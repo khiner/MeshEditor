@@ -139,3 +139,41 @@ private:
     SlotType Type;
 };
 } // namespace mvk
+
+// Typed wrapper over mvk::Buffer for fixed-element-count buffers (no arena/free-list).
+template<typename T>
+struct TypedBuffer {
+    TypedBuffer(mvk::BufferContext &ctx, vk::DeviceSize bytes, vk::BufferUsageFlags usage, SlotType slot)
+        : Buffer(ctx, bytes, usage, slot) {}
+    TypedBuffer(mvk::BufferContext &ctx, vk::DeviceSize bytes, mvk::MemoryUsage mem, vk::BufferUsageFlags usage = {})
+        : Buffer(ctx, bytes, mem, usage) {}
+
+    vk::Buffer operator*() const { return *Buffer; }
+    uint32_t Slot() const { return Buffer.Slot; }
+
+    uint32_t Count() const { return uint32_t(Buffer.UsedSize / sizeof(T)); }
+    void SetCount(uint32_t n) {
+        auto s = vk::DeviceSize(n) * sizeof(T);
+        Buffer.Reserve(s);
+        Buffer.UsedSize = s;
+    }
+    void Reserve(uint32_t n) { Buffer.Reserve(vk::DeviceSize(n) * sizeof(T)); }
+
+    T *Data() { return reinterpret_cast<T *>(Buffer.GetMappedData().data()); }
+    const T *Data() const { return reinterpret_cast<const T *>(Buffer.GetData().data()); }
+
+    T &Get(uint32_t i) { return Data()[i]; }
+    const T &Get(uint32_t i) const { return Data()[i]; }
+
+    void Set(uint32_t i, const T &v) { Buffer.Update(as_bytes(v), vk::DeviceSize(i) * sizeof(T)); }
+    uint32_t Append(const T &v) {
+        auto i = Count();
+        Set(i, v);
+        return i;
+    }
+
+    vk::DescriptorBufferInfo GetDescriptor() const { return Buffer.GetDescriptor(); }
+    vk::DescriptorBufferInfo GetDescriptor(uint32_t count) const { return {*Buffer, 0, vk::DeviceSize(count) * sizeof(T)}; }
+
+    mvk::Buffer Buffer;
+};

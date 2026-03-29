@@ -358,7 +358,7 @@ void Scene::SetInteractionMode(InteractionMode mode) {
             for (const auto [_, br] : R.view<const MeshSelectionBitsetRange>().each()) {
                 next_offset = std::max(next_offset, (br.Offset + br.Count + 31) / 32 * 32);
             }
-            auto *bits = Buffers->GetSelectionBits();
+            auto *bits = Buffers->SelectionBitset.Data();
             for (const auto mesh_entity : scene_selection::GetSelectedMeshEntities(R)) {
                 if (R.all_of<MeshSelectionBitsetRange>(mesh_entity)) continue;
                 const auto &mesh = R.get<const Mesh>(mesh_entity);
@@ -378,7 +378,7 @@ void Scene::SetEditMode(Element mode) {
     const auto current_mode = R.get<const SceneEditMode>(SceneEntity).Value;
     if (current_mode == mode) return;
 
-    auto *bits = Buffers->GetSelectionBits();
+    auto *bits = Buffers->SelectionBitset.Data();
 
     // Phase 1: scan old selection handles and zero old bits for every mesh.
     // Stash the from-handles so we can write new bits in phase 3, after the GPU
@@ -532,7 +532,7 @@ void Scene::Interact() {
                 } else if (interaction_mode == InteractionMode::Edit) {
                     // Select all elements in the current edit mode.
                     const auto ranges = GetBitsetRangesForSelected();
-                    auto *bits = Buffers->GetSelectionBits();
+                    auto *bits = Buffers->SelectionBitset.Data();
                     for (const auto &range : ranges) scene_selection::SelectAll(bits, range.Offset, range.Count);
                     if (!ranges.empty()) SelectionBitsDirty = true;
                 } else if (interaction_mode == InteractionMode::Object) {
@@ -667,7 +667,7 @@ void Scene::Interact() {
                         const auto element_count = fold_left(ranges, uint32_t{0}, [](uint32_t total, const auto &range) { return std::max(total, range.Offset + range.Count); });
                         const uint32_t bitset_words = (element_count + 31) / 32;
                         baseline.ElementBitset.resize(bitset_words);
-                        memcpy(baseline.ElementBitset.data(), Buffers->GetSelectionBits(), bitset_words * sizeof(uint32_t));
+                        memcpy(baseline.ElementBitset.data(), Buffers->SelectionBitset.Data(), bitset_words * sizeof(uint32_t));
                     }
                 } else if (bone_mode) {
                     for (const auto e : R.view<BoneSelection>()) {
@@ -754,7 +754,7 @@ void Scene::Interact() {
     if (interaction_mode == InteractionMode::Edit && !active_is_armature) {
         const bool toggle = IsKeyDown(ImGuiMod_Shift) || IsKeyDown(ImGuiMod_Ctrl) || IsKeyDown(ImGuiMod_Super);
         const auto ranges = GetBitsetRangesForSelected();
-        auto *bits = Buffers->GetSelectionBits();
+        auto *bits = Buffers->SelectionBitset.Data();
         if (!toggle) {
             for (const auto &range : ranges) {
                 const uint32_t first_word = range.Offset / 32;
@@ -992,7 +992,7 @@ void Scene::InteractOverlay() {
         if (bone_mode) return !bone_selected_view.empty();
         if (selected_view.empty()) return false;
         if (!mesh_edit_mode) return true;
-        const auto *bits = Buffers->GetSelectionBits();
+        const auto *bits = Buffers->SelectionBitset.Data();
         for (const auto [e, instance] : R.view<const Instance, const Selected>(entt::exclude<Frozen>).each()) {
             if (const auto *br = R.try_get<const MeshSelectionBitsetRange>(instance.Entity)) {
                 if (scene_selection::CountSelected(bits, br->Offset, br->Count) > 0) return true;
@@ -1480,7 +1480,7 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
             auto &material_store = R.get<MaterialStore>(SceneEntity);
             auto &texture_store = *Textures;
             std::span<const uint32_t> primitive_materials = Meshes->GetPrimitiveMaterialIndices(active_mesh.GetStoreId());
-            const auto material_count = Buffers->MaterialCount();
+            const auto material_count = Buffers->Materials.Count();
             const auto material_name = [&](uint32_t index) {
                 if (index < material_store.Names.size() && !material_store.Names[index].empty()) return std::string{material_store.Names[index]};
                 return std::format("Material{}", index);
@@ -1527,7 +1527,7 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
                     EndCombo();
                 }
 
-                auto &material = Buffers->GetMaterial(material_index);
+                auto &material = Buffers->Materials.Get(material_index);
                 const auto edit_texture_slot = [&](const char *label, uint32_t &slot) {
                     std::string preview = "None";
                     bool has_match = false;
@@ -1703,7 +1703,7 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
     if (R.all_of<LightIndex>(active_entity) &&
         CollapsingHeader("Light", ImGuiTreeNodeFlags_DefaultOpen)) {
         constexpr float MaxLightIntensity{1000.f}, MaxLightRange{1000.f};
-        auto light = Buffers->GetLight(R.get<const LightIndex>(active_entity).Value);
+        auto light = Buffers->Lights.Get(R.get<const LightIndex>(active_entity).Value);
         bool changed{false}, wireframe_changed{false};
 
         const char *type_names[]{"Directional", "Point", "Spot"};
@@ -1804,7 +1804,7 @@ void Scene::RenderControls() {
                         if (const auto *instance = R.try_get<Instance>(active_entity); instance && R.all_of<Mesh>(instance->Entity)) {
                             const auto *br = R.try_get<const MeshSelectionBitsetRange>(instance->Entity);
                             const uint32_t selected_count = br ?
-                                scene_selection::CountSelected(Buffers->GetSelectionBits(), br->Offset, br->Count) :
+                                scene_selection::CountSelected(Buffers->SelectionBitset.Data(), br->Offset, br->Count) :
                                 0;
                             Text("Editing %s: %u selected", label(edit_mode).data(), selected_count);
                         }

@@ -300,8 +300,7 @@ struct EditTransformContext {
 };
 
 void ResetObjectPickKeys(SceneBuffers &buffers) {
-    auto bytes = buffers.ObjectPickKeyBuffer.GetMappedData();
-    std::fill_n(reinterpret_cast<uint32_t *>(bytes.data()), SceneBuffers::MaxSelectableObjects, std::numeric_limits<uint32_t>::max());
+    std::fill_n(buffers.ObjectPickKeys.Data(), SceneBuffers::MaxSelectableObjects, std::numeric_limits<uint32_t>::max());
 }
 
 // clang-format off
@@ -441,7 +440,7 @@ std::optional<uint32_t> FindNearestPickedElement(
         wait_semaphore
     );
 
-    const auto *candidates = reinterpret_cast<const ElementPickCandidate *>(buffers.ElementPickCandidateBuffer.GetData().data());
+    const auto *candidates = buffers.ElementPickCandidates.Data();
     ElementPickCandidate best{.Id = 0, .Depth = 1.0f, .DistanceSq = std::numeric_limits<uint32_t>::max()};
     for (uint32_t i = 0; i < group_count; ++i) {
         const auto &candidate = candidates[i];
@@ -647,7 +646,7 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
     SetStudioEnvironment(environments.ActiveHdriIndex);
     environments.SceneWorld = environments.StudioWorld;
 
-    Buffers->AppendMaterial({
+    Buffers->Materials.Append({
         .BaseColorFactor = vec4{1.f},
         .MetallicFactor = 0.f,
         .RoughnessFactor = 1.f,
@@ -875,8 +874,8 @@ Scene::SyncResult Scene::SyncModelsBuffers() {
         }
         // Write ObjectIds and InstanceStates at the new slots. WorldTransform slots are left unwritten —
         // the WorldTransform reactive pass writes them before submit.
-        Buffers->Instances.UpdateObjectIds(base_index, as_bytes(object_ids));
-        Buffers->Instances.UpdateStates(base_index, as_bytes(states));
+        Buffers->Instances.ObjectIdBuffer.Update(as_bytes(object_ids), vk::DeviceSize(base_index) * sizeof(uint32_t));
+        Buffers->Instances.StateBuffer.Update(as_bytes(states), vk::DeviceSize(base_index) * sizeof(uint8_t));
         mb.InstanceCount = new_total;
         // No R.patch needed — ProcessComponentEvents handles Submit explicitly.
         newly_inserted.insert(newly_inserted.end(), entities.begin(), entities.end());
@@ -1047,8 +1046,8 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         std::vector<entt::entity> synced_lights;
         for (auto [entity, light, light_index, instance] : R.view<PunctualLight, LightIndex, Instance>().each()) {
             if (const auto *ri = R.try_get<const RenderInstance>(entity)) {
-                light.TransformSlotOffset = {Buffers->Instances.TransformSlot(), ri->BufferIndex};
-                Buffers->SetLight(light_index.Value, light);
+                light.TransformSlotOffset = {Buffers->Instances.TransformBuffer.Slot, ri->BufferIndex};
+                Buffers->Lights.Set(light_index.Value, light);
                 synced_lights.push_back(entity);
             }
         }
@@ -1059,12 +1058,12 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
     if (auto *pending = R.try_get<PendingLightRemovals>(SceneEntity); pending && !pending->Indices.empty()) {
         auto &indices = pending->Indices;
         std::sort(indices.begin(), indices.end(), std::greater<>());
-        auto buffer_count = Buffers->LightCount();
+        auto buffer_count = Buffers->Lights.Count();
         for (const auto remove_index : indices) {
             if (remove_index >= buffer_count) continue; // Light was never synced to GPU (created and destroyed same frame).
             --buffer_count;
             if (remove_index != buffer_count) {
-                Buffers->SetLight(remove_index, Buffers->GetLight(buffer_count));
+                Buffers->Lights.Set(remove_index, Buffers->Lights.Get(buffer_count));
                 for (auto [other_entity, other_light_index] : R.view<LightIndex>().each()) {
                     if (other_light_index.Value == buffer_count) {
                         R.replace<LightIndex>(other_entity, remove_index);
@@ -1073,7 +1072,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
                 }
             }
         }
-        Buffers->SetLightCount(buffer_count);
+        Buffers->Lights.SetCount(buffer_count);
         R.remove<PendingLightRemovals>(SceneEntity);
         request(RenderRequest::ReRecord);
     }
@@ -1251,13 +1250,13 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
 
     bool light_count_changed = false;
     if (const auto required_count = uint32_t(R.storage<LightIndex>().size());
-        Buffers->LightCount() != required_count) {
-        Buffers->SetLightCount(required_count);
+        Buffers->Lights.Count() != required_count) {
+        Buffers->Lights.SetCount(required_count);
         light_count_changed = true;
     }
     if (!reactive<changes::Submit>(R).empty() || light_count_changed) request(RenderRequest::Submit);
     for (auto light_entity : R.view<LightWireframeDirty, LightIndex, Instance>()) {
-        const auto light = Buffers->GetLight(R.get<const LightIndex>(light_entity).Value);
+        const auto light = Buffers->Lights.Get(R.get<const LightIndex>(light_entity).Value);
         auto wireframe = BuildLightMesh(light);
         const auto buffer_entity = R.get<Instance>(light_entity).Entity;
 
@@ -1299,7 +1298,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
                 const auto &mesh = R.get<const Mesh>(mesh_entity);
                 const uint32_t new_count = scene_selection::GetElementCount(mesh, edit_mode);
                 const uint32_t max_words = (std::max(br->Count, new_count) + 31) / 32;
-                memset(&Buffers->GetSelectionBits()[br->Offset / 32], 0, max_words * sizeof(uint32_t));
+                memset(&Buffers->SelectionBitset.Data()[br->Offset / 32], 0, max_words * sizeof(uint32_t));
                 br->Count = new_count;
                 if (new_count > 0) geometry_ranges.emplace_back(mesh_entity, br->Offset, br->Count);
             }
@@ -1312,7 +1311,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
             const auto *assignment = R.try_get<const MeshMaterialAssignment>(mesh_entity);
             const auto *mesh = R.try_get<const Mesh>(mesh_entity);
             if (!assignment || !mesh) continue;
-            const auto material_count = Buffers->MaterialCount();
+            const auto material_count = Buffers->Materials.Count();
             if (material_count == 0u) continue;
             auto primitive_materials = Meshes->GetPrimitiveMaterialIndices(mesh->GetStoreId());
             if (assignment->PrimitiveIndex >= primitive_materials.size()) continue;
@@ -1331,8 +1330,8 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
     }
     if (!reactive<changes::Materials>(R).empty()) {
         if (const auto *dirty = R.try_get<const MaterialDirty>(SceneEntity);
-            dirty && dirty->Index < Buffers->MaterialCount()) {
-            Buffers->SetMaterial(dirty->Index, Buffers->GetMaterial(dirty->Index));
+            dirty && dirty->Index < Buffers->Materials.Count()) {
+            Buffers->Materials.Set(dirty->Index, Buffers->Materials.Get(dirty->Index));
         }
         request(RenderRequest::Submit);
     }
@@ -1741,8 +1740,8 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
             .CameraPosition = camera.Position(),
             .CameraNear = camera.NearClip(),
             .CameraFar = camera.FarClip(),
-            .LightCount = Buffers->LightCount(),
-            .LightSlot = Buffers->LightBuffer.Slot,
+            .LightCount = Buffers->Lights.Count(),
+            .LightSlot = Buffers->Lights.Slot(),
             .UseSceneLightsRender = use_scene_lights ? 1u : 0u,
             .EnvIntensity = env_intensity,
             .EnvRotationRadians = env_rotation_radians,
@@ -1764,10 +1763,10 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
             .MorphDeformSlot = Meshes->MorphTargetBuffer.Buffer.Slot,
             .MorphWeightsSlot = Buffers->MorphWeightBuffer.Buffer.Slot,
             .VertexClassSlot = Buffers->VertexClassBuffer.Buffer.Slot,
-            .MaterialSlot = Buffers->MaterialBuffer.Slot,
+            .MaterialSlot = Buffers->Materials.Slot(),
             .PrimitiveMaterialSlot = Meshes->PrimitiveMaterialBuffer.Buffer.Slot,
             .FacePrimitiveSlot = Meshes->FacePrimitiveBuffer.Buffer.Slot,
-            .DrawDataSlot = Buffers->RenderDrawData.Slot,
+            .DrawDataSlot = Buffers->RenderDraw.DrawData.Slot,
             .BoneXRay = settings.ViewportShading == ViewportShadingMode::Wireframe ? 1u : 0u,
             // Polygon offset factor matching Blender's GPU_polygon_offset_calc (viewdist = max ortho extent)
             .NdcOffsetFactor = std::holds_alternative<Perspective>(camera.Data) ? proj[3][2] * -0.00125f : 0.000005f * std::max(std::abs(1.f / proj[0][0]), std::abs(1.f / proj[1][1])),
@@ -2508,13 +2507,13 @@ std::pair<entt::entity, entt::entity> Scene::AddMesh(const std::filesystem::path
         std::vector<uint32_t> scene_material_indices(result->Materials.size(), 0u);
         std::vector<std::string> names;
         names.reserve(result->Materials.size());
-        Buffers->ReserveMaterials(Buffers->MaterialCount() + result->Materials.size());
+        Buffers->Materials.Reserve(Buffers->Materials.Count() + result->Materials.size());
         for (uint32_t material_index = 0; material_index < result->Materials.size(); ++material_index) {
             const auto &source = result->Materials[material_index];
             const auto material_name = source.Name.empty() ? std::format("Material{}", material_index) : source.Name;
             const auto base_color_texture = resolve_texture_slot(source.BaseColorTexturePath, TextureColorSpace::Srgb, material_name, "baseColor");
             const auto normal_texture = resolve_texture_slot(source.NormalTexturePath, TextureColorSpace::Linear, material_name, "normal");
-            scene_material_indices[material_index] = Buffers->AppendMaterial({
+            scene_material_indices[material_index] = Buffers->Materials.Append({
                 .BaseColorFactor = source.BaseColorFactor,
                 .MetallicFactor = std::clamp(source.MetallicFactor, 0.f, 1.f),
                 .RoughnessFactor = std::clamp(source.RoughnessFactor, 0.f, 1.f),
@@ -2583,7 +2582,7 @@ entt::entity Scene::Duplicate(entt::entity e, std::optional<MeshInstanceCreateIn
             return copy_entity;
         }
         if (R.all_of<LightIndex>(e)) {
-            const auto copy_entity = AddLight(create_info, Buffers->GetLight(R.get<const LightIndex>(e).Value));
+            const auto copy_entity = AddLight(create_info, Buffers->Lights.Get(R.get<const LightIndex>(e).Value));
             return copy_entity;
         }
         return AddEmpty(create_info);
@@ -2869,7 +2868,7 @@ void Scene::Destroy(entt::entity e) {
         }
         texture_store.WhiteTextureSlot = texture_store.Textures.empty() ? InvalidSlot : texture_store.Textures.front().SamplerSlot;
 
-        if (Buffers->MaterialCount() > 1) Buffers->SetMaterialCount(1u);
+        if (Buffers->Materials.Count() > 1) Buffers->Materials.SetCount(1u);
         R.patch<MaterialStore>(SceneEntity, [](auto &ms) {
             if (ms.Names.size() > 1) ms.Names.erase(ms.Names.begin() + 1, ms.Names.end());
         });
@@ -2878,9 +2877,9 @@ void Scene::Destroy(entt::entity e) {
 
 std::string Scene::DebugBufferHeapUsage() const { return Buffers->Ctx.DebugHeapUsage(); }
 
-void Scene::FlushDrawList(const DrawListBuilder &draw_list, mvk::Buffer &draw_data, mvk::Buffer &indirect) {
-    if (!draw_list.Draws.empty()) draw_data.Update(as_bytes(draw_list.Draws));
-    if (!draw_list.IndirectCommands.empty()) indirect.Update(as_bytes(draw_list.IndirectCommands));
+void Scene::FlushDrawList(const DrawListBuilder &draw_list, DrawBufferPair &pair) {
+    if (!draw_list.Draws.empty()) pair.DrawData.Update(as_bytes(draw_list.Draws));
+    if (!draw_list.IndirectCommands.empty()) pair.Indirect.Update(as_bytes(draw_list.IndirectCommands));
     Buffers->EnsureIdentityIndexBuffer(draw_list.MaxIndexCount);
     if (auto descriptor_updates = Buffers->Ctx.GetDeferredDescriptorUpdates(); !descriptor_updates.empty()) {
         Vk.Device.updateDescriptorSets(std::move(descriptor_updates), {});
@@ -3066,7 +3065,7 @@ void Scene::RecordRenderCommandBuffer(bool silhouette_only) {
                     const auto primitive_materials = Meshes->GetPrimitiveMaterialIndices(mesh.GetStoreId());
                     const auto primitive_ranges = Meshes->GetPrimitiveTriangleRanges(mesh.GetStoreId());
                     if (!primitive_materials.empty() && !primitive_ranges.empty()) {
-                        const auto material_count = Buffers->MaterialCount();
+                        const auto material_count = Buffers->Materials.Count();
                         // Merge adjacent primitives with the same blend mode into single draw calls.
                         struct BlendDrawRange {
                             bool Blend;
@@ -3078,7 +3077,7 @@ void Scene::RecordRenderCommandBuffer(bool silhouette_only) {
                             if (pr.TriangleCount == 0u) continue;
                             auto pi = pr.PrimitiveIndex;
                             if (pi >= primitive_materials.size()) pi = primitive_materials.size() - 1u;
-                            const bool is_blend = primitive_materials[pi] < material_count && Buffers->GetMaterial(primitive_materials[pi]).AlphaMode == MaterialAlphaMode::Blend;
+                            const bool is_blend = primitive_materials[pi] < material_count && Buffers->Materials.Get(primitive_materials[pi]).AlphaMode == MaterialAlphaMode::Blend;
                             if (!blend_ranges.empty() && blend_ranges.back().Blend == is_blend) blend_ranges.back().TriangleCount += pr.TriangleCount;
                             else blend_ranges.emplace_back(is_blend, pr.FirstTriangle, pr.TriangleCount);
                         }
@@ -3133,7 +3132,7 @@ void Scene::RecordRenderCommandBuffer(bool silhouette_only) {
             for (const auto [entity, arm_obj, mesh_buffers, models] : R.view<const ArmatureObject, const MeshBuffers, const ModelsBuffer>().each()) {
                 if (mesh_buffers.FaceIndices.Count == 0) continue;
                 auto fill_draw = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.FaceIndices, Buffers->Instances);
-                fill_draw.InstanceStateSlot = Buffers->Instances.StateSlot();
+                fill_draw.InstanceStateSlot = Buffers->Instances.StateBuffer.Slot;
                 AppendDraw(draw_list, draw.BoneFill, mesh_buffers.FaceIndices, models, fill_draw);
             }
             draw.BoneWire = draw_list.BeginBatch();
@@ -3141,7 +3140,7 @@ void Scene::RecordRenderCommandBuffer(bool silhouette_only) {
                 if (!should_draw_armature_bones(entity)) continue;
                 if (const auto *adj = R.try_get<const BoneAdjacencyIndices>(entity)) {
                     auto wire_draw = MakeDrawData(mesh_buffers.Vertices, adj->Indices, Buffers->Instances);
-                    wire_draw.InstanceStateSlot = Buffers->Instances.StateSlot();
+                    wire_draw.InstanceStateSlot = Buffers->Instances.StateBuffer.Slot;
                     AppendDraw(draw_list, draw.BoneWire, adj->Indices.Count / 2, models, wire_draw);
                 }
             }
@@ -3151,7 +3150,7 @@ void Scene::RecordRenderCommandBuffer(bool silhouette_only) {
             for (const auto [entity, mesh_buffers, models] : R.view<const BoneJoint, const MeshBuffers, const ModelsBuffer>().each()) {
                 if (mesh_buffers.FaceIndices.Count == 0) continue;
                 auto fill_draw = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.FaceIndices, Buffers->Instances);
-                fill_draw.InstanceStateSlot = Buffers->Instances.StateSlot();
+                fill_draw.InstanceStateSlot = Buffers->Instances.StateBuffer.Slot;
                 AppendDraw(draw_list, draw.BoneSphereFill, mesh_buffers.FaceIndices, models, fill_draw);
             }
             draw.BoneSphereWire = draw_list.BeginBatch();
@@ -3159,7 +3158,7 @@ void Scene::RecordRenderCommandBuffer(bool silhouette_only) {
                 if (mesh_buffers.EdgeIndices.Count == 0) continue;
                 if (const auto it = joint_to_owner.find(entity); it != joint_to_owner.end() && !should_draw_armature_bones(it->second)) continue;
                 auto wire_draw = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.EdgeIndices, Buffers->Instances);
-                wire_draw.InstanceStateSlot = Buffers->Instances.StateSlot();
+                wire_draw.InstanceStateSlot = Buffers->Instances.StateBuffer.Slot;
                 AppendDraw(draw_list, draw.BoneSphereWire, mesh_buffers.EdgeIndices, models, wire_draw);
             }
         }
@@ -3243,7 +3242,7 @@ void Scene::RecordRenderCommandBuffer(bool silhouette_only) {
             for (const auto &e : mesh_entities) {
                 if (e.IsExtras || e.IsBoneJoint || e.Buf.FaceIndices.Count == 0) continue;
                 auto dd = MakeDrawData(e.Buf.Vertices, e.Buf.FaceIndices, Buffers->Instances, e.Deform.BoneDeformOffset, e.Deform.ArmatureDeformOffset, e.Deform.MorphDeformOffset, e.Deform.MorphTargetCount);
-                dd.ObjectIdSlot = Buffers->Instances.ObjectIdSlot();
+                dd.ObjectIdSlot = Buffers->Instances.ObjectIdBuffer.Slot;
                 const auto db = sel_list.Draws.size();
                 if (e.PrimaryEditBufferIndex) AppendDraw(sel_list, sel_tri, e.Buf.FaceIndices, e.Mod, dd, *e.PrimaryEditBufferIndex);
                 else AppendDraw(sel_list, sel_tri, e.Buf.FaceIndices, e.Mod, dd);
@@ -3253,7 +3252,7 @@ void Scene::RecordRenderCommandBuffer(bool silhouette_only) {
             for (const auto &e : mesh_entities) {
                 if (e.IsExtras || e.IsBoneJoint || e.Buf.FaceIndices.Count > 0 || e.Buf.EdgeIndices.Count == 0) continue;
                 auto dd = MakeDrawData(e.Buf.Vertices, e.Buf.EdgeIndices, Buffers->Instances, e.Deform.BoneDeformOffset, e.Deform.ArmatureDeformOffset, e.Deform.MorphDeformOffset, e.Deform.MorphTargetCount);
-                dd.ObjectIdSlot = Buffers->Instances.ObjectIdSlot();
+                dd.ObjectIdSlot = Buffers->Instances.ObjectIdBuffer.Slot;
                 const auto db = sel_list.Draws.size();
                 if (e.PrimaryEditBufferIndex) AppendDraw(sel_list, sel_line, e.Buf.EdgeIndices, e.Mod, dd, *e.PrimaryEditBufferIndex);
                 else AppendDraw(sel_list, sel_line, e.Buf.EdgeIndices, e.Mod, dd);
@@ -3263,7 +3262,7 @@ void Scene::RecordRenderCommandBuffer(bool silhouette_only) {
             for (const auto &e : mesh_entities) {
                 if (e.IsExtras || e.IsBoneJoint || e.Buf.FaceIndices.Count > 0 || e.Buf.EdgeIndices.Count > 0) continue;
                 auto dd = MakeDrawData(e.Buf.Vertices, e.Buf.VertexIndices, Buffers->Instances, e.Deform.BoneDeformOffset, e.Deform.ArmatureDeformOffset, e.Deform.MorphDeformOffset, e.Deform.MorphTargetCount);
-                dd.ObjectIdSlot = Buffers->Instances.ObjectIdSlot();
+                dd.ObjectIdSlot = Buffers->Instances.ObjectIdBuffer.Slot;
                 const auto db = sel_list.Draws.size();
                 if (e.PrimaryEditBufferIndex) AppendDraw(sel_list, sel_point, e.Buf.VertexIndices, e.Mod, dd, *e.PrimaryEditBufferIndex);
                 else AppendDraw(sel_list, sel_point, e.Buf.VertexIndices, e.Mod, dd);
@@ -3274,13 +3273,13 @@ void Scene::RecordRenderCommandBuffer(bool silhouette_only) {
             for (const auto [entity, mesh_buffers, models] : R.view<const BoneJoint, const MeshBuffers, const ModelsBuffer>().each()) {
                 if (mesh_buffers.FaceIndices.Count == 0) continue;
                 auto dd = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.FaceIndices, Buffers->Instances);
-                dd.ObjectIdSlot = Buffers->Instances.ObjectIdSlot();
+                dd.ObjectIdSlot = Buffers->Instances.ObjectIdBuffer.Slot;
                 AppendDraw(sel_list, sel_bone_sphere, mesh_buffers.FaceIndices, models, dd);
             }
 
             DrawBatchInfo sel_extras;
             AppendExtrasDraw(R, Buffers->Instances, sel_list, sel_extras, [](auto &dd, const auto &instances) {
-                dd.ObjectIdSlot = instances.ObjectIdSlot();
+                dd.ObjectIdSlot = instances.ObjectIdBuffer.Slot;
             });
 
             draw.SelectionDraws = {
@@ -3327,7 +3326,7 @@ void Scene::RecordRenderCommandBuffer(bool silhouette_only) {
             const auto &models = R.get<ModelsBuffer>(mesh_entity);
             const auto deform = get_deform_slots(mesh_entity);
             auto dd = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.FaceIndices, Buffers->Instances, deform.BoneDeformOffset, deform.ArmatureDeformOffset, deform.MorphDeformOffset, deform.MorphTargetCount);
-            dd.ObjectIdSlot = Buffers->Instances.ObjectIdSlot();
+            dd.ObjectIdSlot = Buffers->Instances.ObjectIdBuffer.Slot;
             const auto draws_before = draw_list.Draws.size();
             AppendDraw(draw_list, draw.Silhouette, mesh_buffers.FaceIndices, models, dd, R.get<RenderInstance>(e).BufferIndex);
             PatchMorphWeights(draw_list, draws_before, deform);
@@ -3340,7 +3339,7 @@ void Scene::RecordRenderCommandBuffer(bool silhouette_only) {
         }
     }
 
-    FlushDrawList(draw_list, Buffers->RenderDrawData, Buffers->RenderIndirect);
+    FlushDrawList(draw_list, Buffers->RenderDraw);
     const auto render_extent = ComputeRenderExtentPx(R.get<const ViewportExtent>(SceneEntity).Value, std::bit_cast<vec2>(ImGui::GetIO().DisplayFramebufferScale));
     const auto &cb = *RenderCommandBuffer;
     cb.begin({vk::CommandBufferUsageFlagBits::eSimultaneousUse});
@@ -3352,14 +3351,14 @@ void Scene::RecordRenderCommandBuffer(bool silhouette_only) {
         const auto &pipeline = renderer.Bind(cb, spt);
         const DrawPassPushConstants pc{batch.DrawDataSlotOffset, transform_vertex_state_slot, InvalidSlot, InvalidSlot, InvalidSlot};
         cb.pushConstants(*pipeline.PipelineLayout, vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, sizeof(pc), &pc);
-        cb.drawIndexedIndirect(*Buffers->RenderIndirect, batch.IndirectOffset, batch.DrawCount, sizeof(vk::DrawIndexedIndirectCommand));
+        cb.drawIndexedIndirect(*Buffers->RenderDraw.Indirect, batch.IndirectOffset, batch.DrawCount, sizeof(vk::DrawIndexedIndirectCommand));
     };
     auto record_pbr_batch = [&](const DrawBatchInfo &batch, bool opaque) {
         if (batch.DrawCount == 0) return;
         const auto layout = Pipelines->Main.Compiler.BindTargeted(cb, opaque);
         const DrawPassPushConstants pc{batch.DrawDataSlotOffset, transform_vertex_state_slot, InvalidSlot, InvalidSlot, InvalidSlot};
         cb.pushConstants(layout, vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, sizeof(pc), &pc);
-        cb.drawIndexedIndirect(*Buffers->RenderIndirect, batch.IndirectOffset, batch.DrawCount, sizeof(vk::DrawIndexedIndirectCommand));
+        cb.drawIndexedIndirect(*Buffers->RenderDraw.Indirect, batch.IndirectOffset, batch.DrawCount, sizeof(vk::DrawIndexedIndirectCommand));
     };
     const auto make_shader_read_barrier = [](vk::AccessFlags src_access, vk::ImageLayout layout, vk::Image image, const vk::ImageSubresourceRange &range) {
         return vk::ImageMemoryBarrier{src_access, vk::AccessFlagBits::eShaderRead, layout, layout, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, image, range};
@@ -3586,7 +3585,7 @@ void Scene::RenderSelectionPassWith(bool render_depth, const SelectionBuildFn &b
                 const auto &models = R.get<ModelsBuffer>(buffer_entity);
                 if (const auto model_index = GetModelBufferIndex(R, e)) {
                     auto draw = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.FaceIndices, Buffers->Instances);
-                    draw.ObjectIdSlot = Buffers->Instances.ObjectIdSlot();
+                    draw.ObjectIdSlot = Buffers->Instances.ObjectIdBuffer.Slot;
                     AppendDraw(draw_list, silhouette_batch, mesh_buffers.FaceIndices, models, draw, *model_index);
                 }
             }
@@ -3594,16 +3593,16 @@ void Scene::RenderSelectionPassWith(bool render_depth, const SelectionBuildFn &b
     }
     const auto selection_draws = build_fn(draw_list);
 
-    FlushDrawList(draw_list, Buffers->SelectionDrawData, Buffers->SelectionIndirect);
+    FlushDrawList(draw_list, Buffers->SelectionDraw);
     // Update DrawDataSlot to point to selection draw data for this pass.
-    Buffers->SceneViewUBO.Update(as_bytes(Buffers->SelectionDrawData.Slot), offsetof(SceneViewUBO, DrawDataSlot));
+    Buffers->SceneViewUBO.Update(as_bytes(Buffers->SelectionDraw.DrawData.Slot), offsetof(SceneViewUBO, DrawDataSlot));
 
     auto cb = *ClickCommandBuffer;
     cb.reset({});
     cb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
 
     // Reset selection counter.
-    Buffers->SelectionCounterBuffer.Write(as_bytes(SelectionCounters{}));
+    Buffers->SelectionCounter.Buffer.Write(as_bytes(SelectionCounters{}));
 
     // Transition head image to general layout and clear.
     const auto &head_image = Pipelines->SelectionFragment.Resources->HeadImage;
@@ -3626,7 +3625,7 @@ void Scene::RenderSelectionPassWith(bool render_depth, const SelectionBuildFn &b
         const auto &pipeline = renderer.Bind(cb, spt);
         const DrawPassPushConstants pc{batch.DrawDataSlotOffset, InvalidSlot, SelectionHandles->HeadImage, Buffers->SelectionNodeBuffer.Slot, SelectionHandles->SelectionCounter};
         cb.pushConstants(*pipeline.PipelineLayout, vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, sizeof(pc), &pc);
-        cb.drawIndexedIndirect(*Buffers->SelectionIndirect, batch.IndirectOffset, batch.DrawCount, sizeof(vk::DrawIndexedIndirectCommand));
+        cb.drawIndexedIndirect(*Buffers->SelectionDraw.Indirect, batch.IndirectOffset, batch.DrawCount, sizeof(vk::DrawIndexedIndirectCommand));
     };
 
     if (render_depth) {
@@ -3701,7 +3700,7 @@ void Scene::RenderElementSelectionPass(
                 const auto &models = R.get<ModelsBuffer>(buffer_entity);
                 if (const auto model_index = GetModelBufferIndex(R, e)) {
                     auto draw = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.FaceIndices, Buffers->Instances);
-                    draw.ObjectIdSlot = Buffers->Instances.ObjectIdSlot();
+                    draw.ObjectIdSlot = Buffers->Instances.ObjectIdBuffer.Slot;
                     AppendDraw(draw_list, silhouette_batch, mesh_buffers.FaceIndices, models, draw, *model_index);
                 }
             }
@@ -3733,8 +3732,8 @@ void Scene::RenderElementSelectionPass(
         }
     }
 
-    FlushDrawList(draw_list, Buffers->SelectionDrawData, Buffers->SelectionIndirect);
-    Buffers->SceneViewUBO.Update(as_bytes(Buffers->SelectionDrawData.Slot), offsetof(SceneViewUBO, DrawDataSlot));
+    FlushDrawList(draw_list, Buffers->SelectionDraw);
+    Buffers->SceneViewUBO.Update(as_bytes(Buffers->SelectionDraw.DrawData.Slot), offsetof(SceneViewUBO, DrawDataSlot));
 
     auto cb = *ClickCommandBuffer;
     cb.reset({});
@@ -3742,7 +3741,7 @@ void Scene::RenderElementSelectionPass(
 
     if (!write_bitset) {
         // Reset linked-list state before writing selection fragments.
-        Buffers->SelectionCounterBuffer.Write(as_bytes(SelectionCounters{}));
+        Buffers->SelectionCounter.Buffer.Write(as_bytes(SelectionCounters{}));
 
         const auto &head_image = Pipelines->SelectionFragment.Resources->HeadImage;
         cb.pipelineBarrier(
@@ -3770,7 +3769,7 @@ void Scene::RenderElementSelectionPass(
             const auto &pipeline = silhouette.Renderer.Bind(cb, SPT::SilhouetteDepthObject);
             const DrawPassPushConstants sil_pc{silhouette_batch.DrawDataSlotOffset, InvalidSlot, SelectionHandles->HeadImage, Buffers->SelectionNodeBuffer.Slot, SelectionHandles->SelectionCounter};
             cb.pushConstants(*pipeline.PipelineLayout, vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, sizeof(sil_pc), &sil_pc);
-            cb.drawIndexedIndirect(*Buffers->SelectionIndirect, silhouette_batch.IndirectOffset, silhouette_batch.DrawCount, sizeof(vk::DrawIndexedIndirectCommand));
+            cb.drawIndexedIndirect(*Buffers->SelectionDraw.Indirect, silhouette_batch.IndirectOffset, silhouette_batch.DrawCount, sizeof(vk::DrawIndexedIndirectCommand));
         }
         cb.endRenderPass();
     }
@@ -3795,7 +3794,7 @@ void Scene::RenderElementSelectionPass(
         auto draw_with = [&](SPT spt) {
             const auto &pipeline = selection.Renderer.Bind(cb, spt);
             cb.pushConstants(*pipeline.PipelineLayout, vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, sizeof(element_pc), &element_pc);
-            cb.drawIndexedIndirect(*Buffers->SelectionIndirect, element_batch.IndirectOffset, element_batch.DrawCount, sizeof(vk::DrawIndexedIndirectCommand));
+            cb.drawIndexedIndirect(*Buffers->SelectionDraw.Indirect, element_batch.IndirectOffset, element_batch.DrawCount, sizeof(vk::DrawIndexedIndirectCommand));
         };
         draw_with(element_pipeline(element));
         if (write_bitset && xray_selection) {
@@ -3814,7 +3813,7 @@ void Scene::RenderElementSelectionPass(
         const vk::DeviceSize bitset_bytes = ((element_count + 31) / 32) * sizeof(uint32_t);
         cb.pipelineBarrier(
             vk::PipelineStageFlagBits::eFragmentShader, vk::PipelineStageFlagBits::eHost, {}, {},
-            vk::BufferMemoryBarrier{vk::AccessFlagBits::eShaderWrite, vk::AccessFlagBits::eHostRead, {}, {}, *Buffers->SelectionBitsetBuffer, 0, bitset_bytes},
+            vk::BufferMemoryBarrier{vk::AccessFlagBits::eShaderWrite, vk::AccessFlagBits::eHostRead, {}, {}, *Buffers->SelectionBitset, 0, bitset_bytes},
             {}
         );
     }
@@ -3897,7 +3896,7 @@ void Scene::ApplySelectionStateUpdate(std::span<const ElementRange> ranges, Elem
             Meshes->UpdateFaceStatesFromVertices(mesh);
         }
     } else if (element == Element::Face || element == Element::Edge) {
-        const auto *bits = Buffers->GetSelectionBits();
+        const auto *bits = Buffers->SelectionBitset.Data();
         for (const auto &range : ranges) {
             const auto &mesh = R.get<const Mesh>(range.MeshEntity);
             const auto selected_handles = scene_selection::ScanBitsetRange(bits, range.Offset, range.Count);
@@ -3940,7 +3939,7 @@ void Scene::RunBoxSelectElements(std::span<const ElementRange> ranges, Element e
     if (bitset_words > SceneBuffers::SelectionBitsetWords) return;
 
     // Restore baseline bitset for additive mode, or clear for non-additive.
-    auto *bits = Buffers->GetSelectionBits();
+    auto *bits = Buffers->SelectionBitset.Data();
     if (is_additive) {
         const auto *baseline = R.try_get<const AdditiveBoxSelectBaseline>(SceneEntity);
         if (baseline && !baseline->ElementBitset.empty()) {
@@ -4065,8 +4064,8 @@ std::vector<entt::entity> Scene::RunObjectPick(uvec2 mouse_px, uint32_t radius_p
         auto operator<=>(const SortedHit &) const = default;
     };
 
-    const auto *bits = reinterpret_cast<const uint32_t *>(Buffers->ObjectPickSeenBitsetBuffer.GetData().data());
-    const auto *keys = reinterpret_cast<const uint32_t *>(Buffers->ObjectPickKeyBuffer.GetData().data());
+    const auto *bits = Buffers->ObjectPickSeenBitset.Data();
+    const auto *keys = Buffers->ObjectPickKeys.Data();
     std::vector<SortedHit> hits;
     for (uint32_t object_id = 1; object_id <= max_object_id; ++object_id) {
         const uint32_t idx = object_id - 1;
@@ -4088,7 +4087,7 @@ std::vector<entt::entity> Scene::RunObjectPick(uvec2 mouse_px, uint32_t radius_p
 
 void Scene::DispatchBoxSelect(uvec2 box_min, uvec2 box_max, uint32_t max_id, vk::Semaphore wait_semaphore) {
     const uint32_t bitset_words = (max_id + 31) / 32;
-    memset(Buffers->GetSelectionBits(), 0, bitset_words * sizeof(uint32_t));
+    memset(Buffers->SelectionBitset.Data(), 0, bitset_words * sizeof(uint32_t));
 
     const auto group_counts = glm::max((box_max - box_min + 15u) / 16u, uvec2{1, 1});
     RunSelectionCompute(
@@ -4122,7 +4121,7 @@ std::vector<entt::entity> Scene::RunBoxSelect(std::pair<uvec2, uvec2> box_px) {
     std::unordered_map<uint32_t, entt::entity> object_id_to_entity;
     for (const auto [e, ri] : R.view<RenderInstance>().each()) object_id_to_entity[ri.ObjectId] = e;
 
-    const auto *bits = reinterpret_cast<const uint32_t *>(Buffers->SelectionBitsetBuffer.GetData().data());
+    const auto *bits = Buffers->SelectionBitset.Data();
     std::vector<entt::entity> entities;
     for (uint32_t object_id = 1; object_id <= max_object_id; ++object_id) {
         const uint32_t bit_index = object_id - 1;
@@ -4206,9 +4205,9 @@ bool Scene::SubmitViewport(vk::Fence viewportConsumerFence) {
                 *Pipelines->SelectionFragment.Resources->HeadImage.View,
                 vk::ImageLayout::eGeneral
             };
-            const vk::DescriptorBufferInfo selection_counter{*Buffers->SelectionCounterBuffer, 0, sizeof(SelectionCounters)};
-            const vk::DescriptorBufferInfo object_pick_key{*Buffers->ObjectPickKeyBuffer, 0, SceneBuffers::MaxSelectableObjects * sizeof(uint32_t)};
-            const vk::DescriptorBufferInfo element_pick_candidates{*Buffers->ElementPickCandidateBuffer, 0, SceneBuffers::ElementPickGroupCount * sizeof(ElementPickCandidate)};
+            const auto selection_counter = Buffers->SelectionCounter.GetDescriptor();
+            const auto object_pick_key = Buffers->ObjectPickKeys.GetDescriptor(SceneBuffers::MaxSelectableObjects);
+            const auto element_pick_candidates = Buffers->ElementPickCandidates.GetDescriptor(SceneBuffers::ElementPickGroupCount);
             const auto &sil = Pipelines->Silhouette;
             const auto &sil_edge = Pipelines->SilhouetteEdge;
             const auto &main = Pipelines->Main;
@@ -4217,8 +4216,8 @@ bool Scene::SubmitViewport(vk::Fence viewportConsumerFence) {
             const vk::DescriptorImageInfo depth_sampler{*sil_edge.Resources->DepthSampler, *sil_edge.Resources->DepthImage.View, vk::ImageLayout::eDepthStencilReadOnlyOptimal};
             const vk::DescriptorImageInfo color_sampler{*main.Resources->NearestSampler, *main.Resources->ColorImage.View, vk::ImageLayout::eShaderReadOnlyOptimal};
             const vk::DescriptorImageInfo line_data_sampler{*main.Resources->NearestSampler, *main.Resources->LineDataImage.View, vk::ImageLayout::eShaderReadOnlyOptimal};
-            const auto selection_bitset = Buffers->GetSelectionBitsetDescriptor();
-            const auto object_pick_seen_bitset = Buffers->GetObjectPickSeenBitsetDescriptor();
+            const auto selection_bitset = Buffers->SelectionBitset.GetDescriptor(SceneBuffers::SelectionBitsetWords);
+            const auto object_pick_seen_bitset = Buffers->ObjectPickSeenBitset.GetDescriptor(SceneBuffers::ObjectPickBitsetWords);
             Vk.Device.updateDescriptorSets(
                 {
                     Slots->MakeImageWrite(SelectionHandles->HeadImage, head_image_info),
@@ -4253,7 +4252,7 @@ bool Scene::SubmitViewport(vk::Fence viewportConsumerFence) {
     }
 
     // Always ensure DrawDataSlot points to render draw data before submitting (may have been overwritten by a selection pass).
-    Buffers->SceneViewUBO.Update(as_bytes(Buffers->RenderDrawData.Slot), offsetof(SceneViewUBO, DrawDataSlot));
+    Buffers->SceneViewUBO.Update(as_bytes(Buffers->RenderDraw.DrawData.Slot), offsetof(SceneViewUBO, DrawDataSlot));
 
     vk::SubmitInfo submit;
 #ifdef MVK_FORCE_STAGED_TRANSFERS

@@ -30,13 +30,19 @@ enum class IndexKind {
 
 constexpr uint32_t ElementStateSelected{1u << 0}, ElementStateActive{1u << 1};
 
+struct DrawBufferPair {
+    mvk::Buffer DrawData;
+    mvk::Buffer Indirect;
+    DrawBufferPair(mvk::BufferContext &ctx)
+        : DrawData(ctx, 0, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::DrawDataBuffer),
+          Indirect(ctx, 0, mvk::MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eIndirectBuffer) {}
+};
+
 struct RenderBuffers {
     RenderBuffers(Range vertices, SlottedRange indices, IndexKind index_type)
         : Vertices(vertices), Indices(indices), IndexType(index_type) {}
     RenderBuffers(RenderBuffers &&) = default;
     RenderBuffers &operator=(RenderBuffers &&) = default;
-    RenderBuffers(const RenderBuffers &) = delete;
-    RenderBuffers &operator=(const RenderBuffers &) = delete;
 
     Range Vertices;
     SlottedRange Indices;
@@ -52,7 +58,6 @@ struct MeshBuffers {
         : Vertices{vertices}, FaceIndices{face_indices}, EdgeIndices{edge_indices}, VertexIndices{vertex_indices} {}
     MeshBuffers(const MeshBuffers &) = delete;
     MeshBuffers &operator=(const MeshBuffers &) = delete;
-
     SlottedRange Vertices;
     SlottedRange FaceIndices, EdgeIndices, VertexIndices;
     std::unordered_map<Element, RenderBuffers> NormalIndicators;
@@ -103,9 +108,6 @@ struct InstanceArena {
         EnsureCapacity(vk::DeviceSize(Allocator.HighWaterMark()) + count);
     }
 
-    // Typed accessors — eliminate manual sizeof/reinterpret_cast at call sites.
-    void UpdateObjectIds(uint32_t offset, std::span<const std::byte> data) { ObjectIdBuffer.Update(data, vk::DeviceSize(offset) * sizeof(uint32_t)); }
-    void UpdateStates(uint32_t offset, std::span<const std::byte> data) { StateBuffer.Update(data, vk::DeviceSize(offset) * sizeof(uint8_t)); }
     void UpdateState(uint32_t index, uint8_t state) { StateBuffer.Update(as_bytes(state), vk::DeviceSize(index) * sizeof(uint8_t)); }
     std::span<uint8_t> GetMutableStates() {
         return {reinterpret_cast<uint8_t *>(StateBuffer.GetMutableRange(0, StateBuffer.UsedSize).data()), static_cast<size_t>(StateBuffer.UsedSize)};
@@ -114,10 +116,6 @@ struct InstanceArena {
         auto mapped = TransformBuffer.GetMutableRange(0, TransformBuffer.UsedSize);
         return {reinterpret_cast<WorldTransform *>(mapped.data()), mapped.size() / sizeof(WorldTransform)};
     }
-
-    uint32_t TransformSlot() const { return TransformBuffer.Slot; }
-    uint32_t ObjectIdSlot() const { return ObjectIdBuffer.Slot; }
-    uint32_t StateSlot() const { return StateBuffer.Slot; }
 
     mvk::Buffer TransformBuffer, ObjectIdBuffer, StateBuffer;
 
@@ -165,22 +163,17 @@ struct SceneBuffers {
           SceneViewUBO{Ctx, sizeof(SceneViewUBO), vk::BufferUsageFlagBits::eUniformBuffer, SlotType::SceneViewUBO},
           ViewportThemeUBO{Ctx, sizeof(ViewportTheme), vk::BufferUsageFlagBits::eUniformBuffer, SlotType::ViewportThemeUBO},
           WorkspaceLightsUBO{Ctx, sizeof(WorkspaceLights), vk::BufferUsageFlagBits::eUniformBuffer, SlotType::WorkspaceLightsUBO},
-          RenderDrawData{Ctx, 0, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::DrawDataBuffer},
-          RenderIndirect{Ctx, 0, mvk::MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eIndirectBuffer},
-          SelectionDrawData{Ctx, 0, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::DrawDataBuffer},
-          SelectionIndirect{Ctx, 0, mvk::MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eIndirectBuffer},
-          LightBuffer{Ctx, sizeof(PunctualLight), vk::BufferUsageFlagBits::eStorageBuffer, SlotType::LightBuffer},
-          MaterialBuffer{Ctx, sizeof(PBRMaterial), vk::BufferUsageFlagBits::eStorageBuffer, SlotType::MaterialBuffer},
+          RenderDraw{Ctx},
+          SelectionDraw{Ctx},
+          Lights{Ctx, sizeof(PunctualLight), vk::BufferUsageFlagBits::eStorageBuffer, SlotType::LightBuffer},
+          Materials{Ctx, sizeof(PBRMaterial), vk::BufferUsageFlagBits::eStorageBuffer, SlotType::MaterialBuffer},
           IdentityIndexBuffer{Ctx, 0, mvk::MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eIndexBuffer},
           SelectionNodeBuffer{Ctx, sizeof(SelectionNode), vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer},
-          SelectionCounterBuffer{Ctx, sizeof(SelectionCounters), mvk::MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eStorageBuffer},
-          ObjectPickKeyBuffer{Ctx, MaxSelectableObjects * sizeof(uint32_t), mvk::MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eStorageBuffer},
-          ElementPickCandidateBuffer{Ctx, ElementPickGroupCount * sizeof(ElementPickCandidate), mvk::MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eStorageBuffer},
-          ObjectPickSeenBitsetBuffer{Ctx, ObjectPickBitsetWords * sizeof(uint32_t), mvk::MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eStorageBuffer},
-          SelectionBitsetBuffer{Ctx, SelectionBitsetWords * sizeof(uint32_t), mvk::MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eStorageBuffer} {}
-
-    vk::DescriptorBufferInfo GetSelectionBitsetDescriptor() const { return {*SelectionBitsetBuffer, 0, SelectionBitsetWords * sizeof(uint32_t)}; }
-    vk::DescriptorBufferInfo GetObjectPickSeenBitsetDescriptor() const { return {*ObjectPickSeenBitsetBuffer, 0, ObjectPickBitsetWords * sizeof(uint32_t)}; }
+          SelectionCounter{Ctx, sizeof(SelectionCounters), mvk::MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eStorageBuffer},
+          ObjectPickKeys{Ctx, MaxSelectableObjects * sizeof(uint32_t), mvk::MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eStorageBuffer},
+          ObjectPickSeenBitset{Ctx, ObjectPickBitsetWords * sizeof(uint32_t), mvk::MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eStorageBuffer},
+          SelectionBitset{Ctx, SelectionBitsetWords * sizeof(uint32_t), mvk::MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eStorageBuffer},
+          ElementPickCandidates{Ctx, ElementPickGroupCount * sizeof(ElementPickCandidate), mvk::MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eStorageBuffer} {}
 
     void ReserveAdditionalIndices(uint32_t face, uint32_t edge, uint32_t vertex) {
         FaceIndexBuffer.ReserveAdditional(face);
@@ -246,35 +239,6 @@ struct SceneBuffers {
         IdentityIndexCount = count;
     }
 
-    // Light buffer typed accessors.
-    uint32_t LightCount() const { return LightBuffer.UsedSize / sizeof(PunctualLight); }
-    void SetLightCount(uint32_t count) {
-        auto s = vk::DeviceSize(count) * sizeof(PunctualLight);
-        LightBuffer.Reserve(s);
-        LightBuffer.UsedSize = s;
-    }
-    PunctualLight GetLight(uint32_t index) const { return reinterpret_cast<const PunctualLight *>(LightBuffer.GetMappedData().data())[index]; }
-    void SetLight(uint32_t index, const PunctualLight &light) { LightBuffer.Update(as_bytes(light), vk::DeviceSize(index) * sizeof(PunctualLight)); }
-
-    // Material buffer typed accessors.
-    uint32_t MaterialCount() const { return MaterialBuffer.UsedSize / sizeof(PBRMaterial); }
-    const PBRMaterial &GetMaterial(uint32_t index) const { return reinterpret_cast<const PBRMaterial *>(MaterialBuffer.GetData().data())[index]; }
-    PBRMaterial &GetMaterial(uint32_t index) { return reinterpret_cast<PBRMaterial *>(MaterialBuffer.GetMappedData().data())[index]; }
-    void SetMaterial(uint32_t index, const PBRMaterial &material) { MaterialBuffer.Update(as_bytes(material), vk::DeviceSize(index) * sizeof(PBRMaterial)); }
-    uint32_t AppendMaterial(const PBRMaterial &material) {
-        auto i = MaterialCount();
-        SetMaterial(i, material);
-        return i;
-    }
-    void SetMaterialCount(uint32_t count) {
-        auto s = vk::DeviceSize(count) * sizeof(PBRMaterial);
-        MaterialBuffer.Reserve(s);
-        MaterialBuffer.UsedSize = s;
-    }
-    void ReserveMaterials(uint32_t count) { MaterialBuffer.Reserve(vk::DeviceSize(count) * sizeof(PBRMaterial)); }
-
-    uint32_t *GetSelectionBits() { return reinterpret_cast<uint32_t *>(SelectionBitsetBuffer.GetMappedData().data()); }
-
     WorkspaceLights &GetWorkspaceLights() { return *reinterpret_cast<WorkspaceLights *>(WorkspaceLightsUBO.GetMappedData().data()); }
 
     mvk::BufferContext Ctx;
@@ -282,9 +246,9 @@ struct SceneBuffers {
     BufferArena<uint32_t> FaceIndexBuffer, EdgeIndexBuffer, VertexIndexBuffer;
     InstanceArena Instances;
     mvk::Buffer SceneViewUBO, ViewportThemeUBO, WorkspaceLightsUBO;
-    mvk::Buffer RenderDrawData, RenderIndirect;
-    mvk::Buffer SelectionDrawData, SelectionIndirect;
-    mvk::Buffer LightBuffer, MaterialBuffer;
+    DrawBufferPair RenderDraw, SelectionDraw;
+    TypedBuffer<PunctualLight> Lights;
+    TypedBuffer<PBRMaterial> Materials;
     mvk::Buffer IdentityIndexBuffer;
     uint32_t IdentityIndexCount{0};
     uint32_t SelectionNodeCapacity{1};
@@ -293,7 +257,9 @@ struct SceneBuffers {
     BufferArena<float> MorphWeightBuffer{Ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::MorphWeightBuffer};
     BufferArena<uint8_t> VertexClassBuffer{Ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::VertexClassBuffer};
     // CPU readback buffers (host-visible)
-    mvk::Buffer SelectionCounterBuffer, ObjectPickKeyBuffer, ElementPickCandidateBuffer, ObjectPickSeenBitsetBuffer, SelectionBitsetBuffer;
+    TypedBuffer<SelectionCounters> SelectionCounter;
+    TypedBuffer<uint32_t> ObjectPickKeys, ObjectPickSeenBitset, SelectionBitset;
+    TypedBuffer<ElementPickCandidate> ElementPickCandidates;
 };
 
 inline vk::Extent2D ComputeRenderExtentPx(vk::Extent2D logical_extent, vec2 scale) {

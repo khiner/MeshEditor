@@ -80,9 +80,9 @@ DrawData MakeDrawData(
     };
 }
 DrawData MakeDrawData(const SlottedRange &vertices, const SlottedRange &indices, const InstanceArena &instances, uint32_t bone_deform = InvalidOffset, uint32_t armature_deform = InvalidOffset, uint32_t morph_deform = InvalidOffset, uint32_t morph_target_count = 0) {
-    return MakeDrawData(vertices.Slot, vertices, indices, instances.TransformSlot(), instances.StateSlot(), bone_deform, armature_deform, morph_deform, morph_target_count);
+    return MakeDrawData(vertices.Slot, vertices, indices, instances.TransformBuffer.Slot, instances.StateBuffer.Slot, bone_deform, armature_deform, morph_deform, morph_target_count);
 }
 DrawData MakeDrawData(const RenderBuffers &rb, uint32_t vertex_slot, const InstanceArena &instances) {
-    return MakeDrawData(vertex_slot, rb.Vertices, rb.Indices, instances.TransformSlot());
+    return MakeDrawData(vertex_slot, rb.Vertices, rb.Indices, instances.TransformBuffer.Slot);
 }
 } // namespace
