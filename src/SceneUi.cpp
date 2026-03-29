@@ -470,9 +470,9 @@ void Scene::Interact() {
 
     const auto interaction_mode = R.get<const SceneInteraction>(SceneEntity).Mode;
     const auto active_entity = FindActiveEntity(R);
-    const bool has_frozen_selected = R.view<Selected, Frozen>().begin() != R.view<Selected, Frozen>().end();
+    const bool has_frozen_selected = R.view<Selected, ScaleLocked>().begin() != R.view<Selected, ScaleLocked>().end();
     const bool edit_transform_locked = interaction_mode == InteractionMode::Edit &&
-        any_of(scene_selection::GetSelectedMeshEntities(R), [&](entt::entity mesh_entity) { return scene_selection::HasFrozenInstance(R, mesh_entity); });
+        any_of(scene_selection::GetSelectedMeshEntities(R), [&](entt::entity mesh_entity) { return scene_selection::HasScaleLockedInstance(R, mesh_entity); });
     const bool transform_shortcuts_enabled = !edit_transform_locked;
     const bool scale_shortcut_enabled = transform_shortcuts_enabled && !has_frozen_selected;
     // Handle keyboard input.
@@ -831,9 +831,9 @@ void Scene::InteractOverlay() {
     { // Transform mode pill buttons (top-left overlay)
         using enum TransformGizmo::Type;
         const auto interaction_mode = R.get<const SceneInteraction>(SceneEntity).Mode;
-        const bool has_frozen_selected = R.view<Selected, Frozen>().begin() != R.view<Selected, Frozen>().end();
+        const bool has_frozen_selected = R.view<Selected, ScaleLocked>().begin() != R.view<Selected, ScaleLocked>().end();
         const bool edit_transform_locked = interaction_mode == InteractionMode::Edit &&
-            any_of(scene_selection::GetSelectedMeshEntities(R), [&](entt::entity mesh_entity) { return scene_selection::HasFrozenInstance(R, mesh_entity); });
+            any_of(scene_selection::GetSelectedMeshEntities(R), [&](entt::entity mesh_entity) { return scene_selection::HasScaleLockedInstance(R, mesh_entity); });
         const bool transform_enabled = !edit_transform_locked;
         const bool scale_enabled = transform_enabled && !has_frozen_selected;
 
@@ -993,7 +993,7 @@ void Scene::InteractOverlay() {
         if (selected_view.empty()) return false;
         if (!mesh_edit_mode) return true;
         const auto *bits = Buffers->SelectionBitset.Data();
-        for (const auto [e, instance] : R.view<const Instance, const Selected>(entt::exclude<Frozen>).each()) {
+        for (const auto [e, instance] : R.view<const Instance, const Selected>(entt::exclude<ScaleLocked>).each()) {
             if (const auto *br = R.try_get<const MeshSelectionBitsetRange>(instance.Entity)) {
                 if (scene_selection::CountSelected(bits, br->Offset, br->Count) > 0) return true;
             }
@@ -1122,7 +1122,7 @@ void Scene::InteractOverlay() {
                     R.patch<Transform>(e, [&](auto &t) {
                         t.P = glm::conjugate(pd.R) * ((world.P - pd.P) / pd.S);
                         t.R = glm::conjugate(pd.R) * world.R;
-                        if (!R.all_of<Frozen>(e)) t.S = world.S / pd.S;
+                        if (!R.all_of<ScaleLocked>(e)) t.S = world.S / pd.S;
                     });
                 };
 
@@ -1165,7 +1165,7 @@ void Scene::InteractOverlay() {
 
                     // Object mode / non-bone transform.
                     const auto &pd = ts_e_comp.ParentDelta;
-                    const bool frozen = R.all_of<Frozen>(e);
+                    const bool frozen = R.all_of<ScaleLocked>(e);
                     const auto offset = ts_e.P - ts.P;
                     set_local(e, {td.P + ts.P + glm::rotate(td.R, frozen ? offset : r * (rT * offset * td.S)), glm::normalize(td.R * ts_e.R), frozen ? ts_e.S : td.S * ts_e.S}, pd);
                 }
@@ -1420,7 +1420,7 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
                 );
             }
 
-            const bool frozen = R.all_of<Frozen>(transform_entity);
+            const bool frozen = R.all_of<ScaleLocked>(transform_entity);
             if (frozen) BeginDisabled();
             const auto label = std::format("Scale{}", frozen ? " (frozen)" : "");
             if (DragFloat3(label.c_str(), &transform.S[0], 0.01f, 0.01f, 10)) R.patch<Transform>(transform_entity, [](auto &) {});
@@ -1464,7 +1464,7 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
     if (is_mesh_instance) {
         const auto active_mesh_entity = active_instance->Entity;
         if (const auto *primitive_type = R.try_get<PrimitiveType>(active_mesh_entity)) {
-            const bool frozen = scene_selection::HasFrozenInstance(R, active_mesh_entity);
+            const bool frozen = scene_selection::HasScaleLockedInstance(R, active_mesh_entity);
             if (frozen) BeginDisabled();
             const auto update_label = std::format("Update primitive{}", frozen ? " (frozen)" : "");
             if (CollapsingHeader(update_label.c_str()) && !frozen) {

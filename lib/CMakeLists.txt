@@ -4,7 +4,16 @@ add_subdirectory(tetgen)
 add_subdirectory(lunasvg)
 add_subdirectory(tinyobjloader)
 add_subdirectory(tinyply)
+
+set(FASTGLTF_ENABLE_KHR_PHYSICS_RIGID_BODIES ON CACHE BOOL "" FORCE)
 add_subdirectory(fastgltf)
+
+# JoltPhysics: disable GPU compute (Hair/SoftBody GPU features not needed for rigid body physics)
+set(JPH_USE_DX12 OFF CACHE BOOL "" FORCE)
+set(JPH_USE_VK OFF CACHE BOOL "" FORCE)
+set(JPH_USE_MTL OFF CACHE BOOL "" FORCE)
+set(JPH_USE_CPU_COMPUTE OFF CACHE BOOL "" FORCE)
+add_subdirectory(JoltPhysics/Build)
 
 #=================== faust ===================
 # See [the docs](https://faustdoc.grame.fr/manual/embedding/#using-libfaust-with-the-llvm-backend) for general help.

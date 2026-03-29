@@ -112,15 +112,15 @@ std::unordered_map<entt::entity, entt::entity> ComputePrimaryEditInstances(const
     const auto active = FindActiveEntity(r);
     for (const auto [e, instance, ok, ri] : r.view<const Instance, const Selected, const ObjectKind, const RenderInstance>().each()) {
         if (ok.Value != ObjectType::Mesh) continue;
-        if (!include_frozen && r.all_of<Frozen>(e)) continue;
+        if (!include_frozen && r.all_of<ScaleLocked>(e)) continue;
         auto &primary = primaries[instance.Entity];
         if (primary == entt::entity{} || e == active) primary = e;
     }
     return primaries;
 }
 
-bool HasFrozenInstance(const entt::registry &r, entt::entity e) {
-    for (const auto [_, instance] : r.view<const Instance, const Frozen>().each()) {
+bool HasScaleLockedInstance(const entt::registry &r, entt::entity e) {
+    for (const auto [_, instance] : r.view<const Instance, const ScaleLocked>().each()) {
         if (instance.Entity == e) return true;
     }
     return false;

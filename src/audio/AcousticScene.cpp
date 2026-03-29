@@ -138,7 +138,7 @@ void AcousticScene::LoadRealImpact(const fs::path &directory, Scene &scene) {
                     std::ranges::end(materials::acoustic::All)) {
                 R.emplace<AcousticMaterial>(mesh_entity, *real_impact_material);
             }
-            R.emplace<Frozen>(instance_entity);
+            R.emplace<ScaleLocked>(instance_entity);
             R.emplace<Excitable>(instance_entity, vertex_indices);
             SetImpactFrames(instance_entity, to<std::vector>(RealImpact::LoadSamples(directory, listener_point.Index)), std::move(vertex_indices));
         }
@@ -260,7 +260,7 @@ void AcousticScene::RenderControls(Scene &scene) {
     const auto sound_entity = FindSelectedSoundEntity();
     if (sound_entity == entt::null) {
         if (Button("Create sound object")) {
-            R.emplace<Frozen>(active_entity);
+            R.emplace<ScaleLocked>(active_entity);
             R.emplace<SoundObjectModel>(active_entity, SoundObjectModel::Modal);
             R.emplace<ModalModelCreateInfo>(active_entity);
         }
@@ -288,7 +288,7 @@ void AcousticScene::RenderControls(Scene &scene) {
     Draw(sound_entity, scene.GetMeshEntity(sound_entity));
     Spacing();
     if (Button("Delete sound object")) {
-        R.remove<Frozen, Excitable, Recording, SoundObjectModel, ModalSoundObject, SampleSoundObject, ModalModelCreateInfo, SoundObjectListener>(sound_entity);
+        R.remove<ScaleLocked, Excitable, Recording, SoundObjectModel, ModalSoundObject, SampleSoundObject, ModalModelCreateInfo, SoundObjectListener>(sound_entity);
     }
 }
 

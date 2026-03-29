@@ -25,7 +25,7 @@ struct SubElementOf {
     entt::entity Parent;
 };
 
-struct Frozen {}; // Disable scale changes (translate/rotate still allowed)
+struct ScaleLocked {}; // Disable scale changes (translate/rotate still allowed)
 
 enum class ObjectType : uint8_t {
     Empty,

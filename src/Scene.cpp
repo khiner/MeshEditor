@@ -28,6 +28,7 @@
 #include "mesh/MeshStore.h"
 #include "mesh/PrimitiveType.h"
 #include "mesh/Primitives.h"
+#include "physics/PhysicsWorld.h"
 #include "scene_impl/SceneInternalTypes.h"
 
 #include "imgui.h"
@@ -539,7 +540,8 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
       Buffers{std::make_unique<SceneBuffers>(Vk.PhysicalDevice, Vk.Device, Vk.Instance, *Slots)},
       Meshes{std::make_unique<MeshStore>(Buffers->Ctx)},
       Textures{std::make_unique<TextureStore>()},
-      Environments{std::make_unique<EnvironmentStore>()} {
+      Environments{std::make_unique<EnvironmentStore>()},
+      Physics{std::make_unique<PhysicsWorld>()} {
     // Reactive storage subscriptions for deferred once-per-frame processing
     track<changes::Selected>(R).on<Selected>(On::Create | On::Destroy);
     track<changes::ActiveInstance>(R).on<Active>(On::Create | On::Destroy);
@@ -1361,7 +1363,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
             // Apply edit transform once per selected mesh via a representative selected instance.
             // This keeps linked instances from receiving duplicate per-instance edits.
             for (const auto &[mesh_entity, instance_entity] : edit_transform_context.TransformInstances) {
-                if (scene_selection::HasFrozenInstance(R, mesh_entity)) continue;
+                if (scene_selection::HasScaleLockedInstance(R, mesh_entity)) continue;
                 const auto &mesh = R.get<const Mesh>(mesh_entity);
                 const auto vertex_states = Meshes->GetVertexStates(mesh.GetStoreId());
                 const bool any_selected = std::ranges::any_of(vertex_states, [](const auto s) { return (s & ElementStateSelected) != 0u; });
@@ -1508,6 +1510,13 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
                 R.patch<ModelsBuffer>(arm_obj.JointEntity);
             }
         }
+        // Physics step: advance simulation and sync Jolt body transforms back to ECS.
+        // Runs before bone/WorldTransform sync so that physics Transform patches are included.
+        if (Physics->HasBodies() && anim_advanced) {
+            Physics->Step(R, Physics->TimeStep);
+            request(RenderRequest::Submit);
+        }
+
         // Bone pose sync: classify bone changes, update pose deltas, compute deform matrices.
         // Runs before the reactive WorldTransform pass so bone sync's Transform patches are included.
         const bool bones_need_refresh = anim_advanced || mode_changed;
@@ -2334,7 +2343,7 @@ void Scene::DeleteSelectedBones() {
         for (const auto child : children) {
             const auto &ct = R.get<const Transform>(child);
             const auto t = ComposeLocalTransforms(bone.RestLocal, ct);
-            R.emplace_or_replace<Transform>(child, Transform{t.P, t.R, R.all_of<Frozen>(child) ? ct.S : t.S});
+            R.emplace_or_replace<Transform>(child, Transform{t.P, t.R, R.all_of<ScaleLocked>(child) ? ct.S : t.S});
             ClearParent(R, child);
             SetParent(R, child, grandparent);
             R.emplace_or_replace<ParentInverse>(child, I4);
@@ -2752,7 +2761,7 @@ void Scene::ClearMeshes() {
 }
 
 void Scene::SetMeshPositions(entt::entity e, std::span<const vec3> positions) {
-    if (scene_selection::HasFrozenInstance(R, e)) return;
+    if (scene_selection::HasScaleLockedInstance(R, e)) return;
 
     Meshes->SetPositions(R.get<const Mesh>(e), positions);
     R.emplace_or_replace<MeshGeometryDirty>(e);
@@ -2933,7 +2942,7 @@ void Scene::RecordRenderCommandBuffer(bool silhouette_only) {
             if (ok.Value != ObjectType::Mesh) continue;
             auto &primary = primary_edit_instances[instance.Entity];
             if (primary == entt::entity{} || e == active) primary = e;
-            if (has_pending_transform && !R.all_of<Frozen>(e)) {
+            if (has_pending_transform && !R.all_of<ScaleLocked>(e)) {
                 auto &primary_uf = edit_transform_context.TransformInstances[instance.Entity];
                 if (primary_uf == entt::entity{} || e == active) primary_uf = e;
             }

@@ -60,6 +60,7 @@ struct ObjectCreateInfo {
 struct Mesh;
 struct MeshData;
 struct MeshStore;
+struct PhysicsWorld;
 struct ScenePipelines;
 struct SceneBuffers;
 struct DescriptorSlots;
@@ -184,6 +185,7 @@ private:
     std::unique_ptr<MeshStore> Meshes;
     std::unique_ptr<TextureStore> Textures;
     std::unique_ptr<EnvironmentStore> Environments;
+    std::unique_ptr<PhysicsWorld> Physics;
 
     enum class SelectionMode { Click,
                                Box };

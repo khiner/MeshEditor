@@ -25,7 +25,7 @@ std::vector<uint32_t> ConvertSelectionElement(std::span<const uint32_t> handles,
 // Only includes Mesh-type objects (excludes Cameras, etc.).
 std::unordered_map<entt::entity, entt::entity> ComputePrimaryEditInstances(const entt::registry &, bool include_frozen = true);
 
-bool HasFrozenInstance(const entt::registry &, entt::entity);
+bool HasScaleLockedInstance(const entt::registry &, entt::entity);
 std::unordered_set<entt::entity> GetSelectedMeshEntities(const entt::registry &);
 uint32_t GetElementCount(const Mesh &, Element);
 
