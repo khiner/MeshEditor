@@ -132,3 +132,10 @@ struct PhysicsBodyHandle {
 struct PhysicsConstraintHandle {
     uint32_t ConstraintIndex{UINT32_MAX};
 };
+
+// Links a collider entity to its wireframe overlay instance(s).
+// Capsules use 3 instances (body + 2 caps); others use 1.
+struct ColliderWireframe {
+    entt::entity Instances[3]{null_entity, null_entity, null_entity};
+    uint8_t Count{0};
+};

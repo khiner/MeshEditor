@@ -187,6 +187,16 @@ private:
     std::unique_ptr<EnvironmentStore> Environments;
     std::unique_ptr<PhysicsWorld> Physics;
 
+    // Shared buffer entities for collider wireframe overlays, indexed by ColliderShapeBuffer enum.
+    enum ColliderShapeBuffer : uint8_t { CSB_Box,
+                                         CSB_Sphere,
+                                         CSB_CapsuleBody,
+                                         CSB_CapsuleCap,
+                                         CSB_Cylinder,
+                                         CSB_Count };
+    entt::entity ColliderShapeBufferEntities[CSB_Count]{null_entity, null_entity, null_entity, null_entity, null_entity};
+    void SyncColliderWireframes();
+
     enum class SelectionMode { Click,
                                Box };
     SelectionMode SelectionMode{SelectionMode::Box};

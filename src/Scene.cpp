@@ -28,6 +28,7 @@
 #include "mesh/MeshStore.h"
 #include "mesh/PrimitiveType.h"
 #include "mesh/Primitives.h"
+#include "physics/PhysicsDebugDraw.h"
 #include "physics/PhysicsWorld.h"
 #include "scene_impl/SceneInternalTypes.h"
 
@@ -1652,6 +1653,10 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
                 if (R.valid(e) && !is_newly_inserted(e)) update_wt(e, !(bone_edit && R.all_of<StartTransform>(e)));
             }
         }
+        // Update collider wireframe instances after WorldTransform recomputation so they read
+        // up-to-date parent transforms, and before the GPU write so their own WT changes are included.
+        SyncColliderWireframes();
+
         // Batch WorldTransform writes: collect all (BufferIndex, WorldTransform) pairs,
         // sort by BufferIndex for cache-friendly access, then write via single GetMutableRange.
         {
@@ -2430,6 +2435,128 @@ entt::entity Scene::CreateExtrasObject(std::span<const vec3> positions, std::spa
     return entity;
 }
 
+void Scene::SyncColliderWireframes() {
+    if (R.view<const PhysicsCollider>().begin() == R.view<const PhysicsCollider>().end() &&
+        R.view<ColliderWireframe>().begin() == R.view<ColliderWireframe>().end()) return;
+
+    // Lazily create canonical buffer entities (recreated if destroyed by last-instance cleanup).
+    auto ensure_buffer = [&](ColliderShapeBuffer idx, auto generator) {
+        if (R.valid(ColliderShapeBufferEntities[idx])) return;
+        auto mesh = generator();
+        if (mesh.Positions.empty()) return;
+        ColliderShapeBufferEntities[idx] = CreateExtrasBufferEntity(mesh.Positions, {}, mesh.EdgeIndices);
+    };
+    ensure_buffer(CSB_Box, physics_debug::UnitBox);
+    ensure_buffer(CSB_Sphere, physics_debug::UnitSphere);
+    ensure_buffer(CSB_CapsuleBody, physics_debug::UnitCapsuleBody);
+    ensure_buffer(CSB_CapsuleCap, physics_debug::UnitCapsuleCap);
+    ensure_buffer(CSB_Cylinder, physics_debug::UnitCylinder);
+
+    // Create wireframe instances for colliders that don't have them yet
+    for (auto [entity, collider] : R.view<const PhysicsCollider>().each()) {
+        if (R.all_of<ColliderWireframe>(entity)) continue;
+
+        const auto &shape = collider.Shape;
+        ColliderWireframe cw{};
+
+        auto make_instance = [&](entt::entity buffer_entity) -> entt::entity {
+            if (buffer_entity == entt::null) return entt::null;
+            auto inst = R.create();
+            R.emplace<Instance>(inst, buffer_entity);
+            R.emplace<Transform>(inst);
+            R.emplace<WorldTransform>(inst);
+            R.emplace<SubElementOf>(inst, entity);
+            SetVisible(inst, true);
+            return inst;
+        };
+
+        if (shape.Type == PhysicsShapeType::Capsule) {
+            cw.Instances[0] = make_instance(ColliderShapeBufferEntities[CSB_CapsuleBody]);
+            cw.Instances[1] = make_instance(ColliderShapeBufferEntities[CSB_CapsuleCap]); // top
+            cw.Instances[2] = make_instance(ColliderShapeBufferEntities[CSB_CapsuleCap]); // bottom
+            cw.Count = 3;
+        } else {
+            entt::entity buf = entt::null;
+            switch (shape.Type) {
+                case PhysicsShapeType::Box: buf = ColliderShapeBufferEntities[CSB_Box]; break;
+                case PhysicsShapeType::Sphere: buf = ColliderShapeBufferEntities[CSB_Sphere]; break;
+                case PhysicsShapeType::Cylinder: buf = ColliderShapeBufferEntities[CSB_Cylinder]; break;
+                default: break;
+            }
+            if (buf != entt::null) {
+                cw.Instances[0] = make_instance(buf);
+                cw.Count = 1;
+            }
+        }
+        if (cw.Count > 0) R.emplace<ColliderWireframe>(entity, cw);
+    }
+
+    // Remove wireframe instances for colliders that no longer exist
+    std::vector<entt::entity> orphans;
+    for (auto [entity, cw] : R.view<ColliderWireframe>().each()) {
+        if (R.all_of<PhysicsCollider>(entity)) continue;
+        for (uint8_t i = 0; i < cw.Count; ++i) {
+            if (R.valid(cw.Instances[i])) Destroy(cw.Instances[i]);
+        }
+        orphans.push_back(entity);
+    }
+    for (auto e : orphans) R.remove<ColliderWireframe>(e);
+
+    // Update wireframe transforms only when the parent entity's WorldTransform changed,
+    // or when the wireframe was just created this frame (no BufferIndex yet).
+    const auto &wt_changed = reactive<changes::WorldTransform>(R);
+    for (auto [entity, collider, cw] : R.view<const PhysicsCollider, const ColliderWireframe>().each()) {
+        const auto *wt = R.try_get<const WorldTransform>(entity);
+        if (!wt) continue;
+
+        const bool parent_moved = wt_changed.contains(entity);
+        const bool newly_created = [&] {
+            for (uint8_t i = 0; i < cw.Count; ++i) {
+                const auto *ri = R.try_get<const RenderInstance>(cw.Instances[i]);
+                if (!ri || ri->BufferIndex == UINT32_MAX) return true;
+            }
+            return false;
+        }();
+        if (!parent_moved && !newly_created) continue;
+
+        const auto &shape = collider.Shape;
+        mat4 base = ToMatrix(*wt);
+
+        auto set_wt = [&](entt::entity inst, mat4 m) {
+            if (!R.valid(inst)) return;
+            R.replace<WorldTransform>(inst, ToWorldTransform(m));
+        };
+
+        switch (shape.Type) {
+            case PhysicsShapeType::Box:
+                set_wt(cw.Instances[0], base * glm::scale(mat4{1}, {shape.Size.x, shape.Size.y, shape.Size.z}));
+                break;
+            case PhysicsShapeType::Sphere: {
+                float d = shape.Radius * 2.0f;
+                set_wt(cw.Instances[0], base * glm::scale(mat4{1}, {d, d, d}));
+                break;
+            }
+            case PhysicsShapeType::Capsule: {
+                float r = std::max(shape.RadiusTop, shape.RadiusBottom);
+                float d = r * 2.0f;
+                float body_h = std::max(shape.Height, 0.001f);
+                set_wt(cw.Instances[0], base * glm::scale(mat4{1}, {d, body_h, d}));
+                mat4 top = base * glm::translate(mat4{1}, {0, shape.Height * 0.5f, 0}) * glm::scale(mat4{1}, {d, d, d});
+                set_wt(cw.Instances[1], top);
+                mat4 bot = base * glm::translate(mat4{1}, {0, -shape.Height * 0.5f, 0}) * glm::scale(mat4{1}, {d, -d, d});
+                set_wt(cw.Instances[2], bot);
+                break;
+            }
+            case PhysicsShapeType::Cylinder: {
+                float d = std::max(shape.RadiusTop, shape.RadiusBottom) * 2.0f;
+                set_wt(cw.Instances[0], base * glm::scale(mat4{1}, {d, shape.Height, d}));
+                break;
+            }
+            default: break;
+        }
+    }
+}
+
 entt::entity Scene::AddCamera(ObjectCreateInfo info) {
     Camera camera{DefaultPerspectiveCamera()};
     auto mesh = BuildCameraFrustumMesh(camera);
@@ -2806,6 +2933,16 @@ void Scene::Destroy(entt::entity e) {
     if (const auto *armature = R.try_get<ArmatureObject>(e)) try_add_armature_data(armature->Entity);
     if (const auto *armature_modifier = R.try_get<ArmatureModifier>(e)) try_add_armature_data(armature_modifier->ArmatureEntity);
     if (const auto *bone_attachment = R.try_get<BoneAttachment>(e)) try_add_armature_data(bone_attachment->ArmatureEntity);
+
+    // Destroy collider wireframe instances before the entity is destroyed.
+    if (const auto *cw = R.try_get<ColliderWireframe>(e)) {
+        for (uint8_t i = 0; i < cw->Count; ++i) {
+            if (R.valid(cw->Instances[i])) {
+                SetVisible(cw->Instances[i], false);
+                R.destroy(cw->Instances[i]);
+            }
+        }
+    }
 
     if (const auto *light_index = R.try_get<LightIndex>(e)) {
         R.get_or_emplace<PendingLightRemovals>(SceneEntity).Indices.push_back(light_index->Value);
