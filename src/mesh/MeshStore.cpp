@@ -447,49 +447,46 @@ std::pair<uint32_t, Range> MeshStore::AllocateVertexBuffer(std::span<const vec3>
     return {id, vertices};
 }
 
-void MeshStore::ReserveForBulkCreate(const BulkMeshReservation &r) {
-    if (r.Vertices > 0) {
-        VerticesBuffer.Buffer.Reserve(VerticesBuffer.Buffer.UsedSize + vk::DeviceSize(r.Vertices) * sizeof(Vertex));
-        VertexStateBuffer.Reserve(VertexStateBuffer.UsedSize + vk::DeviceSize(r.Vertices) * sizeof(uint8_t));
-    }
-    if (r.Faces > 0) {
-        FaceFirstTriangleBuffer.Buffer.Reserve(FaceFirstTriangleBuffer.Buffer.UsedSize + vk::DeviceSize(r.Faces) * sizeof(uint32_t));
-        FacePrimitiveBuffer.Buffer.Reserve(FacePrimitiveBuffer.Buffer.UsedSize + vk::DeviceSize(r.Faces) * sizeof(uint32_t));
-        FaceStateBuffer.Reserve(FaceStateBuffer.UsedSize + vk::DeviceSize(r.Faces) * sizeof(uint8_t));
-    }
-    if (r.Triangles > 0) {
-        TriangleFaceIdBuffer.Buffer.Reserve(TriangleFaceIdBuffer.Buffer.UsedSize + vk::DeviceSize(r.Triangles) * sizeof(uint32_t));
-    }
-    if (r.EdgeStates > 0) {
-        EdgeStateBuffer.Buffer.Reserve(EdgeStateBuffer.Buffer.UsedSize + vk::DeviceSize(r.EdgeStates) * sizeof(uint8_t));
-    }
-    if (r.BoneDeformVertices > 0) {
-        BoneDeformBuffer.Buffer.Reserve(BoneDeformBuffer.Buffer.UsedSize + vk::DeviceSize(r.BoneDeformVertices) * sizeof(BoneDeformVertex));
-    }
-    if (r.MorphTargetEntries > 0) {
-        MorphTargetBuffer.Buffer.Reserve(MorphTargetBuffer.Buffer.UsedSize + vk::DeviceSize(r.MorphTargetEntries) * sizeof(MorphTargetVertex));
-    }
+void MeshStore::PlanCreate(const MeshData &data, const MeshPrimitives &primitives, bool has_deform, uint32_t morph_target_count) {
+    const auto vertices = static_cast<uint32_t>(data.Positions.size());
+    const auto faces = static_cast<uint32_t>(data.Faces.size());
+    uint32_t triangles = 0;
+    for (const auto &face : data.Faces) triangles += face.size() - 2;
+    Pending.Vertices += vertices;
+    Pending.Faces += faces;
+    Pending.Triangles += triangles;
+    Pending.EdgeStates += triangles + 2 * faces; // manifold estimate: halfedges ≈ triangles + 2*faces
+    Pending.Primitives += primitives.MaterialIndices.size();
+    if (has_deform) Pending.BoneDeformVertices += vertices;
+    if (morph_target_count > 0) Pending.MorphTargetEntries += morph_target_count * vertices;
 }
 
-void MeshStore::ReserveForBulkClone(std::span<const Mesh *> meshes) {
-    BulkMeshReservation r{};
-    uint32_t total_face_primitives = 0, total_primitive_materials = 0;
-    for (const auto *mesh : meshes) {
-        const auto &entry = Entries.at(mesh->GetStoreId());
-        r.Vertices += entry.Vertices.Count;
-        r.Faces += entry.FaceData.Count;
-        r.Triangles += entry.TriangleFaceIds.Count;
-        r.EdgeStates += entry.EdgeStates.Count;
-        r.BoneDeformVertices += entry.BoneDeform.Count;
-        r.MorphTargetEntries += entry.MorphTargets.Count;
-        total_face_primitives += entry.FacePrimitives.Count;
-        total_primitive_materials += entry.PrimitiveMaterials.Count;
-    }
-    ReserveForBulkCreate(r);
-    if (total_face_primitives > 0)
-        FacePrimitiveBuffer.Buffer.Reserve(FacePrimitiveBuffer.Buffer.UsedSize + vk::DeviceSize(total_face_primitives) * sizeof(uint32_t));
-    if (total_primitive_materials > 0)
-        PrimitiveMaterialBuffer.Buffer.Reserve(PrimitiveMaterialBuffer.Buffer.UsedSize + vk::DeviceSize(total_primitive_materials) * sizeof(uint32_t));
+void MeshStore::PlanClone(const Mesh &mesh) {
+    const auto &e = Entries.at(mesh.GetStoreId());
+    Pending.Vertices += e.Vertices.Count;
+    Pending.Faces += e.FaceData.Count;
+    Pending.Triangles += e.TriangleFaceIds.Count;
+    Pending.EdgeStates += e.EdgeStates.Count;
+    Pending.Primitives += e.PrimitiveMaterials.Count;
+    Pending.BoneDeformVertices += e.BoneDeform.Count;
+    Pending.MorphTargetEntries += e.MorphTargets.Count;
+}
+
+void MeshStore::CommitReserves() {
+    auto reserve = [](auto &buf, uint32_t count, size_t elem_size) {
+        if (count > 0) buf.Reserve(buf.UsedSize + vk::DeviceSize(count) * elem_size);
+    };
+    reserve(VerticesBuffer.Buffer, Pending.Vertices, sizeof(Vertex));
+    reserve(VertexStateBuffer, Pending.Vertices, sizeof(uint8_t));
+    reserve(FaceFirstTriangleBuffer.Buffer, Pending.Faces, sizeof(uint32_t));
+    reserve(FacePrimitiveBuffer.Buffer, Pending.Faces, sizeof(uint32_t));
+    reserve(FaceStateBuffer, Pending.Faces, sizeof(uint8_t));
+    reserve(TriangleFaceIdBuffer.Buffer, Pending.Triangles, sizeof(uint32_t));
+    reserve(EdgeStateBuffer.Buffer, Pending.EdgeStates, sizeof(uint8_t));
+    reserve(PrimitiveMaterialBuffer.Buffer, Pending.Primitives, sizeof(uint32_t));
+    reserve(BoneDeformBuffer.Buffer, Pending.BoneDeformVertices, sizeof(BoneDeformVertex));
+    reserve(MorphTargetBuffer.Buffer, Pending.MorphTargetEntries, sizeof(MorphTargetVertex));
+    Pending = {};
 }
 
 Mesh MeshStore::CreateMesh(MeshData &&data, MeshVertexAttributes &&attrs, MeshPrimitives &&primitives, std::optional<ArmatureDeformData> deform, std::optional<MorphTargetData> morph) {

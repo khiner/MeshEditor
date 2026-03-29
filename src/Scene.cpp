@@ -2757,16 +2757,13 @@ void Scene::Duplicate() {
     for (const auto e : R.view<Selected>()) entities.emplace_back(e);
 
     // Pre-reserve MeshStore arenas to avoid per-CloneMesh buffer growth.
-    {
-        std::vector<const Mesh *> meshes_to_clone;
-        for (const auto e : entities) {
-            if (!R.all_of<Instance>(e) || R.all_of<BoneSubPartOf>(e)) continue;
-            const auto mesh_entity = R.get<Instance>(e).Entity;
-            if (R.all_of<ObjectExtrasTag>(mesh_entity) || !R.all_of<Mesh>(mesh_entity)) continue;
-            meshes_to_clone.push_back(&R.get<const Mesh>(mesh_entity));
-        }
-        if (!meshes_to_clone.empty()) Meshes->ReserveForBulkClone(meshes_to_clone);
+    for (const auto e : entities) {
+        if (!R.all_of<Instance>(e) || R.all_of<BoneSubPartOf>(e)) continue;
+        const auto mesh_entity = R.get<Instance>(e).Entity;
+        if (R.all_of<ObjectExtrasTag>(mesh_entity) || !R.all_of<Mesh>(mesh_entity)) continue;
+        Meshes->PlanClone(R.get<const Mesh>(mesh_entity));
     }
+    Meshes->CommitReserves();
 
     for (const auto e : entities) {
         const auto new_e = Duplicate(e);

@@ -2,6 +2,8 @@
 
 #include "ArmatureDeformData.h"
 #include "Mesh.h"
+#include "MeshAttributes.h"
+#include "MeshData.h"
 #include "MorphTargetData.h"
 #include "gpu/BoneDeformVertex.h"
 #include "gpu/MorphTargetVertex.h"
@@ -29,28 +31,20 @@ struct MeshWithMaterials {
     std::vector<ObjPlyMaterial> Materials;
 };
 
-struct MeshData;
-struct MeshVertexAttributes;
-struct MeshPrimitives;
-
 struct PrimitiveTriangleRange {
     uint32_t PrimitiveIndex, FirstTriangle, TriangleCount;
-};
-
-// Additional element counts beyond current usage, for pre-reserving GPU arenas.
-struct BulkMeshReservation {
-    uint32_t Vertices, Faces, Triangles, EdgeStates;
-    uint32_t BoneDeformVertices, MorphTargetEntries;
 };
 
 // Owns mesh vertex data (canonical CPU/GPU storage) used by all systems, including rendering.
 struct MeshStore {
     explicit MeshStore(mvk::BufferContext &);
 
-    // Pre-reserve internal GPU arenas to avoid repeated reallocations during bulk CreateMesh calls.
-    void ReserveForBulkCreate(const BulkMeshReservation &);
-    // Pre-reserve for bulk CloneMesh calls by summing arena sizes from source meshes.
-    void ReserveForBulkClone(std::span<const Mesh *> meshes);
+    // Accumulate arena reservations for upcoming mesh operations.
+    // Call PlanCreate/PlanClone per mesh, then CommitReserves() once before the actual operations.
+    void PlanCreate(const MeshData &, const MeshPrimitives & = {}, bool has_deform = false, uint32_t morph_target_count = 0);
+    void PlanClone(const Mesh &);
+    // Reserve all arenas for accumulated plans, then reset.
+    void CommitReserves();
 
     Mesh CreateMesh(MeshData &&, MeshVertexAttributes &&, MeshPrimitives &&, std::optional<ArmatureDeformData> = {}, std::optional<MorphTargetData> = {});
     Mesh CloneMesh(const Mesh &);
@@ -148,6 +142,12 @@ private:
 
     std::vector<Entry> Entries{};
     std::vector<uint32_t> FreeIds{};
+
+    struct PendingReserves {
+        uint32_t Vertices{}, Faces{}, Triangles{}, EdgeStates{};
+        uint32_t Primitives{};
+        uint32_t BoneDeformVertices{}, MorphTargetEntries{};
+    } Pending{};
 
     uint32_t AcquireId(Entry &&);
     Range AllocateVertices(uint32_t count);

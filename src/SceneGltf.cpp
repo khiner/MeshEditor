@@ -204,33 +204,16 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
 
     // Pre-reserve MeshStore arenas to avoid O(N) reallocations during bulk mesh creation.
     {
-        uint32_t total_vertices = 0, total_faces = 0, total_triangles = 0;
-        uint32_t total_bone_deform_vertices = 0, total_morph_target_entries = 0;
-        auto count_mesh_data = [&](const std::optional<MeshData> &data) {
-            if (!data) return;
-            total_vertices += data->Positions.size();
-            total_faces += data->Faces.size();
-            for (const auto &face : data->Faces) total_triangles += face.size() - 2;
-        };
+        auto plan = [&](const std::optional<MeshData> &data) { if (data) Meshes->PlanCreate(*data); };
         for (const auto &scene_mesh : scene->Meshes) {
-            count_mesh_data(scene_mesh.Triangles);
-            count_mesh_data(scene_mesh.Lines);
-            count_mesh_data(scene_mesh.Points);
             if (scene_mesh.Triangles) {
-                const auto vc = static_cast<uint32_t>(scene_mesh.Triangles->Positions.size());
-                if (scene_mesh.DeformData) total_bone_deform_vertices += vc;
-                if (scene_mesh.MorphData && scene_mesh.MorphData->TargetCount > 0) total_morph_target_entries += scene_mesh.MorphData->TargetCount * vc;
+                uint32_t morph_targets = scene_mesh.MorphData ? scene_mesh.MorphData->TargetCount : 0;
+                Meshes->PlanCreate(*scene_mesh.Triangles, scene_mesh.TrianglePrimitives, scene_mesh.DeformData.has_value(), morph_targets);
             }
+            plan(scene_mesh.Lines);
+            plan(scene_mesh.Points);
         }
-        // For manifold triangle meshes: halfedges = triangles + 2*faces, edges ≈ halfedges/2, edge_states = edges*2 ≈ halfedges.
-        if (total_vertices > 0) Meshes->ReserveForBulkCreate({
-            .Vertices = total_vertices,
-            .Faces = total_faces,
-            .Triangles = total_triangles,
-            .EdgeStates = total_triangles + 2 * total_faces,
-            .BoneDeformVertices = total_bone_deform_vertices,
-            .MorphTargetEntries = total_morph_target_entries,
-        });
+        Meshes->CommitReserves();
     }
 
     std::vector<entt::entity> mesh_entities;
