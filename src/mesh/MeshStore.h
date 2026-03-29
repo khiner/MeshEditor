@@ -60,19 +60,9 @@ struct MeshStore {
 
     std::span<const Vertex> GetVertices(uint32_t id) const { return VerticesBuffer.Get(Entries.at(id).Vertices); }
     std::span<Vertex> GetVertices(uint32_t id) { return VerticesBuffer.GetMutable(Entries.at(id).Vertices); }
-    SlottedRange GetVerticesRange(uint32_t id) const { return {Entries.at(id).Vertices, VerticesBuffer.Buffer.Slot}; }
-
-    SlottedRange GetBoneDeformRange(uint32_t id) const {
-        const auto &entry = Entries.at(id);
-        if (entry.BoneDeform.Count == 0) return {};
-        return {entry.BoneDeform, BoneDeformBuffer.Buffer.Slot};
-    }
-
-    SlottedRange GetMorphTargetRange(uint32_t id) const {
-        const auto &entry = Entries.at(id);
-        if (entry.MorphTargets.Count == 0) return {};
-        return {entry.MorphTargets, MorphTargetBuffer.Buffer.Slot};
-    }
+    SlottedRange GetVerticesRange(uint32_t id) const { return VerticesBuffer.Slotted(Entries.at(id).Vertices); }
+    SlottedRange GetBoneDeformRange(uint32_t id) const { return BoneDeformBuffer.Slotted(Entries.at(id).BoneDeform); }
+    SlottedRange GetMorphTargetRange(uint32_t id) const { return MorphTargetBuffer.Slotted(Entries.at(id).MorphTargets); }
     uint32_t GetMorphTargetCount(uint32_t id) const { return Entries.at(id).MorphTargetCount; }
     uint32_t GetTriangleCount(uint32_t id) const { return Entries.at(id).TriangleCount; }
     std::span<const float> GetDefaultMorphWeights(uint32_t id) const { return Entries.at(id).DefaultMorphWeights; }
@@ -80,12 +70,12 @@ struct MeshStore {
     uint32_t GetVertexStateSlot() const { return VertexStateBuffer.Slot; }
     std::span<const uint8_t> GetVertexStates(uint32_t id) const;
     SlottedRange GetFaceStateRange(uint32_t id) const { return {Entries.at(id).FaceData, FaceStateBuffer.Slot}; }
-    SlottedRange GetEdgeStateRange(uint32_t id) const { return {Entries.at(id).EdgeStates, EdgeStateBuffer.Buffer.Slot}; }
-    SlottedRange GetFaceFirstTriRange(uint32_t id) const { return {Entries.at(id).FaceData, FaceFirstTriangleBuffer.Buffer.Slot}; }
+    SlottedRange GetEdgeStateRange(uint32_t id) const { return EdgeStateBuffer.Slotted(Entries.at(id).EdgeStates); }
+    SlottedRange GetFaceFirstTriRange(uint32_t id) const { return FaceFirstTriangleBuffer.Slotted(Entries.at(id).FaceData); }
 
-    SlottedRange GetFaceIdRange(uint32_t id) const { return {Entries.at(id).TriangleFaceIds, TriangleFaceIdBuffer.Buffer.Slot}; }
-    SlottedRange GetFacePrimitiveRange(uint32_t id) const { return {Entries.at(id).FacePrimitives, FacePrimitiveBuffer.Buffer.Slot}; }
-    SlottedRange GetPrimitiveMaterialRange(uint32_t id) const { return {Entries.at(id).PrimitiveMaterials, PrimitiveMaterialBuffer.Buffer.Slot}; }
+    SlottedRange GetFaceIdRange(uint32_t id) const { return TriangleFaceIdBuffer.Slotted(Entries.at(id).TriangleFaceIds); }
+    SlottedRange GetFacePrimitiveRange(uint32_t id) const { return FacePrimitiveBuffer.Slotted(Entries.at(id).FacePrimitives); }
+    SlottedRange GetPrimitiveMaterialRange(uint32_t id) const { return PrimitiveMaterialBuffer.Slotted(Entries.at(id).PrimitiveMaterials); }
 
     std::span<const uint32_t> GetTriangleFaceIds(uint32_t id) const { return TriangleFaceIdBuffer.Get(Entries.at(id).TriangleFaceIds); }
     std::span<const uint32_t> GetFacePrimitiveIndices(uint32_t id) const { return FacePrimitiveBuffer.Get(Entries.at(id).FacePrimitives); }

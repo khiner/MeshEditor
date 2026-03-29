@@ -41,8 +41,6 @@ struct DrawBufferPair {
 struct RenderBuffers {
     RenderBuffers(Range vertices, SlottedRange indices, IndexKind index_type)
         : Vertices(vertices), Indices(indices), IndexType(index_type) {}
-    RenderBuffers(RenderBuffers &&) = default;
-    RenderBuffers &operator=(RenderBuffers &&) = default;
 
     Range Vertices;
     SlottedRange Indices;
@@ -182,14 +180,14 @@ struct SceneBuffers {
     }
 
     SlottedRange CreateIndices(std::span<const uint> indices, IndexKind index_kind) {
-        auto &index_buffer = GetIndexBuffer(index_kind);
-        return {index_buffer.Allocate(indices), index_buffer.Buffer.Slot};
+        auto &buf = GetIndexBuffer(index_kind);
+        return buf.Slotted(buf.Allocate(indices));
     }
     // Allocate an index range without writing data. Returns the range and a mutable span for direct writes.
     std::pair<SlottedRange, std::span<uint32_t>> AllocateIndices(uint32_t count, IndexKind index_kind) {
         auto &buf = GetIndexBuffer(index_kind);
         auto range = buf.Allocate(count);
-        return {{range, buf.Buffer.Slot}, buf.GetMutable(range)};
+        return {buf.Slotted(range), buf.GetMutable(range)};
     }
     RenderBuffers CreateRenderBuffers(std::span<const Vertex> vertices, std::span<const uint> indices, IndexKind index_kind) {
         return {VertexBuffer.Allocate(vertices), CreateIndices(indices, index_kind), index_kind};

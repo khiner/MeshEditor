@@ -15,7 +15,6 @@ struct Worker {
         : Title(title), ResultFuture(std::async(std::launch::async, std::forward<decltype(work)>(work))) {
         ImGui::OpenPopup(window->GetID(Title.data()));
     }
-    ~Worker() = default;
 
     std::optional<Result> Render() {
         using namespace ImGui;

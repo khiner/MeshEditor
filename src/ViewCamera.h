@@ -17,7 +17,6 @@ struct ViewCamera {
         const auto direction = glm::normalize(position - target);
         YawPitch = {atan2(direction.z, direction.x), asin(direction.y)};
     }
-    ~ViewCamera() = default;
 
     Camera Data;
     vec3 Target;

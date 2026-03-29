@@ -37,7 +37,6 @@ struct SoundObjectListenerPoint {
 struct SampleSoundObject {
     SampleSoundObject(std::vector<std::vector<float>> &&frames, std::vector<uint> vertices)
         : Frames(std::move(frames)), Excitable(vertices) {}
-    ~SampleSoundObject() = default;
 
     std::vector<std::vector<float>> Frames;
     Excitable Excitable;

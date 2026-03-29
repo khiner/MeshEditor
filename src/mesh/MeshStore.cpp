@@ -620,11 +620,11 @@ Mesh MeshStore::CloneMesh(const Mesh &mesh) {
         .Vertices = vertices,
         .FaceData = faces,
         .EdgeStates = edge_states,
-        .TriangleFaceIds = TriangleFaceIdBuffer.Allocate(TriangleFaceIdBuffer.Get(src_entry.TriangleFaceIds)),
-        .FacePrimitives = src_entry.FacePrimitives.Count > 0 ? FacePrimitiveBuffer.Allocate(FacePrimitiveBuffer.Get(src_entry.FacePrimitives)) : Range{},
-        .PrimitiveMaterials = src_entry.PrimitiveMaterials.Count > 0 ? PrimitiveMaterialBuffer.Allocate(PrimitiveMaterialBuffer.Get(src_entry.PrimitiveMaterials)) : Range{},
-        .BoneDeform = src_entry.BoneDeform.Count > 0 ? BoneDeformBuffer.Allocate(BoneDeformBuffer.Get(src_entry.BoneDeform)) : Range{},
-        .MorphTargets = src_entry.MorphTargets.Count > 0 ? MorphTargetBuffer.Allocate(MorphTargetBuffer.Get(src_entry.MorphTargets)) : Range{},
+        .TriangleFaceIds = TriangleFaceIdBuffer.Clone(src_entry.TriangleFaceIds),
+        .FacePrimitives = FacePrimitiveBuffer.Clone(src_entry.FacePrimitives),
+        .PrimitiveMaterials = PrimitiveMaterialBuffer.Clone(src_entry.PrimitiveMaterials),
+        .BoneDeform = BoneDeformBuffer.Clone(src_entry.BoneDeform),
+        .MorphTargets = MorphTargetBuffer.Clone(src_entry.MorphTargets),
         .MorphTargetCount = src_entry.MorphTargetCount,
         .TriangleCount = src_entry.TriangleCount,
         .DefaultMorphWeights = src_entry.DefaultMorphWeights,
@@ -677,8 +677,8 @@ void MeshStore::Release(uint32_t id) {
     FacePrimitiveBuffer.Release(entry.FacePrimitives);
     PrimitiveMaterialBuffer.Release(entry.PrimitiveMaterials);
     EdgeStateBuffer.Release(entry.EdgeStates);
-    if (entry.BoneDeform.Count > 0) BoneDeformBuffer.Release(entry.BoneDeform);
-    if (entry.MorphTargets.Count > 0) MorphTargetBuffer.Release(entry.MorphTargets);
+    BoneDeformBuffer.Release(entry.BoneDeform);
+    MorphTargetBuffer.Release(entry.MorphTargets);
     entry = {};
     FreeIds.emplace_back(id);
 }

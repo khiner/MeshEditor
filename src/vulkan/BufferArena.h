@@ -107,6 +107,11 @@ struct BufferArena {
         return {reinterpret_cast<T *>(bytes.data()), range.Count};
     }
 
+    // Deep-copy an existing range into a new allocation.
+    Range Clone(Range src) { return src.Count > 0 ? Allocate(Get(src)) : Range{}; }
+
+    SlottedRange Slotted(Range r) const { return {r, Buffer.Slot}; }
+
     mvk::Buffer Buffer;
 
 private:

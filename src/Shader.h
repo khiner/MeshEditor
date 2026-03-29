@@ -97,8 +97,6 @@ struct ShaderPipeline {
         vk::DescriptorSetLayout set_layout = {},
         vk::DescriptorSet set = {}
     );
-    ShaderPipeline(ShaderPipeline &&) = default;
-    ~ShaderPipeline() = default;
 
     vk::Device Device;
 
@@ -128,8 +126,6 @@ struct ComputePipeline {
         vk::Device, Shaders &&, std::optional<vk::PushConstantRange> = std::nullopt,
         vk::DescriptorSetLayout set_layout = {}, vk::DescriptorSet set = {}
     );
-    ComputePipeline(ComputePipeline &&) = default;
-    ~ComputePipeline() = default;
 
     vk::Device Device;
     Shaders ShaderModules;
