@@ -23,7 +23,7 @@ struct RotationUiDriving {};
 // Tracks transform at start of gizmo manipulation. If present, actively manipulating.
 struct StartTransform {
     Transform T;
-    Transform ParentDelta; // ScaleLocked parent_world * parent_inverse at drag start (identity if unparented)
+    Transform ParentDelta; // Captured parent_world * parent_inverse at drag start (identity if unparented)
 };
 
 // Bone display length captured at drag start (for head/tail partial transforms).

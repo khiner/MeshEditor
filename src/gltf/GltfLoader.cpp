@@ -1257,6 +1257,86 @@ std::expected<Scene, std::string> LoadScene(const std::filesystem::path &path) {
         scene.Lights.emplace_back(punctual_light, std::string{light.name});
     }
 
+    // Parse KHR_physics_rigid_bodies document-level resources
+    {
+        const auto ToCombineMode = [](fastgltf::CombineMode m) {
+            switch (m) {
+                case fastgltf::CombineMode::Minimum: return PhysicsCombineMode::Minimum;
+                case fastgltf::CombineMode::Maximum: return PhysicsCombineMode::Maximum;
+                case fastgltf::CombineMode::Multiply: return PhysicsCombineMode::Multiply;
+                default: return PhysicsCombineMode::Average;
+            }
+        };
+        for (const auto &src : asset.physicsMaterials) {
+            scene.PhysicsMaterials.push_back({
+                .StaticFriction = float(src.staticFriction),
+                .DynamicFriction = float(src.dynamicFriction),
+                .Restitution = float(src.restitution),
+                .FrictionCombine = ToCombineMode(src.frictionCombine),
+                .RestitutionCombine = ToCombineMode(src.restitutionCombine),
+            });
+        }
+        for (const auto &src : asset.collisionFilters) {
+            CollisionFilter filter;
+            for (const auto &s : src.collisionSystems) filter.CollisionSystems.emplace_back(s);
+            for (const auto &s : src.collideWithSystems) filter.CollideWithSystems.emplace_back(s);
+            for (const auto &s : src.notCollideWithSystems) filter.NotCollideWithSystems.emplace_back(s);
+            scene.CollisionFilters.push_back(std::move(filter));
+        }
+        for (const auto &src : asset.physicsJoints) {
+            PhysicsJointDef def;
+            for (const auto &lim : src.limits) {
+                PhysicsJointLimit limit;
+                limit.LinearAxes.assign(lim.linearAxes.begin(), lim.linearAxes.end());
+                limit.AngularAxes.assign(lim.angularAxes.begin(), lim.angularAxes.end());
+                if (lim.min) limit.Min = float(*lim.min);
+                if (lim.max) limit.Max = float(*lim.max);
+                if (lim.stiffness) limit.Stiffness = float(*lim.stiffness);
+                limit.Damping = float(lim.damping);
+                def.Limits.push_back(std::move(limit));
+            }
+            for (const auto &drv : src.drives) {
+                PhysicsJointDrive drive;
+                drive.Type = drv.type == fastgltf::DriveType::Angular ? PhysicsDriveType::Angular : PhysicsDriveType::Linear;
+                drive.Mode = drv.mode == fastgltf::DriveMode::Acceleration ? PhysicsDriveMode::Acceleration : PhysicsDriveMode::Force;
+                drive.Axis = drv.axis;
+                drive.MaxForce = float(drv.maxForce);
+                drive.PositionTarget = float(drv.positionTarget);
+                drive.VelocityTarget = float(drv.velocityTarget);
+                drive.Stiffness = float(drv.stiffness);
+                drive.Damping = float(drv.damping);
+                def.Drives.push_back(std::move(drive));
+            }
+            scene.PhysicsJointDefs.push_back(std::move(def));
+        }
+    }
+
+    // Convert implicit shapes for physics geometry references
+    const auto ToPhysicsShape = [&](const fastgltf::Geometry &geom) -> PhysicsShape {
+        if (geom.shape && *geom.shape < asset.shapes.size()) {
+            return std::visit(
+                [](const auto &s) -> PhysicsShape {
+                    using T = std::decay_t<decltype(s)>;
+                    if constexpr (std::is_same_v<T, fastgltf::BoxShape>) {
+                        return {.Type = PhysicsShapeType::Box, .Size = ToVec3(s.size)};
+                    } else if constexpr (std::is_same_v<T, fastgltf::SphereShape>) {
+                        return {.Type = PhysicsShapeType::Sphere, .Radius = float(s.radius)};
+                    } else if constexpr (std::is_same_v<T, fastgltf::CapsuleShape>) {
+                        return {.Type = PhysicsShapeType::Capsule, .RadiusTop = float(s.radiusTop), .RadiusBottom = float(s.radiusBottom), .Height = float(s.height)};
+                    } else if constexpr (std::is_same_v<T, fastgltf::CylinderShape>) {
+                        return {.Type = PhysicsShapeType::Cylinder, .RadiusTop = float(s.radiusTop), .RadiusBottom = float(s.radiusBottom), .Height = float(s.height)};
+                    }
+                },
+                asset.shapes[*geom.shape]
+            );
+        }
+        // Mesh-based shape: node reference + convexHull flag
+        PhysicsShape shape;
+        shape.Type = geom.convexHull ? PhysicsShapeType::ConvexHull : PhysicsShapeType::TriangleMesh;
+        // MeshEntity will be resolved in SceneGltf.cpp using node-to-entity mapping
+        return shape;
+    };
+
     std::vector<bool> is_joint(asset.nodes.size(), false);
     for (uint32_t skin_index = 0; skin_index < asset.skins.size(); ++skin_index) {
         if (!used_skin[skin_index]) continue;
@@ -1282,7 +1362,8 @@ std::expected<Scene, std::string> LoadScene(const std::filesystem::path &path) {
         for (const auto child_idx : source_node.children) {
             if (const auto child = ToIndex(child_idx, asset.nodes.size())) children_node_indices.emplace_back(*child);
         }
-        scene.Nodes[node_index] = Node{
+        auto &node = scene.Nodes[node_index];
+        node = Node{
             .NodeIndex = node_index,
             .ParentNodeIndex = parents[node_index],
             .ChildrenNodeIndices = std::move(children_node_indices),
@@ -1296,6 +1377,57 @@ std::expected<Scene, std::string> LoadScene(const std::filesystem::path &path) {
             .LightIndex = ToIndex(source_node.lightIndex, asset.lights.size()),
             .Name = MakeNodeName(asset, node_index, source_mesh_index),
         };
+
+        // KHR_physics_rigid_bodies per-node data
+        if (const auto &rb = source_node.physicsRigidBody) {
+            if (rb->motion) {
+                PhysicsMotion motion{.IsKinematic = rb->motion->isKinematic};
+                if (rb->motion->mass) motion.Mass = float(*rb->motion->mass);
+                motion.CenterOfMass = ToVec3(rb->motion->centerOfMass);
+                if (rb->motion->inertialDiagonal) motion.InertiaDiagonal = ToVec3(*rb->motion->inertialDiagonal);
+                if (rb->motion->inertialOrientation) {
+                    const auto q = ToVec4(*rb->motion->inertialOrientation);
+                    motion.InertiaOrientation = quat{q.w, q.x, q.y, q.z}; // glTF quat: [x,y,z,w]
+                }
+                motion.LinearVelocity = ToVec3(rb->motion->linearVelocity);
+                motion.AngularVelocity = ToVec3(rb->motion->angularVelocity);
+                motion.GravityFactor = float(rb->motion->gravityFactor);
+                node.Motion = std::move(motion);
+            }
+            if (rb->collider) {
+                PhysicsCollider collider;
+                collider.Shape = ToPhysicsShape(rb->collider->geometry);
+                collider.PhysicsMaterialIndex = ToIndex(rb->collider->physicsMaterial, asset.physicsMaterials.size());
+                collider.CollisionFilterIndex = ToIndex(rb->collider->collisionFilter, asset.collisionFilters.size());
+                node.Collider = std::move(collider);
+                node.ColliderGeometryNodeIndex = ToIndex(rb->collider->geometry.node, asset.nodes.size());
+            }
+            if (rb->trigger) {
+                Node::TriggerData trigger;
+                std::visit(
+                    [&](const auto &t) {
+                        using T = std::decay_t<decltype(t)>;
+                        if constexpr (std::is_same_v<T, fastgltf::GeometryTrigger>) {
+                            trigger.Shape = ToPhysicsShape(t.geometry);
+                            trigger.CollisionFilterIndex = ToIndex(t.collisionFilter, asset.collisionFilters.size());
+                        } else {
+                            for (const auto n : t.nodes) {
+                                if (n < asset.nodes.size()) trigger.NodeIndices.push_back(uint32_t(n));
+                            }
+                        }
+                    },
+                    *rb->trigger
+                );
+                node.Trigger = std::move(trigger);
+            }
+            if (rb->joint) {
+                node.Joint = Node::JointData{
+                    .ConnectedNodeIndex = uint32_t(rb->joint->connectedNode),
+                    .JointDefIndex = uint32_t(rb->joint->joint),
+                    .EnableCollision = rb->joint->enableCollision,
+                };
+            }
+        }
     }
 
     std::vector<bool> is_object_emitted(asset.nodes.size(), false);

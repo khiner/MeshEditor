@@ -23,6 +23,7 @@
 #include "mesh/MorphTargetData.h"
 #include "numeric/mat4.h"
 #include "numeric/vec3.h"
+#include "physics/PhysicsTypes.h"
 
 #include <expected>
 #include <filesystem>
@@ -88,6 +89,28 @@ struct Node {
     bool IsJoint;
     std::optional<uint32_t> MeshIndex, SkinIndex, CameraIndex, LightIndex;
     std::string Name;
+
+    // KHR_physics_rigid_bodies per-node data (empty if no physics on this node).
+    // These use the ECS component types directly where possible. For fields that reference
+    // other glTF nodes (joint ConnectedNode, trigger Nodes), we store node indices here
+    // and resolve to entities in SceneGltf.cpp.
+    std::optional<PhysicsMotion> Motion{};
+    std::optional<PhysicsCollider> Collider{};
+    std::optional<uint32_t> ColliderGeometryNodeIndex{}; // glTF node providing mesh geometry for collider shape
+
+    struct TriggerData {
+        std::optional<PhysicsShape> Shape{};
+        std::vector<uint32_t> NodeIndices{}; // glTF node indices (resolved to entities in SceneGltf)
+        std::optional<uint32_t> CollisionFilterIndex{};
+    };
+    std::optional<TriggerData> Trigger{};
+
+    struct JointData {
+        uint32_t ConnectedNodeIndex{}; // glTF node index (resolved to entity in SceneGltf)
+        uint32_t JointDefIndex{};
+        bool EnableCollision{false};
+    };
+    std::optional<JointData> Joint{};
 };
 
 struct Object {
@@ -149,6 +172,11 @@ struct Scene {
     std::vector<Camera> Cameras;
     std::vector<Light> Lights;
     std::optional<ImageBasedLight> ImageBasedLight;
+
+    // KHR_physics_rigid_bodies document-level resources.
+    std::vector<PhysicsMaterial> PhysicsMaterials;
+    std::vector<CollisionFilter> CollisionFilters;
+    std::vector<PhysicsJointDef> PhysicsJointDefs;
 };
 
 std::expected<Scene, std::string> LoadScene(const std::filesystem::path &);

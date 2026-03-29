@@ -23,7 +23,7 @@ std::vector<uint32_t> ConvertSelectionElement(std::span<const uint32_t> handles,
 
 // Returns representative edit instance per selected mesh: active instance if selected, else first selected instance.
 // Only includes Mesh-type objects (excludes Cameras, etc.).
-std::unordered_map<entt::entity, entt::entity> ComputePrimaryEditInstances(const entt::registry &, bool include_frozen = true);
+std::unordered_map<entt::entity, entt::entity> ComputePrimaryEditInstances(const entt::registry &, bool include_scale_locked = true);
 
 bool HasScaleLockedInstance(const entt::registry &, entt::entity);
 std::unordered_set<entt::entity> GetSelectedMeshEntities(const entt::registry &);

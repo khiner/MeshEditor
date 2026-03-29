@@ -9,6 +9,7 @@
 #include "gltf/GltfLoader.h"
 #include "mesh/MeshStore.h"
 #include "mesh/MorphTargetData.h"
+#include "physics/PhysicsWorld.h"
 #include "scene_impl/SceneBuffers.h"
 #include "scene_impl/SceneComponents.h"
 
@@ -350,6 +351,66 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
     std::unordered_map<uint32_t, const gltf::Node *> scene_nodes_by_index;
     scene_nodes_by_index.reserve(scene->Nodes.size());
     for (const auto &node : scene->Nodes) scene_nodes_by_index.emplace(node.NodeIndex, &node);
+
+    // KHR_physics_rigid_bodies: populate PhysicsWorld resources and emplace per-entity components.
+    {
+        Physics->Materials = std::move(scene->PhysicsMaterials);
+        Physics->Filters = std::move(scene->CollisionFilters);
+        Physics->JointDefs = std::move(scene->PhysicsJointDefs);
+
+        bool has_any_physics = false;
+        for (const auto &node : scene->Nodes) {
+            auto it = object_entities_by_node.find(node.NodeIndex);
+            if (it == object_entities_by_node.end()) continue;
+            const auto entity = it->second;
+
+            if (node.Collider) {
+                auto collider = *node.Collider;
+                // Resolve mesh-based shape: geometry.node → mesh entity
+                if (collider.Shape.Type == PhysicsShapeType::ConvexHull || collider.Shape.Type == PhysicsShapeType::TriangleMesh) {
+                    entt::entity mesh_source = entt::null;
+                    if (node.ColliderGeometryNodeIndex) {
+                        auto geom_it = object_entities_by_node.find(*node.ColliderGeometryNodeIndex);
+                        if (geom_it != object_entities_by_node.end()) mesh_source = geom_it->second;
+                    }
+                    if (mesh_source == entt::null) mesh_source = entity; // fallback to self
+                    if (R.all_of<Instance>(mesh_source)) {
+                        collider.Shape.MeshEntity = R.get<const Instance>(mesh_source).Entity;
+                    }
+                }
+                R.emplace<PhysicsCollider>(entity, std::move(collider));
+                has_any_physics = true;
+            }
+            if (node.Motion) {
+                R.emplace<PhysicsMotion>(entity, *node.Motion);
+                has_any_physics = true;
+            }
+            if (node.Trigger) {
+                const auto &td = *node.Trigger;
+                std::vector<entt::entity> resolved_nodes;
+                resolved_nodes.reserve(td.NodeIndices.size());
+                for (const auto node_idx : td.NodeIndices) {
+                    auto nit = object_entities_by_node.find(node_idx);
+                    resolved_nodes.push_back(nit != object_entities_by_node.end() ? nit->second : entt::null);
+                }
+                R.emplace<PhysicsTrigger>(entity, PhysicsTrigger{
+                                                      .Shape = td.Shape,
+                                                      .Nodes = std::move(resolved_nodes),
+                                                      .CollisionFilterIndex = td.CollisionFilterIndex,
+                                                  });
+            }
+            if (node.Joint) {
+                const auto &jd = *node.Joint;
+                auto nit = object_entities_by_node.find(jd.ConnectedNodeIndex);
+                R.emplace<PhysicsJoint>(entity, PhysicsJoint{
+                                                    .ConnectedNode = nit != object_entities_by_node.end() ? nit->second : entt::null,
+                                                    .JointDefIndex = jd.JointDefIndex,
+                                                    .EnableCollision = jd.EnableCollision,
+                                                });
+            }
+        }
+        if (has_any_physics) Physics->Rebuild(R);
+    }
 
     for (const auto &skin : scene->Skins) {
         const auto armature_data_entity = R.create();

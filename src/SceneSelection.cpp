@@ -107,12 +107,12 @@ std::vector<uint32_t> ConvertSelectionElement(std::span<const uint32_t> handles,
     return result;
 }
 
-std::unordered_map<entt::entity, entt::entity> ComputePrimaryEditInstances(const entt::registry &r, bool include_frozen) {
+std::unordered_map<entt::entity, entt::entity> ComputePrimaryEditInstances(const entt::registry &r, bool include_scale_locked) {
     std::unordered_map<entt::entity, entt::entity> primaries;
     const auto active = FindActiveEntity(r);
     for (const auto [e, instance, ok, ri] : r.view<const Instance, const Selected, const ObjectKind, const RenderInstance>().each()) {
         if (ok.Value != ObjectType::Mesh) continue;
-        if (!include_frozen && r.all_of<ScaleLocked>(e)) continue;
+        if (!include_scale_locked && r.all_of<ScaleLocked>(e)) continue;
         auto &primary = primaries[instance.Entity];
         if (primary == entt::entity{} || e == active) primary = e;
     }

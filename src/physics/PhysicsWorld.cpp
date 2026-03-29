@@ -25,6 +25,7 @@ JPH_SUPPRESS_WARNINGS
 
 #include "PhysicsWorld.h"
 #include "Transform.h"
+#include "mesh/Mesh.h"
 
 #include <entt/entity/registry.hpp>
 
@@ -129,7 +130,7 @@ struct PhysicsWorld::Impl {
 
 // --- Shape creation ---
 
-static Ref<Shape> CreateJoltShape(const PhysicsShape &shape) {
+static Ref<Shape> CreateJoltShape(const PhysicsShape &shape, const Mesh *mesh) {
     switch (shape.Type) {
         case PhysicsShapeType::Box: {
             // KHR spec uses full size, Jolt uses half-extents
@@ -148,11 +149,34 @@ static Ref<Shape> CreateJoltShape(const PhysicsShape &shape) {
         case PhysicsShapeType::Cylinder: {
             return new CylinderShape(shape.Height * 0.5f, std::max(shape.RadiusTop, shape.RadiusBottom));
         }
-        case PhysicsShapeType::ConvexHull:
+        case PhysicsShapeType::ConvexHull: {
+            if (!mesh || mesh->VertexCount() == 0) break;
+            auto verts = mesh->GetVerticesSpan();
+            // Jolt Vec3 is a 16-byte SIMD type — must convert from interleaved Vertex positions
+            Array<Vec3> points;
+            points.reserve(int(verts.size()));
+            for (const auto &v : verts) points.push_back(Vec3(v.Position.x, v.Position.y, v.Position.z));
+            ConvexHullShapeSettings settings(points.data(), int(points.size()));
+            auto result = settings.Create();
+            if (result.IsValid()) return result.Get();
+            break;
+        }
         case PhysicsShapeType::TriangleMesh: {
-            // Mesh-based shapes require vertex data — handled separately.
-            // For now return a unit box as placeholder.
-            return new BoxShape(Vec3(0.5f, 0.5f, 0.5f));
+            if (!mesh || mesh->FaceCount() == 0) break;
+            auto verts = mesh->GetVerticesSpan();
+            VertexList vertices;
+            vertices.reserve(verts.size());
+            for (const auto &v : verts) vertices.push_back(Float3(v.Position.x, v.Position.y, v.Position.z));
+            auto indices = mesh->CreateTriangleIndices();
+            IndexedTriangleList triangles;
+            triangles.reserve(indices.size() / 3);
+            for (size_t i = 0; i + 2 < indices.size(); i += 3) {
+                triangles.push_back(IndexedTriangle(indices[i], indices[i + 1], indices[i + 2]));
+            }
+            MeshShapeSettings settings(std::move(vertices), std::move(triangles));
+            auto result = settings.Create();
+            if (result.IsValid()) return result.Get();
+            break;
         }
     }
     return new BoxShape(Vec3(0.5f, 0.5f, 0.5f));
@@ -195,7 +219,8 @@ void PhysicsWorld::Rebuild(entt::registry &r) {
     std::vector<entt::entity> entities;
 
     for (auto [entity, collider] : r.view<const PhysicsCollider>().each()) {
-        auto shape = CreateJoltShape(collider.Shape);
+        const auto *mesh = collider.Shape.MeshEntity ? r.try_get<const Mesh>(*collider.Shape.MeshEntity) : nullptr;
+        auto shape = CreateJoltShape(collider.Shape, mesh);
         if (!shape) continue;
 
         const auto *transform = r.try_get<const Transform>(entity);
@@ -257,7 +282,8 @@ void PhysicsWorld::AddBody(entt::registry &r, entt::entity entity) {
     const auto *collider = r.try_get<const PhysicsCollider>(entity);
     if (!collider) return;
 
-    auto shape = CreateJoltShape(collider->Shape);
+    const auto *mesh = collider->Shape.MeshEntity ? r.try_get<const Mesh>(*collider->Shape.MeshEntity) : nullptr;
+    auto shape = CreateJoltShape(collider->Shape, mesh);
     if (!shape) return;
 
     const auto *transform = r.try_get<const Transform>(entity);
