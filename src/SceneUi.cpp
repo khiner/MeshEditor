@@ -21,6 +21,8 @@
 #include "mesh/Primitives.h"
 #include "numeric/mat3.h"
 #include "numeric/rect.h"
+#include "physics/PhysicsUi.h"
+#include "physics/PhysicsWorld.h"
 
 #include <algorithm>
 #include <cmath>
@@ -1758,6 +1760,7 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
         }
         if (wireframe_changed) R.emplace_or_replace<LightWireframeDirty>(active_entity);
     }
+    physics_ui::RenderEntityProperties(R, active_entity, SceneEntity, *Physics);
     PopID();
 }
 
@@ -2107,6 +2110,11 @@ void Scene::RenderControls() {
                 }
             }
             if (changed) R.emplace_or_replace<SubmitDirty>(SceneEntity);
+            EndTabItem();
+        }
+
+        if (BeginTabItem("Physics")) {
+            physics_ui::RenderTab(*Physics);
             EndTabItem();
         }
         EndTabBar();

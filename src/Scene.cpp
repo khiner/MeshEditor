@@ -774,11 +774,19 @@ void Scene::ApplyTimelineAction(const AnimationTimelineAction &action) {
     };
     std::visit(
         overloaded{
-            [&](timeline_action::TogglePlay) { R.patch<AnimationTimeline>(SceneEntity, [](auto &tl) { tl.Playing = !tl.Playing; }); },
+            [&](timeline_action::TogglePlay) {
+                const bool was_playing = R.get<const AnimationTimeline>(SceneEntity).Playing;
+                if (!was_playing && Physics->HasBodies()) Physics->SaveSnapshot(R);
+                if (was_playing && Physics->HasBodies()) Physics->RestoreSnapshot(R);
+                R.patch<AnimationTimeline>(SceneEntity, [](auto &tl) { tl.Playing = !tl.Playing; });
+            },
             [&](timeline_action::SetFrame a) { set_frame(a.Frame); },
             [&](timeline_action::SetStartFrame a) { R.patch<AnimationTimeline>(SceneEntity, [&](auto &tl) { tl.StartFrame = a.Frame; }); },
             [&](timeline_action::SetEndFrame a) { R.patch<AnimationTimeline>(SceneEntity, [&](auto &tl) { tl.EndFrame = a.Frame; }); },
-            [&](timeline_action::JumpToStart) { set_frame(R.get<AnimationTimeline>(SceneEntity).StartFrame); },
+            [&](timeline_action::JumpToStart) {
+                if (Physics->HasBodies()) Physics->RestoreSnapshot(R);
+                set_frame(R.get<AnimationTimeline>(SceneEntity).StartFrame);
+            },
             [&](timeline_action::JumpToEnd) { set_frame(R.get<AnimationTimeline>(SceneEntity).EndFrame); },
         },
         action

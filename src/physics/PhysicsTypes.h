@@ -28,22 +28,22 @@ struct PhysicsMaterial {
     float Restitution{0.0f};
     PhysicsCombineMode FrictionCombine{PhysicsCombineMode::Average};
     PhysicsCombineMode RestitutionCombine{PhysicsCombineMode::Average};
-    std::string Name;
+    std::string Name{};
 };
 
 struct CollisionFilter {
-    std::vector<std::string> CollisionSystems;
-    std::vector<std::string> CollideWithSystems;
-    std::vector<std::string> NotCollideWithSystems;
-    std::string Name;
+    std::vector<std::string> CollisionSystems{};
+    std::vector<std::string> CollideWithSystems{};
+    std::vector<std::string> NotCollideWithSystems{};
+    std::string Name{};
 };
 
 struct PhysicsJointLimit {
-    std::vector<uint8_t> LinearAxes;
-    std::vector<uint8_t> AngularAxes;
-    std::optional<float> Min;
-    std::optional<float> Max;
-    std::optional<float> Stiffness; // nullopt = hard (infinite stiffness) limit
+    std::vector<uint8_t> LinearAxes{};
+    std::vector<uint8_t> AngularAxes{};
+    std::optional<float> Min{};
+    std::optional<float> Max{};
+    std::optional<float> Stiffness{}; // nullopt = hard (infinite stiffness) limit
     float Damping{0.0f};
 };
 
@@ -64,9 +64,9 @@ struct PhysicsJointDrive {
 };
 
 struct PhysicsJointDef {
-    std::vector<PhysicsJointLimit> Limits;
-    std::vector<PhysicsJointDrive> Drives;
-    std::string Name;
+    std::vector<PhysicsJointLimit> Limits{};
+    std::vector<PhysicsJointDrive> Drives{};
+    std::string Name{};
 };
 
 // --- Per-shape ---
@@ -88,7 +88,7 @@ struct PhysicsShape {
     float RadiusBottom{0.25f}; // Capsule, Cylinder (tapered)
     float Height{0.5f}; // Capsule, Cylinder
     // For mesh-based shapes
-    std::optional<entt::entity> MeshEntity;
+    std::optional<entt::entity> MeshEntity{};
     bool ConvexHull{false};
 };
 
@@ -96,25 +96,25 @@ struct PhysicsShape {
 
 struct PhysicsMotion {
     bool IsKinematic{false};
-    std::optional<float> Mass; // nullopt = auto-compute from shape
+    std::optional<float> Mass{}; // nullopt = auto-compute from shape
     vec3 CenterOfMass{0.0f};
-    std::optional<vec3> InertiaDiagonal;
-    std::optional<quat> InertiaOrientation;
+    std::optional<vec3> InertiaDiagonal{};
+    std::optional<quat> InertiaOrientation{};
     vec3 LinearVelocity{0.0f};
     vec3 AngularVelocity{0.0f};
     float GravityFactor{1.0f};
 };
 
 struct PhysicsCollider {
-    PhysicsShape Shape;
-    std::optional<uint32_t> PhysicsMaterialIndex;
-    std::optional<uint32_t> CollisionFilterIndex;
+    PhysicsShape Shape{};
+    std::optional<uint32_t> PhysicsMaterialIndex{};
+    std::optional<uint32_t> CollisionFilterIndex{};
 };
 
 struct PhysicsTrigger {
-    std::optional<PhysicsShape> Shape;
-    std::vector<entt::entity> Nodes;
-    std::optional<uint32_t> CollisionFilterIndex;
+    std::optional<PhysicsShape> Shape{};
+    std::vector<entt::entity> Nodes{};
+    std::optional<uint32_t> CollisionFilterIndex{};
 };
 
 struct PhysicsJoint {
