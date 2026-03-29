@@ -19,7 +19,6 @@ struct DrawListBuilder {
     void Append(DrawBatchInfo &batch, const DrawData &draw, uint32_t index_count, uint32_t instance_count) {
         if (index_count == 0 || instance_count == 0) return;
         const auto draw_data_start = uint32_t(Draws.size());
-        Draws.reserve(Draws.size() + instance_count);
         for (uint32_t i = 0; i < instance_count; ++i) {
             DrawData per_instance = draw;
             per_instance.FirstInstance = draw.FirstInstance + i;
