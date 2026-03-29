@@ -447,24 +447,27 @@ std::pair<uint32_t, Range> MeshStore::AllocateVertexBuffer(std::span<const vec3>
     return {id, vertices};
 }
 
-void MeshStore::ReserveForBulkCreate(uint32_t additional_vertices, uint32_t additional_faces, uint32_t additional_triangles, uint32_t additional_bone_deform_vertices, uint32_t additional_morph_target_entries) {
-    if (additional_vertices > 0) {
-        VerticesBuffer.Buffer.Reserve(VerticesBuffer.Buffer.UsedSize + vk::DeviceSize(additional_vertices) * sizeof(Vertex));
-        VertexStateBuffer.Reserve(VertexStateBuffer.UsedSize + vk::DeviceSize(additional_vertices) * sizeof(uint8_t));
+void MeshStore::ReserveForBulkCreate(const BulkMeshReservation &r) {
+    if (r.Vertices > 0) {
+        VerticesBuffer.Buffer.Reserve(VerticesBuffer.Buffer.UsedSize + vk::DeviceSize(r.Vertices) * sizeof(Vertex));
+        VertexStateBuffer.Reserve(VertexStateBuffer.UsedSize + vk::DeviceSize(r.Vertices) * sizeof(uint8_t));
     }
-    if (additional_faces > 0) {
-        FaceFirstTriangleBuffer.Buffer.Reserve(FaceFirstTriangleBuffer.Buffer.UsedSize + vk::DeviceSize(additional_faces) * sizeof(uint32_t));
-        FacePrimitiveBuffer.Buffer.Reserve(FacePrimitiveBuffer.Buffer.UsedSize + vk::DeviceSize(additional_faces) * sizeof(uint32_t));
-        FaceStateBuffer.Reserve(FaceStateBuffer.UsedSize + vk::DeviceSize(additional_faces) * sizeof(uint8_t));
+    if (r.Faces > 0) {
+        FaceFirstTriangleBuffer.Buffer.Reserve(FaceFirstTriangleBuffer.Buffer.UsedSize + vk::DeviceSize(r.Faces) * sizeof(uint32_t));
+        FacePrimitiveBuffer.Buffer.Reserve(FacePrimitiveBuffer.Buffer.UsedSize + vk::DeviceSize(r.Faces) * sizeof(uint32_t));
+        FaceStateBuffer.Reserve(FaceStateBuffer.UsedSize + vk::DeviceSize(r.Faces) * sizeof(uint8_t));
     }
-    if (additional_triangles > 0) {
-        TriangleFaceIdBuffer.Buffer.Reserve(TriangleFaceIdBuffer.Buffer.UsedSize + vk::DeviceSize(additional_triangles) * sizeof(uint32_t));
+    if (r.Triangles > 0) {
+        TriangleFaceIdBuffer.Buffer.Reserve(TriangleFaceIdBuffer.Buffer.UsedSize + vk::DeviceSize(r.Triangles) * sizeof(uint32_t));
     }
-    if (additional_bone_deform_vertices > 0) {
-        BoneDeformBuffer.Buffer.Reserve(BoneDeformBuffer.Buffer.UsedSize + vk::DeviceSize(additional_bone_deform_vertices) * sizeof(BoneDeformVertex));
+    if (r.EdgeStates > 0) {
+        EdgeStateBuffer.Buffer.Reserve(EdgeStateBuffer.Buffer.UsedSize + vk::DeviceSize(r.EdgeStates) * sizeof(uint8_t));
     }
-    if (additional_morph_target_entries > 0) {
-        MorphTargetBuffer.Buffer.Reserve(MorphTargetBuffer.Buffer.UsedSize + vk::DeviceSize(additional_morph_target_entries) * sizeof(MorphTargetVertex));
+    if (r.BoneDeformVertices > 0) {
+        BoneDeformBuffer.Buffer.Reserve(BoneDeformBuffer.Buffer.UsedSize + vk::DeviceSize(r.BoneDeformVertices) * sizeof(BoneDeformVertex));
+    }
+    if (r.MorphTargetEntries > 0) {
+        MorphTargetBuffer.Buffer.Reserve(MorphTargetBuffer.Buffer.UsedSize + vk::DeviceSize(r.MorphTargetEntries) * sizeof(MorphTargetVertex));
     }
 }
 
@@ -500,7 +503,8 @@ Mesh MeshStore::CreateMesh(MeshData &&data, MeshVertexAttributes &&attrs, MeshPr
         const auto face_count = static_cast<uint32_t>(data.Faces.size());
 
         // Sort faces by primitive index so triangles are grouped by primitive in the index buffer.
-        if (!primitives.FacePrimitiveIndices.empty() && primitives.FacePrimitiveIndices.size() == face_count) {
+        if (!primitives.FacePrimitiveIndices.empty() && primitives.FacePrimitiveIndices.size() == face_count &&
+            !std::ranges::all_of(primitives.FacePrimitiveIndices, [&](uint32_t pi) { return pi == primitives.FacePrimitiveIndices[0]; })) {
             std::vector<uint32_t> perm(face_count);
             std::iota(perm.begin(), perm.end(), 0u);
             std::stable_sort(perm.begin(), perm.end(), [&](uint32_t a, uint32_t b) {
@@ -591,12 +595,8 @@ Mesh MeshStore::CreateMesh(MeshData &&data, MeshVertexAttributes &&attrs, MeshPr
         return {*this, id, vertex_count};
     }();
 
-    if (!data.Faces.empty()) {
-        if (!attrs.Normals) {
-            UpdateNormals(mesh);
-        } else {
-            UpdateNormals(mesh, /*skip_nonzero=*/true);
-        }
+    if (!data.Faces.empty() && !attrs.Normals) {
+        UpdateNormals(mesh);
     }
 
     entry.EdgeStates = EdgeStateBuffer.Allocate(mesh.EdgeCount() * 2);

@@ -37,13 +37,18 @@ struct PrimitiveTriangleRange {
     uint32_t PrimitiveIndex, FirstTriangle, TriangleCount;
 };
 
+// Additional element counts beyond current usage, for pre-reserving GPU arenas.
+struct BulkMeshReservation {
+    uint32_t Vertices, Faces, Triangles, EdgeStates;
+    uint32_t BoneDeformVertices, MorphTargetEntries;
+};
+
 // Owns mesh vertex data (canonical CPU/GPU storage) used by all systems, including rendering.
 struct MeshStore {
     explicit MeshStore(mvk::BufferContext &);
 
     // Pre-reserve internal GPU arenas to avoid repeated reallocations during bulk CreateMesh calls.
-    // Counts are *additional* elements beyond current usage.
-    void ReserveForBulkCreate(uint32_t additional_vertices, uint32_t additional_faces, uint32_t additional_triangles, uint32_t additional_bone_deform_vertices, uint32_t additional_morph_target_entries);
+    void ReserveForBulkCreate(const BulkMeshReservation &);
 
     Mesh CreateMesh(MeshData &&, MeshVertexAttributes &&, MeshPrimitives &&, std::optional<ArmatureDeformData> = {}, std::optional<MorphTargetData> = {});
     Mesh CloneMesh(const Mesh &);

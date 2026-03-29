@@ -5,6 +5,7 @@
 #include <glm/gtx/norm.hpp>
 
 #include <algorithm>
+#include <bit>
 #include <cassert>
 #include <ranges>
 
@@ -14,6 +15,37 @@ namespace {
 constexpr uint64_t MakeEdgeKey(uint from, uint to) {
     return (static_cast<uint64_t>(from) << 32) | static_cast<uint64_t>(to);
 }
+
+// Flat open-addressing map reused across Mesh constructions via thread_local.
+// Key 0 is the empty sentinel (self-loop edges are impossible).
+struct EdgeMap {
+    void reset(size_t n) {
+        size_t cap = std::bit_ceil(n * 2 | 16u);
+        Data.assign(cap, {});
+        Mask = cap - 1;
+    }
+    void insert(uint64_t key, he::HH val) {
+        for (auto i = mix(key);; i = (i + 1) & Mask)
+            if (!Data[i].Key) {
+                Data[i] = {key, val};
+                return;
+            }
+    }
+    he::HH *find(uint64_t key) {
+        for (auto i = mix(key); Data[i].Key; i = (i + 1) & Mask)
+            if (Data[i].Key == key) return &Data[i].Val;
+        return nullptr;
+    }
+
+private:
+    size_t mix(uint64_t k) const { return (k ^ (k >> 16)) & Mask; }
+    struct Entry {
+        uint64_t Key;
+        he::HH Val;
+    };
+    std::vector<Entry> Data;
+    size_t Mask = 0;
+};
 } // namespace
 
 Mesh::Mesh(MeshStore &store, uint32_t store_id, std::vector<std::vector<uint>> &&faces)
@@ -22,8 +54,12 @@ Mesh::Mesh(MeshStore &store, uint32_t store_id, std::vector<std::vector<uint>> &
 
     size_t total_halfedges = 0;
     for (const auto &face : faces) total_halfedges += face.size();
-    std::unordered_map<uint64_t, HH> halfedge_map;
-    halfedge_map.reserve(total_halfedges);
+    Faces.reserve(faces.size());
+    Halfedges.reserve(total_halfedges);
+    HalfedgeToEdge.reserve(total_halfedges);
+    Edges.reserve(total_halfedges / 2 + 1);
+    static thread_local EdgeMap halfedge_map;
+    halfedge_map.reset(total_halfedges);
     for (const auto &face : faces) {
         assert(face.size() >= 3);
 
@@ -44,17 +80,13 @@ Mesh::Mesh(MeshStore &store, uint32_t store_id, std::vector<std::vector<uint>> &
 
             const HH hh(start_he_i + i);
             if (!OutgoingHalfedges[from_v]) OutgoingHalfedges[from_v] = hh;
-            halfedge_map.emplace(MakeEdgeKey(from_v, to_v), hh);
+            halfedge_map.insert(MakeEdgeKey(from_v, to_v), hh);
 
             // Look for opposite halfedge (from previously added faces)
-            if (const auto it = halfedge_map.find(MakeEdgeKey(to_v, from_v));
-                it != halfedge_map.end()) {
-                // Found existing opposite halfedge
-                const auto opposite_hh = it->second;
-                Halfedges[*hh].Opposite = opposite_hh;
-                Halfedges[*opposite_hh].Opposite = hh;
-                // They should share the same edge
-                HalfedgeToEdge.emplace_back(HalfedgeToEdge[*opposite_hh]);
+            if (const auto *opposite = halfedge_map.find(MakeEdgeKey(to_v, from_v))) {
+                Halfedges[*hh].Opposite = *opposite;
+                Halfedges[**opposite].Opposite = hh;
+                HalfedgeToEdge.emplace_back(HalfedgeToEdge[**opposite]);
             } else {
                 // Create new edge
                 Edges.emplace_back(hh);

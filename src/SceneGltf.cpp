@@ -222,7 +222,15 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
                 if (scene_mesh.MorphData && scene_mesh.MorphData->TargetCount > 0) total_morph_target_entries += scene_mesh.MorphData->TargetCount * vc;
             }
         }
-        if (total_vertices > 0) Meshes->ReserveForBulkCreate(total_vertices, total_faces, total_triangles, total_bone_deform_vertices, total_morph_target_entries);
+        // For manifold triangle meshes: halfedges = triangles + 2*faces, edges ≈ halfedges/2, edge_states = edges*2 ≈ halfedges.
+        if (total_vertices > 0) Meshes->ReserveForBulkCreate({
+            .Vertices = total_vertices,
+            .Faces = total_faces,
+            .Triangles = total_triangles,
+            .EdgeStates = total_triangles + 2 * total_faces,
+            .BoneDeformVertices = total_bone_deform_vertices,
+            .MorphTargetEntries = total_morph_target_entries,
+        });
     }
 
     std::vector<entt::entity> mesh_entities;
@@ -288,6 +296,7 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
     }
 
     const auto name_prefix = path.stem().string();
+    NameSet.reserve(NameSet.size() + scene->Objects.size());
     std::unordered_map<uint32_t, entt::entity> object_entities_by_node;
     object_entities_by_node.reserve(scene->Objects.size());
     std::unordered_map<uint32_t, std::vector<entt::entity>> skinned_mesh_instances_by_skin;
