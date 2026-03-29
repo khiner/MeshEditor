@@ -53,6 +53,8 @@ struct RangeAllocator {
         FreeBlocks.insert(it, {start, end - start});
     }
 
+    uint32_t HighWaterMark() const { return EndOffset; }
+
 private:
     std::vector<Range> FreeBlocks;
     uint32_t EndOffset{0};

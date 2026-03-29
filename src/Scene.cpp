@@ -348,6 +348,10 @@ ReactiveTracker track(entt::registry &r) { return {r.storage<entt::reactive>(ent
 template<typename Change>
 auto &reactive(entt::registry &r) { return r.storage<entt::reactive>(entt::type_hash<Change>::value()); }
 
+struct SelectedInstanceCount {
+    uint32_t Value{0};
+};
+
 struct DeformSlots {
     uint32_t BoneDeformOffset{InvalidOffset}, ArmatureDeformOffset{InvalidOffset}, MorphDeformOffset{InvalidOffset};
     uint32_t MorphTargetCount{0};
@@ -393,10 +397,6 @@ void PatchMorphWeights(DrawListBuilder &dl, size_t draws_before, const DeformSlo
             dl.Draws[i].MorphWeightsOffset = it->second;
         }
     }
-}
-
-bool HasSelectedInstance(const entt::registry &r, entt::entity mesh_entity) {
-    return any_of(r.view<const Instance, const Selected>().each(), [mesh_entity](const auto &t) { return std::get<1>(t).Entity == mesh_entity; });
 }
 
 void RunSelectionCompute(
@@ -865,6 +865,15 @@ Scene::SyncResult Scene::SyncModelsBuffers() {
         if (ri.BufferIndex != UINT32_MAX) continue; // already synced
         shows_by_buffer[ri.Entity].push_back(entity);
     }
+    // Pre-reserve InstanceArena for all new instances to avoid per-Allocate growth checks.
+    {
+        uint32_t total_new_instances = 0;
+        for (const auto &[_, entities] : shows_by_buffer) total_new_instances += entities.size();
+        if (total_new_instances > 0) Buffers->Instances.ReserveAdditional(total_new_instances);
+    }
+    // Shared write buffers — reused across groups to avoid per-group heap allocations.
+    std::vector<uint32_t> object_ids;
+    std::vector<uint8_t> states;
     for (auto &[buffer_entity, entities] : shows_by_buffer) {
         const auto n = static_cast<uint32_t>(entities.size());
         // Create ModelsBuffer on first show (deferred from MeshBuffers creation so we know the initial capacity).
@@ -887,9 +896,9 @@ Scene::SyncResult Scene::SyncModelsBuffers() {
             }
             Buffers->Instances.Free(old_range);
         }
-        // Build contiguous arrays for ObjectIds and InstanceStates.
-        std::vector<uint32_t> object_ids(n);
-        std::vector<uint8_t> states(n);
+        // Build contiguous arrays for ObjectIds and InstanceStates (reusing shared vectors).
+        object_ids.resize(n);
+        states.resize(n);
         const auto base_index = mb.InstanceRange.Offset + mb.InstanceCount;
         for (uint32_t j = 0; j < n; ++j) {
             const auto instance_entity = entities[j];
@@ -914,7 +923,7 @@ Scene::SyncResult Scene::SyncModelsBuffers() {
 Scene::RenderRequest Scene::ProcessComponentEvents() {
     const bool profile = std::exchange(ProfileNextProcessComponentEvents, false);
     std::optional<Timer> timer;
-    if (profile) timer.emplace("ProcessComponentEvents (post-glTF)");
+    if (profile) timer.emplace("ProcessComponentEvents");
 
     auto render_request = RenderRequest::None;
     auto request = [&render_request](RenderRequest req) { render_request = std::max(render_request, req); };
@@ -927,8 +936,8 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
 
     auto sync = SyncModelsBuffers(); // Runs first so BufferIndex is valid for all downstream code.
     if (!sync.NewlyInserted.empty()) request(RenderRequest::Submit);
-    std::sort(sync.NewlyInserted.begin(), sync.NewlyInserted.end());
-    const auto is_newly_inserted = [&](entt::entity e) { return std::binary_search(sync.NewlyInserted.begin(), sync.NewlyInserted.end(), e); };
+    const std::unordered_set<entt::entity> newly_inserted_set(sync.NewlyInserted.begin(), sync.NewlyInserted.end());
+    const auto is_newly_inserted = [&](entt::entity e) { return newly_inserted_set.contains(e); };
 
     // Deferred ArmatureDeform allocation for newly created ArmaturePoseState (GpuDeformRange.Count == 0).
     // Two-pass: count total joints, single Reserve, then per-armature Allocate + ComputeDeformMatrices.
@@ -1134,27 +1143,39 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
             request(mode == InteractionMode::Edit ? RenderRequest::ReRecord : RenderRequest::ReRecordSilhouette);
         }
 
-        // Update GPU instance state for entities NOT already handled by SyncModelsBuffers.
-        // SyncModelsBuffers writes the full initial state (Selected+Active) for newly inserted instances,
-        // so we skip those here to avoid redundant R.patch + Update calls.
-        const auto update_instance_state = [&](entt::entity instance_entity) {
+        // Collect instance state writes, then batch via GetMutableRange.
+        // SyncModelsBuffers writes the full initial state for newly inserted instances,
+        // so we skip those here to avoid redundant writes.
+        struct StateWrite {
+            uint32_t index;
+            uint8_t state;
+            entt::entity buffer_entity;
+        };
+        std::vector<StateWrite> state_writes;
+        const auto collect_instance_state = [&](entt::entity instance_entity) {
             if (is_newly_inserted(instance_entity)) return;
             if (const auto *ri = R.try_get<RenderInstance>(instance_entity); ri && ri->BufferIndex != UINT32_MAX) {
                 uint8_t state = 0;
                 if (R.all_of<Selected>(instance_entity)) state |= ElementStateSelected;
                 if (R.all_of<Active>(instance_entity)) state |= ElementStateActive;
-                Buffers->Instances.StateBuffer.Update(as_bytes(state), vk::DeviceSize(ri->BufferIndex) * sizeof(uint8_t));
-                R.patch<ModelsBuffer>(ri->Entity);
+                state_writes.push_back({ri->BufferIndex, state, ri->Entity});
             }
         };
+        // Update SelectedInstanceCount on mesh entities before per-entity processing.
         for (auto instance_entity : selected_tracker) {
-            update_instance_state(instance_entity);
+            if (const auto *instance = R.try_get<Instance>(instance_entity); instance && R.all_of<Mesh>(instance->Entity)) {
+                auto &sc = R.get_or_emplace<SelectedInstanceCount>(instance->Entity);
+                sc.Value += R.all_of<Selected>(instance_entity) ? 1 : -1;
+            }
+        }
+        for (auto instance_entity : selected_tracker) {
+            collect_instance_state(instance_entity);
             if (const auto arm = FindArmatureObject(R, instance_entity); arm != entt::null) dirty_bone_state_armatures.insert(arm);
             if (const auto *instance = R.try_get<Instance>(instance_entity); instance && R.all_of<Mesh>(instance->Entity)) {
                 const auto mesh_entity = instance->Entity;
                 if (R.all_of<Selected>(instance_entity)) {
                     dirty_overlay_meshes.insert(mesh_entity);
-                } else if (!HasSelectedInstance(R, mesh_entity)) {
+                } else if (!R.get_or_emplace<SelectedInstanceCount>(mesh_entity).Value) {
                     // Clean up overlays for this mesh
                     if (auto *buffers = R.try_get<MeshBuffers>(mesh_entity)) {
                         for (auto &[_, rb] : buffers->NormalIndicators) Buffers->Release(rb);
@@ -1166,11 +1187,22 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
             }
         }
         for (auto instance_entity : active_tracker) {
-            update_instance_state(instance_entity);
+            collect_instance_state(instance_entity);
             if (const auto arm = FindArmatureObject(R, instance_entity); arm != entt::null) dirty_bone_state_armatures.insert(arm);
             // If looking through a camera and a different camera becomes active, snap to it.
             if (SavedViewCamera && R.all_of<Camera>(instance_entity) && R.all_of<Active>(instance_entity)) {
                 SnapToCamera(instance_entity);
+            }
+        }
+
+        // Batch-write all collected instance state changes.
+        if (!state_writes.empty()) {
+            std::sort(state_writes.begin(), state_writes.end(), [](const auto &a, const auto &b) { return a.index < b.index; });
+            auto mapped = Buffers->Instances.StateBuffer.GetMutableRange(0, Buffers->Instances.StateBuffer.UsedSize);
+            auto *base = reinterpret_cast<uint8_t *>(mapped.data());
+            for (const auto &w : state_writes) {
+                base[w.index] = w.state;
+                R.patch<ModelsBuffer>(w.buffer_entity);
             }
         }
     }
@@ -1304,7 +1336,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         const auto edit_mode = R.get<const SceneEditMode>(SceneEntity).Value;
         std::vector<ElementRange> geometry_ranges;
         for (auto mesh_entity : tracker) {
-            if (HasSelectedInstance(R, mesh_entity)) dirty_overlay_meshes.insert(mesh_entity);
+            if (R.get_or_emplace<SelectedInstanceCount>(mesh_entity).Value > 0) dirty_overlay_meshes.insert(mesh_entity);
             if (auto *br = R.try_get<MeshSelectionBitsetRange>(mesh_entity); br && edit_mode != Element::None) {
                 // Topology changed: zero stale selection bits and update count.
                 const auto &mesh = R.get<const Mesh>(mesh_entity);
@@ -1648,12 +1680,18 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
                 if (R.valid(e) && !is_newly_inserted(e)) update_wt(e, !(bone_edit && R.all_of<StartTransform>(e)));
             }
         }
-        // Write WorldTransform directly to GPU buffers — no intermediate map.
-        // The only consumer of changes::ModelsBuffer is request(Submit), handled explicitly.
+        // Batch WorldTransform writes: collect all (BufferIndex, WorldTransform) pairs,
+        // sort by BufferIndex for cache-friendly access, then write via single GetMutableRange.
         {
             const auto &wt_reactive = reactive<changes::WorldTransform>(R);
-            bool any_wt_written = false;
-            const auto write_wt = [&](entt::entity e) {
+            struct WtWrite {
+                uint32_t index;
+                WorldTransform wt;
+            };
+            std::vector<WtWrite> wt_writes;
+            wt_writes.reserve(wt_reactive.size() + sync.NewlyInserted.size());
+
+            const auto collect_wt = [&](entt::entity e) {
                 if (!R.valid(e)) return;
                 const auto *ri = R.try_get<const RenderInstance>(e);
                 if (!ri || ri->BufferIndex == UINT32_MAX) return;
@@ -1661,35 +1699,37 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
                 if (!wt) return;
                 auto display_wt = *wt;
                 if (const auto *ds = R.try_get<BoneDisplayScale>(e)) display_wt.Scale = vec3{ds->Value};
-                Buffers->Instances.TransformBuffer.Update(as_bytes(display_wt), vk::DeviceSize(ri->BufferIndex) * sizeof(WorldTransform));
-                any_wt_written = true;
+                wt_writes.push_back({ri->BufferIndex, display_wt});
                 // Bone joint sphere transforms (head and tail).
                 if (const auto *joints = R.try_get<const BoneJointEntities>(e); joints && R.all_of<BoneDisplayScale>(e)) {
-                    const auto &wt = R.get<const WorldTransform>(e);
                     const float bone_length = R.get<BoneDisplayScale>(e).Value;
                     const float sphere_scale = bone_length * 0.06f;
                     if (joints->Head != entt::null) {
                         if (const auto *jri = R.try_get<const RenderInstance>(joints->Head)) {
-                            const WorldTransform head_wt{wt.Position, {0, 0, 0, 1}, vec3{sphere_scale}};
-                            Buffers->Instances.TransformBuffer.Update(as_bytes(head_wt), vk::DeviceSize(jri->BufferIndex) * sizeof(WorldTransform));
+                            wt_writes.push_back({jri->BufferIndex, {wt->Position, {0, 0, 0, 1}, vec3{sphere_scale}}});
                         }
                     }
                     if (joints->Tail != entt::null) {
                         if (const auto *jri = R.try_get<const RenderInstance>(joints->Tail)) {
-                            const vec3 tail_pos = wt.Position + glm::quat(wt.Rotation.w, wt.Rotation.x, wt.Rotation.y, wt.Rotation.z) * vec3{0, bone_length, 0};
-                            const WorldTransform tail_wt{tail_pos, {0, 0, 0, 1}, vec3{sphere_scale}};
-                            Buffers->Instances.TransformBuffer.Update(as_bytes(tail_wt), vk::DeviceSize(jri->BufferIndex) * sizeof(WorldTransform));
+                            const vec3 tail_pos = wt->Position + glm::quat(wt->Rotation.w, wt->Rotation.x, wt->Rotation.y, wt->Rotation.z) * vec3{0, bone_length, 0};
+                            wt_writes.push_back({jri->BufferIndex, {tail_pos, {0, 0, 0, 1}, vec3{sphere_scale}}});
                         }
                     }
                 }
             };
-            for (auto e : wt_reactive) write_wt(e);
+            for (auto e : wt_reactive) collect_wt(e);
             // Newly inserted entities whose WorldTransform wasn't already in the reactive set
             // (e.g., visibility toggled on without a Transform change).
             for (auto e : sync.NewlyInserted) {
-                if (!wt_reactive.contains(e)) write_wt(e);
+                if (!wt_reactive.contains(e)) collect_wt(e);
             }
-            if (any_wt_written) request(RenderRequest::Submit);
+            if (!wt_writes.empty()) {
+                std::sort(wt_writes.begin(), wt_writes.end(), [](const auto &a, const auto &b) { return a.index < b.index; });
+                auto mapped = Buffers->Instances.TransformBuffer.GetMutableRange(0, Buffers->Instances.TransformBuffer.UsedSize);
+                auto *base = reinterpret_cast<WorldTransform *>(mapped.data());
+                for (const auto &w : wt_writes) base[w.index] = w.wt;
+                request(RenderRequest::Submit);
+            }
         }
     }
     if (SavedViewCamera) {
@@ -2610,6 +2650,7 @@ entt::entity Scene::Duplicate(entt::entity e, std::optional<MeshInstanceCreateIn
     if (auto primitive_type = R.try_get<PrimitiveType>(mesh_entity)) R.emplace<PrimitiveType>(e_new.first, *primitive_type);
     if (const auto *armature_modifier = R.try_get<ArmatureModifier>(e)) R.emplace<ArmatureModifier>(e_new.second, *armature_modifier);
     if (const auto *bone_attachment = R.try_get<BoneAttachment>(e)) R.emplace<BoneAttachment>(e_new.second, *bone_attachment);
+    ProfileNextProcessComponentEvents = true;
     return e_new.second;
 }
 
@@ -2714,6 +2755,19 @@ void Scene::Duplicate() {
     const Timer timer{"Duplicate"};
     std::vector<entt::entity> entities;
     for (const auto e : R.view<Selected>()) entities.emplace_back(e);
+
+    // Pre-reserve MeshStore arenas to avoid per-CloneMesh buffer growth.
+    {
+        std::vector<const Mesh *> meshes_to_clone;
+        for (const auto e : entities) {
+            if (!R.all_of<Instance>(e) || R.all_of<BoneSubPartOf>(e)) continue;
+            const auto mesh_entity = R.get<Instance>(e).Entity;
+            if (R.all_of<ObjectExtrasTag>(mesh_entity) || !R.all_of<Mesh>(mesh_entity)) continue;
+            meshes_to_clone.push_back(&R.get<const Mesh>(mesh_entity));
+        }
+        if (!meshes_to_clone.empty()) Meshes->ReserveForBulkClone(meshes_to_clone);
+    }
+
     for (const auto e : entities) {
         const auto new_e = Duplicate(e);
         if (R.all_of<Active>(e)) {
@@ -2762,6 +2816,15 @@ void Scene::Destroy(entt::entity e) {
         std::vector<entt::entity> children;
         for (auto child : Children{&R, e}) children.emplace_back(child);
         for (const auto child : children) ClearParent(R, child);
+    }
+
+    // Decrement SelectedInstanceCount before entity destruction (while all components are intact).
+    // Cannot rely on on_destroy<Selected> — EnTT's pool removal order during R.destroy() is non-deterministic,
+    // so Instance may already be gone when on_destroy<Selected> fires.
+    if (R.all_of<Selected, Instance>(e)) {
+        const auto mesh_entity = R.get<Instance>(e).Entity;
+        if (auto *count = R.try_get<SelectedInstanceCount>(mesh_entity))
+            if (count->Value > 0) --count->Value;
     }
 
     entt::entity buffer_entity = entt::null;

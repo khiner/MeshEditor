@@ -92,6 +92,11 @@ struct InstanceArena {
         StateBuffer.Move(vk::DeviceSize(src_offset) * sizeof(uint8_t), vk::DeviceSize(dst_offset) * sizeof(uint8_t), count * sizeof(uint8_t));
     }
 
+    // Pre-reserve capacity for `count` additional instances to avoid per-Allocate growth.
+    void ReserveAdditional(uint32_t count) {
+        EnsureCapacity(vk::DeviceSize(Allocator.HighWaterMark()) + count);
+    }
+
     uint32_t TransformSlot() const { return TransformBuffer.Slot; }
     uint32_t ObjectIdSlot() const { return ObjectIdBuffer.Slot; }
     uint32_t StateSlot() const { return StateBuffer.Slot; }

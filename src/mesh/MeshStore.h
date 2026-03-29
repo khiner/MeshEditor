@@ -49,6 +49,8 @@ struct MeshStore {
 
     // Pre-reserve internal GPU arenas to avoid repeated reallocations during bulk CreateMesh calls.
     void ReserveForBulkCreate(const BulkMeshReservation &);
+    // Pre-reserve for bulk CloneMesh calls by summing arena sizes from source meshes.
+    void ReserveForBulkClone(std::span<const Mesh *> meshes);
 
     Mesh CreateMesh(MeshData &&, MeshVertexAttributes &&, MeshPrimitives &&, std::optional<ArmatureDeformData> = {}, std::optional<MorphTargetData> = {});
     Mesh CloneMesh(const Mesh &);

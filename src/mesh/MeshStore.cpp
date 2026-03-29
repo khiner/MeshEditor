@@ -471,6 +471,27 @@ void MeshStore::ReserveForBulkCreate(const BulkMeshReservation &r) {
     }
 }
 
+void MeshStore::ReserveForBulkClone(std::span<const Mesh *> meshes) {
+    BulkMeshReservation r{};
+    uint32_t total_face_primitives = 0, total_primitive_materials = 0;
+    for (const auto *mesh : meshes) {
+        const auto &entry = Entries.at(mesh->GetStoreId());
+        r.Vertices += entry.Vertices.Count;
+        r.Faces += entry.FaceData.Count;
+        r.Triangles += entry.TriangleFaceIds.Count;
+        r.EdgeStates += entry.EdgeStates.Count;
+        r.BoneDeformVertices += entry.BoneDeform.Count;
+        r.MorphTargetEntries += entry.MorphTargets.Count;
+        total_face_primitives += entry.FacePrimitives.Count;
+        total_primitive_materials += entry.PrimitiveMaterials.Count;
+    }
+    ReserveForBulkCreate(r);
+    if (total_face_primitives > 0)
+        FacePrimitiveBuffer.Buffer.Reserve(FacePrimitiveBuffer.Buffer.UsedSize + vk::DeviceSize(total_face_primitives) * sizeof(uint32_t));
+    if (total_primitive_materials > 0)
+        PrimitiveMaterialBuffer.Buffer.Reserve(PrimitiveMaterialBuffer.Buffer.UsedSize + vk::DeviceSize(total_primitive_materials) * sizeof(uint32_t));
+}
+
 Mesh MeshStore::CreateMesh(MeshData &&data, MeshVertexAttributes &&attrs, MeshPrimitives &&primitives, std::optional<ArmatureDeformData> deform, std::optional<MorphTargetData> morph) {
     const auto vertex_count = static_cast<uint32_t>(data.Positions.size());
     auto [id, vertices] = AllocateVertexBuffer(data.Positions, attrs);
