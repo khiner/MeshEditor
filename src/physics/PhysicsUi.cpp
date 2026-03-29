@@ -63,7 +63,94 @@ void physics_ui::RenderTab(PhysicsWorld &physics) {
         for (size_t i = 0; i < physics.JointDefs.size(); ++i) {
             PushID(int(i));
             auto &jd = physics.JointDefs[i];
-            Text("Joint %zu: %s (%zu limits, %zu drives)", i, jd.Name.empty() ? "(unnamed)" : jd.Name.c_str(), jd.Limits.size(), jd.Drives.size());
+            auto label = jd.Name.empty() ? std::format("Joint {}", i) : jd.Name;
+            if (TreeNode(label.c_str())) {
+                static const char *axis_names[]{"X", "Y", "Z"};
+
+                // Limits
+                for (size_t li = 0; li < jd.Limits.size(); ++li) {
+                    PushID(int(li));
+                    auto &limit = jd.Limits[li];
+                    if (TreeNode("Limit", "Limit %zu", li)) {
+                        // Linear axes checkboxes
+                        TextUnformatted("Linear axes:");
+                        SameLine();
+                        for (uint8_t a = 0; a < 3; ++a) {
+                            bool active = std::find(limit.LinearAxes.begin(), limit.LinearAxes.end(), a) != limit.LinearAxes.end();
+                            if (Checkbox(axis_names[a], &active)) {
+                                if (active) limit.LinearAxes.push_back(a);
+                                else std::erase(limit.LinearAxes, a);
+                            }
+                            if (a < 2) SameLine();
+                        }
+                        // Angular axes checkboxes
+                        TextUnformatted("Angular axes:");
+                        SameLine();
+                        for (uint8_t a = 0; a < 3; ++a) {
+                            PushID(a + 3);
+                            bool active = std::find(limit.AngularAxes.begin(), limit.AngularAxes.end(), a) != limit.AngularAxes.end();
+                            if (Checkbox(axis_names[a], &active)) {
+                                if (active) limit.AngularAxes.push_back(a);
+                                else std::erase(limit.AngularAxes, a);
+                            }
+                            if (a < 2) SameLine();
+                            PopID();
+                        }
+
+                        bool has_min = limit.Min.has_value(), has_max = limit.Max.has_value();
+                        float min_val = limit.Min.value_or(0.0f), max_val = limit.Max.value_or(0.0f);
+                        if (Checkbox("Min", &has_min)) limit.Min = has_min ? std::optional{min_val} : std::nullopt;
+                        if (has_min) {
+                            SameLine();
+                            DragFloat("##min", &min_val, 0.01f);
+                            limit.Min = min_val;
+                        }
+                        if (Checkbox("Max", &has_max)) limit.Max = has_max ? std::optional{max_val} : std::nullopt;
+                        if (has_max) {
+                            SameLine();
+                            DragFloat("##max", &max_val, 0.01f);
+                            limit.Max = max_val;
+                        }
+
+                        bool soft = limit.Stiffness.has_value();
+                        if (Checkbox("Soft limit", &soft)) limit.Stiffness = soft ? std::optional{1000.0f} : std::nullopt;
+                        if (limit.Stiffness) {
+                            float stiffness = *limit.Stiffness;
+                            if (DragFloat("Stiffness", &stiffness, 1.0f, 0.0f, 1e6f)) limit.Stiffness = stiffness;
+                            DragFloat("Damping", &limit.Damping, 0.1f, 0.0f, 1e4f);
+                        }
+                        TreePop();
+                    }
+                    PopID();
+                }
+                if (Button("Add limit")) jd.Limits.push_back({});
+
+                Spacing();
+
+                // Drives
+                for (size_t di = 0; di < jd.Drives.size(); ++di) {
+                    PushID(int(di + 1000));
+                    auto &drive = jd.Drives[di];
+                    if (TreeNode("Drive", "Drive %zu", di)) {
+                        int type = int(drive.Type);
+                        if (Combo("Type", &type, "Linear\0Angular\0")) drive.Type = PhysicsDriveType(type);
+                        int axis = drive.Axis;
+                        if (Combo("Axis", &axis, "X\0Y\0Z\0")) drive.Axis = uint8_t(axis);
+                        int mode = int(drive.Mode);
+                        if (Combo("Mode", &mode, "Force\0Acceleration\0")) drive.Mode = PhysicsDriveMode(mode);
+                        DragFloat("Max force", &drive.MaxForce, 1.0f, 0.0f, 1e6f);
+                        DragFloat("Position target", &drive.PositionTarget, 0.01f);
+                        DragFloat("Velocity target", &drive.VelocityTarget, 0.01f);
+                        DragFloat("Stiffness", &drive.Stiffness, 1.0f, 0.0f, 1e6f);
+                        DragFloat("Damping", &drive.Damping, 0.1f, 0.0f, 1e4f);
+                        TreePop();
+                    }
+                    PopID();
+                }
+                if (Button("Add drive")) jd.Drives.push_back({});
+
+                TreePop();
+            }
             PopID();
         }
         if (Button("Add joint definition")) {
@@ -220,6 +307,36 @@ void physics_ui::RenderEntityProperties(entt::registry &r, entt::entity entity, 
                 DragFloat3("Inertia diagonal", &motion->InertiaDiagonal->x, 0.01f, 0.001f, 1e6f);
             }
             TreePop();
+        }
+    }
+
+    // Joint properties
+    if (auto *joint = r.try_get<PhysicsJoint>(entity)) {
+        Spacing();
+        SeparatorText("Joint");
+
+        // Joint definition selector
+        if (!physics.JointDefs.empty()) {
+            uint32_t clamped_idx = std::min(joint->JointDefIndex, uint32_t(physics.JointDefs.size() - 1));
+            auto &def = physics.JointDefs[clamped_idx];
+            auto preview = def.Name.empty() ? std::format("Joint {}", clamped_idx) : def.Name;
+            if (BeginCombo("Definition", preview.c_str())) {
+                for (size_t i = 0; i < physics.JointDefs.size(); ++i) {
+                    auto &jd = physics.JointDefs[i];
+                    auto jlabel = jd.Name.empty() ? std::format("Joint {}", i) : jd.Name;
+                    if (Selectable(jlabel.c_str(), clamped_idx == uint32_t(i))) joint->JointDefIndex = uint32_t(i);
+                }
+                EndCombo();
+            }
+            Text("Limits: %zu, Drives: %zu", def.Limits.size(), def.Drives.size());
+        }
+
+        Checkbox("Enable collision", &joint->EnableCollision);
+
+        if (joint->ConnectedNode != entt::null) {
+            Text("Connected: entity %u", uint32_t(joint->ConnectedNode));
+        } else {
+            TextDisabled("Not connected");
         }
     }
 

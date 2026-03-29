@@ -6,6 +6,7 @@
 #include <Jolt/Core/JobSystemThreadPool.h>
 #include <Jolt/Core/TempAllocator.h>
 #include <Jolt/Physics/Body/BodyCreationSettings.h>
+#include <Jolt/Physics/Body/BodyLock.h>
 #include <Jolt/Physics/Collision/Shape/BoxShape.h>
 #include <Jolt/Physics/Collision/Shape/CapsuleShape.h>
 #include <Jolt/Physics/Collision/Shape/ConvexHullShape.h>
@@ -24,7 +25,7 @@
 JPH_SUPPRESS_WARNINGS
 
 #include "PhysicsWorld.h"
-#include "Transform.h"
+#include "SceneTree.h"
 #include "mesh/Mesh.h"
 
 #include <entt/entity/registry.hpp>
@@ -113,6 +114,7 @@ struct PhysicsWorld::Impl {
     ObjectVsBPLayerFilterImpl ObjectVsBPFilter;
     PhysicsSystem System;
 
+    std::vector<Ref<Constraint>> Constraints;
     std::vector<BodySnapshot> Snapshots;
 
     Impl() {
@@ -182,6 +184,99 @@ static Ref<Shape> CreateJoltShape(const PhysicsShape &shape, const Mesh *mesh) {
     return new BoxShape(Vec3(0.5f, 0.5f, 0.5f));
 }
 
+// Find the nearest ancestor (or self) that has a PhysicsBodyHandle.
+static entt::entity FindBodyAncestor(const entt::registry &r, entt::entity e) {
+    for (; e != entt::null; e = GetParentEntity(r, e)) {
+        if (r.all_of<PhysicsBodyHandle>(e)) return e;
+    }
+    return entt::null;
+}
+
+// Configure a SixDOFConstraintSettings from a KHR joint definition.
+static void ConfigureJointSettings(SixDOFConstraintSettings &settings, const PhysicsJointDef &def) {
+    // Default: all axes fixed (locked to the attachment frame)
+    for (int a = 0; a < SixDOFConstraintSettings::EAxis::Num; ++a)
+        settings.MakeFixedAxis(static_cast<SixDOFConstraintSettings::EAxis>(a));
+
+    // Apply limits — each limit entry may cover multiple axes
+    for (const auto &limit : def.Limits) {
+        auto configure_axis = [&](SixDOFConstraintSettings::EAxis axis) {
+            if (!limit.Min && !limit.Max) {
+                settings.MakeFreeAxis(axis);
+            } else {
+                float lo = limit.Min.value_or(-FLT_MAX);
+                float hi = limit.Max.value_or(FLT_MAX);
+                settings.SetLimitedAxis(axis, lo, hi);
+            }
+            // Soft spring limits (translation axes only in Jolt)
+            if (limit.Stiffness && axis < SixDOFConstraintSettings::EAxis::NumTranslation) {
+                settings.mLimitsSpringSettings[axis] = SpringSettings(ESpringMode::StiffnessAndDamping, *limit.Stiffness, limit.Damping);
+            }
+        };
+        for (uint8_t a : limit.LinearAxes) {
+            if (a < 3) configure_axis(static_cast<SixDOFConstraintSettings::EAxis>(a));
+        }
+        for (uint8_t a : limit.AngularAxes) {
+            if (a < 3) configure_axis(static_cast<SixDOFConstraintSettings::EAxis>(a + 3));
+        }
+    }
+
+    // Apply drives as motor settings
+    for (const auto &drive : def.Drives) {
+        int axis_index = (drive.Type == PhysicsDriveType::Linear ? 0 : 3) + drive.Axis;
+        auto axis = static_cast<SixDOFConstraintSettings::EAxis>(axis_index);
+        auto &motor = settings.mMotorSettings[axis_index];
+        if (drive.Stiffness > 0.0f || drive.Damping > 0.0f) {
+            motor.mSpringSettings = SpringSettings(ESpringMode::StiffnessAndDamping, drive.Stiffness, drive.Damping);
+        }
+        if (drive.Type == PhysicsDriveType::Linear) {
+            motor.SetForceLimit(drive.MaxForce);
+        } else {
+            motor.SetTorqueLimit(drive.MaxForce);
+        }
+        // Ensure the axis isn't fixed so the motor can act
+        if (settings.IsFixedAxis(axis)) settings.MakeFreeAxis(axis);
+    }
+}
+
+// After constraint creation, set motor states and targets from drives.
+static void ApplyDriveTargets(SixDOFConstraint &constraint, const PhysicsJointDef &def) {
+    Vec3 target_pos = Vec3::sZero(), target_vel = Vec3::sZero();
+    Vec3 target_ang_vel = Vec3::sZero();
+    Quat target_orient = Quat::sIdentity();
+    bool has_orient_target = false;
+
+    for (const auto &drive : def.Drives) {
+        int axis_index = (drive.Type == PhysicsDriveType::Linear ? 0 : 3) + drive.Axis;
+        auto axis = static_cast<SixDOFConstraintSettings::EAxis>(axis_index);
+
+        bool has_position = drive.Stiffness > 0.0f || drive.PositionTarget != 0.0f;
+        bool has_velocity = drive.VelocityTarget != 0.0f;
+
+        if (has_position) {
+            constraint.SetMotorState(axis, EMotorState::Position);
+            if (drive.Type == PhysicsDriveType::Linear) {
+                target_pos.SetComponent(drive.Axis, drive.PositionTarget);
+            } else {
+                // Compose per-axis angular position targets into a quaternion
+                static const Vec3 axes[3] = {Vec3::sAxisX(), Vec3::sAxisY(), Vec3::sAxisZ()};
+                target_orient = target_orient * Quat::sRotation(axes[drive.Axis], drive.PositionTarget);
+                has_orient_target = true;
+            }
+        } else if (has_velocity) {
+            constraint.SetMotorState(axis, EMotorState::Velocity);
+            if (drive.Type == PhysicsDriveType::Linear)
+                target_vel.SetComponent(drive.Axis, drive.VelocityTarget);
+            else
+                target_ang_vel.SetComponent(drive.Axis, drive.VelocityTarget);
+        }
+    }
+    constraint.SetTargetPositionCS(target_pos);
+    constraint.SetTargetVelocityCS(target_vel);
+    constraint.SetTargetAngularVelocityCS(target_ang_vel);
+    if (has_orient_target) constraint.SetTargetOrientationCS(target_orient);
+}
+
 // --- Jolt one-time init/shutdown ---
 
 static struct JoltInit {
@@ -206,6 +301,10 @@ bool PhysicsWorld::HasBodies() const { return P->System.GetNumBodies() > 0; }
 uint32_t PhysicsWorld::BodyCount() const { return P->System.GetNumBodies(); }
 
 void PhysicsWorld::Rebuild(entt::registry &r) {
+    // Remove all existing constraints
+    for (auto &c : P->Constraints) P->System.RemoveConstraint(c);
+    P->Constraints.clear();
+
     // Remove all existing bodies
     auto &bi = P->System.GetBodyInterface();
     for (auto [entity, handle] : r.view<PhysicsBodyHandle>().each()) {
@@ -214,10 +313,7 @@ void PhysicsWorld::Rebuild(entt::registry &r) {
     }
     r.clear<PhysicsBodyHandle>();
 
-    // Batch-add all bodies with physics components
-    std::vector<BodyCreationSettings> settings_list;
-    std::vector<entt::entity> entities;
-
+    // Create all bodies
     for (auto [entity, collider] : r.view<const PhysicsCollider>().each()) {
         const auto *mesh = collider.Shape.MeshEntity ? r.try_get<const Mesh>(*collider.Shape.MeshEntity) : nullptr;
         auto shape = CreateJoltShape(collider.Shape, mesh);
@@ -227,7 +323,6 @@ void PhysicsWorld::Rebuild(entt::registry &r) {
         RVec3 pos = transform ? RVec3(transform->P.x, transform->P.y, transform->P.z) : RVec3::sZero();
         Quat rot = transform ? ToJoltQuat(transform->R) : Quat::sIdentity();
 
-        // Wrap in ScaledShape if non-unit scale
         if (transform && (transform->S.x != 1.0f || transform->S.y != 1.0f || transform->S.z != 1.0f)) {
             shape = new ScaledShape(shape, ToJolt(transform->S));
         }
@@ -241,38 +336,71 @@ void PhysicsWorld::Rebuild(entt::registry &r) {
         }
 
         BodyCreationSettings bcs(shape, pos, rot, motion_type, layer);
-
         if (motion) {
-            if (motion->Mass.has_value()) {
-                if (motion_type == EMotionType::Dynamic) {
-                    bcs.mOverrideMassProperties = EOverrideMassProperties::CalculateInertia;
-                    bcs.mMassPropertiesOverride.mMass = *motion->Mass;
-                }
+            if (motion->Mass.has_value() && motion_type == EMotionType::Dynamic) {
+                bcs.mOverrideMassProperties = EOverrideMassProperties::CalculateInertia;
+                bcs.mMassPropertiesOverride.mMass = *motion->Mass;
             }
             bcs.mLinearVelocity = ToJolt(motion->LinearVelocity);
             bcs.mAngularVelocity = ToJolt(motion->AngularVelocity);
             bcs.mGravityFactor = motion->GravityFactor;
         }
 
-        // Physics material
         if (collider.PhysicsMaterialIndex.has_value() && *collider.PhysicsMaterialIndex < Materials.size()) {
             const auto &mat = Materials[*collider.PhysicsMaterialIndex];
             bcs.mFriction = mat.DynamicFriction;
             bcs.mRestitution = mat.Restitution;
         }
 
-        settings_list.push_back(std::move(bcs));
-        entities.push_back(entity);
+        Body *body = bi.CreateBody(bcs);
+        if (!body) continue;
+        bi.AddBody(body->GetID(), motion_type == EMotionType::Static ? EActivation::DontActivate : EActivation::Activate);
+        r.emplace_or_replace<PhysicsBodyHandle>(entity, PhysicsBodyHandle{body->GetID().GetIndexAndSequenceNumber()});
     }
 
-    if (settings_list.empty()) return;
+    // Create constraints from PhysicsJoint components
+    const auto &lock_iface = P->System.GetBodyLockInterfaceNoLock();
+    for (auto [entity, joint] : r.view<const PhysicsJoint>().each()) {
+        if (joint.ConnectedNode == entt::null) continue;
+        if (joint.JointDefIndex >= JointDefs.size()) continue;
 
-    // Batch create and add
-    for (size_t i = 0; i < settings_list.size(); ++i) {
-        Body *body = bi.CreateBody(settings_list[i]);
-        if (!body) continue;
-        bi.AddBody(body->GetID(), settings_list[i].mMotionType == EMotionType::Static ? EActivation::DontActivate : EActivation::Activate);
-        r.emplace_or_replace<PhysicsBodyHandle>(entities[i], PhysicsBodyHandle{body->GetID().GetIndexAndSequenceNumber()});
+        // Body 1: nearest ancestor (or self) with a physics body
+        entt::entity body1_entity = FindBodyAncestor(r, entity);
+        // Body 2: the connected node (should itself be a body, or find its body ancestor)
+        entt::entity body2_entity = FindBodyAncestor(r, joint.ConnectedNode);
+        if (body1_entity == entt::null || body2_entity == entt::null) continue;
+        if (body1_entity == body2_entity) continue;
+
+        const auto *h1 = r.try_get<const PhysicsBodyHandle>(body1_entity);
+        const auto *h2 = r.try_get<const PhysicsBodyHandle>(body2_entity);
+        if (!h1 || !h2) continue;
+
+        const auto &def = JointDefs[joint.JointDefIndex];
+
+        SixDOFConstraintSettings settings;
+        settings.mSpace = EConstraintSpace::WorldSpace;
+
+        // Joint anchor at the joint node's world position
+        const auto *jt = r.try_get<const Transform>(entity);
+        if (jt) {
+            RVec3 anchor(jt->P.x, jt->P.y, jt->P.z);
+            settings.mPosition1 = settings.mPosition2 = anchor;
+            // Derive constraint frame axes from joint node rotation
+            glm::mat3 rot_mat = glm::mat3_cast(glm::normalize(jt->R));
+            settings.mAxisX1 = settings.mAxisX2 = Vec3(rot_mat[0].x, rot_mat[0].y, rot_mat[0].z);
+            settings.mAxisY1 = settings.mAxisY2 = Vec3(rot_mat[1].x, rot_mat[1].y, rot_mat[1].z);
+        }
+
+        ConfigureJointSettings(settings, def);
+
+        BodyLockWrite lock1(lock_iface, BodyID(h1->BodyId));
+        BodyLockWrite lock2(lock_iface, BodyID(h2->BodyId));
+        if (!lock1.Succeeded() || !lock2.Succeeded()) continue;
+
+        auto *constraint = static_cast<SixDOFConstraint *>(settings.Create(lock1.GetBody(), lock2.GetBody()));
+        ApplyDriveTargets(*constraint, def);
+        P->System.AddConstraint(constraint);
+        P->Constraints.push_back(constraint);
     }
 
     P->System.OptimizeBroadPhase();
@@ -377,21 +505,21 @@ void PhysicsWorld::SaveSnapshot(entt::registry &r) {
 }
 
 void PhysicsWorld::RestoreSnapshot(entt::registry &r) {
-    auto &bi = P->System.GetBodyInterface();
+    // Restore ECS transforms and velocities from snapshot
     for (const auto &snap : P->Snapshots) {
         if (!r.valid(snap.Entity)) continue;
-        auto *handle = r.try_get<PhysicsBodyHandle>(snap.Entity);
-        if (!handle || handle->BodyId == UINT32_MAX) continue;
-
-        BodyID id(handle->BodyId);
-        bi.SetPositionAndRotation(id, RVec3(snap.Position.x, snap.Position.y, snap.Position.z), ToJoltQuat(snap.Rotation), EActivation::DontActivate);
-        bi.SetLinearVelocity(id, ToJolt(snap.LinearVelocity));
-        bi.SetAngularVelocity(id, ToJolt(snap.AngularVelocity));
-
         r.patch<Transform>(snap.Entity, [&](Transform &t) {
             t.P = snap.Position;
             t.R = snap.Rotation;
             t.S = snap.Scale;
         });
+        if (auto *motion = r.try_get<PhysicsMotion>(snap.Entity)) {
+            motion->LinearVelocity = snap.LinearVelocity;
+            motion->AngularVelocity = snap.AngularVelocity;
+        }
     }
+    // Rebuild all Jolt bodies and constraints from the restored ECS state.
+    // This guarantees deterministic replay by eliminating stale solver warm-start cache.
+    // Ideally we'd just clear the solver cache, but Jolt doesn't expose such an API.
+    Rebuild(r);
 }
