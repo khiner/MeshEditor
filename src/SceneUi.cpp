@@ -1,7 +1,6 @@
 #include "PbrFeature.h"
 #include "Scene.h"
 #include "SceneDefaults.h"
-#include "SceneMaterials.h"
 #include "SceneTextures.h"
 #include "SceneTree.h"
 #include "Widgets.h" // imgui
@@ -71,16 +70,6 @@ std::vector<SelectionHit> ResolveHits(entt::registry &r, const std::vector<entt:
         }
     }
     return hits;
-}
-
-vk::Extent2D ComputeRenderExtentPx(vk::Extent2D logical_extent) {
-    const auto scale = GetIO().DisplayFramebufferScale;
-    const auto scaled_dim = [](uint32_t logical, float s) -> uint32_t {
-        if (logical == 0u) return 0u;
-        const float scale_value = s > 0.0f ? s : 1.0f;
-        return std::max(1u, uint32_t(float(logical) * scale_value + 0.5f));
-    };
-    return {scaled_dim(logical_extent.width, scale.x), scaled_dim(logical_extent.height, scale.y)};
 }
 
 std::optional<std::pair<uvec2, uvec2>> ComputeBoxSelectPixels(vec2 start, vec2 end, vec2 window_pos, vk::Extent2D logical_extent, vk::Extent2D render_extent) {
@@ -338,10 +327,6 @@ bool RenderCameraLensEditor(Camera &camera, std::optional<ViewportContext> viewp
     return lens_changed;
 }
 
-WorkspaceLights &GetWorkspaceLights(SceneBuffers &buffers) {
-    return *reinterpret_cast<WorkspaceLights *>(buffers.WorkspaceLightsUBO.GetMappedData().data());
-}
-
 } // namespace
 
 void Scene::SetInteractionMode(InteractionMode mode) {
@@ -373,7 +358,7 @@ void Scene::SetInteractionMode(InteractionMode mode) {
             for (const auto [_, br] : R.view<const MeshSelectionBitsetRange>().each()) {
                 next_offset = std::max(next_offset, (br.Offset + br.Count + 31) / 32 * 32);
             }
-            auto *bits = reinterpret_cast<uint32_t *>(Buffers->SelectionBitsetBuffer.GetMappedData().data());
+            auto *bits = Buffers->GetSelectionBits();
             for (const auto mesh_entity : scene_selection::GetSelectedMeshEntities(R)) {
                 if (R.all_of<MeshSelectionBitsetRange>(mesh_entity)) continue;
                 const auto &mesh = R.get<const Mesh>(mesh_entity);
@@ -393,7 +378,7 @@ void Scene::SetEditMode(Element mode) {
     const auto current_mode = R.get<const SceneEditMode>(SceneEntity).Value;
     if (current_mode == mode) return;
 
-    auto *bits = reinterpret_cast<uint32_t *>(Buffers->SelectionBitsetBuffer.GetMappedData().data());
+    auto *bits = Buffers->GetSelectionBits();
 
     // Phase 1: scan old selection handles and zero old bits for every mesh.
     // Stash the from-handles so we can write new bits in phase 3, after the GPU
@@ -480,7 +465,7 @@ void Scene::Interact() {
     }
 
     const auto logical_extent = R.get<const ViewportExtent>(SceneEntity).Value;
-    const auto render_extent = ComputeRenderExtentPx(logical_extent);
+    const auto render_extent = ComputeRenderExtentPx(logical_extent, std::bit_cast<vec2>(GetIO().DisplayFramebufferScale));
     if (logical_extent.width == 0 || logical_extent.height == 0 || render_extent.width == 0 || render_extent.height == 0) return;
 
     const auto interaction_mode = R.get<const SceneInteraction>(SceneEntity).Mode;
@@ -547,7 +532,7 @@ void Scene::Interact() {
                 } else if (interaction_mode == InteractionMode::Edit) {
                     // Select all elements in the current edit mode.
                     const auto ranges = GetBitsetRangesForSelected();
-                    auto *bits = reinterpret_cast<uint32_t *>(Buffers->SelectionBitsetBuffer.GetMappedData().data());
+                    auto *bits = Buffers->GetSelectionBits();
                     for (const auto &range : ranges) scene_selection::SelectAll(bits, range.Offset, range.Count);
                     if (!ranges.empty()) SelectionBitsDirty = true;
                 } else if (interaction_mode == InteractionMode::Object) {
@@ -681,9 +666,8 @@ void Scene::Interact() {
                     if (!ranges.empty()) {
                         const auto element_count = fold_left(ranges, uint32_t{0}, [](uint32_t total, const auto &range) { return std::max(total, range.Offset + range.Count); });
                         const uint32_t bitset_words = (element_count + 31) / 32;
-                        auto mapped = Buffers->SelectionBitsetBuffer.GetMappedData();
                         baseline.ElementBitset.resize(bitset_words);
-                        memcpy(baseline.ElementBitset.data(), mapped.data(), bitset_words * sizeof(uint32_t));
+                        memcpy(baseline.ElementBitset.data(), Buffers->GetSelectionBits(), bitset_words * sizeof(uint32_t));
                     }
                 } else if (bone_mode) {
                     for (const auto e : R.view<BoneSelection>()) {
@@ -770,13 +754,12 @@ void Scene::Interact() {
     if (interaction_mode == InteractionMode::Edit && !active_is_armature) {
         const bool toggle = IsKeyDown(ImGuiMod_Shift) || IsKeyDown(ImGuiMod_Ctrl) || IsKeyDown(ImGuiMod_Super);
         const auto ranges = GetBitsetRangesForSelected();
-        auto *mapped = Buffers->SelectionBitsetBuffer.GetMappedData().data();
-        auto *bits = reinterpret_cast<uint32_t *>(mapped);
+        auto *bits = Buffers->GetSelectionBits();
         if (!toggle) {
             for (const auto &range : ranges) {
                 const uint32_t first_word = range.Offset / 32;
                 const uint32_t last_word = (range.Offset + range.Count + 31) / 32;
-                memset(mapped + first_word * sizeof(uint32_t), 0, (last_word - first_word) * sizeof(uint32_t));
+                memset(&bits[first_word], 0, (last_word - first_word) * sizeof(uint32_t));
                 R.remove<MeshActiveElement>(range.MeshEntity);
             }
         }
@@ -1009,7 +992,7 @@ void Scene::InteractOverlay() {
         if (bone_mode) return !bone_selected_view.empty();
         if (selected_view.empty()) return false;
         if (!mesh_edit_mode) return true;
-        const auto *bits = reinterpret_cast<const uint32_t *>(Buffers->SelectionBitsetBuffer.GetMappedData().data());
+        const auto *bits = Buffers->GetSelectionBits();
         for (const auto [e, instance] : R.view<const Instance, const Selected>(entt::exclude<Frozen>).each()) {
             if (const auto *br = R.try_get<const MeshSelectionBitsetRange>(instance.Entity)) {
                 if (scene_selection::CountSelected(bits, br->Offset, br->Count) > 0) return true;
@@ -1497,7 +1480,7 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
             auto &material_store = R.get<MaterialStore>(SceneEntity);
             auto &texture_store = *Textures;
             std::span<const uint32_t> primitive_materials = Meshes->GetPrimitiveMaterialIndices(active_mesh.GetStoreId());
-            const auto material_count = GetMaterialCount(*Buffers);
+            const auto material_count = Buffers->MaterialCount();
             const auto material_name = [&](uint32_t index) {
                 if (index < material_store.Names.size() && !material_store.Names[index].empty()) return std::string{material_store.Names[index]};
                 return std::format("Material{}", index);
@@ -1544,7 +1527,7 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
                     EndCombo();
                 }
 
-                auto &material = GetMaterial(*Buffers, material_index);
+                auto &material = Buffers->GetMaterial(material_index);
                 const auto edit_texture_slot = [&](const char *label, uint32_t &slot) {
                     std::string preview = "None";
                     bool has_match = false;
@@ -1821,7 +1804,7 @@ void Scene::RenderControls() {
                         if (const auto *instance = R.try_get<Instance>(active_entity); instance && R.all_of<Mesh>(instance->Entity)) {
                             const auto *br = R.try_get<const MeshSelectionBitsetRange>(instance->Entity);
                             const uint32_t selected_count = br ?
-                                scene_selection::CountSelected(reinterpret_cast<const uint32_t *>(Buffers->SelectionBitsetBuffer.GetMappedData().data()), br->Offset, br->Count) :
+                                scene_selection::CountSelected(Buffers->GetSelectionBits(), br->Offset, br->Count) :
                                 0;
                             Text("Editing %s: %u selected", label(edit_mode).data(), selected_count);
                         }
@@ -2082,7 +2065,7 @@ void Scene::RenderControls() {
 
         // Note: Rendered world/light toggles are in Render -> Viewport shading.
         if (BeginTabItem("Lighting")) {
-            auto &lights = GetWorkspaceLights(*Buffers);
+            auto &lights = Buffers->GetWorkspaceLights();
             bool changed = false;
             if (Button("Reset##Lighting")) {
                 lights = SceneDefaults::WorkspaceLights;

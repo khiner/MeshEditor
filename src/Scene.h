@@ -36,6 +36,9 @@ enum class FaceColorMode {
 
 struct DrawListBuilder;
 struct SelectionDrawInfo;
+namespace mvk {
+struct Buffer;
+}
 
 struct MeshInstanceCreateInfo {
     std::string Name{};
@@ -252,6 +255,7 @@ private:
     void AnimateToCamera(entt::entity camera_entity);
 
     void RecordRenderCommandBuffer(bool silhouette_only = false);
+    void FlushDrawList(const DrawListBuilder &, mvk::Buffer &draw_data, mvk::Buffer &indirect);
 
     // Process deferred component events. Called once per frame.
     RenderRequest ProcessComponentEvents();

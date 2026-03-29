@@ -3,13 +3,13 @@
 #include "NodeTransformAnimation.h"
 #include "PbrFeature.h"
 #include "Scene.h"
-#include "SceneMaterials.h"
 #include "SceneTextures.h"
 #include "SceneTree.h"
 #include "Timer.h"
 #include "gltf/GltfLoader.h"
 #include "mesh/MeshStore.h"
 #include "mesh/MorphTargetData.h"
+#include "scene_impl/SceneBuffers.h"
 #include "scene_impl/SceneComponents.h"
 
 #include <entt/entity/registry.hpp>
@@ -27,14 +27,14 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
 
     auto &texture_store = *Textures;
     const auto texture_start = texture_store.Textures.size();
-    const auto material_start = GetMaterialCount(*Buffers);
+    const auto material_start = Buffers->MaterialCount();
     const auto material_name_start = R.get<const MaterialStore>(SceneEntity).Names.size();
     const auto rollback_import_side_effects = [&] {
         if (texture_store.Textures.size() > texture_start) {
             ReleaseSamplerSlots(*Slots, CollectSamplerSlots(std::span<const TextureEntry>{texture_store.Textures}.subspan(texture_start)));
             texture_store.Textures.resize(texture_start);
         }
-        if (GetMaterialCount(*Buffers) > material_start) SetMaterialCount(*Buffers, material_start);
+        if (Buffers->MaterialCount() > material_start) Buffers->SetMaterialCount(material_start);
         R.patch<MaterialStore>(
             SceneEntity,
             [&](auto &store) {
@@ -58,7 +58,7 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
         return texture.DdsImageIndex;
     };
 
-    auto upload_batch = BeginTextureUploadBatch(Vk.Device, *CommandPool, GetBufferCtx(Buffers.get()));
+    auto upload_batch = BeginTextureUploadBatch(Vk.Device, *CommandPool, Buffers->Ctx);
 
     std::unordered_map<uint64_t, uint32_t> texture_slot_cache;
     // Cache on the resolved (image_index, sampler_index, color_space) rather than glTF texture index,
@@ -124,11 +124,11 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
     };
 
     std::vector<uint32_t> material_indices_by_gltf_material(scene->Materials.size(), 0u);
-    const auto material_count = GetMaterialCount(*Buffers);
+    const auto material_count = Buffers->MaterialCount();
     const auto default_material_index = material_count > 0 ? material_count - 1u : 0u;
     std::vector<std::string> material_names;
     material_names.reserve(scene->Materials.size());
-    ReserveMaterials(*Buffers, material_count + scene->Materials.size());
+    Buffers->ReserveMaterials(material_count + scene->Materials.size());
     for (uint32_t material_index = 0; material_index < scene->Materials.size(); ++material_index) {
         const auto &src_named_material = scene->Materials[material_index];
         const auto &src_material = src_named_material.Value;
@@ -187,7 +187,7 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
             !result) {
             return std::unexpected{std::move(result.error())};
         }
-        material_indices_by_gltf_material[material_index] = AppendMaterial(*Buffers, gpu_material);
+        material_indices_by_gltf_material[material_index] = Buffers->AppendMaterial(gpu_material);
         material_names.emplace_back(material_name);
     }
     const auto fallback_material_index = material_indices_by_gltf_material.empty() ? default_material_index : material_indices_by_gltf_material.back();
@@ -600,7 +600,7 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
     }
 
     if (scene->ImageBasedLight) {
-        auto ibl_batch = BeginTextureUploadBatch(Vk.Device, *CommandPool, GetBufferCtx(Buffers.get()));
+        auto ibl_batch = BeginTextureUploadBatch(Vk.Device, *CommandPool, Buffers->Ctx);
         auto scene_world = CreateIblFromExtIbl(Vk, ibl_batch, *Slots, scene->Images, *scene->ImageBasedLight);
         SubmitTextureUploadBatch(ibl_batch, Vk.Queue, *OneShotFence, Vk.Device);
         if (!scene_world) {

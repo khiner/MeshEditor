@@ -155,4 +155,5 @@ private:
     std::span<uint8_t> GetFaceStates(Range);
     std::span<uint8_t> GetVertexStates(Range);
     std::span<const uint8_t> GetVertexStates(Range) const;
+    void ClearElementStates(Range vertices, Range faces, Range edges);
 };

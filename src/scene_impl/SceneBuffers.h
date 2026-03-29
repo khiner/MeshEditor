@@ -6,15 +6,21 @@
 #include "gpu/SceneViewUBO.h"
 #include "gpu/SelectionCounters.h"
 #include "gpu/SelectionNode.h"
+#include "gpu/Vertex.h"
 #include "gpu/ViewportTheme.h"
 #include "gpu/WorkspaceLights.h"
 #include "gpu/WorldTransform.h"
 #include "vulkan/BufferArena.h"
 
 #include <numeric>
+#include <string>
 #include <unordered_map>
 
 using uint = uint32_t;
+
+struct MaterialStore {
+    std::vector<std::string> Names;
+};
 
 enum class IndexKind {
     Face,
@@ -79,22 +85,34 @@ struct InstanceArena {
     void CompactErase(uint32_t global_index, uint32_t range_end) {
         const auto count = range_end - global_index - 1;
         if (count == 0) return;
-        TransformBuffer.Move(vk::DeviceSize(global_index + 1) * sizeof(WorldTransform), vk::DeviceSize(global_index) * sizeof(WorldTransform), count * sizeof(WorldTransform));
-        ObjectIdBuffer.Move(vk::DeviceSize(global_index + 1) * sizeof(uint32_t), vk::DeviceSize(global_index) * sizeof(uint32_t), count * sizeof(uint32_t));
-        StateBuffer.Move(vk::DeviceSize(global_index + 1) * sizeof(uint8_t), vk::DeviceSize(global_index) * sizeof(uint8_t), count * sizeof(uint8_t));
+        ForEachBuffer([&](mvk::Buffer &buf, size_t sz) {
+            buf.Move(vk::DeviceSize(global_index + 1) * sz, vk::DeviceSize(global_index) * sz, count * sz);
+        });
     }
 
     // Copy `count` elements from src_offset to dst_offset across all 3 buffers.
     void CopyInstances(uint32_t src_offset, uint32_t dst_offset, uint32_t count) {
         if (count == 0 || src_offset == dst_offset) return;
-        TransformBuffer.Move(vk::DeviceSize(src_offset) * sizeof(WorldTransform), vk::DeviceSize(dst_offset) * sizeof(WorldTransform), count * sizeof(WorldTransform));
-        ObjectIdBuffer.Move(vk::DeviceSize(src_offset) * sizeof(uint32_t), vk::DeviceSize(dst_offset) * sizeof(uint32_t), count * sizeof(uint32_t));
-        StateBuffer.Move(vk::DeviceSize(src_offset) * sizeof(uint8_t), vk::DeviceSize(dst_offset) * sizeof(uint8_t), count * sizeof(uint8_t));
+        ForEachBuffer([&](mvk::Buffer &buf, size_t sz) {
+            buf.Move(vk::DeviceSize(src_offset) * sz, vk::DeviceSize(dst_offset) * sz, count * sz);
+        });
     }
 
     // Pre-reserve capacity for `count` additional instances to avoid per-Allocate growth.
     void ReserveAdditional(uint32_t count) {
         EnsureCapacity(vk::DeviceSize(Allocator.HighWaterMark()) + count);
+    }
+
+    // Typed accessors — eliminate manual sizeof/reinterpret_cast at call sites.
+    void UpdateObjectIds(uint32_t offset, std::span<const std::byte> data) { ObjectIdBuffer.Update(data, vk::DeviceSize(offset) * sizeof(uint32_t)); }
+    void UpdateStates(uint32_t offset, std::span<const std::byte> data) { StateBuffer.Update(data, vk::DeviceSize(offset) * sizeof(uint8_t)); }
+    void UpdateState(uint32_t index, uint8_t state) { StateBuffer.Update(as_bytes(state), vk::DeviceSize(index) * sizeof(uint8_t)); }
+    std::span<uint8_t> GetMutableStates() {
+        return {reinterpret_cast<uint8_t *>(StateBuffer.GetMutableRange(0, StateBuffer.UsedSize).data()), static_cast<size_t>(StateBuffer.UsedSize)};
+    }
+    std::span<WorldTransform> GetMutableTransforms() {
+        auto mapped = TransformBuffer.GetMutableRange(0, TransformBuffer.UsedSize);
+        return {reinterpret_cast<WorldTransform *>(mapped.data()), mapped.size() / sizeof(WorldTransform)};
     }
 
     uint32_t TransformSlot() const { return TransformBuffer.Slot; }
@@ -104,15 +122,18 @@ struct InstanceArena {
     mvk::Buffer TransformBuffer, ObjectIdBuffer, StateBuffer;
 
 private:
+    void ForEachBuffer(auto &&fn) {
+        fn(TransformBuffer, sizeof(WorldTransform));
+        fn(ObjectIdBuffer, sizeof(uint32_t));
+        fn(StateBuffer, sizeof(uint8_t));
+    }
+
     void EnsureCapacity(vk::DeviceSize end) {
-        auto ensure = [end](mvk::Buffer &buf, size_t elem_size) {
-            const vk::DeviceSize required = end * elem_size;
+        ForEachBuffer([end](mvk::Buffer &buf, size_t sz) {
+            const auto required = end * sz;
             buf.Reserve(required);
             buf.UsedSize = std::max(buf.UsedSize, required);
-        };
-        ensure(TransformBuffer, sizeof(WorldTransform));
-        ensure(ObjectIdBuffer, sizeof(uint32_t));
-        ensure(StateBuffer, sizeof(uint8_t));
+        });
     }
 
     RangeAllocator Allocator;
@@ -160,6 +181,12 @@ struct SceneBuffers {
 
     vk::DescriptorBufferInfo GetSelectionBitsetDescriptor() const { return {*SelectionBitsetBuffer, 0, SelectionBitsetWords * sizeof(uint32_t)}; }
     vk::DescriptorBufferInfo GetObjectPickSeenBitsetDescriptor() const { return {*ObjectPickSeenBitsetBuffer, 0, ObjectPickBitsetWords * sizeof(uint32_t)}; }
+
+    void ReserveAdditionalIndices(uint32_t face, uint32_t edge, uint32_t vertex) {
+        FaceIndexBuffer.ReserveAdditional(face);
+        EdgeIndexBuffer.ReserveAdditional(edge);
+        VertexIndexBuffer.ReserveAdditional(vertex);
+    }
 
     SlottedRange CreateIndices(std::span<const uint> indices, IndexKind index_kind) {
         auto &index_buffer = GetIndexBuffer(index_kind);
@@ -219,8 +246,36 @@ struct SceneBuffers {
         IdentityIndexCount = count;
     }
 
+    // Light buffer typed accessors.
+    uint32_t LightCount() const { return LightBuffer.UsedSize / sizeof(PunctualLight); }
+    void SetLightCount(uint32_t count) {
+        auto s = vk::DeviceSize(count) * sizeof(PunctualLight);
+        LightBuffer.Reserve(s);
+        LightBuffer.UsedSize = s;
+    }
     PunctualLight GetLight(uint32_t index) const { return reinterpret_cast<const PunctualLight *>(LightBuffer.GetMappedData().data())[index]; }
     void SetLight(uint32_t index, const PunctualLight &light) { LightBuffer.Update(as_bytes(light), vk::DeviceSize(index) * sizeof(PunctualLight)); }
+
+    // Material buffer typed accessors.
+    uint32_t MaterialCount() const { return MaterialBuffer.UsedSize / sizeof(PBRMaterial); }
+    const PBRMaterial &GetMaterial(uint32_t index) const { return reinterpret_cast<const PBRMaterial *>(MaterialBuffer.GetData().data())[index]; }
+    PBRMaterial &GetMaterial(uint32_t index) { return reinterpret_cast<PBRMaterial *>(MaterialBuffer.GetMappedData().data())[index]; }
+    void SetMaterial(uint32_t index, const PBRMaterial &material) { MaterialBuffer.Update(as_bytes(material), vk::DeviceSize(index) * sizeof(PBRMaterial)); }
+    uint32_t AppendMaterial(const PBRMaterial &material) {
+        auto i = MaterialCount();
+        SetMaterial(i, material);
+        return i;
+    }
+    void SetMaterialCount(uint32_t count) {
+        auto s = vk::DeviceSize(count) * sizeof(PBRMaterial);
+        MaterialBuffer.Reserve(s);
+        MaterialBuffer.UsedSize = s;
+    }
+    void ReserveMaterials(uint32_t count) { MaterialBuffer.Reserve(vk::DeviceSize(count) * sizeof(PBRMaterial)); }
+
+    uint32_t *GetSelectionBits() { return reinterpret_cast<uint32_t *>(SelectionBitsetBuffer.GetMappedData().data()); }
+
+    WorkspaceLights &GetWorkspaceLights() { return *reinterpret_cast<WorkspaceLights *>(WorkspaceLightsUBO.GetMappedData().data()); }
 
     mvk::BufferContext Ctx;
     BufferArena<Vertex> VertexBuffer;
@@ -240,3 +295,11 @@ struct SceneBuffers {
     // CPU readback buffers (host-visible)
     mvk::Buffer SelectionCounterBuffer, ObjectPickKeyBuffer, ElementPickCandidateBuffer, ObjectPickSeenBitsetBuffer, SelectionBitsetBuffer;
 };
+
+inline vk::Extent2D ComputeRenderExtentPx(vk::Extent2D logical_extent, vec2 scale) {
+    const auto scaled_dim = [](uint32_t logical, float s) -> uint32_t {
+        if (logical == 0u) return 0u;
+        return std::max(1u, uint32_t(float(logical) * (s > 0.0f ? s : 1.0f) + 0.5f));
+    };
+    return {scaled_dim(logical_extent.width, scale.x), scaled_dim(logical_extent.height, scale.y)};
+}

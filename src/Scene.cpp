@@ -1,6 +1,5 @@
 #include "Scene.h"
 #include "SceneDefaults.h"
-#include "SceneMaterials.h"
 #include "SceneTextures.h"
 #include "SceneTree.h"
 
@@ -73,15 +72,6 @@ void WaitFor(vk::Fence fence, vk::Device device) {
     device.resetFences(fence);
 }
 
-vk::Extent2D ComputeRenderExtentPx(vk::Extent2D logical_extent) {
-    const auto scale = ImGui::GetIO().DisplayFramebufferScale;
-    const auto scaled_dim = [](uint32_t logical, float s) -> uint32_t {
-        if (logical == 0u) return 0u;
-        const float scale_value = s > 0.0f ? s : 1.0f;
-        return std::max(1u, uint32_t(float(logical) * scale_value + 0.5f));
-    };
-    return {scaled_dim(logical_extent.width, scale.x), scaled_dim(logical_extent.height, scale.y)};
-}
 } // namespace
 
 #include "scene_impl/SceneComponents.h"
@@ -466,29 +456,6 @@ std::optional<uint32_t> FindNearestPickedElement(
 }
 } // namespace
 
-uint32_t GetMaterialCount(const SceneBuffers &buffers) { return buffers.MaterialBuffer.UsedSize / sizeof(PBRMaterial); }
-const PBRMaterial &GetMaterial(const SceneBuffers &buffers, uint32_t index) { return reinterpret_cast<const PBRMaterial *>(buffers.MaterialBuffer.GetData().data())[index]; }
-PBRMaterial &GetMaterial(SceneBuffers &buffers, uint32_t index) { return reinterpret_cast<PBRMaterial *>(buffers.MaterialBuffer.GetMappedData().data())[index]; }
-void SetMaterial(SceneBuffers &buffers, uint32_t index, const PBRMaterial &material) { buffers.MaterialBuffer.Update(as_bytes(material), vk::DeviceSize(index) * sizeof(PBRMaterial)); }
-uint32_t AppendMaterial(SceneBuffers &buffers, const PBRMaterial &material) {
-    const auto index = GetMaterialCount(buffers);
-    SetMaterial(buffers, index, material);
-    return index;
-}
-void SetMaterialCount(SceneBuffers &buffers, uint32_t count) {
-    buffers.MaterialBuffer.Reserve(vk::DeviceSize(count) * sizeof(PBRMaterial));
-    buffers.MaterialBuffer.UsedSize = vk::DeviceSize(count) * sizeof(PBRMaterial);
-}
-void ReserveMaterials(SceneBuffers &buffers, uint32_t count) { buffers.MaterialBuffer.Reserve(vk::DeviceSize(count) * sizeof(PBRMaterial)); }
-
-mvk::BufferContext &GetBufferCtx(SceneBuffers *b) { return b->Ctx; }
-Range AllocateArmatureDeform(SceneBuffers *b, uint32_t count) { return b->ArmatureDeformBuffer.Allocate(count); }
-void ReserveArmatureDeform(SceneBuffers *b, uint32_t additional) { b->ArmatureDeformBuffer.Buffer.Reserve(b->ArmatureDeformBuffer.Buffer.UsedSize + vk::DeviceSize(additional) * sizeof(mat4)); }
-std::span<mat4> GetArmatureDeformMutable(SceneBuffers *b, Range r) { return b->ArmatureDeformBuffer.GetMutable(r); }
-Range AllocateMorphWeights(SceneBuffers *b, uint32_t count) { return b->MorphWeightBuffer.Allocate(count); }
-void ReserveMorphWeights(SceneBuffers *b, uint32_t additional) { b->MorphWeightBuffer.Buffer.Reserve(b->MorphWeightBuffer.Buffer.UsedSize + vk::DeviceSize(additional) * sizeof(float)); }
-std::span<float> GetMorphWeightsMutable(SceneBuffers *b, Range r) { return b->MorphWeightBuffer.GetMutable(r); }
-
 struct Scene::SelectionSlotHandles {
     explicit SelectionSlotHandles(DescriptorSlots &slots)
         : Slots(slots),
@@ -680,18 +647,15 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
     SetStudioEnvironment(environments.ActiveHdriIndex);
     environments.SceneWorld = environments.StudioWorld;
 
-    AppendMaterial(
-        *Buffers,
-        {
-            .BaseColorFactor = vec4{1.f},
-            .MetallicFactor = 0.f,
-            .RoughnessFactor = 1.f,
-            .AlphaMode = MaterialAlphaMode::Opaque,
-            .AlphaCutoff = 0.5f,
-            .DoubleSided = 0u,
-            .BaseColorTexture = {.Slot = texture_store.WhiteTextureSlot},
-        }
-    );
+    Buffers->AppendMaterial({
+        .BaseColorFactor = vec4{1.f},
+        .MetallicFactor = 0.f,
+        .RoughnessFactor = 1.f,
+        .AlphaMode = MaterialAlphaMode::Opaque,
+        .AlphaCutoff = 0.5f,
+        .DoubleSided = 0u,
+        .BaseColorTexture = {.Slot = texture_store.WhiteTextureSlot},
+    });
     R.patch<MaterialStore>(SceneEntity, [](auto &material_store) { material_store.Names.emplace_back("Default"); });
 
     Pipelines->CompileShaders();
@@ -911,8 +875,8 @@ Scene::SyncResult Scene::SyncModelsBuffers() {
         }
         // Write ObjectIds and InstanceStates at the new slots. WorldTransform slots are left unwritten —
         // the WorldTransform reactive pass writes them before submit.
-        Buffers->Instances.ObjectIdBuffer.Update(as_bytes(object_ids), vk::DeviceSize(base_index) * sizeof(uint32_t));
-        Buffers->Instances.StateBuffer.Update(as_bytes(states), vk::DeviceSize(base_index) * sizeof(uint8_t));
+        Buffers->Instances.UpdateObjectIds(base_index, as_bytes(object_ids));
+        Buffers->Instances.UpdateStates(base_index, as_bytes(states));
         mb.InstanceCount = new_total;
         // No R.patch needed — ProcessComponentEvents handles Submit explicitly.
         newly_inserted.insert(newly_inserted.end(), entities.begin(), entities.end());
@@ -952,15 +916,15 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
             total_joints += armature->ImportedSkin->OrderedJointNodeIndices.size();
             pending_armatures.push_back(arm_obj_comp.Entity);
         }
-        if (total_joints > 0) ReserveArmatureDeform(Buffers.get(), total_joints);
+        Buffers->ArmatureDeformBuffer.ReserveAdditional(total_joints);
         for (const auto arm_data_entity : pending_armatures) {
             auto &pose_state = R.get<ArmaturePoseState>(arm_data_entity);
             const auto &armature = R.get<const Armature>(arm_data_entity);
-            pose_state.GpuDeformRange = AllocateArmatureDeform(Buffers.get(), armature.ImportedSkin->OrderedJointNodeIndices.size());
+            pose_state.GpuDeformRange = Buffers->ArmatureDeformBuffer.Allocate(armature.ImportedSkin->OrderedJointNodeIndices.size());
             ComputeDeformMatrices(
                 armature, pose_state.BonePoseDelta, pose_state.BoneUserOffset,
                 armature.ImportedSkin->InverseBindMatrices,
-                GetArmatureDeformMutable(Buffers.get(), pose_state.GpuDeformRange)
+                Buffers->ArmatureDeformBuffer.GetMutable(pose_state.GpuDeformRange)
             );
         }
         if (!pending_armatures.empty()) request(RenderRequest::ReRecord);
@@ -976,11 +940,11 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
             total_weights += morph_state.Weights.size();
             pending_morphs.push_back(entity);
         }
-        if (total_weights > 0) ReserveMorphWeights(Buffers.get(), total_weights);
+        Buffers->MorphWeightBuffer.ReserveAdditional(total_weights);
         for (const auto entity : pending_morphs) {
             auto &morph_state = R.get<MorphWeightState>(entity);
-            morph_state.GpuWeightRange = AllocateMorphWeights(Buffers.get(), morph_state.Weights.size());
-            auto gpu_weights = GetMorphWeightsMutable(Buffers.get(), morph_state.GpuWeightRange);
+            morph_state.GpuWeightRange = Buffers->MorphWeightBuffer.Allocate(morph_state.Weights.size());
+            auto gpu_weights = Buffers->MorphWeightBuffer.GetMutable(morph_state.GpuWeightRange);
             std::copy(morph_state.Weights.begin(), morph_state.Weights.end(), gpu_weights.begin());
         }
         if (!pending_morphs.empty()) request(RenderRequest::ReRecord);
@@ -997,9 +961,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
             total_edge += mesh.EdgeCount() * 2;
             total_vertex += mesh.VertexCount();
         }
-        if (total_face > 0) Buffers->FaceIndexBuffer.Buffer.Reserve(Buffers->FaceIndexBuffer.Buffer.UsedSize + total_face * sizeof(uint32_t));
-        if (total_edge > 0) Buffers->EdgeIndexBuffer.Buffer.Reserve(Buffers->EdgeIndexBuffer.Buffer.UsedSize + total_edge * sizeof(uint32_t));
-        if (total_vertex > 0) Buffers->VertexIndexBuffer.Buffer.Reserve(Buffers->VertexIndexBuffer.Buffer.UsedSize + total_vertex * sizeof(uint32_t));
+        Buffers->ReserveAdditionalIndices(total_face, total_edge, total_vertex);
         for (auto entity : sync.NewMeshEntities) {
             const auto &mesh = R.get<const Mesh>(entity);
             R.patch<MeshBuffers>(entity, [&](auto &mb) {
@@ -1057,10 +1019,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
                 total_edge += pending->Indices.size();
             }
         }
-        if (total_face > 0) Buffers->FaceIndexBuffer.Buffer.Reserve(Buffers->FaceIndexBuffer.Buffer.UsedSize + total_face * sizeof(uint32_t));
-        if (total_edge > 0) Buffers->EdgeIndexBuffer.Buffer.Reserve(Buffers->EdgeIndexBuffer.Buffer.UsedSize + total_edge * sizeof(uint32_t));
-        if (total_vertex > 0) Buffers->VertexIndexBuffer.Buffer.Reserve(Buffers->VertexIndexBuffer.Buffer.UsedSize + total_vertex * sizeof(uint32_t));
-
+        Buffers->ReserveAdditionalIndices(total_face, total_edge, total_vertex);
         for (auto entity : sync.NewExtrasEntities) {
             if (R.all_of<ArmatureObject>(entity)) {
                 R.patch<MeshBuffers>(entity, [&](auto &mb) {
@@ -1100,7 +1059,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
     if (auto *pending = R.try_get<PendingLightRemovals>(SceneEntity); pending && !pending->Indices.empty()) {
         auto &indices = pending->Indices;
         std::sort(indices.begin(), indices.end(), std::greater<>());
-        auto buffer_count = uint32_t(Buffers->LightBuffer.UsedSize / sizeof(PunctualLight));
+        auto buffer_count = Buffers->LightCount();
         for (const auto remove_index : indices) {
             if (remove_index >= buffer_count) continue; // Light was never synced to GPU (created and destroyed same frame).
             --buffer_count;
@@ -1114,7 +1073,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
                 }
             }
         }
-        Buffers->LightBuffer.UsedSize = vk::DeviceSize(buffer_count) * sizeof(PunctualLight);
+        Buffers->SetLightCount(buffer_count);
         R.remove<PendingLightRemovals>(SceneEntity);
         request(RenderRequest::ReRecord);
     }
@@ -1198,10 +1157,9 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         // Batch-write all collected instance state changes.
         if (!state_writes.empty()) {
             std::sort(state_writes.begin(), state_writes.end(), [](const auto &a, const auto &b) { return a.index < b.index; });
-            auto mapped = Buffers->Instances.StateBuffer.GetMutableRange(0, Buffers->Instances.StateBuffer.UsedSize);
-            auto *base = reinterpret_cast<uint8_t *>(mapped.data());
+            auto states = Buffers->Instances.GetMutableStates();
             for (const auto &w : state_writes) {
-                base[w.index] = w.state;
+                states[w.index] = w.state;
                 R.patch<ModelsBuffer>(w.buffer_entity);
             }
         }
@@ -1292,10 +1250,9 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
     }
 
     bool light_count_changed = false;
-    if (const auto required_size = vk::DeviceSize(R.storage<LightIndex>().size()) * sizeof(PunctualLight);
-        Buffers->LightBuffer.UsedSize != required_size) {
-        Buffers->LightBuffer.Reserve(required_size);
-        Buffers->LightBuffer.UsedSize = required_size;
+    if (const auto required_count = uint32_t(R.storage<LightIndex>().size());
+        Buffers->LightCount() != required_count) {
+        Buffers->SetLightCount(required_count);
         light_count_changed = true;
     }
     if (!reactive<changes::Submit>(R).empty() || light_count_changed) request(RenderRequest::Submit);
@@ -1342,8 +1299,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
                 const auto &mesh = R.get<const Mesh>(mesh_entity);
                 const uint32_t new_count = scene_selection::GetElementCount(mesh, edit_mode);
                 const uint32_t max_words = (std::max(br->Count, new_count) + 31) / 32;
-                auto *mapped = Buffers->SelectionBitsetBuffer.GetMappedData().data();
-                memset(mapped + (br->Offset / 32) * sizeof(uint32_t), 0, max_words * sizeof(uint32_t));
+                memset(&Buffers->GetSelectionBits()[br->Offset / 32], 0, max_words * sizeof(uint32_t));
                 br->Count = new_count;
                 if (new_count > 0) geometry_ranges.emplace_back(mesh_entity, br->Offset, br->Count);
             }
@@ -1356,7 +1312,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
             const auto *assignment = R.try_get<const MeshMaterialAssignment>(mesh_entity);
             const auto *mesh = R.try_get<const Mesh>(mesh_entity);
             if (!assignment || !mesh) continue;
-            const auto material_count = GetMaterialCount(*Buffers);
+            const auto material_count = Buffers->MaterialCount();
             if (material_count == 0u) continue;
             auto primitive_materials = Meshes->GetPrimitiveMaterialIndices(mesh->GetStoreId());
             if (assignment->PrimitiveIndex >= primitive_materials.size()) continue;
@@ -1375,8 +1331,8 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
     }
     if (!reactive<changes::Materials>(R).empty()) {
         if (const auto *dirty = R.try_get<const MaterialDirty>(SceneEntity);
-            dirty && dirty->Index < GetMaterialCount(*Buffers)) {
-            SetMaterial(*Buffers, dirty->Index, GetMaterial(*Buffers, dirty->Index));
+            dirty && dirty->Index < Buffers->MaterialCount()) {
+            Buffers->SetMaterial(dirty->Index, Buffers->GetMaterial(dirty->Index));
         }
         request(RenderRequest::Submit);
     }
@@ -1533,7 +1489,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
             for (const auto b : bone_entities) {
                 if (const auto bi = GetModelBufferIndex(R, b)) {
                     const auto state = compute_state(b, BoneSel::Body);
-                    Buffers->Instances.StateBuffer.Update(as_bytes(state), vk::DeviceSize(*bi) * sizeof(uint8_t));
+                    Buffers->Instances.UpdateState(*bi, state);
                 }
             }
             R.patch<ModelsBuffer>(arm_obj_entity);
@@ -1545,7 +1501,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
                         if (je != entt::null) {
                             if (const auto *ri = R.try_get<const RenderInstance>(je)) {
                                 const auto state = compute_state(b, part);
-                                Buffers->Instances.StateBuffer.Update(as_bytes(state), vk::DeviceSize(ri->BufferIndex) * sizeof(uint8_t));
+                                Buffers->Instances.UpdateState(ri->BufferIndex, state);
                             }
                         }
                     }
@@ -1725,9 +1681,8 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
             }
             if (!wt_writes.empty()) {
                 std::sort(wt_writes.begin(), wt_writes.end(), [](const auto &a, const auto &b) { return a.index < b.index; });
-                auto mapped = Buffers->Instances.TransformBuffer.GetMutableRange(0, Buffers->Instances.TransformBuffer.UsedSize);
-                auto *base = reinterpret_cast<WorldTransform *>(mapped.data());
-                for (const auto &w : wt_writes) base[w.index] = w.wt;
+                auto transforms = Buffers->Instances.GetMutableTransforms();
+                for (const auto &w : wt_writes) transforms[w.index] = w.wt;
                 request(RenderRequest::Submit);
             }
         }
@@ -1753,7 +1708,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
             const auto active_entity = FindActiveEntity(R);
             if (const auto *cd = active_entity != entt::null ? R.try_get<Camera>(active_entity) : nullptr) {
                 const auto logical_extent = R.get<const ViewportExtent>(SceneEntity).Value;
-                const auto render_extent = ComputeRenderExtentPx(logical_extent);
+                const auto render_extent = ComputeRenderExtentPx(logical_extent, std::bit_cast<vec2>(ImGui::GetIO().DisplayFramebufferScale));
                 const float viewport_aspect = render_extent.width == 0 || render_extent.height == 0 ? 1.f : float(render_extent.width) / float(render_extent.height);
                 R.get<ViewCamera>(SceneEntity).Data = WidenForLookThrough(*cd, viewport_aspect);
             }
@@ -1773,7 +1728,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         const float world_opacity = is_pbr_mode ? (use_scene_world ? 1.f : active_lighting.WorldOpacity) : 0.f;
         const auto *pending = R.try_get<const PendingTransform>(SceneEntity);
         const auto logical_extent = R.get<const ViewportExtent>(SceneEntity).Value;
-        const auto render_extent = ComputeRenderExtentPx(logical_extent);
+        const auto render_extent = ComputeRenderExtentPx(logical_extent, std::bit_cast<vec2>(ImGui::GetIO().DisplayFramebufferScale));
         const float viewport_height = render_extent.height > 0 ? float(render_extent.height) : 1.f;
         // ScreenPixelScale: world-space size per pixel at unit distance (perspective) or absolute (ortho).
         // Sign encodes camera type: positive = perspective (shader multiplies by distance), negative = orthographic.
@@ -1786,7 +1741,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
             .CameraPosition = camera.Position(),
             .CameraNear = camera.NearClip(),
             .CameraFar = camera.FarClip(),
-            .LightCount = uint32_t(Buffers->LightBuffer.UsedSize / sizeof(PunctualLight)),
+            .LightCount = Buffers->LightCount(),
             .LightSlot = Buffers->LightBuffer.Slot,
             .UseSceneLightsRender = use_scene_lights ? 1u : 0u,
             .EnvIntensity = env_intensity,
@@ -2553,25 +2508,22 @@ std::pair<entt::entity, entt::entity> Scene::AddMesh(const std::filesystem::path
         std::vector<uint32_t> scene_material_indices(result->Materials.size(), 0u);
         std::vector<std::string> names;
         names.reserve(result->Materials.size());
-        ReserveMaterials(*Buffers, GetMaterialCount(*Buffers) + result->Materials.size());
+        Buffers->ReserveMaterials(Buffers->MaterialCount() + result->Materials.size());
         for (uint32_t material_index = 0; material_index < result->Materials.size(); ++material_index) {
             const auto &source = result->Materials[material_index];
             const auto material_name = source.Name.empty() ? std::format("Material{}", material_index) : source.Name;
             const auto base_color_texture = resolve_texture_slot(source.BaseColorTexturePath, TextureColorSpace::Srgb, material_name, "baseColor");
             const auto normal_texture = resolve_texture_slot(source.NormalTexturePath, TextureColorSpace::Linear, material_name, "normal");
-            scene_material_indices[material_index] = AppendMaterial(
-                *Buffers,
-                {
-                    .BaseColorFactor = source.BaseColorFactor,
-                    .MetallicFactor = std::clamp(source.MetallicFactor, 0.f, 1.f),
-                    .RoughnessFactor = std::clamp(source.RoughnessFactor, 0.f, 1.f),
-                    .AlphaMode = (source.BaseColorFactor.w < 1.f || source.HasAlphaTexture) ?
-                        MaterialAlphaMode::Blend :
-                        MaterialAlphaMode::Opaque,
-                    .BaseColorTexture = {.Slot = base_color_texture != InvalidSlot ? base_color_texture : Textures->WhiteTextureSlot},
-                    .NormalTexture = {.Slot = normal_texture},
-                }
-            );
+            scene_material_indices[material_index] = Buffers->AppendMaterial({
+                .BaseColorFactor = source.BaseColorFactor,
+                .MetallicFactor = std::clamp(source.MetallicFactor, 0.f, 1.f),
+                .RoughnessFactor = std::clamp(source.RoughnessFactor, 0.f, 1.f),
+                .AlphaMode = (source.BaseColorFactor.w < 1.f || source.HasAlphaTexture) ?
+                    MaterialAlphaMode::Blend :
+                    MaterialAlphaMode::Opaque,
+                .BaseColorTexture = {.Slot = base_color_texture != InvalidSlot ? base_color_texture : Textures->WhiteTextureSlot},
+                .NormalTexture = {.Slot = normal_texture},
+            });
             names.emplace_back(material_name);
         }
         SubmitTextureUploadBatch(obj_batch, Vk.Queue, *OneShotFence, Vk.Device);
@@ -2917,7 +2869,7 @@ void Scene::Destroy(entt::entity e) {
         }
         texture_store.WhiteTextureSlot = texture_store.Textures.empty() ? InvalidSlot : texture_store.Textures.front().SamplerSlot;
 
-        if (GetMaterialCount(*Buffers) > 1) SetMaterialCount(*Buffers, 1u);
+        if (Buffers->MaterialCount() > 1) Buffers->SetMaterialCount(1u);
         R.patch<MaterialStore>(SceneEntity, [](auto &ms) {
             if (ms.Names.size() > 1) ms.Names.erase(ms.Names.begin() + 1, ms.Names.end());
         });
@@ -2925,6 +2877,16 @@ void Scene::Destroy(entt::entity e) {
 }
 
 std::string Scene::DebugBufferHeapUsage() const { return Buffers->Ctx.DebugHeapUsage(); }
+
+void Scene::FlushDrawList(const DrawListBuilder &draw_list, mvk::Buffer &draw_data, mvk::Buffer &indirect) {
+    if (!draw_list.Draws.empty()) draw_data.Update(as_bytes(draw_list.Draws));
+    if (!draw_list.IndirectCommands.empty()) indirect.Update(as_bytes(draw_list.IndirectCommands));
+    Buffers->EnsureIdentityIndexBuffer(draw_list.MaxIndexCount);
+    if (auto descriptor_updates = Buffers->Ctx.GetDeferredDescriptorUpdates(); !descriptor_updates.empty()) {
+        Vk.Device.updateDescriptorSets(std::move(descriptor_updates), {});
+        Buffers->Ctx.ClearDeferredDescriptorUpdates();
+    }
+}
 
 void Scene::RecordRenderCommandBuffer(bool silhouette_only) {
     const Timer timer{silhouette_only ? "RecordRenderCommandBuffer (silhouette)" : "RecordRenderCommandBuffer"};
@@ -3104,7 +3066,7 @@ void Scene::RecordRenderCommandBuffer(bool silhouette_only) {
                     const auto primitive_materials = Meshes->GetPrimitiveMaterialIndices(mesh.GetStoreId());
                     const auto primitive_ranges = Meshes->GetPrimitiveTriangleRanges(mesh.GetStoreId());
                     if (!primitive_materials.empty() && !primitive_ranges.empty()) {
-                        const auto material_count = GetMaterialCount(*Buffers);
+                        const auto material_count = Buffers->MaterialCount();
                         // Merge adjacent primitives with the same blend mode into single draw calls.
                         struct BlendDrawRange {
                             bool Blend;
@@ -3116,7 +3078,7 @@ void Scene::RecordRenderCommandBuffer(bool silhouette_only) {
                             if (pr.TriangleCount == 0u) continue;
                             auto pi = pr.PrimitiveIndex;
                             if (pi >= primitive_materials.size()) pi = primitive_materials.size() - 1u;
-                            const bool is_blend = primitive_materials[pi] < material_count && GetMaterial(*Buffers, primitive_materials[pi]).AlphaMode == MaterialAlphaMode::Blend;
+                            const bool is_blend = primitive_materials[pi] < material_count && Buffers->GetMaterial(primitive_materials[pi]).AlphaMode == MaterialAlphaMode::Blend;
                             if (!blend_ranges.empty() && blend_ranges.back().Blend == is_blend) blend_ranges.back().TriangleCount += pr.TriangleCount;
                             else blend_ranges.emplace_back(is_blend, pr.FirstTriangle, pr.TriangleCount);
                         }
@@ -3378,14 +3340,8 @@ void Scene::RecordRenderCommandBuffer(bool silhouette_only) {
         }
     }
 
-    if (!draw_list.Draws.empty()) Buffers->RenderDrawData.Update(as_bytes(draw_list.Draws));
-    if (!draw_list.IndirectCommands.empty()) Buffers->RenderIndirect.Update(as_bytes(draw_list.IndirectCommands));
-    Buffers->EnsureIdentityIndexBuffer(draw_list.MaxIndexCount);
-    if (auto descriptor_updates = Buffers->Ctx.GetDeferredDescriptorUpdates(); !descriptor_updates.empty()) {
-        Vk.Device.updateDescriptorSets(std::move(descriptor_updates), {});
-        Buffers->Ctx.ClearDeferredDescriptorUpdates();
-    }
-    const auto render_extent = ComputeRenderExtentPx(R.get<const ViewportExtent>(SceneEntity).Value);
+    FlushDrawList(draw_list, Buffers->RenderDrawData, Buffers->RenderIndirect);
+    const auto render_extent = ComputeRenderExtentPx(R.get<const ViewportExtent>(SceneEntity).Value, std::bit_cast<vec2>(ImGui::GetIO().DisplayFramebufferScale));
     const auto &cb = *RenderCommandBuffer;
     cb.begin({vk::CommandBufferUsageFlagBits::eSimultaneousUse});
     cb.setViewport(0, vk::Viewport{0.f, 0.f, float(render_extent.width), float(render_extent.height), 0.f, 1.f});
@@ -3638,13 +3594,7 @@ void Scene::RenderSelectionPassWith(bool render_depth, const SelectionBuildFn &b
     }
     const auto selection_draws = build_fn(draw_list);
 
-    if (!draw_list.Draws.empty()) Buffers->SelectionDrawData.Update(as_bytes(draw_list.Draws));
-    if (!draw_list.IndirectCommands.empty()) Buffers->SelectionIndirect.Update(as_bytes(draw_list.IndirectCommands));
-    Buffers->EnsureIdentityIndexBuffer(draw_list.MaxIndexCount);
-    if (auto descriptor_updates = Buffers->Ctx.GetDeferredDescriptorUpdates(); !descriptor_updates.empty()) {
-        Vk.Device.updateDescriptorSets(std::move(descriptor_updates), {});
-        Buffers->Ctx.ClearDeferredDescriptorUpdates();
-    }
+    FlushDrawList(draw_list, Buffers->SelectionDrawData, Buffers->SelectionIndirect);
     // Update DrawDataSlot to point to selection draw data for this pass.
     Buffers->SceneViewUBO.Update(as_bytes(Buffers->SelectionDrawData.Slot), offsetof(SceneViewUBO, DrawDataSlot));
 
@@ -3667,7 +3617,7 @@ void Scene::RenderSelectionPassWith(bool render_depth, const SelectionBuildFn &b
         vk::ImageMemoryBarrier{vk::AccessFlagBits::eTransferWrite, vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite, vk::ImageLayout::eGeneral, vk::ImageLayout::eGeneral, {}, {}, *head_image.Image, ColorSubresourceRange}
     );
 
-    const auto render_extent = ComputeRenderExtentPx(R.get<const ViewportExtent>(SceneEntity).Value);
+    const auto render_extent = ComputeRenderExtentPx(R.get<const ViewportExtent>(SceneEntity).Value, std::bit_cast<vec2>(ImGui::GetIO().DisplayFramebufferScale));
     cb.setViewport(0, vk::Viewport{0.f, 0.f, float(render_extent.width), float(render_extent.height), 0.f, 1.f});
     cb.setScissor(0, vk::Rect2D{{0, 0}, render_extent});
 
@@ -3783,13 +3733,7 @@ void Scene::RenderElementSelectionPass(
         }
     }
 
-    if (!draw_list.Draws.empty()) Buffers->SelectionDrawData.Update(as_bytes(draw_list.Draws));
-    if (!draw_list.IndirectCommands.empty()) Buffers->SelectionIndirect.Update(as_bytes(draw_list.IndirectCommands));
-    Buffers->EnsureIdentityIndexBuffer(draw_list.MaxIndexCount);
-    if (auto descriptor_updates = Buffers->Ctx.GetDeferredDescriptorUpdates(); !descriptor_updates.empty()) {
-        Vk.Device.updateDescriptorSets(std::move(descriptor_updates), {});
-        Buffers->Ctx.ClearDeferredDescriptorUpdates();
-    }
+    FlushDrawList(draw_list, Buffers->SelectionDrawData, Buffers->SelectionIndirect);
     Buffers->SceneViewUBO.Update(as_bytes(Buffers->SelectionDrawData.Slot), offsetof(SceneViewUBO, DrawDataSlot));
 
     auto cb = *ClickCommandBuffer;
@@ -3812,7 +3756,7 @@ void Scene::RenderElementSelectionPass(
         );
     }
 
-    const auto render_extent = ComputeRenderExtentPx(R.get<const ViewportExtent>(SceneEntity).Value);
+    const auto render_extent = ComputeRenderExtentPx(R.get<const ViewportExtent>(SceneEntity).Value, std::bit_cast<vec2>(ImGui::GetIO().DisplayFramebufferScale));
     cb.setViewport(0, vk::Viewport{0.f, 0.f, float(render_extent.width), float(render_extent.height), 0.f, 1.f});
     cb.setScissor(0, vk::Rect2D{{0, 0}, render_extent});
 
@@ -3953,7 +3897,7 @@ void Scene::ApplySelectionStateUpdate(std::span<const ElementRange> ranges, Elem
             Meshes->UpdateFaceStatesFromVertices(mesh);
         }
     } else if (element == Element::Face || element == Element::Edge) {
-        const auto *bits = reinterpret_cast<const uint32_t *>(Buffers->SelectionBitsetBuffer.GetMappedData().data());
+        const auto *bits = Buffers->GetSelectionBits();
         for (const auto &range : ranges) {
             const auto &mesh = R.get<const Mesh>(range.MeshEntity);
             const auto selected_handles = scene_selection::ScanBitsetRange(bits, range.Offset, range.Count);
@@ -3996,18 +3940,18 @@ void Scene::RunBoxSelectElements(std::span<const ElementRange> ranges, Element e
     if (bitset_words > SceneBuffers::SelectionBitsetWords) return;
 
     // Restore baseline bitset for additive mode, or clear for non-additive.
-    auto mapped = Buffers->SelectionBitsetBuffer.GetMappedData();
+    auto *bits = Buffers->GetSelectionBits();
     if (is_additive) {
         const auto *baseline = R.try_get<const AdditiveBoxSelectBaseline>(SceneEntity);
         if (baseline && !baseline->ElementBitset.empty()) {
             const auto copy_words = std::min(bitset_words, uint32_t(baseline->ElementBitset.size()));
-            memcpy(mapped.data(), baseline->ElementBitset.data(), copy_words * sizeof(uint32_t));
+            memcpy(bits, baseline->ElementBitset.data(), copy_words * sizeof(uint32_t));
             if (copy_words < bitset_words) { // Zero any remaining words beyond the baseline
-                memset(mapped.data() + copy_words * sizeof(uint32_t), 0, (bitset_words - copy_words) * sizeof(uint32_t));
+                memset(&bits[copy_words], 0, (bitset_words - copy_words) * sizeof(uint32_t));
             }
         }
     } else {
-        memset(mapped.data(), 0, bitset_words * sizeof(uint32_t));
+        memset(bits, 0, bitset_words * sizeof(uint32_t));
     }
 
     // Box-select writes element IDs directly from the selection fragment shader.
@@ -4144,8 +4088,7 @@ std::vector<entt::entity> Scene::RunObjectPick(uvec2 mouse_px, uint32_t radius_p
 
 void Scene::DispatchBoxSelect(uvec2 box_min, uvec2 box_max, uint32_t max_id, vk::Semaphore wait_semaphore) {
     const uint32_t bitset_words = (max_id + 31) / 32;
-    auto mapped = Buffers->SelectionBitsetBuffer.GetMappedData();
-    memset(mapped.data(), 0, bitset_words * sizeof(uint32_t));
+    memset(Buffers->GetSelectionBits(), 0, bitset_words * sizeof(uint32_t));
 
     const auto group_counts = glm::max((box_max - box_min + 15u) / 16u, uvec2{1, 1});
     RunSelectionCompute(
@@ -4232,7 +4175,7 @@ bool Scene::SubmitViewport(vk::Fence viewportConsumerFence) {
         logical_extent = new_logical_extent;
         R.patch<ViewportExtent>(SceneEntity, [](auto &) {});
     }
-    const auto render_extent = ComputeRenderExtentPx(logical_extent);
+    const auto render_extent = ComputeRenderExtentPx(logical_extent, std::bit_cast<vec2>(ImGui::GetIO().DisplayFramebufferScale));
     const auto current_render_extent = Pipelines->Main.Resources ? ToExtent2D(Pipelines->Main.Resources->ColorImage.Extent) : vk::Extent2D{};
     const bool render_extent_changed = current_render_extent.width != render_extent.width || current_render_extent.height != render_extent.height;
     if (render_extent_changed && !extent_changed) {

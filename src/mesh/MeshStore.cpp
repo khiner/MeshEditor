@@ -322,34 +322,19 @@ std::pair<MeshData, MeshVertexAttributes> DeduplicateVertices(MeshData &&mesh, M
     MeshData deduped;
     MeshVertexAttributes deduped_attrs;
     deduped.Positions.reserve(mesh.Positions.size());
-    if (attrs.Normals && attrs.Normals->size() == mesh.Positions.size()) {
-        deduped_attrs.Normals = std::vector<vec3>{};
-        deduped_attrs.Normals->reserve(attrs.Normals->size());
-    }
-    if (attrs.Tangents && attrs.Tangents->size() == mesh.Positions.size()) {
-        deduped_attrs.Tangents = std::vector<vec4>{};
-        deduped_attrs.Tangents->reserve(attrs.Tangents->size());
-    }
-    if (attrs.Colors0 && attrs.Colors0->size() == mesh.Positions.size()) {
-        deduped_attrs.Colors0 = std::vector<vec4>{};
-        deduped_attrs.Colors0->reserve(attrs.Colors0->size());
-    }
-    if (attrs.TexCoords0 && attrs.TexCoords0->size() == mesh.Positions.size()) {
-        deduped_attrs.TexCoords0 = std::vector<vec2>{};
-        deduped_attrs.TexCoords0->reserve(attrs.TexCoords0->size());
-    }
-    if (attrs.TexCoords1 && attrs.TexCoords1->size() == mesh.Positions.size()) {
-        deduped_attrs.TexCoords1 = std::vector<vec2>{};
-        deduped_attrs.TexCoords1->reserve(attrs.TexCoords1->size());
-    }
-    if (attrs.TexCoords2 && attrs.TexCoords2->size() == mesh.Positions.size()) {
-        deduped_attrs.TexCoords2 = std::vector<vec2>{};
-        deduped_attrs.TexCoords2->reserve(attrs.TexCoords2->size());
-    }
-    if (attrs.TexCoords3 && attrs.TexCoords3->size() == mesh.Positions.size()) {
-        deduped_attrs.TexCoords3 = std::vector<vec2>{};
-        deduped_attrs.TexCoords3->reserve(attrs.TexCoords3->size());
-    }
+    auto init_attr = [&](auto &dst, const auto &src) {
+        if (src && src->size() == mesh.Positions.size()) {
+            dst.emplace();
+            dst->reserve(src->size());
+        }
+    };
+    init_attr(deduped_attrs.Normals, attrs.Normals);
+    init_attr(deduped_attrs.Tangents, attrs.Tangents);
+    init_attr(deduped_attrs.Colors0, attrs.Colors0);
+    init_attr(deduped_attrs.TexCoords0, attrs.TexCoords0);
+    init_attr(deduped_attrs.TexCoords1, attrs.TexCoords1);
+    init_attr(deduped_attrs.TexCoords2, attrs.TexCoords2);
+    init_attr(deduped_attrs.TexCoords3, attrs.TexCoords3);
     std::unordered_map<vec3, uint, VertexHash> index_by_vertex;
     std::vector<uint32_t> remap(mesh.Positions.size(), 0u);
     for (uint32_t i = 0; i < mesh.Positions.size(); ++i) {
@@ -473,19 +458,17 @@ void MeshStore::PlanClone(const Mesh &mesh) {
 }
 
 void MeshStore::CommitReserves() {
-    auto reserve = [](auto &buf, uint32_t count, size_t elem_size) {
-        if (count > 0) buf.Reserve(buf.UsedSize + vk::DeviceSize(count) * elem_size);
-    };
-    reserve(VerticesBuffer.Buffer, Pending.Vertices, sizeof(Vertex));
-    reserve(VertexStateBuffer, Pending.Vertices, sizeof(uint8_t));
-    reserve(FaceFirstTriangleBuffer.Buffer, Pending.Faces, sizeof(uint32_t));
-    reserve(FacePrimitiveBuffer.Buffer, Pending.Faces, sizeof(uint32_t));
-    reserve(FaceStateBuffer, Pending.Faces, sizeof(uint8_t));
-    reserve(TriangleFaceIdBuffer.Buffer, Pending.Triangles, sizeof(uint32_t));
-    reserve(EdgeStateBuffer.Buffer, Pending.EdgeStates, sizeof(uint8_t));
-    reserve(PrimitiveMaterialBuffer.Buffer, Pending.Primitives, sizeof(uint32_t));
-    reserve(BoneDeformBuffer.Buffer, Pending.BoneDeformVertices, sizeof(BoneDeformVertex));
-    reserve(MorphTargetBuffer.Buffer, Pending.MorphTargetEntries, sizeof(MorphTargetVertex));
+    VerticesBuffer.ReserveAdditional(Pending.Vertices);
+    FaceFirstTriangleBuffer.ReserveAdditional(Pending.Faces);
+    FacePrimitiveBuffer.ReserveAdditional(Pending.Faces);
+    TriangleFaceIdBuffer.ReserveAdditional(Pending.Triangles);
+    EdgeStateBuffer.ReserveAdditional(Pending.EdgeStates);
+    PrimitiveMaterialBuffer.ReserveAdditional(Pending.Primitives);
+    BoneDeformBuffer.ReserveAdditional(Pending.BoneDeformVertices);
+    MorphTargetBuffer.ReserveAdditional(Pending.MorphTargetEntries);
+    // Mirror buffers (uint8_t state per element, no arena — shared ranges with data arenas).
+    if (Pending.Vertices > 0) VertexStateBuffer.Reserve(VertexStateBuffer.UsedSize + Pending.Vertices);
+    if (Pending.Faces > 0) FaceStateBuffer.Reserve(FaceStateBuffer.UsedSize + Pending.Faces);
     Pending = {};
 }
 
@@ -618,9 +601,7 @@ Mesh MeshStore::CreateMesh(MeshData &&data, MeshVertexAttributes &&attrs, MeshPr
     }
 
     entry.EdgeStates = EdgeStateBuffer.Allocate(mesh.EdgeCount() * 2);
-    std::ranges::fill(GetVertexStates(vertices), 0);
-    if (entry.FaceData.Count > 0) std::ranges::fill(GetFaceStates(entry.FaceData), 0);
-    if (entry.EdgeStates.Count > 0) std::ranges::fill(EdgeStateBuffer.GetMutable(entry.EdgeStates), 0);
+    ClearElementStates(vertices, entry.FaceData, entry.EdgeStates);
     return mesh;
 }
 
@@ -651,9 +632,7 @@ Mesh MeshStore::CloneMesh(const Mesh &mesh) {
         .Alive = true,
     });
 
-    std::ranges::fill(GetVertexStates(vertices), 0);
-    std::ranges::fill(GetFaceStates(faces), 0);
-    std::ranges::fill(EdgeStateBuffer.GetMutable(edge_states), 0);
+    ClearElementStates(vertices, faces, edge_states);
     return {*this, id, mesh};
 }
 
@@ -704,39 +683,43 @@ void MeshStore::Release(uint32_t id) {
     FreeIds.emplace_back(id);
 }
 
+// Mirror buffer helpers — uint8_t state per element, sizeof == 1.
+static void SyncMirror(mvk::Buffer &mirror, Range range) {
+    auto end = vk::DeviceSize(range.Offset + range.Count);
+    mirror.Reserve(end);
+    mirror.UsedSize = std::max(mirror.UsedSize, end);
+}
+static std::span<uint8_t> GetStates(mvk::Buffer &buf, Range range) {
+    return {reinterpret_cast<uint8_t *>(buf.GetMutableRange(range.Offset, range.Count).data()), range.Count};
+}
+
 Range MeshStore::AllocateVertices(uint32_t count) {
     const auto range = VerticesBuffer.Allocate(count);
-    const auto required_size = static_cast<vk::DeviceSize>(range.Offset + range.Count) * sizeof(uint8_t);
-    VertexStateBuffer.Reserve(required_size);
-    VertexStateBuffer.UsedSize = std::max(VertexStateBuffer.UsedSize, required_size);
+    SyncMirror(VertexStateBuffer, range);
     return range;
 }
 
 Range MeshStore::AllocateFaces(uint32_t count) {
     const auto range = FaceFirstTriangleBuffer.Allocate(count);
-    const auto required_size = static_cast<vk::DeviceSize>(range.Offset + range.Count) * sizeof(uint8_t);
-    FaceStateBuffer.Reserve(required_size);
-    FaceStateBuffer.UsedSize = std::max(FaceStateBuffer.UsedSize, required_size);
+    SyncMirror(FaceStateBuffer, range);
     return range;
 }
 
-std::span<uint8_t> MeshStore::GetFaceStates(Range range) {
-    const auto bytes = FaceStateBuffer.GetMutableRange(range.Offset * sizeof(uint8_t), range.Count * sizeof(uint8_t));
-    return {reinterpret_cast<uint8_t *>(bytes.data()), range.Count};
-}
-
-std::span<uint8_t> MeshStore::GetVertexStates(Range range) {
-    const auto bytes = VertexStateBuffer.GetMutableRange(range.Offset * sizeof(uint8_t), range.Count * sizeof(uint8_t));
-    return {reinterpret_cast<uint8_t *>(bytes.data()), range.Count};
-}
+std::span<uint8_t> MeshStore::GetFaceStates(Range range) { return GetStates(FaceStateBuffer, range); }
+std::span<uint8_t> MeshStore::GetVertexStates(Range range) { return GetStates(VertexStateBuffer, range); }
 
 std::span<const uint8_t> MeshStore::GetVertexStates(Range range) const {
-    const auto bytes = VertexStateBuffer.GetMappedData().subspan(range.Offset * sizeof(uint8_t), range.Count * sizeof(uint8_t));
-    return {reinterpret_cast<const uint8_t *>(bytes.data()), range.Count};
+    return {reinterpret_cast<const uint8_t *>(VertexStateBuffer.GetMappedData().subspan(range.Offset, range.Count).data()), range.Count};
 }
 
 std::span<const uint8_t> MeshStore::GetVertexStates(uint32_t id) const {
     return GetVertexStates(Entries.at(id).Vertices);
+}
+
+void MeshStore::ClearElementStates(Range vertices, Range faces, Range edges) {
+    std::ranges::fill(GetVertexStates(vertices), 0);
+    if (faces.Count > 0) std::ranges::fill(GetFaceStates(faces), 0);
+    if (edges.Count > 0) std::ranges::fill(EdgeStateBuffer.GetMutable(edges), 0);
 }
 
 using namespace he;

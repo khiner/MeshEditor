@@ -67,6 +67,11 @@ struct BufferArena {
     BufferArena(mvk::BufferContext &ctx, mvk::MemoryUsage mem, vk::BufferUsageFlags usage = {})
         : Buffer(ctx, 0, mem, usage) {}
 
+    void ReserveAdditional(uint32_t count) {
+        if (count == 0) return;
+        Buffer.Reserve(Buffer.UsedSize + vk::DeviceSize(count) * sizeof(T));
+    }
+
     Range Allocate(uint32_t count) {
         const auto range = Allocator.Allocate(count);
         if (range.Count == 0) return range;
