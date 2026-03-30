@@ -105,8 +105,10 @@ PBR render features that are not needed by the scene (because the feature isn't 
 | `KHR_materials_clearcoat` | ✅ | |
 | `KHR_materials_anisotropy` | ✅ | |
 | `KHR_materials_iridescence` | ✅ | |
+| `KHR_physics_rigid_bodies` | 🟨 | (not yet ratified) WIP |
+| `KHR_implicit_shapes` | 🟨 | (not yet ratified) WIP |
 | `EXT_lights_image_based` | 🟨 | Imported as Scene IBL when present (used for Rendered view mode) |
-| `KHR_animation_pointer` | ⬜ | Too much complexity for now, for an extension that isn't widely used yet |
+| `KHR_animation_pointer` | ⬜ | Too much complexity for now, will add when I get to arbitrary property animation. |
 | `EXT_meshopt_compression` | ⬜ | Not taking on the meshopt dependency for now |
 
 ## Build & run
@@ -164,14 +166,14 @@ $ cd build && ./MeshEditor
 - [tetgen](https://github.com/libigl/tetgen): Fast conversion of triangular 3D surface meshes into tetrahedral volume meshes
 - [Spectra](https://github.com/yixuan/spectra) Estimate eigenvalues/vectors for modal analysis
 - [VulkanMemoryAllocator](https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator): Efficient Vulkan memory allocation
-- [nativefiledialog-extended](https://github.com/btzynativefiledialog-extended): Native file dialogs (TODO SDL3 now has `SDL_Dialog`)
-- [ImPlot](https://github.com/epezent/implot): Plotting
-- [fftw](https://www.fftw.org/) for computing spectrograms (visualized with ImPlot)
-- [fastgltf](https://github.com/spnda/fastgltf) for gltf 2.0 scene loading
-- [basis_universal](https://github.com/BinomialLLC/basis_universal) for KTX2 texture transcoding (`KHR_texture_basisu`)
-- [tinyobjloader](https://github.com/tinyobjloader/tinyobjloader) and [tinyply](https://github.com/ddiakopoulos/tinyply): for `.obj` and `.ply` mesh loading
+- [fastgltf](https://github.com/spnda/fastgltf) glTF 2.0 scene loading
+- [JoltPhysics](https://github.com/jrouwe/JoltPhysics): Rigid body physics
+- [basis_universal](https://github.com/BinomialLLC/basis_universal) KTX2 texture transcoding (`KHR_texture_basisu`)
+- [tinyobjloader](https://github.com/tinyobjloader/tinyobjloader) and [tinyply](https://github.com/ddiakopoulos/tinyply): `.obj` and `.ply` mesh loading
 - [lunasvg](https://github.com/sammycage/lunasvg): Render Faust SVGs to bitmaps, parse SVG link bounding boxes, render SVG icons
-
+- [fftw](https://www.fftw.org/) compute spectrograms (visualized with ImPlot)
+- [ImPlot](https://github.com/epezent/implot): Plotting
+- [nativefiledialog-extended](https://github.com/btzynativefiledialog-extended): Native file dialogs (TODO SDL3 now has `SDL_Dialog`)
 
 ## Development
 
