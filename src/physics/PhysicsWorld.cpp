@@ -31,6 +31,7 @@ JPH_SUPPRESS_WARNINGS
 #include <entt/entity/registry.hpp>
 
 #include <thread>
+#include <unordered_map>
 
 using namespace JPH;
 using namespace JPH::literals;
@@ -153,7 +154,7 @@ struct BodySnapshot {
 // --- Impl ---
 
 struct PhysicsWorld::Impl {
-    TempAllocatorImpl TempAllocator{10 * 1024 * 1024};
+    TempAllocatorImpl TempAllocator{64 * 1024 * 1024};
     JobSystemThreadPool JobSystem{cMaxPhysicsJobs, cMaxPhysicsBarriers, int(std::max(1u, std::thread::hardware_concurrency() - 1))};
     BPLayerInterface BPLayerIface;
     ObjectLayerPairFilterImpl ObjectPairFilter;
@@ -372,27 +373,48 @@ void PhysicsWorld::Rebuild(entt::registry &r) {
     // Build collision filter table
     P->FilterRef = Filters.empty() ? nullptr : new KHRCollisionFilter(Filters);
 
-    // Create all collider bodies
+    // Per the KHR_physics_rigid_bodies spec, each collider belongs to its nearest ancestor
+    // (or self) with PhysicsMotion. Colliders with no motion ancestor are static.
+    // Group colliders by their owning motion entity to build compound shapes.
+    auto find_motion_owner = [&](entt::entity e) -> entt::entity {
+        for (auto cur = e; cur != entt::null;) {
+            if (r.all_of<PhysicsMotion>(cur)) return cur;
+            auto parent = GetParentEntity(r, cur);
+            if (parent == cur) break; // root node
+            cur = parent;
+        }
+        return entt::null;
+    };
+
+    std::unordered_map<entt::entity, std::vector<entt::entity>> motion_colliders; // motion entity → collider entities
+    std::vector<entt::entity> static_colliders;
     for (auto [entity, collider] : r.view<const PhysicsCollider>().each()) {
-        const auto *mesh = collider.Shape.MeshEntity ? r.try_get<const Mesh>(*collider.Shape.MeshEntity) : nullptr;
-        auto shape = CreateJoltShape(collider.Shape, mesh);
-        if (!shape) continue;
+        if (auto owner = find_motion_owner(entity); owner != entt::null)
+            motion_colliders[owner].push_back(entity);
+        else
+            static_colliders.push_back(entity);
+    }
 
-        const auto *transform = r.try_get<const Transform>(entity);
-        RVec3 pos = transform ? RVec3(transform->P.x, transform->P.y, transform->P.z) : RVec3::sZero();
-        Quat rot = transform ? ToJoltQuat(transform->R) : Quat::sIdentity();
+    auto make_jolt_shape = [&](const PhysicsCollider &collider, entt::entity entity, bool is_dynamic) -> Ref<Shape> {
+        PhysicsShape effective_shape = collider.Shape;
+        // Jolt doesn't support MeshShape vs MeshShape collision; promote to ConvexHull for dynamic bodies.
+        if (effective_shape.Type == PhysicsShapeType::TriangleMesh && is_dynamic)
+            effective_shape.Type = PhysicsShapeType::ConvexHull;
+        const auto *mesh = effective_shape.MeshEntity ? r.try_get<const Mesh>(*effective_shape.MeshEntity) : nullptr;
+        auto shape = CreateJoltShape(effective_shape, mesh);
+        if (!shape) return {};
+        const auto *t = r.try_get<const Transform>(entity);
+        if (t && (t->S.x != 1.0f || t->S.y != 1.0f || t->S.z != 1.0f))
+            shape = new ScaledShape(shape, ToJolt(t->S));
+        return shape;
+    };
 
-        if (transform && (transform->S.x != 1.0f || transform->S.y != 1.0f || transform->S.z != 1.0f)) {
-            shape = new ScaledShape(shape, ToJolt(transform->S));
-        }
-
-        const auto *motion = r.try_get<const PhysicsMotion>(entity);
-        EMotionType motion_type = EMotionType::Static;
-        ObjectLayer layer = Layers::NonMoving;
-        if (motion) {
-            motion_type = motion->IsKinematic ? EMotionType::Kinematic : EMotionType::Dynamic;
-            layer = Layers::Moving;
-        }
+    auto create_body = [&](Ref<Shape> shape, const Transform *t, EMotionType motion_type,
+                           const PhysicsMotion *motion, const PhysicsCollider *collider, entt::entity body_entity) {
+        if (!shape) return;
+        RVec3 pos = t ? RVec3(t->P.x, t->P.y, t->P.z) : RVec3::sZero();
+        Quat rot = t ? ToJoltQuat(t->R) : Quat::sIdentity();
+        ObjectLayer layer = motion_type == EMotionType::Static ? Layers::NonMoving : Layers::Moving;
 
         BodyCreationSettings bcs(shape, pos, rot, motion_type, layer);
         if (motion) {
@@ -404,21 +426,63 @@ void PhysicsWorld::Rebuild(entt::registry &r) {
             bcs.mAngularVelocity = ToJolt(motion->AngularVelocity);
             bcs.mGravityFactor = motion->GravityFactor;
         }
-
-        if (collider.PhysicsMaterialIndex.has_value() && *collider.PhysicsMaterialIndex < Materials.size()) {
-            const auto &mat = Materials[*collider.PhysicsMaterialIndex];
-            bcs.mFriction = mat.DynamicFriction;
-            bcs.mRestitution = mat.Restitution;
-        }
-
-        if (P->FilterRef && collider.CollisionFilterIndex.has_value() && *collider.CollisionFilterIndex < Filters.size()) {
-            bcs.mCollisionGroup = CollisionGroup(P->FilterRef, 0, *collider.CollisionFilterIndex);
+        if (collider) {
+            if (collider->PhysicsMaterialIndex.has_value() && *collider->PhysicsMaterialIndex < Materials.size()) {
+                const auto &mat = Materials[*collider->PhysicsMaterialIndex];
+                bcs.mFriction = mat.DynamicFriction;
+                bcs.mRestitution = mat.Restitution;
+            }
+            if (P->FilterRef && collider->CollisionFilterIndex.has_value() && *collider->CollisionFilterIndex < Filters.size())
+                bcs.mCollisionGroup = CollisionGroup(P->FilterRef, 0, *collider->CollisionFilterIndex);
         }
 
         Body *body = bi.CreateBody(bcs);
-        if (!body) continue;
+        if (!body) return;
         bi.AddBody(body->GetID(), motion_type == EMotionType::Static ? EActivation::DontActivate : EActivation::Activate);
-        r.emplace_or_replace<PhysicsBodyHandle>(entity, PhysicsBodyHandle{body->GetID().GetIndexAndSequenceNumber()});
+        r.emplace_or_replace<PhysicsBodyHandle>(body_entity, PhysicsBodyHandle{body->GetID().GetIndexAndSequenceNumber()});
+    };
+
+    // Static colliders: one body each.
+    for (auto entity : static_colliders) {
+        const auto &collider = r.get<const PhysicsCollider>(entity);
+        auto shape = make_jolt_shape(collider, entity, false);
+        create_body(shape, r.try_get<const Transform>(entity), EMotionType::Static, nullptr, &collider, entity);
+    }
+
+    // Dynamic/kinematic bodies: one body per motion entity, compound if multiple colliders.
+    for (auto &[motion_entity, colliders] : motion_colliders) {
+        const auto &motion = r.get<const PhysicsMotion>(motion_entity);
+        EMotionType motion_type = motion.IsKinematic ? EMotionType::Kinematic : EMotionType::Dynamic;
+        bool is_dynamic = motion_type != EMotionType::Static;
+        const auto *body_transform = r.try_get<const Transform>(motion_entity);
+
+        Ref<Shape> shape;
+        const PhysicsCollider *single_collider = nullptr;
+        if (colliders.size() == 1 && colliders[0] == motion_entity) {
+            // Single collider on the motion node itself — use directly.
+            single_collider = &r.get<const PhysicsCollider>(motion_entity);
+            shape = make_jolt_shape(*single_collider, motion_entity, is_dynamic);
+        } else {
+            // Compound: gather child collider shapes relative to the motion node.
+            mat4 inv_parent = body_transform ? glm::inverse(glm::translate(mat4{1}, body_transform->P) * glm::mat4_cast(glm::normalize(body_transform->R))) : mat4{1};
+
+            StaticCompoundShapeSettings compound;
+            for (auto ce : colliders) {
+                auto sub = make_jolt_shape(r.get<const PhysicsCollider>(ce), ce, is_dynamic);
+                if (!sub) continue;
+                // Compute collider transform relative to the motion node.
+                const auto *wt = r.try_get<const WorldTransform>(ce);
+                mat4 world = wt ? ToMatrix(*wt) : mat4{1};
+                mat4 rel = inv_parent * world;
+                compound.AddShape(ToJolt(vec3(rel[3])), ToJoltQuat(glm::normalize(glm::quat_cast(glm::mat3(rel)))), sub);
+            }
+            if (compound.mSubShapes.empty()) continue;
+            auto result = compound.Create();
+            if (!result.IsValid()) continue;
+            shape = result.Get();
+        }
+
+        create_body(shape, body_transform, motion_type, &motion, single_collider, motion_entity);
     }
 
     // Create trigger sensor bodies (for entities without a collider body)

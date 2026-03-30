@@ -1541,8 +1541,9 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
 
         // Physics step: advance simulation and sync Jolt body transforms back to ECS.
         // Runs before bone/WorldTransform sync so that physics Transform patches are included.
-        if (Physics->HasBodies() && anim_advanced) {
-            Physics->Step(R, Physics->TimeStep);
+        // Steps every frame with real delta time, independent of animation frame rate.
+        if (Physics->HasBodies() && R.get<const AnimationTimeline>(SceneEntity).Playing) {
+            Physics->Step(R, ImGui::GetIO().DeltaTime);
             request(RenderRequest::Submit);
         }
 
