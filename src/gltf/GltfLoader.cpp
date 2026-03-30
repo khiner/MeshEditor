@@ -1422,7 +1422,7 @@ std::expected<Scene, std::string> LoadScene(const std::filesystem::path &path) {
                 collider.PhysicsMaterialIndex = ToIndex(rb->collider->physicsMaterial, asset.physicsMaterials.size());
                 collider.CollisionFilterIndex = ToIndex(rb->collider->collisionFilter, asset.collisionFilters.size());
                 node.Collider = std::move(collider);
-                node.ColliderGeometryNodeIndex = ToIndex(rb->collider->geometry.node, asset.nodes.size());
+                node.ColliderGeometryMeshIndex = ToIndex(rb->collider->geometry.mesh, asset.meshes.size());
             }
             if (rb->trigger) {
                 Node::TriggerData trigger;

@@ -366,16 +366,12 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
 
             if (node.Collider) {
                 auto collider = *node.Collider;
-                // Resolve mesh-based shape: geometry.node → mesh entity
+                // Resolve mesh-based shape: geometry.mesh → mesh entity
                 if (collider.Shape.Type == PhysicsShapeType::ConvexHull || collider.Shape.Type == PhysicsShapeType::TriangleMesh) {
-                    entt::entity mesh_source = entt::null;
-                    if (node.ColliderGeometryNodeIndex) {
-                        auto geom_it = object_entities_by_node.find(*node.ColliderGeometryNodeIndex);
-                        if (geom_it != object_entities_by_node.end()) mesh_source = geom_it->second;
-                    }
-                    if (mesh_source == entt::null) mesh_source = entity; // fallback to self
-                    if (R.all_of<Instance>(mesh_source)) {
-                        collider.Shape.MeshEntity = R.get<const Instance>(mesh_source).Entity;
+                    if (node.ColliderGeometryMeshIndex && *node.ColliderGeometryMeshIndex < mesh_entities.size()) {
+                        collider.Shape.MeshEntity = mesh_entities[*node.ColliderGeometryMeshIndex];
+                    } else if (R.all_of<Instance>(entity)) {
+                        collider.Shape.MeshEntity = R.get<const Instance>(entity).Entity; // fallback to self
                     }
                 }
                 R.emplace<PhysicsCollider>(entity, std::move(collider));

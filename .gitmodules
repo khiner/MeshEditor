@@ -45,7 +45,7 @@
 	url = git@github.com:ddiakopoulos/tinyply.git
 [submodule "lib/fastgltf"]
 	path = lib/fastgltf
-	url = git@github.com:spnda/fastgltf.git
+	url = git@github.com:khiner/fastgltf.git
 [submodule "lib/basis_universal"]
 	path = lib/basis_universal
 	url = git@github.com:BinomialLLC/basis_universal.git

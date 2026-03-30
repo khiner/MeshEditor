@@ -1,26 +1,26 @@
 // All Jolt includes are isolated to this file.
 
-#include <Jolt/Jolt.h>
+#include "Jolt/Jolt.h"
 
-#include <Jolt/Core/Factory.h>
-#include <Jolt/Core/JobSystemThreadPool.h>
-#include <Jolt/Core/TempAllocator.h>
-#include <Jolt/Physics/Body/BodyCreationSettings.h>
-#include <Jolt/Physics/Body/BodyLock.h>
-#include <Jolt/Physics/Collision/Shape/BoxShape.h>
-#include <Jolt/Physics/Collision/Shape/CapsuleShape.h>
-#include <Jolt/Physics/Collision/Shape/ConvexHullShape.h>
-#include <Jolt/Physics/Collision/Shape/CylinderShape.h>
-#include <Jolt/Physics/Collision/Shape/MeshShape.h>
-#include <Jolt/Physics/Collision/Shape/RotatedTranslatedShape.h>
-#include <Jolt/Physics/Collision/Shape/ScaledShape.h>
-#include <Jolt/Physics/Collision/Shape/SphereShape.h>
-#include <Jolt/Physics/Collision/Shape/StaticCompoundShape.h>
-#include <Jolt/Physics/Collision/Shape/TaperedCapsuleShape.h>
-#include <Jolt/Physics/Constraints/SixDOFConstraint.h>
-#include <Jolt/Physics/PhysicsSettings.h>
-#include <Jolt/Physics/PhysicsSystem.h>
-#include <Jolt/RegisterTypes.h>
+#include "Jolt/Core/Factory.h"
+#include "Jolt/Core/JobSystemThreadPool.h"
+#include "Jolt/Core/TempAllocator.h"
+#include "Jolt/Physics/Body/BodyCreationSettings.h"
+#include "Jolt/Physics/Body/BodyLock.h"
+#include "Jolt/Physics/Collision/Shape/BoxShape.h"
+#include "Jolt/Physics/Collision/Shape/CapsuleShape.h"
+#include "Jolt/Physics/Collision/Shape/ConvexHullShape.h"
+#include "Jolt/Physics/Collision/Shape/CylinderShape.h"
+#include "Jolt/Physics/Collision/Shape/MeshShape.h"
+#include "Jolt/Physics/Collision/Shape/RotatedTranslatedShape.h"
+#include "Jolt/Physics/Collision/Shape/ScaledShape.h"
+#include "Jolt/Physics/Collision/Shape/SphereShape.h"
+#include "Jolt/Physics/Collision/Shape/StaticCompoundShape.h"
+#include "Jolt/Physics/Collision/Shape/TaperedCapsuleShape.h"
+#include "Jolt/Physics/Constraints/SixDOFConstraint.h"
+#include "Jolt/Physics/PhysicsSettings.h"
+#include "Jolt/Physics/PhysicsSystem.h"
+#include "Jolt/RegisterTypes.h"
 
 JPH_SUPPRESS_WARNINGS
 
@@ -36,26 +36,20 @@ JPH_SUPPRESS_WARNINGS
 using namespace JPH;
 using namespace JPH::literals;
 
-// --- Coordinate conversion helpers ---
-
-static inline Vec3 ToJolt(vec3 v) { return {v.x, v.y, v.z}; }
-static inline Quat ToJoltQuat(quat q) { return {q.x, q.y, q.z, q.w}; }
-static inline vec3 FromJoltVec3(Vec3 v) { return {v.GetX(), v.GetY(), v.GetZ()}; }
-static inline vec3 FromJoltRVec3(RVec3 v) { return {float(v.GetX()), float(v.GetY()), float(v.GetZ())}; }
-static inline quat FromJoltQuat(Quat q) { return {q.GetW(), q.GetX(), q.GetY(), q.GetZ()}; }
-
-// --- Layer configuration ---
+namespace {
+inline Vec3 ToJolt(vec3 v) { return {v.x, v.y, v.z}; }
+inline Quat ToJoltQuat(quat q) { return {q.x, q.y, q.z, q.w}; }
+inline vec3 FromJoltVec3(Vec3 v) { return {v.GetX(), v.GetY(), v.GetZ()}; }
+inline vec3 FromJoltRVec3(RVec3 v) { return {float(v.GetX()), float(v.GetY()), float(v.GetZ())}; }
+inline quat FromJoltQuat(Quat q) { return {q.GetW(), q.GetX(), q.GetY(), q.GetZ()}; }
 
 namespace Layers {
-static constexpr ObjectLayer NonMoving = 0;
-static constexpr ObjectLayer Moving = 1;
-static constexpr ObjectLayer NumLayers = 2;
+constexpr ObjectLayer NonMoving{0}, Moving{1}, NumLayers{2};
 } // namespace Layers
 
 namespace BPLayers {
-static constexpr BroadPhaseLayer NonMoving(0);
-static constexpr BroadPhaseLayer Moving(1);
-static constexpr uint NumLayers = 2;
+constexpr BroadPhaseLayer NonMoving{0}, Moving{1};
+constexpr uint NumLayers = 2;
 } // namespace BPLayers
 
 class BPLayerInterface final : public BroadPhaseLayerInterface {
@@ -93,8 +87,6 @@ public:
         return true;
     }
 };
-
-// --- KHR collision filter ---
 
 // Custom GroupFilter implementing KHR_physics_rigid_bodies collision semantics.
 // Precomputes an NxN collision matrix from CollisionFilter definitions.
@@ -140,18 +132,83 @@ public:
     }
 };
 
-// --- Snapshot data ---
+// We store the material index in Body::UserData. UINT32_MAX = no material assigned.
+constexpr uint64_t NoMaterialSentinel = UINT32_MAX;
+
+// KHR combine mode priority: Maximum(2) > Multiply(3) > Average(0) > Minimum(1).
+// When two materials use different combine modes, pick the higher-priority one.
+int CombineModePriority(PhysicsCombineMode m) {
+    switch (m) {
+        case PhysicsCombineMode::Maximum: return 3;
+        case PhysicsCombineMode::Multiply: return 2;
+        case PhysicsCombineMode::Average: return 1;
+        case PhysicsCombineMode::Minimum: return 0;
+    }
+    return 1; // default = Average
+}
+
+float ApplyCombineMode(PhysicsCombineMode mode, float a, float b) {
+    switch (mode) {
+        case PhysicsCombineMode::Average: return (a + b) * 0.5f;
+        case PhysicsCombineMode::Minimum: return std::min(a, b);
+        case PhysicsCombineMode::Maximum: return std::max(a, b);
+        case PhysicsCombineMode::Multiply: return a * b;
+    }
+    return (a + b) * 0.5f;
+}
+
+// Contact listener that overrides Jolt's default friction/restitution combining
+// with the KHR_physics_rigid_bodies combine modes stored in physics materials.
+class KHRContactListener : public ContactListener {
+public:
+    const std::vector<::PhysicsMaterial> *Materials = nullptr;
+
+    void OnContactAdded(const Body &b1, const Body &b2, const ContactManifold &, ContactSettings &s) override {
+        CombineMaterials(b1, b2, s);
+    }
+    void OnContactPersisted(const Body &b1, const Body &b2, const ContactManifold &, ContactSettings &s) override {
+        CombineMaterials(b1, b2, s);
+    }
+
+private:
+    void CombineMaterials(const Body &b1, const Body &b2, ContactSettings &s) const {
+        if (!Materials) return;
+        uint64_t ud1 = b1.GetUserData(), ud2 = b2.GetUserData();
+        bool has1 = ud1 != NoMaterialSentinel && ud1 < Materials->size();
+        bool has2 = ud2 != NoMaterialSentinel && ud2 < Materials->size();
+        if (!has1 && !has2) return; // both use Jolt defaults
+
+        // Default combine mode is Average per KHR spec.
+        auto fc1 = PhysicsCombineMode::Average, fc2 = fc1;
+        auto rc1 = PhysicsCombineMode::Average, rc2 = rc1;
+        float f1 = b1.GetFriction(), f2 = b2.GetFriction();
+        float r1 = b1.GetRestitution(), r2 = b2.GetRestitution();
+
+        if (has1) {
+            fc1 = (*Materials)[ud1].FrictionCombine;
+            rc1 = (*Materials)[ud1].RestitutionCombine;
+        }
+        if (has2) {
+            fc2 = (*Materials)[ud2].FrictionCombine;
+            rc2 = (*Materials)[ud2].RestitutionCombine;
+        }
+
+        auto pick = [](PhysicsCombineMode a, PhysicsCombineMode b) {
+            return CombineModePriority(a) >= CombineModePriority(b) ? a : b;
+        };
+        s.mCombinedFriction = ApplyCombineMode(pick(fc1, fc2), f1, f2);
+        s.mCombinedRestitution = ApplyCombineMode(pick(rc1, rc2), r1, r2);
+    }
+};
 
 struct BodySnapshot {
     entt::entity Entity;
     vec3 Position;
     quat Rotation;
     vec3 Scale;
-    vec3 LinearVelocity;
-    vec3 AngularVelocity;
+    vec3 LinearVelocity, AngularVelocity;
 };
-
-// --- Impl ---
+} // namespace
 
 struct PhysicsWorld::Impl {
     TempAllocatorImpl TempAllocator{64 * 1024 * 1024};
@@ -164,6 +221,7 @@ struct PhysicsWorld::Impl {
     std::vector<Ref<Constraint>> Constraints;
     std::vector<BodySnapshot> Snapshots;
     Ref<KHRCollisionFilter> FilterRef;
+    KHRContactListener ContactListener;
 
     Impl() {
         System.Init(
@@ -175,12 +233,12 @@ struct PhysicsWorld::Impl {
             ObjectVsBPFilter,
             ObjectPairFilter
         );
+        System.SetContactListener(&ContactListener);
     }
 };
 
-// --- Shape creation ---
-
-static Ref<Shape> CreateJoltShape(const PhysicsShape &shape, const Mesh *mesh) {
+namespace {
+Ref<Shape> CreateJoltShape(const PhysicsShape &shape, const Mesh *mesh) {
     switch (shape.Type) {
         case PhysicsShapeType::Box: {
             // KHR spec uses full size, Jolt uses half-extents
@@ -232,16 +290,47 @@ static Ref<Shape> CreateJoltShape(const PhysicsShape &shape, const Mesh *mesh) {
     return new BoxShape(Vec3(0.5f, 0.5f, 0.5f));
 }
 
+// Apply motion, material, and collision filter properties to body creation settings.
+void ApplyPhysicsProperties(
+    BodyCreationSettings &bcs,
+    const PhysicsMotion *motion, const PhysicsCollider *collider,
+    std::optional<uint32_t> filter_idx,
+    const std::vector<::PhysicsMaterial> &materials,
+    const Ref<KHRCollisionFilter> &filter_ref, size_t num_filters
+) {
+    bcs.mUserData = NoMaterialSentinel;
+    if (motion) {
+        if (motion->Mass.has_value() && bcs.mMotionType == EMotionType::Dynamic) {
+            bcs.mOverrideMassProperties = EOverrideMassProperties::CalculateInertia;
+            bcs.mMassPropertiesOverride.mMass = *motion->Mass;
+        }
+        bcs.mLinearVelocity = ToJolt(motion->LinearVelocity);
+        bcs.mAngularVelocity = ToJolt(motion->AngularVelocity);
+        bcs.mGravityFactor = motion->GravityFactor;
+    }
+    if (collider && collider->PhysicsMaterialIndex.has_value() && *collider->PhysicsMaterialIndex < materials.size()) {
+        const auto &mat = materials[*collider->PhysicsMaterialIndex];
+        bcs.mFriction = mat.DynamicFriction;
+        bcs.mRestitution = mat.Restitution;
+        bcs.mUserData = *collider->PhysicsMaterialIndex;
+    }
+    if (filter_ref && filter_idx.has_value() && *filter_idx < num_filters) {
+        bcs.mCollisionGroup = CollisionGroup(filter_ref, 0, *filter_idx);
+    }
+}
+
 // Find the nearest ancestor (or self) that has a PhysicsBodyHandle.
-static entt::entity FindBodyAncestor(const entt::registry &r, entt::entity e) {
-    for (; e != entt::null; e = GetParentEntity(r, e)) {
+entt::entity FindBodyAncestor(const entt::registry &r, entt::entity e) {
+    for (; e != entt::null;) {
         if (r.all_of<PhysicsBodyHandle>(e)) return e;
+        auto parent = GetParentEntity(r, e);
+        if (parent == e) break; // root node — stop
+        e = parent;
     }
     return entt::null;
 }
 
-// Configure a SixDOFConstraintSettings from a KHR joint definition.
-static void ConfigureJointSettings(SixDOFConstraintSettings &settings, const PhysicsJointDef &def) {
+void ConfigureJointSettings(SixDOFConstraintSettings &settings, const PhysicsJointDef &def) {
     // Default: all axes fixed (locked to the attachment frame)
     for (int a = 0; a < SixDOFConstraintSettings::EAxis::Num; ++a)
         settings.MakeFixedAxis(static_cast<SixDOFConstraintSettings::EAxis>(a));
@@ -288,7 +377,7 @@ static void ConfigureJointSettings(SixDOFConstraintSettings &settings, const Phy
 }
 
 // After constraint creation, set motor states and targets from drives.
-static void ApplyDriveTargets(SixDOFConstraint &constraint, const PhysicsJointDef &def) {
+void ApplyDriveTargets(SixDOFConstraint &constraint, const PhysicsJointDef &def) {
     Vec3 target_pos = Vec3::sZero(), target_vel = Vec3::sZero();
     Vec3 target_ang_vel = Vec3::sZero();
     Quat target_orient = Quat::sIdentity();
@@ -325,9 +414,7 @@ static void ApplyDriveTargets(SixDOFConstraint &constraint, const PhysicsJointDe
     if (has_orient_target) constraint.SetTargetOrientationCS(target_orient);
 }
 
-// --- Jolt one-time init/shutdown ---
-
-static struct JoltInit {
+struct JoltInit {
     JoltInit() {
         RegisterDefaultAllocator();
         Factory::sInstance = new Factory();
@@ -339,8 +426,7 @@ static struct JoltInit {
         Factory::sInstance = nullptr;
     }
 } sJoltInit;
-
-// --- PhysicsWorld ---
+} // namespace
 
 PhysicsWorld::PhysicsWorld() : P(std::make_unique<Impl>()) {}
 PhysicsWorld::~PhysicsWorld() = default;
@@ -369,6 +455,9 @@ void PhysicsWorld::Rebuild(entt::registry &r) {
         bi.DestroyBody(BodyID(handle.BodyId));
     }
     r.clear<PhysicsBodyHandle>();
+
+    // Point the contact listener at our materials for KHR friction/restitution combining.
+    P->ContactListener.Materials = &Materials;
 
     // Build collision filter table
     P->FilterRef = Filters.empty() ? nullptr : new KHRCollisionFilter(Filters);
@@ -417,24 +506,7 @@ void PhysicsWorld::Rebuild(entt::registry &r) {
         ObjectLayer layer = motion_type == EMotionType::Static ? Layers::NonMoving : Layers::Moving;
 
         BodyCreationSettings bcs(shape, pos, rot, motion_type, layer);
-        if (motion) {
-            if (motion->Mass.has_value() && motion_type == EMotionType::Dynamic) {
-                bcs.mOverrideMassProperties = EOverrideMassProperties::CalculateInertia;
-                bcs.mMassPropertiesOverride.mMass = *motion->Mass;
-            }
-            bcs.mLinearVelocity = ToJolt(motion->LinearVelocity);
-            bcs.mAngularVelocity = ToJolt(motion->AngularVelocity);
-            bcs.mGravityFactor = motion->GravityFactor;
-        }
-        if (collider) {
-            if (collider->PhysicsMaterialIndex.has_value() && *collider->PhysicsMaterialIndex < Materials.size()) {
-                const auto &mat = Materials[*collider->PhysicsMaterialIndex];
-                bcs.mFriction = mat.DynamicFriction;
-                bcs.mRestitution = mat.Restitution;
-            }
-            if (P->FilterRef && collider->CollisionFilterIndex.has_value() && *collider->CollisionFilterIndex < Filters.size())
-                bcs.mCollisionGroup = CollisionGroup(P->FilterRef, 0, *collider->CollisionFilterIndex);
-        }
+        ApplyPhysicsProperties(bcs, motion, collider, collider ? collider->CollisionFilterIndex : std::optional<uint32_t>{}, Materials, P->FilterRef, Filters.size());
 
         Body *body = bi.CreateBody(bcs);
         if (!body) return;
@@ -512,20 +584,7 @@ void PhysicsWorld::Rebuild(entt::registry &r) {
 
         BodyCreationSettings bcs(shape, pos, rot, motion_type, layer);
         bcs.mIsSensor = true;
-
-        if (motion) {
-            if (motion->Mass.has_value() && motion_type == EMotionType::Dynamic) {
-                bcs.mOverrideMassProperties = EOverrideMassProperties::CalculateInertia;
-                bcs.mMassPropertiesOverride.mMass = *motion->Mass;
-            }
-            bcs.mLinearVelocity = ToJolt(motion->LinearVelocity);
-            bcs.mAngularVelocity = ToJolt(motion->AngularVelocity);
-            bcs.mGravityFactor = motion->GravityFactor;
-        }
-
-        if (P->FilterRef && trigger.CollisionFilterIndex.has_value() && *trigger.CollisionFilterIndex < Filters.size()) {
-            bcs.mCollisionGroup = CollisionGroup(P->FilterRef, 0, *trigger.CollisionFilterIndex);
-        }
+        ApplyPhysicsProperties(bcs, motion, nullptr, trigger.CollisionFilterIndex, Materials, P->FilterRef, Filters.size());
 
         Body *body = bi.CreateBody(bcs);
         if (!body) continue;
@@ -612,27 +671,8 @@ void PhysicsWorld::AddBody(entt::registry &r, entt::entity entity) {
 
     BodyCreationSettings bcs(shape, pos, rot, motion_type, layer);
     bcs.mIsSensor = is_sensor;
-
-    if (motion) {
-        if (motion->Mass.has_value() && motion_type == EMotionType::Dynamic) {
-            bcs.mOverrideMassProperties = EOverrideMassProperties::CalculateInertia;
-            bcs.mMassPropertiesOverride.mMass = *motion->Mass;
-        }
-        bcs.mLinearVelocity = ToJolt(motion->LinearVelocity);
-        bcs.mAngularVelocity = ToJolt(motion->AngularVelocity);
-        bcs.mGravityFactor = motion->GravityFactor;
-    }
-
-    if (collider && collider->PhysicsMaterialIndex.has_value() && *collider->PhysicsMaterialIndex < Materials.size()) {
-        const auto &mat = Materials[*collider->PhysicsMaterialIndex];
-        bcs.mFriction = mat.DynamicFriction;
-        bcs.mRestitution = mat.Restitution;
-    }
-
     auto filter_idx = collider ? collider->CollisionFilterIndex : trigger->CollisionFilterIndex;
-    if (P->FilterRef && filter_idx.has_value() && *filter_idx < Filters.size()) {
-        bcs.mCollisionGroup = CollisionGroup(P->FilterRef, 0, *filter_idx);
-    }
+    ApplyPhysicsProperties(bcs, motion, collider, filter_idx, Materials, P->FilterRef, Filters.size());
 
     auto &bi = P->System.GetBodyInterface();
     Body *body = bi.CreateBody(bcs);
