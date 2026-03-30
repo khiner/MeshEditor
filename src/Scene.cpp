@@ -1764,7 +1764,12 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         const bool use_scene_world = is_pbr_mode && active_lighting.UseSceneWorld;
         const auto &active_environment = use_scene_world ? Environments->SceneWorld : Environments->StudioWorld;
         const float env_intensity = use_scene_world ? 1.f : active_lighting.EnvIntensity;
-        const float env_rotation_radians = use_scene_world ? 0.f : active_lighting.EnvRotationDegrees * (Pi / 180.f);
+        const mat3 env_rotation = [&]() -> mat3 {
+            if (use_scene_world) return Environments->SceneWorldRotation;
+            const float radians = active_lighting.EnvRotationDegrees * (Pi / 180.f);
+            const float s = std::sin(radians), c = std::cos(radians);
+            return {c, 0, -s, 0, 1, 0, s, 0, c};
+        }();
         const float background_blur = use_scene_world ? 0.f : active_lighting.BackgroundBlur;
         const float world_opacity = is_pbr_mode ? (use_scene_world ? 1.f : active_lighting.WorldOpacity) : 0.f;
         const auto *pending = R.try_get<const PendingTransform>(SceneEntity);
@@ -1786,7 +1791,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
             .LightSlot = Buffers->Lights.Slot(),
             .UseSceneLightsRender = use_scene_lights ? 1u : 0u,
             .EnvIntensity = env_intensity,
-            .EnvRotationRadians = env_rotation_radians,
+            .EnvRotation = env_rotation,
             .BackgroundBlur = background_blur,
             .WorldOpacity = world_opacity,
             .Ibl = active_environment.Ibl,

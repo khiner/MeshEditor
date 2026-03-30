@@ -473,7 +473,15 @@ std::expected<EnvironmentPrefiltered, std::string> CreateIblFromExtIbl(
             }
         }
 
-        if (mip == 0u) specular_base_size = faces[0].Width;
+        if (mip == 0u) {
+            specular_base_size = faces[0].Width;
+            if (ibl.SpecularImageSize != 0u && faces[0].Width != ibl.SpecularImageSize) {
+                return std::unexpected{std::format(
+                    "EXT_lights_image_based '{}' specularImageSize is {} but mip 0 face is {}x{}.",
+                    ibl.Name, ibl.SpecularImageSize, faces[0].Width, faces[0].Width
+                )};
+            }
+        }
         const uint32_t expected_size = std::max(1u, specular_base_size >> mip);
         if (faces[0].Width != expected_size) {
             return std::unexpected{std::format("EXT_lights_image_based '{}' mip {} has size {} but expected {}.", ibl.Name, mip, faces[0].Width, expected_size)};

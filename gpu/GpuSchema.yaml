@@ -182,8 +182,8 @@ structs:
         type: u32
       - name: EnvIntensity
         type: float
-      - name: EnvRotationRadians
-        type: float
+      - name: EnvRotation
+        type: mat3
       - name: BackgroundBlur
         type: float
       - name: WorldOpacity

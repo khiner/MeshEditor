@@ -107,7 +107,7 @@ PBR render features that are not needed by the scene (because the feature isn't 
 | `KHR_materials_iridescence` | ✅ | |
 | `KHR_physics_rigid_bodies` | 🟨 | (not yet ratified) WIP |
 | `KHR_implicit_shapes` | 🟨 | (not yet ratified) WIP |
-| `EXT_lights_image_based` | 🟨 | Imported as Scene IBL when present (used for Rendered view mode) |
+| `EXT_lights_image_based` | ✅ | Imported as Scene IBL when present (used for Rendered view mode) |
 | `KHR_animation_pointer` | ⬜ | Too much complexity for now, will add when I get to arbitrary property animation. |
 | `EXT_meshopt_compression` | ⬜ | Not taking on the meshopt dependency for now |
 

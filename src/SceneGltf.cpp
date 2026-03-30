@@ -673,6 +673,7 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
                 ReleaseCubeSamplerSlot(*Slots, environments.ImportedSceneWorld->SpecularEnv.SamplerSlot);
             }
             environments.ImportedSceneWorld = std::move(*scene_world);
+            environments.SceneWorldRotation = glm::mat3_cast(scene->ImageBasedLight->Rotation);
             const auto &pre = *environments.ImportedSceneWorld;
             environments.SceneWorld = {.Ibl = MakeIblSamplers(pre, environments), .Name = pre.Name};
         }

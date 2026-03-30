@@ -327,6 +327,28 @@ std::expected<std::optional<ImageBasedLight>, std::string> ReadImageBasedLight(
     }
     out.Intensity = std::max(0.0, intensity);
 
+    simdjson::dom::array rotation;
+    if (const auto err = light_obj["rotation"].get_array().get(rotation); err == simdjson::SUCCESS) {
+        if (rotation.size() != 4u) {
+            return std::unexpected{std::format("glTF '{}' EXT_lights_image_based rotation must have 4 elements.", path.string())};
+        }
+        double rx = 0, ry = 0, rz = 0, rw = 1;
+        if (rotation.at(0).get_double().get(rx) != simdjson::SUCCESS || rotation.at(1).get_double().get(ry) != simdjson::SUCCESS ||
+            rotation.at(2).get_double().get(rz) != simdjson::SUCCESS || rotation.at(3).get_double().get(rw) != simdjson::SUCCESS) {
+            return std::unexpected{std::format("glTF '{}' EXT_lights_image_based rotation has non-numeric values.", path.string())};
+        }
+        out.Rotation = glm::normalize(quat{float(rw), float(rx), float(ry), float(rz)});
+    } else if (err != simdjson::NO_SUCH_FIELD) {
+        return std::unexpected{std::format("glTF '{}' EXT_lights_image_based rotation is invalid.", path.string())};
+    }
+
+    uint64_t specular_image_size = 0;
+    if (const auto err = light_obj["specularImageSize"].get_uint64().get(specular_image_size); err == simdjson::SUCCESS) {
+        out.SpecularImageSize = uint32_t(specular_image_size);
+    } else if (err != simdjson::NO_SUCH_FIELD) {
+        return std::unexpected{std::format("glTF '{}' EXT_lights_image_based specularImageSize is invalid.", path.string())};
+    }
+
     simdjson::dom::array specular_images;
     if (const auto err = light_obj["specularImages"].get_array().get(specular_images); err != simdjson::SUCCESS) {
         return std::unexpected{std::format("glTF '{}' EXT_lights_image_based specularImages is missing or invalid.", path.string())};

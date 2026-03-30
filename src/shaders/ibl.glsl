@@ -3,20 +3,10 @@
 #ifndef IBL_GLSL
 #define IBL_GLSL
 
-mat3 getEnvRotation() {
-    const float s = sin(SceneViewUBO.EnvRotationRadians);
-    const float c = cos(SceneViewUBO.EnvRotationRadians);
-    return mat3(
-        c, 0.0, -s,
-        0.0, 1.0, 0.0,
-        s, 0.0, c
-    );
-}
-
 vec3 getDiffuseLight(vec3 n) {
     vec4 texture_sample = texture(
         CubeSamplers[nonuniformEXT(SceneViewUBO.Ibl.DiffuseEnvSamplerSlot)],
-        getEnvRotation() * n
+        SceneViewUBO.EnvRotation * n
     );
     texture_sample.rgb *= SceneViewUBO.EnvIntensity;
     return texture_sample.rgb;
@@ -25,7 +15,7 @@ vec3 getDiffuseLight(vec3 n) {
 vec4 getSpecularSample(vec3 reflection, float lod) {
     vec4 texture_sample = textureLod(
         CubeSamplers[nonuniformEXT(SceneViewUBO.Ibl.SpecularEnvSamplerSlot)],
-        getEnvRotation() * reflection,
+        SceneViewUBO.EnvRotation * reflection,
         lod
     );
     texture_sample.rgb *= SceneViewUBO.EnvIntensity;
@@ -60,7 +50,7 @@ vec3 getIBLRadianceGGX(vec3 n, vec3 v, float roughness) {
 
 vec4 getSheenSample(vec3 reflection, float lod) {
     vec4 s = textureLod(CubeSamplers[nonuniformEXT(SceneViewUBO.Ibl.SheenEnvSamplerSlot)],
-                        getEnvRotation() * reflection, lod);
+                        SceneViewUBO.EnvRotation * reflection, lod);
     s.rgb *= SceneViewUBO.EnvIntensity;
     return s;
 }

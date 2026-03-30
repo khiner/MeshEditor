@@ -3,6 +3,7 @@
 #include "SceneVulkanResources.h"
 #include "gltf/Image.h"
 #include "gpu/IblSamplers.h"
+#include "numeric/mat3.h"
 #include "vulkan/Buffer.h"
 #include "vulkan/Image.h"
 
@@ -56,6 +57,7 @@ struct EnvironmentStore {
     uint32_t ActiveHdriIndex;
     TextureEntry BrdfLut, SheenELut, CharlieLut;
     std::optional<EnvironmentPrefiltered> ImportedSceneWorld;
+    mat3 SceneWorldRotation{1.f}; // From EXT_lights_image_based rotation quaternion.
     EnvironmentSelection SceneWorld, StudioWorld;
 };
 
