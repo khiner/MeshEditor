@@ -1519,6 +1519,26 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
                 R.patch<ModelsBuffer>(arm_obj.JointEntity);
             }
         }
+        if (R.all_of<PhysicsFiltersDirty>(SceneEntity)) {
+            Physics->UpdateFilterTable();
+            R.remove<PhysicsFiltersDirty>(SceneEntity);
+        }
+
+        if (const auto *del = R.try_get<PhysicsResourceDeleted>(SceneEntity)) {
+            auto fixup = [](std::optional<uint32_t> &idx, uint32_t d) {
+                if (!idx.has_value()) return;
+                if (*idx == d) idx.reset();
+                else if (*idx > d) --*idx;
+            };
+            if (del->Resource == PhysicsResourceDeleted::Material) {
+                for (auto [e, c] : R.view<PhysicsCollider>().each()) fixup(c.PhysicsMaterialIndex, del->Index);
+            } else {
+                for (auto [e, c] : R.view<PhysicsCollider>().each()) fixup(c.CollisionFilterIndex, del->Index);
+                for (auto [e, t] : R.view<PhysicsTrigger>().each()) fixup(t.CollisionFilterIndex, del->Index);
+            }
+            R.remove<PhysicsResourceDeleted>(SceneEntity);
+        }
+
         // Physics step: advance simulation and sync Jolt body transforms back to ECS.
         // Runs before bone/WorldTransform sync so that physics Transform patches are included.
         if (Physics->HasBodies() && anim_advanced) {

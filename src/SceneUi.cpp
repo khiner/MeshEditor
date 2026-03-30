@@ -2114,7 +2114,7 @@ void Scene::RenderControls() {
         }
 
         if (BeginTabItem("Physics")) {
-            physics_ui::RenderTab(*Physics);
+            physics_ui::RenderTab(R, SceneEntity, *Physics);
             EndTabItem();
         }
         EndTabBar();

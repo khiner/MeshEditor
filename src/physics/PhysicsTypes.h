@@ -133,6 +133,15 @@ struct PhysicsConstraintHandle {
     uint32_t ConstraintIndex{UINT32_MAX};
 };
 
+struct PhysicsFiltersDirty {};
+
+struct PhysicsResourceDeleted {
+    enum Type : uint8_t { Material,
+                          Filter };
+    Type Resource;
+    uint32_t Index;
+};
+
 // Links a collider entity to its wireframe overlay instance(s).
 // Capsules use 3 instances (body + 2 caps); others use 1.
 struct ColliderWireframe {

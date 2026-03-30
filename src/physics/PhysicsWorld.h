@@ -29,6 +29,11 @@ struct PhysicsWorld {
     void SaveSnapshot(entt::registry &);
     void RestoreSnapshot(entt::registry &);
 
+    // Query effective collision between two filter indices (for UI visualization).
+    bool DoFiltersCollide(uint32_t a, uint32_t b) const;
+
+    void UpdateFilterTable();
+
     // Document-level resources (from glTF or UI).
     std::vector<PhysicsMaterial> Materials;
     std::vector<CollisionFilter> Filters;

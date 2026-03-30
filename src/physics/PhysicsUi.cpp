@@ -12,7 +12,53 @@
 
 using namespace ImGui;
 
-void physics_ui::RenderTab(PhysicsWorld &physics) {
+namespace {
+bool DeleteButton(bool in_use) {
+    SameLine();
+    if (in_use) {
+        BeginDisabled();
+        Button("X");
+        EndDisabled();
+        return false;
+    }
+    return Button("X");
+}
+
+bool RenderShapeEditor(PhysicsShape &shape) {
+    static const char *shape_names[]{"Box", "Sphere", "Capsule", "Cylinder", "Convex Hull", "Triangle Mesh"};
+    int shape_type_i = int(shape.Type);
+    bool changed = false;
+    if (Combo("Shape", &shape_type_i, shape_names, IM_ARRAYSIZE(shape_names))) {
+        shape.Type = PhysicsShapeType(shape_type_i);
+        changed = true;
+    }
+    switch (shape.Type) {
+        case PhysicsShapeType::Box:
+            changed |= DragFloat3("Size", &shape.Size.x, 0.01f, 0.01f, 100.0f);
+            break;
+        case PhysicsShapeType::Sphere:
+            changed |= DragFloat("Radius", &shape.Radius, 0.01f, 0.001f, 100.0f);
+            break;
+        case PhysicsShapeType::Capsule:
+            changed |= DragFloat("Height", &shape.Height, 0.01f, 0.001f, 100.0f);
+            changed |= DragFloat("Radius top", &shape.RadiusTop, 0.01f, 0.001f, 100.0f);
+            changed |= DragFloat("Radius bottom", &shape.RadiusBottom, 0.01f, 0.001f, 100.0f);
+            break;
+        case PhysicsShapeType::Cylinder:
+            changed |= DragFloat("Height", &shape.Height, 0.01f, 0.001f, 100.0f);
+            changed |= DragFloat("Radius top", &shape.RadiusTop, 0.01f, 0.001f, 100.0f);
+            changed |= DragFloat("Radius bottom", &shape.RadiusBottom, 0.01f, 0.001f, 100.0f);
+            break;
+        case PhysicsShapeType::ConvexHull:
+        case PhysicsShapeType::TriangleMesh:
+            TextDisabled("Mesh-based shape (from glTF import)");
+            break;
+    }
+    return changed;
+}
+} // namespace
+
+void physics_ui::RenderTab(entt::registry &r, entt::entity scene_entity, PhysicsWorld &physics) {
     SeparatorText("Simulation");
     Text("Bodies: %u", physics.BodyCount());
     SliderInt("Substeps", &physics.SubSteps, 1, 8);
@@ -26,17 +72,42 @@ void physics_ui::RenderTab(PhysicsWorld &physics) {
 
     if (CollapsingHeader("Physics Materials")) {
         PushID("PhysMaterials");
+        int delete_idx = -1;
         for (size_t i = 0; i < physics.Materials.size(); ++i) {
             PushID(int(i));
             auto &mat = physics.Materials[i];
             auto label = mat.Name.empty() ? std::format("Material {}", i) : mat.Name;
             if (TreeNode(label.c_str())) {
+                char buf[128];
+                snprintf(buf, sizeof(buf), "%s", mat.Name.c_str());
+                if (InputText("Name", buf, sizeof(buf))) mat.Name = buf;
+
                 SliderFloat("Static friction", &mat.StaticFriction, 0.0f, 2.0f);
                 SliderFloat("Dynamic friction", &mat.DynamicFriction, 0.0f, 2.0f);
                 SliderFloat("Restitution", &mat.Restitution, 0.0f, 1.0f);
+
+                int fc = int(mat.FrictionCombine);
+                if (Combo("Friction combine", &fc, "Average\0Minimum\0Maximum\0Multiply\0"))
+                    mat.FrictionCombine = PhysicsCombineMode(fc);
+                int rc = int(mat.RestitutionCombine);
+                if (Combo("Restitution combine", &rc, "Average\0Minimum\0Maximum\0Multiply\0"))
+                    mat.RestitutionCombine = PhysicsCombineMode(rc);
+
                 TreePop();
             }
+            bool mat_in_use = false;
+            for (auto [e, c] : r.view<const PhysicsCollider>().each()) {
+                if (c.PhysicsMaterialIndex == uint32_t(i)) {
+                    mat_in_use = true;
+                    break;
+                }
+            }
+            if (DeleteButton(mat_in_use)) delete_idx = int(i);
             PopID();
+        }
+        if (delete_idx >= 0) {
+            physics.Materials.erase(physics.Materials.begin() + delete_idx);
+            r.emplace_or_replace<PhysicsResourceDeleted>(scene_entity, PhysicsResourceDeleted::Material, uint32_t(delete_idx));
         }
         if (Button("Add material")) {
             physics.Materials.push_back({.Name = std::format("Material {}", physics.Materials.size())});
@@ -46,15 +117,176 @@ void physics_ui::RenderTab(PhysicsWorld &physics) {
 
     if (CollapsingHeader("Collision Filters")) {
         PushID("CollisionFilters");
+        bool filters_changed = false;
+
+        // Collect all unique system names across filters for checkboxes.
+        std::vector<std::string> all_systems;
+        for (const auto &f : physics.Filters) {
+            for (const auto &s : f.CollisionSystems)
+                if (std::find(all_systems.begin(), all_systems.end(), s) == all_systems.end()) all_systems.push_back(s);
+            for (const auto &s : f.CollideWithSystems)
+                if (std::find(all_systems.begin(), all_systems.end(), s) == all_systems.end()) all_systems.push_back(s);
+            for (const auto &s : f.NotCollideWithSystems)
+                if (std::find(all_systems.begin(), all_systems.end(), s) == all_systems.end()) all_systems.push_back(s);
+        }
+        std::sort(all_systems.begin(), all_systems.end());
+
+        int delete_filter_idx = -1;
         for (size_t i = 0; i < physics.Filters.size(); ++i) {
             PushID(int(i));
             auto &filter = physics.Filters[i];
-            Text("Filter %zu: %s", i, filter.Name.empty() ? "(unnamed)" : filter.Name.c_str());
+            auto label = filter.Name.empty() ? std::format("Filter {}", i) : filter.Name;
+            if (TreeNode(label.c_str())) {
+                char buf[128];
+                snprintf(buf, sizeof(buf), "%s", filter.Name.c_str());
+                if (InputText("Name", buf, sizeof(buf))) filter.Name = buf;
+
+                // Collision systems (membership)
+                if (TreeNode("Collision systems")) {
+                    for (const auto &sys : all_systems) {
+                        bool member = std::find(filter.CollisionSystems.begin(), filter.CollisionSystems.end(), sys) != filter.CollisionSystems.end();
+                        if (Checkbox(sys.c_str(), &member)) {
+                            if (member) filter.CollisionSystems.push_back(sys);
+                            else std::erase(filter.CollisionSystems, sys);
+                            filters_changed = true;
+                        }
+                    }
+                    TreePop();
+                }
+
+                // Collide-with mode: All / Allowlist / Blocklist
+                int mode = 0; // all
+                if (!filter.CollideWithSystems.empty()) mode = 1; // allowlist
+                else if (!filter.NotCollideWithSystems.empty()) mode = 2; // blocklist
+                TextUnformatted("Collide with:");
+                SameLine();
+                if (RadioButton("All", &mode, 0)) {
+                    filter.CollideWithSystems.clear();
+                    filter.NotCollideWithSystems.clear();
+                    filters_changed = true;
+                }
+                SameLine();
+                if (RadioButton("Allowlist", &mode, 1)) {
+                    filter.NotCollideWithSystems.clear();
+                    if (filter.CollideWithSystems.empty()) filter.CollideWithSystems = all_systems; // default: all checked
+                    filters_changed = true;
+                }
+                SameLine();
+                if (RadioButton("Blocklist", &mode, 2)) {
+                    filter.CollideWithSystems.clear();
+                    filters_changed = true;
+                }
+
+                if (mode == 1) {
+                    Indent();
+                    for (const auto &sys : all_systems) {
+                        bool checked = std::find(filter.CollideWithSystems.begin(), filter.CollideWithSystems.end(), sys) != filter.CollideWithSystems.end();
+                        if (Checkbox(sys.c_str(), &checked)) {
+                            if (checked) filter.CollideWithSystems.push_back(sys);
+                            else std::erase(filter.CollideWithSystems, sys);
+                            filters_changed = true;
+                        }
+                    }
+                    Unindent();
+                } else if (mode == 2) {
+                    Indent();
+                    for (const auto &sys : all_systems) {
+                        bool checked = std::find(filter.NotCollideWithSystems.begin(), filter.NotCollideWithSystems.end(), sys) != filter.NotCollideWithSystems.end();
+                        if (Checkbox(sys.c_str(), &checked)) {
+                            if (checked) filter.NotCollideWithSystems.push_back(sys);
+                            else std::erase(filter.NotCollideWithSystems, sys);
+                            filters_changed = true;
+                        }
+                    }
+                    Unindent();
+                }
+
+                TreePop();
+            }
+            bool filter_in_use = false;
+            for (auto [e, c] : r.view<const PhysicsCollider>().each()) {
+                if (c.CollisionFilterIndex == uint32_t(i)) {
+                    filter_in_use = true;
+                    break;
+                }
+            }
+            if (!filter_in_use) {
+                for (auto [e, t] : r.view<const PhysicsTrigger>().each()) {
+                    if (t.CollisionFilterIndex == uint32_t(i)) {
+                        filter_in_use = true;
+                        break;
+                    }
+                }
+            }
+            if (DeleteButton(filter_in_use)) delete_filter_idx = int(i);
             PopID();
         }
+        if (delete_filter_idx >= 0) {
+            physics.Filters.erase(physics.Filters.begin() + delete_filter_idx);
+            r.emplace_or_replace<PhysicsResourceDeleted>(scene_entity, PhysicsResourceDeleted::Filter, uint32_t(delete_filter_idx));
+            filters_changed = true;
+        }
+
+        // Add system name popup
+        if (Button("Add system")) OpenPopup("AddSystem");
+        if (BeginPopup("AddSystem")) {
+            static char sys_buf[64] = "";
+            InputText("System name", sys_buf, sizeof(sys_buf));
+            if (Button("OK") && sys_buf[0] != '\0') {
+                std::string name = sys_buf;
+                if (std::find(all_systems.begin(), all_systems.end(), name) == all_systems.end()) {
+                    // Add to all filters' collision systems by default
+                    for (auto &f : physics.Filters) f.CollisionSystems.push_back(name);
+                    filters_changed = true;
+                }
+                sys_buf[0] = '\0';
+                CloseCurrentPopup();
+            }
+            EndPopup();
+        }
+
+        SameLine();
         if (Button("Add filter")) {
             physics.Filters.push_back({.Name = std::format("Filter {}", physics.Filters.size())});
+            filters_changed = true;
         }
+
+        if (filters_changed) r.emplace_or_replace<PhysicsFiltersDirty>(scene_entity);
+
+        // Collision matrix visualization (angled-header table)
+        if (physics.Filters.size() >= 2) {
+            Spacing();
+            SeparatorText("Collision Matrix");
+
+            const auto n = physics.Filters.size();
+            if (BeginTable("##CollisionMatrix", int(n) + 1, ImGuiTableFlags_Borders | ImGuiTableFlags_SizingFixedFit)) {
+                // Row header column
+                TableSetupColumn("", ImGuiTableColumnFlags_NoHeaderLabel);
+                for (size_t i = 0; i < n; ++i) {
+                    auto col_label = physics.Filters[i].Name.empty() ? std::format("{}", i) : physics.Filters[i].Name;
+                    TableSetupColumn(col_label.c_str(), ImGuiTableColumnFlags_AngledHeader);
+                }
+                TableAngledHeadersRow();
+
+                for (size_t row = 0; row < n; ++row) {
+                    TableNextRow();
+                    TableSetColumnIndex(0);
+                    auto row_label = physics.Filters[row].Name.empty() ? std::format("{}", row) : physics.Filters[row].Name;
+                    TextUnformatted(row_label.c_str());
+                    for (size_t col = 0; col < n; ++col) {
+                        TableSetColumnIndex(int(col) + 1);
+                        bool collides = physics.DoFiltersCollide(uint32_t(row), uint32_t(col));
+                        if (collides) {
+                            TextColored(ImVec4(0.2f, 0.8f, 0.2f, 1.0f), "Y");
+                        } else {
+                            TextColored(ImVec4(0.8f, 0.2f, 0.2f, 1.0f), "-");
+                        }
+                    }
+                }
+                EndTable();
+            }
+        }
+
         PopID();
     }
 
@@ -196,7 +428,10 @@ void physics_ui::RenderEntityProperties(entt::registry &r, entt::entity entity, 
         if (motion_type >= 2) {
             r.emplace<PhysicsMotion>(entity, PhysicsMotion{.IsKinematic = (motion_type == 2)});
         }
-        if (motion_type >= 1) {
+
+        // Re-add body if collider present, or if trigger-only with geometry
+        auto *trig = r.try_get<PhysicsTrigger>(entity);
+        if (motion_type >= 1 || (trig && trig->Shape.has_value())) {
             physics.AddBody(r, entity);
         }
         motion = r.try_get<PhysicsMotion>(entity);
@@ -207,40 +442,8 @@ void physics_ui::RenderEntityProperties(entt::registry &r, entt::entity entity, 
     if (collider) {
         Spacing();
         SeparatorText("Collider");
-        auto &shape = collider->Shape;
 
-        static const char *shape_names[]{"Box", "Sphere", "Capsule", "Cylinder", "Convex Hull", "Triangle Mesh"};
-        int shape_type_i = int(shape.Type);
-        bool shape_changed = false;
-        if (Combo("Shape", &shape_type_i, shape_names, IM_ARRAYSIZE(shape_names))) {
-            shape.Type = PhysicsShapeType(shape_type_i);
-            shape_changed = true;
-        }
-
-        switch (shape.Type) {
-            case PhysicsShapeType::Box:
-                shape_changed |= DragFloat3("Size", &shape.Size.x, 0.01f, 0.01f, 100.0f);
-                break;
-            case PhysicsShapeType::Sphere:
-                shape_changed |= DragFloat("Radius", &shape.Radius, 0.01f, 0.001f, 100.0f);
-                break;
-            case PhysicsShapeType::Capsule:
-                shape_changed |= DragFloat("Height", &shape.Height, 0.01f, 0.001f, 100.0f);
-                shape_changed |= DragFloat("Radius top", &shape.RadiusTop, 0.01f, 0.001f, 100.0f);
-                shape_changed |= DragFloat("Radius bottom", &shape.RadiusBottom, 0.01f, 0.001f, 100.0f);
-                break;
-            case PhysicsShapeType::Cylinder:
-                shape_changed |= DragFloat("Height", &shape.Height, 0.01f, 0.001f, 100.0f);
-                shape_changed |= DragFloat("Radius top", &shape.RadiusTop, 0.01f, 0.001f, 100.0f);
-                shape_changed |= DragFloat("Radius bottom", &shape.RadiusBottom, 0.01f, 0.001f, 100.0f);
-                break;
-            case PhysicsShapeType::ConvexHull:
-            case PhysicsShapeType::TriangleMesh:
-                TextDisabled("Mesh-based shape (from glTF import)");
-                break;
-        }
-
-        if (shape_changed) {
+        if (RenderShapeEditor(collider->Shape)) {
             physics.RemoveBody(r, entity);
             physics.AddBody(r, entity);
         }
@@ -258,6 +461,29 @@ void physics_ui::RenderEntityProperties(entt::registry &r, entt::entity entity, 
                     auto label = m.Name.empty() ? std::format("Material {}", i) : m.Name;
                     if (Selectable(label.c_str(), mat_idx == int(i))) {
                         collider->PhysicsMaterialIndex = uint32_t(i);
+                    }
+                }
+                EndCombo();
+            }
+        }
+
+        // Collision filter assignment
+        if (!physics.Filters.empty()) {
+            int filter_idx = collider->CollisionFilterIndex.has_value() ? int(*collider->CollisionFilterIndex) : -1;
+            auto preview = filter_idx >= 0 && filter_idx < int(physics.Filters.size()) ? (physics.Filters[filter_idx].Name.empty() ? std::format("Filter {}", filter_idx) : physics.Filters[filter_idx].Name) : std::string{"None"};
+            if (BeginCombo("Collision filter", preview.c_str())) {
+                if (Selectable("None", filter_idx < 0)) {
+                    collider->CollisionFilterIndex.reset();
+                    physics.RemoveBody(r, entity);
+                    physics.AddBody(r, entity);
+                }
+                for (size_t i = 0; i < physics.Filters.size(); ++i) {
+                    const auto &f = physics.Filters[i];
+                    auto flabel = f.Name.empty() ? std::format("Filter {}", i) : f.Name;
+                    if (Selectable(flabel.c_str(), filter_idx == int(i))) {
+                        collider->CollisionFilterIndex = uint32_t(i);
+                        physics.RemoveBody(r, entity);
+                        physics.AddBody(r, entity);
                     }
                 }
                 EndCombo();
@@ -337,6 +563,64 @@ void physics_ui::RenderEntityProperties(entt::registry &r, entt::entity entity, 
             Text("Connected: entity %u", uint32_t(joint->ConnectedNode));
         } else {
             TextDisabled("Not connected");
+        }
+    }
+
+    // Trigger properties
+    {
+        auto *trigger = r.try_get<PhysicsTrigger>(entity);
+        if (!trigger) {
+            Spacing();
+            if (Button("Add Trigger")) {
+                r.emplace<PhysicsTrigger>(entity, PhysicsTrigger{.Shape = PhysicsShape{}});
+                // Only create a sensor body if no collider body already exists (collider wins).
+                if (!r.all_of<PhysicsBodyHandle>(entity)) {
+                    physics.AddBody(r, entity);
+                }
+            }
+        } else {
+            Spacing();
+            SeparatorText("Trigger");
+            PushID("Trigger");
+
+            if (trigger->Shape.has_value()) {
+                if (RenderShapeEditor(*trigger->Shape)) {
+                    physics.RemoveBody(r, entity);
+                    physics.AddBody(r, entity);
+                }
+            } else if (!trigger->Nodes.empty()) {
+                Text("Compound trigger: %zu nodes", trigger->Nodes.size());
+            }
+
+            // Collision filter assignment
+            if (!physics.Filters.empty()) {
+                int filter_idx = trigger->CollisionFilterIndex.has_value() ? int(*trigger->CollisionFilterIndex) : -1;
+                auto preview = filter_idx >= 0 && filter_idx < int(physics.Filters.size()) ? (physics.Filters[filter_idx].Name.empty() ? std::format("Filter {}", filter_idx) : physics.Filters[filter_idx].Name) : std::string{"None"};
+                if (BeginCombo("Collision filter", preview.c_str())) {
+                    if (Selectable("None", filter_idx < 0)) {
+                        trigger->CollisionFilterIndex.reset();
+                        physics.RemoveBody(r, entity);
+                        physics.AddBody(r, entity);
+                    }
+                    for (size_t i = 0; i < physics.Filters.size(); ++i) {
+                        const auto &f = physics.Filters[i];
+                        auto flabel = f.Name.empty() ? std::format("Filter {}", i) : f.Name;
+                        if (Selectable(flabel.c_str(), filter_idx == int(i))) {
+                            trigger->CollisionFilterIndex = uint32_t(i);
+                            physics.RemoveBody(r, entity);
+                            physics.AddBody(r, entity);
+                        }
+                    }
+                    EndCombo();
+                }
+            }
+
+            if (Button("Remove Trigger")) {
+                physics.RemoveBody(r, entity);
+                r.remove<PhysicsTrigger>(entity);
+            }
+
+            PopID();
         }
     }
 

@@ -93,6 +93,52 @@ public:
     }
 };
 
+// --- KHR collision filter ---
+
+// Custom GroupFilter implementing KHR_physics_rigid_bodies collision semantics.
+// Precomputes an NxN collision matrix from CollisionFilter definitions.
+class KHRCollisionFilter : public GroupFilter {
+    uint32_t N{0};
+    std::vector<uint8_t> Matrix; // N*N: Matrix[a*N+b] = 1 if filter a collides with filter b
+
+public:
+    explicit KHRCollisionFilter(const std::vector<CollisionFilter> &filters) { Update(filters); }
+
+    void Update(const std::vector<CollisionFilter> &filters) {
+        N = uint32_t(filters.size());
+        Matrix.assign(N * N, 1);
+        for (uint32_t a = 0; a < N; ++a) {
+            for (uint32_t b = 0; b < N; ++b) {
+                Matrix[a * N + b] = (DoesCollide(filters[a], filters[b]) && DoesCollide(filters[b], filters[a])) ? 1 : 0;
+            }
+        }
+    }
+
+    bool CanCollide(const CollisionGroup &g1, const CollisionGroup &g2) const override {
+        if (g1.GetGroupID() == CollisionGroup::cInvalidGroup || g2.GetGroupID() == CollisionGroup::cInvalidGroup) return true;
+        uint32_t a = g1.GetSubGroupID(), b = g2.GetSubGroupID();
+        if (a >= N || b >= N) return true;
+        return Matrix[a * N + b] != 0;
+    }
+
+    // KHR predicate: does X's collision systems pass Y's filter?
+    // Spec: A collides with B iff A.collisionSystems ⊆ B.collideWithSystems && A.collisionSystems ⊄ B.notCollideWithSystems
+    // Schema enforces mutual exclusivity of the two lists, so only one branch applies.
+    static bool DoesCollide(const CollisionFilter &x, const CollisionFilter &y) {
+        if (!y.CollideWithSystems.empty()) return IsSubsetOf(x.CollisionSystems, y.CollideWithSystems);
+        if (!y.NotCollideWithSystems.empty()) return !IsSubsetOf(x.CollisionSystems, y.NotCollideWithSystems);
+        return true; // No filter constraints = collides with everything
+    }
+
+    // Returns true if every element of `a` appears in `b`.
+    static bool IsSubsetOf(const std::vector<std::string> &a, const std::vector<std::string> &b) {
+        for (const auto &s : a) {
+            if (std::find(b.begin(), b.end(), s) == b.end()) return false;
+        }
+        return true;
+    }
+};
+
 // --- Snapshot data ---
 
 struct BodySnapshot {
@@ -116,6 +162,7 @@ struct PhysicsWorld::Impl {
 
     std::vector<Ref<Constraint>> Constraints;
     std::vector<BodySnapshot> Snapshots;
+    Ref<KHRCollisionFilter> FilterRef;
 
     Impl() {
         System.Init(
@@ -300,6 +347,15 @@ PhysicsWorld::~PhysicsWorld() = default;
 bool PhysicsWorld::HasBodies() const { return P->System.GetNumBodies() > 0; }
 uint32_t PhysicsWorld::BodyCount() const { return P->System.GetNumBodies(); }
 
+void PhysicsWorld::UpdateFilterTable() {
+    if (P->FilterRef) P->FilterRef->Update(Filters);
+}
+
+bool PhysicsWorld::DoFiltersCollide(uint32_t a, uint32_t b) const {
+    if (a >= Filters.size() || b >= Filters.size()) return true;
+    return KHRCollisionFilter::DoesCollide(Filters[a], Filters[b]) && KHRCollisionFilter::DoesCollide(Filters[b], Filters[a]);
+}
+
 void PhysicsWorld::Rebuild(entt::registry &r) {
     // Remove all existing constraints
     for (auto &c : P->Constraints) P->System.RemoveConstraint(c);
@@ -313,7 +369,10 @@ void PhysicsWorld::Rebuild(entt::registry &r) {
     }
     r.clear<PhysicsBodyHandle>();
 
-    // Create all bodies
+    // Build collision filter table
+    P->FilterRef = Filters.empty() ? nullptr : new KHRCollisionFilter(Filters);
+
+    // Create all collider bodies
     for (auto [entity, collider] : r.view<const PhysicsCollider>().each()) {
         const auto *mesh = collider.Shape.MeshEntity ? r.try_get<const Mesh>(*collider.Shape.MeshEntity) : nullptr;
         auto shape = CreateJoltShape(collider.Shape, mesh);
@@ -350,6 +409,58 @@ void PhysicsWorld::Rebuild(entt::registry &r) {
             const auto &mat = Materials[*collider.PhysicsMaterialIndex];
             bcs.mFriction = mat.DynamicFriction;
             bcs.mRestitution = mat.Restitution;
+        }
+
+        if (P->FilterRef && collider.CollisionFilterIndex.has_value() && *collider.CollisionFilterIndex < Filters.size()) {
+            bcs.mCollisionGroup = CollisionGroup(P->FilterRef, 0, *collider.CollisionFilterIndex);
+        }
+
+        Body *body = bi.CreateBody(bcs);
+        if (!body) continue;
+        bi.AddBody(body->GetID(), motion_type == EMotionType::Static ? EActivation::DontActivate : EActivation::Activate);
+        r.emplace_or_replace<PhysicsBodyHandle>(entity, PhysicsBodyHandle{body->GetID().GetIndexAndSequenceNumber()});
+    }
+
+    // Create trigger sensor bodies (for entities without a collider body)
+    for (auto [entity, trigger] : r.view<const PhysicsTrigger>().each()) {
+        if (!trigger.Shape.has_value()) continue; // Compound trigger — no own geometry
+        if (r.all_of<PhysicsBodyHandle>(entity)) continue; // Already has body from collider loop
+
+        const auto *mesh = trigger.Shape->MeshEntity ? r.try_get<const Mesh>(*trigger.Shape->MeshEntity) : nullptr;
+        auto shape = CreateJoltShape(*trigger.Shape, mesh);
+        if (!shape) continue;
+
+        const auto *transform = r.try_get<const Transform>(entity);
+        RVec3 pos = transform ? RVec3(transform->P.x, transform->P.y, transform->P.z) : RVec3::sZero();
+        Quat rot = transform ? ToJoltQuat(transform->R) : Quat::sIdentity();
+
+        if (transform && (transform->S.x != 1.0f || transform->S.y != 1.0f || transform->S.z != 1.0f)) {
+            shape = new ScaledShape(shape, ToJolt(transform->S));
+        }
+
+        const auto *motion = r.try_get<const PhysicsMotion>(entity);
+        EMotionType motion_type = EMotionType::Static;
+        ObjectLayer layer = Layers::NonMoving;
+        if (motion) {
+            motion_type = motion->IsKinematic ? EMotionType::Kinematic : EMotionType::Dynamic;
+            layer = Layers::Moving;
+        }
+
+        BodyCreationSettings bcs(shape, pos, rot, motion_type, layer);
+        bcs.mIsSensor = true;
+
+        if (motion) {
+            if (motion->Mass.has_value() && motion_type == EMotionType::Dynamic) {
+                bcs.mOverrideMassProperties = EOverrideMassProperties::CalculateInertia;
+                bcs.mMassPropertiesOverride.mMass = *motion->Mass;
+            }
+            bcs.mLinearVelocity = ToJolt(motion->LinearVelocity);
+            bcs.mAngularVelocity = ToJolt(motion->AngularVelocity);
+            bcs.mGravityFactor = motion->GravityFactor;
+        }
+
+        if (P->FilterRef && trigger.CollisionFilterIndex.has_value() && *trigger.CollisionFilterIndex < Filters.size()) {
+            bcs.mCollisionGroup = CollisionGroup(P->FilterRef, 0, *trigger.CollisionFilterIndex);
         }
 
         Body *body = bi.CreateBody(bcs);
@@ -408,10 +519,15 @@ void PhysicsWorld::Rebuild(entt::registry &r) {
 
 void PhysicsWorld::AddBody(entt::registry &r, entt::entity entity) {
     const auto *collider = r.try_get<const PhysicsCollider>(entity);
-    if (!collider) return;
+    const auto *trigger = r.try_get<const PhysicsTrigger>(entity);
 
-    const auto *mesh = collider->Shape.MeshEntity ? r.try_get<const Mesh>(*collider->Shape.MeshEntity) : nullptr;
-    auto shape = CreateJoltShape(collider->Shape, mesh);
+    // Collider takes priority; trigger-only needs a shape
+    bool is_sensor = !collider;
+    if (!collider && (!trigger || !trigger->Shape.has_value())) return;
+
+    const PhysicsShape &shape_ref = collider ? collider->Shape : *trigger->Shape;
+    const auto *mesh = shape_ref.MeshEntity ? r.try_get<const Mesh>(*shape_ref.MeshEntity) : nullptr;
+    auto shape = CreateJoltShape(shape_ref, mesh);
     if (!shape) return;
 
     const auto *transform = r.try_get<const Transform>(entity);
@@ -431,22 +547,27 @@ void PhysicsWorld::AddBody(entt::registry &r, entt::entity entity) {
     }
 
     BodyCreationSettings bcs(shape, pos, rot, motion_type, layer);
+    bcs.mIsSensor = is_sensor;
+
     if (motion) {
-        if (motion->Mass.has_value()) {
-            if (motion_type == EMotionType::Dynamic) {
-                bcs.mOverrideMassProperties = EOverrideMassProperties::CalculateInertia;
-                bcs.mMassPropertiesOverride.mMass = *motion->Mass;
-            }
+        if (motion->Mass.has_value() && motion_type == EMotionType::Dynamic) {
+            bcs.mOverrideMassProperties = EOverrideMassProperties::CalculateInertia;
+            bcs.mMassPropertiesOverride.mMass = *motion->Mass;
         }
         bcs.mLinearVelocity = ToJolt(motion->LinearVelocity);
         bcs.mAngularVelocity = ToJolt(motion->AngularVelocity);
         bcs.mGravityFactor = motion->GravityFactor;
     }
 
-    if (collider->PhysicsMaterialIndex.has_value() && *collider->PhysicsMaterialIndex < Materials.size()) {
+    if (collider && collider->PhysicsMaterialIndex.has_value() && *collider->PhysicsMaterialIndex < Materials.size()) {
         const auto &mat = Materials[*collider->PhysicsMaterialIndex];
         bcs.mFriction = mat.DynamicFriction;
         bcs.mRestitution = mat.Restitution;
+    }
+
+    auto filter_idx = collider ? collider->CollisionFilterIndex : trigger->CollisionFilterIndex;
+    if (P->FilterRef && filter_idx.has_value() && *filter_idx < Filters.size()) {
+        bcs.mCollisionGroup = CollisionGroup(P->FilterRef, 0, *filter_idx);
     }
 
     auto &bi = P->System.GetBodyInterface();
