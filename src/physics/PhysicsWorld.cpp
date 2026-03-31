@@ -31,6 +31,7 @@ JPH_SUPPRESS_WARNINGS
 
 #include <entt/entity/registry.hpp>
 
+#include <algorithm>
 #include <thread>
 #include <unordered_map>
 
@@ -100,6 +101,10 @@ struct CollisionMask {
 
 class KHRCollisionFilter : public GroupFilter {
     std::vector<CollisionMask> Masks;
+    // Each body gets a unique SubGroupID via RegisterBody(). This maps SubGroupID → KHR filter index.
+    std::vector<uint32_t> BodyFilterIndices; // UINT32_MAX = no KHR filter
+    // Pairs of SubGroupIDs that should not collide (from joints with EnableCollision=false).
+    std::vector<std::pair<uint32_t, uint32_t>> DisabledPairs; // sorted after FinalizeDisabledPairs()
 
 public:
     explicit KHRCollisionFilter(const std::vector<CollisionFilter> &filters) { Update(filters); }
@@ -126,10 +131,35 @@ public:
         }
     }
 
-    // Body-level filtering via Jolt CollisionGroup (SubGroupID = filter index).
+    // Register a body and return its unique SubGroupID. filterIndex is the KHR collision filter index.
+    uint32_t RegisterBody(std::optional<uint32_t> filterIndex = {}) {
+        uint32_t id = uint32_t(BodyFilterIndices.size());
+        BodyFilterIndices.push_back(filterIndex.value_or(UINT32_MAX));
+        return id;
+    }
+
+    // Mark a pair of bodies (by SubGroupID) as non-colliding. Call FinalizeDisabledPairs() when done.
+    void DisableCollision(uint32_t a, uint32_t b) {
+        DisabledPairs.push_back({std::min(a, b), std::max(a, b)});
+    }
+
+    void FinalizeDisabledPairs() {
+        std::sort(DisabledPairs.begin(), DisabledPairs.end());
+    }
+
     bool CanCollide(const CollisionGroup &g1, const CollisionGroup &g2) const override {
         if (g1.GetGroupID() == CollisionGroup::cInvalidGroup || g2.GetGroupID() == CollisionGroup::cInvalidGroup) return true;
-        return MasksCollide(g1.GetSubGroupID(), g2.GetSubGroupID());
+        uint32_t s1 = g1.GetSubGroupID(), s2 = g2.GetSubGroupID();
+        // Check joint pair exclusion
+        if (!DisabledPairs.empty()) {
+            auto key = std::make_pair(std::min(s1, s2), std::max(s1, s2));
+            if (std::binary_search(DisabledPairs.begin(), DisabledPairs.end(), key)) return false;
+        }
+        // Check KHR collision filter masks
+        uint32_t f1 = s1 < uint32_t(BodyFilterIndices.size()) ? BodyFilterIndices[s1] : UINT32_MAX;
+        uint32_t f2 = s2 < uint32_t(BodyFilterIndices.size()) ? BodyFilterIndices[s2] : UINT32_MAX;
+        if (f1 == UINT32_MAX || f2 == UINT32_MAX) return true;
+        return MasksCollide(f1, f2);
     }
 
     bool MasksCollide(uint32_t a, uint32_t b) const {
@@ -331,9 +361,9 @@ entt::entity FindBodyAncestor(const entt::registry &r, entt::entity e) {
 }
 
 void ConfigureJointSettings(SixDOFConstraintSettings &settings, const PhysicsJointDef &def) {
-    // Default: all axes fixed (locked to the attachment frame)
+    // Per KHR_physics_rigid_bodies, only axes mentioned in limits are constrained; all others are free.
     for (int a = 0; a < SixDOFConstraintSettings::EAxis::Num; ++a) {
-        settings.MakeFixedAxis(static_cast<SixDOFConstraintSettings::EAxis>(a));
+        settings.MakeFreeAxis(static_cast<SixDOFConstraintSettings::EAxis>(a));
     }
 
     // Apply limits — each limit entry may cover multiple axes
@@ -447,8 +477,12 @@ void PhysicsWorld::Rebuild(entt::registry &r) {
     P->ContactListener.Materials = &Materials;
 
     // Build collision filter bitmasks from string-based filter definitions.
-    P->FilterRef = Filters.empty() ? nullptr : new KHRCollisionFilter(Filters);
+    // Always create the filter — it also tracks joint pair collision exclusions.
+    P->FilterRef = new KHRCollisionFilter(Filters);
     P->ContactListener.Filter = P->FilterRef.GetPtr();
+
+    // Map body entities to unique SubGroupIDs for collision filtering.
+    std::unordered_map<entt::entity, uint32_t> body_sub_groups;
 
     // Per the KHR_physics_rigid_bodies spec, each collider belongs to its nearest ancestor
     // (or self) with PhysicsMotion. Colliders with no motion ancestor are static.
@@ -494,8 +528,13 @@ void PhysicsWorld::Rebuild(entt::registry &r) {
 
         BodyCreationSettings bcs(shape, pos, rot, motion_type, layer);
         ApplyPhysicsProperties(bcs, motion, collider, Materials);
-        if (P->FilterRef && collider && collider->CollisionFilterIndex.has_value() && *collider->CollisionFilterIndex < Filters.size()) {
-            bcs.mCollisionGroup = CollisionGroup(P->FilterRef, 0, *collider->CollisionFilterIndex);
+        {
+            std::optional<uint32_t> filterIdx;
+            if (collider && collider->CollisionFilterIndex.has_value() && *collider->CollisionFilterIndex < Filters.size())
+                filterIdx = *collider->CollisionFilterIndex;
+            uint32_t subGroupId = P->FilterRef->RegisterBody(filterIdx);
+            bcs.mCollisionGroup = CollisionGroup(P->FilterRef, 0, subGroupId);
+            body_sub_groups[body_entity] = subGroupId;
         }
         if (const auto *body = bi.CreateBody(bcs)) {
             bi.AddBody(body->GetID(), motion_type == EMotionType::Static ? EActivation::DontActivate : EActivation::Activate);
@@ -572,8 +611,13 @@ void PhysicsWorld::Rebuild(entt::registry &r) {
         BodyCreationSettings bcs{shape, pos, rot, motion_type, layer};
         bcs.mIsSensor = true;
         ApplyPhysicsProperties(bcs, motion, nullptr, Materials);
-        if (P->FilterRef && trigger.CollisionFilterIndex.has_value() && *trigger.CollisionFilterIndex < Filters.size()) {
-            bcs.mCollisionGroup = CollisionGroup(P->FilterRef, 0, *trigger.CollisionFilterIndex);
+        {
+            std::optional<uint32_t> filterIdx;
+            if (trigger.CollisionFilterIndex.has_value() && *trigger.CollisionFilterIndex < Filters.size())
+                filterIdx = *trigger.CollisionFilterIndex;
+            uint32_t subGroupId = P->FilterRef->RegisterBody(filterIdx);
+            bcs.mCollisionGroup = CollisionGroup(P->FilterRef, 0, subGroupId);
+            body_sub_groups[entity] = subGroupId;
         }
         if (const auto *body = bi.CreateBody(bcs)) {
             bi.AddBody(body->GetID(), motion_type == EMotionType::Static ? EActivation::DontActivate : EActivation::Activate);
@@ -603,15 +647,19 @@ void PhysicsWorld::Rebuild(entt::registry &r) {
         SixDOFConstraintSettings settings;
         settings.mSpace = EConstraintSpace::WorldSpace;
 
-        // Joint anchor at the joint node's world position
-        const auto *jt = r.try_get<const Transform>(entity);
-        if (jt) {
+        // Attachment frames from the joint node (A) and connected node (B) world transforms.
+        if (const auto *jt = r.try_get<const Transform>(entity)) {
             const RVec3 anchor{jt->P.x, jt->P.y, jt->P.z};
             settings.mPosition1 = settings.mPosition2 = anchor;
-            // Derive constraint frame axes from joint node rotation
             const auto rot_mat = glm::mat3_cast(glm::normalize(jt->R));
             settings.mAxisX1 = settings.mAxisX2 = Vec3(rot_mat[0].x, rot_mat[0].y, rot_mat[0].z);
             settings.mAxisY1 = settings.mAxisY2 = Vec3(rot_mat[1].x, rot_mat[1].y, rot_mat[1].z);
+        }
+        if (const auto *ct = r.try_get<const Transform>(joint.ConnectedNode)) {
+            settings.mPosition2 = RVec3{ct->P.x, ct->P.y, ct->P.z};
+            const auto rot_mat = glm::mat3_cast(glm::normalize(ct->R));
+            settings.mAxisX2 = Vec3(rot_mat[0].x, rot_mat[0].y, rot_mat[0].z);
+            settings.mAxisY2 = Vec3(rot_mat[1].x, rot_mat[1].y, rot_mat[1].z);
         }
 
         ConfigureJointSettings(settings, def);
@@ -620,11 +668,24 @@ void PhysicsWorld::Rebuild(entt::registry &r) {
         const BodyLockWrite lock2{lock_iface, BodyID(h2->BodyId)};
         if (!lock1.Succeeded() || !lock2.Succeeded()) continue;
 
-        auto *constraint = static_cast<SixDOFConstraint *>(settings.Create(lock1.GetBody(), lock2.GetBody()));
+        auto &b1 = lock1.GetBody(), &b2 = lock2.GetBody();
+        auto *constraint = static_cast<SixDOFConstraint *>(settings.Create(b1, b2));
         ApplyDriveTargets(*constraint, def);
         P->System.AddConstraint(constraint);
         P->Constraints.emplace_back(constraint);
+
+        // Keep all non-static bodies in constraints awake.
+        if (!b1.IsStatic()) b1.SetAllowSleeping(false);
+        if (!b2.IsStatic()) b2.SetAllowSleeping(false);
+
+        // Disable collision between connected bodies unless explicitly enabled.
+        if (!joint.EnableCollision) {
+            auto it1 = body_sub_groups.find(body1_entity), it2 = body_sub_groups.find(body2_entity);
+            if (it1 != body_sub_groups.end() && it2 != body_sub_groups.end())
+                P->FilterRef->DisableCollision(it1->second, it2->second);
+        }
     }
+    P->FilterRef->FinalizeDisabledPairs();
 
     P->System.OptimizeBroadPhase();
 }
@@ -660,9 +721,12 @@ void PhysicsWorld::AddBody(entt::registry &r, entt::entity entity) {
     BodyCreationSettings bcs{shape, pos, rot, motion_type, layer};
     bcs.mIsSensor = is_sensor;
     ApplyPhysicsProperties(bcs, motion, collider, Materials);
-    const auto filter_idx = collider ? collider->CollisionFilterIndex : trigger->CollisionFilterIndex;
-    if (P->FilterRef && filter_idx.has_value() && *filter_idx < Filters.size()) {
-        bcs.mCollisionGroup = CollisionGroup(P->FilterRef, 0, *filter_idx);
+    if (P->FilterRef) {
+        const auto filter_idx = collider ? collider->CollisionFilterIndex : trigger->CollisionFilterIndex;
+        std::optional<uint32_t> filterIdx;
+        if (filter_idx.has_value() && *filter_idx < Filters.size()) filterIdx = *filter_idx;
+        uint32_t subGroupId = P->FilterRef->RegisterBody(filterIdx);
+        bcs.mCollisionGroup = CollisionGroup(P->FilterRef, 0, subGroupId);
     }
 
     auto &bi = P->System.GetBodyInterface();
@@ -687,10 +751,10 @@ void PhysicsWorld::Step(entt::registry &r, float dt) {
     P->System.SetGravity(ToJolt(Gravity));
     P->System.Update(dt, SubSteps, &P->TempAllocator, &P->JobSystem);
 
-    // Sync Jolt → ECS for dynamic bodies
+    // Sync Jolt → ECS for dynamic and kinematic bodies.
+    // Kinematic bodies move according to their velocity in Jolt and must be read back.
     auto &bi = P->System.GetBodyInterface();
     for (auto [entity, motion, handle] : r.view<PhysicsMotion, PhysicsBodyHandle>().each()) {
-        if (motion.IsKinematic) continue;
         BodyID id{handle.BodyId};
         if (!bi.IsActive(id)) continue;
 
