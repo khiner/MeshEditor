@@ -333,9 +333,29 @@ Ref<Shape> CreateJoltShape(const PhysicsShape &shape, const Mesh *mesh) {
 void ApplyPhysicsProperties(BodyCreationSettings &bcs, const PhysicsMotion *motion, const PhysicsCollider *collider, const std::vector<::PhysicsMaterial> &materials) {
     bcs.mUserData = NoMaterialSentinel;
     if (motion) {
-        if (motion->Mass.has_value() && bcs.mMotionType == EMotionType::Dynamic) {
-            bcs.mOverrideMassProperties = EOverrideMassProperties::CalculateInertia;
-            bcs.mMassPropertiesOverride.mMass = *motion->Mass;
+        if (bcs.mMotionType == EMotionType::Dynamic) {
+            const float mass = motion->Mass.value_or(0.0f);
+
+            // KHR spec: mass=0 means infinite mass (can't translate).
+            auto dofs = EAllowedDOFs::All;
+            if (mass == 0.0f)
+                dofs = dofs & ~(EAllowedDOFs::TranslationX | EAllowedDOFs::TranslationY | EAllowedDOFs::TranslationZ);
+            bcs.mAllowedDOFs = dofs;
+
+            // Jolt needs positive mass when any DOF is allowed.
+            if (motion->Mass.has_value()) {
+                const float m = mass > 0.0f ? mass : 1.0f;
+                // MeshShape can't compute mass properties automatically - provide placeholders
+                // (overridden post-creation by SetInverseInertia when inertiaDiagonal is set)
+                const bool is_mesh = collider && collider->Shape.Type == PhysicsShapeType::TriangleMesh;
+                bcs.mMassPropertiesOverride.mMass = m;
+                if (is_mesh) {
+                    bcs.mOverrideMassProperties = EOverrideMassProperties::MassAndInertiaProvided;
+                    bcs.mMassPropertiesOverride.mInertia = Mat44::sScale(Vec3::sReplicate(m / 6.0f));
+                } else {
+                    bcs.mOverrideMassProperties = EOverrideMassProperties::CalculateInertia;
+                }
+            }
         }
         bcs.mLinearVelocity = ToJolt(motion->LinearVelocity);
         bcs.mAngularVelocity = ToJolt(motion->AngularVelocity);
@@ -468,8 +488,8 @@ void PhysicsWorld::Rebuild(entt::registry &r) {
     // Remove all existing bodies
     auto &bi = P->System.GetBodyInterface();
     for (auto [entity, handle] : r.view<PhysicsBodyHandle>().each()) {
-        bi.RemoveBody(BodyID(handle.BodyId));
-        bi.DestroyBody(BodyID(handle.BodyId));
+        bi.RemoveBody(BodyID{handle.BodyId});
+        bi.DestroyBody(BodyID{handle.BodyId});
     }
     r.clear<PhysicsBodyHandle>();
 
@@ -504,10 +524,15 @@ void PhysicsWorld::Rebuild(entt::registry &r) {
         else static_colliders.push_back(entity);
     }
 
-    auto make_jolt_shape = [&](const PhysicsCollider &collider, entt::entity entity, bool is_dynamic) -> Ref<Shape> {
+    auto make_jolt_shape = [&](const PhysicsCollider &collider, entt::entity entity, bool is_dynamic, const PhysicsMotion *motion = nullptr) -> Ref<Shape> {
         auto effective_shape = collider.Shape;
-        // Jolt doesn't support MeshShape vs MeshShape collision; promote to ConvexHull for dynamic bodies.
-        if (effective_shape.Type == PhysicsShapeType::TriangleMesh && is_dynamic) effective_shape.Type = PhysicsShapeType::ConvexHull;
+        // Jolt doesn't support MeshShape vs MeshShape collision.
+        // Promote dynamic bodies that can translate (mass > 0) to ConvexHull, since they may collide with static meshes.
+        // Translation-locked bodies (mass=0) keep MeshShape - they only get hit by other (non-mesh) dynamic bodies.
+        if (effective_shape.Type == PhysicsShapeType::TriangleMesh && is_dynamic) {
+            const float mass = motion ? motion->Mass.value_or(0.f) : 0.f;
+            if (mass > 0.0f) effective_shape.Type = PhysicsShapeType::ConvexHull;
+        }
         const auto *mesh = effective_shape.MeshEntity ? r.try_get<const Mesh>(*effective_shape.MeshEntity) : nullptr;
         auto shape = CreateJoltShape(effective_shape, mesh);
         if (!shape) return {};
@@ -522,7 +547,7 @@ void PhysicsWorld::Rebuild(entt::registry &r) {
     auto create_body = [&](Ref<Shape> shape, const Transform *t, EMotionType motion_type,
                            const PhysicsMotion *motion, const PhysicsCollider *collider, entt::entity body_entity) {
         if (!shape) return;
-        const auto pos = t ? RVec3(t->P.x, t->P.y, t->P.z) : RVec3::sZero();
+        const auto pos = t ? RVec3{t->P.x, t->P.y, t->P.z} : RVec3::sZero();
         const auto rot = t ? ToJoltQuat(t->R) : Quat::sIdentity();
         const auto layer = motion_type == EMotionType::Static ? Layers::NonMoving : Layers::Moving;
 
@@ -539,6 +564,16 @@ void PhysicsWorld::Rebuild(entt::registry &r) {
         if (const auto *body = bi.CreateBody(bcs)) {
             bi.AddBody(body->GetID(), motion_type == EMotionType::Static ? EActivation::DontActivate : EActivation::Activate);
             r.emplace_or_replace<PhysicsBodyHandle>(body_entity, PhysicsBodyHandle{body->GetID().GetIndexAndSequenceNumber()});
+
+            // Override inverse inertia directly for explicit inertiaDiagonal.
+            // Zero components become zero inverse inertia (infinite inertia = locked),
+            // handled correctly in the body-local inertia frame.
+            if (motion && motion->InertiaDiagonal && body->IsDynamic()) {
+                const auto &d = *motion->InertiaDiagonal;
+                const Vec3 inv_diag{d.x > 0 ? 1.f / d.x : 0.f, d.y > 0 ? 1.f / d.y : 0.f, d.z > 0 ? 1.f / d.z : 0.f};
+                const auto rot = motion->InertiaOrientation ? ToJoltQuat(*motion->InertiaOrientation) : Quat::sIdentity();
+                const_cast<Body *>(body)->GetMotionProperties()->SetInverseInertia(inv_diag, rot);
+            }
         }
     };
 
@@ -560,7 +595,7 @@ void PhysicsWorld::Rebuild(entt::registry &r) {
         if (colliders.size() == 1 && colliders[0] == motion_entity) {
             // Single collider on the motion node itself — use directly.
             single_collider = &r.get<const PhysicsCollider>(motion_entity);
-            shape = make_jolt_shape(*single_collider, motion_entity, is_dynamic);
+            shape = make_jolt_shape(*single_collider, motion_entity, is_dynamic, &motion);
         } else {
             // Compound: gather child collider shapes relative to the motion node.
             const auto inv_parent = body_transform ? glm::inverse(glm::translate(mat4{1}, body_transform->P) * glm::mat4_cast(glm::normalize(body_transform->R))) : mat4{1};
@@ -568,13 +603,13 @@ void PhysicsWorld::Rebuild(entt::registry &r) {
             StaticCompoundShapeSettings compound;
             for (auto ce : colliders) {
                 const auto &child_collider = r.get<const PhysicsCollider>(ce);
-                const auto sub = make_jolt_shape(child_collider, ce, is_dynamic);
+                const auto sub = make_jolt_shape(child_collider, ce, is_dynamic, &motion);
                 if (!sub) continue;
                 // Compute collider transform relative to the motion node.
                 const auto *wt = r.try_get<const WorldTransform>(ce);
                 const auto world = wt ? ToMatrix(*wt) : mat4{1};
                 const auto rel = inv_parent * world;
-                compound.AddShape(ToJolt(vec3(rel[3])), ToJoltQuat(glm::normalize(glm::quat_cast(glm::mat3(rel)))), sub);
+                compound.AddShape(ToJolt(vec3{rel[3]}), ToJoltQuat(glm::normalize(glm::quat_cast(glm::mat3{rel}))), sub);
             }
             if (compound.mSubShapes.empty()) continue;
 
