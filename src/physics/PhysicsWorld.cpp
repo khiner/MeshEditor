@@ -646,6 +646,9 @@ void PhysicsWorld::Rebuild(entt::registry &r) {
 
         SixDOFConstraintSettings settings;
         settings.mSpace = EConstraintSpace::WorldSpace;
+        // Default Cone swing couples Y/Z into an ellipse, which degenerates when one
+        // axis is locked. Pyramid gives independent per-axis angular limits.
+        settings.mSwingType = ESwingType::Pyramid;
 
         // Attachment frames from the joint node (A) and connected node (B) world transforms.
         if (const auto *jt = r.try_get<const Transform>(entity)) {

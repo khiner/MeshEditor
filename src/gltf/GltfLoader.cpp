@@ -1322,7 +1322,8 @@ std::expected<Scene, std::string> LoadScene(const std::filesystem::path &path) {
                 drive.Type = drv.type == fastgltf::DriveType::Angular ? PhysicsDriveType::Angular : PhysicsDriveType::Linear;
                 drive.Mode = drv.mode == fastgltf::DriveMode::Acceleration ? PhysicsDriveMode::Acceleration : PhysicsDriveMode::Force;
                 drive.Axis = drv.axis;
-                drive.MaxForce = float(drv.maxForce);
+                // fastgltf zero-initializes maxForce when absent; KHR spec defaults to FLT_MAX.
+                if (drv.maxForce > 0) drive.MaxForce = float(drv.maxForce);
                 drive.PositionTarget = float(drv.positionTarget);
                 drive.VelocityTarget = float(drv.velocityTarget);
                 drive.Stiffness = float(drv.stiffness);
