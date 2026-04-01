@@ -51,4 +51,4 @@
 	url = git@github.com:BinomialLLC/basis_universal.git
 [submodule "lib/JoltPhysics"]
 	path = lib/JoltPhysics
-	url = git@github.com:jrouwe/JoltPhysics.git
+	url = git@github.com:khiner/JoltPhysics.git
