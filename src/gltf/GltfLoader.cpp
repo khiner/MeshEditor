@@ -1423,7 +1423,13 @@ std::expected<Scene, std::string> LoadScene(const std::filesystem::path &path) {
                 collider.PhysicsMaterialIndex = ToIndex(rb->collider->physicsMaterial, asset.physicsMaterials.size());
                 collider.CollisionFilterIndex = ToIndex(rb->collider->collisionFilter, asset.collisionFilters.size());
                 node.Collider = std::move(collider);
-                node.ColliderGeometryMeshIndex = ToIndex(rb->collider->geometry.mesh, asset.meshes.size());
+                // Ensure collider-referenced meshes are loaded even if no node renders them,
+                // and store the remapped scene->Meshes index (not raw glTF index).
+                if (auto raw_mesh_idx = ToIndex(rb->collider->geometry.mesh, asset.meshes.size())) {
+                    auto ensured = EnsureMeshData(asset, *raw_mesh_idx, scene, mesh_index_map);
+                    if (!ensured) return std::unexpected{std::move(ensured.error())};
+                    node.ColliderGeometryMeshIndex = *ensured;
+                }
             }
             if (rb->trigger) {
                 Node::TriggerData trigger;

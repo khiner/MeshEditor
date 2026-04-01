@@ -18,6 +18,7 @@
 #include "Jolt/Physics/Collision/Shape/SphereShape.h"
 #include "Jolt/Physics/Collision/Shape/StaticCompoundShape.h"
 #include "Jolt/Physics/Collision/Shape/TaperedCapsuleShape.h"
+#include "Jolt/Physics/Collision/SimShapeFilter.h"
 #include "Jolt/Physics/Constraints/SixDOFConstraint.h"
 #include "Jolt/Physics/PhysicsSettings.h"
 #include "Jolt/Physics/PhysicsSystem.h"
@@ -34,6 +35,7 @@ JPH_SUPPRESS_WARNINGS
 #include <algorithm>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 
 using namespace JPH;
 using namespace JPH::literals;
@@ -193,6 +195,14 @@ float ApplyCombineMode(PhysicsCombineMode mode, float a, float b) {
     return (a + b) * 0.5f;
 }
 
+// Jolt doesn't support MeshShape vs MeshShape collision — reject before dispatch.
+class MeshVsMeshShapeFilter : public SimShapeFilter {
+public:
+    bool ShouldCollide(const Body &, const Shape *inShape1, const SubShapeID &, const Body &, const Shape *inShape2, const SubShapeID &) const override {
+        return !(inShape1->GetSubType() == EShapeSubType::Mesh && inShape2->GetSubType() == EShapeSubType::Mesh);
+    }
+};
+
 // Contact listener that:
 // 1. Per-sub-shape collision filtering for compound bodies — Shape::mUserData stores filter index + 1
 //    (0 = no filter), looked up in the KHRCollisionFilter's mask table. Jolt's CollisionGroup handles
@@ -268,6 +278,7 @@ struct PhysicsWorld::Impl {
     std::vector<BodySnapshot> Snapshots;
     Ref<KHRCollisionFilter> FilterRef;
     KHRContactListener ContactListener;
+    MeshVsMeshShapeFilter MeshFilter;
 
     Impl() {
         System.Init(
@@ -280,6 +291,15 @@ struct PhysicsWorld::Impl {
             ObjectPairFilter
         );
         System.SetContactListener(&ContactListener);
+        System.SetSimShapeFilter(&MeshFilter);
+        // Jolt MeshShape is single-sided by default.
+        // Enable back-face collision so mesh colliders block from both sides.
+        System.SetSimCollideBodyVsBody([](const Body &b1, const Body &b2, Mat44Arg t1, Mat44Arg t2,
+                                          CollideShapeSettings &settings, CollideShapeCollector &collector,
+                                          const ShapeFilter &filter) {
+            settings.mBackFaceMode = EBackFaceMode::CollideWithBackFaces;
+            PhysicsSystem::sDefaultSimCollideBodyVsBody(b1, b2, t1, t2, settings, collector, filter);
+        });
     }
 };
 
@@ -320,7 +340,9 @@ Ref<Shape> CreateJoltShape(const PhysicsShape &shape, const Mesh *mesh) {
             const auto indices = mesh->CreateTriangleIndices();
             IndexedTriangleList triangles;
             triangles.reserve(indices.size() / 3);
-            for (size_t i = 0; i + 2 < indices.size(); i += 3) triangles.emplace_back(indices[i], indices[i + 1], indices[i + 2]);
+            for (size_t i = 0; i + 2 < indices.size(); i += 3) {
+                triangles.emplace_back(indices[i], indices[i + 1], indices[i + 2]);
+            }
             MeshShapeSettings settings{std::move(vertices), std::move(triangles)};
             if (const auto result = settings.Create(); result.IsValid()) return result.Get();
             break;
@@ -345,17 +367,17 @@ void ApplyPhysicsProperties(BodyCreationSettings &bcs, const PhysicsMotion *moti
             // Jolt needs positive mass when any DOF is allowed.
             if (motion->Mass.has_value()) {
                 const float m = mass > 0.0f ? mass : 1.0f;
-                // MeshShape can't compute mass properties automatically - provide placeholders
-                // (overridden post-creation by SetInverseInertia when inertiaDiagonal is set)
-                const bool is_mesh = collider && collider->Shape.Type == PhysicsShapeType::TriangleMesh;
                 bcs.mMassPropertiesOverride.mMass = m;
-                if (is_mesh) {
-                    bcs.mOverrideMassProperties = EOverrideMassProperties::MassAndInertiaProvided;
-                    bcs.mMassPropertiesOverride.mInertia = Mat44::sScale(Vec3::sReplicate(m / 6.0f));
-                } else {
-                    bcs.mOverrideMassProperties = EOverrideMassProperties::CalculateInertia;
-                }
+                bcs.mOverrideMassProperties = EOverrideMassProperties::CalculateInertia;
             }
+        }
+        // MeshShape can't compute mass properties — provide placeholders for any non-static body.
+        const bool is_mesh = collider && collider->Shape.Type == PhysicsShapeType::TriangleMesh;
+        if (is_mesh && bcs.mMotionType != EMotionType::Static) {
+            const float m = motion->Mass.value_or(1.0f);
+            bcs.mOverrideMassProperties = EOverrideMassProperties::MassAndInertiaProvided;
+            bcs.mMassPropertiesOverride.mMass = m > 0.0f ? m : 1.0f;
+            bcs.mMassPropertiesOverride.mInertia = Mat44::sScale(Vec3::sReplicate(bcs.mMassPropertiesOverride.mMass / 6.0f));
         }
         bcs.mLinearVelocity = ToJolt(motion->LinearVelocity);
         bcs.mAngularVelocity = ToJolt(motion->AngularVelocity);
@@ -517,6 +539,26 @@ void PhysicsWorld::Rebuild(entt::registry &r) {
         return entt::null;
     };
 
+    { // Scale physics tolerances to scene size - default 0.02m slop/speculative distance is too large for small scenes.
+        float min_dim = std::numeric_limits<float>::max();
+        for (auto [entity, collider] : r.view<const PhysicsCollider>().each()) {
+            const auto &s = collider.Shape;
+            switch (s.Type) {
+                case PhysicsShapeType::Sphere: min_dim = std::min(min_dim, s.Radius); break;
+                case PhysicsShapeType::Box: min_dim = std::min(min_dim, std::min({s.Size.x, s.Size.y, s.Size.z})); break;
+                case PhysicsShapeType::Capsule:
+                case PhysicsShapeType::Cylinder: min_dim = std::min(min_dim, std::min({s.RadiusTop, s.RadiusBottom, s.Height})); break;
+                default: break; // Mesh shapes — no analytic size
+            }
+        }
+        auto settings = P->System.GetPhysicsSettings();
+        if (min_dim < std::numeric_limits<float>::max()) {
+            settings.mPenetrationSlop = std::min(settings.mPenetrationSlop, min_dim * 0.02f);
+            settings.mSpeculativeContactDistance = std::min(settings.mSpeculativeContactDistance, min_dim * 0.02f);
+        }
+        P->System.SetPhysicsSettings(settings);
+    }
+
     std::unordered_map<entt::entity, std::vector<entt::entity>> motion_colliders; // motion entity → collider entities
     std::vector<entt::entity> static_colliders;
     for (auto [entity, collider] : r.view<const PhysicsCollider>().each()) {
@@ -524,14 +566,40 @@ void PhysicsWorld::Rebuild(entt::registry &r) {
         else static_colliders.push_back(entity);
     }
 
-    auto make_jolt_shape = [&](const PhysicsCollider &collider, entt::entity entity, bool is_dynamic, const PhysicsMotion *motion = nullptr) -> Ref<Shape> {
+    // Jolt doesn't support MeshShape vs MeshShape collision (SimShapeFilter rejects these as a safety net).
+    // Promote dynamic TriangleMesh to ConvexHull when:
+    //   1. Collision filters allow contact with a static TriangleMesh (otherwise no risk)
+    //   2. The body is NOT joint-constrained (constrained bodies rely on precise concave geometry)
+    // Kinematic bodies always keep MeshShape — they act like moving static bodies.
+
+    // Collect collision filter indices of all static TriangleMesh colliders.
+    std::vector<std::optional<uint32_t>> static_mesh_filter_indices;
+    for (auto entity : static_colliders) {
+        const auto &collider = r.get<const PhysicsCollider>(entity);
+        if (collider.Shape.Type == PhysicsShapeType::TriangleMesh)
+            static_mesh_filter_indices.push_back(collider.CollisionFilterIndex);
+    }
+
+    auto could_hit_static_mesh = [&](std::optional<uint32_t> filterIdx) {
+        for (const auto &smf : static_mesh_filter_indices) {
+            if (!filterIdx || !smf) return true; // no filter = collides with everything
+            if (P->FilterRef && P->FilterRef->MasksCollide(*filterIdx, *smf)) return true;
+        }
+        return false;
+    };
+
+    // Collect motion entities that are constrained by joints (joint's body ancestor = motion owner).
+    std::unordered_set<entt::entity> joint_constrained_bodies;
+    for (auto [entity, joint] : r.view<const PhysicsJoint>().each()) {
+        if (auto owner = find_motion_owner(entity); owner != entt::null)
+            joint_constrained_bodies.insert(owner);
+    }
+
+    auto make_jolt_shape = [&](const PhysicsCollider &collider, entt::entity entity, bool is_dynamic, const PhysicsMotion *motion = nullptr, entt::entity motion_entity = entt::null) -> Ref<Shape> {
         auto effective_shape = collider.Shape;
-        // Jolt doesn't support MeshShape vs MeshShape collision.
-        // Promote dynamic bodies that can translate (mass > 0) to ConvexHull, since they may collide with static meshes.
-        // Translation-locked bodies (mass=0) keep MeshShape - they only get hit by other (non-mesh) dynamic bodies.
-        if (effective_shape.Type == PhysicsShapeType::TriangleMesh && is_dynamic) {
-            const float mass = motion ? motion->Mass.value_or(0.f) : 0.f;
-            if (mass > 0.0f) effective_shape.Type = PhysicsShapeType::ConvexHull;
+        if (effective_shape.Type == PhysicsShapeType::TriangleMesh && is_dynamic && motion && !motion->IsKinematic) {
+            if (could_hit_static_mesh(collider.CollisionFilterIndex) && !joint_constrained_bodies.contains(motion_entity))
+                effective_shape.Type = PhysicsShapeType::ConvexHull;
         }
         const auto *mesh = effective_shape.MeshEntity ? r.try_get<const Mesh>(*effective_shape.MeshEntity) : nullptr;
         auto shape = CreateJoltShape(effective_shape, mesh);
@@ -580,7 +648,8 @@ void PhysicsWorld::Rebuild(entt::registry &r) {
     // Static colliders: one body each.
     for (auto entity : static_colliders) {
         const auto &collider = r.get<const PhysicsCollider>(entity);
-        create_body(make_jolt_shape(collider, entity, false), r.try_get<const Transform>(entity), EMotionType::Static, nullptr, &collider, entity);
+        auto shape = make_jolt_shape(collider, entity, false);
+        create_body(std::move(shape), r.try_get<const Transform>(entity), EMotionType::Static, nullptr, &collider, entity);
     }
 
     // Dynamic/kinematic bodies: one body per motion entity, compound if multiple colliders.
@@ -595,7 +664,7 @@ void PhysicsWorld::Rebuild(entt::registry &r) {
         if (colliders.size() == 1 && colliders[0] == motion_entity) {
             // Single collider on the motion node itself — use directly.
             single_collider = &r.get<const PhysicsCollider>(motion_entity);
-            shape = make_jolt_shape(*single_collider, motion_entity, is_dynamic, &motion);
+            shape = make_jolt_shape(*single_collider, motion_entity, is_dynamic, &motion, motion_entity);
         } else {
             // Compound: gather child collider shapes relative to the motion node.
             const auto inv_parent = body_transform ? glm::inverse(glm::translate(mat4{1}, body_transform->P) * glm::mat4_cast(glm::normalize(body_transform->R))) : mat4{1};
@@ -603,7 +672,7 @@ void PhysicsWorld::Rebuild(entt::registry &r) {
             StaticCompoundShapeSettings compound;
             for (auto ce : colliders) {
                 const auto &child_collider = r.get<const PhysicsCollider>(ce);
-                const auto sub = make_jolt_shape(child_collider, ce, is_dynamic, &motion);
+                const auto sub = make_jolt_shape(child_collider, ce, is_dynamic, &motion, motion_entity);
                 if (!sub) continue;
                 // Compute collider transform relative to the motion node.
                 const auto *wt = r.try_get<const WorldTransform>(ce);
@@ -668,14 +737,13 @@ void PhysicsWorld::Rebuild(entt::registry &r) {
 
         // Body 1: nearest ancestor (or self) with a physics body
         const auto body1_entity = FindBodyAncestor(r, entity);
-        // Body 2: the connected node (should itself be a body, or find its body ancestor)
-        const auto body2_entity = FindBodyAncestor(r, joint.ConnectedNode);
-        if (body1_entity == entt::null || body2_entity == entt::null) continue;
-        if (body1_entity == body2_entity) continue;
-
+        if (body1_entity == entt::null) continue;
         const auto *h1 = r.try_get<const PhysicsBodyHandle>(body1_entity);
-        const auto *h2 = r.try_get<const PhysicsBodyHandle>(body2_entity);
-        if (!h1 || !h2) continue;
+        if (!h1) continue;
+
+        // Body 2: find ancestor body, or constrain to world if none exists.
+        const auto body2_entity = FindBodyAncestor(r, joint.ConnectedNode);
+        const auto *h2 = body2_entity != entt::null ? r.try_get<const PhysicsBodyHandle>(body2_entity) : nullptr;
 
         const auto &def = JointDefs[joint.JointDefIndex];
 
@@ -703,10 +771,12 @@ void PhysicsWorld::Rebuild(entt::registry &r) {
         ConfigureJointSettings(settings, def);
 
         const BodyLockWrite lock1{lock_iface, BodyID(h1->BodyId)};
-        const BodyLockWrite lock2{lock_iface, BodyID(h2->BodyId)};
-        if (!lock1.Succeeded() || !lock2.Succeeded()) continue;
+        std::optional<BodyLockWrite> lock2_opt;
+        if (h2) lock2_opt.emplace(lock_iface, BodyID{h2->BodyId});
+        if (!lock1.Succeeded() || (lock2_opt && !lock2_opt->Succeeded())) continue;
 
-        auto &b1 = lock1.GetBody(), &b2 = lock2.GetBody();
+        auto &b1 = lock1.GetBody();
+        auto &b2 = h2 ? lock2_opt->GetBody() : Body::sFixedToWorld;
         auto *constraint = static_cast<SixDOFConstraint *>(settings.Create(b1, b2));
         ApplyDriveTargets(*constraint, def);
         P->System.AddConstraint(constraint);
@@ -717,7 +787,7 @@ void PhysicsWorld::Rebuild(entt::registry &r) {
         if (!b2.IsStatic()) b2.SetAllowSleeping(false);
 
         // Disable collision between connected bodies unless explicitly enabled.
-        if (!joint.EnableCollision) {
+        if (!joint.EnableCollision && h2) {
             auto it1 = body_sub_groups.find(body1_entity), it2 = body_sub_groups.find(body2_entity);
             if (it1 != body_sub_groups.end() && it2 != body_sub_groups.end())
                 P->FilterRef->DisableCollision(it1->second, it2->second);
