@@ -153,8 +153,11 @@ $ git clone --recurse-submodules git@github.com:khiner/MeshEditor.git
 $ cd MeshEditor
 $ ./script/Clean # optionally clean first
 $ ./script/Build [--release]
-$ cd build && ./MeshEditor
+$ cd build && ./MeshEditor [file] [--quiet|-q]
 ```
+
+* `file` can be a `.gltf`, `.glb`, `.obj`, or `.ply`. Without a file, a default cube is loaded.
+* `--quiet` / `-q` suppresses timer output.
 
 ## Stack
 
@@ -183,6 +186,11 @@ $ cd build && ./MeshEditor
 For discrete GPUs, enable staged transfers:
 ```shell
 $ cmake -B build -DMVK_FORCE_STAGED_TRANSFERS=ON .
+```
+
+**Quiet mode**: Disable timer output at compile time (equivalent to always passing `--quiet`):
+```shell
+$ cmake -B build -DQUIET=ON .
 ```
 
 ### Update submodules

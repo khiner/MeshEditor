@@ -1,4 +1,5 @@
 #include "Scene.h"
+#include "Timer.h"
 #include "Window.h"
 #include "audio/AcousticScene.h"
 #include "audio/AudioDevice.h"
@@ -22,7 +23,7 @@
 #include <numeric>
 #include <ranges>
 
-using std::ranges::any_of, std::ranges::distance, std::ranges::find_if, std::ranges::to;
+using std::ranges::any_of, std::ranges::distance, std::ranges::find_if, std::ranges::find_if_not, std::ranges::to;
 namespace fs = std::filesystem;
 
 // #define IMGUI_UNLIMITED_FRAME_RATE
@@ -306,7 +307,9 @@ std::expected<void, std::string> LoadFile(Scene &scene, const fs::path &path) {
     return {};
 }
 
-void run(const char *initial_file) {
+void run(const char *initial_file, bool quiet) {
+    Timer::Enabled = !quiet;
+
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) {
         throw std::runtime_error(std::format("SDL_Init error: {}", SDL_GetError()));
     }
@@ -669,6 +672,17 @@ int main(int argc, char **argv) {
         std::abort();
     });
 
-    run(argc > 1 ? argv[1] : nullptr);
+    const std::span args{argv + 1, argv + argc};
+    const auto is_flag = [](const char *a) { return std::string_view{a}.starts_with('-'); };
+    const auto file_it = find_if_not(args, is_flag);
+    const char *const initial_file = file_it != args.end() ? *file_it : nullptr;
+    const bool quiet =
+#ifdef QUIET
+        true;
+#else
+        any_of(args, [](const char *a) { return std::string_view{a} == "--quiet" || std::string_view{a} == "-q"; });
+#endif
+
+    run(initial_file, quiet);
     return 0;
 }

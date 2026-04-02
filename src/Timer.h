@@ -6,6 +6,8 @@
 #include <vector>
 
 struct Timer {
+    static inline bool Enabled{true};
+
     Timer(std::string_view name) : Name{name}, InitialDepth{Depth++}, Seq{uint32_t(Pending.size())} {
         Pending.emplace_back(InitialDepth, Name, 0.f);
     }
@@ -13,7 +15,9 @@ struct Timer {
         --Depth;
         Pending[Seq].Ms = std::chrono::duration<float, std::milli>{std::chrono::steady_clock::now() - Start}.count();
         if (InitialDepth == 0) {
-            for (const auto &e : Pending) std::println("{:>{}}{}: ms={:.3f}", "", e.Depth * 2, e.Name, e.Ms);
+            if (Enabled) {
+                for (const auto &e : Pending) std::println("{:>{}}{}: ms={:.3f}", "", e.Depth * 2, e.Name, e.Ms);
+            }
             Pending.clear();
         }
     }

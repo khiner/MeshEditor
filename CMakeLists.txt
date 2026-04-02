@@ -184,6 +184,11 @@ if(MVK_FORCE_STAGED_TRANSFERS)
     target_compile_definitions(${PROJECT_NAME} PRIVATE MVK_FORCE_STAGED_TRANSFERS)
 endif()
 
+option(QUIET "Disable Timer prints" OFF)
+if(QUIET)
+    target_compile_definitions(${PROJECT_NAME} PRIVATE QUIET)
+endif()
+
 # Disable lib warnings
 # staticlib is faustlib (can't use alias target)
 foreach(target IN LISTS disable_warning_targets)
