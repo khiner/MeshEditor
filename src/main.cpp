@@ -291,7 +291,22 @@ bool PushFont(FontFamily family) {
 } // namespace MeshEditor
 */
 
-void run() {
+// Load a file into the scene based on its extension.
+std::expected<void, std::string> LoadFile(Scene &scene, const fs::path &path) {
+    const auto ext = path.extension().string();
+    if (ext == ".gltf" || ext == ".glb") {
+        if (auto result = scene.AddGltfScene(path); !result) {
+            return std::unexpected(std::format("Error loading glTF file '{}': {}", path.string(), result.error()));
+        }
+    } else if (ext == ".obj" || ext == ".ply") {
+        scene.AddMesh(path, MeshInstanceCreateInfo{.Name = path.stem().string()});
+    } else {
+        return std::unexpected(std::format("Unsupported file format: '{}'", ext));
+    }
+    return {};
+}
+
+void run(const char *initial_file) {
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) {
         throw std::runtime_error(std::format("SDL_Init error: {}", SDL_GetError()));
     }
@@ -455,24 +470,20 @@ void run() {
                     static const std::array filters{nfdfilteritem_t{"glTF scene", "gltf,glb"}};
                     nfdchar_t *nfd_path;
                     if (auto result = NFD_OpenDialog(&nfd_path, filters.data(), filters.size(), ""); result == NFD_OKAY) {
-                        const auto path = fs::path(nfd_path);
+                        if (auto load = LoadFile(*scene, fs::path(nfd_path)); !load) std::cerr << load.error() << std::endl;
                         NFD_FreePath(nfd_path);
-                        if (auto gltf_result = scene->AddGltfScene(path); !gltf_result) {
-                            throw std::runtime_error(std::format("Error loading glTF file: {}", gltf_result.error()));
-                        }
                     } else if (result != NFD_CANCEL) {
-                        throw std::runtime_error(std::format("Error loading glTF file: {}", NFD_GetError()));
+                        std::cerr << "Error opening file dialog: " << NFD_GetError() << std::endl;
                     }
                 }
                 if (MenuItem("Load OBJ/PLY", nullptr)) {
                     static const std::array filters{nfdfilteritem_t{"Mesh object", "obj,ply"}};
                     nfdchar_t *nfd_path;
                     if (auto result = NFD_OpenDialog(&nfd_path, filters.data(), filters.size(), ""); result == NFD_OKAY) {
-                        const auto path = fs::path(nfd_path);
+                        if (auto load = LoadFile(*scene, fs::path(nfd_path)); !load) std::cerr << load.error() << std::endl;
                         NFD_FreePath(nfd_path);
-                        scene->AddMesh(path, MeshInstanceCreateInfo{.Name = path.stem().string()});
                     } else if (result != NFD_CANCEL) {
-                        throw std::runtime_error(std::format("Error loading mesh file: {}", NFD_GetError()));
+                        std::cerr << "Error opening file dialog: " << NFD_GetError() << std::endl;
                     }
                 }
                 // if (MenuItem("Export mesh", nullptr, false, MainMesh != nullptr)) {
@@ -601,8 +612,14 @@ void run() {
                 // Initialize scene now that it has an extent.
                 // static const auto DefaultRealImpactPath = fs::path{"../../"} / "RealImpact" / "dataset" / "22_Cup" / "preprocessed";
                 // if (fs::exists(DefaultRealImpactPath)) acoustic_scene->LoadRealImpact(DefaultRealImpactPath, *scene);
-                const auto [mesh_entity, _] = scene->AddMesh(primitive::CreateDefault(PrimitiveType::Cube), MeshInstanceCreateInfo{.Name = ToString(PrimitiveType::Cube)});
-                r.emplace<PrimitiveType>(mesh_entity, PrimitiveType::Cube);
+                if (initial_file) {
+                    if (auto result = LoadFile(*scene, fs::path(initial_file)); !result) {
+                        std::cerr << result.error() << std::endl;
+                    }
+                } else {
+                    const auto [mesh_entity, _] = scene->AddMesh(primitive::CreateDefault(PrimitiveType::Cube), MeshInstanceCreateInfo{.Name = ToString(PrimitiveType::Cube)});
+                    r.emplace<PrimitiveType>(mesh_entity, PrimitiveType::Cube);
+                }
             }
         }
 
@@ -638,7 +655,7 @@ void run() {
     SDL_Quit();
 }
 
-int main(int, char **) {
+int main(int argc, char **argv) {
     std::set_terminate([]() {
         try {
             if (auto eptr = std::current_exception()) {
@@ -652,6 +669,6 @@ int main(int, char **) {
         std::abort();
     });
 
-    run();
+    run(argc > 1 ? argv[1] : nullptr);
     return 0;
 }
