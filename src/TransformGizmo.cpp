@@ -502,16 +502,10 @@ void RenderImpl(const GizmoTransform &transform, const LocalTransformDelta &dt, 
         RenderMouseGuid(g.Interaction->Type, o_px);
         return;
     }
-    if (type == Type::None) return;
-
-    if (g.Start && g.Interaction->Op == InteractionOp::Trackball) {
-        Label(ValueLabel(*g.Interaction, vec3{dt.RotationYawPitch, 0}), o_px);
-        return;
-    }
-
-    auto &dl = *ImGui::GetWindowDrawList();
-    // Full-screen axis guide lines during axis/plane interactions
-    if (g.Start && g.Interaction->Op != InteractionOp::Screen) {
+    // Full-screen axis guide lines during active axis/plane interactions,
+    // even when the gizmo itself is not visible (Type::None, e.g. keyboard-initiated transforms).
+    if (g.Start && g.Interaction->Op != InteractionOp::Screen && g.Interaction->Op != InteractionOp::Trackball) {
+        auto &dl = *ImGui::GetWindowDrawList();
         const auto o_ws = g.Start->Transform.P;
         const auto DrawAxisGuideLine = [&](InteractionOp op) {
             const auto axis_i = AxisIndex(op);
@@ -529,6 +523,15 @@ void RenderImpl(const GizmoTransform &transform, const LocalTransformDelta &dt, 
             DrawAxisGuideLine(g.Interaction->Op);
         }
     }
+
+    if (type == Type::None) return;
+
+    if (g.Start && g.Interaction->Op == InteractionOp::Trackball) {
+        Label(ValueLabel(*g.Interaction, vec3{dt.RotationYawPitch, 0}), o_px);
+        return;
+    }
+
+    auto &dl = *ImGui::GetWindowDrawList();
 
     // Center filled circle
     if (g.Start && g.Interaction->Type != Rotate && g.Interaction->Op != Screen) {
@@ -894,6 +897,20 @@ std::optional<Result> Interact(const GizmoTransform &transform, Config config, c
         g.Start = {};
         g.Interaction = {};
         return {};
+    }
+
+    // X/Y/Z axis constraint toggle during active transform.
+    // Pressing an axis key constrains to that axis; pressing it again toggles back to unconstrained.
+    if (g.Start) {
+        const auto check_axis_key = [&](ImGuiKey key, InteractionOp axis_op) -> bool {
+            if (!ImGui::IsKeyPressed(key, false)) return false;
+            g.Interaction->Op = g.Interaction->Op == axis_op ? (config.Type == TransformGizmo::Type::None ? Action : Screen) : axis_op;
+            g.Start = {.Transform = g.Start->Transform, .MousePx = mouse_px, .MouseRayWs = mouse_ray_ws, .WorldPerNdc = g.WorldPerNdc};
+            return true;
+        };
+        if (check_axis_key(ImGuiKey_X, AxisX) || check_axis_key(ImGuiKey_Y, AxisY) || check_axis_key(ImGuiKey_Z, AxisZ)) {
+            return Result{g.Start->Transform, {}};
+        }
     }
 
     if (g.Start) {
