@@ -2,7 +2,6 @@
 // Free functions — no Scene.h dependency.
 
 #include "PhysicsUi.h"
-
 #include "AnimationTimeline.h"
 #include "PhysicsWorld.h"
 
@@ -26,7 +25,7 @@ bool DeleteButton(bool in_use) {
 
 bool RenderShapeEditor(PhysicsShape &shape) {
     static const char *shape_names[]{"Box", "Sphere", "Capsule", "Cylinder", "Convex Hull", "Triangle Mesh"};
-    int shape_type_i = int(shape.Type);
+    auto shape_type_i = int(shape.Type);
     bool changed = false;
     if (Combo("Shape", &shape_type_i, shape_names, IM_ARRAYSIZE(shape_names))) {
         shape.Type = PhysicsShapeType(shape_type_i);
@@ -34,20 +33,20 @@ bool RenderShapeEditor(PhysicsShape &shape) {
     }
     switch (shape.Type) {
         case PhysicsShapeType::Box:
-            changed |= DragFloat3("Size", &shape.Size.x, 0.01f, 0.01f, 100.0f);
+            changed |= DragFloat3("Size", &shape.Size.x, 0.01f, 0.01f, 100.f);
             break;
         case PhysicsShapeType::Sphere:
-            changed |= DragFloat("Radius", &shape.Radius, 0.01f, 0.001f, 100.0f);
+            changed |= DragFloat("Radius", &shape.Radius, 0.01f, 0.001f, 100.f);
             break;
         case PhysicsShapeType::Capsule:
-            changed |= DragFloat("Height", &shape.Height, 0.01f, 0.001f, 100.0f);
-            changed |= DragFloat("Radius top", &shape.RadiusTop, 0.01f, 0.001f, 100.0f);
-            changed |= DragFloat("Radius bottom", &shape.RadiusBottom, 0.01f, 0.001f, 100.0f);
+            changed |= DragFloat("Height", &shape.Height, 0.01f, 0.001f, 100.f);
+            changed |= DragFloat("Radius top", &shape.RadiusTop, 0.01f, 0.001f, 100.f);
+            changed |= DragFloat("Radius bottom", &shape.RadiusBottom, 0.01f, 0.001f, 100.f);
             break;
         case PhysicsShapeType::Cylinder:
-            changed |= DragFloat("Height", &shape.Height, 0.01f, 0.001f, 100.0f);
-            changed |= DragFloat("Radius top", &shape.RadiusTop, 0.01f, 0.001f, 100.0f);
-            changed |= DragFloat("Radius bottom", &shape.RadiusBottom, 0.01f, 0.001f, 100.0f);
+            changed |= DragFloat("Height", &shape.Height, 0.01f, 0.001f, 100.f);
+            changed |= DragFloat("Radius top", &shape.RadiusTop, 0.01f, 0.001f, 100.f);
+            changed |= DragFloat("Radius bottom", &shape.RadiusBottom, 0.01f, 0.001f, 100.f);
             break;
         case PhysicsShapeType::ConvexHull:
         case PhysicsShapeType::TriangleMesh:
@@ -64,8 +63,8 @@ void physics_ui::RenderTab(entt::registry &r, entt::entity scene_entity, Physics
     SliderInt("Substeps", &physics.SubSteps, 1, 8);
     DragFloat3("Gravity", &physics.Gravity.x, 0.1f);
     {
-        float timestep_ms = physics.TimeStep * 1000.0f;
-        if (DragFloat("Time step (ms)", &timestep_ms, 0.1f, 0.1f, 100.0f, "%.1f")) {
+        float timestep_ms = physics.TimeStep * 1000.f;
+        if (DragFloat("Time step (ms)", &timestep_ms, 0.1f, 0.1f, 100.f, "%.1f")) {
             physics.TimeStep = std::max(timestep_ms * 0.001f, 1e-4f);
         }
     }
@@ -74,9 +73,9 @@ void physics_ui::RenderTab(entt::registry &r, entt::entity scene_entity, Physics
         PushID("PhysMaterials");
         int delete_idx = -1;
         for (size_t i = 0; i < physics.Materials.size(); ++i) {
-            PushID(int(i));
+            PushID(i);
             auto &mat = physics.Materials[i];
-            auto label = mat.Name.empty() ? std::format("Material {}", i) : mat.Name;
+            const auto label = mat.Name.empty() ? std::format("Material {}", i) : mat.Name;
             if (TreeNode(label.c_str())) {
                 char buf[128];
                 snprintf(buf, sizeof(buf), "%s", mat.Name.c_str());
@@ -86,12 +85,14 @@ void physics_ui::RenderTab(entt::registry &r, entt::entity scene_entity, Physics
                 SliderFloat("Dynamic friction", &mat.DynamicFriction, 0.0f, 2.0f);
                 SliderFloat("Restitution", &mat.Restitution, 0.0f, 1.0f);
 
-                int fc = int(mat.FrictionCombine);
-                if (Combo("Friction combine", &fc, "Average\0Minimum\0Maximum\0Multiply\0"))
+                auto fc = int(mat.FrictionCombine);
+                if (Combo("Friction combine", &fc, "Average\0Minimum\0Maximum\0Multiply\0")) {
                     mat.FrictionCombine = PhysicsCombineMode(fc);
-                int rc = int(mat.RestitutionCombine);
-                if (Combo("Restitution combine", &rc, "Average\0Minimum\0Maximum\0Multiply\0"))
+                }
+                auto rc = int(mat.RestitutionCombine);
+                if (Combo("Restitution combine", &rc, "Average\0Minimum\0Maximum\0Multiply\0")) {
                     mat.RestitutionCombine = PhysicsCombineMode(rc);
+                }
 
                 TreePop();
             }
@@ -135,7 +136,7 @@ void physics_ui::RenderTab(entt::registry &r, entt::entity scene_entity, Physics
         for (size_t i = 0; i < physics.Filters.size(); ++i) {
             PushID(int(i));
             auto &filter = physics.Filters[i];
-            auto label = filter.Name.empty() ? std::format("Filter {}", i) : filter.Name;
+            const auto label = filter.Name.empty() ? std::format("Filter {}", i) : filter.Name;
             if (TreeNode(label.c_str())) {
                 char buf[128];
                 snprintf(buf, sizeof(buf), "%s", filter.Name.c_str());
@@ -295,10 +296,9 @@ void physics_ui::RenderTab(entt::registry &r, entt::entity scene_entity, Physics
         for (size_t i = 0; i < physics.JointDefs.size(); ++i) {
             PushID(int(i));
             auto &jd = physics.JointDefs[i];
-            auto label = jd.Name.empty() ? std::format("Joint {}", i) : jd.Name;
+            const auto label = jd.Name.empty() ? std::format("Joint {}", i) : jd.Name;
             if (TreeNode(label.c_str())) {
                 static const char *axis_names[]{"X", "Y", "Z"};
-
                 // Limits
                 for (size_t li = 0; li < jd.Limits.size(); ++li) {
                     PushID(int(li));
@@ -422,24 +422,17 @@ void physics_ui::RenderEntityProperties(entt::registry &r, entt::entity entity, 
         r.remove<PhysicsCollider>(entity);
         physics.RemoveBody(r, entity);
 
-        if (motion_type >= 1) {
-            r.emplace<PhysicsCollider>(entity);
-        }
-        if (motion_type >= 2) {
-            r.emplace<PhysicsMotion>(entity, PhysicsMotion{.IsKinematic = (motion_type == 2)});
-        }
+        if (motion_type >= 1) r.emplace<PhysicsCollider>(entity);
+        if (motion_type >= 2) r.emplace<PhysicsMotion>(entity, PhysicsMotion{.IsKinematic = (motion_type == 2)});
 
         // Re-add body if collider present, or if trigger-only with geometry
-        auto *trig = r.try_get<PhysicsTrigger>(entity);
-        if (motion_type >= 1 || (trig && trig->Shape.has_value())) {
-            physics.AddBody(r, entity);
-        }
+        const auto *trig = r.try_get<PhysicsTrigger>(entity);
+        if (motion_type >= 1 || (trig && trig->Shape.has_value())) physics.AddBody(r, entity);
         motion = r.try_get<PhysicsMotion>(entity);
         collider = r.try_get<PhysicsCollider>(entity);
     }
 
-    // Collider shape editing
-    if (collider) {
+    if (collider) { // Collider shape editing
         Spacing();
         SeparatorText("Collider");
 
@@ -450,18 +443,14 @@ void physics_ui::RenderEntityProperties(entt::registry &r, entt::entity entity, 
 
         // Physics material assignment
         if (!physics.Materials.empty()) {
-            int mat_idx = collider->PhysicsMaterialIndex.has_value() ? int(*collider->PhysicsMaterialIndex) : -1;
-            auto preview = mat_idx >= 0 && mat_idx < int(physics.Materials.size()) ? (physics.Materials[mat_idx].Name.empty() ? std::format("Material {}", mat_idx) : physics.Materials[mat_idx].Name) : std::string{"None"};
+            const int mat_idx = collider->PhysicsMaterialIndex.has_value() ? int(*collider->PhysicsMaterialIndex) : -1;
+            const auto preview = mat_idx >= 0 && mat_idx < int(physics.Materials.size()) ? (physics.Materials[mat_idx].Name.empty() ? std::format("Material {}", mat_idx) : physics.Materials[mat_idx].Name) : std::string{"None"};
             if (BeginCombo("Physics material", preview.c_str())) {
-                if (Selectable("None", mat_idx < 0)) {
-                    collider->PhysicsMaterialIndex.reset();
-                }
+                if (Selectable("None", mat_idx < 0)) collider->PhysicsMaterialIndex.reset();
                 for (size_t i = 0; i < physics.Materials.size(); ++i) {
                     const auto &m = physics.Materials[i];
-                    auto label = m.Name.empty() ? std::format("Material {}", i) : m.Name;
-                    if (Selectable(label.c_str(), mat_idx == int(i))) {
-                        collider->PhysicsMaterialIndex = uint32_t(i);
-                    }
+                    const auto label = m.Name.empty() ? std::format("Material {}", i) : m.Name;
+                    if (Selectable(label.c_str(), mat_idx == int(i))) collider->PhysicsMaterialIndex = i;
                 }
                 EndCombo();
             }
@@ -469,8 +458,8 @@ void physics_ui::RenderEntityProperties(entt::registry &r, entt::entity entity, 
 
         // Collision filter assignment
         if (!physics.Filters.empty()) {
-            int filter_idx = collider->CollisionFilterIndex.has_value() ? int(*collider->CollisionFilterIndex) : -1;
-            auto preview = filter_idx >= 0 && filter_idx < int(physics.Filters.size()) ? (physics.Filters[filter_idx].Name.empty() ? std::format("Filter {}", filter_idx) : physics.Filters[filter_idx].Name) : std::string{"None"};
+            const int filter_idx = collider->CollisionFilterIndex.has_value() ? int(*collider->CollisionFilterIndex) : -1;
+            const auto preview = filter_idx >= 0 && filter_idx < int(physics.Filters.size()) ? (physics.Filters[filter_idx].Name.empty() ? std::format("Filter {}", filter_idx) : physics.Filters[filter_idx].Name) : std::string{"None"};
             if (BeginCombo("Collision filter", preview.c_str())) {
                 if (Selectable("None", filter_idx < 0)) {
                     collider->CollisionFilterIndex.reset();
@@ -479,7 +468,7 @@ void physics_ui::RenderEntityProperties(entt::registry &r, entt::entity entity, 
                 }
                 for (size_t i = 0; i < physics.Filters.size(); ++i) {
                     const auto &f = physics.Filters[i];
-                    auto flabel = f.Name.empty() ? std::format("Filter {}", i) : f.Name;
+                    const auto flabel = f.Name.empty() ? std::format("Filter {}", i) : f.Name;
                     if (Selectable(flabel.c_str(), filter_idx == int(i))) {
                         collider->CollisionFilterIndex = uint32_t(i);
                         physics.RemoveBody(r, entity);
@@ -500,14 +489,10 @@ void physics_ui::RenderEntityProperties(entt::registry &r, entt::entity entity, 
 
         float mass = motion->Mass.value_or(0.0f);
         bool has_mass = motion->Mass.has_value();
-        if (Checkbox("Override mass", &has_mass)) {
-            motion->Mass = has_mass ? std::optional{mass} : std::nullopt;
-        }
+        if (Checkbox("Override mass", &has_mass)) motion->Mass = has_mass ? std::optional{mass} : std::nullopt;
         if (has_mass) {
             SameLine();
-            if (DragFloat("##mass", &mass, 0.1f, 0.001f, 1e6f, "%.3f kg")) {
-                motion->Mass = std::max(mass, 0.001f);
-            }
+            if (DragFloat("##mass", &mass, 0.1f, 0.001f, 1e6f, "%.3f kg")) motion->Mass = std::max(mass, 0.001f);
         }
 
         DragFloat("Gravity factor", &motion->GravityFactor, 0.01f, -10.0f, 10.0f);
@@ -543,13 +528,13 @@ void physics_ui::RenderEntityProperties(entt::registry &r, entt::entity entity, 
 
         // Joint definition selector
         if (!physics.JointDefs.empty()) {
-            uint32_t clamped_idx = std::min(joint->JointDefIndex, uint32_t(physics.JointDefs.size() - 1));
-            auto &def = physics.JointDefs[clamped_idx];
-            auto preview = def.Name.empty() ? std::format("Joint {}", clamped_idx) : def.Name;
+            const uint32_t clamped_idx = std::min(joint->JointDefIndex, uint32_t(physics.JointDefs.size() - 1));
+            const auto &def = physics.JointDefs[clamped_idx];
+            const auto preview = def.Name.empty() ? std::format("Joint {}", clamped_idx) : def.Name;
             if (BeginCombo("Definition", preview.c_str())) {
                 for (size_t i = 0; i < physics.JointDefs.size(); ++i) {
-                    auto &jd = physics.JointDefs[i];
-                    auto jlabel = jd.Name.empty() ? std::format("Joint {}", i) : jd.Name;
+                    const auto &jd = physics.JointDefs[i];
+                    const auto jlabel = jd.Name.empty() ? std::format("Joint {}", i) : jd.Name;
                     if (Selectable(jlabel.c_str(), clamped_idx == uint32_t(i))) joint->JointDefIndex = uint32_t(i);
                 }
                 EndCombo();
@@ -559,69 +544,61 @@ void physics_ui::RenderEntityProperties(entt::registry &r, entt::entity entity, 
 
         Checkbox("Enable collision", &joint->EnableCollision);
 
-        if (joint->ConnectedNode != entt::null) {
-            Text("Connected: entity %u", uint32_t(joint->ConnectedNode));
-        } else {
-            TextDisabled("Not connected");
-        }
+        if (joint->ConnectedNode != entt::null) Text("Connected: entity %u", joint->ConnectedNode);
+        else TextDisabled("Not connected");
     }
 
     // Trigger properties
-    {
-        auto *trigger = r.try_get<PhysicsTrigger>(entity);
-        if (!trigger) {
-            Spacing();
-            if (Button("Add Trigger")) {
-                r.emplace<PhysicsTrigger>(entity, PhysicsTrigger{.Shape = PhysicsShape{}});
-                // Only create a sensor body if no collider body already exists (collider wins).
-                if (!r.all_of<PhysicsBodyHandle>(entity)) {
-                    physics.AddBody(r, entity);
-                }
-            }
-        } else {
-            Spacing();
-            SeparatorText("Trigger");
-            PushID("Trigger");
+    if (auto *trigger = r.try_get<PhysicsTrigger>(entity); !trigger) {
+        Spacing();
+        if (Button("Add Trigger")) {
+            r.emplace<PhysicsTrigger>(entity, PhysicsTrigger{.Shape = PhysicsShape{}});
+            // Only create a sensor body if no collider body already exists (collider wins).
+            if (!r.all_of<PhysicsBodyHandle>(entity)) physics.AddBody(r, entity);
+        }
+    } else {
+        Spacing();
+        SeparatorText("Trigger");
+        PushID("Trigger");
 
-            if (trigger->Shape.has_value()) {
-                if (RenderShapeEditor(*trigger->Shape)) {
+        if (trigger->Shape.has_value()) {
+            if (RenderShapeEditor(*trigger->Shape)) {
+                physics.RemoveBody(r, entity);
+                physics.AddBody(r, entity);
+            }
+        } else if (!trigger->Nodes.empty()) {
+            Text("Compound trigger: %zu nodes", trigger->Nodes.size());
+        }
+
+        // Collision filter assignment
+        if (!physics.Filters.empty()) {
+            const int filter_idx = trigger->CollisionFilterIndex.has_value() ? int(*trigger->CollisionFilterIndex) : -1;
+            const auto preview = filter_idx >= 0 && filter_idx < int(physics.Filters.size()) ? (physics.Filters[filter_idx].Name.empty() ? std::format("Filter {}", filter_idx) : physics.Filters[filter_idx].Name) : std::string{"None"};
+            if (BeginCombo("Collision filter", preview.c_str())) {
+                if (Selectable("None", filter_idx < 0)) {
+                    trigger->CollisionFilterIndex.reset();
                     physics.RemoveBody(r, entity);
                     physics.AddBody(r, entity);
                 }
-            } else if (!trigger->Nodes.empty()) {
-                Text("Compound trigger: %zu nodes", trigger->Nodes.size());
-            }
-
-            // Collision filter assignment
-            if (!physics.Filters.empty()) {
-                int filter_idx = trigger->CollisionFilterIndex.has_value() ? int(*trigger->CollisionFilterIndex) : -1;
-                auto preview = filter_idx >= 0 && filter_idx < int(physics.Filters.size()) ? (physics.Filters[filter_idx].Name.empty() ? std::format("Filter {}", filter_idx) : physics.Filters[filter_idx].Name) : std::string{"None"};
-                if (BeginCombo("Collision filter", preview.c_str())) {
-                    if (Selectable("None", filter_idx < 0)) {
-                        trigger->CollisionFilterIndex.reset();
+                for (size_t i = 0; i < physics.Filters.size(); ++i) {
+                    const auto &f = physics.Filters[i];
+                    const auto flabel = f.Name.empty() ? std::format("Filter {}", i) : f.Name;
+                    if (Selectable(flabel.c_str(), filter_idx == int(i))) {
+                        trigger->CollisionFilterIndex = uint32_t(i);
                         physics.RemoveBody(r, entity);
                         physics.AddBody(r, entity);
                     }
-                    for (size_t i = 0; i < physics.Filters.size(); ++i) {
-                        const auto &f = physics.Filters[i];
-                        auto flabel = f.Name.empty() ? std::format("Filter {}", i) : f.Name;
-                        if (Selectable(flabel.c_str(), filter_idx == int(i))) {
-                            trigger->CollisionFilterIndex = uint32_t(i);
-                            physics.RemoveBody(r, entity);
-                            physics.AddBody(r, entity);
-                        }
-                    }
-                    EndCombo();
                 }
+                EndCombo();
             }
-
-            if (Button("Remove Trigger")) {
-                physics.RemoveBody(r, entity);
-                r.remove<PhysicsTrigger>(entity);
-            }
-
-            PopID();
         }
+
+        if (Button("Remove Trigger")) {
+            physics.RemoveBody(r, entity);
+            r.remove<PhysicsTrigger>(entity);
+        }
+
+        PopID();
     }
 
     PopID();
