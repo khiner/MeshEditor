@@ -206,46 +206,46 @@ std::optional<size_t> DrawOverlayIconButtonGroup(
     return clicked_index;
 }
 
-std::optional<MeshData> PrimitiveEditor(PrimitiveType type, bool is_create = true) {
-    const char *create_label = is_create ? "Add" : "Update";
+std::optional<MeshData> PrimitiveEditor(PrimitiveType type) {
+    const char *label = "Edit";
     if (type == PrimitiveType::Rect) {
         static vec2 size{2, 2};
         InputFloat2("Size", &size.x);
-        if (Button(create_label)) return primitive::Rect(size / 2.f);
+        if (Button(label)) return primitive::Rect(size / 2.f);
     } else if (type == PrimitiveType::Circle) {
         static float r{1};
         InputFloat("Radius", &r);
-        if (Button(create_label)) return primitive::Circle(r);
+        if (Button(label)) return primitive::Circle(r);
     } else if (type == PrimitiveType::Cube) {
         static vec3 size{2, 2, 2};
         InputFloat3("Size", &size.x);
-        if (Button(create_label)) return primitive::Cuboid(size / 2.f);
+        if (Button(label)) return primitive::Cuboid(size / 2.f);
     } else if (type == PrimitiveType::IcoSphere) {
         static float r{1};
         static int subdivisions = 3;
         InputFloat("Radius", &r);
         InputInt("Subdivisions", &subdivisions);
-        if (Button(create_label)) return primitive::IcoSphere(r, uint(subdivisions));
+        if (Button(label)) return primitive::IcoSphere(r, uint(subdivisions));
     } else if (type == PrimitiveType::UVSphere) {
         static float r{1};
         InputFloat("Radius", &r);
-        if (Button(create_label)) return primitive::UVSphere(r);
+        if (Button(label)) return primitive::UVSphere(r);
     } else if (type == PrimitiveType::Torus) {
         static vec2 radii{1, 0.5};
         static glm::ivec2 n_segments{32, 16};
         InputFloat2("Major/minor radius", &radii.x);
         InputInt2("Major/minor segments", &n_segments.x);
-        if (Button(create_label)) return primitive::Torus(radii.x, radii.y, uint(n_segments.x), uint(n_segments.y));
+        if (Button(label)) return primitive::Torus(radii.x, radii.y, uint(n_segments.x), uint(n_segments.y));
     } else if (type == PrimitiveType::Cylinder) {
         static float r{1}, h{2};
         InputFloat("Radius", &r);
         InputFloat("Height", &h);
-        if (Button(create_label)) return primitive::Cylinder(r, h);
+        if (Button(label)) return primitive::Cylinder(r, h);
     } else if (type == PrimitiveType::Cone) {
         static float r{1}, h{2};
         InputFloat("Radius", &r);
         InputFloat("Height", &h);
-        if (Button(create_label)) return primitive::Cone(r, h);
+        if (Button(label)) return primitive::Cone(r, h);
     }
 
     return {};
@@ -1468,9 +1468,9 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
         if (const auto *primitive_type = R.try_get<PrimitiveType>(active_mesh_entity)) {
             const bool frozen = scene_selection::HasScaleLockedInstance(R, active_mesh_entity);
             if (frozen) BeginDisabled();
-            const auto update_label = std::format("Update primitive{}", frozen ? " (frozen)" : "");
+            const auto update_label = std::format("Edit primitive{}", frozen ? " (frozen)" : "");
             if (CollapsingHeader(update_label.c_str()) && !frozen) {
-                if (auto primitive_mesh = PrimitiveEditor(*primitive_type, false)) {
+                if (auto primitive_mesh = PrimitiveEditor(*primitive_type)) {
                     SetMeshPositions(active_mesh_entity, std::move(primitive_mesh->Positions));
                 }
             }
@@ -1857,41 +1857,36 @@ void Scene::RenderControls() {
             RenderEntityControls(FindActiveEntity(R));
 
             if (CollapsingHeader("Add object")) {
-                TextDisabled("Shortcuts: Ctrl+Shift+E (Empty), Ctrl+Shift+A (Armature), Ctrl+Shift+C (Camera)");
-                if (Button("Add Empty")) {
-                    AddEmpty({.Select = MeshInstanceCreateInfo::SelectBehavior::Exclusive});
-                    StartScreenTransform = TransformGizmo::TransformType::Translate;
-                }
-                SameLine();
-                if (Button("Add Armature")) {
-                    AddArmature({.Select = MeshInstanceCreateInfo::SelectBehavior::Exclusive});
-                    StartScreenTransform = TransformGizmo::TransformType::Translate;
-                }
-                SameLine();
-                if (Button("Add Camera")) {
-                    AddCamera({.Select = MeshInstanceCreateInfo::SelectBehavior::Exclusive});
-                    StartScreenTransform = TransformGizmo::TransformType::Translate;
-                }
-                SameLine();
-                if (Button("Add Light")) {
-                    AddLight({.Select = MeshInstanceCreateInfo::SelectBehavior::Exclusive});
-                    StartScreenTransform = TransformGizmo::TransformType::Translate;
-                }
-            }
-
-            if (CollapsingHeader("Add primitive")) {
-                PushID("AddPrimitive");
-                static auto selected_type_i = int(PrimitiveType::Cube);
+                bool added{false};
                 for (uint i = 0; i < PrimitiveTypes.size(); ++i) {
-                    if (i % 3 != 0) SameLine();
-                    RadioButton(ToString(PrimitiveTypes[i]).c_str(), &selected_type_i, i);
+                    if (i % 4 != 0) SameLine();
+                    const auto type = PrimitiveTypes[i];
+                    if (Button(ToString(type).c_str())) {
+                        R.emplace<PrimitiveType>(AddMesh(primitive::CreateDefault(type), MeshInstanceCreateInfo{.Name = ToString(type)}).first, type);
+                        added = true;
+                    }
                 }
-                const auto selected_type = PrimitiveType(selected_type_i);
-                if (auto primitive_mesh = PrimitiveEditor(selected_type, true)) {
-                    R.emplace<PrimitiveType>(AddMesh(std::move(*primitive_mesh), MeshInstanceCreateInfo{.Name = ToString(selected_type)}).first, selected_type);
-                    StartScreenTransform = TransformGizmo::TransformType::Translate;
+                Spacing();
+                if (Button("Empty")) {
+                    AddEmpty({.Select = MeshInstanceCreateInfo::SelectBehavior::Exclusive});
+                    added = true;
                 }
-                PopID();
+                SameLine();
+                if (Button("Armature")) {
+                    AddArmature({.Select = MeshInstanceCreateInfo::SelectBehavior::Exclusive});
+                    added = true;
+                }
+                SameLine();
+                if (Button("Camera")) {
+                    AddCamera({.Select = MeshInstanceCreateInfo::SelectBehavior::Exclusive});
+                    added = true;
+                }
+                SameLine();
+                if (Button("Light")) {
+                    AddLight({.Select = MeshInstanceCreateInfo::SelectBehavior::Exclusive});
+                    added = true;
+                }
+                if (added) StartScreenTransform = TransformGizmo::TransformType::Translate;
             }
             EndTabItem();
         }
