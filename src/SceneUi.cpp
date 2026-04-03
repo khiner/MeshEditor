@@ -207,45 +207,57 @@ std::optional<size_t> DrawOverlayIconButtonGroup(
 }
 
 std::optional<MeshData> PrimitiveEditor(PrimitiveType type) {
-    const char *label = "Edit";
+    static constexpr float MinSize = 0.01f, MaxSize = 100.f, SizeSpeed = 0.01f;
+    bool changed = false;
     if (type == PrimitiveType::Rect) {
         static vec2 size{2, 2};
-        InputFloat2("Size", &size.x);
-        if (Button(label)) return primitive::Rect(size / 2.f);
+        changed = DragFloat2("Size", &size.x, SizeSpeed, MinSize, MaxSize);
+        if (changed) return primitive::Rect(size / 2.f);
     } else if (type == PrimitiveType::Circle) {
         static float r{1};
-        InputFloat("Radius", &r);
-        if (Button(label)) return primitive::Circle(r);
+        static int segments = 32;
+        changed |= DragFloat("Radius", &r, SizeSpeed, MinSize, MaxSize);
+        changed |= SliderInt("Segments", &segments, 3, 128);
+        if (changed) return primitive::Circle(r, uint(segments));
     } else if (type == PrimitiveType::Cube) {
         static vec3 size{2, 2, 2};
-        InputFloat3("Size", &size.x);
-        if (Button(label)) return primitive::Cuboid(size / 2.f);
+        changed = DragFloat3("Size", &size.x, SizeSpeed, MinSize, MaxSize);
+        if (changed) return primitive::Cuboid(size / 2.f);
     } else if (type == PrimitiveType::IcoSphere) {
         static float r{1};
         static int subdivisions = 3;
-        InputFloat("Radius", &r);
-        InputInt("Subdivisions", &subdivisions);
-        if (Button(label)) return primitive::IcoSphere(r, uint(subdivisions));
+        changed |= DragFloat("Radius", &r, SizeSpeed, MinSize, MaxSize);
+        changed |= SliderInt("Subdivisions", &subdivisions, 1, 6);
+        if (changed) return primitive::IcoSphere(r, uint(subdivisions));
     } else if (type == PrimitiveType::UVSphere) {
         static float r{1};
-        InputFloat("Radius", &r);
-        if (Button(label)) return primitive::UVSphere(r);
+        static int slices = 32, stacks = 16;
+        changed |= DragFloat("Radius", &r, SizeSpeed, MinSize, MaxSize);
+        changed |= SliderInt("Slices", &slices, 3, 128);
+        changed |= SliderInt("Stacks", &stacks, 2, 64);
+        if (changed) return primitive::UVSphere(r, uint(slices), uint(stacks));
     } else if (type == PrimitiveType::Torus) {
-        static vec2 radii{1, 0.5};
-        static glm::ivec2 n_segments{32, 16};
-        InputFloat2("Major/minor radius", &radii.x);
-        InputInt2("Major/minor segments", &n_segments.x);
-        if (Button(label)) return primitive::Torus(radii.x, radii.y, uint(n_segments.x), uint(n_segments.y));
+        static float major_r{1}, minor_r{0.5};
+        static int major_seg = 32, minor_seg = 16;
+        changed |= DragFloat("Major radius", &major_r, SizeSpeed, MinSize, MaxSize);
+        changed |= DragFloat("Minor radius", &minor_r, SizeSpeed, MinSize, major_r);
+        changed |= SliderInt("Major segments", &major_seg, 3, 256);
+        changed |= SliderInt("Minor segments", &minor_seg, 3, 256);
+        if (changed) return primitive::Torus(major_r, minor_r, uint(major_seg), uint(minor_seg));
     } else if (type == PrimitiveType::Cylinder) {
         static float r{1}, h{2};
-        InputFloat("Radius", &r);
-        InputFloat("Height", &h);
-        if (Button(label)) return primitive::Cylinder(r, h);
+        static int slices = 32;
+        changed |= DragFloat("Radius", &r, SizeSpeed, MinSize, MaxSize);
+        changed |= DragFloat("Height", &h, SizeSpeed, MinSize, MaxSize);
+        changed |= SliderInt("Slices", &slices, 3, 128);
+        if (changed) return primitive::Cylinder(r, h, uint(slices));
     } else if (type == PrimitiveType::Cone) {
         static float r{1}, h{2};
-        InputFloat("Radius", &r);
-        InputFloat("Height", &h);
-        if (Button(label)) return primitive::Cone(r, h);
+        static int slices = 32;
+        changed |= DragFloat("Radius", &r, SizeSpeed, MinSize, MaxSize);
+        changed |= DragFloat("Height", &h, SizeSpeed, MinSize, MaxSize);
+        changed |= SliderInt("Slices", &slices, 3, 128);
+        if (changed) return primitive::Cone(r, h, uint(slices));
     }
 
     return {};
