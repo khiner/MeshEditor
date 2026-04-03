@@ -338,49 +338,66 @@ std::optional<Interaction> FindHoveredInteraction(const GizmoTransform &transfor
     return std::nullopt;
 }
 
-constexpr char AxisLabels[]{"XYZ"};
-constexpr std::string AxisLabel(uint32_t i, float v) { return i >= 0 && i < 3 ? std::format("{}: {:.3f}", AxisLabels[i], v) : ""; }
-constexpr std::string AxisLabel(uint32_t i, vec3 v) { return AxisLabel(i, v[i]); }
-constexpr std::string AxisLabel(InteractionOp a, vec3 v) { return AxisLabel(AxisIndex(a), v); }
+std::string ConstraintText(InteractionOp op, TransformGizmo::Mode mode) {
+    const char *space = mode == TransformGizmo::Mode::World ? "world" : "local";
+    switch (op) {
+        case AxisX: return std::format(" along {} X", space);
+        case AxisY: return std::format(" along {} Y", space);
+        case AxisZ: return std::format(" along {} Z", space);
+        case YZ: return std::format(" locking {} X", space);
+        case ZX: return std::format(" locking {} Y", space);
+        case XY: return std::format(" locking {} Z", space);
+        default: return "";
+    }
+}
 
-// If Rotate, v[0] holds rotation angle (rad), or v[0]/v[1] yaw/pitch (rad) for Trackball.
-constexpr std::string ValueLabel(Interaction i, vec3 v) {
+// Blender-style value label for active transforms.
+// For Rotate, v[0] holds rotation angle (rad), or v[0]/v[1] yaw/pitch (rad) for Trackball.
+std::string ValueLabel(Interaction i, vec3 v, TransformGizmo::Mode mode) {
     using enum TransformType;
+    const auto con = ConstraintText(i.Op, mode);
+
     switch (i.Type) {
-        case Scale: // fallthrough
         case Translate: {
+            const float dist = glm::length(v);
             switch (i.Op) {
-                case AxisX:
-                case AxisY:
-                case AxisZ:
-                    return AxisLabel(AxisIndex(i.Op), v);
-                case YZ: return std::format("{} {}", AxisLabel(AxisY, v), AxisLabel(AxisZ, v));
-                case ZX: return std::format("{} {}", AxisLabel(AxisZ, v), AxisLabel(AxisX, v));
-                case XY: return std::format("{} {}", AxisLabel(AxisX, v), AxisLabel(AxisY, v));
-                case Trackball: // passthrough (shouldn't happen)
-                case Screen: return i.Type == Scale ?
-                    std::format("XYZ: {:.3f}", v.x) :
-                    std::format("{} {} {}", AxisLabel(AxisX, v), AxisLabel(AxisY, v), AxisLabel(AxisZ, v));
-                case Action:
-                    return std::format("{} {} {}", AxisLabel(AxisX, v), AxisLabel(AxisY, v), AxisLabel(AxisZ, v));
+                case AxisX: return std::format("D: {:.4f} ({:.4f}){}", v.x, dist, con);
+                case AxisY: return std::format("D: {:.4f} ({:.4f}){}", v.y, dist, con);
+                case AxisZ: return std::format("D: {:.4f} ({:.4f}){}", v.z, dist, con);
+                case YZ: return std::format("D: {:.4f}   D: {:.4f} ({:.4f}){}", v.y, v.z, dist, con);
+                case ZX: return std::format("D: {:.4f}   D: {:.4f} ({:.4f}){}", v.z, v.x, dist, con);
+                case XY: return std::format("D: {:.4f}   D: {:.4f} ({:.4f}){}", v.x, v.y, dist, con);
+                default: return std::format("Dx: {:.4f}   Dy: {:.4f}   Dz: {:.4f} ({:.4f})", v.x, v.y, v.z, dist);
+            }
+        }
+        case Scale: {
+            switch (i.Op) {
+                case AxisX: return std::format("Scale: {:.4f}{}", v.x, con);
+                case AxisY: return std::format("Scale: {:.4f}{}", v.y, con);
+                case AxisZ: return std::format("Scale: {:.4f}{}", v.z, con);
+                case YZ: return std::format("Scale: {:.4f} : {:.4f}{}", v.y, v.z, con);
+                case ZX: return std::format("Scale: {:.4f} : {:.4f}{}", v.z, v.x, con);
+                case XY: return std::format("Scale: {:.4f} : {:.4f}{}", v.x, v.y, con);
+                default: return std::format("Scale X: {:.4f}  Y: {:.4f}  Z: {:.4f}", v.x, v.y, v.z);
             }
         }
         case Rotate: {
-            if (i.Op == InteractionOp::Trackball) {
-                const auto [yaw, pitch] = std::pair{v[0], v[1]};
-                return std::format("Trackball: {:.2f}°, {:.2f}°", yaw * 180 / M_PI, pitch * 180 / M_PI);
+            if (i.Op == Trackball) {
+                return std::format("Trackball: {:.2f}°, {:.2f}°", v[0] * 180.f / float(M_PI), v[1] * 180.f / float(M_PI));
             }
-            const auto rad = v[0];
-            if (i.Op == InteractionOp::Screen) return std::format("Screen: {:.2f}°", rad * 180 / M_PI);
-            return AxisLabel(AxisIndex(i.Op), rad);
+            return std::format("Rotation: {:.2f}°{}", v[0] * 180.f / float(M_PI), con);
         }
     }
 }
 
-void Label(std::string_view label, ImVec2 pos) {
+void Label(std::string_view label) {
     auto &dl = *ImGui::GetWindowDrawList();
-    dl.AddText(pos + ImVec2{15, 15}, Color.TextShadow, label.data());
-    dl.AddText(pos + ImVec2{14, 14}, Color.Text, label.data());
+    const auto text_size = ImGui::CalcTextSize(label.data());
+    constexpr float pad_x = 8.f, pad_y = 4.f, rounding = 4.f, top_margin = 6.f;
+    const float x = g.ScreenRect.pos.x + (g.ScreenRect.size.x - text_size.x) * 0.5f;
+    const float y = g.ScreenRect.pos.y + top_margin;
+    dl.AddRectFilled({x - pad_x, y - pad_y}, {x + text_size.x + pad_x, y + text_size.y + pad_y}, IM_COL32(40, 40, 40, 200), rounding);
+    dl.AddText({x, y}, Color.Text, label.data());
 }
 
 // Fast approximation of an ellipse by stepping a 2D rotation matrix instead of using sin/cos.
@@ -498,6 +515,16 @@ void RenderImpl(const GizmoTransform &transform, const LocalTransformDelta &dt, 
     using enum TransformType;
 
     const auto o_px = WsToPx(transform.P, vp);
+
+    // Transform label at top-center of viewport during active interaction
+    if (g.Start) {
+        const auto v = g.Interaction->Type == Rotate ?
+            (g.Interaction->Op == Trackball ? vec3{dt.RotationYawPitch, 0} : vec3{dt.RotationAngle}) :
+            g.Interaction->Type == Translate ? transform.P - g.Start->Transform.P :
+                                               dt.S;
+        Label(ValueLabel(*g.Interaction, v, transform.Mode));
+    }
+
     if (g.Interaction && g.Interaction->Op == InteractionOp::Action) {
         RenderMouseGuid(g.Interaction->Type, o_px);
         return;
@@ -527,7 +554,6 @@ void RenderImpl(const GizmoTransform &transform, const LocalTransformDelta &dt, 
     if (type == Type::None) return;
 
     if (g.Start && g.Interaction->Op == InteractionOp::Trackball) {
-        Label(ValueLabel(*g.Interaction, vec3{dt.RotationYawPitch, 0}), o_px);
         return;
     }
 
@@ -710,13 +736,6 @@ void RenderImpl(const GizmoTransform &transform, const LocalTransformDelta &dt, 
                 }
             }
         }
-
-        if (g.Start) {
-            Label(
-                ValueLabel(*g.Interaction, g.Interaction->Type == Translate ? transform.P - g.Start->Transform.P : dt.S),
-                o_px
-            );
-        }
     }
     if (type == Type::Rotate || type == Type::Universal) {
         const auto o_ws = transform.P;
@@ -743,7 +762,6 @@ void RenderImpl(const GizmoTransform &transform, const LocalTransformDelta &dt, 
             dl.AddPolyline(CirclePositions, FullCircleSegmentCount, color, false, Style.RotationLineWidth);
             dl.AddLine(o_px, CirclePositions[0], color, Style.RotationLineWidth / 2);
             dl.AddLine(o_px, CirclePositions[angle_i], color, Style.RotationLineWidth);
-            Label(ValueLabel(*g.Interaction, vec3{dt.RotationAngle}), CirclePositions[1]);
         } else if (!g.Start) {
             // Half-circles facing the camera
             const float r = g.WorldPerNdc * Style.RotationCircleSize;
