@@ -2921,10 +2921,16 @@ void Scene::ClearMeshes() {
     for (const auto e : entities) Destroy(e);
 }
 
-void Scene::SetMeshPositions(entt::entity e, std::span<const vec3> positions) {
+void Scene::ReplaceMesh(entt::entity e, MeshData &&data) {
     if (scene_selection::HasScaleLockedInstance(R, e)) return;
 
-    Meshes->SetPositions(R.get<const Mesh>(e), positions);
+    if (auto *mb = R.try_get<MeshBuffers>(e)) Buffers->Release(*mb);
+    R.erase<MeshBuffers>(e);
+    R.erase<Mesh>(e);
+
+    auto new_mesh = Meshes->CreateMesh(std::move(data), {}, {});
+    R.emplace<MeshBuffers>(e, Meshes->GetVerticesRange(new_mesh.GetStoreId()), SlottedRange{}, SlottedRange{}, SlottedRange{});
+    R.emplace<Mesh>(e, std::move(new_mesh));
     R.emplace_or_replace<MeshGeometryDirty>(e);
 }
 

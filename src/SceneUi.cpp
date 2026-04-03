@@ -1471,7 +1471,7 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
             const auto update_label = std::format("Edit primitive{}", frozen ? " (frozen)" : "");
             if (CollapsingHeader(update_label.c_str()) && !frozen) {
                 if (auto primitive_mesh = PrimitiveEditor(*primitive_type)) {
-                    SetMeshPositions(active_mesh_entity, std::move(primitive_mesh->Positions));
+                    ReplaceMesh(active_mesh_entity, std::move(*primitive_mesh));
                 }
             }
             if (frozen) EndDisabled();

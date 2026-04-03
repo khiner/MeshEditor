@@ -101,7 +101,7 @@ struct Scene {
     entt::entity Duplicate(entt::entity, std::optional<MeshInstanceCreateInfo> = {});
     entt::entity DuplicateLinked(entt::entity, std::optional<MeshInstanceCreateInfo> = {});
 
-    void SetMeshPositions(entt::entity, std::span<const vec3>);
+    void ReplaceMesh(entt::entity, MeshData &&);
     void ClearMeshes();
 
     void Destroy(entt::entity);
