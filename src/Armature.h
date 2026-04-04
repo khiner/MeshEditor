@@ -42,12 +42,11 @@ struct Armature {
 
     std::vector<ArmatureBone> Bones;
     std::unordered_map<BoneId, uint32_t> BoneIdToIndex;
-    std::unordered_map<uint32_t, BoneId> JointNodeIndexToBoneId; // Derived cache from ArmatureBone::JointNodeIndex
+    std::vector<uint32_t> JointOrderToBoneIndex; // Precomputed: skin joint order -> bone array index (InvalidBoneIndex if unmapped).
     std::optional<ArmatureImportedSkin> ImportedSkin;
 
     BoneId AllocateBoneId();
     std::optional<uint32_t> FindBoneIndex(BoneId) const;
-    std::optional<BoneId> FindBoneIdByJointNodeIndex(uint32_t) const;
     BoneId AddBone(std::string_view name, std::optional<BoneId> parent_bone_id, const Transform &rest_local, std::optional<uint32_t> joint_node_index = {});
     bool RemoveBone(BoneId bone_id); // Returns true if bone was found and removed.
     void FinalizeStructure(); // Rebuild derived caches and increment version. Call after AddBone/RemoveBone.
@@ -82,6 +81,9 @@ struct BoneJointEntities {
 // Bone-level selection — independent of object-level Selected/Active.
 // The armature keeps its own Selected/Active throughout Edit/Pose mode.
 struct BoneActive {};
+
+// Tag on armature object entities needing deferred bone GPU instance state sync (selected/active colors).
+struct BoneInstanceStateDirty {};
 
 // Bone selection part identifier.
 enum class BoneSel : uint8_t {

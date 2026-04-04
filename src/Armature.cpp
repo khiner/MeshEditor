@@ -16,29 +16,31 @@ void RebuildDerivedCaches(Armature &armature) {
     auto &bones = armature.Bones;
     armature.BoneIdToIndex.clear();
     armature.BoneIdToIndex.reserve(bones.size());
-    armature.JointNodeIndexToBoneId.clear();
-    armature.JointNodeIndexToBoneId.reserve(bones.size());
 
-    for (auto &bone : bones) bone.ParentIndex = bone.FirstChild = bone.NextSibling = InvalidBoneIndex;
-
+    std::unordered_map<uint32_t, uint32_t> joint_to_bone;
     for (uint32_t i = 0; i < bones.size(); ++i) {
+        bones[i].ParentIndex = bones[i].FirstChild = bones[i].NextSibling = InvalidBoneIndex;
         armature.BoneIdToIndex.emplace(bones[i].Id, i);
+        if (bones[i].JointNodeIndex) joint_to_bone[*bones[i].JointNodeIndex] = i;
     }
-
-    for (const auto &bone : bones) {
-        if (const auto joint_node_index = bone.JointNodeIndex) {
-            armature.JointNodeIndexToBoneId.emplace(*joint_node_index, bone.Id);
-        }
-    }
-
     for (uint32_t i = 0; i < bones.size(); ++i) {
-        const auto parent_id = bones[i].ParentBoneId;
-        if (parent_id == InvalidBoneId) continue;
-
-        const auto parent = armature.BoneIdToIndex.find(parent_id)->second;
+        if (bones[i].ParentBoneId == InvalidBoneId) continue;
+        const auto parent = armature.BoneIdToIndex.find(bones[i].ParentBoneId)->second;
         bones[i].ParentIndex = parent;
         bones[i].NextSibling = bones[parent].FirstChild;
         bones[parent].FirstChild = i;
+    }
+
+    // Precompute skin joint order -> bone array index (avoids hash lookups in ComputeDeformMatrices).
+    armature.JointOrderToBoneIndex.clear();
+    if (armature.ImportedSkin) {
+        const auto &joints = armature.ImportedSkin->OrderedJointNodeIndices;
+        armature.JointOrderToBoneIndex.resize(joints.size(), InvalidBoneIndex);
+        for (uint32_t j = 0; j < joints.size(); ++j) {
+            if (auto it = joint_to_bone.find(joints[j]); it != joint_to_bone.end()) {
+                armature.JointOrderToBoneIndex[j] = it->second;
+            }
+        }
     }
 
     armature.RecomputeRestWorld();
@@ -46,9 +48,9 @@ void RebuildDerivedCaches(Armature &armature) {
 
 // Binary search for the keyframe interval containing `t`. Returns the index of the left keyframe.
 uint32_t FindKeyframe(const std::vector<float> &times, float t) {
-    if (times.size() <= 1) return 0;
-    if (t <= times.front()) return 0;
+    if (times.size() <= 1 || t <= times.front()) return 0;
     if (t >= times.back()) return times.size() - 2;
+
     auto it = std::upper_bound(times.begin(), times.end(), t);
     if (it == times.begin()) return 0;
     return std::distance(times.begin(), it) - 1;
@@ -78,18 +80,6 @@ BoneId Armature::AllocateBoneId() {
 std::optional<uint32_t> Armature::FindBoneIndex(BoneId bone_id) const {
     if (bone_id == InvalidBoneId) return {};
     if (const auto it = BoneIdToIndex.find(bone_id); it != BoneIdToIndex.end()) return it->second;
-    return {};
-}
-
-std::optional<BoneId> Armature::FindBoneIdByJointNodeIndex(uint32_t joint_node_index) const {
-    if (!Dirty) {
-        if (const auto it = JointNodeIndexToBoneId.find(joint_node_index); it != JointNodeIndexToBoneId.end()) return it->second;
-        return {};
-    }
-
-    for (const auto &bone : Bones) {
-        if (bone.JointNodeIndex && *bone.JointNodeIndex == joint_node_index) return bone.Id;
-    }
     return {};
 }
 
@@ -140,7 +130,7 @@ void Armature::FinalizeStructure() {
 
     if (Bones.empty()) {
         BoneIdToIndex.clear();
-        JointNodeIndexToBoneId.clear();
+        JointOrderToBoneIndex.clear();
         Dirty = false;
         return;
     }
@@ -170,13 +160,10 @@ void Armature::RecomputeRestWorld() {
 void Armature::RecomputeInverseBindMatrices() {
     if (!ImportedSkin) return;
     auto &ibms = ImportedSkin->InverseBindMatrices;
-    const auto &ordered_joints = ImportedSkin->OrderedJointNodeIndices;
-    for (uint32_t j = 0; j < ordered_joints.size() && j < ibms.size(); ++j) {
-        const auto bone_id = FindBoneIdByJointNodeIndex(ordered_joints[j]);
-        if (!bone_id) continue;
-        const auto bone_index = FindBoneIndex(*bone_id);
-        if (!bone_index || *bone_index >= Bones.size()) continue;
-        ibms[j] = Bones[*bone_index].InvRestWorld;
+    for (uint32_t j = 0; j < JointOrderToBoneIndex.size() && j < ibms.size(); ++j) {
+        const auto bone_index = JointOrderToBoneIndex[j];
+        if (bone_index == InvalidBoneIndex || bone_index >= Bones.size()) continue;
+        ibms[j] = Bones[bone_index].InvRestWorld;
     }
 }
 
@@ -355,22 +342,15 @@ void ComputeDeformMatrices(
         pose_world[i] = (parent == InvalidBoneIndex) ? local : pose_world[parent] * local;
     }
 
-    // For each joint in the skin's ordering, compute the deform matrix.
-    const auto &ordered_joints = data.ImportedSkin->OrderedJointNodeIndices;
-    for (uint32_t j = 0; j < ordered_joints.size() && j < out_deform_matrices.size(); ++j) {
-        const auto joint_node_index = ordered_joints[j];
-        const auto bone_id = data.FindBoneIdByJointNodeIndex(joint_node_index);
-        if (!bone_id) {
-            out_deform_matrices[j] = I4;
-            continue;
-        }
-        const auto bone_index = data.FindBoneIndex(*bone_id);
-        if (!bone_index || *bone_index >= pose_world.size()) {
+    // For each joint in the skin's ordering, compute the deform matrix using the precomputed index mapping.
+    for (uint32_t j = 0; j < data.JointOrderToBoneIndex.size() && j < out_deform_matrices.size(); ++j) {
+        const auto bone_index = data.JointOrderToBoneIndex[j];
+        if (bone_index == InvalidBoneIndex || bone_index >= pose_world.size()) {
             out_deform_matrices[j] = I4;
             continue;
         }
         const auto &ibm = (j < inverse_bind_matrices.size()) ? inverse_bind_matrices[j] : I4;
-        out_deform_matrices[j] = pose_world[*bone_index] * ibm;
+        out_deform_matrices[j] = pose_world[bone_index] * ibm;
     }
 }
 

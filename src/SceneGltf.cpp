@@ -444,10 +444,9 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
             }
             imported_skin.OrderedJointNodeIndices.emplace_back(joint.JointNodeIndex);
         }
-        armature.FinalizeStructure();
-
         imported_skin.InverseBindMatrices.resize(imported_skin.OrderedJointNodeIndices.size(), I4);
         armature.ImportedSkin = std::move(imported_skin);
+        armature.FinalizeStructure();
         if (!skin.AnchorNodeIndex) {
             return std::unexpected{std::format("glTF import failed for '{}': skin {} has no deterministic anchor node.", path.string(), skin.SkinIndex)};
         }
@@ -505,9 +504,9 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
     for (const auto &entry : armature_data_entities_by_skin) {
         const auto armature_data_entity = entry.second;
         const auto &armature = R.get<const Armature>(armature_data_entity);
-        for (const auto &[joint_node_index, bone_id] : armature.JointNodeIndexToBoneId) {
-            if (!armature.FindBoneIndex(bone_id)) continue;
-            armature_targets_by_joint_node[joint_node_index].emplace_back(armature_data_entity, bone_id);
+        for (const auto &bone : armature.Bones) {
+            if (!bone.JointNodeIndex) continue;
+            armature_targets_by_joint_node[*bone.JointNodeIndex].emplace_back(armature_data_entity, bone.Id);
         }
     }
 

@@ -1075,7 +1075,6 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         }
     }
     std::unordered_set<entt::entity> dirty_overlay_meshes, dirty_element_state_meshes;
-    std::unordered_set<entt::entity> dirty_bone_state_armatures; // Armature obj entities needing bone GPU instance state sync.
 
     { // Selected/Active instance changes - batch instance state buffer writes per buffer entity.
         auto &selected_tracker = reactive<changes::Selected>(R);
@@ -1114,7 +1113,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         }
         for (auto instance_entity : selected_tracker) {
             collect_instance_state(instance_entity);
-            if (const auto arm = FindArmatureObject(R, instance_entity); arm != entt::null) dirty_bone_state_armatures.insert(arm);
+            if (const auto arm = FindArmatureObject(R, instance_entity); arm != entt::null) R.emplace_or_replace<BoneInstanceStateDirty>(arm);
             if (const auto *instance = R.try_get<Instance>(instance_entity); instance && R.all_of<Mesh>(instance->Entity)) {
                 const auto mesh_entity = instance->Entity;
                 if (R.all_of<Selected>(instance_entity)) {
@@ -1132,7 +1131,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         }
         for (auto instance_entity : active_tracker) {
             collect_instance_state(instance_entity);
-            if (const auto arm = FindArmatureObject(R, instance_entity); arm != entt::null) dirty_bone_state_armatures.insert(arm);
+            if (const auto arm = FindArmatureObject(R, instance_entity); arm != entt::null) R.emplace_or_replace<BoneInstanceStateDirty>(arm);
             // If looking through a camera and a different camera becomes active, snap to it.
             if (SavedViewCamera && R.all_of<Camera>(instance_entity) && R.all_of<Active>(instance_entity)) {
                 SnapToCamera(instance_entity);
@@ -1149,12 +1148,12 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
             }
         }
     }
-    { // Bone selection changes — route to dirty_bone_state_armatures for GPU state sync.
+    { // Bone selection changes — tag armature objects for GPU state sync.
         auto &bone_sel_tracker = reactive<changes::BoneSelection>(R);
         if (!bone_sel_tracker.empty()) {
             request(RenderRequest::ReRecordSilhouette);
             for (auto bone_entity : bone_sel_tracker) {
-                if (const auto arm = FindArmatureObject(R, bone_entity); arm != entt::null) dirty_bone_state_armatures.insert(arm);
+                if (const auto arm = FindArmatureObject(R, bone_entity); arm != entt::null) R.emplace_or_replace<BoneInstanceStateDirty>(arm);
             }
         }
     }
@@ -1337,7 +1336,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
             dirty_element_state_meshes.insert(instance.Entity);
         }
         // Mark all armatures dirty for bone state + pose sync on mode change.
-        for (const auto arm : R.view<ArmatureObject>()) dirty_bone_state_armatures.insert(arm);
+        for (const auto arm : R.view<ArmatureObject>()) R.emplace_or_replace<BoneInstanceStateDirty>(arm);
     }
     // Handle mesh Edit mode transform commit when StartTransform is cleared.
     // Bone Edit mode commits are handled in the bone pose transform section below.
@@ -1442,7 +1441,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
     { // Bones
         // GPU instance state
         const bool is_object_mode = interaction_mode == InteractionMode::Object;
-        for (const auto arm_obj_entity : dirty_bone_state_armatures) {
+        for (const auto arm_obj_entity : R.view<BoneInstanceStateDirty>()) {
             if (!R.all_of<MeshBuffers>(arm_obj_entity)) continue;
             const auto &arm_obj = R.get<const ArmatureObject>(arm_obj_entity);
             const auto &bone_entities = arm_obj.BoneEntities;
@@ -1494,6 +1493,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
                 R.patch<ModelsBuffer>(arm_obj.JointEntity);
             }
         }
+        R.clear<BoneInstanceStateDirty>();
         if (R.all_of<PhysicsFiltersDirty>(SceneEntity)) {
             Physics->UpdateFilterTable();
             R.remove<PhysicsFiltersDirty>(SceneEntity);
@@ -1534,11 +1534,19 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
                 auto &armature = R.get<Armature>(arm_obj_comp.Entity);
                 if (!armature.ImportedSkin) continue;
 
+                // Skip armatures with no dirty bones unless a global refresh is needed.
+                if (!bones_need_refresh) {
+                    bool has_dirty = false;
+                    for (const auto b : arm_obj_comp.BoneEntities) {
+                        if (local_changes.contains(b) || transform_end.contains(b)) {
+                            has_dirty = true;
+                            break;
+                        }
+                    }
+                    if (!has_dirty) continue;
+                }
+
                 bool need_sync{false}, rest_pose_edited{false};
-                // Track which bones were explicitly transformed and save old rest world for cascade fix.
-                std::vector<bool> was_transformed(armature.Bones.size(), false);
-                std::vector<mat4> old_rest_world(armature.Bones.size());
-                for (uint32_t i = 0; i < armature.Bones.size(); ++i) old_rest_world[i] = armature.Bones[i].RestWorld;
                 for (uint32_t i = 0; i < arm_obj_comp.BoneEntities.size(); ++i) {
                     const auto b = arm_obj_comp.BoneEntities[i];
                     if (i >= pose_state->BonePoseDelta.size()) continue;
@@ -1553,7 +1561,6 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
                             const auto &bt = R.get<const Transform>(b);
                             armature.Bones[i].RestLocal.P = bt.P;
                             armature.Bones[i].RestLocal.R = bt.R;
-                            was_transformed[i] = true;
                             rest_pose_edited = true;
                             need_sync = true;
                         }
@@ -1597,21 +1604,20 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
                 }
                 if (rest_pose_edited) {
                     // Recompute RestWorld in topological order, preserving world positions of untransformed bones.
+                    // Topological order guarantees: when we reach bone i, its RestWorld hasn't been overwritten yet
+                    // (only ancestors have been processed), so we can read the pre-edit value directly.
                     for (uint32_t i = 0; i < armature.Bones.size(); ++i) {
                         const auto parent = armature.Bones[i].ParentIndex;
                         const mat4 parent_world = (parent == InvalidBoneIndex) ? I4 : armature.Bones[parent].RestWorld;
-                        if (was_transformed[i]) {
+                        const auto b = arm_obj_comp.BoneEntities[i];
+                        if (transform_end.contains(b) || (local_changes.contains(b) && !R.all_of<StartTransform>(b))) {
                             armature.Bones[i].RestWorld = parent_world * RestLocalToMatrix(armature.Bones[i].RestLocal);
                         } else {
                             // Preserve old world position, adjust RestLocal to compensate for parent change.
-                            const mat4 new_local_mat = glm::inverse(parent_world) * old_rest_world[i];
+                            const mat4 new_local_mat = glm::inverse(parent_world) * armature.Bones[i].RestWorld;
                             armature.Bones[i].RestLocal.P = vec3(new_local_mat[3]);
                             armature.Bones[i].RestLocal.R = glm::normalize(glm::quat_cast(mat3(new_local_mat)));
-                            armature.Bones[i].RestWorld = old_rest_world[i];
-                            // Update ECS to match adjusted RestLocal.
-                            const auto b = arm_obj_comp.BoneEntities[i];
-                            const auto &rl = armature.Bones[i].RestLocal;
-                            R.patch<Transform>(b, [&](auto &t) { t.P = rl.P; t.R = rl.R; });
+                            R.patch<Transform>(b, [&](auto &t) { t.P = armature.Bones[i].RestLocal.P; t.R = armature.Bones[i].RestLocal.R; });
                         }
                         armature.Bones[i].InvRestWorld = glm::inverse(armature.Bones[i].RestWorld);
                     }
@@ -2077,7 +2083,7 @@ void Scene::DestroyArmatureData(entt::entity arm_obj_entity) {
         if (auto *mb = R.try_get<MeshBuffers>(arm.JointEntity)) Buffers->Release(*mb);
         if (auto *ref = R.try_get<VertexStoreId>(arm.JointEntity)) Meshes->Release(ref->StoreId);
         if (auto *models = R.try_get<ModelsBuffer>(arm.JointEntity)) Buffers->Instances.Free(models->InstanceRange);
-        R.remove<MeshBuffers, VertexStoreId, ModelsBuffer>(arm.JointEntity);
+        R.remove<MeshBuffers, VertexStoreId, ModelsBuffer, PendingHide>(arm.JointEntity);
         R.destroy(arm.JointEntity);
         arm.JointEntity = entt::null;
     }
@@ -2085,7 +2091,7 @@ void Scene::DestroyArmatureData(entt::entity arm_obj_entity) {
     if (auto *adj = R.try_get<BoneAdjacencyIndices>(arm_obj_entity)) Buffers->EdgeIndexBuffer.Release(adj->Indices);
     if (auto *ref = R.try_get<VertexStoreId>(arm_obj_entity)) Meshes->Release(ref->StoreId);
     if (auto *models = R.try_get<ModelsBuffer>(arm_obj_entity)) Buffers->Instances.Free(models->InstanceRange);
-    R.remove<MeshBuffers, VertexStoreId, ModelsBuffer, BoneAdjacencyIndices>(arm_obj_entity);
+    R.remove<MeshBuffers, VertexStoreId, ModelsBuffer, BoneAdjacencyIndices, PendingHide>(arm_obj_entity);
 }
 
 // Thin wrapper: domain logic in RebuildArmatureStructure, plus scene-level animation re-eval trigger.
