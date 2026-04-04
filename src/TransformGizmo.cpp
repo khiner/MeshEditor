@@ -48,6 +48,18 @@ struct StartContext {
     float WorldPerNdc; // World units per (signed) NDC at the gizmo origin (sampled along screen-x)
 };
 
+struct NumericInput {
+    std::string Str; // Typed characters (digits and '.')
+    bool Negate{false};
+
+    bool Active() const { return !Str.empty() || Negate; }
+    float Value() const { return (Str.empty() || Str == "." ? 0.f : std::stof(Str)) * (Negate ? -1.f : 1.f); }
+    void Reset() {
+        Str.clear();
+        Negate = false;
+    }
+};
+
 struct Context {
     rect ScreenRect{};
     vec2 MousePx{0, 0};
@@ -60,6 +72,7 @@ struct Context {
     std::optional<StartContext> Start; // Captured at mouse press on hovered Interaction.
 
     LocalTransformDelta Dt{}; // Current frame's local delta, set by Interact() and read by Render().
+    NumericInput NumInput;
 };
 
 struct Style {
@@ -351,19 +364,27 @@ std::string ConstraintText(InteractionOp op, TransformGizmo::Mode mode) {
     }
 }
 
+// "[-(text|)] = value" or just "value" if not active.
+std::string NumericDisplayStr(const state::NumericInput &num, float computed_value, std::string_view value_fmt) {
+    const auto val = std::vformat(value_fmt, std::make_format_args(computed_value));
+    if (!num.Active()) return val;
+    return num.Negate ? std::format("[-({}|)] = {}", num.Str, val) : std::format("[{}|] = {}", num.Str, val);
+}
+
 // Blender-style value label for active transforms.
 // For Rotate, v[0] holds rotation angle (rad), or v[0]/v[1] yaw/pitch (rad) for Trackball.
-std::string ValueLabel(Interaction i, vec3 v, TransformGizmo::Mode mode) {
+std::string ValueLabel(Interaction i, vec3 v, TransformGizmo::Mode mode, const state::NumericInput &num) {
     using enum TransformType;
     const auto con = ConstraintText(i.Op, mode);
 
     switch (i.Type) {
         case Translate: {
             const float dist = glm::length(v);
+            auto d = [&](float val) { return std::format("D: {} ({:.4f}){}", NumericDisplayStr(num, val, "{:.4f}"), dist, con); };
             switch (i.Op) {
-                case AxisX: return std::format("D: {:.4f} ({:.4f}){}", v.x, dist, con);
-                case AxisY: return std::format("D: {:.4f} ({:.4f}){}", v.y, dist, con);
-                case AxisZ: return std::format("D: {:.4f} ({:.4f}){}", v.z, dist, con);
+                case AxisX: return d(v.x);
+                case AxisY: return d(v.y);
+                case AxisZ: return d(v.z);
                 case YZ: return std::format("D: {:.4f}   D: {:.4f} ({:.4f}){}", v.y, v.z, dist, con);
                 case ZX: return std::format("D: {:.4f}   D: {:.4f} ({:.4f}){}", v.z, v.x, dist, con);
                 case XY: return std::format("D: {:.4f}   D: {:.4f} ({:.4f}){}", v.x, v.y, dist, con);
@@ -371,21 +392,23 @@ std::string ValueLabel(Interaction i, vec3 v, TransformGizmo::Mode mode) {
             }
         }
         case Scale: {
+            auto s = [&](float val) { return std::format("Scale: {}{}", NumericDisplayStr(num, val, "{:.4f}"), con); };
             switch (i.Op) {
-                case AxisX: return std::format("Scale: {:.4f}{}", v.x, con);
-                case AxisY: return std::format("Scale: {:.4f}{}", v.y, con);
-                case AxisZ: return std::format("Scale: {:.4f}{}", v.z, con);
+                case AxisX: return s(v.x);
+                case AxisY: return s(v.y);
+                case AxisZ: return s(v.z);
                 case YZ: return std::format("Scale: {:.4f} : {:.4f}{}", v.y, v.z, con);
                 case ZX: return std::format("Scale: {:.4f} : {:.4f}{}", v.z, v.x, con);
                 case XY: return std::format("Scale: {:.4f} : {:.4f}{}", v.x, v.y, con);
-                default: return std::format("Scale X: {:.4f}  Y: {:.4f}  Z: {:.4f}", v.x, v.y, v.z);
+                default: return std::format("Scale: {}", NumericDisplayStr(num, v.x, "{:.4f}"));
             }
         }
         case Rotate: {
             if (i.Op == Trackball) {
                 return std::format("Trackball: {:.2f}°, {:.2f}°", v[0] * 180.f / float(M_PI), v[1] * 180.f / float(M_PI));
             }
-            return std::format("Rotation: {:.2f}°{}", v[0] * 180.f / float(M_PI), con);
+            const float deg = v[0] * 180.f / float(M_PI);
+            return std::format("Rotation: {}°{}", NumericDisplayStr(num, deg, "{:.2f}"), con);
         }
     }
 }
@@ -522,7 +545,7 @@ void RenderImpl(const GizmoTransform &transform, const LocalTransformDelta &dt, 
             (g.Interaction->Op == Trackball ? vec3{dt.RotationYawPitch, 0} : vec3{dt.RotationAngle}) :
             g.Interaction->Type == Translate ? transform.P - g.Start->Transform.P :
                                                dt.S;
-        Label(ValueLabel(*g.Interaction, v, transform.Mode));
+        Label(ValueLabel(*g.Interaction, v, transform.Mode, g.NumInput));
     }
 
     if (g.Interaction && g.Interaction->Op == InteractionOp::Action) {
@@ -900,6 +923,7 @@ std::optional<Result> Interact(const GizmoTransform &transform, Config config, c
         const auto start_transform = g.Start->Transform;
         g.Interaction = {*start_screen_transform, InteractionOp::Action};
         g.Start = {.Transform = start_transform, .MousePx = mouse_px, .MouseRayWs = mouse_ray_ws, .WorldPerNdc = g.WorldPerNdc};
+        g.NumInput.Reset();
         return Result{start_transform, {}};
     }
 
@@ -908,22 +932,24 @@ std::optional<Result> Interact(const GizmoTransform &transform, Config config, c
         Result ret{g.Start->Transform, {}};
         g.Start = {};
         g.Interaction = {};
+        g.NumInput.Reset();
         return ret;
     }
-    if (g.Start && ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
-        // Mouse up - end interaction
+    if (g.Start && (ImGui::IsMouseReleased(ImGuiMouseButton_Left) || ImGui::IsKeyPressed(ImGuiKey_Enter, false) || ImGui::IsKeyPressed(ImGuiKey_KeypadEnter, false))) {
+        // Commit - end interaction
         g.Start = {};
         g.Interaction = {};
+        g.NumInput.Reset();
         return {};
     }
 
-    // X/Y/Z axis constraint toggle during active transform.
-    // Pressing an axis key constrains to that axis; pressing it again toggles back to unconstrained.
+    // During an active transform, pressing axis key constrains to that axis. Pressing it again toggles back to unconstrained.
     if (g.Start) {
         const auto check_axis_key = [&](ImGuiKey key, InteractionOp axis_op) -> bool {
             if (!ImGui::IsKeyPressed(key, false)) return false;
             g.Interaction->Op = g.Interaction->Op == axis_op ? (config.Type == TransformGizmo::Type::None ? Action : Screen) : axis_op;
             g.Start = {.Transform = g.Start->Transform, .MousePx = mouse_px, .MouseRayWs = mouse_ray_ws, .WorldPerNdc = g.WorldPerNdc};
+            g.NumInput.Reset();
             return true;
         };
         if (check_axis_key(ImGuiKey_X, AxisX) || check_axis_key(ImGuiKey_Y, AxisY) || check_axis_key(ImGuiKey_Z, AxisZ)) {
@@ -932,7 +958,64 @@ std::optional<Result> Interact(const GizmoTransform &transform, Config config, c
     }
 
     if (g.Start) {
+        for (int d = 0; d <= 9; d++) {
+            if (ImGui::IsKeyPressed(ImGuiKey(ImGuiKey_0 + d), false) || ImGui::IsKeyPressed(ImGuiKey(ImGuiKey_Keypad0 + d), false)) {
+                g.NumInput.Str += char('0' + d);
+                break;
+            }
+        }
+        if (ImGui::IsKeyPressed(ImGuiKey_Period, false) || ImGui::IsKeyPressed(ImGuiKey_KeypadDecimal, false)) {
+            if (g.NumInput.Str.find('.') == std::string::npos) g.NumInput.Str += '.';
+        } else if (ImGui::IsKeyPressed(ImGuiKey_Minus, false) || ImGui::IsKeyPressed(ImGuiKey_KeypadSubtract, false)) {
+            g.NumInput.Negate = !g.NumInput.Negate;
+        } else if (ImGui::IsKeyPressed(ImGuiKey_Backspace, false)) {
+            if (!g.NumInput.Str.empty()) g.NumInput.Str.pop_back();
+            else if (g.NumInput.Negate) g.NumInput.Negate = false;
+        }
+
         const auto &ts = g.Start->Transform;
+
+        if (g.NumInput.Active()) {
+            // Numeric input overrides mouse-based delta.
+            const float value = g.NumInput.Value();
+            const auto [type, op] = *g.Interaction;
+            if (type == TransformType::Translate) {
+                const auto p = [&]() -> vec3 {
+                    if (op == AxisX || op == AxisY || op == AxisZ) return ts.AxisDirWs(AxisIndex(op)) * value;
+                    if (auto pa = PlaneAxes(op)) return ts.AxisDirWs(AxisIndex(pa->first)) * value;
+                    return ts.AxisDirWs(0) * value; // Default to X axis
+                }();
+                g.Dt.P = p;
+                return Result{ts, {.P = p}};
+            }
+            if (type == TransformType::Scale) {
+                const auto s = [&]() -> vec3 {
+                    if (op == AxisX || op == AxisY || op == AxisZ) {
+                        vec3 s{1};
+                        s[AxisIndex(op)] = value;
+                        return s;
+                    }
+                    if (auto pa = PlaneAxes(op)) {
+                        vec3 s{1};
+                        s[AxisIndex(pa->first)] = value;
+                        s[AxisIndex(pa->second)] = value;
+                        return s;
+                    }
+                    return vec3{value};
+                }();
+                g.Dt.S = s;
+                return Result{ts, {.S = s}};
+            }
+            // Rotation
+            g.Dt.RotationAngle = value * float(M_PI) / 180.f;
+            if (op == Trackball) {
+                g.Dt.RotationYawPitch = {g.Dt.RotationAngle, 0};
+                return Result{ts, {.R = glm::angleAxis(g.Dt.RotationAngle, cam_basis[1])}};
+            }
+            const auto plane = vec3{BuildPlane(ts.P, GetPlaneNormal(*g.Interaction, ts, cam_ray))};
+            return Result{ts, {.R = glm::angleAxis(g.Dt.RotationAngle, glm::normalize(ts.Mode == Mode::Local ? plane : ts.WorldDirToLocal(plane)))}};
+        }
+
         const auto plane = BuildPlane(ts.P, GetPlaneNormal(*g.Interaction, ts, cam_ray));
         g.Dt = GetLocalTransformDelta(ts, *g.Interaction, vp, mouse_ray_ws, plane);
         return Result{ts, GetDeltaTransform(ts, g.Dt, *g.Interaction, plane, cam_basis, config.Snap, config.SnapValue)};
