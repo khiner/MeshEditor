@@ -112,7 +112,6 @@ struct Scene {
     entt::entity GetActiveMeshEntity() const;
     void Select(entt::entity);
     void ToggleSelected(entt::entity);
-    void SelectBone(entt::entity);
 
     // Actions on selected entities
     bool CanDuplicate() const;
@@ -307,12 +306,11 @@ private:
     void CreateBoneInstances(entt::entity arm_obj_entity, entt::entity arm_data_entity);
     entt::entity CreateSingleBoneInstance(entt::entity arm_obj_entity, uint32_t bone_id); // Create ECS entity + joints for one bone.
     void DestroyArmatureData(entt::entity arm_obj_entity);
-    void RebuildBoneStructure(entt::entity arm_data_entity); // Call after Armature::AddBone/RemoveBone
+    void RebuildBoneStructure(entt::entity arm_data_entity);
 
     // Prefilter HDR at index (if not already cached) and activate it as the studio environment.
     void SetStudioEnvironment(uint32_t index);
 
-    void ClearSelectedBoneTransforms(bool position, bool rotation, bool scale);
     void RenderEntityControls(entt::entity);
     void RenderObjectTree();
 };

@@ -1,9 +1,13 @@
 #include "Armature.h"
+#include "Entity.h"
 
 #include <algorithm>
+#include <cassert>
 #include <cmath>
 #include <format>
 #include <stdexcept>
+
+#include <entt/entity/registry.hpp>
 
 namespace {
 mat4 ToMatrix(const Transform &t) { return glm::translate(I4, t.P) * glm::mat4_cast(glm::normalize(t.R)) * glm::scale(I4, t.S); }
@@ -75,12 +79,6 @@ std::optional<uint32_t> Armature::FindBoneIndex(BoneId bone_id) const {
     if (bone_id == InvalidBoneId) return {};
     if (const auto it = BoneIdToIndex.find(bone_id); it != BoneIdToIndex.end()) return it->second;
     return {};
-}
-
-std::optional<uint32_t> Armature::FindJointNodeIndex(BoneId bone_id) const {
-    const auto index = FindBoneIndex(bone_id);
-    if (!index) return {};
-    return Bones[*index].JointNodeIndex;
 }
 
 std::optional<BoneId> Armature::FindBoneIdByJointNodeIndex(uint32_t joint_node_index) const {
@@ -374,4 +372,138 @@ void ComputeDeformMatrices(
         const auto &ibm = (j < inverse_bind_matrices.size()) ? inverse_bind_matrices[j] : I4;
         out_deform_matrices[j] = pose_world[*bone_index] * ibm;
     }
+}
+
+float ComputeBoneDisplayScale(const Armature &armature, uint32_t bone_index) {
+    static constexpr float MinBoneLength = 0.004f;
+    float min_child_dist = std::numeric_limits<float>::max();
+    for (uint32_t j = 0; j < armature.Bones.size(); ++j) {
+        if (armature.Bones[j].ParentIndex == bone_index) {
+            const float d = glm::length(vec3{armature.Bones[j].RestWorld[3]} - vec3{armature.Bones[bone_index].RestWorld[3]});
+            if (d > MinBoneLength) min_child_dist = std::min(min_child_dist, d);
+        }
+    }
+    if (min_child_dist < std::numeric_limits<float>::max()) return min_child_dist;
+    if (armature.Bones[bone_index].ParentIndex != InvalidBoneIndex) {
+        return ComputeBoneDisplayScale(armature, armature.Bones[bone_index].ParentIndex);
+    }
+    return 1.f;
+}
+
+void RebuildArmatureStructure(entt::registry &r, entt::entity arm_data_entity) {
+    auto &armature = r.get<Armature>(arm_data_entity);
+    armature.FinalizeStructure();
+    armature.RecomputeRestWorld();
+
+    const Transform identity{vec3{0}, quat{1, 0, 0, 0}, vec3{1}};
+    if (auto *ps = r.try_get<ArmaturePoseState>(arm_data_entity)) {
+        ps->BonePoseDelta.assign(armature.Bones.size(), identity);
+        ps->BoneUserOffset.assign(armature.Bones.size(), identity);
+    }
+    if (auto *anim = r.try_get<ArmatureAnimation>(arm_data_entity)) {
+        for (auto &clip : anim->Clips) armature.ResolveAnimationIndices(clip);
+    }
+}
+
+void ClearSelectedBoneTransforms(entt::registry &r, bool position, bool rotation, bool scale) {
+    const auto arm_obj_entity = FindArmatureObject(r, FindActiveEntity(r));
+    if (arm_obj_entity == entt::null) return;
+
+    const auto &arm_obj = r.get<const ArmatureObject>(arm_obj_entity);
+    const auto &armature = r.get<const Armature>(arm_obj.Entity);
+    for (const auto b : r.view<const BoneSelection, const BoneIndex>()) {
+        const auto idx = r.get<const BoneIndex>(b).Index;
+        const auto &rest = armature.Bones[idx].RestLocal;
+        r.patch<Transform>(b, [&](auto &t) {
+            if (position) t.P = rest.P;
+            if (rotation) t.R = rest.R;
+            if (scale) t.S = rest.S;
+        });
+    }
+}
+
+void SelectBone(entt::registry &r, entt::entity e) {
+    r.clear<BoneSelection>();
+    if (e != entt::null) {
+        r.clear<BoneActive>();
+        r.emplace<BoneActive>(e);
+        r.emplace<BoneSelection>(e);
+    }
+}
+
+entt::entity FindArmatureObject(const entt::registry &r, entt::entity e) {
+    if (e == entt::null) return entt::null;
+    if (r.all_of<ArmatureObject>(e)) return e;
+    if (const auto *sub = r.try_get<SubElementOf>(e); sub && r.all_of<ArmatureObject>(sub->Parent)) return sub->Parent;
+    return entt::null;
+}
+
+entt::entity FindActiveBone(const entt::registry &r) {
+    entt::entity result = entt::null;
+    for (const auto e : r.view<BoneActive>()) {
+        assert(result == entt::null && "Multiple BoneActive entities");
+        result = e;
+    }
+    return result;
+}
+
+ExtrudeResult ExtrudeBones(entt::registry &r, Armature &armature, entt::entity arm_obj_entity) {
+    const auto &arm_obj = r.get<const ArmatureObject>(arm_obj_entity);
+
+    // Classify: tip or body selected → extrude from tip (child); root-only → extrude from root (sibling).
+    // For root extrude, skip if parent bone's tip is also selected (Blender conflict avoidance).
+    ExtrudeResult result;
+    for (const auto e : r.view<BoneSelection, BoneIndex>()) {
+        if (r.get<SubElementOf>(e).Parent != arm_obj_entity) continue;
+        const auto idx = r.get<BoneIndex>(e).Index;
+        const auto &bone = armature.Bones[idx];
+        const auto *parts = r.try_get<const BoneSelection>(e);
+        const bool from_tip = !(parts && parts->Root && !parts->Tip && !parts->Body);
+        if (!from_tip) {
+            if (bone.ParentIndex != InvalidBoneIndex) {
+                const auto *pp = r.try_get<const BoneSelection>(arm_obj.BoneEntities[bone.ParentIndex]);
+                if (pp && pp->Tip) continue;
+            }
+            const auto parent = bone.ParentBoneId == InvalidBoneId ? std::optional<BoneId>{} : std::optional{bone.ParentBoneId};
+            result.NewBoneIds.emplace_back(armature.AddBone("", parent, bone.RestLocal));
+        } else {
+            result.NewBoneIds.emplace_back(armature.AddBone("", bone.Id, {.P = vec3{0, r.get<BoneDisplayScale>(e).Value, 0}}));
+            result.UpdatedParentIndices.emplace_back(idx);
+        }
+    }
+    return result;
+}
+
+DuplicateResult DuplicateBones(entt::registry &r, Armature &armature, entt::entity arm_obj_entity) {
+    DuplicateResult result;
+    std::unordered_map<BoneId, BoneId> orig_to_new;
+    auto unique_name = [&](std::string_view base) {
+        for (uint32_t i = 1;; ++i) {
+            auto c = std::format("{}.{:03d}", base, i);
+            if (std::ranges::none_of(armature.Bones, [&](const auto &b) { return b.Name == c; })) return c;
+        }
+    };
+    for (const auto e : r.view<BoneSelection, BoneIndex>()) {
+        if (r.get<SubElementOf>(e).Parent != arm_obj_entity) continue;
+        const auto &bone = armature.Bones[r.get<BoneIndex>(e).Index];
+        const auto parent = bone.ParentBoneId == InvalidBoneId ? std::optional<BoneId>{} : std::optional{bone.ParentBoneId};
+        const auto new_id = armature.AddBone(unique_name(bone.Name), parent, bone.RestLocal);
+        orig_to_new[bone.Id] = new_id;
+        result.Duplicated.emplace_back(e, new_id);
+    }
+    // Remap: if both a bone and its parent were duplicated, point duplicate child to duplicate parent.
+    for (const auto &entry : result.Duplicated) {
+        auto &nb = armature.Bones[*armature.FindBoneIndex(entry.NewId)];
+        if (auto it = orig_to_new.find(nb.ParentBoneId); it != orig_to_new.end()) nb.ParentBoneId = it->second;
+    }
+    return result;
+}
+
+std::vector<uint32_t> CollectBonesForDeletion(const entt::registry &r, entt::entity arm_obj_entity) {
+    std::vector<uint32_t> to_delete;
+    for (const auto e : r.view<const BoneSelection, const BoneIndex>()) {
+        if (r.get<const SubElementOf>(e).Parent == arm_obj_entity) to_delete.emplace_back(r.get<const BoneIndex>(e).Index);
+    }
+    std::sort(to_delete.rbegin(), to_delete.rend());
+    return to_delete;
 }

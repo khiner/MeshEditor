@@ -590,9 +590,9 @@ void Scene::Interact() {
                 if (!bone_edit && IsKeyPressed(ImGuiKey_D, false) && GetIO().KeyShift) Duplicate();
                 else if (!bone_edit && IsKeyPressed(ImGuiKey_D, false) && GetIO().KeyAlt) DuplicateLinked();
                 else if (!bone_edit && CanDelete() && (IsKeyPressed(ImGuiKey_Delete, false) || IsKeyPressed(ImGuiKey_Backspace, false))) Delete();
-                else if (interaction_mode == InteractionMode::Pose && GetIO().KeyAlt && IsKeyPressed(ImGuiKey_G, false)) ClearSelectedBoneTransforms(true, false, false);
-                else if (interaction_mode == InteractionMode::Pose && GetIO().KeyAlt && IsKeyPressed(ImGuiKey_R, false)) ClearSelectedBoneTransforms(false, true, false);
-                else if (interaction_mode == InteractionMode::Pose && GetIO().KeyAlt && IsKeyPressed(ImGuiKey_S, false)) ClearSelectedBoneTransforms(false, false, true);
+                else if (interaction_mode == InteractionMode::Pose && GetIO().KeyAlt && IsKeyPressed(ImGuiKey_G, false)) ClearSelectedBoneTransforms(R, true, false, false);
+                else if (interaction_mode == InteractionMode::Pose && GetIO().KeyAlt && IsKeyPressed(ImGuiKey_R, false)) ClearSelectedBoneTransforms(R, false, true, false);
+                else if (interaction_mode == InteractionMode::Pose && GetIO().KeyAlt && IsKeyPressed(ImGuiKey_S, false)) ClearSelectedBoneTransforms(R, false, false, true);
                 else if (IsKeyPressed(ImGuiKey_G, false) && transform_shortcuts_enabled) {
                     // Start transform gizmo in both Object and Edit modes.
                     // In Edit mode, shader applies transform to selected vertices.
@@ -818,7 +818,7 @@ void Scene::Interact() {
                 R.emplace_or_replace<Selected>(pick->Entity);
             }
         } else if (pick || !shift) {
-            if (pick) bone_mode ? SelectBone(pick->Entity) : Select(pick->Entity);
+            if (pick) bone_mode ? SelectBone(R, pick->Entity) : Select(pick->Entity);
             else deselect_all();
         }
         // Bone sub-part tracking: merge on shift (intentional part accumulation), replace otherwise.
@@ -1279,23 +1279,6 @@ void Scene::DrawOverlay() {
             dl.AddRectFilled(iv({fmax.x, fmin.y}), iv({vmax.x, fmax.y}), dim);
             dl.AddRect(iv(fmin), iv(fmax), IM_COL32(255, 255, 255, 140), 0.f, 0, 1.5f);
         }
-    }
-}
-
-void Scene::ClearSelectedBoneTransforms(bool position, bool rotation, bool scale) {
-    const auto arm_obj_entity = FindArmatureObject(R, FindActiveEntity(R));
-    if (arm_obj_entity == entt::null) return;
-
-    const auto &arm_obj = R.get<const ArmatureObject>(arm_obj_entity);
-    const auto &armature = R.get<const Armature>(arm_obj.Entity);
-    for (const auto b : R.view<const BoneSelection, const BoneIndex>()) {
-        const auto idx = R.get<const BoneIndex>(b).Index;
-        const auto &rest = armature.Bones[idx].RestLocal;
-        R.patch<Transform>(b, [&](auto &t) {
-            if (position) t.P = rest.P;
-            if (rotation) t.R = rest.R;
-            if (scale) t.S = rest.S;
-        });
     }
 }
 
@@ -1857,13 +1840,13 @@ void Scene::RenderControls() {
                     AlignTextToFramePadding();
                     TextUnformatted("Clear transform:");
                     SameLine();
-                    if (Button("All")) ClearSelectedBoneTransforms(true, true, true);
+                    if (Button("All")) ClearSelectedBoneTransforms(R, true, true, true);
                     SameLine();
-                    if (Button("Position")) ClearSelectedBoneTransforms(true, false, false);
+                    if (Button("Position")) ClearSelectedBoneTransforms(R, true, false, false);
                     SameLine();
-                    if (Button("Rotation")) ClearSelectedBoneTransforms(false, true, false);
+                    if (Button("Rotation")) ClearSelectedBoneTransforms(R, false, true, false);
                     SameLine();
-                    if (Button("Scale")) ClearSelectedBoneTransforms(false, false, true);
+                    if (Button("Scale")) ClearSelectedBoneTransforms(R, false, false, true);
                 }
             }
             RenderEntityControls(FindActiveEntity(R));

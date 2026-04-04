@@ -47,7 +47,6 @@ struct Armature {
 
     BoneId AllocateBoneId();
     std::optional<uint32_t> FindBoneIndex(BoneId) const;
-    std::optional<uint32_t> FindJointNodeIndex(BoneId) const;
     std::optional<BoneId> FindBoneIdByJointNodeIndex(uint32_t) const;
     BoneId AddBone(std::string_view name, std::optional<BoneId> parent_bone_id, const Transform &rest_local, std::optional<uint32_t> joint_node_index = {});
     bool RemoveBone(BoneId bone_id); // Returns true if bone was found and removed.
@@ -165,6 +164,32 @@ entt::entity FindArmatureObject(const entt::registry &, entt::entity);
 // Return the single BoneActive entity, or entt::null if none.
 entt::entity FindActiveBone(const entt::registry &);
 
+// Exclusive-select a bone: clears all BoneSelection, sets BoneActive + BoneSelection on target.
+void SelectBone(entt::registry &, entt::entity);
+
+// Reset selected bones' transforms to rest pose.
+void ClearSelectedBoneTransforms(entt::registry &, bool position, bool rotation, bool scale);
+
+// Finalize armature structure after AddBone/RemoveBone. Resets pose state and re-resolves animation indices.
+void RebuildArmatureStructure(entt::registry &, entt::entity arm_data_entity);
+
+struct ExtrudeResult {
+    std::vector<BoneId> NewBoneIds;
+    std::vector<uint32_t> UpdatedParentIndices;
+};
+ExtrudeResult ExtrudeBones(entt::registry &, Armature &, entt::entity arm_obj_entity);
+
+struct DuplicateResult {
+    struct Entry {
+        entt::entity OriginalEntity;
+        BoneId NewId;
+    };
+    std::vector<Entry> Duplicated;
+};
+DuplicateResult DuplicateBones(entt::registry &, Armature &, entt::entity arm_obj_entity);
+
+std::vector<uint32_t> CollectBonesForDeletion(const entt::registry &, entt::entity arm_obj_entity);
+
 // Compose a rest-pose transform with a delta (Blender-style pose channel model).
 // delta identity {P=0, R=identity, S=1} produces rest unchanged.
 Transform ComposeWithDelta(const Transform &rest, const Transform &delta);
@@ -179,6 +204,9 @@ void EvaluateAnimationDeltas(const AnimationClip &, float time, std::span<const 
 // Compute final deform matrices from rest poses + pose deltas + user offsets + inverse bind matrices.
 // Effective delta per bone = ComposeWithDelta(pose_delta, user_offset). Writes directly into `out` (mapped GPU memory).
 void ComputeDeformMatrices(const Armature &, std::span<const Transform> pose_deltas, std::span<const Transform> user_offsets, std::span<const mat4> inverse_bind, std::span<mat4> out);
+
+// Non-leaf: minimum distance to any child (ignoring near-zero). Leaf: inherit parent's scale, or 1.0.
+float ComputeBoneDisplayScale(const Armature &, uint32_t bone_index);
 
 // Bone direction/roll ↔ rotation matrix conversion (ported from Blender).
 // Direction is the normalized bone Y axis (head→tail). Roll is twist around that axis.
