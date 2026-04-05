@@ -291,7 +291,7 @@ ModalModes ComputeModes(
         for (float &gain : gains[ex_pos]) gain /= max_gain;
     }
 
-    return {std::move(mode_freqs), std::move(mode_t60s), std::move(gains), lowest_mode_freq_orig};
+    return {std::move(mode_freqs), std::move(mode_t60s), std::move(gains), std::move(opts.ExPos), lowest_mode_freq_orig};
 }
 } // namespace
 

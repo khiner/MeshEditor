@@ -7,6 +7,9 @@
 #include <string_view>
 #include <unordered_map>
 
+static constexpr std::string_view ExciteIndexParamName{"Excite index"};
+static constexpr std::string_view GateParamName{"Gate"};
+
 using OnFaustCodeChanged = std::function<void(std::string_view)>;
 
 // Observes the registry and maintains a single Faust DSP program with all sound objects.
@@ -19,8 +22,8 @@ struct FaustGenerator {
     };
 
 private:
-    void OnCreateModalSoundVertices(const entt::registry &, entt::entity);
-    void OnDestroyModalSoundVertices(const entt::registry &, entt::entity);
+    void OnCreateModalModes(const entt::registry &, entt::entity);
+    void OnDestroyModalModes(const entt::registry &, entt::entity);
 
     entt::registry &R;
     OnFaustCodeChanged OnCodeChanged;

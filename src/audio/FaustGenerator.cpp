@@ -1,7 +1,8 @@
 #include "FaustGenerator.h"
 
 #include "Entity.h"
-#include "ModalSoundVertices.h"
+#include "ModalModes.h"
+#include "SoundVertices.h"
 
 #include <entt/entity/registry.hpp>
 
@@ -11,8 +12,8 @@
 #include <string>
 
 FaustGenerator::FaustGenerator(entt::registry &r, OnFaustCodeChanged code_changed) : R(r), OnCodeChanged(code_changed) {
-    R.on_construct<ModalSoundVertices>().connect<&FaustGenerator::OnCreateModalSoundVertices>(*this);
-    R.on_destroy<ModalSoundVertices>().connect<&FaustGenerator::OnDestroyModalSoundVertices>(*this);
+    R.on_construct<ModalModes>().connect<&FaustGenerator::OnCreateModalModes>(*this);
+    R.on_destroy<ModalModes>().connect<&FaustGenerator::OnDestroyModalModes>(*this);
 }
 FaustGenerator::~FaustGenerator() = default;
 
@@ -68,14 +69,14 @@ std::string GenerateModalModelDsp(const ModalModes &modes, std::string_view mode
 
 using ModalDsp = FaustGenerator::ModalDsp;
 // Note: Frequency control is not physically accurate as it doesn't scale mode dampings.
-ModalDsp GenerateModalDsp(std::string_view model_name, const ModalSoundVertices &obj, bool freq_control) {
-    const float fundamental_freq = obj.Modes.Freqs.front();
+ModalDsp GenerateModalDsp(std::string_view model_name, const ModalModes &modes, const SoundVertices &sound_vertices, bool freq_control) {
+    const float fundamental_freq = modes.Freqs.front();
     static constexpr std::string_view ModelGain{"gain = hslider(\"Gain[scale:log]\",0.2,0,0.5,0.01)"};
     static constexpr std::string_view ModelT60Scale{"t60Scale = hslider(\"t60[scale:log][tooltip: Scale T60 decay values of all modes by the same amount.]\",1,0.1,10,0.01)"};
     const auto model_freq = std::format("freq = hslider(\"Frequency[scale:log][tooltip: Fundamental frequency of the model]\",{},50,16000,1)", fundamental_freq);
-    const uint num_excitable = obj.SoundVertices.Vertices.size();
+    const uint num_excitable = sound_vertices.Vertices.size();
     const auto model_ex_pos = std::format("exPos = nentry(\"{}\",{},0,{},1)", ExciteIndexParamName, (num_excitable - 1) / 2, num_excitable - 1);
-    const auto model = GenerateModalModelDsp(obj.Modes, "modalModel", freq_control);
+    const auto model = GenerateModalModelDsp(modes, "modalModel", freq_control);
     const auto model_definition = std::format("{} = environment {{\n{}\n{};\n{};\n{};\n{};\n}};", model_name, model, ModelGain, model_freq, model_ex_pos, ModelT60Scale);
 
     constexpr std::string_view ToSAH{" : ba.sAndH(gate)"}; // add a sample and hold on the gate in serial
@@ -122,14 +123,15 @@ std::string GenerateDsp(const std::unordered_map<entt::entity, ModalDsp> &modal_
 }
 } // namespace
 
-void FaustGenerator::OnCreateModalSoundVertices(const entt::registry &r, entt::entity e) {
-    const auto &model = r.get<const ModalSoundVertices>(e);
+void FaustGenerator::OnCreateModalModes(const entt::registry &r, entt::entity e) {
+    const auto &modes = r.get<const ModalModes>(e);
+    const auto &sound_vertices = r.get<const SoundVertices>(e);
     auto model_name = GetName(r, e);
     std::ranges::replace(model_name, ' ', '_'); // Make sure name is a valid identifier for Faust (todo handle invalid characters)
-    ModalDspByEntity[e] = GenerateModalDsp(model_name, model, true);
+    ModalDspByEntity[e] = GenerateModalDsp(model_name, modes, sound_vertices, true);
     OnCodeChanged(GenerateDsp(ModalDspByEntity));
 }
-void FaustGenerator::OnDestroyModalSoundVertices(const entt::registry &, entt::entity e) {
+void FaustGenerator::OnDestroyModalModes(const entt::registry &, entt::entity e) {
     ModalDspByEntity.erase(e);
     OnCodeChanged(GenerateDsp(ModalDspByEntity));
 }

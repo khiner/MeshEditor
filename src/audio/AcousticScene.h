@@ -3,7 +3,8 @@
 #include "AcousticMaterial.h"
 #include "AudioBuffer.h"
 #include "CreateSvgResource.h"
-#include "ModalSoundVertices.h"
+#include "ModalModes.h"
+#include "SoundVertices.h"
 
 #include "entt_fwd.h"
 
@@ -48,7 +49,6 @@ private:
 
     void SetVertex(entt::entity, uint);
     void SetVertexForce(entt::entity, float);
-    void SetImpactFrames(entt::entity, std::vector<std::vector<float>> &&impact_frames, std::vector<uint> &&vertex_indices);
     void SetImpactFrames(entt::entity, std::vector<std::vector<float>> &&impact_frames);
     void SetModel(entt::entity, SoundVerticesModel);
     void Stop(entt::entity);
