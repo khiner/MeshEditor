@@ -2,19 +2,12 @@
 
 #include "AcousticMaterial.h"
 #include "AudioBuffer.h"
-#include "CreateSvgResource.h"
-#include "ModalModes.h"
-#include "SoundVertices.h"
 
 #include "entt_fwd.h"
 
-#include <filesystem>
-#include <memory>
 #include <vector>
 
-struct Scene;
 struct FaustDSP;
-struct FaustGenerator;
 
 enum class SoundVerticesModel {
     // Play back recordings of impacts on the object at provided listener points/vertices.
@@ -35,29 +28,10 @@ struct ModalModelCreateInfo {
     bool QualityTets{false};
 };
 
-struct AcousticScene {
-    AcousticScene(entt::registry &, CreateSvgResource);
-    ~AcousticScene();
+// Called from audio device callback.
+void ProcessAudio(FaustDSP &, entt::registry &, AudioBuffer);
 
-    void RenderControls(Scene &);
-
-    void LoadRealImpact(const std::filesystem::path &directory, Scene &);
-    void Process(AudioBuffer) const;
-
-private:
-    void Draw(entt::entity, entt::entity mesh_entity);
-
-    void SetVertex(entt::entity, uint);
-    void SetVertexForce(entt::entity, float);
-    void SetImpactFrames(entt::entity, std::vector<std::vector<float>> &&impact_frames);
-    void SetModel(entt::entity, SoundVerticesModel);
-    void Stop(entt::entity);
-
-    void OnCreateVertexForce(const entt::registry &, entt::entity);
-    void OnDestroyVertexForce(const entt::registry &, entt::entity);
-
-    entt::registry &R;
-    CreateSvgResource CreateSvg;
-    std::unique_ptr<FaustDSP> Dsp;
-    std::unique_ptr<FaustGenerator> FaustGenerator;
-};
+void RegisterAudioComponentHandlers(entt::registry &, entt::entity scene_entity);
+void RemoveAudioComponents(entt::registry &, entt::entity sound_entity);
+void DrawSoundEntity(entt::registry &, entt::entity scene_entity, entt::entity sound_entity, entt::entity mesh_entity);
+void SetImpactFrames(entt::registry &, entt::entity, std::vector<std::vector<float>> &&);

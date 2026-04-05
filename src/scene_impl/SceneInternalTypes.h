@@ -6,11 +6,6 @@
 
 #include <cstdint>
 
-// Most recently selected element per mesh (remembered even when not selected).
-struct MeshActiveElement {
-    uint32_t Handle;
-};
-
 // Per-mesh offset/count into SelectionBitsetBuffer for the current edit element type.
 // Assigned on Edit mode entry; updated on element type switch and mesh topology change.
 struct MeshSelectionBitsetRange {

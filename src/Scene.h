@@ -2,21 +2,17 @@
 
 #include "AnimationTimeline.h"
 #include "Entity.h"
-#include "ShaderPipelineType.h"
+#include "SceneVulkanResources.h"
 #include "TransformGizmo.h"
 #include "ViewCamera.h"
-#include "World.h"
 #include "gpu/InteractionMode.h"
 #include "gpu/PunctualLight.h"
 #include "mesh/Handle.h"
-#include "numeric/vec2.h"
 
 #include <expected>
 #include <filesystem>
 #include <set>
 #include <unordered_set>
-
-using uint = uint32_t;
 
 struct Path {
     std::filesystem::path Value;
@@ -33,10 +29,6 @@ enum class FaceColorMode {
     Mesh,
     Normals,
 };
-
-struct DrawListBuilder;
-struct DrawBufferPair;
-struct SelectionDrawInfo;
 
 struct MeshInstanceCreateInfo {
     std::string Name{};
@@ -57,32 +49,28 @@ struct ObjectCreateInfo {
     MeshInstanceCreateInfo::SelectBehavior Select{MeshInstanceCreateInfo::SelectBehavior::Exclusive};
 };
 
+struct DescriptorSlots;
+struct DrawBufferPair;
+struct DrawListBuilder;
+struct EnvironmentStore;
 struct Mesh;
 struct MeshData;
 struct MeshStore;
 struct PhysicsWorld;
 struct ScenePipelines;
 struct SceneBuffers;
-struct DescriptorSlots;
-struct SvgResource;
+struct SelectionDrawInfo;
 struct TextureStore;
-struct EnvironmentStore;
 
 namespace mvk {
 struct ImGuiTexture;
 } // namespace mvk
-
-#include "SceneVulkanResources.h"
-
-struct SoundVertices;
 
 struct Scene {
     Scene(SceneVulkanResources, entt::registry &);
     ~Scene();
 
     void LoadIcons();
-
-    World GetWorld() const;
 
     // Create mesh backing data, optionally with an instance.
     // Returns (mesh_entity, instance_entity) - instance_entity is entt::null if no instance info provided.
@@ -92,6 +80,8 @@ struct Scene {
     std::pair<entt::entity, entt::entity> AddMesh(const std::filesystem::path &, std::optional<MeshInstanceCreateInfo> = {});
     // Imports glTF as a scene (may create multiple mesh + instance entities).
     std::expected<std::pair<entt::entity, entt::entity>, std::string> AddGltfScene(const std::filesystem::path &);
+    void LoadRealImpact(const std::filesystem::path &directory);
+
     entt::entity AddMeshInstance(entt::entity mesh_entity, MeshInstanceCreateInfo);
     entt::entity AddEmpty(ObjectCreateInfo = {});
     entt::entity AddArmature(ObjectCreateInfo = {});
@@ -136,6 +126,7 @@ struct Scene {
     // Wait for pending viewport render to complete. No-op if no render pending.
     void WaitForRender();
     void RenderControls();
+    void RenderAcousticControls();
 
     const AnimationTimeline &GetTimeline() const;
     AnimationTimelineView &GetTimelineView() { return TimelineView; }
@@ -145,6 +136,8 @@ struct Scene {
     void CreateSvgResource(std::unique_ptr<SvgResource> &svg, std::filesystem::path path);
 
     std::string DebugBufferHeapUsage() const;
+
+    entt::entity GetSceneEntity() const { return SceneEntity; }
 
 private:
     SceneVulkanResources Vk;
@@ -311,6 +304,6 @@ private:
     // Prefilter HDR at index (if not already cached) and activate it as the studio environment.
     void SetStudioEnvironment(uint32_t index);
 
-    void RenderEntityControls(entt::entity);
     void RenderObjectTree();
+    void RenderEntityControls(entt::entity);
 };

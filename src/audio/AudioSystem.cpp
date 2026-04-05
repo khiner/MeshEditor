@@ -1,25 +1,22 @@
-#include "AcousticScene.h"
+#include "AudioSystem.h"
 #include "Entity.h"
 #include "FFTData.h"
 #include "FaustDSP.h"
-#include "FaustGenerator.h"
 #include "Instance.h"
-#include "RealImpact.h"
-#include "Scene.h"
+#include "Reactive.h"
+#include "RealImpactComponents.h"
+#include "SoundVertices.h"
 #include "Tets.h"
+#include "Transform.h"
 #include "Widgets.h" // imgui
 #include "Worker.h"
 #include "mesh/Mesh.h"
-#include "mesh/Primitives.h"
-#include "scene_impl/SceneInternalTypes.h"
 
 #include "implot.h"
 #include "mesh2modes.h"
 #include "miniaudio.h"
 #include "tetgen.h" // Must be after any Faust includes, since it defined a `REAL` macro.
-#include <entt/entity/registry.hpp>
 
-#include <format>
 #include <iostream>
 #include <optional>
 #include <print>
@@ -28,29 +25,34 @@
 using std::ranges::find, std::ranges::find_if, std::ranges::iota_view, std::ranges::sort, std::ranges::to;
 using std::views::transform, std::views::take;
 
-// Tracks which RealImpact microphone entity is currently providing sample data for this sound object.
-struct RealImpactActiveMicrophone {
-    entt::entity Entity;
-};
-// A RealImpact microphone position in the dataset.
-struct RealImpactMicrophone {
-    uint Index;
-};
+static constexpr std::string_view ExciteIndexParamName{"Excite index"}, GateParamName{"Gate"};
 
 struct SoundVerticesSamples {
     std::vector<std::vector<float>> Frames; // Frames[vertex_index][frame_index]
     std::vector<uint32_t> Vertices; // Mesh vertex indices corresponding to each frame index in Frames
-    uint Frame{0};
+    uint32_t Frame{0};
     bool Stopped{true}; // Don't immediately play
 
-    const std::vector<float> &GetFrames(uint selected_vertex_index) const { return Frames[selected_vertex_index]; }
-    bool Complete(uint selected_vertex_index) const { return Stopped || Frame >= GetFrames(selected_vertex_index).size(); }
+    const std::vector<float> &GetFrames(uint32_t selected_vertex_index) const { return Frames[selected_vertex_index]; }
+    bool Complete(uint32_t selected_vertex_index) const { return Stopped || Frame >= GetFrames(selected_vertex_index).size(); }
     void Stop() { Stopped = true; }
     void Play() {
         Frame = 0;
         Stopped = false;
     }
 };
+
+void SetImpactFrames(entt::registry &r, entt::entity e, std::vector<std::vector<float>> &&impact_frames) {
+    const auto &vertices = r.get<const SoundVertices>(e).Vertices;
+    if (auto *samples = r.try_get<SoundVerticesSamples>(e)) {
+        samples->Stop();
+        samples->Frames = std::move(impact_frames);
+        samples->Vertices = vertices;
+    } else if (!impact_frames.empty()) {
+        r.emplace<SoundVerticesSamples>(e, std::move(impact_frames), std::vector<uint32_t>(vertices));
+        r.emplace_or_replace<SoundVerticesModel>(e, SoundVerticesModel::Samples);
+    }
+}
 
 // Recording of an excitation.
 struct Recording {
@@ -76,115 +78,224 @@ uint32_t GetActiveVertexIndex(const entt::registry &r, entt::entity instance_ent
     return 0;
 }
 
-AcousticScene::AcousticScene(entt::registry &r, CreateSvgResource create_svg)
-    : R(r), CreateSvg(std::move(create_svg)), Dsp(std::make_unique<FaustDSP>(CreateSvg)),
-      FaustGenerator(std::make_unique<::FaustGenerator>(r, [this](std::string_view code) { Dsp->SetCode(code); })) {
-    R.on_construct<VertexForce>().connect<&AcousticScene::OnCreateVertexForce>(*this);
-    R.on_destroy<VertexForce>().connect<&AcousticScene::OnDestroyVertexForce>(*this);
-}
-AcousticScene::~AcousticScene() = default;
+/***** Faust DSP code generation *****/
 
-void AcousticScene::OnCreateVertexForce(const entt::registry &r, entt::entity e) {
-    if (r.all_of<SoundVerticesModel>(e)) {
-        const auto &excited_vertex = r.get<const VertexForce>(e);
-        const auto &excitable = r.get<const SoundVertices>(e);
-        if (auto vi = excitable.FindVertexIndex(excited_vertex.Vertex)) {
-            const auto mesh_entity = r.get<const Instance>(e).Entity;
-            R.emplace_or_replace<MeshActiveElement>(mesh_entity, excited_vertex.Vertex);
-            SetVertex(e, *vi);
-            SetVertexForce(e, excited_vertex.Force);
-        }
+// Per-entity component: generated Faust DSP code for a modal model.
+struct ModalDsp {
+    std::string Name, Definition, Eval;
+};
+
+namespace {
+// Generate DSP code from modal modes.
+std::string GenerateModalModelDsp(const ModalModes &modes, std::string_view model_name, bool freq_control) {
+    const auto &freqs = modes.Freqs;
+    const auto &gains = modes.Gains;
+    const auto &t60s = modes.T60s;
+    const auto n_modes = freqs.size();
+    const auto n_ex_pos = gains.size();
+
+    std::stringstream dsp;
+    dsp << model_name << "(" << (freq_control ? "freq," : "")
+        << "exPos,t60Scale) = _ <: "
+           "par(mode,nModes,pm.modeFilter(modeFreqs(mode),modesT60s(mode),"
+           "modesGains(int(exPos),mode))) :> /(nModes)\n"
+        << "with{\n"
+        << "nModes = " << n_modes << ";\n";
+    if (n_ex_pos > 1) dsp << "nExPos = " << n_ex_pos << ";\n";
+
+    dsp << "modeFreqsUnscaled(n) = waveform{";
+    for (size_t mode = 0; mode < n_modes; ++mode) {
+        dsp << freqs[mode];
+        if (mode < n_modes - 1) dsp << ",";
     }
-}
-void AcousticScene::OnDestroyVertexForce(const entt::registry &r, entt::entity e) {
-    if (r.all_of<SoundVerticesModel>(e)) {
-        SetVertexForce(e, 0.f);
-    }
-}
+    dsp << "},int(n) : rdtable;\n";
+    dsp << "modeFreqs(mode) = ";
+    if (freq_control) dsp << "freq*modeFreqsUnscaled(mode)/modeFreqsUnscaled(0)";
+    else dsp << "modeFreqsUnscaled(mode)";
+    dsp << ";\n";
 
-void AcousticScene::LoadRealImpact(const fs::path &directory, Scene &scene) {
-    if (!fs::exists(directory)) throw std::runtime_error(std::format("RealImpact directory does not exist: {}", directory.string()));
-
-    scene.ClearMeshes();
-    const auto [mesh_entity, instance_entity] = scene.AddMesh(
-        directory / "transformed.obj",
-        MeshInstanceCreateInfo{
-            .Name = *RealImpact::FindObjectName(directory),
-            // RealImpact meshes are oriented with Z up, but MeshEditor uses Y up.
-            .Transform = {
-                .R = glm::angleAxis(-float(M_PI_2), vec3{1, 0, 0}) * glm::angleAxis(float(M_PI), vec3{0, 0, 1}),
-            },
+    dsp << "modesGains(p,n) = waveform{";
+    for (size_t ex_pos = 0; ex_pos < gains.size(); ++ex_pos) {
+        for (size_t mode = 0; mode < gains[ex_pos].size(); ++mode) {
+            dsp << gains[ex_pos][mode];
+            if (mode < n_modes - 1) dsp << ",";
         }
+        if (ex_pos < gains.size() - 1) dsp << ",";
+    }
+    dsp << "},int(p*nModes+n) : rdtable" << (freq_control ? " : select2(modeFreqs(n)<(ma.SR/2-1),0)" : "") << ";\n";
+
+    dsp << "modesT60s(n) = t60Scale * (waveform{";
+    for (size_t mode = 0; mode < n_modes; ++mode) {
+        dsp << t60s[mode];
+        if (mode < n_modes - 1) dsp << ",";
+    }
+    dsp << "},int(n) : rdtable);\n";
+    dsp << "};\n";
+
+    return dsp.str();
+}
+
+// Note: Frequency control is not physically accurate as it doesn't scale mode dampings.
+ModalDsp GenerateModalDsp(std::string_view model_name, const ModalModes &modes, const SoundVertices &sound_vertices, bool freq_control) {
+    const float fundamental_freq = modes.Freqs.front();
+    static constexpr std::string_view ModelGain{"gain = hslider(\"Gain[scale:log]\",0.2,0,0.5,0.01)"};
+    static constexpr std::string_view ModelT60Scale{"t60Scale = hslider(\"t60[scale:log][tooltip: Scale T60 decay values of all modes by the same amount.]\",1,0.1,10,0.01)"};
+    const auto model_freq = std::format("freq = hslider(\"Frequency[scale:log][tooltip: Fundamental frequency of the model]\",{},50,16000,1)", fundamental_freq);
+    const uint num_excitable = sound_vertices.Vertices.size();
+    const auto model_ex_pos = std::format("exPos = nentry(\"{}\",{},0,{},1)", ExciteIndexParamName, (num_excitable - 1) / 2, num_excitable - 1);
+    const auto model = GenerateModalModelDsp(modes, "modalModel", freq_control);
+    const auto model_definition = std::format("{} = environment {{\n{}\n{};\n{};\n{};\n{};\n}};", model_name, model, ModelGain, model_freq, model_ex_pos, ModelT60Scale);
+
+    constexpr std::string_view ToSAH{" : ba.sAndH(gate)"}; // add a sample and hold on the gate in serial
+    const auto freq = freq_control ? std::format("{}.freq{},", model_name, ToSAH) : "";
+    const auto model_eval = std::format("{}.modalModel({}{}.exPos{},{}.t60Scale{})*{}.gain", model_name, freq, model_name, ToSAH, model_name, ToSAH, model_name);
+    return {std::string(model_name), model_definition, model_eval};
+}
+
+std::string GenerateDsp(entt::registry &r) {
+    auto view = r.view<const ModalDsp>();
+    if (view.empty()) return "";
+
+    static const auto HammerGate = std::format("gate = button(\"../../{}[tooltip: Applies the current parameters and excites the vertex.]\")", GateParamName);
+    static constexpr std::string_view HammerHardness{"hammerHardness = hslider(\"Hammer hardness\",0.9,0,1,0.01)"};
+    static constexpr std::string_view HammerSize{"hammerSize = hslider(\"Hammer size\",0.1,0,1,0.01)"};
+    static constexpr std::string_view Hammer{"hammer(trig,hardness,size) = en.ar(att,att,trig)*no.noise : fi.lowpass(3,ctoff)\nwith{ ctoff = (1-size)*9500+500; att = (1-hardness)*0.01+0.001; }"};
+    static constexpr std::string_view HammerEval = "hammer(gate,hammerHardness,hammerSize)";
+    static const auto HammerDefinition = std::format("{};\n{};\n{};\n{};", HammerGate, HammerHardness, HammerSize, Hammer);
+
+    const auto count = view.size();
+    std::stringstream modal_definitions;
+    for (auto [_, dsp] : view.each()) modal_definitions << dsp.Definition << "\n\n";
+
+    const bool multiple_models = count > 1;
+    std::stringstream models_eval;
+    if (multiple_models) models_eval << "tgroup(\"Models\", ";
+    size_t i = 0;
+    for (auto [_, dsp] : view.each()) {
+        if (i > 0) models_eval << ",";
+        models_eval << std::format("vgroup(\"{}\", {})", dsp.Name, dsp.Eval);
+        ++i;
+    }
+    if (multiple_models) models_eval << ")";
+
+    const auto switch_definition = multiple_models ? std::format("N={};\nswitchN(n, s) = par(i, n , _*(i==s));\nmodelIndex = nentry(\"Excite model\", 0, 0, N-1, 1);", count) : "";
+    const std::string_view switch_eval = multiple_models ? "switchN(N, modelIndex) : " : "";
+    const std::string_view mix = multiple_models ? "/(N)" : "_";
+    auto hammer = std::format("vgroup(\"Hammer\", {})", HammerEval);
+    // Since models are in a tab group when there are multiple, the gate param needs to be one level deeper for its path to match.
+    if (multiple_models) hammer = std::format("vgroup(\"\", {})", hammer);
+    return std::format(
+        "import(\"stdfaust.lib\");\n\n{}\n\n{}\n\n{}\n\nprocess = {} <: {}{} :> {};\n",
+        HammerDefinition, switch_definition, modal_definitions.str(), hammer, switch_eval, models_eval.str(), mix
     );
+}
 
-    std::vector<uint> vertex_indices(RealImpact::NumImpactVertices);
-    {
-        auto impact_positions = RealImpact::LoadPositions(directory);
-        // RealImpact npy file has vertex indices, but the indices may have changed due to deduplication,
-        // so we don't even load them. Instead, we look up by position here.
-        const auto &mesh = R.get<Mesh>(mesh_entity);
-        for (uint i = 0; i < impact_positions.size(); ++i) {
-            vertex_indices[i] = uint(*mesh.FindNearestVertex(impact_positions[i]));
-        }
-    }
+/***** Free functions for sound object control *****/
 
-    const auto listener_points = RealImpact::LoadListenerPoints(directory);
-    const auto [listener_mesh_entity, _] = scene.AddMesh(primitive::Cylinder(0.5f * RealImpact::MicWidthMm / 1000.f, RealImpact::MicLengthMm / 1000.f));
-    for (const auto &listener_point : listener_points) {
-        static const auto rot_z = glm::angleAxis(float(M_PI_2), vec3{0, 0, 1}); // Cylinder's center is along the Y axis.
-        const auto listener_instance_entity = scene.AddMeshInstance(
-            listener_mesh_entity,
-            {
-                .Name = std::format("RealImpact Microphone: {}", listener_point.Index),
-                .Transform = {
-                    .P = listener_point.GetPosition(scene.GetWorld().Up, true),
-                    .R = glm::angleAxis(glm::radians(float(listener_point.AngleDeg)), scene.GetWorld().Up) * rot_z,
-                },
-                .Select = MeshInstanceCreateInfo::SelectBehavior::None,
-            }
-        );
-        R.emplace<RealImpactMicrophone>(listener_instance_entity, listener_point.Index);
+void Stop(entt::registry &r, entt::entity scene_entity, entt::entity e) {
+    if (auto *samples = r.try_get<SoundVerticesSamples>(e)) samples->Stop();
+    if (r.all_of<ModalModes>(e)) r.get<FaustDSP>(scene_entity).Set(GateParamName, 0);
+}
 
-        static constexpr uint CenterListenerIndex = 263; // This listener point is roughly centered.
-        if (listener_point.Index == CenterListenerIndex) {
-            R.emplace<RealImpactActiveMicrophone>(instance_entity, listener_instance_entity);
+void SetModel(entt::registry &r, entt::entity scene_entity, entt::entity e, SoundVerticesModel model) {
+    Stop(r, scene_entity, e);
 
-            auto material_name = RealImpact::FindMaterialName(R.get<Name>(instance_entity).Value);
-            if (const auto real_impact_material = material_name ?
-                    find_if(materials::acoustic::All, [name = *material_name](const AcousticMaterial &m) { return m.Name == name; }) :
-                    std::ranges::end(materials::acoustic::All)) {
-                R.emplace<AcousticMaterial>(mesh_entity, *real_impact_material);
-            }
-            R.emplace<ScaleLocked>(instance_entity);
-            R.emplace<SoundVertices>(instance_entity, std::move(vertex_indices));
-            SetImpactFrames(instance_entity, to<std::vector>(RealImpact::LoadSamples(directory, listener_point.Index)));
+    const auto *samples = r.try_get<const SoundVerticesSamples>(e);
+    const auto *modal = r.try_get<const ModalModes>(e);
+    const bool is_sample = model == SoundVerticesModel::Samples && samples;
+    const bool is_modal = model == SoundVerticesModel::Modal && modal;
+    if (!is_sample && !is_modal) return;
+
+    r.emplace_or_replace<SoundVerticesModel>(e, model);
+    const auto &vertices = is_sample ? samples->Vertices : modal->Vertices;
+    r.patch<SoundVertices>(e, [&vertices](auto &sv) { sv.Vertices = vertices; });
+    // Ensure MeshActiveElement is valid for the new vertex set.
+    const auto mesh_entity = r.get<const Instance>(e).Entity;
+    if (const auto *active = r.try_get<const MeshActiveElement>(mesh_entity)) {
+        if (!r.get<const SoundVertices>(e).FindVertexIndex(active->Handle)) {
+            r.emplace_or_replace<MeshActiveElement>(mesh_entity, vertices.front());
         }
     }
 }
 
-void AcousticScene::Process(AudioBuffer buffer) const {
-    // Faust DSP evaluates all modal sound objects.
-    Dsp->Compute(buffer.FrameCount, &buffer.Input, &buffer.Output);
+void SetVertex(entt::registry &r, entt::entity scene_entity, entt::entity e, uint vertex) {
+    Stop(r, scene_entity, e);
+    if (r.all_of<ModalModes>(e)) r.get<FaustDSP>(scene_entity).Set(ExciteIndexParamName, vertex);
+}
 
-    // Play sample sound objects and handle recordings.
-    for (const auto [entity, model] : R.view<SoundVerticesModel>().each()) {
+void SetVertexForce(entt::registry &r, entt::entity scene_entity, entt::entity e, float force) {
+    const auto model = r.get<SoundVerticesModel>(e);
+    // Update vertex force in the active model.
+    if (model == SoundVerticesModel::Samples && force > 0) {
+        if (r.all_of<SoundVerticesSamples>(e)) r.patch<SoundVerticesSamples>(e, [](auto &s) { s.Play(); });
+    } else if (model == SoundVerticesModel::Modal && r.all_of<ModalModes>(e)) {
+        r.get<FaustDSP>(scene_entity).Set(GateParamName, force);
+    }
+}
+
+// Reactive change types for audio system
+namespace audio_changes {
+struct VertexForce {};
+struct ModalModes {};
+} // namespace audio_changes
+} // namespace
+
+void RegisterAudioComponentHandlers(entt::registry &r, entt::entity scene_entity) {
+    track<audio_changes::VertexForce>(r).on<::VertexForce>(On::Create | On::Destroy);
+    track<audio_changes::ModalModes>(r).on<::ModalModes>(On::Create | On::Destroy);
+
+    RegisterComponentEventHandler(r, [scene_entity](entt::registry &r) {
+        for (auto e : reactive<audio_changes::VertexForce>(r)) {
+            if (!r.valid(e) || !r.all_of<SoundVerticesModel>(e)) continue;
+            if (const auto *vf = r.try_get<::VertexForce>(e)) {
+                const auto &excitable = r.get<const SoundVertices>(e);
+                if (auto vi = excitable.FindVertexIndex(vf->Vertex)) {
+                    r.emplace_or_replace<MeshActiveElement>(r.get<const Instance>(e).Entity, vf->Vertex);
+                    SetVertex(r, scene_entity, e, *vi);
+                    SetVertexForce(r, scene_entity, e, vf->Force);
+                }
+            } else {
+                SetVertexForce(r, scene_entity, e, 0.f);
+            }
+        }
+        auto &modal_tracker = reactive<audio_changes::ModalModes>(r);
+        if (!modal_tracker.empty()) {
+            for (auto e : modal_tracker) {
+                if (r.valid(e) && r.all_of<::ModalModes>(e)) {
+                    const auto &modes = r.get<const ::ModalModes>(e);
+                    const auto &sv = r.get<const SoundVertices>(e);
+                    auto name = GetName(r, e);
+                    std::ranges::replace(name, ' ', '_');
+                    r.emplace_or_replace<ModalDsp>(e, GenerateModalDsp(name, modes, sv, true));
+                } else if (r.valid(e)) {
+                    r.remove<ModalDsp>(e);
+                }
+            }
+            r.get<FaustDSP>(scene_entity).SetCode(GenerateDsp(r));
+        }
+    });
+}
+
+void ProcessAudio(FaustDSP &dsp, entt::registry &r, AudioBuffer buffer) {
+    dsp.Compute(buffer.FrameCount, &buffer.Input, &buffer.Output);
+
+    for (const auto [entity, model] : r.view<SoundVerticesModel>().each()) {
         if (model == SoundVerticesModel::Samples) {
-            if (auto *samples = R.try_get<SoundVerticesSamples>(entity);
+            if (auto *samples = r.try_get<SoundVerticesSamples>(entity);
                 samples && !samples->Frames.empty() && !samples->Stopped) {
-                const auto &impact_samples = samples->GetFrames(GetActiveVertexIndex(R, entity));
-                // todo - resample from 48kHz to device sample rate if necessary
+                const auto &impact_samples = samples->GetFrames(GetActiveVertexIndex(r, entity));
                 for (uint i = 0; i < buffer.FrameCount; ++i) {
                     buffer.Output[i] += samples->Frame < impact_samples.size() ? impact_samples[samples->Frame++] : 0.0f;
                 }
             }
         } else if (model == SoundVerticesModel::Modal) {
-            if (auto *recording = R.try_get<Recording>(entity)) {
-                if (recording->Frame == 0) Dsp->Set(GateParamName, 1);
+            if (auto *recording = r.try_get<Recording>(entity)) {
+                if (recording->Frame == 0) dsp.Set(GateParamName, 1);
                 if (!recording->Complete()) {
                     for (uint i = 0; i < buffer.FrameCount && !recording->Complete(); ++i) {
                         recording->Record(buffer.Output[i]);
                     }
-                    if (recording->Complete()) Dsp->Set(GateParamName, 0);
+                    if (recording->Complete()) dsp.Set(GateParamName, 0);
                 }
             }
         }
@@ -192,122 +303,6 @@ void AcousticScene::Process(AudioBuffer buffer) const {
 }
 
 using namespace ImGui;
-
-void AcousticScene::RenderControls(Scene &scene) {
-    static const float CharWidth = CalcTextSize("A").x;
-
-    // todo straighten out acoustic models for instances
-    const auto active_entity = FindActiveEntity(R);
-    if (!R.storage<SoundVerticesModel>().empty() && CollapsingHeader("Sound objects")) {
-        if (MeshEditor::BeginTable("Sound objects", 3)) {
-            TableSetupColumn("ID", ImGuiTableColumnFlags_WidthFixed, CharWidth * 10);
-            TableSetupColumn("Name");
-            TableSetupColumn("Actions", ImGuiTableColumnFlags_WidthFixed, CharWidth * 20);
-            TableHeadersRow();
-            entt::entity entity_to_select = entt::null, entity_to_delete = entt::null;
-            for (const auto e : R.view<SoundVerticesModel>()) {
-                const bool is_selected = e == active_entity;
-                PushID(uint(e));
-                TableNextColumn();
-                AlignTextToFramePadding();
-                if (is_selected) TableSetBgColor(ImGuiTableBgTarget_RowBg0, GetColorU32(ImGuiCol_TextSelectedBg));
-                TextUnformatted(IdString(e).c_str());
-                TableNextColumn();
-                TextUnformatted(R.get<Name>(e).Value.c_str());
-                TableNextColumn();
-                if (is_selected) BeginDisabled();
-                if (Button("Select")) entity_to_select = e;
-                if (is_selected) EndDisabled();
-                SameLine();
-                if (Button("Delete")) entity_to_delete = e;
-                if (const auto *active_mic = R.try_get<RealImpactActiveMicrophone>(e)) {
-                    if (Button("Select microphone")) entity_to_select = active_mic->Entity;
-                }
-                PopID();
-            }
-            if (entity_to_select != entt::null) scene.Select(entity_to_select);
-            if (entity_to_delete != entt::null) scene.Destroy(entity_to_delete);
-            EndTable();
-        }
-    }
-    if (!R.storage<RealImpactMicrophone>().empty() && CollapsingHeader("Microphones")) {
-        if (MeshEditor::BeginTable("Microphones", 3)) {
-            TableSetupColumn("ID", ImGuiTableColumnFlags_WidthFixed, CharWidth * 10);
-            TableSetupColumn("Name");
-            TableSetupColumn("Actions", ImGuiTableColumnFlags_WidthFixed, CharWidth * 16);
-            TableHeadersRow();
-            entt::entity entity_to_select = entt::null, entity_to_delete = entt::null;
-            for (const auto e : R.view<RealImpactMicrophone>()) {
-                const bool is_selected = e == active_entity;
-                PushID(uint(e));
-                TableNextColumn();
-                AlignTextToFramePadding();
-                if (is_selected) TableSetBgColor(ImGuiTableBgTarget_RowBg0, GetColorU32(ImGuiCol_TextSelectedBg));
-                TextUnformatted(IdString(e).c_str());
-                TableNextColumn();
-                TextUnformatted(R.get<Name>(e).Value.c_str());
-                TableNextColumn();
-                if (is_selected) BeginDisabled();
-                if (Button("Select")) entity_to_select = e;
-                if (is_selected) EndDisabled();
-                SameLine();
-                if (Button("Delete")) entity_to_delete = e;
-                PopID();
-            }
-            if (entity_to_select != entt::null) scene.Select(entity_to_select);
-            if (entity_to_delete != entt::null) scene.Destroy(entity_to_delete);
-            EndTable();
-        }
-    }
-    if (active_entity == entt::null) {
-        TextUnformatted("No selection");
-        return;
-    }
-
-    // Display the selected sound object (which could be the object listened to if a microphone is selected).
-    const auto FindSelectedSoundEntity = [&]() -> entt::entity {
-        if (R.all_of<SoundVerticesModel>(active_entity)) return active_entity;
-        if (R.storage<RealImpactActiveMicrophone>().empty()) return entt::null;
-        for (const auto &[e, active_mic] : R.view<const RealImpactActiveMicrophone>().each()) {
-            if (active_mic.Entity == active_entity) return e;
-        }
-        if (R.all_of<RealImpactMicrophone>(active_entity)) return *R.view<SoundVerticesModel>().begin();
-        return entt::null;
-    };
-    const auto sound_entity = FindSelectedSoundEntity();
-    if (sound_entity == entt::null) {
-        if (Button("Create sound object")) {
-            R.emplace<ScaleLocked>(active_entity);
-            R.emplace<SoundVerticesModel>(active_entity, SoundVerticesModel::Modal);
-            R.emplace<ModalModelCreateInfo>(active_entity);
-        }
-        // todo Create a sample sound object
-        //  - Load and assign a sample to the whole object, or assign to vertices.
-        return;
-    }
-
-    if (sound_entity != active_entity && Button("Select sound object")) {
-        scene.Select(sound_entity);
-    }
-    {
-        const auto *active_mic = R.try_get<RealImpactActiveMicrophone>(sound_entity);
-        if (active_mic && active_mic->Entity != active_entity && Button("Select microphone")) {
-            scene.Select(active_mic->Entity);
-        }
-        const auto *mic = R.try_get<RealImpactMicrophone>(active_entity);
-        if (mic && (!active_mic || active_mic->Entity != active_entity) && Button("Set microphone")) {
-            SetImpactFrames(sound_entity, to<std::vector>(RealImpact::LoadSamples(R.get<Path>(sound_entity).Value.parent_path(), mic->Index)));
-            R.emplace_or_replace<RealImpactActiveMicrophone>(sound_entity, active_entity);
-        }
-    }
-
-    SeparatorText(std::format("Selected sound object: {}", GetName(R, sound_entity)).c_str());
-    Draw(sound_entity, scene.GetMeshEntity(sound_entity));
-    Spacing();
-    if (Button("Delete sound object")) {
-        R.remove<ScaleLocked, SoundVertices, Recording, SoundVerticesModel, ModalModes, SoundVerticesSamples, ModalModelCreateInfo, RealImpactActiveMicrophone>(sound_entity);
-    }
-}
 
 /***** Sound object *****/
 
@@ -480,74 +475,7 @@ struct ModalModelResult {
 std::unique_ptr<Worker<ModalModelResult>> DspGenerator;
 } // namespace
 
-/*
-namespace {
-// Assumes a and b are the same length.
-constexpr float RMSE(const std::vector<float> &a, const std::vector<float> &b) {
-    float sum = 0;
-    for (size_t i = 0; i < a.size(); ++i) sum += (a[i] - b[i]) * (a[i] - b[i]);
-    return sqrtf(sum / a.size());
-}
-} // namespace
-*/
-
-void AcousticScene::SetImpactFrames(entt::entity e, std::vector<std::vector<float>> &&impact_frames) {
-    const auto &vertices = R.get<const SoundVertices>(e).Vertices;
-    if (auto *samples = R.try_get<SoundVerticesSamples>(e)) {
-        samples->Stop();
-        samples->Frames = std::move(impact_frames);
-        samples->Vertices = vertices;
-    } else if (!impact_frames.empty()) {
-        R.emplace<SoundVerticesSamples>(e, std::move(impact_frames), std::vector<uint32_t>(vertices));
-        R.emplace_or_replace<SoundVerticesModel>(e, SoundVerticesModel::Samples);
-    }
-}
-
-void AcousticScene::SetVertex(entt::entity e, uint vertex) {
-    Stop(e);
-    if (R.all_of<ModalModes>(e)) {
-        Dsp->Set(ExciteIndexParamName, vertex);
-    }
-}
-void AcousticScene::SetVertexForce(entt::entity e, float force) {
-    const auto model = R.get<SoundVerticesModel>(e);
-    // Update vertex force in the active model.
-    if (model == SoundVerticesModel::Samples && force > 0) {
-        if (R.all_of<SoundVerticesSamples>(e)) {
-            R.patch<SoundVerticesSamples>(e, [](auto &s) { s.Play(); });
-        }
-    } else if (model == SoundVerticesModel::Modal && R.all_of<ModalModes>(e)) {
-        Dsp->Set(GateParamName, force);
-    }
-}
-
-void AcousticScene::Stop(entt::entity e) {
-    if (auto *samples = R.try_get<SoundVerticesSamples>(e)) samples->Stop();
-    if (R.all_of<ModalModes>(e)) Dsp->Set(GateParamName, 0);
-}
-
-void AcousticScene::SetModel(entt::entity e, SoundVerticesModel model) {
-    Stop(e);
-
-    const auto *samples = R.try_get<const SoundVerticesSamples>(e);
-    const auto *modal = R.try_get<const ModalModes>(e);
-    const bool is_sample = model == SoundVerticesModel::Samples && samples;
-    const bool is_modal = model == SoundVerticesModel::Modal && modal;
-    if (!is_sample && !is_modal) return;
-
-    R.emplace_or_replace<SoundVerticesModel>(e, model);
-    const auto &vertices = is_sample ? samples->Vertices : modal->Vertices;
-    R.patch<SoundVertices>(e, [&vertices](auto &sv) { sv.Vertices = vertices; });
-    // Ensure MeshActiveElement is valid for the new vertex set.
-    const auto mesh_entity = R.get<const Instance>(e).Entity;
-    if (const auto *active = R.try_get<const MeshActiveElement>(mesh_entity)) {
-        if (!R.get<const SoundVertices>(e).FindVertexIndex(active->Handle)) {
-            R.emplace_or_replace<MeshActiveElement>(mesh_entity, vertices.front());
-        }
-    }
-}
-
-void AcousticScene::Draw(entt::entity e, entt::entity mesh_entity) {
+void DrawSoundEntity(entt::registry &r, entt::entity SceneEntity, entt::entity e, entt::entity mesh_entity) {
     if (e == entt::null || mesh_entity == entt::null) return;
 
     if (auto &dsp_generator = DspGenerator) {
@@ -556,19 +484,19 @@ void AcousticScene::Draw(entt::entity e, entt::entity mesh_entity) {
             if (result->Modes.Freqs.empty()) {
                 std::cerr << "Modal model computation failed.\n";
             } else {
-                R.emplace_or_replace<SoundVertices>(e, std::move(result->SoundVertices));
-                R.emplace_or_replace<ModalModes>(e, std::move(result->Modes));
-                Dsp->Set(ExciteIndexParamName, GetActiveVertexIndex(R, e));
-                SetModel(e, SoundVerticesModel::Modal);
+                r.emplace_or_replace<SoundVertices>(e, std::move(result->SoundVertices));
+                r.emplace_or_replace<ModalModes>(e, std::move(result->Modes));
+                r.get<FaustDSP>(SceneEntity).Set(ExciteIndexParamName, GetActiveVertexIndex(r, e));
+                SetModel(r, SceneEntity, e, SoundVerticesModel::Modal);
             }
         }
     }
 
     using namespace ImGui;
 
-    const auto *samples = R.try_get<SoundVerticesSamples>(e);
-    const auto *modal_modes = R.try_get<ModalModes>(e);
-    auto model = R.get<SoundVerticesModel>(e);
+    const auto *samples = r.try_get<SoundVerticesSamples>(e);
+    const auto *modal_modes = r.try_get<ModalModes>(e);
+    auto model = r.get<SoundVerticesModel>(e);
     if (samples && modal_modes) {
         PushID("SelectAudioModel");
         auto edit_model = int(model);
@@ -578,23 +506,23 @@ void AcousticScene::Draw(entt::entity e, entt::entity mesh_entity) {
         PopID();
         if (model_changed) {
             model = SoundVerticesModel(edit_model);
-            SetModel(e, model);
+            SetModel(r, SceneEntity, e, model);
         }
     }
 
     // Cross-model excite section
-    auto *recording = R.try_get<Recording>(e);
-    const auto *excitable = R.try_get<const SoundVertices>(e);
-    const uint32_t active_vi = excitable ? GetActiveVertexIndex(R, e) : 0;
+    auto *recording = r.try_get<Recording>(e);
+    const auto *excitable = r.try_get<const SoundVertices>(e);
+    const uint32_t active_vi = excitable ? GetActiveVertexIndex(r, e) : 0;
     if (excitable) {
         const auto active_vertex = excitable->Vertices[active_vi];
         if (BeginCombo("Vertex", std::to_string(active_vertex).c_str())) {
             for (uint vi = 0; vi < excitable->Vertices.size(); ++vi) {
                 const auto vertex = excitable->Vertices[vi];
                 if (Selectable(std::to_string(vertex).c_str(), vi == active_vi)) {
-                    R.remove<VertexForce>(e);
-                    R.emplace_or_replace<MeshActiveElement>(mesh_entity, vertex);
-                    SetVertex(e, vi);
+                    r.remove<VertexForce>(e);
+                    r.emplace_or_replace<MeshActiveElement>(mesh_entity, vertex);
+                    SetVertex(r, SceneEntity, e, vi);
                 }
             }
             EndCombo();
@@ -605,9 +533,9 @@ void AcousticScene::Draw(entt::entity e, entt::entity mesh_entity) {
         if (!can_excite) BeginDisabled();
         Button("Excite");
         if (IsItemActivated()) {
-            R.remove<VertexForce>(e);
-            R.emplace<VertexForce>(e, active_vertex, 1.f);
-        } else if (IsItemDeactivated()) R.remove<VertexForce>(e);
+            r.remove<VertexForce>(e);
+            r.emplace<VertexForce>(e, active_vertex, 1.f);
+        } else if (IsItemDeactivated()) r.remove<VertexForce>(e);
         if (!can_excite) EndDisabled();
     }
 
@@ -622,18 +550,14 @@ void AcousticScene::Draw(entt::entity e, entt::entity mesh_entity) {
     SeparatorText("Modal model");
 
     auto *parent_window = GetCurrentWindow();
-    auto *create_info = R.try_get<ModalModelCreateInfo>(e);
+    auto *create_info = r.try_get<ModalModelCreateInfo>(e);
     if (!create_info) {
         // Open create/edit
         if (Button(std::format("{} modal model", modal_modes ? "Edit" : "Create").c_str())) {
             ModalModelCreateInfo create_info{};
-            if (modal_modes && excitable) {
-                create_info.NumVertices = excitable->Vertices.size();
-            }
-            if (const auto *material = R.try_get<const AcousticMaterial>(mesh_entity)) {
-                create_info.Material = *material;
-            }
-            R.emplace<ModalModelCreateInfo>(e, std::move(create_info));
+            if (modal_modes && excitable) create_info.NumVertices = excitable->Vertices.size();
+            if (const auto *material = r.try_get<const AcousticMaterial>(mesh_entity)) create_info.Material = *material;
+            r.emplace<ModalModelCreateInfo>(e, std::move(create_info));
         }
     } else if (BeginChild("CreateModalAudioModel", ImVec2{-FLT_MIN, 0.f}, ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY, ImGuiWindowFlags_MenuBar)) {
         // Create/edit
@@ -669,36 +593,34 @@ void AcousticScene::Draw(entt::entity e, entt::entity mesh_entity) {
 
         SeparatorText("SoundVertices vertices");
         // If object is already excitable, default the modal model to be excitable at the same points.
-        if (excitable) {
-            Checkbox("Copy excitable vertices", &info.CopySoundVertices);
-        }
+        if (excitable) Checkbox("Copy excitable vertices", &info.CopySoundVertices);
         if (!excitable || !info.CopySoundVertices) {
-            const uint num_vertices = R.get<Mesh>(mesh_entity).VertexCount();
+            const uint num_vertices = r.get<Mesh>(mesh_entity).VertexCount();
             info.NumVertices = std::min(info.NumVertices, num_vertices);
             const uint min_vertices = 1, max_vertices = num_vertices;
             SliderScalar("Num excitable vertices", ImGuiDataType_U32, &info.NumVertices, &min_vertices, &max_vertices);
         }
 
         if (Button(modal_modes ? "Update" : "Create")) {
-            Stop(e);
-            R.emplace_or_replace<AcousticMaterial>(mesh_entity, info.Material);
+            Stop(r, SceneEntity, e);
+            r.emplace_or_replace<AcousticMaterial>(mesh_entity, info.Material);
             // todo Add an initially invisible edge-only tet mesh to the scene and add toggle between surface/volumetric tet meshes.
 
             // Extract all registry/mesh data on the main thread.
             // Mesh vertex data lives in GPU-mapped memory and must not be read from a background thread.
             // Making tet generation blocking for now, but we could also copy the vertex positions/triangle
             // indices into vectors on the main thread if we want to do that on a background thread as well.
-            const auto &mesh = R.get<const Mesh>(mesh_entity);
+            const auto &mesh = r.get<const Mesh>(mesh_entity);
             // Use impact model vertices or linearly distribute the vertices across the tet mesh.
             const auto num_vertices = mesh.VertexCount();
-            auto new_sound_vertices = info.CopySoundVertices && R.all_of<SoundVertices>(e) ?
-                R.get<const SoundVertices>(e) :
+            auto new_sound_vertices = info.CopySoundVertices && r.all_of<SoundVertices>(e) ?
+                r.get<const SoundVertices>(e) :
                 SoundVertices{iota_view{0u, uint(info.NumVertices)} | transform([&](uint i) { return i * num_vertices / info.NumVertices; }) | to<std::vector<uint>>()};
             constexpr float ScaleFactor{2}; // Mode freq estimates for RealImpact meshes seem to be consistently about twice as high as recordings.
             // We rely on `PreserveSurface` behavior for excitable vertices;
             // Vertex indices on the surface mesh must match vertex indices on the tet mesh.
-            auto tets = GenerateTets(mesh, ScaleFactor * R.get<const Transform>(e).S, {.PreserveSurface = true, .Quality = info.QualityTets});
-            const auto *sample_obj = R.try_get<const SoundVerticesSamples>(e);
+            auto tets = GenerateTets(mesh, ScaleFactor * r.get<const Transform>(e).S, {.PreserveSurface = true, .Quality = info.QualityTets});
+            const auto *sample_obj = r.try_get<const SoundVerticesSamples>(e);
             std::optional<float> fundamental;
             if (sample_obj && excitable) fundamental = EstimateFundamentalFrequency(ComputeFft(sample_obj->GetFrames(active_vi)));
             auto material_props = info.Material.Properties;
@@ -710,10 +632,10 @@ void AcousticScene::Draw(entt::entity e, entt::entity mesh_entity) {
                     return ModalModelResult{.Modes = std::move(modes), .SoundVertices = std::move(sound_vertices)};
                 }
             );
-            R.remove<ModalModelCreateInfo>(e);
+            r.remove<ModalModelCreateInfo>(e);
         }
         SameLine();
-        if (Button("Cancel")) R.remove<ModalModelCreateInfo>(e);
+        if (Button("Cancel")) r.remove<ModalModelCreateInfo>(e);
         EndChild();
     }
 
@@ -732,9 +654,9 @@ void AcousticScene::Draw(entt::entity e, entt::entity mesh_entity) {
     }
 
     // Poll the Faust DSP UI to see if the current excitation vertex has changed.
-    const auto excite_index = uint(Dsp->Get(ExciteIndexParamName));
+    const auto excite_index = uint(r.get<FaustDSP>(SceneEntity).Get(ExciteIndexParamName));
     if (active_vi != excite_index && excite_index < excitable->Vertices.size()) {
-        R.emplace_or_replace<MeshActiveElement>(mesh_entity, excitable->Vertices[excite_index]);
+        r.emplace_or_replace<MeshActiveElement>(mesh_entity, excitable->Vertices[excite_index]);
     }
     if (CollapsingHeader("Modal data charts")) {
         std::optional<size_t> new_hovered_index;
@@ -753,14 +675,14 @@ void AcousticScene::Draw(entt::entity e, entt::entity mesh_entity) {
         }
     }
 
-    if (CollapsingHeader("DSP parameters")) Dsp->DrawParams();
-    if (CollapsingHeader("DSP graph")) Dsp->DrawGraph();
-    if (Button("Print DSP code")) std::println("DSP code:\n\n{}\n", Dsp->GetCode());
+    if (CollapsingHeader("DSP parameters")) r.get<FaustDSP>(SceneEntity).DrawParams();
+    if (CollapsingHeader("DSP graph")) r.get<FaustDSP>(SceneEntity).DrawGraph();
+    if (Button("Print DSP code")) std::println("DSP code:\n\n{}\n", r.get<FaustDSP>(SceneEntity).GetCode());
 
     const bool is_recording = recording && !recording->Complete();
     if (is_recording) BeginDisabled();
     static constexpr uint RecordFrames = 208'592; // Same length as RealImpact recordings.
-    if (Button("Record strike")) recording = &R.emplace<Recording>(e, RecordFrames);
+    if (Button("Record strike")) recording = &r.emplace<Recording>(e, RecordFrames);
     if (is_recording) EndDisabled();
 
     if (samples && recording && recording->Complete()) {
@@ -773,11 +695,15 @@ void AcousticScene::Draw(entt::entity e, entt::entity mesh_entity) {
         // Text("RMSE of top %d mode frequencies: %f", n_test_modes, rmse);
         SameLine();
         if (Button("Save wav files")) {
-            const auto name = GetName(R, e);
+            const auto name = GetName(r, e);
             // Save wav files for both the modal and real-world impact sounds.
             static const auto WavOutDir = fs::path{".."} / "audio_samples";
             WriteWav(recording->Frames, WavOutDir / std::format("{}-modal", name));
             WriteWav(samples->GetFrames(active_vi), WavOutDir / std::format("{}-impact", name));
         }
     }
+}
+
+void RemoveAudioComponents(entt::registry &r, entt::entity e) {
+    r.remove<ScaleLocked, SoundVertices, Recording, SoundVerticesModel, ModalModes, ModalDsp, SoundVerticesSamples, ModalModelCreateInfo, RealImpactActiveMicrophone>(e);
 }

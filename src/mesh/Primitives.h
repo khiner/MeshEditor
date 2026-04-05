@@ -4,6 +4,8 @@
 #include "mesh/MeshAttributes.h"
 #include "mesh/MeshData.h"
 
+#include <glm/geometric.hpp>
+
 #include <ranges>
 #include <unordered_map>
 

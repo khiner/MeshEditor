@@ -1,9 +1,9 @@
 #include "Scene.h"
 #include "Timer.h"
 #include "Window.h"
-#include "audio/AcousticScene.h"
 #include "audio/AudioDevice.h"
-#include "numeric/vec4.h"
+#include "audio/AudioSystem.h"
+#include "audio/FaustDSP.h"
 
 #include "imgui_impl_sdl3.h"
 #include "imgui_impl_vulkan.h"
@@ -20,7 +20,6 @@
 #include <exception>
 #include <format>
 #include <iostream>
-#include <numeric>
 #include <ranges>
 
 using std::ranges::any_of, std::ranges::distance, std::ranges::find_if, std::ranges::find_if_not, std::ranges::to;
@@ -415,13 +414,20 @@ void run(const char *initial_file, bool quiet) {
         CheckVk(device.waitForFences({wd.Frames[wd.FrameIndex].Fence}, true, UINT64_MAX));
         scene->CreateSvgResource(svg, std::move(path));
     };
-    auto acoustic_scene = std::make_unique<AcousticScene>(r, CreateSvg);
+    auto &faust_dsp = r.emplace<FaustDSP>(scene->GetSceneEntity(), CreateSvg);
+    RegisterAudioComponentHandlers(r, scene->GetSceneEntity());
+
+    struct AudioContext {
+        FaustDSP *Dsp;
+        entt::registry *R;
+    };
+    AudioContext audio_ctx{&faust_dsp, &r};
     AudioDevice audio_device{
         {.Callback = [](auto buffer, void *user_data) {
-             const auto *acoustic_scene = static_cast<const AcousticScene *>(user_data);
-             acoustic_scene->Process(std::move(buffer));
+             auto &ctx = *static_cast<AudioContext *>(user_data);
+             ProcessAudio(*ctx.Dsp, *ctx.R, std::move(buffer));
          },
-         .UserData = acoustic_scene.get()}
+         .UserData = &audio_ctx}
     };
     audio_device.Start();
 
@@ -502,7 +508,7 @@ void run(const char *initial_file, bool quiet) {
                     static const std::vector<nfdfilteritem_t> filters{};
                     nfdchar_t *path;
                     if (auto result = NFD_PickFolder(&path, ""); result == NFD_OKAY) {
-                        acoustic_scene->LoadRealImpact(fs::path{path}, *scene);
+                        scene->LoadRealImpact(fs::path{path});
                         NFD_FreePath(path);
                     } else if (result != NFD_CANCEL) {
                         throw std::runtime_error(std::format("Error loading RealImpact file: {}", NFD_GetError()));
@@ -578,7 +584,7 @@ void run(const char *initial_file, bool quiet) {
                     EndTabItem();
                 }
                 if (BeginTabItem("Acoustic scene")) {
-                    acoustic_scene->RenderControls(*scene);
+                    scene->RenderAcousticControls();
                     EndTabItem();
                 }
                 if (BeginTabItem("Audio device")) {
@@ -614,7 +620,7 @@ void run(const char *initial_file, bool quiet) {
             if (GetFrameCount() == 1) {
                 // Initialize scene now that it has an extent.
                 // static const auto DefaultRealImpactPath = fs::path{"../../"} / "RealImpact" / "dataset" / "22_Cup" / "preprocessed";
-                // if (fs::exists(DefaultRealImpactPath)) acoustic_scene->LoadRealImpact(DefaultRealImpactPath, *scene);
+                // if (fs::exists(DefaultRealImpactPath)) scene->LoadRealImpact(DefaultRealImpactPath);
                 if (initial_file) {
                     if (auto result = LoadFile(*scene, fs::path(initial_file)); !result) {
                         std::cerr << result.error() << std::endl;
@@ -640,7 +646,6 @@ void run(const char *initial_file, bool quiet) {
     r.clear();
 
     audio_device.Uninit();
-    acoustic_scene.reset();
     NFD_Quit();
 
     scene.reset();

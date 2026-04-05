@@ -56,8 +56,7 @@ private:
     llvm_dsp_factory *DspFactory{nullptr};
     std::unique_ptr<FaustParams> Params;
 
-    std::string Code;
-    std::string ErrorMessage;
+    std::string Code, ErrorMessage;
 
     constexpr static std::string_view RootSvgPath{"process.svg"};
     fs::path SelectedSvgPath{RootSvgPath};

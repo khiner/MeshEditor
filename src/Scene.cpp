@@ -32,16 +32,17 @@
 #include "physics/PhysicsWorld.h"
 #include "scene_impl/SceneInternalTypes.h"
 
-#include "imgui.h"
+#include "Widgets.h" // imgui
 
 #include "AxisColors.h" // Must be after imgui.h
 #include <entt/entity/registry.hpp>
 
+#include "Reactive.h"
 #include "Variant.h"
 #include <bit>
 #include <iostream>
 
-using std::ranges::any_of, std::ranges::all_of, std::ranges::find, std::ranges::fold_left, std::ranges::to;
+using std::ranges::any_of, std::ranges::all_of, std::ranges::find, std::ranges::find_if, std::ranges::fold_left, std::ranges::to;
 using std::views::filter, std::views::iota, std::views::transform;
 
 namespace {
@@ -301,27 +302,6 @@ struct SceneView {}; struct CameraLens {}; struct TransformPending {};
 struct TransformEnd {}; struct WorldTransform {}; struct TransformDirty {};
 } // namespace changes
 // clang-format on
-
-enum class On : uint8_t {
-    Create = 1,
-    Update = 2,
-    Destroy = 4
-};
-constexpr On operator|(On a, On b) { return On(uint8_t(a) | uint8_t(b)); }
-
-struct ReactiveTracker {
-    entt::storage_for_t<entt::reactive> &s;
-    template<typename T> ReactiveTracker &on(On events) {
-        if (uint8_t(events) & uint8_t(On::Create)) s.on_construct<T>();
-        if (uint8_t(events) & uint8_t(On::Update)) s.on_update<T>();
-        if (uint8_t(events) & uint8_t(On::Destroy)) s.on_destroy<T>();
-        return *this;
-    }
-};
-template<typename Change>
-ReactiveTracker track(entt::registry &r) { return {r.storage<entt::reactive>(entt::type_hash<Change>::value())}; }
-template<typename Change>
-auto &reactive(entt::registry &r) { return r.storage<entt::reactive>(entt::type_hash<Change>::value()); }
 
 struct SelectedInstanceCount {
     uint32_t Value{0};
@@ -658,8 +638,6 @@ Scene::~Scene() {
     }
     R.clear<Mesh>();
 }
-
-World Scene::GetWorld() const { return SceneDefaults::World; }
 
 void Scene::SetStudioEnvironment(uint32_t index) {
     auto &environments = *Environments;
@@ -1062,6 +1040,8 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         R.remove<PendingLightRemovals>(SceneEntity);
         request(RenderRequest::ReRecord);
     }
+
+    ProcessComponentEventHandlers(R);
 
     { // Note: Can mutate InteractionMode, so do this first before `changes::InteractionMode` handling below.
         const auto interaction_mode = R.get<const SceneInteraction>(SceneEntity).Mode;
@@ -4327,4 +4307,181 @@ void Scene::SnapToCamera(entt::entity camera_entity) {
     const vec3 pos = wt.Position;
     const vec3 fwd = -glm::normalize(glm::rotate(Vec4ToQuat(wt.Rotation), vec3{0.f, 0.f, 1.f}));
     R.replace<ViewCamera>(SceneEntity, ViewCamera{pos, pos + fwd, R.get<Camera>(camera_entity)});
+}
+
+#include "audio/AudioSystem.h"
+#include "audio/RealImpact.h"
+#include "audio/RealImpactComponents.h"
+
+void Scene::LoadRealImpact(const std::filesystem::path &directory) {
+    if (!std::filesystem::exists(directory)) throw std::runtime_error(std::format("RealImpact directory does not exist: {}", directory.string()));
+
+    ClearMeshes();
+    const auto [mesh_entity, instance_entity] = AddMesh(
+        directory / "transformed.obj",
+        MeshInstanceCreateInfo{
+            .Name = *RealImpact::FindObjectName(directory),
+            // RealImpact meshes are oriented with Z up, but MeshEditor uses Y up.
+            .Transform = {
+                .R = glm::angleAxis(-float(M_PI_2), vec3{1, 0, 0}) * glm::angleAxis(float(M_PI), vec3{0, 0, 1}),
+            },
+        }
+    );
+
+    std::vector<uint> vertex_indices(RealImpact::NumImpactVertices);
+    {
+        auto impact_positions = RealImpact::LoadPositions(directory);
+        // RealImpact npy file has vertex indices, but the indices may have changed due to deduplication,
+        // so we don't even load them. Instead, we look up by position here.
+        const auto &mesh = R.get<Mesh>(mesh_entity);
+        for (uint i = 0; i < impact_positions.size(); ++i) {
+            vertex_indices[i] = uint(*mesh.FindNearestVertex(impact_positions[i]));
+        }
+    }
+
+    const auto listener_points = RealImpact::LoadListenerPoints(directory);
+    const auto [listener_mesh_entity, _] = AddMesh(primitive::Cylinder(0.5f * RealImpact::MicWidthMm / 1000.f, RealImpact::MicLengthMm / 1000.f));
+    for (const auto &listener_point : listener_points) {
+        static const auto rot_z = glm::angleAxis(float(M_PI_2), vec3{0, 0, 1}); // Cylinder's center is along the Y axis.
+        const auto listener_instance_entity = AddMeshInstance(
+            listener_mesh_entity,
+            {
+                .Name = std::format("RealImpact Microphone: {}", listener_point.Index),
+                .Transform = {
+                    .P = listener_point.GetPosition(SceneDefaults::World.Up, true),
+                    .R = glm::angleAxis(glm::radians(float(listener_point.AngleDeg)), SceneDefaults::World.Up) * rot_z,
+                },
+                .Select = MeshInstanceCreateInfo::SelectBehavior::None,
+            }
+        );
+        R.emplace<RealImpactMicrophone>(listener_instance_entity, listener_point.Index);
+
+        static constexpr uint CenterListenerIndex = 263; // This listener point is roughly centered.
+        if (listener_point.Index == CenterListenerIndex) {
+            R.emplace<RealImpactActiveMicrophone>(instance_entity, listener_instance_entity);
+
+            auto material_name = RealImpact::FindMaterialName(R.get<Name>(instance_entity).Value);
+            if (const auto real_impact_material = material_name ?
+                    find_if(materials::acoustic::All, [name = *material_name](const AcousticMaterial &m) { return m.Name == name; }) :
+                    std::ranges::end(materials::acoustic::All)) {
+                R.emplace<AcousticMaterial>(mesh_entity, *real_impact_material);
+            }
+            R.emplace<ScaleLocked>(instance_entity);
+            R.emplace<SoundVertices>(instance_entity, std::move(vertex_indices));
+            SetImpactFrames(R, instance_entity, to<std::vector>(RealImpact::LoadSamples(directory, listener_point.Index)));
+        }
+    }
+}
+
+void Scene::RenderAcousticControls() {
+    using namespace ImGui;
+
+    static const float CharWidth = CalcTextSize("A").x;
+
+    // todo straighten out acoustic models for instances
+    const auto active_entity = FindActiveEntity(R);
+    if (!R.storage<SoundVerticesModel>().empty() && CollapsingHeader("Sound objects")) {
+        if (MeshEditor::BeginTable("Sound objects", 3)) {
+            TableSetupColumn("ID", ImGuiTableColumnFlags_WidthFixed, CharWidth * 10);
+            TableSetupColumn("Name");
+            TableSetupColumn("Actions", ImGuiTableColumnFlags_WidthFixed, CharWidth * 20);
+            TableHeadersRow();
+            entt::entity entity_to_select = entt::null, entity_to_delete = entt::null;
+            for (const auto e : R.view<SoundVerticesModel>()) {
+                const bool is_selected = e == active_entity;
+                PushID(uint(e));
+                TableNextColumn();
+                AlignTextToFramePadding();
+                if (is_selected) TableSetBgColor(ImGuiTableBgTarget_RowBg0, GetColorU32(ImGuiCol_TextSelectedBg));
+                TextUnformatted(IdString(e).c_str());
+                TableNextColumn();
+                TextUnformatted(R.get<Name>(e).Value.c_str());
+                TableNextColumn();
+                if (is_selected) BeginDisabled();
+                if (Button("Select")) entity_to_select = e;
+                if (is_selected) EndDisabled();
+                SameLine();
+                if (Button("Delete")) entity_to_delete = e;
+                if (const auto *active_mic = R.try_get<RealImpactActiveMicrophone>(e)) {
+                    if (Button("Select microphone")) entity_to_select = active_mic->Entity;
+                }
+                PopID();
+            }
+            if (entity_to_select != entt::null) Select(entity_to_select);
+            if (entity_to_delete != entt::null) Destroy(entity_to_delete);
+            EndTable();
+        }
+    }
+    if (!R.storage<RealImpactMicrophone>().empty() && CollapsingHeader("Microphones")) {
+        if (MeshEditor::BeginTable("Microphones", 3)) {
+            TableSetupColumn("ID", ImGuiTableColumnFlags_WidthFixed, CharWidth * 10);
+            TableSetupColumn("Name");
+            TableSetupColumn("Actions", ImGuiTableColumnFlags_WidthFixed, CharWidth * 16);
+            TableHeadersRow();
+            entt::entity entity_to_select = entt::null, entity_to_delete = entt::null;
+            for (const auto e : R.view<RealImpactMicrophone>()) {
+                const bool is_selected = e == active_entity;
+                PushID(uint(e));
+                TableNextColumn();
+                AlignTextToFramePadding();
+                if (is_selected) TableSetBgColor(ImGuiTableBgTarget_RowBg0, GetColorU32(ImGuiCol_TextSelectedBg));
+                TextUnformatted(IdString(e).c_str());
+                TableNextColumn();
+                TextUnformatted(R.get<Name>(e).Value.c_str());
+                TableNextColumn();
+                if (is_selected) BeginDisabled();
+                if (Button("Select")) entity_to_select = e;
+                if (is_selected) EndDisabled();
+                SameLine();
+                if (Button("Delete")) entity_to_delete = e;
+                PopID();
+            }
+            if (entity_to_select != entt::null) Select(entity_to_select);
+            if (entity_to_delete != entt::null) Destroy(entity_to_delete);
+            EndTable();
+        }
+    }
+    if (active_entity == entt::null) {
+        TextUnformatted("No selection");
+        return;
+    }
+
+    // Display the selected sound object (which could be the object listened to if a microphone is selected).
+    const auto FindSelectedSoundEntity = [&]() -> entt::entity {
+        if (R.all_of<SoundVerticesModel>(active_entity)) return active_entity;
+        if (R.storage<RealImpactActiveMicrophone>().empty()) return entt::null;
+        for (const auto &[e, active_mic] : R.view<const RealImpactActiveMicrophone>().each()) {
+            if (active_mic.Entity == active_entity) return e;
+        }
+        if (R.all_of<RealImpactMicrophone>(active_entity)) return *R.view<SoundVerticesModel>().begin();
+        return entt::null;
+    };
+    const auto sound_entity = FindSelectedSoundEntity();
+    if (sound_entity == entt::null) {
+        if (Button("Create sound object")) {
+            R.emplace<ScaleLocked>(active_entity);
+            R.emplace<SoundVerticesModel>(active_entity, SoundVerticesModel::Modal);
+            R.emplace<ModalModelCreateInfo>(active_entity);
+        }
+        // todo Create a sample sound object
+        //  - Load and assign a sample to the whole object, or assign to vertices.
+        return;
+    }
+
+    if (sound_entity != active_entity && Button("Select sound object")) Select(sound_entity);
+    {
+        const auto *active_mic = R.try_get<RealImpactActiveMicrophone>(sound_entity);
+        if (active_mic && active_mic->Entity != active_entity && Button("Select microphone")) Select(active_mic->Entity);
+
+        const auto *mic = R.try_get<RealImpactMicrophone>(active_entity);
+        if (mic && (!active_mic || active_mic->Entity != active_entity) && Button("Set microphone")) {
+            SetImpactFrames(R, sound_entity, to<std::vector>(RealImpact::LoadSamples(R.get<Path>(sound_entity).Value.parent_path(), mic->Index)));
+            R.emplace_or_replace<RealImpactActiveMicrophone>(sound_entity, active_entity);
+        }
+    }
+
+    SeparatorText(std::format("Selected sound object: {}", GetName(R, sound_entity)).c_str());
+    DrawSoundEntity(R, SceneEntity, sound_entity, GetMeshEntity(sound_entity));
+    Spacing();
+    if (Button("Delete sound object")) RemoveAudioComponents(R, sound_entity);
 }
