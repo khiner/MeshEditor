@@ -1,8 +1,8 @@
 #pragma once
 
 #include "AcousticMaterial.h"
-#include "Excitable.h"
 #include "ModalModes.h"
+#include "SoundVertices.h"
 
 #include <string_view>
 
@@ -10,7 +10,7 @@ static constexpr std::string_view ExciteIndexParamName{"Excite index"};
 static constexpr std::string_view GateParamName{"Gate"};
 
 // Assumes at least one mode is present.
-struct ModalSoundObject {
+struct ModalSoundVertices {
     ModalModes Modes;
-    Excitable Excitable;
+    SoundVertices SoundVertices;
 };

@@ -19,8 +19,8 @@ struct FaustGenerator {
     };
 
 private:
-    void OnCreateModalSoundObject(const entt::registry &, entt::entity);
-    void OnDestroyModalSoundObject(const entt::registry &, entt::entity);
+    void OnCreateModalSoundVertices(const entt::registry &, entt::entity);
+    void OnDestroyModalSoundVertices(const entt::registry &, entt::entity);
 
     entt::registry &R;
     OnFaustCodeChanged OnCodeChanged;

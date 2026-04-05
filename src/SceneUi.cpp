@@ -6,11 +6,11 @@
 #include "Widgets.h" // imgui
 
 #include "Armature.h"
-#include "Excitable.h"
 #include "Instance.h"
 #include "MeshComponents.h"
 #include "OrientationGizmo.h"
 #include "SceneSelection.h"
+#include "SoundVertices.h"
 #include "SvgResource.h"
 #include "Timer.h"
 #include "Variant.h"
@@ -616,7 +616,7 @@ void Scene::Interact() {
     }
 
     // Handle mouse input.
-    if (!IsMouseDown(ImGuiMouseButton_Left)) R.clear<ExcitedVertex>();
+    if (!IsMouseDown(ImGuiMouseButton_Left)) R.clear<VertexForce>();
 
     const bool active_transform = TransformGizmo::IsUsing();
     if (active_transform) {
@@ -751,14 +751,14 @@ void Scene::Interact() {
     if (interaction_mode == InteractionMode::Excite) {
         if (IsMouseClicked(ImGuiMouseButton_Left)) {
             if (const auto hit_entities = RunObjectPick(mouse_px); !hit_entities.empty()) {
-                if (const auto hit_entity = hit_entities.front(); R.all_of<Excitable>(hit_entity)) {
-                    if (const auto vertex = RunExcitableVertexPick(hit_entity, mouse_px)) {
-                        R.emplace_or_replace<ExcitedVertex>(hit_entity, *vertex, 1.f);
+                if (const auto hit_entity = hit_entities.front(); R.all_of<SoundVertices>(hit_entity)) {
+                    if (const auto vertex = RunSoundVerticesVertexPick(hit_entity, mouse_px)) {
+                        R.emplace_or_replace<VertexForce>(hit_entity, *vertex, 1.f);
                     }
                 }
             }
         } else if (!IsMouseDown(ImGuiMouseButton_Left)) {
-            R.clear<ExcitedVertex>();
+            R.clear<VertexForce>();
         }
         return;
     }

@@ -74,7 +74,7 @@ struct ImGuiTexture;
 
 #include "SceneVulkanResources.h"
 
-struct Excitable;
+struct SoundVertices;
 
 struct Scene {
     Scene(SceneVulkanResources, entt::registry &);
@@ -294,7 +294,7 @@ private:
     std::vector<ElementRange> GetBitsetRangesForSelected() const; // Build ElementRange list from selected mesh bitset ranges.
     void RunBoxSelectElements(std::span<const ElementRange>, Element, std::pair<uvec2, uvec2>, bool is_additive);
     std::optional<std::pair<entt::entity, uint32_t>> RunElementPickFromRanges(std::span<const ElementRange>, Element, uvec2 mouse_px);
-    std::optional<uint32_t> RunExcitableVertexPick(entt::entity instance_entity, uvec2 mouse_px);
+    std::optional<uint32_t> RunSoundVerticesVertexPick(entt::entity instance_entity, uvec2 mouse_px);
 
     void ApplySelectBehavior(entt::entity, MeshInstanceCreateInfo::SelectBehavior);
     entt::entity CreateExtrasBufferEntity(std::span<const vec3> positions, std::span<const uint8_t> vertex_classes = {}, std::span<const uint32_t> edge_indices = {});

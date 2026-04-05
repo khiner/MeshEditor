@@ -6,7 +6,6 @@
 #include "Armature.h"
 #include "BBox.h"
 #include "Bindless.h"
-#include "Excitable.h"
 #include "File.h"
 #include "Instance.h"
 #include "MeshComponents.h"
@@ -14,6 +13,7 @@
 #include "ScenePipelines.h"
 #include "SceneSelection.h"
 #include "Shader.h"
+#include "SoundVertices.h"
 #include "SvgResource.h"
 #include "Timer.h"
 #include "gpu/BoxSelectPushConstants.h"
@@ -293,7 +293,7 @@ void ResetObjectPickKeys(SceneBuffers &buffers) {
 namespace changes {
 struct Selected {}; struct ActiveInstance {}; struct BoneSelection {}; struct Rerecord {};
 struct MeshActiveElement {}; struct MeshGeometry {}; struct MeshMaterial {};
-struct Excitable {}; struct ExcitedVertex {}; struct ModelsBuffer {};
+struct SoundVertices {}; struct VertexForce {}; struct ModelsBuffer {};
 struct NewBufferEntity {}; struct RenderInstanceCreated {};
 struct SceneSettings {}; struct InteractionMode {}; struct Submit {}; struct Rotation {};
 struct ViewportTheme {}; struct Materials {}; struct PbrSpecialization {};
@@ -539,8 +539,8 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
     track<changes::MeshActiveElement>(R).on<MeshActiveElement>(On::Create | On::Update);
     track<changes::MeshGeometry>(R).on<MeshGeometryDirty>(On::Create);
     track<changes::MeshMaterial>(R).on<MeshMaterialAssignment>(On::Create | On::Update);
-    track<changes::Excitable>(R).on<Excitable>(On::Create | On::Destroy);
-    track<changes::ExcitedVertex>(R).on<ExcitedVertex>(On::Create | On::Destroy);
+    track<changes::SoundVertices>(R).on<SoundVertices>(On::Create | On::Destroy);
+    track<changes::VertexForce>(R).on<VertexForce>(On::Create | On::Destroy);
     track<changes::ModelsBuffer>(R).on<ModelsBuffer>(On::Update);
     track<changes::NewBufferEntity>(R).on<MeshBuffers>(On::Create);
     track<changes::RenderInstanceCreated>(R).on<RenderInstance>(On::Create);
@@ -1065,10 +1065,10 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
 
     { // Note: Can mutate InteractionMode, so do this first before `changes::InteractionMode` handling below.
         const auto interaction_mode = R.get<const SceneInteraction>(SceneEntity).Mode;
-        if (R.storage<Excitable>().empty()) {
+        if (R.storage<SoundVertices>().empty()) {
             if (interaction_mode == InteractionMode::Excite) SetInteractionMode(*InteractionModes.begin());
             InteractionModes.erase(InteractionMode::Excite);
-        } else if (!reactive<changes::Excitable>(R).empty()) {
+        } else if (!reactive<changes::SoundVertices>(R).empty()) {
             InteractionModes.insert(InteractionMode::Excite);
             if (interaction_mode == InteractionMode::Excite) request(RenderRequest::ReRecord);
             else SetInteractionMode(InteractionMode::Excite); // Switch to excite mode
@@ -1189,9 +1189,9 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         SelectionBitsDirty = false;
         if (is_edit_mode) ApplySelectionStateUpdate(GetBitsetRangesForSelected(), R.get<const SceneEditMode>(SceneEntity).Value);
     }
-    for (auto instance_entity : reactive<changes::ExcitedVertex>(R)) {
+    for (auto instance_entity : reactive<changes::VertexForce>(R)) {
         if (const auto *inst = R.try_get<Instance>(instance_entity)) dirty_element_state_meshes.insert(inst->Entity);
-        if (const auto *ev = R.try_get<ExcitedVertex>(instance_entity)) orbit_to_active(instance_entity, Element::Vertex, ev->Vertex);
+        if (const auto *ev = R.try_get<VertexForce>(instance_entity)) orbit_to_active(instance_entity, Element::Vertex, ev->Vertex);
     }
     for (auto camera_entity : reactive<changes::CameraLens>(R)) {
         if (const auto *cd = R.try_get<Camera>(camera_entity)) {
@@ -1332,7 +1332,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
             const auto edit_mode = R.get<const SceneEditMode>(SceneEntity).Value;
             if (edit_mode != Element::None) ApplySelectionStateUpdate(GetBitsetRangesForSelected(), edit_mode);
         }
-        for (const auto [_, instance, __] : R.view<const Instance, const Excitable>().each()) {
+        for (const auto [_, instance, __] : R.view<const Instance, const SoundVertices>().each()) {
             dirty_element_state_meshes.insert(instance.Entity);
         }
         // Mark all armatures dirty for bone state + pose sync on mode change.
@@ -1872,10 +1872,10 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         std::unordered_set<EH> selected_edges, active_edges;
         std::unordered_set<FH> selected_faces;
         std::optional<uint32_t> active_handle;
-        for (auto [entity, instance, excitable] : R.view<const Instance, const Excitable>().each()) {
+        for (auto [entity, instance, excitable] : R.view<const Instance, const SoundVertices>().each()) {
             if (instance.Entity != mesh_entity) continue;
-            selected_vertices.insert(excitable.ExcitableVertices.begin(), excitable.ExcitableVertices.end());
-            if (const auto *excited_vertex = R.try_get<ExcitedVertex>(entity)) active_handle = excited_vertex->Vertex;
+            selected_vertices.insert(excitable.Vertices.begin(), excitable.Vertices.end());
+            if (const auto *excited_vertex = R.try_get<VertexForce>(entity)) active_handle = excited_vertex->Vertex;
             break;
         }
         Meshes->UpdateElementStates(mesh, Element::Vertex, selected_vertices, selected_edges, active_edges, selected_faces, active_handle);
@@ -3004,7 +3004,7 @@ void Scene::RecordRenderCommandBuffer(bool silhouette_only) {
 
         std::unordered_set<entt::entity> excitable_mesh_entities;
         if (is_excite_mode) {
-            for (const auto [e, instance, excitable] : R.view<const Instance, const Excitable>().each()) {
+            for (const auto [e, instance, excitable] : R.view<const Instance, const SoundVertices>().each()) {
                 excitable_mesh_entities.emplace(instance.Entity);
             }
         }
@@ -3047,7 +3047,7 @@ void Scene::RecordRenderCommandBuffer(bool silhouette_only) {
             const Mesh *MeshComp; // nullptr if entity has no Mesh component
             const DeformSlots &Deform;
             std::optional<uint32_t> PrimaryEditBufferIndex;
-            bool IsExcitable, IsBone, IsBoneJoint, IsExtras;
+            bool IsSoundVertices, IsBone, IsBoneJoint, IsExtras;
         };
 
         std::vector<MeshEntityData> mesh_entities;
@@ -3219,7 +3219,7 @@ void Scene::RecordRenderCommandBuffer(bool silhouette_only) {
                 dd.ElementStateSlotOffset = Meshes->GetEdgeStateRange(e.MeshComp->GetStoreId());
                 const auto db = draw_list.Draws.size();
                 if (e.PrimaryEditBufferIndex) AppendDraw(draw_list, draw.EdgeQuad, e.Buf.EdgeIndices.Count * 3, e.Mod, dd, *e.PrimaryEditBufferIndex);
-                else if (e.IsExcitable) AppendDraw(draw_list, draw.EdgeQuad, e.Buf.EdgeIndices.Count * 3, e.Mod, dd);
+                else if (e.IsSoundVertices) AppendDraw(draw_list, draw.EdgeQuad, e.Buf.EdgeIndices.Count * 3, e.Mod, dd);
                 PatchMorphWeights(draw_list, db, e.Deform);
                 patch_edit_pending_local_transform(db, e.Entity);
             }
@@ -3252,7 +3252,7 @@ void Scene::RecordRenderCommandBuffer(bool silhouette_only) {
             const auto db = draw_list.Draws.size();
             if (is_point_mesh) AppendDraw(draw_list, draw.Point, e.Buf.VertexIndices, e.Mod, dd);
             else if (e.PrimaryEditBufferIndex) AppendDraw(draw_list, draw.Point, e.Buf.VertexIndices, e.Mod, dd, *e.PrimaryEditBufferIndex);
-            else if (e.IsExcitable) AppendDraw(draw_list, draw.Point, e.Buf.VertexIndices, e.Mod, dd);
+            else if (e.IsSoundVertices) AppendDraw(draw_list, draw.Point, e.Buf.VertexIndices, e.Mod, dd);
             PatchMorphWeights(draw_list, db, e.Deform);
             patch_edit_pending_local_transform(db, e.Entity);
         }
@@ -4031,12 +4031,12 @@ std::optional<std::pair<entt::entity, uint32_t>> Scene::RunElementPickFromRanges
     return {};
 }
 
-std::optional<uint32_t> Scene::RunExcitableVertexPick(entt::entity instance_entity, uvec2 mouse_px) {
-    if (!R.all_of<Excitable>(instance_entity)) return {};
+std::optional<uint32_t> Scene::RunSoundVerticesVertexPick(entt::entity instance_entity, uvec2 mouse_px) {
+    if (!R.all_of<SoundVertices>(instance_entity)) return {};
     const auto *instance = R.try_get<Instance>(instance_entity);
     if (!instance) return {};
 
-    const Timer timer{"RunExcitableVertexPick"};
+    const Timer timer{"RunSoundVerticesVertexPick"};
     const auto mesh_entity = instance->Entity;
     const auto &mesh = R.get<Mesh>(mesh_entity);
     const uint32_t vertex_count = mesh.VertexCount();

@@ -3,7 +3,7 @@
 #include "AcousticMaterial.h"
 #include "AudioBuffer.h"
 #include "CreateSvgResource.h"
-#include "ModalSoundObject.h"
+#include "ModalSoundVertices.h"
 
 #include "entt_fwd.h"
 
@@ -15,7 +15,7 @@ struct Scene;
 struct FaustDSP;
 struct FaustGenerator;
 
-enum class SoundObjectModel {
+enum class SoundVerticesModel {
     // Play back recordings of impacts on the object at provided listener points/vertices.
     Samples,
     // Model a rigid body's response to an impact using modal analysis/synthesis:
@@ -29,8 +29,8 @@ enum class SoundObjectModel {
 // If an entity has this component, user has opened the modal model create/edit pane.
 struct ModalModelCreateInfo {
     AcousticMaterial Material{materials::acoustic::All.front()};
-    uint32_t NumExcitableVertices{10};
-    bool CopyExcitable{true}; // Only used if excitable component is already present.
+    uint32_t NumVertices{10};
+    bool CopySoundVertices{true}; // Only used if excitable component is already present.
     bool QualityTets{false};
 };
 
@@ -50,11 +50,11 @@ private:
     void SetVertexForce(entt::entity, float);
     void SetImpactFrames(entt::entity, std::vector<std::vector<float>> &&impact_frames, std::vector<uint> &&vertex_indices);
     void SetImpactFrames(entt::entity, std::vector<std::vector<float>> &&impact_frames);
-    void SetModel(entt::entity, SoundObjectModel);
+    void SetModel(entt::entity, SoundVerticesModel);
     void Stop(entt::entity);
 
-    void OnCreateExcitedVertex(const entt::registry &, entt::entity);
-    void OnDestroyExcitedVertex(const entt::registry &, entt::entity);
+    void OnCreateVertexForce(const entt::registry &, entt::entity);
+    void OnDestroyVertexForce(const entt::registry &, entt::entity);
 
     entt::registry &R;
     CreateSvgResource CreateSvg;
