@@ -28,12 +28,13 @@
 using std::ranges::find, std::ranges::find_if, std::ranges::iota_view, std::ranges::sort, std::ranges::to;
 using std::views::transform, std::views::take;
 
-// If an entity has this component, it is being listened to by `Listener`.
-struct SoundObjectListener {
-    entt::entity Listener;
+// Tracks which RealImpact microphone entity is currently providing sample data for this sound object.
+struct RealImpactActiveMicrophone {
+    entt::entity Entity;
 };
-struct SoundObjectListenerPoint {
-    uint Index; // Index in the root listener point's children.
+// A RealImpact microphone position in the dataset.
+struct RealImpactMicrophone {
+    uint Index;
 };
 
 struct SoundVerticesSamples {
@@ -134,7 +135,7 @@ void AcousticScene::LoadRealImpact(const fs::path &directory, Scene &scene) {
         const auto listener_instance_entity = scene.AddMeshInstance(
             listener_mesh_entity,
             {
-                .Name = std::format("RealImpact Listener: {}", listener_point.Index),
+                .Name = std::format("RealImpact Microphone: {}", listener_point.Index),
                 .Transform = {
                     .P = listener_point.GetPosition(scene.GetWorld().Up, true),
                     .R = glm::angleAxis(glm::radians(float(listener_point.AngleDeg)), scene.GetWorld().Up) * rot_z,
@@ -142,11 +143,11 @@ void AcousticScene::LoadRealImpact(const fs::path &directory, Scene &scene) {
                 .Select = MeshInstanceCreateInfo::SelectBehavior::None,
             }
         );
-        R.emplace<SoundObjectListenerPoint>(listener_instance_entity, listener_point.Index);
+        R.emplace<RealImpactMicrophone>(listener_instance_entity, listener_point.Index);
 
         static constexpr uint CenterListenerIndex = 263; // This listener point is roughly centered.
         if (listener_point.Index == CenterListenerIndex) {
-            R.emplace<SoundObjectListener>(instance_entity, listener_instance_entity);
+            R.emplace<RealImpactActiveMicrophone>(instance_entity, listener_instance_entity);
 
             auto material_name = RealImpact::FindMaterialName(R.get<Name>(instance_entity).Value);
             if (const auto real_impact_material = material_name ?
@@ -219,8 +220,8 @@ void AcousticScene::RenderControls(Scene &scene) {
                 if (is_selected) EndDisabled();
                 SameLine();
                 if (Button("Delete")) entity_to_delete = e;
-                if (const auto *sound_listener = R.try_get<SoundObjectListener>(e)) {
-                    if (Button("Select listener point")) entity_to_select = sound_listener->Listener;
+                if (const auto *active_mic = R.try_get<RealImpactActiveMicrophone>(e)) {
+                    if (Button("Select microphone")) entity_to_select = active_mic->Entity;
                 }
                 PopID();
             }
@@ -229,14 +230,14 @@ void AcousticScene::RenderControls(Scene &scene) {
             EndTable();
         }
     }
-    if (!R.storage<SoundObjectListenerPoint>().empty() && CollapsingHeader("Listener points")) {
-        if (MeshEditor::BeginTable("Listener points", 3)) {
+    if (!R.storage<RealImpactMicrophone>().empty() && CollapsingHeader("Microphones")) {
+        if (MeshEditor::BeginTable("Microphones", 3)) {
             TableSetupColumn("ID", ImGuiTableColumnFlags_WidthFixed, CharWidth * 10);
             TableSetupColumn("Name");
             TableSetupColumn("Actions", ImGuiTableColumnFlags_WidthFixed, CharWidth * 16);
             TableHeadersRow();
             entt::entity entity_to_select = entt::null, entity_to_delete = entt::null;
-            for (const auto e : R.view<SoundObjectListenerPoint>()) {
+            for (const auto e : R.view<RealImpactMicrophone>()) {
                 const bool is_selected = e == active_entity;
                 PushID(uint(e));
                 TableNextColumn();
@@ -263,14 +264,14 @@ void AcousticScene::RenderControls(Scene &scene) {
         return;
     }
 
-    // Display the selected sound object (which could be the object listened to if a listener is selected).
+    // Display the selected sound object (which could be the object listened to if a microphone is selected).
     const auto FindSelectedSoundEntity = [&]() -> entt::entity {
         if (R.all_of<SoundVerticesModel>(active_entity)) return active_entity;
-        if (R.storage<SoundObjectListener>().empty()) return entt::null;
-        for (const auto &[e, listener] : R.view<const SoundObjectListener>().each()) {
-            if (listener.Listener == active_entity) return e;
+        if (R.storage<RealImpactActiveMicrophone>().empty()) return entt::null;
+        for (const auto &[e, active_mic] : R.view<const RealImpactActiveMicrophone>().each()) {
+            if (active_mic.Entity == active_entity) return e;
         }
-        if (R.all_of<SoundObjectListenerPoint>(active_entity)) return *R.view<SoundVerticesModel>().begin();
+        if (R.all_of<RealImpactMicrophone>(active_entity)) return *R.view<SoundVerticesModel>().begin();
         return entt::null;
     };
     const auto sound_entity = FindSelectedSoundEntity();
@@ -289,14 +290,14 @@ void AcousticScene::RenderControls(Scene &scene) {
         scene.Select(sound_entity);
     }
     {
-        const auto *listener = R.try_get<SoundObjectListener>(sound_entity);
-        if (listener && listener->Listener != active_entity && Button("Select listener point")) {
-            scene.Select(listener->Listener);
+        const auto *active_mic = R.try_get<RealImpactActiveMicrophone>(sound_entity);
+        if (active_mic && active_mic->Entity != active_entity && Button("Select microphone")) {
+            scene.Select(active_mic->Entity);
         }
-        const auto *listener_point = R.try_get<SoundObjectListenerPoint>(active_entity);
-        if (listener_point && (!listener || listener->Listener != active_entity) && Button("Set listener point")) {
-            SetImpactFrames(sound_entity, to<std::vector>(RealImpact::LoadSamples(R.get<Path>(sound_entity).Value.parent_path(), listener_point->Index)));
-            R.emplace_or_replace<SoundObjectListener>(sound_entity, active_entity);
+        const auto *mic = R.try_get<RealImpactMicrophone>(active_entity);
+        if (mic && (!active_mic || active_mic->Entity != active_entity) && Button("Set microphone")) {
+            SetImpactFrames(sound_entity, to<std::vector>(RealImpact::LoadSamples(R.get<Path>(sound_entity).Value.parent_path(), mic->Index)));
+            R.emplace_or_replace<RealImpactActiveMicrophone>(sound_entity, active_entity);
         }
     }
 
@@ -304,7 +305,7 @@ void AcousticScene::RenderControls(Scene &scene) {
     Draw(sound_entity, scene.GetMeshEntity(sound_entity));
     Spacing();
     if (Button("Delete sound object")) {
-        R.remove<ScaleLocked, SoundVertices, Recording, SoundVerticesModel, ModalModes, SoundVerticesSamples, ModalModelCreateInfo, SoundObjectListener>(sound_entity);
+        R.remove<ScaleLocked, SoundVertices, Recording, SoundVerticesModel, ModalModes, SoundVerticesSamples, ModalModelCreateInfo, RealImpactActiveMicrophone>(sound_entity);
     }
 }
 
