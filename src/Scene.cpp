@@ -3360,7 +3360,7 @@ void Scene::RecordRenderCommandBuffer(bool silhouette_only) {
 
     const bool has_object_silhouette_selection =
         any_of(R.view<const Selected, const Instance, const RenderInstance>().each(), [&](const auto &entry) { return is_silhouette_eligible(std::get<0>(entry)); });
-    const bool render_silhouette = (show_overlays && settings.ShowOutlineSelected) &&
+    const bool render_silhouette = (show_overlays && settings.ShowOutlineSelected) && !is_excite_mode &&
         (is_edit_mode ? !silhouette_instances.empty() : has_object_silhouette_selection);
 
     draw.Silhouette = {};
