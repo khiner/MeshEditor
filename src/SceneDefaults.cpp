@@ -53,6 +53,7 @@ static ViewportTheme MakeDefaultViewportTheme() {
             .FaceSelectedIncidental{1, 0.639f, 0, 0.2f},
             .FaceSelected{1, 0.718f, 0, 0.2f},
             .ElementActive{1, 1, 1, 0.2f},
+            .ElementExcited{0.549f, 1.0f, 1.0f, 1},
             .FaceNormal{0.133f, 0.867f, 0.867f},
             .VertexNormal{0.137f, 0.380f, 0.867f},
             .BoneSolid{0.698f, 0.698f, 0.698f},

@@ -1871,14 +1871,15 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         std::unordered_set<VH> selected_vertices;
         std::unordered_set<EH> selected_edges, active_edges;
         std::unordered_set<FH> selected_faces;
-        std::optional<uint32_t> active_handle;
+        std::optional<uint32_t> active_handle, excited_handle;
         for (auto [entity, instance, excitable] : R.view<const Instance, const SoundVertices>().each()) {
             if (instance.Entity != mesh_entity) continue;
             selected_vertices.insert(excitable.Vertices.begin(), excitable.Vertices.end());
+            if (const auto *force = R.try_get<const VertexForce>(entity)) excited_handle = force->Vertex;
             break;
         }
         if (const auto *active = R.try_get<const MeshActiveElement>(mesh_entity)) active_handle = active->Handle;
-        Meshes->UpdateElementStates(mesh, Element::Vertex, selected_vertices, selected_edges, active_edges, selected_faces, active_handle);
+        Meshes->UpdateElementStates(mesh, Element::Vertex, selected_vertices, selected_edges, active_edges, selected_faces, active_handle, excited_handle);
         SelectionStale = true;
     }
     if (!dirty_element_state_meshes.empty()) request(RenderRequest::Submit);

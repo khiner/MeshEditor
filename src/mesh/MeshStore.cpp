@@ -11,7 +11,7 @@
 #include "tinyply.h"
 
 namespace {
-constexpr uint8_t ElementStateSelected{1u << 0}, ElementStateActive{1u << 1};
+constexpr uint8_t ElementStateSelected{1u << 0}, ElementStateActive{1u << 1}, ElementStateExcited{1u << 2};
 
 struct MeshDataWithMaterials {
     MeshData Mesh;
@@ -731,7 +731,8 @@ void MeshStore::UpdateElementStates(
     const std::unordered_set<EH> &selected_edges,
     const std::unordered_set<EH> &active_edges,
     const std::unordered_set<FH> &selected_faces,
-    std::optional<uint32_t> active_handle
+    std::optional<uint32_t> active_handle,
+    std::optional<uint32_t> excited_handle
 ) {
     const auto &entry = Entries.at(mesh.GetStoreId());
     auto face_states = GetFaceStates(entry.FaceData);
@@ -778,6 +779,7 @@ void MeshStore::UpdateElementStates(
             }
         }
     }
+    if (excited_handle && *excited_handle < vertex_states.size()) vertex_states[*excited_handle] |= ElementStateExcited;
 }
 
 void MeshStore::UpdateEdgeStatesFromFaces(const Mesh &mesh, std::span<const uint32_t> selected_faces, std::optional<uint32_t> active_face) {

@@ -113,7 +113,9 @@ void main() {
         Color = base_color;
     } else {
         vec4 final_color = is_selected ? selected_color : base_color;
-        if (is_active) final_color = vec4(ViewportTheme.Colors.ElementActive.rgb, 1.0);
+        const bool is_excited = (element_state & STATE_EXCITED) != 0u;
+        if (is_excited) final_color = ViewportTheme.Colors.ElementExcited;
+        else if (is_active) final_color = vec4(ViewportTheme.Colors.ElementActive.rgb, 1.0);
         Color = final_color;
     }
     TexCoord0 = vert.TexCoord0;

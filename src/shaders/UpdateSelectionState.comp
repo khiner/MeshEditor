@@ -23,6 +23,7 @@ layout(set = 0, binding = BINDING_Buffer, scalar) buffer ElementStateBuffer {
 const uint INVALID_HANDLE = 0xffffffffu;
 const uint8_t STATE_SELECTED = uint8_t(1u);
 const uint8_t STATE_ACTIVE = uint8_t(2u);
+const uint8_t STATE_EXCITED = uint8_t(4u);
 
 void main() {
     const uint i = gl_GlobalInvocationID.x;

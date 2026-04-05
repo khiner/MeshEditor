@@ -91,7 +91,8 @@ struct MeshStore {
         const std::unordered_set<he::EH> &selected_edges,
         const std::unordered_set<he::EH> &active_edges,
         const std::unordered_set<he::FH> &selected_faces,
-        std::optional<uint32_t> active_handle
+        std::optional<uint32_t> active_handle,
+        std::optional<uint32_t> excited_handle = {}
     );
     void UpdateEdgeStatesFromFaces(const Mesh &, std::span<const uint32_t> selected_faces, std::optional<uint32_t> active_face);
     void UpdateEdgeStatesFromVertices(const Mesh &);

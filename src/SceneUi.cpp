@@ -2008,6 +2008,7 @@ void Scene::RenderControls() {
                 changed |= ColorEdit4("Face selected (incidental)", &theme.Colors.FaceSelectedIncidental.x);
                 changed |= ColorEdit4("Face selected", &theme.Colors.FaceSelected.x);
                 changed |= ColorEdit4("Element active", &theme.Colors.ElementActive.x);
+                changed |= ColorEdit4("Element excited", &theme.Colors.ElementExcited.x);
                 changed |= ColorEdit3("Face normal", &theme.Colors.FaceNormal.x);
                 changed |= ColorEdit3("Vertex normal", &theme.Colors.VertexNormal.x);
                 changed |= ColorEdit3("Bone solid", &theme.Colors.BoneSolid.x);

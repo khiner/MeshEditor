@@ -295,6 +295,8 @@ structs:
         type: vec4
       - name: ElementActive # Active Vertex/Edge/Face
         type: vec4
+      - name: ElementExcited # Excite mode, mouse down on excitable vertex
+        type: vec4
       - name: FaceNormal # Face Normal
         type: vec3
       - name: VertexNormal # Vertex Normal

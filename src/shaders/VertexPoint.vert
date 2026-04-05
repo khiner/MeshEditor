@@ -32,9 +32,11 @@ void main() {
 
     WorldNormal = trs_transform_normal(world, normal);
     WorldPosition = world_pos;
-    Color = is_active ? vec4(ViewportTheme.Colors.ElementActive.rgb, 1.0) :
-        is_selected  ? vec4(ViewportTheme.Colors.VertexSelected, 1.0) :
-                       vec4(ViewportTheme.Colors.Vertex, 1.0);
+    const bool is_excited = (element_state & STATE_EXCITED) != 0u;
+    Color = is_excited   ? ViewportTheme.Colors.ElementExcited :
+        is_active        ? vec4(ViewportTheme.Colors.ElementActive.rgb, 1.0) :
+        is_selected      ? vec4(ViewportTheme.Colors.VertexSelected, 1.0) :
+                           vec4(ViewportTheme.Colors.Vertex, 1.0);
     gl_Position = SceneViewUBO.ViewProj * vec4(world_pos, 1.0);
     gl_Position.z -= NdcOffsetFactor() * 1.5; // Push points in front of lines/faces (Blender: vertex_ndc_offset_)
     // Only show selected/active vertices in excite mode

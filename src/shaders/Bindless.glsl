@@ -86,6 +86,7 @@ const uint INVALID_SLOT = 0xffffffffu;
 const uint INVALID_OFFSET = 0xffffffffu;
 const uint STATE_SELECTED = 1u << 0;
 const uint STATE_ACTIVE = 1u << 1;
+const uint STATE_EXCITED = 1u << 2;
 
 DrawData GetDrawData() {
     return DrawDataBuffers[nonuniformEXT(SceneViewUBO.DrawDataSlot)].Draws[pc.DrawDataOffset + gl_InstanceIndex];
