@@ -753,6 +753,7 @@ void Scene::Interact() {
             if (const auto hit_entities = RunObjectPick(mouse_px); !hit_entities.empty()) {
                 if (const auto hit_entity = hit_entities.front(); R.all_of<SoundVertices>(hit_entity)) {
                     if (const auto vertex = RunSoundVerticesVertexPick(hit_entity, mouse_px)) {
+                        R.emplace_or_replace<MeshActiveElement>(R.get<Instance>(hit_entity).Entity, *vertex);
                         R.emplace_or_replace<VertexForce>(hit_entity, *vertex, 1.f);
                     }
                 }

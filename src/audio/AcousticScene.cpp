@@ -3,6 +3,7 @@
 #include "FFTData.h"
 #include "FaustDSP.h"
 #include "FaustGenerator.h"
+#include "Instance.h"
 #include "RealImpact.h"
 #include "Scene.h"
 #include "Tets.h"
@@ -10,6 +11,7 @@
 #include "Worker.h"
 #include "mesh/Mesh.h"
 #include "mesh/Primitives.h"
+#include "scene_impl/SceneInternalTypes.h"
 
 #include "implot.h"
 #include "mesh2modes.h"
@@ -62,6 +64,17 @@ struct Recording {
     }
 };
 
+// Returns the index (into SoundVertices::Vertices) of the active vertex for this instance entity,
+// derived from MeshActiveElement on the mesh entity. Returns 0 if no active element is set.
+uint32_t GetActiveVertexIndex(const entt::registry &r, entt::entity instance_entity) {
+    const auto &excitable = r.get<const SoundVertices>(instance_entity);
+    const auto mesh_entity = r.get<const Instance>(instance_entity).Entity;
+    if (const auto *active = r.try_get<const MeshActiveElement>(mesh_entity)) {
+        if (auto vi = excitable.FindVertexIndex(active->Handle)) return *vi;
+    }
+    return 0;
+}
+
 AcousticScene::AcousticScene(entt::registry &r, CreateSvgResource create_svg)
     : R(r), CreateSvg(std::move(create_svg)), Dsp(std::make_unique<FaustDSP>(CreateSvg)),
       FaustGenerator(std::make_unique<::FaustGenerator>(r, [this](std::string_view code) { Dsp->SetCode(code); })) {
@@ -75,7 +88,8 @@ void AcousticScene::OnCreateVertexForce(const entt::registry &r, entt::entity e)
         const auto &excited_vertex = r.get<const VertexForce>(e);
         const auto &excitable = r.get<const SoundVertices>(e);
         if (auto vi = excitable.FindVertexIndex(excited_vertex.Vertex)) {
-            R.patch<SoundVertices>(e, [vi](auto &e) { e.SelectedVertexIndex = *vi; });
+            const auto mesh_entity = r.get<const Instance>(e).Entity;
+            R.emplace_or_replace<MeshActiveElement>(mesh_entity, excited_vertex.Vertex);
             SetVertex(e, *vi);
             SetVertexForce(e, excited_vertex.Force);
         }
@@ -156,7 +170,7 @@ void AcousticScene::Process(AudioBuffer buffer) const {
         if (model == SoundVerticesModel::Samples) {
             if (auto *samples = R.try_get<SoundVerticesSamples>(entity);
                 samples && !samples->Frames.empty() && !samples->Stopped) {
-                const auto &impact_samples = samples->GetFrames(R.get<SoundVertices>(entity).SelectedVertexIndex);
+                const auto &impact_samples = samples->GetFrames(GetActiveVertexIndex(R, entity));
                 // todo - resample from 48kHz to device sample rate if necessary
                 for (uint i = 0; i < buffer.FrameCount; ++i) {
                     buffer.Output[i] += samples->Frame < impact_samples.size() ? impact_samples[samples->Frame++] : 0.0f;
@@ -522,10 +536,14 @@ void AcousticScene::SetModel(entt::entity e, SoundVerticesModel model) {
 
     R.emplace_or_replace<SoundVerticesModel>(e, model);
     const auto &vertices = is_sample ? samples->Vertices : modal->Vertices;
-    R.patch<SoundVertices>(e, [&vertices](auto &sv) {
-        sv.Vertices = vertices;
-        sv.SelectedVertexIndex = std::min(sv.SelectedVertexIndex, uint32_t(vertices.size() - 1));
-    });
+    R.patch<SoundVertices>(e, [&vertices](auto &sv) { sv.Vertices = vertices; });
+    // Ensure MeshActiveElement is valid for the new vertex set.
+    const auto mesh_entity = R.get<const Instance>(e).Entity;
+    if (const auto *active = R.try_get<const MeshActiveElement>(mesh_entity)) {
+        if (!R.get<const SoundVertices>(e).FindVertexIndex(active->Handle)) {
+            R.emplace_or_replace<MeshActiveElement>(mesh_entity, vertices.front());
+        }
+    }
 }
 
 void AcousticScene::Draw(entt::entity e, entt::entity mesh_entity) {
@@ -537,9 +555,9 @@ void AcousticScene::Draw(entt::entity e, entt::entity mesh_entity) {
             if (result->Modes.Freqs.empty()) {
                 std::cerr << "Modal model computation failed.\n";
             } else {
-                Dsp->Set(ExciteIndexParamName, result->SoundVertices.SelectedVertexIndex);
                 R.emplace_or_replace<SoundVertices>(e, std::move(result->SoundVertices));
                 R.emplace_or_replace<ModalModes>(e, std::move(result->Modes));
+                Dsp->Set(ExciteIndexParamName, GetActiveVertexIndex(R, e));
                 SetModel(e, SoundVerticesModel::Modal);
             }
         }
@@ -566,14 +584,15 @@ void AcousticScene::Draw(entt::entity e, entt::entity mesh_entity) {
     // Cross-model excite section
     auto *recording = R.try_get<Recording>(e);
     const auto *excitable = R.try_get<const SoundVertices>(e);
+    const uint32_t active_vi = excitable ? GetActiveVertexIndex(R, e) : 0;
     if (excitable) {
-        if (BeginCombo("Vertex", std::to_string(excitable->SelectedVertex()).c_str())) {
-            const auto selected_vi = excitable->SelectedVertexIndex;
+        const auto active_vertex = excitable->Vertices[active_vi];
+        if (BeginCombo("Vertex", std::to_string(active_vertex).c_str())) {
             for (uint vi = 0; vi < excitable->Vertices.size(); ++vi) {
                 const auto vertex = excitable->Vertices[vi];
-                if (Selectable(std::to_string(vertex).c_str(), vi == selected_vi)) {
+                if (Selectable(std::to_string(vertex).c_str(), vi == active_vi)) {
                     R.remove<VertexForce>(e);
-                    R.patch<SoundVertices>(e, [vi](auto &e) { e.SelectedVertexIndex = vi; });
+                    R.emplace_or_replace<MeshActiveElement>(mesh_entity, vertex);
                     SetVertex(e, vi);
                 }
             }
@@ -586,14 +605,14 @@ void AcousticScene::Draw(entt::entity e, entt::entity mesh_entity) {
         Button("Excite");
         if (IsItemActivated()) {
             R.remove<VertexForce>(e);
-            R.emplace<VertexForce>(e, excitable->SelectedVertex(), 1.f);
+            R.emplace<VertexForce>(e, active_vertex, 1.f);
         } else if (IsItemDeactivated()) R.remove<VertexForce>(e);
         if (!can_excite) EndDisabled();
     }
 
     if (model == SoundVerticesModel::Samples && samples && excitable) {
         SeparatorText("Sound samples");
-        const auto &frames = samples->GetFrames(excitable->SelectedVertexIndex);
+        const auto &frames = samples->GetFrames(active_vi);
         PlotFrames(frames, "Waveform", samples->Stopped ? std::optional<uint>{} : std::optional{samples->Frame});
         PlotMagnitudeSpectrum(frames, "Spectrum");
     }
@@ -673,17 +692,14 @@ void AcousticScene::Draw(entt::entity e, entt::entity mesh_entity) {
             const auto num_vertices = mesh.VertexCount();
             auto new_sound_vertices = info.CopySoundVertices && R.all_of<SoundVertices>(e) ?
                 R.get<const SoundVertices>(e) :
-                SoundVertices{
-                    iota_view{0u, uint(info.NumVertices)} | transform([&](uint i) { return i * num_vertices / info.NumVertices; }) | to<std::vector<uint>>(),
-                    0
-                };
+                SoundVertices{iota_view{0u, uint(info.NumVertices)} | transform([&](uint i) { return i * num_vertices / info.NumVertices; }) | to<std::vector<uint>>()};
             constexpr float ScaleFactor{2}; // Mode freq estimates for RealImpact meshes seem to be consistently about twice as high as recordings.
             // We rely on `PreserveSurface` behavior for excitable vertices;
             // Vertex indices on the surface mesh must match vertex indices on the tet mesh.
             auto tets = GenerateTets(mesh, ScaleFactor * R.get<const Transform>(e).S, {.PreserveSurface = true, .Quality = info.QualityTets});
             const auto *sample_obj = R.try_get<const SoundVerticesSamples>(e);
             std::optional<float> fundamental;
-            if (sample_obj && excitable) fundamental = EstimateFundamentalFrequency(ComputeFft(sample_obj->GetFrames(excitable->SelectedVertexIndex)));
+            if (sample_obj && excitable) fundamental = EstimateFundamentalFrequency(ComputeFft(sample_obj->GetFrames(active_vi)));
             auto material_props = info.Material.Properties;
 
             DspGenerator = std::make_unique<Worker<ModalModelResult>>(
@@ -716,14 +732,14 @@ void AcousticScene::Draw(entt::entity e, entt::entity mesh_entity) {
 
     // Poll the Faust DSP UI to see if the current excitation vertex has changed.
     const auto excite_index = uint(Dsp->Get(ExciteIndexParamName));
-    if (excitable->SelectedVertexIndex != excite_index) {
-        R.patch<SoundVertices>(e, [excite_index](auto &e) { e.SelectedVertexIndex = excite_index; });
+    if (active_vi != excite_index && excite_index < excitable->Vertices.size()) {
+        R.emplace_or_replace<MeshActiveElement>(mesh_entity, excitable->Vertices[excite_index]);
     }
     if (CollapsingHeader("Modal data charts")) {
         std::optional<size_t> new_hovered_index;
         if (auto hovered = PlotModeData(modes.Freqs, "Mode frequencies", "", "Frequency (Hz)", hovered_mode_index)) new_hovered_index = hovered;
         if (auto hovered = PlotModeData(modes.T60s, "Mode T60s", "", "T60 decay time (s)", hovered_mode_index)) new_hovered_index = hovered;
-        if (auto hovered = PlotModeData(modes.Gains[excitable->SelectedVertexIndex], "Mode gains", "Mode index", "Gain", hovered_mode_index, 1.f)) new_hovered_index = hovered;
+        if (auto hovered = PlotModeData(modes.Gains[active_vi], "Mode gains", "Mode index", "Gain", hovered_mode_index, 1.f)) new_hovered_index = hovered;
         if (hovered_mode_index = new_hovered_index; hovered_mode_index && *hovered_mode_index < modes.Freqs.size()) {
             const auto index = *hovered_mode_index;
             Text(
@@ -731,7 +747,7 @@ void AcousticScene::Draw(entt::entity e, entt::entity mesh_entity) {
                 modes.Freqs[index],
                 modes.Freqs[index] * modes.OriginalFundamentalFreq / modes.Freqs[0],
                 modes.T60s[index],
-                modes.Gains[excitable->SelectedVertexIndex][index]
+                modes.Gains[active_vi][index]
             );
         }
     }
@@ -760,7 +776,7 @@ void AcousticScene::Draw(entt::entity e, entt::entity mesh_entity) {
             // Save wav files for both the modal and real-world impact sounds.
             static const auto WavOutDir = fs::path{".."} / "audio_samples";
             WriteWav(recording->Frames, WavOutDir / std::format("{}-modal", name));
-            WriteWav(samples->GetFrames(excitable->SelectedVertexIndex), WavOutDir / std::format("{}-impact", name));
+            WriteWav(samples->GetFrames(active_vi), WavOutDir / std::format("{}-impact", name));
         }
     }
 }

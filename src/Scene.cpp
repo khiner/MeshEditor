@@ -1875,9 +1875,9 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         for (auto [entity, instance, excitable] : R.view<const Instance, const SoundVertices>().each()) {
             if (instance.Entity != mesh_entity) continue;
             selected_vertices.insert(excitable.Vertices.begin(), excitable.Vertices.end());
-            if (const auto *excited_vertex = R.try_get<VertexForce>(entity)) active_handle = excited_vertex->Vertex;
             break;
         }
+        if (const auto *active = R.try_get<const MeshActiveElement>(mesh_entity)) active_handle = active->Handle;
         Meshes->UpdateElementStates(mesh, Element::Vertex, selected_vertices, selected_edges, active_edges, selected_faces, active_handle);
         SelectionStale = true;
     }
