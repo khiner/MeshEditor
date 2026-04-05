@@ -35,12 +35,12 @@ std::string GenerateModalModelDsp(const ModalModes &modes, std::string_view mode
         << "nModes = " << n_modes << ";\n";
     if (n_ex_pos > 1) dsp << "nExPos = " << n_ex_pos << ";\n";
 
-    dsp << "modeFreqsUnscaled(n) = ba.take(n+1,(";
+    dsp << "modeFreqsUnscaled(n) = waveform{";
     for (size_t mode = 0; mode < n_modes; ++mode) {
         dsp << freqs[mode];
         if (mode < n_modes - 1) dsp << ",";
     }
-    dsp << "));\n";
+    dsp << "},int(n) : rdtable;\n";
     dsp << "modeFreqs(mode) = ";
     if (freq_control) dsp << "freq*modeFreqsUnscaled(mode)/modeFreqsUnscaled(0)";
     else dsp << "modeFreqsUnscaled(mode)";
@@ -56,12 +56,12 @@ std::string GenerateModalModelDsp(const ModalModes &modes, std::string_view mode
     }
     dsp << "},int(p*nModes+n) : rdtable" << (freq_control ? " : select2(modeFreqs(n)<(ma.SR/2-1),0)" : "") << ";\n";
 
-    dsp << "modesT60s(n) = t60Scale * ba.take(n+1,(";
+    dsp << "modesT60s(n) = t60Scale * (waveform{";
     for (size_t mode = 0; mode < n_modes; ++mode) {
         dsp << t60s[mode];
         if (mode < n_modes - 1) dsp << ",";
     }
-    dsp << "));\n";
+    dsp << "},int(n) : rdtable);\n";
     dsp << "};\n";
 
     return dsp.str();
