@@ -583,10 +583,6 @@ void run(const char *initial_file, bool quiet) {
                     scene->RenderControls();
                     EndTabItem();
                 }
-                if (BeginTabItem("Acoustic scene")) {
-                    scene->RenderAcousticControls();
-                    EndTabItem();
-                }
                 if (BeginTabItem("Audio device")) {
                     audio_device.RenderControls();
                     EndTabItem();

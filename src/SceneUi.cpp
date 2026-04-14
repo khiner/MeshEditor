@@ -9,11 +9,15 @@
 #include "Instance.h"
 #include "MeshComponents.h"
 #include "OrientationGizmo.h"
+#include "Path.h"
 #include "SceneSelection.h"
 #include "SoundVertices.h"
 #include "SvgResource.h"
 #include "Timer.h"
 #include "Variant.h"
+#include "audio/AudioSystem.h"
+#include "audio/RealImpact.h"
+#include "audio/RealImpactComponents.h"
 #include "gpu/WorkspaceLights.h"
 #include "gpu/WorldTransform.h"
 #include "mesh/Mesh.h"
@@ -1755,6 +1759,53 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
             R.emplace_or_replace<SubmitDirty>(active_entity);
         }
         if (wireframe_changed) R.emplace_or_replace<LightWireframeDirty>(active_entity);
+    }
+    // Audio controls (mesh instance = sound object or eligible to become one; microphone)
+    if (const auto *instance = R.try_get<Instance>(active_entity); instance && R.all_of<Mesh>(instance->Entity)) {
+        const bool has_sound = R.all_of<SoundVerticesModel>(active_entity);
+        if (CollapsingHeader("Audio", has_sound ? ImGuiTreeNodeFlags_DefaultOpen : 0)) {
+            DrawObjectAudioControls(R, SceneEntity, active_entity, GetMeshEntity(active_entity));
+            if (const auto *active_mic = R.try_get<RealImpactActiveMicrophone>(active_entity)) {
+                SeparatorText("Microphone");
+                Text("Active: %s", GetName(R, active_mic->Entity).c_str());
+                if (Button("Select microphone entity")) Select(active_mic->Entity);
+            }
+        }
+    } else if (const auto *mic = R.try_get<const RealImpactMicrophone>(active_entity)) {
+        if (CollapsingHeader("Audio", ImGuiTreeNodeFlags_DefaultOpen)) {
+            Text("Microphone index: %u", mic->Index);
+            // Target = sound object currently bound to this mic, else first sound object with a dataset Path.
+            auto target = entt::entity{entt::null};
+            for (const auto &[e, active] : R.view<const RealImpactActiveMicrophone>().each()) {
+                if (active.Entity == active_entity) {
+                    target = e;
+                    break;
+                }
+            }
+            if (target == entt::null) {
+                for (auto [e, _, inst] : R.view<SoundVerticesModel, Instance>().each()) {
+                    if (R.all_of<Path>(inst.Entity)) {
+                        target = e;
+                        break;
+                    }
+                }
+            }
+            if (target == entt::null) {
+                TextUnformatted("No matching sound object found.");
+            } else {
+                const auto target_name = GetName(R, target);
+                const auto *active = R.try_get<const RealImpactActiveMicrophone>(target);
+                const bool is_active = active && active->Entity == active_entity;
+                if (is_active) {
+                    Text("Active for: %s", target_name.c_str());
+                } else if (Button(std::format("Set as active for {}", target_name).c_str())) {
+                    const auto dir = R.get<const Path>(R.get<const Instance>(target).Entity).Value.parent_path();
+                    SetVertexSamples(R, target, RealImpact::LoadSamples(dir, mic->Index) | to<std::vector>());
+                    R.emplace_or_replace<RealImpactActiveMicrophone>(target, active_entity);
+                }
+                if (Button("Select sound object")) Select(target);
+            }
+        }
     }
     physics_ui::RenderEntityProperties(R, active_entity, SceneEntity, *Physics);
     PopID();

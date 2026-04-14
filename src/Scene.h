@@ -2,6 +2,7 @@
 
 #include "AnimationTimeline.h"
 #include "Entity.h"
+#include "Path.h"
 #include "SceneVulkanResources.h"
 #include "TransformGizmo.h"
 #include "ViewCamera.h"
@@ -10,13 +11,8 @@
 #include "mesh/Handle.h"
 
 #include <expected>
-#include <filesystem>
 #include <set>
 #include <unordered_set>
-
-struct Path {
-    std::filesystem::path Value;
-};
 
 enum class ViewportShadingMode : uint8_t {
     Wireframe,
@@ -126,7 +122,6 @@ struct Scene {
     // Wait for pending viewport render to complete. No-op if no render pending.
     void WaitForRender();
     void RenderControls();
-    void RenderAcousticControls();
 
     const AnimationTimeline &GetTimeline() const;
     AnimationTimelineView &GetTimelineView() { return TimelineView; }
