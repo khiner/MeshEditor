@@ -1,5 +1,7 @@
 #pragma once
 
+#include "SceneModeComponents.h"
+
 // Component on the scene singleton entity. Changes require command buffer re-recording.
 struct SceneSettings {
     ViewportShadingMode ViewportShading{ViewportShadingMode::Solid};
@@ -22,14 +24,6 @@ struct PBRViewportLighting {
 // Two distinct ECS component types sharing the same layout, with different defaults
 struct MaterialPreviewLighting : PBRViewportLighting {}; // defaults: both OFF (studio HDRI)
 struct RenderedLighting : PBRViewportLighting {}; // defaults: both ON (scene world/lights)
-
-struct SceneInteraction {
-    InteractionMode Mode{InteractionMode::Object};
-};
-
-struct SceneEditMode {
-    Element Value{Element::Vertex};
-};
 
 struct ViewportExtent {
     vk::Extent2D Value{};

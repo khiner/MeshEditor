@@ -29,4 +29,13 @@ bool HasScaleLockedInstance(const entt::registry &, entt::entity);
 std::unordered_set<entt::entity> GetSelectedMeshEntities(const entt::registry &);
 uint32_t GetElementCount(const Mesh &, Element);
 
+// Mesh vertices targeted by a sound-object sample operation (Add/Replace/Remove).
+// Excite mode: single active vertex on the sound object's mesh.
+// Edit mode: selected vertices on the sound object's mesh (edges/faces converted via ConvertSelectionElement).
+// `selection_bits` is the raw SelectionBitset pointer; ignored outside Edit mode.
+std::vector<uint32_t> GetSampleOpVertices(
+    const entt::registry &, entt::entity scene_entity, entt::entity sound_entity,
+    const uint32_t *selection_bits
+);
+
 } // namespace scene_selection

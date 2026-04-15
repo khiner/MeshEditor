@@ -134,15 +134,15 @@ std::array<vec3, NumImpactVertices> LoadPositions(const fs::path &directory) {
     return impact_positions;
 }
 
-std::array<std::vector<float>, NumImpactVertices> LoadSamples(const fs::path &directory, long listener_point_index) {
+std::array<LoadedSample, NumImpactVertices> LoadSamples(const fs::path &directory, long listener_point_index) {
     const auto file = directory / "deconvolved_0db.npy";
     if (!fs::exists(file)) return {};
 
-    std::ifstream stream{std::move(file), std::ifstream::binary};
+    std::ifstream stream{file, std::ifstream::binary};
     const auto header = npy::read_header<float>(stream);
 
     const size_t frames_per_impact = header.shape[1];
-    std::array<std::vector<float>, NumImpactVertices> all_samples;
+    std::array<LoadedSample, NumImpactVertices> all_samples;
     float max_sample = 0;
     for (uint i = 0; i < NumImpactVertices; ++i) {
         // All listener points are recorded before the vertex moves.
@@ -150,10 +150,12 @@ std::array<std::vector<float>, NumImpactVertices> LoadSamples(const fs::path &di
         const size_t advance_frames = (i == 0 ? listener_point_index : (NumListenerPoints - 1)) * frames_per_impact;
         auto frames = npy::read_npy<float>(stream, header, advance_frames, frames_per_impact).data;
         max_sample = std::max(max_sample, std::abs(*max_element(frames, [](auto a, auto b) { return std::abs(a) < std::abs(b); })));
-        all_samples[i] = std::move(frames);
+        // Synthetic key — never opened as a real file; unique per (directory, listener, impact).
+        auto key = fs::path{std::format("realimpact://{}/li{}_impact{}", directory.string(), listener_point_index, i)};
+        all_samples[i] = {std::move(key), std::move(frames)};
     }
     // Normalize audio to [-1, 1]
-    for (auto &samples : all_samples) {
+    for (auto &[_, samples] : all_samples) {
         for (float &sample : samples) sample /= max_sample;
     }
     return all_samples;

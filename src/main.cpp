@@ -420,12 +420,13 @@ void run(const char *initial_file, bool quiet) {
     struct AudioContext {
         FaustDSP *Dsp;
         entt::registry *R;
+        entt::entity SceneEntity;
     };
-    AudioContext audio_ctx{&faust_dsp, &r};
+    AudioContext audio_ctx{&faust_dsp, &r, scene->GetSceneEntity()};
     AudioDevice audio_device{
         {.Callback = [](auto buffer, void *user_data) {
              auto &ctx = *static_cast<AudioContext *>(user_data);
-             ProcessAudio(*ctx.Dsp, *ctx.R, std::move(buffer));
+             ProcessAudio(*ctx.Dsp, *ctx.R, ctx.SceneEntity, std::move(buffer));
          },
          .UserData = &audio_ctx}
     };

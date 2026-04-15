@@ -5,6 +5,9 @@
 
 #include "entt_fwd.h"
 
+#include <filesystem>
+#include <span>
+#include <utility>
 #include <vector>
 
 struct FaustDSP;
@@ -29,21 +32,41 @@ struct ModalModelCreateInfo {
 };
 
 // Called from audio device callback.
-void ProcessAudio(FaustDSP &, entt::registry &, AudioBuffer);
+void ProcessAudio(FaustDSP &, entt::registry &, entt::entity scene_entity, AudioBuffer);
 
 void RegisterAudioComponentHandlers(entt::registry &, entt::entity scene_entity);
 void RemoveAudioComponents(entt::registry &, entt::entity sound_entity);
 
 // Draw the Audio controls for a sound object entity (has SoundVerticesModel).
-void DrawObjectAudioControls(entt::registry &, entt::entity scene_entity, entt::entity sound_entity, entt::entity mesh_entity);
+// `selection_bits` is the raw SelectionBitset pointer (used in Edit mode for SampleOpVertices); may be null.
+void DrawObjectAudioControls(
+    entt::registry &, entt::entity scene_entity, entt::entity sound_entity, entt::entity mesh_entity,
+    const uint32_t *selection_bits
+);
 
-// Replace all per-vertex sample buffers on a sound object (used by RealImpact mic swap).
-void SetVertexSamples(entt::registry &, entt::entity, std::vector<std::vector<float>> &&);
-// Add (or replace) a sample for a single mesh vertex on a sound object.
+// {path, frames} pair — path is an fs::path used as a dedup key in the scene-level sample store.
+// For on-disk audio this is the absolute file path; for synthetic sources (e.g. RealImpact) it is a
+// URI-style virtual key (see RealImpact::LoadSamples) that cannot be mistaken for a real file.
+using LoadedSample = std::pair<std::filesystem::path, std::vector<float>>;
+
+// Replace all per-vertex samples on a sound object (used by RealImpact mic swap).
+// One pair per vertex in SoundVertices (parallel indexing). Any existing samples are refcount-released.
+void SetVertexSamples(entt::registry &, entt::entity scene_entity, entt::entity sound_entity, std::vector<LoadedSample> &&);
+
+// Assign one sample (path + frames) to every mesh vertex in `mesh_vertices`.
 // Creates SoundVertices / VertexSamples / SoundVerticesModel::Samples if missing.
-void AddVertexSample(entt::registry &, entt::entity sound_entity, uint32_t mesh_vertex, std::vector<float> &&frames);
-// Remove the sample for a single mesh vertex. Removes audio components if empty and no modal model.
-void RemoveVertexSample(entt::registry &, entt::entity sound_entity, uint32_t mesh_vertex);
+// The sample store deduplicates by path; existing entries are reused and refcounted.
+void AssignVertexSample(
+    entt::registry &, entt::entity scene_entity, entt::entity sound_entity,
+    std::span<const uint32_t> mesh_vertices, std::filesystem::path, std::vector<float> &&frames
+);
+
+// Remove samples from every mesh vertex in `mesh_vertices`. Removes audio components if the
+// sound object ends up empty and has no modal model.
+void RemoveVertexSamples(
+    entt::registry &, entt::entity scene_entity, entt::entity sound_entity,
+    std::span<const uint32_t> mesh_vertices
+);
 
 // Decode any miniaudio-supported audio file to mono float frames at `SampleRate`. Returns empty on failure.
 std::vector<float> LoadAudioFrames(const std::string &file_path);

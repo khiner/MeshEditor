@@ -4367,7 +4367,7 @@ void Scene::LoadRealImpact(const std::filesystem::path &directory) {
             }
             R.emplace<ScaleLocked>(instance_entity);
             R.emplace<SoundVertices>(instance_entity, std::move(vertex_indices));
-            SetVertexSamples(R, instance_entity, to<std::vector>(RealImpact::LoadSamples(directory, listener_point.Index)));
+            SetVertexSamples(R, SceneEntity, instance_entity, to<std::vector>(RealImpact::LoadSamples(directory, listener_point.Index)));
         }
     }
 }

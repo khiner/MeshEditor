@@ -7,6 +7,7 @@
 #include <filesystem>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 /*
@@ -48,8 +49,12 @@ struct ListenerPoint {
     vec3 GetPosition(vec3 world_up = {0, 1, 0}, bool mic_center = false) const;
 };
 
-// Load the audio sample frames (at 48kHz) for each impact vertex at this listener point.
-std::array<std::vector<float>, NumImpactVertices> LoadSamples(const fs::path &directory, long listener_point_index);
+// Per-impact-vertex {synthetic key, audio frames} at 48kHz.
+// Keys use a `realimpact://` URI-style fs::path so they are unique per (directory, listener, impact_idx)
+// and cannot be mistaken for a real on-disk file.
+using LoadedSample = std::pair<fs::path, std::vector<float>>;
+
+std::array<LoadedSample, NumImpactVertices> LoadSamples(const fs::path &directory, long listener_point_index);
 std::optional<std::string> FindObjectName(const fs::path &start_path);
 std::optional<std::string_view> FindMaterialName(std::string_view);
 std::vector<ListenerPoint> LoadListenerPoints(const fs::path &directory);

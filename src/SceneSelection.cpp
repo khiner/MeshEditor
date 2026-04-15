@@ -3,6 +3,8 @@
 #include "Instance.h"
 #include "MeshComponents.h"
 #include "mesh/Mesh.h"
+#include "scene_impl/SceneInternalTypes.h"
+#include "scene_impl/SceneModeComponents.h"
 
 #include <entt/entity/registry.hpp>
 
@@ -132,6 +134,32 @@ std::unordered_set<entt::entity> GetSelectedMeshEntities(const entt::registry &r
         if (r.all_of<Mesh>(instance.Entity)) entities.emplace(instance.Entity);
     }
     return entities;
+}
+
+std::vector<uint32_t> GetSampleOpVertices(
+    const entt::registry &r, entt::entity scene_entity, entt::entity sound_entity,
+    const uint32_t *selection_bits
+) {
+    if (!r.valid(sound_entity)) return {};
+    const auto *inst = r.try_get<const Instance>(sound_entity);
+    if (!inst) return {};
+    const auto mesh_entity = inst->Entity;
+    const auto *mesh = r.try_get<const Mesh>(mesh_entity);
+    if (!mesh) return {};
+
+    const auto mode = r.get<const SceneInteraction>(scene_entity).Mode;
+    if (mode == InteractionMode::Excite) {
+        if (const auto *active = r.try_get<const MeshActiveElement>(mesh_entity)) return {active->Handle};
+        return {};
+    }
+    if (mode != InteractionMode::Edit || selection_bits == nullptr) return {};
+
+    const auto *br = r.try_get<const MeshSelectionBitsetRange>(mesh_entity);
+    if (!br || br->Count == 0) return {};
+    const auto edit_elem = r.get<const SceneEditMode>(scene_entity).Value;
+    auto handles = ScanBitsetRange(selection_bits, br->Offset, br->Count);
+    if (edit_elem == Element::Vertex) return handles;
+    return ConvertSelectionElement(handles, *mesh, edit_elem, Element::Vertex);
 }
 
 uint32_t GetElementCount(const Mesh &mesh, Element element) {

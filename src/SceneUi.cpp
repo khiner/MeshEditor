@@ -1764,7 +1764,7 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
     if (const auto *instance = R.try_get<Instance>(active_entity); instance && R.all_of<Mesh>(instance->Entity)) {
         const bool has_sound = R.all_of<SoundVerticesModel>(active_entity);
         if (CollapsingHeader("Audio", has_sound ? ImGuiTreeNodeFlags_DefaultOpen : 0)) {
-            DrawObjectAudioControls(R, SceneEntity, active_entity, GetMeshEntity(active_entity));
+            DrawObjectAudioControls(R, SceneEntity, active_entity, GetMeshEntity(active_entity), Buffers->SelectionBitset.Data());
             if (const auto *active_mic = R.try_get<RealImpactActiveMicrophone>(active_entity)) {
                 SeparatorText("Microphone");
                 Text("Active: %s", GetName(R, active_mic->Entity).c_str());
@@ -1800,7 +1800,7 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
                     Text("Active for: %s", target_name.c_str());
                 } else if (Button(std::format("Set as active for {}", target_name).c_str())) {
                     const auto dir = R.get<const Path>(R.get<const Instance>(target).Entity).Value.parent_path();
-                    SetVertexSamples(R, target, RealImpact::LoadSamples(dir, mic->Index) | to<std::vector>());
+                    SetVertexSamples(R, SceneEntity, target, RealImpact::LoadSamples(dir, mic->Index) | to<std::vector>());
                     R.emplace_or_replace<RealImpactActiveMicrophone>(target, active_entity);
                 }
                 if (Button("Select sound object")) Select(target);
