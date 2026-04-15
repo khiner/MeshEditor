@@ -13,9 +13,9 @@ namespace primitive {
 using std::views::transform, std::ranges::iota_view, std::ranges::to;
 
 inline MeshData Rect(vec2 half_extents = {1, 1}) {
-    const auto x = half_extents.x, y = half_extents.y;
+    const auto x = half_extents.x, z = half_extents.y;
     return {
-        {{-x, -y, 0}, {x, -y, 0}, {x, y, 0}, {-x, y, 0}},
+        {{-x, 0, z}, {x, 0, z}, {x, 0, -z}, {-x, 0, -z}},
         {{0, 1, 2, 3}}
     };
 }

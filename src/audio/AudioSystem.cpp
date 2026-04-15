@@ -27,7 +27,7 @@
 #include <ranges>
 #include <unordered_map>
 
-using std::ranges::iota_view, std::ranges::to;
+using std::ranges::distance, std::ranges::iota_view, std::ranges::find, std::ranges::nth_element, std::ranges::max_element, std::ranges::replace, std::ranges::to;
 using std::views::transform;
 
 static constexpr std::string_view ExciteIndexParamName{"Excite index"}, GateParamName{"Gate"};
@@ -417,7 +417,7 @@ void RegisterAudioComponentHandlers(entt::registry &r, entt::entity scene_entity
             for (auto e : modal_tracker) {
                 if (r.valid(e) && r.all_of<::ModalModes>(e)) {
                     auto name = GetName(r, e);
-                    std::ranges::replace(name, ' ', '_');
+                    replace(name, ' ', '_');
                     r.emplace_or_replace<ModalDsp>(e, GenerateModalDsp(name, r.get<const ::ModalModes>(e), r.get<const SoundVertices>(e), true));
                 } else if (r.valid(e)) {
                     r.remove<ModalDsp>(e);
@@ -500,7 +500,7 @@ std::optional<float> EstimateFundamentalFrequency(const FFTData &fft) {
 
     // Noise floor from upper half median
     std::vector<float> upper(mag_db.begin() + n_bins / 2, mag_db.end());
-    std::ranges::nth_element(upper, upper.begin() + upper.size() / 2);
+    nth_element(upper, upper.begin() + upper.size() / 2);
     const float threshold = upper[upper.size() / 2] + 15.f;
 
     constexpr size_t W = 15; // Prominence window
@@ -538,7 +538,7 @@ void WriteWav(const std::vector<float> &frames, fs::path file_path, std::optiona
     if (auto status = ma_encoder_init_file(file_path.c_str(), &WavEncoderConfig, &WavEncoder); status != MA_SUCCESS) {
         throw std::runtime_error(std::format("Failed to initialize wav file {}. Status: {}", file_path.string(), uint(status)));
     }
-    const float mult = normalize_max ? *normalize_max / *std::ranges::max_element(frames) : 1.0f;
+    const float mult = normalize_max ? *normalize_max / *max_element(frames) : 1.0f;
     const auto frames_normed = frames | transform([mult](float f) { return f * mult; }) | to<std::vector>();
     ma_encoder_write_pcm_frames(&WavEncoder, frames_normed.data(), frames_normed.size(), nullptr);
     ma_encoder_uninit(&WavEncoder);
@@ -637,7 +637,6 @@ void DrawModalCreateForm(
     entt::registry &r, entt::entity SceneEntity, entt::entity e, entt::entity mesh_entity,
     ImGuiWindow *parent_window, bool has_excitable, const ModalModes *modal_modes
 ) {
-    using namespace ImGui;
     auto &info = r.get<ModalModelCreateInfo>(e);
     if (!BeginChild("CreateModalAudioModel", ImVec2{-FLT_MIN, 0.f}, ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY, ImGuiWindowFlags_MenuBar)) {
         EndChild();
@@ -725,8 +724,8 @@ void DrawObjectAudioControls(
                 uint32_t excite_idx = 0;
                 if (const auto *active = r.try_get<const MeshActiveElement>(mesh_entity)) {
                     const auto &verts = modes->Vertices;
-                    if (auto it = std::ranges::find(verts, active->Handle); it != verts.end()) {
-                        excite_idx = std::ranges::distance(verts.begin(), it);
+                    if (auto it = find(verts, active->Handle); it != verts.end()) {
+                        excite_idx = distance(verts.begin(), it);
                     }
                 }
                 r.emplace_or_replace<ModalModes>(e, std::move(*modes));
@@ -735,8 +734,6 @@ void DrawObjectAudioControls(
             }
         }
     }
-
-    using namespace ImGui;
 
     // Modal create/edit form takes over whenever open, regardless of whether the entity is a sound object yet.
     if (r.all_of<ModalModelCreateInfo>(e)) {
