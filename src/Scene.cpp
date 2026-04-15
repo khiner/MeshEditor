@@ -294,7 +294,7 @@ void ResetObjectPickKeys(SceneBuffers &buffers) {
 namespace changes {
 struct Selected {}; struct ActiveInstance {}; struct BoneSelection {}; struct Rerecord {};
 struct MeshActiveElement {}; struct MeshGeometry {}; struct MeshMaterial {};
-struct SoundVertices {}; struct VertexForce {}; struct ModelsBuffer {};
+struct SoundVertices {}; struct SoundVerticesUpdated {}; struct VertexForce {}; struct ModelsBuffer {};
 struct NewBufferEntity {}; struct RenderInstanceCreated {};
 struct SceneSettings {}; struct InteractionMode {}; struct Submit {}; struct Rotation {};
 struct ViewportTheme {}; struct Materials {}; struct PbrSpecialization {};
@@ -520,6 +520,7 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
     track<changes::MeshGeometry>(R).on<MeshGeometryDirty>(On::Create);
     track<changes::MeshMaterial>(R).on<MeshMaterialAssignment>(On::Create | On::Update);
     track<changes::SoundVertices>(R).on<SoundVertices>(On::Create | On::Destroy);
+    track<changes::SoundVerticesUpdated>(R).on<SoundVertices>(On::Update);
     track<changes::VertexForce>(R).on<VertexForce>(On::Create | On::Destroy);
     track<changes::ModelsBuffer>(R).on<ModelsBuffer>(On::Update);
     track<changes::NewBufferEntity>(R).on<MeshBuffers>(On::Create);
@@ -1172,6 +1173,9 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
     for (auto instance_entity : reactive<changes::VertexForce>(R)) {
         if (const auto *inst = R.try_get<Instance>(instance_entity)) dirty_element_state_meshes.insert(inst->Entity);
         if (const auto *ev = R.try_get<VertexForce>(instance_entity)) orbit_to_active(instance_entity, Element::Vertex, ev->Vertex);
+    }
+    for (auto instance_entity : reactive<changes::SoundVerticesUpdated>(R)) {
+        if (const auto *inst = R.try_get<const Instance>(instance_entity)) dirty_element_state_meshes.insert(inst->Entity);
     }
     for (auto camera_entity : reactive<changes::CameraLens>(R)) {
         if (const auto *cd = R.try_get<Camera>(camera_entity)) {
@@ -4327,14 +4331,14 @@ void Scene::LoadRealImpact(const std::filesystem::path &directory) {
         }
     );
 
-    std::vector<uint> vertex_indices(RealImpact::NumImpactVertices);
+    // RealImpact npy file has vertex indices, but the indices may have changed due to deduplication, so don't even load them.
+    // Instead, look up by position here.
+    std::vector<uint32_t> vertex_indices(RealImpact::NumImpactVertices);
     {
-        auto impact_positions = RealImpact::LoadPositions(directory);
-        // RealImpact npy file has vertex indices, but the indices may have changed due to deduplication,
-        // so we don't even load them. Instead, we look up by position here.
+        const auto impact_positions = RealImpact::LoadPositions(directory);
         const auto &mesh = R.get<Mesh>(mesh_entity);
-        for (uint i = 0; i < impact_positions.size(); ++i) {
-            vertex_indices[i] = uint(*mesh.FindNearestVertex(impact_positions[i]));
+        for (size_t i = 0; i < impact_positions.size(); ++i) {
+            vertex_indices[i] = *mesh.FindNearestVertex(impact_positions[i]);
         }
     }
 
@@ -4366,8 +4370,8 @@ void Scene::LoadRealImpact(const std::filesystem::path &directory) {
                 R.emplace<AcousticMaterial>(mesh_entity, *real_impact_material);
             }
             R.emplace<ScaleLocked>(instance_entity);
-            R.emplace<SoundVertices>(instance_entity, std::move(vertex_indices));
-            SetVertexSamples(R, SceneEntity, instance_entity, to<std::vector>(RealImpact::LoadSamples(directory, listener_point.Index)));
+            R.emplace<RealImpactVertices>(instance_entity, vertex_indices);
+            SetVertexSamples(R, SceneEntity, instance_entity, vertex_indices, to<std::vector>(RealImpact::LoadSamples(directory, listener_point.Index)));
         }
     }
 }

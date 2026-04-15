@@ -49,9 +49,12 @@ void DrawObjectAudioControls(
 // URI-style virtual key (see RealImpact::LoadSamples) that cannot be mistaken for a real file.
 using LoadedSample = std::pair<std::filesystem::path, std::vector<float>>;
 
-// Replace all per-vertex samples on a sound object (used by RealImpact mic swap).
-// One pair per vertex in SoundVertices (parallel indexing). Any existing samples are refcount-released.
-void SetVertexSamples(entt::registry &, entt::entity scene_entity, entt::entity sound_entity, std::vector<LoadedSample> &&);
+// Assign sample[i] to mesh_vertices[i]. Used by RealImpact initial load and mic swap.
+// Any existing samples at those vertices are refcount-released.
+void SetVertexSamples(
+    entt::registry &, entt::entity scene_entity, entt::entity sound_entity,
+    std::span<const uint32_t> mesh_vertices, std::vector<LoadedSample> &&
+);
 
 // Assign one sample (path + frames) to every mesh vertex in `mesh_vertices`.
 // Creates SoundVertices / VertexSamples / SoundVerticesModel::Samples if missing.

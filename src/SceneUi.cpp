@@ -1800,7 +1800,8 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
                     Text("Active for: %s", target_name.c_str());
                 } else if (Button(std::format("Set as active for {}", target_name).c_str())) {
                     const auto dir = R.get<const Path>(R.get<const Instance>(target).Entity).Value.parent_path();
-                    SetVertexSamples(R, SceneEntity, target, RealImpact::LoadSamples(dir, mic->Index) | to<std::vector>());
+                    const auto &vertex_indices = R.get<const RealImpactVertices>(target).Vertices;
+                    SetVertexSamples(R, SceneEntity, target, vertex_indices, RealImpact::LoadSamples(dir, mic->Index) | to<std::vector>());
                     R.emplace_or_replace<RealImpactActiveMicrophone>(target, active_entity);
                 }
                 if (Button("Select sound object")) Select(target);
