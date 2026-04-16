@@ -264,7 +264,7 @@ struct BodySnapshot {
     vec3 Position;
     quat Rotation;
     vec3 Scale;
-    vec3 LinearVelocity, AngularVelocity;
+    PhysicsVelocity Velocity;
 };
 } // namespace
 
@@ -356,7 +356,7 @@ Ref<Shape> CreateJoltShape(const PhysicsShape &shape, const Mesh *mesh) {
 }
 
 // Apply motion and material properties to body creation settings.
-void ApplyPhysicsProperties(BodyCreationSettings &bcs, const PhysicsMotion *motion, const PhysicsCollider *collider, const std::vector<::PhysicsMaterial> &materials) {
+void ApplyPhysicsProperties(BodyCreationSettings &bcs, const PhysicsMotion *motion, const PhysicsVelocity *velocity, const PhysicsCollider *collider, const std::vector<::PhysicsMaterial> &materials) {
     bcs.mUserData = NoMaterialSentinel;
     if (motion) {
         if (bcs.mMotionType == EMotionType::Dynamic) {
@@ -376,8 +376,10 @@ void ApplyPhysicsProperties(BodyCreationSettings &bcs, const PhysicsMotion *moti
             bcs.mMassPropertiesOverride.mMass = m > 0.0f ? m : DefaultMass;
             bcs.mMassPropertiesOverride.mInertia = Mat44::sScale(Vec3::sReplicate(bcs.mMassPropertiesOverride.mMass / 6.0f));
         }
-        bcs.mLinearVelocity = ToJolt(motion->LinearVelocity);
-        bcs.mAngularVelocity = ToJolt(motion->AngularVelocity);
+        if (velocity) {
+            bcs.mLinearVelocity = ToJolt(velocity->Linear);
+            bcs.mAngularVelocity = ToJolt(velocity->Angular);
+        }
         bcs.mGravityFactor = motion->GravityFactor;
         bcs.mLinearDamping = motion->LinearDamping;
         bcs.mAngularDamping = motion->AngularDamping;
@@ -615,7 +617,7 @@ void PhysicsWorld::Rebuild(entt::registry &r) {
     };
 
     auto create_body = [&](Ref<Shape> shape, const Transform *t, EMotionType motion_type,
-                           const PhysicsMotion *motion, const PhysicsCollider *collider, entt::entity body_entity) {
+                           const PhysicsMotion *motion, const PhysicsVelocity *velocity, const PhysicsCollider *collider, entt::entity body_entity) {
         if (!shape) return;
 
         // KHR centerOfMass is an absolute local-space position.
@@ -633,7 +635,7 @@ void PhysicsWorld::Rebuild(entt::registry &r) {
         const auto layer = motion_type == EMotionType::Static ? Layers::NonMoving : Layers::Moving;
 
         BodyCreationSettings bcs{shape, pos, rot, motion_type, layer};
-        ApplyPhysicsProperties(bcs, motion, collider, Materials);
+        ApplyPhysicsProperties(bcs, motion, velocity, collider, Materials);
 
         // Override inertia with the inner shape's values to avoid PAT inflation.
         if (motion && motion->CenterOfMass && bcs.mMotionType == EMotionType::Dynamic) {
@@ -673,12 +675,13 @@ void PhysicsWorld::Rebuild(entt::registry &r) {
     for (auto entity : static_colliders) {
         const auto &collider = r.get<const PhysicsCollider>(entity);
         auto shape = make_jolt_shape(collider, entity, false);
-        create_body(std::move(shape), r.try_get<const Transform>(entity), EMotionType::Static, nullptr, &collider, entity);
+        create_body(std::move(shape), r.try_get<const Transform>(entity), EMotionType::Static, nullptr, nullptr, &collider, entity);
     }
 
     // Dynamic/kinematic bodies: one body per motion entity, compound if multiple colliders.
     for (auto &[motion_entity, colliders] : motion_colliders) {
         const auto &motion = r.get<const PhysicsMotion>(motion_entity);
+        const auto *velocity = r.try_get<const PhysicsVelocity>(motion_entity);
         const auto motion_type = motion.IsKinematic ? EMotionType::Kinematic : EMotionType::Dynamic;
         const bool is_dynamic = motion_type != EMotionType::Static;
         const auto *body_transform = r.try_get<const Transform>(motion_entity);
@@ -709,7 +712,7 @@ void PhysicsWorld::Rebuild(entt::registry &r) {
             if (const auto result = compound.Create(); result.IsValid()) shape = result.Get();
         }
 
-        create_body(shape, body_transform, motion_type, &motion, single_collider, motion_entity);
+        create_body(shape, body_transform, motion_type, &motion, velocity, single_collider, motion_entity);
     }
 
     // Create trigger sensor bodies (for entities without a collider body)
@@ -738,7 +741,7 @@ void PhysicsWorld::Rebuild(entt::registry &r) {
 
         BodyCreationSettings bcs{shape, pos, rot, motion_type, layer};
         bcs.mIsSensor = true;
-        ApplyPhysicsProperties(bcs, motion, nullptr, Materials);
+        ApplyPhysicsProperties(bcs, motion, r.try_get<const PhysicsVelocity>(entity), nullptr, Materials);
         {
             std::optional<uint32_t> filterIdx;
             if (trigger.CollisionFilterIndex.has_value() && *trigger.CollisionFilterIndex < Filters.size())
@@ -852,7 +855,7 @@ void PhysicsWorld::AddBody(entt::registry &r, entt::entity entity) {
 
     BodyCreationSettings bcs{shape, pos, rot, motion_type, layer};
     bcs.mIsSensor = is_sensor;
-    ApplyPhysicsProperties(bcs, motion, collider, Materials);
+    ApplyPhysicsProperties(bcs, motion, r.try_get<const PhysicsVelocity>(entity), collider, Materials);
     if (P->FilterRef) {
         const auto filter_idx = collider ? collider->CollisionFilterIndex : trigger->CollisionFilterIndex;
         std::optional<uint32_t> filterIdx;
@@ -898,8 +901,9 @@ void PhysicsWorld::Step(entt::registry &r, float dt) {
 
     // Sync Jolt → ECS for dynamic and kinematic bodies.
     // Kinematic bodies move according to their velocity in Jolt and must be read back.
+    // PhysicsVelocity is mutated by direct assignment (no patch) so we don't trigger reactive updates each frame.
     auto &bi = P->System.GetBodyInterface();
-    for (auto [entity, motion, handle] : r.view<PhysicsMotion, PhysicsBodyHandle>().each()) {
+    for (auto [entity, velocity, handle] : r.view<PhysicsVelocity, PhysicsBodyHandle>().each()) {
         BodyID id{handle.BodyId};
         if (!bi.IsActive(id)) continue;
 
@@ -907,15 +911,15 @@ void PhysicsWorld::Step(entt::registry &r, float dt) {
             t.P = FromJoltRVec3(bi.GetPosition(id));
             t.R = FromJoltQuat(bi.GetRotation(id));
         });
-        motion.LinearVelocity = FromJoltVec3(bi.GetLinearVelocity(id));
-        motion.AngularVelocity = FromJoltVec3(bi.GetAngularVelocity(id));
+        velocity.Linear = FromJoltVec3(bi.GetLinearVelocity(id));
+        velocity.Angular = FromJoltVec3(bi.GetAngularVelocity(id));
     }
 }
 
 void PhysicsWorld::SaveSnapshot(entt::registry &r) {
     P->Snapshots.clear();
     auto &bi = P->System.GetBodyInterface();
-    for (auto [entity, motion, handle] : r.view<PhysicsMotion, PhysicsBodyHandle>().each()) {
+    for (auto [entity, _, handle] : r.view<PhysicsVelocity, PhysicsBodyHandle>().each()) {
         BodyID id{handle.BodyId};
         const auto *t = r.try_get<const Transform>(entity);
         P->Snapshots.push_back({
@@ -923,8 +927,7 @@ void PhysicsWorld::SaveSnapshot(entt::registry &r) {
             t ? t->P : vec3{0},
             t ? t->R : quat{1, 0, 0, 0},
             t ? t->S : vec3{1},
-            FromJoltVec3(bi.GetLinearVelocity(id)),
-            FromJoltVec3(bi.GetAngularVelocity(id)),
+            {FromJoltVec3(bi.GetLinearVelocity(id)), FromJoltVec3(bi.GetAngularVelocity(id))},
         });
     }
 }
@@ -938,10 +941,7 @@ void PhysicsWorld::RestoreSnapshot(entt::registry &r) {
             t.R = snap.Rotation;
             t.S = snap.Scale;
         });
-        if (auto *motion = r.try_get<PhysicsMotion>(snap.Entity)) {
-            motion->LinearVelocity = snap.LinearVelocity;
-            motion->AngularVelocity = snap.AngularVelocity;
-        }
+        if (auto *vel = r.try_get<PhysicsVelocity>(snap.Entity)) *vel = snap.Velocity;
     }
     // Rebuild all Jolt bodies and constraints from the restored ECS state.
     // This guarantees deterministic replay by eliminating stale solver warm-start cache.

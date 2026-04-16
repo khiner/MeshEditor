@@ -551,6 +551,11 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
         .on<SceneNode>(On::Create | On::Update)
         .on<BoneDisplayScale>(On::Update);
 
+    // Auto-mirror PhysicsVelocity onto every entity that has PhysicsMotion. Lets us split per-frame
+    // velocity writeback off PhysicsMotion without forcing every callsite to emplace both.
+    R.on_construct<PhysicsMotion>().connect<&entt::registry::emplace<PhysicsVelocity>>();
+    R.on_destroy<PhysicsMotion>().connect<&entt::registry::remove<PhysicsVelocity>>();
+
     DestroyTracker->Bind(R);
 
     R.on_destroy<Name>().connect<&Scene::OnDestroyName>(*this);

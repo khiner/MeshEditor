@@ -98,11 +98,17 @@ struct PhysicsMotion {
     std::optional<vec3> CenterOfMass{}; // nullopt = auto-compute from shape
     std::optional<vec3> InertiaDiagonal{};
     std::optional<quat> InertiaOrientation{};
-    vec3 LinearVelocity{0}, AngularVelocity{0};
     float GravityFactor{1.};
 
     // Engine-specific (not in KHR_physics_rigid_bodies). Defaults match Blender.
     float LinearDamping{0.04f}, AngularDamping{0.1f};
+};
+
+// Split from PhysicsMotion so it can be listened to separately from user-configurable motion properties,
+// not polluted by per-frame velocity writeback.
+// Present iff PhysicsMotion is present.
+struct PhysicsVelocity {
+    vec3 Linear{0}, Angular{0};
 };
 
 struct PhysicsCollider {

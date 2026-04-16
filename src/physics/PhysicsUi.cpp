@@ -558,8 +558,10 @@ void physics_ui::RenderEntityProperties(entt::registry &r, entt::entity entity, 
 
         const bool is_simulating = r.get<const AnimationTimeline>(scene_entity).Playing;
         if (is_simulating) BeginDisabled();
-        DragFloat3("Linear velocity", &motion->LinearVelocity.x, 0.1f);
-        DragFloat3("Angular velocity", &motion->AngularVelocity.x, 0.1f);
+        if (auto *velocity = r.try_get<PhysicsVelocity>(entity)) {
+            DragFloat3("Linear velocity", &velocity->Linear.x, 0.1f);
+            DragFloat3("Angular velocity", &velocity->Angular.x, 0.1f);
+        }
         if (is_simulating) EndDisabled();
 
         if (DragFloat("Gravity factor", &motion->GravityFactor, 0.01f, -10.f, 10.f)) r.emplace_or_replace<PhysicsDynamicsDirty>(entity);

@@ -381,6 +381,7 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
             }
             if (node.Motion) {
                 R.emplace<PhysicsMotion>(entity, *node.Motion);
+                if (node.Velocity) R.replace<PhysicsVelocity>(entity, *node.Velocity); // PhysicsVelocity auto-emplaced by PhysicsMotion's on_construct hook.
                 has_any_physics = true;
             }
             if (node.Trigger) {

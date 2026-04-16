@@ -1412,10 +1412,11 @@ std::expected<Scene, std::string> LoadScene(const std::filesystem::path &path) {
                     const auto q = ToVec4(*rb->motion->inertialOrientation);
                     motion.InertiaOrientation = quat{q.w, q.x, q.y, q.z}; // glTF quat: [x,y,z,w]
                 }
-                motion.LinearVelocity = ToVec3(rb->motion->linearVelocity);
-                motion.AngularVelocity = ToVec3(rb->motion->angularVelocity);
                 motion.GravityFactor = float(rb->motion->gravityFactor);
                 node.Motion = std::move(motion);
+                const auto lv = ToVec3(rb->motion->linearVelocity);
+                const auto av = ToVec3(rb->motion->angularVelocity);
+                if (lv != vec3{0} || av != vec3{0}) node.Velocity = PhysicsVelocity{lv, av};
             }
             if (rb->collider) {
                 PhysicsCollider collider;

@@ -95,6 +95,7 @@ struct Node {
     // other glTF nodes (joint ConnectedNode, trigger Nodes), we store node indices here
     // and resolve to entities in SceneGltf.cpp.
     std::optional<PhysicsMotion> Motion{};
+    std::optional<PhysicsVelocity> Velocity{};
     std::optional<PhysicsCollider> Collider{};
     std::optional<uint32_t> ColliderGeometryMeshIndex{}; // glTF mesh providing geometry for collider shape
 
