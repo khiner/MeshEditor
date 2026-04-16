@@ -19,6 +19,9 @@ struct PhysicsWorld {
     void AddBody(entt::registry &, entt::entity);
     void RemoveBody(entt::registry &, entt::entity);
 
+    // Apply changed dynamics properties (damping, gravity factor) from ECS to Jolt bodies.
+    void SyncDynamics(entt::registry &);
+
     // Step simulation, write results back to ECS Transform components.
     void Step(entt::registry &, float dt);
 

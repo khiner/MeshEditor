@@ -562,7 +562,7 @@ void physics_ui::RenderEntityProperties(entt::registry &r, entt::entity entity, 
         DragFloat3("Angular velocity", &motion->AngularVelocity.x, 0.1f);
         if (is_simulating) EndDisabled();
 
-        DragFloat("Gravity factor", &motion->GravityFactor, 0.01f, -10.0f, 10.0f);
+        if (DragFloat("Gravity factor", &motion->GravityFactor, 0.01f, -10.f, 10.f)) r.emplace_or_replace<PhysicsDynamicsDirty>(entity);
 
         Spacing();
         SeparatorText("Mass properties");
@@ -607,6 +607,13 @@ void physics_ui::RenderEntityProperties(entt::registry &r, entt::entity entity, 
             motion->CenterOfMass = has_com ? std::optional{vec3{0.0f}} : std::nullopt;
         }
         if (motion->CenterOfMass) DragFloat3("Center of mass", &motion->CenterOfMass->x, 0.01f);
+
+        Spacing();
+        SeparatorText("Dynamics");
+
+        bool dynamics_changed = DragFloat("Damping translation", &motion->LinearDamping, 0.01f, 0.f, 1.f);
+        dynamics_changed |= DragFloat("Damping rotation", &motion->AngularDamping, 0.01f, 0.f, 1.f);
+        if (dynamics_changed) r.emplace_or_replace<PhysicsDynamicsDirty>(entity);
     }
 
     // Joint properties

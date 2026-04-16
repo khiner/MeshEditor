@@ -13,6 +13,7 @@
 #include "Jolt/Physics/Collision/Shape/ConvexHullShape.h"
 #include "Jolt/Physics/Collision/Shape/CylinderShape.h"
 #include "Jolt/Physics/Collision/Shape/MeshShape.h"
+#include "Jolt/Physics/Collision/Shape/OffsetCenterOfMassShape.h"
 #include "Jolt/Physics/Collision/Shape/RotatedTranslatedShape.h"
 #include "Jolt/Physics/Collision/Shape/ScaledShape.h"
 #include "Jolt/Physics/Collision/Shape/SphereShape.h"
@@ -378,6 +379,8 @@ void ApplyPhysicsProperties(BodyCreationSettings &bcs, const PhysicsMotion *moti
         bcs.mLinearVelocity = ToJolt(motion->LinearVelocity);
         bcs.mAngularVelocity = ToJolt(motion->AngularVelocity);
         bcs.mGravityFactor = motion->GravityFactor;
+        bcs.mLinearDamping = motion->LinearDamping;
+        bcs.mAngularDamping = motion->AngularDamping;
     }
     if (collider && collider->PhysicsMaterialIndex.has_value() && *collider->PhysicsMaterialIndex < materials.size()) {
         const auto &mat = materials[*collider->PhysicsMaterialIndex];
@@ -614,12 +617,30 @@ void PhysicsWorld::Rebuild(entt::registry &r) {
     auto create_body = [&](Ref<Shape> shape, const Transform *t, EMotionType motion_type,
                            const PhysicsMotion *motion, const PhysicsCollider *collider, entt::entity body_entity) {
         if (!shape) return;
+
+        // KHR centerOfMass is an absolute local-space position.
+        // OffsetCenterOfMassShape takes a relative offset, so subtract the shape's natural CoM.
+        // It also inflates inertia via the parallel axis theorem (PAT), but the spec treats CoM as a pivot shift only.
+        MassProperties inner_mass_props;
+        if (motion && motion->CenterOfMass) {
+            inner_mass_props = shape->GetMassProperties();
+            const auto offset = ToJolt(*motion->CenterOfMass) - shape->GetCenterOfMass();
+            shape = new OffsetCenterOfMassShape(shape, offset);
+        }
+
         const auto pos = t ? RVec3{t->P.x, t->P.y, t->P.z} : RVec3::sZero();
         const auto rot = t ? ToJoltQuat(t->R) : Quat::sIdentity();
         const auto layer = motion_type == EMotionType::Static ? Layers::NonMoving : Layers::Moving;
 
-        BodyCreationSettings bcs(shape, pos, rot, motion_type, layer);
+        BodyCreationSettings bcs{shape, pos, rot, motion_type, layer};
         ApplyPhysicsProperties(bcs, motion, collider, Materials);
+
+        // Override inertia with the inner shape's values to avoid PAT inflation.
+        if (motion && motion->CenterOfMass && bcs.mMotionType == EMotionType::Dynamic) {
+            inner_mass_props.ScaleToMass(bcs.mMassPropertiesOverride.mMass);
+            bcs.mMassPropertiesOverride = inner_mass_props;
+            bcs.mOverrideMassProperties = EOverrideMassProperties::MassAndInertiaProvided;
+        }
         {
             std::optional<uint32_t> filterIdx;
             if (collider && collider->CollisionFilterIndex.has_value() && *collider->CollisionFilterIndex < Filters.size())
@@ -632,14 +653,18 @@ void PhysicsWorld::Rebuild(entt::registry &r) {
             bi.AddBody(body->GetID(), motion_type == EMotionType::Static ? EActivation::DontActivate : EActivation::Activate);
             r.emplace_or_replace<PhysicsBodyHandle>(body_entity, PhysicsBodyHandle{body->GetID().GetIndexAndSequenceNumber()});
 
-            // Override inverse inertia directly for explicit inertiaDiagonal.
-            // Zero components become zero inverse inertia (infinite inertia = locked),
-            // handled correctly in the body-local inertia frame.
-            if (motion && motion->InertiaDiagonal && body->IsDynamic()) {
-                const auto &d = *motion->InertiaDiagonal;
-                const Vec3 inv_diag{d.x > 0 ? 1 / d.x : 0, d.y > 0 ? 1 / d.y : 0, d.z > 0 ? 1 / d.z : 0};
-                const auto rot = motion->InertiaOrientation ? ToJoltQuat(*motion->InertiaOrientation) : Quat::sIdentity();
-                const_cast<Body *>(body)->GetMotionProperties()->SetInverseInertia(inv_diag, rot);
+            if (motion && body->IsDynamic()) {
+                auto *mp = const_cast<Body *>(body)->GetMotionProperties();
+                // KHR spec §128: explicit mass=0 means infinite mass.
+                if (motion->Mass == 0) mp->SetInverseMass(0);
+                // Override inverse inertia for explicit inertiaDiagonal.
+                // Zero component means zero inverse inertia (infinite, locked on that axis).
+                if (motion->InertiaDiagonal) {
+                    const auto &d = *motion->InertiaDiagonal;
+                    const Vec3 inv_diag{d.x > 0 ? 1 / d.x : 0, d.y > 0 ? 1 / d.y : 0, d.z > 0 ? 1 / d.z : 0};
+                    const auto rot = motion->InertiaOrientation ? ToJoltQuat(*motion->InertiaOrientation) : Quat::sIdentity();
+                    mp->SetInverseInertia(inv_diag, rot);
+                }
             }
         }
     };
@@ -852,6 +877,19 @@ void PhysicsWorld::RemoveBody(entt::registry &r, entt::entity entity) {
     bi.RemoveBody(id);
     bi.DestroyBody(id);
     r.remove<PhysicsBodyHandle>(entity);
+}
+
+void PhysicsWorld::SyncDynamics(entt::registry &r) {
+    for (auto [entity, motion, handle] : r.view<PhysicsDynamicsDirty, const PhysicsMotion, const PhysicsBodyHandle>().each()) {
+        BodyLockWrite lock(P->System.GetBodyLockInterface(), BodyID{handle.BodyId});
+        if (lock.Succeeded()) {
+            auto *mp = lock.GetBody().GetMotionProperties();
+            mp->SetLinearDamping(motion.LinearDamping);
+            mp->SetAngularDamping(motion.AngularDamping);
+            mp->SetGravityFactor(motion.GravityFactor);
+        }
+    }
+    r.clear<PhysicsDynamicsDirty>();
 }
 
 void PhysicsWorld::Step(entt::registry &r, float dt) {

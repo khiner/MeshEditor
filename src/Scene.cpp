@@ -1498,6 +1498,9 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
             R.remove<PhysicsResourceDeleted>(SceneEntity);
         }
 
+        // Sync changed dynamics from ECS to Jolt before stepping.
+        if (Physics->HasBodies()) Physics->SyncDynamics(R);
+
         // Physics step: advance simulation and sync Jolt body transforms back to ECS.
         // Runs before bone/WorldTransform sync so that physics Transform patches are included.
         // Steps every frame with real delta time, independent of animation frame rate.

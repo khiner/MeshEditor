@@ -100,6 +100,9 @@ struct PhysicsMotion {
     std::optional<quat> InertiaOrientation{};
     vec3 LinearVelocity{0}, AngularVelocity{0};
     float GravityFactor{1.};
+
+    // Engine-specific (not in KHR_physics_rigid_bodies). Defaults match Blender.
+    float LinearDamping{0.04f}, AngularDamping{0.1f};
 };
 
 struct PhysicsCollider {
@@ -129,6 +132,7 @@ struct PhysicsConstraintHandle {
     uint32_t ConstraintIndex{UINT32_MAX};
 };
 
+struct PhysicsDynamicsDirty {};
 struct PhysicsFiltersDirty {};
 
 struct PhysicsResourceDeleted {
