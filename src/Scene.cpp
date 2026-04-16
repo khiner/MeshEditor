@@ -2612,7 +2612,7 @@ entt::entity Scene::Duplicate(entt::entity e, std::optional<MeshInstanceCreateIn
             .Visible = R.all_of<RenderInstance>(e),
         })
     );
-    if (auto primitive_type = R.try_get<PrimitiveType>(mesh_entity)) R.emplace<PrimitiveType>(e_new.first, *primitive_type);
+    if (auto prim_shape = R.try_get<PrimitiveShape>(mesh_entity)) R.emplace<PrimitiveShape>(e_new.first, *prim_shape);
     if (const auto *armature_modifier = R.try_get<ArmatureModifier>(e)) R.emplace<ArmatureModifier>(e_new.second, *armature_modifier);
     if (const auto *bone_attachment = R.try_get<BoneAttachment>(e)) R.emplace<BoneAttachment>(e_new.second, *bone_attachment);
     ProfileNextProcessComponentEvents = true;
@@ -4343,7 +4343,7 @@ void Scene::LoadRealImpact(const std::filesystem::path &directory) {
     }
 
     const auto listener_points = RealImpact::LoadListenerPoints(directory);
-    const auto [listener_mesh_entity, _] = AddMesh(primitive::Cylinder(0.5f * RealImpact::MicWidthMm / 1000.f, RealImpact::MicLengthMm / 1000.f));
+    const auto [listener_mesh_entity, _] = AddMesh(primitive::CreateMesh({primitive::Cylinder{0.5f * RealImpact::MicWidthMm / 1000.f, RealImpact::MicLengthMm / 1000.f}}));
     for (const auto &listener_point : listener_points) {
         static const auto rot_z = glm::angleAxis(float(M_PI_2), vec3{0, 0, 1}); // Cylinder's center is along the Y axis.
         const auto listener_instance_entity = AddMeshInstance(

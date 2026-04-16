@@ -18,6 +18,7 @@
 #include "Jolt/Physics/Collision/Shape/SphereShape.h"
 #include "Jolt/Physics/Collision/Shape/StaticCompoundShape.h"
 #include "Jolt/Physics/Collision/Shape/TaperedCapsuleShape.h"
+#include "Jolt/Physics/Collision/Shape/TaperedCylinderShape.h"
 #include "Jolt/Physics/Collision/SimShapeFilter.h"
 #include "Jolt/Physics/Constraints/SixDOFConstraint.h"
 #include "Jolt/Physics/PhysicsSettings.h"
@@ -318,6 +319,8 @@ Ref<Shape> CreateJoltShape(const PhysicsShape &shape, const Mesh *mesh) {
             return Ref<Shape>(new CapsuleShape(shape.Height * 0.5f, shape.RadiusBottom));
         }
         case PhysicsShapeType::Cylinder: {
+            if (std::abs(shape.RadiusTop - shape.RadiusBottom) < 1e-6f) return new CylinderShape(shape.Height * 0.5f, shape.RadiusBottom);
+            if (const auto result = TaperedCylinderShapeSettings(shape.Height * 0.5f, shape.RadiusTop, shape.RadiusBottom).Create(); result.IsValid()) return result.Get();
             return new CylinderShape(shape.Height * 0.5f, std::max(shape.RadiusTop, shape.RadiusBottom));
         }
         case PhysicsShapeType::ConvexHull: {

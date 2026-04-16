@@ -623,8 +623,9 @@ void run(const char *initial_file, bool quiet) {
                         std::cerr << result.error() << std::endl;
                     }
                 } else {
-                    const auto [mesh_entity, _] = scene->AddMesh(primitive::CreateDefault(PrimitiveType::Cube), MeshInstanceCreateInfo{.Name = ToString(PrimitiveType::Cube)});
-                    r.emplace<PrimitiveType>(mesh_entity, PrimitiveType::Cube);
+                    constexpr PrimitiveShape default_shape{primitive::Cuboid{}};
+                    const auto [mesh_entity, _] = scene->AddMesh(primitive::CreateMesh(default_shape), MeshInstanceCreateInfo{.Name = ToString(default_shape)});
+                    r.emplace<PrimitiveShape>(mesh_entity, default_shape);
                 }
             }
         }

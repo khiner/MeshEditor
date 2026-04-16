@@ -12,29 +12,30 @@
 namespace primitive {
 using std::views::transform, std::ranges::iota_view, std::ranges::to;
 
-inline MeshData Rect(vec2 half_extents = {1, 1}) {
-    const auto x = half_extents.x, z = half_extents.y;
+inline MeshData CreateMesh(const Rect &p) {
+    const auto x = p.HalfExtents.x, z = p.HalfExtents.y;
     return {
         {{-x, 0, z}, {x, 0, z}, {x, 0, -z}, {-x, 0, -z}},
         {{0, 1, 2, 3}}
     };
 }
 
-inline MeshData Circle(float radius = 1, uint n = 32) {
+inline MeshData CreateMesh(const Circle &p) {
+    const auto [radius, n] = p;
     std::vector vertices =
         iota_view{0u, n} |
-        transform([radius, n](uint i) { return vec3{radius * __cospi(2.f * i / n), radius * __sinpi(2.f * i / n), 0}; }) |
+        transform([radius, n](uint32_t i) { return vec3{radius * __cospi(2.f * i / n), radius * __sinpi(2.f * i / n), 0}; }) |
         to<std::vector>();
     vertices.emplace_back(0, 0, 0); // Center vertex
 
     return {
         std::move(vertices),
-        iota_view{0u, n} | transform([n](uint i) { return std::vector<uint>{i, (i + 1) % n, n}; }) | to<std::vector>()
+        iota_view{0u, n} | transform([n](uint32_t i) { return std::vector<uint32_t>{i, (i + 1) % n, n}; }) | to<std::vector>()
     };
 }
 
-inline MeshData Cuboid(vec3 half_extents = {1, 1, 1}) {
-    const auto x = half_extents.x, y = half_extents.y, z = half_extents.z;
+inline MeshData CreateMesh(const Cuboid &p) {
+    const auto x = p.HalfExtents.x, y = p.HalfExtents.y, z = p.HalfExtents.z;
     return {
         {
             {-x, -y, -z},
@@ -57,7 +58,8 @@ inline MeshData Cuboid(vec3 half_extents = {1, 1, 1}) {
     };
 }
 
-inline MeshData IcoSphere(float radius = 1, uint recursion_level = 3) {
+inline MeshData CreateMesh(const IcoSphere &p) {
+    const auto [radius, recursion_level] = p;
     static const float t = (1.f + sqrt(5.f)) / 2.f;
     // clang-format off
     std::vector<vec3> vertices{
@@ -67,7 +69,7 @@ inline MeshData IcoSphere(float radius = 1, uint recursion_level = 3) {
     };
     for (auto &v : vertices) v = glm::normalize(v);
 
-    std::vector<std::vector<uint>> indices{
+    std::vector<std::vector<uint32_t>> indices{
         {0, 11, 5}, {0, 5, 1},  {0, 1, 7},   {0, 7, 10}, {0, 10, 11},
         {1, 5, 9},  {5, 11, 4}, {11, 10, 2}, {10, 7, 6}, {7, 1, 8},
         {3, 9, 4},  {3, 4, 2},  {3, 2, 6},   {3, 6, 8},  {3, 8, 9},
@@ -75,24 +77,24 @@ inline MeshData IcoSphere(float radius = 1, uint recursion_level = 3) {
     };
     // clang-format on
 
-    std::unordered_map<uint, uint> cache; // Edge midpoint index cache.
-    auto AddMidVertex = [&](uint p1, uint p2) -> uint {
-        const uint key = (std::min(p1, p2) << 16) + std::max(p1, p2);
+    std::unordered_map<uint32_t, uint32_t> cache; // Edge midpoint index cache.
+    auto AddMidVertex = [&](uint32_t p1, uint32_t p2) -> uint32_t {
+        const uint32_t key = (std::min(p1, p2) << 16) + std::max(p1, p2);
         if (const auto found = cache.find(key); found != cache.end()) return found->second;
 
         vertices.emplace_back(glm::normalize((vertices[p1] + vertices[p2]) / 2.f));
 
-        const uint i = vertices.size() - 1;
+        const uint32_t i = vertices.size() - 1;
         cache[key] = i;
         return i;
     };
 
-    for (uint r = 0; r < recursion_level; ++r) {
-        std::vector<std::vector<uint>> new_indices;
+    for (uint32_t r = 0; r < recursion_level; ++r) {
+        std::vector<std::vector<uint32_t>> new_indices;
         new_indices.reserve(indices.size() * 4);
         for (const auto &tri : indices) {
-            const uint a = tri[0], b = tri[1], c = tri[2];
-            const uint ab = AddMidVertex(a, b), bc = AddMidVertex(b, c), ca = AddMidVertex(c, a);
+            const uint32_t a = tri[0], b = tri[1], c = tri[2];
+            const uint32_t ab = AddMidVertex(a, b), bc = AddMidVertex(b, c), ca = AddMidVertex(c, a);
             new_indices.insert(new_indices.end(), {{a, ab, ca}, {b, bc, ab}, {c, ca, bc}, {ab, bc, ca}});
         }
         indices = std::move(new_indices);
@@ -103,28 +105,29 @@ inline MeshData IcoSphere(float radius = 1, uint recursion_level = 3) {
     return {std::move(vertices), std::move(indices)};
 }
 
-inline MeshData UVSphere(float radius = 1, uint n_slices = 32, uint n_stacks = 16) {
+inline MeshData CreateMesh(const UVSphere &p) {
+    const auto [radius, n_slices, n_stacks] = p;
     std::vector<vec3> vertices;
     vertices.reserve(2 + n_slices * (n_stacks - 2)); // +/- 2 for the poles
     vertices.emplace_back(0, radius, 0); // Top pole
     // Vertices (excluding poles)
-    for (uint i = 1; i < n_stacks; ++i) {
-        const float p = float(i) / float(n_stacks);
-        for (uint j = 0; j < n_slices; ++j) {
-            const float t = 2.f * j / n_slices;
-            vertices.emplace_back(vec3{__sinpi(p) * __cospi(t), __cospi(p), __sinpi(p) * __sinpi(t)} * radius);
+    for (uint32_t i = 1; i < n_stacks; ++i) {
+        const float pp = float(i) / float(n_stacks);
+        for (uint32_t j = 0; j < n_slices; ++j) {
+            const float tt = 2.f * j / n_slices;
+            vertices.emplace_back(vec3{__sinpi(pp) * __cospi(tt), __cospi(pp), __sinpi(pp) * __sinpi(tt)} * radius);
         }
     }
     vertices.emplace_back(0, -radius, 0); // Bottom pole
 
-    std::vector<std::vector<uint>> indices;
+    std::vector<std::vector<uint32_t>> indices;
     indices.reserve(2 * n_slices + n_slices * (n_stacks - 2)); // Top + bottom triangles + quads
     // Top triangles
-    for (uint i = 0; i < n_slices; ++i) indices.push_back({0, 1 + (i + 1) % n_slices, 1 + i});
+    for (uint32_t i = 0; i < n_slices; ++i) indices.push_back({0, 1 + (i + 1) % n_slices, 1 + i});
     // Quads per stack / slice
-    for (uint j = 0; j < n_stacks - 2; ++j) {
-        const uint j0 = 1 + j * n_slices, j1 = 1 + (j + 1) * n_slices;
-        for (uint i = 0; i < n_slices; ++i) {
+    for (uint32_t j = 0; j < n_stacks - 2; ++j) {
+        const uint32_t j0 = 1 + j * n_slices, j1 = 1 + (j + 1) * n_slices;
+        for (uint32_t i = 0; i < n_slices; ++i) {
             indices.push_back({
                 j0 + i,
                 j0 + (i + 1) % n_slices,
@@ -134,8 +137,8 @@ inline MeshData UVSphere(float radius = 1, uint n_slices = 32, uint n_stacks = 1
         }
     }
     // Bottom triangles
-    const uint bottom_i = vertices.size() - 1;
-    for (uint i = 0; i < n_slices; ++i) {
+    const uint32_t bottom_i = vertices.size() - 1;
+    for (uint32_t i = 0; i < n_slices; ++i) {
         indices.push_back({
             bottom_i,
             1 + (n_stacks - 2) * n_slices + i,
@@ -146,23 +149,24 @@ inline MeshData UVSphere(float radius = 1, uint n_slices = 32, uint n_stacks = 1
     return {std::move(vertices), std::move(indices)};
 }
 
-inline MeshData Torus(float major_radius = 1, float minor_radius = 0.5, uint n_major = 32, uint n_minor = 16) {
+inline MeshData CreateMesh(const Torus &p) {
+    const auto [major_radius, minor_radius, n_major, n_minor] = p;
     std::vector<vec3> vertices;
     vertices.reserve(n_major * n_minor);
-    for (uint i = 0; i < n_major; ++i) {
+    for (uint32_t i = 0; i < n_major; ++i) {
         const float t = 2.f * i / n_major;
-        for (uint j = 0; j < n_minor; ++j) {
-            const float p = 2.f * j / n_minor;
-            const float r = major_radius + minor_radius * __cospi(p);
-            vertices.emplace_back(r * __sinpi(t), minor_radius * __sinpi(p), r * __cospi(t));
+        for (uint32_t j = 0; j < n_minor; ++j) {
+            const float pp = 2.f * j / n_minor;
+            const float r = major_radius + minor_radius * __cospi(pp);
+            vertices.emplace_back(r * __sinpi(t), minor_radius * __sinpi(pp), r * __cospi(t));
         }
     }
 
-    std::vector<std::vector<uint>> indices;
+    std::vector<std::vector<uint32_t>> indices;
     indices.reserve(n_major * n_minor);
     // Generate quads for the torus surface, maintaining original winding order
-    for (uint i = 0; i < n_major; ++i) {
-        for (uint j = 0; j < n_minor; ++j) {
+    for (uint32_t i = 0; i < n_major; ++i) {
+        for (uint32_t j = 0; j < n_minor; ++j) {
             indices.push_back({
                 i * n_minor + j,
                 ((i + 1) % n_major) * n_minor + j,
@@ -175,20 +179,21 @@ inline MeshData Torus(float major_radius = 1, float minor_radius = 0.5, uint n_m
     return {std::move(vertices), std::move(indices)};
 }
 
-inline MeshData Cylinder(float radius = 1, float height = 2, uint slices = 32) {
+inline MeshData CreateMesh(const Cylinder &p) {
+    const auto [radius, height, slices] = p;
     std::vector<vec3> vertices(2 * slices);
-    for (uint i = 0; i < slices; i++) {
+    for (uint32_t i = 0; i < slices; i++) {
         const float a = 2.f * i / slices;
         const float x = __cospi(a), z = __sinpi(a);
         vertices[i] = {x * radius, -height / 2, z * radius}; // bottom face
         vertices[i + slices] = {x * radius, height / 2, z * radius}; // top face
     }
 
-    std::vector<std::vector<uint>> faces(slices + 2);
+    std::vector<std::vector<uint32_t>> faces(slices + 2);
     // Bottom n-gon
     faces[0] = iota_view{0u, slices} | to<std::vector>();
     // Side quads
-    for (uint i = 0; i < slices; ++i) {
+    for (uint32_t i = 0; i < slices; ++i) {
         faces[i + 1] = {
             i, // bottom
             i + slices, // top
@@ -204,20 +209,25 @@ inline MeshData Cylinder(float radius = 1, float height = 2, uint slices = 32) {
     return {std::move(vertices), std::move(faces)};
 }
 
-inline MeshData Cone(float radius = 1, float height = 2, uint slices = 32) {
+inline MeshData CreateMesh(const Cone &p) {
+    const auto [radius, height, slices] = p;
     std::vector vertices =
-        iota_view{0u, slices} | transform([&](uint i) {
+        iota_view{0u, slices} | transform([&](uint32_t i) {
             return vec3{radius * __cospi(2.f * i / slices), -height / 2, radius * __sinpi(2.f * i / slices)};
         }) |
         to<std::vector>(); // Base
     vertices.emplace_back(0, height / 2, 0); // Top
 
-    std::vector<std::vector<uint>> indices = // Side triangles
+    std::vector<std::vector<uint32_t>> indices = // Side triangles
         iota_view{0u, slices} |
-        transform([slices](uint i) { return std::vector<uint>{slices, (i + 1) % slices, i}; }) | to<std::vector>();
+        transform([slices](uint32_t i) { return std::vector<uint32_t>{slices, (i + 1) % slices, i}; }) | to<std::vector>();
     indices.emplace_back(iota_view{0u, slices} | to<std::vector>()); // Base n-gon
 
     return {std::move(vertices), std::move(indices)};
+}
+
+inline MeshData CreateMesh(const PrimitiveShape &shape) {
+    return std::visit([](const auto &s) -> MeshData { return CreateMesh(s); }, shape);
 }
 
 // Expanded bone octahedron data: mesh with per-face normals + wire/adjacency indices.
@@ -289,20 +299,20 @@ inline BoneOctahedronData BoneOctahedron(float length = 1.0f) {
     // clang-format off
     const std::vector<uint32_t> adjacency{
         // Mid-ring edges
-        0, 1, 2, 5, // edge 1-2: f0 cycle 0→2→1→0 has 1→0→2, f4 cycle has 1→2→5
-        0, 2, 3, 5, // edge 2-3: f1 cycle has 2→0→3, f5 cycle has 2→3→5
-        0, 3, 4, 5, // edge 3-4: f2 cycle has 3→0→4, f6 cycle has 3→4→5
-        0, 4, 1, 5, // edge 4-1: f3 cycle has 4→0→1, f7 cycle has 4→1→5
+        0, 1, 2, 5, // edge 1-2: f0 cycle 0->2->1->0 has 1->0->2, f4 cycle has 1->2->5
+        0, 2, 3, 5, // edge 2-3: f1 cycle has 2->0->3, f5 cycle has 2->3->5
+        0, 3, 4, 5, // edge 3-4: f2 cycle has 3->0->4, f6 cycle has 3->4->5
+        0, 4, 1, 5, // edge 4-1: f3 cycle has 4->0->1, f7 cycle has 4->1->5
         // Head edges (from vertex 0)
-        2, 0, 1, 4, // edge 0-1: f0 cycle has 0→2→1, f3 cycle has 0→1→4
-        3, 0, 2, 1, // edge 0-2: f1 cycle has 0→3→2, f0 cycle has 0→2→1
-        4, 0, 3, 2, // edge 0-3: f2 cycle has 0→4→3, f1 cycle has 0→3→2
-        1, 0, 4, 3, // edge 0-4: f3 cycle has 0→1→4, f2 cycle has 0→4→3
+        2, 0, 1, 4, // edge 0-1: f0 cycle has 0->2->1, f3 cycle has 0->1->4
+        3, 0, 2, 1, // edge 0-2: f1 cycle has 0->3->2, f0 cycle has 0->2->1
+        4, 0, 3, 2, // edge 0-3: f2 cycle has 0->4->3, f1 cycle has 0->3->2
+        1, 0, 4, 3, // edge 0-4: f3 cycle has 0->1->4, f2 cycle has 0->4->3
         // Tail edges (from vertex 5)
-        4, 5, 1, 2, // edge 5-1: f7 cycle has 5→4→1, f4 cycle has 5→1→2
-        1, 5, 2, 3, // edge 5-2: f4 cycle has 5→1→2, f5 cycle has 5→2→3
-        2, 5, 3, 4, // edge 5-3: f5 cycle has 5→2→3, f6 cycle has 5→3→4
-        3, 5, 4, 1, // edge 5-4: f6 cycle has 5→3→4, f7 cycle has 5→4→1
+        4, 5, 1, 2, // edge 5-1: f7 cycle has 5->4->1, f4 cycle has 5->1->2
+        1, 5, 2, 3, // edge 5-2: f4 cycle has 5->1->2, f5 cycle has 5->2->3
+        2, 5, 3, 4, // edge 5-3: f5 cycle has 5->2->3, f6 cycle has 5->3->4
+        3, 5, 4, 1, // edge 5-4: f6 cycle has 5->3->4, f7 cycle has 5->4->1
     };
     // clang-format on
 
@@ -353,42 +363,4 @@ inline BoneSphereData BoneSphereDisc(float radius = 0.05f, uint32_t segments = 3
         .OutlineIndices = std::move(outline),
     };
 }
-
-inline MeshData CreateDefault(PrimitiveType type) {
-    switch (type) {
-        case PrimitiveType::Rect: return Rect();
-        case PrimitiveType::Cube: return Cuboid();
-        case PrimitiveType::IcoSphere: return IcoSphere();
-        case PrimitiveType::Circle: return Circle();
-        case PrimitiveType::UVSphere: return UVSphere();
-        case PrimitiveType::Torus: return Torus();
-        case PrimitiveType::Cylinder: return Cylinder();
-        case PrimitiveType::Cone: return Cone();
-    }
-}
 } // namespace primitive
-
-constexpr std::string ToString(PrimitiveType type) {
-    using enum PrimitiveType;
-    switch (type) {
-        case Rect: return "Rect";
-        case Circle: return "Circle";
-        case Cube: return "Cube";
-        case IcoSphere: return "IcoSphere";
-        case UVSphere: return "UVSphere";
-        case Torus: return "Torus";
-        case Cylinder: return "Cylinder";
-        case Cone: return "Cone";
-    }
-}
-
-constexpr std::array PrimitiveTypes{
-    PrimitiveType::Rect,
-    PrimitiveType::Circle,
-    PrimitiveType::Cube,
-    PrimitiveType::IcoSphere,
-    PrimitiveType::UVSphere,
-    PrimitiveType::Torus,
-    PrimitiveType::Cylinder,
-    PrimitiveType::Cone,
-};

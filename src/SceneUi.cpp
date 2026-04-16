@@ -210,61 +210,59 @@ std::optional<size_t> DrawOverlayIconButtonGroup(
     return clicked_index;
 }
 
-std::optional<MeshData> PrimitiveEditor(PrimitiveType type) {
+std::optional<MeshData> PrimitiveEditor(PrimitiveShape &shape) {
     static constexpr float MinSize = 0.01f, MaxSize = 100.f, SizeSpeed = 0.01f;
-    bool changed = false;
-    if (type == PrimitiveType::Rect) {
-        static vec2 size{2, 2};
-        changed = DragFloat2("Size", &size.x, SizeSpeed, MinSize, MaxSize);
-        if (changed) return primitive::Rect(size / 2.f);
-    } else if (type == PrimitiveType::Circle) {
-        static float r{1};
-        static int segments = 32;
-        changed |= DragFloat("Radius", &r, SizeSpeed, MinSize, MaxSize);
-        changed |= SliderInt("Segments", &segments, 3, 128);
-        if (changed) return primitive::Circle(r, uint(segments));
-    } else if (type == PrimitiveType::Cube) {
-        static vec3 size{2, 2, 2};
-        changed = DragFloat3("Size", &size.x, SizeSpeed, MinSize, MaxSize);
-        if (changed) return primitive::Cuboid(size / 2.f);
-    } else if (type == PrimitiveType::IcoSphere) {
-        static float r{1};
-        static int subdivisions = 3;
-        changed |= DragFloat("Radius", &r, SizeSpeed, MinSize, MaxSize);
-        changed |= SliderInt("Subdivisions", &subdivisions, 1, 6);
-        if (changed) return primitive::IcoSphere(r, uint(subdivisions));
-    } else if (type == PrimitiveType::UVSphere) {
-        static float r{1};
-        static int slices = 32, stacks = 16;
-        changed |= DragFloat("Radius", &r, SizeSpeed, MinSize, MaxSize);
-        changed |= SliderInt("Slices", &slices, 3, 128);
-        changed |= SliderInt("Stacks", &stacks, 2, 64);
-        if (changed) return primitive::UVSphere(r, uint(slices), uint(stacks));
-    } else if (type == PrimitiveType::Torus) {
-        static float major_r{1}, minor_r{0.5};
-        static int major_seg = 32, minor_seg = 16;
-        changed |= DragFloat("Major radius", &major_r, SizeSpeed, MinSize, MaxSize);
-        changed |= DragFloat("Minor radius", &minor_r, SizeSpeed, MinSize, major_r);
-        changed |= SliderInt("Major segments", &major_seg, 3, 256);
-        changed |= SliderInt("Minor segments", &minor_seg, 3, 256);
-        if (changed) return primitive::Torus(major_r, minor_r, uint(major_seg), uint(minor_seg));
-    } else if (type == PrimitiveType::Cylinder) {
-        static float r{1}, h{2};
-        static int slices = 32;
-        changed |= DragFloat("Radius", &r, SizeSpeed, MinSize, MaxSize);
-        changed |= DragFloat("Height", &h, SizeSpeed, MinSize, MaxSize);
-        changed |= SliderInt("Slices", &slices, 3, 128);
-        if (changed) return primitive::Cylinder(r, h, uint(slices));
-    } else if (type == PrimitiveType::Cone) {
-        static float r{1}, h{2};
-        static int slices = 32;
-        changed |= DragFloat("Radius", &r, SizeSpeed, MinSize, MaxSize);
-        changed |= DragFloat("Height", &h, SizeSpeed, MinSize, MaxSize);
-        changed |= SliderInt("Slices", &slices, 3, 128);
-        if (changed) return primitive::Cone(r, h, uint(slices));
-    }
-
-    return {};
+    return std::visit([](auto &s) -> std::optional<MeshData> {
+        using T = std::decay_t<decltype(s)>;
+        bool changed = false;
+        if constexpr (std::is_same_v<T, primitive::Rect>) {
+            vec2 size = s.HalfExtents * 2.f;
+            changed = DragFloat2("Size", &size.x, SizeSpeed, MinSize, MaxSize);
+            if (changed) s.HalfExtents = size / 2.f;
+        } else if constexpr (std::is_same_v<T, primitive::Circle>) {
+            changed |= DragFloat("Radius", &s.Radius, SizeSpeed, MinSize, MaxSize);
+            int segments = int(s.Segments);
+            changed |= SliderInt("Segments", &segments, 3, 128);
+            if (changed) s.Segments = uint(segments);
+        } else if constexpr (std::is_same_v<T, primitive::Cuboid>) {
+            vec3 size = s.HalfExtents * 2.f;
+            changed = DragFloat3("Size", &size.x, SizeSpeed, MinSize, MaxSize);
+            if (changed) s.HalfExtents = size / 2.f;
+        } else if constexpr (std::is_same_v<T, primitive::IcoSphere>) {
+            changed |= DragFloat("Radius", &s.Radius, SizeSpeed, MinSize, MaxSize);
+            int subdivisions = int(s.Subdivisions);
+            changed |= SliderInt("Subdivisions", &subdivisions, 1, 6);
+            if (changed) s.Subdivisions = uint(subdivisions);
+        } else if constexpr (std::is_same_v<T, primitive::UVSphere>) {
+            changed |= DragFloat("Radius", &s.Radius, SizeSpeed, MinSize, MaxSize);
+            int slices = int(s.Slices), stacks = int(s.Stacks);
+            changed |= SliderInt("Slices", &slices, 3, 128);
+            changed |= SliderInt("Stacks", &stacks, 2, 64);
+            if (changed) {
+                s.Slices = uint(slices);
+                s.Stacks = uint(stacks);
+            }
+        } else if constexpr (std::is_same_v<T, primitive::Torus>) {
+            changed |= DragFloat("Major radius", &s.MajorRadius, SizeSpeed, MinSize, MaxSize);
+            changed |= DragFloat("Minor radius", &s.MinorRadius, SizeSpeed, MinSize, s.MajorRadius);
+            int major_seg = int(s.MajorSegments), minor_seg = int(s.MinorSegments);
+            changed |= SliderInt("Major segments", &major_seg, 3, 256);
+            changed |= SliderInt("Minor segments", &minor_seg, 3, 256);
+            if (changed) {
+                s.MajorSegments = uint(major_seg);
+                s.MinorSegments = uint(minor_seg);
+            }
+        } else if constexpr (std::is_same_v<T, primitive::Cylinder> || std::is_same_v<T, primitive::Cone>) {
+            changed |= DragFloat("Radius", &s.Radius, SizeSpeed, MinSize, MaxSize);
+            changed |= DragFloat("Height", &s.Height, SizeSpeed, MinSize, MaxSize);
+            int slices = int(s.Slices);
+            changed |= SliderInt("Slices", &slices, 3, 128);
+            if (changed) s.Slices = uint(slices);
+        }
+        if (changed) return primitive::CreateMesh(s);
+        return {};
+    },
+                      shape);
 }
 
 std::string to_string(InteractionMode mode) {
@@ -1465,12 +1463,12 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
     }
     if (is_mesh_instance) {
         const auto active_mesh_entity = active_instance->Entity;
-        if (const auto *primitive_type = R.try_get<PrimitiveType>(active_mesh_entity)) {
+        if (auto *prim_shape = R.try_get<PrimitiveShape>(active_mesh_entity)) {
             const bool frozen = scene_selection::HasScaleLockedInstance(R, active_mesh_entity);
             if (frozen) BeginDisabled();
             const auto update_label = std::format("Edit primitive{}", frozen ? " (frozen)" : "");
             if (CollapsingHeader(update_label.c_str()) && !frozen) {
-                if (auto primitive_mesh = PrimitiveEditor(*primitive_type)) {
+                if (auto primitive_mesh = PrimitiveEditor(*prim_shape)) {
                     ReplaceMesh(active_mesh_entity, std::move(*primitive_mesh));
                 }
             }
@@ -1906,11 +1904,11 @@ void Scene::RenderControls() {
 
             if (CollapsingHeader("Add object")) {
                 bool added{false};
-                for (uint i = 0; i < PrimitiveTypes.size(); ++i) {
+                for (uint32_t i = 0; i < AllPrimitiveShapes.size(); ++i) {
                     if (i % 4 != 0) SameLine();
-                    const auto type = PrimitiveTypes[i];
-                    if (Button(ToString(type).c_str())) {
-                        R.emplace<PrimitiveType>(AddMesh(primitive::CreateDefault(type), MeshInstanceCreateInfo{.Name = ToString(type)}).first, type);
+                    const auto &shape = AllPrimitiveShapes[i];
+                    if (Button(ToString(shape).c_str())) {
+                        R.emplace<PrimitiveShape>(AddMesh(primitive::CreateMesh(shape), MeshInstanceCreateInfo{.Name = ToString(shape)}).first, shape);
                         added = true;
                     }
                 }

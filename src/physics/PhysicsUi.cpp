@@ -3,7 +3,10 @@
 
 #include "PhysicsUi.h"
 #include "AnimationTimeline.h"
+#include "Instance.h"
 #include "PhysicsWorld.h"
+#include "mesh/Mesh.h"
+#include "mesh/PrimitiveType.h"
 
 #include <entt/entity/registry.hpp>
 #include <format>
@@ -14,6 +17,68 @@
 using namespace ImGui;
 
 namespace {
+// Find the mesh entity for an instance or mesh entity.
+entt::entity FindMeshEntity(const entt::registry &r, entt::entity entity) {
+    if (const auto *instance = r.try_get<const Instance>(entity)) return instance->Entity;
+    return entity;
+}
+
+// Initialize a PhysicsShape from the PrimitiveShape component if present,
+// otherwise fall back to AABB-derived box dimensions.
+PhysicsShape InitColliderShape(const entt::registry &r, entt::entity entity) {
+    const auto mesh_entity = FindMeshEntity(r, entity);
+    if (const auto *prim = r.try_get<const PrimitiveShape>(mesh_entity)) {
+        auto shape = std::visit([](const auto &s) -> PhysicsShape {
+            using T = std::decay_t<decltype(s)>;
+            PhysicsShape shape;
+            if constexpr (std::is_same_v<T, primitive::Cuboid>) {
+                shape.Type = PhysicsShapeType::Box;
+                shape.Size = s.HalfExtents * 2.f;
+            } else if constexpr (std::is_same_v<T, primitive::IcoSphere> || std::is_same_v<T, primitive::UVSphere>) {
+                shape.Type = PhysicsShapeType::Sphere;
+                shape.Radius = s.Radius;
+            } else if constexpr (std::is_same_v<T, primitive::Cylinder>) {
+                shape.Type = PhysicsShapeType::Cylinder;
+                shape.RadiusTop = shape.RadiusBottom = s.Radius;
+                shape.Height = s.Height;
+            } else if constexpr (std::is_same_v<T, primitive::Cone>) {
+                shape.Type = PhysicsShapeType::Cylinder;
+                shape.RadiusTop = 0;
+                shape.RadiusBottom = s.Radius;
+                shape.Height = s.Height;
+            } else {
+                // Rect, Circle, Torus → ConvexHull from mesh geometry
+                shape.Type = PhysicsShapeType::ConvexHull;
+            }
+            return shape;
+        },
+                                *prim);
+        if (shape.Type == PhysicsShapeType::ConvexHull) shape.MeshEntity = mesh_entity;
+        return shape;
+    }
+
+    // Fallback: derive shape from mesh AABB.
+    const auto *mesh = r.try_get<const Mesh>(mesh_entity);
+    if (!mesh || mesh->VertexCount() == 0) return {};
+
+    const auto verts = mesh->GetVerticesSpan();
+    vec3 lo = verts[0].Position, hi = lo;
+    for (const auto &v : verts) {
+        lo = glm::min(lo, v.Position);
+        hi = glm::max(hi, v.Position);
+    }
+    const vec3 extents = hi - lo;
+    PhysicsShape shape;
+    // If any AABB dimension is degenerate, use ConvexHull instead of a zero-thickness box.
+    if (extents.x < 1e-6f || extents.y < 1e-6f || extents.z < 1e-6f) {
+        shape.Type = PhysicsShapeType::ConvexHull;
+        shape.MeshEntity = mesh_entity;
+    } else {
+        shape.Size = extents;
+    }
+    return shape;
+}
+
 bool DeleteButton(bool in_use) {
     SameLine();
     if (in_use) {
@@ -424,7 +489,11 @@ void physics_ui::RenderEntityProperties(entt::registry &r, entt::entity entity, 
         r.remove<PhysicsCollider>(entity);
         physics.RemoveBody(r, entity);
 
-        if (motion_type >= MT_Static) r.emplace<PhysicsCollider>(entity);
+        if (motion_type >= MT_Static) {
+            PhysicsCollider c;
+            c.Shape = InitColliderShape(r, entity);
+            r.emplace<PhysicsCollider>(entity, std::move(c));
+        }
         if (motion_type >= MT_Dynamic) r.emplace<PhysicsMotion>(entity);
 
         // Re-add body if collider present, or if trigger-only with geometry
