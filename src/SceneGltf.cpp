@@ -291,6 +291,7 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
     std::vector<entt::entity> all_imported_objects;
     entt::entity first_object_entity = entt::null,
                  first_mesh_object_entity = entt::null,
+                 first_camera_object_entity = entt::null,
                  first_root_empty_entity = entt::null,
                  first_armature_entity = entt::null;
     for (uint32_t i = 0; i < scene->Objects.size(); ++i) {
@@ -335,6 +336,7 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
         if (object.SkinIndex && R.all_of<Instance>(object_entity)) skinned_mesh_instances_by_skin[*object.SkinIndex].emplace_back(object_entity);
         if (first_object_entity == entt::null) first_object_entity = object_entity;
         if (first_mesh_object_entity == entt::null && object.ObjectType == gltf::Object::Type::Mesh) first_mesh_object_entity = object_entity;
+        if (first_camera_object_entity == entt::null && object.ObjectType == gltf::Object::Type::Camera) first_camera_object_entity = object_entity;
         if (first_root_empty_entity == entt::null && object.ObjectType == gltf::Object::Type::Empty && !object.ParentNodeIndex) first_root_empty_entity = object_entity;
     }
 
@@ -675,13 +677,18 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
     }
 
     const auto active_entity =
-        first_mesh_object_entity != entt::null ? first_mesh_object_entity :
-        first_armature_entity != entt::null    ? first_armature_entity :
-        first_root_empty_entity != entt::null  ? first_root_empty_entity :
-                                                 first_object_entity;
+        first_camera_object_entity != entt::null ? first_camera_object_entity :
+        first_mesh_object_entity != entt::null   ? first_mesh_object_entity :
+        first_armature_entity != entt::null      ? first_armature_entity :
+        first_root_empty_entity != entt::null    ? first_root_empty_entity :
+                                                   first_object_entity;
     R.clear<Active, Selected>();
     if (active_entity != entt::null) R.emplace<Active>(active_entity);
     for (const auto e : all_imported_objects) R.emplace<Selected>(e);
+    if (first_camera_object_entity != entt::null) {
+        SavedViewCamera = R.get<ViewCamera>(SceneEntity);
+        SnapToCamera(first_camera_object_entity);
+    }
     import_rollback_guard.Enabled = false;
     ProfileNextProcessComponentEvents = true;
 

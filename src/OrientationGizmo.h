@@ -33,6 +33,7 @@ struct Context {
 static Context Ctx;
 
 bool IsActive() { return Ctx.Hovered || Ctx.MouseDownPos || Ctx.DragEndPos; }
+bool IsUsing() { return Ctx.MouseDownPos.has_value() || Ctx.DragEndPos.has_value(); }
 
 void Interact(vec2 pos, float size, ViewCamera &camera, bool interactive = true) {
     const auto mouse_pos = std::bit_cast<vec2>(ImGui::GetMousePos());

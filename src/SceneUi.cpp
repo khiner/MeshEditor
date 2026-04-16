@@ -987,7 +987,7 @@ void Scene::InteractOverlay() {
     }
 
     // Exit "look through" camera view if the user interacts with the orientation gizmo.
-    if (!active_transform && OrientationGizmo::IsActive()) ExitLookThroughCamera();
+    if (!active_transform && OrientationGizmo::IsUsing()) ExitLookThroughCamera();
     auto &camera = R.get<ViewCamera>(SceneEntity);
     { // Orientation gizmo (interacted before tick so camera animations it initiates begin this frame)
         const float shading_group_height = shading_button_style.ButtonSize.y;
