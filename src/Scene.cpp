@@ -1114,7 +1114,8 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
             collect_instance_state(instance_entity);
             if (const auto arm = FindArmatureObject(R, instance_entity); arm != entt::null) R.emplace_or_replace<BoneInstanceStateDirty>(arm);
             // If looking through a camera and a different camera becomes active, snap to it.
-            if (SavedViewCamera && R.all_of<Camera>(instance_entity) && R.all_of<Active>(instance_entity)) {
+            if (LookThrough && R.all_of<Camera>(instance_entity) && R.all_of<Active>(instance_entity)) {
+                LookThrough->Camera = instance_entity;
                 SnapToCamera(instance_entity);
             }
         }
@@ -1184,7 +1185,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
             R.emplace_or_replace<SubmitDirty>(buffer_entity);
             // If looking through this camera, trigger a ViewCamera update so the SceneView
             // handler re-derives the widened FOV from the updated camera.
-            if (SavedViewCamera && R.all_of<Active>(camera_entity)) R.patch<ViewCamera>(SceneEntity, [](auto &) {});
+            if (LookThrough && LookThrough->Camera == camera_entity) R.patch<ViewCamera>(SceneEntity, [](auto &) {});
         }
     }
     { // Sync RotationUiVariant from Rotation, but skip entities where the UI is driving the change.
@@ -1697,14 +1698,11 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
             }
         }
     }
-    if (SavedViewCamera) {
-        // If looking through a camera and it moved (animation or manual edit), snap the ViewCamera.
-        // This must run before the SceneView handler so SnapToCamera's ViewCamera replacement is picked up.
-        if (const auto active_entity = FindActiveEntity(R);
-            active_entity != entt::null && R.all_of<Camera>(active_entity) &&
-            reactive<changes::WorldTransform>(R).contains(active_entity)) {
-            SnapToCamera(active_entity);
-        }
+    // If looking through a camera and it moved (animation or manual edit), snap the ViewCamera.
+    // This must run before the SceneView handler so SnapToCamera's ViewCamera replacement is picked up.
+    if (LookThrough && R.all_of<Camera>(LookThrough->Camera) &&
+        reactive<changes::WorldTransform>(R).contains(LookThrough->Camera)) {
+        SnapToCamera(LookThrough->Camera);
     }
     if (!reactive<changes::SceneView>(R).empty() ||
         !reactive<changes::TransformPending>(R).empty() ||
@@ -1714,14 +1712,11 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         light_count_changed) {
         // When looking through a scene camera, keep the ViewCamera's widened FOV in sync
         // with the current viewport aspect ratio (handles viewport resize).
-        if (SavedViewCamera) {
-            const auto active_entity = FindActiveEntity(R);
-            if (const auto *cd = active_entity != entt::null ? R.try_get<Camera>(active_entity) : nullptr) {
-                const auto logical_extent = R.get<const ViewportExtent>(SceneEntity).Value;
-                const auto render_extent = ComputeRenderExtentPx(logical_extent, std::bit_cast<vec2>(ImGui::GetIO().DisplayFramebufferScale));
-                const float viewport_aspect = render_extent.width == 0 || render_extent.height == 0 ? 1.f : float(render_extent.width) / float(render_extent.height);
-                R.get<ViewCamera>(SceneEntity).Data = WidenForLookThrough(*cd, viewport_aspect);
-            }
+        if (LookThrough && R.all_of<Camera>(LookThrough->Camera)) {
+            const auto logical_extent = R.get<const ViewportExtent>(SceneEntity).Value;
+            const auto render_extent = ComputeRenderExtentPx(logical_extent, std::bit_cast<vec2>(ImGui::GetIO().DisplayFramebufferScale));
+            const float viewport_aspect = render_extent.width == 0 || render_extent.height == 0 ? 1.f : float(render_extent.width) / float(render_extent.height);
+            R.get<ViewCamera>(SceneEntity).Data = WidenForLookThrough(R.get<Camera>(LookThrough->Camera), viewport_aspect);
         }
         const auto &camera = R.get<const ViewCamera>(SceneEntity);
         const auto &settings = R.get<const SceneSettings>(SceneEntity);
@@ -2782,6 +2777,7 @@ void Scene::ReplaceMesh(entt::entity e, MeshData &&data) {
 }
 
 void Scene::Destroy(entt::entity e) {
+    if (LookThrough && LookThrough->Camera == e) ExitLookThroughCamera();
     { // Clear relationships
         ClearParent(R, e);
         std::vector<entt::entity> children;

@@ -190,7 +190,11 @@ private:
     std::optional<vec2> BoxSelectStart, BoxSelectEnd;
     bool SelectionXRay{false}; // Edit mode: Whether to ignore occlusion when selecting elements.
     bool OrbitToActive{false}; // Edit/Excite mode: When true, orbit camera to active element.
-    std::optional<ViewCamera> SavedViewCamera; // Saved viewport state when looking through a scene camera.
+    struct LookThroughState {
+        entt::entity Camera; // Camera entity being looked through (independent of Active).
+        ViewCamera SavedViewCamera; // ViewCamera to restore on exit.
+    };
+    std::optional<LookThroughState> LookThrough;
 
     struct TransformGizmoState {
         TransformGizmo::Config Config;

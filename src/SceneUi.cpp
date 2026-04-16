@@ -457,9 +457,9 @@ void Scene::SetEditMode(Element mode) {
 }
 
 void Scene::ExitLookThroughCamera() {
-    if (!SavedViewCamera) return;
-    R.replace<ViewCamera>(SceneEntity, *SavedViewCamera);
-    SavedViewCamera.reset();
+    if (!LookThrough) return;
+    R.replace<ViewCamera>(SceneEntity, LookThrough->SavedViewCamera);
+    LookThrough.reset();
 }
 
 void Scene::AnimateToCamera(entt::entity camera_entity) {
@@ -1260,15 +1260,13 @@ void Scene::DrawOverlay() {
         }
     }
 
-    // Camera look-through frame overlay: show the active camera's view as a centered frame.
-    // The ViewCamera's FOV is widened so the active camera's view fits inside with padding.
-    // The frame marks exactly what the active camera captures.
-    if (SavedViewCamera && !camera.IsAnimating()) {
-        const auto active_entity = FindActiveEntity(R);
-        if (const auto *cd = active_entity != entt::null ? R.try_get<Camera>(active_entity) : nullptr) {
+    // Camera look-through frame overlay: show the looked-through camera's view as a centered frame.
+    // The ViewCamera's FOV is widened so the camera's view fits inside with padding.
+    // The frame marks exactly what the camera captures.
+    if (LookThrough && !camera.IsAnimating()) {
+        if (const auto *cd = R.try_get<Camera>(LookThrough->Camera)) {
             const float cam_aspect = AspectRatio(*cd);
-            const float frame_ratio = LookThroughFrameRatio(cam_aspect, viewport.size.x / viewport.size.y);
-            const vec2 frame_size{viewport.size.y * frame_ratio * cam_aspect, viewport.size.y * frame_ratio};
+            const auto frame_size = vec2{viewport.size.y * cam_aspect, viewport.size.y} * LookThroughFrameRatio(cam_aspect, viewport.size.x / viewport.size.y);
             const vec2 vp_center = viewport.pos + viewport.size * 0.5f;
             const vec2 fmin = vp_center - frame_size * 0.5f, fmax = vp_center + frame_size * 0.5f;
             const auto vmin = viewport.pos, vmax = viewport.pos + viewport.size;
@@ -1690,11 +1688,12 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
         if (CollapsingHeader("Camera")) {
             if (RenderCameraLensEditor(*cd)) R.patch<Camera>(active_entity, [](auto &) {});
             Separator();
-            if (SavedViewCamera) {
+            if (LookThrough && LookThrough->Camera == active_entity) {
                 if (Button("Exit camera view")) ExitLookThroughCamera();
             } else {
                 if (Button("Look through")) {
-                    SavedViewCamera = R.get<ViewCamera>(SceneEntity);
+                    if (!LookThrough) LookThrough = LookThroughState{active_entity, R.get<ViewCamera>(SceneEntity)};
+                    else LookThrough->Camera = active_entity;
                     AnimateToCamera(active_entity);
                 }
             }

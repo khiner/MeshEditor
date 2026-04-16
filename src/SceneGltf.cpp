@@ -686,7 +686,7 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
     if (active_entity != entt::null) R.emplace<Active>(active_entity);
     for (const auto e : all_imported_objects) R.emplace<Selected>(e);
     if (first_camera_object_entity != entt::null) {
-        SavedViewCamera = R.get<ViewCamera>(SceneEntity);
+        LookThrough = LookThroughState{first_camera_object_entity, R.get<ViewCamera>(SceneEntity)};
         SnapToCamera(first_camera_object_entity);
     }
     import_rollback_guard.Enabled = false;
