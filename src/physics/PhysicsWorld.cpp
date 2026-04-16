@@ -356,27 +356,20 @@ void ApplyPhysicsProperties(BodyCreationSettings &bcs, const PhysicsMotion *moti
     bcs.mUserData = NoMaterialSentinel;
     if (motion) {
         if (bcs.mMotionType == EMotionType::Dynamic) {
-            const float mass = motion->Mass.value_or(0.0f);
-
-            // KHR spec: mass=0 means infinite mass (can't translate).
-            auto dofs = EAllowedDOFs::All;
-            if (mass == 0.0f)
-                dofs = dofs & ~(EAllowedDOFs::TranslationX | EAllowedDOFs::TranslationY | EAllowedDOFs::TranslationZ);
-            bcs.mAllowedDOFs = dofs;
-
-            // Jolt needs positive mass when any DOF is allowed.
-            if (motion->Mass.has_value()) {
-                const float m = mass > 0.0f ? mass : 1.0f;
-                bcs.mMassPropertiesOverride.mMass = m;
-                bcs.mOverrideMassProperties = EOverrideMassProperties::CalculateInertia;
+            // KHR spec §128: an explicit mass of 0 means infinite (lock translation).
+            if (motion->Mass == 0.0f) {
+                bcs.mAllowedDOFs = EAllowedDOFs::All & ~(EAllowedDOFs::TranslationX | EAllowedDOFs::TranslationY | EAllowedDOFs::TranslationZ);
             }
+            const float mass = motion->Mass.value_or(DefaultMass);
+            bcs.mMassPropertiesOverride.mMass = mass > 0.0f ? mass : DefaultMass;
+            bcs.mOverrideMassProperties = EOverrideMassProperties::CalculateInertia;
         }
         // MeshShape can't compute mass properties — provide placeholders for any non-static body.
         const bool is_mesh = collider && collider->Shape.Type == PhysicsShapeType::TriangleMesh;
         if (is_mesh && bcs.mMotionType != EMotionType::Static) {
-            const float m = motion->Mass.value_or(1.0f);
+            const float m = motion->Mass.value_or(DefaultMass);
             bcs.mOverrideMassProperties = EOverrideMassProperties::MassAndInertiaProvided;
-            bcs.mMassPropertiesOverride.mMass = m > 0.0f ? m : 1.0f;
+            bcs.mMassPropertiesOverride.mMass = m > 0.0f ? m : DefaultMass;
             bcs.mMassPropertiesOverride.mInertia = Mat44::sScale(Vec3::sReplicate(bcs.mMassPropertiesOverride.mMass / 6.0f));
         }
         bcs.mLinearVelocity = ToJolt(motion->LinearVelocity);

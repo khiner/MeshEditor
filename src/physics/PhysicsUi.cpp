@@ -7,6 +7,8 @@
 
 #include <entt/entity/registry.hpp>
 #include <format>
+#include <glm/gtc/quaternion.hpp>
+#include <glm/trigonometric.hpp>
 #include <imgui.h>
 
 using namespace ImGui;
@@ -400,34 +402,34 @@ void physics_ui::RenderEntityProperties(entt::registry &r, entt::entity entity, 
     auto *motion = r.try_get<PhysicsMotion>(entity);
     auto *collider = r.try_get<PhysicsCollider>(entity);
 
-    // Motion type radio: None / Static / Kinematic / Dynamic
-    int motion_type = 0; // None
-    if (collider && !motion) motion_type = 1; // Static
-    else if (motion && motion->IsKinematic) motion_type = 2; // Kinematic
-    else if (motion) motion_type = 3; // Dynamic
+    // Kinematic is an Infinite-mass sub-toggle inside Dynamic, not a separate motion type.
+    enum : int { MT_None = 0,
+                 MT_Static,
+                 MT_Dynamic };
+    int motion_type = MT_None;
+    if (collider && !motion) motion_type = MT_Static;
+    else if (motion) motion_type = MT_Dynamic;
 
     AlignTextToFramePadding();
     TextUnformatted("Motion type:");
     SameLine();
-    bool changed = RadioButton("None", &motion_type, 0);
+    bool changed = RadioButton("None", &motion_type, MT_None);
     SameLine();
-    changed |= RadioButton("Static", &motion_type, 1);
+    changed |= RadioButton("Static", &motion_type, MT_Static);
     SameLine();
-    changed |= RadioButton("Kinematic", &motion_type, 2);
-    SameLine();
-    changed |= RadioButton("Dynamic", &motion_type, 3);
+    changed |= RadioButton("Dynamic", &motion_type, MT_Dynamic);
 
     if (changed) {
         r.remove<PhysicsMotion>(entity);
         r.remove<PhysicsCollider>(entity);
         physics.RemoveBody(r, entity);
 
-        if (motion_type >= 1) r.emplace<PhysicsCollider>(entity);
-        if (motion_type >= 2) r.emplace<PhysicsMotion>(entity, PhysicsMotion{.IsKinematic = (motion_type == 2)});
+        if (motion_type >= MT_Static) r.emplace<PhysicsCollider>(entity);
+        if (motion_type >= MT_Dynamic) r.emplace<PhysicsMotion>(entity);
 
         // Re-add body if collider present, or if trigger-only with geometry
         const auto *trig = r.try_get<PhysicsTrigger>(entity);
-        if (motion_type >= 1 || (trig && trig->Shape.has_value())) physics.AddBody(r, entity);
+        if (motion_type >= MT_Static || (trig && trig->Shape.has_value())) physics.AddBody(r, entity);
         motion = r.try_get<PhysicsMotion>(entity);
         collider = r.try_get<PhysicsCollider>(entity);
     }
@@ -486,39 +488,56 @@ void physics_ui::RenderEntityProperties(entt::registry &r, entt::entity entity, 
         SeparatorText("Motion");
 
         const bool is_simulating = r.get<const AnimationTimeline>(scene_entity).Playing;
-
-        float mass = motion->Mass.value_or(0.0f);
-        bool has_mass = motion->Mass.has_value();
-        if (Checkbox("Override mass", &has_mass)) motion->Mass = has_mass ? std::optional{mass} : std::nullopt;
-        if (has_mass) {
-            SameLine();
-            if (DragFloat("##mass", &mass, 0.1f, 0.001f, 1e6f, "%.3f kg")) motion->Mass = std::max(mass, 0.001f);
-        }
-
-        DragFloat("Gravity factor", &motion->GravityFactor, 0.01f, -10.0f, 10.0f);
-
         if (is_simulating) BeginDisabled();
         DragFloat3("Linear velocity", &motion->LinearVelocity.x, 0.1f);
         DragFloat3("Angular velocity", &motion->AngularVelocity.x, 0.1f);
         if (is_simulating) EndDisabled();
 
-        if (TreeNode("Inertia")) {
-            DragFloat3("Center of mass", &motion->CenterOfMass.x, 0.01f);
-            bool has_inertia = motion->InertiaDiagonal.has_value();
-            if (Checkbox("Override inertia", &has_inertia)) {
-                if (has_inertia) {
-                    motion->InertiaDiagonal = vec3{1.0f};
-                    motion->InertiaOrientation = quat{1, 0, 0, 0};
-                } else {
-                    motion->InertiaDiagonal.reset();
-                    motion->InertiaOrientation.reset();
-                }
-            }
-            if (motion->InertiaDiagonal.has_value()) {
-                DragFloat3("Inertia diagonal", &motion->InertiaDiagonal->x, 0.01f, 0.001f, 1e6f);
-            }
-            TreePop();
+        DragFloat("Gravity factor", &motion->GravityFactor, 0.01f, -10.0f, 10.0f);
+
+        Spacing();
+        SeparatorText("Mass properties");
+
+        // IsKinematic changes Jolt EMotionType, so the body must be rebuilt.
+        if (Checkbox("Infinite mass", &motion->IsKinematic)) {
+            physics.RemoveBody(r, entity);
+            physics.AddBody(r, entity);
         }
+
+        // Mass/inertia overrides are meaningless on a kinematic body (infinite mass).
+        if (motion->IsKinematic) BeginDisabled();
+
+        // Mass: always shown. Unset displays DefaultMass and round-trips as absent;
+        // any user drag makes it explicit.
+        float mass = motion->Mass.value_or(DefaultMass);
+        if (DragFloat("Mass", &mass, 0.1f, 0.001f, 1e6f, "%.3f kg")) motion->Mass = mass;
+
+        bool has_inertia = motion->InertiaDiagonal.has_value();
+        if (Checkbox("Override inertia tensor", &has_inertia)) {
+            if (has_inertia) {
+                motion->InertiaDiagonal = vec3{1.0f};
+                motion->InertiaOrientation = quat{1, 0, 0, 0};
+            } else {
+                motion->InertiaDiagonal.reset();
+                motion->InertiaOrientation.reset();
+            }
+        }
+        if (motion->InertiaDiagonal) {
+            DragFloat3("Inertia diagonal", &motion->InertiaDiagonal->x, 0.01f, 0.001f, 1e6f);
+            vec3 euler_deg = glm::degrees(glm::eulerAngles(motion->InertiaOrientation.value_or(quat{1, 0, 0, 0})));
+            if (DragFloat3("Inertia orientation", &euler_deg.x, 0.1f)) {
+                motion->InertiaOrientation = quat{glm::radians(euler_deg)};
+            }
+        }
+
+        if (motion->IsKinematic) EndDisabled();
+
+        // Center of mass stays editable even when kinematic — still affects rotation pivoting.
+        bool has_com = motion->CenterOfMass.has_value();
+        if (Checkbox("Override center of mass", &has_com)) {
+            motion->CenterOfMass = has_com ? std::optional{vec3{0.0f}} : std::nullopt;
+        }
+        if (motion->CenterOfMass) DragFloat3("Center of mass", &motion->CenterOfMass->x, 0.01f);
     }
 
     // Joint properties

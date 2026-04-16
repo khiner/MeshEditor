@@ -1406,7 +1406,7 @@ std::expected<Scene, std::string> LoadScene(const std::filesystem::path &path) {
             if (rb->motion) {
                 PhysicsMotion motion{.IsKinematic = rb->motion->isKinematic};
                 if (rb->motion->mass) motion.Mass = float(*rb->motion->mass);
-                motion.CenterOfMass = ToVec3(rb->motion->centerOfMass);
+                if (const auto com = ToVec3(rb->motion->centerOfMass); com != vec3{0}) motion.CenterOfMass = com;
                 if (rb->motion->inertialDiagonal) motion.InertiaDiagonal = ToVec3(*rb->motion->inertialDiagonal);
                 if (rb->motion->inertialOrientation) {
                     const auto q = ToVec4(*rb->motion->inertialOrientation);

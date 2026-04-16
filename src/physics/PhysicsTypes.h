@@ -10,8 +10,7 @@
 #include <string>
 #include <vector>
 
-// KHR_physics_rigid_bodies-aligned ECS component structs.
-// No Jolt types — these are pure data, serializable to/from glTF.
+// KHR_physics_rigid_bodies-aligned component structs.
 
 // --- Document-level resources (stored in PhysicsWorld) ---
 
@@ -23,26 +22,19 @@ enum class PhysicsCombineMode : uint8_t {
 };
 
 struct PhysicsMaterial {
-    float StaticFriction{0.6f};
-    float DynamicFriction{0.6f};
-    float Restitution{0.0f};
-    PhysicsCombineMode FrictionCombine{PhysicsCombineMode::Average};
-    PhysicsCombineMode RestitutionCombine{PhysicsCombineMode::Average};
+    float StaticFriction{0.6f}, DynamicFriction{0.6f}, Restitution{0.0f};
+    PhysicsCombineMode FrictionCombine{PhysicsCombineMode::Average}, RestitutionCombine{PhysicsCombineMode::Average};
     std::string Name{};
 };
 
 struct CollisionFilter {
-    std::vector<std::string> CollisionSystems{};
-    std::vector<std::string> CollideWithSystems{};
-    std::vector<std::string> NotCollideWithSystems{};
+    std::vector<std::string> CollisionSystems{}, CollideWithSystems{}, NotCollideWithSystems{};
     std::string Name{};
 };
 
 struct PhysicsJointLimit {
-    std::vector<uint8_t> LinearAxes{};
-    std::vector<uint8_t> AngularAxes{};
-    std::optional<float> Min{};
-    std::optional<float> Max{};
+    std::vector<uint8_t> LinearAxes{}, AngularAxes{};
+    std::optional<float> Min{}, Max{};
     std::optional<float> Stiffness{}; // nullopt = hard (infinite stiffness) limit
     float Damping{0.0f};
 };
@@ -57,10 +49,8 @@ struct PhysicsJointDrive {
     PhysicsDriveMode Mode{PhysicsDriveMode::Force};
     uint8_t Axis{0}; // 0=X, 1=Y, 2=Z
     float MaxForce{std::numeric_limits<float>::max()};
-    float PositionTarget{0.0f};
-    float VelocityTarget{0.0f};
-    float Stiffness{0.0f};
-    float Damping{0.0f};
+    float PositionTarget{0}, VelocityTarget{0};
+    float Stiffness{0}, Damping{0};
 };
 
 struct PhysicsJointDef {
@@ -92,23 +82,29 @@ struct PhysicsShape {
     bool ConvexHull{false};
 };
 
-// --- Per-node ECS components ---
+// --- Per-node ---
 
+// Engine default mass (kg) when PhysicsMotion::Mass is unset. Matches Blender.
+inline constexpr float DefaultMass = 1.0f;
+
+// Motion states (KHR_physics_rigid_bodies terms):
+// Static: Only PhysicsCollider (~Blender Passive, unanimated).
+// Dynamic: PhysicsMotion present. IsKinematic toggles infinite mass:
+//   false: force-driven (~Blender Active)
+//   true:  velocity-constant, animation-driven (~Blender Passive, animated)
 struct PhysicsMotion {
     bool IsKinematic{false};
-    std::optional<float> Mass{}; // nullopt = auto-compute from shape
-    vec3 CenterOfMass{0.0f};
+    std::optional<float> Mass{}; // nullopt = DefaultMass
+    std::optional<vec3> CenterOfMass{}; // nullopt = auto-compute from shape
     std::optional<vec3> InertiaDiagonal{};
     std::optional<quat> InertiaOrientation{};
-    vec3 LinearVelocity{0.0f};
-    vec3 AngularVelocity{0.0f};
-    float GravityFactor{1.0f};
+    vec3 LinearVelocity{0}, AngularVelocity{0};
+    float GravityFactor{1.};
 };
 
 struct PhysicsCollider {
     PhysicsShape Shape{};
-    std::optional<uint32_t> PhysicsMaterialIndex{};
-    std::optional<uint32_t> CollisionFilterIndex{};
+    std::optional<uint32_t> PhysicsMaterialIndex{}, CollisionFilterIndex{};
 };
 
 struct PhysicsTrigger {
@@ -136,8 +132,10 @@ struct PhysicsConstraintHandle {
 struct PhysicsFiltersDirty {};
 
 struct PhysicsResourceDeleted {
-    enum Type : uint8_t { Material,
-                          Filter };
+    enum Type : uint8_t {
+        Material,
+        Filter
+    };
     Type Resource;
     uint32_t Index;
 };
