@@ -594,8 +594,11 @@ void PhysicsWorld::Rebuild(entt::registry &r) {
     auto make_jolt_shape = [&](const PhysicsCollider &collider, entt::entity entity, bool is_dynamic, const PhysicsMotion *motion = nullptr, entt::entity motion_entity = entt::null) -> Ref<Shape> {
         auto effective_shape = collider.Shape;
         if (effective_shape.Type == PhysicsShapeType::TriangleMesh && is_dynamic && motion && !motion->IsKinematic) {
-            if (could_hit_static_mesh(collider.CollisionFilterIndex) && !joint_constrained_bodies.contains(motion_entity))
+            const float mass = motion->Mass.value_or(0.f);
+            // mass=0 bodies can't translate, so keep concave mesh for accurate collision.
+            if (mass > 0 && could_hit_static_mesh(collider.CollisionFilterIndex) && !joint_constrained_bodies.contains(motion_entity)) {
                 effective_shape.Type = PhysicsShapeType::ConvexHull;
+            }
         }
         const auto *mesh = effective_shape.MeshEntity ? r.try_get<const Mesh>(*effective_shape.MeshEntity) : nullptr;
         auto shape = CreateJoltShape(effective_shape, mesh);
@@ -604,7 +607,7 @@ void PhysicsWorld::Rebuild(entt::registry &r) {
         // GetSubShapeUserData returns it for per-sub-shape filtering in OnContactValidate.
         if (collider.CollisionFilterIndex.has_value()) shape->SetUserData(*collider.CollisionFilterIndex + 1);
         const auto *t = r.try_get<const Transform>(entity);
-        if (t && (t->S.x != 1.0f || t->S.y != 1.0f || t->S.z != 1.0f)) shape = new ScaledShape(shape, ToJolt(t->S));
+        if (t && (t->S.x != 1 || t->S.y != 1 || t->S.z != 1)) shape = new ScaledShape(shape, ToJolt(t->S));
         return shape;
     };
 
@@ -634,7 +637,7 @@ void PhysicsWorld::Rebuild(entt::registry &r) {
             // handled correctly in the body-local inertia frame.
             if (motion && motion->InertiaDiagonal && body->IsDynamic()) {
                 const auto &d = *motion->InertiaDiagonal;
-                const Vec3 inv_diag{d.x > 0 ? 1.f / d.x : 0.f, d.y > 0 ? 1.f / d.y : 0.f, d.z > 0 ? 1.f / d.z : 0.f};
+                const Vec3 inv_diag{d.x > 0 ? 1 / d.x : 0, d.y > 0 ? 1 / d.y : 0, d.z > 0 ? 1 / d.z : 0};
                 const auto rot = motion->InertiaOrientation ? ToJoltQuat(*motion->InertiaOrientation) : Quat::sIdentity();
                 const_cast<Body *>(body)->GetMotionProperties()->SetInverseInertia(inv_diag, rot);
             }
