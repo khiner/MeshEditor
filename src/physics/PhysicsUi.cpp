@@ -164,8 +164,8 @@ void physics_ui::RenderTab(entt::registry &r, entt::entity scene_entity, Physics
                 TreePop();
             }
             bool mat_in_use = false;
-            for (auto [e, c] : r.view<const PhysicsCollider>().each()) {
-                if (c.PhysicsMaterialIndex == uint32_t(i)) {
+            for (auto [e, m] : r.view<const ColliderMaterial>().each()) {
+                if (m.PhysicsMaterialIndex == uint32_t(i)) {
                     mat_in_use = true;
                     break;
                 }
@@ -272,8 +272,8 @@ void physics_ui::RenderTab(entt::registry &r, entt::entity scene_entity, Physics
                 TreePop();
             }
             bool filter_in_use = false;
-            for (auto [e, c] : r.view<const PhysicsCollider>().each()) {
-                if (c.CollisionFilterIndex == uint32_t(i)) {
+            for (auto [e, m] : r.view<const ColliderMaterial>().each()) {
+                if (m.CollisionFilterIndex == uint32_t(i)) {
                     filter_in_use = true;
                     break;
                 }
@@ -319,7 +319,7 @@ void physics_ui::RenderTab(entt::registry &r, entt::entity scene_entity, Physics
             filters_changed = true;
         }
 
-        if (filters_changed) r.emplace_or_replace<PhysicsFiltersDirty>(scene_entity);
+        if (filters_changed) physics.UpdateFilterTable();
 
         // Collision matrix visualization (angled-header table)
         if (physics.Filters.size() >= 2) {
@@ -464,8 +464,8 @@ void physics_ui::RenderEntityProperties(entt::registry &r, entt::entity entity, 
 
     PushID("PhysicsEntity");
 
-    auto *motion = r.try_get<PhysicsMotion>(entity);
-    auto *collider = r.try_get<PhysicsCollider>(entity);
+    const auto *motion = r.try_get<const PhysicsMotion>(entity);
+    const auto *collider = r.try_get<const ColliderShape>(entity);
 
     // Kinematic is an Infinite-mass sub-toggle inside Dynamic, not a separate motion type.
     enum : int { MT_None = 0,
@@ -485,65 +485,60 @@ void physics_ui::RenderEntityProperties(entt::registry &r, entt::entity entity, 
     changed |= RadioButton("Dynamic", &motion_type, MT_Dynamic);
 
     if (changed) {
-        r.remove<PhysicsMotion>(entity);
-        r.remove<PhysicsCollider>(entity);
-        physics.RemoveBody(r, entity);
-
-        if (motion_type >= MT_Static) {
-            PhysicsCollider c;
-            c.Shape = InitColliderShape(r, entity);
-            r.emplace<PhysicsCollider>(entity, std::move(c));
+        if (motion_type < MT_Dynamic) r.remove<PhysicsMotion>(entity);
+        if (motion_type < MT_Static) r.remove<ColliderShape>(entity);
+        if (motion_type >= MT_Static && !r.all_of<ColliderShape>(entity)) {
+            r.emplace<ColliderShape>(entity, ColliderShape{InitColliderShape(r, entity)});
         }
-        if (motion_type >= MT_Dynamic) r.emplace<PhysicsMotion>(entity);
-
-        // Re-add body if collider present, or if trigger-only with geometry
-        const auto *trig = r.try_get<PhysicsTrigger>(entity);
-        if (motion_type >= MT_Static || (trig && trig->Shape.has_value())) physics.AddBody(r, entity);
-        motion = r.try_get<PhysicsMotion>(entity);
-        collider = r.try_get<PhysicsCollider>(entity);
+        if (motion_type >= MT_Dynamic && !r.all_of<PhysicsMotion>(entity)) {
+            r.emplace<PhysicsMotion>(entity);
+        }
+        motion = r.try_get<const PhysicsMotion>(entity);
+        collider = r.try_get<const ColliderShape>(entity);
     }
 
     if (collider) { // Collider shape editing
         Spacing();
         SeparatorText("Collider");
 
-        if (RenderShapeEditor(collider->Shape)) {
-            physics.RemoveBody(r, entity);
-            physics.AddBody(r, entity);
+        PhysicsShape shape_edit = collider->Shape;
+        if (RenderShapeEditor(shape_edit)) {
+            r.patch<ColliderShape>(entity, [&](ColliderShape &cs) { cs.Shape = shape_edit; });
         }
 
+        const auto *material = r.try_get<const ColliderMaterial>(entity);
         // Physics material assignment
-        if (!physics.Materials.empty()) {
-            const int mat_idx = collider->PhysicsMaterialIndex.has_value() ? int(*collider->PhysicsMaterialIndex) : -1;
+        if (material && !physics.Materials.empty()) {
+            const int mat_idx = material->PhysicsMaterialIndex.has_value() ? int(*material->PhysicsMaterialIndex) : -1;
             const auto preview = mat_idx >= 0 && mat_idx < int(physics.Materials.size()) ? (physics.Materials[mat_idx].Name.empty() ? std::format("Material {}", mat_idx) : physics.Materials[mat_idx].Name) : std::string{"None"};
             if (BeginCombo("Physics material", preview.c_str())) {
-                if (Selectable("None", mat_idx < 0)) collider->PhysicsMaterialIndex.reset();
+                if (Selectable("None", mat_idx < 0)) {
+                    r.patch<ColliderMaterial>(entity, [](ColliderMaterial &cm) { cm.PhysicsMaterialIndex.reset(); });
+                }
                 for (size_t i = 0; i < physics.Materials.size(); ++i) {
                     const auto &m = physics.Materials[i];
                     const auto label = m.Name.empty() ? std::format("Material {}", i) : m.Name;
-                    if (Selectable(label.c_str(), mat_idx == int(i))) collider->PhysicsMaterialIndex = i;
+                    if (Selectable(label.c_str(), mat_idx == int(i))) {
+                        r.patch<ColliderMaterial>(entity, [i](ColliderMaterial &cm) { cm.PhysicsMaterialIndex = uint32_t(i); });
+                    }
                 }
                 EndCombo();
             }
         }
 
         // Collision filter assignment
-        if (!physics.Filters.empty()) {
-            const int filter_idx = collider->CollisionFilterIndex.has_value() ? int(*collider->CollisionFilterIndex) : -1;
+        if (material && !physics.Filters.empty()) {
+            const int filter_idx = material->CollisionFilterIndex.has_value() ? int(*material->CollisionFilterIndex) : -1;
             const auto preview = filter_idx >= 0 && filter_idx < int(physics.Filters.size()) ? (physics.Filters[filter_idx].Name.empty() ? std::format("Filter {}", filter_idx) : physics.Filters[filter_idx].Name) : std::string{"None"};
             if (BeginCombo("Collision filter", preview.c_str())) {
                 if (Selectable("None", filter_idx < 0)) {
-                    collider->CollisionFilterIndex.reset();
-                    physics.RemoveBody(r, entity);
-                    physics.AddBody(r, entity);
+                    r.patch<ColliderMaterial>(entity, [](ColliderMaterial &cm) { cm.CollisionFilterIndex.reset(); });
                 }
                 for (size_t i = 0; i < physics.Filters.size(); ++i) {
                     const auto &f = physics.Filters[i];
                     const auto flabel = f.Name.empty() ? std::format("Filter {}", i) : f.Name;
                     if (Selectable(flabel.c_str(), filter_idx == int(i))) {
-                        collider->CollisionFilterIndex = uint32_t(i);
-                        physics.RemoveBody(r, entity);
-                        physics.AddBody(r, entity);
+                        r.patch<ColliderMaterial>(entity, [i](ColliderMaterial &cm) { cm.CollisionFilterIndex = uint32_t(i); });
                     }
                 }
                 EndCombo();
@@ -564,58 +559,59 @@ void physics_ui::RenderEntityProperties(entt::registry &r, entt::entity entity, 
         }
         if (is_simulating) EndDisabled();
 
-        if (DragFloat("Gravity factor", &motion->GravityFactor, 0.01f, -10.f, 10.f)) r.emplace_or_replace<PhysicsDynamicsDirty>(entity);
+        // Edit a local copy, then apply via patch<> so the reactive handler dispatches the update.
+        PhysicsMotion edit = *motion;
+        bool motion_changed = DragFloat("Gravity factor", &edit.GravityFactor, 0.01f, -10.f, 10.f);
 
         Spacing();
         SeparatorText("Mass properties");
 
-        // IsKinematic changes Jolt EMotionType, so the body must be rebuilt.
-        if (Checkbox("Infinite mass", &motion->IsKinematic)) {
-            physics.RemoveBody(r, entity);
-            physics.AddBody(r, entity);
+        motion_changed |= Checkbox("Infinite mass", &edit.IsKinematic);
+
+        if (edit.IsKinematic) BeginDisabled();
+
+        float mass = edit.Mass.value_or(DefaultMass);
+        if (DragFloat("Mass", &mass, 0.1f, 0.001f, 1e6f, "%.3f kg")) {
+            edit.Mass = mass;
+            motion_changed = true;
         }
 
-        // Mass/inertia overrides are meaningless on a kinematic body (infinite mass).
-        if (motion->IsKinematic) BeginDisabled();
-
-        // Mass: always shown. Unset displays DefaultMass and round-trips as absent;
-        // any user drag makes it explicit.
-        float mass = motion->Mass.value_or(DefaultMass);
-        if (DragFloat("Mass", &mass, 0.1f, 0.001f, 1e6f, "%.3f kg")) motion->Mass = mass;
-
-        bool has_inertia = motion->InertiaDiagonal.has_value();
+        bool has_inertia = edit.InertiaDiagonal.has_value();
         if (Checkbox("Override inertia tensor", &has_inertia)) {
             if (has_inertia) {
-                motion->InertiaDiagonal = vec3{1.0f};
-                motion->InertiaOrientation = quat{1, 0, 0, 0};
+                edit.InertiaDiagonal = vec3{1.0f};
+                edit.InertiaOrientation = quat{1, 0, 0, 0};
             } else {
-                motion->InertiaDiagonal.reset();
-                motion->InertiaOrientation.reset();
+                edit.InertiaDiagonal.reset();
+                edit.InertiaOrientation.reset();
             }
+            motion_changed = true;
         }
-        if (motion->InertiaDiagonal) {
-            DragFloat3("Inertia diagonal", &motion->InertiaDiagonal->x, 0.01f, 0.001f, 1e6f);
-            vec3 euler_deg = glm::degrees(glm::eulerAngles(motion->InertiaOrientation.value_or(quat{1, 0, 0, 0})));
+        if (edit.InertiaDiagonal) {
+            motion_changed |= DragFloat3("Inertia diagonal", &edit.InertiaDiagonal->x, 0.01f, 0.001f, 1e6f);
+            vec3 euler_deg = glm::degrees(glm::eulerAngles(edit.InertiaOrientation.value_or(quat{1, 0, 0, 0})));
             if (DragFloat3("Inertia orientation", &euler_deg.x, 0.1f)) {
-                motion->InertiaOrientation = quat{glm::radians(euler_deg)};
+                edit.InertiaOrientation = quat{glm::radians(euler_deg)};
+                motion_changed = true;
             }
         }
 
-        if (motion->IsKinematic) EndDisabled();
+        if (edit.IsKinematic) EndDisabled();
 
-        // Center of mass stays editable even when kinematic — still affects rotation pivoting.
-        bool has_com = motion->CenterOfMass.has_value();
+        bool has_com = edit.CenterOfMass.has_value();
         if (Checkbox("Override center of mass", &has_com)) {
-            motion->CenterOfMass = has_com ? std::optional{vec3{0.0f}} : std::nullopt;
+            edit.CenterOfMass = has_com ? std::optional{vec3{0.0f}} : std::nullopt;
+            motion_changed = true;
         }
-        if (motion->CenterOfMass) DragFloat3("Center of mass", &motion->CenterOfMass->x, 0.01f);
+        if (edit.CenterOfMass) motion_changed |= DragFloat3("Center of mass", &edit.CenterOfMass->x, 0.01f);
 
         Spacing();
         SeparatorText("Dynamics");
 
-        bool dynamics_changed = DragFloat("Damping translation", &motion->LinearDamping, 0.01f, 0.f, 1.f);
-        dynamics_changed |= DragFloat("Damping rotation", &motion->AngularDamping, 0.01f, 0.f, 1.f);
-        if (dynamics_changed) r.emplace_or_replace<PhysicsDynamicsDirty>(entity);
+        motion_changed |= DragFloat("Damping translation", &edit.LinearDamping, 0.01f, 0.f, 1.f);
+        motion_changed |= DragFloat("Damping rotation", &edit.AngularDamping, 0.01f, 0.f, 1.f);
+
+        if (motion_changed) r.patch<PhysicsMotion>(entity, [&](PhysicsMotion &m) { m = edit; });
     }
 
     // Joint properties
@@ -646,22 +642,18 @@ void physics_ui::RenderEntityProperties(entt::registry &r, entt::entity entity, 
     }
 
     // Trigger properties
-    if (auto *trigger = r.try_get<PhysicsTrigger>(entity); !trigger) {
+    if (const auto *trigger = r.try_get<const PhysicsTrigger>(entity); !trigger) {
         Spacing();
-        if (Button("Add Trigger")) {
-            r.emplace<PhysicsTrigger>(entity, PhysicsTrigger{.Shape = PhysicsShape{}});
-            // Only create a sensor body if no collider body already exists (collider wins).
-            if (!r.all_of<PhysicsBodyHandle>(entity)) physics.AddBody(r, entity);
-        }
+        if (Button("Add Trigger")) r.emplace<PhysicsTrigger>(entity, PhysicsTrigger{.Shape = PhysicsShape{}});
     } else {
         Spacing();
         SeparatorText("Trigger");
         PushID("Trigger");
 
         if (trigger->Shape.has_value()) {
-            if (RenderShapeEditor(*trigger->Shape)) {
-                physics.RemoveBody(r, entity);
-                physics.AddBody(r, entity);
+            PhysicsShape shape_edit = *trigger->Shape;
+            if (RenderShapeEditor(shape_edit)) {
+                r.patch<PhysicsTrigger>(entity, [&](PhysicsTrigger &t) { t.Shape = shape_edit; });
             }
         } else if (!trigger->Nodes.empty()) {
             Text("Compound trigger: %zu nodes", trigger->Nodes.size());
@@ -673,27 +665,20 @@ void physics_ui::RenderEntityProperties(entt::registry &r, entt::entity entity, 
             const auto preview = filter_idx >= 0 && filter_idx < int(physics.Filters.size()) ? (physics.Filters[filter_idx].Name.empty() ? std::format("Filter {}", filter_idx) : physics.Filters[filter_idx].Name) : std::string{"None"};
             if (BeginCombo("Collision filter", preview.c_str())) {
                 if (Selectable("None", filter_idx < 0)) {
-                    trigger->CollisionFilterIndex.reset();
-                    physics.RemoveBody(r, entity);
-                    physics.AddBody(r, entity);
+                    r.patch<PhysicsTrigger>(entity, [](PhysicsTrigger &t) { t.CollisionFilterIndex.reset(); });
                 }
                 for (size_t i = 0; i < physics.Filters.size(); ++i) {
                     const auto &f = physics.Filters[i];
                     const auto flabel = f.Name.empty() ? std::format("Filter {}", i) : f.Name;
                     if (Selectable(flabel.c_str(), filter_idx == int(i))) {
-                        trigger->CollisionFilterIndex = uint32_t(i);
-                        physics.RemoveBody(r, entity);
-                        physics.AddBody(r, entity);
+                        r.patch<PhysicsTrigger>(entity, [i](PhysicsTrigger &t) { t.CollisionFilterIndex = uint32_t(i); });
                     }
                 }
                 EndCombo();
             }
         }
 
-        if (Button("Remove Trigger")) {
-            physics.RemoveBody(r, entity);
-            r.remove<PhysicsTrigger>(entity);
-        }
+        if (Button("Remove Trigger")) r.remove<PhysicsTrigger>(entity);
 
         PopID();
     }

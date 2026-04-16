@@ -376,7 +376,8 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
                         collider.Shape.MeshEntity = R.get<const Instance>(entity).Entity; // fallback to self
                     }
                 }
-                R.emplace<PhysicsCollider>(entity, std::move(collider));
+                R.emplace<ColliderShape>(entity, std::move(collider));
+                if (node.Material) R.replace<ColliderMaterial>(entity, *node.Material);
                 has_any_physics = true;
             }
             if (node.Motion) {
@@ -390,25 +391,29 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
                 resolved_nodes.reserve(td.NodeIndices.size());
                 for (const auto node_idx : td.NodeIndices) {
                     auto nit = object_entities_by_node.find(node_idx);
-                    resolved_nodes.push_back(nit != object_entities_by_node.end() ? nit->second : entt::null);
+                    resolved_nodes.emplace_back(nit != object_entities_by_node.end() ? nit->second : entt::null);
                 }
-                R.emplace<PhysicsTrigger>(entity, PhysicsTrigger{
-                                                      .Shape = td.Shape,
-                                                      .Nodes = std::move(resolved_nodes),
-                                                      .CollisionFilterIndex = td.CollisionFilterIndex,
-                                                  });
+                R.emplace<PhysicsTrigger>(
+                    entity,
+                    PhysicsTrigger{.Shape = td.Shape, .Nodes = std::move(resolved_nodes), .CollisionFilterIndex = td.CollisionFilterIndex}
+                );
             }
             if (node.Joint) {
                 const auto &jd = *node.Joint;
                 auto nit = object_entities_by_node.find(jd.ConnectedNodeIndex);
-                R.emplace<PhysicsJoint>(entity, PhysicsJoint{
-                                                    .ConnectedNode = nit != object_entities_by_node.end() ? nit->second : entt::null,
-                                                    .JointDefIndex = jd.JointDefIndex,
-                                                    .EnableCollision = jd.EnableCollision,
-                                                });
+                R.emplace<PhysicsJoint>(
+                    entity,
+                    PhysicsJoint{.ConnectedNode = nit != object_entities_by_node.end() ? nit->second : entt::null, .JointDefIndex = jd.JointDefIndex, .EnableCollision = jd.EnableCollision}
+                );
             }
         }
-        if (has_any_physics) Physics->Rebuild(R);
+        if (has_any_physics) {
+            // Bodies and constraints come up reactively above.
+            // Collision filter masks and scene-scale tolerances have no reactive trigger,
+            // so refresh them now from the loader-populated Filters and ColliderShape state.
+            Physics->UpdateFilterTable();
+            Physics->RecomputeSceneScale(R);
+        }
     }
 
     for (const auto &skin : scene->Skins) {

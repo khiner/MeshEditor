@@ -300,6 +300,7 @@ struct SceneSettings {}; struct InteractionMode {}; struct Submit {}; struct Rot
 struct ViewportTheme {}; struct Materials {}; struct PbrSpecialization {};
 struct SceneView {}; struct CameraLens {}; struct TransformPending {};
 struct TransformEnd {}; struct WorldTransform {}; struct TransformDirty {};
+struct PhysicsMotion {}; struct PhysicsShape {}; struct PhysicsMaterial {}; struct PhysicsTrigger {}; struct PhysicsJoint {};
 } // namespace changes
 // clang-format on
 
@@ -550,11 +551,26 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
         .on<Transform>(On::Create | On::Update)
         .on<SceneNode>(On::Create | On::Update)
         .on<BoneDisplayScale>(On::Update);
+    track<changes::PhysicsMotion>(R).on<PhysicsMotion>(On::Create | On::Update | On::Destroy);
+    track<changes::PhysicsShape>(R).on<ColliderShape>(On::Create | On::Update | On::Destroy);
+    track<changes::PhysicsMaterial>(R).on<ColliderMaterial>(On::Update);
+    track<changes::PhysicsTrigger>(R).on<PhysicsTrigger>(On::Create | On::Update | On::Destroy);
+    track<changes::PhysicsJoint>(R).on<PhysicsJoint>(On::Create | On::Update | On::Destroy);
 
-    // Auto-mirror PhysicsVelocity onto every entity that has PhysicsMotion. Lets us split per-frame
-    // velocity writeback off PhysicsMotion without forcing every callsite to emplace both.
     R.on_construct<PhysicsMotion>().connect<&entt::registry::emplace<PhysicsVelocity>>();
     R.on_destroy<PhysicsMotion>().connect<&entt::registry::remove<PhysicsVelocity>>();
+    R.on_construct<ColliderShape>().connect<&entt::registry::emplace<ColliderMaterial>>();
+    R.on_destroy<ColliderShape>().connect<&entt::registry::remove<ColliderMaterial>>();
+
+    PhysicsWorld *physics = Physics.get();
+    RegisterComponentEventHandler(R, [physics](entt::registry &r) {
+        const bool joint_events = !reactive<changes::PhysicsJoint>(r).empty();
+        for (auto e : reactive<changes::PhysicsShape>(r)) physics->OnShapeChange(r, e);
+        for (auto e : reactive<changes::PhysicsMotion>(r)) physics->OnMotionChange(r, e);
+        for (auto e : reactive<changes::PhysicsMaterial>(r)) physics->OnMaterialChange(r, e);
+        for (auto e : reactive<changes::PhysicsTrigger>(r)) physics->OnTriggerChange(r, e);
+        physics->FlushJoints(r, joint_events);
+    });
 
     DestroyTracker->Bind(R);
 
@@ -1484,28 +1500,24 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
             }
         }
         R.clear<BoneInstanceStateDirty>();
-        if (R.all_of<PhysicsFiltersDirty>(SceneEntity)) {
-            Physics->UpdateFilterTable();
-            R.remove<PhysicsFiltersDirty>(SceneEntity);
-        }
 
         if (const auto *del = R.try_get<PhysicsResourceDeleted>(SceneEntity)) {
-            auto fixup = [](std::optional<uint32_t> &idx, uint32_t d) {
+            const auto d = del->Index;
+            auto fixup = [d](std::optional<uint32_t> &idx) {
                 if (!idx.has_value()) return;
                 if (*idx == d) idx.reset();
                 else if (*idx > d) --*idx;
             };
-            if (del->Resource == PhysicsResourceDeleted::Material) {
-                for (auto [e, c] : R.view<PhysicsCollider>().each()) fixup(c.PhysicsMaterialIndex, del->Index);
-            } else {
-                for (auto [e, c] : R.view<PhysicsCollider>().each()) fixup(c.CollisionFilterIndex, del->Index);
-                for (auto [e, t] : R.view<PhysicsTrigger>().each()) fixup(t.CollisionFilterIndex, del->Index);
+            using Member = std::optional<uint32_t> ColliderMaterial::*;
+            const Member member = del->Resource == PhysicsResourceDeleted::Material ? &ColliderMaterial::PhysicsMaterialIndex : &ColliderMaterial::CollisionFilterIndex;
+            for (auto e : R.view<ColliderMaterial>()) {
+                R.patch<ColliderMaterial>(e, [&](ColliderMaterial &cm) { fixup(cm.*member); });
+            }
+            if (del->Resource != PhysicsResourceDeleted::Material) {
+                for (auto [e, t] : R.view<PhysicsTrigger>().each()) fixup(t.CollisionFilterIndex);
             }
             R.remove<PhysicsResourceDeleted>(SceneEntity);
         }
-
-        // Sync changed dynamics from ECS to Jolt before stepping.
-        if (Physics->HasBodies()) Physics->SyncDynamics(R);
 
         // Physics step: advance simulation and sync Jolt body transforms back to ECS.
         // Runs before bone/WorldTransform sync so that physics Transform patches are included.
@@ -2310,7 +2322,7 @@ entt::entity Scene::CreateExtrasObject(std::span<const vec3> positions, std::spa
 }
 
 void Scene::SyncColliderWireframes() {
-    if (R.view<const PhysicsCollider>().empty() && R.view<ColliderWireframe>().empty()) return;
+    if (R.view<const ColliderShape>().empty() && R.view<ColliderWireframe>().empty()) return;
 
     // Lazily create canonical buffer entities (recreated if destroyed by last-instance cleanup).
     auto ensure_buffer = [&](ColliderShapeBuffer idx, auto generator) {
@@ -2326,10 +2338,10 @@ void Scene::SyncColliderWireframes() {
     ensure_buffer(CSB_Cylinder, physics_debug::UnitCylinder);
 
     // Create wireframe instances for colliders that don't have them yet
-    for (auto [entity, collider] : R.view<const PhysicsCollider>().each()) {
+    for (auto [entity, cs] : R.view<const ColliderShape>().each()) {
         if (R.all_of<ColliderWireframe>(entity)) continue;
 
-        const auto &shape = collider.Shape;
+        const auto &shape = cs.Shape;
         ColliderWireframe cw{};
 
         auto make_instance = [&](entt::entity buffer_entity) -> entt::entity {
@@ -2367,7 +2379,7 @@ void Scene::SyncColliderWireframes() {
     // Remove wireframe instances for colliders that no longer exist
     std::vector<entt::entity> orphans;
     for (auto [entity, cw] : R.view<ColliderWireframe>().each()) {
-        if (R.all_of<PhysicsCollider>(entity)) continue;
+        if (R.all_of<ColliderShape>(entity)) continue;
         for (uint8_t i = 0; i < cw.Count; ++i) {
             if (R.valid(cw.Instances[i])) Destroy(cw.Instances[i]);
         }
@@ -2378,7 +2390,7 @@ void Scene::SyncColliderWireframes() {
     // Update wireframe transforms only when the parent entity's WorldTransform changed,
     // or when the wireframe was just created this frame (no BufferIndex yet).
     const auto &wt_changed = reactive<changes::WorldTransform>(R);
-    for (auto [entity, collider, cw] : R.view<const PhysicsCollider, const ColliderWireframe>().each()) {
+    for (auto [entity, cs, cw] : R.view<const ColliderShape, const ColliderWireframe>().each()) {
         const auto *wt = R.try_get<const WorldTransform>(entity);
         if (!wt) continue;
 
@@ -2392,7 +2404,7 @@ void Scene::SyncColliderWireframes() {
         }();
         if (!parent_moved && !newly_created) continue;
 
-        const auto &shape = collider.Shape;
+        const auto &shape = cs.Shape;
         mat4 base = ToMatrix(*wt);
 
         auto set_wt = [&](entt::entity inst, mat4 m) {

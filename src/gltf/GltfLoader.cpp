@@ -1419,11 +1419,11 @@ std::expected<Scene, std::string> LoadScene(const std::filesystem::path &path) {
                 if (lv != vec3{0} || av != vec3{0}) node.Velocity = PhysicsVelocity{lv, av};
             }
             if (rb->collider) {
-                PhysicsCollider collider;
-                collider.Shape = ToPhysicsShape(rb->collider->geometry);
-                collider.PhysicsMaterialIndex = ToIndex(rb->collider->physicsMaterial, asset.physicsMaterials.size());
-                collider.CollisionFilterIndex = ToIndex(rb->collider->collisionFilter, asset.collisionFilters.size());
-                node.Collider = std::move(collider);
+                node.Collider = ColliderShape{ToPhysicsShape(rb->collider->geometry)};
+                ColliderMaterial material;
+                material.PhysicsMaterialIndex = ToIndex(rb->collider->physicsMaterial, asset.physicsMaterials.size());
+                material.CollisionFilterIndex = ToIndex(rb->collider->collisionFilter, asset.collisionFilters.size());
+                if (material.PhysicsMaterialIndex || material.CollisionFilterIndex) node.Material = material;
                 // Ensure collider-referenced meshes are loaded even if no node renders them,
                 // and store the remapped scene->Meshes index (not raw glTF index).
                 if (auto raw_mesh_idx = ToIndex(rb->collider->geometry.mesh, asset.meshes.size())) {

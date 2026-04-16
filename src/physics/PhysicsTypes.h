@@ -4,8 +4,6 @@
 #include "numeric/quat.h"
 #include "numeric/vec3.h"
 
-#include <cstdint>
-#include <limits>
 #include <optional>
 #include <string>
 #include <vector>
@@ -88,7 +86,7 @@ struct PhysicsShape {
 inline constexpr float DefaultMass = 1.0f;
 
 // Motion states (KHR_physics_rigid_bodies terms):
-// Static: Only PhysicsCollider (~Blender Passive, unanimated).
+// Static: Only ColliderShape (~Blender Passive, unanimated).
 // Dynamic: PhysicsMotion present. IsKinematic toggles infinite mass:
 //   false: force-driven (~Blender Active)
 //   true:  velocity-constant, animation-driven (~Blender Passive, animated)
@@ -104,15 +102,18 @@ struct PhysicsMotion {
     float LinearDamping{0.04f}, AngularDamping{0.1f};
 };
 
-// Split from PhysicsMotion so it can be listened to separately from user-configurable motion properties,
-// not polluted by per-frame velocity writeback.
-// Present iff PhysicsMotion is present.
+// Linear and angular velocity of a dynamic body. Present iff PhysicsMotion is present.
 struct PhysicsVelocity {
     vec3 Linear{0}, Angular{0};
 };
 
-struct PhysicsCollider {
+// Geometry of the collision volume.
+struct ColliderShape {
     PhysicsShape Shape{};
+};
+
+// Material and collision filter assignment for a collider.
+struct ColliderMaterial {
     std::optional<uint32_t> PhysicsMaterialIndex{}, CollisionFilterIndex{};
 };
 
@@ -137,9 +138,6 @@ struct PhysicsBodyHandle {
 struct PhysicsConstraintHandle {
     uint32_t ConstraintIndex{UINT32_MAX};
 };
-
-struct PhysicsDynamicsDirty {};
-struct PhysicsFiltersDirty {};
 
 struct PhysicsResourceDeleted {
     enum Type : uint8_t {

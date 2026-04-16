@@ -96,7 +96,8 @@ struct Node {
     // and resolve to entities in SceneGltf.cpp.
     std::optional<PhysicsMotion> Motion{};
     std::optional<PhysicsVelocity> Velocity{};
-    std::optional<PhysicsCollider> Collider{};
+    std::optional<ColliderShape> Collider{};
+    std::optional<ColliderMaterial> Material{};
     std::optional<uint32_t> ColliderGeometryMeshIndex{}; // glTF mesh providing geometry for collider shape
 
     struct TriggerData {
