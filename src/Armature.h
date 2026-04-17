@@ -13,6 +13,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <variant>
 #include <vector>
 
 inline constexpr uint32_t InvalidBoneIndex{std::numeric_limits<uint32_t>::max()};
@@ -134,10 +135,27 @@ struct BoneAttachment {
     BoneId Bone;
 };
 
+// Pose constraint stack on bone entities.
+struct CopyTransformsData {};
+struct ChildOfData {
+    mat4 InverseMatrix{I4}; // Stored "parent-inverse" like Blender's Child Of: inverse(target_world) * owner_world at bind time.
+};
+
+struct BoneConstraint {
+    entt::entity TargetEntity{null_entity};
+    float Influence{1.f};
+    std::variant<CopyTransformsData, ChildOfData> Data{CopyTransformsData{}};
+};
+
+struct BoneConstraints {
+    std::vector<BoneConstraint> Stack;
+};
+
 // Component on armature data entities with imported skin data.
 struct ArmaturePoseState {
     std::vector<Transform> BonePoseDelta; // Animation delta from rest (identity = at rest). Persistent across frames.
     std::vector<Transform> BoneUserOffset; // Additive user offset per bone (identity = no offset). Applied on top of animation.
+    std::vector<mat4> BonePoseWorld; // Per-bone pose world in armature-local space, post-constraint. Scratch, reused across frames.
     Range GpuDeformRange; // Allocation in shared ArmatureDeformBuffer arena. Count == 0 means not yet allocated.
 };
 
@@ -203,9 +221,14 @@ Transform AbsoluteToDelta(const Transform &rest, const Transform &absolute);
 // keyframe value and converts to a rest-relative delta. Unkeyed components are left unchanged.
 void EvaluateAnimationDeltas(const AnimationClip &, float time, std::span<const ArmatureBone>, std::span<Transform> deltas);
 
-// Compute final deform matrices from rest poses + pose deltas + user offsets + inverse bind matrices.
-// Effective delta per bone = ComposeWithDelta(pose_delta, user_offset). Writes directly into `out` (mapped GPU memory).
-void ComputeDeformMatrices(const Armature &, std::span<const Transform> pose_deltas, std::span<const Transform> user_offsets, std::span<const mat4> inverse_bind, std::span<mat4> out);
+// Gather per-joint deform matrices from pre-composed bone pose-world matrices + inverse binds.
+// Pose-sync owns FK (it needs per-bone world for constraint eval), so this is only the joint-order gather.
+// Writes directly into `out` (mapped GPU memory).
+void ComputeDeformMatrices(const Armature &, std::span<const mat4> bone_pose_world, std::span<const mat4> inverse_bind, std::span<mat4> out);
+
+// Blend `pre_local` toward the transform implied by `target_world` at `c.Influence`.
+// Math is armature-local; `armature_world_inv` converts target from world. Scale is preserved from `pre_local`.
+Transform ApplyBoneConstraint(const BoneConstraint &c, const Transform &pre_local, const mat4 &parent_pose_world, const mat4 &armature_world_inv, const mat4 &target_world);
 
 // Non-leaf: minimum distance to any child (ignoring near-zero). Leaf: inherit parent's scale, or 1.0.
 float ComputeBoneDisplayScale(const Armature &, uint32_t bone_index);

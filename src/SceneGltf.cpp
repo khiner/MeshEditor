@@ -503,6 +503,7 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
             if (const auto object_it = object_entities_by_node.find(joint.JointNodeIndex);
                 object_it != object_entities_by_node.end() &&
                 R.all_of<Instance>(object_it->second) &&
+                !R.all_of<PhysicsMotion>(object_it->second) &&
                 !R.all_of<BoneAttachment>(object_it->second)) {
                 R.emplace<BoneAttachment>(object_it->second, armature_data_entity, bone_id);
             }
@@ -555,9 +556,44 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
             const Transform identity_delta{vec3{0}, quat{1, 0, 0, 0}, vec3{1}};
             pose_state.BonePoseDelta.resize(armature.Bones.size(), identity_delta);
             pose_state.BoneUserOffset.resize(armature.Bones.size(), identity_delta);
+            pose_state.BonePoseWorld.resize(armature.Bones.size(), I4);
             R.emplace<ArmaturePoseState>(armature_data_entity, std::move(pose_state));
         }
         CreateBoneInstances(armature_entity, armature_data_entity);
+
+        // Auto-wire Child Of on bones whose joint node has a physics-driven ancestor object,
+        // so the skin follows simulated motion when an asset pairs rigid bodies with skinning via the scene graph.
+        // Target is the nearest ancestor object with PhysicsMotion; InverseMatrix bakes the rest offset.
+        {
+            const auto find_physics_ancestor_entity = [&](uint32_t node_index) -> entt::entity {
+                for (std::optional<uint32_t> cur = node_index; cur;) {
+                    if (const auto oit = object_entities_by_node.find(*cur);
+                        oit != object_entities_by_node.end() && R.all_of<PhysicsMotion>(oit->second)) return oit->second;
+                    const auto nit = scene_nodes_by_index.find(*cur);
+                    if (nit == scene_nodes_by_index.end()) break;
+                    cur = nit->second->ParentNodeIndex;
+                }
+                return entt::null;
+            };
+            const auto &arm_obj = R.get<const ArmatureObject>(armature_entity);
+            const mat4 armature_world = ToMatrix(R.get<const WorldTransform>(armature_entity));
+            for (uint32_t i = 0; i < armature.Bones.size(); ++i) {
+                const auto &bone = armature.Bones[i];
+                if (!bone.JointNodeIndex) continue;
+                const auto target = find_physics_ancestor_entity(*bone.JointNodeIndex);
+                if (target == entt::null) continue;
+                R.emplace<BoneConstraints>(
+                    arm_obj.BoneEntities[i],
+                    BoneConstraints{
+                        .Stack = {BoneConstraint{
+                            .TargetEntity = target,
+                            .Influence = 1.f,
+                            .Data = ChildOfData{.InverseMatrix = glm::inverse(ToMatrix(R.get<const WorldTransform>(target))) * (armature_world * bone.RestWorld)},
+                        }}
+                    }
+                );
+            }
+        }
     }
 
     std::unordered_set<uint32_t> joint_node_indices;

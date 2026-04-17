@@ -1459,6 +1459,88 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
             TreePop();
         }
     }
+    if (active_bone_entity != entt::null && CollapsingHeader("Bone Constraints")) {
+        PushID("BoneConstraints");
+        auto *constraints = R.try_get<BoneConstraints>(active_bone_entity);
+        const size_t stack_size = constraints ? constraints->Stack.size() : 0;
+        const auto dirty_bone = [&] { R.patch<Transform>(active_bone_entity, [](auto &) {}); };
+        std::optional<size_t> delete_index;
+        for (size_t i = 0; i < stack_size; ++i) {
+            PushID(int(i));
+            const auto &c = constraints->Stack[i];
+            const char *type_label = std::visit([]<typename T>(const T &) {
+                if constexpr (std::is_same_v<T, CopyTransformsData>) return "Copy Transforms";
+                else if constexpr (std::is_same_v<T, ChildOfData>) return "Child Of";
+                else return "?";
+            },
+                                                c.Data);
+            const bool expanded = TreeNodeEx("##node", ImGuiTreeNodeFlags_SpanTextWidth, "%s", type_label);
+            SameLine();
+            if (SmallButton("X")) delete_index = i;
+            if (expanded) {
+                const auto *cur_name = c.TargetEntity != entt::null && R.valid(c.TargetEntity) ? R.try_get<const Name>(c.TargetEntity) : nullptr;
+                const std::string preview = c.TargetEntity == entt::null ? "None" :
+                    cur_name && !cur_name->Value.empty()                 ? cur_name->Value :
+                                                                           IdString(c.TargetEntity);
+                if (BeginCombo("Target", preview.c_str())) {
+                    if (Selectable("None", c.TargetEntity == entt::null)) {
+                        R.patch<BoneConstraints>(active_bone_entity, [&](auto &cs) { cs.Stack[i].TargetEntity = entt::null; });
+                        dirty_bone();
+                    }
+                    for (auto [te, kind, name] : R.view<const ObjectKind, const Name>().each()) {
+                        if (R.any_of<BoneIndex, BoneSubPartOf, BoneJoint, SubElementOf>(te)) continue;
+                        const std::string label = name.Value.empty() ? IdString(te) : name.Value;
+                        if (Selectable(label.c_str(), te == c.TargetEntity)) {
+                            R.patch<BoneConstraints>(active_bone_entity, [&](auto &cs) { cs.Stack[i].TargetEntity = te; });
+                            dirty_bone();
+                        }
+                    }
+                    EndCombo();
+                }
+                if (std::holds_alternative<ChildOfData>(c.Data)) {
+                    if (Button("Set Inverse") && c.TargetEntity != entt::null && R.valid(c.TargetEntity)) {
+                        // Bake inverse(target_world) * bone_world so current relative pose becomes the new rest.
+                        const auto *twt = R.try_get<const WorldTransform>(c.TargetEntity);
+                        const auto *bwt = R.try_get<const WorldTransform>(active_bone_entity);
+                        if (twt && bwt) {
+                            const mat4 inv = glm::inverse(ToMatrix(*twt)) * ToMatrix(*bwt);
+                            R.patch<BoneConstraints>(active_bone_entity, [&](auto &cs) {
+                                std::get<ChildOfData>(cs.Stack[i].Data).InverseMatrix = inv;
+                            });
+                            dirty_bone();
+                        }
+                    }
+                    SameLine();
+                    if (Button("Clear Inverse")) {
+                        R.patch<BoneConstraints>(active_bone_entity, [&](auto &cs) {
+                            std::get<ChildOfData>(cs.Stack[i].Data).InverseMatrix = I4;
+                        });
+                        dirty_bone();
+                    }
+                }
+                float influence = c.Influence;
+                if (SliderFloat("Influence", &influence, 0.f, 1.f)) {
+                    R.patch<BoneConstraints>(active_bone_entity, [&](auto &cs) { cs.Stack[i].Influence = influence; });
+                    dirty_bone();
+                }
+                TreePop();
+            }
+            PopID();
+        }
+        if (delete_index) {
+            R.patch<BoneConstraints>(active_bone_entity, [&](auto &cs) { cs.Stack.erase(cs.Stack.begin() + *delete_index); });
+            dirty_bone();
+        }
+        const auto add = [&](auto data) {
+            if (!constraints) R.emplace<BoneConstraints>(active_bone_entity);
+            R.patch<BoneConstraints>(active_bone_entity, [&](auto &cs) { cs.Stack.push_back({.Data = data}); });
+            dirty_bone();
+        };
+        if (Button("Add Copy Transforms")) add(CopyTransformsData{});
+        SameLine();
+        if (Button("Add Child Of")) add(ChildOfData{});
+        PopID();
+    }
     if (is_mesh_instance) {
         const auto active_mesh_entity = active_instance->Entity;
         if (auto *prim_shape = R.try_get<PrimitiveShape>(active_mesh_entity)) {

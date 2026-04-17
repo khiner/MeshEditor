@@ -329,29 +329,36 @@ void BoneMat3ToVecRoll(const mat3 &m, vec3 &direction, float &roll) {
 // co-located transforms and the spec ignores skinned mesh node transforms.
 void ComputeDeformMatrices(
     const Armature &data,
-    std::span<const Transform> pose_deltas, std::span<const Transform> user_offsets, std::span<const mat4> inverse_bind_matrices, std::span<mat4> out_deform_matrices
+    std::span<const mat4> bone_pose_world, std::span<const mat4> inverse_bind_matrices, std::span<mat4> out_deform_matrices
 ) {
     if (!data.ImportedSkin || data.Bones.empty()) return;
 
-    // Compute posed world transforms in parent-before-child order (bones are already sorted this way)
-    std::vector<mat4> pose_world(data.Bones.size());
-    for (uint32_t i = 0; i < data.Bones.size(); ++i) {
-        const auto combined = ComposeWithDelta(pose_deltas[i], user_offsets[i]);
-        const auto local = ToMatrix(ComposeWithDelta(data.Bones[i].RestLocal, combined));
-        const auto parent = data.Bones[i].ParentIndex;
-        pose_world[i] = (parent == InvalidBoneIndex) ? local : pose_world[parent] * local;
-    }
-
-    // For each joint in the skin's ordering, compute the deform matrix using the precomputed index mapping.
     for (uint32_t j = 0; j < data.JointOrderToBoneIndex.size() && j < out_deform_matrices.size(); ++j) {
         const auto bone_index = data.JointOrderToBoneIndex[j];
-        if (bone_index == InvalidBoneIndex || bone_index >= pose_world.size()) {
+        if (bone_index == InvalidBoneIndex || bone_index >= bone_pose_world.size()) {
             out_deform_matrices[j] = I4;
             continue;
         }
         const auto &ibm = (j < inverse_bind_matrices.size()) ? inverse_bind_matrices[j] : I4;
-        out_deform_matrices[j] = pose_world[bone_index] * ibm;
+        out_deform_matrices[j] = bone_pose_world[bone_index] * ibm;
     }
+}
+
+Transform ApplyBoneConstraint(
+    const BoneConstraint &c, const Transform &pre_local,
+    const mat4 &parent_pose_world, const mat4 &armature_world_inv, const mat4 &target_world
+) {
+    const mat4 effective_target = std::visit(
+        [&]<typename T>(const T &d) -> mat4 {
+            if constexpr (std::is_same_v<T, ChildOfData>) return target_world * d.InverseMatrix;
+            else return target_world;
+        },
+        c.Data
+    );
+    const mat4 constrained_local = glm::inverse(parent_pose_world) * (armature_world_inv * effective_target);
+    const Transform tl{vec3(constrained_local[3]), glm::normalize(glm::quat_cast(mat3(constrained_local))), pre_local.S};
+    if (c.Influence >= 1.f) return tl;
+    return {glm::mix(pre_local.P, tl.P, c.Influence), glm::slerp(pre_local.R, tl.R, c.Influence), pre_local.S};
 }
 
 float ComputeBoneDisplayScale(const Armature &armature, uint32_t bone_index) {
@@ -379,6 +386,7 @@ void RebuildArmatureStructure(entt::registry &r, entt::entity arm_data_entity) {
     if (auto *ps = r.try_get<ArmaturePoseState>(arm_data_entity)) {
         ps->BonePoseDelta.assign(armature.Bones.size(), identity);
         ps->BoneUserOffset.assign(armature.Bones.size(), identity);
+        ps->BonePoseWorld.assign(armature.Bones.size(), I4);
     }
     if (auto *anim = r.try_get<ArmatureAnimation>(arm_data_entity)) {
         for (auto &clip : anim->Clips) armature.ResolveAnimationIndices(clip);

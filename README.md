@@ -49,9 +49,8 @@ Noteworthy dev bits:
 
 This project supports generating an efficient physical audio model for any mesh using Linear Modal Analysis/Synthesis
 
-The physical audio modeling components were implemented as a final project for PHYS-6260 - Computational Physics at Georgia Tech during my Master's, and this is the final report. [Here is the final report paper](paper/PAMofPassiveRigidBodies.pdf).
-
-And here is a 36X48 poster:
+The physical audio modeling was originally implemented as a final project for PHYS-6260 - Computational Physics at Georgia Tech during my Master's.
+It's gotten a lot of work since then, but the details laid out in [the final report](paper/PAMofPassiveRigidBodies.pdf) are still the same, as well as this 36X48 poster:
 
 ![](paper/ProjectPoster36X48.png)
 

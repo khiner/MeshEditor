@@ -919,8 +919,11 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
             auto &pose_state = R.get<ArmaturePoseState>(arm_data_entity);
             const auto &armature = R.get<const Armature>(arm_data_entity);
             pose_state.GpuDeformRange = Buffers->ArmatureDeformBuffer.Allocate(armature.ImportedSkin->OrderedJointNodeIndices.size());
+            for (uint32_t i = 0; i < armature.Bones.size() && i < pose_state.BonePoseWorld.size(); ++i) {
+                pose_state.BonePoseWorld[i] = armature.Bones[i].RestWorld;
+            }
             ComputeDeformMatrices(
-                armature, pose_state.BonePoseDelta, pose_state.BoneUserOffset,
+                armature, pose_state.BonePoseWorld,
                 armature.ImportedSkin->InverseBindMatrices,
                 Buffers->ArmatureDeformBuffer.GetMutable(pose_state.GpuDeformRange)
             );
@@ -1534,8 +1537,13 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
                 auto &armature = R.get<Armature>(arm_obj_comp.Entity);
                 if (!armature.ImportedSkin) continue;
 
-                // Skip armatures with no dirty bones unless a global refresh is needed.
-                if (!bones_need_refresh) {
+                // Constraints can depend on external targets (e.g. physics bodies), so we can't early-out on bone-dirty alone.
+                const bool has_any_constraint = std::any_of(
+                    arm_obj_comp.BoneEntities.begin(), arm_obj_comp.BoneEntities.end(),
+                    [&](auto e) { return R.all_of<BoneConstraints>(e); }
+                );
+
+                if (!bones_need_refresh && !has_any_constraint) {
                     bool has_dirty = false;
                     for (const auto b : arm_obj_comp.BoneEntities) {
                         if (local_changes.contains(b) || transform_end.contains(b)) {
@@ -1546,19 +1554,25 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
                     if (!has_dirty) continue;
                 }
 
-                bool need_sync{false}, rest_pose_edited{false};
+                const mat4 armature_world_inv = has_any_constraint ? glm::inverse(ToMatrix(R.get<const WorldTransform>(arm_obj_entity))) : I4;
+
+                bool need_sync = has_any_constraint;
+                bool rest_pose_edited = false;
                 for (uint32_t i = 0; i < arm_obj_comp.BoneEntities.size(); ++i) {
                     const auto b = arm_obj_comp.BoneEntities[i];
                     if (i >= pose_state->BonePoseDelta.size()) continue;
                     const auto &rest = armature.Bones[i].RestLocal;
+                    const auto &bt = R.get<const Transform>(b);
+                    Transform local{bt.P, bt.R, rest.S}; // Default; branches that recompute overwrite it.
+                    bool should_patch = false;
                     if (is_edit_mode) {
                         if (mode_changed) {
                             // Entering Edit mode: snap to rest pose.
-                            R.patch<Transform>(b, [&](auto &t) { t.P = rest.P; t.R = rest.R; });
+                            local = {rest.P, rest.R, rest.S};
+                            should_patch = true;
                             need_sync = true;
                         } else if (transform_end.contains(b) || (local_changes.contains(b) && !R.all_of<StartTransform>(b))) {
                             // Commit Edit mode transform (gizmo drag end or UI slider edit).
-                            const auto &bt = R.get<const Transform>(b);
                             armature.Bones[i].RestLocal.P = bt.P;
                             armature.Bones[i].RestLocal.R = bt.R;
                             rest_pose_edited = true;
@@ -1575,32 +1589,50 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
                                 .S = st->T.S / pd.S,
                             }
                         );
-                        const auto &bt = R.get<const Transform>(b);
                         const Transform gizmo_local{bt.P, bt.R, rest.S};
                         pose_state->BoneUserOffset[i] = AbsoluteToDelta(grab_delta, AbsoluteToDelta(rest, gizmo_local));
-                        const auto local = ComposeWithDelta(rest, ComposeWithDelta(pose_state->BonePoseDelta[i], pose_state->BoneUserOffset[i]));
-                        R.patch<Transform>(b, [&](auto &t) { t.P = local.P; t.R = local.R; });
+                        local = ComposeWithDelta(rest, ComposeWithDelta(pose_state->BonePoseDelta[i], pose_state->BoneUserOffset[i]));
+                        should_patch = true;
                         need_sync = true;
                     } else if (transform_end.contains(b)) {
                         // Commit drag: bake current P/R into delta, clear offset.
-                        const auto &cbt = R.get<const Transform>(b);
-                        pose_state->BonePoseDelta[i] = AbsoluteToDelta(rest, {cbt.P, cbt.R, rest.S});
+                        pose_state->BonePoseDelta[i] = AbsoluteToDelta(rest, {bt.P, bt.R, rest.S});
                         pose_state->BoneUserOffset[i] = {};
                         need_sync = true;
                     } else if (bones_need_refresh) {
                         // Animation advanced or leaving Edit mode: recompute entity P/R from deltas.
-                        const auto local = ComposeWithDelta(rest, ComposeWithDelta(pose_state->BonePoseDelta[i], pose_state->BoneUserOffset[i]));
-                        R.patch<Transform>(b, [&](auto &t) { t.P = local.P; t.R = local.R; });
+                        local = ComposeWithDelta(rest, ComposeWithDelta(pose_state->BonePoseDelta[i], pose_state->BoneUserOffset[i]));
+                        should_patch = true;
                         need_sync = true;
                     } else if (local_changes.contains(b)) {
                         // Manual transform: bake if position actually changed.
                         const auto expected = ComposeWithDelta(rest, ComposeWithDelta(pose_state->BonePoseDelta[i], pose_state->BoneUserOffset[i]));
-                        const auto &bt = R.get<const Transform>(b);
-                        if (bt.P == expected.P && bt.R == expected.R) continue;
-                        pose_state->BonePoseDelta[i] = AbsoluteToDelta(rest, {bt.P, bt.R, rest.S});
-                        pose_state->BoneUserOffset[i] = {};
-                        need_sync = true;
+                        if (bt.P != expected.P || bt.R != expected.R) {
+                            pose_state->BonePoseDelta[i] = AbsoluteToDelta(rest, {bt.P, bt.R, rest.S});
+                            pose_state->BoneUserOffset[i] = {};
+                            need_sync = true;
+                        }
                     }
+
+                    const uint32_t parent_idx = armature.Bones[i].ParentIndex;
+                    const mat4 parent_pose_world = (parent_idx == InvalidBoneIndex) ? I4 : pose_state->BonePoseWorld[parent_idx];
+
+                    // Apply bone constraints. Skipped in edit mode (rest-pose edits bypass pose constraints).
+                    if (!is_edit_mode) {
+                        if (const auto *cs = R.try_get<const BoneConstraints>(b); cs && !cs->Stack.empty()) {
+                            const auto before = local;
+                            for (const auto &c : cs->Stack) {
+                                if (c.TargetEntity == null_entity || !R.valid(c.TargetEntity)) continue;
+                                const auto *twt = R.try_get<const WorldTransform>(c.TargetEntity);
+                                if (!twt) continue;
+                                local = ApplyBoneConstraint(c, local, parent_pose_world, armature_world_inv, ToMatrix(*twt));
+                            }
+                            if (local.P != before.P || local.R != before.R) should_patch = true;
+                        }
+                    }
+
+                    if (should_patch) R.patch<Transform>(b, [&](auto &t) { t.P = local.P; t.R = local.R; });
+                    pose_state->BonePoseWorld[i] = parent_pose_world * RestLocalToMatrix(local);
                 }
                 if (rest_pose_edited) {
                     // Recompute RestWorld in topological order, preserving world positions of untransformed bones.
@@ -1626,7 +1658,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
                 if (need_sync) {
                     if (!is_edit_mode) {
                         ComputeDeformMatrices(
-                            armature, pose_state->BonePoseDelta, pose_state->BoneUserOffset,
+                            armature, pose_state->BonePoseWorld,
                             armature.ImportedSkin->InverseBindMatrices,
                             Buffers->ArmatureDeformBuffer.GetMutable(pose_state->GpuDeformRange)
                         );

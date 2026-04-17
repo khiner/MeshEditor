@@ -13,6 +13,7 @@
 #include "Jolt/Physics/Collision/Shape/ConvexHullShape.h"
 #include "Jolt/Physics/Collision/Shape/CylinderShape.h"
 #include "Jolt/Physics/Collision/Shape/DecoratedShape.h"
+#include "Jolt/Physics/Collision/Shape/EmptyShape.h"
 #include "Jolt/Physics/Collision/Shape/MeshShape.h"
 #include "Jolt/Physics/Collision/Shape/OffsetCenterOfMassShape.h"
 #include "Jolt/Physics/Collision/Shape/PlaneShape.h"
@@ -38,6 +39,7 @@ JPH_SUPPRESS_WARNINGS
 
 #include <algorithm>
 #include <functional>
+#include <numbers>
 #include <thread>
 #include <unordered_map>
 
@@ -470,12 +472,16 @@ void ConfigureJointSettings(SixDOFConstraintSettings &settings, const PhysicsJoi
         }
     }
 
-    // Apply drives as motor settings
+    // Apply drives as motor settings.
     for (const auto &drive : def.Drives) {
         const int axis_index = (drive.Type == PhysicsDriveType::Linear ? 0 : 3) + drive.Axis;
         const auto axis = static_cast<SixDOFConstraintSettings::EAxis>(axis_index);
         auto &motor = settings.mMotorSettings[axis_index];
-        if (drive.Stiffness > 0.0f || drive.Damping > 0.0f) {
+        if (drive.Mode == PhysicsDriveMode::Acceleration && drive.Stiffness > 0.0f) {
+            const float frequency = std::sqrt(drive.Stiffness) / (2.0f * std::numbers::pi_v<float>);
+            const float damping_ratio = drive.Damping / (2.0f * std::sqrt(drive.Stiffness));
+            motor.mSpringSettings = SpringSettings(ESpringMode::FrequencyAndDamping, frequency, damping_ratio);
+        } else if (drive.Stiffness > 0.0f || drive.Damping > 0.0f) {
             motor.mSpringSettings = SpringSettings(ESpringMode::StiffnessAndDamping, drive.Stiffness, drive.Damping);
         }
         if (drive.Type == PhysicsDriveType::Linear) motor.SetForceLimit(drive.MaxForce);
@@ -800,6 +806,12 @@ BodyShape BuildBodyShape(const entt::registry &r, entt::entity entity, const KHR
         std::vector<entt::entity> colliders;
         if (collider) colliders.emplace_back(entity);
         GatherCompoundChildren(r, entity, colliders);
+        if (colliders.empty() && !trigger) {
+            // KHR_physics_rigid_bodies: `motion` alone defines a rigid body even without a collider.
+            // Use EmptyShape so Jolt can still create the body - it collides with nothing.
+            out.Shape = new EmptyShape();
+            return out;
+        }
         if (!colliders.empty()) {
             if (colliders.size() == 1 && colliders[0] == entity) {
                 out.SingleMaterial = r.try_get<const ColliderMaterial>(entity);
@@ -1213,7 +1225,6 @@ void PhysicsWorld::Step(entt::registry &r, float dt) {
     for (auto [entity, velocity, handle] : r.view<PhysicsVelocity, const PhysicsBodyHandle>().each()) {
         const BodyID id{handle.BodyId};
         if (!bi.IsActive(id)) continue;
-
         r.patch<Transform>(entity, [&](Transform &t) {
             t.P = FromJoltRVec3(bi.GetPosition(id));
             t.R = FromJoltQuat(bi.GetRotation(id));
