@@ -3232,6 +3232,7 @@ void Scene::RecordRenderCommandBuffer(bool silhouette_only) {
             patch_edit_pending_local_transform(db, e.Entity);
         }
 
+        draw.ExtrasLine = {};
         if (show_overlays && settings.ShowExtras) {
             AppendExtrasDraw(R, Buffers->Instances, draw_list, draw.ExtrasLine, [](auto &, const auto &) {});
         }
@@ -3319,9 +3320,11 @@ void Scene::RecordRenderCommandBuffer(bool silhouette_only) {
             }
 
             DrawBatchInfo sel_extras;
-            AppendExtrasDraw(R, Buffers->Instances, sel_list, sel_extras, [](auto &dd, const auto &instances) {
-                dd.ObjectIdSlot = instances.ObjectIdBuffer.Slot;
-            });
+            if (show_overlays && settings.ShowExtras) {
+                AppendExtrasDraw(R, Buffers->Instances, sel_list, sel_extras, [](auto &dd, const auto &instances) {
+                    dd.ObjectIdSlot = instances.ObjectIdBuffer.Slot;
+                });
+            }
 
             draw.SelectionDraws = {
                 {SPT::SelectionFragmentTriangles, sel_tri},
