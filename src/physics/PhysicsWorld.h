@@ -35,6 +35,7 @@ struct PhysicsWorld {
     // for bodies/constraints referencing the entity; destroy path clears dangling refs on
     // dependent components (which fires downstream per-entity handlers).
     void OnPhysicsMaterialDefChange(entt::registry &, entt::entity);
+    void OnCollisionSystemDefChange(entt::registry &, entt::entity);
     void OnCollisionFilterDefChange(entt::registry &, entt::entity);
     void OnPhysicsJointDefChange(entt::registry &, entt::entity);
 
@@ -57,6 +58,10 @@ struct PhysicsWorld {
     // Query effective collision between two filter entities (for UI visualization).
     // null filter = permissive (collides with all).
     bool DoFiltersCollide(entt::entity a, entt::entity b) const;
+
+    // Directional single-side test: does `source`'s membership intersect `target`'s collide-mask?
+    // Effective collision requires this in both directions. Use for UI asymmetry visualization.
+    bool DoesFilterAllow(entt::entity source, entt::entity target) const;
 
 private:
     struct Impl;

@@ -1299,7 +1299,7 @@ std::expected<Scene, std::string> LoadScene(const std::filesystem::path &path) {
             });
         }
         for (const auto &src : asset.collisionFilters) {
-            CollisionFilter filter;
+            CollisionFilterData filter;
             for (const auto &s : src.collisionSystems) filter.CollisionSystems.emplace_back(s);
             for (const auto &s : src.collideWithSystems) filter.CollideWithSystems.emplace_back(s);
             for (const auto &s : src.notCollideWithSystems) filter.NotCollideWithSystems.emplace_back(s);

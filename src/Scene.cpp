@@ -301,7 +301,7 @@ struct ViewportTheme {}; struct Materials {}; struct PbrSpecialization {};
 struct SceneView {}; struct CameraLens {}; struct TransformPending {};
 struct TransformEnd {}; struct WorldTransform {}; struct TransformDirty {};
 struct PhysicsMotion {}; struct PhysicsShape {}; struct PhysicsMaterial {}; struct PhysicsTrigger {}; struct PhysicsJoint {};
-struct PhysicsMaterialDef {}; struct CollisionFilterDef {}; struct PhysicsJointDef {};
+struct PhysicsMaterialDef {}; struct CollisionSystemDef {}; struct CollisionFilterDef {}; struct PhysicsJointDef {};
 } // namespace changes
 // clang-format on
 
@@ -560,6 +560,7 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
     track<changes::PhysicsTrigger>(R).on<PhysicsTrigger>(On::Create | On::Update | On::Destroy);
     track<changes::PhysicsJoint>(R).on<PhysicsJoint>(On::Create | On::Update | On::Destroy);
     track<changes::PhysicsMaterialDef>(R).on<PhysicsMaterial>(On::Create | On::Update | On::Destroy);
+    track<changes::CollisionSystemDef>(R).on<CollisionSystem>(On::Create | On::Update | On::Destroy);
     track<changes::CollisionFilterDef>(R).on<CollisionFilter>(On::Create | On::Update | On::Destroy);
     track<changes::PhysicsJointDef>(R).on<::PhysicsJointDef>(On::Create | On::Update | On::Destroy);
 
@@ -573,6 +574,7 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
         const bool joint_events = !reactive<changes::PhysicsJoint>(r).empty();
         // Resource def handlers run first so dangling-ref patches fire before per-entity handlers this tick.
         for (auto e : reactive<changes::PhysicsMaterialDef>(r)) physics->OnPhysicsMaterialDefChange(r, e);
+        for (auto e : reactive<changes::CollisionSystemDef>(r)) physics->OnCollisionSystemDefChange(r, e);
         for (auto e : reactive<changes::CollisionFilterDef>(r)) physics->OnCollisionFilterDefChange(r, e);
         for (auto e : reactive<changes::PhysicsJointDef>(r)) physics->OnPhysicsJointDefChange(r, e);
         for (auto e : reactive<changes::PhysicsShape>(r)) physics->OnShapeChange(r, e);

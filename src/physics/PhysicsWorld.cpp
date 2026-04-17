@@ -117,25 +117,29 @@ public:
     KHRCollisionFilter() = default;
 
     void Update(const entt::registry &r) {
-        // Assign a bit index to each unique system name seen across all filter entities.
-        std::unordered_map<std::string, uint32_t> bit_index;
-        auto get_bit = [&](const std::string &name) -> uint32_t {
-            auto [it, inserted] = bit_index.try_emplace(name, bit_index.size());
-            return 1u << it->second;
-        };
-        auto names_to_mask = [&](const std::vector<std::string> &names) {
+        // Assign a bit index to each CollisionSystem entity by iteration order.
+        std::unordered_map<entt::entity, uint32_t> bit_index;
+        {
+            uint32_t i = 0;
+            for (auto e : r.view<const CollisionSystem>()) bit_index.emplace(e, i++);
+        }
+        auto systems_to_mask = [&](const std::vector<entt::entity> &systems) {
             uint32_t m = 0;
-            for (auto &n : names) m |= get_bit(n);
+            for (auto e : systems) {
+                if (auto it = bit_index.find(e); it != bit_index.end()) m |= 1u << it->second;
+            }
             return m;
         };
 
         Masks.clear();
         for (auto [e, f] : r.view<const CollisionFilter>().each()) {
             CollisionMask mask;
-            mask.Membership = names_to_mask(f.CollisionSystems);
-            if (!f.CollideWithSystems.empty()) mask.Collide = names_to_mask(f.CollideWithSystems);
-            else if (!f.NotCollideWithSystems.empty()) mask.Collide = ~names_to_mask(f.NotCollideWithSystems);
-            else mask.Collide = ~0u;
+            mask.Membership = systems_to_mask(f.Systems);
+            switch (f.Mode) {
+                case CollideMode::Allowlist: mask.Collide = systems_to_mask(f.CollideSystems); break;
+                case CollideMode::Blocklist: mask.Collide = ~systems_to_mask(f.CollideSystems); break;
+                case CollideMode::All: mask.Collide = ~0u; break;
+            }
             Masks.emplace(static_cast<uint32_t>(e), mask);
         }
     }
@@ -181,6 +185,13 @@ public:
         const auto ib = Masks.find(static_cast<uint32_t>(b));
         if (ia == Masks.end() || ib == Masks.end()) return true; // missing/null filter = permissive
         return (ia->second.Membership & ib->second.Collide) != 0 && (ib->second.Membership & ia->second.Collide) != 0;
+    }
+
+    bool DirectionalAllows(entt::entity source, entt::entity target) const {
+        const auto is = Masks.find(static_cast<uint32_t>(source));
+        const auto it = Masks.find(static_cast<uint32_t>(target));
+        if (is == Masks.end() || it == Masks.end()) return true;
+        return (is->second.Membership & it->second.Collide) != 0;
     }
 };
 
@@ -525,6 +536,10 @@ uint32_t PhysicsWorld::BodyCount() const { return P->System.GetNumBodies(); }
 
 bool PhysicsWorld::DoFiltersCollide(entt::entity a, entt::entity b) const {
     return !P->FilterRef || P->FilterRef->MasksCollide(a, b);
+}
+
+bool PhysicsWorld::DoesFilterAllow(entt::entity source, entt::entity target) const {
+    return !P->FilterRef || P->FilterRef->DirectionalAllows(source, target);
 }
 
 void PhysicsWorld::Rebuild(entt::registry &r) {
@@ -1099,6 +1114,18 @@ void ClearDanglingRefs(entt::registry &r, entt::entity deleted) {
         if (c.*Field == deleted) r.patch<C>(e, [](C &x) { x.*Field = null_entity; });
     }
 }
+
+// std::vector<entt::entity> variant: erases `deleted` from every component's field.
+template<auto Field>
+void ClearDanglingRefsFromVector(entt::registry &r, entt::entity deleted) {
+    using C = typename ptr_class<decltype(Field)>::type;
+    for (auto [e, c] : r.view<C>().each()) {
+        const auto &vec = c.*Field;
+        if (std::find(vec.begin(), vec.end(), deleted) != vec.end()) {
+            r.patch<C>(e, [deleted](C &x) { std::erase(x.*Field, deleted); });
+        }
+    }
+}
 } // namespace
 
 void PhysicsWorld::OnPhysicsMaterialDefChange(entt::registry &r, entt::entity e) {
@@ -1122,6 +1149,18 @@ void PhysicsWorld::OnPhysicsMaterialDefChange(entt::registry &r, entt::entity e)
             ApplyShape(r, owner);
         }
     }
+}
+
+void PhysicsWorld::OnCollisionSystemDefChange(entt::registry &r, entt::entity e) {
+    // On destroy: erase this system from every filter's Systems / CollideSystems.
+    // The CollisionFilter patches fire downstream OnCollisionFilterDefChange, which rebuilds masks.
+    // On create/update: nothing per-entity to patch — bit positions are derived from registry iteration.
+    if (!r.valid(e) || !r.all_of<CollisionSystem>(e)) {
+        ClearDanglingRefsFromVector<&CollisionFilter::Systems>(r, e);
+        ClearDanglingRefsFromVector<&CollisionFilter::CollideSystems>(r, e);
+    }
+    // Rebuild the mask table: create/destroy can shift bit positions for all filters.
+    P->FilterRef->Update(r);
 }
 
 void PhysicsWorld::OnCollisionFilterDefChange(entt::registry &r, entt::entity e) {

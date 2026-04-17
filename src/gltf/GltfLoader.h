@@ -166,6 +166,14 @@ struct AnimationClip {
     std::vector<AnimationChannel> Channels;
 };
 
+// Loader-side representation of a collision filter; system names are raw strings
+// (no entities exist at load time). SceneGltf.cpp converts these to CollisionSystem
+// entities and CollisionFilter{CollideMode, entity refs} during import.
+struct CollisionFilterData {
+    std::vector<std::string> CollisionSystems{}, CollideWithSystems{}, NotCollideWithSystems{};
+    std::string Name{};
+};
+
 struct Scene {
     std::vector<MeshData> Meshes;
     std::vector<NamedMaterial> Materials;
@@ -182,7 +190,7 @@ struct Scene {
 
     // KHR_physics_rigid_bodies document-level resources.
     std::vector<PhysicsMaterial> PhysicsMaterials;
-    std::vector<CollisionFilter> CollisionFilters;
+    std::vector<CollisionFilterData> CollisionFilters;
     std::vector<PhysicsJointDef> PhysicsJointDefs;
 };
 

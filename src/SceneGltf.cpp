@@ -365,10 +365,38 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
             R.emplace<PhysicsMaterial>(e, std::move(m));
             material_entities.push_back(e);
         }
+        // Dedupe system names across all filters into CollisionSystem entities.
+        std::unordered_map<std::string, entt::entity> system_entity_by_name;
+        const auto get_or_create_system = [&](const std::string &name) {
+            auto [it, inserted] = system_entity_by_name.try_emplace(name, entt::null);
+            if (inserted) {
+                it->second = R.create();
+                R.emplace<CollisionSystem>(it->second, CollisionSystem{.Name = name});
+            }
+            return it->second;
+        };
+        const auto resolve_systems = [&](const std::vector<std::string> &names) {
+            std::vector<entt::entity> out;
+            out.reserve(names.size());
+            for (const auto &n : names) out.emplace_back(get_or_create_system(n));
+            return out;
+        };
+
         filter_entities.reserve(scene->CollisionFilters.size());
         for (auto &f : scene->CollisionFilters) {
+            CollisionFilter filter;
+            filter.Name = std::move(f.Name);
+            filter.Systems = resolve_systems(f.CollisionSystems);
+            // KHR schema forbids both collideWith and notCollideWith. Prefer allowlist if both appear.
+            if (!f.CollideWithSystems.empty()) {
+                filter.Mode = CollideMode::Allowlist;
+                filter.CollideSystems = resolve_systems(f.CollideWithSystems);
+            } else if (!f.NotCollideWithSystems.empty()) {
+                filter.Mode = CollideMode::Blocklist;
+                filter.CollideSystems = resolve_systems(f.NotCollideWithSystems);
+            }
             const auto e = R.create();
-            R.emplace<CollisionFilter>(e, std::move(f));
+            R.emplace<CollisionFilter>(e, std::move(filter));
             filter_entities.push_back(e);
         }
         jointdef_entities.reserve(scene->PhysicsJointDefs.size());

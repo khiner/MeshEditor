@@ -25,8 +25,25 @@ struct PhysicsMaterial {
     std::string Name{};
 };
 
+// Named collision system. Document-level resource; each entity gets a bit position
+// (assigned by iteration order over view<CollisionSystem>) in the Jolt collision mask.
+struct CollisionSystem {
+    std::string Name{};
+};
+
+enum class CollideMode : uint8_t { All,
+                                   Allowlist,
+                                   Blocklist };
+
+// KHR_physics_rigid_bodies-aligned collision filter.
+// Mode == All: no filtering beyond membership (CollideSystems ignored at rebuild, but preserved across mode toggles).
+// Mode == Allowlist: collides only with bodies whose membership intersects CollideSystems.
+// Mode == Blocklist: blocks collisions with bodies whose membership intersects CollideSystems.
+// Type enforces the KHR schema's mutual-exclusion of collideWithSystems / notCollideWithSystems.
 struct CollisionFilter {
-    std::vector<std::string> CollisionSystems{}, CollideWithSystems{}, NotCollideWithSystems{};
+    std::vector<entt::entity> Systems{};
+    CollideMode Mode{CollideMode::All};
+    std::vector<entt::entity> CollideSystems{};
     std::string Name{};
 };
 
