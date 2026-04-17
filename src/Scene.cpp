@@ -3200,6 +3200,10 @@ void Scene::RecordRenderCommandBuffer(bool silhouette_only) {
         for (const auto [e, arm_obj] : R.view<const ArmatureObject>().each()) {
             if (arm_obj.JointEntity != entt::null) joint_to_owner[arm_obj.JointEntity] = e;
         }
+        draw.BoneFill = {};
+        draw.BoneWire = {};
+        draw.BoneSphereFill = {};
+        draw.BoneSphereWire = {};
         if (show_overlays && settings.ShowBones) {
             draw.BoneFill = draw_list.BeginBatch();
             for (const auto [entity, arm_obj, mesh_buffers, models] : R.view<const ArmatureObject, const MeshBuffers, const ModelsBuffer>().each()) {
@@ -3343,12 +3347,15 @@ void Scene::RecordRenderCommandBuffer(bool silhouette_only) {
                 PatchMorphWeights(sel_list, db, e.Deform);
             }
 
-            auto sel_bone_sphere = sel_list.BeginBatch();
-            for (const auto [entity, mesh_buffers, models] : R.view<const BoneJoint, const MeshBuffers, const ModelsBuffer>().each()) {
-                if (mesh_buffers.FaceIndices.Count == 0) continue;
-                auto dd = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.FaceIndices, Buffers->Instances);
-                dd.ObjectIdSlot = Buffers->Instances.ObjectIdBuffer.Slot;
-                AppendDraw(sel_list, sel_bone_sphere, mesh_buffers.FaceIndices, models, dd);
+            DrawBatchInfo sel_bone_sphere;
+            if (show_overlays && settings.ShowBones) {
+                sel_bone_sphere = sel_list.BeginBatch();
+                for (const auto [entity, mesh_buffers, models] : R.view<const BoneJoint, const MeshBuffers, const ModelsBuffer>().each()) {
+                    if (mesh_buffers.FaceIndices.Count == 0) continue;
+                    auto dd = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.FaceIndices, Buffers->Instances);
+                    dd.ObjectIdSlot = Buffers->Instances.ObjectIdBuffer.Slot;
+                    AppendDraw(sel_list, sel_bone_sphere, mesh_buffers.FaceIndices, models, dd);
+                }
             }
 
             DrawBatchInfo sel_extras;
