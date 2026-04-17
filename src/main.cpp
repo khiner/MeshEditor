@@ -385,6 +385,7 @@ void run(const char *initial_file, bool quiet) {
             .RenderPass = wd.RenderPass,
             .Subpass = 0,
             .MSAASamples = VK_SAMPLE_COUNT_1_BIT,
+            .ExtraDynamicStates = {},
             .PipelineRenderingCreateInfo = {},
             .SwapChainImageUsage = {},
         },
