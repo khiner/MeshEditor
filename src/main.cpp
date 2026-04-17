@@ -306,7 +306,7 @@ std::expected<void, std::string> LoadFile(Scene &scene, const fs::path &path) {
     return {};
 }
 
-void run(const char *initial_file, bool quiet) {
+void run(const char *initial_file, bool quiet, bool play) {
     Timer::Enabled = !quiet;
 
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) {
@@ -624,6 +624,8 @@ void run(const char *initial_file, bool quiet) {
                 if (initial_file) {
                     if (auto result = LoadFile(*scene, fs::path(initial_file)); !result) {
                         std::cerr << result.error() << std::endl;
+                    } else if (play) {
+                        scene->ApplyTimelineAction(timeline_action::TogglePlay{});
                     }
                 } else {
                     constexpr PrimitiveShape default_shape{primitive::Cuboid{}};
@@ -688,7 +690,8 @@ int main(int argc, char **argv) {
 #else
         any_of(args, [](const char *a) { return std::string_view{a} == "--quiet" || std::string_view{a} == "-q"; });
 #endif
+    const bool play = any_of(args, [](const char *a) { return std::string_view{a} == "--play"; });
 
-    run(initial_file, quiet);
+    run(initial_file, quiet, play);
     return 0;
 }
