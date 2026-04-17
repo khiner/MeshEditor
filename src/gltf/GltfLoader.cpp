@@ -1420,7 +1420,7 @@ std::expected<Scene, std::string> LoadScene(const std::filesystem::path &path) {
             }
             if (rb->collider) {
                 node.Collider = ColliderShape{ToPhysicsShape(rb->collider->geometry)};
-                ColliderMaterial material;
+                Node::MaterialRefs material;
                 material.PhysicsMaterialIndex = ToIndex(rb->collider->physicsMaterial, asset.physicsMaterials.size());
                 material.CollisionFilterIndex = ToIndex(rb->collider->collisionFilter, asset.collisionFilters.size());
                 if (material.PhysicsMaterialIndex || material.CollisionFilterIndex) node.Material = material;

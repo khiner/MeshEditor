@@ -354,11 +354,36 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
     scene_nodes_by_index.reserve(scene->Nodes.size());
     for (const auto &node : scene->Nodes) scene_nodes_by_index.emplace(node.NodeIndex, &node);
 
-    // KHR_physics_rigid_bodies: populate PhysicsWorld resources and emplace per-entity components.
+    // KHR_physics_rigid_bodies: create resource entities and emplace per-entity components.
     {
-        Physics->Materials = std::move(scene->PhysicsMaterials);
-        Physics->Filters = std::move(scene->CollisionFilters);
-        Physics->JointDefs = std::move(scene->PhysicsJointDefs);
+        // Promote loader's index-keyed resource arrays to registry entities.
+        // Local index→entity vectors (function-scoped) resolve per-node references below.
+        std::vector<entt::entity> material_entities, filter_entities, jointdef_entities;
+        material_entities.reserve(scene->PhysicsMaterials.size());
+        for (auto &m : scene->PhysicsMaterials) {
+            const auto e = R.create();
+            R.emplace<PhysicsMaterial>(e, std::move(m));
+            material_entities.push_back(e);
+        }
+        filter_entities.reserve(scene->CollisionFilters.size());
+        for (auto &f : scene->CollisionFilters) {
+            const auto e = R.create();
+            R.emplace<CollisionFilter>(e, std::move(f));
+            filter_entities.push_back(e);
+        }
+        jointdef_entities.reserve(scene->PhysicsJointDefs.size());
+        for (auto &jd : scene->PhysicsJointDefs) {
+            const auto e = R.create();
+            R.emplace<PhysicsJointDef>(e, std::move(jd));
+            jointdef_entities.push_back(e);
+        }
+
+        auto resolve_mat = [&](std::optional<uint32_t> idx) {
+            return idx && *idx < material_entities.size() ? material_entities[*idx] : null_entity;
+        };
+        auto resolve_filter = [&](std::optional<uint32_t> idx) {
+            return idx && *idx < filter_entities.size() ? filter_entities[*idx] : null_entity;
+        };
 
         bool has_any_physics = false;
         for (const auto &node : scene->Nodes) {
@@ -368,21 +393,25 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
 
             if (node.Collider) {
                 auto collider = *node.Collider;
-                // Resolve mesh-based shape: geometry.mesh → mesh entity
                 if (collider.Shape.Type == PhysicsShapeType::ConvexHull || collider.Shape.Type == PhysicsShapeType::TriangleMesh) {
                     if (node.ColliderGeometryMeshIndex && *node.ColliderGeometryMeshIndex < mesh_entities.size()) {
                         collider.Shape.MeshEntity = mesh_entities[*node.ColliderGeometryMeshIndex];
                     } else if (R.all_of<Instance>(entity)) {
-                        collider.Shape.MeshEntity = R.get<const Instance>(entity).Entity; // fallback to self
+                        collider.Shape.MeshEntity = R.get<const Instance>(entity).Entity;
                     }
                 }
                 R.emplace<ColliderShape>(entity, std::move(collider));
-                if (node.Material) R.replace<ColliderMaterial>(entity, *node.Material);
+                if (node.Material) {
+                    R.replace<ColliderMaterial>(entity, ColliderMaterial{
+                                                            .PhysicsMaterialEntity = resolve_mat(node.Material->PhysicsMaterialIndex),
+                                                            .CollisionFilterEntity = resolve_filter(node.Material->CollisionFilterIndex),
+                                                        });
+                }
                 has_any_physics = true;
             }
             if (node.Motion) {
                 R.emplace<PhysicsMotion>(entity, *node.Motion);
-                if (node.Velocity) R.replace<PhysicsVelocity>(entity, *node.Velocity); // PhysicsVelocity auto-emplaced by PhysicsMotion's on_construct hook.
+                if (node.Velocity) R.replace<PhysicsVelocity>(entity, *node.Velocity);
                 has_any_physics = true;
             }
             if (node.Trigger) {
@@ -395,23 +424,22 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
                 }
                 R.emplace<PhysicsTrigger>(
                     entity,
-                    PhysicsTrigger{.Shape = td.Shape, .Nodes = std::move(resolved_nodes), .CollisionFilterIndex = td.CollisionFilterIndex}
+                    PhysicsTrigger{.Shape = td.Shape, .Nodes = std::move(resolved_nodes), .CollisionFilterEntity = resolve_filter(td.CollisionFilterIndex)}
                 );
             }
             if (node.Joint) {
                 const auto &jd = *node.Joint;
                 auto nit = object_entities_by_node.find(jd.ConnectedNodeIndex);
+                const auto def_entity = jd.JointDefIndex < jointdef_entities.size() ? jointdef_entities[jd.JointDefIndex] : null_entity;
                 R.emplace<PhysicsJoint>(
                     entity,
-                    PhysicsJoint{.ConnectedNode = nit != object_entities_by_node.end() ? nit->second : entt::null, .JointDefIndex = jd.JointDefIndex, .EnableCollision = jd.EnableCollision}
+                    PhysicsJoint{.ConnectedNode = nit != object_entities_by_node.end() ? nit->second : entt::null, .JointDefEntity = def_entity, .EnableCollision = jd.EnableCollision}
                 );
             }
         }
         if (has_any_physics) {
-            // Bodies and constraints come up reactively above.
-            // Collision filter masks and scene-scale tolerances have no reactive trigger,
-            // so refresh them now from the loader-populated Filters and ColliderShape state.
-            Physics->UpdateFilterTable();
+            // Per-entity physics state comes up reactively from the emplaces above;
+            // RecomputeSceneScale has no reactive trigger, so call it once from the loaded ColliderShape set.
             Physics->RecomputeSceneScale(R);
         }
     }

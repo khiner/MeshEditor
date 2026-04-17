@@ -301,6 +301,7 @@ struct ViewportTheme {}; struct Materials {}; struct PbrSpecialization {};
 struct SceneView {}; struct CameraLens {}; struct TransformPending {};
 struct TransformEnd {}; struct WorldTransform {}; struct TransformDirty {};
 struct PhysicsMotion {}; struct PhysicsShape {}; struct PhysicsMaterial {}; struct PhysicsTrigger {}; struct PhysicsJoint {};
+struct PhysicsMaterialDef {}; struct CollisionFilterDef {}; struct PhysicsJointDef {};
 } // namespace changes
 // clang-format on
 
@@ -508,6 +509,8 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
       Textures{std::make_unique<TextureStore>()},
       Environments{std::make_unique<EnvironmentStore>()},
       Physics{std::make_unique<PhysicsWorld>()} {
+    // Wire registry into the contact listener so it can resolve PhysicsMaterial entities by body UserData.
+    Physics->BindRegistry(R);
     // Reactive storage subscriptions for deferred once-per-frame processing
     track<changes::Selected>(R).on<Selected>(On::Create | On::Destroy);
     track<changes::ActiveInstance>(R).on<Active>(On::Create | On::Destroy);
@@ -556,6 +559,9 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
     track<changes::PhysicsMaterial>(R).on<ColliderMaterial>(On::Update);
     track<changes::PhysicsTrigger>(R).on<PhysicsTrigger>(On::Create | On::Update | On::Destroy);
     track<changes::PhysicsJoint>(R).on<PhysicsJoint>(On::Create | On::Update | On::Destroy);
+    track<changes::PhysicsMaterialDef>(R).on<PhysicsMaterial>(On::Create | On::Update | On::Destroy);
+    track<changes::CollisionFilterDef>(R).on<CollisionFilter>(On::Create | On::Update | On::Destroy);
+    track<changes::PhysicsJointDef>(R).on<::PhysicsJointDef>(On::Create | On::Update | On::Destroy);
 
     R.on_construct<PhysicsMotion>().connect<&entt::registry::emplace<PhysicsVelocity>>();
     R.on_destroy<PhysicsMotion>().connect<&entt::registry::remove<PhysicsVelocity>>();
@@ -565,6 +571,10 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
     PhysicsWorld *physics = Physics.get();
     RegisterComponentEventHandler(R, [physics](entt::registry &r) {
         const bool joint_events = !reactive<changes::PhysicsJoint>(r).empty();
+        // Resource def handlers run first so dangling-ref patches fire before per-entity handlers this tick.
+        for (auto e : reactive<changes::PhysicsMaterialDef>(r)) physics->OnPhysicsMaterialDefChange(r, e);
+        for (auto e : reactive<changes::CollisionFilterDef>(r)) physics->OnCollisionFilterDefChange(r, e);
+        for (auto e : reactive<changes::PhysicsJointDef>(r)) physics->OnPhysicsJointDefChange(r, e);
         for (auto e : reactive<changes::PhysicsShape>(r)) physics->OnShapeChange(r, e);
         for (auto e : reactive<changes::PhysicsMotion>(r)) physics->OnMotionChange(r, e);
         for (auto e : reactive<changes::PhysicsMaterial>(r)) physics->OnMaterialChange(r, e);
@@ -1500,24 +1510,6 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
             }
         }
         R.clear<BoneInstanceStateDirty>();
-
-        if (const auto *del = R.try_get<PhysicsResourceDeleted>(SceneEntity)) {
-            const auto d = del->Index;
-            auto fixup = [d](std::optional<uint32_t> &idx) {
-                if (!idx.has_value()) return;
-                if (*idx == d) idx.reset();
-                else if (*idx > d) --*idx;
-            };
-            using Member = std::optional<uint32_t> ColliderMaterial::*;
-            const Member member = del->Resource == PhysicsResourceDeleted::Material ? &ColliderMaterial::PhysicsMaterialIndex : &ColliderMaterial::CollisionFilterIndex;
-            for (auto e : R.view<ColliderMaterial>()) {
-                R.patch<ColliderMaterial>(e, [&](ColliderMaterial &cm) { fixup(cm.*member); });
-            }
-            if (del->Resource != PhysicsResourceDeleted::Material) {
-                for (auto [e, t] : R.view<PhysicsTrigger>().each()) fixup(t.CollisionFilterIndex);
-            }
-            R.remove<PhysicsResourceDeleted>(SceneEntity);
-        }
 
         // Physics step: advance simulation and sync Jolt body transforms back to ECS.
         // Runs before bone/WorldTransform sync so that physics Transform patches are included.

@@ -5,9 +5,16 @@
 #include <entt/entity/fwd.hpp>
 #include <memory>
 
+// Goal: Every user edit of a physics parameter updates Jolt reactively per frame,
+// via a handler doing the minimum Jolt work the API allows.
+// (We currently over-update in some cases for simplicity.)
 struct PhysicsWorld {
     PhysicsWorld();
     ~PhysicsWorld();
+
+    // Point the contact listener at the registry so it can resolve PhysicsMaterial
+    // components by entity value from Body UserData. Call once after construction.
+    void BindRegistry(const entt::registry &);
 
     // Simulation state
     float TimeStep{1.0f / 60.0f};
@@ -23,6 +30,13 @@ struct PhysicsWorld {
     void OnMotionChange(entt::registry &, entt::entity);
     void OnMaterialChange(entt::registry &, entt::entity);
     void OnTriggerChange(entt::registry &, entt::entity);
+
+    // Document-level resource change handlers. Update path re-applies targeted Jolt state
+    // for bodies/constraints referencing the entity; destroy path clears dangling refs on
+    // dependent components (which fires downstream per-entity handlers).
+    void OnPhysicsMaterialDefChange(entt::registry &, entt::entity);
+    void OnCollisionFilterDefChange(entt::registry &, entt::entity);
+    void OnPhysicsJointDefChange(entt::registry &, entt::entity);
 
     // Rebuild all constraints from the current PhysicsJoint view.
     // No-op when neither joints_changed nor any body lifecycle ran this tick.
@@ -40,15 +54,9 @@ struct PhysicsWorld {
     void SaveSnapshot(entt::registry &);
     void RestoreSnapshot(entt::registry &);
 
-    // Query effective collision between two filter indices (for UI visualization).
-    bool DoFiltersCollide(uint32_t a, uint32_t b) const;
-
-    void UpdateFilterTable();
-
-    // Document-level resources (from glTF or UI).
-    std::vector<PhysicsMaterial> Materials;
-    std::vector<CollisionFilter> Filters;
-    std::vector<PhysicsJointDef> JointDefs;
+    // Query effective collision between two filter entities (for UI visualization).
+    // null filter = permissive (collides with all).
+    bool DoFiltersCollide(entt::entity a, entt::entity b) const;
 
 private:
     struct Impl;

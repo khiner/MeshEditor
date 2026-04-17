@@ -104,18 +104,20 @@ struct CollisionMask {
     uint32_t Membership = 0, Collide = ~0u; // default: collide with everything
 };
 
+// Filter storage is keyed by the CollisionFilter entity's raw value (uint32_t),
+// stored directly in Body/Shape UserData. UINT32_MAX (== null_entity) means "no filter".
 class KHRCollisionFilter : public GroupFilter {
-    std::vector<CollisionMask> Masks;
-    // Each body gets a unique SubGroupID via RegisterBody(). This maps SubGroupID → KHR filter index.
-    std::vector<uint32_t> BodyFilterIndices; // UINT32_MAX = no KHR filter
+    std::unordered_map<uint32_t, CollisionMask> Masks; // filter entity value → mask
+    // Each body gets a unique SubGroupID via RegisterBody(). Maps SubGroupID → filter entity value.
+    std::vector<uint32_t> BodyFilterByGroup; // UINT32_MAX = no KHR filter
     // Pairs of SubGroupIDs that should not collide (from joints with EnableCollision=false).
     std::vector<std::pair<uint32_t, uint32_t>> DisabledPairs; // sorted after FinalizeDisabledPairs()
 
 public:
-    explicit KHRCollisionFilter(const std::vector<CollisionFilter> &filters) { Update(filters); }
+    KHRCollisionFilter() = default;
 
-    void Update(const std::vector<CollisionFilter> &filters) {
-        // Assign a bit index to each unique system name.
+    void Update(const entt::registry &r) {
+        // Assign a bit index to each unique system name seen across all filter entities.
         std::unordered_map<std::string, uint32_t> bit_index;
         auto get_bit = [&](const std::string &name) -> uint32_t {
             auto [it, inserted] = bit_index.try_emplace(name, bit_index.size());
@@ -127,28 +129,30 @@ public:
             return m;
         };
 
-        Masks.resize(filters.size());
-        for (size_t i = 0; i < filters.size(); ++i) {
-            Masks[i].Membership = names_to_mask(filters[i].CollisionSystems);
-            if (!filters[i].CollideWithSystems.empty()) Masks[i].Collide = names_to_mask(filters[i].CollideWithSystems);
-            else if (!filters[i].NotCollideWithSystems.empty()) Masks[i].Collide = ~names_to_mask(filters[i].NotCollideWithSystems);
-            else Masks[i].Collide = ~0u;
+        Masks.clear();
+        for (auto [e, f] : r.view<const CollisionFilter>().each()) {
+            CollisionMask mask;
+            mask.Membership = names_to_mask(f.CollisionSystems);
+            if (!f.CollideWithSystems.empty()) mask.Collide = names_to_mask(f.CollideWithSystems);
+            else if (!f.NotCollideWithSystems.empty()) mask.Collide = ~names_to_mask(f.NotCollideWithSystems);
+            else mask.Collide = ~0u;
+            Masks.emplace(static_cast<uint32_t>(e), mask);
         }
     }
 
-    // Register a body and return its unique SubGroupID. filter_index is the KHR collision filter index.
-    uint32_t RegisterBody(std::optional<uint32_t> filter_index = {}) {
-        const uint32_t id = BodyFilterIndices.size();
-        BodyFilterIndices.emplace_back(filter_index.value_or(UINT32_MAX));
+    // Register a body and return its unique SubGroupID. filter is the KHR collision filter entity.
+    uint32_t RegisterBody(entt::entity filter = null_entity) {
+        const uint32_t id = BodyFilterByGroup.size();
+        BodyFilterByGroup.emplace_back(static_cast<uint32_t>(filter));
         return id;
     }
 
-    void SetBodyFilter(uint32_t sub_group_id, std::optional<uint32_t> filter_index) {
-        if (sub_group_id < BodyFilterIndices.size()) BodyFilterIndices[sub_group_id] = filter_index.value_or(UINT32_MAX);
+    void SetBodyFilter(uint32_t sub_group_id, entt::entity filter) {
+        if (sub_group_id < BodyFilterByGroup.size()) BodyFilterByGroup[sub_group_id] = static_cast<uint32_t>(filter);
     }
 
     void Reset() {
-        BodyFilterIndices.clear();
+        BodyFilterByGroup.clear();
         DisabledPairs.clear();
     }
 
@@ -167,19 +171,21 @@ public:
             if (std::binary_search(DisabledPairs.begin(), DisabledPairs.end(), key)) return false;
         }
         // Check KHR collision filter masks
-        const uint32_t f1 = s1 < BodyFilterIndices.size() ? BodyFilterIndices[s1] : UINT32_MAX;
-        const uint32_t f2 = s2 < BodyFilterIndices.size() ? BodyFilterIndices[s2] : UINT32_MAX;
-        if (f1 == UINT32_MAX || f2 == UINT32_MAX) return true;
-        return MasksCollide(f1, f2);
+        const uint32_t f1 = s1 < BodyFilterByGroup.size() ? BodyFilterByGroup[s1] : UINT32_MAX;
+        const uint32_t f2 = s2 < BodyFilterByGroup.size() ? BodyFilterByGroup[s2] : UINT32_MAX;
+        return MasksCollide(static_cast<entt::entity>(f1), static_cast<entt::entity>(f2));
     }
 
-    bool MasksCollide(uint32_t a, uint32_t b) const {
-        if (a >= Masks.size() || b >= Masks.size()) return true;
-        return (Masks[a].Membership & Masks[b].Collide) != 0 && (Masks[b].Membership & Masks[a].Collide) != 0;
+    bool MasksCollide(entt::entity a, entt::entity b) const {
+        const auto ia = Masks.find(static_cast<uint32_t>(a));
+        const auto ib = Masks.find(static_cast<uint32_t>(b));
+        if (ia == Masks.end() || ib == Masks.end()) return true; // missing/null filter = permissive
+        return (ia->second.Membership & ib->second.Collide) != 0 && (ib->second.Membership & ia->second.Collide) != 0;
     }
 };
 
-// We store the material index in Body::UserData. UINT32_MAX = no material assigned.
+// Body::UserData stores the PhysicsMaterial entity's raw value (uint32_t, widened to uint64_t).
+// UINT32_MAX (== null_entity) means "no material assigned".
 constexpr uint64_t NoMaterialSentinel = UINT32_MAX;
 
 // KHR combine mode priority: Maximum(2) > Multiply(3) > Average(0) > Minimum(1).
@@ -219,7 +225,7 @@ public:
 // 2. KHR_physics_rigid_bodies friction/restitution combine modes.
 class KHRContactListener : public ContactListener {
 public:
-    const std::vector<::PhysicsMaterial> *Materials{nullptr};
+    const entt::registry *R{nullptr};
     const KHRCollisionFilter *Filter{nullptr};
 
     ValidateResult OnContactValidate(const Body &b1, const Body &b2, RVec3Arg, const CollideShapeResult &result) override {
@@ -227,7 +233,9 @@ public:
         const uint64_t f1 = b1.GetShape()->GetSubShapeUserData(result.mSubShapeID1);
         const uint64_t f2 = b2.GetShape()->GetSubShapeUserData(result.mSubShapeID2);
         if (f1 == 0 || f2 == 0) return ValidateResult::AcceptContact;
-        if (!Filter->MasksCollide(f1 - 1, f2 - 1)) return ValidateResult::RejectContact;
+        const auto e1 = static_cast<entt::entity>(static_cast<uint32_t>(f1 - 1));
+        const auto e2 = static_cast<entt::entity>(static_cast<uint32_t>(f2 - 1));
+        if (!Filter->MasksCollide(e1, e2)) return ValidateResult::RejectContact;
         return ValidateResult::AcceptContact;
     }
 
@@ -239,18 +247,22 @@ public:
     }
 
 private:
+    const ::PhysicsMaterial *LookupMaterial(uint64_t userdata) const {
+        if (!R || userdata == NoMaterialSentinel) return nullptr;
+        const auto e = static_cast<entt::entity>(static_cast<uint32_t>(userdata));
+        return R->valid(e) ? R->try_get<const ::PhysicsMaterial>(e) : nullptr;
+    }
+
     void CombineMaterials(const Body &b1, const Body &b2, ContactSettings &s) const {
-        if (!Materials) return;
-        const uint64_t ud1 = b1.GetUserData(), ud2 = b2.GetUserData();
-        const bool has1 = ud1 != NoMaterialSentinel && ud1 < Materials->size();
-        const bool has2 = ud2 != NoMaterialSentinel && ud2 < Materials->size();
-        if (!has1 && !has2) return; // both use Jolt defaults
+        const auto *m1 = LookupMaterial(b1.GetUserData());
+        const auto *m2 = LookupMaterial(b2.GetUserData());
+        if (!m1 && !m2) return; // both use Jolt defaults
 
         // Default combine mode is Average per KHR spec.
-        const auto fc1 = has1 ? (*Materials)[ud1].FrictionCombine : PhysicsCombineMode::Average;
-        const auto rc1 = has1 ? (*Materials)[ud1].RestitutionCombine : PhysicsCombineMode::Average;
-        const auto fc2 = has2 ? (*Materials)[ud2].FrictionCombine : PhysicsCombineMode::Average;
-        const auto rc2 = has2 ? (*Materials)[ud2].RestitutionCombine : PhysicsCombineMode::Average;
+        const auto fc1 = m1 ? m1->FrictionCombine : PhysicsCombineMode::Average;
+        const auto rc1 = m1 ? m1->RestitutionCombine : PhysicsCombineMode::Average;
+        const auto fc2 = m2 ? m2->FrictionCombine : PhysicsCombineMode::Average;
+        const auto rc2 = m2 ? m2->RestitutionCombine : PhysicsCombineMode::Average;
         const float f1 = b1.GetFriction(), f2 = b2.GetFriction();
         const float r1 = b1.GetRestitution(), r2 = b2.GetRestitution();
 
@@ -277,7 +289,7 @@ struct PhysicsWorld::Impl {
     ObjectVsBPLayerFilterImpl ObjectVsBPFilter;
     PhysicsSystem System;
 
-    std::vector<Ref<Constraint>> Constraints;
+    std::unordered_map<entt::entity, Ref<Constraint>> ConstraintsByJoint; // PhysicsJoint entity → its constraint.
     std::vector<BodySnapshot> Snapshots;
     Ref<KHRCollisionFilter> FilterRef;
     KHRContactListener ContactListener;
@@ -361,7 +373,7 @@ Ref<Shape> CreateJoltShape(const PhysicsShape &shape, const Mesh *mesh) {
 }
 
 // Apply motion and material properties to body creation settings.
-void ApplyPhysicsProperties(BodyCreationSettings &bcs, const PhysicsMotion *motion, const PhysicsVelocity *velocity, std::optional<PhysicsShapeType> shape_type, const ColliderMaterial *material, const std::vector<::PhysicsMaterial> &materials) {
+void ApplyPhysicsProperties(BodyCreationSettings &bcs, const PhysicsMotion *motion, const PhysicsVelocity *velocity, std::optional<PhysicsShapeType> shape_type, const ColliderMaterial *material, const entt::registry &r) {
     bcs.mUserData = NoMaterialSentinel;
     if (motion) {
         if (bcs.mMotionType == EMotionType::Dynamic) {
@@ -389,11 +401,12 @@ void ApplyPhysicsProperties(BodyCreationSettings &bcs, const PhysicsMotion *moti
         bcs.mLinearDamping = motion->LinearDamping;
         bcs.mAngularDamping = motion->AngularDamping;
     }
-    if (material && material->PhysicsMaterialIndex.has_value() && *material->PhysicsMaterialIndex < materials.size()) {
-        const auto &mat = materials[*material->PhysicsMaterialIndex];
-        bcs.mFriction = mat.DynamicFriction;
-        bcs.mRestitution = mat.Restitution;
-        bcs.mUserData = *material->PhysicsMaterialIndex;
+    if (material && material->PhysicsMaterialEntity != null_entity) {
+        if (const auto *mat = r.try_get<const ::PhysicsMaterial>(material->PhysicsMaterialEntity)) {
+            bcs.mFriction = mat->DynamicFriction;
+            bcs.mRestitution = mat->Restitution;
+            bcs.mUserData = static_cast<uint32_t>(material->PhysicsMaterialEntity);
+        }
     }
 }
 
@@ -495,29 +508,29 @@ struct JoltInit {
 } // namespace
 
 PhysicsWorld::PhysicsWorld() : P(std::make_unique<Impl>()) {
-    // Materials and FilterRef are stable for the PhysicsWorld lifetime, so the contact listener
-    // can hold raw pointers to them.
-    P->ContactListener.Materials = &Materials;
-    P->FilterRef = new KHRCollisionFilter(Filters);
+    // FilterRef is stable for PhysicsWorld lifetime — the contact listener holds a raw pointer to it.
+    // Registry pointer is wired separately via BindRegistry(), since construction order runs before
+    // Scene hands over its registry.
+    P->FilterRef = new KHRCollisionFilter();
     P->ContactListener.Filter = P->FilterRef.GetPtr();
 }
 PhysicsWorld::~PhysicsWorld() = default;
 
+void PhysicsWorld::BindRegistry(const entt::registry &r) {
+    P->ContactListener.R = &r;
+}
+
 bool PhysicsWorld::HasBodies() const { return P->System.GetNumBodies() > 0; }
 uint32_t PhysicsWorld::BodyCount() const { return P->System.GetNumBodies(); }
 
-void PhysicsWorld::UpdateFilterTable() {
-    if (P->FilterRef) P->FilterRef->Update(Filters);
-}
-
-bool PhysicsWorld::DoFiltersCollide(uint32_t a, uint32_t b) const {
+bool PhysicsWorld::DoFiltersCollide(entt::entity a, entt::entity b) const {
     return !P->FilterRef || P->FilterRef->MasksCollide(a, b);
 }
 
 void PhysicsWorld::Rebuild(entt::registry &r) {
     // Clear existing constraints and bodies.
-    for (auto &c : P->Constraints) P->System.RemoveConstraint(c);
-    P->Constraints.clear();
+    for (auto &[_, c] : P->ConstraintsByJoint) P->System.RemoveConstraint(c);
+    P->ConstraintsByJoint.clear();
     auto &bi = P->System.GetBodyInterface();
     for (auto [entity, handle] : r.view<PhysicsBodyHandle>().each()) {
         bi.RemoveBody(BodyID{handle.BodyId});
@@ -527,7 +540,7 @@ void PhysicsWorld::Rebuild(entt::registry &r) {
 
     // Refresh the filter's mask table and clear per-body state in place; the FilterRef pointer
     // (held by the contact listener) must not be reassigned.
-    P->FilterRef->Update(Filters);
+    P->FilterRef->Update(r);
     P->FilterRef->Reset();
     P->BodySubGroups.clear();
 
@@ -573,20 +586,21 @@ void PhysicsWorld::BuildJoint(const entt::registry &r, entt::entity entity) {
     const auto *joint_p = r.try_get<const PhysicsJoint>(entity);
     if (!joint_p) return;
     const auto &joint = *joint_p;
-    if (joint.ConnectedNode == entt::null) return;
-    if (joint.JointDefIndex >= JointDefs.size()) return;
+    if (joint.ConnectedNode == null_entity) return;
+    const auto *def_p = joint.JointDefEntity != null_entity ? r.try_get<const PhysicsJointDef>(joint.JointDefEntity) : nullptr;
+    if (!def_p) return;
 
     // Body 1: nearest ancestor (or self) with a physics body
     const auto body1_entity = FindBodyAncestor(r, entity);
-    if (body1_entity == entt::null) return;
+    if (body1_entity == null_entity) return;
     const auto *h1 = r.try_get<const PhysicsBodyHandle>(body1_entity);
     if (!h1) return;
 
     // Body 2: find ancestor body, or constrain to world if none exists.
     const auto body2_entity = FindBodyAncestor(r, joint.ConnectedNode);
-    const auto *h2 = body2_entity != entt::null ? r.try_get<const PhysicsBodyHandle>(body2_entity) : nullptr;
+    const auto *h2 = body2_entity != null_entity ? r.try_get<const PhysicsBodyHandle>(body2_entity) : nullptr;
 
-    const auto &def = JointDefs[joint.JointDefIndex];
+    const auto &def = *def_p;
 
     SixDOFConstraintSettings settings;
     settings.mSpace = EConstraintSpace::WorldSpace;
@@ -622,7 +636,7 @@ void PhysicsWorld::BuildJoint(const entt::registry &r, entt::entity entity) {
     auto *constraint = static_cast<SixDOFConstraint *>(settings.Create(b1, b2));
     ApplyDriveTargets(*constraint, def);
     P->System.AddConstraint(constraint);
-    P->Constraints.emplace_back(constraint);
+    P->ConstraintsByJoint[entity] = constraint;
 
     // Keep all non-static bodies in constraints awake.
     if (!b1.IsStatic()) b1.SetAllowSleeping(false);
@@ -640,8 +654,8 @@ void PhysicsWorld::FlushJoints(const entt::registry &r, bool joints_changed) {
     if (!joints_changed && !P->JointsDirty) return;
     P->JointsDirty = false;
 
-    for (auto &c : P->Constraints) P->System.RemoveConstraint(c);
-    P->Constraints.clear();
+    for (auto &[_, c] : P->ConstraintsByJoint) P->System.RemoveConstraint(c);
+    P->ConstraintsByJoint.clear();
     P->FilterRef->ResetDisabledPairs();
     for (auto entity : r.view<const PhysicsJoint>()) BuildJoint(r, entity);
     P->FilterRef->FinalizeDisabledPairs();
@@ -681,40 +695,41 @@ bool IsJointConstrained(const entt::registry &r, entt::entity motion_owner) {
 }
 
 // True iff some static TriangleMesh collider's filter mask permits contact with this filter.
-bool CouldHitStaticMesh(const entt::registry &r, std::optional<uint32_t> filter_idx, const KHRCollisionFilter *filter) {
+bool CouldHitStaticMesh(const entt::registry &r, entt::entity filter_entity, const KHRCollisionFilter *filter) {
     for (auto [e, cs] : r.view<const ColliderShape>().each()) {
         if (cs.Shape.Type != PhysicsShapeType::TriangleMesh) continue;
-        if (FindMotionOwner(r, e) != entt::null) continue; // not static
+        if (FindMotionOwner(r, e) != null_entity) continue; // not static
         const auto *cm = r.try_get<const ColliderMaterial>(e);
-        const auto smf = cm ? cm->CollisionFilterIndex : std::nullopt;
-        if (!filter_idx || !smf) return true;
-        if (!filter || filter->MasksCollide(*filter_idx, *smf)) return true;
+        const auto other = cm ? cm->CollisionFilterEntity : null_entity;
+        if (filter_entity == null_entity || other == null_entity) return true;
+        if (!filter || filter->MasksCollide(filter_entity, other)) return true;
     }
     return false;
 }
 
 // Promote dynamic TriangleMesh→ConvexHull when all conditions are met:
 // Owner is not kinematic. mass > 0. Filters allow contact with some static TriangleMesh. Not joint-constrained.
-bool ShouldPromoteMesh(const entt::registry &r, entt::entity motion_owner, const PhysicsMotion &motion, std::optional<uint32_t> filter_idx, const KHRCollisionFilter *filter) {
+bool ShouldPromoteMesh(const entt::registry &r, entt::entity motion_owner, const PhysicsMotion &motion, entt::entity filter_entity, const KHRCollisionFilter *filter) {
     if (motion.IsKinematic) return false;
     if (motion.Mass.value_or(0.f) <= 0.f) return false; // mass=0 = locked translation, keep concave mesh
-    if (!CouldHitStaticMesh(r, filter_idx, filter)) return false;
+    if (!CouldHitStaticMesh(r, filter_entity, filter)) return false;
     if (IsJointConstrained(r, motion_owner)) return false;
     return true;
 }
 
 // Build a leaf Jolt shape for a single collider entity. Promotes mesh→convex per ShouldPromoteMesh,
-// stores filter index UserData on the leaf, then wraps in ScaledShape if entity has non-unit scale.
+// stores filter entity UserData on the leaf, then wraps in ScaledShape if entity has non-unit scale.
 Ref<Shape> BuildLeafShape(const entt::registry &r, entt::entity entity, const ColliderShape &cs, const ColliderMaterial *cm, const PhysicsMotion *owner_motion, entt::entity owner_entity, const KHRCollisionFilter *filter) {
     auto shape_proto = cs.Shape;
-    const auto filter_idx = cm ? cm->CollisionFilterIndex : std::nullopt;
-    if (shape_proto.Type == PhysicsShapeType::TriangleMesh && owner_motion && ShouldPromoteMesh(r, owner_entity, *owner_motion, filter_idx, filter)) {
+    const auto filter_entity = cm ? cm->CollisionFilterEntity : null_entity;
+    if (shape_proto.Type == PhysicsShapeType::TriangleMesh && owner_motion && ShouldPromoteMesh(r, owner_entity, *owner_motion, filter_entity, filter)) {
         shape_proto.Type = PhysicsShapeType::ConvexHull;
     }
     const auto *mesh = shape_proto.MeshEntity ? r.try_get<const Mesh>(*shape_proto.MeshEntity) : nullptr;
     auto js = CreateJoltShape(shape_proto, mesh);
     if (!js) return {};
-    if (filter_idx.has_value()) js->SetUserData(*filter_idx + 1);
+    // 0 = no filter. Offset by 1 so null_entity (= UINT32_MAX) maps to 0x100000000, not 0.
+    if (filter_entity != null_entity) js->SetUserData(uint64_t(static_cast<uint32_t>(filter_entity)) + 1);
     const auto *t = r.try_get<const Transform>(entity);
     if (t && (t->S.x != 1 || t->S.y != 1 || t->S.z != 1)) js = new ScaledShape(js, ToJolt(t->S));
     return js;
@@ -737,19 +752,19 @@ struct BodyShape {
     bool IsSensor = false;
     std::optional<PhysicsShapeType> SingleShapeType; // for ApplyPhysicsProperties mesh handling
     const ColliderMaterial *SingleMaterial{nullptr}; // material for body settings (single-collider bodies only)
-    std::optional<uint32_t> FilterIdx; // resolved/validated filter index
+    entt::entity FilterEntity{null_entity}; // resolved collision-filter entity (null = no KHR filter)
 };
 
 // Build the body's complete shape (single collider, compound, or sensor). Does NOT apply CoM wrap.
 // Skips child colliders whose parent motion-owner builds them as compound children.
-BodyShape BuildBodyShape(const entt::registry &r, entt::entity entity, const KHRCollisionFilter *filter, size_t filter_count) {
+BodyShape BuildBodyShape(const entt::registry &r, entt::entity entity, const KHRCollisionFilter *filter) {
     BodyShape out;
     const auto *motion = r.try_get<const PhysicsMotion>(entity);
     const auto *trigger = r.try_get<const PhysicsTrigger>(entity);
     const auto *collider = r.try_get<const ColliderShape>(entity);
 
-    auto resolve = [&](std::optional<uint32_t> idx) -> std::optional<uint32_t> {
-        return idx.has_value() && *idx < filter_count ? idx : std::nullopt;
+    auto resolve = [&](entt::entity e) -> entt::entity {
+        return e != null_entity && r.valid(e) && r.all_of<CollisionFilter>(e) ? e : null_entity;
     };
 
     if (motion) {
@@ -760,7 +775,7 @@ BodyShape BuildBodyShape(const entt::registry &r, entt::entity entity, const KHR
             if (colliders.size() == 1 && colliders[0] == entity) {
                 out.SingleMaterial = r.try_get<const ColliderMaterial>(entity);
                 out.SingleShapeType = collider->Shape.Type;
-                out.FilterIdx = resolve(out.SingleMaterial ? out.SingleMaterial->CollisionFilterIndex : std::nullopt);
+                out.FilterEntity = resolve(out.SingleMaterial ? out.SingleMaterial->CollisionFilterEntity : null_entity);
                 out.Shape = BuildLeafShape(r, entity, *collider, out.SingleMaterial, motion, entity, filter);
                 return out;
             }
@@ -793,7 +808,7 @@ BodyShape BuildBodyShape(const entt::registry &r, entt::entity entity, const KHR
         if (FindMotionOwner(r, GetParentEntity(r, entity)) != entt::null) return out;
         out.SingleMaterial = r.try_get<const ColliderMaterial>(entity);
         out.SingleShapeType = collider->Shape.Type;
-        out.FilterIdx = resolve(out.SingleMaterial ? out.SingleMaterial->CollisionFilterIndex : std::nullopt);
+        out.FilterEntity = resolve(out.SingleMaterial ? out.SingleMaterial->CollisionFilterEntity : null_entity);
         out.Shape = BuildLeafShape(r, entity, *collider, out.SingleMaterial, nullptr, entt::null, filter);
         return out;
     }
@@ -801,7 +816,7 @@ BodyShape BuildBodyShape(const entt::registry &r, entt::entity entity, const KHR
     if (trigger && trigger->Shape) {
         out.IsSensor = true;
         out.SingleShapeType = trigger->Shape->Type;
-        out.FilterIdx = resolve(trigger->CollisionFilterIndex);
+        out.FilterEntity = resolve(trigger->CollisionFilterEntity);
         const auto *mesh = trigger->Shape->MeshEntity ? r.try_get<const Mesh>(*trigger->Shape->MeshEntity) : nullptr;
         auto js = CreateJoltShape(*trigger->Shape, mesh);
         if (!js) return out;
@@ -824,7 +839,7 @@ Ref<Shape> WrapCenterOfMass(Ref<Shape> inner, const PhysicsMotion *motion, MassP
 void PhysicsWorld::AddBody(entt::registry &r, entt::entity entity) {
     if (r.all_of<PhysicsBodyHandle>(entity)) return;
 
-    const auto built = BuildBodyShape(r, entity, P->FilterRef.GetPtr(), Filters.size());
+    const auto built = BuildBodyShape(r, entity, P->FilterRef.GetPtr());
     if (!built.Shape) return;
 
     const auto *motion = r.try_get<const PhysicsMotion>(entity);
@@ -839,7 +854,7 @@ void PhysicsWorld::AddBody(entt::registry &r, entt::entity entity) {
 
     BodyCreationSettings bcs{shape, pos, rot, motion_type, layer};
     bcs.mIsSensor = built.IsSensor;
-    ApplyPhysicsProperties(bcs, motion, r.try_get<const PhysicsVelocity>(entity), built.SingleShapeType, built.SingleMaterial, Materials);
+    ApplyPhysicsProperties(bcs, motion, r.try_get<const PhysicsVelocity>(entity), built.SingleShapeType, built.SingleMaterial, r);
 
     if (motion && motion->CenterOfMass && bcs.mMotionType == EMotionType::Dynamic && !built.IsSensor) {
         inner_mass_props.ScaleToMass(bcs.mMassPropertiesOverride.mMass);
@@ -848,7 +863,7 @@ void PhysicsWorld::AddBody(entt::registry &r, entt::entity entity) {
     }
 
     if (P->FilterRef) {
-        const uint32_t sub = P->FilterRef->RegisterBody(built.FilterIdx);
+        const uint32_t sub = P->FilterRef->RegisterBody(built.FilterEntity);
         bcs.mCollisionGroup = CollisionGroup(P->FilterRef, 0, sub);
         P->BodySubGroups[entity] = sub;
     }
@@ -888,7 +903,7 @@ void PhysicsWorld::RemoveBody(entt::registry &r, entt::entity entity) {
 void PhysicsWorld::ApplyShape(const entt::registry &r, entt::entity entity) {
     const auto *handle = r.try_get<const PhysicsBodyHandle>(entity);
     if (!handle) return;
-    const auto built = BuildBodyShape(r, entity, P->FilterRef.GetPtr(), Filters.size());
+    const auto built = BuildBodyShape(r, entity, P->FilterRef.GetPtr());
     if (!built.Shape) return;
     MassProperties inner_mass_props;
     const auto shape = WrapCenterOfMass(built.Shape, built.IsSensor ? nullptr : r.try_get<const PhysicsMotion>(entity), inner_mass_props);
@@ -977,30 +992,35 @@ void PhysicsWorld::ApplyMaterial(const entt::registry &r, entt::entity entity) {
     auto &bi = P->System.GetBodyInterface();
     const BodyID id{handle->BodyId};
 
-    if (material->PhysicsMaterialIndex.has_value() && *material->PhysicsMaterialIndex < Materials.size()) {
-        const auto &mat = Materials[*material->PhysicsMaterialIndex];
-        bi.SetFriction(id, mat.DynamicFriction);
-        bi.SetRestitution(id, mat.Restitution);
+    const auto mat_entity = material->PhysicsMaterialEntity;
+    const auto *mat = mat_entity != null_entity && r.valid(mat_entity) ? r.try_get<const ::PhysicsMaterial>(mat_entity) : nullptr;
+    if (mat) {
+        bi.SetFriction(id, mat->DynamicFriction);
+        bi.SetRestitution(id, mat->Restitution);
     } else {
         const ::PhysicsMaterial defaults;
         bi.SetFriction(id, defaults.DynamicFriction);
         bi.SetRestitution(id, defaults.Restitution);
     }
 
+    const auto filter_entity = material->CollisionFilterEntity != null_entity && r.valid(material->CollisionFilterEntity) && r.all_of<CollisionFilter>(material->CollisionFilterEntity) ? material->CollisionFilterEntity : null_entity;
     if (P->FilterRef) {
         if (const auto it = P->BodySubGroups.find(entity); it != P->BodySubGroups.end()) {
-            const auto filter_idx = material->CollisionFilterIndex.has_value() && *material->CollisionFilterIndex < Filters.size() ? material->CollisionFilterIndex : std::nullopt;
-            P->FilterRef->SetBodyFilter(it->second, filter_idx);
+            P->FilterRef->SetBodyFilter(it->second, filter_entity);
         }
     }
 
     BodyLockWrite lock(P->System.GetBodyLockInterface(), id);
     if (lock.Succeeded()) {
-        auto *leaf = const_cast<Shape *>(lock.GetBody().GetShape());
+        auto &body = lock.GetBody();
+        auto *leaf = const_cast<Shape *>(body.GetShape());
         while (leaf->GetType() == EShapeType::Decorated) {
             leaf = const_cast<Shape *>(static_cast<const DecoratedShape *>(leaf)->GetInnerShape());
         }
-        leaf->SetUserData(material->CollisionFilterIndex.value_or(UINT32_MAX) + 1);
+        // Shape UserData: 0 = no filter; offset by 1 so null_entity (= UINT32_MAX) maps to 0x100000000, not 0.
+        leaf->SetUserData(filter_entity != null_entity ? uint64_t(static_cast<uint32_t>(filter_entity)) + 1 : 0);
+        // Body UserData stores the material entity value for contact-listener lookup.
+        body.SetUserData(mat ? static_cast<uint32_t>(mat_entity) : NoMaterialSentinel);
     }
 }
 
@@ -1060,6 +1080,73 @@ void PhysicsWorld::OnTriggerChange(entt::registry &r, entt::entity e) {
     }
     if (has_body) ApplyShape(r, e);
     else AddBody(r, e);
+}
+
+namespace {
+// Deduce the owner class from a data-member pointer, so callers can write
+// `ClearDanglingRefs<&ColliderMaterial::PhysicsMaterialEntity>(r, e)` without repeating the class.
+template<class M> struct ptr_class;
+template<class C, class V> struct ptr_class<V C::*> {
+    using type = C;
+};
+
+// Patches every component instance whose `.*Field` equals `deleted`, setting it to null_entity.
+// The patch fires downstream per-entity change handlers that re-apply defaults.
+template<auto Field>
+void ClearDanglingRefs(entt::registry &r, entt::entity deleted) {
+    using C = typename ptr_class<decltype(Field)>::type;
+    for (auto [e, c] : r.view<C>().each()) {
+        if (c.*Field == deleted) r.patch<C>(e, [](C &x) { x.*Field = null_entity; });
+    }
+}
+} // namespace
+
+void PhysicsWorld::OnPhysicsMaterialDefChange(entt::registry &r, entt::entity e) {
+    if (!r.valid(e) || !r.all_of<::PhysicsMaterial>(e)) {
+        ClearDanglingRefs<&ColliderMaterial::PhysicsMaterialEntity>(r, e);
+        return;
+    }
+    // Re-apply to every collider referencing e: direct-body colliders get SetFriction/Restitution
+    // (+ActivateBody to re-evaluate cached resting-contact coefficients); child colliders inside
+    // compound bodies trigger a compound rebuild on the owner (Jolt friction is per-Body, not per-leaf).
+    const auto &mat = r.get<const ::PhysicsMaterial>(e);
+    auto &bi = P->System.GetBodyInterface();
+    for (auto [ce, cm] : r.view<const ColliderMaterial>().each()) {
+        if (cm.PhysicsMaterialEntity != e) continue;
+        if (const auto *bh = r.try_get<const PhysicsBodyHandle>(ce)) {
+            const BodyID id{bh->BodyId};
+            bi.SetFriction(id, mat.DynamicFriction);
+            bi.SetRestitution(id, mat.Restitution);
+            bi.ActivateBody(id);
+        } else if (const auto owner = FindCompoundParentBody(r, ce); owner != entt::null) {
+            ApplyShape(r, owner);
+        }
+    }
+}
+
+void PhysicsWorld::OnCollisionFilterDefChange(entt::registry &r, entt::entity e) {
+    if (!r.valid(e) || !r.all_of<CollisionFilter>(e)) {
+        ClearDanglingRefs<&ColliderMaterial::CollisionFilterEntity>(r, e);
+        ClearDanglingRefs<&PhysicsTrigger::CollisionFilterEntity>(r, e);
+    }
+    // Rebuild the filter mask table — cheap, and picks up both update and destroy paths.
+    // Per-body filter assignments (BodyFilterByGroup) already key by entity value, so no reassignment needed.
+    P->FilterRef->Update(r);
+}
+
+void PhysicsWorld::OnPhysicsJointDefChange(entt::registry &r, entt::entity e) {
+    // SixDOFConstraintSettings is baked at Create() time — no cheap-apply path, so each
+    // referencing joint must remove+rebuild its constraint. Destroy path skips the rebuild.
+    const bool destroyed = !r.valid(e) || !r.all_of<PhysicsJointDef>(e);
+    for (auto [je, j] : r.view<const PhysicsJoint>().each()) {
+        if (j.JointDefEntity != e) continue;
+        if (auto it = P->ConstraintsByJoint.find(je); it != P->ConstraintsByJoint.end()) {
+            P->System.RemoveConstraint(it->second);
+            P->ConstraintsByJoint.erase(it);
+        }
+        if (!destroyed) BuildJoint(r, je);
+    }
+    if (destroyed) ClearDanglingRefs<&PhysicsJoint::JointDefEntity>(r, e);
 }
 
 void PhysicsWorld::Step(entt::registry &r, float dt) {

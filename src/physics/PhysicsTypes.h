@@ -114,18 +114,19 @@ struct ColliderShape {
 
 // Material and collision filter assignment for a collider.
 struct ColliderMaterial {
-    std::optional<uint32_t> PhysicsMaterialIndex{}, CollisionFilterIndex{};
+    entt::entity PhysicsMaterialEntity{null_entity};
+    entt::entity CollisionFilterEntity{null_entity};
 };
 
 struct PhysicsTrigger {
     std::optional<PhysicsShape> Shape{};
     std::vector<entt::entity> Nodes{};
-    std::optional<uint32_t> CollisionFilterIndex{};
+    entt::entity CollisionFilterEntity{null_entity};
 };
 
 struct PhysicsJoint {
     entt::entity ConnectedNode{null_entity};
-    uint32_t JointDefIndex{0};
+    entt::entity JointDefEntity{null_entity};
     bool EnableCollision{false};
 };
 
@@ -137,15 +138,6 @@ struct PhysicsBodyHandle {
 
 struct PhysicsConstraintHandle {
     uint32_t ConstraintIndex{UINT32_MAX};
-};
-
-struct PhysicsResourceDeleted {
-    enum Type : uint8_t {
-        Material,
-        Filter
-    };
-    Type Resource;
-    uint32_t Index;
 };
 
 // Links a collider entity to its wireframe overlay instance(s).

@@ -1805,7 +1805,7 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
             }
         }
     }
-    physics_ui::RenderEntityProperties(R, active_entity, SceneEntity, *Physics);
+    physics_ui::RenderEntityProperties(R, active_entity, SceneEntity);
     PopID();
 }
 
@@ -2155,7 +2155,7 @@ void Scene::RenderControls() {
         }
 
         if (BeginTabItem("Physics")) {
-            physics_ui::RenderTab(R, SceneEntity, *Physics);
+            physics_ui::RenderTab(R, *Physics);
             EndTabItem();
         }
         EndTabBar();
