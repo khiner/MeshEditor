@@ -8,7 +8,8 @@
 #include <variant>
 
 namespace primitive {
-struct Rect {
+// Finite plane in the XZ plane (normal +Y), centered at origin.
+struct Plane {
     vec2 HalfExtents{1, 1};
 };
 struct Circle {
@@ -41,7 +42,7 @@ struct Cone {
 } // namespace primitive
 
 using PrimitiveShape = std::variant<
-    primitive::Rect,
+    primitive::Plane,
     primitive::Circle,
     primitive::Cuboid,
     primitive::IcoSphere,
@@ -51,13 +52,13 @@ using PrimitiveShape = std::variant<
     primitive::Cone>;
 
 inline std::string ToString(const PrimitiveShape &shape) {
-    static constexpr const char *Names[]{"Rect", "Circle", "Cube", "IcoSphere", "UVSphere", "Torus", "Cylinder", "Cone"};
+    static constexpr const char *Names[]{"Plane", "Circle", "Cube", "IcoSphere", "UVSphere", "Torus", "Cylinder", "Cone"};
     return Names[shape.index()];
 }
 
 // All default primitive shapes, for iteration in UI menus.
 inline const std::array AllPrimitiveShapes{
-    PrimitiveShape{primitive::Rect{}},
+    PrimitiveShape{primitive::Plane{}},
     PrimitiveShape{primitive::Circle{}},
     PrimitiveShape{primitive::Cuboid{}},
     PrimitiveShape{primitive::IcoSphere{}},

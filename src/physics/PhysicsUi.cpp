@@ -3,8 +3,10 @@
 
 #include "PhysicsUi.h"
 #include "AnimationTimeline.h"
+#include "Entity.h"
 #include "Instance.h"
 #include "PhysicsWorld.h"
+#include "SceneTree.h"
 #include "mesh/Mesh.h"
 #include "mesh/PrimitiveType.h"
 
@@ -34,6 +36,9 @@ PhysicsShape InitColliderShape(const entt::registry &r, entt::entity entity) {
             if constexpr (std::is_same_v<T, primitive::Cuboid>) {
                 shape.Type = PhysicsShapeType::Box;
                 shape.Size = s.HalfExtents * 2.f;
+            } else if constexpr (std::is_same_v<T, primitive::Plane>) {
+                shape.Type = PhysicsShapeType::Plane;
+                shape.Size = vec3{s.HalfExtents.x * 2.f, 0.f, s.HalfExtents.y * 2.f};
             } else if constexpr (std::is_same_v<T, primitive::IcoSphere> || std::is_same_v<T, primitive::UVSphere>) {
                 shape.Type = PhysicsShapeType::Sphere;
                 shape.Radius = s.Radius;
@@ -47,7 +52,7 @@ PhysicsShape InitColliderShape(const entt::registry &r, entt::entity entity) {
                 shape.RadiusBottom = s.Radius;
                 shape.Height = s.Height;
             } else {
-                // Rect, Circle, Torus → ConvexHull from mesh geometry
+                // Circle, Torus → ConvexHull from mesh geometry
                 shape.Type = PhysicsShapeType::ConvexHull;
             }
             return shape;
@@ -224,7 +229,7 @@ void DrawMatrixCell(ImDrawList *dl, ImVec2 p_min, ImVec2 p_max, bool a_to_b, boo
 }
 
 bool RenderShapeEditor(PhysicsShape &shape) {
-    static const char *shape_names[]{"Box", "Sphere", "Capsule", "Cylinder", "Convex Hull", "Triangle Mesh"};
+    static const char *shape_names[]{"Box", "Sphere", "Capsule", "Cylinder", "Plane", "Convex Hull", "Triangle Mesh"};
     auto shape_type_i = int(shape.Type);
     bool changed = false;
     if (Combo("Shape", &shape_type_i, shape_names, IM_ARRAYSIZE(shape_names))) {
@@ -248,9 +253,25 @@ bool RenderShapeEditor(PhysicsShape &shape) {
             changed |= DragFloat("Radius top", &shape.RadiusTop, 0.01f, 0.001f, 100.f);
             changed |= DragFloat("Radius bottom", &shape.RadiusBottom, 0.01f, 0.001f, 100.f);
             break;
+        case PhysicsShapeType::Plane: {
+            // Plane normal is +Y; sizeX/sizeZ = 0 means infinite extent along that axis.
+            bool infinite = shape.Size.x <= 0.f || shape.Size.z <= 0.f;
+            if (Checkbox("Infinite", &infinite)) {
+                shape.Size = infinite ? vec3{0.f, 0.f, 0.f} : vec3{2.f, 0.f, 2.f};
+                changed = true;
+            }
+            if (!infinite) {
+                vec2 size{shape.Size.x, shape.Size.z};
+                if (DragFloat2("Size (X, Z)", &size.x, 0.01f, 0.01f, 1000.f)) {
+                    shape.Size = vec3{size.x, 0.f, size.y};
+                    changed = true;
+                }
+            }
+            changed |= Checkbox("Double-sided", &shape.DoubleSided);
+            break;
+        }
         case PhysicsShapeType::ConvexHull:
         case PhysicsShapeType::TriangleMesh:
-            TextDisabled("Mesh-based shape (from glTF import)");
             break;
     }
     return changed;
@@ -720,8 +741,22 @@ void physics_ui::RenderEntityProperties(entt::registry &r, entt::entity entity, 
             r.patch<PhysicsJoint>(entity, [enable_collision](PhysicsJoint &j) { j.EnableCollision = enable_collision; });
         }
 
-        if (joint->ConnectedNode != entt::null) Text("Connected: entity %u", joint->ConnectedNode);
-        else TextDisabled("Not connected");
+        // ConnectedNode picker — KHR joint.connectedNode is the second attachment frame.
+        // Mirrors Blender's rigid_body_constraint object1/object2 fields.
+        const auto cn = joint->ConnectedNode;
+        const auto cn_label = cn != null_entity && r.valid(cn) ? GetName(r, cn) : std::string{"None"};
+        if (BeginCombo("Connected node", cn_label.c_str())) {
+            if (Selectable("None", cn == null_entity)) {
+                r.patch<PhysicsJoint>(entity, [](PhysicsJoint &j) { j.ConnectedNode = null_entity; });
+            }
+            for (auto ne : r.view<const SceneNode>()) {
+                if (ne == entity) continue; // self-connection is meaningless
+                if (Selectable(GetName(r, ne).c_str(), cn == ne)) {
+                    r.patch<PhysicsJoint>(entity, [ne](PhysicsJoint &j) { j.ConnectedNode = ne; });
+                }
+            }
+            EndCombo();
+        }
     }
 
     // Trigger properties

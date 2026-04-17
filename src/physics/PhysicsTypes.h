@@ -81,17 +81,20 @@ enum class PhysicsShapeType : uint8_t {
     Sphere,
     Capsule,
     Cylinder,
+    Plane,
     ConvexHull,
     TriangleMesh,
 };
 
 struct PhysicsShape {
     PhysicsShapeType Type{PhysicsShapeType::Box};
-    vec3 Size{1.0f, 1.0f, 1.0f}; // Box full size (not half-extents) per KHR spec
+    vec3 Size{1.0f, 1.0f, 1.0f}; // Box full size (not half-extents) per KHR spec.
+                                 // Plane: Size.x = sizeX, Size.z = sizeZ; 0 on either axis = infinite extent.
     float Radius{0.5f}; // Sphere, Capsule, Cylinder
     float RadiusTop{0.25f}; // Capsule, Cylinder (tapered)
     float RadiusBottom{0.25f}; // Capsule, Cylinder (tapered)
     float Height{0.5f}; // Capsule, Cylinder
+    bool DoubleSided{false}; // Plane only — KHR plane.doubleSided
     // For mesh-based shapes
     std::optional<entt::entity> MeshEntity{};
     bool ConvexHull{false};

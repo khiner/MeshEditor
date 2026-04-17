@@ -12,7 +12,7 @@
 namespace primitive {
 using std::views::transform, std::ranges::iota_view, std::ranges::to;
 
-inline MeshData CreateMesh(const Rect &p) {
+inline MeshData CreateMesh(const Plane &p) {
     const auto x = p.HalfExtents.x, z = p.HalfExtents.y;
     return {
         {{-x, 0, z}, {x, 0, z}, {x, 0, -z}, {-x, 0, -z}},

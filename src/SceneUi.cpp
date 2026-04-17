@@ -215,7 +215,7 @@ std::optional<MeshData> PrimitiveEditor(PrimitiveShape &shape) {
     return std::visit([](auto &s) -> std::optional<MeshData> {
         using T = std::decay_t<decltype(s)>;
         bool changed = false;
-        if constexpr (std::is_same_v<T, primitive::Rect>) {
+        if constexpr (std::is_same_v<T, primitive::Plane>) {
             vec2 size = s.HalfExtents * 2.f;
             changed = DragFloat2("Size", &size.x, SizeSpeed, MinSize, MaxSize);
             if (changed) s.HalfExtents = size / 2.f;

@@ -15,6 +15,7 @@
 #include "Jolt/Physics/Collision/Shape/DecoratedShape.h"
 #include "Jolt/Physics/Collision/Shape/MeshShape.h"
 #include "Jolt/Physics/Collision/Shape/OffsetCenterOfMassShape.h"
+#include "Jolt/Physics/Collision/Shape/PlaneShape.h"
 #include "Jolt/Physics/Collision/Shape/RotatedTranslatedShape.h"
 #include "Jolt/Physics/Collision/Shape/ScaledShape.h"
 #include "Jolt/Physics/Collision/Shape/SphereShape.h"
@@ -334,7 +335,10 @@ struct PhysicsWorld::Impl {
 };
 
 namespace {
-Ref<Shape> CreateJoltShape(const PhysicsShape &shape, const Mesh *mesh) {
+// Y-thickness of the BoxShape used as a finite-plane / non-static-infinite-plane fallback.
+constexpr float PlaneThickness = 1e-3f;
+
+Ref<Shape> CreateJoltShape(const PhysicsShape &shape, const Mesh *mesh, bool body_is_static = false) {
     switch (shape.Type) {
         case PhysicsShapeType::Box: {
             return new BoxShape(ToJolt(shape.Size * 0.5f)); // KHR spec uses full size, Jolt uses half-extents
@@ -351,6 +355,16 @@ Ref<Shape> CreateJoltShape(const PhysicsShape &shape, const Mesh *mesh) {
             if (std::abs(shape.RadiusTop - shape.RadiusBottom) < 1e-6f) return new CylinderShape(shape.Height * 0.5f, shape.RadiusBottom);
             if (const auto result = TaperedCylinderShapeSettings(shape.Height * 0.5f, shape.RadiusTop, shape.RadiusBottom).Create(); result.IsValid()) return result.Get();
             return new CylinderShape(shape.Height * 0.5f, std::max(shape.RadiusTop, shape.RadiusBottom));
+        }
+        case PhysicsShapeType::Plane: {
+            // Jolt PlaneShape is single-sided and static-only (PlaneShape::MustBeStatic).
+            // Used only for infinite+static+single-sided. Everything else collapses to a thin BoxShape.
+            // Infinite non-static uses a large half-extent.
+            const bool is_infinite = shape.Size.x <= 0.f || shape.Size.z <= 0.f;
+            if (body_is_static && is_infinite && !shape.DoubleSided) return new PlaneShape(Plane(Vec3(0, 1, 0), 0));
+            const float hx = is_infinite ? PlaneShapeSettings::cDefaultHalfExtent : shape.Size.x * 0.5f;
+            const float hz = is_infinite ? PlaneShapeSettings::cDefaultHalfExtent : shape.Size.z * 0.5f;
+            return new BoxShape(Vec3(hx, PlaneThickness * 0.5f, hz));
         }
         case PhysicsShapeType::ConvexHull: {
             if (!mesh || mesh->VertexCount() == 0) break;
@@ -741,7 +755,7 @@ Ref<Shape> BuildLeafShape(const entt::registry &r, entt::entity entity, const Co
         shape_proto.Type = PhysicsShapeType::ConvexHull;
     }
     const auto *mesh = shape_proto.MeshEntity ? r.try_get<const Mesh>(*shape_proto.MeshEntity) : nullptr;
-    auto js = CreateJoltShape(shape_proto, mesh);
+    auto js = CreateJoltShape(shape_proto, mesh, owner_motion == nullptr);
     if (!js) return {};
     // 0 = no filter. Offset by 1 so null_entity (= UINT32_MAX) maps to 0x100000000, not 0.
     if (filter_entity != null_entity) js->SetUserData(uint64_t(static_cast<uint32_t>(filter_entity)) + 1);
