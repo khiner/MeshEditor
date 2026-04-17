@@ -10,6 +10,7 @@
 #include "Instance.h"
 #include "MeshComponents.h"
 #include "NodeTransformAnimation.h"
+#include "Paths.h"
 #include "ScenePipelines.h"
 #include "SceneSelection.h"
 #include "Shader.h"
@@ -624,15 +625,15 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
     texture_store.Textures.emplace_back(std::move(white_texture));
 
     auto &environments = *Environments;
-    environments.BrdfLut = CreateDefaultLutTexture(Vk, init_batch, *Slots, "res/images/lut_ggx.png", "DefaultGGXBRDFLUT");
-    environments.SheenELut = CreateDefaultLutTexture(Vk, init_batch, *Slots, "res/images/lut_sheen_E.png", "DefaultSheenELUT");
-    environments.CharlieLut = CreateDefaultLutTexture(Vk, init_batch, *Slots, "res/images/lut_charlie.png", "DefaultCharlieLUT");
+    const auto images_dir = Paths::Res() / "images";
+    environments.BrdfLut = CreateDefaultLutTexture(Vk, init_batch, *Slots, images_dir / "lut_ggx.png", "DefaultGGXBRDFLUT");
+    environments.SheenELut = CreateDefaultLutTexture(Vk, init_batch, *Slots, images_dir / "lut_sheen_E.png", "DefaultSheenELUT");
+    environments.CharlieLut = CreateDefaultLutTexture(Vk, init_batch, *Slots, images_dir / "lut_charlie.png", "DefaultCharlieLUT");
     SubmitTextureUploadBatch(init_batch, Vk.Queue, *OneShotFence, Vk.Device);
 
     // Discover HDR environment files, sorted by name for stable ordering.
-    static constexpr std::string_view HdriDir{"res/images/studiolights/world"};
     std::error_code ec;
-    for (const auto &entry : std::filesystem::directory_iterator{HdriDir, ec}) {
+    for (const auto &entry : std::filesystem::directory_iterator{images_dir / "studiolights" / "world", ec}) {
         if (entry.path().extension() == ".hdr") {
             const auto stem = entry.path().stem().string();
             environments.Hdris.emplace_back(HdriEntry{.Name = stem, .Path = entry.path(), .Prefiltered = {}});
@@ -722,7 +723,7 @@ void Scene::CreateSvgResource(std::unique_ptr<SvgResource> &svg, std::filesystem
 }
 
 void Scene::LoadIcons() {
-    static const std::filesystem::path svg_path{"res/svg/"};
+    const auto svg_path = Paths::Res() / "svg";
     auto batch = BeginTextureUploadBatch(Vk.Device, *CommandPool, Buffers->Ctx);
     const auto RenderBitmap = [this, &batch](std::span<const std::byte> data, uint32_t width, uint32_t height) {
         return RenderBitmapToImage(Vk, batch, data, width, height, Format::Color, ColorSubresourceRange);

@@ -826,14 +826,15 @@ std::expected<TextureEntry, std::string> CreateTextureEntryFromImage(
     return CreateCompressedTextureEntry(vk, batch, slots, all_mip_data, std::move(copies), vk_fmt, width, height, mip_levels, std::move(texture_name), wrap_s, wrap_t, sampler_cfg);
 }
 
-TextureEntry CreateDefaultLutTexture(const SceneVulkanResources &vk, TextureUploadBatch &batch, DescriptorSlots &slots, std::string_view lut_path, std::string_view name) {
-    const auto encoded = File::Read(std::filesystem::path{lut_path});
+TextureEntry CreateDefaultLutTexture(const SceneVulkanResources &vk, TextureUploadBatch &batch, DescriptorSlots &slots, const std::filesystem::path &lut_path, std::string_view name) {
+    const auto encoded = File::Read(lut_path);
+    const auto lut_path_str = lut_path.string();
     auto texture = CreateTextureEntryFromEncoded(
         vk, batch, slots,
-        std::as_bytes(std::span{encoded}), lut_path, std::string{name},
+        std::as_bytes(std::span{encoded}), lut_path_str, std::string{name},
         TextureColorSpace::Linear, vk::SamplerAddressMode::eClampToEdge, vk::SamplerAddressMode::eClampToEdge,
         {.MinFilter = vk::Filter::eLinear, .MagFilter = vk::Filter::eLinear, .MipmapMode = vk::SamplerMipmapMode::eLinear, .UsesMipmaps = false}
     );
-    if (!texture) throw std::runtime_error(std::format("Failed to initialize default LUT texture '{}': {}", lut_path, texture.error()));
+    if (!texture) throw std::runtime_error(std::format("Failed to initialize default LUT texture '{}': {}", lut_path_str, texture.error()));
     return std::move(*texture);
 }

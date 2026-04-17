@@ -1,5 +1,6 @@
 #include "Shader.h"
 #include "File.h"
+#include "Paths.h"
 
 #include <cassert>
 #include <format>
@@ -9,26 +10,13 @@
 
 using std::views::transform, std::ranges::find_if, std::ranges::to;
 
-#ifdef RELEASE_BUILD
-// All files in `src/shaders` are copied to `build/shaders` at build time.
-static const std::filesystem::path ShadersDir = "shaders";
-static const std::array ShaderIncludeDirs{ShadersDir};
-#else
-static const std::filesystem::path ShadersDir = "../src/shaders"; // Relative to `build/`.
-static const std::filesystem::path BuildShadersDir = "shaders";
-static const std::array ShaderIncludeDirs{ShadersDir, BuildShadersDir};
-#endif
-
 static std::filesystem::path ResolveIncludePath(const std::filesystem::path &requested) {
-    for (const auto &dir : ShaderIncludeDirs) {
-        const auto candidate = dir / requested;
-        std::error_code ec;
-        if (std::filesystem::exists(candidate, ec)) return candidate;
-    }
+    auto candidate = Paths::Shaders() / requested;
+    std::error_code ec;
+    if (std::filesystem::exists(candidate, ec)) return candidate;
     throw std::runtime_error(std::format("Failed to resolve shader path '{}'", requested.string()));
 }
 
-// Resolves #include directives relative to `ShadersDir`
 class ShaderIncluder : public shaderc::CompileOptions::IncluderInterface {
 public:
     shaderc_include_result *GetInclude(
@@ -118,14 +106,14 @@ static vk::UniqueShaderModule CompileToModule(vk::Device device, ShaderType type
 }
 
 vk::UniqueShaderModule CompileShaderModule(vk::Device device, ShaderType type, const std::filesystem::path &relative_path) {
-    return CompileToModule(device, type, ShadersDir / relative_path);
+    return CompileToModule(device, type, Paths::Shaders() / relative_path);
 }
 
 std::vector<vk::PipelineShaderStageCreateInfo> Shaders::CompileAll(vk::Device device) {
     auto stages =
         Resources | transform([device](auto &resource) {
             const auto type = resource.TypePath.Type;
-            const auto path = ShadersDir / resource.TypePath.Path;
+            const auto path = Paths::Shaders() / resource.TypePath.Path;
             resource.Module = CompileToModule(device, type, path);
             vk::PipelineShaderStageCreateInfo stage_info{vk::PipelineShaderStageCreateFlags{}, type, *resource.Module, "main"};
             if (resource.Specialization) stage_info.setPSpecializationInfo(&resource.Specialization->Info);

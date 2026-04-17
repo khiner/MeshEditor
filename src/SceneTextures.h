@@ -124,5 +124,5 @@ EnvironmentPrefiltered CreateIblFromHdri(
 IblSamplers MakeIblSamplers(const EnvironmentPrefiltered &, const EnvironmentStore &);
 TextureEntry CreateDefaultLutTexture(
     const SceneVulkanResources &, TextureUploadBatch &, DescriptorSlots &,
-    std::string_view lut_path, std::string_view name
+    const std::filesystem::path &lut_path, std::string_view name
 );

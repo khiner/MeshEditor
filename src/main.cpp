@@ -1,3 +1,4 @@
+#include "Paths.h"
 #include "Scene.h"
 #include "Timer.h"
 #include "Window.h"
@@ -20,9 +21,8 @@
 #include <exception>
 #include <format>
 #include <iostream>
-#include <ranges>
 
-using std::ranges::any_of, std::ranges::distance, std::ranges::find_if, std::ranges::find_if_not, std::ranges::to;
+using std::ranges::any_of, std::ranges::distance, std::ranges::find_if, std::ranges::find_if_not;
 namespace fs = std::filesystem;
 
 // #define IMGUI_UNLIMITED_FRAME_RATE
@@ -90,7 +90,7 @@ enum class FontFamily {
 constexpr float FontAtlasScale = 2; // Rasterize to a scaled-up texture and scale down the font size globally, for sharper text.
 ImFont *MainFont{nullptr}, *MonospaceFont{nullptr};
 ImFont *AddFont(FontFamily family, const std::string_view font_file) {
-    static const auto FontsPath = fs::path("./") / "res" / "fonts";
+    static const auto FontsPath = Paths::Res() / "fonts";
     static constexpr auto PixelsForFamily = [] {
         // These are eyeballed.
         std::array<uint, size_t(FontFamily::Count)> v{};
@@ -312,6 +312,8 @@ void run(const char *initial_file, bool quiet) {
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) {
         throw std::runtime_error(std::format("SDL_Init error: {}", SDL_GetError()));
     }
+    if (const char *base = SDL_GetBasePath()) Paths::Init(base);
+    else throw std::runtime_error(std::format("SDL_GetBasePath error: {}", SDL_GetError()));
 
     // Create window with Vulkan graphics context.
     auto *window = SDL_CreateWindow(

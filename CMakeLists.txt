@@ -147,11 +147,23 @@ include_directories(
     src
 )
 
-# Symlink resources into the build directory so the app can find them.
+# Symlink resources next to the executable.
 set(RESOURCE_DEST "${CMAKE_BINARY_DIR}/res")
 if(NOT EXISTS ${RESOURCE_DEST})
     file(CREATE_LINK "${CMAKE_SOURCE_DIR}/res" ${RESOURCE_DEST} SYMBOLIC)
 endif()
+
+# Symlink each source shader into build/shaders. Generated GLSL (from the GPU schema step)
+# is also written here, giving a single runtime shader path. Add new files → reconfigure.
+file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/shaders")
+file(GLOB SHADER_SOURCE_FILES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/src/shaders/*")
+foreach(src IN LISTS SHADER_SOURCE_FILES)
+    get_filename_component(name "${src}" NAME)
+    set(dst "${CMAKE_BINARY_DIR}/shaders/${name}")
+    if(NOT EXISTS "${dst}")
+        file(CREATE_LINK "${src}" "${dst}" SYMBOLIC)
+    endif()
+endforeach()
 
 if(APPLE)
   target_include_directories(${PROJECT_NAME} PRIVATE /opt/homebrew/include/eigen3)
@@ -201,11 +213,3 @@ target_compile_options(${PROJECT_NAME} PRIVATE -Wall -Wextra -Wno-elaborated-enu
 add_definitions(-DTETLIBRARY)
 add_definitions(-DIMGUI_DEFINE_MATH_OPERATORS -DGLM_ENABLE_EXPERIMENTAL)
 add_definitions(-DMA_NO_ENGINE) # Reduce MA build size
-
-# Copy shader files on every release build.
-if(CMAKE_BUILD_TYPE MATCHES Release)
-    add_custom_target(copy_shaders ALL
-        COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_SOURCE_DIR}/src/shaders ${CMAKE_BINARY_DIR}/shaders
-    )
-    add_dependencies(${PROJECT_NAME} copy_shaders)
-endif()
