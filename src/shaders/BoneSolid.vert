@@ -10,7 +10,7 @@ void main() {
     const DrawData draw = GetDrawData();
     const uint idx = IndexBuffers[draw.IndexSlotOffset.Slot].Indices[draw.IndexSlotOffset.Offset + uint(gl_VertexIndex)];
     const Vertex vert = VertexBuffers[draw.VertexSlot].Vertices[idx + draw.VertexOffset];
-    const WorldTransform world = ModelBuffers[draw.ModelSlot].Models[draw.FirstInstance];
+    const Transform world = ModelBuffers[draw.ModelSlot].Models[draw.FirstInstance];
 
     const mat4 M = trs_to_mat4(world);
     const vec3 world_pos = (M * vec4(vert.Position, 1.0)).xyz;

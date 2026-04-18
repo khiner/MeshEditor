@@ -1,27 +1,7 @@
 #include "SceneTree.h"
+#include "TransformMath.h"
 
 #include <entt/entity/registry.hpp>
-#include <glm/gtx/matrix_decompose.hpp>
-
-WorldTransform ToWorldTransform(const mat4 &m) {
-    vec3 scale, translation, skew;
-    vec4 perspective;
-    quat rotation;
-    glm::decompose(m, scale, rotation, translation, skew, perspective);
-    return {translation, QuatToVec4(glm::normalize(rotation)), scale};
-}
-
-mat4 ToMatrix(const WorldTransform &wt) {
-    return glm::translate(I4, wt.Position) * glm::mat4_cast(glm::normalize(Vec4ToQuat(wt.Rotation))) * glm::scale(I4, wt.Scale);
-}
-
-Transform ToTransform(const mat4 &m) {
-    vec3 scale, translation, skew;
-    vec4 perspective;
-    quat rotation;
-    if (!glm::decompose(m, scale, rotation, translation, skew, perspective)) return {};
-    return {translation, glm::normalize(rotation), scale};
-}
 
 mat4 GetParentDelta(const entt::registry &r, entt::entity e) {
     const auto *node = r.try_get<SceneNode>(e);

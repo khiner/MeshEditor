@@ -26,7 +26,7 @@ layout(location = 13) out vec2 EdgePos;
 layout(constant_id = 0) const uint OverlayKind = 0u;
 layout(constant_id = 1) const uint IsLineDraw = 0u;
 
-vec3 ComputeWorldPos(DrawData draw, WorldTransform world, uint vertex_index) {
+vec3 ComputeWorldPos(DrawData draw, Transform world, uint vertex_index) {
     vec3 pos = VertexBuffers[draw.VertexSlot].Vertices[vertex_index + draw.VertexOffset].Position;
     vec3 n = vec3(0);
     ApplyMorphDeform(draw, pos, vertex_index, n);
@@ -38,7 +38,7 @@ void main() {
     const DrawData draw = GetDrawData();
     const uint idx = IndexBuffers[draw.IndexSlotOffset.Slot].Indices[draw.IndexSlotOffset.Offset + uint(gl_VertexIndex)];
     const Vertex vert = VertexBuffers[draw.VertexSlot].Vertices[idx + draw.VertexOffset];
-    const WorldTransform world = ModelBuffers[draw.ModelSlot].Models[draw.FirstInstance];
+    const Transform world = ModelBuffers[draw.ModelSlot].Models[draw.FirstInstance];
 
     uint element_state = 0u;
     uint face_id = 0u;
@@ -134,7 +134,7 @@ void main() {
             WorldTangent = vec4(0, 0, 0, 1);
         }
     }
-    WorldScale = (world.Scale.x + world.Scale.y + world.Scale.z) / 3.0;
+    WorldScale = (world.S.x + world.S.y + world.S.z) / 3.0;
     gl_Position = SceneViewUBO.ViewProj * vec4(world_pos, 1.0);
     if (IsLineDraw != 0u) {
         gl_Position.z -= NdcOffsetFactor() * 1.0; // Push lines in front of faces (Blender: edge_ndc_offset_)

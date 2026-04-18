@@ -15,7 +15,7 @@
 #include "PBRMaterial.glsl"
 #include "MaterialAlphaMode.glsl"
 #include "PunctualLight.glsl"
-#include "WorldTransform.glsl"
+#include "Transform.glsl"
 #include "TRSUtils.glsl"
 #include "brdf.glsl"
 #include "tonemapping.glsl"
@@ -25,7 +25,7 @@ layout(set = 0, binding = BINDING_LightBuffer, scalar) readonly buffer LightBuff
 } LightBuffers[];
 
 layout(set = 0, binding = BINDING_ModelBuffer, scalar) readonly buffer ModelBufferBlock {
-    WorldTransform Models[];
+    Transform Models[];
 } ModelBuffers[];
 
 layout(set = 0, binding = BINDING_MaterialBuffer, scalar) readonly buffer MaterialBufferBlock {

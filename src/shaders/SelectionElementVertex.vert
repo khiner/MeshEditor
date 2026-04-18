@@ -22,7 +22,7 @@ void main() {
     }
 
     const Vertex vert = VertexBuffers[draw.VertexSlot].Vertices[idx + draw.VertexOffset];
-    const WorldTransform world = ModelBuffers[draw.ModelSlot].Models[draw.FirstInstance];
+    const Transform world = ModelBuffers[draw.ModelSlot].Models[draw.FirstInstance];
 
     ElementId = draw.ElementIdOffset + idx + 1;
 

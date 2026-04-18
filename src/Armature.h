@@ -1,8 +1,8 @@
 #pragma once
 
 #include "AnimationData.h"
-#include "Transform.h"
 #include "entt_fwd.h"
+#include "gpu/Transform.h"
 #include "numeric/mat3.h"
 #include "numeric/mat4.h"
 #include "vulkan/Range.h"

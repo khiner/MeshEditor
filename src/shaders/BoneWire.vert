@@ -15,7 +15,7 @@ layout(location = 13) out vec2 EdgePos;
 
 void main() {
     const DrawData draw = GetDrawData();
-    const WorldTransform world = ModelBuffers[draw.ModelSlot].Models[draw.FirstInstance];
+    const Transform world = ModelBuffers[draw.ModelSlot].Models[draw.FirstInstance];
     const mat4 M = trs_to_mat4(world);
 
     // Build view matrix from SceneViewUBO

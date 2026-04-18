@@ -1,9 +1,14 @@
 #pragma once
 
-#include "Transform.h"
 #include "entt_fwd.h"
-#include "gpu/WorldTransform.h"
+#include "gpu/Transform.h"
 #include "numeric/mat4.h"
+
+// Distinct component type so an entity can hold both local and world transforms.
+struct WorldTransform : Transform {
+    using Transform::Transform;
+    WorldTransform(const Transform &t) : Transform{t} {}
+};
 
 struct SceneNode {
     entt::entity Parent{null_entity};
@@ -43,11 +48,6 @@ struct Children {
     ChildrenIterator begin() const;
     ChildrenIterator end() const { return {R, null_entity}; }
 };
-
-mat4 ToMatrix(const WorldTransform &);
-WorldTransform ToWorldTransform(const mat4 &);
-inline WorldTransform ToWorldTransform(const Transform &t) { return {t.P, QuatToVec4(glm::normalize(t.R)), t.S}; }
-Transform ToTransform(const mat4 &);
 
 mat4 GetParentDelta(const entt::registry &, entt::entity);
 entt::entity GetParentEntity(const entt::registry &, entt::entity);

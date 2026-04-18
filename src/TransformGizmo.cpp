@@ -1,5 +1,6 @@
 #include "TransformGizmo.h"
 #include "ViewCamera.h"
+#include "numeric/vec4.h"
 
 #include "imgui.h"
 

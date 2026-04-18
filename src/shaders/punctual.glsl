@@ -33,20 +33,20 @@ float getSpotAttenuation(vec3 point_to_light, vec3 spot_direction, float outerCo
     return 0.0;
 }
 
-vec3 getLightEmissionDirection(const WorldTransform wt) {
+vec3 getLightEmissionDirection(const Transform wt) {
     // Emission axis is transform local -Z.
-    const vec3 local_plus_z = quat_rotate(wt.Rotation, vec3(0.0, 0.0, 1.0));
+    const vec3 local_plus_z = quat_rotate(wt.R, vec3(0.0, 0.0, 1.0));
     return -safeNormalize(local_plus_z, vec3(0.0, 0.0, 1.0));
 }
 
-vec3 getPointToLight(PunctualLight light, const WorldTransform wt, vec3 world_position, vec3 emission_direction) {
+vec3 getPointToLight(PunctualLight light, const Transform wt, vec3 world_position, vec3 emission_direction) {
     // Directional point-to-light vectors are opposite emission direction.
     if (light.Type == PunctualLightType_Directional) return -emission_direction;
-    return wt.Position - world_position;
+    return wt.P - world_position;
 }
 
 vec3 getLightIntensity(PunctualLight light, vec3 worldPosition, out vec3 L) {
-    const WorldTransform wt = ModelBuffers[nonuniformEXT(light.TransformSlotOffset.Slot)].Models[light.TransformSlotOffset.Offset];
+    const Transform wt = ModelBuffers[nonuniformEXT(light.TransformSlotOffset.Slot)].Models[light.TransformSlotOffset.Offset];
     const vec3 emission_direction = getLightEmissionDirection(wt);
     const vec3 point_to_light = getPointToLight(light, wt, worldPosition, emission_direction);
 

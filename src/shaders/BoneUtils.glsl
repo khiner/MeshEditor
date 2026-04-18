@@ -47,11 +47,11 @@ struct BoneBillboard {
     float radius;
 };
 
-// Build a camera-facing billboard from a disc mesh vertex and a sphere WorldTransform.
+// Build a camera-facing billboard from a disc mesh vertex and a sphere Transform.
 // Disc vertices are expected in XY plane with radius 0.05.
-BoneBillboard bone_sphere_billboard(WorldTransform world, vec3 vert_pos) {
-    vec3 center = world.Position;
-    float radius = world.Scale.x;
+BoneBillboard bone_sphere_billboard(Transform world, vec3 vert_pos) {
+    vec3 center = world.P;
+    float radius = world.S.x;
 
     vec3 to_cam = SceneViewUBO.CameraPosition - center;
     float dist = length(to_cam);

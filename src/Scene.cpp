@@ -2,6 +2,7 @@
 #include "SceneDefaults.h"
 #include "SceneTextures.h"
 #include "SceneTree.h"
+#include "TransformMath.h"
 
 #include "Armature.h"
 #include "BBox.h"
@@ -48,7 +49,6 @@ using std::ranges::any_of, std::ranges::find, std::ranges::find_if, std::ranges:
 using std::views::iota, std::views::transform;
 
 namespace {
-mat4 RestLocalToMatrix(const Transform &t) { return glm::translate(I4, t.P) * glm::mat4_cast(glm::normalize(t.R)) * glm::scale(I4, t.S); }
 constexpr vk::Extent2D ToExtent2D(vk::Extent3D extent) { return {extent.width, extent.height}; }
 const vk::ClearColorValue Transparent{0, 0, 0, 0};
 
@@ -277,11 +277,7 @@ vec3 ComputeElementWorldPosition(const entt::registry &r, entt::entity instance_
     const auto &mesh = r.get<Mesh>(r.get<Instance>(instance_entity).Entity);
     const auto local_pos = ComputeElementLocalPosition(mesh, element, handle);
     const auto &wt = r.get<WorldTransform>(instance_entity);
-    return {wt.Position + glm::rotate(Vec4ToQuat(wt.Rotation), wt.Scale * local_pos)};
-}
-
-Transform ComposeWorldTransform(const Transform &parent, const Transform &local) {
-    return {.P = parent.P + glm::rotate(parent.R, parent.S * local.P), .R = glm::normalize(parent.R * local.R), .S = parent.S * local.S};
+    return {wt.P + glm::rotate(wt.R, wt.S * local_pos)};
 }
 
 struct EditTransformContext {
@@ -1380,15 +1376,14 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
                     const auto vertex_states = Meshes->GetVertexStates(mesh.GetStoreId());
                     const auto vertices = mesh.GetVerticesSpan();
                     const auto &wt = R.get<const WorldTransform>(instance_entity);
-                    const auto wt_rot = Vec4ToQuat(wt.Rotation);
-                    const auto inv_rot = glm::conjugate(wt_rot);
-                    const auto inv_scale = 1.f / wt.Scale;
-                    const auto pivot_rel = pending.Pivot - wt.Position;
+                    const auto inv_rot = glm::conjugate(wt.R);
+                    const auto inv_scale = 1.f / wt.S;
+                    const auto pivot_rel = pending.Pivot - wt.P;
                     bool any_moved{false};
                     for (uint32_t vi = 0; vi < vertex_states.size(); ++vi) {
                         if ((vertex_states[vi] & ElementStateSelected) == 0u) continue;
                         const auto local_pos = vertices[vi].Position;
-                        const auto world_rel = glm::rotate(wt_rot, wt.Scale * local_pos);
+                        const auto world_rel = glm::rotate(wt.R, wt.S * local_pos);
                         const auto offset = glm::rotate(pending.Delta.R, pending.Delta.S * (world_rel - pivot_rel));
                         const auto new_rel = pivot_rel + offset + pending.Delta.P;
                         const auto new_local = inv_scale * glm::rotate(inv_rot, new_rel);
@@ -1478,7 +1473,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
                 const float clip_time = clip.DurationSeconds > 0 ? std::fmod(eval_seconds, clip.DurationSeconds) : 0.0f;
                 std::array<Transform, 1> local_pose{node_anim.RestLocal};
                 EvaluateAnimation(clip, clip_time, local_pose);
-                const auto t = ComposeWorldTransform(node_anim.ParentBindWorld, local_pose.front());
+                const auto t = ComposeLocalTransforms(node_anim.ParentBindWorld, local_pose.front());
                 R.replace<Transform>(entity, t);
                 request_rerecord = true;
             }
@@ -1657,7 +1652,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
                     }
 
                     if (should_patch) R.patch<Transform>(b, [&](auto &t) { t.P = local.P; t.R = local.R; });
-                    pose_state->BonePoseWorld[i] = parent_pose_world * RestLocalToMatrix(local);
+                    pose_state->BonePoseWorld[i] = parent_pose_world * ToMatrix(local);
                 }
                 if (rest_pose_edited) {
                     // Recompute RestWorld in topological order, preserving world positions of untransformed bones.
@@ -1668,7 +1663,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
                         const mat4 parent_world = (parent == InvalidBoneIndex) ? I4 : armature.Bones[parent].RestWorld;
                         const auto b = arm_obj_comp.BoneEntities[i];
                         if (transform_end.contains(b) || (local_changes.contains(b) && !R.all_of<StartTransform>(b))) {
-                            armature.Bones[i].RestWorld = parent_world * RestLocalToMatrix(armature.Bones[i].RestLocal);
+                            armature.Bones[i].RestWorld = parent_world * ToMatrix(armature.Bones[i].RestLocal);
                         } else {
                             // Preserve old world position, adjust RestLocal to compensate for parent change.
                             const mat4 new_local_mat = glm::inverse(parent_world) * armature.Bones[i].RestWorld;
@@ -1695,13 +1690,10 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         // Recompute WorldTransform for all entities with changed local transforms or parenting.
         // Runs after bone sync so bone Transform patches are included in a single pass.
         if (const auto &dirty = reactive<changes::TransformDirty>(R); !dirty.empty()) {
-            static const auto TransformToMatrix = [](const Transform &t) {
-                return glm::translate(I4, t.P) * glm::mat4_cast(glm::normalize(t.R)) * glm::scale(I4, t.S);
-            };
             const auto update_wt = [&](this const auto &self, entt::entity e, bool propagate) -> void {
                 const auto *node = R.try_get<SceneNode>(e);
                 const auto &t = R.get<const Transform>(e);
-                node && node->Parent != entt::null ? R.emplace_or_replace<WorldTransform>(e, ToWorldTransform(GetParentDelta(R, e) * TransformToMatrix(t))) : R.emplace_or_replace<WorldTransform>(e, ToWorldTransform(t));
+                node && node->Parent != entt::null ? R.emplace_or_replace<WorldTransform>(e, ToTransform(GetParentDelta(R, e) * ToMatrix(t))) : R.emplace_or_replace<WorldTransform>(e, t);
                 if (propagate) {
                     for (const auto child : Children{&R, e}) self(child, true);
                 }
@@ -1734,7 +1726,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
                 const auto *wt = R.try_get<const WorldTransform>(e);
                 if (!wt) return;
                 auto display_wt = *wt;
-                if (const auto *ds = R.try_get<BoneDisplayScale>(e)) display_wt.Scale = vec3{ds->Value};
+                if (const auto *ds = R.try_get<BoneDisplayScale>(e)) display_wt.S = vec3{ds->Value};
                 wt_writes.push_back({ri->BufferIndex, display_wt});
                 // Bone joint sphere transforms (head and tail).
                 if (const auto *joints = R.try_get<const BoneJointEntities>(e); joints && R.all_of<BoneDisplayScale>(e)) {
@@ -1742,13 +1734,13 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
                     const float sphere_scale = bone_length * 0.06f;
                     if (joints->Head != entt::null) {
                         if (const auto *jri = R.try_get<const RenderInstance>(joints->Head)) {
-                            wt_writes.push_back({jri->BufferIndex, {wt->Position, {0, 0, 0, 1}, vec3{sphere_scale}}});
+                            wt_writes.push_back({jri->BufferIndex, Transform{wt->P, {1, 0, 0, 0}, vec3{sphere_scale}}});
                         }
                     }
                     if (joints->Tail != entt::null) {
                         if (const auto *jri = R.try_get<const RenderInstance>(joints->Tail)) {
-                            const vec3 tail_pos = wt->Position + glm::quat(wt->Rotation.w, wt->Rotation.x, wt->Rotation.y, wt->Rotation.z) * vec3{0, bone_length, 0};
-                            wt_writes.push_back({jri->BufferIndex, {tail_pos, {0, 0, 0, 1}, vec3{sphere_scale}}});
+                            const vec3 tail_pos = wt->P + wt->R * vec3{0, bone_length, 0};
+                            wt_writes.push_back({jri->BufferIndex, Transform{tail_pos, {1, 0, 0, 0}, vec3{sphere_scale}}});
                         }
                     }
                 }
@@ -1833,7 +1825,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
             .IsTransforming = pending ? 1u : 0u,
             .PendingPivot = pending ? pending->Pivot : vec3{},
             .PendingTranslation = pending ? pending->Delta.P : vec3{},
-            .PendingRotation = pending ? QuatToVec4(pending->Delta.R) : vec4{0, 0, 0, 1},
+            .PendingRotation = pending ? pending->Delta.R : quat{1, 0, 0, 0},
             .PendingScale = pending ? pending->Delta.S : vec3{1},
             .ScreenPixelScale = screen_pixel_scale,
             .ViewportSize = {float(render_extent.width), float(render_extent.height)},
@@ -2012,7 +2004,7 @@ entt::entity Scene::AddMeshInstance(entt::entity mesh_entity, MeshInstanceCreate
     R.emplace<Instance>(instance_entity, mesh_entity);
     R.emplace<ObjectKind>(instance_entity, ObjectType::Mesh);
     R.emplace<Transform>(instance_entity, info.Transform);
-    R.emplace<WorldTransform>(instance_entity, ToWorldTransform(info.Transform));
+    R.emplace<WorldTransform>(instance_entity, info.Transform);
     R.emplace<Name>(instance_entity, CreateName(info.Name));
 
     SetVisible(instance_entity, true); // Always set visibility to true first, since this sets up the model buffer/indices.
@@ -2076,7 +2068,7 @@ void Scene::CreateBoneInstances(entt::entity arm_obj_entity, entt::entity arm_da
         R.emplace<BoneDisplayScale>(bone_entity, bone_scales[i]);
         const auto bone_transform = Transform{bone.RestLocal.P, bone.RestLocal.R, vec3{1}};
         R.emplace<Transform>(bone_entity, bone_transform);
-        R.emplace<WorldTransform>(bone_entity, ToWorldTransform(bone_transform));
+        R.emplace<WorldTransform>(bone_entity, bone_transform);
         bone_entities[i] = bone_entity;
     }
 
@@ -2168,7 +2160,7 @@ entt::entity Scene::CreateSingleBoneInstance(entt::entity arm_obj_entity, BoneId
     R.emplace<BoneDisplayScale>(bone_entity, ComputeBoneDisplayScale(armature, new_index));
     const Transform bone_transform{bone.RestLocal.P, bone.RestLocal.R, vec3{1}};
     R.emplace<Transform>(bone_entity, bone_transform);
-    R.emplace<WorldTransform>(bone_entity, ToWorldTransform(bone_transform));
+    R.emplace<WorldTransform>(bone_entity, bone_transform);
 
     const auto parent_entity = bone.ParentIndex == InvalidBoneIndex ? arm_obj_entity : arm_obj.BoneEntities[bone.ParentIndex];
     SetParent(R, bone_entity, parent_entity);
@@ -2328,7 +2320,7 @@ entt::entity Scene::AddArmature(ObjectCreateInfo info) {
     R.emplace<ObjectKind>(entity, ObjectType::Armature);
     R.emplace<ArmatureObject>(entity, data_entity);
     R.emplace<Transform>(entity, info.Transform);
-    R.emplace<WorldTransform>(entity, ToWorldTransform(info.Transform));
+    R.emplace<WorldTransform>(entity, info.Transform);
     R.emplace<Name>(entity, CreateName(info.Name.empty() ? "Armature" : info.Name));
 
     ApplySelectBehavior(entity, info.Select);
@@ -2365,7 +2357,7 @@ entt::entity Scene::CreateExtrasObject(std::span<const vec3> positions, std::spa
     R.emplace<ObjectKind>(entity, type);
     R.emplace<Instance>(entity, buffer_entity);
     R.emplace<Transform>(entity, info.Transform);
-    R.emplace<WorldTransform>(entity, ToWorldTransform(info.Transform));
+    R.emplace<WorldTransform>(entity, info.Transform);
     R.emplace<Name>(entity, CreateName(info.Name.empty() ? default_name : info.Name));
 
     SetVisible(entity, true);
@@ -2463,7 +2455,7 @@ void Scene::SyncColliderWireframes() {
 
         auto set_wt = [&](entt::entity inst, mat4 m) {
             if (!R.valid(inst)) return;
-            R.replace<WorldTransform>(inst, ToWorldTransform(m));
+            R.replace<WorldTransform>(inst, ToTransform(m));
         };
 
         std::visit(
@@ -2698,7 +2690,7 @@ entt::entity Scene::DuplicateLinked(entt::entity e, std::optional<MeshInstanceCr
             R.emplace<ArmatureObject>(e_new, armature->Entity);
             const auto t = info ? info->Transform : R.get<const Transform>(e);
             R.emplace_or_replace<Transform>(e_new, t);
-            R.emplace<WorldTransform>(e_new, ToWorldTransform(t));
+            R.emplace<WorldTransform>(e_new, t);
 
             ApplySelectBehavior(e_new, select_behavior);
             CreateBoneInstances(e_new, armature->Entity);
@@ -2725,7 +2717,7 @@ entt::entity Scene::DuplicateLinked(entt::entity e, std::optional<MeshInstanceCr
     R.emplace<ObjectKind>(e_new, ObjectType::Mesh);
     const auto t_new = info ? info->Transform : R.get<const Transform>(e);
     R.emplace_or_replace<Transform>(e_new, t_new);
-    R.emplace<WorldTransform>(e_new, ToWorldTransform(t_new));
+    R.emplace<WorldTransform>(e_new, t_new);
     SetVisible(e_new, !info || info->Visible);
     if (const auto *armature_modifier = R.try_get<ArmatureModifier>(e)) R.emplace<ArmatureModifier>(e_new, *armature_modifier);
     if (const auto *bone_attachment = R.try_get<BoneAttachment>(e)) R.emplace<BoneAttachment>(e_new, *bone_attachment);
@@ -3073,7 +3065,7 @@ void Scene::RecordRenderCommandBuffer(bool silhouette_only) {
                 entt::entity mesh_entity = entity;
                 if (const auto *instance = R.try_get<const Instance>(entity)) mesh_entity = instance->Entity;
                 if (!R.valid(mesh_entity) || !R.all_of<Mesh>(mesh_entity)) continue;
-                const auto delta = wt.Position - camera_position;
+                const auto delta = wt.P - camera_position;
                 const auto distance2 = dot(delta, delta);
                 if (const auto it = farthest_distance2_by_mesh.find(mesh_entity); it != farthest_distance2_by_mesh.end()) {
                     it->second = std::max(it->second, distance2);
@@ -4385,9 +4377,8 @@ void Scene::WaitForRender() {
 
 void Scene::SnapToCamera(entt::entity camera_entity) {
     const auto &wt = R.get<WorldTransform>(camera_entity);
-    const vec3 pos = wt.Position;
-    const vec3 fwd = -glm::normalize(glm::rotate(Vec4ToQuat(wt.Rotation), vec3{0.f, 0.f, 1.f}));
-    R.replace<ViewCamera>(SceneEntity, ViewCamera{pos, pos + fwd, R.get<Camera>(camera_entity)});
+    const vec3 fwd = -glm::normalize(glm::rotate(wt.R, vec3{0.f, 0.f, 1.f}));
+    R.replace<ViewCamera>(SceneEntity, ViewCamera{wt.P, wt.P + fwd, R.get<Camera>(camera_entity)});
 }
 
 #include "audio/AudioSystem.h"

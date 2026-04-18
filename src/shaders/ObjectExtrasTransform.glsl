@@ -14,9 +14,9 @@ uint GetVertexClass(DrawData draw, uint idx) {
     return VCLASS_NONE;
 }
 
-vec3 ObjectExtrasWorldPos(DrawData draw, Vertex vert, WorldTransform world, uint idx) {
+vec3 ObjectExtrasWorldPos(DrawData draw, Vertex vert, Transform world, uint idx) {
     const uint vertex_class = GetVertexClass(draw, idx);
-    const vec3 object_origin = world.Position;
+    const vec3 object_origin = world.P;
     if (vertex_class == VCLASS_BILLBOARD || vertex_class == VCLASS_SCREENSPACE) {
         // Billboard: rotate local XY-plane vertices to face the camera.
         const vec3 to_camera_vec = SceneViewUBO.CameraPosition - object_origin;

@@ -2,7 +2,7 @@
 
 #include "gpu/DrawData.h"
 #include "gpu/DrawPassPushConstants.h"
-#include "gpu/WorldTransform.h"
+#include "gpu/Transform.h"
 
 struct DrawBatchInfo {
     uint32_t DrawDataSlotOffset{0}, DrawCount{0};

@@ -1,5 +1,6 @@
 #include "GltfLoader.h"
 
+#include "TransformMath.h"
 #include "Variant.h"
 #include "numeric/vec2.h"
 #include "numeric/vec3.h"
@@ -10,8 +11,6 @@
 #include <fastgltf/tools.hpp>
 #include <fastgltf/types.hpp>
 #include <simdjson.h>
-
-#include <glm/gtx/matrix_decompose.hpp>
 
 #include <algorithm>
 #include <cmath>
@@ -27,16 +26,6 @@
 
 namespace gltf {
 namespace {
-Transform ToTransform(const mat4 &m) {
-    vec3 scale, translation, skew;
-    vec4 perspective;
-    quat rotation;
-    if (!glm::decompose(m, scale, rotation, translation, skew, perspective)) return {};
-    return {.P = translation, .R = glm::normalize(rotation), .S = scale};
-}
-
-mat4 ToMatrix(const Transform &t) { return glm::translate(I4, t.P) * glm::mat4_cast(glm::normalize(t.R)) * glm::scale(I4, t.S); }
-
 std::optional<uint32_t> ToIndex(std::size_t index, std::size_t upper_bound) {
     if (index >= upper_bound) return {};
     return index;
@@ -99,7 +88,7 @@ vec2 ToVec2(const fastgltf::math::nvec2 &v) { return {v.x(), v.y()}; }
 vec3 ToVec3(const fastgltf::math::nvec3 &v) { return {v.x(), v.y(), v.z()}; }
 vec4 ToVec4(const fastgltf::math::nvec4 &v) { return {v.x(), v.y(), v.z(), v.w()}; }
 quat ToQuat(const fastgltf::math::fquat &q) { return {q.w(), q.x(), q.y(), q.z()}; }
-Transform ToTransform(const fastgltf::TRS &trs) { return {.P = ToVec3(trs.translation), .R = glm::normalize(ToQuat(trs.rotation)), .S = ToVec3(trs.scale)}; }
+Transform TrsToTransform(const fastgltf::TRS &trs) { return {.P = ToVec3(trs.translation), .R = glm::normalize(ToQuat(trs.rotation)), .S = ToVec3(trs.scale)}; }
 
 // Converts any fastgltf optional texture info type (TextureInfo, NormalTextureInfo, OcclusionTextureInfo)
 // to a GPU TextureInfo with Slot = glTF texture index (resolved to a bindless slot later, in Scene.cpp).
@@ -1221,7 +1210,7 @@ std::expected<Scene, std::string> LoadScene(const std::filesystem::path &path) {
     std::vector<Transform> local_transforms(asset.nodes.size());
     for (uint32_t node_index = 0; node_index < asset.nodes.size(); ++node_index) {
         // DecomposeNodeMatrices guarantees node.transform is always TRS.
-        local_transforms[node_index] = ToTransform(std::get<fastgltf::TRS>(asset.nodes[node_index].transform));
+        local_transforms[node_index] = TrsToTransform(std::get<fastgltf::TRS>(asset.nodes[node_index].transform));
     }
     const auto traversal = TraverseSceneNodes(asset, local_transforms, uint32_t(scene_index));
 

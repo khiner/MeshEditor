@@ -13,7 +13,7 @@
 #include "MorphTargetVertex.glsl"
 #include "PBRMaterial.glsl"
 #include "PunctualLight.glsl"
-#include "WorldTransform.glsl"
+#include "Transform.glsl"
 #include "TRSUtils.glsl"
 
 layout(set = 0, binding = BINDING_VertexBuffer, scalar) readonly buffer VertexBuffer {
@@ -21,7 +21,7 @@ layout(set = 0, binding = BINDING_VertexBuffer, scalar) readonly buffer VertexBu
 } VertexBuffers[];
 
 layout(set = 0, binding = BINDING_ModelBuffer, scalar) readonly buffer ModelBuffer {
-    WorldTransform Models[];
+    Transform Models[];
 } ModelBuffers[];
 
 layout(set = 0, binding = BINDING_IndexBuffer, scalar) readonly buffer IndexBuffer {

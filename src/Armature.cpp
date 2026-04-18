@@ -1,5 +1,6 @@
 #include "Armature.h"
 #include "Entity.h"
+#include "TransformMath.h"
 
 #include <algorithm>
 #include <cassert>
@@ -10,8 +11,6 @@
 #include <entt/entity/registry.hpp>
 
 namespace {
-mat4 ToMatrix(const Transform &t) { return glm::translate(I4, t.P) * glm::mat4_cast(glm::normalize(t.R)) * glm::scale(I4, t.S); }
-
 void RebuildDerivedCaches(Armature &armature) {
     auto &bones = armature.Bones;
     armature.BoneIdToIndex.clear();
@@ -382,10 +381,9 @@ void RebuildArmatureStructure(entt::registry &r, entt::entity arm_data_entity) {
     armature.FinalizeStructure();
     armature.RecomputeRestWorld();
 
-    const Transform identity{vec3{0}, quat{1, 0, 0, 0}, vec3{1}};
     if (auto *ps = r.try_get<ArmaturePoseState>(arm_data_entity)) {
-        ps->BonePoseDelta.assign(armature.Bones.size(), identity);
-        ps->BoneUserOffset.assign(armature.Bones.size(), identity);
+        ps->BonePoseDelta.assign(armature.Bones.size(), Transform{});
+        ps->BoneUserOffset.assign(armature.Bones.size(), Transform{});
         ps->BonePoseWorld.assign(armature.Bones.size(), I4);
     }
     if (auto *anim = r.try_get<ArmatureAnimation>(arm_data_entity)) {

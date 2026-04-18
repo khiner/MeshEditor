@@ -6,6 +6,7 @@
 #include "SceneTextures.h"
 #include "SceneTree.h"
 #include "Timer.h"
+#include "TransformMath.h"
 #include "gltf/GltfLoader.h"
 #include "mesh/MeshStore.h"
 #include "mesh/MorphTargetData.h"
@@ -535,7 +536,7 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
         R.emplace<ArmatureObject>(armature_entity, armature_data_entity);
         const auto &t = anchor_it->second->WorldTransform;
         R.emplace<Transform>(armature_entity, t);
-        R.emplace<WorldTransform>(armature_entity, ToWorldTransform(t));
+        R.emplace<WorldTransform>(armature_entity, t);
         R.emplace<Name>(armature_entity, CreateName(skin.Name.empty() ? std::format("{}_Armature{}", name_prefix, skin.SkinIndex) : skin.Name));
 
         if (skin.ParentObjectNodeIndex) {
@@ -562,9 +563,8 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
 
         { // Create pose state — GPU deform buffer allocation deferred to ProcessComponentEvents.
             ArmaturePoseState pose_state;
-            const Transform identity_delta{vec3{0}, quat{1, 0, 0, 0}, vec3{1}};
-            pose_state.BonePoseDelta.resize(armature.Bones.size(), identity_delta);
-            pose_state.BoneUserOffset.resize(armature.Bones.size(), identity_delta);
+            pose_state.BonePoseDelta.resize(armature.Bones.size(), Transform{});
+            pose_state.BoneUserOffset.resize(armature.Bones.size(), Transform{});
             pose_state.BonePoseWorld.resize(armature.Bones.size(), I4);
             R.emplace<ArmaturePoseState>(armature_data_entity, std::move(pose_state));
         }

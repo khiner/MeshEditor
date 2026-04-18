@@ -1,5 +1,7 @@
 // All Jolt includes are isolated to this file.
 
+#include "TransformMath.h"
+
 #include "Jolt/Jolt.h"
 
 #include "Jolt/Core/Factory.h"

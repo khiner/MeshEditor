@@ -9,8 +9,8 @@ vec3 apply_pending_transform_world(vec3 world_pos) {
     return SceneViewUBO.PendingPivot + offset + SceneViewUBO.PendingTranslation;
 }
 
-vec3 trs_inverse_transform_point(WorldTransform t, vec3 pos) {
-    return quat_rotate(quat_conjugate(t.Rotation), pos - t.Position) / t.Scale;
+vec3 trs_inverse_transform_point(Transform t, vec3 pos) {
+    return quat_rotate(quat_conjugate(t.R), pos - t.P) / t.S;
 }
 
 bool should_apply_pending_transform(DrawData draw, uint idx) {
@@ -28,11 +28,11 @@ bool should_apply_pending_transform(DrawData draw, uint idx) {
     return (instance_state & STATE_SELECTED) != 0u;
 }
 
-vec3 apply_pending_transform(DrawData draw, WorldTransform world, vec3 local_pos, uint idx) {
+vec3 apply_pending_transform(DrawData draw, Transform world, vec3 local_pos, uint idx) {
     vec3 world_pos = trs_transform_point(world, local_pos);
     if (!should_apply_pending_transform(draw, idx)) return world_pos;
     if (pc.TransformVertexStateSlot != INVALID_SLOT) {
-        const WorldTransform primary = ModelBuffers[draw.ModelSlot].Models[draw.PrimaryEditInstanceIndex];
+        const Transform primary = ModelBuffers[draw.ModelSlot].Models[draw.PrimaryEditInstanceIndex];
         const vec3 primary_world = trs_transform_point(primary, local_pos);
         const vec3 pending_world = apply_pending_transform_world(primary_world);
         const vec3 pending_local = trs_inverse_transform_point(primary, pending_world);

@@ -293,6 +293,7 @@ enum class TargetLang {
 std::optional<std::string_view> BuiltinTypeFor(std::string_view type, TargetLang target) {
     if (type == "u8") return "uint8_t";
     if (type == "u32") return target == TargetLang::Cpp ? "uint32_t" : "uint";
+    if (type == "quat") return target == TargetLang::Cpp ? "quat" : "vec4";
     if (type == "float" || type == "vec2" || type == "uvec2" || type == "uvec4" || type == "vec3" || type == "vec4" || type == "mat3" || type == "mat4") return type;
     return {};
 }
@@ -504,7 +505,7 @@ int main(int argc, char **argv) {
 
         bool needs_array{false}, needs_cstdint{false},
             needs_uvec2{false}, needs_uvec4{false}, needs_vec2{false}, needs_vec3{false}, needs_vec4{false},
-            needs_mat3{false}, needs_mat4{false}, needs_slots{false};
+            needs_mat3{false}, needs_mat4{false}, needs_quat{false}, needs_slots{false};
         std::vector<std::string_view> cpp_includes;
         for (const auto &field : def.Fields) {
             const auto spec = ParseType(field.Type);
@@ -517,6 +518,7 @@ int main(int argc, char **argv) {
             if (spec.Base == "vec4") needs_vec4 = true;
             if (spec.Base == "mat3") needs_mat3 = true;
             if (spec.Base == "mat4") needs_mat4 = true;
+            if (spec.Base == "quat") needs_quat = true;
             if (field.DefaultValue.find("InvalidSlot") != std::string_view::npos ||
                 field.DefaultValue.find("InvalidOffset") != std::string_view::npos) needs_slots = true;
             if (IsStructType(spec.Base, structs) && spec.Base != def.Name) {
@@ -537,9 +539,10 @@ int main(int argc, char **argv) {
         if (needs_mat4) cpp_out << "#include \"numeric/mat4.h\"\n";
         if (needs_vec3) cpp_out << "#include \"numeric/vec3.h\"\n";
         if (needs_vec4) cpp_out << "#include \"numeric/vec4.h\"\n";
+        if (needs_quat) cpp_out << "#include \"numeric/quat.h\"\n";
         if (needs_slots) cpp_out << "#include \"vulkan/Slots.h\"\n";
         for (const auto &include : cpp_includes) cpp_out << "#include \"gpu/" << include << ".h\"\n";
-        if (needs_cstdint || needs_vec2 || needs_mat3 || needs_mat4 || needs_vec3 || needs_vec4 || needs_slots || !cpp_includes.empty()) cpp_out << "\n";
+        if (needs_cstdint || needs_vec2 || needs_mat3 || needs_mat4 || needs_vec3 || needs_vec4 || needs_quat || needs_slots || !cpp_includes.empty()) cpp_out << "\n";
 
         cpp_out << "struct " << def.Name << " {\n";
         for (const auto &field : def.Fields) {
@@ -555,6 +558,7 @@ int main(int argc, char **argv) {
                 }
             } else Fail("Unknown type: " + field.Type);
         }
+        cpp_out << "    bool operator==(const " << def.Name << " &) const = default;\n";
         cpp_out << "};\n";
     }
 

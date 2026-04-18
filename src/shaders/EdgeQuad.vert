@@ -11,7 +11,7 @@ layout(location = 1) out vec4 Color;
 
 void main() {
     const DrawData draw = GetDrawData();
-    const WorldTransform world = ModelBuffers[draw.ModelSlot].Models[draw.FirstInstance];
+    const Transform world = ModelBuffers[draw.ModelSlot].Models[draw.FirstInstance];
 
     // 6 vertices per edge quad (2 triangles).
     const uint edge_id = uint(gl_VertexIndex) / 6u;

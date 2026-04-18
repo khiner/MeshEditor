@@ -6,10 +6,10 @@
 #include "gpu/SceneViewUBO.h"
 #include "gpu/SelectionCounters.h"
 #include "gpu/SelectionNode.h"
+#include "gpu/Transform.h"
 #include "gpu/Vertex.h"
 #include "gpu/ViewportTheme.h"
 #include "gpu/WorkspaceLights.h"
-#include "gpu/WorldTransform.h"
 #include "vulkan/BufferArena.h"
 
 #include <numeric>
@@ -110,16 +110,16 @@ struct InstanceArena {
     std::span<uint8_t> GetMutableStates() {
         return {reinterpret_cast<uint8_t *>(StateBuffer.GetMutableRange(0, StateBuffer.UsedSize).data()), static_cast<size_t>(StateBuffer.UsedSize)};
     }
-    std::span<WorldTransform> GetMutableTransforms() {
+    std::span<Transform> GetMutableTransforms() {
         auto mapped = TransformBuffer.GetMutableRange(0, TransformBuffer.UsedSize);
-        return {reinterpret_cast<WorldTransform *>(mapped.data()), mapped.size() / sizeof(WorldTransform)};
+        return {reinterpret_cast<Transform *>(mapped.data()), mapped.size() / sizeof(Transform)};
     }
 
     mvk::Buffer TransformBuffer, ObjectIdBuffer, StateBuffer;
 
 private:
     void ForEachBuffer(auto &&fn) {
-        fn(TransformBuffer, sizeof(WorldTransform));
+        fn(TransformBuffer, sizeof(Transform));
         fn(ObjectIdBuffer, sizeof(uint32_t));
         fn(StateBuffer, sizeof(uint8_t));
     }

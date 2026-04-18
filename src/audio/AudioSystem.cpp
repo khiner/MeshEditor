@@ -8,9 +8,9 @@
 #include "SceneSelection.h"
 #include "SoundVertices.h"
 #include "Tets.h"
-#include "Transform.h"
 #include "Widgets.h" // imgui
 #include "Worker.h"
+#include "gpu/Transform.h"
 #include "mesh/Mesh.h"
 #include "scene_impl/SceneModeComponents.h"
 

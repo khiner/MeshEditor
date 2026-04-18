@@ -14,7 +14,7 @@ void main() {
     const uint vertex_count = max(draw.VertexCountOrHeadImageSlot, 1u);
     const uint idx = min(gl_VertexIndex, vertex_count - 1);
     const Vertex vert = VertexBuffers[draw.VertexSlot].Vertices[idx + draw.VertexOffset];
-    const WorldTransform world = ModelBuffers[draw.ModelSlot].Models[draw.FirstInstance];
+    const Transform world = ModelBuffers[draw.ModelSlot].Models[draw.FirstInstance];
 
     uint element_state = 0u;
     if (draw.ElementStateSlotOffset.Slot != INVALID_SLOT) {

@@ -3,6 +3,7 @@
 #include "SceneDefaults.h"
 #include "SceneTextures.h"
 #include "SceneTree.h"
+#include "TransformMath.h"
 #include "Widgets.h" // imgui
 
 #include "Armature.h"
@@ -18,8 +19,8 @@
 #include "audio/AudioSystem.h"
 #include "audio/RealImpact.h"
 #include "audio/RealImpactComponents.h"
+#include "gpu/Transform.h"
 #include "gpu/WorkspaceLights.h"
-#include "gpu/WorldTransform.h"
 #include "mesh/Mesh.h"
 #include "mesh/MeshStore.h"
 #include "mesh/Primitives.h"
@@ -464,11 +465,10 @@ void Scene::ExitLookThroughCamera() {
 
 void Scene::AnimateToCamera(entt::entity camera_entity) {
     const auto &wt = R.get<WorldTransform>(camera_entity);
-    const vec3 pos = wt.Position;
-    const vec3 fwd = -glm::normalize(glm::rotate(Vec4ToQuat(wt.Rotation), vec3{0.f, 0.f, 1.f}));
+    const vec3 fwd = -glm::normalize(glm::rotate(wt.R, vec3{0.f, 0.f, 1.f}));
     const vec3 away = -fwd; // Forward() points from target to position
     R.patch<ViewCamera>(SceneEntity, [&](auto &vc) {
-        vc.AnimateTo(pos + fwd, {std::atan2(away.z, away.x), std::asin(away.y)}, 1.f);
+        vc.AnimateTo(wt.P + fwd, {std::atan2(away.z, away.x), std::asin(away.y)}, 1.f);
     });
 }
 
@@ -1033,7 +1033,7 @@ void Scene::InteractOverlay() {
         const auto active_transform = [&]() -> Transform {
             if (gizmo_active_entity == entt::null) return {};
             const auto &wt = R.get<WorldTransform>(gizmo_active_entity);
-            return {wt.Position, Vec4ToQuat(wt.Rotation), wt.Scale};
+            return wt;
         }();
 
         std::vector<entt::entity> root_selected;
@@ -1067,7 +1067,7 @@ void Scene::InteractOverlay() {
                 const auto &wt = R.get<const WorldTransform>(instance_entity);
                 for (uint32_t vi = 0; vi < vertex_states.size(); ++vi) {
                     if ((vertex_states[vi] & ElementStateSelected) == 0u) continue;
-                    pivot += wt.Position + glm::rotate(Vec4ToQuat(wt.Rotation), wt.Scale * vertices[vi].Position);
+                    pivot += wt.P + glm::rotate(wt.R, wt.S * vertices[vi].Position);
                     ++vertex_count;
                 }
             }
@@ -1085,20 +1085,19 @@ void Scene::InteractOverlay() {
                 for (const auto e : root_selected) {
                     const auto &wt = R.get<WorldTransform>(e);
                     const auto *parts = R.try_get<const BoneSelection>(e);
-                    const vec3 head_pos = wt.Position;
                     if (!parts || parts->Root) {
-                        pivot_sum += head_pos;
+                        pivot_sum += wt.P;
                         ++pivot_count;
                     }
                     if (parts && parts->Tip) {
                         const float bl = R.get<BoneDisplayScale>(e).Value;
-                        pivot_sum += head_pos + glm::rotate(Vec4ToQuat(wt.Rotation), vec3{0, bl, 0});
+                        pivot_sum += wt.P + glm::rotate(wt.R, vec3{0, bl, 0});
                         ++pivot_count;
                     }
                 }
                 pivot = pivot_count > 0 ? pivot_sum / float(pivot_count) : vec3{};
             } else {
-                pivot = fold_left(root_selected | transform([&](auto e) { return R.get<WorldTransform>(e).Position; }), vec3{}, std::plus{}) / float(root_count);
+                pivot = fold_left(root_selected | transform([&](auto e) { return R.get<WorldTransform>(e).P; }), vec3{}, std::plus{}) / float(root_count);
             }
         }
 
@@ -1120,7 +1119,7 @@ void Scene::InteractOverlay() {
                     // Capture parent transform at drag start so world->local conversion uses a stable reference frame throughout the interaction.
                     for (const auto e : root_selected) {
                         const auto &wt = R.get<WorldTransform>(e);
-                        R.emplace<StartTransform>(e, Transform{wt.Position, Vec4ToQuat(wt.Rotation), wt.Scale}, ToTransform(GetParentDelta(R, e)));
+                        R.emplace<StartTransform>(e, wt, ToTransform(GetParentDelta(R, e)));
                         if (bone_edit_mode) {
                             if (const auto *ds = R.try_get<BoneDisplayScale>(e)) R.emplace<StartBoneLength>(e, ds->Value);
                         }
@@ -1229,7 +1228,7 @@ void Scene::DrawOverlay() {
         // Top-level objects: draw dot at own position.
         for (const auto [e, wt] : R.view<const WorldTransform>(entt::exclude<SubElementOf>).each()) {
             if (!R.any_of<Active, Selected>(e)) continue;
-            draw_dot(wt.Position, R.all_of<Active>(e));
+            draw_dot(wt.P, R.all_of<Active>(e));
         }
     }
 
@@ -1332,14 +1331,13 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
     if (CollapsingHeader("Transform")) {
         if (is_bone_edit) {
             const auto &wt = R.get<WorldTransform>(active_bone_entity);
-            const auto world_rot = Vec4ToQuat(wt.Rotation);
             const float bone_length = R.get<BoneDisplayScale>(active_bone_entity).Value;
 
-            vec3 head = wt.Position;
-            vec3 tail = head + glm::rotate(world_rot, vec3{0, bone_length, 0});
+            vec3 head = wt.P;
+            vec3 tail = head + glm::rotate(wt.R, vec3{0, bone_length, 0});
             vec3 dir;
             float roll;
-            BoneMat3ToVecRoll(glm::mat3_cast(world_rot), dir, roll);
+            BoneMat3ToVecRoll(glm::mat3_cast(wt.R), dir, roll);
             float roll_deg = glm::degrees(roll);
             float length = bone_length;
 
@@ -1453,9 +1451,9 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
         }
         if (TreeNode("World transform")) {
             const auto &wt = R.get<WorldTransform>(active_entity);
-            Text("Position: %.3f, %.3f, %.3f", wt.Position.x, wt.Position.y, wt.Position.z);
-            Text("Rotation: %.3f, %.3f, %.3f, %.3f", wt.Rotation.x, wt.Rotation.y, wt.Rotation.z, wt.Rotation.w);
-            Text("Scale: %.3f, %.3f, %.3f", wt.Scale.x, wt.Scale.y, wt.Scale.z);
+            Text("Position: %.3f, %.3f, %.3f", wt.P.x, wt.P.y, wt.P.z);
+            Text("Rotation: %.3f, %.3f, %.3f, %.3f", wt.R.x, wt.R.y, wt.R.z, wt.R.w);
+            Text("Scale: %.3f, %.3f, %.3f", wt.S.x, wt.S.y, wt.S.z);
             TreePop();
         }
     }

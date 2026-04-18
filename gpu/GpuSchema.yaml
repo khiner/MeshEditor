@@ -201,7 +201,8 @@ structs:
       - name: PendingTranslation
         type: vec3
       - name: PendingRotation
-        type: vec4
+        type: quat
+        default: "1, 0, 0, 0"
       - name: PendingScale
         type: vec3
       - name: ScreenPixelScale
@@ -358,14 +359,16 @@ structs:
         type: vec3
       - name: NormalDelta
         type: vec3
-  - name: WorldTransform
+  - name: Transform
     fields:
-      - name: Position
+      - name: P
         type: vec3
-      - name: Rotation
-        type: vec4
-      - name: Scale
+      - name: R
+        type: quat
+        default: "1, 0, 0, 0"
+      - name: S
         type: vec3
+        default: "1, 1, 1"
   - name: PunctualLight
     fields:
       - name: TransformSlotOffset
