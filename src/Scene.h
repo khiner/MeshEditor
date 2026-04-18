@@ -127,6 +127,9 @@ struct Scene {
     AnimationTimelineView &GetTimelineView() { return TimelineView; }
     const AnimationIcons &GetAnimationIcons() const { return AnimIcons; }
     void ApplyTimelineAction(const AnimationTimelineAction &);
+    // Start animation playback with presentation-friendly viewport settings
+    // (Material Preview shading, overlays hidden).
+    void Play();
 
     void CreateSvgResource(std::unique_ptr<SvgResource> &svg, std::filesystem::path path);
 

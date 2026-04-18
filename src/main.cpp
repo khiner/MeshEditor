@@ -625,7 +625,7 @@ void run(const char *initial_file, bool quiet, bool play) {
                     if (auto result = LoadFile(*scene, fs::path(initial_file)); !result) {
                         std::cerr << result.error() << std::endl;
                     } else if (play) {
-                        scene->ApplyTimelineAction(timeline_action::TogglePlay{});
+                        scene->Play();
                     }
                 } else {
                     constexpr PrimitiveShape default_shape{primitive::Cuboid{}};

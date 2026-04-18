@@ -785,6 +785,15 @@ void Scene::ApplyTimelineAction(const AnimationTimelineAction &action) {
     );
 }
 
+void Scene::Play() {
+    R.patch<SceneSettings>(SceneEntity, [](auto &s) {
+        s.ViewportShading = ViewportShadingMode::MaterialPreview;
+        s.FillMode = ViewportShadingMode::MaterialPreview;
+        s.ShowOverlays = false;
+    });
+    ApplyTimelineAction(timeline_action::TogglePlay{});
+}
+
 Scene::SyncResult Scene::SyncModelsBuffers() {
     // Consume the new-buffer-entity tracker. Categorize by type for deferred index buffer creation.
     std::vector<entt::entity> new_mesh_entities, new_extras_entities;
