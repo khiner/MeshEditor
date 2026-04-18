@@ -33,6 +33,7 @@ JPH_SUPPRESS_WARNINGS
 
 #include "PhysicsWorld.h"
 #include "SceneTree.h"
+#include "Variant.h"
 #include "mesh/Mesh.h"
 
 #include <entt/entity/registry.hpp>
@@ -341,66 +342,65 @@ namespace {
 constexpr float PlaneThickness = 1e-3f;
 
 Ref<Shape> CreateJoltShape(const PhysicsShape &shape, const Mesh *mesh, bool body_is_static = false) {
-    switch (shape.Type) {
-        case PhysicsShapeType::Box: {
-            return new BoxShape(ToJolt(shape.Size * 0.5f)); // KHR spec uses full size, Jolt uses half-extents
-        }
-        case PhysicsShapeType::Sphere: {
-            return new SphereShape(shape.Radius);
-        }
-        case PhysicsShapeType::Capsule: {
-            if (std::abs(shape.RadiusTop - shape.RadiusBottom) < 1e-6f) return new CapsuleShape(shape.Height * 0.5f, shape.RadiusBottom);
-            if (const auto result = TaperedCapsuleShapeSettings(shape.Height * 0.5f, shape.RadiusTop, shape.RadiusBottom).Create(); result.IsValid()) return result.Get();
-            return Ref<Shape>(new CapsuleShape(shape.Height * 0.5f, shape.RadiusBottom));
-        }
-        case PhysicsShapeType::Cylinder: {
-            if (std::abs(shape.RadiusTop - shape.RadiusBottom) < 1e-6f) return new CylinderShape(shape.Height * 0.5f, shape.RadiusBottom);
-            if (const auto result = TaperedCylinderShapeSettings(shape.Height * 0.5f, shape.RadiusTop, shape.RadiusBottom).Create(); result.IsValid()) return result.Get();
-            return new CylinderShape(shape.Height * 0.5f, std::max(shape.RadiusTop, shape.RadiusBottom));
-        }
-        case PhysicsShapeType::Plane: {
-            // Jolt PlaneShape is single-sided and static-only (PlaneShape::MustBeStatic).
-            // Used only for infinite+static+single-sided. Everything else collapses to a thin BoxShape.
-            // Infinite non-static uses a large half-extent.
-            const bool is_infinite = shape.Size.x <= 0.f || shape.Size.z <= 0.f;
-            if (body_is_static && is_infinite && !shape.DoubleSided) return new PlaneShape(Plane(Vec3(0, 1, 0), 0));
-            const float hx = is_infinite ? PlaneShapeSettings::cDefaultHalfExtent : shape.Size.x * 0.5f;
-            const float hz = is_infinite ? PlaneShapeSettings::cDefaultHalfExtent : shape.Size.z * 0.5f;
-            return new BoxShape(Vec3(hx, PlaneThickness * 0.5f, hz));
-        }
-        case PhysicsShapeType::ConvexHull: {
-            if (!mesh || mesh->VertexCount() == 0) break;
-            auto verts = mesh->GetVerticesSpan();
-            // Jolt Vec3 is a 16-byte SIMD type — must convert from interleaved Vertex positions
-            Array<Vec3> points;
-            points.reserve(int(verts.size()));
-            for (const auto &v : verts) points.emplace_back(v.Position.x, v.Position.y, v.Position.z);
-            ConvexHullShapeSettings settings(points.data(), int(points.size()));
-            if (const auto result = settings.Create(); result.IsValid()) return result.Get();
-            break;
-        }
-        case PhysicsShapeType::TriangleMesh: {
-            if (!mesh || mesh->FaceCount() == 0) break;
-            const auto verts = mesh->GetVerticesSpan();
-            VertexList vertices;
-            vertices.reserve(verts.size());
-            for (const auto &v : verts) vertices.emplace_back(v.Position.x, v.Position.y, v.Position.z);
-            const auto indices = mesh->CreateTriangleIndices();
-            IndexedTriangleList triangles;
-            triangles.reserve(indices.size() / 3);
-            for (size_t i = 0; i + 2 < indices.size(); i += 3) {
-                triangles.emplace_back(indices[i], indices[i + 1], indices[i + 2]);
-            }
-            MeshShapeSettings settings{std::move(vertices), std::move(triangles)};
-            if (const auto result = settings.Create(); result.IsValid()) return result.Get();
-            break;
-        }
-    }
-    return new BoxShape(Vec3(0.5f, 0.5f, 0.5f));
+    Ref<Shape> js = std::visit(
+        overloaded{
+            // KHR spec uses full size, Jolt uses half-extents.
+            [](const physics::Box &s) -> Ref<Shape> { return new BoxShape(ToJolt(s.Size * 0.5f)); },
+            [](const physics::Sphere &s) -> Ref<Shape> { return new SphereShape(s.Radius); },
+            [](const physics::Capsule &s) -> Ref<Shape> {
+                if (std::abs(s.RadiusTop - s.RadiusBottom) < 1e-6f) return new CapsuleShape(s.Height * 0.5f, s.RadiusBottom);
+                if (const auto r = TaperedCapsuleShapeSettings(s.Height * 0.5f, s.RadiusTop, s.RadiusBottom).Create(); r.IsValid()) return r.Get();
+                return new CapsuleShape(s.Height * 0.5f, s.RadiusBottom);
+            },
+            [](const physics::Cylinder &s) -> Ref<Shape> {
+                if (std::abs(s.RadiusTop - s.RadiusBottom) < 1e-6f) return new CylinderShape(s.Height * 0.5f, s.RadiusBottom);
+                if (const auto r = TaperedCylinderShapeSettings(s.Height * 0.5f, s.RadiusTop, s.RadiusBottom).Create(); r.IsValid()) return r.Get();
+                return new CylinderShape(s.Height * 0.5f, std::max(s.RadiusTop, s.RadiusBottom));
+            },
+            // Jolt PlaneShape is single-sided and static-only. Everything else collapses to a thin BoxShape;
+            // infinite non-static uses a large half-extent.
+            [body_is_static](const physics::Plane &s) -> Ref<Shape> {
+                const bool is_infinite = s.SizeX <= 0.f || s.SizeZ <= 0.f;
+                if (body_is_static && is_infinite && !s.DoubleSided) return new PlaneShape(Plane(Vec3(0, 1, 0), 0));
+                const float hx = is_infinite ? PlaneShapeSettings::cDefaultHalfExtent : s.SizeX * 0.5f;
+                const float hz = is_infinite ? PlaneShapeSettings::cDefaultHalfExtent : s.SizeZ * 0.5f;
+                return new BoxShape(Vec3(hx, PlaneThickness * 0.5f, hz));
+            },
+            [mesh](const physics::ConvexHull &) -> Ref<Shape> {
+                if (!mesh || mesh->VertexCount() == 0) return {};
+                auto verts = mesh->GetVerticesSpan();
+                // Jolt Vec3 is a 16-byte SIMD type — must convert from interleaved Vertex positions
+                Array<Vec3> points;
+                points.reserve(int(verts.size()));
+                for (const auto &v : verts) points.emplace_back(v.Position.x, v.Position.y, v.Position.z);
+                ConvexHullShapeSettings settings(points.data(), int(points.size()));
+                if (const auto r = settings.Create(); r.IsValid()) return r.Get();
+                return {};
+            },
+            [mesh](const physics::TriangleMesh &) -> Ref<Shape> {
+                if (!mesh || mesh->FaceCount() == 0) return {};
+                const auto verts = mesh->GetVerticesSpan();
+                VertexList vertices;
+                vertices.reserve(verts.size());
+                for (const auto &v : verts) vertices.emplace_back(v.Position.x, v.Position.y, v.Position.z);
+                const auto indices = mesh->CreateTriangleIndices();
+                IndexedTriangleList triangles;
+                triangles.reserve(indices.size() / 3);
+                for (size_t i = 0; i + 2 < indices.size(); i += 3) {
+                    triangles.emplace_back(indices[i], indices[i + 1], indices[i + 2]);
+                }
+                MeshShapeSettings settings{std::move(vertices), std::move(triangles)};
+                if (const auto r = settings.Create(); r.IsValid()) return r.Get();
+                return {};
+            },
+        },
+        shape
+    );
+    return js ? js : Ref<Shape>(new BoxShape(Vec3(0.5f, 0.5f, 0.5f)));
 }
 
 // Apply motion and material properties to body creation settings.
-void ApplyPhysicsProperties(BodyCreationSettings &bcs, const PhysicsMotion *motion, const PhysicsVelocity *velocity, std::optional<PhysicsShapeType> shape_type, const ColliderMaterial *material, const entt::registry &r) {
+void ApplyPhysicsProperties(BodyCreationSettings &bcs, const PhysicsMotion *motion, const PhysicsVelocity *velocity, bool is_mesh_shape, const ColliderMaterial *material, const entt::registry &r) {
     bcs.mUserData = NoMaterialSentinel;
     if (motion) {
         if (bcs.mMotionType == EMotionType::Dynamic) {
@@ -413,8 +413,7 @@ void ApplyPhysicsProperties(BodyCreationSettings &bcs, const PhysicsMotion *moti
             bcs.mOverrideMassProperties = EOverrideMassProperties::CalculateInertia;
         }
         // MeshShape can't compute mass properties — provide placeholders for any non-static body.
-        const bool is_mesh = shape_type == PhysicsShapeType::TriangleMesh;
-        if (is_mesh && bcs.mMotionType != EMotionType::Static) {
+        if (is_mesh_shape && bcs.mMotionType != EMotionType::Static) {
             const float m = motion->Mass.value_or(DefaultMass);
             bcs.mOverrideMassProperties = EOverrideMassProperties::MassAndInertiaProvided;
             bcs.mMassPropertiesOverride.mMass = m > 0.0f ? m : DefaultMass;
@@ -600,14 +599,16 @@ void PhysicsWorld::RecomputeSceneScale(const entt::registry &r) {
     // Scale physics tolerances to scene size — default 0.02m slop is too large for small scenes.
     float min_dim = std::numeric_limits<float>::max();
     for (auto [entity, collider] : r.view<const ColliderShape>().each()) {
-        const auto &s = collider.Shape;
-        switch (s.Type) {
-            case PhysicsShapeType::Sphere: min_dim = std::min(min_dim, s.Radius); break;
-            case PhysicsShapeType::Box: min_dim = std::min(min_dim, std::min({s.Size.x, s.Size.y, s.Size.z})); break;
-            case PhysicsShapeType::Capsule:
-            case PhysicsShapeType::Cylinder: min_dim = std::min(min_dim, std::min({s.RadiusTop, s.RadiusBottom, s.Height})); break;
-            default: break; // Mesh shapes — no analytic size
-        }
+        std::visit(
+            overloaded{
+                [&](const physics::Sphere &s) { min_dim = std::min(min_dim, s.Radius); },
+                [&](const physics::Box &s) { min_dim = std::min(min_dim, std::min({s.Size.x, s.Size.y, s.Size.z})); },
+                [&](const physics::Capsule &s) { min_dim = std::min(min_dim, std::min({s.RadiusTop, s.RadiusBottom, s.Height})); },
+                [&](const physics::Cylinder &s) { min_dim = std::min(min_dim, std::min({s.RadiusTop, s.RadiusBottom, s.Height})); },
+                [](const auto &) {}, // Plane / mesh shapes — no analytic size
+            },
+            collider.Shape
+        );
     }
     auto settings = P->System.GetPhysicsSettings();
     if (min_dim < std::numeric_limits<float>::max()) {
@@ -732,7 +733,7 @@ bool IsJointConstrained(const entt::registry &r, entt::entity motion_owner) {
 // True iff some static TriangleMesh collider's filter mask permits contact with this filter.
 bool CouldHitStaticMesh(const entt::registry &r, entt::entity filter_entity, const KHRCollisionFilter *filter) {
     for (auto [e, cs] : r.view<const ColliderShape>().each()) {
-        if (cs.Shape.Type != PhysicsShapeType::TriangleMesh) continue;
+        if (!std::holds_alternative<physics::TriangleMesh>(cs.Shape)) continue;
         if (FindMotionOwner(r, e) != null_entity) continue; // not static
         const auto *cm = r.try_get<const ColliderMaterial>(e);
         const auto other = cm ? cm->CollisionFilterEntity : null_entity;
@@ -757,10 +758,12 @@ bool ShouldPromoteMesh(const entt::registry &r, entt::entity motion_owner, const
 Ref<Shape> BuildLeafShape(const entt::registry &r, entt::entity entity, const ColliderShape &cs, const ColliderMaterial *cm, const PhysicsMotion *owner_motion, entt::entity owner_entity, const KHRCollisionFilter *filter) {
     auto shape_proto = cs.Shape;
     const auto filter_entity = cm ? cm->CollisionFilterEntity : null_entity;
-    if (shape_proto.Type == PhysicsShapeType::TriangleMesh && owner_motion && ShouldPromoteMesh(r, owner_entity, *owner_motion, filter_entity, filter)) {
-        shape_proto.Type = PhysicsShapeType::ConvexHull;
+    if (std::holds_alternative<physics::TriangleMesh>(shape_proto) &&
+        owner_motion && ShouldPromoteMesh(r, owner_entity, *owner_motion, filter_entity, filter)) {
+        shape_proto = physics::ConvexHull{};
     }
-    const auto *mesh = shape_proto.MeshEntity ? r.try_get<const Mesh>(*shape_proto.MeshEntity) : nullptr;
+    const auto mesh_entity = IsMeshBackedShape(shape_proto) ? cs.MeshEntity : null_entity;
+    const auto *mesh = mesh_entity != null_entity ? r.try_get<const Mesh>(mesh_entity) : nullptr;
     auto js = CreateJoltShape(shape_proto, mesh, owner_motion == nullptr);
     if (!js) return {};
     // 0 = no filter. Offset by 1 so null_entity (= UINT32_MAX) maps to 0x100000000, not 0.
@@ -785,7 +788,7 @@ void GatherCompoundChildren(const entt::registry &r, entt::entity owner, std::ve
 struct BodyShape {
     Ref<Shape> Shape; // null = no body should be created here
     bool IsSensor = false;
-    std::optional<PhysicsShapeType> SingleShapeType; // for ApplyPhysicsProperties mesh handling
+    bool IsMeshShape = false; // TriangleMesh leaf — needs mass-properties placeholders
     const ColliderMaterial *SingleMaterial{nullptr}; // material for body settings (single-collider bodies only)
     entt::entity FilterEntity{null_entity}; // resolved collision-filter entity (null = no KHR filter)
 };
@@ -815,7 +818,7 @@ BodyShape BuildBodyShape(const entt::registry &r, entt::entity entity, const KHR
         if (!colliders.empty()) {
             if (colliders.size() == 1 && colliders[0] == entity) {
                 out.SingleMaterial = r.try_get<const ColliderMaterial>(entity);
-                out.SingleShapeType = collider->Shape.Type;
+                out.IsMeshShape = std::holds_alternative<physics::TriangleMesh>(collider->Shape);
                 out.FilterEntity = resolve(out.SingleMaterial ? out.SingleMaterial->CollisionFilterEntity : null_entity);
                 out.Shape = BuildLeafShape(r, entity, *collider, out.SingleMaterial, motion, entity, filter);
                 return out;
@@ -848,7 +851,7 @@ BodyShape BuildBodyShape(const entt::registry &r, entt::entity entity, const KHR
         // Static body — skip if a motion ancestor exists (this leaf is a compound child).
         if (FindMotionOwner(r, GetParentEntity(r, entity)) != entt::null) return out;
         out.SingleMaterial = r.try_get<const ColliderMaterial>(entity);
-        out.SingleShapeType = collider->Shape.Type;
+        out.IsMeshShape = std::holds_alternative<physics::TriangleMesh>(collider->Shape);
         out.FilterEntity = resolve(out.SingleMaterial ? out.SingleMaterial->CollisionFilterEntity : null_entity);
         out.Shape = BuildLeafShape(r, entity, *collider, out.SingleMaterial, nullptr, entt::null, filter);
         return out;
@@ -856,9 +859,10 @@ BodyShape BuildBodyShape(const entt::registry &r, entt::entity entity, const KHR
 
     if (trigger && trigger->Shape) {
         out.IsSensor = true;
-        out.SingleShapeType = trigger->Shape->Type;
+        out.IsMeshShape = std::holds_alternative<physics::TriangleMesh>(*trigger->Shape);
         out.FilterEntity = resolve(trigger->CollisionFilterEntity);
-        const auto *mesh = trigger->Shape->MeshEntity ? r.try_get<const Mesh>(*trigger->Shape->MeshEntity) : nullptr;
+        const auto mesh_entity = IsMeshBackedShape(*trigger->Shape) ? trigger->MeshEntity : null_entity;
+        const auto *mesh = mesh_entity != null_entity ? r.try_get<const Mesh>(mesh_entity) : nullptr;
         auto js = CreateJoltShape(*trigger->Shape, mesh);
         if (!js) return out;
         const auto *t = r.try_get<const Transform>(entity);
@@ -895,7 +899,7 @@ void PhysicsWorld::AddBody(entt::registry &r, entt::entity entity) {
 
     BodyCreationSettings bcs{shape, pos, rot, motion_type, layer};
     bcs.mIsSensor = built.IsSensor;
-    ApplyPhysicsProperties(bcs, motion, r.try_get<const PhysicsVelocity>(entity), built.SingleShapeType, built.SingleMaterial, r);
+    ApplyPhysicsProperties(bcs, motion, r.try_get<const PhysicsVelocity>(entity), built.IsMeshShape, built.SingleMaterial, r);
 
     if (motion && motion->CenterOfMass && bcs.mMotionType == EMotionType::Dynamic && !built.IsSensor) {
         inner_mass_props.ScaleToMass(bcs.mMassPropertiesOverride.mMass);

@@ -1,5 +1,6 @@
 #include "GltfLoader.h"
 
+#include "Variant.h"
 #include "numeric/vec2.h"
 #include "numeric/vec3.h"
 #include "numeric/vec4.h"
@@ -1334,30 +1335,26 @@ std::expected<Scene, std::string> LoadScene(const std::filesystem::path &path) {
         }
     }
 
-    // Convert implicit shapes for physics geometry references
+    // Convert implicit shapes for physics geometry references.
+    // Mesh-backed shapes leave MeshEntity as null_entity here — SceneGltf.cpp resolves it via node-to-entity mapping.
     const auto ToPhysicsShape = [&](const fastgltf::Geometry &geom) -> PhysicsShape {
         if (geom.shape && *geom.shape < asset.shapes.size()) {
             return std::visit(
-                [](const auto &s) -> PhysicsShape {
-                    using T = std::decay_t<decltype(s)>;
-                    if constexpr (std::is_same_v<T, fastgltf::BoxShape>) {
-                        return {.Type = PhysicsShapeType::Box, .Size = ToVec3(s.size)};
-                    } else if constexpr (std::is_same_v<T, fastgltf::SphereShape>) {
-                        return {.Type = PhysicsShapeType::Sphere, .Radius = float(s.radius)};
-                    } else if constexpr (std::is_same_v<T, fastgltf::CapsuleShape>) {
-                        return {.Type = PhysicsShapeType::Capsule, .RadiusTop = float(s.radiusTop), .RadiusBottom = float(s.radiusBottom), .Height = float(s.height)};
-                    } else if constexpr (std::is_same_v<T, fastgltf::CylinderShape>) {
-                        return {.Type = PhysicsShapeType::Cylinder, .RadiusTop = float(s.radiusTop), .RadiusBottom = float(s.radiusBottom), .Height = float(s.height)};
-                    }
+                overloaded{
+                    [](const fastgltf::BoxShape &s) -> PhysicsShape { return physics::Box{ToVec3(s.size)}; },
+                    [](const fastgltf::SphereShape &s) -> PhysicsShape { return physics::Sphere{float(s.radius)}; },
+                    [](const fastgltf::CapsuleShape &s) -> PhysicsShape {
+                        return physics::Capsule{float(s.height), float(s.radiusTop), float(s.radiusBottom)};
+                    },
+                    [](const fastgltf::CylinderShape &s) -> PhysicsShape {
+                        return physics::Cylinder{float(s.height), float(s.radiusTop), float(s.radiusBottom)};
+                    },
                 },
                 asset.shapes[*geom.shape]
             );
         }
-        // Mesh-based shape: node reference + convexHull flag
-        PhysicsShape shape;
-        shape.Type = geom.convexHull ? PhysicsShapeType::ConvexHull : PhysicsShapeType::TriangleMesh;
-        // MeshEntity will be resolved in SceneGltf.cpp using node-to-entity mapping
-        return shape;
+        if (geom.convexHull) return physics::ConvexHull{};
+        return physics::TriangleMesh{};
     };
 
     std::vector<bool> is_joint(asset.nodes.size(), false);

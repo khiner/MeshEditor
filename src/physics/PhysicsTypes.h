@@ -6,6 +6,7 @@
 
 #include <optional>
 #include <string>
+#include <variant>
 #include <vector>
 
 // KHR_physics_rigid_bodies-aligned component structs.
@@ -76,29 +77,46 @@ struct PhysicsJointDef {
 
 // --- Per-shape ---
 
-enum class PhysicsShapeType : uint8_t {
-    Box,
-    Sphere,
-    Capsule,
-    Cylinder,
-    Plane,
-    ConvexHull,
-    TriangleMesh,
+namespace physics {
+// KHR_physics_rigid_bodies / KHR_implicit_shapes-aligned shape primitives.
+struct Box {
+    vec3 Size{1.0f, 1.0f, 1.0f}; // full size (not half-extents) per KHR spec
 };
+struct Sphere {
+    float Radius{0.5f};
+};
+struct Capsule {
+    float Height{0.5f};
+    float RadiusTop{0.25f};
+    float RadiusBottom{0.25f};
+};
+struct Cylinder {
+    float Height{0.5f};
+    float RadiusTop{0.25f};
+    float RadiusBottom{0.25f};
+};
+// Plane lies in the XZ plane with +Y normal. Size{X,Z} == 0 means infinite along that axis.
+struct Plane {
+    float SizeX{0.f}, SizeZ{0.f};
+    bool DoubleSided{false};
+};
+// Mesh-backed shape kinds. Mesh reference lives on the ColliderShape / PhysicsTrigger wrapper.
+struct ConvexHull {};
+struct TriangleMesh {};
+} // namespace physics
 
-struct PhysicsShape {
-    PhysicsShapeType Type{PhysicsShapeType::Box};
-    vec3 Size{1.0f, 1.0f, 1.0f}; // Box full size (not half-extents) per KHR spec.
-                                 // Plane: Size.x = sizeX, Size.z = sizeZ; 0 on either axis = infinite extent.
-    float Radius{0.5f}; // Sphere, Capsule, Cylinder
-    float RadiusTop{0.25f}; // Capsule, Cylinder (tapered)
-    float RadiusBottom{0.25f}; // Capsule, Cylinder (tapered)
-    float Height{0.5f}; // Capsule, Cylinder
-    bool DoubleSided{false}; // Plane only — KHR plane.doubleSided
-    // For mesh-based shapes
-    std::optional<entt::entity> MeshEntity{};
-    bool ConvexHull{false};
-};
+using PhysicsShape = std::variant<
+    physics::Box,
+    physics::Sphere,
+    physics::Capsule,
+    physics::Cylinder,
+    physics::Plane,
+    physics::ConvexHull,
+    physics::TriangleMesh>;
+
+inline bool IsMeshBackedShape(const PhysicsShape &shape) {
+    return std::holds_alternative<physics::ConvexHull>(shape) || std::holds_alternative<physics::TriangleMesh>(shape);
+}
 
 // --- Per-node ---
 
@@ -128,8 +146,10 @@ struct PhysicsVelocity {
 };
 
 // Geometry of the collision volume.
+// MeshEntity references the mesh supplying geometry for ConvexHull / TriangleMesh shapes, or null_entity for primitives.
 struct ColliderShape {
     PhysicsShape Shape{};
+    entt::entity MeshEntity{null_entity};
 };
 
 // Material and collision filter assignment for a collider.
@@ -142,6 +162,7 @@ struct PhysicsTrigger {
     std::optional<PhysicsShape> Shape{};
     std::vector<entt::entity> Nodes{};
     entt::entity CollisionFilterEntity{null_entity};
+    entt::entity MeshEntity{null_entity}; // See ColliderShape::MeshEntity.
 };
 
 struct PhysicsJoint {

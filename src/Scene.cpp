@@ -2382,19 +2382,21 @@ void Scene::SyncColliderWireframes() {
             return inst;
         };
 
-        if (shape.Type == PhysicsShapeType::Capsule) {
+        if (std::holds_alternative<physics::Capsule>(shape)) {
             cw.Instances[0] = make_instance(ColliderShapeBufferEntities[CSB_CapsuleBody]);
             cw.Instances[1] = make_instance(ColliderShapeBufferEntities[CSB_CapsuleCap]); // top
             cw.Instances[2] = make_instance(ColliderShapeBufferEntities[CSB_CapsuleCap]); // bottom
             cw.Count = 3;
         } else {
-            entt::entity buf = entt::null;
-            switch (shape.Type) {
-                case PhysicsShapeType::Box: buf = ColliderShapeBufferEntities[CSB_Box]; break;
-                case PhysicsShapeType::Sphere: buf = ColliderShapeBufferEntities[CSB_Sphere]; break;
-                case PhysicsShapeType::Cylinder: buf = ColliderShapeBufferEntities[CSB_Cylinder]; break;
-                default: break;
-            }
+            const auto buf = std::visit(
+                overloaded{
+                    [&](const physics::Box &) { return ColliderShapeBufferEntities[CSB_Box]; },
+                    [&](const physics::Sphere &) { return ColliderShapeBufferEntities[CSB_Sphere]; },
+                    [&](const physics::Cylinder &) { return ColliderShapeBufferEntities[CSB_Cylinder]; },
+                    [](const auto &) { return entt::entity{entt::null}; },
+                },
+                shape
+            );
             if (buf != entt::null) {
                 cw.Instances[0] = make_instance(buf);
                 cw.Count = 1;
@@ -2439,33 +2441,31 @@ void Scene::SyncColliderWireframes() {
             R.replace<WorldTransform>(inst, ToWorldTransform(m));
         };
 
-        switch (shape.Type) {
-            case PhysicsShapeType::Box:
-                set_wt(cw.Instances[0], base * glm::scale(mat4{1}, {shape.Size.x, shape.Size.y, shape.Size.z}));
-                break;
-            case PhysicsShapeType::Sphere: {
-                float d = shape.Radius * 2.0f;
-                set_wt(cw.Instances[0], base * glm::scale(mat4{1}, {d, d, d}));
-                break;
-            }
-            case PhysicsShapeType::Capsule: {
-                float r = std::max(shape.RadiusTop, shape.RadiusBottom);
-                float d = r * 2.0f;
-                float body_h = std::max(shape.Height, 0.001f);
-                set_wt(cw.Instances[0], base * glm::scale(mat4{1}, {d, body_h, d}));
-                mat4 top = base * glm::translate(mat4{1}, {0, shape.Height * 0.5f, 0}) * glm::scale(mat4{1}, {d, d, d});
-                set_wt(cw.Instances[1], top);
-                mat4 bot = base * glm::translate(mat4{1}, {0, -shape.Height * 0.5f, 0}) * glm::scale(mat4{1}, {d, -d, d});
-                set_wt(cw.Instances[2], bot);
-                break;
-            }
-            case PhysicsShapeType::Cylinder: {
-                float d = std::max(shape.RadiusTop, shape.RadiusBottom) * 2.0f;
-                set_wt(cw.Instances[0], base * glm::scale(mat4{1}, {d, shape.Height, d}));
-                break;
-            }
-            default: break;
-        }
+        std::visit(
+            overloaded{
+                [&](const physics::Box &s) {
+                    set_wt(cw.Instances[0], base * glm::scale(mat4{1}, {s.Size.x, s.Size.y, s.Size.z}));
+                },
+                [&](const physics::Sphere &s) {
+                    const float d = s.Radius * 2.0f;
+                    set_wt(cw.Instances[0], base * glm::scale(mat4{1}, {d, d, d}));
+                },
+                [&](const physics::Capsule &s) {
+                    const float r = std::max(s.RadiusTop, s.RadiusBottom);
+                    const float d = r * 2.0f;
+                    const float body_h = std::max(s.Height, 0.001f);
+                    set_wt(cw.Instances[0], base * glm::scale(mat4{1}, {d, body_h, d}));
+                    set_wt(cw.Instances[1], base * glm::translate(mat4{1}, {0, s.Height * 0.5f, 0}) * glm::scale(mat4{1}, {d, d, d}));
+                    set_wt(cw.Instances[2], base * glm::translate(mat4{1}, {0, -s.Height * 0.5f, 0}) * glm::scale(mat4{1}, {d, -d, d}));
+                },
+                [&](const physics::Cylinder &s) {
+                    const float d = std::max(s.RadiusTop, s.RadiusBottom) * 2.0f;
+                    set_wt(cw.Instances[0], base * glm::scale(mat4{1}, {d, s.Height, d}));
+                },
+                [](const auto &) {},
+            },
+            shape
+        );
     }
 }
 

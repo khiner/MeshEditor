@@ -7,6 +7,7 @@
 #include "Instance.h"
 #include "PhysicsWorld.h"
 #include "SceneTree.h"
+#include "Variant.h"
 #include "mesh/Mesh.h"
 #include "mesh/PrimitiveType.h"
 
@@ -25,63 +26,43 @@ entt::entity FindMeshEntity(const entt::registry &r, entt::entity entity) {
     return entity;
 }
 
-// Initialize a PhysicsShape from the PrimitiveShape component if present,
+// Initialize a ColliderShape from the PrimitiveShape component if present,
 // otherwise fall back to AABB-derived box dimensions.
-PhysicsShape InitColliderShape(const entt::registry &r, entt::entity entity) {
+ColliderShape InitColliderShape(const entt::registry &r, entt::entity entity) {
     const auto mesh_entity = FindMeshEntity(r, entity);
-    if (const auto *prim = r.try_get<const PrimitiveShape>(mesh_entity)) {
-        auto shape = std::visit([](const auto &s) -> PhysicsShape {
-            using T = std::decay_t<decltype(s)>;
-            PhysicsShape shape;
-            if constexpr (std::is_same_v<T, primitive::Cuboid>) {
-                shape.Type = PhysicsShapeType::Box;
-                shape.Size = s.HalfExtents * 2.f;
-            } else if constexpr (std::is_same_v<T, primitive::Plane>) {
-                shape.Type = PhysicsShapeType::Plane;
-                shape.Size = vec3{s.HalfExtents.x * 2.f, 0.f, s.HalfExtents.y * 2.f};
-            } else if constexpr (std::is_same_v<T, primitive::IcoSphere> || std::is_same_v<T, primitive::UVSphere>) {
-                shape.Type = PhysicsShapeType::Sphere;
-                shape.Radius = s.Radius;
-            } else if constexpr (std::is_same_v<T, primitive::Cylinder>) {
-                shape.Type = PhysicsShapeType::Cylinder;
-                shape.RadiusTop = shape.RadiusBottom = s.Radius;
-                shape.Height = s.Height;
-            } else if constexpr (std::is_same_v<T, primitive::Cone>) {
-                shape.Type = PhysicsShapeType::Cylinder;
-                shape.RadiusTop = 0;
-                shape.RadiusBottom = s.Radius;
-                shape.Height = s.Height;
-            } else {
-                // Circle, Torus → ConvexHull from mesh geometry
-                shape.Type = PhysicsShapeType::ConvexHull;
-            }
-            return shape;
-        },
-                                *prim);
-        if (shape.Type == PhysicsShapeType::ConvexHull) shape.MeshEntity = mesh_entity;
-        return shape;
-    }
+    const auto shape = [&]() -> PhysicsShape {
+        if (const auto *prim = r.try_get<const PrimitiveShape>(mesh_entity)) {
+            return std::visit(
+                overloaded{
+                    [](const primitive::Cuboid &s) -> PhysicsShape { return physics::Box{s.HalfExtents * 2.f}; },
+                    [](const primitive::Plane &s) -> PhysicsShape { return physics::Plane{s.HalfExtents.x * 2.f, s.HalfExtents.y * 2.f}; },
+                    [](const primitive::IcoSphere &s) -> PhysicsShape { return physics::Sphere{s.Radius}; },
+                    [](const primitive::UVSphere &s) -> PhysicsShape { return physics::Sphere{s.Radius}; },
+                    [](const primitive::Cylinder &s) -> PhysicsShape { return physics::Cylinder{s.Height, s.Radius, s.Radius}; },
+                    [](const primitive::Cone &s) -> PhysicsShape { return physics::Cylinder{s.Height, 0.f, s.Radius}; },
+                    // Circle, Torus → ConvexHull from mesh geometry
+                    [](const auto &) -> PhysicsShape { return physics::ConvexHull{}; },
+                },
+                *prim
+            );
+        }
 
-    // Fallback: derive shape from mesh AABB.
-    const auto *mesh = r.try_get<const Mesh>(mesh_entity);
-    if (!mesh || mesh->VertexCount() == 0) return {};
+        // Fallback: derive shape from mesh AABB.
+        const auto *mesh = r.try_get<const Mesh>(mesh_entity);
+        if (!mesh || mesh->VertexCount() == 0) return physics::Box{};
 
-    const auto verts = mesh->GetVerticesSpan();
-    vec3 lo = verts[0].Position, hi = lo;
-    for (const auto &v : verts) {
-        lo = glm::min(lo, v.Position);
-        hi = glm::max(hi, v.Position);
-    }
-    const vec3 extents = hi - lo;
-    PhysicsShape shape;
-    // If any AABB dimension is degenerate, use ConvexHull instead of a zero-thickness box.
-    if (extents.x < 1e-6f || extents.y < 1e-6f || extents.z < 1e-6f) {
-        shape.Type = PhysicsShapeType::ConvexHull;
-        shape.MeshEntity = mesh_entity;
-    } else {
-        shape.Size = extents;
-    }
-    return shape;
+        const auto verts = mesh->GetVerticesSpan();
+        vec3 lo = verts[0].Position, hi = lo;
+        for (const auto &v : verts) {
+            lo = glm::min(lo, v.Position);
+            hi = glm::max(hi, v.Position);
+        }
+        const vec3 extents = hi - lo;
+        // If any AABB dimension is degenerate, use ConvexHull instead of a zero-thickness box.
+        if (extents.x < 1e-6f || extents.y < 1e-6f || extents.z < 1e-6f) return physics::ConvexHull{};
+        return physics::Box{extents};
+    }();
+    return ColliderShape{.Shape = shape, .MeshEntity = IsMeshBackedShape(shape) ? mesh_entity : null_entity};
 }
 
 // Returns `name` if non-empty, else a bracketed fallback formatted from `fmt`/args (e.g., "<3>").
@@ -228,53 +209,55 @@ void DrawMatrixCell(ImDrawList *dl, ImVec2 p_min, ImVec2 p_max, bool a_to_b, boo
     if (b_to_a) dl->AddTriangleFilled(TR, BR, BL, fill); // col→row
 }
 
-bool RenderShapeEditor(PhysicsShape &shape) {
+// Pure-function shape editor: returns the edited shape iff the user changed something.
+// MeshEntity is stored on the ColliderShape / PhysicsTrigger wrapper, so it's preserved
+// across type changes without needing to be passed through here.
+std::optional<PhysicsShape> RenderShapeEditor(const PhysicsShape &in) {
     static const char *shape_names[]{"Box", "Sphere", "Capsule", "Cylinder", "Plane", "Convex Hull", "Triangle Mesh"};
-    auto shape_type_i = int(shape.Type);
+    auto out = in;
     bool changed = false;
+    auto shape_type_i = int(out.index());
     if (Combo("Shape", &shape_type_i, shape_names, IM_ARRAYSIZE(shape_names))) {
-        shape.Type = PhysicsShapeType(shape_type_i);
+        out = CreateVariantByIndex<PhysicsShape>(size_t(shape_type_i));
         changed = true;
     }
-    switch (shape.Type) {
-        case PhysicsShapeType::Box:
-            changed |= DragFloat3("Size", &shape.Size.x, 0.01f, 0.01f, 100.f);
-            break;
-        case PhysicsShapeType::Sphere:
-            changed |= DragFloat("Radius", &shape.Radius, 0.01f, 0.001f, 100.f);
-            break;
-        case PhysicsShapeType::Capsule:
-            changed |= DragFloat("Height", &shape.Height, 0.01f, 0.001f, 100.f);
-            changed |= DragFloat("Radius top", &shape.RadiusTop, 0.01f, 0.001f, 100.f);
-            changed |= DragFloat("Radius bottom", &shape.RadiusBottom, 0.01f, 0.001f, 100.f);
-            break;
-        case PhysicsShapeType::Cylinder:
-            changed |= DragFloat("Height", &shape.Height, 0.01f, 0.001f, 100.f);
-            changed |= DragFloat("Radius top", &shape.RadiusTop, 0.01f, 0.001f, 100.f);
-            changed |= DragFloat("Radius bottom", &shape.RadiusBottom, 0.01f, 0.001f, 100.f);
-            break;
-        case PhysicsShapeType::Plane: {
-            // Plane normal is +Y; sizeX/sizeZ = 0 means infinite extent along that axis.
-            bool infinite = shape.Size.x <= 0.f || shape.Size.z <= 0.f;
-            if (Checkbox("Infinite", &infinite)) {
-                shape.Size = infinite ? vec3{0.f, 0.f, 0.f} : vec3{2.f, 0.f, 2.f};
-                changed = true;
-            }
-            if (!infinite) {
-                vec2 size{shape.Size.x, shape.Size.z};
-                if (DragFloat2("Size (X, Z)", &size.x, 0.01f, 0.01f, 1000.f)) {
-                    shape.Size = vec3{size.x, 0.f, size.y};
+    std::visit(
+        overloaded{
+            [&](physics::Box &s) { changed |= DragFloat3("Size", &s.Size.x, 0.01f, 0.01f, 100.f); },
+            [&](physics::Sphere &s) { changed |= DragFloat("Radius", &s.Radius, 0.01f, 0.001f, 100.f); },
+            [&](physics::Capsule &s) {
+                changed |= DragFloat("Height", &s.Height, 0.01f, 0.001f, 100.f);
+                changed |= DragFloat("Radius top", &s.RadiusTop, 0.01f, 0.001f, 100.f);
+                changed |= DragFloat("Radius bottom", &s.RadiusBottom, 0.01f, 0.001f, 100.f);
+            },
+            [&](physics::Cylinder &s) {
+                changed |= DragFloat("Height", &s.Height, 0.01f, 0.001f, 100.f);
+                changed |= DragFloat("Radius top", &s.RadiusTop, 0.01f, 0.001f, 100.f);
+                changed |= DragFloat("Radius bottom", &s.RadiusBottom, 0.01f, 0.001f, 100.f);
+            },
+            [&](physics::Plane &s) {
+                // Plane normal is +Y; sizeX/sizeZ = 0 means infinite extent along that axis.
+                bool infinite = s.SizeX <= 0.f || s.SizeZ <= 0.f;
+                if (Checkbox("Infinite", &infinite)) {
+                    s.SizeX = s.SizeZ = infinite ? 0.f : 2.f;
                     changed = true;
                 }
-            }
-            changed |= Checkbox("Double-sided", &shape.DoubleSided);
-            break;
-        }
-        case PhysicsShapeType::ConvexHull:
-        case PhysicsShapeType::TriangleMesh:
-            break;
-    }
-    return changed;
+                if (!infinite) {
+                    vec2 size{s.SizeX, s.SizeZ};
+                    if (DragFloat2("Size (X, Z)", &size.x, 0.01f, 0.01f, 1000.f)) {
+                        s.SizeX = size.x;
+                        s.SizeZ = size.y;
+                        changed = true;
+                    }
+                }
+                changed |= Checkbox("Double-sided", &s.DoubleSided);
+            },
+            [](physics::ConvexHull &) {},
+            [](physics::TriangleMesh &) {},
+        },
+        out
+    );
+    return changed ? std::optional{std::move(out)} : std::nullopt;
 }
 } // namespace
 
@@ -638,7 +621,7 @@ void physics_ui::RenderEntityProperties(entt::registry &r, entt::entity entity, 
         if (!want_motion) r.remove<PhysicsMotion>(entity);
         if (!want_collider) r.remove<ColliderShape>(entity);
         if (want_collider && !r.all_of<ColliderShape>(entity)) {
-            r.emplace<ColliderShape>(entity, ColliderShape{InitColliderShape(r, entity)});
+            r.emplace<ColliderShape>(entity, InitColliderShape(r, entity));
         }
         if (want_motion) {
             const bool is_kinematic = motion_type == MT_Kinematic;
@@ -653,9 +636,16 @@ void physics_ui::RenderEntityProperties(entt::registry &r, entt::entity entity, 
         Spacing();
         SeparatorText("Collider");
 
-        PhysicsShape shape_edit = collider->Shape;
-        if (RenderShapeEditor(shape_edit)) {
-            r.patch<ColliderShape>(entity, [&](ColliderShape &cs) { cs.Shape = shape_edit; });
+        if (auto s = RenderShapeEditor(collider->Shape)) {
+            const auto owner_mesh = FindMeshEntity(r, entity);
+            r.patch<ColliderShape>(entity, [&](ColliderShape &cs) {
+                cs.Shape = *s;
+                // Seed MeshEntity on first-ever flip into a mesh-backed variant (primitive-only
+                // collider being changed to ConvexHull/TriangleMesh). Preserve it across all other
+                // flips — including mesh → primitive → mesh round-trips — so glTF-loaded divergent
+                // links survive accidental editor edits.
+                if (IsMeshBackedShape(*s) && cs.MeshEntity == null_entity) cs.MeshEntity = owner_mesh;
+            });
         }
 
         RenderEntityCombo<PhysicsMaterial, &ColliderMaterial::PhysicsMaterialEntity>(r, entity, "Physics material", "No materials defined");
@@ -762,16 +752,19 @@ void physics_ui::RenderEntityProperties(entt::registry &r, entt::entity entity, 
     // Trigger properties
     if (const auto *trigger = r.try_get<const PhysicsTrigger>(entity); !trigger) {
         Spacing();
-        if (Button("Add Trigger")) r.emplace<PhysicsTrigger>(entity, PhysicsTrigger{.Shape = PhysicsShape{}});
+        if (Button("Add Trigger")) r.emplace<PhysicsTrigger>(entity, PhysicsTrigger{.Shape = physics::Box{}});
     } else {
         Spacing();
         SeparatorText("Trigger");
         PushID("Trigger");
 
         if (trigger->Shape.has_value()) {
-            PhysicsShape shape_edit = *trigger->Shape;
-            if (RenderShapeEditor(shape_edit)) {
-                r.patch<PhysicsTrigger>(entity, [&](PhysicsTrigger &t) { t.Shape = shape_edit; });
+            if (auto s = RenderShapeEditor(*trigger->Shape)) {
+                const auto owner_mesh = FindMeshEntity(r, entity);
+                r.patch<PhysicsTrigger>(entity, [&](PhysicsTrigger &t) {
+                    t.Shape = *s;
+                    if (IsMeshBackedShape(*s) && t.MeshEntity == null_entity) t.MeshEntity = owner_mesh;
+                });
             }
         } else if (!trigger->Nodes.empty()) {
             Text("Compound trigger: %zu nodes", trigger->Nodes.size());

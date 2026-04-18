@@ -421,11 +421,11 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
 
             if (node.Collider) {
                 auto collider = *node.Collider;
-                if (collider.Shape.Type == PhysicsShapeType::ConvexHull || collider.Shape.Type == PhysicsShapeType::TriangleMesh) {
+                if (IsMeshBackedShape(collider.Shape)) {
                     if (node.ColliderGeometryMeshIndex && *node.ColliderGeometryMeshIndex < mesh_entities.size()) {
-                        collider.Shape.MeshEntity = mesh_entities[*node.ColliderGeometryMeshIndex];
+                        collider.MeshEntity = mesh_entities[*node.ColliderGeometryMeshIndex];
                     } else if (R.all_of<Instance>(entity)) {
-                        collider.Shape.MeshEntity = R.get<const Instance>(entity).Entity;
+                        collider.MeshEntity = R.get<const Instance>(entity).Entity;
                     }
                 }
                 R.emplace<ColliderShape>(entity, std::move(collider));
