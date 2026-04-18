@@ -1074,7 +1074,7 @@ void Scene::InteractOverlay() {
             if (vertex_count > 0) pivot /= float(vertex_count);
             // Apply pending transform to gizmo position (vertices aren't modified until commit).
             if (const auto *pending = R.try_get<const PendingTransform>(SceneEntity)) {
-                pivot += pending->P;
+                pivot += pending->Delta.P;
             }
         } else {
             if (bone_edit_mode) {
@@ -1130,7 +1130,7 @@ void Scene::InteractOverlay() {
             if (mesh_edit_mode) {
                 // Mesh Edit mode: store pending transform for shader-based preview.
                 // Actual vertex positions are only modified on commit.
-                R.emplace_or_replace<PendingTransform>(SceneEntity, ts.P, ts.R, td.P, td.R, td.S);
+                R.emplace_or_replace<PendingTransform>(SceneEntity, ts.P, ts.R, td);
             } else {
                 // Object mode: apply transform to entity components immediately during drag.
                 // Compute new world result, then convert to local for parented entities.

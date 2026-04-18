@@ -44,8 +44,8 @@
 #include <bit>
 #include <iostream>
 
-using std::ranges::any_of, std::ranges::all_of, std::ranges::find, std::ranges::find_if, std::ranges::fold_left, std::ranges::to;
-using std::views::filter, std::views::iota, std::views::transform;
+using std::ranges::any_of, std::ranges::find, std::ranges::find_if, std::ranges::fold_left, std::ranges::to;
+using std::views::iota, std::views::transform;
 
 namespace {
 mat4 RestLocalToMatrix(const Transform &t) { return glm::translate(I4, t.P) * glm::mat4_cast(glm::normalize(t.R)) * glm::scale(I4, t.S); }
@@ -1371,34 +1371,37 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
     // Bone Edit mode commits are handled in the bone pose transform section below.
     if (!reactive<changes::TransformEnd>(R).empty()) {
         if (is_edit_mode && FindArmatureObject(R, FindActiveEntity(R)) == entt::null) {
-            const auto &pending = R.get<const PendingTransform>(SceneEntity);
-            // Apply edit transform once per selected mesh via a representative selected instance.
-            // This keeps linked instances from receiving duplicate per-instance edits.
-            for (const auto &[mesh_entity, instance_entity] : edit_transform_context.TransformInstances) {
-                if (scene_selection::HasScaleLockedInstance(R, mesh_entity)) continue;
-                const auto &mesh = R.get<const Mesh>(mesh_entity);
-                const auto vertex_states = Meshes->GetVertexStates(mesh.GetStoreId());
-                const bool any_selected = std::ranges::any_of(vertex_states, [](const auto s) { return (s & ElementStateSelected) != 0u; });
-                if (!any_selected) continue;
-                const auto vertices = mesh.GetVerticesSpan();
-                const auto &wt = R.get<const WorldTransform>(instance_entity);
-                const auto wt_rot = Vec4ToQuat(wt.Rotation);
-                const auto inv_rot = glm::conjugate(wt_rot);
-                const auto inv_scale = 1.f / wt.Scale;
-                for (uint32_t vi = 0; vi < vertex_states.size(); ++vi) {
-                    if ((vertex_states[vi] & ElementStateSelected) == 0u) continue;
-                    const auto local_pos = vertices[vi].Position;
-                    const auto world_pos = wt.Position + glm::rotate(wt_rot, wt.Scale * local_pos);
-                    auto offset = world_pos - pending.Pivot;
-                    offset = pending.S * offset;
-                    offset = glm::rotate(pending.R, offset);
-                    const auto new_world = pending.Pivot + offset + pending.P;
-                    const auto new_local = inv_scale * glm::rotate(inv_rot, new_world - wt.Position);
-                    Meshes->SetPosition(mesh, vi, new_local);
+            if (const auto &pending = R.get<const PendingTransform>(SceneEntity); pending.Delta != Transform{}) {
+                // Apply edit transform once per selected mesh via a representative selected instance.
+                // This keeps linked instances from receiving duplicate per-instance edits.
+                for (const auto &[mesh_entity, instance_entity] : edit_transform_context.TransformInstances) {
+                    if (scene_selection::HasScaleLockedInstance(R, mesh_entity)) continue;
+                    const auto &mesh = R.get<const Mesh>(mesh_entity);
+                    const auto vertex_states = Meshes->GetVertexStates(mesh.GetStoreId());
+                    const auto vertices = mesh.GetVerticesSpan();
+                    const auto &wt = R.get<const WorldTransform>(instance_entity);
+                    const auto wt_rot = Vec4ToQuat(wt.Rotation);
+                    const auto inv_rot = glm::conjugate(wt_rot);
+                    const auto inv_scale = 1.f / wt.Scale;
+                    const auto pivot_rel = pending.Pivot - wt.Position;
+                    bool any_moved{false};
+                    for (uint32_t vi = 0; vi < vertex_states.size(); ++vi) {
+                        if ((vertex_states[vi] & ElementStateSelected) == 0u) continue;
+                        const auto local_pos = vertices[vi].Position;
+                        const auto world_rel = glm::rotate(wt_rot, wt.Scale * local_pos);
+                        const auto offset = glm::rotate(pending.Delta.R, pending.Delta.S * (world_rel - pivot_rel));
+                        const auto new_rel = pivot_rel + offset + pending.Delta.P;
+                        const auto new_local = inv_scale * glm::rotate(inv_rot, new_rel);
+                        if (glm::length2(new_local - local_pos) <= 1e-12f) continue;
+                        Meshes->SetPosition(mesh, vi, new_local);
+                        any_moved = true;
+                    }
+                    if (any_moved) {
+                        Meshes->UpdateNormals(mesh);
+                        dirty_overlay_meshes.insert(mesh_entity);
+                        R.emplace_or_replace<MeshElementEditCommitted>(mesh_entity);
+                    }
                 }
-                Meshes->UpdateNormals(mesh);
-                dirty_overlay_meshes.insert(mesh_entity);
-                R.emplace_or_replace<MeshElementEditCommitted>(mesh_entity);
             }
             R.remove<PendingTransform>(SceneEntity);
         }
@@ -1829,9 +1832,9 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
             .EditElement = R.get<const SceneEditMode>(SceneEntity).Value,
             .IsTransforming = pending ? 1u : 0u,
             .PendingPivot = pending ? pending->Pivot : vec3{},
-            .PendingTranslation = pending ? pending->P : vec3{},
-            .PendingRotation = pending ? QuatToVec4(pending->R) : vec4{0, 0, 0, 1},
-            .PendingScale = pending ? pending->S : vec3{1},
+            .PendingTranslation = pending ? pending->Delta.P : vec3{},
+            .PendingRotation = pending ? QuatToVec4(pending->Delta.R) : vec4{0, 0, 0, 1},
+            .PendingScale = pending ? pending->Delta.S : vec3{1},
             .ScreenPixelScale = screen_pixel_scale,
             .ViewportSize = {float(render_extent.width), float(render_extent.height)},
             .FaceFirstTriSlot = Meshes->FaceFirstTriangleBuffer.Buffer.Slot,

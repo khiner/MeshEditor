@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Transform.h"
 #include "gpu/PBRMaterial.h"
 #include "numeric/quat.h"
 #include "numeric/vec3.h"
@@ -40,7 +41,5 @@ struct LightIndex {
 struct PendingTransform {
     vec3 Pivot{};
     quat PivotR{1, 0, 0, 0};
-    vec3 P{}; // Translation delta
-    quat R{1, 0, 0, 0}; // Rotation delta
-    vec3 S{1, 1, 1}; // Scale delta
+    Transform Delta{};
 };
