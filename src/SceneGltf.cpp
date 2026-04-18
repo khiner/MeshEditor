@@ -444,16 +444,25 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
             }
             if (node.Trigger) {
                 const auto &td = *node.Trigger;
-                std::vector<entt::entity> resolved_nodes;
-                resolved_nodes.reserve(td.NodeIndices.size());
-                for (const auto node_idx : td.NodeIndices) {
-                    auto nit = object_entities_by_node.find(node_idx);
-                    resolved_nodes.emplace_back(nit != object_entities_by_node.end() ? nit->second : entt::null);
+                if (td.Shape) {
+                    // GeometryTrigger: reuse ColliderShape + TriggerTag. Skip if a solid collider
+                    // already took this entity — KHR declares nodes as one-or-the-other.
+                    if (!R.all_of<ColliderShape>(entity)) {
+                        R.emplace<ColliderShape>(entity, ColliderShape{.Shape = *td.Shape});
+                        R.emplace<TriggerTag>(entity);
+                        R.patch<ColliderMaterial>(entity, [&](auto &m) { m.CollisionFilterEntity = resolve_filter(td.CollisionFilterIndex); });
+                        has_any_physics = true;
+                    }
+                } else {
+                    // NodesTrigger: compound zone.
+                    std::vector<entt::entity> resolved_nodes;
+                    resolved_nodes.reserve(td.NodeIndices.size());
+                    for (const auto node_idx : td.NodeIndices) {
+                        auto nit = object_entities_by_node.find(node_idx);
+                        resolved_nodes.emplace_back(nit != object_entities_by_node.end() ? nit->second : entt::null);
+                    }
+                    R.emplace<TriggerNodes>(entity, TriggerNodes{.Nodes = std::move(resolved_nodes), .CollisionFilterEntity = resolve_filter(td.CollisionFilterIndex)});
                 }
-                R.emplace<PhysicsTrigger>(
-                    entity,
-                    PhysicsTrigger{.Shape = td.Shape, .Nodes = std::move(resolved_nodes), .CollisionFilterEntity = resolve_filter(td.CollisionFilterIndex)}
-                );
             }
             if (node.Joint) {
                 const auto &jd = *node.Joint;

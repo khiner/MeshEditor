@@ -3,13 +3,12 @@
 
 #include "PhysicsUi.h"
 #include "AnimationTimeline.h"
+#include "ColliderFit.h"
 #include "Entity.h"
-#include "Instance.h"
 #include "PhysicsWorld.h"
 #include "SceneTree.h"
 #include "Variant.h"
-#include "mesh/Mesh.h"
-#include "mesh/PrimitiveType.h"
+#include "numeric/vec2.h"
 
 #include <entt/entity/registry.hpp>
 #include <format>
@@ -20,51 +19,6 @@
 using namespace ImGui;
 
 namespace {
-// Find the mesh entity for an instance or mesh entity.
-entt::entity FindMeshEntity(const entt::registry &r, entt::entity entity) {
-    if (const auto *instance = r.try_get<const Instance>(entity)) return instance->Entity;
-    return entity;
-}
-
-// Initialize a ColliderShape from the PrimitiveShape component if present,
-// otherwise fall back to AABB-derived box dimensions.
-ColliderShape InitColliderShape(const entt::registry &r, entt::entity entity) {
-    const auto mesh_entity = FindMeshEntity(r, entity);
-    const auto shape = [&]() -> PhysicsShape {
-        if (const auto *prim = r.try_get<const PrimitiveShape>(mesh_entity)) {
-            return std::visit(
-                overloaded{
-                    [](const primitive::Cuboid &s) -> PhysicsShape { return physics::Box{s.HalfExtents * 2.f}; },
-                    [](const primitive::Plane &s) -> PhysicsShape { return physics::Plane{s.HalfExtents.x * 2.f, s.HalfExtents.y * 2.f}; },
-                    [](const primitive::IcoSphere &s) -> PhysicsShape { return physics::Sphere{s.Radius}; },
-                    [](const primitive::UVSphere &s) -> PhysicsShape { return physics::Sphere{s.Radius}; },
-                    [](const primitive::Cylinder &s) -> PhysicsShape { return physics::Cylinder{s.Height, s.Radius, s.Radius}; },
-                    [](const primitive::Cone &s) -> PhysicsShape { return physics::Cylinder{s.Height, 0.f, s.Radius}; },
-                    // Circle, Torus → ConvexHull from mesh geometry
-                    [](const auto &) -> PhysicsShape { return physics::ConvexHull{}; },
-                },
-                *prim
-            );
-        }
-
-        // Fallback: derive shape from mesh AABB.
-        const auto *mesh = r.try_get<const Mesh>(mesh_entity);
-        if (!mesh || mesh->VertexCount() == 0) return physics::Box{};
-
-        const auto verts = mesh->GetVerticesSpan();
-        vec3 lo = verts[0].Position, hi = lo;
-        for (const auto &v : verts) {
-            lo = glm::min(lo, v.Position);
-            hi = glm::max(hi, v.Position);
-        }
-        const vec3 extents = hi - lo;
-        // If any AABB dimension is degenerate, use ConvexHull instead of a zero-thickness box.
-        if (extents.x < 1e-6f || extents.y < 1e-6f || extents.z < 1e-6f) return physics::ConvexHull{};
-        return physics::Box{extents};
-    }();
-    return ColliderShape{.Shape = shape, .MeshEntity = IsMeshBackedShape(shape) ? mesh_entity : null_entity};
-}
-
 // Returns `name` if non-empty, else a bracketed fallback formatted from `fmt`/args (e.g., "<3>").
 // Brackets signal "no explicit name" and can't be confused with a user-typed value.
 // Uses vformat since consteval-checking of `fmt` is lost through the forwarded pack.
@@ -160,7 +114,7 @@ size_t CountFilterUses(const entt::registry &r, entt::entity filter) {
     for (auto [e, m] : r.view<const ColliderMaterial>().each()) {
         if (m.CollisionFilterEntity == filter) ++n;
     }
-    for (auto [e, t] : r.view<const PhysicsTrigger>().each()) {
+    for (auto [e, t] : r.view<const TriggerNodes>().each()) {
         if (t.CollisionFilterEntity == filter) ++n;
     }
     return n;
@@ -209,10 +163,9 @@ void DrawMatrixCell(ImDrawList *dl, ImVec2 p_min, ImVec2 p_max, bool a_to_b, boo
     if (b_to_a) dl->AddTriangleFilled(TR, BR, BL, fill); // col→row
 }
 
-// Pure-function shape editor: returns the edited shape iff the user changed something.
-// MeshEntity is stored on the ColliderShape / PhysicsTrigger wrapper, so it's preserved
-// across type changes without needing to be passed through here.
-std::optional<PhysicsShape> RenderShapeEditor(const PhysicsShape &in) {
+// Returns the edited shape iff the user changed something.
+// When `auto_fit`, dim widgets for BBox-fittable kinds are hidden — the fitter owns them.
+std::optional<PhysicsShape> RenderShapeEditor(const PhysicsShape &in, bool auto_fit) {
     static const char *shape_names[]{"Box", "Sphere", "Capsule", "Cylinder", "Plane", "Convex Hull", "Triangle Mesh"};
     auto out = in;
     bool changed = false;
@@ -223,14 +176,20 @@ std::optional<PhysicsShape> RenderShapeEditor(const PhysicsShape &in) {
     }
     std::visit(
         overloaded{
-            [&](physics::Box &s) { changed |= DragFloat3("Size", &s.Size.x, 0.01f, 0.01f, 100.f); },
-            [&](physics::Sphere &s) { changed |= DragFloat("Radius", &s.Radius, 0.01f, 0.001f, 100.f); },
+            [&](physics::Box &s) {
+                if (!auto_fit) changed |= DragFloat3("Size", &s.Size.x, 0.01f, 0.01f, 100.f);
+            },
+            [&](physics::Sphere &s) {
+                if (!auto_fit) changed |= DragFloat("Radius", &s.Radius, 0.01f, 0.001f, 100.f);
+            },
             [&](physics::Capsule &s) {
+                if (auto_fit) return;
                 changed |= DragFloat("Height", &s.Height, 0.01f, 0.001f, 100.f);
                 changed |= DragFloat("Radius top", &s.RadiusTop, 0.01f, 0.001f, 100.f);
                 changed |= DragFloat("Radius bottom", &s.RadiusBottom, 0.01f, 0.001f, 100.f);
             },
             [&](physics::Cylinder &s) {
+                if (auto_fit) return;
                 changed |= DragFloat("Height", &s.Height, 0.01f, 0.001f, 100.f);
                 changed |= DragFloat("Radius top", &s.RadiusTop, 0.01f, 0.001f, 100.f);
                 changed |= DragFloat("Radius bottom", &s.RadiusBottom, 0.01f, 0.001f, 100.f);
@@ -621,7 +580,8 @@ void physics_ui::RenderEntityProperties(entt::registry &r, entt::entity entity, 
         if (!want_motion) r.remove<PhysicsMotion>(entity);
         if (!want_collider) r.remove<ColliderShape>(entity);
         if (want_collider && !r.all_of<ColliderShape>(entity)) {
-            r.emplace<ColliderShape>(entity, InitColliderShape(r, entity));
+            r.emplace<ColliderShape>(entity, CreateInitialCollider(r, entity));
+            r.emplace<AutoFitShape>(entity);
         }
         if (want_motion) {
             const bool is_kinematic = motion_type == MT_Kinematic;
@@ -636,7 +596,13 @@ void physics_ui::RenderEntityProperties(entt::registry &r, entt::entity entity, 
         Spacing();
         SeparatorText("Collider");
 
-        if (auto s = RenderShapeEditor(collider->Shape)) {
+        bool auto_fit = r.all_of<const AutoFitShape>(entity);
+        if (Checkbox("Auto-fit", &auto_fit)) {
+            if (auto_fit) r.emplace<AutoFitShape>(entity);
+            else r.remove<AutoFitShape>(entity);
+        }
+
+        if (auto s = RenderShapeEditor(collider->Shape, auto_fit)) {
             const auto owner_mesh = FindMeshEntity(r, entity);
             r.patch<ColliderShape>(entity, [&](ColliderShape &cs) {
                 cs.Shape = *s;
@@ -749,32 +715,28 @@ void physics_ui::RenderEntityProperties(entt::registry &r, entt::entity entity, 
         }
     }
 
-    // Trigger properties
-    if (const auto *trigger = r.try_get<const PhysicsTrigger>(entity); !trigger) {
+    if (const auto *trigger_nodes = r.try_get<const TriggerNodes>(entity)) {
         Spacing();
-        if (Button("Add Trigger")) r.emplace<PhysicsTrigger>(entity, PhysicsTrigger{.Shape = physics::Box{}});
+        SeparatorText("Trigger (compound)");
+        PushID("Trigger");
+        Text("Compound trigger: %zu nodes", trigger_nodes->Nodes.size());
+        RenderEntityCombo<CollisionFilter, &TriggerNodes::CollisionFilterEntity>(r, entity, "Collision filter", "No filters defined");
+        if (Button("Remove Trigger")) r.remove<TriggerNodes>(entity);
+        PopID();
     } else {
         Spacing();
-        SeparatorText("Trigger");
-        PushID("Trigger");
-
-        if (trigger->Shape.has_value()) {
-            if (auto s = RenderShapeEditor(*trigger->Shape)) {
-                const auto owner_mesh = FindMeshEntity(r, entity);
-                r.patch<PhysicsTrigger>(entity, [&](PhysicsTrigger &t) {
-                    t.Shape = *s;
-                    if (IsMeshBackedShape(*s) && t.MeshEntity == null_entity) t.MeshEntity = owner_mesh;
-                });
+        const bool is_shape_trigger = collider && r.all_of<const TriggerTag>(entity);
+        if (collider) {
+            if (is_shape_trigger) {
+                if (Button("Convert to Collider")) r.remove<TriggerTag>(entity);
+            } else {
+                if (Button("Convert to Trigger")) r.emplace<TriggerTag>(entity);
             }
-        } else if (!trigger->Nodes.empty()) {
-            Text("Compound trigger: %zu nodes", trigger->Nodes.size());
+        } else if (Button("Add Trigger")) {
+            r.emplace<ColliderShape>(entity, CreateInitialCollider(r, entity));
+            r.emplace<TriggerTag>(entity);
+            r.emplace<AutoFitShape>(entity);
         }
-
-        RenderEntityCombo<CollisionFilter, &PhysicsTrigger::CollisionFilterEntity>(r, entity, "Collision filter", "No filters defined");
-
-        if (Button("Remove Trigger")) r.remove<PhysicsTrigger>(entity);
-
-        PopID();
     }
 
     PopID();

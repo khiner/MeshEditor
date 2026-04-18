@@ -100,7 +100,7 @@ struct Plane {
     float SizeX{0.f}, SizeZ{0.f};
     bool DoubleSided{false};
 };
-// Mesh-backed shape kinds. Mesh reference lives on the ColliderShape / PhysicsTrigger wrapper.
+// Mesh-backed shape kinds. Mesh reference lives on the ColliderShape wrapper.
 struct ConvexHull {};
 struct TriangleMesh {};
 } // namespace physics
@@ -158,11 +158,20 @@ struct ColliderMaterial {
     entt::entity CollisionFilterEntity{null_entity};
 };
 
-struct PhysicsTrigger {
-    std::optional<PhysicsShape> Shape{};
+// Marker: this entity's ColliderShape participates as a sensor (KHR GeometryTrigger), not a solid body.
+// CollisionFilterEntity for shape-flavor triggers lives on the shared ColliderMaterial (material slot unused).
+struct TriggerTag {};
+
+// Presence means the ColliderShape dimensions are auto-derived from the mesh BBox.
+// Engine-only, not serialized to glTF.
+struct AutoFitShape {};
+
+// Compound trigger (KHR NodesTrigger): zone defined by child nodes — no own shape.
+// Listed nodes supply the geometry; engine reports entry/exit for any of them.
+// Does not produce a Jolt body; exists for document structure and filter assignment.
+struct TriggerNodes {
     std::vector<entt::entity> Nodes{};
     entt::entity CollisionFilterEntity{null_entity};
-    entt::entity MeshEntity{null_entity}; // See ColliderShape::MeshEntity.
 };
 
 struct PhysicsJoint {

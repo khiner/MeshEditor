@@ -29,6 +29,7 @@
 #include "mesh/MeshStore.h"
 #include "mesh/PrimitiveType.h"
 #include "mesh/Primitives.h"
+#include "physics/ColliderFit.h"
 #include "physics/PhysicsDebugDraw.h"
 #include "physics/PhysicsWorld.h"
 #include "scene_impl/SceneInternalTypes.h"
@@ -294,7 +295,7 @@ void ResetObjectPickKeys(SceneBuffers &buffers) {
 // clang-format off
 namespace changes {
 struct Selected {}; struct ActiveInstance {}; struct BoneSelection {}; struct Rerecord {};
-struct MeshActiveElement {}; struct MeshGeometry {}; struct MeshMaterial {};
+struct MeshActiveElement {}; struct MeshGeometry {}; struct MeshElementEdit {}; struct MeshMaterial {};
 struct SoundVertices {}; struct SoundVerticesUpdated {}; struct VertexForce {}; struct ModelsBuffer {};
 struct NewBufferEntity {}; struct RenderInstanceCreated {};
 struct SceneSettings {}; struct InteractionMode {}; struct Submit {}; struct Rotation {};
@@ -523,6 +524,7 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
         .on<SceneEditMode>(On::Create | On::Update);
     track<changes::MeshActiveElement>(R).on<MeshActiveElement>(On::Create | On::Update);
     track<changes::MeshGeometry>(R).on<MeshGeometryDirty>(On::Create);
+    track<changes::MeshElementEdit>(R).on<MeshElementEditCommitted>(On::Create);
     track<changes::MeshMaterial>(R).on<MeshMaterialAssignment>(On::Create | On::Update);
     track<changes::SoundVertices>(R).on<SoundVertices>(On::Create | On::Destroy);
     track<changes::SoundVerticesUpdated>(R).on<SoundVertices>(On::Update);
@@ -558,7 +560,7 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
     track<changes::PhysicsMotion>(R).on<PhysicsMotion>(On::Create | On::Update | On::Destroy);
     track<changes::PhysicsShape>(R).on<ColliderShape>(On::Create | On::Update | On::Destroy);
     track<changes::PhysicsMaterial>(R).on<ColliderMaterial>(On::Update);
-    track<changes::PhysicsTrigger>(R).on<PhysicsTrigger>(On::Create | On::Update | On::Destroy);
+    track<changes::PhysicsTrigger>(R).on<TriggerTag>(On::Create | On::Destroy);
     track<changes::PhysicsJoint>(R).on<PhysicsJoint>(On::Create | On::Update | On::Destroy);
     track<changes::PhysicsMaterialDef>(R).on<PhysicsMaterial>(On::Create | On::Update | On::Destroy);
     track<changes::CollisionSystemDef>(R).on<CollisionSystem>(On::Create | On::Update | On::Destroy);
@@ -569,6 +571,7 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
     R.on_destroy<PhysicsMotion>().connect<&entt::registry::remove<PhysicsVelocity>>();
     R.on_construct<ColliderShape>().connect<&entt::registry::emplace<ColliderMaterial>>();
     R.on_destroy<ColliderShape>().connect<&entt::registry::remove<ColliderMaterial>>();
+    R.on_construct<AutoFitShape>().connect<&RefitAutoFitShape>();
 
     PhysicsWorld *physics = Physics.get();
     RegisterComponentEventHandler(R, [physics](entt::registry &r) {
@@ -578,7 +581,11 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
         for (auto e : reactive<changes::CollisionSystemDef>(r)) physics->OnCollisionSystemDefChange(r, e);
         for (auto e : reactive<changes::CollisionFilterDef>(r)) physics->OnCollisionFilterDefChange(r, e);
         for (auto e : reactive<changes::PhysicsJointDef>(r)) physics->OnPhysicsJointDefChange(r, e);
-        for (auto e : reactive<changes::PhysicsShape>(r)) physics->OnShapeChange(r, e);
+        // Refit must run before OnShapeChange so Jolt sees fitted dims in the same event.
+        for (auto e : reactive<changes::PhysicsShape>(r)) {
+            if (r.all_of<const AutoFitShape>(e)) RefitAutoFitShape(r, e);
+            physics->OnShapeChange(r, e);
+        }
         for (auto e : reactive<changes::PhysicsMotion>(r)) physics->OnMotionChange(r, e);
         for (auto e : reactive<changes::PhysicsMaterial>(r)) physics->OnMaterialChange(r, e);
         for (auto e : reactive<changes::PhysicsTrigger>(r)) physics->OnTriggerChange(r, e);
@@ -1391,8 +1398,23 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
                 }
                 Meshes->UpdateNormals(mesh);
                 dirty_overlay_meshes.insert(mesh_entity);
+                R.emplace_or_replace<MeshElementEditCommitted>(mesh_entity);
             }
             R.remove<PendingTransform>(SceneEntity);
+        }
+    }
+
+    // A vertex edit de-primitivizes the mesh and invalidates any AutoFit collider tracking it.
+    // Fall back to ConvexHull (the non-primitive auto-pick); the patch also pokes Jolt to rebuild
+    // with fresh mesh data for already-ConvexHull colliders.
+    if (auto &tracker = reactive<changes::MeshElementEdit>(R); !tracker.empty()) {
+        for (auto mesh_entity : tracker) R.remove<PrimitiveShape>(mesh_entity);
+        for (auto [ce, cs] : R.view<const ColliderShape, const AutoFitShape>().each()) {
+            const auto mesh_entity = cs.MeshEntity != null_entity ? cs.MeshEntity : FindMeshEntity(R, ce);
+            if (!tracker.contains(mesh_entity)) continue;
+            R.patch<ColliderShape>(ce, [](ColliderShape &x) {
+                if (!std::holds_alternative<physics::ConvexHull>(x.Shape)) x.Shape = physics::ConvexHull{};
+            });
         }
     }
     const bool mode_changed = !reactive<changes::InteractionMode>(R).empty();
@@ -1917,7 +1939,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         if (storage.info() == entt::type_id<entt::reactive>()) storage.clear();
     }
     DestroyTracker->Storage.clear();
-    R.clear<MeshGeometryDirty, MeshMaterialAssignment, MaterialDirty, SubmitDirty, LightWireframeDirty>();
+    R.clear<MeshGeometryDirty, MeshElementEditCommitted, MeshMaterialAssignment, MaterialDirty, SubmitDirty, LightWireframeDirty>();
 
     return render_request;
 }

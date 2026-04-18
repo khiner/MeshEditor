@@ -584,7 +584,6 @@ void PhysicsWorld::Rebuild(entt::registry &r) {
     // so iterating all three views is safe.
     for (auto entity : r.view<PhysicsMotion>()) AddBody(r, entity);
     for (auto entity : r.view<ColliderShape>()) AddBody(r, entity);
-    for (auto entity : r.view<PhysicsTrigger>()) AddBody(r, entity);
     // The joint loop below absorbs all current joint state; reset the dirty bit so the next
     // FlushJoints tick starts clean.
     P->JointsDirty = false;
@@ -798,18 +797,33 @@ struct BodyShape {
 BodyShape BuildBodyShape(const entt::registry &r, entt::entity entity, const KHRCollisionFilter *filter) {
     BodyShape out;
     const auto *motion = r.try_get<const PhysicsMotion>(entity);
-    const auto *trigger = r.try_get<const PhysicsTrigger>(entity);
     const auto *collider = r.try_get<const ColliderShape>(entity);
+    const bool is_trigger = collider && r.all_of<const TriggerTag>(entity);
 
     auto resolve = [&](entt::entity e) -> entt::entity {
         return e != null_entity && r.valid(e) && r.all_of<CollisionFilter>(e) ? e : null_entity;
     };
 
+    if (is_trigger) {
+        out.IsSensor = true;
+        out.IsMeshShape = std::holds_alternative<physics::TriangleMesh>(collider->Shape);
+        const auto *cm = r.try_get<const ColliderMaterial>(entity);
+        out.FilterEntity = resolve(cm ? cm->CollisionFilterEntity : null_entity);
+        const auto mesh_entity = IsMeshBackedShape(collider->Shape) ? collider->MeshEntity : null_entity;
+        const auto *mesh = mesh_entity != null_entity ? r.try_get<const Mesh>(mesh_entity) : nullptr;
+        auto js = CreateJoltShape(collider->Shape, mesh);
+        if (!js) return out;
+        const auto *t = r.try_get<const Transform>(entity);
+        if (t && (t->S.x != 1 || t->S.y != 1 || t->S.z != 1)) js = new ScaledShape(js, ToJolt(t->S));
+        out.Shape = js;
+        return out;
+    }
+
     if (motion) {
         std::vector<entt::entity> colliders;
         if (collider) colliders.emplace_back(entity);
         GatherCompoundChildren(r, entity, colliders);
-        if (colliders.empty() && !trigger) {
+        if (colliders.empty()) {
             // KHR_physics_rigid_bodies: `motion` alone defines a rigid body even without a collider.
             // Use EmptyShape so Jolt can still create the body - it collides with nothing.
             out.Shape = new EmptyShape();
@@ -855,19 +869,6 @@ BodyShape BuildBodyShape(const entt::registry &r, entt::entity entity, const KHR
         out.FilterEntity = resolve(out.SingleMaterial ? out.SingleMaterial->CollisionFilterEntity : null_entity);
         out.Shape = BuildLeafShape(r, entity, *collider, out.SingleMaterial, nullptr, entt::null, filter);
         return out;
-    }
-
-    if (trigger && trigger->Shape) {
-        out.IsSensor = true;
-        out.IsMeshShape = std::holds_alternative<physics::TriangleMesh>(*trigger->Shape);
-        out.FilterEntity = resolve(trigger->CollisionFilterEntity);
-        const auto mesh_entity = IsMeshBackedShape(*trigger->Shape) ? trigger->MeshEntity : null_entity;
-        const auto *mesh = mesh_entity != null_entity ? r.try_get<const Mesh>(mesh_entity) : nullptr;
-        auto js = CreateJoltShape(*trigger->Shape, mesh);
-        if (!js) return out;
-        const auto *t = r.try_get<const Transform>(entity);
-        if (t && (t->S.x != 1 || t->S.y != 1 || t->S.z != 1)) js = new ScaledShape(js, ToJolt(t->S));
-        out.Shape = js;
     }
     return out;
 }
@@ -1116,15 +1117,10 @@ void PhysicsWorld::OnMaterialChange(entt::registry &r, entt::entity e) {
 
 void PhysicsWorld::OnTriggerChange(entt::registry &r, entt::entity e) {
     if (!r.valid(e)) return;
-    const bool has_trigger = r.all_of<PhysicsTrigger>(e);
-    const bool has_body = r.all_of<PhysicsBodyHandle>(e);
-    if (!has_trigger) {
-        // Trigger removed: only drop the body if it was sensor-only (no collider/motion).
-        if (has_body && !r.any_of<ColliderShape, PhysicsMotion>(e)) RemoveBody(r, e);
-        return;
-    }
-    if (has_body) ApplyShape(r, e);
-    else AddBody(r, e);
+    // TriggerTag toggled: body's sensor flag (part of BodyCreationSettings) is baked at create,
+    // so any transition requires a full rebuild. AddBody is a no-op when no shape is available.
+    if (r.all_of<PhysicsBodyHandle>(e)) RemoveBody(r, e);
+    AddBody(r, e);
 }
 
 namespace {
@@ -1196,7 +1192,7 @@ void PhysicsWorld::OnCollisionSystemDefChange(entt::registry &r, entt::entity e)
 void PhysicsWorld::OnCollisionFilterDefChange(entt::registry &r, entt::entity e) {
     if (!r.valid(e) || !r.all_of<CollisionFilter>(e)) {
         ClearDanglingRefs<&ColliderMaterial::CollisionFilterEntity>(r, e);
-        ClearDanglingRefs<&PhysicsTrigger::CollisionFilterEntity>(r, e);
+        ClearDanglingRefs<&TriggerNodes::CollisionFilterEntity>(r, e);
     }
     // Rebuild the filter mask table — cheap, and picks up both update and destroy paths.
     // Per-body filter assignments (BodyFilterByGroup) already key by entity value, so no reassignment needed.
