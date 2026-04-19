@@ -162,9 +162,13 @@ struct ColliderMaterial {
 // CollisionFilterEntity for shape-flavor triggers lives on the shared ColliderMaterial (material slot unused).
 struct TriggerTag {};
 
-// Presence means the ColliderShape dimensions are auto-derived from the mesh BBox.
-// Engine-only, not serialized to glTF.
-struct AutoFitShape {};
+// Engine-only collider derivation policy, not serialized to glTF.
+// AutoFitDims: refit ColliderShape dimensions to the mesh BBox on mesh changes.
+// LockedKind: user picked the variant from the dropdown — engine never auto-changes the kind.
+struct ColliderPolicy {
+    bool AutoFitDims{true};
+    bool LockedKind{false};
+};
 
 // Compound trigger (KHR NodesTrigger): zone defined by child nodes — no own shape.
 // Listed nodes supply the geometry; engine reports entry/exit for any of them.

@@ -205,7 +205,11 @@ private:
                                          CSB_Cylinder,
                                          CSB_Count };
     entt::entity ColliderShapeBufferEntities[CSB_Count]{null_entity, null_entity, null_entity, null_entity, null_entity};
-    void SyncColliderWireframes();
+    // Split in two so reactive events fire on the correct side of SyncModelsBuffers:
+    // EnsureColliderWireframes runs before SyncModelsBuffers so new instance/buffer-entity events
+    // get consumed this frame; UpdateColliderWireframeTransforms runs after WorldTransform recomputation.
+    void EnsureColliderWireframes();
+    void UpdateColliderWireframeTransforms();
 
     enum class SelectionMode { Click,
                                Box };

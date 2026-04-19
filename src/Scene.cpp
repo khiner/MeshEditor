@@ -292,7 +292,7 @@ void ResetObjectPickKeys(SceneBuffers &buffers) {
 // clang-format off
 namespace changes {
 struct Selected {}; struct ActiveInstance {}; struct BoneSelection {}; struct Rerecord {};
-struct MeshActiveElement {}; struct MeshGeometry {}; struct MeshElementEdit {}; struct MeshMaterial {};
+struct MeshActiveElement {}; struct MeshGeometry {}; struct MeshMaterial {};
 struct SoundVertices {}; struct SoundVerticesUpdated {}; struct VertexForce {}; struct ModelsBuffer {};
 struct NewBufferEntity {}; struct RenderInstanceCreated {};
 struct SceneSettings {}; struct InteractionMode {}; struct Submit {}; struct Rotation {};
@@ -521,7 +521,6 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
         .on<SceneEditMode>(On::Create | On::Update);
     track<changes::MeshActiveElement>(R).on<MeshActiveElement>(On::Create | On::Update);
     track<changes::MeshGeometry>(R).on<MeshGeometryDirty>(On::Create);
-    track<changes::MeshElementEdit>(R).on<MeshElementEditCommitted>(On::Create);
     track<changes::MeshMaterial>(R).on<MeshMaterialAssignment>(On::Create | On::Update);
     track<changes::SoundVertices>(R).on<SoundVertices>(On::Create | On::Destroy);
     track<changes::SoundVerticesUpdated>(R).on<SoundVertices>(On::Update);
@@ -568,7 +567,6 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
     R.on_destroy<PhysicsMotion>().connect<&entt::registry::remove<PhysicsVelocity>>();
     R.on_construct<ColliderShape>().connect<&entt::registry::emplace<ColliderMaterial>>();
     R.on_destroy<ColliderShape>().connect<&entt::registry::remove<ColliderMaterial>>();
-    R.on_construct<AutoFitShape>().connect<&RefitAutoFitShape>();
 
     PhysicsWorld *physics = Physics.get();
     RegisterComponentEventHandler(R, [physics](entt::registry &r) {
@@ -578,11 +576,7 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
         for (auto e : reactive<changes::CollisionSystemDef>(r)) physics->OnCollisionSystemDefChange(r, e);
         for (auto e : reactive<changes::CollisionFilterDef>(r)) physics->OnCollisionFilterDefChange(r, e);
         for (auto e : reactive<changes::PhysicsJointDef>(r)) physics->OnPhysicsJointDefChange(r, e);
-        // Refit must run before OnShapeChange so Jolt sees fitted dims in the same event.
-        for (auto e : reactive<changes::PhysicsShape>(r)) {
-            if (r.all_of<const AutoFitShape>(e)) RefitAutoFitShape(r, e);
-            physics->OnShapeChange(r, e);
-        }
+        for (auto e : reactive<changes::PhysicsShape>(r)) physics->OnShapeChange(r, e);
         for (auto e : reactive<changes::PhysicsMotion>(r)) physics->OnMotionChange(r, e);
         for (auto e : reactive<changes::PhysicsMaterial>(r)) physics->OnMaterialChange(r, e);
         for (auto e : reactive<changes::PhysicsTrigger>(r)) physics->OnTriggerChange(r, e);
@@ -945,6 +939,10 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         Pipelines->CompileShaders();
         request(RenderRequest::ReRecord);
     }
+
+    // Create/destroy collider wireframe instances and their buffer entities before SyncModelsBuffers
+    // consumes the RenderInstance/NewBufferEntity reactive events they fire.
+    EnsureColliderWireframes();
 
     auto sync = SyncModelsBuffers(); // Runs first so BufferIndex is valid for all downstream code.
     if (!sync.NewlyInserted.empty()) request(RenderRequest::Submit);
@@ -1441,7 +1439,11 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
                     if (any_moved) {
                         Meshes->UpdateNormals(mesh);
                         dirty_overlay_meshes.insert(mesh_entity);
-                        R.emplace_or_replace<MeshElementEditCommitted>(mesh_entity);
+                        R.remove<PrimitiveShape>(mesh_entity);
+                        for (auto [ce, cs] : R.view<const ColliderShape>().each()) {
+                            const auto me = cs.MeshEntity != null_entity ? cs.MeshEntity : FindMeshEntity(R, ce);
+                            if (me == mesh_entity) RederiveCollider(R, ce);
+                        }
                     }
                 }
             }
@@ -1449,19 +1451,6 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         }
     }
 
-    // A vertex edit de-primitivizes the mesh and invalidates any AutoFit collider tracking it.
-    // Fall back to ConvexHull (the non-primitive auto-pick); the patch also pokes Jolt to rebuild
-    // with fresh mesh data for already-ConvexHull colliders.
-    if (auto &tracker = reactive<changes::MeshElementEdit>(R); !tracker.empty()) {
-        for (auto mesh_entity : tracker) R.remove<PrimitiveShape>(mesh_entity);
-        for (auto [ce, cs] : R.view<const ColliderShape, const AutoFitShape>().each()) {
-            const auto mesh_entity = cs.MeshEntity != null_entity ? cs.MeshEntity : FindMeshEntity(R, ce);
-            if (!tracker.contains(mesh_entity)) continue;
-            R.patch<ColliderShape>(ce, [](ColliderShape &x) {
-                if (!std::holds_alternative<physics::ConvexHull>(x.Shape)) x.Shape = physics::ConvexHull{};
-            });
-        }
-    }
     const bool mode_changed = !reactive<changes::InteractionMode>(R).empty();
     bool anim_advanced;
     { // Animation timeline tick
@@ -1751,9 +1740,9 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
                 if (R.valid(e) && !is_newly_inserted(e)) update_wt(e, !(bone_edit && R.all_of<StartTransform>(e)));
             }
         }
-        // Update collider wireframe instances after WorldTransform recomputation so they read
+        // Update collider wireframe transforms after WorldTransform recomputation so they read
         // up-to-date parent transforms, and before the GPU write so their own WT changes are included.
-        SyncColliderWireframes();
+        UpdateColliderWireframeTransforms();
 
         // Batch WorldTransform writes: collect all (BufferIndex, WorldTransform) pairs,
         // sort by BufferIndex for cache-friendly access, then write via single GetMutableRange.
@@ -1981,7 +1970,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         if (storage.info() == entt::type_id<entt::reactive>()) storage.clear();
     }
     DestroyTracker->Storage.clear();
-    R.clear<MeshGeometryDirty, MeshElementEditCommitted, MeshMaterialAssignment, MaterialDirty, SubmitDirty, LightWireframeDirty>();
+    R.clear<MeshGeometryDirty, MeshMaterialAssignment, MaterialDirty, SubmitDirty, LightWireframeDirty>();
 
     return render_request;
 }
@@ -2412,7 +2401,7 @@ entt::entity Scene::CreateExtrasObject(std::span<const vec3> positions, std::spa
     return entity;
 }
 
-void Scene::SyncColliderWireframes() {
+void Scene::EnsureColliderWireframes() {
     if (R.view<const ColliderShape>().empty() && R.view<ColliderWireframe>().empty()) return;
 
     // Lazily create canonical buffer entities (recreated if destroyed by last-instance cleanup).
@@ -2428,7 +2417,34 @@ void Scene::SyncColliderWireframes() {
     ensure_buffer(CSB_CapsuleCap, physics_debug::UnitCapsuleCap);
     ensure_buffer(CSB_Cylinder, physics_debug::UnitCylinder);
 
-    // Create wireframe instances for colliders that don't have them yet
+    // Buffer entity that Instances[0] should reference for a given shape kind. null = no wireframe.
+    auto primary_buffer = [&](const PhysicsShape &shape) -> entt::entity {
+        return std::visit(
+            overloaded{
+                [&](const physics::Box &) { return ColliderShapeBufferEntities[CSB_Box]; },
+                [&](const physics::Sphere &) { return ColliderShapeBufferEntities[CSB_Sphere]; },
+                [&](const physics::Cylinder &) { return ColliderShapeBufferEntities[CSB_Cylinder]; },
+                [&](const physics::Capsule &) { return ColliderShapeBufferEntities[CSB_CapsuleBody]; },
+                [](const auto &) { return entt::entity{entt::null}; },
+            },
+            shape
+        );
+    };
+
+    // Drop wireframes whose backing buffer no longer matches the shape kind (e.g. Box → ConvexHull).
+    // The creation loop below recreates them (or leaves none for non-wireframe kinds).
+    std::vector<entt::entity> stale;
+    for (auto [entity, cs, cw] : R.view<const ColliderShape, const ColliderWireframe>().each()) {
+        if (cw.Count == 0 || !R.valid(cw.Instances[0])) continue;
+        if (R.get<const Instance>(cw.Instances[0]).Entity == primary_buffer(cs.Shape)) continue;
+        for (uint8_t i = 0; i < cw.Count; ++i) {
+            if (R.valid(cw.Instances[i])) Destroy(cw.Instances[i]);
+        }
+        stale.push_back(entity);
+    }
+    for (auto e : stale) R.remove<ColliderWireframe>(e);
+
+    // Create wireframe instances for colliders that don't have them yet.
     for (auto [entity, cs] : R.view<const ColliderShape>().each()) {
         if (R.all_of<ColliderWireframe>(entity)) continue;
 
@@ -2469,7 +2485,7 @@ void Scene::SyncColliderWireframes() {
         if (cw.Count > 0) R.emplace<ColliderWireframe>(entity, cw);
     }
 
-    // Remove wireframe instances for colliders that no longer exist
+    // Remove wireframe instances for colliders that no longer exist.
     std::vector<entt::entity> orphans;
     for (auto [entity, cw] : R.view<ColliderWireframe>().each()) {
         if (R.all_of<ColliderShape>(entity)) continue;
@@ -2479,26 +2495,32 @@ void Scene::SyncColliderWireframes() {
         orphans.push_back(entity);
     }
     for (auto e : orphans) R.remove<ColliderWireframe>(e);
+}
 
-    // Update wireframe transforms only when the parent entity's WorldTransform changed,
-    // or when the wireframe was just created this frame (no BufferIndex yet).
+void Scene::UpdateColliderWireframeTransforms() {
+    if (R.view<ColliderWireframe>().empty()) return;
+
+    // Update when the parent's WorldTransform changed, the ColliderShape changed (dims/kind),
+    // or any wireframe instance's WT is in the reactive set (On::Create from EnsureColliderWireframes
+    // = just inserted this frame).
     const auto &wt_changed = reactive<changes::WorldTransform>(R);
+    const auto &shape_changed = reactive<changes::PhysicsShape>(R);
     for (auto [entity, cs, cw] : R.view<const ColliderShape, const ColliderWireframe>().each()) {
         const auto *wt = R.try_get<const WorldTransform>(entity);
         if (!wt) continue;
 
         const bool parent_moved = wt_changed.contains(entity);
+        const bool shape_resized = shape_changed.contains(entity);
         const bool newly_created = [&] {
             for (uint8_t i = 0; i < cw.Count; ++i) {
-                const auto *ri = R.try_get<const RenderInstance>(cw.Instances[i]);
-                if (!ri || ri->BufferIndex == UINT32_MAX) return true;
+                if (R.valid(cw.Instances[i]) && wt_changed.contains(cw.Instances[i])) return true;
             }
             return false;
         }();
-        if (!parent_moved && !newly_created) continue;
+        if (!parent_moved && !shape_resized && !newly_created) continue;
 
         const auto &shape = cs.Shape;
-        mat4 base = ToMatrix(*wt);
+        const mat4 base = ToMatrix(*wt);
 
         auto set_wt = [&](entt::entity inst, mat4 m) {
             if (!R.valid(inst)) return;
@@ -2882,6 +2904,12 @@ void Scene::ReplaceMesh(entt::entity e, MeshData &&data) {
     R.emplace<MeshBuffers>(e, Meshes->GetVerticesRange(new_mesh.GetStoreId()), SlottedRange{}, SlottedRange{}, SlottedRange{});
     R.emplace<Mesh>(e, std::move(new_mesh));
     R.emplace_or_replace<MeshGeometryDirty>(e);
+    // Rederive here (not in a per-frame handler) so PhysicsShape reactive entries land before
+    // ProcessComponentEventHandlers consumes them and the end-of-frame clear.
+    for (auto [ce, cs] : R.view<const ColliderShape>().each()) {
+        const auto me = cs.MeshEntity != null_entity ? cs.MeshEntity : FindMeshEntity(R, ce);
+        if (me == e) RederiveCollider(R, ce);
+    }
 }
 
 void Scene::Destroy(entt::entity e) {

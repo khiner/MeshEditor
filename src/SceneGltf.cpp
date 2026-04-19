@@ -430,6 +430,8 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
                     }
                 }
                 R.emplace<ColliderShape>(entity, std::move(collider));
+                // Imported collider state is authoritative — engine must not auto-derive over it.
+                R.emplace<ColliderPolicy>(entity, ColliderPolicy{.AutoFitDims = false, .LockedKind = true});
                 if (node.Material) {
                     R.replace<ColliderMaterial>(entity, ColliderMaterial{
                                                             .PhysicsMaterialEntity = resolve_mat(node.Material->PhysicsMaterialIndex),
@@ -450,6 +452,7 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
                     // already took this entity — KHR declares nodes as one-or-the-other.
                     if (!R.all_of<ColliderShape>(entity)) {
                         R.emplace<ColliderShape>(entity, ColliderShape{.Shape = *td.Shape});
+                        R.emplace<ColliderPolicy>(entity, ColliderPolicy{.AutoFitDims = false, .LockedKind = true});
                         R.emplace<TriggerTag>(entity);
                         R.patch<ColliderMaterial>(entity, [&](auto &m) { m.CollisionFilterEntity = resolve_filter(td.CollisionFilterIndex); });
                         has_any_physics = true;

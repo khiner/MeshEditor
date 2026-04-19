@@ -580,8 +580,9 @@ void physics_ui::RenderEntityProperties(entt::registry &r, entt::entity entity, 
         if (!want_motion) r.remove<PhysicsMotion>(entity);
         if (!want_collider) r.remove<ColliderShape>(entity);
         if (want_collider && !r.all_of<ColliderShape>(entity)) {
-            r.emplace<ColliderShape>(entity, CreateInitialCollider(r, entity));
-            r.emplace<AutoFitShape>(entity);
+            r.emplace<ColliderShape>(entity);
+            r.emplace<ColliderPolicy>(entity);
+            RederiveCollider(r, entity);
         }
         if (want_motion) {
             const bool is_kinematic = motion_type == MT_Kinematic;
@@ -596,14 +597,15 @@ void physics_ui::RenderEntityProperties(entt::registry &r, entt::entity entity, 
         Spacing();
         SeparatorText("Collider");
 
-        bool auto_fit = r.all_of<const AutoFitShape>(entity);
+        bool auto_fit = r.get<const ColliderPolicy>(entity).AutoFitDims;
         if (Checkbox("Auto-fit", &auto_fit)) {
-            if (auto_fit) r.emplace<AutoFitShape>(entity);
-            else r.remove<AutoFitShape>(entity);
+            r.patch<ColliderPolicy>(entity, [&](ColliderPolicy &p) { p.AutoFitDims = auto_fit; });
+            RederiveCollider(r, entity);
         }
 
         if (auto s = RenderShapeEditor(collider->Shape, auto_fit)) {
             const auto owner_mesh = FindMeshEntity(r, entity);
+            const bool kind_changed = s->index() != collider->Shape.index();
             r.patch<ColliderShape>(entity, [&](ColliderShape &cs) {
                 cs.Shape = *s;
                 // Seed MeshEntity on first-ever flip into a mesh-backed variant (primitive-only
@@ -612,6 +614,11 @@ void physics_ui::RenderEntityProperties(entt::registry &r, entt::entity entity, 
                 // links survive accidental editor edits.
                 if (IsMeshBackedShape(*s) && cs.MeshEntity == null_entity) cs.MeshEntity = owner_mesh;
             });
+            // User picked the variant from the dropdown — lock the kind from automatic changes.
+            if (kind_changed) {
+                r.patch<ColliderPolicy>(entity, [](ColliderPolicy &p) { p.LockedKind = true; });
+                RederiveCollider(r, entity);
+            }
         }
 
         RenderEntityCombo<PhysicsMaterial, &ColliderMaterial::PhysicsMaterialEntity>(r, entity, "Physics material", "No materials defined");
@@ -733,9 +740,10 @@ void physics_ui::RenderEntityProperties(entt::registry &r, entt::entity entity, 
                 if (Button("Convert to Trigger")) r.emplace<TriggerTag>(entity);
             }
         } else if (Button("Add Trigger")) {
-            r.emplace<ColliderShape>(entity, CreateInitialCollider(r, entity));
+            r.emplace<ColliderShape>(entity);
+            r.emplace<ColliderPolicy>(entity);
             r.emplace<TriggerTag>(entity);
-            r.emplace<AutoFitShape>(entity);
+            RederiveCollider(r, entity);
         }
     }
 

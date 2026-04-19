@@ -16,8 +16,6 @@ struct MeshSelectionBitsetRange {
 
 // Tag to request overlay + element-state buffer refresh after mesh geometry changes.
 struct MeshGeometryDirty {};
-// Fires for user-driven element edits only (not ReplaceMesh / primitive regeneration).
-struct MeshElementEditCommitted {};
 struct MeshMaterialAssignment {
     uint32_t PrimitiveIndex, MaterialIndex;
 };
