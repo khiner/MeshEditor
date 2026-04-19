@@ -45,7 +45,9 @@ struct ObjectCreateInfo {
     MeshInstanceCreateInfo::SelectBehavior Select{MeshInstanceCreateInfo::SelectBehavior::Exclusive};
 };
 
+struct Armature;
 struct DescriptorSlots;
+struct DrawBatchInfo;
 struct DrawBufferPair;
 struct DrawListBuilder;
 struct EnvironmentStore;
@@ -310,6 +312,7 @@ private:
     void RenderSelectionPass(vk::Semaphore signal_semaphore = {}); // On-demand selection fragment rendering.
     using SelectionBuildFn = std::function<std::vector<SelectionDrawInfo>(DrawListBuilder &)>;
     void RenderSelectionPassWith(bool render_depth, const SelectionBuildFn &build_fn, vk::Semaphore signal_semaphore = {}, bool render_silhouette = true);
+    void AppendSelectedSilhouetteDraws(DrawListBuilder &, DrawBatchInfo &); // Adds face-mesh draws for every Selected entity to the silhouette batch.
     void RenderEditSelectionPass(std::span<const ElementRange>, Element, vk::Semaphore signal_semaphore = {});
     void RenderElementSelectionPass(std::span<const ElementRange>, Element, bool write_bitset, uvec2 box_min = {}, uvec2 box_max = {}, vk::Semaphore signal_semaphore = {});
     void DispatchUpdateSelectionStates(std::span<const ElementRange>, Element); // Submits UpdateSelectionState.comp for each range and waits.
@@ -328,6 +331,8 @@ private:
 
     void CreateBoneInstances(entt::entity arm_obj_entity, entt::entity arm_data_entity);
     entt::entity CreateSingleBoneInstance(entt::entity arm_obj_entity, uint32_t bone_id); // Create ECS entity + joints for one bone.
+    entt::entity CreateBoneEntity(entt::entity arm_obj_entity, const Armature &, uint32_t bone_index, entt::entity parent);
+    void CreateBoneJoints(entt::entity arm_obj_entity, entt::entity bone_entity, entt::entity joint_entity);
     void DestroyArmatureData(entt::entity arm_obj_entity);
     void RebuildBoneStructure(entt::entity arm_data_entity);
 

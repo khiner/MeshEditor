@@ -51,6 +51,7 @@ using std::views::iota, std::views::transform;
 namespace {
 constexpr vk::Extent2D ToExtent2D(vk::Extent3D extent) { return {extent.width, extent.height}; }
 const vk::ClearColorValue Transparent{0, 0, 0, 0};
+const std::vector<vk::ClearValue> SilhouetteClearValues{{vk::ClearDepthStencilValue{1, 0}}, {Transparent}};
 
 using namespace he;
 
@@ -107,6 +108,10 @@ std::vector<Vertex> CreateNormalVertices(const Mesh &mesh, Element element) {
 std::optional<uint32_t> GetModelBufferIndex(const entt::registry &r, entt::entity e) {
     if (const auto *ri = r.try_get<RenderInstance>(e)) return ri->BufferIndex;
     return {};
+}
+
+uint8_t InstanceStateBits(const entt::registry &r, entt::entity e) {
+    return (r.all_of<Selected>(e) ? ElementStateSelected : 0) | (r.all_of<Active>(e) ? ElementStateActive : 0);
 }
 } // namespace
 
@@ -287,6 +292,23 @@ void ResetObjectPickKeys(SceneBuffers &buffers) {
     std::fill_n(buffers.ObjectPickKeys.Data(), SceneBuffers::MaxSelectableObjects, std::numeric_limits<uint32_t>::max());
 }
 
+// True if any component of type C has `C.*field == target`.
+template<class C, class F>
+bool AnyComponentRefersTo(entt::registry &R, F C::*field, entt::entity target) {
+    return any_of(R.view<C>().each(), [=](const auto &entry) { return std::get<1>(entry).*field == target; });
+}
+
+void ReplaceSelected(entt::registry &R, std::span<const entt::entity> entities, auto &&make_new) {
+    for (const auto e : entities) {
+        const auto new_e = make_new(e);
+        if (R.all_of<Active>(e)) {
+            R.remove<Active>(e);
+            R.emplace<Active>(new_e);
+        }
+        R.remove<Selected>(e);
+    }
+}
+
 // clang-format off
 namespace changes {
 struct Selected {}; struct ActiveInstance {}; struct BoneSelection {}; struct Rerecord {};
@@ -405,52 +427,45 @@ std::optional<uint32_t> FindNearestPickedElement(
         wait_semaphore
     );
 
-    const auto *candidates = buffers.ElementPickCandidates.Data();
-    ElementPickCandidate best{.Id = 0, .Depth = 1.0f, .DistanceSq = std::numeric_limits<uint32_t>::max()};
-    for (uint32_t i = 0; i < group_count; ++i) {
-        const auto &candidate = candidates[i];
-        if (candidate.Id == 0) continue;
-        if (candidate.DistanceSq < best.DistanceSq || (candidate.DistanceSq == best.DistanceSq && candidate.Depth < best.Depth)) {
-            best = candidate;
-        }
-    }
+    const std::span candidates{buffers.ElementPickCandidates.Data(), group_count};
+    auto valid = candidates | std::views::filter([](const auto &c) { return c.Id != 0; });
+    const auto it = std::ranges::min_element(valid, [](const auto &a, const auto &b) {
+        return std::tie(a.DistanceSq, a.Depth) < std::tie(b.DistanceSq, b.Depth);
+    });
+    if (it == valid.end() || it->Id > max_element_id) return {};
+    return it->Id - 1;
+}
 
-    if (best.Id == 0 || best.Id > max_element_id) return {};
-    return best.Id - 1;
+uint32_t MaxElementBound(auto &&ranges) {
+    return fold_left(ranges, uint32_t{0}, [](uint32_t total, const auto &r) { return std::max(total, r.Offset + r.Count); });
 }
 } // namespace
 
 struct Scene::SelectionSlotHandles {
-    explicit SelectionSlotHandles(DescriptorSlots &slots)
-        : Slots(slots),
-          HeadImage(slots.Allocate(SlotType::Image)),
-          SelectionCounter(slots.Allocate(SlotType::Buffer)),
-          ObjectPickKey(slots.Allocate(SlotType::Buffer)),
-          ElementPickCandidates(slots.Allocate(SlotType::Buffer)),
-          ObjectPickSeenBits(slots.Allocate(SlotType::Buffer)),
-          SelectionBitset(slots.Allocate(SlotType::Buffer)),
-          ObjectIdSampler(slots.Allocate(SlotType::Sampler)),
-          DepthSampler(slots.Allocate(SlotType::Sampler)),
-          SilhouetteSampler(slots.Allocate(SlotType::Sampler)),
-          ColorSampler(slots.Allocate(SlotType::Sampler)),
-          LineDataSampler(slots.Allocate(SlotType::Sampler)) {}
-
-    ~SelectionSlotHandles() {
-        Slots.Release({SlotType::Image, HeadImage});
-        Slots.Release({SlotType::Buffer, SelectionCounter});
-        Slots.Release({SlotType::Buffer, ObjectPickKey});
-        Slots.Release({SlotType::Buffer, ElementPickCandidates});
-        Slots.Release({SlotType::Buffer, ObjectPickSeenBits});
-        Slots.Release({SlotType::Buffer, SelectionBitset});
-        Slots.Release({SlotType::Sampler, ObjectIdSampler});
-        Slots.Release({SlotType::Sampler, DepthSampler});
-        Slots.Release({SlotType::Sampler, SilhouetteSampler});
-        Slots.Release({SlotType::Sampler, ColorSampler});
-        Slots.Release({SlotType::Sampler, LineDataSampler});
-    }
-
     DescriptorSlots &Slots;
     uint32_t HeadImage, SelectionCounter, ObjectPickKey, ElementPickCandidates, ObjectPickSeenBits, SelectionBitset, ObjectIdSampler, DepthSampler, SilhouetteSampler, ColorSampler, LineDataSampler;
+
+    using Entry = std::pair<SlotType, uint32_t SelectionSlotHandles::*>;
+    static constexpr std::array<Entry, 11> Entries{{
+        {SlotType::Image, &SelectionSlotHandles::HeadImage},
+        {SlotType::Buffer, &SelectionSlotHandles::SelectionCounter},
+        {SlotType::Buffer, &SelectionSlotHandles::ObjectPickKey},
+        {SlotType::Buffer, &SelectionSlotHandles::ElementPickCandidates},
+        {SlotType::Buffer, &SelectionSlotHandles::ObjectPickSeenBits},
+        {SlotType::Buffer, &SelectionSlotHandles::SelectionBitset},
+        {SlotType::Sampler, &SelectionSlotHandles::ObjectIdSampler},
+        {SlotType::Sampler, &SelectionSlotHandles::DepthSampler},
+        {SlotType::Sampler, &SelectionSlotHandles::SilhouetteSampler},
+        {SlotType::Sampler, &SelectionSlotHandles::ColorSampler},
+        {SlotType::Sampler, &SelectionSlotHandles::LineDataSampler},
+    }};
+
+    explicit SelectionSlotHandles(DescriptorSlots &slots) : Slots(slots) {
+        for (const auto &[type, field] : Entries) this->*field = slots.Allocate(type);
+    }
+    ~SelectionSlotHandles() {
+        for (const auto &[type, field] : Entries) Slots.Release({type, this->*field});
+    }
 };
 
 // Unmanaged reactive storage to track entity destruction.
@@ -724,28 +739,27 @@ void Scene::LoadIcons() {
     const auto RenderBitmap = [this, &batch](std::span<const std::byte> data, uint32_t width, uint32_t height) {
         return RenderBitmapToImage(Vk, batch, data, width, height, Format::Color, ColorSubresourceRange);
     };
-    const auto LoadSvg = [&](std::unique_ptr<SvgResource> &svg, std::filesystem::path path) {
-        svg = std::make_unique<SvgResource>(Vk.Device, RenderBitmap, std::move(path));
+
+    const std::pair<std::unique_ptr<SvgResource> *, std::string_view> entries[] = {
+        {&Icons.Select, "select.svg"},
+        {&Icons.SelectBox, "select_box.svg"},
+        {&Icons.Move, "move.svg"},
+        {&Icons.Rotate, "rotate.svg"},
+        {&Icons.Scale, "scale.svg"},
+        {&Icons.Universal, "transform.svg"},
+        {&ShadingIcons.Wireframe, "shading_wire.svg"},
+        {&ShadingIcons.Solid, "shading_solid.svg"},
+        {&ShadingIcons.MaterialPreview, "shading_texture.svg"},
+        {&ShadingIcons.Rendered, "shading_rendered.svg"},
+        {&OverlayIcon, "overlay.svg"},
+        {&AnimIcons.Play, "play.svg"},
+        {&AnimIcons.Pause, "pause.svg"},
+        {&AnimIcons.JumpStart, "jump_start.svg"},
+        {&AnimIcons.JumpEnd, "jump_end.svg"},
     };
-
-    LoadSvg(Icons.Select, svg_path / "select.svg");
-    LoadSvg(Icons.SelectBox, svg_path / "select_box.svg");
-    LoadSvg(Icons.Move, svg_path / "move.svg");
-    LoadSvg(Icons.Rotate, svg_path / "rotate.svg");
-    LoadSvg(Icons.Scale, svg_path / "scale.svg");
-    LoadSvg(Icons.Universal, svg_path / "transform.svg");
-
-    LoadSvg(ShadingIcons.Wireframe, svg_path / "shading_wire.svg");
-    LoadSvg(ShadingIcons.Solid, svg_path / "shading_solid.svg");
-    LoadSvg(ShadingIcons.MaterialPreview, svg_path / "shading_texture.svg");
-    LoadSvg(ShadingIcons.Rendered, svg_path / "shading_rendered.svg");
-
-    LoadSvg(OverlayIcon, svg_path / "overlay.svg");
-
-    LoadSvg(AnimIcons.Play, svg_path / "play.svg");
-    LoadSvg(AnimIcons.Pause, svg_path / "pause.svg");
-    LoadSvg(AnimIcons.JumpStart, svg_path / "jump_start.svg");
-    LoadSvg(AnimIcons.JumpEnd, svg_path / "jump_end.svg");
+    for (const auto &[svg, name] : entries) {
+        *svg = std::make_unique<SvgResource>(Vk.Device, RenderBitmap, svg_path / name);
+    }
 
     SubmitTextureUploadBatch(batch, Vk.Queue, *OneShotFence, Vk.Device);
 }
@@ -908,10 +922,7 @@ Scene::SyncResult Scene::SyncModelsBuffers() {
             const auto instance_entity = entities[j];
             R.get<RenderInstance>(instance_entity).BufferIndex = base_index + j;
             object_ids[j] = R.get<const RenderInstance>(instance_entity).ObjectId;
-            uint8_t state = 0;
-            if (R.all_of<Selected>(instance_entity)) state |= ElementStateSelected;
-            if (R.all_of<Active>(instance_entity)) state |= ElementStateActive;
-            states[j] = state;
+            states[j] = InstanceStateBits(R, instance_entity);
         }
         // Write ObjectIds and InstanceStates at the new slots. WorldTransform slots are left unwritten —
         // the WorldTransform reactive pass writes them before submit.
@@ -1162,10 +1173,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         const auto collect_instance_state = [&](entt::entity instance_entity) {
             if (is_newly_inserted(instance_entity)) return;
             if (const auto *ri = R.try_get<RenderInstance>(instance_entity); ri && ri->BufferIndex != UINT32_MAX) {
-                uint8_t state = 0;
-                if (R.all_of<Selected>(instance_entity)) state |= ElementStateSelected;
-                if (R.all_of<Active>(instance_entity)) state |= ElementStateActive;
-                state_writes.push_back({ri->BufferIndex, state, ri->Entity});
+                state_writes.push_back({ri->BufferIndex, InstanceStateBits(R, instance_entity), ri->Entity});
             }
         };
         // Update SelectedInstanceCount on mesh entities before per-entity processing.
@@ -1462,6 +1470,9 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         if (anim_advanced) LastEvaluatedFrame = tl.CurrentFrame;
         // Timeline frames are displayed 1-based, but animation time starts at t=0 on frame 1.
         const float eval_seconds = float(std::max(0, tl.CurrentFrame - 1)) / tl.Fps;
+        const auto clip_time = [eval_seconds](const auto &clip) {
+            return clip.DurationSeconds > 0 ? std::fmod(eval_seconds, clip.DurationSeconds) : 0.0f;
+        };
 
         // Evaluate animation deltas (data only — no bone entity iteration).
         bool request_rerecord = false;
@@ -1474,8 +1485,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
                 if (const auto *anim = R.try_get<const ArmatureAnimation>(arm_obj_comp.Entity);
                     anim && !anim->Clips.empty() && anim->ActiveClipIndex < anim->Clips.size()) {
                     const auto &clip = anim->Clips[anim->ActiveClipIndex];
-                    const float clip_time = clip.DurationSeconds > 0 ? std::fmod(eval_seconds, clip.DurationSeconds) : 0.0f;
-                    EvaluateAnimationDeltas(clip, clip_time, armature.Bones, pose_state->BonePoseDelta);
+                    EvaluateAnimationDeltas(clip, clip_time(clip), armature.Bones, pose_state->BonePoseDelta);
                 }
             }
         }
@@ -1486,12 +1496,11 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
                  R.view<const MorphWeightAnimation, MorphWeightState, const Instance>().each()) {
                 if (morph_anim.Clips.empty() || morph_anim.ActiveClipIndex >= morph_anim.Clips.size()) continue;
                 const auto &clip = morph_anim.Clips[morph_anim.ActiveClipIndex];
-                const float clip_time = clip.DurationSeconds > 0 ? std::fmod(eval_seconds, clip.DurationSeconds) : 0.0f;
                 // Reset to default weights from mesh-level data
                 const auto &mesh = R.get<const Mesh>(instance.Entity);
                 const auto default_weights = Meshes->GetDefaultMorphWeights(mesh.GetStoreId());
                 std::copy(default_weights.begin(), default_weights.end(), morph_state.Weights.begin());
-                EvaluateMorphWeights(clip, clip_time, morph_state.Weights);
+                EvaluateMorphWeights(clip, clip_time(clip), morph_state.Weights);
                 // Write to GPU
                 auto gpu_weights = Buffers->MorphWeightBuffer.GetMutable(morph_state.GpuWeightRange);
                 std::copy(morph_state.Weights.begin(), morph_state.Weights.end(), gpu_weights.begin());
@@ -1501,9 +1510,8 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
             for (auto [entity, node_anim] : R.view<const NodeTransformAnimation>().each()) {
                 if (node_anim.Clips.empty() || node_anim.ActiveClipIndex >= node_anim.Clips.size()) continue;
                 const auto &clip = node_anim.Clips[node_anim.ActiveClipIndex];
-                const float clip_time = clip.DurationSeconds > 0 ? std::fmod(eval_seconds, clip.DurationSeconds) : 0.0f;
                 std::array<Transform, 1> local_pose{node_anim.RestLocal};
-                EvaluateAnimation(clip, clip_time, local_pose);
+                EvaluateAnimation(clip, clip_time(clip), local_pose);
                 const auto t = ComposeLocalTransforms(node_anim.ParentBindWorld, local_pose.front());
                 R.replace<Transform>(entity, t);
                 request_rerecord = true;
@@ -1802,13 +1810,13 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         !reactive<changes::InteractionMode>(R).empty() ||
         !reactive<changes::TransformEnd>(R).empty() ||
         light_count_changed) {
+        const auto logical_extent = R.get<const ViewportExtent>(SceneEntity).Value;
+        const auto render_extent = ComputeRenderExtentPx(logical_extent, std::bit_cast<vec2>(ImGui::GetIO().DisplayFramebufferScale));
+        const float aspect = render_extent.width == 0 || render_extent.height == 0 ? 1.f : float(render_extent.width) / float(render_extent.height);
         // When looking through a scene camera, keep the ViewCamera's widened FOV in sync
         // with the current viewport aspect ratio (handles viewport resize).
         if (LookThrough && R.all_of<Camera>(LookThrough->Camera)) {
-            const auto logical_extent = R.get<const ViewportExtent>(SceneEntity).Value;
-            const auto render_extent = ComputeRenderExtentPx(logical_extent, std::bit_cast<vec2>(ImGui::GetIO().DisplayFramebufferScale));
-            const float viewport_aspect = render_extent.width == 0 || render_extent.height == 0 ? 1.f : float(render_extent.width) / float(render_extent.height);
-            R.get<ViewCamera>(SceneEntity).Data = WidenForLookThrough(R.get<Camera>(LookThrough->Camera), viewport_aspect);
+            R.get<ViewCamera>(SceneEntity).Data = WidenForLookThrough(R.get<Camera>(LookThrough->Camera), aspect);
         }
         const auto &camera = R.get<const ViewCamera>(SceneEntity);
         const auto &settings = R.get<const SceneSettings>(SceneEntity);
@@ -1829,13 +1837,9 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         const float background_blur = use_scene_world ? 0.f : active_lighting.BackgroundBlur;
         const float world_opacity = is_pbr_mode ? (use_scene_world ? 1.f : active_lighting.WorldOpacity) : 0.f;
         const auto *pending = R.try_get<const PendingTransform>(SceneEntity);
-        const auto logical_extent = R.get<const ViewportExtent>(SceneEntity).Value;
-        const auto render_extent = ComputeRenderExtentPx(logical_extent, std::bit_cast<vec2>(ImGui::GetIO().DisplayFramebufferScale));
-        const float viewport_height = render_extent.height > 0 ? float(render_extent.height) : 1.f;
         // ScreenPixelScale: world-space size per pixel at unit distance (perspective) or absolute (ortho).
         // Sign encodes camera type: positive = perspective (shader multiplies by distance), negative = orthographic.
-        const float screen_pixel_scale = ScreenPixelScale(camera.Data, viewport_height);
-        const float aspect = render_extent.width == 0 || render_extent.height == 0 ? 1.f : float(render_extent.width) / float(render_extent.height);
+        const float screen_pixel_scale = ScreenPixelScale(camera.Data, std::max(float(render_extent.height), 1.f));
         const auto proj = camera.Projection(aspect);
         Buffers->SceneViewUBO.Update(as_bytes(SceneViewUBO{
             .ViewProj = proj * camera.View(),
@@ -1972,7 +1976,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
 
 void Scene::SetVisible(entt::entity entity, bool visible) {
     const bool already_visible = R.all_of<RenderInstance>(entity);
-    if ((visible && already_visible) || (!visible && !already_visible)) return;
+    if (visible == already_visible) return;
 
     if (visible) {
         const auto buffer_entity = R.get<Instance>(entity).Entity;
@@ -2049,6 +2053,38 @@ entt::entity Scene::AddEmpty(ObjectCreateInfo info) {
     return CreateExtrasObject(positions, {}, edges, ObjectType::Empty, info, "Empty");
 }
 
+// Bone entities keep Scale=vec3{1} and ParentInverse=I4 so FK cascade stays clean: Transform.P is a
+// pure local-frame offset, parent scale can't displace children. Bone length lives in BoneDisplayScale
+// (baked into mesh scale at GPU write time; BoneOctahedron(1.f) is a unit mesh).
+entt::entity Scene::CreateBoneEntity(entt::entity arm_obj_entity, const Armature &armature, uint32_t bone_index, entt::entity parent_entity) {
+    const auto &bone = armature.Bones[bone_index];
+    const auto bone_entity = R.create();
+    R.emplace<BoneIndex>(bone_entity, bone_index);
+    R.emplace<SubElementOf>(bone_entity, arm_obj_entity);
+    R.emplace<Instance>(bone_entity, arm_obj_entity);
+    R.emplace<Name>(bone_entity, CreateName(bone.Name));
+    R.emplace<BoneDisplayScale>(bone_entity, ComputeBoneDisplayScale(armature, bone_index));
+    const Transform bone_transform{bone.RestLocal.P, bone.RestLocal.R, vec3{1}};
+    R.emplace<Transform>(bone_entity, bone_transform);
+    R.emplace<WorldTransform>(bone_entity, bone_transform);
+    SetParent(R, bone_entity, parent_entity);
+    R.emplace_or_replace<ParentInverse>(bone_entity, I4);
+    SetVisible(bone_entity, true);
+    return bone_entity;
+}
+
+void Scene::CreateBoneJoints(entt::entity arm_obj_entity, entt::entity bone_entity, entt::entity joint_entity) {
+    auto make = [&](bool is_tail) {
+        const auto e = R.create();
+        R.emplace<SubElementOf>(e, arm_obj_entity);
+        R.emplace<Instance>(e, joint_entity);
+        R.emplace<BoneSubPartOf>(e, bone_entity, is_tail);
+        SetVisible(e, true);
+        return e;
+    };
+    R.emplace<BoneJointEntities>(bone_entity, make(false), make(true));
+}
+
 void Scene::CreateBoneInstances(entt::entity arm_obj_entity, entt::entity arm_data_entity) {
     const auto &armature = R.get<const Armature>(arm_data_entity);
     const uint32_t n = armature.Bones.size();
@@ -2062,93 +2098,29 @@ void Scene::CreateBoneInstances(entt::entity arm_obj_entity, entt::entity arm_da
     );
     R.emplace<VertexStoreId>(arm_obj_entity, bone_store_id);
 
-    // ECS Scale stays vec3{1} for all bone entities so parent scale never displaces FK child positions.
-    // Per-bone bone length is stored in BoneDisplayScale and baked into the mesh scale at GPU write time.
-    // BoneOctahedron(1.f) is a unit mesh scaled by bone_length so rendered length = bone_length.
-    // Non-leaf bones: length from nearest child distance. Leaf bones: inherit parent's length.
-    // Bones are topologically sorted, so parent length is always resolved before children.
-    static constexpr float MinBoneLength = 0.004f;
-    std::vector<float> bone_scales(n, 0.f);
-    // Non-leaf bones: minimum distance to any child (ignoring near-zero distances).
-    for (uint32_t i = 0; i < n; ++i) {
-        float min_child_dist = std::numeric_limits<float>::max();
-        for (uint32_t j = 0; j < n; ++j) {
-            if (armature.Bones[j].ParentIndex == i) {
-                const float d = glm::length(vec3{armature.Bones[j].RestWorld[3]} - vec3{armature.Bones[i].RestWorld[3]});
-                if (d > MinBoneLength) min_child_dist = std::min(min_child_dist, d);
-            }
-        }
-        if (min_child_dist < std::numeric_limits<float>::max()) bone_scales[i] = min_child_dist;
-    }
-    // Leaf/zero-length bones: inherit parent's scale, or fall back to 1.0.
-    for (uint32_t i = 0; i < n; ++i) {
-        if (bone_scales[i] == 0.f) {
-            bone_scales[i] = armature.Bones[i].ParentIndex != InvalidBoneIndex ? bone_scales[armature.Bones[i].ParentIndex] : 1.f;
-        }
-    }
-
+    // Bones are topologically sorted (parents before children), so a single pass suffices.
     std::vector<entt::entity> bone_entities(n);
     for (uint32_t i = 0; i < n; ++i) {
-        const auto &bone = armature.Bones[i];
-        const auto bone_entity = R.create();
-        R.emplace<BoneIndex>(bone_entity, i);
-        R.emplace<SubElementOf>(bone_entity, arm_obj_entity);
-        R.emplace<Instance>(bone_entity, arm_obj_entity);
-        R.emplace<Name>(bone_entity, CreateName(bone.Name));
-        R.emplace<BoneDisplayScale>(bone_entity, bone_scales[i]);
-        const auto bone_transform = Transform{bone.RestLocal.P, bone.RestLocal.R, vec3{1}};
-        R.emplace<Transform>(bone_entity, bone_transform);
-        R.emplace<WorldTransform>(bone_entity, bone_transform);
-        bone_entities[i] = bone_entity;
-    }
-
-    // Set up SceneNode hierarchy (bones are topologically sorted: parents before children).
-    // Use "parent without inverse" so bone Transform.P represents local-frame offsets
-    // (FK cascade: WorldMatrix = parent.WorldMatrix * LocalMatrix, no ParentInverse baked in).
-    for (uint32_t i = 0; i < n; ++i) {
-        const auto parent = armature.Bones[i].ParentIndex == InvalidBoneIndex ? arm_obj_entity : bone_entities[armature.Bones[i].ParentIndex];
-        SetParent(R, bone_entities[i], parent);
-        R.emplace_or_replace<ParentInverse>(bone_entities[i], I4); // Parent without inverse
-        SetVisible(bone_entities[i], true);
+        const auto parent_index = armature.Bones[i].ParentIndex;
+        const auto parent = parent_index == InvalidBoneIndex ? arm_obj_entity : bone_entities[parent_index];
+        bone_entities[i] = CreateBoneEntity(arm_obj_entity, armature, i, parent);
     }
     auto &arm_obj = R.get<ArmatureObject>(arm_obj_entity);
     arm_obj.BoneEntities = std::move(bone_entities);
 
-    // Create shared joint sphere disc mesh (once per armature)
-    {
-        auto sphere_data = primitive::BoneSphereDisc();
-        const auto sphere_store_id = Meshes->AllocateVertexBuffer(sphere_data.Mesh.Positions, {}).first;
-        const auto joint_entity = R.create();
-        R.emplace<BoneJoint>(joint_entity);
-        R.emplace<MeshBuffers>(
-            joint_entity, Meshes->GetVerticesRange(sphere_store_id),
-            SlottedRange{}, SlottedRange{}, SlottedRange{} // All indices deferred to ProcessComponentEvents
-        );
-        R.emplace<VertexStoreId>(joint_entity, sphere_store_id);
+    // Create shared joint sphere disc mesh (once per armature).
+    auto sphere_data = primitive::BoneSphereDisc();
+    const auto sphere_store_id = Meshes->AllocateVertexBuffer(sphere_data.Mesh.Positions, {}).first;
+    const auto joint_entity = R.create();
+    R.emplace<BoneJoint>(joint_entity);
+    R.emplace<MeshBuffers>(
+        joint_entity, Meshes->GetVerticesRange(sphere_store_id),
+        SlottedRange{}, SlottedRange{}, SlottedRange{} // All indices deferred to ProcessComponentEvents
+    );
+    R.emplace<VertexStoreId>(joint_entity, sphere_store_id);
 
-        // Create joint sphere instance entities
-        for (uint32_t i = 0; i < n; ++i) {
-            const auto bone_entity = arm_obj.BoneEntities[i];
-
-            // Head joint
-            const auto head_entity = R.create();
-            R.emplace<SubElementOf>(head_entity, arm_obj_entity);
-            R.emplace<Instance>(head_entity, joint_entity);
-            R.emplace<BoneSubPartOf>(head_entity, bone_entity, false);
-            SetVisible(head_entity, true);
-
-            // Tail joint
-            const auto tail_entity = R.create();
-            R.emplace<SubElementOf>(tail_entity, arm_obj_entity);
-            R.emplace<Instance>(tail_entity, joint_entity);
-            R.emplace<BoneSubPartOf>(tail_entity, bone_entity, true);
-            SetVisible(tail_entity, true);
-
-            R.emplace<BoneJointEntities>(bone_entity, head_entity, tail_entity);
-        }
-
-        arm_obj.JointEntity = joint_entity;
-    }
+    for (const auto bone_entity : arm_obj.BoneEntities) CreateBoneJoints(arm_obj_entity, bone_entity, joint_entity);
+    arm_obj.JointEntity = joint_entity;
 }
 
 void Scene::DestroyArmatureData(entt::entity arm_obj_entity) {
@@ -2180,40 +2152,12 @@ entt::entity Scene::CreateSingleBoneInstance(entt::entity arm_obj_entity, BoneId
     auto &arm_obj = R.get<ArmatureObject>(arm_obj_entity);
     const auto &armature = R.get<const Armature>(arm_obj.Entity);
     const auto new_index = *armature.FindBoneIndex(bone_id);
-    const auto &bone = armature.Bones[new_index];
-
-    const auto bone_entity = R.create();
-    R.emplace<BoneIndex>(bone_entity, new_index);
-    R.emplace<SubElementOf>(bone_entity, arm_obj_entity);
-    R.emplace<Instance>(bone_entity, arm_obj_entity);
-    R.emplace<Name>(bone_entity, CreateName(bone.Name));
-    R.emplace<BoneDisplayScale>(bone_entity, ComputeBoneDisplayScale(armature, new_index));
-    const Transform bone_transform{bone.RestLocal.P, bone.RestLocal.R, vec3{1}};
-    R.emplace<Transform>(bone_entity, bone_transform);
-    R.emplace<WorldTransform>(bone_entity, bone_transform);
-
-    const auto parent_entity = bone.ParentIndex == InvalidBoneIndex ? arm_obj_entity : arm_obj.BoneEntities[bone.ParentIndex];
-    SetParent(R, bone_entity, parent_entity);
-    R.emplace_or_replace<ParentInverse>(bone_entity, I4);
-
+    const auto parent_index = armature.Bones[new_index].ParentIndex;
+    const auto parent_entity = parent_index == InvalidBoneIndex ? arm_obj_entity : arm_obj.BoneEntities[parent_index];
+    const auto bone_entity = CreateBoneEntity(arm_obj_entity, armature, new_index, parent_entity);
     if (arm_obj.JointEntity != null_entity && R.valid(arm_obj.JointEntity)) {
-        const auto head_entity = R.create();
-        R.emplace<SubElementOf>(head_entity, arm_obj_entity);
-        R.emplace<Instance>(head_entity, arm_obj.JointEntity);
-        R.emplace<BoneSubPartOf>(head_entity, bone_entity, false);
-        SetVisible(head_entity, true);
-
-        const auto tail_entity = R.create();
-        R.emplace<SubElementOf>(tail_entity, arm_obj_entity);
-        R.emplace<Instance>(tail_entity, arm_obj.JointEntity);
-        R.emplace<BoneSubPartOf>(tail_entity, bone_entity, true);
-        SetVisible(tail_entity, true);
-
-        R.emplace<BoneJointEntities>(bone_entity, head_entity, tail_entity);
+        CreateBoneJoints(arm_obj_entity, bone_entity, arm_obj.JointEntity);
     }
-
-    SetVisible(bone_entity, true);
-
     arm_obj.BoneEntities.emplace_back(bone_entity);
     return bone_entity;
 }
@@ -2429,18 +2373,26 @@ void Scene::EnsureColliderWireframes() {
         );
     };
 
+    // Drop wireframe: destroy instances and remove the component (batched so views stay valid).
+    auto drop_wireframes = [&](std::span<const entt::entity> entities) {
+        for (auto e : entities) {
+            const auto &cw = R.get<const ColliderWireframe>(e);
+            for (uint8_t i = 0; i < cw.Count; ++i) {
+                if (R.valid(cw.Instances[i])) Destroy(cw.Instances[i]);
+            }
+            R.remove<ColliderWireframe>(e);
+        }
+    };
+
     // Drop wireframes whose backing buffer no longer matches the shape kind (e.g. Box → ConvexHull).
     // The creation loop below recreates them (or leaves none for non-wireframe kinds).
     std::vector<entt::entity> stale;
     for (auto [entity, cs, cw] : R.view<const ColliderShape, const ColliderWireframe>().each()) {
         if (cw.Count == 0 || !R.valid(cw.Instances[0])) continue;
         if (R.get<const Instance>(cw.Instances[0]).Entity == primary_buffer(cs.Shape)) continue;
-        for (uint8_t i = 0; i < cw.Count; ++i) {
-            if (R.valid(cw.Instances[i])) Destroy(cw.Instances[i]);
-        }
         stale.push_back(entity);
     }
-    for (auto e : stale) R.remove<ColliderWireframe>(e);
+    drop_wireframes(stale);
 
     // Create wireframe instances for colliders that don't have them yet.
     for (auto [entity, cs] : R.view<const ColliderShape>().each()) {
@@ -2489,13 +2441,9 @@ void Scene::EnsureColliderWireframes() {
     // Remove wireframe instances for colliders that no longer exist.
     std::vector<entt::entity> orphans;
     for (auto [entity, cw] : R.view<ColliderWireframe>().each()) {
-        if (R.all_of<ColliderShape>(entity)) continue;
-        for (uint8_t i = 0; i < cw.Count; ++i) {
-            if (R.valid(cw.Instances[i])) Destroy(cw.Instances[i]);
-        }
-        orphans.push_back(entity);
+        if (!R.all_of<ColliderShape>(entity)) orphans.push_back(entity);
     }
-    for (auto e : orphans) R.remove<ColliderWireframe>(e);
+    drop_wireframes(orphans);
 }
 
 void Scene::UpdateColliderWireframeTransforms() {
@@ -2830,16 +2778,10 @@ bool Scene::CanDuplicate() const {
 }
 
 bool Scene::CanDuplicateLinked() const {
-    if (R.get<const SceneInteraction>(SceneEntity).Mode == InteractionMode::Pose) return false;
-    if (IsBoneEditMode(R, SceneEntity)) return false;
-    return !R.storage<Selected>().empty();
+    return CanDuplicate() && !IsBoneEditMode(R, SceneEntity);
 }
 
-bool Scene::CanDelete() const {
-    if (R.get<const SceneInteraction>(SceneEntity).Mode == InteractionMode::Pose) return false;
-    if (IsBoneEditMode(R, SceneEntity)) return !R.view<BoneSelection>().empty();
-    return !R.storage<Selected>().empty();
-}
+bool Scene::CanDelete() const { return CanDuplicate(); }
 
 void Scene::Delete() {
     if (!CanDelete()) return;
@@ -2873,14 +2815,7 @@ void Scene::Duplicate() {
     }
     Meshes->CommitReserves();
 
-    for (const auto e : entities) {
-        const auto new_e = Duplicate(e);
-        if (R.all_of<Active>(e)) {
-            R.remove<Active>(e);
-            R.emplace<Active>(new_e);
-        }
-        R.remove<Selected>(e);
-    }
+    ReplaceSelected(R, entities, [this](entt::entity e) { return Duplicate(e); });
     StartScreenTransform = TransformGizmo::TransformType::Translate;
 }
 
@@ -2889,14 +2824,7 @@ void Scene::DuplicateLinked() {
     const Timer timer{"DuplicateLinked"};
     std::vector<entt::entity> entities;
     for (const auto e : R.view<Selected>()) entities.emplace_back(e);
-    for (const auto e : entities) {
-        const auto new_e = DuplicateLinked(e);
-        if (R.all_of<Active>(e)) {
-            R.remove<Active>(e);
-            R.emplace<Active>(new_e);
-        }
-        R.remove<Selected>(e);
-    }
+    ReplaceSelected(R, entities, [this](entt::entity e) { return DuplicateLinked(e); });
     StartScreenTransform = TransformGizmo::TransformType::Translate;
 }
 
@@ -2999,11 +2927,7 @@ void Scene::Destroy(entt::entity e) {
 
     // If this was the last instance, destroy the buffer entity
     if (R.valid(buffer_entity)) {
-        const auto has_instances = any_of(
-            R.view<Instance>().each(),
-            [buffer_entity](const auto &entry) { return std::get<1>(entry).Entity == buffer_entity; }
-        );
-        if (!has_instances) {
+        if (!AnyComponentRefersTo(R, &Instance::Entity, buffer_entity)) {
             if (auto *mesh_buffers = R.try_get<MeshBuffers>(buffer_entity)) {
                 if (const auto *vcr = R.try_get<VertexClass>(buffer_entity)) {
                     Buffers->VertexClassBuffer.Release({vcr->Offset, mesh_buffers->Vertices.Count});
@@ -3017,23 +2941,10 @@ void Scene::Destroy(entt::entity e) {
     }
     for (const auto armature_data_entity : armature_data_entities) {
         if (!R.valid(armature_data_entity)) continue;
-
-        const auto used_by_armature_object = any_of(
-            R.view<ArmatureObject>().each(),
-            [armature_data_entity](const auto &entry) { return std::get<1>(entry).Entity == armature_data_entity; }
-        );
-        const auto used_by_armature_modifier = any_of(
-            R.view<ArmatureModifier>().each(),
-            [armature_data_entity](const auto &entry) { return std::get<1>(entry).ArmatureEntity == armature_data_entity; }
-        );
-        const auto used_by_bone_attachment = any_of(
-            R.view<BoneAttachment>().each(),
-            [armature_data_entity](const auto &entry) { return std::get<1>(entry).ArmatureEntity == armature_data_entity; }
-        );
-
-        if (!(used_by_armature_object || used_by_armature_modifier || used_by_bone_attachment)) {
-            R.destroy(armature_data_entity);
-        }
+        const bool is_used = AnyComponentRefersTo(R, &ArmatureObject::Entity, armature_data_entity) ||
+            AnyComponentRefersTo(R, &ArmatureModifier::ArmatureEntity, armature_data_entity) ||
+            AnyComponentRefersTo(R, &BoneAttachment::ArmatureEntity, armature_data_entity);
+        if (!is_used) R.destroy(armature_data_entity);
     }
 
     // If no instances remain, release all imported textures and reset to the default material.
@@ -3421,36 +3332,32 @@ void Scene::RecordRenderCommandBuffer(bool silhouette_only) {
             auto &sel_list = draw.SelectionList;
             sel_list = {};
 
-            auto sel_tri = sel_list.BeginBatch();
-            for (const auto &e : mesh_entities) {
-                if (e.IsExtras || e.IsBoneJoint || e.Buf.FaceIndices.Count == 0) continue;
-                auto dd = MakeDrawData(e.Buf.Vertices, e.Buf.FaceIndices, Buffers->Instances, e.Deform.BoneDeformOffset, e.Deform.ArmatureDeformOffset, e.Deform.MorphDeformOffset, e.Deform.MorphTargetCount);
-                dd.ObjectIdSlot = Buffers->Instances.ObjectIdBuffer.Slot;
-                const auto db = sel_list.Draws.size();
-                if (e.PrimaryEditBufferIndex) AppendDraw(sel_list, sel_tri, e.Buf.FaceIndices, e.Mod, dd, *e.PrimaryEditBufferIndex);
-                else AppendDraw(sel_list, sel_tri, e.Buf.FaceIndices, e.Mod, dd);
-                PatchMorphWeights(sel_list, db, e.Deform);
-            }
-            auto sel_line = sel_list.BeginBatch();
-            for (const auto &e : mesh_entities) {
-                if (e.IsExtras || e.IsBoneJoint || e.Buf.FaceIndices.Count > 0 || e.Buf.EdgeIndices.Count == 0) continue;
-                auto dd = MakeDrawData(e.Buf.Vertices, e.Buf.EdgeIndices, Buffers->Instances, e.Deform.BoneDeformOffset, e.Deform.ArmatureDeformOffset, e.Deform.MorphDeformOffset, e.Deform.MorphTargetCount);
-                dd.ObjectIdSlot = Buffers->Instances.ObjectIdBuffer.Slot;
-                const auto db = sel_list.Draws.size();
-                if (e.PrimaryEditBufferIndex) AppendDraw(sel_list, sel_line, e.Buf.EdgeIndices, e.Mod, dd, *e.PrimaryEditBufferIndex);
-                else AppendDraw(sel_list, sel_line, e.Buf.EdgeIndices, e.Mod, dd);
-                PatchMorphWeights(sel_list, db, e.Deform);
-            }
-            auto sel_point = sel_list.BeginBatch();
-            for (const auto &e : mesh_entities) {
-                if (e.IsExtras || e.IsBoneJoint || e.Buf.FaceIndices.Count > 0 || e.Buf.EdgeIndices.Count > 0) continue;
-                auto dd = MakeDrawData(e.Buf.Vertices, e.Buf.VertexIndices, Buffers->Instances, e.Deform.BoneDeformOffset, e.Deform.ArmatureDeformOffset, e.Deform.MorphDeformOffset, e.Deform.MorphTargetCount);
-                dd.ObjectIdSlot = Buffers->Instances.ObjectIdBuffer.Slot;
-                const auto db = sel_list.Draws.size();
-                if (e.PrimaryEditBufferIndex) AppendDraw(sel_list, sel_point, e.Buf.VertexIndices, e.Mod, dd, *e.PrimaryEditBufferIndex);
-                else AppendDraw(sel_list, sel_point, e.Buf.VertexIndices, e.Mod, dd);
-                PatchMorphWeights(sel_list, db, e.Deform);
-            }
+            const auto run_sel_pass = [&](auto &&indices_of, auto &&skip) {
+                auto batch = sel_list.BeginBatch();
+                for (const auto &e : mesh_entities) {
+                    if (e.IsExtras || e.IsBoneJoint || skip(e)) continue;
+                    const auto &indices = indices_of(e);
+                    auto dd = MakeDrawData(e.Buf.Vertices, indices, Buffers->Instances, e.Deform.BoneDeformOffset, e.Deform.ArmatureDeformOffset, e.Deform.MorphDeformOffset, e.Deform.MorphTargetCount);
+                    dd.ObjectIdSlot = Buffers->Instances.ObjectIdBuffer.Slot;
+                    const auto db = sel_list.Draws.size();
+                    if (e.PrimaryEditBufferIndex) AppendDraw(sel_list, batch, indices, e.Mod, dd, *e.PrimaryEditBufferIndex);
+                    else AppendDraw(sel_list, batch, indices, e.Mod, dd);
+                    PatchMorphWeights(sel_list, db, e.Deform);
+                }
+                return batch;
+            };
+            const auto sel_tri = run_sel_pass(
+                [](const auto &e) -> const auto & { return e.Buf.FaceIndices; },
+                [](const auto &e) { return e.Buf.FaceIndices.Count == 0; }
+            );
+            const auto sel_line = run_sel_pass(
+                [](const auto &e) -> const auto & { return e.Buf.EdgeIndices; },
+                [](const auto &e) { return e.Buf.FaceIndices.Count > 0 || e.Buf.EdgeIndices.Count == 0; }
+            );
+            const auto sel_point = run_sel_pass(
+                [](const auto &e) -> const auto & { return e.Buf.VertexIndices; },
+                [](const auto &e) { return e.Buf.FaceIndices.Count > 0 || e.Buf.EdgeIndices.Count > 0; }
+            );
 
             DrawBatchInfo sel_bone_sphere;
             if (show_overlays && settings.ShowBones) {
@@ -3558,9 +3465,8 @@ void Scene::RecordRenderCommandBuffer(bool silhouette_only) {
     const bool has_silhouette = render_silhouette && draw.Silhouette.DrawCount > 0;
     if (has_silhouette) { // Silhouette depth/object pass
         const auto &silhouette = Pipelines->Silhouette;
-        static const std::vector<vk::ClearValue> clear_values{{vk::ClearDepthStencilValue{1, 0}}, {Transparent}};
         const vk::Rect2D rect{{0, 0}, ToExtent2D(silhouette.Resources->OffscreenImage.Extent)};
-        cb.beginRenderPass({*silhouette.Renderer.RenderPass, *silhouette.Resources->Framebuffer, rect, clear_values}, vk::SubpassContents::eInline);
+        cb.beginRenderPass({*silhouette.Renderer.RenderPass, *silhouette.Resources->Framebuffer, rect, SilhouetteClearValues}, vk::SubpassContents::eInline);
         cb.bindIndexBuffer(*Buffers->IdentityIndexBuffer, 0, vk::IndexType::eUint32);
         record_draw_batch(silhouette.Renderer, SPT::SilhouetteDepthObject, draw.Silhouette);
         cb.endRenderPass();
@@ -3572,9 +3478,8 @@ void Scene::RecordRenderCommandBuffer(bool silhouette_only) {
         sync_fragment_shader_reads(vk::PipelineStageFlagBits::eColorAttachmentOutput, silhouette_to_edge_barriers);
 
         const auto &silhouette_edge = Pipelines->SilhouetteEdge;
-        static const std::vector<vk::ClearValue> edge_clear_values{{vk::ClearDepthStencilValue{1, 0}}, {Transparent}};
         const vk::Rect2D edge_rect{{0, 0}, ToExtent2D(silhouette_edge.Resources->OffscreenImage.Extent)};
-        cb.beginRenderPass({*silhouette_edge.Renderer.RenderPass, *silhouette_edge.Resources->Framebuffer, edge_rect, edge_clear_values}, vk::SubpassContents::eInline);
+        cb.beginRenderPass({*silhouette_edge.Renderer.RenderPass, *silhouette_edge.Resources->Framebuffer, edge_rect, SilhouetteClearValues}, vk::SubpassContents::eInline);
         const auto &silhouette_edo = silhouette_edge.Renderer.ShaderPipelines.at(SPT::SilhouetteEdgeDepthObject);
         const SilhouetteEdgeDepthObjectPushConstants edge_pc{SelectionHandles->SilhouetteSampler};
         cb.pushConstants(*silhouette_edo.PipelineLayout, vk::ShaderStageFlagBits::eFragment, 0, sizeof(edge_pc), &edge_pc);
@@ -3758,26 +3663,28 @@ void Scene::RenderSelectionPass(vk::Semaphore signal_semaphore) {
     SelectionStale = false;
 }
 
+void Scene::AppendSelectedSilhouetteDraws(DrawListBuilder &draw_list, DrawBatchInfo &silhouette_batch) {
+    for (const auto e : R.view<Selected>()) {
+        const auto *inst = R.try_get<Instance>(e);
+        if (!inst) continue;
+        const auto buffer_entity = inst->Entity;
+        const auto &mesh_buffers = R.get<MeshBuffers>(buffer_entity);
+        const auto &models = R.get<ModelsBuffer>(buffer_entity);
+        if (const auto model_index = GetModelBufferIndex(R, e)) {
+            auto draw = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.FaceIndices, Buffers->Instances);
+            draw.ObjectIdSlot = Buffers->Instances.ObjectIdBuffer.Slot;
+            AppendDraw(draw_list, silhouette_batch, mesh_buffers.FaceIndices, models, draw, *model_index);
+        }
+    }
+}
+
 void Scene::RenderSelectionPassWith(bool render_depth, const SelectionBuildFn &build_fn, vk::Semaphore signal_semaphore, bool render_silhouette) {
     const Timer timer{"RenderSelectionPassWith"};
     DrawListBuilder draw_list;
     DrawBatchInfo silhouette_batch{};
     if (render_depth) {
         silhouette_batch = draw_list.BeginBatch();
-        if (render_silhouette) {
-            for (const auto e : R.view<Selected>()) {
-                const auto *inst = R.try_get<Instance>(e);
-                if (!inst) continue;
-                const auto buffer_entity = inst->Entity;
-                const auto &mesh_buffers = R.get<MeshBuffers>(buffer_entity);
-                const auto &models = R.get<ModelsBuffer>(buffer_entity);
-                if (const auto model_index = GetModelBufferIndex(R, e)) {
-                    auto draw = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.FaceIndices, Buffers->Instances);
-                    draw.ObjectIdSlot = Buffers->Instances.ObjectIdBuffer.Slot;
-                    AppendDraw(draw_list, silhouette_batch, mesh_buffers.FaceIndices, models, draw, *model_index);
-                }
-            }
-        }
+        if (render_silhouette) AppendSelectedSilhouetteDraws(draw_list, silhouette_batch);
     }
     const auto selection_draws = build_fn(draw_list);
 
@@ -3819,9 +3726,8 @@ void Scene::RenderSelectionPassWith(bool render_depth, const SelectionBuildFn &b
     if (render_depth) {
         // Render selected meshes to silhouette depth buffer for element occlusion
         const auto &silhouette = Pipelines->Silhouette;
-        static const std::vector<vk::ClearValue> clear_values{{vk::ClearDepthStencilValue{1, 0}}, {Transparent}};
         const vk::Rect2D rect{{0, 0}, ToExtent2D(silhouette.Resources->OffscreenImage.Extent)};
-        cb.beginRenderPass({*silhouette.Renderer.RenderPass, *silhouette.Resources->Framebuffer, rect, clear_values}, vk::SubpassContents::eInline);
+        cb.beginRenderPass({*silhouette.Renderer.RenderPass, *silhouette.Resources->Framebuffer, rect, SilhouetteClearValues}, vk::SubpassContents::eInline);
         cb.bindIndexBuffer(*Buffers->IdentityIndexBuffer, 0, vk::IndexType::eUint32);
         record_draw_batch(silhouette.Renderer, SPT::SilhouetteDepthObject, silhouette_batch);
         cb.endRenderPass();
@@ -3879,20 +3785,7 @@ void Scene::RenderElementSelectionPass(
         // Drawing the silhouette would fill depth with mesh surface depth, causing face fragments at equal
         // depth to fail the eLess test. For vertex/edge selection, we do render silhouette geometry so that
         // elements at the surface pass (eLessOrEqual) while occluded elements behind it fail.
-        if (element != Element::Face) {
-            for (const auto e : R.view<Selected>()) {
-                const auto *inst = R.try_get<Instance>(e);
-                if (!inst) continue;
-                const auto buffer_entity = inst->Entity;
-                const auto &mesh_buffers = R.get<MeshBuffers>(buffer_entity);
-                const auto &models = R.get<ModelsBuffer>(buffer_entity);
-                if (const auto model_index = GetModelBufferIndex(R, e)) {
-                    auto draw = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.FaceIndices, Buffers->Instances);
-                    draw.ObjectIdSlot = Buffers->Instances.ObjectIdBuffer.Slot;
-                    AppendDraw(draw_list, silhouette_batch, mesh_buffers.FaceIndices, models, draw, *model_index);
-                }
-            }
-        }
+        if (element != Element::Face) AppendSelectedSilhouetteDraws(draw_list, silhouette_batch);
     }
     auto element_batch = draw_list.BeginBatch();
     for (const auto &r : ranges) {
@@ -3949,9 +3842,8 @@ void Scene::RenderElementSelectionPass(
 
     if (render_depth) {
         const auto &silhouette = Pipelines->Silhouette;
-        static const std::vector<vk::ClearValue> clear_values{{vk::ClearDepthStencilValue{1, 0}}, {Transparent}};
         const vk::Rect2D sil_rect{{0, 0}, ToExtent2D(silhouette.Resources->OffscreenImage.Extent)};
-        cb.beginRenderPass({*silhouette.Renderer.RenderPass, *silhouette.Resources->Framebuffer, sil_rect, clear_values}, vk::SubpassContents::eInline);
+        cb.beginRenderPass({*silhouette.Renderer.RenderPass, *silhouette.Resources->Framebuffer, sil_rect, SilhouetteClearValues}, vk::SubpassContents::eInline);
         cb.bindIndexBuffer(*Buffers->IdentityIndexBuffer, 0, vk::IndexType::eUint32);
         if (silhouette_batch.DrawCount > 0) {
             const auto &pipeline = silhouette.Renderer.Bind(cb, SPT::SilhouetteDepthObject);
@@ -3997,7 +3889,7 @@ void Scene::RenderElementSelectionPass(
     if (write_bitset) {
         // Ensure fragment shader writes to the bitset are visible to the host after the fence.
         // Scope the barrier to the written range.
-        const auto element_count = fold_left(ranges, uint32_t{0}, [](uint32_t total, const auto &r) { return std::max(total, r.Offset + r.Count); });
+        const auto element_count = MaxElementBound(ranges);
         const vk::DeviceSize bitset_bytes = ((element_count + 31) / 32) * sizeof(uint32_t);
         cb.pipelineBarrier(
             vk::PipelineStageFlagBits::eFragmentShader, vk::PipelineStageFlagBits::eHost, {}, {},
@@ -4117,10 +4009,7 @@ void Scene::RunBoxSelectElements(std::span<const ElementRange> ranges, Element e
     if (box_min.x > box_max.x || box_min.y > box_max.y) return;
 
     const Timer timer{"RunBoxSelectElements"};
-    const auto element_count = fold_left(
-        ranges, uint32_t{0},
-        [](uint32_t total, const auto &range) { return std::max(total, range.Offset + range.Count); }
-    );
+    const auto element_count = MaxElementBound(ranges);
     if (element_count == 0) return;
 
     const uint32_t bitset_words = (element_count + 31) / 32;
@@ -4150,10 +4039,7 @@ void Scene::RunBoxSelectElements(std::span<const ElementRange> ranges, Element e
 
 std::optional<std::pair<entt::entity, uint32_t>> Scene::RunElementPickFromRanges(std::span<const ElementRange> ranges, Element element, uvec2 mouse_px) {
     if (ranges.empty() || element == Element::None) return {};
-    const auto element_count = fold_left(
-        ranges, uint32_t{0},
-        [](uint32_t total, const auto &range) { return std::max(total, range.Offset + range.Count); }
-    );
+    const auto element_count = MaxElementBound(ranges);
     if (element_count == 0) return {};
 
     const Timer timer{"RunElementPick"};

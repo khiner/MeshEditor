@@ -41,7 +41,6 @@ JPH_SUPPRESS_WARNINGS
 #include <entt/entity/registry.hpp>
 
 #include <algorithm>
-#include <functional>
 #include <numbers>
 #include <thread>
 #include <unordered_map>
@@ -51,10 +50,42 @@ using namespace JPH::literals;
 
 namespace {
 inline Vec3 ToJolt(vec3 v) { return {v.x, v.y, v.z}; }
+inline RVec3 ToJoltR(vec3 v) { return RVec3{v.x, v.y, v.z}; }
 inline Quat ToJoltQuat(quat q) { return {q.x, q.y, q.z, q.w}; }
 inline vec3 FromJoltVec3(Vec3 v) { return {v.GetX(), v.GetY(), v.GetZ()}; }
 inline vec3 FromJoltRVec3(RVec3 v) { return {float(v.GetX()), float(v.GetY()), float(v.GetZ())}; }
 inline quat FromJoltQuat(Quat q) { return {q.GetW(), q.GetX(), q.GetY(), q.GetZ()}; }
+
+inline bool HasNonUnitScale(const Transform &t) { return t.S.x != 1 || t.S.y != 1 || t.S.z != 1; }
+
+// Pack filter entity into a Shape UserData. 0 = no filter; offset by 1 so null_entity doesn't alias the sentinel.
+inline uint64_t ShapeFilterUserData(entt::entity e) { return e != null_entity ? uint64_t(static_cast<uint32_t>(e)) + 1 : 0; }
+
+inline entt::entity ResolveFilterEntity(const entt::registry &r, entt::entity e) {
+    return e != null_entity && r.valid(e) && r.all_of<CollisionFilter>(e) ? e : null_entity;
+}
+
+inline float ResolvedMass(const PhysicsMotion &m) {
+    const float v = m.Mass.value_or(DefaultMass);
+    return v > 0 ? v : DefaultMass;
+}
+
+inline void ApplyInertiaDiagonal(MotionProperties &mp, const PhysicsMotion &motion) {
+    if (!motion.InertiaDiagonal) return;
+    const auto &d = *motion.InertiaDiagonal;
+    const Vec3 inv_diag{d.x > 0 ? 1 / d.x : 0, d.y > 0 ? 1 / d.y : 0, d.z > 0 ? 1 / d.z : 0};
+    const auto irot = motion.InertiaOrientation ? ToJoltQuat(*motion.InertiaOrientation) : Quat::sIdentity();
+    mp.SetInverseInertia(inv_diag, irot);
+}
+
+// Walk self+ancestors until `pred` matches. Returns null_entity if none match.
+entt::entity FindAncestorIf(const entt::registry &r, entt::entity e, auto &&pred) {
+    for (; e != entt::null && !pred(e);) {
+        const auto p = GetParentEntity(r, e);
+        e = p == e ? entt::null : p;
+    }
+    return e;
+}
 
 namespace Layers {
 constexpr ObjectLayer NonMoving{0}, Moving{1}, NumLayers{2};
@@ -74,11 +105,9 @@ public:
     uint GetNumBroadPhaseLayers() const override { return BPLayers::NumLayers; }
     BroadPhaseLayer GetBroadPhaseLayer(ObjectLayer layer) const override { return Mapping[layer]; }
     const char *GetBroadPhaseLayerName(BroadPhaseLayer layer) const override {
-        switch (static_cast<BroadPhaseLayer::Type>(layer)) {
-            case static_cast<BroadPhaseLayer::Type>(0): return "NON_MOVING";
-            case static_cast<BroadPhaseLayer::Type>(1): return "MOVING";
-            default: return "INVALID";
-        }
+        if (layer == BPLayers::NonMoving) return "NON_MOVING";
+        if (layer == BPLayers::Moving) return "MOVING";
+        return "INVALID";
     }
 
 private:
@@ -274,18 +303,12 @@ private:
         const auto *m1 = LookupMaterial(b1.GetUserData());
         const auto *m2 = LookupMaterial(b2.GetUserData());
         if (!m1 && !m2) return; // both use Jolt defaults
-
         // Default combine mode is Average per KHR spec.
-        const auto fc1 = m1 ? m1->FrictionCombine : PhysicsCombineMode::Average;
-        const auto rc1 = m1 ? m1->RestitutionCombine : PhysicsCombineMode::Average;
-        const auto fc2 = m2 ? m2->FrictionCombine : PhysicsCombineMode::Average;
-        const auto rc2 = m2 ? m2->RestitutionCombine : PhysicsCombineMode::Average;
-        const float f1 = b1.GetFriction(), f2 = b2.GetFriction();
-        const float r1 = b1.GetRestitution(), r2 = b2.GetRestitution();
-
+        const auto fc = [](const ::PhysicsMaterial *m) { return m ? m->FrictionCombine : PhysicsCombineMode::Average; };
+        const auto rc = [](const ::PhysicsMaterial *m) { return m ? m->RestitutionCombine : PhysicsCombineMode::Average; };
         const auto pick = [](PhysicsCombineMode a, PhysicsCombineMode b) { return CombineModePriority(a) >= CombineModePriority(b) ? a : b; };
-        s.mCombinedFriction = ApplyCombineMode(pick(fc1, fc2), f1, f2);
-        s.mCombinedRestitution = ApplyCombineMode(pick(rc1, rc2), r1, r2);
+        s.mCombinedFriction = ApplyCombineMode(pick(fc(m1), fc(m2)), b1.GetFriction(), b2.GetFriction());
+        s.mCombinedRestitution = ApplyCombineMode(pick(rc(m1), rc(m2)), b1.GetRestitution(), b2.GetRestitution());
     }
 };
 
@@ -414,15 +437,13 @@ void ApplyPhysicsProperties(BodyCreationSettings &bcs, const PhysicsMotion *moti
             if (motion->Mass == 0.0f) {
                 bcs.mAllowedDOFs = EAllowedDOFs::All & ~(EAllowedDOFs::TranslationX | EAllowedDOFs::TranslationY | EAllowedDOFs::TranslationZ);
             }
-            const float mass = motion->Mass.value_or(DefaultMass);
-            bcs.mMassPropertiesOverride.mMass = mass > 0.0f ? mass : DefaultMass;
+            bcs.mMassPropertiesOverride.mMass = ResolvedMass(*motion);
             bcs.mOverrideMassProperties = EOverrideMassProperties::CalculateInertia;
         }
         // MeshShape can't compute mass properties — provide placeholders for any non-static body.
         if (is_mesh_shape && bcs.mMotionType != EMotionType::Static) {
-            const float m = motion->Mass.value_or(DefaultMass);
             bcs.mOverrideMassProperties = EOverrideMassProperties::MassAndInertiaProvided;
-            bcs.mMassPropertiesOverride.mMass = m > 0.0f ? m : DefaultMass;
+            bcs.mMassPropertiesOverride.mMass = ResolvedMass(*motion);
             bcs.mMassPropertiesOverride.mInertia = Mat44::sScale(Vec3::sReplicate(bcs.mMassPropertiesOverride.mMass / 6.0f));
         }
         if (velocity) {
@@ -444,13 +465,7 @@ void ApplyPhysicsProperties(BodyCreationSettings &bcs, const PhysicsMotion *moti
 
 // Find the nearest ancestor (or self) that has a PhysicsBodyHandle.
 entt::entity FindBodyAncestor(const entt::registry &r, entt::entity e) {
-    for (; e != entt::null;) {
-        if (r.all_of<PhysicsBodyHandle>(e)) return e;
-        const auto parent = GetParentEntity(r, e);
-        if (parent == e) break; // root node — stop
-        e = parent;
-    }
-    return entt::null;
+    return FindAncestorIf(r, e, [&](auto x) { return r.all_of<PhysicsBodyHandle>(x); });
 }
 
 void ConfigureJointSettings(SixDOFConstraintSettings &settings, const PhysicsJointDef &def) {
@@ -625,23 +640,18 @@ void PhysicsWorld::RecomputeSceneScale(const entt::registry &r) {
 
 void PhysicsWorld::BuildJoint(const entt::registry &r, entt::entity entity) {
     const auto *joint_p = r.try_get<const PhysicsJoint>(entity);
-    if (!joint_p) return;
-    const auto &joint = *joint_p;
-    if (joint.ConnectedNode == null_entity) return;
-    const auto *def_p = joint.JointDefEntity != null_entity ? r.try_get<const PhysicsJointDef>(joint.JointDefEntity) : nullptr;
+    if (!joint_p || joint_p->ConnectedNode == null_entity || joint_p->JointDefEntity == null_entity) return;
+    const auto *def_p = r.try_get<const PhysicsJointDef>(joint_p->JointDefEntity);
     if (!def_p) return;
+    const auto &joint = *joint_p;
+    const auto &def = *def_p;
 
-    // Body 1: nearest ancestor (or self) with a physics body
+    // Body 1: nearest ancestor (or self) with a physics body. Body 2: ancestor body, or world if none.
     const auto body1_entity = FindBodyAncestor(r, entity);
-    if (body1_entity == null_entity) return;
-    const auto *h1 = r.try_get<const PhysicsBodyHandle>(body1_entity);
+    const auto *h1 = body1_entity != null_entity ? r.try_get<const PhysicsBodyHandle>(body1_entity) : nullptr;
     if (!h1) return;
-
-    // Body 2: find ancestor body, or constrain to world if none exists.
     const auto body2_entity = FindBodyAncestor(r, joint.ConnectedNode);
     const auto *h2 = body2_entity != null_entity ? r.try_get<const PhysicsBodyHandle>(body2_entity) : nullptr;
-
-    const auto &def = *def_p;
 
     SixDOFConstraintSettings settings;
     settings.mSpace = EConstraintSpace::WorldSpace;
@@ -651,17 +661,16 @@ void PhysicsWorld::BuildJoint(const entt::registry &r, entt::entity entity) {
 
     // Attachment frames from the joint node (A) and connected node (B) world transforms.
     if (const auto *jt = r.try_get<const Transform>(entity)) {
-        const RVec3 anchor{jt->P.x, jt->P.y, jt->P.z};
-        settings.mPosition1 = settings.mPosition2 = anchor;
         const auto rot_mat = glm::mat3_cast(glm::normalize(jt->R));
-        settings.mAxisX1 = settings.mAxisX2 = Vec3(rot_mat[0].x, rot_mat[0].y, rot_mat[0].z);
-        settings.mAxisY1 = settings.mAxisY2 = Vec3(rot_mat[1].x, rot_mat[1].y, rot_mat[1].z);
+        settings.mPosition1 = settings.mPosition2 = ToJoltR(jt->P);
+        settings.mAxisX1 = settings.mAxisX2 = ToJolt(rot_mat[0]);
+        settings.mAxisY1 = settings.mAxisY2 = ToJolt(rot_mat[1]);
     }
     if (const auto *ct = r.try_get<const Transform>(joint.ConnectedNode)) {
-        settings.mPosition2 = RVec3{ct->P.x, ct->P.y, ct->P.z};
         const auto rot_mat = glm::mat3_cast(glm::normalize(ct->R));
-        settings.mAxisX2 = Vec3(rot_mat[0].x, rot_mat[0].y, rot_mat[0].z);
-        settings.mAxisY2 = Vec3(rot_mat[1].x, rot_mat[1].y, rot_mat[1].z);
+        settings.mPosition2 = ToJoltR(ct->P);
+        settings.mAxisX2 = ToJolt(rot_mat[0]);
+        settings.mAxisY2 = ToJolt(rot_mat[1]);
     }
 
     ConfigureJointSettings(settings, def);
@@ -705,26 +714,14 @@ void PhysicsWorld::FlushJoints(const entt::registry &r, bool joints_changed) {
 namespace {
 // Walk self+ancestors for nearest PhysicsMotion. null if none.
 entt::entity FindMotionOwner(const entt::registry &r, entt::entity e) {
-    for (; e != entt::null;) {
-        if (r.all_of<PhysicsMotion>(e)) return e;
-        const auto p = GetParentEntity(r, e);
-        if (p == e) return entt::null;
-        e = p;
-    }
-    return entt::null;
+    return FindAncestorIf(r, e, [&](auto x) { return r.all_of<PhysicsMotion>(x); });
 }
 
 // For a child collider, return the body-owning motion ancestor whose compound contains this leaf.
 // null if entity owns its own body or has no parent compound body.
 entt::entity FindCompoundParentBody(const entt::registry &r, entt::entity e) {
     if (r.all_of<PhysicsBodyHandle>(e)) return entt::null;
-    for (auto cur = GetParentEntity(r, e); cur != entt::null;) {
-        if (r.all_of<PhysicsMotion, PhysicsBodyHandle>(cur)) return cur;
-        const auto p = GetParentEntity(r, cur);
-        if (p == cur) return entt::null;
-        cur = p;
-    }
-    return entt::null;
+    return FindAncestorIf(r, GetParentEntity(r, e), [&](auto x) { return r.all_of<PhysicsMotion, PhysicsBodyHandle>(x); });
 }
 
 // True if any PhysicsJoint's body ancestor resolves to this motion owner.
@@ -771,20 +768,19 @@ Ref<Shape> BuildLeafShape(const entt::registry &r, entt::entity entity, const Co
     const auto *mesh = mesh_entity != null_entity ? r.try_get<const Mesh>(mesh_entity) : nullptr;
     auto js = CreateJoltShape(shape_proto, mesh, owner_motion == nullptr);
     if (!js) return {};
-    // 0 = no filter. Offset by 1 so null_entity (= UINT32_MAX) maps to 0x100000000, not 0.
-    if (filter_entity != null_entity) js->SetUserData(uint64_t(static_cast<uint32_t>(filter_entity)) + 1);
+    js->SetUserData(ShapeFilterUserData(filter_entity));
     const auto *t = r.try_get<const Transform>(entity);
-    if (t && (t->S.x != 1 || t->S.y != 1 || t->S.z != 1)) js = new ScaledShape(js, ToJolt(t->S));
+    if (t && HasNonUnitScale(*t)) js = new ScaledShape(js, ToJolt(t->S));
     return js;
 }
 
 // Walk descendants of `owner`, stopping at any descendant PhysicsMotion. Collects ColliderShape entities.
 void GatherCompoundChildren(const entt::registry &r, entt::entity owner, std::vector<entt::entity> &out) {
-    std::function<void(entt::entity)> walk = [&](entt::entity e) {
+    const auto walk = [&](this auto &self, entt::entity e) -> void {
         for (auto child : Children{&r, e}) {
             if (r.all_of<PhysicsMotion>(child)) continue;
             if (r.all_of<ColliderShape>(child)) out.emplace_back(child);
-            walk(child);
+            self(child);
         }
     };
     walk(owner);
@@ -806,24 +802,28 @@ BodyShape BuildBodyShape(const entt::registry &r, entt::entity entity, const KHR
     const auto *collider = r.try_get<const ColliderShape>(entity);
     const bool is_trigger = collider && r.all_of<const TriggerTag>(entity);
 
-    auto resolve = [&](entt::entity e) -> entt::entity {
-        return e != null_entity && r.valid(e) && r.all_of<CollisionFilter>(e) ? e : null_entity;
-    };
-
     if (is_trigger) {
         out.IsSensor = true;
         out.IsMeshShape = std::holds_alternative<physics::TriangleMesh>(collider->Shape);
         const auto *cm = r.try_get<const ColliderMaterial>(entity);
-        out.FilterEntity = resolve(cm ? cm->CollisionFilterEntity : null_entity);
+        out.FilterEntity = ResolveFilterEntity(r, cm ? cm->CollisionFilterEntity : null_entity);
         const auto mesh_entity = IsMeshBackedShape(collider->Shape) ? collider->MeshEntity : null_entity;
         const auto *mesh = mesh_entity != null_entity ? r.try_get<const Mesh>(mesh_entity) : nullptr;
         auto js = CreateJoltShape(collider->Shape, mesh);
         if (!js) return out;
         const auto *t = r.try_get<const Transform>(entity);
-        if (t && (t->S.x != 1 || t->S.y != 1 || t->S.z != 1)) js = new ScaledShape(js, ToJolt(t->S));
+        if (t && HasNonUnitScale(*t)) js = new ScaledShape(js, ToJolt(t->S));
         out.Shape = js;
         return out;
     }
+
+    // Populate `out` for a body whose shape is a single leaf collider on `entity`.
+    auto build_single = [&](const PhysicsMotion *m, entt::entity owner) {
+        out.SingleMaterial = r.try_get<const ColliderMaterial>(entity);
+        out.IsMeshShape = std::holds_alternative<physics::TriangleMesh>(collider->Shape);
+        out.FilterEntity = ResolveFilterEntity(r, out.SingleMaterial ? out.SingleMaterial->CollisionFilterEntity : null_entity);
+        out.Shape = BuildLeafShape(r, entity, *collider, out.SingleMaterial, m, owner, filter);
+    };
 
     if (motion) {
         std::vector<entt::entity> colliders;
@@ -831,51 +831,35 @@ BodyShape BuildBodyShape(const entt::registry &r, entt::entity entity, const KHR
         GatherCompoundChildren(r, entity, colliders);
         if (colliders.empty()) {
             // KHR_physics_rigid_bodies: `motion` alone defines a rigid body even without a collider.
-            // Use EmptyShape so Jolt can still create the body - it collides with nothing.
+            // Use EmptyShape so Jolt can still create the body — it collides with nothing.
             out.Shape = new EmptyShape();
             return out;
         }
-        if (!colliders.empty()) {
-            if (colliders.size() == 1 && colliders[0] == entity) {
-                out.SingleMaterial = r.try_get<const ColliderMaterial>(entity);
-                out.IsMeshShape = std::holds_alternative<physics::TriangleMesh>(collider->Shape);
-                out.FilterEntity = resolve(out.SingleMaterial ? out.SingleMaterial->CollisionFilterEntity : null_entity);
-                out.Shape = BuildLeafShape(r, entity, *collider, out.SingleMaterial, motion, entity, filter);
-                return out;
-            }
-            const auto *bt = r.try_get<const Transform>(entity);
-            const auto inv_parent = bt ? glm::inverse(glm::translate(mat4{1}, bt->P) * glm::mat4_cast(glm::normalize(bt->R))) : mat4{1};
-            StaticCompoundShapeSettings compound;
-            for (auto ce : colliders) {
-                const auto &cs = r.get<const ColliderShape>(ce);
-                const auto *cm = r.try_get<const ColliderMaterial>(ce);
-                const auto sub = BuildLeafShape(r, ce, cs, cm, motion, entity, filter);
-                if (!sub) continue;
-                if (ce == entity) compound.AddShape(Vec3::sZero(), Quat::sIdentity(), sub);
-                else {
-                    const auto *wt = r.try_get<const WorldTransform>(ce);
-                    const auto world = wt ? ToMatrix(*wt) : mat4{1};
-                    const auto rel = inv_parent * world;
-                    compound.AddShape(ToJolt(vec3{rel[3]}), ToJoltQuat(glm::normalize(glm::quat_cast(glm::mat3{rel}))), sub);
-                }
-            }
-            if (!compound.mSubShapes.empty()) {
-                if (const auto result = compound.Create(); result.IsValid()) out.Shape = result.Get();
-            }
+        if (colliders.size() == 1 && colliders[0] == entity) {
+            build_single(motion, entity);
             return out;
         }
-        // Motion entity with no colliders falls through to trigger-sensor path if applicable.
-    }
-
-    if (collider && !motion) {
-        // Static body — skip if a motion ancestor exists (this leaf is a compound child).
-        if (FindMotionOwner(r, GetParentEntity(r, entity)) != entt::null) return out;
-        out.SingleMaterial = r.try_get<const ColliderMaterial>(entity);
-        out.IsMeshShape = std::holds_alternative<physics::TriangleMesh>(collider->Shape);
-        out.FilterEntity = resolve(out.SingleMaterial ? out.SingleMaterial->CollisionFilterEntity : null_entity);
-        out.Shape = BuildLeafShape(r, entity, *collider, out.SingleMaterial, nullptr, entt::null, filter);
+        const auto *bt = r.try_get<const Transform>(entity);
+        const auto inv_parent = bt ? glm::inverse(glm::translate(mat4{1}, bt->P) * glm::mat4_cast(glm::normalize(bt->R))) : mat4{1};
+        StaticCompoundShapeSettings compound;
+        for (auto ce : colliders) {
+            const auto &cs = r.get<const ColliderShape>(ce);
+            const auto sub = BuildLeafShape(r, ce, cs, r.try_get<const ColliderMaterial>(ce), motion, entity, filter);
+            if (!sub) continue;
+            if (ce == entity) compound.AddShape(Vec3::sZero(), Quat::sIdentity(), sub);
+            else {
+                const auto *wt = r.try_get<const WorldTransform>(ce);
+                const auto rel = inv_parent * (wt ? ToMatrix(*wt) : mat4{1});
+                compound.AddShape(ToJolt(vec3{rel[3]}), ToJoltQuat(glm::normalize(glm::quat_cast(glm::mat3{rel}))), sub);
+            }
+        }
+        if (!compound.mSubShapes.empty())
+            if (const auto result = compound.Create(); result.IsValid()) out.Shape = result.Get();
         return out;
     }
+
+    // Static leaf — skip if a motion ancestor exists (this leaf is a compound child).
+    if (collider && FindMotionOwner(r, GetParentEntity(r, entity)) == entt::null) build_single(nullptr, entt::null);
     return out;
 }
 
@@ -899,7 +883,7 @@ void PhysicsWorld::AddBody(entt::registry &r, entt::entity entity) {
     const auto shape = WrapCenterOfMass(built.Shape, built.IsSensor ? nullptr : motion, inner_mass_props);
 
     const auto *t = r.try_get<const Transform>(entity);
-    const auto pos = t ? RVec3{t->P.x, t->P.y, t->P.z} : RVec3::sZero();
+    const auto pos = t ? ToJoltR(t->P) : RVec3::sZero();
     const auto rot = t ? ToJoltQuat(t->R) : Quat::sIdentity();
     const auto motion_type = motion ? (motion->IsKinematic ? EMotionType::Kinematic : EMotionType::Dynamic) : EMotionType::Static;
     const auto layer = motion ? Layers::Moving : Layers::NonMoving;
@@ -929,12 +913,7 @@ void PhysicsWorld::AddBody(entt::registry &r, entt::entity entity) {
     if (motion && body->IsDynamic() && !built.IsSensor) {
         auto *mp = const_cast<Body *>(body)->GetMotionProperties();
         if (motion->Mass == 0) mp->SetInverseMass(0); // KHR §128: explicit zero = infinite mass
-        if (motion->InertiaDiagonal) {
-            const auto &d = *motion->InertiaDiagonal;
-            const Vec3 inv_diag{d.x > 0 ? 1 / d.x : 0, d.y > 0 ? 1 / d.y : 0, d.z > 0 ? 1 / d.z : 0};
-            const auto irot = motion->InertiaOrientation ? ToJoltQuat(*motion->InertiaOrientation) : Quat::sIdentity();
-            mp->SetInverseInertia(inv_diag, irot);
-        }
+        ApplyInertiaDiagonal(*mp, *motion);
     }
 
     P->JointsDirty = true;
@@ -978,9 +957,8 @@ void PhysicsWorld::ApplyMassPropertiesFromShape(const entt::registry &r, entt::e
     auto &body = lock.GetBody();
     if (!body.IsDynamic()) return; // sensors, static, kinematic skip
 
-    const float mass = motion->Mass.value_or(DefaultMass);
     auto props = body.GetShape()->GetMassProperties();
-    props.ScaleToMass(mass > 0 ? mass : DefaultMass);
+    props.ScaleToMass(ResolvedMass(*motion));
     body.GetMotionProperties()->SetMassProperties(EAllowedDOFs::All, props);
 }
 
@@ -1009,18 +987,9 @@ void PhysicsWorld::ApplyMotion(const entt::registry &r, entt::entity entity) {
         mp->SetAngularDamping(motion->AngularDamping);
 
         if (body.IsDynamic()) {
-            if (motion->Mass == 0.0f) {
-                mp->SetInverseMass(0); // KHR §128: explicit zero = infinite mass (locked translation)
-            } else {
-                const float mass = motion->Mass.value_or(DefaultMass);
-                mp->SetInverseMass(mass > 0 ? 1.f / mass : 1.f / DefaultMass);
-            }
-            if (motion->InertiaDiagonal) {
-                const auto &d = *motion->InertiaDiagonal;
-                const Vec3 inv_diag{d.x > 0 ? 1 / d.x : 0, d.y > 0 ? 1 / d.y : 0, d.z > 0 ? 1 / d.z : 0};
-                const auto irot = motion->InertiaOrientation ? ToJoltQuat(*motion->InertiaOrientation) : Quat::sIdentity();
-                mp->SetInverseInertia(inv_diag, irot);
-            }
+            // KHR §128: explicit zero Mass = infinite mass (locked translation).
+            mp->SetInverseMass(motion->Mass == 0.0f ? 0.f : 1.f / ResolvedMass(*motion));
+            ApplyInertiaDiagonal(*mp, *motion);
         }
     }
 
@@ -1046,16 +1015,12 @@ void PhysicsWorld::ApplyMaterial(const entt::registry &r, entt::entity entity) {
 
     const auto mat_entity = material->PhysicsMaterialEntity;
     const auto *mat = mat_entity != null_entity && r.valid(mat_entity) ? r.try_get<const ::PhysicsMaterial>(mat_entity) : nullptr;
-    if (mat) {
-        bi.SetFriction(id, mat->DynamicFriction);
-        bi.SetRestitution(id, mat->Restitution);
-    } else {
-        const ::PhysicsMaterial defaults;
-        bi.SetFriction(id, defaults.DynamicFriction);
-        bi.SetRestitution(id, defaults.Restitution);
-    }
+    const ::PhysicsMaterial defaults;
+    const auto &m = mat ? *mat : defaults;
+    bi.SetFriction(id, m.DynamicFriction);
+    bi.SetRestitution(id, m.Restitution);
 
-    const auto filter_entity = material->CollisionFilterEntity != null_entity && r.valid(material->CollisionFilterEntity) && r.all_of<CollisionFilter>(material->CollisionFilterEntity) ? material->CollisionFilterEntity : null_entity;
+    const auto filter_entity = ResolveFilterEntity(r, material->CollisionFilterEntity);
     if (P->FilterRef) {
         if (const auto it = P->BodySubGroups.find(entity); it != P->BodySubGroups.end()) {
             P->FilterRef->SetBodyFilter(it->second, filter_entity);
@@ -1069,8 +1034,7 @@ void PhysicsWorld::ApplyMaterial(const entt::registry &r, entt::entity entity) {
         while (leaf->GetType() == EShapeType::Decorated) {
             leaf = const_cast<Shape *>(static_cast<const DecoratedShape *>(leaf)->GetInnerShape());
         }
-        // Shape UserData: 0 = no filter; offset by 1 so null_entity (= UINT32_MAX) maps to 0x100000000, not 0.
-        leaf->SetUserData(filter_entity != null_entity ? uint64_t(static_cast<uint32_t>(filter_entity)) + 1 : 0);
+        leaf->SetUserData(ShapeFilterUserData(filter_entity));
         // Body UserData stores the material entity value for contact-listener lookup.
         body.SetUserData(mat ? static_cast<uint32_t>(mat_entity) : NoMaterialSentinel);
     }
