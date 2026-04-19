@@ -11,27 +11,27 @@
 
 using Real = float;
 
-enum ItemType {
-    ItemType_None = 0,
+enum class ItemType {
+    None = 0,
     // Containers
-    ItemType_HGroup,
-    ItemType_VGroup,
-    ItemType_TGroup,
+    HGroup,
+    VGroup,
+    TGroup,
 
     // Widgets
-    ItemType_Button,
-    ItemType_CheckButton,
-    ItemType_VSlider,
-    ItemType_HSlider,
-    ItemType_NumEntry,
-    ItemType_HBargraph,
-    ItemType_VBargraph,
+    Button,
+    CheckButton,
+    VSlider,
+    HSlider,
+    NumEntry,
+    HBargraph,
+    VBargraph,
 
     // Types specified with metadata
-    ItemType_Knob,
-    ItemType_Menu,
-    ItemType_VRadioButtons,
-    ItemType_HRadioButtons,
+    Knob,
+    Menu,
+    VRadioButtons,
+    HRadioButtons,
 };
 
 // Label, shortname, or complete path (to discriminate between possibly identical labels
@@ -46,7 +46,7 @@ public:
         Item(const ItemType type, std::string_view label, Real *zone = nullptr, Real min = 0, Real max = 0, Real init = 0, Real step = 0, const char *tooltip = nullptr, std::vector<Item> items = {})
             : type(type), id(label), label(label == "0x00" ? "" : label), zone(zone), min(min), max(max), init(init), step(step), tooltip(tooltip), items(std::move(items)) {}
 
-        const ItemType type{ItemType_None};
+        const ItemType type{ItemType::None};
         const std::string id, label; // `id` will be the same as `label` unless it's the special empty group label of '0x00', in which case `label` will be empty.
         Real *zone; // Only meaningful for widget items (not container items)
         const Real min, max; // Only meaningful for sliders, num-entries, and bar graphs.
@@ -62,17 +62,17 @@ public:
 
     void openHorizontalBox(const char *label) override {
         pushLabel(label);
-        activeGroup().items.emplace_back(ItemType_HGroup, label);
+        activeGroup().items.emplace_back(ItemType::HGroup, label);
         Groups.push(&activeGroup().items.back());
     }
     void openVerticalBox(const char *label) override {
         pushLabel(label);
-        activeGroup().items.emplace_back(ItemType_VGroup, label);
+        activeGroup().items.emplace_back(ItemType::VGroup, label);
         Groups.push(&activeGroup().items.back());
     }
     void openTabBox(const char *label) override {
         pushLabel(label);
-        activeGroup().items.emplace_back(ItemType_TGroup, label);
+        activeGroup().items.emplace_back(ItemType::TGroup, label);
         Groups.push(&activeGroup().items.back());
     }
     void closeBox() override {
@@ -84,10 +84,10 @@ public:
 
     // Active widgets
     void addButton(const char *label, Real *zone) override {
-        addUiItem(ItemType_Button, label, zone);
+        addUiItem(ItemType::Button, label, zone);
     }
     void addCheckButton(const char *label, Real *zone) override {
-        addUiItem(ItemType_CheckButton, label, zone);
+        addUiItem(ItemType::CheckButton, label, zone);
     }
     void addHorizontalSlider(const char *label, Real *zone, Real init, Real min, Real max, Real step) override {
         addSlider(label, zone, init, min, max, step, false);
@@ -96,33 +96,33 @@ public:
         addSlider(label, zone, init, min, max, step, true);
     }
     void addNumEntry(const char *label, Real *zone, Real init, Real min, Real max, Real step) override {
-        addUiItem(ItemType_NumEntry, label, zone, min, max, init, step);
+        addUiItem(ItemType::NumEntry, label, zone, min, max, init, step);
     }
     void addSlider(const char *label, Real *zone, Real init, Real min, Real max, Real step, bool is_vertical) {
-        if (isKnob(zone)) addUiItem(ItemType_Knob, label, zone, min, max, init, step);
+        if (isKnob(zone)) addUiItem(ItemType::Knob, label, zone, min, max, init, step);
         else if (isRadio(zone)) addRadioButtons(label, zone, init, min, max, step, fRadioDescription[zone].c_str(), is_vertical);
         else if (isMenu(zone)) addMenu(label, zone, init, min, max, step, fMenuDescription[zone].c_str());
-        else addUiItem(is_vertical ? ItemType_VSlider : ItemType_HSlider, label, zone, min, max, init, step);
+        else addUiItem(is_vertical ? ItemType::VSlider : ItemType::HSlider, label, zone, min, max, init, step);
     }
     void addRadioButtons(const char *label, Real *zone, Real init, Real min, Real max, Real step, const char *text, bool is_vertical) {
         NamesForZone[zone] = {};
         ValuesForZone[zone] = {};
         parseMenuList(text, NamesForZone.at(zone), ValuesForZone.at(zone));
-        addUiItem(is_vertical ? ItemType_VRadioButtons : ItemType_HRadioButtons, label, zone, min, max, init, step);
+        addUiItem(is_vertical ? ItemType::VRadioButtons : ItemType::HRadioButtons, label, zone, min, max, init, step);
     }
     void addMenu(const char *label, Real *zone, Real init, Real min, Real max, Real step, const char *text) {
         NamesForZone[zone] = {};
         ValuesForZone[zone] = {};
         parseMenuList(text, NamesForZone.at(zone), ValuesForZone.at(zone));
-        addUiItem(ItemType_Menu, label, zone, min, max, init, step);
+        addUiItem(ItemType::Menu, label, zone, min, max, init, step);
     }
 
     // Passive widgets
     void addHorizontalBargraph(const char *label, Real *zone, Real min, Real max) override {
-        addUiItem(ItemType_HBargraph, label, zone, min, max);
+        addUiItem(ItemType::HBargraph, label, zone, min, max);
     }
     void addVerticalBargraph(const char *label, Real *zone, Real min, Real max) override {
-        addUiItem(ItemType_VBargraph, label, zone, min, max);
+        addUiItem(ItemType::VBargraph, label, zone, min, max);
     }
 
     // Soundfile
@@ -137,7 +137,7 @@ public:
         return ZoneForLabel.contains(label) ? ZoneForLabel.at(label) : nullptr;
     }
 
-    Item Root{ItemType_None, ""};
+    Item Root{ItemType::None, ""};
     std::unordered_map<const Real *, std::vector<std::string>> NamesForZone;
     std::unordered_map<const Real *, std::vector<double>> ValuesForZone;
 

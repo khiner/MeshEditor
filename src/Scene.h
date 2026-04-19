@@ -198,21 +198,25 @@ private:
     std::pair<vk::Offset3D, vk::Extent2D> GetCaptureRegion() const;
 
     // Shared buffer entities for collider wireframe overlays, indexed by ColliderShapeBuffer enum.
-    enum ColliderShapeBuffer : uint8_t { CSB_Box,
-                                         CSB_Sphere,
-                                         CSB_CapsuleCap,
-                                         CSB_Circle,
-                                         CSB_Line,
-                                         CSB_Count };
-    entt::entity ColliderShapeBufferEntities[CSB_Count]{null_entity, null_entity, null_entity, null_entity, null_entity};
+    enum class ColliderShapeBuffer : uint8_t {
+        Box,
+        Sphere,
+        CapsuleCap,
+        Circle,
+        Line,
+        Count
+    };
+    entt::entity ColliderShapeBufferEntities[static_cast<uint8_t>(ColliderShapeBuffer::Count)]{null_entity, null_entity, null_entity, null_entity, null_entity};
     // Split in two so reactive events fire on the correct side of SyncModelsBuffers:
     // EnsureColliderWireframes runs before SyncModelsBuffers so new instance/buffer-entity events
     // get consumed this frame; UpdateColliderWireframeTransforms runs after WorldTransform recomputation.
     void EnsureColliderWireframes();
     void UpdateColliderWireframeTransforms();
 
-    enum class SelectionMode { Click,
-                               Box };
+    enum class SelectionMode {
+        Click,
+        Box
+    };
     SelectionMode SelectionMode{SelectionMode::Box};
     std::optional<vec2> BoxSelectStart, BoxSelectEnd;
     bool SelectionXRay{false}; // Edit mode: Whether to ignore occlusion when selecting elements.

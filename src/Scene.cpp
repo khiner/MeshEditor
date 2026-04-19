@@ -2403,28 +2403,31 @@ entt::entity Scene::CreateExtrasObject(std::span<const vec3> positions, std::spa
 void Scene::EnsureColliderWireframes() {
     if (R.view<const ColliderShape>().empty() && R.view<ColliderWireframe>().empty()) return;
 
+    using enum ColliderShapeBuffer;
+    auto buf = [&](ColliderShapeBuffer kind) -> entt::entity & { return ColliderShapeBufferEntities[static_cast<uint8_t>(kind)]; };
+
     // Lazily create canonical buffer entities (recreated if destroyed by last-instance cleanup).
-    auto ensure_buffer = [&](ColliderShapeBuffer idx, auto generator) {
-        if (R.valid(ColliderShapeBufferEntities[idx])) return;
+    auto ensure_buffer = [&](ColliderShapeBuffer kind, auto generator) {
+        if (R.valid(buf(kind))) return;
         auto mesh = generator();
         if (mesh.Positions.empty()) return;
-        ColliderShapeBufferEntities[idx] = CreateExtrasBufferEntity(mesh.Positions, {}, mesh.EdgeIndices);
+        buf(kind) = CreateExtrasBufferEntity(mesh.Positions, {}, mesh.EdgeIndices);
     };
-    ensure_buffer(CSB_Box, physics_debug::UnitBox);
-    ensure_buffer(CSB_Sphere, physics_debug::UnitSphere);
-    ensure_buffer(CSB_CapsuleCap, physics_debug::UnitCapsuleCap);
-    ensure_buffer(CSB_Circle, physics_debug::UnitCircle);
-    ensure_buffer(CSB_Line, physics_debug::UnitLine);
+    ensure_buffer(Box, physics_debug::UnitBox);
+    ensure_buffer(Sphere, physics_debug::UnitSphere);
+    ensure_buffer(CapsuleCap, physics_debug::UnitCapsuleCap);
+    ensure_buffer(Circle, physics_debug::UnitCircle);
+    ensure_buffer(Line, physics_debug::UnitLine);
 
     // Buffer entity that Instances[0] should reference for a given shape kind. null = no wireframe.
     // Cylinder uses a Circle for its top ring; Capsule uses a CapsuleCap for its top hemisphere.
     auto primary_buffer = [&](const PhysicsShape &shape) -> entt::entity {
         return std::visit(
             overloaded{
-                [&](const physics::Box &) { return ColliderShapeBufferEntities[CSB_Box]; },
-                [&](const physics::Sphere &) { return ColliderShapeBufferEntities[CSB_Sphere]; },
-                [&](const physics::Cylinder &) { return ColliderShapeBufferEntities[CSB_Circle]; },
-                [&](const physics::Capsule &) { return ColliderShapeBufferEntities[CSB_CapsuleCap]; },
+                [&](const physics::Box &) { return buf(Box); },
+                [&](const physics::Sphere &) { return buf(Sphere); },
+                [&](const physics::Cylinder &) { return buf(Circle); },
+                [&](const physics::Capsule &) { return buf(CapsuleCap); },
                 [](const auto &) { return entt::entity{entt::null}; },
             },
             shape
@@ -2466,22 +2469,22 @@ void Scene::EnsureColliderWireframes() {
         const bool is_cylinder = std::holds_alternative<physics::Cylinder>(shape);
         const bool is_capsule = std::holds_alternative<physics::Capsule>(shape);
         if (is_cylinder || is_capsule) {
-            const auto cap_buf = ColliderShapeBufferEntities[is_capsule ? CSB_CapsuleCap : CSB_Circle];
+            const auto cap_buf = buf(is_capsule ? CapsuleCap : Circle);
             cw.Instances[0] = make_instance(cap_buf); // top
             cw.Instances[1] = make_instance(cap_buf); // bottom
-            for (uint8_t i = 0; i < 4; ++i) cw.Instances[2 + i] = make_instance(ColliderShapeBufferEntities[CSB_Line]);
+            for (uint8_t i = 0; i < 4; ++i) cw.Instances[2 + i] = make_instance(buf(Line));
             cw.Count = 6;
         } else {
-            const auto buf = std::visit(
+            const auto shape_buf = std::visit(
                 overloaded{
-                    [&](const physics::Box &) { return ColliderShapeBufferEntities[CSB_Box]; },
-                    [&](const physics::Sphere &) { return ColliderShapeBufferEntities[CSB_Sphere]; },
+                    [&](const physics::Box &) { return buf(Box); },
+                    [&](const physics::Sphere &) { return buf(Sphere); },
                     [](const auto &) { return entt::entity{entt::null}; },
                 },
                 shape
             );
-            if (buf != entt::null) {
-                cw.Instances[0] = make_instance(buf);
+            if (shape_buf != entt::null) {
+                cw.Instances[0] = make_instance(shape_buf);
                 cw.Count = 1;
             }
         }

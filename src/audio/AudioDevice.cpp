@@ -15,23 +15,23 @@ void DataCallback(ma_device *device, void *output, const void *input, ma_uint32 
     cb->Callback(AudioBuffer{device->sampleRate, device->playback.channels, frame_count, (const float *)input, (float *)output}, cb->UserData);
 }
 
-enum IO {
-    IO_None = -1,
-    IO_In,
-    IO_Out
+enum class IO : uint8_t {
+    In,
+    Out,
+    Count,
 };
-constexpr IO IO_All[] = {IO_In, IO_Out};
-constexpr uint IO_Count = 2;
+constexpr IO AllIo[]{IO::In, IO::Out};
+constexpr auto Idx(IO io) { return static_cast<uint8_t>(io); }
 
 ma_context AudioContext;
 ma_device Device;
 
-std::vector<ma_device_info *> DeviceInfos[IO_Count];
-std::vector<std::string> DeviceNames[IO_Count];
-std::vector<uint> NativeSampleRates[IO_Count];
+std::vector<ma_device_info *> DeviceInfos[Idx(IO::Count)];
+std::vector<std::string> DeviceNames[Idx(IO::Count)];
+std::vector<uint> NativeSampleRates[Idx(IO::Count)];
 
 const ma_device_info *GetDeviceInfo(IO io, std::string_view device_name) {
-    for (const ma_device_info *info : DeviceInfos[io]) {
+    for (const ma_device_info *info : DeviceInfos[Idx(io)]) {
         if (info->name == device_name) return info;
     }
     return nullptr;
@@ -42,7 +42,8 @@ const ma_device_id *GetDeviceId(IO io, std::string_view device_name) {
 }
 
 std::string GetSampleRateName(IO io, const uint sample_rate) {
-    const bool is_native = std::find(NativeSampleRates[io].begin(), NativeSampleRates[io].end(), sample_rate) != NativeSampleRates[io].end();
+    const auto &rates = NativeSampleRates[Idx(io)];
+    const bool is_native = std::find(rates.begin(), rates.end(), sample_rate) != rates.end();
     return std::format("{}{}", sample_rate, is_native ? "*" : "");
 }
 } // namespace
@@ -61,22 +62,22 @@ void AudioDevice::Init() {
     if (ma_context_get_devices(&AudioContext, &PlaybackDeviceInfos, &PlaybackDeviceCount, &CaptureDeviceInfos, &CaptureDeviceCount)) {
         throw std::runtime_error("Failed to get audio devices.");
     }
-    for (auto io : IO_All) {
-        DeviceInfos[io].clear();
-        DeviceNames[io].clear();
-        NativeSampleRates[io].clear();
+    for (auto io : AllIo) {
+        DeviceInfos[Idx(io)].clear();
+        DeviceNames[Idx(io)].clear();
+        NativeSampleRates[Idx(io)].clear();
     }
     for (uint i = 0; i < CaptureDeviceCount; ++i) {
-        DeviceInfos[IO_In].emplace_back(&CaptureDeviceInfos[i]);
-        DeviceNames[IO_In].push_back(CaptureDeviceInfos[i].name);
+        DeviceInfos[Idx(IO::In)].emplace_back(&CaptureDeviceInfos[i]);
+        DeviceNames[Idx(IO::In)].push_back(CaptureDeviceInfos[i].name);
     }
     for (uint i = 0; i < PlaybackDeviceCount; ++i) {
-        DeviceInfos[IO_Out].emplace_back(&PlaybackDeviceInfos[i]);
-        DeviceNames[IO_Out].push_back(PlaybackDeviceInfos[i].name);
+        DeviceInfos[Idx(IO::Out)].emplace_back(&PlaybackDeviceInfos[i]);
+        DeviceNames[Idx(IO::Out)].push_back(PlaybackDeviceInfos[i].name);
     }
 
     ma_device_config config = ma_device_config_init(ma_device_type_playback);
-    config.playback.pDeviceID = GetDeviceId(IO_Out, OutDeviceName);
+    config.playback.pDeviceID = GetDeviceId(IO::Out, OutDeviceName);
     config.playback.format = ma_format_f32;
     config.playback.channels = 1;
     config.sampleRate = SampleRate;
@@ -94,7 +95,7 @@ void AudioDevice::Init() {
     }
     for (uint i = 0; i < out_device_info.nativeDataFormatCount; ++i) {
         const auto &native_format = out_device_info.nativeDataFormats[i];
-        NativeSampleRates[IO_Out].emplace_back(native_format.sampleRate);
+        NativeSampleRates[Idx(IO::Out)].emplace_back(native_format.sampleRate);
     }
 
     OutDeviceName = out_device_info.name;
@@ -145,7 +146,7 @@ void AudioDevice::RenderControls() {
     }
 
     if (BeginCombo("Output device", OutDeviceName.c_str())) {
-        for (const auto &option : DeviceNames[IO_Out]) {
+        for (const auto &option : DeviceNames[Idx(IO::Out)]) {
             const bool is_selected = option == OutDeviceName;
             if (Selectable(option.c_str(), is_selected) && !is_selected) {
                 OutDeviceName = option;
@@ -156,10 +157,10 @@ void AudioDevice::RenderControls() {
         }
         EndCombo();
     }
-    if (BeginCombo("Sample rate", GetSampleRateName(IO_Out, SampleRate).c_str())) {
-        for (uint option : NativeSampleRates[IO_Out]) {
+    if (BeginCombo("Sample rate", GetSampleRateName(IO::Out, SampleRate).c_str())) {
+        for (uint option : NativeSampleRates[Idx(IO::Out)]) {
             const bool is_selected = option == SampleRate;
-            if (Selectable(GetSampleRateName(IO_Out, option).c_str(), is_selected) && !is_selected) {
+            if (Selectable(GetSampleRateName(IO::Out, option).c_str(), is_selected) && !is_selected) {
                 SampleRate = option;
                 Restart();
             }

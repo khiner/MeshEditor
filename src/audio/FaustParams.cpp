@@ -30,8 +30,9 @@ bool RadioButtons(const char *label, float *value, const std::span<std::string> 
 void FaustParams::DrawItem(const Item &item) {
     const auto type = item.type;
     const auto *label = item.label.c_str();
+    using enum ItemType;
     if (!item.items.empty()) {
-        if (type == ItemType_TGroup) {
+        if (type == TGroup) {
             BeginTabBar(label);
             for (const auto &child_item : item.items) {
                 if (BeginTabItem(child_item.label.c_str())) {
@@ -48,24 +49,24 @@ void FaustParams::DrawItem(const Item &item) {
         }
         return;
     }
-    if (type == ItemType_Button) {
-        Button(label);
+    if (type == Button) {
+        ImGui::Button(label);
         if (IsItemActivated() && *item.zone == 0.0) *item.zone = 1.0;
         else if (IsItemDeactivated() && *item.zone == 1.0) *item.zone = 0.0;
-    } else if (type == ItemType_CheckButton) {
+    } else if (type == CheckButton) {
         auto value = bool(*item.zone);
         if (Checkbox(label, &value)) *item.zone = Real(value);
-    } else if (type == ItemType_NumEntry) {
+    } else if (type == NumEntry) {
         auto value = int(*item.zone);
         if (InputInt(label, &value, int(item.step))) *item.zone = std::clamp(Real(value), item.min, item.max);
-    } else if (type == ItemType_Knob || type == ItemType_HSlider || type == ItemType_VSlider || type == ItemType_HBargraph || type == ItemType_VBargraph) {
+    } else if (type == Knob || type == HSlider || type == VSlider || type == HBargraph || type == VBargraph) {
         auto value = float(*item.zone);
         ImGuiSliderFlags flags = item.logscale ? ImGuiSliderFlags_Logarithmic : ImGuiSliderFlags_None;
         if (SliderFloat(label, &value, float(item.min), float(item.max), nullptr, flags)) *item.zone = Real(value);
-    } else if (type == ItemType_HRadioButtons || type == ItemType_VRadioButtons) {
+    } else if (type == HRadioButtons || type == VRadioButtons) {
         auto value = float(*item.zone);
         if (RadioButtons(item.label.c_str(), &value, NamesForZone.at(item.zone), ValuesForZone.at(item.zone))) *item.zone = Real(value);
-    } else if (type == ItemType_Menu) {
+    } else if (type == Menu) {
         auto value = *item.zone;
         const auto &names = NamesForZone.at(item.zone);
         const auto &values = ValuesForZone.at(item.zone);

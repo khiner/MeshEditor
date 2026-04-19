@@ -32,9 +32,11 @@ struct CollisionSystem {
     std::string Name{};
 };
 
-enum class CollideMode : uint8_t { All,
-                                   Allowlist,
-                                   Blocklist };
+enum class CollideMode : uint8_t {
+    All,
+    Allowlist,
+    Blocklist
+};
 
 // KHR_physics_rigid_bodies-aligned collision filter.
 // Mode == All: no filtering beyond membership (CollideSystems ignored at rebuild, but preserved across mode toggles).
@@ -55,10 +57,14 @@ struct PhysicsJointLimit {
     float Damping{0.0f};
 };
 
-enum class PhysicsDriveType : uint8_t { Linear,
-                                        Angular };
-enum class PhysicsDriveMode : uint8_t { Force,
-                                        Acceleration };
+enum class PhysicsDriveType : uint8_t {
+    Linear,
+    Angular
+};
+enum class PhysicsDriveMode : uint8_t {
+    Force,
+    Acceleration
+};
 
 struct PhysicsJointDrive {
     PhysicsDriveType Type{PhysicsDriveType::Linear};
