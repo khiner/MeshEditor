@@ -55,6 +55,7 @@ struct MeshStore;
 struct PhysicsWorld;
 struct ScenePipelines;
 struct SceneBuffers;
+struct VideoRecorder;
 struct SelectionDrawInfo;
 struct TextureStore;
 
@@ -131,6 +132,18 @@ struct Scene {
     // (Material Preview shading, overlays hidden).
     void Play();
 
+    // Record the viewport to an H.264 mp4 by piping frames to an `ffmpeg` subprocess.
+    // When a look-through camera is active, captures only the framed sub-region matching
+    // what the user sees inside the dimmed overlay. Locks to the initial capture extent;
+    // any resize or look-through change stops recording.
+    void StartRecording(std::filesystem::path, int fps);
+    void StopRecording();
+    // Copy the current FinalColorImage to the recorder. No-op if not recording.
+    // Call after WaitForRender() so the source image is coherent.
+    void CaptureRecordFrame();
+    bool IsRecording() const;
+    uint64_t CapturedFrameCount() const;
+
     void CreateSvgResource(std::unique_ptr<SvgResource> &svg, std::filesystem::path path);
 
     std::string DebugBufferHeapUsage() const;
@@ -176,6 +189,13 @@ private:
     std::unique_ptr<TextureStore> Textures;
     std::unique_ptr<EnvironmentStore> Environments;
     std::unique_ptr<PhysicsWorld> Physics;
+    std::unique_ptr<VideoRecorder> Recorder;
+    std::pair<vk::Offset3D, vk::Extent2D> RecordRegion; // Locked at StartRecording; CaptureRecordFrame stops if the live region diverges.
+
+    // Region of FinalColorImage to record.
+    // Full image, or the camera-frame sub-rect if a look-through camera is active.
+    // Extent is clamped to even dimensions (libx264/yuv420p requires even width/height).
+    std::pair<vk::Offset3D, vk::Extent2D> GetCaptureRegion() const;
 
     // Shared buffer entities for collider wireframe overlays, indexed by ColliderShapeBuffer enum.
     enum ColliderShapeBuffer : uint8_t { CSB_Box,

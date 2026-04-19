@@ -18,6 +18,7 @@
 #include "SoundVertices.h"
 #include "SvgResource.h"
 #include "Timer.h"
+#include "VideoRecorder.h"
 #include "gpu/BoxSelectPushConstants.h"
 #include "gpu/ElementPickPushConstants.h"
 #include "gpu/ObjectPickPushConstants.h"
@@ -792,6 +793,43 @@ void Scene::Play() {
         s.ShowOverlays = false;
     });
     ApplyTimelineAction(timeline_action::TogglePlay{});
+}
+
+std::pair<vk::Offset3D, vk::Extent2D> Scene::GetCaptureRegion() const {
+    const auto full = ToExtent2D(Pipelines->Main.Resources->FinalColorImage.Extent);
+    const auto *cd = LookThrough ? R.try_get<Camera>(LookThrough->Camera) : nullptr;
+    if (!cd) return {{0, 0, 0}, full};
+
+    const auto cam_aspect = AspectRatio(*cd);
+    const auto ratio = LookThroughFrameRatio(cam_aspect, float(full.width) / float(full.height));
+    // yuv420p requires even width/height.
+    const auto w = uint32_t(float(full.height) * cam_aspect * ratio) & ~1u;
+    const auto h = uint32_t(float(full.height) * ratio) & ~1u;
+    return {{int32_t(full.width - w) / 2, int32_t(full.height - h) / 2, 0}, {w, h}};
+}
+
+void Scene::StartRecording(std::filesystem::path path, int fps) {
+    StopRecording();
+    if (!Pipelines->Main.Resources) {
+        std::println(stderr, "Scene::StartRecording: render resources not ready");
+        return;
+    }
+    RecordRegion = GetCaptureRegion();
+    Recorder = std::make_unique<VideoRecorder>(Vk, std::move(path), RecordRegion.first, RecordRegion.second, fps);
+}
+
+void Scene::StopRecording() { Recorder.reset(); }
+bool Scene::IsRecording() const { return Recorder && Recorder->IsActive(); }
+uint64_t Scene::CapturedFrameCount() const { return Recorder ? Recorder->CapturedFrameCount() : 0; }
+
+void Scene::CaptureRecordFrame() {
+    if (!IsRecording() || !Pipelines->Main.Resources) return;
+    if (GetCaptureRegion() != RecordRegion) {
+        std::println(stderr, "Scene: capture region changed; stopping recording.");
+        StopRecording();
+        return;
+    }
+    Recorder->CaptureFrame(*Pipelines->Main.Resources->FinalColorImage.Image);
 }
 
 Scene::SyncResult Scene::SyncModelsBuffers() {

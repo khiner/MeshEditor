@@ -18,11 +18,12 @@
 #include <vulkan/vulkan_to_string.hpp>
 
 #include <array>
+#include <csignal>
 #include <exception>
 #include <format>
 #include <iostream>
 
-using std::ranges::any_of, std::ranges::distance, std::ranges::find_if, std::ranges::find_if_not;
+using std::ranges::any_of, std::ranges::distance, std::ranges::find_if;
 namespace fs = std::filesystem;
 
 // #define IMGUI_UNLIMITED_FRAME_RATE
@@ -306,7 +307,7 @@ std::expected<void, std::string> LoadFile(Scene &scene, const fs::path &path) {
     return {};
 }
 
-void run(const char *initial_file, bool quiet, bool play) {
+void run(const char *initial_file, bool quiet, bool play, float play_duration, fs::path record_path, int record_fps) {
     Timer::Enabled = !quiet;
 
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) {
@@ -437,7 +438,16 @@ void run(const char *initial_file, bool quiet, bool play) {
 
     WindowsState windows;
 
-    // Main loop
+    // Main loop.
+    // Sim always uses the real `io.DeltaTime` from SDL, so sim-clock = wall-clock (1:1 real-time) whether
+    // or not we're recording. Recording just samples the already-live viewport: a wall-clock accumulator
+    // captures one frame every `1/record_fps` seconds, decimating if the display refreshes faster than the
+    // video's fps. This keeps the in-app preview and the recorded video playing at the exact same rate —
+    // the file is a faithful sample of what you saw on screen.
+    const bool recording_mode = !record_path.empty();
+    float elapsed_play_time = 0;
+    const Uint64 capture_interval_ns = 1'000'000'000ULL / Uint64(record_fps);
+    Uint64 next_capture_ns = 0; // Initialized when recording starts.
     bool done = false;
     while (!done) {
         SDL_Event event;
@@ -446,6 +456,8 @@ void run(const char *initial_file, bool quiet, bool play) {
             done = event.type == SDL_EVENT_QUIT ||
                 (event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED && event.window.windowID == SDL_GetWindowID(window));
         }
+        const float elapsed = recording_mode ? float(scene->CapturedFrameCount()) / float(record_fps) : elapsed_play_time;
+        if (play_duration > 0 && elapsed >= play_duration) done = true;
 
         // Resize swap chain?
         if (RebuildSwapchain) {
@@ -462,6 +474,7 @@ void run(const char *initial_file, bool quiet, bool play) {
         // Start the ImGui frame.
         ImGui_ImplVulkan_NewFrame();
         ImGui_ImplSDL3_NewFrame();
+        elapsed_play_time += io.DeltaTime;
         NewFrame();
 
         auto dockspace_id = DockSpaceOverViewport(0, nullptr, ImGuiDockNodeFlags_PassthruCentralNode | ImGuiDockNodeFlags_AutoHideTabBar);
@@ -639,6 +652,16 @@ void run(const char *initial_file, bool quiet, bool play) {
         auto *draw_data = GetDrawData();
         if (bool is_minimized = (draw_data->DisplaySize.x <= 0.0f || draw_data->DisplaySize.y <= 0.0f); !is_minimized) {
             scene->WaitForRender(); // ImGui samples final image
+            // Lazy-start recording once the viewport has rendered at least once (so FinalColorImage has a valid extent).
+            if (recording_mode && !scene->IsRecording() && GetFrameCount() > 1) {
+                scene->StartRecording(record_path, record_fps);
+                if (scene->IsRecording()) next_capture_ns = SDL_GetTicksNS();
+                else done = true;
+            }
+            if (scene->IsRecording() && SDL_GetTicksNS() >= next_capture_ns) {
+                scene->CaptureRecordFrame();
+                next_capture_ns += capture_interval_ns;
+            }
             RenderFrame(*vc->Device, vc->Queue, wd, draw_data);
             PresentFrame(vc->Queue, wd);
         }
@@ -667,6 +690,9 @@ void run(const char *initial_file, bool quiet, bool play) {
 }
 
 int main(int argc, char **argv) {
+    // VideoRecorder pipes frames to ffmpeg via popen; ignore SIGPIPE so writes return EPIPE instead of killing us.
+    std::signal(SIGPIPE, SIG_IGN);
+
     std::set_terminate([]() {
         try {
             if (auto eptr = std::current_exception()) {
@@ -681,17 +707,33 @@ int main(int argc, char **argv) {
     });
 
     const std::span args{argv + 1, argv + argc};
-    const auto is_flag = [](const char *a) { return std::string_view{a}.starts_with('-'); };
-    const auto file_it = find_if_not(args, is_flag);
-    const char *const initial_file = file_it != args.end() ? *file_it : nullptr;
-    const bool quiet =
-#ifdef QUIET
-        true;
-#else
-        any_of(args, [](const char *a) { return std::string_view{a} == "--quiet" || std::string_view{a} == "-q"; });
-#endif
-    const bool play = any_of(args, [](const char *a) { return std::string_view{a} == "--play"; });
+    const auto looks_numeric = [](const char *a) {
+        const std::string_view s{a};
+        return !s.empty() && std::isdigit(uint8_t(s[0]));
+    };
 
-    run(initial_file, quiet, play);
+    const char *initial_file = nullptr;
+    bool play = false;
+    float play_duration = 0;
+    fs::path record_path;
+    int record_fps = 60;
+#ifdef QUIET
+    bool quiet = true;
+#else
+    bool quiet = false;
+#endif
+    for (auto it = args.begin(); it != args.end(); ++it) {
+        const std::string_view a{*it};
+        if (a == "--quiet" || a == "-q") quiet = true;
+        else if (a == "--play") {
+            play = true;
+            if (std::next(it) != args.end() && looks_numeric(*std::next(it))) play_duration = std::atof(*++it);
+        } else if (a == "--record" && std::next(it) != args.end()) record_path = *++it;
+        else if (a == "--fps" && std::next(it) != args.end()) record_fps = std::atoi(*++it);
+        else if (!a.starts_with('-') && !initial_file) initial_file = *it;
+    }
+    if (record_fps <= 0) record_fps = 60;
+
+    run(initial_file, quiet, play, play_duration, std::move(record_path), record_fps);
     return 0;
 }

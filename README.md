@@ -152,11 +152,18 @@ $ git clone --recurse-submodules git@github.com:khiner/MeshEditor.git
 $ cd MeshEditor
 $ ./script/Clean # optionally clean first
 $ ./script/Build [--release]
-$ cd build && ./MeshEditor [file] [--quiet|-q]
+$ cd build && ./MeshEditor [file] [--quiet|-q] [--play [seconds]] [--record path.mp4 [--fps N]]
 ```
 
 * `file` can be a `.gltf`, `.glb`, `.obj`, or `.ply`. Without a file, a default cube is loaded.
 * `--quiet` / `-q` suppresses timer output.
+* `--play [seconds]` starts in play mode (material preview shading, overlays hidden, animation/physics running).
+Optional `[seconds]` auto-exits after the given duration. See `--record` below for how the duration is interpreted.
+* `--record path.mp4` writes the viewport as an H.264 `.mp4` via a `ffmpeg` subprocess (must be on `PATH`).
+When a look-through camera is active, only the camera-frame sub-rect (the area inside the dimmed overlay) is recorded. Otherwise the full viewport is recorded.
+* `--fps N` sets the recording framerate (default 60).
+
+**Timing**: the sim runs at wall-clock rate. Recording samples the viewport at `fps`, so the file plays at the same rate as the in-app preview. `--play N` exits after N seconds — wall-clock when interactive, video-seconds when recording.
 
 ## Stack
 
