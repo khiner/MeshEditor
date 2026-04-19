@@ -195,8 +195,8 @@ struct PhysicsConstraintHandle {
 };
 
 // Links a collider entity to its wireframe overlay instance(s).
-// Capsules use 3 instances (body + 2 caps); others use 1.
+// Cylinder/Capsule use 6 instances (2 ring/cap + 4 side lines); Box/Sphere use 1.
 struct ColliderWireframe {
-    entt::entity Instances[3]{null_entity, null_entity, null_entity};
+    entt::entity Instances[6]{null_entity, null_entity, null_entity, null_entity, null_entity, null_entity};
     uint8_t Count{0};
 };

@@ -70,22 +70,6 @@ WireframeMesh UnitSphere() {
     return m;
 }
 
-WireframeMesh UnitCapsuleBody() {
-    // 4 vertical lines along Y-axis from y=-0.5 to y=+0.5.
-    // Instance scale.y encodes cylinder height; caps are separate instances.
-    WireframeMesh m;
-    for (uint32_t i = 0; i < 4; ++i) {
-        const auto angle = Pi * 0.5f * float(i);
-        const auto cx = std::cos(angle) * 0.5f, cz = std::sin(angle) * 0.5f;
-        const uint32_t base = m.Positions.size();
-        m.Positions.emplace_back(cx, 0.5f, cz);
-        m.Positions.emplace_back(cx, -0.5f, cz);
-        m.EdgeIndices.emplace_back(base);
-        m.EdgeIndices.emplace_back(base + 1);
-    }
-    return m;
-}
-
 WireframeMesh UnitCapsuleCap() {
     // Hemisphere wireframe at origin, opening in +Y direction, radius 0.5.
     // Base circle in XZ plane + two quarter-arcs (XY and ZY).
@@ -99,21 +83,13 @@ WireframeMesh UnitCapsuleCap() {
     return m;
 }
 
-WireframeMesh UnitCylinder() {
-    // Two circles (top/bottom) + 4 vertical lines. Radius 0.5, height 1 along Y.
+WireframeMesh UnitCircle() {
     WireframeMesh m;
-    vec3 x{1, 0, 0}, z{0, 0, 1};
-    AddCircle(m, {0, 0.5f, 0}, x, z, 0.5f);
-    AddCircle(m, {0, -0.5f, 0}, x, z, 0.5f);
-    for (uint32_t i = 0; i < 4; ++i) {
-        const auto angle = Pi * 0.5f * float(i);
-        const auto cx = std::cos(angle) * 0.5f, cz = std::sin(angle) * 0.5f;
-        const uint32_t base = m.Positions.size();
-        m.Positions.emplace_back(cx, 0.5f, cz);
-        m.Positions.emplace_back(cx, -0.5f, cz);
-        m.EdgeIndices.emplace_back(base);
-        m.EdgeIndices.emplace_back(base + 1);
-    }
+    AddCircle(m, {}, {1, 0, 0}, {0, 0, 1}, 0.5f);
     return m;
+}
+
+WireframeMesh UnitLine() {
+    return {{{0, 0.5f, 0}, {0, -0.5f, 0}}, {0, 1}};
 }
 } // namespace physics_debug

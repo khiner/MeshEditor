@@ -350,14 +350,18 @@ Ref<Shape> CreateJoltShape(const PhysicsShape &shape, const Mesh *mesh, bool bod
             [](const physics::Box &s) -> Ref<Shape> { return new BoxShape(ToJolt(s.Size * 0.5f)); },
             [](const physics::Sphere &s) -> Ref<Shape> { return new SphereShape(s.Radius); },
             [](const physics::Capsule &s) -> Ref<Shape> {
+                // Degenerate (Height ≤ 0): collapse to sphere using the larger radius.
+                // FitDimsToMesh emits Height=0 when the mesh BBox is shorter than 2*r (e.g. cube → Capsule).
+                if (s.Height < 1e-6f) return new SphereShape(std::max(s.RadiusTop, s.RadiusBottom));
                 if (std::abs(s.RadiusTop - s.RadiusBottom) < 1e-6f) return new CapsuleShape(s.Height * 0.5f, s.RadiusBottom);
                 if (const auto r = TaperedCapsuleShapeSettings(s.Height * 0.5f, s.RadiusTop, s.RadiusBottom).Create(); r.IsValid()) return r.Get();
                 return new CapsuleShape(s.Height * 0.5f, s.RadiusBottom);
             },
             [](const physics::Cylinder &s) -> Ref<Shape> {
-                if (std::abs(s.RadiusTop - s.RadiusBottom) < 1e-6f) return new CylinderShape(s.Height * 0.5f, s.RadiusBottom);
-                if (const auto r = TaperedCylinderShapeSettings(s.Height * 0.5f, s.RadiusTop, s.RadiusBottom).Create(); r.IsValid()) return r.Get();
-                return new CylinderShape(s.Height * 0.5f, std::max(s.RadiusTop, s.RadiusBottom));
+                const float h = std::max(s.Height, 1e-3f); // Jolt CylinderShape requires positive half-height.
+                if (std::abs(s.RadiusTop - s.RadiusBottom) < 1e-6f) return new CylinderShape(h * 0.5f, s.RadiusBottom);
+                if (const auto r = TaperedCylinderShapeSettings(h * 0.5f, s.RadiusTop, s.RadiusBottom).Create(); r.IsValid()) return r.Get();
+                return new CylinderShape(h * 0.5f, std::max(s.RadiusTop, s.RadiusBottom));
             },
             // Jolt PlaneShape is single-sided and static-only. Everything else collapses to a thin BoxShape;
             // infinite non-static uses a large half-extent.

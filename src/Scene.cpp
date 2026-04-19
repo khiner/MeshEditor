@@ -12,12 +12,14 @@
 #include "MeshComponents.h"
 #include "NodeTransformAnimation.h"
 #include "Paths.h"
+#include "Reactive.h"
 #include "ScenePipelines.h"
 #include "SceneSelection.h"
 #include "Shader.h"
 #include "SoundVertices.h"
 #include "SvgResource.h"
 #include "Timer.h"
+#include "Variant.h"
 #include "VideoRecorder.h"
 #include "gpu/BoxSelectPushConstants.h"
 #include "gpu/ElementPickPushConstants.h"
@@ -41,9 +43,6 @@
 #include "AxisColors.h" // Must be after imgui.h
 #include <entt/entity/registry.hpp>
 
-#include "Reactive.h"
-#include "Variant.h"
-#include <bit>
 #include <iostream>
 
 using std::ranges::any_of, std::ranges::find, std::ranges::find_if, std::ranges::fold_left, std::ranges::to;
@@ -2413,18 +2412,19 @@ void Scene::EnsureColliderWireframes() {
     };
     ensure_buffer(CSB_Box, physics_debug::UnitBox);
     ensure_buffer(CSB_Sphere, physics_debug::UnitSphere);
-    ensure_buffer(CSB_CapsuleBody, physics_debug::UnitCapsuleBody);
     ensure_buffer(CSB_CapsuleCap, physics_debug::UnitCapsuleCap);
-    ensure_buffer(CSB_Cylinder, physics_debug::UnitCylinder);
+    ensure_buffer(CSB_Circle, physics_debug::UnitCircle);
+    ensure_buffer(CSB_Line, physics_debug::UnitLine);
 
     // Buffer entity that Instances[0] should reference for a given shape kind. null = no wireframe.
+    // Cylinder uses a Circle for its top ring; Capsule uses a CapsuleCap for its top hemisphere.
     auto primary_buffer = [&](const PhysicsShape &shape) -> entt::entity {
         return std::visit(
             overloaded{
                 [&](const physics::Box &) { return ColliderShapeBufferEntities[CSB_Box]; },
                 [&](const physics::Sphere &) { return ColliderShapeBufferEntities[CSB_Sphere]; },
-                [&](const physics::Cylinder &) { return ColliderShapeBufferEntities[CSB_Cylinder]; },
-                [&](const physics::Capsule &) { return ColliderShapeBufferEntities[CSB_CapsuleBody]; },
+                [&](const physics::Cylinder &) { return ColliderShapeBufferEntities[CSB_Circle]; },
+                [&](const physics::Capsule &) { return ColliderShapeBufferEntities[CSB_CapsuleCap]; },
                 [](const auto &) { return entt::entity{entt::null}; },
             },
             shape
@@ -2462,17 +2462,20 @@ void Scene::EnsureColliderWireframes() {
             return inst;
         };
 
-        if (std::holds_alternative<physics::Capsule>(shape)) {
-            cw.Instances[0] = make_instance(ColliderShapeBufferEntities[CSB_CapsuleBody]);
-            cw.Instances[1] = make_instance(ColliderShapeBufferEntities[CSB_CapsuleCap]); // top
-            cw.Instances[2] = make_instance(ColliderShapeBufferEntities[CSB_CapsuleCap]); // bottom
-            cw.Count = 3;
+        // Cylinder/Capsule: 2 ring/cap instances + 4 side-line instances. See UpdateColliderWireframeTransforms.
+        const bool is_cylinder = std::holds_alternative<physics::Cylinder>(shape);
+        const bool is_capsule = std::holds_alternative<physics::Capsule>(shape);
+        if (is_cylinder || is_capsule) {
+            const auto cap_buf = ColliderShapeBufferEntities[is_capsule ? CSB_CapsuleCap : CSB_Circle];
+            cw.Instances[0] = make_instance(cap_buf); // top
+            cw.Instances[1] = make_instance(cap_buf); // bottom
+            for (uint8_t i = 0; i < 4; ++i) cw.Instances[2 + i] = make_instance(ColliderShapeBufferEntities[CSB_Line]);
+            cw.Count = 6;
         } else {
             const auto buf = std::visit(
                 overloaded{
                     [&](const physics::Box &) { return ColliderShapeBufferEntities[CSB_Box]; },
                     [&](const physics::Sphere &) { return ColliderShapeBufferEntities[CSB_Sphere]; },
-                    [&](const physics::Cylinder &) { return ColliderShapeBufferEntities[CSB_Cylinder]; },
                     [](const auto &) { return entt::entity{entt::null}; },
                 },
                 shape
@@ -2527,6 +2530,29 @@ void Scene::UpdateColliderWireframeTransforms() {
             R.replace<WorldTransform>(inst, ToTransform(m));
         };
 
+        // Maps the unit Y-line (from (0,+0.5,0) to (0,-0.5,0)) onto the segment p1→p2.
+        // Line is rotationally symmetric about its axis; any perpendicular X/Z basis works.
+        auto line_xform = [](vec3 p1, vec3 p2) -> mat4 {
+            const vec3 mid = (p1 + p2) * 0.5f;
+            const vec3 y_axis = p1 - p2;
+            const float len = glm::length(y_axis);
+            if (len < 1e-6f) return glm::translate(mat4{1}, mid);
+
+            const vec3 y_dir = y_axis / len;
+            const vec3 x_dir = glm::normalize(glm::cross(std::abs(y_dir.y) > 0.9f ? vec3{1, 0, 0} : vec3{0, 1, 0}, y_dir));
+            return mat4{{x_dir, 0}, {y_dir * len, 0}, {glm::cross(x_dir, y_dir), 0}, {mid, 1}};
+        };
+        // Cylinder/Capsule share side-line geometry: 4 segments running from (RT*cos θ, +H/2, RT*sin θ)
+        // to (RB*cos θ, -H/2, RB*sin θ) at θ ∈ {0, π/2, π, 3π/2}.
+        auto set_side_lines = [&](float rt, float rb, float h) {
+            constexpr float Pi = std::numbers::pi_v<float>;
+            for (uint8_t i = 0; i < 4; ++i) {
+                const float a = Pi * 0.5f * float(i);
+                const float c = std::cos(a), s = std::sin(a);
+                set_wt(cw.Instances[2 + i], base * line_xform({rt * c, h * 0.5f, rt * s}, {rb * c, -h * 0.5f, rb * s}));
+            }
+        };
+
         std::visit(
             overloaded{
                 [&](const physics::Box &s) {
@@ -2537,16 +2563,16 @@ void Scene::UpdateColliderWireframeTransforms() {
                     set_wt(cw.Instances[0], base * glm::scale(mat4{1}, {d, d, d}));
                 },
                 [&](const physics::Capsule &s) {
-                    const float r = std::max(s.RadiusTop, s.RadiusBottom);
-                    const float d = r * 2.0f;
-                    const float body_h = std::max(s.Height, 0.001f);
-                    set_wt(cw.Instances[0], base * glm::scale(mat4{1}, {d, body_h, d}));
-                    set_wt(cw.Instances[1], base * glm::translate(mat4{1}, {0, s.Height * 0.5f, 0}) * glm::scale(mat4{1}, {d, d, d}));
-                    set_wt(cw.Instances[2], base * glm::translate(mat4{1}, {0, -s.Height * 0.5f, 0}) * glm::scale(mat4{1}, {d, -d, d}));
+                    const float dt = s.RadiusTop * 2.0f, db = s.RadiusBottom * 2.0f;
+                    set_wt(cw.Instances[0], base * glm::translate(mat4{1}, {0, s.Height * 0.5f, 0}) * glm::scale(mat4{1}, {dt, dt, dt}));
+                    set_wt(cw.Instances[1], base * glm::translate(mat4{1}, {0, -s.Height * 0.5f, 0}) * glm::scale(mat4{1}, {db, -db, db}));
+                    set_side_lines(s.RadiusTop, s.RadiusBottom, s.Height);
                 },
                 [&](const physics::Cylinder &s) {
-                    const float d = std::max(s.RadiusTop, s.RadiusBottom) * 2.0f;
-                    set_wt(cw.Instances[0], base * glm::scale(mat4{1}, {d, s.Height, d}));
+                    const float dt = s.RadiusTop * 2.0f, db = s.RadiusBottom * 2.0f;
+                    set_wt(cw.Instances[0], base * glm::translate(mat4{1}, {0, s.Height * 0.5f, 0}) * glm::scale(mat4{1}, {dt, 1, dt}));
+                    set_wt(cw.Instances[1], base * glm::translate(mat4{1}, {0, -s.Height * 0.5f, 0}) * glm::scale(mat4{1}, {db, 1, db}));
+                    set_side_lines(s.RadiusTop, s.RadiusBottom, s.Height);
                 },
                 [](const auto &) {},
             },

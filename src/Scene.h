@@ -200,9 +200,9 @@ private:
     // Shared buffer entities for collider wireframe overlays, indexed by ColliderShapeBuffer enum.
     enum ColliderShapeBuffer : uint8_t { CSB_Box,
                                          CSB_Sphere,
-                                         CSB_CapsuleBody,
                                          CSB_CapsuleCap,
-                                         CSB_Cylinder,
+                                         CSB_Circle,
+                                         CSB_Line,
                                          CSB_Count };
     entt::entity ColliderShapeBufferEntities[CSB_Count]{null_entity, null_entity, null_entity, null_entity, null_entity};
     // Split in two so reactive events fire on the correct side of SyncModelsBuffers:

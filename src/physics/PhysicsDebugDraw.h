@@ -18,7 +18,7 @@ struct WireframeMesh {
 // Canonical unit wireframe meshes (generated once, shared via instancing).
 WireframeMesh UnitBox(); // [-0.5, 0.5]^3
 WireframeMesh UnitSphere(); // Radius 0.5, 3 great circles
-WireframeMesh UnitCapsuleBody(); // 4 vertical lines, Y-axis, height 1
 WireframeMesh UnitCapsuleCap(); // Hemisphere wireframe, radius 0.5, cap in +Y
-WireframeMesh UnitCylinder(); // Radius 0.5, height 1, Y-axis
+WireframeMesh UnitCircle(); // Radius 0.5, in XZ plane (Y-up axis)
+WireframeMesh UnitLine(); // Single segment from (0, +0.5, 0) to (0, -0.5, 0)
 } // namespace physics_debug
