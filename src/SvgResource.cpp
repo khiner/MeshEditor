@@ -32,7 +32,7 @@ struct SvgResource::Impl {
     Impl(vk::Device device, BitmapToImage render, std::filesystem::path path) {
         if ((Document = lunasvg::Document::loadFromFile(path))) {
             if (auto bitmap = RenderDocumentToBitmap(*Document, Scale); !bitmap.isNull()) {
-                const auto width = uint32_t(bitmap.width()), height = uint32_t(bitmap.height());
+                const uint32_t width = bitmap.width(), height = bitmap.height();
                 const auto size = width * height * 4; // 4 bytes per pixel
                 Image = std::make_unique<mvk::ImageResource>(render({reinterpret_cast<const std::byte *>(bitmap.data()), size}, width, height));
                 Texture = std::make_unique<mvk::ImGuiTexture>(device, *Image->View);
@@ -56,10 +56,8 @@ struct SvgResource::Impl {
             const auto display_scale = display_width / doc_width;
             const auto offset = GetItemRectMin();
             const auto local_point = (GetMousePos() - offset) / display_scale;
-            auto link = FindLinkAtPoint(doc, local_point, LinkAttribute);
-            if (link) {
-                const auto box = link->getGlobalBoundingBox();
-                if (box.w > 0.f && box.h > 0.f) {
+            if (auto link = FindLinkAtPoint(doc, local_point, LinkAttribute)) {
+                if (const auto box = link->getGlobalBoundingBox(); box.w > 0.f && box.h > 0.f) {
                     GetWindowDrawList()->AddRect(
                         offset + ImVec2{box.x, box.y} * display_scale,
                         offset + ImVec2{box.x + box.w, box.y + box.h} * display_scale,

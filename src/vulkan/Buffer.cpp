@@ -115,8 +115,8 @@ struct VmaBuffer {
         std::copy(src.begin(), src.end(), GetMappedData().subspan(offset).data());
     }
     void Move(vk::DeviceSize from, vk::DeviceSize to, vk::DeviceSize size) const {
-        const auto allocated_size = GetAllocatedSize();
-        if (size == 0 || from + size > allocated_size || to + size > allocated_size) return;
+        if (const auto allocated_size = GetAllocatedSize();
+            size == 0 || from + size > allocated_size || to + size > allocated_size) return;
         const auto mapped = GetMappedData();
         std::memmove(mapped.subspan(to).data(), mapped.subspan(from).data(), size_t(size));
     }

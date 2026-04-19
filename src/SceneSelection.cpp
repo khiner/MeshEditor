@@ -30,7 +30,7 @@ uint32_t CountSelected(const uint32_t *bits, uint32_t offset, uint32_t count) {
             const uint32_t end_bit = (offset + count) & 31;
             if (end_bit) word &= (1u << end_bit) - 1u;
         }
-        total += static_cast<uint32_t>(__builtin_popcount(word));
+        total += __builtin_popcount(word);
     }
     return total;
 }
@@ -41,7 +41,7 @@ std::vector<uint32_t> ScanBitsetRange(const uint32_t *bits, uint32_t offset, uin
     for (uint32_t w = first_word; w < last_word; ++w) {
         uint32_t word = bits[w];
         while (word) {
-            const uint32_t global_idx = w * 32 + static_cast<uint32_t>(__builtin_ctz(word));
+            const uint32_t global_idx = w * 32 + __builtin_ctz(word);
             if (global_idx >= offset && global_idx < offset + count) result.emplace_back(global_idx - offset);
             word &= word - 1;
         }
@@ -88,8 +88,7 @@ std::vector<uint32_t> ConvertSelectionElement(std::span<const uint32_t> handles,
         const std::unordered_set<uint32_t> handle_set{handles.begin(), handles.end()};
         if (to_element == Element::Edge) {
             for (const auto eh : mesh.edges()) {
-                const auto heh = mesh.GetHalfedge(eh, 0);
-                if (handle_set.contains(*mesh.GetFromVertex(heh)) && handle_set.contains(*mesh.GetToVertex(heh))) {
+                if (const auto heh = mesh.GetHalfedge(eh, 0); handle_set.contains(*mesh.GetFromVertex(heh)) && handle_set.contains(*mesh.GetToVertex(heh))) {
                     result.emplace_back(*eh);
                 }
             }

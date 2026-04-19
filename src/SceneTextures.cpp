@@ -187,8 +187,7 @@ KtxFormatPair SelectKtx2Format(vk::PhysicalDevice pd, TextureColorSpace cs) {
         {vk::Format::eEtc2R8G8B8A8UnormBlock, vk::Format::eEtc2R8G8B8A8SrgbBlock, basist::transcoder_texture_format::cTFETC2_RGBA},
     };
     for (const auto &c : Candidates) {
-        const auto fmt = srgb ? c.Srgb : c.Unorm;
-        if (pd.getFormatProperties(fmt).optimalTilingFeatures & vk::FormatFeatureFlagBits::eSampledImage) return {fmt, c.BasisFmt};
+        if (const auto fmt = srgb ? c.Srgb : c.Unorm; pd.getFormatProperties(fmt).optimalTilingFeatures & vk::FormatFeatureFlagBits::eSampledImage) return {fmt, c.BasisFmt};
     }
     return {srgb ? vk::Format::eR8G8B8A8Srgb : vk::Format::eR8G8B8A8Unorm, basist::transcoder_texture_format::cTFRGBA32};
 }
@@ -243,13 +242,12 @@ void SubmitTextureUploadBatch(TextureUploadBatch &batch, vk::Queue queue, vk::Fe
 }
 
 StagingAlloc AllocStaging(TextureUploadBatch &batch, std::span<const std::byte> data) {
-    const auto size = static_cast<vk::DeviceSize>(data.size());
+    const vk::DeviceSize size = data.size();
     constexpr vk::DeviceSize alignment = 16;
     const auto aligned_size = (size + alignment - 1) & ~(alignment - 1);
 
     if (batch.StagingChunks.empty() || batch.ChunkUsed + aligned_size > batch.StagingChunks.back().GetAllocatedSize()) {
-        const auto chunk_size = aligned_size;
-        batch.StagingChunks.emplace_back(*batch.Ctx, chunk_size, mvk::MemoryUsage::CpuOnly, vk::BufferUsageFlagBits::eTransferSrc);
+        batch.StagingChunks.emplace_back(*batch.Ctx, aligned_size, mvk::MemoryUsage::CpuOnly, vk::BufferUsageFlagBits::eTransferSrc);
         batch.ChunkUsed = 0;
     }
 

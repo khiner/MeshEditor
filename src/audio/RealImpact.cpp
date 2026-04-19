@@ -87,11 +87,10 @@ namespace RealImpact {
 std::optional<std::string> FindObjectName(const fs::path &start_path) {
     static const std::regex pattern("^\\d+_.*"); // Integer followed by an underscore and any characters
     for (auto path = start_path; path != path.root_path(); path = path.parent_path()) {
-        const auto dirname = path.filename().string();
-        if (std::regex_search(dirname, pattern)) {
+        if (const auto dirname = path.filename().string(); std::regex_search(dirname, pattern)) {
             // Extract the object name part after the underscore.
-            const auto underscore_pos = dirname.find('_');
-            if (underscore_pos != std::string::npos && underscore_pos + 1 < dirname.length()) {
+            if (const auto underscore_pos = dirname.find('_');
+                underscore_pos != std::string::npos && underscore_pos + 1 < dirname.length()) {
                 return dirname.substr(underscore_pos + 1); // Extract the object name.
             }
         }

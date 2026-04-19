@@ -663,16 +663,14 @@ std::expected<void, std::string> AppendPrimitive(
             morph->NormalDeltas.resize(prev_norm_size + std::size_t(target_count) * prim_vertex_count, vec3{0.f});
         }
         for (uint32_t t = 0; t < target_count; ++t) {
-            auto pos_it = primitive.findTargetAttribute(t, "POSITION");
-            if (pos_it != primitive.targets[t].end()) {
+            if (auto pos_it = primitive.findTargetAttribute(t, "POSITION"); pos_it != primitive.targets[t].end()) {
                 const auto &target_accessor = asset.accessors[pos_it->accessorIndex];
                 if (target_accessor.count == prim_vertex_count) {
                     fastgltf::copyFromAccessor<vec3>(asset, target_accessor, &morph->PositionDeltas[prev_pos_size + std::size_t(t) * prim_vertex_count]);
                 }
             }
             if (!morph->NormalDeltas.empty()) {
-                auto norm_it = primitive.findTargetAttribute(t, "NORMAL");
-                if (norm_it != primitive.targets[t].end()) {
+                if (auto norm_it = primitive.findTargetAttribute(t, "NORMAL"); norm_it != primitive.targets[t].end()) {
                     const auto &norm_accessor = asset.accessors[norm_it->accessorIndex];
                     const auto prev_norm_size = morph->NormalDeltas.size() - std::size_t(target_count) * prim_vertex_count;
                     if (norm_accessor.count == prim_vertex_count) {
@@ -1400,9 +1398,8 @@ std::expected<Scene, std::string> LoadScene(const std::filesystem::path &path) {
                 }
                 motion.GravityFactor = float(rb->motion->gravityFactor);
                 node.Motion = std::move(motion);
-                const auto lv = ToVec3(rb->motion->linearVelocity);
-                const auto av = ToVec3(rb->motion->angularVelocity);
-                if (lv != vec3{0} || av != vec3{0}) node.Velocity = PhysicsVelocity{lv, av};
+                if (const auto lv = ToVec3(rb->motion->linearVelocity), av = ToVec3(rb->motion->angularVelocity);
+                    lv != vec3{0} || av != vec3{0}) node.Velocity = PhysicsVelocity{lv, av};
             }
             if (rb->collider) {
                 node.Collider = ColliderShape{ToPhysicsShape(rb->collider->geometry)};

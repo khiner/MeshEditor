@@ -63,17 +63,14 @@ std::vector<SelectionHit> ResolveHits(entt::registry &r, const std::vector<entt:
     std::vector<SelectionHit> hits;
     for (const auto e : raw) {
         if (bone_mode && r.all_of<BoneIndex>(e)) {
-            auto it = find(hits, e, &SelectionHit::Entity);
-            if (it == hits.end()) hits.emplace_back(e, BoneSel::Body);
+            if (auto it = find(hits, e, &SelectionHit::Entity); it == hits.end()) hits.emplace_back(e, BoneSel::Body);
             else if (merge_parts) it->Part = {};
         } else if (bone_mode && r.all_of<BoneSubPartOf>(e)) {
             const auto &sub = r.get<BoneSubPartOf>(e);
-            auto it = find(hits, sub.BoneEntity, &SelectionHit::Entity);
-            if (it == hits.end()) hits.emplace_back(sub.BoneEntity, sub.IsTip ? BoneSel::Tip : BoneSel::Root);
+            if (auto it = find(hits, sub.BoneEntity, &SelectionHit::Entity); it == hits.end()) hits.emplace_back(sub.BoneEntity, sub.IsTip ? BoneSel::Tip : BoneSel::Root);
             else if (merge_parts) it->Part = {};
         } else if (!bone_mode) {
-            const auto target = r.all_of<SubElementOf>(e) ? r.get<SubElementOf>(e).Parent : e;
-            if (!contains(hits, target, &SelectionHit::Entity)) hits.emplace_back(target);
+            if (const auto target = r.all_of<SubElementOf>(e) ? r.get<SubElementOf>(e).Parent : e; !contains(hits, target, &SelectionHit::Entity)) hits.emplace_back(target);
         }
     }
     return hits;
@@ -355,8 +352,7 @@ void Scene::SetInteractionMode(InteractionMode mode) {
     if (mode == InteractionMode::Edit && !AllSelectedAreMeshes(R) && !active_is_armature) return;
     if (mode == InteractionMode::Pose && !active_is_armature) return;
 
-    const auto current_mode = R.get<const SceneInteraction>(SceneEntity).Mode;
-    if (current_mode == InteractionMode::Edit) {
+    if (R.get<const SceneInteraction>(SceneEntity).Mode == InteractionMode::Edit) {
         // Leaving Edit mode: clear GPU element-state colors, but keep bitset ranges + bits
         // so element selections are remembered when toggling back into Edit mode.
         for (const auto [mesh_entity, br, mesh] : R.view<const MeshSelectionBitsetRange, const Mesh>().each()) {
@@ -369,8 +365,7 @@ void Scene::SetInteractionMode(InteractionMode mode) {
         // Entering Edit mode: assign ranges only for selected meshes missing one.
         // Existing ranges preserve remembered selection.
         // ProcessComponentEvents handles the GPU state update via the InteractionMode reactive event.
-        const auto edit_element = R.get<const SceneEditMode>(SceneEntity).Value;
-        if (edit_element != Element::None) {
+        if (const auto edit_element = R.get<const SceneEditMode>(SceneEntity).Value; edit_element != Element::None) {
             uint32_t next_offset = 0;
             for (const auto [_, br] : R.view<const MeshSelectionBitsetRange>().each()) {
                 next_offset = std::max(next_offset, (br.Offset + br.Count + 31) / 32 * 32);
@@ -678,8 +673,7 @@ void Scene::Interact() {
             if (IsKeyDown(ImGuiMod_Shift)) {
                 AdditiveBoxSelectBaseline baseline;
                 if (interaction_mode == InteractionMode::Edit && !active_is_armature) {
-                    const auto ranges = GetBitsetRangesForSelected();
-                    if (!ranges.empty()) {
+                    if (const auto ranges = GetBitsetRangesForSelected(); !ranges.empty()) {
                         const auto element_count = fold_left(ranges, uint32_t{0}, [](uint32_t total, const auto &range) { return std::max(total, range.Offset + range.Count); });
                         const uint32_t bitset_words = (element_count + 31) / 32;
                         baseline.ElementBitset.resize(bitset_words);
@@ -1354,8 +1348,7 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
 
             if (changed) {
                 const auto new_dir = tail - head;
-                const auto new_length = glm::length(new_dir);
-                if (new_length > 1e-6f) {
+                if (const auto new_length = glm::length(new_dir); new_length > 1e-6f) {
                     const auto new_rot = glm::quat_cast(BoneVecRollToMat3(new_dir, roll));
                     const auto pd = ToTransform(GetParentDelta(R, active_bone_entity));
                     R.patch<Transform>(active_bone_entity, [&](auto &t) {
@@ -1418,8 +1411,10 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
 
             const bool frozen = R.all_of<ScaleLocked>(transform_entity);
             if (frozen) BeginDisabled();
-            const auto label = std::format("Scale{}", frozen ? " (frozen)" : "");
-            if (DragFloat3(label.c_str(), &transform.S[0], 0.01f, 0.01f, 10)) R.patch<Transform>(transform_entity, [](auto &) {});
+            if (const auto label = std::format("Scale{}", frozen ? " (frozen)" : "");
+                DragFloat3(label.c_str(), &transform.S[0], 0.01f, 0.01f, 10)) {
+                R.patch<Transform>(transform_entity, [](auto &) {});
+            }
             if (frozen) EndDisabled();
         }
         Spacing();
@@ -1544,8 +1539,8 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
         if (auto *prim_shape = R.try_get<PrimitiveShape>(active_mesh_entity)) {
             const bool frozen = scene_selection::HasScaleLockedInstance(R, active_mesh_entity);
             if (frozen) BeginDisabled();
-            const auto update_label = std::format("Edit primitive{}", frozen ? " (frozen)" : "");
-            if (CollapsingHeader(update_label.c_str()) && !frozen) {
+            if (const auto update_label = std::format("Edit primitive{}", frozen ? " (frozen)" : "");
+                CollapsingHeader(update_label.c_str()) && !frozen) {
                 if (auto primitive_mesh = PrimitiveEditor(*prim_shape)) {
                     ReplaceMesh(active_mesh_entity, std::move(*primitive_mesh));
                 }
@@ -1570,7 +1565,7 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
             } else {
                 auto &slot_selection = R.get_or_emplace<MeshMaterialSlotSelection>(active_mesh_entity);
                 bool slot_selection_changed = false;
-                if (const auto max_primitive = uint32_t(primitive_materials.size() - 1);
+                if (const uint32_t max_primitive = primitive_materials.size() - 1;
                     slot_selection.PrimitiveIndex > max_primitive) {
                     slot_selection.PrimitiveIndex = max_primitive;
                     slot_selection_changed = true;
@@ -1579,8 +1574,8 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
                 BeginChild("MaterialSlots", ImVec2(0, 110), true);
                 for (uint32_t primitive_index = 0; primitive_index < primitive_materials.size(); ++primitive_index) {
                     const uint32_t material_index = std::min(primitive_materials[primitive_index], material_count - 1);
-                    const auto label = std::format("Slot {:L}: {}", primitive_index, material_name(material_index));
-                    if (Selectable(label.c_str(), slot_selection.PrimitiveIndex == primitive_index)) {
+                    if (const auto label = std::format("Slot {:L}: {}", primitive_index, material_name(material_index));
+                        Selectable(label.c_str(), slot_selection.PrimitiveIndex == primitive_index)) {
                         slot_selection.PrimitiveIndex = primitive_index;
                         slot_selection_changed = true;
                     }
@@ -1593,11 +1588,11 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
                     pending_assignment->MaterialIndex :
                     primitive_materials[slot_selection.PrimitiveIndex];
                 material_index = std::min(material_index, material_count - 1);
-                const auto assigned_material_name = material_name(material_index);
-                if (BeginCombo("Assigned material", assigned_material_name.c_str())) {
+                if (const auto assigned_material_name = material_name(material_index);
+                    BeginCombo("Assigned material", assigned_material_name.c_str())) {
                     for (uint32_t i = 0; i < material_count; ++i) {
-                        const auto option_name = material_name(i);
-                        if (Selectable(option_name.c_str(), material_index == i)) {
+                        if (const auto option_name = material_name(i);
+                            Selectable(option_name.c_str(), material_index == i)) {
                             material_index = i;
                             R.emplace_or_replace<MeshMaterialAssignment>(active_mesh_entity, slot_selection.PrimitiveIndex, i);
                         }
@@ -2053,7 +2048,7 @@ void Scene::RenderControls() {
                     auto &environments = *Environments;
                     const auto &current_name = environments.Hdris[environments.ActiveHdriIndex].Name;
                     if (BeginCombo("Environment", current_name.c_str())) {
-                        for (uint32_t i = 0; i < uint32_t(environments.Hdris.size()); ++i) {
+                        for (uint32_t i = 0; i < environments.Hdris.size(); ++i) {
                             const bool selected = (i == environments.ActiveHdriIndex);
                             if (Selectable(environments.Hdris[i].Name.c_str(), selected)) {
                                 SetStudioEnvironment(i);
@@ -2104,8 +2099,8 @@ void Scene::RenderControls() {
                 for (const auto element : NormalElements) {
                     SameLine();
                     bool show = ElementMaskContains(settings.NormalOverlays, element);
-                    const auto type_name = Capitalize(label(element));
-                    if (Checkbox(type_name.c_str(), &show)) {
+                    if (const auto type_name = Capitalize(label(element));
+                        Checkbox(type_name.c_str(), &show)) {
                         SetElementMask(settings.NormalOverlays, element, show);
                         settings_changed = true;
                     }
@@ -2148,12 +2143,10 @@ void Scene::RenderControls() {
                 changed |= ColorEdit3("Axis X", &theme.AxisColors.X.x);
                 changed |= ColorEdit3("Axis Y", &theme.AxisColors.Y.x);
                 changed |= ColorEdit3("Axis Z", &theme.AxisColors.Z.x);
-                {
-                    auto full_width = theme.EdgeWidth * 2.f;
-                    if (SliderFloat("Edge width", &full_width, 0.5f, 4.f)) {
-                        theme.EdgeWidth = full_width / 2.f;
-                        changed = true;
-                    }
+                if (auto full_width = theme.EdgeWidth * 2.f;
+                    SliderFloat("Edge width", &full_width, 0.5f, 4.f)) {
+                    theme.EdgeWidth = full_width / 2.f;
+                    changed = true;
                 }
                 changed |= MeshEditor::SliderUInt("Silhouette edge width", &theme.SilhouetteEdgeWidth, 1, 4);
                 if (changed) R.patch<ViewportTheme>(SceneEntity, [](auto &) {});
@@ -2202,8 +2195,7 @@ void Scene::RenderControls() {
             }
             // Light colors are stored in linear space. Display/edit as sRGB.
             static const auto LinearColorEdit = [](const char *label, vec3 &linear) -> bool {
-                auto srgb = glm::pow(linear, vec3{1.f / 2.2f});
-                if (ColorEdit3(label, &srgb[0])) {
+                if (auto srgb = glm::pow(linear, vec3{1.f / 2.2f}); ColorEdit3(label, &srgb[0])) {
                     linear = glm::pow(srgb, vec3{2.2f});
                     return true;
                 }
@@ -2306,8 +2298,7 @@ void Scene::RenderObjectTree() {
         }
 
         // Transfer Active to the navigated entity when it becomes selected.
-        const auto nav_entity = FromSelectionUserData(nav_item);
-        if (nav_entity != entt::null) {
+        if (const auto nav_entity = FromSelectionUserData(nav_item); nav_entity != entt::null) {
             if (const bool nav_is_bone = R.all_of<BoneIndex>(nav_entity);
                 nav_is_bone ? R.all_of<BoneSelection>(nav_entity) : R.all_of<Selected>(nav_entity)) {
                 if (nav_is_bone) {
@@ -2321,7 +2312,7 @@ void Scene::RenderObjectTree() {
         }
     };
 
-    const auto total_selected = int(R.storage<Selected>().size() + R.storage<BoneSelection>().size());
+    const int total_selected = R.storage<Selected>().size() + R.storage<BoneSelection>().size();
     auto *ms_begin = BeginMultiSelect(ImGuiMultiSelectFlags_None, total_selected, -1);
     std::vector<ImGuiSelectionRequest> begin_requests;
     begin_requests.reserve(ms_begin->Requests.Size);

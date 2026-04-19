@@ -87,7 +87,7 @@ vk::UniquePipeline PbrCompiler::CreateTargetedPipeline(const vk::SpecializationI
 bool PbrCompiler::CompilePipelines(PbrFeatureMask mask) {
     if (mask == Mask && OpaqueTargeted && BlendTargeted) return false;
 
-    constexpr auto N = uint32_t(PbrSpecFeatures.size());
+    constexpr uint32_t N = PbrSpecFeatures.size();
     std::array<uint32_t, PbrSpecFeatures.size()> data{};
     std::array<vk::SpecializationMapEntry, PbrSpecFeatures.size()> entries{};
     for (uint32_t i = 0; i < N; ++i) {

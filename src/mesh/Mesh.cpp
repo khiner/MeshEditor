@@ -13,7 +13,7 @@ using std::ranges::any_of, std::ranges::find_if, std::ranges::distance;
 
 namespace {
 constexpr uint64_t MakeEdgeKey(uint from, uint to) {
-    return (static_cast<uint64_t>(from) << 32) | static_cast<uint64_t>(to);
+    return (static_cast<uint64_t>(from) << 32) | to;
 }
 
 // Flat open-addressing map reused across Mesh constructions via thread_local.
@@ -49,7 +49,7 @@ private:
 } // namespace
 
 Mesh::Mesh(MeshStore &store, uint32_t store_id, std::vector<std::vector<uint>> &&faces)
-    : Store(&store), StoreId(store_id), VertexCountValue(static_cast<uint32_t>(store.GetVertices(store_id).size())) {
+    : Store(&store), StoreId(store_id), VertexCountValue(store.GetVertices(store_id).size()) {
     OutgoingHalfedges.resize(VertexCountValue);
 
     size_t total_halfedges = 0;
@@ -158,8 +158,7 @@ Mesh::~Mesh() {
 
 he::VH Mesh::GetFromVertex(HH hh) const {
     assert(*hh < Halfedges.size());
-    const auto opp = Halfedges[*hh].Opposite;
-    if (opp) return Halfedges[*opp].Vertex;
+    if (const auto opp = Halfedges[*hh].Opposite) return Halfedges[*opp].Vertex;
 
     // For boundary halfedges, find the previous halfedge in the face loop
     const auto range = FaceHalfedgeRange{this, Halfedges[*hh].Next};

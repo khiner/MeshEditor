@@ -780,8 +780,7 @@ void DrawObjectAudioControls(
         const auto active_vertex = excitable->Vertices[active_vi];
         if (BeginCombo("Vertex", std::to_string(active_vertex).c_str())) {
             for (uint vi = 0; vi < excitable->Vertices.size(); ++vi) {
-                const auto vertex = excitable->Vertices[vi];
-                if (Selectable(std::to_string(vertex).c_str(), vi == active_vi)) {
+                if (const auto vertex = excitable->Vertices[vi]; Selectable(std::to_string(vertex).c_str(), vi == active_vi)) {
                     r.remove<VertexForce>(e);
                     r.emplace_or_replace<MeshActiveElement>(mesh_entity, vertex);
                     SetVertex(r, SceneEntity, e, vi);
@@ -813,16 +812,16 @@ void DrawObjectAudioControls(
             }
             const auto n = op_vertices.size(), with_sample = op_with_sample.size();
             if (n == 0) BeginDisabled();
-            const auto assign_label = n > 1 ? std::format("Assign sample to {} vertices…", n) : std::string{with_sample ? "Replace sample…" : "Assign sample…"};
-            if (Button(assign_label.c_str())) {
+            if (const auto assign_label = n > 1 ? std::format("Assign sample to {} vertices…", n) : std::string{with_sample ? "Replace sample…" : "Assign sample…"};
+                Button(assign_label.c_str())) {
                 auto [path, frames] = PickAndLoadAudio();
                 if (!frames.empty()) AssignVertexSample(r, SceneEntity, e, op_vertices, std::move(path), std::move(frames));
             }
             if (n == 0) EndDisabled();
             if (with_sample > 0) {
                 SameLine();
-                const auto remove_label = with_sample > 1 ? std::format("Remove {} samples", with_sample) : std::string{"Remove sample"};
-                if (Button(remove_label.c_str())) {
+                if (const auto remove_label = with_sample > 1 ? std::format("Remove {} samples", with_sample) : std::string{"Remove sample"};
+                    Button(remove_label.c_str())) {
                     RemoveVertexSamples(r, SceneEntity, e, op_with_sample);
                     return;
                 }
@@ -868,8 +867,8 @@ void DrawObjectAudioControls(
     }
 
     // Poll the Faust DSP UI to see if the current excitation vertex has changed.
-    const auto excite_index = uint(r.get<FaustDSP>(SceneEntity).Get(ExciteIndexParamName));
-    if (active_vi != excite_index && excite_index < excitable->Vertices.size()) {
+    if (const auto excite_index = uint(r.get<FaustDSP>(SceneEntity).Get(ExciteIndexParamName));
+        active_vi != excite_index && excite_index < excitable->Vertices.size()) {
         r.emplace_or_replace<MeshActiveElement>(mesh_entity, excitable->Vertices[excite_index]);
     }
     if (CollapsingHeader("Modal data charts")) {

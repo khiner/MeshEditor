@@ -177,8 +177,8 @@ public:
         const uint32_t s1 = g1.GetSubGroupID(), s2 = g2.GetSubGroupID();
         // Check joint pair exclusion
         if (!DisabledPairs.empty()) {
-            const auto key = std::make_pair(std::min(s1, s2), std::max(s1, s2));
-            if (std::binary_search(DisabledPairs.begin(), DisabledPairs.end(), key)) return false;
+            if (const auto key = std::make_pair(std::min(s1, s2), std::max(s1, s2));
+                std::binary_search(DisabledPairs.begin(), DisabledPairs.end(), key)) return false;
         }
         // Check KHR collision filter masks
         const uint32_t f1 = s1 < BodyFilterByGroup.size() ? BodyFilterByGroup[s1] : UINT32_MAX;
@@ -250,9 +250,9 @@ public:
         const uint64_t f1 = b1.GetShape()->GetSubShapeUserData(result.mSubShapeID1);
         const uint64_t f2 = b2.GetShape()->GetSubShapeUserData(result.mSubShapeID2);
         if (f1 == 0 || f2 == 0) return ValidateResult::AcceptContact;
-        const auto e1 = static_cast<entt::entity>(static_cast<uint32_t>(f1 - 1));
-        const auto e2 = static_cast<entt::entity>(static_cast<uint32_t>(f2 - 1));
-        if (!Filter->MasksCollide(e1, e2)) return ValidateResult::RejectContact;
+        if (const auto e1 = static_cast<entt::entity>(static_cast<uint32_t>(f1 - 1)),
+            e2 = static_cast<entt::entity>(static_cast<uint32_t>(f2 - 1));
+            !Filter->MasksCollide(e1, e2)) return ValidateResult::RejectContact;
         return ValidateResult::AcceptContact;
     }
 
@@ -685,8 +685,8 @@ void PhysicsWorld::BuildJoint(const entt::registry &r, entt::entity entity) {
 
     // Disable collision between connected bodies unless explicitly enabled.
     if (!joint.EnableCollision && h2) {
-        const auto it1 = P->BodySubGroups.find(body1_entity), it2 = P->BodySubGroups.find(body2_entity);
-        if (it1 != P->BodySubGroups.end() && it2 != P->BodySubGroups.end())
+        if (const auto it1 = P->BodySubGroups.find(body1_entity), it2 = P->BodySubGroups.find(body2_entity);
+            it1 != P->BodySubGroups.end() && it2 != P->BodySubGroups.end())
             P->FilterRef->DisableCollision(it1->second, it2->second);
     }
 }
@@ -993,8 +993,8 @@ void PhysicsWorld::ApplyMotion(const entt::registry &r, entt::entity entity) {
     const BodyID id{handle->BodyId};
 
     // Kinematic toggle is a motion-type flip (Dynamic ↔ Kinematic, both stay in Layers::Moving).
-    const auto desired_type = motion->IsKinematic ? EMotionType::Kinematic : EMotionType::Dynamic;
-    if (bi.GetMotionType(id) != desired_type) bi.SetMotionType(id, desired_type, EActivation::Activate);
+    if (const auto desired_type = motion->IsKinematic ? EMotionType::Kinematic : EMotionType::Dynamic;
+        bi.GetMotionType(id) != desired_type) bi.SetMotionType(id, desired_type, EActivation::Activate);
 
     bi.SetGravityFactor(id, motion->GravityFactor);
 

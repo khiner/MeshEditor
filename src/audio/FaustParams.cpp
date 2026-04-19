@@ -54,25 +54,21 @@ void FaustParams::DrawItem(const Item &item) {
         if (IsItemActivated() && *item.zone == 0.0) *item.zone = 1.0;
         else if (IsItemDeactivated() && *item.zone == 1.0) *item.zone = 0.0;
     } else if (type == CheckButton) {
-        auto value = bool(*item.zone);
-        if (Checkbox(label, &value)) *item.zone = Real(value);
+        if (auto value = bool(*item.zone); Checkbox(label, &value)) *item.zone = Real(value);
     } else if (type == NumEntry) {
-        auto value = int(*item.zone);
-        if (InputInt(label, &value, int(item.step))) *item.zone = std::clamp(Real(value), item.min, item.max);
+        if (auto value = int(*item.zone); InputInt(label, &value, int(item.step))) *item.zone = std::clamp(Real(value), item.min, item.max);
     } else if (type == Knob || type == HSlider || type == VSlider || type == HBargraph || type == VBargraph) {
-        auto value = float(*item.zone);
-        ImGuiSliderFlags flags = item.logscale ? ImGuiSliderFlags_Logarithmic : ImGuiSliderFlags_None;
-        if (SliderFloat(label, &value, float(item.min), float(item.max), nullptr, flags)) *item.zone = Real(value);
+        const ImGuiSliderFlags flags = item.logscale ? ImGuiSliderFlags_Logarithmic : ImGuiSliderFlags_None;
+        if (auto value = float(*item.zone); SliderFloat(label, &value, float(item.min), float(item.max), nullptr, flags)) *item.zone = Real(value);
     } else if (type == HRadioButtons || type == VRadioButtons) {
-        auto value = float(*item.zone);
-        if (RadioButtons(item.label.c_str(), &value, NamesForZone.at(item.zone), ValuesForZone.at(item.zone))) *item.zone = Real(value);
+        if (auto value = float(*item.zone); RadioButtons(item.label.c_str(), &value, NamesForZone.at(item.zone), ValuesForZone.at(item.zone))) *item.zone = Real(value);
     } else if (type == Menu) {
         auto value = *item.zone;
         const auto &names = NamesForZone.at(item.zone);
         const auto &values = ValuesForZone.at(item.zone);
         // todo handle not present
-        const auto selected_index = find(values, value) - values.begin();
-        if (BeginCombo(label, names[selected_index].c_str())) {
+        if (const auto selected_index = find(values, value) - values.begin();
+            BeginCombo(label, names[selected_index].c_str())) {
             for (size_t i = 0; i < NamesForZone.size(); ++i) {
                 const Real choice_value = values[i];
                 const bool is_selected = value == choice_value;

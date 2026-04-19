@@ -170,7 +170,7 @@ void EvaluateMorphWeights(const MorphWeightClip &clip, float time_seconds, std::
     for (const auto &channel : clip.Channels) {
         if (channel.TimesSeconds.empty()) continue;
 
-        const auto target_count = static_cast<uint32_t>(weights.size());
+        const uint32_t target_count = weights.size();
         if (target_count == 0) continue;
 
         const auto k = FindKeyframe(channel.TimesSeconds, time_seconds);
@@ -465,8 +465,8 @@ DuplicateResult DuplicateBones(entt::registry &r, Armature &armature, entt::enti
     std::unordered_map<BoneId, BoneId> orig_to_new;
     auto unique_name = [&](std::string_view base) {
         for (uint32_t i = 1;; ++i) {
-            auto c = std::format("{}.{:03d}", base, i);
-            if (std::ranges::none_of(armature.Bones, [&](const auto &b) { return b.Name == c; })) return c;
+            if (auto c = std::format("{}.{:03d}", base, i);
+                std::ranges::none_of(armature.Bones, [&](const auto &b) { return b.Name == c; })) return c;
         }
     };
     for (const auto e : r.view<BoneSelection, BoneIndex>()) {

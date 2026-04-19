@@ -72,9 +72,7 @@ struct SlotBinding {
 };
 
 constexpr SlotBinding BindingFor(SlotType type) {
-    const auto binding = static_cast<uint32_t>(type);
-    const auto descriptor = DescriptorTypeFor(BindingDefs[size_t(type)].Kind);
-    return {binding, descriptor};
+    return {static_cast<uint32_t>(type), DescriptorTypeFor(BindingDefs[size_t(type)].Kind)};
 }
 
 } // namespace

@@ -250,8 +250,7 @@ const std::unordered_map<std::type_index, dtype_t> dtype_map{
 // `in` stream position will be after the header after returning.
 template<typename Scalar> inline header_t read_header(std::istream &in) {
     auto header = parse_header(read_header(in));
-    auto dtype = dtype_map.at(type_idx<Scalar>());
-    if (header.dtype != dtype) throw std::runtime_error("Formatting error: typestrings do not match.");
+    if (const auto dtype = dtype_map.at(type_idx<Scalar>()); header.dtype != dtype) throw std::runtime_error("Formatting error: typestrings do not match.");
 
     return header;
 }

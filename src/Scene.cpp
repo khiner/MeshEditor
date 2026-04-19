@@ -275,9 +275,8 @@ vec3 ComputeElementLocalPosition(const Mesh &mesh, Element element, uint32_t han
 
 vec3 ComputeElementWorldPosition(const entt::registry &r, entt::entity instance_entity, Element element, uint32_t handle) {
     const auto &mesh = r.get<Mesh>(r.get<Instance>(instance_entity).Entity);
-    const auto local_pos = ComputeElementLocalPosition(mesh, element, handle);
     const auto &wt = r.get<WorldTransform>(instance_entity);
-    return {wt.P + glm::rotate(wt.R, wt.S * local_pos)};
+    return {wt.P + glm::rotate(wt.R, wt.S * ComputeElementLocalPosition(mesh, element, handle))};
 }
 
 struct EditTransformContext {
@@ -880,7 +879,7 @@ Scene::SyncResult Scene::SyncModelsBuffers() {
     std::vector<uint32_t> object_ids;
     std::vector<uint8_t> states;
     for (auto &[buffer_entity, entities] : shows_by_buffer) {
-        const auto n = static_cast<uint32_t>(entities.size());
+        const uint32_t n = entities.size();
         // Create ModelsBuffer on first show (deferred from MeshBuffers creation so we know the initial capacity).
         if (!R.all_of<ModelsBuffer>(buffer_entity)) {
             R.emplace<ModelsBuffer>(buffer_entity, ModelsBuffer{Buffers->Instances.Allocate(n), 0});
@@ -1303,7 +1302,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
     }
 
     bool light_count_changed = false;
-    if (const auto required_count = uint32_t(R.storage<LightIndex>().size());
+    if (const uint32_t required_count = R.storage<LightIndex>().size();
         Buffers->Lights.Count() != required_count) {
         Buffers->Lights.SetCount(required_count);
         light_count_changed = true;
@@ -1396,10 +1395,8 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
     if (!reactive<changes::InteractionMode>(R).empty()) {
         request(RenderRequest::ReRecord);
         // Dispatch UpdateSelectionState for all meshes entering Edit mode (MeshSelectionBitsetRange assigned in SetInteractionMode).
-        const auto new_interaction_mode = R.get<const SceneInteraction>(SceneEntity).Mode;
-        if (new_interaction_mode == InteractionMode::Edit) {
-            const auto edit_mode = R.get<const SceneEditMode>(SceneEntity).Value;
-            if (edit_mode != Element::None) ApplySelectionStateUpdate(GetBitsetRangesForSelected(), edit_mode);
+        if (R.get<const SceneInteraction>(SceneEntity).Mode == InteractionMode::Edit) {
+            if (const auto edit_mode = R.get<const SceneEditMode>(SceneEntity).Value; edit_mode != Element::None) ApplySelectionStateUpdate(GetBitsetRangesForSelected(), edit_mode);
         }
         for (const auto [_, instance, __] : R.view<const Instance, const SoundVertices>().each()) {
             dirty_element_state_meshes.insert(instance.Entity);
@@ -1440,8 +1437,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
                         dirty_overlay_meshes.insert(mesh_entity);
                         R.remove<PrimitiveShape>(mesh_entity);
                         for (auto [ce, cs] : R.view<const ColliderShape>().each()) {
-                            const auto me = cs.MeshEntity != null_entity ? cs.MeshEntity : FindMeshEntity(R, ce);
-                            if (me == mesh_entity) RederiveCollider(R, ce);
+                            if (const auto me = cs.MeshEntity != null_entity ? cs.MeshEntity : FindMeshEntity(R, ce); me == mesh_entity) RederiveCollider(R, ce);
                         }
                     }
                 }
@@ -1661,8 +1657,8 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
                         need_sync = true;
                     } else if (local_changes.contains(b)) {
                         // Manual transform: bake if position actually changed.
-                        const auto expected = ComposeWithDelta(rest, ComposeWithDelta(pose_state->BonePoseDelta[i], pose_state->BoneUserOffset[i]));
-                        if (bt.P != expected.P || bt.R != expected.R) {
+                        if (const auto expected = ComposeWithDelta(rest, ComposeWithDelta(pose_state->BonePoseDelta[i], pose_state->BoneUserOffset[i]));
+                            bt.P != expected.P || bt.R != expected.R) {
                             pose_state->BonePoseDelta[i] = AbsoluteToDelta(rest, {bt.P, bt.R, rest.S});
                             pose_state->BoneUserOffset[i] = {};
                             need_sync = true;
@@ -1997,8 +1993,7 @@ void Scene::SetVisible(entt::entity entity, bool visible) {
 std::string Scene::CreateName(std::string_view prefix) {
     const std::string prefix_str{prefix};
     for (uint32_t i = 0; i < std::numeric_limits<uint32_t>::max(); ++i) {
-        const auto name = i == 0 ? prefix_str : std::format("{}_{}", prefix, i);
-        if (!NameSet.contains(name)) {
+        if (const auto name = i == 0 ? prefix_str : std::format("{}_{}", prefix, i); !NameSet.contains(name)) {
             NameSet.insert(name);
             return name;
         }
@@ -2587,8 +2582,7 @@ void Scene::UpdateColliderWireframeTransforms() {
 entt::entity Scene::AddCamera(ObjectCreateInfo info) {
     Camera camera{DefaultPerspectiveCamera()};
     auto mesh = BuildCameraFrustumMesh(camera);
-    auto edge_indices = mesh.CreateEdgeIndices();
-    const auto entity = CreateExtrasObject(mesh.Positions, {}, edge_indices, ObjectType::Camera, info, "Camera");
+    const auto entity = CreateExtrasObject(mesh.Positions, {}, mesh.CreateEdgeIndices(), ObjectType::Camera, info, "Camera");
     R.emplace<Camera>(entity, camera);
     return entity;
 }
@@ -2597,8 +2591,7 @@ entt::entity Scene::AddLight(ObjectCreateInfo info, std::optional<PunctualLight>
     auto light = props.value_or(SceneDefaults::MakePunctualLight(PunctualLightType::Point));
     auto wireframe = BuildLightMesh(light);
     const auto entity = CreateExtrasObject(wireframe.Data.Positions, wireframe.VertexClasses, {}, ObjectType::Light, info, "Light");
-    const uint32_t light_index = R.storage<LightIndex>().size();
-    R.emplace<LightIndex>(entity, light_index);
+    R.emplace<LightIndex>(entity, R.storage<LightIndex>().size());
     R.emplace<SubmitDirty>(entity);
     R.emplace<LightWireframeDirty>(entity);
     // Defer SetLight: TransformSlotOffset needs InstanceArena slot and RenderInstance.BufferIndex,
@@ -2705,8 +2698,7 @@ std::pair<entt::entity, entt::entity> Scene::AddMesh(const std::filesystem::path
             }
         );
 
-        auto primitive_materials = Meshes->GetPrimitiveMaterialIndices(result->Mesh.GetStoreId());
-        if (!primitive_materials.empty()) {
+        if (auto primitive_materials = Meshes->GetPrimitiveMaterialIndices(result->Mesh.GetStoreId()); !primitive_materials.empty()) {
             const auto fallback = scene_material_indices.front();
             for (auto &primitive_material : primitive_materials) {
                 primitive_material = primitive_material < scene_material_indices.size() ?
@@ -2730,8 +2722,7 @@ entt::entity Scene::Duplicate(entt::entity e, std::optional<MeshInstanceCreateIn
     };
 
     if (!R.all_of<Instance>(e)) {
-        const auto object_type = R.all_of<ObjectKind>(e) ? R.get<const ObjectKind>(e).Value : ObjectType::Empty;
-        if (object_type == ObjectType::Armature) {
+        if (const auto object_type = R.all_of<ObjectKind>(e) ? R.get<const ObjectKind>(e).Value : ObjectType::Empty; object_type == ObjectType::Armature) {
             const auto copy_entity = AddArmature(create_info);
             if (const auto *src_armature = R.try_get<ArmatureObject>(e)) {
                 auto &dst = R.get<Armature>(R.get<ArmatureObject>(copy_entity).Entity);
@@ -2753,8 +2744,7 @@ entt::entity Scene::Duplicate(entt::entity e, std::optional<MeshInstanceCreateIn
             return copy_entity;
         }
         if (R.all_of<LightIndex>(e)) {
-            const auto copy_entity = AddLight(create_info, Buffers->Lights.Get(R.get<const LightIndex>(e).Value));
-            return copy_entity;
+            return AddLight(create_info, Buffers->Lights.Get(R.get<const LightIndex>(e).Value));
         }
         return AddEmpty(create_info);
     }
@@ -2828,29 +2818,25 @@ entt::entity Scene::DuplicateLinked(entt::entity e, std::optional<MeshInstanceCr
 
 namespace {
 bool IsBoneEditMode(const entt::registry &R, entt::entity scene_entity) {
-    const auto mode = R.get<const SceneInteraction>(scene_entity).Mode;
-    if (mode != InteractionMode::Edit) return false;
+    if (R.get<const SceneInteraction>(scene_entity).Mode != InteractionMode::Edit) return false;
     return FindArmatureObject(R, FindActiveEntity(R)) != entt::null;
 }
 } // namespace
 
 bool Scene::CanDuplicate() const {
-    const auto mode = R.get<const SceneInteraction>(SceneEntity).Mode;
-    if (mode == InteractionMode::Pose) return false;
+    if (R.get<const SceneInteraction>(SceneEntity).Mode == InteractionMode::Pose) return false;
     if (IsBoneEditMode(R, SceneEntity)) return !R.view<BoneSelection>().empty();
     return !R.storage<Selected>().empty();
 }
 
 bool Scene::CanDuplicateLinked() const {
-    const auto mode = R.get<const SceneInteraction>(SceneEntity).Mode;
-    if (mode == InteractionMode::Pose) return false;
+    if (R.get<const SceneInteraction>(SceneEntity).Mode == InteractionMode::Pose) return false;
     if (IsBoneEditMode(R, SceneEntity)) return false;
     return !R.storage<Selected>().empty();
 }
 
 bool Scene::CanDelete() const {
-    const auto mode = R.get<const SceneInteraction>(SceneEntity).Mode;
-    if (mode == InteractionMode::Pose) return false;
+    if (R.get<const SceneInteraction>(SceneEntity).Mode == InteractionMode::Pose) return false;
     if (IsBoneEditMode(R, SceneEntity)) return !R.view<BoneSelection>().empty();
     return !R.storage<Selected>().empty();
 }
@@ -2936,8 +2922,7 @@ void Scene::ReplaceMesh(entt::entity e, MeshData &&data) {
     // Rederive here (not in a per-frame handler) so PhysicsShape reactive entries land before
     // ProcessComponentEventHandlers consumes them and the end-of-frame clear.
     for (auto [ce, cs] : R.view<const ColliderShape>().each()) {
-        const auto me = cs.MeshEntity != null_entity ? cs.MeshEntity : FindMeshEntity(R, ce);
-        if (me == e) RederiveCollider(R, ce);
+        if (const auto me = cs.MeshEntity != null_entity ? cs.MeshEntity : FindMeshEntity(R, ce); me == e) RederiveCollider(R, ce);
     }
 }
 
@@ -2954,8 +2939,7 @@ void Scene::Destroy(entt::entity e) {
     // Cannot rely on on_destroy<Selected> — EnTT's pool removal order during R.destroy() is non-deterministic,
     // so Instance may already be gone when on_destroy<Selected> fires.
     if (R.all_of<Selected, Instance>(e)) {
-        const auto mesh_entity = R.get<Instance>(e).Entity;
-        if (auto *count = R.try_get<SelectedInstanceCount>(mesh_entity))
+        if (auto *count = R.try_get<SelectedInstanceCount>(R.get<Instance>(e).Entity))
             if (count->Value > 0) --count->Value;
     }
 
@@ -3496,8 +3480,8 @@ void Scene::RecordRenderCommandBuffer(bool silhouette_only) {
         }
 
         // Cache the main draw list state (everything before silhouette).
-        draw.MainDrawCount = uint32_t(draw_list.Draws.size());
-        draw.MainIndirectCount = uint32_t(draw_list.IndirectCommands.size());
+        draw.MainDrawCount = draw_list.Draws.size();
+        draw.MainIndirectCount = draw_list.IndirectCommands.size();
     } else {
         // Silhouette-only: truncate to cached main portion, batch infos retained from last full build.
         draw_list.Draws.resize(draw.MainDrawCount);

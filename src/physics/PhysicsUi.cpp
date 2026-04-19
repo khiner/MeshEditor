@@ -55,8 +55,8 @@ const Target *RenderEntityCombo(entt::registry &r, entt::entity entity, const ch
     }
     const auto cur_e = r.get<const Owner>(entity).*Field;
     const auto *cur = cur_e != null_entity && r.valid(cur_e) ? r.try_get<const Target>(cur_e) : nullptr;
-    const auto preview = cur ? DisplayName(cur->Name, "{:x}", uint32_t(cur_e)) : std::string{"None"};
-    if (BeginCombo(label, preview.c_str())) {
+    if (const auto preview = cur ? DisplayName(cur->Name, "{:x}", uint32_t(cur_e)) : std::string{"None"};
+        BeginCombo(label, preview.c_str())) {
         if (Selectable("None", cur_e == null_entity)) {
             r.patch<Owner>(entity, [](Owner &o) { o.*Field = null_entity; });
         }
@@ -169,8 +169,8 @@ std::optional<PhysicsShape> RenderShapeEditor(const PhysicsShape &in, bool auto_
     static const char *shape_names[]{"Box", "Sphere", "Capsule", "Cylinder", "Plane", "Convex Hull", "Triangle Mesh"};
     auto out = in;
     bool changed = false;
-    auto shape_type_i = int(out.index());
-    if (Combo("Shape", &shape_type_i, shape_names, IM_ARRAYSIZE(shape_names))) {
+    if (auto shape_type_i = int(out.index());
+        Combo("Shape", &shape_type_i, shape_names, IM_ARRAYSIZE(shape_names))) {
         out = CreateVariantByIndex<PhysicsShape>(size_t(shape_type_i));
         changed = true;
     }
@@ -256,12 +256,12 @@ void physics_ui::RenderTab(entt::registry &r, PhysicsWorld &physics) {
                 if (SliderFloat("Dynamic friction", &df, 0.0f, 2.0f)) r.patch<PhysicsMaterial>(mat_entity, [&](auto &m) { m.DynamicFriction = df; });
                 if (SliderFloat("Restitution", &rest, 0.0f, 1.0f)) r.patch<PhysicsMaterial>(mat_entity, [&](auto &m) { m.Restitution = rest; });
 
-                auto fc = int(mat.FrictionCombine);
-                if (Combo("Friction combine", &fc, "Average\0Minimum\0Maximum\0Multiply\0")) {
+                if (auto fc = int(mat.FrictionCombine);
+                    Combo("Friction combine", &fc, "Average\0Minimum\0Maximum\0Multiply\0")) {
                     r.patch<PhysicsMaterial>(mat_entity, [&](auto &m) { m.FrictionCombine = PhysicsCombineMode(fc); });
                 }
-                auto rc = int(mat.RestitutionCombine);
-                if (Combo("Restitution combine", &rc, "Average\0Minimum\0Maximum\0Multiply\0")) {
+                if (auto rc = int(mat.RestitutionCombine);
+                    Combo("Restitution combine", &rc, "Average\0Minimum\0Maximum\0Multiply\0")) {
                     r.patch<PhysicsMaterial>(mat_entity, [&](auto &m) { m.RestitutionCombine = PhysicsCombineMode(rc); });
                 }
 
@@ -707,8 +707,8 @@ void physics_ui::RenderEntityProperties(entt::registry &r, entt::entity entity, 
         // ConnectedNode picker — KHR joint.connectedNode is the second attachment frame.
         // Mirrors Blender's rigid_body_constraint object1/object2 fields.
         const auto cn = joint->ConnectedNode;
-        const auto cn_label = cn != null_entity && r.valid(cn) ? GetName(r, cn) : std::string{"None"};
-        if (BeginCombo("Connected node", cn_label.c_str())) {
+        if (const auto cn_label = cn != null_entity && r.valid(cn) ? GetName(r, cn) : std::string{"None"};
+            BeginCombo("Connected node", cn_label.c_str())) {
             if (Selectable("None", cn == null_entity)) {
                 r.patch<PhysicsJoint>(entity, [](PhysicsJoint &j) { j.ConnectedNode = null_entity; });
             }

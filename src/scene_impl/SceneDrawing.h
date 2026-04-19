@@ -18,7 +18,7 @@ struct DrawListBuilder {
 
     void Append(DrawBatchInfo &batch, const DrawData &draw, uint32_t index_count, uint32_t instance_count) {
         if (index_count == 0 || instance_count == 0) return;
-        const auto draw_data_start = uint32_t(Draws.size());
+        const uint32_t draw_data_start = Draws.size();
         for (uint32_t i = 0; i < instance_count; ++i) {
             DrawData per_instance = draw;
             per_instance.FirstInstance = draw.FirstInstance + i;
@@ -46,7 +46,7 @@ void AppendDraw(
 ) {
     draw.FirstInstance = model_index.value_or(mb.InstanceRange.Offset);
     const auto instance_count = model_index.has_value() ? 1 : mb.InstanceCount;
-    builder.Append(batch, draw, index_count, uint32_t(instance_count));
+    builder.Append(batch, draw, index_count, instance_count);
 }
 
 void AppendDraw(

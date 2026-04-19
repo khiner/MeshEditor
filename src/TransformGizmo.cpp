@@ -287,16 +287,16 @@ std::optional<Interaction> FindHoveredInteraction(const GizmoTransform &transfor
             const vec4 dir_ndc{transform.AxisDirWs(i), 0};
             const auto start = WsToPx(o_ws + vec3{dir_ndc} * g.WorldPerNdc * Style.InnerCircleRadSize, vp) - screen_min_px;
             const auto end_size = type == Type::Universal ? Style.UniversalAxisHandleSize : Style.AxisHandleSize;
-            const auto end = WsToPx(o_ws + vec3{dir_ndc} * (g.WorldPerNdc * end_size), vp) - screen_min_px;
-            if (ImLengthSqr(PointOnSegment(mouse_rel_px, start, end) - mouse_rel_px) < SelectDist * SelectDist) {
+            if (const auto end = WsToPx(o_ws + vec3{dir_ndc} * (g.WorldPerNdc * end_size), vp) - screen_min_px;
+                ImLengthSqr(PointOnSegment(mouse_rel_px, start, end) - mouse_rel_px) < SelectDist * SelectDist) {
                 return Interaction{type == Type::Translate ? TransformType::Translate : TransformType::Scale, AxisOp(i)};
             }
 
             if (type == Type::Universal) {
                 const auto arrow_center_size = Style.TranslationArrowPosSizeUniversal + Style.TranslationArrowSize * 0.5f;
                 const auto translate_pos = WsToPx(o_ws + vec3{dir_ndc} * g.WorldPerNdc * arrow_center_size, vp) - screen_min_px;
-                const auto half_arrow_px = SizeToPx(Style.TranslationArrowSize) * 0.5f;
-                if (ImLengthSqr(translate_pos - mouse_rel_px) < half_arrow_px * half_arrow_px) {
+                if (const auto half_arrow_px = SizeToPx(Style.TranslationArrowSize) * 0.5f;
+                    ImLengthSqr(translate_pos - mouse_rel_px) < half_arrow_px * half_arrow_px) {
                     return Interaction{TransformType::Translate, AxisOp(i)};
                 }
             }
@@ -319,8 +319,8 @@ std::optional<Interaction> FindHoveredInteraction(const GizmoTransform &transfor
     }
     if (type == Type::Rotate || type == Type::Universal) {
         const auto rotation_radius = SizeToPx(Style.OuterCircleRadSize);
-        const auto inner_rad = rotation_radius - SelectDist / 2, outer_rad = rotation_radius + SelectDist / 2;
-        if (mouse_r_sq >= inner_rad * inner_rad && mouse_r_sq < outer_rad * outer_rad) {
+        if (const auto inner_rad = rotation_radius - SelectDist / 2, outer_rad = rotation_radius + SelectDist / 2;
+            mouse_r_sq >= inner_rad * inner_rad && mouse_r_sq < outer_rad * outer_rad) {
             return Interaction{TransformType::Rotate, Screen};
         }
 
@@ -332,8 +332,7 @@ std::optional<Interaction> FindHoveredInteraction(const GizmoTransform &transfor
             // Project intersection direction into gizmo-local and back to screen
             const auto dir_local = glm::normalize(transform.WorldDirToLocal(intersect_pos_world - o_ws));
             const auto circle_ws = o_ws + transform.LocalDirToWorld(dir_local * g.WorldPerNdc * Style.RotationCircleSize);
-            const auto circle_pos = WsToPx(circle_ws, vp);
-            if (ImLengthSqr(circle_pos - mouse_px) < SelectDist * SelectDist) {
+            if (const auto circle_pos = WsToPx(circle_ws, vp); ImLengthSqr(circle_pos - mouse_px) < SelectDist * SelectDist) {
                 return Interaction{TransformType::Rotate, AxisOp(i)};
             }
         }
@@ -450,8 +449,8 @@ std::optional<std::pair<ImVec2, ImVec2>> ClipRayToRect(const rect &r, ImVec2 p, 
 
     const auto r_min = std::bit_cast<ImVec2>(r.pos), r_max = std::bit_cast<ImVec2>(r.max());
     // Check if parallel and outside (shouldn't happen in practice for axis guide lines)
-    const auto pc = ImClamp(p, r_min, r_max);
-    if ((fabsf(d.x) < eps && pc.x != p.x) || (fabsf(d.y) < eps && pc.y != p.y)) return {};
+    if (const auto pc = ImClamp(p, r_min, r_max);
+        (fabsf(d.x) < eps && pc.x != p.x) || (fabsf(d.y) < eps && pc.y != p.y)) return {};
 
     const ImVec2 d_inv{1.f / d.x, 1.f / d.y};
     const auto t0 = (r_min - p) * d_inv;
@@ -635,8 +634,7 @@ void RenderImpl(const GizmoTransform &transform, const LocalTransformDelta &dt, 
                 // Unit outward normal to the base (perp(b)), flipped to point away from tip
                 const float inv_b_len = 1.f / std::sqrt(b_len2);
                 auto n_hat = ImVec2{-b.y, b.x} * inv_b_len;
-                const auto tip_dir = p_tip - c;
-                if (tip_dir.x * n_hat.x + tip_dir.y * n_hat.y > 0) n_hat = -n_hat;
+                if (const auto tip_dir = p_tip - c; tip_dir.x * n_hat.x + tip_dir.y * n_hat.y > 0) n_hat = -n_hat;
 
                 // Minor radius
                 const auto u = p_u - c;
@@ -858,8 +856,7 @@ LocalTransformDelta GetLocalTransformDelta(const Transform &ts, Interaction inte
     // Axis/Screen rotation on plane
     const auto a0 = glm::normalize(mouse_plane_start - ts.P);
     const auto t_ws = glm::normalize(mouse_plane - ts.P);
-    const auto perp = glm::cross(a0, vec3{plane});
-    return {.RotationAngle = acosf(glm::clamp(glm::dot(t_ws, a0), -1.f, 1.f)) * -glm::sign(glm::dot(t_ws, perp))};
+    return {.RotationAngle = acosf(glm::clamp(glm::dot(t_ws, a0), -1.f, 1.f)) * -glm::sign(glm::dot(t_ws, glm::cross(a0, vec3{plane})))};
 }
 
 Transform GetDeltaTransform(const GizmoTransform &ts, const LocalTransformDelta &dt, Interaction interaction, const vec4 &plane, const mat3 &cam_basis, bool snap, vec3 snap_value) {

@@ -276,7 +276,7 @@ ModalModes ComputeModes(
 
     const uint n_ex_pos = std::min(opts.ExPos.size(), size_t(num_vertices));
     std::vector<std::vector<float>> gains(n_ex_pos); // Mode gains by [exitation position][mode]
-    for (size_t ex_pos = 0; ex_pos < size_t(n_ex_pos); ++ex_pos) { // For each excitation position
+    for (size_t ex_pos = 0; ex_pos < n_ex_pos; ++ex_pos) { // For each excitation position
         // If no `ExPos` was provided, distribute excitation positions linearly.
         uint ev_i = vertex_dim * (ex_pos < opts.ExPos.size() ? opts.ExPos[ex_pos] : ex_pos * num_vertices / n_ex_pos);
         gains[ex_pos] = std::vector<float>(n_modes);

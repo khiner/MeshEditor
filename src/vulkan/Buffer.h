@@ -79,8 +79,7 @@ struct BufferContext {
 private:
     struct TypedSlotHash {
         size_t operator()(const TypedSlot &key) const noexcept {
-            const auto type = static_cast<uint64_t>(std::to_underlying(key.Type));
-            return std::hash<uint64_t>{}((type << 32) | static_cast<uint64_t>(key.Slot));
+            return std::hash<uint64_t>{}((static_cast<uint64_t>(std::to_underlying(key.Type)) << 32) | static_cast<uint64_t>(key.Slot));
         }
     };
     std::unordered_map<TypedSlot, vk::DescriptorBufferInfo, TypedSlotHash> DeferredDescriptorUpdates;

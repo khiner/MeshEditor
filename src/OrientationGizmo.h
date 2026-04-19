@@ -77,8 +77,8 @@ void Interact(vec2 pos, float size, ViewCamera &camera, bool interactive = true)
                 // Click threshold is an arbitrary smaller amount than a hovered circle,
                 // since we don't want to wait for that long of a drag to switch into drag behavior.
                 const auto click_threshold = 0.5f * size * CircleRad;
-                const auto mouse_delta = mouse_pos - *Ctx.MouseDownPos;
-                if (glm::dot(mouse_delta, mouse_delta) > click_threshold * click_threshold) {
+                if (const auto mouse_delta = mouse_pos - *Ctx.MouseDownPos;
+                    glm::dot(mouse_delta, mouse_delta) > click_threshold * click_threshold) {
                     Ctx.DragEndPos = mouse_pos;
                 }
             } else { // Dragging
@@ -87,8 +87,7 @@ void Interact(vec2 pos, float size, ViewCamera &camera, bool interactive = true)
                 camera.SetTargetYawPitch(camera.YawPitch + drag_delta * 0.02f);
             }
         } else if (ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
-            auto hovered_i = Ctx.HoveredAxis;
-            if (!Ctx.DragEndPos && hovered_i) {
+            if (auto hovered_i = Ctx.HoveredAxis; !Ctx.DragEndPos && hovered_i) {
                 // If selecting the same axis, switch to the opposite axis.
                 if (Ctx.Aligned[*hovered_i]) hovered_i = (*hovered_i + 3) % 6;
                 camera.SetTargetDirection(SignedAxis(I3, *hovered_i));

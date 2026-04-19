@@ -108,7 +108,7 @@ struct InstanceArena {
 
     void UpdateState(uint32_t index, uint8_t state) { StateBuffer.Update(as_bytes(state), vk::DeviceSize(index) * sizeof(uint8_t)); }
     std::span<uint8_t> GetMutableStates() {
-        return {reinterpret_cast<uint8_t *>(StateBuffer.GetMutableRange(0, StateBuffer.UsedSize).data()), static_cast<size_t>(StateBuffer.UsedSize)};
+        return {reinterpret_cast<uint8_t *>(StateBuffer.GetMutableRange(0, StateBuffer.UsedSize).data()), StateBuffer.UsedSize};
     }
     std::span<Transform> GetMutableTransforms() {
         auto mapped = TransformBuffer.GetMutableRange(0, TransformBuffer.UsedSize);

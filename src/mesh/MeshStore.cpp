@@ -105,7 +105,7 @@ MeshDataWithMaterials ReadObj(const std::filesystem::path &path) {
             throw std::runtime_error{std::format("OBJ '{}' references invalid vertex index {}.", path.string(), index.vertex_index)};
         }
 
-        const auto vertex_index = static_cast<uint32_t>(data.Positions.size());
+        const uint32_t vertex_index = data.Positions.size();
         data.Positions.emplace_back(
             attrib.vertices[size_t(index.vertex_index) * 3u],
             attrib.vertices[size_t(index.vertex_index) * 3u + 1u],
@@ -145,7 +145,7 @@ MeshDataWithMaterials ReadObj(const std::filesystem::path &path) {
     std::vector<uint32_t> primitive_material_indices;
     const auto local_material_index = [&](int material_id) -> uint32_t {
         if (const auto it = material_to_local_index.find(material_id); it != material_to_local_index.end()) return it->second;
-        const auto local_index = static_cast<uint32_t>(result.Materials.size());
+        const uint32_t local_index = result.Materials.size();
         if (material_id >= 0 && material_id < static_cast<int>(materials.size())) {
             result.Materials.emplace_back(ToObjPlyMaterial(materials[size_t(material_id)], uint32_t(material_id), path.parent_path()));
         } else {
@@ -156,7 +156,7 @@ MeshDataWithMaterials ReadObj(const std::filesystem::path &path) {
     };
     const auto primitive_index = [&](int material_id) -> uint32_t {
         if (const auto it = material_to_primitive.find(material_id); it != material_to_primitive.end()) return it->second;
-        const auto index = static_cast<uint32_t>(primitive_material_indices.size());
+        const uint32_t index = primitive_material_indices.size();
         primitive_material_indices.emplace_back(local_material_index(material_id));
         material_to_primitive.emplace(material_id, index);
         return index;
@@ -191,10 +191,10 @@ float NormalizeColor(T value) {
         return std::clamp(static_cast<float>(value), 0.f, 1.f);
     } else if constexpr (std::is_signed_v<T>) {
         const auto den = static_cast<float>(std::numeric_limits<T>::max());
-        return std::clamp(static_cast<float>(value) / den, 0.f, 1.f);
+        return std::clamp(value / den, 0.f, 1.f);
     } else {
         const auto den = static_cast<float>(std::numeric_limits<T>::max());
-        return std::clamp(static_cast<float>(value) / den, 0.f, 1.f);
+        return std::clamp(value / den, 0.f, 1.f);
     }
 }
 
@@ -411,7 +411,7 @@ void MeshStore::UpdateNormals(const Mesh &mesh, bool skip_nonzero) {
 }
 
 std::pair<uint32_t, Range> MeshStore::AllocateVertexBuffer(std::span<const vec3> positions, const MeshVertexAttributes &attrs) {
-    const auto vertex_count = static_cast<uint32_t>(positions.size());
+    const uint32_t vertex_count = positions.size();
     const auto vertices = AllocateVertices(vertex_count);
     auto vertex_span = VerticesBuffer.GetMutable(vertices);
     for (uint32_t i = 0; i < vertex_count; ++i) {
@@ -428,13 +428,12 @@ std::pair<uint32_t, Range> MeshStore::AllocateVertexBuffer(std::span<const vec3>
     if (attrs.Normals) {
         for (uint32_t i = 0; i < vertex_count; ++i) vertex_span[i].Normal = (*attrs.Normals)[i];
     }
-    const auto id = AcquireId({.Vertices = vertices, .FaceData = {}, .Alive = true});
-    return {id, vertices};
+    return {AcquireId({.Vertices = vertices, .FaceData = {}, .Alive = true}), vertices};
 }
 
 void MeshStore::PlanCreate(const MeshData &data, const MeshPrimitives &primitives, bool has_deform, uint32_t morph_target_count) {
-    const auto vertices = static_cast<uint32_t>(data.Positions.size());
-    const auto faces = static_cast<uint32_t>(data.Faces.size());
+    const uint32_t vertices = data.Positions.size();
+    const uint32_t faces = data.Faces.size();
     uint32_t triangles = 0;
     for (const auto &face : data.Faces) triangles += face.size() - 2;
     Pending.Vertices += vertices;
@@ -473,7 +472,7 @@ void MeshStore::CommitReserves() {
 }
 
 Mesh MeshStore::CreateMesh(MeshData &&data, MeshVertexAttributes &&attrs, MeshPrimitives &&primitives, std::optional<ArmatureDeformData> deform, std::optional<MorphTargetData> morph) {
-    const auto vertex_count = static_cast<uint32_t>(data.Positions.size());
+    const uint32_t vertex_count = data.Positions.size();
     auto [id, vertices] = AllocateVertexBuffer(data.Positions, attrs);
     auto &entry = Entries[id];
 
@@ -501,7 +500,7 @@ Mesh MeshStore::CreateMesh(MeshData &&data, MeshVertexAttributes &&attrs, MeshPr
     }
 
     if (!data.Faces.empty()) {
-        const auto face_count = static_cast<uint32_t>(data.Faces.size());
+        const uint32_t face_count = data.Faces.size();
 
         // Sort faces by primitive index so triangles are grouped by primitive in the index buffer.
         if (!primitives.FacePrimitiveIndices.empty() && primitives.FacePrimitiveIndices.size() == face_count &&
