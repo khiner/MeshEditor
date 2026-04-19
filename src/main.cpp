@@ -637,14 +637,17 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
                 if (initial_file) {
                     if (auto result = LoadFile(*scene, fs::path(initial_file)); !result) {
                         std::cerr << result.error() << std::endl;
-                    } else if (play) {
-                        scene->Play();
+                        play = false;
                     }
                 } else {
                     constexpr PrimitiveShape default_shape{primitive::Cuboid{}};
                     const auto [mesh_entity, _] = scene->AddMesh(primitive::CreateMesh(default_shape), MeshInstanceCreateInfo{.Name = ToString(default_shape)});
                     r.emplace<PrimitiveShape>(mesh_entity, default_shape);
                 }
+            } else if (GetFrameCount() == 2 && play) {
+                // Wait to play until after app load to avoid a long initial dt.
+                scene->Play();
+                play = false;
             }
         }
 
