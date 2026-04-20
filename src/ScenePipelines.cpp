@@ -12,7 +12,6 @@
 
 namespace {
 enum class OverlayKind : uint32_t {
-    Edge = 0,
     FaceNormal = 1,
     VertexNormal = 2,
 };
@@ -191,7 +190,6 @@ static PipelineRenderer CreateMainRenderer(
     };
     pipelines.emplace(SPT::LineOverlayFaceNormals, make_overlay_pipeline(OverlayKind::FaceNormal));
     pipelines.emplace(SPT::LineOverlayVertexNormals, make_overlay_pipeline(OverlayKind::VertexNormal));
-    pipelines.emplace(SPT::LineOverlayBBox, make_overlay_pipeline(OverlayKind::Edge));
     pipelines.emplace(
         SPT::Point,
         ctx.CreateGraphics(

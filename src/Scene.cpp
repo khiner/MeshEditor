@@ -46,7 +46,7 @@
 #include <iostream>
 
 using std::ranges::any_of, std::ranges::find, std::ranges::find_if, std::ranges::fold_left, std::ranges::to;
-using std::views::iota, std::views::transform;
+using std::views::iota;
 
 namespace {
 constexpr vk::Extent2D ToExtent2D(vk::Extent3D extent) { return {extent.width, extent.height}; }
@@ -328,6 +328,11 @@ struct SelectedInstanceCount {
     uint32_t Value{0};
 };
 
+// Show this instance's BBox when SceneSettings.ShowBoundingBoxes is on and the instance is selected.
+struct BBoxWireframe {
+    entt::entity Instance{null_entity};
+};
+
 struct DeformSlots {
     uint32_t BoneDeformOffset{InvalidOffset}, ArmatureDeformOffset{InvalidOffset}, MorphDeformOffset{InvalidOffset};
     uint32_t MorphTargetCount{0};
@@ -489,7 +494,7 @@ struct Scene::DrawState {
     DrawBatchInfo EdgeQuad, WireLine, Point;
     DrawBatchInfo ExtrasLine;
     DrawBatchInfo BoneFill, BoneWire, BoneSphereFill, BoneSphereWire;
-    DrawBatchInfo OverlayFaceNormals, OverlayVertexNormals, OverlayBBox;
+    DrawBatchInfo OverlayFaceNormals, OverlayVertexNormals;
 
     // Cached selection pass draw list — reused when only the camera changed.
     DrawListBuilder SelectionList;
@@ -1196,8 +1201,6 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
                         for (auto &[_, rb] : buffers->NormalIndicators) Buffers->Release(rb);
                         buffers->NormalIndicators.clear();
                     }
-                    if (auto *bbox = R.try_get<BoundingBoxesBuffers>(mesh_entity)) Buffers->Release(bbox->Buffers);
-                    R.remove<BoundingBoxesBuffers>(mesh_entity);
                 }
             }
         }
@@ -1919,28 +1922,6 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
                 }
             }
         });
-        if (settings.ShowBoundingBoxes) {
-            static const auto create_bbox = [](const Mesh &mesh) {
-                BBox bbox;
-                for (const auto vh : mesh.vertices()) {
-                    const auto p = mesh.GetPosition(vh);
-                    bbox.Min = glm::min(bbox.Min, p);
-                    bbox.Max = glm::max(bbox.Max, p);
-                }
-                return bbox;
-            };
-            const auto box_vertices = create_bbox(mesh).Corners() |
-                transform([](const auto &corner) { return Vertex{corner, vec3{}}; }) |
-                to<std::vector>();
-            if (!R.all_of<BoundingBoxesBuffers>(mesh_entity)) {
-                R.emplace<BoundingBoxesBuffers>(mesh_entity, Buffers->CreateRenderBuffers(box_vertices, BBox::EdgeIndices, IndexKind::Edge));
-            } else {
-                Buffers->VertexBuffer.Update(R.get<BoundingBoxesBuffers>(mesh_entity).Buffers.Vertices, box_vertices);
-            }
-        } else if (R.all_of<BoundingBoxesBuffers>(mesh_entity)) {
-            Buffers->Release(R.get<BoundingBoxesBuffers>(mesh_entity).Buffers);
-            R.remove<BoundingBoxesBuffers>(mesh_entity);
-        }
     }
     // Update mesh element state buffers (Excite mode only; Edit mode handled by GPU compute)
     for (const auto mesh_entity : dirty_element_state_meshes) {
@@ -2340,7 +2321,9 @@ entt::entity Scene::CreateExtrasObject(std::span<const vec3> positions, std::spa
 }
 
 void Scene::EnsureColliderWireframes() {
-    if (R.view<const ColliderShape>().empty() && R.view<ColliderWireframe>().empty()) return;
+    const bool show_bbox = R.get<const SceneSettings>(SceneEntity).ShowBoundingBoxes;
+    if (R.view<const ColliderShape>().empty() && R.view<ColliderWireframe>().empty() &&
+        R.view<BBoxWireframe>().empty() && !show_bbox) return;
 
     using enum ColliderShapeBuffer;
     auto buf = [&](ColliderShapeBuffer kind) -> entt::entity & { return ColliderShapeBufferEntities[static_cast<uint8_t>(kind)]; };
@@ -2384,6 +2367,17 @@ void Scene::EnsureColliderWireframes() {
         }
     };
 
+    auto make_instance = [&](entt::entity buffer_entity, entt::entity parent) -> entt::entity {
+        if (buffer_entity == entt::null) return entt::null;
+        auto inst = R.create();
+        R.emplace<Instance>(inst, buffer_entity);
+        R.emplace<Transform>(inst);
+        R.emplace<WorldTransform>(inst);
+        R.emplace<SubElementOf>(inst, parent);
+        SetVisible(inst, true);
+        return inst;
+    };
+
     // Drop wireframes whose backing buffer no longer matches the shape kind (e.g. Box → ConvexHull).
     // The creation loop below recreates them (or leaves none for non-wireframe kinds).
     std::vector<entt::entity> stale;
@@ -2401,25 +2395,14 @@ void Scene::EnsureColliderWireframes() {
         const auto &shape = cs.Shape;
         ColliderWireframe cw{};
 
-        auto make_instance = [&](entt::entity buffer_entity) -> entt::entity {
-            if (buffer_entity == entt::null) return entt::null;
-            auto inst = R.create();
-            R.emplace<Instance>(inst, buffer_entity);
-            R.emplace<Transform>(inst);
-            R.emplace<WorldTransform>(inst);
-            R.emplace<SubElementOf>(inst, entity);
-            SetVisible(inst, true);
-            return inst;
-        };
-
         // Cylinder/Capsule: 2 ring/cap instances + 4 side-line instances. See UpdateColliderWireframeTransforms.
         const bool is_cylinder = std::holds_alternative<physics::Cylinder>(shape);
         const bool is_capsule = std::holds_alternative<physics::Capsule>(shape);
         if (is_cylinder || is_capsule) {
             const auto cap_buf = buf(is_capsule ? CapsuleCap : Circle);
-            cw.Instances[0] = make_instance(cap_buf); // top
-            cw.Instances[1] = make_instance(cap_buf); // bottom
-            for (uint8_t i = 0; i < 4; ++i) cw.Instances[2 + i] = make_instance(buf(Line));
+            cw.Instances[0] = make_instance(cap_buf, entity); // top
+            cw.Instances[1] = make_instance(cap_buf, entity); // bottom
+            for (uint8_t i = 0; i < 4; ++i) cw.Instances[2 + i] = make_instance(buf(Line), entity);
             cw.Count = 6;
         } else {
             const auto shape_buf = std::visit(
@@ -2431,7 +2414,7 @@ void Scene::EnsureColliderWireframes() {
                 shape
             );
             if (shape_buf != entt::null) {
-                cw.Instances[0] = make_instance(shape_buf);
+                cw.Instances[0] = make_instance(shape_buf, entity);
                 cw.Count = 1;
             }
         }
@@ -2444,16 +2427,35 @@ void Scene::EnsureColliderWireframes() {
         if (!R.all_of<ColliderShape>(entity)) orphans.push_back(entity);
     }
     drop_wireframes(orphans);
+
+    std::vector<entt::entity> bbox_stale;
+    for (auto [entity, bw] : R.view<BBoxWireframe>().each()) {
+        if (!show_bbox || !R.all_of<Selected>(entity)) bbox_stale.push_back(entity);
+    }
+    for (auto e : bbox_stale) {
+        if (auto &bw = R.get<BBoxWireframe>(e); R.valid(bw.Instance)) Destroy(bw.Instance);
+        R.remove<BBoxWireframe>(e);
+    }
+
+    if (show_bbox) {
+        for (auto entity : R.view<Selected>()) {
+            if (R.all_of<BBoxWireframe>(entity)) continue;
+            const auto *instance = R.try_get<const Instance>(entity);
+            if (!instance || !R.all_of<Mesh>(instance->Entity)) continue;
+            R.emplace<BBoxWireframe>(entity, make_instance(buf(Box), entity));
+        }
+    }
 }
 
 void Scene::UpdateColliderWireframeTransforms() {
-    if (R.view<ColliderWireframe>().empty()) return;
+    if (R.view<ColliderWireframe>().empty() && R.view<BBoxWireframe>().empty()) return;
 
     // Update when the parent's WorldTransform changed, the ColliderShape changed (dims/kind),
     // or any wireframe instance's WT is in the reactive set (On::Create from EnsureColliderWireframes
     // = just inserted this frame).
     const auto &wt_changed = reactive<changes::WorldTransform>(R);
     const auto &shape_changed = reactive<changes::PhysicsShape>(R);
+    const auto &mesh_geom_changed = reactive<changes::MeshGeometry>(R);
     for (auto [entity, cs, cw] : R.view<const ColliderShape, const ColliderWireframe>().each()) {
         const auto *wt = R.try_get<const WorldTransform>(entity);
         if (!wt) continue;
@@ -2524,6 +2526,31 @@ void Scene::UpdateColliderWireframeTransforms() {
             },
             shape
         );
+    }
+
+    // Recompute BBox when the mesh geometry changed, the parent moved, or the wireframe instance was just created this frame.
+    for (auto [entity, bw] : R.view<const BBoxWireframe>().each()) {
+        if (!R.valid(bw.Instance)) continue;
+        const auto *wt = R.try_get<const WorldTransform>(entity);
+        const auto *instance = R.try_get<const Instance>(entity);
+        if (!wt || !instance) continue;
+        const auto *mesh = R.try_get<const Mesh>(instance->Entity);
+        if (!mesh) continue;
+
+        const bool parent_moved = wt_changed.contains(entity);
+        const bool mesh_changed = mesh_geom_changed.contains(instance->Entity);
+        const bool newly_created = wt_changed.contains(bw.Instance);
+        if (!parent_moved && !mesh_changed && !newly_created) continue;
+
+        BBox aabb;
+        for (const auto &v : mesh->GetVerticesSpan()) {
+            aabb.Min = glm::min(aabb.Min, v.Position);
+            aabb.Max = glm::max(aabb.Max, v.Position);
+        }
+        const vec3 size = aabb.Max - aabb.Min;
+        const vec3 center = (aabb.Min + aabb.Max) * 0.5f;
+        const mat4 base = ToMatrix(*wt);
+        R.replace<WorldTransform>(bw.Instance, ToTransform(base * glm::translate(mat4{1}, center) * glm::scale(mat4{1}, size)));
     }
 }
 
@@ -2885,8 +2912,6 @@ void Scene::Destroy(entt::entity e) {
     if (const auto *armature = R.try_get<ArmatureObject>(e)) try_add_armature_data(armature->Entity);
     if (const auto *armature_modifier = R.try_get<ArmatureModifier>(e)) try_add_armature_data(armature_modifier->ArmatureEntity);
     if (const auto *bone_attachment = R.try_get<BoneAttachment>(e)) try_add_armature_data(bone_attachment->ArmatureEntity);
-
-    // Destroy collider wireframe instances before the entity is destroyed.
     if (const auto *cw = R.try_get<ColliderWireframe>(e)) {
         for (uint8_t i = 0; i < cw->Count; ++i) {
             if (R.valid(cw->Instances[i])) {
@@ -2894,6 +2919,10 @@ void Scene::Destroy(entt::entity e) {
                 R.destroy(cw->Instances[i]);
             }
         }
+    }
+    if (const auto *bw = R.try_get<BBoxWireframe>(e); bw && R.valid(bw->Instance)) {
+        SetVisible(bw->Instance, false);
+        R.destroy(bw->Instance);
     }
 
     if (const auto *light_index = R.try_get<LightIndex>(e)) {
@@ -3321,11 +3350,6 @@ void Scene::RecordRenderCommandBuffer(bool silhouette_only) {
                     AppendDraw(draw_list, draw.OverlayVertexNormals, it->second.Indices, e.Mod, dd);
                 }
             }
-            draw.OverlayBBox = draw_list.BeginBatch();
-            for (auto [_, bounding_boxes, models] : R.view<BoundingBoxesBuffers, ModelsBuffer>().each()) {
-                auto dd = MakeDrawData(bounding_boxes.Buffers, vertex_slot, Buffers->Instances);
-                AppendDraw(draw_list, draw.OverlayBBox, bounding_boxes.Buffers.Indices, models, dd);
-            }
         }
 
         { // Build selection draw list
@@ -3568,7 +3592,6 @@ void Scene::RecordRenderCommandBuffer(bool silhouette_only) {
         cb.bindIndexBuffer(*Buffers->IdentityIndexBuffer, 0, vk::IndexType::eUint32);
         record_draw_batch(main.Renderer, SPT::LineOverlayFaceNormals, draw.OverlayFaceNormals);
         record_draw_batch(main.Renderer, SPT::LineOverlayVertexNormals, draw.OverlayVertexNormals);
-        record_draw_batch(main.Renderer, SPT::LineOverlayBBox, draw.OverlayBBox);
     }
 
     // Grid lines texture (drawn before bone depth clear so grid remains depth-tested against scene meshes)

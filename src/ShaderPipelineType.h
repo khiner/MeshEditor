@@ -6,7 +6,6 @@ enum class ShaderPipelineType {
     Line,
     LineOverlayFaceNormals,
     LineOverlayVertexNormals,
-    LineOverlayBBox,
     Point,
     Grid,
     Background,

@@ -47,10 +47,6 @@ struct RenderBuffers {
     IndexKind IndexType;
 };
 
-struct BoundingBoxesBuffers {
-    RenderBuffers Buffers;
-};
-
 struct MeshBuffers {
     MeshBuffers(SlottedRange vertices, SlottedRange face_indices, SlottedRange edge_indices, SlottedRange vertex_indices)
         : Vertices{vertices}, FaceIndices{face_indices}, EdgeIndices{edge_indices}, VertexIndices{vertex_indices} {}
