@@ -33,25 +33,23 @@ std::unique_ptr<tetgenio> GenerateTets(const Mesh &mesh, vec3 scale, TetGenOptio
     }
 
     auto result = std::make_unique<tetgenio>();
-    const auto flags = std::format("p{}{}", options.PreserveSurface ? "Y" : "", options.Quality ? "q" : "");
+    const auto flags = std::format("pe{}{}", options.PreserveSurface ? "Y" : "", options.Quality ? "q" : "");
     tetrahedralize(const_cast<char *>(flags.c_str()), &in, result.get());
     return result;
 }
 
-/*
-Mesh CreateTetsMesh(const tetgenio &tets) const {
-    std::vector<vec3> vertices;
-    std::vector<std::vector<uint>> faces;
-    for (uint i = 0; i < uint(tets.numberofpoints); ++i) {
-        vertices.emplace_back(tets.pointlist[i * 3], tets.pointlist[i * 3 + 1], tets.pointlist[i * 3 + 2]);
+TetMeshData BuildTetMeshData(const tetgenio &tets, vec3 scale) {
+    static_assert(sizeof(int) == sizeof(uint32_t));
+    const vec3 inv_scale{1.f / scale.x, 1.f / scale.y, 1.f / scale.z};
+    TetMeshData out;
+    out.Positions.reserve(tets.numberofpoints);
+    for (int i = 0; i < tets.numberofpoints; ++i) {
+        out.Positions.emplace_back(
+            float(tets.pointlist[i * 3] * inv_scale.x),
+            float(tets.pointlist[i * 3 + 1] * inv_scale.y),
+            float(tets.pointlist[i * 3 + 2] * inv_scale.z)
+        );
     }
-    for (uint i = 0; i < uint(tets.numberoftrifaces); ++i) {
-        const auto &tri_indices = tets.trifacelist;
-        const uint tri_i = i * 3;
-        const uint a = tri_indices[tri_i + 2], b = tri_indices[tri_i + 1], c = tri_indices[tri_i];
-        faces.push_back({a, b, c});
-    }
-
-    return {std::move(vertices), std::move(faces)};
+    out.EdgeIndices.assign(reinterpret_cast<const uint32_t *>(tets.edgelist), reinterpret_cast<const uint32_t *>(tets.edgelist) + tets.numberofedges * 2);
+    return out;
 }
-*/

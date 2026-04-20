@@ -619,7 +619,11 @@ std::optional<size_t> PlotModeData(
 
     return hovered_index;
 }
-std::unique_ptr<Worker<ModalModes>> DspGenerator;
+struct ModalGenerationResult {
+    ModalModes Modes;
+    TetMeshData Tets;
+};
+std::unique_ptr<Worker<ModalGenerationResult>> DspGenerator;
 
 LoadedSample PickAndLoadAudio() {
     static const std::array filters{nfdfilteritem_t{"Audio", "wav,mp3,flac,ogg,opus"}};
@@ -687,17 +691,18 @@ void DrawModalCreateForm(
             r.get<const SoundVertices>(e) :
             SoundVertices{iota_view{0u, uint(info.NumVertices)} | transform([&](uint i) { return i * num_vertices / info.NumVertices; }) | to<std::vector<uint>>()};
         constexpr float ScaleFactor{2}; // Mode freq estimates for RealImpact meshes seem to be consistently about twice as high as recordings.
-        auto tets = GenerateTets(mesh, ScaleFactor * r.get<const Transform>(e).S, {.PreserveSurface = true, .Quality = info.QualityTets});
+        const vec3 tet_scale = ScaleFactor * r.get<const Transform>(e).S;
+        auto tets = GenerateTets(mesh, tet_scale, {.PreserveSurface = true, .Quality = info.QualityTets});
         std::optional<float> fundamental;
         if (const auto path = ActiveSamplePath(r, e)) {
             const auto &frames = GetSampleFrames(r, SceneEntity, *path);
             if (!frames.empty()) fundamental = EstimateFundamentalFrequency(ComputeFft(frames));
         }
         auto material_props = info.Material.Properties;
-        DspGenerator = std::make_unique<Worker<ModalModes>>(
+        DspGenerator = std::make_unique<Worker<ModalGenerationResult>>(
             parent_window, "Generating modal audio model...",
-            [tets = std::move(tets), material_props, sound_vertices = std::move(new_sound_vertices), fundamental]() mutable {
-                return m2f::mesh2modes(*tets, material_props, sound_vertices.Vertices, fundamental);
+            [tets = std::move(tets), tet_scale, material_props, sound_vertices = std::move(new_sound_vertices), fundamental]() mutable {
+                return ModalGenerationResult{m2f::mesh2modes(*tets, material_props, sound_vertices.Vertices, fundamental), BuildTetMeshData(*tets, tet_scale)};
             }
         );
         r.remove<ModalModelCreateInfo>(e);
@@ -715,20 +720,19 @@ void DrawObjectAudioControls(
     if (e == entt::null || mesh_entity == entt::null) return;
 
     if (auto &dsp_generator = DspGenerator) {
-        if (auto modes = dsp_generator->Render()) {
+        if (auto result = dsp_generator->Render()) {
             dsp_generator.reset();
-            if (modes->Freqs.empty()) {
+            if (result->Modes.Freqs.empty()) {
                 std::cerr << "Modal model computation failed.\n";
             } else {
                 if (!r.all_of<ScaleLocked>(e)) r.emplace<ScaleLocked>(e);
                 uint32_t excite_idx = 0;
                 if (const auto *active = r.try_get<const MeshActiveElement>(mesh_entity)) {
-                    const auto &verts = modes->Vertices;
-                    if (auto it = find(verts, active->Handle); it != verts.end()) {
-                        excite_idx = distance(verts.begin(), it);
-                    }
+                    const auto &verts = result->Modes.Vertices;
+                    if (auto it = find(verts, active->Handle); it != verts.end()) excite_idx = distance(verts.begin(), it);
                 }
-                r.emplace_or_replace<ModalModes>(e, std::move(*modes));
+                r.emplace_or_replace<ModalModes>(e, std::move(result->Modes));
+                r.emplace_or_replace<TetMeshData>(mesh_entity, std::move(result->Tets));
                 r.get<FaustDSP>(SceneEntity).Set(ExciteIndexParamName, excite_idx);
                 SetModel(r, SceneEntity, e, SoundVerticesModel::Modal);
             }

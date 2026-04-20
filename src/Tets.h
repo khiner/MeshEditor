@@ -1,6 +1,7 @@
 #pragma once
 
 #include <memory>
+#include <vector>
 
 #include "numeric/vec3.h"
 
@@ -18,3 +19,11 @@ struct TetGenOptions {
 class tetgenio;
 
 std::unique_ptr<tetgenio> GenerateTets(const Mesh &, vec3 scale, TetGenOptions);
+
+struct TetMeshData {
+    std::vector<vec3> Positions;
+    std::vector<uint32_t> EdgeIndices;
+};
+
+// positions are divided by `scale`.
+TetMeshData BuildTetMeshData(const tetgenio &, vec3 scale);

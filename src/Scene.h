@@ -209,11 +209,9 @@ private:
         Count
     };
     entt::entity ColliderShapeBufferEntities[static_cast<uint8_t>(ColliderShapeBuffer::Count)]{null_entity, null_entity, null_entity, null_entity, null_entity};
-    // Split in two so reactive events fire on the correct side of SyncModelsBuffers:
-    // EnsureColliderWireframes runs before SyncModelsBuffers so new instance/buffer-entity events
-    // get consumed this frame; UpdateColliderWireframeTransforms runs after WorldTransform recomputation.
-    void EnsureColliderWireframes();
-    void UpdateColliderWireframeTransforms();
+
+    void EnsureWireframes();
+    void UpdateWireframeTransforms();
 
     enum class SelectionMode {
         Click,

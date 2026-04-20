@@ -18,6 +18,7 @@
 #include "Shader.h"
 #include "SoundVertices.h"
 #include "SvgResource.h"
+#include "Tets.h"
 #include "Timer.h"
 #include "Variant.h"
 #include "VideoRecorder.h"
@@ -330,6 +331,12 @@ struct SelectedInstanceCount {
 
 // Show this instance's BBox when SceneSettings.ShowBoundingBoxes is on and the instance is selected.
 struct BBoxWireframe {
+    entt::entity Instance{null_entity};
+};
+
+// Show the tet-mesh wireframe for this instance when SceneSettings.ShowTetWireframe is on,
+// the instance is selected, and its mesh has a TetMeshData component.
+struct TetWireframe {
     entt::entity Instance{null_entity};
 };
 
@@ -954,9 +961,9 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         request(RenderRequest::ReRecord);
     }
 
-    // Create/destroy collider wireframe instances and their buffer entities before SyncModelsBuffers
+    // Create/destroy wireframe overlay instances and their buffer entities before SyncModelsBuffers
     // consumes the RenderInstance/NewBufferEntity reactive events they fire.
-    EnsureColliderWireframes();
+    EnsureWireframes();
 
     auto sync = SyncModelsBuffers(); // Runs first so BufferIndex is valid for all downstream code.
     if (!sync.NewlyInserted.empty()) request(RenderRequest::Submit);
@@ -1746,9 +1753,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
                 if (R.valid(e) && !is_newly_inserted(e)) update_wt(e, !(bone_edit && R.all_of<StartTransform>(e)));
             }
         }
-        // Update collider wireframe transforms after WorldTransform recomputation so they read
-        // up-to-date parent transforms, and before the GPU write so their own WT changes are included.
-        UpdateColliderWireframeTransforms();
+        UpdateWireframeTransforms(); // Needs updated WorldTransforms
 
         // Batch WorldTransform writes: collect all (BufferIndex, WorldTransform) pairs,
         // sort by BufferIndex for cache-friendly access, then write via single GetMutableRange.
@@ -2320,10 +2325,13 @@ entt::entity Scene::CreateExtrasObject(std::span<const vec3> positions, std::spa
     return entity;
 }
 
-void Scene::EnsureColliderWireframes() {
-    const bool show_bbox = R.get<const SceneSettings>(SceneEntity).ShowBoundingBoxes;
+void Scene::EnsureWireframes() {
+    const auto &settings = R.get<const SceneSettings>(SceneEntity);
+    const bool show_bbox = settings.ShowBoundingBoxes;
+    const bool show_tets = settings.ShowTetWireframe;
     if (R.view<const ColliderShape>().empty() && R.view<ColliderWireframe>().empty() &&
-        R.view<BBoxWireframe>().empty() && !show_bbox) return;
+        R.view<BBoxWireframe>().empty() && R.view<TetWireframe>().empty() &&
+        !show_bbox && !show_tets) return;
 
     using enum ColliderShapeBuffer;
     auto buf = [&](ColliderShapeBuffer kind) -> entt::entity & { return ColliderShapeBufferEntities[static_cast<uint8_t>(kind)]; };
@@ -2395,7 +2403,6 @@ void Scene::EnsureColliderWireframes() {
         const auto &shape = cs.Shape;
         ColliderWireframe cw{};
 
-        // Cylinder/Capsule: 2 ring/cap instances + 4 side-line instances. See UpdateColliderWireframeTransforms.
         const bool is_cylinder = std::holds_alternative<physics::Cylinder>(shape);
         const bool is_capsule = std::holds_alternative<physics::Capsule>(shape);
         if (is_cylinder || is_capsule) {
@@ -2445,14 +2452,42 @@ void Scene::EnsureColliderWireframes() {
             R.emplace<BBoxWireframe>(entity, make_instance(buf(Box), entity));
         }
     }
+
+    // Drop tet wireframes whose backing geometry no longer matches (toggle off, deselected,
+    // TetMeshData removed, or point count differs after regeneration).
+    std::vector<entt::entity> tet_stale;
+    for (auto [entity, tw] : R.view<TetWireframe>().each()) {
+        const auto *inst = R.try_get<const Instance>(entity);
+        const auto *tm = inst ? R.try_get<const TetMeshData>(inst->Entity) : nullptr;
+        if (!show_tets || !R.all_of<Selected>(entity) || !tm || tm->Positions.empty()) {
+            tet_stale.push_back(entity);
+            continue;
+        }
+        const auto *wi = R.try_get<const Instance>(tw.Instance);
+        const auto *mb = wi ? R.try_get<const MeshBuffers>(wi->Entity) : nullptr;
+        if (!mb || mb->Vertices.Count != tm->Positions.size()) tet_stale.push_back(entity);
+    }
+    for (auto e : tet_stale) {
+        if (auto &tw = R.get<TetWireframe>(e); R.valid(tw.Instance)) Destroy(tw.Instance);
+        R.remove<TetWireframe>(e);
+    }
+
+    if (show_tets) {
+        for (auto entity : R.view<Selected>()) {
+            if (R.all_of<TetWireframe>(entity)) continue;
+            const auto *instance = R.try_get<const Instance>(entity);
+            if (!instance) continue;
+            const auto *tm = R.try_get<const TetMeshData>(instance->Entity);
+            if (!tm || tm->Positions.empty()) continue;
+            const auto tet_buf = CreateExtrasBufferEntity(tm->Positions, {}, tm->EdgeIndices);
+            R.emplace<TetWireframe>(entity, make_instance(tet_buf, entity));
+        }
+    }
 }
 
-void Scene::UpdateColliderWireframeTransforms() {
-    if (R.view<ColliderWireframe>().empty() && R.view<BBoxWireframe>().empty()) return;
+void Scene::UpdateWireframeTransforms() {
+    if (R.view<ColliderWireframe>().empty() && R.view<BBoxWireframe>().empty() && R.view<TetWireframe>().empty()) return;
 
-    // Update when the parent's WorldTransform changed, the ColliderShape changed (dims/kind),
-    // or any wireframe instance's WT is in the reactive set (On::Create from EnsureColliderWireframes
-    // = just inserted this frame).
     const auto &wt_changed = reactive<changes::WorldTransform>(R);
     const auto &shape_changed = reactive<changes::PhysicsShape>(R);
     const auto &mesh_geom_changed = reactive<changes::MeshGeometry>(R);
@@ -2551,6 +2586,16 @@ void Scene::UpdateColliderWireframeTransforms() {
         const vec3 center = (aabb.Min + aabb.Max) * 0.5f;
         const mat4 base = ToMatrix(*wt);
         R.replace<WorldTransform>(bw.Instance, ToTransform(base * glm::translate(mat4{1}, center) * glm::scale(mat4{1}, size)));
+    }
+
+    for (auto [entity, tw] : R.view<const TetWireframe>().each()) {
+        if (!R.valid(tw.Instance)) continue;
+        const auto *wt = R.try_get<const WorldTransform>(entity);
+        if (!wt) continue;
+        const bool parent_moved = wt_changed.contains(entity);
+        const bool newly_created = wt_changed.contains(tw.Instance);
+        if (!parent_moved && !newly_created) continue;
+        R.replace<WorldTransform>(tw.Instance, *wt);
     }
 }
 
@@ -2923,6 +2968,10 @@ void Scene::Destroy(entt::entity e) {
     if (const auto *bw = R.try_get<BBoxWireframe>(e); bw && R.valid(bw->Instance)) {
         SetVisible(bw->Instance, false);
         R.destroy(bw->Instance);
+    }
+    if (const auto *tw = R.try_get<TetWireframe>(e); tw && R.valid(tw->Instance)) {
+        SetVisible(tw->Instance, false);
+        R.destroy(tw->Instance);
     }
 
     if (const auto *light_index = R.try_get<LightIndex>(e)) {

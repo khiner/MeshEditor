@@ -14,6 +14,7 @@
 #include "SceneSelection.h"
 #include "SoundVertices.h"
 #include "SvgResource.h"
+#include "Tets.h"
 #include "Timer.h"
 #include "Variant.h"
 #include "audio/AudioSystem.h"
@@ -2105,11 +2106,8 @@ void Scene::RenderControls() {
                         settings_changed = true;
                     }
                 }
-                bool show_bboxes = settings.ShowBoundingBoxes;
-                if (Checkbox("Bounding boxes", &show_bboxes)) {
-                    settings.ShowBoundingBoxes = show_bboxes;
-                    settings_changed = true;
-                }
+                if (Checkbox("Bounding boxes", &settings.ShowBoundingBoxes)) settings_changed = true;
+                if (!R.view<const TetMeshData>().empty() && Checkbox("Tet wireframe", &settings.ShowTetWireframe)) settings_changed = true;
             }
             {
                 SeparatorText("Viewport theme");
