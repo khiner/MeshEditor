@@ -213,3 +213,5 @@ target_compile_options(${PROJECT_NAME} PRIVATE -Wall -Wextra -Wno-elaborated-enu
 add_definitions(-DTETLIBRARY)
 add_definitions(-DIMGUI_DEFINE_MATH_OPERATORS -DGLM_ENABLE_EXPERIMENTAL)
 add_definitions(-DMA_NO_ENGINE) # Reduce MA build size
+
+add_subdirectory(tests)

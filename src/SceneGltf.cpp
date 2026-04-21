@@ -7,7 +7,7 @@
 #include "SceneTree.h"
 #include "Timer.h"
 #include "TransformMath.h"
-#include "gltf/GltfLoader.h"
+#include "gltf/GltfScene.h"
 #include "mesh/MeshStore.h"
 #include "mesh/MorphTargetData.h"
 #include "physics/PhysicsWorld.h"

@@ -52,3 +52,6 @@
 [submodule "lib/JoltPhysics"]
 	path = lib/JoltPhysics
 	url = git@github.com:khiner/JoltPhysics.git
+[submodule "lib/ut"]
+	path = lib/ut
+	url = git@github.com:boost-ext/ut.git

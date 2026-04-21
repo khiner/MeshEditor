@@ -1,3 +1,4 @@
+add_subdirectory(ut)
 add_subdirectory(nativefiledialog-extended)
 add_subdirectory(VulkanMemoryAllocator)
 add_subdirectory(tetgen)

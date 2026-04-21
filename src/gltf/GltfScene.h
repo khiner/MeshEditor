@@ -195,4 +195,5 @@ struct Scene {
 };
 
 std::expected<Scene, std::string> LoadScene(const std::filesystem::path &);
+std::expected<void, std::string> SaveScene(const Scene &, const std::filesystem::path &);
 } // namespace gltf

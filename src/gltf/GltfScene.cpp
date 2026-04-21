@@ -1,4 +1,4 @@
-#include "GltfLoader.h"
+#include "GltfScene.h"
 
 #include "TransformMath.h"
 #include "Variant.h"
@@ -1642,5 +1642,19 @@ std::expected<Scene, std::string> LoadScene(const std::filesystem::path &path) {
         return std::unexpected{std::format("glTF '{}' has no importable scene objects or skins.", path.string())};
     }
     return scene;
+}
+
+// todo - just a skeleton for now
+std::expected<void, std::string> SaveScene(const Scene &, const std::filesystem::path &path) {
+    fastgltf::Asset asset;
+    asset.assetInfo = fastgltf::AssetInfo{.gltfVersion = "2.0", .copyright = "", .generator = "MeshEditor"};
+
+    fastgltf::FileExporter exporter;
+    const auto ext = path.extension();
+    const auto err = ext == ".glb" ? exporter.writeGltfBinary(asset, path) : exporter.writeGltfJson(asset, path);
+    if (err != fastgltf::Error::None) {
+        return std::unexpected{std::format("fastgltf export to '{}' failed: {}", path.string(), fastgltf::getErrorMessage(err))};
+    }
+    return {};
 }
 } // namespace gltf

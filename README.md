@@ -183,6 +183,7 @@ When a look-through camera is active, only the camera-frame sub-rect (the area i
 - [fftw](https://www.fftw.org/) compute spectrograms (visualized with ImPlot)
 - [ImPlot](https://github.com/epezent/implot): Plotting
 - [nativefiledialog-extended](https://github.com/btzynativefiledialog-extended): Native file dialogs (TODO SDL3 now has `SDL_Dialog`)
+- [boost-ext/ut](https://github.com/boost-ext/ut): Testing
 
 ## Development
 
@@ -197,6 +198,16 @@ $ cmake -B build -DMVK_FORCE_STAGED_TRANSFERS=ON .
 **Quiet mode**: Disable timer output at compile time (equivalent to always passing `--quiet`):
 ```shell
 $ cmake -B build -DQUIET=ON .
+```
+
+### Tests
+
+WIP glTF roundtrip tests.
+Currently expects [`glTF-Sample-Assets`](https://github.com/KhronosGroup/glTF-Sample-Assets) and [`glTF_Physics`](https://github.com/eoineoineoin/glTF_Physics) cloned alongside `MeshEditor/`.
+
+```shell
+$ ./script/Build --test
+$ ./build/tests/MeshEditorTests
 ```
 
 ### Update submodules
