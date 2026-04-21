@@ -8,6 +8,31 @@
 // - Also skipping `KHR_animation_pointer` for now - too much complexity for an extension that isn't widely used yet
 // - Probably should suppor `EXT_meshopt_compression`, with a minimal decode path:
 //   - meshopt decode-only sources (`indexcodec.cpp`, `vertexcodec.cpp`, `vertexfilter.cpp`, plus `allocator.cpp` if needed);
+//
+// SaveScene round-trip gaps (structural count/name roundtrip only; not full fidelity):
+// - Mesh geometry is stubbed: each mesh writes a single 3-vertex triangle primitive. Positions,
+//   indices, normals, tangents, colors, UVs, joints, and weights are NOT re-emitted.
+//   Rationale: the importer collapses multi-primitive meshes and drops quantization/meshopt
+//   encodings, so a true bit-exact re-export would require remembering every source layout;
+//   far out of scope for a minimal round-trip.
+// - Morph targets: only a count of empty targets is emitted per mesh (enough for weights
+//   animations to survive the importer's component-count check). Deltas and default weights
+//   are not preserved.
+// - EXT_mesh_gpu_instancing: instance count is preserved via identity per-instance transforms;
+//   original TRANSLATION/ROTATION/SCALE instance attributes are not recovered since Scene.Node
+//   doesn't retain them separately from the derived Objects.
+// - Per-node physics (KHR_physics_rigid_bodies): only a minimal collider with geometry.mesh is
+//   emitted for nodes whose collider references a mesh - enough to keep collider-only meshes
+//   reachable on reload. Motion, velocity, triggers, joints, primitive shape colliders, and
+//   material/filter references on nodes are NOT re-emitted. Document-level
+//   physicsMaterials/collisionFilters/physicsJoints arrays are emitted to preserve counts.
+// - Materials emit name-only (plus a default PBR block). PBR factors, textures, and all
+//   KHR_materials_* extension data are not re-emitted.
+// - Images are re-emitted with bytes + mimeType (verbatim) via an embedded buffer view.
+// - EXT_lights_image_based: not re-emitted. Scene.ImageBasedLight round-trip is lossy.
+// - This implementation depends on local patches to lib/fastgltf/src/fastgltf.cpp fixing
+//   exporter bugs (collisionFilters trailing commas, spot light field structure, per-node
+//   KHR_physics_rigid_bodies extension name and shape). See the diff on that file.
 
 #pragma once
 
