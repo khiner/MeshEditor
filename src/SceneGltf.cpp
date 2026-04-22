@@ -154,7 +154,7 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
             tex.Slot = *texture_slot_result;
             return {};
         };
-        PBRMaterial gpu_material = src_material;
+        auto gpu_material = gltf::ToGpu(src_material);
         if (auto result = [&]() -> std::expected<void, std::string> {
                 std::expected<void, std::string> resolve_result{};
                 const auto check = [&](TextureInfo &tex, TextureColorSpace color_space, std::string_view texture_label) {
@@ -237,7 +237,7 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
             PbrFeatureMask mesh_pbr_mask{0};
             for (const auto gltf_mat_idx : scene_mesh.TrianglePrimitives.MaterialIndices) {
                 if (gltf_mat_idx < scene->Materials.size()) {
-                    const auto &mat = scene->Materials[gltf_mat_idx].Value;
+                    const auto mat = gltf::ToGpu(scene->Materials[gltf_mat_idx].Value);
                     if (mat.Transmission.Factor > 0.f || mat.Transmission.Texture.Slot != InvalidSlot) mesh_pbr_mask |= PbrFeature::Transmission;
                     if (mat.DiffuseTransmission.Factor > 0.f || mat.DiffuseTransmission.Texture.Slot != InvalidSlot) mesh_pbr_mask |= PbrFeature::DiffuseTrans;
                     if (mat.Clearcoat.Factor > 0.f || mat.Clearcoat.Texture.Slot != InvalidSlot) mesh_pbr_mask |= PbrFeature::Clearcoat;
@@ -364,7 +364,7 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
         for (auto &m : scene->PhysicsMaterials) {
             const auto e = R.create();
             R.emplace<PhysicsMaterial>(e, std::move(m));
-            material_entities.push_back(e);
+            material_entities.emplace_back(e);
         }
         // Dedupe system names across all filters into CollisionSystem entities.
         std::unordered_map<std::string, entt::entity> system_entity_by_name;
@@ -398,13 +398,13 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
             }
             const auto e = R.create();
             R.emplace<CollisionFilter>(e, std::move(filter));
-            filter_entities.push_back(e);
+            filter_entities.emplace_back(e);
         }
         jointdef_entities.reserve(scene->PhysicsJointDefs.size());
         for (auto &jd : scene->PhysicsJointDefs) {
             const auto e = R.create();
             R.emplace<PhysicsJointDef>(e, std::move(jd));
-            jointdef_entities.push_back(e);
+            jointdef_entities.emplace_back(e);
         }
 
         auto resolve_mat = [&](std::optional<uint32_t> idx) {

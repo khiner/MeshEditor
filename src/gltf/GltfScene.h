@@ -1,38 +1,41 @@
-// Note: Additional skin influence sets (JOINTS_1/WEIGHTS_1, etc.) are imported and compressed
-// to the top 4 influences per vertex (sorted by weight, renormalized).
-// The spec permits supporting only a single set of 4 (see glTF 2.0 §3.7.3.1).
-// Lossy for round-trip export but visually near-lossless.
-// - Known gap: morph target tangent deltas (targets[*].TANGENT) are not imported/applied yet.
-//   Static tangents (vertex TANGENT) are imported and used for shading, but
-//   morphing is deferred for now due to added GPU morph bandwidth/ALU cost.
-// - Also skipping `KHR_animation_pointer` for now - too much complexity for an extension that isn't widely used yet
-// - Probably should suppor `EXT_meshopt_compression`, with a minimal decode path:
-//   - meshopt decode-only sources (`indexcodec.cpp`, `vertexcodec.cpp`, `vertexfilter.cpp`, plus `allocator.cpp` if needed);
+// Round-trip gaps (see tests/RoundtripTest.cpp for the per-path exception list):
 //
-// SaveScene round-trip gaps (structural count/name roundtrip only; not full fidelity):
-// - Mesh geometry is stubbed: each mesh writes a single 3-vertex triangle primitive. Positions,
-//   indices, normals, tangents, colors, UVs, joints, and weights are NOT re-emitted.
-//   Rationale: the importer collapses multi-primitive meshes and drops quantization/meshopt
-//   encodings, so a true bit-exact re-export would require remembering every source layout;
-//   far out of scope for a minimal round-trip.
-// - Morph targets: only a count of empty targets is emitted per mesh (enough for weights
-//   animations to survive the importer's component-count check). Deltas and default weights
-//   are not preserved.
-// - EXT_mesh_gpu_instancing: instance count is preserved via identity per-instance transforms;
-//   original TRANSLATION/ROTATION/SCALE instance attributes are not recovered since Scene.Node
-//   doesn't retain them separately from the derived Objects.
-// - Per-node physics (KHR_physics_rigid_bodies): only a minimal collider with geometry.mesh is
-//   emitted for nodes whose collider references a mesh - enough to keep collider-only meshes
-//   reachable on reload. Motion, velocity, triggers, joints, primitive shape colliders, and
-//   material/filter references on nodes are NOT re-emitted. Document-level
-//   physicsMaterials/collisionFilters/physicsJoints arrays are emitted to preserve counts.
-// - Materials emit name-only (plus a default PBR block). PBR factors, textures, and all
-//   KHR_materials_* extension data are not re-emitted.
-// - Images are re-emitted with bytes + mimeType (verbatim) via an embedded buffer view.
-// - EXT_lights_image_based: not re-emitted. Scene.ImageBasedLight round-trip is lossy.
-// - This implementation depends on local patches to lib/fastgltf/src/fastgltf.cpp fixing
-//   exporter bugs (collisionFilters trailing commas, spot light field structure, per-node
-//   KHR_physics_rigid_bodies extension name and shape). See the diff on that file.
+// Lossy:
+// - Additional skin influence sets (JOINTS_1+, WEIGHTS_1+) are compressed at import to the top 4 weights per vertex (sorted, renormalized).
+//  (The spec does permit this single set of 4 - see glTF 2.0 §3.7.3.1.)
+// - KHR_mesh_quantization: quantized attributes decode to FLOAT at import, save always emits FLOAT
+// - EXT_mesh_gpu_instancing: per-instance TRS round-trips, but custom instancing attributes (`_FOO`) beyond TRANSLATION/ROTATION/SCALE aren't retained
+//
+// Unsupported (neither imported nor re-emitted):
+// - KHR_draco_mesh_compression, EXT_meshopt_compression: files relying on these to carry geometry
+//   will load with empty/missing vertex data, or fail entirely if the extension is listed as required.
+// - KHR_animation_pointer: animation channels targeting extension pointer paths are silently dropped at import (along with their samplers).
+//
+// Parsed for round-trip but not consumed by the application:
+//   Fields and features carried on gltf::Scene only for LoadScene -> SaveScene to preserve source fidelity.
+//   Runtime (SceneGltf.cpp -> ECS) ignores them.
+//   When we implement ECS -> Save round-trip, these are what needs sidecar storage.
+// - Scene-level metadata:
+//   - Scene::Copyright, Generator, MinVersion: asset.* metadata
+//   - Scene::AssetExtras, AssetExtensions: raw JSON for asset.extras / asset.extensions
+//   - Scene::DefaultSceneName, DefaultSceneRoots: default scene name and root-node source order
+//   - Scene::ExtensionsRequired: verbatim pass-through
+//   - Scene::MaterialVariants + MeshPrimitives::VariantMappings: KHR_materials_variants data
+//     Full feature foundation (just wire a UI + render-path lookup on top)
+//   - Scene::ExtrasByEntity: per-entity `extras` raw JSON, keyed by (fastgltf::Category, index)
+// - Per-entity encoding hints:
+//   - Image::Uri, SourceDataUri, SourceHadMimeType: runtime uses Bytes + MimeType;
+//     these let save re-emit in the source form (external URI, data URI, bufferView, with/without mimeType)
+//   - Node::SourceMatrix: save-side preservation for matrix-form transforms; runtime uses LocalTransform
+//   - MaterialData::{BaseColor,MetallicRoughness,Normal,Occlusion,Emissive}Meta: KHR_texture_transform
+//     override state (empty-extension vs missing, texCoord override vs parent texCoord)
+//   - MeshVertexAttributes::Colors0ComponentCount: source VEC3 vs VEC4 for COLOR_0.
+//   - MeshPrimitives::AttributeFlags: per-source-primitive attribute presence bitmask;
+//     emits each channel only on primitives that carried it in source (vs our zero-backfilled merged form)
+//   - MeshPrimitives::HasSourceIndices: per-primitive "source had an indices accessor" flag;
+//     lets non-indexed source round-trip as non-indexed
+//   - MorphTargetData::TangentDeltas: imported and re-emitted but not applied in the shader (the
+//     GPU bandwidth/ALU cost isn't justified yet)
 
 #pragma once
 
@@ -52,6 +55,7 @@
 
 #include <expected>
 #include <filesystem>
+#include <unordered_map>
 
 namespace gltf {
 enum class Filter : uint16_t {
@@ -68,8 +72,44 @@ enum class Wrap : uint16_t {
     Repeat,
 };
 
+// TextureInfo.TexCoord is the effective value (override if present, else base).
+struct TextureTransformMeta {
+    bool SourceHadExtension{};
+    uint32_t SourceBaseTexCoord{};
+    std::optional<uint32_t> SourceTexCoordOverride{};
+};
+
+// CPU-side material view. Each KHR_materials_* block is std::optional, set iff the source
+// carried the extension. Downstream code gets the flat GPU-bindable PBRMaterial via gltf::ToGpu().
+struct MaterialData {
+    vec4 BaseColorFactor{1};
+    vec3 EmissiveFactor{0};
+    float MetallicFactor{1}, RoughnessFactor{1}, NormalScale{1}, OcclusionStrength{1};
+    MaterialAlphaMode AlphaMode{MaterialAlphaMode::Opaque};
+    float AlphaCutoff{0.5};
+    uint32_t DoubleSided{}, Unlit{};
+    TextureInfo BaseColorTexture{}, MetallicRoughnessTexture{}, NormalTexture{}, OcclusionTexture{}, EmissiveTexture{};
+    // Nested extension textures (Sheen.ColorTexture etc.) don't round-trip overrides today.
+    TextureTransformMeta BaseColorMeta{}, MetallicRoughnessMeta{}, NormalMeta{}, OcclusionMeta{}, EmissiveMeta{};
+
+    std::optional<float> Ior{}, Dispersion{}, EmissiveStrength{};
+
+    std::optional<::Sheen> Sheen{};
+    std::optional<::Specular> Specular{};
+    std::optional<::Transmission> Transmission{};
+    std::optional<::DiffuseTransmission> DiffuseTransmission{};
+    std::optional<::Volume> Volume{};
+    std::optional<::Clearcoat> Clearcoat{};
+    std::optional<::Anisotropy> Anisotropy{};
+    std::optional<::Iridescence> Iridescence{};
+};
+
+// An absent extension and an all-default extension render identically, so it's safe
+// to flatten optionals to default-initialized fields when crossing into the GPU type.
+PBRMaterial ToGpu(const MaterialData &);
+
 struct NamedMaterial {
-    PBRMaterial Value{};
+    MaterialData Value{};
     std::string Name;
 };
 
@@ -88,7 +128,7 @@ struct Sampler {
 struct MeshData {
     // Merged triangle/line/point primitives (Triangles/TriangleStrip/TriangleFan, Lines/LineStrip/LineLoop, Points)
     std::optional<::MeshData> Triangles, Lines, Points;
-    ::MeshVertexAttributes TriangleAttrs;
+    ::MeshVertexAttributes TriangleAttrs, LineAttrs, PointAttrs;
     ::MeshPrimitives TrianglePrimitives;
     std::optional<ArmatureDeformData> DeformData;
     std::optional<MorphTargetData> MorphData;
@@ -110,28 +150,28 @@ struct Node {
     std::optional<uint32_t> ParentNodeIndex;
     std::vector<uint32_t> ChildrenNodeIndices;
     Transform LocalTransform, WorldTransform;
-    bool InScene;
-    bool IsJoint;
+    bool InScene, IsJoint;
+    std::optional<mat4> SourceMatrix{};
     std::optional<uint32_t> MeshIndex, SkinIndex, CameraIndex, LightIndex;
     std::string Name;
 
     // KHR_physics_rigid_bodies per-node data (empty if no physics on this node).
-    // These use the ECS component types directly where possible. For fields that reference
-    // other glTF nodes (joint ConnectedNode, trigger Nodes), we store node indices here
-    // and resolve to entities in SceneGltf.cpp.
+    // These use the ECS component types directly where possible.
+    // For fields that reference other glTF nodes (joint ConnectedNode, trigger Nodes),
+    // we store node indices here and resolve to entities in SceneGltf.cpp.
     std::optional<PhysicsMotion> Motion{};
     std::optional<PhysicsVelocity> Velocity{};
     std::optional<ColliderShape> Collider{};
     // Loader-side index refs; SceneGltf.cpp resolves these to entity refs on ColliderMaterial.
     struct MaterialRefs {
-        std::optional<uint32_t> PhysicsMaterialIndex{};
-        std::optional<uint32_t> CollisionFilterIndex{};
+        std::optional<uint32_t> PhysicsMaterialIndex{}, CollisionFilterIndex{};
     };
     std::optional<MaterialRefs> Material{};
     std::optional<uint32_t> ColliderGeometryMeshIndex{}; // glTF mesh providing geometry for collider shape
 
     struct TriggerData {
         std::optional<PhysicsShape> Shape{};
+        std::optional<uint32_t> GeometryMeshIndex{}; // glTF mesh for ConvexHull/TriangleMesh trigger shapes
         std::vector<uint32_t> NodeIndices{}; // glTF node indices (resolved to entities in SceneGltf)
         std::optional<uint32_t> CollisionFilterIndex{};
     };
@@ -200,6 +240,10 @@ struct CollisionFilterData {
 };
 
 struct Scene {
+    std::string Copyright, Generator, MinVersion;
+    std::string AssetExtras, AssetExtensions; // raw minified JSON
+    std::string DefaultSceneName;
+    std::vector<uint32_t> DefaultSceneRoots;
     std::vector<MeshData> Meshes;
     std::vector<NamedMaterial> Materials;
     std::vector<Texture> Textures;
@@ -213,10 +257,14 @@ struct Scene {
     std::vector<Light> Lights;
     std::optional<ImageBasedLight> ImageBasedLight;
 
-    // KHR_physics_rigid_bodies document-level resources.
+    // KHR_physics_rigid_bodies document-level resources
     std::vector<PhysicsMaterial> PhysicsMaterials;
     std::vector<CollisionFilterData> CollisionFilters;
     std::vector<PhysicsJointDef> PhysicsJointDefs;
+
+    std::vector<std::string> ExtensionsRequired;
+    std::vector<std::string> MaterialVariants;
+    std::unordered_map<uint64_t, std::string> ExtrasByEntity; // Key: (fastgltf::Category << 32) | entity_index
 };
 
 std::expected<Scene, std::string> LoadScene(const std::filesystem::path &);

@@ -8,6 +8,7 @@ target_include_directories(MeshEditorTests PRIVATE
     ${CMAKE_SOURCE_DIR}/src
     SYSTEM ${CMAKE_SOURCE_DIR}/lib/glm
     SYSTEM ${CMAKE_SOURCE_DIR}/lib/entt/src
+    SYSTEM ${CMAKE_SOURCE_DIR}/lib/fastgltf/deps/simdjson
 )
 
 target_link_libraries(MeshEditorTests PRIVATE fastgltf::fastgltf Boost::ut)
