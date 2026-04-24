@@ -709,37 +709,23 @@ std::expected<uint32_t, std::string> EnsureMeshData(const fastgltf::Asset &asset
     if (mesh_morph && mesh_morph->TargetCount > 0 && triangle_prim_count > 1) {
         const uint32_t total_verts = mesh.Positions.size();
         const auto target_count = mesh_morph->TargetCount;
-        std::vector<vec3> repacked(std::size_t(target_count) * total_verts, vec3{0.f});
-
-        uint32_t src_offset = 0, dst_vert_offset = 0;
-        for (const auto prim_verts : vertex_counts) {
-            if (prim_verts == 0) continue;
-            for (uint32_t t = 0; t < target_count; ++t) {
-                for (uint32_t v = 0; v < prim_verts; ++v) {
-                    repacked[std::size_t(t) * total_verts + dst_vert_offset + v] = mesh_morph->PositionDeltas[src_offset + std::size_t(t) * prim_verts + v];
-                }
-            }
-            src_offset += target_count * prim_verts;
-            dst_vert_offset += prim_verts;
-        }
-        mesh_morph->PositionDeltas = std::move(repacked);
-
         const auto repack_channel = [&](std::vector<vec3> &channel) {
             if (channel.empty()) return;
-            std::vector<vec3> repacked_channel(std::size_t(target_count) * total_verts, vec3{0.f});
+            std::vector<vec3> repacked(std::size_t(target_count) * total_verts, vec3{0.f});
             uint32_t src_off = 0, dst_vert_off = 0;
             for (const auto prim_verts : vertex_counts) {
                 if (prim_verts == 0) continue;
                 for (uint32_t t = 0; t < target_count; ++t) {
                     for (uint32_t v = 0; v < prim_verts; ++v) {
-                        repacked_channel[std::size_t(t) * total_verts + dst_vert_off + v] = channel[src_off + std::size_t(t) * prim_verts + v];
+                        repacked[std::size_t(t) * total_verts + dst_vert_off + v] = channel[src_off + std::size_t(t) * prim_verts + v];
                     }
                 }
                 src_off += target_count * prim_verts;
                 dst_vert_off += prim_verts;
             }
-            channel = std::move(repacked_channel);
+            channel = std::move(repacked);
         };
+        repack_channel(mesh_morph->PositionDeltas);
         repack_channel(mesh_morph->NormalDeltas);
         repack_channel(mesh_morph->TangentDeltas);
     }
@@ -1855,22 +1841,38 @@ std::expected<void, std::string> SaveScene(const Scene &scene, const std::filesy
         return uint32_t(accessors.size() - 1);
     };
 
+    const auto AddDataAccessor = [&]<typename T>(std::span<const T> data, fastgltf::AccessorType type, fastgltf::ComponentType component, std::optional<fastgltf::BufferTarget> target = {}) {
+        const uint32_t off = AppendAligned<T>(bin, data);
+        const uint32_t bv = AddBufferView(off, uint32_t(data.size() * sizeof(T)), {}, target);
+        return AddAccessor(bv, uint32_t(data.size()), type, component);
+    };
+
     const auto AddVec3Accessor = [&](std::span<const vec3> data, bool with_bounds, fastgltf::BufferTarget target) {
         const uint32_t vcount = uint32_t(data.size());
-        const uint32_t off = AppendAligned<vec3>(bin, data);
-        const uint32_t bv = AddBufferView(off, vcount * sizeof(vec3), {}, target);
-        if (!with_bounds || vcount == 0) {
-            return AddAccessor(bv, vcount, fastgltf::AccessorType::Vec3, fastgltf::ComponentType::Float);
-        }
+        if (!with_bounds || vcount == 0) return AddDataAccessor(data, fastgltf::AccessorType::Vec3, fastgltf::ComponentType::Float, target);
         vec3 lo = data[0], hi = data[0];
         for (const auto &p : data) {
             lo = glm::min(lo, p);
             hi = glm::max(hi, p);
         }
+        const uint32_t off = AppendAligned<vec3>(bin, data);
+        const uint32_t bv = AddBufferView(off, vcount * sizeof(vec3), {}, target);
         return AddAccessor(
             bv, vcount, fastgltf::AccessorType::Vec3, fastgltf::ComponentType::Float,
             MakeBounds({lo.x, lo.y, lo.z}), MakeBounds({hi.x, hi.y, hi.z})
         );
+    };
+
+    // Emit COLOR_0 preserving source component count (vec3 narrows the vec4 CPU store; vec4 passes through).
+    const auto EmitColor0 = [&](fastgltf::pmr::SmallVector<fastgltf::Attribute, 4> &out, std::span<const vec4> src, uint8_t component_count) {
+        if (component_count == 3) {
+            std::vector<vec3> rgb(src.size());
+            for (std::size_t i = 0; i < src.size(); ++i) rgb[i] = vec3{src[i].x, src[i].y, src[i].z};
+            out.emplace_back(fastgltf::Attribute{"COLOR_0", AddVec3Accessor(rgb, false, fastgltf::BufferTarget::ArrayBuffer)});
+        } else {
+            const uint32_t acc = AddDataAccessor(src, fastgltf::AccessorType::Vec4, fastgltf::ComponentType::Float, fastgltf::BufferTarget::ArrayBuffer);
+            out.emplace_back(fastgltf::Attribute{"COLOR_0", acc});
+        }
     };
 
     // Samplers
@@ -1944,9 +1946,6 @@ std::expected<void, std::string> SaveScene(const Scene &scene, const std::filesy
     // Materials: skip the trailing synthetic "DefaultMaterial" the loader appends.
     const uint32_t material_count = scene.Materials.empty() ? 0 : uint32_t(scene.Materials.size() - 1);
     asset.materials.reserve(material_count);
-    bool uses_ior = false, uses_emissive_strength = false, uses_unlit = false, uses_dispersion = false;
-    bool uses_sheen = false, uses_specular = false, uses_transmission = false, uses_diffuse_transmission = false;
-    bool uses_volume = false, uses_clearcoat = false, uses_anisotropy = false, uses_iridescence = false;
     for (uint32_t i = 0; i < material_count; ++i) {
         const auto &m = scene.Materials[i].Value;
         fastgltf::Material out;
@@ -1963,24 +1962,14 @@ std::expected<void, std::string> SaveScene(const Scene &scene, const std::filesy
         out.emissiveTexture = ToFgTexInfo(m.EmissiveTexture, &m.EmissiveMeta);
 
         out.emissiveFactor = {m.EmissiveFactor.x, m.EmissiveFactor.y, m.EmissiveFactor.z};
-        if (m.EmissiveStrength) {
-            out.emissiveStrength = fastgltf::Optional<fastgltf::num>{*m.EmissiveStrength};
-            uses_emissive_strength = true;
-        }
+        if (m.EmissiveStrength) out.emissiveStrength = fastgltf::Optional<fastgltf::num>{*m.EmissiveStrength};
 
         out.alphaMode = FromAlphaMode(m.AlphaMode);
         out.alphaCutoff = m.AlphaCutoff;
         out.doubleSided = m.DoubleSided != 0u;
         out.unlit = m.Unlit != 0u;
-        if (out.unlit) uses_unlit = true;
-        if (m.Ior) {
-            out.ior = fastgltf::Optional<fastgltf::num>{*m.Ior};
-            uses_ior = true;
-        }
-        if (m.Dispersion) {
-            out.dispersion = fastgltf::Optional<fastgltf::num>{*m.Dispersion};
-            uses_dispersion = true;
-        }
+        if (m.Ior) out.ior = fastgltf::Optional<fastgltf::num>{*m.Ior};
+        if (m.Dispersion) out.dispersion = fastgltf::Optional<fastgltf::num>{*m.Dispersion};
 
         if (m.Sheen) {
             out.sheen = std::make_unique<fastgltf::MaterialSheen>();
@@ -1988,7 +1977,6 @@ std::expected<void, std::string> SaveScene(const Scene &scene, const std::filesy
             out.sheen->sheenRoughnessFactor = m.Sheen->RoughnessFactor;
             out.sheen->sheenColorTexture = ToFgTexInfo(m.Sheen->ColorTexture);
             out.sheen->sheenRoughnessTexture = ToFgTexInfo(m.Sheen->RoughnessTexture);
-            uses_sheen = true;
         }
         if (m.Specular) {
             out.specular = std::make_unique<fastgltf::MaterialSpecular>();
@@ -1996,13 +1984,11 @@ std::expected<void, std::string> SaveScene(const Scene &scene, const std::filesy
             out.specular->specularColorFactor = {m.Specular->ColorFactor.x, m.Specular->ColorFactor.y, m.Specular->ColorFactor.z};
             out.specular->specularTexture = ToFgTexInfo(m.Specular->Texture);
             out.specular->specularColorTexture = ToFgTexInfo(m.Specular->ColorTexture);
-            uses_specular = true;
         }
         if (m.Transmission) {
             out.transmission = std::make_unique<fastgltf::MaterialTransmission>();
             out.transmission->transmissionFactor = m.Transmission->Factor;
             out.transmission->transmissionTexture = ToFgTexInfo(m.Transmission->Texture);
-            uses_transmission = true;
         }
         if (m.DiffuseTransmission) {
             out.diffuseTransmission = std::make_unique<fastgltf::MaterialDiffuseTransmission>();
@@ -2010,7 +1996,6 @@ std::expected<void, std::string> SaveScene(const Scene &scene, const std::filesy
             out.diffuseTransmission->diffuseTransmissionColorFactor = {m.DiffuseTransmission->ColorFactor.x, m.DiffuseTransmission->ColorFactor.y, m.DiffuseTransmission->ColorFactor.z};
             out.diffuseTransmission->diffuseTransmissionTexture = ToFgTexInfo(m.DiffuseTransmission->Texture);
             out.diffuseTransmission->diffuseTransmissionColorTexture = ToFgTexInfo(m.DiffuseTransmission->ColorTexture);
-            uses_diffuse_transmission = true;
         }
         if (m.Volume) {
             out.volume = std::make_unique<fastgltf::MaterialVolume>();
@@ -2018,7 +2003,6 @@ std::expected<void, std::string> SaveScene(const Scene &scene, const std::filesy
             out.volume->attenuationColor = {m.Volume->AttenuationColor.x, m.Volume->AttenuationColor.y, m.Volume->AttenuationColor.z};
             out.volume->attenuationDistance = m.Volume->AttenuationDistance > 0.f ? m.Volume->AttenuationDistance : std::numeric_limits<float>::infinity();
             out.volume->thicknessTexture = ToFgTexInfo(m.Volume->ThicknessTexture);
-            uses_volume = true;
         }
         if (m.Clearcoat) {
             out.clearcoat = std::make_unique<fastgltf::MaterialClearcoat>();
@@ -2027,14 +2011,12 @@ std::expected<void, std::string> SaveScene(const Scene &scene, const std::filesy
             out.clearcoat->clearcoatTexture = ToFgTexInfo(m.Clearcoat->Texture);
             out.clearcoat->clearcoatRoughnessTexture = ToFgTexInfo(m.Clearcoat->RoughnessTexture);
             out.clearcoat->clearcoatNormalTexture = ToFgNormalTexInfo(m.Clearcoat->NormalTexture, m.Clearcoat->NormalScale);
-            uses_clearcoat = true;
         }
         if (m.Anisotropy) {
             out.anisotropy = std::make_unique<fastgltf::MaterialAnisotropy>();
             out.anisotropy->anisotropyStrength = m.Anisotropy->Strength;
             out.anisotropy->anisotropyRotation = m.Anisotropy->Rotation;
             out.anisotropy->anisotropyTexture = ToFgTexInfo(m.Anisotropy->Texture);
-            uses_anisotropy = true;
         }
         if (m.Iridescence) {
             out.iridescence = std::make_unique<fastgltf::MaterialIridescence>();
@@ -2044,7 +2026,6 @@ std::expected<void, std::string> SaveScene(const Scene &scene, const std::filesy
             out.iridescence->iridescenceThicknessMaximum = m.Iridescence->ThicknessMaximum;
             out.iridescence->iridescenceTexture = ToFgTexInfo(m.Iridescence->Texture);
             out.iridescence->iridescenceThicknessTexture = ToFgTexInfo(m.Iridescence->ThicknessTexture);
-            uses_iridescence = true;
         }
 
         asset.materials.emplace_back(std::move(out));
@@ -2086,7 +2067,6 @@ std::expected<void, std::string> SaveScene(const Scene &scene, const std::filesy
             const bool has_tangent_deltas = mesh.MorphData && !mesh.MorphData->TangentDeltas.empty();
             // Fall back to emitting every populated channel when AttributeFlags isn't populated.
             const bool have_flags = tprims.AttributeFlags.size() == tprims.VertexCounts.size();
-            const auto emit_color0_vec3 = attrs.Colors0ComponentCount == 3;
 
             for (uint32_t prim_idx = 0; prim_idx < tprims.VertexCounts.size(); ++prim_idx) {
                 const uint32_t pcount = tprims.VertexCounts[prim_idx];
@@ -2105,29 +2085,16 @@ std::expected<void, std::string> SaveScene(const Scene &scene, const std::filesy
                 }
 
                 const auto emit_vec4 = [&](const char *name, const vec4 *src) {
-                    const uint32_t off = AppendAligned<vec4>(bin, std::span<const vec4>(src, pcount));
-                    const uint32_t bv = AddBufferView(off, uint32_t(pcount * sizeof(vec4)), {}, fastgltf::BufferTarget::ArrayBuffer);
-                    const uint32_t acc = AddAccessor(bv, pcount, fastgltf::AccessorType::Vec4, fastgltf::ComponentType::Float);
+                    const uint32_t acc = AddDataAccessor(std::span<const vec4>(src, pcount), fastgltf::AccessorType::Vec4, fastgltf::ComponentType::Float, fastgltf::BufferTarget::ArrayBuffer);
                     prim_attrs.emplace_back(fastgltf::Attribute{name, acc});
                 };
                 if (has_tangents && (flags & MeshAttributeBit_Tangent)) emit_vec4("TANGENT", attrs.Tangents->data() + offset);
                 if (has_colors && (flags & MeshAttributeBit_Color0)) {
-                    if (emit_color0_vec3) {
-                        std::vector<vec3> rgb(pcount);
-                        for (uint32_t i = 0; i < pcount; ++i) {
-                            const auto &c = (*attrs.Colors0)[offset + i];
-                            rgb[i] = vec3{c.x, c.y, c.z};
-                        }
-                        prim_attrs.emplace_back(fastgltf::Attribute{"COLOR_0", AddVec3Accessor(rgb, false, fastgltf::BufferTarget::ArrayBuffer)});
-                    } else {
-                        emit_vec4("COLOR_0", attrs.Colors0->data() + offset);
-                    }
+                    EmitColor0(prim_attrs, std::span<const vec4>(attrs.Colors0->data() + offset, pcount), attrs.Colors0ComponentCount);
                 }
 
                 const auto emit_uv = [&](const char *name, const vec2 *src) {
-                    const uint32_t off = AppendAligned<vec2>(bin, std::span<const vec2>(src, pcount));
-                    const uint32_t bv = AddBufferView(off, uint32_t(pcount * sizeof(vec2)), {}, fastgltf::BufferTarget::ArrayBuffer);
-                    const uint32_t acc = AddAccessor(bv, pcount, fastgltf::AccessorType::Vec2, fastgltf::ComponentType::Float);
+                    const uint32_t acc = AddDataAccessor(std::span<const vec2>(src, pcount), fastgltf::AccessorType::Vec2, fastgltf::ComponentType::Float, fastgltf::BufferTarget::ArrayBuffer);
                     prim_attrs.emplace_back(fastgltf::Attribute{name, acc});
                 };
                 if (has_uv0 && (flags & MeshAttributeBit_TexCoord0)) emit_uv("TEXCOORD_0", attrs.TexCoords0->data() + offset);
@@ -2141,9 +2108,7 @@ std::expected<void, std::string> SaveScene(const Scene &scene, const std::filesy
                         const auto &j = mesh.DeformData->Joints[offset + i];
                         joints16[i] = {uint16_t(j.x), uint16_t(j.y), uint16_t(j.z), uint16_t(j.w)};
                     }
-                    const uint32_t joff = AppendAligned<std::array<uint16_t, 4>>(bin, joints16);
-                    const uint32_t jbv = AddBufferView(joff, uint32_t(pcount * 4 * sizeof(uint16_t)), {}, fastgltf::BufferTarget::ArrayBuffer);
-                    const uint32_t jacc = AddAccessor(jbv, pcount, fastgltf::AccessorType::Vec4, fastgltf::ComponentType::UnsignedShort);
+                    const uint32_t jacc = AddDataAccessor(std::span<const std::array<uint16_t, 4>>(joints16), fastgltf::AccessorType::Vec4, fastgltf::ComponentType::UnsignedShort, fastgltf::BufferTarget::ArrayBuffer);
                     prim_attrs.emplace_back(fastgltf::Attribute{"JOINTS_0", jacc});
 
                     emit_vec4("WEIGHTS_0", mesh.DeformData->Weights.data() + offset);
@@ -2190,9 +2155,7 @@ std::expected<void, std::string> SaveScene(const Scene &scene, const std::filesy
                 const bool emit_indices = prim_idx < tprims.HasSourceIndices.size() ? tprims.HasSourceIndices[prim_idx] != 0 : true;
                 fastgltf::Optional<std::size_t> indices_accessor;
                 if (emit_indices) {
-                    const uint32_t ioff = AppendAligned<uint32_t>(bin, indices);
-                    const uint32_t ibv = AddBufferView(ioff, uint32_t(indices.size() * sizeof(uint32_t)), {}, fastgltf::BufferTarget::ElementArrayBuffer);
-                    indices_accessor = AddAccessor(ibv, uint32_t(indices.size()), fastgltf::AccessorType::Scalar, fastgltf::ComponentType::UnsignedInt);
+                    indices_accessor = AddDataAccessor(std::span<const uint32_t>(indices), fastgltf::AccessorType::Scalar, fastgltf::ComponentType::UnsignedInt, fastgltf::BufferTarget::ElementArrayBuffer);
                 }
 
                 fastgltf::Optional<std::size_t> material_index;
@@ -2226,19 +2189,7 @@ std::expected<void, std::string> SaveScene(const Scene &scene, const std::filesy
                 out.emplace_back(fastgltf::Attribute{"NORMAL", AddVec3Accessor(*va.Normals, false, fastgltf::BufferTarget::ArrayBuffer)});
             }
             if (va.Colors0 && va.Colors0->size() == vcount) {
-                if (va.Colors0ComponentCount == 3) {
-                    std::vector<vec3> rgb(vcount);
-                    for (std::size_t i = 0; i < vcount; ++i) {
-                        const auto &c = (*va.Colors0)[i];
-                        rgb[i] = vec3{c.x, c.y, c.z};
-                    }
-                    out.emplace_back(fastgltf::Attribute{"COLOR_0", AddVec3Accessor(rgb, false, fastgltf::BufferTarget::ArrayBuffer)});
-                } else {
-                    const uint32_t off = AppendAligned<vec4>(bin, std::span<const vec4>(va.Colors0->data(), vcount));
-                    const uint32_t bv = AddBufferView(off, uint32_t(vcount * sizeof(vec4)), {}, fastgltf::BufferTarget::ArrayBuffer);
-                    const uint32_t acc = AddAccessor(bv, uint32_t(vcount), fastgltf::AccessorType::Vec4, fastgltf::ComponentType::Float);
-                    out.emplace_back(fastgltf::Attribute{"COLOR_0", acc});
-                }
+                EmitColor0(out, std::span<const vec4>(va.Colors0->data(), vcount), va.Colors0ComponentCount);
             }
         };
 
@@ -2253,9 +2204,7 @@ std::expected<void, std::string> SaveScene(const Scene &scene, const std::filesy
                 idx.emplace_back(pair[0]);
                 idx.emplace_back(pair[1]);
             }
-            const uint32_t ioff = AppendAligned<uint32_t>(bin, idx);
-            const uint32_t ibv = AddBufferView(ioff, uint32_t(idx.size() * sizeof(uint32_t)), {}, fastgltf::BufferTarget::ElementArrayBuffer);
-            const uint32_t iacc = AddAccessor(ibv, uint32_t(idx.size()), fastgltf::AccessorType::Scalar, fastgltf::ComponentType::UnsignedInt);
+            const uint32_t iacc = AddDataAccessor(std::span<const uint32_t>(idx), fastgltf::AccessorType::Scalar, fastgltf::ComponentType::UnsignedInt, fastgltf::BufferTarget::ElementArrayBuffer);
 
             fastgltf::pmr::SmallVector<fastgltf::Attribute, 4> attrs;
             attrs.emplace_back(fastgltf::Attribute{"POSITION", pos_acc});
@@ -2330,9 +2279,7 @@ std::expected<void, std::string> SaveScene(const Scene &scene, const std::filesy
 
         const auto ibm = [&]() -> fastgltf::Optional<std::size_t> {
             if (s.InverseBindMatrices.empty()) return {};
-            const uint32_t offset = AppendAligned<mat4>(bin, s.InverseBindMatrices);
-            const uint32_t bv = AddBufferView(offset, uint32_t(s.InverseBindMatrices.size() * sizeof(mat4)));
-            return AddAccessor(bv, uint32_t(s.InverseBindMatrices.size()), fastgltf::AccessorType::Mat4, fastgltf::ComponentType::Float);
+            return AddDataAccessor(std::span<const mat4>(s.InverseBindMatrices), fastgltf::AccessorType::Mat4, fastgltf::ComponentType::Float);
         }();
 
         asset.skins.emplace_back(fastgltf::Skin{
@@ -2534,16 +2481,11 @@ std::expected<void, std::string> SaveScene(const Scene &scene, const std::filesy
             }
 
             const auto add_vec3 = [&](const char *name, std::span<const vec3> data) {
-                const uint32_t off = AppendAligned<vec3>(bin, data);
-                const uint32_t bv = AddBufferView(off, uint32_t(count * sizeof(vec3)));
-                const uint32_t acc = AddAccessor(bv, count, fastgltf::AccessorType::Vec3, fastgltf::ComponentType::Float);
-                instancing.emplace_back(fastgltf::Attribute{name, acc});
+                instancing.emplace_back(fastgltf::Attribute{name, AddDataAccessor(data, fastgltf::AccessorType::Vec3, fastgltf::ComponentType::Float)});
             };
             if (any_t) add_vec3("TRANSLATION", translations);
             if (any_r) {
-                const uint32_t off = AppendAligned<vec4>(bin, rotations);
-                const uint32_t bv = AddBufferView(off, uint32_t(count * sizeof(vec4)));
-                const uint32_t acc = AddAccessor(bv, count, fastgltf::AccessorType::Vec4, fastgltf::ComponentType::Float);
+                const uint32_t acc = AddDataAccessor(std::span<const vec4>(rotations), fastgltf::AccessorType::Vec4, fastgltf::ComponentType::Float);
                 instancing.emplace_back(fastgltf::Attribute{"ROTATION", acc});
             }
             if (any_s) add_vec3("SCALE", scales);
@@ -2780,18 +2722,19 @@ std::expected<void, std::string> SaveScene(const Scene &scene, const std::filesy
     }
     if (!asset.shapes.empty()) asset.extensionsUsed.emplace_back("KHR_implicit_shapes");
     if (!asset.imageBasedLights.empty()) asset.extensionsUsed.emplace_back("EXT_lights_image_based");
-    if (uses_unlit) asset.extensionsUsed.emplace_back("KHR_materials_unlit");
-    if (uses_ior) asset.extensionsUsed.emplace_back("KHR_materials_ior");
-    if (uses_emissive_strength) asset.extensionsUsed.emplace_back("KHR_materials_emissive_strength");
-    if (uses_dispersion) asset.extensionsUsed.emplace_back("KHR_materials_dispersion");
-    if (uses_sheen) asset.extensionsUsed.emplace_back("KHR_materials_sheen");
-    if (uses_specular) asset.extensionsUsed.emplace_back("KHR_materials_specular");
-    if (uses_transmission) asset.extensionsUsed.emplace_back("KHR_materials_transmission");
-    if (uses_diffuse_transmission) asset.extensionsUsed.emplace_back("KHR_materials_diffuse_transmission");
-    if (uses_volume) asset.extensionsUsed.emplace_back("KHR_materials_volume");
-    if (uses_clearcoat) asset.extensionsUsed.emplace_back("KHR_materials_clearcoat");
-    if (uses_anisotropy) asset.extensionsUsed.emplace_back("KHR_materials_anisotropy");
-    if (uses_iridescence) asset.extensionsUsed.emplace_back("KHR_materials_iridescence");
+    const auto any_material = [&](auto pred) { return std::ranges::any_of(asset.materials, pred); };
+    if (any_material([](const auto &m) { return m.unlit; })) asset.extensionsUsed.emplace_back("KHR_materials_unlit");
+    if (any_material([](const auto &m) { return m.ior.has_value(); })) asset.extensionsUsed.emplace_back("KHR_materials_ior");
+    if (any_material([](const auto &m) { return m.emissiveStrength.has_value(); })) asset.extensionsUsed.emplace_back("KHR_materials_emissive_strength");
+    if (any_material([](const auto &m) { return m.dispersion.has_value(); })) asset.extensionsUsed.emplace_back("KHR_materials_dispersion");
+    if (any_material([](const auto &m) { return m.sheen != nullptr; })) asset.extensionsUsed.emplace_back("KHR_materials_sheen");
+    if (any_material([](const auto &m) { return m.specular != nullptr; })) asset.extensionsUsed.emplace_back("KHR_materials_specular");
+    if (any_material([](const auto &m) { return m.transmission != nullptr; })) asset.extensionsUsed.emplace_back("KHR_materials_transmission");
+    if (any_material([](const auto &m) { return m.diffuseTransmission != nullptr; })) asset.extensionsUsed.emplace_back("KHR_materials_diffuse_transmission");
+    if (any_material([](const auto &m) { return m.volume != nullptr; })) asset.extensionsUsed.emplace_back("KHR_materials_volume");
+    if (any_material([](const auto &m) { return m.clearcoat != nullptr; })) asset.extensionsUsed.emplace_back("KHR_materials_clearcoat");
+    if (any_material([](const auto &m) { return m.anisotropy != nullptr; })) asset.extensionsUsed.emplace_back("KHR_materials_anisotropy");
+    if (any_material([](const auto &m) { return m.iridescence != nullptr; })) asset.extensionsUsed.emplace_back("KHR_materials_iridescence");
     if (!scene.MaterialVariants.empty()) {
         asset.materialVariants.reserve(scene.MaterialVariants.size());
         for (const auto &v : scene.MaterialVariants) asset.materialVariants.emplace_back(v);
