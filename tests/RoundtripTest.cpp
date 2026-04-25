@@ -365,6 +365,29 @@ void CompareAccessorShape(simdjson::dom::element src, simdjson::dom::element out
     }
 }
 
+// q and -q describe the same rotation; `glm::decompose` doesn't preserve source sign so this
+// surfaces as a per-component diff on `nodes[*].rotation`. Accept either sign within tolerance.
+bool QuaternionsEqual(simdjson::dom::array a, simdjson::dom::array b) {
+    if (a.size() != 4 || b.size() != 4) return false;
+    const auto to_quat = [](simdjson::dom::array arr, std::array<double, 4> &out) {
+        std::size_t i = 0;
+        for (auto e : arr) {
+            if (!IsNumber(e.type())) return false;
+            out[i++] = AsNumber(e);
+        }
+        return true;
+    };
+    std::array<double, 4> va{}, vb{};
+    if (!to_quat(a, va) || !to_quat(b, vb)) return false;
+    const auto eq_signed = [&](double sign) {
+        for (std::size_t i = 0; i < 4; ++i) {
+            if (!NumberEq(va[i], sign * vb[i])) return false;
+        }
+        return true;
+    };
+    return eq_signed(1.0) || eq_signed(-1.0);
+}
+
 void CompareJson(simdjson::dom::element a, simdjson::dom::element b, std::string_view path, std::vector<Diff> &out, simdjson::dom::element root_a, simdjson::dom::element root_b) {
     const auto ta = a.type(), tb = b.type();
     // Numbers compare with epsilon regardless of int/uint/double subtype.
@@ -386,6 +409,12 @@ void CompareJson(simdjson::dom::element a, simdjson::dom::element b, std::string
     }
     if (ta != tb) {
         out.emplace_back(std::string(path), std::format("type {} vs {}", TypeName(ta), TypeName(tb)));
+        return;
+    }
+    if (ta == ElType::ARRAY && NormalizePath(path) == "nodes[*].rotation") {
+        if (!QuaternionsEqual(a, b)) {
+            out.emplace_back(std::string(path), "quaternion mismatch");
+        }
         return;
     }
     switch (ta) {
@@ -521,6 +550,13 @@ int main() {
             auto loaded = gltf::LoadScene(src);
             if (!loaded) return;
 
+            // Save A first while `loaded` is pristine — PopulateGltfScene consumes mesh data
+            // (moves into MeshStore arenas) and would leave `*loaded` unsafe to re-serialize.
+            const auto a_path = tmp_root / (sample_name + ".A.gltf");
+            auto save_a = gltf::SaveScene(*loaded, a_path);
+            expect(save_a.has_value()) << "SaveScene(loaded) failed: " << (save_a ? "" : save_a.error());
+            if (!save_a) return;
+
             entt::registry registry;
             SceneStores stores{vk_resources, *cmd_pool, *fence};
             const auto scene_entity = WireSceneRegistry(registry, stores);
@@ -541,17 +577,12 @@ int main() {
             expect(populate.has_value()) << "PopulateGltfScene failed: " << (populate ? "" : populate.error());
             if (!populate) return;
 
-            auto rebuilt = gltf::BuildGltfScene(registry, scene_entity);
+            auto rebuilt = gltf::BuildGltfScene(registry, scene_entity, *stores.Buffers, *stores.Meshes);
 
-            // Save both `loaded` and `rebuilt` through SaveScene; identical SaveScene paths cancel
-            // out fastgltf-side asymmetries, so any diff is genuine ECS-roundtrip lossiness.
-            const auto a_path = tmp_root / (sample_name + ".A.gltf");
             const auto b_path = tmp_root / (sample_name + ".B.gltf");
-            auto save_a = gltf::SaveScene(*loaded, a_path);
             auto save_b = gltf::SaveScene(rebuilt, b_path);
-            expect(save_a.has_value()) << "SaveScene(loaded) failed: " << (save_a ? "" : save_a.error());
             expect(save_b.has_value()) << "SaveScene(rebuilt) failed: " << (save_b ? "" : save_b.error());
-            if (!save_a || !save_b) return;
+            if (!save_b) return;
 
             const auto unexpected = CompareGltfJson(a_path, b_path, sample_name + " (ecs)");
             expect(unexpected == 0) << unexpected << " unexpected JSON diff(s)";

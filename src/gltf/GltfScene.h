@@ -107,6 +107,7 @@ struct MaterialData {
 // An absent extension and an all-default extension render identically, so it's safe
 // to flatten optionals to default-initialized fields when crossing into the GPU type.
 PBRMaterial ToGpu(const MaterialData &);
+MaterialData FromGpu(const PBRMaterial &);
 
 struct NamedMaterial {
     MaterialData Value{};

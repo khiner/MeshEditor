@@ -959,6 +959,40 @@ std::vector<Transform> ReadInstanceTransforms(const fastgltf::Asset &asset, cons
 }
 } // namespace
 
+MaterialData FromGpu(const PBRMaterial &m) {
+    MaterialData d{
+        .BaseColorFactor = m.BaseColorFactor,
+        .EmissiveFactor = m.EmissiveFactor,
+        .MetallicFactor = m.MetallicFactor,
+        .RoughnessFactor = m.RoughnessFactor,
+        .NormalScale = m.NormalScale,
+        .OcclusionStrength = m.OcclusionStrength,
+        .AlphaMode = m.AlphaMode,
+        .AlphaCutoff = m.AlphaCutoff,
+        .DoubleSided = m.DoubleSided,
+        .Unlit = m.Unlit,
+        .BaseColorTexture = m.BaseColorTexture,
+        .MetallicRoughnessTexture = m.MetallicRoughnessTexture,
+        .NormalTexture = m.NormalTexture,
+        .OcclusionTexture = m.OcclusionTexture,
+        .EmissiveTexture = m.EmissiveTexture,
+    };
+    // Emit extension blocks only when their values diverge from spec defaults — otherwise the
+    // extension block was either absent in source or carried only defaults (filtered by the
+    // existing default-omission expected-divergence list).
+    if (m.Ior != 1.5f) d.Ior = m.Ior;
+    if (m.Dispersion != 0.f) d.Dispersion = m.Dispersion;
+    if (m.Sheen != ::Sheen{}) d.Sheen = m.Sheen;
+    if (m.Specular != ::Specular{}) d.Specular = m.Specular;
+    if (m.Transmission != ::Transmission{}) d.Transmission = m.Transmission;
+    if (m.DiffuseTransmission != ::DiffuseTransmission{}) d.DiffuseTransmission = m.DiffuseTransmission;
+    if (m.Volume != ::Volume{}) d.Volume = m.Volume;
+    if (m.Clearcoat != ::Clearcoat{}) d.Clearcoat = m.Clearcoat;
+    if (m.Anisotropy != ::Anisotropy{}) d.Anisotropy = m.Anisotropy;
+    if (m.Iridescence != ::Iridescence{}) d.Iridescence = m.Iridescence;
+    return d;
+}
+
 PBRMaterial ToGpu(const MaterialData &m) {
     const float emissive_strength = m.EmissiveStrength.value_or(1.f);
     return PBRMaterial{

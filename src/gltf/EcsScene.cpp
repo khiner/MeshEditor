@@ -58,6 +58,82 @@ std::expected<gltf::PopulateResult, std::string> gltf::PopulateGltfScene(gltf::S
         return texture.DdsImageIndex;
     };
 
+    // Snapshot source-form gltf data onto SceneEntity before the materials loop remaps `tex.Slot`
+    // from gltf texture index to bindless sampler slot.
+    std::vector<std::string> animation_order;
+    animation_order.reserve(source.Animations.size());
+    for (const auto &a : source.Animations) animation_order.emplace_back(a.Name);
+    R.emplace_or_replace<GltfSourceAssets>(
+        SceneEntity,
+        GltfSourceAssets{
+            .Copyright = source.Copyright,
+            .Generator = source.Generator,
+            .MinVersion = source.MinVersion,
+            .AssetExtras = source.AssetExtras,
+            .AssetExtensions = source.AssetExtensions,
+            .DefaultSceneName = source.DefaultSceneName,
+            .DefaultSceneRoots = source.DefaultSceneRoots,
+            .ExtensionsRequired = source.ExtensionsRequired,
+            .MaterialVariants = source.MaterialVariants,
+            .ExtrasByEntity = source.ExtrasByEntity,
+            .Textures = source.Textures,
+            .Images = source.Images,
+            .Samplers = source.Samplers,
+            .AnimationOrder = std::move(animation_order),
+            .ImageBasedLight = source.ImageBasedLight,
+        }
+    );
+
+    // Snapshot the FromGpu-lossy delta per source material before the texture-slot remap and
+    // before extension-block optionality is folded into the GPU `PBRMaterial`.
+    {
+        const auto opt_slot = [](const auto &opt, auto field) -> uint32_t {
+            return opt ? ((*opt).*field).Slot : InvalidSlot;
+        };
+        using M = MaterialSourceMeta;
+        std::vector<M> metas;
+        metas.reserve(source.Materials.size());
+        for (const auto &nm : source.Materials) {
+            const auto &m = nm.Value;
+            M meta{
+                .EmissiveStrength = m.EmissiveStrength,
+                .BaseSlotMeta = {m.BaseColorMeta, m.MetallicRoughnessMeta, m.NormalMeta, m.OcclusionMeta, m.EmissiveMeta},
+                .NameWasEmpty = nm.Name.empty(),
+            };
+            meta.TextureSlots = {
+                m.BaseColorTexture.Slot,
+                m.MetallicRoughnessTexture.Slot,
+                m.NormalTexture.Slot,
+                m.OcclusionTexture.Slot,
+                m.EmissiveTexture.Slot,
+                opt_slot(m.Specular, &::Specular::Texture),
+                opt_slot(m.Specular, &::Specular::ColorTexture),
+                opt_slot(m.Sheen, &::Sheen::ColorTexture),
+                opt_slot(m.Sheen, &::Sheen::RoughnessTexture),
+                opt_slot(m.Transmission, &::Transmission::Texture),
+                opt_slot(m.DiffuseTransmission, &::DiffuseTransmission::Texture),
+                opt_slot(m.DiffuseTransmission, &::DiffuseTransmission::ColorTexture),
+                opt_slot(m.Volume, &::Volume::ThicknessTexture),
+                opt_slot(m.Clearcoat, &::Clearcoat::Texture),
+                opt_slot(m.Clearcoat, &::Clearcoat::RoughnessTexture),
+                opt_slot(m.Clearcoat, &::Clearcoat::NormalTexture),
+                opt_slot(m.Anisotropy, &::Anisotropy::Texture),
+                opt_slot(m.Iridescence, &::Iridescence::Texture),
+                opt_slot(m.Iridescence, &::Iridescence::ThicknessTexture),
+            };
+            meta.ExtensionPresence = uint16_t(
+                (m.Ior ? M::ExtIor : 0) | (m.Dispersion ? M::ExtDispersion : 0) |
+                (m.EmissiveStrength ? M::ExtEmissiveStrength : 0) |
+                (m.Sheen ? M::ExtSheen : 0) | (m.Specular ? M::ExtSpecular : 0) |
+                (m.Transmission ? M::ExtTransmission : 0) | (m.DiffuseTransmission ? M::ExtDiffuseTransmission : 0) |
+                (m.Volume ? M::ExtVolume : 0) | (m.Clearcoat ? M::ExtClearcoat : 0) |
+                (m.Anisotropy ? M::ExtAnisotropy : 0) | (m.Iridescence ? M::ExtIridescence : 0)
+            );
+            metas.emplace_back(std::move(meta));
+        }
+        R.patch<GltfSourceAssets>(SceneEntity, [&](auto &a) { a.MaterialMetas = std::move(metas); });
+    }
+
     auto upload_batch = BeginTextureUploadBatch(ctx.Vk.Device, ctx.CommandPool, ctx.Buffers.Ctx);
 
     std::unordered_map<uint64_t, uint32_t> texture_slot_cache;
@@ -249,6 +325,16 @@ std::expected<gltf::PopulateResult, std::string> gltf::PopulateGltfScene(gltf::S
                     material_indices_by_gltf_material[local_material_index] :
                     fallback_material_index;
             }
+            // Snapshot per-primitive metadata + morph tangent deltas before move-into-CreateMesh
+            // discards them. Stored as a sidecar so `BuildGltfScene` can re-emit verbatim.
+            MeshSourceLayout layout{
+                .VertexCounts = scene_mesh.TrianglePrimitives.VertexCounts,
+                .AttributeFlags = scene_mesh.TrianglePrimitives.AttributeFlags,
+                .HasSourceIndices = scene_mesh.TrianglePrimitives.HasSourceIndices,
+                .VariantMappings = scene_mesh.TrianglePrimitives.VariantMappings,
+                .Colors0ComponentCount = scene_mesh.TriangleAttrs.Colors0ComponentCount,
+                .MorphTangentDeltas = scene_mesh.MorphData ? scene_mesh.MorphData->TangentDeltas : std::vector<vec3>{},
+            };
             auto morph_data_copy = scene_mesh.MorphData; // Keep a copy for component setup
             auto mesh = ctx.Meshes.CreateMesh(
                 std::move(*scene_mesh.Triangles), std::move(scene_mesh.TriangleAttrs), std::move(scene_mesh.TrianglePrimitives),
@@ -257,6 +343,10 @@ std::expected<gltf::PopulateResult, std::string> gltf::PopulateGltfScene(gltf::S
             const auto [me, _] = ::AddMesh(R, ctx.Meshes, SceneEntity, std::move(mesh), std::nullopt);
             mesh_entity = me;
             R.emplace<Path>(mesh_entity, source_path);
+            R.emplace<SourceMeshIndex>(mesh_entity, mi);
+            R.emplace<SourceMeshKind>(mesh_entity, MeshKind::Triangles);
+            R.emplace<MeshSourceLayout>(mesh_entity, std::move(layout));
+            if (!scene_mesh.Name.empty()) R.emplace<MeshName>(mesh_entity, MeshName{scene_mesh.Name});
             if (mesh_pbr_mask != 0) R.emplace<PbrMeshFeatures>(mesh_entity, mesh_pbr_mask);
             mesh_morphs.emplace_back(std::move(morph_data_copy));
         } else {
@@ -265,16 +355,19 @@ std::expected<gltf::PopulateResult, std::string> gltf::PopulateGltfScene(gltf::S
         if (first_mesh_entity == entt::null && mesh_entity != entt::null) first_mesh_entity = mesh_entity;
         mesh_entities.emplace_back(mesh_entity);
 
-        auto create_extra = [&](std::optional<::MeshData> &data) -> entt::entity {
+        auto create_extra = [&](std::optional<::MeshData> &data, ::MeshVertexAttributes &attrs, MeshKind kind) -> entt::entity {
             if (!data) return entt::null;
-            auto m = ctx.Meshes.CreateMesh(std::move(*data), {}, {});
+            auto m = ctx.Meshes.CreateMesh(std::move(*data), std::move(attrs), {});
             const auto [e, _] = ::AddMesh(R, ctx.Meshes, SceneEntity, std::move(m), std::nullopt);
             R.emplace<Path>(e, source_path);
+            R.emplace<SourceMeshIndex>(e, mi);
+            R.emplace<SourceMeshKind>(e, kind);
+            if (!scene_mesh.Name.empty()) R.emplace<MeshName>(e, MeshName{scene_mesh.Name});
             if (first_mesh_entity == entt::null) first_mesh_entity = e;
             return e;
         };
-        auto lines_entity = create_extra(scene_mesh.Lines);
-        auto points_entity = create_extra(scene_mesh.Points);
+        auto lines_entity = create_extra(scene_mesh.Lines, scene_mesh.LineAttrs, MeshKind::Lines);
+        auto points_entity = create_extra(scene_mesh.Points, scene_mesh.PointAttrs, MeshKind::Points);
         extra_entities_per_mesh[mi] = {lines_entity, points_entity};
     }
 
@@ -299,30 +392,42 @@ std::expected<gltf::PopulateResult, std::string> gltf::PopulateGltfScene(gltf::S
         const auto &object = source.Objects[i];
         const auto object_name = object.Name.empty() ? std::format("{}_{}", name_prefix, i) : object.Name;
         entt::entity object_entity = entt::null;
-        if (object.ObjectType == gltf::Object::Type::Mesh &&
-            object.MeshIndex &&
-            *object.MeshIndex < mesh_entities.size() &&
-            mesh_entities[*object.MeshIndex] != entt::null) {
+        // Prefer Triangles, then Lines, then Points (for Lines/Points-only source meshes).
+        const auto primary_mesh_entity = [&]() -> entt::entity {
+            if (object.ObjectType != gltf::Object::Type::Mesh || !object.MeshIndex) return entt::null;
+            const auto mi = *object.MeshIndex;
+            if (mi < mesh_entities.size() && mesh_entities[mi] != entt::null) return mesh_entities[mi];
+            if (mi < extra_entities_per_mesh.size()) {
+                const auto &[lines, points] = extra_entities_per_mesh[mi];
+                return lines != entt::null ? lines : points;
+            }
+            return entt::null;
+        }();
+        if (primary_mesh_entity != entt::null) {
             object_entity = ::AddMeshInstance(
                 R, SceneEntity,
-                mesh_entities[*object.MeshIndex],
+                primary_mesh_entity,
                 {.Name = object_name, .Transform = object.WorldTransform, .Select = MeshInstanceCreateInfo::SelectBehavior::None, .Visible = true}
             );
         } else if (object.ObjectType == gltf::Object::Type::Camera && object.CameraIndex && *object.CameraIndex < source.Cameras.size()) {
             object_entity = ::AddCamera(R, ctx.Meshes, ctx.Buffers, SceneEntity, {.Name = object_name, .Transform = object.WorldTransform, .Select = MeshInstanceCreateInfo::SelectBehavior::None});
             const auto &scd = source.Cameras[*object.CameraIndex];
-            R.replace<Camera>(object_entity, scd.Camera);
+            R.replace<::Camera>(object_entity, scd.Camera);
+            R.emplace<SourceCameraIndex>(object_entity, *object.CameraIndex);
+            if (!scd.Name.empty()) R.emplace<CameraName>(object_entity, scd.Name);
         } else if (object.ObjectType == gltf::Object::Type::Light && object.LightIndex && *object.LightIndex < source.Lights.size()) {
             const auto &sld = source.Lights[*object.LightIndex];
             object_entity = ::AddLight(R, ctx.Meshes, ctx.Buffers, SceneEntity, {.Name = object_name, .Transform = object.WorldTransform, .Select = MeshInstanceCreateInfo::SelectBehavior::None}, sld.Light);
+            R.emplace<SourceLightIndex>(object_entity, *object.LightIndex);
+            if (!sld.Name.empty()) R.emplace<LightName>(object_entity, sld.Name);
         } else {
             object_entity = ::AddEmpty(R, ctx.Meshes, ctx.Buffers, SceneEntity, {.Name = object_name, .Transform = object.WorldTransform, .Select = MeshInstanceCreateInfo::SelectBehavior::None});
         }
-        // Create instances for non-triangle primitives (lines/points) associated with this mesh
+        // Companion instances for non-triangle primitives, skipping whichever already serves as primary.
         if (object.ObjectType == gltf::Object::Type::Mesh && object.MeshIndex && *object.MeshIndex < extra_entities_per_mesh.size()) {
             const auto &extras = extra_entities_per_mesh[*object.MeshIndex];
             for (const auto extra_entity : {extras.Lines, extras.Points}) {
-                if (extra_entity == entt::null) continue;
+                if (extra_entity == entt::null || extra_entity == primary_mesh_entity) continue;
                 const auto extra_instance = ::AddMeshInstance(
                     R, SceneEntity,
                     extra_entity,
@@ -334,6 +439,16 @@ std::expected<gltf::PopulateResult, std::string> gltf::PopulateGltfScene(gltf::S
         }
 
         object_entities_by_node[object.NodeIndex] = object_entity;
+        R.emplace<SourceNodeIndex>(object_entity, object.NodeIndex);
+        // `object.Name` was already synthesized by the loader's MakeNodeName when source was
+        // empty; `source.Nodes` preserves the raw value. Capture source-empty / collision-renamed.
+        if (object.NodeIndex < source.Nodes.size()) {
+            const auto &raw_name = source.Nodes[object.NodeIndex].Name;
+            if (raw_name.empty()) R.emplace<SourceEmptyName>(object_entity);
+            else if (const auto *n = R.try_get<const Name>(object_entity); n && n->Value != raw_name) {
+                R.emplace<SourceObjectName>(object_entity, SourceObjectName{raw_name});
+            }
+        }
         all_imported_objects.emplace_back(object_entity);
         // glTF node.skin is deform linkage, not a transform-parent relationship.
         if (object.SkinIndex && R.all_of<Instance>(object_entity)) skinned_mesh_instances_by_skin[*object.SkinIndex].emplace_back(object_entity);
@@ -357,39 +472,61 @@ std::expected<gltf::PopulateResult, std::string> gltf::PopulateGltfScene(gltf::S
     scene_nodes_by_index.reserve(source.Nodes.size());
     for (const auto &node : source.Nodes) scene_nodes_by_index.emplace(node.NodeIndex, &node);
 
-    // KHR_physics_rigid_bodies: create resource entities and emplace per-entity components.
-    {
-        // Promote loader's index-keyed resource arrays to registry entities.
-        std::vector<entt::entity> material_entities, filter_entities, jointdef_entities;
-        material_entities.reserve(source.PhysicsMaterials.size());
-        for (auto &m : source.PhysicsMaterials) {
-            const auto e = R.create();
-            R.emplace<PhysicsMaterial>(e, m);
-            material_entities.emplace_back(e);
+    // Stubs for out-of-scene nodes (referenced only by non-default scenes) so build emits them
+    // like the file round-trip does. They carry only what build needs and aren't in
+    // `object_entities_by_node`, so runtime systems that walk the scene tree don't see them.
+    for (const auto &node : source.Nodes) {
+        if (node.InScene) continue;
+        const auto e = R.create();
+        R.emplace<SourceNodeIndex>(e, node.NodeIndex);
+        R.emplace<Transform>(e, node.LocalTransform);
+        R.emplace<WorldTransform>(e, node.WorldTransform);
+        if (node.MeshIndex && *node.MeshIndex < mesh_entities.size() && mesh_entities[*node.MeshIndex] != entt::null) {
+            R.emplace<Instance>(e, mesh_entities[*node.MeshIndex]);
         }
+        if (node.Name.empty()) R.emplace<SourceEmptyName>(e);
+        else R.emplace<Name>(e, node.Name);
+    }
+
+    // KHR_physics_rigid_bodies: promote loader's index-keyed resource arrays to registry entities,
+    // each tagged with its source index for round-trip ordering.
+    {
+        const auto promote = [&]<typename TComp, typename TIndex>(const auto &src) {
+            std::vector<entt::entity> entities;
+            entities.reserve(src.size());
+            for (uint32_t i = 0; i < src.size(); ++i) {
+                const auto e = R.create();
+                R.emplace<TComp>(e, src[i]);
+                R.emplace<TIndex>(e, i);
+                entities.emplace_back(e);
+            }
+            return entities;
+        };
+        const auto material_entities = promote.operator()<PhysicsMaterial, SourcePhysicsMaterialIndex>(source.PhysicsMaterials);
+        const auto jointdef_entities = promote.operator()<::PhysicsJointDef, SourcePhysicsJointDefIndex>(source.PhysicsJointDefs);
+
         // Dedupe system names across all filters into CollisionSystem entities.
         std::unordered_map<std::string, entt::entity> system_entity_by_name;
-        const auto get_or_create_system = [&](const std::string &name) {
-            auto [it, inserted] = system_entity_by_name.try_emplace(name, entt::null);
-            if (inserted) {
-                it->second = R.create();
-                R.emplace<CollisionSystem>(it->second, CollisionSystem{.Name = name});
-            }
-            return it->second;
-        };
         const auto resolve_systems = [&](const std::vector<std::string> &names) {
             std::vector<entt::entity> out;
             out.reserve(names.size());
-            for (const auto &n : names) out.emplace_back(get_or_create_system(n));
+            for (const auto &n : names) {
+                auto [it, inserted] = system_entity_by_name.try_emplace(n, entt::null);
+                if (inserted) {
+                    it->second = R.create();
+                    R.emplace<CollisionSystem>(it->second, CollisionSystem{.Name = n});
+                }
+                out.emplace_back(it->second);
+            }
             return out;
         };
 
+        std::vector<entt::entity> filter_entities;
         filter_entities.reserve(source.CollisionFilters.size());
-        for (auto &f : source.CollisionFilters) {
-            CollisionFilter filter;
-            filter.Name = f.Name;
-            filter.Systems = resolve_systems(f.CollisionSystems);
-            // KHR schema forbids both collideWith and notCollideWith. Prefer allowlist if both appear.
+        for (uint32_t i = 0; i < source.CollisionFilters.size(); ++i) {
+            const auto &f = source.CollisionFilters[i];
+            CollisionFilter filter{.Systems = resolve_systems(f.CollisionSystems), .Name = f.Name};
+            // KHR schema forbids both collideWith and notCollideWith; prefer allowlist if both appear.
             if (!f.CollideWithSystems.empty()) {
                 filter.Mode = CollideMode::Allowlist;
                 filter.CollideSystems = resolve_systems(f.CollideWithSystems);
@@ -399,13 +536,8 @@ std::expected<gltf::PopulateResult, std::string> gltf::PopulateGltfScene(gltf::S
             }
             const auto e = R.create();
             R.emplace<CollisionFilter>(e, std::move(filter));
+            R.emplace<SourceCollisionFilterIndex>(e, i);
             filter_entities.emplace_back(e);
-        }
-        jointdef_entities.reserve(source.PhysicsJointDefs.size());
-        for (auto &jd : source.PhysicsJointDefs) {
-            const auto e = R.create();
-            R.emplace<PhysicsJointDef>(e, jd);
-            jointdef_entities.emplace_back(e);
         }
 
         auto resolve_mat = [&](std::optional<uint32_t> idx) {
@@ -449,7 +581,11 @@ std::expected<gltf::PopulateResult, std::string> gltf::PopulateGltfScene(gltf::S
                     // GeometryTrigger: reuse ColliderShape + TriggerTag. Skip if a solid collider
                     // already took this entity — KHR declares nodes as one-or-the-other.
                     if (!R.all_of<ColliderShape>(entity)) {
-                        R.emplace<ColliderShape>(entity, ColliderShape{.Shape = *td.Shape});
+                        ColliderShape shape{.Shape = *td.Shape};
+                        if (td.GeometryMeshIndex && *td.GeometryMeshIndex < mesh_entities.size()) {
+                            shape.MeshEntity = mesh_entities[*td.GeometryMeshIndex];
+                        }
+                        R.emplace<ColliderShape>(entity, std::move(shape));
                         R.emplace<ColliderPolicy>(entity, ColliderPolicy{.AutoFitDims = false, .LockedKind = true});
                         R.emplace<TriggerTag>(entity);
                         R.patch<ColliderMaterial>(entity, [&](auto &m) { m.CollisionFilterEntity = resolve_filter(td.CollisionFilterIndex); });
@@ -533,6 +669,8 @@ std::expected<gltf::PopulateResult, std::string> gltf::PopulateGltfScene(gltf::S
         R.emplace<Transform>(armature_entity, t);
         R.emplace<WorldTransform>(armature_entity, t);
         R.emplace<Name>(armature_entity, ::CreateName(R, SceneEntity, skin.Name.empty() ? std::format("{}_Armature{}", name_prefix, skin.SkinIndex) : skin.Name));
+        if (skin.Name.empty()) R.emplace<SourceEmptyName>(armature_entity);
+        else R.emplace<SkinName>(armature_entity, SkinName{skin.Name});
 
         if (skin.ParentObjectNodeIndex) {
             if (const auto parent_it = object_entities_by_node.find(*skin.ParentObjectNodeIndex);
@@ -564,6 +702,16 @@ std::expected<gltf::PopulateResult, std::string> gltf::PopulateGltfScene(gltf::S
             R.emplace<ArmaturePoseState>(armature_data_entity, std::move(pose_state));
         }
         ::CreateBoneInstances(R, ctx.Meshes, SceneEntity, armature_entity, armature_data_entity);
+        // Mark each bone entity with its source joint NodeIndex (for SaveScene round-trip).
+        const auto &bone_entities_for_source = R.get<const ArmatureObject>(armature_entity).BoneEntities;
+        for (uint32_t i = 0; i < armature.Bones.size(); ++i) {
+            const auto joint_node_index = armature.Bones[i].JointNodeIndex;
+            if (!joint_node_index) continue;
+            R.emplace<SourceNodeIndex>(bone_entities_for_source[i], *joint_node_index);
+            if (*joint_node_index < source.Nodes.size() && source.Nodes[*joint_node_index].Name.empty()) {
+                R.emplace<SourceEmptyName>(bone_entities_for_source[i]);
+            }
+        }
 
         // Auto-wire Child Of on bones whose joint node has a physics-driven ancestor object,
         // so the skin follows simulated motion when an asset pairs rigid bodies with skinning via the scene graph.
@@ -598,6 +746,27 @@ std::expected<gltf::PopulateResult, std::string> gltf::PopulateGltfScene(gltf::S
                 );
             }
         }
+    }
+
+    // Per source-derived entity: tag with source parent / sibling position / matrix-form flag,
+    // and stash source `LocalTransform` for lossless save (see `SourceLocalTransform`).
+    // `Transform`/`WorldTransform`/`ParentInverse` are left as set by AddMeshInstance/etc. + SetParent
+    // (Transform == world, ParentInverse == inverse(parent_world)).
+    for (const auto [entity, sni] : R.view<const SourceNodeIndex>().each()) {
+        const auto it = scene_nodes_by_index.find(sni.Value);
+        if (it == scene_nodes_by_index.end()) continue;
+        const auto &source_node = *it->second;
+        if (source_node.ParentNodeIndex) {
+            R.emplace<SourceParentNodeIndex>(entity, *source_node.ParentNodeIndex);
+            if (const auto parent_it = scene_nodes_by_index.find(*source_node.ParentNodeIndex); parent_it != scene_nodes_by_index.end()) {
+                const auto &siblings = parent_it->second->ChildrenNodeIndices;
+                if (const auto pos = std::ranges::find(siblings, sni.Value); pos != siblings.end()) {
+                    R.emplace<SourceSiblingIndex>(entity, uint32_t(pos - siblings.begin()));
+                }
+            }
+        }
+        if (source_node.SourceMatrix) R.emplace<SourceMatrixTransform>(entity, *source_node.SourceMatrix);
+        else R.emplace<SourceLocalTransform>(entity, source_node.LocalTransform);
     }
 
     std::unordered_set<uint32_t> joint_node_indices;
@@ -793,6 +962,587 @@ std::expected<gltf::PopulateResult, std::string> gltf::PopulateGltfScene(gltf::S
     };
 }
 
-gltf::Scene gltf::BuildGltfScene(const entt::registry &, entt::entity) {
-    return gltf::Scene{};
+gltf::Scene gltf::BuildGltfScene(const entt::registry &r, entt::entity scene_entity, const SceneBuffers &buffers, const MeshStore &meshes) {
+    gltf::Scene scene;
+
+    // Order entities in `view` by their `TIndex` sidecar value. Entities without `TIndex`
+    // (runtime-added) land after the source range. Used for cameras, lights, physics resources.
+    const auto ordered_by_source = [&]<typename TIndex>(auto view) {
+        std::vector<std::pair<uint32_t, entt::entity>> ordered;
+        uint32_t next = 0;
+        for (const auto e : view) {
+            if (const auto *si = r.try_get<const TIndex>(e)) {
+                ordered.emplace_back(si->Value, e);
+                next = std::max(next, si->Value + 1u);
+            }
+        }
+        for (const auto e : view) {
+            if (!r.all_of<TIndex>(e)) ordered.emplace_back(next++, e);
+        }
+        std::ranges::sort(ordered, {}, &std::pair<uint32_t, entt::entity>::first);
+        return ordered;
+    };
+
+    // Source-form scene metadata + texture/image/sampler arrays come from the GltfSourceAssets
+    // sidecar — encoded image bytes, sampler-config collapse, and asset.* metadata aren't
+    // recoverable from registry/GPU state. Cameras and lights emit below from per-entity
+    // components (see CameraName/LightName). Materials reconstruct via FromGpu(GPU buffer) +
+    // patch from the per-material delta in `MaterialMetas`.
+    const auto *src_assets = r.try_get<const GltfSourceAssets>(scene_entity);
+    if (src_assets) {
+        scene.Copyright = src_assets->Copyright;
+        scene.Generator = src_assets->Generator;
+        scene.MinVersion = src_assets->MinVersion;
+        scene.AssetExtras = src_assets->AssetExtras;
+        scene.AssetExtensions = src_assets->AssetExtensions;
+        scene.DefaultSceneName = src_assets->DefaultSceneName;
+        scene.DefaultSceneRoots = src_assets->DefaultSceneRoots;
+        scene.ExtensionsRequired = src_assets->ExtensionsRequired;
+        scene.MaterialVariants = src_assets->MaterialVariants;
+        scene.ExtrasByEntity = src_assets->ExtrasByEntity;
+        scene.Textures = src_assets->Textures;
+        scene.Images = src_assets->Images;
+        scene.Samplers = src_assets->Samplers;
+        scene.ImageBasedLight = src_assets->ImageBasedLight;
+    }
+    // Materials: skip the engine "Default" at registry index 0; loaded gltf materials live at
+    // [1, count). Reconstruct each via `FromGpu` then patch with `MaterialSourceMeta` to restore
+    // KHR_materials_emissive_strength split, KHR_texture_transform meta, source texture indices,
+    // and the optionality of extension blocks (FromGpu's value-vs-default gate is lossy for them).
+    const auto &names = r.get<const MaterialStore>(scene_entity).Names;
+    const auto material_count = buffers.Materials.Count();
+    const auto &material_metas = src_assets ? src_assets->MaterialMetas : std::vector<MaterialSourceMeta>{};
+    if (material_count > 1) {
+        using M = MaterialSourceMeta;
+        // Restore an extension's optional<>: bit set + FromGpu produced nullopt (all-defaults block) → default-construct.
+        // Bit clear → drop FromGpu's reconstruction (source had no extension).
+        const auto sync_ext = [&]<typename T>(std::optional<T> &slot, uint16_t bits, uint16_t bit) {
+            if (bits & bit) {
+                if (!slot) slot = T{};
+            } else slot.reset();
+        };
+        scene.Materials.reserve(material_count - 1);
+        for (uint32_t i = 1; i < material_count; ++i) {
+            const auto source_idx = i - 1;
+            auto data = gltf::FromGpu(buffers.Materials.Get(i));
+            std::string name = i < names.size() ? names[i] : std::string{};
+            if (source_idx < material_metas.size()) {
+                const auto &meta = material_metas[source_idx];
+                const auto bits = meta.ExtensionPresence;
+                // Base texture slots + KHR_texture_transform meta.
+                const std::array<TextureInfo *, 5> base_tex{&data.BaseColorTexture, &data.MetallicRoughnessTexture, &data.NormalTexture, &data.OcclusionTexture, &data.EmissiveTexture};
+                const std::array<gltf::TextureTransformMeta *, 5> base_meta{&data.BaseColorMeta, &data.MetallicRoughnessMeta, &data.NormalMeta, &data.OcclusionMeta, &data.EmissiveMeta};
+                for (uint8_t k = 0; k < 5; ++k) {
+                    base_tex[k]->Slot = meta.TextureSlots[k];
+                    *base_meta[k] = meta.BaseSlotMeta[k];
+                }
+                // Extension presence — Ior/Dispersion are scalars; the rest are sub-structs.
+                if (bits & M::ExtIor) {
+                    if (!data.Ior) data.Ior = 1.5f;
+                } else data.Ior.reset();
+                if (bits & M::ExtDispersion) {
+                    if (!data.Dispersion) data.Dispersion = 0.f;
+                } else data.Dispersion.reset();
+                sync_ext(data.Sheen, bits, M::ExtSheen);
+                sync_ext(data.Specular, bits, M::ExtSpecular);
+                sync_ext(data.Transmission, bits, M::ExtTransmission);
+                sync_ext(data.DiffuseTransmission, bits, M::ExtDiffuseTransmission);
+                sync_ext(data.Volume, bits, M::ExtVolume);
+                sync_ext(data.Clearcoat, bits, M::ExtClearcoat);
+                sync_ext(data.Anisotropy, bits, M::ExtAnisotropy);
+                sync_ext(data.Iridescence, bits, M::ExtIridescence);
+                // Nested extension texture slots — assigns are no-ops when the optional is empty.
+                const auto put = [&](auto &opt, auto field, MaterialTextureSlot s) {
+                    if (opt) ((*opt).*field).Slot = meta.TextureSlots[s];
+                };
+                put(data.Specular, &::Specular::Texture, MTS_Specular);
+                put(data.Specular, &::Specular::ColorTexture, MTS_SpecularColor);
+                put(data.Sheen, &::Sheen::ColorTexture, MTS_SheenColor);
+                put(data.Sheen, &::Sheen::RoughnessTexture, MTS_SheenRoughness);
+                put(data.Transmission, &::Transmission::Texture, MTS_Transmission);
+                put(data.DiffuseTransmission, &::DiffuseTransmission::Texture, MTS_DiffuseTransmission);
+                put(data.DiffuseTransmission, &::DiffuseTransmission::ColorTexture, MTS_DiffuseTransmissionColor);
+                put(data.Volume, &::Volume::ThicknessTexture, MTS_VolumeThickness);
+                put(data.Clearcoat, &::Clearcoat::Texture, MTS_Clearcoat);
+                put(data.Clearcoat, &::Clearcoat::RoughnessTexture, MTS_ClearcoatRoughness);
+                put(data.Clearcoat, &::Clearcoat::NormalTexture, MTS_ClearcoatNormal);
+                put(data.Anisotropy, &::Anisotropy::Texture, MTS_Anisotropy);
+                put(data.Iridescence, &::Iridescence::Texture, MTS_Iridescence);
+                put(data.Iridescence, &::Iridescence::ThicknessTexture, MTS_IridescenceThickness);
+                // ToGpu folded `EmissiveFactor *= strength`; un-fold for round-trip.
+                if (meta.EmissiveStrength) {
+                    const float s = *meta.EmissiveStrength;
+                    if (s != 0.f) data.EmissiveFactor /= s;
+                    data.EmissiveStrength = s;
+                }
+                if (meta.NameWasEmpty) name.clear();
+            }
+            scene.Materials.emplace_back(gltf::NamedMaterial{.Value = std::move(data), .Name = std::move(name)});
+        }
+    }
+
+    // Mesh entities → MeshIndex. Source meshes use SourceMeshIndex for stable round-trip ordering;
+    // engine-generated meshes (no SourceMeshIndex) are skipped — they don't belong in scene.Meshes.
+    std::unordered_map<entt::entity, uint32_t> mesh_entity_to_index;
+    uint32_t source_mesh_count = 0;
+    auto source_mesh_view = r.view<const Mesh, const SourceMeshIndex>();
+    for (const auto e : source_mesh_view) {
+        const auto smi_value = source_mesh_view.get<const SourceMeshIndex>(e).Value;
+        mesh_entity_to_index[e] = smi_value;
+        source_mesh_count = std::max(source_mesh_count, smi_value + 1u);
+    }
+
+    // Source meshes → gltf::MeshData. Triangles populate the .Triangles slot below, Lines and
+    // Points entities (which share a SourceMeshIndex with their sibling kinds) populate the
+    // .Lines / .Points slots in the second pass.
+    scene.Meshes.resize(source_mesh_count);
+    for (const auto [entity, smi, layout] : r.view<const SourceMeshIndex, const MeshSourceLayout>().each()) {
+        const auto *mesh_ptr = r.try_get<const Mesh>(entity);
+        if (!mesh_ptr) continue;
+        const auto &mesh = *mesh_ptr;
+        const auto store_id = mesh.GetStoreId();
+        const auto vertices = meshes.GetVertices(store_id);
+        const auto vertex_count = uint32_t(vertices.size());
+
+        ::MeshData triangles;
+        triangles.Positions.reserve(vertex_count);
+        for (const auto &v : vertices) triangles.Positions.emplace_back(v.Position);
+        triangles.Faces.reserve(mesh.FaceCount());
+        for (const auto fh : mesh.faces()) {
+            std::vector<uint32_t> face_indices;
+            for (const auto vh : mesh.fv_range(fh)) face_indices.emplace_back(*vh);
+            triangles.Faces.emplace_back(std::move(face_indices));
+        }
+
+        // Populate a TriangleAttrs slot iff any source primitive had that bit set. Per-primitive
+        // emission re-checks via `MeshPrimitives::AttributeFlags` at save time.
+        uint32_t any_flags = 0;
+        for (const auto f : layout.AttributeFlags) any_flags |= f;
+        ::MeshVertexAttributes attrs;
+        attrs.Colors0ComponentCount = layout.Colors0ComponentCount;
+        const auto fill = [&]<typename V>(uint32_t bit, std::optional<std::vector<V>> &dest, V Vertex::*field) {
+            if (!(any_flags & bit)) return;
+            dest.emplace();
+            dest->reserve(vertex_count);
+            for (const auto &v : vertices) dest->emplace_back(v.*field);
+        };
+        fill(MeshAttributeBit_Normal, attrs.Normals, &Vertex::Normal);
+        fill(MeshAttributeBit_Tangent, attrs.Tangents, &Vertex::Tangent);
+        fill(MeshAttributeBit_Color0, attrs.Colors0, &Vertex::Color);
+        fill(MeshAttributeBit_TexCoord0, attrs.TexCoords0, &Vertex::TexCoord0);
+        fill(MeshAttributeBit_TexCoord1, attrs.TexCoords1, &Vertex::TexCoord1);
+        fill(MeshAttributeBit_TexCoord2, attrs.TexCoords2, &Vertex::TexCoord2);
+        fill(MeshAttributeBit_TexCoord3, attrs.TexCoords3, &Vertex::TexCoord3);
+
+        const auto face_primitives = meshes.GetFacePrimitiveIndices(store_id);
+        const auto primitive_materials = meshes.GetPrimitiveMaterialIndices(store_id);
+        // Reverse populate's +1 material-index shift; `~0u` (out-of-range) = don't emit.
+        ::MeshPrimitives prims{
+            .FacePrimitiveIndices = {face_primitives.begin(), face_primitives.end()},
+            .VertexCounts = layout.VertexCounts,
+            .AttributeFlags = layout.AttributeFlags,
+            .HasSourceIndices = layout.HasSourceIndices,
+            .VariantMappings = layout.VariantMappings,
+        };
+        prims.MaterialIndices.reserve(primitive_materials.size());
+        for (const auto reg_idx : primitive_materials) prims.MaterialIndices.emplace_back(reg_idx >= 1 ? reg_idx - 1 : ~0u);
+
+        std::optional<ArmatureDeformData> deform_data;
+        if (const auto bd_range = meshes.GetBoneDeformRange(store_id); bd_range.Count > 0) {
+            const auto bd_span = meshes.BoneDeformBuffer.Get(bd_range);
+            ArmatureDeformData dd;
+            dd.Joints.reserve(bd_span.size());
+            dd.Weights.reserve(bd_span.size());
+            for (const auto &bdv : bd_span) {
+                dd.Joints.emplace_back(bdv.Joints);
+                dd.Weights.emplace_back(bdv.Weights);
+            }
+            deform_data = std::move(dd);
+        }
+
+        std::optional<MorphTargetData> morph_data;
+        if (const auto target_count = meshes.GetMorphTargetCount(store_id); target_count > 0 && vertex_count > 0) {
+            const auto mt_span = meshes.MorphTargetBuffer.Get(meshes.GetMorphTargetRange(store_id));
+            MorphTargetData md{.TargetCount = target_count};
+            md.PositionDeltas.reserve(mt_span.size());
+            for (const auto &m : mt_span) md.PositionDeltas.emplace_back(m.PositionDelta);
+            // CreateMesh writes 0 when source lacked normal deltas, so any non-zero ⇒ source had them.
+            if (std::ranges::any_of(mt_span, [](const auto &m) { return m.NormalDelta != vec3{0}; })) {
+                md.NormalDeltas.reserve(mt_span.size());
+                for (const auto &m : mt_span) md.NormalDeltas.emplace_back(m.NormalDelta);
+            }
+            md.TangentDeltas = layout.MorphTangentDeltas;
+            const auto default_weights = meshes.GetDefaultMorphWeights(store_id);
+            md.DefaultWeights.assign(default_weights.begin(), default_weights.end());
+            morph_data = std::move(md);
+        }
+
+        const auto *mn = r.try_get<const MeshName>(entity);
+        scene.Meshes[smi.Value] = gltf::MeshData{
+            .Triangles = std::move(triangles),
+            .TriangleAttrs = std::move(attrs),
+            .TrianglePrimitives = std::move(prims),
+            .DeformData = std::move(deform_data),
+            .MorphData = std::move(morph_data),
+            .Name = mn ? mn->Value : std::string{},
+        };
+    }
+
+    // Lines / Points entities → fill `.Lines` / `.Points` on the corresponding scene.Meshes slot.
+    // Lines/Points entities → fill the matching `.Lines`/`.Points` slot. Attrs are recovered by
+    // detecting non-default values: NORMAL non-zero, COLOR_0 not (1,1,1,1).
+    for (const auto [entity, smi, kind] : r.view<const SourceMeshIndex, const SourceMeshKind>().each()) {
+        if (kind.Value == MeshKind::Triangles) continue;
+        const auto *mesh_ptr = r.try_get<const Mesh>(entity);
+        if (!mesh_ptr) continue;
+        const auto &mesh = *mesh_ptr;
+        const auto vertices = meshes.GetVertices(mesh.GetStoreId());
+        ::MeshData md;
+        md.Positions.reserve(vertices.size());
+        for (const auto &v : vertices) md.Positions.emplace_back(v.Position);
+        if (kind.Value == MeshKind::Lines) {
+            md.Edges.reserve(mesh.EdgeCount());
+            for (const auto eh : mesh.edges()) {
+                const auto h0 = mesh.GetHalfedge(eh, 0);
+                md.Edges.emplace_back(std::array<uint32_t, 2>{*mesh.GetFromVertex(h0), *mesh.GetToVertex(h0)});
+            }
+        }
+        ::MeshVertexAttributes attrs;
+        const auto fill_if_any = [&]<typename V>(std::optional<std::vector<V>> &dest, V Vertex::*field, V sentinel) {
+            if (!std::ranges::any_of(vertices, [&](const auto &v) { return v.*field != sentinel; })) return;
+            dest.emplace();
+            dest->reserve(vertices.size());
+            for (const auto &v : vertices) dest->emplace_back(v.*field);
+        };
+        fill_if_any(attrs.Normals, &Vertex::Normal, vec3{0});
+        fill_if_any(attrs.Colors0, &Vertex::Color, vec4{1});
+        if (attrs.Colors0) attrs.Colors0ComponentCount = 4; // CPU stores vec4 regardless of source
+        auto &dst = scene.Meshes[smi.Value];
+        if (kind.Value == MeshKind::Lines) {
+            dst.Lines = std::move(md);
+            dst.LineAttrs = std::move(attrs);
+        } else {
+            dst.Points = std::move(md);
+            dst.PointAttrs = std::move(attrs);
+        }
+        if (dst.Name.empty()) {
+            if (const auto *mn = r.try_get<const MeshName>(entity)) dst.Name = mn->Value;
+        }
+    }
+
+    // Cameras / lights: one entry per component-bearing entity, in source-aligned order. Per the
+    // Khronos sample set source cameras/lights aren't shared across nodes, so 1:1 matches source counts.
+    std::unordered_map<entt::entity, uint32_t> camera_entity_to_index, light_entity_to_index;
+    {
+        auto camera_view = r.view<const ::Camera>();
+        for (const auto &[_, entity] : ordered_by_source.operator()<SourceCameraIndex>(camera_view)) {
+            camera_entity_to_index[entity] = uint32_t(scene.Cameras.size());
+            const auto *cn = r.try_get<const CameraName>(entity);
+            scene.Cameras.emplace_back(gltf::Camera{.Camera = camera_view.get<const ::Camera>(entity), .Name = cn ? cn->Value : std::string{}});
+        }
+        auto light_view = r.view<const PunctualLight>();
+        for (const auto &[_, entity] : ordered_by_source.operator()<SourceLightIndex>(light_view)) {
+            light_entity_to_index[entity] = uint32_t(scene.Lights.size());
+            const auto *ln = r.try_get<const LightName>(entity);
+            scene.Lights.emplace_back(gltf::Light{.Light = light_view.get<const PunctualLight>(entity), .Name = ln ? ln->Value : std::string{}});
+        }
+    }
+
+    // Armature data entities → SkinIndex (source-fidelity from ImportedSkin if present).
+    std::unordered_map<entt::entity, uint32_t> armature_data_to_skin_index;
+    for (const auto e : r.view<const Armature>()) {
+        const auto &arm = r.get<const Armature>(e);
+        armature_data_to_skin_index[e] = arm.ImportedSkin ? arm.ImportedSkin->SkinIndex : uint32_t(armature_data_to_skin_index.size());
+    }
+
+    // Map data entity → ArmatureObject entity (for parent-of-armature lookup + name).
+    std::unordered_map<entt::entity, entt::entity> armature_data_to_object;
+    for (const auto [e, ao] : r.view<const ArmatureObject>().each()) armature_data_to_object[ao.Entity] = e;
+
+    // Skins: one gltf::Skin per Armature data entity carrying ImportedSkin metadata.
+    for (const auto data_entity : r.view<const Armature>()) {
+        const auto &arm = r.get<const Armature>(data_entity);
+        if (!arm.ImportedSkin) continue;
+        const auto skin_index = arm.ImportedSkin->SkinIndex;
+        if (skin_index >= scene.Skins.size()) scene.Skins.resize(skin_index + 1);
+        auto &gltf_skin = scene.Skins[skin_index];
+        gltf_skin.SkinIndex = skin_index;
+        gltf_skin.SkeletonNodeIndex = arm.ImportedSkin->SkeletonNodeIndex;
+        gltf_skin.AnchorNodeIndex = arm.ImportedSkin->AnchorNodeIndex;
+        gltf_skin.InverseBindMatrices = arm.ImportedSkin->InverseBindMatrices;
+        if (const auto ait = armature_data_to_object.find(data_entity); ait != armature_data_to_object.end()) {
+            if (const auto *sn = r.try_get<const SceneNode>(ait->second); sn && sn->Parent != null_entity) {
+                if (const auto *psni = r.try_get<const SourceNodeIndex>(sn->Parent)) gltf_skin.ParentObjectNodeIndex = psni->Value;
+            }
+            if (const auto *sn = r.try_get<const SkinName>(ait->second)) gltf_skin.Name = sn->Value;
+            else if (!r.all_of<SourceEmptyName>(ait->second)) {
+                if (const auto *name = r.try_get<const Name>(ait->second)) gltf_skin.Name = name->Value;
+            }
+        }
+        gltf_skin.Joints.reserve(arm.ImportedSkin->OrderedJointNodeIndices.size());
+        for (const auto joint_node_index : arm.ImportedSkin->OrderedJointNodeIndices) {
+            std::optional<uint32_t> parent_joint_node_index;
+            std::string joint_name;
+            Transform rest_local{};
+            for (const auto &bone : arm.Bones) {
+                if (bone.JointNodeIndex == joint_node_index) {
+                    joint_name = bone.Name;
+                    rest_local = bone.RestLocal;
+                    if (bone.ParentIndex != InvalidBoneIndex) parent_joint_node_index = arm.Bones[bone.ParentIndex].JointNodeIndex;
+                    break;
+                }
+            }
+            gltf_skin.Joints.emplace_back(gltf::SkinJoint{
+                .JointNodeIndex = joint_node_index,
+                .ParentJointNodeIndex = parent_joint_node_index,
+                .RestLocal = rest_local,
+                .Name = std::move(joint_name),
+            });
+        }
+    }
+
+    // Scene tree: only source-derived entities (with `SourceNodeIndex`) become nodes; engine
+    // helpers like the armature object are skipped. Hierarchy comes from `SourceParentNodeIndex`,
+    // not `SceneNode` (which gets mutated by skinning/armature re-parenting at populate).
+    std::unordered_map<entt::entity, uint32_t> entity_to_node_index;
+    uint32_t total_node_count = 0;
+    for (const auto [e, sni] : r.view<const SourceNodeIndex>().each()) {
+        entity_to_node_index[e] = sni.Value;
+        total_node_count = std::max(total_node_count, sni.Value + 1u);
+    }
+    // Children paired with sibling position so we sort in source order.
+    std::unordered_map<uint32_t, std::vector<std::pair<uint32_t, uint32_t>>> children_by_parent;
+    for (const auto [e, sni, spi] : r.view<const SourceNodeIndex, const SourceParentNodeIndex>().each()) {
+        const auto *ssi = r.try_get<const SourceSiblingIndex>(e);
+        children_by_parent[spi.Value].emplace_back(ssi ? ssi->Value : sni.Value, sni.Value);
+    }
+    for (auto &[_, kids] : children_by_parent) std::ranges::sort(kids, {}, &std::pair<uint32_t, uint32_t>::first);
+
+    scene.Nodes.resize(total_node_count);
+    for (const auto [entity, node_index] : entity_to_node_index) {
+        auto &node = scene.Nodes[node_index];
+        node.NodeIndex = node_index;
+        // Prefer the SourceLocalTransform sidecar when present (lossless). Fallback: decompose
+        // `inv(parent_world) * Transform` from the engine's world-space `Transform`.
+        if (const auto *slt = r.try_get<const SourceLocalTransform>(entity)) {
+            node.LocalTransform = slt->Value;
+        } else {
+            const auto &transform = r.get<const Transform>(entity);
+            const auto *pi = r.try_get<const ParentInverse>(entity);
+            node.LocalTransform = pi ? ToTransform(pi->M * ToMatrix(transform)) : transform;
+        }
+        node.WorldTransform = r.get<const WorldTransform>(entity);
+        node.InScene = true;
+        node.IsJoint = r.all_of<BoneIndex>(entity);
+        if (const auto *smt = r.try_get<const SourceMatrixTransform>(entity)) node.SourceMatrix = smt->Value;
+        if (!r.all_of<SourceEmptyName>(entity)) {
+            if (const auto *son = r.try_get<const SourceObjectName>(entity)) node.Name = son->Value;
+            else if (const auto *name = r.try_get<const Name>(entity)) node.Name = name->Value;
+        }
+        if (const auto *spi = r.try_get<const SourceParentNodeIndex>(entity)) node.ParentNodeIndex = spi->Value;
+        if (const auto it = children_by_parent.find(node_index); it != children_by_parent.end()) {
+            node.ChildrenNodeIndices.reserve(it->second.size());
+            for (const auto &[_, child_idx] : it->second) node.ChildrenNodeIndices.push_back(child_idx);
+        }
+    }
+
+    // Fill mesh/camera/light/skin refs on both nodes and objects from the entity-index maps.
+    // `ArmatureModifier::ArmatureEntity` actually holds the Armature *data* entity (legacy naming).
+    const auto fill_refs = [&](entt::entity entity, auto &dst) {
+        if (const auto *inst = r.try_get<const Instance>(entity)) {
+            if (const auto it = mesh_entity_to_index.find(inst->Entity); it != mesh_entity_to_index.end()) dst.MeshIndex = it->second;
+        }
+        if (const auto it = camera_entity_to_index.find(entity); it != camera_entity_to_index.end()) dst.CameraIndex = it->second;
+        if (const auto it = light_entity_to_index.find(entity); it != light_entity_to_index.end()) dst.LightIndex = it->second;
+        if (const auto *am = r.try_get<const ArmatureModifier>(entity)) {
+            if (const auto it = armature_data_to_skin_index.find(am->ArmatureEntity); it != armature_data_to_skin_index.end()) dst.SkinIndex = it->second;
+        }
+    };
+    for (const auto [entity, node_index] : entity_to_node_index) fill_refs(entity, scene.Nodes[node_index]);
+
+    const auto to_object_type = [](ObjectType k) {
+        switch (k) {
+            case ObjectType::Mesh: return gltf::Object::Type::Mesh;
+            case ObjectType::Camera: return gltf::Object::Type::Camera;
+            case ObjectType::Light: return gltf::Object::Type::Light;
+            default: return gltf::Object::Type::Empty;
+        }
+    };
+    auto object_view = r.view<const Transform, const ObjectKind>();
+    for (const auto entity : object_view) {
+        const auto kind = object_view.get<const ObjectKind>(entity).Value;
+        if (kind == ObjectType::Armature) continue; // → gltf::Skin, handled separately.
+        const auto it = entity_to_node_index.find(entity);
+        if (it == entity_to_node_index.end()) continue;
+        const auto *spi = r.try_get<const SourceParentNodeIndex>(entity);
+        gltf::Object obj{
+            .ObjectType = to_object_type(kind),
+            .NodeIndex = it->second,
+            .ParentNodeIndex = spi ? std::optional{spi->Value} : std::nullopt,
+            .WorldTransform = r.get<const WorldTransform>(entity),
+        };
+        if (const auto *name = r.try_get<const Name>(entity)) obj.Name = name->Value;
+        fill_refs(entity, obj);
+        scene.Objects.emplace_back(std::move(obj));
+    }
+
+    // Physics document-level resources, source-aligned via the per-resource index sidecars.
+    std::unordered_map<entt::entity, uint32_t> physics_material_to_index, physics_jointdef_to_index, collision_filter_to_index;
+    {
+        auto mat_view = r.view<const PhysicsMaterial>();
+        for (const auto &[_, e] : ordered_by_source.operator()<SourcePhysicsMaterialIndex>(mat_view)) {
+            physics_material_to_index[e] = uint32_t(scene.PhysicsMaterials.size());
+            scene.PhysicsMaterials.emplace_back(mat_view.get<const PhysicsMaterial>(e));
+        }
+        auto jd_view = r.view<const ::PhysicsJointDef>();
+        for (const auto &[_, e] : ordered_by_source.operator()<SourcePhysicsJointDefIndex>(jd_view)) {
+            physics_jointdef_to_index[e] = uint32_t(scene.PhysicsJointDefs.size());
+            scene.PhysicsJointDefs.emplace_back(jd_view.get<const ::PhysicsJointDef>(e));
+        }
+        const auto resolve_system_names = [&](std::span<const entt::entity> systems) {
+            std::vector<std::string> names;
+            names.reserve(systems.size());
+            for (const auto se : systems) {
+                if (const auto *cs = r.try_get<const CollisionSystem>(se)) names.emplace_back(cs->Name);
+            }
+            return names;
+        };
+        auto cf_view = r.view<const CollisionFilter>();
+        for (const auto &[_, e] : ordered_by_source.operator()<SourceCollisionFilterIndex>(cf_view)) {
+            const auto &f = cf_view.get<const CollisionFilter>(e);
+            collision_filter_to_index[e] = uint32_t(scene.CollisionFilters.size());
+            gltf::CollisionFilterData data{.CollisionSystems = resolve_system_names(f.Systems), .Name = f.Name};
+            if (f.Mode == CollideMode::Allowlist) data.CollideWithSystems = resolve_system_names(f.CollideSystems);
+            else if (f.Mode == CollideMode::Blocklist) data.NotCollideWithSystems = resolve_system_names(f.CollideSystems);
+            scene.CollisionFilters.emplace_back(std::move(data));
+        }
+    }
+
+    // Per-node physics: walk all nodes, fill Motion/Velocity/Collider/Material/Trigger/Joint.
+    for (const auto [entity, node_index] : entity_to_node_index) {
+        if (node_index >= scene.Nodes.size()) continue;
+        auto &node = scene.Nodes[node_index];
+        if (const auto *m = r.try_get<const PhysicsMotion>(entity)) node.Motion = *m;
+        if (const auto *v = r.try_get<const PhysicsVelocity>(entity)) node.Velocity = *v;
+        if (const auto *cs = r.try_get<const ColliderShape>(entity)) {
+            if (!r.all_of<TriggerTag>(entity)) {
+                node.Collider = *cs;
+                if (const auto *cm = r.try_get<const ColliderMaterial>(entity)) {
+                    gltf::Node::MaterialRefs refs;
+                    if (const auto mit = physics_material_to_index.find(cm->PhysicsMaterialEntity); mit != physics_material_to_index.end()) refs.PhysicsMaterialIndex = mit->second;
+                    if (const auto fit = collision_filter_to_index.find(cm->CollisionFilterEntity); fit != collision_filter_to_index.end()) refs.CollisionFilterIndex = fit->second;
+                    if (refs.PhysicsMaterialIndex || refs.CollisionFilterIndex) node.Material = refs;
+                }
+                if (cs->MeshEntity != null_entity) {
+                    if (const auto mit = mesh_entity_to_index.find(cs->MeshEntity); mit != mesh_entity_to_index.end()) node.ColliderGeometryMeshIndex = mit->second;
+                }
+            } else {
+                // Geometry trigger: shape on the same entity, distinguished by TriggerTag.
+                gltf::Node::TriggerData td{.Shape = cs->Shape};
+                if (cs->MeshEntity != null_entity) {
+                    if (const auto mit = mesh_entity_to_index.find(cs->MeshEntity); mit != mesh_entity_to_index.end()) td.GeometryMeshIndex = mit->second;
+                }
+                if (const auto *cm = r.try_get<const ColliderMaterial>(entity)) {
+                    if (const auto fit = collision_filter_to_index.find(cm->CollisionFilterEntity); fit != collision_filter_to_index.end()) td.CollisionFilterIndex = fit->second;
+                }
+                node.Trigger = std::move(td);
+            }
+        }
+        if (const auto *tn = r.try_get<const TriggerNodes>(entity)) {
+            gltf::Node::TriggerData td;
+            td.NodeIndices.reserve(tn->Nodes.size());
+            for (const auto ne : tn->Nodes) {
+                if (const auto nit = entity_to_node_index.find(ne); nit != entity_to_node_index.end()) td.NodeIndices.emplace_back(nit->second);
+            }
+            if (const auto fit = collision_filter_to_index.find(tn->CollisionFilterEntity); fit != collision_filter_to_index.end()) td.CollisionFilterIndex = fit->second;
+            node.Trigger = std::move(td);
+        }
+        if (const auto *pj = r.try_get<const PhysicsJoint>(entity)) {
+            gltf::Node::JointData jd;
+            if (const auto cit = entity_to_node_index.find(pj->ConnectedNode); cit != entity_to_node_index.end()) jd.ConnectedNodeIndex = cit->second;
+            if (const auto dit = physics_jointdef_to_index.find(pj->JointDefEntity); dit != physics_jointdef_to_index.end()) jd.JointDefIndex = dit->second;
+            jd.EnableCollision = pj->EnableCollision;
+            node.Joint = jd;
+        }
+    }
+
+    // Animations: merge per-entity engine clips back into source-side clips by (Name, Duration).
+    // Populate split each source clip into N engine clips (one per affected entity); reverse here.
+    // Pre-seed scene.Animations in source-name order from `GltfSourceAssets::AnimationOrder` so
+    // animations[*] indices match source; clips not present in the source list (runtime-added)
+    // are appended.
+    std::unordered_map<std::string, size_t> clip_index_by_name;
+    if (src_assets) {
+        scene.Animations.reserve(src_assets->AnimationOrder.size());
+        for (const auto &name : src_assets->AnimationOrder) {
+            clip_index_by_name.emplace(name, scene.Animations.size());
+            scene.Animations.emplace_back(gltf::AnimationClip{.Name = name, .DurationSeconds = 0.f, .Channels = {}});
+        }
+    }
+    const auto get_or_create_clip = [&](const std::string &name, float duration) -> gltf::AnimationClip & {
+        auto [it, inserted] = clip_index_by_name.try_emplace(name, scene.Animations.size());
+        if (inserted) scene.Animations.emplace_back(gltf::AnimationClip{.Name = name, .DurationSeconds = duration, .Channels = {}});
+        else scene.Animations[it->second].DurationSeconds = std::max(scene.Animations[it->second].DurationSeconds, duration);
+        return scene.Animations[it->second];
+    };
+    const auto get_node_index = [&](entt::entity e) -> std::optional<uint32_t> {
+        const auto it = entity_to_node_index.find(e);
+        return it != entity_to_node_index.end() ? std::optional<uint32_t>{it->second} : std::nullopt;
+    };
+
+    // Armature animation: bone channels → joint node index.
+    for (const auto [data_entity, anim] : r.view<const ArmatureAnimation>().each()) {
+        const auto &arm = r.get<const Armature>(data_entity);
+        for (const auto &clip : anim.Clips) {
+            auto &gclip = get_or_create_clip(clip.Name, clip.DurationSeconds);
+            for (const auto &ch : clip.Channels) {
+                if (ch.BoneIndex == InvalidBoneIndex || ch.BoneIndex >= arm.Bones.size()) continue;
+                const auto &bone = arm.Bones[ch.BoneIndex];
+                if (!bone.JointNodeIndex) continue;
+                gclip.Channels.emplace_back(gltf::AnimationChannel{
+                    .TargetNodeIndex = *bone.JointNodeIndex,
+                    .Target = ch.Target,
+                    .Interp = ch.Interp,
+                    .TimesSeconds = ch.TimesSeconds,
+                    .Values = ch.Values,
+                });
+            }
+        }
+    }
+    // Morph weight animation: target = the mesh-instance entity's node index.
+    for (const auto [entity, anim] : r.view<const MorphWeightAnimation>().each()) {
+        const auto node_idx = get_node_index(entity);
+        if (!node_idx) continue;
+        for (const auto &clip : anim.Clips) {
+            auto &gclip = get_or_create_clip(clip.Name, clip.DurationSeconds);
+            for (const auto &ch : clip.Channels) {
+                gclip.Channels.emplace_back(gltf::AnimationChannel{
+                    .TargetNodeIndex = *node_idx,
+                    .Target = AnimationPath::Weights,
+                    .Interp = ch.Interp,
+                    .TimesSeconds = ch.TimesSeconds,
+                    .Values = ch.Values,
+                });
+            }
+        }
+    }
+    // Node transform animation: target = the object entity's node index.
+    for (const auto [entity, anim] : r.view<const NodeTransformAnimation>().each()) {
+        const auto node_idx = get_node_index(entity);
+        if (!node_idx) continue;
+        for (const auto &clip : anim.Clips) {
+            auto &gclip = get_or_create_clip(clip.Name, clip.DurationSeconds);
+            for (const auto &ch : clip.Channels) {
+                gclip.Channels.emplace_back(gltf::AnimationChannel{
+                    .TargetNodeIndex = *node_idx,
+                    .Target = ch.Target,
+                    .Interp = ch.Interp,
+                    .TimesSeconds = ch.TimesSeconds,
+                    .Values = ch.Values,
+                });
+            }
+        }
+    }
+
+    return scene;
 }
