@@ -1,7 +1,13 @@
+#include "SceneStores.h"
+#include "SceneVulkanResources.h"
+#include "gltf/EcsScene.h"
 #include "gltf/GltfScene.h"
+#include "vulkan/VulkanContext.h"
 
 #include <boost/ut.hpp>
 #include <simdjson.h>
+
+#include <entt/entity/registry.hpp>
 
 #include <algorithm>
 #include <cmath>
@@ -440,6 +446,43 @@ void CompareJson(simdjson::dom::element a, simdjson::dom::element b, std::string
 }
 } // namespace
 
+namespace {
+// Compares two parsed gltf JSON files A and B with the existing exception list. Reports up to
+// 20 unexpected diffs to stderr. Returns the count of unexpected diffs.
+size_t CompareGltfJson(const fs::path &a_path, const fs::path &b_path, std::string_view sample_name) {
+    using namespace boost::ut;
+    simdjson::dom::parser pa, pb;
+    simdjson::dom::element ea, eb;
+    const auto err_a = pa.load(a_path.string()).get(ea);
+    const auto err_b = pb.load(b_path.string()).get(eb);
+    expect(err_a == simdjson::SUCCESS) << "Parse A: " << simdjson::error_message(err_a);
+    expect(err_b == simdjson::SUCCESS) << "Parse B: " << simdjson::error_message(err_b);
+    if (err_a != simdjson::SUCCESS || err_b != simdjson::SUCCESS) return 0;
+
+    std::vector<Diff> all_diffs;
+    CompareJson(ea, eb, "", all_diffs, ea, eb);
+
+    std::vector<Diff> unexpected;
+    size_t expected = 0;
+    for (auto &d : all_diffs) {
+        if (IsExpectedDivergence(d.Path)) ++expected;
+        else unexpected.emplace_back(std::move(d));
+    }
+    if (!unexpected.empty()) {
+        constexpr size_t MaxReport = 20;
+        std::cerr << "  " << unexpected.size() << " unexpected JSON diff(s) in " << sample_name
+                  << " (" << expected << " expected-divergence diff(s) filtered):\n";
+        for (size_t i = 0; i < unexpected.size() && i < MaxReport; ++i) {
+            std::cerr << "    " << unexpected[i].Path << ": " << unexpected[i].Message << "\n";
+        }
+        if (unexpected.size() > MaxReport) {
+            std::cerr << "    ... and " << (unexpected.size() - MaxReport) << " more\n";
+        }
+    }
+    return unexpected.size();
+}
+} // namespace
+
 int main() {
     using namespace boost::ut;
 
@@ -451,46 +494,67 @@ int main() {
         samples.insert(samples.end(), found.begin(), found.end());
     }
 
+    // Headless Vulkan fixture shared across all ECS-roundtrip samples (device init is expensive).
+    // Each sample test below builds its own SceneStores + registry on top of these shared handles.
+    VulkanContext vk_ctx{{}, /*with_swapchain=*/false};
+    const SceneVulkanResources vk_resources{*vk_ctx.Instance, vk_ctx.PhysicalDevice, *vk_ctx.Device, vk_ctx.QueueFamily, vk_ctx.Queue};
+    const auto cmd_pool = vk_ctx.Device->createCommandPoolUnique({vk::CommandPoolCreateFlagBits::eResetCommandBuffer, vk_ctx.QueueFamily});
+    const auto fence = vk_ctx.Device->createFenceUnique({});
+
     for (const auto &src : samples) {
-        test(src.stem().string()) = [&] {
+        const auto sample_name = src.stem().string();
+
+        test(sample_name) = [&] {
             auto loaded = gltf::LoadScene(src);
             if (!loaded) return; // Loader limitation on source (e.g., unsupported extension); not a roundtrip concern.
 
-            const auto out_path = tmp_root / (src.stem().string() + ".gltf");
+            const auto out_path = tmp_root / (sample_name + ".gltf");
             auto save_result = gltf::SaveScene(*loaded, out_path);
             expect(save_result.has_value()) << "SaveScene failed: " << (save_result ? "" : save_result.error());
             if (!save_result) return;
 
-            simdjson::dom::parser pa, pb;
-            simdjson::dom::element ea, eb;
-            const auto err_a = pa.load(src.string()).get(ea);
-            const auto err_b = pb.load(out_path.string()).get(eb);
-            expect(err_a == simdjson::SUCCESS) << "Parse source: " << simdjson::error_message(err_a);
-            expect(err_b == simdjson::SUCCESS) << "Parse roundtripped: " << simdjson::error_message(err_b);
-            if (err_a != simdjson::SUCCESS || err_b != simdjson::SUCCESS) return;
+            const auto unexpected = CompareGltfJson(src, out_path, sample_name);
+            expect(unexpected == 0) << unexpected << " unexpected JSON diff(s)";
+        };
 
-            std::vector<Diff> all_diffs;
-            CompareJson(ea, eb, "", all_diffs, ea, eb);
+        test(sample_name + " (ecs)") = [&] {
+            auto loaded = gltf::LoadScene(src);
+            if (!loaded) return;
 
-            std::vector<Diff> unexpected;
-            size_t expected = 0;
-            for (auto &d : all_diffs) {
-                if (IsExpectedDivergence(d.Path)) ++expected;
-                else unexpected.emplace_back(std::move(d));
-            }
+            entt::registry registry;
+            SceneStores stores{vk_resources, *cmd_pool, *fence};
+            const auto scene_entity = WireSceneRegistry(registry, stores);
 
-            if (!unexpected.empty()) {
-                constexpr size_t MaxReport = 20;
-                std::cerr << "  " << unexpected.size() << " unexpected JSON diff(s) in " << src.stem().string()
-                          << " (" << expected << " expected-divergence diff(s) filtered):\n";
-                for (size_t i = 0; i < unexpected.size() && i < MaxReport; ++i) {
-                    std::cerr << "    " << unexpected[i].Path << ": " << unexpected[i].Message << "\n";
-                }
-                if (unexpected.size() > MaxReport) {
-                    std::cerr << "    ... and " << (unexpected.size() - MaxReport) << " more\n";
-                }
-            }
-            expect(unexpected.empty()) << unexpected.size() << " unexpected JSON diff(s)";
+            gltf::PopulateContext ctx{
+                .R = registry,
+                .SceneEntity = scene_entity,
+                .Vk = vk_resources,
+                .CommandPool = *cmd_pool,
+                .OneShotFence = *fence,
+                .Slots = *stores.Slots,
+                .Buffers = *stores.Buffers,
+                .Meshes = *stores.Meshes,
+                .Textures = *stores.Textures,
+                .Environments = *stores.Environments,
+            };
+            auto populate = gltf::PopulateGltfScene(*loaded, src, ctx);
+            expect(populate.has_value()) << "PopulateGltfScene failed: " << (populate ? "" : populate.error());
+            if (!populate) return;
+
+            auto rebuilt = gltf::BuildGltfScene(registry, scene_entity);
+
+            // Save both `loaded` and `rebuilt` through SaveScene; identical SaveScene paths cancel
+            // out fastgltf-side asymmetries, so any diff is genuine ECS-roundtrip lossiness.
+            const auto a_path = tmp_root / (sample_name + ".A.gltf");
+            const auto b_path = tmp_root / (sample_name + ".B.gltf");
+            auto save_a = gltf::SaveScene(*loaded, a_path);
+            auto save_b = gltf::SaveScene(rebuilt, b_path);
+            expect(save_a.has_value()) << "SaveScene(loaded) failed: " << (save_a ? "" : save_a.error());
+            expect(save_b.has_value()) << "SaveScene(rebuilt) failed: " << (save_b ? "" : save_b.error());
+            if (!save_a || !save_b) return;
+
+            const auto unexpected = CompareGltfJson(a_path, b_path, sample_name + " (ecs)");
+            expect(unexpected == 0) << unexpected << " unexpected JSON diff(s)";
         };
     }
 }

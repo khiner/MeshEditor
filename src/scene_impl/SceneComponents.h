@@ -1,6 +1,26 @@
 #pragma once
 
+#include "Armature.h" // BoneSelection
 #include "SceneModeComponents.h"
+#include "entt_fwd.h"
+
+#include <cstdint>
+#include <utility>
+#include <vector>
+
+#include <vulkan/vulkan.hpp>
+
+enum class ViewportShadingMode : uint8_t {
+    Wireframe,
+    Solid,
+    MaterialPreview,
+    Rendered,
+};
+
+enum class FaceColorMode {
+    Mesh,
+    Normals,
+};
 
 // Component on the scene singleton entity. Changes require command buffer re-recording.
 struct SceneSettings {

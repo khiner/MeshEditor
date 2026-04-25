@@ -3,6 +3,8 @@
 #include "AnimationTimeline.h"
 #include "Entity.h"
 #include "Path.h"
+#include "SceneOps.h"
+#include "SceneStores.h"
 #include "SceneVulkanResources.h"
 #include "TransformGizmo.h"
 #include "ViewCamera.h"
@@ -12,38 +14,6 @@
 
 #include <expected>
 #include <set>
-#include <unordered_set>
-
-enum class ViewportShadingMode : uint8_t {
-    Wireframe,
-    Solid,
-    MaterialPreview,
-    Rendered,
-};
-
-enum class FaceColorMode {
-    Mesh,
-    Normals,
-};
-
-struct MeshInstanceCreateInfo {
-    std::string Name{};
-    Transform Transform{};
-
-    enum class SelectBehavior {
-        Exclusive,
-        Additive,
-        None,
-    };
-    SelectBehavior Select{SelectBehavior::Exclusive};
-    bool Visible{true};
-};
-
-struct ObjectCreateInfo {
-    std::string Name{};
-    Transform Transform{};
-    MeshInstanceCreateInfo::SelectBehavior Select{MeshInstanceCreateInfo::SelectBehavior::Exclusive};
-};
 
 struct Armature;
 struct DescriptorSlots;
@@ -94,8 +64,6 @@ struct Scene {
     void ClearMeshes();
 
     void Destroy(entt::entity);
-
-    void SetVisible(entt::entity, bool visible);
 
     entt::entity GetMeshEntity(entt::entity) const;
     entt::entity GetActiveMeshEntity() const;
@@ -164,7 +132,7 @@ private:
     vk::UniqueFence OneShotFence; // For short-lived transfers (e.g. selection passes and image uploads)
     vk::UniqueSemaphore SelectionReadySemaphore; // Signals selection buffers ready for compute.
     vk::UniqueCommandBuffer ClickCommandBuffer;
-    std::unique_ptr<DescriptorSlots> Slots;
+    SceneStores Stores;
 
     struct SelectionSlotHandles;
     std::unique_ptr<SelectionSlotHandles> SelectionHandles;
@@ -177,19 +145,13 @@ private:
 
     entt::entity SceneEntity{null_entity}; // Singleton for scene-level components
 
-    std::unordered_set<std::string> NameSet; // O(1) uniqueness check for CreateName
     std::set<InteractionMode> InteractionModes{InteractionMode::Object, InteractionMode::Edit, InteractionMode::Pose};
     vec2 AccumulatedWrapMouseDelta{0, 0};
     double LastWheelZoomTime{-1.0};
     float WheelZoomBurst{0.f}; // Signed by zoom direction; stores the next burst level to apply.
     uint32_t ObjectPickEpochTag{255}; // 8-bit epoch encoded in object click keys; wraps with periodic key reset.
-    uint32_t NextObjectId{1}; // Monotonically increasing, assigned to RenderInstance on show
 
     std::unique_ptr<ScenePipelines> Pipelines;
-    std::unique_ptr<SceneBuffers> Buffers;
-    std::unique_ptr<MeshStore> Meshes;
-    std::unique_ptr<TextureStore> Textures;
-    std::unique_ptr<EnvironmentStore> Environments;
     std::unique_ptr<PhysicsWorld> Physics;
     std::unique_ptr<VideoRecorder> Recorder;
     std::pair<vk::Offset3D, vk::Extent2D> RecordRegion; // Locked at StartRecording; CaptureRecordFrame stops if the live region diverges.
@@ -324,13 +286,8 @@ private:
     entt::entity CreateExtrasBufferEntity(std::span<const vec3> positions, std::span<const uint8_t> vertex_classes = {}, std::span<const uint32_t> edge_indices = {});
     entt::entity CreateExtrasObject(std::span<const vec3> positions, std::span<const uint8_t> vertex_classes, std::span<const uint32_t> edge_indices, ObjectType, ObjectCreateInfo, const std::string &default_name);
 
-    std::string CreateName(std::string_view prefix);
-    void OnDestroyName(entt::registry &, entt::entity);
-
     void CreateBoneInstances(entt::entity arm_obj_entity, entt::entity arm_data_entity);
     entt::entity CreateSingleBoneInstance(entt::entity arm_obj_entity, uint32_t bone_id); // Create ECS entity + joints for one bone.
-    entt::entity CreateBoneEntity(entt::entity arm_obj_entity, const Armature &, uint32_t bone_index, entt::entity parent);
-    void CreateBoneJoints(entt::entity arm_obj_entity, entt::entity bone_entity, entt::entity joint_entity);
     void DestroyArmatureData(entt::entity arm_obj_entity);
     void RebuildBoneStructure(entt::entity arm_data_entity);
 
