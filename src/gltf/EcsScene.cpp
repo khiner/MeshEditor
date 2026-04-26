@@ -43,15 +43,14 @@
 #include <unordered_map>
 #include <unordered_set>
 
-// Internal-only intermediate representation built by LoadScene (parses fastgltf into a normalized
-// CPU view) and consumed by PopulateGltfScene to drain into ECS. The inverse path uses
-// BuildGltfScene + SaveScene. The struct + sub-types are TU-local — never include in any header.
+// Internal-only intermediate carriers (TU-local). MeshData specifically holds parsed-but-not-yet-
+// uploaded geometry: load builds it from fastgltf accessors, runs `MeshStore::PlanCreate` for the
+// whole batch (so arena reserves happen before any CreateMesh), and then drains into ECS. Save
+// reverses the flow, gathering per-(SourceMeshIndex, MeshKind) ECS state into one carrier per
+// source mesh before emitting fastgltf primitives. PlanCreate's batch-then-commit contract is
+// what blocks a single-pass collapse here — the bulk vertex/face data legitimately outlives the
+// parse.
 namespace gltf {
-struct NamedMaterial {
-    MaterialData Value{};
-    std::string Name;
-};
-
 struct MeshData {
     std::optional<::MeshData> Triangles, Lines, Points;
     ::MeshVertexAttributes TriangleAttrs, LineAttrs, PointAttrs;
@@ -61,6 +60,14 @@ struct MeshData {
     std::string Name;
 };
 
+// `Node` and `Object` carry per-node state too entangled to dissolve. Load fans each Node into
+// ~10 downstream passes (objects, parents, stubs, physics rb/joint, skin anchor, morph binding,
+// animation resolve, joint-name reconciliation) interleaved with ECS construction. Save
+// accumulates from independent ECS views and drains to `asset.nodes` only after the instance
+// fan-in is known — itself gated on `node_objects` and `skin_remap`. Splitting fields hits
+// option-1 (parallel cousins) or option-3 (tuples for MaterialRefs/TriggerData/JointData).
+// `Object` is the EXT_mesh_gpu_instancing fan-out (one Node → N Objects) feeding the same
+// passes, so it shares Node's fate.
 struct Node {
     uint32_t NodeIndex;
     std::optional<uint32_t> ParentNodeIndex;
@@ -111,40 +118,6 @@ struct Object {
     std::optional<uint32_t> MeshIndex, SkinIndex, CameraIndex, LightIndex;
     std::optional<std::vector<float>> NodeWeights;
     std::string Name;
-};
-
-struct SkinJoint {
-    uint32_t JointNodeIndex;
-    std::optional<uint32_t> ParentJointNodeIndex;
-    Transform RestLocal;
-    std::string Name;
-};
-
-struct Skin {
-    uint32_t SkinIndex;
-    std::string Name;
-    std::optional<uint32_t> SkeletonNodeIndex, AnchorNodeIndex, ParentObjectNodeIndex{};
-    std::vector<SkinJoint> Joints;
-    std::vector<mat4> InverseBindMatrices;
-};
-
-struct AnimationChannel {
-    uint32_t TargetNodeIndex;
-    AnimationPath Target;
-    AnimationInterpolation Interp;
-    std::vector<float> TimesSeconds;
-    std::vector<float> Values;
-};
-
-struct AnimationClip {
-    std::string Name;
-    float DurationSeconds;
-    std::vector<AnimationChannel> Channels;
-};
-
-struct CollisionFilterData {
-    std::vector<std::string> CollisionSystems{}, CollideWithSystems{}, NotCollideWithSystems{};
-    std::string Name{};
 };
 
 } // namespace gltf
@@ -1451,8 +1424,17 @@ std::expected<PopulateResult, std::string> LoadGltfFile(const std::filesystem::p
         });
     }
 
-    std::vector<NamedMaterial> source_materials;
+    // Plain `MaterialData` per source material — the name is read straight from `asset.materials`
+    // when needed. The trailing entry is the synthetic "DefaultMaterial" fallback (see below).
+    std::vector<MaterialData> source_materials;
     source_materials.reserve(asset.materials.size() + 1u);
+    // Build the FromGpu-lossy delta per material in the same pass: extension-block presence,
+    // KHR_texture_transform meta, source texture slots (pre-remap), and emissive_strength split.
+    std::vector<MaterialSourceMeta> material_metas;
+    material_metas.reserve(asset.materials.size() + 1u);
+    const auto opt_slot = [](const auto &opt, auto field) -> uint32_t {
+        return opt ? ((*opt).*field).Slot : InvalidSlot;
+    };
     for (uint32_t material_index = 0; material_index < asset.materials.size(); ++material_index) {
         const auto &material = asset.materials[material_index];
         TextureTransformMeta base_meta{}, mr_meta{}, normal_meta{}, occlusion_meta{}, emissive_meta{};
@@ -1549,12 +1531,47 @@ std::expected<PopulateResult, std::string> LoadGltfFile(const std::filesystem::p
             };
         }
 
-        source_materials.emplace_back(NamedMaterial{
-            .Value = std::move(data),
-            .Name = std::string(material.name),
-        });
+        using M = MaterialSourceMeta;
+        M meta{
+            .EmissiveStrength = data.EmissiveStrength,
+            .BaseSlotMeta = {data.BaseColorMeta, data.MetallicRoughnessMeta, data.NormalMeta, data.OcclusionMeta, data.EmissiveMeta},
+            .NameWasEmpty = material.name.empty(),
+        };
+        meta.TextureSlots = {
+            data.BaseColorTexture.Slot,
+            data.MetallicRoughnessTexture.Slot,
+            data.NormalTexture.Slot,
+            data.OcclusionTexture.Slot,
+            data.EmissiveTexture.Slot,
+            opt_slot(data.Specular, &::Specular::Texture),
+            opt_slot(data.Specular, &::Specular::ColorTexture),
+            opt_slot(data.Sheen, &::Sheen::ColorTexture),
+            opt_slot(data.Sheen, &::Sheen::RoughnessTexture),
+            opt_slot(data.Transmission, &::Transmission::Texture),
+            opt_slot(data.DiffuseTransmission, &::DiffuseTransmission::Texture),
+            opt_slot(data.DiffuseTransmission, &::DiffuseTransmission::ColorTexture),
+            opt_slot(data.Volume, &::Volume::ThicknessTexture),
+            opt_slot(data.Clearcoat, &::Clearcoat::Texture),
+            opt_slot(data.Clearcoat, &::Clearcoat::RoughnessTexture),
+            opt_slot(data.Clearcoat, &::Clearcoat::NormalTexture),
+            opt_slot(data.Anisotropy, &::Anisotropy::Texture),
+            opt_slot(data.Iridescence, &::Iridescence::Texture),
+            opt_slot(data.Iridescence, &::Iridescence::ThicknessTexture),
+        };
+        meta.ExtensionPresence = uint16_t(
+            (data.Ior ? M::ExtIor : 0) | (data.Dispersion ? M::ExtDispersion : 0) |
+            (data.EmissiveStrength ? M::ExtEmissiveStrength : 0) |
+            (data.Sheen ? M::ExtSheen : 0) | (data.Specular ? M::ExtSpecular : 0) |
+            (data.Transmission ? M::ExtTransmission : 0) | (data.DiffuseTransmission ? M::ExtDiffuseTransmission : 0) |
+            (data.Volume ? M::ExtVolume : 0) | (data.Clearcoat ? M::ExtClearcoat : 0) |
+            (data.Anisotropy ? M::ExtAnisotropy : 0) | (data.Iridescence ? M::ExtIridescence : 0)
+        );
+        material_metas.emplace_back(std::move(meta));
+        source_materials.emplace_back(std::move(data));
     }
-    source_materials.emplace_back(NamedMaterial{.Name = "DefaultMaterial"});
+    // Synthetic fallback used as the default material when a primitive references no material.
+    source_materials.emplace_back();
+    material_metas.emplace_back();
 
     const auto parents = BuildNodeParentTable(asset);
     std::vector<Transform> local_transforms(asset.nodes.size());
@@ -1585,9 +1602,9 @@ std::expected<PopulateResult, std::string> LoadGltfFile(const std::filesystem::p
         if (const auto skin_index = ToIndex(asset.nodes[node_index].skinIndex, asset.skins.size())) used_skin[*skin_index] = true;
     }
 
-    // Parse KHR_physics_rigid_bodies document-level resources
+    // Parse KHR_physics_rigid_bodies document-level resources. Collision filters are read straight
+    // from `asset.collisionFilters` at the consumer site below — no intermediate staging vector.
     std::vector<PhysicsMaterial> physics_materials;
-    std::vector<CollisionFilterData> collision_filters;
     std::vector<PhysicsJointDef> physics_joint_defs;
     {
         const auto ToCombineMode = [](fastgltf::CombineMode m) {
@@ -1606,13 +1623,6 @@ std::expected<PopulateResult, std::string> LoadGltfFile(const std::filesystem::p
                 .FrictionCombine = ToCombineMode(src.frictionCombine),
                 .RestitutionCombine = ToCombineMode(src.restitutionCombine),
             });
-        }
-        for (const auto &src : asset.collisionFilters) {
-            CollisionFilterData filter;
-            for (const auto &s : src.collisionSystems) filter.CollisionSystems.emplace_back(s);
-            for (const auto &s : src.collideWithSystems) filter.CollideWithSystems.emplace_back(s);
-            for (const auto &s : src.notCollideWithSystems) filter.NotCollideWithSystems.emplace_back(s);
-            collision_filters.emplace_back(std::move(filter));
         }
         for (const auto &src : asset.physicsJoints) {
             PhysicsJointDef def;
@@ -1841,144 +1851,18 @@ std::expected<PopulateResult, std::string> LoadGltfFile(const std::filesystem::p
         }
     }
 
-    std::vector<Skin> source_skins;
-    source_skins.reserve(asset.skins.size());
-    for (uint32_t skin_index = 0; skin_index < asset.skins.size(); ++skin_index) {
-        if (!used_skin[skin_index]) continue;
-        const auto &skin = asset.skins[skin_index];
-
-        std::vector<uint32_t> source_joint_nodes;
-        source_joint_nodes.reserve(skin.joints.size());
-        std::unordered_set<uint32_t> seen_joints;
-        for (const auto joint_idx : skin.joints) {
-            if (const auto joint = ToIndex(joint_idx, asset.nodes.size())) {
-                if (const auto [it, inserted] = seen_joints.emplace(*joint); inserted) {
-                    source_joint_nodes.emplace_back(*it);
-                }
+    // Quick scan: any skin with at least one valid joint reference and used_skin[i] is usable
+    // by the merged build/consume loop below. Used only for the early-exit guard.
+    const bool any_usable_skin = [&] {
+        for (uint32_t i = 0; i < asset.skins.size(); ++i) {
+            if (!used_skin[i]) continue;
+            for (const auto j : asset.skins[i].joints) {
+                if (j < asset.nodes.size()) return true;
             }
         }
-        if (source_joint_nodes.empty()) continue;
-
-        std::vector<bool> is_joint_in_skin(asset.nodes.size(), false);
-        for (const auto joint_node_index : source_joint_nodes) is_joint_in_skin[joint_node_index] = true;
-
-        std::unordered_map<uint32_t, std::optional<uint32_t>> joint_parent_map;
-        joint_parent_map.reserve(source_joint_nodes.size());
-        for (const auto joint_node_index : source_joint_nodes) {
-            joint_parent_map.emplace(joint_node_index, FindNearestJointAncestor(joint_node_index, parents, is_joint_in_skin));
-        }
-
-        auto ordered_joint_nodes = BuildParentBeforeChildJointOrder(source_joint_nodes, joint_parent_map, skin_index);
-        if (!ordered_joint_nodes) return std::unexpected{ordered_joint_nodes.error()};
-        // AddBone/FinalizeStructure consume joints in this parent-before-child order.
-
-        const auto skeleton_node_index = ToIndex(skin.skeleton, asset.nodes.size());
-        // Deterministic armature source anchor: explicit skin.skeleton if present,
-        // otherwise the computed joint ancestry root. Do not synthesize extra roots.
-        Skin scene_skin{
-            .SkinIndex = skin_index,
-            .Name = std::string(skin.name),
-            .SkeletonNodeIndex = skeleton_node_index,
-            .AnchorNodeIndex = skeleton_node_index ? skeleton_node_index : ComputeCommonAncestor(*ordered_joint_nodes, parents),
-            .Joints = {},
-            .InverseBindMatrices = {},
-        };
-        scene_skin.Joints.reserve(ordered_joint_nodes->size());
-        for (const auto joint_node_index : *ordered_joint_nodes) {
-            const auto parent_joint_node_index = joint_parent_map.at(joint_node_index);
-            auto rest_local = ComputeJointRestLocal(skin_index, joint_node_index, parent_joint_node_index, scene_skin.AnchorNodeIndex, parents, local_transforms);
-            if (!rest_local) return std::unexpected{rest_local.error()};
-
-            scene_skin.Joints.emplace_back(SkinJoint{
-                .JointNodeIndex = joint_node_index,
-                .ParentJointNodeIndex = parent_joint_node_index,
-                .RestLocal = *rest_local,
-                .Name = MakeNodeName(asset, joint_node_index),
-            });
-        }
-        scene_skin.InverseBindMatrices = LoadInverseBindMatrices(asset, skin, uint32_t(scene_skin.Joints.size()));
-        if (scene_skin.AnchorNodeIndex && traversal.InScene[*scene_skin.AnchorNodeIndex]) {
-            scene_skin.ParentObjectNodeIndex = nearest_object_ancestor[*scene_skin.AnchorNodeIndex];
-        }
-        source_skins.emplace_back(std::move(scene_skin));
-    }
-
-    // Parse animations
-    std::vector<AnimationClip> source_animations;
-    for (uint32_t anim_index = 0; anim_index < asset.animations.size(); ++anim_index) {
-        const auto &anim = asset.animations[anim_index];
-        std::vector<AnimationChannel> channels;
-        float max_time = 0;
-        struct ChannelTargetSpec {
-            AnimationPath Path;
-            std::size_t ComponentCount;
-        };
-        for (const auto &channel : anim.channels) {
-            if (!channel.nodeIndex || *channel.nodeIndex >= asset.nodes.size()) continue;
-            if (channel.samplerIndex >= anim.samplers.size()) continue;
-
-            const auto target_spec = [&]() -> std::optional<ChannelTargetSpec> {
-                switch (channel.path) {
-                    case fastgltf::AnimationPath::Translation: return ChannelTargetSpec{.Path = AnimationPath::Translation, .ComponentCount = 3};
-                    case fastgltf::AnimationPath::Rotation: return ChannelTargetSpec{.Path = AnimationPath::Rotation, .ComponentCount = 4};
-                    case fastgltf::AnimationPath::Scale: return ChannelTargetSpec{.Path = AnimationPath::Scale, .ComponentCount = 3};
-                    case fastgltf::AnimationPath::Weights: {
-                        const auto &target_node = asset.nodes[*channel.nodeIndex];
-                        if (!target_node.meshIndex || *target_node.meshIndex >= asset.meshes.size()) return std::nullopt;
-                        const auto component_count = asset.meshes[*target_node.meshIndex].primitives.empty() ? 0 : asset.meshes[*target_node.meshIndex].primitives[0].targets.size();
-                        if (component_count == 0) return std::nullopt;
-                        return ChannelTargetSpec{.Path = AnimationPath::Weights, .ComponentCount = component_count};
-                    }
-                }
-                return std::nullopt;
-            }();
-            if (!target_spec) continue;
-
-            const auto &sampler = anim.samplers[channel.samplerIndex];
-            if (sampler.inputAccessor >= asset.accessors.size() || sampler.outputAccessor >= asset.accessors.size()) continue;
-
-            const auto &input_accessor = asset.accessors[sampler.inputAccessor];
-            const auto &output_accessor = asset.accessors[sampler.outputAccessor];
-            if (input_accessor.count == 0) continue;
-
-            const auto interp = [&]() {
-                switch (sampler.interpolation) {
-                    case fastgltf::AnimationInterpolation::Step: return AnimationInterpolation::Step;
-                    case fastgltf::AnimationInterpolation::Linear: return AnimationInterpolation::Linear;
-                    case fastgltf::AnimationInterpolation::CubicSpline: return AnimationInterpolation::CubicSpline;
-                }
-                return AnimationInterpolation::Linear;
-            }();
-
-            std::vector<float> times(input_accessor.count);
-            fastgltf::copyFromAccessor<float>(asset, input_accessor, times.data());
-
-            std::vector<float> values;
-            if (target_spec->Path == AnimationPath::Weights) {
-                // Output is keyframe_count * target_count scalars.
-                values.resize(output_accessor.count);
-                fastgltf::copyFromAccessor<float>(asset, output_accessor, values.data());
-            } else {
-                values.resize(output_accessor.count * target_spec->ComponentCount);
-                if (target_spec->ComponentCount == 4) fastgltf::copyFromAccessor<vec4>(asset, output_accessor, reinterpret_cast<vec4 *>(values.data()));
-                else fastgltf::copyFromAccessor<vec3>(asset, output_accessor, reinterpret_cast<vec3 *>(values.data()));
-            }
-
-            if (!times.empty()) max_time = std::max(max_time, times.back());
-
-            channels.emplace_back(AnimationChannel{.TargetNodeIndex = uint32_t(*channel.nodeIndex), .Target = target_spec->Path, .Interp = interp, .TimesSeconds = std::move(times), .Values = std::move(values)});
-        }
-
-        if (!channels.empty()) {
-            source_animations.emplace_back(AnimationClip{
-                .Name = std::string(anim.name),
-                .DurationSeconds = max_time,
-                .Channels = std::move(channels),
-            });
-        }
-    }
-
-    if (source_objects.empty() && source_skins.empty()) {
+        return false;
+    }();
+    if (source_objects.empty() && !any_usable_skin) {
         return std::unexpected{std::format("glTF '{}' has no importable source objects or skins.", source_path.string())};
     }
 
@@ -2018,10 +1902,8 @@ std::expected<PopulateResult, std::string> LoadGltfFile(const std::filesystem::p
     };
 
     // Snapshot source-form gltf data onto SceneEntity before the materials loop remaps `tex.Slot`
-    // from gltf texture index to bindless sampler slot.
-    std::vector<std::string> animation_order;
-    animation_order.reserve(source_animations.size());
-    for (const auto &a : source_animations) animation_order.emplace_back(a.Name);
+    // from gltf texture index to bindless sampler slot. AnimationOrder is patched in below after
+    // animations are parsed (it depends on which source animations produced any valid channels).
     auto source_ibl = ConvertIBL(asset, scene_index);
     GltfSourceAssets source_assets{
         .Copyright = asset.assetInfo ? std::string(asset.assetInfo->copyright) : std::string{},
@@ -2034,7 +1916,6 @@ std::expected<PopulateResult, std::string> LoadGltfFile(const std::filesystem::p
         .Textures = textures,
         .Images = images,
         .Samplers = samplers,
-        .AnimationOrder = std::move(animation_order),
         .ImageBasedLight = source_ibl,
     };
     source_assets.DefaultSceneRoots.reserve(asset.scenes[scene_index].nodeIndices.size());
@@ -2045,57 +1926,8 @@ std::expected<PopulateResult, std::string> LoadGltfFile(const std::filesystem::p
     for (const auto &e : asset.extensionsRequired) source_assets.ExtensionsRequired.emplace_back(e);
     source_assets.MaterialVariants.reserve(asset.materialVariants.size());
     for (const auto &v : asset.materialVariants) source_assets.MaterialVariants.emplace_back(v);
+    source_assets.MaterialMetas = std::move(material_metas);
     R.emplace_or_replace<GltfSourceAssets>(SceneEntity, std::move(source_assets));
-
-    // Snapshot the FromGpu-lossy delta per source material before the texture-slot remap and
-    // before extension-block optionality is folded into the GPU `PBRMaterial`.
-    {
-        const auto opt_slot = [](const auto &opt, auto field) -> uint32_t {
-            return opt ? ((*opt).*field).Slot : InvalidSlot;
-        };
-        using M = MaterialSourceMeta;
-        std::vector<M> metas;
-        metas.reserve(source_materials.size());
-        for (const auto &nm : source_materials) {
-            const auto &m = nm.Value;
-            M meta{
-                .EmissiveStrength = m.EmissiveStrength,
-                .BaseSlotMeta = {m.BaseColorMeta, m.MetallicRoughnessMeta, m.NormalMeta, m.OcclusionMeta, m.EmissiveMeta},
-                .NameWasEmpty = nm.Name.empty(),
-            };
-            meta.TextureSlots = {
-                m.BaseColorTexture.Slot,
-                m.MetallicRoughnessTexture.Slot,
-                m.NormalTexture.Slot,
-                m.OcclusionTexture.Slot,
-                m.EmissiveTexture.Slot,
-                opt_slot(m.Specular, &::Specular::Texture),
-                opt_slot(m.Specular, &::Specular::ColorTexture),
-                opt_slot(m.Sheen, &::Sheen::ColorTexture),
-                opt_slot(m.Sheen, &::Sheen::RoughnessTexture),
-                opt_slot(m.Transmission, &::Transmission::Texture),
-                opt_slot(m.DiffuseTransmission, &::DiffuseTransmission::Texture),
-                opt_slot(m.DiffuseTransmission, &::DiffuseTransmission::ColorTexture),
-                opt_slot(m.Volume, &::Volume::ThicknessTexture),
-                opt_slot(m.Clearcoat, &::Clearcoat::Texture),
-                opt_slot(m.Clearcoat, &::Clearcoat::RoughnessTexture),
-                opt_slot(m.Clearcoat, &::Clearcoat::NormalTexture),
-                opt_slot(m.Anisotropy, &::Anisotropy::Texture),
-                opt_slot(m.Iridescence, &::Iridescence::Texture),
-                opt_slot(m.Iridescence, &::Iridescence::ThicknessTexture),
-            };
-            meta.ExtensionPresence = uint16_t(
-                (m.Ior ? M::ExtIor : 0) | (m.Dispersion ? M::ExtDispersion : 0) |
-                (m.EmissiveStrength ? M::ExtEmissiveStrength : 0) |
-                (m.Sheen ? M::ExtSheen : 0) | (m.Specular ? M::ExtSpecular : 0) |
-                (m.Transmission ? M::ExtTransmission : 0) | (m.DiffuseTransmission ? M::ExtDiffuseTransmission : 0) |
-                (m.Volume ? M::ExtVolume : 0) | (m.Clearcoat ? M::ExtClearcoat : 0) |
-                (m.Anisotropy ? M::ExtAnisotropy : 0) | (m.Iridescence ? M::ExtIridescence : 0)
-            );
-            metas.emplace_back(std::move(meta));
-        }
-        R.patch<GltfSourceAssets>(SceneEntity, [&](auto &a) { a.MaterialMetas = std::move(metas); });
-    }
 
     auto upload_batch = BeginTextureUploadBatch(ctx.Vk.Device, ctx.CommandPool, ctx.Buffers.Ctx);
 
@@ -2169,9 +2001,9 @@ std::expected<PopulateResult, std::string> LoadGltfFile(const std::filesystem::p
     material_names.reserve(source_materials.size());
     ctx.Buffers.Materials.Reserve(material_count + source_materials.size());
     for (uint32_t material_index = 0; material_index < source_materials.size(); ++material_index) {
-        const auto &src_named_material = source_materials[material_index];
-        const auto &src_material = src_named_material.Value;
-        const auto material_name = src_named_material.Name.empty() ? std::format("Material{}", material_index) : src_named_material.Name;
+        const auto &src_material = source_materials[material_index];
+        const auto src_name = material_index < asset.materials.size() ? std::string_view(asset.materials[material_index].name) : std::string_view{"DefaultMaterial"};
+        const auto material_name = src_name.empty() ? std::format("Material{}", material_index) : std::string{src_name};
         const auto clamp_uv_set = [&](uint32_t uv_set, std::string_view texture_label) {
             if (uv_set <= 3u) return uv_set;
             std::cerr << std::format(
@@ -2274,7 +2106,7 @@ std::expected<PopulateResult, std::string> LoadGltfFile(const std::filesystem::p
             PbrFeatureMask mesh_pbr_mask{0};
             for (const auto gltf_mat_idx : scene_mesh.TrianglePrimitives.MaterialIndices) {
                 if (gltf_mat_idx < source_materials.size()) {
-                    const auto mat = gltf::ToGpu(source_materials[gltf_mat_idx].Value);
+                    const auto mat = gltf::ToGpu(source_materials[gltf_mat_idx]);
                     if (mat.Transmission.Factor > 0.f || mat.Transmission.Texture.Slot != InvalidSlot) mesh_pbr_mask |= PbrFeature::Transmission;
                     if (mat.DiffuseTransmission.Factor > 0.f || mat.DiffuseTransmission.Texture.Slot != InvalidSlot) mesh_pbr_mask |= PbrFeature::DiffuseTrans;
                     if (mat.Clearcoat.Factor > 0.f || mat.Clearcoat.Texture.Slot != InvalidSlot) mesh_pbr_mask |= PbrFeature::Clearcoat;
@@ -2341,9 +2173,9 @@ std::expected<PopulateResult, std::string> LoadGltfFile(const std::filesystem::p
     std::unordered_map<uint32_t, entt::entity> object_entities_by_node;
     object_entities_by_node.reserve(source_objects.size());
     std::unordered_map<uint32_t, std::vector<entt::entity>> skinned_mesh_instances_by_skin;
-    skinned_mesh_instances_by_skin.reserve(source_skins.size());
+    skinned_mesh_instances_by_skin.reserve(asset.skins.size());
     std::unordered_map<uint32_t, entt::entity> armature_data_entities_by_skin;
-    armature_data_entities_by_skin.reserve(source_skins.size());
+    armature_data_entities_by_skin.reserve(asset.skins.size());
 
     std::vector<entt::entity> all_imported_objects;
     entt::entity first_object_entity = entt::null,
@@ -2470,14 +2302,15 @@ std::expected<PopulateResult, std::string> LoadGltfFile(const std::filesystem::p
 
         // Dedupe system names across all filters into CollisionSystem entities.
         std::unordered_map<std::string, entt::entity> system_entity_by_name;
-        const auto resolve_systems = [&](const std::vector<std::string> &names) {
+        const auto resolve_systems = [&](const auto &names) {
             std::vector<entt::entity> out;
             out.reserve(names.size());
             for (const auto &n : names) {
-                auto [it, inserted] = system_entity_by_name.try_emplace(n, entt::null);
+                std::string key{n};
+                auto [it, inserted] = system_entity_by_name.try_emplace(std::move(key), entt::null);
                 if (inserted) {
                     it->second = R.create();
-                    R.emplace<CollisionSystem>(it->second, CollisionSystem{.Name = n});
+                    R.emplace<CollisionSystem>(it->second, CollisionSystem{.Name = it->first});
                 }
                 out.emplace_back(it->second);
             }
@@ -2485,17 +2318,17 @@ std::expected<PopulateResult, std::string> LoadGltfFile(const std::filesystem::p
         };
 
         std::vector<entt::entity> filter_entities;
-        filter_entities.reserve(collision_filters.size());
-        for (uint32_t i = 0; i < collision_filters.size(); ++i) {
-            const auto &f = collision_filters[i];
-            CollisionFilter filter{.Systems = resolve_systems(f.CollisionSystems), .Name = f.Name};
+        filter_entities.reserve(asset.collisionFilters.size());
+        for (uint32_t i = 0; i < asset.collisionFilters.size(); ++i) {
+            const auto &src = asset.collisionFilters[i];
+            CollisionFilter filter{.Systems = resolve_systems(src.collisionSystems)};
             // KHR schema forbids both collideWith and notCollideWith; prefer allowlist if both appear.
-            if (!f.CollideWithSystems.empty()) {
+            if (!src.collideWithSystems.empty()) {
                 filter.Mode = CollideMode::Allowlist;
-                filter.CollideSystems = resolve_systems(f.CollideWithSystems);
-            } else if (!f.NotCollideWithSystems.empty()) {
+                filter.CollideSystems = resolve_systems(src.collideWithSystems);
+            } else if (!src.notCollideWithSystems.empty()) {
                 filter.Mode = CollideMode::Blocklist;
-                filter.CollideSystems = resolve_systems(f.NotCollideWithSystems);
+                filter.CollideSystems = resolve_systems(src.notCollideWithSystems);
             }
             const auto e = R.create();
             R.emplace<CollisionFilter>(e, std::move(filter));
@@ -2576,67 +2409,113 @@ std::expected<PopulateResult, std::string> LoadGltfFile(const std::filesystem::p
         }
     }
 
-    for (const auto &skin : source_skins) {
+    // Build + consume each skin in a single pass. Skin construction needs `parents`,
+    // `local_transforms`, `traversal`, `nearest_object_ancestor` (all set up earlier) and the
+    // already-emitted `object_entities_by_node` / `scene_nodes_by_index` (set up just above).
+    std::unordered_set<uint32_t> joint_node_indices;
+    for (uint32_t skin_index = 0; skin_index < asset.skins.size(); ++skin_index) {
+        if (!used_skin[skin_index]) continue;
+        const auto &skin = asset.skins[skin_index];
+
+        std::vector<uint32_t> source_joint_nodes;
+        source_joint_nodes.reserve(skin.joints.size());
+        std::unordered_set<uint32_t> seen_joints;
+        for (const auto joint_idx : skin.joints) {
+            if (const auto joint = ToIndex(joint_idx, asset.nodes.size())) {
+                if (const auto [it, inserted] = seen_joints.emplace(*joint); inserted) {
+                    source_joint_nodes.emplace_back(*it);
+                }
+            }
+        }
+        if (source_joint_nodes.empty()) continue;
+
+        std::vector<bool> is_joint_in_skin(asset.nodes.size(), false);
+        for (const auto joint_node_index : source_joint_nodes) is_joint_in_skin[joint_node_index] = true;
+
+        std::unordered_map<uint32_t, std::optional<uint32_t>> joint_parent_map;
+        joint_parent_map.reserve(source_joint_nodes.size());
+        for (const auto joint_node_index : source_joint_nodes) {
+            joint_parent_map.emplace(joint_node_index, FindNearestJointAncestor(joint_node_index, parents, is_joint_in_skin));
+        }
+
+        auto ordered_joint_nodes = BuildParentBeforeChildJointOrder(source_joint_nodes, joint_parent_map, skin_index);
+        if (!ordered_joint_nodes) return std::unexpected{ordered_joint_nodes.error()};
+        // AddBone/FinalizeStructure consume joints in this parent-before-child order.
+
+        const auto skeleton_node_index = ToIndex(skin.skeleton, asset.nodes.size());
+        // Deterministic armature source anchor: explicit skin.skeleton if present,
+        // otherwise the computed joint ancestry root. Do not synthesize extra roots.
+        const auto anchor_node_index = skeleton_node_index ? skeleton_node_index : ComputeCommonAncestor(*ordered_joint_nodes, parents);
+        const auto parent_object_node_index = (anchor_node_index && traversal.InScene[*anchor_node_index]) ? nearest_object_ancestor[*anchor_node_index] : std::optional<uint32_t>{};
+        auto inverse_bind_matrices = LoadInverseBindMatrices(asset, skin, uint32_t(ordered_joint_nodes->size()));
+
         const auto armature_data_entity = R.create();
         auto &armature = R.emplace<Armature>(armature_data_entity);
-        armature_data_entities_by_skin[skin.SkinIndex] = armature_data_entity;
+        armature_data_entities_by_skin[skin_index] = armature_data_entity;
 
         ArmatureImportedSkin imported_skin{
-            .SkinIndex = skin.SkinIndex,
-            .SkeletonNodeIndex = skin.SkeletonNodeIndex,
-            .AnchorNodeIndex = skin.AnchorNodeIndex,
+            .SkinIndex = skin_index,
+            .SkeletonNodeIndex = skeleton_node_index,
+            .AnchorNodeIndex = anchor_node_index,
             .OrderedJointNodeIndices = {},
-            .InverseBindMatrices = skin.InverseBindMatrices,
+            .InverseBindMatrices = std::move(inverse_bind_matrices),
         };
-        imported_skin.OrderedJointNodeIndices.reserve(skin.Joints.size());
+        imported_skin.OrderedJointNodeIndices.reserve(ordered_joint_nodes->size());
 
         std::unordered_map<uint32_t, BoneId> joint_node_to_bone_id;
-        joint_node_to_bone_id.reserve(skin.Joints.size());
-        for (const auto &joint : skin.Joints) {
+        joint_node_to_bone_id.reserve(ordered_joint_nodes->size());
+        for (const auto joint_node_index : *ordered_joint_nodes) {
+            joint_node_indices.emplace(joint_node_index);
+            const auto parent_joint_node_index = joint_parent_map.at(joint_node_index);
+            auto rest_local = ComputeJointRestLocal(skin_index, joint_node_index, parent_joint_node_index, anchor_node_index, parents, local_transforms);
+            if (!rest_local) return std::unexpected{rest_local.error()};
+
             std::optional<BoneId> parent_bone_id;
-            if (joint.ParentJointNodeIndex) {
-                if (const auto parent_it = joint_node_to_bone_id.find(*joint.ParentJointNodeIndex);
+            if (parent_joint_node_index) {
+                if (const auto parent_it = joint_node_to_bone_id.find(*parent_joint_node_index);
                     parent_it != joint_node_to_bone_id.end()) {
                     parent_bone_id = parent_it->second;
                 }
             }
 
-            const auto joint_name = joint.Name.empty() ? std::format("Joint{}", joint.JointNodeIndex) : joint.Name;
-            const auto bone_id = armature.AddBone(joint_name, parent_bone_id, joint.RestLocal, joint.JointNodeIndex);
-            joint_node_to_bone_id.emplace(joint.JointNodeIndex, bone_id);
-            if (const auto object_it = object_entities_by_node.find(joint.JointNodeIndex);
+            const auto source_name = MakeNodeName(asset, joint_node_index);
+            const auto joint_name = source_name.empty() ? std::format("Joint{}", joint_node_index) : source_name;
+            const auto bone_id = armature.AddBone(joint_name, parent_bone_id, *rest_local, joint_node_index);
+            joint_node_to_bone_id.emplace(joint_node_index, bone_id);
+            if (const auto object_it = object_entities_by_node.find(joint_node_index);
                 object_it != object_entities_by_node.end() &&
                 R.all_of<Instance>(object_it->second) &&
                 !R.all_of<PhysicsMotion>(object_it->second) &&
                 !R.all_of<BoneAttachment>(object_it->second)) {
                 R.emplace<BoneAttachment>(object_it->second, armature_data_entity, bone_id);
             }
-            imported_skin.OrderedJointNodeIndices.emplace_back(joint.JointNodeIndex);
+            imported_skin.OrderedJointNodeIndices.emplace_back(joint_node_index);
         }
         imported_skin.InverseBindMatrices.resize(imported_skin.OrderedJointNodeIndices.size(), I4);
         armature.ImportedSkin = std::move(imported_skin);
         armature.FinalizeStructure();
-        if (!skin.AnchorNodeIndex) {
-            return std::unexpected{std::format("glTF import failed for '{}': skin {} has no deterministic anchor node.", source_path.string(), skin.SkinIndex)};
+        if (!anchor_node_index) {
+            return std::unexpected{std::format("glTF import failed for '{}': skin {} has no deterministic anchor node.", source_path.string(), skin_index)};
         }
 
-        const auto anchor_it = scene_nodes_by_index.find(*skin.AnchorNodeIndex);
+        const auto anchor_it = scene_nodes_by_index.find(*anchor_node_index);
         if (anchor_it == scene_nodes_by_index.end() || !anchor_it->second->InScene) {
-            return std::unexpected{std::format("glTF import failed for '{}': skin {} anchor node {} is not in the imported scene.", source_path.string(), skin.SkinIndex, *skin.AnchorNodeIndex)};
+            return std::unexpected{std::format("glTF import failed for '{}': skin {} anchor node {} is not in the imported scene.", source_path.string(), skin_index, *anchor_node_index)};
         }
 
+        const std::string skin_name(skin.name);
         const auto armature_entity = R.create();
         R.emplace<ObjectKind>(armature_entity, ObjectType::Armature);
         R.emplace<ArmatureObject>(armature_entity, armature_data_entity);
         const auto &t = anchor_it->second->WorldTransform;
         R.emplace<Transform>(armature_entity, t);
         R.emplace<WorldTransform>(armature_entity, t);
-        R.emplace<Name>(armature_entity, ::CreateName(R, SceneEntity, skin.Name.empty() ? std::format("{}_Armature{}", name_prefix, skin.SkinIndex) : skin.Name));
-        if (skin.Name.empty()) R.emplace<SourceEmptyName>(armature_entity);
-        else R.emplace<SkinName>(armature_entity, SkinName{skin.Name});
+        R.emplace<Name>(armature_entity, ::CreateName(R, SceneEntity, skin_name.empty() ? std::format("{}_Armature{}", name_prefix, skin_index) : skin_name));
+        if (skin_name.empty()) R.emplace<SourceEmptyName>(armature_entity);
+        else R.emplace<SkinName>(armature_entity, SkinName{skin_name});
 
-        if (skin.ParentObjectNodeIndex) {
-            if (const auto parent_it = object_entities_by_node.find(*skin.ParentObjectNodeIndex);
+        if (parent_object_node_index) {
+            if (const auto parent_it = object_entities_by_node.find(*parent_object_node_index);
                 parent_it != object_entities_by_node.end()) {
                 SetParent(R, armature_entity, parent_it->second);
             }
@@ -2646,7 +2525,7 @@ std::expected<PopulateResult, std::string> LoadGltfFile(const std::filesystem::p
         if (first_armature_entity == entt::null) first_armature_entity = armature_entity;
         if (first_object_entity == entt::null) first_object_entity = armature_entity;
 
-        if (const auto skinned_it = skinned_mesh_instances_by_skin.find(skin.SkinIndex);
+        if (const auto skinned_it = skinned_mesh_instances_by_skin.find(skin_index);
             skinned_it != skinned_mesh_instances_by_skin.end()) {
             for (const auto mesh_instance_entity : skinned_it->second) {
                 if (!R.valid(mesh_instance_entity) || !R.all_of<Instance>(mesh_instance_entity)) continue;
@@ -2654,7 +2533,7 @@ std::expected<PopulateResult, std::string> LoadGltfFile(const std::filesystem::p
                 SetParent(R, mesh_instance_entity, armature_entity);
             }
         } else {
-            return std::unexpected{std::format("glTF import failed '{}': skin {} is used but no mesh instances were emitted for skin binding.", source_path.string(), skin.SkinIndex)};
+            return std::unexpected{std::format("glTF import failed '{}': skin {} is used but no mesh instances were emitted for skin binding.", source_path.string(), skin_index)};
         }
 
         { // Create pose state — GPU deform buffer allocation deferred to ProcessComponentEvents.
@@ -2732,10 +2611,6 @@ std::expected<PopulateResult, std::string> LoadGltfFile(const std::filesystem::p
         else R.emplace<SourceLocalTransform>(entity, source_node.LocalTransform);
     }
 
-    std::unordered_set<uint32_t> joint_node_indices;
-    for (const auto &skin : source_skins) {
-        for (const auto &joint : skin.Joints) joint_node_indices.emplace(joint.JointNodeIndex);
-    }
     std::unordered_map<uint32_t, std::vector<std::pair<entt::entity, BoneId>>> armature_targets_by_joint_node;
     for (const auto &entry : armature_data_entities_by_skin) {
         const auto armature_data_entity = entry.second;
@@ -2824,54 +2699,127 @@ std::expected<PopulateResult, std::string> LoadGltfFile(const std::filesystem::p
         );
     };
 
-    // Resolve armature, morph-weight, and node TRS channels in one pass per source clip.
-    for (const auto &anim_clip : source_animations) {
+    // Parse + resolve animations in a single pass: each source channel goes straight from
+    // fastgltf accessors into the per-entity ECS clip it targets. AnimationOrder records the
+    // source-form names of animations that produced at least one valid channel.
+    std::vector<std::string> animation_order;
+    animation_order.reserve(asset.animations.size());
+    struct ChannelTargetSpec {
+        AnimationPath Path;
+        std::size_t ComponentCount;
+    };
+    for (const auto &anim : asset.animations) {
         std::unordered_map<entt::entity, ::AnimationClip> armature_clips_by_entity;
         std::unordered_map<entt::entity, MorphWeightClip> morph_clips_by_entity;
         std::unordered_map<entt::entity, ::AnimationClip> node_clips_by_entity;
-        for (const auto &ch : anim_clip.Channels) {
-            if (ch.Target == AnimationPath::Weights) {
-                const auto inst_it = morph_instance_by_node.find(ch.TargetNodeIndex);
+        const std::string anim_name(anim.name);
+        float max_time = 0;
+        bool any_channel = false;
+
+        for (const auto &channel : anim.channels) {
+            if (!channel.nodeIndex || *channel.nodeIndex >= asset.nodes.size()) continue;
+            if (channel.samplerIndex >= anim.samplers.size()) continue;
+
+            const auto target_spec = [&]() -> std::optional<ChannelTargetSpec> {
+                switch (channel.path) {
+                    case fastgltf::AnimationPath::Translation: return ChannelTargetSpec{.Path = AnimationPath::Translation, .ComponentCount = 3};
+                    case fastgltf::AnimationPath::Rotation: return ChannelTargetSpec{.Path = AnimationPath::Rotation, .ComponentCount = 4};
+                    case fastgltf::AnimationPath::Scale: return ChannelTargetSpec{.Path = AnimationPath::Scale, .ComponentCount = 3};
+                    case fastgltf::AnimationPath::Weights: {
+                        const auto &target_node = asset.nodes[*channel.nodeIndex];
+                        if (!target_node.meshIndex || *target_node.meshIndex >= asset.meshes.size()) return std::nullopt;
+                        const auto component_count = asset.meshes[*target_node.meshIndex].primitives.empty() ? 0 : asset.meshes[*target_node.meshIndex].primitives[0].targets.size();
+                        if (component_count == 0) return std::nullopt;
+                        return ChannelTargetSpec{.Path = AnimationPath::Weights, .ComponentCount = component_count};
+                    }
+                }
+                return std::nullopt;
+            }();
+            if (!target_spec) continue;
+
+            const auto &sampler = anim.samplers[channel.samplerIndex];
+            if (sampler.inputAccessor >= asset.accessors.size() || sampler.outputAccessor >= asset.accessors.size()) continue;
+
+            const auto &input_accessor = asset.accessors[sampler.inputAccessor];
+            const auto &output_accessor = asset.accessors[sampler.outputAccessor];
+            if (input_accessor.count == 0) continue;
+
+            const auto interp = [&]() {
+                switch (sampler.interpolation) {
+                    case fastgltf::AnimationInterpolation::Step: return AnimationInterpolation::Step;
+                    case fastgltf::AnimationInterpolation::Linear: return AnimationInterpolation::Linear;
+                    case fastgltf::AnimationInterpolation::CubicSpline: return AnimationInterpolation::CubicSpline;
+                }
+                return AnimationInterpolation::Linear;
+            }();
+
+            std::vector<float> times(input_accessor.count);
+            fastgltf::copyFromAccessor<float>(asset, input_accessor, times.data());
+
+            std::vector<float> values;
+            if (target_spec->Path == AnimationPath::Weights) {
+                values.resize(output_accessor.count);
+                fastgltf::copyFromAccessor<float>(asset, output_accessor, values.data());
+            } else {
+                values.resize(output_accessor.count * target_spec->ComponentCount);
+                if (target_spec->ComponentCount == 4) fastgltf::copyFromAccessor<vec4>(asset, output_accessor, reinterpret_cast<vec4 *>(values.data()));
+                else fastgltf::copyFromAccessor<vec3>(asset, output_accessor, reinterpret_cast<vec3 *>(values.data()));
+            }
+
+            if (!times.empty()) max_time = std::max(max_time, times.back());
+            any_channel = true;
+            const uint32_t target_node_index = uint32_t(*channel.nodeIndex);
+
+            if (target_spec->Path == AnimationPath::Weights) {
+                const auto inst_it = morph_instance_by_node.find(target_node_index);
                 if (inst_it == morph_instance_by_node.end()) continue;
                 auto &resolved_clip = morph_clips_by_entity
-                                          .try_emplace(inst_it->second, MorphWeightClip{.Name = anim_clip.Name, .DurationSeconds = anim_clip.DurationSeconds, .Channels = {}})
+                                          .try_emplace(inst_it->second, MorphWeightClip{.Name = anim_name, .DurationSeconds = 0.f, .Channels = {}})
                                           .first->second;
                 resolved_clip.Channels.emplace_back(MorphWeightChannel{
-                    .Interp = ch.Interp,
-                    .TimesSeconds = ch.TimesSeconds,
-                    .Values = ch.Values,
+                    .Interp = interp,
+                    .TimesSeconds = std::move(times),
+                    .Values = std::move(values),
                 });
                 continue;
             }
 
-            if (const auto armature_it = armature_targets_by_joint_node.find(ch.TargetNodeIndex);
+            if (const auto armature_it = armature_targets_by_joint_node.find(target_node_index);
                 armature_it != armature_targets_by_joint_node.end()) {
                 for (const auto &[target_data_entity, bone_id] : armature_it->second) {
                     const auto &armature = R.get<const Armature>(target_data_entity);
                     const auto bone_index = armature.FindBoneIndex(bone_id).value_or(InvalidBoneIndex);
                     auto &resolved_clip = armature_clips_by_entity
-                                              .try_emplace(target_data_entity, ::AnimationClip{.Name = anim_clip.Name, .DurationSeconds = anim_clip.DurationSeconds, .Channels = {}})
+                                              .try_emplace(target_data_entity, ::AnimationClip{.Name = anim_name, .DurationSeconds = 0.f, .Channels = {}})
                                               .first->second;
-                    resolved_clip.Channels.emplace_back(::AnimationChannel{.BoneIndex = bone_index, .TargetBoneId = bone_id, .Target = ch.Target, .Interp = ch.Interp, .TimesSeconds = ch.TimesSeconds, .Values = ch.Values});
+                    resolved_clip.Channels.emplace_back(::AnimationChannel{.BoneIndex = bone_index, .TargetBoneId = bone_id, .Target = target_spec->Path, .Interp = interp, .TimesSeconds = times, .Values = values});
                 }
                 continue;
             }
 
-            if (joint_node_indices.contains(ch.TargetNodeIndex)) continue;
+            if (joint_node_indices.contains(target_node_index)) continue;
 
-            const auto object_it = object_entities_by_node.find(ch.TargetNodeIndex);
+            const auto object_it = object_entities_by_node.find(target_node_index);
             if (object_it == object_entities_by_node.end() || !R.valid(object_it->second)) continue;
 
             auto &resolved_clip = node_clips_by_entity
-                                      .try_emplace(object_it->second, ::AnimationClip{.Name = anim_clip.Name, .DurationSeconds = anim_clip.DurationSeconds, .Channels = {}})
+                                      .try_emplace(object_it->second, ::AnimationClip{.Name = anim_name, .DurationSeconds = 0.f, .Channels = {}})
                                       .first->second;
-            resolved_clip.Channels.emplace_back(::AnimationChannel{.BoneIndex = 0, .Target = ch.Target, .Interp = ch.Interp, .TimesSeconds = ch.TimesSeconds, .Values = ch.Values});
+            resolved_clip.Channels.emplace_back(::AnimationChannel{.BoneIndex = 0, .Target = target_spec->Path, .Interp = interp, .TimesSeconds = std::move(times), .Values = std::move(values)});
         }
+
+        if (!any_channel) continue;
+        animation_order.emplace_back(std::move(anim_name));
+
+        for (auto &[_, c] : armature_clips_by_entity) c.DurationSeconds = max_time;
+        for (auto &[_, c] : morph_clips_by_entity) c.DurationSeconds = max_time;
+        for (auto &[_, c] : node_clips_by_entity) c.DurationSeconds = max_time;
 
         for (auto &[target_data_entity, resolved_clip] : armature_clips_by_entity) append_armature_clip(target_data_entity, std::move(resolved_clip));
         for (auto &[instance_entity, resolved_clip] : morph_clips_by_entity) append_morph_clip(instance_entity, std::move(resolved_clip));
         for (auto &[object_entity, resolved_clip] : node_clips_by_entity) append_node_clip(object_entity, std::move(resolved_clip));
     }
+    R.patch<GltfSourceAssets>(SceneEntity, [&](auto &a) { a.AnimationOrder = std::move(animation_order); });
 
     { // Get timeline range from imported animation durations
         float max_dur = 0;
@@ -2964,75 +2912,6 @@ std::expected<void, std::string> SaveGltfFile(const entt::registry &r, entt::ent
     const auto &names = r.get<const MaterialStore>(scene_entity).Names;
     const auto material_count = buffers.Materials.Count();
     const auto &material_metas = src_assets ? src_assets->MaterialMetas : std::vector<MaterialSourceMeta>{};
-    std::vector<gltf::NamedMaterial> save_materials;
-    if (material_count > 1) {
-        using M = MaterialSourceMeta;
-        // Restore an extension's optional<>: bit set + FromGpu produced nullopt (all-defaults block) → default-construct.
-        // Bit clear → drop FromGpu's reconstruction (source had no extension).
-        const auto sync_ext = [&]<typename T>(std::optional<T> &slot, uint16_t bits, uint16_t bit) {
-            if (bits & bit) {
-                if (!slot) slot = T{};
-            } else slot.reset();
-        };
-        save_materials.reserve(material_count - 1);
-        for (uint32_t i = 1; i < material_count; ++i) {
-            const auto source_idx = i - 1;
-            auto data = gltf::FromGpu(buffers.Materials.Get(i));
-            std::string name = i < names.size() ? names[i] : std::string{};
-            if (source_idx < material_metas.size()) {
-                const auto &meta = material_metas[source_idx];
-                const auto bits = meta.ExtensionPresence;
-                // Base texture slots + KHR_texture_transform meta.
-                const std::array<TextureInfo *, 5> base_tex{&data.BaseColorTexture, &data.MetallicRoughnessTexture, &data.NormalTexture, &data.OcclusionTexture, &data.EmissiveTexture};
-                const std::array<gltf::TextureTransformMeta *, 5> base_meta{&data.BaseColorMeta, &data.MetallicRoughnessMeta, &data.NormalMeta, &data.OcclusionMeta, &data.EmissiveMeta};
-                for (uint8_t k = 0; k < 5; ++k) {
-                    base_tex[k]->Slot = meta.TextureSlots[k];
-                    *base_meta[k] = meta.BaseSlotMeta[k];
-                }
-                // Extension presence — Ior/Dispersion are scalars; the rest are sub-structs.
-                if (bits & M::ExtIor) {
-                    if (!data.Ior) data.Ior = 1.5f;
-                } else data.Ior.reset();
-                if (bits & M::ExtDispersion) {
-                    if (!data.Dispersion) data.Dispersion = 0.f;
-                } else data.Dispersion.reset();
-                sync_ext(data.Sheen, bits, M::ExtSheen);
-                sync_ext(data.Specular, bits, M::ExtSpecular);
-                sync_ext(data.Transmission, bits, M::ExtTransmission);
-                sync_ext(data.DiffuseTransmission, bits, M::ExtDiffuseTransmission);
-                sync_ext(data.Volume, bits, M::ExtVolume);
-                sync_ext(data.Clearcoat, bits, M::ExtClearcoat);
-                sync_ext(data.Anisotropy, bits, M::ExtAnisotropy);
-                sync_ext(data.Iridescence, bits, M::ExtIridescence);
-                // Nested extension texture slots — assigns are no-ops when the optional is empty.
-                const auto put = [&](auto &opt, auto field, MaterialTextureSlot s) {
-                    if (opt) ((*opt).*field).Slot = meta.TextureSlots[s];
-                };
-                put(data.Specular, &::Specular::Texture, MTS_Specular);
-                put(data.Specular, &::Specular::ColorTexture, MTS_SpecularColor);
-                put(data.Sheen, &::Sheen::ColorTexture, MTS_SheenColor);
-                put(data.Sheen, &::Sheen::RoughnessTexture, MTS_SheenRoughness);
-                put(data.Transmission, &::Transmission::Texture, MTS_Transmission);
-                put(data.DiffuseTransmission, &::DiffuseTransmission::Texture, MTS_DiffuseTransmission);
-                put(data.DiffuseTransmission, &::DiffuseTransmission::ColorTexture, MTS_DiffuseTransmissionColor);
-                put(data.Volume, &::Volume::ThicknessTexture, MTS_VolumeThickness);
-                put(data.Clearcoat, &::Clearcoat::Texture, MTS_Clearcoat);
-                put(data.Clearcoat, &::Clearcoat::RoughnessTexture, MTS_ClearcoatRoughness);
-                put(data.Clearcoat, &::Clearcoat::NormalTexture, MTS_ClearcoatNormal);
-                put(data.Anisotropy, &::Anisotropy::Texture, MTS_Anisotropy);
-                put(data.Iridescence, &::Iridescence::Texture, MTS_Iridescence);
-                put(data.Iridescence, &::Iridescence::ThicknessTexture, MTS_IridescenceThickness);
-                // ToGpu folded `EmissiveFactor *= strength`; un-fold for round-trip.
-                if (meta.EmissiveStrength) {
-                    const float s = *meta.EmissiveStrength;
-                    if (s != 0.f) data.EmissiveFactor /= s;
-                    data.EmissiveStrength = s;
-                }
-                if (meta.NameWasEmpty) name.clear();
-            }
-            save_materials.emplace_back(gltf::NamedMaterial{.Value = std::move(data), .Name = std::move(name)});
-        }
-    }
 
     // Mesh entities → MeshIndex. Source meshes use SourceMeshIndex for stable round-trip ordering;
     // engine-generated meshes (no SourceMeshIndex) are skipped — they don't belong in save_meshes.
@@ -3212,49 +3091,6 @@ std::expected<void, std::string> SaveGltfFile(const entt::registry &r, entt::ent
     std::unordered_map<entt::entity, entt::entity> armature_data_to_object;
     for (const auto [e, ao] : r.view<const ArmatureObject>().each()) armature_data_to_object[ao.Entity] = e;
 
-    // Skins: one gltf::Skin per Armature data entity carrying ImportedSkin metadata.
-    std::vector<gltf::Skin> save_skins;
-    for (const auto data_entity : r.view<const Armature>()) {
-        const auto &arm = r.get<const Armature>(data_entity);
-        if (!arm.ImportedSkin) continue;
-        const auto skin_index = arm.ImportedSkin->SkinIndex;
-        if (skin_index >= save_skins.size()) save_skins.resize(skin_index + 1);
-        auto &gltf_skin = save_skins[skin_index];
-        gltf_skin.SkinIndex = skin_index;
-        gltf_skin.SkeletonNodeIndex = arm.ImportedSkin->SkeletonNodeIndex;
-        gltf_skin.AnchorNodeIndex = arm.ImportedSkin->AnchorNodeIndex;
-        gltf_skin.InverseBindMatrices = arm.ImportedSkin->InverseBindMatrices;
-        if (const auto ait = armature_data_to_object.find(data_entity); ait != armature_data_to_object.end()) {
-            if (const auto *sn = r.try_get<const SceneNode>(ait->second); sn && sn->Parent != null_entity) {
-                if (const auto *psni = r.try_get<const SourceNodeIndex>(sn->Parent)) gltf_skin.ParentObjectNodeIndex = psni->Value;
-            }
-            if (const auto *sn = r.try_get<const SkinName>(ait->second)) gltf_skin.Name = sn->Value;
-            else if (!r.all_of<SourceEmptyName>(ait->second)) {
-                if (const auto *name = r.try_get<const Name>(ait->second)) gltf_skin.Name = name->Value;
-            }
-        }
-        gltf_skin.Joints.reserve(arm.ImportedSkin->OrderedJointNodeIndices.size());
-        for (const auto joint_node_index : arm.ImportedSkin->OrderedJointNodeIndices) {
-            std::optional<uint32_t> parent_joint_node_index;
-            std::string joint_name;
-            Transform rest_local{};
-            for (const auto &bone : arm.Bones) {
-                if (bone.JointNodeIndex == joint_node_index) {
-                    joint_name = bone.Name;
-                    rest_local = bone.RestLocal;
-                    if (bone.ParentIndex != InvalidBoneIndex) parent_joint_node_index = arm.Bones[bone.ParentIndex].JointNodeIndex;
-                    break;
-                }
-            }
-            gltf_skin.Joints.emplace_back(gltf::SkinJoint{
-                .JointNodeIndex = joint_node_index,
-                .ParentJointNodeIndex = parent_joint_node_index,
-                .RestLocal = rest_local,
-                .Name = std::move(joint_name),
-            });
-        }
-    }
-
     // Scene tree: only source-derived entities (with `SourceNodeIndex`) become nodes; engine
     // helpers like the armature object are skipped. Hierarchy comes from `SourceParentNodeIndex`,
     // not `SceneNode` (which gets mutated by skinning/armature re-parenting at populate).
@@ -3341,11 +3177,14 @@ std::expected<void, std::string> SaveGltfFile(const entt::registry &r, entt::ent
         save_objects.emplace_back(std::move(obj));
     }
 
+    // Asset is declared early so collision filters can be emitted directly into
+    // `asset.collisionFilters` (their pmr allocator binds to the asset).
+    fastgltf::Asset asset;
+
     // Physics document-level resources, source-aligned via the per-resource index sidecars.
     std::unordered_map<entt::entity, uint32_t> physics_material_to_index, physics_jointdef_to_index, collision_filter_to_index;
     std::vector<PhysicsMaterial> save_physics_materials;
     std::vector<::PhysicsJointDef> save_physics_joint_defs;
-    std::vector<gltf::CollisionFilterData> save_collision_filters;
     {
         auto mat_view = r.view<const PhysicsMaterial>();
         for (const auto &[_, e] : ordered_by_source.operator()<SourcePhysicsMaterialIndex>(mat_view)) {
@@ -3358,21 +3197,21 @@ std::expected<void, std::string> SaveGltfFile(const entt::registry &r, entt::ent
             save_physics_joint_defs.emplace_back(jd_view.get<const ::PhysicsJointDef>(e));
         }
         const auto resolve_system_names = [&](std::span<const entt::entity> systems) {
-            std::vector<std::string> names;
-            names.reserve(systems.size());
+            fastgltf::pmr::MaybeSmallVector<FgString> out;
+            out.reserve(systems.size());
             for (const auto se : systems) {
-                if (const auto *cs = r.try_get<const CollisionSystem>(se)) names.emplace_back(cs->Name);
+                if (const auto *cs = r.try_get<const CollisionSystem>(se)) out.emplace_back(ToFgStr(cs->Name));
             }
-            return names;
+            return out;
         };
         auto cf_view = r.view<const CollisionFilter>();
         for (const auto &[_, e] : ordered_by_source.operator()<SourceCollisionFilterIndex>(cf_view)) {
             const auto &f = cf_view.get<const CollisionFilter>(e);
-            collision_filter_to_index[e] = uint32_t(save_collision_filters.size());
-            gltf::CollisionFilterData data{.CollisionSystems = resolve_system_names(f.Systems), .Name = f.Name};
-            if (f.Mode == CollideMode::Allowlist) data.CollideWithSystems = resolve_system_names(f.CollideSystems);
-            else if (f.Mode == CollideMode::Blocklist) data.NotCollideWithSystems = resolve_system_names(f.CollideSystems);
-            save_collision_filters.emplace_back(std::move(data));
+            collision_filter_to_index[e] = uint32_t(asset.collisionFilters.size());
+            fastgltf::CollisionFilter out{.collisionSystems = resolve_system_names(f.Systems)};
+            if (f.Mode == CollideMode::Allowlist) out.collideWithSystems = resolve_system_names(f.CollideSystems);
+            else if (f.Mode == CollideMode::Blocklist) out.notCollideWithSystems = resolve_system_names(f.CollideSystems);
+            asset.collisionFilters.emplace_back(std::move(out));
         }
     }
 
@@ -3424,86 +3263,6 @@ std::expected<void, std::string> SaveGltfFile(const entt::registry &r, entt::ent
         }
     }
 
-    // Animations: merge per-entity engine clips back into source-side clips by (Name, Duration).
-    // Populate split each source clip into N engine clips (one per affected entity); reverse here.
-    // Pre-seed save_animations in source-name order from `GltfSourceAssets::AnimationOrder` so
-    // animations[*] indices match source; clips not present in the source list (runtime-added)
-    // are appended.
-    std::vector<gltf::AnimationClip> save_animations;
-    std::unordered_map<std::string, size_t> clip_index_by_name;
-    if (src_assets) {
-        save_animations.reserve(src_assets->AnimationOrder.size());
-        for (const auto &name : src_assets->AnimationOrder) {
-            clip_index_by_name.emplace(name, save_animations.size());
-            save_animations.emplace_back(gltf::AnimationClip{.Name = name, .DurationSeconds = 0.f, .Channels = {}});
-        }
-    }
-    const auto get_or_create_clip = [&](const std::string &name, float duration) -> gltf::AnimationClip & {
-        auto [it, inserted] = clip_index_by_name.try_emplace(name, save_animations.size());
-        if (inserted) save_animations.emplace_back(gltf::AnimationClip{.Name = name, .DurationSeconds = duration, .Channels = {}});
-        else save_animations[it->second].DurationSeconds = std::max(save_animations[it->second].DurationSeconds, duration);
-        return save_animations[it->second];
-    };
-    const auto get_node_index = [&](entt::entity e) -> std::optional<uint32_t> {
-        const auto it = entity_to_node_index.find(e);
-        return it != entity_to_node_index.end() ? std::optional<uint32_t>{it->second} : std::nullopt;
-    };
-
-    // Armature animation: bone channels → joint node index.
-    for (const auto [data_entity, anim] : r.view<const ArmatureAnimation>().each()) {
-        const auto &arm = r.get<const Armature>(data_entity);
-        for (const auto &clip : anim.Clips) {
-            auto &gclip = get_or_create_clip(clip.Name, clip.DurationSeconds);
-            for (const auto &ch : clip.Channels) {
-                if (ch.BoneIndex == InvalidBoneIndex || ch.BoneIndex >= arm.Bones.size()) continue;
-                const auto &bone = arm.Bones[ch.BoneIndex];
-                if (!bone.JointNodeIndex) continue;
-                gclip.Channels.emplace_back(gltf::AnimationChannel{
-                    .TargetNodeIndex = *bone.JointNodeIndex,
-                    .Target = ch.Target,
-                    .Interp = ch.Interp,
-                    .TimesSeconds = ch.TimesSeconds,
-                    .Values = ch.Values,
-                });
-            }
-        }
-    }
-    // Morph weight animation: target = the mesh-instance entity's node index.
-    for (const auto [entity, anim] : r.view<const MorphWeightAnimation>().each()) {
-        const auto node_idx = get_node_index(entity);
-        if (!node_idx) continue;
-        for (const auto &clip : anim.Clips) {
-            auto &gclip = get_or_create_clip(clip.Name, clip.DurationSeconds);
-            for (const auto &ch : clip.Channels) {
-                gclip.Channels.emplace_back(gltf::AnimationChannel{
-                    .TargetNodeIndex = *node_idx,
-                    .Target = AnimationPath::Weights,
-                    .Interp = ch.Interp,
-                    .TimesSeconds = ch.TimesSeconds,
-                    .Values = ch.Values,
-                });
-            }
-        }
-    }
-    // Node transform animation: target = the object entity's node index.
-    for (const auto [entity, anim] : r.view<const NodeTransformAnimation>().each()) {
-        const auto node_idx = get_node_index(entity);
-        if (!node_idx) continue;
-        for (const auto &clip : anim.Clips) {
-            auto &gclip = get_or_create_clip(clip.Name, clip.DurationSeconds);
-            for (const auto &ch : clip.Channels) {
-                gclip.Channels.emplace_back(gltf::AnimationChannel{
-                    .TargetNodeIndex = *node_idx,
-                    .Target = ch.Target,
-                    .Interp = ch.Interp,
-                    .TimesSeconds = ch.TimesSeconds,
-                    .Values = ch.Values,
-                });
-            }
-        }
-    }
-
-    fastgltf::Asset asset;
     // Empty strings are omitted by fastgltf's writer.
     asset.assetInfo = fastgltf::AssetInfo{
         .gltfVersion = "2.0",
@@ -3582,6 +3341,105 @@ std::expected<void, std::string> SaveGltfFile(const entt::registry &r, entt::ent
         }
     };
 
+    // Animations: merge per-entity engine clips back into source-side clips by (Name, Duration).
+    // Engine splits each source clip into N entity clips (one per affected entity); reverse here.
+    // Pre-seed `asset.animations` in source-name order from `GltfSourceAssets::AnimationOrder` so
+    // animations[*] indices match source; clips not in the source list (runtime-added) are appended.
+    std::unordered_map<std::string, size_t> clip_index_by_name;
+    std::vector<float> clip_duration_by_index;
+    if (src_assets) {
+        asset.animations.reserve(src_assets->AnimationOrder.size());
+        clip_duration_by_index.reserve(src_assets->AnimationOrder.size());
+        for (const auto &name : src_assets->AnimationOrder) {
+            clip_index_by_name.emplace(name, asset.animations.size());
+            asset.animations.emplace_back(fastgltf::Animation{.channels = {}, .samplers = {}, .name = ToFgStr(name)});
+            clip_duration_by_index.emplace_back(0.f);
+        }
+    }
+    const auto get_or_create_clip_index = [&](const std::string &name, float duration) -> size_t {
+        auto [it, inserted] = clip_index_by_name.try_emplace(name, asset.animations.size());
+        if (inserted) {
+            asset.animations.emplace_back(fastgltf::Animation{.channels = {}, .samplers = {}, .name = ToFgStr(name)});
+            clip_duration_by_index.emplace_back(duration);
+        } else {
+            clip_duration_by_index[it->second] = std::max(clip_duration_by_index[it->second], duration);
+        }
+        return it->second;
+    };
+    // Push one channel into asset.animations[clip_idx]: write times+values accessors, then add a sampler/channel pair.
+    const auto push_channel = [&](size_t clip_idx, uint32_t target_node_index, AnimationPath target, AnimationInterpolation interp, std::span<const float> times, std::span<const float> values) {
+        if (times.empty()) return;
+        const uint32_t t_offset = AppendAligned<float>(bin, times);
+        const uint32_t t_bv = AddBufferView(t_offset, uint32_t(times.size() * sizeof(float)));
+        const auto [t_min, t_max] = std::minmax_element(times.begin(), times.end());
+        const uint32_t t_acc = AddAccessor(
+            t_bv, uint32_t(times.size()), fastgltf::AccessorType::Scalar, fastgltf::ComponentType::Float,
+            MakeBounds({double(*t_min)}), MakeBounds({double(*t_max)})
+        );
+        const uint32_t v_offset = AppendAligned<float>(bin, values);
+        const uint32_t v_bv = AddBufferView(v_offset, uint32_t(values.size() * sizeof(float)));
+        const auto [v_type, v_count] = [&] -> std::pair<fastgltf::AccessorType, uint32_t> {
+            switch (target) {
+                case AnimationPath::Translation:
+                case AnimationPath::Scale: return {fastgltf::AccessorType::Vec3, uint32_t(values.size() / 3)};
+                case AnimationPath::Rotation: return {fastgltf::AccessorType::Vec4, uint32_t(values.size() / 4)};
+                case AnimationPath::Weights: return {fastgltf::AccessorType::Scalar, uint32_t(values.size())};
+            }
+        }();
+        const uint32_t v_acc = AddAccessor(v_bv, v_count, v_type, fastgltf::ComponentType::Float);
+        auto &anim = asset.animations[clip_idx];
+        anim.samplers.emplace_back(fastgltf::AnimationSampler{
+            .inputAccessor = t_acc,
+            .outputAccessor = v_acc,
+            .interpolation = FromInterp(interp),
+        });
+        anim.channels.emplace_back(fastgltf::AnimationChannel{
+            .samplerIndex = anim.samplers.size() - 1,
+            .nodeIndex = target_node_index,
+            .path = FromPath(target),
+        });
+    };
+    const auto get_node_index = [&](entt::entity e) -> std::optional<uint32_t> {
+        const auto it = entity_to_node_index.find(e);
+        return it != entity_to_node_index.end() ? std::optional<uint32_t>{it->second} : std::nullopt;
+    };
+
+    // Armature animation: bone channels → joint node index.
+    for (const auto [data_entity, anim] : r.view<const ArmatureAnimation>().each()) {
+        const auto &arm = r.get<const Armature>(data_entity);
+        for (const auto &clip : anim.Clips) {
+            const auto idx = get_or_create_clip_index(clip.Name, clip.DurationSeconds);
+            for (const auto &ch : clip.Channels) {
+                if (ch.BoneIndex == InvalidBoneIndex || ch.BoneIndex >= arm.Bones.size()) continue;
+                const auto &bone = arm.Bones[ch.BoneIndex];
+                if (!bone.JointNodeIndex) continue;
+                push_channel(idx, *bone.JointNodeIndex, ch.Target, ch.Interp, ch.TimesSeconds, ch.Values);
+            }
+        }
+    }
+    // Morph weight animation: target = the mesh-instance entity's node index.
+    for (const auto [entity, anim] : r.view<const MorphWeightAnimation>().each()) {
+        const auto node_idx = get_node_index(entity);
+        if (!node_idx) continue;
+        for (const auto &clip : anim.Clips) {
+            const auto idx = get_or_create_clip_index(clip.Name, clip.DurationSeconds);
+            for (const auto &ch : clip.Channels) {
+                push_channel(idx, *node_idx, AnimationPath::Weights, ch.Interp, ch.TimesSeconds, ch.Values);
+            }
+        }
+    }
+    // Node transform animation: target = the object entity's node index.
+    for (const auto [entity, anim] : r.view<const NodeTransformAnimation>().each()) {
+        const auto node_idx = get_node_index(entity);
+        if (!node_idx) continue;
+        for (const auto &clip : anim.Clips) {
+            const auto idx = get_or_create_clip_index(clip.Name, clip.DurationSeconds);
+            for (const auto &ch : clip.Channels) {
+                push_channel(idx, *node_idx, ch.Target, ch.Interp, ch.TimesSeconds, ch.Values);
+            }
+        }
+    }
+
     // Samplers
     asset.samplers.reserve(sa.Samplers.size());
     for (const auto &s : sa.Samplers) {
@@ -3650,13 +3508,76 @@ std::expected<void, std::string> SaveGltfFile(const entt::registry &r, entt::ent
         });
     }
 
-    // Materials: skip the trailing synthetic "DefaultMaterial" the loader appends.
-    const uint32_t save_material_count = save_materials.empty() ? 0 : uint32_t(save_materials.size() - 1);
+    // Materials: skip the engine "Default" at registry index 0 and the trailing synthetic
+    // "DefaultMaterial" the loader appends — emit i in [1, material_count - 1).
+    const uint32_t save_material_count = material_count > 1 ? material_count - 2u : 0u;
     asset.materials.reserve(save_material_count);
-    for (uint32_t i = 0; i < save_material_count; ++i) {
-        const auto &m = save_materials[i].Value;
+    using M = MaterialSourceMeta;
+    // Restore an extension's optional<>: bit set + FromGpu produced nullopt (all-defaults block) → default-construct.
+    // Bit clear → drop FromGpu's reconstruction (source had no extension).
+    const auto sync_ext = [&]<typename T>(std::optional<T> &slot, uint16_t bits, uint16_t bit) {
+        if (bits & bit) {
+            if (!slot) slot = T{};
+        } else slot.reset();
+    };
+    for (uint32_t i = 1; i <= save_material_count; ++i) {
+        const auto source_idx = i - 1;
+        auto data = gltf::FromGpu(buffers.Materials.Get(i));
+        std::string name = i < names.size() ? names[i] : std::string{};
+        if (source_idx < material_metas.size()) {
+            const auto &meta = material_metas[source_idx];
+            const auto bits = meta.ExtensionPresence;
+            // Base texture slots + KHR_texture_transform meta.
+            const std::array<TextureInfo *, 5> base_tex{&data.BaseColorTexture, &data.MetallicRoughnessTexture, &data.NormalTexture, &data.OcclusionTexture, &data.EmissiveTexture};
+            const std::array<gltf::TextureTransformMeta *, 5> base_meta{&data.BaseColorMeta, &data.MetallicRoughnessMeta, &data.NormalMeta, &data.OcclusionMeta, &data.EmissiveMeta};
+            for (uint8_t k = 0; k < 5; ++k) {
+                base_tex[k]->Slot = meta.TextureSlots[k];
+                *base_meta[k] = meta.BaseSlotMeta[k];
+            }
+            // Extension presence — Ior/Dispersion are scalars; the rest are sub-structs.
+            if (bits & M::ExtIor) {
+                if (!data.Ior) data.Ior = 1.5f;
+            } else data.Ior.reset();
+            if (bits & M::ExtDispersion) {
+                if (!data.Dispersion) data.Dispersion = 0.f;
+            } else data.Dispersion.reset();
+            sync_ext(data.Sheen, bits, M::ExtSheen);
+            sync_ext(data.Specular, bits, M::ExtSpecular);
+            sync_ext(data.Transmission, bits, M::ExtTransmission);
+            sync_ext(data.DiffuseTransmission, bits, M::ExtDiffuseTransmission);
+            sync_ext(data.Volume, bits, M::ExtVolume);
+            sync_ext(data.Clearcoat, bits, M::ExtClearcoat);
+            sync_ext(data.Anisotropy, bits, M::ExtAnisotropy);
+            sync_ext(data.Iridescence, bits, M::ExtIridescence);
+            // Nested extension texture slots — assigns are no-ops when the optional is empty.
+            const auto put = [&](auto &opt, auto field, MaterialTextureSlot s) {
+                if (opt) ((*opt).*field).Slot = meta.TextureSlots[s];
+            };
+            put(data.Specular, &::Specular::Texture, MTS_Specular);
+            put(data.Specular, &::Specular::ColorTexture, MTS_SpecularColor);
+            put(data.Sheen, &::Sheen::ColorTexture, MTS_SheenColor);
+            put(data.Sheen, &::Sheen::RoughnessTexture, MTS_SheenRoughness);
+            put(data.Transmission, &::Transmission::Texture, MTS_Transmission);
+            put(data.DiffuseTransmission, &::DiffuseTransmission::Texture, MTS_DiffuseTransmission);
+            put(data.DiffuseTransmission, &::DiffuseTransmission::ColorTexture, MTS_DiffuseTransmissionColor);
+            put(data.Volume, &::Volume::ThicknessTexture, MTS_VolumeThickness);
+            put(data.Clearcoat, &::Clearcoat::Texture, MTS_Clearcoat);
+            put(data.Clearcoat, &::Clearcoat::RoughnessTexture, MTS_ClearcoatRoughness);
+            put(data.Clearcoat, &::Clearcoat::NormalTexture, MTS_ClearcoatNormal);
+            put(data.Anisotropy, &::Anisotropy::Texture, MTS_Anisotropy);
+            put(data.Iridescence, &::Iridescence::Texture, MTS_Iridescence);
+            put(data.Iridescence, &::Iridescence::ThicknessTexture, MTS_IridescenceThickness);
+            // ToGpu folded `EmissiveFactor *= strength`; un-fold for round-trip.
+            if (meta.EmissiveStrength) {
+                const float s = *meta.EmissiveStrength;
+                if (s != 0.f) data.EmissiveFactor /= s;
+                data.EmissiveStrength = s;
+            }
+            if (meta.NameWasEmpty) name.clear();
+        }
+        const auto &m = data;
         fastgltf::Material out;
-        out.name = ToFgStr(save_materials[i].Name);
+        out.name = ToFgStr(name);
 
         out.pbrData.baseColorFactor = {m.BaseColorFactor.x, m.BaseColorFactor.y, m.BaseColorFactor.z, m.BaseColorFactor.w};
         out.pbrData.metallicFactor = m.MetallicFactor;
@@ -3975,72 +3896,43 @@ std::expected<void, std::string> SaveGltfFile(const entt::registry &r, entt::ent
         });
     }
 
-    // Source→dense skin index remap for node refs below.
+    // Source→dense skin index remap for node refs below. Per Armature, emit one fastgltf::Skin
+    // directly into asset.skins (only joint indices, IBMs, skeleton, and name are needed at the
+    // glTF level; runtime-only fields like rest-local transforms and bone names live in the
+    // engine's `Armature` and round-trip through node entries instead). Load creates Armature
+    // entities in source-skin-index order, so reverse-iterating the view (entt iterates in
+    // reverse-creation order) yields source-ascending order without an extra sort.
     std::unordered_map<uint32_t, uint32_t> skin_remap;
-    for (uint32_t j = 0; j < save_skins.size(); ++j) skin_remap[save_skins[j].SkinIndex] = j;
-    asset.skins.reserve(save_skins.size());
-    for (const auto &s : save_skins) {
+    const auto armature_view = r.view<const Armature>();
+    for (auto it = armature_view.rbegin(); it != armature_view.rend(); ++it) {
+        const auto data_entity = *it;
+        const auto &arm = r.get<const Armature>(data_entity);
+        if (!arm.ImportedSkin) continue;
+        const auto source_skin_index = arm.ImportedSkin->SkinIndex;
+
         fastgltf::pmr::MaybeSmallVector<std::size_t> joints;
-        joints.reserve(s.Joints.size());
-        for (const auto &joint : s.Joints) joints.emplace_back(joint.JointNodeIndex);
+        joints.reserve(arm.ImportedSkin->OrderedJointNodeIndices.size());
+        for (const auto j : arm.ImportedSkin->OrderedJointNodeIndices) joints.emplace_back(j);
 
         const auto ibm = [&]() -> fastgltf::Optional<std::size_t> {
-            if (s.InverseBindMatrices.empty()) return {};
-            return AddDataAccessor(std::span<const mat4>(s.InverseBindMatrices), fastgltf::AccessorType::Mat4, fastgltf::ComponentType::Float);
+            if (arm.ImportedSkin->InverseBindMatrices.empty()) return {};
+            return AddDataAccessor(std::span<const mat4>(arm.ImportedSkin->InverseBindMatrices), fastgltf::AccessorType::Mat4, fastgltf::ComponentType::Float);
         }();
 
+        std::string skin_name;
+        if (const auto ait = armature_data_to_object.find(data_entity); ait != armature_data_to_object.end()) {
+            if (const auto *sn = r.try_get<const SkinName>(ait->second)) skin_name = sn->Value;
+            else if (!r.all_of<SourceEmptyName>(ait->second)) {
+                if (const auto *name = r.try_get<const Name>(ait->second)) skin_name = name->Value;
+            }
+        }
+
+        skin_remap[source_skin_index] = uint32_t(asset.skins.size());
         asset.skins.emplace_back(fastgltf::Skin{
             .inverseBindMatrices = ibm,
-            .skeleton = ToFgOpt<std::size_t>(s.SkeletonNodeIndex),
+            .skeleton = ToFgOpt<std::size_t>(arm.ImportedSkin->SkeletonNodeIndex),
             .joints = std::move(joints),
-            .name = ToFgStr(s.Name),
-        });
-    }
-
-    // Animations
-    asset.animations.reserve(save_animations.size());
-    for (const auto &clip : save_animations) {
-        fastgltf::pmr::MaybeSmallVector<fastgltf::AnimationSampler> samplers;
-        fastgltf::pmr::MaybeSmallVector<fastgltf::AnimationChannel> channels;
-        for (const auto &ch : clip.Channels) {
-            if (ch.TimesSeconds.empty()) continue;
-            // Input (times): spec requires min/max on the accessor.
-            const uint32_t t_offset = AppendAligned<float>(bin, ch.TimesSeconds);
-            const uint32_t t_bv = AddBufferView(t_offset, uint32_t(ch.TimesSeconds.size() * sizeof(float)));
-            const auto [t_min, t_max] = std::minmax_element(ch.TimesSeconds.begin(), ch.TimesSeconds.end());
-            const uint32_t t_acc = AddAccessor(
-                t_bv, uint32_t(ch.TimesSeconds.size()), fastgltf::AccessorType::Scalar, fastgltf::ComponentType::Float,
-                MakeBounds({double(*t_min)}), MakeBounds({double(*t_max)})
-            );
-
-            // Output (values). CubicSpline triples are already flattened into Values.
-            const uint32_t v_offset = AppendAligned<float>(bin, ch.Values);
-            const uint32_t v_bv = AddBufferView(v_offset, uint32_t(ch.Values.size() * sizeof(float)));
-            const auto [v_type, v_count] = [&] -> std::pair<fastgltf::AccessorType, uint32_t> {
-                switch (ch.Target) {
-                    case AnimationPath::Translation:
-                    case AnimationPath::Scale: return {fastgltf::AccessorType::Vec3, uint32_t(ch.Values.size() / 3)};
-                    case AnimationPath::Rotation: return {fastgltf::AccessorType::Vec4, uint32_t(ch.Values.size() / 4)};
-                    case AnimationPath::Weights: return {fastgltf::AccessorType::Scalar, uint32_t(ch.Values.size())};
-                }
-            }();
-            const uint32_t v_acc = AddAccessor(v_bv, v_count, v_type, fastgltf::ComponentType::Float);
-
-            samplers.emplace_back(fastgltf::AnimationSampler{
-                .inputAccessor = t_acc,
-                .outputAccessor = v_acc,
-                .interpolation = FromInterp(ch.Interp),
-            });
-            channels.emplace_back(fastgltf::AnimationChannel{
-                .samplerIndex = samplers.size() - 1,
-                .nodeIndex = ch.TargetNodeIndex,
-                .path = FromPath(ch.Target),
-            });
-        }
-        asset.animations.emplace_back(fastgltf::Animation{
-            .channels = std::move(channels),
-            .samplers = std::move(samplers),
-            .name = ToFgStr(clip.Name),
+            .name = ToFgStr(skin_name),
         });
     }
 
@@ -4331,20 +4223,6 @@ std::expected<void, std::string> SaveGltfFile(const entt::registry &r, entt::ent
             .restitutionCombine = FromCombine(pm.RestitutionCombine),
         });
     }
-    asset.collisionFilters.reserve(save_collision_filters.size());
-    for (const auto &cf : save_collision_filters) {
-        const auto to_fg_strs = [](const std::vector<std::string> &xs) {
-            fastgltf::pmr::MaybeSmallVector<FgString> out;
-            out.reserve(xs.size());
-            for (const auto &s : xs) out.emplace_back(ToFgStr(s));
-            return out;
-        };
-        asset.collisionFilters.emplace_back(fastgltf::CollisionFilter{
-            .collisionSystems = to_fg_strs(cf.CollisionSystems),
-            .notCollideWithSystems = to_fg_strs(cf.NotCollideWithSystems),
-            .collideWithSystems = to_fg_strs(cf.CollideWithSystems),
-        });
-    }
     asset.physicsJoints.reserve(save_physics_joint_defs.size());
     for (const auto &jd : save_physics_joint_defs) {
         fastgltf::pmr::MaybeSmallVector<fastgltf::JointLimit> limits;
@@ -4413,34 +4291,24 @@ std::expected<void, std::string> SaveGltfFile(const entt::registry &r, entt::ent
         asset.extensionsUsed.emplace_back("KHR_materials_variants");
     }
     // KHR_texture_transform: emitted per-texture when non-identity or when source had it at all.
+    // Each emit site (`ToFgTexInfo` / `ToFgNormalTexInfo` / `ToFgOcclusionTexInfo`) attaches the
+    // unique_ptr<TextureTransform> exactly when those conditions hold, so checking it here matches.
     {
-        const auto any_transform = [](const ::TextureInfo &ti, const TextureTransformMeta *meta = nullptr) {
-            if (ti.Slot == InvalidSlot) return false;
-            if (ti.UvOffset.x != 0.f || ti.UvOffset.y != 0.f || ti.UvScale.x != 1.f || ti.UvScale.y != 1.f || ti.UvRotation != 0.f) return true;
-            return meta && meta->SourceHadExtension;
+        const auto has_xf = [](const auto &opt) { return opt.has_value() && opt->transform != nullptr; };
+        const auto material_has_xf = [&](const fastgltf::Material &m) {
+            if (has_xf(m.pbrData.baseColorTexture) || has_xf(m.pbrData.metallicRoughnessTexture) ||
+                has_xf(m.normalTexture) || has_xf(m.occlusionTexture) || has_xf(m.emissiveTexture)) return true;
+            if (m.sheen && (has_xf(m.sheen->sheenColorTexture) || has_xf(m.sheen->sheenRoughnessTexture))) return true;
+            if (m.specular && (has_xf(m.specular->specularTexture) || has_xf(m.specular->specularColorTexture))) return true;
+            if (m.transmission && has_xf(m.transmission->transmissionTexture)) return true;
+            if (m.diffuseTransmission && (has_xf(m.diffuseTransmission->diffuseTransmissionTexture) || has_xf(m.diffuseTransmission->diffuseTransmissionColorTexture))) return true;
+            if (m.volume && has_xf(m.volume->thicknessTexture)) return true;
+            if (m.clearcoat && (has_xf(m.clearcoat->clearcoatTexture) || has_xf(m.clearcoat->clearcoatRoughnessTexture) || has_xf(m.clearcoat->clearcoatNormalTexture))) return true;
+            if (m.anisotropy && has_xf(m.anisotropy->anisotropyTexture)) return true;
+            if (m.iridescence && (has_xf(m.iridescence->iridescenceTexture) || has_xf(m.iridescence->iridescenceThicknessTexture))) return true;
+            return false;
         };
-        bool uses_texture_transform = false;
-        for (uint32_t i = 0; i < save_material_count && !uses_texture_transform; ++i) {
-            const auto &m = save_materials[i].Value;
-            const auto any_of = [&](std::initializer_list<const ::TextureInfo *> texs) {
-                for (const auto *t : texs)
-                    if (any_transform(*t)) return true;
-                return false;
-            };
-            if (any_transform(m.BaseColorTexture, &m.BaseColorMeta) || any_transform(m.MetallicRoughnessTexture, &m.MetallicRoughnessMeta) ||
-                any_transform(m.NormalTexture, &m.NormalMeta) || any_transform(m.OcclusionTexture, &m.OcclusionMeta) || any_transform(m.EmissiveTexture, &m.EmissiveMeta) ||
-                (m.Sheen && any_of({&m.Sheen->ColorTexture, &m.Sheen->RoughnessTexture})) ||
-                (m.Specular && any_of({&m.Specular->Texture, &m.Specular->ColorTexture})) ||
-                (m.Transmission && any_transform(m.Transmission->Texture)) ||
-                (m.DiffuseTransmission && any_of({&m.DiffuseTransmission->Texture, &m.DiffuseTransmission->ColorTexture})) ||
-                (m.Volume && any_transform(m.Volume->ThicknessTexture)) ||
-                (m.Clearcoat && any_of({&m.Clearcoat->Texture, &m.Clearcoat->RoughnessTexture, &m.Clearcoat->NormalTexture})) ||
-                (m.Anisotropy && any_transform(m.Anisotropy->Texture)) ||
-                (m.Iridescence && any_of({&m.Iridescence->Texture, &m.Iridescence->ThicknessTexture}))) {
-                uses_texture_transform = true;
-            }
-        }
-        if (uses_texture_transform) asset.extensionsUsed.emplace_back("KHR_texture_transform");
+        if (std::ranges::any_of(asset.materials, material_has_xf)) asset.extensionsUsed.emplace_back("KHR_texture_transform");
     }
 
     // Finalize buffer. sources::Vector owns our binary blob; FileExporter writes it as a sibling .bin.
