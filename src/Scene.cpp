@@ -756,6 +756,52 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         request(RenderRequest::ReRecord);
     }
 
+    // Drain deferred glTF texture / IBL uploads before any consumer reads a TextureEntry or sampler descriptor.
+    // Slots were pre-allocated at load time (CPU-only); the VkImage / vk::Sampler / descriptor write happen here.
+    if (auto *pending_tex = R.try_get<PendingTextureUploads>(SceneEntity); pending_tex && !pending_tex->Items.empty()) {
+        if (const auto *src = R.try_get<const GltfSourceAssets>(SceneEntity)) {
+            auto batch = BeginTextureUploadBatch(Vk.Device, *CommandPool, Stores.Buffers->Ctx);
+            for (const auto &item : pending_tex->Items) {
+                if (item.SourceImageIndex >= src->Images.size()) {
+                    std::cerr << std::format("Warning: PendingTextureUpload references image index {} (out of range; {} images).\n", item.SourceImageIndex, src->Images.size());
+                    ReleaseSamplerSlots(*Stores.Slots, std::span{&item.SamplerSlot, 1});
+                    continue;
+                }
+                auto entry = MaterializeTextureEntry(Vk, batch, *Stores.Slots, item, src->Images[item.SourceImageIndex]);
+                if (!entry) {
+                    std::cerr << std::format("Warning: Failed to materialize texture '{}': {}\n", item.Name, entry.error());
+                    ReleaseSamplerSlots(*Stores.Slots, std::span{&item.SamplerSlot, 1});
+                    continue;
+                }
+                Stores.Textures->Textures.emplace_back(std::move(*entry));
+            }
+            SubmitTextureUploadBatch(batch, Vk.Queue, *OneShotFence, Vk.Device);
+        }
+        R.remove<PendingTextureUploads>(SceneEntity);
+    }
+    if (auto *pending_env = R.try_get<PendingEnvironmentImport>(SceneEntity)) {
+        if (const auto *src = R.try_get<const GltfSourceAssets>(SceneEntity)) {
+            auto batch = BeginTextureUploadBatch(Vk.Device, *CommandPool, Stores.Buffers->Ctx);
+            auto pre = MaterializeEnvironmentImport(Vk, batch, *Stores.Slots, *pending_env, src->Images);
+            SubmitTextureUploadBatch(batch, Vk.Queue, *OneShotFence, Vk.Device);
+            auto &env = *Stores.Environments;
+            if (pre) {
+                if (env.ImportedSceneWorld) {
+                    ReleaseCubeSamplerSlot(*Stores.Slots, env.ImportedSceneWorld->DiffuseEnv.SamplerSlot);
+                    ReleaseCubeSamplerSlot(*Stores.Slots, env.ImportedSceneWorld->SpecularEnv.SamplerSlot);
+                }
+                env.ImportedSceneWorld = std::move(*pre);
+                env.SceneWorldRotation = glm::mat3_cast(pending_env->Source.Rotation);
+                env.SceneWorld = {.Ibl = MakeIblSamplers(*env.ImportedSceneWorld, env), .Name = env.ImportedSceneWorld->Name};
+            } else {
+                std::cerr << std::format("Warning: Failed to materialize EXT_lights_image_based '{}': {}\n", pending_env->Source.Name, pre.error());
+                ReleaseCubeSamplerSlot(*Stores.Slots, pending_env->DiffuseCubeSlot);
+                ReleaseCubeSamplerSlot(*Stores.Slots, pending_env->SpecularCubeSlot);
+            }
+        }
+        R.remove<PendingEnvironmentImport>(SceneEntity);
+    }
+
     // Create/destroy wireframe overlay instances and their buffer entities before SyncModelsBuffers
     // consumes the RenderInstance/NewBufferEntity reactive events they fire.
     EnsureWireframes();

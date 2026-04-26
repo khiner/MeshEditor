@@ -13,9 +13,6 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
     gltf::PopulateContext ctx{
         .R = R,
         .SceneEntity = SceneEntity,
-        .Vk = Vk,
-        .CommandPool = *CommandPool,
-        .OneShotFence = *OneShotFence,
         .Slots = *Stores.Slots,
         .Buffers = *Stores.Buffers,
         .Meshes = *Stores.Meshes,

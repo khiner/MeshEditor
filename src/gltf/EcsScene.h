@@ -13,7 +13,6 @@
 
 #include "GltfScene.h"
 #include "Image.h"
-#include "SceneVulkanResources.h"
 #include "entt_fwd.h"
 #include "gpu/Transform.h"
 #include "numeric/mat4.h"
@@ -28,8 +27,6 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
-
-#include <vulkan/vulkan.hpp>
 
 struct DescriptorSlots;
 struct EnvironmentStore;
@@ -206,9 +203,6 @@ namespace gltf {
 struct PopulateContext {
     entt::registry &R;
     entt::entity SceneEntity;
-    SceneVulkanResources Vk;
-    vk::CommandPool CommandPool;
-    vk::Fence OneShotFence;
     DescriptorSlots &Slots;
     SceneBuffers &Buffers;
     MeshStore &Meshes;

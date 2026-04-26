@@ -14,6 +14,9 @@
 struct DescriptorSlots;
 struct IblPrefilterPipelines;
 
+// If `TextureEntry` exists, texture is fully materialized (GPU image + sampler + descriptor written).
+// In-flight textures live as `PendingTextureUpload` markers on the scene entity until the
+// drain pass in `Scene::ProcessComponentEvents` materializes them.
 struct TextureEntry {
     mvk::ImageResource Image;
     vk::UniqueSampler Sampler;
@@ -72,6 +75,30 @@ enum class TextureColorSpace : uint8_t {
     Linear,
 };
 
+// Deferred-upload markers for the glTF load path. Slots in these are pre-allocated at load
+// time (CPU bookkeeping), the GPU image/sampler/descriptor work runs in the drain pass.
+//
+// Source image bytes are referenced by index into `GltfSourceAssets::Images` on the scene
+// entity rather than copied. `GltfSourceAssets` is emplaced before any pending markers are
+// pushed (`gltf::EcsScene.cpp`), so the storage outlives the pending markers under the
+// invariant that the drain pass runs before the next load swaps `GltfSourceAssets`.
+struct PendingTextureUpload {
+    uint32_t SamplerSlot;
+    uint32_t SourceImageIndex;
+    TextureColorSpace ColorSpace;
+    vk::SamplerAddressMode WrapS, WrapT;
+    SamplerConfig Sampler;
+    std::string Name;
+};
+struct PendingTextureUploads {
+    std::vector<PendingTextureUpload> Items;
+};
+
+struct PendingEnvironmentImport {
+    gltf::ImageBasedLight Source;
+    uint32_t DiffuseCubeSlot, SpecularCubeSlot;
+};
+
 struct StagingAlloc {
     vk::Buffer Buffer;
     vk::DeviceSize Offset;
@@ -106,15 +133,19 @@ std::expected<TextureEntry, std::string> CreateTextureEntryFromEncoded(
     std::span<const std::byte>, std::string_view encoded_name, std::string texture_name,
     TextureColorSpace, vk::SamplerAddressMode, vk::SamplerAddressMode, const SamplerConfig &
 );
-std::expected<TextureEntry, std::string> CreateTextureEntryFromImage(
+uint32_t AllocateSamplerSlot(DescriptorSlots &);
+std::pair<uint32_t, uint32_t> AllocateIblCubeSlots(DescriptorSlots &); // {diffuse, specular}
+
+// Materializes a `TextureEntry` into a slot pre-allocated by `AllocateSamplerSlot`.
+// `source` is the encoded image; typically resolved from `GltfSourceAssets::Images[item.SourceImageIndex]`.
+std::expected<TextureEntry, std::string> MaterializeTextureEntry(
     const SceneVulkanResources &, TextureUploadBatch &, DescriptorSlots &,
-    const gltf::Image &, std::string texture_name,
-    TextureColorSpace, vk::SamplerAddressMode wrap_s, vk::SamplerAddressMode wrap_t,
-    const SamplerConfig &
+    const PendingTextureUpload &item, const gltf::Image &source
 );
-std::expected<EnvironmentPrefiltered, std::string> CreateIblFromExtIbl(
+// Materializes an `EnvironmentPrefiltered` into the two cube slots pre-allocated by `AllocateIblCubeSlots`.
+std::expected<EnvironmentPrefiltered, std::string> MaterializeEnvironmentImport(
     const SceneVulkanResources &, TextureUploadBatch &, DescriptorSlots &,
-    const std::vector<gltf::Image> &, const gltf::ImageBasedLight &
+    const PendingEnvironmentImport &, const std::vector<gltf::Image> &images
 );
 EnvironmentPrefiltered CreateIblFromHdri(
     const SceneVulkanResources &, DescriptorSlots &,

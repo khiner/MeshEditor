@@ -540,9 +540,6 @@ int main() {
             gltf::PopulateContext ctx{
                 .R = registry,
                 .SceneEntity = scene_entity,
-                .Vk = vk_resources,
-                .CommandPool = *cmd_pool,
-                .OneShotFence = *fence,
                 .Slots = *stores.Slots,
                 .Buffers = *stores.Buffers,
                 .Meshes = *stores.Meshes,

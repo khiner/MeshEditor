@@ -1872,10 +1872,28 @@ std::expected<PopulateResult, std::string> LoadGltfFile(const std::filesystem::p
     const auto texture_start = texture_store.Textures.size();
     const auto material_start = ctx.Buffers.Materials.Count();
     const auto material_name_start = R.get<const MaterialStore>(SceneEntity).Names.size();
+    const auto pending_texture_start = R.all_of<PendingTextureUploads>(SceneEntity) ? R.get<const PendingTextureUploads>(SceneEntity).Items.size() : size_t{0};
+    bool replaced_pending_env = false;
+    std::optional<PendingEnvironmentImport> prev_pending_env_backup;
     const auto rollback_import_side_effects = [&] {
         if (texture_store.Textures.size() > texture_start) {
             ReleaseSamplerSlots(ctx.Slots, CollectSamplerSlots(std::span<const TextureEntry>{texture_store.Textures}.subspan(texture_start)));
             texture_store.Textures.resize(texture_start);
+        }
+        if (auto *pending = R.try_get<PendingTextureUploads>(SceneEntity); pending && pending->Items.size() > pending_texture_start) {
+            for (size_t i = pending_texture_start; i < pending->Items.size(); ++i) {
+                ReleaseSamplerSlots(ctx.Slots, std::span{&pending->Items[i].SamplerSlot, 1});
+            }
+            pending->Items.resize(pending_texture_start);
+            if (pending->Items.empty()) R.remove<PendingTextureUploads>(SceneEntity);
+        }
+        if (replaced_pending_env) {
+            if (auto *cur = R.try_get<PendingEnvironmentImport>(SceneEntity)) {
+                ReleaseCubeSamplerSlot(ctx.Slots, cur->DiffuseCubeSlot);
+                ReleaseCubeSamplerSlot(ctx.Slots, cur->SpecularCubeSlot);
+            }
+            if (prev_pending_env_backup) R.emplace_or_replace<PendingEnvironmentImport>(SceneEntity, std::move(*prev_pending_env_backup));
+            else R.remove<PendingEnvironmentImport>(SceneEntity);
         }
         if (ctx.Buffers.Materials.Count() > material_start) ctx.Buffers.Materials.SetCount(material_start);
         R.patch<MaterialStore>(
@@ -1929,8 +1947,7 @@ std::expected<PopulateResult, std::string> LoadGltfFile(const std::filesystem::p
     source_assets.MaterialMetas = std::move(material_metas);
     R.emplace_or_replace<GltfSourceAssets>(SceneEntity, std::move(source_assets));
 
-    auto upload_batch = BeginTextureUploadBatch(ctx.Vk.Device, ctx.CommandPool, ctx.Buffers.Ctx);
-
+    std::vector<PendingTextureUpload> new_pending_textures;
     std::unordered_map<uint64_t, uint32_t> texture_slot_cache;
     // Cache on the resolved (image_index, sampler_index, color_space) rather than glTF texture index,
     // so that multiple glTF textures referencing the same image+sampler share a single TextureEntry and sampler slot.
@@ -1948,7 +1965,6 @@ std::expected<PopulateResult, std::string> LoadGltfFile(const std::filesystem::p
         const auto cache_key = texture_cache_key(*image_index, sampler_index, color_space);
         if (const auto it = texture_slot_cache.find(cache_key); it != texture_slot_cache.end()) return it->second;
 
-        const auto &src_image = images[*image_index];
         const auto *src_sampler = src_texture.SamplerIndex && *src_texture.SamplerIndex < samplers.size() ?
             &samplers[*src_texture.SamplerIndex] :
             nullptr;
@@ -1984,12 +2000,18 @@ std::expected<PopulateResult, std::string> LoadGltfFile(const std::filesystem::p
         const auto sampler_config = ToSamplerConfig(src_sampler);
         const auto wrap_s = src_sampler ? ToSamplerAddressMode(src_sampler->WrapS) : vk::SamplerAddressMode::eRepeat;
         const auto wrap_t = src_sampler ? ToSamplerAddressMode(src_sampler->WrapT) : vk::SamplerAddressMode::eRepeat;
-        const auto texture_name = std::format("{} ({})", src_texture.Name.empty() ? std::format("Texture{}", texture_index) : src_texture.Name, color_space == TextureColorSpace::Srgb ? "sRGB" : "Linear");
+        auto texture_name = std::format("{} ({})", src_texture.Name.empty() ? std::format("Texture{}", texture_index) : src_texture.Name, color_space == TextureColorSpace::Srgb ? "sRGB" : "Linear");
 
-        auto texture = CreateTextureEntryFromImage(ctx.Vk, upload_batch, ctx.Slots, src_image, texture_name, color_space, wrap_s, wrap_t, sampler_config);
-        if (!texture) return std::unexpected{std::move(texture.error())};
-        const auto sampler_slot = texture->SamplerSlot;
-        texture_store.Textures.emplace_back(std::move(*texture));
+        const auto sampler_slot = AllocateSamplerSlot(ctx.Slots);
+        new_pending_textures.emplace_back(PendingTextureUpload{
+            .SamplerSlot = sampler_slot,
+            .SourceImageIndex = *image_index,
+            .ColorSpace = color_space,
+            .WrapS = wrap_s,
+            .WrapT = wrap_t,
+            .Sampler = sampler_config,
+            .Name = std::move(texture_name),
+        });
         texture_slot_cache.emplace(cache_key, sampler_slot);
         return sampler_slot;
     };
@@ -2071,7 +2093,10 @@ std::expected<PopulateResult, std::string> LoadGltfFile(const std::filesystem::p
         );
     }
 
-    SubmitTextureUploadBatch(upload_batch, ctx.Vk.Queue, ctx.OneShotFence, ctx.Vk.Device);
+    if (!new_pending_textures.empty()) {
+        auto &pending = R.get_or_emplace<PendingTextureUploads>(SceneEntity);
+        pending.Items.insert(pending.Items.end(), std::make_move_iterator(new_pending_textures.begin()), std::make_move_iterator(new_pending_textures.end()));
+    }
 
     // Pre-reserve MeshStore arenas to avoid O(N) reallocations during bulk mesh creation.
     {
@@ -2836,22 +2861,10 @@ std::expected<PopulateResult, std::string> LoadGltfFile(const std::filesystem::p
     }
 
     if (source_ibl) {
-        auto ibl_batch = BeginTextureUploadBatch(ctx.Vk.Device, ctx.CommandPool, ctx.Buffers.Ctx);
-        auto scene_world = CreateIblFromExtIbl(ctx.Vk, ibl_batch, ctx.Slots, images, *source_ibl);
-        SubmitTextureUploadBatch(ibl_batch, ctx.Vk.Queue, ctx.OneShotFence, ctx.Vk.Device);
-        if (!scene_world) {
-            std::cerr << std::format("Warning: Failed to import EXT_lights_image_based scene world from '{}': {}\n", source_path.string(), scene_world.error());
-        } else {
-            auto &environments = ctx.Environments;
-            if (environments.ImportedSceneWorld) {
-                ReleaseCubeSamplerSlot(ctx.Slots, environments.ImportedSceneWorld->DiffuseEnv.SamplerSlot);
-                ReleaseCubeSamplerSlot(ctx.Slots, environments.ImportedSceneWorld->SpecularEnv.SamplerSlot);
-            }
-            environments.ImportedSceneWorld = std::move(*scene_world);
-            environments.SceneWorldRotation = glm::mat3_cast(source_ibl->Rotation);
-            const auto &pre = *environments.ImportedSceneWorld;
-            environments.SceneWorld = {.Ibl = MakeIblSamplers(pre, environments), .Name = pre.Name};
-        }
+        if (auto *prev = R.try_get<PendingEnvironmentImport>(SceneEntity)) prev_pending_env_backup = *prev;
+        const auto [diffuse_slot, specular_slot] = AllocateIblCubeSlots(ctx.Slots);
+        R.emplace_or_replace<PendingEnvironmentImport>(SceneEntity, *source_ibl, diffuse_slot, specular_slot);
+        replaced_pending_env = true;
     }
 
     const auto active_entity =
