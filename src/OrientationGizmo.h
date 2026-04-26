@@ -84,7 +84,7 @@ void Interact(vec2 pos, float size, ViewCamera &camera, bool interactive = true)
             } else { // Dragging
                 const auto drag_delta = mouse_pos - *Ctx.DragEndPos;
                 Ctx.DragEndPos = mouse_pos;
-                camera.SetTargetYawPitch(camera.YawPitch + drag_delta * 0.02f);
+                camera.RotateBy(drag_delta * 0.02f);
             }
         } else if (ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
             if (auto hovered_i = Ctx.HoveredAxis; !Ctx.DragEndPos && hovered_i) {

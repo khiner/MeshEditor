@@ -1,17 +1,18 @@
 #include "ViewCamera.h"
-#include "numeric/vec4.h"
 #include <glm/gtc/matrix_transform.hpp>
 
 namespace {
 constexpr float WrapYaw(float angle) { return glm::mod(angle, glm::two_pi<float>()); }
 constexpr float WrapPitch(float angle) { return glm::atan(glm::sin(angle), glm::cos(angle)); }
-constexpr float LengthSq(vec2 v) { return glm::dot(v, v); }
 constexpr float ShortestAngleDelta(float from, float to) {
     const float d = to - from;
     return std::atan2(std::sin(d), std::cos(d)); // in (-pi, pi]
 }
 
 inline constexpr float MinDistance{0.001f};
+inline constexpr uint32_t DurationFrames{12}; // ~200ms at 60fps.
+
+constexpr float Smoothstep(float t) { return t * t * (3.f - 2.f * t); }
 } // namespace
 
 bool ViewCamera::IsAligned(vec3 direction) const { return glm::dot(Forward(), glm::normalize(direction)) > 0.999f; }
@@ -26,8 +27,6 @@ float ViewCamera::FarClip() const {
     if (const auto *perspective = std::get_if<Perspective>(&Data)) return perspective->FarClip.value_or(MaxFarClip);
     return std::get<Orthographic>(Data).FarClip;
 }
-
-float ViewCamera::TargetDistance() const { return GoalDistance.value_or(Distance); }
 
 ray ViewCamera::PixelToWorldRay(vec2 mouse_px, rect viewport) const {
     const auto rel = (mouse_px - viewport.pos) / viewport.size;
@@ -70,84 +69,57 @@ mat3 ViewCamera::Basis() const {
     return {right, glm::cross(forward, right), -forward};
 }
 
-void ViewCamera::SetTargetDirection(vec3 direction) {
-    SetTargetYawPitch({WrapYaw(atan2(direction.z, direction.x)), WrapPitch(asin(direction.y))});
-}
-void ViewCamera::SetTargetDistance(float distance) {
-    StopMoving();
-    GoalDistance = std::max(distance, MinDistance);
-}
-void ViewCamera::SetTargetYawPitch(vec2 yaw_pitch) {
-    StopMoving();
-    GoalYawPitch = {WrapYaw(yaw_pitch.x), WrapPitch(yaw_pitch.y)};
+void ViewCamera::ApplyDistance(float new_distance) {
+    if (auto *orthographic = std::get_if<Orthographic>(&Data)) orthographic->Mag *= new_distance / Distance;
+    Distance = new_distance;
 }
 
-void ViewCamera::SetData(const Camera &data) {
-    Data = data;
-    StopMoving();
+void ViewCamera::RotateBy(vec2 delta) {
+    if (delta == vec2{0}) return;
+    Anim.reset();
+    YawPitch = {WrapYaw(YawPitch.x + delta.x), WrapPitch(YawPitch.y + delta.y)};
+}
+
+void ViewCamera::ZoomBy(float factor) {
+    if (factor == 1.f) return;
+    Anim.reset();
+    ApplyDistance(std::max(Distance * factor, MinDistance));
+}
+
+void ViewCamera::SetTargetDirection(vec3 direction) {
+    AnimateTo(Target, {atan2(direction.z, direction.x), asin(direction.y)}, Distance);
 }
 
 void ViewCamera::AnimateTo(vec3 target, vec2 yaw_pitch, float distance) {
-    StopMoving();
-    GoalTarget = target;
-    GoalDistance = std::max(distance, MinDistance);
-    GoalYawPitch = {WrapYaw(yaw_pitch.x), WrapPitch(yaw_pitch.y)};
+    distance = std::max(distance, MinDistance);
+    // Unwrap dst yaw/pitch around src so a straight lerp takes the shortest path through angle space.
+    const vec2 dst_yp{
+        YawPitch.x + ShortestAngleDelta(YawPitch.x, WrapYaw(yaw_pitch.x)),
+        YawPitch.y + ShortestAngleDelta(YawPitch.y, WrapPitch(yaw_pitch.y)),
+    };
+    if (target == Target && distance == Distance && dst_yp == YawPitch) {
+        Anim.reset();
+        return;
+    }
+    Anim = Animation{
+        .SrcTarget = Target,
+        .DstTarget = target,
+        .SrcDistance = Distance,
+        .DstDistance = distance,
+        .SrcYawPitch = YawPitch,
+        .DstYawPitch = dst_yp,
+        .Frame = 0,
+    };
 }
 
 bool ViewCamera::Tick() {
-    if (Changed) {
-        Changed = false;
-        return true;
-    }
-    bool moved = false;
-    if (YawPitchVelocity != vec2{0}) {
-        _SetYawPitch(YawPitch + YawPitchVelocity);
-        YawPitchVelocity *= 0.9f;
-        if (LengthSq(YawPitchVelocity) < 0.00001) YawPitchVelocity = {};
-        moved = true;
-    }
-    if (GoalTarget) {
-        if (glm::length(*GoalTarget - Target) < 0.0001f) {
-            Target = *GoalTarget;
-            GoalTarget.reset();
-        } else {
-            Target = glm::mix(Target, *GoalTarget, TickSpeed);
-        }
-        moved = true;
-    }
-    if (GoalDistance) {
-        const auto old_distance = Distance;
-        if (std::abs(old_distance - *GoalDistance) < 0.0001) {
-            Distance = *GoalDistance;
-            GoalDistance.reset();
-        } else {
-            Distance = glm::mix(old_distance, *GoalDistance, TickSpeed);
-        }
-        if (auto *orthographic = std::get_if<Orthographic>(&Data)) {
-            orthographic->Mag *= Distance / old_distance;
-        }
-        moved = true;
-    }
-    if (GoalYawPitch) {
-        const vec2 delta{ShortestAngleDelta(YawPitch.x, GoalYawPitch->x), ShortestAngleDelta(YawPitch.y, GoalYawPitch->y)};
-        if (LengthSq(delta) < 0.0001f) {
-            _SetYawPitch(*GoalYawPitch);
-            GoalYawPitch.reset();
-        } else {
-            _SetYawPitch(YawPitch + delta * TickSpeed); // minimal path step
-        }
-        moved = true;
-    }
-    return moved;
+    if (!Anim) return false;
+    ++Anim->Frame;
+    const float t = std::min(float(Anim->Frame) / float(DurationFrames), 1.f);
+    const float k = Smoothstep(t);
+    Target = glm::mix(Anim->SrcTarget, Anim->DstTarget, k);
+    ApplyDistance(glm::mix(Anim->SrcDistance, Anim->DstDistance, k));
+    YawPitch = {WrapYaw(glm::mix(Anim->SrcYawPitch.x, Anim->DstYawPitch.x, k)), WrapPitch(glm::mix(Anim->SrcYawPitch.y, Anim->DstYawPitch.y, k))};
+    if (Anim->Frame >= DurationFrames) Anim.reset();
+    return true;
 }
-
-bool ViewCamera::IsAnimating() const { return GoalTarget || GoalDistance || GoalYawPitch || YawPitchVelocity != vec2{0}; }
-
-void ViewCamera::StopMoving() {
-    GoalTarget.reset();
-    GoalDistance.reset();
-    GoalYawPitch.reset();
-    YawPitchVelocity = {};
-}
-
-void ViewCamera::_SetYawPitch(vec2 yaw_pitch) { YawPitch = {WrapYaw(yaw_pitch.x), WrapPitch(yaw_pitch.y)}; }

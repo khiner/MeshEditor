@@ -147,10 +147,12 @@ private:
 
     std::set<InteractionMode> InteractionModes{InteractionMode::Object, InteractionMode::Edit, InteractionMode::Pose};
     vec2 AccumulatedWrapMouseDelta{0, 0};
-    double LastWheelZoomTime{-1.0};
-    float WheelZoomBurst{0.f}; // Signed by zoom direction; stores the next burst level to apply.
     uint32_t ObjectPickEpochTag{255}; // 8-bit epoch encoded in object click keys; wraps with periodic key reset.
 
+public:
+    vec2 PreciseWheelDelta{0, 0};
+
+private:
     std::unique_ptr<ScenePipelines> Pipelines;
     std::unique_ptr<PhysicsWorld> Physics;
     std::unique_ptr<VideoRecorder> Recorder;

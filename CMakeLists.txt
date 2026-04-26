@@ -31,7 +31,22 @@ target_compile_options(staticlib PRIVATE -w) # Faust (can't use alias target)
 file(GLOB_RECURSE LIB_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/lib/*.c ${CMAKE_CURRENT_SOURCE_DIR}/lib/*.cpp)
 set_source_files_properties(${LIB_SOURCES} PROPERTIES COMPILE_FLAGS "-w")
 
-find_package(SDL3 REQUIRED)
+# Vendored SDL3 from main for pixel-precise macOS scroll deltas.
+# Drop and restore `find_package(SDL3 REQUIRED)` once a release ships past this commit.
+include(FetchContent)
+set(SDL_TEST_LIBRARY OFF CACHE BOOL "" FORCE)
+set(SDL_TESTS OFF CACHE BOOL "" FORCE)
+set(SDL_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(SDL_INSTALL OFF CACHE BOOL "" FORCE)
+set(SDL_DISABLE_INSTALL_DOCS ON CACHE BOOL "" FORCE)
+FetchContent_Declare(
+    SDL3
+    GIT_REPOSITORY https://github.com/libsdl-org/SDL.git
+    GIT_TAG        85b36937a985c12dee7edc4dd6e1efcfaa508c99
+    GIT_SHALLOW    FALSE
+)
+FetchContent_MakeAvailable(SDL3)
+
 find_package(PkgConfig REQUIRED)
 pkg_search_module(FFTW3F REQUIRED fftw3f IMPORTED_TARGET)
 find_package(Vulkan REQUIRED)

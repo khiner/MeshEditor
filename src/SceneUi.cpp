@@ -47,9 +47,8 @@ using namespace ImGui;
 
 namespace {
 constexpr vec2 ToGlm(ImVec2 v) { return std::bit_cast<vec2>(v); }
-constexpr float WheelZoomBaseSpeed{0.01f}; // Base per-wheel-unit zoom speed for isolated scroll ticks.
-constexpr float WheelZoomMaxBurst{8.f}; // Cap on accumulated rapid-scroll acceleration.
-constexpr double WheelZoomAccelerationWindow{0.25}; // Seconds between ticks that still count as one accelerated burst.
+constexpr float WheelOrbitRadPerUnit{0.05f};
+constexpr float WheelZoomStep{1.04f};
 
 struct SelectionHit {
     entt::entity Entity;
@@ -634,27 +633,13 @@ void Scene::Interact() {
 
     // Mouse wheel for camera rotation, Cmd+wheel to zoom.
     const auto &io = GetIO();
-    if (const vec2 wheel{io.MouseWheelH, io.MouseWheel}; wheel != vec2{0, 0}) {
+    if (const vec2 wheel = std::exchange(PreciseWheelDelta, vec2{0}); wheel != vec2{0, 0}) {
         // Exit "look through" camera view on any orbit/zoom interaction.
         ExitLookThroughCamera();
-        if (io.KeyCtrl || io.KeySuper) {
-            const double now = GetTime();
-            const float zoom_direction = wheel.y > 0.f ? 1.f : -1.f;
-            const bool accelerate = LastWheelZoomTime >= 0.0 &&
-                now - LastWheelZoomTime <= WheelZoomAccelerationWindow &&
-                WheelZoomBurst * zoom_direction > 0.f;
-            WheelZoomBurst = accelerate ? glm::clamp(WheelZoomBurst + zoom_direction, -WheelZoomMaxBurst, WheelZoomMaxBurst) : zoom_direction;
-            LastWheelZoomTime = now;
-
-            const float zoom_speed = WheelZoomBaseSpeed * (1.f + std::max(std::abs(WheelZoomBurst), 0.f));
-            const float burst_ratio = std::abs(WheelZoomBurst) / WheelZoomMaxBurst;
-            const float signed_zoom = wheel.y * zoom_speed * (1.f + 0.15f * burst_ratio);
-            R.patch<ViewCamera>(SceneEntity, [&](auto &camera) {
-                camera.SetTargetDistance(std::max(camera.TargetDistance() * std::exp2(-signed_zoom), 0.01f));
-            });
-        } else {
-            R.patch<ViewCamera>(SceneEntity, [&](auto &camera) { camera.SetTargetYawPitch(camera.YawPitch + wheel * 0.15f); });
-        }
+        R.patch<ViewCamera>(SceneEntity, [&](auto &camera) {
+            if (io.KeyCtrl || io.KeySuper) camera.ZoomBy(std::pow(WheelZoomStep, -wheel.y));
+            else camera.RotateBy(wheel * WheelOrbitRadPerUnit);
+        });
     }
     if (OrientationGizmo::IsActive() || OverlayControlsHovered) return;
 

@@ -25,7 +25,6 @@ struct ViewCamera {
 
     float NearClip() const;
     float FarClip() const; // Always finite (fallback when perspective far is infinite).
-    float TargetDistance() const;
 
     vec3 Forward() const;
     mat3 Basis() const; // Right, Up, -Forward
@@ -38,27 +37,28 @@ struct ViewCamera {
     bool IsAligned(vec3 direction) const;
     bool IsInFront(vec3) const;
 
-    void SetTargetDistance(float);
-    void SetTargetYawPitch(vec2);
+    // Direct (non-animated) mutators for interactive input. Cancel any in-flight transition.
+    void RotateBy(vec2 yaw_pitch_delta);
+    void ZoomBy(float factor); // Multiplies Distance.
+
+    // Smoothstep ease-in/out over a fixed tick count.
     void SetTargetDirection(vec3);
-    void SetData(const Camera &);
     void AnimateTo(vec3 target, vec2 yaw_pitch, float distance);
 
-    // Not currently used, since I need to figure out trackpad touch events.
-    void SetYawPitchVelocity(vec2 vel) { YawPitchVelocity = vel; }
-    bool IsAnimating() const;
-    void StopMoving();
+    bool IsAnimating() const { return Anim.has_value(); }
+    void StopMoving() { Anim.reset(); }
 
     bool Tick();
 
 private:
-    std::optional<vec3> GoalTarget{};
-    std::optional<float> GoalDistance{};
-    std::optional<vec2> GoalYawPitch{};
-    vec2 YawPitchVelocity{};
-    bool Changed{false};
-    float TickSpeed{0.25};
+    struct Animation {
+        vec3 SrcTarget, DstTarget;
+        float SrcDistance, DstDistance;
+        vec2 SrcYawPitch, DstYawPitch; // DstYawPitch unwrapped relative to Src for shortest-path lerp.
+        uint32_t Frame; // Incremented each Tick; animation completes at DurationFrames.
+    };
+    std::optional<Animation> Anim{};
 
-    void _SetYawPitch(vec2);
+    void ApplyDistance(float new_distance); // Updates Distance and scales orthographic Mag in lockstep.
     vec3 YAxis() const; // May be flipped depending on pitch.
 };

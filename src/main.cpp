@@ -142,6 +142,8 @@ std::expected<void, std::string> LoadFile(Scene &scene, const fs::path &path) {
 void run(const char *initial_file, bool quiet, bool play, float play_duration, fs::path record_path, int record_fps) {
     Timer::Enabled = !quiet;
 
+    SDL_SetHint(SDL_HINT_MAC_SCROLL_MOMENTUM, "1");
+
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) {
         throw std::runtime_error(std::format("SDL_Init error: {}", SDL_GetError()));
     }
@@ -284,6 +286,13 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
     while (!done) {
         SDL_Event event;
         while (SDL_PollEvent(&event)) {
+            if (event.type == SDL_EVENT_MOUSE_WHEEL) {
+                scene->PreciseWheelDelta += vec2{-event.wheel.x, event.wheel.y};
+                // SDL's pixel-derived deltas overscroll ImGui panels.
+                constexpr float ImGuiWheelScale = 0.3f;
+                event.wheel.x *= ImGuiWheelScale;
+                event.wheel.y *= ImGuiWheelScale;
+            }
             ImGui_ImplSDL3_ProcessEvent(&event);
             done = event.type == SDL_EVENT_QUIT ||
                 (event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED && event.window.windowID == SDL_GetWindowID(window));
