@@ -3,7 +3,6 @@
 #include "AnimationTimeline.h"
 #include "Timer.h"
 #include "gltf/EcsScene.h"
-#include "gltf/GltfScene.h"
 #include "physics/PhysicsTypes.h"
 #include "physics/PhysicsWorld.h"
 
@@ -11,12 +10,6 @@
 
 std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltfScene(const std::filesystem::path &path) {
     const Timer timer{"AddGltfScene"};
-    auto loaded = [&] {
-        const Timer timer{"gltf::LoadScene"};
-        return gltf::LoadScene(path);
-    }();
-    if (!loaded) return std::unexpected{std::move(loaded.error())};
-
     gltf::PopulateContext ctx{
         .R = R,
         .SceneEntity = SceneEntity,
@@ -29,7 +22,7 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
         .Textures = *Stores.Textures,
         .Environments = *Stores.Environments,
     };
-    auto result = gltf::PopulateGltfScene(*loaded, path, ctx);
+    auto result = gltf::LoadGltfFile(path, ctx);
     if (!result) return std::unexpected{std::move(result.error())};
 
     // TODO: drive RecomputeSceneScale reactively from track<changes::PhysicsShape> and drop this imperative call.

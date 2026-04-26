@@ -1,7 +1,6 @@
 add_executable(MeshEditorTests
     RoundtripTest.cpp
     ${CMAKE_SOURCE_DIR}/src/gltf/EcsScene.cpp
-    ${CMAKE_SOURCE_DIR}/src/gltf/GltfScene.cpp
     ${CMAKE_SOURCE_DIR}/src/Armature.cpp
     ${CMAKE_SOURCE_DIR}/src/Bindless.cpp
     ${CMAKE_SOURCE_DIR}/src/Entity.cpp

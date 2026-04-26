@@ -1,17 +1,18 @@
-// Bridge between gltf::Scene (CPU intermediate) and the EnTT registry + canonical UMA buffers.
+// Bridge between glTF files and the EnTT registry + canonical UMA buffers.
 //
-// `PopulateGltfScene` populates registry components and writes to canonical UMA buffers
-// (Materials, MeshStore arenas, TextureStore). Texture uploads and IBL prefilter currently run
-// synchronously here; deferring them to `ProcessComponentEvents` via `Pending*` markers is a
+// `LoadGltfFile` parses a glTF/.glb, populates registry components, and writes to canonical UMA
+// buffers (Materials, MeshStore arenas, TextureStore). Texture uploads and IBL prefilter currently
+// run synchronously here; deferring them to `ProcessComponentEvents` via `Pending*` markers is a
 // follow-up (Phase 3b).
 //
-// `BuildGltfScene` is the inverse: reads back into a fresh gltf::Scene suitable for SaveScene.
+// `SaveGltfFile` is the inverse: walks the registry + buffers and writes a glTF/.glb to disk.
 //
 // Sidecars below carry source-form data that GPU+registry state can't recreate verbatim.
 
 #pragma once
 
 #include "GltfScene.h"
+#include "Image.h"
 #include "SceneVulkanResources.h"
 #include "entt_fwd.h"
 #include "gpu/Transform.h"
@@ -99,12 +100,12 @@ struct MeshName {
     std::string Value;
 };
 
-// Source `gltf::Node::SourceMatrix` — engine uses TRS at runtime.
+// Source-side glTF node transform stored as a 4x4 matrix — engine uses TRS at runtime.
 struct SourceMatrixTransform {
     mat4 Value{1.f};
 };
 
-// Source `gltf::Node::LocalTransform` preserved verbatim. Engine stores `Transform` in world space
+// Source-side glTF node `LocalTransform` preserved verbatim. Engine stores `Transform` in world space
 // (via SetParent), so save would otherwise have to decompose `inv(parent_world) * Transform` —
 // lossy when parents have non-uniform scale or when the chain involves quantization-style scaling.
 // Build prefers this when present.
@@ -222,10 +223,12 @@ struct PopulateResult {
     bool ImportedAnimation{false};
 };
 
-// `source` is mutated (mesh data is moved out into MeshStore arenas).
+// Parse a glTF/.glb at `path` and drain it into the ECS / UMA buffers in one pass.
 std::expected<PopulateResult, std::string>
-PopulateGltfScene(Scene &source, const std::filesystem::path &source_path, PopulateContext ctx);
+LoadGltfFile(const std::filesystem::path &path, PopulateContext ctx);
 
-Scene BuildGltfScene(const entt::registry &, entt::entity scene_entity, const SceneBuffers &, const MeshStore &);
+// Walk the ECS + UMA buffers and write a glTF/.glb to `path`.
+std::expected<void, std::string>
+SaveGltfFile(const entt::registry &, entt::entity scene_entity, const SceneBuffers &, const MeshStore &, const std::filesystem::path &path);
 
 } // namespace gltf

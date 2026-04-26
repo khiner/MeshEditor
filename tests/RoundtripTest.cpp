@@ -1,7 +1,6 @@
 #include "SceneStores.h"
 #include "SceneVulkanResources.h"
 #include "gltf/EcsScene.h"
-#include "gltf/GltfScene.h"
 #include "vulkan/VulkanContext.h"
 
 #include <boost/ut.hpp>
@@ -534,29 +533,6 @@ int main() {
         const auto sample_name = src.stem().string();
 
         test(sample_name) = [&] {
-            auto loaded = gltf::LoadScene(src);
-            if (!loaded) return; // Loader limitation on source (e.g., unsupported extension); not a roundtrip concern.
-
-            const auto out_path = tmp_root / (sample_name + ".gltf");
-            auto save_result = gltf::SaveScene(*loaded, out_path);
-            expect(save_result.has_value()) << "SaveScene failed: " << (save_result ? "" : save_result.error());
-            if (!save_result) return;
-
-            const auto unexpected = CompareGltfJson(src, out_path, sample_name);
-            expect(unexpected == 0) << unexpected << " unexpected JSON diff(s)";
-        };
-
-        test(sample_name + " (ecs)") = [&] {
-            auto loaded = gltf::LoadScene(src);
-            if (!loaded) return;
-
-            // Save A first while `loaded` is pristine — PopulateGltfScene consumes mesh data
-            // (moves into MeshStore arenas) and would leave `*loaded` unsafe to re-serialize.
-            const auto a_path = tmp_root / (sample_name + ".A.gltf");
-            auto save_a = gltf::SaveScene(*loaded, a_path);
-            expect(save_a.has_value()) << "SaveScene(loaded) failed: " << (save_a ? "" : save_a.error());
-            if (!save_a) return;
-
             entt::registry registry;
             SceneStores stores{vk_resources, *cmd_pool, *fence};
             const auto scene_entity = WireSceneRegistry(registry, stores);
@@ -573,18 +549,15 @@ int main() {
                 .Textures = *stores.Textures,
                 .Environments = *stores.Environments,
             };
-            auto populate = gltf::PopulateGltfScene(*loaded, src, ctx);
-            expect(populate.has_value()) << "PopulateGltfScene failed: " << (populate ? "" : populate.error());
-            if (!populate) return;
+            auto load = gltf::LoadGltfFile(src, ctx);
+            if (!load) return; // Loader limitation on source (e.g., unsupported extension); not a roundtrip concern.
 
-            auto rebuilt = gltf::BuildGltfScene(registry, scene_entity, *stores.Buffers, *stores.Meshes);
+            const auto out_path = tmp_root / (sample_name + ".gltf");
+            auto save = gltf::SaveGltfFile(registry, scene_entity, *stores.Buffers, *stores.Meshes, out_path);
+            expect(save.has_value()) << "SaveGltfFile failed: " << (save ? "" : save.error());
+            if (!save) return;
 
-            const auto b_path = tmp_root / (sample_name + ".B.gltf");
-            auto save_b = gltf::SaveScene(rebuilt, b_path);
-            expect(save_b.has_value()) << "SaveScene(rebuilt) failed: " << (save_b ? "" : save_b.error());
-            if (!save_b) return;
-
-            const auto unexpected = CompareGltfJson(a_path, b_path, sample_name + " (ecs)");
+            const auto unexpected = CompareGltfJson(src, out_path, sample_name);
             expect(unexpected == 0) << unexpected << " unexpected JSON diff(s)";
         };
     }
