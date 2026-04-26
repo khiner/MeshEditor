@@ -13,7 +13,7 @@
 
 #include <entt/entity/registry.hpp>
 
-SceneStores::SceneStores(SceneVulkanResources vk, vk::CommandPool command_pool, vk::Fence fence)
+SceneStores::SceneStores(SceneVulkanResources vk)
     : Slots{std::make_unique<DescriptorSlots>(
           vk.Device,
           vk.PhysicalDevice.getProperties2<vk::PhysicalDeviceProperties2, vk::PhysicalDeviceDescriptorIndexingProperties>().get<vk::PhysicalDeviceDescriptorIndexingProperties>()
@@ -22,15 +22,7 @@ SceneStores::SceneStores(SceneVulkanResources vk, vk::CommandPool command_pool, 
       Meshes{std::make_unique<MeshStore>(Buffers->Ctx)},
       Textures{std::make_unique<TextureStore>()},
       Environments{std::make_unique<EnvironmentStore>()} {
-    auto batch = BeginTextureUploadBatch(vk.Device, command_pool, Buffers->Ctx);
-    constexpr std::array<std::byte, 4> white_pixels{std::byte{0xff}, std::byte{0xff}, std::byte{0xff}, std::byte{0xff}};
-    auto white_texture = CreateTextureEntry(
-        vk, batch, *Slots, white_pixels, 1, 1, "DefaultWhite",
-        TextureColorSpace::Srgb, vk::SamplerAddressMode::eRepeat, vk::SamplerAddressMode::eRepeat, SamplerConfig{}
-    );
-    Textures->WhiteTextureSlot = white_texture.SamplerSlot;
-    Textures->Textures.emplace_back(std::move(white_texture));
-    SubmitTextureUploadBatch(batch, vk.Queue, fence, vk.Device);
+    Textures->WhiteTextureSlot = AllocateSamplerSlot(*Slots);
 }
 
 SceneStores::~SceneStores() {
@@ -60,6 +52,18 @@ entt::entity WireSceneRegistry(entt::registry &r, SceneStores &stores) {
         .BaseColorTexture = {.Slot = stores.Textures->WhiteTextureSlot},
     });
     r.patch<MaterialStore>(scene_entity, [](auto &m) { m.Names.emplace_back("Default"); });
+
+    constexpr std::array<std::byte, 4> WhitePixels{std::byte{0xff}, std::byte{0xff}, std::byte{0xff}, std::byte{0xff}};
+    auto &pending = r.get_or_emplace<PendingTextureUploads>(scene_entity);
+    pending.Items.emplace_back(PendingTextureUpload{
+        .SamplerSlot = stores.Textures->WhiteTextureSlot,
+        .Source = PendingTextureUpload::RawPixels{.Pixels = std::vector<std::byte>(WhitePixels.begin(), WhitePixels.end()), .Width = 1, .Height = 1},
+        .ColorSpace = TextureColorSpace::Srgb,
+        .WrapS = vk::SamplerAddressMode::eRepeat,
+        .WrapT = vk::SamplerAddressMode::eRepeat,
+        .Sampler = SamplerConfig{},
+        .Name = "DefaultWhite",
+    });
 
     return scene_entity;
 }

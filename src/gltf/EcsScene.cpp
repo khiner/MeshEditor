@@ -2005,7 +2005,7 @@ std::expected<PopulateResult, std::string> LoadGltfFile(const std::filesystem::p
         const auto sampler_slot = AllocateSamplerSlot(ctx.Slots);
         new_pending_textures.emplace_back(PendingTextureUpload{
             .SamplerSlot = sampler_slot,
-            .SourceImageIndex = *image_index,
+            .Source = PendingTextureUpload::GltfImageRef{*image_index},
             .ColorSpace = color_space,
             .WrapS = wrap_s,
             .WrapT = wrap_t,

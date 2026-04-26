@@ -381,7 +381,7 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
       OneShotFence{Vk.Device.createFenceUnique({})},
       SelectionReadySemaphore{Vk.Device.createSemaphoreUnique({})},
       ClickCommandBuffer{std::move(Vk.Device.allocateCommandBuffersUnique({*CommandPool, vk::CommandBufferLevel::ePrimary, 1}).front())},
-      Stores{Vk, *CommandPool, *OneShotFence},
+      Stores{Vk},
       SelectionHandles{std::make_unique<SelectionSlotHandles>(*Stores.Slots)},
       DestroyTracker{std::make_unique<EntityDestroyTracker>()},
       Draw{std::make_unique<DrawState>()},
@@ -756,27 +756,21 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         request(RenderRequest::ReRecord);
     }
 
-    // Drain deferred glTF texture / IBL uploads before any consumer reads a TextureEntry or sampler descriptor.
-    // Slots were pre-allocated at load time (CPU-only); the VkImage / vk::Sampler / descriptor write happen here.
     if (auto *pending_tex = R.try_get<PendingTextureUploads>(SceneEntity); pending_tex && !pending_tex->Items.empty()) {
-        if (const auto *src = R.try_get<const GltfSourceAssets>(SceneEntity)) {
-            auto batch = BeginTextureUploadBatch(Vk.Device, *CommandPool, Stores.Buffers->Ctx);
-            for (const auto &item : pending_tex->Items) {
-                if (item.SourceImageIndex >= src->Images.size()) {
-                    std::cerr << std::format("Warning: PendingTextureUpload references image index {} (out of range; {} images).\n", item.SourceImageIndex, src->Images.size());
-                    ReleaseSamplerSlots(*Stores.Slots, std::span{&item.SamplerSlot, 1});
-                    continue;
-                }
-                auto entry = MaterializeTextureEntry(Vk, batch, *Stores.Slots, item, src->Images[item.SourceImageIndex]);
-                if (!entry) {
-                    std::cerr << std::format("Warning: Failed to materialize texture '{}': {}\n", item.Name, entry.error());
-                    ReleaseSamplerSlots(*Stores.Slots, std::span{&item.SamplerSlot, 1});
-                    continue;
-                }
-                Stores.Textures->Textures.emplace_back(std::move(*entry));
+        const auto *src = R.try_get<const GltfSourceAssets>(SceneEntity);
+        static const std::vector<gltf::Image> empty_images;
+        const auto &gltf_images = src ? src->Images : empty_images;
+        auto batch = BeginTextureUploadBatch(Vk.Device, *CommandPool, Stores.Buffers->Ctx);
+        for (const auto &item : pending_tex->Items) {
+            auto entry = MaterializeTextureEntry(Vk, batch, *Stores.Slots, item, gltf_images);
+            if (!entry) {
+                std::cerr << std::format("Warning: Failed to materialize texture '{}': {}\n", item.Name, entry.error());
+                ReleaseSamplerSlots(*Stores.Slots, std::span{&item.SamplerSlot, 1});
+                continue;
             }
-            SubmitTextureUploadBatch(batch, Vk.Queue, *OneShotFence, Vk.Device);
+            Stores.Textures->Textures.emplace_back(std::move(*entry));
         }
+        SubmitTextureUploadBatch(batch, Vk.Queue, *OneShotFence, Vk.Device);
         R.remove<PendingTextureUploads>(SceneEntity);
     }
     if (auto *pending_env = R.try_get<PendingEnvironmentImport>(SceneEntity)) {

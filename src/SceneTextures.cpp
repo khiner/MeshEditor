@@ -803,8 +803,20 @@ IblSamplers MakeIblSamplers(const EnvironmentPrefiltered &pre, const Environment
 std::expected<TextureEntry, std::string> MaterializeTextureEntry(
     const SceneVulkanResources &vk,
     TextureUploadBatch &batch, DescriptorSlots &slots,
-    const PendingTextureUpload &item, const gltf::Image &source
+    const PendingTextureUpload &item, const std::vector<gltf::Image> &gltf_images
 ) {
+    if (const auto *raw = std::get_if<PendingTextureUpload::RawPixels>(&item.Source)) {
+        return CreateTextureEntryAtSlot(
+            vk, batch, slots, item.SamplerSlot,
+            raw->Pixels, raw->Width, raw->Height, item.Name,
+            item.ColorSpace, item.WrapS, item.WrapT, item.Sampler
+        );
+    }
+    const auto &ref = std::get<PendingTextureUpload::GltfImageRef>(item.Source);
+    if (ref.ImageIndex >= gltf_images.size()) {
+        return std::unexpected{std::format("PendingTextureUpload '{}' references gltf image index {} (out of range; {} images).", item.Name, ref.ImageIndex, gltf_images.size())};
+    }
+    const auto &source = gltf_images[ref.ImageIndex];
     if (source.MimeType != gltf::MimeType::KTX2) {
         auto decoded = DecodeImageRgba8(source.Bytes, source.Name);
         if (!decoded) return std::unexpected{std::move(decoded.error())};

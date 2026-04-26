@@ -5,19 +5,14 @@
 
 #include <memory>
 
-#include <vulkan/vulkan.hpp>
-
 struct DescriptorSlots;
 struct EnvironmentStore;
 struct MeshStore;
 struct SceneBuffers;
 struct TextureStore;
 
-// Owns GPU-bound stores that the gltf populate/build path operates on. Construction uploads
-// the default white texture (used as a material fallback) via the provided command pool +
-// fence, but does not retain those handles.
 struct SceneStores {
-    SceneStores(SceneVulkanResources, vk::CommandPool, vk::Fence);
+    SceneStores(SceneVulkanResources);
     ~SceneStores();
     SceneStores(const SceneStores &) = delete;
     SceneStores &operator=(const SceneStores &) = delete;

@@ -526,15 +526,13 @@ int main() {
     // Each sample test below builds its own SceneStores + registry on top of these shared handles.
     VulkanContext vk_ctx{{}, /*with_swapchain=*/false};
     const SceneVulkanResources vk_resources{*vk_ctx.Instance, vk_ctx.PhysicalDevice, *vk_ctx.Device, vk_ctx.QueueFamily, vk_ctx.Queue};
-    const auto cmd_pool = vk_ctx.Device->createCommandPoolUnique({vk::CommandPoolCreateFlagBits::eResetCommandBuffer, vk_ctx.QueueFamily});
-    const auto fence = vk_ctx.Device->createFenceUnique({});
 
     for (const auto &src : samples) {
         const auto sample_name = src.stem().string();
 
         test(sample_name) = [&] {
             entt::registry registry;
-            SceneStores stores{vk_resources, *cmd_pool, *fence};
+            SceneStores stores{vk_resources};
             const auto scene_entity = WireSceneRegistry(registry, stores);
 
             gltf::PopulateContext ctx{
