@@ -38,7 +38,15 @@ struct EdgeMap {
     }
 
 private:
-    size_t mix(uint64_t k) const { return (k ^ (k >> 16)) & Mask; }
+    size_t mix(uint64_t k) const {
+        // splitmix64 finalizer — kills the clustering you get from `(from << 32) | to` keys.
+        k ^= k >> 30;
+        k *= 0xbf58476d1ce4e5b9ULL;
+        k ^= k >> 27;
+        k *= 0x94d049bb133111ebULL;
+        k ^= k >> 31;
+        return k & Mask;
+    }
     struct Entry {
         uint64_t Key;
         he::HH Val;
