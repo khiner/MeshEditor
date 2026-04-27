@@ -1298,7 +1298,7 @@ fastgltf::Light ConvertLightToFg(const PunctualLight &pl, std::string_view name)
 
 } // namespace
 
-std::expected<PopulateResult, std::string> LoadGltf(const std::filesystem::path &source_path, PopulateContext ctx) {
+std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &source_path, LoadContext ctx) {
     const Timer timer{"LoadGltf"};
 
     ExtrasMap extras;
@@ -2755,10 +2755,10 @@ std::expected<PopulateResult, std::string> LoadGltf(const std::filesystem::path 
     for (const auto e : all_imported_objects) R.emplace<Selected>(e);
     import_rollback_guard.Enabled = false;
 
-    return gltf::PopulateResult{.Active = active_entity, .FirstMesh = first_mesh_entity, .FirstCameraObject = first_camera_object_entity, .ImportedAnimation = imported_animation};
+    return gltf::LoadResult{.Active = active_entity, .FirstMesh = first_mesh_entity, .FirstCameraObject = first_camera_object_entity, .ImportedAnimation = imported_animation};
 }
 
-std::expected<void, std::string> SaveGltf(const SaveContext &sc, const std::filesystem::path &path) {
+std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, const SaveContext &sc) {
     const Timer timer{"SaveGltf"};
 
     const auto &r = sc.R;
@@ -2801,29 +2801,32 @@ std::expected<void, std::string> SaveGltf(const SaveContext &sc, const std::file
     const auto &material_metas = src_assets ? src_assets->MaterialMetas : std::vector<MaterialSourceMeta>{};
 
     // Mesh entities → MeshIndex. Source meshes use SourceMeshIndex for stable round-trip ordering;
-    // engine-generated meshes (no SourceMeshIndex) are skipped — they don't belong in save_meshes.
+    // runtime-created meshes (AddMesh / primitives) lack SourceMeshIndex and get fresh indices
+    // appended after the source range so they round-trip through save.
     std::unordered_map<entt::entity, uint32_t> mesh_entity_to_index;
-    uint32_t source_mesh_count = 0;
-    auto source_mesh_view = r.view<const Mesh, const SourceMeshIndex>();
-    for (const auto e : source_mesh_view) {
-        const auto smi_value = source_mesh_view.get<const SourceMeshIndex>(e).Value;
-        mesh_entity_to_index[e] = smi_value;
-        source_mesh_count = std::max(source_mesh_count, smi_value + 1u);
+    uint32_t mesh_count = 0;
+    for (const auto [e, _, smi] : r.view<const Mesh, const SourceMeshIndex>().each()) {
+        mesh_entity_to_index[e] = smi.Value;
+        mesh_count = std::max(mesh_count, smi.Value + 1u);
+    }
+    for (const auto e : r.view<const Mesh>()) {
+        if (!mesh_entity_to_index.contains(e)) mesh_entity_to_index[e] = mesh_count++;
     }
 
-    // Group source-mesh entities by SourceMeshIndex (one Triangles/Lines/Points entity per slot).
+    // Group mesh entities by mesh index (one Triangles/Lines/Points entity per slot).
     // The fastgltf::Mesh emit pass below reads vertex/face/skin/morph data straight from
     // MeshStore for each grouped entity — no per-mesh `gltf::MeshData` aggregate is needed.
     struct MeshEntitySet {
         entt::entity Triangles{entt::null}, Lines{entt::null}, Points{entt::null};
         std::string Name;
     };
-    std::vector<MeshEntitySet> mesh_groups(source_mesh_count);
-    for (const auto [entity, smi, kind] : r.view<const SourceMeshIndex, const SourceMeshKind>().each()) {
-        if (!r.all_of<Mesh>(entity)) continue;
-        auto &g = mesh_groups[smi.Value];
-        if (kind.Value == MeshKind::Triangles) g.Triangles = entity;
-        else if (kind.Value == MeshKind::Lines) g.Lines = entity;
+    std::vector<MeshEntitySet> mesh_groups(mesh_count);
+    for (const auto &[entity, idx] : mesh_entity_to_index) {
+        auto &g = mesh_groups[idx];
+        const auto *kind = r.try_get<const SourceMeshKind>(entity);
+        const auto k = kind ? kind->Value : MeshKind::Triangles;
+        if (k == MeshKind::Triangles) g.Triangles = entity;
+        else if (k == MeshKind::Lines) g.Lines = entity;
         else g.Points = entity;
         if (g.Name.empty()) {
             if (const auto *mn = r.try_get<const MeshName>(entity)) g.Name = mn->Value;
@@ -2859,14 +2862,20 @@ std::expected<void, std::string> SaveGltf(const SaveContext &sc, const std::file
     std::unordered_map<entt::entity, entt::entity> armature_data_to_object;
     for (const auto [e, ao] : r.view<const ArmatureObject>().each()) armature_data_to_object[ao.Entity] = e;
 
-    // Scene tree: only source-derived entities (with `SourceNodeIndex`) become nodes; engine
-    // helpers like the armature object are skipped. Hierarchy comes from `SourceParentNodeIndex`,
-    // not `SceneNode` (which gets mutated by skinning/armature re-parenting at populate).
+    // Scene tree: source-derived entities use `SourceNodeIndex` (hierarchy comes from
+    // `SourceParentNodeIndex`, not `SceneNode` which gets mutated by skinning/armature
+    // re-parenting at populate). Runtime-created object entities (AddMesh / primitives) lack
+    // SourceNodeIndex and get fresh indices appended after the source range; they emit as scene
+    // roots since they have no SourceParentNodeIndex.
     std::unordered_map<entt::entity, uint32_t> entity_to_node_index;
     uint32_t total_node_count = 0;
     for (const auto [e, sni] : r.view<const SourceNodeIndex>().each()) {
         entity_to_node_index[e] = sni.Value;
         total_node_count = std::max(total_node_count, sni.Value + 1u);
+    }
+    for (const auto [e, _t, kind] : r.view<const Transform, const ObjectKind>().each()) {
+        if (kind.Value == ObjectType::Armature) continue; // Armatures aren't gltf nodes — they round-trip via skins.
+        if (!entity_to_node_index.contains(e)) entity_to_node_index[e] = total_node_count++;
     }
     // Children paired with sibling position so we sort in source order.
     std::unordered_map<uint32_t, std::vector<std::pair<uint32_t, uint32_t>>> children_by_parent;
@@ -3459,12 +3468,31 @@ std::expected<void, std::string> SaveGltf(const SaveContext &sc, const std::file
         // is read straight from MeshStore — no per-mesh contiguous vectors materialized.
         if (group.Triangles != entt::null) {
             const auto &mesh = r.get<const Mesh>(group.Triangles);
-            const auto &layout = r.get<const MeshSourceLayout>(group.Triangles);
             const auto store_id = mesh.GetStoreId();
             const auto vertices = meshes.GetVertices(store_id);
             const auto total_vcount = uint32_t(vertices.size());
             const auto face_primitives = meshes.GetFacePrimitiveIndices(store_id);
             const auto primitive_materials = meshes.GetPrimitiveMaterialIndices(store_id);
+            // Runtime-created meshes have no MeshSourceLayout; synthesize a single-primitive
+            // layout from actual vertex contents so attribute emission matches what's present.
+            const auto *layout_ptr = r.try_get<const MeshSourceLayout>(group.Triangles);
+            const MeshSourceLayout synthesized_layout = layout_ptr ? MeshSourceLayout{} : [&] {
+                MeshSourceLayout out;
+                uint32_t flags = 0;
+                if (std::ranges::any_of(vertices, [](const auto &v) { return v.Normal != vec3{0}; })) flags |= MeshAttributeBit_Normal;
+                if (std::ranges::any_of(vertices, [](const auto &v) { return v.Tangent != vec4{0}; })) flags |= MeshAttributeBit_Tangent;
+                if (std::ranges::any_of(vertices, [](const auto &v) { return v.Color != vec4{0}; })) flags |= MeshAttributeBit_Color0;
+                if (std::ranges::any_of(vertices, [](const auto &v) { return v.TexCoord0 != vec2{0}; })) flags |= MeshAttributeBit_TexCoord0;
+                if (std::ranges::any_of(vertices, [](const auto &v) { return v.TexCoord1 != vec2{0}; })) flags |= MeshAttributeBit_TexCoord1;
+                if (std::ranges::any_of(vertices, [](const auto &v) { return v.TexCoord2 != vec2{0}; })) flags |= MeshAttributeBit_TexCoord2;
+                if (std::ranges::any_of(vertices, [](const auto &v) { return v.TexCoord3 != vec2{0}; })) flags |= MeshAttributeBit_TexCoord3;
+                out.VertexCounts = {total_vcount};
+                out.AttributeFlags = {flags};
+                out.HasSourceIndices = {1};
+                out.Colors0ComponentCount = 4;
+                return out;
+            }();
+            const auto &layout = layout_ptr ? *layout_ptr : synthesized_layout;
             const auto prim_count = uint32_t(layout.VertexCounts.size());
 
             std::vector<uint32_t> vertex_offsets(prim_count + 1, 0);

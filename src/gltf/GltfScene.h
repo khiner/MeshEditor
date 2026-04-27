@@ -223,7 +223,7 @@ struct SourceAssets {
     std::optional<ImageBasedLight> ImageBasedLight; // source IBL definition; runtime keeps the prefiltered cubemap
 };
 
-struct PopulateContext {
+struct LoadContext {
     entt::registry &R;
     entt::entity SceneEntity;
     DescriptorSlots &Slots;
@@ -233,7 +233,7 @@ struct PopulateContext {
     EnvironmentStore &Environments;
 };
 
-struct PopulateResult {
+struct LoadResult {
     entt::entity Active{null_entity}, FirstMesh{null_entity}, FirstCameraObject{null_entity};
     bool ImportedAnimation{false};
 };
@@ -255,6 +255,6 @@ struct SaveContext {
     SaveOptions Options{};
 };
 
-std::expected<PopulateResult, std::string> LoadGltf(const std::filesystem::path &, PopulateContext);
-std::expected<void, std::string> SaveGltf(const SaveContext &, const std::filesystem::path &);
+std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &, LoadContext);
+std::expected<void, std::string> SaveGltf(const std::filesystem::path &, const SaveContext &);
 } // namespace gltf

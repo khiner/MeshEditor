@@ -546,7 +546,7 @@ int main() {
     const SceneVulkanResources vk_resources{*vk_ctx.Instance, vk_ctx.PhysicalDevice, *vk_ctx.Device, vk_ctx.QueueFamily, vk_ctx.Queue};
 
     const auto load_ctx = [](entt::registry &r, SceneStores &s, entt::entity e) {
-        return gltf::PopulateContext{.R = r, .SceneEntity = e, .Slots = *s.Slots, .Buffers = *s.Buffers, .Meshes = *s.Meshes, .Textures = *s.Textures, .Environments = *s.Environments};
+        return gltf::LoadContext{.R = r, .SceneEntity = e, .Slots = *s.Slots, .Buffers = *s.Buffers, .Meshes = *s.Meshes, .Textures = *s.Textures, .Environments = *s.Environments};
     };
     const auto save_ctx = [&](const entt::registry &r, const SceneStores &s, entt::entity e) {
         return gltf::SaveContext{.R = r, .SceneEntity = e, .Buffers = *s.Buffers, .Meshes = *s.Meshes, .Textures = *s.Textures, .Vk = &vk_resources, .BufCtx = &s.Buffers->Ctx};
@@ -563,7 +563,7 @@ int main() {
             if (!load) return; // Loader limitation on source (e.g., unsupported extension); not a roundtrip concern.
 
             const auto out_path = tmp_root / (sample_name + ".gltf");
-            auto save = gltf::SaveGltf(save_ctx(r, stores, scene), out_path);
+            auto save = gltf::SaveGltf(out_path, save_ctx(r, stores, scene));
             expect(save.has_value()) << "SaveGltf failed: " << (save ? "" : save.error());
             if (!save) return;
 
@@ -624,7 +624,7 @@ int main() {
             r.get<gltf::SourceAssets>(scene).Images.front().IsDirty = true;
 
             const auto out_path = edit_root / "BoxTextured-dirty.gltf";
-            auto save = gltf::SaveGltf(save_ctx(r, stores, scene), out_path);
+            auto save = gltf::SaveGltf(out_path, save_ctx(r, stores, scene));
             expect(save.has_value()) << "save failed: " << (save ? "" : save.error());
             if (!save) return;
 
@@ -671,7 +671,7 @@ int main() {
             fs::rename(staged_png, stage_dir / "CesiumLogoFlat.png.moved");
 
             const auto out_path = edit_root / "BoxTextured-fallback.gltf";
-            auto save = gltf::SaveGltf(save_ctx(r, stores, scene), out_path);
+            auto save = gltf::SaveGltf(out_path, save_ctx(r, stores, scene));
             expect(save.has_value()) << "save failed: " << (save ? "" : save.error());
             if (!save) return;
 

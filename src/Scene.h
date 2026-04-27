@@ -49,6 +49,7 @@ struct Scene {
     std::pair<entt::entity, entt::entity> AddMesh(const std::filesystem::path &, std::optional<MeshInstanceCreateInfo> = {});
     // Imports glTF as a scene (may create multiple mesh + instance entities).
     std::expected<std::pair<entt::entity, entt::entity>, std::string> AddGltfScene(const std::filesystem::path &);
+    std::expected<void, std::string> SaveGltf(const std::filesystem::path &);
     void LoadRealImpact(const std::filesystem::path &directory);
 
     entt::entity AddMeshInstance(entt::entity mesh_entity, MeshInstanceCreateInfo);

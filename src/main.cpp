@@ -353,15 +353,6 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
                         std::cerr << "Error opening file dialog: " << NFD_GetError() << std::endl;
                     }
                 }
-                // if (MenuItem("Export mesh", nullptr, false, MainMesh != nullptr)) {
-                //     nfdchar_t *path;
-                //     if (auto result = NFD_SaveDialog(&path, filtes.data(), filters.size(), nullptr); result == NFD_OKAY) {
-                //         scene->SaveMesh(fs::path(path));
-                //         NFD_FreePath(path);
-                //     } else if (result != NFD_CANCEL) {
-                //         throw std::runtime_error(std::format("Error saving mesh file: {}", NFD_GetError()));
-                //     }
-                // }
                 if (MenuItem("Load RealImpact", nullptr)) {
                     static const std::vector<nfdfilteritem_t> filters{};
                     nfdchar_t *path;
@@ -370,6 +361,16 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
                         NFD_FreePath(path);
                     } else if (result != NFD_CANCEL) {
                         throw std::runtime_error(std::format("Error loading RealImpact file: {}", NFD_GetError()));
+                    }
+                }
+                if (MenuItem("Save glTF", nullptr)) {
+                    static const std::array filters{nfdfilteritem_t{"glTF scene", "gltf,glb"}};
+                    nfdchar_t *nfd_path;
+                    if (auto result = NFD_SaveDialog(&nfd_path, filters.data(), filters.size(), nullptr, "scene.gltf"); result == NFD_OKAY) {
+                        if (auto save = scene->SaveGltf(fs::path(nfd_path)); !save) std::cerr << save.error() << std::endl;
+                        NFD_FreePath(nfd_path);
+                    } else if (result != NFD_CANCEL) {
+                        std::cerr << "Error opening save dialog: " << NFD_GetError() << std::endl;
                     }
                 }
                 EndMenu();
