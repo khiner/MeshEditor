@@ -21,6 +21,9 @@ struct TextureEntry {
     uint32_t SamplerSlot;
     uint32_t Width, Height, MipLevels;
     std::string Name;
+    // Index into `GltfSourceAssets::Images` for textures materialized from a `GltfImageRef`;
+    // UINT32_MAX for raw-pixel uploads (LUTs, SVG bitmaps). Used by SaveGltfFile for re-encode lookup.
+    uint32_t SourceImageIndex{UINT32_MAX};
 };
 
 struct TextureStore {
@@ -137,6 +140,13 @@ std::expected<TextureEntry, std::string> CreateTextureEntryFromEncoded(
 );
 uint32_t AllocateSamplerSlot(DescriptorSlots &);
 std::pair<uint32_t, uint32_t> AllocateIblCubeSlots(DescriptorSlots &); // {diffuse, specular}
+
+// Read mip 0 of an RGBA8 texture back to host memory. Synchronous: submits to `queue`, blocks on
+// `fence`. The texture's resting layout (eShaderReadOnlyOptimal) is restored on completion.
+std::expected<std::vector<std::byte>, std::string> ReadbackTextureRgba8(
+    const SceneVulkanResources &, mvk::BufferContext &,
+    vk::CommandPool, vk::Fence, const TextureEntry &
+);
 
 std::expected<TextureEntry, std::string> MaterializeTextureEntry(
     const SceneVulkanResources &, TextureUploadBatch &, DescriptorSlots &,

@@ -795,6 +795,15 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         }
         R.remove<PendingEnvironmentImport>(SceneEntity);
     }
+    // Drop encoded Bytes for external-URI images now that materialization has consumed them.
+    // SourceAbsPath is the persistence — SaveGltfFile re-reads from there.
+    if (!R.any_of<PendingTextureUploads, PendingEnvironmentImport>(SceneEntity)) {
+        if (auto *src_assets = R.try_get<GltfSourceAssets>(SceneEntity)) {
+            for (auto &img : src_assets->Images) {
+                if (!img.Uri.empty()) img.Bytes = {};
+            }
+        }
+    }
 
     // Create/destroy wireframe overlay instances and their buffer entities before SyncModelsBuffers
     // consumes the RenderInstance/NewBufferEntity reactive events they fire.

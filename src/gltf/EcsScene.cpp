@@ -1,5 +1,6 @@
 #include "EcsScene.h"
 
+#include "../ImageEncode.h"
 #include "AnimationData.h"
 #include "AnimationTimeline.h"
 #include "Armature.h"
@@ -293,10 +294,13 @@ std::expected<Image, std::string> ReadImage(const fastgltf::Asset &asset, uint32
                 image_path = image_path.lexically_normal();
                 auto bytes = ReadFileBytes(image_path);
                 if (!bytes) return std::unexpected{std::move(bytes.error())};
+                // Hold bytes only until upload — Scene::ProcessComponentEvents clears them after
+                // materialization since SourceAbsPath is the persistence for external URIs.
                 image_result.Bytes = std::move(*bytes);
                 image_result.MimeType = ToMimeType(uri.mimeType);
                 image_result.SourceHadMimeType = uri.mimeType != fastgltf::MimeType::None;
                 image_result.Uri = std::string(uri.uri.string());
+                image_result.SourceAbsPath = image_path.string();
                 return {};
             },
             [&](const fastgltf::sources::CustomBuffer &) -> std::expected<void, std::string> {
@@ -2879,8 +2883,13 @@ std::expected<PopulateResult, std::string> LoadGltfFile(const std::filesystem::p
     };
 }
 
-std::expected<void, std::string> SaveGltfFile(const entt::registry &r, entt::entity scene_entity, const SceneBuffers &buffers, const MeshStore &meshes, const std::filesystem::path &path) {
+std::expected<void, std::string> SaveGltfFile(const SaveContext &sc, const std::filesystem::path &path) {
     const Timer timer{"SaveGltfFile"};
+
+    const auto &r = sc.R;
+    const auto scene_entity = sc.SceneEntity;
+    const auto &buffers = sc.Buffers;
+    const auto &meshes = sc.Meshes;
 
     // Order entities in `view` by their `TIndex` sidecar value. Entities without `TIndex`
     // (runtime-added) land after the source range. Used for cameras, lights, physics resources.
@@ -3450,47 +3459,131 @@ std::expected<void, std::string> SaveGltfFile(const entt::registry &r, entt::ent
         });
     }
 
-    // Images: re-emit in the source's form - data URI, external URI, or embedded bufferView.
-    std::vector<uint32_t> image_bv_index(sa.Images.size(), UINT32_MAX);
+    // Images: dirty → re-encode from GPU readback; external URI not dirty → re-read source +
+    // magic-byte validate, fall back to embed-as-PNG on miss; embedded → passthrough Bytes.
     asset.images.reserve(sa.Images.size());
+
+    std::unordered_map<uint32_t, const TextureEntry *> texture_for_image;
+    for (const auto &tex : sc.Textures.Textures) {
+        if (tex.SourceImageIndex != UINT32_MAX) texture_for_image.emplace(tex.SourceImageIndex, &tex);
+    }
+    const auto magic_matches = [](std::span<const std::byte> b, gltf::MimeType mime) {
+        const auto *u8 = reinterpret_cast<const uint8_t *>(b.data());
+        using enum gltf::MimeType;
+        switch (mime) {
+            case PNG: return b.size() >= 4 && u8[0] == 0x89 && u8[1] == 0x50 && u8[2] == 0x4E && u8[3] == 0x47;
+            case JPEG: return b.size() >= 3 && u8[0] == 0xFF && u8[1] == 0xD8 && u8[2] == 0xFF;
+            case WEBP: return b.size() >= 12 && u8[8] == 0x57 && u8[9] == 0x45 && u8[10] == 0x42 && u8[11] == 0x50;
+            case KTX2: {
+                static constexpr uint8_t Magic[12]{0xAB, 0x4B, 0x54, 0x58, 0x20, 0x32, 0x30, 0xBB, 0x0D, 0x0A, 0x1A, 0x0A};
+                return b.size() >= 12 && std::memcmp(b.data(), Magic, 12) == 0;
+            }
+            default: return false;
+        }
+    };
+    // Lazy: command pool / fence are created on the first GPU readback only.
+    vk::UniqueCommandPool save_pool;
+    vk::UniqueFence save_fence;
+    const auto reencode_from_gpu = [&](uint32_t img_idx, gltf::MimeType target, std::string_view name)
+        -> std::expected<std::pair<std::vector<std::byte>, gltf::MimeType>, std::string> {
+        const auto it = texture_for_image.find(img_idx);
+        if (it == texture_for_image.end()) return std::unexpected{std::format("Image '{}' has no GPU texture; cannot re-encode.", name)};
+        if (!sc.Vk || !sc.BufCtx) return std::unexpected{"GPU readback required but SaveContext.Vk / BufCtx is null"};
+        if (!save_pool) {
+            save_pool = sc.Vk->Device.createCommandPoolUnique({vk::CommandPoolCreateFlagBits::eTransient, sc.Vk->QueueFamily});
+            save_fence = sc.Vk->Device.createFenceUnique({});
+        }
+        auto rgba8 = ReadbackTextureRgba8(*sc.Vk, *sc.BufCtx, *save_pool, *save_fence, *it->second);
+        if (!rgba8) return std::unexpected{std::move(rgba8.error())};
+        const auto w = it->second->Width, h = it->second->Height;
+        if (auto enc = EncodeImageRgba8ForMime(target, *rgba8, w, h, sc.Options.LossyImageQuality, name)) {
+            return std::pair{std::move(*enc), target};
+        } else if (target == gltf::MimeType::PNG) {
+            return std::unexpected{std::move(enc.error())};
+        } else {
+            // Unsupported encoder (WebP / KTX2 / DDS): fall back to PNG.
+            std::cerr << std::format("Warning: image '{}': {} — falling back to PNG.\n", name, enc.error());
+            auto png = EncodeImagePngRgba8(*rgba8, w, h, name);
+            if (!png) return std::unexpected{std::move(png.error())};
+            return std::pair{std::move(*png), gltf::MimeType::PNG};
+        }
+    };
+
     for (uint32_t i = 0; i < sa.Images.size(); ++i) {
         const auto &img = sa.Images[i];
-        if (img.SourceDataUri && !img.Bytes.empty()) {
-            // The data URI carries the mime; suppress the separate mimeType field (source didn't have one).
-            const auto fg_mime = FromMimeType(img.MimeType);
+        // Default: passthrough embedded Bytes. Branches below override when re-encoding or when
+        // emitting as external URI (which uses no bytes).
+        std::vector<std::byte> owned; // backs `view` when we re-encode
+        std::span<const std::byte> view = img.Bytes;
+        auto emit_mime = img.MimeType;
+        bool emit_external_uri = false;
+        const bool ktx2_or_dds = img.MimeType == gltf::MimeType::KTX2 || img.MimeType == gltf::MimeType::DDS;
+
+        if (img.IsDirty && !ktx2_or_dds) {
+            auto re = reencode_from_gpu(i, img.MimeType, img.Name);
+            if (!re) return std::unexpected{std::move(re.error())};
+            owned = std::move(re->first);
+            emit_mime = re->second;
+            view = owned;
+        } else if (img.IsDirty) {
+            // KTX2/DDS dirty: no encoder dep. Passthrough with a warning.
+            std::cerr << std::format("Warning: image '{}' is dirty but {} re-encoding isn't supported; emitting original bytes.\n", img.Name, img.MimeType == gltf::MimeType::KTX2 ? "KTX2" : "DDS");
+        } else if (!img.Uri.empty()) {
+            std::error_code ec;
+            const bool exists = !img.SourceAbsPath.empty() && std::filesystem::is_regular_file(img.SourceAbsPath, ec);
+            // Unknown mimes (HDR / IBL panoramas) have no magic check or RGBA8 re-encode path —
+            // existence-only.
+            const bool validate = img.MimeType == gltf::MimeType::PNG || img.MimeType == gltf::MimeType::JPEG ||
+                img.MimeType == gltf::MimeType::WEBP || img.MimeType == gltf::MimeType::KTX2;
+            bool ok = false;
+            if (exists) {
+                if (!validate) ok = true;
+                else if (auto b = ReadFileBytes(img.SourceAbsPath)) ok = magic_matches(*b, img.MimeType);
+            }
+            if (ok) {
+                emit_external_uri = true;
+            } else if (auto re = reencode_from_gpu(i, gltf::MimeType::PNG, img.Name)) {
+                std::cerr << std::format("Warning: image '{}' source '{}' missing or mime-mismatched; embedding as PNG.\n", img.Name, img.SourceAbsPath);
+                owned = std::move(re->first);
+                emit_mime = gltf::MimeType::PNG;
+                view = owned;
+            } else {
+                // Best-effort: no GPU readback available — emit URI as-is so the save still completes.
+                std::cerr << std::format("Warning: image '{}' fallback re-encode failed ({}); emitting URI as-is.\n", img.Name, re.error());
+                emit_external_uri = true;
+            }
+        }
+
+        if (emit_external_uri) {
+            const auto fg_mime = img.SourceHadMimeType ? FromMimeType(img.MimeType) : fastgltf::MimeType::None;
+            asset.images.emplace_back(fastgltf::Image{
+                .data = fastgltf::sources::URI{.fileByteOffset = 0, .uri = fastgltf::URI{std::string_view{img.Uri}}, .mimeType = fg_mime},
+                .name = ToFgStr(img.Name),
+            });
+        } else if (img.SourceDataUri && !view.empty()) {
+            const auto fg_mime = FromMimeType(emit_mime);
             const auto mime_str = fg_mime == fastgltf::MimeType::None ? std::string{} : std::string(fastgltf::getMimeTypeString(fg_mime));
-            const auto data_uri = "data:" + mime_str + ";base64," + fastgltf::base64::encode(reinterpret_cast<const std::uint8_t *>(img.Bytes.data()), img.Bytes.size());
+            const auto data_uri = "data:" + mime_str + ";base64," + fastgltf::base64::encode(reinterpret_cast<const std::uint8_t *>(view.data()), view.size());
             asset.images.emplace_back(fastgltf::Image{
                 .data = fastgltf::sources::URI{.fileByteOffset = 0, .uri = fastgltf::URI{data_uri}, .mimeType = fastgltf::MimeType::None},
                 .name = ToFgStr(img.Name),
             });
-            continue;
-        }
-        if (!img.Uri.empty()) {
-            // mimeType is optional for URI-form; our magic-byte inference (runtime-only) shouldn't leak to output.
-            const auto emit_mime = img.SourceHadMimeType ? FromMimeType(img.MimeType) : fastgltf::MimeType::None;
+        } else {
+            uint32_t bv;
+            if (!view.empty()) {
+                bv = AddBufferView(AppendAligned(bin, view.data(), uint32_t(view.size())), uint32_t(view.size()));
+            } else {
+                // Placeholder empty bufferView.
+                const uint32_t offset = bin.size();
+                bin.emplace_back(std::byte{0});
+                while (bin.size() % 4 != 0) bin.emplace_back(std::byte{0});
+                bv = AddBufferView(offset, 1);
+            }
             asset.images.emplace_back(fastgltf::Image{
-                .data = fastgltf::sources::URI{.fileByteOffset = 0, .uri = fastgltf::URI{std::string_view{img.Uri}}, .mimeType = emit_mime},
+                .data = fastgltf::sources::BufferView{.bufferViewIndex = bv, .mimeType = FromMimeType(emit_mime)},
                 .name = ToFgStr(img.Name),
             });
-            continue;
         }
-        const uint32_t bv = [&] {
-            if (!img.Bytes.empty()) {
-                const uint32_t offset = AppendAligned(bin, img.Bytes.data(), uint32_t(img.Bytes.size()));
-                return AddBufferView(offset, uint32_t(img.Bytes.size()));
-            }
-            // Placeholder empty bufferView.
-            const uint32_t offset = bin.size();
-            bin.emplace_back(std::byte{0});
-            while (bin.size() % 4 != 0) bin.emplace_back(std::byte{0});
-            return AddBufferView(offset, 1);
-        }();
-        image_bv_index[i] = bv;
-        asset.images.emplace_back(fastgltf::Image{
-            .data = fastgltf::sources::BufferView{.bufferViewIndex = bv, .mimeType = FromMimeType(img.MimeType)},
-            .name = ToFgStr(img.Name),
-        });
     }
 
     // Textures

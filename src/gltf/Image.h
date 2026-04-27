@@ -21,10 +21,17 @@ enum class MimeType : uint8_t {
 };
 
 struct Image {
+    // Encoded source bytes. Retained for embedded sources (data URI / bufferView) so save can
+    // passthrough byte-identically. External-URI images drop Bytes after upload — SourceAbsPath
+    // is the persistence and is re-read at save time.
     std::vector<std::byte> Bytes;
     MimeType MimeType;
     std::string Name, Uri{};
+    std::string SourceAbsPath{}; // resolved absolute path; only set when Uri is non-empty.
     bool SourceDataUri{}, SourceHadMimeType{};
+    // Flip true when the GPU texture for this image is mutated; SaveGltfFile then re-encodes
+    // from the GPU pixels instead of using Bytes / re-reading the source file.
+    bool IsDirty{};
 };
 
 struct ImageBasedLight {

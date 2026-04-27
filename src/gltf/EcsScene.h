@@ -32,6 +32,10 @@ struct EnvironmentStore;
 struct MeshStore;
 struct SceneBuffers;
 struct TextureStore;
+struct SceneVulkanResources;
+namespace mvk {
+struct BufferContext;
+}
 
 // Per-entity source-index sidecars for stable round-trip ordering / referencing. Build uses these
 // rather than `SceneNode` (which has been mutated by skinning/armature re-parenting) and rather
@@ -206,8 +210,25 @@ struct PopulateResult {
 std::expected<PopulateResult, std::string>
 LoadGltfFile(const std::filesystem::path &path, PopulateContext ctx);
 
+struct SaveOptions {
+    uint8_t LossyImageQuality{75}; // 1–100; ignored for PNG (lossless).
+};
+
+// Vk / BufCtx are only consulted when an image is IsDirty (or external-URI fallback fires).
+// For plain passthrough saves they may be null.
+struct SaveContext {
+    const entt::registry &R;
+    entt::entity SceneEntity;
+    const SceneBuffers &Buffers;
+    const MeshStore &Meshes;
+    const TextureStore &Textures;
+    const SceneVulkanResources *Vk{nullptr};
+    mvk::BufferContext *BufCtx{nullptr};
+    SaveOptions Options{};
+};
+
 // Walk the ECS + UMA buffers and write a glTF/.glb to `path`.
 std::expected<void, std::string>
-SaveGltfFile(const entt::registry &, entt::entity scene_entity, const SceneBuffers &, const MeshStore &, const std::filesystem::path &path);
+SaveGltfFile(const SaveContext &, const std::filesystem::path &path);
 
 } // namespace gltf

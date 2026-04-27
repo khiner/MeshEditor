@@ -6,6 +6,7 @@ add_executable(MeshEditorTests
     ${CMAKE_SOURCE_DIR}/src/Entity.cpp
     ${CMAKE_SOURCE_DIR}/src/ExtrasMesh.cpp
     ${CMAKE_SOURCE_DIR}/src/ImageDecode.cpp
+    ${CMAKE_SOURCE_DIR}/src/ImageEncode.cpp
     ${CMAKE_SOURCE_DIR}/src/SceneDefaults.cpp
     ${CMAKE_SOURCE_DIR}/src/SceneOps.cpp
     ${CMAKE_SOURCE_DIR}/src/SceneStores.cpp

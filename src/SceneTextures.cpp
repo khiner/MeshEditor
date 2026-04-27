@@ -800,6 +800,56 @@ IblSamplers MakeIblSamplers(const EnvironmentPrefiltered &pre, const Environment
     };
 }
 
+std::expected<std::vector<std::byte>, std::string> ReadbackTextureRgba8(
+    const SceneVulkanResources &vk, mvk::BufferContext &buf_ctx,
+    vk::CommandPool cmd_pool, vk::Fence fence, const TextureEntry &entry
+) {
+    if (entry.Width == 0 || entry.Height == 0) {
+        return std::unexpected{std::format("Texture '{}' has zero dimension {}x{}.", entry.Name, entry.Width, entry.Height)};
+    }
+    const vk::DeviceSize byte_size = vk::DeviceSize(entry.Width) * vk::DeviceSize(entry.Height) * 4u;
+    mvk::Buffer staging{buf_ctx, byte_size, mvk::MemoryUsage::CpuOnly, vk::BufferUsageFlagBits::eTransferDst};
+
+    auto cbs = vk.Device.allocateCommandBuffersUnique({cmd_pool, vk::CommandBufferLevel::ePrimary, 1});
+    auto cb = std::move(cbs.front());
+    cb->begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
+
+    const vk::ImageSubresourceRange mip0{vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1};
+    TransitionImage(
+        *cb, vk::PipelineStageFlagBits::eFragmentShader, vk::PipelineStageFlagBits::eTransfer,
+        vk::AccessFlagBits::eShaderRead, vk::AccessFlagBits::eTransferRead,
+        vk::ImageLayout::eShaderReadOnlyOptimal, vk::ImageLayout::eTransferSrcOptimal,
+        *entry.Image.Image, mip0
+    );
+    cb->copyImageToBuffer(
+        *entry.Image.Image, vk::ImageLayout::eTransferSrcOptimal, *staging,
+        vk::BufferImageCopy{
+            0,
+            0,
+            0,
+            vk::ImageSubresourceLayers{vk::ImageAspectFlagBits::eColor, 0, 0, 1},
+            vk::Offset3D{0, 0, 0},
+            vk::Extent3D{entry.Width, entry.Height, 1},
+        }
+    );
+    TransitionImage(
+        *cb, vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eFragmentShader,
+        vk::AccessFlagBits::eTransferRead, vk::AccessFlagBits::eShaderRead,
+        vk::ImageLayout::eTransferSrcOptimal, vk::ImageLayout::eShaderReadOnlyOptimal,
+        *entry.Image.Image, mip0
+    );
+    cb->pipelineBarrier(
+        vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eHost, {},
+        vk::MemoryBarrier{vk::AccessFlagBits::eTransferWrite, vk::AccessFlagBits::eHostRead}, {}, {}
+    );
+    cb->end();
+
+    SubmitWait(vk.Queue, *cb, fence, vk.Device);
+
+    const auto mapped = staging.GetMappedData();
+    return std::vector<std::byte>{mapped.begin(), mapped.begin() + size_t(byte_size)};
+}
+
 std::expected<TextureEntry, std::string> MaterializeTextureEntry(
     const SceneVulkanResources &vk,
     TextureUploadBatch &batch, DescriptorSlots &slots,
@@ -820,11 +870,13 @@ std::expected<TextureEntry, std::string> MaterializeTextureEntry(
     if (source.MimeType != gltf::MimeType::KTX2) {
         auto decoded = DecodeImageRgba8(source.Bytes, source.Name);
         if (!decoded) return std::unexpected{std::move(decoded.error())};
-        return CreateTextureEntryAtSlot(
+        auto entry = CreateTextureEntryAtSlot(
             vk, batch, slots, item.SamplerSlot,
             decoded->Pixels, decoded->Width, decoded->Height, item.Name,
             item.ColorSpace, item.WrapS, item.WrapT, item.Sampler
         );
+        entry.SourceImageIndex = ref.ImageIndex;
+        return entry;
     }
 
     basist::basisu_transcoder_init();
@@ -856,7 +908,9 @@ std::expected<TextureEntry, std::string> MaterializeTextureEntry(
         offset += mip_bytes;
     }
 
-    return CreateCompressedTextureEntry(vk, batch, slots, item.SamplerSlot, all_mip_data, std::move(copies), vk_fmt, width, height, mip_levels, item.Name, item.WrapS, item.WrapT, item.Sampler);
+    auto entry = CreateCompressedTextureEntry(vk, batch, slots, item.SamplerSlot, all_mip_data, std::move(copies), vk_fmt, width, height, mip_levels, item.Name, item.WrapS, item.WrapT, item.Sampler);
+    entry.SourceImageIndex = ref.ImageIndex;
+    return entry;
 }
 
 TextureEntry CreateDefaultLutTexture(const SceneVulkanResources &vk, TextureUploadBatch &batch, DescriptorSlots &slots, const std::filesystem::path &lut_path, std::string_view name) {
