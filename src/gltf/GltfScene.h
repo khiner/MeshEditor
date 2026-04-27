@@ -17,8 +17,6 @@
 
 #include "Image.h"
 #include "entt_fwd.h"
-#include "gpu/PBRMaterial.h"
-#include "gpu/Transform.h"
 #include "numeric/mat4.h"
 #include "vulkan/Slots.h"
 
@@ -122,7 +120,7 @@ struct MeshSourceLayout {
     std::vector<vec3> MorphTangentDeltas;
 };
 
-// Material texture slots, in the order they appear on `MaterialData`.
+// Material texture slots, in the order they appear on `MaterialSourceMeta::TextureSlots`.
 enum MaterialTextureSlot : uint8_t {
     MTS_BaseColor,
     MTS_MetallicRoughness,
@@ -168,35 +166,11 @@ struct TextureTransformMeta {
     std::optional<uint32_t> SourceTexCoordOverride{};
 };
 
-// Each KHR_materials_* block is std::optional, set iff the source carried the extension.
-// Downstream code gets the flat GPU-bindable PBRMaterial.
-struct MaterialData {
-    vec4 BaseColorFactor{1};
-    vec3 EmissiveFactor{0};
-    float MetallicFactor{1}, RoughnessFactor{1}, NormalScale{1}, OcclusionStrength{1};
-    MaterialAlphaMode AlphaMode{MaterialAlphaMode::Opaque};
-    float AlphaCutoff{0.5};
-    uint32_t DoubleSided{}, Unlit{};
-    TextureInfo BaseColorTexture{}, MetallicRoughnessTexture{}, NormalTexture{}, OcclusionTexture{}, EmissiveTexture{};
-    // Nested extension textures (Sheen.ColorTexture etc.) don't round-trip overrides today.
-    TextureTransformMeta BaseColorMeta{}, MetallicRoughnessMeta{}, NormalMeta{}, OcclusionMeta{}, EmissiveMeta{};
-
-    std::optional<float> Ior{}, Dispersion{}, EmissiveStrength{};
-
-    std::optional<::Sheen> Sheen{};
-    std::optional<::Specular> Specular{};
-    std::optional<::Transmission> Transmission{};
-    std::optional<::DiffuseTransmission> DiffuseTransmission{};
-    std::optional<::Volume> Volume{};
-    std::optional<::Clearcoat> Clearcoat{};
-    std::optional<::Anisotropy> Anisotropy{};
-    std::optional<::Iridescence> Iridescence{};
-};
-
 // Per-material delta of fields `buffers.Materials` can't recover:
 // emissive_strength split, KHR_texture_transform meta on the 5 base textures, source texture
 // indices per slot (PBRMaterial holds bindless slots), optional extension-block presence.
-// Build = `FromGpu(...)` then patch from this.
+// Save reads `PBRMaterial` from the GPU buffer, then uses this to gate which extension blocks
+// to emit, restore source texture indices, and un-fold the EmissiveFactor *= strength split.
 struct MaterialSourceMeta {
     std::optional<float> EmissiveStrength;
     std::array<TextureTransformMeta, 5> BaseSlotMeta{}; // BaseColor..Emissive
@@ -283,5 +257,4 @@ struct SaveContext {
 
 std::expected<PopulateResult, std::string> LoadGltf(const std::filesystem::path &, PopulateContext);
 std::expected<void, std::string> SaveGltf(const SaveContext &, const std::filesystem::path &);
-
 } // namespace gltf

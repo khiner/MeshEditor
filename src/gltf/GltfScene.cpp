@@ -44,13 +44,11 @@
 #include <unordered_map>
 #include <unordered_set>
 
-// Internal-only intermediate carriers (TU-local). MeshData specifically holds parsed-but-not-yet-
-// uploaded geometry: load builds it from fastgltf accessors, runs `MeshStore::PlanCreate` for the
-// whole batch (so arena reserves happen before any CreateMesh), and then drains into ECS. Save
-// reverses the flow, gathering per-(SourceMeshIndex, MeshKind) ECS state into one carrier per
-// source mesh before emitting fastgltf primitives. PlanCreate's batch-then-commit contract is
-// what blocks a single-pass collapse here — the bulk vertex/face data legitimately outlives the
-// parse.
+// Load-only intermediate carrier (TU-local). Holds parsed-but-not-yet-uploaded geometry: load
+// builds it from fastgltf accessors, runs `MeshStore::PlanCreate` for the whole batch (so arena
+// reserves happen before any CreateMesh), and then drains into ECS. PlanCreate's batch-then-
+// commit contract is what blocks a single-pass collapse — the bulk vertex/face data legitimately
+// outlives the parse. Save reads MeshStore vertices directly per-primitive, no carrier needed.
 namespace gltf {
 struct MeshData {
     std::optional<::MeshData> Triangles, Lines, Points;
@@ -61,14 +59,13 @@ struct MeshData {
     std::string Name;
 };
 
-// `Node` and `Object` carry per-node state too entangled to dissolve. Load fans each Node into
-// ~10 downstream passes (objects, parents, stubs, physics rb/joint, skin anchor, morph binding,
+// `Node` carries per-node state too entangled to dissolve. Load fans each Node into ~10
+// downstream passes (objects, parents, stubs, physics rb/joint, skin anchor, morph binding,
 // animation resolve, joint-name reconciliation) interleaved with ECS construction. Save
 // accumulates from independent ECS views and drains to `asset.nodes` only after the instance
-// fan-in is known — itself gated on `node_objects` and `skin_remap`. Splitting fields hits
-// option-1 (parallel cousins) or option-3 (tuples for MaterialRefs/TriggerData/JointData).
-// `Object` is the EXT_mesh_gpu_instancing fan-out (one Node → N Objects) feeding the same
-// passes, so it shares Node's fate.
+// fan-in is known. Splitting fields hits option-1 (parallel cousins) or option-3 (tuples for
+// MaterialRefs/TriggerData/JointData). `Object` is the load-side EXT_mesh_gpu_instancing fan-out
+// (one Node → N Objects) feeding the same passes, so it shares Node's fate.
 struct Node {
     uint32_t NodeIndex;
     std::optional<uint32_t> ParentNodeIndex;
@@ -116,7 +113,6 @@ struct Object {
     uint32_t NodeIndex;
     std::optional<uint32_t> ParentNodeIndex;
     Transform LocalTransform;
-    Transform WorldTransform;
     std::optional<uint32_t> MeshIndex, SkinIndex, CameraIndex, LightIndex;
     std::optional<std::vector<float>> NodeWeights;
     std::string Name;
@@ -1094,71 +1090,6 @@ PunctualLight ConvertLight(const fastgltf::Light &light) {
 }
 } // namespace
 
-MaterialData FromGpu(const PBRMaterial &m) {
-    MaterialData d{
-        .BaseColorFactor = m.BaseColorFactor,
-        .EmissiveFactor = m.EmissiveFactor,
-        .MetallicFactor = m.MetallicFactor,
-        .RoughnessFactor = m.RoughnessFactor,
-        .NormalScale = m.NormalScale,
-        .OcclusionStrength = m.OcclusionStrength,
-        .AlphaMode = m.AlphaMode,
-        .AlphaCutoff = m.AlphaCutoff,
-        .DoubleSided = m.DoubleSided,
-        .Unlit = m.Unlit,
-        .BaseColorTexture = m.BaseColorTexture,
-        .MetallicRoughnessTexture = m.MetallicRoughnessTexture,
-        .NormalTexture = m.NormalTexture,
-        .OcclusionTexture = m.OcclusionTexture,
-        .EmissiveTexture = m.EmissiveTexture,
-    };
-    // Emit extension blocks only when their values diverge from spec defaults — otherwise the
-    // extension block was either absent in source or carried only defaults (filtered by the
-    // existing default-omission expected-divergence list).
-    if (m.Ior != 1.5f) d.Ior = m.Ior;
-    if (m.Dispersion != 0.f) d.Dispersion = m.Dispersion;
-    if (m.Sheen != ::Sheen{}) d.Sheen = m.Sheen;
-    if (m.Specular != ::Specular{}) d.Specular = m.Specular;
-    if (m.Transmission != ::Transmission{}) d.Transmission = m.Transmission;
-    if (m.DiffuseTransmission != ::DiffuseTransmission{}) d.DiffuseTransmission = m.DiffuseTransmission;
-    if (m.Volume != ::Volume{}) d.Volume = m.Volume;
-    if (m.Clearcoat != ::Clearcoat{}) d.Clearcoat = m.Clearcoat;
-    if (m.Anisotropy != ::Anisotropy{}) d.Anisotropy = m.Anisotropy;
-    if (m.Iridescence != ::Iridescence{}) d.Iridescence = m.Iridescence;
-    return d;
-}
-
-PBRMaterial ToGpu(const MaterialData &m) {
-    const float emissive_strength = m.EmissiveStrength.value_or(1.f);
-    return PBRMaterial{
-        .BaseColorFactor = m.BaseColorFactor,
-        .EmissiveFactor = m.EmissiveFactor * emissive_strength,
-        .MetallicFactor = m.MetallicFactor,
-        .RoughnessFactor = m.RoughnessFactor,
-        .NormalScale = m.NormalScale,
-        .OcclusionStrength = m.OcclusionStrength,
-        .AlphaMode = m.AlphaMode,
-        .AlphaCutoff = m.AlphaCutoff,
-        .DoubleSided = m.DoubleSided,
-        .Unlit = m.Unlit,
-        .Ior = m.Ior.value_or(1.5f),
-        .Dispersion = m.Dispersion.value_or(0.f),
-        .BaseColorTexture = m.BaseColorTexture,
-        .MetallicRoughnessTexture = m.MetallicRoughnessTexture,
-        .NormalTexture = m.NormalTexture,
-        .OcclusionTexture = m.OcclusionTexture,
-        .EmissiveTexture = m.EmissiveTexture,
-        .Sheen = m.Sheen.value_or(::Sheen{}),
-        .Specular = m.Specular.value_or(::Specular{}),
-        .Transmission = m.Transmission.value_or(::Transmission{}),
-        .DiffuseTransmission = m.DiffuseTransmission.value_or(::DiffuseTransmission{}),
-        .Volume = m.Volume.value_or(::Volume{}),
-        .Clearcoat = m.Clearcoat.value_or(::Clearcoat{}),
-        .Anisotropy = m.Anisotropy.value_or(::Anisotropy{}),
-        .Iridescence = m.Iridescence.value_or(::Iridescence{}),
-    };
-}
-
 namespace {
 fastgltf::Filter FromFilter(Filter f) {
     switch (f) {
@@ -1247,6 +1178,18 @@ uint32_t AppendAligned(std::vector<std::byte> &buffer, const std::byte *data, ui
 template<typename T>
 uint32_t AppendAligned(std::vector<std::byte> &buffer, std::span<const T> data) {
     return AppendAligned(buffer, reinterpret_cast<const std::byte *>(data.data()), uint32_t(data.size() * sizeof(T)));
+}
+
+// Strided variant: copy field `field` of each element in `data` into the binary blob (4-byte
+// aligned), no intermediate vector materialized. Returns the starting byte offset.
+template<typename T, typename V>
+uint32_t AppendField(std::vector<std::byte> &buffer, std::span<const V> data, T V::*field) {
+    const uint32_t offset = buffer.size();
+    buffer.resize(offset + data.size() * sizeof(T));
+    auto *out = reinterpret_cast<T *>(buffer.data() + offset);
+    for (std::size_t i = 0; i < data.size(); ++i) out[i] = data[i].*field;
+    while (buffer.size() % 4 != 0) buffer.emplace_back(std::byte{0});
+    return offset;
 }
 
 fastgltf::AlphaMode FromAlphaMode(MaterialAlphaMode m) {
@@ -1383,10 +1326,21 @@ std::expected<PopulateResult, std::string> LoadGltf(const std::filesystem::path 
     const auto scene_index = asset.defaultScene.value_or(0);
     if (scene_index >= asset.scenes.size()) return std::unexpected{std::format("glTF '{}' has invalid default scene index.", source_path.string())};
 
-    std::vector<Sampler> samplers;
-    samplers.reserve(asset.samplers.size());
+    // Build SourceAssets in-place, no local intermediate vectors. The struct lives on
+    // SceneEntity for the rest of the load (and beyond — needed for save round-trip), and the
+    // resolve_texture_slot lambda below reads samplers/images/textures via this stored ref.
+    gltf::SourceAssets source_assets{
+        .Copyright = asset.assetInfo ? std::string(asset.assetInfo->copyright) : std::string{},
+        .Generator = asset.assetInfo ? std::string(asset.assetInfo->generator) : std::string{},
+        .MinVersion = asset.assetInfo ? std::string(asset.assetInfo->minVersion) : std::string{},
+        .AssetExtras = asset.assetInfo ? std::string(asset.assetInfo->extras) : std::string{},
+        .AssetExtensions = asset.assetInfo ? std::string(asset.assetInfo->extensions) : std::string{},
+        .DefaultSceneName = std::string(asset.scenes[scene_index].name),
+        .ExtrasByEntity = std::move(extras),
+    };
+    source_assets.Samplers.reserve(asset.samplers.size());
     for (const auto &sampler : asset.samplers) {
-        samplers.emplace_back(Sampler{
+        source_assets.Samplers.emplace_back(Sampler{
             .MagFilter = ToFilter(sampler.magFilter),
             .MinFilter = ToFilter(sampler.minFilter),
             .WrapS = ToWrap(sampler.wrapS),
@@ -1394,19 +1348,15 @@ std::expected<PopulateResult, std::string> LoadGltf(const std::filesystem::path 
             .Name = std::string(sampler.name),
         });
     }
-
-    std::vector<Image> images;
-    images.reserve(asset.images.size());
+    source_assets.Images.reserve(asset.images.size());
     for (uint32_t image_index = 0; image_index < asset.images.size(); ++image_index) {
         auto image_result = ReadImage(asset, image_index, source_path.parent_path());
         if (!image_result) return std::unexpected{std::move(image_result.error())};
-        images.emplace_back(std::move(*image_result));
+        source_assets.Images.emplace_back(std::move(*image_result));
     }
-
-    std::vector<Texture> textures;
-    textures.reserve(asset.textures.size());
+    source_assets.Textures.reserve(asset.textures.size());
     for (const auto &texture : asset.textures) {
-        textures.emplace_back(Texture{
+        source_assets.Textures.emplace_back(Texture{
             .SamplerIndex = ToIndex(texture.samplerIndex, asset.samplers.size()),
             .ImageIndex = ToIndex(texture.imageIndex, asset.images.size()),
             .WebpImageIndex = ToIndex(texture.webpImageIndex, asset.images.size()),
@@ -1416,21 +1366,19 @@ std::expected<PopulateResult, std::string> LoadGltf(const std::filesystem::path 
         });
     }
 
-    // Plain `MaterialData` per source material — the name is read straight from `asset.materials`
-    // when needed. The trailing entry is the synthetic "DefaultMaterial" fallback (see below).
-    std::vector<MaterialData> source_materials;
+    // Per source material: PBRMaterial (texture slots are gltf indices here; remapped to bindless
+    // slots in the emit loop below) + the lossy delta `MaterialSourceMeta` carries for round-trip.
+    // Trailing entry is the synthetic "DefaultMaterial" fallback (see below).
+    std::vector<PBRMaterial> source_materials;
     source_materials.reserve(asset.materials.size() + 1u);
-    // Build the FromGpu-lossy delta per material in the same pass: extension-block presence,
-    // KHR_texture_transform meta, source texture slots (pre-remap), and emissive_strength split.
     std::vector<MaterialSourceMeta> material_metas;
     material_metas.reserve(asset.materials.size() + 1u);
-    const auto opt_slot = [](const auto &opt, auto field) -> uint32_t {
-        return opt ? ((*opt).*field).Slot : InvalidSlot;
-    };
     for (uint32_t material_index = 0; material_index < asset.materials.size(); ++material_index) {
         const auto &material = asset.materials[material_index];
-        TextureTransformMeta base_meta{}, mr_meta{}, normal_meta{}, occlusion_meta{}, emissive_meta{};
-        MaterialData data{
+        using M = MaterialSourceMeta;
+        MaterialSourceMeta meta;
+        meta.NameWasEmpty = material.name.empty();
+        PBRMaterial pbr{
             .BaseColorFactor = ToVec4(material.pbrData.baseColorFactor),
             .EmissiveFactor = ToVec3(material.emissiveFactor),
             .MetallicFactor = material.pbrData.metallicFactor,
@@ -1441,23 +1389,30 @@ std::expected<PopulateResult, std::string> LoadGltf(const std::filesystem::path 
             .AlphaCutoff = material.alphaCutoff,
             .DoubleSided = material.doubleSided ? 1u : 0u,
             .Unlit = material.unlit ? 1u : 0u,
-            .BaseColorTexture = ToTextureIndex(material.pbrData.baseColorTexture, asset, &base_meta),
-            .MetallicRoughnessTexture = ToTextureIndex(material.pbrData.metallicRoughnessTexture, asset, &mr_meta),
-            .NormalTexture = ToTextureIndex(material.normalTexture, asset, &normal_meta),
-            .OcclusionTexture = ToTextureIndex(material.occlusionTexture, asset, &occlusion_meta),
-            .EmissiveTexture = ToTextureIndex(material.emissiveTexture, asset, &emissive_meta),
-            .BaseColorMeta = base_meta,
-            .MetallicRoughnessMeta = mr_meta,
-            .NormalMeta = normal_meta,
-            .OcclusionMeta = occlusion_meta,
-            .EmissiveMeta = emissive_meta,
+            .BaseColorTexture = ToTextureIndex(material.pbrData.baseColorTexture, asset, &meta.BaseSlotMeta[0]),
+            .MetallicRoughnessTexture = ToTextureIndex(material.pbrData.metallicRoughnessTexture, asset, &meta.BaseSlotMeta[1]),
+            .NormalTexture = ToTextureIndex(material.normalTexture, asset, &meta.BaseSlotMeta[2]),
+            .OcclusionTexture = ToTextureIndex(material.occlusionTexture, asset, &meta.BaseSlotMeta[3]),
+            .EmissiveTexture = ToTextureIndex(material.emissiveTexture, asset, &meta.BaseSlotMeta[4]),
         };
-        if (material.ior) data.Ior = float(*material.ior);
-        if (material.dispersion) data.Dispersion = float(*material.dispersion);
-        if (material.emissiveStrength) data.EmissiveStrength = float(*material.emissiveStrength);
+        if (material.ior) {
+            pbr.Ior = float(*material.ior);
+            meta.ExtensionPresence |= M::ExtIor;
+        }
+        if (material.dispersion) {
+            pbr.Dispersion = float(*material.dispersion);
+            meta.ExtensionPresence |= M::ExtDispersion;
+        }
+        if (material.emissiveStrength) {
+            const float s = float(*material.emissiveStrength);
+            meta.EmissiveStrength = s;
+            meta.ExtensionPresence |= M::ExtEmissiveStrength;
+            pbr.EmissiveFactor *= s; // collapse strength into factor for GPU
+        }
 
         if (material.sheen) {
-            data.Sheen = ::Sheen{
+            meta.ExtensionPresence |= M::ExtSheen;
+            pbr.Sheen = ::Sheen{
                 .ColorFactor = ToVec3(material.sheen->sheenColorFactor),
                 .RoughnessFactor = material.sheen->sheenRoughnessFactor,
                 .ColorTexture = ToTextureIndex(material.sheen->sheenColorTexture, asset),
@@ -1465,7 +1420,8 @@ std::expected<PopulateResult, std::string> LoadGltf(const std::filesystem::path 
             };
         }
         if (material.specular) {
-            data.Specular = ::Specular{
+            meta.ExtensionPresence |= M::ExtSpecular;
+            pbr.Specular = ::Specular{
                 .Factor = material.specular->specularFactor,
                 .ColorFactor = ToVec3(material.specular->specularColorFactor),
                 .Texture = ToTextureIndex(material.specular->specularTexture, asset),
@@ -1473,13 +1429,15 @@ std::expected<PopulateResult, std::string> LoadGltf(const std::filesystem::path 
             };
         }
         if (material.transmission) {
-            data.Transmission = ::Transmission{
+            meta.ExtensionPresence |= M::ExtTransmission;
+            pbr.Transmission = ::Transmission{
                 .Factor = material.transmission->transmissionFactor,
                 .Texture = ToTextureIndex(material.transmission->transmissionTexture, asset),
             };
         }
         if (material.diffuseTransmission) {
-            data.DiffuseTransmission = ::DiffuseTransmission{
+            meta.ExtensionPresence |= M::ExtDiffuseTransmission;
+            pbr.DiffuseTransmission = ::DiffuseTransmission{
                 .Factor = material.diffuseTransmission->diffuseTransmissionFactor,
                 .ColorFactor = ToVec3(material.diffuseTransmission->diffuseTransmissionColorFactor),
                 .Texture = ToTextureIndex(material.diffuseTransmission->diffuseTransmissionTexture, asset),
@@ -1487,8 +1445,9 @@ std::expected<PopulateResult, std::string> LoadGltf(const std::filesystem::path 
             };
         }
         if (material.volume) {
+            meta.ExtensionPresence |= M::ExtVolume;
             const float ad = material.volume->attenuationDistance;
-            data.Volume = ::Volume{
+            pbr.Volume = ::Volume{
                 .ThicknessFactor = material.volume->thicknessFactor,
                 .AttenuationColor = ToVec3(material.volume->attenuationColor),
                 .AttenuationDistance = (std::isinf(ad) || ad <= 0.f) ? 0.f : ad,
@@ -1496,7 +1455,8 @@ std::expected<PopulateResult, std::string> LoadGltf(const std::filesystem::path 
             };
         }
         if (material.clearcoat) {
-            data.Clearcoat = ::Clearcoat{
+            meta.ExtensionPresence |= M::ExtClearcoat;
+            pbr.Clearcoat = ::Clearcoat{
                 .Factor = material.clearcoat->clearcoatFactor,
                 .RoughnessFactor = material.clearcoat->clearcoatRoughnessFactor,
                 .NormalScale = material.clearcoat->clearcoatNormalTexture ? material.clearcoat->clearcoatNormalTexture->scale : 1.f,
@@ -1506,14 +1466,16 @@ std::expected<PopulateResult, std::string> LoadGltf(const std::filesystem::path 
             };
         }
         if (material.anisotropy) {
-            data.Anisotropy = ::Anisotropy{
+            meta.ExtensionPresence |= M::ExtAnisotropy;
+            pbr.Anisotropy = ::Anisotropy{
                 .Strength = material.anisotropy->anisotropyStrength,
                 .Rotation = material.anisotropy->anisotropyRotation,
                 .Texture = ToTextureIndex(material.anisotropy->anisotropyTexture, asset),
             };
         }
         if (material.iridescence) {
-            data.Iridescence = ::Iridescence{
+            meta.ExtensionPresence |= M::ExtIridescence;
+            pbr.Iridescence = ::Iridescence{
                 .Factor = material.iridescence->iridescenceFactor,
                 .Ior = material.iridescence->iridescenceIor,
                 .ThicknessMinimum = material.iridescence->iridescenceThicknessMinimum,
@@ -1523,43 +1485,29 @@ std::expected<PopulateResult, std::string> LoadGltf(const std::filesystem::path 
             };
         }
 
-        using M = MaterialSourceMeta;
-        M meta{
-            .EmissiveStrength = data.EmissiveStrength,
-            .BaseSlotMeta = {data.BaseColorMeta, data.MetallicRoughnessMeta, data.NormalMeta, data.OcclusionMeta, data.EmissiveMeta},
-            .NameWasEmpty = material.name.empty(),
-        };
         meta.TextureSlots = {
-            data.BaseColorTexture.Slot,
-            data.MetallicRoughnessTexture.Slot,
-            data.NormalTexture.Slot,
-            data.OcclusionTexture.Slot,
-            data.EmissiveTexture.Slot,
-            opt_slot(data.Specular, &::Specular::Texture),
-            opt_slot(data.Specular, &::Specular::ColorTexture),
-            opt_slot(data.Sheen, &::Sheen::ColorTexture),
-            opt_slot(data.Sheen, &::Sheen::RoughnessTexture),
-            opt_slot(data.Transmission, &::Transmission::Texture),
-            opt_slot(data.DiffuseTransmission, &::DiffuseTransmission::Texture),
-            opt_slot(data.DiffuseTransmission, &::DiffuseTransmission::ColorTexture),
-            opt_slot(data.Volume, &::Volume::ThicknessTexture),
-            opt_slot(data.Clearcoat, &::Clearcoat::Texture),
-            opt_slot(data.Clearcoat, &::Clearcoat::RoughnessTexture),
-            opt_slot(data.Clearcoat, &::Clearcoat::NormalTexture),
-            opt_slot(data.Anisotropy, &::Anisotropy::Texture),
-            opt_slot(data.Iridescence, &::Iridescence::Texture),
-            opt_slot(data.Iridescence, &::Iridescence::ThicknessTexture),
+            pbr.BaseColorTexture.Slot,
+            pbr.MetallicRoughnessTexture.Slot,
+            pbr.NormalTexture.Slot,
+            pbr.OcclusionTexture.Slot,
+            pbr.EmissiveTexture.Slot,
+            pbr.Specular.Texture.Slot,
+            pbr.Specular.ColorTexture.Slot,
+            pbr.Sheen.ColorTexture.Slot,
+            pbr.Sheen.RoughnessTexture.Slot,
+            pbr.Transmission.Texture.Slot,
+            pbr.DiffuseTransmission.Texture.Slot,
+            pbr.DiffuseTransmission.ColorTexture.Slot,
+            pbr.Volume.ThicknessTexture.Slot,
+            pbr.Clearcoat.Texture.Slot,
+            pbr.Clearcoat.RoughnessTexture.Slot,
+            pbr.Clearcoat.NormalTexture.Slot,
+            pbr.Anisotropy.Texture.Slot,
+            pbr.Iridescence.Texture.Slot,
+            pbr.Iridescence.ThicknessTexture.Slot,
         };
-        meta.ExtensionPresence = uint16_t(
-            (data.Ior ? M::ExtIor : 0) | (data.Dispersion ? M::ExtDispersion : 0) |
-            (data.EmissiveStrength ? M::ExtEmissiveStrength : 0) |
-            (data.Sheen ? M::ExtSheen : 0) | (data.Specular ? M::ExtSpecular : 0) |
-            (data.Transmission ? M::ExtTransmission : 0) | (data.DiffuseTransmission ? M::ExtDiffuseTransmission : 0) |
-            (data.Volume ? M::ExtVolume : 0) | (data.Clearcoat ? M::ExtClearcoat : 0) |
-            (data.Anisotropy ? M::ExtAnisotropy : 0) | (data.Iridescence ? M::ExtIridescence : 0)
-        );
         material_metas.emplace_back(std::move(meta));
-        source_materials.emplace_back(std::move(data));
+        source_materials.emplace_back(std::move(pbr));
     }
     // Synthetic fallback used as the default material when a primitive references no material.
     source_materials.emplace_back();
@@ -1815,7 +1763,6 @@ std::expected<PopulateResult, std::string> LoadGltf(const std::filesystem::path 
                         .NodeIndex = node.NodeIndex,
                         .ParentNodeIndex = std::nullopt,
                         .LocalTransform = instance_world,
-                        .WorldTransform = instance_world,
                         .MeshIndex = node.MeshIndex,
                         .SkinIndex = node.SkinIndex,
                         .CameraIndex = {},
@@ -1835,7 +1782,6 @@ std::expected<PopulateResult, std::string> LoadGltf(const std::filesystem::path 
                     .NodeIndex = node.NodeIndex,
                     .ParentNodeIndex = nearest_object_ancestor[node.NodeIndex],
                     .LocalTransform = node.LocalTransform,
-                    .WorldTransform = node.WorldTransform,
                     .MeshIndex = node.MeshIndex,
                     .SkinIndex = node.SkinIndex,
                     .CameraIndex = node.CameraIndex,
@@ -1915,23 +1861,10 @@ std::expected<PopulateResult, std::string> LoadGltf(const std::filesystem::path 
         return texture.DdsImageIndex;
     };
 
-    // Snapshot source-form gltf data onto SceneEntity before the materials loop remaps `tex.Slot`
-    // from gltf texture index to bindless sampler slot. AnimationOrder is patched in below after
-    // animations are parsed (it depends on which source animations produced any valid channels).
+    // Finalize SourceAssets: scene roots, extensions/variants lists, IBL, MaterialMetas (built
+    // alongside source_materials above). Then emplace and bind a const ref for downstream lookups.
     auto source_ibl = ConvertIBL(asset, scene_index);
-    gltf::SourceAssets source_assets{
-        .Copyright = asset.assetInfo ? std::string(asset.assetInfo->copyright) : std::string{},
-        .Generator = asset.assetInfo ? std::string(asset.assetInfo->generator) : std::string{},
-        .MinVersion = asset.assetInfo ? std::string(asset.assetInfo->minVersion) : std::string{},
-        .AssetExtras = asset.assetInfo ? std::string(asset.assetInfo->extras) : std::string{},
-        .AssetExtensions = asset.assetInfo ? std::string(asset.assetInfo->extensions) : std::string{},
-        .DefaultSceneName = std::string(asset.scenes[scene_index].name),
-        .ExtrasByEntity = std::move(extras),
-        .Textures = textures,
-        .Images = images,
-        .Samplers = samplers,
-        .ImageBasedLight = source_ibl,
-    };
+    source_assets.ImageBasedLight = source_ibl;
     source_assets.DefaultSceneRoots.reserve(asset.scenes[scene_index].nodeIndices.size());
     for (const auto n : asset.scenes[scene_index].nodeIndices) {
         if (const auto idx = ToIndex(n, asset.nodes.size())) source_assets.DefaultSceneRoots.emplace_back(*idx);
@@ -1941,7 +1874,7 @@ std::expected<PopulateResult, std::string> LoadGltf(const std::filesystem::path 
     source_assets.MaterialVariants.reserve(asset.materialVariants.size());
     for (const auto &v : asset.materialVariants) source_assets.MaterialVariants.emplace_back(v);
     source_assets.MaterialMetas = std::move(material_metas);
-    R.emplace_or_replace<gltf::SourceAssets>(SceneEntity, std::move(source_assets));
+    const auto &sa = R.emplace_or_replace<gltf::SourceAssets>(SceneEntity, std::move(source_assets));
 
     std::vector<PendingTextureUpload> new_pending_textures;
     std::unordered_map<uint64_t, uint32_t> texture_slot_cache;
@@ -1951,18 +1884,18 @@ std::expected<PopulateResult, std::string> LoadGltf(const std::filesystem::path 
         return (uint64_t(image_index) << 33u) | (uint64_t(sampler_index) << 1u) | (color_space == TextureColorSpace::Srgb ? 1u : 0u);
     };
     const auto resolve_texture_slot = [&](uint32_t texture_index, TextureColorSpace color_space) -> std::expected<uint32_t, std::string> {
-        if (texture_index >= textures.size()) return InvalidSlot;
+        if (texture_index >= sa.Textures.size()) return InvalidSlot;
 
-        const auto &src_texture = textures[texture_index];
+        const auto &src_texture = sa.Textures[texture_index];
         const auto image_index = resolve_image_index(src_texture);
-        if (!image_index || *image_index >= images.size()) return InvalidSlot;
+        if (!image_index || *image_index >= sa.Images.size()) return InvalidSlot;
 
         const auto sampler_index = src_texture.SamplerIndex.value_or(InvalidSlot);
         const auto cache_key = texture_cache_key(*image_index, sampler_index, color_space);
         if (const auto it = texture_slot_cache.find(cache_key); it != texture_slot_cache.end()) return it->second;
 
-        const auto *src_sampler = src_texture.SamplerIndex && *src_texture.SamplerIndex < samplers.size() ?
-            &samplers[*src_texture.SamplerIndex] :
+        const auto *src_sampler = src_texture.SamplerIndex && *src_texture.SamplerIndex < sa.Samplers.size() ?
+            &sa.Samplers[*src_texture.SamplerIndex] :
             nullptr;
         static constexpr auto ToSamplerAddressMode = [](gltf::Wrap wrap) {
             switch (wrap) {
@@ -2041,7 +1974,7 @@ std::expected<PopulateResult, std::string> LoadGltf(const std::filesystem::path 
             tex.Slot = *texture_slot_result;
             return {};
         };
-        auto gpu_material = gltf::ToGpu(src_material);
+        auto gpu_material = src_material;
         if (auto result = [&]() -> std::expected<void, std::string> {
                 std::expected<void, std::string> resolve_result{};
                 const auto check = [&](TextureInfo &tex, TextureColorSpace color_space, std::string_view texture_label) {
@@ -2123,11 +2056,13 @@ std::expected<PopulateResult, std::string> LoadGltf(const std::filesystem::path 
         auto &scene_mesh = source_meshes[mi];
         entt::entity mesh_entity = entt::null;
         if (scene_mesh.Triangles) {
-            // Detect PBR extension features before material index remapping.
+            // Detect PBR extension features before material index remapping. `source_materials`
+            // entries hold pre-remap gltf texture indices; the test below only checks for
+            // InvalidSlot, which is identical pre/post remap.
             PbrFeatureMask mesh_pbr_mask{0};
             for (const auto gltf_mat_idx : scene_mesh.TrianglePrimitives.MaterialIndices) {
                 if (gltf_mat_idx < source_materials.size()) {
-                    const auto mat = gltf::ToGpu(source_materials[gltf_mat_idx]);
+                    const auto &mat = source_materials[gltf_mat_idx];
                     if (mat.Transmission.Factor > 0.f || mat.Transmission.Texture.Slot != InvalidSlot) mesh_pbr_mask |= PbrFeature::Transmission;
                     if (mat.DiffuseTransmission.Factor > 0.f || mat.DiffuseTransmission.Texture.Slot != InvalidSlot) mesh_pbr_mask |= PbrFeature::DiffuseTrans;
                     if (mat.Clearcoat.Factor > 0.f || mat.Clearcoat.Texture.Slot != InvalidSlot) mesh_pbr_mask |= PbrFeature::Clearcoat;
@@ -2892,8 +2827,8 @@ std::expected<void, std::string> SaveGltf(const SaveContext &sc, const std::file
     // Source-form scene metadata + texture/image/sampler arrays come from the gltf::SourceAssets
     // sidecar — encoded image bytes, sampler-config collapse, and asset.* metadata aren't
     // recoverable from registry/GPU state. Cameras and lights emit below from per-entity
-    // components (see CameraName/LightName). Materials reconstruct via FromGpu(GPU buffer) +
-    // patch from the per-material delta in `MaterialMetas`.
+    // components (see CameraName/LightName). Materials emit directly from PBRMaterial (GPU buffer)
+    // + per-material `MaterialSourceMeta` delta, no intermediate type.
     const auto *src_assets = r.try_get<const gltf::SourceAssets>(sc.SceneEntity);
     // Source-form scene-level metadata (Copyright/Generator/MinVersion/Asset.*, DefaultScene,
     // ExtensionsRequired/MaterialVariants/ExtrasByEntity, Textures/Images/Samplers/IBL) is read
@@ -2901,9 +2836,8 @@ std::expected<void, std::string> SaveGltf(const SaveContext &sc, const std::file
     static const gltf::SourceAssets EmptySourceAssets{};
     const auto &sa = src_assets ? *src_assets : EmptySourceAssets;
     // Materials: skip the engine "Default" at registry index 0; loaded gltf materials live at
-    // [1, count). Reconstruct each via `FromGpu` then patch with `MaterialSourceMeta` to restore
-    // KHR_materials_emissive_strength split, KHR_texture_transform meta, source texture indices,
-    // and the optionality of extension blocks (FromGpu's value-vs-default gate is lossy for them).
+    // [1, count). `MaterialSourceMeta` carries the round-trip-only deltas (ext-block presence,
+    // source texture indices, KHR_texture_transform meta, KHR_materials_emissive_strength split).
     const auto &names = r.get<const MaterialStore>(sc.SceneEntity).Names;
     const auto material_count = sc.Buffers.Materials.Count();
     const auto &material_metas = src_assets ? src_assets->MaterialMetas : std::vector<MaterialSourceMeta>{};
@@ -2919,141 +2853,22 @@ std::expected<void, std::string> SaveGltf(const SaveContext &sc, const std::file
         source_mesh_count = std::max(source_mesh_count, smi_value + 1u);
     }
 
-    // Source meshes → gltf::MeshData. Triangles populate the .Triangles slot below, Lines and
-    // Points entities (which share a SourceMeshIndex with their sibling kinds) populate the
-    // .Lines / .Points slots in the second pass.
-    std::vector<gltf::MeshData> save_meshes(source_mesh_count);
-    for (const auto [entity, smi, layout] : r.view<const SourceMeshIndex, const MeshSourceLayout>().each()) {
-        const auto *mesh_ptr = r.try_get<const Mesh>(entity);
-        if (!mesh_ptr) continue;
-        const auto &mesh = *mesh_ptr;
-        const auto store_id = mesh.GetStoreId();
-        const auto vertices = meshes.GetVertices(store_id);
-        const auto vertex_count = uint32_t(vertices.size());
-
-        ::MeshData triangles;
-        triangles.Positions.reserve(vertex_count);
-        for (const auto &v : vertices) triangles.Positions.emplace_back(v.Position);
-        triangles.Faces.reserve(mesh.FaceCount());
-        for (const auto fh : mesh.faces()) {
-            std::vector<uint32_t> face_indices;
-            for (const auto vh : mesh.fv_range(fh)) face_indices.emplace_back(*vh);
-            triangles.Faces.emplace_back(std::move(face_indices));
-        }
-
-        // Populate a TriangleAttrs slot iff any source primitive had that bit set. Per-primitive
-        // emission re-checks via `MeshPrimitives::AttributeFlags` at save time.
-        uint32_t any_flags = 0;
-        for (const auto f : layout.AttributeFlags) any_flags |= f;
-        ::MeshVertexAttributes attrs;
-        attrs.Colors0ComponentCount = layout.Colors0ComponentCount;
-        const auto fill = [&]<typename V>(uint32_t bit, std::optional<std::vector<V>> &dest, V Vertex::*field) {
-            if (!(any_flags & bit)) return;
-            dest.emplace();
-            dest->reserve(vertex_count);
-            for (const auto &v : vertices) dest->emplace_back(v.*field);
-        };
-        fill(MeshAttributeBit_Normal, attrs.Normals, &Vertex::Normal);
-        fill(MeshAttributeBit_Tangent, attrs.Tangents, &Vertex::Tangent);
-        fill(MeshAttributeBit_Color0, attrs.Colors0, &Vertex::Color);
-        fill(MeshAttributeBit_TexCoord0, attrs.TexCoords0, &Vertex::TexCoord0);
-        fill(MeshAttributeBit_TexCoord1, attrs.TexCoords1, &Vertex::TexCoord1);
-        fill(MeshAttributeBit_TexCoord2, attrs.TexCoords2, &Vertex::TexCoord2);
-        fill(MeshAttributeBit_TexCoord3, attrs.TexCoords3, &Vertex::TexCoord3);
-
-        const auto face_primitives = meshes.GetFacePrimitiveIndices(store_id);
-        const auto primitive_materials = meshes.GetPrimitiveMaterialIndices(store_id);
-        // Reverse populate's +1 material-index shift; `~0u` (out-of-range) = don't emit.
-        ::MeshPrimitives prims{
-            .FacePrimitiveIndices = {face_primitives.begin(), face_primitives.end()},
-            .VertexCounts = layout.VertexCounts,
-            .AttributeFlags = layout.AttributeFlags,
-            .HasSourceIndices = layout.HasSourceIndices,
-            .VariantMappings = layout.VariantMappings,
-        };
-        prims.MaterialIndices.reserve(primitive_materials.size());
-        for (const auto reg_idx : primitive_materials) prims.MaterialIndices.emplace_back(reg_idx >= 1 ? reg_idx - 1 : ~0u);
-
-        std::optional<ArmatureDeformData> deform_data;
-        if (const auto bd_range = meshes.GetBoneDeformRange(store_id); bd_range.Count > 0) {
-            const auto bd_span = meshes.BoneDeformBuffer.Get(bd_range);
-            ArmatureDeformData dd;
-            dd.Joints.reserve(bd_span.size());
-            dd.Weights.reserve(bd_span.size());
-            for (const auto &bdv : bd_span) {
-                dd.Joints.emplace_back(bdv.Joints);
-                dd.Weights.emplace_back(bdv.Weights);
-            }
-            deform_data = std::move(dd);
-        }
-
-        std::optional<MorphTargetData> morph_data;
-        if (const auto target_count = meshes.GetMorphTargetCount(store_id); target_count > 0 && vertex_count > 0) {
-            const auto mt_span = meshes.MorphTargetBuffer.Get(meshes.GetMorphTargetRange(store_id));
-            MorphTargetData md{.TargetCount = target_count};
-            md.PositionDeltas.reserve(mt_span.size());
-            for (const auto &m : mt_span) md.PositionDeltas.emplace_back(m.PositionDelta);
-            // CreateMesh writes 0 when source lacked normal deltas, so any non-zero ⇒ source had them.
-            if (std::ranges::any_of(mt_span, [](const auto &m) { return m.NormalDelta != vec3{0}; })) {
-                md.NormalDeltas.reserve(mt_span.size());
-                for (const auto &m : mt_span) md.NormalDeltas.emplace_back(m.NormalDelta);
-            }
-            md.TangentDeltas = layout.MorphTangentDeltas;
-            const auto default_weights = meshes.GetDefaultMorphWeights(store_id);
-            md.DefaultWeights.assign(default_weights.begin(), default_weights.end());
-            morph_data = std::move(md);
-        }
-
-        const auto *mn = r.try_get<const MeshName>(entity);
-        save_meshes[smi.Value] = gltf::MeshData{
-            .Triangles = std::move(triangles),
-            .TriangleAttrs = std::move(attrs),
-            .TrianglePrimitives = std::move(prims),
-            .DeformData = std::move(deform_data),
-            .MorphData = std::move(morph_data),
-            .Name = mn ? mn->Value : std::string{},
-        };
-    }
-
-    // Lines / Points entities → fill `.Lines` / `.Points` on the corresponding save_meshes slot.
-    // Lines/Points entities → fill the matching `.Lines`/`.Points` slot. Attrs are recovered by
-    // detecting non-default values: NORMAL non-zero, COLOR_0 not (1,1,1,1).
+    // Group source-mesh entities by SourceMeshIndex (one Triangles/Lines/Points entity per slot).
+    // The fastgltf::Mesh emit pass below reads vertex/face/skin/morph data straight from
+    // MeshStore for each grouped entity — no per-mesh `gltf::MeshData` aggregate is needed.
+    struct MeshEntitySet {
+        entt::entity Triangles{entt::null}, Lines{entt::null}, Points{entt::null};
+        std::string Name;
+    };
+    std::vector<MeshEntitySet> mesh_groups(source_mesh_count);
     for (const auto [entity, smi, kind] : r.view<const SourceMeshIndex, const SourceMeshKind>().each()) {
-        if (kind.Value == MeshKind::Triangles) continue;
-        const auto *mesh_ptr = r.try_get<const Mesh>(entity);
-        if (!mesh_ptr) continue;
-        const auto &mesh = *mesh_ptr;
-        const auto vertices = meshes.GetVertices(mesh.GetStoreId());
-        ::MeshData md;
-        md.Positions.reserve(vertices.size());
-        for (const auto &v : vertices) md.Positions.emplace_back(v.Position);
-        if (kind.Value == MeshKind::Lines) {
-            md.Edges.reserve(mesh.EdgeCount());
-            for (const auto eh : mesh.edges()) {
-                const auto h0 = mesh.GetHalfedge(eh, 0);
-                md.Edges.emplace_back(std::array<uint32_t, 2>{*mesh.GetFromVertex(h0), *mesh.GetToVertex(h0)});
-            }
-        }
-        ::MeshVertexAttributes attrs;
-        const auto fill_if_any = [&]<typename V>(std::optional<std::vector<V>> &dest, V Vertex::*field, V sentinel) {
-            if (!std::ranges::any_of(vertices, [&](const auto &v) { return v.*field != sentinel; })) return;
-            dest.emplace();
-            dest->reserve(vertices.size());
-            for (const auto &v : vertices) dest->emplace_back(v.*field);
-        };
-        fill_if_any(attrs.Normals, &Vertex::Normal, vec3{0});
-        fill_if_any(attrs.Colors0, &Vertex::Color, vec4{1});
-        if (attrs.Colors0) attrs.Colors0ComponentCount = 4; // CPU stores vec4 regardless of source
-        auto &dst = save_meshes[smi.Value];
-        if (kind.Value == MeshKind::Lines) {
-            dst.Lines = std::move(md);
-            dst.LineAttrs = std::move(attrs);
-        } else {
-            dst.Points = std::move(md);
-            dst.PointAttrs = std::move(attrs);
-        }
-        if (dst.Name.empty()) {
-            if (const auto *mn = r.try_get<const MeshName>(entity)) dst.Name = mn->Value;
+        if (!r.all_of<Mesh>(entity)) continue;
+        auto &g = mesh_groups[smi.Value];
+        if (kind.Value == MeshKind::Triangles) g.Triangles = entity;
+        else if (kind.Value == MeshKind::Lines) g.Lines = entity;
+        else g.Points = entity;
+        if (g.Name.empty()) {
+            if (const auto *mn = r.try_get<const MeshName>(entity)) g.Name = mn->Value;
         }
     }
 
@@ -3137,31 +2952,16 @@ std::expected<void, std::string> SaveGltf(const SaveContext &sc, const std::file
     };
     for (const auto [entity, node_index] : entity_to_node_index) fill_refs(entity, save_nodes[node_index]);
 
-    const auto to_object_type = [](ObjectType k) {
-        switch (k) {
-            case ObjectType::Mesh: return gltf::Object::Type::Mesh;
-            case ObjectType::Camera: return gltf::Object::Type::Camera;
-            case ObjectType::Light: return gltf::Object::Type::Light;
-            default: return gltf::Object::Type::Empty;
-        }
-    };
-    std::vector<gltf::Object> save_objects;
+    // Per save_nodes[ni]: world transforms of every Object that targets that node — used for
+    // EXT_mesh_gpu_instancing fan-in (multi-object → single node). Only the count + per-instance
+    // world transform are read downstream, so no full `gltf::Object` aggregate is needed.
+    std::vector<std::vector<Transform>> node_instance_worlds(save_nodes.size());
     auto object_view = r.view<const Transform, const ObjectKind>();
     for (const auto entity : object_view) {
-        const auto kind = object_view.get<const ObjectKind>(entity).Value;
-        if (kind == ObjectType::Armature) continue; // → gltf::Skin, handled separately.
+        if (object_view.get<const ObjectKind>(entity).Value == ObjectType::Armature) continue; // → gltf::Skin, handled separately.
         const auto it = entity_to_node_index.find(entity);
-        if (it == entity_to_node_index.end()) continue;
-        const auto *spi = r.try_get<const SourceParentNodeIndex>(entity);
-        gltf::Object obj{
-            .ObjectType = to_object_type(kind),
-            .NodeIndex = it->second,
-            .ParentNodeIndex = spi ? std::optional{spi->Value} : std::nullopt,
-            .WorldTransform = r.get<const WorldTransform>(entity),
-        };
-        if (const auto *name = r.try_get<const Name>(entity)) obj.Name = name->Value;
-        fill_refs(entity, obj);
-        save_objects.emplace_back(std::move(obj));
+        if (it == entity_to_node_index.end() || it->second >= node_instance_worlds.size()) continue;
+        node_instance_worlds[it->second].emplace_back(r.get<const WorldTransform>(entity));
     }
 
     // Asset is declared early so collision filters can be emitted directly into
@@ -3169,19 +2969,57 @@ std::expected<void, std::string> SaveGltf(const SaveContext &sc, const std::file
     fastgltf::Asset asset;
 
     // Physics document-level resources, source-aligned via the per-resource index sidecars.
+    // Emit fastgltf entries directly into asset.* — the per-entity index map lets node fan-in
+    // resolve refs without a parallel staging vector.
     std::unordered_map<entt::entity, uint32_t> physics_material_to_index, physics_jointdef_to_index, collision_filter_to_index;
-    std::vector<PhysicsMaterial> save_physics_materials;
-    std::vector<::PhysicsJointDef> save_physics_joint_defs;
     {
         auto mat_view = r.view<const PhysicsMaterial>();
         for (const auto &[_, e] : ordered_by_source.operator()<SourcePhysicsMaterialIndex>(mat_view)) {
-            physics_material_to_index[e] = uint32_t(save_physics_materials.size());
-            save_physics_materials.emplace_back(mat_view.get<const PhysicsMaterial>(e));
+            const auto &pm = mat_view.get<const PhysicsMaterial>(e);
+            physics_material_to_index[e] = uint32_t(asset.physicsMaterials.size());
+            asset.physicsMaterials.emplace_back(fastgltf::PhysicsMaterial{
+                .staticFriction = pm.StaticFriction,
+                .dynamicFriction = pm.DynamicFriction,
+                .restitution = pm.Restitution,
+                .frictionCombine = FromCombine(pm.FrictionCombine),
+                .restitutionCombine = FromCombine(pm.RestitutionCombine),
+            });
         }
         auto jd_view = r.view<const ::PhysicsJointDef>();
         for (const auto &[_, e] : ordered_by_source.operator()<SourcePhysicsJointDefIndex>(jd_view)) {
-            physics_jointdef_to_index[e] = uint32_t(save_physics_joint_defs.size());
-            save_physics_joint_defs.emplace_back(jd_view.get<const ::PhysicsJointDef>(e));
+            const auto &jd = jd_view.get<const ::PhysicsJointDef>(e);
+            fastgltf::pmr::MaybeSmallVector<fastgltf::JointLimit> limits;
+            limits.reserve(jd.Limits.size());
+            for (const auto &lim : jd.Limits) {
+                fastgltf::pmr::SmallVector<uint8_t, 3> linear_axes;
+                for (const auto a : lim.LinearAxes) linear_axes.emplace_back(a);
+                fastgltf::pmr::SmallVector<uint8_t, 3> angular_axes;
+                for (const auto a : lim.AngularAxes) angular_axes.emplace_back(a);
+                limits.emplace_back(fastgltf::JointLimit{
+                    .linearAxes = std::move(linear_axes),
+                    .angularAxes = std::move(angular_axes),
+                    .min = ToFgOpt<fastgltf::num>(lim.Min),
+                    .max = ToFgOpt<fastgltf::num>(lim.Max),
+                    .stiffness = ToFgOpt<fastgltf::num>(lim.Stiffness),
+                    .damping = lim.Damping,
+                });
+            }
+            fastgltf::pmr::MaybeSmallVector<fastgltf::JointDrive> drives;
+            drives.reserve(jd.Drives.size());
+            for (const auto &drv : jd.Drives) {
+                drives.emplace_back(fastgltf::JointDrive{
+                    .type = drv.Type == PhysicsDriveType::Angular ? fastgltf::DriveType::Angular : fastgltf::DriveType::Linear,
+                    .mode = drv.Mode == PhysicsDriveMode::Acceleration ? fastgltf::DriveMode::Acceleration : fastgltf::DriveMode::Force,
+                    .axis = drv.Axis,
+                    .maxForce = drv.MaxForce,
+                    .positionTarget = drv.PositionTarget,
+                    .velocityTarget = drv.VelocityTarget,
+                    .stiffness = drv.Stiffness,
+                    .damping = drv.Damping,
+                });
+            }
+            physics_jointdef_to_index[e] = uint32_t(asset.physicsJoints.size());
+            asset.physicsJoints.emplace_back(fastgltf::PhysicsJoint{.limits = std::move(limits), .drives = std::move(drives)});
         }
         const auto resolve_system_names = [&](std::span<const entt::entity> systems) {
             fastgltf::pmr::MaybeSmallVector<FgString> out;
@@ -3316,15 +3154,42 @@ std::expected<void, std::string> SaveGltf(const SaveContext &sc, const std::file
         );
     };
 
-    // Emit COLOR_0 preserving source component count (vec3 narrows the vec4 CPU store; vec4 passes through).
-    const auto EmitColor0 = [&](fastgltf::pmr::SmallVector<fastgltf::Attribute, 4> &out, std::span<const vec4> src, uint8_t component_count) {
+    // Strided variant: copy `field` of each element in `data` into `bin` and register a
+    // single-attribute accessor — no per-mesh contiguous vector materialized.
+    const auto AddFieldAccessor = [&]<typename T, typename V>(std::span<const V> data, T V::*field, fastgltf::AccessorType type, fastgltf::BufferTarget target) {
+        const uint32_t off = AppendField<T>(bin, data, field);
+        const uint32_t bv = AddBufferView(off, uint32_t(data.size() * sizeof(T)), {}, target);
+        return AddAccessor(bv, uint32_t(data.size()), type, fastgltf::ComponentType::Float);
+    };
+    const auto AddPositionFieldAccessor = [&]<typename V>(std::span<const V> data, vec3 V::*field, fastgltf::BufferTarget target) {
+        const uint32_t vcount = uint32_t(data.size());
+        if (vcount == 0) return AddFieldAccessor.template operator()<vec3>(data, field, fastgltf::AccessorType::Vec3, target);
+        vec3 lo = data[0].*field, hi = lo;
+        for (const auto &v : data) {
+            lo = glm::min(lo, v.*field);
+            hi = glm::max(hi, v.*field);
+        }
+        const uint32_t off = AppendField<vec3>(bin, data, field);
+        const uint32_t bv = AddBufferView(off, vcount * sizeof(vec3), {}, target);
+        return AddAccessor(
+            bv, vcount, fastgltf::AccessorType::Vec3, fastgltf::ComponentType::Float,
+            MakeBounds({lo.x, lo.y, lo.z}), MakeBounds({hi.x, hi.y, hi.z})
+        );
+    };
+
+    // Emit COLOR_0 from the strided Vertex span, preserving source component count.
+    const auto EmitColor0 = [&](fastgltf::pmr::SmallVector<fastgltf::Attribute, 4> &out, std::span<const Vertex> verts, uint8_t component_count) {
         if (component_count == 3) {
-            std::vector<vec3> rgb(src.size());
-            for (std::size_t i = 0; i < src.size(); ++i) rgb[i] = vec3{src[i].x, src[i].y, src[i].z};
-            out.emplace_back(fastgltf::Attribute{"COLOR_0", AddVec3Accessor(rgb, false, fastgltf::BufferTarget::ArrayBuffer)});
+            const uint32_t vcount = uint32_t(verts.size());
+            const uint32_t off = bin.size();
+            bin.resize(off + vcount * sizeof(vec3));
+            auto *outp = reinterpret_cast<vec3 *>(bin.data() + off);
+            for (uint32_t i = 0; i < vcount; ++i) outp[i] = {verts[i].Color.x, verts[i].Color.y, verts[i].Color.z};
+            while (bin.size() % 4 != 0) bin.emplace_back(std::byte{0});
+            const uint32_t bv = AddBufferView(off, vcount * sizeof(vec3), {}, fastgltf::BufferTarget::ArrayBuffer);
+            out.emplace_back(fastgltf::Attribute{"COLOR_0", AddAccessor(bv, vcount, fastgltf::AccessorType::Vec3, fastgltf::ComponentType::Float)});
         } else {
-            const uint32_t acc = AddDataAccessor(src, fastgltf::AccessorType::Vec4, fastgltf::ComponentType::Float, fastgltf::BufferTarget::ArrayBuffer);
-            out.emplace_back(fastgltf::Attribute{"COLOR_0", acc});
+            out.emplace_back(fastgltf::Attribute{"COLOR_0", AddFieldAccessor.template operator()<vec4>(verts, &Vertex::Color, fastgltf::AccessorType::Vec4, fastgltf::BufferTarget::ArrayBuffer)});
         }
     };
 
@@ -3580,235 +3445,228 @@ std::expected<void, std::string> SaveGltf(const SaveContext &sc, const std::file
     }
 
     // Materials: skip the engine "Default" at registry index 0 and the trailing synthetic
-    // "DefaultMaterial" the loader appends — emit i in [1, material_count - 1).
+    // "DefaultMaterial" the loader appends — emit i in [1, material_count - 1). Build
+    // fastgltf::Material directly from the GPU PBRMaterial; `MaterialSourceMeta` carries the
+    // round-trip-only deltas (ext-block presence, source texture indices, KHR_texture_transform
+    // meta, EmissiveFactor*=strength split).
     const uint32_t save_material_count = material_count > 1 ? material_count - 2u : 0u;
     asset.materials.reserve(save_material_count);
     using M = MaterialSourceMeta;
-    // Restore an extension's optional<>: bit set + FromGpu produced nullopt (all-defaults block) → default-construct.
-    // Bit clear → drop FromGpu's reconstruction (source had no extension).
-    const auto sync_ext = [&]<typename T>(std::optional<T> &slot, uint16_t bits, uint16_t bit) {
-        if (bits & bit) {
-            if (!slot) slot = T{};
-        } else slot.reset();
-    };
+    static const MaterialSourceMeta DefaultMeta{};
     for (uint32_t i = 1; i <= save_material_count; ++i) {
         const auto source_idx = i - 1;
-        auto data = gltf::FromGpu(sc.Buffers.Materials.Get(i));
-        std::string name = i < names.size() ? names[i] : std::string{};
-        if (source_idx < material_metas.size()) {
-            const auto &meta = material_metas[source_idx];
-            const auto bits = meta.ExtensionPresence;
-            // Base texture slots + KHR_texture_transform meta.
-            const std::array<TextureInfo *, 5> base_tex{&data.BaseColorTexture, &data.MetallicRoughnessTexture, &data.NormalTexture, &data.OcclusionTexture, &data.EmissiveTexture};
-            const std::array<gltf::TextureTransformMeta *, 5> base_meta{&data.BaseColorMeta, &data.MetallicRoughnessMeta, &data.NormalMeta, &data.OcclusionMeta, &data.EmissiveMeta};
-            for (uint8_t k = 0; k < 5; ++k) {
-                base_tex[k]->Slot = meta.TextureSlots[k];
-                *base_meta[k] = meta.BaseSlotMeta[k];
-            }
-            // Extension presence — Ior/Dispersion are scalars; the rest are sub-structs.
-            if (bits & M::ExtIor) {
-                if (!data.Ior) data.Ior = 1.5f;
-            } else data.Ior.reset();
-            if (bits & M::ExtDispersion) {
-                if (!data.Dispersion) data.Dispersion = 0.f;
-            } else data.Dispersion.reset();
-            sync_ext(data.Sheen, bits, M::ExtSheen);
-            sync_ext(data.Specular, bits, M::ExtSpecular);
-            sync_ext(data.Transmission, bits, M::ExtTransmission);
-            sync_ext(data.DiffuseTransmission, bits, M::ExtDiffuseTransmission);
-            sync_ext(data.Volume, bits, M::ExtVolume);
-            sync_ext(data.Clearcoat, bits, M::ExtClearcoat);
-            sync_ext(data.Anisotropy, bits, M::ExtAnisotropy);
-            sync_ext(data.Iridescence, bits, M::ExtIridescence);
-            // Nested extension texture slots — assigns are no-ops when the optional is empty.
-            const auto put = [&](auto &opt, auto field, MaterialTextureSlot s) {
-                if (opt) ((*opt).*field).Slot = meta.TextureSlots[s];
-            };
-            put(data.Specular, &::Specular::Texture, MTS_Specular);
-            put(data.Specular, &::Specular::ColorTexture, MTS_SpecularColor);
-            put(data.Sheen, &::Sheen::ColorTexture, MTS_SheenColor);
-            put(data.Sheen, &::Sheen::RoughnessTexture, MTS_SheenRoughness);
-            put(data.Transmission, &::Transmission::Texture, MTS_Transmission);
-            put(data.DiffuseTransmission, &::DiffuseTransmission::Texture, MTS_DiffuseTransmission);
-            put(data.DiffuseTransmission, &::DiffuseTransmission::ColorTexture, MTS_DiffuseTransmissionColor);
-            put(data.Volume, &::Volume::ThicknessTexture, MTS_VolumeThickness);
-            put(data.Clearcoat, &::Clearcoat::Texture, MTS_Clearcoat);
-            put(data.Clearcoat, &::Clearcoat::RoughnessTexture, MTS_ClearcoatRoughness);
-            put(data.Clearcoat, &::Clearcoat::NormalTexture, MTS_ClearcoatNormal);
-            put(data.Anisotropy, &::Anisotropy::Texture, MTS_Anisotropy);
-            put(data.Iridescence, &::Iridescence::Texture, MTS_Iridescence);
-            put(data.Iridescence, &::Iridescence::ThicknessTexture, MTS_IridescenceThickness);
-            // ToGpu folded `EmissiveFactor *= strength`; un-fold for round-trip.
-            if (meta.EmissiveStrength) {
-                const float s = *meta.EmissiveStrength;
-                if (s != 0.f) data.EmissiveFactor /= s;
-                data.EmissiveStrength = s;
-            }
-            if (meta.NameWasEmpty) name.clear();
-        }
-        const auto &m = data;
+        auto pbr = sc.Buffers.Materials.Get(i);
+        const auto &meta = source_idx < material_metas.size() ? material_metas[source_idx] : DefaultMeta;
+        const auto bits = meta.ExtensionPresence;
+        // Restore source texture slots — PBRMaterial holds bindless slots; emit needs gltf indices.
+        pbr.BaseColorTexture.Slot = meta.TextureSlots[MTS_BaseColor];
+        pbr.MetallicRoughnessTexture.Slot = meta.TextureSlots[MTS_MetallicRoughness];
+        pbr.NormalTexture.Slot = meta.TextureSlots[MTS_Normal];
+        pbr.OcclusionTexture.Slot = meta.TextureSlots[MTS_Occlusion];
+        pbr.EmissiveTexture.Slot = meta.TextureSlots[MTS_Emissive];
+        pbr.Specular.Texture.Slot = meta.TextureSlots[MTS_Specular];
+        pbr.Specular.ColorTexture.Slot = meta.TextureSlots[MTS_SpecularColor];
+        pbr.Sheen.ColorTexture.Slot = meta.TextureSlots[MTS_SheenColor];
+        pbr.Sheen.RoughnessTexture.Slot = meta.TextureSlots[MTS_SheenRoughness];
+        pbr.Transmission.Texture.Slot = meta.TextureSlots[MTS_Transmission];
+        pbr.DiffuseTransmission.Texture.Slot = meta.TextureSlots[MTS_DiffuseTransmission];
+        pbr.DiffuseTransmission.ColorTexture.Slot = meta.TextureSlots[MTS_DiffuseTransmissionColor];
+        pbr.Volume.ThicknessTexture.Slot = meta.TextureSlots[MTS_VolumeThickness];
+        pbr.Clearcoat.Texture.Slot = meta.TextureSlots[MTS_Clearcoat];
+        pbr.Clearcoat.RoughnessTexture.Slot = meta.TextureSlots[MTS_ClearcoatRoughness];
+        pbr.Clearcoat.NormalTexture.Slot = meta.TextureSlots[MTS_ClearcoatNormal];
+        pbr.Anisotropy.Texture.Slot = meta.TextureSlots[MTS_Anisotropy];
+        pbr.Iridescence.Texture.Slot = meta.TextureSlots[MTS_Iridescence];
+        pbr.Iridescence.ThicknessTexture.Slot = meta.TextureSlots[MTS_IridescenceThickness];
+
+        std::string name = (!meta.NameWasEmpty && i < names.size()) ? names[i] : std::string{};
+        // Un-fold load's `EmissiveFactor *= strength` for emissive_strength round-trip.
+        vec3 emissive_factor = pbr.EmissiveFactor;
+        if (meta.EmissiveStrength && *meta.EmissiveStrength != 0.f) emissive_factor /= *meta.EmissiveStrength;
+
         fastgltf::Material out;
         out.name = ToFgStr(name);
+        out.pbrData.baseColorFactor = {pbr.BaseColorFactor.x, pbr.BaseColorFactor.y, pbr.BaseColorFactor.z, pbr.BaseColorFactor.w};
+        out.pbrData.metallicFactor = pbr.MetallicFactor;
+        out.pbrData.roughnessFactor = pbr.RoughnessFactor;
+        out.pbrData.baseColorTexture = ToFgTexInfo(pbr.BaseColorTexture, &meta.BaseSlotMeta[0]);
+        out.pbrData.metallicRoughnessTexture = ToFgTexInfo(pbr.MetallicRoughnessTexture, &meta.BaseSlotMeta[1]);
+        out.normalTexture = ToFgNormalTexInfo(pbr.NormalTexture, pbr.NormalScale, &meta.BaseSlotMeta[2]);
+        out.occlusionTexture = ToFgOcclusionTexInfo(pbr.OcclusionTexture, pbr.OcclusionStrength, &meta.BaseSlotMeta[3]);
+        out.emissiveTexture = ToFgTexInfo(pbr.EmissiveTexture, &meta.BaseSlotMeta[4]);
+        out.emissiveFactor = {emissive_factor.x, emissive_factor.y, emissive_factor.z};
+        if (bits & M::ExtEmissiveStrength) out.emissiveStrength = fastgltf::Optional<fastgltf::num>{meta.EmissiveStrength.value_or(1.f)};
+        out.alphaMode = FromAlphaMode(pbr.AlphaMode);
+        out.alphaCutoff = pbr.AlphaCutoff;
+        out.doubleSided = pbr.DoubleSided != 0u;
+        out.unlit = pbr.Unlit != 0u;
+        if (bits & M::ExtIor) out.ior = fastgltf::Optional<fastgltf::num>{pbr.Ior};
+        if (bits & M::ExtDispersion) out.dispersion = fastgltf::Optional<fastgltf::num>{pbr.Dispersion};
 
-        out.pbrData.baseColorFactor = {m.BaseColorFactor.x, m.BaseColorFactor.y, m.BaseColorFactor.z, m.BaseColorFactor.w};
-        out.pbrData.metallicFactor = m.MetallicFactor;
-        out.pbrData.roughnessFactor = m.RoughnessFactor;
-        out.pbrData.baseColorTexture = ToFgTexInfo(m.BaseColorTexture, &m.BaseColorMeta);
-        out.pbrData.metallicRoughnessTexture = ToFgTexInfo(m.MetallicRoughnessTexture, &m.MetallicRoughnessMeta);
-
-        out.normalTexture = ToFgNormalTexInfo(m.NormalTexture, m.NormalScale, &m.NormalMeta);
-        out.occlusionTexture = ToFgOcclusionTexInfo(m.OcclusionTexture, m.OcclusionStrength, &m.OcclusionMeta);
-        out.emissiveTexture = ToFgTexInfo(m.EmissiveTexture, &m.EmissiveMeta);
-
-        out.emissiveFactor = {m.EmissiveFactor.x, m.EmissiveFactor.y, m.EmissiveFactor.z};
-        if (m.EmissiveStrength) out.emissiveStrength = fastgltf::Optional<fastgltf::num>{*m.EmissiveStrength};
-
-        out.alphaMode = FromAlphaMode(m.AlphaMode);
-        out.alphaCutoff = m.AlphaCutoff;
-        out.doubleSided = m.DoubleSided != 0u;
-        out.unlit = m.Unlit != 0u;
-        if (m.Ior) out.ior = fastgltf::Optional<fastgltf::num>{*m.Ior};
-        if (m.Dispersion) out.dispersion = fastgltf::Optional<fastgltf::num>{*m.Dispersion};
-
-        if (m.Sheen) {
+        if (bits & M::ExtSheen) {
             out.sheen = std::make_unique<fastgltf::MaterialSheen>();
-            out.sheen->sheenColorFactor = {m.Sheen->ColorFactor.x, m.Sheen->ColorFactor.y, m.Sheen->ColorFactor.z};
-            out.sheen->sheenRoughnessFactor = m.Sheen->RoughnessFactor;
-            out.sheen->sheenColorTexture = ToFgTexInfo(m.Sheen->ColorTexture);
-            out.sheen->sheenRoughnessTexture = ToFgTexInfo(m.Sheen->RoughnessTexture);
+            out.sheen->sheenColorFactor = {pbr.Sheen.ColorFactor.x, pbr.Sheen.ColorFactor.y, pbr.Sheen.ColorFactor.z};
+            out.sheen->sheenRoughnessFactor = pbr.Sheen.RoughnessFactor;
+            out.sheen->sheenColorTexture = ToFgTexInfo(pbr.Sheen.ColorTexture);
+            out.sheen->sheenRoughnessTexture = ToFgTexInfo(pbr.Sheen.RoughnessTexture);
         }
-        if (m.Specular) {
+        if (bits & M::ExtSpecular) {
             out.specular = std::make_unique<fastgltf::MaterialSpecular>();
-            out.specular->specularFactor = m.Specular->Factor;
-            out.specular->specularColorFactor = {m.Specular->ColorFactor.x, m.Specular->ColorFactor.y, m.Specular->ColorFactor.z};
-            out.specular->specularTexture = ToFgTexInfo(m.Specular->Texture);
-            out.specular->specularColorTexture = ToFgTexInfo(m.Specular->ColorTexture);
+            out.specular->specularFactor = pbr.Specular.Factor;
+            out.specular->specularColorFactor = {pbr.Specular.ColorFactor.x, pbr.Specular.ColorFactor.y, pbr.Specular.ColorFactor.z};
+            out.specular->specularTexture = ToFgTexInfo(pbr.Specular.Texture);
+            out.specular->specularColorTexture = ToFgTexInfo(pbr.Specular.ColorTexture);
         }
-        if (m.Transmission) {
+        if (bits & M::ExtTransmission) {
             out.transmission = std::make_unique<fastgltf::MaterialTransmission>();
-            out.transmission->transmissionFactor = m.Transmission->Factor;
-            out.transmission->transmissionTexture = ToFgTexInfo(m.Transmission->Texture);
+            out.transmission->transmissionFactor = pbr.Transmission.Factor;
+            out.transmission->transmissionTexture = ToFgTexInfo(pbr.Transmission.Texture);
         }
-        if (m.DiffuseTransmission) {
+        if (bits & M::ExtDiffuseTransmission) {
             out.diffuseTransmission = std::make_unique<fastgltf::MaterialDiffuseTransmission>();
-            out.diffuseTransmission->diffuseTransmissionFactor = m.DiffuseTransmission->Factor;
-            out.diffuseTransmission->diffuseTransmissionColorFactor = {m.DiffuseTransmission->ColorFactor.x, m.DiffuseTransmission->ColorFactor.y, m.DiffuseTransmission->ColorFactor.z};
-            out.diffuseTransmission->diffuseTransmissionTexture = ToFgTexInfo(m.DiffuseTransmission->Texture);
-            out.diffuseTransmission->diffuseTransmissionColorTexture = ToFgTexInfo(m.DiffuseTransmission->ColorTexture);
+            out.diffuseTransmission->diffuseTransmissionFactor = pbr.DiffuseTransmission.Factor;
+            out.diffuseTransmission->diffuseTransmissionColorFactor = {pbr.DiffuseTransmission.ColorFactor.x, pbr.DiffuseTransmission.ColorFactor.y, pbr.DiffuseTransmission.ColorFactor.z};
+            out.diffuseTransmission->diffuseTransmissionTexture = ToFgTexInfo(pbr.DiffuseTransmission.Texture);
+            out.diffuseTransmission->diffuseTransmissionColorTexture = ToFgTexInfo(pbr.DiffuseTransmission.ColorTexture);
         }
-        if (m.Volume) {
+        if (bits & M::ExtVolume) {
             out.volume = std::make_unique<fastgltf::MaterialVolume>();
-            out.volume->thicknessFactor = m.Volume->ThicknessFactor;
-            out.volume->attenuationColor = {m.Volume->AttenuationColor.x, m.Volume->AttenuationColor.y, m.Volume->AttenuationColor.z};
-            out.volume->attenuationDistance = m.Volume->AttenuationDistance > 0.f ? m.Volume->AttenuationDistance : std::numeric_limits<float>::infinity();
-            out.volume->thicknessTexture = ToFgTexInfo(m.Volume->ThicknessTexture);
+            out.volume->thicknessFactor = pbr.Volume.ThicknessFactor;
+            out.volume->attenuationColor = {pbr.Volume.AttenuationColor.x, pbr.Volume.AttenuationColor.y, pbr.Volume.AttenuationColor.z};
+            out.volume->attenuationDistance = pbr.Volume.AttenuationDistance > 0.f ? pbr.Volume.AttenuationDistance : std::numeric_limits<float>::infinity();
+            out.volume->thicknessTexture = ToFgTexInfo(pbr.Volume.ThicknessTexture);
         }
-        if (m.Clearcoat) {
+        if (bits & M::ExtClearcoat) {
             out.clearcoat = std::make_unique<fastgltf::MaterialClearcoat>();
-            out.clearcoat->clearcoatFactor = m.Clearcoat->Factor;
-            out.clearcoat->clearcoatRoughnessFactor = m.Clearcoat->RoughnessFactor;
-            out.clearcoat->clearcoatTexture = ToFgTexInfo(m.Clearcoat->Texture);
-            out.clearcoat->clearcoatRoughnessTexture = ToFgTexInfo(m.Clearcoat->RoughnessTexture);
-            out.clearcoat->clearcoatNormalTexture = ToFgNormalTexInfo(m.Clearcoat->NormalTexture, m.Clearcoat->NormalScale);
+            out.clearcoat->clearcoatFactor = pbr.Clearcoat.Factor;
+            out.clearcoat->clearcoatRoughnessFactor = pbr.Clearcoat.RoughnessFactor;
+            out.clearcoat->clearcoatTexture = ToFgTexInfo(pbr.Clearcoat.Texture);
+            out.clearcoat->clearcoatRoughnessTexture = ToFgTexInfo(pbr.Clearcoat.RoughnessTexture);
+            out.clearcoat->clearcoatNormalTexture = ToFgNormalTexInfo(pbr.Clearcoat.NormalTexture, pbr.Clearcoat.NormalScale);
         }
-        if (m.Anisotropy) {
+        if (bits & M::ExtAnisotropy) {
             out.anisotropy = std::make_unique<fastgltf::MaterialAnisotropy>();
-            out.anisotropy->anisotropyStrength = m.Anisotropy->Strength;
-            out.anisotropy->anisotropyRotation = m.Anisotropy->Rotation;
-            out.anisotropy->anisotropyTexture = ToFgTexInfo(m.Anisotropy->Texture);
+            out.anisotropy->anisotropyStrength = pbr.Anisotropy.Strength;
+            out.anisotropy->anisotropyRotation = pbr.Anisotropy.Rotation;
+            out.anisotropy->anisotropyTexture = ToFgTexInfo(pbr.Anisotropy.Texture);
         }
-        if (m.Iridescence) {
+        if (bits & M::ExtIridescence) {
             out.iridescence = std::make_unique<fastgltf::MaterialIridescence>();
-            out.iridescence->iridescenceFactor = m.Iridescence->Factor;
-            out.iridescence->iridescenceIor = m.Iridescence->Ior;
-            out.iridescence->iridescenceThicknessMinimum = m.Iridescence->ThicknessMinimum;
-            out.iridescence->iridescenceThicknessMaximum = m.Iridescence->ThicknessMaximum;
-            out.iridescence->iridescenceTexture = ToFgTexInfo(m.Iridescence->Texture);
-            out.iridescence->iridescenceThicknessTexture = ToFgTexInfo(m.Iridescence->ThicknessTexture);
+            out.iridescence->iridescenceFactor = pbr.Iridescence.Factor;
+            out.iridescence->iridescenceIor = pbr.Iridescence.Ior;
+            out.iridescence->iridescenceThicknessMinimum = pbr.Iridescence.ThicknessMinimum;
+            out.iridescence->iridescenceThicknessMaximum = pbr.Iridescence.ThicknessMaximum;
+            out.iridescence->iridescenceTexture = ToFgTexInfo(pbr.Iridescence.Texture);
+            out.iridescence->iridescenceThicknessTexture = ToFgTexInfo(pbr.Iridescence.ThicknessTexture);
         }
 
         asset.materials.emplace_back(std::move(out));
     }
 
-    asset.meshes.reserve(save_meshes.size());
-    for (uint32_t mi = 0; mi < save_meshes.size(); ++mi) {
-        const auto &mesh = save_meshes[mi];
+    asset.meshes.reserve(mesh_groups.size());
+    // For non-triangle (Lines/Points) primitives: emit NORMAL/COLOR_0 iff at least one vertex
+    // has a non-default value (sentinel = NORMAL=0, COLOR_0=(1,1,1,1)). CPU stores vec4 colors.
+    const auto emit_non_triangle_attrs = [&](fastgltf::pmr::SmallVector<fastgltf::Attribute, 4> &out, std::span<const Vertex> verts) {
+        if (std::ranges::any_of(verts, [](const auto &v) { return v.Normal != vec3{0}; })) {
+            out.emplace_back(fastgltf::Attribute{"NORMAL", AddFieldAccessor.template operator()<vec3>(verts, &Vertex::Normal, fastgltf::AccessorType::Vec3, fastgltf::BufferTarget::ArrayBuffer)});
+        }
+        if (std::ranges::any_of(verts, [](const auto &v) { return v.Color != vec4{1}; })) {
+            EmitColor0(out, verts, /*component_count=*/4);
+        }
+    };
+    for (uint32_t mi = 0; mi < mesh_groups.size(); ++mi) {
+        const auto &group = mesh_groups[mi];
         fastgltf::pmr::MaybeSmallVector<fastgltf::Primitive, 2> primitives;
+        fastgltf::pmr::MaybeSmallVector<fastgltf::num> default_weights;
 
         // --- Triangle primitives ---
         // Each source primitive owns a contiguous [offset, offset+count) slice of the merged
-        // per-mesh vertex buffer; re-slice here by primitive range.
-        if (mesh.Triangles && !mesh.Triangles->Positions.empty() && !mesh.Triangles->Faces.empty()) {
-            const auto &tri = *mesh.Triangles;
-            const uint32_t total_vcount = uint32_t(tri.Positions.size());
-            const auto &tprims = mesh.TrianglePrimitives;
+        // per-mesh vertex buffer; re-slice here by primitive range. Vertex/face/skin/morph data
+        // is read straight from MeshStore — no per-mesh contiguous vectors materialized.
+        if (group.Triangles != entt::null) {
+            const auto &mesh = r.get<const Mesh>(group.Triangles);
+            const auto &layout = r.get<const MeshSourceLayout>(group.Triangles);
+            const auto store_id = mesh.GetStoreId();
+            const auto vertices = meshes.GetVertices(store_id);
+            const auto total_vcount = uint32_t(vertices.size());
+            const auto face_primitives = meshes.GetFacePrimitiveIndices(store_id);
+            const auto primitive_materials = meshes.GetPrimitiveMaterialIndices(store_id);
+            const auto prim_count = uint32_t(layout.VertexCounts.size());
 
-            std::vector<uint32_t> vertex_offsets(tprims.VertexCounts.size() + 1, 0);
-            for (std::size_t p = 0; p < tprims.VertexCounts.size(); ++p) vertex_offsets[p + 1] = vertex_offsets[p] + tprims.VertexCounts[p];
+            std::vector<uint32_t> vertex_offsets(prim_count + 1, 0);
+            for (uint32_t p = 0; p < prim_count; ++p) vertex_offsets[p + 1] = vertex_offsets[p] + layout.VertexCounts[p];
 
-            std::unordered_map<uint32_t, std::vector<uint32_t>> faces_by_prim;
-            for (uint32_t fi = 0; fi < tri.Faces.size(); ++fi) {
-                const uint32_t p = fi < tprims.FacePrimitiveIndices.size() ? tprims.FacePrimitiveIndices[fi] : 0u;
-                faces_by_prim[p].emplace_back(fi);
+            // Build per-primitive (rebased, fan-triangulated) index buffers in one faces walk.
+            std::vector<std::vector<uint32_t>> indices_per_prim(prim_count);
+            uint32_t fi = 0;
+            for (const auto fh : mesh.faces()) {
+                const uint32_t p = fi < face_primitives.size() ? face_primitives[fi] : 0u;
+                if (p < prim_count) {
+                    std::array<uint32_t, 16> fv{};
+                    uint32_t fv_count = 0;
+                    for (const auto vh : mesh.fv_range(fh)) {
+                        if (fv_count < fv.size()) fv[fv_count] = *vh;
+                        ++fv_count;
+                    }
+                    if (fv_count >= 3) {
+                        const uint32_t offset = vertex_offsets[p];
+                        auto &out = indices_per_prim[p];
+                        for (uint32_t k = 1; k + 1 < fv_count; ++k) {
+                            out.emplace_back(fv[0] - offset);
+                            out.emplace_back(fv[k] - offset);
+                            out.emplace_back(fv[k + 1] - offset);
+                        }
+                    }
+                }
+                ++fi;
             }
 
-            const auto &attrs = mesh.TriangleAttrs;
-            const bool has_normals = attrs.Normals && attrs.Normals->size() == total_vcount;
-            const bool has_tangents = attrs.Tangents && attrs.Tangents->size() == total_vcount;
-            const bool has_colors = attrs.Colors0 && attrs.Colors0->size() == total_vcount;
-            const bool has_uv0 = attrs.TexCoords0 && attrs.TexCoords0->size() == total_vcount;
-            const bool has_uv1 = attrs.TexCoords1 && attrs.TexCoords1->size() == total_vcount;
-            const bool has_uv2 = attrs.TexCoords2 && attrs.TexCoords2->size() == total_vcount;
-            const bool has_uv3 = attrs.TexCoords3 && attrs.TexCoords3->size() == total_vcount;
-            const bool has_skin = mesh.DeformData && mesh.DeformData->Joints.size() == total_vcount && mesh.DeformData->Weights.size() == total_vcount;
-            const uint32_t target_count = mesh.MorphData ? mesh.MorphData->TargetCount : 0;
-            const bool has_normal_deltas = mesh.MorphData && !mesh.MorphData->NormalDeltas.empty();
-            const bool has_tangent_deltas = mesh.MorphData && !mesh.MorphData->TangentDeltas.empty();
-            // Fall back to emitting every populated channel when AttributeFlags isn't populated.
-            const bool have_flags = tprims.AttributeFlags.size() == tprims.VertexCounts.size();
-            for (uint32_t prim_idx = 0; prim_idx < tprims.VertexCounts.size(); ++prim_idx) {
-                const uint32_t pcount = tprims.VertexCounts[prim_idx];
+            // Skin / morph spans (empty when the mesh lacks the channel).
+            const auto bd_range = meshes.GetBoneDeformRange(store_id);
+            const auto bd_span = bd_range.Count > 0 ? meshes.BoneDeformBuffer.Get(bd_range) : std::span<const BoneDeformVertex>{};
+            const bool has_skin = bd_span.size() == total_vcount && total_vcount > 0;
+            const uint32_t target_count = (total_vcount > 0) ? meshes.GetMorphTargetCount(store_id) : 0u;
+            const auto mt_span = target_count > 0 ? meshes.MorphTargetBuffer.Get(meshes.GetMorphTargetRange(store_id)) : std::span<const MorphTargetVertex>{};
+            // CreateMesh writes 0 when source lacked normal deltas, so any non-zero ⇒ source had them.
+            const bool has_normal_deltas = std::ranges::any_of(mt_span, [](const auto &m) { return m.NormalDelta != vec3{0}; });
+            const bool has_tangent_deltas = !layout.MorphTangentDeltas.empty();
+
+            // OR of per-prim AttributeFlags; channel emitted iff any primitive set the bit
+            // (matches old behavior of populating the merged TriangleAttrs slot).
+            uint32_t any_flags = 0;
+            for (const auto f : layout.AttributeFlags) any_flags |= f;
+            const bool have_flags = layout.AttributeFlags.size() == prim_count;
+
+            for (uint32_t prim_idx = 0; prim_idx < prim_count; ++prim_idx) {
+                const uint32_t pcount = layout.VertexCounts[prim_idx];
                 if (pcount == 0) continue; // non-triangle primitive
                 const auto offset = vertex_offsets[prim_idx];
-                const auto flags = have_flags ? tprims.AttributeFlags[prim_idx] : ~0u;
+                const auto flags = have_flags ? layout.AttributeFlags[prim_idx] : ~0u;
+                const auto vslice = vertices.subspan(offset, pcount);
 
                 fastgltf::pmr::SmallVector<fastgltf::Attribute, 4> prim_attrs;
+                prim_attrs.emplace_back(fastgltf::Attribute{"POSITION", AddPositionFieldAccessor.template operator()<Vertex>(vslice, &Vertex::Position, fastgltf::BufferTarget::ArrayBuffer)});
 
-                const std::span<const vec3> pos_span(tri.Positions.data() + offset, pcount);
-                prim_attrs.emplace_back(fastgltf::Attribute{"POSITION", AddVec3Accessor(pos_span, true, fastgltf::BufferTarget::ArrayBuffer)});
-
-                if (has_normals && (flags & MeshAttributeBit_Normal)) {
-                    const std::span<const vec3> norm_span(attrs.Normals->data() + offset, pcount);
-                    prim_attrs.emplace_back(fastgltf::Attribute{"NORMAL", AddVec3Accessor(norm_span, false, fastgltf::BufferTarget::ArrayBuffer)});
-                }
-
-                const auto emit_vec4 = [&](const char *name, const vec4 *src) {
-                    const auto acc = AddDataAccessor(std::span<const vec4>(src, pcount), fastgltf::AccessorType::Vec4, fastgltf::ComponentType::Float, fastgltf::BufferTarget::ArrayBuffer);
-                    prim_attrs.emplace_back(fastgltf::Attribute{name, acc});
+                const auto emit = [&]<typename T>(const char *name, T Vertex::*field, fastgltf::AccessorType type) {
+                    prim_attrs.emplace_back(fastgltf::Attribute{name, AddFieldAccessor.template operator()<T>(vslice, field, type, fastgltf::BufferTarget::ArrayBuffer)});
                 };
-                if (has_tangents && (flags & MeshAttributeBit_Tangent)) emit_vec4("TANGENT", attrs.Tangents->data() + offset);
-                if (has_colors && (flags & MeshAttributeBit_Color0)) {
-                    EmitColor0(prim_attrs, std::span<const vec4>(attrs.Colors0->data() + offset, pcount), attrs.Colors0ComponentCount);
-                }
-
-                const auto emit_uv = [&](const char *name, const vec2 *src) {
-                    const auto acc = AddDataAccessor(std::span<const vec2>(src, pcount), fastgltf::AccessorType::Vec2, fastgltf::ComponentType::Float, fastgltf::BufferTarget::ArrayBuffer);
-                    prim_attrs.emplace_back(fastgltf::Attribute{name, acc});
-                };
-                if (has_uv0 && (flags & MeshAttributeBit_TexCoord0)) emit_uv("TEXCOORD_0", attrs.TexCoords0->data() + offset);
-                if (has_uv1 && (flags & MeshAttributeBit_TexCoord1)) emit_uv("TEXCOORD_1", attrs.TexCoords1->data() + offset);
-                if (has_uv2 && (flags & MeshAttributeBit_TexCoord2)) emit_uv("TEXCOORD_2", attrs.TexCoords2->data() + offset);
-                if (has_uv3 && (flags & MeshAttributeBit_TexCoord3)) emit_uv("TEXCOORD_3", attrs.TexCoords3->data() + offset);
+                if ((any_flags & MeshAttributeBit_Normal) && (flags & MeshAttributeBit_Normal)) emit("NORMAL", &Vertex::Normal, fastgltf::AccessorType::Vec3);
+                if ((any_flags & MeshAttributeBit_Tangent) && (flags & MeshAttributeBit_Tangent)) emit("TANGENT", &Vertex::Tangent, fastgltf::AccessorType::Vec4);
+                if ((any_flags & MeshAttributeBit_Color0) && (flags & MeshAttributeBit_Color0)) EmitColor0(prim_attrs, vslice, layout.Colors0ComponentCount);
+                if ((any_flags & MeshAttributeBit_TexCoord0) && (flags & MeshAttributeBit_TexCoord0)) emit("TEXCOORD_0", &Vertex::TexCoord0, fastgltf::AccessorType::Vec2);
+                if ((any_flags & MeshAttributeBit_TexCoord1) && (flags & MeshAttributeBit_TexCoord1)) emit("TEXCOORD_1", &Vertex::TexCoord1, fastgltf::AccessorType::Vec2);
+                if ((any_flags & MeshAttributeBit_TexCoord2) && (flags & MeshAttributeBit_TexCoord2)) emit("TEXCOORD_2", &Vertex::TexCoord2, fastgltf::AccessorType::Vec2);
+                if ((any_flags & MeshAttributeBit_TexCoord3) && (flags & MeshAttributeBit_TexCoord3)) emit("TEXCOORD_3", &Vertex::TexCoord3, fastgltf::AccessorType::Vec2);
 
                 if (has_skin) {
+                    const auto bd_slice = bd_span.subspan(offset, pcount);
                     std::vector<std::array<uint16_t, 4>> joints16(pcount);
                     for (uint32_t i = 0; i < pcount; ++i) {
-                        const auto &j = mesh.DeformData->Joints[offset + i];
+                        const auto &j = bd_slice[i].Joints;
                         joints16[i] = {uint16_t(j.x), uint16_t(j.y), uint16_t(j.z), uint16_t(j.w)};
                     }
                     prim_attrs.emplace_back(fastgltf::Attribute{"JOINTS_0", AddDataAccessor(std::span<const std::array<uint16_t, 4>>(joints16), fastgltf::AccessorType::Vec4, fastgltf::ComponentType::UnsignedShort, fastgltf::BufferTarget::ArrayBuffer)});
-
-                    emit_vec4("WEIGHTS_0", mesh.DeformData->Weights.data() + offset);
+                    prim_attrs.emplace_back(fastgltf::Attribute{"WEIGHTS_0", AddFieldAccessor.template operator()<vec4>(bd_slice, &BoneDeformVertex::Weights, fastgltf::AccessorType::Vec4, fastgltf::BufferTarget::ArrayBuffer)});
                 }
 
                 std::pmr::vector<fastgltf::pmr::SmallVector<fastgltf::Attribute, 4>> prim_targets;
@@ -3816,54 +3674,36 @@ std::expected<void, std::string> SaveGltf(const SaveContext &sc, const std::file
                     prim_targets.reserve(target_count);
                     for (uint32_t t = 0; t < target_count; ++t) {
                         fastgltf::pmr::SmallVector<fastgltf::Attribute, 4> tattrs;
-                        const std::span<const vec3> pos_deltas(mesh.MorphData->PositionDeltas.data() + std::size_t(t) * total_vcount + offset, pcount);
-                        tattrs.emplace_back(fastgltf::Attribute{"POSITION", AddVec3Accessor(pos_deltas, false, fastgltf::BufferTarget::ArrayBuffer)});
-                        if (has_normal_deltas) {
-                            const std::span<const vec3> norm_deltas(mesh.MorphData->NormalDeltas.data() + std::size_t(t) * total_vcount + offset, pcount);
-                            tattrs.emplace_back(fastgltf::Attribute{"NORMAL", AddVec3Accessor(norm_deltas, false, fastgltf::BufferTarget::ArrayBuffer)});
-                        }
+                        const auto target_slice = mt_span.subspan(std::size_t(t) * total_vcount + offset, pcount);
+                        tattrs.emplace_back(fastgltf::Attribute{"POSITION", AddFieldAccessor.template operator()<vec3>(target_slice, &MorphTargetVertex::PositionDelta, fastgltf::AccessorType::Vec3, fastgltf::BufferTarget::ArrayBuffer)});
+                        if (has_normal_deltas) tattrs.emplace_back(fastgltf::Attribute{"NORMAL", AddFieldAccessor.template operator()<vec3>(target_slice, &MorphTargetVertex::NormalDelta, fastgltf::AccessorType::Vec3, fastgltf::BufferTarget::ArrayBuffer)});
                         if (has_tangent_deltas) {
-                            const std::span<const vec3> tan_deltas(mesh.MorphData->TangentDeltas.data() + std::size_t(t) * total_vcount + offset, pcount);
+                            const std::span<const vec3> tan_deltas(layout.MorphTangentDeltas.data() + std::size_t(t) * total_vcount + offset, pcount);
                             tattrs.emplace_back(fastgltf::Attribute{"TANGENT", AddVec3Accessor(tan_deltas, false, fastgltf::BufferTarget::ArrayBuffer)});
                         }
                         prim_targets.emplace_back(std::move(tattrs));
                     }
                 }
 
-                // Face indices are absolute into the shared buffer; rebase into this primitive's slice.
-                const auto face_it = faces_by_prim.find(prim_idx);
-                std::vector<uint32_t> indices;
-                if (face_it != faces_by_prim.end()) {
-                    indices.reserve(face_it->second.size() * 3);
-                    for (const uint32_t fi : face_it->second) {
-                        const auto &face = tri.Faces[fi];
-                        if (face.size() < 3) continue;
-                        // Fan-triangulate polygons (source is usually already triangulated).
-                        for (std::size_t k = 1; k + 1 < face.size(); ++k) {
-                            indices.emplace_back(face[0] - offset);
-                            indices.emplace_back(face[k] - offset);
-                            indices.emplace_back(face[k + 1] - offset);
-                        }
-                    }
-                }
-                if (indices.empty()) continue;
-
+                if (indices_per_prim[prim_idx].empty()) continue;
                 // Empty HasSourceIndices falls back to emitting (preserves legacy behavior).
-                const bool emit_indices = prim_idx < tprims.HasSourceIndices.size() ? tprims.HasSourceIndices[prim_idx] != 0 : true;
+                const bool emit_indices = prim_idx < layout.HasSourceIndices.size() ? layout.HasSourceIndices[prim_idx] != 0 : true;
                 fastgltf::Optional<std::size_t> indices_accessor;
                 if (emit_indices) {
-                    indices_accessor = AddDataAccessor(std::span<const uint32_t>(indices), fastgltf::AccessorType::Scalar, fastgltf::ComponentType::UnsignedInt, fastgltf::BufferTarget::ElementArrayBuffer);
+                    indices_accessor = AddDataAccessor(std::span<const uint32_t>(indices_per_prim[prim_idx]), fastgltf::AccessorType::Scalar, fastgltf::ComponentType::UnsignedInt, fastgltf::BufferTarget::ElementArrayBuffer);
                 }
 
                 fastgltf::Optional<std::size_t> material_index;
-                if (prim_idx < tprims.MaterialIndices.size()) {
-                    const uint32_t mat = tprims.MaterialIndices[prim_idx];
+                if (prim_idx < primitive_materials.size()) {
+                    // Reverse populate's +1 material-index shift; `~0u` (registry default) = don't emit.
+                    const uint32_t reg_idx = primitive_materials[prim_idx];
+                    const uint32_t mat = reg_idx >= 1 ? reg_idx - 1 : ~0u;
                     if (mat < save_material_count) material_index = mat;
                 }
 
                 std::vector<fastgltf::Optional<std::size_t>> mappings;
-                if (prim_idx < tprims.VariantMappings.size()) {
-                    for (const auto &m : tprims.VariantMappings[prim_idx]) {
+                if (prim_idx < layout.VariantMappings.size()) {
+                    for (const auto &m : layout.VariantMappings[prim_idx]) {
                         if (m.has_value() && *m < save_material_count) mappings.emplace_back(std::size_t(*m));
                         else mappings.emplace_back();
                     }
@@ -3879,60 +3719,59 @@ std::expected<void, std::string> SaveGltf(const SaveContext &sc, const std::file
                     .dracoCompression = nullptr,
                 });
             }
+
+            const auto dw = meshes.GetDefaultMorphWeights(store_id);
+            if (!dw.empty()) {
+                default_weights.reserve(dw.size());
+                for (const auto w : dw) default_weights.emplace_back(w);
+            }
         }
 
-        const auto emit_non_triangle_attrs = [&](fastgltf::pmr::SmallVector<fastgltf::Attribute, 4> &out, std::size_t vcount, const ::MeshVertexAttributes &va) {
-            if (va.Normals && va.Normals->size() == vcount) {
-                out.emplace_back(fastgltf::Attribute{"NORMAL", AddVec3Accessor(*va.Normals, false, fastgltf::BufferTarget::ArrayBuffer)});
-            }
-            if (va.Colors0 && va.Colors0->size() == vcount) {
-                EmitColor0(out, std::span<const vec4>(va.Colors0->data(), vcount), va.Colors0ComponentCount);
-            }
-        };
-
         // --- Line primitive ---
-        if (mesh.Lines && !mesh.Lines->Positions.empty() && !mesh.Lines->Edges.empty()) {
-            const auto &l = *mesh.Lines;
-            const uint32_t pos_acc = AddVec3Accessor(l.Positions, true, fastgltf::BufferTarget::ArrayBuffer);
-
-            std::vector<uint32_t> idx;
-            idx.reserve(l.Edges.size() * 2);
-            for (const auto &pair : l.Edges) {
-                idx.emplace_back(pair[0]);
-                idx.emplace_back(pair[1]);
+        if (group.Lines != entt::null) {
+            const auto &mesh = r.get<const Mesh>(group.Lines);
+            const auto vertices = meshes.GetVertices(mesh.GetStoreId());
+            if (!vertices.empty() && mesh.EdgeCount() > 0) {
+                std::vector<uint32_t> idx;
+                idx.reserve(mesh.EdgeCount() * 2);
+                for (const auto eh : mesh.edges()) {
+                    const auto h0 = mesh.GetHalfedge(eh, 0);
+                    idx.emplace_back(*mesh.GetFromVertex(h0));
+                    idx.emplace_back(*mesh.GetToVertex(h0));
+                }
+                fastgltf::pmr::SmallVector<fastgltf::Attribute, 4> attrs;
+                attrs.emplace_back(fastgltf::Attribute{"POSITION", AddPositionFieldAccessor.template operator()<Vertex>(vertices, &Vertex::Position, fastgltf::BufferTarget::ArrayBuffer)});
+                emit_non_triangle_attrs(attrs, vertices);
+                primitives.emplace_back(fastgltf::Primitive{
+                    .attributes = std::move(attrs),
+                    .type = fastgltf::PrimitiveType::Lines,
+                    .targets = {},
+                    .indicesAccessor = AddDataAccessor(std::span<const uint32_t>(idx), fastgltf::AccessorType::Scalar, fastgltf::ComponentType::UnsignedInt, fastgltf::BufferTarget::ElementArrayBuffer),
+                    .materialIndex = {},
+                    .mappings = {},
+                    .dracoCompression = nullptr,
+                });
             }
-            const uint32_t iacc = AddDataAccessor(std::span<const uint32_t>(idx), fastgltf::AccessorType::Scalar, fastgltf::ComponentType::UnsignedInt, fastgltf::BufferTarget::ElementArrayBuffer);
-
-            fastgltf::pmr::SmallVector<fastgltf::Attribute, 4> attrs;
-            attrs.emplace_back(fastgltf::Attribute{"POSITION", pos_acc});
-            emit_non_triangle_attrs(attrs, l.Positions.size(), mesh.LineAttrs);
-            primitives.emplace_back(fastgltf::Primitive{
-                .attributes = std::move(attrs),
-                .type = fastgltf::PrimitiveType::Lines,
-                .targets = {},
-                .indicesAccessor = iacc,
-                .materialIndex = {},
-                .mappings = {},
-                .dracoCompression = nullptr,
-            });
         }
 
         // --- Point primitive ---
-        if (mesh.Points && !mesh.Points->Positions.empty()) {
-            const auto &p = *mesh.Points;
-            const uint32_t pos_acc = AddVec3Accessor(p.Positions, true, fastgltf::BufferTarget::ArrayBuffer);
-            fastgltf::pmr::SmallVector<fastgltf::Attribute, 4> attrs;
-            attrs.emplace_back(fastgltf::Attribute{"POSITION", pos_acc});
-            emit_non_triangle_attrs(attrs, p.Positions.size(), mesh.PointAttrs);
-            primitives.emplace_back(fastgltf::Primitive{
-                .attributes = std::move(attrs),
-                .type = fastgltf::PrimitiveType::Points,
-                .targets = {},
-                .indicesAccessor = {},
-                .materialIndex = {},
-                .mappings = {},
-                .dracoCompression = nullptr,
-            });
+        if (group.Points != entt::null) {
+            const auto &mesh = r.get<const Mesh>(group.Points);
+            const auto vertices = meshes.GetVertices(mesh.GetStoreId());
+            if (!vertices.empty()) {
+                fastgltf::pmr::SmallVector<fastgltf::Attribute, 4> attrs;
+                attrs.emplace_back(fastgltf::Attribute{"POSITION", AddPositionFieldAccessor.template operator()<Vertex>(vertices, &Vertex::Position, fastgltf::BufferTarget::ArrayBuffer)});
+                emit_non_triangle_attrs(attrs, vertices);
+                primitives.emplace_back(fastgltf::Primitive{
+                    .attributes = std::move(attrs),
+                    .type = fastgltf::PrimitiveType::Points,
+                    .targets = {},
+                    .indicesAccessor = {},
+                    .materialIndex = {},
+                    .mappings = {},
+                    .dracoCompression = nullptr,
+                });
+            }
         }
 
         // glTF requires >= 1 primitive per mesh; emit a single degenerate point.
@@ -3952,16 +3791,10 @@ std::expected<void, std::string> SaveGltf(const SaveContext &sc, const std::file
             });
         }
 
-        fastgltf::pmr::MaybeSmallVector<fastgltf::num> weights;
-        if (mesh.MorphData && !mesh.MorphData->DefaultWeights.empty()) {
-            weights.reserve(mesh.MorphData->DefaultWeights.size());
-            for (const float w : mesh.MorphData->DefaultWeights) weights.emplace_back(w);
-        }
-
         asset.meshes.emplace_back(fastgltf::Mesh{
             .primitives = std::move(primitives),
-            .weights = std::move(weights),
-            .name = ToFgStr(mesh.Name),
+            .weights = std::move(default_weights),
+            .name = ToFgStr(group.Name),
         });
     }
 
@@ -4015,13 +3848,6 @@ std::expected<void, std::string> SaveGltf(const SaveContext &sc, const std::file
     for (const auto entity : light_entities_ordered) {
         const auto *ln = r.try_get<const LightName>(entity);
         asset.lights.emplace_back(ConvertLightToFg(r.get<const PunctualLight>(entity), ln ? ln->Value : std::string_view{}));
-    }
-
-    // Nodes referenced by multiple Objects become EXT_mesh_gpu_instancing.
-    std::vector<std::vector<uint32_t>> node_objects(save_nodes.size());
-    for (uint32_t oi = 0; oi < save_objects.size(); ++oi) {
-        const auto ni = save_objects[oi].NodeIndex;
-        if (ni < node_objects.size()) node_objects[ni].emplace_back(oi);
     }
 
     // KHR_implicit_shapes: dedupe primitive shapes referenced by colliders/triggers into asset.shapes.
@@ -4087,15 +3913,15 @@ std::expected<void, std::string> SaveGltf(const SaveContext &sc, const std::file
 
         fastgltf::pmr::MaybeSmallVector<std::size_t> children(n.ChildrenNodeIndices.begin(), n.ChildrenNodeIndices.end());
 
-        // EXT_mesh_gpu_instancing. Per-instance TRS = node.WorldTransform^-1 * object.WorldTransform.
+        // EXT_mesh_gpu_instancing. Per-instance TRS = node.WorldTransform^-1 * instance.WorldTransform.
         // Emit only channels that aren't uniformly default; spec requires >=1 attribute so fall back
         // to TRANSLATION when everything's default.
-        const bool needs_instancing = n.InScene && n.MeshIndex && node_objects[ni].size() > 1;
+        const auto &instance_worlds = node_instance_worlds[ni];
+        const bool needs_instancing = n.InScene && n.MeshIndex && instance_worlds.size() > 1;
         if (needs_instancing) uses_gpu_instancing = true;
         std::pmr::vector<fastgltf::Attribute> instancing;
         if (needs_instancing) {
-            const auto &obj_indices = node_objects[ni];
-            const uint32_t count = uint32_t(obj_indices.size());
+            const uint32_t count = uint32_t(instance_worlds.size());
             const mat4 node_world_inv = glm::inverse(ToMatrix(n.WorldTransform));
 
             std::vector<vec3> translations(count);
@@ -4103,8 +3929,7 @@ std::expected<void, std::string> SaveGltf(const SaveContext &sc, const std::file
             std::vector<vec3> scales(count);
             bool any_t = false, any_r = false, any_s = false;
             for (uint32_t i = 0; i < count; ++i) {
-                const auto &obj = save_objects[obj_indices[i]];
-                const Transform local = ToTransform(node_world_inv * ToMatrix(obj.WorldTransform));
+                const Transform local = ToTransform(node_world_inv * ToMatrix(instance_worlds[i]));
                 translations[i] = local.P;
                 rotations[i] = {local.R.x, local.R.y, local.R.z, local.R.w};
                 scales[i] = local.S;
@@ -4280,55 +4105,6 @@ std::expected<void, std::string> SaveGltf(const SaveContext &sc, const std::file
         .name = ToFgStr(sa.DefaultSceneName),
     });
     asset.defaultScene = 0;
-
-    // Physics doc-level arrays
-    asset.physicsMaterials.reserve(save_physics_materials.size());
-    for (const auto &pm : save_physics_materials) {
-        asset.physicsMaterials.emplace_back(fastgltf::PhysicsMaterial{
-            .staticFriction = pm.StaticFriction,
-            .dynamicFriction = pm.DynamicFriction,
-            .restitution = pm.Restitution,
-            .frictionCombine = FromCombine(pm.FrictionCombine),
-            .restitutionCombine = FromCombine(pm.RestitutionCombine),
-        });
-    }
-    asset.physicsJoints.reserve(save_physics_joint_defs.size());
-    for (const auto &jd : save_physics_joint_defs) {
-        fastgltf::pmr::MaybeSmallVector<fastgltf::JointLimit> limits;
-        limits.reserve(jd.Limits.size());
-        for (const auto &lim : jd.Limits) {
-            fastgltf::pmr::SmallVector<uint8_t, 3> linear_axes;
-            for (const auto a : lim.LinearAxes) linear_axes.emplace_back(a);
-            fastgltf::pmr::SmallVector<uint8_t, 3> angular_axes;
-            for (const auto a : lim.AngularAxes) angular_axes.emplace_back(a);
-            limits.emplace_back(fastgltf::JointLimit{
-                .linearAxes = std::move(linear_axes),
-                .angularAxes = std::move(angular_axes),
-                .min = ToFgOpt<fastgltf::num>(lim.Min),
-                .max = ToFgOpt<fastgltf::num>(lim.Max),
-                .stiffness = ToFgOpt<fastgltf::num>(lim.Stiffness),
-                .damping = lim.Damping,
-            });
-        }
-        fastgltf::pmr::MaybeSmallVector<fastgltf::JointDrive> drives;
-        drives.reserve(jd.Drives.size());
-        for (const auto &drv : jd.Drives) {
-            drives.emplace_back(fastgltf::JointDrive{
-                .type = drv.Type == PhysicsDriveType::Angular ? fastgltf::DriveType::Angular : fastgltf::DriveType::Linear,
-                .mode = drv.Mode == PhysicsDriveMode::Acceleration ? fastgltf::DriveMode::Acceleration : fastgltf::DriveMode::Force,
-                .axis = drv.Axis,
-                .maxForce = drv.MaxForce,
-                .positionTarget = drv.PositionTarget,
-                .velocityTarget = drv.VelocityTarget,
-                .stiffness = drv.Stiffness,
-                .damping = drv.Damping,
-            });
-        }
-        asset.physicsJoints.emplace_back(fastgltf::PhysicsJoint{
-            .limits = std::move(limits),
-            .drives = std::move(drives),
-        });
-    }
 
     asset.extensionsRequired.reserve(sa.ExtensionsRequired.size());
     for (const auto &e : sa.ExtensionsRequired) asset.extensionsRequired.emplace_back(e);
