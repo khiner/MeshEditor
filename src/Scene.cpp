@@ -1357,8 +1357,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
                 const auto &clip = node_anim.Clips[node_anim.ActiveClipIndex];
                 std::array<Transform, 1> local_pose{node_anim.RestLocal};
                 EvaluateAnimation(clip, clip_time(clip), local_pose);
-                const auto t = ComposeLocalTransforms(node_anim.ParentBindWorld, local_pose.front());
-                R.replace<Transform>(entity, t);
+                R.replace<Transform>(entity, local_pose.front());
                 request_rerecord = true;
             }
         }
@@ -1941,7 +1940,6 @@ void Scene::DeleteSelectedBones() {
             R.emplace_or_replace<Transform>(child, Transform{t.P, t.R, R.all_of<ScaleLocked>(child) ? ct.S : t.S});
             ClearParent(R, child);
             SetParent(R, child, grandparent);
-            R.emplace_or_replace<ParentInverse>(child, I4);
         }
 
         ClearParent(R, bone_entity);
@@ -2376,7 +2374,8 @@ entt::entity Scene::Duplicate(entt::entity e, std::optional<MeshInstanceCreateIn
     const auto select_behavior = info ? info->Select : (R.all_of<Selected>(e) ? MeshInstanceCreateInfo::SelectBehavior::Additive : MeshInstanceCreateInfo::SelectBehavior::None);
     const ObjectCreateInfo create_info{
         .Name = info && !info->Name.empty() ? info->Name : std::format("{}_copy", GetName(R, e)),
-        .Transform = info ? info->Transform : R.get<const Transform>(e),
+        // Duplicate is created at root, so its local must match source's world.
+        .Transform = info ? info->Transform : Transform{R.get<const WorldTransform>(e)},
         .Select = select_behavior,
     };
 
@@ -2413,7 +2412,7 @@ entt::entity Scene::Duplicate(entt::entity e, std::optional<MeshInstanceCreateIn
         Stores.Meshes->CloneMesh(R.get<const Mesh>(mesh_entity)),
         info.value_or(MeshInstanceCreateInfo{
             .Name = std::format("{}_copy", GetName(R, e)),
-            .Transform = R.get<const Transform>(e),
+            .Transform = Transform{R.get<const WorldTransform>(e)},
             .Select = R.all_of<Selected>(e) ? MeshInstanceCreateInfo::SelectBehavior::Additive : MeshInstanceCreateInfo::SelectBehavior::None,
             .Visible = R.all_of<RenderInstance>(e),
         })
@@ -2435,7 +2434,7 @@ entt::entity Scene::DuplicateLinked(entt::entity e, std::optional<MeshInstanceCr
             R.emplace<Name>(e_new, !info || info->Name.empty() ? ::CreateName(R, SceneEntity, std::format("{}_copy", GetName(R, e))) : ::CreateName(R, SceneEntity, info->Name));
             R.emplace<ObjectKind>(e_new, ObjectType::Armature);
             R.emplace<ArmatureObject>(e_new, armature->Entity);
-            const auto t = info ? info->Transform : R.get<const Transform>(e);
+            const auto t = info ? info->Transform : Transform{R.get<const WorldTransform>(e)};
             R.emplace_or_replace<Transform>(e_new, t);
             R.emplace<WorldTransform>(e_new, t);
 
@@ -2446,7 +2445,7 @@ entt::entity Scene::DuplicateLinked(entt::entity e, std::optional<MeshInstanceCr
 
         return AddEmpty({
             .Name = info && !info->Name.empty() ? info->Name : std::format("{}_copy", GetName(R, e)),
-            .Transform = info ? info->Transform : R.get<const Transform>(e),
+            .Transform = info ? info->Transform : Transform{R.get<const WorldTransform>(e)},
             .Select = select_behavior,
         });
     }
@@ -2462,7 +2461,7 @@ entt::entity Scene::DuplicateLinked(entt::entity e, std::optional<MeshInstanceCr
     }
     R.emplace<Instance>(e_new, mesh_entity);
     R.emplace<ObjectKind>(e_new, ObjectType::Mesh);
-    const auto t_new = info ? info->Transform : R.get<const Transform>(e);
+    const auto t_new = info ? info->Transform : Transform{R.get<const WorldTransform>(e)};
     R.emplace_or_replace<Transform>(e_new, t_new);
     R.emplace<WorldTransform>(e_new, t_new);
     if (!info || info->Visible) Show(R, e_new);

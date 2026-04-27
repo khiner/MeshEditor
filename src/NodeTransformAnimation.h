@@ -8,5 +8,4 @@ struct NodeTransformAnimation {
     std::vector<AnimationClip> Clips;
     uint32_t ActiveClipIndex{0};
     Transform RestLocal{};
-    Transform ParentBindWorld{}; // Parent node world transform in the imported bind pose.
 };

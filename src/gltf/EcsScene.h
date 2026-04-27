@@ -14,7 +14,6 @@
 #include "GltfScene.h"
 #include "Image.h"
 #include "entt_fwd.h"
-#include "gpu/Transform.h"
 #include "numeric/mat4.h"
 #include "numeric/vec3.h"
 #include "vulkan/Slots.h"
@@ -100,20 +99,6 @@ struct MeshName {
 // Source-side glTF node transform stored as a 4x4 matrix — engine uses TRS at runtime.
 struct SourceMatrixTransform {
     mat4 Value{1.f};
-};
-
-// Source-side glTF node `LocalTransform` preserved verbatim. Engine stores `Transform` in world space
-// (via SetParent), so save would otherwise have to decompose `inv(parent_world) * Transform` —
-// lossy when parents have non-uniform scale or when the chain involves quantization-style scaling.
-// Build prefers this when present.
-// TODO: Remove once `Transform` semantics are migrated to Blender-style local-relative-to-parent
-// (i.e. SetParent decomposes `inv(parent_world) * old_world` into the new `Transform`, with
-// `ParentInverse = I4` as the default — see `BKE_object_apply_parent_inverse` in blender). Then
-// save can read `Transform` directly and roundtrip is lossless without a sidecar. Migration also
-// requires updating every consumer that reads `Transform` as world space (e.g. `BuildJoint`,
-// `AddBody` pos/rot, compound child transforms in `PhysicsWorld.cpp`) to use `WorldTransform`.
-struct SourceLocalTransform {
-    Transform Value{};
 };
 
 // Source name was empty; populate auto-synthesizes one for usability, build skips emit.

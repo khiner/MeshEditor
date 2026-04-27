@@ -59,9 +59,8 @@ void ClearParent(entt::registry &r, entt::entity child) {
     r.remove<ParentInverse>(child);
 }
 
-void SetParent(entt::registry &r, entt::entity child, entt::entity parent) {
-    if (child == entt::null || parent == entt::null || child == parent) return;
-
+namespace {
+void LinkChildToParent(entt::registry &r, entt::entity child, entt::entity parent) {
     if (!r.all_of<SceneNode>(child)) r.emplace<SceneNode>(child);
     if (!r.all_of<SceneNode>(parent)) r.emplace<SceneNode>(parent);
 
@@ -73,8 +72,40 @@ void SetParent(entt::registry &r, entt::entity child, entt::entity parent) {
         n.NextSibling = first_child;
     });
     r.patch<SceneNode>(parent, [child](auto &n) { n.FirstChild = child; });
+}
+} // namespace
 
-    // Default ParentInverse preserves child's world position under new parent.
-    // Callers that want identity (e.g. bones for FK) overwrite after.
-    r.emplace<ParentInverse>(child, glm::inverse(ToMatrix(r.get<WorldTransform>(parent))));
+namespace {
+// Recompute WT and recurse. Needed because the glTF SetParent loop is not topological — a
+// child can be parented before its ancestor's WT settles, and physics setup reads WT before
+// the next reactive pass.
+void UpdateWorldTransformRecursive(entt::registry &r, entt::entity e) {
+    const auto *node = r.try_get<const SceneNode>(e);
+    const auto *t = r.try_get<const Transform>(e);
+    if (!t) return;
+    if (node && node->Parent != entt::null) {
+        const auto parent_world = ToMatrix(r.get<const WorldTransform>(node->Parent));
+        r.emplace_or_replace<WorldTransform>(e, ToTransform(parent_world * r.get<const ParentInverse>(e).M * ToMatrix(*t)));
+    } else {
+        r.emplace_or_replace<WorldTransform>(e, *t);
+    }
+    for (const auto child : Children{&r, e}) UpdateWorldTransformRecursive(r, child);
+}
+} // namespace
+
+void SetParent(entt::registry &r, entt::entity child, entt::entity parent) {
+    if (child == entt::null || parent == entt::null || child == parent) return;
+    LinkChildToParent(r, child, parent);
+    r.emplace<ParentInverse>(child, I4);
+    UpdateWorldTransformRecursive(r, child);
+}
+
+void SetParentKeepWorld(entt::registry &r, entt::entity child, entt::entity parent) {
+    if (child == entt::null || parent == entt::null || child == parent) return;
+    const auto child_world = r.all_of<WorldTransform>(child) ? ToMatrix(r.get<const WorldTransform>(child)) : I4;
+    const auto parent_world_inv = glm::inverse(ToMatrix(r.get<const WorldTransform>(parent)));
+    LinkChildToParent(r, child, parent);
+    r.emplace<ParentInverse>(child, I4);
+    r.emplace_or_replace<Transform>(child, ToTransform(parent_world_inv * child_world));
+    UpdateWorldTransformRecursive(r, child);
 }

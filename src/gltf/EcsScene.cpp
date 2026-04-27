@@ -114,6 +114,7 @@ struct Object {
     Type ObjectType;
     uint32_t NodeIndex;
     std::optional<uint32_t> ParentNodeIndex;
+    Transform LocalTransform;
     Transform WorldTransform;
     std::optional<uint32_t> MeshIndex, SkinIndex, CameraIndex, LightIndex;
     std::optional<std::vector<float>> NodeWeights;
@@ -1816,11 +1817,14 @@ std::expected<PopulateResult, std::string> LoadGltfFile(const std::filesystem::p
                 const auto &source_weights = asset.nodes[node_index].weights;
                 auto node_weights = source_weights.empty() ? std::optional<std::vector<float>>{} : std::optional{std::vector<float>(source_weights.begin(), source_weights.end())};
                 for (uint32_t i = 0; i < instance_transforms.size(); ++i) {
+                    // EXT_mesh_gpu_instancing: each instance is a root in the engine, so local == world.
+                    auto instance_world = ToTransform(traversal.WorldTransforms[node_index] * ToMatrix(instance_transforms[i]));
                     source_objects.emplace_back(Object{
                         .ObjectType = Object::Type::Mesh,
                         .NodeIndex = node.NodeIndex,
                         .ParentNodeIndex = std::nullopt,
-                        .WorldTransform = ToTransform(traversal.WorldTransforms[node_index] * ToMatrix(instance_transforms[i])),
+                        .LocalTransform = instance_world,
+                        .WorldTransform = instance_world,
                         .MeshIndex = node.MeshIndex,
                         .SkinIndex = node.SkinIndex,
                         .CameraIndex = {},
@@ -1839,6 +1843,7 @@ std::expected<PopulateResult, std::string> LoadGltfFile(const std::filesystem::p
                     .ObjectType = object_type,
                     .NodeIndex = node.NodeIndex,
                     .ParentNodeIndex = nearest_object_ancestor[node.NodeIndex],
+                    .LocalTransform = node.LocalTransform,
                     .WorldTransform = node.WorldTransform,
                     .MeshIndex = node.MeshIndex,
                     .SkinIndex = node.SkinIndex,
@@ -2227,23 +2232,23 @@ std::expected<PopulateResult, std::string> LoadGltfFile(const std::filesystem::p
             object_entity = ::AddMeshInstance(
                 R, SceneEntity,
                 primary_mesh_entity,
-                {.Name = object_name, .Transform = object.WorldTransform, .Select = MeshInstanceCreateInfo::SelectBehavior::None, .Visible = true}
+                {.Name = object_name, .Transform = object.LocalTransform, .Select = MeshInstanceCreateInfo::SelectBehavior::None, .Visible = true}
             );
         } else if (object.ObjectType == gltf::Object::Type::Camera && object.CameraIndex && *object.CameraIndex < asset.cameras.size()) {
             const auto &cam = asset.cameras[*object.CameraIndex];
-            object_entity = ::AddCamera(R, ctx.Meshes, ctx.Buffers, SceneEntity, {.Name = object_name, .Transform = object.WorldTransform, .Select = MeshInstanceCreateInfo::SelectBehavior::None});
+            object_entity = ::AddCamera(R, ctx.Meshes, ctx.Buffers, SceneEntity, {.Name = object_name, .Transform = object.LocalTransform, .Select = MeshInstanceCreateInfo::SelectBehavior::None});
             R.replace<::Camera>(object_entity, ConvertCamera(cam));
             R.emplace<SourceCameraIndex>(object_entity, *object.CameraIndex);
             if (!cam.name.empty()) R.emplace<CameraName>(object_entity, std::string(cam.name));
         } else if (object.ObjectType == gltf::Object::Type::Light && object.LightIndex && *object.LightIndex < asset.lights.size()) {
             const auto &light = asset.lights[*object.LightIndex];
-            object_entity = ::AddLight(R, ctx.Meshes, ctx.Buffers, SceneEntity, {.Name = object_name, .Transform = object.WorldTransform, .Select = MeshInstanceCreateInfo::SelectBehavior::None}, ConvertLight(light));
+            object_entity = ::AddLight(R, ctx.Meshes, ctx.Buffers, SceneEntity, {.Name = object_name, .Transform = object.LocalTransform, .Select = MeshInstanceCreateInfo::SelectBehavior::None}, ConvertLight(light));
             R.emplace<SourceLightIndex>(object_entity, *object.LightIndex);
             if (!light.name.empty()) R.emplace<LightName>(object_entity, std::string(light.name));
         } else {
-            object_entity = ::AddEmpty(R, ctx.Meshes, ctx.Buffers, SceneEntity, {.Name = object_name, .Transform = object.WorldTransform, .Select = MeshInstanceCreateInfo::SelectBehavior::None});
+            object_entity = ::AddEmpty(R, ctx.Meshes, ctx.Buffers, SceneEntity, {.Name = object_name, .Transform = object.LocalTransform, .Select = MeshInstanceCreateInfo::SelectBehavior::None});
         }
-        // Companion instances for non-triangle primitives, skipping whichever already serves as primary.
+        // Companion instances for non-triangle primitives, parented under primary with identity local.
         if (object.ObjectType == gltf::Object::Type::Mesh && object.MeshIndex && *object.MeshIndex < extra_entities_per_mesh.size()) {
             const auto &extras = extra_entities_per_mesh[*object.MeshIndex];
             for (const auto extra_entity : {extras.Lines, extras.Points}) {
@@ -2251,9 +2256,8 @@ std::expected<PopulateResult, std::string> LoadGltfFile(const std::filesystem::p
                 const auto extra_instance = ::AddMeshInstance(
                     R, SceneEntity,
                     extra_entity,
-                    {.Name = object_name, .Transform = object.WorldTransform, .Select = MeshInstanceCreateInfo::SelectBehavior::None, .Visible = true}
+                    {.Name = object_name, .Transform = Transform{}, .Select = MeshInstanceCreateInfo::SelectBehavior::None, .Visible = true}
                 );
-                // Keep line/point primitive instances in lockstep with the primary glTF object transform.
                 SetParent(R, extra_instance, object_entity);
             }
         }
@@ -2542,7 +2546,7 @@ std::expected<PopulateResult, std::string> LoadGltfFile(const std::filesystem::p
         if (parent_object_node_index) {
             if (const auto parent_it = object_entities_by_node.find(*parent_object_node_index);
                 parent_it != object_entities_by_node.end()) {
-                SetParent(R, armature_entity, parent_it->second);
+                SetParentKeepWorld(R, armature_entity, parent_it->second);
             }
         }
 
@@ -2555,7 +2559,7 @@ std::expected<PopulateResult, std::string> LoadGltfFile(const std::filesystem::p
             for (const auto mesh_instance_entity : skinned_it->second) {
                 if (!R.valid(mesh_instance_entity) || !R.all_of<Instance>(mesh_instance_entity)) continue;
                 R.emplace_or_replace<ArmatureModifier>(mesh_instance_entity, armature_data_entity, armature_entity);
-                SetParent(R, mesh_instance_entity, armature_entity);
+                SetParentKeepWorld(R, mesh_instance_entity, armature_entity);
             }
         } else {
             return std::unexpected{std::format("glTF import failed '{}': skin {} is used but no mesh instances were emitted for skin binding.", source_path.string(), skin_index)};
@@ -2615,10 +2619,7 @@ std::expected<PopulateResult, std::string> LoadGltfFile(const std::filesystem::p
         }
     }
 
-    // Per source-derived entity: tag with source parent / sibling position / matrix-form flag,
-    // and stash source `LocalTransform` for lossless save (see `SourceLocalTransform`).
-    // `Transform`/`WorldTransform`/`ParentInverse` are left as set by AddMeshInstance/etc. + SetParent
-    // (Transform == world, ParentInverse == inverse(parent_world)).
+    // Per source-derived entity: tag with source parent / sibling position / matrix-form flag.
     for (const auto [entity, sni] : R.view<const SourceNodeIndex>().each()) {
         const auto it = scene_nodes_by_index.find(sni.Value);
         if (it == scene_nodes_by_index.end()) continue;
@@ -2633,7 +2634,6 @@ std::expected<PopulateResult, std::string> LoadGltfFile(const std::filesystem::p
             }
         }
         if (source_node.SourceMatrix) R.emplace<SourceMatrixTransform>(entity, *source_node.SourceMatrix);
-        else R.emplace<SourceLocalTransform>(entity, source_node.LocalTransform);
     }
 
     std::unordered_map<uint32_t, std::vector<std::pair<entt::entity, BoneId>>> armature_targets_by_joint_node;
@@ -2674,20 +2674,13 @@ std::expected<PopulateResult, std::string> LoadGltfFile(const std::filesystem::p
 
     // Resolve object/node transform animations (empties, meshes, cameras, lights).
     // Channels targeting skin joints are handled by ArmatureAnimation and skipped here.
-    std::unordered_map<entt::entity, std::pair<Transform, Transform>> node_anim_bindings;
+    std::unordered_map<entt::entity, Transform> node_anim_bindings;
     node_anim_bindings.reserve(object_entities_by_node.size());
     for (const auto &[node_index, object_entity] : object_entities_by_node) {
         if (!R.valid(object_entity)) continue;
         const auto node_it = scene_nodes_by_index.find(node_index);
         if (node_it == scene_nodes_by_index.end()) continue;
-
-        Transform parent_bind_world{};
-        if (const auto parent_node_index = node_it->second->ParentNodeIndex) {
-            if (const auto parent_it = scene_nodes_by_index.find(*parent_node_index); parent_it != scene_nodes_by_index.end()) {
-                parent_bind_world = parent_it->second->WorldTransform;
-            }
-        }
-        node_anim_bindings.emplace(object_entity, std::pair{node_it->second->LocalTransform, parent_bind_world});
+        node_anim_bindings.emplace(object_entity, node_it->second->LocalTransform);
     }
 
     bool imported_animation = false;
@@ -2720,7 +2713,7 @@ std::expected<PopulateResult, std::string> LoadGltfFile(const std::filesystem::p
         if (binding_it == node_anim_bindings.end()) return;
         R.emplace<NodeTransformAnimation>(
             object_entity,
-            NodeTransformAnimation{.Clips = {std::move(resolved_clip)}, .ActiveClipIndex = 0, .RestLocal = binding_it->second.first, .ParentBindWorld = binding_it->second.second}
+            NodeTransformAnimation{.Clips = {std::move(resolved_clip)}, .ActiveClipIndex = 0, .RestLocal = binding_it->second}
         );
     };
 
@@ -3125,15 +3118,7 @@ std::expected<void, std::string> SaveGltfFile(const entt::registry &r, entt::ent
     for (const auto [entity, node_index] : entity_to_node_index) {
         auto &node = save_nodes[node_index];
         node.NodeIndex = node_index;
-        // Prefer the SourceLocalTransform sidecar when present (lossless). Fallback: decompose
-        // `inv(parent_world) * Transform` from the engine's world-space `Transform`.
-        if (const auto *slt = r.try_get<const SourceLocalTransform>(entity)) {
-            node.LocalTransform = slt->Value;
-        } else {
-            const auto &transform = r.get<const Transform>(entity);
-            const auto *pi = r.try_get<const ParentInverse>(entity);
-            node.LocalTransform = pi ? ToTransform(pi->M * ToMatrix(transform)) : transform;
-        }
+        node.LocalTransform = r.get<const Transform>(entity);
         node.WorldTransform = r.get<const WorldTransform>(entity);
         node.InScene = true;
         node.IsJoint = r.all_of<BoneIndex>(entity);

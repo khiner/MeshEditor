@@ -16,9 +16,9 @@ struct SceneNode {
     entt::entity NextSibling{null_entity};
 };
 
-// Inverse of parent's world matrix at the moment of parenting.
-// Used to compute world transforms that follow parent transforms.
-// WorldTransform = decompose(ParentMatrix * ParentInverse * LocalMatrix)
+// Blender-style "parent inverse": absorbs any residual between local `Transform` and the
+// child's world-relative-to-parent. Always identity in current callers; kept for the formula
+// WorldTransform = decompose(ParentMatrix * ParentInverse * LocalMatrix).
 struct ParentInverse {
     mat4 M{I4};
 };
@@ -52,4 +52,10 @@ struct Children {
 mat4 GetParentDelta(const entt::registry &, entt::entity);
 entt::entity GetParentEntity(const entt::registry &, entt::entity);
 void ClearParent(entt::registry &, entt::entity child);
+
+// Snap: child keeps its local Transform; new world = parent_world * Transform.
 void SetParent(entt::registry &, entt::entity child, entt::entity parent);
+
+// Keep-world: child preserves world pose by decomposing inv(parent_world) * old_world into
+// Transform. Lossy under non-uniform parent scale (cf. BKE_object_apply_parent_inverse).
+void SetParentKeepWorld(entt::registry &, entt::entity child, entt::entity parent);

@@ -6,6 +6,7 @@
 #include "Reactive.h"
 #include "RealImpactComponents.h"
 #include "SceneSelection.h"
+#include "SceneTree.h"
 #include "SoundVertices.h"
 #include "Tets.h"
 #include "Widgets.h" // imgui
@@ -691,7 +692,7 @@ void DrawModalCreateForm(
             r.get<const SoundVertices>(e) :
             SoundVertices{iota_view{0u, uint(info.NumVertices)} | transform([&](uint i) { return i * num_vertices / info.NumVertices; }) | to<std::vector<uint>>()};
         constexpr float ScaleFactor{2}; // Mode freq estimates for RealImpact meshes seem to be consistently about twice as high as recordings.
-        const vec3 tet_scale = ScaleFactor * r.get<const Transform>(e).S;
+        const vec3 tet_scale = ScaleFactor * r.get<const WorldTransform>(e).S;
         auto tets = GenerateTets(mesh, tet_scale, {.PreserveSurface = true, .Quality = info.QualityTets});
         std::optional<float> fundamental;
         if (const auto path = ActiveSamplePath(r, e)) {

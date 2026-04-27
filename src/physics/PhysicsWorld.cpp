@@ -660,13 +660,13 @@ void PhysicsWorld::BuildJoint(const entt::registry &r, entt::entity entity) {
     settings.mSwingType = ESwingType::Pyramid;
 
     // Attachment frames from the joint node (A) and connected node (B) world transforms.
-    if (const auto *jt = r.try_get<const Transform>(entity)) {
+    if (const auto *jt = r.try_get<const WorldTransform>(entity)) {
         const auto rot_mat = glm::mat3_cast(glm::normalize(jt->R));
         settings.mPosition1 = settings.mPosition2 = ToJoltR(jt->P);
         settings.mAxisX1 = settings.mAxisX2 = ToJolt(rot_mat[0]);
         settings.mAxisY1 = settings.mAxisY2 = ToJolt(rot_mat[1]);
     }
-    if (const auto *ct = r.try_get<const Transform>(joint.ConnectedNode)) {
+    if (const auto *ct = r.try_get<const WorldTransform>(joint.ConnectedNode)) {
         const auto rot_mat = glm::mat3_cast(glm::normalize(ct->R));
         settings.mPosition2 = ToJoltR(ct->P);
         settings.mAxisX2 = ToJolt(rot_mat[0]);
@@ -769,7 +769,7 @@ Ref<Shape> BuildLeafShape(const entt::registry &r, entt::entity entity, const Co
     auto js = CreateJoltShape(shape_proto, mesh, owner_motion == nullptr);
     if (!js) return {};
     js->SetUserData(ShapeFilterUserData(filter_entity));
-    const auto *t = r.try_get<const Transform>(entity);
+    const auto *t = r.try_get<const WorldTransform>(entity);
     if (t && HasNonUnitScale(*t)) js = new ScaledShape(js, ToJolt(t->S));
     return js;
 }
@@ -811,7 +811,7 @@ BodyShape BuildBodyShape(const entt::registry &r, entt::entity entity, const KHR
         const auto *mesh = mesh_entity != null_entity ? r.try_get<const Mesh>(mesh_entity) : nullptr;
         auto js = CreateJoltShape(collider->Shape, mesh);
         if (!js) return out;
-        const auto *t = r.try_get<const Transform>(entity);
+        const auto *t = r.try_get<const WorldTransform>(entity);
         if (t && HasNonUnitScale(*t)) js = new ScaledShape(js, ToJolt(t->S));
         out.Shape = js;
         return out;
@@ -839,7 +839,7 @@ BodyShape BuildBodyShape(const entt::registry &r, entt::entity entity, const KHR
             build_single(motion, entity);
             return out;
         }
-        const auto *bt = r.try_get<const Transform>(entity);
+        const auto *bt = r.try_get<const WorldTransform>(entity);
         const auto inv_parent = bt ? glm::inverse(glm::translate(mat4{1}, bt->P) * glm::mat4_cast(glm::normalize(bt->R))) : mat4{1};
         StaticCompoundShapeSettings compound;
         for (auto ce : colliders) {
@@ -882,7 +882,7 @@ void PhysicsWorld::AddBody(entt::registry &r, entt::entity entity) {
     MassProperties inner_mass_props;
     const auto shape = WrapCenterOfMass(built.Shape, built.IsSensor ? nullptr : motion, inner_mass_props);
 
-    const auto *t = r.try_get<const Transform>(entity);
+    const auto *t = r.try_get<const WorldTransform>(entity);
     const auto pos = t ? ToJoltR(t->P) : RVec3::sZero();
     const auto rot = t ? ToJoltQuat(t->R) : Quat::sIdentity();
     const auto motion_type = motion ? (motion->IsKinematic ? EMotionType::Kinematic : EMotionType::Dynamic) : EMotionType::Static;
@@ -1188,14 +1188,14 @@ void PhysicsWorld::Step(entt::registry &r, float dt) {
     P->System.SetGravity(ToJolt(Gravity));
     P->System.Update(dt, SubSteps, &P->TempAllocator, &P->JobSystem);
 
-    // Sync Jolt → ECS for dynamic and kinematic bodies.
-    // Kinematic bodies move according to their velocity in Jolt and must be read back.
-    // PhysicsVelocity is mutated by direct assignment (no patch) so we don't trigger reactive updates each frame.
+    // Sync Jolt → ECS for dynamic and kinematic bodies. PhysicsVelocity is direct-assigned (no
+    // patch) to avoid triggering reactive updates each frame. WT is owned by the simulator during
+    // sim; local Transform stays at the bind pose (cf. BKE_rigidbody_sync_transforms).
     const auto &bi = P->System.GetBodyInterface();
     for (auto [entity, velocity, handle] : r.view<PhysicsVelocity, const PhysicsBodyHandle>().each()) {
         const BodyID id{handle.BodyId};
         if (!bi.IsActive(id)) continue;
-        r.patch<Transform>(entity, [&](Transform &t) {
+        r.patch<WorldTransform>(entity, [&](WorldTransform &t) {
             t.P = FromJoltRVec3(bi.GetPosition(id));
             t.R = FromJoltQuat(bi.GetRotation(id));
         });
@@ -1209,7 +1209,7 @@ void PhysicsWorld::SaveSnapshot(entt::registry &r) {
     const auto &bi = P->System.GetBodyInterface();
     for (auto [entity, _, handle] : r.view<const PhysicsVelocity, const PhysicsBodyHandle>().each()) {
         const BodyID id{handle.BodyId};
-        const auto *t = r.try_get<const Transform>(entity);
+        const auto *t = r.try_get<const WorldTransform>(entity);
         P->Snapshots.emplace_back(BodySnapshot{
             entity,
             t ? t->P : vec3{0},
@@ -1221,10 +1221,10 @@ void PhysicsWorld::SaveSnapshot(entt::registry &r) {
 }
 
 void PhysicsWorld::RestoreSnapshot(entt::registry &r) {
-    // Restore ECS transforms and velocities from snapshot
+    // Restore simulator-owned WT and velocities from snapshot.
     for (const auto &snap : P->Snapshots) {
         if (!r.valid(snap.Entity)) continue;
-        r.patch<Transform>(snap.Entity, [&](Transform &t) {
+        r.patch<WorldTransform>(snap.Entity, [&](WorldTransform &t) {
             t.P = snap.Position;
             t.R = snap.Rotation;
             t.S = snap.Scale;

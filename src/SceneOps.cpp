@@ -174,7 +174,6 @@ entt::entity CreateBoneEntity(entt::registry &r, entt::entity scene_entity, entt
     r.emplace<Transform>(bone_entity, bone_transform);
     r.emplace<WorldTransform>(bone_entity, bone_transform);
     SetParent(r, bone_entity, parent_entity);
-    r.emplace_or_replace<ParentInverse>(bone_entity, I4);
     Show(r, bone_entity);
     return bone_entity;
 }

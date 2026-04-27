@@ -606,7 +606,7 @@ void Scene::Interact() {
                 } else if (IsKeyPressed(ImGuiKey_P, false) && GetIO().KeyCtrl) {
                     if (active_entity != entt::null) {
                         for (const auto e : R.view<Selected>()) {
-                            if (e != active_entity) SetParent(R, e, active_entity);
+                            if (e != active_entity) SetParentKeepWorld(R, e, active_entity);
                         }
                     }
                 } else if (IsKeyPressed(ImGuiKey_P, false) && GetIO().KeyAlt) {
