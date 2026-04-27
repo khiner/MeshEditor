@@ -3,16 +3,12 @@
 
 #include "imgui.h"
 
-#include <algorithm>
-#include <cmath>
 #include <format>
 
 using namespace ImGui;
 
 namespace {
-constexpr float HeaderHeight{20};
-constexpr float MinPixelsPerFrame{1};
-constexpr float MaxPixelsPerFrame{400};
+constexpr float HeaderHeight{20}, MinPixelsPerFrame{1}, MaxPixelsPerFrame{400};
 
 bool IconButton(const char *id, const SvgResource *icon, ImDrawFlags corners = ImDrawFlags_RoundCornersAll) {
     const float h = GetFrameHeight();

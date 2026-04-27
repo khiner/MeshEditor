@@ -8,8 +8,7 @@ struct SvgResource;
 
 struct AnimationTimeline {
     int CurrentFrame{1};
-    int StartFrame{1};
-    int EndFrame{100};
+    int StartFrame{1}, EndFrame{100};
     float Fps{24.0f};
     bool Playing{false};
 };

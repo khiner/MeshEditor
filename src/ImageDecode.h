@@ -1,7 +1,5 @@
 #pragma once
 
-#include <cstddef>
-#include <cstdint>
 #include <expected>
 #include <filesystem>
 #include <span>

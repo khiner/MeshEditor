@@ -2,7 +2,6 @@
 
 #include "gpu/Transform.h"
 
-#include <cstdint>
 #include <span>
 #include <string>
 #include <vector>

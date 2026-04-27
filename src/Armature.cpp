@@ -2,13 +2,10 @@
 #include "Entity.h"
 #include "TransformMath.h"
 
-#include <algorithm>
-#include <cassert>
-#include <cmath>
-#include <format>
-#include <stdexcept>
-
 #include <entt/entity/registry.hpp>
+
+#include <cassert>
+#include <format>
 
 namespace {
 void RebuildDerivedCaches(Armature &armature) {

@@ -1,4 +1,4 @@
-#include "EcsScene.h"
+#include "GltfScene.h"
 
 #include "../ImageEncode.h"
 #include "AnimationData.h"
@@ -235,10 +235,10 @@ std::expected<std::vector<std::byte>, std::string> ReadFileBytes(const std::file
 
     const auto end = file.tellg();
     if (end <= 0) return std::vector<std::byte>{};
-    const auto size = static_cast<std::size_t>(end);
-    std::vector<std::byte> bytes(size);
+
+    std::vector<std::byte> bytes(end);
     file.seekg(0, std::ios::beg);
-    file.read(reinterpret_cast<char *>(bytes.data()), std::streamsize(size));
+    file.read(reinterpret_cast<char *>(bytes.data()), std::streamsize(end));
     if (!file) return std::unexpected{std::format("Failed to read image file '{}'.", path.string())};
     return bytes;
 }
@@ -247,11 +247,7 @@ std::expected<Image, std::string> ReadImage(const fastgltf::Asset &asset, uint32
     if (image_index >= asset.images.size()) return std::unexpected{std::format("glTF image index {} is out of range.", image_index)};
     const auto &image = asset.images[image_index];
 
-    Image image_result{
-        .Bytes = {},
-        .MimeType = MimeType::None,
-        .Name = std::string(image.name),
-    };
+    Image image_result{.Bytes = {}, .MimeType = MimeType::None, .Name = std::string(image.name)};
 
     const auto from_span = [&image_result](const auto &data, fastgltf::MimeType mime_type) {
         image_result.Bytes.resize(data.size());
@@ -362,9 +358,7 @@ void AppendNonTrianglePrimitive(const fastgltf::Asset &asset, const fastgltf::Pr
             if (attrs.Colors0ComponentCount == 0) attrs.Colors0ComponentCount = 3;
             std::vector<vec3> colors(position_accessor.count);
             fastgltf::copyFromAccessor<vec3>(asset, color_accessor, colors.data());
-            for (uint32_t i = 0; i < position_accessor.count; ++i) {
-                (*attrs.Colors0)[base_vertex + i] = vec4{colors[i], 1.f};
-            }
+            for (uint32_t i = 0; i < position_accessor.count; ++i) (*attrs.Colors0)[base_vertex + i] = vec4{colors[i], 1.f};
         } else if (color_accessor.type == fastgltf::AccessorType::Vec4) {
             attrs.Colors0ComponentCount = 4;
             fastgltf::copyFromAccessor<vec4>(asset, color_accessor, &(*attrs.Colors0)[base_vertex]);
@@ -483,9 +477,7 @@ std::expected<void, std::string> AppendPrimitive(
             if (attrs.Colors0ComponentCount == 0) attrs.Colors0ComponentCount = 3;
             std::vector<vec3> colors(position_accessor.count);
             fastgltf::copyFromAccessor<vec3>(asset, color_accessor, colors.data());
-            for (uint32_t i = 0; i < position_accessor.count; ++i) {
-                (*attrs.Colors0)[base_vertex + i] = vec4{colors[i], 1.f};
-            }
+            for (uint32_t i = 0; i < position_accessor.count; ++i) (*attrs.Colors0)[base_vertex + i] = vec4{colors[i], 1.f};
         } else if (color_accessor.type == fastgltf::AccessorType::Vec4) {
             attrs.Colors0ComponentCount = 4;
             fastgltf::copyFromAccessor<vec4>(asset, color_accessor, &(*attrs.Colors0)[base_vertex]);
@@ -1090,11 +1082,10 @@ PunctualLight ConvertLight(const fastgltf::Light &light) {
             pl.Range = light.range ? *light.range : 0.f;
             break;
         case fastgltf::LightType::Spot: {
-            const float outer = light.outerConeAngle ? *light.outerConeAngle : std::numbers::pi_v<float> / 4.f;
-            const float inner = std::clamp(light.innerConeAngle ? *light.innerConeAngle : 0.f, 0.f, outer);
+            const auto outer = light.outerConeAngle ? *light.outerConeAngle : std::numbers::pi_v<float> / 4.f;
             pl.Type = PunctualLightType::Spot;
             pl.Range = light.range ? *light.range : 0.f;
-            pl.InnerConeCos = std::cos(inner);
+            pl.InnerConeCos = std::cos(std::clamp(light.innerConeAngle ? *light.innerConeAngle : 0.f, 0.f, outer));
             pl.OuterConeCos = std::cos(outer);
             break;
         }
@@ -1234,13 +1225,9 @@ FgString ToFgStr(std::string_view s) { return FgString{s}; }
 
 // fastgltf::Optional<T> doesn't implicit-convert from std::optional<U>.
 template<typename T, typename U>
-fastgltf::Optional<T> ToFgOpt(const std::optional<U> &o) {
-    return o ? fastgltf::Optional<T>{T(*o)} : fastgltf::Optional<T>{};
-}
+fastgltf::Optional<T> ToFgOpt(const std::optional<U> &o) { return o ? fastgltf::Optional<T>{T(*o)} : fastgltf::Optional<T>{}; }
 template<typename T, typename U, typename Fn>
-fastgltf::Optional<T> ToFgOpt(const std::optional<U> &o, Fn &&fn) {
-    return o ? fastgltf::Optional<T>{fn(*o)} : fastgltf::Optional<T>{};
-}
+fastgltf::Optional<T> ToFgOpt(const std::optional<U> &o, Fn &&fn) { return o ? fastgltf::Optional<T>{fn(*o)} : fastgltf::Optional<T>{}; }
 
 std::optional<fastgltf::AccessorBoundsArray> MakeBounds(std::initializer_list<double> vals) {
     auto arr = fastgltf::AccessorBoundsArray::ForType<double>(vals.size());
@@ -1383,8 +1370,8 @@ fastgltf::Light ConvertLightToFg(const PunctualLight &pl, std::string_view name)
 
 } // namespace
 
-std::expected<PopulateResult, std::string> LoadGltfFile(const std::filesystem::path &source_path, PopulateContext ctx) {
-    const Timer timer{"LoadGltfFile"};
+std::expected<PopulateResult, std::string> LoadGltf(const std::filesystem::path &source_path, PopulateContext ctx) {
+    const Timer timer{"LoadGltf"};
 
     ExtrasMap extras;
     auto parsed_asset = ParseAsset(source_path, &extras);
@@ -1932,7 +1919,7 @@ std::expected<PopulateResult, std::string> LoadGltfFile(const std::filesystem::p
     // from gltf texture index to bindless sampler slot. AnimationOrder is patched in below after
     // animations are parsed (it depends on which source animations produced any valid channels).
     auto source_ibl = ConvertIBL(asset, scene_index);
-    GltfSourceAssets source_assets{
+    gltf::SourceAssets source_assets{
         .Copyright = asset.assetInfo ? std::string(asset.assetInfo->copyright) : std::string{},
         .Generator = asset.assetInfo ? std::string(asset.assetInfo->generator) : std::string{},
         .MinVersion = asset.assetInfo ? std::string(asset.assetInfo->minVersion) : std::string{},
@@ -1954,7 +1941,7 @@ std::expected<PopulateResult, std::string> LoadGltfFile(const std::filesystem::p
     source_assets.MaterialVariants.reserve(asset.materialVariants.size());
     for (const auto &v : asset.materialVariants) source_assets.MaterialVariants.emplace_back(v);
     source_assets.MaterialMetas = std::move(material_metas);
-    R.emplace_or_replace<GltfSourceAssets>(SceneEntity, std::move(source_assets));
+    R.emplace_or_replace<gltf::SourceAssets>(SceneEntity, std::move(source_assets));
 
     std::vector<PendingTextureUpload> new_pending_textures;
     std::unordered_map<uint64_t, uint32_t> texture_slot_cache;
@@ -2841,7 +2828,7 @@ std::expected<PopulateResult, std::string> LoadGltfFile(const std::filesystem::p
         for (auto &[instance_entity, resolved_clip] : morph_clips_by_entity) append_morph_clip(instance_entity, std::move(resolved_clip));
         for (auto &[object_entity, resolved_clip] : node_clips_by_entity) append_node_clip(object_entity, std::move(resolved_clip));
     }
-    R.patch<GltfSourceAssets>(SceneEntity, [&](auto &a) { a.AnimationOrder = std::move(animation_order); });
+    R.patch<gltf::SourceAssets>(SceneEntity, [&](auto &a) { a.AnimationOrder = std::move(animation_order); });
 
     { // Get timeline range from imported animation durations
         float max_dur = 0;
@@ -2875,20 +2862,13 @@ std::expected<PopulateResult, std::string> LoadGltfFile(const std::filesystem::p
     for (const auto e : all_imported_objects) R.emplace<Selected>(e);
     import_rollback_guard.Enabled = false;
 
-    return gltf::PopulateResult{
-        .FirstMesh = first_mesh_entity,
-        .Active = active_entity,
-        .FirstCameraObject = first_camera_object_entity,
-        .ImportedAnimation = imported_animation,
-    };
+    return gltf::PopulateResult{.Active = active_entity, .FirstMesh = first_mesh_entity, .FirstCameraObject = first_camera_object_entity, .ImportedAnimation = imported_animation};
 }
 
-std::expected<void, std::string> SaveGltfFile(const SaveContext &sc, const std::filesystem::path &path) {
-    const Timer timer{"SaveGltfFile"};
+std::expected<void, std::string> SaveGltf(const SaveContext &sc, const std::filesystem::path &path) {
+    const Timer timer{"SaveGltf"};
 
     const auto &r = sc.R;
-    const auto scene_entity = sc.SceneEntity;
-    const auto &buffers = sc.Buffers;
     const auto &meshes = sc.Meshes;
 
     // Order entities in `view` by their `TIndex` sidecar value. Entities without `TIndex`
@@ -2909,23 +2889,23 @@ std::expected<void, std::string> SaveGltfFile(const SaveContext &sc, const std::
         return ordered;
     };
 
-    // Source-form scene metadata + texture/image/sampler arrays come from the GltfSourceAssets
+    // Source-form scene metadata + texture/image/sampler arrays come from the gltf::SourceAssets
     // sidecar — encoded image bytes, sampler-config collapse, and asset.* metadata aren't
     // recoverable from registry/GPU state. Cameras and lights emit below from per-entity
     // components (see CameraName/LightName). Materials reconstruct via FromGpu(GPU buffer) +
     // patch from the per-material delta in `MaterialMetas`.
-    const auto *src_assets = r.try_get<const GltfSourceAssets>(scene_entity);
+    const auto *src_assets = r.try_get<const gltf::SourceAssets>(sc.SceneEntity);
     // Source-form scene-level metadata (Copyright/Generator/MinVersion/Asset.*, DefaultScene,
     // ExtensionsRequired/MaterialVariants/ExtrasByEntity, Textures/Images/Samplers/IBL) is read
     // directly from `src_assets` at each emit site below (no intermediate aggregate).
-    static const GltfSourceAssets EmptySourceAssets{};
+    static const gltf::SourceAssets EmptySourceAssets{};
     const auto &sa = src_assets ? *src_assets : EmptySourceAssets;
     // Materials: skip the engine "Default" at registry index 0; loaded gltf materials live at
     // [1, count). Reconstruct each via `FromGpu` then patch with `MaterialSourceMeta` to restore
     // KHR_materials_emissive_strength split, KHR_texture_transform meta, source texture indices,
     // and the optionality of extension blocks (FromGpu's value-vs-default gate is lossy for them).
-    const auto &names = r.get<const MaterialStore>(scene_entity).Names;
-    const auto material_count = buffers.Materials.Count();
+    const auto &names = r.get<const MaterialStore>(sc.SceneEntity).Names;
+    const auto material_count = sc.Buffers.Materials.Count();
     const auto &material_metas = src_assets ? src_assets->MaterialMetas : std::vector<MaterialSourceMeta>{};
 
     // Mesh entities → MeshIndex. Source meshes use SourceMeshIndex for stable round-trip ordering;
@@ -3350,7 +3330,7 @@ std::expected<void, std::string> SaveGltfFile(const SaveContext &sc, const std::
 
     // Animations: merge per-entity engine clips back into source-side clips by (Name, Duration).
     // Engine splits each source clip into N entity clips (one per affected entity); reverse here.
-    // Pre-seed `asset.animations` in source-name order from `GltfSourceAssets::AnimationOrder` so
+    // Pre-seed `asset.animations` in source-name order from `gltf::SourceAssets::AnimationOrder` so
     // animations[*] indices match source; clips not in the source list (runtime-added) are appended.
     std::unordered_map<std::string, size_t> clip_index_by_name;
     std::vector<float> clip_duration_by_index;
@@ -3613,7 +3593,7 @@ std::expected<void, std::string> SaveGltfFile(const SaveContext &sc, const std::
     };
     for (uint32_t i = 1; i <= save_material_count; ++i) {
         const auto source_idx = i - 1;
-        auto data = gltf::FromGpu(buffers.Materials.Get(i));
+        auto data = gltf::FromGpu(sc.Buffers.Materials.Get(i));
         std::string name = i < names.size() ? names[i] : std::string{};
         if (source_idx < material_metas.size()) {
             const auto &meta = material_metas[source_idx];
@@ -3786,12 +3766,11 @@ std::expected<void, std::string> SaveGltfFile(const SaveContext &sc, const std::
             const bool has_tangent_deltas = mesh.MorphData && !mesh.MorphData->TangentDeltas.empty();
             // Fall back to emitting every populated channel when AttributeFlags isn't populated.
             const bool have_flags = tprims.AttributeFlags.size() == tprims.VertexCounts.size();
-
             for (uint32_t prim_idx = 0; prim_idx < tprims.VertexCounts.size(); ++prim_idx) {
                 const uint32_t pcount = tprims.VertexCounts[prim_idx];
                 if (pcount == 0) continue; // non-triangle primitive
-                const uint32_t offset = vertex_offsets[prim_idx];
-                const uint32_t flags = have_flags ? tprims.AttributeFlags[prim_idx] : ~0u;
+                const auto offset = vertex_offsets[prim_idx];
+                const auto flags = have_flags ? tprims.AttributeFlags[prim_idx] : ~0u;
 
                 fastgltf::pmr::SmallVector<fastgltf::Attribute, 4> prim_attrs;
 
@@ -3804,7 +3783,7 @@ std::expected<void, std::string> SaveGltfFile(const SaveContext &sc, const std::
                 }
 
                 const auto emit_vec4 = [&](const char *name, const vec4 *src) {
-                    const uint32_t acc = AddDataAccessor(std::span<const vec4>(src, pcount), fastgltf::AccessorType::Vec4, fastgltf::ComponentType::Float, fastgltf::BufferTarget::ArrayBuffer);
+                    const auto acc = AddDataAccessor(std::span<const vec4>(src, pcount), fastgltf::AccessorType::Vec4, fastgltf::ComponentType::Float, fastgltf::BufferTarget::ArrayBuffer);
                     prim_attrs.emplace_back(fastgltf::Attribute{name, acc});
                 };
                 if (has_tangents && (flags & MeshAttributeBit_Tangent)) emit_vec4("TANGENT", attrs.Tangents->data() + offset);
@@ -3813,7 +3792,7 @@ std::expected<void, std::string> SaveGltfFile(const SaveContext &sc, const std::
                 }
 
                 const auto emit_uv = [&](const char *name, const vec2 *src) {
-                    const uint32_t acc = AddDataAccessor(std::span<const vec2>(src, pcount), fastgltf::AccessorType::Vec2, fastgltf::ComponentType::Float, fastgltf::BufferTarget::ArrayBuffer);
+                    const auto acc = AddDataAccessor(std::span<const vec2>(src, pcount), fastgltf::AccessorType::Vec2, fastgltf::ComponentType::Float, fastgltf::BufferTarget::ArrayBuffer);
                     prim_attrs.emplace_back(fastgltf::Attribute{name, acc});
                 };
                 if (has_uv0 && (flags & MeshAttributeBit_TexCoord0)) emit_uv("TEXCOORD_0", attrs.TexCoords0->data() + offset);
@@ -3827,8 +3806,7 @@ std::expected<void, std::string> SaveGltfFile(const SaveContext &sc, const std::
                         const auto &j = mesh.DeformData->Joints[offset + i];
                         joints16[i] = {uint16_t(j.x), uint16_t(j.y), uint16_t(j.z), uint16_t(j.w)};
                     }
-                    const uint32_t jacc = AddDataAccessor(std::span<const std::array<uint16_t, 4>>(joints16), fastgltf::AccessorType::Vec4, fastgltf::ComponentType::UnsignedShort, fastgltf::BufferTarget::ArrayBuffer);
-                    prim_attrs.emplace_back(fastgltf::Attribute{"JOINTS_0", jacc});
+                    prim_attrs.emplace_back(fastgltf::Attribute{"JOINTS_0", AddDataAccessor(std::span<const std::array<uint16_t, 4>>(joints16), fastgltf::AccessorType::Vec4, fastgltf::ComponentType::UnsignedShort, fastgltf::BufferTarget::ArrayBuffer)});
 
                     emit_vec4("WEIGHTS_0", mesh.DeformData->Weights.data() + offset);
                 }
@@ -4018,7 +3996,7 @@ std::expected<void, std::string> SaveGltfFile(const SaveContext &sc, const std::
             }
         }
 
-        skin_remap[source_skin_index] = uint32_t(asset.skins.size());
+        skin_remap[source_skin_index] = asset.skins.size();
         asset.skins.emplace_back(fastgltf::Skin{
             .inverseBindMatrices = ibm,
             .skeleton = ToFgOpt<std::size_t>(arm.ImportedSkin->SkeletonNodeIndex),

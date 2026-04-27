@@ -4,7 +4,6 @@
 #define VMA_IMPLEMENTATION
 #include "vk_mem_alloc.h"
 
-#include <algorithm>
 #include <cassert>
 #include <print>
 #include <ranges>

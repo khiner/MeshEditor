@@ -2,12 +2,9 @@
 
 #include "numeric/vec2.h"
 
-#include <algorithm>
-#include <cmath>
 #include <glm/common.hpp>
 #include <glm/trigonometric.hpp>
 #include <optional>
-#include <type_traits>
 #include <variant>
 
 inline constexpr float DefaultAspectRatio{16.f / 9.f};

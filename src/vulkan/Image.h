@@ -4,8 +4,6 @@
 
 #include <vulkan/vulkan.hpp>
 
-#include <functional>
-
 namespace mvk {
 struct ImageResource {
     vk::UniqueDeviceMemory Memory;

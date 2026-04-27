@@ -13,7 +13,6 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
-#include <variant>
 #include <vector>
 
 inline constexpr uint32_t InvalidBoneIndex{std::numeric_limits<uint32_t>::max()};

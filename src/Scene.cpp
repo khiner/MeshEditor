@@ -4,7 +4,7 @@
 #include "SceneTextures.h"
 #include "SceneTree.h"
 #include "TransformMath.h"
-#include "gltf/EcsScene.h"
+#include "gltf/GltfScene.h"
 
 #include "Armature.h"
 #include "BBox.h"
@@ -757,7 +757,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
     }
 
     if (auto *pending_tex = R.try_get<PendingTextureUploads>(SceneEntity); pending_tex && !pending_tex->Items.empty()) {
-        const auto *src = R.try_get<const GltfSourceAssets>(SceneEntity);
+        const auto *src = R.try_get<const gltf::SourceAssets>(SceneEntity);
         static const std::vector<gltf::Image> empty_images;
         const auto &gltf_images = src ? src->Images : empty_images;
         auto batch = BeginTextureUploadBatch(Vk.Device, *CommandPool, Stores.Buffers->Ctx);
@@ -774,7 +774,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         R.remove<PendingTextureUploads>(SceneEntity);
     }
     if (auto *pending_env = R.try_get<PendingEnvironmentImport>(SceneEntity)) {
-        if (const auto *src = R.try_get<const GltfSourceAssets>(SceneEntity)) {
+        if (const auto *src = R.try_get<const gltf::SourceAssets>(SceneEntity)) {
             auto batch = BeginTextureUploadBatch(Vk.Device, *CommandPool, Stores.Buffers->Ctx);
             auto pre = MaterializeEnvironmentImport(Vk, batch, *Stores.Slots, *pending_env, src->Images);
             SubmitTextureUploadBatch(batch, Vk.Queue, *OneShotFence, Vk.Device);
@@ -796,9 +796,9 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         R.remove<PendingEnvironmentImport>(SceneEntity);
     }
     // Drop encoded Bytes for external-URI images now that materialization has consumed them.
-    // SourceAbsPath is the persistence — SaveGltfFile re-reads from there.
+    // SourceAbsPath is the persistence — SaveGltf re-reads from there.
     if (!R.any_of<PendingTextureUploads, PendingEnvironmentImport>(SceneEntity)) {
-        if (auto *src_assets = R.try_get<GltfSourceAssets>(SceneEntity)) {
+        if (auto *src_assets = R.try_get<gltf::SourceAssets>(SceneEntity)) {
             for (auto &img : src_assets->Images) {
                 if (!img.Uri.empty()) img.Bytes = {};
             }

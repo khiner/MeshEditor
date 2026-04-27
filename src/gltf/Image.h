@@ -29,7 +29,7 @@ struct Image {
     std::string Name, Uri{};
     std::string SourceAbsPath{}; // resolved absolute path; only set when Uri is non-empty.
     bool SourceDataUri{}, SourceHadMimeType{};
-    // Flip true when the GPU texture for this image is mutated; SaveGltfFile then re-encodes
+    // Flip true when the GPU texture for this image is mutated; SaveGltf then re-encodes
     // from the GPU pixels instead of using Bytes / re-reading the source file.
     bool IsDirty{};
 };

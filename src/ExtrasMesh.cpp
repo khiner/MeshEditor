@@ -1,16 +1,13 @@
 #include "ExtrasMesh.h"
 
-#include "SceneDefaults.h" // Pi
 #include "gpu/PunctualLight.h"
 
 #include <algorithm>
-#include <array>
-#include <cmath>
-
-#include <glm/trigonometric.hpp>
+#include <numbers>
 
 namespace {
-constexpr uint32_t SpotConeSegments = 32;
+constexpr float Pi{std::numbers::pi_v<float>};
+constexpr uint32_t SpotConeSegments{32};
 float AngleFromCos(float cos_theta) { return std::acos(std::clamp(cos_theta, -1.f, 1.f)); }
 } // namespace
 

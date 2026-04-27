@@ -1,7 +1,5 @@
 #include "ImageEncode.h"
 
-#include <algorithm>
-#include <cstring>
 #include <format>
 
 #define STB_IMAGE_WRITE_STATIC
@@ -13,16 +11,15 @@ void AppendToVector(void *ctx, void *data, int size) {
     if (size <= 0) return;
     auto *out = static_cast<std::vector<std::byte> *>(ctx);
     const auto offset = out->size();
-    out->resize(offset + size_t(size));
-    std::memcpy(out->data() + offset, data, size_t(size));
+    out->resize(offset + size);
+    std::memcpy(out->data() + offset, data, size);
 }
 
 std::expected<void, std::string> ValidateInput(std::span<const std::byte> rgba8, uint32_t width, uint32_t height, std::string_view image_name) {
     if (width == 0 || height == 0) {
         return std::unexpected{std::format("Image '{}' has zero dimension {}x{}.", image_name, width, height)};
     }
-    const size_t expected = size_t(width) * size_t(height) * 4u;
-    if (rgba8.size() != expected) {
+    if (const size_t expected = width * height * 4; rgba8.size() != expected) {
         return std::unexpected{std::format("Image '{}' RGBA8 buffer size {} doesn't match {}x{}x4 = {}.", image_name, rgba8.size(), width, height, expected)};
     }
     return {};
@@ -34,9 +31,8 @@ EncodeImagePngRgba8(std::span<const std::byte> rgba8, uint32_t width, uint32_t h
     if (auto valid = ValidateInput(rgba8, width, height, image_name); !valid) return std::unexpected{std::move(valid.error())};
 
     std::vector<std::byte> out;
-    out.reserve(size_t(width) * size_t(height));
-    const int stride = int(width) * 4;
-    if (!stbi_write_png_to_func(&AppendToVector, &out, int(width), int(height), 4, rgba8.data(), stride)) {
+    out.reserve(width * height);
+    if (!stbi_write_png_to_func(&AppendToVector, &out, width, height, 4, rgba8.data(), width * 4)) {
         return std::unexpected{std::format("Failed to PNG-encode image '{}'.", image_name)};
     }
     return out;
@@ -46,10 +42,9 @@ std::expected<std::vector<std::byte>, std::string>
 EncodeImageJpegRgba8(std::span<const std::byte> rgba8, uint32_t width, uint32_t height, int quality, std::string_view image_name) {
     if (auto valid = ValidateInput(rgba8, width, height, image_name); !valid) return std::unexpected{std::move(valid.error())};
 
-    const int q = std::clamp(quality, 1, 100);
     std::vector<std::byte> out;
-    out.reserve(size_t(width) * size_t(height) / 4u);
-    if (!stbi_write_jpg_to_func(&AppendToVector, &out, int(width), int(height), 4, rgba8.data(), q)) {
+    out.reserve(width * height / 4);
+    if (!stbi_write_jpg_to_func(&AppendToVector, &out, width, height, 4, rgba8.data(), std::clamp(quality, 1, 100))) {
         return std::unexpected{std::format("Failed to JPEG-encode image '{}'.", image_name)};
     }
     return out;

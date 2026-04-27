@@ -21,8 +21,8 @@ struct TextureEntry {
     uint32_t SamplerSlot;
     uint32_t Width, Height, MipLevels;
     std::string Name;
-    // Index into `GltfSourceAssets::Images` for textures materialized from a `GltfImageRef`;
-    // UINT32_MAX for raw-pixel uploads (LUTs, SVG bitmaps). Used by SaveGltfFile for re-encode lookup.
+    // Index into `gltf::SourceAssets::Images` for textures materialized from a `GltfImageRef`;
+    // UINT32_MAX for raw-pixel uploads (LUTs, SVG bitmaps). Used by SaveGltf for re-encode lookup.
     uint32_t SourceImageIndex{UINT32_MAX};
 };
 
@@ -78,7 +78,7 @@ enum class TextureColorSpace : uint8_t {
 
 struct PendingTextureUpload {
     // Index into a `gltf::Image` vector supplied at materialization (typically
-    // `GltfSourceAssets::Images` on the scene entity). Caller must keep the storage alive
+    // `gltf::SourceAssets::Images` on the scene entity). Caller must keep the storage alive
     // until the drain pass runs.
     struct GltfImageRef {
         uint32_t ImageIndex;

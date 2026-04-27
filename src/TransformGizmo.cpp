@@ -6,6 +6,7 @@
 
 #include "AxisColors.h" // Must be after imgui.h
 
+#include <algorithm>
 #include <format>
 #include <span>
 
