@@ -41,6 +41,8 @@ JPH_SUPPRESS_WARNINGS
 #include <entt/entity/registry.hpp>
 
 #include <algorithm>
+#include <format>
+#include <iostream>
 #include <thread>
 #include <unordered_map>
 
@@ -478,9 +480,16 @@ void ConfigureJointSettings(SixDOFConstraintSettings &settings, const PhysicsJoi
         const auto configure_axis = [&](SixDOFConstraintSettings::EAxis axis) {
             if (!limit.Min && !limit.Max) settings.MakeFreeAxis(axis);
             else settings.SetLimitedAxis(axis, limit.Min.value_or(-FLT_MAX), limit.Max.value_or(FLT_MAX));
-            // Soft spring limits (translation axes only in Jolt)
-            if (limit.Stiffness && axis < SixDOFConstraintSettings::EAxis::NumTranslation) {
-                settings.mLimitsSpringSettings[axis] = SpringSettings(ESpringMode::StiffnessAndDamping, *limit.Stiffness, limit.Damping);
+            if (limit.Stiffness) {
+                if (axis < SixDOFConstraintSettings::EAxis::NumTranslation) {
+                    settings.mLimitsSpringSettings[axis] = SpringSettings(ESpringMode::StiffnessAndDamping, *limit.Stiffness, limit.Damping);
+                } else {
+                    // Jolt's SixDOFConstraint has no spring path for angular limits — they're treated as hard.
+                    // (See lib/JoltPhysics for an in-progress local patch adding this; not yet upstream.)
+                    static constexpr const char *AxisNames[]{"X", "Y", "Z"};
+                    const auto label = def.Name.empty() ? "<unnamed>" : def.Name.c_str();
+                    std::cerr << std::format("Warning: joint '{}': soft angular limit on {} ignored (Jolt SixDOFConstraint lacks angular spring limits).\n", label, AxisNames[int(axis) - int(SixDOFConstraintSettings::EAxis::NumTranslation)]);
+                }
             }
         };
         for (uint8_t a : limit.LinearAxes) {
