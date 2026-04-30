@@ -41,7 +41,6 @@ JPH_SUPPRESS_WARNINGS
 #include <entt/entity/registry.hpp>
 
 #include <algorithm>
-#include <numbers>
 #include <thread>
 #include <unordered_map>
 
@@ -497,13 +496,8 @@ void ConfigureJointSettings(SixDOFConstraintSettings &settings, const PhysicsJoi
         const int axis_index = (drive.Type == PhysicsDriveType::Linear ? 0 : 3) + drive.Axis;
         const auto axis = static_cast<SixDOFConstraintSettings::EAxis>(axis_index);
         auto &motor = settings.mMotorSettings[axis_index];
-        if (drive.Mode == PhysicsDriveMode::Acceleration && drive.Stiffness > 0.0f) {
-            const float frequency = std::sqrt(drive.Stiffness) / (2.0f * std::numbers::pi_v<float>);
-            const float damping_ratio = drive.Damping / (2.0f * std::sqrt(drive.Stiffness));
-            motor.mSpringSettings = SpringSettings(ESpringMode::FrequencyAndDamping, frequency, damping_ratio);
-        } else if (drive.Stiffness > 0.0f || drive.Damping > 0.0f) {
-            motor.mSpringSettings = SpringSettings(ESpringMode::StiffnessAndDamping, drive.Stiffness, drive.Damping);
-        }
+        const auto spring_mode = drive.Mode == PhysicsDriveMode::Acceleration ? ESpringMode::MassNormalizedStiffnessAndDamping : ESpringMode::StiffnessAndDamping;
+        motor.mSpringSettings = SpringSettings(spring_mode, drive.Stiffness, drive.Damping);
         if (drive.Type == PhysicsDriveType::Linear) motor.SetForceLimit(drive.MaxForce);
         else motor.SetTorqueLimit(drive.MaxForce);
         // Ensure the axis isn't fixed so the motor can act
@@ -520,10 +514,14 @@ void ApplyDriveTargets(SixDOFConstraint &constraint, const PhysicsJointDef &def)
     for (const auto &drive : def.Drives) {
         const int axis_index = (drive.Type == PhysicsDriveType::Linear ? 0 : 3) + drive.Axis;
         const auto axis = static_cast<SixDOFConstraintSettings::EAxis>(axis_index);
-        const bool has_position = drive.Stiffness > 0.0f || drive.PositionTarget != 0.0f;
-        const bool has_velocity = drive.VelocityTarget != 0.0f;
+        // Per KHR spec: positionTarget is co-required with stiffness, velocityTarget with damping.
+        const bool has_position = drive.Stiffness > 0.0f;
+        const bool has_velocity = drive.Damping > 0.0f;
+        const auto state = has_position && has_velocity ? EMotorState::PositionAndVelocity : has_position ? EMotorState::Position :
+            has_velocity                                                                                  ? EMotorState::Velocity :
+                                                                                                            EMotorState::Off;
+        constraint.SetMotorState(axis, state);
         if (has_position) {
-            constraint.SetMotorState(axis, EMotorState::Position);
             if (drive.Type == PhysicsDriveType::Linear) {
                 target_pos.SetComponent(drive.Axis, drive.PositionTarget);
             } else {
@@ -532,8 +530,8 @@ void ApplyDriveTargets(SixDOFConstraint &constraint, const PhysicsJointDef &def)
                 target_orient = target_orient * Quat::sRotation(axes[drive.Axis], drive.PositionTarget);
                 has_orient_target = true;
             }
-        } else if (has_velocity) {
-            constraint.SetMotorState(axis, EMotorState::Velocity);
+        }
+        if (has_velocity) {
             if (drive.Type == PhysicsDriveType::Linear) target_vel.SetComponent(drive.Axis, drive.VelocityTarget);
             else target_ang_vel.SetComponent(drive.Axis, drive.VelocityTarget);
         }
