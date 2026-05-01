@@ -486,8 +486,9 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
                     const auto [mesh_entity, _] = scene->AddMesh(primitive::CreateMesh(default_shape), MeshInstanceCreateInfo{.Name = ToString(default_shape)});
                     r.emplace<PrimitiveShape>(mesh_entity, default_shape);
                 }
-            } else if (GetFrameCount() == 2 && play) {
-                // Wait to play until after app load to avoid a long initial dt.
+            } else if (GetFrameCount() == 3 && play) {
+                // Wait to play until scene load (frame 1) has settled and one render frame has elapsed.
+                // Calling Play() on the same frame as LoadFile races physics setup.
                 scene->Play();
                 play = false;
             }

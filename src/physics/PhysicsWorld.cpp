@@ -26,6 +26,7 @@
 #include "Jolt/Physics/Collision/Shape/TaperedCapsuleShape.h"
 #include "Jolt/Physics/Collision/Shape/TaperedCylinderShape.h"
 #include "Jolt/Physics/Collision/SimShapeFilter.h"
+#include "Jolt/Physics/Constraints/HingeConstraint.h"
 #include "Jolt/Physics/Constraints/SixDOFConstraint.h"
 #include "Jolt/Physics/PhysicsSettings.h"
 #include "Jolt/Physics/PhysicsSystem.h"
@@ -514,6 +515,38 @@ void ConfigureJointSettings(SixDOFConstraintSettings &settings, const PhysicsJoi
     }
 }
 
+// Returns the angular drive axis (0/1/2) for hinge-like joints, -1 otherwise. Hinge-like = one
+// continuous-spin angular drive + all 3 linear axes locked at 0 + the other 2 angular axes locked
+// within ±5°. We route these to HingeConstraint instead of SixDOF because SixDOF's swing-twist
+// decomposition is ill-conditioned at ±π — passing through that point in the full Robot_skinned
+// scene caused a single-frame position correction that teleported the key + its anchor body
+// simultaneously. HingeConstraint is continuous through ±π.
+int DetectHingeAxis(const PhysicsJointDef &def) {
+    int spin_axis = -1;
+    for (const auto &drive : def.Drives) {
+        if (drive.Type != PhysicsDriveType::Angular) return -1;
+        if (drive.Stiffness <= 0.0f || drive.Damping <= 0.0f || drive.VelocityTarget == 0.0f) return -1;
+        if (spin_axis != -1) return -1;
+        spin_axis = drive.Axis;
+    }
+    if (spin_axis < 0) return -1;
+    bool linear_locked[3] = {false, false, false};
+    bool angular_locked[3] = {false, false, false};
+    for (const auto &lim : def.Limits) {
+        const float lo = lim.Min.value_or(-FLT_MAX), hi = lim.Max.value_or(FLT_MAX);
+        if (std::abs(lo) >= 0.09f || std::abs(hi) >= 0.09f) return -1; // ~5° / 9cm tolerance
+        for (uint8_t a : lim.LinearAxes)
+            if (a < 3) linear_locked[a] = true;
+        for (uint8_t a : lim.AngularAxes)
+            if (a < 3) angular_locked[a] = true;
+    }
+    for (int i = 0; i < 3; ++i)
+        if (!linear_locked[i]) return -1;
+    for (int i = 0; i < 3; ++i)
+        if (i != spin_axis && !angular_locked[i]) return -1;
+    return spin_axis;
+}
+
 // After constraint creation, set motor states and targets from drives.
 void ApplyDriveTargets(SixDOFConstraint &constraint, const PhysicsJointDef &def) {
     auto target_pos = Vec3::sZero(), target_vel = Vec3::sZero();
@@ -526,9 +559,10 @@ void ApplyDriveTargets(SixDOFConstraint &constraint, const PhysicsJointDef &def)
         // Per KHR spec: positionTarget is co-required with stiffness, velocityTarget with damping.
         const bool has_position = drive.Stiffness > 0.0f;
         const bool has_velocity = drive.Damping > 0.0f;
-        const auto state = has_position && has_velocity ? EMotorState::PositionAndVelocity : has_position ? EMotorState::Position :
-            has_velocity                                                                                  ? EMotorState::Velocity :
-                                                                                                            EMotorState::Off;
+        const auto state = has_position && has_velocity ? EMotorState::PositionAndVelocity :
+            has_position                                ? EMotorState::Position :
+            has_velocity                                ? EMotorState::Velocity :
+                                                          EMotorState::Off;
         constraint.SetMotorState(axis, state);
         if (has_position) {
             if (drive.Type == PhysicsDriveType::Linear) {
@@ -660,27 +694,22 @@ void PhysicsWorld::BuildJoint(const entt::registry &r, entt::entity entity) {
     const auto body2_entity = FindBodyAncestor(r, joint.ConnectedNode);
     const auto *h2 = body2_entity != null_entity ? r.try_get<const PhysicsBodyHandle>(body2_entity) : nullptr;
 
-    SixDOFConstraintSettings settings;
-    settings.mSpace = EConstraintSpace::WorldSpace;
-    // Default Cone swing couples Y/Z into an ellipse, which degenerates when one
-    // axis is locked. Pyramid gives independent per-axis angular limits.
-    settings.mSwingType = ESwingType::Pyramid;
-
-    // Attachment frames from the joint node (A) and connected node (B) world transforms.
+    // Joint and connected-node world transforms define the joint frame on each body.
+    Vec3 axis_x1 = Vec3::sAxisX(), axis_y1 = Vec3::sAxisY();
+    Vec3 axis_x2 = Vec3::sAxisX(), axis_y2 = Vec3::sAxisY();
+    RVec3 pos1 = RVec3::sZero(), pos2 = RVec3::sZero();
     if (const auto *jt = r.try_get<const WorldTransform>(entity)) {
         const auto rot_mat = glm::mat3_cast(glm::normalize(jt->R));
-        settings.mPosition1 = settings.mPosition2 = ToJoltR(jt->P);
-        settings.mAxisX1 = settings.mAxisX2 = ToJolt(rot_mat[0]);
-        settings.mAxisY1 = settings.mAxisY2 = ToJolt(rot_mat[1]);
+        pos1 = pos2 = ToJoltR(jt->P);
+        axis_x1 = axis_x2 = ToJolt(rot_mat[0]);
+        axis_y1 = axis_y2 = ToJolt(rot_mat[1]);
     }
     if (const auto *ct = r.try_get<const WorldTransform>(joint.ConnectedNode)) {
         const auto rot_mat = glm::mat3_cast(glm::normalize(ct->R));
-        settings.mPosition2 = ToJoltR(ct->P);
-        settings.mAxisX2 = ToJolt(rot_mat[0]);
-        settings.mAxisY2 = ToJolt(rot_mat[1]);
+        pos2 = ToJoltR(ct->P);
+        axis_x2 = ToJolt(rot_mat[0]);
+        axis_y2 = ToJolt(rot_mat[1]);
     }
-
-    ConfigureJointSettings(settings, def);
 
     const auto &lock_iface = P->System.GetBodyLockInterfaceNoLock();
     const BodyLockWrite lock1{lock_iface, BodyID(h1->BodyId)};
@@ -690,8 +719,46 @@ void PhysicsWorld::BuildJoint(const entt::registry &r, entt::entity entity) {
 
     auto &b1 = lock1.GetBody();
     auto &b2 = h2 ? lock2_opt->GetBody() : Body::sFixedToWorld;
-    auto *constraint = static_cast<SixDOFConstraint *>(settings.Create(b1, b2));
-    ApplyDriveTargets(*constraint, def);
+
+    Constraint *constraint = nullptr;
+    if (const int hinge_axis = DetectHingeAxis(def); hinge_axis >= 0) {
+        HingeConstraintSettings hs;
+        hs.mSpace = EConstraintSpace::WorldSpace;
+        hs.mPoint1 = pos1;
+        hs.mPoint2 = pos2;
+        const Vec3 frame1[3]{axis_x1, axis_y1, axis_x1.Cross(axis_y1)};
+        const Vec3 frame2[3]{axis_x2, axis_y2, axis_x2.Cross(axis_y2)};
+        hs.mHingeAxis1 = frame1[hinge_axis];
+        hs.mHingeAxis2 = frame2[hinge_axis];
+        hs.mNormalAxis1 = frame1[(hinge_axis + 1) % 3];
+        hs.mNormalAxis2 = frame2[(hinge_axis + 1) % 3];
+        hs.mLimitsMin = -JPH_PI;
+        hs.mLimitsMax = JPH_PI;
+        const auto &drive = def.Drives.front();
+        const auto spring_mode = drive.Mode == PhysicsDriveMode::Acceleration ? ESpringMode::MassNormalizedStiffnessAndDamping : ESpringMode::StiffnessAndDamping;
+        hs.mMotorSettings.mSpringSettings = SpringSettings(spring_mode, drive.Stiffness, drive.Damping);
+        hs.mMotorSettings.SetTorqueLimit(drive.MaxForce);
+        auto *hinge = static_cast<HingeConstraint *>(hs.Create(b1, b2));
+        hinge->SetMotorState(EMotorState::Velocity);
+        hinge->SetTargetAngularVelocity(drive.VelocityTarget);
+        constraint = hinge;
+    } else {
+        SixDOFConstraintSettings settings;
+        settings.mSpace = EConstraintSpace::WorldSpace;
+        // Default Cone swing couples Y/Z into an ellipse, which degenerates when one
+        // axis is locked. Pyramid gives independent per-axis angular limits.
+        settings.mSwingType = ESwingType::Pyramid;
+        settings.mPosition1 = pos1;
+        settings.mPosition2 = pos2;
+        settings.mAxisX1 = axis_x1;
+        settings.mAxisY1 = axis_y1;
+        settings.mAxisX2 = axis_x2;
+        settings.mAxisY2 = axis_y2;
+        ConfigureJointSettings(settings, def);
+        auto *six = static_cast<SixDOFConstraint *>(settings.Create(b1, b2));
+        ApplyDriveTargets(*six, def);
+        constraint = six;
+    }
     P->System.AddConstraint(constraint);
     P->ConstraintsByJoint[entity] = constraint;
 
@@ -1193,7 +1260,7 @@ void PhysicsWorld::OnPhysicsJointDefChange(entt::registry &r, entt::entity e) {
 
 void PhysicsWorld::Step(entt::registry &r, float dt) {
     P->System.SetGravity(ToJolt(Gravity));
-    P->System.Update(dt, SubSteps, &P->TempAllocator, &P->JobSystem);
+    P->System.Update(std::min(dt, 1.f / 30.f), SubSteps, &P->TempAllocator, &P->JobSystem);
 
     // Sync Jolt → ECS for dynamic and kinematic bodies. PhysicsVelocity is direct-assigned (no
     // patch) to avoid triggering reactive updates each frame. WT is owned by the simulator during
