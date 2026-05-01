@@ -556,14 +556,12 @@ void ApplyDriveTargets(SixDOFConstraint &constraint, const PhysicsJointDef &def)
     for (const auto &drive : def.Drives) {
         const int axis_index = (drive.Type == PhysicsDriveType::Linear ? 0 : 3) + drive.Axis;
         const auto axis = static_cast<SixDOFConstraintSettings::EAxis>(axis_index);
-        // Per KHR spec: positionTarget is co-required with stiffness, velocityTarget with damping.
+        // PositionAndVelocity uses the spring formula `k*(posT-posC) + c*(velT-velC)`, matching the
+        // KHR spec. Jolt's pure Velocity mode is a rigid constraint that ignores spring settings.
+        const bool active = drive.Stiffness > 0.0f || drive.Damping > 0.0f;
+        constraint.SetMotorState(axis, active ? EMotorState::PositionAndVelocity : EMotorState::Off);
         const bool has_position = drive.Stiffness > 0.0f;
         const bool has_velocity = drive.Damping > 0.0f;
-        const auto state = has_position && has_velocity ? EMotorState::PositionAndVelocity :
-            has_position                                ? EMotorState::Position :
-            has_velocity                                ? EMotorState::Velocity :
-                                                          EMotorState::Off;
-        constraint.SetMotorState(axis, state);
         if (has_position) {
             if (drive.Type == PhysicsDriveType::Linear) {
                 target_pos.SetComponent(drive.Axis, drive.PositionTarget);
