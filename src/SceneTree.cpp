@@ -75,10 +75,6 @@ void LinkChildToParent(entt::registry &r, entt::entity child, entt::entity paren
 }
 } // namespace
 
-namespace {
-// Recompute WT and recurse. Needed because the glTF SetParent loop is not topological — a
-// child can be parented before its ancestor's WT settles, and physics setup reads WT before
-// the next reactive pass.
 void UpdateWorldTransformRecursive(entt::registry &r, entt::entity e) {
     const auto *node = r.try_get<const SceneNode>(e);
     const auto *t = r.try_get<const Transform>(e);
@@ -91,7 +87,6 @@ void UpdateWorldTransformRecursive(entt::registry &r, entt::entity e) {
     }
     for (const auto child : Children{&r, e}) UpdateWorldTransformRecursive(r, child);
 }
-} // namespace
 
 void SetParent(entt::registry &r, entt::entity child, entt::entity parent) {
     if (child == entt::null || parent == entt::null || child == parent) return;

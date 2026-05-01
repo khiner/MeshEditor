@@ -59,3 +59,6 @@ void SetParent(entt::registry &, entt::entity child, entt::entity parent);
 // Keep-world: child preserves world pose by decomposing inv(parent_world) * old_world into
 // Transform. Lossy under non-uniform parent scale (cf. BKE_object_apply_parent_inverse).
 void SetParentKeepWorld(entt::registry &, entt::entity child, entt::entity parent);
+
+// Recompute WT for `e` and its descendants from local Transforms and ancestor's WT.
+void UpdateWorldTransformRecursive(entt::registry &, entt::entity e);

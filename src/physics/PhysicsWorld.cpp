@@ -1273,6 +1273,9 @@ void PhysicsWorld::Step(entt::registry &r, float dt) {
             t.P = FromJoltRVec3(bi.GetPosition(id));
             t.R = FromJoltQuat(bi.GetRotation(id));
         });
+        // Compound visuals/colliders parented to the body must follow its world pose.
+        // Reactive WT propagation is keyed on local Transform changes, which physics doesn't touch.
+        for (const auto child : Children{&r, entity}) UpdateWorldTransformRecursive(r, child);
         velocity.Linear = FromJoltVec3(bi.GetLinearVelocity(id));
         velocity.Angular = FromJoltVec3(bi.GetAngularVelocity(id));
     }
@@ -1303,6 +1306,7 @@ void PhysicsWorld::RestoreSnapshot(entt::registry &r) {
             t.R = snap.Rotation;
             t.S = snap.Scale;
         });
+        for (const auto child : Children{&r, snap.Entity}) UpdateWorldTransformRecursive(r, child);
         if (auto *vel = r.try_get<PhysicsVelocity>(snap.Entity)) *vel = snap.Velocity;
     }
     // Rebuild all Jolt bodies and constraints from the restored ECS state.
