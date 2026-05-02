@@ -6,6 +6,7 @@
 #include "Armature.h"
 #include "Camera.h"
 #include "Instance.h"
+#include "MeshComponents.h"
 #include "NodeTransformAnimation.h"
 #include "Path.h"
 #include "PbrFeature.h"
@@ -688,7 +689,7 @@ std::expected<fastgltf::Asset, std::string> ParseAsset(const std::filesystem::pa
     auto gltf_file = fastgltf::MappedGltfFile::FromPath(path);
     if (gltf_file.error() != fastgltf::Error::None) return std::unexpected{std::format("Failed to open glTF file '{}': {}", path.string(), fastgltf::getErrorMessage(gltf_file.error()))};
 
-    static constexpr auto EnabledExtensions = fastgltf::Extensions::KHR_mesh_quantization | fastgltf::Extensions::EXT_mesh_gpu_instancing | fastgltf::Extensions::KHR_lights_punctual | fastgltf::Extensions::EXT_lights_image_based | fastgltf::Extensions::KHR_texture_transform | fastgltf::Extensions::KHR_materials_emissive_strength | fastgltf::Extensions::KHR_materials_unlit | fastgltf::Extensions::KHR_texture_basisu | fastgltf::Extensions::KHR_materials_specular | fastgltf::Extensions::KHR_materials_sheen | fastgltf::Extensions::KHR_materials_ior | fastgltf::Extensions::KHR_materials_dispersion | fastgltf::Extensions::KHR_materials_transmission | fastgltf::Extensions::KHR_materials_diffuse_transmission | fastgltf::Extensions::KHR_materials_volume | fastgltf::Extensions::KHR_materials_clearcoat | fastgltf::Extensions::KHR_materials_anisotropy | fastgltf::Extensions::KHR_materials_iridescence | fastgltf::Extensions::KHR_materials_variants | fastgltf::Extensions::KHR_implicit_shapes | fastgltf::Extensions::KHR_physics_rigid_bodies;
+    static constexpr auto EnabledExtensions = fastgltf::Extensions::KHR_mesh_quantization | fastgltf::Extensions::EXT_mesh_gpu_instancing | fastgltf::Extensions::KHR_lights_punctual | fastgltf::Extensions::EXT_lights_image_based | fastgltf::Extensions::KHR_texture_transform | fastgltf::Extensions::KHR_materials_emissive_strength | fastgltf::Extensions::KHR_materials_unlit | fastgltf::Extensions::KHR_texture_basisu | fastgltf::Extensions::KHR_materials_specular | fastgltf::Extensions::KHR_materials_sheen | fastgltf::Extensions::KHR_materials_ior | fastgltf::Extensions::KHR_materials_dispersion | fastgltf::Extensions::KHR_materials_transmission | fastgltf::Extensions::KHR_materials_diffuse_transmission | fastgltf::Extensions::KHR_materials_volume | fastgltf::Extensions::KHR_materials_clearcoat | fastgltf::Extensions::KHR_materials_anisotropy | fastgltf::Extensions::KHR_materials_iridescence | fastgltf::Extensions::KHR_materials_variants | fastgltf::Extensions::KHR_node_visibility | fastgltf::Extensions::KHR_implicit_shapes | fastgltf::Extensions::KHR_physics_rigid_bodies;
     fastgltf::Parser parser{EnabledExtensions};
     if (extras_out) {
         parser.setUserPointer(extras_out);
@@ -2523,6 +2524,16 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
         if (source_matrices[sni.Value]) R.emplace<SourceMatrixTransform>(entity, *source_matrices[sni.Value]);
     }
 
+    { // KHR_node_visibility: `visible:false` hides node *and* descendants.
+        const auto hide_subtree = [&](this const auto &self, entt::entity e) -> void {
+            Hide(R, e);
+            for (const auto child : Children{&R, e}) self(child);
+        };
+        for (const auto [entity, sni] : R.view<const SourceNodeIndex>().each()) {
+            if (sni.Value < asset.nodes.size() && !asset.nodes[sni.Value].visible) hide_subtree(entity);
+        }
+    }
+
     std::unordered_map<uint32_t, std::vector<std::pair<entt::entity, BoneId>>> armature_targets_by_joint_node;
     for (const auto &entry : armature_data_entities_by_skin) {
         const auto armature_data_entity = entry.second;
@@ -2891,6 +2902,36 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
     std::vector<entt::entity> node_to_entity(total_node_count, entt::null);
     for (const auto [entity, node_index] : entity_to_node_index) {
         if (node_index < node_to_entity.size()) node_to_entity[node_index] = entity;
+    }
+
+    // KHR_node_visibility: node is hidden iff it has no RenderInstance and every child is hidden too.
+    // Stubs are unreachable from scene roots, so they default to not-hidden and don't emit spurious visible:false.
+    // Post-order DFS populates `fully_hidden` so parents can check children without recursion or multi-pass.
+    std::vector<bool> fully_hidden(total_node_count, false);
+    {
+        const auto dfs = [&](this const auto &self, uint32_t ni) -> bool {
+            if (ni >= total_node_count) return false;
+            const auto entity = node_to_entity[ni];
+            bool hidden = entity != entt::null && !r.all_of<RenderInstance>(entity);
+            if (const auto it = children_by_parent.find(ni); it != children_by_parent.end()) {
+                for (const auto &[_, child_ni] : it->second) {
+                    if (!self(child_ni)) hidden = false;
+                }
+            }
+            fully_hidden[ni] = hidden;
+            return hidden;
+        };
+        if (src_assets && !src_assets->DefaultSceneRoots.empty()) {
+            for (const auto ni : src_assets->DefaultSceneRoots) dfs(ni);
+        } else {
+            for (uint32_t ni = 0; ni < total_node_count; ++ni) {
+                const auto entity = node_to_entity[ni];
+                if (entity == entt::null) continue;
+                const auto *spi = r.try_get<const SourceParentNodeIndex>(entity);
+                const bool is_root = !spi || spi->Value >= total_node_count || node_to_entity[spi->Value] == entt::null;
+                if (is_root) dfs(ni);
+            }
+        }
     }
 
     // Per node: world transforms of every Object that targets that node — used for
@@ -4018,7 +4059,11 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             .instancingAttributes = std::move(instancing),
             .name = ToFgStr(node_name),
             .physicsRigidBody = std::move(physics_rigid_body),
-            .visible = true,
+            .visible = [&] {
+                if (!fully_hidden[ni]) return true;
+                const auto *spi = r.try_get<const SourceParentNodeIndex>(entity);
+                return spi && spi->Value < total_node_count && fully_hidden[spi->Value];
+            }(),
             .selectable = true,
             .hoverable = true,
         });
@@ -4078,6 +4123,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
     for (const auto &e : sa.ExtensionsRequired) asset.extensionsRequired.emplace_back(e);
 
     // extensionsUsed
+    if (std::ranges::any_of(asset.nodes, [](const auto &n) { return !n.visible; })) asset.extensionsUsed.emplace_back("KHR_node_visibility");
     if (!asset.lights.empty()) asset.extensionsUsed.emplace_back("KHR_lights_punctual");
     if (uses_gpu_instancing) asset.extensionsUsed.emplace_back("EXT_mesh_gpu_instancing");
     if (uses_physics_rigid_bodies || !asset.physicsMaterials.empty() || !asset.collisionFilters.empty() || !asset.physicsJoints.empty()) {

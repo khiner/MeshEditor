@@ -76,15 +76,12 @@ void LinkChildToParent(entt::registry &r, entt::entity child, entt::entity paren
 } // namespace
 
 void UpdateWorldTransformRecursive(entt::registry &r, entt::entity e) {
-    const auto *node = r.try_get<const SceneNode>(e);
     const auto *t = r.try_get<const Transform>(e);
     if (!t) return;
-    if (node && node->Parent != entt::null) {
-        const auto parent_world = ToMatrix(r.get<const WorldTransform>(node->Parent));
-        r.emplace_or_replace<WorldTransform>(e, ToTransform(parent_world * r.get<const ParentInverse>(e).M * ToMatrix(*t)));
-    } else {
-        r.emplace_or_replace<WorldTransform>(e, *t);
-    }
+
+    const auto *node = r.try_get<const SceneNode>(e);
+    const auto world = node && node->Parent != entt::null ? ToTransform(ToMatrix(r.get<const WorldTransform>(node->Parent)) * r.get<const ParentInverse>(e).M * ToMatrix(*t)) : *t;
+    r.emplace_or_replace<WorldTransform>(e, world);
     for (const auto child : Children{&r, e}) UpdateWorldTransformRecursive(r, child);
 }
 

@@ -101,6 +101,9 @@ constexpr Exception SubtreeExceptions[]{
     {"animations[*].channels", "channels using KHR_animation_pointer are dropped on import"},
     {"animations[*].samplers", "samplers for dropped channels (e.g. KHR_animation_pointer) are also dropped"},
 
+    // Lights aren't shared across nodes on import, so the lights table and per-node `light`
+    // indices diverge when source had multiple nodes pointing at the same `lights[i]`.
+    {"extensions.KHR_lights_punctual.lights", "per-node PunctualLight components aren't deduped on save"},
 };
 
 // --- Default-value omission ---
@@ -159,6 +162,7 @@ constexpr Exception DefaultOmissionExactExceptions[]{
     {"extensions.EXT_lights_image_based.lights[*].intensity", "default 1.0 omitted"},
     {"nodes[*].extensions.KHR_physics_rigid_bodies.collider.geometry.convexHull", "default false omitted"},
     {"nodes[*].extensions.KHR_physics_rigid_bodies.motion.centerOfMass", "default [0,0,0] omitted"},
+    {"nodes[*].extensions.KHR_node_visibility", "extension block only emitted for visible:false (default true is omitted)"},
     {"meshes[*].primitives[*].mode", "default 4 (triangles) omitted"},
     // fastgltf's writer omits TRS fields equal to defaults on TRS-form nodes.
     // Matrix-form nodes now re-emit as matrix (see SourceMatrixTransform handling).
@@ -208,6 +212,7 @@ constexpr Exception OtherExactExceptions[]{
     {"meshes[*].extensions", "mesh-level extensions (e.g. KHR_materials_variants mappings) not re-emitted"},
     {"scenes[*].extras", "not tracked on Scene"},
     {"scenes[*].extensions", "scene-level extensions not re-emitted"},
+    {"nodes[*].extensions.KHR_lights_punctual.light", "renumbered to match the un-deduped lights table"},
 };
 
 std::string NormalizePath(std::string_view path) {
