@@ -130,6 +130,12 @@ vec3 getPunctualRadianceTransmission(vec3 n, vec3 v, vec3 l, float alphaRoughnes
     return baseColor * D_GGX(clampedDot(n, h), tr) * V_GGX(clampedDot(n, l_mirror), clampedDot(n, v), tr);
 }
 
+// KHR_materials_volume: refraction ray inside the volume, scaled by world-space thickness.
+// Caller subtracts this from point_to_light so the BTDF sees the light direction at the exit point.
+vec3 getVolumeTransmissionRay(vec3 n, vec3 v, float world_thickness, float ior) {
+    return normalize(refract(-v, normalize(n), 1.0 / ior)) * world_thickness;
+}
+
 NormalInfo GetNormalInfo(const PBRMaterial material) {
     const vec2 uv = GetUv(material.NormalTexture);
     vec3 ng = normalize(WorldNormal);
@@ -351,7 +357,8 @@ void main() {
             const PunctualLight light = LightBuffers[nonuniformEXT(SceneViewUBO.LightSlot)].Lights[i];
 
             vec3 L;
-            const vec3 light_intensity = getLightIntensity(light, WorldPosition, L);
+            vec3 point_to_light;
+            const vec3 light_intensity = getLightIntensity(light, WorldPosition, L, point_to_light);
             const vec3 H = normalize(L + v);
             const float NdotL = clampedDot(n, L);
             const float NdotH = clampedDot(n, H);
@@ -374,8 +381,10 @@ void main() {
                 }
             }
             if (transmissionFactor > 0.0) {
-                vec3 l_transmit = light_intensity * getPunctualRadianceTransmission(n, v, L, alphaRoughness, base_color.rgb, material.Ior);
-                l_transmit = applyVolumeAttenuation(l_transmit, worldThickness, material.Volume.AttenuationColor, material.Volume.AttenuationDistance);
+                const vec3 transmission_ray = getVolumeTransmissionRay(n, v, worldThickness, material.Ior);
+                const vec3 transmit_l = safeNormalize(point_to_light - transmission_ray, L);
+                vec3 l_transmit = light_intensity * getPunctualRadianceTransmission(n, v, transmit_l, alphaRoughness, base_color.rgb, material.Ior);
+                l_transmit = applyVolumeAttenuation(l_transmit, length(transmission_ray), material.Volume.AttenuationColor, material.Volume.AttenuationDistance);
                 l_diffuse = mix(l_diffuse, l_transmit, transmissionFactor);
             }
             const vec3 l_specular = light_intensity * NdotL * (has_anisotropy

@@ -45,10 +45,10 @@ vec3 getPointToLight(PunctualLight light, const Transform wt, vec3 world_positio
     return wt.P - world_position;
 }
 
-vec3 getLightIntensity(PunctualLight light, vec3 worldPosition, out vec3 L) {
+vec3 getLightIntensity(PunctualLight light, vec3 worldPosition, out vec3 L, out vec3 point_to_light) {
     const Transform wt = ModelBuffers[nonuniformEXT(light.TransformSlotOffset.Slot)].Models[light.TransformSlotOffset.Offset];
     const vec3 emission_direction = getLightEmissionDirection(wt);
-    const vec3 point_to_light = getPointToLight(light, wt, worldPosition, emission_direction);
+    point_to_light = getPointToLight(light, wt, worldPosition, emission_direction);
 
     L = safeNormalize(point_to_light, -emission_direction);
 
