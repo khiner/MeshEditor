@@ -266,7 +266,7 @@ private:
     };
     SyncResult SyncModelsBuffers();
 
-    void SetInteractionMode(InteractionMode);
+    bool SetInteractionMode(InteractionMode);
     void SetEditMode(Element mode);
 
     std::vector<entt::entity> RunObjectPick(uvec2 pixel, uint32_t radius_px = 0);

@@ -41,8 +41,8 @@
 #include "scene_impl/SceneInternalTypes.h"
 #include "scene_impl/SceneTransformUtils.h"
 
-using std::ranges::all_of, std::ranges::any_of, std::ranges::contains, std::ranges::distance, std::ranges::find, std::ranges::find_if, std::ranges::fold_left, std::ranges::to;
-using std::views::filter, std::views::transform;
+using std::ranges::any_of, std::ranges::contains, std::ranges::distance, std::ranges::find, std::ranges::find_if, std::ranges::fold_left, std::ranges::to;
+using std::views::transform;
 using namespace ImGui;
 
 namespace {
@@ -344,14 +344,14 @@ bool RenderCameraLensEditor(Camera &camera, std::optional<ViewportContext> viewp
 
 } // namespace
 
-void Scene::SetInteractionMode(InteractionMode mode) {
-    if (R.get<const SceneInteraction>(SceneEntity).Mode == mode) return;
+bool Scene::SetInteractionMode(InteractionMode mode) {
+    if (R.get<const SceneInteraction>(SceneEntity).Mode == mode) return false;
 
     const auto active_entity = FindActiveEntity(R);
     const auto active_arm = active_entity != entt::null ? FindArmatureObject(R, active_entity) : entt::null;
     const bool active_is_armature = active_arm != entt::null;
-    if (mode == InteractionMode::Edit && !AllSelectedAreMeshes(R) && !active_is_armature) return;
-    if (mode == InteractionMode::Pose && !active_is_armature) return;
+    if (mode == InteractionMode::Edit && !AllSelectedAreMeshes(R) && !active_is_armature) return false;
+    if (mode == InteractionMode::Pose && !active_is_armature) return false;
 
     if (R.get<const SceneInteraction>(SceneEntity).Mode == InteractionMode::Edit) {
         // Leaving Edit mode: clear GPU element-state colors, but keep bitset ranges + bits
@@ -385,6 +385,7 @@ void Scene::SetInteractionMode(InteractionMode mode) {
     }
     R.patch<SceneInteraction>(SceneEntity, [mode](auto &s) { s.Mode = mode; });
     R.patch<ViewportTheme>(SceneEntity, [](auto &) {});
+    return true;
 }
 
 void Scene::SetEditMode(Element mode) {
@@ -487,131 +488,139 @@ void Scene::Interact() {
         any_of(scene_selection::GetSelectedMeshEntities(R), [&](entt::entity mesh_entity) { return scene_selection::HasScaleLockedInstance(R, mesh_entity); });
     const bool transform_shortcuts_enabled = !edit_transform_locked;
     const bool scale_shortcut_enabled = transform_shortcuts_enabled && !has_frozen_selected;
-    // Handle keyboard input.
-    if (IsWindowFocused()) {
-        if (TransformGizmo::IsUsing()) {
-            // During an active transform, only allow transform switching shortcuts.
-            if (IsKeyPressed(ImGuiKey_G, false) && transform_shortcuts_enabled) {
-                StartScreenTransform = TransformGizmo::TransformType::Translate;
-            } else if (IsKeyPressed(ImGuiKey_R, false) && transform_shortcuts_enabled) {
-                StartScreenTransform = TransformGizmo::TransformType::Rotate;
-            } else if (IsKeyPressed(ImGuiKey_S, false) && scale_shortcut_enabled) {
-                StartScreenTransform = TransformGizmo::TransformType::Scale;
-            }
-        } else {
-            if (IsKeyPressed(ImGuiKey_Space, false)) R.patch<AnimationTimeline>(SceneEntity, [](auto &tl) { tl.Playing = !tl.Playing; });
-            if (IsKeyPressed(ImGuiKey_Z, false) && !GetIO().KeyCtrl && !GetIO().KeyShift && !GetIO().KeyAlt && !GetIO().KeySuper) {
-                R.patch<SceneSettings>(SceneEntity, [](auto &s) {
-                    const auto next = s.ViewportShading == ViewportShadingMode::Solid ? ViewportShadingMode::MaterialPreview : s.ViewportShading == ViewportShadingMode::MaterialPreview ? ViewportShadingMode::Rendered :
-                                                                                                                                                                                           ViewportShadingMode::Solid;
-                    s.ViewportShading = next;
-                    s.FillMode = next;
-                });
-            } else if (IsKeyPressed(ImGuiKey_Z, false) && !GetIO().KeyCtrl && GetIO().KeyShift && !GetIO().KeyAlt && !GetIO().KeySuper) {
-                R.patch<SceneSettings>(SceneEntity, [](auto &s) {
-                    s.ViewportShading = s.ViewportShading == ViewportShadingMode::Wireframe ? s.FillMode : ViewportShadingMode::Wireframe;
-                });
-            } else if (IsKeyPressed(ImGuiKey_Z, false) && !GetIO().KeyCtrl && !GetIO().KeyShift && GetIO().KeyAlt && !GetIO().KeySuper) {
-                SelectionXRay = !SelectionXRay;
-            }
-            if (IsKeyPressed(ImGuiKey_Tab)) {
-                const bool is_armature = FindArmatureObject(R, active_entity) != entt::null;
-                if (is_armature && GetIO().KeyCtrl) {
-                    SetInteractionMode(interaction_mode == InteractionMode::Pose ? InteractionMode::Object : InteractionMode::Pose);
-                } else if (is_armature) {
-                    SetInteractionMode(interaction_mode == InteractionMode::Edit ? InteractionMode::Object : InteractionMode::Edit);
-                } else {
-                    // Cycle to the next interaction mode, wrapping around to the first.
-                    auto it = find(InteractionModes, interaction_mode);
-                    SetInteractionMode(++it != InteractionModes.end() ? *it : *InteractionModes.begin());
+    // Keyboard shortcuts use ImGui's Shortcut() routing system with RouteGlobal so they fire from any
+    // focused window in the dockspace. RouteGlobal yields to active items (sliders mid-drag, focused
+    // InputText, etc.) and ImGui's Nav (Tab/arrows) via key-ownership, so widget editing and tree/list
+    // navigation in panels keep working. char-input keys (G/A/etc.) are auto-filtered while WantTextInput.
+    constexpr ImGuiInputFlags VKey = ImGuiInputFlags_RouteGlobal;
+    if (TransformGizmo::IsUsing()) {
+        // During an active transform, only allow transform switching shortcuts.
+        if (Shortcut(ImGuiKey_G, VKey) && transform_shortcuts_enabled) {
+            StartScreenTransform = TransformGizmo::TransformType::Translate;
+        } else if (Shortcut(ImGuiKey_R, VKey) && transform_shortcuts_enabled) {
+            StartScreenTransform = TransformGizmo::TransformType::Rotate;
+        } else if (Shortcut(ImGuiKey_S, VKey) && scale_shortcut_enabled) {
+            StartScreenTransform = TransformGizmo::TransformType::Scale;
+        }
+    } else {
+        if (Shortcut(ImGuiKey_Space, VKey)) R.patch<AnimationTimeline>(SceneEntity, [](auto &tl) { tl.Playing = !tl.Playing; });
+        if (Shortcut(ImGuiKey_Z, VKey)) {
+            R.patch<SceneSettings>(SceneEntity, [](auto &s) {
+                const auto next = s.ViewportShading == ViewportShadingMode::Solid ? ViewportShadingMode::MaterialPreview : s.ViewportShading == ViewportShadingMode::MaterialPreview ? ViewportShadingMode::Rendered :
+                                                                                                                                                                                       ViewportShadingMode::Solid;
+                s.ViewportShading = next;
+                s.FillMode = next;
+            });
+        } else if (Shortcut(ImGuiMod_Shift | ImGuiKey_Z, VKey)) {
+            R.patch<SceneSettings>(SceneEntity, [](auto &s) {
+                s.ViewportShading = s.ViewportShading == ViewportShadingMode::Wireframe ? s.FillMode : ViewportShadingMode::Wireframe;
+            });
+        } else if (Shortcut(ImGuiMod_Alt | ImGuiKey_Z, VKey)) {
+            SelectionXRay = !SelectionXRay;
+        }
+        // Tab uses default RouteFocused (not VKey/RouteGlobal) so widget tabbing in panels keeps working.
+        const bool tab_no_mods = Shortcut(ImGuiKey_Tab);
+        const bool tab_ctrl = Shortcut(ImGuiMod_Ctrl | ImGuiKey_Tab);
+        if (tab_no_mods || tab_ctrl) {
+            const bool is_armature = FindArmatureObject(R, active_entity) != entt::null;
+            if (is_armature && tab_ctrl) {
+                SetInteractionMode(interaction_mode == InteractionMode::Pose ? InteractionMode::Object : InteractionMode::Pose);
+            } else if (is_armature) {
+                SetInteractionMode(interaction_mode == InteractionMode::Edit ? InteractionMode::Object : InteractionMode::Edit);
+            } else if (tab_no_mods) {
+                // Cycle to the next interaction mode that SetInteractionMode accepts, wrapping around.
+                auto it = find(InteractionModes, interaction_mode);
+                for (size_t i = 0; i < InteractionModes.size(); ++i) {
+                    if (++it == InteractionModes.end()) it = InteractionModes.begin();
+                    if (SetInteractionMode(*it)) break;
                 }
             }
-            if (interaction_mode == InteractionMode::Edit) {
-                if (IsKeyPressed(ImGuiKey_1, false)) SetEditMode(Element::Vertex);
-                else if (IsKeyPressed(ImGuiKey_2, false)) SetEditMode(Element::Edge);
-                else if (IsKeyPressed(ImGuiKey_3, false)) SetEditMode(Element::Face);
-            }
-            if (IsKeyPressed(ImGuiKey_A, false) && !GetIO().KeyShift && !GetIO().KeyCtrl && !GetIO().KeyAlt && !GetIO().KeySuper) {
-                if (const auto arm_obj_entity = FindArmatureObject(R, active_entity);
-                    interaction_mode == InteractionMode::Pose || (interaction_mode == InteractionMode::Edit && arm_obj_entity != entt::null)) {
-                    // Select all bones in the active armature.
-                    if (arm_obj_entity != entt::null) {
-                        const auto &arm_obj = R.get<const ArmatureObject>(arm_obj_entity);
-                        R.clear<BoneActive, BoneSelection>();
-                        for (const auto bone_entity : arm_obj.BoneEntities) R.emplace<BoneSelection>(bone_entity);
-                        if (!arm_obj.BoneEntities.empty()) R.emplace<BoneActive>(arm_obj.BoneEntities.back());
-                    }
-                } else if (interaction_mode == InteractionMode::Edit) {
-                    // Select all elements in the current edit mode.
-                    const auto ranges = GetBitsetRangesForSelected();
-                    auto *bits = Stores.Buffers->SelectionBitset.Data();
-                    for (const auto &range : ranges) scene_selection::SelectAll(bits, range.Offset, range.Count);
-                    if (!ranges.empty()) SelectionBitsDirty = true;
-                } else if (interaction_mode == InteractionMode::Object) {
-                    // Select all top-level objects.
-                    R.clear<Active, Selected>();
-                    entt::entity last{entt::null};
-                    for (const auto [e, _] : R.view<const ObjectKind>().each()) {
-                        R.emplace<Selected>(e);
-                        last = e;
-                    }
-                    if (last != entt::null) R.emplace<Active>(last);
+        }
+        if (interaction_mode == InteractionMode::Edit) {
+            if (Shortcut(ImGuiKey_1, VKey)) SetEditMode(Element::Vertex);
+            else if (Shortcut(ImGuiKey_2, VKey)) SetEditMode(Element::Edge);
+            else if (Shortcut(ImGuiKey_3, VKey)) SetEditMode(Element::Face);
+        }
+        if (Shortcut(ImGuiKey_A, VKey)) {
+            if (const auto arm_obj_entity = FindArmatureObject(R, active_entity);
+                interaction_mode == InteractionMode::Pose || (interaction_mode == InteractionMode::Edit && arm_obj_entity != entt::null)) {
+                // Select all bones in the active armature.
+                if (arm_obj_entity != entt::null) {
+                    const auto &arm_obj = R.get<const ArmatureObject>(arm_obj_entity);
+                    R.clear<BoneActive, BoneSelection>();
+                    for (const auto bone_entity : arm_obj.BoneEntities) R.emplace<BoneSelection>(bone_entity);
+                    if (!arm_obj.BoneEntities.empty()) R.emplace<BoneActive>(arm_obj.BoneEntities.back());
                 }
-            }
-            const bool bone_edit = interaction_mode == InteractionMode::Edit && FindArmatureObject(R, active_entity) != entt::null;
-            if (bone_edit) {
-                if (IsKeyPressed(ImGuiKey_A, false) && GetIO().KeyShift && !GetIO().KeyCtrl) {
-                    AddBone();
-                } else if (IsKeyPressed(ImGuiKey_E, false) && !GetIO().KeyCtrl && !GetIO().KeyShift) {
-                    ExtrudeBone();
-                    StartScreenTransform = TransformGizmo::TransformType::Translate;
-                } else if (IsKeyPressed(ImGuiKey_X, false) || IsKeyPressed(ImGuiKey_Delete, false) || IsKeyPressed(ImGuiKey_Backspace, false)) {
-                    Delete();
-                } else if (IsKeyPressed(ImGuiKey_D, false) && GetIO().KeyShift) {
-                    Duplicate();
+            } else if (interaction_mode == InteractionMode::Edit) {
+                // Select all elements in the current edit mode.
+                const auto ranges = GetBitsetRangesForSelected();
+                auto *bits = Stores.Buffers->SelectionBitset.Data();
+                for (const auto &range : ranges) scene_selection::SelectAll(bits, range.Offset, range.Count);
+                if (!ranges.empty()) SelectionBitsDirty = true;
+            } else if (interaction_mode == InteractionMode::Object) {
+                // Select all top-level objects.
+                R.clear<Active, Selected>();
+                entt::entity last{entt::null};
+                for (const auto [e, _] : R.view<const ObjectKind>().each()) {
+                    R.emplace<Selected>(e);
+                    last = e;
                 }
+                if (last != entt::null) R.emplace<Active>(last);
             }
-            if (IsKeyPressed(ImGuiKey_E, false) && GetIO().KeyCtrl && GetIO().KeyShift) {
-                AddEmpty({.Select = MeshInstanceCreateInfo::SelectBehavior::Exclusive});
+        }
+        const bool bone_edit = interaction_mode == InteractionMode::Edit && FindArmatureObject(R, active_entity) != entt::null;
+        if (bone_edit) {
+            if (Shortcut(ImGuiMod_Shift | ImGuiKey_A, VKey)) {
+                AddBone();
+            } else if (Shortcut(ImGuiKey_E, VKey)) {
+                ExtrudeBone();
                 StartScreenTransform = TransformGizmo::TransformType::Translate;
-            } else if (IsKeyPressed(ImGuiKey_A, false) && GetIO().KeyCtrl && GetIO().KeyShift) {
-                AddArmature({.Select = MeshInstanceCreateInfo::SelectBehavior::Exclusive});
-                StartScreenTransform = TransformGizmo::TransformType::Translate;
-            } else if (IsKeyPressed(ImGuiKey_C, false) && GetIO().KeyCtrl && GetIO().KeyShift) {
-                AddCamera({.Select = MeshInstanceCreateInfo::SelectBehavior::Exclusive});
-                StartScreenTransform = TransformGizmo::TransformType::Translate;
-            } else if (IsKeyPressed(ImGuiKey_L, false) && GetIO().KeyCtrl && GetIO().KeyShift) {
-                AddLight({.Select = MeshInstanceCreateInfo::SelectBehavior::Exclusive});
-                StartScreenTransform = TransformGizmo::TransformType::Translate;
+            } else if (Shortcut(ImGuiKey_X, VKey) || Shortcut(ImGuiKey_Delete, VKey) || Shortcut(ImGuiKey_Backspace, VKey)) {
+                Delete();
+            } else if (Shortcut(ImGuiMod_Shift | ImGuiKey_D, VKey)) {
+                Duplicate();
             }
-            if (!R.storage<Selected>().empty()) {
-                if (!bone_edit && IsKeyPressed(ImGuiKey_D, false) && GetIO().KeyShift) Duplicate();
-                else if (!bone_edit && IsKeyPressed(ImGuiKey_D, false) && GetIO().KeyAlt) DuplicateLinked();
-                else if (!bone_edit && CanDelete() && (IsKeyPressed(ImGuiKey_Delete, false) || IsKeyPressed(ImGuiKey_Backspace, false))) Delete();
-                else if (interaction_mode == InteractionMode::Pose && GetIO().KeyAlt && IsKeyPressed(ImGuiKey_G, false)) ClearSelectedBoneTransforms(R, true, false, false);
-                else if (interaction_mode == InteractionMode::Pose && GetIO().KeyAlt && IsKeyPressed(ImGuiKey_R, false)) ClearSelectedBoneTransforms(R, false, true, false);
-                else if (interaction_mode == InteractionMode::Pose && GetIO().KeyAlt && IsKeyPressed(ImGuiKey_S, false)) ClearSelectedBoneTransforms(R, false, false, true);
-                else if (IsKeyPressed(ImGuiKey_G, false) && transform_shortcuts_enabled) {
-                    // Start transform gizmo in both Object and Edit modes.
-                    // In Edit mode, shader applies transform to selected vertices.
-                    // In Object mode, shader applies transform to selected instances.
-                    StartScreenTransform = TransformGizmo::TransformType::Translate;
-                } else if (IsKeyPressed(ImGuiKey_R, false) && transform_shortcuts_enabled) StartScreenTransform = TransformGizmo::TransformType::Rotate;
-                else if (IsKeyPressed(ImGuiKey_S, false) && scale_shortcut_enabled) StartScreenTransform = TransformGizmo::TransformType::Scale;
-                else if (IsKeyPressed(ImGuiKey_H, false)) {
+        }
+        if (Shortcut(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_E, VKey)) {
+            AddEmpty({.Select = MeshInstanceCreateInfo::SelectBehavior::Exclusive});
+            StartScreenTransform = TransformGizmo::TransformType::Translate;
+        } else if (Shortcut(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_A, VKey)) {
+            AddArmature({.Select = MeshInstanceCreateInfo::SelectBehavior::Exclusive});
+            StartScreenTransform = TransformGizmo::TransformType::Translate;
+        } else if (Shortcut(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_C, VKey)) {
+            AddCamera({.Select = MeshInstanceCreateInfo::SelectBehavior::Exclusive});
+            StartScreenTransform = TransformGizmo::TransformType::Translate;
+        } else if (Shortcut(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_L, VKey)) {
+            AddLight({.Select = MeshInstanceCreateInfo::SelectBehavior::Exclusive});
+            StartScreenTransform = TransformGizmo::TransformType::Translate;
+        }
+        if (!R.storage<Selected>().empty()) {
+            if (!bone_edit && Shortcut(ImGuiMod_Shift | ImGuiKey_D, VKey)) Duplicate();
+            else if (!bone_edit && Shortcut(ImGuiMod_Alt | ImGuiKey_D, VKey)) DuplicateLinked();
+            else if (!bone_edit && CanDelete() && (Shortcut(ImGuiKey_Delete, VKey) || Shortcut(ImGuiKey_Backspace, VKey))) Delete();
+            else if (interaction_mode == InteractionMode::Pose && Shortcut(ImGuiMod_Alt | ImGuiKey_G, VKey)) ClearSelectedBoneTransforms(R, true, false, false);
+            else if (interaction_mode == InteractionMode::Pose && Shortcut(ImGuiMod_Alt | ImGuiKey_R, VKey)) ClearSelectedBoneTransforms(R, false, true, false);
+            else if (interaction_mode == InteractionMode::Pose && Shortcut(ImGuiMod_Alt | ImGuiKey_S, VKey)) ClearSelectedBoneTransforms(R, false, false, true);
+            else if (Shortcut(ImGuiKey_G, VKey) && transform_shortcuts_enabled) {
+                // Start transform gizmo in both Object and Edit modes.
+                // In Edit mode, shader applies transform to selected vertices.
+                // In Object mode, shader applies transform to selected instances.
+                StartScreenTransform = TransformGizmo::TransformType::Translate;
+            } else if (Shortcut(ImGuiKey_R, VKey) && transform_shortcuts_enabled) StartScreenTransform = TransformGizmo::TransformType::Rotate;
+            else if (Shortcut(ImGuiKey_S, VKey) && scale_shortcut_enabled) StartScreenTransform = TransformGizmo::TransformType::Scale;
+            else if (Shortcut(ImGuiKey_H, VKey)) {
+                for (const auto e : R.view<Selected>()) {
+                    if (R.all_of<RenderInstance>(e)) Hide(R, e);
+                    else Show(R, e);
+                }
+            } else if (Shortcut(ImGuiMod_Ctrl | ImGuiKey_P, VKey)) {
+                if (active_entity != entt::null) {
                     for (const auto e : R.view<Selected>()) {
-                        if (R.all_of<RenderInstance>(e)) Hide(R, e);
-                        else Show(R, e);
+                        if (e != active_entity) SetParentKeepWorld(R, e, active_entity);
                     }
-                } else if (IsKeyPressed(ImGuiKey_P, false) && GetIO().KeyCtrl) {
-                    if (active_entity != entt::null) {
-                        for (const auto e : R.view<Selected>()) {
-                            if (e != active_entity) SetParentKeepWorld(R, e, active_entity);
-                        }
-                    }
-                } else if (IsKeyPressed(ImGuiKey_P, false) && GetIO().KeyAlt) {
-                    for (const auto e : R.view<Selected>()) ClearParent(R, e);
                 }
+            } else if (Shortcut(ImGuiMod_Alt | ImGuiKey_P, VKey)) {
+                for (const auto e : R.view<Selected>()) ClearParent(R, e);
             }
         }
     }
