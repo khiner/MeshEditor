@@ -3849,12 +3849,28 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             else if (const auto *nm = r.try_get<const Name>(entity)) node_name = nm->Value;
         }
 
-        const auto &local_transform = r.get<const Transform>(entity);
         const auto &world_transform = r.get<const WorldTransform>(entity);
 
+        // Bones with non-joint source ancestors are flattened on import (EnTT parent is the previous joint/armature),
+        // but the emitted node tree keeps them via SourceParentNodeIndex.
+        // When the source parent differs from the EnTT parent, derive the local from world transforms.
+        const Transform local_transform = [&] {
+            const auto *spi = r.try_get<const SourceParentNodeIndex>(entity);
+            const auto *node = r.try_get<const SceneNode>(entity);
+            if (spi && spi->Value < node_to_entity.size()) {
+                const auto src_parent = node_to_entity[spi->Value];
+                if (src_parent != entt::null && (!node || node->Parent != src_parent)) {
+                    if (const auto *parent_wt = r.try_get<const WorldTransform>(src_parent)) {
+                        return ToTransform(glm::inverse(ToMatrix(*parent_wt)) * ToMatrix(world_transform));
+                    }
+                }
+            }
+            return r.get<const Transform>(entity);
+        }();
+
         // EXT_mesh_gpu_instancing. Per-instance TRS = node.WorldTransform^-1 * instance.WorldTransform.
-        // Emit only channels that aren't uniformly default; spec requires >=1 attribute so fall back
-        // to TRANSLATION when everything's default.
+        // Emit only channels that aren't uniformly default.
+        // spec requires >=1 attribute so fall back to TRANSLATION when everything's default.
         const auto &instance_worlds = node_instance_worlds[ni];
         const bool needs_instancing = mesh_index.has_value() && instance_worlds.size() > 1;
         if (needs_instancing) uses_gpu_instancing = true;
