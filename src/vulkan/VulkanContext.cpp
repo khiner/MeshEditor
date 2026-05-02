@@ -151,6 +151,7 @@ VulkanContext::VulkanContext(std::vector<const char *> enabled_extensions, bool 
     const std::array pool_sizes{
         vk::DescriptorPoolSize{vk::DescriptorType::eCombinedImageSampler, 16},
         vk::DescriptorPoolSize{vk::DescriptorType::eSampledImage, 8},
+        vk::DescriptorPoolSize{vk::DescriptorType::eSampler, 2}, // IMGUI_IMPL_VULKAN_MINIMUM_SAMPLER_POOL_SIZE
         vk::DescriptorPoolSize{vk::DescriptorType::eUniformBuffer, 8},
         vk::DescriptorPoolSize{vk::DescriptorType::eStorageBuffer, 8},
         vk::DescriptorPoolSize{vk::DescriptorType::eStorageImage, 4},
