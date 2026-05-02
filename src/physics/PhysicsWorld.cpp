@@ -914,9 +914,13 @@ BodyShape BuildBodyShape(const entt::registry &r, entt::entity entity, const KHR
         const auto *bt = r.try_get<const WorldTransform>(entity);
         const auto inv_parent = bt ? glm::inverse(glm::translate(mat4{1}, bt->P) * glm::mat4_cast(glm::normalize(bt->R))) : mat4{1};
         StaticCompoundShapeSettings compound;
+        // Pull friction/restitution from the first child collider's material.
+        // Otherwise compound bodies fall back to Jolt's BCS default instead of material value.
         for (auto ce : colliders) {
             const auto &cs = r.get<const ColliderShape>(ce);
-            const auto sub = BuildLeafShape(r, ce, cs, r.try_get<const ColliderMaterial>(ce), motion, entity, filter);
+            const auto *cm = r.try_get<const ColliderMaterial>(ce);
+            if (!out.SingleMaterial && cm) out.SingleMaterial = cm;
+            const auto sub = BuildLeafShape(r, ce, cs, cm, motion, entity, filter);
             if (!sub) continue;
             if (ce == entity) compound.AddShape(Vec3::sZero(), Quat::sIdentity(), sub);
             else {
@@ -937,10 +941,11 @@ BodyShape BuildBodyShape(const entt::registry &r, entt::entity entity, const KHR
 
 // Wrap with OffsetCenterOfMassShape (KHR semantics: CoM is an absolute local-space point).
 // Writes the inner mass props the caller needs to override the BCS with (avoids PAT inflation).
-Ref<Shape> WrapCenterOfMass(Ref<Shape> inner, const PhysicsMotion *motion, MassProperties &out_inner_mass_props) {
+// glTF CoM is in node-local pre-scale coords. Jolt body frames are world-meters, so scale by world_scale to convert.
+Ref<Shape> WrapCenterOfMass(Ref<Shape> inner, const PhysicsMotion *motion, vec3 world_scale, MassProperties &out_inner_mass_props) {
     if (!motion || !motion->CenterOfMass) return inner;
     out_inner_mass_props = inner->GetMassProperties();
-    return new OffsetCenterOfMassShape(inner, ToJolt(*motion->CenterOfMass) - inner->GetCenterOfMass());
+    return new OffsetCenterOfMassShape(inner, ToJolt(*motion->CenterOfMass * world_scale) - inner->GetCenterOfMass());
 }
 } // namespace
 
@@ -951,10 +956,11 @@ void PhysicsWorld::AddBody(entt::registry &r, entt::entity entity) {
     if (!built.Shape) return;
 
     const auto *motion = r.try_get<const PhysicsMotion>(entity);
-    MassProperties inner_mass_props;
-    const auto shape = WrapCenterOfMass(built.Shape, built.IsSensor ? nullptr : motion, inner_mass_props);
-
     const auto *t = r.try_get<const WorldTransform>(entity);
+    const auto world_scale = t ? t->S : vec3{1};
+    MassProperties inner_mass_props;
+    const auto shape = WrapCenterOfMass(built.Shape, built.IsSensor ? nullptr : motion, world_scale, inner_mass_props);
+
     const auto pos = t ? ToJoltR(t->P) : RVec3::sZero();
     const auto rot = t ? ToJoltQuat(t->R) : Quat::sIdentity();
     const auto motion_type = motion ? (motion->IsKinematic ? EMotionType::Kinematic : EMotionType::Dynamic) : EMotionType::Static;
@@ -1009,7 +1015,9 @@ void PhysicsWorld::ApplyShape(const entt::registry &r, entt::entity entity) {
     const auto built = BuildBodyShape(r, entity, P->FilterRef.GetPtr());
     if (!built.Shape) return;
     MassProperties inner_mass_props;
-    const auto shape = WrapCenterOfMass(built.Shape, built.IsSensor ? nullptr : r.try_get<const PhysicsMotion>(entity), inner_mass_props);
+    const auto *t = r.try_get<const WorldTransform>(entity);
+    const auto world_scale = t ? t->S : vec3{1};
+    const auto shape = WrapCenterOfMass(built.Shape, built.IsSensor ? nullptr : r.try_get<const PhysicsMotion>(entity), world_scale, inner_mass_props);
     // updateMassProperties=false: preserves explicit Mass/Inertia overrides and avoids
     // GetMassProperties() on shapes that return zero inertia (TriangleMesh, MeshShape).
     // ApplyMassPropertiesFromShape re-derives mass props with the right guards.
