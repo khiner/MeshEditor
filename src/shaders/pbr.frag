@@ -136,6 +136,14 @@ vec3 getVolumeTransmissionRay(vec3 n, vec3 v, float world_thickness, float ior) 
     return normalize(refract(-v, normalize(n), 1.0 / ior)) * world_thickness;
 }
 
+// KHR_texture_transform: rotate the tangent basis around n by the normal map's UV rotation
+// so sampled X/Y components stay aligned with the rotated UV axes.
+mat3 GetNormalMapTBN(vec3 t, vec3 b, vec3 n, float uv_rotation) {
+    const float c = cos(uv_rotation);
+    const float s = sin(uv_rotation);
+    return mat3(c * t - s * b, s * t + c * b, n);
+}
+
 NormalInfo GetNormalInfo(const PBRMaterial material) {
     const vec2 uv = GetUv(material.NormalTexture);
     vec3 ng = normalize(WorldNormal);
@@ -172,7 +180,7 @@ NormalInfo GetNormalInfo(const PBRMaterial material) {
         info.ntex = texture(Samplers[nonuniformEXT(material.NormalTexture.Slot)], uv).rgb * 2.0 - vec3(1.0);
         info.ntex *= vec3(material.NormalScale, material.NormalScale, 1.0);
         info.ntex = normalize(info.ntex);
-        info.n = normalize(mat3(t, b, ng) * info.ntex);
+        info.n = normalize(GetNormalMapTBN(t, b, ng, material.NormalTexture.UvRotation) * info.ntex);
     } else {
         info.ntex = vec3(0.0, 0.0, 1.0);
         info.n = ng;
@@ -297,7 +305,7 @@ void main() {
         if (material.Clearcoat.NormalTexture.Slot != INVALID_SLOT) {
             vec3 cc_ntex = texture(Samplers[nonuniformEXT(material.Clearcoat.NormalTexture.Slot)], GetUv(material.Clearcoat.NormalTexture)).rgb * 2.0 - vec3(1.0);
             cc_ntex *= vec3(material.Clearcoat.NormalScale, material.Clearcoat.NormalScale, 1.0);
-            n_cc = normalize(mat3(normal_info.t, normal_info.b, normal_info.ng) * normalize(cc_ntex));
+            n_cc = normalize(GetNormalMapTBN(normal_info.t, normal_info.b, normal_info.ng, material.Clearcoat.NormalTexture.UvRotation) * normalize(cc_ntex));
         }
         NdotV_cc = clampedDot(n_cc, v);
     }
