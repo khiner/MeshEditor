@@ -99,6 +99,8 @@ struct Scene {
     AnimationTimelineView &GetTimelineView() { return TimelineView; }
     const AnimationIcons &GetAnimationIcons() const { return AnimIcons; }
     void ApplyTimelineAction(const AnimationTimelineAction &);
+    // Render per-source animation-clip pickers above the timeline.
+    void RenderClipPickers();
     // Start animation playback with presentation-friendly viewport settings
     // (Material Preview shading, overlays hidden).
     void Play();

@@ -1324,7 +1324,6 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
         .DefaultSceneName = std::string{asset.scenes[scene_index].name},
         .DefaultSceneRoots = {},
         .ExtensionsRequired = {},
-        .MaterialVariants = {},
         .ExtrasByEntity = std::move(extras),
         .MaterialMetas = {},
         .Textures = {},
@@ -1836,10 +1835,17 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
     }
     source_assets.ExtensionsRequired.reserve(asset.extensionsRequired.size());
     for (const auto &e : asset.extensionsRequired) source_assets.ExtensionsRequired.emplace_back(e);
-    source_assets.MaterialVariants.reserve(asset.materialVariants.size());
-    for (const auto &v : asset.materialVariants) source_assets.MaterialVariants.emplace_back(v);
     source_assets.MaterialMetas = std::move(material_metas);
     const auto &sa = R.emplace_or_replace<gltf::SourceAssets>(SceneEntity, std::move(source_assets));
+
+    if (!asset.materialVariants.empty()) {
+        ::MaterialVariants mv;
+        mv.Names.reserve(asset.materialVariants.size());
+        for (const auto &v : asset.materialVariants) mv.Names.emplace_back(v);
+        R.emplace_or_replace<::MaterialVariants>(SceneEntity, std::move(mv));
+    } else {
+        R.remove<::MaterialVariants>(SceneEntity);
+    }
 
     std::vector<PendingTextureUpload> new_pending_textures;
     std::unordered_map<uint64_t, uint32_t> texture_slot_cache;
@@ -2042,19 +2048,25 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
                 }
             }
             for (auto &local_material_index : scene_mesh.TrianglePrimitives.MaterialIndices) {
-                local_material_index = local_material_index < material_indices_by_gltf_material.size() ?
-                    material_indices_by_gltf_material[local_material_index] :
-                    fallback_material_index;
+                local_material_index = local_material_index < material_indices_by_gltf_material.size() ? material_indices_by_gltf_material[local_material_index] : fallback_material_index;
             }
-            // Snapshot per-primitive metadata + morph tangent deltas before move-into-CreateMesh
-            // discards them. Stored as a sidecar so `BuildGltfScene` can re-emit verbatim. Layout-only
-            // fields (VertexCounts/AttributeFlags/HasSourceIndices/VariantMappings) and TangentDeltas
-            // aren't consumed by CreateMesh, so move them out of the source instead of copying.
+            // KHR_materials_variants mappings carry source gltf material indices.
+            // Remap to match post-load PrimitiveMaterialBuffer indices so the runtime can apply a variant by writing entries straight to that buffer.
+            for (auto &prim_mappings : scene_mesh.TrianglePrimitives.VariantMappings) {
+                for (auto &m : prim_mappings) {
+                    if (m) {
+                        *m = *m < material_indices_by_gltf_material.size() ? material_indices_by_gltf_material[*m] : fallback_material_index;
+                    }
+                }
+            }
+            // Snapshot per-primitive metadata + morph tangent deltas before CreateMesh consumes the source.
+            // DefaultMaterials copies because CreateMesh also consumes MaterialIndices to populate PrimitiveMaterialBuffer.
             MorphSummary morph_summary;
             MeshSourceLayout layout{
                 .VertexCounts = std::move(scene_mesh.TrianglePrimitives.VertexCounts),
                 .AttributeFlags = std::move(scene_mesh.TrianglePrimitives.AttributeFlags),
                 .HasSourceIndices = std::move(scene_mesh.TrianglePrimitives.HasSourceIndices),
+                .DefaultMaterials = scene_mesh.TrianglePrimitives.MaterialIndices,
                 .VariantMappings = std::move(scene_mesh.TrianglePrimitives.VariantMappings),
                 .Colors0ComponentCount = scene_mesh.TriangleAttrs.Colors0ComponentCount,
                 .MorphTangentDeltas = scene_mesh.MorphData ? std::move(scene_mesh.MorphData->TangentDeltas) : std::vector<vec3>{},
@@ -3655,8 +3667,15 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
                 std::vector<fastgltf::Optional<std::size_t>> mappings;
                 if (prim_idx < layout.VariantMappings.size()) {
                     for (const auto &m : layout.VariantMappings[prim_idx]) {
-                        if (m.has_value() && *m < save_material_count) mappings.emplace_back(std::size_t(*m));
-                        else mappings.emplace_back();
+                        // Same +1 shift unwind as primitive_materials above.
+                        if (m.has_value() && *m >= 1) {
+                            const auto mat = *m - 1;
+                            if (mat < save_material_count) {
+                                mappings.emplace_back(std::size_t(mat));
+                                continue;
+                            }
+                        }
+                        mappings.emplace_back();
                     }
                 }
 
@@ -4144,9 +4163,9 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
     if (any_material([](const auto &m) { return m.clearcoat != nullptr; })) asset.extensionsUsed.emplace_back("KHR_materials_clearcoat");
     if (any_material([](const auto &m) { return m.anisotropy != nullptr; })) asset.extensionsUsed.emplace_back("KHR_materials_anisotropy");
     if (any_material([](const auto &m) { return m.iridescence != nullptr; })) asset.extensionsUsed.emplace_back("KHR_materials_iridescence");
-    if (!sa.MaterialVariants.empty()) {
-        asset.materialVariants.reserve(sa.MaterialVariants.size());
-        for (const auto &v : sa.MaterialVariants) asset.materialVariants.emplace_back(v);
+    if (const auto *mv = sc.R.try_get<const ::MaterialVariants>(sc.SceneEntity); mv && !mv->Names.empty()) {
+        asset.materialVariants.reserve(mv->Names.size());
+        for (const auto &v : mv->Names) asset.materialVariants.emplace_back(v);
         asset.extensionsUsed.emplace_back("KHR_materials_variants");
     }
     // KHR_texture_transform: emitted per-texture when non-identity or when source had it at all.

@@ -454,6 +454,12 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
         if (windows.Animation.Visible) {
             PushStyleVar(ImGuiStyleVar_WindowPadding, {0, 0});
             if (Begin(windows.Animation.Name, &windows.Animation.Visible, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse)) {
+                PushStyleVar(ImGuiStyleVar_FramePadding, {6, 4});
+                Indent(6);
+                Spacing();
+                scene->RenderClipPickers();
+                Unindent(6);
+                PopStyleVar();
                 if (auto action = RenderAnimationTimeline(scene->GetTimeline(), scene->GetTimelineView(), scene->GetAnimationIcons())) {
                     scene->ApplyTimelineAction(*action);
                 }

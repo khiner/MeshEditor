@@ -178,7 +178,7 @@ struct MeshActiveElement {}; struct MeshGeometry {}; struct MeshMaterial {};
 struct SoundVertices {}; struct SoundVerticesUpdated {}; struct VertexForce {}; struct ModelsBuffer {};
 struct NewBufferEntity {}; struct RenderInstanceCreated {};
 struct SceneSettings {}; struct InteractionMode {}; struct Submit {}; struct Rotation {};
-struct ViewportTheme {}; struct Materials {}; struct PbrSpecialization {};
+struct ViewportTheme {}; struct Materials {}; struct PbrSpecialization {}; struct ActiveMaterialVariant {};
 struct SceneView {}; struct CameraLens {}; struct TransformPending {};
 struct TransformEnd {}; struct WorldTransform {}; struct TransformDirty {};
 struct PhysicsMotion {}; struct PhysicsShape {}; struct PhysicsMaterial {}; struct PhysicsTrigger {}; struct PhysicsJoint {};
@@ -411,6 +411,7 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
     track<changes::Submit>(R).on<SubmitDirty>(On::Create);
     track<changes::ViewportTheme>(R).on<ViewportTheme>(On::Create | On::Update);
     track<changes::Materials>(R).on<MaterialDirty>(On::Create | On::Update);
+    track<changes::ActiveMaterialVariant>(R).on<MaterialVariants>(On::Create | On::Update);
     track<changes::PbrSpecialization>(R)
         .on<PbrMeshFeatures>(On::Create | On::Update | On::Destroy)
         .on<MaterialPreviewLighting>(On::Create | On::Update)
@@ -1247,6 +1248,20 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         if (const auto *dirty = R.try_get<const MaterialDirty>(SceneEntity);
             dirty && dirty->Index < Stores.Buffers->Materials.Count()) {
             Stores.Buffers->Materials.Set(dirty->Index, Stores.Buffers->Materials.Get(dirty->Index));
+        }
+        request(RenderRequest::Submit);
+    }
+    if (!reactive<changes::ActiveMaterialVariant>(R).empty()) {
+        const auto *mv = R.try_get<const MaterialVariants>(SceneEntity);
+        const auto active = mv ? mv->Active : std::nullopt;
+        for (const auto [_, layout, mesh] : R.view<const MeshSourceLayout, const Mesh>().each()) {
+            auto primitive_materials = Stores.Meshes->GetPrimitiveMaterialIndices(mesh.GetStoreId());
+            for (std::size_t i = 0; i < layout.DefaultMaterials.size(); ++i) {
+                const auto &mapping = layout.VariantMappings[i];
+                primitive_materials[i] = active && *active < mapping.size() && mapping[*active] ?
+                    *mapping[*active] :
+                    layout.DefaultMaterials[i];
+            }
         }
         request(RenderRequest::Submit);
     }

@@ -10,6 +10,7 @@
 #include "Armature.h"
 #include "Instance.h"
 #include "MeshComponents.h"
+#include "NodeTransformAnimation.h"
 #include "OrientationGizmo.h"
 #include "Path.h"
 #include "SceneSelection.h"
@@ -340,6 +341,10 @@ bool RenderCameraLensEditor(Camera &camera, std::optional<ViewportContext> viewp
         lens_changed |= SliderFloat("Far clip", &orthographic->FarClip, orthographic->NearClip + MinNearFarDelta, far_max);
     }
     return lens_changed;
+}
+
+std::string NamedOr(const std::string &name, std::string_view fallback, uint32_t i) {
+    return name.empty() ? std::format("{}{}", fallback, i) : name;
 }
 
 } // namespace
@@ -1934,8 +1939,53 @@ void Scene::RenderControls() {
                 }
                 PopID();
             }
-            if (CollapsingHeader("Object tree", ImGuiTreeNodeFlags_DefaultOpen)) {
-                RenderObjectTree();
+            if (CollapsingHeader("Object tree", ImGuiTreeNodeFlags_DefaultOpen)) RenderObjectTree();
+            SeparatorText("");
+            if (CollapsingHeader("Add object")) {
+                bool added{false};
+                for (uint32_t i = 0; i < AllPrimitiveShapes.size(); ++i) {
+                    if (i % 4 != 0) SameLine();
+                    const auto &shape = AllPrimitiveShapes[i];
+                    if (Button(ToString(shape).c_str())) {
+                        R.emplace<PrimitiveShape>(AddMesh(primitive::CreateMesh(shape), MeshInstanceCreateInfo{.Name = ToString(shape)}).first, shape);
+                        added = true;
+                    }
+                }
+                Spacing();
+                if (Button("Empty")) {
+                    AddEmpty({.Select = MeshInstanceCreateInfo::SelectBehavior::Exclusive});
+                    added = true;
+                }
+                SameLine();
+                if (Button("Armature")) {
+                    AddArmature({.Select = MeshInstanceCreateInfo::SelectBehavior::Exclusive});
+                    added = true;
+                }
+                SameLine();
+                if (Button("Camera")) {
+                    AddCamera({.Select = MeshInstanceCreateInfo::SelectBehavior::Exclusive});
+                    added = true;
+                }
+                SameLine();
+                if (Button("Light")) {
+                    AddLight({.Select = MeshInstanceCreateInfo::SelectBehavior::Exclusive});
+                    added = true;
+                }
+                if (added) StartScreenTransform = TransformGizmo::TransformType::Translate;
+            }
+            if (auto *mv = R.try_get<MaterialVariants>(SceneEntity); mv && !mv->Names.empty() && CollapsingHeader("Material variants")) {
+                const auto active = mv->Active;
+                const auto preview = active ? NamedOr(mv->Names[*active], "Variant ", *active) : std::string{"Default"};
+                const auto set_variant = [&](std::optional<uint32_t> v) {
+                    if (active != v) R.patch<MaterialVariants>(SceneEntity, [v](auto &m) { m.Active = v; });
+                };
+                if (BeginCombo("Active variant", preview.c_str())) {
+                    if (Selectable("Default", !active)) set_variant({});
+                    for (uint32_t i = 0; i < mv->Names.size(); ++i) {
+                        if (Selectable(NamedOr(mv->Names[i], "Variant ", i).c_str(), active == i)) set_variant(i);
+                    }
+                    EndCombo();
+                }
             }
             if (!R.storage<Selected>().empty()) {
                 SeparatorText("Selection actions");
@@ -1977,39 +2027,6 @@ void Scene::RenderControls() {
                 }
             }
             RenderEntityControls(FindActiveEntity(R));
-
-            if (CollapsingHeader("Add object")) {
-                bool added{false};
-                for (uint32_t i = 0; i < AllPrimitiveShapes.size(); ++i) {
-                    if (i % 4 != 0) SameLine();
-                    const auto &shape = AllPrimitiveShapes[i];
-                    if (Button(ToString(shape).c_str())) {
-                        R.emplace<PrimitiveShape>(AddMesh(primitive::CreateMesh(shape), MeshInstanceCreateInfo{.Name = ToString(shape)}).first, shape);
-                        added = true;
-                    }
-                }
-                Spacing();
-                if (Button("Empty")) {
-                    AddEmpty({.Select = MeshInstanceCreateInfo::SelectBehavior::Exclusive});
-                    added = true;
-                }
-                SameLine();
-                if (Button("Armature")) {
-                    AddArmature({.Select = MeshInstanceCreateInfo::SelectBehavior::Exclusive});
-                    added = true;
-                }
-                SameLine();
-                if (Button("Camera")) {
-                    AddCamera({.Select = MeshInstanceCreateInfo::SelectBehavior::Exclusive});
-                    added = true;
-                }
-                SameLine();
-                if (Button("Light")) {
-                    AddLight({.Select = MeshInstanceCreateInfo::SelectBehavior::Exclusive});
-                    added = true;
-                }
-                if (added) StartScreenTransform = TransformGizmo::TransformType::Translate;
-            }
             EndTabItem();
         }
 
@@ -2231,6 +2248,42 @@ void Scene::RenderControls() {
         }
         EndTabBar();
     }
+}
+
+void Scene::RenderClipPickers() {
+    static constexpr float ComboWidth = 200.f;
+    // Names live on object entities, but ArmatureAnimation lives on the data entity.
+    const auto display_name = [&]<typename Anim>(entt::entity entity) {
+        if constexpr (std::is_same_v<Anim, ArmatureAnimation>) {
+            for (const auto [obj_e, obj] : R.view<const ArmatureObject>().each()) {
+                if (obj.Entity == entity) return GetName(R, obj_e);
+            }
+        }
+        return GetName(R, entity);
+    };
+    const auto clip_picker = [&]<typename Anim>(std::string_view kind) {
+        for (auto [entity, anim] : R.view<Anim>().each()) {
+            if (anim.Clips.size() < 2) continue;
+            const auto active_idx = anim.ActiveClipIndex;
+            const auto label = std::format("{}: {}", kind, display_name.template operator()<Anim>(entity));
+            PushID(label.c_str());
+            SetNextItemWidth(ComboWidth);
+            if (BeginCombo("##clip", NamedOr(anim.Clips[active_idx].Name, "Clip ", active_idx).c_str())) {
+                for (uint32_t i = 0; i < anim.Clips.size(); ++i) {
+                    if (Selectable(NamedOr(anim.Clips[i].Name, "Clip ", i).c_str(), active_idx == i) && active_idx != i) {
+                        R.patch<Anim>(entity, [i](auto &a) { a.ActiveClipIndex = i; });
+                    }
+                }
+                EndCombo();
+            }
+            SameLine();
+            TextUnformatted(label.c_str());
+            PopID();
+        }
+    };
+    clip_picker.template operator()<ArmatureAnimation>("Armature");
+    clip_picker.template operator()<MorphWeightAnimation>("Morph");
+    clip_picker.template operator()<NodeTransformAnimation>("Node");
 }
 
 void Scene::RenderObjectTree() {

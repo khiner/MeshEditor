@@ -209,7 +209,7 @@ constexpr Exception BufferViewIndexExactExceptions[]{
 
 constexpr Exception OtherExactExceptions[]{
     {"meshes[*].primitives[*].material", "line/point primitives lose per-primitive material on import (merged across primitives without retaining material refs)"},
-    {"meshes[*].extensions", "mesh-level extensions (e.g. KHR_materials_variants mappings) not re-emitted"},
+    {"meshes[*].extensions", "mesh-level extensions (e.g. KHR_xmp_json_ld) not re-emitted"},
     {"scenes[*].extras", "not tracked on Scene"},
     {"scenes[*].extensions", "scene-level extensions not re-emitted"},
     {"nodes[*].extensions.KHR_lights_punctual.light", "renumbered to match the un-deduped lights table"},

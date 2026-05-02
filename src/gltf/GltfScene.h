@@ -115,6 +115,10 @@ struct MeshSourceLayout {
     std::vector<uint32_t> VertexCounts;
     std::vector<uint32_t> AttributeFlags;
     std::vector<uint8_t> HasSourceIndices;
+    // No KHR_materials_variants variant is active, or the active variant doesn't override this primitive.
+    std::vector<uint32_t> DefaultMaterials;
+    // Outer indexed by primitive. inner size == variant count (empty when primitive has no mappings).
+    // nullopt means variant has no override (falls back to DefaultMaterials).
     std::vector<std::vector<std::optional<uint32_t>>> VariantMappings;
     uint8_t Colors0ComponentCount{};
     // target-major: target0[v0..vN], ...; `MorphTargetVertex` only carries position+normal deltas.
@@ -214,7 +218,6 @@ struct SourceAssets {
     std::string DefaultSceneName;
     std::vector<uint32_t> DefaultSceneRoots;
     std::vector<std::string> ExtensionsRequired;
-    std::vector<std::string> MaterialVariants;
     std::unordered_map<uint64_t, std::string> ExtrasByEntity;
     std::vector<MaterialSourceMeta> MaterialMetas;
     std::vector<Texture> Textures;
