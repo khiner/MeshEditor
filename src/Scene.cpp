@@ -1856,8 +1856,8 @@ void Scene::AddBone() {
     auto &armature = R.get<Armature>(R.get<ArmatureObject>(arm_obj_entity).Entity);
 
     // New bone: unparented, unit length, oriented along Y (up), at world origin.
-    const auto arm_world_inv = glm::inverse(ToMatrix(R.get<WorldTransform>(arm_obj_entity)));
-    const auto new_id = armature.AddBone("Bone", {}, {.P = vec3{arm_world_inv * vec4{0, 0, 0, 1}}});
+    const auto &arm_wt = R.get<WorldTransform>(arm_obj_entity);
+    const auto new_id = armature.AddBone("Bone", {}, {.P = (glm::conjugate(glm::normalize(arm_wt.R)) * -arm_wt.P) / arm_wt.S});
     RebuildBoneStructure(R.get<ArmatureObject>(arm_obj_entity).Entity);
 
     const auto bone_entity = CreateSingleBoneInstance(arm_obj_entity, new_id);
