@@ -2151,6 +2151,24 @@ void Scene::RenderControls() {
                         }
                     }
                     if (mixed_visible) PopItemFlag();
+
+                    const auto face_mesh_entities = scene_selection::GetSelectedMeshEntities(R) |
+                        std::views::filter([&](entt::entity me) { return R.get<const Mesh>(me).FaceCount() > 0; }) |
+                        to<std::vector>();
+                    if (!face_mesh_entities.empty()) {
+                        const bool any_smooth = any_of(face_mesh_entities, [&](entt::entity me) { return R.all_of<SmoothShading>(me); });
+                        const bool any_flat = any_of(face_mesh_entities, [&](entt::entity me) { return !R.all_of<SmoothShading>(me); });
+                        const bool mixed_smooth = any_smooth && any_flat;
+                        SameLine();
+                        if (mixed_smooth) PushItemFlag(ImGuiItemFlags_MixedValue, true);
+                        if (bool set_smooth = any_smooth && !any_flat; Checkbox("Smooth shading", &set_smooth)) {
+                            for (const auto me : face_mesh_entities) {
+                                if (set_smooth) R.emplace_or_replace<SmoothShading>(me);
+                                else R.remove<SmoothShading>(me);
+                            }
+                        }
+                        if (mixed_smooth) PopItemFlag();
+                    }
                 }
                 if (CanDuplicate() && Button("Duplicate")) Duplicate();
                 if (CanDuplicateLinked()) {
@@ -2186,14 +2204,6 @@ void Scene::RenderControls() {
             SeparatorText("Viewport shading");
             TextUnformatted("Use the viewport icons in the top-right.");
             const auto current_mode = settings.ViewportShading;
-
-            if (current_mode != ViewportShadingMode::Wireframe) {
-                bool smooth_shading = settings.SmoothShading;
-                if (Checkbox("Smooth shading", &smooth_shading)) {
-                    settings.SmoothShading = smooth_shading;
-                    settings_changed = true;
-                }
-            }
 
             if (current_mode == ViewportShadingMode::Solid) {
                 auto color_mode = int(settings.FaceColorMode);

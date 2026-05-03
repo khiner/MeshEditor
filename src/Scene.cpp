@@ -396,7 +396,8 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
         .on<RenderInstance>(On::Create | On::Destroy)
         .on<Active>(On::Create | On::Destroy)
         .on<StartTransform>(On::Create | On::Destroy)
-        .on<SceneEditMode>(On::Create | On::Update);
+        .on<SceneEditMode>(On::Create | On::Update)
+        .on<SmoothShading>(On::Create | On::Destroy);
     track<changes::MeshActiveElement>(R).on<MeshActiveElement>(On::Create | On::Update);
     track<changes::MeshGeometry>(R).on<MeshGeometryDirty>(On::Create);
     track<changes::MeshMaterial>(R).on<MeshMaterialAssignment>(On::Create | On::Update);
@@ -2415,6 +2416,7 @@ std::pair<entt::entity, entt::entity> Scene::AddMesh(const std::filesystem::path
 
     const auto e = AddMesh(std::move(result->Mesh), std::move(info));
     R.emplace<Path>(e.first, path);
+    R.emplace<SmoothShading>(e.first);
     return e;
 }
 
@@ -2466,6 +2468,7 @@ entt::entity Scene::Duplicate(entt::entity e, std::optional<MeshInstanceCreateIn
         })
     );
     if (auto prim_shape = R.try_get<PrimitiveShape>(mesh_entity)) R.emplace<PrimitiveShape>(e_new.first, *prim_shape);
+    if (R.all_of<SmoothShading>(mesh_entity)) R.emplace<SmoothShading>(e_new.first);
     if (const auto *armature_modifier = R.try_get<ArmatureModifier>(e)) R.emplace<ArmatureModifier>(e_new.second, *armature_modifier);
     if (const auto *bone_attachment = R.try_get<BoneAttachment>(e)) R.emplace<BoneAttachment>(e_new.second, *bone_attachment);
     ProfileNextProcessComponentEvents = true;
@@ -2855,7 +2858,7 @@ void Scene::RecordRenderCommandBuffer(bool silhouette_only) {
             const Mesh *MeshComp; // nullptr if entity has no Mesh component
             const DeformSlots &Deform;
             std::optional<uint32_t> PrimaryEditBufferIndex;
-            bool IsSoundVertices, IsBone, IsBoneJoint, IsExtras;
+            bool IsSoundVertices, IsBone, IsBoneJoint, IsExtras, Smooth;
         };
 
         std::vector<MeshEntityData> mesh_entities;
@@ -2866,7 +2869,7 @@ void Scene::RecordRenderCommandBuffer(bool silhouette_only) {
                 primary_bi = R.get<RenderInstance>(it->second).BufferIndex;
             }
             const bool is_bone_joint = R.all_of<BoneJoint>(entity);
-            mesh_entities.emplace_back(entity, mesh_buffers, models, R.try_get<const Mesh>(entity), get_deform_slots(entity), primary_bi, excitable_mesh_entities.contains(entity), R.all_of<ArmatureObject>(entity) || is_bone_joint, is_bone_joint, R.all_of<ObjectExtrasTag>(entity));
+            mesh_entities.emplace_back(entity, mesh_buffers, models, R.try_get<const Mesh>(entity), get_deform_slots(entity), primary_bi, excitable_mesh_entities.contains(entity), R.all_of<ArmatureObject>(entity) || is_bone_joint, is_bone_joint, R.all_of<ObjectExtrasTag>(entity), R.all_of<SmoothShading>(entity));
         }
 
         // Entity -> mesh_entities index map for blend_mesh_order lookup
@@ -2890,7 +2893,7 @@ void Scene::RecordRenderCommandBuffer(bool silhouette_only) {
                 const auto primitive_material_buffer = Stores.Meshes->GetPrimitiveMaterialRange(mesh.GetStoreId());
                 dd.ObjectIdSlot = face_id_buffer.Slot;
                 dd.FaceIdOffset = face_id_buffer.Offset;
-                dd.FaceFirstTriOffset = settings.SmoothShading ? InvalidOffset : Stores.Meshes->GetFaceFirstTriRange(mesh.GetStoreId()).Offset;
+                dd.FaceFirstTriOffset = e.Smooth ? InvalidOffset : Stores.Meshes->GetFaceFirstTriRange(mesh.GetStoreId()).Offset;
                 dd.FacePrimitiveOffset = face_primitive_buffer.Count > 0 ? face_primitive_buffer.Offset : InvalidOffset;
                 dd.PrimitiveMaterialOffset = primitive_material_buffer.Count > 0 ? primitive_material_buffer.Offset : InvalidOffset;
                 const auto append_fill_draw = [&](const DrawData &dd, uint32_t index_count, std::optional<uint32_t> model_index) {

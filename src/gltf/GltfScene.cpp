@@ -2084,6 +2084,7 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
             R.emplace<SourceMeshIndex>(mesh_entity, mi);
             R.emplace<SourceMeshKind>(mesh_entity, MeshKind::Triangles);
             R.emplace<MeshSourceLayout>(mesh_entity, std::move(layout));
+            R.emplace<SmoothShading>(mesh_entity);
             if (!scene_mesh.Name.empty()) R.emplace<MeshName>(mesh_entity, scene_mesh.Name);
             if (mesh_pbr_mask != 0) R.emplace<PbrMeshFeatures>(mesh_entity, mesh_pbr_mask);
             mesh_morphs.emplace_back(std::move(morph_summary));

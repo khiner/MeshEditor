@@ -20,6 +20,10 @@ struct ModelsBuffer {
 // Cameras, lights, empties.
 struct ObjectExtrasTag {};
 
+// Presence on a mesh entity: interpolated vertex normals
+// Absence: per-face normal computed in the vertex shader
+struct SmoothShading {};
+
 struct VertexClass {
     uint32_t Offset{InvalidOffset};
 };
