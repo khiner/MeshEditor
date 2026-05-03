@@ -3896,8 +3896,10 @@ std::vector<entt::entity> Scene::RunObjectPick(uvec2 mouse_px, uint32_t radius_p
     }
 
     struct SortedHit {
-        uint32_t Key24;
-        uint32_t Id;
+        uint32_t DistSq;
+        uint32_t Layer; // 0 = bone (on top in main pass), 1 = other
+        uint32_t Depth;
+        entt::entity Entity;
         auto operator<=>(const SortedHit &) const = default;
     };
 
@@ -3907,18 +3909,18 @@ std::vector<entt::entity> Scene::RunObjectPick(uvec2 mouse_px, uint32_t radius_p
     for (uint32_t object_id = 1; object_id <= max_object_id; ++object_id) {
         const uint32_t idx = object_id - 1;
         if ((bits[idx / 32] & (1u << (idx % 32))) == 0) continue;
-        if (!object_id_to_entity.contains(object_id)) continue;
+        const auto it = object_id_to_entity.find(object_id);
+        if (it == object_id_to_entity.end()) continue;
         const uint32_t packed_key = keys[idx];
         if ((packed_key >> 24) != epoch_inv) continue;
-        hits.emplace_back(SortedHit{packed_key & 0x00ffffffu, object_id});
+        const uint32_t layer = R.any_of<BoneIndex, BoneSubPartOf>(it->second) ? 0u : 1u;
+        hits.emplace_back(SortedHit{(packed_key >> 16) & 0xffu, layer, packed_key & 0xffffu, it->second});
     }
     std::ranges::sort(hits);
 
     std::vector<entt::entity> entities;
     entities.reserve(hits.size());
-    for (const auto &hit : hits) {
-        entities.emplace_back(object_id_to_entity.at(hit.Id));
-    }
+    for (const auto &hit : hits) entities.emplace_back(hit.Entity);
     return entities;
 }
 
