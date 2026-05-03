@@ -275,11 +275,4 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &, const S
 // nodes belonging to `scene_index` (per `SourceAssets::NodeSceneMasks`) render.
 // No-op if the asset is single-scene or the index is invalid / unchanged.
 void SwitchActiveScene(entt::registry &, entt::entity scene_entity, uint32_t scene_index);
-
-// Show in-active-scene objects, hide the rest. No-op for single-scene assets.
-void ApplySceneVisibility(entt::registry &, entt::entity scene_entity);
-
-// Pick Active and select all objects in the active scene. Shared by load and scene switch so the
-// Active/Selected state is derived from the same rules in both paths. Returns the picked Active.
-entt::entity ApplyActiveSceneSelection(entt::registry &, entt::entity scene_entity);
 } // namespace gltf
