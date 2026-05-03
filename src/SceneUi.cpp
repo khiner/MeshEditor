@@ -889,18 +889,21 @@ void Scene::InteractOverlay() {
 
     auto &settings = R.get<SceneSettings>(SceneEntity);
 
-    { // Viewport shading group (top-right overlay)
-        const float group_width = shading_button_style.ButtonSize.x * 4.f;
-        const ImVec2 start_pos = std::bit_cast<ImVec2>(viewport.pos + vec2{GetWindowContentRegionMax().x - group_width, GetWindowContentRegionMin().y}) + ImVec2{-overlay_corner_gap, overlay_corner_gap};
-        const float button_w = shading_button_style.ButtonSize.x;
+    const auto shading_arrow_w = shading_button_style.ButtonSize.y * 0.55f;
+    const float shading_button_w = shading_button_style.ButtonSize.x;
+    const float shading_group_width = shading_button_w * 4.f + shading_arrow_w;
+    const auto shading_button_h = shading_button_style.ButtonSize.y;
+
+    { // Viewport shading button group + dropdown (top-right overlay)
+        const auto start_pos = std::bit_cast<ImVec2>(viewport.pos + vec2{GetWindowContentRegionMax().x - shading_group_width, GetWindowContentRegionMin().y}) + ImVec2{-overlay_corner_gap, overlay_corner_gap};
         const auto make_shading_button = [&](const SvgResource *icon, float x, ImDrawFlags corners, ViewportShadingMode mode, const char *tooltip) {
             return OverlayIconButtonInfo{icon, {x, 0.f}, corners, true, settings.ViewportShading == mode, tooltip};
         };
         const OverlayIconButtonInfo buttons[]{
             make_shading_button(ShadingIcons.Wireframe.get(), 0.f, ImDrawFlags_RoundCornersLeft, ViewportShadingMode::Wireframe, "Wireframe"),
-            make_shading_button(ShadingIcons.Solid.get(), button_w, ImDrawFlags_RoundCornersNone, ViewportShadingMode::Solid, "Solid"),
-            make_shading_button(ShadingIcons.MaterialPreview.get(), button_w * 2.f, ImDrawFlags_RoundCornersNone, ViewportShadingMode::MaterialPreview, "Material Preview"),
-            make_shading_button(ShadingIcons.Rendered.get(), button_w * 3.f, ImDrawFlags_RoundCornersRight, ViewportShadingMode::Rendered, "Rendered"),
+            make_shading_button(ShadingIcons.Solid.get(), shading_button_w, ImDrawFlags_RoundCornersNone, ViewportShadingMode::Solid, "Solid"),
+            make_shading_button(ShadingIcons.MaterialPreview.get(), shading_button_w * 2.f, ImDrawFlags_RoundCornersNone, ViewportShadingMode::MaterialPreview, "Material Preview"),
+            make_shading_button(ShadingIcons.Rendered.get(), shading_button_w * 3.f, ImDrawFlags_RoundCornersNone, ViewportShadingMode::Rendered, "Rendered"),
         };
 
         if (const auto clicked = DrawOverlayIconButtonGroup("ViewportShading", start_pos, buttons, !active_transform, &OverlayControlsHovered, shading_button_style)) {
@@ -912,14 +915,150 @@ void Scene::InteractOverlay() {
             if (mode != ViewportShadingMode::Wireframe) settings.FillMode = mode;
             R.patch<SceneSettings>(SceneEntity, [](auto &) {});
         }
+
+        { // Dropdown arrow button
+            auto &dl = *GetWindowDrawList();
+            const auto saved_cursor = GetCursorScreenPos();
+            SetCursorScreenPos(start_pos + ImVec2{shading_button_w * 4.f, 0.f});
+            PushID("##ShadingArrow");
+            InvisibleButton("##btn", {shading_arrow_w, shading_button_h});
+            const bool arrow_hovered = IsItemHovered();
+            PopID();
+            SetCursorScreenPos(saved_cursor);
+
+            if (arrow_hovered) OverlayControlsHovered = true;
+            const auto arrow_min = start_pos + ImVec2{shading_button_w * 4.f + shading_button_style.Padding.x, shading_button_style.Padding.y};
+            const auto arrow_max = start_pos + ImVec2{shading_button_w * 4.f + shading_arrow_w - shading_button_style.Padding.x, shading_button_h - shading_button_style.Padding.y};
+            const bool popup_open = IsPopupOpen("##ShadingDropdown");
+            const auto bg_color = GetColorU32(popup_open ? ImGuiCol_ButtonActive : arrow_hovered ? ImGuiCol_ButtonHovered :
+                                                                                                   ImGuiCol_Button);
+            dl.AddRectFilled(arrow_min, arrow_max, bg_color, shading_button_style.CornerRounding, ImDrawFlags_RoundCornersRight);
+
+            const auto center = (arrow_min + arrow_max) * 0.5f;
+            const auto arrow_half = 3.5f;
+            dl.AddTriangleFilled(
+                center - ImVec2{arrow_half, arrow_half * 0.5f},
+                center + ImVec2{arrow_half, -arrow_half * 0.5f},
+                center + ImVec2{0.f, arrow_half * 0.5f},
+                GetColorU32(ImGuiCol_Text)
+            );
+            if (IsMouseClicked(0) && arrow_hovered && !popup_open) OpenPopup("##ShadingDropdown");
+        }
+        { // Dropdown popup
+            SetNextWindowPos(start_pos + ImVec2{shading_group_width, shading_button_h + 2.f}, ImGuiCond_Always, {1.f, 0.f});
+            PushStyleVar(ImGuiStyleVar_WindowPadding, {8, 8});
+            if (BeginPopup("##ShadingDropdown")) {
+                OverlayControlsHovered = true;
+                TextUnformatted("Viewport shading");
+                Separator();
+                const auto current_mode = settings.ViewportShading;
+
+                const auto render_pbr_controls = [&](PBRViewportLighting &lighting, bool &lighting_changed, const char *id) {
+                    PushID(id);
+                    if (Button("Reset")) {
+                        lighting = {false, false, 1.f, 0.f, 0.5f, 0.f};
+                        lighting_changed = true;
+                    }
+                    lighting_changed |= Checkbox("Scene lights", &lighting.UseSceneLights);
+                    SameLine();
+                    lighting_changed |= Checkbox("Scene world", &lighting.UseSceneWorld);
+                    if (!lighting.UseSceneWorld) {
+                        auto &environments = *Stores.Environments;
+                        const auto &current_name = environments.Hdris[environments.ActiveHdriIndex].Name;
+                        if (BeginCombo("Environment", current_name.c_str())) {
+                            for (uint32_t i = 0; i < environments.Hdris.size(); ++i) {
+                                const bool selected = (i == environments.ActiveHdriIndex);
+                                if (Selectable(environments.Hdris[i].Name.c_str(), selected)) {
+                                    SetStudioEnvironment(i);
+                                    lighting_changed = true;
+                                }
+                                if (selected) SetItemDefaultFocus();
+                            }
+                            EndCombo();
+                        }
+                        lighting_changed |= SliderFloat("Intensity", &lighting.EnvIntensity, 0.f, 2.f, "%.2f");
+                        lighting_changed |= SliderFloat("Rotation", &lighting.EnvRotationDegrees, -180.f, 180.f, "%.1f deg");
+                        lighting_changed |= SliderFloat("Blur", &lighting.BackgroundBlur, 0.f, 1.f, "%.2f");
+                        lighting_changed |= SliderFloat("World opacity", &lighting.WorldOpacity, 0.f, 1.f, "%.2f");
+                    }
+                    PopID();
+                };
+
+                if (current_mode == ViewportShadingMode::MaterialPreview) {
+                    auto &lighting = R.get<MaterialPreviewLighting>(SceneEntity);
+                    bool changed = false;
+                    SeparatorText("Material Preview lighting");
+                    render_pbr_controls(lighting, changed, "MatPreviewLighting");
+                    if (changed) {
+                        lighting.EnvIntensity = std::max(0.f, lighting.EnvIntensity);
+                        lighting.BackgroundBlur = std::clamp(lighting.BackgroundBlur, 0.f, 1.f);
+                        R.patch<MaterialPreviewLighting>(SceneEntity, [](auto &) {});
+                    }
+                } else if (current_mode == ViewportShadingMode::Rendered) {
+                    auto &lighting = R.get<RenderedLighting>(SceneEntity);
+                    bool changed = false;
+                    SeparatorText("Rendered lighting");
+                    render_pbr_controls(lighting, changed, "RenderedLighting");
+                    if (changed) {
+                        lighting.EnvIntensity = std::max(0.f, lighting.EnvIntensity);
+                        lighting.BackgroundBlur = std::clamp(lighting.BackgroundBlur, 0.f, 1.f);
+                        R.patch<RenderedLighting>(SceneEntity, [](auto &) {});
+                    }
+                } else if (current_mode == ViewportShadingMode::Solid) {
+                    SeparatorText("Solid lighting");
+                    auto &lights = Stores.Buffers->GetWorkspaceLights();
+                    bool changed = false;
+                    if (Button("Reset##Lighting")) {
+                        lights = SceneDefaults::WorkspaceLights;
+                        changed = true;
+                    }
+                    bool use_specular = lights.UseSpecular != 0;
+                    if (Checkbox("Specular highlights", &use_specular)) {
+                        lights.UseSpecular = use_specular ? 1 : 0;
+                        changed = true;
+                    }
+                    // Light colors are stored in linear space. Display/edit as sRGB.
+                    static const auto linear_color_edit = [](const char *label, vec3 &linear) -> bool {
+                        if (auto srgb = glm::pow(linear, vec3{1.f / 2.2f}); ColorEdit3(label, &srgb[0])) {
+                            linear = glm::pow(srgb, vec3{2.2f});
+                            return true;
+                        }
+                        return false;
+                    };
+                    changed |= linear_color_edit("Ambient color", lights.AmbientColor);
+                    static const char *light_names[]{"Light 1", "Light 2", "Light 3", "Light 4"};
+                    for (int i = 0; i < 4; i++) {
+                        auto &light = lights.Lights[i];
+                        if (CollapsingHeader(light_names[i])) {
+                            PushID(i);
+                            if (SliderFloat3("Direction", &light.Direction[0], -1, 1)) {
+                                const float len = sqrtf(light.Direction[0] * light.Direction[0] + light.Direction[1] * light.Direction[1] + light.Direction[2] * light.Direction[2]);
+                                if (len > 0.0001f) {
+                                    light.Direction[0] /= len;
+                                    light.Direction[1] /= len;
+                                    light.Direction[2] /= len;
+                                }
+                                changed = true;
+                            }
+                            changed |= linear_color_edit("Diffuse color", light.DiffuseColor);
+                            changed |= linear_color_edit("Specular color", light.SpecularColor);
+                            changed |= SliderFloat("Wrap", &light.Wrap, 0, 1);
+                            PopID();
+                        }
+                    }
+                    if (changed) R.emplace_or_replace<SubmitDirty>(SceneEntity);
+                }
+                EndPopup();
+            }
+            PopStyleVar();
+        }
     }
 
     { // Viewport overlays toggle + dropdown
-        const auto shading_group_width = shading_button_style.ButtonSize.x * 4.f;
         const auto buttons_gap = 6.f;
-        const auto arrow_w = shading_button_style.ButtonSize.y * 0.55f;
-        const auto icon_w = shading_button_style.ButtonSize.x;
-        const auto button_h = shading_button_style.ButtonSize.y;
+        const auto arrow_w = shading_arrow_w;
+        const auto icon_w = shading_button_w;
+        const auto button_h = shading_button_h;
         const auto overlay_group_width = icon_w + arrow_w;
         const auto group_start = std::bit_cast<ImVec2>(viewport.pos + vec2{GetWindowContentRegionMax().x - shading_group_width - buttons_gap - overlay_group_width, GetWindowContentRegionMin().y}) + ImVec2{-overlay_corner_gap, overlay_corner_gap};
 
@@ -2032,10 +2171,7 @@ void Scene::RenderControls() {
 
         if (BeginTabItem("Render")) {
             auto &settings = R.get<SceneSettings>(SceneEntity);
-            auto &mat_preview_lighting = R.get<MaterialPreviewLighting>(SceneEntity);
-            auto &rendered_lighting = R.get<RenderedLighting>(SceneEntity);
             bool settings_changed = false;
-            bool mat_preview_changed = false, rendered_changed = false;
             if (ColorEdit3("Background color", settings.ClearColor.float32)) {
                 settings.ClearColor.float32[3] = 1.f;
                 settings_changed = true;
@@ -2045,72 +2181,29 @@ void Scene::RenderControls() {
             TextUnformatted("Use the viewport icons in the top-right.");
             const auto current_mode = settings.ViewportShading;
 
-            bool smooth_shading_changed = false;
             if (current_mode != ViewportShadingMode::Wireframe) {
                 bool smooth_shading = settings.SmoothShading;
                 if (Checkbox("Smooth shading", &smooth_shading)) {
                     settings.SmoothShading = smooth_shading;
-                    smooth_shading_changed = true;
+                    settings_changed = true;
                 }
             }
 
-            const auto render_pbr_controls = [&](PBRViewportLighting &lighting, bool &lighting_changed, const char *id) {
-                PushID(id);
-                if (Button("Reset")) {
-                    lighting = {false, false, 1.f, 0.f, 0.5f, 0.f};
-                    lighting_changed = true;
-                }
-                lighting_changed |= Checkbox("Scene lights", &lighting.UseSceneLights);
-                SameLine();
-                lighting_changed |= Checkbox("Scene world", &lighting.UseSceneWorld);
-                if (!lighting.UseSceneWorld) {
-                    auto &environments = *Stores.Environments;
-                    const auto &current_name = environments.Hdris[environments.ActiveHdriIndex].Name;
-                    if (BeginCombo("Environment", current_name.c_str())) {
-                        for (uint32_t i = 0; i < environments.Hdris.size(); ++i) {
-                            const bool selected = (i == environments.ActiveHdriIndex);
-                            if (Selectable(environments.Hdris[i].Name.c_str(), selected)) {
-                                SetStudioEnvironment(i);
-                                lighting_changed = true;
-                            }
-                            if (selected) SetItemDefaultFocus();
-                        }
-                        EndCombo();
-                    }
-                    lighting_changed |= SliderFloat("Intensity", &lighting.EnvIntensity, 0.f, 2.f, "%.2f");
-                    lighting_changed |= SliderFloat("Rotation", &lighting.EnvRotationDegrees, -180.f, 180.f, "%.1f deg");
-                    lighting_changed |= SliderFloat("Blur", &lighting.BackgroundBlur, 0.f, 1.f, "%.2f");
-                    lighting_changed |= SliderFloat("World opacity", &lighting.WorldOpacity, 0.f, 1.f, "%.2f");
-                }
-                PopID();
-            };
-
-            if (current_mode == ViewportShadingMode::MaterialPreview) {
-                SeparatorText("Material Preview lighting");
-                render_pbr_controls(mat_preview_lighting, mat_preview_changed, "MatPreviewLighting");
-            }
-            if (current_mode == ViewportShadingMode::Rendered) {
-                SeparatorText("Rendered lighting");
-                render_pbr_controls(rendered_lighting, rendered_changed, "RenderedLighting");
-            }
-
-            auto color_mode = int(settings.FaceColorMode);
-            bool color_mode_changed = false;
             if (current_mode == ViewportShadingMode::Solid) {
+                auto color_mode = int(settings.FaceColorMode);
                 PushID("FaceColorMode");
                 AlignTextToFramePadding();
                 TextUnformatted("Fill color mode");
                 SameLine();
-                color_mode_changed |= RadioButton("Mesh", &color_mode, int(FaceColorMode::Mesh));
+                bool color_mode_changed = RadioButton("Mesh", &color_mode, int(FaceColorMode::Mesh));
                 SameLine();
                 color_mode_changed |= RadioButton("Normals", &color_mode, int(FaceColorMode::Normals));
                 PopID();
+                if (color_mode_changed) {
+                    settings.FaceColorMode = FaceColorMode(color_mode);
+                    settings_changed = true;
+                }
             }
-            if (color_mode_changed) {
-                settings.FaceColorMode = FaceColorMode(color_mode);
-                settings_changed = true;
-            }
-            if (smooth_shading_changed) settings_changed = true;
             if (!R.view<Selected>().empty()) {
                 SeparatorText("Selection overlays");
                 AlignTextToFramePadding();
@@ -2168,16 +2261,6 @@ void Scene::RenderControls() {
                 if (changed) R.patch<ViewportTheme>(SceneEntity, [](auto &) {});
             }
             if (settings_changed) R.patch<SceneSettings>(SceneEntity, [](auto &) {});
-            if (mat_preview_changed) {
-                mat_preview_lighting.EnvIntensity = std::max(0.f, mat_preview_lighting.EnvIntensity);
-                mat_preview_lighting.BackgroundBlur = std::clamp(mat_preview_lighting.BackgroundBlur, 0.f, 1.f);
-                R.patch<MaterialPreviewLighting>(SceneEntity, [](auto &) {});
-            }
-            if (rendered_changed) {
-                rendered_lighting.EnvIntensity = std::max(0.f, rendered_lighting.EnvIntensity);
-                rendered_lighting.BackgroundBlur = std::clamp(rendered_lighting.BackgroundBlur, 0.f, 1.f);
-                R.patch<RenderedLighting>(SceneEntity, [](auto &) {});
-            }
             EndTabItem();
         }
 
@@ -2193,52 +2276,6 @@ void Scene::RenderControls() {
             changed |= SliderFloat3("Target", &camera.Target.x, -10, 10);
             changed |= RenderCameraLensEditor(camera.Data, ViewportContext{.Distance = camera.Distance, .AspectRatio = viewport_aspect});
             if (changed) R.patch<ViewCamera>(SceneEntity, [](auto &camera) { camera.StopMoving(); });
-            EndTabItem();
-        }
-
-        // Note: Rendered world/light toggles are in Render -> Viewport shading.
-        if (BeginTabItem("Lighting")) {
-            auto &lights = Stores.Buffers->GetWorkspaceLights();
-            bool changed = false;
-            if (Button("Reset##Lighting")) {
-                lights = SceneDefaults::WorkspaceLights;
-                changed = true;
-            }
-            bool use_specular = lights.UseSpecular != 0;
-            if (Checkbox("Specular highlights", &use_specular)) {
-                lights.UseSpecular = use_specular ? 1 : 0;
-                changed = true;
-            }
-            // Light colors are stored in linear space. Display/edit as sRGB.
-            static const auto LinearColorEdit = [](const char *label, vec3 &linear) -> bool {
-                if (auto srgb = glm::pow(linear, vec3{1.f / 2.2f}); ColorEdit3(label, &srgb[0])) {
-                    linear = glm::pow(srgb, vec3{2.2f});
-                    return true;
-                }
-                return false;
-            };
-            changed |= LinearColorEdit("Ambient color", lights.AmbientColor);
-            static const char *light_names[]{"Light 1", "Light 2", "Light 3", "Light 4"};
-            for (int i = 0; i < 4; i++) {
-                auto &light = lights.Lights[i];
-                if (CollapsingHeader(light_names[i])) {
-                    PushID(i);
-                    if (SliderFloat3("Direction", &light.Direction[0], -1, 1)) {
-                        const float len = sqrtf(light.Direction[0] * light.Direction[0] + light.Direction[1] * light.Direction[1] + light.Direction[2] * light.Direction[2]);
-                        if (len > 0.0001f) {
-                            light.Direction[0] /= len;
-                            light.Direction[1] /= len;
-                            light.Direction[2] /= len;
-                        }
-                        changed = true;
-                    }
-                    changed |= LinearColorEdit("Diffuse color", light.DiffuseColor);
-                    changed |= LinearColorEdit("Specular color", light.SpecularColor);
-                    changed |= SliderFloat("Wrap", &light.Wrap, 0, 1);
-                    PopID();
-                }
-            }
-            if (changed) R.emplace_or_replace<SubmitDirty>(SceneEntity);
             EndTabItem();
         }
 
