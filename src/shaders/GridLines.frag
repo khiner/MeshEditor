@@ -71,8 +71,8 @@ void main() {
     const vec4 grid = BlendGrids(emph_grid, BlendGrids(base_grid, fine_grid));
 
     // Axis lines
-    const float x_axis = 1.0 - smoothstep(0.0, 1.5, abs(pos_3d.z) / max(world_d.y, 0.001));
-    const float z_axis = 1.0 - smoothstep(0.0, 1.5, abs(pos_3d.x) / max(world_d.x, 0.001));
+    const float x_axis = 1.0 - smoothstep(0.0, 1.5, abs(pos_3d.z) / world_d.y);
+    const float z_axis = 1.0 - smoothstep(0.0, 1.5, abs(pos_3d.x) / world_d.x);
     const vec3 axis_color = mix(ViewportTheme.Colors.GridAxisX, ViewportTheme.Colors.GridAxisZ, step(x_axis, z_axis));
 
     // Axes on top of grid
