@@ -48,6 +48,9 @@ layout(constant_id = 3) const bool ENABLE_CLEARCOAT     = true;
 layout(constant_id = 4) const bool ENABLE_SHEEN         = true;
 layout(constant_id = 5) const bool ENABLE_ANISOTROPY    = true;
 layout(constant_id = 6) const bool ENABLE_IRIDESCENCE   = true;
+// Pre-pass pipelines disable framebuffer sampling so transmission materials drawn into the
+// transmission framebuffer don't recursively sample their own attachment.
+layout(constant_id = 7) const bool ALLOW_REAL_TRANSMISSION_SAMPLING = true;
 
 layout(location = 0) in vec3 WorldNormal;
 layout(location = 1) in vec3 WorldPosition;
@@ -248,11 +251,11 @@ void main() {
     }
     float f0_ior_t = (material.Ior - 1.0) / (material.Ior + 1.0);
     float f0_ior = f0_ior_t * f0_ior_t;
-    vec3 f0_dielectric = vec3(f0_ior) * material.Specular.ColorFactor;
+    vec3 specular_color = material.Specular.ColorFactor;
     if (material.Specular.ColorTexture.Slot != INVALID_SLOT) {
-        f0_dielectric *= texture(Samplers[nonuniformEXT(material.Specular.ColorTexture.Slot)], GetUv(material.Specular.ColorTexture)).rgb;
+        specular_color *= texture(Samplers[nonuniformEXT(material.Specular.ColorTexture.Slot)], GetUv(material.Specular.ColorTexture)).rgb;
     }
-    f0_dielectric = min(f0_dielectric, vec3(1.0));
+    vec3 f0_dielectric = min(vec3(f0_ior) * specular_color, vec3(1.0));
     const vec3 f90_dielectric = vec3(specular_weight);
 
     // KHR_materials_transmission / KHR_materials_dispersion
@@ -263,6 +266,8 @@ void main() {
             transmission_factor *= texture(Samplers[nonuniformEXT(material.Transmission.Texture.Slot)], GetUv(material.Transmission.Texture)).r;
         }
     }
+    // When building the transmission framebuffer, drop transmission fragments so opaque geometry behind them is preserved.
+    if (!ALLOW_REAL_TRANSMISSION_SAMPLING && transmission_factor > 0.0) discard;
     // KHR_materials_diffuse_transmission
     float diffuse_transmission_factor = 0.0;
     vec3 diffuse_transmission_color = vec3(0.0);
@@ -312,12 +317,13 @@ void main() {
 
     // KHR_materials_anisotropy
     float anisotropy_strength = 0.0;
+    vec2 anisotropy_dir = vec2(1.0, 0.0);
     vec3 anisotropic_t = vec3(0.0);
     vec3 anisotropic_b = vec3(0.0);
     if (ENABLE_ANISOTROPY) {
         anisotropy_strength = material.Anisotropy.Strength;
         // Pre-rotate the tangent-space direction by the material rotation angle.
-        vec2 anisotropy_dir = vec2(cos(material.Anisotropy.Rotation), sin(material.Anisotropy.Rotation));
+        anisotropy_dir = vec2(cos(material.Anisotropy.Rotation), sin(material.Anisotropy.Rotation));
         if (material.Anisotropy.Texture.Slot != INVALID_SLOT) {
             const vec3 anisotropySample = texture(Samplers[nonuniformEXT(material.Anisotropy.Texture.Slot)], GetUv(material.Anisotropy.Texture)).rgb;
             // Texture RG encodes direction in [0,1]; remap to [-1,1] then rotate by material angle.
@@ -335,6 +341,7 @@ void main() {
 
     // KHR_materials_iridescence
     float iridescence_factor = 0.0;
+    float iridescence_thickness = 0.0;
     vec3 iridescence_fresnel_dielectric = vec3(0.0);
     vec3 iridescence_fresnel_metallic = vec3(0.0);
     if (ENABLE_IRIDESCENCE) {
@@ -343,15 +350,15 @@ void main() {
             iridescence_factor *= texture(Samplers[nonuniformEXT(material.Iridescence.Texture.Slot)], GetUv(material.Iridescence.Texture)).r;
         }
         iridescence_factor = clamp(iridescence_factor, 0.0, 1.0);
-        float iridescenceThickness = material.Iridescence.ThicknessMaximum;
+        iridescence_thickness = material.Iridescence.ThicknessMaximum;
         if (material.Iridescence.ThicknessTexture.Slot != INVALID_SLOT) {
             const float t = texture(Samplers[nonuniformEXT(material.Iridescence.ThicknessTexture.Slot)], GetUv(material.Iridescence.ThicknessTexture)).g;
-            iridescenceThickness = mix(material.Iridescence.ThicknessMinimum, material.Iridescence.ThicknessMaximum, t);
+            iridescence_thickness = mix(material.Iridescence.ThicknessMinimum, material.Iridescence.ThicknessMaximum, t);
         }
         // Iridescence Fresnel is precomputed once at NdotV (not per-light), consistent with reference.
-        iridescence_fresnel_dielectric = evalIridescence(1.0, material.Iridescence.Ior, NdotV, iridescenceThickness, f0_dielectric);
-        iridescence_fresnel_metallic   = evalIridescence(1.0, material.Iridescence.Ior, NdotV, iridescenceThickness, base_color.rgb);
-        if (iridescenceThickness == 0.0) iridescence_factor = 0.0;
+        iridescence_fresnel_dielectric = evalIridescence(1.0, material.Iridescence.Ior, NdotV, iridescence_thickness, f0_dielectric);
+        iridescence_fresnel_metallic   = evalIridescence(1.0, material.Iridescence.Ior, NdotV, iridescence_thickness, base_color.rgb);
+        if (iridescence_thickness == 0.0) iridescence_factor = 0.0;
     }
     const bool has_iridescence = ENABLE_IRIDESCENCE && iridescence_factor > 0.0;
 
@@ -431,7 +438,10 @@ void main() {
         f_diffuse = mix(f_diffuse, f_diffuse_transmission, diffuse_transmission_factor);
     }
     if (transmission_factor > 0.0) {
-        vec3 f_transmission = getIBLVolumeRefraction(n, v, perceptual_roughness, material.Ior, material.Dispersion) * base_color.rgb;
+        const bool real = ALLOW_REAL_TRANSMISSION_SAMPLING
+            && SceneViewUBO.UseRealTransmission != 0u
+            && SceneViewUBO.TransmissionFramebufferSamplerSlot != INVALID_SLOT;
+        vec3 f_transmission = getVolumeRefraction(n, v, WorldPosition, world_thickness, perceptual_roughness, material.Ior, material.Dispersion, real) * base_color.rgb;
         f_transmission = applyVolumeAttenuation(f_transmission, world_thickness, material.Volume.AttenuationColor, material.Volume.AttenuationDistance);
         f_diffuse = mix(f_diffuse, f_transmission, transmission_factor);
     }
@@ -459,8 +469,9 @@ void main() {
         const float albedo_sheen_scaling = 1.0 - max_sheen * sheen_lut_ndotv;
         indirect_color = f_sheen + indirect_color * albedo_sheen_scaling;
     }
+    float ao = 1.0;
     if (material.OcclusionTexture.Slot != INVALID_SLOT) {
-        const float ao = texture(Samplers[nonuniformEXT(material.OcclusionTexture.Slot)], GetUv(material.OcclusionTexture)).r;
+        ao = texture(Samplers[nonuniformEXT(material.OcclusionTexture.Slot)], GetUv(material.OcclusionTexture)).r;
         indirect_color *= (1.0 + material.OcclusionStrength * (ao - 1.0));
     }
     vec3 cc_fresnel_ibl = vec3(0.0);

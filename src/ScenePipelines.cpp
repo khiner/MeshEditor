@@ -16,6 +16,7 @@ enum class OverlayKind : uint32_t {
     VertexNormal = 2,
 };
 constexpr std::array PbrSpecFeatures{PbrFeature::Punctual, PbrFeature::Transmission, PbrFeature::DiffuseTrans, PbrFeature::Clearcoat, PbrFeature::Sheen, PbrFeature::Anisotropy, PbrFeature::Iridescence};
+constexpr uint32_t AllowRealTransmissionSamplingSpecId = PbrSpecFeatures.size();
 
 constexpr vk::SubpassDependency ExternalFragReadDependency() {
     return {
@@ -87,23 +88,35 @@ bool PbrCompiler::CompilePipelines(PbrFeatureMask mask) {
     if (mask == Mask && OpaqueTargeted && BlendTargeted) return false;
 
     constexpr uint32_t N = PbrSpecFeatures.size();
-    std::array<uint32_t, PbrSpecFeatures.size()> data{};
-    std::array<vk::SpecializationMapEntry, PbrSpecFeatures.size()> entries{};
+    constexpr uint32_t TotalConstants = N + 1; // + ALLOW_REAL_TRANSMISSION_SAMPLING
+    std::array<uint32_t, TotalConstants> data{};
+    std::array<vk::SpecializationMapEntry, TotalConstants> entries{};
     for (uint32_t i = 0; i < N; ++i) {
-        data[i] = HasFeature(mask, PbrSpecFeatures[i]) ? 1u : 0u;
+        data[i] = ::HasFeature(mask, PbrSpecFeatures[i]) ? 1u : 0u;
         entries[i] = vk::SpecializationMapEntry{i, i * uint32_t(sizeof(uint32_t)), uint32_t(sizeof(uint32_t))};
     }
-    const vk::SpecializationInfo spec{N, entries.data(), N * sizeof(uint32_t), data.data()};
+    entries[N] = vk::SpecializationMapEntry{AllowRealTransmissionSamplingSpecId, N * uint32_t(sizeof(uint32_t)), uint32_t(sizeof(uint32_t))};
+    data[N] = 1u; // main pipelines: framebuffer sampling allowed
+    const vk::SpecializationInfo spec_main{TotalConstants, entries.data(), TotalConstants * sizeof(uint32_t), data.data()};
     const Timer timer{"PBR pipeline compile"};
-    OpaqueTargeted = CreateTargetedPipeline(spec, true);
-    BlendTargeted = CreateTargetedPipeline(spec, false);
+    OpaqueTargeted = CreateTargetedPipeline(spec_main, true);
+    BlendTargeted = CreateTargetedPipeline(spec_main, false);
+    if (::HasFeature(mask, PbrFeature::Transmission)) {
+        data[N] = 0u; // pre-pass pipeline: framebuffer sampling disabled (avoids self-sample recursion)
+        const vk::SpecializationInfo spec_prepass{TotalConstants, entries.data(), TotalConstants * sizeof(uint32_t), data.data()};
+        OpaquePrepass = CreateTargetedPipeline(spec_prepass, true);
+    } else {
+        OpaquePrepass.reset();
+    }
     Mask = mask;
 
     return true;
 }
 
-vk::PipelineLayout PbrCompiler::BindTargeted(vk::CommandBuffer cb, bool opaque) const {
-    cb.bindPipeline(vk::PipelineBindPoint::eGraphics, opaque ? *OpaqueTargeted : *BlendTargeted);
+vk::PipelineLayout PbrCompiler::Bind(vk::CommandBuffer cb, Variant v) const {
+    const auto &pipeline = v == Variant::Opaque ? OpaqueTargeted : v == Variant::Blend ? BlendTargeted :
+                                                                                         OpaquePrepass;
+    cb.bindPipeline(vk::PipelineBindPoint::eGraphics, *pipeline);
     cb.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *Layout, 0, Set, {});
     return *Layout;
 }
@@ -113,6 +126,7 @@ void PbrCompiler::RecompileModules() {
     CompileModules();
     OpaqueTargeted.reset();
     BlendTargeted.reset();
+    OpaquePrepass.reset();
     CompilePipelines(Mask);
 }
 
@@ -329,6 +343,16 @@ MainPipeline::MainPipeline(
     },
     Compiler{{d, shared_layout, shared_set}, *Renderer.RenderPass} {}
 
+static uint32_t MipCount(vk::Extent2D extent) {
+    uint32_t levels = 1;
+    uint32_t side = std::max(extent.width, extent.height);
+    while (side > 1) {
+        side >>= 1;
+        ++levels;
+    }
+    return levels;
+}
+
 MainPipeline::ResourcesT::ResourcesT(
     vk::Extent2D extent, vk::Device d, vk::PhysicalDevice pd, vk::RenderPass render_pass, vk::RenderPass line_aa_render_pass
 ) : DepthImage{mvk::CreateImage(d, pd, {{}, vk::ImageType::e2D, Format::Depth, vk::Extent3D{extent, 1}, 1, 1, vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eDepthStencilAttachment, vk::SharingMode::eExclusive}, {{}, {}, vk::ImageViewType::e2D, Format::Depth, {}, DepthSubresourceRange})},
@@ -357,6 +381,47 @@ MainPipeline::ResourcesT::ResourcesT(
 
 void MainPipeline::SetExtent(vk::Extent2D extent, vk::Device d, vk::PhysicalDevice pd) {
     Resources = std::make_unique<ResourcesT>(extent, d, pd, *Renderer.RenderPass, *LineAARenderPass);
+    // Resize invalidates any existing transmission framebuffer (it shares this struct's depth/linedata views).
+    Transmission.reset();
+}
+
+MainPipeline::TransmissionResourcesT::TransmissionResourcesT(
+    vk::Extent2D extent, vk::Device d, vk::PhysicalDevice pd, vk::RenderPass render_pass, vk::ImageView depth_view, vk::ImageView line_data_view
+) : Image{mvk::CreateImage(d, pd, {{}, vk::ImageType::e2D, Format::Color, vk::Extent3D{extent, 1}, ::MipCount(extent), 1, vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eTransferSrc | vk::ImageUsageFlagBits::eTransferDst, vk::SharingMode::eExclusive}, {{}, {}, vk::ImageViewType::e2D, Format::Color, {}, vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eColor, 0, ::MipCount(extent), 0, 1}})},
+    MipCount{::MipCount(extent)},
+    Extent{extent},
+    Sampler{d.createSamplerUnique({
+        {},
+        vk::Filter::eLinear,
+        vk::Filter::eLinear,
+        vk::SamplerMipmapMode::eLinear,
+        vk::SamplerAddressMode::eClampToEdge,
+        vk::SamplerAddressMode::eClampToEdge,
+        vk::SamplerAddressMode::eClampToEdge,
+        0.f,
+        VK_FALSE,
+        1.f,
+        VK_FALSE,
+        vk::CompareOp::eNever,
+        0.f,
+        float(::MipCount(extent)),
+    })} {
+    Mip0View = d.createImageViewUnique({{}, *Image.Image, vk::ImageViewType::e2D, Format::Color, {}, ColorSubresourceRange});
+    // Pre-pass framebuffer reuses the main render pass — same attachment formats, different color target.
+    // Depth/LineData views are owned by ResourcesT; both passes loadOp=Clear so prior contents don't matter.
+    const std::array image_views{depth_view, *Mip0View, line_data_view};
+    Framebuffer = d.createFramebufferUnique({{}, render_pass, image_views, extent.width, extent.height, 1});
+}
+
+bool MainPipeline::EnsureTransmissionResources(vk::Extent2D extent, vk::Device d, vk::PhysicalDevice pd, bool wanted) {
+    if (!wanted) {
+        if (!Transmission) return false;
+        Transmission.reset();
+        return true;
+    }
+    if (Transmission && Transmission->Extent.width == extent.width && Transmission->Extent.height == extent.height) return false;
+    Transmission = std::make_unique<TransmissionResourcesT>(extent, d, pd, *Renderer.RenderPass, *Resources->DepthImage.View, *Resources->LineDataImage.View);
+    return true;
 }
 
 static PipelineRenderer CreateSilhouetteRenderer(vk::Device d, vk::DescriptorSetLayout shared_layout, vk::DescriptorSet shared_set) {

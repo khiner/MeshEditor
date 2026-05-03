@@ -233,6 +233,13 @@ structs:
         type: u32
       - name: NdcOffsetFactor
         type: float
+      - name: TransmissionFramebufferSamplerSlot
+        type: u32
+        default: InvalidSlot
+      - name: TransmissionFramebufferMipCount
+        type: u32
+      - name: UseRealTransmission
+        type: u32
   - name: SolidLight
     fields:
       - name: Direction

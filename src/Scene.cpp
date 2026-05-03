@@ -154,6 +154,10 @@ void ResetObjectPickKeys(SceneBuffers &buffers) {
     std::fill_n(buffers.ObjectPickKeys.Data(), SceneBuffers::MaxSelectableObjects, std::numeric_limits<uint32_t>::max());
 }
 
+const PBRViewportLighting &GetActivePbrLighting(const entt::registry &r, entt::entity scene, ViewportShadingMode m) {
+    return m == ViewportShadingMode::Rendered ? static_cast<const PBRViewportLighting &>(r.get<const RenderedLighting>(scene)) : static_cast<const PBRViewportLighting &>(r.get<const MaterialPreviewLighting>(scene));
+}
+
 // True if any component of type C has `C.*field == target`.
 template<class C, class F>
 bool AnyComponentRefersTo(entt::registry &R, F C::*field, entt::entity target) {
@@ -316,10 +320,10 @@ uint32_t MaxElementBound(auto &&ranges) {
 
 struct Scene::SelectionSlotHandles {
     DescriptorSlots &Slots;
-    uint32_t HeadImage, SelectionCounter, ObjectPickKey, ElementPickCandidates, ObjectPickSeenBits, SelectionBitset, ObjectIdSampler, DepthSampler, SilhouetteSampler, ColorSampler, LineDataSampler;
+    uint32_t HeadImage, SelectionCounter, ObjectPickKey, ElementPickCandidates, ObjectPickSeenBits, SelectionBitset, ObjectIdSampler, DepthSampler, SilhouetteSampler, ColorSampler, LineDataSampler, TransmissionSampler;
 
     using Entry = std::pair<SlotType, uint32_t SelectionSlotHandles::*>;
-    static constexpr std::array<Entry, 11> Entries{{
+    static constexpr std::array<Entry, 12> Entries{{
         {SlotType::Image, &SelectionSlotHandles::HeadImage},
         {SlotType::Buffer, &SelectionSlotHandles::SelectionCounter},
         {SlotType::Buffer, &SelectionSlotHandles::ObjectPickKey},
@@ -331,6 +335,7 @@ struct Scene::SelectionSlotHandles {
         {SlotType::Sampler, &SelectionSlotHandles::SilhouetteSampler},
         {SlotType::Sampler, &SelectionSlotHandles::ColorSampler},
         {SlotType::Sampler, &SelectionSlotHandles::LineDataSampler},
+        {SlotType::Sampler, &SelectionSlotHandles::TransmissionSampler},
     }};
 
     explicit SelectionSlotHandles(DescriptorSlots &slots) : Slots(slots) {
@@ -1693,6 +1698,33 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         reactive<changes::WorldTransform>(R).contains(LookThrough->Camera)) {
         SnapToCamera(LookThrough->Camera);
     }
+    { // Keep targeted PBR specialization mask in sync when one of its inputs changes.
+        // Run before the UBO update below so Transmission pipeline is settled when the UBO reads it.
+        const auto shading = R.get<const SceneSettings>(SceneEntity).ViewportShading;
+        if (!reactive<changes::SceneSettings>(R).empty() || !reactive<changes::PbrSpecialization>(R).empty()) {
+            // SubmitViewport's full descriptor block runs only on resize, so write the transmission sampler
+            // descriptor inline whenever EnsureTransmissionResources flips state.
+            const auto refresh_transmission_descriptor = [&] {
+                const auto &main = Pipelines->Main;
+                const vk::DescriptorImageInfo info = main.Transmission ? vk::DescriptorImageInfo{*main.Transmission->Sampler, *main.Transmission->Image.View, vk::ImageLayout::eShaderReadOnlyOptimal} : vk::DescriptorImageInfo{*main.Resources->NearestSampler, *main.Resources->ColorImage.View, vk::ImageLayout::eShaderReadOnlyOptimal};
+                Vk.Device.updateDescriptorSets({Stores.Slots->MakeSamplerWrite(SelectionHandles->TransmissionSampler, info)}, {});
+                request(RenderRequest::ReRecord);
+            };
+            if (shading == ViewportShadingMode::MaterialPreview || shading == ViewportShadingMode::Rendered) {
+                PbrFeatureMask pbr_mask{0};
+                const auto &active_lighting = GetActivePbrLighting(R, SceneEntity, shading);
+                if (active_lighting.UseSceneLights) pbr_mask |= PbrFeature::Punctual;
+                for (const auto [_, feat] : R.view<const PbrMeshFeatures>().each()) pbr_mask |= feat.Mask;
+                if (Pipelines->Main.Compiler.CompilePipelines(pbr_mask)) request(RenderRequest::ReRecord);
+                const bool want_transmission = active_lighting.RealTransmission && HasFeature(pbr_mask, PbrFeature::Transmission);
+                const auto render_extent_now = ComputeRenderExtentPx(R.get<const ViewportExtent>(SceneEntity).Value, std::bit_cast<vec2>(ImGui::GetIO().DisplayFramebufferScale));
+                if (Pipelines->Main.EnsureTransmissionResources(render_extent_now, Vk.Device, Vk.PhysicalDevice, want_transmission)) refresh_transmission_descriptor();
+            } else if (Pipelines->Main.EnsureTransmissionResources({}, Vk.Device, Vk.PhysicalDevice, false)) {
+                refresh_transmission_descriptor();
+            }
+        }
+    }
+
     if (!reactive<changes::SceneView>(R).empty() ||
         !reactive<changes::TransformPending>(R).empty() ||
         !reactive<changes::SceneSettings>(R).empty() ||
@@ -1709,10 +1741,8 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         }
         const auto &camera = R.get<const ViewCamera>(SceneEntity);
         const auto &settings = R.get<const SceneSettings>(SceneEntity);
-        const auto &mat_preview_lighting = R.get<const MaterialPreviewLighting>(SceneEntity);
-        const auto &rendered_lighting = R.get<const RenderedLighting>(SceneEntity);
         const bool is_pbr_mode = settings.ViewportShading == ViewportShadingMode::MaterialPreview || settings.ViewportShading == ViewportShadingMode::Rendered;
-        const auto &active_lighting = (settings.ViewportShading == ViewportShadingMode::Rendered) ? static_cast<const PBRViewportLighting &>(rendered_lighting) : static_cast<const PBRViewportLighting &>(mat_preview_lighting);
+        const auto &active_lighting = GetActivePbrLighting(R, SceneEntity, settings.ViewportShading);
         const bool use_scene_lights = is_pbr_mode && active_lighting.UseSceneLights;
         const bool use_scene_world = is_pbr_mode && active_lighting.UseSceneWorld;
         const auto &active_environment = use_scene_world ? Stores.Environments->SceneWorld : Stores.Environments->StudioWorld;
@@ -1768,24 +1798,12 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
             .BoneXRay = settings.ViewportShading == ViewportShadingMode::Wireframe ? 1u : 0u,
             // Polygon offset factor matching Blender's GPU_polygon_offset_calc (viewdist = max ortho extent)
             .NdcOffsetFactor = std::holds_alternative<Perspective>(camera.Data) ? proj[3][2] * -0.00125f : 0.000005f * std::max(std::abs(1.f / proj[0][0]), std::abs(1.f / proj[1][1])),
+            .TransmissionFramebufferSamplerSlot = SelectionHandles->TransmissionSampler,
+            .TransmissionFramebufferMipCount = Pipelines->Main.Transmission ? Pipelines->Main.Transmission->MipCount : 1u,
+            .UseRealTransmission = (is_pbr_mode && active_lighting.RealTransmission && Pipelines->Main.Transmission) ? 1u : 0u,
         }));
         SelectionStale = true;
         request(RenderRequest::Submit);
-    }
-
-    { // Keep targeted PBR specialization mask in sync when one of its inputs changes.
-        const auto shading = R.get<const SceneSettings>(SceneEntity).ViewportShading;
-        if (!reactive<changes::SceneSettings>(R).empty() || !reactive<changes::PbrSpecialization>(R).empty()) {
-            if (shading == ViewportShadingMode::MaterialPreview || shading == ViewportShadingMode::Rendered) {
-                PbrFeatureMask pbr_mask{0};
-                const bool use_scene_lights = shading == ViewportShadingMode::Rendered ?
-                    R.get<const RenderedLighting>(SceneEntity).UseSceneLights :
-                    R.get<const MaterialPreviewLighting>(SceneEntity).UseSceneLights;
-                if (use_scene_lights) pbr_mask |= PbrFeature::Punctual;
-                for (const auto [_, feat] : R.view<const PbrMeshFeatures>().each()) pbr_mask |= feat.Mask;
-                if (Pipelines->Main.Compiler.CompilePipelines(pbr_mask)) request(RenderRequest::ReRecord);
-            }
-        }
     }
 
     const auto &settings = R.get<const SceneSettings>(SceneEntity);
@@ -2756,7 +2774,9 @@ void Scene::RecordRenderCommandBuffer(bool silhouette_only) {
     const bool is_wireframe_mode = settings.ViewportShading == ViewportShadingMode::Wireframe;
     const bool show_rendered = settings.ViewportShading == ViewportShadingMode::MaterialPreview || settings.ViewportShading == ViewportShadingMode::Rendered;
     const bool show_fill = !is_wireframe_mode, show_overlays = settings.ShowOverlays;
-    const SPT fill_pipeline = settings.FaceColorMode == FaceColorMode::Mesh ? SPT::Fill : SPT::DebugNormals;
+    const bool real_transmission = show_rendered &&
+        GetActivePbrLighting(R, SceneEntity, settings.ViewportShading).RealTransmission &&
+        Pipelines->Main.Compiler.HasFeature(PbrFeature::Transmission);
 
     auto &draw = *Draw;
     auto &draw_list = draw.List;
@@ -3211,9 +3231,9 @@ void Scene::RecordRenderCommandBuffer(bool silhouette_only) {
         cb.pushConstants(*pipeline.PipelineLayout, vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, sizeof(pc), &pc);
         cb.drawIndexedIndirect(*Stores.Buffers->RenderDraw.Indirect, batch.IndirectOffset, batch.DrawCount, sizeof(vk::DrawIndexedIndirectCommand));
     };
-    auto record_pbr_batch = [&](const DrawBatchInfo &batch, bool opaque) {
+    auto record_pbr_batch = [&](const DrawBatchInfo &batch, PbrCompiler::Variant variant) {
         if (batch.DrawCount == 0) return;
-        const auto layout = Pipelines->Main.Compiler.BindTargeted(cb, opaque);
+        const auto layout = Pipelines->Main.Compiler.Bind(cb, variant);
         const DrawPassPushConstants pc{batch.DrawDataSlotOffset, transform_vertex_state_slot, InvalidSlot, InvalidSlot, InvalidSlot};
         cb.pushConstants(layout, vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, sizeof(pc), &pc);
         cb.drawIndexedIndirect(*Stores.Buffers->RenderDraw.Indirect, batch.IndirectOffset, batch.DrawCount, sizeof(vk::DrawIndexedIndirectCommand));
@@ -3258,17 +3278,83 @@ void Scene::RecordRenderCommandBuffer(bool silhouette_only) {
     }
 
     const auto &main = Pipelines->Main;
-    // Main rendering pass
-    {
-        // Three clear values: depth, color, linedata (linedata cleared to 0 so alpha=0 means "no line")
-        const std::vector<vk::ClearValue> clear_values{
-            {vk::ClearDepthStencilValue{1, 0}},
-            {settings.ClearColor},
-            {vk::ClearColorValue{std::array<float, 4>{0, 0, 0, 0}}},
-        };
-        const vk::Rect2D rect{{0, 0}, ToExtent2D(main.Resources->ColorImage.Extent)};
-        cb.beginRenderPass({*main.Renderer.RenderPass, *main.Resources->Framebuffer, rect, clear_values}, vk::SubpassContents::eInline);
+    const vk::Rect2D main_rect{{0, 0}, ToExtent2D(main.Resources->ColorImage.Extent)};
+    const std::vector<vk::ClearValue> main_clear_values{
+        {vk::ClearDepthStencilValue{1, 0}},
+        {settings.ClearColor},
+        {vk::ClearColorValue{std::array<float, 4>{0, 0, 0, 0}}},
+    };
+
+    // Real-transmission pre-pass: render Background + FillOpaque into TransmissionImage mip 0.
+    // The PBR shader samples this in the main pass at the refracted exit point projected to NDC.
+    // The OpaquePrepass spec-constant variant disables framebuffer sampling, so transmission
+    // materials drawn here don't recursively read the attachment they're writing into.
+    if (real_transmission && main.Transmission) {
+        cb.beginRenderPass({*main.Renderer.RenderPass, *main.Transmission->Framebuffer, main_rect, main_clear_values}, vk::SubpassContents::eInline);
+        main.Renderer.ShaderPipelines.at(SPT::Background).RenderQuad(cb);
+        if (Stores.Buffers->IdentityIndexCount > 0 && show_fill) {
+            cb.bindIndexBuffer(*Stores.Buffers->IdentityIndexBuffer, 0, vk::IndexType::eUint32);
+            record_pbr_batch(draw.FillOpaque, PbrCompiler::Variant::OpaquePrepass);
+        }
+        cb.endRenderPass();
+
+        // Generate mip chain via linear blits. After the render pass, mip 0 is in eShaderReadOnlyOptimal
+        // (per attachment finalLayout); we re-transition it for blits, then leave all mips in eShaderReadOnlyOptimal.
+        const auto mip_count = main.Transmission->MipCount;
+        const auto image = *main.Transmission->Image.Image;
+        // mip 0: shaderRO -> transferSrc
+        cb.pipelineBarrier(
+            vk::PipelineStageFlagBits::eFragmentShader, vk::PipelineStageFlagBits::eTransfer, {}, {}, {},
+            {{vk::AccessFlagBits::eShaderRead, vk::AccessFlagBits::eTransferRead,
+              vk::ImageLayout::eShaderReadOnlyOptimal, vk::ImageLayout::eTransferSrcOptimal,
+              VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, image,
+              vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}}}
+        );
+        // mips 1..N-1: undefined -> transferDst
+        if (mip_count > 1) {
+            cb.pipelineBarrier(
+                vk::PipelineStageFlagBits::eTopOfPipe, vk::PipelineStageFlagBits::eTransfer, {}, {}, {},
+                {{{}, vk::AccessFlagBits::eTransferWrite, vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, image, vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eColor, 1, mip_count - 1, 0, 1}}}
+            );
+        }
+        int32_t mip_w = int32_t(main_rect.extent.width), mip_h = int32_t(main_rect.extent.height);
+        for (uint32_t mip = 1; mip < mip_count; ++mip) {
+            const int32_t next_w = std::max(1, mip_w / 2);
+            const int32_t next_h = std::max(1, mip_h / 2);
+            cb.blitImage(
+                image, vk::ImageLayout::eTransferSrcOptimal,
+                image, vk::ImageLayout::eTransferDstOptimal,
+                vk::ImageBlit{
+                    vk::ImageSubresourceLayers{vk::ImageAspectFlagBits::eColor, mip - 1, 0, 1},
+                    {vk::Offset3D{0, 0, 0}, vk::Offset3D{mip_w, mip_h, 1}},
+                    vk::ImageSubresourceLayers{vk::ImageAspectFlagBits::eColor, mip, 0, 1},
+                    {vk::Offset3D{0, 0, 0}, vk::Offset3D{next_w, next_h, 1}},
+                },
+                vk::Filter::eLinear
+            );
+            // Promote this mip from transferDst to transferSrc for the next iteration.
+            cb.pipelineBarrier(
+                vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eTransfer, {}, {}, {},
+                {{vk::AccessFlagBits::eTransferWrite, vk::AccessFlagBits::eTransferRead,
+                  vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eTransferSrcOptimal,
+                  VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, image,
+                  vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eColor, mip, 1, 0, 1}}}
+            );
+            mip_w = next_w;
+            mip_h = next_h;
+        }
+        // All mips currently in transferSrc — flip to shaderReadOnly for sampling in the main pass.
+        cb.pipelineBarrier(
+            vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eFragmentShader, {}, {}, {},
+            {{vk::AccessFlagBits::eTransferRead, vk::AccessFlagBits::eShaderRead,
+              vk::ImageLayout::eTransferSrcOptimal, vk::ImageLayout::eShaderReadOnlyOptimal,
+              VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, image,
+              vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eColor, 0, mip_count, 0, 1}}}
+        );
     }
+
+    // Main rendering pass
+    cb.beginRenderPass({*main.Renderer.RenderPass, *main.Resources->Framebuffer, main_rect, main_clear_values}, vk::SubpassContents::eInline);
 
     // Background environment (PBR modes only; shader discards when WorldOpacity == 0 or no env slot)
     if (show_rendered) main.Renderer.ShaderPipelines.at(SPT::Background).RenderQuad(cb);
@@ -3286,10 +3372,10 @@ void Scene::RecordRenderCommandBuffer(bool silhouette_only) {
         // Solid faces
         if (show_fill) {
             if (show_rendered) {
-                record_pbr_batch(draw.FillOpaque, true);
-                record_pbr_batch(draw.FillBlend, false);
+                record_pbr_batch(draw.FillOpaque, PbrCompiler::Variant::Opaque);
+                record_pbr_batch(draw.FillBlend, PbrCompiler::Variant::Blend);
             } else {
-                record_draw_batch(main.Renderer, fill_pipeline, draw.FillOpaque);
+                record_draw_batch(main.Renderer, SPT::Fill, draw.FillOpaque);
             }
         }
         // Edit mode edges as triangle quads with self-AA
@@ -4037,6 +4123,12 @@ bool Scene::SubmitViewport(vk::Fence viewportConsumerFence) {
             std::ignore = Vk.Device.waitForFences(viewportConsumerFence, VK_TRUE, UINT64_MAX);
         }
         Pipelines->SetExtent(render_extent);
+        {
+            const auto shading = R.get<const SceneSettings>(SceneEntity).ViewportShading;
+            const bool is_pbr = shading == ViewportShadingMode::MaterialPreview || shading == ViewportShadingMode::Rendered;
+            const bool want_transmission = is_pbr && GetActivePbrLighting(R, SceneEntity, shading).RealTransmission && Pipelines->Main.Compiler.HasFeature(PbrFeature::Transmission);
+            Pipelines->Main.EnsureTransmissionResources(render_extent, Vk.Device, Vk.PhysicalDevice, want_transmission);
+        }
         Stores.Buffers->ResizeSelectionNodeBuffer(render_extent);
         {
             const Timer timer{"SubmitViewport->UpdateSelectionDescriptorSets"};
@@ -4056,6 +4148,9 @@ bool Scene::SubmitViewport(vk::Fence viewportConsumerFence) {
             const vk::DescriptorImageInfo depth_sampler{*sil_edge.Resources->DepthSampler, *sil_edge.Resources->DepthImage.View, vk::ImageLayout::eDepthStencilReadOnlyOptimal};
             const vk::DescriptorImageInfo color_sampler{*main.Resources->NearestSampler, *main.Resources->ColorImage.View, vk::ImageLayout::eShaderReadOnlyOptimal};
             const vk::DescriptorImageInfo line_data_sampler{*main.Resources->NearestSampler, *main.Resources->LineDataImage.View, vk::ImageLayout::eShaderReadOnlyOptimal};
+            // Transmission resources are lazy. When unallocated, point the descriptor at ColorImage so the binding stays valid.
+            // The shader's UseRealTransmission flag is 0 in that state, so it's never sampled.
+            const vk::DescriptorImageInfo transmission_sampler = main.Transmission ? vk::DescriptorImageInfo{*main.Transmission->Sampler, *main.Transmission->Image.View, vk::ImageLayout::eShaderReadOnlyOptimal} : vk::DescriptorImageInfo{*main.Resources->NearestSampler, *main.Resources->ColorImage.View, vk::ImageLayout::eShaderReadOnlyOptimal};
             const auto selection_bitset = Stores.Buffers->SelectionBitset.GetDescriptor(SceneBuffers::SelectionBitsetWords);
             const auto object_pick_seen_bitset = Stores.Buffers->ObjectPickSeenBitset.GetDescriptor(SceneBuffers::ObjectPickBitsetWords);
             Vk.Device.updateDescriptorSets(
@@ -4071,6 +4166,7 @@ bool Scene::SubmitViewport(vk::Fence viewportConsumerFence) {
                     Stores.Slots->MakeSamplerWrite(SelectionHandles->SilhouetteSampler, silhouette_sampler),
                     Stores.Slots->MakeSamplerWrite(SelectionHandles->ColorSampler, color_sampler),
                     Stores.Slots->MakeSamplerWrite(SelectionHandles->LineDataSampler, line_data_sampler),
+                    Stores.Slots->MakeSamplerWrite(SelectionHandles->TransmissionSampler, transmission_sampler),
                 },
                 {}
             );

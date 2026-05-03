@@ -79,25 +79,42 @@ float applyIorToRoughness(float roughness, float ior) {
     return roughness * clamp(ior * 2.0 - 2.0, 0.0, 1.0);
 }
 
-// Sample environment at refracted ray direction instead of reflected.
-// Approximation: uses the prefiltered specular environment (no separate scene render pass needed).
-// KHR_materials_dispersion: for dispersion>0, split IOR across RGB channels and sample each channel separately.
-vec3 getIBLVolumeRefraction(vec3 n, vec3 v, float perceptual_roughness, float ior, float dispersion) {
+// Sample the transmission framebuffer (mip chain of the pre-rendered scene without transmission objects)
+// at the projected refracted exit point. LOD scales with applyIorToRoughness, matching glTF Sample Renderer.
+vec3 sampleTransmissionFramebuffer(vec3 refracted_dir, vec3 world_pos, float world_thickness, float perceptual_roughness, float ior) {
+    vec4 clip = SceneViewUBO.ViewProj * vec4(world_pos + refracted_dir * world_thickness, 1.0);
+    vec2 uv = (clip.xy / clip.w) * 0.5 + 0.5;
+    float lod = log2(float(max(SceneViewUBO.ViewportSize.x, 1.0))) * applyIorToRoughness(perceptual_roughness, ior);
+    lod = clamp(lod, 0.0, float(max(SceneViewUBO.TransmissionFramebufferMipCount, 1u) - 1u));
+    return textureLod(Samplers[nonuniformEXT(SceneViewUBO.TransmissionFramebufferSamplerSlot)], uv, lod).rgb;
+}
+
+// Sample the prefiltered specular env at the refracted direction (IBL approximation).
+vec3 sampleIblRefraction(vec3 refracted_dir, float perceptual_roughness, float ior) {
+    float lod = applyIorToRoughness(perceptual_roughness, ior) * float(max(SceneViewUBO.Ibl.SpecularEnvMipCount, 1u) - 1u);
+    return getSpecularSample(refracted_dir, lod).rgb;
+}
+
+// Sample environment at the refracted ray direction. When `real`, samples the pre-rendered transmission
+// framebuffer at the projected exit point; otherwise samples the prefiltered IBL.
+// KHR_materials_dispersion: for dispersion>0, split IOR across RGB channels and sample each per-channel.
+vec3 getVolumeRefraction(vec3 n, vec3 v, vec3 world_pos, float world_thickness, float perceptual_roughness, float ior, float dispersion, bool real) {
+    #define SAMPLE_DIR(dir, channel_ior) (real \
+        ? sampleTransmissionFramebuffer(dir, world_pos, world_thickness, perceptual_roughness, channel_ior) \
+        : sampleIblRefraction(dir, perceptual_roughness, channel_ior))
     if (dispersion > 0.0) {
         float half_spread = (ior - 1.0) * 0.025 * dispersion;
         vec3 iors = vec3(ior - half_spread, ior, ior + half_spread);
         vec3 transmitted_light = vec3(0.0);
         for (int i = 0; i < 3; ++i) {
-            float lod = applyIorToRoughness(perceptual_roughness, iors[i]) * float(max(SceneViewUBO.Ibl.SpecularEnvMipCount, 1u) - 1u);
             vec3 refracted = normalize(refract(-v, n, 1.0 / iors[i]));
-            transmitted_light[i] = getSpecularSample(refracted, lod)[i];
+            transmitted_light[i] = SAMPLE_DIR(refracted, iors[i])[i];
         }
         return transmitted_light;
     }
-
-    float lod = applyIorToRoughness(perceptual_roughness, ior) * float(max(SceneViewUBO.Ibl.SpecularEnvMipCount, 1u) - 1u);
     vec3 refracted = normalize(refract(-v, n, 1.0 / ior));
-    return getSpecularSample(refracted, lod).rgb;
+    return SAMPLE_DIR(refracted, ior);
+    #undef SAMPLE_DIR
 }
 
 vec3 getIBLRadianceCharlie(vec3 n, vec3 v, float sheen_roughness, vec3 sheen_color) {

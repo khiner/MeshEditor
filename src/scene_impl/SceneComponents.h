@@ -39,6 +39,9 @@ struct PBRViewportLighting {
     bool UseSceneLights, UseSceneWorld;
     float EnvIntensity, EnvRotationDegrees;
     float BackgroundBlur{0.5f}, WorldOpacity{0.f};
+    // Render the scene into a transmission framebuffer (with mips) and sample it at the
+    // refracted ray exit point, instead of approximating refraction by sampling the IBL.
+    bool RealTransmission{true};
 };
 
 // Two distinct ECS component types sharing the same layout, with different defaults

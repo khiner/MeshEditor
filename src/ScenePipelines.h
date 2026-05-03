@@ -35,8 +35,13 @@ inline constexpr auto Uint = vk::Format::eR32Uint;
 struct PbrCompiler {
     PbrCompiler(PipelineContext, vk::RenderPass);
 
+    enum class Variant { Opaque,
+                         Blend,
+                         OpaquePrepass };
+
     bool CompilePipelines(PbrFeatureMask);
-    vk::PipelineLayout BindTargeted(vk::CommandBuffer, bool opaque) const;
+    vk::PipelineLayout Bind(vk::CommandBuffer, Variant) const;
+    bool HasFeature(PbrFeature f) const { return ::HasFeature(Mask, f); }
     void RecompileModules(); // hot reload: recompile SPIRV and pipelines from disk
 
 private:
@@ -52,7 +57,7 @@ private:
     vk::RenderPass RenderPass;
 
     PbrFeatureMask Mask{0};
-    vk::UniquePipeline OpaqueTargeted, BlendTargeted;
+    vk::UniquePipeline OpaqueTargeted, BlendTargeted, OpaquePrepass;
 };
 
 struct MainPipeline {
@@ -66,12 +71,29 @@ struct MainPipeline {
         vk::UniqueFramebuffer Framebuffer, LineAAFramebuffer;
     };
 
+    // Mip chain + framebuffer backing real-transmission sampling.
+    // Allocated on demand only when a scene material uses KHR_materials_transmission and the user toggle is on.
+    struct TransmissionResourcesT {
+        TransmissionResourcesT(vk::Extent2D, vk::Device, vk::PhysicalDevice, vk::RenderPass, vk::ImageView depth_view, vk::ImageView line_data_view);
+
+        mvk::ImageResource Image;
+        vk::UniqueImageView Mip0View;
+        uint32_t MipCount{1};
+        vk::Extent2D Extent{};
+        vk::UniqueSampler Sampler;
+        vk::UniqueFramebuffer Framebuffer;
+    };
+
     void SetExtent(vk::Extent2D, vk::Device, vk::PhysicalDevice);
+    // Idempotent: allocates if `wanted` and not already at the right extent; releases if not wanted.
+    // Returns true when the allocated state changed (caller should re-write the descriptor write).
+    bool EnsureTransmissionResources(vk::Extent2D, vk::Device, vk::PhysicalDevice, bool wanted);
 
     PipelineRenderer Renderer;
     vk::UniqueRenderPass LineAARenderPass;
     ShaderPipeline LineAAComposite;
     std::unique_ptr<ResourcesT> Resources;
+    std::unique_ptr<TransmissionResourcesT> Transmission;
 
     PbrCompiler Compiler;
 };

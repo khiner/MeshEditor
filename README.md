@@ -74,9 +74,10 @@ _The cylinders shown in the images represent recorded microphone positions, but 
 
 ### glTF viewer
 
-MeshEditor is also a fully featured glTF 2.0 viewer/importer.
+MeshEditor is also a fully featured glTF 2.0 viewer/editor/exporter.
 glTF scene nodes are mapped to corresponding MeshEditor objects (meshes, armatures, cameras, lights, empty objects), with the scene parenting hierarchy mirroring the glTF node hierarchy.
-All Khnonos ratified extensions that visually impact the scene are supported (imported, rendered, fully editable), except for the common realtime approximation to sample the refracted IBL behind transmissive objects instead of scene contents behind them (same as Blender).
+All Khronos ratified extensions that visually impact the scene are supported (imported, rendered, fully editable).
+Load/save roundtrips almost all glTF losslessly, with known exceptions listed in `tests/RoundtripTest.cpp`.
 PBR BRDF/lighting equations are taken directly from the reference [glTF-Sample-Renderer shaders](https://github.com/KhronosGroup/glTF-Sample-Renderer/blob/main/source/Renderer/shaders/).
 
 PBR render features that are not needed by the scene (because the feature isn't enabled on any current object's materials, scene lights are not present or enabled, or IBL environment not present (in Solid render mode)) are not compiled. This is updated dynamically as the scene changes or edits are made.
@@ -98,7 +99,7 @@ PBR render features that are not needed by the scene (because the feature isn't 
 | `KHR_materials_sheen` | ✅ | |
 | `KHR_materials_ior` | ✅ | |
 | `KHR_materials_dispersion` | ✅ | |
-| `KHR_materials_transmission` | ✅ | |
+| `KHR_materials_transmission` | ✅ | "Real transmission" toggle in Viewport Shading: on samples a pre-rendered scene texture; off samples the IBL. |
 | `KHR_materials_diffuse_transmission` | ✅ | |
 | `KHR_materials_volume` | ✅ | |
 | `KHR_materials_clearcoat` | ✅ | |
@@ -109,7 +110,7 @@ PBR render features that are not needed by the scene (because the feature isn't 
 | `KHR_implicit_shapes` | 🟨 | (not yet ratified) WIP |
 | `KHR_node_visibility` | ✅ | Load and roundtrip are conformant. However, hiding a parent in the app without also hiding its descendants is dropped, since glTF can't express "parent invisible, children visible." |
 | `KHR_animation_pointer` | ⬜ | Too much complexity for now, will add when I get to arbitrary property animation. |
-| `EXT_lights_image_based` | ✅ | Imported as Scene IBL when present (used for Rendered view mode) |
+| `EXT_lights_image_based` | ✅ | Imported as Scene IBL when present |
 | `EXT_meshopt_compression` | ⬜ | Not taking on the meshopt dependency for now |
 
 ## Build & run

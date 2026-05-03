@@ -957,7 +957,7 @@ void Scene::InteractOverlay() {
                 const auto render_pbr_controls = [&](PBRViewportLighting &lighting, bool &lighting_changed, const char *id) {
                     PushID(id);
                     if (Button("Reset")) {
-                        lighting = {false, false, 1.f, 0.f, 0.5f, 0.f};
+                        lighting = {false, false, 1.f, 0.f, 0.5f, 0.f, true};
                         lighting_changed = true;
                     }
                     lighting_changed |= Checkbox("Scene lights", &lighting.UseSceneLights);
@@ -987,6 +987,8 @@ void Scene::InteractOverlay() {
                     }
                     lighting_changed |= SliderFloat("Blur", &lighting.BackgroundBlur, 0.f, 1.f, "%.2f");
                     lighting_changed |= SliderFloat("World opacity", &lighting.WorldOpacity, 0.f, 1.f, "%.2f");
+                    if (Checkbox("Real transmission", &lighting.RealTransmission)) lighting_changed = true;
+                    if (IsItemHovered()) SetTooltip("Sample transmission from a pre-rendered scene framebuffer instead of from the IBL.");
                     PopID();
                 };
 
