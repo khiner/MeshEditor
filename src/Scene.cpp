@@ -779,8 +779,8 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
             auto batch = BeginTextureUploadBatch(Vk.Device, *CommandPool, Stores.Buffers->Ctx);
             auto pre = MaterializeEnvironmentImport(Vk, batch, *Stores.Slots, *pending_env, src->Images);
             SubmitTextureUploadBatch(batch, Vk.Queue, *OneShotFence, Vk.Device);
-            auto &env = *Stores.Environments;
             if (pre) {
+                auto &env = *Stores.Environments;
                 if (env.ImportedSceneWorld) {
                     ReleaseCubeSamplerSlot(*Stores.Slots, env.ImportedSceneWorld->DiffuseEnv.SamplerSlot);
                     ReleaseCubeSamplerSlot(*Stores.Slots, env.ImportedSceneWorld->SpecularEnv.SamplerSlot);
@@ -1693,15 +1693,17 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         const bool use_scene_lights = is_pbr_mode && active_lighting.UseSceneLights;
         const bool use_scene_world = is_pbr_mode && active_lighting.UseSceneWorld;
         const auto &active_environment = use_scene_world ? Stores.Environments->SceneWorld : Stores.Environments->StudioWorld;
-        const float env_intensity = use_scene_world ? 1.f : active_lighting.EnvIntensity;
+        const auto *source_assets = R.try_get<const gltf::SourceAssets>(SceneEntity);
+        const auto *source_ibl = source_assets && source_assets->ImageBasedLight.has_value() ? &*source_assets->ImageBasedLight : nullptr;
+        const float env_intensity = use_scene_world && source_ibl ? source_ibl->Intensity : active_lighting.EnvIntensity;
         const mat3 env_rotation = [&]() -> mat3 {
             if (use_scene_world) return Stores.Environments->SceneWorldRotation;
             const float radians = active_lighting.EnvRotationDegrees * (Pi / 180.f);
             const float s = std::sin(radians), c = std::cos(radians);
             return {c, 0, -s, 0, 1, 0, s, 0, c};
         }();
-        const float background_blur = use_scene_world ? 0.f : active_lighting.BackgroundBlur;
-        const float world_opacity = is_pbr_mode ? (use_scene_world ? 1.f : active_lighting.WorldOpacity) : 0.f;
+        const float background_blur = active_lighting.BackgroundBlur;
+        const float world_opacity = is_pbr_mode ? active_lighting.WorldOpacity : 0.f;
         const auto *pending = R.try_get<const PendingTransform>(SceneEntity);
         // ScreenPixelScale: world-space size per pixel at unit distance (perspective) or absolute (ortho).
         // Sign encodes camera type: positive = perspective (shader multiplies by distance), negative = orthographic.

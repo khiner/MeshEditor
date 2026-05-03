@@ -64,7 +64,7 @@ vec3 EvaluateIrradianceSH(const std::array<vec3, 9> &l, vec3 n) {
 
 using CubemapMipFacesF32 = std::array<DecodedImageF32, 6>;
 
-CubemapMipFacesF32 BuildDiffuseCubemapFromIrradiance(const std::array<vec3, 9> &coefficients, float intensity, uint32_t size = 32u) {
+CubemapMipFacesF32 BuildDiffuseCubemapFromIrradiance(const std::array<vec3, 9> &coefficients, uint32_t size = 32u) {
     CubemapMipFacesF32 mip{};
     for (uint32_t face = 0; face < 6u; ++face) {
         auto &image = mip[face];
@@ -75,7 +75,7 @@ CubemapMipFacesF32 BuildDiffuseCubemapFromIrradiance(const std::array<vec3, 9> &
             for (uint32_t x = 0; x < size; ++x) {
                 const auto u = 2.f * (x + 0.5f) / float(size) - 1.f;
                 const auto v = 2.f * (y + 0.5f) / float(size) - 1.f;
-                const auto rgb = intensity * EvaluateIrradianceSH(coefficients, CubemapFaceDirection(face, u, v));
+                const auto rgb = EvaluateIrradianceSH(coefficients, CubemapFaceDirection(face, u, v));
                 const auto offset = (size_t(y) * size + x) * 4u;
                 image.Pixels[offset + 0] = rgb.r;
                 image.Pixels[offset + 1] = rgb.g;
@@ -476,9 +476,6 @@ std::expected<EnvironmentPrefiltered, std::string> MaterializeEnvironmentImport(
             );
             if (!decoded) return std::unexpected{std::format("Failed to decode EXT_lights_image_based '{}' image {}: {}", ibl.Name, image_index, decoded.error())};
             if (decoded->Width != decoded->Height) return std::unexpected{std::format("EXT_lights_image_based '{}' image {} must be square (got {}x{}).", ibl.Name, image_index, decoded->Width, decoded->Height)};
-            if (ibl.Intensity != 1.f) {
-                for (auto &px : decoded->Pixels) px *= ibl.Intensity;
-            }
             faces[face] = std::move(*decoded);
         }
         // Normalize EXT_lights_image_based face data to our cubemap upload convention.
@@ -513,7 +510,7 @@ std::expected<EnvironmentPrefiltered, std::string> MaterializeEnvironmentImport(
 
     std::vector<CubemapMipFacesF32> diffuse_mips;
     diffuse_mips.reserve(1);
-    if (ibl.IrradianceCoefficients) diffuse_mips.emplace_back(BuildDiffuseCubemapFromIrradiance(*ibl.IrradianceCoefficients, ibl.Intensity));
+    if (ibl.IrradianceCoefficients) diffuse_mips.emplace_back(BuildDiffuseCubemapFromIrradiance(*ibl.IrradianceCoefficients));
     else diffuse_mips.emplace_back(specular_mips.back());
 
     auto diffuse_env = CreateCubemapEntryFromMipFacesF32(vk, batch, slots, pending.DiffuseCubeSlot, diffuse_mips, ibl.Name + "_diffuse");

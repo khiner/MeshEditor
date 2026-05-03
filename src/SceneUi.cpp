@@ -22,6 +22,7 @@
 #include "audio/AudioSystem.h"
 #include "audio/RealImpact.h"
 #include "audio/RealImpactComponents.h"
+#include "gltf/GltfScene.h"
 #include "gpu/Transform.h"
 #include "gpu/WorkspaceLights.h"
 #include "mesh/Mesh.h"
@@ -962,7 +963,12 @@ void Scene::InteractOverlay() {
                     lighting_changed |= Checkbox("Scene lights", &lighting.UseSceneLights);
                     SameLine();
                     lighting_changed |= Checkbox("Scene world", &lighting.UseSceneWorld);
-                    if (!lighting.UseSceneWorld) {
+                    auto *source_assets = R.try_get<gltf::SourceAssets>(SceneEntity);
+                    auto *source_ibl = source_assets && source_assets->ImageBasedLight.has_value() ? &*source_assets->ImageBasedLight : nullptr;
+                    if (lighting.UseSceneWorld) {
+                        // Spec-defined intensity edits the source IBL directly so save round-trips.
+                        if (source_ibl) lighting_changed |= SliderFloat("Intensity", &source_ibl->Intensity, 0.f, 2.f, "%.2f");
+                    } else {
                         auto &environments = *Stores.Environments;
                         const auto &current_name = environments.Hdris[environments.ActiveHdriIndex].Name;
                         if (BeginCombo("Environment", current_name.c_str())) {
@@ -978,9 +984,9 @@ void Scene::InteractOverlay() {
                         }
                         lighting_changed |= SliderFloat("Intensity", &lighting.EnvIntensity, 0.f, 2.f, "%.2f");
                         lighting_changed |= SliderFloat("Rotation", &lighting.EnvRotationDegrees, -180.f, 180.f, "%.1f deg");
-                        lighting_changed |= SliderFloat("Blur", &lighting.BackgroundBlur, 0.f, 1.f, "%.2f");
-                        lighting_changed |= SliderFloat("World opacity", &lighting.WorldOpacity, 0.f, 1.f, "%.2f");
                     }
+                    lighting_changed |= SliderFloat("Blur", &lighting.BackgroundBlur, 0.f, 1.f, "%.2f");
+                    lighting_changed |= SliderFloat("World opacity", &lighting.WorldOpacity, 0.f, 1.f, "%.2f");
                     PopID();
                 };
 
