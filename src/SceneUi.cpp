@@ -476,6 +476,13 @@ void Scene::AnimateToCamera(entt::entity camera_entity) {
 }
 
 void Scene::Interact() {
+    // Any open popup (e.g. Viewport shading dropdown) blocks viewport mouse/keyboard input.
+    // Without this, wheel/click events still patch the camera while the popup overlays the viewport.
+    if (IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel)) {
+        PreciseWheelDelta = {0, 0};
+        return;
+    }
+
     // Track the previous click position for pick-cycle gating.
     static ImVec2 PrevClickPos{-FLT_MAX, -FLT_MAX}, CurrentClickPos{-FLT_MAX, -FLT_MAX};
     if (GetIO().MouseClicked[0]) {
