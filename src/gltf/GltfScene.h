@@ -5,6 +5,7 @@
 //  (The spec does permit this single set of 4 - see glTF 2.0 §3.7.3.1.)
 // - KHR_mesh_quantization: quantized attributes decode to FLOAT at import, save always emits FLOAT
 // - EXT_mesh_gpu_instancing: per-instance TRS round-trips, but custom instancing attributes (`_FOO`) beyond TRANSLATION/ROTATION/SCALE aren't retained
+// - EXT_lights_image_based: per-scene IBL assignments collapse to a single source IBL on the default scene
 //
 // Unsupported (neither imported nor re-emitted):
 // - KHR_draco_mesh_compression, EXT_meshopt_compression: files relying on these to carry geometry
@@ -210,13 +211,21 @@ struct Sampler {
     std::string Name;
 };
 
+struct SourceScene {
+    std::string Name;
+    std::vector<uint32_t> RootNodeIndices;
+};
+
 // Source-form scene-level data on the SceneEntity — encoded image bytes, sampler-config collapse,
 // asset.* metadata, etc. Cameras/lights round-trip via per-entity components above.
 struct SourceAssets {
     std::string Copyright, Generator, MinVersion;
     std::string AssetExtras, AssetExtensions; // raw minified JSON
-    std::string DefaultSceneName;
-    std::vector<uint32_t> DefaultSceneRoots;
+    std::vector<SourceScene> Scenes;
+    uint32_t ActiveSceneIndex{0}; // Becomes `asset.defaultScene` on save — the user's current view persists.
+    // Per source node: bitmask of which scenes the node belongs to (bit s set ⇒ in scene s).
+    // Empty / single-scene files leave this empty (everything is in the only scene).
+    std::vector<uint32_t> NodeSceneMasks;
     std::vector<std::string> ExtensionsRequired;
     std::unordered_map<uint64_t, std::string> ExtrasByEntity;
     std::vector<MaterialSourceMeta> MaterialMetas;
@@ -261,4 +270,16 @@ struct SaveContext {
 
 std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &, LoadContext);
 std::expected<void, std::string> SaveGltf(const std::filesystem::path &, const SaveContext &);
+
+// Switch which glTF scene is "active" - toggles RenderInstance on object entities so only the
+// nodes belonging to `scene_index` (per `SourceAssets::NodeSceneMasks`) render.
+// No-op if the asset is single-scene or the index is invalid / unchanged.
+void SwitchActiveScene(entt::registry &, entt::entity scene_entity, uint32_t scene_index);
+
+// Show in-active-scene objects, hide the rest. No-op for single-scene assets.
+void ApplySceneVisibility(entt::registry &, entt::entity scene_entity);
+
+// Pick Active and select all objects in the active scene. Shared by load and scene switch so the
+// Active/Selected state is derived from the same rules in both paths. Returns the picked Active.
+entt::entity ApplyActiveSceneSelection(entt::registry &, entt::entity scene_entity);
 } // namespace gltf

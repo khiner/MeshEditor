@@ -106,7 +106,6 @@ struct Object {
     std::optional<std::vector<float>> NodeWeights;
     std::string Name;
 };
-
 } // namespace gltf
 
 namespace gltf {
@@ -1297,7 +1296,57 @@ fastgltf::Light ConvertLightToFg(const PunctualLight &pl, std::string_view name)
     };
 }
 
+bool NodeInActiveScene(const SourceAssets *sa, uint32_t ni) {
+    if (!sa || sa->NodeSceneMasks.empty() || ni >= sa->NodeSceneMasks.size()) return true;
+    return (sa->NodeSceneMasks[ni] & (1u << sa->ActiveSceneIndex)) != 0u;
+}
+bool EntityInActiveScene(const entt::registry &r, const SourceAssets *sa, entt::entity e) {
+    const auto *sni = r.try_get<const SourceNodeIndex>(e);
+    return !sni || NodeInActiveScene(sa, sni->Value);
+}
 } // namespace
+
+// Pick an Active entity by source-node order, with type priority Camera > Mesh > Armature >
+// root Empty > any object; clear prior Active/Selected and re-apply over entities in the active
+// scene. Used by both initial load and scene switch so the selection state is consistent.
+entt::entity ApplyActiveSceneSelection(entt::registry &r, entt::entity scene_entity) {
+    const auto *sa = r.try_get<const SourceAssets>(scene_entity);
+
+    // Source-order traversal so "first" matches load-time iteration. Entities without
+    // SourceNodeIndex (runtime-added or armatures) fall to the end via UINT32_MAX.
+    std::vector<std::pair<uint32_t, entt::entity>> ordered;
+    for (const auto e : r.view<const ObjectKind>()) {
+        if (!EntityInActiveScene(r, sa, e)) continue;
+        const auto *sni = r.try_get<const SourceNodeIndex>(e);
+        ordered.emplace_back(sni ? sni->Value : std::numeric_limits<uint32_t>::max(), e);
+    }
+    std::ranges::sort(ordered);
+
+    // Pick Active by type priority (Camera > Mesh > Armature > root-Empty > any). `ordered` is
+    // already sorted by source-node index, so first hit per priority wins.
+    const auto priority = [&](entt::entity e) {
+        switch (r.get<const ObjectKind>(e).Value) {
+            case ObjectType::Camera: return 0;
+            case ObjectType::Mesh: return 1;
+            case ObjectType::Armature: return 2;
+            case ObjectType::Empty: return r.all_of<const SourceParentNodeIndex>(e) ? 4 : 3;
+            default: return 4;
+        }
+    };
+    entt::entity active = entt::null;
+    int best = std::numeric_limits<int>::max();
+    for (const auto &[_, e] : ordered) {
+        if (const auto p = priority(e); p < best) {
+            best = p;
+            active = e;
+        }
+    }
+
+    r.clear<Active, Selected>();
+    if (active != entt::null) r.emplace<Active>(active);
+    for (const auto &[_, e] : ordered) r.emplace<Selected>(e);
+    return active;
+}
 
 std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &source_path, LoadContext ctx) {
     const Timer timer{"LoadGltf"};
@@ -1312,6 +1361,17 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
     const auto scene_index = asset.defaultScene.value_or(0);
     if (scene_index >= asset.scenes.size()) return std::unexpected{std::format("glTF '{}' has invalid default scene index.", source_path.string())};
 
+    std::vector<gltf::SourceScene> source_scenes;
+    source_scenes.reserve(asset.scenes.size());
+    for (const auto &fg_scene : asset.scenes) {
+        std::vector<uint32_t> roots;
+        roots.reserve(fg_scene.nodeIndices.size());
+        for (const auto n : fg_scene.nodeIndices) {
+            if (const auto idx = ToIndex(n, asset.nodes.size())) roots.emplace_back(*idx);
+        }
+        source_scenes.emplace_back(gltf::SourceScene{.Name = std::string{fg_scene.name}, .RootNodeIndices = std::move(roots)});
+    }
+
     // Build SourceAssets in-place, no local intermediate vectors. The struct lives on
     // SceneEntity for the rest of the load (and beyond — needed for save round-trip), and the
     // resolve_texture_slot lambda below reads samplers/images/textures via this stored ref.
@@ -1321,8 +1381,9 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
         .MinVersion = asset.assetInfo ? std::string{asset.assetInfo->minVersion} : std::string{},
         .AssetExtras = asset.assetInfo ? std::string{asset.assetInfo->extras} : std::string{},
         .AssetExtensions = asset.assetInfo ? std::string{asset.assetInfo->extensions} : std::string{},
-        .DefaultSceneName = std::string{asset.scenes[scene_index].name},
-        .DefaultSceneRoots = {},
+        .Scenes = std::move(source_scenes),
+        .ActiveSceneIndex = uint32_t(scene_index),
+        .NodeSceneMasks = {},
         .ExtensionsRequired = {},
         .ExtrasByEntity = std::move(extras),
         .MaterialMetas = {},
@@ -1528,7 +1589,28 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
             local_transforms[node_index] = Transform{ToVec3(translation), glm::normalize(ToQuat(rotation)), ToVec3(scale)};
         }
     }
-    const auto traversal = TraverseSceneNodes(asset, local_transforms, uint32_t(scene_index));
+    // Traverse every scene; union into a single InScene mask so objects from any scene get full
+    // entity creation. World transforms come from the default scene first (so its hierarchy wins
+    // when a node appears in multiple scenes), with other scenes filling in nodes the default omits.
+    // node_to_scene_mask records which scenes each node belongs to (bit s = scene s); used after
+    // entity creation to hide objects that aren't in the active scene.
+    SceneTraversalData traversal{.InScene = std::vector(asset.nodes.size(), false), .WorldTransforms = std::vector(asset.nodes.size(), I4)};
+    std::vector<uint32_t> node_to_scene_mask(asset.nodes.size(), 0u);
+    const auto merge_scene = [&](uint32_t si) {
+        const auto t = TraverseSceneNodes(asset, local_transforms, si);
+        for (uint32_t i = 0; i < asset.nodes.size(); ++i) {
+            if (!t.InScene[i]) continue;
+            node_to_scene_mask[i] |= (1u << si);
+            if (!traversal.InScene[i]) {
+                traversal.InScene[i] = true;
+                traversal.WorldTransforms[i] = t.WorldTransforms[i];
+            }
+        }
+    };
+    merge_scene(uint32_t(scene_index));
+    for (uint32_t s = 0; s < asset.scenes.size(); ++s) {
+        if (s != uint32_t(scene_index)) merge_scene(s);
+    }
 
     std::vector<bool> used_skin(asset.skins.size(), false);
     for (uint32_t node_index = 0; node_index < asset.nodes.size(); ++node_index) {
@@ -1825,14 +1907,12 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
         return texture.DdsImageIndex;
     };
 
-    // Finalize SourceAssets: scene roots, extensions/variants lists, IBL, MaterialMetas (built
-    // alongside source_materials above). Then emplace and bind a const ref for downstream lookups.
+    // Finalize SourceAssets: extensions/variants lists, IBL, MaterialMetas (built alongside
+    // source_materials above). Scenes/ActiveSceneIndex were populated up front; emplace and bind
+    // a const ref for downstream lookups.
     auto source_ibl = ConvertIBL(asset, scene_index);
     source_assets.ImageBasedLight = source_ibl;
-    source_assets.DefaultSceneRoots.reserve(asset.scenes[scene_index].nodeIndices.size());
-    for (const auto n : asset.scenes[scene_index].nodeIndices) {
-        if (const auto idx = ToIndex(n, asset.nodes.size())) source_assets.DefaultSceneRoots.emplace_back(*idx);
-    }
+    if (source_assets.Scenes.size() > 1) source_assets.NodeSceneMasks = node_to_scene_mask;
     source_assets.ExtensionsRequired.reserve(asset.extensionsRequired.size());
     for (const auto &e : asset.extensionsRequired) source_assets.ExtensionsRequired.emplace_back(e);
     source_assets.MaterialMetas = std::move(material_metas);
@@ -2771,15 +2851,8 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
         R.emplace_or_replace<PendingSceneWorldClear>(SceneEntity);
     }
 
-    const auto active_entity =
-        first_camera_object_entity != entt::null ? first_camera_object_entity :
-        first_mesh_object_entity != entt::null   ? first_mesh_object_entity :
-        first_armature_entity != entt::null      ? first_armature_entity :
-        first_root_empty_entity != entt::null    ? first_root_empty_entity :
-                                                   first_object_entity;
-    R.clear<Active, Selected>();
-    if (active_entity != entt::null) R.emplace<Active>(active_entity);
-    for (const auto e : all_imported_objects) R.emplace<Selected>(e);
+    ApplySceneVisibility(R, SceneEntity);
+    const auto active_entity = ApplyActiveSceneSelection(R, SceneEntity);
     import_rollback_guard.Enabled = false;
 
     return gltf::LoadResult{.Active = active_entity, .FirstMesh = first_mesh_entity, .FirstCameraObject = first_camera_object_entity, .ImportedAnimation = imported_animation};
@@ -2920,15 +2993,31 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         if (node_index < node_to_entity.size()) node_to_entity[node_index] = entity;
     }
 
+    // Roots derived from current parent state — used when no `SourceAssets::Scenes` is available
+    // (runtime-built scenes, primitives) to synthesize a single scene's nodeIndices.
+    const auto compute_roots_from_parents = [&] {
+        std::vector<uint32_t> roots;
+        for (uint32_t ni = 0; ni < total_node_count; ++ni) {
+            const auto entity = node_to_entity[ni];
+            if (entity == entt::null) continue;
+            const auto *spi = r.try_get<const SourceParentNodeIndex>(entity);
+            const bool is_root = !spi || spi->Value >= total_node_count || node_to_entity[spi->Value] == entt::null;
+            if (is_root) roots.emplace_back(ni);
+        }
+        return roots;
+    };
+
     // KHR_node_visibility: node is hidden iff it has no RenderInstance and every child is hidden too.
     // Stubs are unreachable from scene roots, so they default to not-hidden and don't emit spurious visible:false.
     // Post-order DFS populates `fully_hidden` so parents can check children without recursion or multi-pass.
+    // Nodes only in non-active scenes are treated as not-hidden — their missing RenderInstance is
+    // a switch-time artifact, not a user-set hide.
     std::vector<bool> fully_hidden(total_node_count, false);
     {
         const auto dfs = [&](this const auto &self, uint32_t ni) -> bool {
             if (ni >= total_node_count) return false;
             const auto entity = node_to_entity[ni];
-            bool hidden = entity != entt::null && !r.all_of<RenderInstance>(entity);
+            bool hidden = NodeInActiveScene(src_assets, ni) && entity != entt::null && !r.all_of<RenderInstance>(entity);
             if (const auto it = children_by_parent.find(ni); it != children_by_parent.end()) {
                 for (const auto &[_, child_ni] : it->second) {
                     if (!self(child_ni)) hidden = false;
@@ -2937,16 +3026,17 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             fully_hidden[ni] = hidden;
             return hidden;
         };
-        if (src_assets && !src_assets->DefaultSceneRoots.empty()) {
-            for (const auto ni : src_assets->DefaultSceneRoots) dfs(ni);
-        } else {
-            for (uint32_t ni = 0; ni < total_node_count; ++ni) {
-                const auto entity = node_to_entity[ni];
-                if (entity == entt::null) continue;
-                const auto *spi = r.try_get<const SourceParentNodeIndex>(entity);
-                const bool is_root = !spi || spi->Value >= total_node_count || node_to_entity[spi->Value] == entt::null;
-                if (is_root) dfs(ni);
+        bool walked_any = false;
+        if (src_assets) {
+            for (const auto &scene : src_assets->Scenes) {
+                for (const auto ni : scene.RootNodeIndices) {
+                    dfs(ni);
+                    walked_any = true;
+                }
             }
+        }
+        if (!walked_any) {
+            for (const auto ni : compute_roots_from_parents()) dfs(ni);
         }
     }
 
@@ -4092,21 +4182,9 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         });
     }
 
-    fastgltf::pmr::MaybeSmallVector<std::size_t> scene_roots;
-    if (!sa.DefaultSceneRoots.empty()) {
-        scene_roots.reserve(sa.DefaultSceneRoots.size());
-        for (const auto n : sa.DefaultSceneRoots) scene_roots.emplace_back(n);
-    } else {
-        for (uint32_t ni = 0; ni < total_node_count; ++ni) {
-            const auto entity = node_to_entity[ni];
-            if (entity == entt::null) continue;
-            if (const auto *spi = r.try_get<const SourceParentNodeIndex>(entity);
-                spi && spi->Value < total_node_count && node_to_entity[spi->Value] != entt::null) continue;
-            scene_roots.emplace_back(ni);
-        }
-    }
-    // EXT_lights_image_based
-    fastgltf::Optional<std::size_t> scene_ibl_index;
+    // EXT_lights_image_based: a single IBL is preserved across round-trip, attached to the
+    // default scene (per-scene IBL preservation isn't modeled — see header round-trip gaps).
+    fastgltf::Optional<std::size_t> default_scene_ibl_index;
     if (sa.ImageBasedLight) {
         const auto &src_ibl = *sa.ImageBasedLight;
         fastgltf::ImageBasedLight ibl{
@@ -4132,15 +4210,33 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             ibl.irradianceCoefficients = coeffs;
         }
         asset.imageBasedLights.emplace_back(std::move(ibl));
-        scene_ibl_index = std::size_t{0};
+        default_scene_ibl_index = std::size_t{0};
     }
 
-    asset.scenes.emplace_back(fastgltf::Scene{
-        .nodeIndices = std::move(scene_roots),
-        .imageBasedLightIndex = scene_ibl_index,
-        .name = ToFgStr(sa.DefaultSceneName),
-    });
-    asset.defaultScene = 0;
+    if (!sa.Scenes.empty()) {
+        for (uint32_t i = 0; i < sa.Scenes.size(); ++i) {
+            const auto &scene = sa.Scenes[i];
+            fastgltf::pmr::MaybeSmallVector<std::size_t> scene_roots;
+            scene_roots.reserve(scene.RootNodeIndices.size());
+            for (const auto n : scene.RootNodeIndices) scene_roots.emplace_back(n);
+            asset.scenes.emplace_back(fastgltf::Scene{
+                .nodeIndices = std::move(scene_roots),
+                .imageBasedLightIndex = i == sa.ActiveSceneIndex ? default_scene_ibl_index : fastgltf::Optional<std::size_t>{},
+                .name = ToFgStr(scene.Name),
+            });
+        }
+        asset.defaultScene = sa.ActiveSceneIndex;
+    } else {
+        // No SourceAssets (runtime-built scene): synthesize a single scene from current roots.
+        fastgltf::pmr::MaybeSmallVector<std::size_t> scene_roots;
+        for (const auto ni : compute_roots_from_parents()) scene_roots.emplace_back(ni);
+        asset.scenes.emplace_back(fastgltf::Scene{
+            .nodeIndices = std::move(scene_roots),
+            .imageBasedLightIndex = default_scene_ibl_index,
+            .name = {},
+        });
+        asset.defaultScene = 0;
+    }
 
     asset.extensionsRequired.reserve(sa.ExtensionsRequired.size());
     for (const auto &e : sa.ExtensionsRequired) asset.extensionsRequired.emplace_back(e);
@@ -4214,5 +4310,24 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         return std::unexpected{std::format("fastgltf export to '{}' failed: {}", path.string(), fastgltf::getErrorMessage(err))};
     }
     return {};
+}
+
+// Toggle RenderInstance on object entities so only nodes belonging to the active scene render.
+// No-op for single-scene assets (NodeSceneMasks empty). Show/Hide are idempotent.
+void ApplySceneVisibility(entt::registry &r, entt::entity scene_entity) {
+    const auto *sa = r.try_get<const SourceAssets>(scene_entity);
+    if (!sa || sa->NodeSceneMasks.empty()) return;
+    for (auto [e, sni, _i] : r.view<const SourceNodeIndex, const Instance>().each()) {
+        if (NodeInActiveScene(sa, sni.Value)) Show(r, e);
+        else Hide(r, e);
+    }
+}
+
+void SwitchActiveScene(entt::registry &r, entt::entity scene_entity, uint32_t scene_index) {
+    auto *sa = r.try_get<SourceAssets>(scene_entity);
+    if (!sa || scene_index >= sa->Scenes.size() || scene_index == sa->ActiveSceneIndex || sa->NodeSceneMasks.empty()) return;
+    r.patch<SourceAssets>(scene_entity, [scene_index](auto &a) { a.ActiveSceneIndex = scene_index; });
+    ApplySceneVisibility(r, scene_entity);
+    ApplyActiveSceneSelection(r, scene_entity);
 }
 } // namespace gltf

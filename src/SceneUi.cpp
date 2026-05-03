@@ -2084,6 +2084,20 @@ void Scene::RenderControls() {
                 }
                 PopID();
             }
+            if (auto *sa = R.try_get<gltf::SourceAssets>(SceneEntity); sa && sa->Scenes.size() > 1) {
+                const auto &active_name = sa->Scenes[sa->ActiveSceneIndex].Name;
+                const auto preview = NamedOr(active_name, "Scene ", sa->ActiveSceneIndex);
+                if (BeginCombo("Scene", preview.c_str())) {
+                    for (uint32_t i = 0; i < sa->Scenes.size(); ++i) {
+                        const bool selected = i == sa->ActiveSceneIndex;
+                        if (Selectable(NamedOr(sa->Scenes[i].Name, "Scene ", i).c_str(), selected) && !selected) {
+                            gltf::SwitchActiveScene(R, SceneEntity, i);
+                        }
+                        if (selected) SetItemDefaultFocus();
+                    }
+                    EndCombo();
+                }
+            }
             if (CollapsingHeader("Object tree", ImGuiTreeNodeFlags_DefaultOpen)) RenderObjectTree();
             SeparatorText("");
             if (CollapsingHeader("Add object")) {

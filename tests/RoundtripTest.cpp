@@ -96,8 +96,7 @@ constexpr Exception SubtreeExceptions[]{
     {"extensions.KHR_xmp", "not imported"},
     {"materials[*].extensions.KHR_materials_volume_scatter", "not imported"},
 
-    // --- Multi-scene files and unsupported animation channels. ---
-    {"scenes", "multi-scene files are collapsed to the default scene on import"},
+    // --- Unsupported animation channels. ---
     {"animations[*].channels", "channels using KHR_animation_pointer are dropped on import"},
     {"animations[*].samplers", "samplers for dropped channels (e.g. KHR_animation_pointer) are also dropped"},
 
