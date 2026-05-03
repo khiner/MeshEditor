@@ -291,6 +291,8 @@ void ReleaseEnvironmentSamplerSlots(DescriptorSlots &slots, const EnvironmentSto
         ReleaseCubeSamplerSlot(slots, environments.ImportedSceneWorld->DiffuseEnv.SamplerSlot);
         ReleaseCubeSamplerSlot(slots, environments.ImportedSceneWorld->SpecularEnv.SamplerSlot);
     }
+    ReleaseCubeSamplerSlot(slots, environments.EmptySceneWorld.DiffuseEnv.SamplerSlot);
+    ReleaseCubeSamplerSlot(slots, environments.EmptySceneWorld.SpecularEnv.SamplerSlot);
     for (const auto *tex : {&environments.BrdfLut, &environments.SheenELut, &environments.CharlieLut}) {
         if (tex->SamplerSlot != InvalidSlot) slots.Release({SlotType::Sampler, tex->SamplerSlot});
     }
@@ -517,6 +519,24 @@ std::expected<EnvironmentPrefiltered, std::string> MaterializeEnvironmentImport(
     if (!diffuse_env) return std::unexpected{std::move(diffuse_env.error())};
 
     return EnvironmentPrefiltered{.DiffuseEnv = std::move(*diffuse_env), .SpecularEnv = std::move(*specular_env), .Name = ibl.Name};
+}
+
+EnvironmentPrefiltered BuildFlatColorEnvironment(
+    const SceneVulkanResources &vk, TextureUploadBatch &batch, DescriptorSlots &slots,
+    vec3 color, std::string name
+) {
+    CubemapMipFacesF32 face{};
+    for (uint32_t f = 0; f < 6u; ++f) {
+        face[f].Width = 1;
+        face[f].Height = 1;
+        face[f].Pixels = {color.r, color.g, color.b, 1.f};
+    }
+    const std::vector<CubemapMipFacesF32> mips{face};
+    const auto [diffuse_slot, specular_slot] = AllocateIblCubeSlots(slots);
+    auto specular = CreateCubemapEntryFromMipFacesF32(vk, batch, slots, specular_slot, mips, name + "_specular");
+    auto diffuse = CreateCubemapEntryFromMipFacesF32(vk, batch, slots, diffuse_slot, mips, name + "_diffuse");
+    if (!specular || !diffuse) throw std::runtime_error(std::format("Failed to build flat-color environment '{}'", name));
+    return EnvironmentPrefiltered{.DiffuseEnv = std::move(*diffuse), .SpecularEnv = std::move(*specular), .Name = std::move(name)};
 }
 
 // GPU-prefilters a Radiance HDR equirectangular image into a diffuse irradiance cubemap and a

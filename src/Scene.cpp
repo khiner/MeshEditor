@@ -483,6 +483,8 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
     environments.BrdfLut = CreateDefaultLutTexture(Vk, init_batch, *Stores.Slots, images_dir / "lut_ggx.png", "DefaultGGXBRDFLUT");
     environments.SheenELut = CreateDefaultLutTexture(Vk, init_batch, *Stores.Slots, images_dir / "lut_sheen_E.png", "DefaultSheenELUT");
     environments.CharlieLut = CreateDefaultLutTexture(Vk, init_batch, *Stores.Slots, images_dir / "lut_charlie.png", "DefaultCharlieLUT");
+    // Blender's default world background color (linear RGB) - flat ambient-only IBL when no scene world is provided.
+    environments.EmptySceneWorld = BuildFlatColorEnvironment(Vk, init_batch, *Stores.Slots, vec3{0.05f}, "EmptySceneWorld");
     SubmitTextureUploadBatch(init_batch, Vk.Queue, *OneShotFence, Vk.Device);
 
     std::error_code ec;
@@ -495,7 +497,7 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
     const auto forest_it = find(environments.Hdris, "forest", &HdriEntry::Name);
     environments.ActiveHdriIndex = forest_it != environments.Hdris.end() ? std::distance(environments.Hdris.begin(), forest_it) : 0;
     SetStudioEnvironment(environments.ActiveHdriIndex);
-    environments.SceneWorld = environments.StudioWorld;
+    environments.SceneWorld = {.Ibl = MakeIblSamplers(environments.EmptySceneWorld, environments), .Name = environments.EmptySceneWorld.Name};
 
     Pipelines->CompileShaders();
 }
@@ -774,6 +776,25 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         SubmitTextureUploadBatch(batch, Vk.Queue, *OneShotFence, Vk.Device);
         R.remove<PendingTextureUploads>(SceneEntity);
     }
+    // PendingSceneWorldClear takes precedence: a non-EXT load arrived after a previous EXT-IBL load
+    // and the import is now stale. Cancel any pending import (release its allocated slots) before reset.
+    if (R.all_of<PendingSceneWorldClear>(SceneEntity)) {
+        auto &env = *Stores.Environments;
+        if (auto *imp = R.try_get<PendingEnvironmentImport>(SceneEntity)) {
+            ReleaseCubeSamplerSlot(*Stores.Slots, imp->DiffuseCubeSlot);
+            ReleaseCubeSamplerSlot(*Stores.Slots, imp->SpecularCubeSlot);
+            R.remove<PendingEnvironmentImport>(SceneEntity);
+        }
+        if (env.ImportedSceneWorld) {
+            ReleaseCubeSamplerSlot(*Stores.Slots, env.ImportedSceneWorld->DiffuseEnv.SamplerSlot);
+            ReleaseCubeSamplerSlot(*Stores.Slots, env.ImportedSceneWorld->SpecularEnv.SamplerSlot);
+            env.ImportedSceneWorld.reset();
+        }
+        env.SceneWorldRotation = mat3{1.f};
+        env.SceneWorld = {.Ibl = MakeIblSamplers(env.EmptySceneWorld, env), .Name = env.EmptySceneWorld.Name};
+        R.patch<RenderedLighting>(SceneEntity, [](auto &l) { l.WorldOpacity = 0.f; });
+        R.remove<PendingSceneWorldClear>(SceneEntity);
+    }
     if (auto *pending_env = R.try_get<PendingEnvironmentImport>(SceneEntity)) {
         if (const auto *src = R.try_get<const gltf::SourceAssets>(SceneEntity)) {
             auto batch = BeginTextureUploadBatch(Vk.Device, *CommandPool, Stores.Buffers->Ctx);
@@ -788,6 +809,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
                 env.ImportedSceneWorld = std::move(*pre);
                 env.SceneWorldRotation = glm::mat3_cast(pending_env->Source.Rotation);
                 env.SceneWorld = {.Ibl = MakeIblSamplers(*env.ImportedSceneWorld, env), .Name = env.ImportedSceneWorld->Name};
+                R.patch<RenderedLighting>(SceneEntity, [](auto &l) { l.WorldOpacity = 1.f; });
             } else {
                 std::cerr << std::format("Warning: Failed to materialize EXT_lights_image_based '{}': {}\n", pending_env->Source.Name, pre.error());
                 ReleaseCubeSamplerSlot(*Stores.Slots, pending_env->DiffuseCubeSlot);

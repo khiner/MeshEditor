@@ -62,6 +62,7 @@ struct EnvironmentStore {
     TextureEntry BrdfLut, SheenELut, CharlieLut;
     std::optional<EnvironmentPrefiltered> ImportedSceneWorld;
     mat3 SceneWorldRotation{1.f}; // From EXT_lights_image_based rotation quaternion.
+    EnvironmentPrefiltered EmptySceneWorld; // 1x1 flat-color cubemap; used when no EXT_lights_image_based asset is loaded.
     EnvironmentSelection SceneWorld, StudioWorld;
 };
 
@@ -103,6 +104,9 @@ struct PendingEnvironmentImport {
     gltf::ImageBasedLight Source;
     uint32_t DiffuseCubeSlot, SpecularCubeSlot;
 };
+
+// Tag: drain pass releases ImportedSceneWorld and resets SceneWorld back to EmptySceneWorld.
+struct PendingSceneWorldClear {};
 
 struct StagingAlloc {
     vk::Buffer Buffer;
@@ -160,6 +164,11 @@ EnvironmentPrefiltered CreateIblFromHdri(
     const SceneVulkanResources &, DescriptorSlots &,
     const IblPrefilterPipelines &, const std::filesystem::path &, const std::string &,
     vk::CommandPool, vk::Fence, mvk::BufferContext &
+);
+// Allocates a 1x1x6 cubemap (1 mip) of the given linear color, used as the "no scene IBL" default.
+EnvironmentPrefiltered BuildFlatColorEnvironment(
+    const SceneVulkanResources &, TextureUploadBatch &, DescriptorSlots &,
+    vec3 color, std::string name
 );
 IblSamplers MakeIblSamplers(const EnvironmentPrefiltered &, const EnvironmentStore &);
 TextureEntry CreateDefaultLutTexture(

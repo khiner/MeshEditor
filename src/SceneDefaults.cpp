@@ -74,14 +74,3 @@ static ViewportTheme MakeDefaultViewportTheme() {
 }
 
 ViewportTheme SceneDefaults::ViewportTheme = MakeDefaultViewportTheme();
-
-PunctualLight SceneDefaults::MakePunctualLight(PunctualLightType type) {
-    return {
-        .Range = type == PunctualLightType::Directional ? 0.f : PointRange,
-        .Color = {1.f, 1.f, 1.f},
-        .Intensity = LightIntensity,
-        .InnerConeCos = type == PunctualLightType::Spot ? std::cos(SpotOuterAngle * (1.f - SpotBlend)) : 0.f,
-        .OuterConeCos = type == PunctualLightType::Spot ? std::cos(SpotOuterAngle) : 0.f,
-        .Type = type,
-    };
-}

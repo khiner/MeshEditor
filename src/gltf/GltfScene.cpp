@@ -2764,7 +2764,10 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
         if (auto *prev = R.try_get<PendingEnvironmentImport>(SceneEntity)) prev_pending_env_backup = *prev;
         const auto [diffuse_slot, specular_slot] = AllocateIblCubeSlots(ctx.Slots);
         R.emplace_or_replace<PendingEnvironmentImport>(SceneEntity, *source_ibl, diffuse_slot, specular_slot);
+        R.remove<PendingSceneWorldClear>(SceneEntity);
         replaced_pending_env = true;
+    } else {
+        R.emplace_or_replace<PendingSceneWorldClear>(SceneEntity);
     }
 
     const auto active_entity =
