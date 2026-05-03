@@ -1801,6 +1801,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
             .TransmissionFramebufferSamplerSlot = SelectionHandles->TransmissionSampler,
             .TransmissionFramebufferMipCount = Pipelines->Main.Transmission ? Pipelines->Main.Transmission->MipCount : 1u,
             .UseRealTransmission = (is_pbr_mode && active_lighting.RealTransmission && Pipelines->Main.Transmission) ? 1u : 0u,
+            .DebugChannel = is_pbr_mode ? settings.DebugChannel : DebugChannel::None,
         }));
         SelectionStale = true;
         request(RenderRequest::Submit);

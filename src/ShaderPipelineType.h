@@ -39,5 +39,4 @@ enum class ShaderPipelineType {
     BoneSphereWire,
     ObjectExtrasLine,
     SelectionObjectExtrasLines,
-    DebugNormals,
 };

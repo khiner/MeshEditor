@@ -292,15 +292,6 @@ static PipelineRenderer CreateMainRenderer(
             {CreateColorBlendAttachment(true), LineDataBlend}, CreateDepthStencil(true, false, vk::CompareOp::eLessOrEqual), draw_pc
         )
     );
-    pipelines.emplace(
-        SPT::DebugNormals,
-        ctx.CreateGraphics(
-            {{{ShaderType::eVertex, "VertexTransform.vert"}, {ShaderType::eFragment, "Normals.frag"}}},
-            {},
-            vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleList,
-            {CreateColorBlendAttachment(true), NoWriteBlend}, CreateDepthStencil(), draw_pc
-        )
-    );
     const std::array dependencies{ExternalFragReadDependency()};
     return {d.createRenderPassUnique({{}, attachments, subpass, dependencies}), std::move(pipelines)};
 }

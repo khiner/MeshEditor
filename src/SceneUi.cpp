@@ -1056,6 +1056,91 @@ void Scene::InteractOverlay() {
                     }
                     if (changed) R.emplace_or_replace<SubmitDirty>(SceneEntity);
                 }
+
+                if (current_mode == ViewportShadingMode::MaterialPreview || current_mode == ViewportShadingMode::Rendered) {
+                    SeparatorText("Debug");
+                    struct DebugChannelEntry {
+                        DebugChannel Value;
+                        const char *Label;
+                    };
+                    struct DebugChannelGroup {
+                        const char *Label; // null = no header (used for the leading "None" entry)
+                        std::initializer_list<DebugChannelEntry> Entries;
+                    };
+                    static const DebugChannelGroup groups[]{
+                        {nullptr, {{DebugChannel::None, "None"}}},
+                        {"Generic", {
+                                        {DebugChannel::UvCoords0, "Texture Coordinates 0"},
+                                        {DebugChannel::UvCoords1, "Texture Coordinates 1"},
+                                        {DebugChannel::NormalTexture, "Normal Texture"},
+                                        {DebugChannel::NormalGeometry, "Geometry Normal"},
+                                        {DebugChannel::Tangent, "Geometry Tangent"},
+                                        {DebugChannel::Bitangent, "Geometry Bitangent"},
+                                        {DebugChannel::TangentW, "Geometry Tangent W"},
+                                        {DebugChannel::NormalShading, "Shading Normal"},
+                                        {DebugChannel::Alpha, "Alpha"},
+                                        {DebugChannel::Occlusion, "Occlusion"},
+                                        {DebugChannel::Emissive, "Emissive"},
+                                    }},
+                        {"Metallic-Roughness", {
+                                                   {DebugChannel::BaseColor, "Base Color"},
+                                                   {DebugChannel::Metallic, "Metallic"},
+                                                   {DebugChannel::Roughness, "Roughness"},
+                                               }},
+                        {"Clearcoat", {
+                                          {DebugChannel::ClearcoatFactor, "Clearcoat Strength"},
+                                          {DebugChannel::ClearcoatRoughness, "Clearcoat Roughness"},
+                                          {DebugChannel::ClearcoatNormal, "Clearcoat Normal"},
+                                      }},
+                        {"Sheen", {
+                                      {DebugChannel::SheenColor, "Sheen Color"},
+                                      {DebugChannel::SheenRoughness, "Sheen Roughness"},
+                                  }},
+                        {"Specular", {
+                                         {DebugChannel::SpecularFactor, "Specular Strength"},
+                                         {DebugChannel::SpecularColor, "Specular Color"},
+                                     }},
+                        {"Transmission", {
+                                             {DebugChannel::TransmissionFactor, "Transmission Strength"},
+                                             {DebugChannel::VolumeThickness, "Volume Thickness"},
+                                         }},
+                        {"Diffuse Transmission", {
+                                                     {DebugChannel::DiffuseTransmissionFactor, "Diffuse Transmission Strength"},
+                                                     {DebugChannel::DiffuseTransmissionColor, "Diffuse Transmission Color"},
+                                                 }},
+                        {"Iridescence", {
+                                            {DebugChannel::IridescenceFactor, "Iridescence Strength"},
+                                            {DebugChannel::IridescenceThickness, "Iridescence Thickness"},
+                                        }},
+                        {"Anisotropy", {
+                                           {DebugChannel::AnisotropyStrength, "Anisotropic Strength"},
+                                           {DebugChannel::AnisotropyDirection, "Anisotropic Direction"},
+                                       }},
+                    };
+                    const auto label_for = [&](DebugChannel ch) {
+                        for (const auto &group : groups) {
+                            for (const auto &entry : group.Entries) {
+                                if (entry.Value == ch) return entry.Label;
+                            }
+                        }
+                        return "None";
+                    };
+                    if (BeginCombo("Channel", label_for(settings.DebugChannel))) {
+                        for (const auto &group : groups) {
+                            if (group.Label) SeparatorText(group.Label);
+                            for (const auto &entry : group.Entries) {
+                                const bool selected = entry.Value == settings.DebugChannel;
+                                if (Selectable(entry.Label, selected) && !selected) {
+                                    settings.DebugChannel = entry.Value;
+                                    R.patch<SceneSettings>(SceneEntity, [](auto &) {});
+                                }
+                                if (selected) SetItemDefaultFocus();
+                            }
+                        }
+                        EndCombo();
+                    }
+                }
+
                 EndPopup();
             }
             PopStyleVar();
@@ -2217,25 +2302,7 @@ void Scene::RenderControls() {
                 settings_changed = true;
             }
             if (Button("Recompile shaders")) ShaderRecompileRequested = true;
-            SeparatorText("Viewport shading");
-            TextUnformatted("Use the viewport icons in the top-right.");
-            const auto current_mode = settings.ViewportShading;
 
-            if (current_mode == ViewportShadingMode::Solid) {
-                auto color_mode = int(settings.FaceColorMode);
-                PushID("FaceColorMode");
-                AlignTextToFramePadding();
-                TextUnformatted("Fill color mode");
-                SameLine();
-                bool color_mode_changed = RadioButton("Mesh", &color_mode, int(FaceColorMode::Mesh));
-                SameLine();
-                color_mode_changed |= RadioButton("Normals", &color_mode, int(FaceColorMode::Normals));
-                PopID();
-                if (color_mode_changed) {
-                    settings.FaceColorMode = FaceColorMode(color_mode);
-                    settings_changed = true;
-                }
-            }
             if (!R.view<Selected>().empty()) {
                 SeparatorText("Selection overlays");
                 AlignTextToFramePadding();

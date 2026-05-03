@@ -76,6 +76,39 @@ enums:
         value: 2
       - name: Face
         value: 4
+  - name: DebugChannel
+    type: u32
+    values:
+      - name: None
+      - name: UvCoords0
+      - name: UvCoords1
+      - name: NormalTexture
+      - name: NormalGeometry
+      - name: Tangent
+      - name: Bitangent
+      - name: TangentW
+      - name: NormalShading
+      - name: Alpha
+      - name: Occlusion
+      - name: Emissive
+      - name: BaseColor
+      - name: Metallic
+      - name: Roughness
+      - name: ClearcoatFactor
+      - name: ClearcoatRoughness
+      - name: ClearcoatNormal
+      - name: SheenColor
+      - name: SheenRoughness
+      - name: SpecularFactor
+      - name: SpecularColor
+      - name: TransmissionFactor
+      - name: VolumeThickness
+      - name: DiffuseTransmissionFactor
+      - name: DiffuseTransmissionColor
+      - name: IridescenceFactor
+      - name: IridescenceThickness
+      - name: AnisotropyStrength
+      - name: AnisotropyDirection
 structs:
   - name: SlotOffset
     fields:
@@ -240,6 +273,8 @@ structs:
         type: u32
       - name: UseRealTransmission
         type: u32
+      - name: DebugChannel
+        type: DebugChannel
   - name: SolidLight
     fields:
       - name: Direction

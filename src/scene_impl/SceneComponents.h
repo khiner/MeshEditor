@@ -3,6 +3,7 @@
 #include "Armature.h" // BoneSelection
 #include "SceneModeComponents.h"
 #include "entt_fwd.h"
+#include "gpu/DebugChannel.h"
 
 #include <cstdint>
 #include <utility>
@@ -17,21 +18,16 @@ enum class ViewportShadingMode : uint8_t {
     Rendered,
 };
 
-enum class FaceColorMode {
-    Mesh,
-    Normals,
-};
-
 // Component on the scene singleton entity. Changes require command buffer re-recording.
 struct SceneSettings {
     ViewportShadingMode ViewportShading{ViewportShadingMode::Solid};
     ViewportShadingMode FillMode{ViewportShadingMode::Solid}; // last non-wireframe mode (for Shift+Z toggle)
     vk::ClearColorValue ClearColor{0.25f, 0.25f, 0.25f, 1.f};
-    FaceColorMode FaceColorMode{FaceColorMode::Mesh};
     bool ShowGrid{true}, ShowBoundingBoxes{false}, ShowTetWireframe{false};
     bool ShowExtras{true}, ShowBones{true}, ShowOrigins{true}, ShowOutlineSelected{true};
     bool ShowOverlays{true}; // Master toggle for all overlays
     uint8_t NormalOverlays{0}; // Bitmask of Element
+    DebugChannel DebugChannel{DebugChannel::None};
 };
 
 // Scene lights/world toggles + studio env controls

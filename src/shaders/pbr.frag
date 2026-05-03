@@ -12,6 +12,7 @@
 
 #include "SceneUBO.glsl"
 #include "BindlessBindings.glsl"
+#include "DebugChannel.glsl"
 #include "PBRMaterial.glsl"
 #include "MaterialAlphaMode.glsl"
 #include "PunctualLight.glsl"
@@ -203,7 +204,8 @@ void main() {
         base_color.a = 1.0;
     }
 
-    if (material.Unlit != 0u) {
+    // Unlit fast path. When a debug channel is active, fall through so all per-pixel props are computed and overrideable.
+    if (material.Unlit != 0u && SceneViewUBO.DebugChannel == DebugChannel_None) {
         if (material.AlphaMode == MaterialAlphaMode_Mask) {
             if (base_color.a < material.AlphaCutoff) discard;
             base_color.a = 1.0;
@@ -494,6 +496,56 @@ void main() {
     if (material.AlphaMode == MaterialAlphaMode_Mask) {
         if (base_color.a < material.AlphaCutoff) discard;
         base_color.a = 1.0;
+    }
+
+    // When active, replace the shaded color with the named property; skip tonemap and face-overlay.
+    if (SceneViewUBO.DebugChannel != DebugChannel_None) {
+        vec3 dbg = vec3(0.0);
+        switch (SceneViewUBO.DebugChannel) {
+            // Generic
+            case DebugChannel_UvCoords0:      dbg = vec3(TexCoord0, 0.0); break;
+            case DebugChannel_UvCoords1:      dbg = vec3(TexCoord1, 0.0); break;
+            case DebugChannel_NormalTexture:  dbg = (normal_info.ntex + 1.0) * 0.5; break;
+            case DebugChannel_NormalGeometry: dbg = (normal_info.ng + 1.0) * 0.5; break;
+            case DebugChannel_NormalShading:  dbg = (n + 1.0) * 0.5; break;
+            case DebugChannel_Tangent:        dbg = (normal_info.t + 1.0) * 0.5; break;
+            case DebugChannel_Bitangent:      dbg = (normal_info.b + 1.0) * 0.5; break;
+            case DebugChannel_TangentW:       dbg = vec3((WorldTangent.w + 1.0) * 0.5); break;
+            case DebugChannel_Alpha:          dbg = vec3(base_color.a); break;
+            case DebugChannel_Occlusion:      dbg = vec3(ao); break;
+            case DebugChannel_Emissive:       dbg = linearTosRGB(emissive); break;
+            // Metallic-roughness
+            case DebugChannel_BaseColor: dbg = linearTosRGB(base_color.rgb); break;
+            case DebugChannel_Metallic:  dbg = vec3(metallic); break;
+            case DebugChannel_Roughness: dbg = vec3(perceptual_roughness); break;
+            // KHR_materials_clearcoat
+            case DebugChannel_ClearcoatFactor:    dbg = vec3(clearcoat_factor); break;
+            case DebugChannel_ClearcoatRoughness: dbg = vec3(cc_perceptual_roughness); break;
+            case DebugChannel_ClearcoatNormal:    dbg = (n_cc + 1.0) * 0.5; break;
+            // KHR_materials_sheen
+            case DebugChannel_SheenColor:     dbg = sheen_color; break;
+            case DebugChannel_SheenRoughness: dbg = vec3(sheen_roughness); break;
+            // KHR_materials_specular
+            case DebugChannel_SpecularFactor: dbg = vec3(specular_weight); break;
+            case DebugChannel_SpecularColor:  dbg = specular_color; break;
+            // KHR_materials_transmission / KHR_materials_volume
+            case DebugChannel_TransmissionFactor: dbg = vec3(transmission_factor); break;
+            case DebugChannel_VolumeThickness: {
+                const float denom = material.Volume.ThicknessFactor * WorldScale;
+                dbg = denom > 0.0 ? vec3(world_thickness / denom) : vec3(0.0);
+            } break;
+            // KHR_materials_diffuse_transmission
+            case DebugChannel_DiffuseTransmissionFactor: dbg = linearTosRGB(vec3(diffuse_transmission_factor)); break;
+            case DebugChannel_DiffuseTransmissionColor:  dbg = linearTosRGB(diffuse_transmission_color); break;
+            // KHR_materials_iridescence (thickness divided by 1200 nm to match reference range)
+            case DebugChannel_IridescenceFactor:    dbg = vec3(iridescence_factor); break;
+            case DebugChannel_IridescenceThickness: dbg = vec3(iridescence_thickness / 1200.0); break;
+            // KHR_materials_anisotropy
+            case DebugChannel_AnisotropyStrength:  dbg = vec3(anisotropy_strength); break;
+            case DebugChannel_AnisotropyDirection: dbg = vec3((anisotropy_dir + 1.0) * 0.5, 0.0); break;
+        }
+        OutColor = vec4(dbg, base_color.a);
+        return;
     }
 
     if (FaceOverlayFlags != 0u) {
