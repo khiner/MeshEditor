@@ -491,6 +491,8 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
                     constexpr PrimitiveShape default_shape{primitive::Cuboid{}};
                     const auto [mesh_entity, _] = scene->AddMesh(primitive::CreateMesh(default_shape), MeshInstanceCreateInfo{.Name = ToString(default_shape)});
                     r.emplace<PrimitiveShape>(mesh_entity, default_shape);
+                    // Same as Blender startup light
+                    scene->AddLight(ObjectCreateInfo{.Name = "Light", .Transform = {.P = {4.07625f, 5.90386f, -1.00545f}}, .Select = MeshInstanceCreateInfo::SelectBehavior::None});
                 }
             } else if (GetFrameCount() == 3 && play) {
                 // Wait to play until scene load (frame 1) has settled and one render frame has elapsed.
