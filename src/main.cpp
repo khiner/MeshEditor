@@ -209,6 +209,8 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard | ImGuiConfigFlags_NavEnableGamepad | ImGuiConfigFlags_DockingEnable;
     // io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable; // Enable Multi-Viewport / Platform Windows
     io.IniFilename = nullptr; // Disable ImGui's .ini file saving
+    // Keep input state across Cmd+Tab so in-flight gizmo drags survive focus loss.
+    io.ConfigDebugIgnoreFocusLoss = true;
 
     StyleColorsDark();
 
@@ -301,9 +303,11 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
                 event.wheel.x *= ImGuiWheelScale;
                 event.wheel.y *= ImGuiWheelScale;
             }
+            // SDL3 backend invalidates MousePos to -FLT_MAX on leave when no mouse button is held,
+            // which flings a keyboard-initiated (G/R/S) transform offscreen when switching focus.
+            if (event.type == SDL_EVENT_WINDOW_MOUSE_LEAVE && TransformGizmo::IsUsing()) continue;
             ImGui_ImplSDL3_ProcessEvent(&event);
-            done = event.type == SDL_EVENT_QUIT ||
-                (event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED && event.window.windowID == SDL_GetWindowID(window));
+            done = event.type == SDL_EVENT_QUIT || (event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED && event.window.windowID == SDL_GetWindowID(window));
         }
         const float elapsed = recording_mode ? float(scene->CapturedFrameCount()) / float(record_fps) : elapsed_play_time;
         if (play_duration > 0 && elapsed >= play_duration) done = true;
