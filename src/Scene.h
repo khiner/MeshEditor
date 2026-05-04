@@ -55,7 +55,7 @@ struct Scene {
     entt::entity AddMeshInstance(entt::entity mesh_entity, MeshInstanceCreateInfo);
     entt::entity AddEmpty(ObjectCreateInfo = {});
     entt::entity AddArmature(ObjectCreateInfo = {});
-    entt::entity AddCamera(ObjectCreateInfo = {});
+    entt::entity AddCamera(ObjectCreateInfo = {}, std::optional<Camera> = {});
     entt::entity AddLight(ObjectCreateInfo = {}, std::optional<PunctualLight> = {});
 
     entt::entity Duplicate(entt::entity, std::optional<MeshInstanceCreateInfo> = {});

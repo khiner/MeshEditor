@@ -154,8 +154,8 @@ entt::entity AddEmpty(entt::registry &r, MeshStore &meshes, SceneBuffers &buffer
     return CreateExtrasObject(r, meshes, buffers, scene_entity, positions, {}, edges, ObjectType::Empty, std::move(info), "Empty");
 }
 
-entt::entity AddCamera(entt::registry &r, MeshStore &meshes, SceneBuffers &buffers, entt::entity scene_entity, ObjectCreateInfo info) {
-    Camera camera{DefaultPerspectiveCamera()};
+entt::entity AddCamera(entt::registry &r, MeshStore &meshes, SceneBuffers &buffers, entt::entity scene_entity, ObjectCreateInfo info, std::optional<Camera> props) {
+    const Camera camera = props.value_or(Camera{DefaultPerspectiveCamera()});
     auto mesh = BuildCameraFrustumMesh(camera);
     const auto entity = CreateExtrasObject(r, meshes, buffers, scene_entity, mesh.Positions, {}, mesh.CreateEdgeIndices(), ObjectType::Camera, std::move(info), "Camera");
     r.emplace<Camera>(entity, camera);

@@ -2323,7 +2323,7 @@ void Scene::UpdateWireframeTransforms() {
     }
 }
 
-entt::entity Scene::AddCamera(ObjectCreateInfo info) { return ::AddCamera(R, *Stores.Meshes, *Stores.Buffers, SceneEntity, std::move(info)); }
+entt::entity Scene::AddCamera(ObjectCreateInfo info, std::optional<Camera> props) { return ::AddCamera(R, *Stores.Meshes, *Stores.Buffers, SceneEntity, std::move(info), std::move(props)); }
 entt::entity Scene::AddLight(ObjectCreateInfo info, std::optional<PunctualLight> props) { return ::AddLight(R, *Stores.Meshes, *Stores.Buffers, SceneEntity, std::move(info), std::move(props)); }
 
 std::pair<entt::entity, entt::entity> Scene::AddMesh(MeshData &&data, std::optional<MeshInstanceCreateInfo> info) {
@@ -2466,9 +2466,7 @@ entt::entity Scene::Duplicate(entt::entity e, std::optional<MeshInstanceCreateIn
     // Object extras (Camera, Empty, Light) have Instance but create their own wireframe mesh.
     if (R.all_of<ObjectExtrasTag>(R.get<Instance>(e).Entity)) {
         if (const auto *src_cd = R.try_get<Camera>(e)) {
-            const auto copy_entity = AddCamera(create_info);
-            R.replace<Camera>(copy_entity, *src_cd);
-            return copy_entity;
+            return AddCamera(create_info, *src_cd);
         }
         if (R.all_of<LightIndex>(e)) {
             return AddLight(create_info, Stores.Buffers->Lights.Get(R.get<const LightIndex>(e).Value));

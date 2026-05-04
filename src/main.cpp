@@ -143,18 +143,31 @@ void LoadDefaultScene(Scene &scene, entt::registry &r) {
     constexpr PrimitiveShape default_shape{primitive::Cuboid{}};
     const auto [mesh_entity, _] = scene.AddMesh(primitive::CreateMesh(default_shape), MeshInstanceCreateInfo{.Name = ToString(default_shape)});
     r.emplace<PrimitiveShape>(mesh_entity, default_shape);
-    // Same as Blender startup light
-    scene.AddLight(ObjectCreateInfo{.Name = "Light", .Transform = {.P = {4.07625f, 5.90386f, -1.00545f}}, .Select = MeshInstanceCreateInfo::SelectBehavior::None});
+
+    // startup.blend data, in Blender's frame (Z-up, -Y forward)
+    constexpr vec3 LightLoc{4.07625, 1.00545, 5.90386}, CameraLoc{7.358891, -6.925791, 4.958309}, CameraEulerXYZ{1.109319, 0, 0.815801};
+    constexpr float Lens{50}, SensorX{36}, RenderW{16}, RenderH{9};
+
+    // Blender Z-up -> MeshEditor Y-up is a -90° rotation about +X: (x, y, z) -> (x, z, -y)
+    const auto to_y_up_pos = [](vec3 v) { return vec3{v.x, v.z, -v.y}; };
+    const quat to_y_up_rot = glm::angleAxis(-float(M_PI_2), vec3{1, 0, 0});
+    // Matches Blender glTF exporter (cameras.py / yvof_blender_to_gltf): horizontal fit since render aspect > sensor aspect
+    const float hfov = 2 * std::atan(SensorX / (2 * Lens));
+    const float yfov = 2 * std::atan(std::tan(hfov * 0.5) * RenderH / RenderW);
+
+    scene.AddLight({.Name = "Light", .Transform = {.P = to_y_up_pos(LightLoc)}, .Select = MeshInstanceCreateInfo::SelectBehavior::None});
+    scene.AddCamera(
+        {.Name = "Camera", .Transform = {.P = to_y_up_pos(CameraLoc), .R = to_y_up_rot * quat{CameraEulerXYZ}}, .Select = MeshInstanceCreateInfo::SelectBehavior::None},
+        {Perspective{.FieldOfViewRad = yfov, .FarClip = 1000, .NearClip = DefaultPerspectiveNearClip}}
+    );
 }
 
 void run(const char *initial_file, bool quiet, bool play, float play_duration, fs::path record_path, int record_fps) {
     Timer::Enabled = !quiet;
 
     SDL_SetHint(SDL_HINT_MAC_SCROLL_MOMENTUM, "1");
+    if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) throw std::runtime_error(std::format("SDL_Init error: {}", SDL_GetError()));
 
-    if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) {
-        throw std::runtime_error(std::format("SDL_Init error: {}", SDL_GetError()));
-    }
     if (const char *base = SDL_GetBasePath()) Paths::Init(base);
     else throw std::runtime_error(std::format("SDL_GetBasePath error: {}", SDL_GetError()));
 
@@ -170,8 +183,7 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
 
     constexpr static uint MinImageCount = 2;
     ImGui_ImplVulkanH_Window wd;
-    // Set up Vulkan window.
-    {
+    { // Set up Vulkan window.
         VkSurfaceKHR surface;
         // Create window surface.
         if (!SDL_Vulkan_CreateSurface(window, *vc->Instance, nullptr, &surface)) throw std::runtime_error("Failed to create Vulkan surface.\n");

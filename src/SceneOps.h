@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Camera.h"
 #include "Entity.h" // ObjectType
 #include "entt_fwd.h"
 #include "gpu/PunctualLight.h"
@@ -68,7 +69,7 @@ entt::entity CreateExtrasBufferEntity(entt::registry &, MeshStore &, SceneBuffer
 entt::entity CreateExtrasObject(entt::registry &, MeshStore &, SceneBuffers &, entt::entity scene_entity, std::span<const vec3> positions, std::span<const uint8_t> vertex_classes, std::span<const uint32_t> edge_indices, ObjectType, ObjectCreateInfo, std::string_view default_name);
 
 entt::entity AddEmpty(entt::registry &, MeshStore &, SceneBuffers &, entt::entity scene_entity, ObjectCreateInfo = {});
-entt::entity AddCamera(entt::registry &, MeshStore &, SceneBuffers &, entt::entity scene_entity, ObjectCreateInfo = {});
+entt::entity AddCamera(entt::registry &, MeshStore &, SceneBuffers &, entt::entity scene_entity, ObjectCreateInfo = {}, std::optional<Camera> = {});
 entt::entity AddLight(entt::registry &, MeshStore &, SceneBuffers &, entt::entity scene_entity, ObjectCreateInfo = {}, std::optional<PunctualLight> = {});
 
 entt::entity CreateBoneEntity(entt::registry &, entt::entity scene_entity, entt::entity arm_obj_entity, const Armature &, uint32_t bone_index, entt::entity parent_entity);
