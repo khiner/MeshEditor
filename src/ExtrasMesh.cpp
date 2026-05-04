@@ -36,45 +36,43 @@ void ExtrasWireframe::AddDiamond(float radius, uint8_t vclass, vec3 axis1, vec3 
 }
 
 MeshData BuildCameraFrustumMesh(const Camera &camera) {
-    float display_near{0.01f}, display_far{5.f};
-    float near_half_w{0.f}, near_half_h{0.f}, far_half_w{0.f}, far_half_h{0.f};
-    if (const auto *perspective = std::get_if<Perspective>(&camera)) {
-        // Clamp far plane for display so wireframe doesn't extend to infinity.
-        display_near = perspective->NearClip;
-        display_far = std::min(perspective->FarClip.value_or(5.f), 5.f);
+    // Matches Blender's overlay (overlay_camera.hh / overlay_shape.cc) at default cam.drawsize=1:
+    // BKE_camera_view_frame_ex sets r_drawsize = drawsize/2 = 0.5, so the frame is 1 unit wide
+    // (or tall) in the dominant axis, and the up-triangle has fixed proportions 0.7 and 0.1.
+    constexpr float HalfExtent{0.5f}; // = drawsize/2 with default drawsize=1
+    constexpr float TriaSize{0.7f * HalfExtent}, TriaMargin{0.1f * HalfExtent};
 
+    float depth{1.f}, half_w{HalfExtent}, half_h{HalfExtent};
+    if (const auto *perspective = std::get_if<Perspective>(&camera)) {
         const float aspect = AspectRatio(camera);
-        near_half_h = display_near * std::tan(perspective->FieldOfViewRad * 0.5f);
-        near_half_w = near_half_h * aspect;
-        far_half_h = display_far * std::tan(perspective->FieldOfViewRad * 0.5f);
-        far_half_w = far_half_h * aspect;
+        // Sensor fit: dominant axis is the wider one (matches Blender's AUTO fit).
+        half_w = aspect >= 1.f ? HalfExtent : HalfExtent * aspect;
+        half_h = aspect >= 1.f ? HalfExtent / aspect : HalfExtent;
+        depth = half_h / std::tan(perspective->FieldOfViewRad * 0.5f);
     } else if (const auto *orthographic = std::get_if<Orthographic>(&camera)) {
-        display_near = orthographic->NearClip;
-        display_far = std::min(orthographic->FarClip, 5.f);
-        near_half_w = far_half_w = orthographic->Mag.x;
-        near_half_h = far_half_h = orthographic->Mag.y;
+        half_w = orthographic->Mag.x;
+        half_h = orthographic->Mag.y;
     }
 
+    const float tria_base_y = half_h + TriaMargin;
+    const float tria_apex_y = tria_base_y + TriaSize;
+
     std::vector<vec3> positions{
-        {-near_half_w, -near_half_h, -display_near},
-        {near_half_w, -near_half_h, -display_near},
-        {near_half_w, near_half_h, -display_near},
-        {-near_half_w, near_half_h, -display_near},
-        {-far_half_w, -far_half_h, -display_far},
-        {far_half_w, -far_half_h, -display_far},
-        {far_half_w, far_half_h, -display_far},
-        {-far_half_w, far_half_h, -display_far},
-        {-far_half_w, far_half_h, -display_far},
-        {far_half_w, far_half_h, -display_far},
-        {0.f, far_half_h + far_half_h * 0.3f, -display_far},
+        {-half_w, -half_h, -depth}, // 0: frame bottom-left
+        {half_w, -half_h, -depth}, // 1: frame bottom-right
+        {half_w, half_h, -depth}, // 2: frame top-right
+        {-half_w, half_h, -depth}, // 3: frame top-left
+        {0.f, 0.f, 0.f}, // 4: camera origin
+        {-TriaSize, tria_base_y, -depth}, // 5: tria base-left
+        {TriaSize, tria_base_y, -depth}, // 6: tria base-right
+        {0.f, tria_apex_y, -depth}, // 7: tria apex
     };
 
     // clang-format off
     std::vector<std::array<uint32_t, 2>> edges{
-        {0, 1}, {1, 2}, {2, 3}, {3, 0},
-        {4, 5}, {5, 6}, {6, 7}, {7, 4},
-        {0, 4}, {1, 5}, {2, 6}, {3, 7},
-        {8, 10}, {10, 9},
+        {0, 1}, {1, 2}, {2, 3}, {3, 0}, // Frame loop
+        {0, 4}, {1, 4}, {2, 4}, {3, 4}, // Wires from frame corners to camera origin
+        {5, 6}, {6, 7}, {7, 5},         // Up triangle (closed)
     };
     // clang-format on
 
