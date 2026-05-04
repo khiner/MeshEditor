@@ -12,12 +12,23 @@ enum class On : uint8_t {
 };
 constexpr On operator|(On a, On b) { return On(uint8_t(a) | uint8_t(b)); }
 
+// Like the default `basic_reactive_mixin::emplace_element`, but erases a stale-version
+// slot entry first so a recycled id doesn't collide with the prior version.
+inline void EmplaceSafe(entt::storage_for_t<entt::reactive> &s, const entt::registry &, entt::entity e) {
+    if (s.contains(e)) return;
+    using traits = entt::entt_traits<entt::entity>;
+    if (const auto stored_ver = s.current(e); stored_ver != traits::to_version(entt::tombstone)) {
+        s.erase(traits::construct(traits::to_entity(e), stored_ver));
+    }
+    s.emplace(e);
+}
+
 struct ReactiveTracker {
     entt::storage_for_t<entt::reactive> &s;
     template<typename T> ReactiveTracker &on(On events) {
-        if (uint8_t(events) & uint8_t(On::Create)) s.on_construct<T>();
-        if (uint8_t(events) & uint8_t(On::Update)) s.on_update<T>();
-        if (uint8_t(events) & uint8_t(On::Destroy)) s.on_destroy<T>();
+        if (uint8_t(events) & uint8_t(On::Create)) s.on_construct<T, &EmplaceSafe>();
+        if (uint8_t(events) & uint8_t(On::Update)) s.on_update<T, &EmplaceSafe>();
+        if (uint8_t(events) & uint8_t(On::Destroy)) s.on_destroy<T, &EmplaceSafe>();
         return *this;
     }
 };
