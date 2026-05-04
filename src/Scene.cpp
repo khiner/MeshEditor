@@ -2615,6 +2615,7 @@ void Scene::ClearMeshes() {
         if (!R.all_of<SubElementOf>(e)) entities.emplace_back(e);
     }
     for (const auto e : entities) Destroy(e);
+    ProcessComponentEvents(); // Eager flush to avoid entity ID reuse with any new entities created in the same frame.
 }
 
 void Scene::ReplaceMesh(entt::entity e, MeshData &&data) {

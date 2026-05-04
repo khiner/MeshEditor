@@ -505,7 +505,7 @@ void Scene::Interact() {
     // focused window in the dockspace. RouteGlobal yields to active items (sliders mid-drag, focused
     // InputText, etc.) and ImGui's Nav (Tab/arrows) via key-ownership, so widget editing and tree/list
     // navigation in panels keep working. char-input keys (G/A/etc.) are auto-filtered while WantTextInput.
-    constexpr ImGuiInputFlags VKey = ImGuiInputFlags_RouteGlobal;
+    constexpr auto VKey = ImGuiInputFlags_RouteGlobal;
     if (TransformGizmo::IsUsing()) {
         // During an active transform, only allow transform switching shortcuts.
         if (Shortcut(ImGuiKey_G, VKey) && transform_shortcuts_enabled) {

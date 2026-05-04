@@ -139,6 +139,14 @@ std::expected<void, std::string> LoadFile(Scene &scene, const fs::path &path) {
     return {};
 }
 
+void LoadDefaultScene(Scene &scene, entt::registry &r) {
+    constexpr PrimitiveShape default_shape{primitive::Cuboid{}};
+    const auto [mesh_entity, _] = scene.AddMesh(primitive::CreateMesh(default_shape), MeshInstanceCreateInfo{.Name = ToString(default_shape)});
+    r.emplace<PrimitiveShape>(mesh_entity, default_shape);
+    // Same as Blender startup light
+    scene.AddLight(ObjectCreateInfo{.Name = "Light", .Transform = {.P = {4.07625f, 5.90386f, -1.00545f}}, .Select = MeshInstanceCreateInfo::SelectBehavior::None});
+}
+
 void run(const char *initial_file, bool quiet, bool play, float play_duration, fs::path record_path, int record_fps) {
     Timer::Enabled = !quiet;
 
@@ -333,6 +341,10 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
 
         if (BeginMainMenuBar()) {
             if (BeginMenu("File")) {
+                if (MenuItem("New", nullptr)) {
+                    scene->ClearMeshes();
+                    LoadDefaultScene(*scene, r);
+                }
                 if (MenuItem("Load glTF", nullptr)) {
                     static const std::array filters{nfdfilteritem_t{"glTF scene", "gltf,glb"}};
                     nfdchar_t *nfd_path;
@@ -488,11 +500,7 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
                         play = false;
                     }
                 } else {
-                    constexpr PrimitiveShape default_shape{primitive::Cuboid{}};
-                    const auto [mesh_entity, _] = scene->AddMesh(primitive::CreateMesh(default_shape), MeshInstanceCreateInfo{.Name = ToString(default_shape)});
-                    r.emplace<PrimitiveShape>(mesh_entity, default_shape);
-                    // Same as Blender startup light
-                    scene->AddLight(ObjectCreateInfo{.Name = "Light", .Transform = {.P = {4.07625f, 5.90386f, -1.00545f}}, .Select = MeshInstanceCreateInfo::SelectBehavior::None});
+                    LoadDefaultScene(*scene, r);
                 }
             } else if (GetFrameCount() == 3 && play) {
                 // Wait to play until scene load (frame 1) has settled and one render frame has elapsed.
