@@ -286,25 +286,18 @@ bool AllSelectedAreMeshes(const entt::registry &r) {
     return true;
 }
 
-struct ViewportContext {
-    float Distance, AspectRatio;
-};
-
-bool RenderCameraLensEditor(Camera &camera, std::optional<ViewportContext> viewport = {}) {
+// `viewport_aspect` is set when the camera is bound to a viewport that determines its aspect.
+bool RenderCameraLensEditor(Camera &camera, float distance, std::optional<float> viewport_aspect = {}) {
     bool lens_changed = false;
 
     int proj_i = std::holds_alternative<Orthographic>(camera) ? 1 : 0;
     const char *proj_names[]{"Perspective", "Orthographic"};
     if (Combo("Projection", &proj_i, proj_names, IM_ARRAYSIZE(proj_names))) {
         if (proj_i == 0 && !std::holds_alternative<Perspective>(camera)) {
-            camera = PerspectiveFromOrthographic(std::get<Orthographic>(camera), viewport ? std::optional<float>{viewport->Distance} : std::nullopt);
+            camera = PerspectiveFromOrthographic(std::get<Orthographic>(camera), distance);
             lens_changed = true;
         } else if (proj_i == 1 && !std::holds_alternative<Orthographic>(camera)) {
-            camera = OrthographicFromPerspective(
-                std::get<Perspective>(camera),
-                viewport ? std::optional<float>{viewport->Distance} : std::nullopt,
-                viewport ? std::optional<float>{viewport->AspectRatio} : std::nullopt
-            );
+            camera = OrthographicFromPerspective(std::get<Perspective>(camera), distance, viewport_aspect);
             lens_changed = true;
         }
     }
@@ -327,7 +320,7 @@ bool RenderCameraLensEditor(Camera &camera, std::optional<ViewportContext> viewp
         if (perspective->FarClip) {
             lens_changed |= SliderFloat("Far clip", &*perspective->FarClip, perspective->NearClip + MinNearFarDelta, far_max);
         }
-        if (!viewport) {
+        if (!viewport_aspect) {
             float aspect = perspective->AspectRatio.value_or(DefaultAspectRatio);
             if (SliderFloat("Aspect ratio", &aspect, 0.1f, 5.f)) {
                 perspective->AspectRatio = aspect;
@@ -2019,7 +2012,9 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
     }
     if (auto *cd = R.try_get<Camera>(active_entity)) {
         if (CollapsingHeader("Camera")) {
-            if (RenderCameraLensEditor(*cd)) R.patch<Camera>(active_entity, [](auto &) {});
+            // Use the camera's distance from world origin as the conversion distance.
+            const float distance = std::max(glm::length(R.get<WorldTransform>(active_entity).P), 1.f);
+            if (RenderCameraLensEditor(*cd, distance)) R.patch<Camera>(active_entity, [](auto &) {});
             Separator();
             if (LookThroughCameraEntity() == active_entity) {
                 if (Button("Exit camera view")) ExitLookThroughCamera();
@@ -2394,7 +2389,7 @@ void Scene::RenderControls() {
                 changed = true;
             }
             changed |= SliderFloat3("Target", &camera.Target.x, -10, 10);
-            changed |= RenderCameraLensEditor(camera.Data, ViewportContext{.Distance = camera.Distance, .AspectRatio = viewport_aspect});
+            changed |= RenderCameraLensEditor(camera.Data, camera.Distance, viewport_aspect);
             if (changed) R.patch<ViewCamera>(SceneEntity, [](auto &camera) { camera.StopMoving(); });
             EndTabItem();
         }

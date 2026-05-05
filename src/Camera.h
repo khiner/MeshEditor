@@ -36,19 +36,21 @@ inline float AspectRatio(const Camera &camera) {
     return mag.x / mag.y;
 }
 
-inline Perspective PerspectiveFromOrthographic(const Orthographic &orthographic, std::optional<float> distance = {}) {
-    const float field_of_view_rad = distance ? glm::clamp(2.f * std::atan(orthographic.Mag.y / *distance), glm::radians(1.f), glm::radians(179.f)) : glm::radians(60.f);
-    return {.FieldOfViewRad = field_of_view_rad, .FarClip = orthographic.FarClip, .NearClip = orthographic.NearClip};
+// P<->O round-trips when both directions are called with the same `distance`.
+inline Perspective PerspectiveFromOrthographic(const Orthographic &orthographic, float distance) {
+    return {
+        .FieldOfViewRad = glm::clamp(2.f * std::atan(orthographic.Mag.y / distance), glm::radians(1.f), glm::radians(179.f)),
+        .FarClip = orthographic.FarClip,
+        .NearClip = orthographic.NearClip,
+        .AspectRatio = orthographic.Mag.x / orthographic.Mag.y,
+    };
 }
 
-inline Orthographic OrthographicFromPerspective(const Perspective &perspective, std::optional<float> distance = {}, std::optional<float> aspect_ratio = {}) {
-    vec2 mag{1.f};
-    if (distance && aspect_ratio) {
-        mag.y = *distance * std::tan(perspective.FieldOfViewRad * 0.5f);
-        mag.x = mag.y * *aspect_ratio;
-    }
+inline Orthographic OrthographicFromPerspective(const Perspective &perspective, float distance, std::optional<float> aspect_ratio = {}) {
+    const float aspect = perspective.AspectRatio.value_or(aspect_ratio.value_or(DefaultAspectRatio));
+    const float mag_y = distance * std::tan(perspective.FieldOfViewRad * 0.5f);
     return {
-        .Mag = mag,
+        .Mag = {mag_y * aspect, mag_y},
         .FarClip = perspective.FarClip.value_or(std::max(perspective.NearClip + MinNearFarDelta, DefaultPerspectiveFarClip)),
         .NearClip = perspective.NearClip,
     };
