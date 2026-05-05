@@ -2028,7 +2028,6 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
     }
     if (R.all_of<LightIndex>(active_entity) &&
         CollapsingHeader("Light", ImGuiTreeNodeFlags_DefaultOpen)) {
-        constexpr float MaxLightIntensity{1000.f}, MaxLightRange{1000.f};
         auto light = Stores.Buffers->Lights.Get(R.get<const LightIndex>(active_entity).Value);
         bool changed{false}, wireframe_changed{false};
 
@@ -2044,15 +2043,15 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
         }
 
         changed |= ColorEdit3("Color", &light.Color.x);
-        changed |= SliderFloat("Intensity", &light.Intensity, 0.f, MaxLightIntensity, "%.2f");
+        changed |= SliderFloat("Intensity", &light.Intensity, 0.f, 1000.f, "%.2f");
         if (light.Type == PunctualLightType::Point || light.Type == PunctualLightType::Spot) {
             bool infinite_range = light.Range <= 0.f;
             if (Checkbox("Infinite range", &infinite_range)) {
-                light.Range = infinite_range ? 0.f : std::max(light.Range, SceneDefaults::PointRange);
+                light.Range = infinite_range ? 0.f : 100.f;
                 changed = wireframe_changed = true;
             }
             if (!infinite_range) {
-                if (SliderFloat("Range", &light.Range, 0.01f, MaxLightRange, "%.2f")) {
+                if (SliderFloat("Range", &light.Range, 0.01f, 1000.f, "%.2f")) {
                     changed = wireframe_changed = true;
                 }
             }

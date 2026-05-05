@@ -18,10 +18,10 @@ struct SceneDefaults {
     static WorkspaceLights WorkspaceLights;
     static ViewportTheme ViewportTheme;
 
-    static constexpr float SpotOuterAngle{Pi / 4}, SpotBlend{0.15}, LightIntensity{75}, PointRange{10};
+    static constexpr float SpotOuterAngle{Pi / 4}, SpotBlend{0.15}, LightIntensity{100};
     static PunctualLight MakePunctualLight(PunctualLightType type) {
         return {
-            .Range = type == PunctualLightType::Directional ? 0.f : PointRange,
+            .Range = 0.f, // infinite
             .Color = {1.f, 1.f, 1.f},
             .Intensity = LightIntensity,
             .InnerConeCos = type == PunctualLightType::Spot ? std::cos(SpotOuterAngle * (1.f - SpotBlend)) : 0.f,
