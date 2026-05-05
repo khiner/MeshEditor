@@ -1522,6 +1522,7 @@ void Scene::DrawOverlay() {
             const vec2 fmin = vp_center - frame_size * 0.5f, fmax = vp_center + frame_size * 0.5f;
             const auto vmin = viewport.pos, vmax = viewport.pos + viewport.size;
 
+            // Dim the area outside the camera's view.
             auto &dl = *GetWindowDrawList();
             static constexpr auto dim = IM_COL32(0, 0, 0, 100);
             auto iv = [](vec2 v) { return std::bit_cast<ImVec2>(v); };
@@ -1529,7 +1530,6 @@ void Scene::DrawOverlay() {
             dl.AddRectFilled(iv({vmin.x, fmax.y}), iv(vmax), dim);
             dl.AddRectFilled(iv({vmin.x, fmin.y}), iv({fmin.x, fmax.y}), dim);
             dl.AddRectFilled(iv({fmax.x, fmin.y}), iv({vmax.x, fmax.y}), dim);
-            dl.AddRect(iv(fmin), iv(fmax), IM_COL32(255, 255, 255, 140), 0.f, 0, 1.5f);
         }
     }
 }
