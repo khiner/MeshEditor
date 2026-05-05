@@ -35,6 +35,12 @@ namespace mvk {
 struct ImGuiTexture;
 } // namespace mvk
 
+// Marks the camera entity currently being "looked through".
+// At most one camera carries this component at a time.
+struct LookingThrough {
+    ViewCamera SavedViewCamera; // The pre-look-through ViewCamera, restored on exit.
+};
+
 struct Scene {
     Scene(SceneVulkanResources, entt::registry &);
     ~Scene();
@@ -188,11 +194,8 @@ private:
     std::optional<vec2> BoxSelectStart, BoxSelectEnd;
     bool SelectionXRay{false}; // Edit mode: Whether to ignore occlusion when selecting elements.
     bool OrbitToActive{false}; // Edit/Excite mode: When true, orbit camera to active element.
-    struct LookThroughState {
-        entt::entity Camera; // Camera entity being looked through (independent of Active).
-        ViewCamera SavedViewCamera; // ViewCamera to restore on exit.
-    };
-    std::optional<LookThroughState> LookThrough;
+
+    entt::entity LookThroughCameraEntity() const;
 
     struct TransformGizmoState {
         TransformGizmo::Config Config;
@@ -249,6 +252,8 @@ private:
     // and reads up-to-date WorldTransforms.
     void InteractOverlay();
     void DrawOverlay();
+
+    void EnterLookThroughCamera(entt::entity camera_entity);
     void ExitLookThroughCamera();
     void SnapToCamera(entt::entity camera_entity);
     void AnimateToCamera(entt::entity camera_entity);

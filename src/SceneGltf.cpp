@@ -18,7 +18,7 @@ std::expected<std::pair<entt::entity, entt::entity>, std::string> Scene::AddGltf
     if (!R.view<ColliderShape>().empty()) Physics->RecomputeSceneScale(R);
 
     if (result->FirstCameraObject != entt::null) {
-        LookThrough = LookThroughState{result->FirstCameraObject, R.get<ViewCamera>(SceneEntity)};
+        EnterLookThroughCamera(result->FirstCameraObject);
         SnapToCamera(result->FirstCameraObject);
     }
     if (result->ImportedAnimation) {

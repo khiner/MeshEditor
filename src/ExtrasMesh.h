@@ -21,5 +21,5 @@ struct ExtrasWireframe {
     void AddDiamond(float radius, uint8_t vclass, vec3 axis1, vec3 axis2, vec3 center = {});
 };
 
-MeshData BuildCameraFrustumMesh(const Camera &);
+MeshData BuildCameraFrustumMesh(const Camera &, bool look_through_view = false);
 ExtrasWireframe BuildLightMesh(const PunctualLight &);

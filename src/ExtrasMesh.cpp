@@ -35,7 +35,7 @@ void ExtrasWireframe::AddDiamond(float radius, uint8_t vclass, vec3 axis1, vec3 
     for (uint32_t i = 0; i < 4; ++i) AddEdge(base + i, base + (i + 1) % 4);
 }
 
-MeshData BuildCameraFrustumMesh(const Camera &camera) {
+MeshData BuildCameraFrustumMesh(const Camera &camera, bool look_through_view) {
     // Matches Blender's overlay (overlay_camera.hh / overlay_shape.cc) at default cam.drawsize=1:
     // BKE_camera_view_frame_ex sets r_drawsize = drawsize/2 = 0.5, so the frame is 1 unit wide
     // (or tall) in the dominant axis, and the up-triangle has fixed proportions 0.7 and 0.1.
@@ -54,25 +54,30 @@ MeshData BuildCameraFrustumMesh(const Camera &camera) {
         half_h = orthographic->Mag.y;
     }
 
-    const float tria_base_y = half_h + TriaMargin;
-    const float tria_apex_y = tria_base_y + TriaSize;
-
+    const vec3 frame_bl{-half_w, -half_h, -depth}, frame_br{half_w, -half_h, -depth};
+    const vec3 frame_tr{half_w, half_h, -depth}, frame_tl{-half_w, half_h, -depth};
+    const vec3 origin{0};
+    const float tria_y = half_h + TriaMargin;
     std::vector<vec3> positions{
-        {-half_w, -half_h, -depth}, // 0: frame bottom-left
-        {half_w, -half_h, -depth}, // 1: frame bottom-right
-        {half_w, half_h, -depth}, // 2: frame top-right
-        {-half_w, half_h, -depth}, // 3: frame top-left
-        {0.f, 0.f, 0.f}, // 4: camera origin
-        {-TriaSize, tria_base_y, -depth}, // 5: tria base-left
-        {TriaSize, tria_base_y, -depth}, // 6: tria base-right
-        {0.f, tria_apex_y, -depth}, // 7: tria apex
+        frame_bl, // 0: frame bottom-left
+        frame_br, // 1: frame bottom-right
+        frame_tr, // 2: frame top-right
+        frame_tl, // 3: frame top-left
+        // Look-through: collapse non-frame verts so their edges are zero-length, leaving only the lens rect visible.
+        look_through_view ? frame_bl : origin, // 4: wire endpoint from frame_bl
+        look_through_view ? frame_br : origin, // 5: wire endpoint from frame_br
+        look_through_view ? frame_tr : origin, // 6: wire endpoint from frame_tr
+        look_through_view ? frame_tl : origin, // 7: wire endpoint from frame_tl
+        look_through_view ? frame_bl : vec3{-TriaSize, tria_y, -depth}, // 8: tria base-left
+        look_through_view ? frame_bl : vec3{TriaSize, tria_y, -depth}, // 9: tria base-right
+        look_through_view ? frame_bl : vec3{0.f, tria_y + TriaSize, -depth}, // 10: tria apex
     };
 
     // clang-format off
     std::vector<std::array<uint32_t, 2>> edges{
         {0, 1}, {1, 2}, {2, 3}, {3, 0}, // Frame loop
-        {0, 4}, {1, 4}, {2, 4}, {3, 4}, // Wires from frame corners to camera origin
-        {5, 6}, {6, 7}, {7, 5},         // Up triangle (closed)
+        {0, 4}, {1, 5}, {2, 6}, {3, 7}, // Wires from frame corners to far endpoints
+        {8, 9}, {9, 10}, {10, 8},       // Up triangle (closed)
     };
     // clang-format on
 
