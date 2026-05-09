@@ -22,10 +22,12 @@
 #include <csignal>
 #include <exception>
 #include <format>
+#include <fstream>
 #include <iostream>
 #include <map>
 
-using std::ranges::any_of, std::ranges::distance, std::ranges::find_if;
+using std::ranges::any_of, std::ranges::all_of, std::ranges::distance, std::ranges::find_if;
+
 namespace fs = std::filesystem;
 
 // #define IMGUI_UNLIMITED_FRAME_RATE
@@ -128,6 +130,7 @@ bool PushFont(FontFamily family) {
 struct GltfSample {
     std::string Label;
     fs::path Path;
+    std::set<std::string> Extensions; // top-level "extensionsUsed"
 };
 
 struct GltfSampleTree {
@@ -135,25 +138,58 @@ struct GltfSampleTree {
     std::vector<GltfSample> Files;
 };
 
-// Recursively collect (.glb preferred, .gltf fallback) sample files under `root`, deduped by file stem.
+// Read a glTF/glb file's top-level "extensionsUsed" array without constructing a full Asset.
+// Scans the JSON portion of the file (whole .gltf, or the JSON chunk of a .glb) for
+// `"extensionsUsed":[ ... ]` and pulls each quoted name. Cheap enough to run on every sample at scan time.
+std::set<std::string> ReadExtensionsUsed(const fs::path &path) {
+    std::ifstream f{path, std::ios::binary};
+    if (!f) return {};
+    const std::string json = [&] {
+        if (path.extension() != ".glb") return std::string{std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>()};
+        // GLB: 12-byte container header, then 8-byte chunk header (length, type), then JSON bytes.
+        char header[20];
+        if (!f.read(header, sizeof(header)) || std::memcmp(header, "glTF", 4) != 0) return std::string{};
+        uint32_t chunk_len{}, chunk_type{};
+        std::memcpy(&chunk_len, header + 12, 4);
+        std::memcpy(&chunk_type, header + 16, 4);
+        if (chunk_type != 0x4E4F534A /* 'JSON' */) return std::string{};
+        std::string s(chunk_len, '\0');
+        f.read(s.data(), chunk_len);
+        return s;
+    }();
+    const auto key_pos = json.find("\"extensionsUsed\"");
+    if (key_pos == std::string::npos) return {};
+    const auto open = json.find('[', key_pos);
+    if (open == std::string::npos) return {};
+    const auto close = json.find(']', open);
+    if (close == std::string::npos) return {};
+    std::set<std::string> result;
+    for (auto i = open + 1; i < close;) {
+        const auto str_open = json.find('"', i);
+        if (str_open == std::string::npos || str_open >= close) break;
+        const auto str_close = json.find('"', str_open + 1);
+        if (str_close == std::string::npos || str_close >= close) break;
+        result.insert(json.substr(str_open + 1, str_close - str_open - 1));
+        i = str_close + 1;
+    }
+    return result;
+}
+
+// Recursively collect every .glb/.gltf under `root`. No stem-dedupe so variant subdirs
+// (e.g. glTF-Sample-Assets `Models/<Name>/glTF-IBL/<Name>.gltf`) round-trip into the tree
+// and contribute their own `extensionsUsed` to the filter set.
 std::vector<GltfSample> CollectGltfSamples(const fs::path &root) {
     if (!fs::is_directory(root)) return {};
-    std::vector<fs::path> paths;
+    std::vector<GltfSample> samples;
     for (const auto &entry : fs::recursive_directory_iterator(root)) {
         const auto ext = entry.path().extension();
-        if (entry.is_regular_file() && (ext == ".glb" || ext == ".gltf")) paths.push_back(entry.path());
-    }
-    // Sort by stem (alpha), then prefer .glb within same stem, then by full path.
-    std::ranges::sort(paths, [](const fs::path &a, const fs::path &b) {
-        if (a.stem() != b.stem()) return a.stem() < b.stem();
-        if (a.extension() != b.extension()) return a.extension() == ".glb";
-        return a < b;
-    });
-    std::vector<GltfSample> samples;
-    for (auto &p : paths) {
+        if (!entry.is_regular_file() || (ext != ".glb" && ext != ".gltf")) continue;
+        auto p = entry.path();
         auto stem = p.stem().string();
-        if (samples.empty() || samples.back().Label != stem) samples.push_back({std::move(stem), std::move(p)});
+        auto exts = ReadExtensionsUsed(p);
+        samples.push_back({std::move(stem), std::move(p), std::move(exts)});
     }
+    std::ranges::sort(samples, [](const auto &a, const auto &b) { return a.Path < b.Path; });
     return samples;
 }
 
@@ -433,29 +469,72 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
                         std::cerr << "Error opening file dialog: " << NFD_GetError() << std::endl;
                     }
                 }
+                const auto render_tree = [&](this auto &&self, const GltfSampleTree &n, const auto &passes) -> void {
+                    const auto has_visible = [&](this auto &&rec, const GltfSampleTree &m) -> bool {
+                        return any_of(m.Files, passes) || any_of(m.Children, [&](const auto &c) { return rec(c.second); });
+                    };
+                    struct Item {
+                        const std::string *Name;
+                        const GltfSampleTree *Child;
+                        const GltfSample *File;
+                    };
+                    std::vector<Item> items;
+                    items.reserve(n.Children.size() + n.Files.size());
+                    for (const auto &[name, c] : n.Children) items.push_back({&name, &c, nullptr});
+                    for (const auto &f : n.Files) items.push_back({&f.Label, nullptr, &f});
+                    std::ranges::sort(items, {}, [](const Item &it) { return *it.Name; });
+                    for (const auto &it : items) {
+                        if (it.Child) {
+                            if (!has_visible(*it.Child)) continue;
+                            if (BeginMenu(it.Name->c_str())) {
+                                self(*it.Child, passes);
+                                EndMenu();
+                            }
+                        } else {
+                            if (!passes(*it.File)) continue;
+                            if (MenuItem(it.File->Label.c_str())) {
+                                if (auto load = LoadFile(*scene, it.File->Path); !load) std::cerr << load.error() << std::endl;
+                            }
+                        }
+                    }
+                };
                 const auto render_submenu = [&](const char *label, const GltfSampleTree &tree) {
                     if (tree.Children.empty() && tree.Files.empty()) return;
                     if (!BeginMenu(label)) return;
-                    [&](this auto &&self, const GltfSampleTree &n) -> void {
-                        for (const auto &[name, child] : n.Children) {
-                            if (BeginMenu(name.c_str())) {
-                                self(child);
-                                EndMenu();
-                            }
-                        }
-                        for (const auto &f : n.Files) {
-                            if (MenuItem(f.Label.c_str())) {
-                                if (auto load = LoadFile(*scene, f.Path); !load) std::cerr << load.error() << std::endl;
-                            }
-                        }
-                    }(tree);
+                    render_tree(tree, [](const GltfSample &) { return true; });
                     EndMenu();
                 };
-                static const auto Examples = GltfSampleTree{.Files = CollectGltfSamples(Paths::Res() / "examples")};
+                static const auto Examples = BuildGltfSampleTree(Paths::Res() / "examples");
                 render_submenu("Examples", Examples);
 #ifdef GLTF_SAMPLE_ASSETS_DIR
-                static const auto SampleAssets = GltfSampleTree{.Files = CollectGltfSamples(GLTF_SAMPLE_ASSETS_DIR)};
-                render_submenu("glTF Samples", SampleAssets);
+                static const auto SampleAssets = BuildGltfSampleTree(fs::path{GLTF_SAMPLE_ASSETS_DIR} / "Models");
+                static const auto SampleAssetsExtensions = [] {
+                    std::set<std::string> exts;
+                    [&](this auto &&self, const GltfSampleTree &n) -> void {
+                        for (const auto &f : n.Files) exts.insert(f.Extensions.begin(), f.Extensions.end());
+                        for (const auto &[_, c] : n.Children) self(c);
+                    }(SampleAssets);
+                    return exts;
+                }();
+                static std::set<std::string> SampleAssetsFilter;
+                if (!SampleAssets.Files.empty() || !SampleAssets.Children.empty()) {
+                    if (BeginMenu("glTF Samples")) {
+                        if (BeginMenu("Filter extensions")) {
+                            PushItemFlag(ImGuiItemFlags_AutoClosePopups, false);
+                            for (const auto &ext : SampleAssetsExtensions) {
+                                const bool checked = SampleAssetsFilter.contains(ext);
+                                if (MenuItem(ext.c_str(), nullptr, checked)) {
+                                    if (checked) SampleAssetsFilter.erase(ext);
+                                    else SampleAssetsFilter.insert(ext);
+                                }
+                            }
+                            PopItemFlag();
+                            EndMenu();
+                        }
+                        render_tree(SampleAssets, [](const GltfSample &f) { return all_of(SampleAssetsFilter, [&](const auto &e) { return f.Extensions.contains(e); }); });
+                        EndMenu();
+                    }
+                }
 #endif
 #ifdef GLTF_PHYSICS_DIR
                 static const auto PhysicsTree = BuildGltfSampleTree(GLTF_PHYSICS_DIR);
