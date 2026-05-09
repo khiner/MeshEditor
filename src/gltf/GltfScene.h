@@ -216,8 +216,8 @@ struct SourceScene {
     std::vector<uint32_t> RootNodeIndices;
 };
 
-// Source-form scene-level data on the SceneEntity — encoded image bytes, sampler-config collapse,
-// asset.* metadata, etc. Cameras/lights round-trip via per-entity components above.
+// Source-form scene-level data on the SceneEntity — encoded image bytes, sampler-config collapse, asset.* metadata, etc.
+// Cameras/lights round-trip via per-entity components above.
 struct SourceAssets {
     std::string Copyright, Generator, MinVersion;
     std::string AssetExtras, AssetExtensions; // raw minified JSON
@@ -227,6 +227,9 @@ struct SourceAssets {
     // Empty / single-scene files leave this empty (everything is in the only scene).
     std::vector<uint32_t> NodeSceneMasks;
     std::vector<std::string> ExtensionsRequired;
+    // Object entities (objects + armatures) created from this glTF, in load order.
+    // Source of truth for selection / scene-switch — pre-existing entities aren't here, so they aren't affected.
+    std::vector<entt::entity> ObjectEntities;
     std::unordered_map<uint64_t, std::string> ExtrasByEntity;
     std::vector<MaterialSourceMeta> MaterialMetas;
     std::vector<Texture> Textures;

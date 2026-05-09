@@ -1293,24 +1293,23 @@ bool EntityInActiveScene(const entt::registry &r, const SourceAssets *sa, entt::
     return !sni || NodeInActiveScene(sa, sni->Value);
 }
 
-// Pick an Active entity by source-node order, with type priority Camera > Mesh > Armature >
-// root Empty > any object; clear prior Active/Selected and re-apply over entities in the active
-// scene. Used by both initial load and scene switch so the selection state is consistent.
+// Pick an Active entity by source-node order, with type priority Camera > Mesh > Armature > root Empty > any object.
+// Clear prior Active/Selected and re-apply over entities in the active scene.
+// Operates over `SourceAssets::ObjectEntities` so pre-existing (non-glTF) entities are untouched.
+// Callers ensure SourceAssets exists.
 entt::entity ApplyActiveSceneSelection(entt::registry &r, entt::entity scene_entity) {
-    const auto *sa = r.try_get<const SourceAssets>(scene_entity);
+    const auto &sa = r.get<const SourceAssets>(scene_entity);
 
-    // Source-order traversal so "first" matches load-time iteration. Entities without
-    // SourceNodeIndex (runtime-added or armatures) fall to the end via UINT32_MAX.
+    // Armatures (no SourceNodeIndex) fall to the end via uint max.
     std::vector<std::pair<uint32_t, entt::entity>> ordered;
-    for (const auto e : r.view<const ObjectKind>()) {
-        if (!EntityInActiveScene(r, sa, e)) continue;
+    for (const auto e : sa.ObjectEntities) {
+        if (!r.valid(e) || !r.all_of<const ObjectKind>(e)) continue;
+        if (!EntityInActiveScene(r, &sa, e)) continue;
         const auto *sni = r.try_get<const SourceNodeIndex>(e);
         ordered.emplace_back(sni ? sni->Value : std::numeric_limits<uint32_t>::max(), e);
     }
     std::ranges::sort(ordered);
 
-    // Pick Active by type priority (Camera > Mesh > Armature > root-Empty > any). `ordered` is
-    // already sorted by source-node index, so first hit per priority wins.
     const auto priority = [&](entt::entity e) {
         switch (r.get<const ObjectKind>(e).Value) {
             case ObjectType::Camera: return 0;
@@ -2835,6 +2834,7 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
         R.emplace_or_replace<PendingSceneWorldClear>(SceneEntity);
     }
 
+    R.patch<gltf::SourceAssets>(SceneEntity, [&](auto &a) { a.ObjectEntities = std::move(all_imported_objects); });
     ApplySceneVisibility(R, SceneEntity);
     const auto active_entity = ApplyActiveSceneSelection(R, SceneEntity);
     import_rollback_guard.Enabled = false;
