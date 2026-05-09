@@ -30,10 +30,6 @@ struct MaterialDirty {
     uint32_t Index{0};
 };
 
-struct LightIndex {
-    uint32_t Value{0}; // Index into SceneBuffers::LightBuffer (PunctualLight[])
-};
-
 // Tracks pending transform for shader-based preview during Edit mode gizmo manipulation.
 // Presence indicates active transform; removal triggers UBO clear.
 struct PendingTransform {

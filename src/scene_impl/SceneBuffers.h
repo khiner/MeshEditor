@@ -22,6 +22,11 @@ struct MaterialStore {
     std::vector<std::string> Names;
 };
 
+// Component on a light entity. Indexes into the SceneBuffers::Lights buffer (canonical PunctualLight storage).
+struct LightIndex {
+    uint32_t Value{0};
+};
+
 enum class IndexKind {
     Face,
     Edge,

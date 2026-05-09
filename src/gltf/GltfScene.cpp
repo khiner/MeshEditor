@@ -2928,7 +2928,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             camera_entity_to_index[entity] = camera_entities_ordered.size();
             camera_entities_ordered.emplace_back(entity);
         }
-        auto light_view = r.view<const PunctualLight>();
+        auto light_view = r.view<const LightIndex>();
         for (const auto &[_, entity] : ordered_by_source.operator()<SourceLightIndex>(light_view)) {
             light_entity_to_index[entity] = light_entities_ordered.size();
             light_entities_ordered.emplace_back(entity);
@@ -3915,7 +3915,8 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
     asset.lights.reserve(light_entities_ordered.size());
     for (const auto entity : light_entities_ordered) {
         const auto *ln = r.try_get<const LightName>(entity);
-        asset.lights.emplace_back(ConvertLightToFg(r.get<const PunctualLight>(entity), ln ? ln->Value : std::string_view{}));
+        const auto &pl = sc.Buffers.Lights.Get(r.get<const LightIndex>(entity).Value);
+        asset.lights.emplace_back(ConvertLightToFg(pl, ln ? ln->Value : std::string_view{}));
     }
 
     // KHR_implicit_shapes: dedupe primitive shapes referenced by colliders/triggers into asset.shapes.
