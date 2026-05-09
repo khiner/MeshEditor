@@ -3671,11 +3671,35 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             const bool have_flags = layout.AttributeFlags.size() == prim_count;
 
             for (uint32_t prim_idx = 0; prim_idx < prim_count; ++prim_idx) {
-                const uint32_t pcount = layout.VertexCounts[prim_idx];
+                uint32_t pcount = layout.VertexCounts[prim_idx];
                 if (pcount == 0) continue; // non-triangle primitive
                 const auto offset = vertex_offsets[prim_idx];
-                const auto flags = have_flags ? layout.AttributeFlags[prim_idx] : ~0u;
-                const auto vslice = vertices.subspan(offset, pcount);
+                auto flags = have_flags ? layout.AttributeFlags[prim_idx] : ~0u;
+                std::span<const Vertex> vslice = vertices.subspan(offset, pcount);
+
+                // Flat-shaded export: When SmoothShading tag is absent, split per-face vertices
+                // and assign face-aligned normals so the mesh renders flat in glTF viewers.
+                // Skipped for skinned/morphed meshes where face-splitting would also need to rebuild
+                // those parallel arrays (primitives, the typical authoring case, hit neither).
+                std::vector<Vertex> flat_verts;
+                if (!r.all_of<const SmoothShading>(group.Triangles) && !has_skin && target_count == 0) {
+                    auto &tri_indices = indices_per_prim[prim_idx];
+                    flat_verts.reserve(tri_indices.size());
+                    for (size_t t = 0; t + 2 < tri_indices.size(); t += 3) {
+                        const auto &v0 = vslice[tri_indices[t]], &v1 = vslice[tri_indices[t + 1]], &v2 = vslice[tri_indices[t + 2]];
+                        const auto n = glm::normalize(glm::cross(v1.Position - v0.Position, v2.Position - v0.Position));
+                        flat_verts.emplace_back(v0);
+                        flat_verts.back().Normal = n;
+                        flat_verts.emplace_back(v1);
+                        flat_verts.back().Normal = n;
+                        flat_verts.emplace_back(v2);
+                        flat_verts.back().Normal = n;
+                    }
+                    for (uint32_t i = 0; i < tri_indices.size(); ++i) tri_indices[i] = i;
+                    vslice = flat_verts;
+                    pcount = flat_verts.size();
+                    flags |= MeshAttributeBit_Normal;
+                }
 
                 fastgltf::pmr::SmallVector<fastgltf::Attribute, 4> prim_attrs;
                 prim_attrs.emplace_back(fastgltf::Attribute{"POSITION", AddPositionFieldAccessor.template operator()<Vertex>(vslice, &Vertex::Position, fastgltf::BufferTarget::ArrayBuffer)});
