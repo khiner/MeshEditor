@@ -4324,4 +4324,23 @@ void SwitchActiveScene(entt::registry &r, entt::entity scene_entity, uint32_t sc
     ApplySceneVisibility(r, scene_entity);
     ApplyActiveSceneSelection(r, scene_entity);
 }
+
+static_assert(uint32_t(ExtrasCategory::Images) == uint32_t(fastgltf::Category::Images));
+static_assert(uint32_t(ExtrasCategory::Samplers) == uint32_t(fastgltf::Category::Samplers));
+static_assert(uint32_t(ExtrasCategory::Textures) == uint32_t(fastgltf::Category::Textures));
+static_assert(uint32_t(ExtrasCategory::Animations) == uint32_t(fastgltf::Category::Animations));
+static_assert(uint32_t(ExtrasCategory::Cameras) == uint32_t(fastgltf::Category::Cameras));
+static_assert(uint32_t(ExtrasCategory::Materials) == uint32_t(fastgltf::Category::Materials));
+static_assert(uint32_t(ExtrasCategory::Meshes) == uint32_t(fastgltf::Category::Meshes));
+static_assert(uint32_t(ExtrasCategory::Skins) == uint32_t(fastgltf::Category::Skins));
+static_assert(uint32_t(ExtrasCategory::Nodes) == uint32_t(fastgltf::Category::Nodes));
+static_assert(uint32_t(ExtrasCategory::Scenes) == uint32_t(fastgltf::Category::Scenes));
+static_assert(uint32_t(ExtrasCategory::Lights) == uint32_t(fastgltf::Category::Lights));
+static_assert(uint32_t(ExtrasCategory::ImageBasedLights) == uint32_t(fastgltf::Category::ImageBasedLights));
+
+std::optional<std::string_view> GetExtras(const SourceAssets &sa, ExtrasCategory cat, uint32_t source_index) {
+    const auto key = (uint64_t(uint32_t(cat)) << 32) | uint64_t(source_index);
+    if (const auto it = sa.ExtrasByEntity.find(key); it != sa.ExtrasByEntity.end()) return std::string_view{it->second};
+    return std::nullopt;
+}
 } // namespace gltf

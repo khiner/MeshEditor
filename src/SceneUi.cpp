@@ -341,6 +341,52 @@ std::string NamedOr(const std::string &name, std::string_view fallback, uint32_t
     return name.empty() ? std::format("{}{}", fallback, i) : name;
 }
 
+constexpr std::string_view MimeTypeName(gltf::MimeType m) {
+    using gltf::MimeType;
+    switch (m) {
+        case MimeType::None: return "—";
+        case MimeType::JPEG: return "image/jpeg";
+        case MimeType::PNG: return "image/png";
+        case MimeType::KTX2: return "image/ktx2";
+        case MimeType::DDS: return "image/vnd-ms.dds";
+        case MimeType::GltfBuffer: return "model/gltf-buffer";
+        case MimeType::OctetStream: return "application/octet-stream";
+        case MimeType::WEBP: return "image/webp";
+    }
+    return "?";
+}
+
+std::string AttributeFlagsString(uint32_t flags) {
+    std::string s;
+    const auto add = [&](std::string_view tag) {
+        if (!s.empty()) s += '|';
+        s += tag;
+    };
+    add("POS"); // Always present.
+    if (flags & MeshAttributeBit_Normal) add("NRM");
+    if (flags & MeshAttributeBit_Tangent) add("TAN");
+    if (flags & MeshAttributeBit_Color0) add("COL0");
+    if (flags & MeshAttributeBit_TexCoord0) add("UV0");
+    if (flags & MeshAttributeBit_TexCoord1) add("UV1");
+    if (flags & MeshAttributeBit_TexCoord2) add("UV2");
+    if (flags & MeshAttributeBit_TexCoord3) add("UV3");
+    return s;
+}
+
+void RenderJsonBlock(const char *label, std::string_view json) {
+    SeparatorText(label);
+    PushID(label);
+    const float row_h = GetTextLineHeightWithSpacing();
+    InputTextMultiline(
+        "##json", const_cast<char *>(json.data()), json.size() + 1,
+        ImVec2{-FLT_MIN, row_h * 6.f}, ImGuiInputTextFlags_ReadOnly
+    );
+    if (SmallButton("Copy")) SetClipboardText(std::string{json}.c_str());
+    PopID();
+}
+
+constexpr ImGuiTableFlags MetadataTableFlags = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp;
+
 } // namespace
 
 bool Scene::SetInteractionMode(InteractionMode mode) {
@@ -2132,6 +2178,43 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
         }
     }
     physics_ui::RenderEntityProperties(R, active_entity, SceneEntity);
+
+    // glTF metadata: round-trip-only source state on the active entity.
+    // TODO: surface per-material source metadata here once material editing UI exists:
+    //   - `extras` JSON via SourceAssets::ExtrasByEntity[(Category::Materials, source_index)]
+    //   - `MaterialSourceMeta::ExtensionPresence` bits (which extension blocks the source had)
+    if (const auto *sa = R.try_get<const gltf::SourceAssets>(SceneEntity)) {
+        const auto mesh_entity = active_instance ? active_instance->Entity : entt::null;
+        const auto extras = [&](const auto *src, gltf::ExtrasCategory cat) -> std::optional<std::string_view> {
+            return src ? gltf::GetExtras(*sa, cat, src->Value) : std::nullopt;
+        };
+        const std::pair<const char *, std::optional<std::string_view>> sections[]{
+            {"Extras (Node)", extras(R.try_get<const SourceNodeIndex>(active_entity), gltf::ExtrasCategory::Nodes)},
+            {"Extras (Mesh)", extras(mesh_entity != entt::null ? R.try_get<const SourceMeshIndex>(mesh_entity) : nullptr, gltf::ExtrasCategory::Meshes)},
+            {"Extras (Camera)", extras(R.try_get<const SourceCameraIndex>(active_entity), gltf::ExtrasCategory::Cameras)},
+            {"Extras (Light)", extras(R.try_get<const SourceLightIndex>(active_entity), gltf::ExtrasCategory::Lights)},
+        };
+        const auto *mesh_layout = mesh_entity != entt::null ? R.try_get<const MeshSourceLayout>(mesh_entity) : nullptr;
+        const bool any_extras = std::ranges::any_of(sections, [](const auto &s) { return s.second.has_value(); });
+        if ((any_extras || mesh_layout) && CollapsingHeader("glTF metadata")) {
+            for (const auto &[label, json] : sections) {
+                if (json) RenderJsonBlock(label, *json);
+            }
+            if (mesh_layout && !mesh_layout->VertexCounts.empty()) {
+                SeparatorText("Mesh source layout");
+                Text("Primitives: %zu", mesh_layout->VertexCounts.size());
+                for (size_t i = 0; i < mesh_layout->VertexCounts.size(); ++i) {
+                    const uint32_t flags = i < mesh_layout->AttributeFlags.size() ? mesh_layout->AttributeFlags[i] : 0u;
+                    const bool indexed = i < mesh_layout->HasSourceIndices.size() && mesh_layout->HasSourceIndices[i];
+                    Text("[%zu] verts:%u%s attrs:%s", i, mesh_layout->VertexCounts[i], indexed ? "" : " (non-indexed)", AttributeFlagsString(flags).c_str());
+                }
+                if (!mesh_layout->MorphTangentDeltas.empty()) {
+                    Text("Morph tangent deltas: %zu", mesh_layout->MorphTangentDeltas.size());
+                }
+            }
+        }
+    }
+
     PopID();
 }
 
@@ -2396,6 +2479,141 @@ void Scene::RenderControls() {
         if (BeginTabItem("Physics")) {
             physics_ui::RenderTab(R, *Physics);
             EndTabItem();
+        }
+
+        if (const auto *sa = R.try_get<const gltf::SourceAssets>(SceneEntity)) {
+            if (BeginTabItem("glTF metadata")) {
+                const bool has_asset = !sa->Generator.empty() || !sa->Copyright.empty() || !sa->MinVersion.empty() || !sa->AssetExtras.empty() || !sa->AssetExtensions.empty();
+                if (has_asset && CollapsingHeader("Asset", ImGuiTreeNodeFlags_DefaultOpen)) {
+                    if (!sa->Generator.empty()) Text("Generator: %s", sa->Generator.c_str());
+                    if (!sa->Copyright.empty()) Text("Copyright: %s", sa->Copyright.c_str());
+                    if (!sa->MinVersion.empty()) Text("Min version: %s", sa->MinVersion.c_str());
+                    if (!sa->AssetExtras.empty()) RenderJsonBlock("asset.extras", sa->AssetExtras);
+                    if (!sa->AssetExtensions.empty()) RenderJsonBlock("asset.extensions", sa->AssetExtensions);
+                }
+                if (!sa->ExtensionsRequired.empty() && CollapsingHeader("Extensions required", ImGuiTreeNodeFlags_DefaultOpen)) {
+                    for (const auto &e : sa->ExtensionsRequired) BulletText("%s", e.c_str());
+                }
+                if (CollapsingHeader("Counts", ImGuiTreeNodeFlags_DefaultOpen)) {
+                    Text("Source nodes: %zu", R.view<const SourceNodeIndex>().size());
+                    Text("Meshes: %zu", R.view<const MeshName>().size());
+                    Text("Materials: %zu", sa->MaterialMetas.size());
+                    Text("Textures: %zu", sa->Textures.size());
+                    Text("Images: %zu", sa->Images.size());
+                    Text("Samplers: %zu", sa->Samplers.size());
+                    Text("Animations: %zu", sa->AnimationOrder.size());
+                    Text("Skins: %zu", R.view<const SkinName>().size());
+                    Text("Cameras: %zu", R.view<const CameraName>().size());
+                    Text("Lights: %zu", R.view<const LightName>().size());
+                    Text("Physics materials: %zu", R.view<const SourcePhysicsMaterialIndex>().size());
+                    Text("Collision filters: %zu", R.view<const SourceCollisionFilterIndex>().size());
+                    Text("Physics joints: %zu", R.view<const SourcePhysicsJointDefIndex>().size());
+                }
+                if (!sa->Images.empty() && CollapsingHeader("Image registry")) {
+                    if (BeginTable("Images", 5, MetadataTableFlags)) {
+                        TableSetupColumn("#");
+                        TableSetupColumn("Name");
+                        TableSetupColumn("Mime");
+                        TableSetupColumn("Source");
+                        TableSetupColumn("Bytes");
+                        TableHeadersRow();
+                        for (size_t i = 0; i < sa->Images.size(); ++i) {
+                            const auto &img = sa->Images[i];
+                            TableNextRow();
+                            TableNextColumn();
+                            Text("%zu", i);
+                            TableNextColumn();
+                            TextUnformatted(img.Name.c_str());
+                            TableNextColumn();
+                            TextUnformatted(MimeTypeName(img.MimeType).data());
+                            TableNextColumn();
+                            if (img.SourceDataUri) TextUnformatted("data URI");
+                            else if (!img.SourceAbsPath.empty()) TextUnformatted(img.SourceAbsPath.c_str());
+                            else TextUnformatted("embedded");
+                            TableNextColumn();
+                            if (img.Bytes.empty()) TextUnformatted(img.SourceAbsPath.empty() ? "—" : "external");
+                            else Text("%zu", img.Bytes.size());
+                            if (img.IsDirty) {
+                                SameLine();
+                                TextUnformatted("(dirty)");
+                            }
+                        }
+                        EndTable();
+                    }
+                }
+                if (!sa->Textures.empty() && CollapsingHeader("Texture registry")) {
+                    if (BeginTable("Textures", 4, MetadataTableFlags)) {
+                        TableSetupColumn("#");
+                        TableSetupColumn("Name");
+                        TableSetupColumn("Sampler");
+                        TableSetupColumn("Image (default/WebP/Basisu/DDS)");
+                        TableHeadersRow();
+                        const auto idx_or_dash = [](const std::optional<uint32_t> &i) {
+                            return i ? std::format("{}", *i) : std::string{"—"};
+                        };
+                        for (size_t i = 0; i < sa->Textures.size(); ++i) {
+                            const auto &t = sa->Textures[i];
+                            TableNextRow();
+                            TableNextColumn();
+                            Text("%zu", i);
+                            TableNextColumn();
+                            TextUnformatted(t.Name.c_str());
+                            TableNextColumn();
+                            TextUnformatted(idx_or_dash(t.SamplerIndex).c_str());
+                            TableNextColumn();
+                            Text("%s / %s / %s / %s", idx_or_dash(t.ImageIndex).c_str(), idx_or_dash(t.WebpImageIndex).c_str(), idx_or_dash(t.BasisuImageIndex).c_str(), idx_or_dash(t.DdsImageIndex).c_str());
+                        }
+                        EndTable();
+                    }
+                }
+                if (!sa->Samplers.empty() && CollapsingHeader("Sampler registry")) {
+                    if (BeginTable("Samplers", 5, MetadataTableFlags)) {
+                        TableSetupColumn("#");
+                        TableSetupColumn("Name");
+                        TableSetupColumn("Mag");
+                        TableSetupColumn("Min");
+                        TableSetupColumn("Wrap S/T");
+                        TableHeadersRow();
+                        const auto filter_name = [](gltf::Filter f) -> std::string_view {
+                            using F = gltf::Filter;
+                            switch (f) {
+                                case F::Nearest: return "Nearest";
+                                case F::Linear: return "Linear";
+                                case F::NearestMipMapNearest: return "Nearest/Nearest";
+                                case F::LinearMipMapNearest: return "Linear/Nearest";
+                                case F::NearestMipMapLinear: return "Nearest/Linear";
+                                case F::LinearMipMapLinear: return "Linear/Linear";
+                            }
+                            return "?";
+                        };
+                        const auto wrap_name = [](gltf::Wrap w) -> std::string_view {
+                            using W = gltf::Wrap;
+                            switch (w) {
+                                case W::ClampToEdge: return "Clamp";
+                                case W::MirroredRepeat: return "Mirror";
+                                case W::Repeat: return "Repeat";
+                            }
+                            return "?";
+                        };
+                        for (size_t i = 0; i < sa->Samplers.size(); ++i) {
+                            const auto &s = sa->Samplers[i];
+                            TableNextRow();
+                            TableNextColumn();
+                            Text("%zu", i);
+                            TableNextColumn();
+                            TextUnformatted(s.Name.c_str());
+                            TableNextColumn();
+                            TextUnformatted(s.MagFilter ? filter_name(*s.MagFilter).data() : "—");
+                            TableNextColumn();
+                            TextUnformatted(s.MinFilter ? filter_name(*s.MinFilter).data() : "—");
+                            TableNextColumn();
+                            Text("%s / %s", wrap_name(s.WrapS).data(), wrap_name(s.WrapT).data());
+                        }
+                        EndTable();
+                    }
+                }
+                EndTabItem();
+            }
         }
         EndTabBar();
     }

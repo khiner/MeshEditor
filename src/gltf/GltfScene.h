@@ -59,9 +59,6 @@ struct SourceCameraIndex {
 struct SourceLightIndex {
     uint32_t Value{};
 };
-struct SourceSkinIndex {
-    uint32_t Value{};
-};
 struct SourcePhysicsMaterialIndex {
     uint32_t Value{};
 };
@@ -278,4 +275,22 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &, const S
 // nodes belonging to `scene_index` (per `SourceAssets::NodeSceneMasks`) render.
 // No-op if the asset is single-scene or the index is invalid / unchanged.
 void SwitchActiveScene(entt::registry &, entt::entity scene_entity, uint32_t scene_index);
+
+// Mirrors fastgltf::Category bit values (asserted in .cpp). Used as the category half of
+// `SourceAssets::ExtrasByEntity` keys, which the loader writes via fastgltf's parse callback.
+enum class ExtrasCategory : uint32_t {
+    Images = 1u << 3,
+    Samplers = 1u << 4,
+    Textures = 1u << 5,
+    Animations = 1u << 6,
+    Cameras = 1u << 7,
+    Materials = 1u << 8,
+    Meshes = 1u << 9,
+    Skins = 1u << 10,
+    Nodes = 1u << 11,
+    Scenes = 1u << 12,
+    Lights = 1u << 18, // KHR_lights_punctual; not a top-level glTF category but identifies lights in the extras callback.
+    ImageBasedLights = 1u << 19, // EXT_lights_image_based.
+};
+std::optional<std::string_view> GetExtras(const SourceAssets &, ExtrasCategory, uint32_t source_index);
 } // namespace gltf
