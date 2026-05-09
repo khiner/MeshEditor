@@ -1,9 +1,11 @@
 #pragma once
 
+#include "numeric/quat.h"
 #include "numeric/vec2.h"
 #include "numeric/vec3.h"
 
 #include <array>
+#include <expected>
 #include <filesystem>
 #include <optional>
 #include <string>
@@ -36,6 +38,10 @@ static constexpr float MicBarLengthMm = 1890 - 70; // Height of the microphone a
 // Authors use a Dayton Audio EMM6 calibrated measurement microphone.
 // Measurements from https://www.amazon.com/Dayton-Audio-EMM-6-Measurement-Microphone/dp/B002KI8X40
 static constexpr float MicLengthMm = 190.5, MicWidthMm = 22.352;
+// Listener point closest to the front-center of the object's hemisphere of microphone positions.
+static constexpr uint CenteredListenerIndex = 263;
+// RealImpact meshes are Z-up; rotate to MeshEditor's Y-up frame and flip 180° so the object faces forward.
+extern const quat ObjectRotationToYUp;
 
 struct ListenerPoint {
     const long Index; // [0, NumListenerPoints - 1]
@@ -49,6 +55,10 @@ struct ListenerPoint {
     vec3 GetPosition(vec3 world_up = {0, 1, 0}, bool mic_center = false) const;
 };
 
+// Verifies `directory` is a RealImpact dataset directory (exists, contains required files, name matches).
+// Returns the object name on success, or an error message on failure.
+std::expected<std::string, std::string> ValidateDirectory(const fs::path &);
+
 // Per-impact-vertex {synthetic key, audio frames} at 48kHz.
 // Keys use a `realimpact://` URI-style fs::path so they are unique per (directory, listener, impact_idx)
 // and cannot be mistaken for a real on-disk file.
@@ -60,5 +70,4 @@ std::optional<std::string_view> FindMaterialName(std::string_view);
 std::vector<ListenerPoint> LoadListenerPoints(const fs::path &directory);
 // World positions of the impact points
 std::array<vec3, NumImpactVertices> LoadPositions(const fs::path &directory);
-
 } // namespace RealImpact

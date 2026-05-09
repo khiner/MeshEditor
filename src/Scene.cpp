@@ -4222,18 +4222,16 @@ void Scene::SnapToCamera(entt::entity camera_entity) {
 #include "audio/RealImpact.h"
 #include "audio/RealImpactComponents.h"
 
-void Scene::LoadRealImpact(const std::filesystem::path &directory) {
-    if (!std::filesystem::exists(directory)) throw std::runtime_error(std::format("RealImpact directory does not exist: {}", directory.string()));
+std::expected<void, std::string> Scene::LoadRealImpact(const std::filesystem::path &directory) {
+    auto object_name = RealImpact::ValidateDirectory(directory);
+    if (!object_name) return std::unexpected(std::move(object_name.error()));
 
     ClearMeshes();
     const auto [mesh_entity, instance_entity] = AddMesh(
         directory / "transformed.obj",
         MeshInstanceCreateInfo{
-            .Name = *RealImpact::FindObjectName(directory),
-            // RealImpact meshes are oriented with Z up, but MeshEditor uses Y up.
-            .Transform = {
-                .R = glm::angleAxis(-float(M_PI_2), vec3{1, 0, 0}) * glm::angleAxis(float(M_PI), vec3{0, 0, 1}),
-            },
+            .Name = std::move(*object_name),
+            .Transform = {.R = RealImpact::ObjectRotationToYUp},
         }
     );
 
@@ -4265,8 +4263,7 @@ void Scene::LoadRealImpact(const std::filesystem::path &directory) {
         );
         R.emplace<RealImpactMicrophone>(listener_instance_entity, listener_point.Index);
 
-        static constexpr uint CenterListenerIndex = 263; // This listener point is roughly centered.
-        if (listener_point.Index == CenterListenerIndex) {
+        if (listener_point.Index == RealImpact::CenteredListenerIndex) {
             R.emplace<RealImpactActiveMicrophone>(instance_entity, listener_instance_entity);
 
             auto material_name = RealImpact::FindMaterialName(R.get<Name>(instance_entity).Value);
@@ -4280,4 +4277,5 @@ void Scene::LoadRealImpact(const std::filesystem::path &directory) {
             SetVertexSamples(R, SceneEntity, instance_entity, vertex_indices, to<std::vector>(RealImpact::LoadSamples(directory, listener_point.Index)));
         }
     }
+    return {};
 }

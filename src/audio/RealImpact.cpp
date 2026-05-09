@@ -1,9 +1,11 @@
 #include "RealImpact.h"
 #include "npy.h"
+#include "numeric/mat4.h"
 #include "numeric/vec4.h"
 
 #include <glm/gtc/matrix_transform.hpp>
 
+#include <format>
 #include <ranges>
 #include <regex>
 
@@ -83,6 +85,22 @@ const std::unordered_map<std::string_view, std::string_view> MaterialNameForObje
 } // namespace
 
 namespace RealImpact {
+const quat ObjectRotationToYUp = glm::angleAxis(-float(M_PI_2), vec3{1, 0, 0}) * glm::angleAxis(float(M_PI), vec3{0, 0, 1});
+
+std::expected<std::string, std::string> ValidateDirectory(const fs::path &directory) {
+    if (!fs::is_directory(directory)) return std::unexpected(std::format("RealImpact directory does not exist: {}", directory.string()));
+
+    static constexpr std::array RequiredFiles{"transformed.obj", "vertexXYZ.npy", "micID.npy", "angle.npy", "distance.npy"};
+    for (const auto *name : RequiredFiles) {
+        if (!fs::exists(directory / name)) {
+            return std::unexpected(std::format("'{}' is not a RealImpact directory: missing '{}'", directory.string(), name));
+        }
+    }
+    auto object_name = FindObjectName(directory);
+    if (!object_name) return std::unexpected(std::format("'{}' is not a RealImpact directory: ancestor folder does not match the '<id>_<object>' naming pattern", directory.string()));
+    return std::move(*object_name);
+}
+
 // Ascend up ancestor directories until we find the RealImpact object name directory.
 std::optional<std::string> FindObjectName(const fs::path &start_path) {
     static const std::regex pattern("^\\d+_.*"); // Integer followed by an underscore and any characters
@@ -184,6 +202,6 @@ vec3 ListenerPoint::GetPosition(vec3 world_up, bool mic_center) const {
         // You can see the same offsets in https://samuelpclarke.com/realimpact/ and https://www.youtube.com/watch?v=OeZMeze-oIs
         ((45.f / 2.f) + 20.95f),
     };
-    return vec3{glm::rotate({1}, angle, world_up) * vec4{pos, 1}} / 1000.f;
+    return vec3{glm::rotate(mat4{1}, angle, world_up) * vec4{pos, 1}} / 1000.f;
 }
 } // namespace RealImpact

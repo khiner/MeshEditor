@@ -385,10 +385,10 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
                     static const std::vector<nfdfilteritem_t> filters{};
                     nfdchar_t *path;
                     if (auto result = NFD_PickFolder(&path, ""); result == NFD_OKAY) {
-                        scene->LoadRealImpact(fs::path{path});
+                        if (auto load = scene->LoadRealImpact(fs::path{path}); !load) std::cerr << load.error() << std::endl;
                         NFD_FreePath(path);
                     } else if (result != NFD_CANCEL) {
-                        throw std::runtime_error(std::format("Error loading RealImpact file: {}", NFD_GetError()));
+                        std::cerr << "Error opening folder dialog: " << NFD_GetError() << std::endl;
                     }
                 }
                 if (MenuItem("Save glTF", nullptr)) {
