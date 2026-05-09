@@ -23,6 +23,7 @@
 #include <exception>
 #include <format>
 #include <iostream>
+#include <map>
 
 using std::ranges::any_of, std::ranges::distance, std::ranges::find_if;
 namespace fs = std::filesystem;
@@ -123,6 +124,67 @@ bool PushFont(FontFamily family) {
 }
 } // namespace MeshEditor
 */
+
+struct GltfSample {
+    std::string Label;
+    fs::path Path;
+};
+
+struct GltfSampleTree {
+    std::map<std::string, GltfSampleTree> Children;
+    std::vector<GltfSample> Files;
+};
+
+// Recursively collect (.glb preferred, .gltf fallback) sample files under `root`, deduped by file stem.
+std::vector<GltfSample> CollectGltfSamples(const fs::path &root) {
+    if (!fs::is_directory(root)) return {};
+    std::vector<fs::path> paths;
+    for (const auto &entry : fs::recursive_directory_iterator(root)) {
+        const auto ext = entry.path().extension();
+        if (entry.is_regular_file() && (ext == ".glb" || ext == ".gltf")) paths.push_back(entry.path());
+    }
+    // Sort by stem (alpha), then prefer .glb within same stem, then by full path.
+    std::ranges::sort(paths, [](const fs::path &a, const fs::path &b) {
+        if (a.stem() != b.stem()) return a.stem() < b.stem();
+        if (a.extension() != b.extension()) return a.extension() == ".glb";
+        return a < b;
+    });
+    std::vector<GltfSample> samples;
+    for (auto &p : paths) {
+        auto stem = p.stem().string();
+        if (samples.empty() || samples.back().Label != stem) samples.push_back({std::move(stem), std::move(p)});
+    }
+    return samples;
+}
+
+// Tree mirroring the directory structure under `root`. Single-file leaf dirs are collapsed:
+// the file is hoisted into its parent labeled by the leaf dir's name, so e.g.
+// samples/Robot_skinned/Robot_skinned.glb shows as one entry, not three nested submenus.
+GltfSampleTree BuildGltfSampleTree(const fs::path &root) {
+    GltfSampleTree tree;
+    for (auto &s : CollectGltfSamples(root)) {
+        auto *node = &tree;
+        for (const auto &c : s.Path.lexically_relative(root).parent_path()) {
+            node = &node->Children[c.string()];
+        }
+        node->Files.push_back(std::move(s));
+    }
+    const auto collapse = [](this auto &&self, GltfSampleTree &n) -> void {
+        for (auto it = n.Children.begin(); it != n.Children.end();) {
+            self(it->second);
+            if (it->second.Children.empty() && it->second.Files.size() == 1) {
+                auto f = std::move(it->second.Files.front());
+                f.Label = it->first;
+                n.Files.push_back(std::move(f));
+                it = n.Children.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    };
+    collapse(tree);
+    return tree;
+}
 
 // Load a file into the scene based on its extension.
 std::expected<void, std::string> LoadFile(Scene &scene, const fs::path &path) {
@@ -371,6 +433,32 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
                         std::cerr << "Error opening file dialog: " << NFD_GetError() << std::endl;
                     }
                 }
+                [[maybe_unused]] const auto render_submenu = [&](const char *label, const GltfSampleTree &tree) {
+                    if (tree.Children.empty() && tree.Files.empty()) return;
+                    if (!BeginMenu(label)) return;
+                    [&](this auto &&self, const GltfSampleTree &n) -> void {
+                        for (const auto &[name, child] : n.Children) {
+                            if (BeginMenu(name.c_str())) {
+                                self(child);
+                                EndMenu();
+                            }
+                        }
+                        for (const auto &f : n.Files) {
+                            if (MenuItem(f.Label.c_str())) {
+                                if (auto load = LoadFile(*scene, f.Path); !load) std::cerr << load.error() << std::endl;
+                            }
+                        }
+                    }(tree);
+                    EndMenu();
+                };
+#ifdef GLTF_SAMPLE_ASSETS_DIR
+                static const auto SampleAssets = GltfSampleTree{.Files = CollectGltfSamples(GLTF_SAMPLE_ASSETS_DIR)};
+                render_submenu("glTF Samples", SampleAssets);
+#endif
+#ifdef GLTF_PHYSICS_DIR
+                static const auto PhysicsTree = BuildGltfSampleTree(GLTF_PHYSICS_DIR);
+                render_submenu("glTF_Physics Samples", PhysicsTree);
+#endif
                 if (MenuItem("Load OBJ/PLY", nullptr)) {
                     static const std::array filters{nfdfilteritem_t{"Mesh object", "obj,ply"}};
                     nfdchar_t *nfd_path;

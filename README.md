@@ -198,6 +198,20 @@ For discrete GPUs, enable staged transfers:
 $ cmake -B build -DMVK_FORCE_STAGED_TRANSFERS=ON .
 ```
 
+**glTF sample submenus** (optional): clone [glTF-Sample-Assets](https://github.com/KhronosGroup/glTF-Sample-Assets) and/or [glTF_Physics](https://github.com/eoineoineoin/glTF_Physics) to populate `File > glTF Samples` and `File > glTF_Physics Samples` with one entry per model (`.glb` preferred, `.gltf` fallback). Submenus are hidden when the path is unset or invalid.
+
+CMake settings (cached, defaults used if they exist, otherwise empty):
+- `GLTF_SAMPLE_ASSETS_DIR`: defaults to `../glTF-Sample-Assets`
+- `GLTF_PHYSICS_DIR`: defaults to `../glTF_Physics`
+
+```shell
+# Use the defaults: clone as siblings of MeshEditor, then configure normally.
+$ git clone https://github.com/KhronosGroup/glTF-Sample-Assets ../glTF-Sample-Assets
+$ git clone https://github.com/eoineoineoin/glTF_Physics ../glTF_Physics
+# Or point elsewhere explicitly (overrides the default):
+$ cmake -B build -DGLTF_SAMPLE_ASSETS_DIR=/path/to/glTF-Sample-Assets -DGLTF_PHYSICS_DIR=/path/to/glTF_Physics .
+```
+
 **Quiet mode**: Disable timer output at compile time (equivalent to always passing `--quiet`):
 ```shell
 $ cmake -B build -DQUIET=ON .
