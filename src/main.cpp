@@ -433,7 +433,7 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
                         std::cerr << "Error opening file dialog: " << NFD_GetError() << std::endl;
                     }
                 }
-                [[maybe_unused]] const auto render_submenu = [&](const char *label, const GltfSampleTree &tree) {
+                const auto render_submenu = [&](const char *label, const GltfSampleTree &tree) {
                     if (tree.Children.empty() && tree.Files.empty()) return;
                     if (!BeginMenu(label)) return;
                     [&](this auto &&self, const GltfSampleTree &n) -> void {
@@ -451,6 +451,8 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
                     }(tree);
                     EndMenu();
                 };
+                static const auto Examples = GltfSampleTree{.Files = CollectGltfSamples(Paths::Res() / "examples")};
+                render_submenu("Examples", Examples);
 #ifdef GLTF_SAMPLE_ASSETS_DIR
                 static const auto SampleAssets = GltfSampleTree{.Files = CollectGltfSamples(GLTF_SAMPLE_ASSETS_DIR)};
                 render_submenu("glTF Samples", SampleAssets);
