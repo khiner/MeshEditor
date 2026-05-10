@@ -113,7 +113,6 @@ std::optional<AnimationTimelineAction> RenderAnimationTimeline(const AnimationTi
     const float major_px = major_step * view.PixelsPerFrame;
     const bool show_minor = major_step >= 2 && major_px >= 32.0f; // Half-step lines when spacing allows
 
-    // Compute visible frame range
     const float half_width_frames = (area.x * 0.5f) / view.PixelsPerFrame;
     const int vis_start = int(std::floor(view.ViewCenterFrame - half_width_frames));
     const int vis_end = int(std::ceil(view.ViewCenterFrame + half_width_frames));

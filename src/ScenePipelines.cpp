@@ -147,8 +147,8 @@ static PipelineRenderer CreateMainRenderer(
     };
     const vk::AttachmentReference depth_attachment_ref{0, vk::ImageLayout::eDepthStencilAttachmentOptimal};
     const std::array color_attachment_refs{
-        vk::AttachmentReference{1, vk::ImageLayout::eColorAttachmentOptimal}, // Color (location 0)
-        vk::AttachmentReference{2, vk::ImageLayout::eColorAttachmentOptimal}, // LineData (location 1)
+        vk::AttachmentReference{1, vk::ImageLayout::eColorAttachmentOptimal},
+        vk::AttachmentReference{2, vk::ImageLayout::eColorAttachmentOptimal},
     };
     const vk::SubpassDescription subpass{{}, vk::PipelineBindPoint::eGraphics, 0, nullptr, uint32_t(color_attachment_refs.size()), color_attachment_refs.data(), nullptr, &depth_attachment_ref};
 

@@ -106,7 +106,6 @@ DescriptorSlots::DescriptorSlots(vk::Device device, const vk::PhysicalDeviceDesc
     DescriptorPool = Device.createDescriptorPoolUnique({vk::DescriptorPoolCreateFlagBits::eUpdateAfterBind | vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet, 1, static_cast<uint32_t>(pool_sizes.size()), pool_sizes.data()});
     DescriptorSet = std::move(Device.allocateDescriptorSetsUnique({*DescriptorPool, 1, &*SetLayout}).front());
 
-    // Initialize free slot lists
     std::ranges::transform(indices, FreeSlots.begin(), [&](uint32_t i) {
         return iota(uint32_t{0}, GetMaxDescriptors(props, BindingDefs[i].Kind)) | std::views::reverse | to<std::vector>();
     });

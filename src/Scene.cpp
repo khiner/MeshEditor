@@ -948,7 +948,6 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         static const auto sphere_faces = flatten_tri_indices(sphere.Mesh.Faces);
         static const auto sphere_verts = iota(0u, uint32_t(sphere.Mesh.Positions.size())) | to<std::vector>();
 
-        // Count total indices from generated/pending data for batch reserve.
         uint32_t total_face = 0, total_edge = 0, total_vertex = 0;
         for (auto entity : sync.NewExtrasEntities) {
             if (R.all_of<ArmatureObject>(entity)) {
@@ -1212,13 +1211,11 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
             R.remove<VertexClass>(buffer_entity);
         }
 
-        // Release old store entry and mesh buffers
         auto &vs = R.get<VertexStoreId>(buffer_entity);
         Stores.Meshes->Release(vs.StoreId);
         if (auto *mb = R.try_get<MeshBuffers>(buffer_entity)) Stores.Buffers->Release(*mb);
         R.erase<MeshBuffers>(buffer_entity);
 
-        // Allocate new
         const auto [store_id, vertices] = Stores.Meshes->AllocateVertexBuffer(wireframe.Data.Positions, {});
         vs.StoreId = store_id;
 
@@ -1395,12 +1392,10 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
                  R.view<const MorphWeightAnimation, MorphWeightState, const Instance>().each()) {
                 if (morph_anim.Clips.empty() || morph_anim.ActiveClipIndex >= morph_anim.Clips.size()) continue;
                 const auto &clip = morph_anim.Clips[morph_anim.ActiveClipIndex];
-                // Reset to default weights from mesh-level data
                 const auto &mesh = R.get<const Mesh>(instance.Entity);
                 const auto default_weights = Stores.Meshes->GetDefaultMorphWeights(mesh.GetStoreId());
                 std::copy(default_weights.begin(), default_weights.end(), morph_state.Weights.begin());
                 EvaluateMorphWeights(clip, clip_time(clip), morph_state.Weights);
-                // Write to GPU
                 auto gpu_weights = Stores.Buffers->MorphWeightBuffer.GetMutable(morph_state.GpuWeightRange);
                 std::copy(morph_state.Weights.begin(), morph_state.Weights.end(), gpu_weights.begin());
                 request_rerecord = true;
@@ -1810,7 +1805,6 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
     }
 
     const auto &settings = R.get<const SceneSettings>(SceneEntity);
-    // Update selection overlays
     for (const auto mesh_entity : dirty_overlay_meshes) {
         const auto &mesh = R.get<const Mesh>(mesh_entity);
         R.patch<MeshBuffers>(mesh_entity, [&](auto &mesh_buffers) {
@@ -1989,7 +1983,6 @@ void Scene::DeleteSelectedBones() {
         const auto &bone = armature.Bones[idx];
         const auto grandparent = bone.ParentIndex == InvalidBoneIndex ? arm_obj_entity : arm_obj.BoneEntities[bone.ParentIndex];
 
-        // Destroy joint sphere entities for this bone.
         if (auto *joints = R.try_get<BoneJointEntities>(bone_entity)) {
             if (joints->Head != null_entity) {
                 Hide(R, joints->Head);
@@ -2024,7 +2017,6 @@ void Scene::DeleteSelectedBones() {
 
     RebuildBoneStructure(arm_obj.Entity);
 
-    // Update surviving bones with new dense indices.
     for (uint32_t i = 0; i < arm_obj.BoneEntities.size(); ++i) R.get<BoneIndex>(arm_obj.BoneEntities[i]).Index = i;
 
     if (arm_obj.BoneEntities.empty()) DestroyArmatureData(arm_obj_entity);
@@ -2122,7 +2114,6 @@ void Scene::EnsureWireframes() {
     }
     drop_wireframes(stale);
 
-    // Create wireframe instances for colliders that don't have them yet.
     for (auto [entity, cs] : R.view<const ColliderShape>().each()) {
         if (R.all_of<ColliderWireframe>(entity)) continue;
 
@@ -3538,14 +3529,12 @@ void Scene::RenderSelectionPassWith(bool render_depth, const SelectionBuildFn &b
     const auto selection_draws = build_fn(draw_list);
 
     FlushDrawList(draw_list, Stores.Buffers->SelectionDraw);
-    // Update DrawDataSlot to point to selection draw data for this pass.
     Stores.Buffers->SceneViewUBO.Update(as_bytes(Stores.Buffers->SelectionDraw.DrawData.Slot), offsetof(SceneViewUBO, DrawDataSlot));
 
     auto cb = *ClickCommandBuffer;
     cb.reset({});
     cb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
 
-    // Reset selection counter.
     Stores.Buffers->SelectionCounter.Buffer.Write(as_bytes(SelectionCounters{}));
 
     // Transition head image to general layout and clear.
@@ -4044,7 +4033,6 @@ std::vector<entt::entity> Scene::RunBoxSelect(std::pair<uvec2, uvec2> box_px) {
     if (selection_rendered) RenderSelectionPass(*SelectionReadySemaphore);
     DispatchBoxSelect(box_min, box_max, max_object_id, selection_rendered ? *SelectionReadySemaphore : vk::Semaphore{});
 
-    // Build ObjectId -> entity map for lookup
     std::unordered_map<uint32_t, entt::entity> object_id_to_entity;
     for (const auto [e, ri] : R.view<RenderInstance>().each()) object_id_to_entity[ri.ObjectId] = e;
 

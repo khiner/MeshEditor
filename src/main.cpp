@@ -269,7 +269,6 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
     if (const char *base = SDL_GetBasePath()) Paths::Init(base);
     else throw std::runtime_error(std::format("SDL_GetBasePath error: {}", SDL_GetError()));
 
-    // Create window with Vulkan graphics context.
     auto *window = SDL_CreateWindow(
         "MeshEditor", 1280, 800,
         SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_MAXIMIZED | SDL_WINDOW_HIGH_PIXEL_DENSITY
@@ -283,7 +282,6 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
     ImGui_ImplVulkanH_Window wd;
     { // Set up Vulkan window.
         VkSurfaceKHR surface;
-        // Create window surface.
         if (!SDL_Vulkan_CreateSurface(window, *vc->Instance, nullptr, &surface)) throw std::runtime_error("Failed to create Vulkan surface.\n");
         wd.Surface = surface;
 

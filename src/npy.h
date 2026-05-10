@@ -53,7 +53,6 @@ inline version_t read_magic(std::istream &istream) {
 }
 
 inline std::string read_header(std::istream &istream) {
-    // Check magic bytes an version number
     version_t version = read_magic(istream);
     uint32_t header_length = 0;
     if (version == version_t{1, 0}) {
@@ -81,7 +80,6 @@ inline std::string read_header(std::istream &istream) {
     return {buf_v.data(), header_length};
 }
 
-// Remove leading and trailing whitespace
 constexpr std::string_view trim(std::string_view str) {
     constexpr std::string_view whitespace = " \t";
 
@@ -262,7 +260,6 @@ template<typename Scalar> inline npy_data<Scalar> read_npy(std::istream &in, con
     size_t total_size = std::accumulate(shape.begin(), shape.end(), size_t(1), std::multiplies());
     size_t read_size = size == 0 || size > total_size - advance ? total_size - advance : size;
     npy_data<Scalar> data{shape, header.fortran_order, std::vector<Scalar>(read_size)};
-    // Seek relative to the current position.
     in.seekg(std::streamoff(sizeof(Scalar) * advance), std::ios_base::cur);
     in.read(reinterpret_cast<char *>(data.data.data()), sizeof(Scalar) * read_size);
     return data;

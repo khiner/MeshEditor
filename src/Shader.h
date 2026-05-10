@@ -47,39 +47,39 @@ private:
 
 constexpr vk::PipelineDepthStencilStateCreateInfo CreateDepthStencil(bool test = true, bool write = true, vk::CompareOp compare_op = vk::CompareOp::eLess) {
     return {
-        {}, // flags
-        test, // depthTestEnable
-        write, // depthWriteEnable
-        compare_op, // depthCompareOp
-        vk::False, // depthBoundsTestEnable
-        vk::False, // stencilTestEnable
-        {}, // front (stencil state for front faces)
-        {}, // back (stencil state for back faces)
-        0.f, // minDepthBounds
-        1.f // maxDepthBounds
+        {},
+        test,
+        write,
+        compare_op,
+        vk::False,
+        vk::False,
+        {},
+        {},
+        0.f,
+        1.f
     };
 }
 constexpr vk::PipelineColorBlendAttachmentState CreateColorBlendAttachment(bool blend = true) {
     if (blend) {
         return {
-            true, // blendEnable
-            vk::BlendFactor::eSrcAlpha, // srcCol
-            vk::BlendFactor::eOneMinusSrcAlpha, // dstCol
-            vk::BlendOp::eAdd, // colBlend
-            vk::BlendFactor::eOne, // srcAlpha
-            vk::BlendFactor::eOne, // dstAlpha
-            vk::BlendOp::eAdd, // alphaBlend
+            true,
+            vk::BlendFactor::eSrcAlpha,
+            vk::BlendFactor::eOneMinusSrcAlpha,
+            vk::BlendOp::eAdd,
+            vk::BlendFactor::eOne,
+            vk::BlendFactor::eOne,
+            vk::BlendOp::eAdd,
             vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG | vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA,
         };
     }
     return {
         false,
-        vk::BlendFactor::eOne, // srcCol
-        vk::BlendFactor::eZero, // dstCol
-        vk::BlendOp::eAdd, // colBlend
-        vk::BlendFactor::eOne, // srcAlpha
-        vk::BlendFactor::eZero, // dstAlpha
-        vk::BlendOp::eAdd, // alphaBlend
+        vk::BlendFactor::eOne,
+        vk::BlendFactor::eZero,
+        vk::BlendOp::eAdd,
+        vk::BlendFactor::eOne,
+        vk::BlendFactor::eZero,
+        vk::BlendOp::eAdd,
         vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG | vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA,
     };
 }

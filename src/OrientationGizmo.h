@@ -61,7 +61,6 @@ void Interact(vec2 pos, float size, ViewCamera &camera, bool interactive = true)
     }
     std::ranges::sort(Ctx.SortedIndices, [](auto i, auto j) { return Ctx.AxisCam[i].z > Ctx.AxisCam[j].z; });
 
-    // Find closest hovered axis.
     if (interactive && Ctx.Hovered && !Ctx.DragEndPos) {
         Ctx.HoveredAxis = std::ranges::min(Ctx.SortedIndices, {}, [&](size_t i) {
             const auto mouse_delta = mouse_pos - (center + Ctx.AxisScreen[i]);
