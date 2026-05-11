@@ -11,14 +11,13 @@
 #include "Tets.h"
 #include "Widgets.h" // imgui
 #include "Worker.h"
-#include "gpu/Transform.h"
 #include "mesh/Mesh.h"
 #include "scene_impl/SceneModeComponents.h"
 
 #include "implot.h"
 #include "mesh2modes.h"
 #include "miniaudio.h"
-#include "tetgen.h" // Must be after any Faust includes, since it defined a `REAL` macro.
+#include "tetgen.h" // Needed for `unique_ptr<tetgenio>` dereference. Must come after Faust (defines `REAL`).
 
 #include <nfd.h>
 
@@ -171,19 +170,6 @@ void SetVertexSamples(
     }
 }
 
-// Recording of an excitation.
-struct Recording {
-    Recording(uint frame_count) : Frames(frame_count) {}
-
-    std::vector<float> Frames;
-    uint Frame{0};
-
-    bool Complete() const { return Frame == Frames.size(); }
-    void Record(float value) {
-        if (!Complete()) Frames[Frame++] = value;
-    }
-};
-
 // Returns the index (into SoundVertices::Vertices) of the active vertex for this instance entity,
 // derived from MeshActiveElement on the mesh entity. Returns 0 if no active element is set.
 uint32_t GetActiveVertexIndex(const entt::registry &r, entt::entity instance_entity) {
@@ -316,6 +302,8 @@ std::string GenerateDsp(entt::registry &r) {
     );
 }
 
+} // namespace
+
 /***** Free functions for sound object control *****/
 
 void Stop(entt::registry &r, entt::entity scene_entity, entt::entity e) {
@@ -333,11 +321,12 @@ void SetModel(entt::registry &r, entt::entity scene_entity, entt::entity e, Soun
     r.emplace_or_replace<SoundVerticesModel>(e, model);
 }
 
-void SetVertex(entt::registry &r, entt::entity scene_entity, entt::entity e, uint vertex) {
+void SetVertex(entt::registry &r, entt::entity scene_entity, entt::entity e, uint32_t vertex) {
     Stop(r, scene_entity, e);
     if (r.all_of<ModalModes>(e)) r.get<FaustDSP>(scene_entity).Set(ExciteIndexParamName, vertex);
 }
 
+namespace {
 void SetVertexForce(entt::registry &r, entt::entity scene_entity, entt::entity e, float force) {
     const auto model = r.get<SoundVerticesModel>(e);
     // Update vertex force in the active model.
@@ -640,9 +629,9 @@ LoadedSample PickAndLoadAudio() {
 // `modal_modes` may be null (e.g. bare-mesh first-time create).
 void DrawModalCreateForm(
     entt::registry &r, entt::entity SceneEntity, entt::entity e, entt::entity mesh_entity,
-    ImGuiWindow *parent_window, bool has_excitable, const ModalModes *modal_modes
+    ImGuiWindow *parent_window, bool has_excitable, const ModalModes *modal_modes, const AudioApply &apply
 ) {
-    auto &info = r.get<ModalModelCreateInfo>(e);
+    const auto &info = r.get<const ModalModelCreateInfo>(e);
     if (!BeginChild("CreateModalAudioModel", ImVec2{-FLT_MIN, 0.f}, ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY, ImGuiWindowFlags_MenuBar)) {
         EndChild();
         return;
@@ -655,42 +644,53 @@ void DrawModalCreateForm(
     if (BeginCombo("Presets", info.Material.Name.c_str())) {
         for (const auto &material_choice : materials::acoustic::All) {
             const bool is_selected = (material_choice.Name == info.Material.Name);
-            if (Selectable(material_choice.Name.c_str(), is_selected)) info.Material = material_choice;
+            if (Selectable(material_choice.Name.c_str(), is_selected))
+                apply(action::audio::SetModalFormMaterial{e, std::make_unique<AcousticMaterial>(material_choice)});
             if (is_selected) SetItemDefaultFocus();
         }
         EndCombo();
     }
+    using Props = AcousticMaterialProperties;
+    const auto edit_prop = [&](const char *id, double Props::*member, double current) {
+        if (double v = current; InputDouble(id, &v, 0.0, 0.0, "%.3f"))
+            apply(action::UpdateOf(e, &ModalModelCreateInfo::Material, &AcousticMaterial::Properties, member, v));
+    };
     Text("Density (kg/m^3)");
-    InputDouble("##Density", &info.Material.Properties.Density, 0.0f, 0.0f, "%.3f");
+    edit_prop("##Density", &Props::Density, info.Material.Properties.Density);
     Text("Young's modulus (Pa)");
-    InputDouble("##Young's modulus", &info.Material.Properties.YoungModulus, 0.0f, 0.0f, "%.3f");
+    edit_prop("##Young's modulus", &Props::YoungModulus, info.Material.Properties.YoungModulus);
     Text("Poisson's ratio");
-    InputDouble("##Poisson's ratio", &info.Material.Properties.PoissonRatio, 0.0f, 0.0f, "%.3f");
+    edit_prop("##Poisson's ratio", &Props::PoissonRatio, info.Material.Properties.PoissonRatio);
     Text("Rayleigh damping alpha/beta");
-    InputDouble("##Rayleigh damping alpha", &info.Material.Properties.Alpha, 0.0f, 0.0f, "%.3f");
-    InputDouble("##Rayleigh damping beta", &info.Material.Properties.Beta, 0.0f, 0.0f, "%.3f");
+    edit_prop("##Rayleigh damping alpha", &Props::Alpha, info.Material.Properties.Alpha);
+    edit_prop("##Rayleigh damping beta", &Props::Beta, info.Material.Properties.Beta);
 
     SeparatorText("Tet mesh");
-    Checkbox("Quality", &info.QualityTets);
+    if (bool v = info.QualityTets; Checkbox("Quality", &v))
+        apply(action::UpdateOf(e, &ModalModelCreateInfo::QualityTets, v));
     MeshEditor::HelpMarker("Add new Steiner points to the interior of the tet mesh to improve model quality.");
 
     SeparatorText("SoundVertices vertices");
-    if (has_excitable) Checkbox("Copy excitable vertices", &info.CopySoundVertices);
+    if (has_excitable) {
+        if (bool v = info.CopySoundVertices; Checkbox("Copy excitable vertices", &v))
+            apply(action::UpdateOf(e, &ModalModelCreateInfo::CopySoundVertices, v));
+    }
     if (!has_excitable || !info.CopySoundVertices) {
-        const uint num_vertices = r.get<Mesh>(mesh_entity).VertexCount();
-        info.NumVertices = std::min(info.NumVertices, num_vertices);
-        const uint min_vertices = 1, max_vertices = num_vertices;
-        SliderScalar("Num excitable vertices", ImGuiDataType_U32, &info.NumVertices, &min_vertices, &max_vertices);
+        const uint32_t num_vertices = r.get<Mesh>(mesh_entity).VertexCount();
+        const uint32_t min_vertices = 1, max_vertices = num_vertices;
+        const uint32_t clamped_num = std::min(info.NumVertices, num_vertices);
+        if (uint32_t v = clamped_num;
+            SliderScalar("Num excitable vertices", ImGuiDataType_U32, &v, &min_vertices, &max_vertices))
+            apply(action::UpdateOf(e, &ModalModelCreateInfo::NumVertices, v));
     }
 
     if (Button(modal_modes ? "Update" : "Create")) {
-        Stop(r, SceneEntity, e);
-        r.emplace_or_replace<AcousticMaterial>(mesh_entity, info.Material);
+        const auto material = info.Material;
         const auto &mesh = r.get<const Mesh>(mesh_entity);
-        const auto num_vertices = mesh.VertexCount();
+        const uint32_t num_vertices = mesh.VertexCount();
         auto new_sound_vertices = info.CopySoundVertices && r.all_of<SoundVertices>(e) ?
             r.get<const SoundVertices>(e) :
-            SoundVertices{iota_view{0u, uint(info.NumVertices)} | transform([&](uint i) { return i * num_vertices / info.NumVertices; }) | to<std::vector<uint>>()};
+            SoundVertices{iota_view{0u, uint32_t(info.NumVertices)} | transform([&](uint32_t i) { return i * num_vertices / info.NumVertices; }) | to<std::vector<uint32_t>>()};
         constexpr float ScaleFactor{2}; // Mode freq estimates for RealImpact meshes seem to be consistently about twice as high as recordings.
         const vec3 tet_scale = ScaleFactor * r.get<const WorldTransform>(e).S;
         auto tets = GenerateTets(mesh, tet_scale, {.PreserveSurface = true, .Quality = info.QualityTets});
@@ -699,24 +699,24 @@ void DrawModalCreateForm(
             const auto &frames = GetSampleFrames(r, SceneEntity, *path);
             if (!frames.empty()) fundamental = EstimateFundamentalFrequency(ComputeFft(frames));
         }
-        auto material_props = info.Material.Properties;
+        const auto material_props = material.Properties;
+        apply(action::audio::SubmitModalForm{e, mesh_entity});
         DspGenerator = std::make_unique<Worker<ModalGenerationResult>>(
             parent_window, "Generating modal audio model...",
             [tets = std::move(tets), tet_scale, material_props, sound_vertices = std::move(new_sound_vertices), fundamental]() mutable {
                 return ModalGenerationResult{m2f::mesh2modes(*tets, material_props, sound_vertices.Vertices, fundamental), BuildTetMeshData(*tets, tet_scale)};
             }
         );
-        r.remove<ModalModelCreateInfo>(e);
     }
     SameLine();
-    if (Button("Cancel")) r.remove<ModalModelCreateInfo>(e);
+    if (Button("Cancel")) apply(action::audio::CancelModalForm{e});
     EndChild();
 }
 } // namespace
 
 void DrawObjectAudioControls(
     entt::registry &r, entt::entity SceneEntity, entt::entity e, entt::entity mesh_entity,
-    const uint32_t *selection_bits
+    const uint32_t *selection_bits, const AudioApply &apply
 ) {
     if (e == entt::null || mesh_entity == entt::null) return;
 
@@ -726,16 +726,13 @@ void DrawObjectAudioControls(
             if (result->Modes.Freqs.empty()) {
                 std::cerr << "Modal model computation failed.\n";
             } else {
-                if (!r.all_of<ScaleLocked>(e)) r.emplace<ScaleLocked>(e);
                 uint32_t excite_idx = 0;
                 if (const auto *active = r.try_get<const MeshActiveElement>(mesh_entity)) {
                     const auto &verts = result->Modes.Vertices;
                     if (auto it = find(verts, active->Handle); it != verts.end()) excite_idx = distance(verts.begin(), it);
                 }
-                r.emplace_or_replace<ModalModes>(e, std::move(result->Modes));
-                r.emplace_or_replace<TetMeshData>(mesh_entity, std::move(result->Tets));
                 r.get<FaustDSP>(SceneEntity).Set(ExciteIndexParamName, excite_idx);
-                SetModel(r, SceneEntity, e, SoundVerticesModel::Modal);
+                apply(action::audio::AcceptModalGenerationResult{e, mesh_entity, std::make_unique<action::audio::AcceptModalGenerationResult::Data>(std::move(result->Modes), std::move(result->Tets))});
             }
         }
     }
@@ -743,7 +740,7 @@ void DrawObjectAudioControls(
     // Modal create/edit form takes over whenever open, regardless of whether the entity is a sound object yet.
     if (r.all_of<ModalModelCreateInfo>(e)) {
         const auto *modal_modes = r.try_get<const ModalModes>(e);
-        DrawModalCreateForm(r, SceneEntity, e, mesh_entity, GetCurrentWindow(), r.all_of<SoundVertices>(e), modal_modes);
+        DrawModalCreateForm(r, SceneEntity, e, mesh_entity, GetCurrentWindow(), r.all_of<SoundVertices>(e), modal_modes, apply);
         return;
     }
 
@@ -756,15 +753,15 @@ void DrawObjectAudioControls(
     if (!has_model && Button("Create modal model")) {
         ModalModelCreateInfo info{};
         if (const auto *material = r.try_get<const AcousticMaterial>(mesh_entity)) info.Material = *material;
-        r.emplace<ModalModelCreateInfo>(e, std::move(info));
+        apply(action::audio::OpenModalForm{e, std::make_unique<ModalModelCreateInfo>(std::move(info))});
         return;
     }
 
-    auto *samples = r.try_get<VertexSamples>(e);
-    const auto *modal_modes = r.try_get<ModalModes>(e);
+    const auto *samples = r.try_get<const VertexSamples>(e);
+    const auto *modal_modes = r.try_get<const ModalModes>(e);
     const auto *excitable = r.try_get<const SoundVertices>(e);
     auto model = has_model ? r.get<SoundVerticesModel>(e) : SoundVerticesModel::Samples;
-    auto *recording = r.try_get<Recording>(e);
+    const auto *recording = r.try_get<const Recording>(e);
     const uint32_t active_vi = excitable ? GetActiveVertexIndex(r, e) : 0;
 
     if (samples && modal_modes) {
@@ -776,7 +773,7 @@ void DrawObjectAudioControls(
         PopID();
         if (model_changed) {
             model = SoundVerticesModel(edit_model);
-            SetModel(r, SceneEntity, e, model);
+            apply(action::audio::SetModel{e, model});
         }
     }
 
@@ -784,12 +781,9 @@ void DrawObjectAudioControls(
     if (has_model && excitable) {
         const auto active_vertex = excitable->Vertices[active_vi];
         if (BeginCombo("Vertex", std::to_string(active_vertex).c_str())) {
-            for (uint vi = 0; vi < excitable->Vertices.size(); ++vi) {
-                if (const auto vertex = excitable->Vertices[vi]; Selectable(std::to_string(vertex).c_str(), vi == active_vi)) {
-                    r.remove<VertexForce>(e);
-                    r.emplace_or_replace<MeshActiveElement>(mesh_entity, vertex);
-                    SetVertex(r, SceneEntity, e, vi);
-                }
+            for (uint32_t vi = 0; vi < excitable->Vertices.size(); ++vi) {
+                if (const auto vertex = excitable->Vertices[vi]; Selectable(std::to_string(vertex).c_str(), vi == active_vi))
+                    apply(action::audio::SetExciteVertex{e, mesh_entity, vi, vertex});
             }
             EndCombo();
         }
@@ -798,10 +792,8 @@ void DrawObjectAudioControls(
             (model == SoundVerticesModel::Modal && (!recording || recording->Complete()));
         if (!can_excite) BeginDisabled();
         Button("Excite");
-        if (IsItemActivated()) {
-            r.remove<VertexForce>(e);
-            r.emplace<VertexForce>(e, active_vertex, 1.f);
-        } else if (IsItemDeactivated()) r.remove<VertexForce>(e);
+        if (IsItemActivated()) apply(action::audio::StartExcite{e, active_vertex});
+        else if (IsItemDeactivated()) apply(action::audio::StopExcite{e});
         if (!can_excite) EndDisabled();
     }
 
@@ -820,14 +812,14 @@ void DrawObjectAudioControls(
             if (const auto assign_label = n > 1 ? std::format("Assign sample to {} vertices…", n) : std::string{with_sample ? "Replace sample…" : "Assign sample…"};
                 Button(assign_label.c_str())) {
                 auto [path, frames] = PickAndLoadAudio();
-                if (!frames.empty()) AssignVertexSample(r, SceneEntity, e, op_vertices, std::move(path), std::move(frames));
+                if (!frames.empty()) apply(action::audio::AssignVertexSamples{SceneEntity, e, std::make_unique<action::audio::AssignVertexSamples::Data>(op_vertices, std::move(path), std::move(frames))});
             }
             if (n == 0) EndDisabled();
             if (with_sample > 0) {
                 SameLine();
                 if (const auto remove_label = with_sample > 1 ? std::format("Remove {} samples", with_sample) : std::string{"Remove sample"};
                     Button(remove_label.c_str())) {
-                    RemoveVertexSamples(r, SceneEntity, e, op_with_sample);
+                    apply(action::audio::RemoveVertexSamples{SceneEntity, e, std::move(op_with_sample)});
                     return;
                 }
             }
@@ -848,12 +840,12 @@ void DrawObjectAudioControls(
         ModalModelCreateInfo info{};
         if (modal_modes && excitable) info.NumVertices = excitable->Vertices.size();
         if (const auto *material = r.try_get<const AcousticMaterial>(mesh_entity)) info.Material = *material;
-        r.emplace<ModalModelCreateInfo>(e, std::move(info));
+        apply(action::audio::OpenModalForm{e, std::make_unique<ModalModelCreateInfo>(std::move(info))});
     }
 
     Spacing();
     if (Button("Delete sound object")) {
-        RemoveAudioComponents(r, e);
+        apply(action::audio::DeleteSoundObject{e});
         return;
     }
 
@@ -872,9 +864,9 @@ void DrawObjectAudioControls(
     }
 
     // Poll the Faust DSP UI to see if the current excitation vertex has changed.
-    if (const auto excite_index = uint(r.get<FaustDSP>(SceneEntity).Get(ExciteIndexParamName));
+    if (const auto excite_index = uint32_t(r.get<FaustDSP>(SceneEntity).Get(ExciteIndexParamName));
         active_vi != excite_index && excite_index < excitable->Vertices.size()) {
-        r.emplace_or_replace<MeshActiveElement>(mesh_entity, excitable->Vertices[excite_index]);
+        apply(action::audio::SetActiveElementFromDsp{mesh_entity, excitable->Vertices[excite_index]});
     }
     if (CollapsingHeader("Modal data charts")) {
         std::optional<size_t> new_hovered_index;
@@ -899,8 +891,8 @@ void DrawObjectAudioControls(
 
     const bool is_recording = recording && !recording->Complete();
     if (is_recording) BeginDisabled();
-    static constexpr uint RecordFrames = 208'592; // Same length as RealImpact recordings.
-    if (Button("Record strike")) recording = &r.emplace<Recording>(e, RecordFrames);
+    static constexpr uint32_t RecordFrames = 208'592; // Same length as RealImpact recordings.
+    if (Button("Record strike")) apply(action::audio::StartRecording{e, RecordFrames});
     if (is_recording) EndDisabled();
 
     if (samples && recording && recording->Complete()) {

@@ -220,6 +220,22 @@ void CreateBoneInstances(entt::registry &r, MeshStore &meshes, entt::entity scen
     arm_obj.JointEntity = joint_entity;
 }
 
+entt::entity AddArmature(entt::registry &r, MeshStore &meshes, entt::entity scene_entity, ObjectCreateInfo info) {
+    const auto data_entity = r.create();
+    r.emplace<Armature>(data_entity);
+
+    const auto entity = r.create();
+    r.emplace<ObjectKind>(entity, ObjectType::Armature);
+    r.emplace<ArmatureObject>(entity, data_entity);
+    r.emplace<Transform>(entity, info.Transform);
+    r.emplace<WorldTransform>(entity, info.Transform);
+    r.emplace<Name>(entity, CreateName(r, scene_entity, info.Name.empty() ? "Armature" : info.Name));
+
+    ApplySelectBehavior(r, entity, info.Select);
+    CreateBoneInstances(r, meshes, scene_entity, entity, data_entity);
+    return entity;
+}
+
 entt::entity AddLight(entt::registry &r, MeshStore &meshes, SceneBuffers &buffers, entt::entity scene_entity, ObjectCreateInfo info, std::optional<PunctualLight> props) {
     auto light = props.value_or(SceneDefaults::MakePunctualLight(PunctualLightType::Point));
     auto wireframe = BuildLightMesh(light);

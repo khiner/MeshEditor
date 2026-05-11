@@ -226,21 +226,20 @@ GltfSampleTree BuildGltfSampleTree(const fs::path &root) {
 std::expected<void, std::string> LoadFile(Scene &scene, const fs::path &path) {
     const auto ext = path.extension().string();
     if (ext == ".gltf" || ext == ".glb") {
-        if (auto result = scene.AddGltfScene(path); !result) {
+        if (auto result = scene.Apply(action::project::LoadGltf{.Path = path}); !result) {
             return std::unexpected(std::format("Error loading glTF file '{}': {}", path.string(), result.error()));
         }
     } else if (ext == ".obj" || ext == ".ply") {
-        scene.AddMesh(path, MeshInstanceCreateInfo{.Name = path.stem().string()});
+        scene.Apply(action::object::ImportMesh{path, std::make_unique<MeshInstanceCreateInfo>(MeshInstanceCreateInfo{.Name = path.stem().string()})});
     } else {
         return std::unexpected(std::format("Unsupported file format: '{}'", ext));
     }
     return {};
 }
 
-void LoadDefaultScene(Scene &scene, entt::registry &r) {
+void LoadDefaultScene(Scene &scene) {
     constexpr PrimitiveShape default_shape{primitive::Cuboid{}};
-    const auto [mesh_entity, _] = scene.AddMesh(primitive::CreateMesh(default_shape), MeshInstanceCreateInfo{.Name = ToString(default_shape)});
-    r.emplace<PrimitiveShape>(mesh_entity, default_shape);
+    scene.Apply(action::object::AddMeshPrimitive{default_shape, std::make_unique<MeshInstanceCreateInfo>(MeshInstanceCreateInfo{.Name = ToString(default_shape)})});
 
     // startup.blend data, in Blender's frame (Z-up, -Y forward)
     constexpr vec3 LightLoc{4.07625, 1.00545, 5.90386}, CameraLoc{7.358891, -6.925791, 4.958309}, CameraEulerXYZ{1.109319, 0, 0.815801};
@@ -253,11 +252,13 @@ void LoadDefaultScene(Scene &scene, entt::registry &r) {
     const float hfov = 2 * std::atan(SensorX / (2 * Lens));
     const float yfov = 2 * std::atan(std::tan(hfov * 0.5) * RenderH / RenderW);
 
-    scene.AddLight({.Name = "Light", .Transform = {.P = to_y_up_pos(LightLoc)}, .Select = MeshInstanceCreateInfo::SelectBehavior::None});
-    scene.AddCamera(
-        {.Name = "Camera", .Transform = {.P = to_y_up_pos(CameraLoc), .R = to_y_up_rot * quat{CameraEulerXYZ}}, .Select = MeshInstanceCreateInfo::SelectBehavior::None},
-        {Perspective{.FieldOfViewRad = yfov, .FarClip = 1000, .NearClip = DefaultPerspectiveNearClip}}
-    );
+    scene.Apply(action::object::AddLight{
+        .Info = std::make_unique<ObjectCreateInfo>(ObjectCreateInfo{.Name = "Light", .Transform = {.P = to_y_up_pos(LightLoc)}, .Select = MeshInstanceCreateInfo::SelectBehavior::None}),
+    });
+    scene.Apply(action::object::AddCamera{
+        .Info = std::make_unique<ObjectCreateInfo>(ObjectCreateInfo{.Name = "Camera", .Transform = {.P = to_y_up_pos(CameraLoc), .R = to_y_up_rot * quat{CameraEulerXYZ}}, .Select = MeshInstanceCreateInfo::SelectBehavior::None}),
+        .Props = Perspective{.FieldOfViewRad = yfov, .FarClip = 1000, .NearClip = DefaultPerspectiveNearClip},
+    });
 }
 
 void run(const char *initial_file, bool quiet, bool play, float play_duration, fs::path record_path, int record_fps) {
@@ -454,8 +455,8 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
         if (BeginMainMenuBar()) {
             if (BeginMenu("File")) {
                 if (MenuItem("New", nullptr)) {
-                    scene->ClearMeshes();
-                    LoadDefaultScene(*scene, r);
+                    scene->Apply(action::project::ClearMeshes{});
+                    LoadDefaultScene(*scene);
                 }
                 if (MenuItem("Load glTF", nullptr)) {
                     static const std::array filters{nfdfilteritem_t{"glTF scene", "gltf,glb"}};
@@ -552,7 +553,7 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
                     static const std::vector<nfdfilteritem_t> filters{};
                     nfdchar_t *path;
                     if (auto result = NFD_PickFolder(&path, ""); result == NFD_OKAY) {
-                        if (auto load = scene->LoadRealImpact(fs::path{path}); !load) std::cerr << load.error() << std::endl;
+                        if (auto load = scene->Apply(action::project::LoadRealImpact{.Directory = fs::path{path}}); !load) std::cerr << load.error() << std::endl;
                         NFD_FreePath(path);
                     } else if (result != NFD_CANCEL) {
                         std::cerr << "Error opening folder dialog: " << NFD_GetError() << std::endl;
@@ -562,7 +563,7 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
                     static const std::array filters{nfdfilteritem_t{"glTF scene", "gltf,glb"}};
                     nfdchar_t *nfd_path;
                     if (auto result = NFD_SaveDialog(&nfd_path, filters.data(), filters.size(), nullptr, "scene.gltf"); result == NFD_OKAY) {
-                        if (auto save = scene->SaveGltf(fs::path(nfd_path)); !save) std::cerr << save.error() << std::endl;
+                        if (auto save = scene->Apply(action::project::SaveGltf{.Path = fs::path(nfd_path)}); !save) std::cerr << save.error() << std::endl;
                         NFD_FreePath(nfd_path);
                     } else if (result != NFD_CANCEL) {
                         std::cerr << "Error opening save dialog: " << NFD_GetError() << std::endl;
@@ -656,7 +657,7 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
                 Unindent(6);
                 PopStyleVar();
                 if (auto action = RenderAnimationTimeline(scene->GetTimeline(), scene->GetTimelineView(), scene->GetAnimationIcons())) {
-                    scene->ApplyTimelineAction(*action);
+                    scene->Apply(*action);
                 }
             }
             End();
@@ -683,12 +684,12 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
                         play = false;
                     }
                 } else {
-                    LoadDefaultScene(*scene, r);
+                    LoadDefaultScene(*scene);
                 }
             } else if (GetFrameCount() == 3 && play) {
                 // Wait to play until scene load (frame 1) has settled and one render frame has elapsed.
                 // Calling Play() on the same frame as LoadFile races physics setup.
-                scene->Play();
+                scene->Apply(action::scene::Play{});
                 play = false;
             }
         }

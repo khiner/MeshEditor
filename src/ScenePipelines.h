@@ -35,9 +35,11 @@ inline constexpr auto Uint = vk::Format::eR32Uint;
 struct PbrCompiler {
     PbrCompiler(PipelineContext, vk::RenderPass);
 
-    enum class Variant { Opaque,
-                         Blend,
-                         OpaquePrepass };
+    enum class Variant {
+        Opaque,
+        Blend,
+        OpaquePrepass
+    };
 
     bool CompilePipelines(PbrFeatureMask);
     vk::PipelineLayout Bind(vk::CommandBuffer, Variant) const;

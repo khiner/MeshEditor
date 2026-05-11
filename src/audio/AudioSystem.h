@@ -1,34 +1,26 @@
 #pragma once
 
-#include "AcousticMaterial.h"
+#include "Action.h"
 #include "AudioBuffer.h"
+#include "AudioTypes.h"
 
-#include "entt_fwd.h"
-
+#include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <span>
 #include <utility>
 #include <vector>
 
 struct FaustDSP;
 
-enum class SoundVerticesModel {
-    // Play back recordings of impacts on the object at provided listener points/vertices.
-    Samples,
-    // Model a rigid body's response to an impact using modal analysis/synthesis:
-    // - transform the object's geometry into a tetrahedral volume mesh
-    // - use FEM to estimate the mass/sg/damping matrices from the mesh
-    // - estimate the dominant modes (frequencies/amplitudes/T60s) using an eigensolver
-    // - simulate the object's response to an impact by exciting the modes associated with the impacted vertex
-    Modal,
-};
-
-// If an entity has this component, user has opened the modal model create/edit pane.
-struct ModalModelCreateInfo {
-    AcousticMaterial Material{materials::acoustic::All.front()};
-    uint32_t NumVertices{10};
-    bool CopySoundVertices{true}; // Only used if excitable component is already present.
-    bool QualityTets{false};
+struct Recording {
+    Recording(uint32_t frame_count) : Frames(frame_count) {}
+    std::vector<float> Frames;
+    uint32_t Frame{0};
+    bool Complete() const { return Frame == Frames.size(); }
+    void Record(float value) {
+        if (!Complete()) Frames[Frame++] = value;
+    }
 };
 
 // Called from audio device callback.
@@ -37,11 +29,13 @@ void ProcessAudio(FaustDSP &, entt::registry &, entt::entity scene_entity, Audio
 void RegisterAudioComponentHandlers(entt::registry &, entt::entity scene_entity);
 void RemoveAudioComponents(entt::registry &, entt::entity sound_entity);
 
+using AudioApply = std::function<void(const action::Action &)>;
+
 // Draw the Audio controls for a sound object entity (has SoundVerticesModel).
 // `selection_bits` is the raw SelectionBitset pointer (used in Edit mode for SampleOpVertices); may be null.
 void DrawObjectAudioControls(
     entt::registry &, entt::entity scene_entity, entt::entity sound_entity, entt::entity mesh_entity,
-    const uint32_t *selection_bits
+    const uint32_t *selection_bits, const AudioApply &
 );
 
 // {path, frames} pair — path is an fs::path used as a dedup key in the scene-level sample store.
@@ -73,3 +67,7 @@ void RemoveVertexSamples(
 
 // Decode any miniaudio-supported audio file to mono float frames at `SampleRate`. Returns empty on failure.
 std::vector<float> LoadAudioFrames(const std::string &file_path);
+
+void Stop(entt::registry &, entt::entity scene_entity, entt::entity sound_entity);
+void SetModel(entt::registry &, entt::entity scene_entity, entt::entity sound_entity, SoundVerticesModel);
+void SetVertex(entt::registry &, entt::entity scene_entity, entt::entity sound_entity, uint32_t vertex);

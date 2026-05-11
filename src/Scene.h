@@ -1,16 +1,14 @@
 #pragma once
 
+#include "Action.h"
 #include "AnimationTimeline.h"
 #include "Entity.h"
-#include "Path.h"
 #include "SceneOps.h"
 #include "SceneStores.h"
 #include "SceneVulkanResources.h"
 #include "TransformGizmo.h"
 #include "ViewCamera.h"
 #include "gpu/InteractionMode.h"
-#include "gpu/PunctualLight.h"
-#include "mesh/Handle.h"
 
 #include <expected>
 #include <set>
@@ -47,35 +45,15 @@ struct Scene {
 
     void LoadIcons();
 
-    // Create mesh backing data, optionally with an instance.
-    // Returns (mesh_entity, instance_entity) - instance_entity is entt::null if no instance info provided.
-    std::pair<entt::entity, entt::entity> AddMesh(Mesh &&, std::optional<MeshInstanceCreateInfo> = {});
-    std::pair<entt::entity, entt::entity> AddMesh(MeshData &&, std::optional<MeshInstanceCreateInfo> = {});
-    // Loads a single mesh from non-scene formats (e.g. OBJ/PLY).
-    std::pair<entt::entity, entt::entity> AddMesh(const std::filesystem::path &, std::optional<MeshInstanceCreateInfo> = {});
-    // Imports glTF as a scene (may create multiple mesh + instance entities).
-    std::expected<std::pair<entt::entity, entt::entity>, std::string> AddGltfScene(const std::filesystem::path &);
-    std::expected<void, std::string> SaveGltf(const std::filesystem::path &);
-    std::expected<void, std::string> LoadRealImpact(const std::filesystem::path &directory);
-
-    entt::entity AddMeshInstance(entt::entity mesh_entity, MeshInstanceCreateInfo);
-    entt::entity AddEmpty(ObjectCreateInfo = {});
-    entt::entity AddArmature(ObjectCreateInfo = {});
-    entt::entity AddCamera(ObjectCreateInfo = {}, std::optional<Camera> = {});
-    entt::entity AddLight(ObjectCreateInfo = {}, std::optional<PunctualLight> = {});
-
-    entt::entity Duplicate(entt::entity, std::optional<MeshInstanceCreateInfo> = {});
-    entt::entity DuplicateLinked(entt::entity, std::optional<MeshInstanceCreateInfo> = {});
-
-    void ReplaceMesh(entt::entity, MeshData &&);
-    void ClearMeshes();
-
     void Destroy(entt::entity);
 
     entt::entity GetMeshEntity(entt::entity) const;
     entt::entity GetActiveMeshEntity() const;
     void Select(entt::entity);
     void ToggleSelected(entt::entity);
+
+    void Apply(const action::Action &);
+    std::expected<void, std::string> Apply(const action::FallibleAction &);
 
     // Actions on selected entities
     bool CanDuplicate() const;
@@ -104,12 +82,8 @@ struct Scene {
     const AnimationTimeline &GetTimeline() const;
     AnimationTimelineView &GetTimelineView() { return TimelineView; }
     const AnimationIcons &GetAnimationIcons() const { return AnimIcons; }
-    void ApplyTimelineAction(const AnimationTimelineAction &);
     // Render per-source animation-clip pickers above the timeline.
     void RenderClipPickers();
-    // Start animation playback with presentation-friendly viewport settings
-    // (Material Preview shading, overlays hidden).
-    void Play();
 
     // Record the viewport to an H.264 mp4 by piping frames to an `ffmpeg` subprocess.
     // When a look-through camera is active, captures only the framed sub-region matching
@@ -130,6 +104,13 @@ struct Scene {
     entt::entity GetSceneEntity() const { return SceneEntity; }
 
 private:
+    std::pair<entt::entity, entt::entity> ImportMesh(const std::filesystem::path &, MeshInstanceCreateInfo);
+    // Capture the current view (or the previously-saved one) and transfer LookingThrough to `target`.
+    void SetLookThrough(entt::entity target);
+    // Returns false if `mode` is already current or precluded by selection.
+    bool SetInteractionMode(InteractionMode);
+    void SetEditMode(Element);
+
     SceneVulkanResources Vk;
     entt::registry &R;
     vk::UniqueCommandPool CommandPool;
@@ -253,11 +234,6 @@ private:
     void InteractOverlay();
     void DrawOverlay();
 
-    void EnterLookThroughCamera(entt::entity camera_entity);
-    void ExitLookThroughCamera();
-    void SnapToCamera(entt::entity camera_entity);
-    void AnimateToCamera(entt::entity camera_entity);
-
     void RecordRenderCommandBuffer(bool silhouette_only = false);
     void FlushDrawList(const DrawListBuilder &, DrawBufferPair &);
 
@@ -272,9 +248,6 @@ private:
         std::vector<entt::entity> NewExtrasEntities; // Non-mesh buffer entities (extras/bone/joint) needing deferred index creation.
     };
     SyncResult SyncModelsBuffers();
-
-    bool SetInteractionMode(InteractionMode);
-    void SetEditMode(Element mode);
 
     std::vector<entt::entity> RunObjectPick(uvec2 pixel, uint32_t radius_px = 0);
     std::vector<entt::entity> RunBoxSelect(std::pair<uvec2, uvec2>);
@@ -292,11 +265,9 @@ private:
     std::optional<std::pair<entt::entity, uint32_t>> RunElementPickFromRanges(std::span<const ElementRange>, Element, uvec2 mouse_px);
     std::optional<uint32_t> RunSoundVerticesVertexPick(entt::entity instance_entity, uvec2 mouse_px);
 
-    void ApplySelectBehavior(entt::entity, MeshInstanceCreateInfo::SelectBehavior);
     entt::entity CreateExtrasBufferEntity(std::span<const vec3> positions, std::span<const uint8_t> vertex_classes = {}, std::span<const uint32_t> edge_indices = {});
     entt::entity CreateExtrasObject(std::span<const vec3> positions, std::span<const uint8_t> vertex_classes, std::span<const uint32_t> edge_indices, ObjectType, ObjectCreateInfo, const std::string &default_name);
 
-    void CreateBoneInstances(entt::entity arm_obj_entity, entt::entity arm_data_entity);
     entt::entity CreateSingleBoneInstance(entt::entity arm_obj_entity, uint32_t bone_id); // Create ECS entity + joints for one bone.
     void DestroyArmatureData(entt::entity arm_obj_entity);
     void RebuildBoneStructure(entt::entity arm_data_entity);

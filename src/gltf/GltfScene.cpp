@@ -1297,7 +1297,7 @@ bool EntityInActiveScene(const entt::registry &r, const SourceAssets *sa, entt::
 // Clear prior Active/Selected and re-apply over entities in the active scene.
 // Operates over `SourceAssets::ObjectEntities` so pre-existing (non-glTF) entities are untouched.
 // Callers ensure SourceAssets exists.
-entt::entity ApplyActiveSceneSelection(entt::registry &r, entt::entity scene_entity) {
+void ApplyActiveSceneSelection(entt::registry &r, entt::entity scene_entity) {
     const auto &sa = r.get<const SourceAssets>(scene_entity);
 
     // Armatures (no SourceNodeIndex) fall to the end via uint max.
@@ -1331,7 +1331,6 @@ entt::entity ApplyActiveSceneSelection(entt::registry &r, entt::entity scene_ent
     r.clear<Active, Selected>();
     if (active != entt::null) r.emplace<Active>(active);
     for (const auto &[_, e] : ordered) r.emplace<Selected>(e);
-    return active;
 }
 } // namespace
 
@@ -2089,7 +2088,6 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
     };
     std::vector<MorphSummary> mesh_morphs;
     mesh_morphs.reserve(source_meshes.size());
-    entt::entity first_mesh_entity = entt::null;
     // Per-mesh: optional line entity + optional point entity
     struct ExtraPrimitiveEntities {
         entt::entity Lines{entt::null}, Points{entt::null};
@@ -2158,7 +2156,6 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
         } else {
             mesh_morphs.emplace_back();
         }
-        if (first_mesh_entity == entt::null && mesh_entity != entt::null) first_mesh_entity = mesh_entity;
         mesh_entities.emplace_back(mesh_entity);
 
         auto create_extra = [&](std::optional<::MeshData> &data, ::MeshVertexAttributes &attrs, MeshKind kind) -> entt::entity {
@@ -2169,7 +2166,6 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
             R.emplace<SourceMeshIndex>(e, mi);
             R.emplace<SourceMeshKind>(e, kind);
             if (!scene_mesh.Name.empty()) R.emplace<MeshName>(e, scene_mesh.Name);
-            if (first_mesh_entity == entt::null) first_mesh_entity = e;
             return e;
         };
         auto lines_entity = create_extra(scene_mesh.Lines, scene_mesh.LineAttrs, MeshKind::Lines);
@@ -2836,10 +2832,10 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
 
     R.patch<gltf::SourceAssets>(SceneEntity, [&](auto &a) { a.ObjectEntities = std::move(all_imported_objects); });
     ApplySceneVisibility(R, SceneEntity);
-    const auto active_entity = ApplyActiveSceneSelection(R, SceneEntity);
+    ApplyActiveSceneSelection(R, SceneEntity);
     import_rollback_guard.Enabled = false;
 
-    return gltf::LoadResult{.Active = active_entity, .FirstMesh = first_mesh_entity, .FirstCameraObject = first_camera_object_entity, .ImportedAnimation = imported_animation};
+    return gltf::LoadResult{.FirstCameraObject = first_camera_object_entity, .ImportedAnimation = imported_animation};
 }
 
 std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, const SaveContext &sc) {

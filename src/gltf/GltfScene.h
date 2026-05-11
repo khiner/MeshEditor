@@ -247,7 +247,7 @@ struct LoadContext {
 };
 
 struct LoadResult {
-    entt::entity Active{null_entity}, FirstMesh{null_entity}, FirstCameraObject{null_entity};
+    entt::entity FirstCameraObject{null_entity};
     bool ImportedAnimation{false};
 };
 

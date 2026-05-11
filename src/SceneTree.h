@@ -10,6 +10,11 @@ struct WorldTransform : Transform {
     WorldTransform(const Transform &t) : Transform{t} {}
 };
 
+// World-space forward direction for a camera entity (matches glTF: cameras look down -Z).
+inline vec3 CameraForward(const WorldTransform &wt) {
+    return -glm::normalize(glm::rotate(wt.R, vec3{0.f, 0.f, 1.f}));
+}
+
 struct SceneNode {
     entt::entity Parent{null_entity};
     entt::entity FirstChild{null_entity};

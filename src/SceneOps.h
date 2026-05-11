@@ -71,6 +71,7 @@ entt::entity CreateExtrasObject(entt::registry &, MeshStore &, SceneBuffers &, e
 entt::entity AddEmpty(entt::registry &, MeshStore &, SceneBuffers &, entt::entity scene_entity, ObjectCreateInfo = {});
 entt::entity AddCamera(entt::registry &, MeshStore &, SceneBuffers &, entt::entity scene_entity, ObjectCreateInfo = {}, std::optional<Camera> = {});
 entt::entity AddLight(entt::registry &, MeshStore &, SceneBuffers &, entt::entity scene_entity, ObjectCreateInfo = {}, std::optional<PunctualLight> = {});
+entt::entity AddArmature(entt::registry &, MeshStore &, entt::entity scene_entity, ObjectCreateInfo = {});
 
 entt::entity CreateBoneEntity(entt::registry &, entt::entity scene_entity, entt::entity arm_obj_entity, const Armature &, uint32_t bone_index, entt::entity parent_entity);
 void CreateBoneJoints(entt::registry &, entt::entity arm_obj_entity, entt::entity bone_entity, entt::entity joint_entity);

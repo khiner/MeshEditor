@@ -1,8 +1,9 @@
 #pragma once
 
+#include "Action.h"
+
 #include <memory>
 #include <optional>
-#include <variant>
 
 struct SvgResource;
 
@@ -22,24 +23,4 @@ struct AnimationIcons {
     std::unique_ptr<SvgResource> Play, Pause, JumpStart, JumpEnd;
 };
 
-namespace timeline_action {
-struct TogglePlay {};
-struct SetFrame {
-    int Frame;
-};
-struct SetStartFrame {
-    int Frame;
-};
-struct SetEndFrame {
-    int Frame;
-};
-struct JumpToStart {};
-struct JumpToEnd {};
-} // namespace timeline_action
-
-using AnimationTimelineAction = std::variant<
-    timeline_action::TogglePlay, timeline_action::SetFrame,
-    timeline_action::SetStartFrame, timeline_action::SetEndFrame,
-    timeline_action::JumpToStart, timeline_action::JumpToEnd>;
-
-std::optional<AnimationTimelineAction> RenderAnimationTimeline(const AnimationTimeline &, AnimationTimelineView &, const AnimationIcons &);
+std::optional<action::Action> RenderAnimationTimeline(const AnimationTimeline &, AnimationTimelineView &, const AnimationIcons &);

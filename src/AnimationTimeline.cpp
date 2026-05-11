@@ -42,8 +42,8 @@ int ComputeMajorStep(float pixels_per_frame) {
 }
 } // namespace
 
-std::optional<AnimationTimelineAction> RenderAnimationTimeline(const AnimationTimeline &tl, AnimationTimelineView &view, const AnimationIcons &icons) {
-    std::optional<AnimationTimelineAction> action;
+std::optional<action::Action> RenderAnimationTimeline(const AnimationTimeline &tl, AnimationTimelineView &view, const AnimationIcons &icons) {
+    std::optional<action::Action> action;
 
     // --- Transport bar ---
     const float w = GetContentRegionAvail().x;
@@ -55,11 +55,11 @@ std::optional<AnimationTimelineAction> RenderAnimationTimeline(const AnimationTi
     {
         const auto transport_p = bar_origin + ImVec2{(w - h * 3) * 0.5f, spacing.y};
         SetCursorScreenPos(transport_p);
-        if (IconButton("jump_start", icons.JumpStart.get(), ImDrawFlags_RoundCornersLeft)) action = timeline_action::JumpToStart{};
+        if (IconButton("jump_start", icons.JumpStart.get(), ImDrawFlags_RoundCornersLeft)) action = action::timeline::JumpToStart{};
         SetCursorScreenPos({transport_p.x + h, transport_p.y});
-        if (IconButton("play_pause", tl.Playing ? icons.Pause.get() : icons.Play.get(), ImDrawFlags_RoundCornersNone)) action = timeline_action::TogglePlay{};
+        if (IconButton("play_pause", tl.Playing ? icons.Pause.get() : icons.Play.get(), ImDrawFlags_RoundCornersNone)) action = action::timeline::TogglePlay{};
         SetCursorScreenPos({transport_p.x + h * 2, transport_p.y});
-        if (IconButton("jump_end", icons.JumpEnd.get(), ImDrawFlags_RoundCornersRight)) action = timeline_action::JumpToEnd{};
+        if (IconButton("jump_end", icons.JumpEnd.get(), ImDrawFlags_RoundCornersRight)) action = action::timeline::JumpToEnd{};
     }
 
     // Right-aligned frame inputs
@@ -71,19 +71,19 @@ std::optional<AnimationTimelineAction> RenderAnimationTimeline(const AnimationTi
     {
         int frame = tl.CurrentFrame;
         InputInt("Frame", &frame, 0, 0);
-        if (IsItemDeactivatedAfterEdit()) action = timeline_action::SetFrame{frame};
+        if (IsItemDeactivatedAfterEdit()) action = action::timeline::SetFrame{frame};
     }
     SameLine(0, spacing.x * 2);
     {
         int start = tl.StartFrame;
         InputInt("Start", &start, 0, 0);
-        if (IsItemDeactivatedAfterEdit()) action = timeline_action::SetStartFrame{start};
+        if (IsItemDeactivatedAfterEdit()) action = action::timeline::SetStartFrame{start};
     }
     SameLine(0, spacing.x);
     {
         int end = tl.EndFrame;
         InputInt("End", &end, 0, 0);
-        if (IsItemDeactivatedAfterEdit()) action = timeline_action::SetEndFrame{end};
+        if (IsItemDeactivatedAfterEdit()) action = action::timeline::SetEndFrame{end};
     }
     PopItemWidth();
     SetCursorScreenPos({bar_origin.x, bar_origin.y + h + spacing.y * 2 - spacing.y});
@@ -153,7 +153,7 @@ std::optional<AnimationTimelineAction> RenderAnimationTimeline(const AnimationTi
         // Click/drag in header to scrub frame
         const bool in_header = io.MousePos.y >= p0.y && io.MousePos.y < p0.y + HeaderHeight;
         if ((in_header && IsMouseClicked(ImGuiMouseButton_Left)) || (timeline_active && IsMouseDragging(ImGuiMouseButton_Left) && io.MouseClickedPos[0].y < p0.y + HeaderHeight)) {
-            action = timeline_action::SetFrame{int(std::round(x_to_frame(io.MousePos.x)))};
+            action = action::timeline::SetFrame{int(std::round(x_to_frame(io.MousePos.x)))};
         }
         // Vertical scroll (or pinch) → zoom, horizontal scroll → pan
         if (io.MouseWheel != 0.0f) {
