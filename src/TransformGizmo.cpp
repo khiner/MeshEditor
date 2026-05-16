@@ -511,7 +511,7 @@ void RenderMouseGuid(TransformGizmo::TransformType type, ImVec2 o_px) {
 
         static constexpr auto FillColor{IM_COL32(255, 255, 255, 255)}, OutlineColor{IM_COL32(0, 0, 0, 255)};
         dl.AddConvexPolyFilled(points, 5, FillColor);
-        dl.AddPolyline(points, 5, OutlineColor, true, 1.f);
+        dl.AddPolyline(points, 5, OutlineColor, 1.f, ImDrawFlags_Closed);
     };
 
     // Two arrows pointing in opposite directions, either along or perpendicular to `line_dir`
@@ -782,7 +782,7 @@ void RenderImpl(const GizmoTransform &transform, const LocalTransformDelta &dt, 
 
             CirclePositions[angle_i + 1] = angle_circle_pos; // restore
             const auto color = g.Interaction->Op == Screen ? IM_COL32_WHITE : Axes[AxisIndex(g.Interaction->Op)];
-            dl.AddPolyline(CirclePositions, FullCircleSegmentCount, color, false, Style.RotationLineWidth);
+            dl.AddPolyline(CirclePositions, FullCircleSegmentCount, color, Style.RotationLineWidth);
             dl.AddLine(o_px, CirclePositions[0], color, Style.RotationLineWidth / 2);
             dl.AddLine(o_px, CirclePositions[angle_i], color, Style.RotationLineWidth);
         } else if (!g.Start) {
@@ -800,7 +800,7 @@ void RenderImpl(const GizmoTransform &transform, const LocalTransformDelta &dt, 
                 const auto v_px = WsToPx(o_ws + transform.LocalDirToWorld(v_local * r), vp) - o_px;
                 FastEllipse(std::span{CirclePositions}.first(HalfCircleSegmentCount + 1), o_px, u_px, v_px, true, 0.5f);
                 const auto color = SelectionColor(Axes[2 - axis], g.Interaction == Interaction{Rotate, AxisOp(2 - axis)});
-                dl.AddPolyline(CirclePositions, HalfCircleSegmentCount + 1, color, false, Style.RotationLineWidth);
+                dl.AddPolyline(CirclePositions, HalfCircleSegmentCount + 1, color, Style.RotationLineWidth);
             }
             if (g.Interaction && g.Interaction->Op == Trackball) {
                 dl.AddCircleFilled(o_px, SizeToPx(Style.RotationCircleSize), Color.RotationTrackballHoverFill);
