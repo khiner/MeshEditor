@@ -83,9 +83,7 @@ struct AnyHandle {
 };
 
 struct AnyHandleHash {
-    size_t operator()(const AnyHandle &h) const {
-        return std::hash<uint>{}(static_cast<uint>(h.Element)) ^ (std::hash<uint>{}(h.Index) << 1);
-    }
+    size_t operator()(const AnyHandle &h) const { return std::hash<uint>{}(uint(h.Element)) ^ (std::hash<uint>{}(h.Index) << 1); }
 };
 } // namespace he
 

@@ -71,9 +71,7 @@ struct SlotBinding {
     vk::DescriptorType Descriptor;
 };
 
-constexpr SlotBinding BindingFor(SlotType type) {
-    return {static_cast<uint32_t>(type), DescriptorTypeFor(BindingDefs[size_t(type)].Kind)};
-}
+constexpr SlotBinding BindingFor(SlotType type) { return {uint32_t(type), DescriptorTypeFor(BindingDefs[size_t(type)].Kind)}; }
 
 } // namespace
 
@@ -103,7 +101,7 @@ DescriptorSlots::DescriptorSlots(vk::Device device, const vk::PhysicalDeviceDesc
         pool_size_for(BindKind::Sampler),
         pool_size_for(BindKind::Buffer),
     };
-    DescriptorPool = Device.createDescriptorPoolUnique({vk::DescriptorPoolCreateFlagBits::eUpdateAfterBind | vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet, 1, static_cast<uint32_t>(pool_sizes.size()), pool_sizes.data()});
+    DescriptorPool = Device.createDescriptorPoolUnique({vk::DescriptorPoolCreateFlagBits::eUpdateAfterBind | vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet, 1, uint32_t(pool_sizes.size()), pool_sizes.data()});
     DescriptorSet = std::move(Device.allocateDescriptorSetsUnique({*DescriptorPool, 1, &*SetLayout}).front());
 
     std::ranges::transform(indices, FreeSlots.begin(), [&](uint32_t i) {

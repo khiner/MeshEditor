@@ -12,9 +12,7 @@
 using std::ranges::any_of, std::ranges::find_if, std::ranges::distance;
 
 namespace {
-constexpr uint64_t MakeEdgeKey(uint from, uint to) {
-    return (static_cast<uint64_t>(from) << 32) | to;
-}
+constexpr uint64_t MakeEdgeKey(uint from, uint to) { return (uint64_t(from) << 32) | to; }
 
 // Flat open-addressing map reused across Mesh constructions via thread_local.
 // Key 0 is the empty sentinel (self-loop edges are impossible).
@@ -186,7 +184,7 @@ vec3 Mesh::CalcFaceCentroid(FH fh) const {
         centroid += vertices[*vh].Position;
         count++;
     }
-    return count > 0 ? centroid / static_cast<float>(count) : centroid;
+    return count > 0 ? centroid / float(count) : centroid;
 }
 
 float Mesh::CalcEdgeLength(HH hh) const {

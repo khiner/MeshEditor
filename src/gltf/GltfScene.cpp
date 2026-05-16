@@ -686,7 +686,7 @@ std::expected<fastgltf::Asset, std::string> ParseAsset(const std::filesystem::pa
             // Re-parse with all extensions enabled to recover the full `extensionsRequired` list
             // for the diagnostic - fastgltf bails before populating it on the first pass.
             gltf_file.get().reset();
-            fastgltf::Parser probe{static_cast<fastgltf::Extensions>(~0U)};
+            fastgltf::Parser probe{fastgltf::Extensions(~0U)};
             if (auto probed = probe.loadGltf(gltf_file.get(), path.parent_path(), Options::DontRequireValidAssetMember | Options::AllowDouble);
                 probed.error() == fastgltf::Error::None) {
                 const auto enabled = fastgltf::stringifyExtensionBits(EnabledExtensions);

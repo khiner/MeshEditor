@@ -63,12 +63,12 @@ Shaders::Shaders(std::vector<ShaderTypePath> type_paths)
                         spec.Data.reserve(tp.SpecializationConstants.size());
                         size_t offset = 0;
                         for (const auto &[id, value] : tp.SpecializationConstants) {
-                            spec.Entries.emplace_back(vk::SpecializationMapEntry{id, static_cast<uint32_t>(offset), sizeof(uint32_t)});
+                            spec.Entries.emplace_back(vk::SpecializationMapEntry{id, uint32_t(offset), sizeof(uint32_t)});
                             spec.Data.push_back(value);
                             offset += sizeof(uint32_t);
                         }
                         spec.Info = vk::SpecializationInfo{
-                            static_cast<uint32_t>(spec.Entries.size()),
+                            uint32_t(spec.Entries.size()),
                             spec.Entries.data(),
                             spec.Data.size() * sizeof(uint32_t),
                             spec.Data.data(),
@@ -153,7 +153,7 @@ void ShaderPipeline::Compile(vk::RenderPass render_pass) {
     static const vk::PipelineDynamicStateCreateInfo dynamic_state{{}, dynamic_states};
     static constexpr vk::PipelineMultisampleStateCreateInfo multisample_state{{}, vk::SampleCountFlagBits::e1};
 
-    const vk::PipelineColorBlendStateCreateInfo color_blending{{}, false, vk::LogicOp::eCopy, static_cast<uint32_t>(ColorBlendAttachments.size()), ColorBlendAttachments.data()};
+    const vk::PipelineColorBlendStateCreateInfo color_blending{{}, false, vk::LogicOp::eCopy, uint32_t(ColorBlendAttachments.size()), ColorBlendAttachments.data()};
     auto pipeline_result = Device.createGraphicsPipelineUnique(
         {},
         {

@@ -21,7 +21,7 @@ enum class IO : uint8_t {
     Count,
 };
 constexpr IO AllIo[]{IO::In, IO::Out};
-constexpr auto Idx(IO io) { return static_cast<uint8_t>(io); }
+constexpr auto Idx(IO io) { return uint8_t(io); }
 
 ma_context AudioContext;
 ma_device Device;

@@ -60,7 +60,7 @@ inline quat FromJoltQuat(Quat q) { return {q.GetW(), q.GetX(), q.GetY(), q.GetZ(
 inline bool HasNonUnitScale(const Transform &t) { return t.S.x != 1 || t.S.y != 1 || t.S.z != 1; }
 
 // Pack filter entity into a Shape UserData. 0 = no filter; offset by 1 so null_entity doesn't alias the sentinel.
-inline uint64_t ShapeFilterUserData(entt::entity e) { return e != null_entity ? uint64_t(static_cast<uint32_t>(e)) + 1 : 0; }
+inline uint64_t ShapeFilterUserData(entt::entity e) { return e != null_entity ? uint64_t(uint32_t(e)) + 1 : 0; }
 
 inline entt::entity ResolveFilterEntity(const entt::registry &r, entt::entity e) {
     return e != null_entity && r.valid(e) && r.all_of<CollisionFilter>(e) ? e : null_entity;
@@ -176,19 +176,19 @@ public:
                 case CollideMode::Blocklist: mask.Collide = ~systems_to_mask(f.CollideSystems); break;
                 case CollideMode::All: mask.Collide = ~0u; break;
             }
-            Masks.emplace(static_cast<uint32_t>(e), mask);
+            Masks.emplace(uint32_t(e), mask);
         }
     }
 
     // Register a body and return its unique SubGroupID. filter is the KHR collision filter entity.
     uint32_t RegisterBody(entt::entity filter = null_entity) {
         const uint32_t id = BodyFilterByGroup.size();
-        BodyFilterByGroup.emplace_back(static_cast<uint32_t>(filter));
+        BodyFilterByGroup.emplace_back(uint32_t(filter));
         return id;
     }
 
     void SetBodyFilter(uint32_t sub_group_id, entt::entity filter) {
-        if (sub_group_id < BodyFilterByGroup.size()) BodyFilterByGroup[sub_group_id] = static_cast<uint32_t>(filter);
+        if (sub_group_id < BodyFilterByGroup.size()) BodyFilterByGroup[sub_group_id] = uint32_t(filter);
     }
 
     void Reset() {
@@ -213,19 +213,19 @@ public:
         // Check KHR collision filter masks
         const uint32_t f1 = s1 < BodyFilterByGroup.size() ? BodyFilterByGroup[s1] : UINT32_MAX;
         const uint32_t f2 = s2 < BodyFilterByGroup.size() ? BodyFilterByGroup[s2] : UINT32_MAX;
-        return MasksCollide(static_cast<entt::entity>(f1), static_cast<entt::entity>(f2));
+        return MasksCollide(entt::entity(f1), entt::entity(f2));
     }
 
     bool MasksCollide(entt::entity a, entt::entity b) const {
-        const auto ia = Masks.find(static_cast<uint32_t>(a));
-        const auto ib = Masks.find(static_cast<uint32_t>(b));
+        const auto ia = Masks.find(uint32_t(a));
+        const auto ib = Masks.find(uint32_t(b));
         if (ia == Masks.end() || ib == Masks.end()) return true; // missing/null filter = permissive
         return (ia->second.Membership & ib->second.Collide) != 0 && (ib->second.Membership & ia->second.Collide) != 0;
     }
 
     bool DirectionalAllows(entt::entity source, entt::entity target) const {
-        const auto is = Masks.find(static_cast<uint32_t>(source));
-        const auto it = Masks.find(static_cast<uint32_t>(target));
+        const auto is = Masks.find(uint32_t(source));
+        const auto it = Masks.find(uint32_t(target));
         if (is == Masks.end() || it == Masks.end()) return true;
         return (is->second.Membership & it->second.Collide) != 0;
     }
@@ -268,9 +268,9 @@ public:
         const uint64_t f1 = b1.GetShape()->GetSubShapeUserData(result.mSubShapeID1);
         const uint64_t f2 = b2.GetShape()->GetSubShapeUserData(result.mSubShapeID2);
         if (f1 == 0 || f2 == 0) return ValidateResult::AcceptContact;
-        if (const auto e1 = static_cast<entt::entity>(static_cast<uint32_t>(f1 - 1)),
-            e2 = static_cast<entt::entity>(static_cast<uint32_t>(f2 - 1));
-            !Filter->MasksCollide(e1, e2)) return ValidateResult::RejectContact;
+        if (const auto e1 = entt::entity(uint32_t(f1 - 1)), e2 = entt::entity(uint32_t(f2 - 1)); !Filter->MasksCollide(e1, e2)) {
+            return ValidateResult::RejectContact;
+        }
         return ValidateResult::AcceptContact;
     }
 
@@ -284,7 +284,7 @@ public:
 private:
     const ::PhysicsMaterial *LookupMaterial(uint64_t userdata) const {
         if (!R || userdata == NoMaterialSentinel) return nullptr;
-        const auto e = static_cast<entt::entity>(static_cast<uint32_t>(userdata));
+        const auto e = entt::entity(uint32_t(userdata));
         return R->valid(e) ? R->try_get<const ::PhysicsMaterial>(e) : nullptr;
     }
 
@@ -462,7 +462,7 @@ void ApplyPhysicsProperties(BodyCreationSettings &bcs, const PhysicsMotion *moti
         if (const auto *mat = r.try_get<const ::PhysicsMaterial>(material->PhysicsMaterialEntity)) {
             bcs.mFriction = mat->DynamicFriction;
             bcs.mRestitution = mat->Restitution;
-            bcs.mUserData = static_cast<uint32_t>(material->PhysicsMaterialEntity);
+            bcs.mUserData = uint32_t(material->PhysicsMaterialEntity);
         }
     }
 }
@@ -496,10 +496,10 @@ void ConfigureJointSettings(SixDOFConstraintSettings &settings, const PhysicsJoi
             }
         };
         for (uint8_t a : limit.LinearAxes) {
-            if (a < 3) configure_axis(static_cast<SixDOFConstraintSettings::EAxis>(a));
+            if (a < 3) configure_axis(SixDOFConstraintSettings::EAxis(a));
         }
         for (uint8_t a : limit.AngularAxes) {
-            if (a < 3) configure_axis(static_cast<SixDOFConstraintSettings::EAxis>(a + 3));
+            if (a < 3) configure_axis(SixDOFConstraintSettings::EAxis(a + 3));
         }
     }
 
@@ -557,7 +557,7 @@ void ApplyDriveTargets(SixDOFConstraint &constraint, const PhysicsJointDef &def)
     bool has_orient_target = false;
     for (const auto &drive : def.Drives) {
         const int axis_index = (drive.Type == PhysicsDriveType::Linear ? 0 : 3) + drive.Axis;
-        const auto axis = static_cast<SixDOFConstraintSettings::EAxis>(axis_index);
+        const auto axis = SixDOFConstraintSettings::EAxis(axis_index);
         // PositionAndVelocity uses the spring formula `k*(posT-posC) + c*(velT-velC)`, matching the
         // KHR spec. Jolt's pure Velocity mode is a rigid constraint that ignores spring settings.
         const bool active = drive.Stiffness > 0.0f || drive.Damping > 0.0f;
@@ -1122,7 +1122,7 @@ void PhysicsWorld::ApplyMaterial(const entt::registry &r, entt::entity entity) {
         }
         leaf->SetUserData(ShapeFilterUserData(filter_entity));
         // Body UserData stores the material entity value for contact-listener lookup.
-        body.SetUserData(mat ? static_cast<uint32_t>(mat_entity) : NoMaterialSentinel);
+        body.SetUserData(mat ? uint32_t(mat_entity) : NoMaterialSentinel);
     }
     P->SimDirty = true;
 }

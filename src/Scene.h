@@ -162,7 +162,7 @@ private:
         Line,
         Count
     };
-    entt::entity ColliderShapeBufferEntities[static_cast<uint8_t>(ColliderShapeBuffer::Count)]{null_entity, null_entity, null_entity, null_entity, null_entity};
+    entt::entity ColliderShapeBufferEntities[uint8_t(ColliderShapeBuffer::Count)]{null_entity, null_entity, null_entity, null_entity, null_entity};
 
     void EnsureWireframes();
     void UpdateWireframeTransforms();

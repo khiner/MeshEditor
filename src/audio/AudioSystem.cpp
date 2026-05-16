@@ -493,20 +493,18 @@ std::optional<float> EstimateFundamentalFrequency(const FFTData &fft) {
     nth_element(upper, upper.begin() + upper.size() / 2);
     const float threshold = upper[upper.size() / 2] + 15.f;
 
-    constexpr size_t W = 15; // Prominence window
-    const size_t min_bin = static_cast<size_t>(50.0f * fft.NumReal / SampleRate);
+    constexpr size_t W{15}; // Prominence window
+    const size_t min_bin = 50 * fft.NumReal / SampleRate;
     for (size_t i = std::max(min_bin, W); i < n_bins - W; ++i) {
         // Local maximum?
-        if (mag_db[i] <= mag_db[i - 1] || mag_db[i] <= mag_db[i + 1]) continue;
-        if (mag_db[i] < threshold) continue;
+        if (mag_db[i] <= mag_db[i - 1] || mag_db[i] <= mag_db[i + 1] || mag_db[i] < threshold) continue;
 
         constexpr float ProminenceThresholdDb{10.f};
         // Prominence check: peak must be above the local mean by ProminenceThresholdDb
         float local_sum = 0;
         for (size_t j = i - W; j <= i + W; ++j) local_sum += mag_db[j];
         const float local_mean = local_sum / (2 * W + 1);
-        if (mag_db[i] - local_mean < ProminenceThresholdDb) continue;
-        return float(i) * SampleRate / fft.NumReal;
+        if (mag_db[i] - local_mean >= ProminenceThresholdDb) return i * SampleRate / fft.NumReal;
     }
     return std::nullopt;
 }

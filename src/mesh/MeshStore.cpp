@@ -146,7 +146,7 @@ MeshDataWithMaterials ReadObj(const std::filesystem::path &path) {
     const auto local_material_index = [&](int material_id) -> uint32_t {
         if (const auto it = material_to_local_index.find(material_id); it != material_to_local_index.end()) return it->second;
         const uint32_t local_index = result.Materials.size();
-        if (material_id >= 0 && material_id < static_cast<int>(materials.size())) {
+        if (material_id >= 0 && material_id < int(materials.size())) {
             result.Materials.emplace_back(ToObjPlyMaterial(materials[size_t(material_id)], uint32_t(material_id), path.parent_path()));
         } else {
             result.Materials.emplace_back(DefaultMaterial());
@@ -188,12 +188,12 @@ MeshDataWithMaterials ReadObj(const std::filesystem::path &path) {
 template<typename T>
 float NormalizeColor(T value) {
     if constexpr (std::is_floating_point_v<T>) {
-        return std::clamp(static_cast<float>(value), 0.f, 1.f);
+        return std::clamp(float(value), 0.f, 1.f);
     } else if constexpr (std::is_signed_v<T>) {
-        const auto den = static_cast<float>(std::numeric_limits<T>::max());
+        const auto den = float(std::numeric_limits<T>::max());
         return std::clamp(value / den, 0.f, 1.f);
     } else {
-        const auto den = static_cast<float>(std::numeric_limits<T>::max());
+        const auto den = float(std::numeric_limits<T>::max());
         return std::clamp(value / den, 0.f, 1.f);
     }
 }
@@ -207,7 +207,7 @@ vec3 AverageColor(tinyply::PlyData &colors) {
         sum.y += NormalizeColor(values[i * 3 + 1]);
         sum.z += NormalizeColor(values[i * 3 + 2]);
     }
-    return colors.count > 0 ? sum / static_cast<float>(colors.count) : vec3{1.f};
+    return colors.count > 0 ? sum / float(colors.count) : vec3{1.f};
 }
 
 vec3 ComputeAverageVertexColor(tinyply::PlyData &colors) {
@@ -637,7 +637,7 @@ Mesh MeshStore::CloneMesh(const Mesh &mesh) {
 
 std::expected<MeshWithMaterials, std::string> MeshStore::LoadMesh(const std::filesystem::path &path) {
     auto ext = path.extension().string();
-    std::ranges::transform(ext, ext.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    std::ranges::transform(ext, ext.begin(), [](unsigned char c) { return std::tolower(c); });
     MeshDataWithMaterials source;
     try {
         if (ext == ".ply") source = ReadPly(path);

@@ -42,8 +42,7 @@ struct BufferPair {
 };
 struct BufferPairHash {
     size_t operator()(const BufferPair &p) const noexcept {
-        return std::hash<void *>{}(static_cast<VkBuffer>(p.Src)) ^
-            (std::hash<void *>{}(static_cast<VkBuffer>(p.Dst)) << 1);
+        return std::hash<void *>{}(VkBuffer(p.Src)) ^ (std::hash<void *>{}(VkBuffer(p.Dst)) << 1);
     }
 };
 // Maps start offset -> end offset, automatically sorted and merged on insert
@@ -79,7 +78,7 @@ struct BufferContext {
 private:
     struct TypedSlotHash {
         size_t operator()(const TypedSlot &key) const noexcept {
-            return std::hash<uint64_t>{}((static_cast<uint64_t>(std::to_underlying(key.Type)) << 32) | static_cast<uint64_t>(key.Slot));
+            return std::hash<uint64_t>{}((uint64_t(std::to_underlying(key.Type)) << 32) | key.Slot);
         }
     };
     std::unordered_map<TypedSlot, vk::DescriptorBufferInfo, TypedSlotHash> DeferredDescriptorUpdates;

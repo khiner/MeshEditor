@@ -2,4 +2,4 @@
 
 #include <entt/entity/fwd.hpp>
 
-constexpr entt::entity null_entity = static_cast<entt::entity>(-1);
+constexpr entt::entity null_entity = entt::entity(-1);

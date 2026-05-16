@@ -1977,7 +1977,7 @@ void Scene::EnsureWireframes() {
         !show_bbox && !show_tets) return;
 
     using enum ColliderShapeBuffer;
-    auto buf = [&](ColliderShapeBuffer kind) -> entt::entity & { return ColliderShapeBufferEntities[static_cast<uint8_t>(kind)]; };
+    auto buf = [&](ColliderShapeBuffer kind) -> entt::entity & { return ColliderShapeBufferEntities[uint8_t(kind)]; };
 
     // Lazily create canonical buffer entities (recreated if destroyed by last-instance cleanup).
     auto ensure_buffer = [&](ColliderShapeBuffer kind, auto generator) {
