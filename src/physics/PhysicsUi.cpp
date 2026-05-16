@@ -241,13 +241,23 @@ std::optional<PhysicsShape> RenderShapeEditor(const PhysicsShape &in, bool auto_
 }
 } // namespace
 
-void physics_ui::RenderTab(entt::registry &r, PhysicsWorld &physics, const ApplyAction &apply) {
+void physics_ui::RenderTab(entt::registry &r, entt::entity scene_entity, PhysicsWorld &physics, const ApplyAction &apply) {
     SeparatorText("Simulation");
     Text("Bodies: %u", physics.BodyCount());
-    if (SliderInt("Substeps per frame", &physics.SubstepsPerFrame, 1, 100)) physics.MarkSimulationDirty();
-    if (SliderInt("Solver iterations", &physics.SolverIterations, 2, 50)) physics.MarkSimulationDirty();
-    if (SliderFloat("Time scale", &physics.TimeScale, 0.f, 10.f, "%.2fx")) physics.MarkSimulationDirty();
-    if (DragFloat3("Gravity", &physics.Gravity.x, 0.1f)) physics.MarkSimulationDirty();
+    {
+        const auto &settings = r.get<PhysicsSimulationSettings>(scene_entity);
+        int substeps = int(settings.SubstepsPerFrame), iters = int(settings.SolverIterations);
+        float time_scale = settings.TimeScale;
+        vec3 gravity = settings.Gravity;
+        if (SliderInt("Substeps per frame", &substeps, 1, 100))
+            apply(action::UpdateOf(scene_entity, &PhysicsSimulationSettings::SubstepsPerFrame, uint32_t(substeps)));
+        if (SliderInt("Solver iterations", &iters, 2, 50))
+            apply(action::UpdateOf(scene_entity, &PhysicsSimulationSettings::SolverIterations, uint32_t(iters)));
+        if (SliderFloat("Time scale", &time_scale, 0.f, 10.f, "%.2fx"))
+            apply(action::UpdateOf(scene_entity, &PhysicsSimulationSettings::TimeScale, time_scale));
+        if (DragFloat3("Gravity", &gravity.x, 0.1f))
+            apply(action::UpdateOf(scene_entity, &PhysicsSimulationSettings::Gravity, gravity));
+    }
 
     if (CollapsingHeader("Physics Materials")) {
         DrawNamedEntityList<PhysicsMaterial>(

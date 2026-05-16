@@ -252,7 +252,7 @@ struct SceneView {}; struct CameraLens {}; struct TransformPending {};
 struct TransformEnd {}; struct WorldTransform {}; struct TransformDirty {};
 struct PhysicsMotion {}; struct PhysicsShape {}; struct PhysicsMaterial {}; struct PhysicsTrigger {}; struct PhysicsJoint {};
 struct PhysicsMaterialDef {}; struct CollisionSystemDef {}; struct CollisionFilterDef {}; struct PhysicsJointDef {};
-struct ColliderPolicy {};
+struct ColliderPolicy {}; struct PhysicsSimulationSettings {};
 } // namespace changes
 // clang-format on
 
@@ -514,6 +514,7 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
     track<changes::CollisionSystemDef>(R).on<CollisionSystem>(On::Create | On::Update | On::Destroy);
     track<changes::CollisionFilterDef>(R).on<CollisionFilter>(On::Create | On::Update | On::Destroy);
     track<changes::PhysicsJointDef>(R).on<::PhysicsJointDef>(On::Create | On::Update | On::Destroy);
+    track<changes::PhysicsSimulationSettings>(R).on<::PhysicsSimulationSettings>(On::Update);
 
     PhysicsWorld *physics = Physics.get();
     RegisterComponentEventHandler(R, [physics](entt::registry &r) {
@@ -550,6 +551,7 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
     R.emplace<MaterialPreviewLighting>(SceneEntity, false, false, 1.f, 0.f);
     R.emplace<RenderedLighting>(SceneEntity, true, true, 1.f, 0.f);
     R.emplace<ViewportExtent>(SceneEntity);
+    Physics->ApplySimulationSettings(R.emplace<PhysicsSimulationSettings>(SceneEntity));
 
     Stores.Buffers->WorkspaceLightsUBO.Update(as_bytes(SceneDefaults::WorkspaceLights));
     ResetObjectPickKeys(*Stores.Buffers);
@@ -1411,16 +1413,31 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         }
         anim_advanced = tl.CurrentFrame != LastEvaluatedFrame;
 
+        if (!reactive<changes::PhysicsSimulationSettings>(R).empty()) {
+            Physics->ApplySimulationSettings(R.get<const PhysicsSimulationSettings>(SceneEntity));
+        }
         // The cache is the timeline: bake past the frontier, restore within it.
         if (Physics->HasBodies()) {
             Physics->EnsureCacheRange(tl.StartFrame, tl.EndFrame);
-            if (Physics->TakeCacheDirty()) Physics->InvalidateFromFrame(tl.CurrentFrame);
+            // Any physics-mutating change invalidates cached future frames so the next play-forward re-bakes.
+            if (!reactive<changes::PhysicsShape>(R).empty() ||
+                !reactive<changes::PhysicsMotion>(R).empty() ||
+                !reactive<changes::PhysicsMaterial>(R).empty() ||
+                !reactive<changes::PhysicsTrigger>(R).empty() ||
+                !reactive<changes::PhysicsJoint>(R).empty() ||
+                !reactive<changes::PhysicsMaterialDef>(R).empty() ||
+                !reactive<changes::CollisionSystemDef>(R).empty() ||
+                !reactive<changes::CollisionFilterDef>(R).empty() ||
+                !reactive<changes::PhysicsJointDef>(R).empty() ||
+                !reactive<changes::PhysicsSimulationSettings>(R).empty()) {
+                Physics->InvalidateFromFrame(tl.CurrentFrame);
+            }
             if (anim_advanced) {
                 const int from = LastEvaluatedFrame, to = tl.CurrentFrame;
                 const float dt = tl.Fps > 0 ? 1.f / tl.Fps : 1.f / 60.f;
                 const auto baked = Physics->BakedThrough();
                 if (to == from + 1 && (!baked || uint32_t(to) > *baked)) {
-                    Physics->BakeFrame(R, to, dt);
+                    Physics->BakeFrame(R, R.get<const PhysicsSimulationSettings>(SceneEntity), to, dt);
                     request(RenderRequest::Submit);
                 } else if (Physics->HasCachedFrame(to)) {
                     Physics->RestoreFrame(R, to);
@@ -1435,9 +1452,9 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
 
         if (anim_advanced) LastEvaluatedFrame = tl.CurrentFrame;
         // Timeline frames are displayed 1-based, but animation time starts at t=0 on frame 1.
-        const float eval_seconds = float(std::max(0, tl.CurrentFrame - 1)) / tl.Fps;
+        const auto eval_seconds = float(std::max(0, tl.CurrentFrame - 1)) / tl.Fps;
         const auto clip_time = [eval_seconds](const auto &clip) {
-            return clip.DurationSeconds > 0 ? std::fmod(eval_seconds, clip.DurationSeconds) : 0.0f;
+            return clip.DurationSeconds > 0 ? std::fmod(eval_seconds, clip.DurationSeconds) : 0.f;
         };
 
         // Evaluate animation deltas (data only — no bone entity iteration).
@@ -3066,7 +3083,7 @@ void Scene::Apply(const action::Action &action) {
             },
             [&]<typename Field>(const action::Update<Field> &a) {
                 const auto e = a.Entity != entt::null ? a.Entity : SceneEntity;
-                DispatchByTypeHash<Transform, SceneSettings, MaterialVariants, ArmatureAnimation, MorphWeightAnimation, NodeTransformAnimation, MaterialPreviewLighting, RenderedLighting, ViewportTheme, ViewCamera, PhysicsMaterial, CollisionFilter, ColliderMaterial, ColliderPolicy, PhysicsMotion, PhysicsVelocity, PhysicsJoint, TriggerNodes, ModalModelCreateInfo>(a.ComponentType, [&]<typename T> {
+                DispatchByTypeHash<Transform, SceneSettings, MaterialVariants, ArmatureAnimation, MorphWeightAnimation, NodeTransformAnimation, MaterialPreviewLighting, RenderedLighting, ViewportTheme, ViewCamera, PhysicsMaterial, CollisionFilter, ColliderMaterial, ColliderPolicy, PhysicsMotion, PhysicsVelocity, PhysicsJoint, TriggerNodes, ModalModelCreateInfo, PhysicsSimulationSettings>(a.ComponentType, [&]<typename T> {
                     R.patch<T>(e, [&](T &t) {
                         *reinterpret_cast<Field *>(reinterpret_cast<std::byte *>(&t) + a.Offset) = a.Value;
                     });
@@ -3212,10 +3229,7 @@ void Scene::Apply(const action::Action &action) {
                 if (Physics->HasBodies()) Physics->ClearCache();
             },
             [&](action::timeline::JumpToStart) {
-                if (Physics->HasBodies()) {
-                    Physics->ClearCache();
-                    Physics->Rebuild(R);
-                }
+                if (Physics->HasBodies()) Physics->Rebuild(R);
                 const auto frame = R.get<AnimationTimeline>(SceneEntity).StartFrame;
                 R.patch<AnimationTimeline>(SceneEntity, [&](auto &tl) { tl.CurrentFrame = frame; });
                 PlaybackFrame = frame;

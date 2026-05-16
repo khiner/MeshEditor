@@ -1408,9 +1408,8 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
             // In Pose mode, edit the active bone rather than the armature.
             const bool is_pose_bone = R.get<const SceneInteraction>(SceneEntity).Mode == InteractionMode::Pose && active_bone_entity != entt::null;
             const auto transform_entity = is_pose_bone ? active_bone_entity : active_entity;
-            auto &transform = R.get<Transform>(transform_entity);
             {
-                auto p = transform.P;
+                auto p = R.get<const Transform>(transform_entity).P;
                 if (DragFloat3("Position", &p[0], 0.01f)) Apply(action::UpdateOf(transform_entity, &Transform::P, p));
             }
             // Rotation editor (RotationUiVariant is reactively created; may not exist yet on the first frame)
@@ -1457,7 +1456,7 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
             const bool frozen = R.all_of<ScaleLocked>(transform_entity);
             if (frozen) BeginDisabled();
             {
-                auto s = transform.S;
+                auto s = R.get<const Transform>(transform_entity).S;
                 if (const auto label = std::format("Scale{}", frozen ? " (frozen)" : "");
                     DragFloat3(label.c_str(), &s[0], 0.01f, 0.01f, 10)) {
                     Apply(action::UpdateOf(transform_entity, &Transform::S, s));
@@ -2191,7 +2190,7 @@ void Scene::RenderControls() {
         }
 
         if (BeginTabItem("Physics")) {
-            physics_ui::RenderTab(R, *Physics, [this](const action::Action &a) { Apply(a); });
+            physics_ui::RenderTab(R, SceneEntity, *Physics, [this](const action::Action &a) { Apply(a); });
             EndTabItem();
         }
 

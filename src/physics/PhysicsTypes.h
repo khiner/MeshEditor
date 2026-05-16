@@ -9,6 +9,12 @@
 #include <variant>
 #include <vector>
 
+struct PhysicsSimulationSettings {
+    vec3 Gravity{0.0f, -9.81f, 0.0f};
+    uint32_t SubstepsPerFrame{10}, SolverIterations{10};
+    float TimeScale{1.0f}; // Multiplier on simulated dt (1 = real-time)
+};
+
 // KHR_physics_rigid_bodies-aligned component structs.
 
 // --- Document-level resources (stored in PhysicsWorld) ---

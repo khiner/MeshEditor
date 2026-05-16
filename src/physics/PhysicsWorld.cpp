@@ -334,7 +334,6 @@ struct PhysicsWorld::Impl {
     uint32_t CacheStartFrame{1};
     uint32_t CacheEndFrame{0}; // For range validation only — actual storage is per-entity BodyPoseCache.
     std::optional<uint32_t> Baked; // highest frame baked (inclusive); nullopt if nothing baked since last clear.
-    bool SimDirty{false};
     Ref<KHRCollisionFilter> FilterRef;
     KHRContactListener ContactListener;
     MeshVsMeshShapeFilter MeshFilter;
@@ -634,6 +633,7 @@ void PhysicsWorld::Rebuild(entt::registry &r) {
     }
     r.clear<PhysicsBodyHandle>();
     r.clear<BodyPoseCache>();
+    P->Baked = {};
 
     // Refresh the filter's mask table and clear per-body state.
     // The FilterRef pointer held by the contact listener must not be reassigned.
@@ -786,7 +786,6 @@ void PhysicsWorld::FlushJoints(const entt::registry &r, bool joints_changed) {
     P->FilterRef->ResetDisabledPairs();
     for (auto entity : r.view<const PhysicsJoint>()) BuildJoint(r, entity);
     P->FilterRef->FinalizeDisabledPairs();
-    P->SimDirty = true;
 }
 
 namespace {
@@ -996,7 +995,6 @@ void PhysicsWorld::AddBody(entt::registry &r, entt::entity entity) {
     }
 
     P->JointsDirty = true;
-    P->SimDirty = true;
 }
 
 void PhysicsWorld::RemoveBody(entt::registry &r, entt::entity entity) {
@@ -1010,7 +1008,6 @@ void PhysicsWorld::RemoveBody(entt::registry &r, entt::entity entity) {
     r.remove<BodyPoseCache>(entity);
     P->BodySubGroups.erase(entity);
     P->JointsDirty = true;
-    P->SimDirty = true;
 }
 
 void PhysicsWorld::ApplyShape(const entt::registry &r, entt::entity entity) {
@@ -1027,7 +1024,6 @@ void PhysicsWorld::ApplyShape(const entt::registry &r, entt::entity entity) {
     // ApplyMassPropertiesFromShape re-derives mass props with the right guards.
     P->System.GetBodyInterface().SetShape(BodyID{handle->BodyId}, shape, /*updateMassProperties=*/false, EActivation::Activate);
     ApplyMassPropertiesFromShape(r, entity);
-    P->SimDirty = true;
 }
 
 void PhysicsWorld::ApplyMassPropertiesFromShape(const entt::registry &r, entt::entity entity) {
@@ -1081,7 +1077,6 @@ void PhysicsWorld::ApplyMotion(const entt::registry &r, entt::entity entity) {
     // CenterOfMass (set or cleared) requires SetShape with a refreshed OffsetCenterOfMassShape wrapper.
     // ApplyShape also re-derives mass props from the new shape for the no-override case.
     ApplyShape(r, entity);
-    P->SimDirty = true;
 }
 
 void PhysicsWorld::ApplyMaterial(const entt::registry &r, entt::entity entity) {
@@ -1124,7 +1119,6 @@ void PhysicsWorld::ApplyMaterial(const entt::registry &r, entt::entity entity) {
         // Body UserData stores the material entity value for contact-listener lookup.
         body.SetUserData(mat ? uint32_t(mat_entity) : NoMaterialSentinel);
     }
-    P->SimDirty = true;
 }
 
 void PhysicsWorld::OnShapeChange(entt::registry &r, entt::entity e) {
@@ -1277,15 +1271,16 @@ void PhysicsWorld::EnsureCacheRange(uint32_t start_frame, uint32_t end_frame) {
     }
 }
 
-void PhysicsWorld::BakeFrame(entt::registry &r, uint32_t frame, float dt) {
-    P->System.SetGravity(ToJolt(Gravity));
-    {
-        auto settings = P->System.GetPhysicsSettings();
-        settings.mNumVelocitySteps = SolverIterations;
-        P->System.SetPhysicsSettings(settings);
-    }
+void PhysicsWorld::ApplySimulationSettings(const PhysicsSimulationSettings &settings) {
+    P->System.SetGravity(ToJolt(settings.Gravity));
+    auto system_settings = P->System.GetPhysicsSettings();
+    system_settings.mNumVelocitySteps = settings.SolverIterations;
+    P->System.SetPhysicsSettings(system_settings);
+}
+
+void PhysicsWorld::BakeFrame(entt::registry &r, const PhysicsSimulationSettings &settings, uint32_t frame, float dt) {
     // Each collision step integrates (dt * TimeScale) / SubstepsPerFrame seconds of sim time.
-    P->System.Update(dt * TimeScale, SubstepsPerFrame, &P->TempAllocator, &P->JobSystem);
+    P->System.Update(dt * settings.TimeScale, settings.SubstepsPerFrame, &P->TempAllocator, &P->JobSystem);
 
     // Sync Jolt -> ECS WorldTransform only.
     // PhysicsVelocity is authored-only, live velocity stays in Jolt.
@@ -1339,6 +1334,3 @@ void PhysicsWorld::ClearCache() { P->Baked = {}; }
 void PhysicsWorld::InvalidateFromFrame(uint32_t frame) {
     P->Baked = (frame == 0 || !P->Baked) ? std::nullopt : std::optional{std::min(*P->Baked, frame - 1)};
 }
-
-bool PhysicsWorld::TakeCacheDirty() { return std::exchange(P->SimDirty, false); }
-void PhysicsWorld::MarkSimulationDirty() { P->SimDirty = true; }

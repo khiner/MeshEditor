@@ -17,12 +17,6 @@ struct PhysicsWorld {
     // components by entity value from Body UserData. Call once after construction.
     void BindRegistry(const entt::registry &);
 
-    // Simulation state
-    vec3 Gravity{0.0f, -9.81f, 0.0f};
-    int SubstepsPerFrame{10}; // Collision steps subdividing each frame's dt.
-    int SolverIterations{10}; // Velocity-solver iterations per sub-step.
-    float TimeScale{1.0f}; // Multiplier on simulated dt; 1.0 = real-time.
-
     // Build all physics bodies and constraints from ECS state from scratch.
     void Rebuild(entt::registry &);
 
@@ -52,16 +46,13 @@ struct PhysicsWorld {
 
     // Per-frame pose cache. Bake steps and records; Restore replays without re-simulating.
     void EnsureCacheRange(uint32_t start_frame, uint32_t end_frame);
-    void BakeFrame(entt::registry &, uint32_t, float dt);
+    void ApplySimulationSettings(const PhysicsSimulationSettings &);
+    void BakeFrame(entt::registry &, const PhysicsSimulationSettings &, uint32_t, float dt);
     void RestoreFrame(entt::registry &, uint32_t);
     bool HasCachedFrame(uint32_t) const;
     std::optional<uint32_t> BakedThrough() const; // nullopt if nothing baked since last clear
     void InvalidateFromFrame(uint32_t);
     void ClearCache();
-
-    // Set when a sim input changes (shape, mass, gravity, ...) so the cache can be invalidated.
-    bool TakeCacheDirty();
-    void MarkSimulationDirty();
 
     // Query effective collision between two filter entities (for UI visualization).
     // null filter = permissive (collides with all).
