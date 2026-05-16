@@ -1410,6 +1410,29 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
             PlaybackFrame = float(tl.CurrentFrame);
         }
         anim_advanced = tl.CurrentFrame != LastEvaluatedFrame;
+
+        // The cache is the timeline: bake past the frontier, restore within it.
+        if (Physics->HasBodies()) {
+            Physics->EnsureCacheRange(tl.StartFrame, tl.EndFrame);
+            if (Physics->TakeCacheDirty()) Physics->InvalidateFromFrame(tl.CurrentFrame);
+            if (anim_advanced) {
+                const int from = LastEvaluatedFrame, to = tl.CurrentFrame;
+                const float dt = tl.Fps > 0 ? 1.f / tl.Fps : 1.f / 60.f;
+                const auto baked = Physics->BakedThrough();
+                if (to == from + 1 && (!baked || uint32_t(to) > *baked)) {
+                    Physics->BakeFrame(R, to, dt);
+                    request(RenderRequest::Submit);
+                } else if (Physics->HasCachedFrame(to)) {
+                    Physics->RestoreFrame(R, to);
+                    request(RenderRequest::Submit);
+                } else if (to == tl.StartFrame && baked && *baked >= uint32_t(tl.StartFrame)) {
+                    Physics->Rebuild(R); // Wrap back to start after a play-loop.
+                    request(RenderRequest::Submit);
+                }
+                // Else: scrub past the bake frontier — hold current pose until play resumes baking.
+            }
+        }
+
         if (anim_advanced) LastEvaluatedFrame = tl.CurrentFrame;
         // Timeline frames are displayed 1-based, but animation time starts at t=0 on frame 1.
         const float eval_seconds = float(std::max(0, tl.CurrentFrame - 1)) / tl.Fps;
@@ -1515,14 +1538,6 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
             }
         }
         R.clear<BoneInstanceStateDirty>();
-
-        // Physics step: advance simulation and sync Jolt body transforms back to ECS.
-        // Runs before bone/WorldTransform sync so that physics Transform patches are included.
-        // Steps every frame with real delta time, independent of animation frame rate.
-        if (Physics->HasBodies() && R.get<const AnimationTimeline>(SceneEntity).Playing) {
-            Physics->Step(R, ImGui::GetIO().DeltaTime);
-            request(RenderRequest::Submit);
-        }
 
         // Bone pose sync: classify bone changes, update pose deltas, compute deform matrices.
         // Runs before the reactive WorldTransform pass so bone sync's Transform patches are included.
@@ -3178,18 +3193,29 @@ void Scene::Apply(const action::Action &action) {
                 R.patch<SceneSettings>(SceneEntity, [&](auto &s) { s.ViewportShading = a.Mode; if (a.Mode != ViewportShadingMode::Wireframe) s.FillMode = a.Mode; });
             },
             [&](action::timeline::TogglePlay) {
-                const bool was_playing = R.get<const AnimationTimeline>(SceneEntity).Playing;
-                if (!was_playing && Physics->HasBodies()) Physics->SaveSnapshot(R);
                 R.patch<AnimationTimeline>(SceneEntity, [](auto &tl) { tl.Playing = !tl.Playing; });
             },
             [&](const action::timeline::SetFrame &a) {
                 R.patch<AnimationTimeline>(SceneEntity, [&](auto &tl) { tl.CurrentFrame = a.Frame; });
                 PlaybackFrame = a.Frame;
+                if (Physics->HasBodies()) {
+                    if (Physics->HasCachedFrame(a.Frame)) Physics->RestoreFrame(R, a.Frame);
+                    else if (a.Frame == R.get<const AnimationTimeline>(SceneEntity).StartFrame) Physics->Rebuild(R);
+                }
             },
-            [&](const action::timeline::SetStartFrame &a) { R.patch<AnimationTimeline>(SceneEntity, [&](auto &tl) { tl.StartFrame = a.Frame; }); },
-            [&](const action::timeline::SetEndFrame &a) { R.patch<AnimationTimeline>(SceneEntity, [&](auto &tl) { tl.EndFrame = a.Frame; }); },
+            [&](const action::timeline::SetStartFrame &a) {
+                R.patch<AnimationTimeline>(SceneEntity, [&](auto &tl) { tl.StartFrame = a.Frame; });
+                if (Physics->HasBodies()) Physics->ClearCache(); // Frame index base shifts.
+            },
+            [&](const action::timeline::SetEndFrame &a) {
+                R.patch<AnimationTimeline>(SceneEntity, [&](auto &tl) { tl.EndFrame = a.Frame; });
+                if (Physics->HasBodies()) Physics->ClearCache();
+            },
             [&](action::timeline::JumpToStart) {
-                if (Physics->HasBodies()) Physics->RestoreSnapshot(R);
+                if (Physics->HasBodies()) {
+                    Physics->ClearCache();
+                    Physics->Rebuild(R);
+                }
                 const auto frame = R.get<AnimationTimeline>(SceneEntity).StartFrame;
                 R.patch<AnimationTimeline>(SceneEntity, [&](auto &tl) { tl.CurrentFrame = frame; });
                 PlaybackFrame = frame;

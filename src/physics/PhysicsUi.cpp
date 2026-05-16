@@ -244,22 +244,19 @@ std::optional<PhysicsShape> RenderShapeEditor(const PhysicsShape &in, bool auto_
 void physics_ui::RenderTab(entt::registry &r, PhysicsWorld &physics, const ApplyAction &apply) {
     SeparatorText("Simulation");
     Text("Bodies: %u", physics.BodyCount());
-    SliderInt("Substeps", &physics.SubSteps, 1, 8);
-    DragFloat3("Gravity", &physics.Gravity.x, 0.1f);
-    {
-        float timestep_ms = physics.TimeStep * 1000.f;
-        if (DragFloat("Time step (ms)", &timestep_ms, 0.1f, 0.1f, 100.f, "%.1f")) {
-            physics.TimeStep = std::max(timestep_ms * 0.001f, 1e-4f);
-        }
-    }
+    if (SliderInt("Substeps per frame", &physics.SubstepsPerFrame, 1, 100)) physics.MarkSimulationDirty();
+    if (SliderInt("Solver iterations", &physics.SolverIterations, 2, 50)) physics.MarkSimulationDirty();
+    if (SliderFloat("Time scale", &physics.TimeScale, 0.f, 10.f, "%.2fx")) physics.MarkSimulationDirty();
+    if (DragFloat3("Gravity", &physics.Gravity.x, 0.1f)) physics.MarkSimulationDirty();
 
     if (CollapsingHeader("Physics Materials")) {
         DrawNamedEntityList<PhysicsMaterial>(
             r, "PhysMaterials", "Add material", "Material",
             [&](entt::entity mat_entity) {
                 size_t n = 0;
-                for (auto [e, m] : r.view<const ColliderMaterial>().each())
+                for (auto [e, m] : r.view<const ColliderMaterial>().each()) {
                     if (m.PhysicsMaterialEntity == mat_entity) ++n;
+                }
                 return n;
             },
             [&](entt::entity mat_entity, const PhysicsMaterial &mat) {
@@ -359,8 +356,9 @@ void physics_ui::RenderTab(entt::registry &r, PhysicsWorld &physics, const Apply
             r, "JointDefs", "Add joint definition", "Joint",
             [&](entt::entity jd_entity) {
                 size_t n = 0;
-                for (auto [e, j] : r.view<const PhysicsJoint>().each())
+                for (auto [e, j] : r.view<const PhysicsJoint>().each()) {
                     if (j.JointDefEntity == jd_entity) ++n;
+                }
                 return n;
             },
             [&](entt::entity jd_entity, const PhysicsJointDef &jd) {
@@ -465,7 +463,7 @@ void physics_ui::RenderTab(entt::registry &r, PhysicsWorld &physics, const Apply
     }
 }
 
-void physics_ui::RenderEntityProperties(entt::registry &r, entt::entity entity, entt::entity scene_entity, const ApplyAction &apply) {
+void physics_ui::RenderEntityProperties(entt::registry &r, entt::entity entity, entt::entity scene_entity, const PhysicsWorld &physics, const ApplyAction &apply) {
     if (!CollapsingHeader("Physics")) return;
 
     PushID("PhysicsEntity");
@@ -476,7 +474,7 @@ void physics_ui::RenderEntityProperties(entt::registry &r, entt::entity entity, 
     // 4-way motion type matching Jolt's EMotionType + a "none" state.
     // Projects losslessly to/from {ColliderShape?, PhysicsMotion?, PhysicsMotion::IsKinematic}.
     using MType = action::physics::SetMotionType::Type;
-    int motion_type = int(MType::None);
+    auto motion_type = int(MType::None);
     if (collider && !motion) motion_type = int(MType::Static);
     else if (motion && motion->IsKinematic) motion_type = int(MType::Kinematic);
     else if (motion) motion_type = int(MType::Dynamic);
@@ -505,7 +503,6 @@ void physics_ui::RenderEntityProperties(entt::registry &r, entt::entity entity, 
 
         if (bool auto_fit = r.get<const ColliderPolicy>(entity).AutoFitDims; Checkbox("Auto-fit", &auto_fit))
             apply(action::UpdateOf(entity, &ColliderPolicy::AutoFitDims, auto_fit));
-
         if (auto s = RenderShapeEditor(collider->Shape, r.get<const ColliderPolicy>(entity).AutoFitDims))
             apply(action::physics::SetColliderShape{entity, *s, s->index() != collider->Shape.index()});
 
@@ -518,15 +515,18 @@ void physics_ui::RenderEntityProperties(entt::registry &r, entt::entity entity, 
         Spacing();
         SeparatorText("Motion");
 
-        const bool is_simulating = r.get<const AnimationTimeline>(scene_entity).Playing;
-        if (is_simulating) BeginDisabled();
+        // Velocity is an authored initial condition (KHR_physics_rigid_bodies). Locked once
+        // sim has produced any baked frames; JumpToStart unlocks it.
+        const auto &tl = r.get<const AnimationTimeline>(scene_entity);
+        const bool velocity_locked = tl.Playing || physics.BakedThrough() >= tl.StartFrame;
+        if (velocity_locked) BeginDisabled();
         if (const auto *velocity = r.try_get<const PhysicsVelocity>(entity)) {
             if (vec3 linear = velocity->Linear; DragFloat3("Linear velocity", &linear.x, 0.1f))
                 apply(action::UpdateOf(entity, &PhysicsVelocity::Linear, linear));
             if (vec3 angular = velocity->Angular; DragFloat3("Angular velocity", &angular.x, 0.1f))
                 apply(action::UpdateOf(entity, &PhysicsVelocity::Angular, angular));
         }
-        if (is_simulating) EndDisabled();
+        if (velocity_locked) EndDisabled();
 
         // Mass/inertia/damping/gravity are only meaningful for Dynamic bodies.
         // Kinematic bodies move purely by velocity assignment; these fields are hidden to avoid noise.
@@ -563,8 +563,7 @@ void physics_ui::RenderEntityProperties(entt::registry &r, entt::entity entity, 
                 }
             }
 
-            bool has_com = edit.CenterOfMass.has_value();
-            if (Checkbox("Override center of mass", &has_com)) {
+            if (bool has_com = edit.CenterOfMass.has_value(); Checkbox("Override center of mass", &has_com)) {
                 edit.CenterOfMass = has_com ? std::optional{vec3{0.0f}} : std::nullopt;
                 motion_changed = true;
             }
@@ -575,7 +574,6 @@ void physics_ui::RenderEntityProperties(entt::registry &r, entt::entity entity, 
 
             motion_changed |= DragFloat("Damping translation", &edit.LinearDamping, 0.01f, 0.f, 1.f);
             motion_changed |= DragFloat("Damping rotation", &edit.AngularDamping, 0.01f, 0.f, 1.f);
-
             if (motion_changed) apply(action::Replace<PhysicsMotion>{entity, std::make_unique<PhysicsMotion>(edit)});
         }
     }
@@ -596,12 +594,10 @@ void physics_ui::RenderEntityProperties(entt::registry &r, entt::entity entity, 
         const auto cn = joint->ConnectedNode;
         if (const auto cn_label = cn != null_entity && r.valid(cn) ? GetName(r, cn) : std::string{"None"};
             BeginCombo("Connected node", cn_label.c_str())) {
-            if (Selectable("None", cn == null_entity))
-                apply(action::UpdateOf(entity, &PhysicsJoint::ConnectedNode, entt::entity{null_entity}));
+            if (Selectable("None", cn == null_entity)) apply(action::UpdateOf(entity, &PhysicsJoint::ConnectedNode, entt::entity{null_entity}));
             for (auto ne : r.view<const SceneNode>()) {
                 if (ne == entity) continue; // self-connection is meaningless
-                if (Selectable(GetName(r, ne).c_str(), cn == ne))
-                    apply(action::UpdateOf(entity, &PhysicsJoint::ConnectedNode, ne));
+                if (Selectable(GetName(r, ne).c_str(), cn == ne)) apply(action::UpdateOf(entity, &PhysicsJoint::ConnectedNode, ne));
             }
             EndCombo();
         }

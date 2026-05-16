@@ -92,14 +92,10 @@ struct Sphere {
     float Radius{0.5f};
 };
 struct Capsule {
-    float Height{0.5f};
-    float RadiusTop{0.25f};
-    float RadiusBottom{0.25f};
+    float Height{0.5f}, RadiusTop{0.25f}, RadiusBottom{0.25f};
 };
 struct Cylinder {
-    float Height{0.5f};
-    float RadiusTop{0.25f};
-    float RadiusBottom{0.25f};
+    float Height{0.5f}, RadiusTop{0.25f}, RadiusBottom{0.25f};
 };
 // Plane lies in the XZ plane with +Y normal. Size{X,Z} == 0 means infinite along that axis.
 struct Plane {
@@ -126,8 +122,8 @@ inline bool IsMeshBackedShape(const PhysicsShape &shape) {
 
 // --- Per-node ---
 
-// Engine default mass (kg) when PhysicsMotion::Mass is unset. Matches Blender.
-inline constexpr float DefaultMass = 1.0f;
+// Engine default mass (kg) when PhysicsMotion::Mass is unset.
+inline constexpr float DefaultMass{1};
 
 // Motion states (KHR_physics_rigid_bodies terms):
 // Static: Only ColliderShape (~Blender Passive, unanimated).
@@ -141,24 +137,21 @@ struct PhysicsMotion {
     std::optional<vec3> InertiaDiagonal{};
     std::optional<quat> InertiaOrientation{};
     float GravityFactor{1.};
-
     // Engine-specific (not in KHR_physics_rigid_bodies). Defaults match Blender.
     float LinearDamping{0.04f}, AngularDamping{0.1f};
 };
 
-// Linear and angular velocity of a dynamic body. Present iff PhysicsMotion is present.
+// Present iff PhysicsMotion is present.
 struct PhysicsVelocity {
     vec3 Linear{0}, Angular{0};
 };
 
-// Geometry of the collision volume.
-// MeshEntity references the mesh supplying geometry for ConvexHull / TriangleMesh shapes, or null_entity for primitives.
+// MeshEntity present for ConvexHull/TriangleMesh, null for primitives.
 struct ColliderShape {
     PhysicsShape Shape{};
     entt::entity MeshEntity{null_entity};
 };
 
-// Material and collision filter assignment for a collider.
 struct ColliderMaterial {
     entt::entity PhysicsMaterialEntity{null_entity};
     entt::entity CollisionFilterEntity{null_entity};
@@ -172,8 +165,7 @@ struct TriggerTag {};
 // AutoFitDims: refit ColliderShape dimensions to the mesh BBox on mesh changes.
 // LockedKind: user picked the variant from the dropdown — engine never auto-changes the kind.
 struct ColliderPolicy {
-    bool AutoFitDims{true};
-    bool LockedKind{false};
+    bool AutoFitDims{true}, LockedKind{false};
 };
 
 // Compound trigger (KHR NodesTrigger): zone defined by child nodes — no own shape.
@@ -195,7 +187,6 @@ struct PhysicsJoint {
 struct PhysicsBodyHandle {
     uint32_t BodyId{UINT32_MAX};
 };
-
 struct PhysicsConstraintHandle {
     uint32_t ConstraintIndex{UINT32_MAX};
 };

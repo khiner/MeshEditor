@@ -1890,7 +1890,7 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
             }
         }
     }
-    physics_ui::RenderEntityProperties(R, active_entity, SceneEntity, [this](const action::Action &a) { Apply(a); });
+    physics_ui::RenderEntityProperties(R, active_entity, SceneEntity, *Physics, [this](const action::Action &a) { Apply(a); });
 
     // glTF metadata: round-trip-only source state on the active entity.
     // TODO: surface per-material source metadata here once material editing UI exists:

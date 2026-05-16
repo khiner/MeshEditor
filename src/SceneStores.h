@@ -24,9 +24,5 @@ struct SceneStores {
     std::unique_ptr<EnvironmentStore> Environments;
 };
 
-// Wires `registry` to `stores`: creates the scene singleton entity, emplaces required
-// components (NameRegistry, ObjectIdCounter, MaterialStore, AnimationTimeline), registers
-// the registry-only physics companion-component handlers (PhysicsMotion → PhysicsVelocity,
-// ColliderShape → ColliderMaterial), and appends the default fallback material. Returns
-// the scene singleton entity.
+// Initializes the registry with scene-singleton state and returns its entity.
 entt::entity WireSceneRegistry(entt::registry &, SceneStores &);

@@ -4,6 +4,7 @@
 
 #include <entt/entity/fwd.hpp>
 #include <memory>
+#include <optional>
 
 // Goal: Every user edit of a physics parameter updates Jolt reactively per frame,
 // via a handler doing the minimum Jolt work the API allows.
@@ -17,9 +18,10 @@ struct PhysicsWorld {
     void BindRegistry(const entt::registry &);
 
     // Simulation state
-    float TimeStep{1.0f / 60.0f};
     vec3 Gravity{0.0f, -9.81f, 0.0f};
-    int SubSteps{1};
+    int SubstepsPerFrame{10}; // Collision steps subdividing each frame's dt.
+    int SolverIterations{10}; // Velocity-solver iterations per sub-step.
+    float TimeScale{1.0f}; // Multiplier on simulated dt; 1.0 = real-time.
 
     // Build all physics bodies and constraints from ECS state from scratch.
     void Rebuild(entt::registry &);
@@ -45,19 +47,25 @@ struct PhysicsWorld {
 
     void RecomputeSceneScale(const entt::registry &);
 
-    // Step simulation, write results back to ECS Transform components.
-    void Step(entt::registry &, float dt);
-
     bool HasBodies() const;
     uint32_t BodyCount() const;
 
-    // Snapshot/restore for play/reset.
-    void SaveSnapshot(entt::registry &);
-    void RestoreSnapshot(entt::registry &);
+    // Per-frame pose cache. Bake steps and records; Restore replays without re-simulating.
+    void EnsureCacheRange(uint32_t start_frame, uint32_t end_frame);
+    void BakeFrame(entt::registry &, uint32_t, float dt);
+    void RestoreFrame(entt::registry &, uint32_t);
+    bool HasCachedFrame(uint32_t) const;
+    std::optional<uint32_t> BakedThrough() const; // nullopt if nothing baked since last clear
+    void InvalidateFromFrame(uint32_t);
+    void ClearCache();
+
+    // Set when a sim input changes (shape, mass, gravity, ...) so the cache can be invalidated.
+    bool TakeCacheDirty();
+    void MarkSimulationDirty();
 
     // Query effective collision between two filter entities (for UI visualization).
     // null filter = permissive (collides with all).
-    bool DoFiltersCollide(entt::entity a, entt::entity b) const;
+    bool DoFiltersCollide(entt::entity, entt::entity) const;
 
     // Directional single-side test: does `source`'s membership intersect `target`'s collide-mask?
     // Effective collision requires this in both directions. Use for UI asymmetry visualization.
