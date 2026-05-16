@@ -54,6 +54,11 @@ struct Scene {
 
     void Apply(const action::Action &);
     std::expected<void, std::string> Apply(const action::FallibleAction &);
+    // Dispatch any sub-variant whose alts are convertible to action::Action.
+    template<typename... Ts>
+    void Apply(std::variant<Ts...> v) {
+        std::visit([this](auto &&x) { this->Apply(std::forward<decltype(x)>(x)); }, std::move(v));
+    }
 
     // Actions on selected entities
     bool CanDuplicate() const;

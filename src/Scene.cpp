@@ -2369,7 +2369,7 @@ std::pair<entt::entity, entt::entity> Scene::ImportMesh(const std::filesystem::p
 
 namespace {
 template<typename... Ts, typename Fn>
-bool DispatchByTypeHash(entt::id_type hash, Fn &&fn) {
+bool DispatchByTypeHash(entt::type_list<Ts...>, entt::id_type hash, Fn &&fn) {
     return ([&]<typename T> {
         if (entt::type_hash<T>::value() == hash) {
             fn.template operator()<T>();
@@ -2379,6 +2379,16 @@ bool DispatchByTypeHash(entt::id_type hash, Fn &&fn) {
     }.template operator()<Ts>() ||
             ...);
 }
+
+// Component lists driving action::Update<F>/action::SetTag dispatch. Add new types as new UpdateOf<C>/SetTagOf<T> sites appear.
+using UpdateableComponents = entt::type_list<
+    Transform, SceneSettings, MaterialVariants, ArmatureAnimation, MorphWeightAnimation,
+    NodeTransformAnimation, MaterialPreviewLighting, RenderedLighting, ViewportTheme,
+    ViewCamera, PhysicsMaterial, CollisionFilter, ColliderMaterial, ColliderPolicy,
+    PhysicsMotion, PhysicsVelocity, PhysicsJoint, TriggerNodes, ModalModelCreateInfo,
+    PhysicsSimulationSettings>;
+using TagComponents = entt::type_list<SmoothShading, SubmitDirty, LightWireframeDirty, TriggerTag>;
+using NamedPhysicsComponents = entt::type_list<PhysicsMaterial, CollisionSystem, CollisionFilter, PhysicsJointDef>;
 
 bool IsBoneEditMode(const entt::registry &R, entt::entity scene_entity) {
     if (R.get<const SceneInteraction>(scene_entity).Mode != InteractionMode::Edit) return false;
@@ -3083,14 +3093,14 @@ void Scene::Apply(const action::Action &action) {
             },
             [&]<typename Field>(const action::Update<Field> &a) {
                 const auto e = a.Entity != entt::null ? a.Entity : SceneEntity;
-                DispatchByTypeHash<Transform, SceneSettings, MaterialVariants, ArmatureAnimation, MorphWeightAnimation, NodeTransformAnimation, MaterialPreviewLighting, RenderedLighting, ViewportTheme, ViewCamera, PhysicsMaterial, CollisionFilter, ColliderMaterial, ColliderPolicy, PhysicsMotion, PhysicsVelocity, PhysicsJoint, TriggerNodes, ModalModelCreateInfo, PhysicsSimulationSettings>(a.ComponentType, [&]<typename T> {
+                DispatchByTypeHash(UpdateableComponents{}, a.ComponentType, [&]<typename T> {
                     R.patch<T>(e, [&](T &t) {
                         *reinterpret_cast<Field *>(reinterpret_cast<std::byte *>(&t) + a.Offset) = a.Value;
                     });
                 });
             },
             [&](const action::SetTag &a) {
-                DispatchByTypeHash<SmoothShading, SubmitDirty, LightWireframeDirty, TriggerTag>(a.TagType, [&]<typename T> {
+                DispatchByTypeHash(TagComponents{}, a.TagType, [&]<typename T> {
                     if (a.Present) R.emplace_or_replace<T>(a.Entity);
                     else R.remove<T>(a.Entity);
                 });
@@ -3101,8 +3111,8 @@ void Scene::Apply(const action::Action &action) {
             },
             [&](const action::DestroyEntity &a) { R.destroy(a.Entity); },
             [&](const action::physics::SetName &a) {
-                DispatchByTypeHash<PhysicsMaterial, CollisionSystem, CollisionFilter, PhysicsJointDef>(a.ComponentType, [&]<typename T> {
-                    R.patch<T>(a.Entity, [&](auto &x) { x.Name = a.Name; });
+                DispatchByTypeHash(NamedPhysicsComponents{}, a.ComponentType, [&]<typename T> {
+                    R.patch<T>(a.Entity, [&](T &x) { x.Name = a.Name; });
                 });
             },
             [&](const action::physics::SetMotionType &a) {
@@ -3138,7 +3148,7 @@ void Scene::Apply(const action::Action &action) {
             },
             [&](const action::physics::RemoveTriggerNodes &a) { R.remove<TriggerNodes>(a.Entity); },
             [&](const action::physics::CreateNamed &a) {
-                DispatchByTypeHash<PhysicsMaterial, CollisionSystem, CollisionFilter, PhysicsJointDef>(a.ComponentType, [&]<typename T> {
+                DispatchByTypeHash(NamedPhysicsComponents{}, a.ComponentType, [&]<typename T> {
                     R.emplace<T>(R.create(), T{.Name = std::format("{} {}", a.Prefix, R.view<T>().size())});
                 });
             },

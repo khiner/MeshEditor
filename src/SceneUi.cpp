@@ -1845,7 +1845,7 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
     if (const auto *instance = R.try_get<Instance>(active_entity); instance && R.all_of<Mesh>(instance->Entity)) {
         const bool has_sound = R.all_of<SoundVerticesModel>(active_entity);
         if (CollapsingHeader("Audio", has_sound ? ImGuiTreeNodeFlags_DefaultOpen : 0)) {
-            DrawObjectAudioControls(R, SceneEntity, active_entity, GetMeshEntity(active_entity), Stores.Buffers->SelectionBitset.Data(), [this](const action::Action &a) { Apply(a); });
+            DrawObjectAudioControls(R, SceneEntity, active_entity, GetMeshEntity(active_entity), Stores.Buffers->SelectionBitset.Data(), [this](action::audio::Action a) { Apply(std::move(a)); });
             if (const auto *active_mic = R.try_get<RealImpactActiveMicrophone>(active_entity)) {
                 SeparatorText("Microphone");
                 Text("Active: %s", GetName(R, active_mic->Entity).c_str());
@@ -1889,7 +1889,7 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
             }
         }
     }
-    physics_ui::RenderEntityProperties(R, active_entity, SceneEntity, *Physics, [this](const action::Action &a) { Apply(a); });
+    physics_ui::RenderEntityProperties(R, active_entity, SceneEntity, *Physics, [this](action::physics::Action a) { Apply(std::move(a)); });
 
     // glTF metadata: round-trip-only source state on the active entity.
     // TODO: surface per-material source metadata here once material editing UI exists:
@@ -2190,7 +2190,7 @@ void Scene::RenderControls() {
         }
 
         if (BeginTabItem("Physics")) {
-            physics_ui::RenderTab(R, SceneEntity, *Physics, [this](const action::Action &a) { Apply(a); });
+            physics_ui::RenderTab(R, SceneEntity, *Physics, [this](action::physics::Action a) { Apply(std::move(a)); });
             EndTabItem();
         }
 

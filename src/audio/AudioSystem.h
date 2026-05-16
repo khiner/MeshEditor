@@ -1,8 +1,8 @@
 #pragma once
 
-#include "Action.h"
 #include "AudioBuffer.h"
 #include "AudioTypes.h"
+#include "action/Audio.h"
 
 #include <cstdint>
 #include <filesystem>
@@ -29,7 +29,8 @@ void ProcessAudio(FaustDSP &, entt::registry &, entt::entity scene_entity, Audio
 void RegisterAudioComponentHandlers(entt::registry &, entt::entity scene_entity);
 void RemoveAudioComponents(entt::registry &, entt::entity sound_entity);
 
-using AudioApply = std::function<void(const action::Action &)>;
+// By value (not const&) so move-only alternatives (e.g. AcceptModalGenerationResult) survive the visit-into-Apply hop.
+using AudioApply = std::function<void(action::audio::Action)>;
 
 // Draw the Audio controls for a sound object entity (has SoundVerticesModel).
 // `selection_bits` is the raw SelectionBitset pointer (used in Edit mode for SampleOpVertices); may be null.

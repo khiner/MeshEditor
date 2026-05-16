@@ -1,8 +1,9 @@
 #pragma once
 
+#include "Range.h"
 #include "entt_fwd.h"
-#include "vulkan/Range.h"
-#include "vulkan/Slots.h"
+
+#include <vector>
 
 // Links a renderable instance to the entity holding its shared GPU buffers (MeshBuffers + ModelsBuffer).
 struct RenderInstance {

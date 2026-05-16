@@ -657,7 +657,7 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
                 Unindent(6);
                 PopStyleVar();
                 if (auto action = RenderAnimationTimeline(scene->GetTimeline(), scene->GetTimelineView(), scene->GetAnimationIcons())) {
-                    scene->Apply(*action);
+                    scene->Apply(std::move(*action));
                 }
             }
             End();

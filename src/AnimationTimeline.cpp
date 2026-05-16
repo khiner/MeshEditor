@@ -42,8 +42,8 @@ int ComputeMajorStep(float pixels_per_frame) {
 }
 } // namespace
 
-std::optional<action::Action> RenderAnimationTimeline(const AnimationTimeline &tl, AnimationTimelineView &view, const AnimationIcons &icons) {
-    std::optional<action::Action> action;
+std::optional<action::timeline::Action> RenderAnimationTimeline(const AnimationTimeline &tl, AnimationTimelineView &view, const AnimationIcons &icons) {
+    std::optional<action::timeline::Action> action;
 
     // --- Transport bar ---
     const float w = GetContentRegionAvail().x;

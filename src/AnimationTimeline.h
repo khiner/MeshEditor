@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Action.h"
+#include "action/Timeline.h"
 
 #include <memory>
 #include <optional>
@@ -23,4 +23,4 @@ struct AnimationIcons {
     std::unique_ptr<SvgResource> Play, Pause, JumpStart, JumpEnd;
 };
 
-std::optional<action::Action> RenderAnimationTimeline(const AnimationTimeline &, AnimationTimelineView &, const AnimationIcons &);
+std::optional<action::timeline::Action> RenderAnimationTimeline(const AnimationTimeline &, AnimationTimelineView &, const AnimationIcons &);

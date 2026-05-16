@@ -1,0 +1,101 @@
+#pragma once
+
+#include "Camera.h"
+#include "entt_fwd.h"
+#include "gpu/Element.h"
+#include "gpu/InteractionMode.h"
+#include "numeric/quat.h"
+#include "numeric/vec3.h"
+#include "scene_impl/SceneComponents.h"
+#include "scene_impl/SceneInternalTypes.h"
+#include "scene_impl/SceneTransformUtils.h"
+
+#include <cstdint>
+#include <memory>
+#include <utility>
+#include <vector>
+
+namespace action::scene {
+struct SetInteractionMode {
+    InteractionMode Mode;
+};
+struct CycleInteractionMode {};
+struct SetEditMode {
+    Element Mode;
+};
+struct EnterLookThroughCamera {};
+struct ExitLookThroughCamera {};
+struct AnimateToCamera {};
+struct Play {};
+struct SetViewportShading {
+    ViewportShadingMode Mode;
+};
+struct SelectAll {};
+struct OrbitViewCamera {
+    vec2 DeltaRad;
+};
+struct ZoomViewCamera {
+    float Factor;
+};
+struct ApplyExciteImpact {
+    entt::entity InstanceEntity;
+    uint32_t VertexIndex;
+};
+struct ClearExciteImpacts {};
+struct TickViewCamera {};
+struct SetStudioEnvironment {
+    uint32_t Index;
+};
+struct SetSourceIblIntensity {
+    float Intensity;
+};
+struct ResetViewCamera {};
+struct ResetViewportTheme {};
+struct ResetPbrLighting {
+    bool Rendered;
+};
+struct SetViewCameraTarget {
+    vec3 Target;
+};
+struct SetViewCameraLens {
+    ::Camera Data;
+};
+// `Mask=0` removes the component.
+struct SetPbrMeshFeaturesMask {
+    entt::entity Entity;
+    uint32_t Mask;
+};
+struct SetRotationUiMode {
+    entt::entity Entity;
+    int Index;
+};
+// `R` must already be normalized.
+struct SetTransformRotationFromUi {
+    entt::entity Entity;
+    quat R;
+    RotationUiVariant UiVariant;
+};
+struct BeginGizmoDrag {
+    std::vector<std::pair<entt::entity, StartTransform>> Starts;
+    std::vector<std::pair<entt::entity, float>> StartBoneLengths;
+};
+struct UpdateGizmoDragLocals {
+    std::vector<std::pair<entt::entity, Transform>> Locals;
+    std::vector<std::pair<entt::entity, float>> BoneDisplayScales;
+};
+struct UpdateGizmoMeshEditPending {
+    std::unique_ptr<PendingTransform> Value;
+};
+struct EndGizmoDrag {};
+
+using Actions = entt::type_list<
+    SetInteractionMode, CycleInteractionMode, SetEditMode,
+    EnterLookThroughCamera, ExitLookThroughCamera, AnimateToCamera, Play,
+    SetViewportShading, SelectAll, OrbitViewCamera, ZoomViewCamera,
+    ApplyExciteImpact, ClearExciteImpacts, TickViewCamera,
+    SetStudioEnvironment, SetSourceIblIntensity,
+    ResetViewCamera, ResetViewportTheme, ResetPbrLighting,
+    SetViewCameraTarget, SetViewCameraLens, SetPbrMeshFeaturesMask,
+    SetRotationUiMode, SetTransformRotationFromUi,
+    BeginGizmoDrag, UpdateGizmoDragLocals, UpdateGizmoMeshEditPending, EndGizmoDrag>;
+} // namespace action::scene
