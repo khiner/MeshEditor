@@ -46,9 +46,20 @@ VulkanContext::VulkanContext(std::vector<const char *> enabled_extensions, bool 
     };
     AddExtensionIfAvailable(vk::KHRPortabilityEnumerationExtensionName, vk::InstanceCreateFlagBits::eEnumeratePortabilityKHR);
     AddExtensionIfAvailable(vk::EXTDebugUtilsExtensionName);
+    const bool have_layer_settings = AddExtensionIfAvailable(vk::EXTLayerSettingsExtensionName);
 
     const vk::ApplicationInfo app{"", {}, "", {}, VkApiVersion};
-    Instance = vk::createInstanceUnique({flags, &app, enabled_layers, enabled_extensions});
+    vk::InstanceCreateInfo ici{flags, &app, enabled_layers, enabled_extensions};
+
+    // Silence imgui's UNDEFINED -> PRESENT_SRC_KHR transition on swapchain images in
+    // ImGui_ImplVulkanH_CreateOrResizeWindow, which submits before they're acquired.
+    // TODO try removing this after next ImGui update to see if the validation error is fixed.
+    static constexpr const char *suppressed_ids[]{"UNASSIGNED-non-acquired-swapchain-image-used"};
+    const vk::LayerSettingEXT suppress{"VK_LAYER_KHRONOS_validation", "message_id_filter", vk::LayerSettingTypeEXT::eString, std::size(suppressed_ids), suppressed_ids};
+    const vk::LayerSettingsCreateInfoEXT layer_settings{1, &suppress};
+    if (have_layer_settings) ici.pNext = &layer_settings;
+
+    Instance = vk::createInstanceUnique(ici);
     PhysicalDevice = FindPhysicalDevice(Instance);
 
     const auto device_extensions_props = PhysicalDevice.enumerateDeviceExtensionProperties();
