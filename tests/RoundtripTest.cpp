@@ -7,9 +7,8 @@
 #include "vulkan/VulkanContext.h"
 
 #include <boost/ut.hpp>
-#include <simdjson.h>
-
 #include <entt/entity/registry.hpp>
+#include <simdjson.h>
 
 #include <algorithm>
 #include <cmath>

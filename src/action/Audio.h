@@ -61,6 +61,10 @@ struct SetVertexSamples {
     std::vector<uint32_t> MeshVertices;
     std::vector<std::pair<std::filesystem::path, std::vector<float>>> Samples;
 };
+// Load samples for the target sound entity from `MicrophoneEntity` and mark that mic active.
+struct ActivateRealImpactMicrophone {
+    entt::entity TargetSoundEntity, MicrophoneEntity;
+};
 struct RemoveVertexSamples {
     std::vector<uint32_t> MeshVertices;
 };
@@ -72,7 +76,7 @@ using Actions = std::variant<
     SetModel, SetExciteVertex, SetActiveElementFromDsp,
     StartExcite, StopExcite, DeleteSoundObject, StartRecording,
     OpenModalForm, CancelModalForm, SubmitModalForm, AcceptModalGenerationResult,
-    AssignVertexSamples, SetVertexSamples, RemoveVertexSamples, SetModalFormMaterial>;
+    AssignVertexSamples, SetVertexSamples, RemoveVertexSamples, ActivateRealImpactMicrophone, SetModalFormMaterial>;
 
 using Action = MergedVariantT<
     Actions, std::variant<action::Update<bool>, action::Update<uint32_t>, action::Update<double>, action::UpdateActive<bool>, action::UpdateActive<uint32_t>, action::UpdateActive<float>, action::UpdateActive<double>>>;

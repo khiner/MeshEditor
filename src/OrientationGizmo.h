@@ -10,6 +10,7 @@
 #include <optional>
 #include <ranges>
 #include <string_view>
+#include <variant>
 
 namespace OrientationGizmo {
 // Radii are relative to rect size.
@@ -35,7 +36,16 @@ static Context Ctx;
 bool IsActive() { return Ctx.Hovered || Ctx.MouseDownPos || Ctx.DragEndPos; }
 bool IsUsing() { return Ctx.MouseDownPos.has_value() || Ctx.DragEndPos.has_value(); }
 
-void Interact(vec2 pos, float size, ViewCamera &camera, bool interactive = true) {
+// User-intent emitted by Interact for the caller to dispatch.
+struct RotateBy {
+    vec2 Delta;
+};
+struct AlignTo {
+    vec3 Direction;
+};
+using Interaction = std::variant<RotateBy, AlignTo>;
+
+std::optional<Interaction> Interact(vec2 pos, float size, const ViewCamera &camera, bool interactive = true) {
     const auto mouse_pos = std::bit_cast<vec2>(ImGui::GetMousePos());
     const auto center = pos + vec2{size, size} * 0.5f;
     Ctx.Center = center;
@@ -68,33 +78,36 @@ void Interact(vec2 pos, float size, ViewCamera &camera, bool interactive = true)
         });
     }
 
-    if (interactive) {
-        if (Ctx.Hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
-            Ctx.MouseDownPos = mouse_pos;
-        } else if (ImGui::IsMouseDown(ImGuiMouseButton_Left) && Ctx.MouseDownPos) {
-            if (!Ctx.DragEndPos) {
-                // Click threshold is an arbitrary smaller amount than a hovered circle,
-                // since we don't want to wait for that long of a drag to switch into drag behavior.
-                const auto click_threshold = 0.5f * size * CircleRad;
-                if (const auto mouse_delta = mouse_pos - *Ctx.MouseDownPos;
-                    glm::dot(mouse_delta, mouse_delta) > click_threshold * click_threshold) {
-                    Ctx.DragEndPos = mouse_pos;
-                }
-            } else { // Dragging
-                const auto drag_delta = mouse_pos - *Ctx.DragEndPos;
+    if (!interactive) return std::nullopt;
+
+    if (Ctx.Hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+        Ctx.MouseDownPos = mouse_pos;
+    } else if (ImGui::IsMouseDown(ImGuiMouseButton_Left) && Ctx.MouseDownPos) {
+        if (!Ctx.DragEndPos) {
+            // Click threshold is an arbitrary smaller amount than a hovered circle,
+            // since we don't want to wait for that long of a drag to switch into drag behavior.
+            const auto click_threshold = 0.5f * size * CircleRad;
+            if (const auto mouse_delta = mouse_pos - *Ctx.MouseDownPos;
+                glm::dot(mouse_delta, mouse_delta) > click_threshold * click_threshold) {
                 Ctx.DragEndPos = mouse_pos;
-                camera.RotateBy(drag_delta * 0.02f);
             }
-        } else if (ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
-            if (auto hovered_i = Ctx.HoveredAxis; !Ctx.DragEndPos && hovered_i) {
-                // If selecting the same axis, switch to the opposite axis.
-                if (Ctx.Aligned[*hovered_i]) hovered_i = (*hovered_i + 3) % 6;
-                camera.SetTargetDirection(SignedAxis(I3, *hovered_i));
-            }
-            Ctx.MouseDownPos = std::nullopt;
-            Ctx.DragEndPos = std::nullopt;
+        } else { // Dragging
+            const auto drag_delta = mouse_pos - *Ctx.DragEndPos;
+            Ctx.DragEndPos = mouse_pos;
+            return Interaction{RotateBy{drag_delta * 0.02f}};
         }
+    } else if (ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
+        std::optional<Interaction> out;
+        if (auto hovered_i = Ctx.HoveredAxis; !Ctx.DragEndPos && hovered_i) {
+            // If selecting the same axis, switch to the opposite axis.
+            if (Ctx.Aligned[*hovered_i]) hovered_i = (*hovered_i + 3) % 6;
+            out = Interaction{AlignTo{SignedAxis(I3, *hovered_i)}};
+        }
+        Ctx.MouseDownPos = std::nullopt;
+        Ctx.DragEndPos = std::nullopt;
+        return out;
     }
+    return {};
 }
 
 void Render(const colors::AxesArray &Axes) {

@@ -6,10 +6,11 @@
 #include "numeric/quat.h"
 #include "numeric/vec3.h"
 #include "scene_impl/SceneComponents.h"
-#include "scene_impl/SceneInternalTypes.h"
 #include "scene_impl/SceneTransformUtils.h"
 
 #include <entt/entity/fwd.hpp>
+
+struct PendingTransform;
 
 namespace action::scene {
 struct SetInteractionMode {
@@ -21,7 +22,6 @@ struct SetEditMode {
 };
 struct EnterLookThroughCamera {};
 struct ExitLookThroughCamera {};
-struct AnimateToCamera {};
 struct Play {};
 struct SetViewportShading {
     ViewportShadingMode Mode;
@@ -38,7 +38,6 @@ struct ApplyExciteImpact {
     uint32_t VertexIndex;
 };
 struct ClearExciteImpacts {};
-struct TickViewCamera {};
 struct SetStudioEnvironment {
     uint32_t Index;
 };
@@ -55,6 +54,9 @@ struct SetViewCameraTarget {
 };
 struct SetViewCameraLens {
     ::Camera Data;
+};
+struct SetViewCameraTargetDirection {
+    vec3 Direction;
 };
 // `Mask=0` removes the component. Targets the active mesh entity.
 struct SetPbrMeshFeaturesMask {
@@ -84,12 +86,12 @@ struct EndGizmoDrag {};
 
 using Actions = std::variant<
     SetInteractionMode, CycleInteractionMode, SetEditMode,
-    EnterLookThroughCamera, ExitLookThroughCamera, AnimateToCamera, Play,
+    EnterLookThroughCamera, ExitLookThroughCamera, Play,
     SetViewportShading, SelectAll, OrbitViewCamera, ZoomViewCamera,
-    ApplyExciteImpact, ClearExciteImpacts, TickViewCamera,
+    ApplyExciteImpact, ClearExciteImpacts,
     SetStudioEnvironment, SetSourceIblIntensity,
     ResetViewCamera, ResetViewportTheme, ResetPbrLighting,
-    SetViewCameraTarget, SetViewCameraLens, SetPbrMeshFeaturesMask,
+    SetViewCameraTarget, SetViewCameraLens, SetViewCameraTargetDirection, SetPbrMeshFeaturesMask,
     SetRotationUiMode, SetTransformRotationFromUi,
     BeginGizmoDrag, UpdateGizmoDragLocals, UpdateGizmoMeshEditPending, EndGizmoDrag>;
 } // namespace action::scene

@@ -19,7 +19,7 @@
 #include "numeric/vec4.h"
 
 #include <entt/entity/entity.hpp>
-#include <entt/entity/registry.hpp>
+#include <entt/entity/registry.hpp> // TODO rework to not include registry in the header
 #include <imgui.h>
 
 #include <concepts>

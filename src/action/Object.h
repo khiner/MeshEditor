@@ -16,6 +16,9 @@ struct ToggleHidden {};
 struct SetSelectedVisible {
     bool Visible;
 };
+struct SetSelectedSmoothShading {
+    bool Smooth;
+};
 struct ParentToActive {};
 struct ClearParent {};
 
@@ -45,7 +48,7 @@ struct ReplaceMesh {
 };
 
 using Actions = std::variant<
-    Delete, Duplicate, DuplicateLinked, ToggleHidden, SetSelectedVisible,
+    Delete, Duplicate, DuplicateLinked, ToggleHidden, SetSelectedVisible, SetSelectedSmoothShading,
     ParentToActive, ClearParent,
     AddEmpty, AddArmature, AddCamera, AddLight, AddMeshPrimitive, ImportMesh, ReplaceMesh>;
 } // namespace action::object

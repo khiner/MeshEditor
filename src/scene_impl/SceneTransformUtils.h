@@ -1,5 +1,7 @@
 #pragma once
 
+#include "numeric/vec4.h"
+
 #include <glm/gtx/euler_angles.hpp>
 
 // Mutually exclusive structs to track rotation representation.

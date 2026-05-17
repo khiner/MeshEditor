@@ -1,13 +1,11 @@
 #include "PbrFeature.h"
 #include "Scene.h"
 #include "SceneDefaults.h"
-#include "SceneOps.h"
 #include "SceneTextures.h"
 #include "SceneTree.h"
 #include "TransformMath.h"
 #include "Widgets.h" // imgui
 
-#include "Armature.h"
 #include "Instance.h"
 #include "MeshComponents.h"
 #include "NodeTransformAnimation.h"
@@ -16,32 +14,18 @@
 #include "SceneSelection.h"
 #include "SoundVertices.h"
 #include "SvgResource.h"
-#include "Tets.h"
 #include "Timer.h"
-#include "Variant.h"
 #include "audio/AudioSystem.h"
-#include "audio/RealImpact.h"
-#include "audio/RealImpactComponents.h"
 #include "gltf/GltfScene.h"
-#include "gpu/Transform.h"
-#include "gpu/WorkspaceLights.h"
-#include "mesh/Mesh.h"
 #include "mesh/MeshStore.h"
 #include "mesh/Primitives.h"
-#include "numeric/mat3.h"
-#include "numeric/rect.h"
 #include "physics/PhysicsUi.h"
-#include "physics/PhysicsWorld.h"
 #include "ui/FieldEdit.h"
 
-#include <algorithm>
-#include <cmath>
 #include <entt/entity/registry.hpp>
 #include <imgui_internal.h>
 
 #include "scene_impl/SceneBuffers.h"
-#include "scene_impl/SceneComponents.h"
-#include "scene_impl/SceneInternalTypes.h"
 #include "scene_impl/SceneTransformUtils.h"
 
 using std::ranges::any_of, std::ranges::contains, std::ranges::distance, std::ranges::find, std::ranges::find_if, std::ranges::fold_left, std::ranges::to;
@@ -50,8 +34,7 @@ using namespace ImGui;
 
 namespace {
 constexpr vec2 ToGlm(ImVec2 v) { return std::bit_cast<vec2>(v); }
-constexpr float WheelOrbitRadPerUnit{0.05f};
-constexpr float WheelZoomStep{1.04f};
+constexpr float WheelOrbitRadPerUnit{0.05f}, WheelZoomStep{1.04f};
 
 struct SelectionHit {
     entt::entity Entity;
@@ -386,23 +369,8 @@ void RenderJsonBlock(const char *label, std::string_view json) {
     PopID();
 }
 
-constexpr ImGuiTableFlags MetadataTableFlags = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp;
-
+constexpr auto MetadataTableFlags = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp;
 } // namespace
-
-entt::entity Scene::LookThroughCameraEntity() const {
-    auto view = R.view<LookingThrough>();
-    return view.empty() ? entt::null : *view.begin();
-}
-
-void Scene::SetLookThrough(entt::entity target) {
-    const auto previous = LookThroughCameraEntity();
-    if (previous == target) return;
-    // Preserve the saved view across camera switches; only capture fresh on first entry.
-    auto saved = previous != entt::null ? R.get<LookingThrough>(previous).SavedViewCamera : R.get<ViewCamera>(SceneEntity);
-    if (previous != entt::null) R.remove<LookingThrough>(previous);
-    R.emplace<LookingThrough>(target, std::move(saved));
-}
 
 void Scene::Interact() {
     // Any open popup (e.g. Viewport shading dropdown) blocks viewport mouse/keyboard input.
@@ -541,8 +509,6 @@ void Scene::Interact() {
     // Mouse wheel for camera rotation, Cmd+wheel to zoom.
     const auto &io = GetIO();
     if (const vec2 wheel = std::exchange(PreciseWheelDelta, vec2{0}); wheel != vec2{0, 0}) {
-        // Exit "look through" camera view on any orbit/zoom interaction.
-        Apply(action::scene::ExitLookThroughCamera{});
         if (io.KeyCtrl || io.KeySuper) Apply(action::scene::ZoomViewCamera{.Factor = std::pow(WheelZoomStep, -wheel.y)});
         else Apply(action::scene::OrbitViewCamera{.DeltaRad = wheel * WheelOrbitRadPerUnit});
     }
@@ -1021,15 +987,22 @@ void Scene::InteractOverlay() {
         }
     }
 
-    // Exit "look through" camera view if the user interacts with the orientation gizmo.
-    if (!active_transform && OrientationGizmo::IsUsing()) Apply(action::scene::ExitLookThroughCamera{});
-    auto &camera = R.get<ViewCamera>(SceneEntity);
+    const auto &camera = R.get<const ViewCamera>(SceneEntity);
     { // Orientation gizmo (interacted before tick so camera animations it initiates begin this frame)
         const float shading_group_height = shading_button_style.ButtonSize.y;
         const auto pos = viewport.pos + vec2{GetWindowContentRegionMax().x - OrientationGizmoSize, GetWindowContentRegionMin().y} + vec2{-overlay_corner_gap, overlay_corner_gap * 2 + shading_group_height};
-        OrientationGizmo::Interact(pos, OrientationGizmoSize, camera, !active_transform && !any_popup_open);
+        if (auto interaction = OrientationGizmo::Interact(pos, OrientationGizmoSize, camera, !active_transform && !any_popup_open)) {
+            std::visit(
+                overloaded{
+                    [&](OrientationGizmo::RotateBy r) { Apply(action::scene::OrbitViewCamera{r.Delta}); },
+                    [&](OrientationGizmo::AlignTo a) { Apply(action::scene::SetViewCameraTargetDirection{a.Direction}); },
+                },
+                *interaction
+            );
+        }
     }
-    Apply(action::scene::TickViewCamera{});
+    // Intentionally mutating registry outside of Apply. TODO should all non-saved state be outside the registry?
+    if (R.get<ViewCamera>(SceneEntity).Tick()) R.patch<ViewCamera>(SceneEntity, [](auto &) {});
 
     const auto selected_view = R.view<const Selected>();
     const auto bone_selected_view = R.view<const BoneSelection>();
@@ -1780,17 +1753,14 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
             if (LookThroughCameraEntity() == active_entity) {
                 if (Button("Exit camera view")) Apply(action::scene::ExitLookThroughCamera{});
             } else {
-                if (Button("Look through")) {
-                    Apply(action::scene::EnterLookThroughCamera{});
-                    Apply(action::scene::AnimateToCamera{});
-                }
+                if (Button("Look through")) Apply(action::scene::EnterLookThroughCamera{});
             }
         }
     }
     if (R.all_of<LightIndex>(active_entity) &&
         CollapsingHeader("Light", ImGuiTreeNodeFlags_DefaultOpen)) {
         auto light = Stores.Buffers->Lights.Get(R.get<const LightIndex>(active_entity).Value);
-        bool changed{false}, wireframe_changed{false};
+        bool changed{false};
 
         const char *type_names[]{"Directional", "Point", "Spot"};
         if (int type_i = int(light.Type); Combo("Type", &type_i, type_names, IM_ARRAYSIZE(type_names))) {
@@ -1799,7 +1769,7 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
             next.Color = light.Color;
             next.Intensity = light.Intensity;
             light = next;
-            changed = wireframe_changed = true;
+            changed = true;
         }
         changed |= ColorEdit3("Color", &light.Color.x);
         changed |= SliderFloat("Intensity", &light.Intensity, 0.f, 1000.f, "%.2f");
@@ -1807,11 +1777,9 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
             bool infinite_range = light.Range <= 0.f;
             if (Checkbox("Infinite range", &infinite_range)) {
                 light.Range = infinite_range ? 0.f : 100.f;
-                changed = wireframe_changed = true;
+                changed = true;
             }
-            if (!infinite_range && SliderFloat("Range", &light.Range, 0.01f, 1000.f, "%.2f")) {
-                changed = wireframe_changed = true;
-            }
+            changed |= !infinite_range && SliderFloat("Range", &light.Range, 0.01f, 1000.f, "%.2f");
         }
         if (light.Type == PunctualLightType::Spot) {
             float outer_deg = std::clamp(glm::degrees(AngleFromCos(light.OuterConeCos)), 0.f, 90.f);
@@ -1823,14 +1791,10 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
                 const float outer_rad = glm::radians(std::clamp(outer_deg, 0.f, 90.f));
                 light.OuterConeCos = std::cos(outer_rad);
                 light.InnerConeCos = std::cos(outer_rad * (1.f - std::clamp(blend, 0.f, 1.f)));
-                changed = wireframe_changed = true;
+                changed = true;
             }
         }
-        if (changed) {
-            Apply(action::ReplaceActive<PunctualLight>{light});
-            Apply(action::SetTagOf<SubmitDirty>(true));
-        }
-        if (wireframe_changed) Apply(action::SetTagOf<LightWireframeDirty>(true));
+        if (changed) Apply(action::ReplaceActive<PunctualLight>{light});
     }
     // Audio controls (mesh instance = sound object or eligible to become one; microphone)
     if (const auto *instance = R.try_get<Instance>(active_entity); instance && R.all_of<Mesh>(instance->Entity)) {
@@ -1871,10 +1835,7 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
                 if (is_active) {
                     Text("Active for: %s", target_name.c_str());
                 } else if (Button(std::format("Set as active for {}", target_name).c_str())) {
-                    const auto dir = R.get<const Path>(R.get<const Instance>(target).Entity).Value.parent_path();
-                    const auto &vertex_indices = R.get<const RealImpactVertices>(target).Vertices;
-                    Apply(action::audio::SetVertexSamples{target, vertex_indices, RealImpact::LoadSamples(dir, mic->Index) | to<std::vector>()});
-                    Apply(action::Replace<RealImpactActiveMicrophone>{target, {active_entity}});
+                    Apply(action::audio::ActivateRealImpactMicrophone{target, active_entity});
                 }
                 if (Button("Select sound object")) Select(target);
             }
@@ -2046,9 +2007,7 @@ void Scene::RenderControls() {
                     const bool any_hidden = any_of(selected_mesh_instances, [&](entt::entity e) { return !R.all_of<RenderInstance>(e); });
                     const bool mixed_visible = any_visible && any_hidden;
                     if (mixed_visible) PushItemFlag(ImGuiItemFlags_MixedValue, true);
-                    if (bool set_visible = any_visible && !any_hidden; Checkbox("Visible", &set_visible)) {
-                        Apply(action::object::SetSelectedVisible{set_visible});
-                    }
+                    if (bool set_visible = any_visible && !any_hidden; Checkbox("Visible", &set_visible)) Apply(action::object::SetSelectedVisible{set_visible});
                     if (mixed_visible) PopItemFlag();
 
                     const auto face_mesh_entities = scene_selection::GetSelectedMeshEntities(R) |
@@ -2060,9 +2019,7 @@ void Scene::RenderControls() {
                         const bool mixed_smooth = any_smooth && any_flat;
                         SameLine();
                         if (mixed_smooth) PushItemFlag(ImGuiItemFlags_MixedValue, true);
-                        if (bool set_smooth = any_smooth && !any_flat; Checkbox("Smooth shading", &set_smooth)) {
-                            for (const auto me : face_mesh_entities) Apply(action::SetTagOf<SmoothShading>(me, set_smooth));
-                        }
+                        if (bool set_smooth = any_smooth && !any_flat; Checkbox("Smooth shading", &set_smooth)) Apply(action::object::SetSelectedSmoothShading{set_smooth});
                         if (mixed_smooth) PopItemFlag();
                     }
                 }

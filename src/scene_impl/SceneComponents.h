@@ -7,6 +7,26 @@
 #include <entt/entity/fwd.hpp>
 #include <vulkan/vulkan.hpp>
 
+struct SubmitDirty {}; // Generic tag for events that only require command buffer submission (not re-record)
+struct MeshGeometryDirty {}; // Request overlay + element-state buffer refresh after mesh geometry changes
+struct LightWireframeDirty {};
+struct MaterialDirty {
+    uint32_t Index{0};
+};
+struct MeshMaterialAssignment {
+    uint32_t PrimitiveIndex, MaterialIndex;
+};
+struct MeshMaterialSlotSelection {
+    uint32_t PrimitiveIndex{0};
+};
+
+// Presence indicates active transform
+struct PendingTransform {
+    vec3 Pivot{};
+    quat PivotR{1, 0, 0, 0};
+    Transform Delta{};
+};
+
 enum class ViewportShadingMode : uint8_t {
     Wireframe,
     Solid,

@@ -1,6 +1,5 @@
 #pragma once
 
-#include "imgui.h"
 #include "imspinner.h"
 
 #include <chrono>

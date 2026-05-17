@@ -39,9 +39,9 @@
 #include "mesh/Primitives.h"
 #include "physics/PhysicsDebugDraw.h"
 #include "physics/PhysicsWorld.h"
-#include "scene_impl/SceneInternalTypes.h"
 
 #include "audio/AudioSystem.h"
+#include "audio/RealImpact.h"
 
 #include "imgui.h"
 
@@ -1033,6 +1033,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
                 synced_lights.push_back(entity);
             }
         }
+        if (!synced_lights.empty()) request(RenderRequest::Submit);
         for (auto e : synced_lights) R.remove<PunctualLight>(e);
     }
 
@@ -1064,12 +1065,12 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
     { // Note: Can mutate InteractionMode, so do this first before `changes::InteractionMode` handling below.
         const auto interaction_mode = R.get<const SceneInteraction>(SceneEntity).Mode;
         if (R.storage<SoundVertices>().empty()) {
-            if (interaction_mode == InteractionMode::Excite) Apply(action::scene::SetInteractionMode{.Mode = *InteractionModes.begin()});
+            if (interaction_mode == InteractionMode::Excite) SetInteractionMode(*InteractionModes.begin());
             InteractionModes.erase(InteractionMode::Excite);
         } else if (!reactive<changes::SoundVertices>(R).empty()) {
             InteractionModes.insert(InteractionMode::Excite);
             if (interaction_mode == InteractionMode::Excite) request(RenderRequest::ReRecord);
-            else Apply(action::scene::SetInteractionMode{.Mode = InteractionMode::Excite});
+            else SetInteractionMode(InteractionMode::Excite);
         }
     }
     std::unordered_set<entt::entity> dirty_overlay_meshes, dirty_element_state_meshes;
@@ -1125,12 +1126,6 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         for (auto instance_entity : active_tracker) {
             collect_instance_state(instance_entity);
             if (const auto arm = FindArmatureObject(R, instance_entity); arm != entt::null) R.emplace_or_replace<BoneInstanceStateDirty>(arm);
-            // If looking through a camera and a different camera becomes active, snap to it.
-            if (LookThroughCameraEntity() != entt::null && R.all_of<Camera>(instance_entity) && R.all_of<Active>(instance_entity)) {
-                Apply(action::scene::EnterLookThroughCamera{});
-                const auto &wt = R.get<WorldTransform>(instance_entity);
-                R.replace<ViewCamera>(SceneEntity, ViewCamera{wt.P, wt.P + CameraForward(wt), R.get<Camera>(instance_entity)});
-            }
         }
 
         // Batch-write all collected instance state changes.
@@ -2495,8 +2490,14 @@ bool Scene::CanDuplicate() const {
 bool Scene::CanDuplicateLinked() const { return CanDuplicate() && !IsBoneEditMode(R, SceneEntity); }
 bool Scene::CanDelete() const { return CanDuplicate(); }
 
-void Scene::Delete() { Apply(action::object::Delete{}); }
-void Scene::Duplicate() { Apply(action::object::Duplicate{}); }
+void Scene::Delete() {
+    if (IsBoneEditMode(R, SceneEntity)) Apply(action::bone::DeleteSelected{});
+    else Apply(action::object::Delete{});
+}
+void Scene::Duplicate() {
+    if (IsBoneEditMode(R, SceneEntity)) Apply(action::bone::DuplicateSelected{});
+    else Apply(action::object::Duplicate{});
+}
 void Scene::DuplicateLinked() { Apply(action::object::DuplicateLinked{}); }
 
 bool Scene::SetInteractionMode(InteractionMode mode) {
@@ -2538,6 +2539,59 @@ bool Scene::SetInteractionMode(InteractionMode mode) {
     R.patch<SceneInteraction>(SceneEntity, [mode](auto &s) { s.Mode = mode; });
     R.patch<ViewportTheme>(SceneEntity, [](auto &) {});
     return true;
+}
+
+entt::entity Scene::LookThroughCameraEntity() const {
+    auto view = R.view<LookingThrough>();
+    return view.empty() ? entt::null : *view.begin();
+}
+
+void Scene::SetLookThrough(entt::entity target) {
+    const auto previous = LookThroughCameraEntity();
+    if (previous == target) return;
+    // Preserve the saved view across camera switches; only capture fresh on first entry.
+    auto saved = previous != entt::null ? R.get<LookingThrough>(previous).SavedViewCamera : R.get<ViewCamera>(SceneEntity);
+    if (previous != entt::null) R.remove<LookingThrough>(previous);
+    R.emplace<LookingThrough>(target, std::move(saved));
+}
+
+void Scene::ExitLookThrough() {
+    const auto camera = LookThroughCameraEntity();
+    if (camera == entt::null) return;
+    R.replace<ViewCamera>(SceneEntity, R.get<LookingThrough>(camera).SavedViewCamera);
+    R.remove<LookingThrough>(camera);
+}
+
+void Scene::JumpToStartFrame() {
+    if (Physics->HasBodies()) Physics->Rebuild(R);
+    const auto frame = R.get<AnimationTimeline>(SceneEntity).StartFrame;
+    R.patch<AnimationTimeline>(SceneEntity, [&](auto &tl) { tl.CurrentFrame = frame; });
+    PlaybackFrame = frame;
+}
+
+void Scene::ClearMeshes() {
+    for (const auto e : R.view<Instance>(entt::exclude<SubElementOf>) | to<std::vector>()) Destroy(e);
+}
+
+void Scene::NewDefaultScene() {
+    ClearMeshes();
+
+    constexpr PrimitiveShape default_shape{primitive::Cuboid{}};
+    const auto [mesh_entity, _] = ::AddMesh(R, *Stores.Meshes, SceneEntity, Stores.Meshes->CreateMesh(primitive::CreateMesh(default_shape), {}, {}), MeshInstanceCreateInfo{.Name = ToString(default_shape)});
+    R.emplace<PrimitiveShape>(mesh_entity, default_shape);
+
+    // startup.blend data, in Blender's frame (Z-up, -Y forward)
+    constexpr vec3 LightLoc{4.07625, 1.00545, 5.90386}, CameraLoc{7.358891, -6.925791, 4.958309}, CameraEulerXYZ{1.109319, 0, 0.815801};
+    constexpr float Lens{50}, SensorX{36}, RenderW{16}, RenderH{9};
+    // Blender Z-up -> MeshEditor Y-up is a -90° rotation about +X: (x, y, z) -> (x, z, -y)
+    const auto to_y_up_pos = [](vec3 v) { return vec3{v.x, v.z, -v.y}; };
+    const quat to_y_up_rot = glm::angleAxis(-float(M_PI_2), vec3{1, 0, 0});
+    // Matches Blender glTF exporter (cameras.py / yvof_blender_to_gltf): horizontal fit since render aspect > sensor aspect
+    const float hfov = 2 * std::atan(SensorX / (2 * Lens));
+    const float yfov = 2 * std::atan(std::tan(hfov * 0.5) * RenderH / RenderW);
+
+    ::AddLight(R, *Stores.Meshes, *Stores.Buffers, SceneEntity, ObjectCreateInfo{.Name = "Light", .Transform = {.P = to_y_up_pos(LightLoc)}, .Select = MeshInstanceCreateInfo::SelectBehavior::None});
+    ::AddCamera(R, *Stores.Meshes, *Stores.Buffers, SceneEntity, ObjectCreateInfo{.Name = "Camera", .Transform = {.P = to_y_up_pos(CameraLoc), .R = to_y_up_rot * quat{CameraEulerXYZ}}, .Select = MeshInstanceCreateInfo::SelectBehavior::None}, Perspective{.FieldOfViewRad = yfov, .FarClip = 1000, .NearClip = DefaultPerspectiveNearClip});
 }
 
 void Scene::SetEditMode(Element mode) {
@@ -2747,18 +2801,10 @@ void Scene::Apply(const action::Action &action) {
             },
             [&](action::object::Delete) {
                 if (!CanDelete()) return;
-                if (IsBoneEditMode(R, SceneEntity)) {
-                    Apply(action::bone::DeleteSelected{});
-                    return;
-                }
                 for (const auto e : R.view<Selected>(entt::exclude<SubElementOf>) | to<std::vector>()) Destroy(e);
             },
             [&](action::object::Duplicate) {
                 if (!CanDuplicate()) return;
-                if (IsBoneEditMode(R, SceneEntity)) {
-                    Apply(action::bone::DuplicateSelected{});
-                    return;
-                }
                 const Timer timer{"Duplicate"};
                 const auto entities = R.view<Selected>() | to<std::vector>();
 
@@ -2809,6 +2855,13 @@ void Scene::Apply(const action::Action &action) {
                     else Hide(R, e);
                 }
             },
+            [&](const action::object::SetSelectedSmoothShading &a) {
+                for (const auto me : scene_selection::GetSelectedMeshEntities(R)) {
+                    if (R.get<const Mesh>(me).FaceCount() == 0) continue;
+                    if (a.Smooth) R.emplace_or_replace<SmoothShading>(me);
+                    else R.remove<SmoothShading>(me);
+                }
+            },
             [&](action::object::ParentToActive) {
                 const auto active = FindActiveEntity(R);
                 if (active == entt::null) return;
@@ -2841,9 +2894,7 @@ void Scene::Apply(const action::Action &action) {
                 R.emplace<Mesh>(e, std::move(new_mesh));
                 R.emplace_or_replace<MeshGeometryDirty>(e);
             },
-            [&](action::project::ClearMeshes) {
-                for (const auto e : R.view<Instance>(entt::exclude<SubElementOf>) | to<std::vector>()) Destroy(e);
-            },
+            [&](action::project::NewDefaultScene) { NewDefaultScene(); },
             [&](action::bone::Add) {
                 const auto active_entity = FindActiveEntity(R);
                 const auto arm_obj_entity = FindArmatureObject(R, active_entity);
@@ -2992,21 +3043,28 @@ void Scene::Apply(const action::Action &action) {
                     if (last != entt::null) R.emplace<Active>(last);
                 }
             },
-            [&](action::scene::EnterLookThroughCamera) { if (const auto e = FindActiveEntity(R); e != entt::null) SetLookThrough(e); },
-            [&](action::scene::ExitLookThroughCamera) {
-                const auto camera = LookThroughCameraEntity();
-                if (camera == entt::null) return;
-                R.replace<ViewCamera>(SceneEntity, R.get<LookingThrough>(camera).SavedViewCamera);
-                R.remove<LookingThrough>(camera);
+            [&](action::scene::EnterLookThroughCamera) {
+                const auto e = FindActiveEntity(R);
+                if (e == entt::null) return;
+                SetLookThrough(e);
+                const auto &wt = R.get<WorldTransform>(e);
+                const vec3 fwd = CameraForward(wt), away = -fwd;
+                R.patch<ViewCamera>(SceneEntity, [&](auto &vc) { vc.AnimateTo(wt.P + fwd, {std::atan2(away.z, away.x), std::asin(away.y)}, 1.f); });
             },
-            [&](const action::scene::OrbitViewCamera &a) { R.patch<ViewCamera>(SceneEntity, [&](auto &camera) { camera.RotateBy(a.DeltaRad); }); },
-            [&](const action::scene::ZoomViewCamera &a) { R.patch<ViewCamera>(SceneEntity, [&](auto &camera) { camera.ZoomBy(a.Factor); }); },
+            [&](action::scene::ExitLookThroughCamera) { ExitLookThrough(); },
+            [&](const action::scene::OrbitViewCamera &a) {
+                ExitLookThrough();
+                R.patch<ViewCamera>(SceneEntity, [&](auto &camera) { camera.RotateBy(a.DeltaRad); });
+            },
+            [&](const action::scene::ZoomViewCamera &a) {
+                ExitLookThrough();
+                R.patch<ViewCamera>(SceneEntity, [&](auto &camera) { camera.ZoomBy(a.Factor); });
+            },
             [&](const action::scene::ApplyExciteImpact &a) {
                 R.emplace_or_replace<MeshActiveElement>(R.get<Instance>(a.InstanceEntity).Entity, a.VertexIndex);
                 R.emplace_or_replace<VertexForce>(a.InstanceEntity, a.VertexIndex, 1.f);
             },
             [&](action::scene::ClearExciteImpacts) { R.clear<VertexForce>(); },
-            [&](action::scene::TickViewCamera) { if (R.get<ViewCamera>(SceneEntity).Tick()) R.patch<ViewCamera>(SceneEntity, [](auto &) {}); },
             [&](const action::scene::SetStudioEnvironment &a) { SetStudioEnvironment(a.Index); poke_active_lighting(); },
             [&](const action::scene::SetSourceIblIntensity &a) {
                 R.patch<gltf::SourceAssets>(SceneEntity, [&](auto &sa) { if (sa.ImageBasedLight) sa.ImageBasedLight->Intensity = a.Intensity; });
@@ -3021,6 +3079,10 @@ void Scene::Apply(const action::Action &action) {
             },
             [&](const action::scene::SetViewCameraTarget &a) { patch_camera_stopped([&](auto &c) { c.Target = a.Target; }); },
             [&](const action::scene::SetViewCameraLens &a) { patch_camera_stopped([&](auto &c) { c.Data = a.Data; }); },
+            [&](const action::scene::SetViewCameraTargetDirection &a) {
+                ExitLookThrough();
+                R.patch<ViewCamera>(SceneEntity, [&](auto &c) { c.SetTargetDirection(a.Direction); });
+            },
             [&](const action::scene::SetPbrMeshFeaturesMask &a) {
                 const auto e = GetActiveMeshEntity();
                 if (a.Mask != 0u) R.emplace_or_replace<PbrMeshFeatures>(e, a.Mask);
@@ -3103,7 +3165,13 @@ void Scene::Apply(const action::Action &action) {
             [&]<typename T>(const action::ReplaceActive<T> &a) {
                 const auto e = FindActiveEntity(R);
                 if constexpr (std::is_same_v<T, PhysicsMotion>) R.emplace_or_replace<T>(e, *a.Value);
-                else R.emplace_or_replace<T>(e, a.Value);
+                else if constexpr (std::is_same_v<T, PunctualLight>) {
+                    const auto &old = Stores.Buffers->Lights.Get(R.get<const LightIndex>(e).Value);
+                    const auto &n = a.Value;
+                    if (old.Type != n.Type || old.Range != n.Range || old.OuterConeCos != n.OuterConeCos || old.InnerConeCos != n.InnerConeCos)
+                        R.emplace_or_replace<LightWireframeDirty>(e);
+                    R.emplace_or_replace<T>(e, n);
+                } else R.emplace_or_replace<T>(e, a.Value);
             },
             [&](const action::DestroyEntity &a) { R.destroy(a.Entity); },
             [&](const action::physics::CreateNamed &a) {
@@ -3204,18 +3272,18 @@ void Scene::Apply(const action::Action &action) {
                 ::AssignVertexSample(R, SceneEntity, FindActiveEntity(R), a.D->MeshVertices, a.D->Path, std::vector<float>{a.D->Frames});
             },
             [&](action::audio::SetVertexSamples a) { ::SetVertexSamples(R, SceneEntity, a.SoundEntity, a.MeshVertices, std::move(a.Samples)); },
+            [&](const action::audio::ActivateRealImpactMicrophone &a) {
+                const auto dir = R.get<const Path>(R.get<const Instance>(a.TargetSoundEntity).Entity).Value.parent_path();
+                const auto &vertex_indices = R.get<const RealImpactVertices>(a.TargetSoundEntity).Vertices;
+                const auto mic_index = R.get<const RealImpactMicrophone>(a.MicrophoneEntity).Index;
+                ::SetVertexSamples(R, SceneEntity, a.TargetSoundEntity, vertex_indices, RealImpact::LoadSamples(dir, mic_index) | to<std::vector>());
+                R.emplace_or_replace<RealImpactActiveMicrophone>(a.TargetSoundEntity, a.MicrophoneEntity);
+            },
             [&](const action::audio::RemoveVertexSamples &a) { ::RemoveVertexSamples(R, SceneEntity, FindActiveEntity(R), a.MeshVertices); },
             [&](const action::audio::SetModalFormMaterial &a) { R.patch<ModalModelCreateInfo>(FindActiveEntity(R), [&](auto &info) { info.Material = *a.Material; }); },
-            [&](action::scene::AnimateToCamera) {
-                const auto e = FindActiveEntity(R);
-                if (e == entt::null) return;
-                const auto &wt = R.get<WorldTransform>(e);
-                const vec3 fwd = CameraForward(wt), away = -fwd; // Forward() points from target to position
-                R.patch<ViewCamera>(SceneEntity, [&](auto &vc) { vc.AnimateTo(wt.P + fwd, {std::atan2(away.z, away.x), std::asin(away.y)}, 1.f); });
-            },
             [&](action::scene::Play) {
                 R.patch<SceneSettings>(SceneEntity, [](auto &s) { s.ViewportShading = s.FillMode = ViewportShadingMode::MaterialPreview; s.ShowOverlays = false; });
-                Apply(action::timeline::TogglePlay{});
+                R.patch<AnimationTimeline>(SceneEntity, [](auto &tl) { tl.Playing = !tl.Playing; });
             },
             [&](const action::scene::SetViewportShading &a) {
                 R.patch<SceneSettings>(SceneEntity, [&](auto &s) { s.ViewportShading = a.Mode; if (a.Mode != ViewportShadingMode::Wireframe) s.FillMode = a.Mode; });
@@ -3239,12 +3307,7 @@ void Scene::Apply(const action::Action &action) {
                 R.patch<AnimationTimeline>(SceneEntity, [&](auto &tl) { tl.EndFrame = a.Frame; });
                 if (Physics->HasBodies()) Physics->ClearCache();
             },
-            [&](action::timeline::JumpToStart) {
-                if (Physics->HasBodies()) Physics->Rebuild(R);
-                const auto frame = R.get<AnimationTimeline>(SceneEntity).StartFrame;
-                R.patch<AnimationTimeline>(SceneEntity, [&](auto &tl) { tl.CurrentFrame = frame; });
-                PlaybackFrame = frame;
-            },
+            [&](action::timeline::JumpToStart) { JumpToStartFrame(); },
             [&](action::timeline::JumpToEnd) {
                 const auto frame = R.get<AnimationTimeline>(SceneEntity).EndFrame;
                 R.patch<AnimationTimeline>(SceneEntity, [&](auto &tl) { tl.CurrentFrame = frame; });
@@ -4832,11 +4895,6 @@ void Scene::WaitForRender() {
     RenderPending = false;
 }
 
-#include "audio/AudioSystem.h"
-#include "audio/RealImpact.h"
-#include "audio/RealImpactComponents.h"
-#include "gltf/GltfScene.h"
-
 std::expected<void, std::string> Scene::Apply(const action::FallibleAction &action) {
     return std::visit(
         overloaded{
@@ -4858,7 +4916,7 @@ std::expected<void, std::string> Scene::Apply(const action::FallibleAction &acti
                     R.replace<ViewCamera>(SceneEntity, ViewCamera{wt.P, wt.P + CameraForward(wt), R.get<Camera>(camera_entity)});
                 }
                 if (result->ImportedAnimation) {
-                    Apply(action::timeline::JumpToStart{});
+                    JumpToStartFrame();
                     LastEvaluatedFrame = -1;
                 }
                 ProfileNextProcessComponentEvents = true;
@@ -4868,7 +4926,7 @@ std::expected<void, std::string> Scene::Apply(const action::FallibleAction &acti
                 auto object_name = RealImpact::ValidateDirectory(a.Directory);
                 if (!object_name) return std::unexpected(std::move(object_name.error()));
 
-                Apply(action::project::ClearMeshes{});
+                ClearMeshes();
                 const auto [mesh_entity, instance_entity] = ImportMesh(
                     a.Directory / "transformed.obj",
                     MeshInstanceCreateInfo{

@@ -111,7 +111,12 @@ struct Scene {
 private:
     std::pair<entt::entity, entt::entity> ImportMesh(const std::filesystem::path &, MeshInstanceCreateInfo);
     // Capture the current view (or the previously-saved one) and transfer LookingThrough to `target`.
-    void SetLookThrough(entt::entity target);
+    void SetLookThrough(entt::entity);
+    // No-op if not currently looking through any camera.
+    void ExitLookThrough();
+    void JumpToStartFrame();
+    void ClearMeshes();
+    void NewDefaultScene();
     // Returns false if `mode` is already current or precluded by selection.
     bool SetInteractionMode(InteractionMode);
     void SetEditMode(Element);

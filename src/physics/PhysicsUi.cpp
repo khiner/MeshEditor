@@ -1,5 +1,4 @@
 // Physics UI: "Physics" tab + per-entity physics properties.
-// Free functions — no Scene.h dependency.
 
 #include "PhysicsUi.h"
 #include "AnimationTimeline.h"
@@ -14,7 +13,6 @@
 #include <format>
 #include <glm/gtc/quaternion.hpp>
 #include <glm/trigonometric.hpp>
-#include <imgui.h>
 #include <optional>
 
 using namespace ImGui;

@@ -12,6 +12,13 @@
 
 struct Mesh;
 
+// Per-mesh offset/count into SelectionBitsetBuffer for the current edit element type.
+// Assigned on Edit mode entry; updated on element type switch and mesh topology change.
+struct MeshSelectionBitsetRange {
+    uint32_t Offset; // Start bit index in SelectionBitsetBuffer
+    uint32_t Count; // Element count for current edit mode
+};
+
 namespace scene_selection {
 
 // Set all bits in [offset, offset+count), clearing any gap bits in the last word.
