@@ -1,7 +1,8 @@
 #pragma once
 
 #include "SceneVulkanResources.h"
-#include "entt_fwd.h"
+
+#include <entt/entity/fwd.hpp>
 
 #include <memory>
 

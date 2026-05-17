@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Variant.h"
 #include "action/Audio.h"
 #include "action/Bone.h"
 #include "action/Destroy.h"
@@ -12,7 +13,6 @@
 #include "action/Tag.h"
 #include "action/Timeline.h"
 #include "action/Update.h"
-#include "action/Variant.h"
 #include "audio/RealImpactComponents.h"
 #include "gpu/PunctualLight.h"
 #include "numeric/vec4.h"
@@ -21,7 +21,7 @@
 namespace action {
 
 // Cross-cutting alts (Update<F>, Replace<X>, SetTag, DestroyEntity) — not owned by any single domain.
-using CrossCuttingActions = entt::type_list<
+using CrossCuttingActions = std::variant<
     Update<bool>, Update<uint8_t>, Update<uint32_t>, Update<float>, Update<double>,
     Update<vec3>, Update<vec4>,
     Update<entt::entity>,
@@ -33,10 +33,10 @@ using CrossCuttingActions = entt::type_list<
     Replace<Camera>, Replace<MaterialDirty>, Replace<MeshMaterialAssignment>, Replace<MeshMaterialSlotSelection>,
     Replace<PhysicsMotion>, Replace<PunctualLight>, Replace<RealImpactActiveMicrophone>>;
 
-using Action = detail::VariantFromT<entt::type_list_cat_t<
+using Action = MergedVariantT<
     selection::Actions, object::Actions, project::Actions, scene::Actions,
     physics::Actions, audio::Actions, bone::Actions, timeline::Actions,
-    CrossCuttingActions>>;
+    CrossCuttingActions>;
 
-using FallibleAction = detail::VariantFromT<project::FallibleActions>;
+using FallibleAction = project::FallibleActions;
 } // namespace action

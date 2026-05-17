@@ -1,6 +1,6 @@
 #pragma once
 
-#include "entt_fwd.h"
+#include <entt/entity/fwd.hpp>
 
 // Permanent linkage to the entity holding shared GPU buffers (MeshBuffers + ModelsBuffer).
 // Every instance entity gets this component.

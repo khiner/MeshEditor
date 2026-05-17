@@ -5,6 +5,7 @@
 #include "numeric/vec2.h"
 
 #include <optional>
+#include <variant>
 #include <vector>
 
 namespace action::selection {
@@ -57,7 +58,7 @@ struct ApplyTreeSelection {
     ClearKind Clear{ClearKind::None};
 };
 
-using Actions = entt::type_list<
+using Actions = std::variant<
     Select, ToggleSelected, SelectBone, ExtendActive, ExtendBoneActive, SetBoneSelectionPart,
     DeselectAll, SnapshotBoxSelectBaseline, ClearBoxSelectBaseline,
     ApplyBoxSelectObjectHits, ApplyBoxSelectBoneHits, ApplyEditElementClick, ApplyTreeSelection>;

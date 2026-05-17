@@ -1,8 +1,7 @@
 #pragma once
 
-#include "entt_fwd.h"
-
 #include <filesystem>
+#include <variant>
 
 namespace action::project {
 struct ClearMeshes {};
@@ -17,6 +16,6 @@ struct LoadRealImpact {
     std::filesystem::path Directory;
 };
 
-using Actions = entt::type_list<ClearMeshes>;
-using FallibleActions = entt::type_list<LoadGltf, SaveGltf, LoadRealImpact>;
+using Actions = std::variant<ClearMeshes>;
+using FallibleActions = std::variant<LoadGltf, SaveGltf, LoadRealImpact>;
 } // namespace action::project

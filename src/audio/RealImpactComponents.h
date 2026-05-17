@@ -1,6 +1,6 @@
 #pragma once
 
-#include "entt_fwd.h"
+#include <entt/entity/fwd.hpp>
 
 #include <vector>
 

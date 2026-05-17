@@ -1,8 +1,8 @@
 #pragma once
 
 #include "Tets.h"
+#include "Variant.h"
 #include "action/Update.h"
-#include "action/Variant.h"
 #include "audio/AcousticMaterial.h"
 #include "audio/AudioTypes.h"
 #include "audio/ModalModes.h"
@@ -89,12 +89,12 @@ struct SetModalFormMaterial {
     std::unique_ptr<AcousticMaterial> Material;
 };
 
-using Actions = entt::type_list<
+using Actions = std::variant<
     SetModel, SetExciteVertex, SetActiveElementFromDsp,
     StartExcite, StopExcite, DeleteSoundObject, StartRecording,
     OpenModalForm, CancelModalForm, SubmitModalForm, AcceptModalGenerationResult,
     AssignVertexSamples, SetVertexSamples, RemoveVertexSamples, SetModalFormMaterial>;
 
-using Action = detail::VariantFromT<entt::type_list_cat_t<
-    Actions, entt::type_list<action::Update<bool>, action::Update<uint32_t>, action::Update<double>>>>;
+using Action = MergedVariantT<
+    Actions, std::variant<action::Update<bool>, action::Update<uint32_t>, action::Update<double>>>;
 } // namespace action::audio

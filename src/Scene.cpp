@@ -2368,27 +2368,22 @@ std::pair<entt::entity, entt::entity> Scene::ImportMesh(const std::filesystem::p
 }
 
 namespace {
+template<typename...> struct TypeList {};
+
 template<typename... Ts, typename Fn>
-bool DispatchByTypeHash(entt::type_list<Ts...>, entt::id_type hash, Fn &&fn) {
-    return ([&]<typename T> {
-        if (entt::type_hash<T>::value() == hash) {
-            fn.template operator()<T>();
-            return true;
-        }
-        return false;
-    }.template operator()<Ts>() ||
-            ...);
+bool DispatchByTypeHash(TypeList<Ts...>, entt::id_type hash, Fn &&fn) {
+    return ((entt::type_hash<Ts>::value() == hash && (fn.template operator()<Ts>(), true)) || ...);
 }
 
-// Component lists driving action::Update<F>/action::SetTag dispatch. Add new types as new UpdateOf<C>/SetTagOf<T> sites appear.
-using UpdateableComponents = entt::type_list<
+// Lists of components used by multilps templated actions.
+using UpdateableComponents = TypeList<
     Transform, SceneSettings, MaterialVariants, ArmatureAnimation, MorphWeightAnimation,
     NodeTransformAnimation, MaterialPreviewLighting, RenderedLighting, ViewportTheme,
     ViewCamera, PhysicsMaterial, CollisionFilter, ColliderMaterial, ColliderPolicy,
     PhysicsMotion, PhysicsVelocity, PhysicsJoint, TriggerNodes, ModalModelCreateInfo,
     PhysicsSimulationSettings>;
-using TagComponents = entt::type_list<SmoothShading, SubmitDirty, LightWireframeDirty, TriggerTag>;
-using NamedPhysicsComponents = entt::type_list<PhysicsMaterial, CollisionSystem, CollisionFilter, PhysicsJointDef>;
+using TagComponents = TypeList<SmoothShading, SubmitDirty, LightWireframeDirty, TriggerTag>;
+using NamedPhysicsComponents = TypeList<PhysicsMaterial, CollisionSystem, CollisionFilter, PhysicsJointDef>;
 
 bool IsBoneEditMode(const entt::registry &R, entt::entity scene_entity) {
     if (R.get<const SceneInteraction>(scene_entity).Mode != InteractionMode::Edit) return false;
@@ -3110,6 +3105,11 @@ void Scene::Apply(const action::Action &action) {
                 else R.emplace_or_replace<T>(a.Entity, a.Value);
             },
             [&](const action::DestroyEntity &a) { R.destroy(a.Entity); },
+            [&](const action::physics::CreateNamed &a) {
+                DispatchByTypeHash(NamedPhysicsComponents{}, a.ComponentType, [&]<typename T> {
+                    R.emplace<T>(R.create(), T{.Name = std::format("{} {}", a.Prefix, R.view<T>().size())});
+                });
+            },
             [&](const action::physics::SetName &a) {
                 DispatchByTypeHash(NamedPhysicsComponents{}, a.ComponentType, [&]<typename T> {
                     R.patch<T>(a.Entity, [&](T &x) { x.Name = a.Name; });
@@ -3147,11 +3147,6 @@ void Scene::Apply(const action::Action &action) {
                 R.emplace<TriggerTag>(a.Entity);
             },
             [&](const action::physics::RemoveTriggerNodes &a) { R.remove<TriggerNodes>(a.Entity); },
-            [&](const action::physics::CreateNamed &a) {
-                DispatchByTypeHash(NamedPhysicsComponents{}, a.ComponentType, [&]<typename T> {
-                    R.emplace<T>(R.create(), T{.Name = std::format("{} {}", a.Prefix, R.view<T>().size())});
-                });
-            },
             [&](const action::physics::ToggleFilterEntity &a) {
                 R.patch<CollisionFilter>(a.FilterEntity, [&](CollisionFilter &f) {
                     auto &vec = f.*(a.Field);

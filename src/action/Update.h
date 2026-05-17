@@ -1,8 +1,7 @@
 #pragma once
 
-#include "entt_fwd.h"
-
 #include <entt/core/type_info.hpp>
+#include <entt/entity/fwd.hpp>
 
 #include <bit>
 #include <cstdint>

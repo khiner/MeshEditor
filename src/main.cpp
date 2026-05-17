@@ -26,6 +26,8 @@
 #include <iostream>
 #include <map>
 
+static_assert(null_entity == entt::null, "null_entity does not match entt::null");
+
 using std::ranges::any_of, std::ranges::all_of, std::ranges::distance, std::ranges::find_if;
 
 namespace fs = std::filesystem;

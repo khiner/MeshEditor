@@ -1,4 +1,5 @@
 #include "Armature.h"
+#include "BoneSelection.h"
 #include "Entity.h"
 #include "TransformMath.h"
 
@@ -317,12 +318,8 @@ void BoneMat3ToVecRoll(const mat3 &m, vec3 &direction, float &roll) {
     roll = 2.f * std::atan2(glm::dot(vec3{twist.x, twist.y, twist.z}, nor), twist.w);
 }
 
-// Unlike Blender, we don't apply mesh-to-armature transforms (target_to_armature / armature_to_target) around the deformation.
-// Blender computes these per-mesh-instance on CPU, but we batch deform matrices per-armature on the GPU:
-// multiple mesh instances share one deform buffer, so per-instance transforms would require duplicating deform buffers
-// or adding per-draw uniforms. The only visible effect is that moving a skinned mesh away from its armature
-// produces a rigid shift instead of Blender's stretching, which is rare in practice since glTF exporters bake
-// co-located transforms and the spec ignores skinned mesh node transforms.
+// One deform buffer per armature is shared across mesh instances, so we skip Blender's per-instance mesh-to-armature transform.
+// A skinned mesh moved off its armature shifts rigidly instead of stretching.
 void ComputeDeformMatrices(
     const Armature &data,
     std::span<const mat4> bone_pose_world, std::span<const mat4> inverse_bind_matrices, std::span<mat4> out_deform_matrices
@@ -434,7 +431,7 @@ ExtrudeResult ExtrudeBones(entt::registry &r, Armature &armature, entt::entity a
     const auto &arm_obj = r.get<const ArmatureObject>(arm_obj_entity);
 
     // Classify: tip or body selected → extrude from tip (child); root-only → extrude from root (sibling).
-    // For root extrude, skip if parent bone's tip is also selected (Blender conflict avoidance).
+    // For root extrude, skip if parent bone's tip is also selected.
     ExtrudeResult result;
     for (const auto e : r.view<BoneSelection, BoneIndex>()) {
         if (r.get<SubElementOf>(e).Parent != arm_obj_entity) continue;

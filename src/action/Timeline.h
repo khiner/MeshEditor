@@ -1,6 +1,6 @@
 #pragma once
 
-#include "action/Variant.h"
+#include <variant>
 
 namespace action::timeline {
 struct TogglePlay {};
@@ -16,6 +16,6 @@ struct SetEndFrame {
 struct JumpToStart {};
 struct JumpToEnd {};
 
-using Actions = entt::type_list<TogglePlay, SetFrame, SetStartFrame, SetEndFrame, JumpToStart, JumpToEnd>;
-using Action = detail::VariantFromT<Actions>;
+using Actions = std::variant<TogglePlay, SetFrame, SetStartFrame, SetEndFrame, JumpToStart, JumpToEnd>;
+using Action = Actions;
 } // namespace action::timeline

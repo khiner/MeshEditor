@@ -1,12 +1,14 @@
 #pragma once
 
-#include "entt_fwd.h"
 #include "numeric/mat4.h"
 #include "numeric/quat.h"
 #include "numeric/vec3.h"
 
+#include <entt/entity/fwd.hpp>
+
 #include <cstdint>
 #include <memory>
+#include <variant>
 
 namespace action::bone {
 struct Add {};
@@ -49,7 +51,7 @@ struct AddConstraint {
     BoneConstraintKind Kind;
 };
 
-using Actions = entt::type_list<
+using Actions = std::variant<
     Add, Extrude, DuplicateSelected, DeleteSelected, ClearSelectedTransforms,
     SetEditHeadTailRoll,
     SetConstraintTarget, SetConstraintInfluence, SetConstraintChildOfInverse,

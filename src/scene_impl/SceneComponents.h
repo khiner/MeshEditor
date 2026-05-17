@@ -1,14 +1,10 @@
 #pragma once
 
-#include "Armature.h" // BoneSelection
+#include "BoneSelection.h"
 #include "SceneModeComponents.h"
-#include "entt_fwd.h"
 #include "gpu/DebugChannel.h"
 
-#include <cstdint>
-#include <utility>
-#include <vector>
-
+#include <entt/entity/fwd.hpp>
 #include <vulkan/vulkan.hpp>
 
 enum class ViewportShadingMode : uint8_t {

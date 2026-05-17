@@ -1,7 +1,6 @@
 #pragma once
 
 #include "Camera.h"
-#include "entt_fwd.h"
 #include "gpu/Element.h"
 #include "gpu/InteractionMode.h"
 #include "numeric/quat.h"
@@ -10,10 +9,7 @@
 #include "scene_impl/SceneInternalTypes.h"
 #include "scene_impl/SceneTransformUtils.h"
 
-#include <cstdint>
-#include <memory>
-#include <utility>
-#include <vector>
+#include <entt/entity/fwd.hpp>
 
 namespace action::scene {
 struct SetInteractionMode {
@@ -88,7 +84,7 @@ struct UpdateGizmoMeshEditPending {
 };
 struct EndGizmoDrag {};
 
-using Actions = entt::type_list<
+using Actions = std::variant<
     SetInteractionMode, CycleInteractionMode, SetEditMode,
     EnterLookThroughCamera, ExitLookThroughCamera, AnimateToCamera, Play,
     SetViewportShading, SelectAll, OrbitViewCamera, ZoomViewCamera,

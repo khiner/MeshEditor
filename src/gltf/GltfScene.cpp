@@ -1371,6 +1371,7 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
         .ActiveSceneIndex = uint32_t(scene_index),
         .NodeSceneMasks = {},
         .ExtensionsRequired = {},
+        .ObjectEntities = {},
         .ExtrasByEntity = std::move(extras),
         .MaterialMetas = {},
         .Textures = {},

@@ -7,7 +7,6 @@
 
 #include <filesystem>
 #include <memory>
-#include <optional>
 
 namespace action::object {
 struct Delete {};
@@ -45,7 +44,7 @@ struct ReplaceMesh {
     std::unique_ptr<MeshData> Data;
 };
 
-using Actions = entt::type_list<
+using Actions = std::variant<
     Delete, Duplicate, DuplicateLinked, ToggleHidden, SetSelectedVisible,
     ParentToActive, ClearParent,
     AddEmpty, AddArmature, AddCamera, AddLight, AddMeshPrimitive, ImportMesh, ReplaceMesh>;

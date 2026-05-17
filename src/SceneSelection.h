@@ -1,7 +1,8 @@
 #pragma once
 
-#include "entt_fwd.h"
 #include "gpu/Element.h"
+
+#include <entt/entity/fwd.hpp>
 
 #include <cstdint>
 #include <span>

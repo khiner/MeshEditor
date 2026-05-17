@@ -2,10 +2,11 @@
 
 #include "Camera.h"
 #include "Entity.h" // ObjectType
-#include "entt_fwd.h"
 #include "gpu/PunctualLight.h"
 #include "gpu/Transform.h"
 #include "numeric/vec3.h"
+
+#include <entt/entity/fwd.hpp>
 
 #include <cstdint>
 #include <optional>

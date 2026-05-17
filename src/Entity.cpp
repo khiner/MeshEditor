@@ -4,8 +4,6 @@
 
 #include <format>
 
-static_assert(null_entity == entt::null, "null_entity does not match entt::null");
-
 std::string IdString(entt::entity e) { return std::format("0x{:08x}", uint32_t(e)); }
 std::string GetName(const entt::registry &r, entt::entity e) {
     if (e == entt::null) return "null";

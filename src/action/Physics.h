@@ -1,10 +1,10 @@
 #pragma once
 
+#include "Variant.h"
 #include "action/Destroy.h"
 #include "action/Replace.h"
 #include "action/Tag.h"
 #include "action/Update.h"
-#include "action/Variant.h"
 #include "numeric/vec3.h"
 #include "physics/PhysicsTypes.h"
 
@@ -84,12 +84,12 @@ struct DeleteJointVecItem {
     uint32_t Index;
 };
 
-using Actions = entt::type_list<
+using Actions = std::variant<
     SetName, SetMotionType, SetColliderShape, AddTrigger, RemoveTriggerNodes,
     CreateNamed, ToggleFilterEntity,
     SetJointVecItem<PhysicsJointLimit>, AddJointVecItem<PhysicsJointLimit>, DeleteJointVecItem<PhysicsJointLimit>,
     SetJointVecItem<PhysicsJointDrive>, AddJointVecItem<PhysicsJointDrive>, DeleteJointVecItem<PhysicsJointDrive>>;
 
-using Action = detail::VariantFromT<entt::type_list_cat_t<
-    Actions, entt::type_list<action::Update<bool>, action::Update<uint32_t>, action::Update<float>, action::Update<vec3>, action::Update<entt::entity>, action::Update<CollideMode>, action::Update<PhysicsCombineMode>, action::Replace<PhysicsMotion>, action::SetTag, action::DestroyEntity>>>;
+using Action = MergedVariantT<
+    Actions, std::variant<action::Update<bool>, action::Update<uint32_t>, action::Update<float>, action::Update<vec3>, action::Update<entt::entity>, action::Update<CollideMode>, action::Update<PhysicsCombineMode>, action::Replace<PhysicsMotion>, action::SetTag, action::DestroyEntity>>;
 } // namespace action::physics

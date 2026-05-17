@@ -1,7 +1,8 @@
 #pragma once
 
 #include "Range.h"
-#include "entt_fwd.h"
+
+#include <entt/entity/fwd.hpp>
 
 #include <vector>
 
