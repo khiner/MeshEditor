@@ -1689,8 +1689,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
                 if (need_sync) {
                     if (!is_edit_mode) {
                         ComputeDeformMatrices(
-                            armature, pose_state->BonePoseWorld,
-                            armature.ImportedSkin->InverseBindMatrices,
+                            armature, pose_state->BonePoseWorld, armature.ImportedSkin->InverseBindMatrices,
                             Stores.Buffers->ArmatureDeformBuffer.GetMutable(pose_state->GpuDeformRange)
                         );
                     }
@@ -1730,10 +1729,13 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
 
             const auto collect_wt = [&](entt::entity e) {
                 if (!R.valid(e)) return;
+
                 const auto *ri = R.try_get<const RenderInstance>(e);
                 if (!ri || ri->BufferIndex == UINT32_MAX) return;
+
                 const auto *wt = R.try_get<const WorldTransform>(e);
                 if (!wt) return;
+
                 auto display_wt = *wt;
                 if (const auto *ds = R.try_get<BoneDisplayScale>(e)) display_wt.S = vec3{ds->Value};
                 wt_writes.push_back({ri->BufferIndex, display_wt});
@@ -2000,8 +2002,7 @@ void Scene::EnsureWireframes() {
     auto ensure_buffer = [&](ColliderShapeBuffer kind, auto generator) {
         if (R.valid(buf(kind))) return;
         auto mesh = generator();
-        if (mesh.Positions.empty()) return;
-        buf(kind) = CreateExtrasBufferEntity(mesh.Positions, {}, mesh.EdgeIndices);
+        if (!mesh.Positions.empty()) buf(kind) = CreateExtrasBufferEntity(mesh.Positions, {}, mesh.EdgeIndices);
     };
     ensure_buffer(Box, physics_debug::UnitBox);
     ensure_buffer(Sphere, physics_debug::UnitSphere);
@@ -2037,7 +2038,7 @@ void Scene::EnsureWireframes() {
 
     auto make_instance = [&](entt::entity buffer_entity, entt::entity parent) -> entt::entity {
         if (buffer_entity == entt::null) return entt::null;
-        auto inst = R.create();
+        const auto inst = R.create();
         R.emplace<Instance>(inst, buffer_entity);
         R.emplace<Transform>(inst);
         R.emplace<WorldTransform>(inst);
@@ -2050,9 +2051,9 @@ void Scene::EnsureWireframes() {
     // The creation loop below recreates them (or leaves none for non-wireframe kinds).
     std::vector<entt::entity> stale;
     for (auto [entity, cs, cw] : R.view<const ColliderShape, const ColliderWireframe>().each()) {
-        if (cw.Count == 0 || !R.valid(cw.Instances[0])) continue;
-        if (R.get<const Instance>(cw.Instances[0]).Entity == primary_buffer(cs.Shape)) continue;
-        stale.push_back(entity);
+        if (cw.Count > 0 && R.valid(cw.Instances[0]) && R.get<const Instance>(cw.Instances[0]).Entity != primary_buffer(cs.Shape)) {
+            stale.emplace_back(entity);
+        }
     }
     drop_wireframes(stale);
 
@@ -2062,10 +2063,8 @@ void Scene::EnsureWireframes() {
         const auto &shape = cs.Shape;
         ColliderWireframe cw{};
 
-        const bool is_cylinder = std::holds_alternative<physics::Cylinder>(shape);
-        const bool is_capsule = std::holds_alternative<physics::Capsule>(shape);
-        if (is_cylinder || is_capsule) {
-            const auto cap_buf = buf(is_capsule ? CapsuleCap : Circle);
+        if (std::holds_alternative<physics::Cylinder>(shape) || std::holds_alternative<physics::Capsule>(shape)) {
+            const auto cap_buf = buf(std::holds_alternative<physics::Capsule>(shape) ? CapsuleCap : Circle);
             cw.Instances[0] = make_instance(cap_buf, entity); // top
             cw.Instances[1] = make_instance(cap_buf, entity); // bottom
             for (uint8_t i = 0; i < 4; ++i) cw.Instances[2 + i] = make_instance(buf(Line), entity);
@@ -2106,9 +2105,9 @@ void Scene::EnsureWireframes() {
     if (show_bbox) {
         for (auto entity : R.view<Selected>()) {
             if (R.all_of<BBoxWireframe>(entity)) continue;
+
             const auto *instance = R.try_get<const Instance>(entity);
-            if (!instance || !R.all_of<Mesh>(instance->Entity)) continue;
-            R.emplace<BBoxWireframe>(entity, make_instance(buf(Box), entity));
+            if (instance && R.all_of<Mesh>(instance->Entity)) R.emplace<BBoxWireframe>(entity, make_instance(buf(Box), entity));
         }
     }
 
@@ -2136,8 +2135,10 @@ void Scene::EnsureWireframes() {
             if (R.all_of<TetWireframe>(entity)) continue;
             const auto *instance = R.try_get<const Instance>(entity);
             if (!instance) continue;
+
             const auto *tm = R.try_get<const TetMeshData>(instance->Entity);
             if (!tm || tm->Positions.empty()) continue;
+
             const auto tet_buf = CreateExtrasBufferEntity(tm->Positions, {}, tm->EdgeIndices);
             R.emplace<TetWireframe>(entity, make_instance(tet_buf, entity));
         }
@@ -2225,9 +2226,11 @@ void Scene::UpdateWireframeTransforms() {
     // Recompute BBox when the mesh geometry changed, the parent moved, or the wireframe instance was just created this frame.
     for (auto [entity, bw] : R.view<const BBoxWireframe>().each()) {
         if (!R.valid(bw.Instance)) continue;
+
         const auto *wt = R.try_get<const WorldTransform>(entity);
         const auto *instance = R.try_get<const Instance>(entity);
         if (!wt || !instance) continue;
+
         const auto *mesh = R.try_get<const Mesh>(instance->Entity);
         if (!mesh) continue;
 
@@ -2241,20 +2244,15 @@ void Scene::UpdateWireframeTransforms() {
             aabb.Min = glm::min(aabb.Min, v.Position);
             aabb.Max = glm::max(aabb.Max, v.Position);
         }
-        const vec3 size = aabb.Max - aabb.Min;
-        const vec3 center = (aabb.Min + aabb.Max) * 0.5f;
-        const mat4 base = ToMatrix(*wt);
-        R.replace<WorldTransform>(bw.Instance, ToTransform(base * glm::translate(mat4{1}, center) * glm::scale(mat4{1}, size)));
+        const auto size = aabb.Max - aabb.Min, center = (aabb.Min + aabb.Max) * 0.5f;
+        R.replace<WorldTransform>(bw.Instance, ToTransform(ToMatrix(*wt) * glm::translate(mat4{1}, center) * glm::scale(mat4{1}, size)));
     }
 
     for (auto [entity, tw] : R.view<const TetWireframe>().each()) {
         if (!R.valid(tw.Instance)) continue;
+
         const auto *wt = R.try_get<const WorldTransform>(entity);
-        if (!wt) continue;
-        const bool parent_moved = wt_changed.contains(entity);
-        const bool newly_created = wt_changed.contains(tw.Instance);
-        if (!parent_moved && !newly_created) continue;
-        R.replace<WorldTransform>(tw.Instance, *wt);
+        if (wt && (wt_changed.contains(entity) || wt_changed.contains(tw.Instance))) R.replace<WorldTransform>(tw.Instance, *wt);
     }
 }
 
@@ -2297,11 +2295,7 @@ std::pair<entt::entity, entt::entity> Scene::ImportMesh(const std::filesystem::p
                 *Stores.Slots,
                 std::as_bytes(std::span{encoded}),
                 texture_path.filename().string(),
-                std::format(
-                    "{} ({})",
-                    texture_path.filename().string(),
-                    color_space == TextureColorSpace::Srgb ? "sRGB" : "Linear"
-                ),
+                std::format("{} ({})", texture_path.filename().string(), color_space == TextureColorSpace::Srgb ? "sRGB" : "Linear"),
                 color_space,
                 vk::SamplerAddressMode::eRepeat,
                 vk::SamplerAddressMode::eRepeat,
@@ -2354,9 +2348,7 @@ std::pair<entt::entity, entt::entity> Scene::ImportMesh(const std::filesystem::p
         if (auto primitive_materials = Stores.Meshes->GetPrimitiveMaterialIndices(result->Mesh.GetStoreId()); !primitive_materials.empty()) {
             const auto fallback = scene_material_indices.front();
             for (auto &primitive_material : primitive_materials) {
-                primitive_material = primitive_material < scene_material_indices.size() ?
-                    scene_material_indices[primitive_material] :
-                    fallback;
+                primitive_material = primitive_material < scene_material_indices.size() ? scene_material_indices[primitive_material] : fallback;
             }
         }
     }
@@ -2500,10 +2492,7 @@ bool Scene::CanDuplicate() const {
     return !R.storage<Selected>().empty();
 }
 
-bool Scene::CanDuplicateLinked() const {
-    return CanDuplicate() && !IsBoneEditMode(R, SceneEntity);
-}
-
+bool Scene::CanDuplicateLinked() const { return CanDuplicate() && !IsBoneEditMode(R, SceneEntity); }
 bool Scene::CanDelete() const { return CanDuplicate(); }
 
 void Scene::Delete() { Apply(action::object::Delete{}); }
@@ -2522,8 +2511,7 @@ bool Scene::SetInteractionMode(InteractionMode mode) {
     if (R.get<const SceneInteraction>(SceneEntity).Mode == InteractionMode::Edit) {
         // Keep bitset ranges + bits so element selections survive toggling Edit mode off and back on.
         for (const auto [mesh_entity, br, mesh] : R.view<const MeshSelectionBitsetRange, const Mesh>().each()) {
-            if (br.Count == 0) continue;
-            Stores.Meshes->UpdateElementStates(mesh, Element::None, {}, {}, {}, {}, std::nullopt);
+            if (br.Count > 0) Stores.Meshes->UpdateElementStates(mesh, Element::None, {}, {}, {}, {}, std::nullopt);
         }
         ElementStatesDirty = true;
     }
@@ -2540,6 +2528,7 @@ bool Scene::SetInteractionMode(InteractionMode mode) {
                 const auto &mesh = R.get<const Mesh>(mesh_entity);
                 const uint32_t count = scene_selection::GetElementCount(mesh, edit_element);
                 if (count == 0) continue;
+
                 scene_selection::SelectAll(bits, next_offset, count);
                 R.emplace<MeshSelectionBitsetRange>(mesh_entity, next_offset, count);
                 next_offset = (next_offset + count + 31) / 32 * 32;
@@ -2605,11 +2594,8 @@ void Scene::SetEditMode(Element mode) {
     }
 
     R.patch<SceneEditMode>(SceneEntity, [mode](auto &edit_mode) { edit_mode.Value = mode; });
-    if (!new_ranges.empty()) {
-        ApplySelectionStateUpdate(new_ranges, mode);
-    } else if (!old_ranges.empty()) {
-        ElementStatesDirty = true;
-    }
+    if (!new_ranges.empty()) ApplySelectionStateUpdate(new_ranges, mode);
+    else if (!old_ranges.empty()) ElementStatesDirty = true;
 }
 
 void Scene::Apply(const action::Action &action) {
@@ -2864,7 +2850,6 @@ void Scene::Apply(const action::Action &action) {
                 if (arm_obj_entity == entt::null) return;
 
                 auto &armature = R.get<Armature>(R.get<ArmatureObject>(arm_obj_entity).Entity);
-
                 const auto &arm_wt = R.get<WorldTransform>(arm_obj_entity);
                 const auto new_id = armature.AddBone("Bone", {}, {.P = (glm::conjugate(glm::normalize(arm_wt.R)) * -arm_wt.P) / arm_wt.S});
                 RebuildBoneStructure(R.get<ArmatureObject>(arm_obj_entity).Entity);
@@ -2879,7 +2864,6 @@ void Scene::Apply(const action::Action &action) {
 
                 auto &arm_obj = R.get<ArmatureObject>(arm_obj_entity);
                 auto &armature = R.get<Armature>(arm_obj.Entity);
-
                 auto result = ExtrudeBones(R, armature, arm_obj_entity);
                 if (result.NewBoneIds.empty()) return;
 
@@ -2925,7 +2909,6 @@ void Scene::Apply(const action::Action &action) {
 
                 auto &arm_obj = R.get<ArmatureObject>(arm_obj_entity);
                 auto &armature = R.get<Armature>(arm_obj.Entity);
-
                 const auto to_delete = CollectBonesForDeletion(R, arm_obj_entity);
                 if (to_delete.empty()) return;
 
@@ -2971,7 +2954,6 @@ void Scene::Apply(const action::Action &action) {
                 for (uint32_t i = 0; i < arm_obj.BoneEntities.size(); ++i) R.get<BoneIndex>(arm_obj.BoneEntities[i]).Index = i;
 
                 if (arm_obj.BoneEntities.empty()) DestroyArmatureData(arm_obj_entity);
-
                 Select(arm_obj_entity);
             },
             [&](const action::scene::SetInteractionMode &a) { SetInteractionMode(a.Mode); },
@@ -3077,9 +3059,7 @@ void Scene::Apply(const action::Action &action) {
                 R.patch<BoneConstraints>(FindActiveBone(R), [&](auto &cs) { cs.Stack[a.Index].Influence = a.Influence; });
             },
             [&](const action::bone::SetConstraintChildOfInverse &a) {
-                R.patch<BoneConstraints>(FindActiveBone(R), [&](auto &cs) {
-                    std::get<ChildOfData>(cs.Stack[a.Index].Data).InverseMatrix = *a.Inverse;
-                });
+                R.patch<BoneConstraints>(FindActiveBone(R), [&](auto &cs) { std::get<ChildOfData>(cs.Stack[a.Index].Data).InverseMatrix = *a.Inverse; });
             },
             [&](const action::bone::DeleteConstraint &a) {
                 R.patch<BoneConstraints>(FindActiveBone(R), [&](auto &cs) { cs.Stack.erase(cs.Stack.begin() + a.Index); });
@@ -3094,17 +3074,13 @@ void Scene::Apply(const action::Action &action) {
             [&]<typename Field>(const action::Update<Field> &a) {
                 const auto e = a.Entity != entt::null ? a.Entity : SceneEntity;
                 DispatchByTypeHash(UpdateableComponents{}, a.ComponentType, [&]<typename T> {
-                    R.patch<T>(e, [&](T &t) {
-                        *reinterpret_cast<Field *>(reinterpret_cast<std::byte *>(&t) + a.Offset) = a.Value;
-                    });
+                    R.patch<T>(e, [&](T &t) { *reinterpret_cast<Field *>(reinterpret_cast<std::byte *>(&t) + a.Offset) = a.Value; });
                 });
             },
             [&]<typename Field>(const action::UpdateActive<Field> &a) {
                 const auto e = FindActiveEntity(R);
                 DispatchByTypeHash(UpdateableComponents{}, a.ComponentType, [&]<typename T> {
-                    R.patch<T>(e, [&](T &t) {
-                        *reinterpret_cast<Field *>(reinterpret_cast<std::byte *>(&t) + a.Offset) = a.Value;
-                    });
+                    R.patch<T>(e, [&](T &t) { *reinterpret_cast<Field *>(reinterpret_cast<std::byte *>(&t) + a.Offset) = a.Value; });
                 });
             },
             [&](const action::SetTag &a) {
@@ -3164,9 +3140,7 @@ void Scene::Apply(const action::Action &action) {
                     cs.Shape = a.Shape;
                     if (IsMeshBackedShape(a.Shape) && cs.MeshEntity == null_entity) cs.MeshEntity = owner_mesh;
                 });
-                if (a.LockKind) {
-                    R.patch<ColliderPolicy>(e, [](ColliderPolicy &p) { p.LockedKind = true; });
-                }
+                if (a.LockKind) R.patch<ColliderPolicy>(e, [](ColliderPolicy &p) { p.LockedKind = true; });
             },
             [&](action::physics::AddTrigger) {
                 const auto e = FindActiveEntity(R);
