@@ -651,7 +651,7 @@ void DrawModalCreateForm(
     }
     using MMCI = ModalModelCreateInfo;
     using Props = AcousticMaterialProperties;
-    ui::Edit f{r, apply, e};
+    ui::Edit f{r, apply};
     Text("Density (kg/m^3)");
     f.Input<&MMCI::Material, &AcousticMaterial::Properties, &Props::Density>("##Density");
     Text("Young's modulus (Pa)");

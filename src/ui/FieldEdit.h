@@ -1,13 +1,23 @@
 #pragma once
 
 // ui::Edit — terse, single-line wrappers around ImGui controls that read a field, run the
-// widget, and dispatch `action::UpdateOf<Ms...>` if the user changed it. Bound to (registry,
-// apply, entity) at construction; one instance per UI block.
+// widget, and dispatch an `action::UpdateOf<Ms...>` if the user changed it.
+//
+// Bound to (registry, apply) and optionally an entity:
+//   `ui::Edit{R, A}`     — reads/writes target the registry's active entity. Emits UpdateActive<T>
+//                          (reads resolve via FindActiveEntity(R) at Run time).
+//   `ui::Edit{R, A, E}`  — reads from E and writes carry E. Emits Update<T>.
+//
+// `HasEntity` is a template bool (deduced via the constructor) so only the relevant code path
+// instantiates — adding a `ui::Edit{R, A}` site doesn't force `UpdateActive<T>` for every T
+// the entity-bound form already uses.
 
+#include "Entity.h" // FindActiveEntity
 #include "action/Update.h"
 #include "numeric/vec3.h"
 #include "numeric/vec4.h"
 
+#include <entt/entity/entity.hpp>
 #include <entt/entity/registry.hpp>
 #include <imgui.h>
 
@@ -46,22 +56,32 @@ struct Applier {
 };
 template<class T> Applier(T *) -> Applier<T>;
 
-template<class Apply, auto... Prefix>
+template<class Apply, bool HasEntity, auto... Prefix>
 struct Edit {
     entt::registry &R;
     Apply A;
-    entt::entity E;
+    [[no_unique_address]] std::conditional_t<HasEntity, entt::entity, std::monostate> E{};
 
     // Edit for a nested field, so callers don't repeat the outer member on each call.
-    template<auto... More> Edit<Apply, Prefix..., More...> Sub() const { return {R, A, E}; }
+    template<auto... More>
+    Edit<Apply, HasEntity, Prefix..., More...> Sub() const {
+        if constexpr (HasEntity) return {R, A, E};
+        else return {R, A};
+    }
+
+    entt::entity ReadFrom() const {
+        if constexpr (HasEntity) return E;
+        else return FindActiveEntity(R);
+    }
 
     // Read field, hand a mutable copy to `widget`, dispatch update if the widget returns true.
     template<auto... Ms, class Widget>
     bool Run(Widget widget) {
-        action::detail::last_field<Prefix..., Ms...> v = ReadChain<Prefix..., Ms...>(R.get<const action::detail::first_class<Prefix..., Ms...>>(E));
+        action::detail::last_field<Prefix..., Ms...> v = ReadChain<Prefix..., Ms...>(R.get<const action::detail::first_class<Prefix..., Ms...>>(ReadFrom()));
         if (!widget(v)) return false;
 
-        A(action::UpdateOf<Prefix..., Ms...>(E, v));
+        if constexpr (HasEntity) A(action::UpdateOf<Prefix..., Ms...>(E, v));
+        else A(action::UpdateOf<Prefix..., Ms...>(v));
         return true;
     }
 
@@ -131,10 +151,15 @@ struct Edit {
     // Write a value the caller has already produced (e.g. from a bitmask widget, optional toggle).
     // Skips the read-widget step; useful where a simple read/widget mapping doesn't fit.
     template<auto... Ms>
-    void Set(action::detail::last_field<Ms...> v) const { A(action::UpdateOf<Ms...>(E, std::move(v))); }
+    void Set(action::detail::last_field<Ms...> v) const {
+        if constexpr (HasEntity) A(action::UpdateOf<Ms...>(E, std::move(v)));
+        else A(action::UpdateOf<Ms...>(std::move(v)));
+    }
 };
 
 template<class A>
-Edit(entt::registry &, const A &, entt::entity) -> Edit<A>;
+Edit(entt::registry &, const A &) -> Edit<A, false>;
+template<class A>
+Edit(entt::registry &, const A &, entt::entity) -> Edit<A, true>;
 
 } // namespace ui

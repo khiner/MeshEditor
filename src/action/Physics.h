@@ -86,5 +86,5 @@ using Actions = std::variant<
     SetJointVecItem<PhysicsJointDrive>, AddJointVecItem<PhysicsJointDrive>, DeleteJointVecItem<PhysicsJointDrive>>;
 
 using Action = MergedVariantT<
-    Actions, std::variant<action::Update<bool>, action::Update<uint32_t>, action::Update<float>, action::Update<vec3>, action::Update<entt::entity>, action::Update<CollideMode>, action::Update<PhysicsCombineMode>, action::Replace<PhysicsMotion>, action::SetTag, action::DestroyEntity>>;
+    Actions, std::variant<action::Update<bool>, action::Update<uint32_t>, action::Update<float>, action::Update<vec3>, action::Update<entt::entity>, action::Update<CollideMode>, action::Update<PhysicsCombineMode>, action::UpdateActive<bool>, action::UpdateActive<uint32_t>, action::UpdateActive<float>, action::UpdateActive<vec3>, action::UpdateActive<entt::entity>, action::Replace<PhysicsMotion>, action::ReplaceActive<PhysicsMotion>, action::SetTag, action::SetActiveTag, action::DestroyEntity>>;
 } // namespace action::physics

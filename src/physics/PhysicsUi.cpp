@@ -43,6 +43,7 @@ template<class C, class V> struct ptr_class<V C::*> {
 // Renders a combo that selects a referenced resource entity (Field) from the registry's view<Target>.
 // Returns the currently-selected Target (or nullptr if none/invalid). When `empty_preview` is non-null
 // and the registry has no Target entities, renders a disabled combo with that preview instead.
+// `entity` is the active entity (used for the read; the write targets active via the no-entity UpdateOf).
 template<class Target, auto Field>
 const Target *RenderEntityCombo(entt::registry &r, entt::entity entity, const char *label, const physics_ui::ApplyAction &apply, const char *empty_preview = nullptr) {
     using Owner = typename ptr_class<decltype(Field)>::type;
@@ -57,10 +58,10 @@ const Target *RenderEntityCombo(entt::registry &r, entt::entity entity, const ch
     const auto *cur = cur_e != null_entity && r.valid(cur_e) ? r.try_get<const Target>(cur_e) : nullptr;
     if (const auto preview = cur ? DisplayName(cur->Name, "{:x}", uint32_t(cur_e)) : std::string{"None"};
         BeginCombo(label, preview.c_str())) {
-        if (Selectable("None", cur_e == null_entity)) apply(action::UpdateOf<Field>(entity, entt::entity{null_entity}));
+        if (Selectable("None", cur_e == null_entity)) apply(action::UpdateOf<Field>(entt::entity{null_entity}));
         for (auto [te, t] : view.each()) {
             if (Selectable(DisplayName(t.Name, "{:x}", uint32_t(te)).c_str(), cur_e == te)) {
-                apply(action::UpdateOf<Field>(entity, te));
+                apply(action::UpdateOf<Field>(te));
             }
         }
         EndCombo();
@@ -502,7 +503,7 @@ void physics_ui::RenderEntityProperties(entt::registry &r, entt::entity entity, 
         Spacing();
         SeparatorText("Collider");
 
-        ui::Edit{r, apply, entity}.Check<&ColliderPolicy::AutoFitDims>("Auto-fit");
+        ui::Edit{r, apply}.Check<&ColliderPolicy::AutoFitDims>("Auto-fit");
         if (auto s = RenderShapeEditor(collider->Shape, r.get<const ColliderPolicy>(entity).AutoFitDims))
             apply(action::physics::SetColliderShape{*s, s->index() != collider->Shape.index()});
 
@@ -521,7 +522,7 @@ void physics_ui::RenderEntityProperties(entt::registry &r, entt::entity entity, 
         const bool velocity_locked = tl.Playing || physics.BakedThrough() >= tl.StartFrame;
         if (velocity_locked) BeginDisabled();
         if (r.try_get<const PhysicsVelocity>(entity)) {
-            ui::Edit f{r, apply, entity};
+            ui::Edit f{r, apply};
             f.Drag<&PhysicsVelocity::Linear>("Linear velocity", 0.1f);
             f.Drag<&PhysicsVelocity::Angular>("Angular velocity", 0.1f);
         }
@@ -573,7 +574,7 @@ void physics_ui::RenderEntityProperties(entt::registry &r, entt::entity entity, 
 
             motion_changed |= DragFloat("Damping translation", &edit.LinearDamping, 0.01f, 0.f, 1.f);
             motion_changed |= DragFloat("Damping rotation", &edit.AngularDamping, 0.01f, 0.f, 1.f);
-            if (motion_changed) apply(action::Replace<PhysicsMotion>{entity, std::make_unique<PhysicsMotion>(edit)});
+            if (motion_changed) apply(action::ReplaceActive<PhysicsMotion>{std::make_unique<PhysicsMotion>(edit)});
         }
     }
 
@@ -585,17 +586,17 @@ void physics_ui::RenderEntityProperties(entt::registry &r, entt::entity entity, 
         const auto *cur = RenderEntityCombo<PhysicsJointDef, &PhysicsJoint::JointDefEntity>(r, entity, "Definition", apply, "No joint definitions");
         if (cur) Text("Limits: %zu, Drives: %zu", cur->Limits.size(), cur->Drives.size());
 
-        ui::Edit{r, apply, entity}.Check<&PhysicsJoint::EnableCollision>("Enable collision");
+        ui::Edit{r, apply}.Check<&PhysicsJoint::EnableCollision>("Enable collision");
 
         // ConnectedNode picker — KHR joint.connectedNode is the second attachment frame.
         // Mirrors Blender's rigid_body_constraint object1/object2 fields.
         const auto cn = joint->ConnectedNode;
         if (const auto cn_label = cn != null_entity && r.valid(cn) ? GetName(r, cn) : std::string{"None"};
             BeginCombo("Connected node", cn_label.c_str())) {
-            if (Selectable("None", cn == null_entity)) apply(action::UpdateOf<&PhysicsJoint::ConnectedNode>(entity, entt::entity{null_entity}));
+            if (Selectable("None", cn == null_entity)) apply(action::UpdateOf<&PhysicsJoint::ConnectedNode>(entt::entity{null_entity}));
             for (auto ne : r.view<const SceneNode>()) {
                 if (ne == entity) continue; // self-connection is meaningless
-                if (Selectable(GetName(r, ne).c_str(), cn == ne)) apply(action::UpdateOf<&PhysicsJoint::ConnectedNode>(entity, ne));
+                if (Selectable(GetName(r, ne).c_str(), cn == ne)) apply(action::UpdateOf<&PhysicsJoint::ConnectedNode>(ne));
             }
             EndCombo();
         }
@@ -614,9 +615,9 @@ void physics_ui::RenderEntityProperties(entt::registry &r, entt::entity entity, 
         const bool is_shape_trigger = collider && r.all_of<const TriggerTag>(entity);
         if (collider) {
             if (is_shape_trigger) {
-                if (Button("Convert to Collider")) apply(action::SetTagOf<TriggerTag>(entity, false));
+                if (Button("Convert to Collider")) apply(action::SetTagOf<TriggerTag>(false));
             } else {
-                if (Button("Convert to Trigger")) apply(action::SetTagOf<TriggerTag>(entity, true));
+                if (Button("Convert to Trigger")) apply(action::SetTagOf<TriggerTag>(true));
             }
         } else if (Button("Add Trigger")) apply(action::physics::AddTrigger{});
     }

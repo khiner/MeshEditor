@@ -75,5 +75,5 @@ using Actions = std::variant<
     AssignVertexSamples, SetVertexSamples, RemoveVertexSamples, SetModalFormMaterial>;
 
 using Action = MergedVariantT<
-    Actions, std::variant<action::Update<bool>, action::Update<uint32_t>, action::Update<double>>>;
+    Actions, std::variant<action::Update<bool>, action::Update<uint32_t>, action::Update<double>, action::UpdateActive<bool>, action::UpdateActive<uint32_t>, action::UpdateActive<float>, action::UpdateActive<double>>>;
 } // namespace action::audio

@@ -3099,15 +3099,35 @@ void Scene::Apply(const action::Action &action) {
                     });
                 });
             },
+            [&]<typename Field>(const action::UpdateActive<Field> &a) {
+                const auto e = FindActiveEntity(R);
+                DispatchByTypeHash(UpdateableComponents{}, a.ComponentType, [&]<typename T> {
+                    R.patch<T>(e, [&](T &t) {
+                        *reinterpret_cast<Field *>(reinterpret_cast<std::byte *>(&t) + a.Offset) = a.Value;
+                    });
+                });
+            },
             [&](const action::SetTag &a) {
                 DispatchByTypeHash(TagComponents{}, a.TagType, [&]<typename T> {
                     if (a.Present) R.emplace_or_replace<T>(a.Entity);
                     else R.remove<T>(a.Entity);
                 });
             },
+            [&](const action::SetActiveTag &a) {
+                const auto e = FindActiveEntity(R);
+                DispatchByTypeHash(TagComponents{}, a.TagType, [&]<typename T> {
+                    if (a.Present) R.emplace_or_replace<T>(e);
+                    else R.remove<T>(e);
+                });
+            },
             [&]<typename T>(const action::Replace<T> &a) {
                 if constexpr (std::is_same_v<T, PhysicsMotion>) R.emplace_or_replace<T>(a.Entity, *a.Value);
                 else R.emplace_or_replace<T>(a.Entity, a.Value);
+            },
+            [&]<typename T>(const action::ReplaceActive<T> &a) {
+                const auto e = FindActiveEntity(R);
+                if constexpr (std::is_same_v<T, PhysicsMotion>) R.emplace_or_replace<T>(e, *a.Value);
+                else R.emplace_or_replace<T>(e, a.Value);
             },
             [&](const action::DestroyEntity &a) { R.destroy(a.Entity); },
             [&](const action::physics::CreateNamed &a) {

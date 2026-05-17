@@ -16,6 +16,15 @@ struct Update {
     T Value;
 };
 
+// Like Update<T> but carries no entity — the dispatcher resolves the target via FindActiveEntity(R).
+// Separate type (vs an optional field on Update<T>) so we don't waste bytes storing entt::null.
+template<typename T>
+struct UpdateActive {
+    entt::id_type ComponentType;
+    uint16_t Offset;
+    T Value;
+};
+
 namespace detail {
 template<auto> struct member_traits;
 template<class C, class F, F C::*P>
@@ -49,11 +58,26 @@ UpdateOf(entt::entity e, detail::last_field<Ms...> v) {
     return {e, entt::type_hash<detail::first_class<Ms...>>::value(), uint16_t((detail::MemPtrOffset(Ms) + ...)), std::move(v)};
 }
 
+// No-entity overload: returns UpdateActive<T>; dispatcher resolves via FindActiveEntity(R).
+template<auto... Ms>
+constexpr UpdateActive<detail::last_field<Ms...>>
+UpdateOf(detail::last_field<Ms...> v) {
+    static_assert(sizeof...(Ms) > 0, "UpdateOf requires at least one member pointer");
+    using F = detail::last_field<Ms...>;
+    static_assert(std::is_trivially_copyable_v<F>, "Update<T> is for trivially-copyable fields only; use Replace<T> for complex types");
+    return {entt::type_hash<detail::first_class<Ms...>>::value(), uint16_t((detail::MemPtrOffset(Ms) + ...)), std::move(v)};
+}
+
 // Runtime-pointer escape hatch — for the rare case where a member pointer is computed at runtime
 // (e.g. a generic lambda parameter, a base-to-derived cast). Prefer the NTTP form above.
 template<class C, class F>
 constexpr Update<F> UpdateOf(entt::entity e, F C::*m, F v) {
     static_assert(std::is_trivially_copyable_v<F>);
     return {e, entt::type_hash<C>::value(), uint16_t(detail::MemPtrOffset(m)), std::move(v)};
+}
+template<class C, class F>
+constexpr UpdateActive<F> UpdateOf(F C::*m, F v) {
+    static_assert(std::is_trivially_copyable_v<F>);
+    return {entt::type_hash<C>::value(), uint16_t(detail::MemPtrOffset(m)), std::move(v)};
 }
 } // namespace action

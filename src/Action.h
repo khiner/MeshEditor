@@ -20,7 +20,7 @@
 
 namespace action {
 
-// Cross-cutting alts (Update<F>, Replace<X>, SetTag, DestroyEntity) — not owned by any single domain.
+// `*Active` actions use FindActiveEntity instead of storing the active entity.
 using CrossCuttingActions = std::variant<
     Update<bool>, Update<uint8_t>, Update<uint32_t>, Update<float>, Update<double>,
     Update<vec3>, Update<vec4>,
@@ -29,9 +29,11 @@ using CrossCuttingActions = std::variant<
     Update<CollideMode>, Update<PhysicsCombineMode>, Update<PhysicsDriveType>, Update<PhysicsDriveMode>,
     Update<vk::ClearColorValue>,
     Update<std::optional<uint32_t>>,
-    SetTag, DestroyEntity,
+    UpdateActive<bool>, UpdateActive<uint32_t>, UpdateActive<float>, UpdateActive<double>, UpdateActive<vec3>, UpdateActive<entt::entity>,
+    SetTag, SetActiveTag, DestroyEntity,
     Replace<Camera>, Replace<MaterialDirty>, Replace<MeshMaterialAssignment>, Replace<MeshMaterialSlotSelection>,
-    Replace<PhysicsMotion>, Replace<PunctualLight>, Replace<RealImpactActiveMicrophone>>;
+    Replace<PhysicsMotion>, Replace<PunctualLight>, Replace<RealImpactActiveMicrophone>,
+    ReplaceActive<Camera>, ReplaceActive<PhysicsMotion>, ReplaceActive<PunctualLight>>;
 
 using Action = MergedVariantT<
     selection::Actions, object::Actions, project::Actions, scene::Actions,

@@ -1771,7 +1771,7 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
             // Use the camera's distance from world origin as the conversion distance.
             const float distance = std::max(glm::length(R.get<WorldTransform>(active_entity).P), 1.f);
             auto edited = *cd;
-            if (RenderCameraLensEditor(edited, distance)) Apply(action::Replace<Camera>{active_entity, edited});
+            if (RenderCameraLensEditor(edited, distance)) Apply(action::ReplaceActive<Camera>{edited});
             Separator();
             if (LookThroughCameraEntity() == active_entity) {
                 if (Button("Exit camera view")) Apply(action::scene::ExitLookThroughCamera{});
@@ -1823,10 +1823,10 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
             }
         }
         if (changed) {
-            Apply(action::Replace<PunctualLight>{active_entity, light});
-            Apply(action::SetTagOf<SubmitDirty>(active_entity, true));
+            Apply(action::ReplaceActive<PunctualLight>{light});
+            Apply(action::SetTagOf<SubmitDirty>(true));
         }
-        if (wireframe_changed) Apply(action::SetTagOf<LightWireframeDirty>(active_entity, true));
+        if (wireframe_changed) Apply(action::SetTagOf<LightWireframeDirty>(true));
     }
     // Audio controls (mesh instance = sound object or eligible to become one; microphone)
     if (const auto *instance = R.try_get<Instance>(active_entity); instance && R.all_of<Mesh>(instance->Entity)) {
