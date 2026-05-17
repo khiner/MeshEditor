@@ -6,7 +6,7 @@
 
 #include <cstdint>
 #include <filesystem>
-#include <functional>
+#include <optional>
 #include <span>
 #include <utility>
 #include <vector>
@@ -29,14 +29,12 @@ void ProcessAudio(FaustDSP &, entt::registry &, entt::entity scene_entity, Audio
 void RegisterAudioComponentHandlers(entt::registry &, entt::entity scene_entity);
 void RemoveAudioComponents(entt::registry &, entt::entity sound_entity);
 
-// By value (not const&) so move-only alternatives (e.g. AcceptModalGenerationResult) survive the visit-into-Apply hop.
-using AudioApply = std::function<void(action::audio::Action)>;
-
 // Draw the Audio controls for a sound object entity (has SoundVerticesModel).
 // `selection_bits` is the raw SelectionBitset pointer (used in Edit mode for SampleOpVertices); may be null.
-void DrawObjectAudioControls(
+// Returns an action for the caller to apply, if the user triggered one this frame.
+std::optional<action::audio::Action> DrawObjectAudioControls(
     entt::registry &, entt::entity scene_entity, entt::entity sound_entity, entt::entity mesh_entity,
-    const uint32_t *selection_bits, const AudioApply &
+    const uint32_t *selection_bits
 );
 
 // {path, frames} pair — path is an fs::path used as a dedup key in the scene-level sample store.

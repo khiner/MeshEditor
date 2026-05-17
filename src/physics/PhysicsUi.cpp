@@ -15,10 +15,13 @@
 #include <glm/gtc/quaternion.hpp>
 #include <glm/trigonometric.hpp>
 #include <imgui.h>
+#include <optional>
 
 using namespace ImGui;
 
 namespace {
+using ActionOpt = std::optional<action::physics::Action>;
+
 // Returns `name` if non-empty, else a bracketed fallback formatted from `fmt`/args (e.g., "<3>").
 // Brackets signal "no explicit name" and can't be confused with a user-typed value.
 // Uses vformat since consteval-checking of `fmt` is lost through the forwarded pack.
@@ -28,10 +31,11 @@ std::string DisplayName(std::string_view name, std::string_view fmt, auto &&...a
 }
 
 template<class T>
-void RenderNameEdit(entt::entity e, const std::string &current, const physics_ui::ApplyAction &apply) {
+ActionOpt RenderNameEdit(entt::entity e, const std::string &current) {
     char buf[128];
     snprintf(buf, sizeof(buf), "%s", current.c_str());
-    if (InputText("Name", buf, sizeof(buf))) apply(action::physics::SetNameOf<T>(e, std::string{buf}));
+    if (InputText("Name", buf, sizeof(buf))) return action::physics::SetNameOf<T>(e, std::string{buf});
+    return {};
 }
 
 // Deduce owner class from a data-member pointer (entt::entity Owner::*).
@@ -40,33 +44,39 @@ template<class C, class V> struct ptr_class<V C::*> {
     using type = C;
 };
 
+template<class Target>
+struct EntityComboResult {
+    const Target *Selected;
+    ActionOpt Action;
+};
+
 // Renders a combo that selects a referenced resource entity (Field) from the registry's view<Target>.
-// Returns the currently-selected Target (or nullptr if none/invalid). When `empty_preview` is non-null
-// and the registry has no Target entities, renders a disabled combo with that preview instead.
+// `.Selected` is the currently-selected Target (or nullptr if none/invalid); `.Action` is set if the
+// user picked a new entry. When `empty_preview` is non-null and the registry has no Target entities,
+// renders a disabled combo with that preview instead.
 // `entity` is the active entity (used for the read; the write targets active via the no-entity UpdateOf).
 template<class Target, auto Field>
-const Target *RenderEntityCombo(entt::registry &r, entt::entity entity, const char *label, const physics_ui::ApplyAction &apply, const char *empty_preview = nullptr) {
+EntityComboResult<Target> RenderEntityCombo(entt::registry &r, entt::entity entity, const char *label, const char *empty_preview = nullptr) {
     using Owner = typename ptr_class<decltype(Field)>::type;
     const auto view = r.view<const Target>();
     if (empty_preview && view.begin() == view.end()) {
         BeginDisabled();
         if (BeginCombo(label, empty_preview)) EndCombo();
         EndDisabled();
-        return nullptr;
+        return {nullptr, std::nullopt};
     }
     const auto cur_e = r.get<const Owner>(entity).*Field;
     const auto *cur = cur_e != null_entity && r.valid(cur_e) ? r.try_get<const Target>(cur_e) : nullptr;
+    ActionOpt out;
     if (const auto preview = cur ? DisplayName(cur->Name, "{:x}", uint32_t(cur_e)) : std::string{"None"};
         BeginCombo(label, preview.c_str())) {
-        if (Selectable("None", cur_e == null_entity)) apply(action::UpdateOf<Field>(entt::entity{null_entity}));
+        if (Selectable("None", cur_e == null_entity)) out = action::UpdateOf<Field>(entt::entity{null_entity});
         for (auto [te, t] : view.each()) {
-            if (Selectable(DisplayName(t.Name, "{:x}", uint32_t(te)).c_str(), cur_e == te)) {
-                apply(action::UpdateOf<Field>(te));
-            }
+            if (Selectable(DisplayName(t.Name, "{:x}", uint32_t(te)).c_str(), cur_e == te)) out = action::UpdateOf<Field>(te);
         }
         EndCombo();
     }
-    return cur;
+    return {cur, std::move(out)};
 }
 
 std::string SystemDisplayName(const entt::registry &r, entt::entity e) {
@@ -82,16 +92,16 @@ void ToggleInVector(std::vector<T> &v, T e, bool add) {
     }
 }
 
-// Multi-select combo over all CollisionSystem entities. `on_toggle(system, now_member)` fires per change.
-// Renders a disabled combo with "No systems defined" when none exist.
+// Multi-select combo over all CollisionSystem entities. `on_toggle(system, now_member)` returns
+// the action for that change. Renders a disabled combo with "No systems defined" when none exist.
 template<class Fn>
-void RenderSystemMultiSelect(const entt::registry &r, const char *label, const std::vector<entt::entity> &selection, Fn on_toggle) {
+ActionOpt RenderSystemMultiSelect(const entt::registry &r, const char *label, const std::vector<entt::entity> &selection, Fn on_toggle) {
     const auto view = r.view<const CollisionSystem>();
     if (view.begin() == view.end()) {
         BeginDisabled();
         if (BeginCombo(label, "No systems defined")) EndCombo();
         EndDisabled();
-        return;
+        return {};
     }
 
     std::string preview;
@@ -99,13 +109,15 @@ void RenderSystemMultiSelect(const entt::registry &r, const char *label, const s
     else if (selection.size() == 1) preview = SystemDisplayName(r, selection[0]);
     else preview = std::format("{} selected", selection.size());
 
+    ActionOpt out;
     if (BeginCombo(label, preview.c_str())) {
         for (auto se : view) {
             bool member = std::find(selection.begin(), selection.end(), se) != selection.end();
-            if (Checkbox(SystemDisplayName(r, se).c_str(), &member)) on_toggle(se, member);
+            if (Checkbox(SystemDisplayName(r, se).c_str(), &member)) out = on_toggle(se, member);
         }
         EndCombo();
     }
+    return out;
 }
 
 size_t CountFilterUses(const entt::registry &r, entt::entity filter) {
@@ -121,10 +133,10 @@ size_t CountFilterUses(const entt::registry &r, entt::entity filter) {
 
 // Editor for a collision filter's body: membership, Mode, CollideSystems. Sole editing surface —
 // per-entity panels only reference filters by combo; property edits happen here in the Physics tab.
-void RenderCollisionFilterBody(entt::registry &r, entt::entity filter_e, const physics_ui::ApplyAction &apply) {
+ActionOpt RenderCollisionFilterBody(entt::registry &r, entt::entity filter_e) {
     const auto &filter = r.get<const CollisionFilter>(filter_e);
-    RenderSystemMultiSelect(r, "Member of", filter.Systems, [&](entt::entity se, bool add) {
-        apply(action::physics::ToggleFilterEntity{filter_e, &CollisionFilter::Systems, se, add});
+    ActionOpt out = RenderSystemMultiSelect(r, "Member of", filter.Systems, [&](entt::entity se, bool add) -> action::physics::Action {
+        return action::physics::ToggleFilterEntity{filter_e, &CollisionFilter::Systems, se, add};
     });
 
     int mode = int(filter.Mode);
@@ -135,18 +147,19 @@ void RenderCollisionFilterBody(entt::registry &r, entt::entity filter_e, const p
     mode_changed |= RadioButton("Allowlist", &mode, int(CollideMode::Allowlist));
     SameLine();
     mode_changed |= RadioButton("Blocklist", &mode, int(CollideMode::Blocklist));
-    if (mode_changed) apply(action::UpdateOf<&CollisionFilter::Mode>(filter_e, CollideMode(mode)));
+    if (mode_changed) out = action::UpdateOf<&CollisionFilter::Mode>(filter_e, CollideMode(mode));
 
     if (mode != int(CollideMode::All)) {
         Indent();
-        RenderSystemMultiSelect(r, "##collide", filter.CollideSystems, [&](entt::entity se, bool add) {
-            apply(action::physics::ToggleFilterEntity{filter_e, &CollisionFilter::CollideSystems, se, add});
-        });
+        if (auto a = RenderSystemMultiSelect(r, "##collide", filter.CollideSystems, [&](entt::entity se, bool add) -> action::physics::Action {
+                return action::physics::ToggleFilterEntity{filter_e, &CollisionFilter::CollideSystems, se, add};
+            })) out = std::move(*a);
         if (filter.CollideSystems.empty() && mode == int(CollideMode::Allowlist)) {
             TextColored(ImVec4{0.9f, 0.7f, 0.3f, 1}, "No systems selected — this filter collides with nothing.");
         }
         Unindent();
     }
+    return out;
 }
 
 // Split a cell along the '/' diagonal (TR→BL). Upper-left triangle shows row→col direction;
@@ -154,18 +167,21 @@ void RenderCollisionFilterBody(entt::registry &r, entt::entity filter_e, const p
 // green when both directions agree (effective collide) and red when the other direction vetoes
 // (effective blocked — the allow is overridden).
 void DrawMatrixCell(ImDrawList *dl, ImVec2 p_min, ImVec2 p_max, bool a_to_b, bool b_to_a) {
-    const ImU32 collide = IM_COL32(60, 200, 60, 220);
-    const ImU32 overridden = IM_COL32(200, 60, 60, 220);
-    const ImU32 fill = (a_to_b && b_to_a) ? collide : overridden;
-    const ImVec2 TL = p_min, TR{p_max.x, p_min.y}, BR = p_max, BL{p_min.x, p_max.y};
+    const auto collide = IM_COL32(60, 200, 60, 220);
+    const auto overridden = IM_COL32(200, 60, 60, 220);
+    const auto fill = (a_to_b && b_to_a) ? collide : overridden;
+    const auto TL = p_min, BR = p_max;
+    const ImVec2 TR{p_max.x, p_min.y}, BL{p_min.x, p_max.y};
     if (a_to_b) dl->AddTriangleFilled(TL, TR, BL, fill); // row→col
     if (b_to_a) dl->AddTriangleFilled(TR, BR, BL, fill); // col→row
 }
 
 // List view of named entities with use-count, Delete/Add buttons, and per-entry body.
+// `body(e, x)` returns an action if the user edited that row.
 template<class T>
-void DrawNamedEntityList(entt::registry &r, const char *id, const char *add_label, std::string_view prefix, auto &&count, auto &&body, const physics_ui::ApplyAction &apply) {
+ActionOpt DrawNamedEntityList(entt::registry &r, const char *id, const char *add_label, std::string_view prefix, auto &&count, auto &&body) {
     PushID(id);
+    ActionOpt out;
     entt::entity delete_entity = entt::null;
     for (auto [e, x] : r.view<T>().each()) {
         PushID(uint32_t(e));
@@ -176,15 +192,16 @@ void DrawNamedEntityList(entt::registry &r, const char *id, const char *add_labe
         SameLine();
         if (SmallButton("X")) delete_entity = e;
         if (expanded) {
-            RenderNameEdit<T>(e, x.Name, apply);
-            body(e, x);
+            if (auto a = RenderNameEdit<T>(e, x.Name)) out = std::move(*a);
+            if (auto a = body(e, x)) out = std::move(*a);
             TreePop();
         }
         PopID();
     }
-    if (delete_entity != entt::null) apply(action::DestroyEntity{delete_entity});
-    if (Button(add_label)) apply(action::physics::CreateNamedOf<T>(prefix));
+    if (delete_entity != entt::null) out = action::DestroyEntity{delete_entity};
+    if (Button(add_label)) out = action::physics::CreateNamedOf<T>(prefix);
     PopID();
+    return out;
 }
 
 // Returns the edited shape iff the user changed something.
@@ -244,11 +261,12 @@ std::optional<PhysicsShape> RenderShapeEditor(const PhysicsShape &in, bool auto_
 }
 } // namespace
 
-void physics_ui::RenderTab(entt::registry &r, entt::entity scene_entity, PhysicsWorld &physics, const ApplyAction &apply) {
+std::optional<action::physics::Action> physics_ui::RenderTab(entt::registry &r, entt::entity scene_entity, PhysicsWorld &physics) {
+    ActionOpt out;
     SeparatorText("Simulation");
     Text("Bodies: %u", physics.BodyCount());
     {
-        ui::Edit f{r, apply, scene_entity};
+        ui::Edit f{r, out, scene_entity};
         f.Slider<&PhysicsSimulationSettings::SubstepsPerFrame>("Substeps per frame", 1u, 100u);
         f.Slider<&PhysicsSimulationSettings::SolverIterations>("Solver iterations", 2u, 50u);
         f.Slider<&PhysicsSimulationSettings::TimeScale>("Time scale", 0.f, 10.f, "%.2fx");
@@ -256,50 +274,49 @@ void physics_ui::RenderTab(entt::registry &r, entt::entity scene_entity, Physics
     }
 
     if (CollapsingHeader("Physics Materials")) {
-        DrawNamedEntityList<PhysicsMaterial>(
-            r, "PhysMaterials", "Add material", "Material",
-            [&](entt::entity mat_entity) {
-                size_t n = 0;
-                for (auto [e, m] : r.view<const ColliderMaterial>().each()) {
-                    if (m.PhysicsMaterialEntity == mat_entity) ++n;
+        if (auto a = DrawNamedEntityList<PhysicsMaterial>(
+                r, "PhysMaterials", "Add material", "Material",
+                [&](entt::entity mat_entity) {
+                    size_t n = 0;
+                    for (auto [e, m] : r.view<const ColliderMaterial>().each()) {
+                        if (m.PhysicsMaterialEntity == mat_entity) ++n;
+                    }
+                    return n;
+                },
+                [&](entt::entity mat_entity, const PhysicsMaterial &) -> ActionOpt {
+                    ActionOpt mat_out;
+                    ui::Edit f{r, mat_out, mat_entity};
+                    f.Slider<&PhysicsMaterial::StaticFriction>("Static friction", 0.f, 2.f);
+                    f.Slider<&PhysicsMaterial::DynamicFriction>("Dynamic friction", 0.f, 2.f);
+                    f.Slider<&PhysicsMaterial::Restitution>("Restitution", 0.f, 1.f);
+                    f.Enum<&PhysicsMaterial::FrictionCombine>("Friction combine", "Average\0Minimum\0Maximum\0Multiply\0");
+                    f.Enum<&PhysicsMaterial::RestitutionCombine>("Restitution combine", "Average\0Minimum\0Maximum\0Multiply\0");
+                    return mat_out;
                 }
-                return n;
-            },
-            [&](entt::entity mat_entity, const PhysicsMaterial &) {
-                ui::Edit f{r, apply, mat_entity};
-                f.Slider<&PhysicsMaterial::StaticFriction>("Static friction", 0.f, 2.f);
-                f.Slider<&PhysicsMaterial::DynamicFriction>("Dynamic friction", 0.f, 2.f);
-                f.Slider<&PhysicsMaterial::Restitution>("Restitution", 0.f, 1.f);
-                f.Enum<&PhysicsMaterial::FrictionCombine>("Friction combine", "Average\0Minimum\0Maximum\0Multiply\0");
-                f.Enum<&PhysicsMaterial::RestitutionCombine>("Restitution combine", "Average\0Minimum\0Maximum\0Multiply\0");
-            },
-            apply
-        );
+            )) out = std::move(*a);
     }
 
     if (CollapsingHeader("Collision Systems")) {
-        DrawNamedEntityList<CollisionSystem>(
-            r, "CollisionSystems", "Add system", "System",
-            [&](entt::entity se) {
-                size_t n = 0;
-                for (auto [fe, f] : r.view<const CollisionFilter>().each()) {
-                    if (std::find(f.Systems.begin(), f.Systems.end(), se) != f.Systems.end() ||
-                        std::find(f.CollideSystems.begin(), f.CollideSystems.end(), se) != f.CollideSystems.end()) ++n;
-                }
-                return n;
-            },
-            [&](entt::entity, const CollisionSystem &) {},
-            apply
-        );
+        if (auto a = DrawNamedEntityList<CollisionSystem>(
+                r, "CollisionSystems", "Add system", "System",
+                [&](entt::entity se) {
+                    size_t n = 0;
+                    for (auto [fe, f] : r.view<const CollisionFilter>().each()) {
+                        if (std::find(f.Systems.begin(), f.Systems.end(), se) != f.Systems.end() ||
+                            std::find(f.CollideSystems.begin(), f.CollideSystems.end(), se) != f.CollideSystems.end()) ++n;
+                    }
+                    return n;
+                },
+                [](entt::entity, const CollisionSystem &) -> ActionOpt { return {}; }
+            )) out = std::move(*a);
     }
 
     if (CollapsingHeader("Collision Filters")) {
-        DrawNamedEntityList<CollisionFilter>(
-            r, "CollisionFilters", "Add filter", "Filter",
-            [&](entt::entity fe) { return CountFilterUses(r, fe); },
-            [&](entt::entity fe, const CollisionFilter &) { RenderCollisionFilterBody(r, fe, apply); },
-            apply
-        );
+        if (auto a = DrawNamedEntityList<CollisionFilter>(
+                r, "CollisionFilters", "Add filter", "Filter",
+                [&](entt::entity fe) { return CountFilterUses(r, fe); },
+                [&](entt::entity fe, const CollisionFilter &) { return RenderCollisionFilterBody(r, fe); }
+            )) out = std::move(*a);
         PushID("CollisionFilters");
 
         // Collision matrix
@@ -354,120 +371,123 @@ void physics_ui::RenderTab(entt::registry &r, entt::entity scene_entity, Physics
     }
 
     if (CollapsingHeader("Joint Definitions")) {
-        DrawNamedEntityList<PhysicsJointDef>(
-            r, "JointDefs", "Add joint definition", "Joint",
-            [&](entt::entity jd_entity) {
-                size_t n = 0;
-                for (auto [e, j] : r.view<const PhysicsJoint>().each()) {
-                    if (j.JointDefEntity == jd_entity) ++n;
-                }
-                return n;
-            },
-            [&](entt::entity jd_entity, const PhysicsJointDef &jd) {
-                static const char *axis_names[]{"X", "Y", "Z"};
-                std::optional<uint32_t> delete_limit;
-                for (uint32_t li = 0; li < jd.Limits.size(); ++li) {
-                    PushID(int(li));
-                    const auto &limit = jd.Limits[li];
-                    const bool limit_expanded = TreeNodeEx("##node", ImGuiTreeNodeFlags_SpanTextWidth, "Limit %u", li);
-                    SameLine();
-                    if (SmallButton("X")) delete_limit = li;
-                    if (limit_expanded) {
-                        const auto edit_limit = [&](auto &&fn) {
-                            auto edit = limit;
-                            fn(edit);
-                            apply(action::physics::SetJointVecItem<PhysicsJointLimit>{jd_entity, &PhysicsJointDef::Limits, li, std::make_unique<PhysicsJointLimit>(std::move(edit))});
-                        };
-                        TextUnformatted("Linear axes:");
-                        SameLine();
-                        for (uint8_t a = 0; a < 3; ++a) {
-                            bool active = std::find(limit.LinearAxes.begin(), limit.LinearAxes.end(), a) != limit.LinearAxes.end();
-                            if (Checkbox(axis_names[a], &active)) edit_limit([&](auto &e) {
-                                if (active) e.LinearAxes.push_back(a);
-                                else std::erase(e.LinearAxes, a);
-                            });
-                            if (a < 2) SameLine();
-                        }
-                        TextUnformatted("Angular axes:");
-                        SameLine();
-                        for (uint8_t a = 0; a < 3; ++a) {
-                            PushID(a + 3);
-                            bool active = std::find(limit.AngularAxes.begin(), limit.AngularAxes.end(), a) != limit.AngularAxes.end();
-                            if (Checkbox(axis_names[a], &active)) edit_limit([&](auto &e) {
-                                if (active) e.AngularAxes.push_back(a);
-                                else std::erase(e.AngularAxes, a);
-                            });
-                            if (a < 2) SameLine();
-                            PopID();
-                        }
-
-                        bool has_min = limit.Min.has_value(), has_max = limit.Max.has_value();
-                        float min_val = limit.Min.value_or(0.0f), max_val = limit.Max.value_or(0.0f);
-                        if (Checkbox("Min", &has_min)) edit_limit([&](auto &e) { e.Min = has_min ? std::optional{min_val} : std::nullopt; });
-                        if (has_min) {
-                            SameLine();
-                            if (DragFloat("##min", &min_val, 0.01f)) edit_limit([&](auto &e) { e.Min = min_val; });
-                        }
-                        if (Checkbox("Max", &has_max)) edit_limit([&](auto &e) { e.Max = has_max ? std::optional{max_val} : std::nullopt; });
-                        if (has_max) {
-                            SameLine();
-                            if (DragFloat("##max", &max_val, 0.01f)) edit_limit([&](auto &e) { e.Max = max_val; });
-                        }
-
-                        bool soft = limit.Stiffness.has_value();
-                        if (Checkbox("Soft limit", &soft)) edit_limit([&](auto &e) { e.Stiffness = soft ? std::optional{1000.0f} : std::nullopt; });
-                        if (limit.Stiffness) {
-                            float stiffness = *limit.Stiffness, damping = limit.Damping;
-                            if (DragFloat("Stiffness", &stiffness, 1.0f, 0.0f, 1e6f)) edit_limit([&](auto &e) { e.Stiffness = stiffness; });
-                            if (DragFloat("Damping", &damping, 0.1f, 0.0f, 1e4f)) edit_limit([&](auto &e) { e.Damping = damping; });
-                        }
-                        TreePop();
+        if (auto a = DrawNamedEntityList<PhysicsJointDef>(
+                r, "JointDefs", "Add joint definition", "Joint",
+                [&](entt::entity jd_entity) {
+                    size_t n = 0;
+                    for (auto [e, j] : r.view<const PhysicsJoint>().each()) {
+                        if (j.JointDefEntity == jd_entity) ++n;
                     }
-                    PopID();
-                }
-                if (delete_limit) apply(action::physics::DeleteJointVecItem<PhysicsJointLimit>{jd_entity, &PhysicsJointDef::Limits, *delete_limit});
-                if (Button("Add limit")) apply(action::physics::AddJointVecItem<PhysicsJointLimit>{jd_entity, &PhysicsJointDef::Limits});
+                    return n;
+                },
+                [&](entt::entity jd_entity, const PhysicsJointDef &jd) -> ActionOpt {
+                    static const char *axis_names[]{"X", "Y", "Z"};
+                    ActionOpt jd_out;
+                    std::optional<uint32_t> delete_limit;
+                    for (uint32_t li = 0; li < jd.Limits.size(); ++li) {
+                        PushID(int(li));
+                        const auto &limit = jd.Limits[li];
+                        const bool limit_expanded = TreeNodeEx("##node", ImGuiTreeNodeFlags_SpanTextWidth, "Limit %u", li);
+                        SameLine();
+                        if (SmallButton("X")) delete_limit = li;
+                        if (limit_expanded) {
+                            const auto edit_limit = [&](auto &&fn) -> action::physics::Action {
+                                auto edit = limit;
+                                fn(edit);
+                                return action::physics::SetJointVecItem<PhysicsJointLimit>{jd_entity, &PhysicsJointDef::Limits, li, std::make_unique<PhysicsJointLimit>(std::move(edit))};
+                            };
+                            TextUnformatted("Linear axes:");
+                            SameLine();
+                            for (uint8_t a = 0; a < 3; ++a) {
+                                bool active = std::find(limit.LinearAxes.begin(), limit.LinearAxes.end(), a) != limit.LinearAxes.end();
+                                if (Checkbox(axis_names[a], &active)) jd_out = edit_limit([&](auto &e) {
+                                                                          if (active) e.LinearAxes.push_back(a);
+                                                                          else std::erase(e.LinearAxes, a);
+                                                                      });
+                                if (a < 2) SameLine();
+                            }
+                            TextUnformatted("Angular axes:");
+                            SameLine();
+                            for (uint8_t a = 0; a < 3; ++a) {
+                                PushID(a + 3);
+                                bool active = std::find(limit.AngularAxes.begin(), limit.AngularAxes.end(), a) != limit.AngularAxes.end();
+                                if (Checkbox(axis_names[a], &active)) jd_out = edit_limit([&](auto &e) {
+                                                                          if (active) e.AngularAxes.push_back(a);
+                                                                          else std::erase(e.AngularAxes, a);
+                                                                      });
+                                if (a < 2) SameLine();
+                                PopID();
+                            }
 
-                Spacing();
+                            bool has_min = limit.Min.has_value(), has_max = limit.Max.has_value();
+                            float min_val = limit.Min.value_or(0.0f), max_val = limit.Max.value_or(0.0f);
+                            if (Checkbox("Min", &has_min)) jd_out = edit_limit([&](auto &e) { e.Min = has_min ? std::optional{min_val} : std::nullopt; });
+                            if (has_min) {
+                                SameLine();
+                                if (DragFloat("##min", &min_val, 0.01f)) jd_out = edit_limit([&](auto &e) { e.Min = min_val; });
+                            }
+                            if (Checkbox("Max", &has_max)) jd_out = edit_limit([&](auto &e) { e.Max = has_max ? std::optional{max_val} : std::nullopt; });
+                            if (has_max) {
+                                SameLine();
+                                if (DragFloat("##max", &max_val, 0.01f)) jd_out = edit_limit([&](auto &e) { e.Max = max_val; });
+                            }
 
-                std::optional<uint32_t> delete_drive;
-                for (uint32_t di = 0; di < jd.Drives.size(); ++di) {
-                    PushID(int(di + 1000));
-                    const auto &drive = jd.Drives[di];
-                    const bool drive_expanded = TreeNodeEx("##node", ImGuiTreeNodeFlags_SpanTextWidth, "Drive %u", di);
-                    SameLine();
-                    if (SmallButton("X")) delete_drive = di;
-                    if (drive_expanded) {
-                        const auto edit_drive = [&](auto &&fn) {
-                            auto edit = drive;
-                            fn(edit);
-                            apply(action::physics::SetJointVecItem<PhysicsJointDrive>{jd_entity, &PhysicsJointDef::Drives, di, std::make_unique<PhysicsJointDrive>(std::move(edit))});
-                        };
-                        if (int type = int(drive.Type); Combo("Type", &type, "Linear\0Angular\0")) edit_drive([&](auto &e) { e.Type = PhysicsDriveType(type); });
-                        if (int axis = drive.Axis; Combo("Axis", &axis, "X\0Y\0Z\0")) edit_drive([&](auto &e) { e.Axis = uint8_t(axis); });
-                        if (int mode = int(drive.Mode); Combo("Mode", &mode, "Force\0Acceleration\0")) edit_drive([&](auto &e) { e.Mode = PhysicsDriveMode(mode); });
-                        float max_force = drive.MaxForce, pos_target = drive.PositionTarget, vel_target = drive.VelocityTarget;
-                        float stiffness = drive.Stiffness, damping = drive.Damping;
-                        if (DragFloat("Max force", &max_force, 1.0f, 0.0f, 1e6f)) edit_drive([&](auto &e) { e.MaxForce = max_force; });
-                        if (DragFloat("Position target", &pos_target, 0.01f)) edit_drive([&](auto &e) { e.PositionTarget = pos_target; });
-                        if (DragFloat("Velocity target", &vel_target, 0.01f)) edit_drive([&](auto &e) { e.VelocityTarget = vel_target; });
-                        if (DragFloat("Stiffness", &stiffness, 1.0f, 0.0f, 1e6f)) edit_drive([&](auto &e) { e.Stiffness = stiffness; });
-                        if (DragFloat("Damping", &damping, 0.1f, 0.0f, 1e4f)) edit_drive([&](auto &e) { e.Damping = damping; });
-                        TreePop();
+                            bool soft = limit.Stiffness.has_value();
+                            if (Checkbox("Soft limit", &soft)) jd_out = edit_limit([&](auto &e) { e.Stiffness = soft ? std::optional{1000.0f} : std::nullopt; });
+                            if (limit.Stiffness) {
+                                float stiffness = *limit.Stiffness, damping = limit.Damping;
+                                if (DragFloat("Stiffness", &stiffness, 1.0f, 0.0f, 1e6f)) jd_out = edit_limit([&](auto &e) { e.Stiffness = stiffness; });
+                                if (DragFloat("Damping", &damping, 0.1f, 0.0f, 1e4f)) jd_out = edit_limit([&](auto &e) { e.Damping = damping; });
+                            }
+                            TreePop();
+                        }
+                        PopID();
                     }
-                    PopID();
+                    if (delete_limit) jd_out = action::physics::DeleteJointVecItem<PhysicsJointLimit>{jd_entity, &PhysicsJointDef::Limits, *delete_limit};
+                    if (Button("Add limit")) jd_out = action::physics::AddJointVecItem<PhysicsJointLimit>{jd_entity, &PhysicsJointDef::Limits};
+
+                    Spacing();
+
+                    std::optional<uint32_t> delete_drive;
+                    for (uint32_t di = 0; di < jd.Drives.size(); ++di) {
+                        PushID(int(di + 1000));
+                        const auto &drive = jd.Drives[di];
+                        const bool drive_expanded = TreeNodeEx("##node", ImGuiTreeNodeFlags_SpanTextWidth, "Drive %u", di);
+                        SameLine();
+                        if (SmallButton("X")) delete_drive = di;
+                        if (drive_expanded) {
+                            const auto edit_drive = [&](auto &&fn) -> action::physics::Action {
+                                auto edit = drive;
+                                fn(edit);
+                                return action::physics::SetJointVecItem<PhysicsJointDrive>{jd_entity, &PhysicsJointDef::Drives, di, std::make_unique<PhysicsJointDrive>(std::move(edit))};
+                            };
+                            if (int type = int(drive.Type); Combo("Type", &type, "Linear\0Angular\0")) jd_out = edit_drive([&](auto &e) { e.Type = PhysicsDriveType(type); });
+                            if (int axis = drive.Axis; Combo("Axis", &axis, "X\0Y\0Z\0")) jd_out = edit_drive([&](auto &e) { e.Axis = uint8_t(axis); });
+                            if (int mode = int(drive.Mode); Combo("Mode", &mode, "Force\0Acceleration\0")) jd_out = edit_drive([&](auto &e) { e.Mode = PhysicsDriveMode(mode); });
+                            float max_force = drive.MaxForce, pos_target = drive.PositionTarget, vel_target = drive.VelocityTarget;
+                            float stiffness = drive.Stiffness, damping = drive.Damping;
+                            if (DragFloat("Max force", &max_force, 1.0f, 0.0f, 1e6f)) jd_out = edit_drive([&](auto &e) { e.MaxForce = max_force; });
+                            if (DragFloat("Position target", &pos_target, 0.01f)) jd_out = edit_drive([&](auto &e) { e.PositionTarget = pos_target; });
+                            if (DragFloat("Velocity target", &vel_target, 0.01f)) jd_out = edit_drive([&](auto &e) { e.VelocityTarget = vel_target; });
+                            if (DragFloat("Stiffness", &stiffness, 1.0f, 0.0f, 1e6f)) jd_out = edit_drive([&](auto &e) { e.Stiffness = stiffness; });
+                            if (DragFloat("Damping", &damping, 0.1f, 0.0f, 1e4f)) jd_out = edit_drive([&](auto &e) { e.Damping = damping; });
+                            TreePop();
+                        }
+                        PopID();
+                    }
+                    if (delete_drive) jd_out = action::physics::DeleteJointVecItem<PhysicsJointDrive>{jd_entity, &PhysicsJointDef::Drives, *delete_drive};
+                    if (Button("Add drive")) jd_out = action::physics::AddJointVecItem<PhysicsJointDrive>{jd_entity, &PhysicsJointDef::Drives};
+                    return jd_out;
                 }
-                if (delete_drive) apply(action::physics::DeleteJointVecItem<PhysicsJointDrive>{jd_entity, &PhysicsJointDef::Drives, *delete_drive});
-                if (Button("Add drive")) apply(action::physics::AddJointVecItem<PhysicsJointDrive>{jd_entity, &PhysicsJointDef::Drives});
-            },
-            apply
-        );
+            )) out = std::move(*a);
     }
+    return out;
 }
 
-void physics_ui::RenderEntityProperties(entt::registry &r, entt::entity entity, entt::entity scene_entity, const PhysicsWorld &physics, const ApplyAction &apply) {
-    if (!CollapsingHeader("Physics")) return;
+std::optional<action::physics::Action> physics_ui::RenderEntityProperties(entt::registry &r, entt::entity entity, entt::entity scene_entity, const PhysicsWorld &physics) {
+    if (!CollapsingHeader("Physics")) return {};
 
+    ActionOpt out;
     PushID("PhysicsEntity");
 
     const auto *motion = r.try_get<const PhysicsMotion>(entity);
@@ -492,23 +512,18 @@ void physics_ui::RenderEntityProperties(entt::registry &r, entt::entity entity, 
     SameLine();
     changed |= RadioButton("Dynamic", &motion_type, int(MType::Dynamic));
 
-    if (changed) {
-        apply(action::physics::SetMotionType{MType(motion_type)});
-        // Components may have been added/removed; refresh pointers before the sections below use them.
-        motion = r.try_get<const PhysicsMotion>(entity);
-        collider = r.try_get<const ColliderShape>(entity);
-    }
+    if (changed) out = action::physics::SetMotionType{MType(motion_type)};
 
     if (collider) { // Collider shape editing
         Spacing();
         SeparatorText("Collider");
 
-        ui::Edit{r, apply}.Check<&ColliderPolicy::AutoFitDims>("Auto-fit");
+        ui::Edit{r, out}.Check<&ColliderPolicy::AutoFitDims>("Auto-fit");
         if (auto s = RenderShapeEditor(collider->Shape, r.get<const ColliderPolicy>(entity).AutoFitDims))
-            apply(action::physics::SetColliderShape{*s, s->index() != collider->Shape.index()});
+            out = action::physics::SetColliderShape{*s, s->index() != collider->Shape.index()};
 
-        RenderEntityCombo<PhysicsMaterial, &ColliderMaterial::PhysicsMaterialEntity>(r, entity, "Physics material", apply, "No materials defined");
-        RenderEntityCombo<CollisionFilter, &ColliderMaterial::CollisionFilterEntity>(r, entity, "Collision filter", apply, "No filters defined");
+        if (auto a = RenderEntityCombo<PhysicsMaterial, &ColliderMaterial::PhysicsMaterialEntity>(r, entity, "Physics material", "No materials defined").Action) out = std::move(*a);
+        if (auto a = RenderEntityCombo<CollisionFilter, &ColliderMaterial::CollisionFilterEntity>(r, entity, "Collision filter", "No filters defined").Action) out = std::move(*a);
     }
 
     // Motion properties editing
@@ -522,7 +537,7 @@ void physics_ui::RenderEntityProperties(entt::registry &r, entt::entity entity, 
         const bool velocity_locked = tl.Playing || physics.BakedThrough() >= tl.StartFrame;
         if (velocity_locked) BeginDisabled();
         if (r.try_get<const PhysicsVelocity>(entity)) {
-            ui::Edit f{r, apply};
+            ui::Edit f{r, out};
             f.Drag<&PhysicsVelocity::Linear>("Linear velocity", 0.1f);
             f.Drag<&PhysicsVelocity::Angular>("Angular velocity", 0.1f);
         }
@@ -574,7 +589,7 @@ void physics_ui::RenderEntityProperties(entt::registry &r, entt::entity entity, 
 
             motion_changed |= DragFloat("Damping translation", &edit.LinearDamping, 0.01f, 0.f, 1.f);
             motion_changed |= DragFloat("Damping rotation", &edit.AngularDamping, 0.01f, 0.f, 1.f);
-            if (motion_changed) apply(action::ReplaceActive<PhysicsMotion>{std::make_unique<PhysicsMotion>(edit)});
+            if (motion_changed) out = action::ReplaceActive<PhysicsMotion>{std::make_unique<PhysicsMotion>(edit)};
         }
     }
 
@@ -583,20 +598,21 @@ void physics_ui::RenderEntityProperties(entt::registry &r, entt::entity entity, 
         Spacing();
         SeparatorText("Joint");
 
-        const auto *cur = RenderEntityCombo<PhysicsJointDef, &PhysicsJoint::JointDefEntity>(r, entity, "Definition", apply, "No joint definitions");
+        auto [cur, a] = RenderEntityCombo<PhysicsJointDef, &PhysicsJoint::JointDefEntity>(r, entity, "Definition", "No joint definitions");
+        if (a) out = std::move(*a);
         if (cur) Text("Limits: %zu, Drives: %zu", cur->Limits.size(), cur->Drives.size());
 
-        ui::Edit{r, apply}.Check<&PhysicsJoint::EnableCollision>("Enable collision");
+        ui::Edit{r, out}.Check<&PhysicsJoint::EnableCollision>("Enable collision");
 
         // ConnectedNode picker — KHR joint.connectedNode is the second attachment frame.
         // Mirrors Blender's rigid_body_constraint object1/object2 fields.
         const auto cn = joint->ConnectedNode;
         if (const auto cn_label = cn != null_entity && r.valid(cn) ? GetName(r, cn) : std::string{"None"};
             BeginCombo("Connected node", cn_label.c_str())) {
-            if (Selectable("None", cn == null_entity)) apply(action::UpdateOf<&PhysicsJoint::ConnectedNode>(entt::entity{null_entity}));
+            if (Selectable("None", cn == null_entity)) out = action::UpdateOf<&PhysicsJoint::ConnectedNode>(entt::entity{null_entity});
             for (auto ne : r.view<const SceneNode>()) {
                 if (ne == entity) continue; // self-connection is meaningless
-                if (Selectable(GetName(r, ne).c_str(), cn == ne)) apply(action::UpdateOf<&PhysicsJoint::ConnectedNode>(ne));
+                if (Selectable(GetName(r, ne).c_str(), cn == ne)) out = action::UpdateOf<&PhysicsJoint::ConnectedNode>(ne);
             }
             EndCombo();
         }
@@ -607,20 +623,21 @@ void physics_ui::RenderEntityProperties(entt::registry &r, entt::entity entity, 
         SeparatorText("Trigger (compound)");
         PushID("Trigger");
         Text("Compound trigger: %zu nodes", trigger_nodes->Nodes.size());
-        RenderEntityCombo<CollisionFilter, &TriggerNodes::CollisionFilterEntity>(r, entity, "Collision filter", apply, "No filters defined");
-        if (Button("Remove Trigger")) apply(action::physics::RemoveTriggerNodes{});
+        if (auto a = RenderEntityCombo<CollisionFilter, &TriggerNodes::CollisionFilterEntity>(r, entity, "Collision filter", "No filters defined").Action) out = std::move(*a);
+        if (Button("Remove Trigger")) out = action::physics::RemoveTriggerNodes{};
         PopID();
     } else {
         Spacing();
         const bool is_shape_trigger = collider && r.all_of<const TriggerTag>(entity);
         if (collider) {
             if (is_shape_trigger) {
-                if (Button("Convert to Collider")) apply(action::SetTagOf<TriggerTag>(false));
+                if (Button("Convert to Collider")) out = action::SetTagOf<TriggerTag>(false);
             } else {
-                if (Button("Convert to Trigger")) apply(action::SetTagOf<TriggerTag>(true));
+                if (Button("Convert to Trigger")) out = action::SetTagOf<TriggerTag>(true);
             }
-        } else if (Button("Add Trigger")) apply(action::physics::AddTrigger{});
+        } else if (Button("Add Trigger")) out = action::physics::AddTrigger{};
     }
 
     PopID();
+    return out;
 }

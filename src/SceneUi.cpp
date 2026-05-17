@@ -1007,13 +1007,15 @@ void Scene::InteractOverlay() {
                 OverlayControlsHovered = true;
                 TextUnformatted("Viewport overlays");
                 Separator();
-                ui::Edit f{R, ui::Applier{this}, SceneEntity};
+                std::optional<action::Action> out;
+                ui::Edit f{R, out, SceneEntity};
                 f.Check<&SceneSettings::ShowGrid>("Grid");
                 f.Check<&SceneSettings::ShowExtras>("Extras");
                 f.Check<&SceneSettings::ShowBones>("Bones");
                 f.Check<&SceneSettings::ShowOrigins>("Origins");
                 f.Check<&SceneSettings::ShowOutlineSelected>("Outline selected");
                 EndPopup();
+                if (out) Apply(std::move(*out));
             }
             PopStyleVar();
         }
@@ -1405,7 +1407,8 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
             // In Pose mode, edit the active bone rather than the armature.
             const bool is_pose_bone = R.get<const SceneInteraction>(SceneEntity).Mode == InteractionMode::Pose && active_bone_entity != entt::null;
             const auto transform_entity = is_pose_bone ? active_bone_entity : active_entity;
-            ui::Edit transform_edit{R, ui::Applier{this}, transform_entity};
+            std::optional<action::Action> transform_out;
+            ui::Edit transform_edit{R, transform_out, transform_entity};
             transform_edit.Drag<&Transform::P>("Position", 0.01f);
             // Rotation editor (RotationUiVariant is reactively created; may not exist yet on the first frame)
             if (const auto *rotation_ui_ptr = R.try_get<const RotationUiVariant>(transform_entity)) {
@@ -1450,6 +1453,7 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
             if (frozen) BeginDisabled();
             transform_edit.Drag<&Transform::S>(std::format("Scale{}", frozen ? " (frozen)" : "").c_str(), 0.01f, 0.01f, 10);
             if (frozen) EndDisabled();
+            if (transform_out) Apply(std::move(*transform_out));
         }
         Spacing();
         {
@@ -1832,7 +1836,7 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
     if (const auto *instance = R.try_get<Instance>(active_entity); instance && R.all_of<Mesh>(instance->Entity)) {
         const bool has_sound = R.all_of<SoundVerticesModel>(active_entity);
         if (CollapsingHeader("Audio", has_sound ? ImGuiTreeNodeFlags_DefaultOpen : 0)) {
-            DrawObjectAudioControls(R, SceneEntity, active_entity, GetMeshEntity(active_entity), Stores.Buffers->SelectionBitset.Data(), [this](action::audio::Action a) { Apply(std::move(a)); });
+            if (auto a = DrawObjectAudioControls(R, SceneEntity, active_entity, GetMeshEntity(active_entity), Stores.Buffers->SelectionBitset.Data())) Apply(std::move(*a));
             if (const auto *active_mic = R.try_get<RealImpactActiveMicrophone>(active_entity)) {
                 SeparatorText("Microphone");
                 Text("Active: %s", GetName(R, active_mic->Entity).c_str());
@@ -1876,7 +1880,7 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
             }
         }
     }
-    physics_ui::RenderEntityProperties(R, active_entity, SceneEntity, *Physics, [this](action::physics::Action a) { Apply(std::move(a)); });
+    if (auto a = physics_ui::RenderEntityProperties(R, active_entity, SceneEntity, *Physics)) Apply(std::move(*a));
 
     // glTF metadata: round-trip-only source state on the active entity.
     // TODO: surface per-material source metadata here once material editing UI exists:
@@ -2086,7 +2090,8 @@ void Scene::RenderControls() {
         }
 
         if (BeginTabItem("Render")) {
-            ui::Edit f{R, ui::Applier{this}, SceneEntity};
+            std::optional<action::Action> out;
+            ui::Edit f{R, out, SceneEntity};
             const auto &settings = R.get<const SceneSettings>(SceneEntity);
             {
                 auto color = settings.ClearColor;
@@ -2168,7 +2173,7 @@ void Scene::RenderControls() {
         }
 
         if (BeginTabItem("Physics")) {
-            physics_ui::RenderTab(R, SceneEntity, *Physics, [this](action::physics::Action a) { Apply(std::move(a)); });
+            if (auto a = physics_ui::RenderTab(R, SceneEntity, *Physics)) Apply(std::move(*a));
             EndTabItem();
         }
 
