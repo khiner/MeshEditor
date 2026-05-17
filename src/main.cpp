@@ -5,13 +5,13 @@
 #include "audio/AudioDevice.h"
 #include "audio/AudioSystem.h"
 #include "audio/FaustDSP.h"
+#include "mesh/Primitives.h"
 #include "vulkan/VulkanContext.h"
 
 #include "imgui_impl_sdl3.h"
 #include "imgui_impl_vulkan.h"
 #include "imgui_internal.h"
 #include "implot.h"
-#include "mesh/Primitives.h"
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_vulkan.h>
 #include <entt/entity/registry.hpp>
@@ -624,6 +624,8 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
                     if (BeginTabItem("Scene")) {
                         SeparatorText("Buffer memory");
                         TextUnformatted(scene->DebugBufferHeapUsage().c_str());
+                        SeparatorText("Action");
+                        Text("sizeof(Action): %zu bytes", sizeof(action::Action));
                         EndTabItem();
                     }
                     EndTabBar();
