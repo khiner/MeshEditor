@@ -27,7 +27,7 @@
 
 static_assert(null_entity == entt::null, "null_entity does not match entt::null");
 
-using std::ranges::any_of, std::ranges::all_of, std::ranges::distance, std::ranges::find_if;
+using std::ranges::any_of, std::ranges::all_of;
 
 namespace fs = std::filesystem;
 
@@ -416,6 +416,9 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
         elapsed_play_time += io.DeltaTime;
         NewFrame();
 
+        // At most one user-initiated Action per frame, applied after all UI runs.
+        std::optional<action::Action> action;
+
         auto dockspace_id = DockSpaceOverViewport(0, nullptr, ImGuiDockNodeFlags_PassthruCentralNode | ImGuiDockNodeFlags_AutoHideTabBar);
         if (GetFrameCount() == 1) {
             auto controls_node_id = DockBuilderSplitNode(dockspace_id, ImGuiDir_Left, 0.3f, nullptr, &dockspace_id);
@@ -431,7 +434,7 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
 
         if (BeginMainMenuBar()) {
             if (BeginMenu("File")) {
-                if (MenuItem("New", nullptr)) scene->Apply(action::project::NewDefaultScene{});
+                if (MenuItem("New", nullptr)) action = action::project::NewDefaultScene{};
                 if (MenuItem("Load glTF", nullptr)) {
                     static const std::array filters{nfdfilteritem_t{"glTF scene", "gltf,glb"}};
                     nfdchar_t *nfd_path;
@@ -611,7 +614,7 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
         if (windows.SceneControls.Visible) {
             if (Begin(windows.SceneControls.Name, &windows.SceneControls.Visible) && BeginTabBar("Controls")) {
                 if (BeginTabItem("Scene")) {
-                    scene->RenderControls();
+                    scene->RenderControls(action);
                     EndTabItem();
                 }
                 if (BeginTabItem("Audio device")) {
@@ -629,11 +632,11 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
                 PushStyleVar(ImGuiStyleVar_FramePadding, {6, 4});
                 Indent(6);
                 Spacing();
-                scene->RenderClipPickers();
+                scene->RenderClipPickers(action);
                 Unindent(6);
                 PopStyleVar();
-                if (auto action = RenderAnimationTimeline(scene->GetTimeline(), scene->GetTimelineView(), scene->GetAnimationIcons())) {
-                    scene->Apply(std::move(*action));
+                if (auto a = RenderAnimationTimeline(scene->GetTimeline(), scene->GetTimelineView(), scene->GetAnimationIcons())) {
+                    action::Assign(action, std::move(*a));
                 }
             }
             End();
@@ -643,9 +646,9 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
         if (windows.Scene.Visible) {
             PushStyleVar(ImGuiStyleVar_WindowPadding, {0, 0});
             if (Begin(windows.Scene.Name, &windows.Scene.Visible)) {
-                scene->Interact();
+                scene->Interact(action);
                 // Submit GPU render (nonblocking). WaitForRender() is called later, before RenderFrame() samples the final image.
-                scene->Render(GetFrameCount() > 1 ? vk::Fence{wd.Frames[wd.FrameIndex].Fence} : vk::Fence{});
+                scene->Render(action, GetFrameCount() > 1 ? vk::Fence{wd.Frames[wd.FrameIndex].Fence} : vk::Fence{});
             }
             End();
             PopStyleVar();
@@ -660,15 +663,17 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
                         play = false;
                     }
                 } else {
-                    scene->Apply(action::project::NewDefaultScene{});
+                    action = action::project::NewDefaultScene{};
                 }
             } else if (GetFrameCount() == 3 && play) {
                 // Wait to play until scene load (frame 1) has settled and one render frame has elapsed.
                 // Calling Play() on the same frame as LoadFile races physics setup.
-                scene->Apply(action::scene::Play{});
+                action = action::scene::Play{};
                 play = false;
             }
         }
+
+        if (action) scene->Apply(std::move(*action));
 
         ImGui::Render();
         auto *draw_data = GetDrawData();

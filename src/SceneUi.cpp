@@ -372,7 +372,7 @@ void RenderJsonBlock(const char *label, std::string_view json) {
 constexpr auto MetadataTableFlags = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp;
 } // namespace
 
-void Scene::Interact() {
+void Scene::Interact(std::optional<action::Action> &out) {
     // Any open popup (e.g. Viewport shading dropdown) blocks viewport mouse/keyboard input.
     // Without this, wheel/click events still patch the camera while the popup overlays the viewport.
     if (IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel)) {
@@ -413,16 +413,16 @@ void Scene::Interact() {
             StartScreenTransform = TransformGizmo::TransformType::Scale;
         }
     } else {
-        if (Shortcut(ImGuiKey_Space, VKey)) Apply(action::timeline::TogglePlay{});
-        if (Shortcut(ImGuiKey_Z, VKey)) {
+        if (Shortcut(ImGuiKey_Space, VKey)) out = action::timeline::TogglePlay{};
+        else if (Shortcut(ImGuiKey_Z, VKey)) {
             const auto current = R.get<const SceneSettings>(SceneEntity).ViewportShading;
             const auto next = current == ViewportShadingMode::Solid ? ViewportShadingMode::MaterialPreview :
                 current == ViewportShadingMode::MaterialPreview     ? ViewportShadingMode::Rendered :
                                                                       ViewportShadingMode::Solid;
-            Apply(action::scene::SetViewportShading{.Mode = next});
+            out = action::scene::SetViewportShading{.Mode = next};
         } else if (Shortcut(ImGuiMod_Shift | ImGuiKey_Z, VKey)) {
             const auto &settings = R.get<const SceneSettings>(SceneEntity);
-            Apply(action::scene::SetViewportShading{.Mode = settings.ViewportShading == ViewportShadingMode::Wireframe ? settings.FillMode : ViewportShadingMode::Wireframe});
+            out = action::scene::SetViewportShading{.Mode = settings.ViewportShading == ViewportShadingMode::Wireframe ? settings.FillMode : ViewportShadingMode::Wireframe};
         } else if (Shortcut(ImGuiMod_Alt | ImGuiKey_Z, VKey)) {
             SelectionXRay = !SelectionXRay;
         }
@@ -432,52 +432,52 @@ void Scene::Interact() {
         if (tab_no_mods || tab_ctrl) {
             const bool is_armature = FindArmatureObject(R, active_entity) != entt::null;
             if (is_armature && tab_ctrl) {
-                Apply(action::scene::SetInteractionMode{.Mode = interaction_mode == InteractionMode::Pose ? InteractionMode::Object : InteractionMode::Pose});
+                out = action::scene::SetInteractionMode{.Mode = interaction_mode == InteractionMode::Pose ? InteractionMode::Object : InteractionMode::Pose};
             } else if (is_armature) {
-                Apply(action::scene::SetInteractionMode{.Mode = interaction_mode == InteractionMode::Edit ? InteractionMode::Object : InteractionMode::Edit});
+                out = action::scene::SetInteractionMode{.Mode = interaction_mode == InteractionMode::Edit ? InteractionMode::Object : InteractionMode::Edit};
             } else if (tab_no_mods) {
-                Apply(action::scene::CycleInteractionMode{});
+                out = action::scene::CycleInteractionMode{};
             }
         }
         if (interaction_mode == InteractionMode::Edit) {
-            if (Shortcut(ImGuiKey_1, VKey)) Apply(action::scene::SetEditMode{.Mode = Element::Vertex});
-            else if (Shortcut(ImGuiKey_2, VKey)) Apply(action::scene::SetEditMode{.Mode = Element::Edge});
-            else if (Shortcut(ImGuiKey_3, VKey)) Apply(action::scene::SetEditMode{.Mode = Element::Face});
+            if (Shortcut(ImGuiKey_1, VKey)) out = action::scene::SetEditMode{.Mode = Element::Vertex};
+            else if (Shortcut(ImGuiKey_2, VKey)) out = action::scene::SetEditMode{.Mode = Element::Edge};
+            else if (Shortcut(ImGuiKey_3, VKey)) out = action::scene::SetEditMode{.Mode = Element::Face};
         }
-        if (Shortcut(ImGuiKey_A, VKey)) Apply(action::scene::SelectAll{});
+        if (Shortcut(ImGuiKey_A, VKey)) out = action::scene::SelectAll{};
         const bool bone_edit = interaction_mode == InteractionMode::Edit && FindArmatureObject(R, active_entity) != entt::null;
         if (bone_edit) {
             if (Shortcut(ImGuiMod_Shift | ImGuiKey_A, VKey)) {
-                AddBone();
+                out = action::bone::Add{};
             } else if (Shortcut(ImGuiKey_E, VKey)) {
-                ExtrudeBone();
+                out = action::bone::Extrude{};
                 StartScreenTransform = TransformGizmo::TransformType::Translate;
             } else if (Shortcut(ImGuiKey_X, VKey) || Shortcut(ImGuiKey_Delete, VKey) || Shortcut(ImGuiKey_Backspace, VKey)) {
-                Delete();
+                Delete(out);
             } else if (Shortcut(ImGuiMod_Shift | ImGuiKey_D, VKey)) {
-                Duplicate();
+                Duplicate(out);
             }
         }
         if (Shortcut(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_E, VKey)) {
-            Apply(action::object::AddEmpty{std::make_unique<ObjectCreateInfo>(ObjectCreateInfo{.Select = MeshInstanceCreateInfo::SelectBehavior::Exclusive})});
+            out = action::object::AddEmpty{std::make_unique<ObjectCreateInfo>(ObjectCreateInfo{.Select = MeshInstanceCreateInfo::SelectBehavior::Exclusive})};
             StartScreenTransform = TransformGizmo::TransformType::Translate;
         } else if (Shortcut(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_A, VKey)) {
-            Apply(action::object::AddArmature{std::make_unique<ObjectCreateInfo>(ObjectCreateInfo{.Select = MeshInstanceCreateInfo::SelectBehavior::Exclusive})});
+            out = action::object::AddArmature{std::make_unique<ObjectCreateInfo>(ObjectCreateInfo{.Select = MeshInstanceCreateInfo::SelectBehavior::Exclusive})};
             StartScreenTransform = TransformGizmo::TransformType::Translate;
         } else if (Shortcut(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_C, VKey)) {
-            Apply(action::object::AddCamera{.Info = std::make_unique<ObjectCreateInfo>(ObjectCreateInfo{.Select = MeshInstanceCreateInfo::SelectBehavior::Exclusive}), .Props = {}});
+            out = action::object::AddCamera{.Info = std::make_unique<ObjectCreateInfo>(ObjectCreateInfo{.Select = MeshInstanceCreateInfo::SelectBehavior::Exclusive}), .Props = {}};
             StartScreenTransform = TransformGizmo::TransformType::Translate;
         } else if (Shortcut(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_L, VKey)) {
-            Apply(action::object::AddLight{std::make_unique<ObjectCreateInfo>(ObjectCreateInfo{.Select = MeshInstanceCreateInfo::SelectBehavior::Exclusive})});
+            out = action::object::AddLight{std::make_unique<ObjectCreateInfo>(ObjectCreateInfo{.Select = MeshInstanceCreateInfo::SelectBehavior::Exclusive})};
             StartScreenTransform = TransformGizmo::TransformType::Translate;
         }
         if (!R.storage<Selected>().empty()) {
-            if (!bone_edit && Shortcut(ImGuiMod_Shift | ImGuiKey_D, VKey)) Duplicate();
-            else if (!bone_edit && Shortcut(ImGuiMod_Alt | ImGuiKey_D, VKey)) DuplicateLinked();
-            else if (!bone_edit && CanDelete() && (Shortcut(ImGuiKey_Delete, VKey) || Shortcut(ImGuiKey_Backspace, VKey))) Delete();
-            else if (interaction_mode == InteractionMode::Pose && Shortcut(ImGuiMod_Alt | ImGuiKey_G, VKey)) Apply(action::bone::ClearSelectedTransforms{.Position = true});
-            else if (interaction_mode == InteractionMode::Pose && Shortcut(ImGuiMod_Alt | ImGuiKey_R, VKey)) Apply(action::bone::ClearSelectedTransforms{.Rotation = true});
-            else if (interaction_mode == InteractionMode::Pose && Shortcut(ImGuiMod_Alt | ImGuiKey_S, VKey)) Apply(action::bone::ClearSelectedTransforms{.Scale = true});
+            if (!bone_edit && Shortcut(ImGuiMod_Shift | ImGuiKey_D, VKey)) Duplicate(out);
+            else if (!bone_edit && Shortcut(ImGuiMod_Alt | ImGuiKey_D, VKey)) out = action::object::DuplicateLinked{};
+            else if (!bone_edit && CanDelete() && (Shortcut(ImGuiKey_Delete, VKey) || Shortcut(ImGuiKey_Backspace, VKey))) Delete(out);
+            else if (interaction_mode == InteractionMode::Pose && Shortcut(ImGuiMod_Alt | ImGuiKey_G, VKey)) out = action::bone::ClearSelectedTransforms{.Position = true};
+            else if (interaction_mode == InteractionMode::Pose && Shortcut(ImGuiMod_Alt | ImGuiKey_R, VKey)) out = action::bone::ClearSelectedTransforms{.Rotation = true};
+            else if (interaction_mode == InteractionMode::Pose && Shortcut(ImGuiMod_Alt | ImGuiKey_S, VKey)) out = action::bone::ClearSelectedTransforms{.Scale = true};
             else if (Shortcut(ImGuiKey_G, VKey) && transform_shortcuts_enabled) {
                 // Start transform gizmo in both Object and Edit modes.
                 // In Edit mode, shader applies transform to selected vertices.
@@ -485,14 +485,15 @@ void Scene::Interact() {
                 StartScreenTransform = TransformGizmo::TransformType::Translate;
             } else if (Shortcut(ImGuiKey_R, VKey) && transform_shortcuts_enabled) StartScreenTransform = TransformGizmo::TransformType::Rotate;
             else if (Shortcut(ImGuiKey_S, VKey) && scale_shortcut_enabled) StartScreenTransform = TransformGizmo::TransformType::Scale;
-            else if (Shortcut(ImGuiKey_H, VKey)) Apply(action::object::ToggleHidden{});
-            else if (Shortcut(ImGuiMod_Ctrl | ImGuiKey_P, VKey)) Apply(action::object::ParentToActive{});
-            else if (Shortcut(ImGuiMod_Alt | ImGuiKey_P, VKey)) Apply(action::object::ClearParent{});
+            else if (Shortcut(ImGuiKey_H, VKey)) out = action::object::ToggleHidden{};
+            else if (Shortcut(ImGuiMod_Ctrl | ImGuiKey_P, VKey)) out = action::object::ParentToActive{};
+            else if (Shortcut(ImGuiMod_Alt | ImGuiKey_P, VKey)) out = action::object::ClearParent{};
         }
     }
 
     // Handle mouse input.
-    if (!IsMouseDown(ImGuiMouseButton_Left)) Apply(action::scene::ClearExciteImpacts{});
+    // R.clear<VertexForce> is a no-op outside Excite mode, so losing to a same-frame shortcut is safe.
+    if (!out && !IsMouseDown(ImGuiMouseButton_Left)) out = action::scene::ClearExciteImpacts{};
 
     const bool active_transform = TransformGizmo::IsUsing();
     if (active_transform) {
@@ -509,8 +510,8 @@ void Scene::Interact() {
     // Mouse wheel for camera rotation, Cmd+wheel to zoom.
     const auto &io = GetIO();
     if (const vec2 wheel = std::exchange(PreciseWheelDelta, vec2{0}); wheel != vec2{0, 0}) {
-        if (io.KeyCtrl || io.KeySuper) Apply(action::scene::ZoomViewCamera{.Factor = std::pow(WheelZoomStep, -wheel.y)});
-        else Apply(action::scene::OrbitViewCamera{.DeltaRad = wheel * WheelOrbitRadPerUnit});
+        if (io.KeyCtrl || io.KeySuper) out = action::scene::ZoomViewCamera{.Factor = std::pow(WheelZoomStep, -wheel.y)};
+        else out = action::scene::OrbitViewCamera{.DeltaRad = wheel * WheelOrbitRadPerUnit};
     }
     if (OrientationGizmo::IsActive() || OverlayControlsHovered) return;
 
@@ -518,14 +519,11 @@ void Scene::Interact() {
     const auto arm_obj_entity = FindArmatureObject(R, active_entity);
     const bool active_is_armature = arm_obj_entity != entt::null;
     const bool bone_mode = interaction_mode == InteractionMode::Pose || (interaction_mode == InteractionMode::Edit && active_is_armature);
-    const auto deselect_all = [&] { Apply(action::selection::DeselectAll{}); };
-    auto set_bone_sel = [&](entt::entity entity, std::optional<BoneSel> part, bool additive) {
-        Apply(action::selection::SetBoneSelectionPart{.Entity = entity, .Part = part, .Additive = additive});
-    };
+    const auto deselect_all = [&] { out = action::selection::DeselectAll{}; };
     if (SelectionMode == SelectionMode::Box && interaction_mode != InteractionMode::Excite) {
         if (IsMouseClicked(ImGuiMouseButton_Left)) {
             BoxSelectStart = BoxSelectEnd = ToGlm(GetMousePos());
-            if (IsKeyDown(ImGuiMod_Shift)) Apply(action::selection::SnapshotBoxSelectBaseline{});
+            if (IsKeyDown(ImGuiMod_Shift)) out = action::selection::SnapshotBoxSelectBaseline{};
         } else if (IsMouseDown(ImGuiMouseButton_Left) && BoxSelectStart) {
             BoxSelectEnd = ToGlm(GetMousePos());
             if (const auto box_px = ComputeBoxSelectPixels(*BoxSelectStart, *BoxSelectEnd, ToGlm(GetCursorScreenPos()), logical_extent, render_extent); box_px) {
@@ -538,19 +536,20 @@ void Scene::Interact() {
                     std::vector<action::selection::BoneHit> bone_hits;
                     bone_hits.reserve(hits.size());
                     for (const auto &[entity, part] : hits) bone_hits.emplace_back(entity, part);
-                    Apply(action::selection::ApplyBoxSelectBoneHits{.Hits = std::move(bone_hits), .Additive = is_additive});
+                    out = action::selection::ApplyBoxSelectBoneHits{.Hits = std::move(bone_hits), .Additive = is_additive};
                 } else if (interaction_mode == InteractionMode::Object) {
                     const auto hits = ResolveHits(R, RunBoxSelect(*box_px), bone_mode, true);
                     std::vector<entt::entity> entities;
                     entities.reserve(hits.size());
                     for (const auto &[entity, _] : hits) entities.push_back(entity);
-                    Apply(action::selection::ApplyBoxSelectObjectHits{.Hits = std::move(entities), .Additive = is_additive});
+                    out = action::selection::ApplyBoxSelectObjectHits{.Hits = std::move(entities), .Additive = is_additive};
                 }
             }
         } else if (!IsMouseDown(ImGuiMouseButton_Left) && BoxSelectStart) {
             BoxSelectStart.reset();
             BoxSelectEnd.reset();
-            Apply(action::selection::ClearBoxSelectBaseline{});
+            // A small-drag release falls through to a click-selection whose handler also clears the baseline.
+            out = action::selection::ClearBoxSelectBaseline{};
         }
         if (BoxSelectStart) return;
     }
@@ -571,12 +570,12 @@ void Scene::Interact() {
             if (const auto hit_entities = RunObjectPick(mouse_px); !hit_entities.empty()) {
                 if (const auto hit_entity = hit_entities.front(); R.all_of<SoundVertices>(hit_entity)) {
                     if (const auto vertex = RunSoundVerticesVertexPick(hit_entity, mouse_px)) {
-                        Apply(action::scene::ApplyExciteImpact{.InstanceEntity = hit_entity, .VertexIndex = *vertex});
+                        out = action::scene::ApplyExciteImpact{.InstanceEntity = hit_entity, .VertexIndex = *vertex};
                     }
                 }
             }
         } else if (!IsMouseDown(ImGuiMouseButton_Left)) {
-            Apply(action::scene::ClearExciteImpacts{});
+            out = action::scene::ClearExciteImpacts{};
         }
         return;
     }
@@ -585,7 +584,7 @@ void Scene::Interact() {
 
     if (interaction_mode == InteractionMode::Edit && !active_is_armature) {
         const bool toggle = IsKeyDown(ImGuiMod_Shift) || IsKeyDown(ImGuiMod_Ctrl) || IsKeyDown(ImGuiMod_Super);
-        Apply(action::selection::ApplyEditElementClick{.MousePx = mouse_px, .Toggle = toggle});
+        out = action::selection::ApplyEditElementClick{.MousePx = mouse_px, .Toggle = toggle};
     } else if (interaction_mode == InteractionMode::Object || bone_mode) {
         const auto scaled_pick_radius = std::max(1u, uint32_t(float(ObjectSelectRadiusPx) * std::max(render_scale.x, render_scale.y) + 0.5f));
         const auto active = bone_mode ? FindActiveBone(R) : active_entity;
@@ -597,21 +596,20 @@ void Scene::Interact() {
             return it != hits.end() && ++it != hits.end() ? *it : hits.front();
         }();
         const bool shift = IsKeyDown(ImGuiMod_Shift);
+        // Bone-mode sub-part: merge on shift (intentional part accumulation), replace otherwise.
         if (pick && shift) {
-            if (active == pick->Entity && !bone_mode) Apply(action::selection::ToggleSelected{pick->Entity});
-            else if (bone_mode) Apply(action::selection::ExtendBoneActive{pick->Entity});
-            else Apply(action::selection::ExtendActive{pick->Entity});
+            if (active == pick->Entity && !bone_mode) out = action::selection::ToggleSelected{pick->Entity};
+            else if (bone_mode) out = action::selection::ExtendBoneActive{pick->Entity, pick->Part, true};
+            else out = action::selection::ExtendActive{pick->Entity};
         } else if (pick || !shift) {
-            if (pick && bone_mode) Apply(action::selection::SelectBone{pick->Entity});
-            else if (pick) Apply(action::selection::Select{pick->Entity});
+            if (pick && bone_mode) out = action::selection::SelectBone{pick->Entity, pick->Part, false};
+            else if (pick) out = action::selection::Select{pick->Entity};
             else deselect_all();
         }
-        // Bone sub-part tracking: merge on shift (intentional part accumulation), replace otherwise.
-        if (bone_mode && pick && pick->Part) set_bone_sel(pick->Entity, pick->Part, shift);
     }
 }
 
-void Scene::InteractOverlay() {
+void Scene::InteractOverlay(std::optional<action::Action> &out) {
     const rect viewport{ToGlm(GetWindowPos()), ToGlm(GetContentRegionAvail())};
     const bool active_transform = TransformGizmo::IsUsing();
     static constexpr float OrientationGizmoSize{84};
@@ -691,11 +689,11 @@ void Scene::InteractOverlay() {
         };
 
         if (const auto clicked = DrawOverlayIconButtonGroup("ViewportShading", start_pos, buttons, !active_transform, &OverlayControlsHovered, shading_button_style)) {
-            Apply(action::scene::SetViewportShading{
+            out = action::scene::SetViewportShading{
                 .Mode = *clicked == 0 ? ViewportShadingMode::Wireframe : *clicked == 1 ? ViewportShadingMode::Solid :
                     *clicked == 2                                                      ? ViewportShadingMode::MaterialPreview :
                                                                                          ViewportShadingMode::Rendered,
-            });
+            };
         }
 
         { // Dropdown arrow button
@@ -738,9 +736,9 @@ void Scene::InteractOverlay() {
                 const auto render_pbr_controls = [&]<typename T>(const T &lighting, const char *id) {
                     PushID(id);
                     const auto apply_update = [&]<typename Field>(Field PBRViewportLighting::*member, Field v) {
-                        Apply(action::UpdateOf<T>(SceneEntity, static_cast<Field T::*>(member), v));
+                        out = action::UpdateOf<T>(SceneEntity, static_cast<Field T::*>(member), v);
                     };
-                    if (Button("Reset")) Apply(action::scene::ResetPbrLighting{.Rendered = std::is_same_v<T, RenderedLighting>});
+                    if (Button("Reset")) out = action::scene::ResetPbrLighting{.Rendered = std::is_same_v<T, RenderedLighting>};
                     if (bool v = lighting.UseSceneLights; Checkbox("Scene lights", &v)) apply_update(&PBRViewportLighting::UseSceneLights, v);
                     SameLine();
                     if (bool v = lighting.UseSceneWorld; Checkbox("Scene world", &v)) apply_update(&PBRViewportLighting::UseSceneWorld, v);
@@ -750,7 +748,7 @@ void Scene::InteractOverlay() {
                         // Spec-defined intensity edits the source IBL directly so save round-trips.
                         if (source_ibl) {
                             if (float v = source_ibl->Intensity; SliderFloat("Intensity", &v, 0.f, 2.f, "%.2f"))
-                                Apply(action::scene::SetSourceIblIntensity{v});
+                                out = action::scene::SetSourceIblIntensity{v};
                         }
                     } else {
                         auto &environments = *Stores.Environments;
@@ -758,7 +756,7 @@ void Scene::InteractOverlay() {
                         if (BeginCombo("Environment", current_name.c_str())) {
                             for (uint32_t i = 0; i < environments.Hdris.size(); ++i) {
                                 const bool selected = (i == environments.ActiveHdriIndex);
-                                if (Selectable(environments.Hdris[i].Name.c_str(), selected)) Apply(action::scene::SetStudioEnvironment{i});
+                                if (Selectable(environments.Hdris[i].Name.c_str(), selected)) out = action::scene::SetStudioEnvironment{i};
                                 if (selected) SetItemDefaultFocus();
                             }
                             EndCombo();
@@ -826,7 +824,7 @@ void Scene::InteractOverlay() {
                             PopID();
                         }
                     }
-                    if (changed) Apply(action::SetTagOf<SubmitDirty>(SceneEntity, true));
+                    if (changed) out = action::SetTagOf<SubmitDirty>(SceneEntity, true);
                 }
 
                 if (current_mode == ViewportShadingMode::MaterialPreview || current_mode == ViewportShadingMode::Rendered) {
@@ -903,7 +901,7 @@ void Scene::InteractOverlay() {
                             for (const auto &entry : group.Entries) {
                                 const bool selected = entry.Value == settings.DebugChannel;
                                 if (Selectable(entry.Label, selected) && !selected) {
-                                    Apply(action::UpdateOf<&SceneSettings::DebugChannel>(SceneEntity, entry.Value));
+                                    out = action::UpdateOf<&SceneSettings::DebugChannel>(SceneEntity, entry.Value);
                                 }
                                 if (selected) SetItemDefaultFocus();
                             }
@@ -931,7 +929,7 @@ void Scene::InteractOverlay() {
                 {OverlayIcon.get(), {0.f, 0.f}, ImDrawFlags_RoundCornersLeft, true, settings.ShowOverlays, "Toggle overlays"},
             };
             if (const auto clicked = DrawOverlayIconButtonGroup("ViewportOverlays", group_start, icon_button, !active_transform, &OverlayControlsHovered, shading_button_style)) {
-                Apply(action::UpdateOf<&SceneSettings::ShowOverlays>(SceneEntity, !settings.ShowOverlays));
+                out = action::UpdateOf<&SceneSettings::ShowOverlays>(SceneEntity, !settings.ShowOverlays);
             }
         }
         { // Dropdown arrow button
@@ -973,7 +971,6 @@ void Scene::InteractOverlay() {
                 OverlayControlsHovered = true;
                 TextUnformatted("Viewport overlays");
                 Separator();
-                std::optional<action::Action> out;
                 ui::Edit f{R, out, SceneEntity};
                 f.Check<&SceneSettings::ShowGrid>("Grid");
                 f.Check<&SceneSettings::ShowExtras>("Extras");
@@ -981,7 +978,6 @@ void Scene::InteractOverlay() {
                 f.Check<&SceneSettings::ShowOrigins>("Origins");
                 f.Check<&SceneSettings::ShowOutlineSelected>("Outline selected");
                 EndPopup();
-                if (out) Apply(std::move(*out));
             }
             PopStyleVar();
         }
@@ -994,8 +990,8 @@ void Scene::InteractOverlay() {
         if (auto interaction = OrientationGizmo::Interact(pos, OrientationGizmoSize, camera, !active_transform && !any_popup_open)) {
             std::visit(
                 overloaded{
-                    [&](OrientationGizmo::RotateBy r) { Apply(action::scene::OrbitViewCamera{r.Delta}); },
-                    [&](OrientationGizmo::AlignTo a) { Apply(action::scene::SetViewCameraTargetDirection{a.Direction}); },
+                    [&](OrientationGizmo::RotateBy r) { out = action::scene::OrbitViewCamera{r.Delta}; },
+                    [&](OrientationGizmo::AlignTo a) { out = action::scene::SetViewCameraTargetDirection{a.Direction}; },
                 },
                 *interaction
             );
@@ -1118,28 +1114,31 @@ void Scene::InteractOverlay() {
         );
         if (interact_result) {
             const auto &[ts, td] = *interact_result;
+            std::vector<std::pair<entt::entity, StartTransform>> new_starts;
+            std::vector<std::pair<entt::entity, float>> new_start_bone_lengths;
             if (start_transform_view.empty()) {
-                action::scene::BeginGizmoDrag begin;
                 if (mesh_edit_mode) {
                     for (const auto &[_, instance_entity] : edit_transform_instances) {
-                        begin.Starts.emplace_back(instance_entity, StartTransform{.T = R.get<const Transform>(instance_entity), .ParentDelta = {}});
+                        new_starts.emplace_back(instance_entity, StartTransform{.T = R.get<const Transform>(instance_entity), .ParentDelta = {}});
                     }
                 } else {
                     // Capture parent transform at drag start so world->local conversion uses a stable reference frame throughout the interaction.
                     for (const auto e : root_selected) {
                         const auto &wt = R.get<WorldTransform>(e);
-                        begin.Starts.emplace_back(e, StartTransform{wt, ToTransform(GetParentDelta(R, e))});
+                        new_starts.emplace_back(e, StartTransform{wt, ToTransform(GetParentDelta(R, e))});
                         if (bone_edit_mode) {
-                            if (const auto *ds = R.try_get<BoneDisplayScale>(e)) begin.StartBoneLengths.emplace_back(e, ds->Value);
+                            if (const auto *ds = R.try_get<BoneDisplayScale>(e)) new_start_bone_lengths.emplace_back(e, ds->Value);
                         }
                     }
                 }
-                Apply(std::move(begin));
             }
             if (mesh_edit_mode) {
                 // Mesh Edit mode: store pending transform for shader-based preview.
                 // Actual vertex positions are only modified on commit.
-                Apply(action::scene::UpdateGizmoMeshEditPending{std::make_unique<PendingTransform>(PendingTransform{ts.P, ts.R, td})});
+                out = action::scene::UpdateGizmoMeshEditPending{
+                    .Starts = std::move(new_starts),
+                    .Value = std::make_unique<PendingTransform>(PendingTransform{ts.P, ts.R, td}),
+                };
             } else {
                 // Object mode: apply transform to entity components immediately during drag.
                 // Compute new world result, then convert to local for parented entities.
@@ -1153,7 +1152,15 @@ void Scene::InteractOverlay() {
                 };
 
                 const auto r = ts.R, rT = glm::conjugate(r);
-                for (const auto &[e, ts_e_comp] : start_transform_view.each()) {
+                // Live view is empty before the handler emplaces; iterate the local seed on the first frame.
+                const auto for_each_start = [&](auto &&fn) {
+                    if (!new_starts.empty()) {
+                        for (const auto &[e, st] : new_starts) fn(e, st);
+                    } else {
+                        for (const auto &[e, st] : start_transform_view.each()) fn(e, st);
+                    }
+                };
+                for_each_start([&](entt::entity e, const StartTransform &ts_e_comp) {
                     const auto &ts_e = ts_e_comp.T; // world transform at start
 
                     // Head/tail-only bone transform: stretch/rotate bone instead of moving it rigidly.
@@ -1179,14 +1186,14 @@ void Scene::InteractOverlay() {
                                 const auto new_world_rot = new_length > eps ? glm::rotation(glm::normalize(glm::rotate(ts_e.R, vec3{0, 1, 0})), dir / new_length) * ts_e.R : ts_e.R;
                                 update.BoneDisplayScales.emplace_back(e, std::max(new_length, eps));
                                 make_local(e, {new_head, new_world_rot, ts_e.S}, pd);
-                                continue;
+                                return;
                             }
                         }
 
                         // Full bone transform in bone edit mode.
                         const auto offset = ts_e.P - ts.P;
                         make_local(e, {td.P + ts.P + glm::rotate(td.R, r * (rT * offset * td.S)), glm::normalize(td.R * ts_e.R), ts_e.S}, pd);
-                        continue;
+                        return;
                     }
 
                     // Object mode / non-bone transform.
@@ -1194,11 +1201,13 @@ void Scene::InteractOverlay() {
                     const bool frozen = R.all_of<ScaleLocked>(e);
                     const auto offset = ts_e.P - ts.P;
                     make_local(e, {td.P + ts.P + glm::rotate(td.R, frozen ? offset : r * (rT * offset * td.S)), glm::normalize(td.R * ts_e.R), frozen ? ts_e.S : td.S * ts_e.S}, pd);
-                }
-                Apply(std::move(update));
+                });
+                update.Starts = std::move(new_starts);
+                update.StartBoneLengths = std::move(new_start_bone_lengths);
+                out = std::move(update);
             }
         } else if (!start_transform_view.empty()) {
-            Apply(action::scene::EndGizmoDrag{});
+            out = action::scene::EndGizmoDrag{};
         }
 
         // Store gizmo render transform for DrawOverlay.
@@ -1293,7 +1302,7 @@ void Scene::DrawOverlay() {
     }
 }
 
-void Scene::RenderEntityControls(entt::entity active_entity) {
+void Scene::RenderEntityControls(entt::entity active_entity, std::optional<action::Action> &out) {
     if (active_entity == entt::null) {
         TextUnformatted("Active object: None");
         return;
@@ -1368,11 +1377,11 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
                 if (const auto new_length = glm::length(new_dir); new_length > 1e-6f) {
                     const auto new_rot = glm::quat_cast(BoneVecRollToMat3(new_dir, roll));
                     const auto pd = ToTransform(GetParentDelta(R, active_bone_entity));
-                    Apply(action::bone::SetEditHeadTailRoll{
+                    out = action::bone::SetEditHeadTailRoll{
                         .LocalP = glm::conjugate(pd.R) * ((head - pd.P) / pd.S),
                         .LocalR = glm::conjugate(pd.R) * new_rot,
                         .DisplayScale = new_length,
-                    });
+                    };
                 }
             }
         } else {
@@ -1380,29 +1389,28 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
             // In Pose mode, edit the active bone rather than the armature.
             const bool is_pose_bone = R.get<const SceneInteraction>(SceneEntity).Mode == InteractionMode::Pose && active_bone_entity != entt::null;
             const auto transform_entity = is_pose_bone ? active_bone_entity : active_entity;
-            std::optional<action::Action> transform_out;
-            ui::Edit transform_edit{R, transform_out, transform_entity};
+            ui::Edit transform_edit{R, out, transform_entity};
             transform_edit.Drag<&Transform::P>("Position", 0.01f);
             // Rotation editor (RotationUiVariant is reactively created; may not exist yet on the first frame)
             if (const auto *rotation_ui_ptr = R.try_get<const RotationUiVariant>(transform_entity)) {
                 int mode_i = rotation_ui_ptr->index();
                 const char *modes[]{"Quat (WXYZ)", "XYZ Euler", "Axis Angle"};
                 if (Combo("Rotation mode", &mode_i, modes, IM_ARRAYSIZE(modes)))
-                    Apply(action::scene::SetRotationUiMode{mode_i});
+                    out = action::scene::SetRotationUiMode{mode_i};
                 auto ui_local = *rotation_ui_ptr;
                 std::visit(
                     overloaded{
                         [&](RotationQuat &v) {
                             if (DragFloat4("Rotation (quat WXYZ)", &v.Value[0], 0.01f))
-                                Apply(action::scene::SetTransformRotationFromUi{glm::normalize(v.Value), ui_local});
+                                out = action::scene::SetTransformRotationFromUi{glm::normalize(v.Value), ui_local};
                         },
                         [&](RotationEuler &v) {
                             if (DragFloat3("Rotation (XYZ Euler, deg)", &v.Value[0], 1.f)) {
                                 const auto rads = glm::radians(v.Value);
-                                Apply(action::scene::SetTransformRotationFromUi{
+                                out = action::scene::SetTransformRotationFromUi{
                                     glm::normalize(glm::quat_cast(glm::eulerAngleXYZ(rads.x, rads.y, rads.z))),
                                     ui_local,
-                                });
+                                };
                             }
                         },
                         [&](RotationAxisAngle &v) {
@@ -1411,10 +1419,10 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
                             if (changed) {
                                 const auto axis = glm::normalize(vec3{v.Value});
                                 const auto angle = glm::radians(v.Value.w);
-                                Apply(action::scene::SetTransformRotationFromUi{
+                                out = action::scene::SetTransformRotationFromUi{
                                     glm::normalize(quat{std::cos(angle / 2), axis * std::sin(angle / 2)}),
                                     ui_local,
-                                });
+                                };
                             }
                         },
                     },
@@ -1426,7 +1434,6 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
             if (frozen) BeginDisabled();
             transform_edit.Drag<&Transform::S>(std::format("Scale{}", frozen ? " (frozen)" : "").c_str(), 0.01f, 0.01f, 10);
             if (frozen) EndDisabled();
-            if (transform_out) Apply(std::move(*transform_out));
         }
         Spacing();
         {
@@ -1487,12 +1494,12 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
                                                                            IdString(c.TargetEntity);
                 if (BeginCombo("Target", preview.c_str())) {
                     if (Selectable("None", c.TargetEntity == entt::null))
-                        Apply(action::bone::SetConstraintTarget{uint32_t(i), entt::null});
+                        out = action::bone::SetConstraintTarget{uint32_t(i), entt::null};
                     for (auto [te, kind, name] : R.view<const ObjectKind, const Name>().each()) {
                         if (R.any_of<BoneIndex, BoneSubPartOf, BoneJoint, SubElementOf>(te)) continue;
                         const std::string label = name.Value.empty() ? IdString(te) : name.Value;
                         if (Selectable(label.c_str(), te == c.TargetEntity))
-                            Apply(action::bone::SetConstraintTarget{uint32_t(i), te});
+                            out = action::bone::SetConstraintTarget{uint32_t(i), te};
                     }
                     EndCombo();
                 }
@@ -1503,23 +1510,23 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
                         const auto *bwt = R.try_get<const WorldTransform>(active_bone_entity);
                         if (twt && bwt) {
                             const mat4 inv = glm::inverse(ToMatrix(*twt)) * ToMatrix(*bwt);
-                            Apply(action::bone::SetConstraintChildOfInverse{uint32_t(i), std::make_unique<mat4>(inv)});
+                            out = action::bone::SetConstraintChildOfInverse{uint32_t(i), std::make_unique<mat4>(inv)};
                         }
                     }
                     SameLine();
                     if (Button("Clear Inverse"))
-                        Apply(action::bone::SetConstraintChildOfInverse{uint32_t(i), std::make_unique<mat4>(I4)});
+                        out = action::bone::SetConstraintChildOfInverse{uint32_t(i), std::make_unique<mat4>(I4)};
                 }
                 if (float influence = c.Influence; SliderFloat("Influence", &influence, 0.f, 1.f))
-                    Apply(action::bone::SetConstraintInfluence{uint32_t(i), influence});
+                    out = action::bone::SetConstraintInfluence{uint32_t(i), influence};
                 TreePop();
             }
             PopID();
         }
-        if (delete_index) Apply(action::bone::DeleteConstraint{*delete_index});
-        if (Button("Add Copy Transforms")) Apply(action::bone::AddConstraint{action::bone::BoneConstraintKind::CopyTransforms});
+        if (delete_index) out = action::bone::DeleteConstraint{*delete_index};
+        if (Button("Add Copy Transforms")) out = action::bone::AddConstraint{action::bone::BoneConstraintKind::CopyTransforms};
         SameLine();
-        if (Button("Add Child Of")) Apply(action::bone::AddConstraint{action::bone::BoneConstraintKind::ChildOf});
+        if (Button("Add Child Of")) out = action::bone::AddConstraint{action::bone::BoneConstraintKind::ChildOf};
         PopID();
     }
     if (is_mesh_instance) {
@@ -1530,7 +1537,7 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
             if (const auto update_label = std::format("Edit primitive{}", frozen ? " (frozen)" : "");
                 CollapsingHeader(update_label.c_str()) && !frozen) {
                 if (auto primitive_mesh = PrimitiveEditor(*prim_shape)) {
-                    Apply(action::object::ReplaceMesh{std::make_unique<MeshData>(std::move(*primitive_mesh))});
+                    out = action::object::ReplaceMesh{std::make_unique<MeshData>(std::move(*primitive_mesh))};
                 }
             }
             if (frozen) EndDisabled();
@@ -1556,7 +1563,7 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
                 uint32_t slot_primitive = existing_slot ? existing_slot->PrimitiveIndex : 0u;
                 if (!existing_slot || slot_primitive > max_primitive) {
                     slot_primitive = std::min(slot_primitive, max_primitive);
-                    Apply(action::Replace<MeshMaterialSlotSelection>{active_mesh_entity, {slot_primitive}});
+                    out = action::Replace<MeshMaterialSlotSelection>{active_mesh_entity, {slot_primitive}};
                 }
 
                 BeginChild("MaterialSlots", ImVec2(0, 110), true);
@@ -1564,7 +1571,7 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
                     const uint32_t material_index = std::min(primitive_materials[primitive_index], material_count - 1);
                     if (const auto label = std::format("Slot {:L}: {}", primitive_index, material_name(material_index));
                         Selectable(label.c_str(), slot_primitive == primitive_index) && slot_primitive != primitive_index) {
-                        Apply(action::Replace<MeshMaterialSlotSelection>{active_mesh_entity, {primitive_index}});
+                        out = action::Replace<MeshMaterialSlotSelection>{active_mesh_entity, {primitive_index}};
                         slot_primitive = primitive_index;
                     }
                 }
@@ -1580,7 +1587,7 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
                     for (uint32_t i = 0; i < material_count; ++i) {
                         if (const auto option_name = material_name(i);
                             Selectable(option_name.c_str(), material_index == i)) {
-                            Apply(action::Replace<MeshMaterialAssignment>{active_mesh_entity, {slot_primitive, i}});
+                            out = action::Replace<MeshMaterialAssignment>{active_mesh_entity, {slot_primitive, i}};
                             material_index = i;
                         }
                     }
@@ -1738,8 +1745,8 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
                     material_changed |= edit_texture_info("Iridescence thickness", material.Iridescence.ThicknessTexture);
                 }
 
-                if (pbr_features_changed) Apply(action::scene::SetPbrMeshFeaturesMask{pbr_features_mask});
-                if (material_changed) Apply(action::Replace<MaterialDirty>{SceneEntity, {material_index}});
+                if (pbr_features_changed) out = action::scene::SetPbrMeshFeaturesMask{pbr_features_mask};
+                if (material_changed) out = action::Replace<MaterialDirty>{SceneEntity, {material_index}};
             }
         }
     }
@@ -1748,12 +1755,12 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
             // Use the camera's distance from world origin as the conversion distance.
             const float distance = std::max(glm::length(R.get<WorldTransform>(active_entity).P), 1.f);
             auto edited = *cd;
-            if (RenderCameraLensEditor(edited, distance)) Apply(action::ReplaceActive<Camera>{edited});
+            if (RenderCameraLensEditor(edited, distance)) out = action::ReplaceActive<Camera>{edited};
             Separator();
             if (LookThroughCameraEntity() == active_entity) {
-                if (Button("Exit camera view")) Apply(action::scene::ExitLookThroughCamera{});
+                if (Button("Exit camera view")) out = action::scene::ExitLookThroughCamera{};
             } else {
-                if (Button("Look through")) Apply(action::scene::EnterLookThroughCamera{});
+                if (Button("Look through")) out = action::scene::EnterLookThroughCamera{};
             }
         }
     }
@@ -1794,17 +1801,17 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
                 changed = true;
             }
         }
-        if (changed) Apply(action::ReplaceActive<PunctualLight>{light});
+        if (changed) out = action::ReplaceActive<PunctualLight>{light};
     }
     // Audio controls (mesh instance = sound object or eligible to become one; microphone)
     if (const auto *instance = R.try_get<Instance>(active_entity); instance && R.all_of<Mesh>(instance->Entity)) {
         const bool has_sound = R.all_of<SoundVerticesModel>(active_entity);
         if (CollapsingHeader("Audio", has_sound ? ImGuiTreeNodeFlags_DefaultOpen : 0)) {
-            if (auto a = DrawObjectAudioControls(R, SceneEntity, active_entity, GetMeshEntity(active_entity), Stores.Buffers->SelectionBitset.Data())) Apply(std::move(*a));
+            if (auto a = DrawObjectAudioControls(R, SceneEntity, active_entity, GetMeshEntity(active_entity), Stores.Buffers->SelectionBitset.Data())) action::Assign(out, std::move(*a));
             if (const auto *active_mic = R.try_get<RealImpactActiveMicrophone>(active_entity)) {
                 SeparatorText("Microphone");
                 Text("Active: %s", GetName(R, active_mic->Entity).c_str());
-                if (Button("Select microphone entity")) Select(active_mic->Entity);
+                if (Button("Select microphone entity")) out = action::selection::Select{active_mic->Entity};
             }
         }
     } else if (const auto *mic = R.try_get<const RealImpactMicrophone>(active_entity)) {
@@ -1835,13 +1842,13 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
                 if (is_active) {
                     Text("Active for: %s", target_name.c_str());
                 } else if (Button(std::format("Set as active for {}", target_name).c_str())) {
-                    Apply(action::audio::ActivateRealImpactMicrophone{target, active_entity});
+                    out = action::audio::ActivateRealImpactMicrophone{target, active_entity};
                 }
-                if (Button("Select sound object")) Select(target);
+                if (Button("Select sound object")) out = action::selection::Select{target};
             }
         }
     }
-    if (auto a = physics_ui::RenderEntityProperties(R, active_entity, SceneEntity, *Physics)) Apply(std::move(*a));
+    if (auto a = physics_ui::RenderEntityProperties(R, active_entity, SceneEntity, *Physics)) action::Assign(out, std::move(*a));
 
     // glTF metadata: round-trip-only source state on the active entity.
     // TODO: surface per-material source metadata here once material editing UI exists:
@@ -1882,7 +1889,7 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
     PopID();
 }
 
-void Scene::RenderControls() {
+void Scene::RenderControls(std::optional<action::Action> &out) {
     if (BeginTabBar("Scene controls")) {
         if (BeginTabItem("Object")) {
             {
@@ -1903,7 +1910,7 @@ void Scene::RenderControls() {
                     SameLine();
                     interaction_mode_changed |= RadioButton(to_string(mode).c_str(), &interaction_mode_value, int(mode));
                 }
-                if (interaction_mode_changed) Apply(action::scene::SetInteractionMode{.Mode = InteractionMode(interaction_mode_value)});
+                if (interaction_mode_changed) out = action::scene::SetInteractionMode{.Mode = InteractionMode(interaction_mode_value)};
                 if (interaction_mode == InteractionMode::Edit || interaction_mode == InteractionMode::Excite) {
                     Checkbox("Orbit to active", &OrbitToActive);
                 }
@@ -1918,7 +1925,7 @@ void Scene::RenderControls() {
                         auto name = Capitalize(label(element));
                         SameLine();
                         if (RadioButton(name.c_str(), &type_interaction_mode, int(element))) {
-                            Apply(action::scene::SetEditMode{.Mode = element});
+                            out = action::scene::SetEditMode{.Mode = element};
                         }
                     }
                     if (const auto active_entity = FindActiveEntity(R); active_entity != entt::null) {
@@ -1947,7 +1954,7 @@ void Scene::RenderControls() {
                     EndCombo();
                 }
             }
-            if (CollapsingHeader("Object tree", ImGuiTreeNodeFlags_DefaultOpen)) RenderObjectTree();
+            if (CollapsingHeader("Object tree", ImGuiTreeNodeFlags_DefaultOpen)) RenderObjectTree(out);
             SeparatorText("");
             if (CollapsingHeader("Add object")) {
                 bool added{false};
@@ -1955,28 +1962,28 @@ void Scene::RenderControls() {
                     if (i % 4 != 0) SameLine();
                     const auto &shape = AllPrimitiveShapes[i];
                     if (Button(ToString(shape).c_str())) {
-                        Apply(action::object::AddMeshPrimitive{shape, std::make_unique<MeshInstanceCreateInfo>(MeshInstanceCreateInfo{.Name = ToString(shape)})});
+                        out = action::object::AddMeshPrimitive{shape, std::make_unique<MeshInstanceCreateInfo>(MeshInstanceCreateInfo{.Name = ToString(shape)})};
                         added = true;
                     }
                 }
                 Spacing();
                 if (Button("Empty")) {
-                    Apply(action::object::AddEmpty{std::make_unique<ObjectCreateInfo>(ObjectCreateInfo{.Select = MeshInstanceCreateInfo::SelectBehavior::Exclusive})});
+                    out = action::object::AddEmpty{std::make_unique<ObjectCreateInfo>(ObjectCreateInfo{.Select = MeshInstanceCreateInfo::SelectBehavior::Exclusive})};
                     added = true;
                 }
                 SameLine();
                 if (Button("Armature")) {
-                    Apply(action::object::AddArmature{std::make_unique<ObjectCreateInfo>(ObjectCreateInfo{.Select = MeshInstanceCreateInfo::SelectBehavior::Exclusive})});
+                    out = action::object::AddArmature{std::make_unique<ObjectCreateInfo>(ObjectCreateInfo{.Select = MeshInstanceCreateInfo::SelectBehavior::Exclusive})};
                     added = true;
                 }
                 SameLine();
                 if (Button("Camera")) {
-                    Apply(action::object::AddCamera{.Info = std::make_unique<ObjectCreateInfo>(ObjectCreateInfo{.Select = MeshInstanceCreateInfo::SelectBehavior::Exclusive}), .Props = {}});
+                    out = action::object::AddCamera{.Info = std::make_unique<ObjectCreateInfo>(ObjectCreateInfo{.Select = MeshInstanceCreateInfo::SelectBehavior::Exclusive}), .Props = {}};
                     added = true;
                 }
                 SameLine();
                 if (Button("Light")) {
-                    Apply(action::object::AddLight{std::make_unique<ObjectCreateInfo>(ObjectCreateInfo{.Select = MeshInstanceCreateInfo::SelectBehavior::Exclusive})});
+                    out = action::object::AddLight{std::make_unique<ObjectCreateInfo>(ObjectCreateInfo{.Select = MeshInstanceCreateInfo::SelectBehavior::Exclusive})};
                     added = true;
                 }
                 if (added) StartScreenTransform = TransformGizmo::TransformType::Translate;
@@ -1985,7 +1992,7 @@ void Scene::RenderControls() {
                 const auto active = mv->Active;
                 const auto preview = active ? NamedOr(mv->Names[*active], "Variant ", *active) : std::string{"Default"};
                 const auto set_variant = [&](std::optional<uint32_t> v) {
-                    if (active != v) Apply(action::UpdateOf<&MaterialVariants::Active>(SceneEntity, v));
+                    if (active != v) out = action::UpdateOf<&MaterialVariants::Active>(SceneEntity, v);
                 };
                 if (BeginCombo("Active variant", preview.c_str())) {
                     if (Selectable("Default", !active)) set_variant({});
@@ -2007,7 +2014,7 @@ void Scene::RenderControls() {
                     const bool any_hidden = any_of(selected_mesh_instances, [&](entt::entity e) { return !R.all_of<RenderInstance>(e); });
                     const bool mixed_visible = any_visible && any_hidden;
                     if (mixed_visible) PushItemFlag(ImGuiItemFlags_MixedValue, true);
-                    if (bool set_visible = any_visible && !any_hidden; Checkbox("Visible", &set_visible)) Apply(action::object::SetSelectedVisible{set_visible});
+                    if (bool set_visible = any_visible && !any_hidden; Checkbox("Visible", &set_visible)) out = action::object::SetSelectedVisible{set_visible};
                     if (mixed_visible) PopItemFlag();
 
                     const auto face_mesh_entities = scene_selection::GetSelectedMeshEntities(R) |
@@ -2019,35 +2026,34 @@ void Scene::RenderControls() {
                         const bool mixed_smooth = any_smooth && any_flat;
                         SameLine();
                         if (mixed_smooth) PushItemFlag(ImGuiItemFlags_MixedValue, true);
-                        if (bool set_smooth = any_smooth && !any_flat; Checkbox("Smooth shading", &set_smooth)) Apply(action::object::SetSelectedSmoothShading{set_smooth});
+                        if (bool set_smooth = any_smooth && !any_flat; Checkbox("Smooth shading", &set_smooth)) out = action::object::SetSelectedSmoothShading{set_smooth};
                         if (mixed_smooth) PopItemFlag();
                     }
                 }
-                if (CanDuplicate() && Button("Duplicate")) Duplicate();
+                if (CanDuplicate() && Button("Duplicate")) Duplicate(out);
                 if (CanDuplicateLinked()) {
                     SameLine();
-                    if (Button("Duplicate linked")) DuplicateLinked();
+                    if (Button("Duplicate linked")) out = action::object::DuplicateLinked{};
                 }
-                if (CanDelete() && Button("Delete")) Delete();
+                if (CanDelete() && Button("Delete")) Delete(out);
                 if (R.get<const SceneInteraction>(SceneEntity).Mode == InteractionMode::Pose && !R.view<const BoneSelection>().empty()) {
                     AlignTextToFramePadding();
                     TextUnformatted("Clear transform:");
                     SameLine();
-                    if (Button("All")) Apply(action::bone::ClearSelectedTransforms{.Position = true, .Rotation = true, .Scale = true});
+                    if (Button("All")) out = action::bone::ClearSelectedTransforms{.Position = true, .Rotation = true, .Scale = true};
                     SameLine();
-                    if (Button("Position")) Apply(action::bone::ClearSelectedTransforms{.Position = true});
+                    if (Button("Position")) out = action::bone::ClearSelectedTransforms{.Position = true};
                     SameLine();
-                    if (Button("Rotation")) Apply(action::bone::ClearSelectedTransforms{.Rotation = true});
+                    if (Button("Rotation")) out = action::bone::ClearSelectedTransforms{.Rotation = true};
                     SameLine();
-                    if (Button("Scale")) Apply(action::bone::ClearSelectedTransforms{.Scale = true});
+                    if (Button("Scale")) out = action::bone::ClearSelectedTransforms{.Scale = true};
                 }
             }
-            RenderEntityControls(FindActiveEntity(R));
+            RenderEntityControls(FindActiveEntity(R), out);
             EndTabItem();
         }
 
         if (BeginTabItem("Render")) {
-            std::optional<action::Action> out;
             ui::Edit f{R, out, SceneEntity};
             const auto &settings = R.get<const SceneSettings>(SceneEntity);
             {
@@ -2081,7 +2087,7 @@ void Scene::RenderControls() {
                 using AC = AxisThemeColors;
                 SeparatorText("Viewport theme");
                 const auto &theme = R.get<const ViewportTheme>(SceneEntity);
-                if (Button("Reset##ViewportTheme")) Apply(action::scene::ResetViewportTheme{});
+                if (Button("Reset##ViewportTheme")) out = action::scene::ResetViewportTheme{};
                 auto c = f.Sub<&ViewportTheme::Colors>();
                 c.Color<&VC::Grid>("Grid");
                 c.Color<&VC::Wire>("Wire");
@@ -2121,16 +2127,16 @@ void Scene::RenderControls() {
             const auto &camera = R.get<const ViewCamera>(SceneEntity);
             const auto extent = R.get<const ViewportExtent>(SceneEntity).Value;
             const float viewport_aspect = extent.width == 0 || extent.height == 0 ? 1.f : float(extent.width) / float(extent.height);
-            if (Button("Reset##Camera")) Apply(action::scene::ResetViewCamera{});
+            if (Button("Reset##Camera")) out = action::scene::ResetViewCamera{};
             if (vec3 target = camera.Target; SliderFloat3("Target", &target.x, -10, 10))
-                Apply(action::scene::SetViewCameraTarget{target});
+                out = action::scene::SetViewCameraTarget{target};
             if (Camera lens = camera.Data; RenderCameraLensEditor(lens, camera.Distance, viewport_aspect))
-                Apply(action::scene::SetViewCameraLens{lens});
+                out = action::scene::SetViewCameraLens{lens};
             EndTabItem();
         }
 
         if (BeginTabItem("Physics")) {
-            if (auto a = physics_ui::RenderTab(R, SceneEntity, *Physics)) Apply(std::move(*a));
+            if (auto a = physics_ui::RenderTab(R, SceneEntity, *Physics)) action::Assign(out, std::move(*a));
             EndTabItem();
         }
 
@@ -2272,7 +2278,7 @@ void Scene::RenderControls() {
     }
 }
 
-void Scene::RenderClipPickers() {
+void Scene::RenderClipPickers(std::optional<action::Action> &out) {
     static constexpr float ComboWidth = 200.f;
     // Names live on object entities, but ArmatureAnimation lives on the data entity.
     const auto display_name = [&]<typename Anim>(entt::entity entity) {
@@ -2293,7 +2299,7 @@ void Scene::RenderClipPickers() {
             if (BeginCombo("##clip", NamedOr(anim.Clips[active_idx].Name, "Clip ", active_idx).c_str())) {
                 for (uint32_t i = 0; i < anim.Clips.size(); ++i) {
                     if (Selectable(NamedOr(anim.Clips[i].Name, "Clip ", i).c_str(), active_idx == i) && active_idx != i) {
-                        Apply(action::UpdateOf<&Anim::ActiveClipIndex>(entity, i));
+                        out = action::UpdateOf<&Anim::ActiveClipIndex>(entity, i);
                     }
                 }
                 EndCombo();
@@ -2308,7 +2314,7 @@ void Scene::RenderClipPickers() {
     clip_picker.template operator()<NodeTransformAnimation>("Node");
 }
 
-void Scene::RenderObjectTree() {
+void Scene::RenderObjectTree(std::optional<action::Action> &out) {
     PushStyleVar(ImGuiStyleVar_ItemSpacing, {GetStyle().ItemSpacing.x, 0.f});
 
     const auto ToSelectionUserData = [](entt::entity e) -> ImGuiSelectionUserData { return ImGuiSelectionUserData(uint32_t(e)); };
@@ -2324,9 +2330,9 @@ void Scene::RenderObjectTree() {
         return ObjectTypeName(ObjectType::Empty);
     };
     std::vector<entt::entity> visible_entities;
-    const auto ResolveSelectionRequests = [&](std::span<const ImGuiSelectionRequest> requests, ImGuiSelectionUserData nav_item) -> action::selection::ApplyTreeSelection {
-        using Clear = action::selection::ApplyTreeSelection::ClearKind;
-        action::selection::ApplyTreeSelection out;
+    // Mutates `out` so begin and end batches fold into a single action.
+    using Clear = action::selection::ApplyTreeSelection::ClearKind;
+    const auto resolve_into = [&](action::selection::ApplyTreeSelection &out, std::span<const ImGuiSelectionRequest> requests, ImGuiSelectionUserData nav_item) {
         const auto add_target = [&](entt::entity e, bool selected) {
             if (e == entt::null) return;
             (selected ? out.ToSelect : out.ToDeselect).push_back(e);
@@ -2355,8 +2361,7 @@ void Scene::RenderObjectTree() {
             const auto [i0, i1] = std::minmax(first_i, last_i);
             for (auto i = i0; i <= i1; ++i) add_target(visible_entities[i], request.Selected);
         }
-        out.NavToActive = FromSelectionUserData(nav_item);
-        return out;
+        if (const auto nav = FromSelectionUserData(nav_item); nav != entt::null) out.NavToActive = nav;
     };
 
     const int total_selected = R.storage<Selected>().size() + R.storage<BoneSelection>().size();
@@ -2425,9 +2430,15 @@ void Scene::RenderObjectTree() {
     }
     if (!has_root) TextDisabled("No objects");
 
-    Apply(ResolveSelectionRequests(begin_requests, begin_nav_item));
+    // Both BeginMultiSelect and EndMultiSelect carry requests that resolve to the same selection update.
+    action::selection::ApplyTreeSelection tree_selection;
+    resolve_into(tree_selection, begin_requests, begin_nav_item);
     auto *ms_end = EndMultiSelect();
-    Apply(ResolveSelectionRequests({ms_end->Requests.Data, size_t(ms_end->Requests.Size)}, ms_end->NavIdItem));
+    resolve_into(tree_selection, {ms_end->Requests.Data, size_t(ms_end->Requests.Size)}, ms_end->NavIdItem);
+    if (!tree_selection.ToSelect.empty() || !tree_selection.ToDeselect.empty() ||
+        tree_selection.Clear != Clear::None || tree_selection.NavToActive != entt::null) {
+        out = std::move(tree_selection);
+    }
 
     PopStyleVar();
 }

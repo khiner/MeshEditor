@@ -610,9 +610,6 @@ entt::entity Scene::GetActiveMeshEntity() const {
     return entt::null;
 }
 
-void Scene::Select(entt::entity e) { Apply(action::selection::Select{e}); }
-void Scene::ToggleSelected(entt::entity e) { Apply(action::selection::ToggleSelected{e}); }
-
 void Scene::CreateSvgResource(std::unique_ptr<SvgResource> &svg, std::filesystem::path path) {
     auto svg_batch = BeginTextureUploadBatch(Vk.Device, *CommandPool, Stores.Buffers->Ctx);
     const auto RenderBitmap = [this, &svg_batch](std::span<const std::byte> data, uint32_t width, uint32_t height) {
@@ -1974,11 +1971,6 @@ entt::entity Scene::CreateSingleBoneInstance(entt::entity arm_obj_entity, BoneId
     return bone_entity;
 }
 
-void Scene::AddBone() { Apply(action::bone::Add{}); }
-void Scene::ExtrudeBone() { Apply(action::bone::Extrude{}); }
-void Scene::DuplicateSelectedBones() { Apply(action::bone::DuplicateSelected{}); }
-void Scene::DeleteSelectedBones() { Apply(action::bone::DeleteSelected{}); }
-
 entt::entity Scene::CreateExtrasBufferEntity(std::span<const vec3> positions, std::span<const uint8_t> vertex_classes, std::span<const uint32_t> edge_indices) { return ::CreateExtrasBufferEntity(R, *Stores.Meshes, *Stores.Buffers, positions, vertex_classes, edge_indices); }
 entt::entity Scene::CreateExtrasObject(std::span<const vec3> positions, std::span<const uint8_t> vertex_classes, std::span<const uint32_t> edge_indices, ObjectType type, ObjectCreateInfo info, const std::string &default_name) { return ::CreateExtrasObject(R, *Stores.Meshes, *Stores.Buffers, SceneEntity, positions, vertex_classes, edge_indices, type, std::move(info), default_name); }
 
@@ -2490,15 +2482,14 @@ bool Scene::CanDuplicate() const {
 bool Scene::CanDuplicateLinked() const { return CanDuplicate() && !IsBoneEditMode(R, SceneEntity); }
 bool Scene::CanDelete() const { return CanDuplicate(); }
 
-void Scene::Delete() {
-    if (IsBoneEditMode(R, SceneEntity)) Apply(action::bone::DeleteSelected{});
-    else Apply(action::object::Delete{});
+void Scene::Delete(std::optional<action::Action> &out) {
+    if (IsBoneEditMode(R, SceneEntity)) out = action::bone::DeleteSelected{};
+    else out = action::object::Delete{};
 }
-void Scene::Duplicate() {
-    if (IsBoneEditMode(R, SceneEntity)) Apply(action::bone::DuplicateSelected{});
-    else Apply(action::object::Duplicate{});
+void Scene::Duplicate(std::optional<action::Action> &out) {
+    if (IsBoneEditMode(R, SceneEntity)) out = action::bone::DuplicateSelected{};
+    else out = action::object::Duplicate{};
 }
-void Scene::DuplicateLinked() { Apply(action::object::DuplicateLinked{}); }
 
 bool Scene::SetInteractionMode(InteractionMode mode) {
     if (R.get<const SceneInteraction>(SceneEntity).Mode == mode) return false;
@@ -2674,23 +2665,34 @@ void Scene::Apply(const action::Action &action) {
         R.emplace_or_replace<BoneSelection>(e, additive && cur ? *cur | sel : sel);
     };
 
+    // AdditiveBoxSelectBaseline is meaningful only during an active box-select drag;
+    // a click-selection always ends one, so its handler owns the cleanup.
+    auto end_box_select_interaction = [&] { R.remove<AdditiveBoxSelectBaseline>(SceneEntity); };
     std::visit(
         overloaded{
-            [&](action::selection::Select a) { ::Select(R, a.Entity); },
-            [&](action::selection::ToggleSelected a) { ::ToggleSelected(R, a.Entity); },
-            [&](action::selection::SelectBone a) { ::SelectBone(R, a.Entity); },
+            [&](action::selection::Select a) { end_box_select_interaction(); ::Select(R, a.Entity); },
+            [&](action::selection::ToggleSelected a) { end_box_select_interaction(); ::ToggleSelected(R, a.Entity); },
+            [&](action::selection::SelectBone a) {
+                end_box_select_interaction();
+                ::SelectBone(R, a.Entity);
+                if (a.Part) merge_bone_sel(a.Entity, a.Part, a.Additive);
+            },
             [&](action::selection::ExtendActive a) {
+                end_box_select_interaction();
                 R.clear<Active>();
                 R.emplace<Active>(a.Entity);
                 R.emplace_or_replace<Selected>(a.Entity);
             },
             [&](action::selection::ExtendBoneActive a) {
+                end_box_select_interaction();
                 R.clear<BoneActive>();
                 R.emplace<BoneActive>(a.Entity);
                 if (!R.all_of<BoneSelection>(a.Entity)) R.emplace<BoneSelection>(a.Entity, false, false, false);
+                if (a.Part) merge_bone_sel(a.Entity, a.Part, a.Additive);
             },
             [&](const action::selection::SetBoneSelectionPart &a) { merge_bone_sel(a.Entity, a.Part, a.Additive); },
             [&](action::selection::DeselectAll) {
+                end_box_select_interaction();
                 const auto interaction_mode = R.get<const SceneInteraction>(SceneEntity).Mode;
                 const bool bone_mode = interaction_mode == InteractionMode::Pose || IsBoneEditMode(R, SceneEntity);
                 if (bone_mode) R.clear<BoneSelection>();
@@ -2731,6 +2733,7 @@ void Scene::Apply(const action::Action &action) {
                 );
             },
             [&](const action::selection::ApplyEditElementClick &a) {
+                end_box_select_interaction();
                 const auto edit_mode = R.get<const SceneEditMode>(SceneEntity).Value;
                 const auto ranges = GetBitsetRangesForSelected();
                 auto *bits = Stores.Buffers->SelectionBitset.Data();
@@ -3005,7 +3008,7 @@ void Scene::Apply(const action::Action &action) {
                 for (uint32_t i = 0; i < arm_obj.BoneEntities.size(); ++i) R.get<BoneIndex>(arm_obj.BoneEntities[i]).Index = i;
 
                 if (arm_obj.BoneEntities.empty()) DestroyArmatureData(arm_obj_entity);
-                Select(arm_obj_entity);
+                ::Select(R, arm_obj_entity);
             },
             [&](const action::scene::SetInteractionMode &a) { SetInteractionMode(a.Mode); },
             [&](action::scene::CycleInteractionMode) {
@@ -3099,15 +3102,16 @@ void Scene::Apply(const action::Action &action) {
                 R.emplace_or_replace<RotationUiDriving>(e);
                 R.patch<Transform>(e, [&](auto &t) { t.R = a.R; });
             },
-            [&](const action::scene::BeginGizmoDrag &a) {
+            [&](const action::scene::UpdateGizmoDragLocals &a) {
                 for (const auto &[e, st] : a.Starts) R.emplace<StartTransform>(e, st);
                 for (const auto &[e, len] : a.StartBoneLengths) R.emplace<StartBoneLength>(e, len);
-            },
-            [&](const action::scene::UpdateGizmoDragLocals &a) {
                 for (const auto &[e, local] : a.Locals) R.patch<Transform>(e, [&](auto &t) { t = local; });
                 for (const auto &[e, length] : a.BoneDisplayScales) R.get_or_emplace<BoneDisplayScale>(e).Value = length;
             },
-            [&](const action::scene::UpdateGizmoMeshEditPending &a) { R.emplace_or_replace<PendingTransform>(SceneEntity, *a.Value); },
+            [&](const action::scene::UpdateGizmoMeshEditPending &a) {
+                for (const auto &[e, st] : a.Starts) R.emplace<StartTransform>(e, st);
+                R.emplace_or_replace<PendingTransform>(SceneEntity, *a.Value);
+            },
             [&](action::scene::EndGizmoDrag) { R.clear<StartTransform, StartBoneLength>(); },
             [&](const action::bone::SetEditHeadTailRoll &a) {
                 const auto e = FindActiveBone(R);
@@ -4745,7 +4749,7 @@ std::vector<entt::entity> Scene::RunBoxSelect(std::pair<uvec2, uvec2> box_px) {
     return entities;
 }
 
-void Scene::Render(vk::Fence viewportConsumerFence) {
+void Scene::Render(std::optional<action::Action> &out, vk::Fence viewportConsumerFence) {
     auto &dl = *ImGui::GetWindowDrawList();
     // Split draw list into two channels: viewport texture (background, channel 0) and overlay visuals (foreground, channel 1).
     // Overlay is split into interact and draw phases so that interaction patches (e.g. Transform) are processed
@@ -4753,7 +4757,7 @@ void Scene::Render(vk::Fence viewportConsumerFence) {
     dl.ChannelsSplit(2);
 
     dl.ChannelsSetCurrent(1);
-    InteractOverlay();
+    InteractOverlay(out);
 
     dl.ChannelsSetCurrent(0);
     if (SubmitViewport(viewportConsumerFence)) {

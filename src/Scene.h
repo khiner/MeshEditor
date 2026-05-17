@@ -49,8 +49,6 @@ struct Scene {
 
     entt::entity GetMeshEntity(entt::entity) const;
     entt::entity GetActiveMeshEntity() const;
-    void Select(entt::entity);
-    void ToggleSelected(entt::entity);
 
     void Apply(const action::Action &);
     std::expected<void, std::string> Apply(const action::FallibleAction &);
@@ -63,32 +61,27 @@ struct Scene {
     // Actions on selected entities
     bool CanDuplicate() const;
     bool CanDuplicateLinked() const;
-    void Duplicate();
-    void DuplicateLinked();
+    // Branch on bone-edit mode, so callers can't pick the action variant inline.
+    void Duplicate(std::optional<action::Action> &out);
     bool CanDelete() const;
-    void Delete();
-
-    void AddBone();
-    void ExtrudeBone();
-    void DuplicateSelectedBones();
-    void DeleteSelectedBones();
+    void Delete(std::optional<action::Action> &out);
 
     // Handle mouse/keyboard interactions.
-    void Interact();
+    void Interact(std::optional<action::Action> &out);
 
     // Submit GPU render (nonblocking), draw the final image into the current ImGui window, and draw overlays.
     // Call WaitForRender() before the ImGui frame samples the final image.
     // If provided, waits on `viewportConsumerFence` before destroying old resources on extent change.
-    void Render(vk::Fence viewportConsumerFence = {});
+    void Render(std::optional<action::Action> &out, vk::Fence viewportConsumerFence = {});
     // Wait for pending viewport render to complete. No-op if no render pending.
     void WaitForRender();
-    void RenderControls();
+    void RenderControls(std::optional<action::Action> &out);
 
     const AnimationTimeline &GetTimeline() const;
     AnimationTimelineView &GetTimelineView() { return TimelineView; }
     const AnimationIcons &GetAnimationIcons() const { return AnimIcons; }
     // Render per-source animation-clip pickers above the timeline.
-    void RenderClipPickers();
+    void RenderClipPickers(std::optional<action::Action> &out);
 
     // Record the viewport to an H.264 mp4 by piping frames to an `ffmpeg` subprocess.
     // When a look-through camera is active, captures only the framed sub-region matching
@@ -241,8 +234,11 @@ private:
     // The overlay is everything drawn on top of the viewport with ImGui, independent of the main scene vulkan pipeline.
     // Split into interact (state changes) and draw (visuals) so that DrawOverlay runs after ProcessComponentEvents
     // and reads up-to-date WorldTransforms.
-    void InteractOverlay();
+    void InteractOverlay(std::optional<action::Action> &out);
     void DrawOverlay();
+
+    void RenderObjectTree(std::optional<action::Action> &out);
+    void RenderEntityControls(entt::entity, std::optional<action::Action> &out);
 
     void RecordRenderCommandBuffer(bool silhouette_only = false);
     void FlushDrawList(const DrawListBuilder &, DrawBufferPair &);
@@ -284,7 +280,4 @@ private:
 
     // Prefilter HDR at index (if not already cached) and activate it as the studio environment.
     void SetStudioEnvironment(uint32_t index);
-
-    void RenderObjectTree();
-    void RenderEntityControls(entt::entity);
 };

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Armature.h"
+#include "BoneSelection.h"
 #include "entt_fwd.h"
 #include "numeric/vec2.h"
 
@@ -15,14 +16,19 @@ struct Select {
 struct ToggleSelected {
     entt::entity Entity;
 };
+// `Part`/`Additive` describe an optional sub-part merged after the selection state is established.
 struct SelectBone {
     entt::entity Entity;
+    std::optional<BoneSel> Part{};
+    bool Additive{false};
 };
 struct ExtendActive {
     entt::entity Entity;
 };
 struct ExtendBoneActive {
     entt::entity Entity;
+    std::optional<BoneSel> Part{};
+    bool Additive{false};
 };
 struct SetBoneSelectionPart {
     entt::entity Entity;
@@ -52,8 +58,7 @@ struct ApplyTreeSelection {
     enum class ClearKind : uint8_t { None,
                                      BonesOnly,
                                      All };
-    std::vector<entt::entity> ToSelect;
-    std::vector<entt::entity> ToDeselect;
+    std::vector<entt::entity> ToSelect, ToDeselect;
     entt::entity NavToActive{null_entity};
     ClearKind Clear{ClearKind::None};
 };

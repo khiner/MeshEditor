@@ -41,4 +41,10 @@ using Action = MergedVariantT<
     CrossCuttingActions>;
 
 using FallibleAction = project::FallibleActions;
+
+// Promote a sub-domain Action variant into the top-level Action.
+template<typename... Ts>
+void Assign(std::optional<Action> &out, std::variant<Ts...> v) {
+    std::visit([&](auto &&x) { out = std::forward<decltype(x)>(x); }, std::move(v));
+}
 } // namespace action
