@@ -8,6 +8,7 @@
 #include "SceneTree.h"
 #include "Variant.h"
 #include "numeric/vec2.h"
+#include "ui/FieldEdit.h"
 
 #include <entt/entity/registry.hpp>
 #include <format>
@@ -56,10 +57,11 @@ const Target *RenderEntityCombo(entt::registry &r, entt::entity entity, const ch
     const auto *cur = cur_e != null_entity && r.valid(cur_e) ? r.try_get<const Target>(cur_e) : nullptr;
     if (const auto preview = cur ? DisplayName(cur->Name, "{:x}", uint32_t(cur_e)) : std::string{"None"};
         BeginCombo(label, preview.c_str())) {
-        if (Selectable("None", cur_e == null_entity)) apply(action::UpdateOf(entity, Field, entt::entity{null_entity}));
+        if (Selectable("None", cur_e == null_entity)) apply(action::UpdateOf<Field>(entity, entt::entity{null_entity}));
         for (auto [te, t] : view.each()) {
-            if (Selectable(DisplayName(t.Name, "{:x}", uint32_t(te)).c_str(), cur_e == te))
-                apply(action::UpdateOf(entity, Field, te));
+            if (Selectable(DisplayName(t.Name, "{:x}", uint32_t(te)).c_str(), cur_e == te)) {
+                apply(action::UpdateOf<Field>(entity, te));
+            }
         }
         EndCombo();
     }
@@ -132,7 +134,7 @@ void RenderCollisionFilterBody(entt::registry &r, entt::entity filter_e, const p
     mode_changed |= RadioButton("Allowlist", &mode, int(CollideMode::Allowlist));
     SameLine();
     mode_changed |= RadioButton("Blocklist", &mode, int(CollideMode::Blocklist));
-    if (mode_changed) apply(action::UpdateOf(filter_e, &CollisionFilter::Mode, CollideMode(mode)));
+    if (mode_changed) apply(action::UpdateOf<&CollisionFilter::Mode>(filter_e, CollideMode(mode)));
 
     if (mode != int(CollideMode::All)) {
         Indent();
@@ -245,18 +247,11 @@ void physics_ui::RenderTab(entt::registry &r, entt::entity scene_entity, Physics
     SeparatorText("Simulation");
     Text("Bodies: %u", physics.BodyCount());
     {
-        const auto &settings = r.get<PhysicsSimulationSettings>(scene_entity);
-        int substeps = int(settings.SubstepsPerFrame), iters = int(settings.SolverIterations);
-        float time_scale = settings.TimeScale;
-        vec3 gravity = settings.Gravity;
-        if (SliderInt("Substeps per frame", &substeps, 1, 100))
-            apply(action::UpdateOf(scene_entity, &PhysicsSimulationSettings::SubstepsPerFrame, uint32_t(substeps)));
-        if (SliderInt("Solver iterations", &iters, 2, 50))
-            apply(action::UpdateOf(scene_entity, &PhysicsSimulationSettings::SolverIterations, uint32_t(iters)));
-        if (SliderFloat("Time scale", &time_scale, 0.f, 10.f, "%.2fx"))
-            apply(action::UpdateOf(scene_entity, &PhysicsSimulationSettings::TimeScale, time_scale));
-        if (DragFloat3("Gravity", &gravity.x, 0.1f))
-            apply(action::UpdateOf(scene_entity, &PhysicsSimulationSettings::Gravity, gravity));
+        ui::Edit f{r, apply, scene_entity};
+        f.Slider<&PhysicsSimulationSettings::SubstepsPerFrame>("Substeps per frame", 1u, 100u);
+        f.Slider<&PhysicsSimulationSettings::SolverIterations>("Solver iterations", 2u, 50u);
+        f.Slider<&PhysicsSimulationSettings::TimeScale>("Time scale", 0.f, 10.f, "%.2fx");
+        f.Drag<&PhysicsSimulationSettings::Gravity>("Gravity", 0.1f);
     }
 
     if (CollapsingHeader("Physics Materials")) {
@@ -269,17 +264,13 @@ void physics_ui::RenderTab(entt::registry &r, entt::entity scene_entity, Physics
                 }
                 return n;
             },
-            [&](entt::entity mat_entity, const PhysicsMaterial &mat) {
-                if (float sf = mat.StaticFriction; SliderFloat("Static friction", &sf, 0.0f, 2.0f))
-                    apply(action::UpdateOf(mat_entity, &PhysicsMaterial::StaticFriction, sf));
-                if (float df = mat.DynamicFriction; SliderFloat("Dynamic friction", &df, 0.0f, 2.0f))
-                    apply(action::UpdateOf(mat_entity, &PhysicsMaterial::DynamicFriction, df));
-                if (float rest = mat.Restitution; SliderFloat("Restitution", &rest, 0.0f, 1.0f))
-                    apply(action::UpdateOf(mat_entity, &PhysicsMaterial::Restitution, rest));
-                if (auto fc = int(mat.FrictionCombine); Combo("Friction combine", &fc, "Average\0Minimum\0Maximum\0Multiply\0"))
-                    apply(action::UpdateOf(mat_entity, &PhysicsMaterial::FrictionCombine, PhysicsCombineMode(fc)));
-                if (auto rc = int(mat.RestitutionCombine); Combo("Restitution combine", &rc, "Average\0Minimum\0Maximum\0Multiply\0"))
-                    apply(action::UpdateOf(mat_entity, &PhysicsMaterial::RestitutionCombine, PhysicsCombineMode(rc)));
+            [&](entt::entity mat_entity, const PhysicsMaterial &) {
+                ui::Edit f{r, apply, mat_entity};
+                f.Slider<&PhysicsMaterial::StaticFriction>("Static friction", 0.f, 2.f);
+                f.Slider<&PhysicsMaterial::DynamicFriction>("Dynamic friction", 0.f, 2.f);
+                f.Slider<&PhysicsMaterial::Restitution>("Restitution", 0.f, 1.f);
+                f.Enum<&PhysicsMaterial::FrictionCombine>("Friction combine", "Average\0Minimum\0Maximum\0Multiply\0");
+                f.Enum<&PhysicsMaterial::RestitutionCombine>("Restitution combine", "Average\0Minimum\0Maximum\0Multiply\0");
             },
             apply
         );
@@ -511,8 +502,7 @@ void physics_ui::RenderEntityProperties(entt::registry &r, entt::entity entity, 
         Spacing();
         SeparatorText("Collider");
 
-        if (bool auto_fit = r.get<const ColliderPolicy>(entity).AutoFitDims; Checkbox("Auto-fit", &auto_fit))
-            apply(action::UpdateOf(entity, &ColliderPolicy::AutoFitDims, auto_fit));
+        ui::Edit{r, apply, entity}.Check<&ColliderPolicy::AutoFitDims>("Auto-fit");
         if (auto s = RenderShapeEditor(collider->Shape, r.get<const ColliderPolicy>(entity).AutoFitDims))
             apply(action::physics::SetColliderShape{entity, *s, s->index() != collider->Shape.index()});
 
@@ -530,11 +520,10 @@ void physics_ui::RenderEntityProperties(entt::registry &r, entt::entity entity, 
         const auto &tl = r.get<const AnimationTimeline>(scene_entity);
         const bool velocity_locked = tl.Playing || physics.BakedThrough() >= tl.StartFrame;
         if (velocity_locked) BeginDisabled();
-        if (const auto *velocity = r.try_get<const PhysicsVelocity>(entity)) {
-            if (vec3 linear = velocity->Linear; DragFloat3("Linear velocity", &linear.x, 0.1f))
-                apply(action::UpdateOf(entity, &PhysicsVelocity::Linear, linear));
-            if (vec3 angular = velocity->Angular; DragFloat3("Angular velocity", &angular.x, 0.1f))
-                apply(action::UpdateOf(entity, &PhysicsVelocity::Angular, angular));
+        if (r.try_get<const PhysicsVelocity>(entity)) {
+            ui::Edit f{r, apply, entity};
+            f.Drag<&PhysicsVelocity::Linear>("Linear velocity", 0.1f);
+            f.Drag<&PhysicsVelocity::Angular>("Angular velocity", 0.1f);
         }
         if (velocity_locked) EndDisabled();
 
@@ -596,18 +585,17 @@ void physics_ui::RenderEntityProperties(entt::registry &r, entt::entity entity, 
         const auto *cur = RenderEntityCombo<PhysicsJointDef, &PhysicsJoint::JointDefEntity>(r, entity, "Definition", apply, "No joint definitions");
         if (cur) Text("Limits: %zu, Drives: %zu", cur->Limits.size(), cur->Drives.size());
 
-        if (bool enable_collision = joint->EnableCollision; Checkbox("Enable collision", &enable_collision))
-            apply(action::UpdateOf(entity, &PhysicsJoint::EnableCollision, enable_collision));
+        ui::Edit{r, apply, entity}.Check<&PhysicsJoint::EnableCollision>("Enable collision");
 
         // ConnectedNode picker — KHR joint.connectedNode is the second attachment frame.
         // Mirrors Blender's rigid_body_constraint object1/object2 fields.
         const auto cn = joint->ConnectedNode;
         if (const auto cn_label = cn != null_entity && r.valid(cn) ? GetName(r, cn) : std::string{"None"};
             BeginCombo("Connected node", cn_label.c_str())) {
-            if (Selectable("None", cn == null_entity)) apply(action::UpdateOf(entity, &PhysicsJoint::ConnectedNode, entt::entity{null_entity}));
+            if (Selectable("None", cn == null_entity)) apply(action::UpdateOf<&PhysicsJoint::ConnectedNode>(entity, entt::entity{null_entity}));
             for (auto ne : r.view<const SceneNode>()) {
                 if (ne == entity) continue; // self-connection is meaningless
-                if (Selectable(GetName(r, ne).c_str(), cn == ne)) apply(action::UpdateOf(entity, &PhysicsJoint::ConnectedNode, ne));
+                if (Selectable(GetName(r, ne).c_str(), cn == ne)) apply(action::UpdateOf<&PhysicsJoint::ConnectedNode>(entity, ne));
             }
             EndCombo();
         }

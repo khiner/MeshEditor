@@ -13,6 +13,7 @@
 #include "Worker.h"
 #include "mesh/Mesh.h"
 #include "scene_impl/SceneModeComponents.h"
+#include "ui/FieldEdit.h"
 
 #include "implot.h"
 #include "mesh2modes.h"
@@ -648,38 +649,31 @@ void DrawModalCreateForm(
         }
         EndCombo();
     }
+    using MMCI = ModalModelCreateInfo;
     using Props = AcousticMaterialProperties;
-    const auto edit_prop = [&](const char *id, double Props::*member, double current) {
-        if (double v = current; InputDouble(id, &v, 0.0, 0.0, "%.3f"))
-            apply(action::UpdateOf(e, &ModalModelCreateInfo::Material, &AcousticMaterial::Properties, member, v));
-    };
+    ui::Edit f{r, apply, e};
     Text("Density (kg/m^3)");
-    edit_prop("##Density", &Props::Density, info.Material.Properties.Density);
+    f.Input<&MMCI::Material, &AcousticMaterial::Properties, &Props::Density>("##Density");
     Text("Young's modulus (Pa)");
-    edit_prop("##Young's modulus", &Props::YoungModulus, info.Material.Properties.YoungModulus);
+    f.Input<&MMCI::Material, &AcousticMaterial::Properties, &Props::YoungModulus>("##Young's modulus");
     Text("Poisson's ratio");
-    edit_prop("##Poisson's ratio", &Props::PoissonRatio, info.Material.Properties.PoissonRatio);
+    f.Input<&MMCI::Material, &AcousticMaterial::Properties, &Props::PoissonRatio>("##Poisson's ratio");
     Text("Rayleigh damping alpha/beta");
-    edit_prop("##Rayleigh damping alpha", &Props::Alpha, info.Material.Properties.Alpha);
-    edit_prop("##Rayleigh damping beta", &Props::Beta, info.Material.Properties.Beta);
+    f.Input<&MMCI::Material, &AcousticMaterial::Properties, &Props::Alpha>("##Rayleigh damping alpha");
+    f.Input<&MMCI::Material, &AcousticMaterial::Properties, &Props::Beta>("##Rayleigh damping beta");
 
     SeparatorText("Tet mesh");
-    if (bool v = info.QualityTets; Checkbox("Quality", &v))
-        apply(action::UpdateOf(e, &ModalModelCreateInfo::QualityTets, v));
+    f.Check<&MMCI::QualityTets>("Quality");
     MeshEditor::HelpMarker("Add new Steiner points to the interior of the tet mesh to improve model quality.");
 
     SeparatorText("SoundVertices vertices");
-    if (has_excitable) {
-        if (bool v = info.CopySoundVertices; Checkbox("Copy excitable vertices", &v))
-            apply(action::UpdateOf(e, &ModalModelCreateInfo::CopySoundVertices, v));
-    }
+    if (has_excitable) f.Check<&MMCI::CopySoundVertices>("Copy excitable vertices");
     if (!has_excitable || !info.CopySoundVertices) {
         const uint32_t num_vertices = r.get<Mesh>(mesh_entity).VertexCount();
         const uint32_t min_vertices = 1, max_vertices = num_vertices;
-        const uint32_t clamped_num = std::min(info.NumVertices, num_vertices);
-        if (uint32_t v = clamped_num;
+        if (uint32_t v = std::min(info.NumVertices, num_vertices);
             SliderScalar("Num excitable vertices", ImGuiDataType_U32, &v, &min_vertices, &max_vertices))
-            apply(action::UpdateOf(e, &ModalModelCreateInfo::NumVertices, v));
+            f.Set<&MMCI::NumVertices>(v);
     }
 
     if (Button(modal_modes ? "Update" : "Create")) {

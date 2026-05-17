@@ -32,6 +32,7 @@
 #include "numeric/rect.h"
 #include "physics/PhysicsUi.h"
 #include "physics/PhysicsWorld.h"
+#include "ui/FieldEdit.h"
 
 #include <algorithm>
 #include <cmath>
@@ -936,7 +937,7 @@ void Scene::InteractOverlay() {
                             for (const auto &entry : group.Entries) {
                                 const bool selected = entry.Value == settings.DebugChannel;
                                 if (Selectable(entry.Label, selected) && !selected) {
-                                    Apply(action::UpdateOf(SceneEntity, &SceneSettings::DebugChannel, entry.Value));
+                                    Apply(action::UpdateOf<&SceneSettings::DebugChannel>(SceneEntity, entry.Value));
                                 }
                                 if (selected) SetItemDefaultFocus();
                             }
@@ -964,7 +965,7 @@ void Scene::InteractOverlay() {
                 {OverlayIcon.get(), {0.f, 0.f}, ImDrawFlags_RoundCornersLeft, true, settings.ShowOverlays, "Toggle overlays"},
             };
             if (const auto clicked = DrawOverlayIconButtonGroup("ViewportOverlays", group_start, icon_button, !active_transform, &OverlayControlsHovered, shading_button_style)) {
-                Apply(action::UpdateOf(SceneEntity, &SceneSettings::ShowOverlays, !settings.ShowOverlays));
+                Apply(action::UpdateOf<&SceneSettings::ShowOverlays>(SceneEntity, !settings.ShowOverlays));
             }
         }
         { // Dropdown arrow button
@@ -1006,15 +1007,12 @@ void Scene::InteractOverlay() {
                 OverlayControlsHovered = true;
                 TextUnformatted("Viewport overlays");
                 Separator();
-                const auto check = [&](const char *label, bool SceneSettings::*member) {
-                    bool v = settings.*member;
-                    if (Checkbox(label, &v)) Apply(action::UpdateOf(SceneEntity, member, v));
-                };
-                check("Grid", &SceneSettings::ShowGrid);
-                check("Extras", &SceneSettings::ShowExtras);
-                check("Bones", &SceneSettings::ShowBones);
-                check("Origins", &SceneSettings::ShowOrigins);
-                check("Outline selected", &SceneSettings::ShowOutlineSelected);
+                ui::Edit f{R, ui::Applier{this}, SceneEntity};
+                f.Check<&SceneSettings::ShowGrid>("Grid");
+                f.Check<&SceneSettings::ShowExtras>("Extras");
+                f.Check<&SceneSettings::ShowBones>("Bones");
+                f.Check<&SceneSettings::ShowOrigins>("Origins");
+                f.Check<&SceneSettings::ShowOutlineSelected>("Outline selected");
                 EndPopup();
             }
             PopStyleVar();
@@ -1408,10 +1406,8 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
             // In Pose mode, edit the active bone rather than the armature.
             const bool is_pose_bone = R.get<const SceneInteraction>(SceneEntity).Mode == InteractionMode::Pose && active_bone_entity != entt::null;
             const auto transform_entity = is_pose_bone ? active_bone_entity : active_entity;
-            {
-                auto p = R.get<const Transform>(transform_entity).P;
-                if (DragFloat3("Position", &p[0], 0.01f)) Apply(action::UpdateOf(transform_entity, &Transform::P, p));
-            }
+            ui::Edit transform_edit{R, ui::Applier{this}, transform_entity};
+            transform_edit.Drag<&Transform::P>("Position", 0.01f);
             // Rotation editor (RotationUiVariant is reactively created; may not exist yet on the first frame)
             if (const auto *rotation_ui_ptr = R.try_get<const RotationUiVariant>(transform_entity)) {
                 int mode_i = rotation_ui_ptr->index();
@@ -1455,13 +1451,7 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
 
             const bool frozen = R.all_of<ScaleLocked>(transform_entity);
             if (frozen) BeginDisabled();
-            {
-                auto s = R.get<const Transform>(transform_entity).S;
-                if (const auto label = std::format("Scale{}", frozen ? " (frozen)" : "");
-                    DragFloat3(label.c_str(), &s[0], 0.01f, 0.01f, 10)) {
-                    Apply(action::UpdateOf(transform_entity, &Transform::S, s));
-                }
-            }
+            transform_edit.Drag<&Transform::S>(std::format("Scale{}", frozen ? " (frozen)" : "").c_str(), 0.01f, 0.01f, 10);
             if (frozen) EndDisabled();
         }
         Spacing();
@@ -2033,7 +2023,7 @@ void Scene::RenderControls() {
                 const auto active = mv->Active;
                 const auto preview = active ? NamedOr(mv->Names[*active], "Variant ", *active) : std::string{"Default"};
                 const auto set_variant = [&](std::optional<uint32_t> v) {
-                    if (active != v) Apply(action::UpdateOf(SceneEntity, &MaterialVariants::Active, v));
+                    if (active != v) Apply(action::UpdateOf<&MaterialVariants::Active>(SceneEntity, v));
                 };
                 if (BeginCombo("Active variant", preview.c_str())) {
                     if (Selectable("Default", !active)) set_variant({});
@@ -2099,12 +2089,13 @@ void Scene::RenderControls() {
         }
 
         if (BeginTabItem("Render")) {
+            ui::Edit f{R, ui::Applier{this}, SceneEntity};
             const auto &settings = R.get<const SceneSettings>(SceneEntity);
             {
                 auto color = settings.ClearColor;
                 if (ColorEdit3("Background color", color.float32)) {
                     color.float32[3] = 1.f;
-                    Apply(action::UpdateOf(SceneEntity, &SceneSettings::ClearColor, color));
+                    f.Set<&SceneSettings::ClearColor>(color);
                 }
             }
             if (Button("Recompile shaders")) ShaderRecompileRequested = true;
@@ -2120,59 +2111,49 @@ void Scene::RenderControls() {
                         Checkbox(type_name.c_str(), &show)) {
                         auto next_mask = settings.NormalOverlays;
                         SetElementMask(next_mask, element, show);
-                        Apply(action::UpdateOf(SceneEntity, &SceneSettings::NormalOverlays, next_mask));
+                        f.Set<&SceneSettings::NormalOverlays>(next_mask);
                     }
                 }
-                if (bool v = settings.ShowBoundingBoxes; Checkbox("Bounding boxes", &v)) {
-                    Apply(action::UpdateOf(SceneEntity, &SceneSettings::ShowBoundingBoxes, v));
-                }
-                if (!R.view<const TetMeshData>().empty()) {
-                    if (bool v = settings.ShowTetWireframe; Checkbox("Tet wireframe", &v)) {
-                        Apply(action::UpdateOf(SceneEntity, &SceneSettings::ShowTetWireframe, v));
-                    }
-                }
+                f.Check<&SceneSettings::ShowBoundingBoxes>("Bounding boxes");
+                if (!R.view<const TetMeshData>().empty()) f.Check<&SceneSettings::ShowTetWireframe>("Tet wireframe");
             }
             {
+                using VC = ViewportThemeColors;
+                using AC = AxisThemeColors;
                 SeparatorText("Viewport theme");
                 const auto &theme = R.get<const ViewportTheme>(SceneEntity);
                 if (Button("Reset##ViewportTheme")) Apply(action::scene::ResetViewportTheme{});
-                const auto color_edit3 = [&](const char *label, vec3 ViewportThemeColors::*member) {
-                    if (vec3 v = theme.Colors.*member; ColorEdit3(label, &v.x)) Apply(action::UpdateOf(SceneEntity, &ViewportTheme::Colors, member, v));
-                };
-                const auto color_edit4 = [&](const char *label, vec4 ViewportThemeColors::*member) {
-                    if (vec4 v = theme.Colors.*member; ColorEdit4(label, &v.x)) Apply(action::UpdateOf(SceneEntity, &ViewportTheme::Colors, member, v));
-                };
-                const auto axis_edit3 = [&](const char *label, vec3 AxisThemeColors::*member) {
-                    if (vec3 v = theme.AxisColors.*member; ColorEdit3(label, &v.x)) Apply(action::UpdateOf(SceneEntity, &ViewportTheme::AxisColors, member, v));
-                };
-                color_edit4("Grid", &ViewportThemeColors::Grid);
-                color_edit3("Wire", &ViewportThemeColors::Wire);
-                color_edit3("Wire edit", &ViewportThemeColors::WireEdit);
-                color_edit3("Object active", &ViewportThemeColors::ObjectActive);
-                color_edit3("Object selected", &ViewportThemeColors::ObjectSelected);
-                color_edit4("Light", &ViewportThemeColors::Light);
-                color_edit3("Vertex", &ViewportThemeColors::Vertex);
-                color_edit3("Vertex selected", &ViewportThemeColors::VertexSelected);
-                color_edit3("Edge selected (incidental)", &ViewportThemeColors::EdgeSelectedIncidental);
-                color_edit3("Edge selected", &ViewportThemeColors::EdgeSelected);
-                color_edit4("Face selected (incidental)", &ViewportThemeColors::FaceSelectedIncidental);
-                color_edit4("Face selected", &ViewportThemeColors::FaceSelected);
-                color_edit4("Element active", &ViewportThemeColors::ElementActive);
-                color_edit4("Element excited", &ViewportThemeColors::ElementExcited);
-                color_edit3("Face normal", &ViewportThemeColors::FaceNormal);
-                color_edit3("Vertex normal", &ViewportThemeColors::VertexNormal);
-                color_edit3("Bone solid", &ViewportThemeColors::BoneSolid);
-                color_edit3("Bone pose", &ViewportThemeColors::BonePose);
-                color_edit3("Bone pose active", &ViewportThemeColors::BonePoseActive);
-                color_edit3("Transform", &ViewportThemeColors::Transform);
+                auto c = f.Sub<&ViewportTheme::Colors>();
+                c.Color<&VC::Grid>("Grid");
+                c.Color<&VC::Wire>("Wire");
+                c.Color<&VC::WireEdit>("Wire edit");
+                c.Color<&VC::ObjectActive>("Object active");
+                c.Color<&VC::ObjectSelected>("Object selected");
+                c.Color<&VC::Light>("Light");
+                c.Color<&VC::Vertex>("Vertex");
+                c.Color<&VC::VertexSelected>("Vertex selected");
+                c.Color<&VC::EdgeSelectedIncidental>("Edge selected (incidental)");
+                c.Color<&VC::EdgeSelected>("Edge selected");
+                c.Color<&VC::FaceSelectedIncidental>("Face selected (incidental)");
+                c.Color<&VC::FaceSelected>("Face selected");
+                c.Color<&VC::ElementActive>("Element active");
+                c.Color<&VC::ElementExcited>("Element excited");
+                c.Color<&VC::FaceNormal>("Face normal");
+                c.Color<&VC::VertexNormal>("Vertex normal");
+                c.Color<&VC::BoneSolid>("Bone solid");
+                c.Color<&VC::BonePose>("Bone pose");
+                c.Color<&VC::BonePoseActive>("Bone pose active");
+                c.Color<&VC::Transform>("Transform");
                 SeparatorText("Axis colors");
-                axis_edit3("Axis X", &AxisThemeColors::X);
-                axis_edit3("Axis Y", &AxisThemeColors::Y);
-                axis_edit3("Axis Z", &AxisThemeColors::Z);
+                auto a = f.Sub<&ViewportTheme::AxisColors>();
+                a.Color<&AC::X>("Axis X");
+                a.Color<&AC::Y>("Axis Y");
+                a.Color<&AC::Z>("Axis Z");
+                // UI edits "full" width; storage is half-width.
                 if (float full_width = theme.EdgeWidth * 2.f; SliderFloat("Edge width", &full_width, 0.5f, 4.f))
-                    Apply(action::UpdateOf(SceneEntity, &ViewportTheme::EdgeWidth, full_width / 2.f));
+                    f.Set<&ViewportTheme::EdgeWidth>(full_width / 2.f);
                 if (uint32_t v = theme.SilhouetteEdgeWidth; MeshEditor::SliderUInt("Silhouette edge width", &v, 1, 4))
-                    Apply(action::UpdateOf(SceneEntity, &ViewportTheme::SilhouetteEdgeWidth, v));
+                    f.Set<&ViewportTheme::SilhouetteEdgeWidth>(v);
             }
             EndTabItem();
         }
@@ -2353,7 +2334,7 @@ void Scene::RenderClipPickers() {
             if (BeginCombo("##clip", NamedOr(anim.Clips[active_idx].Name, "Clip ", active_idx).c_str())) {
                 for (uint32_t i = 0; i < anim.Clips.size(); ++i) {
                     if (Selectable(NamedOr(anim.Clips[i].Name, "Clip ", i).c_str(), active_idx == i) && active_idx != i) {
-                        Apply(action::UpdateOf(entity, &Anim::ActiveClipIndex, i));
+                        Apply(action::UpdateOf<&Anim::ActiveClipIndex>(entity, i));
                     }
                 }
                 EndCombo();
