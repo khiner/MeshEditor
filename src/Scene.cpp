@@ -3040,17 +3040,20 @@ void Scene::Apply(const action::Action &action) {
             [&](const action::scene::SetViewCameraTarget &a) { patch_camera_stopped([&](auto &c) { c.Target = a.Target; }); },
             [&](const action::scene::SetViewCameraLens &a) { patch_camera_stopped([&](auto &c) { c.Data = a.Data; }); },
             [&](const action::scene::SetPbrMeshFeaturesMask &a) {
-                if (a.Mask != 0u) R.emplace_or_replace<PbrMeshFeatures>(a.Entity, a.Mask);
-                else R.remove<PbrMeshFeatures>(a.Entity);
+                const auto e = GetActiveMeshEntity();
+                if (a.Mask != 0u) R.emplace_or_replace<PbrMeshFeatures>(e, a.Mask);
+                else R.remove<PbrMeshFeatures>(e);
             },
             [&](const action::scene::SetRotationUiMode &a) {
-                R.replace<RotationUiVariant>(a.Entity, CreateVariantByIndex<RotationUiVariant>(a.Index));
-                R.patch<Transform>(a.Entity, [](auto &) {});
+                const auto e = R.get<const SceneInteraction>(SceneEntity).Mode == InteractionMode::Pose && FindActiveBone(R) != entt::null ? FindActiveBone(R) : FindActiveEntity(R);
+                R.replace<RotationUiVariant>(e, CreateVariantByIndex<RotationUiVariant>(a.Index));
+                R.patch<Transform>(e, [](auto &) {});
             },
             [&](const action::scene::SetTransformRotationFromUi &a) {
-                R.replace<RotationUiVariant>(a.Entity, a.UiVariant);
-                R.emplace_or_replace<RotationUiDriving>(a.Entity);
-                R.patch<Transform>(a.Entity, [&](auto &t) { t.R = a.R; });
+                const auto e = R.get<const SceneInteraction>(SceneEntity).Mode == InteractionMode::Pose && FindActiveBone(R) != entt::null ? FindActiveBone(R) : FindActiveEntity(R);
+                R.replace<RotationUiVariant>(e, a.UiVariant);
+                R.emplace_or_replace<RotationUiDriving>(e);
+                R.patch<Transform>(e, [&](auto &t) { t.R = a.R; });
             },
             [&](const action::scene::BeginGizmoDrag &a) {
                 for (const auto &[e, st] : a.Starts) R.emplace<StartTransform>(e, st);
@@ -3063,26 +3066,28 @@ void Scene::Apply(const action::Action &action) {
             [&](const action::scene::UpdateGizmoMeshEditPending &a) { R.emplace_or_replace<PendingTransform>(SceneEntity, *a.Value); },
             [&](action::scene::EndGizmoDrag) { R.clear<StartTransform, StartBoneLength>(); },
             [&](const action::bone::SetEditHeadTailRoll &a) {
-                R.patch<Transform>(a.Entity, [&](auto &t) { t.P = a.LocalP; t.R = a.LocalR; });
-                R.get<BoneDisplayScale>(a.Entity).Value = a.DisplayScale;
+                const auto e = FindActiveBone(R);
+                R.patch<Transform>(e, [&](auto &t) { t.P = a.LocalP; t.R = a.LocalR; });
+                R.get<BoneDisplayScale>(e).Value = a.DisplayScale;
             },
             [&](const action::bone::SetConstraintTarget &a) {
-                R.patch<BoneConstraints>(a.Entity, [&](auto &cs) { cs.Stack[a.Index].TargetEntity = a.Target; });
+                R.patch<BoneConstraints>(FindActiveBone(R), [&](auto &cs) { cs.Stack[a.Index].TargetEntity = a.Target; });
             },
             [&](const action::bone::SetConstraintInfluence &a) {
-                R.patch<BoneConstraints>(a.Entity, [&](auto &cs) { cs.Stack[a.Index].Influence = a.Influence; });
+                R.patch<BoneConstraints>(FindActiveBone(R), [&](auto &cs) { cs.Stack[a.Index].Influence = a.Influence; });
             },
             [&](const action::bone::SetConstraintChildOfInverse &a) {
-                R.patch<BoneConstraints>(a.Entity, [&](auto &cs) {
+                R.patch<BoneConstraints>(FindActiveBone(R), [&](auto &cs) {
                     std::get<ChildOfData>(cs.Stack[a.Index].Data).InverseMatrix = *a.Inverse;
                 });
             },
             [&](const action::bone::DeleteConstraint &a) {
-                R.patch<BoneConstraints>(a.Entity, [&](auto &cs) { cs.Stack.erase(cs.Stack.begin() + a.Index); });
+                R.patch<BoneConstraints>(FindActiveBone(R), [&](auto &cs) { cs.Stack.erase(cs.Stack.begin() + a.Index); });
             },
             [&](const action::bone::AddConstraint &a) {
-                if (!R.all_of<BoneConstraints>(a.Entity)) R.emplace<BoneConstraints>(a.Entity);
-                R.patch<BoneConstraints>(a.Entity, [&](auto &cs) {
+                const auto e = FindActiveBone(R);
+                if (!R.all_of<BoneConstraints>(e)) R.emplace<BoneConstraints>(e);
+                R.patch<BoneConstraints>(e, [&](auto &cs) {
                     cs.Stack.push_back(a.Kind == action::bone::BoneConstraintKind::ChildOf ? BoneConstraint{.Data = ChildOfData{}} : BoneConstraint{.Data = CopyTransformsData{}});
                 });
             },
@@ -3117,36 +3122,39 @@ void Scene::Apply(const action::Action &action) {
             },
             [&](const action::physics::SetMotionType &a) {
                 using Type = action::physics::SetMotionType::Type;
+                const auto e = FindActiveEntity(R);
                 const bool want_motion = a.Value == Type::Kinematic || a.Value == Type::Dynamic;
                 const bool want_collider = a.Value == Type::Static || want_motion;
-                if (!want_motion) R.remove<PhysicsMotion>(a.Entity);
-                if (!want_collider) R.remove<ColliderShape>(a.Entity);
-                if (want_collider && !R.all_of<ColliderShape>(a.Entity)) {
-                    R.emplace<ColliderShape>(a.Entity);
-                    R.emplace<ColliderPolicy>(a.Entity);
+                if (!want_motion) R.remove<PhysicsMotion>(e);
+                if (!want_collider) R.remove<ColliderShape>(e);
+                if (want_collider && !R.all_of<ColliderShape>(e)) {
+                    R.emplace<ColliderShape>(e);
+                    R.emplace<ColliderPolicy>(e);
                 }
                 if (want_motion) {
                     const bool is_kinematic = a.Value == Type::Kinematic;
-                    if (!R.all_of<PhysicsMotion>(a.Entity)) R.emplace<PhysicsMotion>(a.Entity, PhysicsMotion{.IsKinematic = is_kinematic});
-                    else R.patch<PhysicsMotion>(a.Entity, [is_kinematic](PhysicsMotion &m) { m.IsKinematic = is_kinematic; });
+                    if (!R.all_of<PhysicsMotion>(e)) R.emplace<PhysicsMotion>(e, PhysicsMotion{.IsKinematic = is_kinematic});
+                    else R.patch<PhysicsMotion>(e, [is_kinematic](PhysicsMotion &m) { m.IsKinematic = is_kinematic; });
                 }
             },
             [&](const action::physics::SetColliderShape &a) {
-                const auto owner_mesh = FindMeshEntity(R, a.Entity);
-                R.patch<ColliderShape>(a.Entity, [&](ColliderShape &cs) {
+                const auto e = FindActiveEntity(R);
+                const auto owner_mesh = FindMeshEntity(R, e);
+                R.patch<ColliderShape>(e, [&](ColliderShape &cs) {
                     cs.Shape = a.Shape;
                     if (IsMeshBackedShape(a.Shape) && cs.MeshEntity == null_entity) cs.MeshEntity = owner_mesh;
                 });
                 if (a.LockKind) {
-                    R.patch<ColliderPolicy>(a.Entity, [](ColliderPolicy &p) { p.LockedKind = true; });
+                    R.patch<ColliderPolicy>(e, [](ColliderPolicy &p) { p.LockedKind = true; });
                 }
             },
-            [&](const action::physics::AddTrigger &a) {
-                R.emplace<ColliderShape>(a.Entity);
-                R.emplace<ColliderPolicy>(a.Entity);
-                R.emplace<TriggerTag>(a.Entity);
+            [&](action::physics::AddTrigger) {
+                const auto e = FindActiveEntity(R);
+                R.emplace<ColliderShape>(e);
+                R.emplace<ColliderPolicy>(e);
+                R.emplace<TriggerTag>(e);
             },
-            [&](const action::physics::RemoveTriggerNodes &a) { R.remove<TriggerNodes>(a.Entity); },
+            [&](action::physics::RemoveTriggerNodes) { R.remove<TriggerNodes>(FindActiveEntity(R)); },
             [&](const action::physics::ToggleFilterEntity &a) {
                 R.patch<CollisionFilter>(a.FilterEntity, [&](CollisionFilter &f) {
                     auto &vec = f.*(a.Field);
@@ -3167,39 +3175,43 @@ void Scene::Apply(const action::Action &action) {
                     vec.erase(vec.begin() + a.Index);
                 });
             },
-            [&](const action::audio::SetModel &a) { ::SetModel(R, SceneEntity, a.Entity, a.Model); },
+            [&](const action::audio::SetModel &a) { ::SetModel(R, SceneEntity, FindActiveEntity(R), a.Model); },
             [&](const action::audio::SetExciteVertex &a) {
-                R.remove<VertexForce>(a.Entity);
-                R.emplace_or_replace<MeshActiveElement>(a.MeshEntity, a.MeshVertex);
-                ::SetVertex(R, SceneEntity, a.Entity, a.VertexIndex);
+                const auto e = FindActiveEntity(R);
+                R.remove<VertexForce>(e);
+                R.emplace_or_replace<MeshActiveElement>(GetActiveMeshEntity(), a.MeshVertex);
+                ::SetVertex(R, SceneEntity, e, a.VertexIndex);
             },
-            [&](const action::audio::SetActiveElementFromDsp &a) { R.emplace_or_replace<MeshActiveElement>(a.MeshEntity, a.Vertex); },
+            [&](const action::audio::SetActiveElementFromDsp &a) { R.emplace_or_replace<MeshActiveElement>(GetActiveMeshEntity(), a.Vertex); },
             [&](const action::audio::StartExcite &a) {
-                R.remove<VertexForce>(a.Entity);
-                R.emplace<VertexForce>(a.Entity, a.Vertex, 1.f);
+                const auto e = FindActiveEntity(R);
+                R.remove<VertexForce>(e);
+                R.emplace<VertexForce>(e, a.Vertex, 1.f);
             },
-            [&](const action::audio::StopExcite &a) { R.remove<VertexForce>(a.Entity); },
-            [&](const action::audio::DeleteSoundObject &a) { RemoveAudioComponents(R, a.Entity); },
-            [&](const action::audio::StartRecording &a) { R.emplace_or_replace<Recording>(a.Entity, a.FrameCount); },
-            [&](const action::audio::OpenModalForm &a) { R.emplace_or_replace<ModalModelCreateInfo>(a.Entity, *a.Info); },
-            [&](const action::audio::CancelModalForm &a) { R.remove<ModalModelCreateInfo>(a.Entity); },
-            [&](const action::audio::SubmitModalForm &a) {
-                ::Stop(R, SceneEntity, a.Entity);
-                R.emplace_or_replace<AcousticMaterial>(a.MeshEntity, R.get<const ModalModelCreateInfo>(a.Entity).Material);
-                R.remove<ModalModelCreateInfo>(a.Entity);
+            [&](action::audio::StopExcite) { R.remove<VertexForce>(FindActiveEntity(R)); },
+            [&](action::audio::DeleteSoundObject) { RemoveAudioComponents(R, FindActiveEntity(R)); },
+            [&](const action::audio::StartRecording &a) { R.emplace_or_replace<Recording>(FindActiveEntity(R), a.FrameCount); },
+            [&](const action::audio::OpenModalForm &a) { R.emplace_or_replace<ModalModelCreateInfo>(FindActiveEntity(R), *a.Info); },
+            [&](action::audio::CancelModalForm) { R.remove<ModalModelCreateInfo>(FindActiveEntity(R)); },
+            [&](action::audio::SubmitModalForm) {
+                const auto e = FindActiveEntity(R);
+                ::Stop(R, SceneEntity, e);
+                R.emplace_or_replace<AcousticMaterial>(GetActiveMeshEntity(), R.get<const ModalModelCreateInfo>(e).Material);
+                R.remove<ModalModelCreateInfo>(e);
             },
             [&](const action::audio::AcceptModalGenerationResult &a) {
-                if (!R.all_of<ScaleLocked>(a.Entity)) R.emplace<ScaleLocked>(a.Entity);
-                R.emplace_or_replace<ModalModes>(a.Entity, a.D->Modes);
-                R.emplace_or_replace<TetMeshData>(a.MeshEntity, a.D->Tets);
-                ::SetModel(R, SceneEntity, a.Entity, SoundVerticesModel::Modal);
+                const auto e = FindActiveEntity(R);
+                if (!R.all_of<ScaleLocked>(e)) R.emplace<ScaleLocked>(e);
+                R.emplace_or_replace<ModalModes>(e, a.D->Modes);
+                R.emplace_or_replace<TetMeshData>(GetActiveMeshEntity(), a.D->Tets);
+                ::SetModel(R, SceneEntity, e, SoundVerticesModel::Modal);
             },
             [&](const action::audio::AssignVertexSamples &a) {
-                ::AssignVertexSample(R, a.SceneEntity, a.SoundEntity, a.D->MeshVertices, a.D->Path, std::vector<float>{a.D->Frames});
+                ::AssignVertexSample(R, SceneEntity, FindActiveEntity(R), a.D->MeshVertices, a.D->Path, std::vector<float>{a.D->Frames});
             },
-            [&](action::audio::SetVertexSamples a) { ::SetVertexSamples(R, a.SceneEntity, a.SoundEntity, a.MeshVertices, std::move(a.Samples)); },
-            [&](const action::audio::RemoveVertexSamples &a) { ::RemoveVertexSamples(R, a.SceneEntity, a.SoundEntity, a.MeshVertices); },
-            [&](const action::audio::SetModalFormMaterial &a) { R.patch<ModalModelCreateInfo>(a.Entity, [&](auto &info) { info.Material = *a.Material; }); },
+            [&](action::audio::SetVertexSamples a) { ::SetVertexSamples(R, SceneEntity, a.SoundEntity, a.MeshVertices, std::move(a.Samples)); },
+            [&](const action::audio::RemoveVertexSamples &a) { ::RemoveVertexSamples(R, SceneEntity, FindActiveEntity(R), a.MeshVertices); },
+            [&](const action::audio::SetModalFormMaterial &a) { R.patch<ModalModelCreateInfo>(FindActiveEntity(R), [&](auto &info) { info.Material = *a.Material; }); },
             [&](action::scene::AnimateToCamera) {
                 const auto e = FindActiveEntity(R);
                 if (e == entt::null) return;

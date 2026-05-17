@@ -1394,7 +1394,6 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
                     const auto new_rot = glm::quat_cast(BoneVecRollToMat3(new_dir, roll));
                     const auto pd = ToTransform(GetParentDelta(R, active_bone_entity));
                     Apply(action::bone::SetEditHeadTailRoll{
-                        .Entity = active_bone_entity,
                         .LocalP = glm::conjugate(pd.R) * ((head - pd.P) / pd.S),
                         .LocalR = glm::conjugate(pd.R) * new_rot,
                         .DisplayScale = new_length,
@@ -1413,19 +1412,18 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
                 int mode_i = rotation_ui_ptr->index();
                 const char *modes[]{"Quat (WXYZ)", "XYZ Euler", "Axis Angle"};
                 if (Combo("Rotation mode", &mode_i, modes, IM_ARRAYSIZE(modes)))
-                    Apply(action::scene::SetRotationUiMode{transform_entity, mode_i});
+                    Apply(action::scene::SetRotationUiMode{mode_i});
                 auto ui_local = *rotation_ui_ptr;
                 std::visit(
                     overloaded{
                         [&](RotationQuat &v) {
                             if (DragFloat4("Rotation (quat WXYZ)", &v.Value[0], 0.01f))
-                                Apply(action::scene::SetTransformRotationFromUi{transform_entity, glm::normalize(v.Value), ui_local});
+                                Apply(action::scene::SetTransformRotationFromUi{glm::normalize(v.Value), ui_local});
                         },
                         [&](RotationEuler &v) {
                             if (DragFloat3("Rotation (XYZ Euler, deg)", &v.Value[0], 1.f)) {
                                 const auto rads = glm::radians(v.Value);
                                 Apply(action::scene::SetTransformRotationFromUi{
-                                    transform_entity,
                                     glm::normalize(glm::quat_cast(glm::eulerAngleXYZ(rads.x, rads.y, rads.z))),
                                     ui_local,
                                 });
@@ -1438,7 +1436,6 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
                                 const auto axis = glm::normalize(vec3{v.Value});
                                 const auto angle = glm::radians(v.Value.w);
                                 Apply(action::scene::SetTransformRotationFromUi{
-                                    transform_entity,
                                     glm::normalize(quat{std::cos(angle / 2), axis * std::sin(angle / 2)}),
                                     ui_local,
                                 });
@@ -1513,12 +1510,12 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
                                                                            IdString(c.TargetEntity);
                 if (BeginCombo("Target", preview.c_str())) {
                     if (Selectable("None", c.TargetEntity == entt::null))
-                        Apply(action::bone::SetConstraintTarget{active_bone_entity, uint32_t(i), entt::null});
+                        Apply(action::bone::SetConstraintTarget{uint32_t(i), entt::null});
                     for (auto [te, kind, name] : R.view<const ObjectKind, const Name>().each()) {
                         if (R.any_of<BoneIndex, BoneSubPartOf, BoneJoint, SubElementOf>(te)) continue;
                         const std::string label = name.Value.empty() ? IdString(te) : name.Value;
                         if (Selectable(label.c_str(), te == c.TargetEntity))
-                            Apply(action::bone::SetConstraintTarget{active_bone_entity, uint32_t(i), te});
+                            Apply(action::bone::SetConstraintTarget{uint32_t(i), te});
                     }
                     EndCombo();
                 }
@@ -1529,23 +1526,23 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
                         const auto *bwt = R.try_get<const WorldTransform>(active_bone_entity);
                         if (twt && bwt) {
                             const mat4 inv = glm::inverse(ToMatrix(*twt)) * ToMatrix(*bwt);
-                            Apply(action::bone::SetConstraintChildOfInverse{active_bone_entity, uint32_t(i), std::make_unique<mat4>(inv)});
+                            Apply(action::bone::SetConstraintChildOfInverse{uint32_t(i), std::make_unique<mat4>(inv)});
                         }
                     }
                     SameLine();
                     if (Button("Clear Inverse"))
-                        Apply(action::bone::SetConstraintChildOfInverse{active_bone_entity, uint32_t(i), std::make_unique<mat4>(I4)});
+                        Apply(action::bone::SetConstraintChildOfInverse{uint32_t(i), std::make_unique<mat4>(I4)});
                 }
                 if (float influence = c.Influence; SliderFloat("Influence", &influence, 0.f, 1.f))
-                    Apply(action::bone::SetConstraintInfluence{active_bone_entity, uint32_t(i), influence});
+                    Apply(action::bone::SetConstraintInfluence{uint32_t(i), influence});
                 TreePop();
             }
             PopID();
         }
-        if (delete_index) Apply(action::bone::DeleteConstraint{active_bone_entity, *delete_index});
-        if (Button("Add Copy Transforms")) Apply(action::bone::AddConstraint{active_bone_entity, action::bone::BoneConstraintKind::CopyTransforms});
+        if (delete_index) Apply(action::bone::DeleteConstraint{*delete_index});
+        if (Button("Add Copy Transforms")) Apply(action::bone::AddConstraint{action::bone::BoneConstraintKind::CopyTransforms});
         SameLine();
-        if (Button("Add Child Of")) Apply(action::bone::AddConstraint{active_bone_entity, action::bone::BoneConstraintKind::ChildOf});
+        if (Button("Add Child Of")) Apply(action::bone::AddConstraint{action::bone::BoneConstraintKind::ChildOf});
         PopID();
     }
     if (is_mesh_instance) {
@@ -1764,7 +1761,7 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
                     material_changed |= edit_texture_info("Iridescence thickness", material.Iridescence.ThicknessTexture);
                 }
 
-                if (pbr_features_changed) Apply(action::scene::SetPbrMeshFeaturesMask{active_mesh_entity, pbr_features_mask});
+                if (pbr_features_changed) Apply(action::scene::SetPbrMeshFeaturesMask{pbr_features_mask});
                 if (material_changed) Apply(action::Replace<MaterialDirty>{SceneEntity, {material_index}});
             }
         }
@@ -1872,7 +1869,7 @@ void Scene::RenderEntityControls(entt::entity active_entity) {
                 } else if (Button(std::format("Set as active for {}", target_name).c_str())) {
                     const auto dir = R.get<const Path>(R.get<const Instance>(target).Entity).Value.parent_path();
                     const auto &vertex_indices = R.get<const RealImpactVertices>(target).Vertices;
-                    Apply(action::audio::SetVertexSamples{SceneEntity, target, vertex_indices, RealImpact::LoadSamples(dir, mic->Index) | to<std::vector>()});
+                    Apply(action::audio::SetVertexSamples{target, vertex_indices, RealImpact::LoadSamples(dir, mic->Index) | to<std::vector>()});
                     Apply(action::Replace<RealImpactActiveMicrophone>{target, {active_entity}});
                 }
                 if (Button("Select sound object")) Select(target);

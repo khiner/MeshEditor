@@ -56,18 +56,16 @@ struct SetViewCameraTarget {
 struct SetViewCameraLens {
     ::Camera Data;
 };
-// `Mask=0` removes the component.
+// `Mask=0` removes the component. Targets the active mesh entity.
 struct SetPbrMeshFeaturesMask {
-    entt::entity Entity;
     uint32_t Mask;
 };
+// Targets the active bone in Pose mode, otherwise the active entity.
 struct SetRotationUiMode {
-    entt::entity Entity;
     int Index;
 };
-// `R` must already be normalized.
+// `R` must already be normalized. Targets the active bone in Pose mode, otherwise the active entity.
 struct SetTransformRotationFromUi {
-    entt::entity Entity;
     quat R;
     RotationUiVariant UiVariant;
 };

@@ -23,28 +23,23 @@ struct SetName {
     std::string Name;
 };
 
+// SetMotionType / SetColliderShape / AddTrigger / RemoveTriggerNodes target the active entity.
 struct SetMotionType {
     enum class Type : uint8_t { None,
                                 Static,
                                 Kinematic,
                                 Dynamic };
-    entt::entity Entity;
     Type Value;
 };
 
 // `LockKind=true` locks `ColliderPolicy.LockedKind`; set it when the variant alternative changed.
 struct SetColliderShape {
-    entt::entity Entity;
     PhysicsShape Shape;
     bool LockKind;
 };
 
-struct AddTrigger {
-    entt::entity Entity;
-};
-struct RemoveTriggerNodes {
-    entt::entity Entity;
-};
+struct AddTrigger {};
+struct RemoveTriggerNodes {};
 
 // Create a new named entity carrying component `ComponentType`, named "<Prefix> <ordinal>".
 struct CreateNamed {

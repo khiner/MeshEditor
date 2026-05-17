@@ -14,53 +14,38 @@
 #include <vector>
 
 namespace action::audio {
+// All actions here target the active sound entity (FindActiveEntity(R)) and its mesh
+// (GetActiveMeshEntity()), except `SetVertexSamples` which carries an explicit SoundEntity
+// because it's emitted from a microphone branch that targets a discovered sound object.
 struct SetModel {
-    entt::entity Entity;
     SoundVerticesModel Model;
 };
 // `VertexIndex` indexes `SoundVertices::Vertices`; `MeshVertex` is the mesh handle stored there.
 struct SetExciteVertex {
-    entt::entity Entity;
-    entt::entity MeshEntity;
     uint32_t VertexIndex;
     uint32_t MeshVertex;
 };
 struct SetActiveElementFromDsp {
-    entt::entity MeshEntity;
     uint32_t Vertex;
 };
 struct StartExcite {
-    entt::entity Entity;
     uint32_t Vertex;
 };
-struct StopExcite {
-    entt::entity Entity;
-};
-struct DeleteSoundObject {
-    entt::entity Entity;
-};
+struct StopExcite {};
+struct DeleteSoundObject {};
 struct StartRecording {
-    entt::entity Entity;
     uint32_t FrameCount;
 };
 struct OpenModalForm {
-    entt::entity Entity;
     std::unique_ptr<ModalModelCreateInfo> Info;
 };
-struct CancelModalForm {
-    entt::entity Entity;
-};
-struct SubmitModalForm {
-    entt::entity Entity;
-    entt::entity MeshEntity;
-};
+struct CancelModalForm {};
+struct SubmitModalForm {};
 struct AcceptModalGenerationResult {
     struct Data {
         ModalModes Modes;
         TetMeshData Tets;
     };
-    entt::entity Entity;
-    entt::entity MeshEntity;
     std::unique_ptr<Data> D;
 };
 struct AssignVertexSamples {
@@ -69,23 +54,17 @@ struct AssignVertexSamples {
         std::filesystem::path Path;
         std::vector<float> Frames;
     };
-    entt::entity SceneEntity;
-    entt::entity SoundEntity;
     std::unique_ptr<Data> D;
 };
 struct SetVertexSamples {
-    entt::entity SceneEntity;
     entt::entity SoundEntity;
     std::vector<uint32_t> MeshVertices;
     std::vector<std::pair<std::filesystem::path, std::vector<float>>> Samples;
 };
 struct RemoveVertexSamples {
-    entt::entity SceneEntity;
-    entt::entity SoundEntity;
     std::vector<uint32_t> MeshVertices;
 };
 struct SetModalFormMaterial {
-    entt::entity Entity;
     std::unique_ptr<AcousticMaterial> Material;
 };
 

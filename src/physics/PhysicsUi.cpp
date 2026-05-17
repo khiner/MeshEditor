@@ -492,7 +492,7 @@ void physics_ui::RenderEntityProperties(entt::registry &r, entt::entity entity, 
     changed |= RadioButton("Dynamic", &motion_type, int(MType::Dynamic));
 
     if (changed) {
-        apply(action::physics::SetMotionType{entity, MType(motion_type)});
+        apply(action::physics::SetMotionType{MType(motion_type)});
         // Components may have been added/removed; refresh pointers before the sections below use them.
         motion = r.try_get<const PhysicsMotion>(entity);
         collider = r.try_get<const ColliderShape>(entity);
@@ -504,7 +504,7 @@ void physics_ui::RenderEntityProperties(entt::registry &r, entt::entity entity, 
 
         ui::Edit{r, apply, entity}.Check<&ColliderPolicy::AutoFitDims>("Auto-fit");
         if (auto s = RenderShapeEditor(collider->Shape, r.get<const ColliderPolicy>(entity).AutoFitDims))
-            apply(action::physics::SetColliderShape{entity, *s, s->index() != collider->Shape.index()});
+            apply(action::physics::SetColliderShape{*s, s->index() != collider->Shape.index()});
 
         RenderEntityCombo<PhysicsMaterial, &ColliderMaterial::PhysicsMaterialEntity>(r, entity, "Physics material", apply, "No materials defined");
         RenderEntityCombo<CollisionFilter, &ColliderMaterial::CollisionFilterEntity>(r, entity, "Collision filter", apply, "No filters defined");
@@ -607,7 +607,7 @@ void physics_ui::RenderEntityProperties(entt::registry &r, entt::entity entity, 
         PushID("Trigger");
         Text("Compound trigger: %zu nodes", trigger_nodes->Nodes.size());
         RenderEntityCombo<CollisionFilter, &TriggerNodes::CollisionFilterEntity>(r, entity, "Collision filter", apply, "No filters defined");
-        if (Button("Remove Trigger")) apply(action::physics::RemoveTriggerNodes{entity});
+        if (Button("Remove Trigger")) apply(action::physics::RemoveTriggerNodes{});
         PopID();
     } else {
         Spacing();
@@ -618,7 +618,7 @@ void physics_ui::RenderEntityProperties(entt::registry &r, entt::entity entity, 
             } else {
                 if (Button("Convert to Trigger")) apply(action::SetTagOf<TriggerTag>(entity, true));
             }
-        } else if (Button("Add Trigger")) apply(action::physics::AddTrigger{entity});
+        } else if (Button("Add Trigger")) apply(action::physics::AddTrigger{});
     }
 
     PopID();
