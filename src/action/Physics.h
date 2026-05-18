@@ -1,11 +1,7 @@
 #pragma once
 
 #include "Variant.h"
-#include "action/Destroy.h"
-#include "action/Replace.h"
-#include "action/Tag.h"
-#include "action/Update.h"
-#include "numeric/vec3.h"
+#include "action/Core.h"
 #include "physics/PhysicsTypes.h"
 
 #include <entt/core/type_info.hpp>
@@ -16,6 +12,19 @@
 #include <string_view>
 #include <vector>
 
+namespace action {
+// Heap-allocate big types to keep the variant small.
+template<>
+struct Replace<PhysicsMotion> {
+    entt::entity Entity;
+    std::unique_ptr<PhysicsMotion> Value;
+};
+template<>
+struct ReplaceActive<PhysicsMotion> {
+    std::unique_ptr<PhysicsMotion> Value;
+};
+} // namespace action
+
 namespace action::physics {
 struct SetName {
     entt::entity Entity;
@@ -25,10 +34,12 @@ struct SetName {
 
 // SetMotionType / SetColliderShape / AddTrigger / RemoveTriggerNodes target the active entity.
 struct SetMotionType {
-    enum class Type : uint8_t { None,
-                                Static,
-                                Kinematic,
-                                Dynamic };
+    enum class Type : uint8_t {
+        None,
+        Static,
+        Kinematic,
+        Dynamic
+    };
     Type Value;
 };
 
@@ -86,5 +97,7 @@ using Actions = std::variant<
     SetJointVecItem<PhysicsJointDrive>, AddJointVecItem<PhysicsJointDrive>, DeleteJointVecItem<PhysicsJointDrive>>;
 
 using Action = MergedVariantT<
-    Actions, std::variant<action::Update<bool>, action::Update<uint32_t>, action::Update<float>, action::Update<vec3>, action::Update<entt::entity>, action::Update<CollideMode>, action::Update<PhysicsCombineMode>, action::UpdateActive<bool>, action::UpdateActive<uint32_t>, action::UpdateActive<float>, action::UpdateActive<vec3>, action::UpdateActive<entt::entity>, action::Replace<PhysicsMotion>, action::ReplaceActive<PhysicsMotion>, action::SetTag, action::SetActiveTag, action::DestroyEntity>>;
+    Actions, action::Core,
+    action::Update<CollideMode>, action::Update<PhysicsCombineMode>,
+    action::Replace<PhysicsMotion>, action::ReplaceActive<PhysicsMotion>>;
 } // namespace action::physics

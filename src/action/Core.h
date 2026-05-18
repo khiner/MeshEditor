@@ -1,11 +1,15 @@
 #pragma once
 
+#include "numeric/vec3.h"
+#include "numeric/vec4.h"
+
 #include <entt/core/type_info.hpp>
 #include <entt/entity/fwd.hpp>
 
 #include <bit>
 #include <cstdint>
 #include <type_traits>
+#include <variant>
 
 namespace action {
 template<typename T>
@@ -24,6 +28,45 @@ struct UpdateActive {
     uint16_t Offset;
     T Value;
 };
+
+// Per-component specializations (e.g. wrapping a heavy payload in unique_ptr to keep the variant
+// alternative small) live in the domain header that owns the component type.
+template<typename T>
+struct Replace {
+    entt::entity Entity;
+    T Value;
+};
+
+// Like Replace<T> but carries no entity — the dispatcher resolves the target via FindActiveEntity(R).
+// Separate type (vs an optional field on Replace<T>) so we don't waste bytes storing entt::null.
+template<typename T>
+struct ReplaceActive {
+    T Value;
+};
+
+struct DestroyEntity {
+    entt::entity Entity;
+};
+
+struct SetTag {
+    entt::entity Entity;
+    entt::id_type TagType;
+    bool Present;
+};
+
+// Like SetTag but carries no entity — the dispatcher resolves the target via FindActiveEntity(R).
+// Separate type (vs an optional field on SetTag) so we don't waste bytes storing entt::null.
+struct SetActiveTag {
+    entt::id_type TagType;
+    bool Present;
+};
+
+template<typename Tag>
+constexpr SetTag SetTagOf(entt::entity e, bool present) { return {e, entt::type_hash<Tag>::value(), present}; }
+
+// No-entity overload: returns SetActiveTag; dispatcher resolves via FindActiveEntity(R).
+template<typename Tag>
+constexpr SetActiveTag SetTagOf(bool present) { return {entt::type_hash<Tag>::value(), present}; }
 
 namespace detail {
 template<auto> struct member_traits;
@@ -80,4 +123,11 @@ constexpr UpdateActive<F> UpdateOf(F C::*m, F v) {
     static_assert(std::is_trivially_copyable_v<F>);
     return {entt::type_hash<C>::value(), uint16_t(detail::MemPtrOffset(m)), std::move(v)};
 }
+
+using Core = std::variant<
+    Update<bool>, Update<uint8_t>, Update<uint32_t>, Update<float>, Update<double>,
+    Update<vec3>, Update<vec4>, Update<entt::entity>,
+    UpdateActive<bool>, UpdateActive<uint8_t>, UpdateActive<uint32_t>, UpdateActive<float>, UpdateActive<double>,
+    UpdateActive<vec3>, UpdateActive<vec4>, UpdateActive<entt::entity>,
+    SetTag, SetActiveTag, DestroyEntity>;
 } // namespace action

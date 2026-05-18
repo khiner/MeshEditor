@@ -1,11 +1,4 @@
 #include "Scene.h"
-#include "SceneDefaults.h"
-#include "SceneOps.h"
-#include "SceneTextures.h"
-#include "SceneTree.h"
-#include "TransformMath.h"
-#include "gltf/GltfScene.h"
-
 #include "Armature.h"
 #include "BBox.h"
 #include "Bindless.h"
@@ -17,15 +10,21 @@
 #include "Path.h"
 #include "Paths.h"
 #include "Reactive.h"
+#include "SceneDefaults.h"
+#include "SceneOps.h"
 #include "ScenePipelines.h"
 #include "SceneSelection.h"
+#include "SceneTextures.h"
+#include "SceneTree.h"
 #include "Shader.h"
 #include "SoundVertices.h"
 #include "SvgResource.h"
-#include "Tets.h"
 #include "Timer.h"
-#include "Variant.h"
+#include "TransformMath.h"
 #include "VideoRecorder.h"
+#include "audio/AudioSystem.h"
+#include "audio/RealImpact.h"
+#include "gltf/GltfScene.h"
 #include "gpu/BoxSelectPushConstants.h"
 #include "gpu/ElementPickPushConstants.h"
 #include "gpu/MainDrawPushConstants.h"
@@ -35,20 +34,14 @@
 #include "gpu/SilhouetteEdgeColorPushConstants.h"
 #include "gpu/SilhouetteEdgeDepthObjectPushConstants.h"
 #include "gpu/UpdateSelectionStatePushConstants.h"
-#include "mesh/MeshData.h"
 #include "mesh/MeshStore.h"
-#include "mesh/PrimitiveType.h"
 #include "mesh/Primitives.h"
 #include "physics/PhysicsDebugDraw.h"
 #include "physics/PhysicsWorld.h"
 
-#include "audio/AudioSystem.h"
-#include "audio/RealImpact.h"
-
 #include "imgui.h"
 
 #include "AxisColors.h" // Must be after imgui.h
-#include <entt/entity/registry.hpp>
 
 #include <iostream>
 
@@ -3174,8 +3167,9 @@ void Scene::Apply(const action::Action &action) {
                 else if constexpr (std::is_same_v<T, PunctualLight>) {
                     const auto &old = Stores.Buffers->Lights.Get(R.get<const LightIndex>(e).Value);
                     const auto &n = a.Value;
-                    if (old.Type != n.Type || old.Range != n.Range || old.OuterConeCos != n.OuterConeCos || old.InnerConeCos != n.InnerConeCos)
+                    if (old.Type != n.Type || old.Range != n.Range || old.OuterConeCos != n.OuterConeCos || old.InnerConeCos != n.InnerConeCos) {
                         R.emplace_or_replace<LightWireframeDirty>(e);
+                    }
                     R.emplace_or_replace<T>(e, n);
                 } else R.emplace_or_replace<T>(e, a.Value);
             },
@@ -3292,11 +3286,12 @@ void Scene::Apply(const action::Action &action) {
                 R.patch<AnimationTimeline>(SceneEntity, [](auto &tl) { tl.Playing = !tl.Playing; });
             },
             [&](const action::scene::SetViewportShading &a) {
-                R.patch<SceneSettings>(SceneEntity, [&](auto &s) { s.ViewportShading = a.Mode; if (a.Mode != ViewportShadingMode::Wireframe) s.FillMode = a.Mode; });
+                R.patch<SceneSettings>(SceneEntity, [&](auto &s) {
+                    s.ViewportShading = a.Mode;
+                    if (a.Mode != ViewportShadingMode::Wireframe) s.FillMode = a.Mode;
+                });
             },
-            [&](action::timeline::TogglePlay) {
-                R.patch<AnimationTimeline>(SceneEntity, [](auto &tl) { tl.Playing = !tl.Playing; });
-            },
+            [&](action::timeline::TogglePlay) { R.patch<AnimationTimeline>(SceneEntity, [](auto &tl) { tl.Playing = !tl.Playing; }); },
             [&](const action::timeline::SetFrame &a) {
                 R.patch<AnimationTimeline>(SceneEntity, [&](auto &tl) { tl.CurrentFrame = a.Frame; });
                 PlaybackFrame = a.Frame;

@@ -1,20 +1,18 @@
-#include "PbrFeature.h"
-#include "Scene.h"
-#include "SceneDefaults.h"
-#include "SceneTextures.h"
-#include "SceneTree.h"
-#include "TransformMath.h"
-#include "Widgets.h" // imgui
-
+#include "Armature.h"
 #include "Instance.h"
 #include "MeshComponents.h"
 #include "NodeTransformAnimation.h"
-#include "OrientationGizmo.h"
 #include "Path.h"
+#include "PbrFeature.h"
+#include "Scene.h"
+#include "SceneDefaults.h"
 #include "SceneSelection.h"
+#include "SceneTextures.h"
+#include "SceneTree.h"
 #include "SoundVertices.h"
 #include "SvgResource.h"
 #include "Timer.h"
+#include "TransformMath.h"
 #include "audio/AudioSystem.h"
 #include "gltf/GltfScene.h"
 #include "mesh/MeshStore.h"
@@ -25,6 +23,8 @@
 #include <entt/entity/registry.hpp>
 #include <imgui_internal.h>
 
+#include "OrientationGizmo.h"
+
 #include "scene_impl/SceneBuffers.h"
 #include "scene_impl/SceneTransformUtils.h"
 
@@ -33,6 +33,10 @@ using std::views::transform;
 using namespace ImGui;
 
 namespace {
+bool SliderUInt(const char *label, uint32_t *v, uint32_t v_min, uint32_t v_max, const char *format = nullptr, ImGuiSliderFlags flags = 0) {
+    return ImGui::SliderScalar(label, ImGuiDataType_U32, v, &v_min, &v_max, format, flags);
+}
+
 constexpr vec2 ToGlm(ImVec2 v) { return std::bit_cast<vec2>(v); }
 constexpr float WheelOrbitRadPerUnit{0.05f}, WheelZoomStep{1.04f};
 
@@ -1632,7 +1636,7 @@ void Scene::RenderEntityControls(entt::entity active_entity, std::optional<actio
                 const auto edit_texture_info = [&](const char *label, TextureInfo &tex) {
                     bool changed = false;
                     changed |= edit_texture_slot(std::format("{} texture", label).c_str(), tex.Slot);
-                    changed |= MeshEditor::SliderUInt(std::format("{} UV set", label).c_str(), &tex.TexCoord, 0u, 3u);
+                    changed |= SliderUInt(std::format("{} UV set", label).c_str(), &tex.TexCoord, 0u, 3u);
                     changed |= edit_uv_transform(
                         std::format("{} UV offset", label).c_str(),
                         std::format("{} UV scale", label).c_str(),
@@ -2117,7 +2121,7 @@ void Scene::RenderControls(std::optional<action::Action> &out) {
                 // UI edits "full" width; storage is half-width.
                 if (float full_width = theme.EdgeWidth * 2.f; SliderFloat("Edge width", &full_width, 0.5f, 4.f))
                     f.Set<&ViewportTheme::EdgeWidth>(full_width / 2.f);
-                if (uint32_t v = theme.SilhouetteEdgeWidth; MeshEditor::SliderUInt("Silhouette edge width", &v, 1, 4))
+                if (uint32_t v = theme.SilhouetteEdgeWidth; SliderUInt("Silhouette edge width", &v, 1, 4))
                     f.Set<&ViewportTheme::SilhouetteEdgeWidth>(v);
             }
             EndTabItem();

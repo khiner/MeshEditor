@@ -14,12 +14,11 @@
 // the entity-bound form already uses.
 
 #include "Entity.h" // FindActiveEntity
-#include "action/Update.h"
+#include "action/Core.h"
 #include "numeric/vec3.h"
 #include "numeric/vec4.h"
 
-#include <entt/entity/entity.hpp>
-#include <entt/entity/registry.hpp> // TODO rework to not include registry in the header
+#include <entt/entity/fwd.hpp>
 #include <imgui.h>
 
 #include <concepts>
@@ -68,10 +67,13 @@ struct Edit {
         else return FindActiveEntity(R);
     }
 
+    template<class T, class Reg>
+    const T &GetConst(Reg &r, entt::entity e) { return r.template get<const T>(e); }
+
     // Read field, hand a mutable copy to `widget`, write update to `Out` if the widget returns true.
     template<auto... Ms, class Widget>
     bool Run(Widget widget) {
-        action::detail::last_field<Prefix..., Ms...> v = ReadChain<Prefix..., Ms...>(R.get<const action::detail::first_class<Prefix..., Ms...>>(ReadFrom()));
+        action::detail::last_field<Prefix..., Ms...> v = ReadChain<Prefix..., Ms...>(GetConst<action::detail::first_class<Prefix..., Ms...>>(R, ReadFrom()));
         if (!widget(v)) return false;
 
         if constexpr (HasEntity) Out = action::UpdateOf<Prefix..., Ms...>(E, v);

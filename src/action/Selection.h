@@ -1,6 +1,5 @@
 #pragma once
 
-#include "Armature.h"
 #include "BoneSelection.h"
 #include "entt_fwd.h"
 #include "numeric/vec2.h"

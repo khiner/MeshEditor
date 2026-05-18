@@ -2,7 +2,7 @@
 
 #include "Tets.h"
 #include "Variant.h"
-#include "action/Update.h"
+#include "action/Core.h"
 #include "audio/AcousticMaterial.h"
 #include "audio/AudioTypes.h"
 #include "audio/ModalModes.h"
@@ -78,6 +78,5 @@ using Actions = std::variant<
     OpenModalForm, CancelModalForm, SubmitModalForm, AcceptModalGenerationResult,
     AssignVertexSamples, SetVertexSamples, RemoveVertexSamples, ActivateRealImpactMicrophone, SetModalFormMaterial>;
 
-using Action = MergedVariantT<
-    Actions, std::variant<action::Update<bool>, action::Update<uint32_t>, action::Update<double>, action::UpdateActive<bool>, action::UpdateActive<uint32_t>, action::UpdateActive<float>, action::UpdateActive<double>>>;
+using Action = MergedVariantT<Actions, action::Core>;
 } // namespace action::audio

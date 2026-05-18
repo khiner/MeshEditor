@@ -9,7 +9,6 @@
 #include "SceneTree.h"
 #include "SoundVertices.h"
 #include "Tets.h"
-#include "Widgets.h" // imgui
 #include "Worker.h"
 #include "mesh/Mesh.h"
 #include "scene_impl/SceneModeComponents.h"
@@ -19,6 +18,8 @@
 #include "mesh2modes.h"
 #include "miniaudio.h"
 #include "tetgen.h" // Needed for `unique_ptr<tetgenio>` dereference. Must come after Faust (defines `REAL`).
+
+#include "HelpMarker.h" // depends on imgui
 
 #include <nfd.h>
 
