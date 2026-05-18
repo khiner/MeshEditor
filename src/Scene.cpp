@@ -3918,14 +3918,14 @@ void Scene::RecordRenderCommandBuffer(bool silhouette_only) {
     auto record_draw_batch = [&](const PipelineRenderer &renderer, SPT spt, const DrawBatchInfo &batch) {
         if (batch.DrawCount == 0) return;
         const auto &pipeline = renderer.Bind(cb, spt);
-        const DrawPassPushConstants pc{batch.DrawDataSlotOffset, transform_vertex_state_slot, InvalidSlot, InvalidSlot, InvalidSlot};
+        const DrawPassPushConstants pc{batch.DrawDataSlotOffset, transform_vertex_state_slot, InvalidSlot, InvalidSlot, InvalidSlot, 0};
         cb.pushConstants(*pipeline.PipelineLayout, vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, sizeof(pc), &pc);
         cb.drawIndexedIndirect(*Stores.Buffers->RenderDraw.Indirect, batch.IndirectOffset, batch.DrawCount, sizeof(vk::DrawIndexedIndirectCommand));
     };
     auto record_pbr_batch = [&](const DrawBatchInfo &batch, PbrCompiler::Variant variant) {
         if (batch.DrawCount == 0) return;
         const auto layout = Pipelines->Main.Compiler.Bind(cb, variant);
-        const DrawPassPushConstants pc{batch.DrawDataSlotOffset, transform_vertex_state_slot, InvalidSlot, InvalidSlot, InvalidSlot};
+        const DrawPassPushConstants pc{batch.DrawDataSlotOffset, transform_vertex_state_slot, InvalidSlot, InvalidSlot, InvalidSlot, 0};
         cb.pushConstants(layout, vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, sizeof(pc), &pc);
         cb.drawIndexedIndirect(*Stores.Buffers->RenderDraw.Indirect, batch.IndirectOffset, batch.DrawCount, sizeof(vk::DrawIndexedIndirectCommand));
     };
@@ -4255,7 +4255,7 @@ void Scene::RenderSelectionPassWith(bool render_depth, const SelectionBuildFn &b
     auto record_draw_batch = [&](const PipelineRenderer &renderer, SPT spt, const DrawBatchInfo &batch) {
         if (batch.DrawCount == 0) return;
         const auto &pipeline = renderer.Bind(cb, spt);
-        const DrawPassPushConstants pc{batch.DrawDataSlotOffset, InvalidSlot, SelectionHandles->HeadImage, Stores.Buffers->SelectionNodeBuffer.Slot, SelectionHandles->SelectionCounter};
+        const DrawPassPushConstants pc{batch.DrawDataSlotOffset, InvalidSlot, SelectionHandles->HeadImage, Stores.Buffers->SelectionNodeBuffer.Slot, SelectionHandles->SelectionCounter, Stores.Buffers->SelectionNodeCapacity};
         cb.pushConstants(*pipeline.PipelineLayout, vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, sizeof(pc), &pc);
         cb.drawIndexedIndirect(*Stores.Buffers->SelectionDraw.Indirect, batch.IndirectOffset, batch.DrawCount, sizeof(vk::DrawIndexedIndirectCommand));
     };
@@ -4384,7 +4384,7 @@ void Scene::RenderElementSelectionPass(
         cb.bindIndexBuffer(*Stores.Buffers->IdentityIndexBuffer, 0, vk::IndexType::eUint32);
         if (silhouette_batch.DrawCount > 0) {
             const auto &pipeline = silhouette.Renderer.Bind(cb, SPT::SilhouetteDepthObject);
-            const DrawPassPushConstants sil_pc{silhouette_batch.DrawDataSlotOffset, InvalidSlot, SelectionHandles->HeadImage, Stores.Buffers->SelectionNodeBuffer.Slot, SelectionHandles->SelectionCounter};
+            const DrawPassPushConstants sil_pc{silhouette_batch.DrawDataSlotOffset, InvalidSlot, SelectionHandles->HeadImage, Stores.Buffers->SelectionNodeBuffer.Slot, SelectionHandles->SelectionCounter, Stores.Buffers->SelectionNodeCapacity};
             cb.pushConstants(*pipeline.PipelineLayout, vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, sizeof(sil_pc), &sil_pc);
             cb.drawIndexedIndirect(*Stores.Buffers->SelectionDraw.Indirect, silhouette_batch.IndirectOffset, silhouette_batch.DrawCount, sizeof(vk::DrawIndexedIndirectCommand));
         }
@@ -4407,6 +4407,7 @@ void Scene::RenderElementSelectionPass(
             box_max.x,
             box_max.y,
             SelectionHandles->SelectionBitset,
+            Stores.Buffers->SelectionNodeCapacity,
         };
         auto draw_with = [&](SPT spt) {
             const auto &pipeline = selection.Renderer.Bind(cb, spt);

@@ -641,6 +641,8 @@ structs:
         type: u32
       - name: SelectionCounterSlot
         type: u32
+      - name: SelectionNodesCapacity
+        type: u32
   - name: SelectionElementPushConstants
     push_constant: true
     fields:
@@ -663,6 +665,8 @@ structs:
       - name: BoxMaxY
         type: u32
       - name: BoxResultSlot
+        type: u32
+      - name: SelectionNodesCapacity
         type: u32
   - name: ObjectPickPushConstants
     push_constant: true

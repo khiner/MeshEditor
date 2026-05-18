@@ -14,7 +14,9 @@ void main() {
     const uint counter_index = nonuniformEXT(pc.SelectionCounterSlot);
 
     const uint idx = atomicAdd(Counters[counter_index].Data.Count, 1);
-    if (idx >= SelectionBuffers[nodes_index].Nodes.length()) {
+    // MoltenVK mis-translates SSBO .length() for bindless storage buffers (always returns a
+    // wrong/tiny value), so we pass capacity via push constant instead.
+    if (idx >= pc.SelectionNodesCapacity) {
         atomicAdd(Counters[counter_index].Data.Overflow, 1);
         return;
     }
