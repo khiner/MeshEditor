@@ -628,46 +628,50 @@ structs:
         type: float
       - name: DistanceSq
         type: u32
-  - name: DrawPassPushConstants
-    push_constant: true
+  - name: VertexTransform
     fields:
       - name: DrawDataOffset
         type: u32
-      - name: TransformVertexStateSlot
+      - name: VertexStateSlot
         type: u32
-      - name: SelectionHeadImageSlot
+        default: InvalidSlot
+  - name: SelectionContext
+    fields:
+      - name: HeadImageSlot
         type: u32
-      - name: SelectionNodesSlot
+        default: InvalidSlot
+      - name: NodesSlot
         type: u32
-      - name: SelectionCounterSlot
+        default: InvalidSlot
+      - name: CounterSlot
         type: u32
-      - name: SelectionNodesCapacity
+        default: InvalidSlot
+      - name: NodesCapacity
         type: u32
+  - name: MainDrawPushConstants
+    push_constant: true
+    fields:
+      - name: VertexTransform
+        type: VertexTransform
+  - name: SelectionDrawPushConstants
+    push_constant: true
+    fields:
+      - name: VertexTransform
+        type: VertexTransform
+      - name: Selection
+        type: SelectionContext
   - name: SelectionElementPushConstants
     push_constant: true
     fields:
-      - name: DrawDataOffset
-        type: u32
-      - name: TransformVertexStateSlot
-        type: u32
-      - name: SelectionHeadImageSlot
-        type: u32
-      - name: SelectionNodesSlot
-        type: u32
-      - name: SelectionCounterSlot
-        type: u32
-      - name: BoxMinX
-        type: u32
-      - name: BoxMinY
-        type: u32
-      - name: BoxMaxX
-        type: u32
-      - name: BoxMaxY
-        type: u32
+      - name: VertexTransform
+        type: VertexTransform
+      - name: Selection
+        type: SelectionContext
+      - name: Box
+        type: uvec4
       - name: BoxResultSlot
         type: u32
-      - name: SelectionNodesCapacity
-        type: u32
+        default: InvalidSlot
   - name: ObjectPickPushConstants
     push_constant: true
     fields:

@@ -28,7 +28,9 @@
 #include "VideoRecorder.h"
 #include "gpu/BoxSelectPushConstants.h"
 #include "gpu/ElementPickPushConstants.h"
+#include "gpu/MainDrawPushConstants.h"
 #include "gpu/ObjectPickPushConstants.h"
+#include "gpu/SelectionDrawPushConstants.h"
 #include "gpu/SelectionElementPushConstants.h"
 #include "gpu/SilhouetteEdgeColorPushConstants.h"
 #include "gpu/SilhouetteEdgeDepthObjectPushConstants.h"
@@ -3918,14 +3920,14 @@ void Scene::RecordRenderCommandBuffer(bool silhouette_only) {
     auto record_draw_batch = [&](const PipelineRenderer &renderer, SPT spt, const DrawBatchInfo &batch) {
         if (batch.DrawCount == 0) return;
         const auto &pipeline = renderer.Bind(cb, spt);
-        const DrawPassPushConstants pc{batch.DrawDataSlotOffset, transform_vertex_state_slot, InvalidSlot, InvalidSlot, InvalidSlot, 0};
+        const MainDrawPushConstants pc{{batch.DrawDataSlotOffset, transform_vertex_state_slot}};
         cb.pushConstants(*pipeline.PipelineLayout, vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, sizeof(pc), &pc);
         cb.drawIndexedIndirect(*Stores.Buffers->RenderDraw.Indirect, batch.IndirectOffset, batch.DrawCount, sizeof(vk::DrawIndexedIndirectCommand));
     };
     auto record_pbr_batch = [&](const DrawBatchInfo &batch, PbrCompiler::Variant variant) {
         if (batch.DrawCount == 0) return;
         const auto layout = Pipelines->Main.Compiler.Bind(cb, variant);
-        const DrawPassPushConstants pc{batch.DrawDataSlotOffset, transform_vertex_state_slot, InvalidSlot, InvalidSlot, InvalidSlot, 0};
+        const MainDrawPushConstants pc{{batch.DrawDataSlotOffset, transform_vertex_state_slot}};
         cb.pushConstants(layout, vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, sizeof(pc), &pc);
         cb.drawIndexedIndirect(*Stores.Buffers->RenderDraw.Indirect, batch.IndirectOffset, batch.DrawCount, sizeof(vk::DrawIndexedIndirectCommand));
     };
@@ -4252,21 +4254,19 @@ void Scene::RenderSelectionPassWith(bool render_depth, const SelectionBuildFn &b
     cb.setViewport(0, vk::Viewport{0.f, 0.f, float(render_extent.width), float(render_extent.height), 0.f, 1.f});
     cb.setScissor(0, vk::Rect2D{{0, 0}, render_extent});
 
-    auto record_draw_batch = [&](const PipelineRenderer &renderer, SPT spt, const DrawBatchInfo &batch) {
-        if (batch.DrawCount == 0) return;
-        const auto &pipeline = renderer.Bind(cb, spt);
-        const DrawPassPushConstants pc{batch.DrawDataSlotOffset, InvalidSlot, SelectionHandles->HeadImage, Stores.Buffers->SelectionNodeBuffer.Slot, SelectionHandles->SelectionCounter, Stores.Buffers->SelectionNodeCapacity};
-        cb.pushConstants(*pipeline.PipelineLayout, vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, sizeof(pc), &pc);
-        cb.drawIndexedIndirect(*Stores.Buffers->SelectionDraw.Indirect, batch.IndirectOffset, batch.DrawCount, sizeof(vk::DrawIndexedIndirectCommand));
-    };
-
     if (render_depth) {
-        // Render selected meshes to silhouette depth buffer for element occlusion
+        // Render selected meshes to silhouette depth buffer for element occlusion.
+        // Open the pass even with no draws — its depth LoadOp::eClear seeds the selection-fragment pass's LoadOp::eLoad.
         const auto &silhouette = Pipelines->Silhouette;
         const vk::Rect2D rect{{0, 0}, ToExtent2D(silhouette.Resources->OffscreenImage.Extent)};
         cb.beginRenderPass({*silhouette.Renderer.RenderPass, *silhouette.Resources->Framebuffer, rect, SilhouetteClearValues}, vk::SubpassContents::eInline);
-        cb.bindIndexBuffer(*Stores.Buffers->IdentityIndexBuffer, 0, vk::IndexType::eUint32);
-        record_draw_batch(silhouette.Renderer, SPT::SilhouetteDepthObject, silhouette_batch);
+        if (silhouette_batch.DrawCount > 0) {
+            cb.bindIndexBuffer(*Stores.Buffers->IdentityIndexBuffer, 0, vk::IndexType::eUint32);
+            const auto &pipeline = silhouette.Renderer.Bind(cb, SPT::SilhouetteDepthObject);
+            const MainDrawPushConstants sil_pc{{silhouette_batch.DrawDataSlotOffset, InvalidSlot}};
+            cb.pushConstants(*pipeline.PipelineLayout, vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, sizeof(sil_pc), &sil_pc);
+            cb.drawIndexedIndirect(*Stores.Buffers->SelectionDraw.Indirect, silhouette_batch.IndirectOffset, silhouette_batch.DrawCount, sizeof(vk::DrawIndexedIndirectCommand));
+        }
         cb.endRenderPass();
     }
 
@@ -4274,8 +4274,17 @@ void Scene::RenderSelectionPassWith(bool render_depth, const SelectionBuildFn &b
     const vk::Rect2D rect{{0, 0}, ToExtent2D(Pipelines->Silhouette.Resources->DepthImage.Extent)};
     cb.beginRenderPass({*selection.Renderer.RenderPass, *selection.Resources->Framebuffer, rect, {}}, vk::SubpassContents::eInline);
     cb.bindIndexBuffer(*Stores.Buffers->IdentityIndexBuffer, 0, vk::IndexType::eUint32);
+    const SelectionDrawPushConstants sel_pc{
+        {0u, InvalidSlot},
+        {SelectionHandles->HeadImage, Stores.Buffers->SelectionNodeBuffer.Slot, SelectionHandles->SelectionCounter, Stores.Buffers->SelectionNodeCapacity},
+    };
     for (const auto &selection_draw : selection_draws) {
-        record_draw_batch(selection.Renderer, selection_draw.Pipeline, selection_draw.Batch);
+        if (selection_draw.Batch.DrawCount == 0) continue;
+        const auto &pipeline = selection.Renderer.Bind(cb, selection_draw.Pipeline);
+        auto pc = sel_pc;
+        pc.VertexTransform.DrawDataOffset = selection_draw.Batch.DrawDataSlotOffset;
+        cb.pushConstants(*pipeline.PipelineLayout, vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, sizeof(pc), &pc);
+        cb.drawIndexedIndirect(*Stores.Buffers->SelectionDraw.Indirect, selection_draw.Batch.IndirectOffset, selection_draw.Batch.DrawCount, sizeof(vk::DrawIndexedIndirectCommand));
     }
     cb.endRenderPass();
 
@@ -4384,7 +4393,7 @@ void Scene::RenderElementSelectionPass(
         cb.bindIndexBuffer(*Stores.Buffers->IdentityIndexBuffer, 0, vk::IndexType::eUint32);
         if (silhouette_batch.DrawCount > 0) {
             const auto &pipeline = silhouette.Renderer.Bind(cb, SPT::SilhouetteDepthObject);
-            const DrawPassPushConstants sil_pc{silhouette_batch.DrawDataSlotOffset, InvalidSlot, SelectionHandles->HeadImage, Stores.Buffers->SelectionNodeBuffer.Slot, SelectionHandles->SelectionCounter, Stores.Buffers->SelectionNodeCapacity};
+            const MainDrawPushConstants sil_pc{{silhouette_batch.DrawDataSlotOffset, InvalidSlot}};
             cb.pushConstants(*pipeline.PipelineLayout, vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, sizeof(sil_pc), &sil_pc);
             cb.drawIndexedIndirect(*Stores.Buffers->SelectionDraw.Indirect, silhouette_batch.IndirectOffset, silhouette_batch.DrawCount, sizeof(vk::DrawIndexedIndirectCommand));
         }
@@ -4397,17 +4406,10 @@ void Scene::RenderElementSelectionPass(
     cb.bindIndexBuffer(*Stores.Buffers->IdentityIndexBuffer, 0, vk::IndexType::eUint32);
     if (element_batch.DrawCount > 0) {
         const SelectionElementPushConstants element_pc{
-            element_batch.DrawDataSlotOffset,
-            InvalidSlot,
-            SelectionHandles->HeadImage,
-            Stores.Buffers->SelectionNodeBuffer.Slot,
-            SelectionHandles->SelectionCounter,
-            box_min.x,
-            box_min.y,
-            box_max.x,
-            box_max.y,
+            {element_batch.DrawDataSlotOffset, InvalidSlot},
+            {SelectionHandles->HeadImage, Stores.Buffers->SelectionNodeBuffer.Slot, SelectionHandles->SelectionCounter, Stores.Buffers->SelectionNodeCapacity},
+            {box_min.x, box_min.y, box_max.x, box_max.y},
             SelectionHandles->SelectionBitset,
-            Stores.Buffers->SelectionNodeCapacity,
         };
         auto draw_with = [&](SPT spt) {
             const auto &pipeline = selection.Renderer.Bind(cb, spt);

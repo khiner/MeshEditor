@@ -13,14 +13,14 @@ layout(early_fragment_tests) in;
 void main() {
     // MoltenVK/SPIRV-Cross requires nonuniformEXT for dynamic buffer array indexing
     // when using .length() or image atomics, even when the index is uniform.
-    const uint head_index = nonuniformEXT(pc.SelectionHeadImageSlot);
-    const uint nodes_index = nonuniformEXT(pc.SelectionNodesSlot);
-    const uint counter_index = nonuniformEXT(pc.SelectionCounterSlot);
+    const uint head_index = nonuniformEXT(pc.Selection.HeadImageSlot);
+    const uint nodes_index = nonuniformEXT(pc.Selection.NodesSlot);
+    const uint counter_index = nonuniformEXT(pc.Selection.CounterSlot);
 
     const uint idx = atomicAdd(Counters[counter_index].Data.Count, 1);
     // MoltenVK mis-translates SSBO .length() for bindless storage buffers (always returns a
     // wrong/tiny value), so we pass capacity via push constant instead.
-    if (idx >= pc.SelectionNodesCapacity) {
+    if (idx >= pc.Selection.NodesCapacity) {
         atomicAdd(Counters[counter_index].Data.Overflow, 1);
         return;
     }

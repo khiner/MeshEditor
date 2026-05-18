@@ -18,9 +18,9 @@ bool should_apply_pending_transform(DrawData draw, uint idx) {
 
     // In edit preview, pending transforms are keyed off mesh vertex state and driven by the mesh's primary edit instance.
     // In object preview, pending transforms are instance-scoped and keyed off instance selection.
-    if (pc.TransformVertexStateSlot != INVALID_SLOT) {
+    if (pc.VertexTransform.VertexStateSlot != INVALID_SLOT) {
         if (draw.HasPendingVertexTransform == 0u) return false;
-        const uint vertex_state = uint(ElementStateBuffers[pc.TransformVertexStateSlot].States[draw.VertexOffset + idx]);
+        const uint vertex_state = uint(ElementStateBuffers[pc.VertexTransform.VertexStateSlot].States[draw.VertexOffset + idx]);
         return (vertex_state & STATE_SELECTED) != 0u;
     }
     if (SceneViewUBO.InteractionMode == InteractionMode_Edit || draw.InstanceStateSlot == INVALID_SLOT) return false;
@@ -31,7 +31,7 @@ bool should_apply_pending_transform(DrawData draw, uint idx) {
 vec3 apply_pending_transform(DrawData draw, Transform world, vec3 local_pos, uint idx) {
     vec3 world_pos = trs_transform_point(world, local_pos);
     if (!should_apply_pending_transform(draw, idx)) return world_pos;
-    if (pc.TransformVertexStateSlot != INVALID_SLOT) {
+    if (pc.VertexTransform.VertexStateSlot != INVALID_SLOT) {
         const Transform primary = ModelBuffers[draw.ModelSlot].Models[draw.PrimaryEditInstanceIndex];
         const vec3 primary_world = trs_transform_point(primary, local_pos);
         const vec3 pending_world = apply_pending_transform_world(primary_world);

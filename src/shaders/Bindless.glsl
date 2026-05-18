@@ -6,7 +6,7 @@
 #include "SceneUBO.glsl"
 #include "DrawData.glsl"
 #ifndef BINDLESS_CUSTOM_DRAW_PASS_PC
-#include "DrawPassPushConstants.glsl"
+#include "MainDrawPushConstants.glsl"
 #endif
 #include "Vertex.glsl"
 #include "BoneDeformVertex.glsl"
@@ -89,5 +89,5 @@ const uint STATE_ACTIVE = 1u << 1;
 const uint STATE_EXCITED = 1u << 2;
 
 DrawData GetDrawData() {
-    return DrawDataBuffers[nonuniformEXT(SceneViewUBO.DrawDataSlot)].Draws[pc.DrawDataOffset + gl_InstanceIndex];
+    return DrawDataBuffers[nonuniformEXT(SceneViewUBO.DrawDataSlot)].Draws[pc.VertexTransform.DrawDataOffset + gl_InstanceIndex];
 }

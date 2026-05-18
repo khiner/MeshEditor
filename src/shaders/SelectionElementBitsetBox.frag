@@ -17,8 +17,8 @@ layout(set = 0, binding = BINDING_Buffer, scalar) buffer BoxSelectResult {
 void main() {
     if (ElementId == 0u) return;
     const uvec2 frag_px = uvec2(gl_FragCoord.xy);
-    if (frag_px.x < pc.BoxMinX || frag_px.x > pc.BoxMaxX ||
-        frag_px.y < pc.BoxMinY || frag_px.y > pc.BoxMaxY) return;
+    if (frag_px.x < pc.Box.x || frag_px.x > pc.Box.z ||
+        frag_px.y < pc.Box.y || frag_px.y > pc.Box.w) return;
     const uint bit_idx = ElementId - 1u;
     // MoltenVK/SPIRV-Cross requires nonuniformEXT for dynamic buffer array indexing.
     atomicOr(BoxResults[nonuniformEXT(pc.BoxResultSlot)].Bits[bit_idx >> 5u], 1u << (bit_idx & 31u));

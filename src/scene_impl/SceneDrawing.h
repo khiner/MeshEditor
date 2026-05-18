@@ -1,7 +1,6 @@
 #pragma once
 
 #include "gpu/DrawData.h"
-#include "gpu/DrawPassPushConstants.h"
 #include "gpu/Transform.h"
 
 struct DrawBatchInfo {

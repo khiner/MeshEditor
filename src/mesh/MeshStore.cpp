@@ -2,13 +2,15 @@
 #include "MeshAttributes.h"
 #include "MeshData.h"
 
-#include <limits>
-#include <numeric>
+#include <glm/geometric.hpp>
 
 #define TINYOBJLOADER_IMPLEMENTATION
 #include "tiny_obj_loader.h"
 #define TINYPLY_IMPLEMENTATION
 #include "tinyply.h"
+
+#include <limits>
+#include <numeric>
 
 namespace {
 constexpr uint8_t ElementStateSelected{1u << 0}, ElementStateActive{1u << 1}, ElementStateExcited{1u << 2};

@@ -2,9 +2,10 @@
 #include "Shader.h"
 #include "Timer.h"
 #include "gpu/BoxSelectPushConstants.h"
-#include "gpu/DrawPassPushConstants.h"
 #include "gpu/ElementPickPushConstants.h"
+#include "gpu/MainDrawPushConstants.h"
 #include "gpu/ObjectPickPushConstants.h"
+#include "gpu/SelectionDrawPushConstants.h"
 #include "gpu/SelectionElementPushConstants.h"
 #include "gpu/UpdateSelectionStatePushConstants.h"
 
@@ -49,7 +50,7 @@ static constexpr vk::PipelineColorBlendAttachmentState NoWriteBlend{};
 PbrCompiler::PbrCompiler(PipelineContext ctx, vk::RenderPass rp)
     : Device(ctx.Device), Cache(Device.createPipelineCacheUnique({})), SetLayout(ctx.SharedLayout), Set(ctx.SharedSet), RenderPass(rp) {
     CompileModules();
-    const vk::PushConstantRange draw_pc{vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, sizeof(DrawPassPushConstants)};
+    const vk::PushConstantRange draw_pc{vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, sizeof(MainDrawPushConstants)};
     Layout = Device.createPipelineLayoutUnique({{}, 1, &SetLayout, 1, &draw_pc});
 }
 
@@ -153,7 +154,7 @@ static PipelineRenderer CreateMainRenderer(
     const vk::SubpassDescription subpass{{}, vk::PipelineBindPoint::eGraphics, 0, nullptr, uint32_t(color_attachment_refs.size()), color_attachment_refs.data(), nullptr, &depth_attachment_ref};
 
     const PipelineContext ctx{d, shared_layout, shared_set};
-    const vk::PushConstantRange draw_pc{vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, sizeof(DrawPassPushConstants)};
+    const vk::PushConstantRange draw_pc{vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, sizeof(MainDrawPushConstants)};
 
     // Can't construct this map in-place with pairs because `ShaderPipeline` doesn't have a copy constructor.
     std::unordered_map<SPT, ShaderPipeline> pipelines;
@@ -427,7 +428,7 @@ static PipelineRenderer CreateSilhouetteRenderer(vk::Device d, vk::DescriptorSet
     const vk::SubpassDescription subpass{{}, vk::PipelineBindPoint::eGraphics, 0, nullptr, 1, &color_attachment_ref, nullptr, &depth_attachment_ref};
 
     const PipelineContext ctx{d, shared_layout, shared_set};
-    const vk::PushConstantRange draw_pc{vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, sizeof(DrawPassPushConstants)};
+    const vk::PushConstantRange draw_pc{vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, sizeof(MainDrawPushConstants)};
     std::unordered_map<SPT, ShaderPipeline> pipelines;
     pipelines.emplace(
         SPT::SilhouetteDepthObject,
@@ -566,7 +567,7 @@ static PipelineRenderer CreateSelectionFragmentRenderer(vk::Device d, vk::Descri
     const vk::SubpassDescription subpass{{}, vk::PipelineBindPoint::eGraphics, 0, nullptr, 0, nullptr, nullptr, &depth_attachment_ref};
 
     const PipelineContext ctx{d, shared_layout, shared_set};
-    const vk::PushConstantRange draw_pc{vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, sizeof(DrawPassPushConstants)};
+    const vk::PushConstantRange draw_pc{vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, sizeof(SelectionDrawPushConstants)};
     const vk::PushConstantRange element_pc{vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, sizeof(SelectionElementPushConstants)};
     std::unordered_map<SPT, ShaderPipeline> pipelines;
     const auto make_selection_element = [&](const char *vert, const char *frag, vk::PrimitiveTopology topology, vk::PipelineDepthStencilStateCreateInfo depth_stencil) {

@@ -473,14 +473,15 @@ int main(int argc, char **argv) {
         }
         // Determine if we need extensions and BindlessBindings.glsl for layout declarations
         const bool is_uniform = !def.Binding.empty();
-        if (is_uniform) glsl_out << "#extension GL_EXT_scalar_block_layout : require\n\n";
+        if (is_uniform || def.IsPushConstant) glsl_out << "#extension GL_EXT_scalar_block_layout : require\n\n";
         if (is_uniform || def.IsPushConstant) glsl_out << "#include \"BindlessBindings.glsl\"\n";
         for (const auto &include : glsl_includes) glsl_out << "#include \"" << include << ".glsl\"\n";
         if (is_uniform || def.IsPushConstant || !glsl_includes.empty()) glsl_out << "\n";
 
         // Generate layout block or plain struct
         if (def.IsPushConstant) {
-            glsl_out << "layout(push_constant) uniform " << def.Name;
+            // scalar layout matches C++ tight packing so nested structs don't pick up std140 16-byte alignment.
+            glsl_out << "layout(push_constant, scalar) uniform " << def.Name;
         } else if (is_uniform) {
             if (!BindingExists(bindings, def.Binding)) Fail("Unknown binding: " + def.Binding);
             glsl_out << "layout(set = 0, binding = BINDING_" << def.Binding << ", scalar) uniform " << def.Name << "Block";
@@ -533,7 +534,8 @@ int main(int argc, char **argv) {
                 << GeneratedComment(schema_relative_path);
         if (needs_array) cpp_out << "#include <array>\n";
         if (needs_cstdint) cpp_out << "#include <cstdint>\n";
-        if (needs_uvec2 || needs_uvec4) cpp_out << "#include \"glm/glm.hpp\"\n";
+        if (needs_uvec2) cpp_out << "#include \"numeric/vec2.h\"\n";
+        if (needs_uvec4) cpp_out << "#include \"numeric/vec4.h\"\n";
         if (needs_vec2) cpp_out << "#include \"numeric/vec2.h\"\n";
         if (needs_mat3) cpp_out << "#include \"numeric/mat3.h\"\n";
         if (needs_mat4) cpp_out << "#include \"numeric/mat4.h\"\n";
