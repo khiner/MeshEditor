@@ -435,6 +435,818 @@ struct Scene::DrawState {
     std::vector<SelectionDrawInfo> SelectionDraws;
 };
 
+bool IsBoneEditMode(const entt::registry &R, entt::entity scene_entity) {
+    if (R.get<const SceneInteraction>(scene_entity).Mode != InteractionMode::Edit) return false;
+    return FindArmatureObject(R, FindActiveEntity(R)) != entt::null;
+}
+bool AllSelectedAreMeshes(const entt::registry &R) {
+    for (const auto [e, ok] : R.view<const Selected, const ObjectKind>().each()) {
+        if (ok.Value != ObjectType::Mesh) return false;
+    }
+    return true;
+}
+
+namespace scene_apply {
+
+// Aggregate of all Scene-owned state Apply needs.
+// All fields are non-owning references/handles into Scene-owned objects.
+struct ApplyContext {
+    entt::registry &R;
+    const SceneStores &Stores;
+    entt::entity SceneEntity;
+    const SceneVulkanResources &Vk;
+    const ScenePipelines &Pipelines;
+    PhysicsWorld &Physics;
+    vk::CommandPool CommandPool;
+    vk::CommandBuffer ClickCommandBuffer;
+    vk::Fence OneShotFence;
+    vk::Semaphore SelectionReadySemaphore;
+    uint32_t SelectionBitsetSlot;
+    uint32_t HeadImageSlot;
+    uint32_t SelectionCounterSlot;
+    uint32_t ElementPickCandidatesSlot;
+    bool SelectionXRay;
+    const std::set<InteractionMode> &InteractionModes;
+};
+
+// Aggregate of Vulkan/GPU dependencies used by selection-pass helpers.
+// All fields are non-owning handles into Scene-owned objects.
+struct SelectionGpuCtx {
+    vk::CommandBuffer Cb;
+    vk::Fence Fence;
+    vk::Queue Queue;
+    vk::Device Device;
+    const ScenePipelines &Pipelines;
+    uint32_t SelectionBitsetSlot{};
+    uint32_t HeadImageSlot{};
+    uint32_t SelectionCounterSlot{};
+    uint32_t ElementPickCandidatesSlot{};
+    vk::Semaphore SelectionReadySemaphore{};
+    bool SelectionXRay{};
+};
+
+entt::entity GetMeshEntity(const entt::registry &R, entt::entity e) {
+    if (const auto *instance = R.try_get<Instance>(e); instance && R.all_of<Mesh>(instance->Entity)) return instance->Entity;
+    return entt::null;
+}
+
+entt::entity GetActiveMeshEntity(const entt::registry &R) {
+    const auto active = FindActiveEntity(R);
+    return active != entt::null ? GetMeshEntity(R, active) : entt::null;
+}
+
+entt::entity LookThroughCameraEntity(const entt::registry &R) {
+    auto view = R.view<LookingThrough>();
+    return view.empty() ? entt::null : *view.begin();
+}
+
+bool CanDuplicate(const entt::registry &R, entt::entity scene_entity) {
+    if (R.get<const SceneInteraction>(scene_entity).Mode == InteractionMode::Pose) return false;
+    if (IsBoneEditMode(R, scene_entity)) return !R.view<BoneSelection>().empty();
+    return !R.view<Selected>().empty();
+}
+
+bool CanDuplicateLinked(const entt::registry &R, entt::entity scene_entity) {
+    return CanDuplicate(R, scene_entity) && !IsBoneEditMode(R, scene_entity);
+}
+
+bool CanDelete(const entt::registry &R, entt::entity scene_entity) {
+    return CanDuplicate(R, scene_entity);
+}
+
+std::vector<ElementRange> GetBitsetRangesForSelected(const entt::registry &R) {
+    std::vector<ElementRange> ranges;
+    for (const auto mesh_entity : scene_selection::GetSelectedMeshEntities(R)) {
+        if (const auto *br = R.try_get<const MeshSelectionBitsetRange>(mesh_entity); br && br->Count > 0) {
+            ranges.emplace_back(mesh_entity, br->Offset, br->Count);
+        }
+    }
+    return ranges;
+}
+
+} // namespace scene_apply
+
+namespace {
+
+using scene_apply::SelectionGpuCtx;
+
+void SetLookThrough(entt::registry &R, entt::entity scene_entity, entt::entity target) {
+    const auto previous = scene_apply::LookThroughCameraEntity(R);
+    if (previous == target) return;
+    // Preserve the saved view across camera switches; only capture fresh on first entry.
+    auto saved = previous != entt::null ? R.get<LookingThrough>(previous).SavedViewCamera : R.get<ViewCamera>(scene_entity);
+    if (previous != entt::null) R.remove<LookingThrough>(previous);
+    R.emplace<LookingThrough>(target, std::move(saved));
+}
+
+void ExitLookThrough(entt::registry &R, entt::entity scene_entity) {
+    const auto camera = scene_apply::LookThroughCameraEntity(R);
+    if (camera == entt::null) return;
+    R.replace<ViewCamera>(scene_entity, R.get<LookingThrough>(camera).SavedViewCamera);
+    R.remove<LookingThrough>(camera);
+}
+
+void RebuildBoneStructure(entt::registry &R, entt::entity scene_entity, entt::entity arm_data_entity) {
+    RebuildArmatureStructure(R, arm_data_entity);
+    R.get<LastEvaluatedFrame>(scene_entity).Value = -1;
+}
+
+void DestroyArmatureData(entt::registry &R, const SceneStores &stores, entt::entity arm_obj_entity) {
+    auto &arm = R.get<ArmatureObject>(arm_obj_entity);
+    if (arm.JointEntity != entt::null) {
+        if (auto *mb = R.try_get<MeshBuffers>(arm.JointEntity)) stores.Buffers->Release(*mb);
+        if (auto *ref = R.try_get<VertexStoreId>(arm.JointEntity)) stores.Meshes->Release(ref->StoreId);
+        if (auto *models = R.try_get<ModelsBuffer>(arm.JointEntity)) stores.Buffers->Instances.Free(models->InstanceRange);
+        R.remove<MeshBuffers, VertexStoreId, ModelsBuffer, PendingHide>(arm.JointEntity);
+        R.destroy(arm.JointEntity);
+        arm.JointEntity = entt::null;
+    }
+    if (auto *mb = R.try_get<MeshBuffers>(arm_obj_entity)) stores.Buffers->Release(*mb);
+    if (auto *adj = R.try_get<BoneAdjacencyIndices>(arm_obj_entity)) stores.Buffers->EdgeIndexBuffer.Release(adj->Indices);
+    if (auto *ref = R.try_get<VertexStoreId>(arm_obj_entity)) stores.Meshes->Release(ref->StoreId);
+    if (auto *models = R.try_get<ModelsBuffer>(arm_obj_entity)) stores.Buffers->Instances.Free(models->InstanceRange);
+    R.remove<MeshBuffers, VertexStoreId, ModelsBuffer, BoneAdjacencyIndices, PendingHide>(arm_obj_entity);
+}
+
+entt::entity CreateSingleBoneInstance(entt::registry &R, entt::entity scene_entity, entt::entity arm_obj_entity, BoneId bone_id) {
+    auto &arm_obj = R.get<ArmatureObject>(arm_obj_entity);
+    const auto &armature = R.get<const Armature>(arm_obj.Entity);
+    const auto new_index = *armature.FindBoneIndex(bone_id);
+    const auto parent_index = armature.Bones[new_index].ParentIndex;
+    const auto parent_entity = parent_index == InvalidBoneIndex ? arm_obj_entity : arm_obj.BoneEntities[parent_index];
+    const auto bone_entity = ::CreateBoneEntity(R, scene_entity, arm_obj_entity, armature, new_index, parent_entity);
+    if (arm_obj.JointEntity != null_entity && R.valid(arm_obj.JointEntity)) {
+        ::CreateBoneJoints(R, arm_obj_entity, bone_entity, arm_obj.JointEntity);
+    }
+    arm_obj.BoneEntities.emplace_back(bone_entity);
+    return bone_entity;
+}
+
+void Destroy(entt::registry &R, const SceneStores &stores, entt::entity scene_entity, entt::entity e) {
+    if (R.all_of<LookingThrough>(e)) {
+        R.replace<ViewCamera>(scene_entity, R.get<LookingThrough>(e).SavedViewCamera);
+        R.remove<LookingThrough>(e);
+    }
+    { // Clear relationships
+        ClearParent(R, e);
+        std::vector<entt::entity> children;
+        for (auto child : Children{&R, e}) children.emplace_back(child);
+        for (const auto child : children) ClearParent(R, child);
+    }
+
+    // Decrement SelectedInstanceCount before entity destruction (while all components are intact).
+    // Cannot rely on on_destroy<Selected> — EnTT's pool removal order during R.destroy() is non-deterministic,
+    // so Instance may already be gone when on_destroy<Selected> fires.
+    if (R.all_of<Selected, Instance>(e)) {
+        if (auto *count = R.try_get<SelectedInstanceCount>(R.get<Instance>(e).Entity))
+            if (count->Value > 0) --count->Value;
+    }
+
+    entt::entity buffer_entity = entt::null;
+    if (const auto *instance = R.try_get<Instance>(e)) {
+        if (R.all_of<Mesh>(instance->Entity) || R.all_of<ObjectExtrasTag>(instance->Entity)) buffer_entity = instance->Entity;
+        Hide(R, e);
+    }
+    std::vector<entt::entity> armature_data_entities;
+    auto try_add_armature_data = [&](entt::entity data_entity) {
+        if (R.valid(data_entity) && find(armature_data_entities, data_entity) == armature_data_entities.end()) {
+            armature_data_entities.emplace_back(data_entity);
+        }
+    };
+    if (const auto *armature = R.try_get<ArmatureObject>(e)) try_add_armature_data(armature->Entity);
+    if (const auto *armature_modifier = R.try_get<ArmatureModifier>(e)) try_add_armature_data(armature_modifier->ArmatureEntity);
+    if (const auto *bone_attachment = R.try_get<BoneAttachment>(e)) try_add_armature_data(bone_attachment->ArmatureEntity);
+    if (const auto *cw = R.try_get<ColliderWireframe>(e)) {
+        for (uint8_t i = 0; i < cw->Count; ++i) {
+            if (R.valid(cw->Instances[i])) {
+                Hide(R, cw->Instances[i]);
+                R.destroy(cw->Instances[i]);
+            }
+        }
+    }
+    if (const auto *bw = R.try_get<BBoxWireframe>(e); bw && R.valid(bw->Instance)) {
+        Hide(R, bw->Instance);
+        R.destroy(bw->Instance);
+    }
+    if (const auto *tw = R.try_get<TetWireframe>(e); tw && R.valid(tw->Instance)) {
+        Hide(R, tw->Instance);
+        R.destroy(tw->Instance);
+    }
+
+    if (const auto *light_index = R.try_get<LightIndex>(e)) {
+        R.get_or_emplace<PendingLightRemovals>(scene_entity).Indices.push_back(light_index->Value);
+    }
+
+    if (R.all_of<ArmatureObject>(e)) {
+        auto &arm = R.get<ArmatureObject>(e);
+        auto destroy_visible = [&](entt::entity entity) {
+            Hide(R, entity);
+            R.destroy(entity);
+        };
+        for (const auto bone_entity : arm.BoneEntities) {
+            if (auto *joints = R.try_get<BoneJointEntities>(bone_entity)) {
+                if (joints->Head != entt::null) destroy_visible(joints->Head);
+                if (joints->Tail != entt::null) destroy_visible(joints->Tail);
+            }
+            R.remove<BoneJointEntities>(bone_entity);
+        }
+
+        // Destroy children before parents (reverse of topological order) so ClearParent
+        // can access the parent's SceneNode to unlink the child.
+        for (auto it = arm.BoneEntities.rbegin(); it != arm.BoneEntities.rend(); ++it) {
+            ClearParent(R, *it);
+            destroy_visible(*it);
+        }
+        DestroyArmatureData(R, stores, e);
+    }
+
+    R.destroy(e);
+
+    // If this was the last instance, destroy the buffer entity
+    if (R.valid(buffer_entity)) {
+        if (!AnyComponentRefersTo(R, &Instance::Entity, buffer_entity)) {
+            if (auto *mesh_buffers = R.try_get<MeshBuffers>(buffer_entity)) {
+                if (const auto *vcr = R.try_get<VertexClass>(buffer_entity)) {
+                    stores.Buffers->VertexClassBuffer.Release({vcr->Offset, mesh_buffers->Vertices.Count});
+                }
+                stores.Buffers->Release(*mesh_buffers);
+            }
+            if (const auto *vs = R.try_get<VertexStoreId>(buffer_entity)) stores.Meshes->Release(vs->StoreId);
+            if (const auto *models = R.try_get<ModelsBuffer>(buffer_entity)) stores.Buffers->Instances.Free(models->InstanceRange);
+            R.destroy(buffer_entity);
+        }
+    }
+    for (const auto armature_data_entity : armature_data_entities) {
+        if (!R.valid(armature_data_entity)) continue;
+        const bool is_used = AnyComponentRefersTo(R, &ArmatureObject::Entity, armature_data_entity) ||
+            AnyComponentRefersTo(R, &ArmatureModifier::ArmatureEntity, armature_data_entity) ||
+            AnyComponentRefersTo(R, &BoneAttachment::ArmatureEntity, armature_data_entity);
+        if (!is_used) R.destroy(armature_data_entity);
+    }
+
+    // If no instances remain, release all imported textures and reset to the default material.
+    if (R.view<Instance>().empty()) {
+        auto &texture_store = *stores.Textures;
+        // Index 0 is the default white texture (permanent); imported textures start at index 1.
+        if (texture_store.Textures.size() > 1) {
+            ReleaseSamplerSlots(*stores.Slots, CollectSamplerSlots(std::span<const TextureEntry>{texture_store.Textures}.subspan(1)));
+            texture_store.Textures.erase(texture_store.Textures.begin() + 1, texture_store.Textures.end());
+        }
+        texture_store.WhiteTextureSlot = texture_store.Textures.empty() ? InvalidSlot : texture_store.Textures.front().SamplerSlot;
+
+        if (stores.Buffers->Materials.Count() > 1) stores.Buffers->Materials.SetCount(1u);
+        R.patch<MaterialStore>(scene_entity, [](auto &ms) {
+            if (ms.Names.size() > 1) ms.Names.erase(ms.Names.begin() + 1, ms.Names.end());
+        });
+    }
+}
+
+void ClearMeshes(entt::registry &R, const SceneStores &stores, entt::entity scene_entity) {
+    for (const auto e : R.view<Instance>(entt::exclude<SubElementOf>) | to<std::vector>()) Destroy(R, stores, scene_entity, e);
+}
+
+void AppendSelectedSilhouetteDraws(const entt::registry &R, const SceneStores &stores, DrawListBuilder &draw_list, DrawBatchInfo &silhouette_batch) {
+    for (const auto e : R.view<Selected>()) {
+        const auto *inst = R.try_get<Instance>(e);
+        if (!inst) continue;
+        const auto buffer_entity = inst->Entity;
+        const auto &mesh_buffers = R.get<MeshBuffers>(buffer_entity);
+        const auto &models = R.get<ModelsBuffer>(buffer_entity);
+        if (const auto model_index = GetModelBufferIndex(R, e)) {
+            auto draw = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.FaceIndices, stores.Buffers->Instances);
+            draw.ObjectIdSlot = stores.Buffers->Instances.ObjectIdBuffer.Slot;
+            AppendDraw(draw_list, silhouette_batch, mesh_buffers.FaceIndices, models, draw, *model_index);
+        }
+    }
+}
+
+void FlushDrawList(const SceneStores &stores, vk::Device device, const DrawListBuilder &draw_list, DrawBufferPair &pair) {
+    if (!draw_list.Draws.empty()) pair.DrawData.Update(as_bytes(draw_list.Draws));
+    if (!draw_list.IndirectCommands.empty()) pair.Indirect.Update(as_bytes(draw_list.IndirectCommands));
+    stores.Buffers->EnsureIdentityIndexBuffer(draw_list.MaxIndexCount);
+    if (auto descriptor_updates = stores.Buffers->Ctx.GetDeferredDescriptorUpdates(); !descriptor_updates.empty()) {
+        device.updateDescriptorSets(std::move(descriptor_updates), {});
+        stores.Buffers->Ctx.ClearDeferredDescriptorUpdates();
+    }
+}
+
+void RenderElementSelectionPass(
+    entt::registry &R, const SceneStores &stores, entt::entity scene_entity,
+    const SelectionGpuCtx &gpu,
+    std::span<const ElementRange> ranges, Element element, bool write_bitset,
+    uvec2 box_min, uvec2 box_max, vk::Semaphore signal_semaphore
+) {
+    if (ranges.empty() || element == Element::None) return;
+
+    const auto primary_edit_instances = scene_selection::ComputePrimaryEditInstances(R);
+    const bool xray_selection = gpu.SelectionXRay;
+    const auto element_pipeline = [xray_selection, write_bitset](Element el) -> SPT {
+        if (el == Element::Vertex) {
+            if (xray_selection) return write_bitset ? SPT::SelectionElementVertexXRayBitsetBox : SPT::SelectionElementVertexXRay;
+            return write_bitset ? SPT::SelectionElementVertexBitsetBox : SPT::SelectionElementVertex;
+        }
+        if (el == Element::Edge) {
+            if (xray_selection) return write_bitset ? SPT::SelectionElementEdgeXRayBitsetBox : SPT::SelectionElementEdgeXRay;
+            return write_bitset ? SPT::SelectionElementEdgeBitsetBox : SPT::SelectionElementEdge;
+        }
+        if (xray_selection) return write_bitset ? SPT::SelectionElementFaceXRayBitsetBox : SPT::SelectionElementFaceXRay;
+        return write_bitset ? SPT::SelectionElementFaceBitsetBox : SPT::SelectionElementFace;
+    };
+
+    DrawListBuilder draw_list;
+    DrawBatchInfo silhouette_batch{};
+    const bool render_depth = !xray_selection;
+    if (render_depth) {
+        silhouette_batch = draw_list.BeginBatch();
+        if (element != Element::Face) AppendSelectedSilhouetteDraws(R, stores, draw_list, silhouette_batch);
+    }
+    auto element_batch = draw_list.BeginBatch();
+    for (const auto &r : ranges) {
+        const auto &mesh_buffers = R.get<MeshBuffers>(r.MeshEntity);
+        const auto &models = R.get<ModelsBuffer>(r.MeshEntity);
+        const auto &mesh = R.get<Mesh>(r.MeshEntity);
+        const auto &indices = element == Element::Vertex ? mesh_buffers.VertexIndices :
+            element == Element::Edge                     ? mesh_buffers.EdgeIndices :
+                                                           mesh_buffers.FaceIndices;
+        auto draw = MakeDrawData(mesh_buffers.Vertices, indices, stores.Buffers->Instances);
+        if (element == Element::Face) {
+            const auto face_id_buffer = stores.Meshes->GetFaceIdRange(mesh.GetStoreId());
+            draw.ObjectIdSlot = face_id_buffer.Slot;
+            draw.FaceIdOffset = face_id_buffer.Offset;
+        } else {
+            draw.ObjectIdSlot = InvalidSlot;
+            draw.FaceIdOffset = 0;
+        }
+        draw.VertexCountOrHeadImageSlot = 0;
+        draw.ElementIdOffset = r.Offset;
+        if (auto it = primary_edit_instances.find(r.MeshEntity); it != primary_edit_instances.end()) {
+            AppendDraw(draw_list, element_batch, indices, models, draw, R.get<RenderInstance>(it->second).BufferIndex);
+        } else {
+            AppendDraw(draw_list, element_batch, indices, models, draw);
+        }
+    }
+
+    FlushDrawList(stores, gpu.Device, draw_list, stores.Buffers->SelectionDraw);
+    stores.Buffers->SceneViewUBO.Update(as_bytes(stores.Buffers->SelectionDraw.DrawData.Slot), offsetof(SceneViewUBO, DrawDataSlot));
+
+    auto cb = gpu.Cb;
+    cb.reset({});
+    cb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
+
+    if (!write_bitset) {
+        // Reset linked-list state before writing selection fragments.
+        stores.Buffers->SelectionCounter.Buffer.Write(as_bytes(SelectionCounters{}));
+
+        const auto &head_image = gpu.Pipelines.SelectionFragment.Resources->HeadImage;
+        cb.pipelineBarrier(
+            vk::PipelineStageFlagBits::eTopOfPipe, vk::PipelineStageFlagBits::eTransfer, {}, {}, {},
+            vk::ImageMemoryBarrier{{}, vk::AccessFlagBits::eTransferWrite, vk::ImageLayout::eUndefined, vk::ImageLayout::eGeneral, {}, {}, *head_image.Image, ColorSubresourceRange}
+        );
+        cb.clearColorImage(*head_image.Image, vk::ImageLayout::eGeneral, vk::ClearColorValue{std::array<uint32_t, 4>{InvalidSlot, 0, 0, 0}}, ColorSubresourceRange);
+        cb.pipelineBarrier(
+            vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eFragmentShader, {}, {}, {},
+            vk::ImageMemoryBarrier{vk::AccessFlagBits::eTransferWrite, vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite, vk::ImageLayout::eGeneral, vk::ImageLayout::eGeneral, {}, {}, *head_image.Image, ColorSubresourceRange}
+        );
+    }
+
+    const auto render_extent = ComputeRenderExtentPx(R.get<const ViewportExtent>(scene_entity).Value, std::bit_cast<vec2>(ImGui::GetIO().DisplayFramebufferScale));
+    cb.setViewport(0, vk::Viewport{0.f, 0.f, float(render_extent.width), float(render_extent.height), 0.f, 1.f});
+    cb.setScissor(0, vk::Rect2D{{0, 0}, render_extent});
+
+    if (render_depth) {
+        const auto &silhouette = gpu.Pipelines.Silhouette;
+        const vk::Rect2D sil_rect{{0, 0}, ToExtent2D(silhouette.Resources->OffscreenImage.Extent)};
+        cb.beginRenderPass({*silhouette.Renderer.RenderPass, *silhouette.Resources->Framebuffer, sil_rect, SilhouetteClearValues}, vk::SubpassContents::eInline);
+        cb.bindIndexBuffer(*stores.Buffers->IdentityIndexBuffer, 0, vk::IndexType::eUint32);
+        if (silhouette_batch.DrawCount > 0) {
+            const auto &pipeline = silhouette.Renderer.Bind(cb, SPT::SilhouetteDepthObject);
+            const MainDrawPushConstants sil_pc{{silhouette_batch.DrawDataSlotOffset, InvalidSlot}};
+            cb.pushConstants(*pipeline.PipelineLayout, vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, sizeof(sil_pc), &sil_pc);
+            cb.drawIndexedIndirect(*stores.Buffers->SelectionDraw.Indirect, silhouette_batch.IndirectOffset, silhouette_batch.DrawCount, sizeof(vk::DrawIndexedIndirectCommand));
+        }
+        cb.endRenderPass();
+    }
+
+    const auto &selection = gpu.Pipelines.SelectionFragment;
+    const vk::Rect2D sel_rect{{0, 0}, ToExtent2D(gpu.Pipelines.Silhouette.Resources->DepthImage.Extent)};
+    cb.beginRenderPass({*selection.Renderer.RenderPass, *selection.Resources->Framebuffer, sel_rect, {}}, vk::SubpassContents::eInline);
+    cb.bindIndexBuffer(*stores.Buffers->IdentityIndexBuffer, 0, vk::IndexType::eUint32);
+    if (element_batch.DrawCount > 0) {
+        const SelectionElementPushConstants element_pc{
+            {element_batch.DrawDataSlotOffset, InvalidSlot},
+            {gpu.HeadImageSlot, stores.Buffers->SelectionNodeBuffer.Slot, gpu.SelectionCounterSlot, stores.Buffers->SelectionNodeCapacity},
+            {box_min.x, box_min.y, box_max.x, box_max.y},
+            gpu.SelectionBitsetSlot,
+        };
+        auto draw_with = [&](SPT spt) {
+            const auto &pipeline = selection.Renderer.Bind(cb, spt);
+            cb.pushConstants(*pipeline.PipelineLayout, vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, sizeof(element_pc), &element_pc);
+            cb.drawIndexedIndirect(*stores.Buffers->SelectionDraw.Indirect, element_batch.IndirectOffset, element_batch.DrawCount, sizeof(vk::DrawIndexedIndirectCommand));
+        };
+        draw_with(element_pipeline(element));
+        if (write_bitset && xray_selection) {
+            // X-Ray face: point pass catches edge-on faces (zero projected triangle area).
+            if (element == Element::Face) draw_with(SPT::SelectionElementFaceXRayVertsBitsetBox);
+            // X-Ray edge: point pass catches near/zero-length projected edges.
+            if (element == Element::Edge) draw_with(SPT::SelectionElementEdgeXRayVertsBitsetBox);
+        }
+    }
+    cb.endRenderPass();
+
+    if (write_bitset) {
+        // Ensure fragment shader writes to the bitset are visible to the host after the fence.
+        // Scope the barrier to the written range.
+        const auto element_count = MaxElementBound(ranges);
+        const vk::DeviceSize bitset_bytes = ((element_count + 31) / 32) * sizeof(uint32_t);
+        cb.pipelineBarrier(
+            vk::PipelineStageFlagBits::eFragmentShader, vk::PipelineStageFlagBits::eHost, {}, {},
+            vk::BufferMemoryBarrier{vk::AccessFlagBits::eShaderWrite, vk::AccessFlagBits::eHostRead, {}, {}, *stores.Buffers->SelectionBitset, 0, bitset_bytes},
+            {}
+        );
+    }
+
+    cb.end();
+    vk::SubmitInfo submit;
+    submit.setCommandBuffers(cb);
+    if (signal_semaphore) submit.setSignalSemaphores(signal_semaphore);
+    gpu.Queue.submit(submit, gpu.Fence);
+    WaitFor(gpu.Fence, gpu.Device);
+
+    // Element selection pass overwrites the shared head image used for object selection.
+    R.emplace_or_replace<SelectionStale>(scene_entity);
+}
+
+std::optional<std::pair<entt::entity, uint32_t>> RunElementPickFromRanges(
+    entt::registry &R, const SceneStores &stores, entt::entity scene_entity,
+    const SelectionGpuCtx &gpu, std::span<const ElementRange> ranges, Element element, uvec2 mouse_px
+) {
+    if (ranges.empty() || element == Element::None) return {};
+    const auto element_count = MaxElementBound(ranges);
+    if (element_count == 0) return {};
+
+    const Timer timer{"RunElementPick"};
+    RenderElementSelectionPass(R, stores, scene_entity, gpu, ranges, element, false, {}, {}, gpu.SelectionReadySemaphore);
+    if (const auto index = FindNearestPickedElement(
+            *stores.Buffers, gpu.Pipelines.ElementPick, gpu.Cb,
+            gpu.Queue, gpu.Fence, gpu.Device,
+            gpu.HeadImageSlot, stores.Buffers->SelectionNodeBuffer.Slot, gpu.ElementPickCandidatesSlot,
+            mouse_px, element_count, element,
+            gpu.SelectionReadySemaphore
+        )) {
+        for (const auto &range : ranges) {
+            if (*index < range.Offset || *index >= range.Offset + range.Count) continue;
+            return std::pair{range.MeshEntity, *index - range.Offset};
+        }
+    }
+    return {};
+}
+
+void DispatchUpdateSelectionStates(
+    entt::registry &R, const SceneStores &stores, const SelectionGpuCtx &gpu,
+    std::span<const ElementRange> ranges, Element element
+) {
+    if (ranges.empty() || element == Element::None) return;
+
+    auto cb = gpu.Cb;
+    cb.reset({});
+    cb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
+
+    // Ensure bitset writes from previous render/compute are visible to this compute shader.
+    const vk::MemoryBarrier input_barrier{vk::AccessFlagBits::eShaderWrite, vk::AccessFlagBits::eShaderRead};
+    cb.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands, vk::PipelineStageFlagBits::eComputeShader, {}, input_barrier, {}, {});
+
+    const auto &compute = gpu.Pipelines.UpdateSelectionState;
+    cb.bindPipeline(vk::PipelineBindPoint::eCompute, *compute.Pipeline);
+    cb.bindDescriptorSets(vk::PipelineBindPoint::eCompute, *compute.PipelineLayout, 0, compute.GetDescriptorSet(), {});
+
+    for (const auto &range : ranges) {
+        const auto &mesh = R.get<const Mesh>(range.MeshEntity);
+        const auto &mesh_buffers = R.get<const MeshBuffers>(range.MeshEntity);
+        const auto *active_element = R.try_get<const MeshActiveElement>(range.MeshEntity);
+
+        uint32_t state_slot, state_offset;
+        if (element == Element::Vertex) {
+            state_slot = stores.Meshes->GetVertexStateSlot();
+            state_offset = mesh_buffers.Vertices.Offset;
+        } else if (element == Element::Edge) {
+            const auto edge_range = stores.Meshes->GetEdgeStateRange(mesh.GetStoreId());
+            state_slot = edge_range.Slot;
+            state_offset = edge_range.Offset;
+        } else {
+            const auto face_range = stores.Meshes->GetFaceStateRange(mesh.GetStoreId());
+            state_slot = face_range.Slot;
+            state_offset = face_range.Offset;
+        }
+
+        const UpdateSelectionStatePushConstants pc{
+            .BitsetSlot = gpu.SelectionBitsetSlot,
+            .BitsetOffset = range.Offset,
+            .StateSlot = state_slot,
+            .StateOffset = state_offset,
+            .ElementCount = range.Count,
+            .ActiveHandle = active_element ? active_element->Handle : InvalidOffset,
+            .EdgeMode = element == Element::Edge ? 1u : 0u,
+        };
+        cb.pushConstants(*compute.PipelineLayout, vk::ShaderStageFlagBits::eCompute, 0, sizeof(pc), &pc);
+        cb.dispatch((range.Count + 255) / 256, 1, 1);
+    }
+
+    const vk::MemoryBarrier output_barrier{vk::AccessFlagBits::eShaderWrite, vk::AccessFlagBits::eHostRead};
+    cb.pipelineBarrier(vk::PipelineStageFlagBits::eComputeShader, vk::PipelineStageFlagBits::eHost, {}, output_barrier, {}, {});
+    cb.end();
+
+    vk::SubmitInfo submit;
+    submit.setCommandBuffers(cb);
+    gpu.Queue.submit(submit, gpu.Fence);
+    WaitFor(gpu.Fence, gpu.Device);
+}
+
+void ApplySelectionStateUpdate(
+    entt::registry &R, const SceneStores &stores, entt::entity scene_entity,
+    const SelectionGpuCtx &gpu, std::span<const ElementRange> ranges, Element element
+) {
+    DispatchUpdateSelectionStates(R, stores, gpu, ranges, element);
+    if (element == Element::Vertex) {
+        // Vertex states are already updated by the GPU compute above; derive edge/face states from them directly.
+        for (const auto &range : ranges) {
+            const auto &mesh = R.get<const Mesh>(range.MeshEntity);
+            stores.Meshes->UpdateEdgeStatesFromVertices(mesh);
+            stores.Meshes->UpdateFaceStatesFromVertices(mesh);
+        }
+    } else if (element == Element::Face || element == Element::Edge) {
+        const auto *bits = stores.Buffers->SelectionBitset.Data();
+        for (const auto &range : ranges) {
+            const auto &mesh = R.get<const Mesh>(range.MeshEntity);
+            const auto selected_handles = scene_selection::ScanBitsetRange(bits, range.Offset, range.Count);
+            std::optional<uint32_t> active_handle;
+            if (const auto *active = R.try_get<const MeshActiveElement>(range.MeshEntity); active && active->Handle < range.Count) {
+                active_handle = active->Handle;
+            }
+            if (element == Element::Face) stores.Meshes->UpdateEdgeStatesFromFaces(mesh, selected_handles, active_handle);
+            if (element == Element::Edge) stores.Meshes->UpdateFaceStatesFromEdges(mesh);
+            stores.Meshes->UpdateVertexStatesFromElements(mesh, selected_handles, element, active_handle);
+        }
+    }
+    R.emplace_or_replace<ElementStatesDirty>(scene_entity);
+}
+
+void SetEditMode(
+    entt::registry &R, const SceneStores &stores, entt::entity scene_entity,
+    const SelectionGpuCtx &gpu, Element mode
+) {
+    const auto current_mode = R.get<const SceneEditMode>(scene_entity).Value;
+    if (current_mode == mode) return;
+
+    auto *bits = stores.Buffers->SelectionBitset.Data();
+
+    struct PendingConvert {
+        entt::entity MeshEntity;
+        uint32_t NewCount;
+        std::vector<uint32_t> FromHandles;
+    };
+    std::vector<PendingConvert> pending;
+    std::vector<ElementRange> old_ranges;
+    uint32_t old_max_end = 0;
+    for (auto [mesh_entity, br, mesh] : R.view<MeshSelectionBitsetRange, const Mesh>().each()) {
+        const uint32_t old_count = br.Count, new_count = scene_selection::GetElementCount(mesh, mode);
+        auto from_handles = scene_selection::ScanBitsetRange(bits, br.Offset, old_count);
+        if (old_count > 0) old_ranges.emplace_back(mesh_entity, br.Offset, old_count);
+        old_max_end = std::max(old_max_end, br.Offset + old_count);
+        R.remove<MeshActiveElement>(mesh_entity);
+        pending.emplace_back(PendingConvert{mesh_entity, new_count, std::move(from_handles)});
+    }
+
+    // Clear the superset of old and new packed bit ranges once, to avoid stale/overlap bits.
+    uint32_t new_max_end = 0;
+    for (const auto &p : pending) new_max_end += (p.NewCount + 31) / 32 * 32;
+    const uint32_t clear_words = (std::max(old_max_end, new_max_end) + 31) / 32;
+    if (clear_words > 0) memset(bits, 0, clear_words * sizeof(uint32_t));
+
+    if (!old_ranges.empty()) {
+        DispatchUpdateSelectionStates(R, stores, gpu, old_ranges, current_mode);
+        // Face mode also derives edge states via CPU; clear them when exiting face-select.
+        if (current_mode == Element::Face) {
+            for (const auto &p : pending) stores.Meshes->UpdateEdgeStatesFromFaces(R.get<const Mesh>(p.MeshEntity), {}, {});
+        }
+    }
+
+    std::vector<ElementRange> new_ranges;
+    uint32_t next_offset = 0;
+    for (const auto &p : pending) {
+        auto &br = R.get<MeshSelectionBitsetRange>(p.MeshEntity);
+        br.Offset = next_offset;
+        br.Count = p.NewCount;
+        const auto &mesh = R.get<const Mesh>(p.MeshEntity);
+        for (const uint32_t h : scene_selection::ConvertSelectionElement(p.FromHandles, mesh, current_mode, mode)) {
+            if (h >= p.NewCount) continue;
+            const uint32_t gbit = next_offset + h;
+            bits[gbit >> 5] |= 1u << (gbit & 31u);
+        }
+        if (p.NewCount > 0) new_ranges.emplace_back(p.MeshEntity, next_offset, p.NewCount);
+        next_offset = (next_offset + p.NewCount + 31) / 32 * 32;
+    }
+
+    R.patch<SceneEditMode>(scene_entity, [mode](auto &edit_mode) { edit_mode.Value = mode; });
+    if (!new_ranges.empty()) ApplySelectionStateUpdate(R, stores, scene_entity, gpu, new_ranges, mode);
+    else if (!old_ranges.empty()) R.emplace_or_replace<ElementStatesDirty>(scene_entity);
+}
+
+bool SetInteractionMode(entt::registry &R, const SceneStores &stores, entt::entity scene_entity, InteractionMode mode) {
+    if (R.get<const SceneInteraction>(scene_entity).Mode == mode) return false;
+
+    const auto active_entity = FindActiveEntity(R);
+    const auto active_arm = active_entity != entt::null ? FindArmatureObject(R, active_entity) : entt::null;
+    const bool active_is_armature = active_arm != entt::null;
+    if (mode == InteractionMode::Edit && !AllSelectedAreMeshes(R) && !active_is_armature) return false;
+    if (mode == InteractionMode::Pose && !active_is_armature) return false;
+
+    if (R.get<const SceneInteraction>(scene_entity).Mode == InteractionMode::Edit) {
+        // Keep bitset ranges + bits so element selections survive toggling Edit mode off and back on.
+        for (const auto [mesh_entity, br, mesh] : R.view<const MeshSelectionBitsetRange, const Mesh>().each()) {
+            if (br.Count > 0) stores.Meshes->UpdateElementStates(mesh, Element::None, {}, {}, {}, {}, std::nullopt);
+        }
+        R.emplace_or_replace<ElementStatesDirty>(scene_entity);
+    }
+    if (mode == InteractionMode::Edit && !active_is_armature) {
+        // Only assign ranges for selected meshes missing one; existing ranges preserve remembered selection.
+        if (const auto edit_element = R.get<const SceneEditMode>(scene_entity).Value; edit_element != Element::None) {
+            uint32_t next_offset = 0;
+            for (const auto [_, br] : R.view<const MeshSelectionBitsetRange>().each()) {
+                next_offset = std::max(next_offset, (br.Offset + br.Count + 31) / 32 * 32);
+            }
+            auto *bits = stores.Buffers->SelectionBitset.Data();
+            for (const auto mesh_entity : scene_selection::GetSelectedMeshEntities(R)) {
+                if (R.all_of<MeshSelectionBitsetRange>(mesh_entity)) continue;
+                const auto &mesh = R.get<const Mesh>(mesh_entity);
+                const uint32_t count = scene_selection::GetElementCount(mesh, edit_element);
+                if (count == 0) continue;
+
+                scene_selection::SelectAll(bits, next_offset, count);
+                R.emplace<MeshSelectionBitsetRange>(mesh_entity, next_offset, count);
+                next_offset = (next_offset + count + 31) / 32 * 32;
+            }
+        }
+    }
+    R.patch<SceneInteraction>(scene_entity, [mode](auto &s) { s.Mode = mode; });
+    R.patch<ViewportTheme>(scene_entity, [](auto &) {});
+    return true;
+}
+
+void JumpToStartFrame(entt::registry &R, entt::entity scene_entity, PhysicsWorld &physics) {
+    if (physics.HasBodies()) physics.Rebuild(R);
+    const auto frame = R.get<AnimationTimeline>(scene_entity).StartFrame;
+    R.patch<AnimationTimeline>(scene_entity, [&](auto &tl) { tl.CurrentFrame = frame; });
+    R.get<PlaybackFrame>(scene_entity).Value = frame;
+}
+
+void SetStudioEnvironment(
+    const SceneVulkanResources &vk, const SceneStores &stores, const ScenePipelines &pipelines,
+    vk::CommandPool command_pool, vk::Fence one_shot_fence, uint32_t index
+) {
+    auto &environments = *stores.Environments;
+    auto &hdri = environments.Hdris[index];
+    if (!hdri.Prefiltered) {
+        hdri.Prefiltered = CreateIblFromHdri(
+            vk, *stores.Slots,
+            pipelines.IblPrefilter, hdri.Path, hdri.Name,
+            command_pool, one_shot_fence, stores.Buffers->Ctx
+        );
+    }
+    const auto &pre = *hdri.Prefiltered;
+    environments.ActiveHdriIndex = index;
+    environments.StudioWorld = {.Ibl = MakeIblSamplers(pre, environments), .Name = hdri.Name};
+}
+
+std::pair<entt::entity, entt::entity> ImportMesh(
+    entt::registry &R, const SceneStores &stores, entt::entity scene_entity,
+    const SceneVulkanResources &vk, vk::CommandPool command_pool, vk::Fence one_shot_fence,
+    const std::filesystem::path &path, MeshInstanceCreateInfo info
+) {
+    auto result = stores.Meshes->LoadMesh(path);
+    if (!result) throw std::runtime_error(result.error());
+
+    if (!result->Materials.empty()) {
+        auto &texture_store = *stores.Textures;
+        auto obj_batch = BeginTextureUploadBatch(vk.Device, command_pool, stores.Buffers->Ctx);
+        std::unordered_map<std::string, uint32_t> texture_slot_cache;
+        const auto resolve_texture_slot =
+            [&](
+                const std::optional<std::filesystem::path> &source_texture_path,
+                TextureColorSpace color_space,
+                std::string_view material_name, std::string_view texture_label
+            ) -> uint32_t {
+            if (!source_texture_path) return InvalidSlot;
+            auto texture_path = *source_texture_path;
+            if (texture_path.is_relative()) texture_path = path.parent_path() / texture_path;
+            texture_path = texture_path.lexically_normal();
+
+            const auto cache_key = std::format("{}|{}", texture_path.generic_string(), color_space == TextureColorSpace::Srgb ? "sRGB" : "Linear");
+            if (const auto it = texture_slot_cache.find(cache_key); it != texture_slot_cache.end()) return it->second;
+
+            std::string encoded;
+            try {
+                encoded = File::Read(texture_path);
+            } catch (const std::exception &e) {
+                std::cerr << std::format(
+                    "Warning: Failed to read OBJ texture '{}' for material '{}' ({}) in '{}': {}\n",
+                    texture_path.string(), material_name, texture_label, path.string(), e.what()
+                );
+                return InvalidSlot;
+            }
+
+            auto texture = CreateTextureEntryFromEncoded(
+                vk,
+                obj_batch,
+                *stores.Slots,
+                std::as_bytes(std::span{encoded}),
+                texture_path.filename().string(),
+                std::format("{} ({})", texture_path.filename().string(), color_space == TextureColorSpace::Srgb ? "sRGB" : "Linear"),
+                color_space,
+                vk::SamplerAddressMode::eRepeat,
+                vk::SamplerAddressMode::eRepeat,
+                SamplerConfig{}
+            );
+            if (!texture) {
+                std::cerr << std::format(
+                    "Warning: Failed to decode OBJ texture '{}' for material '{}' ({}) in '{}': {}\n",
+                    texture_path.string(), material_name, texture_label, path.string(), texture.error()
+                );
+                return InvalidSlot;
+            }
+
+            const auto sampler_slot = texture->SamplerSlot;
+            texture_store.Textures.emplace_back(std::move(*texture));
+            texture_slot_cache.emplace(cache_key, sampler_slot);
+            return sampler_slot;
+        };
+
+        std::vector<uint32_t> scene_material_indices(result->Materials.size(), 0u);
+        std::vector<std::string> names;
+        names.reserve(result->Materials.size());
+        stores.Buffers->Materials.Reserve(stores.Buffers->Materials.Count() + result->Materials.size());
+        for (uint32_t material_index = 0; material_index < result->Materials.size(); ++material_index) {
+            const auto &source = result->Materials[material_index];
+            const auto material_name = source.Name.empty() ? std::format("Material{}", material_index) : source.Name;
+            const auto base_color_texture = resolve_texture_slot(source.BaseColorTexturePath, TextureColorSpace::Srgb, material_name, "baseColor");
+            const auto normal_texture = resolve_texture_slot(source.NormalTexturePath, TextureColorSpace::Linear, material_name, "normal");
+            scene_material_indices[material_index] = stores.Buffers->Materials.Append({
+                .BaseColorFactor = source.BaseColorFactor,
+                .MetallicFactor = std::clamp(source.MetallicFactor, 0.f, 1.f),
+                .RoughnessFactor = std::clamp(source.RoughnessFactor, 0.f, 1.f),
+                .AlphaMode = (source.BaseColorFactor.w < 1.f || source.HasAlphaTexture) ?
+                    MaterialAlphaMode::Blend :
+                    MaterialAlphaMode::Opaque,
+                .BaseColorTexture = {.Slot = base_color_texture != InvalidSlot ? base_color_texture : stores.Textures->WhiteTextureSlot},
+                .NormalTexture = {.Slot = normal_texture},
+            });
+            names.emplace_back(material_name);
+        }
+        SubmitTextureUploadBatch(obj_batch, vk.Queue, one_shot_fence, vk.Device);
+
+        R.patch<MaterialStore>(
+            scene_entity,
+            [&](auto &material_store) {
+                material_store.Names.insert(material_store.Names.end(), std::make_move_iterator(names.begin()), std::make_move_iterator(names.end()));
+            }
+        );
+
+        if (auto primitive_materials = stores.Meshes->GetPrimitiveMaterialIndices(result->Mesh.GetStoreId()); !primitive_materials.empty()) {
+            const auto fallback = scene_material_indices.front();
+            for (auto &primitive_material : primitive_materials) {
+                primitive_material = primitive_material < scene_material_indices.size() ? scene_material_indices[primitive_material] : fallback;
+            }
+        }
+    }
+
+    const auto entities = ::AddMesh(R, *stores.Meshes, scene_entity, std::move(result->Mesh), std::move(info));
+    R.emplace<Path>(entities.first, path);
+    R.emplace<SmoothShading>(entities.first);
+    return entities;
+}
+
+void NewDefaultScene(entt::registry &R, const SceneStores &stores, entt::entity scene_entity) {
+    ClearMeshes(R, stores, scene_entity);
+
+    constexpr PrimitiveShape default_shape{primitive::Cuboid{}};
+    const auto [mesh_entity, _] = ::AddMesh(R, *stores.Meshes, scene_entity, stores.Meshes->CreateMesh(primitive::CreateMesh(default_shape), {}, {}), MeshInstanceCreateInfo{.Name = ToString(default_shape)});
+    R.emplace<PrimitiveShape>(mesh_entity, default_shape);
+
+    // startup.blend data, in Blender's frame (Z-up, -Y forward)
+    constexpr vec3 LightLoc{4.07625, 1.00545, 5.90386}, CameraLoc{7.358891, -6.925791, 4.958309}, CameraEulerXYZ{1.109319, 0, 0.815801};
+    constexpr float Lens{50}, SensorX{36}, RenderW{16}, RenderH{9};
+    // Blender Z-up -> MeshEditor Y-up is a -90° rotation about +X: (x, y, z) -> (x, z, -y)
+    const auto to_y_up_pos = [](vec3 v) { return vec3{v.x, v.z, -v.y}; };
+    const quat to_y_up_rot = glm::angleAxis(-float(M_PI_2), vec3{1, 0, 0});
+    // Matches Blender glTF exporter (cameras.py / yvof_blender_to_gltf): horizontal fit since render aspect > sensor aspect
+    const float hfov = 2 * std::atan(SensorX / (2 * Lens));
+    const float yfov = 2 * std::atan(std::tan(hfov * 0.5) * RenderH / RenderW);
+
+    ::AddLight(R, *stores.Meshes, *stores.Buffers, scene_entity, ObjectCreateInfo{.Name = "Light", .Transform = {.P = to_y_up_pos(LightLoc)}, .Select = MeshInstanceCreateInfo::SelectBehavior::None});
+    ::AddCamera(R, *stores.Meshes, *stores.Buffers, scene_entity, ObjectCreateInfo{.Name = "Camera", .Transform = {.P = to_y_up_pos(CameraLoc), .R = to_y_up_rot * quat{CameraEulerXYZ}}, .Select = MeshInstanceCreateInfo::SelectBehavior::None}, Perspective{.FieldOfViewRad = yfov, .FarClip = 1000, .NearClip = DefaultPerspectiveNearClip});
+}
+
+} // namespace
+
 Scene::Scene(SceneVulkanResources vc, entt::registry &r)
     : Vk{vc},
       R{r},
@@ -546,6 +1358,10 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
     R.emplace<MaterialPreviewLighting>(SceneEntity, false, false, 1.f, 0.f);
     R.emplace<RenderedLighting>(SceneEntity, true, true, 1.f, 0.f);
     R.emplace<ViewportExtent>(SceneEntity);
+    R.emplace<PlaybackFrame>(SceneEntity);
+    R.emplace<LastEvaluatedFrame>(SceneEntity);
+    R.emplace<StartScreenTransform>(SceneEntity);
+    R.emplace<SelectionStale>(SceneEntity); // Initial state: fragments need rendering on first selection use.
     Physics->ApplySimulationSettings(R.emplace<PhysicsSimulationSettings>(SceneEntity));
 
     Stores.Buffers->WorkspaceLightsUBO.Update(as_bytes(SceneDefaults::WorkspaceLights));
@@ -570,7 +1386,7 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
     std::ranges::sort(environments.Hdris, {}, &HdriEntry::Name);
     const auto forest_it = find(environments.Hdris, "forest", &HdriEntry::Name);
     environments.ActiveHdriIndex = forest_it != environments.Hdris.end() ? std::distance(environments.Hdris.begin(), forest_it) : 0;
-    SetStudioEnvironment(environments.ActiveHdriIndex);
+    SetStudioEnvironment(Vk, Stores, *Pipelines, *CommandPool, *OneShotFence, environments.ActiveHdriIndex);
     environments.SceneWorld = {.Ibl = MakeIblSamplers(environments.EmptySceneWorld, environments), .Name = environments.EmptySceneWorld.Name};
 
     Pipelines->CompileShaders();
@@ -579,30 +1395,6 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
 Scene::~Scene() {
     if (R.valid(SceneEntity)) R.remove<MaterialStore>(SceneEntity);
     R.clear<Mesh>();
-}
-
-void Scene::SetStudioEnvironment(uint32_t index) {
-    auto &environments = *Stores.Environments;
-    auto &hdri = environments.Hdris[index];
-    if (!hdri.Prefiltered) {
-        hdri.Prefiltered = CreateIblFromHdri(
-            Vk, *Stores.Slots,
-            Pipelines->IblPrefilter, hdri.Path, hdri.Name,
-            *CommandPool, *OneShotFence, Stores.Buffers->Ctx
-        );
-    }
-    const auto &pre = *hdri.Prefiltered;
-    environments.ActiveHdriIndex = index;
-    environments.StudioWorld = {.Ibl = MakeIblSamplers(pre, environments), .Name = hdri.Name};
-}
-
-entt::entity Scene::GetMeshEntity(entt::entity e) const {
-    if (const auto *instance = R.try_get<Instance>(e); instance && R.all_of<Mesh>(instance->Entity)) return instance->Entity;
-    return entt::null;
-}
-entt::entity Scene::GetActiveMeshEntity() const {
-    if (const auto active = FindActiveEntity(R); active != entt::null) return GetMeshEntity(active);
-    return entt::null;
 }
 
 void Scene::CreateSvgResource(std::unique_ptr<SvgResource> &svg, std::filesystem::path path) {
@@ -649,7 +1441,7 @@ const AnimationTimeline &Scene::GetTimeline() const { return R.get<const Animati
 
 std::pair<vk::Offset3D, vk::Extent2D> Scene::GetCaptureRegion() const {
     const auto full = ToExtent2D(Pipelines->Main.Resources->FinalColorImage.Extent);
-    const auto camera = LookThroughCameraEntity();
+    const auto camera = scene_apply::LookThroughCameraEntity(R);
     const auto *cd = camera != entt::null ? R.try_get<Camera>(camera) : nullptr;
     if (!cd) return {{0, 0, 0}, full};
 
@@ -783,7 +1575,8 @@ Scene::SyncResult Scene::SyncModelsBuffers() {
 }
 
 Scene::RenderRequest Scene::ProcessComponentEvents() {
-    const bool profile = std::exchange(ProfileNextProcessComponentEvents, false);
+    const bool profile = R.all_of<ProfileNextProcessComponentEvents>(SceneEntity);
+    if (profile) R.remove<ProfileNextProcessComponentEvents>(SceneEntity);
     std::optional<Timer> timer;
     if (profile) timer.emplace("ProcessComponentEvents");
 
@@ -1057,12 +1850,12 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
     { // Note: Can mutate InteractionMode, so do this first before `changes::InteractionMode` handling below.
         const auto interaction_mode = R.get<const SceneInteraction>(SceneEntity).Mode;
         if (R.storage<SoundVertices>().empty()) {
-            if (interaction_mode == InteractionMode::Excite) SetInteractionMode(*InteractionModes.begin());
+            if (interaction_mode == InteractionMode::Excite) SetInteractionMode(R, Stores, SceneEntity, *InteractionModes.begin());
             InteractionModes.erase(InteractionMode::Excite);
         } else if (!reactive<changes::SoundVertices>(R).empty()) {
             InteractionModes.insert(InteractionMode::Excite);
             if (interaction_mode == InteractionMode::Excite) request(RenderRequest::ReRecord);
-            else SetInteractionMode(InteractionMode::Excite);
+            else SetInteractionMode(R, Stores, SceneEntity, InteractionMode::Excite);
         }
     }
     std::unordered_set<entt::entity> dirty_overlay_meshes, dirty_element_state_meshes;
@@ -1167,9 +1960,9 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
             dirty_element_state_meshes.insert(mesh_entity); // for Excite mode
         }
     }
-    if (SelectionBitsDirty) {
-        SelectionBitsDirty = false;
-        if (is_edit_mode) ApplySelectionStateUpdate(GetBitsetRangesForSelected(), R.get<const SceneEditMode>(SceneEntity).Value);
+    if (R.all_of<SelectionBitsDirty>(SceneEntity)) {
+        R.remove<SelectionBitsDirty>(SceneEntity);
+        if (is_edit_mode) ApplySelectionStateUpdate(R, Stores, SceneEntity, MakeSelectionGpuCtx(), scene_apply::GetBitsetRangesForSelected(R), R.get<const SceneEditMode>(SceneEntity).Value);
     }
     for (auto instance_entity : reactive<changes::VertexForce>(R)) {
         if (const auto *inst = R.try_get<Instance>(instance_entity)) dirty_element_state_meshes.insert(inst->Entity);
@@ -1272,7 +2065,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
                 if (new_count > 0) geometry_ranges.emplace_back(mesh_entity, br->Offset, br->Count);
             }
         }
-        if (!geometry_ranges.empty()) ApplySelectionStateUpdate(geometry_ranges, edit_mode);
+        if (!geometry_ranges.empty()) ApplySelectionStateUpdate(R, Stores, SceneEntity, MakeSelectionGpuCtx(), geometry_ranges, edit_mode);
         request(RenderRequest::Submit);
     }
     if (auto &tracker = reactive<changes::MeshMaterial>(R); !tracker.empty()) {
@@ -1326,7 +2119,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         request(RenderRequest::ReRecord);
         // Dispatch UpdateSelectionState for all meshes entering Edit mode (MeshSelectionBitsetRange assigned in SetInteractionMode).
         if (R.get<const SceneInteraction>(SceneEntity).Mode == InteractionMode::Edit) {
-            if (const auto edit_mode = R.get<const SceneEditMode>(SceneEntity).Value; edit_mode != Element::None) ApplySelectionStateUpdate(GetBitsetRangesForSelected(), edit_mode);
+            if (const auto edit_mode = R.get<const SceneEditMode>(SceneEntity).Value; edit_mode != Element::None) ApplySelectionStateUpdate(R, Stores, SceneEntity, MakeSelectionGpuCtx(), scene_apply::GetBitsetRangesForSelected(R), edit_mode);
         }
         for (const auto [_, instance, __] : R.view<const Instance, const SoundVertices>().each()) {
             dirty_element_state_meshes.insert(instance.Entity);
@@ -1390,15 +2183,16 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
     bool anim_advanced;
     { // Animation timeline tick
         auto &tl = R.get<AnimationTimeline>(SceneEntity);
+        auto &pf = R.get<PlaybackFrame>(SceneEntity).Value;
         if (tl.Playing) {
-            PlaybackFrame += ImGui::GetIO().DeltaTime * tl.Fps;
-            if (PlaybackFrame > float(tl.EndFrame)) PlaybackFrame = float(tl.StartFrame);
-            const int new_frame = int(std::floor(PlaybackFrame));
+            pf += ImGui::GetIO().DeltaTime * tl.Fps;
+            if (pf > float(tl.EndFrame)) pf = float(tl.StartFrame);
+            const int new_frame = int(std::floor(pf));
             if (new_frame != tl.CurrentFrame) R.patch<AnimationTimeline>(SceneEntity, [&](auto &t) { t.CurrentFrame = new_frame; });
         } else {
-            PlaybackFrame = float(tl.CurrentFrame);
+            pf = float(tl.CurrentFrame);
         }
-        anim_advanced = tl.CurrentFrame != LastEvaluatedFrame;
+        anim_advanced = tl.CurrentFrame != R.get<LastEvaluatedFrame>(SceneEntity).Value;
 
         if (!reactive<changes::PhysicsSimulationSettings>(R).empty()) {
             Physics->ApplySimulationSettings(R.get<const PhysicsSimulationSettings>(SceneEntity));
@@ -1420,7 +2214,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
                 Physics->InvalidateFromFrame(tl.CurrentFrame);
             }
             if (anim_advanced) {
-                const int from = LastEvaluatedFrame, to = tl.CurrentFrame;
+                const int from = R.get<LastEvaluatedFrame>(SceneEntity).Value, to = tl.CurrentFrame;
                 const float dt = tl.Fps > 0 ? 1.f / tl.Fps : 1.f / 60.f;
                 const auto baked = Physics->BakedThrough();
                 if (to == from + 1 && (!baked || uint32_t(to) > *baked)) {
@@ -1437,7 +2231,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
             }
         }
 
-        if (anim_advanced) LastEvaluatedFrame = tl.CurrentFrame;
+        if (anim_advanced) R.get<LastEvaluatedFrame>(SceneEntity).Value = tl.CurrentFrame;
         // Timeline frames are displayed 1-based, but animation time starts at t=0 on frame 1.
         const auto eval_seconds = float(std::max(0, tl.CurrentFrame - 1)) / tl.Fps;
         const auto clip_time = [eval_seconds](const auto &clip) {
@@ -1759,7 +2553,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
     }
     // If looking through a camera and it moved (animation or manual edit), snap the ViewCamera.
     // Must run before the SceneView handler so the ViewCamera replacement is picked up.
-    if (const auto camera = LookThroughCameraEntity(); camera != entt::null &&
+    if (const auto camera = scene_apply::LookThroughCameraEntity(R); camera != entt::null &&
         reactive<changes::WorldTransform>(R).contains(camera)) {
         const auto &wt = R.get<WorldTransform>(camera);
         R.replace<ViewCamera>(SceneEntity, ViewCamera{wt.P, wt.P + CameraForward(wt), R.get<Camera>(camera)});
@@ -1802,7 +2596,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         const float aspect = render_extent.width == 0 || render_extent.height == 0 ? 1.f : float(render_extent.width) / float(render_extent.height);
         // When looking through a scene camera, keep the ViewCamera's widened FOV in sync
         // with the current viewport aspect ratio (handles viewport resize).
-        if (const auto camera = LookThroughCameraEntity(); camera != entt::null) {
+        if (const auto camera = scene_apply::LookThroughCameraEntity(R); camera != entt::null) {
             R.get<ViewCamera>(SceneEntity).Data = WidenForLookThrough(R.get<Camera>(camera), aspect);
         }
         const auto &camera = R.get<const ViewCamera>(SceneEntity);
@@ -1869,7 +2663,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
             .UseRealTransmission = (is_pbr_mode && active_lighting.RealTransmission && Pipelines->Main.Transmission) ? 1u : 0u,
             .DebugChannel = is_pbr_mode ? settings.DebugChannel : DebugChannel::None,
         }));
-        SelectionStale = true;
+        R.emplace_or_replace<SelectionStale>(SceneEntity);
         request(RenderRequest::Submit);
     }
 
@@ -1911,11 +2705,11 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         }
         if (const auto *active = R.try_get<const MeshActiveElement>(mesh_entity)) active_handle = active->Handle;
         Stores.Meshes->UpdateElementStates(mesh, Element::Vertex, selected_vertices, selected_edges, active_edges, selected_faces, active_handle, excited_handle);
-        SelectionStale = true;
+        R.emplace_or_replace<SelectionStale>(SceneEntity);
     }
     if (!dirty_element_state_meshes.empty()) request(RenderRequest::Submit);
-    if (ElementStatesDirty) {
-        ElementStatesDirty = false;
+    if (R.all_of<ElementStatesDirty>(SceneEntity)) {
+        R.remove<ElementStatesDirty>(SceneEntity);
         request(RenderRequest::Submit);
     }
     for (auto &&[id, storage] : R.storage()) {
@@ -1926,48 +2720,6 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
 
     return render_request;
 }
-
-void Scene::DestroyArmatureData(entt::entity arm_obj_entity) {
-    auto &arm = R.get<ArmatureObject>(arm_obj_entity);
-    if (arm.JointEntity != entt::null) {
-        if (auto *mb = R.try_get<MeshBuffers>(arm.JointEntity)) Stores.Buffers->Release(*mb);
-        if (auto *ref = R.try_get<VertexStoreId>(arm.JointEntity)) Stores.Meshes->Release(ref->StoreId);
-        if (auto *models = R.try_get<ModelsBuffer>(arm.JointEntity)) Stores.Buffers->Instances.Free(models->InstanceRange);
-        R.remove<MeshBuffers, VertexStoreId, ModelsBuffer, PendingHide>(arm.JointEntity);
-        R.destroy(arm.JointEntity);
-        arm.JointEntity = entt::null;
-    }
-    if (auto *mb = R.try_get<MeshBuffers>(arm_obj_entity)) Stores.Buffers->Release(*mb);
-    if (auto *adj = R.try_get<BoneAdjacencyIndices>(arm_obj_entity)) Stores.Buffers->EdgeIndexBuffer.Release(adj->Indices);
-    if (auto *ref = R.try_get<VertexStoreId>(arm_obj_entity)) Stores.Meshes->Release(ref->StoreId);
-    if (auto *models = R.try_get<ModelsBuffer>(arm_obj_entity)) Stores.Buffers->Instances.Free(models->InstanceRange);
-    R.remove<MeshBuffers, VertexStoreId, ModelsBuffer, BoneAdjacencyIndices, PendingHide>(arm_obj_entity);
-}
-
-// Thin wrapper: domain logic in RebuildArmatureStructure, plus scene-level animation re-eval trigger.
-void Scene::RebuildBoneStructure(entt::entity arm_data_entity) {
-    RebuildArmatureStructure(R, arm_data_entity);
-    LastEvaluatedFrame = -1;
-}
-
-// Create a single bone ECS entity with model buffer reservation, joint spheres, and scene hierarchy.
-// Returns the new bone entity. Caller is responsible for selection.
-entt::entity Scene::CreateSingleBoneInstance(entt::entity arm_obj_entity, BoneId bone_id) {
-    auto &arm_obj = R.get<ArmatureObject>(arm_obj_entity);
-    const auto &armature = R.get<const Armature>(arm_obj.Entity);
-    const auto new_index = *armature.FindBoneIndex(bone_id);
-    const auto parent_index = armature.Bones[new_index].ParentIndex;
-    const auto parent_entity = parent_index == InvalidBoneIndex ? arm_obj_entity : arm_obj.BoneEntities[parent_index];
-    const auto bone_entity = ::CreateBoneEntity(R, SceneEntity, arm_obj_entity, armature, new_index, parent_entity);
-    if (arm_obj.JointEntity != null_entity && R.valid(arm_obj.JointEntity)) {
-        ::CreateBoneJoints(R, arm_obj_entity, bone_entity, arm_obj.JointEntity);
-    }
-    arm_obj.BoneEntities.emplace_back(bone_entity);
-    return bone_entity;
-}
-
-entt::entity Scene::CreateExtrasBufferEntity(std::span<const vec3> positions, std::span<const uint8_t> vertex_classes, std::span<const uint32_t> edge_indices) { return ::CreateExtrasBufferEntity(R, *Stores.Meshes, *Stores.Buffers, positions, vertex_classes, edge_indices); }
-entt::entity Scene::CreateExtrasObject(std::span<const vec3> positions, std::span<const uint8_t> vertex_classes, std::span<const uint32_t> edge_indices, ObjectType type, ObjectCreateInfo info, const std::string &default_name) { return ::CreateExtrasObject(R, *Stores.Meshes, *Stores.Buffers, SceneEntity, positions, vertex_classes, edge_indices, type, std::move(info), default_name); }
 
 void Scene::EnsureWireframes() {
     const auto &settings = R.get<const SceneSettings>(SceneEntity);
@@ -1984,7 +2736,7 @@ void Scene::EnsureWireframes() {
     auto ensure_buffer = [&](ColliderShapeBuffer kind, auto generator) {
         if (R.valid(buf(kind))) return;
         auto mesh = generator();
-        if (!mesh.Positions.empty()) buf(kind) = CreateExtrasBufferEntity(mesh.Positions, {}, mesh.EdgeIndices);
+        if (!mesh.Positions.empty()) buf(kind) = ::CreateExtrasBufferEntity(R, *Stores.Meshes, *Stores.Buffers, mesh.Positions, {}, mesh.EdgeIndices);
     };
     ensure_buffer(Box, physics_debug::UnitBox);
     ensure_buffer(Sphere, physics_debug::UnitSphere);
@@ -2012,7 +2764,7 @@ void Scene::EnsureWireframes() {
         for (auto e : entities) {
             const auto &cw = R.get<const ColliderWireframe>(e);
             for (uint8_t i = 0; i < cw.Count; ++i) {
-                if (R.valid(cw.Instances[i])) Destroy(cw.Instances[i]);
+                if (R.valid(cw.Instances[i])) Destroy(R, Stores, SceneEntity, cw.Instances[i]);
             }
             R.remove<ColliderWireframe>(e);
         }
@@ -2080,7 +2832,7 @@ void Scene::EnsureWireframes() {
         if (!show_bbox || !R.all_of<Selected>(entity)) bbox_stale.push_back(entity);
     }
     for (auto e : bbox_stale) {
-        if (auto &bw = R.get<BBoxWireframe>(e); R.valid(bw.Instance)) Destroy(bw.Instance);
+        if (auto &bw = R.get<BBoxWireframe>(e); R.valid(bw.Instance)) Destroy(R, Stores, SceneEntity, bw.Instance);
         R.remove<BBoxWireframe>(e);
     }
 
@@ -2108,7 +2860,7 @@ void Scene::EnsureWireframes() {
         if (!mb || mb->Vertices.Count != tm->Positions.size()) tet_stale.push_back(entity);
     }
     for (auto e : tet_stale) {
-        if (auto &tw = R.get<TetWireframe>(e); R.valid(tw.Instance)) Destroy(tw.Instance);
+        if (auto &tw = R.get<TetWireframe>(e); R.valid(tw.Instance)) Destroy(R, Stores, SceneEntity, tw.Instance);
         R.remove<TetWireframe>(e);
     }
 
@@ -2121,7 +2873,7 @@ void Scene::EnsureWireframes() {
             const auto *tm = R.try_get<const TetMeshData>(instance->Entity);
             if (!tm || tm->Positions.empty()) continue;
 
-            const auto tet_buf = CreateExtrasBufferEntity(tm->Positions, {}, tm->EdgeIndices);
+            const auto tet_buf = ::CreateExtrasBufferEntity(R, *Stores.Meshes, *Stores.Buffers, tm->Positions, {}, tm->EdgeIndices);
             R.emplace<TetWireframe>(entity, make_instance(tet_buf, entity));
         }
     }
@@ -2238,109 +2990,6 @@ void Scene::UpdateWireframeTransforms() {
     }
 }
 
-std::pair<entt::entity, entt::entity> Scene::ImportMesh(const std::filesystem::path &path, MeshInstanceCreateInfo info) {
-    auto result = Stores.Meshes->LoadMesh(path);
-    if (!result) throw std::runtime_error(result.error());
-
-    if (!result->Materials.empty()) {
-        auto &texture_store = *Stores.Textures;
-        auto obj_batch = BeginTextureUploadBatch(Vk.Device, *CommandPool, Stores.Buffers->Ctx);
-        std::unordered_map<std::string, uint32_t> texture_slot_cache;
-        const auto resolve_texture_slot =
-            [&](
-                const std::optional<std::filesystem::path> &source_texture_path,
-                TextureColorSpace color_space,
-                std::string_view material_name, std::string_view texture_label
-            ) -> uint32_t {
-            if (!source_texture_path) return InvalidSlot;
-            auto texture_path = *source_texture_path;
-            if (texture_path.is_relative()) texture_path = path.parent_path() / texture_path;
-            texture_path = texture_path.lexically_normal();
-
-            const auto cache_key = std::format("{}|{}", texture_path.generic_string(), color_space == TextureColorSpace::Srgb ? "sRGB" : "Linear");
-            if (const auto it = texture_slot_cache.find(cache_key); it != texture_slot_cache.end()) return it->second;
-
-            std::string encoded;
-            try {
-                encoded = File::Read(texture_path);
-            } catch (const std::exception &e) {
-                std::cerr << std::format(
-                    "Warning: Failed to read OBJ texture '{}' for material '{}' ({}) in '{}': {}\n",
-                    texture_path.string(), material_name, texture_label, path.string(), e.what()
-                );
-                return InvalidSlot;
-            }
-
-            auto texture = CreateTextureEntryFromEncoded(
-                Vk,
-                obj_batch,
-                *Stores.Slots,
-                std::as_bytes(std::span{encoded}),
-                texture_path.filename().string(),
-                std::format("{} ({})", texture_path.filename().string(), color_space == TextureColorSpace::Srgb ? "sRGB" : "Linear"),
-                color_space,
-                vk::SamplerAddressMode::eRepeat,
-                vk::SamplerAddressMode::eRepeat,
-                SamplerConfig{}
-            );
-            if (!texture) {
-                std::cerr << std::format(
-                    "Warning: Failed to decode OBJ texture '{}' for material '{}' ({}) in '{}': {}\n",
-                    texture_path.string(), material_name, texture_label, path.string(), texture.error()
-                );
-                return InvalidSlot;
-            }
-
-            const auto sampler_slot = texture->SamplerSlot;
-            texture_store.Textures.emplace_back(std::move(*texture));
-            texture_slot_cache.emplace(cache_key, sampler_slot);
-            return sampler_slot;
-        };
-
-        std::vector<uint32_t> scene_material_indices(result->Materials.size(), 0u);
-        std::vector<std::string> names;
-        names.reserve(result->Materials.size());
-        Stores.Buffers->Materials.Reserve(Stores.Buffers->Materials.Count() + result->Materials.size());
-        for (uint32_t material_index = 0; material_index < result->Materials.size(); ++material_index) {
-            const auto &source = result->Materials[material_index];
-            const auto material_name = source.Name.empty() ? std::format("Material{}", material_index) : source.Name;
-            const auto base_color_texture = resolve_texture_slot(source.BaseColorTexturePath, TextureColorSpace::Srgb, material_name, "baseColor");
-            const auto normal_texture = resolve_texture_slot(source.NormalTexturePath, TextureColorSpace::Linear, material_name, "normal");
-            scene_material_indices[material_index] = Stores.Buffers->Materials.Append({
-                .BaseColorFactor = source.BaseColorFactor,
-                .MetallicFactor = std::clamp(source.MetallicFactor, 0.f, 1.f),
-                .RoughnessFactor = std::clamp(source.RoughnessFactor, 0.f, 1.f),
-                .AlphaMode = (source.BaseColorFactor.w < 1.f || source.HasAlphaTexture) ?
-                    MaterialAlphaMode::Blend :
-                    MaterialAlphaMode::Opaque,
-                .BaseColorTexture = {.Slot = base_color_texture != InvalidSlot ? base_color_texture : Stores.Textures->WhiteTextureSlot},
-                .NormalTexture = {.Slot = normal_texture},
-            });
-            names.emplace_back(material_name);
-        }
-        SubmitTextureUploadBatch(obj_batch, Vk.Queue, *OneShotFence, Vk.Device);
-
-        R.patch<MaterialStore>(
-            SceneEntity,
-            [&](auto &material_store) {
-                material_store.Names.insert(material_store.Names.end(), std::make_move_iterator(names.begin()), std::make_move_iterator(names.end()));
-            }
-        );
-
-        if (auto primitive_materials = Stores.Meshes->GetPrimitiveMaterialIndices(result->Mesh.GetStoreId()); !primitive_materials.empty()) {
-            const auto fallback = scene_material_indices.front();
-            for (auto &primitive_material : primitive_materials) {
-                primitive_material = primitive_material < scene_material_indices.size() ? scene_material_indices[primitive_material] : fallback;
-            }
-        }
-    }
-
-    const auto entities = ::AddMesh(R, *Stores.Meshes, SceneEntity, std::move(result->Mesh), std::move(info));
-    R.emplace<Path>(entities.first, path);
-    R.emplace<SmoothShading>(entities.first);
-    return entities;
-}
-
 namespace {
 template<typename...> struct TypeList {};
 
@@ -2359,18 +3008,7 @@ using UpdateableComponents = TypeList<
 using TagComponents = TypeList<SmoothShading, SubmitDirty, LightWireframeDirty, TriggerTag>;
 using NamedPhysicsComponents = TypeList<PhysicsMaterial, CollisionSystem, CollisionFilter, PhysicsJointDef>;
 
-bool IsBoneEditMode(const entt::registry &R, entt::entity scene_entity) {
-    if (R.get<const SceneInteraction>(scene_entity).Mode != InteractionMode::Edit) return false;
-    return FindArmatureObject(R, FindActiveEntity(R)) != entt::null;
-}
-bool AllSelectedAreMeshes(const entt::registry &R) {
-    for (const auto [e, ok] : R.view<const Selected, const ObjectKind>().each()) {
-        if (ok.Value != ObjectType::Mesh) return false;
-    }
-    return true;
-}
-
-entt::entity DuplicateOne(entt::registry &R, SceneStores &stores, entt::entity scene_entity, entt::entity e, bool &was_mesh_duplicate) {
+entt::entity DuplicateOne(entt::registry &R, const SceneStores &stores, entt::entity scene_entity, entt::entity e, bool &was_mesh_duplicate) {
     const ObjectCreateInfo create_info{
         .Name = std::format("{}_copy", GetName(R, e)),
         // Duplicate is created at root, so its local must match source's world.
@@ -2423,7 +3061,7 @@ entt::entity DuplicateOne(entt::registry &R, SceneStores &stores, entt::entity s
     return e_new.second;
 }
 
-entt::entity DuplicateLinkedOne(entt::registry &R, SceneStores &stores, entt::entity scene_entity, entt::entity e) {
+entt::entity DuplicateLinkedOne(entt::registry &R, const SceneStores &stores, entt::entity scene_entity, entt::entity e) {
     if (R.all_of<BoneSubPartOf>(e)) return entt::null;
     if (!R.all_of<Instance>(e)) {
         const auto select_behavior = R.all_of<Selected>(e) ? MeshInstanceCreateInfo::SelectBehavior::Additive : MeshInstanceCreateInfo::SelectBehavior::None;
@@ -2468,15 +3106,6 @@ entt::entity DuplicateLinkedOne(entt::registry &R, SceneStores &stores, entt::en
 }
 } // namespace
 
-bool Scene::CanDuplicate() const {
-    if (R.get<const SceneInteraction>(SceneEntity).Mode == InteractionMode::Pose) return false;
-    if (IsBoneEditMode(R, SceneEntity)) return !R.view<BoneSelection>().empty();
-    return !R.storage<Selected>().empty();
-}
-
-bool Scene::CanDuplicateLinked() const { return CanDuplicate() && !IsBoneEditMode(R, SceneEntity); }
-bool Scene::CanDelete() const { return CanDuplicate(); }
-
 void Scene::Delete(std::optional<action::Action> &out) {
     if (IsBoneEditMode(R, SceneEntity)) out = action::bone::DeleteSelected{};
     else out = action::object::Delete{};
@@ -2486,159 +3115,22 @@ void Scene::Duplicate(std::optional<action::Action> &out) {
     else out = action::object::Duplicate{};
 }
 
-bool Scene::SetInteractionMode(InteractionMode mode) {
-    if (R.get<const SceneInteraction>(SceneEntity).Mode == mode) return false;
-
-    const auto active_entity = FindActiveEntity(R);
-    const auto active_arm = active_entity != entt::null ? FindArmatureObject(R, active_entity) : entt::null;
-    const bool active_is_armature = active_arm != entt::null;
-    if (mode == InteractionMode::Edit && !AllSelectedAreMeshes(R) && !active_is_armature) return false;
-    if (mode == InteractionMode::Pose && !active_is_armature) return false;
-
-    if (R.get<const SceneInteraction>(SceneEntity).Mode == InteractionMode::Edit) {
-        // Keep bitset ranges + bits so element selections survive toggling Edit mode off and back on.
-        for (const auto [mesh_entity, br, mesh] : R.view<const MeshSelectionBitsetRange, const Mesh>().each()) {
-            if (br.Count > 0) Stores.Meshes->UpdateElementStates(mesh, Element::None, {}, {}, {}, {}, std::nullopt);
-        }
-        ElementStatesDirty = true;
-    }
-    if (mode == InteractionMode::Edit && !active_is_armature) {
-        // Only assign ranges for selected meshes missing one; existing ranges preserve remembered selection.
-        if (const auto edit_element = R.get<const SceneEditMode>(SceneEntity).Value; edit_element != Element::None) {
-            uint32_t next_offset = 0;
-            for (const auto [_, br] : R.view<const MeshSelectionBitsetRange>().each()) {
-                next_offset = std::max(next_offset, (br.Offset + br.Count + 31) / 32 * 32);
-            }
-            auto *bits = Stores.Buffers->SelectionBitset.Data();
-            for (const auto mesh_entity : scene_selection::GetSelectedMeshEntities(R)) {
-                if (R.all_of<MeshSelectionBitsetRange>(mesh_entity)) continue;
-                const auto &mesh = R.get<const Mesh>(mesh_entity);
-                const uint32_t count = scene_selection::GetElementCount(mesh, edit_element);
-                if (count == 0) continue;
-
-                scene_selection::SelectAll(bits, next_offset, count);
-                R.emplace<MeshSelectionBitsetRange>(mesh_entity, next_offset, count);
-                next_offset = (next_offset + count + 31) / 32 * 32;
-            }
-        }
-    }
-    R.patch<SceneInteraction>(SceneEntity, [mode](auto &s) { s.Mode = mode; });
-    R.patch<ViewportTheme>(SceneEntity, [](auto &) {});
-    return true;
-}
-
-entt::entity Scene::LookThroughCameraEntity() const {
-    auto view = R.view<LookingThrough>();
-    return view.empty() ? entt::null : *view.begin();
-}
-
-void Scene::SetLookThrough(entt::entity target) {
-    const auto previous = LookThroughCameraEntity();
-    if (previous == target) return;
-    // Preserve the saved view across camera switches; only capture fresh on first entry.
-    auto saved = previous != entt::null ? R.get<LookingThrough>(previous).SavedViewCamera : R.get<ViewCamera>(SceneEntity);
-    if (previous != entt::null) R.remove<LookingThrough>(previous);
-    R.emplace<LookingThrough>(target, std::move(saved));
-}
-
-void Scene::ExitLookThrough() {
-    const auto camera = LookThroughCameraEntity();
-    if (camera == entt::null) return;
-    R.replace<ViewCamera>(SceneEntity, R.get<LookingThrough>(camera).SavedViewCamera);
-    R.remove<LookingThrough>(camera);
-}
-
-void Scene::JumpToStartFrame() {
-    if (Physics->HasBodies()) Physics->Rebuild(R);
-    const auto frame = R.get<AnimationTimeline>(SceneEntity).StartFrame;
-    R.patch<AnimationTimeline>(SceneEntity, [&](auto &tl) { tl.CurrentFrame = frame; });
-    PlaybackFrame = frame;
-}
-
-void Scene::ClearMeshes() {
-    for (const auto e : R.view<Instance>(entt::exclude<SubElementOf>) | to<std::vector>()) Destroy(e);
-}
-
-void Scene::NewDefaultScene() {
-    ClearMeshes();
-
-    constexpr PrimitiveShape default_shape{primitive::Cuboid{}};
-    const auto [mesh_entity, _] = ::AddMesh(R, *Stores.Meshes, SceneEntity, Stores.Meshes->CreateMesh(primitive::CreateMesh(default_shape), {}, {}), MeshInstanceCreateInfo{.Name = ToString(default_shape)});
-    R.emplace<PrimitiveShape>(mesh_entity, default_shape);
-
-    // startup.blend data, in Blender's frame (Z-up, -Y forward)
-    constexpr vec3 LightLoc{4.07625, 1.00545, 5.90386}, CameraLoc{7.358891, -6.925791, 4.958309}, CameraEulerXYZ{1.109319, 0, 0.815801};
-    constexpr float Lens{50}, SensorX{36}, RenderW{16}, RenderH{9};
-    // Blender Z-up -> MeshEditor Y-up is a -90° rotation about +X: (x, y, z) -> (x, z, -y)
-    const auto to_y_up_pos = [](vec3 v) { return vec3{v.x, v.z, -v.y}; };
-    const quat to_y_up_rot = glm::angleAxis(-float(M_PI_2), vec3{1, 0, 0});
-    // Matches Blender glTF exporter (cameras.py / yvof_blender_to_gltf): horizontal fit since render aspect > sensor aspect
-    const float hfov = 2 * std::atan(SensorX / (2 * Lens));
-    const float yfov = 2 * std::atan(std::tan(hfov * 0.5) * RenderH / RenderW);
-
-    ::AddLight(R, *Stores.Meshes, *Stores.Buffers, SceneEntity, ObjectCreateInfo{.Name = "Light", .Transform = {.P = to_y_up_pos(LightLoc)}, .Select = MeshInstanceCreateInfo::SelectBehavior::None});
-    ::AddCamera(R, *Stores.Meshes, *Stores.Buffers, SceneEntity, ObjectCreateInfo{.Name = "Camera", .Transform = {.P = to_y_up_pos(CameraLoc), .R = to_y_up_rot * quat{CameraEulerXYZ}}, .Select = MeshInstanceCreateInfo::SelectBehavior::None}, Perspective{.FieldOfViewRad = yfov, .FarClip = 1000, .NearClip = DefaultPerspectiveNearClip});
-}
-
-void Scene::SetEditMode(Element mode) {
-    const auto current_mode = R.get<const SceneEditMode>(SceneEntity).Value;
-    if (current_mode == mode) return;
-
-    auto *bits = Stores.Buffers->SelectionBitset.Data();
-
-    struct PendingConvert {
-        entt::entity MeshEntity;
-        uint32_t NewCount;
-        std::vector<uint32_t> FromHandles;
+namespace scene_apply {
+void Apply(const ApplyContext &ctx, const action::Action &action) {
+    auto &R = ctx.R;
+    auto &Stores = ctx.Stores;
+    const auto SceneEntity = ctx.SceneEntity;
+    auto &Vk = ctx.Vk;
+    auto *Pipelines = &ctx.Pipelines;
+    auto *Physics = &ctx.Physics;
+    const auto CommandPool = ctx.CommandPool;
+    const auto ClickCommandBuffer = ctx.ClickCommandBuffer;
+    const auto OneShotFence = ctx.OneShotFence;
+    const auto SelectionReadySemaphore = ctx.SelectionReadySemaphore;
+    auto &InteractionModes = ctx.InteractionModes;
+    const auto MakeSelectionGpuCtx = [&] {
+        return SelectionGpuCtx{ClickCommandBuffer, OneShotFence, Vk.Queue, Vk.Device, *Pipelines, ctx.SelectionBitsetSlot, ctx.HeadImageSlot, ctx.SelectionCounterSlot, ctx.ElementPickCandidatesSlot, SelectionReadySemaphore, ctx.SelectionXRay};
     };
-    std::vector<PendingConvert> pending;
-    std::vector<ElementRange> old_ranges;
-    uint32_t old_max_end = 0;
-    for (auto [mesh_entity, br, mesh] : R.view<MeshSelectionBitsetRange, const Mesh>().each()) {
-        const uint32_t old_count = br.Count, new_count = scene_selection::GetElementCount(mesh, mode);
-        auto from_handles = scene_selection::ScanBitsetRange(bits, br.Offset, old_count);
-        if (old_count > 0) old_ranges.emplace_back(mesh_entity, br.Offset, old_count);
-        old_max_end = std::max(old_max_end, br.Offset + old_count);
-        R.remove<MeshActiveElement>(mesh_entity);
-        pending.emplace_back(PendingConvert{mesh_entity, new_count, std::move(from_handles)});
-    }
-
-    // Clear the superset of old and new packed bit ranges once, to avoid stale/overlap bits.
-    uint32_t new_max_end = 0;
-    for (const auto &p : pending) new_max_end += (p.NewCount + 31) / 32 * 32;
-    const uint32_t clear_words = (std::max(old_max_end, new_max_end) + 31) / 32;
-    if (clear_words > 0) memset(bits, 0, clear_words * sizeof(uint32_t));
-
-    if (!old_ranges.empty()) {
-        DispatchUpdateSelectionStates(old_ranges, current_mode);
-        // Face mode also derives edge states via CPU; clear them when exiting face-select.
-        if (current_mode == Element::Face) {
-            for (const auto &p : pending) Stores.Meshes->UpdateEdgeStatesFromFaces(R.get<const Mesh>(p.MeshEntity), {}, {});
-        }
-    }
-
-    std::vector<ElementRange> new_ranges;
-    uint32_t next_offset = 0;
-    for (const auto &p : pending) {
-        auto &br = R.get<MeshSelectionBitsetRange>(p.MeshEntity);
-        br.Offset = next_offset;
-        br.Count = p.NewCount;
-        const auto &mesh = R.get<const Mesh>(p.MeshEntity);
-        for (const uint32_t h : scene_selection::ConvertSelectionElement(p.FromHandles, mesh, current_mode, mode)) {
-            if (h >= p.NewCount) continue;
-            const uint32_t gbit = next_offset + h;
-            bits[gbit >> 5] |= 1u << (gbit & 31u);
-        }
-        if (p.NewCount > 0) new_ranges.emplace_back(p.MeshEntity, next_offset, p.NewCount);
-        next_offset = (next_offset + p.NewCount + 31) / 32 * 32;
-    }
-
-    R.patch<SceneEditMode>(SceneEntity, [mode](auto &edit_mode) { edit_mode.Value = mode; });
-    if (!new_ranges.empty()) ApplySelectionStateUpdate(new_ranges, mode);
-    else if (!old_ranges.empty()) ElementStatesDirty = true;
-}
-
-void Scene::Apply(const action::Action &action) {
     auto patch_camera_stopped = [&](auto &&fn) {
         R.patch<ViewCamera>(SceneEntity, [&](auto &c) { fn(c); c.StopMoving(); });
     };
@@ -2700,7 +3192,7 @@ void Scene::Apply(const action::Action &action) {
                 const bool bone_mode = interaction_mode == InteractionMode::Pose || (interaction_mode == InteractionMode::Edit && active_is_armature);
                 AdditiveBoxSelectBaseline baseline;
                 if (interaction_mode == InteractionMode::Edit && !active_is_armature) {
-                    if (const auto ranges = GetBitsetRangesForSelected(); !ranges.empty()) {
+                    if (const auto ranges = scene_apply::GetBitsetRangesForSelected(R); !ranges.empty()) {
                         const auto element_count = std::ranges::fold_left(ranges, uint32_t{0}, [](uint32_t total, const auto &range) { return std::max(total, range.Offset + range.Count); });
                         const uint32_t bitset_words = (element_count + 31) / 32;
                         baseline.ElementBitset.resize(bitset_words);
@@ -2730,7 +3222,7 @@ void Scene::Apply(const action::Action &action) {
             [&](const action::selection::ApplyEditElementClick &a) {
                 end_box_select_interaction();
                 const auto edit_mode = R.get<const SceneEditMode>(SceneEntity).Value;
-                const auto ranges = GetBitsetRangesForSelected();
+                const auto ranges = scene_apply::GetBitsetRangesForSelected(R);
                 auto *bits = Stores.Buffers->SelectionBitset.Data();
                 if (!a.Toggle) {
                     for (const auto &range : ranges) {
@@ -2740,7 +3232,7 @@ void Scene::Apply(const action::Action &action) {
                         R.remove<MeshActiveElement>(range.MeshEntity);
                     }
                 }
-                const auto hit = RunElementPickFromRanges(ranges, edit_mode, a.MousePx);
+                const auto hit = RunElementPickFromRanges(R, Stores, SceneEntity, MakeSelectionGpuCtx(), ranges, edit_mode, a.MousePx);
                 if (hit) {
                     const auto [mesh_entity, element_index] = *hit;
                     const auto *current_active = R.try_get<MeshActiveElement>(mesh_entity);
@@ -2756,7 +3248,7 @@ void Scene::Apply(const action::Action &action) {
                 } else if (!a.Toggle) {
                     for (const auto &range : ranges) R.remove<MeshActiveElement>(range.MeshEntity);
                 }
-                if (!ranges.empty() && (!a.Toggle || hit)) SelectionBitsDirty = true;
+                if (!ranges.empty() && (!a.Toggle || hit)) R.emplace_or_replace<SelectionBitsDirty>(SceneEntity);
             },
             [&](const action::selection::ApplyTreeSelection &a) {
                 using Clear = action::selection::ApplyTreeSelection::ClearKind;
@@ -2798,11 +3290,11 @@ void Scene::Apply(const action::Action &action) {
                 );
             },
             [&](action::object::Delete) {
-                if (!CanDelete()) return;
-                for (const auto e : R.view<Selected>(entt::exclude<SubElementOf>) | to<std::vector>()) Destroy(e);
+                if (!scene_apply::CanDelete(R, SceneEntity)) return;
+                for (const auto e : R.view<Selected>(entt::exclude<SubElementOf>) | to<std::vector>()) Destroy(R, Stores, SceneEntity, e);
             },
             [&](action::object::Duplicate) {
-                if (!CanDuplicate()) return;
+                if (!scene_apply::CanDuplicate(R, SceneEntity)) return;
                 const Timer timer{"Duplicate"};
                 const auto entities = R.view<Selected>() | to<std::vector>();
 
@@ -2824,11 +3316,11 @@ void Scene::Apply(const action::Action &action) {
                     }
                     R.remove<Selected>(e);
                 }
-                if (any_mesh_duplicate) ProfileNextProcessComponentEvents = true;
-                StartScreenTransform = TransformGizmo::TransformType::Translate;
+                if (any_mesh_duplicate) R.emplace_or_replace<ProfileNextProcessComponentEvents>(SceneEntity);
+                R.get<StartScreenTransform>(SceneEntity).Value = TransformGizmo::TransformType::Translate;
             },
             [&](action::object::DuplicateLinked) {
-                if (!CanDuplicateLinked()) return;
+                if (!scene_apply::CanDuplicateLinked(R, SceneEntity)) return;
                 const Timer timer{"DuplicateLinked"};
                 for (const auto e : R.view<Selected>() | to<std::vector>()) {
                     const auto new_e = DuplicateLinkedOne(R, Stores, SceneEntity, e);
@@ -2838,7 +3330,7 @@ void Scene::Apply(const action::Action &action) {
                     }
                     R.remove<Selected>(e);
                 }
-                StartScreenTransform = TransformGizmo::TransformType::Translate;
+                R.get<StartScreenTransform>(SceneEntity).Value = TransformGizmo::TransformType::Translate;
             },
             [&](action::object::ToggleHidden) {
                 for (const auto e : R.view<Selected>()) {
@@ -2878,9 +3370,9 @@ void Scene::Apply(const action::Action &action) {
                 const auto [mesh_entity, _] = ::AddMesh(R, *Stores.Meshes, SceneEntity, Stores.Meshes->CreateMesh(primitive::CreateMesh(a.Shape), {}, {}), *a.Info);
                 R.emplace<PrimitiveShape>(mesh_entity, a.Shape);
             },
-            [&](const action::object::ImportMesh &a) { ImportMesh(a.Path, *a.Info); },
+            [&](const action::object::ImportMesh &a) { ImportMesh(R, Stores, SceneEntity, Vk, CommandPool, OneShotFence, a.Path, *a.Info); },
             [&](const action::object::ReplaceMesh &a) {
-                const auto e = GetActiveMeshEntity();
+                const auto e = scene_apply::GetActiveMeshEntity(R);
                 if (e == entt::null || scene_selection::HasScaleLockedInstance(R, e)) return;
 
                 if (auto *mb = R.try_get<MeshBuffers>(e)) Stores.Buffers->Release(*mb);
@@ -2892,7 +3384,7 @@ void Scene::Apply(const action::Action &action) {
                 R.emplace<Mesh>(e, std::move(new_mesh));
                 R.emplace_or_replace<MeshGeometryDirty>(e);
             },
-            [&](action::project::NewDefaultScene) { NewDefaultScene(); },
+            [&](action::project::NewDefaultScene) { NewDefaultScene(R, Stores, SceneEntity); },
             [&](action::bone::Add) {
                 const auto active_entity = FindActiveEntity(R);
                 const auto arm_obj_entity = FindArmatureObject(R, active_entity);
@@ -2901,9 +3393,9 @@ void Scene::Apply(const action::Action &action) {
                 auto &armature = R.get<Armature>(R.get<ArmatureObject>(arm_obj_entity).Entity);
                 const auto &arm_wt = R.get<WorldTransform>(arm_obj_entity);
                 const auto new_id = armature.AddBone("Bone", {}, {.P = (glm::conjugate(glm::normalize(arm_wt.R)) * -arm_wt.P) / arm_wt.S});
-                RebuildBoneStructure(R.get<ArmatureObject>(arm_obj_entity).Entity);
+                RebuildBoneStructure(R, SceneEntity, R.get<ArmatureObject>(arm_obj_entity).Entity);
 
-                const auto bone_entity = CreateSingleBoneInstance(arm_obj_entity, new_id);
+                const auto bone_entity = CreateSingleBoneInstance(R, SceneEntity, arm_obj_entity, new_id);
                 SelectBone(R, bone_entity);
                 R.emplace_or_replace<BoneSelection>(bone_entity, false, true, false);
             },
@@ -2916,11 +3408,11 @@ void Scene::Apply(const action::Action &action) {
                 auto result = ExtrudeBones(R, armature, arm_obj_entity);
                 if (result.NewBoneIds.empty()) return;
 
-                RebuildBoneStructure(arm_obj.Entity);
+                RebuildBoneStructure(R, SceneEntity, arm_obj.Entity);
                 R.clear<BoneSelection, BoneActive>();
 
                 for (const auto id : result.NewBoneIds) {
-                    const auto bone_entity = CreateSingleBoneInstance(arm_obj_entity, id);
+                    const auto bone_entity = CreateSingleBoneInstance(R, SceneEntity, arm_obj_entity, id);
                     R.replace<BoneDisplayScale>(bone_entity, 0.f);
                     R.emplace<BoneSelection>(bone_entity, false, true, false);
                     R.emplace_or_replace<BoneActive>(bone_entity);
@@ -2937,18 +3429,18 @@ void Scene::Apply(const action::Action &action) {
                 auto result = DuplicateBones(R, armature, arm_obj_entity);
                 if (result.Duplicated.empty()) return;
 
-                RebuildBoneStructure(R.get<ArmatureObject>(arm_obj_entity).Entity);
+                RebuildBoneStructure(R, SceneEntity, R.get<ArmatureObject>(arm_obj_entity).Entity);
                 R.clear<BoneSelection, BoneActive>();
 
                 entt::entity last_bone{};
                 for (const auto &[orig_entity, new_id] : result.Duplicated) {
-                    last_bone = CreateSingleBoneInstance(arm_obj_entity, new_id);
+                    last_bone = CreateSingleBoneInstance(R, SceneEntity, arm_obj_entity, new_id);
                     R.replace<BoneDisplayScale>(last_bone, R.get<const BoneDisplayScale>(orig_entity).Value);
                     R.emplace<BoneSelection>(last_bone);
                 }
                 R.emplace<BoneActive>(last_bone);
 
-                StartScreenTransform = TransformGizmo::TransformType::Translate;
+                R.get<StartScreenTransform>(SceneEntity).Value = TransformGizmo::TransformType::Translate;
             },
             [&](const action::bone::ClearSelectedTransforms &a) { ClearSelectedBoneTransforms(R, a.Position, a.Rotation, a.Scale); },
             [&](action::bone::DeleteSelected) {
@@ -2998,23 +3490,25 @@ void Scene::Apply(const action::Action &action) {
                     arm_obj.BoneEntities.erase(arm_obj.BoneEntities.begin() + idx);
                 }
 
-                RebuildBoneStructure(arm_obj.Entity);
+                RebuildBoneStructure(R, SceneEntity, arm_obj.Entity);
 
                 for (uint32_t i = 0; i < arm_obj.BoneEntities.size(); ++i) R.get<BoneIndex>(arm_obj.BoneEntities[i]).Index = i;
 
-                if (arm_obj.BoneEntities.empty()) DestroyArmatureData(arm_obj_entity);
+                if (arm_obj.BoneEntities.empty()) DestroyArmatureData(R, Stores, arm_obj_entity);
                 ::Select(R, arm_obj_entity);
             },
-            [&](const action::scene::SetInteractionMode &a) { SetInteractionMode(a.Mode); },
+            [&](const action::scene::SetInteractionMode &a) { SetInteractionMode(R, Stores, SceneEntity, a.Mode); },
             [&](action::scene::CycleInteractionMode) {
                 const auto interaction_mode = R.get<const SceneInteraction>(SceneEntity).Mode;
                 auto it = find(InteractionModes, interaction_mode);
                 for (size_t i = 0; i < InteractionModes.size(); ++i) {
                     if (++it == InteractionModes.end()) it = InteractionModes.begin();
-                    if (SetInteractionMode(*it)) break;
+                    if (SetInteractionMode(R, Stores, SceneEntity, *it)) break;
                 }
             },
-            [&](const action::scene::SetEditMode &a) { SetEditMode(a.Mode); },
+            [&](const action::scene::SetEditMode &a) {
+                SetEditMode(R, Stores, SceneEntity, MakeSelectionGpuCtx(), a.Mode);
+            },
             [&](action::scene::SelectAll) {
                 const auto interaction_mode = R.get<const SceneInteraction>(SceneEntity).Mode;
                 const auto active_entity = FindActiveEntity(R);
@@ -3027,10 +3521,10 @@ void Scene::Apply(const action::Action &action) {
                     for (const auto bone_entity : arm_obj.BoneEntities) R.emplace<BoneSelection>(bone_entity);
                     if (!arm_obj.BoneEntities.empty()) R.emplace<BoneActive>(arm_obj.BoneEntities.back());
                 } else if (interaction_mode == InteractionMode::Edit) {
-                    const auto ranges = GetBitsetRangesForSelected();
+                    const auto ranges = scene_apply::GetBitsetRangesForSelected(R);
                     auto *bits = Stores.Buffers->SelectionBitset.Data();
                     for (const auto &range : ranges) scene_selection::SelectAll(bits, range.Offset, range.Count);
-                    if (!ranges.empty()) SelectionBitsDirty = true;
+                    if (!ranges.empty()) R.emplace_or_replace<SelectionBitsDirty>(SceneEntity);
                 } else if (interaction_mode == InteractionMode::Object) {
                     R.clear<Active, Selected>();
                     entt::entity last{entt::null};
@@ -3044,18 +3538,18 @@ void Scene::Apply(const action::Action &action) {
             [&](action::scene::EnterLookThroughCamera) {
                 const auto e = FindActiveEntity(R);
                 if (e == entt::null) return;
-                SetLookThrough(e);
+                SetLookThrough(R, SceneEntity, e);
                 const auto &wt = R.get<WorldTransform>(e);
                 const vec3 fwd = CameraForward(wt), away = -fwd;
                 R.patch<ViewCamera>(SceneEntity, [&](auto &vc) { vc.AnimateTo(wt.P + fwd, {std::atan2(away.z, away.x), std::asin(away.y)}, 1.f); });
             },
-            [&](action::scene::ExitLookThroughCamera) { ExitLookThrough(); },
+            [&](action::scene::ExitLookThroughCamera) { ExitLookThrough(R, SceneEntity); },
             [&](const action::scene::OrbitViewCamera &a) {
-                ExitLookThrough();
+                ExitLookThrough(R, SceneEntity);
                 R.patch<ViewCamera>(SceneEntity, [&](auto &camera) { camera.RotateBy(a.DeltaRad); });
             },
             [&](const action::scene::ZoomViewCamera &a) {
-                ExitLookThrough();
+                ExitLookThrough(R, SceneEntity);
                 R.patch<ViewCamera>(SceneEntity, [&](auto &camera) { camera.ZoomBy(a.Factor); });
             },
             [&](const action::scene::ApplyExciteImpact &a) {
@@ -3063,7 +3557,7 @@ void Scene::Apply(const action::Action &action) {
                 R.emplace_or_replace<VertexForce>(a.InstanceEntity, a.VertexIndex, 1.f);
             },
             [&](action::scene::ClearExciteImpacts) { R.clear<VertexForce>(); },
-            [&](const action::scene::SetStudioEnvironment &a) { SetStudioEnvironment(a.Index); poke_active_lighting(); },
+            [&](const action::scene::SetStudioEnvironment &a) { SetStudioEnvironment(Vk, Stores, *Pipelines, CommandPool, OneShotFence, a.Index); poke_active_lighting(); },
             [&](const action::scene::SetSourceIblIntensity &a) {
                 R.patch<gltf::SourceAssets>(SceneEntity, [&](auto &sa) { if (sa.ImageBasedLight) sa.ImageBasedLight->Intensity = a.Intensity; });
                 poke_active_lighting();
@@ -3078,11 +3572,11 @@ void Scene::Apply(const action::Action &action) {
             [&](const action::scene::SetViewCameraTarget &a) { patch_camera_stopped([&](auto &c) { c.Target = a.Target; }); },
             [&](const action::scene::SetViewCameraLens &a) { patch_camera_stopped([&](auto &c) { c.Data = a.Data; }); },
             [&](const action::scene::SetViewCameraTargetDirection &a) {
-                ExitLookThrough();
+                ExitLookThrough(R, SceneEntity);
                 R.patch<ViewCamera>(SceneEntity, [&](auto &c) { c.SetTargetDirection(a.Direction); });
             },
             [&](const action::scene::SetPbrMeshFeaturesMask &a) {
-                const auto e = GetActiveMeshEntity();
+                const auto e = scene_apply::GetActiveMeshEntity(R);
                 if (a.Mask != 0u) R.emplace_or_replace<PbrMeshFeatures>(e, a.Mask);
                 else R.remove<PbrMeshFeatures>(e);
             },
@@ -3241,10 +3735,10 @@ void Scene::Apply(const action::Action &action) {
             [&](const action::audio::SetExciteVertex &a) {
                 const auto e = FindActiveEntity(R);
                 R.remove<VertexForce>(e);
-                R.emplace_or_replace<MeshActiveElement>(GetActiveMeshEntity(), a.MeshVertex);
+                R.emplace_or_replace<MeshActiveElement>(scene_apply::GetActiveMeshEntity(R), a.MeshVertex);
                 ::SetVertex(R, SceneEntity, e, a.VertexIndex);
             },
-            [&](const action::audio::SetActiveElementFromDsp &a) { R.emplace_or_replace<MeshActiveElement>(GetActiveMeshEntity(), a.Vertex); },
+            [&](const action::audio::SetActiveElementFromDsp &a) { R.emplace_or_replace<MeshActiveElement>(scene_apply::GetActiveMeshEntity(R), a.Vertex); },
             [&](const action::audio::StartExcite &a) {
                 const auto e = FindActiveEntity(R);
                 R.remove<VertexForce>(e);
@@ -3258,14 +3752,14 @@ void Scene::Apply(const action::Action &action) {
             [&](action::audio::SubmitModalForm) {
                 const auto e = FindActiveEntity(R);
                 ::Stop(R, SceneEntity, e);
-                R.emplace_or_replace<AcousticMaterial>(GetActiveMeshEntity(), R.get<const ModalModelCreateInfo>(e).Material);
+                R.emplace_or_replace<AcousticMaterial>(scene_apply::GetActiveMeshEntity(R), R.get<const ModalModelCreateInfo>(e).Material);
                 R.remove<ModalModelCreateInfo>(e);
             },
             [&](const action::audio::AcceptModalGenerationResult &a) {
                 const auto e = FindActiveEntity(R);
                 if (!R.all_of<ScaleLocked>(e)) R.emplace<ScaleLocked>(e);
                 R.emplace_or_replace<ModalModes>(e, a.D->Modes);
-                R.emplace_or_replace<TetMeshData>(GetActiveMeshEntity(), a.D->Tets);
+                R.emplace_or_replace<TetMeshData>(scene_apply::GetActiveMeshEntity(R), a.D->Tets);
                 ::SetModel(R, SceneEntity, e, SoundVerticesModel::Modal);
             },
             [&](const action::audio::AssignVertexSamples &a) {
@@ -3294,7 +3788,7 @@ void Scene::Apply(const action::Action &action) {
             [&](action::timeline::TogglePlay) { R.patch<AnimationTimeline>(SceneEntity, [](auto &tl) { tl.Playing = !tl.Playing; }); },
             [&](const action::timeline::SetFrame &a) {
                 R.patch<AnimationTimeline>(SceneEntity, [&](auto &tl) { tl.CurrentFrame = a.Frame; });
-                PlaybackFrame = a.Frame;
+                R.get<PlaybackFrame>(SceneEntity).Value = a.Frame;
                 if (Physics->HasBodies()) {
                     if (Physics->HasCachedFrame(a.Frame)) Physics->RestoreFrame(R, a.Frame);
                     else if (a.Frame == R.get<const AnimationTimeline>(SceneEntity).StartFrame) Physics->Rebuild(R);
@@ -3308,151 +3802,47 @@ void Scene::Apply(const action::Action &action) {
                 R.patch<AnimationTimeline>(SceneEntity, [&](auto &tl) { tl.EndFrame = a.Frame; });
                 if (Physics->HasBodies()) Physics->ClearCache();
             },
-            [&](action::timeline::JumpToStart) { JumpToStartFrame(); },
+            [&](action::timeline::JumpToStart) { JumpToStartFrame(R, SceneEntity, *Physics); },
             [&](action::timeline::JumpToEnd) {
                 const auto frame = R.get<AnimationTimeline>(SceneEntity).EndFrame;
                 R.patch<AnimationTimeline>(SceneEntity, [&](auto &tl) { tl.CurrentFrame = frame; });
-                PlaybackFrame = frame;
+                R.get<PlaybackFrame>(SceneEntity).Value = frame;
             },
         },
         action
     );
 }
 
-void Scene::Destroy(entt::entity e) {
-    if (R.all_of<LookingThrough>(e)) {
-        R.replace<ViewCamera>(SceneEntity, R.get<LookingThrough>(e).SavedViewCamera);
-        R.remove<LookingThrough>(e);
-    }
-    { // Clear relationships
-        ClearParent(R, e);
-        std::vector<entt::entity> children;
-        for (auto child : Children{&R, e}) children.emplace_back(child);
-        for (const auto child : children) ClearParent(R, child);
-    }
+} // namespace scene_apply
 
-    // Decrement SelectedInstanceCount before entity destruction (while all components are intact).
-    // Cannot rely on on_destroy<Selected> — EnTT's pool removal order during R.destroy() is non-deterministic,
-    // so Instance may already be gone when on_destroy<Selected> fires.
-    if (R.all_of<Selected, Instance>(e)) {
-        if (auto *count = R.try_get<SelectedInstanceCount>(R.get<Instance>(e).Entity))
-            if (count->Value > 0) --count->Value;
-    }
-
-    entt::entity buffer_entity = entt::null;
-    if (const auto *instance = R.try_get<Instance>(e)) {
-        if (R.all_of<Mesh>(instance->Entity) || R.all_of<ObjectExtrasTag>(instance->Entity)) buffer_entity = instance->Entity;
-        Hide(R, e);
-    }
-    std::vector<entt::entity> armature_data_entities;
-    auto try_add_armature_data = [&](entt::entity data_entity) {
-        if (R.valid(data_entity) && find(armature_data_entities, data_entity) == armature_data_entities.end()) {
-            armature_data_entities.emplace_back(data_entity);
-        }
+scene_apply::ApplyContext Scene::MakeApplyContext() const {
+    return {
+        R,
+        Stores,
+        SceneEntity,
+        Vk,
+        *Pipelines,
+        *Physics,
+        *CommandPool,
+        *ClickCommandBuffer,
+        *OneShotFence,
+        *SelectionReadySemaphore,
+        SelectionHandles->SelectionBitset,
+        SelectionHandles->HeadImage,
+        SelectionHandles->SelectionCounter,
+        SelectionHandles->ElementPickCandidates,
+        SelectionXRay,
+        InteractionModes,
     };
-    if (const auto *armature = R.try_get<ArmatureObject>(e)) try_add_armature_data(armature->Entity);
-    if (const auto *armature_modifier = R.try_get<ArmatureModifier>(e)) try_add_armature_data(armature_modifier->ArmatureEntity);
-    if (const auto *bone_attachment = R.try_get<BoneAttachment>(e)) try_add_armature_data(bone_attachment->ArmatureEntity);
-    if (const auto *cw = R.try_get<ColliderWireframe>(e)) {
-        for (uint8_t i = 0; i < cw->Count; ++i) {
-            if (R.valid(cw->Instances[i])) {
-                Hide(R, cw->Instances[i]);
-                R.destroy(cw->Instances[i]);
-            }
-        }
-    }
-    if (const auto *bw = R.try_get<BBoxWireframe>(e); bw && R.valid(bw->Instance)) {
-        Hide(R, bw->Instance);
-        R.destroy(bw->Instance);
-    }
-    if (const auto *tw = R.try_get<TetWireframe>(e); tw && R.valid(tw->Instance)) {
-        Hide(R, tw->Instance);
-        R.destroy(tw->Instance);
-    }
-
-    if (const auto *light_index = R.try_get<LightIndex>(e)) {
-        R.get_or_emplace<PendingLightRemovals>(SceneEntity).Indices.push_back(light_index->Value);
-    }
-
-    if (R.all_of<ArmatureObject>(e)) {
-        auto &arm = R.get<ArmatureObject>(e);
-        auto destroy_visible = [&](entt::entity entity) {
-            Hide(R, entity);
-            R.destroy(entity);
-        };
-        for (const auto bone_entity : arm.BoneEntities) {
-            if (auto *joints = R.try_get<BoneJointEntities>(bone_entity)) {
-                if (joints->Head != entt::null) destroy_visible(joints->Head);
-                if (joints->Tail != entt::null) destroy_visible(joints->Tail);
-            }
-            R.remove<BoneJointEntities>(bone_entity);
-        }
-
-        // Destroy children before parents (reverse of topological order) so ClearParent
-        // can access the parent's SceneNode to unlink the child.
-        for (auto it = arm.BoneEntities.rbegin(); it != arm.BoneEntities.rend(); ++it) {
-            ClearParent(R, *it);
-            destroy_visible(*it);
-        }
-        DestroyArmatureData(e);
-    }
-
-    R.destroy(e);
-
-    // If this was the last instance, destroy the buffer entity
-    if (R.valid(buffer_entity)) {
-        if (!AnyComponentRefersTo(R, &Instance::Entity, buffer_entity)) {
-            if (auto *mesh_buffers = R.try_get<MeshBuffers>(buffer_entity)) {
-                if (const auto *vcr = R.try_get<VertexClass>(buffer_entity)) {
-                    Stores.Buffers->VertexClassBuffer.Release({vcr->Offset, mesh_buffers->Vertices.Count});
-                }
-                Stores.Buffers->Release(*mesh_buffers);
-            }
-            if (const auto *vs = R.try_get<VertexStoreId>(buffer_entity)) Stores.Meshes->Release(vs->StoreId);
-            if (const auto *models = R.try_get<ModelsBuffer>(buffer_entity)) Stores.Buffers->Instances.Free(models->InstanceRange);
-            R.destroy(buffer_entity);
-        }
-    }
-    for (const auto armature_data_entity : armature_data_entities) {
-        if (!R.valid(armature_data_entity)) continue;
-        const bool is_used = AnyComponentRefersTo(R, &ArmatureObject::Entity, armature_data_entity) ||
-            AnyComponentRefersTo(R, &ArmatureModifier::ArmatureEntity, armature_data_entity) ||
-            AnyComponentRefersTo(R, &BoneAttachment::ArmatureEntity, armature_data_entity);
-        if (!is_used) R.destroy(armature_data_entity);
-    }
-
-    // If no instances remain, release all imported textures and reset to the default material.
-    if (R.view<Instance>().empty()) {
-        auto &texture_store = *Stores.Textures;
-        // Index 0 is the default white texture (permanent); imported textures start at index 1.
-        if (texture_store.Textures.size() > 1) {
-            ReleaseSamplerSlots(*Stores.Slots, CollectSamplerSlots(std::span<const TextureEntry>{texture_store.Textures}.subspan(1)));
-            texture_store.Textures.erase(texture_store.Textures.begin() + 1, texture_store.Textures.end());
-        }
-        texture_store.WhiteTextureSlot = texture_store.Textures.empty() ? InvalidSlot : texture_store.Textures.front().SamplerSlot;
-
-        if (Stores.Buffers->Materials.Count() > 1) Stores.Buffers->Materials.SetCount(1u);
-        R.patch<MaterialStore>(SceneEntity, [](auto &ms) {
-            if (ms.Names.size() > 1) ms.Names.erase(ms.Names.begin() + 1, ms.Names.end());
-        });
-    }
 }
+
+void Scene::Apply(const action::Action &action) const { scene_apply::Apply(MakeApplyContext(), action); }
 
 std::string Scene::DebugBufferHeapUsage() const { return Stores.Buffers->Ctx.DebugHeapUsage(); }
 
-void Scene::FlushDrawList(const DrawListBuilder &draw_list, DrawBufferPair &pair) {
-    if (!draw_list.Draws.empty()) pair.DrawData.Update(as_bytes(draw_list.Draws));
-    if (!draw_list.IndirectCommands.empty()) pair.Indirect.Update(as_bytes(draw_list.IndirectCommands));
-    Stores.Buffers->EnsureIdentityIndexBuffer(draw_list.MaxIndexCount);
-    if (auto descriptor_updates = Stores.Buffers->Ctx.GetDeferredDescriptorUpdates(); !descriptor_updates.empty()) {
-        Vk.Device.updateDescriptorSets(std::move(descriptor_updates), {});
-        Stores.Buffers->Ctx.ClearDeferredDescriptorUpdates();
-    }
-}
-
 void Scene::RecordRenderCommandBuffer(bool silhouette_only) {
     const Timer timer{silhouette_only ? "RecordRenderCommandBuffer (silhouette)" : "RecordRenderCommandBuffer"};
-    if (!silhouette_only) SelectionStale = true;
+    if (!silhouette_only) R.emplace_or_replace<SelectionStale>(SceneEntity);
 
     const auto &settings = R.get<const SceneSettings>(SceneEntity);
     const auto interaction_mode = R.get<const SceneInteraction>(SceneEntity).Mode;
@@ -3905,7 +4295,7 @@ void Scene::RecordRenderCommandBuffer(bool silhouette_only) {
         }
     }
 
-    FlushDrawList(draw_list, Stores.Buffers->RenderDraw);
+    FlushDrawList(Stores, Vk.Device, draw_list, Stores.Buffers->RenderDraw);
     const auto render_extent = ComputeRenderExtentPx(R.get<const ViewportExtent>(SceneEntity).Value, std::bit_cast<vec2>(ImGui::GetIO().DisplayFramebufferScale));
     const auto &cb = *RenderCommandBuffer;
     cb.begin({vk::CommandBufferUsageFlagBits::eSimultaneousUse});
@@ -4183,7 +4573,7 @@ void Scene::RecordTransferCommandBuffer() {
 }
 #endif
 
-void Scene::RenderSelectionPass(vk::Semaphore signal_semaphore) {
+void Scene::RenderSelectionPass(vk::Semaphore signal_semaphore) const {
     const Timer timer{"RenderSelectionPass"};
 
     // Selection draw list is pre-built by RecordRenderCommandBuffer.
@@ -4196,35 +4586,20 @@ void Scene::RenderSelectionPass(vk::Semaphore signal_semaphore) {
         signal_semaphore
     );
 
-    SelectionStale = false;
+    R.remove<SelectionStale>(SceneEntity);
 }
 
-void Scene::AppendSelectedSilhouetteDraws(DrawListBuilder &draw_list, DrawBatchInfo &silhouette_batch) {
-    for (const auto e : R.view<Selected>()) {
-        const auto *inst = R.try_get<Instance>(e);
-        if (!inst) continue;
-        const auto buffer_entity = inst->Entity;
-        const auto &mesh_buffers = R.get<MeshBuffers>(buffer_entity);
-        const auto &models = R.get<ModelsBuffer>(buffer_entity);
-        if (const auto model_index = GetModelBufferIndex(R, e)) {
-            auto draw = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.FaceIndices, Stores.Buffers->Instances);
-            draw.ObjectIdSlot = Stores.Buffers->Instances.ObjectIdBuffer.Slot;
-            AppendDraw(draw_list, silhouette_batch, mesh_buffers.FaceIndices, models, draw, *model_index);
-        }
-    }
-}
-
-void Scene::RenderSelectionPassWith(bool render_depth, const SelectionBuildFn &build_fn, vk::Semaphore signal_semaphore, bool render_silhouette) {
+void Scene::RenderSelectionPassWith(bool render_depth, const SelectionBuildFn &build_fn, vk::Semaphore signal_semaphore, bool render_silhouette) const {
     const Timer timer{"RenderSelectionPassWith"};
     DrawListBuilder draw_list;
     DrawBatchInfo silhouette_batch{};
     if (render_depth) {
         silhouette_batch = draw_list.BeginBatch();
-        if (render_silhouette) AppendSelectedSilhouetteDraws(draw_list, silhouette_batch);
+        if (render_silhouette) AppendSelectedSilhouetteDraws(R, Stores, draw_list, silhouette_batch);
     }
     const auto selection_draws = build_fn(draw_list);
 
-    FlushDrawList(draw_list, Stores.Buffers->SelectionDraw);
+    FlushDrawList(Stores, Vk.Device, draw_list, Stores.Buffers->SelectionDraw);
     Stores.Buffers->SceneViewUBO.Update(as_bytes(Stores.Buffers->SelectionDraw.DrawData.Slot), offsetof(SceneViewUBO, DrawDataSlot));
 
     auto cb = *ClickCommandBuffer;
@@ -4291,250 +4666,20 @@ void Scene::RenderSelectionPassWith(bool render_depth, const SelectionBuildFn &b
     WaitFor(*OneShotFence, Vk.Device);
 }
 
-void Scene::RenderEditSelectionPass(std::span<const ElementRange> ranges, Element element, vk::Semaphore signal_semaphore) {
-    const Timer timer{"RenderEditSelectionPass"};
-    RenderElementSelectionPass(ranges, element, false, {}, {}, signal_semaphore);
-}
-
-void Scene::RenderElementSelectionPass(
-    std::span<const ElementRange> ranges, Element element, bool write_bitset,
-    uvec2 box_min, uvec2 box_max, vk::Semaphore signal_semaphore
-) {
-    if (ranges.empty() || element == Element::None) return;
-
-    const auto primary_edit_instances = scene_selection::ComputePrimaryEditInstances(R);
-    const bool xray_selection = SelectionXRay;
-    const auto element_pipeline = [xray_selection, write_bitset](Element el) -> SPT {
-        if (el == Element::Vertex) {
-            if (xray_selection) return write_bitset ? SPT::SelectionElementVertexXRayBitsetBox : SPT::SelectionElementVertexXRay;
-            return write_bitset ? SPT::SelectionElementVertexBitsetBox : SPT::SelectionElementVertex;
-        }
-        if (el == Element::Edge) {
-            if (xray_selection) return write_bitset ? SPT::SelectionElementEdgeXRayBitsetBox : SPT::SelectionElementEdgeXRay;
-            return write_bitset ? SPT::SelectionElementEdgeBitsetBox : SPT::SelectionElementEdge;
-        }
-        if (xray_selection) return write_bitset ? SPT::SelectionElementFaceXRayBitsetBox : SPT::SelectionElementFaceXRay;
-        return write_bitset ? SPT::SelectionElementFaceBitsetBox : SPT::SelectionElementFace;
+scene_apply::SelectionGpuCtx Scene::MakeSelectionGpuCtx() const {
+    return {
+        *ClickCommandBuffer,
+        *OneShotFence,
+        Vk.Queue,
+        Vk.Device,
+        *Pipelines,
+        SelectionHandles->SelectionBitset,
+        SelectionHandles->HeadImage,
+        SelectionHandles->SelectionCounter,
+        SelectionHandles->ElementPickCandidates,
+        *SelectionReadySemaphore,
+        SelectionXRay,
     };
-
-    DrawListBuilder draw_list;
-    DrawBatchInfo silhouette_batch{};
-    const bool render_depth = !xray_selection;
-    if (render_depth) {
-        silhouette_batch = draw_list.BeginBatch();
-        // For face selection, faces self-sort by depth (eLess + depthWrite against cleared depth 1.0).
-        // Drawing the silhouette would fill depth with mesh surface depth, causing face fragments at equal
-        // depth to fail the eLess test. For vertex/edge selection, we do render silhouette geometry so that
-        // elements at the surface pass (eLessOrEqual) while occluded elements behind it fail.
-        if (element != Element::Face) AppendSelectedSilhouetteDraws(draw_list, silhouette_batch);
-    }
-    auto element_batch = draw_list.BeginBatch();
-    for (const auto &r : ranges) {
-        const auto &mesh_buffers = R.get<MeshBuffers>(r.MeshEntity);
-        const auto &models = R.get<ModelsBuffer>(r.MeshEntity);
-        const auto &mesh = R.get<Mesh>(r.MeshEntity);
-        const auto &indices = element == Element::Vertex ? mesh_buffers.VertexIndices :
-            element == Element::Edge                     ? mesh_buffers.EdgeIndices :
-                                                           mesh_buffers.FaceIndices;
-        auto draw = MakeDrawData(mesh_buffers.Vertices, indices, Stores.Buffers->Instances);
-        if (element == Element::Face) {
-            const auto face_id_buffer = Stores.Meshes->GetFaceIdRange(mesh.GetStoreId());
-            draw.ObjectIdSlot = face_id_buffer.Slot;
-            draw.FaceIdOffset = face_id_buffer.Offset;
-        } else {
-            draw.ObjectIdSlot = InvalidSlot;
-            draw.FaceIdOffset = 0;
-        }
-        draw.VertexCountOrHeadImageSlot = 0;
-        draw.ElementIdOffset = r.Offset;
-        if (auto it = primary_edit_instances.find(r.MeshEntity); it != primary_edit_instances.end()) {
-            AppendDraw(draw_list, element_batch, indices, models, draw, R.get<RenderInstance>(it->second).BufferIndex);
-        } else {
-            AppendDraw(draw_list, element_batch, indices, models, draw);
-        }
-    }
-
-    FlushDrawList(draw_list, Stores.Buffers->SelectionDraw);
-    Stores.Buffers->SceneViewUBO.Update(as_bytes(Stores.Buffers->SelectionDraw.DrawData.Slot), offsetof(SceneViewUBO, DrawDataSlot));
-
-    auto cb = *ClickCommandBuffer;
-    cb.reset({});
-    cb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
-
-    if (!write_bitset) {
-        // Reset linked-list state before writing selection fragments.
-        Stores.Buffers->SelectionCounter.Buffer.Write(as_bytes(SelectionCounters{}));
-
-        const auto &head_image = Pipelines->SelectionFragment.Resources->HeadImage;
-        cb.pipelineBarrier(
-            vk::PipelineStageFlagBits::eTopOfPipe, vk::PipelineStageFlagBits::eTransfer, {}, {}, {},
-            vk::ImageMemoryBarrier{{}, vk::AccessFlagBits::eTransferWrite, vk::ImageLayout::eUndefined, vk::ImageLayout::eGeneral, {}, {}, *head_image.Image, ColorSubresourceRange}
-        );
-        cb.clearColorImage(*head_image.Image, vk::ImageLayout::eGeneral, vk::ClearColorValue{std::array<uint32_t, 4>{InvalidSlot, 0, 0, 0}}, ColorSubresourceRange);
-        cb.pipelineBarrier(
-            vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eFragmentShader, {}, {}, {},
-            vk::ImageMemoryBarrier{vk::AccessFlagBits::eTransferWrite, vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite, vk::ImageLayout::eGeneral, vk::ImageLayout::eGeneral, {}, {}, *head_image.Image, ColorSubresourceRange}
-        );
-    }
-
-    const auto render_extent = ComputeRenderExtentPx(R.get<const ViewportExtent>(SceneEntity).Value, std::bit_cast<vec2>(ImGui::GetIO().DisplayFramebufferScale));
-    cb.setViewport(0, vk::Viewport{0.f, 0.f, float(render_extent.width), float(render_extent.height), 0.f, 1.f});
-    cb.setScissor(0, vk::Rect2D{{0, 0}, render_extent});
-
-    if (render_depth) {
-        const auto &silhouette = Pipelines->Silhouette;
-        const vk::Rect2D sil_rect{{0, 0}, ToExtent2D(silhouette.Resources->OffscreenImage.Extent)};
-        cb.beginRenderPass({*silhouette.Renderer.RenderPass, *silhouette.Resources->Framebuffer, sil_rect, SilhouetteClearValues}, vk::SubpassContents::eInline);
-        cb.bindIndexBuffer(*Stores.Buffers->IdentityIndexBuffer, 0, vk::IndexType::eUint32);
-        if (silhouette_batch.DrawCount > 0) {
-            const auto &pipeline = silhouette.Renderer.Bind(cb, SPT::SilhouetteDepthObject);
-            const MainDrawPushConstants sil_pc{{silhouette_batch.DrawDataSlotOffset, InvalidSlot}};
-            cb.pushConstants(*pipeline.PipelineLayout, vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, sizeof(sil_pc), &sil_pc);
-            cb.drawIndexedIndirect(*Stores.Buffers->SelectionDraw.Indirect, silhouette_batch.IndirectOffset, silhouette_batch.DrawCount, sizeof(vk::DrawIndexedIndirectCommand));
-        }
-        cb.endRenderPass();
-    }
-
-    const auto &selection = Pipelines->SelectionFragment;
-    const vk::Rect2D sel_rect{{0, 0}, ToExtent2D(Pipelines->Silhouette.Resources->DepthImage.Extent)};
-    cb.beginRenderPass({*selection.Renderer.RenderPass, *selection.Resources->Framebuffer, sel_rect, {}}, vk::SubpassContents::eInline);
-    cb.bindIndexBuffer(*Stores.Buffers->IdentityIndexBuffer, 0, vk::IndexType::eUint32);
-    if (element_batch.DrawCount > 0) {
-        const SelectionElementPushConstants element_pc{
-            {element_batch.DrawDataSlotOffset, InvalidSlot},
-            {SelectionHandles->HeadImage, Stores.Buffers->SelectionNodeBuffer.Slot, SelectionHandles->SelectionCounter, Stores.Buffers->SelectionNodeCapacity},
-            {box_min.x, box_min.y, box_max.x, box_max.y},
-            SelectionHandles->SelectionBitset,
-        };
-        auto draw_with = [&](SPT spt) {
-            const auto &pipeline = selection.Renderer.Bind(cb, spt);
-            cb.pushConstants(*pipeline.PipelineLayout, vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, sizeof(element_pc), &element_pc);
-            cb.drawIndexedIndirect(*Stores.Buffers->SelectionDraw.Indirect, element_batch.IndirectOffset, element_batch.DrawCount, sizeof(vk::DrawIndexedIndirectCommand));
-        };
-        draw_with(element_pipeline(element));
-        if (write_bitset && xray_selection) {
-            // X-Ray face: point pass catches edge-on faces (zero projected triangle area).
-            if (element == Element::Face) draw_with(SPT::SelectionElementFaceXRayVertsBitsetBox);
-            // X-Ray edge: point pass catches near/zero-length projected edges.
-            if (element == Element::Edge) draw_with(SPT::SelectionElementEdgeXRayVertsBitsetBox);
-        }
-    }
-    cb.endRenderPass();
-
-    if (write_bitset) {
-        // Ensure fragment shader writes to the bitset are visible to the host after the fence.
-        // Scope the barrier to the written range.
-        const auto element_count = MaxElementBound(ranges);
-        const vk::DeviceSize bitset_bytes = ((element_count + 31) / 32) * sizeof(uint32_t);
-        cb.pipelineBarrier(
-            vk::PipelineStageFlagBits::eFragmentShader, vk::PipelineStageFlagBits::eHost, {}, {},
-            vk::BufferMemoryBarrier{vk::AccessFlagBits::eShaderWrite, vk::AccessFlagBits::eHostRead, {}, {}, *Stores.Buffers->SelectionBitset, 0, bitset_bytes},
-            {}
-        );
-    }
-
-    cb.end();
-    vk::SubmitInfo submit;
-    submit.setCommandBuffers(cb);
-    if (signal_semaphore) submit.setSignalSemaphores(signal_semaphore);
-    Vk.Queue.submit(submit, *OneShotFence);
-    WaitFor(*OneShotFence, Vk.Device);
-
-    // Element selection pass overwrites the shared head image used for object selection.
-    SelectionStale = true;
-}
-
-void Scene::DispatchUpdateSelectionStates(std::span<const ElementRange> ranges, Element element) {
-    if (ranges.empty() || element == Element::None) return;
-
-    auto cb = *ClickCommandBuffer;
-    cb.reset({});
-    cb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
-
-    // Ensure bitset writes from previous render/compute are visible to this compute shader.
-    const vk::MemoryBarrier input_barrier{vk::AccessFlagBits::eShaderWrite, vk::AccessFlagBits::eShaderRead};
-    cb.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands, vk::PipelineStageFlagBits::eComputeShader, {}, input_barrier, {}, {});
-
-    const auto &compute = Pipelines->UpdateSelectionState;
-    cb.bindPipeline(vk::PipelineBindPoint::eCompute, *compute.Pipeline);
-    cb.bindDescriptorSets(vk::PipelineBindPoint::eCompute, *compute.PipelineLayout, 0, compute.GetDescriptorSet(), {});
-
-    for (const auto &range : ranges) {
-        const auto &mesh = R.get<const Mesh>(range.MeshEntity);
-        const auto &mesh_buffers = R.get<const MeshBuffers>(range.MeshEntity);
-        const auto *active_element = R.try_get<const MeshActiveElement>(range.MeshEntity);
-
-        uint32_t state_slot, state_offset;
-        if (element == Element::Vertex) {
-            state_slot = Stores.Meshes->GetVertexStateSlot();
-            state_offset = mesh_buffers.Vertices.Offset;
-        } else if (element == Element::Edge) {
-            const auto edge_range = Stores.Meshes->GetEdgeStateRange(mesh.GetStoreId());
-            state_slot = edge_range.Slot;
-            state_offset = edge_range.Offset;
-        } else {
-            const auto face_range = Stores.Meshes->GetFaceStateRange(mesh.GetStoreId());
-            state_slot = face_range.Slot;
-            state_offset = face_range.Offset;
-        }
-
-        const UpdateSelectionStatePushConstants pc{
-            .BitsetSlot = SelectionHandles->SelectionBitset,
-            .BitsetOffset = range.Offset,
-            .StateSlot = state_slot,
-            .StateOffset = state_offset,
-            .ElementCount = range.Count,
-            .ActiveHandle = active_element ? active_element->Handle : InvalidOffset,
-            .EdgeMode = element == Element::Edge ? 1u : 0u,
-        };
-        cb.pushConstants(*compute.PipelineLayout, vk::ShaderStageFlagBits::eCompute, 0, sizeof(pc), &pc);
-        cb.dispatch((range.Count + 255) / 256, 1, 1);
-    }
-
-    const vk::MemoryBarrier output_barrier{vk::AccessFlagBits::eShaderWrite, vk::AccessFlagBits::eHostRead};
-    cb.pipelineBarrier(vk::PipelineStageFlagBits::eComputeShader, vk::PipelineStageFlagBits::eHost, {}, output_barrier, {}, {});
-    cb.end();
-
-    vk::SubmitInfo submit;
-    submit.setCommandBuffers(cb);
-    Vk.Queue.submit(submit, *OneShotFence);
-    WaitFor(*OneShotFence, Vk.Device);
-}
-
-void Scene::ApplySelectionStateUpdate(std::span<const ElementRange> ranges, Element element) {
-    DispatchUpdateSelectionStates(ranges, element);
-    if (element == Element::Vertex) {
-        // Vertex states are already updated by the GPU compute above; derive edge/face states from them directly.
-        for (const auto &range : ranges) {
-            const auto &mesh = R.get<const Mesh>(range.MeshEntity);
-            Stores.Meshes->UpdateEdgeStatesFromVertices(mesh);
-            Stores.Meshes->UpdateFaceStatesFromVertices(mesh);
-        }
-    } else if (element == Element::Face || element == Element::Edge) {
-        const auto *bits = Stores.Buffers->SelectionBitset.Data();
-        for (const auto &range : ranges) {
-            const auto &mesh = R.get<const Mesh>(range.MeshEntity);
-            const auto selected_handles = scene_selection::ScanBitsetRange(bits, range.Offset, range.Count);
-            std::optional<uint32_t> active_handle;
-            if (const auto *active = R.try_get<const MeshActiveElement>(range.MeshEntity); active && active->Handle < range.Count) {
-                active_handle = active->Handle;
-            }
-            if (element == Element::Face) Stores.Meshes->UpdateEdgeStatesFromFaces(mesh, selected_handles, active_handle);
-            if (element == Element::Edge) Stores.Meshes->UpdateFaceStatesFromEdges(mesh);
-            Stores.Meshes->UpdateVertexStatesFromElements(mesh, selected_handles, element, active_handle);
-        }
-    }
-    ElementStatesDirty = true;
-}
-
-std::vector<Scene::ElementRange> Scene::GetBitsetRangesForSelected() const {
-    std::vector<ElementRange> ranges;
-    for (const auto mesh_entity : scene_selection::GetSelectedMeshEntities(R)) {
-        if (const auto *br = R.try_get<const MeshSelectionBitsetRange>(mesh_entity); br && br->Count > 0) {
-            ranges.emplace_back(mesh_entity, br->Offset, br->Count);
-        }
-    }
-    return ranges;
 }
 
 void Scene::RunBoxSelectElements(std::span<const ElementRange> ranges, Element element, std::pair<uvec2, uvec2> box_px, bool is_additive) {
@@ -4566,32 +4711,11 @@ void Scene::RunBoxSelectElements(std::span<const ElementRange> ranges, Element e
     }
 
     // Box-select writes element IDs directly from the selection fragment shader.
-    RenderElementSelectionPass(ranges, element, true, box_min, box_max);
+    const auto gpu = MakeSelectionGpuCtx();
+    RenderElementSelectionPass(R, Stores, SceneEntity, gpu, ranges, element, true, box_min, box_max, {});
     // After RenderElementSelectionPass (which waits on fence), SelectionBitsetBuffer is populated.
     // Dispatch UpdateSelectionState compute shader to update element state buffers on GPU.
-    ApplySelectionStateUpdate(ranges, element);
-}
-
-std::optional<std::pair<entt::entity, uint32_t>> Scene::RunElementPickFromRanges(std::span<const ElementRange> ranges, Element element, uvec2 mouse_px) {
-    if (ranges.empty() || element == Element::None) return {};
-    const auto element_count = MaxElementBound(ranges);
-    if (element_count == 0) return {};
-
-    const Timer timer{"RunElementPick"};
-    RenderEditSelectionPass(ranges, element, *SelectionReadySemaphore);
-    if (const auto index = FindNearestPickedElement(
-            *Stores.Buffers, Pipelines->ElementPick, *ClickCommandBuffer,
-            Vk.Queue, *OneShotFence, Vk.Device,
-            SelectionHandles->HeadImage, Stores.Buffers->SelectionNodeBuffer.Slot, SelectionHandles->ElementPickCandidates,
-            mouse_px, element_count, element,
-            *SelectionReadySemaphore
-        )) {
-        for (const auto &range : ranges) {
-            if (*index < range.Offset || *index >= range.Offset + range.Count) continue;
-            return std::pair{range.MeshEntity, *index - range.Offset};
-        }
-    }
-    return {};
+    ApplySelectionStateUpdate(R, Stores, SceneEntity, gpu, ranges, element);
 }
 
 std::optional<uint32_t> Scene::RunSoundVerticesVertexPick(entt::entity instance_entity, uvec2 mouse_px) {
@@ -4615,7 +4739,7 @@ std::optional<uint32_t> Scene::RunSoundVerticesVertexPick(entt::entity instance_
         draw.ElementStateSlotOffset = {Stores.Meshes->GetVertexStateSlot(), mesh_buffers.Vertices.Offset};
         AppendDraw(draw_list, batch, mesh_buffers.VertexIndices, models, draw, model_index);
         return std::vector{SelectionDrawInfo{SPT::SelectionElementVertex, batch}}; }, *SelectionReadySemaphore);
-    SelectionStale = true;
+    R.emplace_or_replace<SelectionStale>(SceneEntity);
 
     return FindNearestPickedElement(
         *Stores.Buffers, Pipelines->ElementPick, *ClickCommandBuffer,
@@ -4633,7 +4757,7 @@ std::vector<entt::entity> Scene::RunObjectPick(uvec2 mouse_px, uint32_t radius_p
     const uint32_t max_object_id = std::min(next_object_id - 1, SceneBuffers::MaxSelectableObjects);
     if (max_object_id == 0) return {};
 
-    const bool selection_rendered = SelectionStale;
+    const bool selection_rendered = R.all_of<SelectionStale>(SceneEntity);
     if (selection_rendered) RenderSelectionPass(*SelectionReadySemaphore);
 
     const Timer timer{"RunObjectPick"};
@@ -4726,7 +4850,7 @@ std::vector<entt::entity> Scene::RunBoxSelect(std::pair<uvec2, uvec2> box_px) {
     const uint32_t max_object_id = std::min(next_object_id - 1, SceneBuffers::MaxSelectableObjects);
 
     const Timer timer{"RunBoxSelect"};
-    const bool selection_rendered = SelectionStale;
+    const bool selection_rendered = R.all_of<SelectionStale>(SceneEntity);
     if (selection_rendered) RenderSelectionPass(*SelectionReadySemaphore);
     DispatchBoxSelect(box_min, box_max, max_object_id, selection_rendered ? *SelectionReadySemaphore : vk::Semaphore{});
 
@@ -4897,7 +5021,15 @@ void Scene::WaitForRender() {
     RenderPending = false;
 }
 
-std::expected<void, std::string> Scene::Apply(const action::FallibleAction &action) {
+namespace scene_apply {
+std::expected<void, std::string> Apply(const ApplyContext &ctx, const action::FallibleAction &action) {
+    auto &R = ctx.R;
+    auto &Stores = ctx.Stores;
+    const auto SceneEntity = ctx.SceneEntity;
+    auto &Vk = ctx.Vk;
+    auto &Physics = ctx.Physics;
+    const auto CommandPool = ctx.CommandPool;
+    const auto OneShotFence = ctx.OneShotFence;
     return std::visit(
         overloaded{
             [&](const action::project::SaveGltf &a) -> std::expected<void, std::string> {
@@ -4909,27 +5041,28 @@ std::expected<void, std::string> Scene::Apply(const action::FallibleAction &acti
                 if (!result) return std::unexpected{std::move(result.error())};
 
                 // TODO: drive reactively from track<changes::PhysicsShape>.
-                if (!R.view<ColliderShape>().empty()) Physics->RecomputeSceneScale(R);
+                if (!R.view<ColliderShape>().empty()) Physics.RecomputeSceneScale(R);
 
                 if (result->FirstCameraObject != entt::null) {
                     const auto camera_entity = result->FirstCameraObject;
-                    SetLookThrough(camera_entity);
+                    SetLookThrough(R, SceneEntity, camera_entity);
                     const auto &wt = R.get<WorldTransform>(camera_entity);
                     R.replace<ViewCamera>(SceneEntity, ViewCamera{wt.P, wt.P + CameraForward(wt), R.get<Camera>(camera_entity)});
                 }
                 if (result->ImportedAnimation) {
-                    JumpToStartFrame();
-                    LastEvaluatedFrame = -1;
+                    JumpToStartFrame(R, SceneEntity, Physics);
+                    R.get<LastEvaluatedFrame>(SceneEntity).Value = -1;
                 }
-                ProfileNextProcessComponentEvents = true;
+                R.emplace_or_replace<ProfileNextProcessComponentEvents>(SceneEntity);
                 return {};
             },
             [&](const action::project::LoadRealImpact &a) -> std::expected<void, std::string> {
                 auto object_name = RealImpact::ValidateDirectory(a.Directory);
                 if (!object_name) return std::unexpected(std::move(object_name.error()));
 
-                ClearMeshes();
+                ClearMeshes(R, Stores, SceneEntity);
                 const auto [mesh_entity, instance_entity] = ImportMesh(
+                    R, Stores, SceneEntity, Vk, CommandPool, OneShotFence,
                     a.Directory / "transformed.obj",
                     MeshInstanceCreateInfo{
                         .Name = std::move(*object_name),
@@ -4984,3 +5117,6 @@ std::expected<void, std::string> Scene::Apply(const action::FallibleAction &acti
         action
     );
 }
+} // namespace scene_apply
+
+std::expected<void, std::string> Scene::Apply(const action::FallibleAction &action) const { return scene_apply::Apply(MakeApplyContext(), action); }

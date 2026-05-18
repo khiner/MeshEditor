@@ -25,7 +25,9 @@
 
 #include "OrientationGizmo.h"
 
+#include "scene_impl/SceneApply.h"
 #include "scene_impl/SceneBuffers.h"
+#include "scene_impl/SceneComponents.h"
 #include "scene_impl/SceneTransformUtils.h"
 
 using std::ranges::any_of, std::ranges::contains, std::ranges::distance, std::ranges::find, std::ranges::find_if, std::ranges::fold_left, std::ranges::to;
@@ -410,11 +412,11 @@ void Scene::Interact(std::optional<action::Action> &out) {
     if (TransformGizmo::IsUsing()) {
         // During an active transform, only allow transform switching shortcuts.
         if (Shortcut(ImGuiKey_G, VKey) && transform_shortcuts_enabled) {
-            StartScreenTransform = TransformGizmo::TransformType::Translate;
+            R.get<StartScreenTransform>(SceneEntity).Value = TransformGizmo::TransformType::Translate;
         } else if (Shortcut(ImGuiKey_R, VKey) && transform_shortcuts_enabled) {
-            StartScreenTransform = TransformGizmo::TransformType::Rotate;
+            R.get<StartScreenTransform>(SceneEntity).Value = TransformGizmo::TransformType::Rotate;
         } else if (Shortcut(ImGuiKey_S, VKey) && scale_shortcut_enabled) {
-            StartScreenTransform = TransformGizmo::TransformType::Scale;
+            R.get<StartScreenTransform>(SceneEntity).Value = TransformGizmo::TransformType::Scale;
         }
     } else {
         if (Shortcut(ImGuiKey_Space, VKey)) out = action::timeline::TogglePlay{};
@@ -455,7 +457,7 @@ void Scene::Interact(std::optional<action::Action> &out) {
                 out = action::bone::Add{};
             } else if (Shortcut(ImGuiKey_E, VKey)) {
                 out = action::bone::Extrude{};
-                StartScreenTransform = TransformGizmo::TransformType::Translate;
+                R.get<StartScreenTransform>(SceneEntity).Value = TransformGizmo::TransformType::Translate;
             } else if (Shortcut(ImGuiKey_X, VKey) || Shortcut(ImGuiKey_Delete, VKey) || Shortcut(ImGuiKey_Backspace, VKey)) {
                 Delete(out);
             } else if (Shortcut(ImGuiMod_Shift | ImGuiKey_D, VKey)) {
@@ -464,21 +466,21 @@ void Scene::Interact(std::optional<action::Action> &out) {
         }
         if (Shortcut(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_E, VKey)) {
             out = action::object::AddEmpty{std::make_unique<ObjectCreateInfo>(ObjectCreateInfo{.Select = MeshInstanceCreateInfo::SelectBehavior::Exclusive})};
-            StartScreenTransform = TransformGizmo::TransformType::Translate;
+            R.get<StartScreenTransform>(SceneEntity).Value = TransformGizmo::TransformType::Translate;
         } else if (Shortcut(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_A, VKey)) {
             out = action::object::AddArmature{std::make_unique<ObjectCreateInfo>(ObjectCreateInfo{.Select = MeshInstanceCreateInfo::SelectBehavior::Exclusive})};
-            StartScreenTransform = TransformGizmo::TransformType::Translate;
+            R.get<StartScreenTransform>(SceneEntity).Value = TransformGizmo::TransformType::Translate;
         } else if (Shortcut(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_C, VKey)) {
             out = action::object::AddCamera{.Info = std::make_unique<ObjectCreateInfo>(ObjectCreateInfo{.Select = MeshInstanceCreateInfo::SelectBehavior::Exclusive}), .Props = {}};
-            StartScreenTransform = TransformGizmo::TransformType::Translate;
+            R.get<StartScreenTransform>(SceneEntity).Value = TransformGizmo::TransformType::Translate;
         } else if (Shortcut(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_L, VKey)) {
             out = action::object::AddLight{std::make_unique<ObjectCreateInfo>(ObjectCreateInfo{.Select = MeshInstanceCreateInfo::SelectBehavior::Exclusive})};
-            StartScreenTransform = TransformGizmo::TransformType::Translate;
+            R.get<StartScreenTransform>(SceneEntity).Value = TransformGizmo::TransformType::Translate;
         }
         if (!R.storage<Selected>().empty()) {
             if (!bone_edit && Shortcut(ImGuiMod_Shift | ImGuiKey_D, VKey)) Duplicate(out);
             else if (!bone_edit && Shortcut(ImGuiMod_Alt | ImGuiKey_D, VKey)) out = action::object::DuplicateLinked{};
-            else if (!bone_edit && CanDelete() && (Shortcut(ImGuiKey_Delete, VKey) || Shortcut(ImGuiKey_Backspace, VKey))) Delete(out);
+            else if (!bone_edit && scene_apply::CanDelete(R, SceneEntity) && (Shortcut(ImGuiKey_Delete, VKey) || Shortcut(ImGuiKey_Backspace, VKey))) Delete(out);
             else if (interaction_mode == InteractionMode::Pose && Shortcut(ImGuiMod_Alt | ImGuiKey_G, VKey)) out = action::bone::ClearSelectedTransforms{.Position = true};
             else if (interaction_mode == InteractionMode::Pose && Shortcut(ImGuiMod_Alt | ImGuiKey_R, VKey)) out = action::bone::ClearSelectedTransforms{.Rotation = true};
             else if (interaction_mode == InteractionMode::Pose && Shortcut(ImGuiMod_Alt | ImGuiKey_S, VKey)) out = action::bone::ClearSelectedTransforms{.Scale = true};
@@ -486,9 +488,9 @@ void Scene::Interact(std::optional<action::Action> &out) {
                 // Start transform gizmo in both Object and Edit modes.
                 // In Edit mode, shader applies transform to selected vertices.
                 // In Object mode, shader applies transform to selected instances.
-                StartScreenTransform = TransformGizmo::TransformType::Translate;
-            } else if (Shortcut(ImGuiKey_R, VKey) && transform_shortcuts_enabled) StartScreenTransform = TransformGizmo::TransformType::Rotate;
-            else if (Shortcut(ImGuiKey_S, VKey) && scale_shortcut_enabled) StartScreenTransform = TransformGizmo::TransformType::Scale;
+                R.get<StartScreenTransform>(SceneEntity).Value = TransformGizmo::TransformType::Translate;
+            } else if (Shortcut(ImGuiKey_R, VKey) && transform_shortcuts_enabled) R.get<StartScreenTransform>(SceneEntity).Value = TransformGizmo::TransformType::Rotate;
+            else if (Shortcut(ImGuiKey_S, VKey) && scale_shortcut_enabled) R.get<StartScreenTransform>(SceneEntity).Value = TransformGizmo::TransformType::Scale;
             else if (Shortcut(ImGuiKey_H, VKey)) out = action::object::ToggleHidden{};
             else if (Shortcut(ImGuiMod_Ctrl | ImGuiKey_P, VKey)) out = action::object::ParentToActive{};
             else if (Shortcut(ImGuiMod_Alt | ImGuiKey_P, VKey)) out = action::object::ClearParent{};
@@ -534,7 +536,7 @@ void Scene::Interact(std::optional<action::Action> &out) {
                 const bool is_additive = R.all_of<AdditiveBoxSelectBaseline>(SceneEntity);
                 if (interaction_mode == InteractionMode::Edit && !active_is_armature) {
                     Timer timer{"BoxSelectElements (all)"};
-                    RunBoxSelectElements(GetBitsetRangesForSelected(), edit_mode, *box_px, is_additive);
+                    RunBoxSelectElements(scene_apply::GetBitsetRangesForSelected(R), edit_mode, *box_px, is_additive);
                 } else if (bone_mode) {
                     const auto hits = ResolveHits(R, RunBoxSelect(*box_px), bone_mode, true);
                     std::vector<action::selection::BoneHit> bone_hits;
@@ -1114,7 +1116,7 @@ void Scene::InteractOverlay(std::optional<action::Action> &out) {
         auto interact_result = TransformGizmo::Interact(
             gizmo_transform,
             MGizmo.Config, camera, viewport, ToGlm(GetMousePos()) + AccumulatedWrapMouseDelta,
-            StartScreenTransform
+            R.get<const StartScreenTransform>(SceneEntity).Value
         );
         if (interact_result) {
             const auto &[ts, td] = *interact_result;
@@ -1219,7 +1221,7 @@ void Scene::InteractOverlay(std::optional<action::Action> &out) {
         if (interact_result) GizmoRenderTransform->P = interact_result->Start.P + interact_result->Delta.P;
     }
 
-    StartScreenTransform = {};
+    R.get<StartScreenTransform>(SceneEntity).Value.reset();
 }
 
 void Scene::DrawOverlay() {
@@ -1286,7 +1288,7 @@ void Scene::DrawOverlay() {
     // Camera look-through frame overlay: show the looked-through camera's view as a centered frame.
     // The ViewCamera's FOV is widened so the camera's view fits inside with padding.
     // The frame marks exactly what the camera captures.
-    if (const auto look_through_entity = LookThroughCameraEntity(); look_through_entity != entt::null && !camera.IsAnimating()) {
+    if (const auto look_through_entity = scene_apply::LookThroughCameraEntity(R); look_through_entity != entt::null && !camera.IsAnimating()) {
         if (const auto *cd = R.try_get<Camera>(look_through_entity)) {
             const float cam_aspect = AspectRatio(*cd);
             const auto frame_size = vec2{viewport.size.y * cam_aspect, viewport.size.y} * LookThroughFrameRatio(cam_aspect, viewport.size.x / viewport.size.y);
@@ -1761,7 +1763,7 @@ void Scene::RenderEntityControls(entt::entity active_entity, std::optional<actio
             auto edited = *cd;
             if (RenderCameraLensEditor(edited, distance)) out = action::ReplaceActive<Camera>{edited};
             Separator();
-            if (LookThroughCameraEntity() == active_entity) {
+            if (scene_apply::LookThroughCameraEntity(R) == active_entity) {
                 if (Button("Exit camera view")) out = action::scene::ExitLookThroughCamera{};
             } else {
                 if (Button("Look through")) out = action::scene::EnterLookThroughCamera{};
@@ -1811,7 +1813,7 @@ void Scene::RenderEntityControls(entt::entity active_entity, std::optional<actio
     if (const auto *instance = R.try_get<Instance>(active_entity); instance && R.all_of<Mesh>(instance->Entity)) {
         const bool has_sound = R.all_of<SoundVerticesModel>(active_entity);
         if (CollapsingHeader("Audio", has_sound ? ImGuiTreeNodeFlags_DefaultOpen : 0)) {
-            if (auto a = DrawObjectAudioControls(R, SceneEntity, active_entity, GetMeshEntity(active_entity), Stores.Buffers->SelectionBitset.Data())) action::Assign(out, std::move(*a));
+            if (auto a = DrawObjectAudioControls(R, SceneEntity, active_entity, scene_apply::GetMeshEntity(R, active_entity), Stores.Buffers->SelectionBitset.Data())) action::Assign(out, std::move(*a));
             if (const auto *active_mic = R.try_get<RealImpactActiveMicrophone>(active_entity)) {
                 SeparatorText("Microphone");
                 Text("Active: %s", GetName(R, active_mic->Entity).c_str());
@@ -1990,7 +1992,7 @@ void Scene::RenderControls(std::optional<action::Action> &out) {
                     out = action::object::AddLight{std::make_unique<ObjectCreateInfo>(ObjectCreateInfo{.Select = MeshInstanceCreateInfo::SelectBehavior::Exclusive})};
                     added = true;
                 }
-                if (added) StartScreenTransform = TransformGizmo::TransformType::Translate;
+                if (added) R.get<StartScreenTransform>(SceneEntity).Value = TransformGizmo::TransformType::Translate;
             }
             if (auto *mv = R.try_get<MaterialVariants>(SceneEntity); mv && !mv->Names.empty() && CollapsingHeader("Material variants")) {
                 const auto active = mv->Active;
@@ -2034,12 +2036,12 @@ void Scene::RenderControls(std::optional<action::Action> &out) {
                         if (mixed_smooth) PopItemFlag();
                     }
                 }
-                if (CanDuplicate() && Button("Duplicate")) Duplicate(out);
-                if (CanDuplicateLinked()) {
+                if (scene_apply::CanDuplicate(R, SceneEntity) && Button("Duplicate")) Duplicate(out);
+                if (scene_apply::CanDuplicateLinked(R, SceneEntity)) {
                     SameLine();
                     if (Button("Duplicate linked")) out = action::object::DuplicateLinked{};
                 }
-                if (CanDelete() && Button("Delete")) Delete(out);
+                if (scene_apply::CanDelete(R, SceneEntity) && Button("Delete")) Delete(out);
                 if (R.get<const SceneInteraction>(SceneEntity).Mode == InteractionMode::Pose && !R.view<const BoneSelection>().empty()) {
                     AlignTextToFramePadding();
                     TextUnformatted("Clear transform:");

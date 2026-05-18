@@ -2,9 +2,11 @@
 
 #include "BoneSelection.h"
 #include "SceneModeComponents.h"
+#include "TransformGizmo.h"
 #include "gpu/DebugChannel.h"
 
 #include <entt/entity/fwd.hpp>
+#include <optional>
 #include <vulkan/vulkan.hpp>
 
 struct SubmitDirty {}; // Generic tag for events that only require command buffer submission (not re-record)
@@ -84,4 +86,24 @@ struct AdditiveBoxSelectBaseline {
     std::vector<entt::entity> SelectedEntities;
     std::vector<std::pair<entt::entity, BoneSelection>> BoneSelections;
     std::vector<uint32_t> ElementBitset;
+};
+
+// Singleton flags on SceneEntity, consumed and cleared by ProcessComponentEvents.
+struct SelectionBitsDirty {}; // Bitset written by Interact; dispatches the compute update.
+struct ElementStatesDirty {}; // Element state buffers updated by GPU compute; triggers a submit.
+struct ProfileNextProcessComponentEvents {}; // Profile the next ProcessComponentEvents pass.
+struct SelectionStale {}; // Selection fragment data no longer matches current scene. Cleared after RenderSelectionPass.
+
+// Smooth float frame position for playback, advanced by Render. Singleton on SceneEntity.
+struct PlaybackFrame {
+    float Value{1.0f};
+};
+// Last frame where armature poses were evaluated. Singleton on SceneEntity.
+struct LastEvaluatedFrame {
+    int Value{-1};
+};
+// Requested transform type for the next gizmo drag, latched by keyboard shortcuts.
+// Cleared by InteractOverlay after consumption. Singleton on SceneEntity.
+struct StartScreenTransform {
+    std::optional<TransformGizmo::TransformType> Value;
 };

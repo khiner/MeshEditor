@@ -37,31 +37,34 @@ struct LookingThrough {
     ViewCamera SavedViewCamera; // The pre-look-through ViewCamera, restored on exit.
 };
 
+// A contiguous span of a mesh's elements (vertices/edges/faces) in the SelectionBitset.
+struct ElementRange {
+    entt::entity MeshEntity;
+    uint32_t Offset;
+    uint32_t Count;
+};
+
+namespace scene_apply {
+struct SelectionGpuCtx;
+struct ApplyContext;
+} // namespace scene_apply
+
 struct Scene {
     Scene(SceneVulkanResources, entt::registry &);
     ~Scene();
 
     void LoadIcons();
 
-    void Destroy(entt::entity);
-
-    entt::entity GetMeshEntity(entt::entity) const;
-    entt::entity GetActiveMeshEntity() const;
-
-    void Apply(const action::Action &);
-    std::expected<void, std::string> Apply(const action::FallibleAction &);
+    void Apply(const action::Action &) const;
+    std::expected<void, std::string> Apply(const action::FallibleAction &) const;
     // Dispatch any sub-variant whose alts are convertible to action::Action.
     template<typename... Ts>
-    void Apply(std::variant<Ts...> v) {
+    void Apply(std::variant<Ts...> v) const {
         std::visit([this](auto &&x) { this->Apply(std::forward<decltype(x)>(x)); }, std::move(v));
     }
 
-    // Actions on selected entities
-    bool CanDuplicate() const;
-    bool CanDuplicateLinked() const;
     // Branch on bone-edit mode, so callers can't pick the action variant inline.
     void Duplicate(std::optional<action::Action> &out);
-    bool CanDelete() const;
     void Delete(std::optional<action::Action> &out);
 
     // Handle mouse/keyboard interactions.
@@ -100,18 +103,6 @@ struct Scene {
     entt::entity GetSceneEntity() const { return SceneEntity; }
 
 private:
-    std::pair<entt::entity, entt::entity> ImportMesh(const std::filesystem::path &, MeshInstanceCreateInfo);
-    // Capture the current view (or the previously-saved one) and transfer LookingThrough to `target`.
-    void SetLookThrough(entt::entity);
-    // No-op if not currently looking through any camera.
-    void ExitLookThrough();
-    void JumpToStartFrame();
-    void ClearMeshes();
-    void NewDefaultScene();
-    // Returns false if `mode` is already current or precluded by selection.
-    bool SetInteractionMode(InteractionMode);
-    void SetEditMode(Element);
-
     SceneVulkanResources Vk;
     entt::registry &R;
     vk::UniqueCommandPool CommandPool;
@@ -177,15 +168,12 @@ private:
     bool SelectionXRay{false}; // Edit mode: Whether to ignore occlusion when selecting elements.
     bool OrbitToActive{false}; // Edit/Excite mode: When true, orbit camera to active element.
 
-    entt::entity LookThroughCameraEntity() const;
-
     struct TransformGizmoState {
         TransformGizmo::Config Config;
         TransformGizmo::Mode Mode;
     };
     TransformGizmoState MGizmo;
     std::optional<GizmoTransform> GizmoRenderTransform; // Set by InteractOverlay, consumed by DrawOverlay.
-    std::optional<TransformGizmo::TransformType> StartScreenTransform;
     bool OverlayControlsHovered{false};
 
     struct TransformIcons {
@@ -199,8 +187,6 @@ private:
     std::unique_ptr<SvgResource> OverlayIcon;
     AnimationIcons AnimIcons;
     AnimationTimelineView TimelineView;
-    float PlaybackFrame{1.0f}; // Smooth float frame position for playback
-    int LastEvaluatedFrame{-1}; // Last frame where armature poses were evaluated
 
     static inline const std::vector<Element> NormalElements{Element::Vertex, Element::Face};
 
@@ -213,17 +199,7 @@ private:
 
     std::unique_ptr<mvk::ImGuiTexture> ViewportTexture;
     bool RenderPending{false}; // GPU render submitted but not yet waited on.
-    bool SelectionStale{true}; // Selection fragment data no longer matches current scene.
-    bool ElementStatesDirty{false}; // Element state buffers updated by GPU compute; triggers a submit.
-    bool SelectionBitsDirty{false}; // Bitset written by Interact; ProcessComponentEvents dispatches the compute update.
     bool ShaderRecompileRequested{false};
-    bool ProfileNextProcessComponentEvents{false};
-
-    struct ElementRange {
-        entt::entity MeshEntity;
-        uint32_t Offset;
-        uint32_t Count;
-    };
 
 #ifdef MVK_FORCE_STAGED_TRANSFERS
     void RecordTransferCommandBuffer();
@@ -239,7 +215,6 @@ private:
     void RenderEntityControls(entt::entity, std::optional<action::Action> &out);
 
     void RecordRenderCommandBuffer(bool silhouette_only = false);
-    void FlushDrawList(const DrawListBuilder &, DrawBufferPair &);
 
     // Process deferred component events. Called once per frame.
     RenderRequest ProcessComponentEvents();
@@ -256,26 +231,11 @@ private:
     std::vector<entt::entity> RunObjectPick(uvec2 pixel, uint32_t radius_px = 0);
     std::vector<entt::entity> RunBoxSelect(std::pair<uvec2, uvec2>);
     void DispatchBoxSelect(uvec2 box_min, uvec2 box_max, uint32_t max_id, vk::Semaphore wait_semaphore);
-    void RenderSelectionPass(vk::Semaphore signal_semaphore = {}); // On-demand selection fragment rendering.
+    void RenderSelectionPass(vk::Semaphore signal_semaphore = {}) const; // On-demand selection fragment rendering.
     using SelectionBuildFn = std::function<std::vector<SelectionDrawInfo>(DrawListBuilder &)>;
-    void RenderSelectionPassWith(bool render_depth, const SelectionBuildFn &build_fn, vk::Semaphore signal_semaphore = {}, bool render_silhouette = true);
-    void AppendSelectedSilhouetteDraws(DrawListBuilder &, DrawBatchInfo &); // Adds face-mesh draws for every Selected entity to the silhouette batch.
-    void RenderEditSelectionPass(std::span<const ElementRange>, Element, vk::Semaphore signal_semaphore = {});
-    void RenderElementSelectionPass(std::span<const ElementRange>, Element, bool write_bitset, uvec2 box_min = {}, uvec2 box_max = {}, vk::Semaphore signal_semaphore = {});
-    void DispatchUpdateSelectionStates(std::span<const ElementRange>, Element); // Submits UpdateSelectionState.comp for each range and waits.
-    void ApplySelectionStateUpdate(std::span<const ElementRange>, Element); // Dispatch + GPU/CPU state update + dirty in one call.
-    std::vector<ElementRange> GetBitsetRangesForSelected() const; // Build ElementRange list from selected mesh bitset ranges.
+    void RenderSelectionPassWith(bool render_depth, const SelectionBuildFn &build_fn, vk::Semaphore signal_semaphore = {}, bool render_silhouette = true) const;
+    scene_apply::SelectionGpuCtx MakeSelectionGpuCtx() const; // Bundle GPU handles for selection-pass helpers.
+    scene_apply::ApplyContext MakeApplyContext() const; // Bundle all Scene state Apply needs.
     void RunBoxSelectElements(std::span<const ElementRange>, Element, std::pair<uvec2, uvec2>, bool is_additive);
-    std::optional<std::pair<entt::entity, uint32_t>> RunElementPickFromRanges(std::span<const ElementRange>, Element, uvec2 mouse_px);
     std::optional<uint32_t> RunSoundVerticesVertexPick(entt::entity instance_entity, uvec2 mouse_px);
-
-    entt::entity CreateExtrasBufferEntity(std::span<const vec3> positions, std::span<const uint8_t> vertex_classes = {}, std::span<const uint32_t> edge_indices = {});
-    entt::entity CreateExtrasObject(std::span<const vec3> positions, std::span<const uint8_t> vertex_classes, std::span<const uint32_t> edge_indices, ObjectType, ObjectCreateInfo, const std::string &default_name);
-
-    entt::entity CreateSingleBoneInstance(entt::entity arm_obj_entity, uint32_t bone_id); // Create ECS entity + joints for one bone.
-    void DestroyArmatureData(entt::entity arm_obj_entity);
-    void RebuildBoneStructure(entt::entity arm_data_entity);
-
-    // Prefilter HDR at index (if not already cached) and activate it as the studio environment.
-    void SetStudioEnvironment(uint32_t index);
 };
