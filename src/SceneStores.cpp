@@ -30,7 +30,7 @@ SceneStores::~SceneStores() {
     if (Textures && Slots) ReleaseSamplerSlots(*Slots, CollectSamplerSlots(Textures->Textures));
 }
 
-entt::entity WireSceneRegistry(entt::registry &r, SceneStores &stores) {
+entt::entity WireSceneRegistry(entt::registry &r, SceneBuffers &buffers, TextureStore &textures) {
     r.on_construct<PhysicsMotion>().connect<&entt::registry::emplace<PhysicsVelocity>>();
     r.on_destroy<PhysicsMotion>().connect<&entt::registry::remove<PhysicsVelocity>>();
     r.on_construct<ColliderShape>().connect<&entt::registry::emplace<ColliderMaterial>>();
@@ -43,21 +43,21 @@ entt::entity WireSceneRegistry(entt::registry &r, SceneStores &stores) {
     r.emplace<TimelineRange>(scene_entity);
     r.emplace<TimelinePlayback>(scene_entity);
 
-    stores.Buffers->Materials.Append({
+    buffers.Materials.Append({
         .BaseColorFactor = vec4{1.f},
         .MetallicFactor = 0.f,
         .RoughnessFactor = 1.f,
         .AlphaMode = MaterialAlphaMode::Opaque,
         .AlphaCutoff = 0.5f,
         .DoubleSided = 0u,
-        .BaseColorTexture = {.Slot = stores.Textures->WhiteTextureSlot},
+        .BaseColorTexture = {.Slot = textures.WhiteTextureSlot},
     });
     r.patch<MaterialStore>(scene_entity, [](auto &m) { m.Names.emplace_back("Default"); });
 
     constexpr std::array<std::byte, 4> WhitePixels{std::byte{0xff}, std::byte{0xff}, std::byte{0xff}, std::byte{0xff}};
     auto &pending = r.get_or_emplace<PendingTextureUploads>(scene_entity);
     pending.Items.emplace_back(PendingTextureUpload{
-        .SamplerSlot = stores.Textures->WhiteTextureSlot,
+        .SamplerSlot = textures.WhiteTextureSlot,
         .Source = PendingTextureUpload::RawPixels{.Pixels = std::vector<std::byte>(WhitePixels.begin(), WhitePixels.end()), .Width = 1, .Height = 1},
         .ColorSpace = TextureColorSpace::Srgb,
         .WrapS = vk::SamplerAddressMode::eRepeat,

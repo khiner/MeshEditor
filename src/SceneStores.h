@@ -26,4 +26,4 @@ struct SceneStores {
 };
 
 // Initializes the registry with scene-singleton state and returns its entity.
-entt::entity WireSceneRegistry(entt::registry &, SceneStores &);
+entt::entity WireSceneRegistry(entt::registry &, SceneBuffers &, TextureStore &);

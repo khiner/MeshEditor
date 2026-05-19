@@ -545,7 +545,7 @@ int main() {
         test(sample_name) = [&] {
             entt::registry r;
             SceneStores stores{vk_resources};
-            const auto scene = WireSceneRegistry(r, stores);
+            const auto scene = WireSceneRegistry(r, *stores.Buffers, *stores.Textures);
             auto load = gltf::LoadGltf(src, load_ctx(r, stores, scene));
             if (!load) return; // Loader limitation on source (e.g., unsupported extension); not a roundtrip concern.
 
@@ -586,7 +586,7 @@ int main() {
         test("dirty_image_re_encodes_pixel_equal") = [&] {
             entt::registry r;
             SceneStores stores{vk_resources};
-            const auto scene = WireSceneRegistry(r, stores);
+            const auto scene = WireSceneRegistry(r, *stores.Buffers, *stores.Textures);
             auto load = gltf::LoadGltf(box_embedded, load_ctx(r, stores, scene));
             expect(load.has_value()) << "load failed";
             if (!load) return;
@@ -617,7 +617,7 @@ int main() {
 
             entt::registry r2;
             SceneStores s2{vk_resources};
-            const auto scene2 = WireSceneRegistry(r2, s2);
+            const auto scene2 = WireSceneRegistry(r2, *s2.Buffers, *s2.Textures);
             auto reload = gltf::LoadGltf(out_path, load_ctx(r2, s2, scene2));
             expect(reload.has_value()) << "reload failed";
             if (!reload) return;
@@ -649,7 +649,7 @@ int main() {
 
             entt::registry r;
             SceneStores stores{vk_resources};
-            const auto scene = WireSceneRegistry(r, stores);
+            const auto scene = WireSceneRegistry(r, *stores.Buffers, *stores.Textures);
             auto load = gltf::LoadGltf(staged_gltf, load_ctx(r, stores, scene));
             expect(load.has_value()) << "load failed";
             if (!load) return;
@@ -664,7 +664,7 @@ int main() {
 
             entt::registry r2;
             SceneStores s2{vk_resources};
-            const auto scene2 = WireSceneRegistry(r2, s2);
+            const auto scene2 = WireSceneRegistry(r2, *s2.Buffers, *s2.Textures);
             auto reload = gltf::LoadGltf(out_path, load_ctx(r2, s2, scene2));
             expect(reload.has_value()) << "reload failed";
             if (!reload) return;
