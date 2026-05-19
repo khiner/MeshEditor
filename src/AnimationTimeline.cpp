@@ -42,7 +42,7 @@ int ComputeMajorStep(float pixels_per_frame) {
 }
 } // namespace
 
-std::optional<action::timeline::Action> RenderAnimationTimeline(const AnimationTimeline &tl, AnimationTimelineView &view, const AnimationIcons &icons) {
+std::optional<action::timeline::Action> RenderAnimationTimeline(const TimelineRange &range, const TimelinePlayback &playback, AnimationTimelineView &view, const AnimationIcons &icons) {
     std::optional<action::timeline::Action> action;
 
     // --- Transport bar ---
@@ -57,7 +57,7 @@ std::optional<action::timeline::Action> RenderAnimationTimeline(const AnimationT
         SetCursorScreenPos(transport_p);
         if (IconButton("jump_start", icons.JumpStart.get(), ImDrawFlags_RoundCornersLeft)) action = action::timeline::JumpToStart{};
         SetCursorScreenPos({transport_p.x + h, transport_p.y});
-        if (IconButton("play_pause", tl.Playing ? icons.Pause.get() : icons.Play.get(), ImDrawFlags_RoundCornersNone)) action = action::timeline::TogglePlay{};
+        if (IconButton("play_pause", playback.Playing ? icons.Pause.get() : icons.Play.get(), ImDrawFlags_RoundCornersNone)) action = action::timeline::TogglePlay{};
         SetCursorScreenPos({transport_p.x + h * 2, transport_p.y});
         if (IconButton("jump_end", icons.JumpEnd.get(), ImDrawFlags_RoundCornersRight)) action = action::timeline::JumpToEnd{};
     }
@@ -69,19 +69,19 @@ std::optional<action::timeline::Action> RenderAnimationTimeline(const AnimationT
     SameLine(w - CalcTextSize("Frame").x - CalcTextSize("Start").x - CalcTextSize("End").x - spacing.x * 6 - input_width * 3);
     PushItemWidth(input_width);
     {
-        int frame = tl.CurrentFrame;
+        int frame = playback.CurrentFrame;
         InputInt("Frame", &frame, 0, 0);
         if (IsItemDeactivatedAfterEdit()) action = action::timeline::SetFrame{frame};
     }
     SameLine(0, spacing.x * 2);
     {
-        int start = tl.StartFrame;
+        int start = range.StartFrame;
         InputInt("Start", &start, 0, 0);
         if (IsItemDeactivatedAfterEdit()) action = action::timeline::SetStartFrame{start};
     }
     SameLine(0, spacing.x);
     {
-        int end = tl.EndFrame;
+        int end = range.EndFrame;
         InputInt("End", &end, 0, 0);
         if (IsItemDeactivatedAfterEdit()) action = action::timeline::SetEndFrame{end};
     }
@@ -104,7 +104,7 @@ std::optional<action::timeline::Action> RenderAnimationTimeline(const AnimationT
     const auto x_to_frame = [&](float x) -> float { return (x - p0.x - area.x * 0.5f) / view.PixelsPerFrame + view.ViewCenterFrame; };
 
     // [StartFrame, EndFrame] range highlight
-    if (const float sx = std::max(frame_to_x(tl.StartFrame), p0.x), ex = std::min(frame_to_x(tl.EndFrame), p1.x); ex > sx) {
+    if (const float sx = std::max(frame_to_x(range.StartFrame), p0.x), ex = std::min(frame_to_x(range.EndFrame), p1.x); ex > sx) {
         dl->AddRectFilled({sx, p0.y}, {ex, p1.y}, IM_COL32(50, 50, 55, 255));
     }
 
@@ -136,10 +136,10 @@ std::optional<action::timeline::Action> RenderAnimationTimeline(const AnimationT
     dl->AddLine({p0.x, p0.y + HeaderHeight}, {p1.x, p0.y + HeaderHeight}, IM_COL32(60, 60, 60, 255));
 
     // Current frame line (light blue)
-    if (const float cfx = frame_to_x(float(tl.CurrentFrame)); cfx >= p0.x && cfx <= p1.x) {
+    if (const float cfx = frame_to_x(float(playback.CurrentFrame)); cfx >= p0.x && cfx <= p1.x) {
         dl->AddLine({cfx, p0.y}, {cfx, p1.y}, IM_COL32(100, 160, 255, 200), 2.0f);
         // Current frame label with background
-        const auto label = std::format("{}", tl.CurrentFrame);
+        const auto label = std::format("{}", playback.CurrentFrame);
         const auto text_size = CalcTextSize(label.c_str());
         const float lx = cfx - text_size.x * 0.5f;
         const float ly = p0.y + (HeaderHeight - text_size.y) * 0.5f;

@@ -7,10 +7,15 @@
 
 struct SvgResource;
 
-struct AnimationTimeline {
-    int CurrentFrame{1};
+// Timeline configuration. Changes here invalidate baked physics frames.
+struct TimelineRange {
     int StartFrame{1}, EndFrame{100};
     float Fps{24.0f};
+};
+
+// Per-tick playback state. Mutated every play frame; does not affect physics cache.
+struct TimelinePlayback {
+    int CurrentFrame{1};
     bool Playing{false};
 };
 
@@ -23,4 +28,4 @@ struct AnimationIcons {
     std::unique_ptr<SvgResource> Play, Pause, JumpStart, JumpEnd;
 };
 
-std::optional<action::timeline::Action> RenderAnimationTimeline(const AnimationTimeline &, AnimationTimelineView &, const AnimationIcons &);
+std::optional<action::timeline::Action> RenderAnimationTimeline(const TimelineRange &, const TimelinePlayback &, AnimationTimelineView &, const AnimationIcons &);

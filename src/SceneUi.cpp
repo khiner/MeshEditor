@@ -616,6 +616,7 @@ void Scene::Interact(std::optional<action::Action> &out) {
 }
 
 void Scene::InteractOverlay(std::optional<action::Action> &out) {
+    auto &Stores = R.ctx().get<SceneStores>();
     const rect viewport{ToGlm(GetWindowPos()), ToGlm(GetContentRegionAvail())};
     const bool active_transform = TransformGizmo::IsUsing();
     static constexpr float OrientationGizmoSize{84};
@@ -1309,6 +1310,8 @@ void Scene::DrawOverlay() {
 }
 
 void Scene::RenderEntityControls(entt::entity active_entity, std::optional<action::Action> &out) {
+    auto &Stores = R.ctx().get<SceneStores>();
+    auto &Physics = R.ctx().get<PhysicsWorld>();
     if (active_entity == entt::null) {
         TextUnformatted("Active object: None");
         return;
@@ -1854,7 +1857,7 @@ void Scene::RenderEntityControls(entt::entity active_entity, std::optional<actio
             }
         }
     }
-    if (auto a = physics_ui::RenderEntityProperties(R, active_entity, SceneEntity, *Physics)) action::Assign(out, std::move(*a));
+    if (auto a = physics_ui::RenderEntityProperties(R, active_entity, SceneEntity, Physics)) action::Assign(out, std::move(*a));
 
     // glTF metadata: round-trip-only source state on the active entity.
     // TODO: surface per-material source metadata here once material editing UI exists:
@@ -1896,6 +1899,8 @@ void Scene::RenderEntityControls(entt::entity active_entity, std::optional<actio
 }
 
 void Scene::RenderControls(std::optional<action::Action> &out) {
+    auto &Stores = R.ctx().get<SceneStores>();
+    auto &Physics = R.ctx().get<PhysicsWorld>();
     if (BeginTabBar("Scene controls")) {
         if (BeginTabItem("Object")) {
             {
@@ -1910,7 +1915,7 @@ void Scene::RenderControls(std::optional<action::Action> &out) {
                 const bool active_is_armature_rc = FindArmatureObject(R, active_entity_rc) != entt::null;
                 const bool edit_allowed = AllSelectedAreMeshes(R) || active_is_armature_rc;
                 const bool pose_allowed = active_is_armature_rc;
-                for (const auto mode : InteractionModes) {
+                for (const auto mode : R.get<const EnabledInteractionModes>(SceneEntity).Value) {
                     if (mode == InteractionMode::Edit && !edit_allowed) continue;
                     if (mode == InteractionMode::Pose && !pose_allowed) continue;
                     SameLine();
@@ -2142,7 +2147,7 @@ void Scene::RenderControls(std::optional<action::Action> &out) {
         }
 
         if (BeginTabItem("Physics")) {
-            if (auto a = physics_ui::RenderTab(R, SceneEntity, *Physics)) action::Assign(out, std::move(*a));
+            if (auto a = physics_ui::RenderTab(R, SceneEntity, Physics)) action::Assign(out, std::move(*a));
             EndTabItem();
         }
 

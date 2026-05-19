@@ -2,14 +2,11 @@
 
 #include "Action.h"
 #include "AnimationTimeline.h"
-#include "Entity.h"
 #include "SceneStores.h"
 #include "TransformGizmo.h"
 #include "ViewCamera.h"
-#include "gpu/InteractionMode.h"
 
 #include <expected>
-#include <set>
 
 struct Armature;
 struct DescriptorSlots;
@@ -79,7 +76,8 @@ struct Scene {
     void WaitForRender();
     void RenderControls(std::optional<action::Action> &out);
 
-    const AnimationTimeline &GetTimeline() const;
+    const TimelineRange &GetTimelineRange() const;
+    const TimelinePlayback &GetTimelinePlayback() const;
     AnimationTimelineView &GetTimelineView() { return TimelineView; }
     const AnimationIcons &GetAnimationIcons() const { return AnimIcons; }
     // Render per-source animation-clip pickers above the timeline.
@@ -115,7 +113,6 @@ private:
     vk::UniqueFence OneShotFence; // For short-lived transfers (e.g. selection passes and image uploads)
     vk::UniqueSemaphore SelectionReadySemaphore; // Signals selection buffers ready for compute.
     vk::UniqueCommandBuffer ClickCommandBuffer;
-    SceneStores Stores;
 
     struct SelectionSlotHandles;
     std::unique_ptr<SelectionSlotHandles> SelectionHandles;
@@ -128,7 +125,6 @@ private:
 
     entt::entity SceneEntity{null_entity}; // Singleton for scene-level components
 
-    std::set<InteractionMode> InteractionModes{InteractionMode::Object, InteractionMode::Edit, InteractionMode::Pose};
     vec2 AccumulatedWrapMouseDelta{0, 0};
     uint32_t ObjectPickEpochTag{255}; // 8-bit epoch encoded in object click keys; wraps with periodic key reset.
 
@@ -136,8 +132,6 @@ public:
     vec2 PreciseWheelDelta{0, 0};
 
 private:
-    std::unique_ptr<ScenePipelines> Pipelines;
-    std::unique_ptr<PhysicsWorld> Physics;
     std::unique_ptr<VideoRecorder> Recorder;
     std::pair<vk::Offset3D, vk::Extent2D> RecordRegion; // Locked at StartRecording; CaptureRecordFrame stops if the live region diverges.
 

@@ -10,6 +10,8 @@
 #include <entt/entity/fwd.hpp>
 #include <filesystem>
 #include <optional>
+#include <set>
+#include <span>
 #include <vulkan/vulkan.hpp>
 
 struct SubmitDirty {}; // Generic tag for events that only require command buffer submission (not re-record)
@@ -111,6 +113,12 @@ struct StartScreenTransform {
     std::optional<TransformGizmo::TransformType> Value;
 };
 
+// Interaction modes available for cycling/selection. Singleton on SceneEntity.
+// Excite is added/removed reactively based on whether the scene has any SoundVertices.
+struct EnabledInteractionModes {
+    std::set<InteractionMode> Value{InteractionMode::Object, InteractionMode::Edit, InteractionMode::Pose};
+};
+
 // Pending edit-mode element click. Apply emits this; ProcessComponentEvents runs the GPU pick and applies bit/active updates, then removes it.
 struct PendingEditElementClick {
     uvec2 MousePx;
@@ -131,4 +139,14 @@ struct PendingSetEditMode {
 struct PendingImportMesh {
     std::filesystem::path Path;
     MeshInstanceCreateInfo Info;
+};
+
+// Forces a fresh Rebuild on the next tick even if the start frame is cached.
+// Emitted by JumpToStart and LoadGltf; cleared after the cache is cleared.
+struct PhysicsCacheInvalid {};
+
+// Non-owning span over the GPU-mapped SelectionBitset words. Lets Apply read/write the bitset
+// without depending on SceneStores. Initialized once by Scene; the underlying storage is stable.
+struct SelectionBitsetRef {
+    std::span<uint32_t> Value;
 };

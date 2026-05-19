@@ -531,8 +531,9 @@ std::optional<action::physics::Action> physics_ui::RenderEntityProperties(entt::
 
         // Velocity is an authored initial condition (KHR_physics_rigid_bodies). Locked once
         // sim has produced any baked frames; JumpToStart unlocks it.
-        const auto &tl = r.get<const AnimationTimeline>(scene_entity);
-        const bool velocity_locked = tl.Playing || physics.BakedThrough() >= tl.StartFrame;
+        const auto &range = r.get<const TimelineRange>(scene_entity);
+        const auto &playback = r.get<const TimelinePlayback>(scene_entity);
+        const bool velocity_locked = playback.Playing || physics.BakedThrough() >= range.StartFrame;
         if (velocity_locked) BeginDisabled();
         if (r.try_get<const PhysicsVelocity>(entity)) {
             ui::Edit f{r, out};

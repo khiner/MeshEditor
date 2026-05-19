@@ -248,6 +248,7 @@ struct TransformEnd {}; struct WorldTransform {}; struct TransformDirty {};
 struct PhysicsMotion {}; struct PhysicsShape {}; struct PhysicsMaterial {}; struct PhysicsTrigger {}; struct PhysicsJoint {};
 struct PhysicsMaterialDef {}; struct CollisionSystemDef {}; struct CollisionFilterDef {}; struct PhysicsJointDef {};
 struct ColliderPolicy {}; struct PhysicsSimulationSettings {};
+struct TimelineRange {};
 } // namespace changes
 // clang-format on
 
@@ -448,23 +449,19 @@ bool AllSelectedAreMeshes(const entt::registry &R) {
 
 namespace scene_apply {
 
-// Aggregate of state Apply(Action) needs.
+// State Apply(Action) needs.
 // Apply(Action) is registry-only — GPU side-effects are deferred via PendingX components that ProcessComponentEvents observes.
+// Heavy resources (SceneStores, PhysicsWorld) live in R.ctx() and are fetched on demand.
 struct ApplyContext {
     entt::registry &R;
-    const SceneStores &Stores;
     entt::entity SceneEntity;
-    PhysicsWorld &Physics;
-    const std::set<InteractionMode> &InteractionModes;
 };
 
 // FallibleActions (LoadGltf, SaveGltf, LoadRealImpact) complete synchronously and report failure inline, so they cannot defer GPU work.
 struct FallibleApplyContext {
     entt::registry &R;
-    const SceneStores &Stores;
     entt::entity SceneEntity;
     const SceneVulkanResources &Vk;
-    PhysicsWorld &Physics;
     vk::CommandPool CommandPool;
     vk::Fence OneShotFence;
 };
@@ -1092,11 +1089,11 @@ bool SetInteractionMode(entt::registry &R, const SceneStores &stores, entt::enti
     return true;
 }
 
-void JumpToStartFrame(entt::registry &R, entt::entity scene_entity, PhysicsWorld &physics) {
-    if (physics.HasBodies()) physics.Rebuild(R);
-    const auto frame = R.get<AnimationTimeline>(scene_entity).StartFrame;
-    R.patch<AnimationTimeline>(scene_entity, [&](auto &tl) { tl.CurrentFrame = frame; });
+void JumpToStartFrame(entt::registry &R, entt::entity scene_entity) {
+    const auto frame = R.get<const TimelineRange>(scene_entity).StartFrame;
+    R.patch<TimelinePlayback>(scene_entity, [&](auto &p) { p.CurrentFrame = frame; });
     R.get<PlaybackFrame>(scene_entity).Value = frame;
+    R.emplace_or_replace<PhysicsCacheInvalid>(scene_entity);
 }
 
 void SetStudioEnvironment(
@@ -1259,14 +1256,15 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
       OneShotFence{Vk.Device.createFenceUnique({})},
       SelectionReadySemaphore{Vk.Device.createSemaphoreUnique({})},
       ClickCommandBuffer{std::move(Vk.Device.allocateCommandBuffersUnique({*CommandPool, vk::CommandBufferLevel::ePrimary, 1}).front())},
-      Stores{Vk},
-      SelectionHandles{std::make_unique<SelectionSlotHandles>(*Stores.Slots)},
       DestroyTracker{std::make_unique<EntityDestroyTracker>()},
-      Draw{std::make_unique<DrawState>()},
-      Pipelines{std::make_unique<ScenePipelines>(Vk.Device, Vk.PhysicalDevice, Stores.Slots->GetSetLayout(), Stores.Slots->GetSet())},
-      Physics{std::make_unique<PhysicsWorld>()} {
-    Physics->BindRegistry(R);
+      Draw{std::make_unique<DrawState>()} {
+    auto &Stores = R.ctx().emplace<SceneStores>(Vk);
+    SelectionHandles = std::make_unique<SelectionSlotHandles>(*Stores.Slots);
+    auto &Pipelines = R.ctx().emplace<ScenePipelines>(Vk.Device, Vk.PhysicalDevice, Stores.Slots->GetSetLayout(), Stores.Slots->GetSet());
+    auto &Physics = R.ctx().emplace<PhysicsWorld>();
+    Physics.BindRegistry(R);
     // Reactive storage subscriptions for deferred once-per-frame processing
+    track<changes::TimelineRange>(R).on<TimelineRange>(On::Update);
     track<changes::Selected>(R).on<Selected>(On::Create | On::Destroy);
     track<changes::ActiveInstance>(R).on<Active>(On::Create | On::Destroy);
     track<changes::BoneSelection>(R).on<BoneSelection>(On::Create | On::Update | On::Destroy).on<BoneActive>(On::Create | On::Destroy);
@@ -1323,7 +1321,7 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
     track<changes::PhysicsJointDef>(R).on<::PhysicsJointDef>(On::Create | On::Update | On::Destroy);
     track<changes::PhysicsSimulationSettings>(R).on<::PhysicsSimulationSettings>(On::Update);
 
-    PhysicsWorld *physics = Physics.get();
+    PhysicsWorld *physics = &Physics;
     RegisterComponentEventHandler(R, [physics](entt::registry &r) {
         const bool joint_events = !reactive<changes::PhysicsJoint>(r).empty();
         // Resource def handlers run first so dangling-ref patches fire before per-entity handlers this tick.
@@ -1361,8 +1359,10 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
     R.emplace<PlaybackFrame>(SceneEntity);
     R.emplace<LastEvaluatedFrame>(SceneEntity);
     R.emplace<StartScreenTransform>(SceneEntity);
+    R.emplace<EnabledInteractionModes>(SceneEntity);
+    R.emplace<SelectionBitsetRef>(SceneEntity, std::span<uint32_t>{Stores.Buffers->SelectionBitset.Data(), SceneBuffers::SelectionBitsetWords});
     R.emplace<SelectionStale>(SceneEntity); // Initial state: fragments need rendering on first selection use.
-    Physics->ApplySimulationSettings(R.emplace<PhysicsSimulationSettings>(SceneEntity));
+    Physics.ApplySimulationSettings(R.emplace<PhysicsSimulationSettings>(SceneEntity));
 
     Stores.Buffers->WorkspaceLightsUBO.Update(as_bytes(SceneDefaults::WorkspaceLights));
     ResetObjectPickKeys(*Stores.Buffers);
@@ -1386,18 +1386,23 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
     std::ranges::sort(environments.Hdris, {}, &HdriEntry::Name);
     const auto forest_it = find(environments.Hdris, "forest", &HdriEntry::Name);
     environments.ActiveHdriIndex = forest_it != environments.Hdris.end() ? std::distance(environments.Hdris.begin(), forest_it) : 0;
-    SetStudioEnvironment(Vk, Stores, *Pipelines, *CommandPool, *OneShotFence, environments.ActiveHdriIndex);
+    SetStudioEnvironment(Vk, Stores, Pipelines, *CommandPool, *OneShotFence, environments.ActiveHdriIndex);
     environments.SceneWorld = {.Ibl = MakeIblSamplers(environments.EmptySceneWorld, environments), .Name = environments.EmptySceneWorld.Name};
 
-    Pipelines->CompileShaders();
+    Pipelines.CompileShaders();
 }
 
 Scene::~Scene() {
     if (R.valid(SceneEntity)) R.remove<MaterialStore>(SceneEntity);
     R.clear<Mesh>();
+    // Tear down ctx resources in reverse-creation order: physics depends on stores, pipelines on stores.
+    R.ctx().erase<PhysicsWorld>();
+    R.ctx().erase<ScenePipelines>();
+    R.ctx().erase<SceneStores>();
 }
 
 void Scene::CreateSvgResource(std::unique_ptr<SvgResource> &svg, std::filesystem::path path) {
+    auto &Stores = R.ctx().get<SceneStores>();
     auto svg_batch = BeginTextureUploadBatch(Vk.Device, *CommandPool, Stores.Buffers->Ctx);
     const auto RenderBitmap = [this, &svg_batch](std::span<const std::byte> data, uint32_t width, uint32_t height) {
         return RenderBitmapToImage(Vk, svg_batch, data, width, height, Format::Color, ColorSubresourceRange);
@@ -1407,6 +1412,7 @@ void Scene::CreateSvgResource(std::unique_ptr<SvgResource> &svg, std::filesystem
 }
 
 void Scene::LoadIcons() {
+    auto &Stores = R.ctx().get<SceneStores>();
     const auto svg_path = Paths::Res() / "svg";
     auto batch = BeginTextureUploadBatch(Vk.Device, *CommandPool, Stores.Buffers->Ctx);
     const auto RenderBitmap = [this, &batch](std::span<const std::byte> data, uint32_t width, uint32_t height) {
@@ -1437,10 +1443,12 @@ void Scene::LoadIcons() {
     SubmitTextureUploadBatch(batch, Vk.Queue, *OneShotFence, Vk.Device);
 }
 
-const AnimationTimeline &Scene::GetTimeline() const { return R.get<const AnimationTimeline>(SceneEntity); }
+const TimelineRange &Scene::GetTimelineRange() const { return R.get<const TimelineRange>(SceneEntity); }
+const TimelinePlayback &Scene::GetTimelinePlayback() const { return R.get<const TimelinePlayback>(SceneEntity); }
 
 std::pair<vk::Offset3D, vk::Extent2D> Scene::GetCaptureRegion() const {
-    const auto full = ToExtent2D(Pipelines->Main.Resources->FinalColorImage.Extent);
+    auto &Pipelines = R.ctx().get<const ScenePipelines>();
+    const auto full = ToExtent2D(Pipelines.Main.Resources->FinalColorImage.Extent);
     const auto camera = scene_apply::LookThroughCameraEntity(R);
     const auto *cd = camera != entt::null ? R.try_get<Camera>(camera) : nullptr;
     if (!cd) return {{0, 0, 0}, full};
@@ -1455,7 +1463,8 @@ std::pair<vk::Offset3D, vk::Extent2D> Scene::GetCaptureRegion() const {
 
 void Scene::StartRecording(std::filesystem::path path, int fps) {
     StopRecording();
-    if (!Pipelines->Main.Resources) {
+    auto &Pipelines = R.ctx().get<const ScenePipelines>();
+    if (!Pipelines.Main.Resources) {
         std::println(stderr, "Scene::StartRecording: render resources not ready");
         return;
     }
@@ -1468,16 +1477,18 @@ bool Scene::IsRecording() const { return Recorder && Recorder->IsActive(); }
 uint64_t Scene::CapturedFrameCount() const { return Recorder ? Recorder->CapturedFrameCount() : 0; }
 
 void Scene::CaptureRecordFrame() {
-    if (!IsRecording() || !Pipelines->Main.Resources) return;
+    auto &Pipelines = R.ctx().get<const ScenePipelines>();
+    if (!IsRecording() || !Pipelines.Main.Resources) return;
     if (GetCaptureRegion() != RecordRegion) {
         std::println(stderr, "Scene: capture region changed; stopping recording.");
         StopRecording();
         return;
     }
-    Recorder->CaptureFrame(*Pipelines->Main.Resources->FinalColorImage.Image);
+    Recorder->CaptureFrame(*Pipelines.Main.Resources->FinalColorImage.Image);
 }
 
 Scene::SyncResult Scene::SyncModelsBuffers() {
+    auto &Stores = R.ctx().get<SceneStores>();
     // Consume the new-buffer-entity tracker. Categorize by type for deferred index buffer creation.
     std::vector<entt::entity> new_mesh_entities, new_extras_entities;
     for (auto e : reactive<changes::NewBufferEntity>(R)) {
@@ -1575,6 +1586,9 @@ Scene::SyncResult Scene::SyncModelsBuffers() {
 }
 
 Scene::RenderRequest Scene::ProcessComponentEvents() {
+    auto &Stores = R.ctx().get<SceneStores>();
+    auto &Physics = R.ctx().get<PhysicsWorld>();
+    auto &Pipelines = R.ctx().get<ScenePipelines>();
     const bool profile = R.all_of<ProfileNextProcessComponentEvents>(SceneEntity);
     if (profile) R.remove<ProfileNextProcessComponentEvents>(SceneEntity);
     std::optional<Timer> timer;
@@ -1585,7 +1599,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
 
     if (ShaderRecompileRequested) {
         ShaderRecompileRequested = false;
-        Pipelines->CompileShaders();
+        Pipelines.CompileShaders();
         request(RenderRequest::ReRecord);
     }
 
@@ -1849,11 +1863,12 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
 
     { // Note: Can mutate InteractionMode, so do this first before `changes::InteractionMode` handling below.
         const auto interaction_mode = R.get<const SceneInteraction>(SceneEntity).Mode;
+        auto &enabled_modes = R.get<EnabledInteractionModes>(SceneEntity).Value;
         if (R.storage<SoundVertices>().empty()) {
-            if (interaction_mode == InteractionMode::Excite) SetInteractionMode(R, Stores, SceneEntity, *InteractionModes.begin());
-            InteractionModes.erase(InteractionMode::Excite);
+            if (interaction_mode == InteractionMode::Excite) SetInteractionMode(R, Stores, SceneEntity, *enabled_modes.begin());
+            enabled_modes.erase(InteractionMode::Excite);
         } else if (!reactive<changes::SoundVertices>(R).empty()) {
-            InteractionModes.insert(InteractionMode::Excite);
+            enabled_modes.insert(InteractionMode::Excite);
             if (interaction_mode == InteractionMode::Excite) request(RenderRequest::ReRecord);
             else SetInteractionMode(R, Stores, SceneEntity, InteractionMode::Excite);
         }
@@ -1963,7 +1978,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
     if (const auto *pending = R.try_get<const PendingSetStudioEnvironment>(SceneEntity)) {
         const auto index = pending->Index;
         R.remove<PendingSetStudioEnvironment>(SceneEntity);
-        SetStudioEnvironment(Vk, Stores, *Pipelines, *CommandPool, *OneShotFence, index);
+        SetStudioEnvironment(Vk, Stores, Pipelines, *CommandPool, *OneShotFence, index);
     }
     if (const auto *pending = R.try_get<const PendingSetEditMode>(SceneEntity)) {
         const auto mode = pending->Mode;
@@ -2233,24 +2248,33 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
     const bool mode_changed = !reactive<changes::InteractionMode>(R).empty();
     bool anim_advanced;
     { // Animation timeline tick
-        auto &tl = R.get<AnimationTimeline>(SceneEntity);
+        const auto &range = R.get<const TimelineRange>(SceneEntity);
+        auto &playback = R.get<TimelinePlayback>(SceneEntity);
         auto &pf = R.get<PlaybackFrame>(SceneEntity).Value;
-        if (tl.Playing) {
-            pf += ImGui::GetIO().DeltaTime * tl.Fps;
-            if (pf > float(tl.EndFrame)) pf = float(tl.StartFrame);
+        if (playback.Playing) {
+            pf += ImGui::GetIO().DeltaTime * range.Fps;
+            if (pf > float(range.EndFrame)) pf = float(range.StartFrame);
             const int new_frame = int(std::floor(pf));
-            if (new_frame != tl.CurrentFrame) R.patch<AnimationTimeline>(SceneEntity, [&](auto &t) { t.CurrentFrame = new_frame; });
+            if (new_frame != playback.CurrentFrame) R.patch<TimelinePlayback>(SceneEntity, [&](auto &p) { p.CurrentFrame = new_frame; });
         } else {
-            pf = float(tl.CurrentFrame);
+            pf = float(playback.CurrentFrame);
         }
-        anim_advanced = tl.CurrentFrame != R.get<LastEvaluatedFrame>(SceneEntity).Value;
+        anim_advanced = playback.CurrentFrame != R.get<LastEvaluatedFrame>(SceneEntity).Value;
 
         if (!reactive<changes::PhysicsSimulationSettings>(R).empty()) {
-            Physics->ApplySimulationSettings(R.get<const PhysicsSimulationSettings>(SceneEntity));
+            Physics.ApplySimulationSettings(R.get<const PhysicsSimulationSettings>(SceneEntity));
+        }
+        // Range edits invalidate the cache: bake frontier becomes meaningless when bounds shift.
+        const bool range_changed = !reactive<changes::TimelineRange>(R).empty();
+        if (R.all_of<PhysicsCacheInvalid>(SceneEntity)) {
+            if (Physics.HasBodies()) Physics.ClearCache();
+            R.remove<PhysicsCacheInvalid>(SceneEntity);
+        } else if (range_changed && Physics.HasBodies()) {
+            Physics.ClearCache();
         }
         // The cache is the timeline: bake past the frontier, restore within it.
-        if (Physics->HasBodies()) {
-            Physics->EnsureCacheRange(tl.StartFrame, tl.EndFrame);
+        if (Physics.HasBodies()) {
+            Physics.EnsureCacheRange(range.StartFrame, range.EndFrame);
             // Any physics-mutating change invalidates cached future frames so the next play-forward re-bakes.
             if (!reactive<changes::PhysicsShape>(R).empty() ||
                 !reactive<changes::PhysicsMotion>(R).empty() ||
@@ -2262,29 +2286,29 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
                 !reactive<changes::CollisionFilterDef>(R).empty() ||
                 !reactive<changes::PhysicsJointDef>(R).empty() ||
                 !reactive<changes::PhysicsSimulationSettings>(R).empty()) {
-                Physics->InvalidateFromFrame(tl.CurrentFrame);
+                Physics.InvalidateFromFrame(playback.CurrentFrame);
             }
             if (anim_advanced) {
-                const int from = R.get<LastEvaluatedFrame>(SceneEntity).Value, to = tl.CurrentFrame;
-                const float dt = tl.Fps > 0 ? 1.f / tl.Fps : 1.f / 60.f;
-                const auto baked = Physics->BakedThrough();
+                const int from = R.get<LastEvaluatedFrame>(SceneEntity).Value, to = playback.CurrentFrame;
+                const float dt = range.Fps > 0 ? 1.f / range.Fps : 1.f / 60.f;
+                const auto baked = Physics.BakedThrough();
                 if (to == from + 1 && (!baked || uint32_t(to) > *baked)) {
-                    Physics->BakeFrame(R, R.get<const PhysicsSimulationSettings>(SceneEntity), to, dt);
+                    Physics.BakeFrame(R, R.get<const PhysicsSimulationSettings>(SceneEntity), to, dt);
                     request(RenderRequest::Submit);
-                } else if (Physics->HasCachedFrame(to)) {
-                    Physics->RestoreFrame(R, to);
+                } else if (Physics.HasCachedFrame(to)) {
+                    Physics.RestoreFrame(R, to);
                     request(RenderRequest::Submit);
-                } else if (to == tl.StartFrame && baked && *baked >= uint32_t(tl.StartFrame)) {
-                    Physics->Rebuild(R); // Wrap back to start after a play-loop.
+                } else if (to == range.StartFrame) {
+                    Physics.Rebuild(R); // Reset sim: covers wrap-after-play and user-initiated jump-to-start.
                     request(RenderRequest::Submit);
                 }
                 // Else: scrub past the bake frontier — hold current pose until play resumes baking.
             }
         }
 
-        if (anim_advanced) R.get<LastEvaluatedFrame>(SceneEntity).Value = tl.CurrentFrame;
+        if (anim_advanced) R.get<LastEvaluatedFrame>(SceneEntity).Value = playback.CurrentFrame;
         // Timeline frames are displayed 1-based, but animation time starts at t=0 on frame 1.
-        const auto eval_seconds = float(std::max(0, tl.CurrentFrame - 1)) / tl.Fps;
+        const auto eval_seconds = float(std::max(0, playback.CurrentFrame - 1)) / range.Fps;
         const auto clip_time = [eval_seconds](const auto &clip) {
             return clip.DurationSeconds > 0 ? std::fmod(eval_seconds, clip.DurationSeconds) : 0.f;
         };
@@ -2616,7 +2640,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
             // SubmitViewport's full descriptor block runs only on resize, so write the transmission sampler
             // descriptor inline whenever EnsureTransmissionResources flips state.
             const auto refresh_transmission_descriptor = [&] {
-                const auto &main = Pipelines->Main;
+                const auto &main = Pipelines.Main;
                 const vk::DescriptorImageInfo info = main.Transmission ? vk::DescriptorImageInfo{*main.Transmission->Sampler, *main.Transmission->Image.View, vk::ImageLayout::eShaderReadOnlyOptimal} : vk::DescriptorImageInfo{*main.Resources->NearestSampler, *main.Resources->ColorImage.View, vk::ImageLayout::eShaderReadOnlyOptimal};
                 Vk.Device.updateDescriptorSets({Stores.Slots->MakeSamplerWrite(SelectionHandles->TransmissionSampler, info)}, {});
                 request(RenderRequest::ReRecord);
@@ -2626,11 +2650,11 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
                 const auto &active_lighting = GetActivePbrLighting(R, SceneEntity, shading);
                 if (active_lighting.UseSceneLights) pbr_mask |= PbrFeature::Punctual;
                 for (const auto [_, feat] : R.view<const PbrMeshFeatures>().each()) pbr_mask |= feat.Mask;
-                if (Pipelines->Main.Compiler.CompilePipelines(pbr_mask)) request(RenderRequest::ReRecord);
+                if (Pipelines.Main.Compiler.CompilePipelines(pbr_mask)) request(RenderRequest::ReRecord);
                 const bool want_transmission = active_lighting.RealTransmission && HasFeature(pbr_mask, PbrFeature::Transmission);
                 const auto render_extent_now = ComputeRenderExtentPx(R.get<const ViewportExtent>(SceneEntity).Value, std::bit_cast<vec2>(ImGui::GetIO().DisplayFramebufferScale));
-                if (Pipelines->Main.EnsureTransmissionResources(render_extent_now, Vk.Device, Vk.PhysicalDevice, want_transmission)) refresh_transmission_descriptor();
-            } else if (Pipelines->Main.EnsureTransmissionResources({}, Vk.Device, Vk.PhysicalDevice, false)) {
+                if (Pipelines.Main.EnsureTransmissionResources(render_extent_now, Vk.Device, Vk.PhysicalDevice, want_transmission)) refresh_transmission_descriptor();
+            } else if (Pipelines.Main.EnsureTransmissionResources({}, Vk.Device, Vk.PhysicalDevice, false)) {
                 refresh_transmission_descriptor();
             }
         }
@@ -2710,8 +2734,8 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
             // Polygon offset factor matching Blender's GPU_polygon_offset_calc (viewdist = max ortho extent)
             .NdcOffsetFactor = std::holds_alternative<Perspective>(camera.Data) ? proj[3][2] * -0.00125f : 0.000005f * std::max(std::abs(1.f / proj[0][0]), std::abs(1.f / proj[1][1])),
             .TransmissionFramebufferSamplerSlot = SelectionHandles->TransmissionSampler,
-            .TransmissionFramebufferMipCount = Pipelines->Main.Transmission ? Pipelines->Main.Transmission->MipCount : 1u,
-            .UseRealTransmission = (is_pbr_mode && active_lighting.RealTransmission && Pipelines->Main.Transmission) ? 1u : 0u,
+            .TransmissionFramebufferMipCount = Pipelines.Main.Transmission ? Pipelines.Main.Transmission->MipCount : 1u,
+            .UseRealTransmission = (is_pbr_mode && active_lighting.RealTransmission && Pipelines.Main.Transmission) ? 1u : 0u,
             .DebugChannel = is_pbr_mode ? settings.DebugChannel : DebugChannel::None,
         }));
         R.emplace_or_replace<SelectionStale>(SceneEntity);
@@ -2773,6 +2797,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
 }
 
 void Scene::EnsureWireframes() {
+    auto &Stores = R.ctx().get<SceneStores>();
     const auto &settings = R.get<const SceneSettings>(SceneEntity);
     const bool show_bbox = settings.ShowBoundingBoxes;
     const bool show_tets = settings.ShowTetWireframe;
@@ -3169,10 +3194,8 @@ void Scene::Duplicate(std::optional<action::Action> &out) {
 namespace scene_apply {
 void Apply(const ApplyContext &ctx, const action::Action &action) {
     auto &R = ctx.R;
-    auto &Stores = ctx.Stores;
     const auto SceneEntity = ctx.SceneEntity;
-    auto *Physics = &ctx.Physics;
-    auto &InteractionModes = ctx.InteractionModes;
+    auto &Stores = R.ctx().get<SceneStores>();
     auto patch_camera_stopped = [&](auto &&fn) {
         R.patch<ViewCamera>(SceneEntity, [&](auto &c) { fn(c); c.StopMoving(); });
     };
@@ -3237,8 +3260,8 @@ void Apply(const ApplyContext &ctx, const action::Action &action) {
                     if (const auto ranges = scene_apply::GetBitsetRangesForSelected(R); !ranges.empty()) {
                         const auto element_count = std::ranges::fold_left(ranges, uint32_t{0}, [](uint32_t total, const auto &range) { return std::max(total, range.Offset + range.Count); });
                         const uint32_t bitset_words = (element_count + 31) / 32;
-                        baseline.ElementBitset.resize(bitset_words);
-                        memcpy(baseline.ElementBitset.data(), Stores.Buffers->SelectionBitset.Data(), bitset_words * sizeof(uint32_t));
+                        const auto bits = R.get<const SelectionBitsetRef>(SceneEntity).Value;
+                        baseline.ElementBitset.assign(bits.begin(), bits.begin() + bitset_words);
                     }
                 } else if (bone_mode) {
                     for (const auto e : R.view<BoneSelection>()) baseline.BoneSelections.emplace_back(e, R.get<BoneSelection>(e));
@@ -3515,9 +3538,10 @@ void Apply(const ApplyContext &ctx, const action::Action &action) {
             [&](const action::scene::SetInteractionMode &a) { SetInteractionMode(R, Stores, SceneEntity, a.Mode); },
             [&](action::scene::CycleInteractionMode) {
                 const auto interaction_mode = R.get<const SceneInteraction>(SceneEntity).Mode;
-                auto it = find(InteractionModes, interaction_mode);
-                for (size_t i = 0; i < InteractionModes.size(); ++i) {
-                    if (++it == InteractionModes.end()) it = InteractionModes.begin();
+                const auto &enabled_modes = R.get<const EnabledInteractionModes>(SceneEntity).Value;
+                auto it = find(enabled_modes, interaction_mode);
+                for (size_t i = 0; i < enabled_modes.size(); ++i) {
+                    if (++it == enabled_modes.end()) it = enabled_modes.begin();
                     if (SetInteractionMode(R, Stores, SceneEntity, *it)) break;
                 }
             },
@@ -3535,7 +3559,7 @@ void Apply(const ApplyContext &ctx, const action::Action &action) {
                     if (!arm_obj.BoneEntities.empty()) R.emplace<BoneActive>(arm_obj.BoneEntities.back());
                 } else if (interaction_mode == InteractionMode::Edit) {
                     const auto ranges = scene_apply::GetBitsetRangesForSelected(R);
-                    auto *bits = Stores.Buffers->SelectionBitset.Data();
+                    auto *bits = R.get<SelectionBitsetRef>(SceneEntity).Value.data();
                     for (const auto &range : ranges) scene_selection::SelectAll(bits, range.Offset, range.Count);
                     if (!ranges.empty()) R.emplace_or_replace<SelectionBitsDirty>(SceneEntity);
                 } else if (interaction_mode == InteractionMode::Object) {
@@ -3672,9 +3696,9 @@ void Apply(const ApplyContext &ctx, const action::Action &action) {
                 const auto e = FindActiveEntity(R);
                 if constexpr (std::is_same_v<T, PhysicsMotion>) R.emplace_or_replace<T>(e, *a.Value);
                 else if constexpr (std::is_same_v<T, PunctualLight>) {
-                    const auto &old = Stores.Buffers->Lights.Get(R.get<const LightIndex>(e).Value);
+                    const auto *old = R.try_get<const PunctualLight>(e);
                     const auto &n = a.Value;
-                    if (old.Type != n.Type || old.Range != n.Range || old.OuterConeCos != n.OuterConeCos || old.InnerConeCos != n.InnerConeCos) {
+                    if (!old || old->Type != n.Type || old->Range != n.Range || old->OuterConeCos != n.OuterConeCos || old->InnerConeCos != n.InnerConeCos) {
                         R.emplace_or_replace<LightWireframeDirty>(e);
                     }
                     R.emplace_or_replace<T>(e, n);
@@ -3790,7 +3814,7 @@ void Apply(const ApplyContext &ctx, const action::Action &action) {
             [&](const action::audio::SetModalFormMaterial &a) { R.patch<ModalModelCreateInfo>(FindActiveEntity(R), [&](auto &info) { info.Material = *a.Material; }); },
             [&](action::scene::Play) {
                 R.patch<SceneSettings>(SceneEntity, [](auto &s) { s.ViewportShading = s.FillMode = ViewportShadingMode::MaterialPreview; s.ShowOverlays = false; });
-                R.patch<AnimationTimeline>(SceneEntity, [](auto &tl) { tl.Playing = !tl.Playing; });
+                R.patch<TimelinePlayback>(SceneEntity, [](auto &p) { p.Playing = !p.Playing; });
             },
             [&](const action::scene::SetViewportShading &a) {
                 R.patch<SceneSettings>(SceneEntity, [&](auto &s) {
@@ -3798,27 +3822,21 @@ void Apply(const ApplyContext &ctx, const action::Action &action) {
                     if (a.Mode != ViewportShadingMode::Wireframe) s.FillMode = a.Mode;
                 });
             },
-            [&](action::timeline::TogglePlay) { R.patch<AnimationTimeline>(SceneEntity, [](auto &tl) { tl.Playing = !tl.Playing; }); },
+            [&](action::timeline::TogglePlay) { R.patch<TimelinePlayback>(SceneEntity, [](auto &p) { p.Playing = !p.Playing; }); },
             [&](const action::timeline::SetFrame &a) {
-                R.patch<AnimationTimeline>(SceneEntity, [&](auto &tl) { tl.CurrentFrame = a.Frame; });
+                R.patch<TimelinePlayback>(SceneEntity, [&](auto &p) { p.CurrentFrame = a.Frame; });
                 R.get<PlaybackFrame>(SceneEntity).Value = a.Frame;
-                if (Physics->HasBodies()) {
-                    if (Physics->HasCachedFrame(a.Frame)) Physics->RestoreFrame(R, a.Frame);
-                    else if (a.Frame == R.get<const AnimationTimeline>(SceneEntity).StartFrame) Physics->Rebuild(R);
-                }
             },
             [&](const action::timeline::SetStartFrame &a) {
-                R.patch<AnimationTimeline>(SceneEntity, [&](auto &tl) { tl.StartFrame = a.Frame; });
-                if (Physics->HasBodies()) Physics->ClearCache(); // Frame index base shifts.
+                R.patch<TimelineRange>(SceneEntity, [&](auto &r) { r.StartFrame = a.Frame; });
             },
             [&](const action::timeline::SetEndFrame &a) {
-                R.patch<AnimationTimeline>(SceneEntity, [&](auto &tl) { tl.EndFrame = a.Frame; });
-                if (Physics->HasBodies()) Physics->ClearCache();
+                R.patch<TimelineRange>(SceneEntity, [&](auto &r) { r.EndFrame = a.Frame; });
             },
-            [&](action::timeline::JumpToStart) { JumpToStartFrame(R, SceneEntity, *Physics); },
+            [&](action::timeline::JumpToStart) { JumpToStartFrame(R, SceneEntity); },
             [&](action::timeline::JumpToEnd) {
-                const auto frame = R.get<AnimationTimeline>(SceneEntity).EndFrame;
-                R.patch<AnimationTimeline>(SceneEntity, [&](auto &tl) { tl.CurrentFrame = frame; });
+                const auto frame = R.get<const TimelineRange>(SceneEntity).EndFrame;
+                R.patch<TimelinePlayback>(SceneEntity, [&](auto &p) { p.CurrentFrame = frame; });
                 R.get<PlaybackFrame>(SceneEntity).Value = frame;
             },
         },
@@ -3829,21 +3847,23 @@ void Apply(const ApplyContext &ctx, const action::Action &action) {
 } // namespace scene_apply
 
 scene_apply::ApplyContext Scene::MakeApplyContext() const {
-    return {R, Stores, SceneEntity, *Physics, InteractionModes};
+    return {R, SceneEntity};
 }
 
 scene_apply::FallibleApplyContext Scene::MakeFallibleApplyContext() const {
-    return {R, Stores, SceneEntity, Vk, *Physics, *CommandPool, *OneShotFence};
+    return {R, SceneEntity, Vk, *CommandPool, *OneShotFence};
 }
 
 void Scene::Apply(const action::Action &action) const { scene_apply::Apply(MakeApplyContext(), action); }
 
-std::string Scene::DebugBufferHeapUsage() const { return Stores.Buffers->Ctx.DebugHeapUsage(); }
+std::string Scene::DebugBufferHeapUsage() const { return R.ctx().get<const SceneStores>().Buffers->Ctx.DebugHeapUsage(); }
 
 void Scene::RecordRenderCommandBuffer(bool silhouette_only) {
     const Timer timer{silhouette_only ? "RecordRenderCommandBuffer (silhouette)" : "RecordRenderCommandBuffer"};
     if (!silhouette_only) R.emplace_or_replace<SelectionStale>(SceneEntity);
 
+    auto &Stores = R.ctx().get<SceneStores>();
+    auto &Pipelines = R.ctx().get<ScenePipelines>();
     const auto &settings = R.get<const SceneSettings>(SceneEntity);
     const auto interaction_mode = R.get<const SceneInteraction>(SceneEntity).Mode;
     const auto edit_mode = R.get<const SceneEditMode>(SceneEntity).Value;
@@ -3854,7 +3874,7 @@ void Scene::RecordRenderCommandBuffer(bool silhouette_only) {
     const bool show_fill = !is_wireframe_mode, show_overlays = settings.ShowOverlays;
     const bool real_transmission = show_rendered &&
         GetActivePbrLighting(R, SceneEntity, settings.ViewportShading).RealTransmission &&
-        Pipelines->Main.Compiler.HasFeature(PbrFeature::Transmission);
+        Pipelines.Main.Compiler.HasFeature(PbrFeature::Transmission);
 
     auto &draw = *Draw;
     auto &draw_list = draw.List;
@@ -4311,7 +4331,7 @@ void Scene::RecordRenderCommandBuffer(bool silhouette_only) {
     };
     auto record_pbr_batch = [&](const DrawBatchInfo &batch, PbrCompiler::Variant variant) {
         if (batch.DrawCount == 0) return;
-        const auto layout = Pipelines->Main.Compiler.Bind(cb, variant);
+        const auto layout = Pipelines.Main.Compiler.Bind(cb, variant);
         const MainDrawPushConstants pc{{batch.DrawDataSlotOffset, transform_vertex_state_slot}};
         cb.pushConstants(layout, vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, sizeof(pc), &pc);
         cb.drawIndexedIndirect(*Stores.Buffers->RenderDraw.Indirect, batch.IndirectOffset, batch.DrawCount, sizeof(vk::DrawIndexedIndirectCommand));
@@ -4325,7 +4345,7 @@ void Scene::RecordRenderCommandBuffer(bool silhouette_only) {
 
     const bool has_silhouette = render_silhouette && draw.Silhouette.DrawCount > 0;
     if (has_silhouette) { // Silhouette depth/object pass
-        const auto &silhouette = Pipelines->Silhouette;
+        const auto &silhouette = Pipelines.Silhouette;
         const vk::Rect2D rect{{0, 0}, ToExtent2D(silhouette.Resources->OffscreenImage.Extent)};
         cb.beginRenderPass({*silhouette.Renderer.RenderPass, *silhouette.Resources->Framebuffer, rect, SilhouetteClearValues}, vk::SubpassContents::eInline);
         cb.bindIndexBuffer(*Stores.Buffers->IdentityIndexBuffer, 0, vk::IndexType::eUint32);
@@ -4338,7 +4358,7 @@ void Scene::RecordRenderCommandBuffer(bool silhouette_only) {
         };
         sync_fragment_shader_reads(vk::PipelineStageFlagBits::eColorAttachmentOutput, silhouette_to_edge_barriers);
 
-        const auto &silhouette_edge = Pipelines->SilhouetteEdge;
+        const auto &silhouette_edge = Pipelines.SilhouetteEdge;
         const vk::Rect2D edge_rect{{0, 0}, ToExtent2D(silhouette_edge.Resources->OffscreenImage.Extent)};
         cb.beginRenderPass({*silhouette_edge.Renderer.RenderPass, *silhouette_edge.Resources->Framebuffer, edge_rect, SilhouetteClearValues}, vk::SubpassContents::eInline);
         const auto &silhouette_edo = silhouette_edge.Renderer.ShaderPipelines.at(SPT::SilhouetteEdgeDepthObject);
@@ -4355,7 +4375,7 @@ void Scene::RecordRenderCommandBuffer(bool silhouette_only) {
         sync_fragment_shader_reads(vk::PipelineStageFlagBits::eLateFragmentTests | vk::PipelineStageFlagBits::eColorAttachmentOutput, edge_to_main_barriers);
     }
 
-    const auto &main = Pipelines->Main;
+    const auto &main = Pipelines.Main;
     const vk::Rect2D main_rect{{0, 0}, ToExtent2D(main.Resources->ColorImage.Extent)};
     const std::vector<vk::ClearValue> main_clear_values{
         {vk::ClearDepthStencilValue{1, 0}},
@@ -4565,6 +4585,7 @@ void Scene::RecordRenderCommandBuffer(bool silhouette_only) {
 
 #ifdef MVK_FORCE_STAGED_TRANSFERS
 void Scene::RecordTransferCommandBuffer() {
+    auto &Stores = R.ctx().get<SceneStores>();
     const Timer timer{"RecordTransferCommandBuffer"};
     TransferCommandBuffer->reset({});
     TransferCommandBuffer->begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
@@ -4591,6 +4612,8 @@ void Scene::RenderSelectionPass(vk::Semaphore signal_semaphore) const {
 
 void Scene::RenderSelectionPassWith(bool render_depth, const SelectionBuildFn &build_fn, vk::Semaphore signal_semaphore, bool render_silhouette) const {
     const Timer timer{"RenderSelectionPassWith"};
+    auto &Stores = R.ctx().get<SceneStores>();
+    auto &Pipelines = R.ctx().get<const ScenePipelines>();
     DrawListBuilder draw_list;
     DrawBatchInfo silhouette_batch{};
     if (render_depth) {
@@ -4609,7 +4632,7 @@ void Scene::RenderSelectionPassWith(bool render_depth, const SelectionBuildFn &b
     Stores.Buffers->SelectionCounter.Buffer.Write(as_bytes(SelectionCounters{}));
 
     // Transition head image to general layout and clear.
-    const auto &head_image = Pipelines->SelectionFragment.Resources->HeadImage;
+    const auto &head_image = Pipelines.SelectionFragment.Resources->HeadImage;
     cb.pipelineBarrier(
         vk::PipelineStageFlagBits::eTopOfPipe, vk::PipelineStageFlagBits::eTransfer, {}, {}, {},
         vk::ImageMemoryBarrier{{}, vk::AccessFlagBits::eTransferWrite, vk::ImageLayout::eUndefined, vk::ImageLayout::eGeneral, {}, {}, *head_image.Image, ColorSubresourceRange}
@@ -4627,7 +4650,7 @@ void Scene::RenderSelectionPassWith(bool render_depth, const SelectionBuildFn &b
     if (render_depth) {
         // Render selected meshes to silhouette depth buffer for element occlusion.
         // Open the pass even with no draws — its depth LoadOp::eClear seeds the selection-fragment pass's LoadOp::eLoad.
-        const auto &silhouette = Pipelines->Silhouette;
+        const auto &silhouette = Pipelines.Silhouette;
         const vk::Rect2D rect{{0, 0}, ToExtent2D(silhouette.Resources->OffscreenImage.Extent)};
         cb.beginRenderPass({*silhouette.Renderer.RenderPass, *silhouette.Resources->Framebuffer, rect, SilhouetteClearValues}, vk::SubpassContents::eInline);
         if (silhouette_batch.DrawCount > 0) {
@@ -4640,8 +4663,8 @@ void Scene::RenderSelectionPassWith(bool render_depth, const SelectionBuildFn &b
         cb.endRenderPass();
     }
 
-    const auto &selection = Pipelines->SelectionFragment;
-    const vk::Rect2D rect{{0, 0}, ToExtent2D(Pipelines->Silhouette.Resources->DepthImage.Extent)};
+    const auto &selection = Pipelines.SelectionFragment;
+    const vk::Rect2D rect{{0, 0}, ToExtent2D(Pipelines.Silhouette.Resources->DepthImage.Extent)};
     cb.beginRenderPass({*selection.Renderer.RenderPass, *selection.Resources->Framebuffer, rect, {}}, vk::SubpassContents::eInline);
     cb.bindIndexBuffer(*Stores.Buffers->IdentityIndexBuffer, 0, vk::IndexType::eUint32);
     const SelectionDrawPushConstants sel_pc{
@@ -4672,7 +4695,7 @@ scene_apply::SelectionGpuCtx Scene::MakeSelectionGpuCtx() const {
         *OneShotFence,
         Vk.Queue,
         Vk.Device,
-        *Pipelines,
+        R.ctx().get<const ScenePipelines>(),
         SelectionHandles->SelectionBitset,
         SelectionHandles->HeadImage,
         SelectionHandles->SelectionCounter,
@@ -4688,6 +4711,7 @@ void Scene::RunBoxSelectElements(std::span<const ElementRange> ranges, Element e
     const auto [box_min, box_max] = box_px;
     if (box_min.x > box_max.x || box_min.y > box_max.y) return;
 
+    auto &Stores = R.ctx().get<SceneStores>();
     const Timer timer{"RunBoxSelectElements"};
     const auto element_count = MaxElementBound(ranges);
     if (element_count == 0) return;
@@ -4722,6 +4746,8 @@ std::optional<uint32_t> Scene::RunSoundVerticesVertexPick(entt::entity instance_
     if (!R.all_of<SoundVertices>(instance_entity)) return {};
     const auto *instance = R.try_get<Instance>(instance_entity);
     if (!instance) return {};
+    auto &Stores = R.ctx().get<SceneStores>();
+    auto &Pipelines = R.ctx().get<const ScenePipelines>();
 
     const Timer timer{"RunSoundVerticesVertexPick"};
     const auto mesh_entity = instance->Entity;
@@ -4742,7 +4768,7 @@ std::optional<uint32_t> Scene::RunSoundVerticesVertexPick(entt::entity instance_
     R.emplace_or_replace<SelectionStale>(SceneEntity);
 
     return FindNearestPickedElement(
-        *Stores.Buffers, Pipelines->ElementPick, *ClickCommandBuffer,
+        *Stores.Buffers, Pipelines.ElementPick, *ClickCommandBuffer,
         Vk.Queue, *OneShotFence, Vk.Device,
         SelectionHandles->HeadImage, Stores.Buffers->SelectionNodeBuffer.Slot, SelectionHandles->ElementPickCandidates,
         mouse_px, vertex_count, Element::Vertex,
@@ -4752,6 +4778,8 @@ std::optional<uint32_t> Scene::RunSoundVerticesVertexPick(entt::entity instance_
 
 // Returns unique object-hit entities sorted by (distance, depth, object id).
 std::vector<entt::entity> Scene::RunObjectPick(uvec2 mouse_px, uint32_t radius_px) {
+    auto &Stores = R.ctx().get<SceneStores>();
+    auto &Pipelines = R.ctx().get<const ScenePipelines>();
     const uint32_t next_object_id = R.get<const ObjectIdCounter>(SceneEntity).Next;
     if (next_object_id <= 1) return {}; // No objects have been assigned IDs yet
     const uint32_t max_object_id = std::min(next_object_id - 1, SceneBuffers::MaxSelectableObjects);
@@ -4772,7 +4800,7 @@ std::vector<entt::entity> Scene::RunObjectPick(uvec2 mouse_px, uint32_t radius_p
 
     auto cb = *ClickCommandBuffer;
     RunSelectionCompute(
-        cb, Vk.Queue, *OneShotFence, Vk.Device, Pipelines->ObjectPick,
+        cb, Vk.Queue, *OneShotFence, Vk.Device, Pipelines.ObjectPick,
         ObjectPickPushConstants{
             .TargetPx = mouse_px,
             .Radius = radius_px,
@@ -4822,12 +4850,14 @@ std::vector<entt::entity> Scene::RunObjectPick(uvec2 mouse_px, uint32_t radius_p
 }
 
 void Scene::DispatchBoxSelect(uvec2 box_min, uvec2 box_max, uint32_t max_id, vk::Semaphore wait_semaphore) {
+    auto &Stores = R.ctx().get<SceneStores>();
+    auto &Pipelines = R.ctx().get<const ScenePipelines>();
     const uint32_t bitset_words = (max_id + 31) / 32;
     memset(Stores.Buffers->SelectionBitset.Data(), 0, bitset_words * sizeof(uint32_t));
 
     const auto group_counts = glm::max((box_max - box_min + 15u) / 16u, uvec2{1, 1});
     RunSelectionCompute(
-        *ClickCommandBuffer, Vk.Queue, *OneShotFence, Vk.Device, Pipelines->BoxSelect,
+        *ClickCommandBuffer, Vk.Queue, *OneShotFence, Vk.Device, Pipelines.BoxSelect,
         BoxSelectPushConstants{
             .BoxMin = box_min,
             .BoxMax = box_max,
@@ -4844,6 +4874,7 @@ void Scene::DispatchBoxSelect(uvec2 box_min, uvec2 box_max, uint32_t max_id, vk:
 std::vector<entt::entity> Scene::RunBoxSelect(std::pair<uvec2, uvec2> box_px) {
     const auto [box_min, box_max] = box_px;
     if (box_min.x > box_max.x || box_min.y > box_max.y) return {};
+    auto &Stores = R.ctx().get<SceneStores>();
     const uint32_t next_object_id = R.get<const ObjectIdCounter>(SceneEntity).Next;
     if (next_object_id <= 1) return {}; // No objects have been assigned IDs yet
 
@@ -4883,7 +4914,8 @@ void Scene::Render(std::optional<action::Action> &out, vk::Fence viewportConsume
 
     dl.ChannelsSetCurrent(0);
     if (SubmitViewport(viewportConsumerFence)) {
-        ViewportTexture = std::make_unique<mvk::ImGuiTexture>(Vk.Device, *Pipelines->Main.Resources->FinalColorImage.View, vec2{0, 1}, vec2{1, 0});
+        auto &Pipelines = R.ctx().get<const ScenePipelines>();
+        ViewportTexture = std::make_unique<mvk::ImGuiTexture>(Vk.Device, *Pipelines.Main.Resources->FinalColorImage.View, vec2{0, 1}, vec2{1, 0});
     }
     if (ViewportTexture) {
         const auto p = ImGui::GetCursorScreenPos();
@@ -4899,6 +4931,8 @@ void Scene::Render(std::optional<action::Action> &out, vk::Fence viewportConsume
 }
 
 bool Scene::SubmitViewport(vk::Fence viewportConsumerFence) {
+    auto &Stores = R.ctx().get<SceneStores>();
+    auto &Pipelines = R.ctx().get<ScenePipelines>();
     auto &logical_extent = R.get<ViewportExtent>(SceneEntity).Value;
     const auto content_region = ImGui::GetContentRegionAvail();
     const vk::Extent2D new_logical_extent{
@@ -4911,7 +4945,7 @@ bool Scene::SubmitViewport(vk::Fence viewportConsumerFence) {
         R.patch<ViewportExtent>(SceneEntity, [](auto &) {});
     }
     const auto render_extent = ComputeRenderExtentPx(logical_extent, std::bit_cast<vec2>(ImGui::GetIO().DisplayFramebufferScale));
-    const auto current_render_extent = Pipelines->Main.Resources ? ToExtent2D(Pipelines->Main.Resources->ColorImage.Extent) : vk::Extent2D{};
+    const auto current_render_extent = Pipelines.Main.Resources ? ToExtent2D(Pipelines.Main.Resources->ColorImage.Extent) : vk::Extent2D{};
     const bool render_extent_changed = current_render_extent.width != render_extent.width || current_render_extent.height != render_extent.height;
     if (render_extent_changed && !extent_changed) {
         // Trigger SceneView update (projection, screen pixel scale) when DPI scale changes at fixed logical viewport size.
@@ -4932,27 +4966,27 @@ bool Scene::SubmitViewport(vk::Fence viewportConsumerFence) {
         if (viewportConsumerFence) { // Wait for viewport consumer to finish sampling old resources
             std::ignore = Vk.Device.waitForFences(viewportConsumerFence, VK_TRUE, UINT64_MAX);
         }
-        Pipelines->SetExtent(render_extent);
+        Pipelines.SetExtent(render_extent);
         {
             const auto shading = R.get<const SceneSettings>(SceneEntity).ViewportShading;
             const bool is_pbr = shading == ViewportShadingMode::MaterialPreview || shading == ViewportShadingMode::Rendered;
-            const bool want_transmission = is_pbr && GetActivePbrLighting(R, SceneEntity, shading).RealTransmission && Pipelines->Main.Compiler.HasFeature(PbrFeature::Transmission);
-            Pipelines->Main.EnsureTransmissionResources(render_extent, Vk.Device, Vk.PhysicalDevice, want_transmission);
+            const bool want_transmission = is_pbr && GetActivePbrLighting(R, SceneEntity, shading).RealTransmission && Pipelines.Main.Compiler.HasFeature(PbrFeature::Transmission);
+            Pipelines.Main.EnsureTransmissionResources(render_extent, Vk.Device, Vk.PhysicalDevice, want_transmission);
         }
         Stores.Buffers->ResizeSelectionNodeBuffer(render_extent);
         {
             const Timer timer{"SubmitViewport->UpdateSelectionDescriptorSets"};
             const auto head_image_info = vk::DescriptorImageInfo{
                 nullptr,
-                *Pipelines->SelectionFragment.Resources->HeadImage.View,
+                *Pipelines.SelectionFragment.Resources->HeadImage.View,
                 vk::ImageLayout::eGeneral
             };
             const auto selection_counter = Stores.Buffers->SelectionCounter.GetDescriptor();
             const auto object_pick_key = Stores.Buffers->ObjectPickKeys.GetDescriptor(SceneBuffers::MaxSelectableObjects);
             const auto element_pick_candidates = Stores.Buffers->ElementPickCandidates.GetDescriptor(SceneBuffers::ElementPickGroupCount);
-            const auto &sil = Pipelines->Silhouette;
-            const auto &sil_edge = Pipelines->SilhouetteEdge;
-            const auto &main = Pipelines->Main;
+            const auto &sil = Pipelines.Silhouette;
+            const auto &sil_edge = Pipelines.SilhouetteEdge;
+            const auto &main = Pipelines.Main;
             const vk::DescriptorImageInfo silhouette_sampler{*sil.Resources->ImageSampler, *sil.Resources->OffscreenImage.View, vk::ImageLayout::eShaderReadOnlyOptimal};
             const vk::DescriptorImageInfo object_id_sampler{*sil_edge.Resources->ImageSampler, *sil_edge.Resources->OffscreenImage.View, vk::ImageLayout::eShaderReadOnlyOptimal};
             const vk::DescriptorImageInfo depth_sampler{*sil_edge.Resources->DepthSampler, *sil_edge.Resources->DepthImage.View, vk::ImageLayout::eDepthStencilReadOnlyOptimal};
@@ -5017,19 +5051,19 @@ void Scene::WaitForRender() {
 
     const Timer timer{"WaitForRender"};
     WaitFor(*RenderFence, Vk.Device);
-    Stores.Buffers->Ctx.ReclaimRetiredBuffers();
+    R.ctx().get<SceneStores>().Buffers->Ctx.ReclaimRetiredBuffers();
     RenderPending = false;
 }
 
 namespace scene_apply {
 std::expected<void, std::string> Apply(const FallibleApplyContext &ctx, const action::FallibleAction &action) {
     auto &R = ctx.R;
-    auto &Stores = ctx.Stores;
     const auto SceneEntity = ctx.SceneEntity;
     auto &Vk = ctx.Vk;
-    auto &Physics = ctx.Physics;
     const auto CommandPool = ctx.CommandPool;
     const auto OneShotFence = ctx.OneShotFence;
+    auto &Stores = R.ctx().get<SceneStores>();
+    auto &Physics = R.ctx().get<PhysicsWorld>();
     return std::visit(
         overloaded{
             [&](const action::project::SaveGltf &a) -> std::expected<void, std::string> {
@@ -5050,7 +5084,7 @@ std::expected<void, std::string> Apply(const FallibleApplyContext &ctx, const ac
                     R.replace<ViewCamera>(SceneEntity, ViewCamera{wt.P, wt.P + CameraForward(wt), R.get<Camera>(camera_entity)});
                 }
                 if (result->ImportedAnimation) {
-                    JumpToStartFrame(R, SceneEntity, Physics);
+                    JumpToStartFrame(R, SceneEntity);
                     R.get<LastEvaluatedFrame>(SceneEntity).Value = -1;
                 }
                 R.emplace_or_replace<ProfileNextProcessComponentEvents>(SceneEntity);

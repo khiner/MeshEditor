@@ -40,7 +40,8 @@ entt::entity WireSceneRegistry(entt::registry &r, SceneStores &stores) {
     r.emplace<NameRegistry>(scene_entity);
     r.emplace<ObjectIdCounter>(scene_entity);
     r.emplace<MaterialStore>(scene_entity);
-    r.emplace<AnimationTimeline>(scene_entity);
+    r.emplace<TimelineRange>(scene_entity);
+    r.emplace<TimelinePlayback>(scene_entity);
 
     stores.Buffers->Materials.Append({
         .BaseColorFactor = vec4{1.f},

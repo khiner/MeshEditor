@@ -635,7 +635,7 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
                 scene->RenderClipPickers(action);
                 Unindent(6);
                 PopStyleVar();
-                if (auto a = RenderAnimationTimeline(scene->GetTimeline(), scene->GetTimelineView(), scene->GetAnimationIcons())) {
+                if (auto a = RenderAnimationTimeline(scene->GetTimelineRange(), scene->GetTimelinePlayback(), scene->GetTimelineView(), scene->GetAnimationIcons())) {
                     action::Assign(action, std::move(*a));
                 }
             }
