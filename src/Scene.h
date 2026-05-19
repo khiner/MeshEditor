@@ -47,6 +47,7 @@ struct ElementRange {
 namespace scene_apply {
 struct SelectionGpuCtx;
 struct ApplyContext;
+struct FallibleApplyContext;
 } // namespace scene_apply
 
 struct Scene {
@@ -235,7 +236,8 @@ private:
     using SelectionBuildFn = std::function<std::vector<SelectionDrawInfo>(DrawListBuilder &)>;
     void RenderSelectionPassWith(bool render_depth, const SelectionBuildFn &build_fn, vk::Semaphore signal_semaphore = {}, bool render_silhouette = true) const;
     scene_apply::SelectionGpuCtx MakeSelectionGpuCtx() const; // Bundle GPU handles for selection-pass helpers.
-    scene_apply::ApplyContext MakeApplyContext() const; // Bundle all Scene state Apply needs.
+    scene_apply::ApplyContext MakeApplyContext() const; // Bundle state Apply(Action) needs.
+    scene_apply::FallibleApplyContext MakeFallibleApplyContext() const; // Bundle state Apply(FallibleAction) needs (includes GPU handles).
     void RunBoxSelectElements(std::span<const ElementRange>, Element, std::pair<uvec2, uvec2>, bool is_additive);
     std::optional<uint32_t> RunSoundVerticesVertexPick(entt::entity instance_entity, uvec2 mouse_px);
 };

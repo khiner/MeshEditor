@@ -448,25 +448,25 @@ bool AllSelectedAreMeshes(const entt::registry &R) {
 
 namespace scene_apply {
 
-// Aggregate of all Scene-owned state Apply needs.
-// All fields are non-owning references/handles into Scene-owned objects.
+// Aggregate of state Apply(Action) needs.
+// Apply(Action) is registry-only — GPU side-effects are deferred via PendingX components that ProcessComponentEvents observes.
 struct ApplyContext {
     entt::registry &R;
     const SceneStores &Stores;
     entt::entity SceneEntity;
+    PhysicsWorld &Physics;
+    const std::set<InteractionMode> &InteractionModes;
+};
+
+// FallibleActions (LoadGltf, SaveGltf, LoadRealImpact) complete synchronously and report failure inline, so they cannot defer GPU work.
+struct FallibleApplyContext {
+    entt::registry &R;
+    const SceneStores &Stores;
+    entt::entity SceneEntity;
     const SceneVulkanResources &Vk;
-    const ScenePipelines &Pipelines;
     PhysicsWorld &Physics;
     vk::CommandPool CommandPool;
-    vk::CommandBuffer ClickCommandBuffer;
     vk::Fence OneShotFence;
-    vk::Semaphore SelectionReadySemaphore;
-    uint32_t SelectionBitsetSlot;
-    uint32_t HeadImageSlot;
-    uint32_t SelectionCounterSlot;
-    uint32_t ElementPickCandidatesSlot;
-    bool SelectionXRay;
-    const std::set<InteractionMode> &InteractionModes;
 };
 
 // Aggregate of Vulkan/GPU dependencies used by selection-pass helpers.
@@ -1960,6 +1960,57 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
             dirty_element_state_meshes.insert(mesh_entity); // for Excite mode
         }
     }
+    if (const auto *pending = R.try_get<const PendingSetStudioEnvironment>(SceneEntity)) {
+        const auto index = pending->Index;
+        R.remove<PendingSetStudioEnvironment>(SceneEntity);
+        SetStudioEnvironment(Vk, Stores, *Pipelines, *CommandPool, *OneShotFence, index);
+    }
+    if (const auto *pending = R.try_get<const PendingSetEditMode>(SceneEntity)) {
+        const auto mode = pending->Mode;
+        R.remove<PendingSetEditMode>(SceneEntity);
+        SetEditMode(R, Stores, SceneEntity, MakeSelectionGpuCtx(), mode);
+    }
+    if (auto *pending = R.try_get<PendingImportMesh>(SceneEntity)) {
+        auto path = std::move(pending->Path);
+        auto info = std::move(pending->Info);
+        R.remove<PendingImportMesh>(SceneEntity);
+        ImportMesh(R, Stores, SceneEntity, Vk, *CommandPool, *OneShotFence, path, std::move(info));
+    }
+    if (const auto *pending = R.try_get<const PendingEditElementClick>(SceneEntity)) {
+        const auto mouse_px = pending->MousePx;
+        const bool toggle = pending->Toggle;
+        R.remove<PendingEditElementClick>(SceneEntity);
+
+        const auto edit_mode = R.get<const SceneEditMode>(SceneEntity).Value;
+        const auto ranges = scene_apply::GetBitsetRangesForSelected(R);
+        auto *bits = Stores.Buffers->SelectionBitset.Data();
+        if (!toggle) {
+            for (const auto &range : ranges) {
+                const uint32_t first_word = range.Offset / 32;
+                const uint32_t last_word = (range.Offset + range.Count + 31) / 32;
+                memset(&bits[first_word], 0, (last_word - first_word) * sizeof(uint32_t));
+                R.remove<MeshActiveElement>(range.MeshEntity);
+            }
+        }
+        const auto hit = RunElementPickFromRanges(R, Stores, SceneEntity, MakeSelectionGpuCtx(), ranges, edit_mode, mouse_px);
+        if (hit) {
+            const auto [mesh_entity, element_index] = *hit;
+            const auto *current_active = R.try_get<MeshActiveElement>(mesh_entity);
+            const bool is_active = current_active && current_active->Handle == element_index;
+            if (const auto *br = R.try_get<const MeshSelectionBitsetRange>(mesh_entity)) {
+                const uint32_t global_bit = br->Offset + element_index;
+                const bool was_selected = (bits[global_bit >> 5] >> (global_bit & 31)) & 1;
+                if (toggle && was_selected) bits[global_bit >> 5] &= ~(1u << (global_bit & 31));
+                else bits[global_bit >> 5] |= 1u << (global_bit & 31);
+            }
+            if (toggle && is_active) R.remove<MeshActiveElement>(mesh_entity);
+            else R.emplace_or_replace<MeshActiveElement>(mesh_entity, element_index);
+        } else if (!toggle) {
+            for (const auto &range : ranges) R.remove<MeshActiveElement>(range.MeshEntity);
+        }
+        if (!ranges.empty() && (!toggle || hit)) R.emplace_or_replace<SelectionBitsDirty>(SceneEntity);
+    }
+
     if (R.all_of<SelectionBitsDirty>(SceneEntity)) {
         R.remove<SelectionBitsDirty>(SceneEntity);
         if (is_edit_mode) ApplySelectionStateUpdate(R, Stores, SceneEntity, MakeSelectionGpuCtx(), scene_apply::GetBitsetRangesForSelected(R), R.get<const SceneEditMode>(SceneEntity).Value);
@@ -3120,17 +3171,8 @@ void Apply(const ApplyContext &ctx, const action::Action &action) {
     auto &R = ctx.R;
     auto &Stores = ctx.Stores;
     const auto SceneEntity = ctx.SceneEntity;
-    auto &Vk = ctx.Vk;
-    auto *Pipelines = &ctx.Pipelines;
     auto *Physics = &ctx.Physics;
-    const auto CommandPool = ctx.CommandPool;
-    const auto ClickCommandBuffer = ctx.ClickCommandBuffer;
-    const auto OneShotFence = ctx.OneShotFence;
-    const auto SelectionReadySemaphore = ctx.SelectionReadySemaphore;
     auto &InteractionModes = ctx.InteractionModes;
-    const auto MakeSelectionGpuCtx = [&] {
-        return SelectionGpuCtx{ClickCommandBuffer, OneShotFence, Vk.Queue, Vk.Device, *Pipelines, ctx.SelectionBitsetSlot, ctx.HeadImageSlot, ctx.SelectionCounterSlot, ctx.ElementPickCandidatesSlot, SelectionReadySemaphore, ctx.SelectionXRay};
-    };
     auto patch_camera_stopped = [&](auto &&fn) {
         R.patch<ViewCamera>(SceneEntity, [&](auto &c) { fn(c); c.StopMoving(); });
     };
@@ -3221,34 +3263,7 @@ void Apply(const ApplyContext &ctx, const action::Action &action) {
             },
             [&](const action::selection::ApplyEditElementClick &a) {
                 end_box_select_interaction();
-                const auto edit_mode = R.get<const SceneEditMode>(SceneEntity).Value;
-                const auto ranges = scene_apply::GetBitsetRangesForSelected(R);
-                auto *bits = Stores.Buffers->SelectionBitset.Data();
-                if (!a.Toggle) {
-                    for (const auto &range : ranges) {
-                        const uint32_t first_word = range.Offset / 32;
-                        const uint32_t last_word = (range.Offset + range.Count + 31) / 32;
-                        memset(&bits[first_word], 0, (last_word - first_word) * sizeof(uint32_t));
-                        R.remove<MeshActiveElement>(range.MeshEntity);
-                    }
-                }
-                const auto hit = RunElementPickFromRanges(R, Stores, SceneEntity, MakeSelectionGpuCtx(), ranges, edit_mode, a.MousePx);
-                if (hit) {
-                    const auto [mesh_entity, element_index] = *hit;
-                    const auto *current_active = R.try_get<MeshActiveElement>(mesh_entity);
-                    const bool is_active = current_active && current_active->Handle == element_index;
-                    if (const auto *br = R.try_get<const MeshSelectionBitsetRange>(mesh_entity)) {
-                        const uint32_t global_bit = br->Offset + element_index;
-                        const bool was_selected = (bits[global_bit >> 5] >> (global_bit & 31)) & 1;
-                        if (a.Toggle && was_selected) bits[global_bit >> 5] &= ~(1u << (global_bit & 31));
-                        else bits[global_bit >> 5] |= 1u << (global_bit & 31);
-                    }
-                    if (a.Toggle && is_active) R.remove<MeshActiveElement>(mesh_entity);
-                    else R.emplace_or_replace<MeshActiveElement>(mesh_entity, element_index);
-                } else if (!a.Toggle) {
-                    for (const auto &range : ranges) R.remove<MeshActiveElement>(range.MeshEntity);
-                }
-                if (!ranges.empty() && (!a.Toggle || hit)) R.emplace_or_replace<SelectionBitsDirty>(SceneEntity);
+                R.emplace_or_replace<PendingEditElementClick>(SceneEntity, a.MousePx, a.Toggle);
             },
             [&](const action::selection::ApplyTreeSelection &a) {
                 using Clear = action::selection::ApplyTreeSelection::ClearKind;
@@ -3370,7 +3385,7 @@ void Apply(const ApplyContext &ctx, const action::Action &action) {
                 const auto [mesh_entity, _] = ::AddMesh(R, *Stores.Meshes, SceneEntity, Stores.Meshes->CreateMesh(primitive::CreateMesh(a.Shape), {}, {}), *a.Info);
                 R.emplace<PrimitiveShape>(mesh_entity, a.Shape);
             },
-            [&](const action::object::ImportMesh &a) { ImportMesh(R, Stores, SceneEntity, Vk, CommandPool, OneShotFence, a.Path, *a.Info); },
+            [&](const action::object::ImportMesh &a) { R.emplace_or_replace<PendingImportMesh>(SceneEntity, a.Path, *a.Info); },
             [&](const action::object::ReplaceMesh &a) {
                 const auto e = scene_apply::GetActiveMeshEntity(R);
                 if (e == entt::null || scene_selection::HasScaleLockedInstance(R, e)) return;
@@ -3506,9 +3521,7 @@ void Apply(const ApplyContext &ctx, const action::Action &action) {
                     if (SetInteractionMode(R, Stores, SceneEntity, *it)) break;
                 }
             },
-            [&](const action::scene::SetEditMode &a) {
-                SetEditMode(R, Stores, SceneEntity, MakeSelectionGpuCtx(), a.Mode);
-            },
+            [&](const action::scene::SetEditMode &a) { R.emplace_or_replace<PendingSetEditMode>(SceneEntity, a.Mode); },
             [&](action::scene::SelectAll) {
                 const auto interaction_mode = R.get<const SceneInteraction>(SceneEntity).Mode;
                 const auto active_entity = FindActiveEntity(R);
@@ -3557,7 +3570,7 @@ void Apply(const ApplyContext &ctx, const action::Action &action) {
                 R.emplace_or_replace<VertexForce>(a.InstanceEntity, a.VertexIndex, 1.f);
             },
             [&](action::scene::ClearExciteImpacts) { R.clear<VertexForce>(); },
-            [&](const action::scene::SetStudioEnvironment &a) { SetStudioEnvironment(Vk, Stores, *Pipelines, CommandPool, OneShotFence, a.Index); poke_active_lighting(); },
+            [&](const action::scene::SetStudioEnvironment &a) { R.emplace_or_replace<PendingSetStudioEnvironment>(SceneEntity, a.Index); poke_active_lighting(); },
             [&](const action::scene::SetSourceIblIntensity &a) {
                 R.patch<gltf::SourceAssets>(SceneEntity, [&](auto &sa) { if (sa.ImageBasedLight) sa.ImageBasedLight->Intensity = a.Intensity; });
                 poke_active_lighting();
@@ -3816,24 +3829,11 @@ void Apply(const ApplyContext &ctx, const action::Action &action) {
 } // namespace scene_apply
 
 scene_apply::ApplyContext Scene::MakeApplyContext() const {
-    return {
-        R,
-        Stores,
-        SceneEntity,
-        Vk,
-        *Pipelines,
-        *Physics,
-        *CommandPool,
-        *ClickCommandBuffer,
-        *OneShotFence,
-        *SelectionReadySemaphore,
-        SelectionHandles->SelectionBitset,
-        SelectionHandles->HeadImage,
-        SelectionHandles->SelectionCounter,
-        SelectionHandles->ElementPickCandidates,
-        SelectionXRay,
-        InteractionModes,
-    };
+    return {R, Stores, SceneEntity, *Physics, InteractionModes};
+}
+
+scene_apply::FallibleApplyContext Scene::MakeFallibleApplyContext() const {
+    return {R, Stores, SceneEntity, Vk, *Physics, *CommandPool, *OneShotFence};
 }
 
 void Scene::Apply(const action::Action &action) const { scene_apply::Apply(MakeApplyContext(), action); }
@@ -5022,7 +5022,7 @@ void Scene::WaitForRender() {
 }
 
 namespace scene_apply {
-std::expected<void, std::string> Apply(const ApplyContext &ctx, const action::FallibleAction &action) {
+std::expected<void, std::string> Apply(const FallibleApplyContext &ctx, const action::FallibleAction &action) {
     auto &R = ctx.R;
     auto &Stores = ctx.Stores;
     const auto SceneEntity = ctx.SceneEntity;
@@ -5119,4 +5119,4 @@ std::expected<void, std::string> Apply(const ApplyContext &ctx, const action::Fa
 }
 } // namespace scene_apply
 
-std::expected<void, std::string> Scene::Apply(const action::FallibleAction &action) const { return scene_apply::Apply(MakeApplyContext(), action); }
+std::expected<void, std::string> Scene::Apply(const action::FallibleAction &action) const { return scene_apply::Apply(MakeFallibleApplyContext(), action); }

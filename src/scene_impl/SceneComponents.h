@@ -2,10 +2,13 @@
 
 #include "BoneSelection.h"
 #include "SceneModeComponents.h"
+#include "SceneOps.h"
 #include "TransformGizmo.h"
 #include "gpu/DebugChannel.h"
+#include "numeric/vec2.h"
 
 #include <entt/entity/fwd.hpp>
+#include <filesystem>
 #include <optional>
 #include <vulkan/vulkan.hpp>
 
@@ -106,4 +109,26 @@ struct LastEvaluatedFrame {
 // Cleared by InteractOverlay after consumption. Singleton on SceneEntity.
 struct StartScreenTransform {
     std::optional<TransformGizmo::TransformType> Value;
+};
+
+// Pending edit-mode element click. Apply emits this; ProcessComponentEvents runs the GPU pick and applies bit/active updates, then removes it.
+struct PendingEditElementClick {
+    uvec2 MousePx;
+    bool Toggle;
+};
+
+// Pending HDR prefilter / activation. Apply emits this; ProcessComponentEvents prefilters and activates, then removes it.
+struct PendingSetStudioEnvironment {
+    uint32_t Index;
+};
+
+// Pending edit-element-mode change. Apply emits this; ProcessComponentEvents performs the bitset conversion + GPU compute dispatch, then removes it.
+struct PendingSetEditMode {
+    Element Mode;
+};
+
+// Pending mesh import (file load + texture uploads). Apply emits this; ProcessComponentEvents performs the GPU work, then removes it.
+struct PendingImportMesh {
+    std::filesystem::path Path;
+    MeshInstanceCreateInfo Info;
 };
