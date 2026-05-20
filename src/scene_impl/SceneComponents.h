@@ -150,3 +150,29 @@ struct PhysicsCacheInvalid {};
 struct SelectionBitsetRef {
     std::span<uint32_t> Value;
 };
+
+// Descriptor-slot IDs for the selection compute/render pipeline.
+// RAII for the slots lives in Scene; this component publishes the stable IDs.
+struct SelectionSlots {
+    uint32_t HeadImage;
+    uint32_t SelectionCounter;
+    uint32_t ElementPickCandidates;
+    uint32_t SelectionBitset;
+};
+
+// Shared one-shot GPU sync primitives for synchronous passes (selection compute,
+// element pick, glTF load, etc.). RAII for the underlying Vulkan resources lives
+// in Scene; raw handles published here so registry-only helpers can read them.
+struct SceneOneShotGpu {
+    vk::CommandPool Pool;
+    vk::CommandBuffer Cb;
+    vk::Fence Fence;
+    vk::Semaphore SelectionReady;
+};
+
+// X-ray (occlusion-ignoring) selection toggle.
+// Kept distinct from SceneSettings so toggling does not trip the SceneSettings
+// reactive handler that forces a full draw-list re-record.
+struct SelectionXRay {
+    bool Value{false};
+};

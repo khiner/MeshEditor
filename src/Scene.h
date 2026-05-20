@@ -41,12 +41,6 @@ struct ElementRange {
     uint32_t Count;
 };
 
-namespace scene_apply {
-struct SelectionGpuCtx;
-struct ApplyContext;
-struct FallibleApplyContext;
-} // namespace scene_apply
-
 struct Scene {
     Scene(SceneVulkanResources, entt::registry &);
     ~Scene();
@@ -160,7 +154,6 @@ private:
     };
     SelectionMode SelectionMode{SelectionMode::Box};
     std::optional<vec2> BoxSelectStart, BoxSelectEnd;
-    bool SelectionXRay{false}; // Edit mode: Whether to ignore occlusion when selecting elements.
     bool OrbitToActive{false}; // Edit/Excite mode: When true, orbit camera to active element.
 
     struct TransformGizmoState {
@@ -229,9 +222,6 @@ private:
     void RenderSelectionPass(vk::Semaphore signal_semaphore = {}) const; // On-demand selection fragment rendering.
     using SelectionBuildFn = std::function<std::vector<SelectionDrawInfo>(DrawListBuilder &)>;
     void RenderSelectionPassWith(bool render_depth, const SelectionBuildFn &build_fn, vk::Semaphore signal_semaphore = {}, bool render_silhouette = true) const;
-    scene_apply::SelectionGpuCtx MakeSelectionGpuCtx() const; // Bundle GPU handles for selection-pass helpers.
-    scene_apply::ApplyContext MakeApplyContext() const; // Bundle state Apply(Action) needs.
-    scene_apply::FallibleApplyContext MakeFallibleApplyContext() const; // Bundle state Apply(FallibleAction) needs (includes GPU handles).
     void RunBoxSelectElements(std::span<const ElementRange>, Element, std::pair<uvec2, uvec2>, bool is_additive);
     std::optional<uint32_t> RunSoundVerticesVertexPick(entt::entity instance_entity, uvec2 mouse_px);
 };

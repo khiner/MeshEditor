@@ -696,11 +696,13 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
 
     // Cleanup
     vc->Device->waitIdle();
-    r.clear();
 
     audio_device.Uninit();
     NFD_Quit();
 
+    // Tear down Scene (and its ctx-resident GPU stores) before clearing the registry —
+    // SceneBuffers is a component on the scene entity, so r.clear() would destroy it
+    // (and its VMA allocator) while MeshStore in ctx still holds outstanding allocations.
     scene.reset();
 
     ImGui_ImplVulkan_Shutdown();

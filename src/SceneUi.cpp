@@ -430,7 +430,7 @@ void Scene::Interact(std::optional<action::Action> &out) {
             const auto &settings = R.get<const SceneSettings>(SceneEntity);
             out = action::scene::SetViewportShading{.Mode = settings.ViewportShading == ViewportShadingMode::Wireframe ? settings.FillMode : ViewportShadingMode::Wireframe};
         } else if (Shortcut(ImGuiMod_Alt | ImGuiKey_Z, VKey)) {
-            SelectionXRay = !SelectionXRay;
+            R.replace<SelectionXRay>(SceneEntity, !R.get<const SelectionXRay>(SceneEntity).Value);
         }
         // Tab uses default RouteFocused (not VKey/RouteGlobal) so widget tabbing in panels keeps working.
         const bool tab_no_mods = Shortcut(ImGuiKey_Tab);
@@ -616,7 +616,9 @@ void Scene::Interact(std::optional<action::Action> &out) {
 }
 
 void Scene::InteractOverlay(std::optional<action::Action> &out) {
-    auto &Stores = R.ctx().get<SceneStores>();
+    auto &Buffers = R.get<SceneBuffers>(SceneEntity);
+    auto &Meshes = R.ctx().get<MeshStore>();
+    auto &Environments = *R.ctx().get<std::unique_ptr<EnvironmentStore>>();
     const rect viewport{ToGlm(GetWindowPos()), ToGlm(GetContentRegionAvail())};
     const bool active_transform = TransformGizmo::IsUsing();
     static constexpr float OrientationGizmoSize{84};
@@ -758,7 +760,7 @@ void Scene::InteractOverlay(std::optional<action::Action> &out) {
                                 out = action::scene::SetSourceIblIntensity{v};
                         }
                     } else {
-                        auto &environments = *Stores.Environments;
+                        auto &environments = Environments;
                         const auto &current_name = environments.Hdris[environments.ActiveHdriIndex].Name;
                         if (BeginCombo("Environment", current_name.c_str())) {
                             for (uint32_t i = 0; i < environments.Hdris.size(); ++i) {
@@ -791,7 +793,7 @@ void Scene::InteractOverlay(std::optional<action::Action> &out) {
                     render_pbr_controls(R.get<const RenderedLighting>(SceneEntity), "RenderedLighting");
                 } else if (current_mode == ViewportShadingMode::Solid) {
                     SeparatorText("Solid lighting");
-                    auto &lights = Stores.Buffers->GetWorkspaceLights();
+                    auto &lights = Buffers.GetWorkspaceLights();
                     bool changed = false;
                     if (Button("Reset##Lighting")) {
                         lights = SceneDefaults::WorkspaceLights;
@@ -1020,7 +1022,7 @@ void Scene::InteractOverlay(std::optional<action::Action> &out) {
         if (bone_mode) return !bone_selected_view.empty();
         if (selected_view.empty()) return false;
         if (!mesh_edit_mode) return true;
-        const auto *bits = Stores.Buffers->SelectionBitset.Data();
+        const auto *bits = Buffers.SelectionBitset.Data();
         for (const auto [e, instance] : R.view<const Instance, const Selected>(entt::exclude<ScaleLocked>).each()) {
             if (const auto *br = R.try_get<const MeshSelectionBitsetRange>(instance.Entity)) {
                 if (scene_selection::CountSelected(bits, br->Offset, br->Count) > 0) return true;
@@ -1073,7 +1075,7 @@ void Scene::InteractOverlay(std::optional<action::Action> &out) {
             uint32_t vertex_count = 0;
             for (const auto &[mesh_entity, instance_entity] : edit_transform_instances) {
                 const auto &mesh = R.get<const Mesh>(mesh_entity);
-                const auto vertex_states = Stores.Meshes->GetVertexStates(mesh.GetStoreId());
+                const auto vertex_states = Meshes.GetVertexStates(mesh.GetStoreId());
                 const auto vertices = mesh.GetVerticesSpan();
                 const auto &wt = R.get<const WorldTransform>(instance_entity);
                 for (uint32_t vi = 0; vi < vertex_states.size(); ++vi) {
@@ -1310,7 +1312,9 @@ void Scene::DrawOverlay() {
 }
 
 void Scene::RenderEntityControls(entt::entity active_entity, std::optional<action::Action> &out) {
-    auto &Stores = R.ctx().get<SceneStores>();
+    auto &Buffers = R.get<SceneBuffers>(SceneEntity);
+    auto &Meshes = R.ctx().get<MeshStore>();
+    auto &Textures = *R.ctx().get<std::unique_ptr<TextureStore>>();
     auto &Physics = R.ctx().get<PhysicsWorld>();
     if (active_entity == entt::null) {
         TextUnformatted("Active object: None");
@@ -1555,9 +1559,9 @@ void Scene::RenderEntityControls(entt::entity active_entity, std::optional<actio
         if (CollapsingHeader("Material")) {
             const auto &active_mesh = R.get<const Mesh>(active_mesh_entity);
             auto &material_store = R.get<MaterialStore>(SceneEntity);
-            auto &texture_store = *Stores.Textures;
-            std::span<const uint32_t> primitive_materials = Stores.Meshes->GetPrimitiveMaterialIndices(active_mesh.GetStoreId());
-            const auto material_count = Stores.Buffers->Materials.Count();
+            auto &texture_store = Textures;
+            std::span<const uint32_t> primitive_materials = Meshes.GetPrimitiveMaterialIndices(active_mesh.GetStoreId());
+            const auto material_count = Buffers.Materials.Count();
             const auto material_name = [&](uint32_t index) {
                 if (index < material_store.Names.size() && !material_store.Names[index].empty()) return std::string{material_store.Names[index]};
                 return std::format("Material{}", index);
@@ -1603,7 +1607,7 @@ void Scene::RenderEntityControls(entt::entity active_entity, std::optional<actio
                     EndCombo();
                 }
 
-                auto &material = Stores.Buffers->Materials.Get(material_index);
+                auto &material = Buffers.Materials.Get(material_index);
                 const auto edit_texture_slot = [&](const char *label, uint32_t &slot) {
                     std::string preview = "None";
                     bool has_match = false;
@@ -1775,7 +1779,7 @@ void Scene::RenderEntityControls(entt::entity active_entity, std::optional<actio
     }
     if (R.all_of<LightIndex>(active_entity) &&
         CollapsingHeader("Light", ImGuiTreeNodeFlags_DefaultOpen)) {
-        auto light = Stores.Buffers->Lights.Get(R.get<const LightIndex>(active_entity).Value);
+        auto light = Buffers.Lights.Get(R.get<const LightIndex>(active_entity).Value);
         bool changed{false};
 
         const char *type_names[]{"Directional", "Point", "Spot"};
@@ -1816,7 +1820,7 @@ void Scene::RenderEntityControls(entt::entity active_entity, std::optional<actio
     if (const auto *instance = R.try_get<Instance>(active_entity); instance && R.all_of<Mesh>(instance->Entity)) {
         const bool has_sound = R.all_of<SoundVerticesModel>(active_entity);
         if (CollapsingHeader("Audio", has_sound ? ImGuiTreeNodeFlags_DefaultOpen : 0)) {
-            if (auto a = DrawObjectAudioControls(R, SceneEntity, active_entity, scene_apply::GetMeshEntity(R, active_entity), Stores.Buffers->SelectionBitset.Data())) action::Assign(out, std::move(*a));
+            if (auto a = DrawObjectAudioControls(R, SceneEntity, active_entity, scene_apply::GetMeshEntity(R, active_entity), Buffers.SelectionBitset.Data())) action::Assign(out, std::move(*a));
             if (const auto *active_mic = R.try_get<RealImpactActiveMicrophone>(active_entity)) {
                 SeparatorText("Microphone");
                 Text("Active: %s", GetName(R, active_mic->Entity).c_str());
@@ -1899,7 +1903,7 @@ void Scene::RenderEntityControls(entt::entity active_entity, std::optional<actio
 }
 
 void Scene::RenderControls(std::optional<action::Action> &out) {
-    auto &Stores = R.ctx().get<SceneStores>();
+    auto &Buffers = R.get<SceneBuffers>(SceneEntity);
     auto &Physics = R.ctx().get<PhysicsWorld>();
     if (BeginTabBar("Scene controls")) {
         if (BeginTabItem("Object")) {
@@ -1926,7 +1930,8 @@ void Scene::RenderControls(std::optional<action::Action> &out) {
                     Checkbox("Orbit to active", &OrbitToActive);
                 }
                 if (interaction_mode == InteractionMode::Edit) {
-                    Checkbox("X-ray selection", &SelectionXRay);
+                    bool xray = R.get<const SelectionXRay>(SceneEntity).Value;
+                    if (Checkbox("X-ray selection", &xray)) R.replace<SelectionXRay>(SceneEntity, xray);
                 }
                 if (interaction_mode == InteractionMode::Edit && !active_is_armature_rc) {
                     AlignTextToFramePadding();
@@ -1943,7 +1948,7 @@ void Scene::RenderControls(std::optional<action::Action> &out) {
                         if (const auto *instance = R.try_get<Instance>(active_entity); instance && R.all_of<Mesh>(instance->Entity)) {
                             const auto *br = R.try_get<const MeshSelectionBitsetRange>(instance->Entity);
                             const uint32_t selected_count = br ?
-                                scene_selection::CountSelected(Stores.Buffers->SelectionBitset.Data(), br->Offset, br->Count) :
+                                scene_selection::CountSelected(Buffers.SelectionBitset.Data(), br->Offset, br->Count) :
                                 0;
                             Text("Editing %s: %u selected", label(edit_mode).data(), selected_count);
                         }

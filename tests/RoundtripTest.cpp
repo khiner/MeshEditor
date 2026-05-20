@@ -1,8 +1,10 @@
+#include "Bindless.h"
 #include "ImageDecode.h"
 #include "SceneStores.h"
 #include "SceneTextures.h"
 #include "SceneVulkanResources.h"
 #include "gltf/GltfScene.h"
+#include "mesh/MeshStore.h"
 #include "scene_impl/SceneBuffers.h"
 #include "vulkan/VulkanContext.h"
 
@@ -532,25 +534,53 @@ int main() {
     VulkanContext vk_ctx{{}, /*with_swapchain=*/false};
     const SceneVulkanResources vk_resources{*vk_ctx.Instance, vk_ctx.PhysicalDevice, *vk_ctx.Device, vk_ctx.QueueFamily, vk_ctx.Queue};
 
-    const auto load_ctx = [](entt::registry &r, SceneStores &s, entt::entity e) {
-        return gltf::LoadContext{.R = r, .SceneEntity = e, .Slots = *s.Slots, .Buffers = *s.Buffers, .Meshes = *s.Meshes, .Textures = *s.Textures, .Environments = *s.Environments};
+    // RAII registry wrapper that initializes the scene stores in ctx and tears them down before destruction.
+    struct SceneFixture {
+        entt::registry R;
+        entt::entity SceneEntity;
+        explicit SceneFixture(SceneVulkanResources vk) {
+            InitSceneStoreCtx(R, vk);
+            SceneEntity = WireSceneRegistry(R, vk);
+        }
+        ~SceneFixture() { TearDownSceneStoreCtx(R); }
+        SceneFixture(const SceneFixture &) = delete;
+        SceneFixture &operator=(const SceneFixture &) = delete;
     };
-    const auto save_ctx = [&](const entt::registry &r, const SceneStores &s, entt::entity e) {
-        return gltf::SaveContext{.R = r, .SceneEntity = e, .Buffers = *s.Buffers, .Meshes = *s.Meshes, .Textures = *s.Textures, .Vk = &vk_resources, .BufCtx = &s.Buffers->Ctx};
+
+    const auto load_ctx = [](entt::registry &r, entt::entity e) {
+        return gltf::LoadContext{
+            .R = r,
+            .SceneEntity = e,
+            .Slots = r.ctx().get<DescriptorSlots>(),
+            .Buffers = r.get<SceneBuffers>(e),
+            .Meshes = r.ctx().get<MeshStore>(),
+            .Textures = *r.ctx().get<std::unique_ptr<TextureStore>>(),
+            .Environments = *r.ctx().get<std::unique_ptr<EnvironmentStore>>(),
+        };
+    };
+    const auto save_ctx = [&](entt::registry &r, entt::entity e) {
+        auto &buffers = r.get<SceneBuffers>(e);
+        return gltf::SaveContext{
+            .R = r,
+            .SceneEntity = e,
+            .Buffers = buffers,
+            .Meshes = r.ctx().get<MeshStore>(),
+            .Textures = *r.ctx().get<std::unique_ptr<TextureStore>>(),
+            .Vk = &vk_resources,
+            .BufCtx = &buffers.Ctx,
+        };
     };
 
     for (const auto &src : samples) {
         const auto sample_name = src.stem().string();
 
         test(sample_name) = [&] {
-            entt::registry r;
-            SceneStores stores{vk_resources};
-            const auto scene = WireSceneRegistry(r, *stores.Buffers, *stores.Textures);
-            auto load = gltf::LoadGltf(src, load_ctx(r, stores, scene));
+            SceneFixture fx{vk_resources};
+            auto load = gltf::LoadGltf(src, load_ctx(fx.R, fx.SceneEntity));
             if (!load) return; // Loader limitation on source (e.g., unsupported extension); not a roundtrip concern.
 
             const auto out_path = tmp_root / (sample_name + ".gltf");
-            auto save = gltf::SaveGltf(out_path, save_ctx(r, stores, scene));
+            auto save = gltf::SaveGltf(out_path, save_ctx(fx.R, fx.SceneEntity));
             expect(save.has_value()) << "SaveGltf failed: " << (save ? "" : save.error());
             if (!save) return;
 
@@ -561,16 +591,19 @@ int main() {
 
     // Drains PendingTextureUploads onto the GPU — Scene::ProcessComponentEvents minus the env /
     // sync passes — so the edit tests below can read texture pixels back.
-    const auto materialize_textures = [&](entt::registry &r, SceneStores &stores, entt::entity scene) {
+    const auto materialize_textures = [&](entt::registry &r, entt::entity scene) {
         auto pool = vk_resources.Device.createCommandPoolUnique({{}, vk_resources.QueueFamily});
         auto fence = vk_resources.Device.createFenceUnique({});
         auto *pending = r.try_get<PendingTextureUploads>(scene);
         const auto *src = r.try_get<const gltf::SourceAssets>(scene);
         if (!pending || pending->Items.empty() || !src) return;
-        auto batch = BeginTextureUploadBatch(vk_resources.Device, *pool, stores.Buffers->Ctx);
+        auto &buffers = r.get<SceneBuffers>(scene);
+        auto &slots = r.ctx().get<DescriptorSlots>();
+        auto &textures = *r.ctx().get<std::unique_ptr<TextureStore>>();
+        auto batch = BeginTextureUploadBatch(vk_resources.Device, *pool, buffers.Ctx);
         for (const auto &item : pending->Items) {
-            if (auto entry = MaterializeTextureEntry(vk_resources, batch, *stores.Slots, item, src->Images)) {
-                stores.Textures->Textures.emplace_back(std::move(*entry));
+            if (auto entry = MaterializeTextureEntry(vk_resources, batch, slots, item, src->Images)) {
+                textures.Textures.emplace_back(std::move(*entry));
             }
         }
         SubmitTextureUploadBatch(batch, vk_resources.Queue, *fence, vk_resources.Device);
@@ -584,17 +617,16 @@ int main() {
     const fs::path box_embedded = "../glTF-Sample-Assets/Models/BoxTextured/glTF-Embedded/BoxTextured.gltf";
     if (fs::exists(box_embedded)) {
         test("dirty_image_re_encodes_pixel_equal") = [&] {
-            entt::registry r;
-            SceneStores stores{vk_resources};
-            const auto scene = WireSceneRegistry(r, *stores.Buffers, *stores.Textures);
-            auto load = gltf::LoadGltf(box_embedded, load_ctx(r, stores, scene));
+            SceneFixture fx{vk_resources};
+            auto load = gltf::LoadGltf(box_embedded, load_ctx(fx.R, fx.SceneEntity));
             expect(load.has_value()) << "load failed";
             if (!load) return;
-            materialize_textures(r, stores, scene);
+            materialize_textures(fx.R, fx.SceneEntity);
 
             // Skip the WireSceneRegistry default-white RawPixels texture (no SourceImageIndex link).
+            const auto &textures = *fx.R.ctx().get<std::unique_ptr<TextureStore>>();
             const TextureEntry *tex = nullptr;
-            for (const auto &t : stores.Textures->Textures) {
+            for (const auto &t : textures.Textures) {
                 if (t.SourceImageIndex == 0) {
                     tex = &t;
                     break;
@@ -604,24 +636,22 @@ int main() {
             if (!tex) return;
             auto pool = vk_resources.Device.createCommandPoolUnique({{}, vk_resources.QueueFamily});
             auto fence = vk_resources.Device.createFenceUnique({});
-            auto original_pixels = ReadbackTextureRgba8(vk_resources, stores.Buffers->Ctx, *pool, *fence, *tex);
+            auto original_pixels = ReadbackTextureRgba8(vk_resources, fx.R.get<SceneBuffers>(fx.SceneEntity).Ctx, *pool, *fence, *tex);
             expect(original_pixels.has_value()) << "readback failed";
             if (!original_pixels) return;
 
-            r.get<gltf::SourceAssets>(scene).Images.front().IsDirty = true;
+            fx.R.get<gltf::SourceAssets>(fx.SceneEntity).Images.front().IsDirty = true;
 
             const auto out_path = edit_root / "BoxTextured-dirty.gltf";
-            auto save = gltf::SaveGltf(out_path, save_ctx(r, stores, scene));
+            auto save = gltf::SaveGltf(out_path, save_ctx(fx.R, fx.SceneEntity));
             expect(save.has_value()) << "save failed: " << (save ? "" : save.error());
             if (!save) return;
 
-            entt::registry r2;
-            SceneStores s2{vk_resources};
-            const auto scene2 = WireSceneRegistry(r2, *s2.Buffers, *s2.Textures);
-            auto reload = gltf::LoadGltf(out_path, load_ctx(r2, s2, scene2));
+            SceneFixture fx2{vk_resources};
+            auto reload = gltf::LoadGltf(out_path, load_ctx(fx2.R, fx2.SceneEntity));
             expect(reload.has_value()) << "reload failed";
             if (!reload) return;
-            const auto &reloaded = r2.get<const gltf::SourceAssets>(scene2).Images;
+            const auto &reloaded = fx2.R.get<const gltf::SourceAssets>(fx2.SceneEntity).Images;
             expect(reloaded.size() == 1u);
             // PNG re-encode is lossless, so decoded pixels must match the pre-edit GPU readback.
             auto decoded = DecodeImageRgba8(reloaded.front().Bytes, reloaded.front().Name);
@@ -647,28 +677,24 @@ int main() {
             const auto staged_png = stage_dir / "CesiumLogoFlat.png";
             expect(fs::exists(staged_png)) << "fixture missing PNG";
 
-            entt::registry r;
-            SceneStores stores{vk_resources};
-            const auto scene = WireSceneRegistry(r, *stores.Buffers, *stores.Textures);
-            auto load = gltf::LoadGltf(staged_gltf, load_ctx(r, stores, scene));
+            SceneFixture fx{vk_resources};
+            auto load = gltf::LoadGltf(staged_gltf, load_ctx(fx.R, fx.SceneEntity));
             expect(load.has_value()) << "load failed";
             if (!load) return;
-            materialize_textures(r, stores, scene);
+            materialize_textures(fx.R, fx.SceneEntity);
 
             fs::rename(staged_png, stage_dir / "CesiumLogoFlat.png.moved");
 
             const auto out_path = edit_root / "BoxTextured-fallback.gltf";
-            auto save = gltf::SaveGltf(out_path, save_ctx(r, stores, scene));
+            auto save = gltf::SaveGltf(out_path, save_ctx(fx.R, fx.SceneEntity));
             expect(save.has_value()) << "save failed: " << (save ? "" : save.error());
             if (!save) return;
 
-            entt::registry r2;
-            SceneStores s2{vk_resources};
-            const auto scene2 = WireSceneRegistry(r2, *s2.Buffers, *s2.Textures);
-            auto reload = gltf::LoadGltf(out_path, load_ctx(r2, s2, scene2));
+            SceneFixture fx2{vk_resources};
+            auto reload = gltf::LoadGltf(out_path, load_ctx(fx2.R, fx2.SceneEntity));
             expect(reload.has_value()) << "reload failed";
             if (!reload) return;
-            const auto &reloaded = r2.get<const gltf::SourceAssets>(scene2).Images;
+            const auto &reloaded = fx2.R.get<const gltf::SourceAssets>(fx2.SceneEntity).Images;
             expect(reloaded.size() == 1u);
             if (reloaded.empty()) return;
             expect(reloaded.front().Uri.empty()) << "fallback should drop the URI";
