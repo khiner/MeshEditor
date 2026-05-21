@@ -22,6 +22,7 @@ using Action = MergedVariantT<
     Update<DebugChannel>, Update<CollideMode>,
     Update<PhysicsCombineMode>, Update<PhysicsDriveType>, Update<PhysicsDriveMode>, Update<vk::ClearColorValue>,
     Update<std::optional<uint32_t>>,
+    Update<TransformGizmo::Type>, Update<TransformGizmo::Mode>,
     Replace<Camera>, Replace<MaterialDirty>, Replace<MeshMaterialAssignment>, Replace<MeshMaterialSlotSelection>,
     Replace<PhysicsMotion>, Replace<PunctualLight>, Replace<RealImpactActiveMicrophone>,
     ReplaceActive<Camera>, ReplaceActive<PhysicsMotion>, ReplaceActive<PunctualLight>>;

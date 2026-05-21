@@ -1366,12 +1366,15 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
     R.emplace<ViewportExtent>(SceneEntity);
     R.emplace<PlaybackFrame>(SceneEntity);
     R.emplace<LastEvaluatedFrame>(SceneEntity);
-    R.emplace<StartScreenTransform>(SceneEntity);
     R.emplace<EnabledInteractionModes>(SceneEntity);
     R.emplace<SelectionBitsetRef>(SceneEntity, std::span<uint32_t>{Buffers.SelectionBitset.Data(), SceneBuffers::SelectionBitsetWords});
     R.emplace<SelectionSlots>(SceneEntity, SelectionHandles->HeadImage, SelectionHandles->SelectionCounter, SelectionHandles->ElementPickCandidates, SelectionHandles->SelectionBitset);
     R.emplace<SceneOneShotGpu>(SceneEntity, *CommandPool, *ClickCommandBuffer, *OneShotFence, *SelectionReadySemaphore);
     R.emplace<SelectionXRay>(SceneEntity);
+    R.emplace<OrbitToActive>(SceneEntity);
+    R.emplace<BoxSelectState>(SceneEntity);
+    R.emplace<TransformGizmoState>(SceneEntity);
+    R.emplace<AnimationTimelineView>(SceneEntity);
     R.emplace<SelectionStale>(SceneEntity); // Initial state: fragments need rendering on first selection use.
     Physics.ApplySimulationSettings(R.emplace<PhysicsSimulationSettings>(SceneEntity));
 
@@ -1457,6 +1460,7 @@ void Scene::LoadIcons() {
 
 const TimelineRange &Scene::GetTimelineRange() const { return R.get<const TimelineRange>(SceneEntity); }
 const TimelinePlayback &Scene::GetTimelinePlayback() const { return R.get<const TimelinePlayback>(SceneEntity); }
+const AnimationTimelineView &Scene::GetTimelineView() const { return R.get<const AnimationTimelineView>(SceneEntity); }
 
 std::pair<vk::Offset3D, vk::Extent2D> Scene::GetCaptureRegion() const {
     auto &Pipelines = R.ctx().get<const ScenePipelines>();
@@ -1970,7 +1974,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
 
     const auto edit_transform_context = is_edit_mode ? EditTransformContext{scene_selection::ComputePrimaryEditInstances(R, false)} : EditTransformContext{};
     const auto orbit_to_active = [&](entt::entity instance_entity, Element element, uint32_t handle) {
-        if (!OrbitToActive) return;
+        if (!R.get<const OrbitToActive>(SceneEntity).Value) return;
         const auto world_pos = ComputeElementWorldPosition(R, instance_entity, element, handle);
         R.patch<ViewCamera>(SceneEntity, [&](auto &camera) {
             if (const auto dir = world_pos - camera.Target; glm::dot(dir, dir) >= 1e-6f) {
@@ -1979,18 +1983,6 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         });
     };
 
-    if (const auto &tracker = reactive<changes::MeshActiveElement>(R); !tracker.empty()) {
-        const auto edit_mode = R.get<const SceneEditMode>(SceneEntity).Value;
-        const auto active_entity = FindActiveEntity(R);
-        const auto *active_instance = R.try_get<Instance>(active_entity);
-        for (auto mesh_entity : tracker) {
-            if (const auto *active_element = R.try_get<MeshActiveElement>(mesh_entity);
-                active_element && edit_mode != Element::None && active_instance && active_instance->Entity == mesh_entity) {
-                orbit_to_active(active_entity, edit_mode, active_element->Handle);
-            }
-            dirty_element_state_meshes.insert(mesh_entity); // for Excite mode
-        }
-    }
     if (const auto *pending = R.try_get<const PendingSetStudioEnvironment>(SceneEntity)) {
         const auto index = pending->Index;
         R.remove<PendingSetStudioEnvironment>(SceneEntity);
@@ -2045,6 +2037,19 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
     if (R.all_of<SelectionBitsDirty>(SceneEntity)) {
         R.remove<SelectionBitsDirty>(SceneEntity);
         if (is_edit_mode) ApplySelectionStateUpdate(R, SceneEntity, scene_apply::GetBitsetRangesForSelected(R), R.get<const SceneEditMode>(SceneEntity).Value);
+    }
+    // Observed after the pending-click handler above so newly emitted MeshActiveElement updates fire orbit on the same frame.
+    if (const auto &tracker = reactive<changes::MeshActiveElement>(R); !tracker.empty()) {
+        const auto edit_mode = R.get<const SceneEditMode>(SceneEntity).Value;
+        const auto active_entity = FindActiveEntity(R);
+        const auto *active_instance = R.try_get<Instance>(active_entity);
+        for (auto mesh_entity : tracker) {
+            if (const auto *active_element = R.try_get<MeshActiveElement>(mesh_entity);
+                active_element && edit_mode != Element::None && active_instance && active_instance->Entity == mesh_entity) {
+                orbit_to_active(active_entity, edit_mode, active_element->Handle);
+            }
+            dirty_element_state_meshes.insert(mesh_entity); // for Excite mode
+        }
     }
     for (auto instance_entity : reactive<changes::VertexForce>(R)) {
         if (const auto *inst = R.try_get<Instance>(instance_entity)) dirty_element_state_meshes.insert(inst->Entity);
@@ -3097,7 +3102,7 @@ using UpdateableComponents = TypeList<
     NodeTransformAnimation, MaterialPreviewLighting, RenderedLighting, ViewportTheme,
     ViewCamera, PhysicsMaterial, CollisionFilter, ColliderMaterial, ColliderPolicy,
     PhysicsMotion, PhysicsVelocity, PhysicsJoint, TriggerNodes, ModalModelCreateInfo,
-    PhysicsSimulationSettings>;
+    PhysicsSimulationSettings, TransformGizmoState>;
 using TagComponents = TypeList<SmoothShading, SubmitDirty, LightWireframeDirty, TriggerTag>;
 using NamedPhysicsComponents = TypeList<PhysicsMaterial, CollisionSystem, CollisionFilter, PhysicsJointDef>;
 
@@ -3375,7 +3380,7 @@ void Apply(entt::registry &R, entt::entity SceneEntity, const action::Action &ac
                     R.remove<Selected>(e);
                 }
                 if (any_mesh_duplicate) R.emplace_or_replace<ProfileNextProcessComponentEvents>(SceneEntity);
-                R.get<StartScreenTransform>(SceneEntity).Value = TransformGizmo::TransformType::Translate;
+                R.emplace_or_replace<StartScreenTransform>(SceneEntity, TransformGizmo::TransformType::Translate);
             },
             [&](action::object::DuplicateLinked) {
                 if (!scene_apply::CanDuplicateLinked(R, SceneEntity)) return;
@@ -3388,7 +3393,7 @@ void Apply(entt::registry &R, entt::entity SceneEntity, const action::Action &ac
                     }
                     R.remove<Selected>(e);
                 }
-                R.get<StartScreenTransform>(SceneEntity).Value = TransformGizmo::TransformType::Translate;
+                R.emplace_or_replace<StartScreenTransform>(SceneEntity, TransformGizmo::TransformType::Translate);
             },
             [&](action::object::ToggleHidden) {
                 for (const auto e : R.view<Selected>()) {
@@ -3420,13 +3425,26 @@ void Apply(entt::registry &R, entt::entity SceneEntity, const action::Action &ac
             [&](action::object::ClearParent) {
                 for (const auto e : R.view<Selected>()) ::ClearParent(R, e);
             },
-            [&](const action::object::AddEmpty &a) { ::AddEmpty(R, Meshes, Buffers, SceneEntity, *a.Info); },
-            [&](const action::object::AddArmature &a) { ::AddArmature(R, Meshes, SceneEntity, *a.Info); },
-            [&](const action::object::AddCamera &a) { ::AddCamera(R, Meshes, Buffers, SceneEntity, *a.Info, a.Props); },
-            [&](const action::object::AddLight &a) { ::AddLight(R, Meshes, Buffers, SceneEntity, *a.Info); },
+            [&](const action::object::AddEmpty &a) {
+                ::AddEmpty(R, Meshes, Buffers, SceneEntity, *a.Info);
+                R.emplace_or_replace<StartScreenTransform>(SceneEntity, TransformGizmo::TransformType::Translate);
+            },
+            [&](const action::object::AddArmature &a) {
+                ::AddArmature(R, Meshes, SceneEntity, *a.Info);
+                R.emplace_or_replace<StartScreenTransform>(SceneEntity, TransformGizmo::TransformType::Translate);
+            },
+            [&](const action::object::AddCamera &a) {
+                ::AddCamera(R, Meshes, Buffers, SceneEntity, *a.Info, a.Props);
+                R.emplace_or_replace<StartScreenTransform>(SceneEntity, TransformGizmo::TransformType::Translate);
+            },
+            [&](const action::object::AddLight &a) {
+                ::AddLight(R, Meshes, Buffers, SceneEntity, *a.Info);
+                R.emplace_or_replace<StartScreenTransform>(SceneEntity, TransformGizmo::TransformType::Translate);
+            },
             [&](const action::object::AddMeshPrimitive &a) {
                 const auto [mesh_entity, _] = ::AddMesh(R, Meshes, SceneEntity, Meshes.CreateMesh(primitive::CreateMesh(a.Shape), {}, {}), *a.Info);
                 R.emplace<PrimitiveShape>(mesh_entity, a.Shape);
+                R.emplace_or_replace<StartScreenTransform>(SceneEntity, TransformGizmo::TransformType::Translate);
             },
             [&](const action::object::ImportMesh &a) { R.emplace_or_replace<PendingImportMesh>(SceneEntity, a.Path, *a.Info); },
             [&](const action::object::ReplaceMesh &a) {
@@ -3478,6 +3496,7 @@ void Apply(entt::registry &R, entt::entity SceneEntity, const action::Action &ac
                 for (const auto idx : result.UpdatedParentIndices) {
                     R.replace<BoneDisplayScale>(arm_obj.BoneEntities[idx], ComputeBoneDisplayScale(armature, idx));
                 }
+                R.emplace_or_replace<StartScreenTransform>(SceneEntity, TransformGizmo::TransformType::Translate);
             },
             [&](action::bone::DuplicateSelected) {
                 const auto arm_obj_entity = FindArmatureObject(R, FindActiveEntity(R));
@@ -3498,7 +3517,7 @@ void Apply(entt::registry &R, entt::entity SceneEntity, const action::Action &ac
                 }
                 R.emplace<BoneActive>(last_bone);
 
-                R.get<StartScreenTransform>(SceneEntity).Value = TransformGizmo::TransformType::Translate;
+                R.emplace_or_replace<StartScreenTransform>(SceneEntity, TransformGizmo::TransformType::Translate);
             },
             [&](const action::bone::ClearSelectedTransforms &a) { ClearSelectedBoneTransforms(R, a.Position, a.Rotation, a.Scale); },
             [&](action::bone::DeleteSelected) {
@@ -3659,6 +3678,24 @@ void Apply(entt::registry &R, entt::entity SceneEntity, const action::Action &ac
                 R.emplace_or_replace<PendingTransform>(SceneEntity, *a.Value);
             },
             [&](action::scene::EndGizmoDrag) { R.clear<StartTransform, StartBoneLength>(); },
+            [&](const action::scene::SetActiveTool &a) {
+                using Tool = action::scene::SetActiveTool::Tool;
+                using TT = TransformGizmo::Type;
+                const auto type = a.Value == Tool::SelectBox || a.Value == Tool::SelectClick ? TT::None :
+                    a.Value == Tool::Translate                                               ? TT::Translate :
+                    a.Value == Tool::Rotate                                                  ? TT::Rotate :
+                    a.Value == Tool::Scale                                                   ? TT::Scale :
+                                                                                               TT::Universal;
+                R.patch<TransformGizmoState>(SceneEntity, [&](auto &s) { s.Config.Type = type; });
+                if (a.Value == Tool::SelectBox || a.Value == Tool::SelectClick) {
+                    const auto g = a.Value == Tool::SelectBox ? SelectionGesture::Box : SelectionGesture::Click;
+                    R.patch<BoxSelectState>(SceneEntity, [&](auto &b) { b.Gesture = g; });
+                }
+            },
+            [&](const action::scene::SetStartScreenTransform &a) {
+                if (a.Value) R.emplace_or_replace<StartScreenTransform>(SceneEntity, *a.Value);
+                else R.remove<StartScreenTransform>(SceneEntity);
+            },
             [&](const action::bone::SetEditHeadTailRoll &a) {
                 const auto e = FindActiveBone(R);
                 R.patch<Transform>(e, [&](auto &t) { t.P = a.LocalP; t.R = a.LocalR; });
@@ -3847,18 +3884,15 @@ void Apply(entt::registry &R, entt::entity SceneEntity, const action::Action &ac
                 R.patch<TimelinePlayback>(SceneEntity, [&](auto &p) { p.CurrentFrame = a.Frame; });
                 R.get<PlaybackFrame>(SceneEntity).Value = a.Frame;
             },
-            [&](const action::timeline::SetStartFrame &a) {
-                R.patch<TimelineRange>(SceneEntity, [&](auto &r) { r.StartFrame = a.Frame; });
-            },
-            [&](const action::timeline::SetEndFrame &a) {
-                R.patch<TimelineRange>(SceneEntity, [&](auto &r) { r.EndFrame = a.Frame; });
-            },
+            [&](const action::timeline::SetStartFrame &a) { R.patch<TimelineRange>(SceneEntity, [&](auto &r) { r.StartFrame = a.Frame; }); },
+            [&](const action::timeline::SetEndFrame &a) { R.patch<TimelineRange>(SceneEntity, [&](auto &r) { r.EndFrame = a.Frame; }); },
             [&](action::timeline::JumpToStart) { JumpToStartFrame(R, SceneEntity); },
             [&](action::timeline::JumpToEnd) {
                 const auto frame = R.get<const TimelineRange>(SceneEntity).EndFrame;
                 R.patch<TimelinePlayback>(SceneEntity, [&](auto &p) { p.CurrentFrame = frame; });
                 R.get<PlaybackFrame>(SceneEntity).Value = frame;
             },
+            [&](const action::timeline::SetView &a) { R.replace<AnimationTimelineView>(SceneEntity, AnimationTimelineView{a.PixelsPerFrame, a.ViewCenterFrame}); },
         },
         action
     );

@@ -411,13 +411,9 @@ void Scene::Interact(std::optional<action::Action> &out) {
     constexpr auto VKey = ImGuiInputFlags_RouteGlobal;
     if (TransformGizmo::IsUsing()) {
         // During an active transform, only allow transform switching shortcuts.
-        if (Shortcut(ImGuiKey_G, VKey) && transform_shortcuts_enabled) {
-            R.get<StartScreenTransform>(SceneEntity).Value = TransformGizmo::TransformType::Translate;
-        } else if (Shortcut(ImGuiKey_R, VKey) && transform_shortcuts_enabled) {
-            R.get<StartScreenTransform>(SceneEntity).Value = TransformGizmo::TransformType::Rotate;
-        } else if (Shortcut(ImGuiKey_S, VKey) && scale_shortcut_enabled) {
-            R.get<StartScreenTransform>(SceneEntity).Value = TransformGizmo::TransformType::Scale;
-        }
+        if (Shortcut(ImGuiKey_G, VKey) && transform_shortcuts_enabled) out = action::scene::SetStartScreenTransform{TransformGizmo::TransformType::Translate};
+        else if (Shortcut(ImGuiKey_R, VKey) && transform_shortcuts_enabled) out = action::scene::SetStartScreenTransform{TransformGizmo::TransformType::Rotate};
+        else if (Shortcut(ImGuiKey_S, VKey) && scale_shortcut_enabled) out = action::scene::SetStartScreenTransform{TransformGizmo::TransformType::Scale};
     } else {
         if (Shortcut(ImGuiKey_Space, VKey)) out = action::timeline::TogglePlay{};
         else if (Shortcut(ImGuiKey_Z, VKey)) {
@@ -457,7 +453,6 @@ void Scene::Interact(std::optional<action::Action> &out) {
                 out = action::bone::Add{};
             } else if (Shortcut(ImGuiKey_E, VKey)) {
                 out = action::bone::Extrude{};
-                R.get<StartScreenTransform>(SceneEntity).Value = TransformGizmo::TransformType::Translate;
             } else if (Shortcut(ImGuiKey_X, VKey) || Shortcut(ImGuiKey_Delete, VKey) || Shortcut(ImGuiKey_Backspace, VKey)) {
                 Delete(out);
             } else if (Shortcut(ImGuiMod_Shift | ImGuiKey_D, VKey)) {
@@ -466,16 +461,12 @@ void Scene::Interact(std::optional<action::Action> &out) {
         }
         if (Shortcut(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_E, VKey)) {
             out = action::object::AddEmpty{std::make_unique<ObjectCreateInfo>(ObjectCreateInfo{.Select = MeshInstanceCreateInfo::SelectBehavior::Exclusive})};
-            R.get<StartScreenTransform>(SceneEntity).Value = TransformGizmo::TransformType::Translate;
         } else if (Shortcut(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_A, VKey)) {
             out = action::object::AddArmature{std::make_unique<ObjectCreateInfo>(ObjectCreateInfo{.Select = MeshInstanceCreateInfo::SelectBehavior::Exclusive})};
-            R.get<StartScreenTransform>(SceneEntity).Value = TransformGizmo::TransformType::Translate;
         } else if (Shortcut(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_C, VKey)) {
             out = action::object::AddCamera{.Info = std::make_unique<ObjectCreateInfo>(ObjectCreateInfo{.Select = MeshInstanceCreateInfo::SelectBehavior::Exclusive}), .Props = {}};
-            R.get<StartScreenTransform>(SceneEntity).Value = TransformGizmo::TransformType::Translate;
         } else if (Shortcut(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_L, VKey)) {
             out = action::object::AddLight{std::make_unique<ObjectCreateInfo>(ObjectCreateInfo{.Select = MeshInstanceCreateInfo::SelectBehavior::Exclusive})};
-            R.get<StartScreenTransform>(SceneEntity).Value = TransformGizmo::TransformType::Translate;
         }
         if (!R.storage<Selected>().empty()) {
             if (!bone_edit && Shortcut(ImGuiMod_Shift | ImGuiKey_D, VKey)) Duplicate(out);
@@ -488,9 +479,9 @@ void Scene::Interact(std::optional<action::Action> &out) {
                 // Start transform gizmo in both Object and Edit modes.
                 // In Edit mode, shader applies transform to selected vertices.
                 // In Object mode, shader applies transform to selected instances.
-                R.get<StartScreenTransform>(SceneEntity).Value = TransformGizmo::TransformType::Translate;
-            } else if (Shortcut(ImGuiKey_R, VKey) && transform_shortcuts_enabled) R.get<StartScreenTransform>(SceneEntity).Value = TransformGizmo::TransformType::Rotate;
-            else if (Shortcut(ImGuiKey_S, VKey) && scale_shortcut_enabled) R.get<StartScreenTransform>(SceneEntity).Value = TransformGizmo::TransformType::Scale;
+                out = action::scene::SetStartScreenTransform{TransformGizmo::TransformType::Translate};
+            } else if (Shortcut(ImGuiKey_R, VKey) && transform_shortcuts_enabled) out = action::scene::SetStartScreenTransform{TransformGizmo::TransformType::Rotate};
+            else if (Shortcut(ImGuiKey_S, VKey) && scale_shortcut_enabled) out = action::scene::SetStartScreenTransform{TransformGizmo::TransformType::Scale};
             else if (Shortcut(ImGuiKey_H, VKey)) out = action::object::ToggleHidden{};
             else if (Shortcut(ImGuiMod_Ctrl | ImGuiKey_P, VKey)) out = action::object::ParentToActive{};
             else if (Shortcut(ImGuiMod_Alt | ImGuiKey_P, VKey)) out = action::object::ClearParent{};
@@ -526,7 +517,7 @@ void Scene::Interact(std::optional<action::Action> &out) {
     const bool active_is_armature = arm_obj_entity != entt::null;
     const bool bone_mode = interaction_mode == InteractionMode::Pose || (interaction_mode == InteractionMode::Edit && active_is_armature);
     const auto deselect_all = [&] { out = action::selection::DeselectAll{}; };
-    if (SelectionMode == SelectionMode::Box && interaction_mode != InteractionMode::Excite) {
+    if (R.get<const BoxSelectState>(SceneEntity).Gesture == SelectionGesture::Box && interaction_mode != InteractionMode::Excite) {
         if (IsMouseClicked(ImGuiMouseButton_Left)) {
             BoxSelectStart = BoxSelectEnd = ToGlm(GetMousePos());
             if (IsKeyDown(ImGuiMod_Shift)) out = action::selection::SnapshotBoxSelectBaseline{};
@@ -643,9 +634,13 @@ void Scene::InteractOverlay(std::optional<action::Action> &out) {
         const bool transform_enabled = !edit_transform_locked;
         const bool scale_enabled = transform_enabled && !has_frozen_selected;
 
-        auto &transform_type = MGizmo.Config.Type;
-        if (!transform_enabled) transform_type = None;
-        else if (!scale_enabled && transform_type == Scale) transform_type = Translate;
+        ui::Edit gizmo_edit{R, out, SceneEntity};
+        const auto transform_type = R.get<const TransformGizmoState>(SceneEntity).Config.Type;
+        if (!transform_enabled && transform_type != None) {
+            gizmo_edit.Set<&TransformGizmoState::Config, &TransformGizmo::Config::Type>(None);
+        } else if (!scale_enabled && transform_type == Scale) {
+            gizmo_edit.Set<&TransformGizmoState::Config, &TransformGizmo::Config::Type>(Translate);
+        }
 
         const auto start_pos = std::bit_cast<ImVec2>(viewport.pos) + GetWindowContentRegionMin() + ImVec2{overlay_corner_gap, overlay_corner_gap};
         static constexpr float gap{4}; // Gap between select buttons and transform buttons
@@ -653,9 +648,10 @@ void Scene::InteractOverlay(std::optional<action::Action> &out) {
         const auto make_button = [](const SvgResource *icon, ImVec2 offset, ImDrawFlags corners, bool enabled, bool active, const char *tooltip = nullptr) {
             return OverlayIconButtonInfo{icon, offset, corners, enabled, active, tooltip};
         };
+        const auto gesture = R.get<const BoxSelectState>(SceneEntity).Gesture;
         const OverlayIconButtonInfo buttons[]{
-            make_button(Icons.SelectBox.get(), {0.f, 0.f}, ImDrawFlags_RoundCornersTop, true, transform_type == None && SelectionMode == SelectionMode::Box),
-            make_button(Icons.Select.get(), {0.f, button_h}, ImDrawFlags_RoundCornersBottom, true, transform_type == None && SelectionMode == SelectionMode::Click),
+            make_button(Icons.SelectBox.get(), {0.f, 0.f}, ImDrawFlags_RoundCornersTop, true, transform_type == None && gesture == SelectionGesture::Box),
+            make_button(Icons.Select.get(), {0.f, button_h}, ImDrawFlags_RoundCornersBottom, true, transform_type == None && gesture == SelectionGesture::Click),
             make_button(Icons.Move.get(), {0.f, button_h * 2.f + gap}, ImDrawFlags_RoundCornersTop, transform_enabled, transform_type == Translate),
             make_button(Icons.Rotate.get(), {0.f, button_h * 3.f + gap}, ImDrawFlags_RoundCornersNone, transform_enabled, transform_type == Rotate),
             make_button(Icons.Scale.get(), {0.f, button_h * 4.f + gap}, ImDrawFlags_RoundCornersNone, scale_enabled, transform_type == Scale),
@@ -663,18 +659,15 @@ void Scene::InteractOverlay(std::optional<action::Action> &out) {
         };
 
         if (const auto clicked = DrawOverlayIconButtonGroup("TransformModes", start_pos, buttons, !active_transform, &OverlayControlsHovered, overlay_button_style)) {
-            if (*clicked == 0) {
-                SelectionMode = SelectionMode::Box;
-                transform_type = None;
-            } else if (*clicked == 1) {
-                SelectionMode = SelectionMode::Click;
-                transform_type = None;
-            } else {
-                transform_type = *clicked == 2 ? Translate :
-                    *clicked == 3              ? Rotate :
-                    *clicked == 4              ? Scale :
-                                                 Universal;
-            }
+            using Tool = action::scene::SetActiveTool::Tool;
+            out = action::scene::SetActiveTool{
+                *clicked == 0     ? Tool::SelectBox :
+                    *clicked == 1 ? Tool::SelectClick :
+                    *clicked == 2 ? Tool::Translate :
+                    *clicked == 3 ? Tool::Rotate :
+                    *clicked == 4 ? Tool::Scale :
+                                    Tool::Universal
+            };
         }
     }
 
@@ -1115,11 +1108,13 @@ void Scene::InteractOverlay(std::optional<action::Action> &out) {
         }
 
         const auto start_transform_view = R.view<const StartTransform>();
-        const auto gizmo_transform = GizmoTransform{{.P = pivot, .R = active_transform.R, .S = active_transform.S}, MGizmo.Mode};
+        const auto &gizmo_state = R.get<const TransformGizmoState>(SceneEntity);
+        const auto gizmo_transform = GizmoTransform{{.P = pivot, .R = active_transform.R, .S = active_transform.S}, gizmo_state.Mode};
+        const auto *start_screen = R.try_get<const StartScreenTransform>(SceneEntity);
         auto interact_result = TransformGizmo::Interact(
             gizmo_transform,
-            MGizmo.Config, camera, viewport, ToGlm(GetMousePos()) + AccumulatedWrapMouseDelta,
-            R.get<const StartScreenTransform>(SceneEntity).Value
+            gizmo_state.Config, camera, viewport, ToGlm(GetMousePos()) + AccumulatedWrapMouseDelta,
+            start_screen ? std::optional{start_screen->Value} : std::nullopt
         );
         if (interact_result) {
             const auto &[ts, td] = *interact_result;
@@ -1224,7 +1219,7 @@ void Scene::InteractOverlay(std::optional<action::Action> &out) {
         if (interact_result) GizmoRenderTransform->P = interact_result->Start.P + interact_result->Delta.P;
     }
 
-    R.get<StartScreenTransform>(SceneEntity).Value.reset();
+    if (R.all_of<StartScreenTransform>(SceneEntity)) out = action::scene::SetStartScreenTransform{};
 }
 
 void Scene::DrawOverlay() {
@@ -1234,7 +1229,7 @@ void Scene::DrawOverlay() {
 
     OrientationGizmo::Render(axes);
     if (GizmoRenderTransform) {
-        TransformGizmo::Render(*GizmoRenderTransform, MGizmo.Config.Type, camera, viewport, axes);
+        TransformGizmo::Render(*GizmoRenderTransform, R.get<const TransformGizmoState>(SceneEntity).Config.Type, camera, viewport, axes);
         GizmoRenderTransform.reset();
     }
 
@@ -1261,7 +1256,7 @@ void Scene::DrawOverlay() {
         }
     }
 
-    if (BoxSelectStart.has_value() && BoxSelectEnd.has_value()) {
+    if (BoxSelectStart && BoxSelectEnd) {
         auto &dl = *GetWindowDrawList();
         const auto box_min = glm::min(*BoxSelectStart, *BoxSelectEnd);
         const auto box_max = glm::max(*BoxSelectStart, *BoxSelectEnd);
@@ -1454,16 +1449,17 @@ void Scene::RenderEntityControls(entt::entity active_entity, std::optional<actio
             Text("Mode:");
             SameLine();
             using enum TransformGizmo::Mode;
-            auto &mode = MGizmo.Mode;
-            if (RadioButton("Local", mode == Local)) mode = Local;
+            ui::Edit gizmo_edit{R, out, SceneEntity};
+            const auto &gizmo_state = R.get<const TransformGizmoState>(SceneEntity);
+            if (RadioButton("Local", gizmo_state.Mode == Local)) gizmo_edit.Set<&TransformGizmoState::Mode>(Local);
             SameLine();
-            if (RadioButton("World", mode == World)) mode = World;
+            if (RadioButton("World", gizmo_state.Mode == World)) gizmo_edit.Set<&TransformGizmoState::Mode>(World);
             Spacing();
-            Checkbox("Snap", &MGizmo.Config.Snap);
-            if (MGizmo.Config.Snap) {
+            gizmo_edit.Check<&TransformGizmoState::Config, &TransformGizmo::Config::Snap>("Snap");
+            if (gizmo_state.Config.Snap) {
                 SameLine();
                 // todo link/unlink snap values
-                DragFloat3("Snap", &MGizmo.Config.SnapValue.x, 1.f, 0.01f, 100.f);
+                gizmo_edit.Drag<&TransformGizmoState::Config, &TransformGizmo::Config::SnapValue>("Snap", 1.f, 0.01f, 100.f);
             }
         }
         Spacing();
@@ -1927,7 +1923,8 @@ void Scene::RenderControls(std::optional<action::Action> &out) {
                 }
                 if (interaction_mode_changed) out = action::scene::SetInteractionMode{.Mode = InteractionMode(interaction_mode_value)};
                 if (interaction_mode == InteractionMode::Edit || interaction_mode == InteractionMode::Excite) {
-                    Checkbox("Orbit to active", &OrbitToActive);
+                    bool orbit = R.get<const OrbitToActive>(SceneEntity).Value;
+                    if (Checkbox("Orbit to active", &orbit)) R.replace<OrbitToActive>(SceneEntity, orbit);
                 }
                 if (interaction_mode == InteractionMode::Edit) {
                     bool xray = R.get<const SelectionXRay>(SceneEntity).Value;
@@ -1973,36 +1970,21 @@ void Scene::RenderControls(std::optional<action::Action> &out) {
             if (CollapsingHeader("Object tree", ImGuiTreeNodeFlags_DefaultOpen)) RenderObjectTree(out);
             SeparatorText("");
             if (CollapsingHeader("Add object")) {
-                bool added{false};
                 for (uint32_t i = 0; i < AllPrimitiveShapes.size(); ++i) {
                     if (i % 4 != 0) SameLine();
                     const auto &shape = AllPrimitiveShapes[i];
                     if (Button(ToString(shape).c_str())) {
                         out = action::object::AddMeshPrimitive{shape, std::make_unique<MeshInstanceCreateInfo>(MeshInstanceCreateInfo{.Name = ToString(shape)})};
-                        added = true;
                     }
                 }
                 Spacing();
-                if (Button("Empty")) {
-                    out = action::object::AddEmpty{std::make_unique<ObjectCreateInfo>(ObjectCreateInfo{.Select = MeshInstanceCreateInfo::SelectBehavior::Exclusive})};
-                    added = true;
-                }
+                if (Button("Empty")) out = action::object::AddEmpty{std::make_unique<ObjectCreateInfo>(ObjectCreateInfo{.Select = MeshInstanceCreateInfo::SelectBehavior::Exclusive})};
                 SameLine();
-                if (Button("Armature")) {
-                    out = action::object::AddArmature{std::make_unique<ObjectCreateInfo>(ObjectCreateInfo{.Select = MeshInstanceCreateInfo::SelectBehavior::Exclusive})};
-                    added = true;
-                }
+                if (Button("Armature")) out = action::object::AddArmature{std::make_unique<ObjectCreateInfo>(ObjectCreateInfo{.Select = MeshInstanceCreateInfo::SelectBehavior::Exclusive})};
                 SameLine();
-                if (Button("Camera")) {
-                    out = action::object::AddCamera{.Info = std::make_unique<ObjectCreateInfo>(ObjectCreateInfo{.Select = MeshInstanceCreateInfo::SelectBehavior::Exclusive}), .Props = {}};
-                    added = true;
-                }
+                if (Button("Camera")) out = action::object::AddCamera{.Info = std::make_unique<ObjectCreateInfo>(ObjectCreateInfo{.Select = MeshInstanceCreateInfo::SelectBehavior::Exclusive}), .Props = {}};
                 SameLine();
-                if (Button("Light")) {
-                    out = action::object::AddLight{std::make_unique<ObjectCreateInfo>(ObjectCreateInfo{.Select = MeshInstanceCreateInfo::SelectBehavior::Exclusive})};
-                    added = true;
-                }
-                if (added) R.get<StartScreenTransform>(SceneEntity).Value = TransformGizmo::TransformType::Translate;
+                if (Button("Light")) out = action::object::AddLight{std::make_unique<ObjectCreateInfo>(ObjectCreateInfo{.Select = MeshInstanceCreateInfo::SelectBehavior::Exclusive})};
             }
             if (auto *mv = R.try_get<MaterialVariants>(SceneEntity); mv && !mv->Names.empty() && CollapsingHeader("Material variants")) {
                 const auto active = mv->Active;

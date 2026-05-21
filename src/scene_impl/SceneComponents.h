@@ -108,9 +108,9 @@ struct LastEvaluatedFrame {
     int Value{-1};
 };
 // Requested transform type for the next gizmo drag, latched by keyboard shortcuts.
-// Cleared by InteractOverlay after consumption. Singleton on SceneEntity.
+// Presence == active latch; removed by InteractOverlay after consumption. Singleton on SceneEntity.
 struct StartScreenTransform {
-    std::optional<TransformGizmo::TransformType> Value;
+    TransformGizmo::TransformType Value;
 };
 
 // Interaction modes available for cycling/selection. Singleton on SceneEntity.
@@ -175,4 +175,23 @@ struct SceneOneShotGpu {
 // reactive handler that forces a full draw-list re-record.
 struct SelectionXRay {
     bool Value{false};
+};
+
+// In Edit/Excite mode, orbit camera to active element on selection change.
+struct OrbitToActive {
+    bool Value{false};
+};
+
+enum class SelectionGesture : uint8_t {
+    Click,
+    Box,
+};
+
+struct BoxSelectState {
+    SelectionGesture Gesture{SelectionGesture::Box};
+};
+
+struct TransformGizmoState {
+    TransformGizmo::Config Config;
+    TransformGizmo::Mode Mode;
 };

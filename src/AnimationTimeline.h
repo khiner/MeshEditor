@@ -28,4 +28,4 @@ struct AnimationIcons {
     std::unique_ptr<SvgResource> Play, Pause, JumpStart, JumpEnd;
 };
 
-std::optional<action::timeline::Action> RenderAnimationTimeline(const TimelineRange &, const TimelinePlayback &, AnimationTimelineView &, const AnimationIcons &);
+std::optional<action::timeline::Action> RenderAnimationTimeline(const TimelineRange &, const TimelinePlayback &, const AnimationTimelineView &, const AnimationIcons &);

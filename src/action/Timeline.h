@@ -15,7 +15,11 @@ struct SetEndFrame {
 };
 struct JumpToStart {};
 struct JumpToEnd {};
+struct SetView {
+    float PixelsPerFrame;
+    float ViewCenterFrame;
+};
 
-using Actions = std::variant<TogglePlay, SetFrame, SetStartFrame, SetEndFrame, JumpToStart, JumpToEnd>;
+using Actions = std::variant<TogglePlay, SetFrame, SetStartFrame, SetEndFrame, JumpToStart, JumpToEnd, SetView>;
 using Action = Actions;
 } // namespace action::timeline

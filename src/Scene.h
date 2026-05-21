@@ -72,7 +72,7 @@ struct Scene {
 
     const TimelineRange &GetTimelineRange() const;
     const TimelinePlayback &GetTimelinePlayback() const;
-    AnimationTimelineView &GetTimelineView() { return TimelineView; }
+    const AnimationTimelineView &GetTimelineView() const;
     const AnimationIcons &GetAnimationIcons() const { return AnimIcons; }
     // Render per-source animation-clip pickers above the timeline.
     void RenderClipPickers(std::optional<action::Action> &out);
@@ -148,19 +148,7 @@ private:
     void EnsureWireframes();
     void UpdateWireframeTransforms();
 
-    enum class SelectionMode {
-        Click,
-        Box
-    };
-    SelectionMode SelectionMode{SelectionMode::Box};
-    std::optional<vec2> BoxSelectStart, BoxSelectEnd;
-    bool OrbitToActive{false}; // Edit/Excite mode: When true, orbit camera to active element.
-
-    struct TransformGizmoState {
-        TransformGizmo::Config Config;
-        TransformGizmo::Mode Mode;
-    };
-    TransformGizmoState MGizmo;
+    std::optional<vec2> BoxSelectStart, BoxSelectEnd; // Per-frame drag plumbing — producer/consumer is the same InteractOverlay call.
     std::optional<GizmoTransform> GizmoRenderTransform; // Set by InteractOverlay, consumed by DrawOverlay.
     bool OverlayControlsHovered{false};
 
@@ -174,7 +162,6 @@ private:
     ViewportShadingIcons ShadingIcons;
     std::unique_ptr<SvgResource> OverlayIcon;
     AnimationIcons AnimIcons;
-    AnimationTimelineView TimelineView;
 
     static inline const std::vector<Element> NormalElements{Element::Vertex, Element::Face};
 

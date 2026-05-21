@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Camera.h"
+#include "TransformGizmo.h"
 #include "gpu/Element.h"
 #include "gpu/InteractionMode.h"
 #include "numeric/quat.h"
@@ -9,6 +10,8 @@
 #include "scene_impl/SceneTransformUtils.h"
 
 #include <entt/entity/fwd.hpp>
+
+#include <optional>
 
 struct PendingTransform;
 
@@ -84,6 +87,23 @@ struct UpdateGizmoMeshEditPending {
 };
 struct EndGizmoDrag {};
 
+// Toolbar viewport-tool selection. Tools are mutually exclusive: picking a select tool clears the
+// transform type; picking a transform tool keeps the selection gesture but suppresses it visually.
+struct SetActiveTool {
+    enum class Tool : uint8_t { SelectBox,
+                                SelectClick,
+                                Translate,
+                                Rotate,
+                                Scale,
+                                Universal };
+    Tool Value;
+};
+
+// Latched transform-type for the next gizmo drag. `nullopt` clears the latch (consumed by InteractOverlay).
+struct SetStartScreenTransform {
+    std::optional<TransformGizmo::TransformType> Value;
+};
+
 using Actions = std::variant<
     SetInteractionMode, CycleInteractionMode, SetEditMode,
     EnterLookThroughCamera, ExitLookThroughCamera, Play,
@@ -93,5 +113,5 @@ using Actions = std::variant<
     ResetViewCamera, ResetViewportTheme, ResetPbrLighting,
     SetViewCameraTarget, SetViewCameraLens, SetViewCameraTargetDirection, SetPbrMeshFeaturesMask,
     SetRotationUiMode, SetTransformRotationFromUi,
-    UpdateGizmoDragLocals, UpdateGizmoMeshEditPending, EndGizmoDrag>;
+    UpdateGizmoDragLocals, UpdateGizmoMeshEditPending, EndGizmoDrag, SetActiveTool, SetStartScreenTransform>;
 } // namespace action::scene

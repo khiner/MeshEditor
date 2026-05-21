@@ -42,7 +42,7 @@ int ComputeMajorStep(float pixels_per_frame) {
 }
 } // namespace
 
-std::optional<action::timeline::Action> RenderAnimationTimeline(const TimelineRange &range, const TimelinePlayback &playback, AnimationTimelineView &view, const AnimationIcons &icons) {
+std::optional<action::timeline::Action> RenderAnimationTimeline(const TimelineRange &range, const TimelinePlayback &playback, const AnimationTimelineView &view, const AnimationIcons &icons) {
     std::optional<action::timeline::Action> action;
 
     // --- Transport bar ---
@@ -159,11 +159,11 @@ std::optional<action::timeline::Action> RenderAnimationTimeline(const TimelineRa
         if (io.MouseWheel != 0.0f) {
             const float mouse_frame = x_to_frame(io.MousePos.x);
             const float mouse_frac = (io.MousePos.x - p0.x) / area.x - 0.5f;
-            view.PixelsPerFrame = std::clamp(view.PixelsPerFrame * std::pow(1.1f, io.MouseWheel), MinPixelsPerFrame, MaxPixelsPerFrame);
-            view.ViewCenterFrame = mouse_frame - mouse_frac * area.x / view.PixelsPerFrame;
+            const float new_ppf = std::clamp(view.PixelsPerFrame * std::pow(1.1f, io.MouseWheel), MinPixelsPerFrame, MaxPixelsPerFrame);
+            action = action::timeline::SetView{new_ppf, mouse_frame - mouse_frac * area.x / new_ppf};
         }
         if (io.MouseWheelH != 0.0f) {
-            view.ViewCenterFrame -= io.MouseWheelH * 20.0f / view.PixelsPerFrame;
+            action = action::timeline::SetView{view.PixelsPerFrame, view.ViewCenterFrame - io.MouseWheelH * 20.0f / view.PixelsPerFrame};
         }
     }
 
