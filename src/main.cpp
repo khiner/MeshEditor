@@ -1,5 +1,6 @@
 #include "Paths.h"
 #include "Scene.h"
+#include "SceneApply.h"
 #include "Timer.h"
 #include "Window.h"
 #include "audio/AudioDevice.h"
@@ -224,14 +225,14 @@ GltfSampleTree BuildGltfSampleTree(const fs::path &root) {
 }
 
 // Load a file into the scene based on its extension.
-std::expected<void, std::string> LoadFile(Scene &scene, const fs::path &path) {
+std::expected<void, std::string> LoadFile(entt::registry &r, entt::entity scene_entity, const fs::path &path) {
     const auto ext = path.extension().string();
     if (ext == ".gltf" || ext == ".glb") {
-        if (auto result = scene.Apply(action::project::LoadGltf{.Path = path}); !result) {
+        if (auto result = Apply(r, scene_entity, action::project::LoadGltf{.Path = path}); !result) {
             return std::unexpected(std::format("Error loading glTF file '{}': {}", path.string(), result.error()));
         }
     } else if (ext == ".obj" || ext == ".ply") {
-        scene.Apply(action::object::ImportMesh{path, std::make_unique<MeshInstanceCreateInfo>(MeshInstanceCreateInfo{.Name = path.stem().string()})});
+        Apply(r, scene_entity, action::object::ImportMesh{path, std::make_unique<MeshInstanceCreateInfo>(MeshInstanceCreateInfo{.Name = path.stem().string()})});
     } else {
         return std::unexpected(std::format("Unsupported file format: '{}'", ext));
     }
@@ -439,7 +440,7 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
                     static const std::array filters{nfdfilteritem_t{"glTF scene", "gltf,glb"}};
                     nfdchar_t *nfd_path;
                     if (auto result = NFD_OpenDialog(&nfd_path, filters.data(), filters.size(), ""); result == NFD_OKAY) {
-                        if (auto load = LoadFile(*scene, fs::path(nfd_path)); !load) std::cerr << load.error() << std::endl;
+                        if (auto load = LoadFile(r, scene->GetSceneEntity(), fs::path(nfd_path)); !load) std::cerr << load.error() << std::endl;
                         NFD_FreePath(nfd_path);
                     } else if (result != NFD_CANCEL) {
                         std::cerr << "Error opening file dialog: " << NFD_GetError() << std::endl;
@@ -469,7 +470,7 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
                         } else {
                             if (!passes(*it.File)) continue;
                             if (MenuItem(it.File->Label.c_str())) {
-                                if (auto load = LoadFile(*scene, it.File->Path); !load) std::cerr << load.error() << std::endl;
+                                if (auto load = LoadFile(r, scene->GetSceneEntity(), it.File->Path); !load) std::cerr << load.error() << std::endl;
                             }
                         }
                     }
@@ -520,7 +521,7 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
                     static const std::array filters{nfdfilteritem_t{"Mesh object", "obj,ply"}};
                     nfdchar_t *nfd_path;
                     if (auto result = NFD_OpenDialog(&nfd_path, filters.data(), filters.size(), ""); result == NFD_OKAY) {
-                        if (auto load = LoadFile(*scene, fs::path(nfd_path)); !load) std::cerr << load.error() << std::endl;
+                        if (auto load = LoadFile(r, scene->GetSceneEntity(), fs::path(nfd_path)); !load) std::cerr << load.error() << std::endl;
                         NFD_FreePath(nfd_path);
                     } else if (result != NFD_CANCEL) {
                         std::cerr << "Error opening file dialog: " << NFD_GetError() << std::endl;
@@ -530,7 +531,7 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
                     static const std::vector<nfdfilteritem_t> filters{};
                     nfdchar_t *path;
                     if (auto result = NFD_PickFolder(&path, ""); result == NFD_OKAY) {
-                        if (auto load = scene->Apply(action::project::LoadRealImpact{.Directory = fs::path{path}}); !load) std::cerr << load.error() << std::endl;
+                        if (auto load = Apply(r, scene->GetSceneEntity(), action::project::LoadRealImpact{.Directory = fs::path{path}}); !load) std::cerr << load.error() << std::endl;
                         NFD_FreePath(path);
                     } else if (result != NFD_CANCEL) {
                         std::cerr << "Error opening folder dialog: " << NFD_GetError() << std::endl;
@@ -540,7 +541,7 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
                     static const std::array filters{nfdfilteritem_t{"glTF scene", "gltf,glb"}};
                     nfdchar_t *nfd_path;
                     if (auto result = NFD_SaveDialog(&nfd_path, filters.data(), filters.size(), nullptr, "scene.gltf"); result == NFD_OKAY) {
-                        if (auto save = scene->Apply(action::project::SaveGltf{.Path = fs::path(nfd_path)}); !save) std::cerr << save.error() << std::endl;
+                        if (auto save = Apply(r, scene->GetSceneEntity(), action::project::SaveGltf{.Path = fs::path(nfd_path)}); !save) std::cerr << save.error() << std::endl;
                         NFD_FreePath(nfd_path);
                     } else if (result != NFD_CANCEL) {
                         std::cerr << "Error opening save dialog: " << NFD_GetError() << std::endl;
@@ -635,7 +636,8 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
                 scene->RenderClipPickers(action);
                 Unindent(6);
                 PopStyleVar();
-                if (auto a = RenderAnimationTimeline(scene->GetTimelineRange(), scene->GetTimelinePlayback(), scene->GetTimelineView(), scene->GetAnimationIcons())) {
+                const auto scene_e = scene->GetSceneEntity();
+                if (auto a = RenderAnimationTimeline(r.get<const TimelineRange>(scene_e), r.get<const TimelinePlayback>(scene_e), r.get<const AnimationTimelineView>(scene_e), scene->GetAnimationIcons())) {
                     action::Assign(action, std::move(*a));
                 }
             }
@@ -658,7 +660,7 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
                 // static const auto DefaultRealImpactPath = fs::path{"../../"} / "RealImpact" / "dataset" / "22_Cup" / "preprocessed";
                 // if (fs::exists(DefaultRealImpactPath)) scene->LoadRealImpact(DefaultRealImpactPath);
                 if (initial_file) {
-                    if (auto result = LoadFile(*scene, fs::path(initial_file)); !result) {
+                    if (auto result = LoadFile(r, scene->GetSceneEntity(), fs::path(initial_file)); !result) {
                         std::cerr << result.error() << std::endl;
                         play = false;
                     }
@@ -673,7 +675,7 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
             }
         }
 
-        if (action) scene->Apply(std::move(*action));
+        if (action) Apply(r, scene->GetSceneEntity(), std::move(*action));
 
         ImGui::Render();
         auto *draw_data = GetDrawData();

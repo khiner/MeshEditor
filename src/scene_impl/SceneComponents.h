@@ -4,6 +4,8 @@
 #include "SceneModeComponents.h"
 #include "SceneOps.h"
 #include "TransformGizmo.h"
+#include "ViewCamera.h"
+#include "entt_fwd.h"
 #include "gpu/DebugChannel.h"
 #include "numeric/vec2.h"
 
@@ -25,6 +27,12 @@ struct MeshMaterialAssignment {
 };
 struct MeshMaterialSlotSelection {
     uint32_t PrimitiveIndex{0};
+};
+
+// A contiguous span of a mesh's elements (vertices/edges/faces) in the SelectionBitset.
+struct ElementRange {
+    entt::entity MeshEntity;
+    uint32_t Offset, Count;
 };
 
 // Presence indicates active transform
@@ -119,23 +127,19 @@ struct EnabledInteractionModes {
     std::set<InteractionMode> Value{InteractionMode::Object, InteractionMode::Edit, InteractionMode::Pose};
 };
 
-// Pending edit-mode element click. Apply emits this; ProcessComponentEvents runs the GPU pick and applies bit/active updates, then removes it.
 struct PendingEditElementClick {
     uvec2 MousePx;
     bool Toggle;
 };
-
-// Pending HDR prefilter / activation. Apply emits this; ProcessComponentEvents prefilters and activates, then removes it.
 struct PendingSetStudioEnvironment {
     uint32_t Index;
 };
-
-// Pending edit-element-mode change. Apply emits this; ProcessComponentEvents performs the bitset conversion + GPU compute dispatch, then removes it.
 struct PendingSetEditMode {
     Element Mode;
 };
 
-// Pending mesh import (file load + texture uploads). Apply emits this; ProcessComponentEvents performs the GPU work, then removes it.
+// Pending mesh import (file load + texture uploads).
+// Apply emits this; ProcessComponentEvents performs the GPU work, then removes it.
 struct PendingImportMesh {
     std::filesystem::path Path;
     MeshInstanceCreateInfo Info;
@@ -145,8 +149,9 @@ struct PendingImportMesh {
 // Emitted by JumpToStart and LoadGltf; cleared after the cache is cleared.
 struct PhysicsCacheInvalid {};
 
-// Non-owning span over the GPU-mapped SelectionBitset words. Lets Apply read/write the bitset
-// without depending on SceneStores. Initialized once by Scene; the underlying storage is stable.
+// Non-owning span over the GPU-mapped SelectionBitset words.
+// Lets Apply read/write the bitset without depending on SceneStores.
+// Initialized once by Scene; the underlying storage is stable.
 struct SelectionBitsetRef {
     std::span<uint32_t> Value;
 };
@@ -154,10 +159,7 @@ struct SelectionBitsetRef {
 // Descriptor-slot IDs for the selection compute/render pipeline.
 // RAII for the slots lives in Scene; this component publishes the stable IDs.
 struct SelectionSlots {
-    uint32_t HeadImage;
-    uint32_t SelectionCounter;
-    uint32_t ElementPickCandidates;
-    uint32_t SelectionBitset;
+    uint32_t HeadImage, SelectionCounter, ElementPickCandidates, SelectionBitset;
 };
 
 // Shared one-shot GPU sync primitives for synchronous passes (selection compute,
@@ -170,9 +172,7 @@ struct SceneOneShotGpu {
     vk::Semaphore SelectionReady;
 };
 
-// X-ray (occlusion-ignoring) selection toggle.
-// Kept distinct from SceneSettings so toggling does not trip the SceneSettings
-// reactive handler that forces a full draw-list re-record.
+// Selection ignores occlusion when true.
 struct SelectionXRay {
     bool Value{false};
 };
@@ -194,4 +194,20 @@ struct BoxSelectState {
 struct TransformGizmoState {
     TransformGizmo::Config Config;
     TransformGizmo::Mode Mode;
+};
+
+struct SelectedInstanceCount {
+    uint32_t Value{0};
+};
+
+struct BBoxWireframe {
+    entt::entity Instance{null_entity};
+};
+struct TetWireframe {
+    entt::entity Instance{null_entity};
+};
+
+// At most one camera carries this component at a time.
+struct LookingThrough {
+    ViewCamera SavedViewCamera; // The pre-look-through ViewCamera, restored on exit.
 };

@@ -4,60 +4,20 @@
 #include "AnimationTimeline.h"
 #include "SceneVulkanResources.h"
 #include "TransformGizmo.h"
-#include "ViewCamera.h"
 
-#include <expected>
-
-struct Armature;
-struct DescriptorSlots;
-struct DrawBatchInfo;
-struct DrawBufferPair;
 struct DrawListBuilder;
-struct EnvironmentStore;
-struct Mesh;
-struct MeshData;
-struct MeshStore;
-struct PhysicsWorld;
-struct ScenePipelines;
-struct SceneBuffers;
 struct VideoRecorder;
 struct SelectionDrawInfo;
-struct TextureStore;
 
 namespace mvk {
 struct ImGuiTexture;
 } // namespace mvk
-
-// Marks the camera entity currently being "looked through".
-// At most one camera carries this component at a time.
-struct LookingThrough {
-    ViewCamera SavedViewCamera; // The pre-look-through ViewCamera, restored on exit.
-};
-
-// A contiguous span of a mesh's elements (vertices/edges/faces) in the SelectionBitset.
-struct ElementRange {
-    entt::entity MeshEntity;
-    uint32_t Offset;
-    uint32_t Count;
-};
 
 struct Scene {
     Scene(SceneVulkanResources, entt::registry &);
     ~Scene();
 
     void LoadIcons();
-
-    void Apply(const action::Action &) const;
-    std::expected<void, std::string> Apply(const action::FallibleAction &) const;
-    // Dispatch any sub-variant whose alts are convertible to action::Action.
-    template<typename... Ts>
-    void Apply(std::variant<Ts...> v) const {
-        std::visit([this](auto &&x) { this->Apply(std::forward<decltype(x)>(x)); }, std::move(v));
-    }
-
-    // Branch on bone-edit mode, so callers can't pick the action variant inline.
-    void Duplicate(std::optional<action::Action> &out);
-    void Delete(std::optional<action::Action> &out);
 
     // Handle mouse/keyboard interactions.
     void Interact(std::optional<action::Action> &out);
@@ -70,9 +30,6 @@ struct Scene {
     void WaitForRender();
     void RenderControls(std::optional<action::Action> &out);
 
-    const TimelineRange &GetTimelineRange() const;
-    const TimelinePlayback &GetTimelinePlayback() const;
-    const AnimationTimelineView &GetTimelineView() const;
     const AnimationIcons &GetAnimationIcons() const { return AnimIcons; }
     // Render per-source animation-clip pickers above the timeline.
     void RenderClipPickers(std::optional<action::Action> &out);
@@ -127,11 +84,6 @@ public:
 private:
     std::unique_ptr<VideoRecorder> Recorder;
     std::pair<vk::Offset3D, vk::Extent2D> RecordRegion; // Locked at StartRecording; CaptureRecordFrame stops if the live region diverges.
-
-    // Region of FinalColorImage to record.
-    // Full image, or the camera-frame sub-rect if a look-through camera is active.
-    // Extent is clamped to even dimensions (libx264/yuv420p requires even width/height).
-    std::pair<vk::Offset3D, vk::Extent2D> GetCaptureRegion() const;
 
     // Shared buffer entities for collider wireframe overlays, indexed by ColliderShapeBuffer enum.
     enum class ColliderShapeBuffer : uint8_t {

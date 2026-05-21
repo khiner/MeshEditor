@@ -3,28 +3,23 @@
 #include "BBox.h"
 #include "Bindless.h"
 #include "ExtrasMesh.h"
-#include "File.h"
 #include "Instance.h"
 #include "MeshComponents.h"
 #include "NodeTransformAnimation.h"
-#include "Path.h"
 #include "Paths.h"
 #include "Reactive.h"
+#include "SceneApply.h"
 #include "SceneDefaults.h"
-#include "SceneOps.h"
 #include "ScenePipelines.h"
 #include "SceneSelection.h"
 #include "SceneStores.h"
 #include "SceneTextures.h"
 #include "SceneTree.h"
-#include "Shader.h"
 #include "SoundVertices.h"
 #include "SvgResource.h"
 #include "Timer.h"
 #include "TransformMath.h"
 #include "VideoRecorder.h"
-#include "audio/AudioSystem.h"
-#include "audio/RealImpact.h"
 #include "gltf/GltfScene.h"
 #include "gpu/BoxSelectPushConstants.h"
 #include "gpu/ElementPickPushConstants.h"
@@ -46,7 +41,7 @@
 
 #include <iostream>
 
-using std::ranges::any_of, std::ranges::find, std::ranges::find_if, std::ranges::fold_left, std::ranges::to;
+using std::ranges::any_of, std::ranges::find, std::ranges::fold_left, std::ranges::to;
 using std::views::iota;
 
 namespace {
@@ -171,11 +166,6 @@ std::pair<vec3, bool> MeshExtents(const Mesh &mesh) {
     }
     return {bbox.Max - bbox.Min, true};
 }
-
-entt::entity FindMeshEntity(const entt::registry &r, entt::entity entity) {
-    if (const auto *instance = r.try_get<const Instance>(entity)) return instance->Entity;
-    return entity;
-}
 } // namespace
 
 void RederiveCollider(entt::registry &r, entt::entity e) {
@@ -252,21 +242,6 @@ struct ColliderPolicy {}; struct PhysicsSimulationSettings {};
 struct TimelineRange {};
 } // namespace changes
 // clang-format on
-
-struct SelectedInstanceCount {
-    uint32_t Value{0};
-};
-
-// Show this instance's BBox when SceneSettings.ShowBoundingBoxes is on and the instance is selected.
-struct BBoxWireframe {
-    entt::entity Instance{null_entity};
-};
-
-// Show the tet-mesh wireframe for this instance when SceneSettings.ShowTetWireframe is on,
-// the instance is selected, and its mesh has a TetMeshData component.
-struct TetWireframe {
-    entt::entity Instance{null_entity};
-};
 
 struct DeformSlots {
     uint32_t BoneDeformOffset{InvalidOffset}, ArmatureDeformOffset{InvalidOffset}, MorphDeformOffset{InvalidOffset};
@@ -437,245 +412,7 @@ struct Scene::DrawState {
     std::vector<SelectionDrawInfo> SelectionDraws;
 };
 
-bool IsBoneEditMode(const entt::registry &R, entt::entity scene_entity) {
-    if (R.get<const SceneInteraction>(scene_entity).Mode != InteractionMode::Edit) return false;
-    return FindArmatureObject(R, FindActiveEntity(R)) != entt::null;
-}
-bool AllSelectedAreMeshes(const entt::registry &R) {
-    for (const auto [e, ok] : R.view<const Selected, const ObjectKind>().each()) {
-        if (ok.Value != ObjectType::Mesh) return false;
-    }
-    return true;
-}
-
-namespace scene_apply {
-
-// Apply(Action) is registry-only — GPU side-effects are deferred via PendingX components that ProcessComponentEvents observes.
-// Apply(FallibleAction) (LoadGltf, SaveGltf, LoadRealImpact) runs GPU work synchronously and reports failure inline.
-// Both fetch heavy resources (SceneStores, PhysicsWorld, SceneVulkanResources, SceneOneShotGpu) from R.ctx() / SceneEntity components on demand.
-
-entt::entity GetMeshEntity(const entt::registry &R, entt::entity e) {
-    if (const auto *instance = R.try_get<Instance>(e); instance && R.all_of<Mesh>(instance->Entity)) return instance->Entity;
-    return entt::null;
-}
-
-entt::entity GetActiveMeshEntity(const entt::registry &R) {
-    const auto active = FindActiveEntity(R);
-    return active != entt::null ? GetMeshEntity(R, active) : entt::null;
-}
-
-entt::entity LookThroughCameraEntity(const entt::registry &R) {
-    auto view = R.view<LookingThrough>();
-    return view.empty() ? entt::null : *view.begin();
-}
-
-bool CanDuplicate(const entt::registry &R, entt::entity scene_entity) {
-    if (R.get<const SceneInteraction>(scene_entity).Mode == InteractionMode::Pose) return false;
-    if (IsBoneEditMode(R, scene_entity)) return !R.view<BoneSelection>().empty();
-    return !R.view<Selected>().empty();
-}
-
-bool CanDuplicateLinked(const entt::registry &R, entt::entity scene_entity) {
-    return CanDuplicate(R, scene_entity) && !IsBoneEditMode(R, scene_entity);
-}
-
-bool CanDelete(const entt::registry &R, entt::entity scene_entity) {
-    return CanDuplicate(R, scene_entity);
-}
-
-std::vector<ElementRange> GetBitsetRangesForSelected(const entt::registry &R) {
-    std::vector<ElementRange> ranges;
-    for (const auto mesh_entity : scene_selection::GetSelectedMeshEntities(R)) {
-        if (const auto *br = R.try_get<const MeshSelectionBitsetRange>(mesh_entity); br && br->Count > 0) {
-            ranges.emplace_back(mesh_entity, br->Offset, br->Count);
-        }
-    }
-    return ranges;
-}
-
-} // namespace scene_apply
-
 namespace {
-
-void SetLookThrough(entt::registry &R, entt::entity scene_entity, entt::entity target) {
-    const auto previous = scene_apply::LookThroughCameraEntity(R);
-    if (previous == target) return;
-    // Preserve the saved view across camera switches; only capture fresh on first entry.
-    auto saved = previous != entt::null ? R.get<LookingThrough>(previous).SavedViewCamera : R.get<ViewCamera>(scene_entity);
-    if (previous != entt::null) R.remove<LookingThrough>(previous);
-    R.emplace<LookingThrough>(target, std::move(saved));
-}
-
-void ExitLookThrough(entt::registry &R, entt::entity scene_entity) {
-    const auto camera = scene_apply::LookThroughCameraEntity(R);
-    if (camera == entt::null) return;
-    R.replace<ViewCamera>(scene_entity, R.get<LookingThrough>(camera).SavedViewCamera);
-    R.remove<LookingThrough>(camera);
-}
-
-void RebuildBoneStructure(entt::registry &R, entt::entity scene_entity, entt::entity arm_data_entity) {
-    RebuildArmatureStructure(R, arm_data_entity);
-    R.get<LastEvaluatedFrame>(scene_entity).Value = -1;
-}
-
-void DestroyArmatureData(entt::registry &R, entt::entity scene_entity, entt::entity arm_obj_entity) {
-    auto &meshes = R.ctx().get<MeshStore>();
-    auto &buffers = R.get<SceneBuffers>(scene_entity);
-    auto &arm = R.get<ArmatureObject>(arm_obj_entity);
-    if (arm.JointEntity != entt::null) {
-        if (auto *mb = R.try_get<MeshBuffers>(arm.JointEntity)) buffers.Release(*mb);
-        if (auto *ref = R.try_get<VertexStoreId>(arm.JointEntity)) meshes.Release(ref->StoreId);
-        if (auto *models = R.try_get<ModelsBuffer>(arm.JointEntity)) buffers.Instances.Free(models->InstanceRange);
-        R.remove<MeshBuffers, VertexStoreId, ModelsBuffer, PendingHide>(arm.JointEntity);
-        R.destroy(arm.JointEntity);
-        arm.JointEntity = entt::null;
-    }
-    if (auto *mb = R.try_get<MeshBuffers>(arm_obj_entity)) buffers.Release(*mb);
-    if (auto *adj = R.try_get<BoneAdjacencyIndices>(arm_obj_entity)) buffers.EdgeIndexBuffer.Release(adj->Indices);
-    if (auto *ref = R.try_get<VertexStoreId>(arm_obj_entity)) meshes.Release(ref->StoreId);
-    if (auto *models = R.try_get<ModelsBuffer>(arm_obj_entity)) buffers.Instances.Free(models->InstanceRange);
-    R.remove<MeshBuffers, VertexStoreId, ModelsBuffer, BoneAdjacencyIndices, PendingHide>(arm_obj_entity);
-}
-
-entt::entity CreateSingleBoneInstance(entt::registry &R, entt::entity scene_entity, entt::entity arm_obj_entity, BoneId bone_id) {
-    auto &arm_obj = R.get<ArmatureObject>(arm_obj_entity);
-    const auto &armature = R.get<const Armature>(arm_obj.Entity);
-    const auto new_index = *armature.FindBoneIndex(bone_id);
-    const auto parent_index = armature.Bones[new_index].ParentIndex;
-    const auto parent_entity = parent_index == InvalidBoneIndex ? arm_obj_entity : arm_obj.BoneEntities[parent_index];
-    const auto bone_entity = ::CreateBoneEntity(R, scene_entity, arm_obj_entity, armature, new_index, parent_entity);
-    if (arm_obj.JointEntity != null_entity && R.valid(arm_obj.JointEntity)) {
-        ::CreateBoneJoints(R, arm_obj_entity, bone_entity, arm_obj.JointEntity);
-    }
-    arm_obj.BoneEntities.emplace_back(bone_entity);
-    return bone_entity;
-}
-
-void Destroy(entt::registry &R, entt::entity scene_entity, entt::entity e) {
-    auto &slots = R.ctx().get<DescriptorSlots>();
-    auto &buffers = R.get<SceneBuffers>(scene_entity);
-    auto &meshes = R.ctx().get<MeshStore>();
-    auto &textures = *R.ctx().get<std::unique_ptr<TextureStore>>();
-    if (R.all_of<LookingThrough>(e)) {
-        R.replace<ViewCamera>(scene_entity, R.get<LookingThrough>(e).SavedViewCamera);
-        R.remove<LookingThrough>(e);
-    }
-    { // Clear relationships
-        ClearParent(R, e);
-        std::vector<entt::entity> children;
-        for (auto child : Children{&R, e}) children.emplace_back(child);
-        for (const auto child : children) ClearParent(R, child);
-    }
-
-    // Decrement SelectedInstanceCount before entity destruction (while all components are intact).
-    // Cannot rely on on_destroy<Selected> — EnTT's pool removal order during R.destroy() is non-deterministic,
-    // so Instance may already be gone when on_destroy<Selected> fires.
-    if (R.all_of<Selected, Instance>(e)) {
-        if (auto *count = R.try_get<SelectedInstanceCount>(R.get<Instance>(e).Entity))
-            if (count->Value > 0) --count->Value;
-    }
-
-    entt::entity buffer_entity = entt::null;
-    if (const auto *instance = R.try_get<Instance>(e)) {
-        if (R.all_of<Mesh>(instance->Entity) || R.all_of<ObjectExtrasTag>(instance->Entity)) buffer_entity = instance->Entity;
-        Hide(R, e);
-    }
-    std::vector<entt::entity> armature_data_entities;
-    auto try_add_armature_data = [&](entt::entity data_entity) {
-        if (R.valid(data_entity) && find(armature_data_entities, data_entity) == armature_data_entities.end()) {
-            armature_data_entities.emplace_back(data_entity);
-        }
-    };
-    if (const auto *armature = R.try_get<ArmatureObject>(e)) try_add_armature_data(armature->Entity);
-    if (const auto *armature_modifier = R.try_get<ArmatureModifier>(e)) try_add_armature_data(armature_modifier->ArmatureEntity);
-    if (const auto *bone_attachment = R.try_get<BoneAttachment>(e)) try_add_armature_data(bone_attachment->ArmatureEntity);
-    if (const auto *cw = R.try_get<ColliderWireframe>(e)) {
-        for (uint8_t i = 0; i < cw->Count; ++i) {
-            if (R.valid(cw->Instances[i])) {
-                Hide(R, cw->Instances[i]);
-                R.destroy(cw->Instances[i]);
-            }
-        }
-    }
-    if (const auto *bw = R.try_get<BBoxWireframe>(e); bw && R.valid(bw->Instance)) {
-        Hide(R, bw->Instance);
-        R.destroy(bw->Instance);
-    }
-    if (const auto *tw = R.try_get<TetWireframe>(e); tw && R.valid(tw->Instance)) {
-        Hide(R, tw->Instance);
-        R.destroy(tw->Instance);
-    }
-
-    if (const auto *light_index = R.try_get<LightIndex>(e)) {
-        R.get_or_emplace<PendingLightRemovals>(scene_entity).Indices.push_back(light_index->Value);
-    }
-
-    if (R.all_of<ArmatureObject>(e)) {
-        auto &arm = R.get<ArmatureObject>(e);
-        auto destroy_visible = [&](entt::entity entity) {
-            Hide(R, entity);
-            R.destroy(entity);
-        };
-        for (const auto bone_entity : arm.BoneEntities) {
-            if (auto *joints = R.try_get<BoneJointEntities>(bone_entity)) {
-                if (joints->Head != entt::null) destroy_visible(joints->Head);
-                if (joints->Tail != entt::null) destroy_visible(joints->Tail);
-            }
-            R.remove<BoneJointEntities>(bone_entity);
-        }
-
-        // Destroy children before parents (reverse of topological order) so ClearParent
-        // can access the parent's SceneNode to unlink the child.
-        for (auto it = arm.BoneEntities.rbegin(); it != arm.BoneEntities.rend(); ++it) {
-            ClearParent(R, *it);
-            destroy_visible(*it);
-        }
-        DestroyArmatureData(R, scene_entity, e);
-    }
-
-    R.destroy(e);
-
-    // If this was the last instance, destroy the buffer entity
-    if (R.valid(buffer_entity)) {
-        if (!AnyComponentRefersTo(R, &Instance::Entity, buffer_entity)) {
-            if (auto *mesh_buffers = R.try_get<MeshBuffers>(buffer_entity)) {
-                if (const auto *vcr = R.try_get<VertexClass>(buffer_entity)) {
-                    buffers.VertexClassBuffer.Release({vcr->Offset, mesh_buffers->Vertices.Count});
-                }
-                buffers.Release(*mesh_buffers);
-            }
-            if (const auto *vs = R.try_get<VertexStoreId>(buffer_entity)) meshes.Release(vs->StoreId);
-            if (const auto *models = R.try_get<ModelsBuffer>(buffer_entity)) buffers.Instances.Free(models->InstanceRange);
-            R.destroy(buffer_entity);
-        }
-    }
-    for (const auto armature_data_entity : armature_data_entities) {
-        if (!R.valid(armature_data_entity)) continue;
-        const bool is_used = AnyComponentRefersTo(R, &ArmatureObject::Entity, armature_data_entity) ||
-            AnyComponentRefersTo(R, &ArmatureModifier::ArmatureEntity, armature_data_entity) ||
-            AnyComponentRefersTo(R, &BoneAttachment::ArmatureEntity, armature_data_entity);
-        if (!is_used) R.destroy(armature_data_entity);
-    }
-
-    // If no instances remain, release all imported textures and reset to the default material.
-    if (R.view<Instance>().empty()) {
-        // Index 0 is the default white texture (permanent); imported textures start at index 1.
-        if (textures.Textures.size() > 1) {
-            ReleaseSamplerSlots(slots, CollectSamplerSlots(std::span<const TextureEntry>{textures.Textures}.subspan(1)));
-            textures.Textures.erase(textures.Textures.begin() + 1, textures.Textures.end());
-        }
-        textures.WhiteTextureSlot = textures.Textures.empty() ? InvalidSlot : textures.Textures.front().SamplerSlot;
-
-        if (buffers.Materials.Count() > 1) buffers.Materials.SetCount(1u);
-        R.patch<MaterialStore>(scene_entity, [](auto &ms) {
-            if (ms.Names.size() > 1) ms.Names.erase(ms.Names.begin() + 1, ms.Names.end());
-        });
-    }
-}
-
-void ClearMeshes(entt::registry &R, entt::entity scene_entity) {
-    for (const auto e : R.view<Instance>(entt::exclude<SubElementOf>) | to<std::vector>()) Destroy(R, scene_entity, e);
-}
 
 void AppendSelectedSilhouetteDraws(const entt::registry &R, entt::entity scene_entity, DrawListBuilder &draw_list, DrawBatchInfo &silhouette_batch) {
     const auto &buffers = R.get<const SceneBuffers>(scene_entity);
@@ -981,9 +718,7 @@ void ApplySelectionStateUpdate(
     R.emplace_or_replace<ElementStatesDirty>(scene_entity);
 }
 
-void SetEditMode(
-    entt::registry &R, entt::entity scene_entity, Element mode
-) {
+void SetEditMode(entt::registry &R, entt::entity scene_entity, Element mode) {
     const auto current_mode = R.get<const SceneEditMode>(scene_entity).Value;
     if (current_mode == mode) return;
 
@@ -1043,57 +778,6 @@ void SetEditMode(
     else if (!old_ranges.empty()) R.emplace_or_replace<ElementStatesDirty>(scene_entity);
 }
 
-bool SetInteractionMode(entt::registry &R, entt::entity scene_entity, InteractionMode mode) {
-    if (R.get<const SceneInteraction>(scene_entity).Mode == mode) return false;
-
-    auto &meshes = R.ctx().get<MeshStore>();
-    auto &buffers = R.get<SceneBuffers>(scene_entity);
-
-    const auto active_entity = FindActiveEntity(R);
-    const auto active_arm = active_entity != entt::null ? FindArmatureObject(R, active_entity) : entt::null;
-    const bool active_is_armature = active_arm != entt::null;
-    if (mode == InteractionMode::Edit && !AllSelectedAreMeshes(R) && !active_is_armature) return false;
-    if (mode == InteractionMode::Pose && !active_is_armature) return false;
-
-    if (R.get<const SceneInteraction>(scene_entity).Mode == InteractionMode::Edit) {
-        // Keep bitset ranges + bits so element selections survive toggling Edit mode off and back on.
-        for (const auto [mesh_entity, br, mesh] : R.view<const MeshSelectionBitsetRange, const Mesh>().each()) {
-            if (br.Count > 0) meshes.UpdateElementStates(mesh, Element::None, {}, {}, {}, {}, std::nullopt);
-        }
-        R.emplace_or_replace<ElementStatesDirty>(scene_entity);
-    }
-    if (mode == InteractionMode::Edit && !active_is_armature) {
-        // Only assign ranges for selected meshes missing one; existing ranges preserve remembered selection.
-        if (const auto edit_element = R.get<const SceneEditMode>(scene_entity).Value; edit_element != Element::None) {
-            uint32_t next_offset = 0;
-            for (const auto [_, br] : R.view<const MeshSelectionBitsetRange>().each()) {
-                next_offset = std::max(next_offset, (br.Offset + br.Count + 31) / 32 * 32);
-            }
-            auto *bits = buffers.SelectionBitset.Data();
-            for (const auto mesh_entity : scene_selection::GetSelectedMeshEntities(R)) {
-                if (R.all_of<MeshSelectionBitsetRange>(mesh_entity)) continue;
-                const auto &mesh = R.get<const Mesh>(mesh_entity);
-                const uint32_t count = scene_selection::GetElementCount(mesh, edit_element);
-                if (count == 0) continue;
-
-                scene_selection::SelectAll(bits, next_offset, count);
-                R.emplace<MeshSelectionBitsetRange>(mesh_entity, next_offset, count);
-                next_offset = (next_offset + count + 31) / 32 * 32;
-            }
-        }
-    }
-    R.patch<SceneInteraction>(scene_entity, [mode](auto &s) { s.Mode = mode; });
-    R.patch<ViewportTheme>(scene_entity, [](auto &) {});
-    return true;
-}
-
-void JumpToStartFrame(entt::registry &R, entt::entity scene_entity) {
-    const auto frame = R.get<const TimelineRange>(scene_entity).StartFrame;
-    R.patch<TimelinePlayback>(scene_entity, [&](auto &p) { p.CurrentFrame = frame; });
-    R.get<PlaybackFrame>(scene_entity).Value = frame;
-    R.emplace_or_replace<PhysicsCacheInvalid>(scene_entity);
-}
-
 void SetStudioEnvironment(entt::registry &R, entt::entity scene_entity, uint32_t index) {
     const auto &vk = R.ctx().get<const SceneVulkanResources>();
     const auto &pipelines = R.ctx().get<const ScenePipelines>();
@@ -1112,141 +796,6 @@ void SetStudioEnvironment(entt::registry &R, entt::entity scene_entity, uint32_t
     const auto &pre = *hdri.Prefiltered;
     environments.ActiveHdriIndex = index;
     environments.StudioWorld = {.Ibl = MakeIblSamplers(pre, environments), .Name = hdri.Name};
-}
-
-std::pair<entt::entity, entt::entity> ImportMesh(
-    entt::registry &R, entt::entity scene_entity,
-    const std::filesystem::path &path, MeshInstanceCreateInfo info
-) {
-    const auto &vk = R.ctx().get<const SceneVulkanResources>();
-    const auto &one_shot = R.get<const SceneOneShotGpu>(scene_entity);
-    auto &slots = R.ctx().get<DescriptorSlots>();
-    auto &buffers = R.get<SceneBuffers>(scene_entity);
-    auto &meshes = R.ctx().get<MeshStore>();
-    auto &textures = *R.ctx().get<std::unique_ptr<TextureStore>>();
-    auto result = meshes.LoadMesh(path);
-    if (!result) throw std::runtime_error(result.error());
-
-    if (!result->Materials.empty()) {
-        auto obj_batch = BeginTextureUploadBatch(vk.Device, one_shot.Pool, buffers.Ctx);
-        std::unordered_map<std::string, uint32_t> texture_slot_cache;
-        const auto resolve_texture_slot =
-            [&](
-                const std::optional<std::filesystem::path> &source_texture_path,
-                TextureColorSpace color_space,
-                std::string_view material_name, std::string_view texture_label
-            ) -> uint32_t {
-            if (!source_texture_path) return InvalidSlot;
-            auto texture_path = *source_texture_path;
-            if (texture_path.is_relative()) texture_path = path.parent_path() / texture_path;
-            texture_path = texture_path.lexically_normal();
-
-            const auto cache_key = std::format("{}|{}", texture_path.generic_string(), color_space == TextureColorSpace::Srgb ? "sRGB" : "Linear");
-            if (const auto it = texture_slot_cache.find(cache_key); it != texture_slot_cache.end()) return it->second;
-
-            std::string encoded;
-            try {
-                encoded = File::Read(texture_path);
-            } catch (const std::exception &e) {
-                std::cerr << std::format(
-                    "Warning: Failed to read OBJ texture '{}' for material '{}' ({}) in '{}': {}\n",
-                    texture_path.string(), material_name, texture_label, path.string(), e.what()
-                );
-                return InvalidSlot;
-            }
-
-            auto texture = CreateTextureEntryFromEncoded(
-                vk,
-                obj_batch,
-                slots,
-                std::as_bytes(std::span{encoded}),
-                texture_path.filename().string(),
-                std::format("{} ({})", texture_path.filename().string(), color_space == TextureColorSpace::Srgb ? "sRGB" : "Linear"),
-                color_space,
-                vk::SamplerAddressMode::eRepeat,
-                vk::SamplerAddressMode::eRepeat,
-                SamplerConfig{}
-            );
-            if (!texture) {
-                std::cerr << std::format(
-                    "Warning: Failed to decode OBJ texture '{}' for material '{}' ({}) in '{}': {}\n",
-                    texture_path.string(), material_name, texture_label, path.string(), texture.error()
-                );
-                return InvalidSlot;
-            }
-
-            const auto sampler_slot = texture->SamplerSlot;
-            textures.Textures.emplace_back(std::move(*texture));
-            texture_slot_cache.emplace(cache_key, sampler_slot);
-            return sampler_slot;
-        };
-
-        std::vector<uint32_t> scene_material_indices(result->Materials.size(), 0u);
-        std::vector<std::string> names;
-        names.reserve(result->Materials.size());
-        buffers.Materials.Reserve(buffers.Materials.Count() + result->Materials.size());
-        for (uint32_t material_index = 0; material_index < result->Materials.size(); ++material_index) {
-            const auto &source = result->Materials[material_index];
-            const auto material_name = source.Name.empty() ? std::format("Material{}", material_index) : source.Name;
-            const auto base_color_texture = resolve_texture_slot(source.BaseColorTexturePath, TextureColorSpace::Srgb, material_name, "baseColor");
-            const auto normal_texture = resolve_texture_slot(source.NormalTexturePath, TextureColorSpace::Linear, material_name, "normal");
-            scene_material_indices[material_index] = buffers.Materials.Append({
-                .BaseColorFactor = source.BaseColorFactor,
-                .MetallicFactor = std::clamp(source.MetallicFactor, 0.f, 1.f),
-                .RoughnessFactor = std::clamp(source.RoughnessFactor, 0.f, 1.f),
-                .AlphaMode = (source.BaseColorFactor.w < 1.f || source.HasAlphaTexture) ?
-                    MaterialAlphaMode::Blend :
-                    MaterialAlphaMode::Opaque,
-                .BaseColorTexture = {.Slot = base_color_texture != InvalidSlot ? base_color_texture : textures.WhiteTextureSlot},
-                .NormalTexture = {.Slot = normal_texture},
-            });
-            names.emplace_back(material_name);
-        }
-        SubmitTextureUploadBatch(obj_batch, vk.Queue, one_shot.Fence, vk.Device);
-
-        R.patch<MaterialStore>(
-            scene_entity,
-            [&](auto &material_store) {
-                material_store.Names.insert(material_store.Names.end(), std::make_move_iterator(names.begin()), std::make_move_iterator(names.end()));
-            }
-        );
-
-        if (auto primitive_materials = meshes.GetPrimitiveMaterialIndices(result->Mesh.GetStoreId()); !primitive_materials.empty()) {
-            const auto fallback = scene_material_indices.front();
-            for (auto &primitive_material : primitive_materials) {
-                primitive_material = primitive_material < scene_material_indices.size() ? scene_material_indices[primitive_material] : fallback;
-            }
-        }
-    }
-
-    const auto entities = ::AddMesh(R, meshes, scene_entity, std::move(result->Mesh), std::move(info));
-    R.emplace<Path>(entities.first, path);
-    R.emplace<SmoothShading>(entities.first);
-    return entities;
-}
-
-void NewDefaultScene(entt::registry &R, entt::entity scene_entity) {
-    ClearMeshes(R, scene_entity);
-
-    auto &meshes = R.ctx().get<MeshStore>();
-    auto &buffers = R.get<SceneBuffers>(scene_entity);
-
-    constexpr PrimitiveShape default_shape{primitive::Cuboid{}};
-    const auto [mesh_entity, _] = ::AddMesh(R, meshes, scene_entity, meshes.CreateMesh(primitive::CreateMesh(default_shape), {}, {}), MeshInstanceCreateInfo{.Name = ToString(default_shape)});
-    R.emplace<PrimitiveShape>(mesh_entity, default_shape);
-
-    // startup.blend data, in Blender's frame (Z-up, -Y forward)
-    constexpr vec3 LightLoc{4.07625, 1.00545, 5.90386}, CameraLoc{7.358891, -6.925791, 4.958309}, CameraEulerXYZ{1.109319, 0, 0.815801};
-    constexpr float Lens{50}, SensorX{36}, RenderW{16}, RenderH{9};
-    // Blender Z-up -> MeshEditor Y-up is a -90° rotation about +X: (x, y, z) -> (x, z, -y)
-    const auto to_y_up_pos = [](vec3 v) { return vec3{v.x, v.z, -v.y}; };
-    const quat to_y_up_rot = glm::angleAxis(-float(M_PI_2), vec3{1, 0, 0});
-    // Matches Blender glTF exporter (cameras.py / yvof_blender_to_gltf): horizontal fit since render aspect > sensor aspect
-    const float hfov = 2 * std::atan(SensorX / (2 * Lens));
-    const float yfov = 2 * std::atan(std::tan(hfov * 0.5) * RenderH / RenderW);
-
-    ::AddLight(R, meshes, buffers, scene_entity, ObjectCreateInfo{.Name = "Light", .Transform = {.P = to_y_up_pos(LightLoc)}, .Select = MeshInstanceCreateInfo::SelectBehavior::None});
-    ::AddCamera(R, meshes, buffers, scene_entity, ObjectCreateInfo{.Name = "Camera", .Transform = {.P = to_y_up_pos(CameraLoc), .R = to_y_up_rot * quat{CameraEulerXYZ}}, .Select = MeshInstanceCreateInfo::SelectBehavior::None}, Perspective{.FieldOfViewRad = yfov, .FarClip = 1000, .NearClip = DefaultPerspectiveNearClip});
 }
 
 } // namespace
@@ -1461,15 +1010,12 @@ void Scene::LoadIcons() {
     SubmitTextureUploadBatch(batch, Vk.Queue, *OneShotFence, Vk.Device);
 }
 
-const TimelineRange &Scene::GetTimelineRange() const { return R.get<const TimelineRange>(SceneEntity); }
-const TimelinePlayback &Scene::GetTimelinePlayback() const { return R.get<const TimelinePlayback>(SceneEntity); }
-const AnimationTimelineView &Scene::GetTimelineView() const { return R.get<const AnimationTimelineView>(SceneEntity); }
-
-std::pair<vk::Offset3D, vk::Extent2D> Scene::GetCaptureRegion() const {
-    auto &Pipelines = R.ctx().get<const ScenePipelines>();
+namespace {
+std::pair<vk::Offset3D, vk::Extent2D> GetCaptureRegion(const entt::registry &r) {
+    auto &Pipelines = r.ctx().get<const ScenePipelines>();
     const auto full = ToExtent2D(Pipelines.Main.Resources->FinalColorImage.Extent);
-    const auto camera = scene_apply::LookThroughCameraEntity(R);
-    const auto *cd = camera != entt::null ? R.try_get<Camera>(camera) : nullptr;
+    const auto camera = LookThroughCameraEntity(r);
+    const auto *cd = camera != entt::null ? r.try_get<Camera>(camera) : nullptr;
     if (!cd) return {{0, 0, 0}, full};
 
     const auto cam_aspect = AspectRatio(*cd);
@@ -1479,6 +1025,7 @@ std::pair<vk::Offset3D, vk::Extent2D> Scene::GetCaptureRegion() const {
     const auto h = uint32_t(float(full.height) * ratio) & ~1u;
     return {{int32_t(full.width - w) / 2, int32_t(full.height - h) / 2, 0}, {w, h}};
 }
+} // namespace
 
 void Scene::StartRecording(std::filesystem::path path, int fps) {
     StopRecording();
@@ -1487,7 +1034,7 @@ void Scene::StartRecording(std::filesystem::path path, int fps) {
         std::println(stderr, "Scene::StartRecording: render resources not ready");
         return;
     }
-    RecordRegion = GetCaptureRegion();
+    RecordRegion = GetCaptureRegion(R);
     const auto &Vk = R.ctx().get<const SceneVulkanResources>();
     Recorder = std::make_unique<VideoRecorder>(Vk, std::move(path), RecordRegion.first, RecordRegion.second, fps);
 }
@@ -1499,7 +1046,7 @@ uint64_t Scene::CapturedFrameCount() const { return Recorder ? Recorder->Capture
 void Scene::CaptureRecordFrame() {
     auto &Pipelines = R.ctx().get<const ScenePipelines>();
     if (!IsRecording() || !Pipelines.Main.Resources) return;
-    if (GetCaptureRegion() != RecordRegion) {
+    if (GetCaptureRegion(R) != RecordRegion) {
         std::println(stderr, "Scene: capture region changed; stopping recording.");
         StopRecording();
         return;
@@ -2010,7 +1557,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         R.remove<PendingEditElementClick>(SceneEntity);
 
         const auto edit_mode = R.get<const SceneEditMode>(SceneEntity).Value;
-        const auto ranges = scene_apply::GetBitsetRangesForSelected(R);
+        const auto ranges = GetBitsetRangesForSelected(R);
         auto *bits = Buffers.SelectionBitset.Data();
         if (!toggle) {
             for (const auto &range : ranges) {
@@ -2041,7 +1588,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
 
     if (R.all_of<SelectionBitsDirty>(SceneEntity)) {
         R.remove<SelectionBitsDirty>(SceneEntity);
-        if (is_edit_mode) ApplySelectionStateUpdate(R, SceneEntity, scene_apply::GetBitsetRangesForSelected(R), R.get<const SceneEditMode>(SceneEntity).Value);
+        if (is_edit_mode) ApplySelectionStateUpdate(R, SceneEntity, GetBitsetRangesForSelected(R), R.get<const SceneEditMode>(SceneEntity).Value);
     }
     // Observed after the pending-click handler above so newly emitted MeshActiveElement updates fire orbit on the same frame.
     if (const auto &tracker = reactive<changes::MeshActiveElement>(R); !tracker.empty()) {
@@ -2211,7 +1758,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         request(RenderRequest::ReRecord);
         // Dispatch UpdateSelectionState for all meshes entering Edit mode (MeshSelectionBitsetRange assigned in SetInteractionMode).
         if (R.get<const SceneInteraction>(SceneEntity).Mode == InteractionMode::Edit) {
-            if (const auto edit_mode = R.get<const SceneEditMode>(SceneEntity).Value; edit_mode != Element::None) ApplySelectionStateUpdate(R, SceneEntity, scene_apply::GetBitsetRangesForSelected(R), edit_mode);
+            if (const auto edit_mode = R.get<const SceneEditMode>(SceneEntity).Value; edit_mode != Element::None) ApplySelectionStateUpdate(R, SceneEntity, GetBitsetRangesForSelected(R), edit_mode);
         }
         for (const auto [_, instance, __] : R.view<const Instance, const SoundVertices>().each()) {
             dirty_element_state_meshes.insert(instance.Entity);
@@ -2654,7 +2201,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
     }
     // If looking through a camera and it moved (animation or manual edit), snap the ViewCamera.
     // Must run before the SceneView handler so the ViewCamera replacement is picked up.
-    if (const auto camera = scene_apply::LookThroughCameraEntity(R); camera != entt::null &&
+    if (const auto camera = LookThroughCameraEntity(R); camera != entt::null &&
         reactive<changes::WorldTransform>(R).contains(camera)) {
         const auto &wt = R.get<WorldTransform>(camera);
         R.replace<ViewCamera>(SceneEntity, ViewCamera{wt.P, wt.P + CameraForward(wt), R.get<Camera>(camera)});
@@ -2697,7 +2244,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         const float aspect = render_extent.width == 0 || render_extent.height == 0 ? 1.f : float(render_extent.width) / float(render_extent.height);
         // When looking through a scene camera, keep the ViewCamera's widened FOV in sync
         // with the current viewport aspect ratio (handles viewport resize).
-        if (const auto camera = scene_apply::LookThroughCameraEntity(R); camera != entt::null) {
+        if (const auto camera = LookThroughCameraEntity(R); camera != entt::null) {
             R.get<ViewCamera>(SceneEntity).Data = WidenForLookThrough(R.get<Camera>(camera), aspect);
         }
         const auto &camera = R.get<const ViewCamera>(SceneEntity);
@@ -3092,820 +2639,6 @@ void Scene::UpdateWireframeTransforms() {
         if (wt && (wt_changed.contains(entity) || wt_changed.contains(tw.Instance))) R.replace<WorldTransform>(tw.Instance, *wt);
     }
 }
-
-namespace {
-template<typename...> struct TypeList {};
-
-template<typename... Ts, typename Fn>
-bool DispatchByTypeHash(TypeList<Ts...>, entt::id_type hash, Fn &&fn) {
-    return ((entt::type_hash<Ts>::value() == hash && (fn.template operator()<Ts>(), true)) || ...);
-}
-
-// Lists of components used by multilps templated actions.
-using UpdateableComponents = TypeList<
-    Transform, SceneSettings, MaterialVariants, ArmatureAnimation, MorphWeightAnimation,
-    NodeTransformAnimation, MaterialPreviewLighting, RenderedLighting, ViewportTheme,
-    ViewCamera, PhysicsMaterial, CollisionFilter, ColliderMaterial, ColliderPolicy,
-    PhysicsMotion, PhysicsVelocity, PhysicsJoint, TriggerNodes, ModalModelCreateInfo,
-    PhysicsSimulationSettings, TransformGizmoState>;
-using TagComponents = TypeList<SmoothShading, SubmitDirty, LightWireframeDirty, TriggerTag>;
-using NamedPhysicsComponents = TypeList<PhysicsMaterial, CollisionSystem, CollisionFilter, PhysicsJointDef>;
-
-entt::entity DuplicateOne(entt::registry &R, entt::entity scene_entity, entt::entity e, bool &was_mesh_duplicate) {
-    auto &meshes = R.ctx().get<MeshStore>();
-    auto &buffers = R.get<SceneBuffers>(scene_entity);
-    const ObjectCreateInfo create_info{
-        .Name = std::format("{}_copy", GetName(R, e)),
-        // Duplicate is created at root, so its local must match source's world.
-        .Transform = Transform{R.get<const WorldTransform>(e)},
-        .Select = R.all_of<Selected>(e) ? MeshInstanceCreateInfo::SelectBehavior::Additive : MeshInstanceCreateInfo::SelectBehavior::None,
-    };
-
-    if (!R.all_of<Instance>(e)) {
-        if (const auto object_type = R.all_of<ObjectKind>(e) ? R.get<const ObjectKind>(e).Value : ObjectType::Empty; object_type == ObjectType::Armature) {
-            const auto data_entity = R.create();
-            R.emplace<Armature>(data_entity);
-            const auto copy_entity = R.create();
-            R.emplace<ObjectKind>(copy_entity, ObjectType::Armature);
-            R.emplace<ArmatureObject>(copy_entity, data_entity);
-            R.emplace<Transform>(copy_entity, create_info.Transform);
-            R.emplace<WorldTransform>(copy_entity, create_info.Transform);
-            R.emplace<Name>(copy_entity, ::CreateName(R, scene_entity, create_info.Name.empty() ? "Armature" : create_info.Name));
-            ::ApplySelectBehavior(R, copy_entity, create_info.Select);
-            ::CreateBoneInstances(R, meshes, scene_entity, copy_entity, data_entity);
-            if (const auto *src_armature = R.try_get<ArmatureObject>(e)) {
-                auto &dst = R.get<Armature>(data_entity);
-                dst = R.get<const Armature>(src_armature->Entity);
-            }
-            return copy_entity;
-        }
-        return ::AddEmpty(R, meshes, buffers, scene_entity, create_info);
-    }
-
-    // Bone sub-entities (head/tail joints, bone instances) are not independently duplicable.
-    if (R.all_of<BoneSubPartOf>(e)) return entt::null;
-
-    // Object extras (Camera, Empty, Light) have Instance but create their own wireframe mesh.
-    if (R.all_of<ObjectExtrasTag>(R.get<Instance>(e).Entity)) {
-        if (const auto *src_cd = R.try_get<Camera>(e)) return ::AddCamera(R, meshes, buffers, scene_entity, create_info, *src_cd);
-        if (R.all_of<LightIndex>(e)) return ::AddLight(R, meshes, buffers, scene_entity, create_info, buffers.Lights.Get(R.get<const LightIndex>(e).Value));
-        return ::AddEmpty(R, meshes, buffers, scene_entity, create_info);
-    }
-
-    const auto mesh_entity = R.get<Instance>(e).Entity;
-    const auto e_new = ::AddMesh(
-        R, meshes, scene_entity,
-        meshes.CloneMesh(R.get<const Mesh>(mesh_entity)),
-        MeshInstanceCreateInfo{.Name = create_info.Name, .Transform = create_info.Transform, .Select = create_info.Select, .Visible = R.all_of<RenderInstance>(e)}
-    );
-    if (auto prim_shape = R.try_get<PrimitiveShape>(mesh_entity)) R.emplace<PrimitiveShape>(e_new.first, *prim_shape);
-    if (R.all_of<SmoothShading>(mesh_entity)) R.emplace<SmoothShading>(e_new.first);
-    if (const auto *armature_modifier = R.try_get<ArmatureModifier>(e)) R.emplace<ArmatureModifier>(e_new.second, *armature_modifier);
-    if (const auto *bone_attachment = R.try_get<BoneAttachment>(e)) R.emplace<BoneAttachment>(e_new.second, *bone_attachment);
-    was_mesh_duplicate = true;
-    return e_new.second;
-}
-
-entt::entity DuplicateLinkedOne(entt::registry &R, entt::entity scene_entity, entt::entity e) {
-    auto &meshes = R.ctx().get<MeshStore>();
-    auto &buffers = R.get<SceneBuffers>(scene_entity);
-    if (R.all_of<BoneSubPartOf>(e)) return entt::null;
-    if (!R.all_of<Instance>(e)) {
-        const auto select_behavior = R.all_of<Selected>(e) ? MeshInstanceCreateInfo::SelectBehavior::Additive : MeshInstanceCreateInfo::SelectBehavior::None;
-
-        if (const auto *armature = R.try_get<ArmatureObject>(e)) {
-            const auto e_new = R.create();
-            R.emplace<Name>(e_new, ::CreateName(R, scene_entity, std::format("{}_copy", GetName(R, e))));
-            R.emplace<ObjectKind>(e_new, ObjectType::Armature);
-            R.emplace<ArmatureObject>(e_new, armature->Entity);
-            const Transform t{R.get<const WorldTransform>(e)};
-            R.emplace_or_replace<Transform>(e_new, t);
-            R.emplace<WorldTransform>(e_new, t);
-
-            ::ApplySelectBehavior(R, e_new, select_behavior);
-            ::CreateBoneInstances(R, meshes, scene_entity, e_new, armature->Entity);
-            return e_new;
-        }
-        return ::AddEmpty(R, meshes, buffers, scene_entity, {.Name = std::format("{}_copy", GetName(R, e)), .Transform = Transform{R.get<const WorldTransform>(e)}, .Select = select_behavior});
-    }
-
-    const auto mesh_entity = R.get<Instance>(e).Entity;
-    const auto e_new = R.create();
-    {
-        uint instance_count = 0; // Count instances for naming (first duplicated instance is _1, etc.)
-        for (const auto [_, instance] : R.view<Instance>().each()) {
-            if (instance.Entity == mesh_entity) ++instance_count;
-        }
-        R.emplace<Name>(e_new, ::CreateName(R, scene_entity, std::format("{}_{}", GetName(R, e), instance_count)));
-    }
-    R.emplace<Instance>(e_new, mesh_entity);
-    R.emplace<ObjectKind>(e_new, ObjectType::Mesh);
-    const Transform t_new{R.get<const WorldTransform>(e)};
-    R.emplace_or_replace<Transform>(e_new, t_new);
-    R.emplace<WorldTransform>(e_new, t_new);
-    Show(R, e_new);
-    if (const auto *armature_modifier = R.try_get<ArmatureModifier>(e)) R.emplace<ArmatureModifier>(e_new, *armature_modifier);
-    if (const auto *bone_attachment = R.try_get<BoneAttachment>(e)) R.emplace<BoneAttachment>(e_new, *bone_attachment);
-
-    R.emplace<Selected>(e_new);
-
-    return e_new;
-}
-} // namespace
-
-void Scene::Delete(std::optional<action::Action> &out) {
-    if (IsBoneEditMode(R, SceneEntity)) out = action::bone::DeleteSelected{};
-    else out = action::object::Delete{};
-}
-void Scene::Duplicate(std::optional<action::Action> &out) {
-    if (IsBoneEditMode(R, SceneEntity)) out = action::bone::DuplicateSelected{};
-    else out = action::object::Duplicate{};
-}
-
-namespace scene_apply {
-void Apply(entt::registry &R, entt::entity SceneEntity, const action::Action &action) {
-    auto &Buffers = R.get<SceneBuffers>(SceneEntity);
-    auto &Meshes = R.ctx().get<MeshStore>();
-    auto patch_camera_stopped = [&](auto &&fn) {
-        R.patch<ViewCamera>(SceneEntity, [&](auto &c) { fn(c); c.StopMoving(); });
-    };
-    auto poke_active_lighting = [&] {
-        const auto mode = R.get<const SceneSettings>(SceneEntity).ViewportShading;
-        if (mode == ViewportShadingMode::MaterialPreview) R.patch<MaterialPreviewLighting>(SceneEntity, [](auto &) {});
-        else if (mode == ViewportShadingMode::Rendered) R.patch<RenderedLighting>(SceneEntity, [](auto &) {});
-    };
-    auto apply_box_select = [&]<typename Tag>(bool additive, auto restore_baseline, auto apply_hits) {
-        R.clear<Tag>();
-        if (additive) {
-            if (const auto *baseline = R.try_get<const AdditiveBoxSelectBaseline>(SceneEntity)) restore_baseline(*baseline);
-        }
-        apply_hits();
-    };
-    auto merge_bone_sel = [&](entt::entity e, const std::optional<BoneSel> &part, bool additive) {
-        const auto sel = part ? BoneSelection::From(*part) : BoneSelection{};
-        const auto *cur = R.try_get<BoneSelection>(e);
-        R.emplace_or_replace<BoneSelection>(e, additive && cur ? *cur | sel : sel);
-    };
-
-    // AdditiveBoxSelectBaseline is meaningful only during an active box-select drag;
-    // a click-selection always ends one, so its handler owns the cleanup.
-    auto end_box_select_interaction = [&] { R.remove<AdditiveBoxSelectBaseline>(SceneEntity); };
-    std::visit(
-        overloaded{
-            [&](action::selection::Select a) { end_box_select_interaction(); ::Select(R, a.Entity); },
-            [&](action::selection::ToggleSelected a) { end_box_select_interaction(); ::ToggleSelected(R, a.Entity); },
-            [&](action::selection::SelectBone a) {
-                end_box_select_interaction();
-                ::SelectBone(R, a.Entity);
-                if (a.Part) merge_bone_sel(a.Entity, a.Part, a.Additive);
-            },
-            [&](action::selection::ExtendActive a) {
-                end_box_select_interaction();
-                R.clear<Active>();
-                R.emplace<Active>(a.Entity);
-                R.emplace_or_replace<Selected>(a.Entity);
-            },
-            [&](action::selection::ExtendBoneActive a) {
-                end_box_select_interaction();
-                R.clear<BoneActive>();
-                R.emplace<BoneActive>(a.Entity);
-                if (!R.all_of<BoneSelection>(a.Entity)) R.emplace<BoneSelection>(a.Entity, false, false, false);
-                if (a.Part) merge_bone_sel(a.Entity, a.Part, a.Additive);
-            },
-            [&](const action::selection::SetBoneSelectionPart &a) { merge_bone_sel(a.Entity, a.Part, a.Additive); },
-            [&](action::selection::DeselectAll) {
-                end_box_select_interaction();
-                const auto interaction_mode = R.get<const SceneInteraction>(SceneEntity).Mode;
-                const bool bone_mode = interaction_mode == InteractionMode::Pose || IsBoneEditMode(R, SceneEntity);
-                if (bone_mode) R.clear<BoneSelection>();
-                else R.clear<Selected>();
-            },
-            [&](action::selection::SnapshotBoxSelectBaseline) {
-                const auto interaction_mode = R.get<const SceneInteraction>(SceneEntity).Mode;
-                const auto active_entity = FindActiveEntity(R);
-                const bool active_is_armature = FindArmatureObject(R, active_entity) != entt::null;
-                const bool bone_mode = interaction_mode == InteractionMode::Pose || (interaction_mode == InteractionMode::Edit && active_is_armature);
-                AdditiveBoxSelectBaseline baseline;
-                if (interaction_mode == InteractionMode::Edit && !active_is_armature) {
-                    if (const auto ranges = scene_apply::GetBitsetRangesForSelected(R); !ranges.empty()) {
-                        const auto element_count = std::ranges::fold_left(ranges, uint32_t{0}, [](uint32_t total, const auto &range) { return std::max(total, range.Offset + range.Count); });
-                        const uint32_t bitset_words = (element_count + 31) / 32;
-                        const auto bits = R.get<const SelectionBitsetRef>(SceneEntity).Value;
-                        baseline.ElementBitset.assign(bits.begin(), bits.begin() + bitset_words);
-                    }
-                } else if (bone_mode) {
-                    for (const auto e : R.view<BoneSelection>()) baseline.BoneSelections.emplace_back(e, R.get<BoneSelection>(e));
-                } else if (interaction_mode == InteractionMode::Object) {
-                    for (const auto e : R.view<Selected>()) baseline.SelectedEntities.push_back(e);
-                }
-                R.emplace_or_replace<AdditiveBoxSelectBaseline>(SceneEntity, std::move(baseline));
-            },
-            [&](action::selection::ClearBoxSelectBaseline) { R.remove<AdditiveBoxSelectBaseline>(SceneEntity); },
-            [&](const action::selection::ApplyBoxSelectObjectHits &a) {
-                apply_box_select.template operator()<Selected>(
-                    a.Additive,
-                    [&](const AdditiveBoxSelectBaseline &b) {
-                        for (const auto e : b.SelectedEntities) {
-                            if (R.valid(e)) R.emplace_or_replace<Selected>(e);
-                        }
-                    },
-                    [&] {
-                        for (const auto e : a.Hits) R.emplace_or_replace<Selected>(e);
-                    }
-                );
-            },
-            [&](const action::selection::ApplyEditElementClick &a) {
-                end_box_select_interaction();
-                R.emplace_or_replace<PendingEditElementClick>(SceneEntity, a.MousePx, a.Toggle);
-            },
-            [&](const action::selection::ApplyTreeSelection &a) {
-                using Clear = action::selection::ApplyTreeSelection::ClearKind;
-                if (a.Clear == Clear::BonesOnly) R.clear<BoneSelection>();
-                else if (a.Clear == Clear::All) R.clear<Selected, BoneSelection>();
-                for (const auto e : a.ToSelect) {
-                    if (R.all_of<BoneIndex>(e)) R.emplace_or_replace<BoneSelection>(e);
-                    else if (!R.all_of<Selected>(e)) R.emplace<Selected>(e);
-                }
-                for (const auto e : a.ToDeselect) {
-                    if (R.all_of<BoneIndex>(e)) {
-                        if (R.all_of<BoneSelection>(e)) R.remove<BoneSelection>(e);
-                    } else if (R.all_of<Selected>(e)) R.remove<Selected>(e);
-                }
-                if (a.NavToActive != entt::null) {
-                    const bool is_bone = R.all_of<BoneIndex>(a.NavToActive);
-                    if (is_bone ? R.all_of<BoneSelection>(a.NavToActive) : R.all_of<Selected>(a.NavToActive)) {
-                        if (is_bone) {
-                            R.clear<BoneActive>();
-                            R.emplace<BoneActive>(a.NavToActive);
-                        } else {
-                            R.clear<Active>();
-                            R.emplace<Active>(a.NavToActive);
-                        }
-                    }
-                }
-            },
-            [&](const action::selection::ApplyBoxSelectBoneHits &a) {
-                apply_box_select.template operator()<BoneSelection>(
-                    a.Additive,
-                    [&](const AdditiveBoxSelectBaseline &b) {
-                        for (const auto &[e, sel] : b.BoneSelections) {
-                            if (R.valid(e)) R.emplace_or_replace<BoneSelection>(e, sel);
-                        }
-                    },
-                    [&] {
-                        for (const auto &[entity, part] : a.Hits) merge_bone_sel(entity, part, a.Additive);
-                    }
-                );
-            },
-            [&](action::object::Delete) {
-                if (!scene_apply::CanDelete(R, SceneEntity)) return;
-                for (const auto e : R.view<Selected>(entt::exclude<SubElementOf>) | to<std::vector>()) Destroy(R, SceneEntity, e);
-            },
-            [&](action::object::Duplicate) {
-                if (!scene_apply::CanDuplicate(R, SceneEntity)) return;
-                const Timer timer{"Duplicate"};
-                const auto entities = R.view<Selected>() | to<std::vector>();
-
-                // Pre-reserve arenas to avoid per-CloneMesh buffer growth.
-                for (const auto e : entities) {
-                    if (!R.all_of<Instance>(e) || R.all_of<BoneSubPartOf>(e)) continue;
-                    const auto mesh_entity = R.get<Instance>(e).Entity;
-                    if (R.all_of<ObjectExtrasTag>(mesh_entity) || !R.all_of<Mesh>(mesh_entity)) continue;
-                    Meshes.PlanClone(R.get<const Mesh>(mesh_entity));
-                }
-                Meshes.CommitReserves();
-
-                bool any_mesh_duplicate = false;
-                for (const auto e : entities) {
-                    const auto new_e = DuplicateOne(R, SceneEntity, e, any_mesh_duplicate);
-                    if (R.all_of<Active>(e)) {
-                        R.remove<Active>(e);
-                        R.emplace<Active>(new_e);
-                    }
-                    R.remove<Selected>(e);
-                }
-                if (any_mesh_duplicate) R.emplace_or_replace<ProfileNextProcessComponentEvents>(SceneEntity);
-                R.emplace_or_replace<StartScreenTransform>(SceneEntity, TransformGizmo::TransformType::Translate);
-            },
-            [&](action::object::DuplicateLinked) {
-                if (!scene_apply::CanDuplicateLinked(R, SceneEntity)) return;
-                const Timer timer{"DuplicateLinked"};
-                for (const auto e : R.view<Selected>() | to<std::vector>()) {
-                    const auto new_e = DuplicateLinkedOne(R, SceneEntity, e);
-                    if (R.all_of<Active>(e)) {
-                        R.remove<Active>(e);
-                        R.emplace<Active>(new_e);
-                    }
-                    R.remove<Selected>(e);
-                }
-                R.emplace_or_replace<StartScreenTransform>(SceneEntity, TransformGizmo::TransformType::Translate);
-            },
-            [&](action::object::ToggleHidden) {
-                for (const auto e : R.view<Selected>()) {
-                    if (R.all_of<RenderInstance>(e)) Hide(R, e);
-                    else Show(R, e);
-                }
-            },
-            [&](const action::object::SetSelectedVisible &a) {
-                for (const auto e : R.view<const Selected, const Instance>()) {
-                    if (R.all_of<SubElementOf>(e)) continue;
-                    if (a.Visible) Show(R, e);
-                    else Hide(R, e);
-                }
-            },
-            [&](const action::object::SetSelectedSmoothShading &a) {
-                for (const auto me : scene_selection::GetSelectedMeshEntities(R)) {
-                    if (R.get<const Mesh>(me).FaceCount() == 0) continue;
-                    if (a.Smooth) R.emplace_or_replace<SmoothShading>(me);
-                    else R.remove<SmoothShading>(me);
-                }
-            },
-            [&](action::object::ParentToActive) {
-                const auto active = FindActiveEntity(R);
-                if (active == entt::null) return;
-                for (const auto e : R.view<Selected>()) {
-                    if (e != active) SetParentKeepWorld(R, e, active);
-                }
-            },
-            [&](action::object::ClearParent) {
-                for (const auto e : R.view<Selected>()) ::ClearParent(R, e);
-            },
-            [&](const action::object::AddEmpty &a) {
-                ::AddEmpty(R, Meshes, Buffers, SceneEntity, *a.Info);
-                R.emplace_or_replace<StartScreenTransform>(SceneEntity, TransformGizmo::TransformType::Translate);
-            },
-            [&](const action::object::AddArmature &a) {
-                ::AddArmature(R, Meshes, SceneEntity, *a.Info);
-                R.emplace_or_replace<StartScreenTransform>(SceneEntity, TransformGizmo::TransformType::Translate);
-            },
-            [&](const action::object::AddCamera &a) {
-                ::AddCamera(R, Meshes, Buffers, SceneEntity, *a.Info, a.Props);
-                R.emplace_or_replace<StartScreenTransform>(SceneEntity, TransformGizmo::TransformType::Translate);
-            },
-            [&](const action::object::AddLight &a) {
-                ::AddLight(R, Meshes, Buffers, SceneEntity, *a.Info);
-                R.emplace_or_replace<StartScreenTransform>(SceneEntity, TransformGizmo::TransformType::Translate);
-            },
-            [&](const action::object::AddMeshPrimitive &a) {
-                const auto [mesh_entity, _] = ::AddMesh(R, Meshes, SceneEntity, Meshes.CreateMesh(primitive::CreateMesh(a.Shape), {}, {}), *a.Info);
-                R.emplace<PrimitiveShape>(mesh_entity, a.Shape);
-                R.emplace_or_replace<StartScreenTransform>(SceneEntity, TransformGizmo::TransformType::Translate);
-            },
-            [&](const action::object::ImportMesh &a) { R.emplace_or_replace<PendingImportMesh>(SceneEntity, a.Path, *a.Info); },
-            [&](const action::object::ReplaceMesh &a) {
-                const auto e = scene_apply::GetActiveMeshEntity(R);
-                if (e == entt::null || scene_selection::HasScaleLockedInstance(R, e)) return;
-
-                if (auto *mb = R.try_get<MeshBuffers>(e)) Buffers.Release(*mb);
-                R.erase<MeshBuffers>(e);
-                R.erase<Mesh>(e);
-
-                auto new_mesh = Meshes.CreateMesh(MeshData{*a.Data}, {}, {});
-                R.emplace<MeshBuffers>(e, Meshes.GetVerticesRange(new_mesh.GetStoreId()), SlottedRange{}, SlottedRange{}, SlottedRange{});
-                R.emplace<Mesh>(e, std::move(new_mesh));
-                R.emplace_or_replace<MeshGeometryDirty>(e);
-            },
-            [&](action::project::NewDefaultScene) { NewDefaultScene(R, SceneEntity); },
-            [&](action::bone::Add) {
-                const auto active_entity = FindActiveEntity(R);
-                const auto arm_obj_entity = FindArmatureObject(R, active_entity);
-                if (arm_obj_entity == entt::null) return;
-
-                auto &armature = R.get<Armature>(R.get<ArmatureObject>(arm_obj_entity).Entity);
-                const auto &arm_wt = R.get<WorldTransform>(arm_obj_entity);
-                const auto new_id = armature.AddBone("Bone", {}, {.P = (glm::conjugate(glm::normalize(arm_wt.R)) * -arm_wt.P) / arm_wt.S});
-                RebuildBoneStructure(R, SceneEntity, R.get<ArmatureObject>(arm_obj_entity).Entity);
-
-                const auto bone_entity = CreateSingleBoneInstance(R, SceneEntity, arm_obj_entity, new_id);
-                SelectBone(R, bone_entity);
-                R.emplace_or_replace<BoneSelection>(bone_entity, false, true, false);
-            },
-            [&](action::bone::Extrude) {
-                const auto arm_obj_entity = FindArmatureObject(R, FindActiveEntity(R));
-                if (arm_obj_entity == entt::null) return;
-
-                auto &arm_obj = R.get<ArmatureObject>(arm_obj_entity);
-                auto &armature = R.get<Armature>(arm_obj.Entity);
-                auto result = ExtrudeBones(R, armature, arm_obj_entity);
-                if (result.NewBoneIds.empty()) return;
-
-                RebuildBoneStructure(R, SceneEntity, arm_obj.Entity);
-                R.clear<BoneSelection, BoneActive>();
-
-                for (const auto id : result.NewBoneIds) {
-                    const auto bone_entity = CreateSingleBoneInstance(R, SceneEntity, arm_obj_entity, id);
-                    R.replace<BoneDisplayScale>(bone_entity, 0.f);
-                    R.emplace<BoneSelection>(bone_entity, false, true, false);
-                    R.emplace_or_replace<BoneActive>(bone_entity);
-                }
-                for (const auto idx : result.UpdatedParentIndices) {
-                    R.replace<BoneDisplayScale>(arm_obj.BoneEntities[idx], ComputeBoneDisplayScale(armature, idx));
-                }
-                R.emplace_or_replace<StartScreenTransform>(SceneEntity, TransformGizmo::TransformType::Translate);
-            },
-            [&](action::bone::DuplicateSelected) {
-                const auto arm_obj_entity = FindArmatureObject(R, FindActiveEntity(R));
-                if (arm_obj_entity == entt::null) return;
-
-                auto &armature = R.get<Armature>(R.get<ArmatureObject>(arm_obj_entity).Entity);
-                auto result = DuplicateBones(R, armature, arm_obj_entity);
-                if (result.Duplicated.empty()) return;
-
-                RebuildBoneStructure(R, SceneEntity, R.get<ArmatureObject>(arm_obj_entity).Entity);
-                R.clear<BoneSelection, BoneActive>();
-
-                entt::entity last_bone{};
-                for (const auto &[orig_entity, new_id] : result.Duplicated) {
-                    last_bone = CreateSingleBoneInstance(R, SceneEntity, arm_obj_entity, new_id);
-                    R.replace<BoneDisplayScale>(last_bone, R.get<const BoneDisplayScale>(orig_entity).Value);
-                    R.emplace<BoneSelection>(last_bone);
-                }
-                R.emplace<BoneActive>(last_bone);
-
-                R.emplace_or_replace<StartScreenTransform>(SceneEntity, TransformGizmo::TransformType::Translate);
-            },
-            [&](const action::bone::ClearSelectedTransforms &a) { ClearSelectedBoneTransforms(R, a.Position, a.Rotation, a.Scale); },
-            [&](action::bone::DeleteSelected) {
-                const auto active_entity = FindActiveEntity(R);
-                const auto arm_obj_entity = FindArmatureObject(R, active_entity);
-                if (arm_obj_entity == entt::null) return;
-
-                auto &arm_obj = R.get<ArmatureObject>(arm_obj_entity);
-                auto &armature = R.get<Armature>(arm_obj.Entity);
-                const auto to_delete = CollectBonesForDeletion(R, arm_obj_entity);
-                if (to_delete.empty()) return;
-
-                for (const auto idx : to_delete) {
-                    const auto bone_entity = arm_obj.BoneEntities[idx];
-                    const auto &bone = armature.Bones[idx];
-                    const auto grandparent = bone.ParentIndex == InvalidBoneIndex ? arm_obj_entity : arm_obj.BoneEntities[bone.ParentIndex];
-
-                    if (auto *joints = R.try_get<BoneJointEntities>(bone_entity)) {
-                        if (joints->Head != null_entity) {
-                            Hide(R, joints->Head);
-                            R.destroy(joints->Head);
-                        }
-                        if (joints->Tail != null_entity) {
-                            Hide(R, joints->Tail);
-                            R.destroy(joints->Tail);
-                        }
-                        R.remove<BoneJointEntities>(bone_entity);
-                    }
-
-                    std::vector<entt::entity> children;
-                    for (const auto child : Children{&R, bone_entity}) children.emplace_back(child);
-                    for (const auto child : children) {
-                        const auto &ct = R.get<const Transform>(child);
-                        const auto t = ComposeLocalTransforms(bone.RestLocal, ct);
-                        R.emplace_or_replace<Transform>(child, Transform{t.P, t.R, R.all_of<ScaleLocked>(child) ? ct.S : t.S});
-                        ClearParent(R, child);
-                        SetParent(R, child, grandparent);
-                    }
-
-                    ClearParent(R, bone_entity);
-                    Hide(R, bone_entity);
-                    R.destroy(bone_entity);
-                }
-
-                for (const auto idx : to_delete) {
-                    armature.RemoveBone(armature.Bones[idx].Id);
-                    arm_obj.BoneEntities.erase(arm_obj.BoneEntities.begin() + idx);
-                }
-
-                RebuildBoneStructure(R, SceneEntity, arm_obj.Entity);
-
-                for (uint32_t i = 0; i < arm_obj.BoneEntities.size(); ++i) R.get<BoneIndex>(arm_obj.BoneEntities[i]).Index = i;
-
-                if (arm_obj.BoneEntities.empty()) DestroyArmatureData(R, SceneEntity, arm_obj_entity);
-                ::Select(R, arm_obj_entity);
-            },
-            [&](const action::scene::SetInteractionMode &a) { SetInteractionMode(R, SceneEntity, a.Mode); },
-            [&](action::scene::CycleInteractionMode) {
-                const auto interaction_mode = R.get<const SceneInteraction>(SceneEntity).Mode;
-                const auto &enabled_modes = R.get<const EnabledInteractionModes>(SceneEntity).Value;
-                auto it = find(enabled_modes, interaction_mode);
-                for (size_t i = 0; i < enabled_modes.size(); ++i) {
-                    if (++it == enabled_modes.end()) it = enabled_modes.begin();
-                    if (SetInteractionMode(R, SceneEntity, *it)) break;
-                }
-            },
-            [&](const action::scene::SetEditMode &a) { R.emplace_or_replace<PendingSetEditMode>(SceneEntity, a.Mode); },
-            [&](action::scene::SelectAll) {
-                const auto interaction_mode = R.get<const SceneInteraction>(SceneEntity).Mode;
-                const auto active_entity = FindActiveEntity(R);
-                const auto arm_obj_entity = FindArmatureObject(R, active_entity);
-                const bool bone_select = interaction_mode == InteractionMode::Pose || (interaction_mode == InteractionMode::Edit && arm_obj_entity != entt::null);
-                if (bone_select) {
-                    if (arm_obj_entity == entt::null) return;
-                    const auto &arm_obj = R.get<const ArmatureObject>(arm_obj_entity);
-                    R.clear<BoneActive, BoneSelection>();
-                    for (const auto bone_entity : arm_obj.BoneEntities) R.emplace<BoneSelection>(bone_entity);
-                    if (!arm_obj.BoneEntities.empty()) R.emplace<BoneActive>(arm_obj.BoneEntities.back());
-                } else if (interaction_mode == InteractionMode::Edit) {
-                    const auto ranges = scene_apply::GetBitsetRangesForSelected(R);
-                    auto *bits = R.get<SelectionBitsetRef>(SceneEntity).Value.data();
-                    for (const auto &range : ranges) scene_selection::SelectAll(bits, range.Offset, range.Count);
-                    if (!ranges.empty()) R.emplace_or_replace<SelectionBitsDirty>(SceneEntity);
-                } else if (interaction_mode == InteractionMode::Object) {
-                    R.clear<Active, Selected>();
-                    entt::entity last{entt::null};
-                    for (const auto [e, _] : R.view<const ObjectKind>().each()) {
-                        R.emplace<Selected>(e);
-                        last = e;
-                    }
-                    if (last != entt::null) R.emplace<Active>(last);
-                }
-            },
-            [&](action::scene::EnterLookThroughCamera) {
-                const auto e = FindActiveEntity(R);
-                if (e == entt::null) return;
-                SetLookThrough(R, SceneEntity, e);
-                const auto &wt = R.get<WorldTransform>(e);
-                const vec3 fwd = CameraForward(wt), away = -fwd;
-                R.patch<ViewCamera>(SceneEntity, [&](auto &vc) { vc.AnimateTo(wt.P + fwd, {std::atan2(away.z, away.x), std::asin(away.y)}, 1.f); });
-            },
-            [&](action::scene::ExitLookThroughCamera) { ExitLookThrough(R, SceneEntity); },
-            [&](const action::scene::OrbitViewCamera &a) {
-                ExitLookThrough(R, SceneEntity);
-                R.patch<ViewCamera>(SceneEntity, [&](auto &camera) { camera.RotateBy(a.DeltaRad); });
-            },
-            [&](const action::scene::ZoomViewCamera &a) {
-                ExitLookThrough(R, SceneEntity);
-                R.patch<ViewCamera>(SceneEntity, [&](auto &camera) { camera.ZoomBy(a.Factor); });
-            },
-            [&](const action::scene::ApplyExciteImpact &a) {
-                R.emplace_or_replace<MeshActiveElement>(R.get<Instance>(a.InstanceEntity).Entity, a.VertexIndex);
-                R.emplace_or_replace<VertexForce>(a.InstanceEntity, a.VertexIndex, 1.f);
-            },
-            [&](action::scene::ClearExciteImpacts) { R.clear<VertexForce>(); },
-            [&](const action::scene::SetStudioEnvironment &a) { R.emplace_or_replace<PendingSetStudioEnvironment>(SceneEntity, a.Index); poke_active_lighting(); },
-            [&](const action::scene::SetSourceIblIntensity &a) {
-                R.patch<gltf::SourceAssets>(SceneEntity, [&](auto &sa) { if (sa.ImageBasedLight) sa.ImageBasedLight->Intensity = a.Intensity; });
-                poke_active_lighting();
-            },
-            [&](action::scene::ResetViewCamera) { patch_camera_stopped([](auto &c) { c = SceneDefaults::ViewCamera; }); },
-            [&](action::scene::ResetViewportTheme) { R.emplace_or_replace<ViewportTheme>(SceneEntity, SceneDefaults::ViewportTheme); },
-            [&](const action::scene::ResetPbrLighting &a) {
-                static constexpr PBRViewportLighting Defaults{false, false, 1.f, 0.f, 0.5f, 0.f, true};
-                if (a.Rendered) R.emplace_or_replace<RenderedLighting>(SceneEntity, RenderedLighting{Defaults});
-                else R.emplace_or_replace<MaterialPreviewLighting>(SceneEntity, MaterialPreviewLighting{Defaults});
-            },
-            [&](const action::scene::SetViewCameraTarget &a) { patch_camera_stopped([&](auto &c) { c.Target = a.Target; }); },
-            [&](const action::scene::SetViewCameraLens &a) { patch_camera_stopped([&](auto &c) { c.Data = a.Data; }); },
-            [&](const action::scene::SetViewCameraTargetDirection &a) {
-                ExitLookThrough(R, SceneEntity);
-                R.patch<ViewCamera>(SceneEntity, [&](auto &c) { c.SetTargetDirection(a.Direction); });
-            },
-            [&](const action::scene::SetPbrMeshFeaturesMask &a) {
-                const auto e = scene_apply::GetActiveMeshEntity(R);
-                if (a.Mask != 0u) R.emplace_or_replace<PbrMeshFeatures>(e, a.Mask);
-                else R.remove<PbrMeshFeatures>(e);
-            },
-            [&](const action::scene::SetRotationUiMode &a) {
-                const auto e = R.get<const SceneInteraction>(SceneEntity).Mode == InteractionMode::Pose && FindActiveBone(R) != entt::null ? FindActiveBone(R) : FindActiveEntity(R);
-                R.replace<RotationUiVariant>(e, CreateVariantByIndex<RotationUiVariant>(a.Index));
-                R.patch<Transform>(e, [](auto &) {});
-            },
-            [&](const action::scene::SetTransformRotationFromUi &a) {
-                const auto e = R.get<const SceneInteraction>(SceneEntity).Mode == InteractionMode::Pose && FindActiveBone(R) != entt::null ? FindActiveBone(R) : FindActiveEntity(R);
-                R.replace<RotationUiVariant>(e, a.UiVariant);
-                R.emplace_or_replace<RotationUiDriving>(e);
-                R.patch<Transform>(e, [&](auto &t) { t.R = a.R; });
-            },
-            [&](const action::scene::UpdateGizmoDragLocals &a) {
-                for (const auto &[e, st] : a.Starts) R.emplace<StartTransform>(e, st);
-                for (const auto &[e, len] : a.StartBoneLengths) R.emplace<StartBoneLength>(e, len);
-                for (const auto &[e, local] : a.Locals) R.patch<Transform>(e, [&](auto &t) { t = local; });
-                for (const auto &[e, length] : a.BoneDisplayScales) R.get_or_emplace<BoneDisplayScale>(e).Value = length;
-            },
-            [&](const action::scene::UpdateGizmoMeshEditPending &a) {
-                for (const auto &[e, st] : a.Starts) R.emplace<StartTransform>(e, st);
-                R.emplace_or_replace<PendingTransform>(SceneEntity, *a.Value);
-            },
-            [&](action::scene::EndGizmoDrag) { R.clear<StartTransform, StartBoneLength>(); },
-            [&](const action::scene::SetActiveTool &a) {
-                using Tool = action::scene::SetActiveTool::Tool;
-                using TT = TransformGizmo::Type;
-                const auto type = a.Value == Tool::SelectBox || a.Value == Tool::SelectClick ? TT::None :
-                    a.Value == Tool::Translate                                               ? TT::Translate :
-                    a.Value == Tool::Rotate                                                  ? TT::Rotate :
-                    a.Value == Tool::Scale                                                   ? TT::Scale :
-                                                                                               TT::Universal;
-                R.patch<TransformGizmoState>(SceneEntity, [&](auto &s) { s.Config.Type = type; });
-                if (a.Value == Tool::SelectBox || a.Value == Tool::SelectClick) {
-                    const auto g = a.Value == Tool::SelectBox ? SelectionGesture::Box : SelectionGesture::Click;
-                    R.patch<BoxSelectState>(SceneEntity, [&](auto &b) { b.Gesture = g; });
-                }
-            },
-            [&](const action::scene::SetStartScreenTransform &a) {
-                if (a.Value) R.emplace_or_replace<StartScreenTransform>(SceneEntity, *a.Value);
-                else R.remove<StartScreenTransform>(SceneEntity);
-            },
-            [&](const action::bone::SetEditHeadTailRoll &a) {
-                const auto e = FindActiveBone(R);
-                R.patch<Transform>(e, [&](auto &t) { t.P = a.LocalP; t.R = a.LocalR; });
-                R.get<BoneDisplayScale>(e).Value = a.DisplayScale;
-            },
-            [&](const action::bone::SetConstraintTarget &a) {
-                R.patch<BoneConstraints>(FindActiveBone(R), [&](auto &cs) { cs.Stack[a.Index].TargetEntity = a.Target; });
-            },
-            [&](const action::bone::SetConstraintInfluence &a) {
-                R.patch<BoneConstraints>(FindActiveBone(R), [&](auto &cs) { cs.Stack[a.Index].Influence = a.Influence; });
-            },
-            [&](const action::bone::SetConstraintChildOfInverse &a) {
-                R.patch<BoneConstraints>(FindActiveBone(R), [&](auto &cs) { std::get<ChildOfData>(cs.Stack[a.Index].Data).InverseMatrix = *a.Inverse; });
-            },
-            [&](const action::bone::DeleteConstraint &a) {
-                R.patch<BoneConstraints>(FindActiveBone(R), [&](auto &cs) { cs.Stack.erase(cs.Stack.begin() + a.Index); });
-            },
-            [&](const action::bone::AddConstraint &a) {
-                const auto e = FindActiveBone(R);
-                if (!R.all_of<BoneConstraints>(e)) R.emplace<BoneConstraints>(e);
-                R.patch<BoneConstraints>(e, [&](auto &cs) {
-                    cs.Stack.push_back(a.Kind == action::bone::BoneConstraintKind::ChildOf ? BoneConstraint{.Data = ChildOfData{}} : BoneConstraint{.Data = CopyTransformsData{}});
-                });
-            },
-            [&]<typename Field>(const action::Update<Field> &a) {
-                const auto e = a.Entity != entt::null ? a.Entity : SceneEntity;
-                DispatchByTypeHash(UpdateableComponents{}, a.ComponentType, [&]<typename T> {
-                    R.patch<T>(e, [&](T &t) { *reinterpret_cast<Field *>(reinterpret_cast<std::byte *>(&t) + a.Offset) = a.Value; });
-                });
-            },
-            [&]<typename Field>(const action::UpdateActive<Field> &a) {
-                const auto e = FindActiveEntity(R);
-                DispatchByTypeHash(UpdateableComponents{}, a.ComponentType, [&]<typename T> {
-                    R.patch<T>(e, [&](T &t) { *reinterpret_cast<Field *>(reinterpret_cast<std::byte *>(&t) + a.Offset) = a.Value; });
-                });
-            },
-            [&](const action::SetTag &a) {
-                DispatchByTypeHash(TagComponents{}, a.TagType, [&]<typename T> {
-                    if (a.Present) R.emplace_or_replace<T>(a.Entity);
-                    else R.remove<T>(a.Entity);
-                });
-            },
-            [&](const action::SetActiveTag &a) {
-                const auto e = FindActiveEntity(R);
-                DispatchByTypeHash(TagComponents{}, a.TagType, [&]<typename T> {
-                    if (a.Present) R.emplace_or_replace<T>(e);
-                    else R.remove<T>(e);
-                });
-            },
-            [&]<typename T>(const action::Replace<T> &a) {
-                if constexpr (std::is_same_v<T, PhysicsMotion>) R.emplace_or_replace<T>(a.Entity, *a.Value);
-                else R.emplace_or_replace<T>(a.Entity, a.Value);
-            },
-            [&]<typename T>(const action::ReplaceActive<T> &a) {
-                const auto e = FindActiveEntity(R);
-                if constexpr (std::is_same_v<T, PhysicsMotion>) R.emplace_or_replace<T>(e, *a.Value);
-                else if constexpr (std::is_same_v<T, PunctualLight>) {
-                    const auto *old = R.try_get<const PunctualLight>(e);
-                    const auto &n = a.Value;
-                    if (!old || old->Type != n.Type || old->Range != n.Range || old->OuterConeCos != n.OuterConeCos || old->InnerConeCos != n.InnerConeCos) {
-                        R.emplace_or_replace<LightWireframeDirty>(e);
-                    }
-                    R.emplace_or_replace<T>(e, n);
-                } else R.emplace_or_replace<T>(e, a.Value);
-            },
-            [&](const action::DestroyEntity &a) { R.destroy(a.Entity); },
-            [&](const action::physics::CreateNamed &a) {
-                DispatchByTypeHash(NamedPhysicsComponents{}, a.ComponentType, [&]<typename T> {
-                    R.emplace<T>(R.create(), T{.Name = std::format("{} {}", a.Prefix, R.view<T>().size())});
-                });
-            },
-            [&](const action::physics::SetName &a) {
-                DispatchByTypeHash(NamedPhysicsComponents{}, a.ComponentType, [&]<typename T> {
-                    R.patch<T>(a.Entity, [&](T &x) { x.Name = a.Name; });
-                });
-            },
-            [&](const action::physics::SetMotionType &a) {
-                using Type = action::physics::SetMotionType::Type;
-                const auto e = FindActiveEntity(R);
-                const bool want_motion = a.Value == Type::Kinematic || a.Value == Type::Dynamic;
-                const bool want_collider = a.Value == Type::Static || want_motion;
-                if (!want_motion) R.remove<PhysicsMotion>(e);
-                if (!want_collider) R.remove<ColliderShape>(e);
-                if (want_collider && !R.all_of<ColliderShape>(e)) {
-                    R.emplace<ColliderShape>(e);
-                    R.emplace<ColliderPolicy>(e);
-                }
-                if (want_motion) {
-                    const bool is_kinematic = a.Value == Type::Kinematic;
-                    if (!R.all_of<PhysicsMotion>(e)) R.emplace<PhysicsMotion>(e, PhysicsMotion{.IsKinematic = is_kinematic});
-                    else R.patch<PhysicsMotion>(e, [is_kinematic](PhysicsMotion &m) { m.IsKinematic = is_kinematic; });
-                }
-            },
-            [&](const action::physics::SetColliderShape &a) {
-                const auto e = FindActiveEntity(R);
-                const auto owner_mesh = FindMeshEntity(R, e);
-                R.patch<ColliderShape>(e, [&](ColliderShape &cs) {
-                    cs.Shape = a.Shape;
-                    if (IsMeshBackedShape(a.Shape) && cs.MeshEntity == null_entity) cs.MeshEntity = owner_mesh;
-                });
-                if (a.LockKind) R.patch<ColliderPolicy>(e, [](ColliderPolicy &p) { p.LockedKind = true; });
-            },
-            [&](action::physics::AddTrigger) {
-                const auto e = FindActiveEntity(R);
-                R.emplace<ColliderShape>(e);
-                R.emplace<ColliderPolicy>(e);
-                R.emplace<TriggerTag>(e);
-            },
-            [&](action::physics::RemoveTriggerNodes) { R.remove<TriggerNodes>(FindActiveEntity(R)); },
-            [&](const action::physics::ToggleFilterEntity &a) {
-                R.patch<CollisionFilter>(a.FilterEntity, [&](CollisionFilter &f) {
-                    auto &vec = f.*(a.Field);
-                    if (a.Add) {
-                        if (std::find(vec.begin(), vec.end(), a.SystemEntity) == vec.end()) vec.push_back(a.SystemEntity);
-                    } else std::erase(vec, a.SystemEntity);
-                });
-            },
-            [&]<typename T>(const action::physics::SetJointVecItem<T> &a) {
-                R.patch<PhysicsJointDef>(a.JointDefEntity, [&](PhysicsJointDef &d) { (d.*(a.Field))[a.Index] = *a.Value; });
-            },
-            [&]<typename T>(const action::physics::AddJointVecItem<T> &a) {
-                R.patch<PhysicsJointDef>(a.JointDefEntity, [&](PhysicsJointDef &d) { (d.*(a.Field)).push_back({}); });
-            },
-            [&]<typename T>(const action::physics::DeleteJointVecItem<T> &a) {
-                R.patch<PhysicsJointDef>(a.JointDefEntity, [&](PhysicsJointDef &d) {
-                    auto &vec = d.*(a.Field);
-                    vec.erase(vec.begin() + a.Index);
-                });
-            },
-            [&](const action::audio::SetModel &a) { ::SetModel(R, SceneEntity, FindActiveEntity(R), a.Model); },
-            [&](const action::audio::SetExciteVertex &a) {
-                const auto e = FindActiveEntity(R);
-                R.remove<VertexForce>(e);
-                R.emplace_or_replace<MeshActiveElement>(scene_apply::GetActiveMeshEntity(R), a.MeshVertex);
-                ::SetVertex(R, SceneEntity, e, a.VertexIndex);
-            },
-            [&](const action::audio::SetActiveElementFromDsp &a) { R.emplace_or_replace<MeshActiveElement>(scene_apply::GetActiveMeshEntity(R), a.Vertex); },
-            [&](const action::audio::StartExcite &a) {
-                const auto e = FindActiveEntity(R);
-                R.remove<VertexForce>(e);
-                R.emplace<VertexForce>(e, a.Vertex, 1.f);
-            },
-            [&](action::audio::StopExcite) { R.remove<VertexForce>(FindActiveEntity(R)); },
-            [&](action::audio::DeleteSoundObject) { RemoveAudioComponents(R, FindActiveEntity(R)); },
-            [&](const action::audio::StartRecording &a) { R.emplace_or_replace<Recording>(FindActiveEntity(R), a.FrameCount); },
-            [&](const action::audio::OpenModalForm &a) { R.emplace_or_replace<ModalModelCreateInfo>(FindActiveEntity(R), *a.Info); },
-            [&](action::audio::CancelModalForm) { R.remove<ModalModelCreateInfo>(FindActiveEntity(R)); },
-            [&](action::audio::SubmitModalForm) {
-                const auto e = FindActiveEntity(R);
-                ::Stop(R, SceneEntity, e);
-                R.emplace_or_replace<AcousticMaterial>(scene_apply::GetActiveMeshEntity(R), R.get<const ModalModelCreateInfo>(e).Material);
-                R.remove<ModalModelCreateInfo>(e);
-            },
-            [&](const action::audio::AcceptModalGenerationResult &a) {
-                const auto e = FindActiveEntity(R);
-                if (!R.all_of<ScaleLocked>(e)) R.emplace<ScaleLocked>(e);
-                R.emplace_or_replace<ModalModes>(e, a.D->Modes);
-                R.emplace_or_replace<TetMeshData>(scene_apply::GetActiveMeshEntity(R), a.D->Tets);
-                ::SetModel(R, SceneEntity, e, SoundVerticesModel::Modal);
-            },
-            [&](const action::audio::AssignVertexSamples &a) {
-                ::AssignVertexSample(R, SceneEntity, FindActiveEntity(R), a.D->MeshVertices, a.D->Path, std::vector<float>{a.D->Frames});
-            },
-            [&](action::audio::SetVertexSamples a) { ::SetVertexSamples(R, SceneEntity, a.SoundEntity, a.MeshVertices, std::move(a.Samples)); },
-            [&](const action::audio::ActivateRealImpactMicrophone &a) {
-                const auto dir = R.get<const Path>(R.get<const Instance>(a.TargetSoundEntity).Entity).Value.parent_path();
-                const auto &vertex_indices = R.get<const RealImpactVertices>(a.TargetSoundEntity).Vertices;
-                const auto mic_index = R.get<const RealImpactMicrophone>(a.MicrophoneEntity).Index;
-                ::SetVertexSamples(R, SceneEntity, a.TargetSoundEntity, vertex_indices, RealImpact::LoadSamples(dir, mic_index) | to<std::vector>());
-                R.emplace_or_replace<RealImpactActiveMicrophone>(a.TargetSoundEntity, a.MicrophoneEntity);
-            },
-            [&](const action::audio::RemoveVertexSamples &a) { ::RemoveVertexSamples(R, SceneEntity, FindActiveEntity(R), a.MeshVertices); },
-            [&](const action::audio::SetModalFormMaterial &a) { R.patch<ModalModelCreateInfo>(FindActiveEntity(R), [&](auto &info) { info.Material = *a.Material; }); },
-            [&](action::scene::Play) {
-                R.patch<SceneSettings>(SceneEntity, [](auto &s) { s.ViewportShading = s.FillMode = ViewportShadingMode::MaterialPreview; s.ShowOverlays = false; });
-                R.patch<TimelinePlayback>(SceneEntity, [](auto &p) { p.Playing = !p.Playing; });
-            },
-            [&](const action::scene::SetViewportShading &a) {
-                R.patch<SceneSettings>(SceneEntity, [&](auto &s) {
-                    s.ViewportShading = a.Mode;
-                    if (a.Mode != ViewportShadingMode::Wireframe) s.FillMode = a.Mode;
-                });
-            },
-            [&](action::timeline::TogglePlay) { R.patch<TimelinePlayback>(SceneEntity, [](auto &p) { p.Playing = !p.Playing; }); },
-            [&](const action::timeline::SetFrame &a) {
-                R.patch<TimelinePlayback>(SceneEntity, [&](auto &p) { p.CurrentFrame = a.Frame; });
-                R.get<PlaybackFrame>(SceneEntity).Value = a.Frame;
-            },
-            [&](const action::timeline::SetStartFrame &a) { R.patch<TimelineRange>(SceneEntity, [&](auto &r) { r.StartFrame = a.Frame; }); },
-            [&](const action::timeline::SetEndFrame &a) { R.patch<TimelineRange>(SceneEntity, [&](auto &r) { r.EndFrame = a.Frame; }); },
-            [&](action::timeline::JumpToStart) { JumpToStartFrame(R, SceneEntity); },
-            [&](action::timeline::JumpToEnd) {
-                const auto frame = R.get<const TimelineRange>(SceneEntity).EndFrame;
-                R.patch<TimelinePlayback>(SceneEntity, [&](auto &p) { p.CurrentFrame = frame; });
-                R.get<PlaybackFrame>(SceneEntity).Value = frame;
-            },
-            [&](const action::timeline::SetView &a) { R.replace<AnimationTimelineView>(SceneEntity, AnimationTimelineView{a.PixelsPerFrame, a.ViewCenterFrame}); },
-        },
-        action
-    );
-}
-
-} // namespace scene_apply
-
-void Scene::Apply(const action::Action &action) const { scene_apply::Apply(R, SceneEntity, action); }
 
 std::string Scene::DebugBufferHeapUsage() const { return R.get<const SceneBuffers>(SceneEntity).Ctx.DebugHeapUsage(); }
 
@@ -5103,103 +3836,3 @@ void Scene::WaitForRender() {
     R.get<SceneBuffers>(SceneEntity).Ctx.ReclaimRetiredBuffers();
     RenderPending = false;
 }
-
-namespace scene_apply {
-std::expected<void, std::string> Apply(entt::registry &R, entt::entity SceneEntity, const action::FallibleAction &action) {
-    const auto &Vk = R.ctx().get<const SceneVulkanResources>();
-    auto &Slots = R.ctx().get<DescriptorSlots>();
-    auto &Buffers = R.get<SceneBuffers>(SceneEntity);
-    auto &Meshes = R.ctx().get<MeshStore>();
-    auto &Textures = *R.ctx().get<std::unique_ptr<TextureStore>>();
-    auto &Environments = *R.ctx().get<std::unique_ptr<EnvironmentStore>>();
-    auto &Physics = R.ctx().get<PhysicsWorld>();
-    return std::visit(
-        overloaded{
-            [&](const action::project::SaveGltf &a) -> std::expected<void, std::string> {
-                return gltf::SaveGltf(a.Path, {R, SceneEntity, Buffers, Meshes, Textures, &Vk, &Buffers.Ctx});
-            },
-            [&](const action::project::LoadGltf &a) -> std::expected<void, std::string> {
-                const Timer timer{"LoadGltf"};
-                auto result = gltf::LoadGltf(a.Path, {R, SceneEntity, Slots, Buffers, Meshes, Textures, Environments});
-                if (!result) return std::unexpected{std::move(result.error())};
-
-                // TODO: drive reactively from track<changes::PhysicsShape>.
-                if (!R.view<ColliderShape>().empty()) Physics.RecomputeSceneScale(R);
-
-                if (result->FirstCameraObject != entt::null) {
-                    const auto camera_entity = result->FirstCameraObject;
-                    SetLookThrough(R, SceneEntity, camera_entity);
-                    const auto &wt = R.get<WorldTransform>(camera_entity);
-                    R.replace<ViewCamera>(SceneEntity, ViewCamera{wt.P, wt.P + CameraForward(wt), R.get<Camera>(camera_entity)});
-                }
-                if (result->ImportedAnimation) {
-                    JumpToStartFrame(R, SceneEntity);
-                    R.get<LastEvaluatedFrame>(SceneEntity).Value = -1;
-                }
-                R.emplace_or_replace<ProfileNextProcessComponentEvents>(SceneEntity);
-                return {};
-            },
-            [&](const action::project::LoadRealImpact &a) -> std::expected<void, std::string> {
-                auto object_name = RealImpact::ValidateDirectory(a.Directory);
-                if (!object_name) return std::unexpected(std::move(object_name.error()));
-
-                ClearMeshes(R, SceneEntity);
-                const auto [mesh_entity, instance_entity] = ImportMesh(
-                    R, SceneEntity,
-                    a.Directory / "transformed.obj",
-                    MeshInstanceCreateInfo{
-                        .Name = std::move(*object_name),
-                        .Transform = {.R = RealImpact::ObjectRotationToYUp},
-                    }
-                );
-
-                // Ignore the npy file's vertex indices: deduplication may have invalidated them. Look up by position instead.
-                std::vector<uint32_t> vertex_indices(RealImpact::NumImpactVertices);
-                {
-                    const auto impact_positions = RealImpact::LoadPositions(a.Directory);
-                    const auto &mesh = R.get<Mesh>(mesh_entity);
-                    for (size_t i = 0; i < impact_positions.size(); ++i) {
-                        vertex_indices[i] = *mesh.FindNearestVertex(impact_positions[i]);
-                    }
-                }
-
-                const auto listener_points = RealImpact::LoadListenerPoints(a.Directory);
-                const auto [listener_mesh_entity, _] = ::AddMesh(R, Meshes, SceneEntity, Meshes.CreateMesh(primitive::CreateMesh({primitive::Cylinder{0.5f * RealImpact::MicWidthMm / 1000.f, RealImpact::MicLengthMm / 1000.f}}), {}, {}));
-                for (const auto &listener_point : listener_points) {
-                    static const auto rot_z = glm::angleAxis(float(M_PI_2), vec3{0, 0, 1}); // Cylinder's center is along the Y axis.
-                    const auto listener_instance_entity = ::AddMeshInstance(
-                        R, SceneEntity, listener_mesh_entity,
-                        {
-                            .Name = std::format("RealImpact Microphone: {}", listener_point.Index),
-                            .Transform = {
-                                .P = listener_point.GetPosition(SceneDefaults::World.Up, true),
-                                .R = glm::angleAxis(glm::radians(float(listener_point.AngleDeg)), SceneDefaults::World.Up) * rot_z,
-                            },
-                            .Select = MeshInstanceCreateInfo::SelectBehavior::None,
-                        }
-                    );
-                    R.emplace<RealImpactMicrophone>(listener_instance_entity, listener_point.Index);
-
-                    if (listener_point.Index == RealImpact::CenteredListenerIndex) {
-                        R.emplace<RealImpactActiveMicrophone>(instance_entity, listener_instance_entity);
-
-                        auto material_name = RealImpact::FindMaterialName(R.get<Name>(instance_entity).Value);
-                        if (const auto real_impact_material = material_name ?
-                                find_if(materials::acoustic::All, [name = *material_name](const AcousticMaterial &m) { return m.Name == name; }) :
-                                std::ranges::end(materials::acoustic::All)) {
-                            R.emplace<AcousticMaterial>(mesh_entity, *real_impact_material);
-                        }
-                        R.emplace<ScaleLocked>(instance_entity);
-                        R.emplace<RealImpactVertices>(instance_entity, vertex_indices);
-                        SetVertexSamples(R, SceneEntity, instance_entity, vertex_indices, to<std::vector>(RealImpact::LoadSamples(a.Directory, listener_point.Index)));
-                    }
-                }
-                return {};
-            },
-        },
-        action
-    );
-}
-} // namespace scene_apply
-
-std::expected<void, std::string> Scene::Apply(const action::FallibleAction &action) const { return scene_apply::Apply(R, SceneEntity, action); }

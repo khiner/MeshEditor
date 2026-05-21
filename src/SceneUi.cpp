@@ -25,7 +25,7 @@
 
 #include "OrientationGizmo.h"
 
-#include "scene_impl/SceneApply.h"
+#include "SceneApply.h"
 #include "scene_impl/SceneBuffers.h"
 #include "scene_impl/SceneComponents.h"
 #include "scene_impl/SceneTransformUtils.h"
@@ -269,13 +269,6 @@ using namespace he;
 
 float AngleFromCos(float cos_theta) { return std::acos(std::clamp(cos_theta, -1.f, 1.f)); }
 
-bool AllSelectedAreMeshes(const entt::registry &r) {
-    for (const auto [e, ok] : r.view<const Selected, const ObjectKind>().each()) {
-        if (ok.Value != ObjectType::Mesh) return false;
-    }
-    return true;
-}
-
 // `viewport_aspect` is set when the camera is bound to a viewport that determines its aspect.
 bool RenderCameraLensEditor(Camera &camera, float distance, std::optional<float> viewport_aspect = {}) {
     bool lens_changed = false;
@@ -376,6 +369,15 @@ void RenderJsonBlock(const char *label, std::string_view json) {
 }
 
 constexpr auto MetadataTableFlags = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp;
+
+void Delete(const entt::registry &r, entt::entity scene_entity, std::optional<action::Action> &out) {
+    if (IsBoneEditMode(r, scene_entity)) out = action::bone::DeleteSelected{};
+    else out = action::object::Delete{};
+}
+void Duplicate(const entt::registry &r, entt::entity scene_entity, std::optional<action::Action> &out) {
+    if (IsBoneEditMode(r, scene_entity)) out = action::bone::DuplicateSelected{};
+    else out = action::object::Duplicate{};
+}
 } // namespace
 
 void Scene::Interact(std::optional<action::Action> &out) {
@@ -454,9 +456,9 @@ void Scene::Interact(std::optional<action::Action> &out) {
             } else if (Shortcut(ImGuiKey_E, VKey)) {
                 out = action::bone::Extrude{};
             } else if (Shortcut(ImGuiKey_X, VKey) || Shortcut(ImGuiKey_Delete, VKey) || Shortcut(ImGuiKey_Backspace, VKey)) {
-                Delete(out);
+                Delete(R, SceneEntity, out);
             } else if (Shortcut(ImGuiMod_Shift | ImGuiKey_D, VKey)) {
-                Duplicate(out);
+                Duplicate(R, SceneEntity, out);
             }
         }
         if (Shortcut(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_E, VKey)) {
@@ -469,9 +471,9 @@ void Scene::Interact(std::optional<action::Action> &out) {
             out = action::object::AddLight{std::make_unique<ObjectCreateInfo>(ObjectCreateInfo{.Select = MeshInstanceCreateInfo::SelectBehavior::Exclusive})};
         }
         if (!R.storage<Selected>().empty()) {
-            if (!bone_edit && Shortcut(ImGuiMod_Shift | ImGuiKey_D, VKey)) Duplicate(out);
+            if (!bone_edit && Shortcut(ImGuiMod_Shift | ImGuiKey_D, VKey)) Duplicate(R, SceneEntity, out);
             else if (!bone_edit && Shortcut(ImGuiMod_Alt | ImGuiKey_D, VKey)) out = action::object::DuplicateLinked{};
-            else if (!bone_edit && scene_apply::CanDelete(R, SceneEntity) && (Shortcut(ImGuiKey_Delete, VKey) || Shortcut(ImGuiKey_Backspace, VKey))) Delete(out);
+            else if (!bone_edit && CanDelete(R, SceneEntity) && (Shortcut(ImGuiKey_Delete, VKey) || Shortcut(ImGuiKey_Backspace, VKey))) Delete(R, SceneEntity, out);
             else if (interaction_mode == InteractionMode::Pose && Shortcut(ImGuiMod_Alt | ImGuiKey_G, VKey)) out = action::bone::ClearSelectedTransforms{.Position = true};
             else if (interaction_mode == InteractionMode::Pose && Shortcut(ImGuiMod_Alt | ImGuiKey_R, VKey)) out = action::bone::ClearSelectedTransforms{.Rotation = true};
             else if (interaction_mode == InteractionMode::Pose && Shortcut(ImGuiMod_Alt | ImGuiKey_S, VKey)) out = action::bone::ClearSelectedTransforms{.Scale = true};
@@ -527,7 +529,7 @@ void Scene::Interact(std::optional<action::Action> &out) {
                 const bool is_additive = R.all_of<AdditiveBoxSelectBaseline>(SceneEntity);
                 if (interaction_mode == InteractionMode::Edit && !active_is_armature) {
                     Timer timer{"BoxSelectElements (all)"};
-                    RunBoxSelectElements(scene_apply::GetBitsetRangesForSelected(R), edit_mode, *box_px, is_additive);
+                    RunBoxSelectElements(GetBitsetRangesForSelected(R), edit_mode, *box_px, is_additive);
                 } else if (bone_mode) {
                     const auto hits = ResolveHits(R, RunBoxSelect(*box_px), bone_mode, true);
                     std::vector<action::selection::BoneHit> bone_hits;
@@ -1286,7 +1288,7 @@ void Scene::DrawOverlay() {
     // Camera look-through frame overlay: show the looked-through camera's view as a centered frame.
     // The ViewCamera's FOV is widened so the camera's view fits inside with padding.
     // The frame marks exactly what the camera captures.
-    if (const auto look_through_entity = scene_apply::LookThroughCameraEntity(R); look_through_entity != entt::null && !camera.IsAnimating()) {
+    if (const auto look_through_entity = LookThroughCameraEntity(R); look_through_entity != entt::null && !camera.IsAnimating()) {
         if (const auto *cd = R.try_get<Camera>(look_through_entity)) {
             const float cam_aspect = AspectRatio(*cd);
             const auto frame_size = vec2{viewport.size.y * cam_aspect, viewport.size.y} * LookThroughFrameRatio(cam_aspect, viewport.size.x / viewport.size.y);
@@ -1766,7 +1768,7 @@ void Scene::RenderEntityControls(entt::entity active_entity, std::optional<actio
             auto edited = *cd;
             if (RenderCameraLensEditor(edited, distance)) out = action::ReplaceActive<Camera>{edited};
             Separator();
-            if (scene_apply::LookThroughCameraEntity(R) == active_entity) {
+            if (LookThroughCameraEntity(R) == active_entity) {
                 if (Button("Exit camera view")) out = action::scene::ExitLookThroughCamera{};
             } else {
                 if (Button("Look through")) out = action::scene::EnterLookThroughCamera{};
@@ -1816,7 +1818,7 @@ void Scene::RenderEntityControls(entt::entity active_entity, std::optional<actio
     if (const auto *instance = R.try_get<Instance>(active_entity); instance && R.all_of<Mesh>(instance->Entity)) {
         const bool has_sound = R.all_of<SoundVerticesModel>(active_entity);
         if (CollapsingHeader("Audio", has_sound ? ImGuiTreeNodeFlags_DefaultOpen : 0)) {
-            if (auto a = DrawObjectAudioControls(R, SceneEntity, active_entity, scene_apply::GetMeshEntity(R, active_entity), Buffers.SelectionBitset.Data())) action::Assign(out, std::move(*a));
+            if (auto a = DrawObjectAudioControls(R, SceneEntity, active_entity, GetMeshEntity(R, active_entity), Buffers.SelectionBitset.Data())) action::Assign(out, std::move(*a));
             if (const auto *active_mic = R.try_get<RealImpactActiveMicrophone>(active_entity)) {
                 SeparatorText("Microphone");
                 Text("Active: %s", GetName(R, active_mic->Entity).c_str());
@@ -2028,12 +2030,12 @@ void Scene::RenderControls(std::optional<action::Action> &out) {
                         if (mixed_smooth) PopItemFlag();
                     }
                 }
-                if (scene_apply::CanDuplicate(R, SceneEntity) && Button("Duplicate")) Duplicate(out);
-                if (scene_apply::CanDuplicateLinked(R, SceneEntity)) {
+                if (CanDuplicate(R, SceneEntity) && Button("Duplicate")) Duplicate(R, SceneEntity, out);
+                if (CanDuplicateLinked(R, SceneEntity)) {
                     SameLine();
                     if (Button("Duplicate linked")) out = action::object::DuplicateLinked{};
                 }
-                if (scene_apply::CanDelete(R, SceneEntity) && Button("Delete")) Delete(out);
+                if (CanDelete(R, SceneEntity) && Button("Delete")) Delete(R, SceneEntity, out);
                 if (R.get<const SceneInteraction>(SceneEntity).Mode == InteractionMode::Pose && !R.view<const BoneSelection>().empty()) {
                     AlignTextToFramePadding();
                     TextUnformatted("Clear transform:");

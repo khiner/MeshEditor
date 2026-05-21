@@ -10,7 +10,6 @@
 #include "NodeTransformAnimation.h"
 #include "Path.h"
 #include "PbrFeature.h"
-#include "SceneOps.h"
 #include "SceneTextures.h"
 #include "SceneTree.h"
 #include "Timer.h"
@@ -21,12 +20,10 @@
 #include "physics/PhysicsTypes.h"
 #include "scene_impl/SceneBuffers.h"
 #include "scene_impl/SceneComponents.h"
-#include "vulkan/Slots.h"
 
 #include <fastgltf/base64.hpp>
 #include <fastgltf/core.hpp>
 #include <fastgltf/glm_element_traits.hpp>
-#include <fastgltf/tools.hpp>
 #include <fastgltf/types.hpp>
 #include <simdjson.h>
 
@@ -36,7 +33,6 @@
 #include <cstring>
 #include <format>
 #include <fstream>
-#include <iostream>
 #include <limits>
 #include <map>
 #include <numbers>

@@ -16,8 +16,6 @@
 #include <string>
 #include <unordered_map>
 
-using uint = uint32_t;
-
 struct MaterialStore {
     std::vector<std::string> Names;
 };
