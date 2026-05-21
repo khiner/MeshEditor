@@ -14,6 +14,7 @@
 #include "SceneOps.h"
 #include "ScenePipelines.h"
 #include "SceneSelection.h"
+#include "SceneStores.h"
 #include "SceneTextures.h"
 #include "SceneTree.h"
 #include "Shader.h"
@@ -1093,11 +1094,10 @@ void JumpToStartFrame(entt::registry &R, entt::entity scene_entity) {
     R.emplace_or_replace<PhysicsCacheInvalid>(scene_entity);
 }
 
-void SetStudioEnvironment(
-    entt::registry &R, entt::entity scene_entity,
-    const SceneVulkanResources &vk, const ScenePipelines &pipelines,
-    vk::CommandPool command_pool, vk::Fence one_shot_fence, uint32_t index
-) {
+void SetStudioEnvironment(entt::registry &R, entt::entity scene_entity, uint32_t index) {
+    const auto &vk = R.ctx().get<const SceneVulkanResources>();
+    const auto &pipelines = R.ctx().get<const ScenePipelines>();
+    const auto &one_shot = R.get<const SceneOneShotGpu>(scene_entity);
     auto &slots = R.ctx().get<DescriptorSlots>();
     auto &buffers = R.get<SceneBuffers>(scene_entity);
     auto &environments = *R.ctx().get<std::unique_ptr<EnvironmentStore>>();
@@ -1106,7 +1106,7 @@ void SetStudioEnvironment(
         hdri.Prefiltered = CreateIblFromHdri(
             vk, slots,
             pipelines.IblPrefilter, hdri.Path, hdri.Name,
-            command_pool, one_shot_fence, buffers.Ctx
+            one_shot.Pool, one_shot.Fence, buffers.Ctx
         );
     }
     const auto &pre = *hdri.Prefiltered;
@@ -1116,9 +1116,10 @@ void SetStudioEnvironment(
 
 std::pair<entt::entity, entt::entity> ImportMesh(
     entt::registry &R, entt::entity scene_entity,
-    const SceneVulkanResources &vk, vk::CommandPool command_pool, vk::Fence one_shot_fence,
     const std::filesystem::path &path, MeshInstanceCreateInfo info
 ) {
+    const auto &vk = R.ctx().get<const SceneVulkanResources>();
+    const auto &one_shot = R.get<const SceneOneShotGpu>(scene_entity);
     auto &slots = R.ctx().get<DescriptorSlots>();
     auto &buffers = R.get<SceneBuffers>(scene_entity);
     auto &meshes = R.ctx().get<MeshStore>();
@@ -1127,7 +1128,7 @@ std::pair<entt::entity, entt::entity> ImportMesh(
     if (!result) throw std::runtime_error(result.error());
 
     if (!result->Materials.empty()) {
-        auto obj_batch = BeginTextureUploadBatch(vk.Device, command_pool, buffers.Ctx);
+        auto obj_batch = BeginTextureUploadBatch(vk.Device, one_shot.Pool, buffers.Ctx);
         std::unordered_map<std::string, uint32_t> texture_slot_cache;
         const auto resolve_texture_slot =
             [&](
@@ -1201,7 +1202,7 @@ std::pair<entt::entity, entt::entity> ImportMesh(
             });
             names.emplace_back(material_name);
         }
-        SubmitTextureUploadBatch(obj_batch, vk.Queue, one_shot_fence, vk.Device);
+        SubmitTextureUploadBatch(obj_batch, vk.Queue, one_shot.Fence, vk.Device);
 
         R.patch<MaterialStore>(
             scene_entity,
@@ -1251,20 +1252,20 @@ void NewDefaultScene(entt::registry &R, entt::entity scene_entity) {
 } // namespace
 
 Scene::Scene(SceneVulkanResources vc, entt::registry &r)
-    : Vk{vc},
-      R{r},
-      CommandPool{Vk.Device.createCommandPoolUnique({vk::CommandPoolCreateFlagBits::eResetCommandBuffer, Vk.QueueFamily})},
-      RenderCommandBuffer{std::move(Vk.Device.allocateCommandBuffersUnique({*CommandPool, vk::CommandBufferLevel::ePrimary, 1}).front())},
+    : R{r},
+      CommandPool{vc.Device.createCommandPoolUnique({vk::CommandPoolCreateFlagBits::eResetCommandBuffer, vc.QueueFamily})},
+      RenderCommandBuffer{std::move(vc.Device.allocateCommandBuffersUnique({*CommandPool, vk::CommandBufferLevel::ePrimary, 1}).front())},
 #ifdef MVK_FORCE_STAGED_TRANSFERS
-      TransferCommandBuffer{std::move(Vk.Device.allocateCommandBuffersUnique({*CommandPool, vk::CommandBufferLevel::ePrimary, 1}).front())},
+      TransferCommandBuffer{std::move(vc.Device.allocateCommandBuffersUnique({*CommandPool, vk::CommandBufferLevel::ePrimary, 1}).front())},
 #endif
-      RenderFence{Vk.Device.createFenceUnique({})},
-      OneShotFence{Vk.Device.createFenceUnique({})},
-      SelectionReadySemaphore{Vk.Device.createSemaphoreUnique({})},
-      ClickCommandBuffer{std::move(Vk.Device.allocateCommandBuffersUnique({*CommandPool, vk::CommandBufferLevel::ePrimary, 1}).front())},
+      RenderFence{vc.Device.createFenceUnique({})},
+      OneShotFence{vc.Device.createFenceUnique({})},
+      SelectionReadySemaphore{vc.Device.createSemaphoreUnique({})},
+      ClickCommandBuffer{std::move(vc.Device.allocateCommandBuffersUnique({*CommandPool, vk::CommandBufferLevel::ePrimary, 1}).front())},
       DestroyTracker{std::make_unique<EntityDestroyTracker>()},
       Draw{std::make_unique<DrawState>()} {
-    InitSceneStoreCtx(R, Vk);
+    InitSceneStoreCtx(R, vc);
+    const auto &Vk = R.ctx().get<const SceneVulkanResources>();
     auto &Slots = R.ctx().get<DescriptorSlots>();
     SelectionHandles = std::make_unique<SelectionSlotHandles>(Slots);
     auto &Pipelines = R.ctx().emplace<ScenePipelines>(Vk.Device, Vk.PhysicalDevice, Slots.GetSetLayout(), Slots.GetSet());
@@ -1400,7 +1401,7 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
     std::ranges::sort(environments.Hdris, {}, &HdriEntry::Name);
     const auto forest_it = find(environments.Hdris, "forest", &HdriEntry::Name);
     environments.ActiveHdriIndex = forest_it != environments.Hdris.end() ? std::distance(environments.Hdris.begin(), forest_it) : 0;
-    SetStudioEnvironment(R, SceneEntity, Vk, Pipelines, *CommandPool, *OneShotFence, environments.ActiveHdriIndex);
+    SetStudioEnvironment(R, SceneEntity, environments.ActiveHdriIndex);
     environments.SceneWorld = {.Ibl = MakeIblSamplers(environments.EmptySceneWorld, environments), .Name = environments.EmptySceneWorld.Name};
 
     Pipelines.CompileShaders();
@@ -1417,9 +1418,10 @@ Scene::~Scene() {
 }
 
 void Scene::CreateSvgResource(std::unique_ptr<SvgResource> &svg, std::filesystem::path path) {
+    const auto &Vk = R.ctx().get<const SceneVulkanResources>();
     auto &Buffers = R.get<SceneBuffers>(SceneEntity);
     auto svg_batch = BeginTextureUploadBatch(Vk.Device, *CommandPool, Buffers.Ctx);
-    const auto RenderBitmap = [this, &svg_batch](std::span<const std::byte> data, uint32_t width, uint32_t height) {
+    const auto RenderBitmap = [&Vk, &svg_batch](std::span<const std::byte> data, uint32_t width, uint32_t height) {
         return RenderBitmapToImage(Vk, svg_batch, data, width, height, Format::Color, ColorSubresourceRange);
     };
     svg = std::make_unique<SvgResource>(Vk.Device, RenderBitmap, std::move(path));
@@ -1427,10 +1429,11 @@ void Scene::CreateSvgResource(std::unique_ptr<SvgResource> &svg, std::filesystem
 }
 
 void Scene::LoadIcons() {
+    const auto &Vk = R.ctx().get<const SceneVulkanResources>();
     auto &Buffers = R.get<SceneBuffers>(SceneEntity);
     const auto svg_path = Paths::Res() / "svg";
     auto batch = BeginTextureUploadBatch(Vk.Device, *CommandPool, Buffers.Ctx);
-    const auto RenderBitmap = [this, &batch](std::span<const std::byte> data, uint32_t width, uint32_t height) {
+    const auto RenderBitmap = [&Vk, &batch](std::span<const std::byte> data, uint32_t width, uint32_t height) {
         return RenderBitmapToImage(Vk, batch, data, width, height, Format::Color, ColorSubresourceRange);
     };
 
@@ -1485,6 +1488,7 @@ void Scene::StartRecording(std::filesystem::path path, int fps) {
         return;
     }
     RecordRegion = GetCaptureRegion();
+    const auto &Vk = R.ctx().get<const SceneVulkanResources>();
     Recorder = std::make_unique<VideoRecorder>(Vk, std::move(path), RecordRegion.first, RecordRegion.second, fps);
 }
 
@@ -1602,6 +1606,7 @@ Scene::SyncResult Scene::SyncModelsBuffers() {
 }
 
 Scene::RenderRequest Scene::ProcessComponentEvents() {
+    const auto &Vk = R.ctx().get<const SceneVulkanResources>();
     auto &Slots = R.ctx().get<DescriptorSlots>();
     auto &Buffers = R.get<SceneBuffers>(SceneEntity);
     auto &Meshes = R.ctx().get<MeshStore>();
@@ -1986,7 +1991,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
     if (const auto *pending = R.try_get<const PendingSetStudioEnvironment>(SceneEntity)) {
         const auto index = pending->Index;
         R.remove<PendingSetStudioEnvironment>(SceneEntity);
-        SetStudioEnvironment(R, SceneEntity, Vk, Pipelines, *CommandPool, *OneShotFence, index);
+        SetStudioEnvironment(R, SceneEntity, index);
     }
     if (const auto *pending = R.try_get<const PendingSetEditMode>(SceneEntity)) {
         const auto mode = pending->Mode;
@@ -1997,7 +2002,7 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         auto path = std::move(pending->Path);
         auto info = std::move(pending->Info);
         R.remove<PendingImportMesh>(SceneEntity);
-        ImportMesh(R, SceneEntity, Vk, *CommandPool, *OneShotFence, path, std::move(info));
+        ImportMesh(R, SceneEntity, path, std::move(info));
     }
     if (const auto *pending = R.try_get<const PendingEditElementClick>(SceneEntity)) {
         const auto mouse_px = pending->MousePx;
@@ -3908,6 +3913,7 @@ void Scene::RecordRenderCommandBuffer(bool silhouette_only) {
     const Timer timer{silhouette_only ? "RecordRenderCommandBuffer (silhouette)" : "RecordRenderCommandBuffer"};
     if (!silhouette_only) R.emplace_or_replace<SelectionStale>(SceneEntity);
 
+    const auto &Vk = R.ctx().get<const SceneVulkanResources>();
     auto &Buffers = R.get<SceneBuffers>(SceneEntity);
     auto &Meshes = R.ctx().get<MeshStore>();
     auto &Pipelines = R.ctx().get<ScenePipelines>();
@@ -4663,6 +4669,7 @@ void Scene::RenderSelectionPass(vk::Semaphore signal_semaphore) const {
 
 void Scene::RenderSelectionPassWith(bool render_depth, const SelectionBuildFn &build_fn, vk::Semaphore signal_semaphore, bool render_silhouette) const {
     const Timer timer{"RenderSelectionPassWith"};
+    const auto &Vk = R.ctx().get<const SceneVulkanResources>();
     auto &Buffers = R.get<SceneBuffers>(SceneEntity);
     auto &Pipelines = R.ctx().get<const ScenePipelines>();
     DrawListBuilder draw_list;
@@ -4780,6 +4787,7 @@ std::optional<uint32_t> Scene::RunSoundVerticesVertexPick(entt::entity instance_
     if (!R.all_of<SoundVertices>(instance_entity)) return {};
     const auto *instance = R.try_get<Instance>(instance_entity);
     if (!instance) return {};
+    const auto &Vk = R.ctx().get<const SceneVulkanResources>();
     auto &Buffers = R.get<SceneBuffers>(SceneEntity);
     auto &Meshes = R.ctx().get<MeshStore>();
     auto &Pipelines = R.ctx().get<const ScenePipelines>();
@@ -4813,6 +4821,7 @@ std::optional<uint32_t> Scene::RunSoundVerticesVertexPick(entt::entity instance_
 
 // Returns unique object-hit entities sorted by (distance, depth, object id).
 std::vector<entt::entity> Scene::RunObjectPick(uvec2 mouse_px, uint32_t radius_px) {
+    const auto &Vk = R.ctx().get<const SceneVulkanResources>();
     auto &Buffers = R.get<SceneBuffers>(SceneEntity);
     auto &Pipelines = R.ctx().get<const ScenePipelines>();
     const uint32_t next_object_id = R.get<const ObjectIdCounter>(SceneEntity).Next;
@@ -4885,6 +4894,7 @@ std::vector<entt::entity> Scene::RunObjectPick(uvec2 mouse_px, uint32_t radius_p
 }
 
 void Scene::DispatchBoxSelect(uvec2 box_min, uvec2 box_max, uint32_t max_id, vk::Semaphore wait_semaphore) {
+    const auto &Vk = R.ctx().get<const SceneVulkanResources>();
     auto &Buffers = R.get<SceneBuffers>(SceneEntity);
     auto &Pipelines = R.ctx().get<const ScenePipelines>();
     const uint32_t bitset_words = (max_id + 31) / 32;
@@ -4949,6 +4959,7 @@ void Scene::Render(std::optional<action::Action> &out, vk::Fence viewportConsume
 
     dl.ChannelsSetCurrent(0);
     if (SubmitViewport(viewportConsumerFence)) {
+        const auto &Vk = R.ctx().get<const SceneVulkanResources>();
         auto &Pipelines = R.ctx().get<const ScenePipelines>();
         ViewportTexture = std::make_unique<mvk::ImGuiTexture>(Vk.Device, *Pipelines.Main.Resources->FinalColorImage.View, vec2{0, 1}, vec2{1, 0});
     }
@@ -4966,6 +4977,7 @@ void Scene::Render(std::optional<action::Action> &out, vk::Fence viewportConsume
 }
 
 bool Scene::SubmitViewport(vk::Fence viewportConsumerFence) {
+    const auto &Vk = R.ctx().get<const SceneVulkanResources>();
     auto &Slots = R.ctx().get<DescriptorSlots>();
     auto &Buffers = R.get<SceneBuffers>(SceneEntity);
     auto &Pipelines = R.ctx().get<ScenePipelines>();
@@ -5085,6 +5097,7 @@ bool Scene::SubmitViewport(vk::Fence viewportConsumerFence) {
 void Scene::WaitForRender() {
     if (!RenderPending) return;
 
+    const auto &Vk = R.ctx().get<const SceneVulkanResources>();
     const Timer timer{"WaitForRender"};
     WaitFor(*RenderFence, Vk.Device);
     R.get<SceneBuffers>(SceneEntity).Ctx.ReclaimRetiredBuffers();
@@ -5094,9 +5107,6 @@ void Scene::WaitForRender() {
 namespace scene_apply {
 std::expected<void, std::string> Apply(entt::registry &R, entt::entity SceneEntity, const action::FallibleAction &action) {
     const auto &Vk = R.ctx().get<const SceneVulkanResources>();
-    const auto &one_shot = R.get<const SceneOneShotGpu>(SceneEntity);
-    const auto CommandPool = one_shot.Pool;
-    const auto OneShotFence = one_shot.Fence;
     auto &Slots = R.ctx().get<DescriptorSlots>();
     auto &Buffers = R.get<SceneBuffers>(SceneEntity);
     auto &Meshes = R.ctx().get<MeshStore>();
@@ -5135,7 +5145,7 @@ std::expected<void, std::string> Apply(entt::registry &R, entt::entity SceneEnti
 
                 ClearMeshes(R, SceneEntity);
                 const auto [mesh_entity, instance_entity] = ImportMesh(
-                    R, SceneEntity, Vk, CommandPool, OneShotFence,
+                    R, SceneEntity,
                     a.Directory / "transformed.obj",
                     MeshInstanceCreateInfo{
                         .Name = std::move(*object_name),

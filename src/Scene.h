@@ -2,7 +2,7 @@
 
 #include "Action.h"
 #include "AnimationTimeline.h"
-#include "SceneStores.h"
+#include "SceneVulkanResources.h"
 #include "TransformGizmo.h"
 #include "ViewCamera.h"
 
@@ -96,7 +96,6 @@ struct Scene {
     entt::entity GetSceneEntity() const { return SceneEntity; }
 
 private:
-    SceneVulkanResources Vk;
     entt::registry &R;
     vk::UniqueCommandPool CommandPool;
     vk::UniqueCommandBuffer RenderCommandBuffer;
