@@ -19,6 +19,10 @@ struct MeshSelectionBitsetRange {
     uint32_t Count; // Element count for current edit mode
 };
 
+struct EditTransformContext {
+    std::unordered_map<entt::entity, entt::entity> TransformInstances; // excludes frozen, for transforms
+};
+
 namespace scene_selection {
 
 // Set all bits in [offset, offset+count), clearing any gap bits in the last word.

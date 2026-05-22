@@ -57,21 +57,14 @@ struct Scene {
 
 private:
     entt::registry &R;
-    vk::UniqueCommandPool CommandPool;
     vk::UniqueCommandBuffer RenderCommandBuffer;
 #ifdef MVK_FORCE_STAGED_TRANSFERS
     vk::UniqueCommandBuffer TransferCommandBuffer;
 #endif
     vk::UniqueFence RenderFence;
-    vk::UniqueFence OneShotFence; // For short-lived transfers (e.g. selection passes and image uploads)
-    vk::UniqueSemaphore SelectionReadySemaphore; // Signals selection buffers ready for compute.
-    vk::UniqueCommandBuffer ClickCommandBuffer;
 
     struct SelectionSlotHandles;
     std::unique_ptr<SelectionSlotHandles> SelectionHandles;
-
-    struct EntityDestroyTracker;
-    std::unique_ptr<EntityDestroyTracker> DestroyTracker;
 
     struct DrawState;
     std::unique_ptr<DrawState> Draw;
@@ -87,20 +80,6 @@ public:
 private:
     std::unique_ptr<VideoRecorder> Recorder;
     std::pair<vk::Offset3D, vk::Extent2D> RecordRegion; // Locked at StartRecording; CaptureRecordFrame stops if the live region diverges.
-
-    // Shared buffer entities for collider wireframe overlays, indexed by ColliderShapeBuffer enum.
-    enum class ColliderShapeBuffer : uint8_t {
-        Box,
-        Sphere,
-        CapsuleCap,
-        Circle,
-        Line,
-        Count
-    };
-    entt::entity ColliderShapeBufferEntities[uint8_t(ColliderShapeBuffer::Count)]{null_entity, null_entity, null_entity, null_entity, null_entity};
-
-    void EnsureWireframes();
-    void UpdateWireframeTransforms();
 
     std::optional<vec2> BoxSelectStart, BoxSelectEnd; // Per-frame drag plumbing — producer/consumer is the same InteractOverlay call.
     std::optional<GizmoTransform> GizmoRenderTransform; // Set by InteractOverlay, consumed by DrawOverlay.
@@ -119,16 +98,8 @@ private:
 
     static inline const std::vector<Element> NormalElements{Element::Vertex, Element::Face};
 
-    enum class RenderRequest : uint8_t {
-        None,
-        Submit,
-        ReRecordSilhouette, // Only silhouette batch + command buffer
-        ReRecord, // Full draw list rebuild
-    };
-
     std::unique_ptr<mvk::ImGuiTexture> ViewportTexture;
     bool RenderPending{false}; // GPU render submitted but not yet waited on.
-    bool ShaderRecompileRequested{false};
 
 #ifdef MVK_FORCE_STAGED_TRANSFERS
     void RecordTransferCommandBuffer();
@@ -143,18 +114,6 @@ private:
     void RenderEntityControls(entt::entity, action::Emit emit);
 
     void RecordRenderCommandBuffer(bool silhouette_only = false);
-
-    // Process deferred component events. Called once per frame.
-    RenderRequest ProcessComponentEvents();
-
-    // Batch-process all deferred ModelsBuffer GPU operations (construction, insert, erase).
-    // Called from ProcessComponentEvents before transform/state sync.
-    struct SyncResult {
-        std::vector<entt::entity> NewlyInserted; // Entities inserted into GPU buffers — callers must write their WorldTransform before submit.
-        std::vector<entt::entity> NewMeshEntities; // Mesh entities needing deferred index buffer creation.
-        std::vector<entt::entity> NewExtrasEntities; // Non-mesh buffer entities (extras/bone/joint) needing deferred index creation.
-    };
-    SyncResult SyncModelsBuffers();
 
     std::vector<entt::entity> RunObjectPick(uvec2 pixel, uint32_t radius_px = 0);
     std::vector<entt::entity> RunBoxSelect(std::pair<uvec2, uvec2>);

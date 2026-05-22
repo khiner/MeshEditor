@@ -9,7 +9,9 @@
 #include "gpu/DebugChannel.h"
 #include "numeric/vec2.h"
 
+#include <array>
 #include <entt/entity/fwd.hpp>
+#include <entt/entity/registry.hpp>
 #include <filesystem>
 #include <optional>
 #include <set>
@@ -75,6 +77,10 @@ struct PBRViewportLighting {
 struct MaterialPreviewLighting : PBRViewportLighting {}; // defaults: both OFF (studio HDRI)
 struct RenderedLighting : PBRViewportLighting {}; // defaults: both ON (scene world/lights)
 
+inline const PBRViewportLighting &GetActivePbrLighting(const entt::registry &r, entt::entity scene_entity, ViewportShadingMode mode) {
+    return mode == ViewportShadingMode::Rendered ? static_cast<const PBRViewportLighting &>(r.get<const RenderedLighting>(scene_entity)) : static_cast<const PBRViewportLighting &>(r.get<const MaterialPreviewLighting>(scene_entity));
+}
+
 struct ViewportExtent {
     vk::Extent2D Value{};
 };
@@ -138,6 +144,20 @@ struct PendingSetEditMode {
     Element Mode;
 };
 
+struct PendingShaderRecompile {};
+
+enum class ColliderShapeBuffer : uint8_t { Box,
+                                           Sphere,
+                                           CapsuleCap,
+                                           Circle,
+                                           Line,
+                                           Count };
+struct ColliderShapeBuffers {
+    std::array<entt::entity, std::size_t(ColliderShapeBuffer::Count)> Entities{
+        null_entity, null_entity, null_entity, null_entity, null_entity
+    };
+};
+
 // Pending mesh import (file load + texture uploads).
 // Apply emits this; ProcessComponentEvents performs the GPU work, then removes it.
 struct PendingImportMesh {
@@ -159,18 +179,29 @@ struct SelectionBitsetRef {
 // Descriptor-slot IDs for the selection compute/render pipeline.
 // RAII for the slots lives in Scene; this component publishes the stable IDs.
 struct SelectionSlots {
-    uint32_t HeadImage, SelectionCounter, ElementPickCandidates, SelectionBitset;
+    uint32_t HeadImage, SelectionCounter, ElementPickCandidates, SelectionBitset, TransmissionSampler;
 };
 
-// Shared one-shot GPU sync primitives for synchronous passes (selection compute,
-// element pick, glTF load, etc.). RAII for the underlying Vulkan resources lives
-// in Scene; raw handles published here so registry-only helpers can read them.
+// One-shot GPU sync primitives for synchronous passes (selection compute, element pick,
+// glTF load, texture uploads, etc.). Owns its Vk resources directly; Scene's render-pipeline
+// command buffers are allocated from `Pool` and freed before this component is destroyed.
 struct SceneOneShotGpu {
-    vk::CommandPool Pool;
-    vk::CommandBuffer Cb;
-    vk::Fence Fence;
-    vk::Semaphore SelectionReady;
+    vk::UniqueCommandPool Pool;
+    vk::UniqueCommandBuffer Cb;
+    vk::UniqueFence Fence;
+    vk::UniqueSemaphore SelectionReady;
 };
+
+inline SceneOneShotGpu MakeSceneOneShotGpu(vk::Device device, uint32_t queue_family) {
+    auto pool = device.createCommandPoolUnique({vk::CommandPoolCreateFlagBits::eResetCommandBuffer, queue_family});
+    auto cb = std::move(device.allocateCommandBuffersUnique({*pool, vk::CommandBufferLevel::ePrimary, 1}).front());
+    return {
+        .Pool = std::move(pool),
+        .Cb = std::move(cb),
+        .Fence = device.createFenceUnique({}),
+        .SelectionReady = device.createSemaphoreUnique({}),
+    };
+}
 
 // Selection ignores occlusion when true.
 struct SelectionXRay {

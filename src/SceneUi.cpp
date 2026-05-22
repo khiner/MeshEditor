@@ -2057,7 +2057,7 @@ void Scene::RenderControls(action::Emit emit) {
                     f.Set<&SceneSettings::ClearColor>(color);
                 }
             }
-            if (Button("Recompile shaders")) ShaderRecompileRequested = true;
+            if (Button("Recompile shaders")) R.emplace_or_replace<PendingShaderRecompile>(SceneEntity);
 
             if (!R.view<Selected>().empty()) {
                 SeparatorText("Selection overlays");

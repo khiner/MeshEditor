@@ -9,6 +9,7 @@
 #include "Path.h"
 #include "SceneDefaults.h"
 #include "SceneOps.h"
+#include "ScenePipelines.h"
 #include "SceneSelection.h"
 #include "SceneTextures.h"
 #include "SceneTree.h"
@@ -16,9 +17,11 @@
 #include "SoundVertices.h"
 #include "Timer.h"
 #include "TransformMath.h"
+#include "VkFenceWait.h"
 #include "audio/AudioSystem.h"
 #include "audio/RealImpact.h"
 #include "gltf/GltfScene.h"
+#include "gpu/UpdateSelectionStatePushConstants.h"
 #include "mesh/MeshStore.h"
 #include "mesh/Primitives.h"
 #include "physics/PhysicsWorld.h"
@@ -481,7 +484,7 @@ std::pair<entt::entity, entt::entity> ImportMesh(
     if (!result) throw std::runtime_error(result.error());
 
     if (!result->Materials.empty()) {
-        auto obj_batch = BeginTextureUploadBatch(vk.Device, one_shot.Pool, buffers.Ctx);
+        auto obj_batch = BeginTextureUploadBatch(vk.Device, *one_shot.Pool, buffers.Ctx);
         std::unordered_map<std::string, uint32_t> texture_slot_cache;
         const auto resolve_texture_slot =
             [&](
@@ -555,7 +558,7 @@ std::pair<entt::entity, entt::entity> ImportMesh(
             });
             names.emplace_back(material_name);
         }
-        SubmitTextureUploadBatch(obj_batch, vk.Queue, one_shot.Fence, vk.Device);
+        SubmitTextureUploadBatch(obj_batch, vk.Queue, *one_shot.Fence, vk.Device);
 
         r.patch<MaterialStore>(
             scene_entity,
@@ -576,6 +579,120 @@ std::pair<entt::entity, entt::entity> ImportMesh(
     r.emplace<Path>(entities.first, path);
     r.emplace<SmoothShading>(entities.first);
     return entities;
+}
+
+void SetStudioEnvironment(entt::registry &r, entt::entity scene_entity, uint32_t index) {
+    const auto &vk = r.ctx().get<const SceneVulkanResources>();
+    const auto &pipelines = r.ctx().get<const ScenePipelines>();
+    const auto &one_shot = r.get<const SceneOneShotGpu>(scene_entity);
+    auto &slots = r.ctx().get<DescriptorSlots>();
+    auto &buffers = r.get<SceneBuffers>(scene_entity);
+    auto &environments = *r.ctx().get<std::unique_ptr<EnvironmentStore>>();
+    auto &hdri = environments.Hdris[index];
+    if (!hdri.Prefiltered) {
+        hdri.Prefiltered = CreateIblFromHdri(
+            vk, slots,
+            pipelines.IblPrefilter, hdri.Path, hdri.Name,
+            *one_shot.Pool, *one_shot.Fence, buffers.Ctx
+        );
+    }
+    const auto &pre = *hdri.Prefiltered;
+    environments.ActiveHdriIndex = index;
+    environments.StudioWorld = {.Ibl = MakeIblSamplers(pre, environments), .Name = hdri.Name};
+}
+
+void DispatchUpdateSelectionStates(
+    entt::registry &r, entt::entity scene_entity,
+    std::span<const ElementRange> ranges, Element element
+) {
+    if (ranges.empty() || element == Element::None) return;
+    const auto &vk_res = r.ctx().get<const SceneVulkanResources>();
+    const auto &pipelines = r.ctx().get<const ScenePipelines>();
+    const auto &one_shot = r.get<const SceneOneShotGpu>(scene_entity);
+    const auto &sel_slots = r.get<const SelectionSlots>(scene_entity);
+    auto &meshes = r.ctx().get<MeshStore>();
+
+    auto cb = *one_shot.Cb;
+    cb.reset({});
+    cb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
+
+    const vk::MemoryBarrier input_barrier{vk::AccessFlagBits::eShaderWrite, vk::AccessFlagBits::eShaderRead};
+    cb.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands, vk::PipelineStageFlagBits::eComputeShader, {}, input_barrier, {}, {});
+
+    const auto &compute = pipelines.UpdateSelectionState;
+    cb.bindPipeline(vk::PipelineBindPoint::eCompute, *compute.Pipeline);
+    cb.bindDescriptorSets(vk::PipelineBindPoint::eCompute, *compute.PipelineLayout, 0, compute.GetDescriptorSet(), {});
+
+    for (const auto &range : ranges) {
+        const auto &mesh = r.get<const Mesh>(range.MeshEntity);
+        const auto &mesh_buffers = r.get<const MeshBuffers>(range.MeshEntity);
+        const auto *active_element = r.try_get<const MeshActiveElement>(range.MeshEntity);
+
+        uint32_t state_slot, state_offset;
+        if (element == Element::Vertex) {
+            state_slot = meshes.GetVertexStateSlot();
+            state_offset = mesh_buffers.Vertices.Offset;
+        } else if (element == Element::Edge) {
+            const auto edge_range = meshes.GetEdgeStateRange(mesh.GetStoreId());
+            state_slot = edge_range.Slot;
+            state_offset = edge_range.Offset;
+        } else {
+            const auto face_range = meshes.GetFaceStateRange(mesh.GetStoreId());
+            state_slot = face_range.Slot;
+            state_offset = face_range.Offset;
+        }
+
+        const UpdateSelectionStatePushConstants pc{
+            .BitsetSlot = sel_slots.SelectionBitset,
+            .BitsetOffset = range.Offset,
+            .StateSlot = state_slot,
+            .StateOffset = state_offset,
+            .ElementCount = range.Count,
+            .ActiveHandle = active_element ? active_element->Handle : InvalidOffset,
+            .EdgeMode = element == Element::Edge ? 1u : 0u,
+        };
+        cb.pushConstants(*compute.PipelineLayout, vk::ShaderStageFlagBits::eCompute, 0, sizeof(pc), &pc);
+        cb.dispatch((range.Count + 255) / 256, 1, 1);
+    }
+
+    const vk::MemoryBarrier output_barrier{vk::AccessFlagBits::eShaderWrite, vk::AccessFlagBits::eHostRead};
+    cb.pipelineBarrier(vk::PipelineStageFlagBits::eComputeShader, vk::PipelineStageFlagBits::eHost, {}, output_barrier, {}, {});
+    cb.end();
+
+    vk::SubmitInfo submit;
+    submit.setCommandBuffers(cb);
+    vk_res.Queue.submit(submit, *one_shot.Fence);
+    WaitFor(*one_shot.Fence, vk_res.Device);
+}
+
+void ApplySelectionStateUpdate(
+    entt::registry &r, entt::entity scene_entity,
+    std::span<const ElementRange> ranges, Element element
+) {
+    auto &meshes = r.ctx().get<MeshStore>();
+    auto &buffers = r.get<SceneBuffers>(scene_entity);
+    DispatchUpdateSelectionStates(r, scene_entity, ranges, element);
+    if (element == Element::Vertex) {
+        for (const auto &range : ranges) {
+            const auto &mesh = r.get<const Mesh>(range.MeshEntity);
+            meshes.UpdateEdgeStatesFromVertices(mesh);
+            meshes.UpdateFaceStatesFromVertices(mesh);
+        }
+    } else if (element == Element::Face || element == Element::Edge) {
+        const auto *bits = buffers.SelectionBitset.Data();
+        for (const auto &range : ranges) {
+            const auto &mesh = r.get<const Mesh>(range.MeshEntity);
+            const auto selected_handles = scene_selection::ScanBitsetRange(bits, range.Offset, range.Count);
+            std::optional<uint32_t> active_handle;
+            if (const auto *active = r.try_get<const MeshActiveElement>(range.MeshEntity); active && active->Handle < range.Count) {
+                active_handle = active->Handle;
+            }
+            if (element == Element::Face) meshes.UpdateEdgeStatesFromFaces(mesh, selected_handles, active_handle);
+            if (element == Element::Edge) meshes.UpdateFaceStatesFromEdges(mesh);
+            meshes.UpdateVertexStatesFromElements(mesh, selected_handles, element, active_handle);
+        }
+    }
+    r.emplace_or_replace<ElementStatesDirty>(scene_entity);
 }
 
 void Apply(entt::registry &r, entt::entity scene_entity, const action::Action &action) {
