@@ -1114,35 +1114,16 @@ void Scene::InteractOverlay(action::Emit emit) {
         );
         if (interact_result) {
             const auto &[ts, td] = *interact_result;
-            std::vector<std::pair<entt::entity, StartTransform>> new_starts;
-            std::vector<std::pair<entt::entity, float>> new_start_bone_lengths;
-            if (start_transform_view.empty()) {
-                if (mesh_edit_mode) {
-                    for (const auto &[_, instance_entity] : edit_transform_instances) {
-                        new_starts.emplace_back(instance_entity, StartTransform{.T = R.get<const Transform>(instance_entity), .ParentDelta = {}});
-                    }
-                } else {
-                    // Capture parent transform at drag start so world->local conversion uses a stable reference frame throughout the interaction.
-                    for (const auto e : root_selected) {
-                        const auto &wt = R.get<WorldTransform>(e);
-                        new_starts.emplace_back(e, StartTransform{wt, ToTransform(GetParentDelta(R, e))});
-                        if (bone_edit_mode) {
-                            if (const auto *ds = R.try_get<BoneDisplayScale>(e)) new_start_bone_lengths.emplace_back(e, ds->Value);
-                        }
-                    }
-                }
-            }
             if (mesh_edit_mode) {
                 // Mesh Edit mode: store pending transform for shader-based preview.
                 // Actual vertex positions are only modified on commit.
-                emit(action::scene::UpdateGizmoMeshEditPending{
-                    .Starts = std::move(new_starts),
+                emit(action::scene::DragGizmoMeshEdit{
                     .Value = std::make_unique<PendingTransform>(PendingTransform{ts.P, ts.R, td}),
                 });
             } else {
                 // Object mode: apply transform to entity components immediately during drag.
                 // Compute new world result, then convert to local for parented entities.
-                action::scene::UpdateGizmoDragLocals update;
+                action::scene::DragGizmo update;
                 const auto make_local = [&](entt::entity e, const Transform &world, const Transform &pd) {
                     Transform local;
                     local.P = glm::conjugate(pd.R) * ((world.P - pd.P) / pd.S);
@@ -1150,24 +1131,27 @@ void Scene::InteractOverlay(action::Emit emit) {
                     local.S = R.all_of<ScaleLocked>(e) ? R.get<const Transform>(e).S : world.S / pd.S;
                     update.Locals.emplace_back(e, local);
                 };
+                // On the first drag frame, StartTransform isn't in the registry yet (handler emplaces on apply).
+                // Current WorldTransform IS the drag start in that case, since nothing has moved yet.
+                const auto get_start = [&](entt::entity e) -> std::pair<Transform, Transform> {
+                    if (const auto *st = R.try_get<const StartTransform>(e)) return {st->T, st->ParentDelta};
+                    return {R.get<const WorldTransform>(e), ToTransform(GetParentDelta(R, e))};
+                };
+                const auto get_start_bone_length = [&](entt::entity e) -> std::optional<float> {
+                    if (const auto *sbl = R.try_get<const StartBoneLength>(e)) return sbl->Value;
+                    if (const auto *ds = R.try_get<const BoneDisplayScale>(e)) return ds->Value;
+                    return std::nullopt;
+                };
 
                 const auto r = ts.R, rT = glm::conjugate(r);
-                // Live view is empty before the handler emplaces; iterate the local seed on the first frame.
-                const auto for_each_start = [&](auto &&fn) {
-                    if (!new_starts.empty()) {
-                        for (const auto &[e, st] : new_starts) fn(e, st);
-                    } else {
-                        for (const auto &[e, st] : start_transform_view.each()) fn(e, st);
-                    }
-                };
-                for_each_start([&](entt::entity e, const StartTransform &ts_e_comp) {
-                    const auto &ts_e = ts_e_comp.T; // world transform at start
+                for (const auto e : root_selected) {
+                    const auto [ts_e, start_pd] = get_start(e);
 
                     // Head/tail-only bone transform: stretch/rotate bone instead of moving it rigidly.
                     if (bone_edit_mode) {
                         // Use current parent WT for world→local (parent may have been moved earlier in this loop).
                         const auto pd = ToTransform(GetParentDelta(R, e));
-                        const auto *sbl = R.try_get<StartBoneLength>(e);
+                        const auto sbl = get_start_bone_length(e);
                         const auto *parts = R.try_get<BoneSelection>(e);
                         if (sbl && parts) {
                             const bool tip_only = parts->Tip && !parts->Root && !parts->Body;
@@ -1175,7 +1159,7 @@ void Scene::InteractOverlay(action::Emit emit) {
                             if (tip_only || root_only) {
                                 const auto transform_point = [&](vec3 p) { return td.P + ts.P + glm::rotate(td.R, r * (rT * (p - ts.P) * td.S)); };
 
-                                const float bone_length = sbl->Value;
+                                const float bone_length = *sbl;
                                 const auto start_head = ts_e.P;
                                 const auto start_tail = start_head + glm::rotate(ts_e.R, vec3{0, bone_length, 0});
                                 const auto new_head = tip_only ? start_head : transform_point(start_head);
@@ -1186,24 +1170,21 @@ void Scene::InteractOverlay(action::Emit emit) {
                                 const auto new_world_rot = new_length > eps ? glm::rotation(glm::normalize(glm::rotate(ts_e.R, vec3{0, 1, 0})), dir / new_length) * ts_e.R : ts_e.R;
                                 update.BoneDisplayScales.emplace_back(e, std::max(new_length, eps));
                                 make_local(e, {new_head, new_world_rot, ts_e.S}, pd);
-                                return;
+                                continue;
                             }
                         }
 
                         // Full bone transform in bone edit mode.
                         const auto offset = ts_e.P - ts.P;
                         make_local(e, {td.P + ts.P + glm::rotate(td.R, r * (rT * offset * td.S)), glm::normalize(td.R * ts_e.R), ts_e.S}, pd);
-                        return;
+                        continue;
                     }
 
                     // Object mode / non-bone transform.
-                    const auto &pd = ts_e_comp.ParentDelta;
                     const bool frozen = R.all_of<ScaleLocked>(e);
                     const auto offset = ts_e.P - ts.P;
-                    make_local(e, {td.P + ts.P + glm::rotate(td.R, frozen ? offset : r * (rT * offset * td.S)), glm::normalize(td.R * ts_e.R), frozen ? ts_e.S : td.S * ts_e.S}, pd);
-                });
-                update.Starts = std::move(new_starts);
-                update.StartBoneLengths = std::move(new_start_bone_lengths);
+                    make_local(e, {td.P + ts.P + glm::rotate(td.R, frozen ? offset : r * (rT * offset * td.S)), glm::normalize(td.R * ts_e.R), frozen ? ts_e.S : td.S * ts_e.S}, start_pd);
+                }
                 emit(std::move(update));
             }
         } else if (!start_transform_view.empty()) {

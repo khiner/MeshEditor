@@ -566,9 +566,6 @@ void UpdateWireframeTransforms(entt::registry &R) {
         }();
         if (!parent_moved && !shape_resized && !newly_created) continue;
 
-        const auto &shape = cs.Shape;
-        const mat4 base = ToMatrix(*wt) * glm::translate(mat4{1}, cs.LocalOffset);
-
         auto set_wt = [&](entt::entity inst, mat4 m) {
             if (!R.valid(inst)) return;
             R.replace<WorldTransform>(inst, ToTransform(m));
@@ -577,18 +574,19 @@ void UpdateWireframeTransforms(entt::registry &R) {
         // Maps the unit Y-line (from (0,+0.5,0) to (0,-0.5,0)) onto the segment p1→p2.
         // Line is rotationally symmetric about its axis - any perpendicular X/Z basis works.
         auto line_xform = [](vec3 p1, vec3 p2) -> mat4 {
-            const vec3 mid = (p1 + p2) * 0.5f;
-            const vec3 y_axis = p1 - p2;
-            const float len = glm::length(y_axis);
+            const auto mid = (p1 + p2) * 0.5f;
+            const auto y_axis = p1 - p2;
+            const auto len = glm::length(y_axis);
             // Coincident endpoints: collapse to a point at mid to avoid divide-by-zero.
             if (len < 1e-6f) return glm::scale(glm::translate(mat4{1}, mid), vec3{0});
 
-            const vec3 y_dir = y_axis / len;
-            const vec3 x_dir = glm::normalize(glm::cross(std::abs(y_dir.y) > 0.9f ? vec3{1, 0, 0} : vec3{0, 1, 0}, y_dir));
-            return mat4{{x_dir, 0}, {y_dir * len, 0}, {glm::cross(x_dir, y_dir), 0}, {mid, 1}};
+            const auto y_dir = y_axis / len;
+            const auto x_dir = glm::normalize(glm::cross(std::abs(y_dir.y) > 0.9f ? vec3{1, 0, 0} : vec3{0, 1, 0}, y_dir));
+            return {{x_dir, 0}, {y_dir * len, 0}, {glm::cross(x_dir, y_dir), 0}, {mid, 1}};
         };
+
+        const auto base = ToMatrix(*wt) * glm::translate(mat4{1}, cs.LocalOffset);
         auto set_side_lines = [&](float rt, float rb, float h) {
-            constexpr auto Pi = std::numbers::pi_v<float>;
             for (uint8_t i = 0; i < 4; ++i) {
                 const auto a = Pi * 0.5f * float(i);
                 const auto c = std::cos(a), s = std::sin(a);
@@ -598,13 +596,8 @@ void UpdateWireframeTransforms(entt::registry &R) {
 
         std::visit(
             overloaded{
-                [&](const physics::Box &s) {
-                    set_wt(cw.Instances[0], base * glm::scale(mat4{1}, {s.Size.x, s.Size.y, s.Size.z}));
-                },
-                [&](const physics::Sphere &s) {
-                    const float d = s.Radius * 2.0f;
-                    set_wt(cw.Instances[0], base * glm::scale(mat4{1}, {d, d, d}));
-                },
+                [&](const physics::Box &s) { set_wt(cw.Instances[0], base * glm::scale(mat4{1}, s.Size)); },
+                [&](const physics::Sphere &s) { set_wt(cw.Instances[0], base * glm::scale(mat4{1}, vec3{s.Radius * 2})); },
                 [&](const physics::Capsule &s) {
                     const float dt = s.RadiusTop * 2.0f, db = s.RadiusBottom * 2.0f;
                     set_wt(cw.Instances[0], base * glm::translate(mat4{1}, {0, s.Height * 0.5f, 0}) * glm::scale(mat4{1}, {dt, dt, dt}));
@@ -619,7 +612,7 @@ void UpdateWireframeTransforms(entt::registry &R) {
                 },
                 [](const auto &) {},
             },
-            shape
+            cs.Shape
         );
     }
 

@@ -1144,14 +1144,24 @@ void Apply(entt::registry &r, entt::entity scene_entity, const action::Action &a
                 r.emplace_or_replace<RotationUiDriving>(e);
                 r.patch<Transform>(e, [&](auto &t) { t.R = a.R; });
             },
-            [&](const action::scene::UpdateGizmoDragLocals &a) {
-                for (const auto &[e, st] : a.Starts) r.emplace<StartTransform>(e, st);
-                for (const auto &[e, len] : a.StartBoneLengths) r.emplace<StartBoneLength>(e, len);
+            [&](const action::scene::DragGizmo &a) {
+                for (const auto &[e, _] : a.Locals) {
+                    if (!r.all_of<StartTransform>(e)) r.emplace<StartTransform>(e, r.get<WorldTransform>(e), ToTransform(GetParentDelta(r, e)));
+                }
+                for (const auto &[e, _] : a.BoneDisplayScales) {
+                    if (!r.all_of<StartBoneLength>(e)) {
+                        if (const auto *ds = r.try_get<BoneDisplayScale>(e)) r.emplace<StartBoneLength>(e, ds->Value);
+                    }
+                }
                 for (const auto &[e, local] : a.Locals) r.patch<Transform>(e, [&](auto &t) { t = local; });
                 for (const auto &[e, length] : a.BoneDisplayScales) r.get_or_emplace<BoneDisplayScale>(e).Value = length;
             },
-            [&](const action::scene::UpdateGizmoMeshEditPending &a) {
-                for (const auto &[e, st] : a.Starts) r.emplace<StartTransform>(e, st);
+            [&](const action::scene::DragGizmoMeshEdit &a) {
+                for (const auto &[_, instance_entity] : scene_selection::ComputePrimaryEditInstances(r, false)) {
+                    if (!r.all_of<StartTransform>(instance_entity)) {
+                        r.emplace<StartTransform>(instance_entity, r.get<WorldTransform>(instance_entity), ToTransform(GetParentDelta(r, instance_entity)));
+                    }
+                }
                 r.emplace_or_replace<PendingTransform>(scene_entity, *a.Value);
             },
             [&](action::scene::EndGizmoDrag) {

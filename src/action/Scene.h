@@ -74,15 +74,12 @@ struct SetTransformRotationFromUi {
     quat R;
     RotationUiVariant UiVariant;
 };
-// First drag frame's caller populates `Starts`/`StartBoneLengths`; empty thereafter.
-struct UpdateGizmoDragLocals {
-    std::vector<std::pair<entt::entity, StartTransform>> Starts;
-    std::vector<std::pair<entt::entity, float>> StartBoneLengths;
+// Handler snapshots `StartTransform`/`StartBoneLength` for any affected entity that doesn't yet have one.
+struct DragGizmo {
     std::vector<std::pair<entt::entity, Transform>> Locals;
     std::vector<std::pair<entt::entity, float>> BoneDisplayScales;
 };
-struct UpdateGizmoMeshEditPending {
-    std::vector<std::pair<entt::entity, StartTransform>> Starts;
+struct DragGizmoMeshEdit {
     std::unique_ptr<PendingTransform> Value;
 };
 struct EndGizmoDrag {};
@@ -113,5 +110,5 @@ using Actions = std::variant<
     ResetViewCamera, ResetViewportTheme, ResetPbrLighting,
     SetViewCameraTarget, SetViewCameraLens, SetViewCameraTargetDirection, SetPbrMeshFeaturesMask,
     SetRotationUiMode, SetTransformRotationFromUi,
-    UpdateGizmoDragLocals, UpdateGizmoMeshEditPending, EndGizmoDrag, SetActiveTool, SetStartScreenTransform>;
+    DragGizmo, DragGizmoMeshEdit, EndGizmoDrag, SetActiveTool, SetStartScreenTransform>;
 } // namespace action::scene
