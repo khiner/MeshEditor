@@ -1,16 +1,12 @@
 #pragma once
 
-#include "action/Physics.h"
-
-#include <optional>
+#include "Action.h" // action::Emit
 
 struct PhysicsWorld;
 
 namespace physics_ui {
 // Renders the "Physics" tab content (simulation settings + document-level resources).
-// Returns an action for the caller to apply, if the user triggered one this frame.
-std::optional<action::physics::Action> RenderTab(entt::registry &, entt::entity scene_entity, PhysicsWorld &);
+void RenderTab(entt::registry &, entt::entity scene_entity, PhysicsWorld &, action::Emit);
 // Renders per-entity physics properties (motion type, collider, motion settings).
-// Returns an action for the caller to apply, if the user triggered one this frame.
-std::optional<action::physics::Action> RenderEntityProperties(entt::registry &, entt::entity, entt::entity scene_entity, const PhysicsWorld &);
+void RenderEntityProperties(entt::registry &, entt::entity, entt::entity scene_entity, const PhysicsWorld &, action::Emit);
 } // namespace physics_ui

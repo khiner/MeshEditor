@@ -1,18 +1,19 @@
 #pragma once
 
 // ui::Edit — terse, single-line wrappers around ImGui controls that read a field, run the
-// widget, and write an `action::UpdateOf<Ms...>` into a caller-owned `std::optional<Action>` if
-// the user changed it. The caller applies the action (if set) after the widgets.
+// widget, and forward an `action::UpdateOf<Ms...>` to the caller-supplied `action::Emit` sink
+// if the user changed it.
 //
-// Bound to (registry, out) and optionally an entity:
-//   `ui::Edit{R, out}`     — reads/writes target the registry's active entity. Emits UpdateActive<T>
-//                            (reads resolve via FindActiveEntity(R) at Run time).
-//   `ui::Edit{R, out, E}`  — reads from E and writes carry E. Emits Update<T>.
+// Bound to (registry, emit) and optionally an entity:
+//   `ui::Edit{R, emit}`     — reads/writes target the registry's active entity. Emits UpdateActive<T>
+//                             (reads resolve via FindActiveEntity(R) at Run time).
+//   `ui::Edit{R, emit, E}`  — reads from E and writes carry E. Emits Update<T>.
 //
 // `HasEntity` is a template bool (deduced via the constructor) so only the relevant code path
-// instantiates — adding a `ui::Edit{R, out}` site doesn't force `UpdateActive<T>` for every T
+// instantiates — adding a `ui::Edit{R, emit}` site doesn't force `UpdateActive<T>` for every T
 // the entity-bound form already uses.
 
+#include "Action.h" // action::Emit
 #include "Entity.h" // FindActiveEntity
 #include "action/Core.h"
 #include "numeric/vec3.h"
@@ -22,7 +23,6 @@
 #include <imgui.h>
 
 #include <concepts>
-#include <optional>
 #include <type_traits>
 
 namespace ui {
@@ -49,15 +49,15 @@ consteval ImGuiDataType ImGuiDt() {
     else static_assert(false, "ImGuiDt: unsupported scalar type");
 }
 
-template<class Action, bool HasEntity, auto... Prefix>
+template<bool HasEntity, auto... Prefix>
 struct Edit {
     entt::registry &R;
-    std::optional<Action> &Out;
+    action::Emit Out;
     [[no_unique_address]] std::conditional_t<HasEntity, entt::entity, std::monostate> E{};
 
     // Edit for a nested field, so callers don't repeat the outer member on each call.
     template<auto... More>
-    Edit<Action, HasEntity, Prefix..., More...> Sub() const {
+    Edit<HasEntity, Prefix..., More...> Sub() const {
         if constexpr (HasEntity) return {R, Out, E};
         else return {R, Out};
     }
@@ -70,14 +70,14 @@ struct Edit {
     template<class T, class Reg>
     const T &GetConst(Reg &r, entt::entity e) { return r.template get<const T>(e); }
 
-    // Read field, hand a mutable copy to `widget`, write update to `Out` if the widget returns true.
+    // Read field, hand a mutable copy to `widget`, emit update if the widget returns true.
     template<auto... Ms, class Widget>
     bool Run(Widget widget) {
         action::detail::last_field<Prefix..., Ms...> v = ReadChain<Prefix..., Ms...>(GetConst<action::detail::first_class<Prefix..., Ms...>>(R, ReadFrom()));
         if (!widget(v)) return false;
 
-        if constexpr (HasEntity) Out = action::UpdateOf<Prefix..., Ms...>(E, v);
-        else Out = action::UpdateOf<Prefix..., Ms...>(v);
+        if constexpr (HasEntity) Out(action::UpdateOf<Prefix..., Ms...>(E, v));
+        else Out(action::UpdateOf<Prefix..., Ms...>(v));
         return true;
     }
 
@@ -148,14 +148,12 @@ struct Edit {
     // Skips the read-widget step; useful where a simple read/widget mapping doesn't fit.
     template<auto... Ms>
     void Set(action::detail::last_field<Ms...> v) const {
-        if constexpr (HasEntity) Out = action::UpdateOf<Ms...>(E, std::move(v));
-        else Out = action::UpdateOf<Ms...>(std::move(v));
+        if constexpr (HasEntity) Out(action::UpdateOf<Ms...>(E, std::move(v)));
+        else Out(action::UpdateOf<Ms...>(std::move(v)));
     }
 };
 
-template<class Action>
-Edit(entt::registry &, std::optional<Action> &) -> Edit<Action, false>;
-template<class Action>
-Edit(entt::registry &, std::optional<Action> &, entt::entity) -> Edit<Action, true>;
+Edit(entt::registry &, action::Emit) -> Edit<false>;
+Edit(entt::registry &, action::Emit, entt::entity) -> Edit<true>;
 
 } // namespace ui

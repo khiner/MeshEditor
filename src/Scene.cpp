@@ -3680,7 +3680,7 @@ std::vector<entt::entity> Scene::RunBoxSelect(std::pair<uvec2, uvec2> box_px) {
     return entities;
 }
 
-void Scene::Render(std::optional<action::Action> &out, vk::Fence viewportConsumerFence) {
+void Scene::Render(action::Emit emit, vk::Fence viewportConsumerFence) {
     auto &dl = *ImGui::GetWindowDrawList();
     // Split draw list into two channels: viewport texture (background, channel 0) and overlay visuals (foreground, channel 1).
     // Overlay is split into interact and draw phases so that interaction patches (e.g. Transform) are processed
@@ -3688,7 +3688,7 @@ void Scene::Render(std::optional<action::Action> &out, vk::Fence viewportConsume
     dl.ChannelsSplit(2);
 
     dl.ChannelsSetCurrent(1);
-    InteractOverlay(out);
+    InteractOverlay(emit);
 
     dl.ChannelsSetCurrent(0);
     if (SubmitViewport(viewportConsumerFence)) {

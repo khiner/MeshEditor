@@ -39,6 +39,13 @@ void CheckVk(vk::Result err) {
     if (err != vk::Result::eSuccess) throw std::runtime_error(std::format("Vulkan error: {}", vk::to_string(err)));
 }
 
+// Per-frame action sink. Reset at the top of each frame, consumed at the bottom by Apply.
+// First-write-wins: emit sites are conceptually early-returns; the first one to fire decides the frame.
+std::optional<action::Action> Pending;
+void Emit(action::Action a) {
+    if (!Pending) Pending = std::move(a);
+}
+
 bool RebuildSwapchain = false;
 void RenderFrame(vk::Device device, vk::Queue queue, ImGui_ImplVulkanH_Window &wd, ImDrawData *draw_data) {
     auto image_acquired_semaphore = wd.FrameSemaphores[wd.SemaphoreIndex].ImageAcquiredSemaphore;
@@ -418,7 +425,8 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
         NewFrame();
 
         // At most one user-initiated Action per frame, applied after all UI runs.
-        std::optional<action::Action> action;
+        // First-write-wins: the first call to Emit decides this frame's action; subsequent emits are dropped.
+        Pending.reset();
 
         auto dockspace_id = DockSpaceOverViewport(0, nullptr, ImGuiDockNodeFlags_PassthruCentralNode | ImGuiDockNodeFlags_AutoHideTabBar);
         if (GetFrameCount() == 1) {
@@ -435,7 +443,7 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
 
         if (BeginMainMenuBar()) {
             if (BeginMenu("File")) {
-                if (MenuItem("New", nullptr)) action = action::project::NewDefaultScene{};
+                if (MenuItem("New", nullptr)) Emit(action::project::NewDefaultScene{});
                 if (MenuItem("Load glTF", nullptr)) {
                     static const std::array filters{nfdfilteritem_t{"glTF scene", "gltf,glb"}};
                     nfdchar_t *nfd_path;
@@ -615,7 +623,7 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
         if (windows.SceneControls.Visible) {
             if (Begin(windows.SceneControls.Name, &windows.SceneControls.Visible) && BeginTabBar("Controls")) {
                 if (BeginTabItem("Scene")) {
-                    scene->RenderControls(action);
+                    scene->RenderControls(Emit);
                     EndTabItem();
                 }
                 if (BeginTabItem("Audio device")) {
@@ -633,12 +641,12 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
                 PushStyleVar(ImGuiStyleVar_FramePadding, {6, 4});
                 Indent(6);
                 Spacing();
-                scene->RenderClipPickers(action);
+                scene->RenderClipPickers(Emit);
                 Unindent(6);
                 PopStyleVar();
                 const auto scene_e = scene->GetSceneEntity();
                 if (auto a = RenderAnimationTimeline(r.get<const TimelineRange>(scene_e), r.get<const TimelinePlayback>(scene_e), r.get<const AnimationTimelineView>(scene_e), scene->GetAnimationIcons())) {
-                    action::Assign(action, std::move(*a));
+                    action::Assign(Emit, std::move(*a));
                 }
             }
             End();
@@ -648,9 +656,9 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
         if (windows.Scene.Visible) {
             PushStyleVar(ImGuiStyleVar_WindowPadding, {0, 0});
             if (Begin(windows.Scene.Name, &windows.Scene.Visible)) {
-                scene->Interact(action);
+                scene->Interact(Emit);
                 // Submit GPU render (nonblocking). WaitForRender() is called later, before RenderFrame() samples the final image.
-                scene->Render(action, GetFrameCount() > 1 ? vk::Fence{wd.Frames[wd.FrameIndex].Fence} : vk::Fence{});
+                scene->Render(Emit, GetFrameCount() > 1 ? vk::Fence{wd.Frames[wd.FrameIndex].Fence} : vk::Fence{});
             }
             End();
             PopStyleVar();
@@ -665,17 +673,17 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
                         play = false;
                     }
                 } else {
-                    action = action::project::NewDefaultScene{};
+                    Emit(action::project::NewDefaultScene{});
                 }
             } else if (GetFrameCount() == 3 && play) {
                 // Wait to play until scene load (frame 1) has settled and one render frame has elapsed.
                 // Calling Play() on the same frame as LoadFile races physics setup.
-                action = action::scene::Play{};
+                Emit(action::scene::Play{});
                 play = false;
             }
         }
 
-        if (action) Apply(r, scene->GetSceneEntity(), std::move(*action));
+        if (Pending) Apply(r, scene->GetSceneEntity(), std::move(*Pending));
 
         ImGui::Render();
         auto *draw_data = GetDrawData();

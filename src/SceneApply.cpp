@@ -425,15 +425,16 @@ std::vector<ElementRange> GetBitsetRangesForSelected(const entt::registry &r) {
 bool SetInteractionMode(entt::registry &r, entt::entity scene_entity, InteractionMode mode) {
     if (r.get<const SceneInteraction>(scene_entity).Mode == mode) return false;
 
-    auto &meshes = r.ctx().get<MeshStore>();
-    auto &buffers = r.get<SceneBuffers>(scene_entity);
-
     const auto active_entity = FindActiveEntity(r);
     const auto active_arm = active_entity != entt::null ? FindArmatureObject(r, active_entity) : entt::null;
     const bool active_is_armature = active_arm != entt::null;
     if (mode == InteractionMode::Edit && !AllSelectedAreMeshes(r) && !active_is_armature) return false;
     if (mode == InteractionMode::Pose && !active_is_armature) return false;
 
+    r.clear<VertexForce>();
+
+    auto &meshes = r.ctx().get<MeshStore>();
+    auto &buffers = r.get<SceneBuffers>(scene_entity);
     if (r.get<const SceneInteraction>(scene_entity).Mode == InteractionMode::Edit) {
         // Keep bitset ranges + bits so element selections survive toggling Edit mode off and back on.
         for (const auto [mesh_entity, br, mesh] : r.view<const MeshSelectionBitsetRange, const Mesh>().each()) {
@@ -1036,7 +1037,10 @@ void Apply(entt::registry &r, entt::entity scene_entity, const action::Action &a
                 for (const auto &[e, st] : a.Starts) r.emplace<StartTransform>(e, st);
                 r.emplace_or_replace<PendingTransform>(scene_entity, *a.Value);
             },
-            [&](action::scene::EndGizmoDrag) { r.clear<StartTransform, StartBoneLength>(); },
+            [&](action::scene::EndGizmoDrag) {
+                r.clear<StartTransform, StartBoneLength>();
+                r.remove<StartScreenTransform>(scene_entity);
+            },
             [&](const action::scene::SetActiveTool &a) {
                 using Tool = action::scene::SetActiveTool::Tool;
                 using TT = TransformGizmo::Type;
@@ -1052,8 +1056,25 @@ void Apply(entt::registry &r, entt::entity scene_entity, const action::Action &a
                 }
             },
             [&](const action::scene::SetStartScreenTransform &a) {
-                if (a.Value) r.emplace_or_replace<StartScreenTransform>(scene_entity, *a.Value);
-                else r.remove<StartScreenTransform>(scene_entity);
+                if (!a.Value) {
+                    r.remove<StartScreenTransform>(scene_entity);
+                    return;
+                }
+                // Mid-drag switch is a cancel-restart: revert any in-progress drag to its start state.
+                // StartTransform / StartBoneLength components stay so the next drag (under the new latched type) reuses them.
+                r.remove<PendingTransform>(scene_entity);
+                for (const auto [e, st] : r.view<const StartTransform>().each()) {
+                    const auto &pd = st.ParentDelta;
+                    r.patch<Transform>(e, [&](auto &t) {
+                        t.P = glm::conjugate(pd.R) * ((st.T.P - pd.P) / pd.S);
+                        t.R = glm::conjugate(pd.R) * st.T.R;
+                        if (!r.all_of<ScaleLocked>(e)) t.S = st.T.S / pd.S;
+                    });
+                }
+                for (const auto [e, sbl] : r.view<const StartBoneLength>().each()) {
+                    r.get_or_emplace<BoneDisplayScale>(e).Value = sbl.Value;
+                }
+                r.emplace_or_replace<StartScreenTransform>(scene_entity, *a.Value);
             },
             [&](const action::bone::SetEditHeadTailRoll &a) {
                 const auto e = FindActiveBone(r);

@@ -20,19 +20,19 @@ struct Scene {
     void LoadIcons();
 
     // Handle mouse/keyboard interactions.
-    void Interact(std::optional<action::Action> &out);
+    void Interact(action::Emit emit);
 
     // Submit GPU render (nonblocking), draw the final image into the current ImGui window, and draw overlays.
     // Call WaitForRender() before the ImGui frame samples the final image.
     // If provided, waits on `viewportConsumerFence` before destroying old resources on extent change.
-    void Render(std::optional<action::Action> &out, vk::Fence viewportConsumerFence = {});
+    void Render(action::Emit emit, vk::Fence viewportConsumerFence = {});
     // Wait for pending viewport render to complete. No-op if no render pending.
     void WaitForRender();
-    void RenderControls(std::optional<action::Action> &out);
+    void RenderControls(action::Emit);
 
     const AnimationIcons &GetAnimationIcons() const { return AnimIcons; }
     // Render per-source animation-clip pickers above the timeline.
-    void RenderClipPickers(std::optional<action::Action> &out);
+    void RenderClipPickers(action::Emit emit);
 
     // Record the viewport to an H.264 mp4 by piping frames to an `ffmpeg` subprocess.
     // When a look-through camera is active, captures only the framed sub-region matching
@@ -134,11 +134,11 @@ private:
     // The overlay is everything drawn on top of the viewport with ImGui, independent of the main scene vulkan pipeline.
     // Split into interact (state changes) and draw (visuals) so that DrawOverlay runs after ProcessComponentEvents
     // and reads up-to-date WorldTransforms.
-    void InteractOverlay(std::optional<action::Action> &out);
+    void InteractOverlay(action::Emit emit);
     void DrawOverlay();
 
-    void RenderObjectTree(std::optional<action::Action> &out);
-    void RenderEntityControls(entt::entity, std::optional<action::Action> &out);
+    void RenderObjectTree(action::Emit emit);
+    void RenderEntityControls(entt::entity, action::Emit emit);
 
     void RecordRenderCommandBuffer(bool silhouette_only = false);
 

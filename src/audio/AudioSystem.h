@@ -1,8 +1,8 @@
 #pragma once
 
+#include "Action.h" // action::Emit
 #include "AudioBuffer.h"
 #include "AudioTypes.h"
-#include "action/Audio.h"
 
 #include <cstdint>
 #include <filesystem>
@@ -31,10 +31,9 @@ void RemoveAudioComponents(entt::registry &, entt::entity sound_entity);
 
 // Draw the Audio controls for a sound object entity (has SoundVerticesModel).
 // `selection_bits` is the raw SelectionBitset pointer (used in Edit mode for SampleOpVertices); may be null.
-// Returns an action for the caller to apply, if the user triggered one this frame.
-std::optional<action::audio::Action> DrawObjectAudioControls(
+void DrawObjectAudioControls(
     entt::registry &, entt::entity scene_entity, entt::entity sound_entity, entt::entity mesh_entity,
-    const uint32_t *selection_bits
+    const uint32_t *selection_bits, action::Emit
 );
 
 // {path, frames} pair — path is an fs::path used as a dedup key in the scene-level sample store.
