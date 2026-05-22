@@ -608,7 +608,7 @@ void Scene::Interact(action::Emit emit) {
 void Scene::InteractOverlay(action::Emit emit) {
     auto &Buffers = R.get<SceneBuffers>(SceneEntity);
     auto &Meshes = R.ctx().get<MeshStore>();
-    auto &Environments = *R.ctx().get<std::unique_ptr<EnvironmentStore>>();
+    auto &Environments = R.ctx().get<EnvironmentStore>();
     const rect viewport{ToGlm(GetWindowPos()), ToGlm(GetContentRegionAvail())};
     const bool active_transform = TransformGizmo::IsUsing();
     static constexpr float OrientationGizmoSize{84};
@@ -1286,7 +1286,7 @@ void Scene::DrawOverlay() {
 void Scene::RenderEntityControls(entt::entity active_entity, action::Emit emit) {
     auto &Buffers = R.get<SceneBuffers>(SceneEntity);
     auto &Meshes = R.ctx().get<MeshStore>();
-    auto &Textures = *R.ctx().get<std::unique_ptr<TextureStore>>();
+    auto &Textures = R.ctx().get<TextureStore>();
     auto &Physics = R.ctx().get<PhysicsWorld>();
     if (active_entity == entt::null) {
         TextUnformatted("Active object: None");

@@ -458,10 +458,9 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
       RenderFence{vc.Device.createFenceUnique({})},
       Draw{std::make_unique<DrawState>()} {
     InitSceneStoreCtx(R, vc);
-    const auto &Vk = R.ctx().get<const SceneVulkanResources>();
     auto &Slots = R.ctx().get<DescriptorSlots>();
     SelectionHandles = std::make_unique<SelectionSlotHandles>(Slots);
-    auto &Pipelines = R.ctx().emplace<ScenePipelines>(Vk.Device, Vk.PhysicalDevice, Slots.GetSetLayout(), Slots.GetSet());
+    auto &Pipelines = R.ctx().emplace<ScenePipelines>(vc.Device, vc.PhysicalDevice, Slots.GetSetLayout(), Slots.GetSet());
     auto &Physics = R.ctx().emplace<PhysicsWorld>();
     Physics.BindRegistry(R);
     // Reactive storage subscriptions for deferred once-per-frame processing
@@ -547,7 +546,7 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
         r.patch<Transform>(e, [](auto &) {});
     }>();
 
-    SceneEntity = WireSceneRegistry(R, Vk);
+    SceneEntity = WireSceneRegistry(R);
     auto &Buffers = R.get<SceneBuffers>(SceneEntity);
     R.emplace<SceneSettings>(SceneEntity);
     R.emplace<SceneInteraction>(SceneEntity);
@@ -563,11 +562,11 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
     R.emplace<EnabledInteractionModes>(SceneEntity);
     R.emplace<SelectionBitsetRef>(SceneEntity, std::span<uint32_t>{Buffers.SelectionBitset.Data(), SceneBuffers::SelectionBitsetWords});
     R.emplace<SelectionSlots>(SceneEntity, SelectionHandles->HeadImage, SelectionHandles->SelectionCounter, SelectionHandles->ElementPickCandidates, SelectionHandles->SelectionBitset, SelectionHandles->TransmissionSampler);
-    const auto &one_shot = R.emplace<SceneOneShotGpu>(SceneEntity, MakeSceneOneShotGpu(Vk.Device, Vk.QueueFamily));
+    const auto &one_shot = R.emplace<SceneOneShotGpu>(SceneEntity, MakeSceneOneShotGpu(vc.Device, vc.QueueFamily));
     R.emplace<ColliderShapeBuffers>(SceneEntity);
-    RenderCommandBuffer = std::move(Vk.Device.allocateCommandBuffersUnique({*one_shot.Pool, vk::CommandBufferLevel::ePrimary, 1}).front());
+    RenderCommandBuffer = std::move(vc.Device.allocateCommandBuffersUnique({*one_shot.Pool, vk::CommandBufferLevel::ePrimary, 1}).front());
 #ifdef MVK_FORCE_STAGED_TRANSFERS
-    TransferCommandBuffer = std::move(Vk.Device.allocateCommandBuffersUnique({*one_shot.Pool, vk::CommandBufferLevel::ePrimary, 1}).front());
+    TransferCommandBuffer = std::move(vc.Device.allocateCommandBuffersUnique({*one_shot.Pool, vk::CommandBufferLevel::ePrimary, 1}).front());
 #endif
     R.emplace<SelectionXRay>(SceneEntity);
     R.emplace<OrbitToActive>(SceneEntity);
@@ -580,15 +579,15 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
     Buffers.WorkspaceLightsUBO.Update(as_bytes(SceneDefaults::WorkspaceLights));
     ResetObjectPickKeys(Buffers);
 
-    auto init_batch = BeginTextureUploadBatch(Vk.Device, *one_shot.Pool, Buffers.Ctx);
-    auto &environments = *R.ctx().get<std::unique_ptr<EnvironmentStore>>();
+    auto init_batch = BeginTextureUploadBatch(vc.Device, *one_shot.Pool, Buffers.Ctx);
+    auto &environments = R.ctx().get<EnvironmentStore>();
     const auto images_dir = Paths::Res() / "images";
-    environments.BrdfLut = CreateDefaultLutTexture(Vk, init_batch, Slots, images_dir / "lut_ggx.png", "DefaultGGXBRDFLUT");
-    environments.SheenELut = CreateDefaultLutTexture(Vk, init_batch, Slots, images_dir / "lut_sheen_E.png", "DefaultSheenELUT");
-    environments.CharlieLut = CreateDefaultLutTexture(Vk, init_batch, Slots, images_dir / "lut_charlie.png", "DefaultCharlieLUT");
+    environments.BrdfLut = CreateDefaultLutTexture(vc, init_batch, Slots, images_dir / "lut_ggx.png", "DefaultGGXBRDFLUT");
+    environments.SheenELut = CreateDefaultLutTexture(vc, init_batch, Slots, images_dir / "lut_sheen_E.png", "DefaultSheenELUT");
+    environments.CharlieLut = CreateDefaultLutTexture(vc, init_batch, Slots, images_dir / "lut_charlie.png", "DefaultCharlieLUT");
     // Blender's default world background color (linear RGB) - flat ambient-only IBL when no scene world is provided.
-    environments.EmptySceneWorld = BuildFlatColorEnvironment(Vk, init_batch, Slots, vec3{0.05f}, "EmptySceneWorld");
-    SubmitTextureUploadBatch(init_batch, Vk.Queue, *one_shot.Fence, Vk.Device);
+    environments.EmptySceneWorld = BuildFlatColorEnvironment(vc, init_batch, Slots, vec3{0.05f}, "EmptySceneWorld");
+    SubmitTextureUploadBatch(init_batch, vc.Queue, *one_shot.Fence, vc.Device);
 
     std::error_code ec;
     for (const auto &entry : std::filesystem::directory_iterator{images_dir / "studiolights" / "world", ec}) {
@@ -1444,8 +1443,8 @@ void Scene::RecordTransferCommandBuffer() {
     auto &Slots = R.ctx().get<DescriptorSlots>();
     auto &Buffers = R.get<SceneBuffers>(SceneEntity);
     auto &Meshes = R.ctx().get<MeshStore>();
-    auto &Textures = *R.ctx().get<std::unique_ptr<TextureStore>>();
-    auto &Environments = *R.ctx().get<std::unique_ptr<EnvironmentStore>>();
+    auto &Textures = R.ctx().get<TextureStore>();
+    auto &Environments = R.ctx().get<EnvironmentStore>();
     const Timer timer{"RecordTransferCommandBuffer"};
     TransferCommandBuffer->reset({});
     TransferCommandBuffer->begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});

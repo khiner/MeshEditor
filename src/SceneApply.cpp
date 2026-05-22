@@ -103,7 +103,7 @@ void Destroy(entt::registry &r, entt::entity scene_entity, entt::entity e) {
     auto &slots = r.ctx().get<DescriptorSlots>();
     auto &buffers = r.get<SceneBuffers>(scene_entity);
     auto &meshes = r.ctx().get<MeshStore>();
-    auto &textures = *r.ctx().get<std::unique_ptr<TextureStore>>();
+    auto &textures = r.ctx().get<TextureStore>();
     if (r.all_of<LookingThrough>(e)) {
         r.replace<ViewCamera>(scene_entity, r.get<LookingThrough>(e).SavedViewCamera);
         r.remove<LookingThrough>(e);
@@ -479,7 +479,7 @@ std::pair<entt::entity, entt::entity> ImportMesh(
     auto &slots = r.ctx().get<DescriptorSlots>();
     auto &buffers = r.get<SceneBuffers>(scene_entity);
     auto &meshes = r.ctx().get<MeshStore>();
-    auto &textures = *r.ctx().get<std::unique_ptr<TextureStore>>();
+    auto &textures = r.ctx().get<TextureStore>();
     auto result = meshes.LoadMesh(path);
     if (!result) throw std::runtime_error(result.error());
 
@@ -587,7 +587,7 @@ void SetStudioEnvironment(entt::registry &r, entt::entity scene_entity, uint32_t
     const auto &one_shot = r.get<const SceneOneShotGpu>(scene_entity);
     auto &slots = r.ctx().get<DescriptorSlots>();
     auto &buffers = r.get<SceneBuffers>(scene_entity);
-    auto &environments = *r.ctx().get<std::unique_ptr<EnvironmentStore>>();
+    auto &environments = r.ctx().get<EnvironmentStore>();
     auto &hdri = environments.Hdris[index];
     if (!hdri.Prefiltered) {
         hdri.Prefiltered = CreateIblFromHdri(
@@ -1410,8 +1410,8 @@ std::expected<void, std::string> Apply(entt::registry &r, entt::entity scene_ent
     auto &slots = r.ctx().get<DescriptorSlots>();
     auto &buffers = r.get<SceneBuffers>(scene_entity);
     auto &meshes = r.ctx().get<MeshStore>();
-    auto &textures = *r.ctx().get<std::unique_ptr<TextureStore>>();
-    auto &environments = *r.ctx().get<std::unique_ptr<EnvironmentStore>>();
+    auto &textures = r.ctx().get<TextureStore>();
+    auto &environments = r.ctx().get<EnvironmentStore>();
     auto &physics = r.ctx().get<PhysicsWorld>();
     return std::visit(
         overloaded{

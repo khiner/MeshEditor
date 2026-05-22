@@ -29,6 +29,12 @@ struct TextureEntry {
 struct TextureStore {
     std::vector<TextureEntry> Textures;
     uint32_t WhiteTextureSlot;
+
+    TextureStore() = default;
+    TextureStore(const TextureStore &) = delete;
+    TextureStore &operator=(const TextureStore &) = delete;
+    TextureStore(TextureStore &&) = default;
+    TextureStore &operator=(TextureStore &&) = default;
 };
 
 struct CubemapEntry {
@@ -64,6 +70,12 @@ struct EnvironmentStore {
     mat3 SceneWorldRotation{1.f}; // From EXT_lights_image_based rotation quaternion.
     EnvironmentPrefiltered EmptySceneWorld; // 1x1 flat-color cubemap; used when no EXT_lights_image_based asset is loaded.
     EnvironmentSelection SceneWorld, StudioWorld;
+
+    EnvironmentStore() = default;
+    EnvironmentStore(const EnvironmentStore &) = delete;
+    EnvironmentStore &operator=(const EnvironmentStore &) = delete;
+    EnvironmentStore(EnvironmentStore &&) = default;
+    EnvironmentStore &operator=(EnvironmentStore &&) = default;
 };
 
 struct SamplerConfig {

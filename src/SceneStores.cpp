@@ -10,7 +10,6 @@
 
 #include <array>
 #include <cstddef>
-#include <memory>
 #include <vector>
 
 #include <entt/entity/registry.hpp>
@@ -21,19 +20,20 @@ void InitSceneStoreCtx(entt::registry &r, SceneVulkanResources vk) {
         vk.Device,
         vk.PhysicalDevice.getProperties2<vk::PhysicalDeviceProperties2, vk::PhysicalDeviceDescriptorIndexingProperties>().get<vk::PhysicalDeviceDescriptorIndexingProperties>()
     );
-    auto &textures = *r.ctx().emplace<std::unique_ptr<TextureStore>>(std::make_unique<TextureStore>());
+    auto &textures = r.ctx().emplace<TextureStore>();
     textures.WhiteTextureSlot = AllocateSamplerSlot(slots);
-    r.ctx().emplace<std::unique_ptr<EnvironmentStore>>(std::make_unique<EnvironmentStore>());
+    r.ctx().emplace<EnvironmentStore>();
 }
 
-entt::entity WireSceneRegistry(entt::registry &r, SceneVulkanResources vk) {
+entt::entity WireSceneRegistry(entt::registry &r) {
     r.on_construct<PhysicsMotion>().connect<&entt::registry::emplace<PhysicsVelocity>>();
     r.on_destroy<PhysicsMotion>().connect<&entt::registry::remove<PhysicsVelocity>>();
     r.on_construct<ColliderShape>().connect<&entt::registry::emplace<ColliderMaterial>>();
     r.on_destroy<ColliderShape>().connect<&entt::registry::remove<ColliderMaterial>>();
 
+    const auto &vk = r.ctx().get<const SceneVulkanResources>();
     auto &slots = r.ctx().get<DescriptorSlots>();
-    auto &textures = *r.ctx().get<std::unique_ptr<TextureStore>>();
+    auto &textures = r.ctx().get<TextureStore>();
 
     const auto scene_entity = r.create();
     auto &buffers = r.emplace<SceneBuffers>(scene_entity, vk.PhysicalDevice, vk.Device, vk.Instance, slots);
@@ -73,15 +73,15 @@ entt::entity WireSceneRegistry(entt::registry &r, SceneVulkanResources vk) {
 
 void TearDownSceneStoreCtx(entt::registry &r) {
     auto &slots = r.ctx().get<DescriptorSlots>();
-    auto &textures = *r.ctx().get<std::unique_ptr<TextureStore>>();
-    auto &environments = *r.ctx().get<std::unique_ptr<EnvironmentStore>>();
+    auto &textures = r.ctx().get<TextureStore>();
+    auto &environments = r.ctx().get<EnvironmentStore>();
     ReleaseEnvironmentSamplerSlots(slots, environments);
     ReleaseSamplerSlots(slots, CollectSamplerSlots(textures.Textures));
 
     // Tear down GPU-resource owners before SceneBuffers, since they retire allocations into
     // SceneBuffers.Ctx.Retired (cleared on ~BufferContext, which destroys the VMA allocator).
-    r.ctx().erase<std::unique_ptr<EnvironmentStore>>();
-    r.ctx().erase<std::unique_ptr<TextureStore>>();
+    r.ctx().erase<EnvironmentStore>();
+    r.ctx().erase<TextureStore>();
     r.ctx().erase<MeshStore>();
     // Destroy entities owning a SceneBuffers component so it drops (and its ~BufferContext destroys
     // the VMA allocator) before DescriptorSlots is erased.

@@ -540,7 +540,7 @@ int main() {
         entt::entity SceneEntity;
         explicit SceneFixture(SceneVulkanResources vk) {
             InitSceneStoreCtx(R, vk);
-            SceneEntity = WireSceneRegistry(R, vk);
+            SceneEntity = WireSceneRegistry(R);
         }
         ~SceneFixture() { TearDownSceneStoreCtx(R); }
         SceneFixture(const SceneFixture &) = delete;
@@ -554,8 +554,8 @@ int main() {
             .Slots = r.ctx().get<DescriptorSlots>(),
             .Buffers = r.get<SceneBuffers>(e),
             .Meshes = r.ctx().get<MeshStore>(),
-            .Textures = *r.ctx().get<std::unique_ptr<TextureStore>>(),
-            .Environments = *r.ctx().get<std::unique_ptr<EnvironmentStore>>(),
+            .Textures = r.ctx().get<TextureStore>(),
+            .Environments = r.ctx().get<EnvironmentStore>(),
         };
     };
     const auto save_ctx = [&](entt::registry &r, entt::entity e) {
@@ -565,7 +565,7 @@ int main() {
             .SceneEntity = e,
             .Buffers = buffers,
             .Meshes = r.ctx().get<MeshStore>(),
-            .Textures = *r.ctx().get<std::unique_ptr<TextureStore>>(),
+            .Textures = r.ctx().get<TextureStore>(),
             .Vk = &vk_resources,
             .BufCtx = &buffers.Ctx,
         };
@@ -599,7 +599,7 @@ int main() {
         if (!pending || pending->Items.empty() || !src) return;
         auto &buffers = r.get<SceneBuffers>(scene);
         auto &slots = r.ctx().get<DescriptorSlots>();
-        auto &textures = *r.ctx().get<std::unique_ptr<TextureStore>>();
+        auto &textures = r.ctx().get<TextureStore>();
         auto batch = BeginTextureUploadBatch(vk_resources.Device, *pool, buffers.Ctx);
         for (const auto &item : pending->Items) {
             if (auto entry = MaterializeTextureEntry(vk_resources, batch, slots, item, src->Images)) {
@@ -624,7 +624,7 @@ int main() {
             materialize_textures(fx.R, fx.SceneEntity);
 
             // Skip the WireSceneRegistry default-white RawPixels texture (no SourceImageIndex link).
-            const auto &textures = *fx.R.ctx().get<std::unique_ptr<TextureStore>>();
+            const auto &textures = fx.R.ctx().get<TextureStore>();
             const TextureEntry *tex = nullptr;
             for (const auto &t : textures.Textures) {
                 if (t.SourceImageIndex == 0) {

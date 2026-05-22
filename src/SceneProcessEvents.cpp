@@ -285,6 +285,12 @@ void SetEditMode(entt::registry &R, entt::entity scene_entity, Element mode) {
     if (!new_ranges.empty()) ApplySelectionStateUpdate(R, scene_entity, new_ranges, mode);
     else if (!old_ranges.empty()) R.emplace_or_replace<ElementStatesDirty>(scene_entity);
 }
+
+struct SyncResult {
+    std::vector<entt::entity> NewlyInserted; // Entities inserted into GPU buffers — callers must write their WorldTransform before submit.
+    std::vector<entt::entity> NewMeshEntities; // Mesh entities needing deferred index buffer creation.
+    std::vector<entt::entity> NewExtrasEntities; // Non-mesh buffer entities (extras/bone/joint) needing deferred index creation.
+};
 } // namespace
 
 SyncResult SyncModelsBuffers(entt::registry &R, entt::entity SceneEntity) {
@@ -655,8 +661,8 @@ RenderRequest ProcessComponentEvents(entt::registry &R, entt::entity SceneEntity
     auto &Slots = R.ctx().get<DescriptorSlots>();
     auto &Buffers = R.get<SceneBuffers>(SceneEntity);
     auto &Meshes = R.ctx().get<MeshStore>();
-    auto &Textures = *R.ctx().get<std::unique_ptr<TextureStore>>();
-    auto &Environments = *R.ctx().get<std::unique_ptr<EnvironmentStore>>();
+    auto &Textures = R.ctx().get<TextureStore>();
+    auto &Environments = R.ctx().get<EnvironmentStore>();
     auto &Physics = R.ctx().get<PhysicsWorld>();
     auto &Pipelines = R.ctx().get<ScenePipelines>();
     const bool profile = R.all_of<ProfileNextProcessComponentEvents>(SceneEntity);
