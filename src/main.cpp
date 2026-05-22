@@ -1,6 +1,7 @@
 #include "Paths.h"
 #include "Scene.h"
 #include "SceneApply.h"
+#include "SceneUi.h"
 #include "Timer.h"
 #include "Window.h"
 #include "audio/AudioDevice.h"
@@ -641,7 +642,7 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
                 PushStyleVar(ImGuiStyleVar_FramePadding, {6, 4});
                 Indent(6);
                 Spacing();
-                scene->RenderClipPickers(Emit);
+                RenderClipPickers(r, Emit);
                 Unindent(6);
                 PopStyleVar();
                 const auto scene_e = scene->GetSceneEntity();

@@ -34,8 +34,6 @@ struct Scene {
     void RenderControls(action::Emit);
 
     const AnimationIcons &GetAnimationIcons() const { return AnimIcons; }
-    // Render per-source animation-clip pickers above the timeline.
-    void RenderClipPickers(action::Emit emit);
 
     // Record the viewport to an H.264 mp4 by piping frames to an `ffmpeg` subprocess.
     // When a look-through camera is active, captures only the framed sub-region matching
@@ -62,12 +60,6 @@ private:
     vk::UniqueCommandBuffer TransferCommandBuffer;
 #endif
     vk::UniqueFence RenderFence;
-
-    struct SelectionSlotHandles;
-    std::unique_ptr<SelectionSlotHandles> SelectionHandles;
-
-    struct DrawState;
-    std::unique_ptr<DrawState> Draw;
 
     entt::entity SceneEntity{null_entity}; // Singleton for scene-level components
 
@@ -101,17 +93,11 @@ private:
     std::unique_ptr<mvk::ImGuiTexture> ViewportTexture;
     bool RenderPending{false}; // GPU render submitted but not yet waited on.
 
-#ifdef MVK_FORCE_STAGED_TRANSFERS
-    void RecordTransferCommandBuffer();
-#endif
     bool SubmitViewport(vk::Fence viewportConsumerFence);
     // The overlay is everything drawn on top of the viewport with ImGui, independent of the main scene vulkan pipeline.
     // Split into interact (state changes) and draw (visuals) so that DrawOverlay runs after ProcessComponentEvents
     // and reads up-to-date WorldTransforms.
     void DrawOverlay();
-
-    void RenderObjectTree(action::Emit emit);
-    void RenderEntityControls(entt::entity, action::Emit emit);
 
     void RecordRenderCommandBuffer(bool silhouette_only = false);
 

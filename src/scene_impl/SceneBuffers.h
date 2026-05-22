@@ -178,7 +178,7 @@ struct SceneBuffers {
         VertexIndexBuffer.ReserveAdditional(vertex);
     }
 
-    SlottedRange CreateIndices(std::span<const uint> indices, IndexKind index_kind) {
+    SlottedRange CreateIndices(std::span<const uint32_t> indices, IndexKind index_kind) {
         auto &buf = GetIndexBuffer(index_kind);
         return buf.Slotted(buf.Allocate(indices));
     }
@@ -188,7 +188,7 @@ struct SceneBuffers {
         auto range = buf.Allocate(count);
         return {buf.Slotted(range), buf.GetMutable(range)};
     }
-    RenderBuffers CreateRenderBuffers(std::span<const Vertex> vertices, std::span<const uint> indices, IndexKind index_kind) {
+    RenderBuffers CreateRenderBuffers(std::span<const Vertex> vertices, std::span<const uint32_t> indices, IndexKind index_kind) {
         return {VertexBuffer.Allocate(vertices), CreateIndices(indices, index_kind), index_kind};
     }
 

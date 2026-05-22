@@ -1,3 +1,4 @@
+#include "SceneUi.h"
 #include "Armature.h"
 #include "Instance.h"
 #include "MeshComponents.h"
@@ -1283,7 +1284,7 @@ void Scene::DrawOverlay() {
     }
 }
 
-void Scene::RenderEntityControls(entt::entity active_entity, action::Emit emit) {
+void RenderEntityControls(entt::registry &R, entt::entity SceneEntity, entt::entity active_entity, action::Emit emit) {
     auto &Buffers = R.get<SceneBuffers>(SceneEntity);
     auto &Meshes = R.ctx().get<MeshStore>();
     auto &Textures = R.ctx().get<TextureStore>();
@@ -1944,7 +1945,7 @@ void Scene::RenderControls(action::Emit emit) {
                     EndCombo();
                 }
             }
-            if (CollapsingHeader("Object tree", ImGuiTreeNodeFlags_DefaultOpen)) RenderObjectTree(emit);
+            if (CollapsingHeader("Object tree", ImGuiTreeNodeFlags_DefaultOpen)) RenderObjectTree(R, SceneEntity, emit);
             SeparatorText("");
             if (CollapsingHeader("Add object")) {
                 for (uint32_t i = 0; i < AllPrimitiveShapes.size(); ++i) {
@@ -2024,7 +2025,7 @@ void Scene::RenderControls(action::Emit emit) {
                     if (Button("Scale")) emit(action::bone::ClearSelectedTransforms{.Scale = true});
                 }
             }
-            RenderEntityControls(FindActiveEntity(R), emit);
+            RenderEntityControls(R, SceneEntity, FindActiveEntity(R), emit);
             EndTabItem();
         }
 
@@ -2253,7 +2254,7 @@ void Scene::RenderControls(action::Emit emit) {
     }
 }
 
-void Scene::RenderClipPickers(action::Emit emit) {
+void RenderClipPickers(entt::registry &R, action::Emit emit) {
     static constexpr float ComboWidth = 200.f;
     // Names live on object entities, but ArmatureAnimation lives on the data entity.
     const auto display_name = [&]<typename Anim>(entt::entity entity) {
@@ -2289,7 +2290,7 @@ void Scene::RenderClipPickers(action::Emit emit) {
     clip_picker.template operator()<NodeTransformAnimation>("Node");
 }
 
-void Scene::RenderObjectTree(action::Emit emit) {
+void RenderObjectTree(entt::registry &R, entt::entity SceneEntity, action::Emit emit) {
     PushStyleVar(ImGuiStyleVar_ItemSpacing, {GetStyle().ItemSpacing.x, 0.f});
 
     const auto ToSelectionUserData = [](entt::entity e) -> ImGuiSelectionUserData { return ImGuiSelectionUserData(uint32_t(e)); };

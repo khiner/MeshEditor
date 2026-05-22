@@ -11,6 +11,7 @@
 #include "SceneDefaults.h"
 #include "ScenePipelines.h"
 #include "SceneProcessEvents.h"
+#include "SceneRenderGpu.h"
 #include "SceneSelection.h"
 #include "SceneStores.h"
 #include "SceneTextures.h"
@@ -197,50 +198,6 @@ uint32_t MaxElementBound(auto &&ranges) {
 }
 } // namespace
 
-struct Scene::SelectionSlotHandles {
-    DescriptorSlots &Slots;
-    uint32_t HeadImage, SelectionCounter, ObjectPickKey, ElementPickCandidates, ObjectPickSeenBits, SelectionBitset, ObjectIdSampler, DepthSampler, SilhouetteSampler, ColorSampler, LineDataSampler, TransmissionSampler;
-
-    using Entry = std::pair<SlotType, uint32_t SelectionSlotHandles::*>;
-    static constexpr std::array<Entry, 12> Entries{{
-        {SlotType::Image, &SelectionSlotHandles::HeadImage},
-        {SlotType::Buffer, &SelectionSlotHandles::SelectionCounter},
-        {SlotType::Buffer, &SelectionSlotHandles::ObjectPickKey},
-        {SlotType::Buffer, &SelectionSlotHandles::ElementPickCandidates},
-        {SlotType::Buffer, &SelectionSlotHandles::ObjectPickSeenBits},
-        {SlotType::Buffer, &SelectionSlotHandles::SelectionBitset},
-        {SlotType::Sampler, &SelectionSlotHandles::ObjectIdSampler},
-        {SlotType::Sampler, &SelectionSlotHandles::DepthSampler},
-        {SlotType::Sampler, &SelectionSlotHandles::SilhouetteSampler},
-        {SlotType::Sampler, &SelectionSlotHandles::ColorSampler},
-        {SlotType::Sampler, &SelectionSlotHandles::LineDataSampler},
-        {SlotType::Sampler, &SelectionSlotHandles::TransmissionSampler},
-    }};
-
-    explicit SelectionSlotHandles(DescriptorSlots &slots) : Slots(slots) {
-        for (const auto &[type, field] : Entries) this->*field = slots.Allocate(type);
-    }
-    ~SelectionSlotHandles() {
-        for (const auto &[type, field] : Entries) Slots.Release({type, this->*field});
-    }
-};
-
-struct Scene::DrawState {
-    DrawListBuilder List;
-    uint32_t MainDrawCount{0}; // Draws.size() after main batches, before silhouette
-    uint32_t MainIndirectCount{0}; // IndirectCommands.size() after main batches
-    DrawBatchInfo Silhouette;
-    DrawBatchInfo FillOpaque, FillBlend;
-    DrawBatchInfo EdgeQuad, WireLine, Point;
-    DrawBatchInfo ExtrasLine;
-    DrawBatchInfo BoneFill, BoneWire, BoneSphereFill, BoneSphereWire;
-    DrawBatchInfo OverlayFaceNormals, OverlayVertexNormals;
-
-    // Cached selection pass draw list — reused when only the camera changed.
-    DrawListBuilder SelectionList;
-    std::vector<SelectionDrawInfo> SelectionDraws;
-};
-
 namespace {
 
 void AppendSelectedSilhouetteDraws(const entt::registry &R, entt::entity scene_entity, DrawListBuilder &draw_list, DrawBatchInfo &silhouette_batch) {
@@ -256,17 +213,6 @@ void AppendSelectedSilhouetteDraws(const entt::registry &R, entt::entity scene_e
             draw.ObjectIdSlot = buffers.Instances.ObjectIdBuffer.Slot;
             AppendDraw(draw_list, silhouette_batch, mesh_buffers.FaceIndices, models, draw, *model_index);
         }
-    }
-}
-
-void FlushDrawList(entt::registry &R, entt::entity scene_entity, vk::Device device, const DrawListBuilder &draw_list, DrawBufferPair &pair) {
-    auto &buffers = R.get<SceneBuffers>(scene_entity);
-    if (!draw_list.Draws.empty()) pair.DrawData.Update(as_bytes(draw_list.Draws));
-    if (!draw_list.IndirectCommands.empty()) pair.Indirect.Update(as_bytes(draw_list.IndirectCommands));
-    buffers.EnsureIdentityIndexBuffer(draw_list.MaxIndexCount);
-    if (auto descriptor_updates = buffers.Ctx.GetDeferredDescriptorUpdates(); !descriptor_updates.empty()) {
-        device.updateDescriptorSets(std::move(descriptor_updates), {});
-        buffers.Ctx.ClearDeferredDescriptorUpdates();
     }
 }
 
@@ -455,11 +401,9 @@ std::optional<std::pair<entt::entity, uint32_t>> RunElementPickFromRanges(
 
 Scene::Scene(SceneVulkanResources vc, entt::registry &r)
     : R{r},
-      RenderFence{vc.Device.createFenceUnique({})},
-      Draw{std::make_unique<DrawState>()} {
+      RenderFence{vc.Device.createFenceUnique({})} {
     InitSceneStoreCtx(R, vc);
     auto &Slots = R.ctx().get<DescriptorSlots>();
-    SelectionHandles = std::make_unique<SelectionSlotHandles>(Slots);
     auto &Pipelines = R.ctx().emplace<ScenePipelines>(vc.Device, vc.PhysicalDevice, Slots.GetSetLayout(), Slots.GetSet());
     auto &Physics = physics::Init(R);
     // Reactive storage subscriptions for deferred once-per-frame processing
@@ -533,7 +477,8 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
     R.emplace<LastEvaluatedFrame>(SceneEntity);
     R.emplace<EnabledInteractionModes>(SceneEntity);
     R.emplace<SelectionBitsetRef>(SceneEntity, std::span<uint32_t>{Buffers.SelectionBitset.Data(), SceneBuffers::SelectionBitsetWords});
-    R.emplace<SelectionSlots>(SceneEntity, SelectionHandles->HeadImage, SelectionHandles->SelectionCounter, SelectionHandles->ElementPickCandidates, SelectionHandles->SelectionBitset, SelectionHandles->TransmissionSampler);
+    R.emplace<SelectionSlots>(SceneEntity, Slots);
+    R.emplace<SceneDrawState>(SceneEntity);
     const auto &one_shot = R.emplace<SceneOneShotGpu>(SceneEntity, MakeSceneOneShotGpu(vc.Device, vc.QueueFamily));
     R.emplace<ColliderShapeBuffers>(SceneEntity);
     RenderCommandBuffer = std::move(vc.Device.allocateCommandBuffersUnique({*one_shot.Pool, vk::CommandBufferLevel::ePrimary, 1}).front());
@@ -588,7 +533,6 @@ Scene::~Scene() {
     R.ctx().erase<EntityDestroyTracker>();
     physics::Deinit(R);
     R.ctx().erase<ScenePipelines>();
-    SelectionHandles.reset();
     TearDownSceneStoreCtx(R);
 }
 
@@ -704,7 +648,8 @@ void Scene::RecordRenderCommandBuffer(bool silhouette_only) {
         GetActivePbrLighting(R, SceneEntity, settings.ViewportShading).RealTransmission &&
         Pipelines.Main.Compiler.HasFeature(PbrFeature::Transmission);
 
-    auto &draw = *Draw;
+    const auto &sel_slots = R.get<const SelectionSlots>(SceneEntity);
+    auto &draw = R.get<SceneDrawState>(SceneEntity);
     auto &draw_list = draw.List;
 
     // Build mesh_entity -> deform slots mapping for skinned meshes (edit mode shows rest pose)
@@ -1190,7 +1135,7 @@ void Scene::RecordRenderCommandBuffer(bool silhouette_only) {
         const vk::Rect2D edge_rect{{0, 0}, ToExtent2D(silhouette_edge.Resources->OffscreenImage.Extent)};
         cb.beginRenderPass({*silhouette_edge.Renderer.RenderPass, *silhouette_edge.Resources->Framebuffer, edge_rect, SilhouetteClearValues}, vk::SubpassContents::eInline);
         const auto &silhouette_edo = silhouette_edge.Renderer.ShaderPipelines.at(SPT::SilhouetteEdgeDepthObject);
-        const SilhouetteEdgeDepthObjectPushConstants edge_pc{SelectionHandles->SilhouetteSampler};
+        const SilhouetteEdgeDepthObjectPushConstants edge_pc{sel_slots.SilhouetteSampler};
         cb.pushConstants(*silhouette_edo.PipelineLayout, vk::ShaderStageFlagBits::eFragment, 0, sizeof(edge_pc), &edge_pc);
         silhouette_edo.RenderQuad(cb);
         cb.endRenderPass();
@@ -1288,7 +1233,7 @@ void Scene::RecordRenderCommandBuffer(bool silhouette_only) {
     // Silhouette edge depth (not color! we render it before mesh depth to avoid overwriting closer depths with further ones)
     if (has_silhouette) {
         const auto &silhouette_depth = main.Renderer.ShaderPipelines.at(SPT::SilhouetteEdgeDepth);
-        const uint32_t depth_sampler_index = SelectionHandles->DepthSampler;
+        const uint32_t depth_sampler_index = sel_slots.DepthSampler;
         cb.pushConstants(*silhouette_depth.PipelineLayout, vk::ShaderStageFlagBits::eFragment, 0, sizeof(depth_sampler_index), &depth_sampler_index);
         silhouette_depth.RenderQuad(cb);
     }
@@ -1333,7 +1278,7 @@ void Scene::RecordRenderCommandBuffer(bool silhouette_only) {
             }
         }
         const SilhouetteEdgeColorPushConstants pc{
-            TransformGizmo::IsUsing() && interaction_mode == InteractionMode::Object, SelectionHandles->ObjectIdSampler, active_object_id
+            TransformGizmo::IsUsing() && interaction_mode == InteractionMode::Object, sel_slots.ObjectIdSampler, active_object_id
         };
         cb.pushConstants(*silhouette_edc.PipelineLayout, vk::ShaderStageFlagBits::eFragment, 0, sizeof(pc), &pc);
         silhouette_edc.RenderQuad(cb);
@@ -1402,7 +1347,7 @@ void Scene::RecordRenderCommandBuffer(bool silhouette_only) {
         cb.beginRenderPass({*main.LineAARenderPass, *main.Resources->LineAAFramebuffer, rect, clear_value}, vk::SubpassContents::eInline);
         const struct {
             uint32_t ColorSamplerSlot, LineDataSamplerSlot;
-        } line_aa_pc{SelectionHandles->ColorSampler, SelectionHandles->LineDataSampler};
+        } line_aa_pc{sel_slots.ColorSampler, sel_slots.LineDataSampler};
         cb.pushConstants(*main.LineAAComposite.PipelineLayout, vk::ShaderStageFlagBits::eFragment, 0, sizeof(line_aa_pc), &line_aa_pc);
         main.LineAAComposite.RenderQuad(cb);
         cb.endRenderPass();
@@ -1411,21 +1356,6 @@ void Scene::RecordRenderCommandBuffer(bool silhouette_only) {
     cb.end();
 }
 
-#ifdef MVK_FORCE_STAGED_TRANSFERS
-void Scene::RecordTransferCommandBuffer() {
-    auto &Slots = R.ctx().get<DescriptorSlots>();
-    auto &Buffers = R.get<SceneBuffers>(SceneEntity);
-    auto &Meshes = R.ctx().get<MeshStore>();
-    auto &Textures = R.ctx().get<TextureStore>();
-    auto &Environments = R.ctx().get<EnvironmentStore>();
-    const Timer timer{"RecordTransferCommandBuffer"};
-    TransferCommandBuffer->reset({});
-    TransferCommandBuffer->begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
-    Buffers.Ctx.RecordDeferredCopies(*TransferCommandBuffer);
-    TransferCommandBuffer->end();
-}
-#endif
-
 void Scene::RenderSelectionPass(vk::Semaphore signal_semaphore) const {
     const Timer timer{"RenderSelectionPass"};
 
@@ -1433,8 +1363,9 @@ void Scene::RenderSelectionPass(vk::Semaphore signal_semaphore) const {
     RenderSelectionPassWith(
         false,
         [this](DrawListBuilder &draw_list) -> std::vector<SelectionDrawInfo> {
-            draw_list = Draw->SelectionList;
-            return Draw->SelectionDraws;
+            const auto &draw = R.get<const SceneDrawState>(SceneEntity);
+            draw_list = draw.SelectionList;
+            return draw.SelectionDraws;
         },
         signal_semaphore
     );
@@ -1446,6 +1377,7 @@ void Scene::RenderSelectionPassWith(bool render_depth, const SelectionBuildFn &b
     const Timer timer{"RenderSelectionPassWith"};
     const auto &Vk = R.ctx().get<const SceneVulkanResources>();
     const auto &one_shot = R.get<const SceneOneShotGpu>(SceneEntity);
+    const auto &sel_slots = R.get<const SelectionSlots>(SceneEntity);
     auto &Buffers = R.get<SceneBuffers>(SceneEntity);
     auto &Pipelines = R.ctx().get<const ScenePipelines>();
     DrawListBuilder draw_list;
@@ -1503,7 +1435,7 @@ void Scene::RenderSelectionPassWith(bool render_depth, const SelectionBuildFn &b
     cb.bindIndexBuffer(*Buffers.IdentityIndexBuffer, 0, vk::IndexType::eUint32);
     const SelectionDrawPushConstants sel_pc{
         {0u, InvalidSlot},
-        {SelectionHandles->HeadImage, Buffers.SelectionNodeBuffer.Slot, SelectionHandles->SelectionCounter, Buffers.SelectionNodeCapacity},
+        {sel_slots.HeadImage, Buffers.SelectionNodeBuffer.Slot, sel_slots.SelectionCounter, Buffers.SelectionNodeCapacity},
     };
     for (const auto &selection_draw : selection_draws) {
         if (selection_draw.Batch.DrawCount == 0) continue;
@@ -1565,6 +1497,7 @@ std::optional<uint32_t> Scene::RunSoundVerticesVertexPick(entt::entity instance_
     if (!instance) return {};
     const auto &Vk = R.ctx().get<const SceneVulkanResources>();
     const auto &one_shot = R.get<const SceneOneShotGpu>(SceneEntity);
+    const auto &sel_slots = R.get<const SelectionSlots>(SceneEntity);
     auto &Buffers = R.get<SceneBuffers>(SceneEntity);
     auto &Meshes = R.ctx().get<MeshStore>();
     auto &Pipelines = R.ctx().get<const ScenePipelines>();
@@ -1590,7 +1523,7 @@ std::optional<uint32_t> Scene::RunSoundVerticesVertexPick(entt::entity instance_
     return FindNearestPickedElement(
         Buffers, Pipelines.ElementPick, *one_shot.Cb,
         Vk.Queue, *one_shot.Fence, Vk.Device,
-        SelectionHandles->HeadImage, Buffers.SelectionNodeBuffer.Slot, SelectionHandles->ElementPickCandidates,
+        sel_slots.HeadImage, Buffers.SelectionNodeBuffer.Slot, sel_slots.ElementPickCandidates,
         mouse_px, vertex_count, Element::Vertex,
         *one_shot.SelectionReady
     );
@@ -1600,6 +1533,7 @@ std::optional<uint32_t> Scene::RunSoundVerticesVertexPick(entt::entity instance_
 std::vector<entt::entity> Scene::RunObjectPick(uvec2 mouse_px, uint32_t radius_px) {
     const auto &Vk = R.ctx().get<const SceneVulkanResources>();
     const auto &one_shot = R.get<const SceneOneShotGpu>(SceneEntity);
+    const auto &sel_slots = R.get<const SelectionSlots>(SceneEntity);
     auto &Buffers = R.get<SceneBuffers>(SceneEntity);
     auto &Pipelines = R.ctx().get<const ScenePipelines>();
     const uint32_t next_object_id = R.get<const ObjectIdCounter>(SceneEntity).Next;
@@ -1628,10 +1562,10 @@ std::vector<entt::entity> Scene::RunObjectPick(uvec2 mouse_px, uint32_t radius_p
             .Radius = radius_px,
             .MaxId = max_object_id,
             .EpochInv = epoch_inv,
-            .HeadImageIndex = SelectionHandles->HeadImage,
+            .HeadImageIndex = sel_slots.HeadImage,
             .SelectionNodesIndex = Buffers.SelectionNodeBuffer.Slot,
-            .BestKeyIndex = SelectionHandles->ObjectPickKey,
-            .SeenBitsIndex = SelectionHandles->ObjectPickSeenBits,
+            .BestKeyIndex = sel_slots.ObjectPickKey,
+            .SeenBitsIndex = sel_slots.ObjectPickSeenBits,
         },
         [](vk::CommandBuffer dispatch_cb) { dispatch_cb.dispatch(1, 1, 1); }, // Single workgroup; threads cooperatively scan the radius.
         selection_rendered ? *one_shot.SelectionReady : vk::Semaphore{}
@@ -1674,6 +1608,7 @@ std::vector<entt::entity> Scene::RunObjectPick(uvec2 mouse_px, uint32_t radius_p
 void Scene::DispatchBoxSelect(uvec2 box_min, uvec2 box_max, uint32_t max_id, vk::Semaphore wait_semaphore) {
     const auto &Vk = R.ctx().get<const SceneVulkanResources>();
     const auto &one_shot = R.get<const SceneOneShotGpu>(SceneEntity);
+    const auto &sel_slots = R.get<const SelectionSlots>(SceneEntity);
     auto &Buffers = R.get<SceneBuffers>(SceneEntity);
     auto &Pipelines = R.ctx().get<const ScenePipelines>();
     const uint32_t bitset_words = (max_id + 31) / 32;
@@ -1686,9 +1621,9 @@ void Scene::DispatchBoxSelect(uvec2 box_min, uvec2 box_max, uint32_t max_id, vk:
             .BoxMin = box_min,
             .BoxMax = box_max,
             .MaxId = max_id,
-            .HeadImageIndex = SelectionHandles->HeadImage,
+            .HeadImageIndex = sel_slots.HeadImage,
             .SelectionNodesIndex = Buffers.SelectionNodeBuffer.Slot,
-            .BoxResultIndex = SelectionHandles->SelectionBitset,
+            .BoxResultIndex = sel_slots.SelectionBitset,
         },
         [group_counts](vk::CommandBuffer dispatch_cb) { dispatch_cb.dispatch(group_counts.x, group_counts.y, 1); },
         wait_semaphore
@@ -1748,6 +1683,7 @@ void Scene::Render(vk::Fence viewportConsumerFence) {
 
 bool Scene::SubmitViewport(vk::Fence viewportConsumerFence) {
     const auto &Vk = R.ctx().get<const SceneVulkanResources>();
+    const auto &sel_slots = R.get<const SelectionSlots>(SceneEntity);
     auto &Slots = R.ctx().get<DescriptorSlots>();
     auto &Buffers = R.get<SceneBuffers>(SceneEntity);
     auto &Pipelines = R.ctx().get<ScenePipelines>();
@@ -1817,18 +1753,18 @@ bool Scene::SubmitViewport(vk::Fence viewportConsumerFence) {
             const auto object_pick_seen_bitset = Buffers.ObjectPickSeenBitset.GetDescriptor(SceneBuffers::ObjectPickBitsetWords);
             Vk.Device.updateDescriptorSets(
                 {
-                    Slots.MakeImageWrite(SelectionHandles->HeadImage, head_image_info),
-                    Slots.MakeBufferWrite({SlotType::Buffer, SelectionHandles->SelectionCounter}, selection_counter),
-                    Slots.MakeBufferWrite({SlotType::Buffer, SelectionHandles->ObjectPickKey}, object_pick_key),
-                    Slots.MakeBufferWrite({SlotType::Buffer, SelectionHandles->ElementPickCandidates}, element_pick_candidates),
-                    Slots.MakeBufferWrite({SlotType::Buffer, SelectionHandles->ObjectPickSeenBits}, object_pick_seen_bitset),
-                    Slots.MakeBufferWrite({SlotType::Buffer, SelectionHandles->SelectionBitset}, selection_bitset),
-                    Slots.MakeSamplerWrite(SelectionHandles->ObjectIdSampler, object_id_sampler),
-                    Slots.MakeSamplerWrite(SelectionHandles->DepthSampler, depth_sampler),
-                    Slots.MakeSamplerWrite(SelectionHandles->SilhouetteSampler, silhouette_sampler),
-                    Slots.MakeSamplerWrite(SelectionHandles->ColorSampler, color_sampler),
-                    Slots.MakeSamplerWrite(SelectionHandles->LineDataSampler, line_data_sampler),
-                    Slots.MakeSamplerWrite(SelectionHandles->TransmissionSampler, transmission_sampler),
+                    Slots.MakeImageWrite(sel_slots.HeadImage, head_image_info),
+                    Slots.MakeBufferWrite({SlotType::Buffer, sel_slots.SelectionCounter}, selection_counter),
+                    Slots.MakeBufferWrite({SlotType::Buffer, sel_slots.ObjectPickKey}, object_pick_key),
+                    Slots.MakeBufferWrite({SlotType::Buffer, sel_slots.ElementPickCandidates}, element_pick_candidates),
+                    Slots.MakeBufferWrite({SlotType::Buffer, sel_slots.ObjectPickSeenBits}, object_pick_seen_bitset),
+                    Slots.MakeBufferWrite({SlotType::Buffer, sel_slots.SelectionBitset}, selection_bitset),
+                    Slots.MakeSamplerWrite(sel_slots.ObjectIdSampler, object_id_sampler),
+                    Slots.MakeSamplerWrite(sel_slots.DepthSampler, depth_sampler),
+                    Slots.MakeSamplerWrite(sel_slots.SilhouetteSampler, silhouette_sampler),
+                    Slots.MakeSamplerWrite(sel_slots.ColorSampler, color_sampler),
+                    Slots.MakeSamplerWrite(sel_slots.LineDataSampler, line_data_sampler),
+                    Slots.MakeSamplerWrite(sel_slots.TransmissionSampler, transmission_sampler),
                 },
                 {}
             );
@@ -1840,12 +1776,12 @@ bool Scene::SubmitViewport(vk::Fence viewportConsumerFence) {
     }
 
 #ifdef MVK_FORCE_STAGED_TRANSFERS
-    RecordTransferCommandBuffer();
+    RecordTransferCommandBuffer(R, SceneEntity, *TransferCommandBuffer);
 #endif
 
     if (render_request == RenderRequest::ReRecord || extent_changed || render_extent_changed) {
         RecordRenderCommandBuffer();
-    } else if (render_request == RenderRequest::ReRecordSilhouette && Draw->MainDrawCount > 0) {
+    } else if (render_request == RenderRequest::ReRecordSilhouette && R.get<const SceneDrawState>(SceneEntity).MainDrawCount > 0) {
         RecordRenderCommandBuffer(/*silhouette_only=*/true);
     }
 

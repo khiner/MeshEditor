@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Bindless.h"
 #include "BoneSelection.h"
 #include "SceneModeComponents.h"
 #include "SceneOps.h"
@@ -16,6 +17,7 @@
 #include <optional>
 #include <set>
 #include <span>
+#include <utility>
 #include <vulkan/vulkan.hpp>
 
 struct SubmitDirty {}; // Generic tag for events that only require command buffer submission (not re-record)
@@ -176,10 +178,54 @@ struct SelectionBitsetRef {
     std::span<uint32_t> Value;
 };
 
-// Descriptor-slot IDs for the selection compute/render pipeline.
-// RAII for the slots lives in Scene; this component publishes the stable IDs.
+// RAII for the descriptor-slot leases used by the selection compute/render pipeline.
 struct SelectionSlots {
-    uint32_t HeadImage, SelectionCounter, ElementPickCandidates, SelectionBitset, TransmissionSampler;
+    uint32_t HeadImage{}, SelectionCounter{}, ObjectPickKey{}, ElementPickCandidates{}, ObjectPickSeenBits{}, SelectionBitset{};
+    uint32_t ObjectIdSampler{}, DepthSampler{}, SilhouetteSampler{}, ColorSampler{}, LineDataSampler{}, TransmissionSampler{};
+
+    using Entry = std::pair<SlotType, uint32_t SelectionSlots::*>;
+    static constexpr std::array<Entry, 12> Entries{{
+        {SlotType::Image, &SelectionSlots::HeadImage},
+        {SlotType::Buffer, &SelectionSlots::SelectionCounter},
+        {SlotType::Buffer, &SelectionSlots::ObjectPickKey},
+        {SlotType::Buffer, &SelectionSlots::ElementPickCandidates},
+        {SlotType::Buffer, &SelectionSlots::ObjectPickSeenBits},
+        {SlotType::Buffer, &SelectionSlots::SelectionBitset},
+        {SlotType::Sampler, &SelectionSlots::ObjectIdSampler},
+        {SlotType::Sampler, &SelectionSlots::DepthSampler},
+        {SlotType::Sampler, &SelectionSlots::SilhouetteSampler},
+        {SlotType::Sampler, &SelectionSlots::ColorSampler},
+        {SlotType::Sampler, &SelectionSlots::LineDataSampler},
+        {SlotType::Sampler, &SelectionSlots::TransmissionSampler},
+    }};
+
+    explicit SelectionSlots(DescriptorSlots &slots) : Slots(&slots) {
+        for (const auto &[type, field] : Entries) this->*field = slots.Allocate(type);
+    }
+    SelectionSlots(const SelectionSlots &) = delete;
+    SelectionSlots &operator=(const SelectionSlots &) = delete;
+    SelectionSlots(SelectionSlots &&o) noexcept : Slots(o.Slots) {
+        for (const auto &[_, field] : Entries) this->*field = o.*field;
+        o.Slots = nullptr;
+    }
+    SelectionSlots &operator=(SelectionSlots &&o) noexcept {
+        if (this != &o) {
+            Release();
+            Slots = o.Slots;
+            for (const auto &[_, field] : Entries) this->*field = o.*field;
+            o.Slots = nullptr;
+        }
+        return *this;
+    }
+    ~SelectionSlots() { Release(); }
+
+private:
+    DescriptorSlots *Slots{nullptr};
+    void Release() {
+        if (!Slots) return;
+        for (const auto &[type, field] : Entries) Slots->Release({type, this->*field});
+        Slots = nullptr;
+    }
 };
 
 // One-shot GPU sync primitives for synchronous passes (selection compute, element pick,

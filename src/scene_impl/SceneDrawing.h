@@ -1,39 +1,6 @@
 #pragma once
 
-#include "gpu/DrawData.h"
-#include "gpu/Transform.h"
-
-struct DrawBatchInfo {
-    uint32_t DrawDataSlotOffset{0}, DrawCount{0};
-    vk::DeviceSize IndirectOffset{0};
-};
-
-struct DrawListBuilder {
-    std::vector<DrawData> Draws;
-    std::vector<vk::DrawIndexedIndirectCommand> IndirectCommands;
-    uint32_t MaxIndexCount{0};
-
-    DrawBatchInfo BeginBatch() { return {uint32_t(Draws.size()), 0, IndirectCommands.size() * sizeof(vk::DrawIndexedIndirectCommand)}; }
-
-    void Append(DrawBatchInfo &batch, const DrawData &draw, uint32_t index_count, uint32_t instance_count) {
-        if (index_count == 0 || instance_count == 0) return;
-        const uint32_t draw_data_start = Draws.size();
-        for (uint32_t i = 0; i < instance_count; ++i) {
-            DrawData per_instance = draw;
-            per_instance.FirstInstance = draw.FirstInstance + i;
-            Draws.emplace_back(per_instance);
-        }
-        const uint32_t first_instance = draw_data_start - batch.DrawDataSlotOffset;
-        IndirectCommands.emplace_back(vk::DrawIndexedIndirectCommand{index_count, instance_count, 0, 0, first_instance});
-        MaxIndexCount = std::max(MaxIndexCount, index_count);
-        ++batch.DrawCount;
-    }
-};
-
-struct SelectionDrawInfo {
-    ShaderPipelineType Pipeline;
-    DrawBatchInfo Batch;
-};
+#include "SceneDrawState.h"
 
 struct InstanceArena;
 
@@ -41,7 +8,7 @@ namespace {
 // If `model_index` is set, only the model at that index is rendered. Otherwise, all models are rendered.
 void AppendDraw(
     DrawListBuilder &builder, DrawBatchInfo &batch, uint32_t index_count, const ModelsBuffer &mb,
-    DrawData draw, std::optional<uint> model_index = {}
+    DrawData draw, std::optional<uint32_t> model_index = {}
 ) {
     draw.FirstInstance = model_index.value_or(mb.InstanceRange.Offset);
     const auto instance_count = model_index.has_value() ? 1 : mb.InstanceCount;
@@ -50,7 +17,7 @@ void AppendDraw(
 
 void AppendDraw(
     DrawListBuilder &builder, DrawBatchInfo &batch, const SlottedRange &indices, const ModelsBuffer &mb,
-    DrawData draw, std::optional<uint> model_index = {}
+    DrawData draw, std::optional<uint32_t> model_index = {}
 ) {
     AppendDraw(builder, batch, indices.Count, mb, draw, model_index);
 }
