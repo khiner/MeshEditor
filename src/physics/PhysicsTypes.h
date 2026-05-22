@@ -90,9 +90,12 @@ struct PhysicsJointDef {
 // --- Per-shape ---
 
 namespace physics {
+// KHR_implicit_shapes requires capsule/cylinder height strictly > 0.
+inline constexpr float MinShapeHeight{1e-6f};
+
 // KHR_physics_rigid_bodies / KHR_implicit_shapes-aligned shape primitives.
 struct Box {
-    vec3 Size{1.0f, 1.0f, 1.0f}; // full size (not half-extents) per KHR spec
+    vec3 Size{1.f}; // full size (not half-extents) per KHR spec
 };
 struct Sphere {
     float Radius{0.5f};
@@ -153,14 +156,15 @@ struct PhysicsVelocity {
 };
 
 // MeshEntity present for ConvexHull/TriangleMesh, null for primitives.
+// LocalOffset is the shape's center in entity-local pre-scale coords (same convention as PhysicsMotion::CenterOfMass).
 struct ColliderShape {
     PhysicsShape Shape{};
     entt::entity MeshEntity{null_entity};
+    vec3 LocalOffset{0};
 };
 
 struct ColliderMaterial {
-    entt::entity PhysicsMaterialEntity{null_entity};
-    entt::entity CollisionFilterEntity{null_entity};
+    entt::entity PhysicsMaterialEntity{null_entity}, CollisionFilterEntity{null_entity};
 };
 
 // Marker: this entity's ColliderShape participates as a sensor (KHR GeometryTrigger), not a solid body.
@@ -198,7 +202,7 @@ struct PhysicsConstraintHandle {
 };
 
 // Links a collider entity to its wireframe overlay instance(s).
-// Cylinder/Capsule use 6 instances (2 ring/cap + 4 side lines); Box/Sphere use 1.
+// Cylinder/Capsule use 6 instances (2 ring/cap + 4 side lines), Box/Sphere use 1.
 struct ColliderWireframe {
     entt::entity Instances[6]{null_entity, null_entity, null_entity, null_entity, null_entity, null_entity};
     uint8_t Count{0};

@@ -106,16 +106,6 @@ vec3 ComputeElementWorldPosition(const entt::registry &r, entt::entity instance_
     return {wt.P + glm::rotate(wt.R, wt.S * ComputeElementLocalPosition(mesh, element, handle))};
 }
 
-std::pair<vec3, bool> MeshExtents(const Mesh &mesh) {
-    if (mesh.VertexCount() == 0) return {vec3{0}, false};
-    BBox bbox;
-    for (const auto &v : mesh.GetVerticesSpan()) {
-        bbox.Min = glm::min(bbox.Min, v.Position);
-        bbox.Max = glm::max(bbox.Max, v.Position);
-    }
-    return {bbox.Max - bbox.Min, true};
-}
-
 void RederiveCollider(entt::registry &r, entt::entity e) {
     const auto *cs = r.try_get<const ColliderShape>(e);
     const auto *policy = r.try_get<const ColliderPolicy>(e);
@@ -124,10 +114,23 @@ void RederiveCollider(entt::registry &r, entt::entity e) {
     const auto *mesh = r.try_get<const Mesh>(mesh_entity);
     if (!mesh) return;
 
-    const auto [extents, has_extents] = MeshExtents(*mesh);
-    PhysicsShape shape = cs->Shape;
+    const auto verts = mesh->GetVerticesSpan();
+    const bool has_verts = !verts.empty();
+    const auto bbox = [&] {
+        BBox b;
+        for (const auto &v : verts) {
+            b.Min = glm::min(b.Min, v.Position);
+            b.Max = glm::max(b.Max, v.Position);
+        }
+        return b;
+    }();
+    const vec3 bbox_center = has_verts ? (bbox.Min + bbox.Max) * 0.5f : vec3{0};
+    const vec3 bbox_extents = has_verts ? (bbox.Max - bbox.Min) : vec3{0};
 
-    // AutoFitDims off -> user owns kind and dims, leave both alone.
+    PhysicsShape shape = cs->Shape;
+    // AutoFitDims off -> user owns kind, dims, and offset. Preserve them.
+    vec3 local_offset = policy->AutoFitDims ? vec3{0} : cs->LocalOffset;
+
     if (policy->AutoFitDims && !policy->LockedKind) {
         if (const auto *prim = r.try_get<const PrimitiveShape>(mesh_entity)) {
             shape = std::visit(
@@ -148,22 +151,69 @@ void RederiveCollider(entt::registry &r, entt::entity e) {
         }
     }
 
-    if (policy->AutoFitDims && has_extents) {
+    if (policy->AutoFitDims && has_verts) {
+        // Ritter's algorithm (Real-Time Collision Detection §4.3.5): near-minimum enclosing sphere
+        // via two farthest-point passes plus one expand pass.
+        auto ritter = [&]() -> std::pair<vec3, float> {
+            const auto farthest_from = [&](vec3 from) {
+                vec3 best = from;
+                float best_d2 = 0;
+                for (const auto &v : verts) {
+                    const float d2 = glm::length2(v.Position - from);
+                    if (d2 > best_d2) {
+                        best_d2 = d2;
+                        best = v.Position;
+                    }
+                }
+                return best;
+            };
+            const vec3 q = farthest_from(verts[0].Position);
+            const vec3 ru = farthest_from(q);
+            vec3 c = (q + ru) * 0.5f;
+            float radius = glm::length(ru - c);
+            for (const auto &v : verts) {
+                const float d = glm::length(v.Position - c);
+                if (d > radius) {
+                    const float new_r = (radius + d) * 0.5f;
+                    c = c + ((d - radius) / (2.f * d)) * (v.Position - c);
+                    radius = new_r;
+                }
+            }
+            return {c, radius};
+        };
+        // Tightest radius for an axis-aligned (Y-axis) cylinder/capsule centered at bbox_center.
+        const auto xz_radius = [&] {
+            const vec2 c{bbox_center.x, bbox_center.z};
+            float r = 0;
+            for (const auto &v : verts) r = glm::max(r, glm::length(vec2{v.Position.x, v.Position.z} - c));
+            return r;
+        };
+
         std::visit(
             overloaded{
-                [&](physics::Box &s) { s.Size = extents; },
-                [&](physics::Sphere &s) { s.Radius = glm::compMax(extents) * 0.5f; },
+                [&](physics::Box &s) {
+                    s.Size = bbox_extents;
+                    local_offset = bbox_center;
+                },
+                [&](physics::Sphere &s) {
+                    const auto [c, radius] = ritter();
+                    s.Radius = radius;
+                    local_offset = c;
+                },
                 [&](physics::Cylinder &s) {
-                    const float r = glm::max(extents.x, extents.z) * 0.5f;
-                    s.RadiusTop = s.RadiusBottom = r;
-                    s.Height = extents.y;
+                    const float radius = xz_radius();
+                    s.RadiusTop = s.RadiusBottom = radius;
+                    s.Height = glm::max(physics::MinShapeHeight, bbox_extents.y);
+                    local_offset = bbox_center;
                 },
                 [&](physics::Capsule &s) {
-                    const float r = glm::max(extents.x, extents.z) * 0.5f;
-                    s.RadiusTop = s.RadiusBottom = r;
-                    s.Height = glm::max(0.f, extents.y - 2.f * r);
+                    const float radius = xz_radius();
+                    s.RadiusTop = s.RadiusBottom = radius;
+                    // 2r ≥ bbox.y degenerates toward a sphere; clamp height to keep it spec-valid.
+                    s.Height = glm::max(physics::MinShapeHeight, bbox_extents.y - 2.f * radius);
+                    local_offset = bbox_center;
                 },
-                [](auto &) {}, // Plane, ConvexHull, TriangleMesh: no fittable dims
+                [](auto &) {}, // Plane, ConvexHull, TriangleMesh: no fittable dims, offset stays 0
             },
             shape
         );
@@ -172,6 +222,7 @@ void RederiveCollider(entt::registry &r, entt::entity e) {
     r.patch<ColliderShape>(e, [&](ColliderShape &x) {
         x.Shape = std::move(shape);
         x.MeshEntity = IsMeshBackedShape(x.Shape) ? mesh_entity : null_entity;
+        x.LocalOffset = local_offset;
     });
 }
 
@@ -516,7 +567,7 @@ void UpdateWireframeTransforms(entt::registry &R) {
         if (!parent_moved && !shape_resized && !newly_created) continue;
 
         const auto &shape = cs.Shape;
-        const mat4 base = ToMatrix(*wt);
+        const mat4 base = ToMatrix(*wt) * glm::translate(mat4{1}, cs.LocalOffset);
 
         auto set_wt = [&](entt::entity inst, mat4 m) {
             if (!R.valid(inst)) return;
@@ -524,24 +575,23 @@ void UpdateWireframeTransforms(entt::registry &R) {
         };
 
         // Maps the unit Y-line (from (0,+0.5,0) to (0,-0.5,0)) onto the segment p1→p2.
-        // Line is rotationally symmetric about its axis; any perpendicular X/Z basis works.
+        // Line is rotationally symmetric about its axis - any perpendicular X/Z basis works.
         auto line_xform = [](vec3 p1, vec3 p2) -> mat4 {
             const vec3 mid = (p1 + p2) * 0.5f;
             const vec3 y_axis = p1 - p2;
             const float len = glm::length(y_axis);
-            if (len < 1e-6f) return glm::translate(mat4{1}, mid);
+            // Coincident endpoints: collapse to a point at mid to avoid divide-by-zero.
+            if (len < 1e-6f) return glm::scale(glm::translate(mat4{1}, mid), vec3{0});
 
             const vec3 y_dir = y_axis / len;
             const vec3 x_dir = glm::normalize(glm::cross(std::abs(y_dir.y) > 0.9f ? vec3{1, 0, 0} : vec3{0, 1, 0}, y_dir));
             return mat4{{x_dir, 0}, {y_dir * len, 0}, {glm::cross(x_dir, y_dir), 0}, {mid, 1}};
         };
-        // Cylinder/Capsule share side-line geometry: 4 segments running from (RT*cos θ, +H/2, RT*sin θ)
-        // to (RB*cos θ, -H/2, RB*sin θ) at θ ∈ {0, π/2, π, 3π/2}.
         auto set_side_lines = [&](float rt, float rb, float h) {
-            constexpr float Pi = std::numbers::pi_v<float>;
+            constexpr auto Pi = std::numbers::pi_v<float>;
             for (uint8_t i = 0; i < 4; ++i) {
-                const float a = Pi * 0.5f * float(i);
-                const float c = std::cos(a), s = std::sin(a);
+                const auto a = Pi * 0.5f * float(i);
+                const auto c = std::cos(a), s = std::sin(a);
                 set_wt(cw.Instances[2 + i], base * line_xform({rt * c, h * 0.5f, rt * s}, {rb * c, -h * 0.5f, rb * s}));
             }
         };

@@ -2,6 +2,8 @@
 
 #include "TransformMath.h"
 
+#include <cassert>
+
 #include "Jolt/Jolt.h"
 
 #include "Jolt/Core/Factory.h"
@@ -376,18 +378,16 @@ Ref<Shape> CreateJoltShape(const PhysicsShape &shape, const Mesh *mesh, bool bod
             [](const physics::Box &s) -> Ref<Shape> { return new BoxShape(ToJolt(s.Size * 0.5f)); },
             [](const physics::Sphere &s) -> Ref<Shape> { return new SphereShape(s.Radius); },
             [](const physics::Capsule &s) -> Ref<Shape> {
-                // Degenerate (Height ≤ 0): collapse to sphere using the larger radius.
-                // FitDimsToMesh emits Height=0 when the mesh BBox is shorter than 2*r (e.g. cube → Capsule).
-                if (s.Height < 1e-6f) return new SphereShape(std::max(s.RadiusTop, s.RadiusBottom));
+                assert(s.Height >= physics::MinShapeHeight);
                 if (std::abs(s.RadiusTop - s.RadiusBottom) < 1e-6f) return new CapsuleShape(s.Height * 0.5f, s.RadiusBottom);
                 if (const auto r = TaperedCapsuleShapeSettings(s.Height * 0.5f, s.RadiusTop, s.RadiusBottom).Create(); r.IsValid()) return r.Get();
                 return new CapsuleShape(s.Height * 0.5f, s.RadiusBottom);
             },
             [](const physics::Cylinder &s) -> Ref<Shape> {
-                const float h = std::max(s.Height, 1e-3f); // Jolt CylinderShape requires positive half-height.
-                if (std::abs(s.RadiusTop - s.RadiusBottom) < 1e-6f) return new CylinderShape(h * 0.5f, s.RadiusBottom);
-                if (const auto r = TaperedCylinderShapeSettings(h * 0.5f, s.RadiusTop, s.RadiusBottom).Create(); r.IsValid()) return r.Get();
-                return new CylinderShape(h * 0.5f, std::max(s.RadiusTop, s.RadiusBottom));
+                assert(s.Height >= physics::MinShapeHeight);
+                if (std::abs(s.RadiusTop - s.RadiusBottom) < 1e-6f) return new CylinderShape(s.Height * 0.5f, s.RadiusBottom);
+                if (const auto r = TaperedCylinderShapeSettings(s.Height * 0.5f, s.RadiusTop, s.RadiusBottom).Create(); r.IsValid()) return r.Get();
+                return new CylinderShape(s.Height * 0.5f, std::max(s.RadiusTop, s.RadiusBottom));
             },
             // Jolt PlaneShape is single-sided and static-only. Everything else collapses to a thin BoxShape;
             // infinite non-static uses a large half-extent.
@@ -840,6 +840,8 @@ Ref<Shape> BuildLeafShape(const entt::registry &r, entt::entity entity, const Co
     auto js = CreateJoltShape(shape_proto, mesh, owner_motion == nullptr);
     if (!js) return {};
     js->SetUserData(ShapeFilterUserData(filter_entity));
+    // Offset is in entity-local pre-scale coords (matches CenterOfMass convention) — translate before scaling.
+    if (cs.LocalOffset != vec3{0}) js = new RotatedTranslatedShape(ToJolt(cs.LocalOffset), Quat::sIdentity(), js);
     const auto *t = r.try_get<const WorldTransform>(entity);
     if (t && HasNonUnitScale(*t)) js = new ScaledShape(js, ToJolt(t->S));
     return js;
@@ -882,6 +884,7 @@ BodyShape BuildBodyShape(const entt::registry &r, entt::entity entity, const KHR
         const auto *mesh = mesh_entity != null_entity ? r.try_get<const Mesh>(mesh_entity) : nullptr;
         auto js = CreateJoltShape(collider->Shape, mesh);
         if (!js) return out;
+        if (collider->LocalOffset != vec3{0}) js = new RotatedTranslatedShape(ToJolt(collider->LocalOffset), Quat::sIdentity(), js);
         const auto *t = r.try_get<const WorldTransform>(entity);
         if (t && HasNonUnitScale(*t)) js = new ScaledShape(js, ToJolt(t->S));
         out.Shape = js;

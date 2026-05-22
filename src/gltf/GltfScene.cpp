@@ -1664,8 +1664,8 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
                 overloaded{
                     [](const fastgltf::BoxShape &s) -> PhysicsShape { return physics::Box{ToVec3(s.size)}; },
                     [](const fastgltf::SphereShape &s) -> PhysicsShape { return physics::Sphere{s.radius}; },
-                    [](const fastgltf::CapsuleShape &s) -> PhysicsShape { return physics::Capsule{s.height, s.radiusTop, s.radiusBottom}; },
-                    [](const fastgltf::CylinderShape &s) -> PhysicsShape { return physics::Cylinder{s.height, s.radiusTop, s.radiusBottom}; },
+                    [](const fastgltf::CapsuleShape &s) -> PhysicsShape { return physics::Capsule{std::max(float(s.height), physics::MinShapeHeight), s.radiusTop, s.radiusBottom}; },
+                    [](const fastgltf::CylinderShape &s) -> PhysicsShape { return physics::Cylinder{std::max(float(s.height), physics::MinShapeHeight), s.radiusTop, s.radiusBottom}; },
                     [](const fastgltf::PlaneShape &s) -> PhysicsShape { return physics::Plane{s.sizeX, s.sizeZ, s.doubleSided}; },
                 },
                 asset.shapes[*geom.shape]
@@ -2970,6 +2970,23 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         if (node_index < node_to_entity.size()) node_to_entity[node_index] = entity;
     }
 
+    // KHR_physics_rigid_bodies §167: an offset collider must live on a child node with the
+    // corresponding translation. Allocate a synthetic child for every ColliderShape with nonzero
+    // LocalOffset; the owner node retains motion/joint/triggerNodes, the synthetic node carries
+    // the collider (or geometry-trigger) extension.
+    std::unordered_map<entt::entity, uint32_t> entity_to_offset_child;
+    std::unordered_map<uint32_t, entt::entity> offset_child_to_owner;
+    for (auto [e, cs] : r.view<const ColliderShape>().each()) {
+        if (cs.LocalOffset == vec3{0}) continue;
+        const auto it = entity_to_node_index.find(e);
+        if (it == entity_to_node_index.end()) continue;
+        const uint32_t synthetic_ni = total_node_count++;
+        entity_to_offset_child[e] = synthetic_ni;
+        offset_child_to_owner[synthetic_ni] = e;
+        children_by_parent[it->second].emplace_back(std::numeric_limits<uint32_t>::max(), synthetic_ni);
+    }
+    node_to_entity.resize(total_node_count, entt::null);
+
     // Roots derived from current parent state — used when no `SourceAssets::Scenes` is available
     // (runtime-built scenes, primitives) to synthesize a single scene's nodeIndices.
     const auto compute_roots_from_parents = [&] {
@@ -3958,6 +3975,46 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         shape_index_by_key[key] = idx;
         return idx;
     };
+    using TriggerVariant = std::variant<fastgltf::GeometryTrigger, fastgltf::NodeTrigger>;
+    // Populates `rb.collider` or `rb.trigger` from the owner's ColliderShape + (Trigger|Collider)Material.
+    // Shared between the owner-no-offset path and the synthetic-offset-child path.
+    const auto populate_collider_extension = [&](entt::entity owner, fastgltf::PhysicsRigidBody &rb) {
+        const auto *cs = r.try_get<const ColliderShape>(owner);
+        if (!cs) return;
+        const bool is_trigger = r.all_of<TriggerTag>(owner);
+        fastgltf::Optional<std::size_t> collider_mesh_idx;
+        if (cs->MeshEntity != null_entity) {
+            if (const auto mit = mesh_entity_to_index.find(cs->MeshEntity); mit != mesh_entity_to_index.end()) collider_mesh_idx = mit->second;
+        }
+        if (!is_trigger) {
+            fastgltf::Collider collider{};
+            if (auto fg_shape = to_fg_shape(cs->Shape)) {
+                collider.geometry.shape = emit_shape_index(*fg_shape);
+            } else if (std::holds_alternative<physics::ConvexHull>(cs->Shape)) {
+                if (collider_mesh_idx) collider.geometry.mesh = *collider_mesh_idx;
+                collider.geometry.convexHull = true;
+            } else if (std::holds_alternative<physics::TriangleMesh>(cs->Shape)) {
+                if (collider_mesh_idx) collider.geometry.mesh = *collider_mesh_idx;
+            }
+            if (const auto *cm = r.try_get<const ColliderMaterial>(owner)) {
+                if (const auto mit = physics_material_to_index.find(cm->PhysicsMaterialEntity); mit != physics_material_to_index.end()) collider.physicsMaterial = mit->second;
+                if (const auto fit = collision_filter_to_index.find(cm->CollisionFilterEntity); fit != collision_filter_to_index.end()) collider.collisionFilter = fit->second;
+            }
+            rb.collider = fastgltf::Optional<fastgltf::Collider>{std::move(collider)};
+        } else {
+            fastgltf::GeometryTrigger gt{};
+            if (auto fg_shape = to_fg_shape(cs->Shape)) {
+                gt.geometry.shape = emit_shape_index(*fg_shape);
+            } else if (collider_mesh_idx) {
+                gt.geometry.mesh = *collider_mesh_idx;
+                gt.geometry.convexHull = std::holds_alternative<physics::ConvexHull>(cs->Shape);
+            }
+            if (const auto *cm = r.try_get<const ColliderMaterial>(owner)) {
+                if (const auto fit = collision_filter_to_index.find(cm->CollisionFilterEntity); fit != collision_filter_to_index.end()) gt.collisionFilter = fit->second;
+            }
+            rb.trigger = fastgltf::Optional<TriggerVariant>{TriggerVariant{std::move(gt)}};
+        }
+    };
 
     // Nodes — each fastgltf::Node is emitted directly from per-entity registry components,
     // no parallel staging struct. `entity == null` slots fall through with default fields
@@ -3972,6 +4029,36 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         if (const auto cit = children_by_parent.find(ni); cit != children_by_parent.end()) {
             children.reserve(cit->second.size());
             for (const auto &[_, child_idx] : cit->second) children.emplace_back(child_idx);
+        }
+
+        // Synthetic offset-collider child (KHR_physics_rigid_bodies §167): carries only the
+        // owner's collider/trigger extension at translation = LocalOffset.
+        if (const auto sit = offset_child_to_owner.find(ni); sit != offset_child_to_owner.end()) {
+            const auto owner = sit->second;
+            const auto &cs = r.get<const ColliderShape>(owner);
+            auto rb = std::make_unique<fastgltf::PhysicsRigidBody>();
+            populate_collider_extension(owner, *rb);
+            uses_physics_rigid_bodies = true;
+            asset.nodes.emplace_back(fastgltf::Node{
+                .meshIndex = {},
+                .skinIndex = {},
+                .cameraIndex = {},
+                .lightIndex = {},
+                .children = std::move(children),
+                .weights = {},
+                .transform = fastgltf::TRS{
+                    .translation = {cs.LocalOffset.x, cs.LocalOffset.y, cs.LocalOffset.z},
+                    .rotation = fastgltf::math::fquat(0.f, 0.f, 0.f, 1.f),
+                    .scale = {1.f, 1.f, 1.f},
+                },
+                .instancingAttributes = {},
+                .name = {},
+                .physicsRigidBody = std::move(rb),
+                .visible = true,
+                .selectable = true,
+                .hoverable = true,
+            });
+            continue;
         }
 
         if (entity == entt::null) {
@@ -4064,13 +4151,16 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         const auto *tn = r.try_get<const TriggerNodes>(entity);
         const auto *pj = r.try_get<const PhysicsJoint>(entity);
         const bool is_trigger = r.all_of<TriggerTag>(entity);
+        // Offset colliders emit their geometry on a synthetic child — strip the cs contribution here.
+        const bool has_offset_child = entity_to_offset_child.contains(entity);
+        const bool cs_on_owner = cs && !has_offset_child;
         fastgltf::Optional<std::size_t> collider_mesh_idx;
-        if (cs && cs->MeshEntity != null_entity) {
+        if (cs_on_owner && cs->MeshEntity != null_entity) {
             if (const auto mit = mesh_entity_to_index.find(cs->MeshEntity); mit != mesh_entity_to_index.end()) collider_mesh_idx = mit->second;
         }
 
         std::unique_ptr<fastgltf::PhysicsRigidBody> physics_rigid_body;
-        if (motion || cs || tn || pj) {
+        if (motion || cs_on_owner || tn || pj) {
             physics_rigid_body = std::make_unique<fastgltf::PhysicsRigidBody>();
             uses_physics_rigid_bodies = true;
 
@@ -4093,38 +4183,9 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
                 physics_rigid_body->motion = fastgltf::Optional<fastgltf::Motion>{std::move(fg_motion)};
             }
 
-            if (cs && !is_trigger) {
-                fastgltf::Collider collider{};
-                if (auto fg_shape = to_fg_shape(cs->Shape)) {
-                    collider.geometry.shape = emit_shape_index(*fg_shape);
-                } else if (std::holds_alternative<physics::ConvexHull>(cs->Shape)) {
-                    if (collider_mesh_idx) collider.geometry.mesh = *collider_mesh_idx;
-                    collider.geometry.convexHull = true;
-                } else if (std::holds_alternative<physics::TriangleMesh>(cs->Shape)) {
-                    if (collider_mesh_idx) collider.geometry.mesh = *collider_mesh_idx;
-                }
-                if (const auto *cm = r.try_get<const ColliderMaterial>(entity)) {
-                    if (const auto mit = physics_material_to_index.find(cm->PhysicsMaterialEntity); mit != physics_material_to_index.end()) collider.physicsMaterial = mit->second;
-                    if (const auto fit = collision_filter_to_index.find(cm->CollisionFilterEntity); fit != collision_filter_to_index.end()) collider.collisionFilter = fit->second;
-                }
-                physics_rigid_body->collider = fastgltf::Optional<fastgltf::Collider>{std::move(collider)};
-            }
+            if (cs_on_owner) populate_collider_extension(entity, *physics_rigid_body);
 
-            using TriggerVariant = std::variant<fastgltf::GeometryTrigger, fastgltf::NodeTrigger>;
-            if (cs && is_trigger) {
-                // GeometryTrigger: shape on the same entity, distinguished by TriggerTag.
-                fastgltf::GeometryTrigger gt{};
-                if (auto fg_shape = to_fg_shape(cs->Shape)) {
-                    gt.geometry.shape = emit_shape_index(*fg_shape);
-                } else if (collider_mesh_idx) {
-                    gt.geometry.mesh = *collider_mesh_idx;
-                    gt.geometry.convexHull = std::holds_alternative<physics::ConvexHull>(cs->Shape);
-                }
-                if (const auto *cm = r.try_get<const ColliderMaterial>(entity)) {
-                    if (const auto fit = collision_filter_to_index.find(cm->CollisionFilterEntity); fit != collision_filter_to_index.end()) gt.collisionFilter = fit->second;
-                }
-                physics_rigid_body->trigger = fastgltf::Optional<TriggerVariant>{TriggerVariant{std::move(gt)}};
-            } else if (tn && !tn->Nodes.empty()) {
+            if (tn && !tn->Nodes.empty() && !(cs && is_trigger)) {
                 // NodesTrigger: compound zone.
                 fastgltf::NodeTrigger nt;
                 for (const auto ne : tn->Nodes) {
