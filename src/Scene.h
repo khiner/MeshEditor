@@ -22,10 +22,13 @@ struct Scene {
     // Handle mouse/keyboard interactions.
     void Interact(action::Emit emit);
 
+    // Draw the overlay controls and emit their state changes. Must run before Render().
+    void InteractOverlay(action::Emit emit);
+
     // Submit GPU render (nonblocking), draw the final image into the current ImGui window, and draw overlays.
     // Call WaitForRender() before the ImGui frame samples the final image.
     // If provided, waits on `viewportConsumerFence` before destroying old resources on extent change.
-    void Render(action::Emit emit, vk::Fence viewportConsumerFence = {});
+    void Render(vk::Fence viewportConsumerFence = {});
     // Wait for pending viewport render to complete. No-op if no render pending.
     void WaitForRender();
     void RenderControls(action::Emit);
@@ -134,7 +137,6 @@ private:
     // The overlay is everything drawn on top of the viewport with ImGui, independent of the main scene vulkan pipeline.
     // Split into interact (state changes) and draw (visuals) so that DrawOverlay runs after ProcessComponentEvents
     // and reads up-to-date WorldTransforms.
-    void InteractOverlay(action::Emit emit);
     void DrawOverlay();
 
     void RenderObjectTree(action::Emit emit);

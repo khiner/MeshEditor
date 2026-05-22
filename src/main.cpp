@@ -657,8 +657,13 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
             PushStyleVar(ImGuiStyleVar_WindowPadding, {0, 0});
             if (Begin(windows.Scene.Name, &windows.Scene.Visible)) {
                 scene->Interact(Emit);
+                auto &dl = *ImGui::GetWindowDrawList();
+                dl.ChannelsSplit(2);
+                dl.ChannelsSetCurrent(1);
+                scene->InteractOverlay(Emit);
                 // Submit GPU render (nonblocking). WaitForRender() is called later, before RenderFrame() samples the final image.
-                scene->Render(Emit, GetFrameCount() > 1 ? vk::Fence{wd.Frames[wd.FrameIndex].Fence} : vk::Fence{});
+                scene->Render(GetFrameCount() > 1 ? vk::Fence{wd.Frames[wd.FrameIndex].Fence} : vk::Fence{});
+                dl.ChannelsMerge();
             }
             End();
             PopStyleVar();
