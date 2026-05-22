@@ -34,8 +34,6 @@
 
 #include "AxisColors.h" // Must be after imgui.h
 
-#include <entt/entity/registry.hpp>
-
 #include <iostream>
 #include <numbers>
 
@@ -987,7 +985,9 @@ RenderRequest ProcessComponentEvents(entt::registry &R, entt::entity SceneEntity
         request(RenderRequest::ReRecord);
     }
 
-    ProcessComponentEventHandlers(R);
+    if (const auto *handlers = R.ctx().find<std::vector<ComponentEventHandler>>()) {
+        for (const auto &h : *handlers) h(R);
+    }
 
     { // Note: Can mutate InteractionMode, so do this first before `changes::InteractionMode` handling below.
         const auto interaction_mode = R.get<const SceneInteraction>(SceneEntity).Mode;

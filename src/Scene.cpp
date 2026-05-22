@@ -461,8 +461,7 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
     auto &Slots = R.ctx().get<DescriptorSlots>();
     SelectionHandles = std::make_unique<SelectionSlotHandles>(Slots);
     auto &Pipelines = R.ctx().emplace<ScenePipelines>(vc.Device, vc.PhysicalDevice, Slots.GetSetLayout(), Slots.GetSet());
-    auto &Physics = R.ctx().emplace<PhysicsWorld>();
-    Physics.BindRegistry(R);
+    auto &Physics = physics::Init(R);
     // Reactive storage subscriptions for deferred once-per-frame processing
     track<changes::TimelineRange>(R).on<TimelineRange>(On::Update);
     track<changes::Selected>(R).on<Selected>(On::Create | On::Destroy);
@@ -509,33 +508,6 @@ Scene::Scene(SceneVulkanResources vc, entt::registry &r)
         .on<Transform>(On::Create | On::Update)
         .on<SceneNode>(On::Create | On::Update)
         .on<BoneDisplayScale>(On::Update);
-    track<changes::PhysicsMotion>(R).on<PhysicsMotion>(On::Create | On::Update | On::Destroy);
-    track<changes::PhysicsShape>(R).on<ColliderShape>(On::Create | On::Update | On::Destroy);
-    track<changes::ColliderPolicy>(R).on<::ColliderPolicy>(On::Create | On::Update);
-    track<changes::PhysicsMaterial>(R).on<ColliderMaterial>(On::Update);
-    track<changes::PhysicsTrigger>(R).on<TriggerTag>(On::Create | On::Destroy);
-    track<changes::PhysicsJoint>(R).on<PhysicsJoint>(On::Create | On::Update | On::Destroy);
-    track<changes::PhysicsMaterialDef>(R).on<PhysicsMaterial>(On::Create | On::Update | On::Destroy);
-    track<changes::CollisionSystemDef>(R).on<CollisionSystem>(On::Create | On::Update | On::Destroy);
-    track<changes::CollisionFilterDef>(R).on<CollisionFilter>(On::Create | On::Update | On::Destroy);
-    track<changes::PhysicsJointDef>(R).on<::PhysicsJointDef>(On::Create | On::Update | On::Destroy);
-    track<changes::PhysicsSimulationSettings>(R).on<::PhysicsSimulationSettings>(On::Update);
-
-    PhysicsWorld *physics = &Physics;
-    RegisterComponentEventHandler(R, [physics](entt::registry &r) {
-        const bool joint_events = !reactive<changes::PhysicsJoint>(r).empty();
-        // Resource def handlers run first so dangling-ref patches fire before per-entity handlers this tick.
-        for (auto e : reactive<changes::PhysicsMaterialDef>(r)) physics->OnPhysicsMaterialDefChange(r, e);
-        for (auto e : reactive<changes::CollisionSystemDef>(r)) physics->OnCollisionSystemDefChange(r, e);
-        for (auto e : reactive<changes::CollisionFilterDef>(r)) physics->OnCollisionFilterDefChange(r, e);
-        for (auto e : reactive<changes::PhysicsJointDef>(r)) physics->OnPhysicsJointDefChange(r, e);
-        for (auto e : reactive<changes::PhysicsShape>(r)) physics->OnShapeChange(r, e);
-        for (auto e : reactive<changes::PhysicsMotion>(r)) physics->OnMotionChange(r, e);
-        for (auto e : reactive<changes::PhysicsMaterial>(r)) physics->OnMaterialChange(r, e);
-        for (auto e : reactive<changes::PhysicsTrigger>(r)) physics->OnTriggerChange(r, e);
-        physics->FlushJoints(r, joint_events);
-    });
-
     R.ctx().emplace<EntityDestroyTracker>().Bind(R);
 
     R.on_destroy<Name>().connect<&OnDestroyName>();
@@ -612,9 +584,10 @@ Scene::~Scene() {
 #endif
     if (R.valid(SceneEntity)) R.remove<MaterialStore>(SceneEntity);
     R.clear<Mesh>();
-    R.ctx().erase<PhysicsWorld>();
+    R.ctx().erase<std::vector<ComponentEventHandler>>();
+    R.ctx().erase<EntityDestroyTracker>();
+    physics::Deinit(R);
     R.ctx().erase<ScenePipelines>();
-    // SelectionHandles holds a DescriptorSlots&; drop it before TearDownSceneStoreCtx erases the slots.
     SelectionHandles.reset();
     TearDownSceneStoreCtx(R);
 }

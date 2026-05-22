@@ -1,8 +1,11 @@
 // All Jolt includes are isolated to this file.
-
+#include "PhysicsWorld.h"
+#include "Reactive.h"
+#include "SceneChanges.h"
+#include "SceneTree.h"
 #include "TransformMath.h"
-
-#include <cassert>
+#include "Variant.h"
+#include "mesh/Mesh.h"
 
 #include "Jolt/Jolt.h"
 
@@ -36,17 +39,8 @@
 
 JPH_SUPPRESS_WARNINGS
 
-#include "PhysicsWorld.h"
-#include "SceneTree.h"
-#include "Variant.h"
-#include "mesh/Mesh.h"
-
-#include <entt/entity/registry.hpp>
-
-#include <algorithm>
 #include <format>
 #include <iostream>
-#include <thread>
 #include <unordered_map>
 
 using namespace JPH;
@@ -1337,3 +1331,41 @@ void PhysicsWorld::ClearCache() { P->Baked = {}; }
 void PhysicsWorld::InvalidateFromFrame(uint32_t frame) {
     P->Baked = (frame == 0 || !P->Baked) ? std::nullopt : std::optional{std::min(*P->Baked, frame - 1)};
 }
+
+namespace physics {
+PhysicsWorld &Init(entt::registry &r) {
+    auto &world = r.ctx().emplace<PhysicsWorld>();
+    world.BindRegistry(r);
+
+    track<changes::PhysicsMotion>(r).on<PhysicsMotion>(On::Create | On::Update | On::Destroy);
+    track<changes::PhysicsShape>(r).on<ColliderShape>(On::Create | On::Update | On::Destroy);
+    track<changes::ColliderPolicy>(r).on<::ColliderPolicy>(On::Create | On::Update);
+    track<changes::PhysicsMaterial>(r).on<ColliderMaterial>(On::Update);
+    track<changes::PhysicsTrigger>(r).on<TriggerTag>(On::Create | On::Destroy);
+    track<changes::PhysicsJoint>(r).on<PhysicsJoint>(On::Create | On::Update | On::Destroy);
+    track<changes::PhysicsMaterialDef>(r).on<::PhysicsMaterial>(On::Create | On::Update | On::Destroy);
+    track<changes::CollisionSystemDef>(r).on<CollisionSystem>(On::Create | On::Update | On::Destroy);
+    track<changes::CollisionFilterDef>(r).on<CollisionFilter>(On::Create | On::Update | On::Destroy);
+    track<changes::PhysicsJointDef>(r).on<::PhysicsJointDef>(On::Create | On::Update | On::Destroy);
+    track<changes::PhysicsSimulationSettings>(r).on<::PhysicsSimulationSettings>(On::Update);
+
+    PhysicsWorld *p = &world;
+    RegisterComponentEventHandler(r, [p](entt::registry &r) {
+        const bool joint_events = !reactive<changes::PhysicsJoint>(r).empty();
+        // Resource def handlers run first so dangling-ref patches fire before per-entity handlers this tick.
+        for (auto e : reactive<changes::PhysicsMaterialDef>(r)) p->OnPhysicsMaterialDefChange(r, e);
+        for (auto e : reactive<changes::CollisionSystemDef>(r)) p->OnCollisionSystemDefChange(r, e);
+        for (auto e : reactive<changes::CollisionFilterDef>(r)) p->OnCollisionFilterDefChange(r, e);
+        for (auto e : reactive<changes::PhysicsJointDef>(r)) p->OnPhysicsJointDefChange(r, e);
+        for (auto e : reactive<changes::PhysicsShape>(r)) p->OnShapeChange(r, e);
+        for (auto e : reactive<changes::PhysicsMotion>(r)) p->OnMotionChange(r, e);
+        for (auto e : reactive<changes::PhysicsMaterial>(r)) p->OnMaterialChange(r, e);
+        for (auto e : reactive<changes::PhysicsTrigger>(r)) p->OnTriggerChange(r, e);
+        p->FlushJoints(r, joint_events);
+    });
+
+    return world;
+}
+
+void Deinit(entt::registry &r) { r.ctx().erase<PhysicsWorld>(); }
+} // namespace physics

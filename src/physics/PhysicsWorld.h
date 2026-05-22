@@ -74,3 +74,8 @@ private:
     void ApplyMassPropertiesFromShape(const entt::registry &, entt::entity);
     void BuildJoint(const entt::registry &, entt::entity);
 };
+
+namespace physics {
+PhysicsWorld &Init(entt::registry &);
+void Deinit(entt::registry &);
+} // namespace physics

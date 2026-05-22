@@ -46,9 +46,3 @@ inline void RegisterComponentEventHandler(entt::registry &r, ComponentEventHandl
     // emplace is a no-op if the type already exists (try_emplace semantics).
     r.ctx().emplace<std::vector<ComponentEventHandler>>().emplace_back(std::move(handler));
 }
-
-inline void ProcessComponentEventHandlers(entt::registry &r) {
-    if (const auto *handlers = r.ctx().find<std::vector<ComponentEventHandler>>()) {
-        for (const auto &h : *handlers) h(r);
-    }
-}
