@@ -1244,6 +1244,58 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         }
     }
 
+    // Pending* handlers run before the reactive checks so their patches land in trackers in time.
+    if (const auto *pending = R.try_get<const PendingSetStudioEnvironment>(SceneEntity)) {
+        const auto index = pending->Index;
+        R.remove<PendingSetStudioEnvironment>(SceneEntity);
+        SetStudioEnvironment(R, SceneEntity, index);
+    }
+    if (const auto *pending = R.try_get<const PendingSetEditMode>(SceneEntity)) {
+        const auto mode = pending->Mode;
+        R.remove<PendingSetEditMode>(SceneEntity);
+        SetEditMode(R, SceneEntity, mode);
+    }
+    if (auto *pending = R.try_get<PendingImportMesh>(SceneEntity)) {
+        auto path = std::move(pending->Path);
+        auto info = std::move(pending->Info);
+        R.remove<PendingImportMesh>(SceneEntity);
+        ImportMesh(R, SceneEntity, path, std::move(info));
+    }
+    if (const auto *pending = R.try_get<const PendingEditElementClick>(SceneEntity)) {
+        const auto mouse_px = pending->MousePx;
+        const bool toggle = pending->Toggle;
+        R.remove<PendingEditElementClick>(SceneEntity);
+
+        const auto edit_mode = R.get<const SceneEditMode>(SceneEntity).Value;
+        const auto ranges = GetBitsetRangesForSelected(R);
+        auto *bits = Buffers.SelectionBitset.Data();
+        if (!toggle) {
+            for (const auto &range : ranges) {
+                const uint32_t first_word = range.Offset / 32;
+                const uint32_t last_word = (range.Offset + range.Count + 31) / 32;
+                memset(&bits[first_word], 0, (last_word - first_word) * sizeof(uint32_t));
+                R.remove<MeshActiveElement>(range.MeshEntity);
+            }
+        }
+        const auto hit = RunElementPickFromRanges(R, SceneEntity, ranges, edit_mode, mouse_px);
+        if (hit) {
+            const auto [mesh_entity, element_index] = *hit;
+            const auto *current_active = R.try_get<MeshActiveElement>(mesh_entity);
+            const bool is_active = current_active && current_active->Handle == element_index;
+            if (const auto *br = R.try_get<const MeshSelectionBitsetRange>(mesh_entity)) {
+                const uint32_t global_bit = br->Offset + element_index;
+                const bool was_selected = (bits[global_bit >> 5] >> (global_bit & 31)) & 1;
+                if (toggle && was_selected) bits[global_bit >> 5] &= ~(1u << (global_bit & 31));
+                else bits[global_bit >> 5] |= 1u << (global_bit & 31);
+            }
+            if (toggle && is_active) R.remove<MeshActiveElement>(mesh_entity);
+            else R.emplace_or_replace<MeshActiveElement>(mesh_entity, element_index);
+        } else if (!toggle) {
+            for (const auto &range : ranges) R.remove<MeshActiveElement>(range.MeshEntity);
+        }
+        if (!ranges.empty() && (!toggle || hit)) R.emplace_or_replace<SelectionBitsDirty>(SceneEntity);
+    }
+
     // Create/destroy wireframe overlay instances and their buffer entities before SyncModelsBuffers
     // consumes the RenderInstance/NewBufferEntity reactive events they fire.
     EnsureWireframes();
@@ -1535,62 +1587,10 @@ Scene::RenderRequest Scene::ProcessComponentEvents() {
         });
     };
 
-    if (const auto *pending = R.try_get<const PendingSetStudioEnvironment>(SceneEntity)) {
-        const auto index = pending->Index;
-        R.remove<PendingSetStudioEnvironment>(SceneEntity);
-        SetStudioEnvironment(R, SceneEntity, index);
-    }
-    if (const auto *pending = R.try_get<const PendingSetEditMode>(SceneEntity)) {
-        const auto mode = pending->Mode;
-        R.remove<PendingSetEditMode>(SceneEntity);
-        SetEditMode(R, SceneEntity, mode);
-    }
-    if (auto *pending = R.try_get<PendingImportMesh>(SceneEntity)) {
-        auto path = std::move(pending->Path);
-        auto info = std::move(pending->Info);
-        R.remove<PendingImportMesh>(SceneEntity);
-        ImportMesh(R, SceneEntity, path, std::move(info));
-    }
-    if (const auto *pending = R.try_get<const PendingEditElementClick>(SceneEntity)) {
-        const auto mouse_px = pending->MousePx;
-        const bool toggle = pending->Toggle;
-        R.remove<PendingEditElementClick>(SceneEntity);
-
-        const auto edit_mode = R.get<const SceneEditMode>(SceneEntity).Value;
-        const auto ranges = GetBitsetRangesForSelected(R);
-        auto *bits = Buffers.SelectionBitset.Data();
-        if (!toggle) {
-            for (const auto &range : ranges) {
-                const uint32_t first_word = range.Offset / 32;
-                const uint32_t last_word = (range.Offset + range.Count + 31) / 32;
-                memset(&bits[first_word], 0, (last_word - first_word) * sizeof(uint32_t));
-                R.remove<MeshActiveElement>(range.MeshEntity);
-            }
-        }
-        const auto hit = RunElementPickFromRanges(R, SceneEntity, ranges, edit_mode, mouse_px);
-        if (hit) {
-            const auto [mesh_entity, element_index] = *hit;
-            const auto *current_active = R.try_get<MeshActiveElement>(mesh_entity);
-            const bool is_active = current_active && current_active->Handle == element_index;
-            if (const auto *br = R.try_get<const MeshSelectionBitsetRange>(mesh_entity)) {
-                const uint32_t global_bit = br->Offset + element_index;
-                const bool was_selected = (bits[global_bit >> 5] >> (global_bit & 31)) & 1;
-                if (toggle && was_selected) bits[global_bit >> 5] &= ~(1u << (global_bit & 31));
-                else bits[global_bit >> 5] |= 1u << (global_bit & 31);
-            }
-            if (toggle && is_active) R.remove<MeshActiveElement>(mesh_entity);
-            else R.emplace_or_replace<MeshActiveElement>(mesh_entity, element_index);
-        } else if (!toggle) {
-            for (const auto &range : ranges) R.remove<MeshActiveElement>(range.MeshEntity);
-        }
-        if (!ranges.empty() && (!toggle || hit)) R.emplace_or_replace<SelectionBitsDirty>(SceneEntity);
-    }
-
     if (R.all_of<SelectionBitsDirty>(SceneEntity)) {
         R.remove<SelectionBitsDirty>(SceneEntity);
         if (is_edit_mode) ApplySelectionStateUpdate(R, SceneEntity, GetBitsetRangesForSelected(R), R.get<const SceneEditMode>(SceneEntity).Value);
     }
-    // Observed after the pending-click handler above so newly emitted MeshActiveElement updates fire orbit on the same frame.
     if (const auto &tracker = reactive<changes::MeshActiveElement>(R); !tracker.empty()) {
         const auto edit_mode = R.get<const SceneEditMode>(SceneEntity).Value;
         const auto active_entity = FindActiveEntity(R);
