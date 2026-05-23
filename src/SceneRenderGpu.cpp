@@ -1,11 +1,13 @@
 #include "SceneRenderGpu.h"
-
 #include "Armature.h"
 #include "Entity.h"
 #include "Instance.h"
 #include "MeshComponents.h"
 #include "PbrFeature.h"
+#include "SceneBuffers.h"
+#include "SceneComponents.h"
 #include "SceneDrawState.h"
+#include "SceneDrawing.h"
 #include "ScenePipelines.h"
 #include "SceneSelection.h"
 #include "SceneTree.h"
@@ -18,9 +20,6 @@
 #include "gpu/SilhouetteEdgeDepthObjectPushConstants.h"
 #include "mesh/Mesh.h"
 #include "mesh/MeshStore.h"
-#include "scene_impl/SceneBuffers.h"
-#include "scene_impl/SceneComponents.h"
-#include "scene_impl/SceneDrawing.h"
 
 #include "imgui.h"
 
@@ -37,6 +36,9 @@ namespace {
 constexpr vk::Extent2D ToExtent2D(vk::Extent3D extent) { return {extent.width, extent.height}; }
 const vk::ClearColorValue Transparent{0, 0, 0, 0};
 const std::vector<vk::ClearValue> SilhouetteClearValues{{vk::ClearDepthStencilValue{1, 0}}, {Transparent}};
+DrawData MakeDrawData(const RenderBuffers &rb, uint32_t vertex_slot, const InstanceArena &instances) {
+    return MakeDrawData(vertex_slot, rb.Vertices, rb.Indices, instances.TransformBuffer.Slot);
+}
 } // namespace
 
 void FlushDrawList(entt::registry &R, entt::entity scene_entity, vk::Device device, const DrawListBuilder &draw_list, DrawBufferPair &pair) {

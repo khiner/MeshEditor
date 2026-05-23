@@ -2,11 +2,11 @@
 
 #include "AnimationTimeline.h"
 #include "Bindless.h"
+#include "SceneBuffers.h"
 #include "SceneOps.h"
 #include "SceneTextures.h"
 #include "mesh/MeshStore.h"
 #include "physics/PhysicsTypes.h"
-#include "scene_impl/SceneBuffers.h"
 
 #include <array>
 #include <cstddef>

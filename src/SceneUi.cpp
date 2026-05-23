@@ -5,7 +5,6 @@
 #include "NodeTransformAnimation.h"
 #include "Path.h"
 #include "PbrFeature.h"
-#include "Scene.h"
 #include "SceneDefaults.h"
 #include "SceneFrameState.h"
 #include "SceneIcons.h"
@@ -30,9 +29,9 @@
 #include "OrientationGizmo.h"
 
 #include "SceneApply.h"
-#include "scene_impl/SceneBuffers.h"
-#include "scene_impl/SceneComponents.h"
-#include "scene_impl/SceneTransformUtils.h"
+#include "SceneBuffers.h"
+#include "SceneComponents.h"
+#include "SceneTransformUtils.h"
 
 using std::ranges::any_of, std::ranges::contains, std::ranges::distance, std::ranges::find, std::ranges::find_if, std::ranges::fold_left, std::ranges::to;
 using std::views::transform;

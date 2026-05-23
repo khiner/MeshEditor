@@ -1,12 +1,12 @@
 #include "SceneIcons.h"
 
 #include "Paths.h"
+#include "SceneBuffers.h"
+#include "SceneComponents.h" // SceneOneShotGpu
 #include "ScenePipelines.h" // ColorSubresourceRange
 #include "SceneTextures.h"
 #include "SceneVulkanResources.h"
 #include "SvgResource.h"
-#include "scene_impl/SceneBuffers.h"
-#include "scene_impl/SceneComponents.h" // SceneOneShotGpu
 
 #include <entt/entity/registry.hpp>
 

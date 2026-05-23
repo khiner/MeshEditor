@@ -6,7 +6,10 @@
 #include "Instance.h"
 #include "MeshComponents.h"
 #include "SceneApply.h"
+#include "SceneBuffers.h"
+#include "SceneComponents.h"
 #include "SceneDrawState.h"
+#include "SceneDrawing.h"
 #include "SceneOps.h"
 #include "ScenePipelines.h"
 #include "SceneRenderGpu.h"
@@ -23,9 +26,6 @@
 #include "gpu/SelectionElementPushConstants.h"
 #include "mesh/Mesh.h"
 #include "mesh/MeshStore.h"
-#include "scene_impl/SceneBuffers.h"
-#include "scene_impl/SceneComponents.h"
-#include "scene_impl/SceneDrawing.h"
 
 #include "imgui.h"
 

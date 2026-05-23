@@ -11,7 +11,9 @@
 #include "NodeTransformAnimation.h"
 #include "Reactive.h"
 #include "SceneApply.h"
+#include "SceneBuffers.h"
 #include "SceneChanges.h"
+#include "SceneComponents.h"
 #include "SceneDefaults.h"
 #include "SceneOps.h"
 #include "ScenePipelines.h"
@@ -28,8 +30,6 @@
 #include "mesh/Primitives.h"
 #include "physics/PhysicsDebugDraw.h"
 #include "physics/PhysicsWorld.h"
-#include "scene_impl/SceneBuffers.h"
-#include "scene_impl/SceneComponents.h"
 
 #include "imgui.h"
 

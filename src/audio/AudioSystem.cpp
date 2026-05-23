@@ -11,7 +11,6 @@
 #include "Tets.h"
 #include "Worker.h"
 #include "mesh/Mesh.h"
-#include "scene_impl/SceneModeComponents.h"
 #include "ui/FieldEdit.h"
 
 #include "implot.h"

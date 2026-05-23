@@ -17,7 +17,6 @@
 #include <optional>
 #include <set>
 #include <span>
-#include <utility>
 #include <vulkan/vulkan.hpp>
 
 struct SubmitDirty {}; // Generic tag for events that only require command buffer submission (not re-record)

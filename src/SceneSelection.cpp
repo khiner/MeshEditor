@@ -2,8 +2,8 @@
 #include "Entity.h"
 #include "Instance.h"
 #include "MeshComponents.h"
+#include "SceneModeComponents.h"
 #include "mesh/Mesh.h"
-#include "scene_impl/SceneModeComponents.h"
 
 #include <entt/entity/registry.hpp>
 

@@ -1,6 +1,5 @@
 #pragma once
 
-#include "Variant.h"
 #include "action/Audio.h"
 #include "action/Bone.h"
 #include "action/Core.h"
@@ -12,7 +11,6 @@
 #include "action/Timeline.h"
 #include "audio/RealImpactComponents.h"
 #include "gpu/PunctualLight.h"
-#include "scene_impl/SceneComponents.h"
 
 namespace action {
 using Action = MergedVariantT<

@@ -13,14 +13,14 @@
 #include "ExtrasMesh.h"
 #include "Instance.h"
 #include "MeshComponents.h"
+#include "SceneBuffers.h"
+#include "SceneComponents.h"
 #include "SceneDefaults.h"
 #include "SceneTree.h"
 #include "mesh/Mesh.h"
 #include "mesh/MeshStore.h"
 #include "mesh/Primitives.h"
 #include "numeric/mat4.h"
-#include "scene_impl/SceneBuffers.h"
-#include "scene_impl/SceneComponents.h"
 
 namespace {
 template<typename T>

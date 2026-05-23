@@ -5,7 +5,6 @@
 #include <ranges>
 #include <stdexcept>
 #include <string_view>
-#include <utility>
 #include <vector>
 
 using std::ranges::count_if, std::views::transform, std::ranges::to;

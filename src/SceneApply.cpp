@@ -7,6 +7,8 @@
 #include "MeshComponents.h"
 #include "NodeTransformAnimation.h"
 #include "Path.h"
+#include "SceneBuffers.h"
+#include "SceneComponents.h"
 #include "SceneDefaults.h"
 #include "SceneOps.h"
 #include "ScenePipelines.h"
@@ -25,8 +27,6 @@
 #include "mesh/MeshStore.h"
 #include "mesh/Primitives.h"
 #include "physics/PhysicsWorld.h"
-#include "scene_impl/SceneBuffers.h"
-#include "scene_impl/SceneComponents.h"
 
 #include <entt/entity/registry.hpp>
 
@@ -36,7 +36,6 @@ using std::ranges::any_of, std::ranges::find, std::ranges::find_if;
 using std::ranges::to;
 
 namespace {
-
 // True if any component of type C has `C.*field == target`.
 template<class C, class F>
 bool AnyComponentRefersTo(entt::registry &r, F C::*field, entt::entity target) {
@@ -96,7 +95,6 @@ entt::entity CreateSingleBoneInstance(entt::registry &r, entt::entity scene_enti
     arm_obj.BoneEntities.emplace_back(bone_entity);
     return bone_entity;
 }
-
 } // namespace
 
 void Destroy(entt::registry &r, entt::entity scene_entity, entt::entity e) {

@@ -10,6 +10,8 @@
 #include "NodeTransformAnimation.h"
 #include "Path.h"
 #include "PbrFeature.h"
+#include "SceneBuffers.h"
+#include "SceneComponents.h"
 #include "SceneTextures.h"
 #include "SceneTree.h"
 #include "Timer.h"
@@ -18,8 +20,6 @@
 #include "mesh/MeshStore.h"
 #include "mesh/MorphTargetData.h"
 #include "physics/PhysicsTypes.h"
-#include "scene_impl/SceneBuffers.h"
-#include "scene_impl/SceneComponents.h"
 
 #include <fastgltf/base64.hpp>
 #include <fastgltf/core.hpp>

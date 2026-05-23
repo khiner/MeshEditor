@@ -1,25 +1,21 @@
 #include "Bindless.h"
 #include "ImageDecode.h"
+#include "SceneBuffers.h"
 #include "SceneStores.h"
 #include "SceneTextures.h"
 #include "SceneVulkanResources.h"
 #include "gltf/GltfScene.h"
 #include "mesh/MeshStore.h"
-#include "scene_impl/SceneBuffers.h"
 #include "vulkan/VulkanContext.h"
 
 #include <boost/ut.hpp>
 #include <entt/entity/registry.hpp>
 #include <simdjson.h>
 
-#include <algorithm>
-#include <cmath>
 #include <filesystem>
 #include <format>
-#include <iostream>
 #include <string>
 #include <string_view>
-#include <utility>
 #include <vector>
 
 namespace {

@@ -38,10 +38,7 @@ constexpr vk::Extent2D ToExtent2D(vk::Extent3D extent) { return {extent.width, e
 using namespace he;
 } // namespace
 
-#include "scene_impl/SceneComponents.h"
-
-#include "scene_impl/SceneBuffers.h"
-#include "scene_impl/SceneTransformUtils.h"
+#include "SceneBuffers.h"
 
 void ResetObjectPickKeys(SceneBuffers &buffers) {
     std::fill_n(buffers.ObjectPickKeys.Data(), SceneBuffers::MaxSelectableObjects, std::numeric_limits<uint32_t>::max());

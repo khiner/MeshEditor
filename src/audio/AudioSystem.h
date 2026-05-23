@@ -8,7 +8,6 @@
 #include <filesystem>
 #include <optional>
 #include <span>
-#include <utility>
 #include <vector>
 
 struct FaustDSP;

@@ -10,7 +10,6 @@
 #include <cstdint>
 #include <filesystem>
 #include <memory>
-#include <utility>
 #include <vector>
 
 namespace action::audio {
