@@ -2,22 +2,24 @@
 #include "AnimationTimeline.h"
 #include "Armature.h"
 #include "Bindless.h"
+#include "Defaults.h"
 #include "File.h"
 #include "GpuBuffers.h"
 #include "Instance.h"
+#include "InteractionComponents.h"
 #include "MeshComponents.h"
 #include "NodeTransformAnimation.h"
+#include "ObjectOps.h"
 #include "Path.h"
 #include "Pipelines.h"
-#include "SceneComponents.h"
-#include "SceneDefaults.h"
-#include "SceneOps.h"
-#include "SceneSelection.h"
-#include "SceneTextures.h"
-#include "SceneTree.h"
+#include "SceneGraph.h"
+#include "Selection.h"
+#include "SelectionComponents.h"
 #include "SoundVertices.h"
+#include "Textures.h"
 #include "Timer.h"
 #include "TransformMath.h"
+#include "ViewportComponents.h"
 #include "VkFenceWait.h"
 #include "VulkanResources.h"
 #include "audio/AudioSystem.h"
@@ -413,7 +415,7 @@ bool CanDelete(const entt::registry &r, entt::entity viewport) { return CanDupli
 
 std::vector<ElementRange> GetBitsetRangesForSelected(const entt::registry &r) {
     std::vector<ElementRange> ranges;
-    for (const auto mesh_entity : scene_selection::GetSelectedMeshEntities(r)) {
+    for (const auto mesh_entity : selection::GetSelectedMeshEntities(r)) {
         if (const auto *br = r.try_get<const MeshSelectionBitsetRange>(mesh_entity); br && br->Count > 0) {
             ranges.emplace_back(mesh_entity, br->Offset, br->Count);
         }
@@ -449,13 +451,13 @@ bool SetInteractionMode(entt::registry &r, entt::entity viewport, InteractionMod
                 next_offset = std::max(next_offset, (br.Offset + br.Count + 31) / 32 * 32);
             }
             auto *bits = buffers.SelectionBitset.Data();
-            for (const auto mesh_entity : scene_selection::GetSelectedMeshEntities(r)) {
+            for (const auto mesh_entity : selection::GetSelectedMeshEntities(r)) {
                 if (r.all_of<MeshSelectionBitsetRange>(mesh_entity)) continue;
                 const auto &mesh = r.get<const Mesh>(mesh_entity);
-                const uint32_t count = scene_selection::GetElementCount(mesh, edit_element);
+                const uint32_t count = selection::GetElementCount(mesh, edit_element);
                 if (count == 0) continue;
 
-                scene_selection::SelectAll(bits, next_offset, count);
+                selection::SelectAll(bits, next_offset, count);
                 r.emplace<MeshSelectionBitsetRange>(mesh_entity, next_offset, count);
                 next_offset = (next_offset + count + 31) / 32 * 32;
             }
@@ -674,7 +676,7 @@ void ApplySelectionStateUpdate(
         const auto *bits = buffers.SelectionBitset.Data();
         for (const auto &range : ranges) {
             const auto &mesh = r.get<const Mesh>(range.MeshEntity);
-            const auto selected_handles = scene_selection::ScanBitsetRange(bits, range.Offset, range.Count);
+            const auto selected_handles = selection::ScanBitsetRange(bits, range.Offset, range.Count);
             std::optional<uint32_t> active_handle;
             if (const auto *active = r.try_get<const MeshActiveElement>(range.MeshEntity); active && active->Handle < range.Count) {
                 active_handle = active->Handle;
@@ -878,7 +880,7 @@ void Apply(entt::registry &r, entt::entity viewport, const action::Action &actio
                 }
             },
             [&](const action::object::SetSelectedSmoothShading &a) {
-                for (const auto me : scene_selection::GetSelectedMeshEntities(r)) {
+                for (const auto me : selection::GetSelectedMeshEntities(r)) {
                     if (r.get<const Mesh>(me).FaceCount() == 0) continue;
                     if (a.Smooth) r.emplace_or_replace<SmoothShading>(me);
                     else r.remove<SmoothShading>(me);
@@ -918,7 +920,7 @@ void Apply(entt::registry &r, entt::entity viewport, const action::Action &actio
             [&](const action::object::ImportMesh &a) { r.emplace_or_replace<PendingImportMesh>(viewport, a.Path, *a.Info); },
             [&](const action::object::ReplaceMesh &a) {
                 const auto e = GetActiveMeshEntity(r);
-                if (e == entt::null || scene_selection::HasScaleLockedInstance(r, e)) return;
+                if (e == entt::null || selection::HasScaleLockedInstance(r, e)) return;
 
                 if (auto *mb = r.try_get<MeshBuffers>(e)) buffers.Release(*mb);
                 r.erase<MeshBuffers>(e);
@@ -1068,7 +1070,7 @@ void Apply(entt::registry &r, entt::entity viewport, const action::Action &actio
                 } else if (interaction_mode == InteractionMode::Edit) {
                     const auto ranges = GetBitsetRangesForSelected(r);
                     auto *bits = r.get<SelectionBitsetRef>(viewport).Value.data();
-                    for (const auto &range : ranges) scene_selection::SelectAll(bits, range.Offset, range.Count);
+                    for (const auto &range : ranges) selection::SelectAll(bits, range.Offset, range.Count);
                     if (!ranges.empty()) r.emplace_or_replace<SelectionBitsDirty>(viewport);
                 } else if (interaction_mode == InteractionMode::Object) {
                     r.clear<Active, Selected>();
@@ -1107,8 +1109,8 @@ void Apply(entt::registry &r, entt::entity viewport, const action::Action &actio
                 r.patch<gltf::SourceAssets>(viewport, [&](auto &sa) { if (sa.ImageBasedLight) sa.ImageBasedLight->Intensity = a.Intensity; });
                 poke_active_lighting();
             },
-            [&](action::view::ResetViewCamera) { patch_camera_stopped([](auto &c) { c = SceneDefaults::ViewCamera; }); },
-            [&](action::view::ResetViewportTheme) { r.emplace_or_replace<ViewportTheme>(viewport, SceneDefaults::ViewportTheme); },
+            [&](action::view::ResetViewCamera) { patch_camera_stopped([](auto &c) { c = Defaults::ViewCamera; }); },
+            [&](action::view::ResetViewportTheme) { r.emplace_or_replace<ViewportTheme>(viewport, Defaults::ViewportTheme); },
             [&](const action::view::ResetPbrLighting &a) {
                 static constexpr PBRViewportLighting Defaults{false, false, 1.f, 0.f, 0.5f, 0.f, true};
                 if (a.Rendered) r.emplace_or_replace<RenderedLighting>(viewport, RenderedLighting{Defaults});
@@ -1149,7 +1151,7 @@ void Apply(entt::registry &r, entt::entity viewport, const action::Action &actio
                 for (const auto &[e, length] : a.BoneDisplayScales) r.get_or_emplace<BoneDisplayScale>(e).Value = length;
             },
             [&](const action::view::DragGizmoMeshEdit &a) {
-                for (const auto &[_, instance_entity] : scene_selection::ComputePrimaryEditInstances(r, false)) {
+                for (const auto &[_, instance_entity] : selection::ComputePrimaryEditInstances(r, false)) {
                     if (!r.all_of<StartTransform>(instance_entity)) {
                         r.emplace<StartTransform>(instance_entity, r.get<WorldTransform>(instance_entity), ToTransform(GetParentDelta(r, instance_entity)));
                     }
@@ -1464,8 +1466,8 @@ std::expected<void, std::string> Apply(entt::registry &r, entt::entity viewport,
                         {
                             .Name = std::format("RealImpact Microphone: {}", listener_point.Index),
                             .Transform = {
-                                .P = listener_point.GetPosition(SceneDefaults::World.Up, true),
-                                .R = glm::angleAxis(glm::radians(float(listener_point.AngleDeg)), SceneDefaults::World.Up) * rot_z,
+                                .P = listener_point.GetPosition(Defaults::World.Up, true),
+                                .R = glm::angleAxis(glm::radians(float(listener_point.AngleDeg)), Defaults::World.Up) * rot_z,
                             },
                             .Select = MeshInstanceCreateInfo::SelectBehavior::None,
                         }

@@ -1,8 +1,8 @@
 #pragma once
 
 #include "DrawState.h"
-
-struct InstanceArena;
+#include "GpuBuffers.h" // SlottedRange, InstanceArena
+#include "MeshComponents.h" // ModelsBuffer
 
 namespace {
 // If `model_index` is set, only the model at that index is rendered. Otherwise, all models are rendered.

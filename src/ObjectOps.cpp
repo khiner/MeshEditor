@@ -1,4 +1,4 @@
-#include "SceneOps.h"
+#include "ObjectOps.h"
 
 #include <cassert>
 #include <format>
@@ -9,14 +9,14 @@
 
 #include "Armature.h"
 #include "Camera.h"
+#include "Defaults.h"
 #include "Entity.h"
 #include "ExtrasMesh.h"
 #include "GpuBuffers.h"
 #include "Instance.h"
 #include "MeshComponents.h"
-#include "SceneComponents.h"
-#include "SceneDefaults.h"
-#include "SceneTree.h"
+#include "SceneGraph.h"
+#include "ViewportComponents.h"
 #include "mesh/Mesh.h"
 #include "mesh/MeshStore.h"
 #include "mesh/Primitives.h"
@@ -228,7 +228,7 @@ entt::entity AddArmature(entt::registry &r, MeshStore &meshes, ObjectCreateInfo 
 }
 
 entt::entity AddLight(entt::registry &r, MeshStore &meshes, GpuBuffers &buffers, ObjectCreateInfo info, std::optional<PunctualLight> props) {
-    auto light = props.value_or(SceneDefaults::MakePunctualLight(PunctualLightType::Point));
+    auto light = props.value_or(Defaults::MakePunctualLight(PunctualLightType::Point));
     auto wireframe = BuildLightMesh(light);
     const auto entity = CreateExtrasObject(r, meshes, buffers, wireframe.Data.Positions, wireframe.VertexClasses, {}, ObjectType::Light, std::move(info), "Light");
     r.emplace<LightIndex>(entity, r.storage<LightIndex>().size());

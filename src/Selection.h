@@ -23,7 +23,7 @@ struct EditTransformContext {
     std::unordered_map<entt::entity, entt::entity> TransformInstances; // excludes frozen, for transforms
 };
 
-namespace scene_selection {
+namespace selection {
 
 // Set all bits in [offset, offset+count), clearing any gap bits in the last word.
 void SelectAll(uint32_t *bits, uint32_t offset, uint32_t count);
@@ -50,4 +50,4 @@ std::vector<uint32_t> GetSampleOpVertices(
     const uint32_t *selection_bits
 );
 
-} // namespace scene_selection
+} // namespace selection

@@ -1,20 +1,20 @@
-#include "SceneIcons.h"
+#include "ViewportIcons.h"
 
 #include "GpuBuffers.h"
 #include "Paths.h"
 #include "Pipelines.h" // ColorSubresourceRange
-#include "SceneComponents.h" // OneShotGpu
-#include "SceneTextures.h"
 #include "SvgResource.h"
+#include "Textures.h"
+#include "ViewportComponents.h" // OneShotGpu
 #include "VulkanResources.h"
 
 #include <entt/entity/registry.hpp>
 
-void LoadSceneIcons(entt::registry &R, entt::entity viewport) {
+void LoadViewportIcons(entt::registry &R, entt::entity viewport) {
     const auto &Vk = R.ctx().get<const VulkanResources>();
     const auto &one_shot = R.ctx().get<const OneShotGpu>();
     auto &Buffers = R.ctx().get<GpuBuffers>();
-    auto &icons = R.emplace<SceneIcons>(viewport);
+    auto &icons = R.emplace<ViewportIcons>(viewport);
     const auto svg_path = Paths::Res() / "svg";
     auto batch = BeginTextureUploadBatch(Vk.Device, *one_shot.Pool, Buffers.Ctx);
     const auto RenderBitmap = [&Vk, &batch](std::span<const std::byte> data, uint32_t width, uint32_t height) {

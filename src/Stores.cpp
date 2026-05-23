@@ -1,11 +1,11 @@
-#include "SceneStores.h"
+#include "Stores.h"
 
 #include "AnimationTimeline.h"
 #include "Bindless.h"
 #include "GpuBuffers.h"
-#include "SceneComponents.h"
-#include "SceneOps.h"
-#include "SceneTextures.h"
+#include "ObjectOps.h"
+#include "Textures.h"
+#include "ViewportComponents.h"
 #include "mesh/MeshStore.h"
 #include "physics/PhysicsTypes.h"
 
@@ -15,7 +15,7 @@
 
 #include <entt/entity/registry.hpp>
 
-void InitSceneStoreCtx(entt::registry &r, VulkanResources vk) {
+void InitStoreCtx(entt::registry &r, VulkanResources vk) {
     r.ctx().emplace<VulkanResources>(vk);
     auto &slots = r.ctx().emplace<DescriptorSlots>(
         vk.Device,
@@ -26,7 +26,7 @@ void InitSceneStoreCtx(entt::registry &r, VulkanResources vk) {
     r.ctx().emplace<EnvironmentStore>();
 }
 
-entt::entity WireSceneRegistry(entt::registry &r) {
+entt::entity WireRegistry(entt::registry &r) {
     r.on_construct<PhysicsMotion>().connect<&entt::registry::emplace<PhysicsVelocity>>();
     r.on_destroy<PhysicsMotion>().connect<&entt::registry::remove<PhysicsVelocity>>();
     r.on_construct<ColliderShape>().connect<&entt::registry::emplace<ColliderMaterial>>();
@@ -72,7 +72,7 @@ entt::entity WireSceneRegistry(entt::registry &r) {
     return viewport;
 }
 
-void TearDownSceneStoreCtx(entt::registry &r) {
+void TearDownStoreCtx(entt::registry &r) {
     auto &slots = r.ctx().get<DescriptorSlots>();
     auto &textures = r.ctx().get<TextureStore>();
     auto &environments = r.ctx().get<EnvironmentStore>();

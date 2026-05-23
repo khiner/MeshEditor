@@ -1,8 +1,8 @@
 // All Jolt includes are isolated to this file.
 #include "PhysicsWorld.h"
+#include "Changes.h"
 #include "Reactive.h"
-#include "SceneChanges.h"
-#include "SceneTree.h"
+#include "SceneGraph.h"
 #include "TransformMath.h"
 #include "Variant.h"
 #include "mesh/Mesh.h"
@@ -595,7 +595,7 @@ struct JoltInit {
 PhysicsWorld::PhysicsWorld() : P(std::make_unique<Impl>()) {
     // FilterRef is stable for PhysicsWorld lifetime — the contact listener holds a raw pointer to it.
     // Registry pointer is wired separately via BindRegistry(), since construction order runs before
-    // Scene hands over its registry.
+    // the registry is handed over.
     P->FilterRef = new KHRCollisionFilter();
     P->ContactListener.Filter = P->FilterRef.GetPtr();
 }

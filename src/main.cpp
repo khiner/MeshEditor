@@ -2,9 +2,9 @@
 #include "Apply.h"
 #include "FrameState.h"
 #include "Paths.h"
-#include "SceneIcons.h"
 #include "Timer.h"
 #include "Viewport.h"
+#include "ViewportIcons.h"
 #include "ViewportUi.h"
 #include "Window.h"
 #include "audio/AudioDevice.h"
@@ -353,9 +353,9 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
     const auto viewport = InitViewport(r, VulkanResources{*vc->Instance, vc->PhysicalDevice, *vc->Device, vc->QueueFamily, vc->Queue});
 
     // Load transform mode icons
-    LoadSceneIcons(r, viewport);
+    LoadViewportIcons(r, viewport);
 
-    const auto CreateSvg = [device = *vc->Device, &r, viewport, &wd](std::unique_ptr<SvgResource> &svg, fs::path path) {
+    const auto CreateSvg = [device = *vc->Device, &r, &wd](std::unique_ptr<SvgResource> &svg, fs::path path) {
         // Wait for previous frame's ImGui render to complete, since it may have sampled the old texture.
         CheckVk(device.waitForFences({wd.Frames[wd.FrameIndex].Fence}, true, UINT64_MAX));
         MakeSvgResource(r, svg, std::move(path));
@@ -442,7 +442,7 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
             DockBuilderDockWindow(windows.ImPlotDemo.Name, extra_node_id);
             DockBuilderDockWindow(windows.SceneControls.Name, controls_node_id);
             DockBuilderDockWindow(windows.Animation.Name, animation_node_id);
-            DockBuilderDockWindow(windows.Scene.Name, dockspace_id);
+            DockBuilderDockWindow(windows.Viewport.Name, dockspace_id);
         }
 
         if (BeginMainMenuBar()) {
@@ -567,7 +567,7 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
                 MenuItem(windows.ImPlotDemo.Name, nullptr, &windows.ImPlotDemo.Visible);
                 MenuItem(windows.SceneControls.Name, nullptr, &windows.SceneControls.Visible);
                 MenuItem(windows.Animation.Name, nullptr, &windows.Animation.Visible);
-                MenuItem(windows.Scene.Name, nullptr, &windows.Scene.Visible);
+                MenuItem(windows.Viewport.Name, nullptr, &windows.Viewport.Visible);
                 EndMenu();
             }
             EndMainMenuBar();
@@ -609,7 +609,7 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
                         Text("Semaphore count: %d", wd.SemaphoreCount);
                         EndTabItem();
                     }
-                    if (BeginTabItem("Scene")) {
+                    if (BeginTabItem("Engine")) {
                         SeparatorText("Buffer memory");
                         TextUnformatted(DebugBufferHeapUsage(r).c_str());
                         SeparatorText("Action");
@@ -649,7 +649,7 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
                 Unindent(6);
                 PopStyleVar();
                 const auto scene_e = viewport;
-                if (auto a = RenderAnimationTimeline(r.get<const TimelineRange>(scene_e), r.get<const TimelinePlayback>(scene_e), r.get<const AnimationTimelineView>(scene_e), r.get<const SceneIcons>(scene_e).Anim)) {
+                if (auto a = RenderAnimationTimeline(r.get<const TimelineRange>(scene_e), r.get<const TimelinePlayback>(scene_e), r.get<const AnimationTimelineView>(scene_e), r.get<const ViewportIcons>(scene_e).Anim)) {
                     action::Assign(Emit, std::move(*a));
                 }
             }
@@ -657,9 +657,9 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
             PopStyleVar();
         }
 
-        if (windows.Scene.Visible) {
+        if (windows.Viewport.Visible) {
             PushStyleVar(ImGuiStyleVar_WindowPadding, {0, 0});
-            if (Begin(windows.Scene.Name, &windows.Scene.Visible)) {
+            if (Begin(windows.Viewport.Name, &windows.Viewport.Visible)) {
                 Interact(r, viewport, r.get<FrameState>(viewport), Emit);
                 auto &dl = *ImGui::GetWindowDrawList();
                 dl.ChannelsSplit(2);
@@ -673,9 +673,9 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
             PopStyleVar();
 
             if (GetFrameCount() == 1) {
-                // Initialize scene now that it has an extent.
+                // Load initial content now that the viewport has an extent.
                 // static const auto DefaultRealImpactPath = fs::path{"../../"} / "RealImpact" / "dataset" / "22_Cup" / "preprocessed";
-                // if (fs::exists(DefaultRealImpactPath)) scene->LoadRealImpact(DefaultRealImpactPath);
+                // if (fs::exists(DefaultRealImpactPath)) Apply(r, viewport, action::project::LoadRealImpact{.Directory = DefaultRealImpactPath});
                 if (initial_file) {
                     if (auto result = LoadFile(r, viewport, fs::path(initial_file)); !result) {
                         std::cerr << result.error() << std::endl;
@@ -719,9 +719,8 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
     audio_device.Uninit();
     NFD_Quit();
 
-    // Tear down scene (and its ctx-resident GPU stores) before clearing the registry —
-    // GpuBuffers is a component on the scene entity, so r.clear() would destroy it
-    // (and its VMA allocator) while MeshStore in ctx still holds outstanding allocations.
+    // Tear down the viewport and its ctx-resident GPU stores in order before clearing the registry,
+    // so GpuBuffers (and its VMA allocator) outlives the MeshStore allocations that retire into it.
     DeinitViewport(r, viewport);
 
     ImGui_ImplVulkan_Shutdown();

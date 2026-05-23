@@ -1,8 +1,8 @@
 #include "Bindless.h"
 #include "GpuBuffers.h"
 #include "ImageDecode.h"
-#include "SceneStores.h"
-#include "SceneTextures.h"
+#include "Stores.h"
+#include "Textures.h"
 #include "VulkanResources.h"
 #include "gltf/GltfScene.h"
 #include "mesh/MeshStore.h"
@@ -535,10 +535,10 @@ int main() {
         entt::registry R;
         entt::entity viewport;
         explicit SceneFixture(VulkanResources vk) {
-            InitSceneStoreCtx(R, vk);
-            viewport = WireSceneRegistry(R);
+            InitStoreCtx(R, vk);
+            viewport = WireRegistry(R);
         }
-        ~SceneFixture() { TearDownSceneStoreCtx(R); }
+        ~SceneFixture() { TearDownStoreCtx(R); }
         SceneFixture(const SceneFixture &) = delete;
         SceneFixture &operator=(const SceneFixture &) = delete;
     };
@@ -619,7 +619,7 @@ int main() {
             if (!load) return;
             materialize_textures(fx.R, fx.viewport);
 
-            // Skip the WireSceneRegistry default-white RawPixels texture (no SourceImageIndex link).
+            // Skip the WireRegistry default-white RawPixels texture (no SourceImageIndex link).
             const auto &textures = fx.R.ctx().get<TextureStore>();
             const TextureEntry *tex = nullptr;
             for (const auto &t : textures.Textures) {

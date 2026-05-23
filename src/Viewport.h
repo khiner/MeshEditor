@@ -11,8 +11,8 @@
 
 struct SvgResource;
 
-// Initialize the scene singleton entity and all ctx-resident GPU stores, pipelines, and reactive subscriptions.
-// Returns the scene entity carrying scene-level components.
+// Initialize the viewport singleton entity and all ctx-resident GPU stores, pipelines, and reactive subscriptions.
+// Returns the viewport entity carrying viewport-level components.
 entt::entity InitViewport(entt::registry &, VulkanResources);
 // Inverse of InitViewport. Must be called before clearing the registry so command buffers
 // are freed before their owning pool, and ctx stores are torn down in dependency order.

@@ -39,7 +39,7 @@ ReactiveTracker track(entt::registry &r) { return {r.storage<entt::reactive>(ent
 template<typename Change>
 auto &reactive(entt::registry &r) { return r.storage<entt::reactive>(entt::type_hash<Change>::value()); }
 
-// Lets domain systems (e.g. audio) register per-frame reactive handlers without coupling to Scene.
+// Lets domain systems (e.g. audio) register per-frame reactive handlers without coupling to the viewport.
 using ComponentEventHandler = std::function<void(entt::registry &)>;
 
 inline void RegisterComponentEventHandler(entt::registry &r, ComponentEventHandler handler) {

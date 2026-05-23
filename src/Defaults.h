@@ -12,7 +12,7 @@ constexpr float Pi{std::numbers::pi_v<float>};
 
 void UpdateDerivedColors(ViewportTheme &);
 
-struct SceneDefaults {
+struct Defaults {
     static World World;
     static ViewCamera ViewCamera;
     static WorkspaceLights WorkspaceLights;

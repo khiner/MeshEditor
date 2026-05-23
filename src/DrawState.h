@@ -41,7 +41,7 @@ struct SelectionDrawInfo {
 };
 
 // Per-scene draw-list scratch storage. Re-populated each frame by RecordRenderCommandBuffer;
-// vector capacity is amortized across frames. Component on the scene singleton entity.
+// vector capacity is amortized across frames. Component on the viewport singleton entity.
 struct DrawState {
     DrawListBuilder List;
     uint32_t MainDrawCount{0}; // Draws.size() after main batches, before silhouette

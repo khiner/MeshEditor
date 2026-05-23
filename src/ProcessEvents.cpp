@@ -5,25 +5,27 @@
 #include "Armature.h"
 #include "BBox.h"
 #include "Bindless.h"
+#include "Changes.h"
+#include "Defaults.h"
 #include "EntityDestroyTracker.h"
 #include "ExtrasMesh.h"
 #include "GpuBuffers.h"
 #include "Instance.h"
+#include "InteractionComponents.h"
 #include "MeshComponents.h"
 #include "NodeTransformAnimation.h"
+#include "ObjectOps.h"
 #include "Pipelines.h"
 #include "Reactive.h"
-#include "SceneChanges.h"
-#include "SceneComponents.h"
-#include "SceneDefaults.h"
-#include "SceneOps.h"
-#include "SceneSelection.h"
-#include "SceneSelectionGpu.h"
-#include "SceneTextures.h"
-#include "SceneTree.h"
+#include "SceneGraph.h"
+#include "Selection.h"
+#include "SelectionComponents.h"
+#include "SelectionGpu.h"
 #include "SoundVertices.h"
+#include "Textures.h"
 #include "Timer.h"
 #include "TransformMath.h"
+#include "ViewportComponents.h"
 #include "VulkanResources.h"
 #include "gltf/GltfScene.h"
 #include "mesh/MeshStore.h"
@@ -236,8 +238,8 @@ void SetEditMode(entt::registry &R, entt::entity viewport, Element mode) {
     std::vector<ElementRange> old_ranges;
     uint32_t old_max_end = 0;
     for (auto [mesh_entity, br, mesh] : R.view<MeshSelectionBitsetRange, const Mesh>().each()) {
-        const uint32_t old_count = br.Count, new_count = scene_selection::GetElementCount(mesh, mode);
-        auto from_handles = scene_selection::ScanBitsetRange(bits, br.Offset, old_count);
+        const uint32_t old_count = br.Count, new_count = selection::GetElementCount(mesh, mode);
+        auto from_handles = selection::ScanBitsetRange(bits, br.Offset, old_count);
         if (old_count > 0) old_ranges.emplace_back(mesh_entity, br.Offset, old_count);
         old_max_end = std::max(old_max_end, br.Offset + old_count);
         R.remove<MeshActiveElement>(mesh_entity);
@@ -265,7 +267,7 @@ void SetEditMode(entt::registry &R, entt::entity viewport, Element mode) {
         br.Offset = next_offset;
         br.Count = p.NewCount;
         const auto &mesh = R.get<const Mesh>(p.MeshEntity);
-        for (const uint32_t h : scene_selection::ConvertSelectionElement(p.FromHandles, mesh, current_mode, mode)) {
+        for (const uint32_t h : selection::ConvertSelectionElement(p.FromHandles, mesh, current_mode, mode)) {
             if (h >= p.NewCount) continue;
             const uint32_t gbit = next_offset + h;
             bits[gbit >> 5] |= 1u << (gbit & 31u);
@@ -1076,7 +1078,7 @@ RenderRequest ProcessComponentEvents(entt::registry &R, entt::entity viewport) {
     const auto interaction_mode = R.get<const Interaction>(viewport).Mode;
     const bool is_edit_mode = interaction_mode == InteractionMode::Edit;
 
-    const auto edit_transform_context = is_edit_mode ? EditTransformContext{scene_selection::ComputePrimaryEditInstances(R, false)} : EditTransformContext{};
+    const auto edit_transform_context = is_edit_mode ? EditTransformContext{selection::ComputePrimaryEditInstances(R, false)} : EditTransformContext{};
     const auto orbit_to_active = [&](entt::entity instance_entity, Element element, uint32_t handle) {
         if (!R.get<const OrbitToActive>(viewport).Value) return;
         const auto world_pos = ComputeElementWorldPosition(R, instance_entity, element, handle);
@@ -1197,7 +1199,7 @@ RenderRequest ProcessComponentEvents(entt::registry &R, entt::entity viewport) {
             if (auto *br = R.try_get<MeshSelectionBitsetRange>(mesh_entity); br && edit_mode != Element::None) {
                 // Topology changed: zero stale selection bits and update count.
                 const auto &mesh = R.get<const Mesh>(mesh_entity);
-                const uint32_t new_count = scene_selection::GetElementCount(mesh, edit_mode);
+                const uint32_t new_count = selection::GetElementCount(mesh, edit_mode);
                 const uint32_t max_words = (std::max(br->Count, new_count) + 31) / 32;
                 memset(&Buffers.SelectionBitset.Data()[br->Offset / 32], 0, max_words * sizeof(uint32_t));
                 br->Count = new_count;
@@ -1252,7 +1254,7 @@ RenderRequest ProcessComponentEvents(entt::registry &R, entt::entity viewport) {
     }
     if (!reactive<changes::ViewportDisplay>(R).empty()) {
         request(RenderRequest::ReRecord);
-        dirty_overlay_meshes.merge(scene_selection::GetSelectedMeshEntities(R));
+        dirty_overlay_meshes.merge(selection::GetSelectedMeshEntities(R));
     }
     if (!reactive<changes::InteractionMode>(R).empty()) {
         request(RenderRequest::ReRecord);
@@ -1274,7 +1276,7 @@ RenderRequest ProcessComponentEvents(entt::registry &R, entt::entity viewport) {
                 // Apply edit transform once per selected mesh via a representative selected instance.
                 // This keeps linked instances from receiving duplicate per-instance edits.
                 for (const auto &[mesh_entity, instance_entity] : edit_transform_context.TransformInstances) {
-                    if (scene_selection::HasScaleLockedInstance(R, mesh_entity)) continue;
+                    if (selection::HasScaleLockedInstance(R, mesh_entity)) continue;
                     const auto &mesh = R.get<const Mesh>(mesh_entity);
                     const auto vertex_states = Meshes.GetVertexStates(mesh.GetStoreId());
                     const auto vertices = mesh.GetVerticesSpan();

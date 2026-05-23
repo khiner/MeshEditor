@@ -7,20 +7,20 @@
 
 #include <memory>
 
-struct SceneIconsTransform {
+struct ViewportIconsTransform {
     std::unique_ptr<SvgResource> Select, SelectBox, Move, Rotate, Scale, Universal;
 };
-struct SceneIconsShading {
+struct ViewportIconsShading {
     std::unique_ptr<SvgResource> Wireframe, Solid, MaterialPreview, Rendered;
 };
 
-// Loaded once by LoadSceneIcons after the GPU context is ready.
-struct SceneIcons {
-    SceneIconsTransform Transform;
-    SceneIconsShading Shading;
+// Loaded once by LoadViewportIcons after the GPU context is ready.
+struct ViewportIcons {
+    ViewportIconsTransform Transform;
+    ViewportIconsShading Shading;
     std::unique_ptr<SvgResource> Overlay;
     AnimationIcons Anim;
 };
 
-// Emplaces SceneIcons on `viewport` and uploads each SVG into its bitmap texture.
-void LoadSceneIcons(entt::registry &, entt::entity viewport);
+// Emplaces ViewportIcons on `viewport` and uploads each SVG into its bitmap texture.
+void LoadViewportIcons(entt::registry &, entt::entity viewport);

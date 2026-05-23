@@ -91,7 +91,7 @@ enum class TextureColorSpace : uint8_t {
 
 struct PendingTextureUpload {
     // Index into a `gltf::Image` vector supplied at materialization (typically
-    // `gltf::SourceAssets::Images` on the scene entity). Caller must keep the storage alive
+    // `gltf::SourceAssets::Images` on the viewport entity). Caller must keep the storage alive
     // until the drain pass runs.
     struct GltfImageRef {
         uint32_t ImageIndex;

@@ -39,7 +39,7 @@ struct ObjectCreateInfo {
     MeshInstanceCreateInfo::SelectBehavior Select{MeshInstanceCreateInfo::SelectBehavior::Exclusive};
 };
 
-// Singleton components on the scene entity.
+// Singleton components on the viewport entity.
 struct NameRegistry {
     std::unordered_set<std::string> Names;
 };
@@ -62,7 +62,7 @@ void Select(entt::registry &, entt::entity);
 void ToggleSelected(entt::registry &, entt::entity);
 void ApplySelectBehavior(entt::registry &, entt::entity, MeshInstanceCreateInfo::SelectBehavior);
 
-// Entity creation. None apply SelectBehavior — Scene wrappers do that after.
+// Entity creation. None apply SelectBehavior — callers do that after.
 std::pair<entt::entity, entt::entity> AddMesh(entt::registry &, MeshStore &, Mesh &&, std::optional<MeshInstanceCreateInfo> = {});
 entt::entity AddMeshInstance(entt::registry &, entt::entity mesh_entity, MeshInstanceCreateInfo);
 

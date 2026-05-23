@@ -3,10 +3,11 @@
 #include "FFTData.h"
 #include "FaustDSP.h"
 #include "Instance.h"
+#include "InteractionComponents.h"
 #include "Reactive.h"
 #include "RealImpactComponents.h"
-#include "SceneSelection.h"
-#include "SceneTree.h"
+#include "SceneGraph.h"
+#include "Selection.h"
 #include "SoundVertices.h"
 #include "Tets.h"
 #include "Worker.h"
@@ -740,7 +741,7 @@ void DrawObjectAudioControls(
     // Sample ops (Add/Replace/Remove) are only available in Edit / Excite mode.
     const auto mode = r.get<const Interaction>(viewport).Mode;
     const bool sample_ops_available = mode == InteractionMode::Edit || mode == InteractionMode::Excite;
-    const auto op_vertices = sample_ops_available ? scene_selection::GetSampleOpVertices(r, viewport, e, selection_bits) : std::vector<uint32_t>{};
+    const auto op_vertices = sample_ops_available ? selection::GetSampleOpVertices(r, viewport, e, selection_bits) : std::vector<uint32_t>{};
 
     const bool has_model = r.all_of<SoundVerticesModel>(e);
     if (!has_model && Button("Create modal model")) {

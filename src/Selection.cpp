@@ -1,13 +1,13 @@
-#include "SceneSelection.h"
+#include "Selection.h"
 #include "Entity.h"
 #include "Instance.h"
+#include "InteractionComponents.h"
 #include "MeshComponents.h"
-#include "SceneModeComponents.h"
 #include "mesh/Mesh.h"
 
 #include <entt/entity/registry.hpp>
 
-namespace scene_selection {
+namespace selection {
 
 void SelectAll(uint32_t *bits, uint32_t offset, uint32_t count) {
     if (count == 0) return;
@@ -167,4 +167,4 @@ uint32_t GetElementCount(const Mesh &mesh, Element element) {
     return 0;
 }
 
-} // namespace scene_selection
+} // namespace selection

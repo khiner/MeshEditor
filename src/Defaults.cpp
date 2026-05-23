@@ -1,4 +1,4 @@
-#include "SceneDefaults.h"
+#include "Defaults.h"
 
 namespace {
 vec3 Shade(vec3 c, int offset) { return glm::clamp(c + float(offset) / 255.f, 0.f, 1.f); }
@@ -20,14 +20,14 @@ void UpdateDerivedColors(ViewportTheme &theme) {
     c.BonePoseActiveUnsel = BlendShade(c.Wire, c.BonePose, 0.15f);
 }
 
-World SceneDefaults::World{.Origin{0, 0, 0}, .Up{0, 1, 0}};
-ViewCamera SceneDefaults::ViewCamera{
+World Defaults::World{.Origin{0, 0, 0}, .Up{0, 1, 0}};
+ViewCamera Defaults::ViewCamera{
     {14.729f, 8.018f, 6.504f}, // distance of ~18
     {0, 0, 0},
     {Perspective{.FieldOfViewRad = 2.f * std::atan(0.72f * 9.f / 16.f), .FarClip = 1000.f, .NearClip = DefaultPerspectiveNearClip}},
 };
 // Blender's default BKE_studiolight_default values (studiolight.cc)
-WorkspaceLights SceneDefaults::WorkspaceLights{
+WorkspaceLights Defaults::WorkspaceLights{
     .Lights = {{
         {.Direction = {-0.352546f, 0.170931f, -0.920051f}, .SpecularColor = {0.266761f, 0.266761f, 0.266761f}, .DiffuseColor = {0.033103f, 0.033103f, 0.033103f}, .Wrap = 0.526620f},
         {.Direction = {-0.408163f, 0.346939f, 0.844415f}, .SpecularColor = {0.599030f, 0.599030f, 0.599030f}, .DiffuseColor = {0.521083f, 0.538226f, 0.538226f}, .Wrap = 0.0f},
@@ -73,4 +73,4 @@ static ViewportTheme MakeDefaultViewportTheme() {
     return theme;
 }
 
-ViewportTheme SceneDefaults::ViewportTheme = MakeDefaultViewportTheme();
+ViewportTheme Defaults::ViewportTheme = MakeDefaultViewportTheme();

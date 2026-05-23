@@ -4,7 +4,7 @@
 #include "AnimationTimeline.h"
 #include "Entity.h"
 #include "PhysicsWorld.h"
-#include "SceneTree.h"
+#include "SceneGraph.h"
 #include "Variant.h"
 #include "numeric/vec2.h"
 #include "ui/FieldEdit.h"

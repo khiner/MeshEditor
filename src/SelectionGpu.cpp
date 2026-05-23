@@ -1,20 +1,21 @@
-#include "SceneSelectionGpu.h"
+#include "SelectionGpu.h"
 
 #include "Apply.h"
 #include "Armature.h"
 #include "Bindless.h"
 #include "DrawState.h"
+#include "Drawing.h"
 #include "Entity.h"
 #include "GpuBuffers.h"
 #include "Instance.h"
 #include "MeshComponents.h"
+#include "ObjectOps.h"
 #include "Pipelines.h"
-#include "SceneComponents.h"
-#include "SceneDrawing.h"
-#include "SceneOps.h"
-#include "SceneSelection.h"
+#include "Selection.h"
+#include "SelectionComponents.h"
 #include "SoundVertices.h"
 #include "Timer.h"
+#include "ViewportComponents.h"
 #include "ViewportRenderGpu.h"
 #include "VkFenceWait.h"
 #include "VulkanResources.h"
@@ -141,7 +142,7 @@ void RenderElementSelectionPass(
     auto &meshes = R.ctx().get<MeshStore>();
     auto &buffers = R.ctx().get<GpuBuffers>();
 
-    const auto primary_edit_instances = scene_selection::ComputePrimaryEditInstances(R);
+    const auto primary_edit_instances = selection::ComputePrimaryEditInstances(R);
     const bool xray_selection = R.get<const SelectionXRay>(viewport).Value;
     const auto element_pipeline = [xray_selection, write_bitset](Element el) -> SPT {
         if (el == Element::Vertex) {

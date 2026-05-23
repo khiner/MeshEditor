@@ -3,22 +3,24 @@
 #include "Apply.h"
 #include "Armature.h"
 #include "Bindless.h"
+#include "Changes.h"
+#include "Defaults.h"
 #include "DrawState.h"
 #include "EntityDestroyTracker.h"
 #include "FrameState.h"
+#include "InteractionComponents.h"
 #include "MeshComponents.h"
 #include "Paths.h"
 #include "Pipelines.h"
 #include "ProcessEvents.h"
 #include "Reactive.h"
-#include "SceneChanges.h"
-#include "SceneDefaults.h"
-#include "SceneSelection.h"
-#include "SceneStores.h"
-#include "SceneTextures.h"
-#include "SceneTree.h"
+#include "SceneGraph.h"
+#include "Selection.h"
+#include "SelectionComponents.h"
 #include "SoundVertices.h"
+#include "Stores.h"
 #include "SvgResource.h"
+#include "Textures.h"
 #include "Timer.h"
 #include "VideoRecorder.h"
 #include "ViewportRenderGpu.h"
@@ -54,7 +56,7 @@ struct ViewportRenderResources {
     std::unique_ptr<mvk::ImGuiTexture> ViewportTexture;
 };
 
-// Present on the scene entity iff recording is active.
+// Present on the viewport entity iff recording is active.
 struct VideoRecording {
     std::unique_ptr<VideoRecorder> Recorder;
     std::pair<vk::Offset3D, vk::Extent2D> Region; // Locked at StartRecording.
@@ -202,7 +204,7 @@ bool SubmitViewport(entt::registry &R, entt::entity viewport, vk::Fence viewport
 } // namespace
 
 entt::entity InitViewport(entt::registry &R, VulkanResources vc) {
-    InitSceneStoreCtx(R, vc);
+    InitStoreCtx(R, vc);
     auto &Slots = R.ctx().get<DescriptorSlots>();
     auto &pipelines = R.ctx().emplace<Pipelines>(vc.Device, vc.PhysicalDevice, Slots.GetSetLayout(), Slots.GetSet());
     auto &Physics = physics::Init(R);
@@ -262,14 +264,14 @@ entt::entity InitViewport(entt::registry &R, VulkanResources vc) {
         r.patch<Transform>(e, [](auto &) {});
     }>();
 
-    const auto viewport = WireSceneRegistry(R);
+    const auto viewport = WireRegistry(R);
     auto &Buffers = R.ctx().get<GpuBuffers>();
     R.emplace<ViewportDisplay>(viewport);
     R.emplace<Interaction>(viewport);
     R.emplace<EditMode>(viewport);
-    R.emplace<ViewportTheme>(viewport, SceneDefaults::ViewportTheme);
-    R.emplace<colors::AxesArray>(viewport, colors::MakeAxes(SceneDefaults::ViewportTheme.AxisColors));
-    R.emplace<ViewCamera>(viewport, SceneDefaults::ViewCamera);
+    R.emplace<ViewportTheme>(viewport, Defaults::ViewportTheme);
+    R.emplace<colors::AxesArray>(viewport, colors::MakeAxes(Defaults::ViewportTheme.AxisColors));
+    R.emplace<ViewCamera>(viewport, Defaults::ViewCamera);
     R.emplace<MaterialPreviewLighting>(viewport, false, false, 1.f, 0.f);
     R.emplace<RenderedLighting>(viewport, true, true, 1.f, 0.f);
     R.emplace<ViewportExtent>(viewport);
@@ -298,7 +300,7 @@ entt::entity InitViewport(entt::registry &R, VulkanResources vc) {
     R.emplace<SelectionStale>(viewport); // Initial state: fragments need rendering on first selection use.
     Physics.ApplySimulationSettings(R.emplace<PhysicsSimulationSettings>(viewport));
 
-    Buffers.WorkspaceLightsUBO.Update(as_bytes(SceneDefaults::WorkspaceLights));
+    Buffers.WorkspaceLightsUBO.Update(as_bytes(Defaults::WorkspaceLights));
     ResetObjectPickKeys(Buffers);
 
     auto init_batch = BeginTextureUploadBatch(vc.Device, *one_shot.Pool, Buffers.Ctx);
@@ -339,10 +341,10 @@ void DeinitViewport(entt::registry &R, entt::entity viewport) {
     R.ctx().erase<EntityDestroyTracker>();
     physics::Deinit(R);
     R.ctx().erase<Pipelines>();
-    // Destroy the viewport entity (frees SceneIcons/FaustDSP SVG images, which are VMA allocations
-    // in GpuBuffers.Ctx) before TearDownSceneStoreCtx erases GpuBuffers and while the device is alive.
+    // Destroy the viewport entity (frees ViewportIcons/FaustDSP SVG images, which are VMA allocations
+    // in GpuBuffers.Ctx) before TearDownStoreCtx erases GpuBuffers and while the device is alive.
     if (R.valid(viewport)) R.destroy(viewport);
-    TearDownSceneStoreCtx(R);
+    TearDownStoreCtx(R);
 }
 
 void MakeSvgResource(entt::registry &R, std::unique_ptr<SvgResource> &svg, std::filesystem::path path) {
@@ -391,7 +393,7 @@ void CaptureRecordFrame(entt::registry &R, entt::entity viewport) {
     auto *rec = R.try_get<VideoRecording>(viewport);
     if (!rec || !rec->Recorder || !rec->Recorder->IsActive() || !pipelines.Main.Resources) return;
     if (GetCaptureRegion(R) != rec->Region) {
-        std::println(stderr, "Scene: capture region changed; stopping recording.");
+        std::println(stderr, "Viewport: capture region changed; stopping recording.");
         StopRecording(R, viewport);
         return;
     }

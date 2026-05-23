@@ -1,14 +1,12 @@
 #pragma once
 
-#include "Bindless.h"
-#include "BoneSelection.h"
-#include "SceneModeComponents.h"
-#include "SceneOps.h"
+#include "ObjectOps.h"
 #include "TransformGizmo.h"
 #include "ViewCamera.h"
 #include "entt_fwd.h"
 #include "gpu/DebugChannel.h"
-#include "numeric/vec2.h"
+#include "gpu/Element.h"
+#include "gpu/InteractionMode.h"
 
 #include <array>
 #include <entt/entity/fwd.hpp>
@@ -16,7 +14,6 @@
 #include <filesystem>
 #include <optional>
 #include <set>
-#include <span>
 #include <vulkan/vulkan.hpp>
 
 struct SubmitDirty {}; // Generic tag for events that only require command buffer submission (not re-record)
@@ -30,12 +27,6 @@ struct MeshMaterialAssignment {
 };
 struct MeshMaterialSlotSelection {
     uint32_t PrimitiveIndex{0};
-};
-
-// A contiguous span of a mesh's elements (vertices/edges/faces) in the SelectionBitset.
-struct ElementRange {
-    entt::entity MeshEntity;
-    uint32_t Offset, Count;
 };
 
 // Presence indicates active transform
@@ -52,7 +43,7 @@ enum class ViewportShadingMode : uint8_t {
     Rendered,
 };
 
-// Component on the scene singleton entity. Changes require command buffer re-recording.
+// Component on the viewport singleton entity. Changes require command buffer re-recording.
 struct ViewportDisplay {
     ViewportShadingMode ViewportShading{ViewportShadingMode::Solid};
     ViewportShadingMode FillMode{ViewportShadingMode::Solid}; // last non-wireframe mode (for Shift+Z toggle)
@@ -100,19 +91,8 @@ struct PbrMeshFeatures {
     uint32_t Mask{0};
 };
 
-// Snapshot of selection state at the start of a shift+box-drag.
-// Presence on viewport means an additive box-drag is active.
-struct AdditiveBoxSelectBaseline {
-    std::vector<entt::entity> SelectedEntities;
-    std::vector<std::pair<entt::entity, BoneSelection>> BoneSelections;
-    std::vector<uint32_t> ElementBitset;
-};
-
 // Singleton flags on viewport, consumed and cleared by ProcessComponentEvents.
-struct SelectionBitsDirty {}; // Bitset written by Interact; dispatches the compute update.
-struct ElementStatesDirty {}; // Element state buffers updated by GPU compute; triggers a submit.
 struct ProfileNextProcessComponentEvents {}; // Profile the next ProcessComponentEvents pass.
-struct SelectionStale {}; // Selection fragment data no longer matches current scene. Cleared after RenderSelectionPass.
 
 // Smooth float frame position for playback, advanced by Render. Singleton on viewport.
 struct PlaybackFrame {
@@ -134,10 +114,6 @@ struct EnabledInteractionModes {
     std::set<InteractionMode> Value{InteractionMode::Object, InteractionMode::Edit, InteractionMode::Pose};
 };
 
-struct PendingEditElementClick {
-    uvec2 MousePx;
-    bool Toggle;
-};
 struct PendingSetStudioEnvironment {
     uint32_t Index;
 };
@@ -170,65 +146,8 @@ struct PendingImportMesh {
 // Emitted by JumpToStart and LoadGltf; cleared after the cache is cleared.
 struct PhysicsCacheInvalid {};
 
-// Non-owning span over the GPU-mapped SelectionBitset words.
-// Lets Apply read/write the bitset without depending on SceneStores.
-// Initialized once by Scene; the underlying storage is stable.
-struct SelectionBitsetRef {
-    std::span<uint32_t> Value;
-};
-
-// RAII for the descriptor-slot leases used by the selection compute/render pipeline.
-struct SelectionSlots {
-    uint32_t HeadImage{}, SelectionCounter{}, ObjectPickKey{}, ElementPickCandidates{}, ObjectPickSeenBits{}, SelectionBitset{};
-    uint32_t ObjectIdSampler{}, DepthSampler{}, SilhouetteSampler{}, ColorSampler{}, LineDataSampler{}, TransmissionSampler{};
-
-    using Entry = std::pair<SlotType, uint32_t SelectionSlots::*>;
-    static constexpr std::array<Entry, 12> Entries{{
-        {SlotType::Image, &SelectionSlots::HeadImage},
-        {SlotType::Buffer, &SelectionSlots::SelectionCounter},
-        {SlotType::Buffer, &SelectionSlots::ObjectPickKey},
-        {SlotType::Buffer, &SelectionSlots::ElementPickCandidates},
-        {SlotType::Buffer, &SelectionSlots::ObjectPickSeenBits},
-        {SlotType::Buffer, &SelectionSlots::SelectionBitset},
-        {SlotType::Sampler, &SelectionSlots::ObjectIdSampler},
-        {SlotType::Sampler, &SelectionSlots::DepthSampler},
-        {SlotType::Sampler, &SelectionSlots::SilhouetteSampler},
-        {SlotType::Sampler, &SelectionSlots::ColorSampler},
-        {SlotType::Sampler, &SelectionSlots::LineDataSampler},
-        {SlotType::Sampler, &SelectionSlots::TransmissionSampler},
-    }};
-
-    explicit SelectionSlots(DescriptorSlots &slots) : Slots(&slots) {
-        for (const auto &[type, field] : Entries) this->*field = slots.Allocate(type);
-    }
-    SelectionSlots(const SelectionSlots &) = delete;
-    SelectionSlots &operator=(const SelectionSlots &) = delete;
-    SelectionSlots(SelectionSlots &&o) noexcept : Slots(o.Slots) {
-        for (const auto &[_, field] : Entries) this->*field = o.*field;
-        o.Slots = nullptr;
-    }
-    SelectionSlots &operator=(SelectionSlots &&o) noexcept {
-        if (this != &o) {
-            Release();
-            Slots = o.Slots;
-            for (const auto &[_, field] : Entries) this->*field = o.*field;
-            o.Slots = nullptr;
-        }
-        return *this;
-    }
-    ~SelectionSlots() { Release(); }
-
-private:
-    DescriptorSlots *Slots{nullptr};
-    void Release() {
-        if (!Slots) return;
-        for (const auto &[type, field] : Entries) Slots->Release({type, this->*field});
-        Slots = nullptr;
-    }
-};
-
 // One-shot GPU sync primitives for synchronous passes (selection compute, element pick,
-// glTF load, texture uploads, etc.). Owns its Vk resources directly; Scene's render-pipeline
+// glTF load, texture uploads, etc.). Owns its Vk resources directly; the render-pipeline
 // command buffers are allocated from `Pool` and freed before this component is destroyed.
 struct OneShotGpu {
     vk::UniqueCommandPool Pool;
@@ -248,32 +167,14 @@ inline OneShotGpu MakeOneShotGpu(vk::Device device, uint32_t queue_family) {
     };
 }
 
-// Selection ignores occlusion when true.
-struct SelectionXRay {
-    bool Value{false};
-};
-
 // In Edit/Excite mode, orbit camera to active element on selection change.
 struct OrbitToActive {
     bool Value{false};
 };
 
-enum class SelectionGesture : uint8_t {
-    Click,
-    Box,
-};
-
-struct BoxSelectState {
-    SelectionGesture Gesture{SelectionGesture::Box};
-};
-
 struct TransformGizmoState {
     TransformGizmo::Config Config;
     TransformGizmo::Mode Mode;
-};
-
-struct SelectedInstanceCount {
-    uint32_t Value{0};
 };
 
 struct BBoxWireframe {

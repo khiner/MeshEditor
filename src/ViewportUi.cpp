@@ -1,21 +1,23 @@
 #include "ViewportUi.h"
 #include "Armature.h"
+#include "Defaults.h"
 #include "FrameState.h"
 #include "Instance.h"
+#include "InteractionComponents.h"
 #include "MeshComponents.h"
 #include "NodeTransformAnimation.h"
 #include "Path.h"
 #include "PbrFeature.h"
-#include "SceneDefaults.h"
-#include "SceneIcons.h"
-#include "SceneSelection.h"
-#include "SceneSelectionGpu.h"
-#include "SceneTextures.h"
-#include "SceneTree.h"
+#include "SceneGraph.h"
+#include "Selection.h"
+#include "SelectionComponents.h"
+#include "SelectionGpu.h"
 #include "SoundVertices.h"
 #include "SvgResource.h"
+#include "Textures.h"
 #include "Timer.h"
 #include "TransformMath.h"
+#include "ViewportIcons.h"
 #include "audio/AudioSystem.h"
 #include "gltf/GltfScene.h"
 #include "mesh/MeshStore.h"
@@ -30,8 +32,8 @@
 
 #include "Apply.h"
 #include "GpuBuffers.h"
-#include "SceneComponents.h"
-#include "SceneTransformUtils.h"
+#include "TransformUtils.h"
+#include "ViewportComponents.h"
 
 using std::ranges::any_of, std::ranges::contains, std::ranges::distance, std::ranges::find, std::ranges::find_if, std::ranges::fold_left, std::ranges::to;
 using std::views::transform;
@@ -408,7 +410,7 @@ void Interact(entt::registry &R, entt::entity viewport, FrameState &Frame, actio
     const auto active_entity = FindActiveEntity(R);
     const bool has_frozen_selected = R.view<Selected, ScaleLocked>().begin() != R.view<Selected, ScaleLocked>().end();
     const bool edit_transform_locked = interaction_mode == InteractionMode::Edit &&
-        any_of(scene_selection::GetSelectedMeshEntities(R), [&](entt::entity mesh_entity) { return scene_selection::HasScaleLockedInstance(R, mesh_entity); });
+        any_of(selection::GetSelectedMeshEntities(R), [&](entt::entity mesh_entity) { return selection::HasScaleLockedInstance(R, mesh_entity); });
     const bool transform_shortcuts_enabled = !edit_transform_locked;
     const bool scale_shortcut_enabled = transform_shortcuts_enabled && !has_frozen_selected;
     // Keyboard shortcuts use ImGui's Shortcut() routing system with RouteGlobal so they fire from any
@@ -614,7 +616,7 @@ void InteractOverlay(entt::registry &R, entt::entity viewport, FrameState &Frame
     auto &Buffers = R.ctx().get<GpuBuffers>();
     auto &Meshes = R.ctx().get<MeshStore>();
     auto &Environments = R.ctx().get<EnvironmentStore>();
-    const auto &icons = R.get<const SceneIcons>(viewport);
+    const auto &icons = R.get<const ViewportIcons>(viewport);
     const rect viewport_rect{ToGlm(GetWindowPos()), ToGlm(GetContentRegionAvail())};
     const bool active_transform = TransformGizmo::IsUsing();
     static constexpr float OrientationGizmoSize{84};
@@ -635,7 +637,7 @@ void InteractOverlay(entt::registry &R, entt::entity viewport, FrameState &Frame
         const auto interaction_mode = R.get<const Interaction>(viewport).Mode;
         const bool has_frozen_selected = R.view<Selected, ScaleLocked>().begin() != R.view<Selected, ScaleLocked>().end();
         const bool edit_transform_locked = interaction_mode == InteractionMode::Edit &&
-            any_of(scene_selection::GetSelectedMeshEntities(R), [&](entt::entity mesh_entity) { return scene_selection::HasScaleLockedInstance(R, mesh_entity); });
+            any_of(selection::GetSelectedMeshEntities(R), [&](entt::entity mesh_entity) { return selection::HasScaleLockedInstance(R, mesh_entity); });
         const bool transform_enabled = !edit_transform_locked;
         const bool scale_enabled = transform_enabled && !has_frozen_selected;
 
@@ -791,7 +793,7 @@ void InteractOverlay(entt::registry &R, entt::entity viewport, FrameState &Frame
                     auto &lights = Buffers.GetWorkspaceLights();
                     bool changed = false;
                     if (Button("Reset##Lighting")) {
-                        lights = SceneDefaults::WorkspaceLights;
+                        lights = Defaults::WorkspaceLights;
                         changed = true;
                     }
                     bool use_specular = lights.UseSpecular != 0;
@@ -1020,7 +1022,7 @@ void InteractOverlay(entt::registry &R, entt::entity viewport, FrameState &Frame
         const auto *bits = Buffers.SelectionBitset.Data();
         for (const auto [e, instance] : R.view<const Instance, const Selected>(entt::exclude<ScaleLocked>).each()) {
             if (const auto *br = R.try_get<const MeshSelectionBitsetRange>(instance.Entity)) {
-                if (scene_selection::CountSelected(bits, br->Offset, br->Count) > 0) return true;
+                if (selection::CountSelected(bits, br->Offset, br->Count) > 0) return true;
             }
         }
         return false;
@@ -1060,7 +1062,7 @@ void InteractOverlay(entt::registry &R, entt::entity viewport, FrameState &Frame
         }
         const auto root_count = root_selected.size();
         const auto edit_transform_instances = mesh_edit_mode ?
-            scene_selection::ComputePrimaryEditInstances(R, false) :
+            selection::ComputePrimaryEditInstances(R, false) :
             std::unordered_map<entt::entity, entt::entity>{};
 
         vec3 pivot{};
@@ -1524,7 +1526,7 @@ void RenderEntityControls(entt::registry &R, entt::entity viewport, entt::entity
     if (is_mesh_instance) {
         const auto active_mesh_entity = active_instance->Entity;
         if (auto *prim_shape = R.try_get<PrimitiveShape>(active_mesh_entity)) {
-            const bool frozen = scene_selection::HasScaleLockedInstance(R, active_mesh_entity);
+            const bool frozen = selection::HasScaleLockedInstance(R, active_mesh_entity);
             if (frozen) BeginDisabled();
             if (const auto update_label = std::format("Edit primitive{}", frozen ? " (frozen)" : "");
                 CollapsingHeader(update_label.c_str()) && !frozen) {
@@ -1763,7 +1765,7 @@ void RenderEntityControls(entt::registry &R, entt::entity viewport, entt::entity
 
         const char *type_names[]{"Directional", "Point", "Spot"};
         if (int type_i = int(light.Type); Combo("Type", &type_i, type_names, IM_ARRAYSIZE(type_names))) {
-            auto next = SceneDefaults::MakePunctualLight(PunctualLightType(type_i));
+            auto next = Defaults::MakePunctualLight(PunctualLightType(type_i));
             next.TransformSlotOffset = light.TransformSlotOffset;
             next.Color = light.Color;
             next.Intensity = light.Intensity;
@@ -1928,7 +1930,7 @@ void RenderControls(entt::registry &R, entt::entity viewport, action::Emit emit)
                         if (const auto *instance = R.try_get<Instance>(active_entity); instance && R.all_of<Mesh>(instance->Entity)) {
                             const auto *br = R.try_get<const MeshSelectionBitsetRange>(instance->Entity);
                             const uint32_t selected_count = br ?
-                                scene_selection::CountSelected(Buffers.SelectionBitset.Data(), br->Offset, br->Count) :
+                                selection::CountSelected(Buffers.SelectionBitset.Data(), br->Offset, br->Count) :
                                 0;
                             Text("Editing %s: %u selected", label(edit_mode).data(), selected_count);
                         }
@@ -1998,7 +2000,7 @@ void RenderControls(entt::registry &R, entt::entity viewport, action::Emit emit)
                     if (bool set_visible = any_visible && !any_hidden; Checkbox("Visible", &set_visible)) emit(action::object::SetSelectedVisible{set_visible});
                     if (mixed_visible) PopItemFlag();
 
-                    const auto face_mesh_entities = scene_selection::GetSelectedMeshEntities(R) |
+                    const auto face_mesh_entities = selection::GetSelectedMeshEntities(R) |
                         std::views::filter([&](entt::entity me) { return R.get<const Mesh>(me).FaceCount() > 0; }) |
                         to<std::vector>();
                     if (!face_mesh_entities.empty()) {

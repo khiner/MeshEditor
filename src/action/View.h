@@ -1,9 +1,9 @@
 #pragma once
 
 #include "Camera.h"
-#include "SceneComponents.h"
-#include "SceneTransformUtils.h"
 #include "TransformGizmo.h"
+#include "TransformUtils.h"
+#include "ViewportComponents.h"
 #include "gpu/Element.h"
 #include "gpu/InteractionMode.h"
 #include "numeric/quat.h"
