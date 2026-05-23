@@ -3,10 +3,10 @@
 #include "gpu/Element.h"
 #include "gpu/InteractionMode.h"
 
-struct SceneInteraction {
+struct Interaction {
     InteractionMode Mode{InteractionMode::Object};
 };
 
-struct SceneEditMode {
+struct EditMode {
     Element Value{Element::Vertex};
 };

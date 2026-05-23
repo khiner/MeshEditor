@@ -6,15 +6,15 @@
 #include "action/Object.h"
 #include "action/Physics.h"
 #include "action/Project.h"
-#include "action/Scene.h"
 #include "action/Selection.h"
 #include "action/Timeline.h"
+#include "action/View.h"
 #include "audio/RealImpactComponents.h"
 #include "gpu/PunctualLight.h"
 
 namespace action {
 using Action = MergedVariantT<
-    Core, selection::Actions, object::Actions, project::Actions, scene::Actions,
+    Core, selection::Actions, object::Actions, project::Actions, view::Actions,
     physics::Actions, audio::Actions, bone::Actions, timeline::Actions,
     Update<DebugChannel>, Update<CollideMode>,
     Update<PhysicsCombineMode>, Update<PhysicsDriveType>, Update<PhysicsDriveMode>, Update<vk::ClearColorValue>,

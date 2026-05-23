@@ -7,8 +7,8 @@
 #include <optional>
 
 // Per-frame scratch state produced and consumed within a single frame.
-// Lives on Scene; passed by reference into Interact/InteractOverlay/DrawOverlay so producers and consumers see the same instance.
-struct SceneFrameState {
+// A component on the scene entity; passed by reference into Interact/InteractOverlay/DrawOverlay so producers and consumers see the same instance.
+struct FrameState {
     vec2 AccumulatedWrapMouseDelta{0, 0};
     vec2 PreciseWheelDelta{0, 0};
     uint32_t ObjectPickEpochTag{255}; // 8-bit epoch encoded in object click keys; wraps with periodic key reset

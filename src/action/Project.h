@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <filesystem>
 #include <variant>
 
@@ -15,7 +16,13 @@ struct SaveGltf {
 struct LoadRealImpact {
     std::filesystem::path Directory;
 };
+struct SetStudioEnvironment {
+    uint32_t Index;
+};
+struct SetSourceIblIntensity {
+    float Intensity;
+};
 
-using Actions = std::variant<NewDefaultScene>;
+using Actions = std::variant<NewDefaultScene, SetStudioEnvironment, SetSourceIblIntensity>;
 using FallibleActions = std::variant<LoadGltf, SaveGltf, LoadRealImpact>;
 } // namespace action::project

@@ -92,7 +92,7 @@ void WriteCubeSamplerDescriptor(DescriptorSlots &slots, vk::Device device, uint3
 }
 
 std::expected<CubemapEntry, std::string> CreateCubemapEntryFromMipFacesF32(
-    const SceneVulkanResources &vk, TextureUploadBatch &batch, DescriptorSlots &slots,
+    const VulkanResources &vk, TextureUploadBatch &batch, DescriptorSlots &slots,
     uint32_t pre_allocated_slot,
     const std::vector<CubemapMipFacesF32> &mip_faces,
     std::string name
@@ -192,7 +192,7 @@ KtxFormatPair SelectKtx2Format(vk::PhysicalDevice pd, TextureColorSpace cs) {
 }
 
 TextureEntry CreateCompressedTextureEntry(
-    const SceneVulkanResources &vk, TextureUploadBatch &batch, DescriptorSlots &slots,
+    const VulkanResources &vk, TextureUploadBatch &batch, DescriptorSlots &slots,
     uint32_t pre_allocated_slot,
     std::span<const std::byte> all_mip_data,
     std::vector<vk::BufferImageCopy> copies,
@@ -299,7 +299,7 @@ void ReleaseEnvironmentSamplerSlots(DescriptorSlots &slots, const EnvironmentSto
 }
 
 mvk::ImageResource RenderBitmapToImage(
-    const SceneVulkanResources &vk, TextureUploadBatch &batch,
+    const VulkanResources &vk, TextureUploadBatch &batch,
     std::span<const std::byte> data,
     uint32_t width, uint32_t height,
     vk::Format format,
@@ -317,7 +317,7 @@ mvk::ImageResource RenderBitmapToImage(
 
 namespace {
 TextureEntry CreateTextureEntryAtSlot(
-    const SceneVulkanResources &vk,
+    const VulkanResources &vk,
     TextureUploadBatch &batch,
     DescriptorSlots &slots,
     uint32_t pre_allocated_slot,
@@ -427,7 +427,7 @@ TextureEntry CreateTextureEntryAtSlot(
 } // namespace
 
 TextureEntry CreateTextureEntry(
-    const SceneVulkanResources &vk,
+    const VulkanResources &vk,
     TextureUploadBatch &batch,
     DescriptorSlots &slots,
     std::span<const std::byte> pixels_rgba8,
@@ -441,7 +441,7 @@ TextureEntry CreateTextureEntry(
 }
 
 std::expected<TextureEntry, std::string> CreateTextureEntryFromEncoded(
-    const SceneVulkanResources &vk, TextureUploadBatch &batch, DescriptorSlots &slots,
+    const VulkanResources &vk, TextureUploadBatch &batch, DescriptorSlots &slots,
     std::span<const std::byte> encoded_bytes, std::string_view encoded_name, std::string texture_name,
     TextureColorSpace color_space,
     vk::SamplerAddressMode wrap_s, vk::SamplerAddressMode wrap_t,
@@ -458,7 +458,7 @@ std::pair<uint32_t, uint32_t> AllocateIblCubeSlots(DescriptorSlots &slots) {
 }
 
 std::expected<EnvironmentPrefiltered, std::string> MaterializeEnvironmentImport(
-    const SceneVulkanResources &vk, TextureUploadBatch &batch, DescriptorSlots &slots,
+    const VulkanResources &vk, TextureUploadBatch &batch, DescriptorSlots &slots,
     const PendingEnvironmentImport &pending, const std::vector<gltf::Image> &images
 ) {
     const auto &ibl = pending.Source;
@@ -522,7 +522,7 @@ std::expected<EnvironmentPrefiltered, std::string> MaterializeEnvironmentImport(
 }
 
 EnvironmentPrefiltered BuildFlatColorEnvironment(
-    const SceneVulkanResources &vk, TextureUploadBatch &batch, DescriptorSlots &slots,
+    const VulkanResources &vk, TextureUploadBatch &batch, DescriptorSlots &slots,
     vec3 color, std::string name
 ) {
     CubemapMipFacesF32 face{};
@@ -544,7 +544,7 @@ EnvironmentPrefiltered BuildFlatColorEnvironment(
 // CubemapEntries. All temporary GPU resources (equirect image, raw cubemap, descriptor sets)
 // are destroyed before returning.
 EnvironmentPrefiltered CreateIblFromHdri(
-    const SceneVulkanResources &vk, DescriptorSlots &slots,
+    const VulkanResources &vk, DescriptorSlots &slots,
     const IblPrefilterPipelines &prefilter,
     const std::filesystem::path &path, const std::string &name,
     vk::CommandPool command_pool, vk::Fence fence, mvk::BufferContext &ctx
@@ -818,7 +818,7 @@ IblSamplers MakeIblSamplers(const EnvironmentPrefiltered &pre, const Environment
 }
 
 std::expected<std::vector<std::byte>, std::string> ReadbackTextureRgba8(
-    const SceneVulkanResources &vk, mvk::BufferContext &buf_ctx,
+    const VulkanResources &vk, mvk::BufferContext &buf_ctx,
     vk::CommandPool cmd_pool, vk::Fence fence, const TextureEntry &entry
 ) {
     if (entry.Width == 0 || entry.Height == 0) {
@@ -868,7 +868,7 @@ std::expected<std::vector<std::byte>, std::string> ReadbackTextureRgba8(
 }
 
 std::expected<TextureEntry, std::string> MaterializeTextureEntry(
-    const SceneVulkanResources &vk,
+    const VulkanResources &vk,
     TextureUploadBatch &batch, DescriptorSlots &slots,
     const PendingTextureUpload &item, const std::vector<gltf::Image> &gltf_images
 ) {
@@ -930,7 +930,7 @@ std::expected<TextureEntry, std::string> MaterializeTextureEntry(
     return entry;
 }
 
-TextureEntry CreateDefaultLutTexture(const SceneVulkanResources &vk, TextureUploadBatch &batch, DescriptorSlots &slots, const std::filesystem::path &lut_path, std::string_view name) {
+TextureEntry CreateDefaultLutTexture(const VulkanResources &vk, TextureUploadBatch &batch, DescriptorSlots &slots, const std::filesystem::path &lut_path, std::string_view name) {
     const auto encoded = File::Read(lut_path);
     const auto lut_path_str = lut_path.string();
     auto texture = CreateTextureEntryFromEncoded(

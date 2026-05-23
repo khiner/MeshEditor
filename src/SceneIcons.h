@@ -22,5 +22,5 @@ struct SceneIcons {
     AnimationIcons Anim;
 };
 
-// Emplaces SceneIcons on `scene_entity` and uploads each SVG into its bitmap texture.
-void LoadSceneIcons(entt::registry &, entt::entity scene_entity);
+// Emplaces SceneIcons on `viewport` and uploads each SVG into its bitmap texture.
+void LoadSceneIcons(entt::registry &, entt::entity viewport);

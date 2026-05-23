@@ -243,11 +243,11 @@ std::optional<PhysicsShape> RenderShapeEditor(const PhysicsShape &in, bool auto_
 }
 } // namespace
 
-void physics_ui::RenderTab(entt::registry &r, entt::entity scene_entity, PhysicsWorld &physics, action::Emit emit) {
+void physics_ui::RenderTab(entt::registry &r, entt::entity viewport, PhysicsWorld &physics, action::Emit emit) {
     SeparatorText("Simulation");
     Text("Bodies: %u", physics.BodyCount());
     {
-        ui::Edit f{r, emit, scene_entity};
+        ui::Edit f{r, emit, viewport};
         f.Slider<&PhysicsSimulationSettings::SubstepsPerFrame>("Substeps per frame", 1u, 100u);
         f.Slider<&PhysicsSimulationSettings::SolverIterations>("Solver iterations", 2u, 50u);
         f.Slider<&PhysicsSimulationSettings::TimeScale>("Time scale", 0.f, 10.f, "%.2fx");
@@ -460,7 +460,7 @@ void physics_ui::RenderTab(entt::registry &r, entt::entity scene_entity, Physics
     }
 }
 
-void physics_ui::RenderEntityProperties(entt::registry &r, entt::entity entity, entt::entity scene_entity, const PhysicsWorld &physics, action::Emit emit) {
+void physics_ui::RenderEntityProperties(entt::registry &r, entt::entity entity, entt::entity viewport, const PhysicsWorld &physics, action::Emit emit) {
     if (!CollapsingHeader("Physics")) return;
 
     PushID("PhysicsEntity");
@@ -508,8 +508,8 @@ void physics_ui::RenderEntityProperties(entt::registry &r, entt::entity entity, 
 
         // Velocity is an authored initial condition (KHR_physics_rigid_bodies). Locked once
         // sim has produced any baked frames; JumpToStart unlocks it.
-        const auto &range = r.get<const TimelineRange>(scene_entity);
-        const auto &playback = r.get<const TimelinePlayback>(scene_entity);
+        const auto &range = r.get<const TimelineRange>(viewport);
+        const auto &playback = r.get<const TimelinePlayback>(viewport);
         const bool velocity_locked = playback.Playing || physics.BakedThrough() >= range.StartFrame;
         if (velocity_locked) BeginDisabled();
         if (r.try_get<const PhysicsVelocity>(entity)) {

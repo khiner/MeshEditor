@@ -1,23 +1,23 @@
 #include "SceneSelectionGpu.h"
 
+#include "Apply.h"
 #include "Armature.h"
 #include "Bindless.h"
+#include "DrawState.h"
 #include "Entity.h"
+#include "GpuBuffers.h"
 #include "Instance.h"
 #include "MeshComponents.h"
-#include "SceneApply.h"
-#include "SceneBuffers.h"
+#include "Pipelines.h"
 #include "SceneComponents.h"
-#include "SceneDrawState.h"
 #include "SceneDrawing.h"
 #include "SceneOps.h"
-#include "ScenePipelines.h"
-#include "SceneRenderGpu.h"
 #include "SceneSelection.h"
-#include "SceneVulkanResources.h"
 #include "SoundVertices.h"
 #include "Timer.h"
+#include "ViewportRenderGpu.h"
 #include "VkFenceWait.h"
+#include "VulkanResources.h"
 #include "gpu/BoxSelectPushConstants.h"
 #include "gpu/ElementPickPushConstants.h"
 #include "gpu/MainDrawPushConstants.h"
@@ -45,8 +45,8 @@ std::optional<uint32_t> GetModelBufferIndex(const entt::registry &r, entt::entit
     return {};
 }
 
-void ResetObjectPickKeys(SceneBuffers &buffers) {
-    std::fill_n(buffers.ObjectPickKeys.Data(), SceneBuffers::MaxSelectableObjects, std::numeric_limits<uint32_t>::max());
+void ResetObjectPickKeys(GpuBuffers &buffers) {
+    std::fill_n(buffers.ObjectPickKeys.Data(), GpuBuffers::MaxSelectableObjects, std::numeric_limits<uint32_t>::max());
 }
 
 void RunSelectionCompute(
@@ -78,14 +78,14 @@ void RunSelectionCompute(
 }
 
 std::optional<uint32_t> FindNearestPickedElement(
-    const SceneBuffers &buffers, const ComputePipeline &compute, vk::CommandBuffer cb,
+    const GpuBuffers &buffers, const ComputePipeline &compute, vk::CommandBuffer cb,
     vk::Queue queue, vk::Fence fence, vk::Device device,
     uint32_t head_image_index, uint32_t selection_nodes_slot, uint32_t element_candidate_buffer_slot,
     uvec2 mouse_px, uint32_t max_element_id, Element element,
     vk::Semaphore wait_semaphore
 ) {
     const uint32_t radius = element == Element::Face ? 0u : ElementSelectRadiusPx;
-    const uint32_t group_count = element == Element::Face ? 1u : SceneBuffers::ElementPickGroupCount;
+    const uint32_t group_count = element == Element::Face ? 1u : GpuBuffers::ElementPickGroupCount;
     RunSelectionCompute(
         cb, queue, fence, device, compute,
         ElementPickPushConstants{
@@ -112,8 +112,8 @@ uint32_t MaxElementBound(auto &&ranges) {
     return std::ranges::fold_left(ranges, uint32_t{0}, [](uint32_t total, const auto &r) { return std::max(total, r.Offset + r.Count); });
 }
 
-void AppendSelectedSilhouetteDraws(const entt::registry &R, entt::entity scene_entity, DrawListBuilder &draw_list, DrawBatchInfo &silhouette_batch) {
-    const auto &buffers = R.get<const SceneBuffers>(scene_entity);
+void AppendSelectedSilhouetteDraws(const entt::registry &R, DrawListBuilder &draw_list, DrawBatchInfo &silhouette_batch) {
+    const auto &buffers = R.ctx().get<const GpuBuffers>();
     for (const auto e : R.view<Selected>()) {
         const auto *inst = R.try_get<Instance>(e);
         if (!inst) continue;
@@ -129,20 +129,20 @@ void AppendSelectedSilhouetteDraws(const entt::registry &R, entt::entity scene_e
 }
 
 void RenderElementSelectionPass(
-    entt::registry &R, entt::entity scene_entity,
+    entt::registry &R, entt::entity viewport,
     std::span<const ElementRange> ranges, Element element, bool write_bitset,
     uvec2 box_min, uvec2 box_max, vk::Semaphore signal_semaphore
 ) {
     if (ranges.empty() || element == Element::None) return;
-    const auto &vk_res = R.ctx().get<const SceneVulkanResources>();
-    const auto &pipelines = R.ctx().get<const ScenePipelines>();
-    const auto &one_shot = R.get<const SceneOneShotGpu>(scene_entity);
-    const auto &sel_slots = R.get<const SelectionSlots>(scene_entity);
+    const auto &vk_res = R.ctx().get<const VulkanResources>();
+    const auto &pipelines = R.ctx().get<const Pipelines>();
+    const auto &one_shot = R.ctx().get<const OneShotGpu>();
+    const auto &sel_slots = R.get<const SelectionSlots>(viewport);
     auto &meshes = R.ctx().get<MeshStore>();
-    auto &buffers = R.get<SceneBuffers>(scene_entity);
+    auto &buffers = R.ctx().get<GpuBuffers>();
 
     const auto primary_edit_instances = scene_selection::ComputePrimaryEditInstances(R);
-    const bool xray_selection = R.get<const SelectionXRay>(scene_entity).Value;
+    const bool xray_selection = R.get<const SelectionXRay>(viewport).Value;
     const auto element_pipeline = [xray_selection, write_bitset](Element el) -> SPT {
         if (el == Element::Vertex) {
             if (xray_selection) return write_bitset ? SPT::SelectionElementVertexXRayBitsetBox : SPT::SelectionElementVertexXRay;
@@ -161,7 +161,7 @@ void RenderElementSelectionPass(
     const bool render_depth = !xray_selection;
     if (render_depth) {
         silhouette_batch = draw_list.BeginBatch();
-        if (element != Element::Face) AppendSelectedSilhouetteDraws(R, scene_entity, draw_list, silhouette_batch);
+        if (element != Element::Face) AppendSelectedSilhouetteDraws(R, draw_list, silhouette_batch);
     }
     auto element_batch = draw_list.BeginBatch();
     for (const auto &r : ranges) {
@@ -189,7 +189,7 @@ void RenderElementSelectionPass(
         }
     }
 
-    FlushDrawList(R, scene_entity, vk_res.Device, draw_list, buffers.SelectionDraw);
+    FlushDrawList(R, vk_res.Device, draw_list, buffers.SelectionDraw);
     buffers.SceneViewUBO.Update(as_bytes(buffers.SelectionDraw.DrawData.Slot), offsetof(SceneViewUBO, DrawDataSlot));
 
     auto cb = *one_shot.Cb;
@@ -212,7 +212,7 @@ void RenderElementSelectionPass(
         );
     }
 
-    const auto render_extent = ComputeRenderExtentPx(R.get<const ViewportExtent>(scene_entity).Value, std::bit_cast<vec2>(ImGui::GetIO().DisplayFramebufferScale));
+    const auto render_extent = ComputeRenderExtentPx(R.get<const ViewportExtent>(viewport).Value, std::bit_cast<vec2>(ImGui::GetIO().DisplayFramebufferScale));
     cb.setViewport(0, vk::Viewport{0.f, 0.f, float(render_extent.width), float(render_extent.height), 0.f, 1.f});
     cb.setScissor(0, vk::Rect2D{{0, 0}, render_extent});
 
@@ -276,13 +276,13 @@ void RenderElementSelectionPass(
     WaitFor(*one_shot.Fence, vk_res.Device);
 
     // Element selection pass overwrites the shared head image used for object selection.
-    R.emplace_or_replace<SelectionStale>(scene_entity);
+    R.emplace_or_replace<SelectionStale>(viewport);
 }
 
 } // namespace
 
 std::optional<std::pair<entt::entity, uint32_t>> RunElementPickFromRanges(
-    entt::registry &R, entt::entity scene_entity,
+    entt::registry &R, entt::entity viewport,
     std::span<const ElementRange> ranges, Element element, uvec2 mouse_px
 ) {
     if (ranges.empty() || element == Element::None) return {};
@@ -290,12 +290,12 @@ std::optional<std::pair<entt::entity, uint32_t>> RunElementPickFromRanges(
     if (element_count == 0) return {};
 
     const Timer timer{"RunElementPick"};
-    const auto &vk_res = R.ctx().get<const SceneVulkanResources>();
-    const auto &pipelines = R.ctx().get<const ScenePipelines>();
-    const auto &one_shot = R.get<const SceneOneShotGpu>(scene_entity);
-    const auto &sel_slots = R.get<const SelectionSlots>(scene_entity);
-    auto &buffers = R.get<SceneBuffers>(scene_entity);
-    RenderElementSelectionPass(R, scene_entity, ranges, element, false, {}, {}, *one_shot.SelectionReady);
+    const auto &vk_res = R.ctx().get<const VulkanResources>();
+    const auto &pipelines = R.ctx().get<const Pipelines>();
+    const auto &one_shot = R.ctx().get<const OneShotGpu>();
+    const auto &sel_slots = R.get<const SelectionSlots>(viewport);
+    auto &buffers = R.ctx().get<GpuBuffers>();
+    RenderElementSelectionPass(R, viewport, ranges, element, false, {}, {}, *one_shot.SelectionReady);
     if (const auto index = FindNearestPickedElement(
             buffers, pipelines.ElementPick, *one_shot.Cb,
             vk_res.Queue, *one_shot.Fence, vk_res.Device,
@@ -311,22 +311,22 @@ std::optional<std::pair<entt::entity, uint32_t>> RunElementPickFromRanges(
     return {};
 }
 
-void RenderSelectionPassWith(entt::registry &R, entt::entity scene_entity, bool render_depth, const SelectionBuildFn &build_fn, vk::Semaphore signal_semaphore, bool render_silhouette) {
+void RenderSelectionPassWith(entt::registry &R, entt::entity viewport, bool render_depth, const SelectionBuildFn &build_fn, vk::Semaphore signal_semaphore, bool render_silhouette) {
     const Timer timer{"RenderSelectionPassWith"};
-    const auto &Vk = R.ctx().get<const SceneVulkanResources>();
-    const auto &one_shot = R.get<const SceneOneShotGpu>(scene_entity);
-    const auto &sel_slots = R.get<const SelectionSlots>(scene_entity);
-    auto &Buffers = R.get<SceneBuffers>(scene_entity);
-    auto &Pipelines = R.ctx().get<const ScenePipelines>();
+    const auto &Vk = R.ctx().get<const VulkanResources>();
+    const auto &one_shot = R.ctx().get<const OneShotGpu>();
+    const auto &sel_slots = R.get<const SelectionSlots>(viewport);
+    auto &Buffers = R.ctx().get<GpuBuffers>();
+    auto &pipelines = R.ctx().get<const Pipelines>();
     DrawListBuilder draw_list;
     DrawBatchInfo silhouette_batch{};
     if (render_depth) {
         silhouette_batch = draw_list.BeginBatch();
-        if (render_silhouette) AppendSelectedSilhouetteDraws(R, scene_entity, draw_list, silhouette_batch);
+        if (render_silhouette) AppendSelectedSilhouetteDraws(R, draw_list, silhouette_batch);
     }
     const auto selection_draws = build_fn(draw_list);
 
-    FlushDrawList(R, scene_entity, Vk.Device, draw_list, Buffers.SelectionDraw);
+    FlushDrawList(R, Vk.Device, draw_list, Buffers.SelectionDraw);
     Buffers.SceneViewUBO.Update(as_bytes(Buffers.SelectionDraw.DrawData.Slot), offsetof(SceneViewUBO, DrawDataSlot));
 
     auto cb = *one_shot.Cb;
@@ -336,7 +336,7 @@ void RenderSelectionPassWith(entt::registry &R, entt::entity scene_entity, bool 
     Buffers.SelectionCounter.Buffer.Write(as_bytes(SelectionCounters{}));
 
     // Transition head image to general layout and clear.
-    const auto &head_image = Pipelines.SelectionFragment.Resources->HeadImage;
+    const auto &head_image = pipelines.SelectionFragment.Resources->HeadImage;
     cb.pipelineBarrier(
         vk::PipelineStageFlagBits::eTopOfPipe, vk::PipelineStageFlagBits::eTransfer, {}, {}, {},
         vk::ImageMemoryBarrier{{}, vk::AccessFlagBits::eTransferWrite, vk::ImageLayout::eUndefined, vk::ImageLayout::eGeneral, {}, {}, *head_image.Image, ColorSubresourceRange}
@@ -347,14 +347,14 @@ void RenderSelectionPassWith(entt::registry &R, entt::entity scene_entity, bool 
         vk::ImageMemoryBarrier{vk::AccessFlagBits::eTransferWrite, vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite, vk::ImageLayout::eGeneral, vk::ImageLayout::eGeneral, {}, {}, *head_image.Image, ColorSubresourceRange}
     );
 
-    const auto render_extent = ComputeRenderExtentPx(R.get<const ViewportExtent>(scene_entity).Value, std::bit_cast<vec2>(ImGui::GetIO().DisplayFramebufferScale));
+    const auto render_extent = ComputeRenderExtentPx(R.get<const ViewportExtent>(viewport).Value, std::bit_cast<vec2>(ImGui::GetIO().DisplayFramebufferScale));
     cb.setViewport(0, vk::Viewport{0.f, 0.f, float(render_extent.width), float(render_extent.height), 0.f, 1.f});
     cb.setScissor(0, vk::Rect2D{{0, 0}, render_extent});
 
     if (render_depth) {
         // Render selected meshes to silhouette depth buffer for element occlusion.
         // Open the pass even with no draws — its depth LoadOp::eClear seeds the selection-fragment pass's LoadOp::eLoad.
-        const auto &silhouette = Pipelines.Silhouette;
+        const auto &silhouette = pipelines.Silhouette;
         const vk::Rect2D rect{{0, 0}, ToExtent2D(silhouette.Resources->OffscreenImage.Extent)};
         cb.beginRenderPass({*silhouette.Renderer.RenderPass, *silhouette.Resources->Framebuffer, rect, SilhouetteClearValues}, vk::SubpassContents::eInline);
         if (silhouette_batch.DrawCount > 0) {
@@ -367,8 +367,8 @@ void RenderSelectionPassWith(entt::registry &R, entt::entity scene_entity, bool 
         cb.endRenderPass();
     }
 
-    const auto &selection = Pipelines.SelectionFragment;
-    const vk::Rect2D rect{{0, 0}, ToExtent2D(Pipelines.Silhouette.Resources->DepthImage.Extent)};
+    const auto &selection = pipelines.SelectionFragment;
+    const vk::Rect2D rect{{0, 0}, ToExtent2D(pipelines.Silhouette.Resources->DepthImage.Extent)};
     cb.beginRenderPass({*selection.Renderer.RenderPass, *selection.Resources->Framebuffer, rect, {}}, vk::SubpassContents::eInline);
     cb.bindIndexBuffer(*Buffers.IdentityIndexBuffer, 0, vk::IndexType::eUint32);
     const SelectionDrawPushConstants sel_pc{
@@ -393,41 +393,41 @@ void RenderSelectionPassWith(entt::registry &R, entt::entity scene_entity, bool 
     WaitFor(*one_shot.Fence, Vk.Device);
 }
 
-void RenderSelectionPass(entt::registry &R, entt::entity scene_entity, vk::Semaphore signal_semaphore) {
+void RenderSelectionPass(entt::registry &R, entt::entity viewport, vk::Semaphore signal_semaphore) {
     const Timer timer{"RenderSelectionPass"};
 
     // Selection draw list is pre-built by RecordRenderCommandBuffer.
     RenderSelectionPassWith(
-        R, scene_entity, false,
-        [&R, scene_entity](DrawListBuilder &draw_list) -> std::vector<SelectionDrawInfo> {
-            const auto &draw = R.get<const SceneDrawState>(scene_entity);
+        R, viewport, false,
+        [&R, viewport](DrawListBuilder &draw_list) -> std::vector<SelectionDrawInfo> {
+            const auto &draw = R.get<const DrawState>(viewport);
             draw_list = draw.SelectionList;
             return draw.SelectionDraws;
         },
         signal_semaphore
     );
 
-    R.remove<SelectionStale>(scene_entity);
+    R.remove<SelectionStale>(viewport);
 }
 
-void RunBoxSelectElements(entt::registry &R, entt::entity scene_entity, std::span<const ElementRange> ranges, Element element, std::pair<uvec2, uvec2> box_px, bool is_additive) {
+void RunBoxSelectElements(entt::registry &R, entt::entity viewport, std::span<const ElementRange> ranges, Element element, std::pair<uvec2, uvec2> box_px, bool is_additive) {
     if (ranges.empty()) return;
 
     const auto [box_min, box_max] = box_px;
     if (box_min.x > box_max.x || box_min.y > box_max.y) return;
 
-    auto &Buffers = R.get<SceneBuffers>(scene_entity);
+    auto &Buffers = R.ctx().get<GpuBuffers>();
     const Timer timer{"RunBoxSelectElements"};
     const auto element_count = MaxElementBound(ranges);
     if (element_count == 0) return;
 
     const uint32_t bitset_words = (element_count + 31) / 32;
-    if (bitset_words > SceneBuffers::SelectionBitsetWords) return;
+    if (bitset_words > GpuBuffers::SelectionBitsetWords) return;
 
     // Restore baseline bitset for additive mode, or clear for non-additive.
     auto *bits = Buffers.SelectionBitset.Data();
     if (is_additive) {
-        const auto *baseline = R.try_get<const AdditiveBoxSelectBaseline>(scene_entity);
+        const auto *baseline = R.try_get<const AdditiveBoxSelectBaseline>(viewport);
         if (baseline && !baseline->ElementBitset.empty()) {
             const auto copy_words = std::min(bitset_words, uint32_t(baseline->ElementBitset.size()));
             memcpy(bits, baseline->ElementBitset.data(), copy_words * sizeof(uint32_t));
@@ -440,22 +440,22 @@ void RunBoxSelectElements(entt::registry &R, entt::entity scene_entity, std::spa
     }
 
     // Box-select writes element IDs directly from the selection fragment shader.
-    RenderElementSelectionPass(R, scene_entity, ranges, element, true, box_min, box_max, {});
+    RenderElementSelectionPass(R, viewport, ranges, element, true, box_min, box_max, {});
     // After RenderElementSelectionPass (which waits on fence), SelectionBitsetBuffer is populated.
     // Dispatch UpdateSelectionState compute shader to update element state buffers on GPU.
-    ApplySelectionStateUpdate(R, scene_entity, ranges, element);
+    ApplySelectionStateUpdate(R, viewport, ranges, element);
 }
 
-std::optional<uint32_t> RunSoundVerticesVertexPick(entt::registry &R, entt::entity scene_entity, entt::entity instance_entity, uvec2 mouse_px) {
+std::optional<uint32_t> RunSoundVerticesVertexPick(entt::registry &R, entt::entity viewport, entt::entity instance_entity, uvec2 mouse_px) {
     if (!R.all_of<SoundVertices>(instance_entity)) return {};
     const auto *instance = R.try_get<Instance>(instance_entity);
     if (!instance) return {};
-    const auto &Vk = R.ctx().get<const SceneVulkanResources>();
-    const auto &one_shot = R.get<const SceneOneShotGpu>(scene_entity);
-    const auto &sel_slots = R.get<const SelectionSlots>(scene_entity);
-    auto &Buffers = R.get<SceneBuffers>(scene_entity);
+    const auto &Vk = R.ctx().get<const VulkanResources>();
+    const auto &one_shot = R.ctx().get<const OneShotGpu>();
+    const auto &sel_slots = R.get<const SelectionSlots>(viewport);
+    auto &Buffers = R.ctx().get<GpuBuffers>();
     auto &Meshes = R.ctx().get<MeshStore>();
-    auto &Pipelines = R.ctx().get<const ScenePipelines>();
+    auto &pipelines = R.ctx().get<const Pipelines>();
 
     const Timer timer{"RunSoundVerticesVertexPick"};
     const auto mesh_entity = instance->Entity;
@@ -466,17 +466,17 @@ std::optional<uint32_t> RunSoundVerticesVertexPick(entt::registry &R, entt::enti
     const auto &mesh_buffers = R.get<MeshBuffers>(mesh_entity);
     const auto &models = R.get<ModelsBuffer>(mesh_entity);
     const auto model_index = R.get<RenderInstance>(instance_entity).BufferIndex;
-    RenderSelectionPassWith(R, scene_entity, true, [&](DrawListBuilder &draw_list) {
+    RenderSelectionPassWith(R, viewport, true, [&](DrawListBuilder &draw_list) {
         auto batch = draw_list.BeginBatch();
         auto draw = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.VertexIndices, Buffers.Instances);
         draw.VertexCountOrHeadImageSlot = 0;
         draw.ElementStateSlotOffset = {Meshes.GetVertexStateSlot(), mesh_buffers.Vertices.Offset};
         AppendDraw(draw_list, batch, mesh_buffers.VertexIndices, models, draw, model_index);
         return std::vector{SelectionDrawInfo{SPT::SelectionElementVertex, batch}}; }, *one_shot.SelectionReady);
-    R.emplace_or_replace<SelectionStale>(scene_entity);
+    R.emplace_or_replace<SelectionStale>(viewport);
 
     return FindNearestPickedElement(
-        Buffers, Pipelines.ElementPick, *one_shot.Cb,
+        Buffers, pipelines.ElementPick, *one_shot.Cb,
         Vk.Queue, *one_shot.Fence, Vk.Device,
         sel_slots.HeadImage, Buffers.SelectionNodeBuffer.Slot, sel_slots.ElementPickCandidates,
         mouse_px, vertex_count, Element::Vertex,
@@ -484,19 +484,19 @@ std::optional<uint32_t> RunSoundVerticesVertexPick(entt::registry &R, entt::enti
     );
 }
 
-std::vector<entt::entity> RunObjectPick(entt::registry &R, entt::entity scene_entity, uint32_t &object_pick_epoch_tag, uvec2 mouse_px, uint32_t radius_px) {
-    const auto &Vk = R.ctx().get<const SceneVulkanResources>();
-    const auto &one_shot = R.get<const SceneOneShotGpu>(scene_entity);
-    const auto &sel_slots = R.get<const SelectionSlots>(scene_entity);
-    auto &Buffers = R.get<SceneBuffers>(scene_entity);
-    auto &Pipelines = R.ctx().get<const ScenePipelines>();
-    const uint32_t next_object_id = R.get<const ObjectIdCounter>(scene_entity).Next;
+std::vector<entt::entity> RunObjectPick(entt::registry &R, entt::entity viewport, uint32_t &object_pick_epoch_tag, uvec2 mouse_px, uint32_t radius_px) {
+    const auto &Vk = R.ctx().get<const VulkanResources>();
+    const auto &one_shot = R.ctx().get<const OneShotGpu>();
+    const auto &sel_slots = R.get<const SelectionSlots>(viewport);
+    auto &Buffers = R.ctx().get<GpuBuffers>();
+    auto &pipelines = R.ctx().get<const Pipelines>();
+    const uint32_t next_object_id = R.ctx().get<const ObjectIdCounter>().Next;
     if (next_object_id <= 1) return {}; // No objects have been assigned IDs yet
-    const uint32_t max_object_id = std::min(next_object_id - 1, SceneBuffers::MaxSelectableObjects);
+    const uint32_t max_object_id = std::min(next_object_id - 1, GpuBuffers::MaxSelectableObjects);
     if (max_object_id == 0) return {};
 
-    const bool selection_rendered = R.all_of<SelectionStale>(scene_entity);
-    if (selection_rendered) RenderSelectionPass(R, scene_entity, *one_shot.SelectionReady);
+    const bool selection_rendered = R.all_of<SelectionStale>(viewport);
+    if (selection_rendered) RenderSelectionPass(R, viewport, *one_shot.SelectionReady);
 
     const Timer timer{"RunObjectPick"};
     // ObjectPickKeyBuffer is persistent across clicks: high 8 bits of each packed key store
@@ -510,7 +510,7 @@ std::vector<entt::entity> RunObjectPick(entt::registry &R, entt::entity scene_en
 
     auto cb = *one_shot.Cb;
     RunSelectionCompute(
-        cb, Vk.Queue, *one_shot.Fence, Vk.Device, Pipelines.ObjectPick,
+        cb, Vk.Queue, *one_shot.Fence, Vk.Device, pipelines.ObjectPick,
         ObjectPickPushConstants{
             .TargetPx = mouse_px,
             .Radius = radius_px,
@@ -560,18 +560,18 @@ std::vector<entt::entity> RunObjectPick(entt::registry &R, entt::entity scene_en
 }
 
 namespace {
-void DispatchBoxSelect(entt::registry &R, entt::entity scene_entity, uvec2 box_min, uvec2 box_max, uint32_t max_id, vk::Semaphore wait_semaphore) {
-    const auto &Vk = R.ctx().get<const SceneVulkanResources>();
-    const auto &one_shot = R.get<const SceneOneShotGpu>(scene_entity);
-    const auto &sel_slots = R.get<const SelectionSlots>(scene_entity);
-    auto &Buffers = R.get<SceneBuffers>(scene_entity);
-    auto &Pipelines = R.ctx().get<const ScenePipelines>();
+void DispatchBoxSelect(entt::registry &R, entt::entity viewport, uvec2 box_min, uvec2 box_max, uint32_t max_id, vk::Semaphore wait_semaphore) {
+    const auto &Vk = R.ctx().get<const VulkanResources>();
+    const auto &one_shot = R.ctx().get<const OneShotGpu>();
+    const auto &sel_slots = R.get<const SelectionSlots>(viewport);
+    auto &Buffers = R.ctx().get<GpuBuffers>();
+    auto &pipelines = R.ctx().get<const Pipelines>();
     const uint32_t bitset_words = (max_id + 31) / 32;
     memset(Buffers.SelectionBitset.Data(), 0, bitset_words * sizeof(uint32_t));
 
     const auto group_counts = glm::max((box_max - box_min + 15u) / 16u, uvec2{1, 1});
     RunSelectionCompute(
-        *one_shot.Cb, Vk.Queue, *one_shot.Fence, Vk.Device, Pipelines.BoxSelect,
+        *one_shot.Cb, Vk.Queue, *one_shot.Fence, Vk.Device, pipelines.BoxSelect,
         BoxSelectPushConstants{
             .BoxMin = box_min,
             .BoxMax = box_max,
@@ -586,20 +586,20 @@ void DispatchBoxSelect(entt::registry &R, entt::entity scene_entity, uvec2 box_m
 }
 } // namespace
 
-std::vector<entt::entity> RunBoxSelect(entt::registry &R, entt::entity scene_entity, std::pair<uvec2, uvec2> box_px) {
+std::vector<entt::entity> RunBoxSelect(entt::registry &R, entt::entity viewport, std::pair<uvec2, uvec2> box_px) {
     const auto [box_min, box_max] = box_px;
     if (box_min.x > box_max.x || box_min.y > box_max.y) return {};
-    const auto &one_shot = R.get<const SceneOneShotGpu>(scene_entity);
-    auto &Buffers = R.get<SceneBuffers>(scene_entity);
-    const uint32_t next_object_id = R.get<const ObjectIdCounter>(scene_entity).Next;
+    const auto &one_shot = R.ctx().get<const OneShotGpu>();
+    auto &Buffers = R.ctx().get<GpuBuffers>();
+    const uint32_t next_object_id = R.ctx().get<const ObjectIdCounter>().Next;
     if (next_object_id <= 1) return {}; // No objects have been assigned IDs yet
 
-    const uint32_t max_object_id = std::min(next_object_id - 1, SceneBuffers::MaxSelectableObjects);
+    const uint32_t max_object_id = std::min(next_object_id - 1, GpuBuffers::MaxSelectableObjects);
 
     const Timer timer{"RunBoxSelect"};
-    const bool selection_rendered = R.all_of<SelectionStale>(scene_entity);
-    if (selection_rendered) RenderSelectionPass(R, scene_entity, *one_shot.SelectionReady);
-    DispatchBoxSelect(R, scene_entity, box_min, box_max, max_object_id, selection_rendered ? *one_shot.SelectionReady : vk::Semaphore{});
+    const bool selection_rendered = R.all_of<SelectionStale>(viewport);
+    if (selection_rendered) RenderSelectionPass(R, viewport, *one_shot.SelectionReady);
+    DispatchBoxSelect(R, viewport, box_min, box_max, max_object_id, selection_rendered ? *one_shot.SelectionReady : vk::Semaphore{});
 
     std::unordered_map<uint32_t, entt::entity> object_id_to_entity;
     for (const auto [e, ri] : R.view<RenderInstance>().each()) object_id_to_entity[ri.ObjectId] = e;

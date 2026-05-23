@@ -135,7 +135,7 @@ std::unordered_set<entt::entity> GetSelectedMeshEntities(const entt::registry &r
 }
 
 std::vector<uint32_t> GetSampleOpVertices(
-    const entt::registry &r, entt::entity scene_entity, entt::entity sound_entity,
+    const entt::registry &r, entt::entity viewport, entt::entity sound_entity,
     const uint32_t *selection_bits
 ) {
     if (!r.valid(sound_entity)) return {};
@@ -145,7 +145,7 @@ std::vector<uint32_t> GetSampleOpVertices(
     const auto *mesh = r.try_get<const Mesh>(mesh_entity);
     if (!mesh) return {};
 
-    const auto mode = r.get<const SceneInteraction>(scene_entity).Mode;
+    const auto mode = r.get<const Interaction>(viewport).Mode;
     if (mode == InteractionMode::Excite) {
         if (const auto *active = r.try_get<const MeshActiveElement>(mesh_entity)) return {active->Handle};
         return {};
@@ -154,7 +154,7 @@ std::vector<uint32_t> GetSampleOpVertices(
 
     const auto *br = r.try_get<const MeshSelectionBitsetRange>(mesh_entity);
     if (!br || br->Count == 0) return {};
-    const auto edit_elem = r.get<const SceneEditMode>(scene_entity).Value;
+    const auto edit_elem = r.get<const EditMode>(viewport).Value;
     auto handles = ScanBitsetRange(selection_bits, br->Offset, br->Count);
     if (edit_elem == Element::Vertex) return handles;
     return ConvertSelectionElement(handles, *mesh, edit_elem, Element::Vertex);

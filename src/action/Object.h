@@ -5,6 +5,7 @@
 #include "mesh/MeshData.h"
 #include "mesh/PrimitiveType.h"
 
+#include <cstdint>
 #include <filesystem>
 #include <memory>
 
@@ -46,9 +47,13 @@ struct ImportMesh {
 struct ReplaceMesh {
     std::unique_ptr<MeshData> Data;
 };
+// `Mask=0` removes the component. Targets the active mesh entity.
+struct SetPbrMeshFeaturesMask {
+    uint32_t Mask;
+};
 
 using Actions = std::variant<
     Delete, Duplicate, DuplicateLinked, ToggleHidden, SetSelectedVisible, SetSelectedSmoothShading,
     ParentToActive, ClearParent,
-    AddEmpty, AddArmature, AddCamera, AddLight, AddMeshPrimitive, ImportMesh, ReplaceMesh>;
+    AddEmpty, AddArmature, AddCamera, AddLight, AddMeshPrimitive, ImportMesh, ReplaceMesh, SetPbrMeshFeaturesMask>;
 } // namespace action::object

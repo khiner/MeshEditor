@@ -42,7 +42,7 @@ struct SelectionDrawInfo {
 
 // Per-scene draw-list scratch storage. Re-populated each frame by RecordRenderCommandBuffer;
 // vector capacity is amortized across frames. Component on the scene singleton entity.
-struct SceneDrawState {
+struct DrawState {
     DrawListBuilder List;
     uint32_t MainDrawCount{0}; // Draws.size() after main batches, before silhouette
     uint32_t MainIndirectCount{0}; // IndirectCommands.size() after main batches

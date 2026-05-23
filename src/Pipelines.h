@@ -151,8 +151,8 @@ struct SelectionFragmentPipeline {
     std::unique_ptr<ResourcesT> Resources;
 };
 
-struct ScenePipelines {
-    ScenePipelines(vk::Device, vk::PhysicalDevice, vk::DescriptorSetLayout selection_layout = {}, vk::DescriptorSet selection_set = {});
+struct Pipelines {
+    Pipelines(vk::Device, vk::PhysicalDevice, vk::DescriptorSetLayout selection_layout = {}, vk::DescriptorSet selection_set = {});
 
     vk::Device Device;
     vk::PhysicalDevice PhysicalDevice;

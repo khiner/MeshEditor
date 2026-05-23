@@ -1,6 +1,6 @@
 #pragma once
 
-#include "SceneVulkanResources.h"
+#include "VulkanResources.h"
 #include "gltf/Image.h"
 #include "gpu/IblSamplers.h"
 #include "numeric/mat3.h"
@@ -141,16 +141,16 @@ void ReleaseSamplerSlots(DescriptorSlots &, std::span<const uint32_t>);
 void ReleaseCubeSamplerSlot(DescriptorSlots &, uint32_t);
 void ReleaseEnvironmentSamplerSlots(DescriptorSlots &, const EnvironmentStore &);
 mvk::ImageResource RenderBitmapToImage(
-    const SceneVulkanResources &, TextureUploadBatch &,
+    const VulkanResources &, TextureUploadBatch &,
     std::span<const std::byte> data, uint32_t width, uint32_t height, vk::Format, vk::ImageSubresourceRange
 );
 TextureEntry CreateTextureEntry(
-    const SceneVulkanResources &, TextureUploadBatch &, DescriptorSlots &,
+    const VulkanResources &, TextureUploadBatch &, DescriptorSlots &,
     std::span<const std::byte> pixels, uint32_t width, uint32_t height, std::string name,
     TextureColorSpace, vk::SamplerAddressMode, vk::SamplerAddressMode, const SamplerConfig &
 );
 std::expected<TextureEntry, std::string> CreateTextureEntryFromEncoded(
-    const SceneVulkanResources &, TextureUploadBatch &, DescriptorSlots &,
+    const VulkanResources &, TextureUploadBatch &, DescriptorSlots &,
     std::span<const std::byte>, std::string_view encoded_name, std::string texture_name,
     TextureColorSpace, vk::SamplerAddressMode, vk::SamplerAddressMode, const SamplerConfig &
 );
@@ -160,30 +160,30 @@ std::pair<uint32_t, uint32_t> AllocateIblCubeSlots(DescriptorSlots &); // {diffu
 // Read mip 0 of an RGBA8 texture back to host memory. Synchronous: submits to `queue`, blocks on
 // `fence`. The texture's resting layout (eShaderReadOnlyOptimal) is restored on completion.
 std::expected<std::vector<std::byte>, std::string> ReadbackTextureRgba8(
-    const SceneVulkanResources &, mvk::BufferContext &,
+    const VulkanResources &, mvk::BufferContext &,
     vk::CommandPool, vk::Fence, const TextureEntry &
 );
 
 std::expected<TextureEntry, std::string> MaterializeTextureEntry(
-    const SceneVulkanResources &, TextureUploadBatch &, DescriptorSlots &,
+    const VulkanResources &, TextureUploadBatch &, DescriptorSlots &,
     const PendingTextureUpload &, const std::vector<gltf::Image> &gltf_images
 );
 std::expected<EnvironmentPrefiltered, std::string> MaterializeEnvironmentImport(
-    const SceneVulkanResources &, TextureUploadBatch &, DescriptorSlots &,
+    const VulkanResources &, TextureUploadBatch &, DescriptorSlots &,
     const PendingEnvironmentImport &, const std::vector<gltf::Image> &images
 );
 EnvironmentPrefiltered CreateIblFromHdri(
-    const SceneVulkanResources &, DescriptorSlots &,
+    const VulkanResources &, DescriptorSlots &,
     const IblPrefilterPipelines &, const std::filesystem::path &, const std::string &,
     vk::CommandPool, vk::Fence, mvk::BufferContext &
 );
 // Allocates a 1x1x6 cubemap (1 mip) of the given linear color, used as the "no scene IBL" default.
 EnvironmentPrefiltered BuildFlatColorEnvironment(
-    const SceneVulkanResources &, TextureUploadBatch &, DescriptorSlots &,
+    const VulkanResources &, TextureUploadBatch &, DescriptorSlots &,
     vec3 color, std::string name
 );
 IblSamplers MakeIblSamplers(const EnvironmentPrefiltered &, const EnvironmentStore &);
 TextureEntry CreateDefaultLutTexture(
-    const SceneVulkanResources &, TextureUploadBatch &, DescriptorSlots &,
+    const VulkanResources &, TextureUploadBatch &, DescriptorSlots &,
     const std::filesystem::path &lut_path, std::string_view name
 );

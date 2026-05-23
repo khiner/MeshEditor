@@ -23,15 +23,15 @@ struct Recording {
 };
 
 // Called from audio device callback.
-void ProcessAudio(FaustDSP &, entt::registry &, entt::entity scene_entity, AudioBuffer);
+void ProcessAudio(FaustDSP &, entt::registry &, entt::entity viewport, AudioBuffer);
 
-void RegisterAudioComponentHandlers(entt::registry &, entt::entity scene_entity);
+void RegisterAudioComponentHandlers(entt::registry &, entt::entity viewport);
 void RemoveAudioComponents(entt::registry &, entt::entity sound_entity);
 
 // Draw the Audio controls for a sound object entity (has SoundVerticesModel).
 // `selection_bits` is the raw SelectionBitset pointer (used in Edit mode for SampleOpVertices); may be null.
 void DrawObjectAudioControls(
-    entt::registry &, entt::entity scene_entity, entt::entity sound_entity, entt::entity mesh_entity,
+    entt::registry &, entt::entity viewport, entt::entity sound_entity, entt::entity mesh_entity,
     const uint32_t *selection_bits, action::Emit
 );
 
@@ -43,7 +43,7 @@ using LoadedSample = std::pair<std::filesystem::path, std::vector<float>>;
 // Assign sample[i] to mesh_vertices[i]. Used by RealImpact initial load and mic swap.
 // Any existing samples at those vertices are refcount-released.
 void SetVertexSamples(
-    entt::registry &, entt::entity scene_entity, entt::entity sound_entity,
+    entt::registry &, entt::entity viewport, entt::entity sound_entity,
     std::span<const uint32_t> mesh_vertices, std::vector<LoadedSample> &&
 );
 
@@ -51,20 +51,20 @@ void SetVertexSamples(
 // Creates SoundVertices / VertexSamples / SoundVerticesModel::Samples if missing.
 // The sample store deduplicates by path; existing entries are reused and refcounted.
 void AssignVertexSample(
-    entt::registry &, entt::entity scene_entity, entt::entity sound_entity,
+    entt::registry &, entt::entity viewport, entt::entity sound_entity,
     std::span<const uint32_t> mesh_vertices, std::filesystem::path, std::vector<float> &&frames
 );
 
 // Remove samples from every mesh vertex in `mesh_vertices`. Removes audio components if the
 // sound object ends up empty and has no modal model.
 void RemoveVertexSamples(
-    entt::registry &, entt::entity scene_entity, entt::entity sound_entity,
+    entt::registry &, entt::entity viewport, entt::entity sound_entity,
     std::span<const uint32_t> mesh_vertices
 );
 
 // Decode any miniaudio-supported audio file to mono float frames at `SampleRate`. Returns empty on failure.
 std::vector<float> LoadAudioFrames(const std::string &file_path);
 
-void Stop(entt::registry &, entt::entity scene_entity, entt::entity sound_entity);
-void SetModel(entt::registry &, entt::entity scene_entity, entt::entity sound_entity, SoundVerticesModel);
-void SetVertex(entt::registry &, entt::entity scene_entity, entt::entity sound_entity, uint32_t vertex);
+void Stop(entt::registry &, entt::entity viewport, entt::entity sound_entity);
+void SetModel(entt::registry &, entt::entity viewport, entt::entity sound_entity, SoundVerticesModel);
+void SetVertex(entt::registry &, entt::entity viewport, entt::entity sound_entity, uint32_t vertex);

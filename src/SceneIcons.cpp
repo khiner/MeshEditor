@@ -1,20 +1,20 @@
 #include "SceneIcons.h"
 
+#include "GpuBuffers.h"
 #include "Paths.h"
-#include "SceneBuffers.h"
-#include "SceneComponents.h" // SceneOneShotGpu
-#include "ScenePipelines.h" // ColorSubresourceRange
+#include "Pipelines.h" // ColorSubresourceRange
+#include "SceneComponents.h" // OneShotGpu
 #include "SceneTextures.h"
-#include "SceneVulkanResources.h"
 #include "SvgResource.h"
+#include "VulkanResources.h"
 
 #include <entt/entity/registry.hpp>
 
-void LoadSceneIcons(entt::registry &R, entt::entity scene_entity) {
-    const auto &Vk = R.ctx().get<const SceneVulkanResources>();
-    const auto &one_shot = R.get<const SceneOneShotGpu>(scene_entity);
-    auto &Buffers = R.get<SceneBuffers>(scene_entity);
-    auto &icons = R.emplace<SceneIcons>(scene_entity);
+void LoadSceneIcons(entt::registry &R, entt::entity viewport) {
+    const auto &Vk = R.ctx().get<const VulkanResources>();
+    const auto &one_shot = R.ctx().get<const OneShotGpu>();
+    auto &Buffers = R.ctx().get<GpuBuffers>();
+    auto &icons = R.emplace<SceneIcons>(viewport);
     const auto svg_path = Paths::Res() / "svg";
     auto batch = BeginTextureUploadBatch(Vk.Device, *one_shot.Pool, Buffers.Ctx);
     const auto RenderBitmap = [&Vk, &batch](std::span<const std::byte> data, uint32_t width, uint32_t height) {

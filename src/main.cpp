@@ -1,10 +1,11 @@
 #include "AnimationTimeline.h"
+#include "Apply.h"
+#include "FrameState.h"
 #include "Paths.h"
-#include "Scene.h"
-#include "SceneApply.h"
 #include "SceneIcons.h"
-#include "SceneUi.h"
 #include "Timer.h"
+#include "Viewport.h"
+#include "ViewportUi.h"
 #include "Window.h"
 #include "audio/AudioDevice.h"
 #include "audio/AudioSystem.h"
@@ -235,14 +236,14 @@ GltfSampleTree BuildGltfSampleTree(const fs::path &root) {
 }
 
 // Load a file into the scene based on its extension.
-std::expected<void, std::string> LoadFile(entt::registry &r, entt::entity scene_entity, const fs::path &path) {
+std::expected<void, std::string> LoadFile(entt::registry &r, entt::entity viewport, const fs::path &path) {
     const auto ext = path.extension().string();
     if (ext == ".gltf" || ext == ".glb") {
-        if (auto result = Apply(r, scene_entity, action::project::LoadGltf{.Path = path}); !result) {
+        if (auto result = Apply(r, viewport, action::project::LoadGltf{.Path = path}); !result) {
             return std::unexpected(std::format("Error loading glTF file '{}': {}", path.string(), result.error()));
         }
     } else if (ext == ".obj" || ext == ".ply") {
-        Apply(r, scene_entity, action::object::ImportMesh{path, std::make_unique<MeshInstanceCreateInfo>(MeshInstanceCreateInfo{.Name = path.stem().string()})});
+        Apply(r, viewport, action::object::ImportMesh{path, std::make_unique<MeshInstanceCreateInfo>(MeshInstanceCreateInfo{.Name = path.stem().string()})});
     } else {
         return std::unexpected(std::format("Unsupported file format: '{}'", ext));
     }
@@ -349,29 +350,29 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
 
     NFD_Init();
     entt::registry r;
-    auto scene = std::make_unique<Scene>(SceneVulkanResources{*vc->Instance, vc->PhysicalDevice, *vc->Device, vc->QueueFamily, vc->Queue}, r);
+    const auto viewport = InitViewport(r, VulkanResources{*vc->Instance, vc->PhysicalDevice, *vc->Device, vc->QueueFamily, vc->Queue});
 
     // Load transform mode icons
-    LoadSceneIcons(r, scene->GetSceneEntity());
+    LoadSceneIcons(r, viewport);
 
-    const auto CreateSvg = [device = *vc->Device, &scene, &wd](std::unique_ptr<SvgResource> &svg, fs::path path) {
+    const auto CreateSvg = [device = *vc->Device, &r, viewport, &wd](std::unique_ptr<SvgResource> &svg, fs::path path) {
         // Wait for previous frame's ImGui render to complete, since it may have sampled the old texture.
         CheckVk(device.waitForFences({wd.Frames[wd.FrameIndex].Fence}, true, UINT64_MAX));
-        scene->CreateSvgResource(svg, std::move(path));
+        MakeSvgResource(r, svg, std::move(path));
     };
-    auto &faust_dsp = r.emplace<FaustDSP>(scene->GetSceneEntity(), CreateSvg);
-    RegisterAudioComponentHandlers(r, scene->GetSceneEntity());
+    auto &faust_dsp = r.emplace<FaustDSP>(viewport, CreateSvg);
+    RegisterAudioComponentHandlers(r, viewport);
 
     struct AudioContext {
         FaustDSP *Dsp;
         entt::registry *R;
-        entt::entity SceneEntity;
+        entt::entity viewport;
     };
-    AudioContext audio_ctx{&faust_dsp, &r, scene->GetSceneEntity()};
+    AudioContext audio_ctx{&faust_dsp, &r, viewport};
     AudioDevice audio_device{
         {.Callback = [](auto buffer, void *user_data) {
              auto &ctx = *static_cast<AudioContext *>(user_data);
-             ProcessAudio(*ctx.Dsp, *ctx.R, ctx.SceneEntity, std::move(buffer));
+             ProcessAudio(*ctx.Dsp, *ctx.R, ctx.viewport, std::move(buffer));
          },
          .UserData = &audio_ctx}
     };
@@ -394,7 +395,7 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
         SDL_Event event;
         while (SDL_PollEvent(&event)) {
             if (event.type == SDL_EVENT_MOUSE_WHEEL) {
-                scene->Frame.PreciseWheelDelta += vec2{-event.wheel.x, event.wheel.y};
+                r.get<FrameState>(viewport).PreciseWheelDelta += vec2{-event.wheel.x, event.wheel.y};
                 // SDL's pixel-derived deltas overscroll ImGui panels.
                 constexpr float ImGuiWheelScale = 0.3f;
                 event.wheel.x *= ImGuiWheelScale;
@@ -406,7 +407,7 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
             ImGui_ImplSDL3_ProcessEvent(&event);
             done = event.type == SDL_EVENT_QUIT || (event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED && event.window.windowID == SDL_GetWindowID(window));
         }
-        const float elapsed = recording_mode ? float(scene->CapturedFrameCount()) / float(record_fps) : elapsed_play_time;
+        const float elapsed = recording_mode ? float(CapturedFrameCount(r, viewport)) / float(record_fps) : elapsed_play_time;
         if (play_duration > 0 && elapsed >= play_duration) done = true;
 
         // Resize swap chain?
@@ -451,7 +452,7 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
                     static const std::array filters{nfdfilteritem_t{"glTF scene", "gltf,glb"}};
                     nfdchar_t *nfd_path;
                     if (auto result = NFD_OpenDialog(&nfd_path, filters.data(), filters.size(), ""); result == NFD_OKAY) {
-                        if (auto load = LoadFile(r, scene->GetSceneEntity(), fs::path(nfd_path)); !load) std::cerr << load.error() << std::endl;
+                        if (auto load = LoadFile(r, viewport, fs::path(nfd_path)); !load) std::cerr << load.error() << std::endl;
                         NFD_FreePath(nfd_path);
                     } else if (result != NFD_CANCEL) {
                         std::cerr << "Error opening file dialog: " << NFD_GetError() << std::endl;
@@ -481,7 +482,7 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
                         } else {
                             if (!passes(*it.File)) continue;
                             if (MenuItem(it.File->Label.c_str())) {
-                                if (auto load = LoadFile(r, scene->GetSceneEntity(), it.File->Path); !load) std::cerr << load.error() << std::endl;
+                                if (auto load = LoadFile(r, viewport, it.File->Path); !load) std::cerr << load.error() << std::endl;
                             }
                         }
                     }
@@ -532,7 +533,7 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
                     static const std::array filters{nfdfilteritem_t{"Mesh object", "obj,ply"}};
                     nfdchar_t *nfd_path;
                     if (auto result = NFD_OpenDialog(&nfd_path, filters.data(), filters.size(), ""); result == NFD_OKAY) {
-                        if (auto load = LoadFile(r, scene->GetSceneEntity(), fs::path(nfd_path)); !load) std::cerr << load.error() << std::endl;
+                        if (auto load = LoadFile(r, viewport, fs::path(nfd_path)); !load) std::cerr << load.error() << std::endl;
                         NFD_FreePath(nfd_path);
                     } else if (result != NFD_CANCEL) {
                         std::cerr << "Error opening file dialog: " << NFD_GetError() << std::endl;
@@ -542,7 +543,7 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
                     static const std::vector<nfdfilteritem_t> filters{};
                     nfdchar_t *path;
                     if (auto result = NFD_PickFolder(&path, ""); result == NFD_OKAY) {
-                        if (auto load = Apply(r, scene->GetSceneEntity(), action::project::LoadRealImpact{.Directory = fs::path{path}}); !load) std::cerr << load.error() << std::endl;
+                        if (auto load = Apply(r, viewport, action::project::LoadRealImpact{.Directory = fs::path{path}}); !load) std::cerr << load.error() << std::endl;
                         NFD_FreePath(path);
                     } else if (result != NFD_CANCEL) {
                         std::cerr << "Error opening folder dialog: " << NFD_GetError() << std::endl;
@@ -552,7 +553,7 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
                     static const std::array filters{nfdfilteritem_t{"glTF scene", "gltf,glb"}};
                     nfdchar_t *nfd_path;
                     if (auto result = NFD_SaveDialog(&nfd_path, filters.data(), filters.size(), nullptr, "scene.gltf"); result == NFD_OKAY) {
-                        if (auto save = Apply(r, scene->GetSceneEntity(), action::project::SaveGltf{.Path = fs::path(nfd_path)}); !save) std::cerr << save.error() << std::endl;
+                        if (auto save = Apply(r, viewport, action::project::SaveGltf{.Path = fs::path(nfd_path)}); !save) std::cerr << save.error() << std::endl;
                         NFD_FreePath(nfd_path);
                     } else if (result != NFD_CANCEL) {
                         std::cerr << "Error opening save dialog: " << NFD_GetError() << std::endl;
@@ -610,7 +611,7 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
                     }
                     if (BeginTabItem("Scene")) {
                         SeparatorText("Buffer memory");
-                        TextUnformatted(scene->DebugBufferHeapUsage().c_str());
+                        TextUnformatted(DebugBufferHeapUsage(r).c_str());
                         SeparatorText("Action");
                         Text("sizeof(Action): %zu bytes", sizeof(action::Action));
                         EndTabItem();
@@ -626,7 +627,7 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
         if (windows.SceneControls.Visible) {
             if (Begin(windows.SceneControls.Name, &windows.SceneControls.Visible) && BeginTabBar("Controls")) {
                 if (BeginTabItem("Scene")) {
-                    RenderControls(r, scene->GetSceneEntity(), Emit);
+                    RenderControls(r, viewport, Emit);
                     EndTabItem();
                 }
                 if (BeginTabItem("Audio device")) {
@@ -647,7 +648,7 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
                 RenderClipPickers(r, Emit);
                 Unindent(6);
                 PopStyleVar();
-                const auto scene_e = scene->GetSceneEntity();
+                const auto scene_e = viewport;
                 if (auto a = RenderAnimationTimeline(r.get<const TimelineRange>(scene_e), r.get<const TimelinePlayback>(scene_e), r.get<const AnimationTimelineView>(scene_e), r.get<const SceneIcons>(scene_e).Anim)) {
                     action::Assign(Emit, std::move(*a));
                 }
@@ -659,13 +660,13 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
         if (windows.Scene.Visible) {
             PushStyleVar(ImGuiStyleVar_WindowPadding, {0, 0});
             if (Begin(windows.Scene.Name, &windows.Scene.Visible)) {
-                Interact(r, scene->GetSceneEntity(), scene->Frame, Emit);
+                Interact(r, viewport, r.get<FrameState>(viewport), Emit);
                 auto &dl = *ImGui::GetWindowDrawList();
                 dl.ChannelsSplit(2);
                 dl.ChannelsSetCurrent(1);
-                InteractOverlay(r, scene->GetSceneEntity(), scene->Frame, Emit);
+                InteractOverlay(r, viewport, r.get<FrameState>(viewport), Emit);
                 // Submit GPU render (nonblocking). WaitForRender() is called later, before RenderFrame() samples the final image.
-                scene->Render(GetFrameCount() > 1 ? vk::Fence{wd.Frames[wd.FrameIndex].Fence} : vk::Fence{});
+                RenderViewport(r, viewport, GetFrameCount() > 1 ? vk::Fence{wd.Frames[wd.FrameIndex].Fence} : vk::Fence{});
                 dl.ChannelsMerge();
             }
             End();
@@ -676,7 +677,7 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
                 // static const auto DefaultRealImpactPath = fs::path{"../../"} / "RealImpact" / "dataset" / "22_Cup" / "preprocessed";
                 // if (fs::exists(DefaultRealImpactPath)) scene->LoadRealImpact(DefaultRealImpactPath);
                 if (initial_file) {
-                    if (auto result = LoadFile(r, scene->GetSceneEntity(), fs::path(initial_file)); !result) {
+                    if (auto result = LoadFile(r, viewport, fs::path(initial_file)); !result) {
                         std::cerr << result.error() << std::endl;
                         play = false;
                     }
@@ -686,25 +687,25 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
             } else if (GetFrameCount() == 3 && play) {
                 // Wait to play until scene load (frame 1) has settled and one render frame has elapsed.
                 // Calling Play() on the same frame as LoadFile races physics setup.
-                Emit(action::scene::Play{});
+                Emit(action::timeline::Play{});
                 play = false;
             }
         }
 
-        if (Pending) Apply(r, scene->GetSceneEntity(), std::move(*Pending));
+        if (Pending) Apply(r, viewport, std::move(*Pending));
 
         ImGui::Render();
         auto *draw_data = GetDrawData();
         if (bool is_minimized = (draw_data->DisplaySize.x <= 0.0f || draw_data->DisplaySize.y <= 0.0f); !is_minimized) {
-            scene->WaitForRender(); // ImGui samples final image
+            WaitForRender(r, viewport); // ImGui samples final image
             // Lazy-start recording once the viewport has rendered at least once (so FinalColorImage has a valid extent).
-            if (recording_mode && !scene->IsRecording() && GetFrameCount() > 1) {
-                scene->StartRecording(record_path, record_fps);
-                if (scene->IsRecording()) next_capture_ns = SDL_GetTicksNS();
+            if (recording_mode && !IsRecording(r, viewport) && GetFrameCount() > 1) {
+                StartRecording(r, viewport, record_path, record_fps);
+                if (IsRecording(r, viewport)) next_capture_ns = SDL_GetTicksNS();
                 else done = true;
             }
-            if (scene->IsRecording() && SDL_GetTicksNS() >= next_capture_ns) {
-                scene->CaptureRecordFrame();
+            if (IsRecording(r, viewport) && SDL_GetTicksNS() >= next_capture_ns) {
+                CaptureRecordFrame(r, viewport);
                 next_capture_ns += capture_interval_ns;
             }
             RenderFrame(*vc->Device, vc->Queue, wd, draw_data);
@@ -718,10 +719,10 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
     audio_device.Uninit();
     NFD_Quit();
 
-    // Tear down Scene (and its ctx-resident GPU stores) before clearing the registry —
-    // SceneBuffers is a component on the scene entity, so r.clear() would destroy it
+    // Tear down scene (and its ctx-resident GPU stores) before clearing the registry —
+    // GpuBuffers is a component on the scene entity, so r.clear() would destroy it
     // (and its VMA allocator) while MeshStore in ctx still holds outstanding allocations.
-    scene.reset();
+    DeinitViewport(r, viewport);
 
     ImGui_ImplVulkan_Shutdown();
     ImGui_ImplSDL3_Shutdown();

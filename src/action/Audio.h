@@ -70,12 +70,19 @@ struct RemoveVertexSamples {
 struct SetModalFormMaterial {
     std::unique_ptr<AcousticMaterial> Material;
 };
+// Apply an impulse at a mesh vertex (RealImpact excitation).
+struct ApplyExciteImpact {
+    entt::entity InstanceEntity;
+    uint32_t VertexIndex;
+};
+struct ClearExciteImpacts {};
 
 using Actions = std::variant<
     SetModel, SetExciteVertex, SetActiveElementFromDsp,
     StartExcite, StopExcite, DeleteSoundObject, StartRecording,
     OpenModalForm, CancelModalForm, SubmitModalForm, AcceptModalGenerationResult,
-    AssignVertexSamples, SetVertexSamples, RemoveVertexSamples, ActivateRealImpactMicrophone, SetModalFormMaterial>;
+    AssignVertexSamples, SetVertexSamples, RemoveVertexSamples, ActivateRealImpactMicrophone, SetModalFormMaterial,
+    ApplyExciteImpact, ClearExciteImpacts>;
 
 using Action = MergedVariantT<Actions, action::Core>;
 } // namespace action::audio

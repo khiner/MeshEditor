@@ -53,7 +53,7 @@ enum class ViewportShadingMode : uint8_t {
 };
 
 // Component on the scene singleton entity. Changes require command buffer re-recording.
-struct SceneSettings {
+struct ViewportDisplay {
     ViewportShadingMode ViewportShading{ViewportShadingMode::Solid};
     ViewportShadingMode FillMode{ViewportShadingMode::Solid}; // last non-wireframe mode (for Shift+Z toggle)
     vk::ClearColorValue ClearColor{0.25f, 0.25f, 0.25f, 1.f};
@@ -78,8 +78,8 @@ struct PBRViewportLighting {
 struct MaterialPreviewLighting : PBRViewportLighting {}; // defaults: both OFF (studio HDRI)
 struct RenderedLighting : PBRViewportLighting {}; // defaults: both ON (scene world/lights)
 
-inline const PBRViewportLighting &GetActivePbrLighting(const entt::registry &r, entt::entity scene_entity, ViewportShadingMode mode) {
-    return mode == ViewportShadingMode::Rendered ? static_cast<const PBRViewportLighting &>(r.get<const RenderedLighting>(scene_entity)) : static_cast<const PBRViewportLighting &>(r.get<const MaterialPreviewLighting>(scene_entity));
+inline const PBRViewportLighting &GetActivePbrLighting(const entt::registry &r, entt::entity viewport, ViewportShadingMode mode) {
+    return mode == ViewportShadingMode::Rendered ? static_cast<const PBRViewportLighting &>(r.get<const RenderedLighting>(viewport)) : static_cast<const PBRViewportLighting &>(r.get<const MaterialPreviewLighting>(viewport));
 }
 
 struct ViewportExtent {
@@ -101,34 +101,34 @@ struct PbrMeshFeatures {
 };
 
 // Snapshot of selection state at the start of a shift+box-drag.
-// Presence on SceneEntity means an additive box-drag is active.
+// Presence on viewport means an additive box-drag is active.
 struct AdditiveBoxSelectBaseline {
     std::vector<entt::entity> SelectedEntities;
     std::vector<std::pair<entt::entity, BoneSelection>> BoneSelections;
     std::vector<uint32_t> ElementBitset;
 };
 
-// Singleton flags on SceneEntity, consumed and cleared by ProcessComponentEvents.
+// Singleton flags on viewport, consumed and cleared by ProcessComponentEvents.
 struct SelectionBitsDirty {}; // Bitset written by Interact; dispatches the compute update.
 struct ElementStatesDirty {}; // Element state buffers updated by GPU compute; triggers a submit.
 struct ProfileNextProcessComponentEvents {}; // Profile the next ProcessComponentEvents pass.
 struct SelectionStale {}; // Selection fragment data no longer matches current scene. Cleared after RenderSelectionPass.
 
-// Smooth float frame position for playback, advanced by Render. Singleton on SceneEntity.
+// Smooth float frame position for playback, advanced by Render. Singleton on viewport.
 struct PlaybackFrame {
     float Value{1.0f};
 };
-// Last frame where armature poses were evaluated. Singleton on SceneEntity.
+// Last frame where armature poses were evaluated. Singleton on viewport.
 struct LastEvaluatedFrame {
     int Value{-1};
 };
 // Requested transform type for the next gizmo drag, latched by keyboard shortcuts.
-// Presence == active latch; removed by InteractOverlay after consumption. Singleton on SceneEntity.
+// Presence == active latch; removed by InteractOverlay after consumption. Singleton on viewport.
 struct StartScreenTransform {
     TransformGizmo::TransformType Value;
 };
 
-// Interaction modes available for cycling/selection. Singleton on SceneEntity.
+// Interaction modes available for cycling/selection. Singleton on viewport.
 // Excite is added/removed reactively based on whether the scene has any SoundVertices.
 struct EnabledInteractionModes {
     std::set<InteractionMode> Value{InteractionMode::Object, InteractionMode::Edit, InteractionMode::Pose};
@@ -230,14 +230,14 @@ private:
 // One-shot GPU sync primitives for synchronous passes (selection compute, element pick,
 // glTF load, texture uploads, etc.). Owns its Vk resources directly; Scene's render-pipeline
 // command buffers are allocated from `Pool` and freed before this component is destroyed.
-struct SceneOneShotGpu {
+struct OneShotGpu {
     vk::UniqueCommandPool Pool;
     vk::UniqueCommandBuffer Cb;
     vk::UniqueFence Fence;
     vk::UniqueSemaphore SelectionReady;
 };
 
-inline SceneOneShotGpu MakeSceneOneShotGpu(vk::Device device, uint32_t queue_family) {
+inline OneShotGpu MakeOneShotGpu(vk::Device device, uint32_t queue_family) {
     auto pool = device.createCommandPoolUnique({vk::CommandPoolCreateFlagBits::eResetCommandBuffer, queue_family});
     auto cb = std::move(device.allocateCommandBuffersUnique({*pool, vk::CommandBufferLevel::ePrimary, 1}).front());
     return {

@@ -35,6 +35,7 @@ struct SetBoneSelectionPart {
     bool Additive;
 };
 struct DeselectAll {};
+struct SelectAll {};
 struct SnapshotBoxSelectBaseline {};
 struct ClearBoxSelectBaseline {};
 struct BoneHit {
@@ -64,6 +65,6 @@ struct ApplyTreeSelection {
 
 using Actions = std::variant<
     Select, ToggleSelected, SelectBone, ExtendActive, ExtendBoneActive, SetBoneSelectionPart,
-    DeselectAll, SnapshotBoxSelectBaseline, ClearBoxSelectBaseline,
+    DeselectAll, SelectAll, SnapshotBoxSelectBaseline, ClearBoxSelectBaseline,
     ApplyBoxSelectObjectHits, ApplyBoxSelectBoneHits, ApplyEditElementClick, ApplyTreeSelection>;
 } // namespace action::selection

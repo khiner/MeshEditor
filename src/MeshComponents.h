@@ -36,7 +36,7 @@ struct PendingHide {
     std::vector<uint32_t> BufferIndices;
 };
 
-// Placed on SceneEntity. Accumulates light buffer indices during Destroy();
+// Placed on viewport. Accumulates light buffer indices during Destroy();
 // batch-compacted in ProcessComponentEvents.
 struct PendingLightRemovals {
     std::vector<uint32_t> Indices;

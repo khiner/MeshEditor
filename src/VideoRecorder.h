@@ -1,6 +1,6 @@
 #pragma once
 
-#include "SceneVulkanResources.h"
+#include "VulkanResources.h"
 
 #include <cstdint>
 #include <cstdio>
@@ -12,7 +12,7 @@
 // IsActive() is false and CaptureFrame is a no-op. The capture region is locked at construction.
 struct VideoRecorder {
     VideoRecorder(
-        const SceneVulkanResources &,
+        const VulkanResources &,
         std::filesystem::path output_path, vk::Offset3D offset, vk::Extent2D extent, int fps
     );
     ~VideoRecorder();

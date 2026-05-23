@@ -4,7 +4,7 @@
 
 #include <cstdint>
 
-struct SceneVulkanResources {
+struct VulkanResources {
     vk::Instance Instance;
     vk::PhysicalDevice PhysicalDevice;
     vk::Device Device;

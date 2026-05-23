@@ -4,6 +4,7 @@
 
 namespace action::timeline {
 struct TogglePlay {};
+struct Play {};
 struct SetFrame {
     int Frame;
 };
@@ -20,6 +21,6 @@ struct SetView {
     float ViewCenterFrame;
 };
 
-using Actions = std::variant<TogglePlay, SetFrame, SetStartFrame, SetEndFrame, JumpToStart, JumpToEnd, SetView>;
+using Actions = std::variant<TogglePlay, Play, SetFrame, SetStartFrame, SetEndFrame, JumpToStart, JumpToEnd, SetView>;
 using Action = Actions;
 } // namespace action::timeline

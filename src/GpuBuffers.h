@@ -20,7 +20,7 @@ struct MaterialStore {
     std::vector<std::string> Names;
 };
 
-// Component on a light entity. Indexes into the SceneBuffers::Lights buffer (canonical PunctualLight storage).
+// Component on a light entity. Indexes into the GpuBuffers::Lights buffer (canonical PunctualLight storage).
 struct LightIndex {
     uint32_t Value{0};
 };
@@ -140,7 +140,7 @@ constexpr uint32_t
     ElementPickDiameterPx = ElementSelectRadiusPx * 2 + 1,
     ElementPickPixelCount = ElementPickDiameterPx * ElementPickDiameterPx;
 
-struct SceneBuffers {
+struct GpuBuffers {
     static constexpr uint32_t MaxSelectableObjects{100'000};
     static constexpr uint32_t MaxSelectableElements{10'000'000};
     static constexpr uint32_t ObjectPickBitsetWords{(MaxSelectableObjects + 31) / 32};
@@ -150,7 +150,7 @@ struct SceneBuffers {
     static constexpr uint32_t SelectionNodesPerPixel{10};
     static constexpr uint32_t MaxSelectionNodeBytes{64 * 1024 * 1024};
 
-    SceneBuffers(vk::PhysicalDevice pd, vk::Device d, vk::Instance instance, DescriptorSlots &slots)
+    GpuBuffers(vk::PhysicalDevice pd, vk::Device d, vk::Instance instance, DescriptorSlots &slots)
         : Ctx{pd, d, instance, slots},
           VertexBuffer{Ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::VertexBuffer},
           FaceIndexBuffer{Ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::IndexBuffer},

@@ -1,4 +1,4 @@
-#include "ScenePipelines.h"
+#include "Pipelines.h"
 #include "Shader.h"
 #include "Timer.h"
 #include "gpu/BoxSelectPushConstants.h"
@@ -661,7 +661,7 @@ void SelectionFragmentPipeline::SetExtent(vk::Extent2D extent, vk::Device d, vk:
     Resources = std::make_unique<ResourcesT>(extent, d, pd, *Renderer.RenderPass, silhouette_depth_view);
 }
 
-ScenePipelines::ScenePipelines(
+Pipelines::Pipelines(
     vk::Device d, vk::PhysicalDevice pd,
     vk::DescriptorSetLayout selection_layout, vk::DescriptorSet selection_set
 ) : Device(d),
@@ -696,14 +696,14 @@ ScenePipelines::ScenePipelines(
     },
     IblPrefilter{d} {}
 
-void ScenePipelines::SetExtent(vk::Extent2D extent) {
+void Pipelines::SetExtent(vk::Extent2D extent) {
     Main.SetExtent(extent, Device, PhysicalDevice);
     Silhouette.SetExtent(extent, Device, PhysicalDevice);
     SilhouetteEdge.SetExtent(extent, Device, PhysicalDevice);
     SelectionFragment.SetExtent(extent, Device, PhysicalDevice, *Silhouette.Resources->DepthImage.View);
 }
 
-void ScenePipelines::CompileShaders() {
+void Pipelines::CompileShaders() {
     Main.Renderer.CompileShaders();
     Main.LineAAComposite.Compile(*Main.LineAARenderPass);
     Main.Compiler.RecompileModules();

@@ -11,9 +11,9 @@
 #include "Camera.h"
 #include "Entity.h"
 #include "ExtrasMesh.h"
+#include "GpuBuffers.h"
 #include "Instance.h"
 #include "MeshComponents.h"
-#include "SceneBuffers.h"
 #include "SceneComponents.h"
 #include "SceneDefaults.h"
 #include "SceneTree.h"
@@ -22,17 +22,8 @@
 #include "mesh/Primitives.h"
 #include "numeric/mat4.h"
 
-namespace {
-template<typename T>
-T *FindSingleton(entt::registry &r) {
-    auto view = r.view<T>();
-    auto it = view.begin();
-    return it == view.end() ? nullptr : &r.get<T>(*it);
-}
-} // namespace
-
-std::string CreateName(entt::registry &r, entt::entity scene_entity, std::string_view prefix) {
-    auto &registry = r.get<NameRegistry>(scene_entity);
+std::string CreateName(entt::registry &r, std::string_view prefix) {
+    auto &registry = r.ctx().get<NameRegistry>();
     const std::string prefix_str{prefix};
     for (uint32_t i = 0; i < std::numeric_limits<uint32_t>::max(); ++i) {
         if (auto name = i == 0 ? prefix_str : std::format("{}_{}", prefix, i); !registry.Names.contains(name)) {
@@ -45,7 +36,7 @@ std::string CreateName(entt::registry &r, entt::entity scene_entity, std::string
 }
 
 void OnDestroyName(entt::registry &r, entt::entity e) {
-    if (auto *registry = FindSingleton<NameRegistry>(r)) {
+    if (auto *registry = r.ctx().find<NameRegistry>()) {
         registry->Names.erase(r.get<const Name>(e).Value);
     }
 }
@@ -53,7 +44,7 @@ void OnDestroyName(entt::registry &r, entt::entity e) {
 void AssignRenderInstanceObjectId(entt::registry &r, entt::entity e) {
     auto &ri = r.get<RenderInstance>(e);
     if (ri.ObjectId != 0) return;
-    if (auto *counter = FindSingleton<ObjectIdCounter>(r)) ri.ObjectId = counter->Next++;
+    if (auto *counter = r.ctx().find<ObjectIdCounter>()) ri.ObjectId = counter->Next++;
 }
 
 void EmitPendingHideOnRenderInstanceDestroy(entt::registry &r, entt::entity e) {
@@ -100,27 +91,27 @@ void ApplySelectBehavior(entt::registry &r, entt::entity e, MeshInstanceCreateIn
     }
 }
 
-entt::entity AddMeshInstance(entt::registry &r, entt::entity scene_entity, entt::entity mesh_entity, MeshInstanceCreateInfo info) {
+entt::entity AddMeshInstance(entt::registry &r, entt::entity mesh_entity, MeshInstanceCreateInfo info) {
     const auto e = r.create();
     r.emplace<Instance>(e, mesh_entity);
     r.emplace<ObjectKind>(e, ObjectType::Mesh);
     r.emplace<Transform>(e, info.Transform);
     r.emplace<WorldTransform>(e, info.Transform);
-    r.emplace<Name>(e, CreateName(r, scene_entity, info.Name));
+    r.emplace<Name>(e, CreateName(r, info.Name));
     Show(r, e);
     if (!info.Visible) Hide(r, e);
     ApplySelectBehavior(r, e, info.Select);
     return e;
 }
 
-std::pair<entt::entity, entt::entity> AddMesh(entt::registry &r, MeshStore &meshes, entt::entity scene_entity, Mesh &&mesh, std::optional<MeshInstanceCreateInfo> info) {
+std::pair<entt::entity, entt::entity> AddMesh(entt::registry &r, MeshStore &meshes, Mesh &&mesh, std::optional<MeshInstanceCreateInfo> info) {
     const auto mesh_entity = r.create();
     r.emplace<MeshBuffers>(mesh_entity, meshes.GetVerticesRange(mesh.GetStoreId()), SlottedRange{}, SlottedRange{}, SlottedRange{});
     r.emplace<Mesh>(mesh_entity, std::move(mesh));
-    return {mesh_entity, info ? AddMeshInstance(r, scene_entity, mesh_entity, *info) : entt::null};
+    return {mesh_entity, info ? AddMeshInstance(r, mesh_entity, *info) : entt::null};
 }
 
-entt::entity CreateExtrasBufferEntity(entt::registry &r, MeshStore &meshes, SceneBuffers &buffers, std::span<const vec3> positions, std::span<const uint8_t> vertex_classes, std::span<const uint32_t> edge_indices) {
+entt::entity CreateExtrasBufferEntity(entt::registry &r, MeshStore &meshes, GpuBuffers &buffers, std::span<const vec3> positions, std::span<const uint8_t> vertex_classes, std::span<const uint32_t> edge_indices) {
     const auto buffer_entity = r.create();
     const auto store_id = meshes.AllocateVertexBuffer(positions, {}).first;
     r.emplace<MeshBuffers>(buffer_entity, meshes.GetVerticesRange(store_id), SlottedRange{}, SlottedRange{}, SlottedRange{});
@@ -135,40 +126,40 @@ entt::entity CreateExtrasBufferEntity(entt::registry &r, MeshStore &meshes, Scen
     return buffer_entity;
 }
 
-entt::entity CreateExtrasObject(entt::registry &r, MeshStore &meshes, SceneBuffers &buffers, entt::entity scene_entity, std::span<const vec3> positions, std::span<const uint8_t> vertex_classes, std::span<const uint32_t> edge_indices, ObjectType type, ObjectCreateInfo info, std::string_view default_name) {
+entt::entity CreateExtrasObject(entt::registry &r, MeshStore &meshes, GpuBuffers &buffers, std::span<const vec3> positions, std::span<const uint8_t> vertex_classes, std::span<const uint32_t> edge_indices, ObjectType type, ObjectCreateInfo info, std::string_view default_name) {
     const auto buffer_entity = CreateExtrasBufferEntity(r, meshes, buffers, positions, vertex_classes, edge_indices);
     const auto e = r.create();
     r.emplace<ObjectKind>(e, type);
     r.emplace<Instance>(e, buffer_entity);
     r.emplace<Transform>(e, info.Transform);
     r.emplace<WorldTransform>(e, info.Transform);
-    r.emplace<Name>(e, CreateName(r, scene_entity, info.Name.empty() ? default_name : info.Name));
+    r.emplace<Name>(e, CreateName(r, info.Name.empty() ? default_name : info.Name));
     Show(r, e);
     ApplySelectBehavior(r, e, info.Select);
     return e;
 }
 
-entt::entity AddEmpty(entt::registry &r, MeshStore &meshes, SceneBuffers &buffers, entt::entity scene_entity, ObjectCreateInfo info) {
+entt::entity AddEmpty(entt::registry &r, MeshStore &meshes, GpuBuffers &buffers, ObjectCreateInfo info) {
     static constexpr vec3 positions[] = {{0, 0, 0}, {1, 0, 0}, {0, 0, 0}, {0, 1, 0}, {0, 0, 0}, {0, 0, -1}};
     static constexpr uint32_t edges[] = {0, 1, 2, 3, 4, 5};
-    return CreateExtrasObject(r, meshes, buffers, scene_entity, positions, {}, edges, ObjectType::Empty, std::move(info), "Empty");
+    return CreateExtrasObject(r, meshes, buffers, positions, {}, edges, ObjectType::Empty, std::move(info), "Empty");
 }
 
-entt::entity AddCamera(entt::registry &r, MeshStore &meshes, SceneBuffers &buffers, entt::entity scene_entity, ObjectCreateInfo info, std::optional<Camera> props) {
+entt::entity AddCamera(entt::registry &r, MeshStore &meshes, GpuBuffers &buffers, ObjectCreateInfo info, std::optional<Camera> props) {
     const Camera camera = props.value_or(Camera{DefaultPerspectiveCamera()});
     auto mesh = BuildCameraFrustumMesh(camera);
-    const auto entity = CreateExtrasObject(r, meshes, buffers, scene_entity, mesh.Positions, {}, mesh.CreateEdgeIndices(), ObjectType::Camera, std::move(info), "Camera");
+    const auto entity = CreateExtrasObject(r, meshes, buffers, mesh.Positions, {}, mesh.CreateEdgeIndices(), ObjectType::Camera, std::move(info), "Camera");
     r.emplace<Camera>(entity, camera);
     return entity;
 }
 
-entt::entity CreateBoneEntity(entt::registry &r, entt::entity scene_entity, entt::entity arm_obj_entity, const Armature &armature, uint32_t bone_index, entt::entity parent_entity) {
+entt::entity CreateBoneEntity(entt::registry &r, entt::entity arm_obj_entity, const Armature &armature, uint32_t bone_index, entt::entity parent_entity) {
     const auto &bone = armature.Bones[bone_index];
     const auto bone_entity = r.create();
     r.emplace<BoneIndex>(bone_entity, bone_index);
     r.emplace<SubElementOf>(bone_entity, arm_obj_entity);
     r.emplace<Instance>(bone_entity, arm_obj_entity);
-    r.emplace<Name>(bone_entity, CreateName(r, scene_entity, bone.Name));
+    r.emplace<Name>(bone_entity, CreateName(r, bone.Name));
     r.emplace<BoneDisplayScale>(bone_entity, ComputeBoneDisplayScale(armature, bone_index));
     const Transform bone_transform{bone.RestLocal.P, bone.RestLocal.R, vec3{1}};
     r.emplace<Transform>(bone_entity, bone_transform);
@@ -190,7 +181,7 @@ void CreateBoneJoints(entt::registry &r, entt::entity arm_obj_entity, entt::enti
     r.emplace<BoneJointEntities>(bone_entity, make(false), make(true));
 }
 
-void CreateBoneInstances(entt::registry &r, MeshStore &meshes, entt::entity scene_entity, entt::entity arm_obj_entity, entt::entity arm_data_entity) {
+void CreateBoneInstances(entt::registry &r, MeshStore &meshes, entt::entity arm_obj_entity, entt::entity arm_data_entity) {
     const auto &armature = r.get<const Armature>(arm_data_entity);
     const uint32_t n = armature.Bones.size();
     if (n == 0) return;
@@ -204,7 +195,7 @@ void CreateBoneInstances(entt::registry &r, MeshStore &meshes, entt::entity scen
     for (uint32_t i = 0; i < n; ++i) {
         const auto parent_index = armature.Bones[i].ParentIndex;
         const auto parent = parent_index == InvalidBoneIndex ? arm_obj_entity : bone_entities[parent_index];
-        bone_entities[i] = CreateBoneEntity(r, scene_entity, arm_obj_entity, armature, i, parent);
+        bone_entities[i] = CreateBoneEntity(r, arm_obj_entity, armature, i, parent);
     }
     auto &arm_obj = r.get<ArmatureObject>(arm_obj_entity);
     arm_obj.BoneEntities = std::move(bone_entities);
@@ -220,7 +211,7 @@ void CreateBoneInstances(entt::registry &r, MeshStore &meshes, entt::entity scen
     arm_obj.JointEntity = joint_entity;
 }
 
-entt::entity AddArmature(entt::registry &r, MeshStore &meshes, entt::entity scene_entity, ObjectCreateInfo info) {
+entt::entity AddArmature(entt::registry &r, MeshStore &meshes, ObjectCreateInfo info) {
     const auto data_entity = r.create();
     r.emplace<Armature>(data_entity);
 
@@ -229,17 +220,17 @@ entt::entity AddArmature(entt::registry &r, MeshStore &meshes, entt::entity scen
     r.emplace<ArmatureObject>(entity, data_entity);
     r.emplace<Transform>(entity, info.Transform);
     r.emplace<WorldTransform>(entity, info.Transform);
-    r.emplace<Name>(entity, CreateName(r, scene_entity, info.Name.empty() ? "Armature" : info.Name));
+    r.emplace<Name>(entity, CreateName(r, info.Name.empty() ? "Armature" : info.Name));
 
     ApplySelectBehavior(r, entity, info.Select);
-    CreateBoneInstances(r, meshes, scene_entity, entity, data_entity);
+    CreateBoneInstances(r, meshes, entity, data_entity);
     return entity;
 }
 
-entt::entity AddLight(entt::registry &r, MeshStore &meshes, SceneBuffers &buffers, entt::entity scene_entity, ObjectCreateInfo info, std::optional<PunctualLight> props) {
+entt::entity AddLight(entt::registry &r, MeshStore &meshes, GpuBuffers &buffers, ObjectCreateInfo info, std::optional<PunctualLight> props) {
     auto light = props.value_or(SceneDefaults::MakePunctualLight(PunctualLightType::Point));
     auto wireframe = BuildLightMesh(light);
-    const auto entity = CreateExtrasObject(r, meshes, buffers, scene_entity, wireframe.Data.Positions, wireframe.VertexClasses, {}, ObjectType::Light, std::move(info), "Light");
+    const auto entity = CreateExtrasObject(r, meshes, buffers, wireframe.Data.Positions, wireframe.VertexClasses, {}, ObjectType::Light, std::move(info), "Light");
     r.emplace<LightIndex>(entity, r.storage<LightIndex>().size());
     r.emplace<SubmitDirty>(entity);
     r.emplace<LightWireframeDirty>(entity);

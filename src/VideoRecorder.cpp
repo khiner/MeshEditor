@@ -30,7 +30,7 @@ bool IsFfmpegAvailable() {
 } // namespace
 
 VideoRecorder::VideoRecorder(
-    const SceneVulkanResources &vk_res,
+    const VulkanResources &vk_res,
     std::filesystem::path output_path, vk::Offset3D offset, vk::Extent2D extent, int fps
 ) : Device{vk_res.Device}, Queue{vk_res.Queue}, Offset{offset}, Ex{extent},
     FrameBytes{extent.width * extent.height * 4} {

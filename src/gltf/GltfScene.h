@@ -31,9 +31,9 @@
 struct DescriptorSlots;
 struct EnvironmentStore;
 struct MeshStore;
-struct SceneBuffers;
+struct GpuBuffers;
 struct TextureStore;
-struct SceneVulkanResources;
+struct VulkanResources;
 namespace mvk {
 struct BufferContext;
 }
@@ -197,8 +197,8 @@ struct MaterialSourceMeta {
 };
 
 struct Texture {
-    std::optional<uint32_t> SamplerIndex; // Index into `Scene::Samplers`
-    std::optional<uint32_t> ImageIndex, WebpImageIndex, BasisuImageIndex, DdsImageIndex; // Indexes into `Scene::Images` in resolution order.
+    std::optional<uint32_t> SamplerIndex; // Index into `SourceAssets::Samplers`
+    std::optional<uint32_t> ImageIndex, WebpImageIndex, BasisuImageIndex, DdsImageIndex; // Indexes into `SourceAssets::Images` in resolution order.
     std::string Name;
 };
 
@@ -213,7 +213,7 @@ struct SourceScene {
     std::vector<uint32_t> RootNodeIndices;
 };
 
-// Source-form scene-level data on the SceneEntity — encoded image bytes, sampler-config collapse, asset.* metadata, etc.
+// Source-form scene-level data on the viewport — encoded image bytes, sampler-config collapse, asset.* metadata, etc.
 // Cameras/lights round-trip via per-entity components above.
 struct SourceAssets {
     std::string Copyright, Generator, MinVersion;
@@ -238,9 +238,9 @@ struct SourceAssets {
 
 struct LoadContext {
     entt::registry &R;
-    entt::entity SceneEntity;
+    entt::entity viewport;
     DescriptorSlots &Slots;
-    SceneBuffers &Buffers;
+    GpuBuffers &Buffers;
     MeshStore &Meshes;
     TextureStore &Textures;
     EnvironmentStore &Environments;
@@ -259,11 +259,11 @@ struct SaveOptions {
 // For plain passthrough saves they may be null.
 struct SaveContext {
     const entt::registry &R;
-    entt::entity SceneEntity;
-    const SceneBuffers &Buffers;
+    entt::entity viewport;
+    const GpuBuffers &Buffers;
     const MeshStore &Meshes;
     const TextureStore &Textures;
-    const SceneVulkanResources *Vk{nullptr};
+    const VulkanResources *Vk{nullptr};
     mvk::BufferContext *BufCtx{nullptr};
     SaveOptions Options{};
 };
@@ -274,7 +274,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &, const S
 // Switch which glTF scene is "active" - toggles RenderInstance on object entities so only the
 // nodes belonging to `scene_index` (per `SourceAssets::NodeSceneMasks`) render.
 // No-op if the asset is single-scene or the index is invalid / unchanged.
-void SwitchActiveScene(entt::registry &, entt::entity scene_entity, uint32_t scene_index);
+void SwitchActiveScene(entt::registry &, entt::entity viewport, uint32_t scene_index);
 
 // Mirrors fastgltf::Category bit values (asserted in .cpp). Used as the category half of
 // `SourceAssets::ExtrasByEntity` keys, which the loader writes via fastgltf's parse callback.

@@ -15,7 +15,7 @@
 
 struct PendingTransform;
 
-namespace action::scene {
+namespace action::view {
 struct SetInteractionMode {
     InteractionMode Mode;
 };
@@ -25,27 +25,14 @@ struct SetEditMode {
 };
 struct EnterLookThroughCamera {};
 struct ExitLookThroughCamera {};
-struct Play {};
 struct SetViewportShading {
     ViewportShadingMode Mode;
 };
-struct SelectAll {};
 struct OrbitViewCamera {
     vec2 DeltaRad;
 };
 struct ZoomViewCamera {
     float Factor;
-};
-struct ApplyExciteImpact {
-    entt::entity InstanceEntity;
-    uint32_t VertexIndex;
-};
-struct ClearExciteImpacts {};
-struct SetStudioEnvironment {
-    uint32_t Index;
-};
-struct SetSourceIblIntensity {
-    float Intensity;
 };
 struct ResetViewCamera {};
 struct ResetViewportTheme {};
@@ -60,10 +47,6 @@ struct SetViewCameraLens {
 };
 struct SetViewCameraTargetDirection {
     vec3 Direction;
-};
-// `Mask=0` removes the component. Targets the active mesh entity.
-struct SetPbrMeshFeaturesMask {
-    uint32_t Mask;
 };
 // Targets the active bone in Pose mode, otherwise the active entity.
 struct SetRotationUiMode {
@@ -103,12 +86,10 @@ struct SetStartScreenTransform {
 
 using Actions = std::variant<
     SetInteractionMode, CycleInteractionMode, SetEditMode,
-    EnterLookThroughCamera, ExitLookThroughCamera, Play,
-    SetViewportShading, SelectAll, OrbitViewCamera, ZoomViewCamera,
-    ApplyExciteImpact, ClearExciteImpacts,
-    SetStudioEnvironment, SetSourceIblIntensity,
+    EnterLookThroughCamera, ExitLookThroughCamera,
+    SetViewportShading, OrbitViewCamera, ZoomViewCamera,
     ResetViewCamera, ResetViewportTheme, ResetPbrLighting,
-    SetViewCameraTarget, SetViewCameraLens, SetViewCameraTargetDirection, SetPbrMeshFeaturesMask,
+    SetViewCameraTarget, SetViewCameraLens, SetViewCameraTargetDirection,
     SetRotationUiMode, SetTransformRotationFromUi,
     DragGizmo, DragGizmoMeshEdit, EndGizmoDrag, SetActiveTool, SetStartScreenTransform>;
-} // namespace action::scene
+} // namespace action::view

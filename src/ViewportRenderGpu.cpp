@@ -1,20 +1,20 @@
-#include "SceneRenderGpu.h"
+#include "ViewportRenderGpu.h"
 #include "Armature.h"
+#include "DrawState.h"
 #include "Entity.h"
+#include "GpuBuffers.h"
 #include "Instance.h"
 #include "MeshComponents.h"
 #include "PbrFeature.h"
-#include "SceneBuffers.h"
+#include "Pipelines.h"
 #include "SceneComponents.h"
-#include "SceneDrawState.h"
 #include "SceneDrawing.h"
-#include "ScenePipelines.h"
 #include "SceneSelection.h"
 #include "SceneTree.h"
-#include "SceneVulkanResources.h"
 #include "SoundVertices.h"
 #include "Timer.h"
 #include "TransformGizmo.h"
+#include "VulkanResources.h"
 #include "gpu/MainDrawPushConstants.h"
 #include "gpu/SilhouetteEdgeColorPushConstants.h"
 #include "gpu/SilhouetteEdgeDepthObjectPushConstants.h"
@@ -41,8 +41,8 @@ DrawData MakeDrawData(const RenderBuffers &rb, uint32_t vertex_slot, const Insta
 }
 } // namespace
 
-void FlushDrawList(entt::registry &R, entt::entity scene_entity, vk::Device device, const DrawListBuilder &draw_list, DrawBufferPair &pair) {
-    auto &buffers = R.get<SceneBuffers>(scene_entity);
+void FlushDrawList(entt::registry &R, vk::Device device, const DrawListBuilder &draw_list, DrawBufferPair &pair) {
+    auto &buffers = R.ctx().get<GpuBuffers>();
     if (!draw_list.Draws.empty()) pair.DrawData.Update(as_bytes(draw_list.Draws));
     if (!draw_list.IndirectCommands.empty()) pair.Indirect.Update(as_bytes(draw_list.IndirectCommands));
     buffers.EnsureIdentityIndexBuffer(draw_list.MaxIndexCount);
@@ -53,8 +53,8 @@ void FlushDrawList(entt::registry &R, entt::entity scene_entity, vk::Device devi
 }
 
 #ifdef MVK_FORCE_STAGED_TRANSFERS
-void RecordTransferCommandBuffer(entt::registry &R, entt::entity scene_entity, vk::CommandBuffer cb) {
-    auto &buffers = R.get<SceneBuffers>(scene_entity);
+void RecordTransferCommandBuffer(entt::registry &R, entt::entity viewport, vk::CommandBuffer cb) {
+    auto &buffers = R.ctx().get<GpuBuffers>();
     const Timer timer{"RecordTransferCommandBuffer"};
     cb.reset({});
     cb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
@@ -124,28 +124,28 @@ void AppendExtrasDraw(entt::registry &r, const InstanceArena &instances, DrawLis
     }
 }
 
-void RecordRenderCommandBuffer(entt::registry &R, entt::entity scene_entity, vk::CommandBuffer cb, bool silhouette_only) {
+void RecordRenderCommandBuffer(entt::registry &R, entt::entity viewport, vk::CommandBuffer cb, bool silhouette_only) {
     const Timer timer{silhouette_only ? "RecordRenderCommandBuffer (silhouette)" : "RecordRenderCommandBuffer"};
-    if (!silhouette_only) R.emplace_or_replace<SelectionStale>(scene_entity);
+    if (!silhouette_only) R.emplace_or_replace<SelectionStale>(viewport);
 
-    const auto &Vk = R.ctx().get<const SceneVulkanResources>();
-    auto &Buffers = R.get<SceneBuffers>(scene_entity);
+    const auto &Vk = R.ctx().get<const VulkanResources>();
+    auto &Buffers = R.ctx().get<GpuBuffers>();
     auto &Meshes = R.ctx().get<MeshStore>();
-    auto &Pipelines = R.ctx().get<ScenePipelines>();
-    const auto &settings = R.get<const SceneSettings>(scene_entity);
-    const auto interaction_mode = R.get<const SceneInteraction>(scene_entity).Mode;
-    const auto edit_mode = R.get<const SceneEditMode>(scene_entity).Value;
+    auto &pipelines = R.ctx().get<Pipelines>();
+    const auto &settings = R.get<const ViewportDisplay>(viewport);
+    const auto interaction_mode = R.get<const Interaction>(viewport).Mode;
+    const auto edit_mode = R.get<const EditMode>(viewport).Value;
     const bool is_edit_mode = interaction_mode == InteractionMode::Edit;
     const bool is_excite_mode = interaction_mode == InteractionMode::Excite;
     const bool is_wireframe_mode = settings.ViewportShading == ViewportShadingMode::Wireframe;
     const bool show_rendered = settings.ViewportShading == ViewportShadingMode::MaterialPreview || settings.ViewportShading == ViewportShadingMode::Rendered;
     const bool show_fill = !is_wireframe_mode, show_overlays = settings.ShowOverlays;
     const bool real_transmission = show_rendered &&
-        GetActivePbrLighting(R, scene_entity, settings.ViewportShading).RealTransmission &&
-        Pipelines.Main.Compiler.HasFeature(PbrFeature::Transmission);
+        GetActivePbrLighting(R, viewport, settings.ViewportShading).RealTransmission &&
+        pipelines.Main.Compiler.HasFeature(PbrFeature::Transmission);
 
-    const auto &sel_slots = R.get<const SelectionSlots>(scene_entity);
-    auto &draw = R.get<SceneDrawState>(scene_entity);
+    const auto &sel_slots = R.get<const SelectionSlots>(viewport);
+    auto &draw = R.get<DrawState>(viewport);
     auto &draw_list = draw.List;
 
     // Build mesh_entity -> deform slots mapping for skinned meshes (edit mode shows rest pose)
@@ -170,7 +170,7 @@ void RecordRenderCommandBuffer(entt::registry &R, entt::entity scene_entity, vk:
     // and edit transform context (for pending vertex transforms) in one pass.
     std::unordered_map<entt::entity, entt::entity> primary_edit_instances;
     EditTransformContext edit_transform_context;
-    const bool has_pending_transform = is_edit_mode && R.all_of<PendingTransform>(scene_entity);
+    const bool has_pending_transform = is_edit_mode && R.all_of<PendingTransform>(viewport);
     if (is_edit_mode) {
         const auto active = FindActiveEntity(R);
         for (const auto [e, instance, ok, ri] : R.view<const Instance, const Selected, const ObjectKind, const RenderInstance>().each()) {
@@ -212,7 +212,7 @@ void RecordRenderCommandBuffer(entt::registry &R, entt::entity scene_entity, vk:
             // Transparent pass ordering: sort mesh draws back-to-front by camera distance.
             // This is a mesh-level approximation; interpenetrating transparent geometry may still require
             // per-primitive sorting or OIT for fully correct compositing.
-            const auto camera_position = R.get<const ViewCamera>(scene_entity).Position();
+            const auto camera_position = R.get<const ViewCamera>(viewport).Position();
             std::unordered_map<entt::entity, float> farthest_distance2_by_mesh;
             farthest_distance2_by_mesh.reserve(R.storage<RenderInstance>().size());
             for (const auto [entity, _, wt] : R.view<const RenderInstance, const WorldTransform>().each()) {
@@ -584,8 +584,8 @@ void RecordRenderCommandBuffer(entt::registry &R, entt::entity scene_entity, vk:
         }
     }
 
-    FlushDrawList(R, scene_entity, Vk.Device, draw_list, Buffers.RenderDraw);
-    const auto render_extent = ComputeRenderExtentPx(R.get<const ViewportExtent>(scene_entity).Value, std::bit_cast<vec2>(ImGui::GetIO().DisplayFramebufferScale));
+    FlushDrawList(R, Vk.Device, draw_list, Buffers.RenderDraw);
+    const auto render_extent = ComputeRenderExtentPx(R.get<const ViewportExtent>(viewport).Value, std::bit_cast<vec2>(ImGui::GetIO().DisplayFramebufferScale));
 
     cb.begin({vk::CommandBufferUsageFlagBits::eSimultaneousUse});
     cb.setViewport(0, vk::Viewport{0.f, 0.f, float(render_extent.width), float(render_extent.height), 0.f, 1.f});
@@ -600,7 +600,7 @@ void RecordRenderCommandBuffer(entt::registry &R, entt::entity scene_entity, vk:
     };
     auto record_pbr_batch = [&](const DrawBatchInfo &batch, PbrCompiler::Variant variant) {
         if (batch.DrawCount == 0) return;
-        const auto layout = Pipelines.Main.Compiler.Bind(cb, variant);
+        const auto layout = pipelines.Main.Compiler.Bind(cb, variant);
         const MainDrawPushConstants pc{{batch.DrawDataSlotOffset, transform_vertex_state_slot}};
         cb.pushConstants(layout, vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, sizeof(pc), &pc);
         cb.drawIndexedIndirect(*Buffers.RenderDraw.Indirect, batch.IndirectOffset, batch.DrawCount, sizeof(vk::DrawIndexedIndirectCommand));
@@ -614,7 +614,7 @@ void RecordRenderCommandBuffer(entt::registry &R, entt::entity scene_entity, vk:
 
     const bool has_silhouette = render_silhouette && draw.Silhouette.DrawCount > 0;
     if (has_silhouette) { // Silhouette depth/object pass
-        const auto &silhouette = Pipelines.Silhouette;
+        const auto &silhouette = pipelines.Silhouette;
         const vk::Rect2D rect{{0, 0}, ToExtent2D(silhouette.Resources->OffscreenImage.Extent)};
         cb.beginRenderPass({*silhouette.Renderer.RenderPass, *silhouette.Resources->Framebuffer, rect, SilhouetteClearValues}, vk::SubpassContents::eInline);
         cb.bindIndexBuffer(*Buffers.IdentityIndexBuffer, 0, vk::IndexType::eUint32);
@@ -627,7 +627,7 @@ void RecordRenderCommandBuffer(entt::registry &R, entt::entity scene_entity, vk:
         };
         sync_fragment_shader_reads(vk::PipelineStageFlagBits::eColorAttachmentOutput, silhouette_to_edge_barriers);
 
-        const auto &silhouette_edge = Pipelines.SilhouetteEdge;
+        const auto &silhouette_edge = pipelines.SilhouetteEdge;
         const vk::Rect2D edge_rect{{0, 0}, ToExtent2D(silhouette_edge.Resources->OffscreenImage.Extent)};
         cb.beginRenderPass({*silhouette_edge.Renderer.RenderPass, *silhouette_edge.Resources->Framebuffer, edge_rect, SilhouetteClearValues}, vk::SubpassContents::eInline);
         const auto &silhouette_edo = silhouette_edge.Renderer.ShaderPipelines.at(SPT::SilhouetteEdgeDepthObject);
@@ -644,7 +644,7 @@ void RecordRenderCommandBuffer(entt::registry &R, entt::entity scene_entity, vk:
         sync_fragment_shader_reads(vk::PipelineStageFlagBits::eLateFragmentTests | vk::PipelineStageFlagBits::eColorAttachmentOutput, edge_to_main_barriers);
     }
 
-    const auto &main = Pipelines.Main;
+    const auto &main = pipelines.Main;
     const vk::Rect2D main_rect{{0, 0}, ToExtent2D(main.Resources->ColorImage.Extent)};
     const std::vector<vk::ClearValue> main_clear_values{
         {vk::ClearDepthStencilValue{1, 0}},

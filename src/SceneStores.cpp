@@ -2,7 +2,8 @@
 
 #include "AnimationTimeline.h"
 #include "Bindless.h"
-#include "SceneBuffers.h"
+#include "GpuBuffers.h"
+#include "SceneComponents.h"
 #include "SceneOps.h"
 #include "SceneTextures.h"
 #include "mesh/MeshStore.h"
@@ -14,8 +15,8 @@
 
 #include <entt/entity/registry.hpp>
 
-void InitSceneStoreCtx(entt::registry &r, SceneVulkanResources vk) {
-    r.ctx().emplace<SceneVulkanResources>(vk);
+void InitSceneStoreCtx(entt::registry &r, VulkanResources vk) {
+    r.ctx().emplace<VulkanResources>(vk);
     auto &slots = r.ctx().emplace<DescriptorSlots>(
         vk.Device,
         vk.PhysicalDevice.getProperties2<vk::PhysicalDeviceProperties2, vk::PhysicalDeviceDescriptorIndexingProperties>().get<vk::PhysicalDeviceDescriptorIndexingProperties>()
@@ -31,19 +32,19 @@ entt::entity WireSceneRegistry(entt::registry &r) {
     r.on_construct<ColliderShape>().connect<&entt::registry::emplace<ColliderMaterial>>();
     r.on_destroy<ColliderShape>().connect<&entt::registry::remove<ColliderMaterial>>();
 
-    const auto &vk = r.ctx().get<const SceneVulkanResources>();
+    const auto &vk = r.ctx().get<const VulkanResources>();
     auto &slots = r.ctx().get<DescriptorSlots>();
     auto &textures = r.ctx().get<TextureStore>();
 
-    const auto scene_entity = r.create();
-    auto &buffers = r.emplace<SceneBuffers>(scene_entity, vk.PhysicalDevice, vk.Device, vk.Instance, slots);
+    const auto viewport = r.create();
+    auto &buffers = r.ctx().emplace<GpuBuffers>(vk.PhysicalDevice, vk.Device, vk.Instance, slots);
     r.ctx().emplace<MeshStore>(buffers.Ctx);
 
-    r.emplace<NameRegistry>(scene_entity);
-    r.emplace<ObjectIdCounter>(scene_entity);
-    r.emplace<MaterialStore>(scene_entity);
-    r.emplace<TimelineRange>(scene_entity);
-    r.emplace<TimelinePlayback>(scene_entity);
+    r.ctx().emplace<NameRegistry>();
+    r.ctx().emplace<ObjectIdCounter>();
+    auto &materials = r.ctx().emplace<MaterialStore>();
+    r.emplace<TimelineRange>(viewport);
+    r.emplace<TimelinePlayback>(viewport);
 
     buffers.Materials.Append({
         .BaseColorFactor = vec4{1.f},
@@ -54,10 +55,10 @@ entt::entity WireSceneRegistry(entt::registry &r) {
         .DoubleSided = 0u,
         .BaseColorTexture = {.Slot = textures.WhiteTextureSlot},
     });
-    r.patch<MaterialStore>(scene_entity, [](auto &m) { m.Names.emplace_back("Default"); });
+    materials.Names.emplace_back("Default");
 
     constexpr std::array<std::byte, 4> WhitePixels{std::byte{0xff}, std::byte{0xff}, std::byte{0xff}, std::byte{0xff}};
-    auto &pending = r.get_or_emplace<PendingTextureUploads>(scene_entity);
+    auto &pending = r.get_or_emplace<PendingTextureUploads>(viewport);
     pending.Items.emplace_back(PendingTextureUpload{
         .SamplerSlot = textures.WhiteTextureSlot,
         .Source = PendingTextureUpload::RawPixels{.Pixels = std::vector<std::byte>(WhitePixels.begin(), WhitePixels.end()), .Width = 1, .Height = 1},
@@ -68,7 +69,7 @@ entt::entity WireSceneRegistry(entt::registry &r) {
         .Name = "DefaultWhite",
     });
 
-    return scene_entity;
+    return viewport;
 }
 
 void TearDownSceneStoreCtx(entt::registry &r) {
@@ -78,16 +79,17 @@ void TearDownSceneStoreCtx(entt::registry &r) {
     ReleaseEnvironmentSamplerSlots(slots, environments);
     ReleaseSamplerSlots(slots, CollectSamplerSlots(textures.Textures));
 
-    // Tear down GPU-resource owners before SceneBuffers, since they retire allocations into
-    // SceneBuffers.Ctx.Retired (cleared on ~BufferContext, which destroys the VMA allocator).
+    // Tear down GPU-resource owners before GpuBuffers, since they retire allocations into
+    // GpuBuffers.Ctx.Retired (cleared on ~BufferContext, which destroys the VMA allocator).
     r.ctx().erase<EnvironmentStore>();
     r.ctx().erase<TextureStore>();
     r.ctx().erase<MeshStore>();
-    // Destroy entities owning a SceneBuffers component so it drops (and its ~BufferContext destroys
-    // the VMA allocator) before DescriptorSlots is erased.
-    std::vector<entt::entity> scene_entities;
-    for (auto e : r.view<SceneBuffers>()) scene_entities.push_back(e);
-    for (auto e : scene_entities) r.destroy(e);
+    r.ctx().erase<ColliderShapeBuffers>();
+    r.ctx().erase<GpuBuffers>(); // drops BufferContext, whose dtor destroys the VMA allocator
+    r.ctx().erase<OneShotGpu>(); // vk pool/fence (Device in VulkanResources still alive)
+    r.ctx().erase<MaterialStore>();
+    r.ctx().erase<ObjectIdCounter>();
+    r.ctx().erase<NameRegistry>();
     r.ctx().erase<DescriptorSlots>();
-    r.ctx().erase<SceneVulkanResources>();
+    r.ctx().erase<VulkanResources>();
 }
