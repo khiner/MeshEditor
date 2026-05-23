@@ -7,7 +7,6 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_CXX_FLAGS "-O2")
 
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -stdlib=libc++")
-set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -L/opt/homebrew/opt/llvm/lib/c++ -L/opt/homebrew/opt/llvm/lib")
 
 add_compile_options(-Wno-missing-field-initializers)
 
@@ -28,6 +27,12 @@ target_compile_options(basisu_transcoder PRIVATE -w -fno-strict-aliasing $<$<COM
 
 # Ignore lib warnings
 target_compile_options(staticlib PRIVATE -w) # Faust (can't use alias target)
+if(APPLE)
+    # Faust statically links LLVM, which references zstd/xml2 by bare -l. On macOS they live under
+    # the Homebrew prefix, off the default link path.
+    execute_process(COMMAND brew --prefix OUTPUT_VARIABLE HOMEBREW_PREFIX OUTPUT_STRIP_TRAILING_WHITESPACE)
+    target_link_directories(staticlib INTERFACE ${HOMEBREW_PREFIX}/lib)
+endif()
 file(GLOB_RECURSE LIB_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/lib/*.c ${CMAKE_CURRENT_SOURCE_DIR}/lib/*.cpp)
 set_source_files_properties(${LIB_SOURCES} PROPERTIES COMPILE_FLAGS "-w")
 
