@@ -2,8 +2,6 @@
 
 #include "vulkan/Image.h" // mvk::FindMemoryType
 
-#include <cstdlib>
-#include <format>
 #include <print>
 
 void VideoRecorder::PipeCloser::operator()(std::FILE *p) const noexcept {

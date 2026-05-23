@@ -1,9 +1,5 @@
 #include "TransformMath.h"
 
-#include <cmath>
-#include <glm/gtc/quaternion.hpp>
-#include <glm/mat3x3.hpp>
-
 // Decompose a TRS matrix. Avoids glm::gtx::matrix_decompose: its determinant-vs-epsilon
 // early-out (matrix_decompose.inl:54, "TODO: Fixme!") rejects matrices whose scale product
 // is below float epsilon — e.g. quantized meshes with per-axis scale ~3.6e-6.

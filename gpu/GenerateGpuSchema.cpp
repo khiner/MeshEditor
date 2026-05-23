@@ -506,7 +506,7 @@ int main(int argc, char **argv) {
 
         bool needs_array{false}, needs_cstdint{false},
             needs_uvec2{false}, needs_uvec4{false}, needs_vec2{false}, needs_vec3{false}, needs_vec4{false},
-            needs_mat3{false}, needs_mat4{false}, needs_quat{false}, needs_slots{false};
+            needs_mat3{false}, needs_mat4{false}, needs_quat{false}, needs_slots{false}, needs_range{false};
         std::vector<std::string_view> cpp_includes;
         for (const auto &field : def.Fields) {
             const auto spec = ParseType(field.Type);
@@ -520,8 +520,8 @@ int main(int argc, char **argv) {
             if (spec.Base == "mat3") needs_mat3 = true;
             if (spec.Base == "mat4") needs_mat4 = true;
             if (spec.Base == "quat") needs_quat = true;
-            if (field.DefaultValue.find("InvalidSlot") != std::string_view::npos ||
-                field.DefaultValue.find("InvalidOffset") != std::string_view::npos) needs_slots = true;
+            if (field.DefaultValue.find("InvalidSlot") != std::string_view::npos) needs_slots = true;
+            if (field.DefaultValue.find("InvalidOffset") != std::string_view::npos) needs_range = true;
             if (IsStructType(spec.Base, structs) && spec.Base != def.Name) {
                 if (find(cpp_includes, spec.Base) == cpp_includes.end()) cpp_includes.emplace_back(spec.Base);
             }
@@ -543,8 +543,9 @@ int main(int argc, char **argv) {
         if (needs_vec4) cpp_out << "#include \"numeric/vec4.h\"\n";
         if (needs_quat) cpp_out << "#include \"numeric/quat.h\"\n";
         if (needs_slots) cpp_out << "#include \"vulkan/Slots.h\"\n";
+        if (needs_range) cpp_out << "#include \"Range.h\"\n";
         for (const auto &include : cpp_includes) cpp_out << "#include \"gpu/" << include << ".h\"\n";
-        if (needs_cstdint || needs_vec2 || needs_mat3 || needs_mat4 || needs_vec3 || needs_vec4 || needs_quat || needs_slots || !cpp_includes.empty()) cpp_out << "\n";
+        if (needs_cstdint || needs_vec2 || needs_mat3 || needs_mat4 || needs_vec3 || needs_vec4 || needs_quat || needs_slots || needs_range || !cpp_includes.empty()) cpp_out << "\n";
 
         cpp_out << "struct " << def.Name << " {\n";
         for (const auto &field : def.Fields) {

@@ -1,5 +1,4 @@
 #include "Pipelines.h"
-#include "Shader.h"
 #include "Timer.h"
 #include "gpu/BoxSelectPushConstants.h"
 #include "gpu/ElementPickPushConstants.h"

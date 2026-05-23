@@ -2,12 +2,9 @@
 
 #include "FaustParams.h"
 #include "SvgResource.h"
-#include "Worker.h"
 
 #include "draw/drawschema.hh" // faust/compiler/draw/drawschema.hh
 #include "faust/dsp/llvm-dsp.h"
-
-#include <vector>
 
 namespace {
 constexpr uint SampleRate = 48'000; // todo respect device sample rate

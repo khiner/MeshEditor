@@ -3,8 +3,6 @@
 
 #include "imgui.h"
 
-#include <format>
-
 using namespace ImGui;
 
 namespace {

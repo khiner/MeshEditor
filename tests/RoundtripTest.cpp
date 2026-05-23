@@ -1,22 +1,13 @@
-#include "Bindless.h"
 #include "GpuBuffers.h"
 #include "ImageDecode.h"
 #include "Stores.h"
 #include "Textures.h"
-#include "VulkanResources.h"
 #include "gltf/GltfScene.h"
-#include "mesh/MeshStore.h"
 #include "vulkan/VulkanContext.h"
 
 #include <boost/ut.hpp>
 #include <entt/entity/registry.hpp>
 #include <simdjson.h>
-
-#include <filesystem>
-#include <format>
-#include <string>
-#include <string_view>
-#include <vector>
 
 namespace {
 namespace fs = std::filesystem;

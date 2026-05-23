@@ -2,20 +2,13 @@
 
 #include "Apply.h"
 #include "Armature.h"
-#include "Bindless.h"
-#include "DrawState.h"
 #include "Drawing.h"
-#include "Entity.h"
-#include "GpuBuffers.h"
 #include "Instance.h"
-#include "MeshComponents.h"
-#include "ObjectOps.h"
 #include "Pipelines.h"
 #include "Selection.h"
 #include "SelectionComponents.h"
 #include "SoundVertices.h"
 #include "Timer.h"
-#include "ViewportComponents.h"
 #include "ViewportRenderGpu.h"
 #include "VkFenceWait.h"
 #include "VulkanResources.h"
@@ -25,16 +18,9 @@
 #include "gpu/ObjectPickPushConstants.h"
 #include "gpu/SelectionDrawPushConstants.h"
 #include "gpu/SelectionElementPushConstants.h"
-#include "mesh/Mesh.h"
 #include "mesh/MeshStore.h"
 
 #include "imgui.h"
-
-#include <entt/entity/registry.hpp>
-
-#include <algorithm>
-#include <ranges>
-#include <unordered_map>
 
 namespace {
 constexpr vk::Extent2D ToExtent2D(vk::Extent3D extent) { return {extent.width, extent.height}; }

@@ -1,13 +1,9 @@
 #include "Mesh.h"
 #include "MeshStore.h"
 
-#include <glm/glm.hpp>
 #include <glm/gtx/norm.hpp>
 
-#include <algorithm>
 #include <bit>
-#include <cassert>
-#include <ranges>
 
 using std::ranges::any_of, std::ranges::find_if, std::ranges::distance;
 

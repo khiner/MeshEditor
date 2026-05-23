@@ -1,7 +1,6 @@
 #include "VulkanContext.h"
 
 #include <iostream>
-#include <span>
 
 vk::PhysicalDevice FindPhysicalDevice(const vk::UniqueInstance &instance) {
     const auto physical_devices = instance->enumeratePhysicalDevices();

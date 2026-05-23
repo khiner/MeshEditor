@@ -1,15 +1,12 @@
 #include "AudioSystem.h"
-#include "Entity.h"
 #include "FFTData.h"
 #include "FaustDSP.h"
 #include "Instance.h"
 #include "InteractionComponents.h"
 #include "Reactive.h"
-#include "RealImpactComponents.h"
 #include "SceneGraph.h"
 #include "Selection.h"
 #include "SoundVertices.h"
-#include "Tets.h"
 #include "Worker.h"
 #include "mesh/Mesh.h"
 #include "ui/FieldEdit.h"
@@ -24,10 +21,6 @@
 #include <nfd.h>
 
 #include <iostream>
-#include <optional>
-#include <print>
-#include <ranges>
-#include <unordered_map>
 
 using std::ranges::distance, std::ranges::iota_view, std::ranges::find, std::ranges::nth_element, std::ranges::max_element, std::ranges::replace, std::ranges::to;
 using std::views::transform;

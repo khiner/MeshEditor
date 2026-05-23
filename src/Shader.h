@@ -4,8 +4,6 @@
 
 #include <filesystem>
 #include <optional>
-#include <string_view>
-#include <unordered_map>
 #include <vector>
 
 using ShaderType = vk::ShaderStageFlagBits;

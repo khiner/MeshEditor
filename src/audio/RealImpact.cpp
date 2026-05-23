@@ -3,10 +3,6 @@
 #include "numeric/mat4.h"
 #include "numeric/vec4.h"
 
-#include <glm/gtc/matrix_transform.hpp>
-
-#include <format>
-#include <ranges>
 #include <regex>
 
 using std::ranges::max_element, std::ranges::iota_view, std::ranges::to;

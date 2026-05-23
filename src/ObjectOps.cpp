@@ -1,26 +1,15 @@
 #include "ObjectOps.h"
 
-#include <cassert>
-#include <format>
-#include <limits>
-#include <vector>
-
-#include <entt/entity/registry.hpp>
-
 #include "Armature.h"
-#include "Camera.h"
 #include "Defaults.h"
-#include "Entity.h"
 #include "ExtrasMesh.h"
 #include "GpuBuffers.h"
 #include "Instance.h"
 #include "MeshComponents.h"
 #include "SceneGraph.h"
 #include "ViewportComponents.h"
-#include "mesh/Mesh.h"
 #include "mesh/MeshStore.h"
 #include "mesh/Primitives.h"
-#include "numeric/mat4.h"
 
 std::string CreateName(entt::registry &r, std::string_view prefix) {
     auto &registry = r.ctx().get<NameRegistry>();

@@ -3,12 +3,8 @@
 #include "GpuBuffers.h"
 #include "Paths.h"
 #include "Pipelines.h" // ColorSubresourceRange
-#include "SvgResource.h"
 #include "Textures.h"
 #include "ViewportComponents.h" // OneShotGpu
-#include "VulkanResources.h"
-
-#include <entt/entity/registry.hpp>
 
 void LoadViewportIcons(entt::registry &R, entt::entity viewport) {
     const auto &Vk = R.ctx().get<const VulkanResources>();

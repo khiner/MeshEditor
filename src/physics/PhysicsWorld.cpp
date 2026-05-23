@@ -11,15 +11,12 @@
 
 #include "Jolt/Core/Factory.h"
 #include "Jolt/Core/JobSystemThreadPool.h"
-#include "Jolt/Core/TempAllocator.h"
 #include "Jolt/Physics/Body/BodyCreationSettings.h"
-#include "Jolt/Physics/Body/BodyLock.h"
 #include "Jolt/Physics/Collision/CollideShape.h"
 #include "Jolt/Physics/Collision/Shape/BoxShape.h"
 #include "Jolt/Physics/Collision/Shape/CapsuleShape.h"
 #include "Jolt/Physics/Collision/Shape/ConvexHullShape.h"
 #include "Jolt/Physics/Collision/Shape/CylinderShape.h"
-#include "Jolt/Physics/Collision/Shape/DecoratedShape.h"
 #include "Jolt/Physics/Collision/Shape/EmptyShape.h"
 #include "Jolt/Physics/Collision/Shape/MeshShape.h"
 #include "Jolt/Physics/Collision/Shape/OffsetCenterOfMassShape.h"
@@ -33,15 +30,12 @@
 #include "Jolt/Physics/Collision/SimShapeFilter.h"
 #include "Jolt/Physics/Constraints/HingeConstraint.h"
 #include "Jolt/Physics/Constraints/SixDOFConstraint.h"
-#include "Jolt/Physics/PhysicsSettings.h"
 #include "Jolt/Physics/PhysicsSystem.h"
 #include "Jolt/RegisterTypes.h"
 
 JPH_SUPPRESS_WARNINGS
 
-#include <format>
 #include <iostream>
-#include <unordered_map>
 
 using namespace JPH;
 using namespace JPH::literals;

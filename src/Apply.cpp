@@ -1,7 +1,6 @@
 #include "Apply.h"
 #include "AnimationTimeline.h"
 #include "Armature.h"
-#include "Bindless.h"
 #include "Defaults.h"
 #include "File.h"
 #include "GpuBuffers.h"
@@ -9,7 +8,6 @@
 #include "InteractionComponents.h"
 #include "MeshComponents.h"
 #include "NodeTransformAnimation.h"
-#include "ObjectOps.h"
 #include "Path.h"
 #include "Pipelines.h"
 #include "SceneGraph.h"
@@ -19,9 +17,7 @@
 #include "Textures.h"
 #include "Timer.h"
 #include "TransformMath.h"
-#include "ViewportComponents.h"
 #include "VkFenceWait.h"
-#include "VulkanResources.h"
 #include "audio/AudioSystem.h"
 #include "audio/RealImpact.h"
 #include "gltf/GltfScene.h"
@@ -29,8 +25,6 @@
 #include "mesh/MeshStore.h"
 #include "mesh/Primitives.h"
 #include "physics/PhysicsWorld.h"
-
-#include <entt/entity/registry.hpp>
 
 #include <iostream>
 

@@ -1,36 +1,22 @@
 #include "ViewportRenderGpu.h"
 #include "Armature.h"
-#include "DrawState.h"
 #include "Drawing.h"
-#include "Entity.h"
-#include "GpuBuffers.h"
 #include "Instance.h"
 #include "InteractionComponents.h"
-#include "MeshComponents.h"
-#include "PbrFeature.h"
 #include "Pipelines.h"
 #include "SceneGraph.h"
 #include "Selection.h"
 #include "SelectionComponents.h"
 #include "SoundVertices.h"
 #include "Timer.h"
-#include "TransformGizmo.h"
 #include "ViewportComponents.h"
 #include "VulkanResources.h"
 #include "gpu/MainDrawPushConstants.h"
 #include "gpu/SilhouetteEdgeColorPushConstants.h"
 #include "gpu/SilhouetteEdgeDepthObjectPushConstants.h"
-#include "mesh/Mesh.h"
 #include "mesh/MeshStore.h"
 
 #include "imgui.h"
-
-#include <entt/entity/registry.hpp>
-
-#include <algorithm>
-#include <ranges>
-#include <unordered_map>
-#include <unordered_set>
 
 using std::ranges::any_of;
 

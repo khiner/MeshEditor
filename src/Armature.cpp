@@ -5,7 +5,6 @@
 
 #include <entt/entity/registry.hpp>
 
-#include <cassert>
 #include <format>
 
 namespace {

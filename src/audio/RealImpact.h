@@ -1,7 +1,6 @@
 #pragma once
 
 #include "numeric/quat.h"
-#include "numeric/vec2.h"
 #include "numeric/vec3.h"
 
 #include <array>

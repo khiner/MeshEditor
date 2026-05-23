@@ -4,7 +4,6 @@
 #include "Apply.h"
 #include "Armature.h"
 #include "BBox.h"
-#include "Bindless.h"
 #include "Changes.h"
 #include "Defaults.h"
 #include "EntityDestroyTracker.h"
@@ -12,9 +11,7 @@
 #include "GpuBuffers.h"
 #include "Instance.h"
 #include "InteractionComponents.h"
-#include "MeshComponents.h"
 #include "NodeTransformAnimation.h"
-#include "ObjectOps.h"
 #include "Pipelines.h"
 #include "Reactive.h"
 #include "SceneGraph.h"
@@ -25,8 +22,6 @@
 #include "Textures.h"
 #include "Timer.h"
 #include "TransformMath.h"
-#include "ViewportComponents.h"
-#include "VulkanResources.h"
 #include "gltf/GltfScene.h"
 #include "mesh/MeshStore.h"
 #include "mesh/Primitives.h"
@@ -38,7 +33,6 @@
 #include "AxisColors.h" // Must be after imgui.h
 
 #include <iostream>
-#include <numbers>
 
 using std::ranges::to;
 using std::views::iota;

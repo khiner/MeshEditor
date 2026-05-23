@@ -1,15 +1,101 @@
 #pragma once
 
-#include "Handle.h"
-#include "gpu/Vertex.h"
-#include "numeric/vec4.h"
-
 #include <array>
+#include <cstdint>
+#include <limits>
 #include <span>
-#include <unordered_map>
+#include <string_view>
 #include <vector>
 
-using uint = uint32_t;
+#include "gpu/Element.h"
+#include "gpu/Vertex.h"
+
+namespace he { // half-edge
+constexpr uint32_t null{std::numeric_limits<uint32_t>::max()};
+
+constexpr uint8_t ElementMask(Element element) { return uint8_t(element); }
+constexpr bool ElementMaskContains(uint8_t mask, Element element) { return (mask & ElementMask(element)) != 0; }
+constexpr void SetElementMask(uint8_t &mask, Element element, bool enabled) {
+    if (enabled) mask |= ElementMask(element);
+    else mask &= ~ElementMask(element);
+}
+
+constexpr std::array Elements{Element::Vertex, Element::Edge, Element::Face};
+
+constexpr std::string_view label(Element element) {
+    switch (element) {
+        case Element::Vertex: return "vertex";
+        case Element::Edge: return "edge";
+        case Element::Face: return "face";
+        case Element::None: return "none";
+    }
+}
+
+// Tag types for type-safe handles
+namespace tag {
+struct Vertex {};
+struct Edge {};
+struct Face {};
+
+struct Halfedge {};
+} // namespace tag
+
+template<typename Tag>
+struct Handle {
+    uint32_t Index{null};
+
+    uint32_t operator*() const { return Index; }
+    auto operator<=>(const Handle &) const = default;
+    explicit operator bool() const { return Index != null; }
+
+    constexpr Element GetElement() const {
+        if constexpr (std::is_same_v<Tag, tag::Vertex>) return Element::Vertex;
+        if constexpr (std::is_same_v<Tag, tag::Edge>) return Element::Edge;
+        if constexpr (std::is_same_v<Tag, tag::Face>) return Element::Face;
+        return Element::None;
+    }
+};
+
+using VH = Handle<tag::Vertex>;
+using HH = Handle<tag::Halfedge>;
+using EH = Handle<tag::Edge>;
+using FH = Handle<tag::Face>;
+
+// Type-erased handle with comparison/conversion to typed handles
+struct AnyHandle {
+    AnyHandle(Element element = Element::None, uint32_t index = null) : Element(element), Index(index) {}
+    template<typename Tag> AnyHandle(Handle<Tag> h) : Element(h.GetElement()), Index(*h) {}
+
+    Element Element;
+    uint32_t Index;
+
+    uint32_t operator*() const { return Index; }
+    bool operator==(const AnyHandle &other) const { return Element == other.Element && Index == other.Index; }
+    operator bool() const { return Index != null; }
+
+    bool operator==(VH vh) const { return Element == Element::Vertex && Index == *vh; }
+    bool operator==(EH eh) const { return Element == Element::Edge && Index == *eh; }
+    bool operator==(FH fh) const { return Element == Element::Face && Index == *fh; }
+
+    // Implicit conversion to typed handles
+    operator VH() const { return {Element == Element::Vertex ? Index : null}; }
+    operator EH() const { return {Element == Element::Edge ? Index : null}; }
+    operator FH() const { return {Element == Element::Face ? Index : null}; }
+};
+
+struct AnyHandleHash {
+    size_t operator()(const AnyHandle &h) const { return std::hash<uint32_t>{}(uint32_t(h.Element)) ^ (std::hash<uint32_t>{}(h.Index) << 1); }
+};
+} // namespace he
+
+namespace std {
+template<typename Tag>
+struct hash<he::Handle<Tag>> {
+    size_t operator()(const he::Handle<Tag> &h) const noexcept {
+        return std::hash<uint32_t>{}(*h);
+    }
+};
+} // namespace std
 
 static constexpr uint32_t InvalidStoreId{~0u};
 
@@ -27,7 +113,7 @@ struct Mesh {
     using EH = he::EH;
     using FH = he::FH;
 
-    Mesh(MeshStore &, uint32_t store_id, std::vector<std::vector<uint>> &&faces);
+    Mesh(MeshStore &, uint32_t store_id, std::vector<std::vector<uint32_t>> &&faces);
     Mesh(MeshStore &, uint32_t store_id, std::vector<std::array<uint32_t, 2>> &&edges, uint32_t vertex_count);
     Mesh(MeshStore &, uint32_t store_id, uint32_t vertex_count);
     Mesh(MeshStore &, uint32_t store_id, const Mesh &src);
@@ -38,10 +124,10 @@ struct Mesh {
     Mesh &operator=(Mesh &&) noexcept;
     ~Mesh();
 
-    uint VertexCount() const { return VertexCountValue; }
-    uint EdgeCount() const { return Edges.size(); }
-    uint FaceCount() const { return Faces.size(); }
-    uint HalfEdgeCount() const { return Halfedges.size(); }
+    uint32_t VertexCount() const { return VertexCountValue; }
+    uint32_t EdgeCount() const { return Edges.size(); }
+    uint32_t FaceCount() const { return Faces.size(); }
+    uint32_t HalfEdgeCount() const { return Halfedges.size(); }
 
     const vec3 &GetPosition(VH vh) const;
     const vec3 &GetNormal(VH vh) const;
@@ -52,7 +138,7 @@ struct Mesh {
     uint32_t TriangleIndexCount() const; // Cached triangle count * 3
 
     // Halfedge navigation
-    HH GetHalfedge(EH eh, uint i) const {
+    HH GetHalfedge(EH eh, uint32_t i) const {
         const auto h0 = Edges[*eh];
         return i == 0 ? h0 : (i == 1 && h0 ? Halfedges[*h0].Opposite : HH{});
     }
@@ -64,8 +150,8 @@ struct Mesh {
 
     // Valence
     bool Empty() const { return VertexCount() == 0; }
-    uint GetValence(VH) const;
-    uint GetValence(FH) const;
+    uint32_t GetValence(VH) const;
+    uint32_t GetValence(FH) const;
 
     // Geometric queries
     vec3 CalcFaceCentroid(FH) const;
@@ -79,13 +165,13 @@ struct Mesh {
     bool VertexBelongsToFaceEdge(VH, FH, EH) const;
     bool EdgeBelongsToFace(EH, FH) const;
 
-    std::vector<uint> CreateTriangleIndices() const; // Allocates + returns triangulated face indices
-    void WriteTriangleIndices(std::span<uint> dest) const; // Write triangulated face indices into dest
-    void WriteEdgeIndices(std::span<uint> dest) const; // Write edge line segment indices into dest
+    std::vector<uint32_t> CreateTriangleIndices() const; // Allocates + returns triangulated face indices
+    void WriteTriangleIndices(std::span<uint32_t> dest) const; // Write triangulated face indices into dest
+    void WriteEdgeIndices(std::span<uint32_t> dest) const; // Write edge line segment indices into dest
 
     // Iterators
     struct VertexIterator {
-        uint Index;
+        uint32_t Index;
         VH operator*() const { return {Index}; }
         VertexIterator &operator++() {
             ++Index;
@@ -94,14 +180,14 @@ struct Mesh {
         bool operator==(const VertexIterator &) const = default;
     };
     struct VertexRange {
-        uint Count;
+        uint32_t Count;
         VertexIterator begin() const { return {0}; }
         VertexIterator end() const { return {Count}; }
     };
     VertexRange vertices() const { return {VertexCount()}; }
 
     struct EdgeIterator {
-        uint Index;
+        uint32_t Index;
         EH operator*() const { return {Index}; }
         EdgeIterator &operator++() {
             ++Index;
@@ -110,14 +196,14 @@ struct Mesh {
         bool operator==(const EdgeIterator &) const = default;
     };
     struct EdgeRange {
-        uint Count;
+        uint32_t Count;
         EdgeIterator begin() const { return {0}; }
         EdgeIterator end() const { return {Count}; }
     };
     EdgeRange edges() const { return {EdgeCount()}; }
 
     struct FaceIterator {
-        uint Index;
+        uint32_t Index;
         FH operator*() const { return {Index}; }
         FaceIterator &operator++() {
             ++Index;
@@ -126,7 +212,7 @@ struct Mesh {
         bool operator==(const FaceIterator &) const = default;
     };
     struct FaceRange {
-        uint Count;
+        uint32_t Count;
         FaceIterator begin() const { return {0}; }
         FaceIterator end() const { return {Count}; }
     };
@@ -134,8 +220,7 @@ struct Mesh {
 
     struct CirculatorBase {
         const Mesh *M{};
-        HH CurrentHalfedge{};
-        HH StartHalfedge{};
+        HH CurrentHalfedge{}, StartHalfedge{};
 
         CirculatorBase() = default;
         CirculatorBase(const Mesh *m, HH current, HH start)
@@ -159,7 +244,6 @@ struct Mesh {
     struct FaceVertexIterator : CirculatorBase {
         using difference_type = std::ptrdiff_t;
         using value_type = VH;
-
         using CirculatorBase::CirculatorBase;
 
         VH operator*() const { return M->GetToVertex(CurrentHalfedge); }
@@ -184,7 +268,6 @@ struct Mesh {
     struct VertexOutgoingHalfedgeIterator : CirculatorBase {
         using difference_type = std::ptrdiff_t;
         using value_type = HH;
-
         using CirculatorBase::CirculatorBase;
 
         HH operator*() const { return CurrentHalfedge; }
@@ -207,7 +290,6 @@ struct Mesh {
         using iterator_category = std::input_iterator_tag;
         using difference_type = std::ptrdiff_t;
         using value_type = HH;
-
         using CirculatorBase::CirculatorBase;
 
         HH operator*() const { return CurrentHalfedge; }

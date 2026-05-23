@@ -3,17 +3,10 @@
 #include "AnimationTimeline.h"
 #include "Bindless.h"
 #include "GpuBuffers.h"
-#include "ObjectOps.h"
 #include "Textures.h"
 #include "ViewportComponents.h"
 #include "mesh/MeshStore.h"
 #include "physics/PhysicsTypes.h"
-
-#include <array>
-#include <cstddef>
-#include <vector>
-
-#include <entt/entity/registry.hpp>
 
 void InitStoreCtx(entt::registry &r, VulkanResources vk) {
     r.ctx().emplace<VulkanResources>(vk);

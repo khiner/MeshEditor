@@ -1,6 +1,4 @@
 #include "MeshStore.h"
-#include "MeshAttributes.h"
-#include "MeshData.h"
 
 #include <glm/geometric.hpp>
 
@@ -9,7 +7,6 @@
 #define TINYPLY_IMPLEMENTATION
 #include "tinyply.h"
 
-#include <limits>
 #include <numeric>
 
 namespace {

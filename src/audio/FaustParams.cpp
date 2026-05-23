@@ -2,7 +2,6 @@
 
 #include "imgui.h"
 
-#include <ranges>
 #include <span>
 
 using namespace ImGui;

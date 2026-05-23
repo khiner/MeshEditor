@@ -13,7 +13,6 @@
 #include "SelectionComponents.h"
 #include "SelectionGpu.h"
 #include "SoundVertices.h"
-#include "SvgResource.h"
 #include "Textures.h"
 #include "Timer.h"
 #include "TransformMath.h"
@@ -25,15 +24,12 @@
 #include "physics/PhysicsUi.h"
 #include "ui/FieldEdit.h"
 
-#include <entt/entity/registry.hpp>
 #include <imgui_internal.h>
 
 #include "OrientationGizmo.h"
 
 #include "Apply.h"
 #include "GpuBuffers.h"
-#include "TransformUtils.h"
-#include "ViewportComponents.h"
 
 using std::ranges::any_of, std::ranges::contains, std::ranges::distance, std::ranges::find, std::ranges::find_if, std::ranges::fold_left, std::ranges::to;
 using std::views::transform;

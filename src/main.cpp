@@ -1,4 +1,3 @@
-#include "AnimationTimeline.h"
 #include "Apply.h"
 #include "FrameState.h"
 #include "Paths.h"
@@ -18,14 +17,10 @@
 #include "implot.h"
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_vulkan.h>
-#include <entt/entity/registry.hpp>
 #include <nfd.h>
-#include <vulkan/vulkan_to_string.hpp>
 
-#include <array>
 #include <csignal>
 #include <exception>
-#include <format>
 #include <fstream>
 #include <iostream>
 #include <map>

@@ -1,10 +1,8 @@
 #include "GltfScene.h"
 
 #include "../ImageEncode.h"
-#include "AnimationData.h"
 #include "AnimationTimeline.h"
 #include "Armature.h"
-#include "Camera.h"
 #include "GpuBuffers.h"
 #include "Instance.h"
 #include "MeshComponents.h"
@@ -18,28 +16,14 @@
 #include "Variant.h"
 #include "ViewportComponents.h"
 #include "mesh/MeshStore.h"
-#include "mesh/MorphTargetData.h"
 #include "physics/PhysicsTypes.h"
 
 #include <fastgltf/base64.hpp>
 #include <fastgltf/core.hpp>
 #include <fastgltf/glm_element_traits.hpp>
-#include <fastgltf/types.hpp>
 #include <simdjson.h>
 
-#include <entt/entity/registry.hpp>
-
-#include <algorithm>
-#include <cstring>
-#include <format>
-#include <fstream>
-#include <limits>
-#include <map>
 #include <numbers>
-#include <numeric>
-#include <span>
-#include <unordered_map>
-#include <unordered_set>
 
 // Load-only intermediate carrier. Holds parsed-but-not-yet-uploaded geometry.
 // Load builds it from fastgltf accessors, runs `MeshStore::PlanCreate` for the whole batch

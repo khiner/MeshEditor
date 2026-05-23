@@ -2,18 +2,9 @@
 
 #include "PhysicsUi.h"
 #include "AnimationTimeline.h"
-#include "Entity.h"
 #include "PhysicsWorld.h"
 #include "SceneGraph.h"
-#include "Variant.h"
-#include "numeric/vec2.h"
 #include "ui/FieldEdit.h"
-
-#include <entt/entity/registry.hpp>
-#include <format>
-#include <glm/gtc/quaternion.hpp>
-#include <glm/trigonometric.hpp>
-#include <optional>
 
 using namespace ImGui;
 

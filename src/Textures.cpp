@@ -3,13 +3,10 @@
 #include "File.h"
 #include "IblPrefilterPipelines.h"
 #include "ImageDecode.h"
-#include "vulkan/Buffer.h"
 
 #include <basisu_transcoder.h>
-#include <glm/geometric.hpp>
 
 #include <bit>
-#include <format>
 
 static void SubmitWait(vk::Queue queue, vk::CommandBuffer command_buffer, vk::Fence fence, vk::Device device) {
     vk::SubmitInfo submit{};

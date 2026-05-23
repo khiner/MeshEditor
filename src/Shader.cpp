@@ -2,9 +2,6 @@
 #include "File.h"
 #include "Paths.h"
 
-#include <cassert>
-#include <format>
-#include <print>
 #include <ranges>
 #include <shaderc/shaderc.hpp>
 
