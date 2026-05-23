@@ -8,6 +8,7 @@
 #include "Scene.h"
 #include "SceneDefaults.h"
 #include "SceneSelection.h"
+#include "SceneSelectionGpu.h"
 #include "SceneTextures.h"
 #include "SceneTree.h"
 #include "SoundVertices.h"
@@ -527,15 +528,15 @@ void Scene::Interact(action::Emit emit) {
                 const bool is_additive = R.all_of<AdditiveBoxSelectBaseline>(SceneEntity);
                 if (interaction_mode == InteractionMode::Edit && !active_is_armature) {
                     Timer timer{"BoxSelectElements (all)"};
-                    RunBoxSelectElements(GetBitsetRangesForSelected(R), edit_mode, *box_px, is_additive);
+                    RunBoxSelectElements(R, SceneEntity, GetBitsetRangesForSelected(R), edit_mode, *box_px, is_additive);
                 } else if (bone_mode) {
-                    const auto hits = ResolveHits(R, RunBoxSelect(*box_px), bone_mode, true);
+                    const auto hits = ResolveHits(R, RunBoxSelect(R, SceneEntity, *box_px), bone_mode, true);
                     std::vector<action::selection::BoneHit> bone_hits;
                     bone_hits.reserve(hits.size());
                     for (const auto &[entity, part] : hits) bone_hits.emplace_back(entity, part);
                     emit(action::selection::ApplyBoxSelectBoneHits{.Hits = std::move(bone_hits), .Additive = is_additive});
                 } else if (interaction_mode == InteractionMode::Object) {
-                    const auto hits = ResolveHits(R, RunBoxSelect(*box_px), bone_mode, true);
+                    const auto hits = ResolveHits(R, RunBoxSelect(R, SceneEntity, *box_px), bone_mode, true);
                     std::vector<entt::entity> entities;
                     entities.reserve(hits.size());
                     for (const auto &[entity, _] : hits) entities.push_back(entity);
@@ -564,9 +565,9 @@ void Scene::Interact(action::Emit emit) {
 
     if (interaction_mode == InteractionMode::Excite) {
         if (IsMouseClicked(ImGuiMouseButton_Left)) {
-            if (const auto hit_entities = RunObjectPick(mouse_px); !hit_entities.empty()) {
+            if (const auto hit_entities = RunObjectPick(R, SceneEntity, ObjectPickEpochTag, mouse_px); !hit_entities.empty()) {
                 if (const auto hit_entity = hit_entities.front(); R.all_of<SoundVertices>(hit_entity)) {
-                    if (const auto vertex = RunSoundVerticesVertexPick(hit_entity, mouse_px)) {
+                    if (const auto vertex = RunSoundVerticesVertexPick(R, SceneEntity, hit_entity, mouse_px)) {
                         emit(action::scene::ApplyExciteImpact{.InstanceEntity = hit_entity, .VertexIndex = *vertex});
                     }
                 }
@@ -585,7 +586,7 @@ void Scene::Interact(action::Emit emit) {
     } else if (interaction_mode == InteractionMode::Object || bone_mode) {
         const auto scaled_pick_radius = std::max(1u, uint32_t(float(ObjectSelectRadiusPx) * std::max(render_scale.x, render_scale.y) + 0.5f));
         const auto active = bone_mode ? FindActiveBone(R) : active_entity;
-        const auto hits = ResolveHits(R, RunObjectPick(mouse_px, scaled_pick_radius), bone_mode);
+        const auto hits = ResolveHits(R, RunObjectPick(R, SceneEntity, ObjectPickEpochTag, mouse_px, scaled_pick_radius), bone_mode);
         const auto pick = hits.empty() ? std::optional<SelectionHit>{} : [&] {
             if (ImLengthSqr(CurrentClickPos - PrevClickPos) > 16) return hits.front();
             const auto *bs = R.try_get<BoneSelection>(active);

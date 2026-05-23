@@ -5,9 +5,7 @@
 #include "SceneVulkanResources.h"
 #include "TransformGizmo.h"
 
-struct DrawListBuilder;
 struct VideoRecorder;
-struct SelectionDrawInfo;
 
 namespace mvk {
 struct ImGuiTexture;
@@ -100,13 +98,4 @@ private:
     void DrawOverlay();
 
     void RecordRenderCommandBuffer(bool silhouette_only = false);
-
-    std::vector<entt::entity> RunObjectPick(uvec2 pixel, uint32_t radius_px = 0);
-    std::vector<entt::entity> RunBoxSelect(std::pair<uvec2, uvec2>);
-    void DispatchBoxSelect(uvec2 box_min, uvec2 box_max, uint32_t max_id, vk::Semaphore wait_semaphore);
-    void RenderSelectionPass(vk::Semaphore signal_semaphore = {}) const; // On-demand selection fragment rendering.
-    using SelectionBuildFn = std::function<std::vector<SelectionDrawInfo>(DrawListBuilder &)>;
-    void RenderSelectionPassWith(bool render_depth, const SelectionBuildFn &build_fn, vk::Semaphore signal_semaphore = {}, bool render_silhouette = true) const;
-    void RunBoxSelectElements(std::span<const ElementRange>, Element, std::pair<uvec2, uvec2>, bool is_additive);
-    std::optional<uint32_t> RunSoundVerticesVertexPick(entt::entity instance_entity, uvec2 mouse_px);
 };

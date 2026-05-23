@@ -16,6 +16,7 @@
 #include "SceneOps.h"
 #include "ScenePipelines.h"
 #include "SceneSelection.h"
+#include "SceneSelectionGpu.h"
 #include "SceneTextures.h"
 #include "SceneTree.h"
 #include "SceneVulkanResources.h"
@@ -39,12 +40,6 @@
 
 using std::ranges::to;
 using std::views::iota;
-
-// Defined in Scene.cpp; only PCE consumes it.
-std::optional<std::pair<entt::entity, uint32_t>> RunElementPickFromRanges(
-    entt::registry &, entt::entity scene_entity,
-    std::span<const ElementRange>, Element, uvec2 mouse_px
-);
 
 namespace {
 
