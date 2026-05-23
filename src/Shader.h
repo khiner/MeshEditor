@@ -145,7 +145,7 @@ struct PipelineContext {
     vk::DescriptorSet SharedSet;
 
     ShaderPipeline CreateGraphics(
-        Shaders &&shaders,
+        Shaders &&,
         vk::PipelineVertexInputStateCreateInfo vertex_input,
         vk::PolygonMode polygon_mode,
         vk::PrimitiveTopology topology,
@@ -156,7 +156,7 @@ struct PipelineContext {
     ) const;
 
     ComputePipeline CreateCompute(
-        Shaders &&shaders,
+        Shaders &&,
         std::optional<vk::PushConstantRange> push_constants = std::nullopt
     ) const;
 };

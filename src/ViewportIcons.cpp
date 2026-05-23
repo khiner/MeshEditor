@@ -6,15 +6,15 @@
 #include "Textures.h"
 #include "ViewportComponents.h" // OneShotGpu
 
-void LoadViewportIcons(entt::registry &R, entt::entity viewport) {
-    const auto &Vk = R.ctx().get<const VulkanResources>();
-    const auto &one_shot = R.ctx().get<const OneShotGpu>();
-    auto &Buffers = R.ctx().get<GpuBuffers>();
-    auto &icons = R.emplace<ViewportIcons>(viewport);
+void LoadViewportIcons(entt::registry &r, entt::entity viewport) {
+    const auto &vk = r.ctx().get<const VulkanResources>();
+    const auto &one_shot = r.ctx().get<const OneShotGpu>();
+    auto &buffers = r.ctx().get<GpuBuffers>();
+    auto &icons = r.emplace<ViewportIcons>(viewport);
     const auto svg_path = Paths::Res() / "svg";
-    auto batch = BeginTextureUploadBatch(Vk.Device, *one_shot.Pool, Buffers.Ctx);
-    const auto RenderBitmap = [&Vk, &batch](std::span<const std::byte> data, uint32_t width, uint32_t height) {
-        return RenderBitmapToImage(Vk, batch, data, width, height, Format::Color, ColorSubresourceRange);
+    auto batch = BeginTextureUploadBatch(vk.Device, *one_shot.Pool, buffers.Ctx);
+    const auto RenderBitmap = [&vk, &batch](std::span<const std::byte> data, uint32_t width, uint32_t height) {
+        return RenderBitmapToImage(vk, batch, data, width, height, Format::Color, ColorSubresourceRange);
     };
 
     const std::pair<std::unique_ptr<SvgResource> *, std::string_view> entries[] = {
@@ -35,8 +35,8 @@ void LoadViewportIcons(entt::registry &R, entt::entity viewport) {
         {&icons.Anim.JumpEnd, "jump_end.svg"},
     };
     for (const auto &[svg, name] : entries) {
-        *svg = std::make_unique<SvgResource>(Vk.Device, RenderBitmap, svg_path / name);
+        *svg = std::make_unique<SvgResource>(vk.Device, RenderBitmap, svg_path / name);
     }
 
-    SubmitTextureUploadBatch(batch, Vk.Queue, *one_shot.Fence, Vk.Device);
+    SubmitTextureUploadBatch(batch, vk.Queue, *one_shot.Fence, vk.Device);
 }

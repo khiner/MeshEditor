@@ -129,9 +129,9 @@ struct Mesh {
     uint32_t FaceCount() const { return Faces.size(); }
     uint32_t HalfEdgeCount() const { return Halfedges.size(); }
 
-    const vec3 &GetPosition(VH vh) const;
-    const vec3 &GetNormal(VH vh) const;
-    vec3 GetNormal(FH fh) const;
+    const vec3 &GetPosition(VH) const;
+    const vec3 &GetNormal(VH) const;
+    vec3 GetNormal(FH) const;
     std::span<const Vertex> GetVerticesSpan() const;
 
     uint32_t GetStoreId() const { return StoreId; }

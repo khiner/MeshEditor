@@ -5,7 +5,6 @@
 #include <vulkan/vulkan.hpp>
 
 #include <array>
-#include <map>
 #include <memory>
 #include <span>
 #include <unordered_map>
@@ -36,6 +35,8 @@ enum class MemoryUsage {
 };
 
 #ifdef MVK_FORCE_STAGED_TRANSFERS
+#include <map>
+
 struct BufferPair {
     vk::Buffer Src, Dst;
     bool operator==(const BufferPair &) const = default;
@@ -64,7 +65,7 @@ struct BufferContext {
 #ifdef MVK_FORCE_STAGED_TRANSFERS
     void DeferCopy(vk::Buffer src, vk::Buffer dst, vk::DeviceSize offset, vk::DeviceSize size);
     void CancelDeferredCopies(vk::Buffer src, vk::Buffer dst);
-    void RecordDeferredCopies(vk::CommandBuffer cb);
+    void RecordDeferredCopies(vk::CommandBuffer);
     auto TakeDeferredCopies() { return std::exchange(DeferredBufferCopies, {}); }
 #endif
 

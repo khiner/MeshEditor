@@ -18,7 +18,7 @@ struct PipelineRenderer {
     std::unordered_map<SPT, ShaderPipeline> ShaderPipelines;
 
     void CompileShaders();
-    const ShaderPipeline &Bind(vk::CommandBuffer cb, SPT spt) const;
+    const ShaderPipeline &Bind(vk::CommandBuffer, SPT) const;
 };
 
 namespace Format {

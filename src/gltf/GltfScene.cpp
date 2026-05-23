@@ -24,6 +24,7 @@
 #include <fastgltf/glm_element_traits.hpp>
 #include <simdjson.h>
 
+#include <map>
 #include <numbers>
 
 // Load-only intermediate carrier. Holds parsed-but-not-yet-uploaded geometry.
@@ -1822,13 +1823,13 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
         return std::unexpected{std::format("glTF '{}' has no importable source objects or skins.", source_path.string())};
     }
 
-    auto &R = ctx.R;
+    auto &r = ctx.R;
     const auto viewport = ctx.viewport;
     auto &texture_store = ctx.Textures;
     const auto texture_start = texture_store.Textures.size();
     const auto material_start = ctx.Buffers.Materials.Count();
-    const auto material_name_start = R.ctx().get<const MaterialStore>().Names.size();
-    const auto pending_texture_start = R.all_of<PendingTextureUploads>(viewport) ? R.get<const PendingTextureUploads>(viewport).Items.size() : size_t{0};
+    const auto material_name_start = r.ctx().get<const MaterialStore>().Names.size();
+    const auto pending_texture_start = r.all_of<PendingTextureUploads>(viewport) ? r.get<const PendingTextureUploads>(viewport).Items.size() : size_t{0};
     bool replaced_pending_env = false;
     std::optional<PendingEnvironmentImport> prev_pending_env_backup;
     const auto rollback_import_side_effects = [&] {
@@ -1836,23 +1837,23 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
             ReleaseSamplerSlots(ctx.Slots, CollectSamplerSlots(std::span<const TextureEntry>{texture_store.Textures}.subspan(texture_start)));
             texture_store.Textures.resize(texture_start);
         }
-        if (auto *pending = R.try_get<PendingTextureUploads>(viewport); pending && pending->Items.size() > pending_texture_start) {
+        if (auto *pending = r.try_get<PendingTextureUploads>(viewport); pending && pending->Items.size() > pending_texture_start) {
             for (size_t i = pending_texture_start; i < pending->Items.size(); ++i) {
                 ReleaseSamplerSlots(ctx.Slots, std::span{&pending->Items[i].SamplerSlot, 1});
             }
             pending->Items.resize(pending_texture_start);
-            if (pending->Items.empty()) R.remove<PendingTextureUploads>(viewport);
+            if (pending->Items.empty()) r.remove<PendingTextureUploads>(viewport);
         }
         if (replaced_pending_env) {
-            if (auto *cur = R.try_get<PendingEnvironmentImport>(viewport)) {
+            if (auto *cur = r.try_get<PendingEnvironmentImport>(viewport)) {
                 ReleaseCubeSamplerSlot(ctx.Slots, cur->DiffuseCubeSlot);
                 ReleaseCubeSamplerSlot(ctx.Slots, cur->SpecularCubeSlot);
             }
-            if (prev_pending_env_backup) R.emplace_or_replace<PendingEnvironmentImport>(viewport, std::move(*prev_pending_env_backup));
-            else R.remove<PendingEnvironmentImport>(viewport);
+            if (prev_pending_env_backup) r.emplace_or_replace<PendingEnvironmentImport>(viewport, std::move(*prev_pending_env_backup));
+            else r.remove<PendingEnvironmentImport>(viewport);
         }
         if (ctx.Buffers.Materials.Count() > material_start) ctx.Buffers.Materials.SetCount(material_start);
-        if (auto &store = R.ctx().get<MaterialStore>(); store.Names.size() > material_name_start) store.Names.resize(material_name_start);
+        if (auto &store = r.ctx().get<MaterialStore>(); store.Names.size() > material_name_start) store.Names.resize(material_name_start);
     };
     struct ImportRollbackGuard {
         decltype(rollback_import_side_effects) &Rollback;
@@ -1879,15 +1880,15 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
     source_assets.ExtensionsRequired.reserve(asset.extensionsRequired.size());
     for (const auto &e : asset.extensionsRequired) source_assets.ExtensionsRequired.emplace_back(e);
     source_assets.MaterialMetas = std::move(material_metas);
-    const auto &sa = R.emplace_or_replace<gltf::SourceAssets>(viewport, std::move(source_assets));
+    const auto &sa = r.emplace_or_replace<gltf::SourceAssets>(viewport, std::move(source_assets));
 
     if (!asset.materialVariants.empty()) {
         ::MaterialVariants mv;
         mv.Names.reserve(asset.materialVariants.size());
         for (const auto &v : asset.materialVariants) mv.Names.emplace_back(v);
-        R.emplace_or_replace<::MaterialVariants>(viewport, std::move(mv));
+        r.emplace_or_replace<::MaterialVariants>(viewport, std::move(mv));
     } else {
-        R.remove<::MaterialVariants>(viewport);
+        r.remove<::MaterialVariants>(viewport);
     }
 
     std::vector<PendingTextureUpload> new_pending_textures;
@@ -2028,12 +2029,12 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
     }
     const auto fallback_material_index = material_indices_by_gltf_material.empty() ? default_material_index : material_indices_by_gltf_material.back();
     if (!material_names.empty()) {
-        auto &store = R.ctx().get<MaterialStore>();
+        auto &store = r.ctx().get<MaterialStore>();
         store.Names.insert(store.Names.end(), std::make_move_iterator(material_names.begin()), std::make_move_iterator(material_names.end()));
     }
 
     if (!new_pending_textures.empty()) {
-        auto &pending = R.get_or_emplace<PendingTextureUploads>(viewport);
+        auto &pending = r.get_or_emplace<PendingTextureUploads>(viewport);
         pending.Items.insert(pending.Items.end(), std::make_move_iterator(new_pending_textures.begin()), std::make_move_iterator(new_pending_textures.end()));
     }
 
@@ -2116,15 +2117,15 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
                 std::move(*scene_mesh.Triangles), std::move(scene_mesh.TriangleAttrs), std::move(scene_mesh.TrianglePrimitives),
                 std::move(scene_mesh.DeformData), std::move(scene_mesh.MorphData)
             );
-            const auto [me, _] = ::AddMesh(R, ctx.Meshes, std::move(mesh), std::nullopt);
+            const auto [me, _] = ::AddMesh(r, ctx.Meshes, std::move(mesh), std::nullopt);
             mesh_entity = me;
-            R.emplace<Path>(mesh_entity, source_path);
-            R.emplace<SourceMeshIndex>(mesh_entity, mi);
-            R.emplace<SourceMeshKind>(mesh_entity, MeshKind::Triangles);
-            R.emplace<MeshSourceLayout>(mesh_entity, std::move(layout));
-            R.emplace<SmoothShading>(mesh_entity);
-            if (!scene_mesh.Name.empty()) R.emplace<MeshName>(mesh_entity, scene_mesh.Name);
-            if (mesh_pbr_mask != 0) R.emplace<PbrMeshFeatures>(mesh_entity, mesh_pbr_mask);
+            r.emplace<Path>(mesh_entity, source_path);
+            r.emplace<SourceMeshIndex>(mesh_entity, mi);
+            r.emplace<SourceMeshKind>(mesh_entity, MeshKind::Triangles);
+            r.emplace<MeshSourceLayout>(mesh_entity, std::move(layout));
+            r.emplace<SmoothShading>(mesh_entity);
+            if (!scene_mesh.Name.empty()) r.emplace<MeshName>(mesh_entity, scene_mesh.Name);
+            if (mesh_pbr_mask != 0) r.emplace<PbrMeshFeatures>(mesh_entity, mesh_pbr_mask);
             mesh_morphs.emplace_back(std::move(morph_summary));
         } else {
             mesh_morphs.emplace_back();
@@ -2134,11 +2135,11 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
         auto create_extra = [&](std::optional<::MeshData> &data, ::MeshVertexAttributes &attrs, MeshKind kind) -> entt::entity {
             if (!data) return entt::null;
             auto m = ctx.Meshes.CreateMesh(std::move(*data), std::move(attrs), {});
-            const auto [e, _] = ::AddMesh(R, ctx.Meshes, std::move(m), std::nullopt);
-            R.emplace<Path>(e, source_path);
-            R.emplace<SourceMeshIndex>(e, mi);
-            R.emplace<SourceMeshKind>(e, kind);
-            if (!scene_mesh.Name.empty()) R.emplace<MeshName>(e, scene_mesh.Name);
+            const auto [e, _] = ::AddMesh(r, ctx.Meshes, std::move(m), std::nullopt);
+            r.emplace<Path>(e, source_path);
+            r.emplace<SourceMeshIndex>(e, mi);
+            r.emplace<SourceMeshKind>(e, kind);
+            if (!scene_mesh.Name.empty()) r.emplace<MeshName>(e, scene_mesh.Name);
             return e;
         };
         auto lines_entity = create_extra(scene_mesh.Lines, scene_mesh.LineAttrs, MeshKind::Lines);
@@ -2147,7 +2148,7 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
     }
 
     const auto name_prefix = source_path.stem().string();
-    auto &name_registry = R.ctx().get<NameRegistry>();
+    auto &name_registry = r.ctx().get<NameRegistry>();
     name_registry.Names.reserve(name_registry.Names.size() + source_objects.size());
     std::unordered_map<uint32_t, entt::entity> object_entities_by_node;
     object_entities_by_node.reserve(source_objects.size());
@@ -2179,23 +2180,23 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
         }();
         if (primary_mesh_entity != entt::null) {
             object_entity = ::AddMeshInstance(
-                R,
+                r,
                 primary_mesh_entity,
                 {.Name = object_name, .Transform = object.LocalTransform, .Select = MeshInstanceCreateInfo::SelectBehavior::None, .Visible = true}
             );
         } else if (object.ObjectType == gltf::Object::Type::Camera && object.CameraIndex && *object.CameraIndex < asset.cameras.size()) {
             const auto &cam = asset.cameras[*object.CameraIndex];
-            object_entity = ::AddCamera(R, ctx.Meshes, ctx.Buffers, {.Name = object_name, .Transform = object.LocalTransform, .Select = MeshInstanceCreateInfo::SelectBehavior::None});
-            R.replace<::Camera>(object_entity, ConvertCamera(cam));
-            R.emplace<SourceCameraIndex>(object_entity, *object.CameraIndex);
-            if (!cam.name.empty()) R.emplace<CameraName>(object_entity, std::string{cam.name});
+            object_entity = ::AddCamera(r, ctx.Meshes, ctx.Buffers, {.Name = object_name, .Transform = object.LocalTransform, .Select = MeshInstanceCreateInfo::SelectBehavior::None});
+            r.replace<::Camera>(object_entity, ConvertCamera(cam));
+            r.emplace<SourceCameraIndex>(object_entity, *object.CameraIndex);
+            if (!cam.name.empty()) r.emplace<CameraName>(object_entity, std::string{cam.name});
         } else if (object.ObjectType == gltf::Object::Type::Light && object.LightIndex && *object.LightIndex < asset.lights.size()) {
             const auto &light = asset.lights[*object.LightIndex];
-            object_entity = ::AddLight(R, ctx.Meshes, ctx.Buffers, {.Name = object_name, .Transform = object.LocalTransform, .Select = MeshInstanceCreateInfo::SelectBehavior::None}, ConvertLight(light));
-            R.emplace<SourceLightIndex>(object_entity, *object.LightIndex);
-            if (!light.name.empty()) R.emplace<LightName>(object_entity, std::string{light.name});
+            object_entity = ::AddLight(r, ctx.Meshes, ctx.Buffers, {.Name = object_name, .Transform = object.LocalTransform, .Select = MeshInstanceCreateInfo::SelectBehavior::None}, ConvertLight(light));
+            r.emplace<SourceLightIndex>(object_entity, *object.LightIndex);
+            if (!light.name.empty()) r.emplace<LightName>(object_entity, std::string{light.name});
         } else {
-            object_entity = ::AddEmpty(R, ctx.Meshes, ctx.Buffers, {.Name = object_name, .Transform = object.LocalTransform, .Select = MeshInstanceCreateInfo::SelectBehavior::None});
+            object_entity = ::AddEmpty(r, ctx.Meshes, ctx.Buffers, {.Name = object_name, .Transform = object.LocalTransform, .Select = MeshInstanceCreateInfo::SelectBehavior::None});
         }
         // Companion instances for non-triangle primitives, parented under primary with identity local.
         if (object.ObjectType == gltf::Object::Type::Mesh && object.MeshIndex && *object.MeshIndex < extra_entities_per_mesh.size()) {
@@ -2203,28 +2204,28 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
             for (const auto extra_entity : {extras.Lines, extras.Points}) {
                 if (extra_entity == entt::null || extra_entity == primary_mesh_entity) continue;
                 const auto extra_instance = ::AddMeshInstance(
-                    R,
+                    r,
                     extra_entity,
                     {.Name = object_name, .Transform = Transform{}, .Select = MeshInstanceCreateInfo::SelectBehavior::None, .Visible = true}
                 );
-                SetParent(R, extra_instance, object_entity);
+                SetParent(r, extra_instance, object_entity);
             }
         }
 
         object_entities_by_node[object.NodeIndex] = object_entity;
-        R.emplace<SourceNodeIndex>(object_entity, object.NodeIndex);
+        r.emplace<SourceNodeIndex>(object_entity, object.NodeIndex);
         // `object.Name` was already synthesized by the loader's MakeNodeName when source was
         // empty; `asset.nodes[i].name` preserves the raw value. Capture source-empty / collision-renamed.
         if (object.NodeIndex < asset.nodes.size()) {
             const std::string raw_name(asset.nodes[object.NodeIndex].name);
-            if (raw_name.empty()) R.emplace<SourceEmptyName>(object_entity);
-            else if (const auto *n = R.try_get<const Name>(object_entity); n && n->Value != raw_name) {
-                R.emplace<SourceObjectName>(object_entity, SourceObjectName{raw_name});
+            if (raw_name.empty()) r.emplace<SourceEmptyName>(object_entity);
+            else if (const auto *n = r.try_get<const Name>(object_entity); n && n->Value != raw_name) {
+                r.emplace<SourceObjectName>(object_entity, SourceObjectName{raw_name});
             }
         }
         all_imported_objects.emplace_back(object_entity);
         // glTF node.skin is deform linkage, not a transform-parent relationship.
-        if (object.SkinIndex && R.all_of<Instance>(object_entity)) skinned_mesh_instances_by_skin[*object.SkinIndex].emplace_back(object_entity);
+        if (object.SkinIndex && r.all_of<Instance>(object_entity)) skinned_mesh_instances_by_skin[*object.SkinIndex].emplace_back(object_entity);
         if (first_object_entity == entt::null) first_object_entity = object_entity;
         if (first_mesh_object_entity == entt::null && object.ObjectType == gltf::Object::Type::Mesh) first_mesh_object_entity = object_entity;
         if (first_camera_object_entity == entt::null && object.ObjectType == gltf::Object::Type::Camera) first_camera_object_entity = object_entity;
@@ -2238,7 +2239,7 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
         if (child_it == object_entities_by_node.end()) continue;
         const auto parent_it = object_entities_by_node.find(*object.ParentNodeIndex);
         if (parent_it == object_entities_by_node.end()) continue;
-        SetParent(R, child_it->second, parent_it->second);
+        SetParent(r, child_it->second, parent_it->second);
     }
 
     // Stubs for out-of-scene nodes (referenced only by non-default scenes) so build emits them
@@ -2247,16 +2248,16 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
     for (uint32_t node_index = 0; node_index < asset.nodes.size(); ++node_index) {
         if (traversal.InScene[node_index]) continue;
         const auto &source_node = asset.nodes[node_index];
-        const auto e = R.create();
-        R.emplace<SourceNodeIndex>(e, node_index);
-        R.emplace<Transform>(e, local_transforms[node_index]);
-        R.emplace<WorldTransform>(e);
+        const auto e = r.create();
+        r.emplace<SourceNodeIndex>(e, node_index);
+        r.emplace<Transform>(e, local_transforms[node_index]);
+        r.emplace<WorldTransform>(e);
         if (const auto mesh_index = ToIndex(source_node.meshIndex, asset.meshes.size());
             mesh_index && *mesh_index < mesh_entities.size() && mesh_entities[*mesh_index] != entt::null) {
-            R.emplace<Instance>(e, mesh_entities[*mesh_index]);
+            r.emplace<Instance>(e, mesh_entities[*mesh_index]);
         }
-        if (source_node.name.empty()) R.emplace<SourceEmptyName>(e);
-        else R.emplace<Name>(e, std::string{source_node.name});
+        if (source_node.name.empty()) r.emplace<SourceEmptyName>(e);
+        else r.emplace<Name>(e, std::string{source_node.name});
     }
 
     // KHR_physics_rigid_bodies: collision filter entities are created here (the system-name dedupe
@@ -2271,8 +2272,8 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
                 std::string key{n};
                 auto [it, inserted] = system_entity_by_name.try_emplace(std::move(key), entt::null);
                 if (inserted) {
-                    it->second = R.create();
-                    R.emplace<CollisionSystem>(it->second, CollisionSystem{.Name = it->first});
+                    it->second = r.create();
+                    r.emplace<CollisionSystem>(it->second, CollisionSystem{.Name = it->first});
                 }
                 out.emplace_back(it->second);
             }
@@ -2289,9 +2290,9 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
                 if (!src.notCollideWithSystems.empty()) return {CollideMode::Blocklist, resolve_systems(src.notCollideWithSystems)};
                 return {CollideMode::All, {}};
             }();
-            const auto e = R.create();
-            R.emplace<CollisionFilter>(e, CollisionFilter{.Systems = resolve_systems(src.collisionSystems), .Mode = mode, .CollideSystems = std::move(collide_systems)});
-            R.emplace<SourceCollisionFilterIndex>(e, i);
+            const auto e = r.create();
+            r.emplace<CollisionFilter>(e, CollisionFilter{.Systems = resolve_systems(src.collisionSystems), .Mode = mode, .CollideSystems = std::move(collide_systems)});
+            r.emplace<SourceCollisionFilterIndex>(e, i);
             filter_entities.emplace_back(e);
         }
 
@@ -2314,14 +2315,14 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
                     if (node.ColliderGeometryMeshIndex && *node.ColliderGeometryMeshIndex < mesh_entities.size()) {
                         return mesh_entities[*node.ColliderGeometryMeshIndex];
                     }
-                    if (R.all_of<Instance>(entity)) return R.get<const Instance>(entity).Entity;
+                    if (r.all_of<Instance>(entity)) return r.get<const Instance>(entity).Entity;
                     return null_entity;
                 }();
-                R.emplace<ColliderShape>(entity, ColliderShape{.Shape = node.Collider->Shape, .MeshEntity = collider_mesh_entity});
+                r.emplace<ColliderShape>(entity, ColliderShape{.Shape = node.Collider->Shape, .MeshEntity = collider_mesh_entity});
                 // Imported collider state is authoritative — engine must not auto-derive over it.
-                R.emplace<ColliderPolicy>(entity, ColliderPolicy{.AutoFitDims = false, .LockedKind = true});
+                r.emplace<ColliderPolicy>(entity, ColliderPolicy{.AutoFitDims = false, .LockedKind = true});
                 if (node.Material) {
-                    R.replace<ColliderMaterial>(
+                    r.replace<ColliderMaterial>(
                         entity,
                         ColliderMaterial{
                             .PhysicsMaterialEntity = resolve_mat(node.Material->PhysicsMaterialIndex),
@@ -2331,20 +2332,20 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
                 }
             }
             if (node.Motion) {
-                R.emplace<PhysicsMotion>(entity, *node.Motion);
-                if (node.Velocity) R.replace<PhysicsVelocity>(entity, *node.Velocity);
+                r.emplace<PhysicsMotion>(entity, *node.Motion);
+                if (node.Velocity) r.replace<PhysicsVelocity>(entity, *node.Velocity);
             }
             if (node.Trigger) {
                 const auto &td = *node.Trigger;
                 if (td.Shape) {
                     // GeometryTrigger: reuse ColliderShape + TriggerTag. Skip if a solid collider
                     // already took this entity — KHR declares nodes as one-or-the-other.
-                    if (!R.all_of<ColliderShape>(entity)) {
+                    if (!r.all_of<ColliderShape>(entity)) {
                         const auto trigger_mesh_entity = (td.GeometryMeshIndex && *td.GeometryMeshIndex < mesh_entities.size()) ? mesh_entities[*td.GeometryMeshIndex] : null_entity;
-                        R.emplace<ColliderShape>(entity, ColliderShape{.Shape = *td.Shape, .MeshEntity = trigger_mesh_entity});
-                        R.emplace<ColliderPolicy>(entity, ColliderPolicy{.AutoFitDims = false, .LockedKind = true});
-                        R.emplace<TriggerTag>(entity);
-                        R.patch<ColliderMaterial>(entity, [&](auto &m) { m.CollisionFilterEntity = resolve_filter(td.CollisionFilterIndex); });
+                        r.emplace<ColliderShape>(entity, ColliderShape{.Shape = *td.Shape, .MeshEntity = trigger_mesh_entity});
+                        r.emplace<ColliderPolicy>(entity, ColliderPolicy{.AutoFitDims = false, .LockedKind = true});
+                        r.emplace<TriggerTag>(entity);
+                        r.patch<ColliderMaterial>(entity, [&](auto &m) { m.CollisionFilterEntity = resolve_filter(td.CollisionFilterIndex); });
                     }
                 } else {
                     // NodesTrigger: compound zone.
@@ -2354,14 +2355,14 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
                         auto nit = object_entities_by_node.find(node_idx);
                         resolved_nodes.emplace_back(nit != object_entities_by_node.end() ? nit->second : entt::null);
                     }
-                    R.emplace<TriggerNodes>(entity, TriggerNodes{.Nodes = std::move(resolved_nodes), .CollisionFilterEntity = resolve_filter(td.CollisionFilterIndex)});
+                    r.emplace<TriggerNodes>(entity, TriggerNodes{.Nodes = std::move(resolved_nodes), .CollisionFilterEntity = resolve_filter(td.CollisionFilterIndex)});
                 }
             }
             if (node.Joint) {
                 const auto &jd = *node.Joint;
                 auto nit = object_entities_by_node.find(jd.ConnectedNodeIndex);
                 const auto def_entity = jd.JointDefIndex < physics_jointdef_entities.size() ? physics_jointdef_entities[jd.JointDefIndex] : null_entity;
-                R.emplace<PhysicsJoint>(
+                r.emplace<PhysicsJoint>(
                     entity,
                     PhysicsJoint{.ConnectedNode = nit != object_entities_by_node.end() ? nit->second : entt::null, .JointDefEntity = def_entity, .EnableCollision = jd.EnableCollision}
                 );
@@ -2409,8 +2410,8 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
         const auto parent_object_node_index = (anchor_node_index && traversal.InScene[*anchor_node_index]) ? nearest_object_ancestor[*anchor_node_index] : std::optional<uint32_t>{};
         auto inverse_bind_matrices = LoadInverseBindMatrices(asset, skin, ordered_joint_nodes->size());
 
-        const auto armature_data_entity = R.create();
-        auto &armature = R.emplace<Armature>(armature_data_entity);
+        const auto armature_data_entity = r.create();
+        auto &armature = r.emplace<Armature>(armature_data_entity);
         armature_data_entities_by_skin[skin_index] = armature_data_entity;
 
         ArmatureImportedSkin imported_skin{
@@ -2444,10 +2445,10 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
             joint_node_to_bone_id.emplace(joint_node_index, bone_id);
             if (const auto object_it = object_entities_by_node.find(joint_node_index);
                 object_it != object_entities_by_node.end() &&
-                R.all_of<Instance>(object_it->second) &&
-                !R.all_of<PhysicsMotion>(object_it->second) &&
-                !R.all_of<BoneAttachment>(object_it->second)) {
-                R.emplace<BoneAttachment>(object_it->second, armature_data_entity, bone_id);
+                r.all_of<Instance>(object_it->second) &&
+                !r.all_of<PhysicsMotion>(object_it->second) &&
+                !r.all_of<BoneAttachment>(object_it->second)) {
+                r.emplace<BoneAttachment>(object_it->second, armature_data_entity, bone_id);
             }
             imported_skin.OrderedJointNodeIndices.emplace_back(joint_node_index);
         }
@@ -2463,20 +2464,20 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
         }
 
         const std::string skin_name(skin.name);
-        const auto armature_entity = R.create();
-        R.emplace<ObjectKind>(armature_entity, ObjectType::Armature);
-        R.emplace<ArmatureObject>(armature_entity, armature_data_entity);
+        const auto armature_entity = r.create();
+        r.emplace<ObjectKind>(armature_entity, ObjectType::Armature);
+        r.emplace<ArmatureObject>(armature_entity, armature_data_entity);
         const auto t = ToTransform(traversal.WorldTransforms[*anchor_node_index]);
-        R.emplace<Transform>(armature_entity, t);
-        R.emplace<WorldTransform>(armature_entity, t);
-        R.emplace<Name>(armature_entity, ::CreateName(R, skin_name.empty() ? std::format("{}_Armature{}", name_prefix, skin_index) : skin_name));
-        if (skin_name.empty()) R.emplace<SourceEmptyName>(armature_entity);
-        else R.emplace<SkinName>(armature_entity, skin_name);
+        r.emplace<Transform>(armature_entity, t);
+        r.emplace<WorldTransform>(armature_entity, t);
+        r.emplace<Name>(armature_entity, ::CreateName(r, skin_name.empty() ? std::format("{}_Armature{}", name_prefix, skin_index) : skin_name));
+        if (skin_name.empty()) r.emplace<SourceEmptyName>(armature_entity);
+        else r.emplace<SkinName>(armature_entity, skin_name);
 
         if (parent_object_node_index) {
             if (const auto parent_it = object_entities_by_node.find(*parent_object_node_index);
                 parent_it != object_entities_by_node.end()) {
-                SetParentKeepWorld(R, armature_entity, parent_it->second);
+                SetParentKeepWorld(r, armature_entity, parent_it->second);
             }
         }
 
@@ -2487,9 +2488,9 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
         if (const auto skinned_it = skinned_mesh_instances_by_skin.find(skin_index);
             skinned_it != skinned_mesh_instances_by_skin.end()) {
             for (const auto mesh_instance_entity : skinned_it->second) {
-                if (!R.valid(mesh_instance_entity) || !R.all_of<Instance>(mesh_instance_entity)) continue;
-                R.emplace_or_replace<ArmatureModifier>(mesh_instance_entity, armature_data_entity, armature_entity);
-                SetParentKeepWorld(R, mesh_instance_entity, armature_entity);
+                if (!r.valid(mesh_instance_entity) || !r.all_of<Instance>(mesh_instance_entity)) continue;
+                r.emplace_or_replace<ArmatureModifier>(mesh_instance_entity, armature_data_entity, armature_entity);
+                SetParentKeepWorld(r, mesh_instance_entity, armature_entity);
             }
         } else {
             return std::unexpected{std::format("glTF import failed '{}': skin {} is used but no mesh instances were emitted for skin binding.", source_path.string(), skin_index)};
@@ -2497,7 +2498,7 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
 
         // Create pose state — GPU deform buffer allocation deferred to ProcessComponentEvents.
         const auto bone_count = armature.Bones.size();
-        R.emplace<ArmaturePoseState>(
+        r.emplace<ArmaturePoseState>(
             armature_data_entity,
             ArmaturePoseState{
                 .BonePoseDelta = std::vector<Transform>(bone_count),
@@ -2506,15 +2507,15 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
                 .GpuDeformRange = {},
             }
         );
-        ::CreateBoneInstances(R, ctx.Meshes, armature_entity, armature_data_entity);
+        ::CreateBoneInstances(r, ctx.Meshes, armature_entity, armature_data_entity);
         // Mark each bone entity with its source joint NodeIndex (for SaveScene round-trip).
-        const auto &bone_entities_for_source = R.get<const ArmatureObject>(armature_entity).BoneEntities;
+        const auto &bone_entities_for_source = r.get<const ArmatureObject>(armature_entity).BoneEntities;
         for (uint32_t i = 0; i < armature.Bones.size(); ++i) {
             const auto joint_node_index = armature.Bones[i].JointNodeIndex;
             if (!joint_node_index) continue;
-            R.emplace<SourceNodeIndex>(bone_entities_for_source[i], *joint_node_index);
+            r.emplace<SourceNodeIndex>(bone_entities_for_source[i], *joint_node_index);
             if (*joint_node_index < asset.nodes.size() && asset.nodes[*joint_node_index].name.empty()) {
-                R.emplace<SourceEmptyName>(bone_entities_for_source[i]);
+                r.emplace<SourceEmptyName>(bone_entities_for_source[i]);
             }
         }
 
@@ -2525,26 +2526,26 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
             const auto find_physics_ancestor_entity = [&](uint32_t node_index) -> entt::entity {
                 for (std::optional<uint32_t> cur = node_index; cur;) {
                     if (const auto oit = object_entities_by_node.find(*cur);
-                        oit != object_entities_by_node.end() && R.all_of<PhysicsMotion>(oit->second)) return oit->second;
+                        oit != object_entities_by_node.end() && r.all_of<PhysicsMotion>(oit->second)) return oit->second;
                     if (*cur >= parents.size()) break;
                     cur = parents[*cur];
                 }
                 return entt::null;
             };
-            const auto &arm_obj = R.get<const ArmatureObject>(armature_entity);
-            const mat4 armature_world = ToMatrix(R.get<const WorldTransform>(armature_entity));
+            const auto &arm_obj = r.get<const ArmatureObject>(armature_entity);
+            const mat4 armature_world = ToMatrix(r.get<const WorldTransform>(armature_entity));
             for (uint32_t i = 0; i < armature.Bones.size(); ++i) {
                 const auto &bone = armature.Bones[i];
                 if (!bone.JointNodeIndex) continue;
                 const auto target = find_physics_ancestor_entity(*bone.JointNodeIndex);
                 if (target == entt::null) continue;
-                R.emplace<BoneConstraints>(
+                r.emplace<BoneConstraints>(
                     arm_obj.BoneEntities[i],
                     BoneConstraints{
                         .Stack = {BoneConstraint{
                             .TargetEntity = target,
                             .Influence = 1.f,
-                            .Data = ChildOfData{.InverseMatrix = glm::inverse(ToMatrix(R.get<const WorldTransform>(target))) * (armature_world * bone.RestWorld)},
+                            .Data = ChildOfData{.InverseMatrix = glm::inverse(ToMatrix(r.get<const WorldTransform>(target))) * (armature_world * bone.RestWorld)},
                         }}
                     }
                 );
@@ -2553,31 +2554,31 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
     }
 
     // Per source-derived entity: tag with source parent / sibling position / matrix-form flag.
-    for (const auto [entity, sni] : R.view<const SourceNodeIndex>().each()) {
+    for (const auto [entity, sni] : r.view<const SourceNodeIndex>().each()) {
         if (sni.Value >= asset.nodes.size()) continue;
         if (const auto parent_idx = parents[sni.Value]) {
-            R.emplace<SourceParentNodeIndex>(entity, *parent_idx);
+            r.emplace<SourceParentNodeIndex>(entity, *parent_idx);
             // Sibling position in parent's bounds-filtered children list.
             uint32_t sibling_idx = 0;
             for (const auto child_raw : asset.nodes[*parent_idx].children) {
                 const auto child = ToIndex(child_raw, asset.nodes.size());
                 if (!child) continue;
                 if (*child == sni.Value) {
-                    R.emplace<SourceSiblingIndex>(entity, sibling_idx);
+                    r.emplace<SourceSiblingIndex>(entity, sibling_idx);
                     break;
                 }
                 ++sibling_idx;
             }
         }
-        if (source_matrices[sni.Value]) R.emplace<SourceMatrixTransform>(entity, *source_matrices[sni.Value]);
+        if (source_matrices[sni.Value]) r.emplace<SourceMatrixTransform>(entity, *source_matrices[sni.Value]);
     }
 
     { // KHR_node_visibility: `visible:false` hides node *and* descendants.
         const auto hide_subtree = [&](this const auto &self, entt::entity e) -> void {
-            Hide(R, e);
-            for (const auto child : Children{&R, e}) self(child);
+            Hide(r, e);
+            for (const auto child : Children{&r, e}) self(child);
         };
-        for (const auto [entity, sni] : R.view<const SourceNodeIndex>().each()) {
+        for (const auto [entity, sni] : r.view<const SourceNodeIndex>().each()) {
             if (sni.Value < asset.nodes.size() && !asset.nodes[sni.Value].visible) hide_subtree(entity);
         }
     }
@@ -2585,7 +2586,7 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
     std::unordered_map<uint32_t, std::vector<std::pair<entt::entity, BoneId>>> armature_targets_by_joint_node;
     for (const auto &entry : armature_data_entities_by_skin) {
         const auto armature_data_entity = entry.second;
-        const auto &armature = R.get<const Armature>(armature_data_entity);
+        const auto &armature = r.get<const Armature>(armature_data_entity);
         for (const auto &bone : armature.Bones) {
             if (!bone.JointNodeIndex) continue;
             armature_targets_by_joint_node[*bone.JointNodeIndex].emplace_back(armature_data_entity, bone.Id);
@@ -2602,7 +2603,7 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
         const auto obj_it = object_entities_by_node.find(object.NodeIndex);
         if (obj_it == object_entities_by_node.end()) continue;
         const auto instance_entity = obj_it->second;
-        if (!R.all_of<Instance>(instance_entity)) continue;
+        if (!r.all_of<Instance>(instance_entity)) continue;
 
         const auto &morph = mesh_morphs[*object.MeshIndex];
         if (morph.TargetCount == 0) continue;
@@ -2613,7 +2614,7 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
             std::copy_n(object.NodeWeights->begin(), std::min(uint32_t(object.NodeWeights->size()), morph.TargetCount), w.begin());
             return w;
         }();
-        R.emplace<MorphWeightState>(instance_entity, MorphWeightState{.Weights = std::move(weights), .GpuWeightRange = {}});
+        r.emplace<MorphWeightState>(instance_entity, MorphWeightState{.Weights = std::move(weights), .GpuWeightRange = {}});
         morph_instance_by_node[object.NodeIndex] = instance_entity;
     }
 
@@ -2622,7 +2623,7 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
     std::unordered_map<entt::entity, Transform> node_anim_bindings;
     node_anim_bindings.reserve(object_entities_by_node.size());
     for (const auto &[node_index, object_entity] : object_entities_by_node) {
-        if (!R.valid(object_entity) || node_index >= local_transforms.size()) continue;
+        if (!r.valid(object_entity) || node_index >= local_transforms.size()) continue;
         node_anim_bindings.emplace(object_entity, local_transforms[node_index]);
     }
 
@@ -2630,31 +2631,31 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
     const auto append_armature_clip = [&](entt::entity target_data_entity, ::AnimationClip &&resolved_clip) {
         if (resolved_clip.Channels.empty()) return;
         imported_animation = true;
-        if (auto *existing = R.try_get<ArmatureAnimation>(target_data_entity)) {
+        if (auto *existing = r.try_get<ArmatureAnimation>(target_data_entity)) {
             existing->Clips.emplace_back(std::move(resolved_clip));
         } else {
-            R.emplace<ArmatureAnimation>(target_data_entity, ArmatureAnimation{.Clips = {std::move(resolved_clip)}});
+            r.emplace<ArmatureAnimation>(target_data_entity, ArmatureAnimation{.Clips = {std::move(resolved_clip)}});
         }
     };
     const auto append_morph_clip = [&](entt::entity instance_entity, MorphWeightClip &&resolved_clip) {
         if (resolved_clip.Channels.empty()) return;
         imported_animation = true;
-        if (auto *existing = R.try_get<MorphWeightAnimation>(instance_entity)) {
+        if (auto *existing = r.try_get<MorphWeightAnimation>(instance_entity)) {
             existing->Clips.emplace_back(std::move(resolved_clip));
         } else {
-            R.emplace<MorphWeightAnimation>(instance_entity, MorphWeightAnimation{.Clips = {std::move(resolved_clip)}});
+            r.emplace<MorphWeightAnimation>(instance_entity, MorphWeightAnimation{.Clips = {std::move(resolved_clip)}});
         }
     };
     const auto append_node_clip = [&](entt::entity object_entity, ::AnimationClip &&resolved_clip) {
         if (resolved_clip.Channels.empty()) return;
         imported_animation = true;
-        if (auto *existing = R.try_get<NodeTransformAnimation>(object_entity)) {
+        if (auto *existing = r.try_get<NodeTransformAnimation>(object_entity)) {
             existing->Clips.emplace_back(std::move(resolved_clip));
             return;
         }
         const auto binding_it = node_anim_bindings.find(object_entity);
         if (binding_it == node_anim_bindings.end()) return;
-        R.emplace<NodeTransformAnimation>(
+        r.emplace<NodeTransformAnimation>(
             object_entity,
             NodeTransformAnimation{.Clips = {std::move(resolved_clip)}, .ActiveClipIndex = 0, .RestLocal = binding_it->second}
         );
@@ -2744,7 +2745,7 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
             if (const auto armature_it = armature_targets_by_joint_node.find(target_node_index);
                 armature_it != armature_targets_by_joint_node.end()) {
                 for (const auto &[target_data_entity, bone_id] : armature_it->second) {
-                    const auto &armature = R.get<const Armature>(target_data_entity);
+                    const auto &armature = r.get<const Armature>(target_data_entity);
                     const auto bone_index = armature.FindBoneIndex(bone_id).value_or(InvalidBoneIndex);
                     auto &resolved_clip = armature_clips_by_entity
                                               .try_emplace(target_data_entity, ::AnimationClip{.Name = anim_name, .DurationSeconds = 0.f, .Channels = {}})
@@ -2757,7 +2758,7 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
             if (joint_node_indices.contains(target_node_index)) continue;
 
             const auto object_it = object_entities_by_node.find(target_node_index);
-            if (object_it == object_entities_by_node.end() || !R.valid(object_it->second)) continue;
+            if (object_it == object_entities_by_node.end() || !r.valid(object_it->second)) continue;
 
             auto &resolved_clip = node_clips_by_entity
                                       .try_emplace(object_it->second, ::AnimationClip{.Name = anim_name, .DurationSeconds = 0.f, .Channels = {}})
@@ -2776,35 +2777,35 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
         for (auto &[instance_entity, resolved_clip] : morph_clips_by_entity) append_morph_clip(instance_entity, std::move(resolved_clip));
         for (auto &[object_entity, resolved_clip] : node_clips_by_entity) append_node_clip(object_entity, std::move(resolved_clip));
     }
-    R.patch<gltf::SourceAssets>(viewport, [&](auto &a) { a.AnimationOrder = std::move(animation_order); });
+    r.patch<gltf::SourceAssets>(viewport, [&](auto &a) { a.AnimationOrder = std::move(animation_order); });
 
     { // Get timeline range from imported animation durations
         float max_dur = 0;
-        for (const auto [_, anim] : R.view<const ArmatureAnimation>().each()) {
+        for (const auto [_, anim] : r.view<const ArmatureAnimation>().each()) {
             for (const auto &clip : anim.Clips) max_dur = std::max(max_dur, clip.DurationSeconds);
         }
-        for (const auto [_, anim] : R.view<const MorphWeightAnimation>().each()) {
+        for (const auto [_, anim] : r.view<const MorphWeightAnimation>().each()) {
             for (const auto &clip : anim.Clips) max_dur = std::max(max_dur, clip.DurationSeconds);
         }
-        for (const auto [_, anim] : R.view<const NodeTransformAnimation>().each()) {
+        for (const auto [_, anim] : r.view<const NodeTransformAnimation>().each()) {
             for (const auto &clip : anim.Clips) max_dur = std::max(max_dur, clip.DurationSeconds);
         }
-        if (max_dur > 0) R.patch<TimelineRange>(viewport, [&](auto &r) { r.EndFrame = int(std::ceil(max_dur * r.Fps)); });
+        if (max_dur > 0) r.patch<TimelineRange>(viewport, [&](auto &r) { r.EndFrame = int(std::ceil(max_dur * r.Fps)); });
     }
 
     if (source_ibl) {
-        if (auto *prev = R.try_get<PendingEnvironmentImport>(viewport)) prev_pending_env_backup = *prev;
+        if (auto *prev = r.try_get<PendingEnvironmentImport>(viewport)) prev_pending_env_backup = *prev;
         const auto [diffuse_slot, specular_slot] = AllocateIblCubeSlots(ctx.Slots);
-        R.emplace_or_replace<PendingEnvironmentImport>(viewport, *source_ibl, diffuse_slot, specular_slot);
-        R.remove<PendingSceneWorldClear>(viewport);
+        r.emplace_or_replace<PendingEnvironmentImport>(viewport, *source_ibl, diffuse_slot, specular_slot);
+        r.remove<PendingSceneWorldClear>(viewport);
         replaced_pending_env = true;
     } else {
-        R.emplace_or_replace<PendingSceneWorldClear>(viewport);
+        r.emplace_or_replace<PendingSceneWorldClear>(viewport);
     }
 
-    R.patch<gltf::SourceAssets>(viewport, [&](auto &a) { a.ObjectEntities = std::move(all_imported_objects); });
-    ApplySceneVisibility(R, viewport);
-    ApplyActiveSceneSelection(R, viewport);
+    r.patch<gltf::SourceAssets>(viewport, [&](auto &a) { a.ObjectEntities = std::move(all_imported_objects); });
+    ApplySceneVisibility(r, viewport);
+    ApplyActiveSceneSelection(r, viewport);
     import_rollback_guard.Enabled = false;
 
     return gltf::LoadResult{.FirstCameraObject = first_camera_object_entity, .ImportedAnimation = imported_animation};
