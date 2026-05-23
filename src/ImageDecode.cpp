@@ -5,7 +5,7 @@
 // Decode imported image bytes (PNG/JPEG/HDR/etc.) to fixed RGBA layouts for GPU uploads.
 #define STB_IMAGE_STATIC
 #define STB_IMAGE_IMPLEMENTATION
-#include "../lib/lunasvg/plutovg/source/plutovg-stb-image.h"
+#include <plutovg-stb-image.h>
 
 namespace {
 std::string StbiFailureReasonOrUnknown() {

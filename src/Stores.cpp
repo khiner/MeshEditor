@@ -2,7 +2,9 @@
 
 #include "AnimationTimeline.h"
 #include "Bindless.h"
+#include "Entity.h"
 #include "GpuBuffers.h"
+#include "ObjectComponents.h"
 #include "Textures.h"
 #include "ViewportComponents.h"
 #include "mesh/MeshStore.h"

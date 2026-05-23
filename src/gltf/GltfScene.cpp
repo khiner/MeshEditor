@@ -7,6 +7,7 @@
 #include "Instance.h"
 #include "MeshComponents.h"
 #include "NodeTransformAnimation.h"
+#include "ObjectOps.h"
 #include "Path.h"
 #include "PbrFeature.h"
 #include "SceneGraph.h"

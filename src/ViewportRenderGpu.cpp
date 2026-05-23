@@ -1,6 +1,7 @@
 #include "ViewportRenderGpu.h"
 #include "Armature.h"
 #include "Drawing.h"
+#include "Entity.h"
 #include "Instance.h"
 #include "InteractionComponents.h"
 #include "Pipelines.h"

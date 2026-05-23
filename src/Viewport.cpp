@@ -8,6 +8,7 @@
 #include "EntityDestroyTracker.h"
 #include "FrameState.h"
 #include "InteractionComponents.h"
+#include "ObjectOps.h"
 #include "Paths.h"
 #include "Pipelines.h"
 #include "ProcessEvents.h"

@@ -12,6 +12,7 @@
 #include "Instance.h"
 #include "InteractionComponents.h"
 #include "NodeTransformAnimation.h"
+#include "ObjectOps.h"
 #include "Pipelines.h"
 #include "Reactive.h"
 #include "SceneGraph.h"

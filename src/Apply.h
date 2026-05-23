@@ -1,7 +1,7 @@
 #pragma once
 
 #include "Action.h"
-#include "ObjectOps.h" // MeshInstanceCreateInfo
+#include "ObjectCreateInfo.h" // MeshInstanceCreateInfo
 
 #include "gpu/Element.h"
 #include "gpu/InteractionMode.h"

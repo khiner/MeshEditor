@@ -1,7 +1,7 @@
 #pragma once
 
 #include "Camera.h"
-#include "ObjectOps.h"
+#include "ObjectCreateInfo.h"
 #include "mesh/MeshData.h"
 #include "mesh/PrimitiveType.h"
 

@@ -4,7 +4,7 @@
 
 #define STB_IMAGE_WRITE_STATIC
 #define STB_IMAGE_WRITE_IMPLEMENTATION
-#include "../lib/lunasvg/plutovg/source/plutovg-stb-image-write.h"
+#include <plutovg-stb-image-write.h>
 
 namespace {
 void AppendToVector(void *ctx, void *data, int size) {

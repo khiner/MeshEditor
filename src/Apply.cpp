@@ -8,6 +8,7 @@
 #include "InteractionComponents.h"
 #include "MeshComponents.h"
 #include "NodeTransformAnimation.h"
+#include "ObjectOps.h"
 #include "Path.h"
 #include "Pipelines.h"
 #include "SceneGraph.h"

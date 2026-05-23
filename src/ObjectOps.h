@@ -2,8 +2,9 @@
 
 #include "Camera.h"
 #include "Entity.h" // ObjectType
+#include "ObjectComponents.h"
+#include "ObjectCreateInfo.h"
 #include "gpu/PunctualLight.h"
-#include "gpu/Transform.h"
 #include "numeric/vec3.h"
 
 #include <entt/entity/fwd.hpp>
@@ -13,39 +14,11 @@
 #include <span>
 #include <string>
 #include <string_view>
-#include <unordered_set>
 
 struct Armature;
 struct Mesh;
 struct MeshStore;
 struct GpuBuffers;
-
-struct MeshInstanceCreateInfo {
-    std::string Name{};
-    Transform Transform{};
-
-    enum class SelectBehavior {
-        Exclusive,
-        Additive,
-        None,
-    };
-    SelectBehavior Select{SelectBehavior::Exclusive};
-    bool Visible{true};
-};
-
-struct ObjectCreateInfo {
-    std::string Name{};
-    Transform Transform{};
-    MeshInstanceCreateInfo::SelectBehavior Select{MeshInstanceCreateInfo::SelectBehavior::Exclusive};
-};
-
-// Singleton components on the viewport entity.
-struct NameRegistry {
-    std::unordered_set<std::string> Names;
-};
-struct ObjectIdCounter {
-    uint32_t Next{1};
-};
 
 std::string CreateName(entt::registry &, std::string_view prefix);
 void OnDestroyName(entt::registry &, entt::entity);
