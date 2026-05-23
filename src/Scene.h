@@ -96,6 +96,4 @@ private:
     // Split into interact (state changes) and draw (visuals) so that DrawOverlay runs after ProcessComponentEvents
     // and reads up-to-date WorldTransforms.
     void DrawOverlay();
-
-    void RecordRenderCommandBuffer(bool silhouette_only = false);
 };
