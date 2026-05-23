@@ -158,9 +158,11 @@ include_directories(
     SYSTEM lib/faust/compiler/errors
     SYSTEM lib/faust/compiler/tlib
     SYSTEM lib/faust/compiler/boxes
+
     SYSTEM lib/spectra/include
     SYSTEM lib/tinyobjloader
     SYSTEM lib/tinyply/source
+    SYSTEM lib/lunasvg/plutovg/source
     SYSTEM lib/JoltPhysics
 
     SYSTEM PkgConfig::FFTW3F
