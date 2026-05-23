@@ -1,11 +1,19 @@
 #pragma once
 
-#include "Action.h"
-#include "AnimationTimeline.h"
+#include "SceneFrameState.h"
 #include "SceneVulkanResources.h"
-#include "TransformGizmo.h"
+#include "entt_fwd.h"
+
+#include <entt/entity/fwd.hpp>
+
+#include <cstdint>
+#include <filesystem>
+#include <memory>
+#include <string>
+#include <utility>
 
 struct VideoRecorder;
+struct SvgResource;
 
 namespace mvk {
 struct ImGuiTexture;
@@ -15,23 +23,12 @@ struct Scene {
     Scene(SceneVulkanResources, entt::registry &);
     ~Scene();
 
-    void LoadIcons();
-
-    // Handle mouse/keyboard interactions.
-    void Interact(action::Emit emit);
-
-    // Draw the overlay controls and emit their state changes. Must run before Render().
-    void InteractOverlay(action::Emit emit);
-
     // Submit GPU render (nonblocking), draw the final image into the current ImGui window, and draw overlays.
     // Call WaitForRender() before the ImGui frame samples the final image.
     // If provided, waits on `viewportConsumerFence` before destroying old resources on extent change.
     void Render(vk::Fence viewportConsumerFence = {});
     // Wait for pending viewport render to complete. No-op if no render pending.
     void WaitForRender();
-    void RenderControls(action::Emit);
-
-    const AnimationIcons &GetAnimationIcons() const { return AnimIcons; }
 
     // Record the viewport to an H.264 mp4 by piping frames to an `ffmpeg` subprocess.
     // When a look-through camera is active, captures only the framed sub-region matching
@@ -51,6 +48,8 @@ struct Scene {
 
     entt::entity GetSceneEntity() const { return SceneEntity; }
 
+    SceneFrameState Frame;
+
 private:
     entt::registry &R;
     vk::UniqueCommandBuffer RenderCommandBuffer;
@@ -61,39 +60,10 @@ private:
 
     entt::entity SceneEntity{null_entity}; // Singleton for scene-level components
 
-    vec2 AccumulatedWrapMouseDelta{0, 0};
-    uint32_t ObjectPickEpochTag{255}; // 8-bit epoch encoded in object click keys; wraps with periodic key reset.
-
-public:
-    vec2 PreciseWheelDelta{0, 0};
-
-private:
     std::unique_ptr<VideoRecorder> Recorder;
     std::pair<vk::Offset3D, vk::Extent2D> RecordRegion; // Locked at StartRecording; CaptureRecordFrame stops if the live region diverges.
 
-    std::optional<vec2> BoxSelectStart, BoxSelectEnd; // Per-frame drag plumbing — producer/consumer is the same InteractOverlay call.
-    std::optional<GizmoTransform> GizmoRenderTransform; // Set by InteractOverlay, consumed by DrawOverlay.
-    bool OverlayControlsHovered{false};
-
-    struct TransformIcons {
-        std::unique_ptr<SvgResource> Select, SelectBox, Move, Rotate, Scale, Universal;
-    };
-    struct ViewportShadingIcons {
-        std::unique_ptr<SvgResource> Wireframe, Solid, MaterialPreview, Rendered;
-    };
-    TransformIcons Icons;
-    ViewportShadingIcons ShadingIcons;
-    std::unique_ptr<SvgResource> OverlayIcon;
-    AnimationIcons AnimIcons;
-
-    static inline const std::vector<Element> NormalElements{Element::Vertex, Element::Face};
-
     std::unique_ptr<mvk::ImGuiTexture> ViewportTexture;
-    bool RenderPending{false}; // GPU render submitted but not yet waited on.
 
     bool SubmitViewport(vk::Fence viewportConsumerFence);
-    // The overlay is everything drawn on top of the viewport with ImGui, independent of the main scene vulkan pipeline.
-    // Split into interact (state changes) and draw (visuals) so that DrawOverlay runs after ProcessComponentEvents
-    // and reads up-to-date WorldTransforms.
-    void DrawOverlay();
 };

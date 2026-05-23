@@ -7,6 +7,8 @@
 #include "PbrFeature.h"
 #include "Scene.h"
 #include "SceneDefaults.h"
+#include "SceneFrameState.h"
+#include "SceneIcons.h"
 #include "SceneSelection.h"
 #include "SceneSelectionGpu.h"
 #include "SceneTextures.h"
@@ -37,6 +39,8 @@ using std::views::transform;
 using namespace ImGui;
 
 namespace {
+const std::vector<Element> NormalElements{Element::Vertex, Element::Face};
+
 bool SliderUInt(const char *label, uint32_t *v, uint32_t v_min, uint32_t v_max, const char *format = nullptr, ImGuiSliderFlags flags = 0) {
     return ImGui::SliderScalar(label, ImGuiDataType_U32, v, &v_min, &v_max, format, flags);
 }
@@ -382,11 +386,11 @@ void Duplicate(const entt::registry &r, entt::entity scene_entity, action::Emit 
 }
 } // namespace
 
-void Scene::Interact(action::Emit emit) {
+void Interact(entt::registry &R, entt::entity SceneEntity, SceneFrameState &Frame, action::Emit emit) {
     // Any open popup (e.g. Viewport shading dropdown) blocks viewport mouse/keyboard input.
     // Without this, wheel/click events still patch the camera while the popup overlays the viewport.
     if (IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel)) {
-        PreciseWheelDelta = {0, 0};
+        Frame.PreciseWheelDelta = {0, 0};
         return;
     }
 
@@ -497,21 +501,21 @@ void Scene::Interact(action::Emit emit) {
     if (active_transform) {
         // TransformGizmo overrides this mouse cursor during some actions - this is a default.
         SetMouseCursor(ImGuiMouseCursor_ResizeAll);
-        WrapMousePos(GetCurrentWindowRead()->InnerClipRect, AccumulatedWrapMouseDelta);
+        WrapMousePos(GetCurrentWindowRead()->InnerClipRect, Frame.AccumulatedWrapMouseDelta);
     } else {
-        AccumulatedWrapMouseDelta = {0, 0};
+        Frame.AccumulatedWrapMouseDelta = {0, 0};
     }
     if (active_transform) return; // Only transform gizmo should consume viewport mouse input while active.
 
-    if (!IsWindowHovered() && !BoxSelectStart) return;
+    if (!IsWindowHovered() && !Frame.BoxSelectStart) return;
 
     // Mouse wheel for camera rotation, Cmd+wheel to zoom.
     const auto &io = GetIO();
-    if (const vec2 wheel = std::exchange(PreciseWheelDelta, vec2{0}); wheel != vec2{0, 0}) {
+    if (const vec2 wheel = std::exchange(Frame.PreciseWheelDelta, vec2{0}); wheel != vec2{0, 0}) {
         if (io.KeyCtrl || io.KeySuper) emit(action::scene::ZoomViewCamera{.Factor = std::pow(WheelZoomStep, -wheel.y)});
         else emit(action::scene::OrbitViewCamera{.DeltaRad = wheel * WheelOrbitRadPerUnit});
     }
-    if (OrientationGizmo::IsActive() || OverlayControlsHovered) return;
+    if (OrientationGizmo::IsActive() || Frame.OverlayControlsHovered) return;
 
     const auto edit_mode = R.get<const SceneEditMode>(SceneEntity).Value;
     const auto arm_obj_entity = FindArmatureObject(R, active_entity);
@@ -520,11 +524,11 @@ void Scene::Interact(action::Emit emit) {
     const auto deselect_all = [&] { emit(action::selection::DeselectAll{}); };
     if (R.get<const BoxSelectState>(SceneEntity).Gesture == SelectionGesture::Box && interaction_mode != InteractionMode::Excite) {
         if (IsMouseClicked(ImGuiMouseButton_Left)) {
-            BoxSelectStart = BoxSelectEnd = ToGlm(GetMousePos());
+            Frame.BoxSelectStart = Frame.BoxSelectEnd = ToGlm(GetMousePos());
             if (IsKeyDown(ImGuiMod_Shift)) emit(action::selection::SnapshotBoxSelectBaseline{});
-        } else if (IsMouseDown(ImGuiMouseButton_Left) && BoxSelectStart) {
-            BoxSelectEnd = ToGlm(GetMousePos());
-            if (const auto box_px = ComputeBoxSelectPixels(*BoxSelectStart, *BoxSelectEnd, ToGlm(GetCursorScreenPos()), logical_extent, render_extent); box_px) {
+        } else if (IsMouseDown(ImGuiMouseButton_Left) && Frame.BoxSelectStart) {
+            Frame.BoxSelectEnd = ToGlm(GetMousePos());
+            if (const auto box_px = ComputeBoxSelectPixels(*Frame.BoxSelectStart, *Frame.BoxSelectEnd, ToGlm(GetCursorScreenPos()), logical_extent, render_extent); box_px) {
                 const bool is_additive = R.all_of<AdditiveBoxSelectBaseline>(SceneEntity);
                 if (interaction_mode == InteractionMode::Edit && !active_is_armature) {
                     Timer timer{"BoxSelectElements (all)"};
@@ -543,13 +547,13 @@ void Scene::Interact(action::Emit emit) {
                     emit(action::selection::ApplyBoxSelectObjectHits{.Hits = std::move(entities), .Additive = is_additive});
                 }
             }
-        } else if (!IsMouseDown(ImGuiMouseButton_Left) && BoxSelectStart) {
+        } else if (!IsMouseDown(ImGuiMouseButton_Left) && Frame.BoxSelectStart) {
             const bool was_drag = IsMouseDragPastThreshold(ImGuiMouseButton_Left);
-            BoxSelectStart.reset();
-            BoxSelectEnd.reset();
+            Frame.BoxSelectStart.reset();
+            Frame.BoxSelectEnd.reset();
             if (was_drag) emit(action::selection::ClearBoxSelectBaseline{});
         }
-        if (BoxSelectStart) return;
+        if (Frame.BoxSelectStart) return;
     }
 
     const vec2 render_scale{
@@ -565,7 +569,7 @@ void Scene::Interact(action::Emit emit) {
 
     if (interaction_mode == InteractionMode::Excite) {
         if (IsMouseClicked(ImGuiMouseButton_Left)) {
-            if (const auto hit_entities = RunObjectPick(R, SceneEntity, ObjectPickEpochTag, mouse_px); !hit_entities.empty()) {
+            if (const auto hit_entities = RunObjectPick(R, SceneEntity, Frame.ObjectPickEpochTag, mouse_px); !hit_entities.empty()) {
                 if (const auto hit_entity = hit_entities.front(); R.all_of<SoundVertices>(hit_entity)) {
                     if (const auto vertex = RunSoundVerticesVertexPick(R, SceneEntity, hit_entity, mouse_px)) {
                         emit(action::scene::ApplyExciteImpact{.InstanceEntity = hit_entity, .VertexIndex = *vertex});
@@ -586,7 +590,7 @@ void Scene::Interact(action::Emit emit) {
     } else if (interaction_mode == InteractionMode::Object || bone_mode) {
         const auto scaled_pick_radius = std::max(1u, uint32_t(float(ObjectSelectRadiusPx) * std::max(render_scale.x, render_scale.y) + 0.5f));
         const auto active = bone_mode ? FindActiveBone(R) : active_entity;
-        const auto hits = ResolveHits(R, RunObjectPick(R, SceneEntity, ObjectPickEpochTag, mouse_px, scaled_pick_radius), bone_mode);
+        const auto hits = ResolveHits(R, RunObjectPick(R, SceneEntity, Frame.ObjectPickEpochTag, mouse_px, scaled_pick_radius), bone_mode);
         const auto pick = hits.empty() ? std::optional<SelectionHit>{} : [&] {
             if (ImLengthSqr(CurrentClickPos - PrevClickPos) > 16) return hits.front();
             const auto *bs = R.try_get<BoneSelection>(active);
@@ -607,10 +611,11 @@ void Scene::Interact(action::Emit emit) {
     }
 }
 
-void Scene::InteractOverlay(action::Emit emit) {
+void InteractOverlay(entt::registry &R, entt::entity SceneEntity, SceneFrameState &Frame, action::Emit emit) {
     auto &Buffers = R.get<SceneBuffers>(SceneEntity);
     auto &Meshes = R.ctx().get<MeshStore>();
     auto &Environments = R.ctx().get<EnvironmentStore>();
+    const auto &icons = R.get<const SceneIcons>(SceneEntity);
     const rect viewport{ToGlm(GetWindowPos()), ToGlm(GetContentRegionAvail())};
     const bool active_transform = TransformGizmo::IsUsing();
     static constexpr float OrientationGizmoSize{84};
@@ -623,7 +628,7 @@ void Scene::InteractOverlay(action::Emit emit) {
         .CornerRounding = overlay_button_style.CornerRounding * 0.75f,
     };
     // Hold through the press-release cycle so IsSingleClicked (which fires on release) is still guarded.
-    if (!IsMouseDown(ImGuiMouseButton_Left)) OverlayControlsHovered = false;
+    if (!IsMouseDown(ImGuiMouseButton_Left)) Frame.OverlayControlsHovered = false;
     const bool any_popup_open = IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel);
 
     { // Transform mode pill buttons (top-left overlay)
@@ -651,15 +656,15 @@ void Scene::InteractOverlay(action::Emit emit) {
         };
         const auto gesture = R.get<const BoxSelectState>(SceneEntity).Gesture;
         const OverlayIconButtonInfo buttons[]{
-            make_button(Icons.SelectBox.get(), {0.f, 0.f}, ImDrawFlags_RoundCornersTop, true, transform_type == None && gesture == SelectionGesture::Box),
-            make_button(Icons.Select.get(), {0.f, button_h}, ImDrawFlags_RoundCornersBottom, true, transform_type == None && gesture == SelectionGesture::Click),
-            make_button(Icons.Move.get(), {0.f, button_h * 2.f + gap}, ImDrawFlags_RoundCornersTop, transform_enabled, transform_type == Translate),
-            make_button(Icons.Rotate.get(), {0.f, button_h * 3.f + gap}, ImDrawFlags_RoundCornersNone, transform_enabled, transform_type == Rotate),
-            make_button(Icons.Scale.get(), {0.f, button_h * 4.f + gap}, ImDrawFlags_RoundCornersNone, scale_enabled, transform_type == Scale),
-            make_button(Icons.Universal.get(), {0.f, button_h * 5.f + gap}, ImDrawFlags_RoundCornersBottom, transform_enabled, transform_type == Universal),
+            make_button(icons.Transform.SelectBox.get(), {0.f, 0.f}, ImDrawFlags_RoundCornersTop, true, transform_type == None && gesture == SelectionGesture::Box),
+            make_button(icons.Transform.Select.get(), {0.f, button_h}, ImDrawFlags_RoundCornersBottom, true, transform_type == None && gesture == SelectionGesture::Click),
+            make_button(icons.Transform.Move.get(), {0.f, button_h * 2.f + gap}, ImDrawFlags_RoundCornersTop, transform_enabled, transform_type == Translate),
+            make_button(icons.Transform.Rotate.get(), {0.f, button_h * 3.f + gap}, ImDrawFlags_RoundCornersNone, transform_enabled, transform_type == Rotate),
+            make_button(icons.Transform.Scale.get(), {0.f, button_h * 4.f + gap}, ImDrawFlags_RoundCornersNone, scale_enabled, transform_type == Scale),
+            make_button(icons.Transform.Universal.get(), {0.f, button_h * 5.f + gap}, ImDrawFlags_RoundCornersBottom, transform_enabled, transform_type == Universal),
         };
 
-        if (const auto clicked = DrawOverlayIconButtonGroup("TransformModes", start_pos, buttons, !active_transform, &OverlayControlsHovered, overlay_button_style)) {
+        if (const auto clicked = DrawOverlayIconButtonGroup("TransformModes", start_pos, buttons, !active_transform, &Frame.OverlayControlsHovered, overlay_button_style)) {
             using Tool = action::scene::SetActiveTool::Tool;
             emit(action::scene::SetActiveTool{*clicked == 0 ? Tool::SelectBox : *clicked == 1 ? Tool::SelectClick :
                                                   *clicked == 2                               ? Tool::Translate :
@@ -682,13 +687,13 @@ void Scene::InteractOverlay(action::Emit emit) {
             return OverlayIconButtonInfo{icon, {x, 0.f}, corners, true, settings.ViewportShading == mode, tooltip};
         };
         const OverlayIconButtonInfo buttons[]{
-            make_shading_button(ShadingIcons.Wireframe.get(), 0.f, ImDrawFlags_RoundCornersLeft, ViewportShadingMode::Wireframe, "Wireframe"),
-            make_shading_button(ShadingIcons.Solid.get(), shading_button_w, ImDrawFlags_RoundCornersNone, ViewportShadingMode::Solid, "Solid"),
-            make_shading_button(ShadingIcons.MaterialPreview.get(), shading_button_w * 2.f, ImDrawFlags_RoundCornersNone, ViewportShadingMode::MaterialPreview, "Material Preview"),
-            make_shading_button(ShadingIcons.Rendered.get(), shading_button_w * 3.f, ImDrawFlags_RoundCornersNone, ViewportShadingMode::Rendered, "Rendered"),
+            make_shading_button(icons.Shading.Wireframe.get(), 0.f, ImDrawFlags_RoundCornersLeft, ViewportShadingMode::Wireframe, "Wireframe"),
+            make_shading_button(icons.Shading.Solid.get(), shading_button_w, ImDrawFlags_RoundCornersNone, ViewportShadingMode::Solid, "Solid"),
+            make_shading_button(icons.Shading.MaterialPreview.get(), shading_button_w * 2.f, ImDrawFlags_RoundCornersNone, ViewportShadingMode::MaterialPreview, "Material Preview"),
+            make_shading_button(icons.Shading.Rendered.get(), shading_button_w * 3.f, ImDrawFlags_RoundCornersNone, ViewportShadingMode::Rendered, "Rendered"),
         };
 
-        if (const auto clicked = DrawOverlayIconButtonGroup("ViewportShading", start_pos, buttons, !active_transform, &OverlayControlsHovered, shading_button_style)) {
+        if (const auto clicked = DrawOverlayIconButtonGroup("ViewportShading", start_pos, buttons, !active_transform, &Frame.OverlayControlsHovered, shading_button_style)) {
             emit(action::scene::SetViewportShading{
                 .Mode = *clicked == 0 ? ViewportShadingMode::Wireframe : *clicked == 1 ? ViewportShadingMode::Solid :
                     *clicked == 2                                                      ? ViewportShadingMode::MaterialPreview :
@@ -706,7 +711,7 @@ void Scene::InteractOverlay(action::Emit emit) {
             PopID();
             SetCursorScreenPos(saved_cursor);
 
-            if (arrow_hovered) OverlayControlsHovered = true;
+            if (arrow_hovered) Frame.OverlayControlsHovered = true;
             const auto arrow_min = start_pos + ImVec2{shading_button_w * 4.f + shading_button_style.Padding.x, shading_button_style.Padding.y};
             const auto arrow_max = start_pos + ImVec2{shading_button_w * 4.f + shading_arrow_w - shading_button_style.Padding.x, shading_button_h - shading_button_style.Padding.y};
             const bool popup_open = IsPopupOpen("##ShadingDropdown");
@@ -728,7 +733,7 @@ void Scene::InteractOverlay(action::Emit emit) {
             SetNextWindowPos(start_pos + ImVec2{shading_group_width, shading_button_h + 2.f}, ImGuiCond_Always, {1.f, 0.f});
             PushStyleVar(ImGuiStyleVar_WindowPadding, {8, 8});
             if (BeginPopup("##ShadingDropdown")) {
-                OverlayControlsHovered = true;
+                Frame.OverlayControlsHovered = true;
                 TextUnformatted("Viewport shading");
                 Separator();
                 const auto current_mode = settings.ViewportShading;
@@ -926,9 +931,9 @@ void Scene::InteractOverlay(action::Emit emit) {
 
         {
             const OverlayIconButtonInfo icon_button[]{
-                {OverlayIcon.get(), {0.f, 0.f}, ImDrawFlags_RoundCornersLeft, true, settings.ShowOverlays, "Toggle overlays"},
+                {icons.Overlay.get(), {0.f, 0.f}, ImDrawFlags_RoundCornersLeft, true, settings.ShowOverlays, "Toggle overlays"},
             };
-            if (const auto clicked = DrawOverlayIconButtonGroup("ViewportOverlays", group_start, icon_button, !active_transform, &OverlayControlsHovered, shading_button_style)) {
+            if (const auto clicked = DrawOverlayIconButtonGroup("ViewportOverlays", group_start, icon_button, !active_transform, &Frame.OverlayControlsHovered, shading_button_style)) {
                 emit(action::UpdateOf<&SceneSettings::ShowOverlays>(SceneEntity, !settings.ShowOverlays));
             }
         }
@@ -943,7 +948,7 @@ void Scene::InteractOverlay(action::Emit emit) {
             PopID();
             SetCursorScreenPos(saved_cursor);
 
-            if (arrow_hovered) OverlayControlsHovered = true;
+            if (arrow_hovered) Frame.OverlayControlsHovered = true;
             const auto arrow_min = group_start + ImVec2{icon_w + shading_button_style.Padding.x, shading_button_style.Padding.y};
             const auto arrow_max = group_start + ImVec2{icon_w + arrow_w - shading_button_style.Padding.x, button_h - shading_button_style.Padding.y};
             const bool popup_open = IsPopupOpen("##OverlayDropdown");
@@ -968,7 +973,7 @@ void Scene::InteractOverlay(action::Emit emit) {
             SetNextWindowPos(group_start + ImVec2{0.f, button_h + 2.f});
             PushStyleVar(ImGuiStyleVar_WindowPadding, {8, 8});
             if (BeginPopup("##OverlayDropdown")) {
-                OverlayControlsHovered = true;
+                Frame.OverlayControlsHovered = true;
                 TextUnformatted("Viewport overlays");
                 Separator();
                 ui::Edit f{R, emit, SceneEntity};
@@ -1111,7 +1116,7 @@ void Scene::InteractOverlay(action::Emit emit) {
         const auto *start_screen = R.try_get<const StartScreenTransform>(SceneEntity);
         auto interact_result = TransformGizmo::Interact(
             gizmo_transform,
-            gizmo_state.Config, camera, viewport, ToGlm(GetMousePos()) + AccumulatedWrapMouseDelta,
+            gizmo_state.Config, camera, viewport, ToGlm(GetMousePos()) + Frame.AccumulatedWrapMouseDelta,
             start_screen ? std::optional{start_screen->Value} : std::nullopt
         );
         if (interact_result) {
@@ -1194,22 +1199,22 @@ void Scene::InteractOverlay(action::Emit emit) {
         }
 
         // Store gizmo render transform for DrawOverlay.
-        GizmoRenderTransform = gizmo_transform;
-        if (interact_result) GizmoRenderTransform->P = interact_result->Start.P + interact_result->Delta.P;
+        Frame.GizmoRenderTransform = gizmo_transform;
+        if (interact_result) Frame.GizmoRenderTransform->P = interact_result->Start.P + interact_result->Delta.P;
     }
 
     if (R.all_of<StartScreenTransform>(SceneEntity)) emit(action::scene::SetStartScreenTransform{});
 }
 
-void Scene::DrawOverlay() {
+void DrawOverlay(entt::registry &R, entt::entity SceneEntity, SceneFrameState &Frame) {
     const rect viewport{ToGlm(GetWindowPos()), ToGlm(GetContentRegionAvail())};
     const auto &axes = R.get<const colors::AxesArray>(SceneEntity);
     const auto &camera = R.get<const ViewCamera>(SceneEntity);
 
     OrientationGizmo::Render(axes);
-    if (GizmoRenderTransform) {
-        TransformGizmo::Render(*GizmoRenderTransform, R.get<const TransformGizmoState>(SceneEntity).Config.Type, camera, viewport, axes);
-        GizmoRenderTransform.reset();
+    if (Frame.GizmoRenderTransform) {
+        TransformGizmo::Render(*Frame.GizmoRenderTransform, R.get<const TransformGizmoState>(SceneEntity).Config.Type, camera, viewport, axes);
+        Frame.GizmoRenderTransform.reset();
     }
 
     const auto &settings = R.get<const SceneSettings>(SceneEntity);
@@ -1235,10 +1240,10 @@ void Scene::DrawOverlay() {
         }
     }
 
-    if (BoxSelectStart && BoxSelectEnd) {
+    if (Frame.BoxSelectStart && Frame.BoxSelectEnd) {
         auto &dl = *GetWindowDrawList();
-        const auto box_min = glm::min(*BoxSelectStart, *BoxSelectEnd);
-        const auto box_max = glm::max(*BoxSelectStart, *BoxSelectEnd);
+        const auto box_min = glm::min(*Frame.BoxSelectStart, *Frame.BoxSelectEnd);
+        const auto box_max = glm::max(*Frame.BoxSelectStart, *Frame.BoxSelectEnd);
         dl.AddRectFilled(std::bit_cast<ImVec2>(box_min), std::bit_cast<ImVec2>(box_max), IM_COL32(255, 255, 255, 30));
 
         // Dashed outline
@@ -1877,7 +1882,7 @@ void RenderEntityControls(entt::registry &R, entt::entity SceneEntity, entt::ent
     PopID();
 }
 
-void Scene::RenderControls(action::Emit emit) {
+void RenderControls(entt::registry &R, entt::entity SceneEntity, action::Emit emit) {
     auto &Buffers = R.get<SceneBuffers>(SceneEntity);
     auto &Physics = R.ctx().get<PhysicsWorld>();
     if (BeginTabBar("Scene controls")) {

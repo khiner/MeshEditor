@@ -1,4 +1,5 @@
 #include "Scene.h"
+#include "AnimationTimeline.h"
 #include "Armature.h"
 #include "Bindless.h"
 #include "EntityDestroyTracker.h"
@@ -16,6 +17,7 @@
 #include "SceneStores.h"
 #include "SceneTextures.h"
 #include "SceneTree.h"
+#include "SceneUi.h"
 #include "SoundVertices.h"
 #include "SvgResource.h"
 #include "Timer.h"
@@ -194,40 +196,6 @@ void Scene::CreateSvgResource(std::unique_ptr<SvgResource> &svg, std::filesystem
     SubmitTextureUploadBatch(svg_batch, Vk.Queue, *one_shot.Fence, Vk.Device);
 }
 
-void Scene::LoadIcons() {
-    const auto &Vk = R.ctx().get<const SceneVulkanResources>();
-    const auto &one_shot = R.get<const SceneOneShotGpu>(SceneEntity);
-    auto &Buffers = R.get<SceneBuffers>(SceneEntity);
-    const auto svg_path = Paths::Res() / "svg";
-    auto batch = BeginTextureUploadBatch(Vk.Device, *one_shot.Pool, Buffers.Ctx);
-    const auto RenderBitmap = [&Vk, &batch](std::span<const std::byte> data, uint32_t width, uint32_t height) {
-        return RenderBitmapToImage(Vk, batch, data, width, height, Format::Color, ColorSubresourceRange);
-    };
-
-    const std::pair<std::unique_ptr<SvgResource> *, std::string_view> entries[] = {
-        {&Icons.Select, "select.svg"},
-        {&Icons.SelectBox, "select_box.svg"},
-        {&Icons.Move, "move.svg"},
-        {&Icons.Rotate, "rotate.svg"},
-        {&Icons.Scale, "scale.svg"},
-        {&Icons.Universal, "transform.svg"},
-        {&ShadingIcons.Wireframe, "shading_wire.svg"},
-        {&ShadingIcons.Solid, "shading_solid.svg"},
-        {&ShadingIcons.MaterialPreview, "shading_texture.svg"},
-        {&ShadingIcons.Rendered, "shading_rendered.svg"},
-        {&OverlayIcon, "overlay.svg"},
-        {&AnimIcons.Play, "play.svg"},
-        {&AnimIcons.Pause, "pause.svg"},
-        {&AnimIcons.JumpStart, "jump_start.svg"},
-        {&AnimIcons.JumpEnd, "jump_end.svg"},
-    };
-    for (const auto &[svg, name] : entries) {
-        *svg = std::make_unique<SvgResource>(Vk.Device, RenderBitmap, svg_path / name);
-    }
-
-    SubmitTextureUploadBatch(batch, Vk.Queue, *one_shot.Fence, Vk.Device);
-}
-
 namespace {
 std::pair<vk::Offset3D, vk::Extent2D> GetCaptureRegion(const entt::registry &r) {
     auto &Pipelines = r.ctx().get<const ScenePipelines>();
@@ -290,7 +258,7 @@ void Scene::Render(vk::Fence viewportConsumerFence) {
     }
 
     dl.ChannelsSetCurrent(1);
-    DrawOverlay();
+    DrawOverlay(R, SceneEntity, Frame);
 }
 
 bool Scene::SubmitViewport(vk::Fence viewportConsumerFence) {
@@ -408,16 +376,16 @@ bool Scene::SubmitViewport(vk::Fence viewportConsumerFence) {
     submit.setCommandBuffers(*RenderCommandBuffer);
 #endif
     Vk.Queue.submit(submit, *RenderFence);
-    RenderPending = true;
+    Frame.RenderPending = true;
     return extent_changed || render_extent_changed;
 }
 
 void Scene::WaitForRender() {
-    if (!RenderPending) return;
+    if (!Frame.RenderPending) return;
 
     const auto &Vk = R.ctx().get<const SceneVulkanResources>();
     const Timer timer{"WaitForRender"};
     WaitFor(*RenderFence, Vk.Device);
     R.get<SceneBuffers>(SceneEntity).Ctx.ReclaimRetiredBuffers();
-    RenderPending = false;
+    Frame.RenderPending = false;
 }

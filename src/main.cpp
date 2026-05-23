@@ -1,6 +1,8 @@
+#include "AnimationTimeline.h"
 #include "Paths.h"
 #include "Scene.h"
 #include "SceneApply.h"
+#include "SceneIcons.h"
 #include "SceneUi.h"
 #include "Timer.h"
 #include "Window.h"
@@ -350,7 +352,7 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
     auto scene = std::make_unique<Scene>(SceneVulkanResources{*vc->Instance, vc->PhysicalDevice, *vc->Device, vc->QueueFamily, vc->Queue}, r);
 
     // Load transform mode icons
-    scene->LoadIcons();
+    LoadSceneIcons(r, scene->GetSceneEntity());
 
     const auto CreateSvg = [device = *vc->Device, &scene, &wd](std::unique_ptr<SvgResource> &svg, fs::path path) {
         // Wait for previous frame's ImGui render to complete, since it may have sampled the old texture.
@@ -392,7 +394,7 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
         SDL_Event event;
         while (SDL_PollEvent(&event)) {
             if (event.type == SDL_EVENT_MOUSE_WHEEL) {
-                scene->PreciseWheelDelta += vec2{-event.wheel.x, event.wheel.y};
+                scene->Frame.PreciseWheelDelta += vec2{-event.wheel.x, event.wheel.y};
                 // SDL's pixel-derived deltas overscroll ImGui panels.
                 constexpr float ImGuiWheelScale = 0.3f;
                 event.wheel.x *= ImGuiWheelScale;
@@ -624,7 +626,7 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
         if (windows.SceneControls.Visible) {
             if (Begin(windows.SceneControls.Name, &windows.SceneControls.Visible) && BeginTabBar("Controls")) {
                 if (BeginTabItem("Scene")) {
-                    scene->RenderControls(Emit);
+                    RenderControls(r, scene->GetSceneEntity(), Emit);
                     EndTabItem();
                 }
                 if (BeginTabItem("Audio device")) {
@@ -646,7 +648,7 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
                 Unindent(6);
                 PopStyleVar();
                 const auto scene_e = scene->GetSceneEntity();
-                if (auto a = RenderAnimationTimeline(r.get<const TimelineRange>(scene_e), r.get<const TimelinePlayback>(scene_e), r.get<const AnimationTimelineView>(scene_e), scene->GetAnimationIcons())) {
+                if (auto a = RenderAnimationTimeline(r.get<const TimelineRange>(scene_e), r.get<const TimelinePlayback>(scene_e), r.get<const AnimationTimelineView>(scene_e), r.get<const SceneIcons>(scene_e).Anim)) {
                     action::Assign(Emit, std::move(*a));
                 }
             }
@@ -657,11 +659,11 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
         if (windows.Scene.Visible) {
             PushStyleVar(ImGuiStyleVar_WindowPadding, {0, 0});
             if (Begin(windows.Scene.Name, &windows.Scene.Visible)) {
-                scene->Interact(Emit);
+                Interact(r, scene->GetSceneEntity(), scene->Frame, Emit);
                 auto &dl = *ImGui::GetWindowDrawList();
                 dl.ChannelsSplit(2);
                 dl.ChannelsSetCurrent(1);
-                scene->InteractOverlay(Emit);
+                InteractOverlay(r, scene->GetSceneEntity(), scene->Frame, Emit);
                 // Submit GPU render (nonblocking). WaitForRender() is called later, before RenderFrame() samples the final image.
                 scene->Render(GetFrameCount() > 1 ? vk::Fence{wd.Frames[wd.FrameIndex].Fence} : vk::Fence{});
                 dl.ChannelsMerge();
