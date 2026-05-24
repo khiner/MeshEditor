@@ -188,7 +188,7 @@ void DrawNamedEntityList(entt::registry &r, const char *id, const char *add_labe
 // When `auto_fit`, dim widgets for BBox-fittable kinds are hidden — the fitter owns them.
 std::optional<PhysicsShape> RenderShapeEditor(const PhysicsShape &in, bool auto_fit) {
     static const char *shape_names[]{"Box", "Sphere", "Capsule", "Cylinder", "Plane", "Convex Hull", "Triangle Mesh"};
-    auto out = in; // TODO avoid copy
+    auto out = in;
     bool changed = false;
     if (auto shape_type_i = int(out.index());
         Combo("Shape", &shape_type_i, shape_names, IM_ARRAYSIZE(shape_names))) {

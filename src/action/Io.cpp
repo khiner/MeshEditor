@@ -22,8 +22,6 @@
 #include "mesh/Mesh.h"
 #include "mesh/MeshStore.h"
 #include "mesh/Primitives.h"
-#include "physics/PhysicsTypes.h"
-#include "physics/PhysicsWorld.h"
 #include <entt/entity/registry.hpp>
 
 using std::ranges::find_if;
@@ -67,7 +65,6 @@ std::expected<void, std::string> Apply(entt::registry &r, entt::entity viewport,
     auto &meshes = r.ctx().get<MeshStore>();
     auto &textures = r.ctx().get<TextureStore>();
     auto &environments = r.ctx().get<EnvironmentStore>();
-    auto &physics = r.ctx().get<PhysicsWorld>();
     return std::visit(
         overloaded{
             [&](const SaveGltf &a) -> std::expected<void, std::string> {
@@ -77,9 +74,6 @@ std::expected<void, std::string> Apply(entt::registry &r, entt::entity viewport,
                 const Timer timer{"LoadGltf"};
                 auto result = gltf::LoadGltf(a.Path, {r, viewport, slots, buffers, meshes, textures, environments});
                 if (!result) return std::unexpected{std::move(result.error())};
-
-                // TODO: drive reactively from track<changes::PhysicsShape>, and get rid of PhysicsTypes.h include
-                if (!r.view<ColliderShape>().empty()) physics.RecomputeSceneScale(r);
 
                 if (result->FirstCameraObject != entt::null) {
                     const auto camera_entity = result->FirstCameraObject;
