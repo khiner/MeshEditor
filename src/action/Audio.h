@@ -6,6 +6,7 @@
 #include "audio/AcousticMaterial.h"
 #include "audio/AudioTypes.h"
 #include "audio/ModalModes.h"
+#include "audio/RealImpactComponents.h"
 
 #include <cstdint>
 #include <filesystem>
@@ -84,5 +85,7 @@ using Actions = std::variant<
     AssignVertexSamples, SetVertexSamples, RemoveVertexSamples, ActivateRealImpactMicrophone, SetModalFormMaterial,
     ApplyExciteImpact, ClearExciteImpacts>;
 
-using Action = MergedVariantT<Actions, action::Core>;
+using Action = MergedVariantT<Actions, Replace<RealImpactActiveMicrophone>>;
+
+void Apply(entt::registry &, entt::entity viewport, const Action &);
 } // namespace action::audio

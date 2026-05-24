@@ -15,53 +15,53 @@ void AppendToVector(void *ctx, void *data, int size) {
     std::memcpy(out->data() + offset, data, size);
 }
 
-std::expected<void, std::string> ValidateInput(std::span<const std::byte> rgba8, uint32_t width, uint32_t height, std::string_view image_name) {
+std::expected<void, std::string> ValidateInput(std::span<const std::byte> rgba8, uint32_t width, uint32_t height, std::string_view name) {
     if (width == 0 || height == 0) {
-        return std::unexpected{std::format("Image '{}' has zero dimension {}x{}.", image_name, width, height)};
+        return std::unexpected{std::format("Image '{}' has zero dimension {}x{}.", name, width, height)};
     }
     if (const size_t expected = width * height * 4; rgba8.size() != expected) {
-        return std::unexpected{std::format("Image '{}' RGBA8 buffer size {} doesn't match {}x{}x4 = {}.", image_name, rgba8.size(), width, height, expected)};
+        return std::unexpected{std::format("Image '{}' RGBA8 buffer size {} doesn't match {}x{}x4 = {}.", name, rgba8.size(), width, height, expected)};
     }
     return {};
 }
 } // namespace
 
 std::expected<std::vector<std::byte>, std::string>
-EncodeImagePngRgba8(std::span<const std::byte> rgba8, uint32_t width, uint32_t height, std::string_view image_name) {
-    if (auto valid = ValidateInput(rgba8, width, height, image_name); !valid) return std::unexpected{std::move(valid.error())};
+EncodeImagePngRgba8(std::span<const std::byte> rgba8, uint32_t width, uint32_t height, std::string_view name) {
+    if (auto valid = ValidateInput(rgba8, width, height, name); !valid) return std::unexpected{std::move(valid.error())};
 
     std::vector<std::byte> out;
     out.reserve(width * height);
     if (!stbi_write_png_to_func(&AppendToVector, &out, width, height, 4, rgba8.data(), width * 4)) {
-        return std::unexpected{std::format("Failed to PNG-encode image '{}'.", image_name)};
+        return std::unexpected{std::format("Failed to PNG-encode image '{}'.", name)};
     }
     return out;
 }
 
 std::expected<std::vector<std::byte>, std::string>
-EncodeImageJpegRgba8(std::span<const std::byte> rgba8, uint32_t width, uint32_t height, int quality, std::string_view image_name) {
-    if (auto valid = ValidateInput(rgba8, width, height, image_name); !valid) return std::unexpected{std::move(valid.error())};
+EncodeImageJpegRgba8(std::span<const std::byte> rgba8, uint32_t width, uint32_t height, int quality, std::string_view name) {
+    if (auto valid = ValidateInput(rgba8, width, height, name); !valid) return std::unexpected{std::move(valid.error())};
 
     std::vector<std::byte> out;
     out.reserve(width * height / 4);
     if (!stbi_write_jpg_to_func(&AppendToVector, &out, width, height, 4, rgba8.data(), std::clamp(quality, 1, 100))) {
-        return std::unexpected{std::format("Failed to JPEG-encode image '{}'.", image_name)};
+        return std::unexpected{std::format("Failed to JPEG-encode image '{}'.", name)};
     }
     return out;
 }
 
 std::expected<std::vector<std::byte>, std::string>
-EncodeImageRgba8ForMime(gltf::MimeType mime, std::span<const std::byte> rgba8, uint32_t width, uint32_t height, int jpeg_quality, std::string_view image_name) {
+EncodeImageRgba8ForMime(gltf::MimeType mime, std::span<const std::byte> rgba8, uint32_t width, uint32_t height, int jpeg_quality, std::string_view name) {
     using enum gltf::MimeType;
     switch (mime) {
-        case PNG: return EncodeImagePngRgba8(rgba8, width, height, image_name);
-        case JPEG: return EncodeImageJpegRgba8(rgba8, width, height, jpeg_quality, image_name);
-        case WEBP: return std::unexpected{std::format("WebP encoding not supported for image '{}'; caller should fall back to PNG.", image_name)};
-        case KTX2: return std::unexpected{std::format("KTX2 encoding not supported for image '{}' (no basisu encoder vendored).", image_name)};
-        case DDS: return std::unexpected{std::format("DDS encoding not supported for image '{}'.", image_name)};
+        case PNG: return EncodeImagePngRgba8(rgba8, width, height, name);
+        case JPEG: return EncodeImageJpegRgba8(rgba8, width, height, jpeg_quality, name);
+        case WEBP: return std::unexpected{std::format("WebP encoding not supported for image '{}'; caller should fall back to PNG.", name)};
+        case KTX2: return std::unexpected{std::format("KTX2 encoding not supported for image '{}' (no basisu encoder vendored).", name)};
+        case DDS: return std::unexpected{std::format("DDS encoding not supported for image '{}'.", name)};
         case GltfBuffer:
         case OctetStream:
-        case None: return std::unexpected{std::format("Unrecognized mime type for image '{}'.", image_name)};
+        case None: return std::unexpected{std::format("Unrecognized mime type for image '{}'.", name)};
     }
-    return std::unexpected{std::format("Unhandled mime type for image '{}'.", image_name)};
+    return std::unexpected{std::format("Unhandled mime type for image '{}'.", name)};
 }

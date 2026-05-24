@@ -1,5 +1,6 @@
 #pragma once
 
+#include <type_traits>
 #include <variant>
 
 template<class... Ts> struct overloaded : Ts... {
@@ -39,3 +40,9 @@ struct variant_concat<std::variant<Ts...>, std::variant<Us...>, Rest...>
 
 template<typename... Vs>
 using MergedVariantT = typename detail::variant_concat<typename detail::as_variant<Vs>::type...>::type;
+
+// True if `T` is one of variant `V`'s alternatives. Used to route a flattened action leaf to its domain.
+template<typename T, typename V> struct is_variant_member : std::false_type {};
+template<typename T, typename... Ts>
+struct is_variant_member<T, std::variant<Ts...>> : std::bool_constant<(std::is_same_v<T, Ts> || ...)> {};
+template<typename T, typename V> inline constexpr bool is_variant_member_v = is_variant_member<T, V>::value;

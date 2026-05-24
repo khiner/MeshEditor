@@ -51,4 +51,7 @@ using Actions = std::variant<
     SetEditHeadTailRoll,
     SetConstraintTarget, SetConstraintInfluence, SetConstraintChildOfInverse,
     DeleteConstraint, AddConstraint>;
+using Action = Actions;
+
+void Apply(entt::registry &, entt::entity viewport, const Action &);
 } // namespace action::bone

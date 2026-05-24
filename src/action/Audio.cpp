@@ -1,0 +1,70 @@
+#include "action/Audio.h"
+#include "Entity.h"
+#include "Instance.h"
+#include "Path.h"
+#include "SoundVertices.h"
+#include "audio/AudioSystem.h"
+#include "audio/RealImpact.h"
+#include "mesh/Mesh.h"
+
+using std::ranges::to;
+
+namespace action::audio {
+void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
+    std::visit(
+        overloaded{
+            [&](const ApplyExciteImpact &a) {
+                r.emplace_or_replace<MeshActiveElement>(r.get<Instance>(a.InstanceEntity).Entity, a.VertexIndex);
+                r.emplace_or_replace<VertexForce>(a.InstanceEntity, a.VertexIndex, 1.f);
+            },
+            [&](ClearExciteImpacts) { r.clear<VertexForce>(); },
+            [&](const SetModel &a) { ::SetModel(r, viewport, FindActiveEntity(r), a.Model); },
+            [&](const SetExciteVertex &a) {
+                const auto e = FindActiveEntity(r);
+                r.remove<VertexForce>(e);
+                r.emplace_or_replace<MeshActiveElement>(GetActiveMeshEntity(r), a.MeshVertex);
+                ::SetVertex(r, viewport, e, a.VertexIndex);
+            },
+            [&](const SetActiveElementFromDsp &a) { r.emplace_or_replace<MeshActiveElement>(GetActiveMeshEntity(r), a.Vertex); },
+            [&](const StartExcite &a) {
+                const auto e = FindActiveEntity(r);
+                r.remove<VertexForce>(e);
+                r.emplace<VertexForce>(e, a.Vertex, 1.f);
+            },
+            [&](StopExcite) { r.remove<VertexForce>(FindActiveEntity(r)); },
+            [&](DeleteSoundObject) { RemoveAudioComponents(r, FindActiveEntity(r)); },
+            [&](const StartRecording &a) { r.emplace_or_replace<Recording>(FindActiveEntity(r), a.FrameCount); },
+            [&](const OpenModalForm &a) { r.emplace_or_replace<ModalModelCreateInfo>(FindActiveEntity(r), *a.Info); },
+            [&](CancelModalForm) { r.remove<ModalModelCreateInfo>(FindActiveEntity(r)); },
+            [&](SubmitModalForm) {
+                const auto e = FindActiveEntity(r);
+                ::Stop(r, viewport, e);
+                r.emplace_or_replace<AcousticMaterial>(GetActiveMeshEntity(r), r.get<const ModalModelCreateInfo>(e).Material);
+                r.remove<ModalModelCreateInfo>(e);
+            },
+            [&](const AcceptModalGenerationResult &a) {
+                const auto e = FindActiveEntity(r);
+                if (!r.all_of<ScaleLocked>(e)) r.emplace<ScaleLocked>(e);
+                r.emplace_or_replace<ModalModes>(e, a.D->Modes);
+                r.emplace_or_replace<TetMeshData>(GetActiveMeshEntity(r), a.D->Tets);
+                ::SetModel(r, viewport, e, SoundVerticesModel::Modal);
+            },
+            [&](const AssignVertexSamples &a) {
+                ::AssignVertexSample(r, viewport, FindActiveEntity(r), a.D->MeshVertices, a.D->Path, std::vector<float>{a.D->Frames});
+            },
+            [&](SetVertexSamples a) { ::SetVertexSamples(r, viewport, a.SoundEntity, a.MeshVertices, std::move(a.Samples)); },
+            [&](const ActivateRealImpactMicrophone &a) {
+                const auto dir = r.get<const Path>(r.get<const Instance>(a.TargetSoundEntity).Entity).Value.parent_path();
+                const auto &vertex_indices = r.get<const RealImpactVertices>(a.TargetSoundEntity).Vertices;
+                const auto mic_index = r.get<const RealImpactMicrophone>(a.MicrophoneEntity).Index;
+                ::SetVertexSamples(r, viewport, a.TargetSoundEntity, vertex_indices, RealImpact::LoadSamples(dir, mic_index) | to<std::vector>());
+                r.emplace_or_replace<RealImpactActiveMicrophone>(a.TargetSoundEntity, a.MicrophoneEntity);
+            },
+            [&](const RemoveVertexSamples &a) { ::RemoveVertexSamples(r, viewport, FindActiveEntity(r), a.MeshVertices); },
+            [&](const SetModalFormMaterial &a) { r.patch<ModalModelCreateInfo>(FindActiveEntity(r), [&](auto &info) { info.Material = *a.Material; }); },
+            [&]<typename T>(const Replace<T> &a) { r.emplace_or_replace<T>(a.Entity, a.Value); },
+        },
+        action
+    );
+}
+} // namespace action::audio

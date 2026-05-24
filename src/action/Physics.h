@@ -97,7 +97,9 @@ using Actions = std::variant<
     SetJointVecItem<PhysicsJointDrive>, AddJointVecItem<PhysicsJointDrive>, DeleteJointVecItem<PhysicsJointDrive>>;
 
 using Action = MergedVariantT<
-    Actions, action::Core,
-    action::Update<CollideMode>, action::Update<PhysicsCombineMode>,
-    action::Replace<PhysicsMotion>, action::ReplaceActive<PhysicsMotion>>;
+    Actions,
+    Update<CollideMode>, Update<PhysicsCombineMode>, Update<PhysicsDriveType>, Update<PhysicsDriveMode>,
+    Replace<PhysicsMotion>, ReplaceActive<PhysicsMotion>>;
+
+void Apply(entt::registry &, entt::entity viewport, const Action &);
 } // namespace action::physics

@@ -3,7 +3,6 @@
 #include "numeric/vec2.h"
 #include "numeric/vec3.h"
 
-#include <array>
 #include <string>
 #include <variant>
 
@@ -55,15 +54,3 @@ inline std::string ToString(const PrimitiveShape &shape) {
     static constexpr const char *Names[]{"Plane", "Circle", "Cube", "IcoSphere", "UVSphere", "Torus", "Cylinder", "Cone"};
     return Names[shape.index()];
 }
-
-// All default primitive shapes, for iteration in UI menus.
-inline const std::array AllPrimitiveShapes{
-    PrimitiveShape{primitive::Plane{}},
-    PrimitiveShape{primitive::Circle{}},
-    PrimitiveShape{primitive::Cuboid{}},
-    PrimitiveShape{primitive::IcoSphere{}},
-    PrimitiveShape{primitive::UVSphere{}},
-    PrimitiveShape{primitive::Torus{}},
-    PrimitiveShape{primitive::Cylinder{}},
-    PrimitiveShape{primitive::Cone{}},
-};

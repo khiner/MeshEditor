@@ -1,6 +1,5 @@
 #include "SelectionGpu.h"
 
-#include "Apply.h"
 #include "Armature.h"
 #include "Drawing.h"
 #include "Entity.h"
@@ -11,6 +10,7 @@
 #include "SelectionComponents.h"
 #include "SoundVertices.h"
 #include "Timer.h"
+#include "ViewportComponents.h"
 #include "ViewportRenderGpu.h"
 #include "VkFenceWait.h"
 #include "VulkanResources.h"
@@ -20,6 +20,7 @@
 #include "gpu/ObjectPickPushConstants.h"
 #include "gpu/SelectionDrawPushConstants.h"
 #include "gpu/SelectionElementPushConstants.h"
+#include "gpu/UpdateSelectionStatePushConstants.h"
 #include "mesh/MeshStore.h"
 
 #include "imgui.h"
@@ -605,4 +606,98 @@ std::vector<entt::entity> RunBoxSelect(entt::registry &r, entt::entity viewport,
         }
     }
     return entities;
+}
+
+void DispatchUpdateSelectionStates(
+    entt::registry &r, entt::entity viewport,
+    std::span<const ElementRange> ranges, Element element
+) {
+    if (ranges.empty() || element == Element::None) return;
+    const auto &vk_res = r.ctx().get<const VulkanResources>();
+    const auto &pipelines = r.ctx().get<const Pipelines>();
+    const auto &one_shot = r.ctx().get<const OneShotGpu>();
+    const auto &sel_slots = r.get<const SelectionSlots>(viewport);
+    auto &meshes = r.ctx().get<MeshStore>();
+
+    auto cb = *one_shot.Cb;
+    cb.reset({});
+    cb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
+
+    const vk::MemoryBarrier input_barrier{vk::AccessFlagBits::eShaderWrite, vk::AccessFlagBits::eShaderRead};
+    cb.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands, vk::PipelineStageFlagBits::eComputeShader, {}, input_barrier, {}, {});
+
+    const auto &compute = pipelines.UpdateSelectionState;
+    cb.bindPipeline(vk::PipelineBindPoint::eCompute, *compute.Pipeline);
+    cb.bindDescriptorSets(vk::PipelineBindPoint::eCompute, *compute.PipelineLayout, 0, compute.GetDescriptorSet(), {});
+
+    for (const auto &range : ranges) {
+        const auto &mesh = r.get<const Mesh>(range.MeshEntity);
+        const auto &mesh_buffers = r.get<const MeshBuffers>(range.MeshEntity);
+        const auto *active_element = r.try_get<const MeshActiveElement>(range.MeshEntity);
+
+        uint32_t state_slot, state_offset;
+        if (element == Element::Vertex) {
+            state_slot = meshes.GetVertexStateSlot();
+            state_offset = mesh_buffers.Vertices.Offset;
+        } else if (element == Element::Edge) {
+            const auto edge_range = meshes.GetEdgeStateRange(mesh.GetStoreId());
+            state_slot = edge_range.Slot;
+            state_offset = edge_range.Offset;
+        } else {
+            const auto face_range = meshes.GetFaceStateRange(mesh.GetStoreId());
+            state_slot = face_range.Slot;
+            state_offset = face_range.Offset;
+        }
+
+        const UpdateSelectionStatePushConstants pc{
+            .BitsetSlot = sel_slots.SelectionBitset,
+            .BitsetOffset = range.Offset,
+            .StateSlot = state_slot,
+            .StateOffset = state_offset,
+            .ElementCount = range.Count,
+            .ActiveHandle = active_element ? active_element->Handle : InvalidOffset,
+            .EdgeMode = element == Element::Edge ? 1u : 0u,
+        };
+        cb.pushConstants(*compute.PipelineLayout, vk::ShaderStageFlagBits::eCompute, 0, sizeof(pc), &pc);
+        cb.dispatch((range.Count + 255) / 256, 1, 1);
+    }
+
+    const vk::MemoryBarrier output_barrier{vk::AccessFlagBits::eShaderWrite, vk::AccessFlagBits::eHostRead};
+    cb.pipelineBarrier(vk::PipelineStageFlagBits::eComputeShader, vk::PipelineStageFlagBits::eHost, {}, output_barrier, {}, {});
+    cb.end();
+
+    vk::SubmitInfo submit;
+    submit.setCommandBuffers(cb);
+    vk_res.Queue.submit(submit, *one_shot.Fence);
+    WaitFor(*one_shot.Fence, vk_res.Device);
+}
+
+void ApplySelectionStateUpdate(
+    entt::registry &r, entt::entity viewport,
+    std::span<const ElementRange> ranges, Element element
+) {
+    auto &meshes = r.ctx().get<MeshStore>();
+    auto &buffers = r.ctx().get<GpuBuffers>();
+    DispatchUpdateSelectionStates(r, viewport, ranges, element);
+    if (element == Element::Vertex) {
+        for (const auto &range : ranges) {
+            const auto &mesh = r.get<const Mesh>(range.MeshEntity);
+            meshes.UpdateEdgeStatesFromVertices(mesh);
+            meshes.UpdateFaceStatesFromVertices(mesh);
+        }
+    } else if (element == Element::Face || element == Element::Edge) {
+        const auto *bits = buffers.SelectionBitset.Data();
+        for (const auto &range : ranges) {
+            const auto &mesh = r.get<const Mesh>(range.MeshEntity);
+            const auto selected_handles = selection::ScanBitsetRange(bits, range.Offset, range.Count);
+            std::optional<uint32_t> active_handle;
+            if (const auto *active = r.try_get<const MeshActiveElement>(range.MeshEntity); active && active->Handle < range.Count) {
+                active_handle = active->Handle;
+            }
+            if (element == Element::Face) meshes.UpdateEdgeStatesFromFaces(mesh, selected_handles, active_handle);
+            if (element == Element::Edge) meshes.UpdateFaceStatesFromEdges(mesh);
+            meshes.UpdateVertexStatesFromElements(mesh, selected_handles, element, active_handle);
+        }
+    }
+    r.emplace_or_replace<ElementStatesDirty>(viewport);
 }

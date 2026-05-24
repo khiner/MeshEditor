@@ -11,6 +11,15 @@
 #include <vector>
 
 struct Mesh;
+struct ElementRange;
+
+// Scene/selection predicates and queries used by the UI and action handlers.
+bool AllSelectedAreMeshes(const entt::registry &);
+bool IsBoneEditMode(const entt::registry &, entt::entity viewport);
+bool CanDuplicate(const entt::registry &, entt::entity viewport);
+bool CanDuplicateLinked(const entt::registry &, entt::entity viewport);
+bool CanDelete(const entt::registry &, entt::entity viewport);
+std::vector<ElementRange> GetBitsetRangesForSelected(const entt::registry &);
 
 // Per-mesh offset/count into SelectionBitsetBuffer for the current edit element type.
 // Assigned on Edit mode entry; updated on element type switch and mesh topology change.

@@ -28,8 +28,10 @@
 
 #include "OrientationGizmo.h"
 
-#include "Apply.h"
+#include "Action.h"
+#include "Entity.h"
 #include "GpuBuffers.h"
+#include "ViewportOps.h"
 
 using std::ranges::any_of, std::ranges::contains, std::ranges::distance, std::ranges::find, std::ranges::find_if, std::ranges::fold_left, std::ranges::to;
 using std::views::transform;
@@ -750,14 +752,14 @@ void InteractOverlay(entt::registry &r, entt::entity viewport, FrameState &frame
                         // Spec-defined intensity edits the source IBL directly so save round-trips.
                         if (source_ibl) {
                             if (float v = source_ibl->Intensity; SliderFloat("Intensity", &v, 0.f, 2.f, "%.2f"))
-                                emit(action::project::SetSourceIblIntensity{v});
+                                emit(action::view::SetSourceIblIntensity{v});
                         }
                     } else {
                         const auto &current_name = environments.Hdris[environments.ActiveHdriIndex].Name;
                         if (BeginCombo("Environment", current_name.c_str())) {
                             for (uint32_t i = 0; i < environments.Hdris.size(); ++i) {
                                 const bool selected = (i == environments.ActiveHdriIndex);
-                                if (Selectable(environments.Hdris[i].Name.c_str(), selected)) emit(action::project::SetStudioEnvironment{i});
+                                if (Selectable(environments.Hdris[i].Name.c_str(), selected)) emit(action::view::SetStudioEnvironment{i});
                                 if (selected) SetItemDefaultFocus();
                             }
                             EndCombo();
@@ -1950,6 +1952,17 @@ void RenderControls(entt::registry &r, entt::entity viewport, action::Emit emit)
             if (CollapsingHeader("Object tree", ImGuiTreeNodeFlags_DefaultOpen)) RenderObjectTree(r, viewport, emit);
             SeparatorText("");
             if (CollapsingHeader("Add object")) {
+                static constexpr std::array AllPrimitiveShapes{
+                    PrimitiveShape{primitive::Plane{}},
+                    PrimitiveShape{primitive::Circle{}},
+                    PrimitiveShape{primitive::Cuboid{}},
+                    PrimitiveShape{primitive::IcoSphere{}},
+                    PrimitiveShape{primitive::UVSphere{}},
+                    PrimitiveShape{primitive::Torus{}},
+                    PrimitiveShape{primitive::Cylinder{}},
+                    PrimitiveShape{primitive::Cone{}},
+                };
+
                 for (uint32_t i = 0; i < AllPrimitiveShapes.size(); ++i) {
                     if (i % 4 != 0) SameLine();
                     const auto &shape = AllPrimitiveShapes[i];

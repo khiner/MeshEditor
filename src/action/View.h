@@ -3,7 +3,9 @@
 #include "Camera.h"
 #include "TransformGizmo.h"
 #include "TransformUtils.h"
+#include "Variant.h"
 #include "ViewportComponents.h"
+#include "action/Core.h"
 #include "gpu/Element.h"
 #include "gpu/InteractionMode.h"
 #include "numeric/quat.h"
@@ -11,6 +13,7 @@
 
 #include <entt/entity/fwd.hpp>
 
+#include <cstdint>
 #include <optional>
 
 struct PendingTransform;
@@ -70,18 +73,28 @@ struct EndGizmoDrag {};
 // Toolbar viewport-tool selection. Tools are mutually exclusive: picking a select tool clears the
 // transform type; picking a transform tool keeps the selection gesture but suppresses it visually.
 struct SetActiveTool {
-    enum class Tool : uint8_t { SelectBox,
-                                SelectClick,
-                                Translate,
-                                Rotate,
-                                Scale,
-                                Universal };
+    enum class Tool : uint8_t {
+        SelectBox,
+        SelectClick,
+        Translate,
+        Rotate,
+        Scale,
+        Universal
+    };
     Tool Value;
 };
 
 // Latched transform-type for the next gizmo drag. `nullopt` clears the latch (consumed by InteractOverlay).
 struct SetStartScreenTransform {
     std::optional<TransformGizmo::TransformType> Value;
+};
+
+// Studio HDRI / image-based lighting environment for the viewport.
+struct SetStudioEnvironment {
+    uint32_t Index;
+};
+struct SetSourceIblIntensity {
+    float Intensity;
 };
 
 using Actions = std::variant<
@@ -91,5 +104,14 @@ using Actions = std::variant<
     ResetViewCamera, ResetViewportTheme, ResetPbrLighting,
     SetViewCameraTarget, SetViewCameraLens, SetViewCameraTargetDirection,
     SetRotationUiMode, SetTransformRotationFromUi,
-    DragGizmo, DragGizmoMeshEdit, EndGizmoDrag, SetActiveTool, SetStartScreenTransform>;
+    DragGizmo, DragGizmoMeshEdit, EndGizmoDrag, SetActiveTool, SetStartScreenTransform,
+    SetStudioEnvironment, SetSourceIblIntensity>;
+
+using Action = MergedVariantT<
+    Actions,
+    Replace<::Camera>, ReplaceActive<::Camera>,
+    Update<TransformGizmo::Type>, Update<TransformGizmo::Mode>,
+    Update<DebugChannel>, Update<vk::ClearColorValue>>;
+
+void Apply(entt::registry &, entt::entity viewport, const Action &);
 } // namespace action::view

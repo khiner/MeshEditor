@@ -1,25 +1,16 @@
 #pragma once
 
+#include "gltf/MimeType.h"
+
+#include "numeric/quat.h"
+#include "numeric/vec3.h"
+
 #include <array>
 #include <optional>
 #include <string>
 #include <vector>
 
-#include "numeric/quat.h"
-#include "numeric/vec3.h"
-
 namespace gltf {
-enum class MimeType : uint8_t {
-    None,
-    JPEG,
-    PNG,
-    KTX2,
-    DDS,
-    GltfBuffer,
-    OctetStream,
-    WEBP,
-};
-
 struct Image {
     // Encoded source bytes. Retained for embedded sources (data URI / bufferView) so save can
     // passthrough byte-identically. External-URI images drop Bytes after upload — SourceAbsPath

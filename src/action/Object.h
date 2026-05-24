@@ -2,12 +2,17 @@
 
 #include "Camera.h"
 #include "ObjectCreateInfo.h"
+#include "Variant.h"
+#include "ViewportComponents.h"
+#include "action/Core.h"
+#include "gpu/PunctualLight.h"
 #include "mesh/MeshData.h"
 #include "mesh/PrimitiveType.h"
 
 #include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <optional>
 
 namespace action::object {
 struct Delete {};
@@ -56,4 +61,12 @@ using Actions = std::variant<
     Delete, Duplicate, DuplicateLinked, ToggleHidden, SetSelectedVisible, SetSelectedSmoothShading,
     ParentToActive, ClearParent,
     AddEmpty, AddArmature, AddCamera, AddLight, AddMeshPrimitive, ImportMesh, ReplaceMesh, SetPbrMeshFeaturesMask>;
+
+using Action = MergedVariantT<
+    Actions,
+    Replace<PunctualLight>, ReplaceActive<PunctualLight>,
+    Replace<MaterialDirty>, Replace<MeshMaterialAssignment>, Replace<MeshMaterialSlotSelection>,
+    Update<std::optional<uint32_t>>>;
+
+void Apply(entt::registry &, entt::entity viewport, const Action &);
 } // namespace action::object

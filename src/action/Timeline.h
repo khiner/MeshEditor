@@ -1,5 +1,7 @@
 #pragma once
 
+#include <entt/entity/fwd.hpp>
+
 #include <variant>
 
 namespace action::timeline {
@@ -23,4 +25,6 @@ struct SetView {
 
 using Actions = std::variant<TogglePlay, Play, SetFrame, SetStartFrame, SetEndFrame, JumpToStart, JumpToEnd, SetView>;
 using Action = Actions;
+
+void Apply(entt::registry &, entt::entity viewport, const Action &);
 } // namespace action::timeline

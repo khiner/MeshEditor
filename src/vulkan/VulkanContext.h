@@ -6,8 +6,6 @@
 
 constexpr auto VkApiVersion = VK_API_VERSION_1_4;
 
-vk::PhysicalDevice FindPhysicalDevice(const vk::UniqueInstance &);
-
 // Headless-capable Vulkan bootstrap. Pass swapchain-related extensions in `instance_extensions`
 // (and set `with_swapchain=true`) for windowed rendering; pass empty + `with_swapchain=false`
 // for tests or other offscreen use.

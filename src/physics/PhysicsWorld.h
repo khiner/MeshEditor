@@ -54,7 +54,6 @@ struct PhysicsWorld {
     void InvalidateFromFrame(uint32_t);
     void ClearCache();
 
-    // Query effective collision between two filter entities (for UI visualization).
     // null filter = permissive (collides with all).
     bool DoFiltersCollide(entt::entity, entt::entity) const;
 

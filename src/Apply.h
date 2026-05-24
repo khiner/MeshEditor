@@ -1,46 +1,15 @@
 #pragma once
 
 #include "Action.h"
-#include "ObjectCreateInfo.h" // MeshInstanceCreateInfo
-
-#include "gpu/Element.h"
-#include "gpu/InteractionMode.h"
 
 #include <entt/entity/fwd.hpp>
 
 #include <expected>
-#include <filesystem>
-#include <span>
+#include <string>
 
-struct ElementRange;
-
-// Apply(Action) is registry-only. GPU side-effects are deferred via PendingX components that ProcessComponentEvents observes.
-// Apply(FallibleAction) (LoadGltf, SaveGltf, LoadRealImpact) runs GPU work synchronously and reports failure inline.
-void Apply(entt::registry &, entt::entity viewport, const action::Action &);
+// Routes each action leaf to the owning domain's action::{domain}::Apply (in src/action/{Domain}.cpp).
+// Registry-only: GPU side-effects are deferred via PendingX components that ProcessComponentEvents observes.
+// Taken by value: the merged variant holds move-only alternatives, so the dispatcher moves each leaf into its domain variant.
+void Apply(entt::registry &, entt::entity viewport, action::Action);
+// File IO (LoadGltf/SaveGltf/LoadRealImpact) runs GPU work synchronously and reports failure inline.
 std::expected<void, std::string> Apply(entt::registry &, entt::entity viewport, const action::FallibleAction &);
-
-void SetStudioEnvironment(entt::registry &, uint32_t index);
-
-// Dispatches the GPU compute pass that rewrites per-element state buffers from the SelectionBitset.
-// Blocking — waits on the one-shot fence before returning.
-void DispatchUpdateSelectionStates(entt::registry &, entt::entity viewport, std::span<const ElementRange>, Element);
-// Runs DispatchUpdateSelectionStates, then derives the dependent edge/face/vertex state buffers CPU-side.
-void ApplySelectionStateUpdate(entt::registry &, entt::entity viewport, std::span<const ElementRange>, Element);
-
-bool SetInteractionMode(entt::registry &, entt::entity viewport, InteractionMode);
-std::pair<entt::entity, entt::entity> ImportMesh(
-    entt::registry &,
-    const std::filesystem::path &, MeshInstanceCreateInfo
-);
-void Destroy(entt::registry &, entt::entity viewport, entt::entity);
-
-bool CanDuplicate(const entt::registry &, entt::entity viewport);
-bool CanDuplicateLinked(const entt::registry &, entt::entity viewport);
-bool CanDelete(const entt::registry &, entt::entity viewport);
-entt::entity GetMeshEntity(const entt::registry &, entt::entity);
-entt::entity GetActiveMeshEntity(const entt::registry &);
-entt::entity LookThroughCameraEntity(const entt::registry &);
-entt::entity FindMeshEntity(const entt::registry &, entt::entity);
-std::vector<ElementRange> GetBitsetRangesForSelected(const entt::registry &);
-bool IsBoneEditMode(const entt::registry &, entt::entity viewport);
-bool AllSelectedAreMeshes(const entt::registry &);

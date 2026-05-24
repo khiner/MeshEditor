@@ -33,7 +33,7 @@ struct EdgeMap {
 
 private:
     size_t mix(uint64_t k) const {
-        // splitmix64 finalizer — kills the clustering you get from `(from << 32) | to` keys.
+        // splitmix64 finalizer — avoids clustering from `(from << 32) | to` keys.
         k ^= k >> 30;
         k *= 0xbf58476d1ce4e5b9ULL;
         k ^= k >> 27;

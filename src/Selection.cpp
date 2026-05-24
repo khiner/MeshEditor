@@ -1,8 +1,10 @@
 #include "Selection.h"
+#include "Armature.h"
 #include "Entity.h"
 #include "Instance.h"
 #include "InteractionComponents.h"
 #include "MeshComponents.h"
+#include "SelectionComponents.h"
 #include "mesh/Mesh.h"
 
 #include <entt/entity/registry.hpp>
@@ -168,3 +170,33 @@ uint32_t GetElementCount(const Mesh &mesh, Element element) {
 }
 
 } // namespace selection
+
+bool IsBoneEditMode(const entt::registry &r, entt::entity viewport) {
+    if (r.get<const Interaction>(viewport).Mode != InteractionMode::Edit) return false;
+    return FindArmatureObject(r, FindActiveEntity(r)) != entt::null;
+}
+
+bool CanDuplicate(const entt::registry &r, entt::entity viewport) {
+    if (r.get<const Interaction>(viewport).Mode == InteractionMode::Pose) return false;
+    if (IsBoneEditMode(r, viewport)) return !r.view<BoneSelection>().empty();
+    return !r.view<Selected>().empty();
+}
+bool CanDuplicateLinked(const entt::registry &r, entt::entity viewport) { return CanDuplicate(r, viewport) && !IsBoneEditMode(r, viewport); }
+bool CanDelete(const entt::registry &r, entt::entity viewport) { return CanDuplicate(r, viewport); }
+
+bool AllSelectedAreMeshes(const entt::registry &r) {
+    for (const auto [e, ok] : r.view<const Selected, const ObjectKind>().each()) {
+        if (ok.Value != ObjectType::Mesh) return false;
+    }
+    return true;
+}
+
+std::vector<ElementRange> GetBitsetRangesForSelected(const entt::registry &r) {
+    std::vector<ElementRange> ranges;
+    for (const auto mesh_entity : selection::GetSelectedMeshEntities(r)) {
+        if (const auto *br = r.try_get<const MeshSelectionBitsetRange>(mesh_entity); br && br->Count > 0) {
+            ranges.emplace_back(mesh_entity, br->Offset, br->Count);
+        }
+    }
+    return ranges;
+}

@@ -3,28 +3,23 @@
 #include "action/Audio.h"
 #include "action/Bone.h"
 #include "action/Core.h"
+#include "action/Io.h"
 #include "action/Object.h"
 #include "action/Physics.h"
-#include "action/Project.h"
 #include "action/Selection.h"
 #include "action/Timeline.h"
 #include "action/View.h"
-#include "audio/RealImpactComponents.h"
-#include "gpu/PunctualLight.h"
 
 namespace action {
+// Each domain owns its own action surface (its explicit actions plus any domain-specific
+// Update/Replace alternatives) via its `Action` typedef; the top-level variant is their union
+// plus Core. Apply(Action) routes each leaf to the owning domain's Apply.
 using Action = MergedVariantT<
-    Core, selection::Actions, object::Actions, project::Actions, view::Actions,
-    physics::Actions, audio::Actions, bone::Actions, timeline::Actions,
-    Update<DebugChannel>, Update<CollideMode>,
-    Update<PhysicsCombineMode>, Update<PhysicsDriveType>, Update<PhysicsDriveMode>, Update<vk::ClearColorValue>,
-    Update<std::optional<uint32_t>>,
-    Update<TransformGizmo::Type>, Update<TransformGizmo::Mode>,
-    Replace<Camera>, Replace<MaterialDirty>, Replace<MeshMaterialAssignment>, Replace<MeshMaterialSlotSelection>,
-    Replace<PhysicsMotion>, Replace<PunctualLight>, Replace<RealImpactActiveMicrophone>,
-    ReplaceActive<Camera>, ReplaceActive<PhysicsMotion>, ReplaceActive<PunctualLight>>;
+    Core,
+    selection::Action, object::Action, view::Action,
+    physics::Action, audio::Action, bone::Action, timeline::Action, io::Action>;
 
-using FallibleAction = project::FallibleActions;
+using FallibleAction = io::FallibleActions;
 
 // First action per frame applies - subsequent actions are dropped.
 using Emit = void (*)(Action);

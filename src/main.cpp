@@ -234,11 +234,11 @@ GltfSampleTree BuildGltfSampleTree(const fs::path &root) {
 std::expected<void, std::string> LoadFile(entt::registry &r, entt::entity viewport, const fs::path &path) {
     const auto ext = path.extension().string();
     if (ext == ".gltf" || ext == ".glb") {
-        if (auto result = Apply(r, viewport, action::project::LoadGltf{.Path = path}); !result) {
+        if (auto result = ::Apply(r, viewport, action::io::LoadGltf{.Path = path}); !result) {
             return std::unexpected(std::format("Error loading glTF file '{}': {}", path.string(), result.error()));
         }
     } else if (ext == ".obj" || ext == ".ply") {
-        Apply(r, viewport, action::object::ImportMesh{path, std::make_unique<MeshInstanceCreateInfo>(MeshInstanceCreateInfo{.Name = path.stem().string()})});
+        ::Apply(r, viewport, action::object::ImportMesh{path, std::make_unique<MeshInstanceCreateInfo>(MeshInstanceCreateInfo{.Name = path.stem().string()})});
     } else {
         return std::unexpected(std::format("Unsupported file format: '{}'", ext));
     }
@@ -442,7 +442,7 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
 
         if (BeginMainMenuBar()) {
             if (BeginMenu("File")) {
-                if (MenuItem("New", nullptr)) Emit(action::project::NewDefaultScene{});
+                if (MenuItem("New", nullptr)) Emit(action::io::NewDefaultScene{});
                 if (MenuItem("Load glTF", nullptr)) {
                     static const std::array filters{nfdfilteritem_t{"glTF scene", "gltf,glb"}};
                     nfdchar_t *nfd_path;
@@ -538,7 +538,7 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
                     static const std::vector<nfdfilteritem_t> filters{};
                     nfdchar_t *path;
                     if (auto result = NFD_PickFolder(&path, ""); result == NFD_OKAY) {
-                        if (auto load = Apply(r, viewport, action::project::LoadRealImpact{.Directory = fs::path{path}}); !load) std::cerr << load.error() << std::endl;
+                        if (auto load = ::Apply(r, viewport, action::io::LoadRealImpact{.Directory = fs::path{path}}); !load) std::cerr << load.error() << std::endl;
                         NFD_FreePath(path);
                     } else if (result != NFD_CANCEL) {
                         std::cerr << "Error opening folder dialog: " << NFD_GetError() << std::endl;
@@ -548,7 +548,7 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
                     static const std::array filters{nfdfilteritem_t{"glTF scene", "gltf,glb"}};
                     nfdchar_t *nfd_path;
                     if (auto result = NFD_SaveDialog(&nfd_path, filters.data(), filters.size(), nullptr, "scene.gltf"); result == NFD_OKAY) {
-                        if (auto save = Apply(r, viewport, action::project::SaveGltf{.Path = fs::path(nfd_path)}); !save) std::cerr << save.error() << std::endl;
+                        if (auto save = ::Apply(r, viewport, action::io::SaveGltf{.Path = fs::path(nfd_path)}); !save) std::cerr << save.error() << std::endl;
                         NFD_FreePath(nfd_path);
                     } else if (result != NFD_CANCEL) {
                         std::cerr << "Error opening save dialog: " << NFD_GetError() << std::endl;
@@ -670,14 +670,14 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
             if (GetFrameCount() == 1) {
                 // Load initial content now that the viewport has an extent.
                 // static const auto DefaultRealImpactPath = fs::path{"../../"} / "RealImpact" / "dataset" / "22_Cup" / "preprocessed";
-                // if (fs::exists(DefaultRealImpactPath)) Apply(r, viewport, action::project::LoadRealImpact{.Directory = DefaultRealImpactPath});
+                // if (fs::exists(DefaultRealImpactPath)) ::Apply(r, viewport, action::io::LoadRealImpact{.Directory = DefaultRealImpactPath});
                 if (initial_file) {
                     if (auto result = LoadFile(r, viewport, fs::path(initial_file)); !result) {
                         std::cerr << result.error() << std::endl;
                         play = false;
                     }
                 } else {
-                    Emit(action::project::NewDefaultScene{});
+                    Emit(action::io::NewDefaultScene{});
                 }
             } else if (GetFrameCount() == 3 && play) {
                 // Wait to play until scene load (frame 1) has settled and one render frame has elapsed.

@@ -1,6 +1,5 @@
 #include "VideoRecorder.h"
-
-#include "vulkan/Image.h" // mvk::FindMemoryType
+#include "vulkan/FindMemoryType.h"
 
 #include <print>
 
@@ -22,9 +21,7 @@ std::string BuildFfmpegCommand(const std::filesystem::path &out, vk::Extent2D ex
     );
 }
 
-bool IsFfmpegAvailable() {
-    return std::system("command -v ffmpeg >/dev/null 2>&1") == 0;
-}
+bool IsFfmpegAvailable() { return std::system("command -v ffmpeg >/dev/null 2>&1") == 0; }
 } // namespace
 
 VideoRecorder::VideoRecorder(
@@ -47,7 +44,7 @@ VideoRecorder::VideoRecorder(
 
     Buffer = Device.createBufferUnique({{}, FrameBytes, vk::BufferUsageFlagBits::eTransferDst, vk::SharingMode::eExclusive});
     const auto mem_reqs = Device.getBufferMemoryRequirements(*Buffer);
-    Memory = Device.allocateMemoryUnique({mem_reqs.size, mvk::FindMemoryType(vk_res.PhysicalDevice, mem_reqs.memoryTypeBits, vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent)});
+    Memory = Device.allocateMemoryUnique({mem_reqs.size, FindMemoryType(vk_res.PhysicalDevice, mem_reqs.memoryTypeBits, vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent)});
     Device.bindBufferMemory(*Buffer, *Memory, 0);
     Mapped = Device.mapMemory(*Memory, 0, FrameBytes);
 

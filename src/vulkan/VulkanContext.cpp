@@ -2,6 +2,7 @@
 
 #include <iostream>
 
+namespace {
 vk::PhysicalDevice FindPhysicalDevice(const vk::UniqueInstance &instance) {
     const auto physical_devices = instance->enumeratePhysicalDevices();
     if (physical_devices.empty()) throw std::runtime_error("No Vulkan devices found.");
@@ -11,6 +12,7 @@ vk::PhysicalDevice FindPhysicalDevice(const vk::UniqueInstance &instance) {
     }
     return physical_devices[0];
 }
+} // namespace
 
 VulkanContext::VulkanContext(std::vector<const char *> enabled_extensions, bool with_swapchain) {
     const auto IsExtensionAvailable = [](std::span<const vk::ExtensionProperties> props, std::string_view extension) {

@@ -2,7 +2,6 @@
 
 #include "Camera.h"
 #include "Entity.h" // ObjectType
-#include "ObjectComponents.h"
 #include "ObjectCreateInfo.h"
 #include "gpu/PunctualLight.h"
 #include "numeric/vec3.h"
@@ -10,6 +9,7 @@
 #include <entt/entity/fwd.hpp>
 
 #include <cstdint>
+#include <filesystem>
 #include <optional>
 #include <span>
 #include <string>
@@ -46,6 +46,14 @@ entt::entity AddEmpty(entt::registry &, MeshStore &, GpuBuffers &, ObjectCreateI
 entt::entity AddCamera(entt::registry &, MeshStore &, GpuBuffers &, ObjectCreateInfo = {}, std::optional<Camera> = {});
 entt::entity AddLight(entt::registry &, MeshStore &, GpuBuffers &, ObjectCreateInfo = {}, std::optional<PunctualLight> = {});
 entt::entity AddArmature(entt::registry &, MeshStore &, ObjectCreateInfo = {});
+
+// Loads a mesh file (with its materials/textures) and creates the mesh + instance entities.
+std::pair<entt::entity, entt::entity> ImportMesh(entt::registry &, const std::filesystem::path &, MeshInstanceCreateInfo);
+
+// Object teardown (counterpart to the Add* creators above).
+void Destroy(entt::registry &, entt::entity viewport, entt::entity);
+void ClearMeshes(entt::registry &, entt::entity viewport);
+void DestroyArmatureData(entt::registry &, entt::entity arm_obj_entity);
 
 entt::entity CreateBoneEntity(entt::registry &, entt::entity arm_obj_entity, const Armature &, uint32_t bone_index, entt::entity parent_entity);
 void CreateBoneJoints(entt::registry &, entt::entity arm_obj_entity, entt::entity bone_entity, entt::entity joint_entity);

@@ -1,14 +1,7 @@
 #include "Image.h"
+#include "FindMemoryType.h"
 
 namespace mvk {
-uint32_t FindMemoryType(vk::PhysicalDevice pd, uint32_t type_filter, vk::MemoryPropertyFlags prop_flags) {
-    auto mem_props = pd.getMemoryProperties();
-    for (uint32_t i = 0; i < mem_props.memoryTypeCount; i++) {
-        if ((type_filter & (1 << i)) && (mem_props.memoryTypes[i].propertyFlags & prop_flags) == prop_flags) return i;
-    }
-    throw std::runtime_error("failed to find suitable memory type!");
-}
-
 ImageResource CreateImage(vk::Device d, vk::PhysicalDevice pd, vk::ImageCreateInfo image_info, vk::ImageViewCreateInfo view_info, vk::MemoryPropertyFlags mem_flags) {
     auto image = d.createImageUnique(image_info);
     const auto mem_reqs = d.getImageMemoryRequirements(*image);
@@ -19,51 +12,26 @@ ImageResource CreateImage(vk::Device d, vk::PhysicalDevice pd, vk::ImageCreateIn
 }
 
 void RecordBufferToSampledImageUpload(
-    vk::CommandBuffer cb, vk::Buffer src, vk::Image dst, uint32_t width, uint32_t height, vk::ImageSubresourceRange subresource_range,
-    vk::DeviceSize buffer_offset
+    vk::CommandBuffer cb, vk::Buffer src, vk::Image dst, uint32_t width, uint32_t height,
+    vk::ImageSubresourceRange subresource_range, vk::DeviceSize buffer_offset
 ) {
     cb.pipelineBarrier(
         vk::PipelineStageFlagBits::eTopOfPipe,
         vk::PipelineStageFlagBits::eTransfer,
         {}, {}, {},
-        vk::ImageMemoryBarrier{
-            {},
-            vk::AccessFlagBits::eTransferWrite,
-            vk::ImageLayout::eUndefined,
-            vk::ImageLayout::eTransferDstOptimal,
-            {},
-            {},
-            dst,
-            subresource_range
-        }
+        vk::ImageMemoryBarrier{{}, vk::AccessFlagBits::eTransferWrite, vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal, {}, {}, dst, subresource_range}
     );
 
     cb.copyBufferToImage(
         src, dst, vk::ImageLayout::eTransferDstOptimal,
-        vk::BufferImageCopy{
-            buffer_offset,
-            0,
-            0,
-            {vk::ImageAspectFlagBits::eColor, 0, 0, 1},
-            {0, 0, 0},
-            {width, height, 1}
-        }
+        vk::BufferImageCopy{buffer_offset, 0, 0, {vk::ImageAspectFlagBits::eColor, 0, 0, 1}, {0, 0, 0}, {width, height, 1}}
     );
 
     cb.pipelineBarrier(
         vk::PipelineStageFlagBits::eTransfer,
         vk::PipelineStageFlagBits::eFragmentShader,
         {}, {}, {},
-        vk::ImageMemoryBarrier{
-            vk::AccessFlagBits::eTransferWrite,
-            vk::AccessFlagBits::eShaderRead,
-            vk::ImageLayout::eTransferDstOptimal,
-            vk::ImageLayout::eShaderReadOnlyOptimal,
-            {},
-            {},
-            dst,
-            subresource_range
-        }
+        vk::ImageMemoryBarrier{vk::AccessFlagBits::eTransferWrite, vk::AccessFlagBits::eShaderRead, vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eShaderReadOnlyOptimal, {}, {}, dst, subresource_range}
     );
 }
 } // namespace mvk

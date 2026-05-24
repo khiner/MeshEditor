@@ -1,6 +1,4 @@
-// Collider wireframe generation for viewport overlay.
-// Canonical unit meshes shared across all instances (Blender-style instancing).
-// No Jolt includes — pure geometry.
+// Collider wireframe generation for viewport overlay
 
 #pragma once
 
@@ -15,7 +13,6 @@ struct WireframeMesh {
     std::vector<uint32_t> EdgeIndices; // Line segment pairs
 };
 
-// Canonical unit wireframe meshes (generated once, shared via instancing).
 WireframeMesh UnitBox(); // [-0.5, 0.5]^3
 WireframeMesh UnitSphere(); // Radius 0.5, 3 great circles
 WireframeMesh UnitCapsuleCap(); // Hemisphere wireframe, radius 0.5, cap in +Y

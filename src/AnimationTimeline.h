@@ -29,3 +29,6 @@ struct AnimationIcons {
 };
 
 std::optional<action::timeline::Action> RenderAnimationTimeline(const TimelineRange &, const TimelinePlayback &, const AnimationTimelineView &, const AnimationIcons &);
+
+// Reset playback to the timeline's start frame and invalidate the physics cache.
+void JumpToStartFrame(entt::registry &, entt::entity viewport);

@@ -18,6 +18,7 @@ add_executable(MeshEditorTests
     ${CMAKE_SOURCE_DIR}/src/vulkan/Buffer.cpp
     ${CMAKE_SOURCE_DIR}/src/vulkan/Image.cpp
     ${CMAKE_SOURCE_DIR}/src/vulkan/VulkanContext.cpp
+    ${CMAKE_SOURCE_DIR}/src/vulkan/FindMemoryType.cpp
 )
 
 add_dependencies(MeshEditorTests generate_gpu_schema)

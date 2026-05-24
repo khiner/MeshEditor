@@ -130,4 +130,6 @@ using Core = std::variant<
     UpdateActive<bool>, UpdateActive<uint8_t>, UpdateActive<uint32_t>, UpdateActive<float>, UpdateActive<double>,
     UpdateActive<vec3>, UpdateActive<vec4>, UpdateActive<entt::entity>,
     SetTag, SetActiveTag, DestroyEntity>;
+
+void Apply(entt::registry &, entt::entity viewport, const Core &);
 } // namespace action

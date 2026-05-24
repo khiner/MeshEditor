@@ -67,4 +67,7 @@ using Actions = std::variant<
     Select, ToggleSelected, SelectBone, ExtendActive, ExtendBoneActive, SetBoneSelectionPart,
     DeselectAll, SelectAll, SnapshotBoxSelectBaseline, ClearBoxSelectBaseline,
     ApplyBoxSelectObjectHits, ApplyBoxSelectBoneHits, ApplyEditElementClick, ApplyTreeSelection>;
+using Action = Actions;
+
+void Apply(entt::registry &, entt::entity viewport, const Action &);
 } // namespace action::selection
