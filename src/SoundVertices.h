@@ -1,7 +1,6 @@
 #pragma once
 
 #include <ranges>
-#include <vector>
 
 // Derived state, do not mutate directly.
 // In Samples mode, mirrors keys of VertexSamples::PathByVertex.

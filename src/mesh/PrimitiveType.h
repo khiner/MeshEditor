@@ -1,11 +1,5 @@
 #pragma once
 
-#include "numeric/vec2.h"
-#include "numeric/vec3.h"
-
-#include <string>
-#include <variant>
-
 namespace primitive {
 // Finite plane in the XZ plane (normal +Y), centered at origin.
 struct Plane {

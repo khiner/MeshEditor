@@ -3,8 +3,6 @@
 #include <vulkan/vulkan.hpp>
 
 #include <filesystem>
-#include <optional>
-#include <vector>
 
 using ShaderType = vk::ShaderStageFlagBits;
 

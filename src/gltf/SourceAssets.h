@@ -3,8 +3,6 @@
 #include "Image.h"
 #include "vulkan/Slots.h"
 
-#include <unordered_map>
-
 // Source-form glTF data preserved across round-trip but not consumed by the runtime, stored on ECS
 // components. Lives apart from the loader (GltfScene.h) so consumers that only read/write these
 // components don't pull in the glTF import/export machinery.

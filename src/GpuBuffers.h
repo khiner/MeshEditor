@@ -13,8 +13,6 @@
 #include "vulkan/BufferArena.h"
 
 #include <numeric>
-#include <string>
-#include <unordered_map>
 
 struct MaterialStore {
     std::vector<std::string> Names;

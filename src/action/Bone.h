@@ -6,9 +6,6 @@
 
 #include <entt/entity/fwd.hpp>
 
-#include <memory>
-#include <variant>
-
 namespace action::bone {
 struct Add {};
 struct Extrude {};

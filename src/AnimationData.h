@@ -3,7 +3,6 @@
 #include "gpu/Transform.h"
 
 #include <span>
-#include <string>
 #include <vector>
 
 using BoneId = uint32_t; // Stable identifier - never reused

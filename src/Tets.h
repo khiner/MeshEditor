@@ -1,8 +1,5 @@
 #pragma once
 
-#include <memory>
-#include <vector>
-
 #include "numeric/vec3.h"
 
 struct Mesh;

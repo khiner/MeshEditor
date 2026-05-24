@@ -1,16 +1,11 @@
 #pragma once
 
-#include "Camera.h"
-#include "ObjectCreateInfo.h"
 #include "Variant.h"
 #include "ViewportComponents.h"
 #include "action/Core.h"
 #include "gpu/PunctualLight.h"
 #include "mesh/MeshData.h"
 #include "mesh/PrimitiveType.h"
-
-#include <filesystem>
-#include <memory>
 
 namespace action::object {
 struct Delete {};

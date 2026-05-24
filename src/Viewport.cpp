@@ -7,7 +7,6 @@
 #include "EntityDestroyTracker.h"
 #include "FrameState.h"
 #include "InteractionComponents.h"
-#include "MeshComponents.h"
 #include "ObjectOps.h"
 #include "Paths.h"
 #include "Pipelines.h"

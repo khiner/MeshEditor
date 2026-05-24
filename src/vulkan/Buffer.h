@@ -4,11 +4,7 @@
 
 #include <vulkan/vulkan.hpp>
 
-#include <array>
-#include <memory>
-#include <span>
 #include <unordered_map>
-#include <vector>
 
 // Forwards to avoid including `vk_mem_alloc.h`.
 struct VmaAllocator_T;

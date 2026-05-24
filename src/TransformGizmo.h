@@ -4,7 +4,6 @@
 #include "numeric/mat3.h"
 #include "numeric/rect.h"
 
-#include <optional>
 #include <string_view>
 
 struct ViewCamera;

@@ -1,17 +1,10 @@
 #pragma once
 
-#include "Camera.h"
 #include "TransformGizmo.h"
 #include "TransformUtils.h"
 #include "Variant.h"
 #include "ViewportComponents.h"
 #include "action/Core.h"
-#include "gpu/Element.h"
-#include "gpu/InteractionMode.h"
-#include "numeric/quat.h"
-#include "numeric/vec3.h"
-
-#include <entt/entity/fwd.hpp>
 
 struct PendingTransform;
 

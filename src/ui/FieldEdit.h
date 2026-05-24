@@ -16,14 +16,8 @@
 #include "Emit.h"
 #include "Entity.h" // FindActiveEntity
 #include "action/Core.h"
-#include "numeric/vec3.h"
-#include "numeric/vec4.h"
 
-#include <entt/entity/fwd.hpp>
 #include <imgui.h>
-
-#include <concepts>
-#include <type_traits>
 
 namespace ui {
 

@@ -2,9 +2,6 @@
 
 #include "Camera.h"
 #include "mesh/MeshData.h"
-#include "numeric/vec3.h"
-
-#include <vector>
 
 struct PunctualLight;
 

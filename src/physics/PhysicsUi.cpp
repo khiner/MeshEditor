@@ -2,10 +2,8 @@
 
 #include "PhysicsUi.h"
 #include "AnimationTimeline.h"
-#include "Emit.h"
 #include "PhysicsWorld.h"
 #include "SceneGraph.h"
-#include "action/Core.h"
 #include "action/Physics.h"
 #include "numeric/vec2.h"
 #include "ui/FieldEdit.h"

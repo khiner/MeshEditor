@@ -4,9 +4,6 @@
 
 #include "numeric/vec3.h"
 
-#include <cstdint>
-#include <vector>
-
 namespace physics_debug {
 struct WireframeMesh {
     std::vector<vec3> Positions;

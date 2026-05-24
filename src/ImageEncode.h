@@ -4,8 +4,6 @@
 
 #include <expected>
 #include <span>
-#include <string>
-#include <string_view>
 #include <vector>
 
 // Encode tightly-packed RGBA8 pixels to a glTF-supported container (PNG / JPEG).

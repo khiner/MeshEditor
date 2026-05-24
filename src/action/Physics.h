@@ -4,13 +4,6 @@
 #include "action/Core.h"
 #include "physics/PhysicsTypes.h"
 
-#include <entt/core/type_info.hpp>
-
-#include <memory>
-#include <string>
-#include <string_view>
-#include <vector>
-
 namespace action {
 // Heap-allocate big types to keep the variant small.
 template<>

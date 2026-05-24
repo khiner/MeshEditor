@@ -2,8 +2,6 @@
 
 #include <fftw3.h>
 
-#include <vector>
-
 struct FFTData {
     fftwf_complex *Complex;
     fftwf_plan Plan;

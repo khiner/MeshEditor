@@ -1,5 +1,4 @@
 #include "AudioSystem.h"
-#include "Emit.h"
 #include "FFTData.h"
 #include "FaustDSP.h"
 #include "Instance.h"

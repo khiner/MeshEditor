@@ -5,9 +5,6 @@
 #include "numeric/mat4.h"
 #include "numeric/ray.h"
 #include "numeric/rect.h"
-#include "numeric/vec3.h"
-
-#include <optional>
 
 // The viewport navigation camera (orbit/zoom around a target point).
 // Note: Aspect ratio of the provided data is ignored, as the ViewCamera follows the viewport aspect ratio.

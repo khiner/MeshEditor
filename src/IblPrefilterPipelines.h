@@ -1,9 +1,6 @@
 #pragma once
 
 #include "Shader.h"
-#include <vulkan/vulkan.hpp>
-
-#include <array>
 
 struct IblPrefilterPipelines {
     // Descriptor set layout: binding 0 = COMBINED_IMAGE_SAMPLER, binding 1 = STORAGE_IMAGE.

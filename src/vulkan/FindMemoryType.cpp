@@ -1,7 +1,5 @@
 #include "FindMemoryType.h"
 
-#include <format>
-
 uint32_t FindMemoryType(vk::PhysicalDevice pd, uint32_t type_filter, vk::MemoryPropertyFlags prop_flags) {
     auto mem_props = pd.getMemoryProperties();
     for (uint32_t i = 0; i < mem_props.memoryTypeCount; i++) {

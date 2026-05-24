@@ -2,8 +2,6 @@
 
 #include "AcousticMaterial.h"
 
-#include <cstdint>
-
 enum class SoundVerticesModel {
     // Play back recordings of impacts on the object at provided listener points/vertices.
     Samples,

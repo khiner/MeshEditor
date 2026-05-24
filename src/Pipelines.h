@@ -5,7 +5,6 @@
 #include "ShaderPipelineType.h"
 #include "vulkan/Image.h"
 
-#include <memory>
 #include <unordered_map>
 
 using SPT = ShaderPipelineType;

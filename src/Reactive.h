@@ -2,9 +2,6 @@
 
 #include <entt/entity/registry.hpp>
 
-#include <functional>
-#include <vector>
-
 enum class On : uint8_t {
     Create = 1,
     Update = 2,

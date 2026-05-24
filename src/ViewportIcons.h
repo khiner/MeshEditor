@@ -3,10 +3,6 @@
 #include "AnimationTimeline.h" // AnimationIcons
 #include "SvgResource.h"
 
-#include <entt/entity/fwd.hpp>
-
-#include <memory>
-
 struct ViewportIconsTransform {
     std::unique_ptr<SvgResource> Select, SelectBox, Move, Rotate, Scale, Universal;
 };

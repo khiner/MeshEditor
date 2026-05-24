@@ -4,9 +4,6 @@
 
 #include <filesystem>
 #include <functional>
-#include <memory>
-#include <optional>
-#include <span>
 
 using BitmapToImage = std::function<mvk::ImageResource(std::span<const std::byte> data, uint32_t width, uint32_t height)>;
 

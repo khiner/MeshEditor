@@ -5,8 +5,6 @@
 
 #include <vulkan/vulkan.hpp>
 
-#include <vector>
-
 struct DrawBatchInfo {
     uint32_t DrawDataSlotOffset{0}, DrawCount{0};
     vk::DeviceSize IndirectOffset{0};

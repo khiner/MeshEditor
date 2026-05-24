@@ -5,9 +5,7 @@
 #include "faust/gui/UI.h"
 
 #include <stack>
-#include <string>
 #include <unordered_map>
-#include <vector>
 
 using Real = float;
 

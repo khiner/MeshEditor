@@ -1,11 +1,5 @@
 #pragma once
 
-#include "Range.h"
-
-#include <entt/entity/fwd.hpp>
-
-#include <vector>
-
 // Links a renderable instance to the entity holding its shared GPU buffers (MeshBuffers + ModelsBuffer).
 struct RenderInstance {
     entt::entity Entity; // The entity this is an instance of (has MeshBuffers + ModelsBuffer).

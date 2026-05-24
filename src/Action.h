@@ -2,7 +2,6 @@
 
 #include "action/Audio.h"
 #include "action/Bone.h"
-#include "action/Core.h"
 #include "action/Io.h"
 #include "action/Object.h"
 #include "action/Physics.h"

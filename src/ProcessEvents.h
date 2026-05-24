@@ -1,7 +1,5 @@
 #pragma once
 
-#include <cstdint>
-
 #include <entt/entity/fwd.hpp>
 
 enum class RenderRequest : uint8_t {

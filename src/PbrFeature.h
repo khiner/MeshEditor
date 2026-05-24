@@ -1,7 +1,5 @@
 #pragma once
 
-#include <cstdint>
-
 enum class PbrFeature : uint32_t {
     Punctual = 1 << 0,
     Transmission = 1 << 1,

@@ -4,9 +4,6 @@
 
 #include <vulkan/vulkan.hpp>
 
-#include <array>
-#include <vector>
-
 struct DescriptorSlots {
     DescriptorSlots(vk::Device, const vk::PhysicalDeviceDescriptorIndexingProperties &);
 

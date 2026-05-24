@@ -2,8 +2,6 @@
 
 #include <vulkan/vulkan.hpp>
 
-#include <cstdint>
-
 struct VulkanResources {
     vk::Instance Instance;
     vk::PhysicalDevice PhysicalDevice;

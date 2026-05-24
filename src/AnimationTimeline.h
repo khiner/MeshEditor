@@ -2,7 +2,6 @@
 
 #include "action/Timeline.h"
 
-#include <memory>
 #include <optional>
 
 struct SvgResource;

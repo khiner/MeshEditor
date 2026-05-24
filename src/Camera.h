@@ -4,7 +4,6 @@
 
 #include <glm/common.hpp>
 #include <glm/trigonometric.hpp>
-#include <optional>
 #include <variant>
 
 inline constexpr float DefaultAspectRatio{16.f / 9.f};

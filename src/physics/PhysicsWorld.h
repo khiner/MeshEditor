@@ -1,7 +1,6 @@
 #pragma once
 
 #include <entt/entity/fwd.hpp>
-#include <memory>
 #include <optional>
 
 struct PhysicsSimulationSettings;

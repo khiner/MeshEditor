@@ -2,9 +2,7 @@
 
 #include "imspinner.h"
 
-#include <chrono>
 #include <future>
-#include <string_view>
 
 using namespace std::chrono_literals;
 

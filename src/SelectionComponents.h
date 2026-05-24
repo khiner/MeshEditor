@@ -4,12 +4,6 @@
 #include "BoneSelection.h"
 #include "numeric/vec2.h"
 
-#include <entt/entity/fwd.hpp>
-
-#include <array>
-#include <span>
-#include <vector>
-
 // A contiguous span of a mesh's elements (vertices/edges/faces) in the SelectionBitset.
 struct ElementRange {
     entt::entity MeshEntity;

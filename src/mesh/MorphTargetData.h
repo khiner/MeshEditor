@@ -1,10 +1,5 @@
 #pragma once
 
-#include "numeric/vec3.h"
-
-#include <cstdint>
-#include <vector>
-
 // Transient morph target data consumed by MeshStore::CreateMesh, then discarded.
 struct MorphTargetData {
     uint32_t TargetCount{0};

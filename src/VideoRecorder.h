@@ -3,7 +3,6 @@
 #include "VulkanResources.h"
 
 #include <filesystem>
-#include <memory>
 
 // Captures a sub-rect of the viewport's final color image each frame and pipes raw BGRA bytes
 // to an `ffmpeg` subprocess for on-the-fly H.264 encoding. `ffmpeg` must be on PATH; if it isn't,

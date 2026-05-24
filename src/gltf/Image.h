@@ -5,9 +5,6 @@
 #include "numeric/quat.h"
 #include "numeric/vec3.h"
 
-#include <array>
-#include <optional>
-#include <string>
 #include <vector>
 
 namespace gltf {

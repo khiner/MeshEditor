@@ -3,17 +3,8 @@
 #include "AnimationData.h"
 #include "Range.h"
 #include "entt_fwd.h"
-#include "gpu/Transform.h"
 #include "numeric/mat3.h"
 #include "numeric/mat4.h"
-
-#include <limits>
-#include <optional>
-#include <span>
-#include <string>
-#include <string_view>
-#include <unordered_map>
-#include <vector>
 
 inline constexpr uint32_t InvalidBoneIndex{std::numeric_limits<uint32_t>::max()};
 

@@ -1,6 +1,5 @@
 #pragma once
 
-#include <type_traits>
 #include <variant>
 
 template<class... Ts> struct overloaded : Ts... {

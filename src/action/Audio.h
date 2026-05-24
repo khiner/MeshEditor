@@ -3,13 +3,11 @@
 #include "Tets.h"
 #include "Variant.h"
 #include "action/Core.h"
-#include "audio/AcousticMaterial.h"
 #include "audio/AudioTypes.h"
 #include "audio/ModalModes.h"
 #include "audio/RealImpactComponents.h"
 
 #include <filesystem>
-#include <memory>
 
 namespace action::audio {
 struct SetModel {

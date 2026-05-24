@@ -6,16 +6,12 @@ Copied and heavily modified the bits needed for reading .npy files from
 */
 
 #include <algorithm>
-#include <array>
 #include <complex>
-#include <filesystem>
 #include <format>
 #include <fstream>
 #include <numeric>
 #include <ranges>
 #include <typeindex>
-#include <unordered_map>
-#include <vector>
 
 namespace npy {
 /*

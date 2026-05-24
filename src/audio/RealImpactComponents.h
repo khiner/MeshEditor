@@ -1,9 +1,5 @@
 #pragma once
 
-#include <entt/entity/fwd.hpp>
-
-#include <vector>
-
 // Tracks which RealImpact microphone entity is currently providing sample data for this sound object.
 struct RealImpactActiveMicrophone {
     entt::entity Entity;

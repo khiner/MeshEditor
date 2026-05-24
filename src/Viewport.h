@@ -5,8 +5,6 @@
 #include <entt/entity/fwd.hpp>
 
 #include <filesystem>
-#include <memory>
-#include <string>
 
 struct SvgResource;
 

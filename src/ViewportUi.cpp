@@ -28,16 +28,12 @@
 
 #include "OrientationGizmo.h"
 
-#include "Emit.h"
-#include "Entity.h"
 #include "GpuBuffers.h"
 #include "ViewportOps.h"
 #include "action/Audio.h"
 #include "action/Bone.h"
-#include "action/Core.h"
 #include "action/Object.h"
 #include "action/Selection.h"
-#include "action/Timeline.h"
 #include "action/View.h"
 
 using std::ranges::any_of, std::ranges::contains, std::ranges::distance, std::ranges::find, std::ranges::find_if, std::ranges::fold_left, std::ranges::to;

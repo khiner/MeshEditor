@@ -4,13 +4,6 @@
 #pragma once
 
 #include "AxisColors.h"
-#include "ViewCamera.h"
-
-#include <algorithm>
-#include <optional>
-#include <ranges>
-#include <string_view>
-#include <variant>
 
 namespace OrientationGizmo {
 // Radii are relative to rect size.

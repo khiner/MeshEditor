@@ -9,7 +9,6 @@
 
 #include <expected>
 #include <filesystem>
-#include <span>
 #include <variant>
 
 struct DescriptorSlots;

@@ -2,8 +2,6 @@
 
 #include <entt/entity/fwd.hpp>
 
-#include <variant>
-
 namespace action::timeline {
 struct TogglePlay {};
 struct Play {};

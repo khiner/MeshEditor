@@ -2,8 +2,6 @@
 
 #include <vulkan/vulkan.hpp>
 
-#include <vector>
-
 constexpr auto VkApiVersion = VK_API_VERSION_1_4;
 
 // Headless-capable Vulkan bootstrap. Pass swapchain-related extensions in `instance_extensions`

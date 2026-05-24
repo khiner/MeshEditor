@@ -5,7 +5,6 @@
 #include "numeric/vec2.h"
 
 #include <optional>
-#include <variant>
 #include <vector>
 
 namespace action::selection {

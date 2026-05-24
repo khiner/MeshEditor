@@ -3,7 +3,6 @@
 #include "ModalModes.h"
 
 #include <optional>
-#include <vector>
 
 class tetgenio;
 struct AcousticMaterialProperties;

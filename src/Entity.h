@@ -3,7 +3,6 @@
 #include <entt/entity/fwd.hpp>
 
 #include <string>
-#include <string_view>
 
 struct Name {
     std::string Value;

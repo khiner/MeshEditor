@@ -1,13 +1,5 @@
 #pragma once
 
-#include "numeric/vec2.h"
-#include "numeric/vec3.h"
-#include "numeric/vec4.h"
-
-#include <cstdint>
-#include <optional>
-#include <vector>
-
 // Per-vertex attributes. Absent channels use GPU defaults.
 struct MeshVertexAttributes {
     std::optional<std::vector<vec3>> Normals{};

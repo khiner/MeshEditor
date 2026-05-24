@@ -1,13 +1,6 @@
 #pragma once
 
 #include "PrimitiveType.h"
-#include "mesh/MeshAttributes.h"
-#include "mesh/MeshData.h"
-
-#include <glm/geometric.hpp>
-
-#include <ranges>
-#include <unordered_map>
 
 namespace primitive {
 using std::views::transform, std::ranges::iota_view, std::ranges::to;

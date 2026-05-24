@@ -7,9 +7,6 @@
 #include <vulkan/vulkan.hpp>
 
 #include <functional>
-#include <optional>
-#include <span>
-#include <vector>
 
 struct ElementRange;
 struct DrawListBuilder;

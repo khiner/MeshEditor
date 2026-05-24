@@ -7,11 +7,6 @@ using Sample = float;
 
 #include "CreateSvgResource.h"
 
-#include <filesystem>
-#include <memory>
-#include <string>
-#include <string_view>
-
 namespace fs = std::filesystem;
 
 class CTree;
@@ -19,7 +14,7 @@ using Box = CTree *;
 class dsp;
 class FaustParams;
 
-struct llvm_dsp_factory;
+class llvm_dsp_factory;
 
 // `FaustDSP` is a wrapper around a Faust DSP and Box.
 // It has a Faust DSP code string, and updates its DSP and Box instances to reflect the current code.

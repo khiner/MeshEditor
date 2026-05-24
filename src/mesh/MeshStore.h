@@ -11,9 +11,6 @@
 
 #include <expected>
 #include <filesystem>
-#include <optional>
-#include <span>
-#include <string>
 #include <unordered_set>
 
 struct ObjPlyMaterial {

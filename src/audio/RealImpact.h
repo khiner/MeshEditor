@@ -3,12 +3,8 @@
 #include "numeric/quat.h"
 #include "numeric/vec3.h"
 
-#include <array>
 #include <expected>
 #include <filesystem>
-#include <optional>
-#include <string>
-#include <vector>
 
 /*
 Loads and provides access to a [RealImpact](https://github.com/samuel-clarke/RealImpact) dataset for a single object.

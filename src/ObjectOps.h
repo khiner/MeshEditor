@@ -4,14 +4,9 @@
 #include "Entity.h" // ObjectType
 #include "ObjectCreateInfo.h"
 #include "gpu/PunctualLight.h"
-#include "numeric/vec3.h"
-
-#include <entt/entity/fwd.hpp>
 
 #include <filesystem>
 #include <span>
-#include <string>
-#include <string_view>
 
 struct Armature;
 struct Mesh;

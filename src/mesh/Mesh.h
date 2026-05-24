@@ -3,10 +3,7 @@
 #include "gpu/Element.h"
 #include "gpu/Vertex.h"
 
-#include <array>
-#include <limits>
 #include <span>
-#include <string_view>
 #include <vector>
 
 namespace he { // half-edge

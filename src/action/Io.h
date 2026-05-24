@@ -4,8 +4,6 @@
 
 #include <expected>
 #include <filesystem>
-#include <string>
-#include <variant>
 
 // Scene/document lifecycle: new scene plus the file-IO actions that load and save it.
 namespace action::io {

@@ -8,11 +8,8 @@
 #include "gpu/Element.h"
 #include "gpu/InteractionMode.h"
 
-#include <array>
-#include <entt/entity/fwd.hpp>
 #include <entt/entity/registry.hpp>
 #include <filesystem>
-#include <optional>
 #include <set>
 #include <vulkan/vulkan.hpp>
 

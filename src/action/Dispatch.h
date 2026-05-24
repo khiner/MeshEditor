@@ -2,7 +2,6 @@
 
 #include "action/Core.h"
 
-#include <entt/core/type_info.hpp>
 #include <entt/entity/registry.hpp>
 
 // Shared machinery for applying the templated Update/Replace/Tag actions.
