@@ -3,6 +3,7 @@
 #include "Armature.h"
 #include "Defaults.h"
 #include "FrameState.h"
+#include "GizmoInteraction.h"
 #include "GpuBuffers.h"
 #include "Instance.h"
 #include "InteractionComponents.h"
@@ -16,6 +17,7 @@
 #include "SoundVertices.h"
 #include "Textures.h"
 #include "Timer.h"
+#include "TransformGizmo.h"
 #include "TransformMath.h"
 #include "ViewportIcons.h"
 #include "ViewportOps.h"
@@ -420,7 +422,7 @@ void Interact(entt::registry &r, entt::entity viewport, FrameState &frame) {
     // InputText, etc.) and ImGui's Nav (Tab/arrows) via key-ownership, so widget editing and tree/list
     // navigation in panels keep working. char-input keys (G/A/etc.) are auto-filtered while WantTextInput.
     constexpr auto VKey = ImGuiInputFlags_RouteGlobal;
-    if (TransformGizmo::IsUsing()) {
+    if (TransformGizmo::IsUsing(r, viewport)) {
         // During an active transform, only allow transform switching shortcuts.
         if (Shortcut(ImGuiKey_G, VKey) && transform_shortcuts_enabled) action::Emit(action::view::SetStartScreenTransform{TransformGizmo::TransformType::Translate});
         else if (Shortcut(ImGuiKey_R, VKey) && transform_shortcuts_enabled) action::Emit(action::view::SetStartScreenTransform{TransformGizmo::TransformType::Rotate});
@@ -500,7 +502,7 @@ void Interact(entt::registry &r, entt::entity viewport, FrameState &frame) {
     }
 
     // Handle mouse input.
-    const bool active_transform = TransformGizmo::IsUsing();
+    const bool active_transform = TransformGizmo::IsUsing(r, viewport);
     if (active_transform) {
         // TransformGizmo overrides this mouse cursor during some actions - this is a default.
         SetMouseCursor(ImGuiMouseCursor_ResizeAll);
@@ -620,7 +622,7 @@ void InteractOverlay(entt::registry &r, entt::entity viewport, FrameState &frame
     auto &environments = r.ctx().get<EnvironmentStore>();
     const auto &icons = r.get<const ViewportIcons>(viewport);
     const rect viewport_rect{ToGlm(GetWindowPos()), ToGlm(GetContentRegionAvail())};
-    const bool active_transform = TransformGizmo::IsUsing();
+    const bool active_transform = TransformGizmo::IsUsing(r, viewport);
     static constexpr float OrientationGizmoSize{84};
     const OverlayIconButtonStyle overlay_button_style{};
     const float overlay_corner_gap = GetTextLineHeightWithSpacing() / 2.f;
@@ -1114,9 +1116,11 @@ void InteractOverlay(entt::registry &r, entt::entity viewport, FrameState &frame
 
         const auto start_transform_view = r.view<const StartTransform>();
         const auto &gizmo_state = r.get<const TransformGizmoState>(viewport);
+        auto &gizmo = r.get<GizmoInteraction>(viewport);
         const auto gizmo_transform = GizmoTransform{{.P = pivot, .R = active_transform.R, .S = active_transform.S}, gizmo_state.Mode};
         const auto *start_screen = r.try_get<const StartScreenTransform>(viewport);
         auto interact_result = TransformGizmo::Interact(
+            gizmo,
             gizmo_transform,
             gizmo_state.Config, camera, viewport_rect, ToGlm(GetMousePos()) + frame.AccumulatedWrapMouseDelta,
             start_screen ? std::optional{start_screen->Value} : std::nullopt
@@ -1201,8 +1205,8 @@ void InteractOverlay(entt::registry &r, entt::entity viewport, FrameState &frame
         }
 
         // Store gizmo render transform for DrawOverlay.
-        frame.GizmoRenderTransform = gizmo_transform;
-        if (interact_result) frame.GizmoRenderTransform->P = interact_result->Start.P + interact_result->Delta.P;
+        gizmo.RenderTransform = gizmo_transform;
+        if (interact_result) gizmo.RenderTransform->P = interact_result->Start.P + interact_result->Delta.P;
     }
 
     if (r.all_of<StartScreenTransform>(viewport)) action::Emit(action::view::SetStartScreenTransform{});
@@ -1214,10 +1218,7 @@ void DrawOverlay(entt::registry &r, entt::entity viewport, FrameState &frame) {
     const auto &camera = r.get<const ViewCamera>(viewport);
 
     OrientationGizmo::Render(axes);
-    if (frame.GizmoRenderTransform) {
-        TransformGizmo::Render(*frame.GizmoRenderTransform, r.get<const TransformGizmoState>(viewport).Config.Type, camera, viewport_rect, axes);
-        frame.GizmoRenderTransform.reset();
-    }
+    TransformGizmo::Render(r.get<GizmoInteraction>(viewport), r.get<const TransformGizmoState>(viewport).Config.Type, camera, viewport_rect, axes);
 
     const auto &settings = r.get<const ViewportDisplay>(viewport);
     // Draw origin dots for active/selected entities
@@ -1450,8 +1451,8 @@ void RenderEntityControls(entt::registry &r, entt::entity viewport, entt::entity
         }
         Spacing();
         if (TreeNode("Debug")) {
-            if (const auto label = TransformGizmo::ToString(); label != "") {
-                Text("%s op: %s", TransformGizmo::IsUsing() ? "Active" : "Hovered", label.data());
+            if (const auto label = TransformGizmo::ToString(r.get<const GizmoInteraction>(viewport)); label != "") {
+                Text("%s op: %s", TransformGizmo::IsUsing(r, viewport) ? "Active" : "Hovered", label.data());
             } else {
                 TextUnformatted("Not hovering");
             }

@@ -1,7 +1,7 @@
 #pragma once
 
 #include "ObjectCreateInfo.h"
-#include "TransformGizmo.h"
+#include "TransformGizmoTypes.h"
 #include "ViewCamera.h"
 #include "entt_fwd.h"
 #include "gpu/DebugChannel.h"

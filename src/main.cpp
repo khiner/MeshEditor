@@ -3,6 +3,7 @@
 #include "Paths.h"
 #include "TimelineUi.h"
 #include "Timer.h"
+#include "TransformGizmoTypes.h"
 #include "Viewport.h"
 #include "ViewportIcons.h"
 #include "ViewportUi.h"
@@ -394,7 +395,7 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
             }
             // SDL3 backend invalidates MousePos to -FLT_MAX on leave when no mouse button is held,
             // which flings a keyboard-initiated (G/R/S) transform offscreen when switching focus.
-            if (event.type == SDL_EVENT_WINDOW_MOUSE_LEAVE && TransformGizmo::IsUsing()) continue;
+            if (event.type == SDL_EVENT_WINDOW_MOUSE_LEAVE && TransformGizmo::IsUsing(r, viewport)) continue;
             ImGui_ImplSDL3_ProcessEvent(&event);
             done = event.type == SDL_EVENT_QUIT || (event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED && event.window.windowID == SDL_GetWindowID(window));
         }

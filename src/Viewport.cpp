@@ -6,6 +6,7 @@
 #include "DrawState.h"
 #include "EntityDestroyTracker.h"
 #include "FrameState.h"
+#include "GizmoInteraction.h"
 #include "InteractionComponents.h"
 #include "ObjectOps.h"
 #include "Paths.h"
@@ -295,6 +296,7 @@ entt::entity InitViewport(entt::registry &r, VulkanResources vc) {
     r.emplace<OrbitToActive>(viewport);
     r.emplace<BoxSelectState>(viewport);
     r.emplace<TransformGizmoState>(viewport);
+    r.emplace<GizmoInteraction>(viewport);
     r.emplace<AnimationTimelineView>(viewport);
     r.emplace<SelectionStale>(viewport); // Initial state: fragments need rendering on first selection use.
     physics.ApplySimulationSettings(r.emplace<PhysicsSimulationSettings>(viewport));

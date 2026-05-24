@@ -11,6 +11,7 @@
 #include "SelectionComponents.h"
 #include "SoundVertices.h"
 #include "Timer.h"
+#include "TransformGizmoTypes.h"
 #include "ViewportComponents.h"
 #include "VulkanResources.h"
 #include "gpu/MainDrawPushConstants.h"
@@ -764,7 +765,7 @@ void RecordRenderCommandBuffer(entt::registry &r, entt::entity viewport, vk::Com
             }
         }
         const SilhouetteEdgeColorPushConstants pc{
-            TransformGizmo::IsUsing() && interaction_mode == InteractionMode::Object, sel_slots.ObjectIdSampler, active_object_id
+            TransformGizmo::IsUsing(r, viewport) && interaction_mode == InteractionMode::Object, sel_slots.ObjectIdSampler, active_object_id
         };
         cb.pushConstants(*silhouette_edc.PipelineLayout, vk::ShaderStageFlagBits::eFragment, 0, sizeof(pc), &pc);
         silhouette_edc.RenderQuad(cb);

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "TransformGizmo.h"
+#include "TransformGizmoTypes.h"
 #include "TransformUtils.h"
 #include "Variant.h"
 #include "ViewportComponents.h"
