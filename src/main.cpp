@@ -1,4 +1,4 @@
-#include "Apply.h"
+#include "Emit.h"
 #include "FrameState.h"
 #include "Paths.h"
 #include "Timer.h"
@@ -6,6 +6,8 @@
 #include "ViewportIcons.h"
 #include "ViewportUi.h"
 #include "Window.h"
+#include "action/Io.h"
+#include "action/Object.h"
 #include "audio/AudioDevice.h"
 #include "audio/AudioSystem.h"
 #include "audio/FaustDSP.h"
@@ -36,13 +38,6 @@ namespace fs = std::filesystem;
 namespace {
 void CheckVk(vk::Result err) {
     if (err != vk::Result::eSuccess) throw std::runtime_error(std::format("Vulkan error: {}", vk::to_string(err)));
-}
-
-// Per-frame action sink. Reset at the top of each frame, consumed at the bottom by Apply.
-// First-write-wins: emit sites are conceptually early-returns; the first one to fire decides the frame.
-std::optional<action::Action> Pending;
-void Emit(action::Action a) {
-    if (!Pending) Pending = std::move(a);
 }
 
 bool RebuildSwapchain = false;
@@ -234,11 +229,11 @@ GltfSampleTree BuildGltfSampleTree(const fs::path &root) {
 std::expected<void, std::string> LoadFile(entt::registry &r, entt::entity viewport, const fs::path &path) {
     const auto ext = path.extension().string();
     if (ext == ".gltf" || ext == ".glb") {
-        if (auto result = ::Apply(r, viewport, action::io::LoadGltf{.Path = path}); !result) {
+        if (auto result = action::io::Apply(r, viewport, action::io::LoadGltf{.Path = path}); !result) {
             return std::unexpected(std::format("Error loading glTF file '{}': {}", path.string(), result.error()));
         }
     } else if (ext == ".obj" || ext == ".ply") {
-        ::Apply(r, viewport, action::object::ImportMesh{path, std::make_unique<MeshInstanceCreateInfo>(MeshInstanceCreateInfo{.Name = path.stem().string()})});
+        action::object::Apply(r, viewport, action::object::ImportMesh{path, std::make_unique<MeshInstanceCreateInfo>(MeshInstanceCreateInfo{.Name = path.stem().string()})});
     } else {
         return std::unexpected(std::format("Unsupported file format: '{}'", ext));
     }
@@ -423,10 +418,6 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
         elapsed_play_time += io.DeltaTime;
         NewFrame();
 
-        // At most one user-initiated Action per frame, applied after all UI runs.
-        // First-write-wins: the first call to Emit decides this frame's action; subsequent emits are dropped.
-        Pending.reset();
-
         auto dockspace_id = DockSpaceOverViewport(0, nullptr, ImGuiDockNodeFlags_PassthruCentralNode | ImGuiDockNodeFlags_AutoHideTabBar);
         if (GetFrameCount() == 1) {
             auto controls_node_id = DockBuilderSplitNode(dockspace_id, ImGuiDir_Left, 0.3f, nullptr, &dockspace_id);
@@ -442,7 +433,7 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
 
         if (BeginMainMenuBar()) {
             if (BeginMenu("File")) {
-                if (MenuItem("New", nullptr)) Emit(action::io::NewDefaultScene{});
+                if (MenuItem("New", nullptr)) action::Emit(action::io::NewDefaultScene{});
                 if (MenuItem("Load glTF", nullptr)) {
                     static const std::array filters{nfdfilteritem_t{"glTF scene", "gltf,glb"}};
                     nfdchar_t *nfd_path;
@@ -538,7 +529,7 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
                     static const std::vector<nfdfilteritem_t> filters{};
                     nfdchar_t *path;
                     if (auto result = NFD_PickFolder(&path, ""); result == NFD_OKAY) {
-                        if (auto load = ::Apply(r, viewport, action::io::LoadRealImpact{.Directory = fs::path{path}}); !load) std::cerr << load.error() << std::endl;
+                        if (auto load = action::io::Apply(r, viewport, action::io::LoadRealImpact{.Directory = fs::path{path}}); !load) std::cerr << load.error() << std::endl;
                         NFD_FreePath(path);
                     } else if (result != NFD_CANCEL) {
                         std::cerr << "Error opening folder dialog: " << NFD_GetError() << std::endl;
@@ -548,7 +539,7 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
                     static const std::array filters{nfdfilteritem_t{"glTF scene", "gltf,glb"}};
                     nfdchar_t *nfd_path;
                     if (auto result = NFD_SaveDialog(&nfd_path, filters.data(), filters.size(), nullptr, "scene.gltf"); result == NFD_OKAY) {
-                        if (auto save = ::Apply(r, viewport, action::io::SaveGltf{.Path = fs::path(nfd_path)}); !save) std::cerr << save.error() << std::endl;
+                        if (auto save = action::io::Apply(r, viewport, action::io::SaveGltf{.Path = fs::path(nfd_path)}); !save) std::cerr << save.error() << std::endl;
                         NFD_FreePath(nfd_path);
                     } else if (result != NFD_CANCEL) {
                         std::cerr << "Error opening save dialog: " << NFD_GetError() << std::endl;
@@ -608,7 +599,7 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
                         SeparatorText("Buffer memory");
                         TextUnformatted(DebugBufferHeapUsage(r).c_str());
                         SeparatorText("Action");
-                        Text("sizeof(Action): %zu bytes", sizeof(action::Action));
+                        Text("sizeof(Action): %zu bytes", action::ActionSize());
                         EndTabItem();
                     }
                     EndTabBar();
@@ -622,7 +613,7 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
         if (windows.SceneControls.Visible) {
             if (Begin(windows.SceneControls.Name, &windows.SceneControls.Visible) && BeginTabBar("Controls")) {
                 if (BeginTabItem("Scene")) {
-                    RenderControls(r, viewport, Emit);
+                    RenderControls(r, viewport);
                     EndTabItem();
                 }
                 if (BeginTabItem("Audio device")) {
@@ -640,12 +631,12 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
                 PushStyleVar(ImGuiStyleVar_FramePadding, {6, 4});
                 Indent(6);
                 Spacing();
-                RenderClipPickers(r, Emit);
+                RenderClipPickers(r);
                 Unindent(6);
                 PopStyleVar();
                 const auto scene_e = viewport;
                 if (auto a = RenderAnimationTimeline(r.get<const TimelineRange>(scene_e), r.get<const TimelinePlayback>(scene_e), r.get<const AnimationTimelineView>(scene_e), r.get<const ViewportIcons>(scene_e).Anim)) {
-                    action::Assign(Emit, std::move(*a));
+                    std::visit([](auto leaf) { action::Emit(leaf); }, std::move(*a));
                 }
             }
             End();
@@ -655,11 +646,11 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
         if (windows.Viewport.Visible) {
             PushStyleVar(ImGuiStyleVar_WindowPadding, {0, 0});
             if (Begin(windows.Viewport.Name, &windows.Viewport.Visible)) {
-                Interact(r, viewport, r.get<FrameState>(viewport), Emit);
+                Interact(r, viewport, r.get<FrameState>(viewport));
                 auto &dl = *ImGui::GetWindowDrawList();
                 dl.ChannelsSplit(2);
                 dl.ChannelsSetCurrent(1);
-                InteractOverlay(r, viewport, r.get<FrameState>(viewport), Emit);
+                InteractOverlay(r, viewport, r.get<FrameState>(viewport));
                 // Submit GPU render (nonblocking). WaitForRender() is called later, before RenderFrame() samples the final image.
                 RenderViewport(r, viewport, GetFrameCount() > 1 ? vk::Fence{wd.Frames[wd.FrameIndex].Fence} : vk::Fence{});
                 dl.ChannelsMerge();
@@ -670,24 +661,24 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
             if (GetFrameCount() == 1) {
                 // Load initial content now that the viewport has an extent.
                 // static const auto DefaultRealImpactPath = fs::path{"../../"} / "RealImpact" / "dataset" / "22_Cup" / "preprocessed";
-                // if (fs::exists(DefaultRealImpactPath)) ::Apply(r, viewport, action::io::LoadRealImpact{.Directory = DefaultRealImpactPath});
+                // if (fs::exists(DefaultRealImpactPath)) action::io::Apply(r, viewport, action::io::LoadRealImpact{.Directory = DefaultRealImpactPath});
                 if (initial_file) {
                     if (auto result = LoadFile(r, viewport, fs::path(initial_file)); !result) {
                         std::cerr << result.error() << std::endl;
                         play = false;
                     }
                 } else {
-                    Emit(action::io::NewDefaultScene{});
+                    action::Emit(action::io::NewDefaultScene{});
                 }
             } else if (GetFrameCount() == 3 && play) {
                 // Wait to play until scene load (frame 1) has settled and one render frame has elapsed.
                 // Calling Play() on the same frame as LoadFile races physics setup.
-                Emit(action::timeline::Play{});
+                action::Emit(action::timeline::Play{});
                 play = false;
             }
         }
 
-        if (Pending) Apply(r, viewport, std::move(*Pending));
+        action::ApplyEmitted(r, viewport);
 
         ImGui::Render();
         auto *draw_data = GetDrawData();

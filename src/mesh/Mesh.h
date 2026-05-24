@@ -1,14 +1,13 @@
 #pragma once
 
+#include "gpu/Element.h"
+#include "gpu/Vertex.h"
+
 #include <array>
-#include <cstdint>
 #include <limits>
 #include <span>
 #include <string_view>
 #include <vector>
-
-#include "gpu/Element.h"
-#include "gpu/Vertex.h"
 
 namespace he { // half-edge
 constexpr uint32_t null{std::numeric_limits<uint32_t>::max()};

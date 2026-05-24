@@ -3,6 +3,7 @@
 #include "numeric/vec2.h"
 #include "numeric/vec3.h"
 #include "numeric/vec4.h"
+
 #include <cstdint>
 #include <optional>
 #include <vector>

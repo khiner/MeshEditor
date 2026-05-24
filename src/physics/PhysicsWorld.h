@@ -1,14 +1,12 @@
 #pragma once
 
-#include "PhysicsTypes.h"
-
 #include <entt/entity/fwd.hpp>
 #include <memory>
 #include <optional>
 
-// Goal: Every user edit of a physics parameter updates Jolt reactively per frame,
-// via a handler doing the minimum Jolt work the API allows.
-// (We currently over-update in some cases for simplicity.)
+struct PhysicsSimulationSettings;
+
+// Goal: User edit of physics parameters updates Jolt reactively per frame via a handler doing minimal Jolt work.
 struct PhysicsWorld {
     PhysicsWorld();
     ~PhysicsWorld();

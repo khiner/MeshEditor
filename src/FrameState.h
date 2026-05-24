@@ -3,7 +3,6 @@
 #include "TransformGizmo.h" // GizmoTransform
 #include "numeric/vec2.h"
 
-#include <cstdint>
 #include <optional>
 
 // Per-frame scratch state produced and consumed within a single frame.

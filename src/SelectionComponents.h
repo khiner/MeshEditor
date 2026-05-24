@@ -7,9 +7,7 @@
 #include <entt/entity/fwd.hpp>
 
 #include <array>
-#include <cstdint>
 #include <span>
-#include <utility>
 #include <vector>
 
 // A contiguous span of a mesh's elements (vertices/edges/faces) in the SelectionBitset.
@@ -26,7 +24,7 @@ struct AdditiveBoxSelectBaseline {
     std::vector<uint32_t> ElementBitset;
 };
 
-// Singleton flags on viewport, consumed and cleared by ProcessComponentEvents.
+// Flags on viewport, consumed and cleared by ProcessComponentEvents.
 struct SelectionBitsDirty {}; // Bitset written by Interact; dispatches the compute update.
 struct ElementStatesDirty {}; // Element state buffers updated by GPU compute; triggers a submit.
 struct SelectionStale {}; // Selection fragment data no longer matches current scene. Cleared after RenderSelectionPass.
@@ -37,8 +35,6 @@ struct PendingEditElementClick {
 };
 
 // Non-owning span over the GPU-mapped SelectionBitset words.
-// Lets Apply read/write the bitset without depending on Stores.
-// Initialized once at startup; the underlying storage is stable.
 struct SelectionBitsetRef {
     std::span<uint32_t> Value;
 };

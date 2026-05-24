@@ -4,7 +4,6 @@
 
 #include <entt/entity/fwd.hpp>
 
-#include <cstdint>
 #include <span>
 #include <unordered_map>
 #include <unordered_set>

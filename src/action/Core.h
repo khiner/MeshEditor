@@ -7,7 +7,6 @@
 #include <entt/entity/fwd.hpp>
 
 #include <bit>
-#include <cstdint>
 #include <type_traits>
 #include <variant>
 

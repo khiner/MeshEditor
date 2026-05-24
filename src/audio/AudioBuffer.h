@@ -4,8 +4,7 @@
 
 struct AudioBuffer {
     const uint32_t SampleRate;
-    const uint32_t ChannelCount;
-    const uint32_t FrameCount;
+    const uint32_t ChannelCount, FrameCount;
     const float *Input;
     float *Output;
 };

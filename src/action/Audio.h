@@ -8,22 +8,16 @@
 #include "audio/ModalModes.h"
 #include "audio/RealImpactComponents.h"
 
-#include <cstdint>
 #include <filesystem>
 #include <memory>
-#include <vector>
 
 namespace action::audio {
-// All actions here target the active sound entity (FindActiveEntity(R)) and its mesh
-// (GetActiveMeshEntity()), except `SetVertexSamples` which carries an explicit SoundEntity
-// because it's emitted from a microphone branch that targets a discovered sound object.
 struct SetModel {
     SoundVerticesModel Model;
 };
-// `VertexIndex` indexes `SoundVertices::Vertices`; `MeshVertex` is the mesh handle stored there.
 struct SetExciteVertex {
-    uint32_t VertexIndex;
-    uint32_t MeshVertex;
+    uint32_t VertexIndex; // Indexes `SoundVertices::Vertices`
+    uint32_t MeshVertex; // Mesh handle stored at `SoundVertices::Vertices[VertexIndex]`
 };
 struct SetActiveElementFromDsp {
     uint32_t Vertex;

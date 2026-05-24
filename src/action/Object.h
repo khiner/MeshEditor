@@ -9,10 +9,8 @@
 #include "mesh/MeshData.h"
 #include "mesh/PrimitiveType.h"
 
-#include <cstdint>
 #include <filesystem>
 #include <memory>
-#include <optional>
 
 namespace action::object {
 struct Delete {};

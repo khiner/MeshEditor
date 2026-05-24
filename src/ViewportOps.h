@@ -4,8 +4,6 @@
 
 #include <entt/entity/fwd.hpp>
 
-#include <cstdint>
-
 // Viewport/camera-state operations: applied imperatively (not via PendingX components).
 
 // Make `target` the look-through camera, preserving the saved view across switches.

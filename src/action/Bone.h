@@ -6,7 +6,6 @@
 
 #include <entt/entity/fwd.hpp>
 
-#include <cstdint>
 #include <memory>
 #include <variant>
 

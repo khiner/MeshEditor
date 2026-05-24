@@ -5,9 +5,6 @@
 #include <entt/core/type_info.hpp>
 #include <entt/entity/registry.hpp>
 
-#include <cstddef>
-#include <cstdint>
-
 // Shared machinery for applying the templated Update/Replace/Tag actions.
 // Each Apply TU supplies its own `TypeList` of candidate component types so it only pulls the
 // component headers it actually writes; the dispatch logic itself lives here once.

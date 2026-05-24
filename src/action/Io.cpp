@@ -1,17 +1,30 @@
 #include "action/Io.h"
 #include "AnimationTimeline.h"
+#include "Camera.h"
 #include "Defaults.h"
+#include "Entity.h"
 #include "GpuBuffers.h"
+#include "MeshComponents.h"
 #include "ObjectOps.h"
 #include "SceneGraph.h"
+#include "SoundVertices.h"
+#include "Textures.h"
 #include "Timer.h"
+#include "Variant.h"
+#include "ViewportComponents.h"
 #include "ViewportOps.h"
+#include "VulkanResources.h"
+#include "audio/AcousticMaterial.h"
 #include "audio/AudioSystem.h"
 #include "audio/RealImpact.h"
+#include "audio/RealImpactComponents.h"
 #include "gltf/GltfScene.h"
+#include "mesh/Mesh.h"
 #include "mesh/MeshStore.h"
 #include "mesh/Primitives.h"
+#include "physics/PhysicsTypes.h"
 #include "physics/PhysicsWorld.h"
+#include <entt/entity/registry.hpp>
 
 using std::ranges::find_if;
 using std::ranges::to;
@@ -65,7 +78,7 @@ std::expected<void, std::string> Apply(entt::registry &r, entt::entity viewport,
                 auto result = gltf::LoadGltf(a.Path, {r, viewport, slots, buffers, meshes, textures, environments});
                 if (!result) return std::unexpected{std::move(result.error())};
 
-                // TODO: drive reactively from track<changes::PhysicsShape>.
+                // TODO: drive reactively from track<changes::PhysicsShape>, and get rid of PhysicsTypes.h include
                 if (!r.view<ColliderShape>().empty()) physics.RecomputeSceneScale(r);
 
                 if (result->FirstCameraObject != entt::null) {

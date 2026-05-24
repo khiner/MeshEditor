@@ -1,6 +1,7 @@
 // All Jolt includes are isolated to this file.
 #include "PhysicsWorld.h"
 #include "Changes.h"
+#include "PhysicsTypes.h"
 #include "Reactive.h"
 #include "SceneGraph.h"
 #include "TransformMath.h"
@@ -595,20 +596,13 @@ PhysicsWorld::PhysicsWorld() : P(std::make_unique<Impl>()) {
 }
 PhysicsWorld::~PhysicsWorld() = default;
 
-void PhysicsWorld::BindRegistry(const entt::registry &r) {
-    P->ContactListener.R = &r;
-}
+void PhysicsWorld::BindRegistry(const entt::registry &r) { P->ContactListener.R = &r; }
 
 bool PhysicsWorld::HasBodies() const { return P->System.GetNumBodies() > 0; }
 uint32_t PhysicsWorld::BodyCount() const { return P->System.GetNumBodies(); }
 
-bool PhysicsWorld::DoFiltersCollide(entt::entity a, entt::entity b) const {
-    return !P->FilterRef || P->FilterRef->MasksCollide(a, b);
-}
-
-bool PhysicsWorld::DoesFilterAllow(entt::entity source, entt::entity target) const {
-    return !P->FilterRef || P->FilterRef->DirectionalAllows(source, target);
-}
+bool PhysicsWorld::DoFiltersCollide(entt::entity a, entt::entity b) const { return !P->FilterRef || P->FilterRef->MasksCollide(a, b); }
+bool PhysicsWorld::DoesFilterAllow(entt::entity source, entt::entity target) const { return !P->FilterRef || P->FilterRef->DirectionalAllows(source, target); }
 
 void PhysicsWorld::Rebuild(entt::registry &r) {
     // Clear existing constraints and bodies.

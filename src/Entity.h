@@ -2,7 +2,6 @@
 
 #include <entt/entity/fwd.hpp>
 
-#include <cstdint>
 #include <string>
 #include <string_view>
 

@@ -2,8 +2,6 @@
 
 #include "VulkanResources.h"
 
-#include <cstdint>
-#include <cstdio>
 #include <filesystem>
 #include <memory>
 

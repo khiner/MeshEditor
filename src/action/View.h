@@ -13,9 +13,6 @@
 
 #include <entt/entity/fwd.hpp>
 
-#include <cstdint>
-#include <optional>
-
 struct PendingTransform;
 
 namespace action::view {

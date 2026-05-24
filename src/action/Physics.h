@@ -6,7 +6,6 @@
 
 #include <entt/core/type_info.hpp>
 
-#include <cstdint>
 #include <memory>
 #include <string>
 #include <string_view>

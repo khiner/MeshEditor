@@ -31,6 +31,7 @@
 #include "mesh/MeshStore.h"
 #include "mesh/Primitives.h"
 #include "physics/PhysicsDebugDraw.h"
+#include "physics/PhysicsTypes.h"
 #include "physics/PhysicsWorld.h"
 
 #include "imgui.h"

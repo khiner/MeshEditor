@@ -1,4 +1,5 @@
 #include "AudioSystem.h"
+#include "Emit.h"
 #include "FFTData.h"
 #include "FaustDSP.h"
 #include "Instance.h"
@@ -8,6 +9,7 @@
 #include "Selection.h"
 #include "SoundVertices.h"
 #include "Worker.h"
+#include "action/Audio.h"
 #include "mesh/Mesh.h"
 #include "ui/FieldEdit.h"
 
@@ -622,7 +624,7 @@ LoadedSample PickAndLoadAudio() {
 // `modal_modes` may be null (e.g. bare-mesh first-time create).
 void DrawModalCreateForm(
     entt::registry &r, entt::entity viewport, entt::entity e, entt::entity mesh_entity,
-    ImGuiWindow *parent_window, bool has_excitable, const ModalModes *modal_modes, action::Emit emit
+    ImGuiWindow *parent_window, bool has_excitable, const ModalModes *modal_modes
 ) {
     const auto &info = r.get<const ModalModelCreateInfo>(e);
     if (!BeginChild("CreateModalAudioModel", ImVec2{-FLT_MIN, 0.f}, ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY, ImGuiWindowFlags_MenuBar)) {
@@ -638,14 +640,14 @@ void DrawModalCreateForm(
         for (const auto &material_choice : materials::acoustic::All) {
             const bool is_selected = (material_choice.Name == info.Material.Name);
             if (Selectable(material_choice.Name.c_str(), is_selected))
-                emit(action::audio::SetModalFormMaterial{std::make_unique<AcousticMaterial>(material_choice)});
+                action::Emit(action::audio::SetModalFormMaterial{std::make_unique<AcousticMaterial>(material_choice)});
             if (is_selected) SetItemDefaultFocus();
         }
         EndCombo();
     }
     using MMCI = ModalModelCreateInfo;
     using Props = AcousticMaterialProperties;
-    ui::Edit f{r, emit};
+    ui::Edit f{r};
     Text("Density (kg/m^3)");
     f.Input<&MMCI::Material, &AcousticMaterial::Properties, &Props::Density>("##Density");
     Text("Young's modulus (Pa)");
@@ -686,7 +688,7 @@ void DrawModalCreateForm(
             if (!frames.empty()) fundamental = EstimateFundamentalFrequency(ComputeFft(frames));
         }
         const auto material_props = material.Properties;
-        emit(action::audio::SubmitModalForm{});
+        action::Emit(action::audio::SubmitModalForm{});
         DspGenerator = std::make_unique<Worker<ModalGenerationResult>>(
             parent_window, "Generating modal audio model...",
             [tets = std::move(tets), tet_scale, material_props, sound_vertices = std::move(new_sound_vertices), fundamental]() mutable {
@@ -695,14 +697,14 @@ void DrawModalCreateForm(
         );
     }
     SameLine();
-    if (Button("Cancel")) emit(action::audio::CancelModalForm{});
+    if (Button("Cancel")) action::Emit(action::audio::CancelModalForm{});
     EndChild();
 }
 } // namespace
 
 void DrawObjectAudioControls(
     entt::registry &r, entt::entity viewport, entt::entity e, entt::entity mesh_entity,
-    const uint32_t *selection_bits, action::Emit emit
+    const uint32_t *selection_bits
 ) {
     if (e == entt::null || mesh_entity == entt::null) return;
 
@@ -718,7 +720,7 @@ void DrawObjectAudioControls(
                     if (auto it = find(verts, active->Handle); it != verts.end()) excite_idx = distance(verts.begin(), it);
                 }
                 r.get<FaustDSP>(viewport).Set(ExciteIndexParamName, excite_idx);
-                emit(action::audio::AcceptModalGenerationResult{std::make_unique<action::audio::AcceptModalGenerationResult::Data>(std::move(result->Modes), std::move(result->Tets))});
+                action::Emit(action::audio::AcceptModalGenerationResult{std::make_unique<action::audio::AcceptModalGenerationResult::Data>(std::move(result->Modes), std::move(result->Tets))});
                 return;
             }
         }
@@ -727,7 +729,7 @@ void DrawObjectAudioControls(
     // Modal create/edit form takes over whenever open, regardless of whether the entity is a sound object yet.
     if (r.all_of<ModalModelCreateInfo>(e)) {
         const auto *modal_modes = r.try_get<const ModalModes>(e);
-        DrawModalCreateForm(r, viewport, e, mesh_entity, GetCurrentWindow(), r.all_of<SoundVertices>(e), modal_modes, emit);
+        DrawModalCreateForm(r, viewport, e, mesh_entity, GetCurrentWindow(), r.all_of<SoundVertices>(e), modal_modes);
         return;
     }
 
@@ -740,7 +742,7 @@ void DrawObjectAudioControls(
     if (!has_model && Button("Create modal model")) {
         ModalModelCreateInfo info{};
         if (const auto *material = r.try_get<const AcousticMaterial>(mesh_entity)) info.Material = *material;
-        emit(action::audio::OpenModalForm{std::make_unique<ModalModelCreateInfo>(std::move(info))});
+        action::Emit(action::audio::OpenModalForm{std::make_unique<ModalModelCreateInfo>(std::move(info))});
         return;
     }
 
@@ -760,7 +762,7 @@ void DrawObjectAudioControls(
         PopID();
         if (model_changed) {
             model = SoundVerticesModel(edit_model);
-            emit(action::audio::SetModel{model});
+            action::Emit(action::audio::SetModel{model});
         }
     }
 
@@ -770,7 +772,7 @@ void DrawObjectAudioControls(
         if (BeginCombo("Vertex", std::to_string(active_vertex).c_str())) {
             for (uint32_t vi = 0; vi < excitable->Vertices.size(); ++vi) {
                 if (const auto vertex = excitable->Vertices[vi]; Selectable(std::to_string(vertex).c_str(), vi == active_vi))
-                    emit(action::audio::SetExciteVertex{vi, vertex});
+                    action::Emit(action::audio::SetExciteVertex{vi, vertex});
             }
             EndCombo();
         }
@@ -779,8 +781,8 @@ void DrawObjectAudioControls(
             (model == SoundVerticesModel::Modal && (!recording || recording->Complete()));
         if (!can_excite) BeginDisabled();
         Button("Excite");
-        if (IsItemActivated()) emit(action::audio::StartExcite{active_vertex});
-        else if (IsItemDeactivated()) emit(action::audio::StopExcite{});
+        if (IsItemActivated()) action::Emit(action::audio::StartExcite{active_vertex});
+        else if (IsItemDeactivated()) action::Emit(action::audio::StopExcite{});
         if (!can_excite) EndDisabled();
     }
 
@@ -799,14 +801,14 @@ void DrawObjectAudioControls(
             if (const auto assign_label = n > 1 ? std::format("Assign sample to {} vertices…", n) : std::string{with_sample ? "Replace sample…" : "Assign sample…"};
                 Button(assign_label.c_str())) {
                 auto [path, frames] = PickAndLoadAudio();
-                if (!frames.empty()) emit(action::audio::AssignVertexSamples{std::make_unique<action::audio::AssignVertexSamples::Data>(op_vertices, std::move(path), std::move(frames))});
+                if (!frames.empty()) action::Emit(action::audio::AssignVertexSamples{std::make_unique<action::audio::AssignVertexSamples::Data>(op_vertices, std::move(path), std::move(frames))});
             }
             if (n == 0) EndDisabled();
             if (with_sample > 0) {
                 SameLine();
                 if (const auto remove_label = with_sample > 1 ? std::format("Remove {} samples", with_sample) : std::string{"Remove sample"};
                     Button(remove_label.c_str())) {
-                    emit(action::audio::RemoveVertexSamples{std::move(op_with_sample)});
+                    action::Emit(action::audio::RemoveVertexSamples{std::move(op_with_sample)});
                     return;
                 }
             }
@@ -827,12 +829,12 @@ void DrawObjectAudioControls(
         ModalModelCreateInfo info{};
         if (modal_modes && excitable) info.NumVertices = excitable->Vertices.size();
         if (const auto *material = r.try_get<const AcousticMaterial>(mesh_entity)) info.Material = *material;
-        emit(action::audio::OpenModalForm{std::make_unique<ModalModelCreateInfo>(std::move(info))});
+        action::Emit(action::audio::OpenModalForm{std::make_unique<ModalModelCreateInfo>(std::move(info))});
     }
 
     Spacing();
     if (Button("Delete sound object")) {
-        emit(action::audio::DeleteSoundObject{});
+        action::Emit(action::audio::DeleteSoundObject{});
         return;
     }
 
@@ -853,7 +855,7 @@ void DrawObjectAudioControls(
     // Poll the Faust DSP UI to see if the current excitation vertex has changed.
     if (const auto excite_index = uint32_t(r.get<FaustDSP>(viewport).Get(ExciteIndexParamName));
         active_vi != excite_index && excite_index < excitable->Vertices.size()) {
-        emit(action::audio::SetActiveElementFromDsp{excitable->Vertices[excite_index]});
+        action::Emit(action::audio::SetActiveElementFromDsp{excitable->Vertices[excite_index]});
     }
     if (CollapsingHeader("Modal data charts")) {
         std::optional<size_t> new_hovered_index;
@@ -879,7 +881,7 @@ void DrawObjectAudioControls(
     const bool is_recording = recording && !recording->Complete();
     if (is_recording) BeginDisabled();
     static constexpr uint32_t RecordFrames = 208'592; // Same length as RealImpact recordings.
-    if (Button("Record strike")) emit(action::audio::StartRecording{RecordFrames});
+    if (Button("Record strike")) action::Emit(action::audio::StartRecording{RecordFrames});
     if (is_recording) EndDisabled();
 
     if (samples && recording && recording->Complete()) {
