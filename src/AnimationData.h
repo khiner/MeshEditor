@@ -1,12 +1,10 @@
 #pragma once
 
+#include "BoneId.h"
 #include "gpu/Transform.h"
 
 #include <span>
 #include <vector>
-
-using BoneId = uint32_t; // Stable identifier - never reused
-inline constexpr BoneId InvalidBoneId{0};
 
 enum class AnimationPath : uint8_t {
     Translation,
@@ -50,6 +48,19 @@ struct MorphWeightClip {
     std::string Name;
     float DurationSeconds;
     std::vector<MorphWeightChannel> Channels;
+};
+
+// Component on scene object entities with imported glTF node TRS animation data.
+// Clips target this entity only; channels use BoneIndex=0 and are evaluated against RestLocal.
+struct NodeTransformAnimation {
+    std::vector<AnimationClip> Clips;
+    uint32_t ActiveClipIndex{0};
+    Transform RestLocal{};
+};
+
+struct MorphWeightAnimation {
+    std::vector<MorphWeightClip> Clips;
+    uint32_t ActiveClipIndex{0};
 };
 
 // Interpolate animation channels at `time`, writing into pre-initialized rest-pose `local_transforms`.

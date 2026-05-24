@@ -1,10 +1,14 @@
 #pragma once
 
+#include "MeshAttributes.h"
 #include "PrimitiveType.h"
 
-namespace primitive {
+#include <ranges>
+#include <vector>
+
 using std::views::transform, std::ranges::iota_view, std::ranges::to;
 
+namespace primitive {
 inline MeshData CreateMesh(const Plane &p) {
     const auto x = p.HalfExtents.x, z = p.HalfExtents.y;
     return {
@@ -15,7 +19,7 @@ inline MeshData CreateMesh(const Plane &p) {
 
 inline MeshData CreateMesh(const Circle &p) {
     const auto [radius, n] = p;
-    std::vector vertices =
+    auto vertices =
         iota_view{0u, n} |
         transform([radius, n](uint32_t i) { return vec3{radius * __cospi(2.f * i / n), radius * __sinpi(2.f * i / n), 0}; }) |
         to<std::vector>();

@@ -1,4 +1,6 @@
 #include "Armature.h"
+#include "AnimationData.h"
+#include "BoneId.h"
 #include "BoneSelection.h"
 #include "Entity.h"
 #include "TransformMath.h"

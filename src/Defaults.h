@@ -1,7 +1,6 @@
 #pragma once
 
 #include "ViewCamera.h"
-#include "World.h"
 #include "gpu/PunctualLight.h"
 #include "gpu/ViewportTheme.h"
 #include "gpu/WorkspaceLights.h"
@@ -13,7 +12,7 @@ constexpr float Pi{std::numbers::pi_v<float>};
 void UpdateDerivedColors(ViewportTheme &);
 
 struct Defaults {
-    static World World;
+    inline static constexpr vec3 WorldUp{0, 1, 0};
     static ViewCamera ViewCamera;
     static WorkspaceLights WorkspaceLights;
     static ViewportTheme ViewportTheme;

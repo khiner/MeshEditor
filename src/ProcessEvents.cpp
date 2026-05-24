@@ -1,5 +1,6 @@
 #include "ProcessEvents.h"
 
+#include "AnimationData.h"
 #include "AnimationTimeline.h"
 #include "Armature.h"
 #include "BBox.h"
@@ -10,7 +11,7 @@
 #include "GpuBuffers.h"
 #include "Instance.h"
 #include "InteractionComponents.h"
-#include "NodeTransformAnimation.h"
+#include "MorphWeightState.h"
 #include "ObjectOps.h"
 #include "Pipelines.h"
 #include "Reactive.h"

@@ -1,6 +1,7 @@
 #include "Action.h"
 #include "FrameState.h"
 #include "Paths.h"
+#include "TimelineUi.h"
 #include "Timer.h"
 #include "Viewport.h"
 #include "ViewportIcons.h"

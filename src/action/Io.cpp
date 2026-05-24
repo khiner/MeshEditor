@@ -15,16 +15,13 @@
 #include "mesh/MeshStore.h"
 #include "mesh/Primitives.h"
 
-using std::ranges::find_if;
-using std::ranges::to;
+using std::ranges::find_if, std::ranges::to;
 
 namespace {
 void NewDefaultScene(entt::registry &r, entt::entity viewport) {
     ClearMeshes(r, viewport);
 
     auto &meshes = r.ctx().get<MeshStore>();
-    auto &buffers = r.ctx().get<GpuBuffers>();
-
     constexpr PrimitiveShape default_shape{primitive::Cuboid{}};
     const auto [mesh_entity, _] = ::AddMesh(r, meshes, meshes.CreateMesh(primitive::CreateMesh(default_shape), {}, {}), MeshInstanceCreateInfo{.Name = ToString(default_shape)});
     r.emplace<PrimitiveShape>(mesh_entity, default_shape);
@@ -39,8 +36,9 @@ void NewDefaultScene(entt::registry &r, entt::entity viewport) {
     const float hfov = 2 * std::atan(SensorX / (2 * Lens));
     const float yfov = 2 * std::atan(std::tan(hfov * 0.5) * RenderH / RenderW);
 
-    ::AddLight(r, meshes, buffers, ObjectCreateInfo{.Name = "Light", .Transform = {.P = to_y_up_pos(LightLoc)}, .Select = MeshInstanceCreateInfo::SelectBehavior::None});
-    ::AddCamera(r, meshes, buffers, ObjectCreateInfo{.Name = "Camera", .Transform = {.P = to_y_up_pos(CameraLoc), .R = to_y_up_rot * quat{CameraEulerXYZ}}, .Select = MeshInstanceCreateInfo::SelectBehavior::None}, Perspective{.FieldOfViewRad = yfov, .FarClip = 1000, .NearClip = DefaultPerspectiveNearClip});
+    auto &buffers = r.ctx().get<GpuBuffers>();
+    ::AddLight(r, meshes, buffers, {.Name = "Light", .Transform = {.P = to_y_up_pos(LightLoc)}, .Select = MeshInstanceCreateInfo::SelectBehavior::None});
+    ::AddCamera(r, meshes, buffers, {.Name = "Camera", .Transform = {.P = to_y_up_pos(CameraLoc), .R = to_y_up_rot * quat{CameraEulerXYZ}}, .Select = MeshInstanceCreateInfo::SelectBehavior::None}, Perspective{.FieldOfViewRad = yfov, .FarClip = 1000, .NearClip = DefaultPerspectiveNearClip});
 }
 } // namespace
 
@@ -87,10 +85,7 @@ std::expected<void, std::string> Apply(entt::registry &r, entt::entity viewport,
                 const auto [mesh_entity, instance_entity] = ImportMesh(
                     r,
                     a.Directory / "transformed.obj",
-                    MeshInstanceCreateInfo{
-                        .Name = std::move(*object_name),
-                        .Transform = {.R = RealImpact::ObjectRotationToYUp},
-                    }
+                    MeshInstanceCreateInfo{.Name = std::move(*object_name), .Transform = {.R = RealImpact::ObjectRotationToYUp}}
                 );
 
                 // Ignore the npy file's vertex indices: deduplication may have invalidated them. Look up by position instead.
@@ -112,8 +107,8 @@ std::expected<void, std::string> Apply(entt::registry &r, entt::entity viewport,
                         {
                             .Name = std::format("RealImpact Microphone: {}", listener_point.Index),
                             .Transform = {
-                                .P = listener_point.GetPosition(Defaults::World.Up, true),
-                                .R = glm::angleAxis(glm::radians(float(listener_point.AngleDeg)), Defaults::World.Up) * rot_z,
+                                .P = listener_point.GetPosition(Defaults::WorldUp, true),
+                                .R = glm::angleAxis(glm::radians(float(listener_point.AngleDeg)), Defaults::WorldUp) * rot_z,
                             },
                             .Select = MeshInstanceCreateInfo::SelectBehavior::None,
                         }

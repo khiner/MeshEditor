@@ -1,8 +1,6 @@
 #pragma once
 
-#include "ArmatureDeformData.h"
 #include "Mesh.h"
-#include "MeshAttributes.h"
 #include "MeshData.h"
 #include "MorphTargetData.h"
 #include "gpu/BoneDeformVertex.h"
@@ -30,6 +28,25 @@ struct MeshWithMaterials {
 
 struct PrimitiveTriangleRange {
     uint32_t PrimitiveIndex, FirstTriangle, TriangleCount;
+};
+
+// Optional per-vertex armature deformation channels.
+struct ArmatureDeformData {
+    std::vector<uvec4> Joints;
+    std::vector<vec4> Weights;
+};
+
+struct MeshVertexAttributes;
+
+// Per-source-primitive metadata; all vectors indexed by primitive.
+struct MeshPrimitives {
+    std::vector<uint32_t> FacePrimitiveIndices{}; // per-face source primitive index
+    std::vector<uint32_t> MaterialIndices{};
+    std::vector<uint32_t> VertexCounts{};
+    std::vector<uint32_t> AttributeFlags{}; // bitmask of MeshAttributeBit_*
+    std::vector<uint8_t> HasSourceIndices{}; // 0 = source drew non-indexed
+    // Inner size = variant count (empty when primitive has no mappings); nullopt falls back to MaterialIndices.
+    std::vector<std::vector<std::optional<uint32_t>>> VariantMappings{};
 };
 
 // Owns mesh vertex data (canonical CPU/GPU storage) used by all systems, including rendering.

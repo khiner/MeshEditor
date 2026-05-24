@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <unordered_set>
 
 // Singleton components on the viewport entity.

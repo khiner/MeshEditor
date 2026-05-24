@@ -4,6 +4,7 @@
 #include "Entity.h"
 #include "Instance.h"
 #include "InteractionComponents.h"
+#include "MorphWeightState.h"
 #include "Pipelines.h"
 #include "SceneGraph.h"
 #include "Selection.h"

@@ -1,13 +1,16 @@
 #pragma once
 
-#include "AnimationTimeline.h" // AnimationIcons
 #include "SvgResource.h"
+#include "entt_fwd.h"
 
 struct ViewportIconsTransform {
     std::unique_ptr<SvgResource> Select, SelectBox, Move, Rotate, Scale, Universal;
 };
 struct ViewportIconsShading {
     std::unique_ptr<SvgResource> Wireframe, Solid, MaterialPreview, Rendered;
+};
+struct AnimationIcons {
+    std::unique_ptr<SvgResource> Play, Pause, JumpStart, JumpEnd;
 };
 
 // Loaded once by LoadViewportIcons after the GPU context is ready.

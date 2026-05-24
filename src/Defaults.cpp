@@ -20,7 +20,6 @@ void UpdateDerivedColors(ViewportTheme &theme) {
     c.BonePoseActiveUnsel = BlendShade(c.Wire, c.BonePose, 0.15f);
 }
 
-World Defaults::World{.Origin{0, 0, 0}, .Up{0, 1, 0}};
 ViewCamera Defaults::ViewCamera{
     {14.729f, 8.018f, 6.504f}, // distance of ~18
     {0, 0, 0},

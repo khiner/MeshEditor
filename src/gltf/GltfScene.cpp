@@ -1,12 +1,13 @@
 #include "GltfScene.h"
 
 #include "../ImageEncode.h"
+#include "AnimationData.h"
 #include "AnimationTimeline.h"
 #include "Armature.h"
 #include "GpuBuffers.h"
 #include "Instance.h"
 #include "MeshComponents.h"
-#include "NodeTransformAnimation.h"
+#include "MorphWeightState.h"
 #include "ObjectComponents.h"
 #include "ObjectOps.h"
 #include "Path.h"
@@ -17,6 +18,7 @@
 #include "TransformMath.h"
 #include "Variant.h"
 #include "ViewportComponents.h"
+#include "mesh/MeshAttributes.h"
 #include "mesh/MeshStore.h"
 #include "physics/PhysicsTypes.h"
 

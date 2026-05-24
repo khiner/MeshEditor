@@ -1,5 +1,13 @@
 #pragma once
 
+#include <numeric/vec2.h>
+#include <numeric/vec3.h>
+#include <numeric/vec4.h>
+
+#include <cstdint>
+#include <optional>
+#include <vector>
+
 // Per-vertex attributes. Absent channels use GPU defaults.
 struct MeshVertexAttributes {
     std::optional<std::vector<vec3>> Normals{};
@@ -16,15 +24,4 @@ enum MeshAttributeBit : uint32_t {
     MeshAttributeBit_TexCoord1 = 1u << 4,
     MeshAttributeBit_TexCoord2 = 1u << 5,
     MeshAttributeBit_TexCoord3 = 1u << 6,
-};
-
-// Per-source-primitive metadata; all vectors indexed by primitive.
-struct MeshPrimitives {
-    std::vector<uint32_t> FacePrimitiveIndices{}; // per-face source primitive index
-    std::vector<uint32_t> MaterialIndices{};
-    std::vector<uint32_t> VertexCounts{};
-    std::vector<uint32_t> AttributeFlags{}; // bitmask of MeshAttributeBit_*
-    std::vector<uint8_t> HasSourceIndices{}; // 0 = source drew non-indexed
-    // Inner size = variant count (empty when primitive has no mappings); nullopt falls back to MaterialIndices.
-    std::vector<std::vector<std::optional<uint32_t>>> VariantMappings{};
 };

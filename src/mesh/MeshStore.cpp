@@ -1,5 +1,7 @@
 #include "MeshStore.h"
 
+#include "MeshAttributes.h"
+
 #include <glm/geometric.hpp>
 
 #define TINYOBJLOADER_IMPLEMENTATION

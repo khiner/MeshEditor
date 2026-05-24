@@ -1,6 +1,9 @@
 #pragma once
 
+#include <chrono>
+#include <cstdint>
 #include <print>
+#include <string_view>
 
 struct Timer {
     static inline bool Enabled{true};

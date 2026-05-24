@@ -1,12 +1,20 @@
 #pragma once
 
-#include "AnimationData.h"
 #include "Range.h"
 #include "entt_fwd.h"
+#include "gpu/Transform.h"
 #include "numeric/mat3.h"
 #include "numeric/mat4.h"
 
+#include <span>
+#include <string>
+#include <string_view>
+
 inline constexpr uint32_t InvalidBoneIndex{std::numeric_limits<uint32_t>::max()};
+
+using BoneId = uint32_t; // Stable identifier - never reused
+
+struct AnimationClip;
 
 struct ArmatureBone {
     BoneId Id;
@@ -119,15 +127,6 @@ struct ArmaturePoseState {
 struct ArmatureAnimation {
     std::vector<AnimationClip> Clips;
     uint32_t ActiveClipIndex{0};
-};
-
-struct MorphWeightAnimation {
-    std::vector<MorphWeightClip> Clips;
-    uint32_t ActiveClipIndex{0};
-};
-struct MorphWeightState {
-    std::vector<float> Weights; // Current evaluated weights (CPU), size == target count
-    Range GpuWeightRange; // Allocation in MorphWeightBuffer
 };
 
 // Returns armature entity if entity is an armature or a sub-element of one
