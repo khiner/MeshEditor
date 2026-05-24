@@ -1,15 +1,27 @@
-#include "Emit.h"
 #include "Action.h"
+
+#include "action/Audio.h"
+#include "action/Bone.h"
+#include "action/Io.h"
+#include "action/Object.h"
+#include "action/Physics.h"
+#include "action/Selection.h"
+#include "action/Timeline.h"
+#include "action/View.h"
 
 using namespace action;
 
 namespace {
+using Action = MergedVariantT<
+    Core,
+    selection::Action, object::Action, view::Action,
+    action::physics::Action, audio::Action, bone::Action, timeline::Action, io::Action>;
 std::optional<Action> Staged;
 } // namespace
 
 namespace action {
 template<typename ActionType> void Emit(ActionType a) {
-    if (!Staged) Staged.emplace(std::move(a)); // First action in the frame wins.
+    if (!Staged) Staged.emplace(std::move(a)); // First action emitted in the frame wins.
 }
 
 void ApplyEmitted(entt::registry &r, entt::entity viewport) {

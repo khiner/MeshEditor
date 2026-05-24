@@ -38,6 +38,7 @@
 
 using std::ranges::any_of, std::ranges::contains, std::ranges::distance, std::ranges::find, std::ranges::find_if, std::ranges::fold_left, std::ranges::to;
 using std::views::transform;
+
 using namespace ImGui;
 
 namespace {
