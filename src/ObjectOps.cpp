@@ -1,6 +1,7 @@
 #include "ObjectOps.h"
 
 #include "Armature.h"
+#include "CameraTypes.h"
 #include "Defaults.h"
 #include "ExtrasComponents.h"
 #include "ExtrasMesh.h"
@@ -138,7 +139,7 @@ entt::entity AddEmpty(entt::registry &r, MeshStore &meshes, GpuBuffers &buffers,
 }
 
 entt::entity AddCamera(entt::registry &r, MeshStore &meshes, GpuBuffers &buffers, ObjectCreateInfo info, std::optional<Camera> props) {
-    const Camera camera = props.value_or(Camera{DefaultPerspectiveCamera()});
+    const Camera camera = props.value_or(Camera{Defaults::PerspectiveCamera});
     auto mesh = BuildCameraFrustumMesh(camera);
     const auto entity = CreateExtrasObject(r, meshes, buffers, mesh.Positions, {}, mesh.CreateEdgeIndices(), ObjectType::Camera, std::move(info), "Camera");
     r.emplace<Camera>(entity, camera);

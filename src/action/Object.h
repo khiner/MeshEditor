@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Camera.h"
+#include "CameraTypes.h"
 #include "MaterialComponents.h"
 #include "ObjectCreateInfo.h"
 #include "Variant.h"

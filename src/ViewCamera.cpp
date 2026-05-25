@@ -1,4 +1,5 @@
 #include "ViewCamera.h"
+
 #include <glm/gtc/matrix_transform.hpp>
 
 namespace {

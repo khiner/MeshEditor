@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Camera.h"
+#include "CameraTypes.h"
 #include "Entity.h" // ObjectType
 #include "ObjectCreateInfo.h"
 #include "gpu/PunctualLight.h"

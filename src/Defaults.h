@@ -16,6 +16,7 @@ struct Defaults {
     static ViewCamera ViewCamera;
     static WorkspaceLights WorkspaceLights;
     static ViewportTheme ViewportTheme;
+    static Perspective PerspectiveCamera;
 
     static constexpr float SpotOuterAngle{Pi / 4}, SpotBlend{0.15}, LightIntensity{100};
     static PunctualLight MakePunctualLight(PunctualLightType type) {

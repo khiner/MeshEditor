@@ -2,8 +2,6 @@
 
 #include "numeric/vec4.h"
 
-#include <glm/gtx/euler_angles.hpp>
-
 // Mutually exclusive structs to track rotation representation.
 // Note: `Transform.R` is the source of truth. These are for slider values only.
 // `RotationUiVariant` is reactively synced from `Transform.R` in ProcessComponentEvents.

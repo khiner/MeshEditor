@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Camera.h"
+#include "CameraTypes.h"
 #include "mesh/MeshData.h"
 
 struct PunctualLight;

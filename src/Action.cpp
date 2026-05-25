@@ -1,5 +1,6 @@
 #include "Action.h"
 
+#include "ViewportInteractionState.h" // PendingTransform
 #include "action/Audio.h"
 #include "action/Bone.h"
 #include "action/Io.h"

@@ -8,6 +8,7 @@
 #include "SelectionComponents.h"
 #include "TransformMath.h"
 #include "ViewportEvents.h"
+#include "ViewportInteractionState.h"
 #include "ViewportOps.h"
 #include "WorldTransform.h"
 #include "action/Dispatch.h"

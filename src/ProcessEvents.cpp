@@ -4,6 +4,7 @@
 #include "AnimationTimeline.h"
 #include "Armature.h"
 #include "BBox.h"
+#include "Camera.h"
 #include "Changes.h"
 #include "Defaults.h"
 #include "EntityDestroyTracker.h"
@@ -24,7 +25,7 @@
 #include "SelectionComponents.h"
 #include "SelectionGpu.h"
 #include "SoundVertices.h"
-#include "Tets.h"
+#include "TetMeshData.h"
 #include "Textures.h"
 #include "Timer.h"
 #include "TransformMath.h"
@@ -43,6 +44,7 @@
 #include "physics/PhysicsWorld.h"
 
 #include "imgui.h"
+#include <glm/gtx/euler_angles.hpp>
 
 #include "AxisColors.h" // Must be after imgui.h
 
@@ -52,7 +54,6 @@ using std::ranges::to;
 using std::views::iota;
 
 namespace {
-
 using namespace he;
 
 static inline const std::vector<Element> NormalElements{Element::Vertex, Element::Face};

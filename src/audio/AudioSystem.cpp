@@ -6,6 +6,7 @@
 #include "Reactive.h"
 #include "SelectionBitset.h"
 #include "SoundVertices.h"
+#include "Tets.h"
 #include "Worker.h"
 #include "WorldTransform.h"
 #include "action/Audio.h"

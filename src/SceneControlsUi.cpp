@@ -1,6 +1,7 @@
 #include "SceneControlsUi.h"
 #include "AnimationData.h"
 #include "Armature.h"
+#include "Camera.h"
 #include "Defaults.h"
 #include "GizmoInteraction.h"
 #include "GpuBuffers.h"
@@ -17,6 +18,7 @@
 #include "TransformGizmo.h"
 #include "TransformMath.h"
 #include "ViewportEvents.h"
+#include "ViewportInteractionState.h"
 #include "ViewportOps.h"
 #include "WorldTransform.h"
 #include "action/Audio.h"
@@ -32,6 +34,7 @@
 #include "ui/FieldEdit.h"
 
 #include <entt/entity/registry.hpp>
+#include <glm/gtx/euler_angles.hpp>
 #include <imgui_internal.h>
 
 using std::ranges::any_of, std::ranges::distance, std::ranges::find, std::ranges::to;

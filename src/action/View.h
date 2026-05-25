@@ -1,10 +1,10 @@
 #pragma once
 
+#include "CameraTypes.h"
 #include "TransformGizmoTypes.h"
 #include "TransformUtils.h"
 #include "Variant.h"
 #include "ViewportDisplay.h"
-#include "ViewportInteractionState.h"
 #include "action/Core.h"
 #include "gpu/Element.h"
 #include "gpu/InteractionMode.h"

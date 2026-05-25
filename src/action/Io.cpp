@@ -1,5 +1,6 @@
 #include "action/Io.h"
 #include "AnimationTimeline.h"
+#include "CameraTypes.h"
 #include "Defaults.h"
 #include "GpuBuffers.h"
 #include "ObjectOps.h"

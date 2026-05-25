@@ -1,6 +1,10 @@
 #pragma once
 
-#include "Armature.h"
+#include "BoneId.h"
+
+#include "entt/entity/fwd.hpp"
+
+struct Armature;
 
 // Registry-mutating armature edit operations: bone selection, structure rebuild, extrude/duplicate.
 

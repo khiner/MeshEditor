@@ -1,6 +1,7 @@
 #include "Viewport.h"
 #include "AnimationTimeline.h"
 #include "ArmatureComponents.h"
+#include "Camera.h"
 #include "Changes.h"
 #include "Defaults.h"
 #include "DrawState.h"

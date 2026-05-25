@@ -1,5 +1,6 @@
 #include "ExtrasMesh.h"
 
+#include "Camera.h"
 #include "gpu/PunctualLight.h"
 
 #include <algorithm>

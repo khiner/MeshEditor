@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Camera.h"
+#include "CameraTypes.h"
 #include "numeric/mat3.h"
 #include "numeric/mat4.h"
 #include "numeric/ray.h"
