@@ -15,3 +15,7 @@ bool SetInteractionMode(entt::registry &, entt::entity viewport, InteractionMode
 
 // Prefilters (once) and activates the studio HDRI environment at `index`.
 void SetStudioEnvironment(entt::registry &, uint32_t index);
+
+// Emit the mode-appropriate delete/duplicate of the current selection.
+void Delete(const entt::registry &, entt::entity viewport);
+void Duplicate(const entt::registry &, entt::entity viewport);

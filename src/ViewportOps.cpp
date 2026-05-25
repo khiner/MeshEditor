@@ -1,5 +1,6 @@
 #include "ViewportOps.h"
 
+#include "Action.h"
 #include "Armature.h"
 #include "Entity.h"
 #include "GpuBuffers.h"
@@ -10,6 +11,8 @@
 #include "SoundVertices.h"
 #include "Textures.h"
 #include "ViewportComponents.h"
+#include "action/Bone.h"
+#include "action/Object.h"
 #include "mesh/MeshStore.h"
 
 void SetLookThrough(entt::registry &r, entt::entity viewport, entt::entity target) {
@@ -89,4 +92,13 @@ void SetStudioEnvironment(entt::registry &r, uint32_t index) {
     const auto &pre = *hdri.Prefiltered;
     environments.ActiveHdriIndex = index;
     environments.StudioWorld = {.Ibl = MakeIblSamplers(pre, environments), .Name = hdri.Name};
+}
+
+void Delete(const entt::registry &r, entt::entity viewport) {
+    if (IsBoneEditMode(r, viewport)) action::Emit(action::bone::DeleteSelected{});
+    else action::Emit(action::object::Delete{});
+}
+void Duplicate(const entt::registry &r, entt::entity viewport) {
+    if (IsBoneEditMode(r, viewport)) action::Emit(action::bone::DuplicateSelected{});
+    else action::Emit(action::object::Duplicate{});
 }

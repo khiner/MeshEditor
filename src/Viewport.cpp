@@ -40,8 +40,6 @@
 using std::ranges::find;
 
 namespace {
-using namespace he;
-
 constexpr vk::Extent2D ToExtent2D(vk::Extent3D extent) { return {extent.width, extent.height}; }
 
 // Per-viewport render command buffers, fence, and the ImGui texture handle for the final color image.
