@@ -22,6 +22,7 @@
 #include "implot.h"
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_vulkan.h>
+#include <entt/entity/registry.hpp>
 #include <nfd.h>
 
 #include <csignal>
@@ -29,6 +30,7 @@
 #include <fstream>
 #include <iostream>
 #include <map>
+#include <set>
 
 static_assert(null_entity == entt::null, "null_entity does not match entt::null");
 

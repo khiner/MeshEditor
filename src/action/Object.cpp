@@ -7,6 +7,8 @@
 #include "ObjectOps.h"
 #include "SceneGraph.h"
 #include "Timer.h"
+#include "ViewportEvents.h"
+#include "ViewportInteractionState.h"
 #include "action/Dispatch.h"
 #include "mesh/MeshStore.h"
 #include "mesh/Primitives.h"

@@ -6,6 +6,7 @@
 #include "Armature.h"
 #include "GpuBuffers.h"
 #include "Instance.h"
+#include "MaterialComponents.h"
 #include "MeshComponents.h"
 #include "MorphWeightState.h"
 #include "ObjectComponents.h"
@@ -17,11 +18,11 @@
 #include "Timer.h"
 #include "TransformMath.h"
 #include "Variant.h"
-#include "ViewportComponents.h"
 #include "mesh/MeshAttributes.h"
 #include "mesh/MeshStore.h"
 #include "physics/PhysicsTypes.h"
 
+#include <entt/entity/registry.hpp>
 #include <fastgltf/base64.hpp>
 #include <fastgltf/core.hpp>
 #include <fastgltf/glm_element_traits.hpp>

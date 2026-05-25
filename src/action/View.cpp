@@ -7,6 +7,7 @@
 #include "SceneGraph.h"
 #include "SelectionComponents.h"
 #include "TransformMath.h"
+#include "ViewportEvents.h"
 #include "ViewportOps.h"
 #include "action/Dispatch.h"
 #include "gltf/SourceAssets.h"

@@ -1,10 +1,11 @@
 #include "AnimationTimeline.h"
 #include "SvgResource.h"
 #include "TimelineUi.h"
-#include "ViewportComponents.h"
 #include "ViewportIcons.h"
 
 #include "imgui.h"
+
+#include <entt/entity/registry.hpp>
 
 using namespace ImGui;
 

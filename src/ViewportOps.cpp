@@ -5,15 +5,18 @@
 #include "Entity.h"
 #include "GpuBuffers.h"
 #include "InteractionComponents.h"
+#include "OneShotGpu.h"
 #include "Pipelines.h"
 #include "Selection.h"
 #include "SelectionComponents.h"
 #include "SoundVertices.h"
 #include "Textures.h"
-#include "ViewportComponents.h"
+#include "ViewportInteractionState.h"
 #include "action/Bone.h"
 #include "action/Object.h"
 #include "mesh/MeshStore.h"
+
+#include <entt/entity/registry.hpp>
 
 void SetLookThrough(entt::registry &r, entt::entity viewport, entt::entity target) {
     const auto previous = LookThroughCameraEntity(r);

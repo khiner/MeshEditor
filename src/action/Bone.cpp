@@ -1,11 +1,14 @@
 #include "action/Bone.h"
+#include "AnimationTimeline.h"
 #include "Armature.h"
 #include "BoneSelection.h"
 #include "ObjectOps.h"
 #include "SceneGraph.h"
 #include "TransformMath.h"
 #include "Variant.h"
-#include "ViewportComponents.h"
+#include "ViewportInteractionState.h"
+
+#include <entt/entity/registry.hpp>
 
 namespace {
 void RebuildBoneStructure(entt::registry &r, entt::entity viewport, entt::entity arm_data_entity) {

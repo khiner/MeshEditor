@@ -6,7 +6,7 @@
 #include "SceneGraph.h"
 #include "Timer.h"
 #include "Variant.h"
-#include "ViewportComponents.h"
+#include "ViewportEvents.h"
 #include "ViewportOps.h"
 #include "audio/AudioSystem.h"
 #include "audio/RealImpact.h"
@@ -14,6 +14,8 @@
 #include "gltf/GltfScene.h"
 #include "mesh/MeshStore.h"
 #include "mesh/Primitives.h"
+
+#include <entt/entity/registry.hpp>
 
 using std::ranges::find_if, std::ranges::to;
 

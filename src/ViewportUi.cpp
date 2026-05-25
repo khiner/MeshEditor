@@ -15,6 +15,7 @@
 #include "Timer.h"
 #include "TransformGizmo.h"
 #include "TransformMath.h"
+#include "ViewportEvents.h"
 #include "ViewportIcons.h"
 #include "ViewportOps.h"
 #include "action/Audio.h"

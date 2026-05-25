@@ -15,6 +15,7 @@
 #include "Textures.h"
 #include "TransformGizmo.h"
 #include "TransformMath.h"
+#include "ViewportEvents.h"
 #include "ViewportOps.h"
 #include "action/Audio.h"
 #include "action/Bone.h"

@@ -1,7 +1,7 @@
 #include "action/Timeline.h"
 #include "AnimationTimeline.h"
 #include "Variant.h"
-#include "ViewportComponents.h"
+#include "ViewportDisplay.h"
 
 namespace action::timeline {
 void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
