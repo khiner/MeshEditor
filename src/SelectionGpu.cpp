@@ -1,6 +1,6 @@
 #include "SelectionGpu.h"
 
-#include "Armature.h"
+#include "ArmatureComponents.h"
 #include "Drawing.h"
 #include "Entity.h"
 #include "Instance.h"

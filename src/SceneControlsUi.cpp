@@ -41,6 +41,16 @@ static void RenderObjectTree(entt::registry &, entt::entity viewport);
 static void RenderEntityControls(entt::registry &, entt::entity viewport, entt::entity active_entity);
 
 namespace {
+constexpr std::string_view ObjectTypeName(ObjectType type) {
+    switch (type) {
+        case ObjectType::Empty: return "Empty";
+        case ObjectType::Mesh: return "Mesh";
+        case ObjectType::Armature: return "Armature";
+        case ObjectType::Camera: return "Camera";
+        case ObjectType::Light: return "Light";
+    }
+}
+
 const std::vector<Element> NormalElements{Element::Vertex, Element::Face};
 
 bool SliderUInt(const char *label, uint32_t *v, uint32_t v_min, uint32_t v_max, const char *format = nullptr, ImGuiSliderFlags flags = 0) {

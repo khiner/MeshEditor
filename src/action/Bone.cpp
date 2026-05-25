@@ -6,6 +6,7 @@
 #include "ObjectOps.h"
 #include "SceneGraph.h"
 #include "SceneGraphOps.h"
+#include "SelectionOps.h"
 #include "TransformMath.h"
 #include "Variant.h"
 #include "ViewportInteractionState.h"

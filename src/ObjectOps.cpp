@@ -14,6 +14,7 @@
 #include "SceneGraph.h"
 #include "SceneGraphOps.h"
 #include "SelectionComponents.h"
+#include "SelectionOps.h"
 #include "Textures.h"
 #include "ViewportEvents.h"
 #include "ViewportInteractionState.h"
@@ -66,21 +67,6 @@ void Show(entt::registry &r, entt::entity e) {
 
 void Hide(entt::registry &r, entt::entity e) {
     if (r.all_of<RenderInstance>(e)) r.remove<RenderInstance>(e);
-}
-
-void Select(entt::registry &r, entt::entity e) {
-    r.clear<Selected>();
-    if (e != entt::null) {
-        r.clear<Active>();
-        r.emplace<Active>(e);
-        r.emplace<Selected>(e);
-    }
-}
-
-void ToggleSelected(entt::registry &r, entt::entity e) {
-    if (e == entt::null) return;
-    if (r.all_of<Selected>(e)) r.remove<Selected>(e);
-    else r.emplace_or_replace<Selected>(e);
 }
 
 void ApplySelectBehavior(entt::registry &r, entt::entity e, MeshInstanceCreateInfo::SelectBehavior behavior) {

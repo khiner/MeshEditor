@@ -5,7 +5,6 @@
 #include "SoundVertices.h"
 #include "audio/AudioSystem.h"
 #include "audio/RealImpact.h"
-#include "mesh/Mesh.h"
 #include <entt/entity/registry.hpp>
 
 using std::ranges::to;

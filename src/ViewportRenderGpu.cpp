@@ -8,6 +8,7 @@
 #include "Pipelines.h"
 #include "Selection.h"
 #include "SelectionComponents.h"
+#include "SelectionGpu.h"
 #include "SoundVertices.h"
 #include "Timer.h"
 #include "TransformGizmoTypes.h"

@@ -3,6 +3,7 @@
 #include "File.h"
 #include "IblPrefilterPipelines.h"
 #include "ImageDecode.h"
+#include "gltf/Image.h"
 
 #include <basisu_transcoder.h>
 

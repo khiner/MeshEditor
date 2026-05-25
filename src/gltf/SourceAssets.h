@@ -1,6 +1,8 @@
 #pragma once
 
 #include "Image.h"
+#include "ImageBasedLight.h"
+#include "entt_fwd.h"
 #include "vulkan/Slots.h"
 
 // Source-form glTF data preserved across round-trip but not consumed by the runtime, stored on ECS

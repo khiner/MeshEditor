@@ -3,9 +3,10 @@
 #include "../SelectionBitset.h"
 #include "Armature.h"
 #include "ArmatureOps.h"
+#include "Entity.h"
 #include "InteractionComponents.h"
-#include "ObjectOps.h"
 #include "SelectionComponents.h"
+#include "SelectionOps.h"
 #include "Variant.h"
 
 #include <entt/entity/registry.hpp>

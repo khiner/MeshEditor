@@ -24,8 +24,6 @@ void EmitPendingHideOnRenderInstanceDestroy(entt::registry &, entt::entity);
 void Show(entt::registry &, entt::entity);
 void Hide(entt::registry &, entt::entity);
 
-void Select(entt::registry &, entt::entity);
-void ToggleSelected(entt::registry &, entt::entity);
 void ApplySelectBehavior(entt::registry &, entt::entity, MeshInstanceCreateInfo::SelectBehavior);
 
 // Entity creation. None apply SelectBehavior — callers do that after.

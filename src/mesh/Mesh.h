@@ -97,11 +97,6 @@ static constexpr uint32_t InvalidStoreId{~0u};
 
 struct MeshStore;
 
-// Most recently selected element per mesh (remembered even when not selected).
-struct MeshActiveElement {
-    uint32_t Handle;
-};
-
 // Half-edge polymesh data structure
 struct Mesh {
     using VH = he::VH;

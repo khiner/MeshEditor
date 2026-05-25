@@ -15,6 +15,11 @@ struct Name {
 struct Selected {};
 struct Active {};
 
+// Most recently selected element within a mesh (remembered even when not selected).
+struct MeshActiveElement {
+    uint32_t Handle;
+};
+
 // Sub-elements are not independently selectable in Object mode.
 // Picking/selection routes to Parent. Origin dot drawn only on Parent.
 // Examples: armature bones, future duplivert instances.
@@ -35,16 +40,6 @@ enum class ObjectType : uint8_t {
 struct ObjectKind {
     ObjectType Value{ObjectType::Empty};
 };
-
-constexpr std::string_view ObjectTypeName(ObjectType type) {
-    switch (type) {
-        case ObjectType::Empty: return "Empty";
-        case ObjectType::Mesh: return "Mesh";
-        case ObjectType::Armature: return "Armature";
-        case ObjectType::Camera: return "Camera";
-        case ObjectType::Light: return "Light";
-    }
-}
 
 std::string IdString(entt::entity);
 std::string GetName(const entt::registry &, entt::entity); // Returns name if present, otherwise hex ID.

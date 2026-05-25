@@ -1,7 +1,7 @@
 #pragma once
 
 #include "VulkanResources.h"
-#include "gltf/Image.h"
+#include "gltf/ImageBasedLight.h"
 #include "gpu/IblSamplers.h"
 #include "numeric/mat3.h"
 #include "vulkan/Buffer.h"
@@ -13,6 +13,10 @@
 
 struct DescriptorSlots;
 struct IblPrefilterPipelines;
+
+namespace gltf {
+struct Image;
+}
 
 struct TextureEntry {
     mvk::ImageResource Image;
