@@ -30,6 +30,7 @@
 #include "mesh/MeshStore.h"
 #include "ui/FieldEdit.h"
 
+#include <entt/entity/registry.hpp>
 #include <imgui_internal.h>
 
 #include "OrientationGizmo.h"
@@ -70,14 +71,14 @@ std::vector<SelectionHit> ResolveHits(entt::registry &r, const std::vector<entt:
     return hits;
 }
 
-std::optional<std::pair<uvec2, uvec2>> ComputeBoxSelectPixels(vec2 start, vec2 end, vec2 window_pos, vk::Extent2D logical_extent, vk::Extent2D render_extent) {
+std::optional<std::pair<uvec2, uvec2>> ComputeBoxSelectPixels(vec2 start, vec2 end, vec2 window_pos, uvec2 logical_extent, vk::Extent2D render_extent) {
     static constexpr float DragThresholdSq{2 * 2};
     if (glm::distance2(start, end) <= DragThresholdSq) return {};
 
-    const vec2 logical_size{float(logical_extent.width), float(logical_extent.height)};
+    const vec2 logical_size{float(logical_extent.x), float(logical_extent.y)};
     const vec2 render_scale{
-        logical_extent.width > 0u ? float(render_extent.width) / float(logical_extent.width) : 1.0f,
-        logical_extent.height > 0u ? float(render_extent.height) / float(logical_extent.height) : 1.0f
+        logical_extent.x > 0u ? float(render_extent.width) / float(logical_extent.x) : 1.f,
+        logical_extent.y > 0u ? float(render_extent.height) / float(logical_extent.y) : 1.f
     };
     const auto box_min = glm::min(start, end) - window_pos;
     const auto box_max = glm::max(start, end) - window_pos;
@@ -212,7 +213,7 @@ void Interact(entt::registry &r, entt::entity viewport, FrameState &frame) {
 
     const auto logical_extent = r.get<const ViewportExtent>(viewport).Value;
     const auto render_extent = ComputeRenderExtentPx(logical_extent, std::bit_cast<vec2>(GetIO().DisplayFramebufferScale));
-    if (logical_extent.width == 0 || logical_extent.height == 0 || render_extent.width == 0 || render_extent.height == 0) return;
+    if (logical_extent.x == 0 || logical_extent.y == 0 || render_extent.width == 0 || render_extent.height == 0) return;
 
     const auto interaction_mode = r.get<const Interaction>(viewport).Mode;
     const auto active_entity = FindActiveEntity(r);
@@ -366,8 +367,8 @@ void Interact(entt::registry &r, entt::entity viewport, FrameState &frame) {
     }
 
     const vec2 render_scale{
-        logical_extent.width > 0u ? float(render_extent.width) / float(logical_extent.width) : 1.0f,
-        logical_extent.height > 0u ? float(render_extent.height) / float(logical_extent.height) : 1.0f
+        logical_extent.x > 0u ? float(render_extent.width) / float(logical_extent.x) : 1.0f,
+        logical_extent.y > 0u ? float(render_extent.height) / float(logical_extent.y) : 1.0f
     };
     const auto mouse_pos_rel = GetMousePos() - GetCursorScreenPos();
     const auto mouse_pos_render = ToGlm(mouse_pos_rel) * render_scale;

@@ -96,11 +96,11 @@ bool SubmitViewport(entt::registry &r, entt::entity viewport, vk::Fence viewport
     auto &frame = r.get<FrameState>(viewport);
     auto &logical_extent = r.get<ViewportExtent>(viewport).Value;
     const auto content_region = ImGui::GetContentRegionAvail();
-    const vk::Extent2D new_logical_extent{
+    const uvec2 new_logical_extent{
         uint32_t(std::max(content_region.x, 0.0f)),
         uint32_t(std::max(content_region.y, 0.0f))
     };
-    const bool extent_changed = logical_extent.width != new_logical_extent.width || logical_extent.height != new_logical_extent.height;
+    const bool extent_changed = logical_extent != new_logical_extent;
     if (extent_changed) {
         logical_extent = new_logical_extent;
         r.patch<ViewportExtent>(viewport, [](auto &) {});
@@ -423,7 +423,7 @@ void RenderViewport(entt::registry &r, entt::entity viewport, vk::Fence viewport
         const auto p = ImGui::GetCursorScreenPos();
         const auto extent = r.get<const ViewportExtent>(viewport).Value;
         const auto &t = *t_ptr;
-        dl.AddImage(ImTextureID(VkDescriptorSet(t.DescriptorSet)), p, p + ImVec2{float(extent.width), float(extent.height)}, std::bit_cast<ImVec2>(t.Uv0), std::bit_cast<ImVec2>(t.Uv1));
+        dl.AddImage(ImTextureID(VkDescriptorSet(t.DescriptorSet)), p, p + ImVec2{float(extent.x), float(extent.y)}, std::bit_cast<ImVec2>(t.Uv0), std::bit_cast<ImVec2>(t.Uv1));
     }
 
     dl.ChannelsSetCurrent(1);

@@ -3,6 +3,8 @@
 #include "Variant.h"
 #include "ViewportDisplay.h"
 
+#include <entt/entity/registry.hpp>
+
 namespace action::timeline {
 void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
     std::visit(

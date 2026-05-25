@@ -104,7 +104,7 @@ using Action = MergedVariantT<
     Actions,
     Replace<::Camera>, ReplaceActive<::Camera>,
     Update<TransformGizmo::Type>, Update<TransformGizmo::Mode>,
-    Update<DebugChannel>, Update<vk::ClearColorValue>>;
+    Update<DebugChannel>>;
 
 void Apply(entt::registry &, entt::entity viewport, const Action &);
 } // namespace action::view

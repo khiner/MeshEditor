@@ -21,12 +21,15 @@
 #include "gpu/SilhouetteEdgeDepthObjectPushConstants.h"
 #include "mesh/MeshStore.h"
 
+#include <entt/entity/registry.hpp>
+
 #include "imgui.h"
 
 using std::ranges::any_of;
 
 namespace {
 constexpr vk::Extent2D ToExtent2D(vk::Extent3D extent) { return {extent.width, extent.height}; }
+constexpr vk::ClearColorValue ToClearColor(vec4 c) { return {std::array<float, 4>{c.r, c.g, c.b, c.a}}; }
 const vk::ClearColorValue Transparent{0, 0, 0, 0};
 const std::vector<vk::ClearValue> SilhouetteClearValues{{vk::ClearDepthStencilValue{1, 0}}, {Transparent}};
 DrawData MakeDrawData(const RenderBuffers &rb, uint32_t vertex_slot, const InstanceArena &instances) {
@@ -641,7 +644,7 @@ void RecordRenderCommandBuffer(entt::registry &r, entt::entity viewport, vk::Com
     const vk::Rect2D main_rect{{0, 0}, ToExtent2D(main.Resources->ColorImage.Extent)};
     const std::vector<vk::ClearValue> main_clear_values{
         {vk::ClearDepthStencilValue{1, 0}},
-        {settings.ClearColor},
+        {ToClearColor(settings.ClearColor)},
         {vk::ClearColorValue{std::array<float, 4>{0, 0, 0, 0}}},
     };
 

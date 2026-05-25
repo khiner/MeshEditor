@@ -31,6 +31,7 @@
 #include "physics/PhysicsUi.h"
 #include "ui/FieldEdit.h"
 
+#include <entt/entity/registry.hpp>
 #include <imgui_internal.h>
 
 using std::ranges::any_of, std::ranges::distance, std::ranges::find, std::ranges::to;
@@ -997,8 +998,8 @@ void RenderControls(entt::registry &r, entt::entity viewport) {
             const auto &settings = r.get<const ViewportDisplay>(viewport);
             {
                 auto color = settings.ClearColor;
-                if (ColorEdit3("Background color", color.float32)) {
-                    color.float32[3] = 1.f;
+                if (ColorEdit3("Background color", &color.x)) {
+                    color.a = 1.f;
                     f.Set<&ViewportDisplay::ClearColor>(color);
                 }
             }
@@ -1065,7 +1066,7 @@ void RenderControls(entt::registry &r, entt::entity viewport) {
         if (BeginTabItem("Camera")) {
             const auto &camera = r.get<const ViewCamera>(viewport);
             const auto extent = r.get<const ViewportExtent>(viewport).Value;
-            const float viewport_aspect = extent.width == 0 || extent.height == 0 ? 1.f : float(extent.width) / float(extent.height);
+            const float viewport_aspect = extent.x == 0 || extent.y == 0 ? 1.f : float(extent.x) / float(extent.y);
             if (Button("Reset##Camera")) action::Emit(action::view::ResetViewCamera{});
             if (vec3 target = camera.Target; SliderFloat3("Target", &target.x, -10, 10))
                 action::Emit(action::view::SetViewCameraTarget{target});

@@ -257,10 +257,10 @@ struct GpuBuffers {
     TypedBuffer<ElementPickCandidate> ElementPickCandidates;
 };
 
-inline vk::Extent2D ComputeRenderExtentPx(vk::Extent2D logical_extent, vec2 scale) {
+inline vk::Extent2D ComputeRenderExtentPx(uvec2 logical_extent, vec2 scale) {
     const auto scaled_dim = [](uint32_t logical, float s) -> uint32_t {
         if (logical == 0u) return 0u;
         return std::max(1u, uint32_t(float(logical) * (s > 0.0f ? s : 1.0f) + 0.5f));
     };
-    return {scaled_dim(logical_extent.width, scale.x), scaled_dim(logical_extent.height, scale.y)};
+    return {scaled_dim(logical_extent.x, scale.x), scaled_dim(logical_extent.y, scale.y)};
 }

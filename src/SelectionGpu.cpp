@@ -26,6 +26,7 @@
 #include "mesh/MeshStore.h"
 
 #include "imgui.h"
+#include <entt/entity/registry.hpp>
 
 namespace {
 constexpr vk::Extent2D ToExtent2D(vk::Extent3D extent) { return {extent.width, extent.height}; }

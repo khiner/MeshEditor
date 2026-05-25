@@ -1,11 +1,12 @@
 #pragma once
 
 #include "gpu/DebugChannel.h"
+#include "numeric/vec2.h"
+#include "numeric/vec4.h"
 
-#include <entt/entity/registry.hpp>
+#include <entt/entity/fwd.hpp>
 
 #include <cstdint>
-#include <vulkan/vulkan.hpp>
 
 enum class ViewportShadingMode : uint8_t {
     Wireframe,
@@ -18,7 +19,7 @@ enum class ViewportShadingMode : uint8_t {
 struct ViewportDisplay {
     ViewportShadingMode ViewportShading{ViewportShadingMode::Solid};
     ViewportShadingMode FillMode{ViewportShadingMode::Solid}; // last non-wireframe mode (for Shift+Z toggle)
-    vk::ClearColorValue ClearColor{0.25f, 0.25f, 0.25f, 1.f};
+    vec4 ClearColor{0.25f, 0.25f, 0.25f, 1.f};
     bool ShowGrid{true}, ShowBoundingBoxes{false}, ShowTetWireframe{false};
     bool ShowExtras{true}, ShowBones{true}, ShowOrigins{true}, ShowOutlineSelected{true};
     bool ShowOverlays{true}; // Master toggle for all overlays
@@ -40,10 +41,9 @@ struct PBRViewportLighting {
 struct MaterialPreviewLighting : PBRViewportLighting {}; // defaults: both OFF (studio HDRI)
 struct RenderedLighting : PBRViewportLighting {}; // defaults: both ON (scene world/lights)
 
-inline const PBRViewportLighting &GetActivePbrLighting(const entt::registry &r, entt::entity viewport, ViewportShadingMode mode) {
-    return mode == ViewportShadingMode::Rendered ? static_cast<const PBRViewportLighting &>(r.get<const RenderedLighting>(viewport)) : static_cast<const PBRViewportLighting &>(r.get<const MaterialPreviewLighting>(viewport));
-}
+const PBRViewportLighting &GetActivePbrLighting(const entt::registry &, entt::entity viewport, ViewportShadingMode);
 
+// Logical (window) size of the viewport in pixels. Component on the viewport singleton entity.
 struct ViewportExtent {
-    vk::Extent2D Value{};
+    uvec2 Value{};
 };
