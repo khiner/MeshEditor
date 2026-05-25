@@ -9,6 +9,7 @@
 #include "TransformMath.h"
 #include "ViewportEvents.h"
 #include "ViewportOps.h"
+#include "WorldTransform.h"
 #include "action/Dispatch.h"
 #include "gltf/SourceAssets.h"
 

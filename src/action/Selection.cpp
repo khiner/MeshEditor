@@ -1,6 +1,8 @@
 #include "action/Selection.h"
 #include "../Selection.h"
+#include "../SelectionBitset.h"
 #include "Armature.h"
+#include "ArmatureOps.h"
 #include "InteractionComponents.h"
 #include "ObjectOps.h"
 #include "SelectionComponents.h"

@@ -1,19 +1,7 @@
 #pragma once
 
 #include "entt_fwd.h"
-#include "gpu/Transform.h"
 #include "numeric/mat4.h"
-
-// Distinct component type so an entity can hold both local and world transforms.
-struct WorldTransform : Transform {
-    using Transform::Transform;
-    WorldTransform(const Transform &t) : Transform{t} {}
-};
-
-// World-space forward direction for a camera entity (matches glTF: cameras look down -Z).
-inline vec3 CameraForward(const WorldTransform &wt) {
-    return -glm::normalize(glm::rotate(wt.R, vec3{0.f, 0.f, 1.f}));
-}
 
 struct SceneNode {
     entt::entity Parent{null_entity};
@@ -56,14 +44,3 @@ struct Children {
 
 mat4 GetParentDelta(const entt::registry &, entt::entity);
 entt::entity GetParentEntity(const entt::registry &, entt::entity);
-void ClearParent(entt::registry &, entt::entity child);
-
-// Snap: child keeps its local Transform; new world = parent_world * Transform.
-void SetParent(entt::registry &, entt::entity child, entt::entity parent);
-
-// Keep-world: child preserves world pose by decomposing inv(parent_world) * old_world into
-// Transform. Lossy under non-uniform parent scale (cf. BKE_object_apply_parent_inverse).
-void SetParentKeepWorld(entt::registry &, entt::entity child, entt::entity parent);
-
-// Recompute WT for `e` and its descendants from local Transforms and ancestor's WT.
-void UpdateWorldTransformRecursive(entt::registry &, entt::entity e);

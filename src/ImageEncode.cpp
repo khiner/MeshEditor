@@ -49,19 +49,3 @@ EncodeImageJpegRgba8(std::span<const std::byte> rgba8, uint32_t width, uint32_t 
     }
     return out;
 }
-
-std::expected<std::vector<std::byte>, std::string>
-EncodeImageRgba8ForMime(gltf::MimeType mime, std::span<const std::byte> rgba8, uint32_t width, uint32_t height, int jpeg_quality, std::string_view name) {
-    using enum gltf::MimeType;
-    switch (mime) {
-        case PNG: return EncodeImagePngRgba8(rgba8, width, height, name);
-        case JPEG: return EncodeImageJpegRgba8(rgba8, width, height, jpeg_quality, name);
-        case WEBP: return std::unexpected{std::format("WebP encoding not supported for image '{}'; caller should fall back to PNG.", name)};
-        case KTX2: return std::unexpected{std::format("KTX2 encoding not supported for image '{}' (no basisu encoder vendored).", name)};
-        case DDS: return std::unexpected{std::format("DDS encoding not supported for image '{}'.", name)};
-        case GltfBuffer:
-        case OctetStream:
-        case None: return std::unexpected{std::format("Unrecognized mime type for image '{}'.", name)};
-    }
-    return std::unexpected{std::format("Unhandled mime type for image '{}'.", name)};
-}

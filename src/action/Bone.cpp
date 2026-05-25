@@ -1,12 +1,15 @@
 #include "action/Bone.h"
 #include "AnimationTimeline.h"
 #include "Armature.h"
+#include "ArmatureOps.h"
 #include "BoneSelection.h"
 #include "ObjectOps.h"
 #include "SceneGraph.h"
+#include "SceneGraphOps.h"
 #include "TransformMath.h"
 #include "Variant.h"
 #include "ViewportInteractionState.h"
+#include "WorldTransform.h"
 
 #include <entt/entity/registry.hpp>
 

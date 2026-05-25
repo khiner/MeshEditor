@@ -1,5 +1,7 @@
 #include "SceneGraph.h"
+#include "SceneGraphOps.h"
 #include "TransformMath.h"
+#include "WorldTransform.h"
 
 #include <entt/entity/registry.hpp>
 

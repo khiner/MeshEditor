@@ -8,6 +8,7 @@
 #include "OneShotGpu.h"
 #include "Pipelines.h"
 #include "Selection.h"
+#include "SelectionBitset.h"
 #include "SelectionComponents.h"
 #include "SoundVertices.h"
 #include "Textures.h"

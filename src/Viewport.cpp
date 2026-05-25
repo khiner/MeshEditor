@@ -32,6 +32,7 @@
 #include "ViewportRenderGpu.h"
 #include "ViewportUi.h"
 #include "VkFenceWait.h"
+#include "WorldTransform.h"
 #include "mesh/Mesh.h"
 #include "physics/PhysicsTypes.h"
 #include "physics/PhysicsWorld.h"

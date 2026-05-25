@@ -4,8 +4,10 @@
 #include "PhysicsTypes.h"
 #include "Reactive.h"
 #include "SceneGraph.h"
+#include "SceneGraphOps.h"
 #include "TransformMath.h"
 #include "Variant.h"
+#include "WorldTransform.h"
 #include "mesh/Mesh.h"
 
 #include "Jolt/Jolt.h"

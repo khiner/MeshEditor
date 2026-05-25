@@ -14,10 +14,12 @@
 #include "Path.h"
 #include "PbrFeature.h"
 #include "SceneGraph.h"
+#include "SceneGraphOps.h"
 #include "Textures.h"
 #include "Timer.h"
 #include "TransformMath.h"
 #include "Variant.h"
+#include "WorldTransform.h"
 #include "mesh/MeshAttributes.h"
 #include "mesh/MeshStore.h"
 #include "physics/PhysicsTypes.h"
@@ -1070,6 +1072,23 @@ fastgltf::MimeType FromMimeType(MimeType m) {
         case MimeType::WEBP: return fastgltf::MimeType::WEBP;
     }
     return fastgltf::MimeType::None;
+}
+// Encode tightly-packed RGBA8 pixels to the container for `mime`, dispatching to the generic encoders.
+// WebP / KTX2 / DDS aren't supported — returns an error so callers can fall back (typically to PNG).
+std::expected<std::vector<std::byte>, std::string>
+EncodeImageRgba8ForMime(MimeType mime, std::span<const std::byte> rgba8, uint32_t width, uint32_t height, int jpeg_quality, std::string_view name) {
+    using enum MimeType;
+    switch (mime) {
+        case PNG: return EncodeImagePngRgba8(rgba8, width, height, name);
+        case JPEG: return EncodeImageJpegRgba8(rgba8, width, height, jpeg_quality, name);
+        case WEBP: return std::unexpected{std::format("WebP encoding not supported for image '{}'; caller should fall back to PNG.", name)};
+        case KTX2: return std::unexpected{std::format("KTX2 encoding not supported for image '{}' (no basisu encoder vendored).", name)};
+        case DDS: return std::unexpected{std::format("DDS encoding not supported for image '{}'.", name)};
+        case GltfBuffer:
+        case OctetStream:
+        case None: return std::unexpected{std::format("Unrecognized mime type for image '{}'.", name)};
+    }
+    return std::unexpected{std::format("Unhandled mime type for image '{}'.", name)};
 }
 fastgltf::AnimationInterpolation FromInterp(AnimationInterpolation i) {
     switch (i) {

@@ -4,10 +4,10 @@
 #include "Instance.h"
 #include "InteractionComponents.h"
 #include "Reactive.h"
-#include "SceneGraph.h"
-#include "Selection.h"
+#include "SelectionBitset.h"
 #include "SoundVertices.h"
 #include "Worker.h"
+#include "WorldTransform.h"
 #include "action/Audio.h"
 #include "mesh/Mesh.h"
 #include "ui/FieldEdit.h"
@@ -699,6 +699,31 @@ void DrawModalCreateForm(
     if (Button("Cancel")) action::Emit(action::audio::CancelModalForm{});
     EndChild();
 }
+
+// Mesh vertices targeted by a sample op (Add/Replace/Remove): the active vertex in Excite mode, or the
+// selected vertices (edges/faces converted to vertices) in Edit mode. `selection_bits` is ignored outside Edit.
+std::vector<uint32_t> GetSampleOpVertices(const entt::registry &r, entt::entity viewport, entt::entity sound_entity, const uint32_t *selection_bits) {
+    if (!r.valid(sound_entity)) return {};
+    const auto *inst = r.try_get<const Instance>(sound_entity);
+    if (!inst) return {};
+    const auto mesh_entity = inst->Entity;
+    const auto *mesh = r.try_get<const Mesh>(mesh_entity);
+    if (!mesh) return {};
+
+    const auto mode = r.get<const Interaction>(viewport).Mode;
+    if (mode == InteractionMode::Excite) {
+        if (const auto *active = r.try_get<const MeshActiveElement>(mesh_entity)) return {active->Handle};
+        return {};
+    }
+    if (mode != InteractionMode::Edit || selection_bits == nullptr) return {};
+
+    const auto *br = r.try_get<const MeshSelectionBitsetRange>(mesh_entity);
+    if (!br || br->Count == 0) return {};
+    const auto edit_elem = r.get<const EditMode>(viewport).Value;
+    auto handles = selection::ScanBitsetRange(selection_bits, br->Offset, br->Count);
+    if (edit_elem == Element::Vertex) return handles;
+    return selection::ConvertSelectionElement(handles, *mesh, edit_elem, Element::Vertex);
+}
 } // namespace
 
 void DrawObjectAudioControls(
@@ -735,7 +760,7 @@ void DrawObjectAudioControls(
     // Sample ops (Add/Replace/Remove) are only available in Edit / Excite mode.
     const auto mode = r.get<const Interaction>(viewport).Mode;
     const bool sample_ops_available = mode == InteractionMode::Edit || mode == InteractionMode::Excite;
-    const auto op_vertices = sample_ops_available ? selection::GetSampleOpVertices(r, viewport, e, selection_bits) : std::vector<uint32_t>{};
+    const auto op_vertices = sample_ops_available ? GetSampleOpVertices(r, viewport, e, selection_bits) : std::vector<uint32_t>{};
 
     const bool has_model = r.all_of<SoundVerticesModel>(e);
     if (!has_model && Button("Create modal model")) {

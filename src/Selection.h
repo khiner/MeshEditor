@@ -1,15 +1,11 @@
 #pragma once
 
-#include "gpu/Element.h"
-
 #include <entt/entity/fwd.hpp>
 
-#include <span>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
-struct Mesh;
 struct ElementRange;
 
 // Scene/selection predicates and queries used by the UI and action handlers.
@@ -20,26 +16,11 @@ bool CanDuplicateLinked(const entt::registry &, entt::entity viewport);
 bool CanDelete(const entt::registry &, entt::entity viewport);
 std::vector<ElementRange> GetBitsetRangesForSelected(const entt::registry &);
 
-// Per-mesh offset/count into SelectionBitsetBuffer for the current edit element type.
-// Assigned on Edit mode entry; updated on element type switch and mesh topology change.
-struct MeshSelectionBitsetRange {
-    uint32_t Offset; // Start bit index in SelectionBitsetBuffer
-    uint32_t Count; // Element count for current edit mode
-};
-
 struct EditTransformContext {
     std::unordered_map<entt::entity, entt::entity> TransformInstances; // excludes frozen, for transforms
 };
 
 namespace selection {
-
-// Set all bits in [offset, offset+count), clearing any gap bits in the last word.
-void SelectAll(uint32_t *bits, uint32_t offset, uint32_t count);
-// Count selected bits in [offset, offset+count).
-uint32_t CountSelected(const uint32_t *bits, uint32_t offset, uint32_t count);
-// Return local (0-based) handles of all set bits in [offset, offset+count).
-std::vector<uint32_t> ScanBitsetRange(const uint32_t *bits, uint32_t offset, uint32_t count);
-std::vector<uint32_t> ConvertSelectionElement(std::span<const uint32_t> handles, const Mesh &, Element from_element, Element to_element);
 
 // Returns representative edit instance per selected mesh: active instance if selected, else first selected instance.
 // Only includes Mesh-type objects (excludes Cameras, etc.).
@@ -47,15 +28,5 @@ std::unordered_map<entt::entity, entt::entity> ComputePrimaryEditInstances(const
 
 bool HasScaleLockedInstance(const entt::registry &, entt::entity);
 std::unordered_set<entt::entity> GetSelectedMeshEntities(const entt::registry &);
-uint32_t GetElementCount(const Mesh &, Element);
-
-// Mesh vertices targeted by a sound-object sample operation (Add/Replace/Remove).
-// Excite mode: single active vertex on the sound object's mesh.
-// Edit mode: selected vertices on the sound object's mesh (edges/faces converted via ConvertSelectionElement).
-// `selection_bits` is the raw SelectionBitset pointer; ignored outside Edit mode.
-std::vector<uint32_t> GetSampleOpVertices(
-    const entt::registry &, entt::entity viewport, entt::entity sound_entity,
-    const uint32_t *selection_bits
-);
 
 } // namespace selection
