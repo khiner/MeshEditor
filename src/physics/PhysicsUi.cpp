@@ -1,7 +1,7 @@
 // Physics UI: "Physics" tab + per-entity physics properties.
 
 #include "PhysicsUi.h"
-#include "PhysicsWorld.h"
+#include "PhysicsSystem.h"
 #include "action/Physics.h"
 #include "animation/AnimationTimeline.h"
 #include "numeric/vec2.h"
@@ -239,9 +239,9 @@ std::optional<PhysicsShape> RenderShapeEditor(const PhysicsShape &in, bool auto_
 }
 } // namespace
 
-void physics_ui::RenderTab(entt::registry &r, entt::entity viewport, PhysicsWorld &physics) {
+void physics_ui::RenderTab(entt::registry &r, entt::entity viewport) {
     SeparatorText("Simulation");
-    Text("Bodies: %u", physics.BodyCount());
+    Text("Bodies: %u", physics::BodyCount(r));
     {
         ui::Edit f{r, viewport};
         f.Slider<&PhysicsSimulationSettings::SubstepsPerFrame>("Substeps per frame", 1u, 100u);
@@ -321,8 +321,8 @@ void physics_ui::RenderTab(entt::registry &r, entt::entity viewport, PhysicsWorl
                         TableSetColumnIndex(int(col) + 1);
                         PushID(int(row * n + col));
                         const auto a = filter_entities[row], b = filter_entities[col];
-                        const bool ab = physics.DoesFilterAllow(a, b);
-                        const bool ba = physics.DoesFilterAllow(b, a);
+                        const bool ab = physics::DoesFilterAllow(r, a, b);
+                        const bool ba = physics::DoesFilterAllow(r, b, a);
                         const ImVec2 p = GetCursorScreenPos();
                         DrawMatrixCell(GetWindowDrawList(), p, {p.x + cell_sz, p.y + cell_sz}, ab, ba);
                         Dummy({cell_sz, cell_sz});
@@ -456,7 +456,7 @@ void physics_ui::RenderTab(entt::registry &r, entt::entity viewport, PhysicsWorl
     }
 }
 
-void physics_ui::RenderEntityProperties(entt::registry &r, entt::entity entity, entt::entity viewport, const PhysicsWorld &physics) {
+void physics_ui::RenderEntityProperties(entt::registry &r, entt::entity entity, entt::entity viewport) {
     if (!CollapsingHeader("Physics")) return;
 
     PushID("PhysicsEntity");
@@ -506,7 +506,7 @@ void physics_ui::RenderEntityProperties(entt::registry &r, entt::entity entity, 
         // sim has produced any baked frames; JumpToStart unlocks it.
         const auto &range = r.get<const TimelineRange>(viewport);
         const auto &playback = r.get<const TimelinePlayback>(viewport);
-        const bool velocity_locked = playback.Playing || physics.BakedThrough() >= range.StartFrame;
+        const bool velocity_locked = playback.Playing || physics::BakedThrough(r) >= range.StartFrame;
         if (velocity_locked) BeginDisabled();
         if (r.try_get<const PhysicsVelocity>(entity)) {
             ui::Edit f{r};

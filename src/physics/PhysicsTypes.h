@@ -14,7 +14,7 @@ struct PhysicsSimulationSettings {
 
 // KHR_physics_rigid_bodies-aligned component structs.
 
-// --- Document-level resources (stored in PhysicsWorld) ---
+// --- Document-level resources ---
 
 enum class PhysicsCombineMode : uint8_t {
     Average,

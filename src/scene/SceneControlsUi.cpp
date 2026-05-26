@@ -245,7 +245,6 @@ static void RenderEntityControls(entt::registry &r, entt::entity viewport, entt:
     auto &buffers = r.ctx().get<GpuBuffers>();
     auto &meshes = r.ctx().get<MeshStore>();
     auto &textures = r.ctx().get<TextureStore>();
-    auto &physics = r.ctx().get<PhysicsWorld>();
     if (active_entity == entt::null) {
         TextUnformatted("Active object: None");
         return;
@@ -792,7 +791,7 @@ static void RenderEntityControls(entt::registry &r, entt::entity viewport, entt:
             }
         }
     }
-    physics_ui::RenderEntityProperties(r, active_entity, viewport, physics);
+    physics_ui::RenderEntityProperties(r, active_entity, viewport);
 
     // glTF metadata: round-trip-only source state on the active entity.
     // TODO: surface per-material source metadata here once material editing UI exists:
@@ -835,7 +834,6 @@ static void RenderEntityControls(entt::registry &r, entt::entity viewport, entt:
 
 void RenderControls(entt::registry &r, entt::entity viewport) {
     auto &buffers = r.ctx().get<GpuBuffers>();
-    auto &physics = r.ctx().get<PhysicsWorld>();
     if (BeginTabBar("Scene controls")) {
         if (BeginTabItem("Object")) {
             {
@@ -1080,7 +1078,7 @@ void RenderControls(entt::registry &r, entt::entity viewport) {
         }
 
         if (BeginTabItem("Physics")) {
-            physics_ui::RenderTab(r, viewport, physics);
+            physics_ui::RenderTab(r, viewport);
             EndTabItem();
         }
 

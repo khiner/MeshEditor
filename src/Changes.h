@@ -1,6 +1,5 @@
 #pragma once
 
-// Reactive-tracker tag types used with reactive<>() helpers in Reactive.h.
 // clang-format off
 namespace changes {
 struct Selected {}; struct ActiveInstance {}; struct BoneSelection {}; struct Rerecord {};

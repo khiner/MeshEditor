@@ -23,8 +23,8 @@
 #include "object/PendingSync.h"
 #include "physics/PhysicsChanges.h"
 #include "physics/PhysicsDebugDraw.h"
+#include "physics/PhysicsSystem.h"
 #include "physics/PhysicsTypes.h"
-#include "physics/PhysicsWorld.h"
 #include "render/GpuBuffers.h"
 #include "render/Instance.h"
 #include "render/MaterialComponents.h"
@@ -671,7 +671,6 @@ RenderRequest ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
     auto &meshes = r.ctx().get<MeshStore>();
     auto &textures = r.ctx().get<TextureStore>();
     auto &environments = r.ctx().get<EnvironmentStore>();
-    auto &physics = r.ctx().get<PhysicsWorld>();
     auto &pipelines = r.ctx().get<Pipelines>();
     const bool profile = r.all_of<ProfileNextProcessComponentEvents>(viewport);
     if (profile) r.remove<ProfileNextProcessComponentEvents>(viewport);
@@ -1349,49 +1348,12 @@ RenderRequest ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
         }
         anim_advanced = playback.CurrentFrame != r.get<LastEvaluatedFrame>(viewport).Value;
 
-        if (!reactive<changes::PhysicsSimulationSettings>(r).empty()) {
-            physics.ApplySimulationSettings(r.get<const PhysicsSimulationSettings>(viewport));
-        }
-        // Range edits invalidate the cache: bake frontier becomes meaningless when bounds shift.
+        const bool cache_invalid = r.all_of<PhysicsCacheInvalid>(viewport);
+        if (cache_invalid) r.remove<PhysicsCacheInvalid>(viewport);
         const bool range_changed = !reactive<changes::TimelineRange>(r).empty();
-        if (r.all_of<PhysicsCacheInvalid>(viewport)) {
-            if (physics.HasBodies()) physics.ClearCache();
-            r.remove<PhysicsCacheInvalid>(viewport);
-        } else if (range_changed && physics.HasBodies()) {
-            physics.ClearCache();
-        }
-        // The cache is the timeline: bake past the frontier, restore within it.
-        if (physics.HasBodies()) {
-            physics.EnsureCacheRange(range.StartFrame, range.EndFrame);
-            // Any physics-mutating change invalidates cached future frames so the next play-forward re-bakes.
-            if (!reactive<changes::PhysicsShape>(r).empty() ||
-                !reactive<changes::PhysicsMotion>(r).empty() ||
-                !reactive<changes::PhysicsMaterial>(r).empty() ||
-                !reactive<changes::PhysicsTrigger>(r).empty() ||
-                !reactive<changes::PhysicsJoint>(r).empty() ||
-                !reactive<changes::PhysicsMaterialDef>(r).empty() ||
-                !reactive<changes::CollisionSystemDef>(r).empty() ||
-                !reactive<changes::CollisionFilterDef>(r).empty() ||
-                !reactive<changes::PhysicsJointDef>(r).empty() ||
-                !reactive<changes::PhysicsSimulationSettings>(r).empty()) {
-                physics.InvalidateFromFrame(playback.CurrentFrame);
-            }
-            if (anim_advanced) {
-                const int from = r.get<LastEvaluatedFrame>(viewport).Value, to = playback.CurrentFrame;
-                const float dt = range.Fps > 0 ? 1.f / range.Fps : 1.f / 60.f;
-                const auto baked = physics.BakedThrough();
-                if (to == from + 1 && (!baked || uint32_t(to) > *baked)) {
-                    physics.BakeFrame(r, r.get<const PhysicsSimulationSettings>(viewport), to, dt);
-                    request(RenderRequest::Submit);
-                } else if (physics.HasCachedFrame(to)) {
-                    physics.RestoreFrame(r, to);
-                    request(RenderRequest::Submit);
-                } else if (to == range.StartFrame) {
-                    physics.Rebuild(r); // Reset sim: covers wrap-after-play and user-initiated jump-to-start.
-                    request(RenderRequest::Submit);
-                }
-                // Else: scrub past the bake frontier — hold current pose until play resumes baking.
-            }
+        const int from = r.get<LastEvaluatedFrame>(viewport).Value;
+        if (physics::AdvancePlayback(r, viewport, from, playback.CurrentFrame, range.StartFrame, range.EndFrame, range.Fps, range_changed, cache_invalid)) {
+            request(RenderRequest::Submit);
         }
 
         if (anim_advanced) r.get<LastEvaluatedFrame>(viewport).Value = playback.CurrentFrame;

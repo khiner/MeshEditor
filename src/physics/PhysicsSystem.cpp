@@ -1,5 +1,5 @@
 // All Jolt includes are isolated to this file.
-#include "PhysicsWorld.h"
+#include "PhysicsSystem.h"
 #include "PhysicsChanges.h"
 #include "PhysicsTypes.h"
 #include "Reactive.h"
@@ -312,7 +312,9 @@ struct BodyPoseCache {
 };
 } // namespace
 
-struct PhysicsWorld::Impl {
+// All Jolt-side physics state. Lives in the registry context (see physics::Init); the physics:: free
+// functions resolve it from the registry. Plain data holder — behavior lives in the functions below.
+struct PhysicsState {
     TempAllocatorImpl TempAllocator{64 * 1024 * 1024};
     JobSystemThreadPool JobSystem{cMaxPhysicsJobs, cMaxPhysicsBarriers, int(std::max(1u, std::thread::hardware_concurrency() - 1))};
     BPLayerInterface BPLayerIface;
@@ -334,7 +336,7 @@ struct PhysicsWorld::Impl {
 
     float DefaultPenetrationSlop{0}, DefaultSpeculativeContactDistance{0};
 
-    Impl() {
+    PhysicsState() {
         System.Init(
             65536, // max bodies
             0, // num body mutexes (0 = default)
@@ -357,6 +359,9 @@ struct PhysicsWorld::Impl {
         const auto settings = System.GetPhysicsSettings();
         DefaultPenetrationSlop = settings.mPenetrationSlop;
         DefaultSpeculativeContactDistance = settings.mSpeculativeContactDistance;
+
+        FilterRef = new KHRCollisionFilter();
+        ContactListener.Filter = FilterRef.GetPtr();
     }
 };
 
@@ -590,52 +595,8 @@ struct JoltInit {
 } sJoltInit;
 } // namespace
 
-PhysicsWorld::PhysicsWorld() : P(std::make_unique<Impl>()) {
-    P->FilterRef = new KHRCollisionFilter();
-    P->ContactListener.Filter = P->FilterRef.GetPtr();
-}
-PhysicsWorld::~PhysicsWorld() = default;
-
-void PhysicsWorld::BindRegistry(const entt::registry &r) { P->ContactListener.R = &r; }
-
-bool PhysicsWorld::HasBodies() const { return P->System.GetNumBodies() > 0; }
-uint32_t PhysicsWorld::BodyCount() const { return P->System.GetNumBodies(); }
-
-bool PhysicsWorld::DoFiltersCollide(entt::entity a, entt::entity b) const { return !P->FilterRef || P->FilterRef->MasksCollide(a, b); }
-bool PhysicsWorld::DoesFilterAllow(entt::entity source, entt::entity target) const { return !P->FilterRef || P->FilterRef->DirectionalAllows(source, target); }
-
-void PhysicsWorld::Rebuild(entt::registry &r) {
-    // Clear existing constraints and bodies.
-    for (auto &[_, c] : P->ConstraintsByJoint) P->System.RemoveConstraint(c);
-    P->ConstraintsByJoint.clear();
-    auto &bi = P->System.GetBodyInterface();
-    for (auto [entity, handle] : r.view<PhysicsBodyHandle>().each()) {
-        bi.RemoveBody(BodyID{handle.BodyId});
-        bi.DestroyBody(BodyID{handle.BodyId});
-    }
-    r.clear<PhysicsBodyHandle>();
-    r.clear<BodyPoseCache>();
-    P->Baked = {};
-    P->FilterRef->Update(r);
-    P->FilterRef->Reset();
-    P->BodySubGroups.clear();
-
-    for (auto [e, _] : r.view<const Transform>().each()) {
-        const auto *node = r.try_get<const SceneNode>(e);
-        if (!node || node->Parent == entt::null) UpdateWorldTransformRecursive(r, e);
-    }
-
-    for (auto entity : r.view<PhysicsMotion>()) AddBody(r, entity);
-    for (auto entity : r.view<ColliderShape>()) AddBody(r, entity);
-
-    P->JointsDirty = false;
-    for (auto entity : r.view<const PhysicsJoint>()) BuildJoint(r, entity);
-
-    P->FilterRef->FinalizeDisabledPairs();
-    P->System.OptimizeBroadPhase();
-}
-
-void PhysicsWorld::RecomputeSceneScale(const entt::registry &r) {
+namespace {
+void RecomputeSceneScale(PhysicsState &s, const entt::registry &r) {
     // Scale physics tolerances to scene size (default slop is too large for small scenes).
     float min_dim = std::numeric_limits<float>::max();
     for (auto [entity, collider] : r.view<const ColliderShape>().each()) {
@@ -651,17 +612,17 @@ void PhysicsWorld::RecomputeSceneScale(const entt::registry &r) {
         );
     }
     // Shrink for small colliders, and grow back (capped at default) when they're removed or embiggened.
-    auto settings = P->System.GetPhysicsSettings();
+    auto settings = s.System.GetPhysicsSettings();
     settings.mPenetrationSlop = (min_dim < std::numeric_limits<float>::max()) ?
-        std::min(P->DefaultPenetrationSlop, min_dim * 0.02f) :
-        P->DefaultPenetrationSlop;
+        std::min(s.DefaultPenetrationSlop, min_dim * 0.02f) :
+        s.DefaultPenetrationSlop;
     settings.mSpeculativeContactDistance = (min_dim < std::numeric_limits<float>::max()) ?
-        std::min(P->DefaultSpeculativeContactDistance, min_dim * 0.02f) :
-        P->DefaultSpeculativeContactDistance;
-    P->System.SetPhysicsSettings(settings);
+        std::min(s.DefaultSpeculativeContactDistance, min_dim * 0.02f) :
+        s.DefaultSpeculativeContactDistance;
+    s.System.SetPhysicsSettings(settings);
 }
 
-void PhysicsWorld::BuildJoint(const entt::registry &r, entt::entity entity) {
+void BuildJoint(PhysicsState &s, const entt::registry &r, entt::entity entity) {
     const auto *joint_p = r.try_get<const PhysicsJoint>(entity);
     if (!joint_p || joint_p->ConnectedNode == null_entity || joint_p->JointDefEntity == null_entity) return;
     const auto *def_p = r.try_get<const PhysicsJointDef>(joint_p->JointDefEntity);
@@ -693,7 +654,7 @@ void PhysicsWorld::BuildJoint(const entt::registry &r, entt::entity entity) {
         axis_y2 = ToJolt(rot_mat[1]);
     }
 
-    const auto &lock_iface = P->System.GetBodyLockInterfaceNoLock();
+    const auto &lock_iface = s.System.GetBodyLockInterfaceNoLock();
     const BodyLockWrite lock1{lock_iface, BodyID(h1->BodyId)};
     std::optional<BodyLockWrite> lock2_opt;
     if (h2) lock2_opt.emplace(lock_iface, BodyID{h2->BodyId});
@@ -741,8 +702,8 @@ void PhysicsWorld::BuildJoint(const entt::registry &r, entt::entity entity) {
         ApplyDriveTargets(*six, def);
         constraint = six;
     }
-    P->System.AddConstraint(constraint);
-    P->ConstraintsByJoint[entity] = constraint;
+    s.System.AddConstraint(constraint);
+    s.ConstraintsByJoint[entity] = constraint;
 
     // Keep all non-static bodies in constraints awake.
     if (!b1.IsStatic()) b1.SetAllowSleeping(false);
@@ -750,24 +711,23 @@ void PhysicsWorld::BuildJoint(const entt::registry &r, entt::entity entity) {
 
     // Disable collision between connected bodies unless explicitly enabled.
     if (!joint.EnableCollision && h2) {
-        if (const auto it1 = P->BodySubGroups.find(body1_entity), it2 = P->BodySubGroups.find(body2_entity);
-            it1 != P->BodySubGroups.end() && it2 != P->BodySubGroups.end())
-            P->FilterRef->DisableCollision(it1->second, it2->second);
+        if (const auto it1 = s.BodySubGroups.find(body1_entity), it2 = s.BodySubGroups.find(body2_entity);
+            it1 != s.BodySubGroups.end() && it2 != s.BodySubGroups.end())
+            s.FilterRef->DisableCollision(it1->second, it2->second);
     }
 }
 
-void PhysicsWorld::FlushJoints(const entt::registry &r, bool joints_changed) {
-    if (!joints_changed && !P->JointsDirty) return;
-    P->JointsDirty = false;
+void FlushJoints(PhysicsState &s, const entt::registry &r, bool joints_changed) {
+    if (!joints_changed && !s.JointsDirty) return;
+    s.JointsDirty = false;
 
-    for (auto &[_, c] : P->ConstraintsByJoint) P->System.RemoveConstraint(c);
-    P->ConstraintsByJoint.clear();
-    P->FilterRef->ResetDisabledPairs();
-    for (auto entity : r.view<const PhysicsJoint>()) BuildJoint(r, entity);
-    P->FilterRef->FinalizeDisabledPairs();
+    for (auto &[_, c] : s.ConstraintsByJoint) s.System.RemoveConstraint(c);
+    s.ConstraintsByJoint.clear();
+    s.FilterRef->ResetDisabledPairs();
+    for (auto entity : r.view<const PhysicsJoint>()) BuildJoint(s, r, entity);
+    s.FilterRef->FinalizeDisabledPairs();
 }
 
-namespace {
 entt::entity FindMotionOwner(const entt::registry &r, entt::entity e) {
     return FindAncestorIf(r, e, [&](auto x) { return r.all_of<PhysicsMotion>(x); });
 }
@@ -925,12 +885,11 @@ Ref<Shape> WrapCenterOfMass(Ref<Shape> inner, const PhysicsMotion *motion, vec3 
     out_inner_mass_props = inner->GetMassProperties();
     return new OffsetCenterOfMassShape(inner, ToJolt(*motion->CenterOfMass * world_scale) - inner->GetCenterOfMass());
 }
-} // namespace
 
-void PhysicsWorld::AddBody(entt::registry &r, entt::entity entity) {
+void AddBody(PhysicsState &s, entt::registry &r, entt::entity entity) {
     if (r.all_of<PhysicsBodyHandle>(entity)) return;
 
-    const auto built = BuildBodyShape(r, entity, P->FilterRef.GetPtr());
+    const auto built = BuildBodyShape(r, entity, s.FilterRef.GetPtr());
     if (!built.Shape) return;
 
     const auto *motion = r.try_get<const PhysicsMotion>(entity);
@@ -954,13 +913,13 @@ void PhysicsWorld::AddBody(entt::registry &r, entt::entity entity) {
         bcs.mOverrideMassProperties = EOverrideMassProperties::MassAndInertiaProvided;
     }
 
-    if (P->FilterRef) {
-        const uint32_t sub = P->FilterRef->RegisterBody(built.FilterEntity);
-        bcs.mCollisionGroup = CollisionGroup(P->FilterRef, 0, sub);
-        P->BodySubGroups[entity] = sub;
+    if (s.FilterRef) {
+        const uint32_t sub = s.FilterRef->RegisterBody(built.FilterEntity);
+        bcs.mCollisionGroup = CollisionGroup(s.FilterRef, 0, sub);
+        s.BodySubGroups[entity] = sub;
     }
 
-    auto &bi = P->System.GetBodyInterface();
+    auto &bi = s.System.GetBodyInterface();
     const auto *body = bi.CreateBody(bcs);
     if (!body) return;
     bi.AddBody(body->GetID(), motion_type == EMotionType::Static ? EActivation::DontActivate : EActivation::Activate);
@@ -973,46 +932,30 @@ void PhysicsWorld::AddBody(entt::registry &r, entt::entity entity) {
         ApplyInertiaDiagonal(*mp, *motion);
     }
 
-    P->JointsDirty = true;
+    s.JointsDirty = true;
 }
 
-void PhysicsWorld::RemoveBody(entt::registry &r, entt::entity entity) {
+void RemoveBody(PhysicsState &s, entt::registry &r, entt::entity entity) {
     const auto *handle = r.try_get<const PhysicsBodyHandle>(entity);
     if (!handle || handle->BodyId == UINT32_MAX) return;
-    auto &bi = P->System.GetBodyInterface();
+    auto &bi = s.System.GetBodyInterface();
     BodyID id{handle->BodyId};
     bi.RemoveBody(id);
     bi.DestroyBody(id);
     r.remove<PhysicsBodyHandle>(entity);
     r.remove<BodyPoseCache>(entity);
-    P->BodySubGroups.erase(entity);
-    P->JointsDirty = true;
+    s.BodySubGroups.erase(entity);
+    s.JointsDirty = true;
 }
 
-void PhysicsWorld::ApplyShape(const entt::registry &r, entt::entity entity) {
-    const auto *handle = r.try_get<const PhysicsBodyHandle>(entity);
-    if (!handle) return;
-    const auto built = BuildBodyShape(r, entity, P->FilterRef.GetPtr());
-    if (!built.Shape) return;
-    MassProperties inner_mass_props;
-    const auto *t = r.try_get<const WorldTransform>(entity);
-    const auto world_scale = t ? t->S : vec3{1};
-    const auto shape = WrapCenterOfMass(built.Shape, built.IsSensor ? nullptr : r.try_get<const PhysicsMotion>(entity), world_scale, inner_mass_props);
-    // updateMassProperties=false: preserves explicit Mass/Inertia overrides and avoids
-    // GetMassProperties() on shapes that return zero inertia (TriangleMesh, MeshShape).
-    // ApplyMassPropertiesFromShape re-derives mass props with the right guards.
-    P->System.GetBodyInterface().SetShape(BodyID{handle->BodyId}, shape, /*updateMassProperties=*/false, EActivation::Activate);
-    ApplyMassPropertiesFromShape(r, entity);
-}
-
-void PhysicsWorld::ApplyMassPropertiesFromShape(const entt::registry &r, entt::entity entity) {
+void ApplyMassPropertiesFromShape(PhysicsState &s, const entt::registry &r, entt::entity entity) {
     const auto *handle = r.try_get<const PhysicsBodyHandle>(entity);
     const auto *motion = r.try_get<const PhysicsMotion>(entity);
     if (!handle || !motion) return;
     if (motion->InertiaDiagonal) return; // explicit override wins
     if (motion->Mass == 0.0f) return; // KHR §128 infinite mass — handled separately
 
-    BodyLockWrite lock(P->System.GetBodyLockInterface(), BodyID{handle->BodyId});
+    BodyLockWrite lock(s.System.GetBodyLockInterface(), BodyID{handle->BodyId});
     if (!lock.Succeeded()) return;
     auto &body = lock.GetBody();
     if (!body.IsDynamic()) return; // sensors, static, kinematic skip
@@ -1022,12 +965,28 @@ void PhysicsWorld::ApplyMassPropertiesFromShape(const entt::registry &r, entt::e
     body.GetMotionProperties()->SetMassProperties(EAllowedDOFs::All, props);
 }
 
-void PhysicsWorld::ApplyMotion(const entt::registry &r, entt::entity entity) {
+void ApplyShape(PhysicsState &s, const entt::registry &r, entt::entity entity) {
+    const auto *handle = r.try_get<const PhysicsBodyHandle>(entity);
+    if (!handle) return;
+    const auto built = BuildBodyShape(r, entity, s.FilterRef.GetPtr());
+    if (!built.Shape) return;
+    MassProperties inner_mass_props;
+    const auto *t = r.try_get<const WorldTransform>(entity);
+    const auto world_scale = t ? t->S : vec3{1};
+    const auto shape = WrapCenterOfMass(built.Shape, built.IsSensor ? nullptr : r.try_get<const PhysicsMotion>(entity), world_scale, inner_mass_props);
+    // updateMassProperties=false: preserves explicit Mass/Inertia overrides and avoids
+    // GetMassProperties() on shapes that return zero inertia (TriangleMesh, MeshShape).
+    // ApplyMassPropertiesFromShape re-derives mass props with the right guards.
+    s.System.GetBodyInterface().SetShape(BodyID{handle->BodyId}, shape, /*updateMassProperties=*/false, EActivation::Activate);
+    ApplyMassPropertiesFromShape(s, r, entity);
+}
+
+void ApplyMotion(PhysicsState &s, const entt::registry &r, entt::entity entity) {
     const auto *handle = r.try_get<const PhysicsBodyHandle>(entity);
     const auto *motion = r.try_get<const PhysicsMotion>(entity);
     if (!handle || !motion) return;
 
-    auto &bi = P->System.GetBodyInterface();
+    auto &bi = s.System.GetBodyInterface();
     const BodyID id{handle->BodyId};
 
     // Kinematic toggle is a motion-type flip (Dynamic ↔ Kinematic, both stay in Layers::Moving).
@@ -1037,7 +996,7 @@ void PhysicsWorld::ApplyMotion(const entt::registry &r, entt::entity entity) {
     bi.SetGravityFactor(id, motion->GravityFactor);
 
     {
-        BodyLockWrite lock(P->System.GetBodyLockInterface(), id);
+        BodyLockWrite lock(s.System.GetBodyLockInterface(), id);
         if (!lock.Succeeded()) return;
         auto &body = lock.GetBody();
         if (!body.IsDynamic() && !body.IsKinematic()) return;
@@ -1055,22 +1014,22 @@ void PhysicsWorld::ApplyMotion(const entt::registry &r, entt::entity entity) {
 
     // CenterOfMass (set or cleared) requires SetShape with a refreshed OffsetCenterOfMassShape wrapper.
     // ApplyShape also re-derives mass props from the new shape for the no-override case.
-    ApplyShape(r, entity);
+    ApplyShape(s, r, entity);
 }
 
-void PhysicsWorld::ApplyMaterial(const entt::registry &r, entt::entity entity) {
+void ApplyMaterial(PhysicsState &s, const entt::registry &r, entt::entity entity) {
     const auto *material = r.try_get<const ColliderMaterial>(entity);
     if (!material) return;
 
     if (const auto owner = FindCompoundParentBody(r, entity); owner != entt::null) {
         // Child collider: leaf UserData lives inside the parent compound shape — rebuild it.
-        ApplyShape(r, owner);
+        ApplyShape(s, r, owner);
         return;
     }
     const auto *handle = r.try_get<const PhysicsBodyHandle>(entity);
     if (!handle) return;
 
-    auto &bi = P->System.GetBodyInterface();
+    auto &bi = s.System.GetBodyInterface();
     const BodyID id{handle->BodyId};
 
     const auto mat_entity = material->PhysicsMaterialEntity;
@@ -1081,13 +1040,13 @@ void PhysicsWorld::ApplyMaterial(const entt::registry &r, entt::entity entity) {
     bi.SetRestitution(id, m.Restitution);
 
     const auto filter_entity = ResolveFilterEntity(r, material->CollisionFilterEntity);
-    if (P->FilterRef) {
-        if (const auto it = P->BodySubGroups.find(entity); it != P->BodySubGroups.end()) {
-            P->FilterRef->SetBodyFilter(it->second, filter_entity);
+    if (s.FilterRef) {
+        if (const auto it = s.BodySubGroups.find(entity); it != s.BodySubGroups.end()) {
+            s.FilterRef->SetBodyFilter(it->second, filter_entity);
         }
     }
 
-    BodyLockWrite lock(P->System.GetBodyLockInterface(), id);
+    BodyLockWrite lock(s.System.GetBodyLockInterface(), id);
     if (lock.Succeeded()) {
         auto &body = lock.GetBody();
         auto *leaf = const_cast<Shape *>(body.GetShape());
@@ -1100,60 +1059,59 @@ void PhysicsWorld::ApplyMaterial(const entt::registry &r, entt::entity entity) {
     }
 }
 
-void PhysicsWorld::OnShapeChange(entt::registry &r, entt::entity e) {
+void OnShapeChange(PhysicsState &s, entt::registry &r, entt::entity e) {
     if (!r.valid(e)) return;
     const bool has_shape = r.all_of<ColliderShape>(e);
     const bool has_body = r.all_of<PhysicsBodyHandle>(e);
     const auto compound_owner = FindCompoundParentBody(r, e);
     if (!has_shape) {
-        if (has_body) RemoveBody(r, e);
-        else if (compound_owner != entt::null) ApplyShape(r, compound_owner);
+        if (has_body) RemoveBody(s, r, e);
+        else if (compound_owner != entt::null) ApplyShape(s, r, compound_owner);
         return;
     }
-    if (compound_owner != entt::null) ApplyShape(r, compound_owner);
-    else if (has_body) ApplyShape(r, e);
-    else AddBody(r, e);
+    if (compound_owner != entt::null) ApplyShape(s, r, compound_owner);
+    else if (has_body) ApplyShape(s, r, e);
+    else AddBody(s, r, e);
 }
 
-void PhysicsWorld::OnMotionChange(entt::registry &r, entt::entity e) {
+void OnMotionChange(PhysicsState &s, entt::registry &r, entt::entity e) {
     if (!r.valid(e)) return;
     const bool has_motion = r.all_of<PhysicsMotion>(e);
     const bool has_body = r.all_of<PhysicsBodyHandle>(e);
     if (!has_motion) {
-        if (has_body) RemoveBody(r, e);
-        if (r.all_of<ColliderShape>(e)) AddBody(r, e); // demote: rebuild as static
+        if (has_body) RemoveBody(s, r, e);
+        if (r.all_of<ColliderShape>(e)) AddBody(s, r, e); // demote: rebuild as static
         return;
     }
     // Object layer is fixed at body creation. Static lives in NonMoving; Dynamic/Kinematic in Moving.
     // Crossing that boundary needs a full recreate; Dynamic↔Kinematic within Moving can cheap-apply.
     if (has_body) {
         const auto *handle = r.try_get<const PhysicsBodyHandle>(e);
-        const bool is_static = P->System.GetBodyInterface().GetMotionType(BodyID{handle->BodyId}) == EMotionType::Static;
+        const bool is_static = s.System.GetBodyInterface().GetMotionType(BodyID{handle->BodyId}) == EMotionType::Static;
         if (is_static) {
-            RemoveBody(r, e);
-            AddBody(r, e);
+            RemoveBody(s, r, e);
+            AddBody(s, r, e);
         } else {
-            ApplyMotion(r, e);
+            ApplyMotion(s, r, e);
         }
     } else {
-        AddBody(r, e); // motion appeared on an entity that didn't have a body yet
+        AddBody(s, r, e); // motion appeared on an entity that didn't have a body yet
     }
 }
 
-void PhysicsWorld::OnMaterialChange(entt::registry &r, entt::entity e) {
+void OnMaterialChange(PhysicsState &s, entt::registry &r, entt::entity e) {
     if (!r.valid(e) || !r.all_of<ColliderMaterial>(e)) return;
-    ApplyMaterial(r, e);
+    ApplyMaterial(s, r, e);
 }
 
-void PhysicsWorld::OnTriggerChange(entt::registry &r, entt::entity e) {
+void OnTriggerChange(PhysicsState &s, entt::registry &r, entt::entity e) {
     if (!r.valid(e)) return;
     // Body's sensor flag (part of BodyCreationSettings) is baked at create, so any transition requires a full rebuild.
     // AddBody is a no-op when no shape is available.
-    if (r.all_of<PhysicsBodyHandle>(e)) RemoveBody(r, e);
-    AddBody(r, e);
+    if (r.all_of<PhysicsBodyHandle>(e)) RemoveBody(s, r, e);
+    AddBody(s, r, e);
 }
 
-namespace {
 // Deduce the owner class from a data-member pointer
 template<class M> struct ptr_class;
 template<class C, class V> struct ptr_class<V C::*> {
@@ -1179,16 +1137,15 @@ void ClearDanglingRefsFromVector(entt::registry &r, entt::entity deleted) {
         }
     }
 }
-} // namespace
 
-void PhysicsWorld::OnPhysicsMaterialDefChange(entt::registry &r, entt::entity e) {
+void OnPhysicsMaterialDefChange(PhysicsState &s, entt::registry &r, entt::entity e) {
     if (!r.valid(e) || !r.all_of<::PhysicsMaterial>(e)) {
         ClearDanglingRefs<&ColliderMaterial::PhysicsMaterialEntity>(r, e);
         return;
     }
     // Jolt friction is per-body: direct colliders update in place. Compound leaves require a parent rebuild.
     const auto &mat = r.get<const ::PhysicsMaterial>(e);
-    auto &bi = P->System.GetBodyInterface();
+    auto &bi = s.System.GetBodyInterface();
     for (auto [ce, cm] : r.view<const ColliderMaterial>().each()) {
         if (cm.PhysicsMaterialEntity != e) continue;
         if (const auto *bh = r.try_get<const PhysicsBodyHandle>(ce)) {
@@ -1197,117 +1154,189 @@ void PhysicsWorld::OnPhysicsMaterialDefChange(entt::registry &r, entt::entity e)
             bi.SetRestitution(id, mat.Restitution);
             bi.ActivateBody(id);
         } else if (const auto owner = FindCompoundParentBody(r, ce); owner != entt::null) {
-            ApplyShape(r, owner);
+            ApplyShape(s, r, owner);
         }
     }
 }
 
-void PhysicsWorld::OnCollisionSystemDefChange(entt::registry &r, entt::entity e) {
+void OnCollisionSystemDefChange(PhysicsState &s, entt::registry &r, entt::entity e) {
     if (!r.valid(e) || !r.all_of<CollisionSystem>(e)) {
         ClearDanglingRefsFromVector<&CollisionFilter::Systems>(r, e);
         ClearDanglingRefsFromVector<&CollisionFilter::CollideSystems>(r, e);
     }
-    P->FilterRef->Update(r);
+    s.FilterRef->Update(r);
 }
 
-void PhysicsWorld::OnCollisionFilterDefChange(entt::registry &r, entt::entity e) {
+void OnCollisionFilterDefChange(PhysicsState &s, entt::registry &r, entt::entity e) {
     if (!r.valid(e) || !r.all_of<CollisionFilter>(e)) {
         ClearDanglingRefs<&ColliderMaterial::CollisionFilterEntity>(r, e);
         ClearDanglingRefs<&TriggerNodes::CollisionFilterEntity>(r, e);
     }
-    P->FilterRef->Update(r);
+    s.FilterRef->Update(r);
 }
 
-void PhysicsWorld::OnPhysicsJointDefChange(entt::registry &r, entt::entity e) {
+void OnPhysicsJointDefChange(PhysicsState &s, entt::registry &r, entt::entity e) {
     // SixDOFConstraintSettings is baked at Create().
     // No cheap-apply path, so each referencing joint must remove+rebuild its constraint.
     const bool destroyed = !r.valid(e) || !r.all_of<PhysicsJointDef>(e);
     for (auto [je, j] : r.view<const PhysicsJoint>().each()) {
         if (j.JointDefEntity != e) continue;
-        if (auto it = P->ConstraintsByJoint.find(je); it != P->ConstraintsByJoint.end()) {
-            P->System.RemoveConstraint(it->second);
-            P->ConstraintsByJoint.erase(it);
+        if (auto it = s.ConstraintsByJoint.find(je); it != s.ConstraintsByJoint.end()) {
+            s.System.RemoveConstraint(it->second);
+            s.ConstraintsByJoint.erase(it);
         }
-        if (!destroyed) BuildJoint(r, je);
+        if (!destroyed) BuildJoint(s, r, je);
     }
     if (destroyed) ClearDanglingRefs<&PhysicsJoint::JointDefEntity>(r, e);
 }
 
-void PhysicsWorld::EnsureCacheRange(uint32_t start_frame, uint32_t end_frame) {
-    if (start_frame != P->CacheStartFrame || end_frame != P->CacheEndFrame) {
-        P->CacheStartFrame = start_frame;
-        P->CacheEndFrame = end_frame;
-        P->Baked = {};
+void Rebuild(entt::registry &r) {
+    auto &s = r.ctx().get<PhysicsState>();
+    // Clear existing constraints and bodies.
+    for (auto &[_, c] : s.ConstraintsByJoint) s.System.RemoveConstraint(c);
+    s.ConstraintsByJoint.clear();
+    auto &bi = s.System.GetBodyInterface();
+    for (auto [entity, handle] : r.view<PhysicsBodyHandle>().each()) {
+        bi.RemoveBody(BodyID{handle.BodyId});
+        bi.DestroyBody(BodyID{handle.BodyId});
     }
-}
+    r.clear<PhysicsBodyHandle>();
+    r.clear<BodyPoseCache>();
+    s.Baked = {};
+    s.FilterRef->Update(r);
+    s.FilterRef->Reset();
+    s.BodySubGroups.clear();
 
-void PhysicsWorld::ApplySimulationSettings(const PhysicsSimulationSettings &settings) {
-    P->System.SetGravity(ToJolt(settings.Gravity));
-    auto system_settings = P->System.GetPhysicsSettings();
-    system_settings.mNumVelocitySteps = settings.SolverIterations;
-    P->System.SetPhysicsSettings(system_settings);
-}
-
-void PhysicsWorld::BakeFrame(entt::registry &r, const PhysicsSimulationSettings &settings, uint32_t frame, float dt) {
-    // Each collision step integrates (dt * TimeScale) / SubstepsPerFrame seconds of sim time.
-    P->System.Update(dt * settings.TimeScale, settings.SubstepsPerFrame, &P->TempAllocator, &P->JobSystem);
-
-    // Sync Jolt -> ECS WorldTransform only.
-    // PhysicsVelocity is authored-only, live velocity stays in Jolt.
-    // WT is owned by the simulator during sim.
-    // Local Transform is the authored pose, restored on Rebuild (like BKE_rigidbody_sync_transforms).
-    const auto &bi = P->System.GetBodyInterface();
-    const bool record = frame >= P->CacheStartFrame && frame <= P->CacheEndFrame;
-    const auto idx = frame - P->CacheStartFrame;
-    for (auto [entity, handle, cache] : r.view<const PhysicsBodyHandle, BodyPoseCache>().each()) {
-        const BodyID id{handle.BodyId};
-        if (bi.GetMotionType(id) == EMotionType::Static) continue; // No pose change to cache or sync.
-        const auto pos = FromJolt(bi.GetPosition(id));
-        const auto rot = FromJolt(bi.GetRotation(id));
-        if (record) {
-            if (cache.Frames.size() <= idx) cache.Frames.resize(idx + 1);
-            cache.Frames[idx] = CachedPose{pos, rot};
-        }
-        if (!bi.IsActive(id)) continue;
-        r.patch<WorldTransform>(entity, [&](WorldTransform &t) {
-            t.P = pos;
-            t.R = rot;
-        });
-        for (const auto child : Children{&r, entity}) UpdateWorldTransformRecursive(r, child);
+    for (auto [e, _] : r.view<const Transform>().each()) {
+        const auto *node = r.try_get<const SceneNode>(e);
+        if (!node || node->Parent == entt::null) UpdateWorldTransformRecursive(r, e);
     }
-    if (record) P->Baked = frame;
+
+    for (auto entity : r.view<PhysicsMotion>()) AddBody(s, r, entity);
+    for (auto entity : r.view<ColliderShape>()) AddBody(s, r, entity);
+
+    s.JointsDirty = false;
+    for (auto entity : r.view<const PhysicsJoint>()) BuildJoint(s, r, entity);
+
+    s.FilterRef->FinalizeDisabledPairs();
+    s.System.OptimizeBroadPhase();
 }
 
-void PhysicsWorld::RestoreFrame(entt::registry &r, uint32_t frame) {
-    if (frame < P->CacheStartFrame) return;
-    const auto idx = frame - P->CacheStartFrame;
-    auto &bi = P->System.GetBodyInterface();
-    for (auto [entity, handle, cache] : r.view<const PhysicsBodyHandle, const BodyPoseCache>().each()) {
-        if (idx >= cache.Frames.size() || !cache.Frames[idx]) continue; // Body not simulated at this frame.
-        const auto &p = *cache.Frames[idx];
-        // DontActivate: scrub/replay shouldn't wake sleeping bodies.
-        // The cache is the timeline, not a sim resume point. Wakes happen when the solver advances past the frontier.
-        bi.SetPositionAndRotationWhenChanged(BodyID{handle.BodyId}, ToJolt(p.P), ToJolt(p.R), EActivation::DontActivate);
-        r.patch<WorldTransform>(entity, [&](WorldTransform &t) {
-            t.P = p.P;
-            t.R = p.R;
-        });
-        for (const auto child : Children{&r, entity}) UpdateWorldTransformRecursive(r, child);
-    }
-}
-
-std::optional<uint32_t> PhysicsWorld::BakedThrough() const { return P->Baked; }
-bool PhysicsWorld::HasCachedFrame(uint32_t frame) const { return P->Baked && frame > P->CacheStartFrame && frame <= *P->Baked; }
-void PhysicsWorld::ClearCache() { P->Baked = {}; }
+void ClearCache(entt::registry &r) { r.ctx().get<PhysicsState>().Baked = {}; }
 // Stale slots past the new frontier get overwritten on the next bake.
-void PhysicsWorld::InvalidateFromFrame(uint32_t frame) {
-    P->Baked = (frame == 0 || !P->Baked) ? std::nullopt : std::optional{std::min(*P->Baked, frame - 1)};
-}
+bool HasBodies(const entt::registry &r) { return r.ctx().get<PhysicsState>().System.GetNumBodies() > 0; }
+
+} // namespace
 
 namespace physics {
-PhysicsWorld &Init(entt::registry &r) {
-    auto &world = r.ctx().emplace<PhysicsWorld>();
-    world.BindRegistry(r);
+void ApplySimulationSettings(entt::registry &r, const PhysicsSimulationSettings &settings) {
+    auto &s = r.ctx().get<PhysicsState>();
+    s.System.SetGravity(ToJolt(settings.Gravity));
+    auto system_settings = s.System.GetPhysicsSettings();
+    system_settings.mNumVelocitySteps = settings.SolverIterations;
+    s.System.SetPhysicsSettings(system_settings);
+}
+
+std::optional<uint32_t> BakedThrough(const entt::registry &r) { return r.ctx().get<PhysicsState>().Baked; }
+uint32_t BodyCount(const entt::registry &r) { return r.ctx().get<PhysicsState>().System.GetNumBodies(); }
+
+bool DoesFilterAllow(const entt::registry &r, entt::entity source, entt::entity target) {
+    const auto &filter = r.ctx().get<PhysicsState>().FilterRef;
+    return !filter || filter->DirectionalAllows(source, target);
+}
+
+bool AdvancePlayback(entt::registry &r, entt::entity viewport, int from_frame, int to_frame, int range_start_frame, int range_end_frame, float fps, bool range_changed, bool cache_invalid) {
+    if (!reactive<changes::PhysicsSimulationSettings>(r).empty()) {
+        ApplySimulationSettings(r, r.get<const PhysicsSimulationSettings>(viewport));
+    }
+
+    // Range edits invalidate the cache: bake frontier becomes meaningless when bounds shift.
+    if (cache_invalid) {
+        if (HasBodies(r)) ClearCache(r);
+    } else if (range_changed && HasBodies(r)) {
+        ClearCache(r);
+    }
+    if (!HasBodies(r)) return false;
+
+    auto &s = r.ctx().get<PhysicsState>();
+    // Keep the cache frame range in sync with the scrub bounds; shifting bounds resets the bake frontier.
+    if (uint32_t(range_start_frame) != s.CacheStartFrame || uint32_t(range_end_frame) != s.CacheEndFrame) {
+        s.CacheStartFrame = range_start_frame;
+        s.CacheEndFrame = range_end_frame;
+        s.Baked = {};
+    }
+    // Any physics-mutating change invalidates cached future frames so the next play-forward re-bakes.
+    if (!reactive<changes::PhysicsShape>(r).empty() ||
+        !reactive<changes::PhysicsMotion>(r).empty() ||
+        !reactive<changes::PhysicsMaterial>(r).empty() ||
+        !reactive<changes::PhysicsTrigger>(r).empty() ||
+        !reactive<changes::PhysicsJoint>(r).empty() ||
+        !reactive<changes::PhysicsMaterialDef>(r).empty() ||
+        !reactive<changes::CollisionSystemDef>(r).empty() ||
+        !reactive<changes::CollisionFilterDef>(r).empty() ||
+        !reactive<changes::PhysicsJointDef>(r).empty() ||
+        !reactive<changes::PhysicsSimulationSettings>(r).empty()) {
+        // Stale slots past the frontier get overwritten on the next bake.
+        const uint32_t frame = to_frame;
+        s.Baked = (frame == 0 || !s.Baked) ? std::nullopt : std::optional{std::min(*s.Baked, frame - 1)};
+    }
+
+    // The cache is the timeline: bake one step past the frontier, restore within it, or reset at the range start.
+    if (from_frame == to_frame) return false; // playhead didn't move
+    if (to_frame == from_frame + 1 && (!s.Baked || uint32_t(to_frame) > *s.Baked)) {
+        // Bake one new frame. Each collision step integrates (dt * TimeScale) / SubstepsPerFrame seconds of sim time.
+        const auto &settings = r.get<const PhysicsSimulationSettings>(viewport);
+        const float dt = fps > 0 ? 1.f / fps : 1.f / 60.f;
+        s.System.Update(dt * settings.TimeScale, settings.SubstepsPerFrame, &s.TempAllocator, &s.JobSystem);
+        // Sync Jolt -> ECS WorldTransform only. PhysicsVelocity is authored-only; live velocity stays in Jolt.
+        // WT is owned by the simulator during sim; local Transform is the authored pose, restored on Rebuild.
+        const auto &bi = s.System.GetBodyInterface();
+        const uint32_t frame = to_frame;
+        const bool record = frame >= s.CacheStartFrame && frame <= s.CacheEndFrame;
+        const auto idx = frame - s.CacheStartFrame;
+        for (auto [entity, handle, cache] : r.view<const PhysicsBodyHandle, BodyPoseCache>().each()) {
+            const BodyID id{handle.BodyId};
+            if (bi.GetMotionType(id) == EMotionType::Static) continue; // No pose change to cache or sync.
+            const auto pos = FromJolt(bi.GetPosition(id));
+            const auto rot = FromJolt(bi.GetRotation(id));
+            if (record) {
+                if (cache.Frames.size() <= idx) cache.Frames.resize(idx + 1);
+                cache.Frames[idx] = CachedPose{pos, rot};
+            }
+            if (!bi.IsActive(id)) continue;
+            r.patch<WorldTransform>(entity, [&](WorldTransform &t) {
+                t.P = pos;
+                t.R = rot;
+            });
+            for (const auto child : Children{&r, entity}) UpdateWorldTransformRecursive(r, child);
+        }
+        if (record) s.Baked = frame;
+    } else if (s.Baked && uint32_t(to_frame) > s.CacheStartFrame && uint32_t(to_frame) <= *s.Baked) {
+        // Restore a cached frame without re-simulating.
+        const auto idx = uint32_t(to_frame) - s.CacheStartFrame;
+        auto &bi = s.System.GetBodyInterface();
+        for (auto [entity, handle, cache] : r.view<const PhysicsBodyHandle, const BodyPoseCache>().each()) {
+            if (idx >= cache.Frames.size() || !cache.Frames[idx]) continue; // Body not simulated at this frame.
+            const auto &p = *cache.Frames[idx];
+            // DontActivate: scrub/replay shouldn't wake sleeping bodies. The cache is the timeline, not a sim resume point.
+            bi.SetPositionAndRotationWhenChanged(BodyID{handle.BodyId}, ToJolt(p.P), ToJolt(p.R), EActivation::DontActivate);
+            r.patch<WorldTransform>(entity, [&](WorldTransform &t) {
+                t.P = p.P;
+                t.R = p.R;
+            });
+            for (const auto child : Children{&r, entity}) UpdateWorldTransformRecursive(r, child);
+        }
+    } else if (to_frame == range_start_frame) {
+        Rebuild(r); // Reset sim: covers wrap-after-play and user-initiated jump-to-start.
+    } else {
+        return false; // scrub past the bake frontier — hold current pose until play resumes baking
+    }
+    return true;
+}
+
+void Init(entt::registry &r) {
+    auto &state = r.ctx().emplace<PhysicsState>();
+    state.ContactListener.R = &r;
 
     track<changes::PhysicsMotion>(r).on<PhysicsMotion>(On::Create | On::Update | On::Destroy);
     track<changes::PhysicsShape>(r).on<ColliderShape>(On::Create | On::Update | On::Destroy);
@@ -1321,24 +1350,22 @@ PhysicsWorld &Init(entt::registry &r) {
     track<changes::PhysicsJointDef>(r).on<::PhysicsJointDef>(On::Create | On::Update | On::Destroy);
     track<changes::PhysicsSimulationSettings>(r).on<::PhysicsSimulationSettings>(On::Update);
 
-    auto *p = &world;
-    RegisterComponentEventHandler(r, [p](entt::registry &r) {
+    RegisterComponentEventHandler(r, [](entt::registry &r) {
+        auto &s = r.ctx().get<PhysicsState>();
         const bool joint_events = !reactive<changes::PhysicsJoint>(r).empty();
         // Resource def handlers run first so dangling-ref patches fire before per-entity handlers this tick.
-        for (auto e : reactive<changes::PhysicsMaterialDef>(r)) p->OnPhysicsMaterialDefChange(r, e);
-        for (auto e : reactive<changes::CollisionSystemDef>(r)) p->OnCollisionSystemDefChange(r, e);
-        for (auto e : reactive<changes::CollisionFilterDef>(r)) p->OnCollisionFilterDefChange(r, e);
-        for (auto e : reactive<changes::PhysicsJointDef>(r)) p->OnPhysicsJointDefChange(r, e);
-        if (!reactive<changes::PhysicsShape>(r).empty()) p->RecomputeSceneScale(r);
-        for (auto e : reactive<changes::PhysicsShape>(r)) p->OnShapeChange(r, e);
-        for (auto e : reactive<changes::PhysicsMotion>(r)) p->OnMotionChange(r, e);
-        for (auto e : reactive<changes::PhysicsMaterial>(r)) p->OnMaterialChange(r, e);
-        for (auto e : reactive<changes::PhysicsTrigger>(r)) p->OnTriggerChange(r, e);
-        p->FlushJoints(r, joint_events);
+        for (auto e : reactive<changes::PhysicsMaterialDef>(r)) OnPhysicsMaterialDefChange(s, r, e);
+        for (auto e : reactive<changes::CollisionSystemDef>(r)) OnCollisionSystemDefChange(s, r, e);
+        for (auto e : reactive<changes::CollisionFilterDef>(r)) OnCollisionFilterDefChange(s, r, e);
+        for (auto e : reactive<changes::PhysicsJointDef>(r)) OnPhysicsJointDefChange(s, r, e);
+        if (!reactive<changes::PhysicsShape>(r).empty()) RecomputeSceneScale(s, r);
+        for (auto e : reactive<changes::PhysicsShape>(r)) OnShapeChange(s, r, e);
+        for (auto e : reactive<changes::PhysicsMotion>(r)) OnMotionChange(s, r, e);
+        for (auto e : reactive<changes::PhysicsMaterial>(r)) OnMaterialChange(s, r, e);
+        for (auto e : reactive<changes::PhysicsTrigger>(r)) OnTriggerChange(s, r, e);
+        FlushJoints(s, r, joint_events);
     });
-
-    return world;
 }
 
-void Deinit(entt::registry &r) { r.ctx().erase<PhysicsWorld>(); }
+void Deinit(entt::registry &r) { r.ctx().erase<PhysicsState>(); }
 } // namespace physics

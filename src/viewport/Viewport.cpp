@@ -15,8 +15,8 @@
 #include "mesh/Mesh.h"
 #include "object/ExtrasComponents.h"
 #include "object/ObjectOps.h"
+#include "physics/PhysicsSystem.h"
 #include "physics/PhysicsTypes.h"
-#include "physics/PhysicsWorld.h"
 #include "render/DrawState.h"
 #include "render/MaterialComponents.h"
 #include "render/OneShotGpu.h"
@@ -214,7 +214,7 @@ entt::entity InitViewport(entt::registry &r, VulkanResources vc) {
     InitStoreCtx(r, vc);
     auto &slots = r.ctx().get<DescriptorSlots>();
     auto &pipelines = r.ctx().emplace<Pipelines>(vc.Device, vc.PhysicalDevice, slots.GetSetLayout(), slots.GetSet());
-    auto &physics = physics::Init(r);
+    physics::Init(r);
     // Reactive storage subscriptions for deferred once-per-frame processing
     track<changes::TimelineRange>(r).on<TimelineRange>(On::Update);
     track<changes::Selected>(r).on<Selected>(On::Create | On::Destroy);
@@ -306,7 +306,7 @@ entt::entity InitViewport(entt::registry &r, VulkanResources vc) {
     r.emplace<GizmoInteraction>(viewport);
     r.emplace<AnimationTimelineView>(viewport);
     r.emplace<SelectionStale>(viewport); // Initial state: fragments need rendering on first selection use.
-    physics.ApplySimulationSettings(r.emplace<PhysicsSimulationSettings>(viewport));
+    physics::ApplySimulationSettings(r, r.emplace<PhysicsSimulationSettings>(viewport));
 
     buffers.WorkspaceLightsUBO.Update(as_bytes(Defaults::WorkspaceLights));
     ResetObjectPickKeys(buffers);
