@@ -9,6 +9,7 @@
 #include "scene/WorldTransform.h"
 #include "selection/Selection.h"
 #include "selection/SelectionComponents.h"
+#include "viewport/GizmoDrag.h"
 #include "viewport/InteractionComponents.h"
 #include "viewport/ViewportEvents.h"
 #include "viewport/ViewportInteractionState.h"

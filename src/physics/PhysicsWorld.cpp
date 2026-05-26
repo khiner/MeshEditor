@@ -1,6 +1,6 @@
 // All Jolt includes are isolated to this file.
 #include "PhysicsWorld.h"
-#include "Changes.h"
+#include "PhysicsChanges.h"
 #include "PhysicsTypes.h"
 #include "Reactive.h"
 #include "TransformMath.h"

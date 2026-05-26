@@ -10,6 +10,7 @@
 #include "object/ExtrasComponents.h"
 #include "object/ExtrasMesh.h"
 #include "object/ObjectComponents.h"
+#include "object/PendingSync.h"
 #include "physics/PhysicsTypes.h"
 #include "render/GpuBuffers.h"
 #include "render/Instance.h"

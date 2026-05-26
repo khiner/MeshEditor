@@ -1,9 +1,10 @@
 #pragma once
 
-#include "gpu/Transform.h"
 #include "numeric/quat.h"
 #include "numeric/vec3.h"
 #include "numeric/vec4.h"
+
+#include <variant>
 
 // Mutually exclusive structs to track rotation representation.
 // Note: `Transform.R` is the source of truth. These are for slider values only.
@@ -22,14 +23,3 @@ using RotationUiVariant = std::variant<RotationQuat, RotationEuler, RotationAxis
 // Tag: the UI is driving Transform.R this frame — reactive sync should not overwrite RotationUiVariant.
 // Emplaced by the rotation slider UI before setting Transform.R; cleared by ProcessComponentEvents.
 struct RotationUiDriving {};
-
-// Tracks transform at start of gizmo manipulation. If present, actively manipulating.
-struct StartTransform {
-    Transform T;
-    Transform ParentDelta; // Captured parent_world * parent_inverse at drag start (identity if unparented)
-};
-
-// Bone display length captured at drag start (for head/tail partial transforms).
-struct StartBoneLength {
-    float Value;
-};

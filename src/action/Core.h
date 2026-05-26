@@ -6,6 +6,8 @@
 #include <entt/core/type_info.hpp>
 #include <entt/entity/fwd.hpp>
 
+#include <variant>
+
 namespace action {
 template<typename T>
 struct Update {

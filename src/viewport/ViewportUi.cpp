@@ -26,6 +26,7 @@
 #include "selection/SelectionGpu.h"
 #include "ui/FieldEdit.h"
 #include "viewport/FrameState.h"
+#include "viewport/GizmoDrag.h"
 #include "viewport/InteractionComponents.h"
 #include "viewport/ViewportEvents.h"
 #include "viewport/ViewportIcons.h"
