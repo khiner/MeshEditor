@@ -14,7 +14,7 @@
 // the entity-bound form already uses.
 
 #include "action/Action.h"
-#include "action/Core.h"
+#include "action/Build.h"
 #include "scene/Entity.h" // FindActiveEntity
 
 #include <imgui.h>

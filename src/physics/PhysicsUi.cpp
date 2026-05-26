@@ -26,7 +26,7 @@ template<class T>
 void RenderNameEdit(entt::entity e, const std::string &current) {
     char buf[128];
     snprintf(buf, sizeof(buf), "%s", current.c_str());
-    if (InputText("Name", buf, sizeof(buf))) action::Emit(action::physics::SetNameOf<T>(e, std::string{buf}));
+    if (InputText("Name", buf, sizeof(buf))) action::Emit(action::SetNameOf<T>(e, std::string{buf}));
 }
 
 // Deduce owner class from a data-member pointer (entt::entity Owner::*).
@@ -178,7 +178,7 @@ void DrawNamedEntityList(entt::registry &r, const char *id, const char *add_labe
         PopID();
     }
     if (delete_entity != entt::null) action::Emit(action::DestroyEntity{delete_entity});
-    if (Button(add_label)) action::Emit(action::physics::CreateNamedOf<T>(prefix));
+    if (Button(add_label)) action::Emit(action::CreateNamedOf<T>(prefix));
     PopID();
 }
 

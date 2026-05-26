@@ -24,9 +24,6 @@ void ExitLookThrough(entt::registry &r, entt::entity viewport) {
     r.replace<ViewCamera>(viewport, r.get<LookingThrough>(camera).SavedViewCamera);
     r.remove<LookingThrough>(camera);
 }
-
-// Components targeted by the view enum/color Updates (gizmo type/mode, debug channel, clear color).
-using UpdateComponents = action::TypeList<TransformGizmoState, ViewportDisplay, ViewportTheme>;
 } // namespace
 
 namespace action::view {
@@ -168,7 +165,7 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
                     if (a.Mode != ViewportShadingMode::Wireframe) s.FillMode = a.Mode;
                 });
             },
-            [&]<typename Field>(const Update<Field> &a) { ApplyUpdate<UpdateComponents>(r, viewport, a); },
+            [&]<typename Field>(const Update<Field> &a) { ApplyUpdate(r, viewport, a); },
             [&](const Replace<::Camera> &a) { r.emplace_or_replace<::Camera>(a.Entity, a.Value); },
             [&](const ReplaceActive<::Camera> &a) { r.emplace_or_replace<::Camera>(FindActiveEntity(r), a.Value); },
         },

@@ -6,6 +6,8 @@
 #include <entt/core/type_info.hpp>
 #include <entt/entity/fwd.hpp>
 
+#include <string>
+#include <string_view>
 #include <variant>
 
 namespace action {
@@ -17,8 +19,6 @@ struct Update {
     T Value;
 };
 
-// Like Update<T> but carries no entity — the dispatcher resolves the target via FindActiveEntity(R).
-// Separate type (vs an optional field on Update<T>) so we don't waste bytes storing entt::null.
 template<typename T>
 struct UpdateActive {
     entt::id_type ComponentType;
@@ -26,16 +26,12 @@ struct UpdateActive {
     T Value;
 };
 
-// Per-component specializations (e.g. wrapping a heavy payload in unique_ptr to keep the variant
-// alternative small) live in the domain header that owns the component type.
 template<typename T>
 struct Replace {
     entt::entity Entity;
     T Value;
 };
 
-// Like Replace<T> but carries no entity — the dispatcher resolves the target via FindActiveEntity(R).
-// Separate type (vs an optional field on Replace<T>) so we don't waste bytes storing entt::null.
 template<typename T>
 struct ReplaceActive {
     T Value;
@@ -51,19 +47,23 @@ struct SetTag {
     bool Present;
 };
 
-// Like SetTag but carries no entity — the dispatcher resolves the target via FindActiveEntity(R).
-// Separate type (vs an optional field on SetTag) so we don't waste bytes storing entt::null.
 struct SetActiveTag {
     entt::id_type TagType;
     bool Present;
 };
 
-template<typename Tag>
-constexpr SetTag SetTagOf(entt::entity e, bool present) { return {e, entt::type_hash<Tag>::value(), present}; }
+// Set the `Name` field of the component identified by `ComponentType`.
+struct SetName {
+    entt::entity Entity;
+    entt::id_type ComponentType;
+    std::string Name;
+};
 
-// No-entity overload: returns SetActiveTag; dispatcher resolves via FindActiveEntity(R).
-template<typename Tag>
-constexpr SetActiveTag SetTagOf(bool present) { return {entt::type_hash<Tag>::value(), present}; }
+// Create a new entity carrying the component identified by `ComponentType`, named "<Prefix> <ordinal>".
+struct CreateNamed {
+    entt::id_type ComponentType;
+    std::string_view Prefix;
+};
 
 namespace detail {
 template<auto> struct member_traits;
@@ -87,39 +87,6 @@ template<auto... Ms> inline constexpr auto last_v = (Ms, ...);
 template<auto... Ms> using first_class = class_of<first_v<Ms...>>;
 template<auto... Ms> using last_field = field_of<last_v<Ms...>>;
 } // namespace detail
-
-// Ms... walks from the component down to the leaf field being written.
-template<auto... Ms>
-constexpr Update<detail::last_field<Ms...>>
-UpdateOf(entt::entity e, detail::last_field<Ms...> v) {
-    static_assert(sizeof...(Ms) > 0, "UpdateOf requires at least one member pointer");
-    using F = detail::last_field<Ms...>;
-    static_assert(std::is_trivially_copyable_v<F>, "Update<T> is for trivially-copyable fields only; use Replace<T> for complex types");
-    return {e, entt::type_hash<detail::first_class<Ms...>>::value(), uint16_t((detail::MemPtrOffset(Ms) + ...)), std::move(v)};
-}
-
-// No-entity overload: returns UpdateActive<T>; dispatcher resolves via FindActiveEntity(R).
-template<auto... Ms>
-constexpr UpdateActive<detail::last_field<Ms...>>
-UpdateOf(detail::last_field<Ms...> v) {
-    static_assert(sizeof...(Ms) > 0, "UpdateOf requires at least one member pointer");
-    using F = detail::last_field<Ms...>;
-    static_assert(std::is_trivially_copyable_v<F>, "Update<T> is for trivially-copyable fields only; use Replace<T> for complex types");
-    return {entt::type_hash<detail::first_class<Ms...>>::value(), uint16_t((detail::MemPtrOffset(Ms) + ...)), std::move(v)};
-}
-
-// Runtime-pointer escape hatch — for the rare case where a member pointer is computed at runtime
-// (e.g. a generic lambda parameter, a base-to-derived cast). Prefer the NTTP form above.
-template<class C, class F>
-constexpr Update<F> UpdateOf(entt::entity e, F C::*m, F v) {
-    static_assert(std::is_trivially_copyable_v<F>);
-    return {e, entt::type_hash<C>::value(), uint16_t(detail::MemPtrOffset(m)), std::move(v)};
-}
-template<class C, class F>
-constexpr UpdateActive<F> UpdateOf(F C::*m, F v) {
-    static_assert(std::is_trivially_copyable_v<F>);
-    return {entt::type_hash<C>::value(), uint16_t(detail::MemPtrOffset(m)), std::move(v)};
-}
 
 using Core = std::variant<
     Update<bool>, Update<uint8_t>, Update<uint32_t>, Update<float>, Update<double>,

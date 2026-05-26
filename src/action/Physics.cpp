@@ -2,30 +2,12 @@
 #include "action/Dispatch.h"
 #include "scene/Entity.h"
 
-#include <format>
-
-namespace {
-// Components targeted by the physics enum Updates (CollideMode, PhysicsCombineMode, drive types).
-using UpdateComponents = action::TypeList<
-    PhysicsMaterial, CollisionFilter, ColliderMaterial, ColliderPolicy,
-    PhysicsMotion, PhysicsVelocity, PhysicsJoint, TriggerNodes, PhysicsSimulationSettings>;
-using NamedComponents = action::TypeList<PhysicsMaterial, CollisionSystem, CollisionFilter, PhysicsJointDef>;
-} // namespace
-
 namespace action::physics {
 void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
     std::visit(
         overloaded{
-            [&](const CreateNamed &a) {
-                DispatchByTypeHash(NamedComponents{}, a.ComponentType, [&]<typename T> {
-                    r.emplace<T>(r.create(), T{.Name = std::format("{} {}", a.Prefix, r.view<T>().size())});
-                });
-            },
-            [&](const SetName &a) {
-                DispatchByTypeHash(NamedComponents{}, a.ComponentType, [&]<typename T> {
-                    r.patch<T>(a.Entity, [&](T &x) { x.Name = a.Name; });
-                });
-            },
+            [&](const CreateNamed &a) { ApplyCreateNamed(r, a.ComponentType, a.Prefix); },
+            [&](const SetName &a) { ApplySetName(r, a.ComponentType, a.Entity, a.Name); },
             [&](const SetMotionType &a) {
                 using Type = SetMotionType::Type;
                 const auto e = FindActiveEntity(r);
@@ -79,7 +61,7 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
                     vec.erase(vec.begin() + a.Index);
                 });
             },
-            [&]<typename Field>(const Update<Field> &a) { ApplyUpdate<UpdateComponents>(r, viewport, a); },
+            [&]<typename Field>(const Update<Field> &a) { ApplyUpdate(r, viewport, a); },
             [&](const Replace<PhysicsMotion> &a) { r.emplace_or_replace<PhysicsMotion>(a.Entity, *a.Value); },
             [&](const ReplaceActive<PhysicsMotion> &a) { r.emplace_or_replace<PhysicsMotion>(FindActiveEntity(r), *a.Value); },
         },

@@ -18,12 +18,6 @@ struct ReplaceActive<PhysicsMotion> {
 } // namespace action
 
 namespace action::physics {
-struct SetName {
-    entt::entity Entity;
-    entt::id_type ComponentType;
-    std::string Name;
-};
-
 // SetMotionType / SetColliderShape / AddTrigger / RemoveTriggerNodes target the active entity.
 struct SetMotionType {
     enum class Type : uint8_t {
@@ -43,17 +37,6 @@ struct SetColliderShape {
 
 struct AddTrigger {};
 struct RemoveTriggerNodes {};
-
-// Create a new named entity carrying component `ComponentType`, named "<Prefix> <ordinal>".
-struct CreateNamed {
-    entt::id_type ComponentType;
-    std::string_view Prefix;
-};
-
-template<typename T>
-inline SetName SetNameOf(entt::entity e, std::string name) { return {e, entt::type_hash<T>::value(), std::move(name)}; }
-template<typename T>
-constexpr CreateNamed CreateNamedOf(std::string_view prefix) { return {entt::type_hash<T>::value(), prefix}; }
 
 // `Add=true` appends iff not present; `Add=false` erases all occurrences.
 struct ToggleFilterEntity {

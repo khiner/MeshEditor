@@ -19,9 +19,6 @@ using std::ranges::to;
 
 namespace {
 
-// Components targeted by Update<std::optional<uint32_t>> (active material variant).
-using UpdateComponents = action::TypeList<MaterialVariants>;
-
 entt::entity DuplicateOne(entt::registry &r, entt::entity e, bool &was_mesh_duplicate) {
     auto &meshes = r.ctx().get<MeshStore>();
     auto &buffers = r.ctx().get<GpuBuffers>();
@@ -240,7 +237,7 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
                 if (a.Mask != 0u) r.emplace_or_replace<PbrMeshFeatures>(e, a.Mask);
                 else r.remove<PbrMeshFeatures>(e);
             },
-            [&]<typename Field>(const Update<Field> &a) { ApplyUpdate<UpdateComponents>(r, viewport, a); },
+            [&]<typename Field>(const Update<Field> &a) { ApplyUpdate(r, viewport, a); },
             [&]<typename T>(const Replace<T> &a) { r.emplace_or_replace<T>(a.Entity, a.Value); },
             [&](const ReplaceActive<PunctualLight> &a) {
                 const auto e = FindActiveEntity(r);
