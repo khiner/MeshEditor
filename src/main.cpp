@@ -64,9 +64,7 @@ void RenderFrame(vk::Device device, vk::Queue queue, ImGui_ImplVulkanH_Window &w
     command_buffer.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
     constexpr static vk::ClearValue clear_color{{0.45f, 0.55f, 0.60f, 1.f}};
     command_buffer.beginRenderPass({wd.RenderPass, fd.Framebuffer, {{0, 0}, {uint32_t(wd.Width), uint32_t(wd.Height)}}, 1, &clear_color}, vk::SubpassContents::eInline);
-    // Record dear imgui primitives into command buffer
     ImGui_ImplVulkan_RenderDrawData(draw_data, fd.CommandBuffer);
-    // Submit command buffer
     command_buffer.endRenderPass();
     command_buffer.end();
 
@@ -273,17 +271,14 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
         int w, h;
         SDL_GetWindowSize(window, &w, &h);
 
-        // Check for WSI support
         if (auto res = vc->PhysicalDevice.getSurfaceSupportKHR(vc->QueueFamily, wd.Surface); res != VK_TRUE) {
             throw std::runtime_error("Error no WSI support on physical device 0\n");
         }
 
-        // Select surface format.
         const VkFormat requestSurfaceImageFormat[]{VK_FORMAT_B8G8R8A8_UNORM, VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_B8G8R8_UNORM, VK_FORMAT_R8G8B8_UNORM};
         const VkColorSpaceKHR requestSurfaceColorSpace = VK_COLORSPACE_SRGB_NONLINEAR_KHR;
         wd.SurfaceFormat = ImGui_ImplVulkanH_SelectSurfaceFormat(vc->PhysicalDevice, wd.Surface, requestSurfaceImageFormat, (size_t)IM_COUNTOF(requestSurfaceImageFormat), requestSurfaceColorSpace);
 
-        // Select present mode.
 #ifdef IMGUI_UNLIMITED_FRAME_RATE
         VkPresentModeKHR present_modes[] = {VK_PRESENT_MODE_MAILBOX_KHR, VK_PRESENT_MODE_IMMEDIATE_KHR, VK_PRESENT_MODE_FIFO_KHR};
 #else
@@ -293,7 +288,6 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
         ImGui_ImplVulkanH_CreateOrResizeWindow(*vc->Instance, vc->PhysicalDevice, *vc->Device, &wd, vc->QueueFamily, nullptr, w, h, MinImageCount, 0);
     }
 
-    // Setup ImGui context.
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     ImPlot::CreateContext();
@@ -307,7 +301,6 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
 
     StyleColorsDark();
 
-    // Setup Platform/Renderer backends
     ImGui_ImplSDL3_InitForVulkan(window);
     ImGui_ImplVulkan_InitInfo init_info{
         .ApiVersion = VkApiVersion,
@@ -405,7 +398,6 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
         const float elapsed = recording_mode ? float(CapturedFrameCount(r, viewport)) / float(record_fps) : elapsed_play_time;
         if (play_duration > 0 && elapsed >= play_duration) done = true;
 
-        // Resize swap chain?
         if (RebuildSwapchain) {
             int w, h;
             SDL_GetWindowSize(window, &w, &h);
@@ -417,7 +409,6 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
             }
         }
 
-        // Start the ImGui frame.
         ImGui_ImplVulkan_NewFrame();
         ImGui_ImplSDL3_NewFrame();
         elapsed_play_time += io.DeltaTime;
@@ -704,7 +695,6 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
         }
     }
 
-    // Cleanup
     vc->Device->waitIdle();
 
     audio_device.Uninit();

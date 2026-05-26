@@ -123,7 +123,6 @@ public:
         addUiItem(ItemType::VBargraph, label, zone, min, max);
     }
 
-    // Soundfile
     void addSoundfile(const char *, const char *, Soundfile **) override {}
 
     // Metadata declaration

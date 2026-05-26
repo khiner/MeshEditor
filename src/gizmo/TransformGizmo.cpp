@@ -816,7 +816,6 @@ LocalTransformDelta GetLocalTransformDelta(const ViewFrame &f, const GizmoIntera
     const auto mouse_plane_start = g.Start->MouseRayWs(IntersectPlane(g.Start->MouseRayWs, plane));
     if (type == TransformType::Translate) return {.P = mouse_plane - mouse_plane_start};
 
-    // Rotation
     if (op == Trackball) return {.RotationYawPitch = (f.MousePx - g.Start->MousePx) / SizeToPx(f, Style.RotationCircleSize)};
 
     // Axis/Screen rotation on plane
@@ -967,7 +966,6 @@ std::optional<Result> Interact(GizmoInteraction &g, const GizmoTransform &transf
                 g.Delta.S = s;
                 return Result{ts, {.S = s}};
             }
-            // Rotation
             g.Delta.RotationAngle = value * float(M_PI) / 180.f;
             if (op == Trackball) {
                 g.Delta.RotationYawPitch = {g.Delta.RotationAngle, 0};

@@ -254,8 +254,8 @@ std::expected<Image, std::string> ReadImage(const fastgltf::Asset &asset, uint32
                 image_path = image_path.lexically_normal();
                 auto bytes = ReadFileBytes(image_path);
                 if (!bytes) return std::unexpected{std::move(bytes.error())};
-                // Hold bytes only until upload — ProcessComponentEvents clears them after
-                // materialization since SourceAbsPath is the persistence for external URIs.
+                // Hold bytes only until upload — they're cleared once the texture materializes,
+                // since SourceAbsPath is the persistence for external URIs.
                 image_result.Bytes = std::move(*bytes);
                 image_result.MimeType = ToMimeType(uri.mimeType);
                 image_result.SourceHadMimeType = uri.mimeType != fastgltf::MimeType::None;
@@ -1364,9 +1364,6 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
         source_scenes.emplace_back(gltf::SourceScene{.Name = std::string{fg_scene.name}, .RootNodeIndices = std::move(roots)});
     }
 
-    // Build SourceAssets in-place, no local intermediate vectors. The struct lives on
-    // viewport for the rest of the load (and beyond — needed for save round-trip), and the
-    // resolve_texture_slot lambda below reads samplers/images/textures via this stored ref.
     gltf::SourceAssets source_assets{
         .Copyright = asset.assetInfo ? std::string{asset.assetInfo->copyright} : std::string{},
         .Generator = asset.assetInfo ? std::string{asset.assetInfo->generator} : std::string{},
@@ -1414,9 +1411,9 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
         });
     }
 
-    // Per source material: PBRMaterial (texture slots are gltf indices here; remapped to bindless
-    // slots in the emit loop below) + the lossy delta `MaterialSourceMeta` carries for round-trip.
-    // Trailing entry is the synthetic "DefaultMaterial" fallback (see below).
+    // Parallel per-material arrays (+ a trailing fallback entry, below): the render PBRMaterial, and
+    // the source data lost in conversion that lets save rebuild the original. PBRMaterial texture
+    // slots are gltf indices here, remapped to bindless slots in the emit loop below.
     std::vector<PBRMaterial> source_materials;
     source_materials.reserve(asset.materials.size() + 1u);
     std::vector<MaterialSourceMeta> material_metas;
@@ -1582,11 +1579,9 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
             local_transforms[node_index] = Transform{ToVec3(translation), glm::normalize(ToQuat(rotation)), ToVec3(scale)};
         }
     }
-    // Traverse every scene; union into a single InScene mask so objects from any scene get full
-    // entity creation. World transforms come from the default scene first (so its hierarchy wins
-    // when a node appears in multiple scenes), with other scenes filling in nodes the default omits.
-    // node_to_scene_mask records which scenes each node belongs to (bit s = scene s); used after
-    // entity creation to hide objects that aren't in the active scene.
+    // Union all scenes so every scene's objects get created.
+    // The default scene goes first so its hierarchy wins for nodes shared across scenes.
+    // node_to_scene_mask (bit s = scene s) later hides objects outside the active scene.
     SceneTraversalData traversal{.InScene = std::vector(asset.nodes.size(), false), .WorldTransforms = std::vector(asset.nodes.size(), I4)};
     std::vector<uint32_t> node_to_scene_mask(asset.nodes.size(), 0u);
     const auto merge_scene = [&](uint32_t si) {
@@ -1694,10 +1689,8 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
         }
     }
 
-    // Load every source mesh in index order, so source_meshes[i] aligns with asset.meshes[i].
-    // This preserves node.meshIndex values on round-trip. Empty-geometry meshes still get a
-    // slot (Triangles/Lines/Points all nullopt), and node traversal below checks for geometry
-    // presence before pointing a Node at one.
+    // Load meshes in index order so source_meshes[i] aligns with asset.meshes[i], preserving node.meshIndex on round-trip.
+    // Empty-geometry meshes still get a slot (all nullopt), so node traversal below checks for geometry before pointing a Node at one.
     std::unordered_map<uint32_t, uint32_t> mesh_index_map;
     std::vector<MeshData> source_meshes;
     source_meshes.reserve(asset.meshes.size());
@@ -1706,9 +1699,8 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
         if (!ensured) return std::unexpected{std::move(ensured.error())};
     }
 
-    // Per-node physics conversion (only for nodes carrying KHR_physics_rigid_bodies). All other
-    // per-node info — local/world transform, parents/children, name, mesh/skin/camera/light refs —
-    // is read at the consumer site directly from `asset.nodes[node_index]` / `parents` / etc.
+    // Convert physics only for nodes carrying KHR_physics_rigid_bodies.
+    // Other per-node info is read directly from asset.nodes/parents at the consumer site, so it needs no staging here.
     std::vector<NodePhysics> source_node_physics(asset.nodes.size());
     for (uint32_t node_index = 0; node_index < asset.nodes.size(); ++node_index) {
         const auto &source_node = asset.nodes[node_index];
@@ -1832,8 +1824,7 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
         }
     }
 
-    // Quick scan: any skin with at least one valid joint reference and used_skin[i] is usable
-    // by the merged build/consume loop below. Used only for the early-exit guard.
+    // Any skin with at least one valid joint reference and used_skin[i] is usable by the merged build/consume loop below.
     const bool any_usable_skin = [&] {
         for (uint32_t i = 0; i < asset.skins.size(); ++i) {
             if (!used_skin[i]) continue;
@@ -1895,9 +1886,8 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
         return texture.DdsImageIndex;
     };
 
-    // Finalize SourceAssets: extensions/variants lists, IBL, MaterialMetas (built alongside
-    // source_materials above). Scenes/ActiveSceneIndex were populated up front; emplace and bind
-    // a const ref for downstream lookups.
+    // Fill in the remaining SourceAssets fields (extensions, IBL, MaterialMetas), then emplace and bind a const ref.
+    // Downstream lookups read through that ref, so it must outlive the rest of the load.
     auto source_ibl = ConvertIBL(asset, scene_index);
     source_assets.ImageBasedLight = source_ibl;
     if (source_assets.Scenes.size() > 1) source_assets.NodeSceneMasks = node_to_scene_mask;
@@ -2062,8 +2052,7 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
         pending.Items.insert(pending.Items.end(), std::make_move_iterator(new_pending_textures.begin()), std::make_move_iterator(new_pending_textures.end()));
     }
 
-    // Pre-reserve MeshStore arenas to avoid O(N) reallocations during bulk mesh creation.
-    {
+    { // Pre-reserve MeshStore arenas to avoid O(N) reallocations during bulk mesh creation.
         auto plan = [&](const std::optional<::MeshData> &data) { if (data) ctx.Meshes.PlanCreate(*data); };
         for (const auto &scene_mesh : source_meshes) {
             if (scene_mesh.Triangles) {
@@ -2076,28 +2065,27 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
         ctx.Meshes.CommitReserves();
     }
 
-    std::vector<entt::entity> mesh_entities;
-    mesh_entities.reserve(source_meshes.size());
-    // Per-mesh morph summary for later instance-component setup. Holds only what's needed
-    // (TargetCount + DefaultWeights) — avoids deep-copying the full delta arrays.
     struct MorphSummary {
         uint32_t TargetCount{};
         std::vector<float> DefaultWeights;
     };
-    std::vector<MorphSummary> mesh_morphs;
-    mesh_morphs.reserve(source_meshes.size());
-    // Per-mesh: optional line entity + optional point entity
     struct ExtraPrimitiveEntities {
         entt::entity Lines{entt::null}, Points{entt::null};
     };
+
+    std::vector<entt::entity> mesh_entities;
+    mesh_entities.reserve(source_meshes.size());
+
+    std::vector<MorphSummary> mesh_morphs;
+    mesh_morphs.reserve(source_meshes.size());
+
     std::vector<ExtraPrimitiveEntities> extra_entities_per_mesh(source_meshes.size());
     for (uint32_t mi = 0; mi < source_meshes.size(); ++mi) {
         auto &scene_mesh = source_meshes[mi];
         entt::entity mesh_entity = entt::null;
         if (scene_mesh.Triangles) {
-            // Detect PBR extension features before material index remapping. `source_materials`
-            // entries hold pre-remap gltf texture indices; the test below only checks for
-            // InvalidSlot, which is identical pre/post remap.
+            // Must run before the remap loop below overwrites MaterialIndices, since this indexes source_materials by gltf index.
+            // The texture tests only check for InvalidSlot, which survives slot remapping, so reading pre-remap slots is fine.
             PbrFeatureMask mesh_pbr_mask{0};
             for (const auto gltf_mat_idx : scene_mesh.TrianglePrimitives.MaterialIndices) {
                 if (gltf_mat_idx < source_materials.size()) {
@@ -2394,9 +2382,7 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
         }
     }
 
-    // Build + consume each skin in a single pass. Skin construction needs `parents`,
-    // `local_transforms`, `traversal`, `nearest_object_ancestor` (all set up earlier) and the
-    // already-emitted `object_entities_by_node` / `scene_nodes_by_index` (set up just above).
+    // Build and consume each skin in one pass
     std::unordered_set<uint32_t> joint_node_indices;
     for (uint32_t skin_index = 0; skin_index < asset.skins.size(); ++skin_index) {
         if (!used_skin[skin_index]) continue;
@@ -2428,8 +2414,7 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
         // AddBone/FinalizeStructure consume joints in this parent-before-child order.
 
         const auto skeleton_node_index = ToIndex(skin.skeleton, asset.nodes.size());
-        // Deterministic armature source anchor: explicit skin.skeleton if present,
-        // otherwise the computed joint ancestry root. Do not synthesize extra roots.
+        // Anchor must be deterministic and must not synthesize new roots.
         const auto anchor_node_index = skeleton_node_index ? skeleton_node_index : ComputeCommonAncestor(*ordered_joint_nodes, parents);
         const auto parent_object_node_index = (anchor_node_index && traversal.InScene[*anchor_node_index]) ? nearest_object_ancestor[*anchor_node_index] : std::optional<uint32_t>{};
         auto inverse_bind_matrices = LoadInverseBindMatrices(asset, skin, ordered_joint_nodes->size());
@@ -2520,7 +2505,7 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
             return std::unexpected{std::format("glTF import failed '{}': skin {} is used but no mesh instances were emitted for skin binding.", source_path.string(), skin_index)};
         }
 
-        // Create pose state — GPU deform buffer allocation deferred to ProcessComponentEvents.
+        // Create pose state — GPU deform buffer allocation is deferred until later.
         const auto bone_count = armature.Bones.size();
         r.emplace<ArmaturePoseState>(
             armature_data_entity,
@@ -2618,7 +2603,7 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
     }
 
     // Set up morph weight state for mesh instances with morph targets.
-    // GPU allocation deferred to ProcessComponentEvents (GpuWeightRange left as default {0,0}).
+    // GPU allocation is deferred until later (GpuWeightRange left as default {0,0}).
     // Build a map: node_index -> mesh instance entity, for resolving weight animation channels.
     std::unordered_map<uint32_t, entt::entity> morph_instance_by_node;
     for (const auto &object : source_objects) {
@@ -3317,7 +3302,6 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         }
     }
 
-    // Samplers
     asset.samplers.reserve(sa.Samplers.size());
     for (const auto &s : sa.Samplers) {
         asset.samplers.emplace_back(fastgltf::Sampler{
@@ -3455,7 +3439,6 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         }
     }
 
-    // Textures
     asset.textures.reserve(sa.Textures.size());
     for (const auto &t : sa.Textures) {
         asset.textures.emplace_back(fastgltf::Texture{
@@ -4068,7 +4051,6 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             continue;
         }
 
-        // Refs
         fastgltf::Optional<std::size_t> mesh_index, camera_index, light_index, skin_index;
         if (const auto *inst = r.try_get<const Instance>(entity)) {
             if (const auto it = mesh_entity_to_index.find(inst->Entity); it != mesh_entity_to_index.end()) mesh_index = it->second;
@@ -4081,7 +4063,6 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             }
         }
 
-        // Name
         std::string node_name;
         if (!r.all_of<SourceEmptyName>(entity)) {
             if (const auto *son = r.try_get<const SourceObjectName>(entity)) node_name = son->Value;
@@ -4144,7 +4125,6 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             if (!any_t && !any_r && !any_s) add_vec3("TRANSLATION", translations);
         }
 
-        // Physics
         const auto *motion = r.try_get<const PhysicsMotion>(entity);
         const auto *velocity = r.try_get<const PhysicsVelocity>(entity);
         const auto *cs = r.try_get<const ColliderShape>(entity);
@@ -4300,7 +4280,6 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
     asset.extensionsRequired.reserve(sa.ExtensionsRequired.size());
     for (const auto &e : sa.ExtensionsRequired) asset.extensionsRequired.emplace_back(e);
 
-    // extensionsUsed
     if (std::ranges::any_of(asset.nodes, [](const auto &n) { return !n.visible; })) asset.extensionsUsed.emplace_back("KHR_node_visibility");
     if (!asset.lights.empty()) asset.extensionsUsed.emplace_back("KHR_lights_punctual");
     if (uses_gpu_instancing) asset.extensionsUsed.emplace_back("EXT_mesh_gpu_instancing");

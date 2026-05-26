@@ -865,7 +865,6 @@ void DrawObjectAudioControls(
 
     if (model != SoundVerticesModel::Modal) return;
 
-    // Modal
     if (!excitable || !modal_modes) return;
 
     static std::optional<size_t> hovered_mode_index;

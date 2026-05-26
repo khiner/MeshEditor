@@ -627,7 +627,6 @@ static void RenderEntityControls(entt::registry &r, entt::entity viewport, entt:
                     return enabled;
                 };
 
-                // Transmission
                 if (feature_toggle("Transmission", PbrFeature::Transmission)) {
                     SeparatorText("Transmission");
                     material_changed |= SliderFloat("Transmission factor", &material.Transmission.Factor, 0.f, 1.f);
@@ -640,7 +639,6 @@ static void RenderEntityControls(entt::registry &r, entt::entity viewport, entt:
                     material_changed |= DragFloat("Attenuation distance", &material.Volume.AttenuationDistance, 0.01f, 0.f, 0.f, material.Volume.AttenuationDistance <= 0.f ? "Infinite" : "%.3f m");
                 }
 
-                // Diffuse transmission
                 if (feature_toggle("Diffuse transmission", PbrFeature::DiffuseTrans)) {
                     SeparatorText("Diffuse transmission");
                     material_changed |= SliderFloat("Diffuse transmission factor", &material.DiffuseTransmission.Factor, 0.f, 1.f);
@@ -649,7 +647,6 @@ static void RenderEntityControls(entt::registry &r, entt::entity viewport, entt:
                     material_changed |= edit_texture_info("Diffuse transmission color", material.DiffuseTransmission.ColorTexture);
                 }
 
-                // Clearcoat
                 if (feature_toggle("Clearcoat", PbrFeature::Clearcoat)) {
                     SeparatorText("Clearcoat");
                     material_changed |= SliderFloat("Clearcoat factor", &material.Clearcoat.Factor, 0.f, 1.f);
@@ -660,7 +657,6 @@ static void RenderEntityControls(entt::registry &r, entt::entity viewport, entt:
                     material_changed |= SliderFloat("Clearcoat normal scale", &material.Clearcoat.NormalScale, -2.f, 2.f);
                 }
 
-                // Anisotropy
                 if (feature_toggle("Anisotropy", PbrFeature::Anisotropy)) {
                     SeparatorText("Anisotropy");
                     material_changed |= SliderFloat("Anisotropy strength", &material.Anisotropy.Strength, 0.f, 1.f);
@@ -668,7 +664,6 @@ static void RenderEntityControls(entt::registry &r, entt::entity viewport, entt:
                     material_changed |= edit_texture_info("Anisotropy", material.Anisotropy.Texture);
                 }
 
-                // Sheen
                 if (feature_toggle("Sheen", PbrFeature::Sheen)) {
                     SeparatorText("Sheen");
                     material_changed |= ColorEdit3("Sheen color", &material.Sheen.ColorFactor.x);
@@ -677,7 +672,6 @@ static void RenderEntityControls(entt::registry &r, entt::entity viewport, entt:
                     material_changed |= edit_texture_info("Sheen roughness", material.Sheen.RoughnessTexture);
                 }
 
-                // Iridescence
                 if (feature_toggle("Iridescence", PbrFeature::Iridescence)) {
                     SeparatorText("Iridescence");
                     material_changed |= SliderFloat("Iridescence factor", &material.Iridescence.Factor, 0.f, 1.f);

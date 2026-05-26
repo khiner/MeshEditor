@@ -440,7 +440,6 @@ void RecordRenderCommandBuffer(entt::registry &r, entt::entity viewport, vk::Com
             AppendExtrasDraw(r, buffers.Instances, draw_list, draw.ExtrasLine, [](auto &, const auto &) {});
         }
 
-        // Point batch
         draw.Point = draw_list.BeginBatch();
         for (const auto &e : mesh_entities) {
             if (e.IsBone) continue;
