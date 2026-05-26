@@ -11,6 +11,7 @@
 #include "animation/AnimationTimeline.h"
 #include "animation/MorphWeightState.h"
 #include "armature/Armature.h"
+#include "armature/ArmatureComponents.h"
 #include "audio/SoundVertices.h"
 #include "gltf/GltfScene.h"
 #include "mesh/MeshStore.h"

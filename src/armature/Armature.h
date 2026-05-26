@@ -1,6 +1,7 @@
 #pragma once
 
-#include "ArmatureComponents.h"
+#include "BoneConstraint.h"
+#include "armature/BoneId.h"
 #include "gpu/Transform.h"
 #include "numeric/mat3.h"
 
@@ -48,12 +49,6 @@ struct Armature {
     void RecomputeRestWorld(); // Recompute RestWorld/InvRestWorld from RestLocal (no reordering).
     void RecomputeInverseBindMatrices(); // Update IBMs from current RestWorld after rest pose edits.
 };
-
-// Returns armature entity if entity is an armature or a sub-element of one
-entt::entity FindArmatureObject(const entt::registry &, entt::entity);
-
-// Returns entt::null if no bone is active
-entt::entity FindActiveBone(const entt::registry &);
 
 std::vector<uint32_t> CollectBonesForDeletion(const entt::registry &, entt::entity arm_obj_entity);
 

@@ -9,6 +9,7 @@
 #include "VideoRecorder.h"
 #include "animation/AnimationTimeline.h"
 #include "armature/ArmatureComponents.h"
+#include "armature/BoneConstraint.h"
 #include "audio/SoundVertices.h"
 #include "gizmo/GizmoInteraction.h"
 #include "mesh/Mesh.h"

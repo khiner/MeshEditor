@@ -1,7 +1,6 @@
 #include "action/Selection.h"
 #include "Variant.h"
-#include "armature/Armature.h"
-#include "armature/ArmatureOps.h"
+#include "armature/ArmatureComponents.h"
 #include "scene/Entity.h"
 #include "selection/Selection.h"
 #include "selection/SelectionBitset.h"
@@ -32,7 +31,12 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
     std::visit(
         overloaded{
             [&](Select a) { end_box_select_interaction(); ::Select(r, a.Entity); },
-            [&](ToggleSelected a) { end_box_select_interaction(); ::ToggleSelected(r, a.Entity); },
+            [&](ToggleSelected a) {
+                end_box_select_interaction();
+                if (a.Entity == entt::null) return;
+                if (r.all_of<Selected>(a.Entity)) r.remove<Selected>(a.Entity);
+                else r.emplace_or_replace<Selected>(a.Entity);
+            },
             [&](SelectBone a) {
                 end_box_select_interaction();
                 ::SelectBone(r, a.Entity);

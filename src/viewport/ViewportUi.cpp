@@ -8,7 +8,7 @@
 #include "action/Selection.h"
 #include "action/Timeline.h"
 #include "action/View.h"
-#include "armature/Armature.h"
+#include "armature/ArmatureComponents.h"
 #include "audio/SoundVertices.h"
 #include "gizmo/GizmoInteraction.h"
 #include "gizmo/TransformGizmo.h"

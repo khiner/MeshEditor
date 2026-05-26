@@ -9,6 +9,7 @@
 #include "action/View.h"
 #include "animation/AnimationData.h"
 #include "armature/Armature.h"
+#include "armature/ArmatureComponents.h"
 #include "audio/AudioSystem.h"
 #include "gizmo/GizmoInteraction.h"
 #include "gizmo/TransformGizmo.h"

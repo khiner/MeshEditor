@@ -4,6 +4,7 @@
 #include "File.h"
 #include "Path.h"
 #include "armature/Armature.h"
+#include "armature/ArmatureComponents.h"
 #include "mesh/MeshComponents.h"
 #include "mesh/MeshStore.h"
 #include "mesh/Primitives.h"
@@ -45,9 +46,7 @@ std::string CreateName(entt::registry &r, std::string_view prefix) {
 }
 
 void OnDestroyName(entt::registry &r, entt::entity e) {
-    if (auto *registry = r.ctx().find<NameRegistry>()) {
-        registry->Names.erase(r.get<const Name>(e).Value);
-    }
+    if (auto *registry = r.ctx().find<NameRegistry>()) registry->Names.erase(r.get<const Name>(e).Value);
 }
 
 void AssignRenderInstanceObjectId(entt::registry &r, entt::entity e) {
@@ -203,22 +202,6 @@ void CreateBoneInstances(entt::registry &r, MeshStore &meshes, entt::entity arm_
 
     for (const auto bone_entity : arm_obj.BoneEntities) CreateBoneJoints(r, arm_obj_entity, bone_entity, joint_entity);
     arm_obj.JointEntity = joint_entity;
-}
-
-entt::entity AddArmature(entt::registry &r, MeshStore &meshes, ObjectCreateInfo info) {
-    const auto data_entity = r.create();
-    r.emplace<Armature>(data_entity);
-
-    const auto entity = r.create();
-    r.emplace<ObjectKind>(entity, ObjectType::Armature);
-    r.emplace<ArmatureObject>(entity, data_entity);
-    r.emplace<Transform>(entity, info.Transform);
-    r.emplace<WorldTransform>(entity, info.Transform);
-    r.emplace<Name>(entity, CreateName(r, info.Name.empty() ? "Armature" : info.Name));
-
-    ApplySelectBehavior(r, entity, info.Select);
-    CreateBoneInstances(r, meshes, entity, data_entity);
-    return entity;
 }
 
 entt::entity AddLight(entt::registry &r, MeshStore &meshes, GpuBuffers &buffers, ObjectCreateInfo info, std::optional<PunctualLight> props) {

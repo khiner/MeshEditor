@@ -16,6 +16,11 @@ bool CanDuplicateLinked(const entt::registry &, entt::entity viewport);
 bool CanDelete(const entt::registry &, entt::entity viewport);
 std::vector<ElementRange> GetBitsetRangesForSelected(const entt::registry &);
 
+// Returns armature entity if entity is an armature or a sub-element of one
+entt::entity FindArmatureObject(const entt::registry &, entt::entity);
+// Returns entt::null if no bone is active
+entt::entity FindActiveBone(const entt::registry &);
+
 struct EditTransformContext {
     std::unordered_map<entt::entity, entt::entity> TransformInstances; // excludes frozen, for transforms
 };

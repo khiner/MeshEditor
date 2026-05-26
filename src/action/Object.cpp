@@ -2,6 +2,7 @@
 #include "Timer.h"
 #include "action/Dispatch.h"
 #include "armature/Armature.h"
+#include "armature/ArmatureComponents.h"
 #include "mesh/MeshComponents.h"
 #include "mesh/MeshStore.h"
 #include "mesh/Primitives.h"
@@ -198,7 +199,21 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
                 for (const auto e : r.view<Selected>()) ::ClearParent(r, e);
             },
             [&](const AddEmpty &a) { ::AddEmpty(r, meshes, buffers, *a.Info); begin_translate(); },
-            [&](const AddArmature &a) { ::AddArmature(r, meshes, *a.Info); begin_translate(); },
+            [&](const AddArmature &a) {
+                const auto &info = *a.Info;
+                const auto data_entity = r.create();
+                r.emplace<Armature>(data_entity);
+
+                const auto entity = r.create();
+                r.emplace<ObjectKind>(entity, ObjectType::Armature);
+                r.emplace<ArmatureObject>(entity, data_entity);
+                r.emplace<Transform>(entity, info.Transform);
+                r.emplace<WorldTransform>(entity, info.Transform);
+                r.emplace<Name>(entity, ::CreateName(r, info.Name.empty() ? "Armature" : info.Name));
+                ::ApplySelectBehavior(r, entity, info.Select);
+                ::CreateBoneInstances(r, meshes, entity, data_entity);
+                begin_translate();
+            },
             [&](const AddCamera &a) { ::AddCamera(r, meshes, buffers, *a.Info, a.Props); begin_translate(); },
             [&](const AddLight &a) { ::AddLight(r, meshes, buffers, *a.Info); begin_translate(); },
             [&](const AddMeshPrimitive &a) {

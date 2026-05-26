@@ -9,6 +9,7 @@ add_executable(MeshEditorTests
     ${CMAKE_SOURCE_DIR}/src/image/ImageEncode.cpp
     ${CMAKE_SOURCE_DIR}/src/scene/Defaults.cpp
     ${CMAKE_SOURCE_DIR}/src/object/ObjectOps.cpp
+    ${CMAKE_SOURCE_DIR}/src/selection/Selection.cpp
     ${CMAKE_SOURCE_DIR}/src/selection/SelectionOps.cpp
     ${CMAKE_SOURCE_DIR}/src/Stores.cpp
     ${CMAKE_SOURCE_DIR}/src/render/Textures.cpp

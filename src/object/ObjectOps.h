@@ -36,7 +36,6 @@ entt::entity CreateExtrasObject(entt::registry &, MeshStore &, GpuBuffers &, std
 entt::entity AddEmpty(entt::registry &, MeshStore &, GpuBuffers &, ObjectCreateInfo = {});
 entt::entity AddCamera(entt::registry &, MeshStore &, GpuBuffers &, ObjectCreateInfo = {}, std::optional<Camera> = {});
 entt::entity AddLight(entt::registry &, MeshStore &, GpuBuffers &, ObjectCreateInfo = {}, std::optional<PunctualLight> = {});
-entt::entity AddArmature(entt::registry &, MeshStore &, ObjectCreateInfo = {});
 
 // Loads a mesh file (with its materials/textures) and creates the mesh + instance entities.
 std::pair<entt::entity, entt::entity> ImportMesh(entt::registry &, const std::filesystem::path &, MeshInstanceCreateInfo);

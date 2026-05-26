@@ -1,7 +1,7 @@
 #include "action/View.h"
 #include "TransformMath.h"
 #include "action/Dispatch.h"
-#include "armature/Armature.h"
+#include "armature/ArmatureComponents.h"
 #include "gltf/SourceAssets.h"
 #include "scene/Defaults.h"
 #include "scene/Entity.h"

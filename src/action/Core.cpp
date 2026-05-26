@@ -2,7 +2,7 @@
 #include "Variant.h"
 #include "action/Dispatch.h"
 #include "animation/AnimationData.h"
-#include "armature/Armature.h"
+#include "armature/ArmatureComponents.h"
 #include "audio/AudioTypes.h"
 #include "gpu/ViewportTheme.h"
 #include "mesh/MeshComponents.h"

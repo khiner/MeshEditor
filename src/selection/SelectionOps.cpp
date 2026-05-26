@@ -1,6 +1,8 @@
 #include "selection/SelectionOps.h"
 
+#include "armature/ArmatureComponents.h" // BoneActive
 #include "scene/Entity.h" // Selected, Active
+#include "selection/BoneSelection.h" // BoneSelection
 
 #include <entt/entity/registry.hpp>
 
@@ -13,8 +15,11 @@ void Select(entt::registry &r, entt::entity e) {
     }
 }
 
-void ToggleSelected(entt::registry &r, entt::entity e) {
-    if (e == entt::null) return;
-    if (r.all_of<Selected>(e)) r.remove<Selected>(e);
-    else r.emplace_or_replace<Selected>(e);
+void SelectBone(entt::registry &r, entt::entity e) {
+    r.clear<BoneSelection>();
+    if (e != entt::null) {
+        r.clear<BoneActive>();
+        r.emplace<BoneActive>(e);
+        r.emplace<BoneSelection>(e);
+    }
 }

@@ -1,7 +1,7 @@
 #include "viewport/ViewportRenderGpu.h"
 #include "Timer.h"
 #include "animation/MorphWeightState.h"
-#include "armature/Armature.h"
+#include "armature/ArmatureComponents.h"
 #include "audio/SoundVertices.h"
 #include "gizmo/TransformGizmoTypes.h"
 #include "gpu/MainDrawPushConstants.h"

@@ -3,7 +3,6 @@
 #include "action/Action.h"
 #include "action/Bone.h"
 #include "action/Object.h"
-#include "armature/Armature.h"
 #include "audio/SoundVertices.h"
 #include "mesh/MeshStore.h"
 #include "render/GpuBuffers.h"

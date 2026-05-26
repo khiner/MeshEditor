@@ -8,6 +8,7 @@
 #include "animation/AnimationTimeline.h"
 #include "animation/MorphWeightState.h"
 #include "armature/Armature.h"
+#include "armature/ArmatureComponents.h"
 #include "image/ImageEncode.h"
 #include "mesh/MeshAttributes.h"
 #include "mesh/MeshComponents.h"

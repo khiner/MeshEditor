@@ -1,5 +1,5 @@
 #include "selection/Selection.h"
-#include "armature/Armature.h"
+#include "armature/ArmatureComponents.h"
 #include "mesh/Mesh.h"
 #include "mesh/MeshComponents.h"
 #include "render/Instance.h"
@@ -40,6 +40,22 @@ std::unordered_set<entt::entity> GetSelectedMeshEntities(const entt::registry &r
 }
 
 } // namespace selection
+
+entt::entity FindArmatureObject(const entt::registry &r, entt::entity e) {
+    if (e == entt::null) return entt::null;
+    if (r.all_of<ArmatureObject>(e)) return e;
+    if (const auto *sub = r.try_get<SubElementOf>(e); sub && r.all_of<ArmatureObject>(sub->Parent)) return sub->Parent;
+    return entt::null;
+}
+
+entt::entity FindActiveBone(const entt::registry &r) {
+    entt::entity result = entt::null;
+    for (const auto e : r.view<BoneActive>()) {
+        assert(result == entt::null && "Multiple BoneActive entities");
+        result = e;
+    }
+    return result;
+}
 
 bool IsBoneEditMode(const entt::registry &r, entt::entity viewport) {
     if (r.get<const Interaction>(viewport).Mode != InteractionMode::Edit) return false;
