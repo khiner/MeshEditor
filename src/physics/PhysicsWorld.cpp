@@ -3,12 +3,12 @@
 #include "Changes.h"
 #include "PhysicsTypes.h"
 #include "Reactive.h"
-#include "SceneGraph.h"
-#include "SceneGraphOps.h"
 #include "TransformMath.h"
 #include "Variant.h"
-#include "WorldTransform.h"
 #include "mesh/Mesh.h"
+#include "scene/SceneGraph.h"
+#include "scene/SceneGraphOps.h"
+#include "scene/WorldTransform.h"
 
 #include "Jolt/Jolt.h"
 

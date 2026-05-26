@@ -1,13 +1,13 @@
 #pragma once
 
 #include "CameraTypes.h"
-#include "MaterialComponents.h"
-#include "ObjectCreateInfo.h"
 #include "Variant.h"
 #include "action/Core.h"
 #include "gpu/PunctualLight.h"
 #include "mesh/MeshData.h"
 #include "mesh/PrimitiveType.h"
+#include "object/ObjectCreateInfo.h"
+#include "render/MaterialComponents.h"
 
 #include <filesystem>
 

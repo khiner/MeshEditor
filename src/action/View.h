@@ -1,13 +1,13 @@
 #pragma once
 
 #include "CameraTypes.h"
-#include "TransformGizmoTypes.h"
 #include "TransformUtils.h"
 #include "Variant.h"
-#include "ViewportDisplay.h"
 #include "action/Core.h"
+#include "gizmo/TransformGizmoTypes.h"
 #include "gpu/Element.h"
 #include "gpu/InteractionMode.h"
+#include "viewport/ViewportDisplay.h"
 
 struct PendingTransform;
 

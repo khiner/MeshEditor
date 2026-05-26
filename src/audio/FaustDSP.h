@@ -5,7 +5,7 @@ using Sample = float;
 #define FAUSTFLOAT Sample
 #endif
 
-#include "CreateSvgResource.h"
+#include "render/CreateSvgResource.h"
 
 namespace fs = std::filesystem;
 

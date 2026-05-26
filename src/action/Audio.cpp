@@ -1,10 +1,10 @@
 #include "action/Audio.h"
-#include "Entity.h"
-#include "Instance.h"
 #include "Path.h"
-#include "SoundVertices.h"
 #include "audio/AudioSystem.h"
 #include "audio/RealImpact.h"
+#include "audio/SoundVertices.h"
+#include "render/Instance.h"
+#include "scene/Entity.h"
 #include <entt/entity/registry.hpp>
 
 using std::ranges::to;

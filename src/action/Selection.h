@@ -1,8 +1,8 @@
 #pragma once
 
-#include "BoneSelection.h"
 #include "entt_fwd.h"
 #include "numeric/vec2.h"
+#include "selection/BoneSelection.h"
 
 #include <optional>
 #include <vector>

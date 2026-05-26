@@ -1,24 +1,24 @@
 #include "AudioSystem.h"
 #include "FFTData.h"
 #include "FaustDSP.h"
-#include "Instance.h"
-#include "InteractionComponents.h"
 #include "Reactive.h"
-#include "SelectionBitset.h"
-#include "SoundVertices.h"
-#include "Tets.h"
 #include "Worker.h"
-#include "WorldTransform.h"
 #include "action/Audio.h"
+#include "audio/SoundVertices.h"
 #include "mesh/Mesh.h"
+#include "mesh/Tets.h"
+#include "render/Instance.h"
+#include "scene/WorldTransform.h"
+#include "selection/SelectionBitset.h"
 #include "ui/FieldEdit.h"
+#include "viewport/InteractionComponents.h"
 
 #include "implot.h"
 #include "mesh2modes.h"
 #include "miniaudio.h"
 #include "tetgen.h" // Needed for `unique_ptr<tetgenio>` dereference. Must come after Faust (defines `REAL`).
 
-#include "HelpMarker.h" // depends on imgui
+#include "ui/HelpMarker.h" // depends on imgui
 
 #include <nfd.h>
 

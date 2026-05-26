@@ -1,0 +1,94 @@
+#pragma once
+
+#include "gpu/Element.h"
+#include "numeric/vec2.h"
+#include "render/Bindless.h"
+
+#include <entt/entity/fwd.hpp>
+#include <vulkan/vulkan.hpp>
+
+#include <array>
+#include <functional>
+#include <utility>
+
+struct ElementRange;
+struct DrawListBuilder;
+struct SelectionDrawInfo;
+
+using SelectionBuildFn = std::function<std::vector<SelectionDrawInfo>(DrawListBuilder &)>;
+
+// RAII for the descriptor-slot leases used by the selection compute/render pipeline.
+struct SelectionSlots {
+    uint32_t HeadImage{}, SelectionCounter{}, ObjectPickKey{}, ElementPickCandidates{}, ObjectPickSeenBits{}, SelectionBitset{};
+    uint32_t ObjectIdSampler{}, DepthSampler{}, SilhouetteSampler{}, ColorSampler{}, LineDataSampler{}, TransmissionSampler{};
+
+    using Entry = std::pair<SlotType, uint32_t SelectionSlots::*>;
+    static constexpr std::array<Entry, 12> Entries{{
+        {SlotType::Image, &SelectionSlots::HeadImage},
+        {SlotType::Buffer, &SelectionSlots::SelectionCounter},
+        {SlotType::Buffer, &SelectionSlots::ObjectPickKey},
+        {SlotType::Buffer, &SelectionSlots::ElementPickCandidates},
+        {SlotType::Buffer, &SelectionSlots::ObjectPickSeenBits},
+        {SlotType::Buffer, &SelectionSlots::SelectionBitset},
+        {SlotType::Sampler, &SelectionSlots::ObjectIdSampler},
+        {SlotType::Sampler, &SelectionSlots::DepthSampler},
+        {SlotType::Sampler, &SelectionSlots::SilhouetteSampler},
+        {SlotType::Sampler, &SelectionSlots::ColorSampler},
+        {SlotType::Sampler, &SelectionSlots::LineDataSampler},
+        {SlotType::Sampler, &SelectionSlots::TransmissionSampler},
+    }};
+
+    explicit SelectionSlots(DescriptorSlots &slots) : Slots(&slots) {
+        for (const auto &[type, field] : Entries) this->*field = slots.Allocate(type);
+    }
+    SelectionSlots(const SelectionSlots &) = delete;
+    SelectionSlots &operator=(const SelectionSlots &) = delete;
+    SelectionSlots(SelectionSlots &&o) noexcept : Slots(o.Slots) {
+        for (const auto &[_, field] : Entries) this->*field = o.*field;
+        o.Slots = nullptr;
+    }
+    SelectionSlots &operator=(SelectionSlots &&o) noexcept {
+        if (this != &o) {
+            Release();
+            Slots = o.Slots;
+            for (const auto &[_, field] : Entries) this->*field = o.*field;
+            o.Slots = nullptr;
+        }
+        return *this;
+    }
+    ~SelectionSlots() { Release(); }
+
+private:
+    DescriptorSlots *Slots{nullptr};
+    void Release() {
+        if (!Slots) return;
+        for (const auto &[type, field] : Entries) Slots->Release({type, this->*field});
+        Slots = nullptr;
+    }
+};
+
+// Render the on-demand selection-fragment pass. `build_fn` populates the draw list given the silhouette-prefilled builder.
+void RenderSelectionPassWith(entt::registry &, entt::entity viewport, bool render_depth, const SelectionBuildFn &, vk::Semaphore signal_semaphore = {}, bool render_silhouette = true);
+
+// Replays the cached selection draw list (built by RecordRenderCommandBuffer). Clears SelectionStale on success.
+void RenderSelectionPass(entt::registry &, entt::entity viewport, vk::Semaphore signal_semaphore = {});
+
+// Box selection: returns object-id-sorted entities hit by the box.
+std::vector<entt::entity> RunBoxSelect(entt::registry &, entt::entity viewport, std::pair<uvec2, uvec2> box_px);
+
+// Element-level box selection: renders element IDs into the bitset over the box region, then GPU-updates the element state buffers.
+void RunBoxSelectElements(entt::registry &, entt::entity viewport, std::span<const ElementRange> ranges, Element, std::pair<uvec2, uvec2> box_px, bool is_additive);
+
+// Object click pick. Returns hit entities sorted by (distance, depth, object id). Advances `object_pick_epoch_tag` (8-bit, wraps with periodic key reset).
+std::vector<entt::entity> RunObjectPick(entt::registry &, entt::entity viewport, uint32_t &object_pick_epoch_tag, uvec2 mouse_px, uint32_t radius_px = 0);
+
+// Pick the nearest sound-vertex of an instance under the cursor.
+std::optional<uint32_t> RunSoundVerticesVertexPick(entt::registry &, entt::entity viewport, entt::entity instance_entity, uvec2 mouse_px);
+
+// Element-level click pick. Returns the (mesh_entity, element_index) under the cursor.
+std::optional<std::pair<entt::entity, uint32_t>> RunElementPickFromRanges(entt::registry &, entt::entity viewport, std::span<const ElementRange> ranges, Element, uvec2 mouse_px);
+
+// Dispatches the GPU compute pass that rewrites per-element state buffers from the SelectionBitset. Blocks on the one-shot fence.
+void DispatchUpdateSelectionStates(entt::registry &, entt::entity viewport, std::span<const ElementRange>, Element);
+// Runs DispatchUpdateSelectionStates, then derives the dependent edge/face/vertex state buffers CPU-side.
+void ApplySelectionStateUpdate(entt::registry &, entt::entity viewport, std::span<const ElementRange>, Element);

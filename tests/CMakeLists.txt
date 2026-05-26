@@ -1,18 +1,18 @@
 add_executable(MeshEditorTests
     RoundtripTest.cpp
     ${CMAKE_SOURCE_DIR}/src/gltf/GltfScene.cpp
-    ${CMAKE_SOURCE_DIR}/src/Armature.cpp
-    ${CMAKE_SOURCE_DIR}/src/Bindless.cpp
-    ${CMAKE_SOURCE_DIR}/src/Entity.cpp
-    ${CMAKE_SOURCE_DIR}/src/ExtrasMesh.cpp
-    ${CMAKE_SOURCE_DIR}/src/ImageDecode.cpp
-    ${CMAKE_SOURCE_DIR}/src/ImageEncode.cpp
-    ${CMAKE_SOURCE_DIR}/src/Defaults.cpp
-    ${CMAKE_SOURCE_DIR}/src/ObjectOps.cpp
-    ${CMAKE_SOURCE_DIR}/src/SelectionOps.cpp
+    ${CMAKE_SOURCE_DIR}/src/armature/Armature.cpp
+    ${CMAKE_SOURCE_DIR}/src/render/Bindless.cpp
+    ${CMAKE_SOURCE_DIR}/src/scene/Entity.cpp
+    ${CMAKE_SOURCE_DIR}/src/object/ExtrasMesh.cpp
+    ${CMAKE_SOURCE_DIR}/src/image/ImageDecode.cpp
+    ${CMAKE_SOURCE_DIR}/src/image/ImageEncode.cpp
+    ${CMAKE_SOURCE_DIR}/src/scene/Defaults.cpp
+    ${CMAKE_SOURCE_DIR}/src/object/ObjectOps.cpp
+    ${CMAKE_SOURCE_DIR}/src/selection/SelectionOps.cpp
     ${CMAKE_SOURCE_DIR}/src/Stores.cpp
-    ${CMAKE_SOURCE_DIR}/src/Textures.cpp
-    ${CMAKE_SOURCE_DIR}/src/SceneGraph.cpp
+    ${CMAKE_SOURCE_DIR}/src/render/Textures.cpp
+    ${CMAKE_SOURCE_DIR}/src/scene/SceneGraph.cpp
     ${CMAKE_SOURCE_DIR}/src/TransformMath.cpp
     ${CMAKE_SOURCE_DIR}/src/mesh/Mesh.cpp
     ${CMAKE_SOURCE_DIR}/src/mesh/MeshStore.cpp

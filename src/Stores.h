@@ -1,6 +1,6 @@
 #pragma once
 
-#include "VulkanResources.h"
+#include "render/VulkanResources.h"
 
 #include <entt/entity/fwd.hpp>
 
@@ -8,11 +8,7 @@
 // Allocates the white-texture sampler slot on TextureStore.
 void InitStoreCtx(entt::registry &, VulkanResources);
 
-// Connects component-lifecycle hooks, creates the viewport entity, emplaces GpuBuffers and
-// MeshStore in ctx (MeshStore depends on GpuBuffers.Ctx), seeds the default material + white
-// texture upload, and returns the viewport entity. Requires InitStoreCtx to have run.
+// InitStoreCtx must run first.
 entt::entity WireRegistry(entt::registry &);
 
-// Releases sampler slots held by TextureStore and EnvironmentStore, then erases the ctx singletons
-// (MeshStore, EnvironmentStore, TextureStore, GpuBuffers, DescriptorSlots).
 void TearDownStoreCtx(entt::registry &);

@@ -1,5 +1,8 @@
 #pragma once
 
+#include "gpu/Transform.h"
+#include "numeric/quat.h"
+#include "numeric/vec3.h"
 #include "numeric/vec4.h"
 
 // Mutually exclusive structs to track rotation representation.

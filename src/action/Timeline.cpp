@@ -1,7 +1,7 @@
 #include "action/Timeline.h"
-#include "AnimationTimeline.h"
 #include "Variant.h"
-#include "ViewportDisplay.h"
+#include "animation/AnimationTimeline.h"
+#include "viewport/ViewportDisplay.h"
 
 #include <entt/entity/registry.hpp>
 

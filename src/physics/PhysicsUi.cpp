@@ -1,11 +1,11 @@
 // Physics UI: "Physics" tab + per-entity physics properties.
 
 #include "PhysicsUi.h"
-#include "AnimationTimeline.h"
 #include "PhysicsWorld.h"
-#include "SceneGraph.h"
 #include "action/Physics.h"
+#include "animation/AnimationTimeline.h"
 #include "numeric/vec2.h"
+#include "scene/SceneGraph.h"
 #include "ui/FieldEdit.h"
 
 #include <entt/entity/registry.hpp>

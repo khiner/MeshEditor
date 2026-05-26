@@ -1,14 +1,14 @@
 #include "Stores.h"
 
-#include "AnimationTimeline.h"
-#include "Bindless.h"
-#include "ExtrasComponents.h"
-#include "GpuBuffers.h"
-#include "ObjectComponents.h"
-#include "OneShotGpu.h"
-#include "Textures.h"
+#include "animation/AnimationTimeline.h"
 #include "mesh/MeshStore.h"
+#include "object/ExtrasComponents.h"
+#include "object/ObjectComponents.h"
 #include "physics/PhysicsTypes.h"
+#include "render/Bindless.h"
+#include "render/GpuBuffers.h"
+#include "render/OneShotGpu.h"
+#include "render/Textures.h"
 
 #include <entt/entity/registry.hpp>
 

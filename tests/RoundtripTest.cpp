@@ -1,8 +1,8 @@
-#include "GpuBuffers.h"
-#include "ImageDecode.h"
 #include "Stores.h"
-#include "Textures.h"
 #include "gltf/GltfScene.h"
+#include "image/ImageDecode.h"
+#include "render/GpuBuffers.h"
+#include "render/Textures.h"
 #include "vulkan/VulkanContext.h"
 
 #include <boost/ut.hpp>

@@ -1,5 +1,9 @@
 #pragma once
 
+#include "numeric/vec3.h"
+
+#include <limits>
+
 struct BBox {
     vec3 Min, Max;
 

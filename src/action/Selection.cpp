@@ -1,13 +1,13 @@
 #include "action/Selection.h"
-#include "../Selection.h"
-#include "../SelectionBitset.h"
-#include "Armature.h"
-#include "ArmatureOps.h"
-#include "Entity.h"
-#include "InteractionComponents.h"
-#include "SelectionComponents.h"
-#include "SelectionOps.h"
 #include "Variant.h"
+#include "armature/Armature.h"
+#include "armature/ArmatureOps.h"
+#include "scene/Entity.h"
+#include "selection/Selection.h"
+#include "selection/SelectionBitset.h"
+#include "selection/SelectionComponents.h"
+#include "selection/SelectionOps.h"
+#include "viewport/InteractionComponents.h"
 
 #include <entt/entity/registry.hpp>
 

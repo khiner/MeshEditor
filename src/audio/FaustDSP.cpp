@@ -1,7 +1,7 @@
 #include "FaustDSP.h"
 
 #include "FaustParams.h"
-#include "SvgResource.h"
+#include "render/SvgResource.h"
 
 #include "draw/drawschema.hh" // faust/compiler/draw/drawschema.hh
 #include "faust/dsp/llvm-dsp.h"
