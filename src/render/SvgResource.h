@@ -1,9 +1,21 @@
 #pragma once
 
-#include "vulkan/Image.h"
+#include "numeric/vec2.h"
 
+#include <cstddef>
+#include <cstdint>
 #include <filesystem>
 #include <functional>
+#include <memory>
+#include <optional>
+#include <span>
+
+namespace vk {
+class Device;
+}
+namespace mvk {
+struct ImageResource;
+}
 
 using BitmapToImage = std::function<mvk::ImageResource(std::span<const std::byte> data, uint32_t width, uint32_t height)>;
 

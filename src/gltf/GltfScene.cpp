@@ -3649,11 +3649,10 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             }
 
             // Skin / morph spans (empty when the mesh lacks the channel).
-            const auto bd_range = meshes.GetBoneDeformRange(store_id);
-            const auto bd_span = bd_range.Count > 0 ? meshes.BoneDeformBuffer.Get(bd_range) : std::span<const BoneDeformVertex>{};
+            const auto bd_span = meshes.GetBoneDeform(store_id);
             const bool has_skin = bd_span.size() == total_vcount && total_vcount > 0;
             const uint32_t target_count = (total_vcount > 0) ? meshes.GetMorphTargetCount(store_id) : 0u;
-            const auto mt_span = target_count > 0 ? meshes.MorphTargetBuffer.Get(meshes.GetMorphTargetRange(store_id)) : std::span<const MorphTargetVertex>{};
+            const auto mt_span = meshes.GetMorphTargets(store_id);
             // CreateMesh writes 0 when source lacked normal deltas, so any non-zero ⇒ source had them.
             const bool has_normal_deltas = std::ranges::any_of(mt_span, [](const auto &m) { return m.NormalDelta != vec3{0}; });
             const bool has_tangent_deltas = !layout.MorphTangentDeltas.empty();

@@ -4,8 +4,10 @@
 #include "image/ImageDecode.h"
 #include "render/Bindless.h"
 #include "render/IblPrefilterPipelines.h"
+#include "render/TextureRefs.h"
 
 #include <basisu_transcoder.h>
+#include <entt/entity/registry.hpp>
 
 #include <bit>
 
@@ -939,4 +941,12 @@ TextureEntry CreateDefaultLutTexture(const VulkanResources &vk, TextureUploadBat
     );
     if (!texture) throw std::runtime_error(std::format("Failed to initialize default LUT texture '{}': {}", lut_path_str, texture.error()));
     return std::move(*texture);
+}
+
+std::vector<TextureRef> GetTextureRefs(entt::registry &r) {
+    const auto &store = r.ctx().get<TextureStore>();
+    std::vector<TextureRef> refs;
+    refs.reserve(store.Textures.size());
+    for (const auto &t : store.Textures) refs.emplace_back(t.SamplerSlot, t.Name);
+    return refs;
 }

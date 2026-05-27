@@ -7,6 +7,8 @@
 
 #include <entt/entity/registry.hpp>
 
+#include <format>
+
 using namespace ImGui;
 
 namespace {

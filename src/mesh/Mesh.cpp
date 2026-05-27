@@ -3,6 +3,7 @@
 
 #include <glm/gtx/norm.hpp>
 
+#include <algorithm>
 #include <bit>
 
 using std::ranges::any_of, std::ranges::find_if, std::ranges::distance;

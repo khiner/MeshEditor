@@ -3,13 +3,19 @@
 #include "Mesh.h"
 #include "MeshData.h"
 #include "MorphTargetData.h"
+#include "Range.h"
+#include "SlottedRange.h"
 #include "gpu/BoneDeformVertex.h"
 #include "gpu/MorphTargetVertex.h"
-#include "vulkan/BufferArena.h"
 
 #include <expected>
 #include <filesystem>
+#include <memory>
 #include <unordered_set>
+
+namespace mvk {
+struct BufferContext;
+}
 
 struct ObjPlyMaterial {
     vec4 BaseColorFactor;
@@ -52,6 +58,9 @@ struct MeshPrimitives {
 // Owns mesh vertex data (canonical CPU/GPU storage) used by all systems, including rendering.
 struct MeshStore {
     explicit MeshStore(mvk::BufferContext &);
+    ~MeshStore();
+    MeshStore(MeshStore &&) noexcept;
+    MeshStore &operator=(MeshStore &&) noexcept;
 
     // Accumulate arena reservations for upcoming mesh operations.
     // Call PlanCreate/PlanClone per mesh, then CommitReserves() once before the actual operations.
@@ -72,30 +81,41 @@ struct MeshStore {
     void SetPositions(uint32_t store_id, std::span<const vec3>); // Position-only, no normals. For topology-free entries.
     void SetPosition(const Mesh &, uint32_t index, vec3 position); // Single vertex, no normal update
 
-    std::span<const Vertex> GetVertices(uint32_t id) const { return VerticesBuffer.Get(Entries.at(id).Vertices); }
-    std::span<Vertex> GetVertices(uint32_t id) { return VerticesBuffer.GetMutable(Entries.at(id).Vertices); }
-    SlottedRange GetVerticesRange(uint32_t id) const { return VerticesBuffer.Slotted(Entries.at(id).Vertices); }
-    SlottedRange GetBoneDeformRange(uint32_t id) const { return BoneDeformBuffer.Slotted(Entries.at(id).BoneDeform); }
-    SlottedRange GetMorphTargetRange(uint32_t id) const { return MorphTargetBuffer.Slotted(Entries.at(id).MorphTargets); }
+    std::span<const Vertex> GetVertices(uint32_t id) const;
+    std::span<Vertex> GetVertices(uint32_t id);
+    SlottedRange GetVerticesRange(uint32_t id) const;
+    SlottedRange GetBoneDeformRange(uint32_t id) const;
+    SlottedRange GetMorphTargetRange(uint32_t id) const;
     uint32_t GetMorphTargetCount(uint32_t id) const { return Entries.at(id).MorphTargetCount; }
     uint32_t GetTriangleCount(uint32_t id) const { return Entries.at(id).TriangleCount; }
     std::span<const float> GetDefaultMorphWeights(uint32_t id) const { return Entries.at(id).DefaultMorphWeights; }
 
-    uint32_t GetVertexStateSlot() const { return VertexStateBuffer.Slot; }
+    // Source-form readback used by glTF export. Empty span when the mesh lacks the channel.
+    std::span<const BoneDeformVertex> GetBoneDeform(uint32_t id) const;
+    std::span<const MorphTargetVertex> GetMorphTargets(uint32_t id) const;
+
+    // Base descriptor slots of the per-mesh GPU buffers (for shader push constants).
+    uint32_t GetVertexStateSlot() const;
+    uint32_t GetFaceFirstTriangleSlot() const;
+    uint32_t GetFacePrimitiveSlot() const;
+    uint32_t GetPrimitiveMaterialSlot() const;
+    uint32_t GetBoneDeformSlot() const;
+    uint32_t GetMorphTargetSlot() const;
+
     std::span<const uint8_t> GetVertexStates(uint32_t id) const;
-    SlottedRange GetFaceStateRange(uint32_t id) const { return {Entries.at(id).FaceData, FaceStateBuffer.Slot}; }
-    SlottedRange GetEdgeStateRange(uint32_t id) const { return EdgeStateBuffer.Slotted(Entries.at(id).EdgeStates); }
-    SlottedRange GetFaceFirstTriRange(uint32_t id) const { return FaceFirstTriangleBuffer.Slotted(Entries.at(id).FaceData); }
+    SlottedRange GetFaceStateRange(uint32_t id) const;
+    SlottedRange GetEdgeStateRange(uint32_t id) const;
+    SlottedRange GetFaceFirstTriRange(uint32_t id) const;
 
-    SlottedRange GetFaceIdRange(uint32_t id) const { return TriangleFaceIdBuffer.Slotted(Entries.at(id).TriangleFaceIds); }
-    SlottedRange GetFacePrimitiveRange(uint32_t id) const { return FacePrimitiveBuffer.Slotted(Entries.at(id).FacePrimitives); }
-    SlottedRange GetPrimitiveMaterialRange(uint32_t id) const { return PrimitiveMaterialBuffer.Slotted(Entries.at(id).PrimitiveMaterials); }
+    SlottedRange GetFaceIdRange(uint32_t id) const;
+    SlottedRange GetFacePrimitiveRange(uint32_t id) const;
+    SlottedRange GetPrimitiveMaterialRange(uint32_t id) const;
 
-    std::span<const uint32_t> GetTriangleFaceIds(uint32_t id) const { return TriangleFaceIdBuffer.Get(Entries.at(id).TriangleFaceIds); }
-    std::span<const uint32_t> GetFacePrimitiveIndices(uint32_t id) const { return FacePrimitiveBuffer.Get(Entries.at(id).FacePrimitives); }
-    std::span<uint32_t> GetFacePrimitiveIndices(uint32_t id) { return FacePrimitiveBuffer.GetMutable(Entries.at(id).FacePrimitives); }
-    std::span<const uint32_t> GetPrimitiveMaterialIndices(uint32_t id) const { return PrimitiveMaterialBuffer.Get(Entries.at(id).PrimitiveMaterials); }
-    std::span<uint32_t> GetPrimitiveMaterialIndices(uint32_t id) { return PrimitiveMaterialBuffer.GetMutable(Entries.at(id).PrimitiveMaterials); }
+    std::span<const uint32_t> GetTriangleFaceIds(uint32_t id) const;
+    std::span<const uint32_t> GetFacePrimitiveIndices(uint32_t id) const;
+    std::span<uint32_t> GetFacePrimitiveIndices(uint32_t id);
+    std::span<const uint32_t> GetPrimitiveMaterialIndices(uint32_t id) const;
+    std::span<uint32_t> GetPrimitiveMaterialIndices(uint32_t id);
 
     std::span<const PrimitiveTriangleRange> GetPrimitiveTriangleRanges(uint32_t id) const { return Entries.at(id).PrimitiveTriangleRanges; }
 
@@ -118,20 +138,9 @@ struct MeshStore {
 
     void Release(uint32_t id);
 
-    BufferArena<uint32_t> FaceFirstTriangleBuffer; // Per-face index of first triangle in the index buffer
-    BufferArena<uint32_t> FacePrimitiveBuffer; // Per-face source primitive index
-    BufferArena<uint32_t> PrimitiveMaterialBuffer; // Primitive index -> material index
-    BufferArena<BoneDeformVertex> BoneDeformBuffer;
-    BufferArena<MorphTargetVertex> MorphTargetBuffer;
-
 private:
-    BufferArena<Vertex> VerticesBuffer;
-
-    mvk::Buffer VertexStateBuffer; // Mirrors VerticesBuffer
-    mvk::Buffer FaceStateBuffer; // Mirrors FaceFirstTriangleBuffer
-    BufferArena<uint8_t> EdgeStateBuffer;
-
-    BufferArena<uint32_t> TriangleFaceIdBuffer; // 1-indexed map from face triangles (in mesh face order) to source face ID
+    struct Buffers;
+    std::unique_ptr<Buffers> B; // Owns all GPU buffer storage (vertex/index/state/deform arenas)
 
     struct Entry {
         Range Vertices;

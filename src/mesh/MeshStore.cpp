@@ -1,6 +1,7 @@
 #include "MeshStore.h"
 
 #include "MeshAttributes.h"
+#include "vulkan/BufferArena.h"
 
 #include <glm/geometric.hpp>
 
@@ -369,17 +370,64 @@ std::pair<MeshData, MeshVertexAttributes> DeduplicateVertices(MeshData &&mesh, M
 
 } // namespace
 
-MeshStore::MeshStore(mvk::BufferContext &ctx)
-    : FaceFirstTriangleBuffer{ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::ObjectIdBuffer},
-      FacePrimitiveBuffer{ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::FacePrimitiveBuffer},
-      PrimitiveMaterialBuffer{ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::PrimitiveMaterialBuffer},
-      BoneDeformBuffer{ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::BoneDeformBuffer},
-      MorphTargetBuffer{ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::MorphTargetBuffer},
-      VerticesBuffer{ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::VertexBuffer},
-      VertexStateBuffer{ctx, 0, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer},
-      FaceStateBuffer{ctx, 0, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer},
-      EdgeStateBuffer{ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer},
-      TriangleFaceIdBuffer{ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::ObjectIdBuffer} {}
+struct MeshStore::Buffers {
+    explicit Buffers(mvk::BufferContext &ctx)
+        : FaceFirstTriangleBuffer{ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::ObjectIdBuffer},
+          FacePrimitiveBuffer{ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::FacePrimitiveBuffer},
+          PrimitiveMaterialBuffer{ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::PrimitiveMaterialBuffer},
+          BoneDeformBuffer{ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::BoneDeformBuffer},
+          MorphTargetBuffer{ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::MorphTargetBuffer},
+          VerticesBuffer{ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::VertexBuffer},
+          VertexStateBuffer{ctx, 0, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer},
+          FaceStateBuffer{ctx, 0, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer},
+          EdgeStateBuffer{ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer},
+          TriangleFaceIdBuffer{ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::ObjectIdBuffer} {}
+
+    BufferArena<uint32_t> FaceFirstTriangleBuffer; // Per-face index of first triangle in the index buffer
+    BufferArena<uint32_t> FacePrimitiveBuffer; // Per-face source primitive index
+    BufferArena<uint32_t> PrimitiveMaterialBuffer; // Primitive index -> material index
+    BufferArena<BoneDeformVertex> BoneDeformBuffer;
+    BufferArena<MorphTargetVertex> MorphTargetBuffer;
+    BufferArena<Vertex> VerticesBuffer;
+    mvk::Buffer VertexStateBuffer; // Mirrors VerticesBuffer
+    mvk::Buffer FaceStateBuffer; // Mirrors FaceFirstTriangleBuffer
+    BufferArena<uint8_t> EdgeStateBuffer;
+    BufferArena<uint32_t> TriangleFaceIdBuffer; // 1-indexed map from face triangles (in mesh face order) to source face ID
+};
+
+MeshStore::MeshStore(mvk::BufferContext &ctx) : B{std::make_unique<Buffers>(ctx)} {}
+MeshStore::~MeshStore() = default;
+MeshStore::MeshStore(MeshStore &&) noexcept = default;
+MeshStore &MeshStore::operator=(MeshStore &&) noexcept = default;
+
+std::span<const Vertex> MeshStore::GetVertices(uint32_t id) const { return B->VerticesBuffer.Get(Entries.at(id).Vertices); }
+std::span<Vertex> MeshStore::GetVertices(uint32_t id) { return B->VerticesBuffer.GetMutable(Entries.at(id).Vertices); }
+SlottedRange MeshStore::GetVerticesRange(uint32_t id) const { return B->VerticesBuffer.Slotted(Entries.at(id).Vertices); }
+SlottedRange MeshStore::GetBoneDeformRange(uint32_t id) const { return B->BoneDeformBuffer.Slotted(Entries.at(id).BoneDeform); }
+SlottedRange MeshStore::GetMorphTargetRange(uint32_t id) const { return B->MorphTargetBuffer.Slotted(Entries.at(id).MorphTargets); }
+
+std::span<const BoneDeformVertex> MeshStore::GetBoneDeform(uint32_t id) const { return B->BoneDeformBuffer.Get(Entries.at(id).BoneDeform); }
+std::span<const MorphTargetVertex> MeshStore::GetMorphTargets(uint32_t id) const { return B->MorphTargetBuffer.Get(Entries.at(id).MorphTargets); }
+
+uint32_t MeshStore::GetVertexStateSlot() const { return B->VertexStateBuffer.Slot; }
+uint32_t MeshStore::GetFaceFirstTriangleSlot() const { return B->FaceFirstTriangleBuffer.Buffer.Slot; }
+uint32_t MeshStore::GetFacePrimitiveSlot() const { return B->FacePrimitiveBuffer.Buffer.Slot; }
+uint32_t MeshStore::GetPrimitiveMaterialSlot() const { return B->PrimitiveMaterialBuffer.Buffer.Slot; }
+uint32_t MeshStore::GetBoneDeformSlot() const { return B->BoneDeformBuffer.Buffer.Slot; }
+uint32_t MeshStore::GetMorphTargetSlot() const { return B->MorphTargetBuffer.Buffer.Slot; }
+
+SlottedRange MeshStore::GetFaceStateRange(uint32_t id) const { return {Entries.at(id).FaceData, B->FaceStateBuffer.Slot}; }
+SlottedRange MeshStore::GetEdgeStateRange(uint32_t id) const { return B->EdgeStateBuffer.Slotted(Entries.at(id).EdgeStates); }
+SlottedRange MeshStore::GetFaceFirstTriRange(uint32_t id) const { return B->FaceFirstTriangleBuffer.Slotted(Entries.at(id).FaceData); }
+SlottedRange MeshStore::GetFaceIdRange(uint32_t id) const { return B->TriangleFaceIdBuffer.Slotted(Entries.at(id).TriangleFaceIds); }
+SlottedRange MeshStore::GetFacePrimitiveRange(uint32_t id) const { return B->FacePrimitiveBuffer.Slotted(Entries.at(id).FacePrimitives); }
+SlottedRange MeshStore::GetPrimitiveMaterialRange(uint32_t id) const { return B->PrimitiveMaterialBuffer.Slotted(Entries.at(id).PrimitiveMaterials); }
+
+std::span<const uint32_t> MeshStore::GetTriangleFaceIds(uint32_t id) const { return B->TriangleFaceIdBuffer.Get(Entries.at(id).TriangleFaceIds); }
+std::span<const uint32_t> MeshStore::GetFacePrimitiveIndices(uint32_t id) const { return B->FacePrimitiveBuffer.Get(Entries.at(id).FacePrimitives); }
+std::span<uint32_t> MeshStore::GetFacePrimitiveIndices(uint32_t id) { return B->FacePrimitiveBuffer.GetMutable(Entries.at(id).FacePrimitives); }
+std::span<const uint32_t> MeshStore::GetPrimitiveMaterialIndices(uint32_t id) const { return B->PrimitiveMaterialBuffer.Get(Entries.at(id).PrimitiveMaterials); }
+std::span<uint32_t> MeshStore::GetPrimitiveMaterialIndices(uint32_t id) { return B->PrimitiveMaterialBuffer.GetMutable(Entries.at(id).PrimitiveMaterials); }
 
 void MeshStore::UpdateNormals(const Mesh &mesh, bool skip_nonzero) {
     const auto face_cross = [&](Mesh::FH fh) {
@@ -414,7 +462,7 @@ void MeshStore::UpdateNormals(const Mesh &mesh, bool skip_nonzero) {
 std::pair<uint32_t, Range> MeshStore::AllocateVertexBuffer(std::span<const vec3> positions, const MeshVertexAttributes &attrs) {
     const uint32_t vertex_count = positions.size();
     const auto vertices = AllocateVertices(vertex_count);
-    auto vertex_span = VerticesBuffer.GetMutable(vertices);
+    auto vertex_span = B->VerticesBuffer.GetMutable(vertices);
     for (uint32_t i = 0; i < vertex_count; ++i) {
         vertex_span[i] = {
             .Position = positions[i],
@@ -458,17 +506,17 @@ void MeshStore::PlanClone(const Mesh &mesh) {
 }
 
 void MeshStore::CommitReserves() {
-    VerticesBuffer.ReserveAdditional(Pending.Vertices);
-    FaceFirstTriangleBuffer.ReserveAdditional(Pending.Faces);
-    FacePrimitiveBuffer.ReserveAdditional(Pending.Faces);
-    TriangleFaceIdBuffer.ReserveAdditional(Pending.Triangles);
-    EdgeStateBuffer.ReserveAdditional(Pending.EdgeStates);
-    PrimitiveMaterialBuffer.ReserveAdditional(Pending.Primitives);
-    BoneDeformBuffer.ReserveAdditional(Pending.BoneDeformVertices);
-    MorphTargetBuffer.ReserveAdditional(Pending.MorphTargetEntries);
+    B->VerticesBuffer.ReserveAdditional(Pending.Vertices);
+    B->FaceFirstTriangleBuffer.ReserveAdditional(Pending.Faces);
+    B->FacePrimitiveBuffer.ReserveAdditional(Pending.Faces);
+    B->TriangleFaceIdBuffer.ReserveAdditional(Pending.Triangles);
+    B->EdgeStateBuffer.ReserveAdditional(Pending.EdgeStates);
+    B->PrimitiveMaterialBuffer.ReserveAdditional(Pending.Primitives);
+    B->BoneDeformBuffer.ReserveAdditional(Pending.BoneDeformVertices);
+    B->MorphTargetBuffer.ReserveAdditional(Pending.MorphTargetEntries);
     // Mirror buffers (uint8_t state per element, no arena — shared ranges with data arenas).
-    if (Pending.Vertices > 0) VertexStateBuffer.Reserve(VertexStateBuffer.UsedSize + Pending.Vertices);
-    if (Pending.Faces > 0) FaceStateBuffer.Reserve(FaceStateBuffer.UsedSize + Pending.Faces);
+    if (Pending.Vertices > 0) B->VertexStateBuffer.Reserve(B->VertexStateBuffer.UsedSize + Pending.Vertices);
+    if (Pending.Faces > 0) B->FaceStateBuffer.Reserve(B->FaceStateBuffer.UsedSize + Pending.Faces);
     Pending = {};
 }
 
@@ -478,8 +526,8 @@ Mesh MeshStore::CreateMesh(MeshData &&data, MeshVertexAttributes &&attrs, MeshPr
     auto &entry = Entries[id];
 
     if (deform) {
-        entry.BoneDeform = BoneDeformBuffer.Allocate(vertex_count);
-        auto bd_span = BoneDeformBuffer.GetMutable(entry.BoneDeform);
+        entry.BoneDeform = B->BoneDeformBuffer.Allocate(vertex_count);
+        auto bd_span = B->BoneDeformBuffer.GetMutable(entry.BoneDeform);
         for (uint32_t i = 0; i < vertex_count; ++i) {
             bd_span[i] = {.Joints = deform->Joints[i], .Weights = deform->Weights[i]};
         }
@@ -487,8 +535,8 @@ Mesh MeshStore::CreateMesh(MeshData &&data, MeshVertexAttributes &&attrs, MeshPr
     if (morph && morph->TargetCount > 0 && vertex_count > 0) {
         entry.MorphTargetCount = morph->TargetCount;
         const auto total = entry.MorphTargetCount * vertex_count;
-        entry.MorphTargets = MorphTargetBuffer.Allocate(total);
-        auto mt_span = MorphTargetBuffer.GetMutable(entry.MorphTargets);
+        entry.MorphTargets = B->MorphTargetBuffer.Allocate(total);
+        auto mt_span = B->MorphTargetBuffer.GetMutable(entry.MorphTargets);
         const bool has_normal_deltas = !morph->NormalDeltas.empty();
         for (uint32_t i = 0; i < total; ++i) {
             mt_span[i] = MorphTargetVertex{
@@ -532,7 +580,7 @@ Mesh MeshStore::CreateMesh(MeshData &&data, MeshVertexAttributes &&attrs, MeshPr
 
         // Write face-first-triangle offsets directly into GPU buffer.
         entry.FaceData = AllocateFaces(face_count);
-        auto first_tri_span = FaceFirstTriangleBuffer.GetMutable(entry.FaceData);
+        auto first_tri_span = B->FaceFirstTriangleBuffer.GetMutable(entry.FaceData);
         uint32_t tri_offset = 0;
         for (uint32_t fi = 0; fi < face_count; ++fi) {
             first_tri_span[fi] = tri_offset;
@@ -542,8 +590,8 @@ Mesh MeshStore::CreateMesh(MeshData &&data, MeshVertexAttributes &&attrs, MeshPr
         entry.TriangleCount = tri_offset;
 
         // Write triangle-to-face IDs directly into GPU buffer.
-        entry.TriangleFaceIds = TriangleFaceIdBuffer.Allocate(tri_offset);
-        auto tri_face_span = TriangleFaceIdBuffer.GetMutable(entry.TriangleFaceIds);
+        entry.TriangleFaceIds = B->TriangleFaceIdBuffer.Allocate(tri_offset);
+        auto tri_face_span = B->TriangleFaceIdBuffer.GetMutable(entry.TriangleFaceIds);
         uint32_t ti = 0;
         for (uint32_t fi = 0; fi < face_count; ++fi) {
             const auto n_tris = data.Faces[fi].size() - 2;
@@ -551,8 +599,8 @@ Mesh MeshStore::CreateMesh(MeshData &&data, MeshVertexAttributes &&attrs, MeshPr
         }
 
         // Write face-to-primitive mapping directly into GPU buffer.
-        entry.FacePrimitives = FacePrimitiveBuffer.Allocate(face_count);
-        auto fp_span = FacePrimitiveBuffer.GetMutable(entry.FacePrimitives);
+        entry.FacePrimitives = B->FacePrimitiveBuffer.Allocate(face_count);
+        auto fp_span = B->FacePrimitiveBuffer.GetMutable(entry.FacePrimitives);
         if (!primitives.FacePrimitiveIndices.empty()) {
             std::ranges::copy(primitives.FacePrimitiveIndices, fp_span.begin());
         } else {
@@ -562,8 +610,8 @@ Mesh MeshStore::CreateMesh(MeshData &&data, MeshVertexAttributes &&attrs, MeshPr
         const auto primitive_count = !primitives.MaterialIndices.empty() ?
             (primitives.FacePrimitiveIndices.empty() ? 1u : *std::ranges::max_element(primitives.FacePrimitiveIndices) + 1u) :
             1u;
-        entry.PrimitiveMaterials = PrimitiveMaterialBuffer.Allocate(primitive_count);
-        auto pm_span = PrimitiveMaterialBuffer.GetMutable(entry.PrimitiveMaterials);
+        entry.PrimitiveMaterials = B->PrimitiveMaterialBuffer.Allocate(primitive_count);
+        auto pm_span = B->PrimitiveMaterialBuffer.GetMutable(entry.PrimitiveMaterials);
         if (!primitives.MaterialIndices.empty()) {
             std::ranges::copy(primitives.MaterialIndices, pm_span.begin());
         } else {
@@ -572,8 +620,8 @@ Mesh MeshStore::CreateMesh(MeshData &&data, MeshVertexAttributes &&attrs, MeshPr
 
         // Compute per-primitive triangle ranges from the (now sorted) face data.
         {
-            const auto fp = FacePrimitiveBuffer.Get(entry.FacePrimitives);
-            const auto fft = FaceFirstTriangleBuffer.Get(entry.FaceData);
+            const auto fp = B->FacePrimitiveBuffer.Get(entry.FacePrimitives);
+            const auto fft = B->FaceFirstTriangleBuffer.Get(entry.FaceData);
             auto &ranges = entry.PrimitiveTriangleRanges;
             if (face_count > 0) {
                 uint32_t current_prim = fp[0];
@@ -600,7 +648,7 @@ Mesh MeshStore::CreateMesh(MeshData &&data, MeshVertexAttributes &&attrs, MeshPr
         UpdateNormals(mesh);
     }
 
-    entry.EdgeStates = EdgeStateBuffer.Allocate(mesh.EdgeCount() * 2);
+    entry.EdgeStates = B->EdgeStateBuffer.Allocate(mesh.EdgeCount() * 2);
     ClearElementStates(vertices, entry.FaceData, entry.EdgeStates);
     return mesh;
 }
@@ -609,22 +657,22 @@ Mesh MeshStore::CloneMesh(const Mesh &mesh) {
     const auto src_id = mesh.GetStoreId();
     const auto src_vertices = GetVertices(src_id);
     const auto vertices = AllocateVertices(src_vertices.size());
-    std::ranges::copy(src_vertices, VerticesBuffer.GetMutable(vertices).begin());
+    std::ranges::copy(src_vertices, B->VerticesBuffer.GetMutable(vertices).begin());
 
     const auto faces = AllocateFaces(mesh.FaceCount());
-    std::ranges::copy(FaceFirstTriangleBuffer.Get(Entries.at(src_id).FaceData), FaceFirstTriangleBuffer.GetMutable(faces).begin());
+    std::ranges::copy(B->FaceFirstTriangleBuffer.Get(Entries.at(src_id).FaceData), B->FaceFirstTriangleBuffer.GetMutable(faces).begin());
 
-    const auto edge_states = EdgeStateBuffer.Allocate(mesh.EdgeCount() * 2);
+    const auto edge_states = B->EdgeStateBuffer.Allocate(mesh.EdgeCount() * 2);
     const auto &src_entry = Entries.at(src_id);
     const auto id = AcquireId({
         .Vertices = vertices,
         .FaceData = faces,
         .EdgeStates = edge_states,
-        .TriangleFaceIds = TriangleFaceIdBuffer.Clone(src_entry.TriangleFaceIds),
-        .FacePrimitives = FacePrimitiveBuffer.Clone(src_entry.FacePrimitives),
-        .PrimitiveMaterials = PrimitiveMaterialBuffer.Clone(src_entry.PrimitiveMaterials),
-        .BoneDeform = BoneDeformBuffer.Clone(src_entry.BoneDeform),
-        .MorphTargets = MorphTargetBuffer.Clone(src_entry.MorphTargets),
+        .TriangleFaceIds = B->TriangleFaceIdBuffer.Clone(src_entry.TriangleFaceIds),
+        .FacePrimitives = B->FacePrimitiveBuffer.Clone(src_entry.FacePrimitives),
+        .PrimitiveMaterials = B->PrimitiveMaterialBuffer.Clone(src_entry.PrimitiveMaterials),
+        .BoneDeform = B->BoneDeformBuffer.Clone(src_entry.BoneDeform),
+        .MorphTargets = B->MorphTargetBuffer.Clone(src_entry.MorphTargets),
         .MorphTargetCount = src_entry.MorphTargetCount,
         .TriangleCount = src_entry.TriangleCount,
         .DefaultMorphWeights = src_entry.DefaultMorphWeights,
@@ -655,30 +703,30 @@ std::expected<MeshWithMaterials, std::string> MeshStore::LoadMesh(const std::fil
 }
 
 void MeshStore::SetPositions(const Mesh &mesh, std::span<const vec3> positions) {
-    auto vertex_span = VerticesBuffer.GetMutable(Entries.at(mesh.GetStoreId()).Vertices);
+    auto vertex_span = B->VerticesBuffer.GetMutable(Entries.at(mesh.GetStoreId()).Vertices);
     for (size_t i = 0; i < positions.size(); ++i) vertex_span[i].Position = positions[i];
     UpdateNormals(mesh);
 }
 void MeshStore::SetPositions(uint32_t store_id, std::span<const vec3> positions) {
-    auto vertex_span = VerticesBuffer.GetMutable(Entries.at(store_id).Vertices);
+    auto vertex_span = B->VerticesBuffer.GetMutable(Entries.at(store_id).Vertices);
     for (size_t i = 0; i < positions.size(); ++i) vertex_span[i].Position = positions[i];
 }
 void MeshStore::SetPosition(const Mesh &mesh, uint32_t index, vec3 position) {
-    VerticesBuffer.GetMutable(Entries.at(mesh.GetStoreId()).Vertices)[index].Position = position;
+    B->VerticesBuffer.GetMutable(Entries.at(mesh.GetStoreId()).Vertices)[index].Position = position;
     // Caller is responsible for updating normals
 }
 
 void MeshStore::Release(uint32_t id) {
     if (id >= Entries.size() || !Entries[id].Alive) return;
     auto &entry = Entries[id];
-    VerticesBuffer.Release(entry.Vertices);
-    TriangleFaceIdBuffer.Release(entry.TriangleFaceIds);
-    FaceFirstTriangleBuffer.Release(entry.FaceData);
-    FacePrimitiveBuffer.Release(entry.FacePrimitives);
-    PrimitiveMaterialBuffer.Release(entry.PrimitiveMaterials);
-    EdgeStateBuffer.Release(entry.EdgeStates);
-    BoneDeformBuffer.Release(entry.BoneDeform);
-    MorphTargetBuffer.Release(entry.MorphTargets);
+    B->VerticesBuffer.Release(entry.Vertices);
+    B->TriangleFaceIdBuffer.Release(entry.TriangleFaceIds);
+    B->FaceFirstTriangleBuffer.Release(entry.FaceData);
+    B->FacePrimitiveBuffer.Release(entry.FacePrimitives);
+    B->PrimitiveMaterialBuffer.Release(entry.PrimitiveMaterials);
+    B->EdgeStateBuffer.Release(entry.EdgeStates);
+    B->BoneDeformBuffer.Release(entry.BoneDeform);
+    B->MorphTargetBuffer.Release(entry.MorphTargets);
     entry = {};
     FreeIds.emplace_back(id);
 }
@@ -694,22 +742,22 @@ static std::span<uint8_t> GetStates(mvk::Buffer &buf, Range range) {
 }
 
 Range MeshStore::AllocateVertices(uint32_t count) {
-    const auto range = VerticesBuffer.Allocate(count);
-    SyncMirror(VertexStateBuffer, range);
+    const auto range = B->VerticesBuffer.Allocate(count);
+    SyncMirror(B->VertexStateBuffer, range);
     return range;
 }
 
 Range MeshStore::AllocateFaces(uint32_t count) {
-    const auto range = FaceFirstTriangleBuffer.Allocate(count);
-    SyncMirror(FaceStateBuffer, range);
+    const auto range = B->FaceFirstTriangleBuffer.Allocate(count);
+    SyncMirror(B->FaceStateBuffer, range);
     return range;
 }
 
-std::span<uint8_t> MeshStore::GetFaceStates(Range range) { return GetStates(FaceStateBuffer, range); }
-std::span<uint8_t> MeshStore::GetVertexStates(Range range) { return GetStates(VertexStateBuffer, range); }
+std::span<uint8_t> MeshStore::GetFaceStates(Range range) { return GetStates(B->FaceStateBuffer, range); }
+std::span<uint8_t> MeshStore::GetVertexStates(Range range) { return GetStates(B->VertexStateBuffer, range); }
 
 std::span<const uint8_t> MeshStore::GetVertexStates(Range range) const {
-    return {reinterpret_cast<const uint8_t *>(VertexStateBuffer.GetMappedData().subspan(range.Offset, range.Count).data()), range.Count};
+    return {reinterpret_cast<const uint8_t *>(B->VertexStateBuffer.GetMappedData().subspan(range.Offset, range.Count).data()), range.Count};
 }
 
 std::span<const uint8_t> MeshStore::GetVertexStates(uint32_t id) const {
@@ -719,7 +767,7 @@ std::span<const uint8_t> MeshStore::GetVertexStates(uint32_t id) const {
 void MeshStore::ClearElementStates(Range vertices, Range faces, Range edges) {
     std::ranges::fill(GetVertexStates(vertices), 0);
     if (faces.Count > 0) std::ranges::fill(GetFaceStates(faces), 0);
-    if (edges.Count > 0) std::ranges::fill(EdgeStateBuffer.GetMutable(edges), 0);
+    if (edges.Count > 0) std::ranges::fill(B->EdgeStateBuffer.GetMutable(edges), 0);
 }
 
 using namespace he;
@@ -736,7 +784,7 @@ void MeshStore::UpdateElementStates(
 ) {
     const auto &entry = Entries.at(mesh.GetStoreId());
     auto face_states = GetFaceStates(entry.FaceData);
-    auto edge_states = EdgeStateBuffer.GetMutable(entry.EdgeStates);
+    auto edge_states = B->EdgeStateBuffer.GetMutable(entry.EdgeStates);
     auto vertex_states = GetVertexStates(entry.Vertices);
 
     std::ranges::fill(face_states, 0);
@@ -784,7 +832,7 @@ void MeshStore::UpdateElementStates(
 
 void MeshStore::UpdateEdgeStatesFromFaces(const Mesh &mesh, std::span<const uint32_t> selected_faces, std::optional<uint32_t> active_face) {
     const auto &entry = Entries.at(mesh.GetStoreId());
-    auto edge_states = EdgeStateBuffer.GetMutable(entry.EdgeStates);
+    auto edge_states = B->EdgeStateBuffer.GetMutable(entry.EdgeStates);
     std::ranges::fill(edge_states, uint8_t{0});
 
     for (const auto fi : selected_faces) {
@@ -807,7 +855,7 @@ void MeshStore::UpdateEdgeStatesFromFaces(const Mesh &mesh, std::span<const uint
 
 void MeshStore::UpdateEdgeStatesFromVertices(const Mesh &mesh) {
     const auto &entry = Entries.at(mesh.GetStoreId());
-    auto edge_states = EdgeStateBuffer.GetMutable(entry.EdgeStates);
+    auto edge_states = B->EdgeStateBuffer.GetMutable(entry.EdgeStates);
     const auto vertex_states = GetVertexStates(entry.Vertices);
     for (uint32_t ei = 0; ei < mesh.EdgeCount(); ++ei) {
         const auto heh = mesh.GetHalfedge(EH{ei}, 0);
@@ -837,7 +885,7 @@ void MeshStore::UpdateFaceStatesFromEdges(const Mesh &mesh) {
     const auto &entry = Entries.at(mesh.GetStoreId());
     auto face_states = GetFaceStates(entry.FaceData);
     if (face_states.empty()) return;
-    const auto edge_states = EdgeStateBuffer.GetMutable(entry.EdgeStates);
+    const auto edge_states = B->EdgeStateBuffer.GetMutable(entry.EdgeStates);
     for (uint32_t fi = 0; fi < mesh.FaceCount(); ++fi) {
         uint8_t state = ElementStateSelected;
         for (const auto heh : mesh.fh_range(FH{fi})) {

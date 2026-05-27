@@ -22,7 +22,7 @@
 #include "render/Instance.h"
 #include "render/LightComponents.h"
 #include "render/PbrFeature.h"
-#include "render/Textures.h"
+#include "render/TextureRefs.h"
 #include "scene/Defaults.h"
 #include "scene/SceneGraph.h"
 #include "scene/WorldTransform.h"
@@ -38,6 +38,8 @@
 #include <entt/entity/registry.hpp>
 #include <glm/gtx/euler_angles.hpp>
 #include <imgui_internal.h>
+
+#include <format>
 
 using std::ranges::any_of, std::ranges::distance, std::ranges::find, std::ranges::to;
 
@@ -244,7 +246,6 @@ constexpr auto MetadataTableFlags = ImGuiTableFlags_Borders | ImGuiTableFlags_Ro
 
 static void RenderEntityControls(entt::registry &r, entt::entity viewport, entt::entity active_entity) {
     auto &meshes = r.ctx().get<MeshStore>();
-    auto &textures = r.ctx().get<TextureStore>();
     if (active_entity == entt::null) {
         TextUnformatted("Active object: None");
         return;
@@ -489,7 +490,7 @@ static void RenderEntityControls(entt::registry &r, entt::entity viewport, entt:
         if (CollapsingHeader("Material")) {
             const auto &active_mesh = r.get<const Mesh>(active_mesh_entity);
             auto &material_store = r.ctx().get<MaterialStore>();
-            auto &texture_store = textures;
+            const auto texture_refs = GetTextureRefs(r);
             std::span<const uint32_t> primitive_materials = meshes.GetPrimitiveMaterialIndices(active_mesh.GetStoreId());
             const auto materials = GetMaterials(r);
             const auto material_count = uint32_t(materials.size());
@@ -542,7 +543,7 @@ static void RenderEntityControls(entt::registry &r, entt::entity viewport, entt:
                 const auto edit_texture_slot = [&](const char *label, uint32_t &slot) {
                     std::string preview = "None";
                     bool has_match = false;
-                    for (const auto &texture : texture_store.Textures) {
+                    for (const auto &texture : texture_refs) {
                         if (texture.SamplerSlot != slot) continue;
                         preview = texture.Name;
                         has_match = true;
@@ -556,7 +557,7 @@ static void RenderEntityControls(entt::registry &r, entt::entity viewport, entt:
                             slot = InvalidSlot;
                             changed = true;
                         }
-                        for (const auto &texture : texture_store.Textures) {
+                        for (const auto &texture : texture_refs) {
                             if (Selectable(texture.Name.c_str(), slot == texture.SamplerSlot)) {
                                 slot = texture.SamplerSlot;
                                 changed = true;

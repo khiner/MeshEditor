@@ -7,9 +7,10 @@
 #include "mesh/MeshStore.h"
 #include "mesh/Primitives.h"
 #include "object/ObjectOps.h"
-#include "render/GpuBuffers.h"
+#include "render/GpuBufferAccessors.h"
 #include "render/Instance.h"
 #include "render/LightComponents.h"
+#include "render/MeshBuffers.h"
 #include "scene/SceneGraphOps.h"
 #include "scene/WorldTransform.h"
 #include "selection/Selection.h"
@@ -57,7 +58,7 @@ entt::entity DuplicateOne(entt::registry &r, entt::entity e, bool &was_mesh_dupl
     // Object extras (Camera, Empty, Light) have Instance but create their own wireframe mesh.
     if (r.all_of<ObjectExtrasTag>(r.get<Instance>(e).Entity)) {
         if (const auto *src_cd = r.try_get<Camera>(e)) return ::AddCamera(r, meshes, buffers, create_info, *src_cd);
-        if (r.all_of<LightIndex>(e)) return ::AddLight(r, meshes, buffers, create_info, buffers.Lights.Get(r.get<const LightIndex>(e).Value));
+        if (r.all_of<LightIndex>(e)) return ::AddLight(r, meshes, buffers, create_info, GetLight(r, r.get<const LightIndex>(e).Value));
         return ::AddEmpty(r, meshes, buffers, create_info);
     }
 
@@ -224,7 +225,7 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
                 const auto e = GetActiveMeshEntity(r);
                 if (e == entt::null || ::selection::HasScaleLockedInstance(r, e)) return;
 
-                if (auto *mb = r.try_get<MeshBuffers>(e)) buffers.Release(*mb);
+                if (auto *mb = r.try_get<MeshBuffers>(e)) ReleaseMeshBuffers(r, *mb);
                 r.erase<MeshBuffers>(e);
                 r.erase<Mesh>(e);
 

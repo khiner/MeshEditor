@@ -10,7 +10,7 @@
 #include "mesh/MeshStore.h"
 #include "mesh/Primitives.h"
 #include "object/ObjectOps.h"
-#include "render/GpuBuffers.h"
+#include "render/GpuBufferAccessors.h"
 #include "scene/Defaults.h"
 #include "scene/WorldTransform.h"
 #include "viewport/ViewportEvents.h"
@@ -60,7 +60,7 @@ std::expected<void, std::string> Apply(entt::registry &r, entt::entity viewport,
     return std::visit(
         overloaded{
             [&](const SaveGltf &a) -> std::expected<void, std::string> {
-                return gltf::SaveGltf(a.Path, {r, viewport, buffers, meshes, textures, &vk, &buffers.Ctx});
+                return gltf::SaveGltf(a.Path, {r, viewport, buffers, meshes, textures, &vk, &GetBufferContext(r)});
             },
             [&](const LoadGltf &a) -> std::expected<void, std::string> {
                 const Timer timer{"LoadGltf"};

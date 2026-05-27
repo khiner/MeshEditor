@@ -1,5 +1,7 @@
 #include "render/SvgResource.h"
 
+#include "vulkan/Image.h"
+
 #include "imgui.h"
 #include "lunasvg.h"
 

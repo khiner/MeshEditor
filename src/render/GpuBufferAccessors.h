@@ -6,10 +6,19 @@
 
 #include <entt/entity/fwd.hpp>
 
+#include <cstdint>
 #include <span>
 
-// Vulkan-free views into GpuBuffers' GPU-mapped storage, so read/UI consumers
+namespace mvk {
+struct BufferContext;
+}
+struct MeshBuffers;
+
+// Vulkan-free views and ops over GpuBuffers' GPU storage, so read/UI/action consumers
 // need not include the full (vulkan-heavy) GpuBuffers header.
 std::span<PBRMaterial> GetMaterials(entt::registry &);
 std::span<const PunctualLight> GetLights(entt::registry &);
 WorkspaceLights &GetWorkspaceLights(entt::registry &);
+PunctualLight GetLight(entt::registry &, uint32_t index);
+mvk::BufferContext &GetBufferContext(entt::registry &);
+void ReleaseMeshBuffers(entt::registry &, MeshBuffers &);
