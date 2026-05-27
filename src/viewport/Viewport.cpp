@@ -33,6 +33,7 @@
 #include "viewport/FrameState.h"
 #include "viewport/GizmoDrag.h"
 #include "viewport/InteractionComponents.h"
+#include "viewport/RenderExtent.h"
 #include "viewport/ViewportDisplay.h"
 #include "viewport/ViewportEvents.h"
 #include "viewport/ViewportInteractionState.h"
@@ -45,6 +46,7 @@
 #include "ui/AxisColors.h" // Must be after imgui.h
 
 #include "render/GpuBuffers.h"
+#include "render/LightComponents.h"
 
 using std::ranges::find;
 
@@ -107,7 +109,7 @@ bool SubmitViewport(entt::registry &r, entt::entity viewport, vk::Fence viewport
         logical_extent = new_logical_extent;
         r.patch<ViewportExtent>(viewport, [](auto &) {});
     }
-    const auto render_extent = ComputeRenderExtentPx(logical_extent, std::bit_cast<vec2>(ImGui::GetIO().DisplayFramebufferScale));
+    const auto render_extent = RenderExtentPx(logical_extent);
     const auto current_render_extent = pipelines.Main.Resources ? ToExtent2D(pipelines.Main.Resources->ColorImage.Extent) : vk::Extent2D{};
     const bool render_extent_changed = current_render_extent.width != render_extent.width || current_render_extent.height != render_extent.height;
     if (render_extent_changed && !extent_changed) {

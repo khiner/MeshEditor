@@ -9,6 +9,7 @@
 #include "object/ObjectOps.h"
 #include "render/GpuBuffers.h"
 #include "render/Instance.h"
+#include "render/LightComponents.h"
 #include "scene/SceneGraphOps.h"
 #include "scene/WorldTransform.h"
 #include "selection/Selection.h"

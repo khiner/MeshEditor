@@ -8,6 +8,9 @@
 #include <span>
 #include <vector>
 
+// Per-element state bits in the element state buffers.
+constexpr uint32_t ElementStateSelected{1u << 0}, ElementStateActive{1u << 1};
+
 // A contiguous span of a mesh's elements (vertices/edges/faces) in the SelectionBitset.
 struct ElementRange {
     entt::entity MeshEntity;

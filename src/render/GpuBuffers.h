@@ -10,26 +10,11 @@
 #include "gpu/Vertex.h"
 #include "gpu/ViewportTheme.h"
 #include "gpu/WorkspaceLights.h"
+#include "render/MeshBuffers.h"
+#include "render/PickConstants.h"
 #include "vulkan/BufferArena.h"
 
 #include <numeric>
-
-struct MaterialStore {
-    std::vector<std::string> Names;
-};
-
-// Component on a light entity. Indexes into the GpuBuffers::Lights buffer (canonical PunctualLight storage).
-struct LightIndex {
-    uint32_t Value{0};
-};
-
-enum class IndexKind {
-    Face,
-    Edge,
-    Vertex
-};
-
-constexpr uint32_t ElementStateSelected{1u << 0}, ElementStateActive{1u << 1};
 
 struct DrawBufferPair {
     mvk::Buffer DrawData;
@@ -37,30 +22,6 @@ struct DrawBufferPair {
     DrawBufferPair(mvk::BufferContext &ctx)
         : DrawData(ctx, 0, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::DrawDataBuffer),
           Indirect(ctx, 0, mvk::MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eIndirectBuffer) {}
-};
-
-struct RenderBuffers {
-    RenderBuffers(Range vertices, SlottedRange indices, IndexKind index_type)
-        : Vertices(vertices), Indices(indices), IndexType(index_type) {}
-
-    Range Vertices;
-    SlottedRange Indices;
-    IndexKind IndexType;
-};
-
-struct MeshBuffers {
-    MeshBuffers(SlottedRange vertices, SlottedRange face_indices, SlottedRange edge_indices, SlottedRange vertex_indices)
-        : Vertices{vertices}, FaceIndices{face_indices}, EdgeIndices{edge_indices}, VertexIndices{vertex_indices} {}
-    MeshBuffers(const MeshBuffers &) = delete;
-    MeshBuffers &operator=(const MeshBuffers &) = delete;
-    SlottedRange Vertices;
-    SlottedRange FaceIndices, EdgeIndices, VertexIndices;
-    std::unordered_map<Element, RenderBuffers> NormalIndicators;
-};
-
-// Adjacency indices for bone silhouette edge detection (stored on armature object entities).
-struct BoneAdjacencyIndices {
-    SlottedRange Indices;
 };
 
 // Shared arena for per-instance GPU data (transforms, object IDs, instance states).
@@ -131,12 +92,6 @@ private:
 
     RangeAllocator Allocator;
 };
-
-constexpr uint32_t
-    ObjectSelectRadiusPx = 15,
-    ElementSelectRadiusPx = 50,
-    ElementPickDiameterPx = ElementSelectRadiusPx * 2 + 1,
-    ElementPickPixelCount = ElementPickDiameterPx * ElementPickDiameterPx;
 
 struct GpuBuffers {
     static constexpr uint32_t MaxSelectableObjects{100'000};
@@ -256,11 +211,3 @@ struct GpuBuffers {
     TypedBuffer<uint32_t> ObjectPickKeys, ObjectPickSeenBitset, SelectionBitset;
     TypedBuffer<ElementPickCandidate> ElementPickCandidates;
 };
-
-inline vk::Extent2D ComputeRenderExtentPx(uvec2 logical_extent, vec2 scale) {
-    const auto scaled_dim = [](uint32_t logical, float s) -> uint32_t {
-        if (logical == 0u) return 0u;
-        return std::max(1u, uint32_t(float(logical) * (s > 0.0f ? s : 1.0f) + 0.5f));
-    };
-    return {scaled_dim(logical_extent.x, scale.x), scaled_dim(logical_extent.y, scale.y)};
-}

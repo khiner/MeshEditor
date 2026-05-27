@@ -15,6 +15,8 @@
 #include "physics/PhysicsTypes.h"
 #include "render/GpuBuffers.h"
 #include "render/Instance.h"
+#include "render/LightComponents.h"
+#include "render/MaterialComponents.h"
 #include "render/OneShotGpu.h"
 #include "render/Textures.h"
 #include "scene/Defaults.h"

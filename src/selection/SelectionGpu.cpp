@@ -22,10 +22,10 @@
 #include "selection/Selection.h"
 #include "selection/SelectionBitset.h"
 #include "selection/SelectionComponents.h"
+#include "viewport/RenderExtent.h"
 #include "viewport/ViewportDisplay.h"
 #include "viewport/ViewportRenderGpu.h"
 
-#include "imgui.h"
 #include <entt/entity/registry.hpp>
 
 namespace {
@@ -205,7 +205,7 @@ void RenderElementSelectionPass(
         );
     }
 
-    const auto render_extent = ComputeRenderExtentPx(r.get<const ViewportExtent>(viewport).Value, std::bit_cast<vec2>(ImGui::GetIO().DisplayFramebufferScale));
+    const auto render_extent = RenderExtentPx(r.get<const ViewportExtent>(viewport).Value);
     cb.setViewport(0, vk::Viewport{0.f, 0.f, float(render_extent.width), float(render_extent.height), 0.f, 1.f});
     cb.setScissor(0, vk::Rect2D{{0, 0}, render_extent});
 
@@ -340,7 +340,7 @@ void RenderSelectionPassWith(entt::registry &r, entt::entity viewport, bool rend
         vk::ImageMemoryBarrier{vk::AccessFlagBits::eTransferWrite, vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite, vk::ImageLayout::eGeneral, vk::ImageLayout::eGeneral, {}, {}, *head_image.Image, ColorSubresourceRange}
     );
 
-    const auto render_extent = ComputeRenderExtentPx(r.get<const ViewportExtent>(viewport).Value, std::bit_cast<vec2>(ImGui::GetIO().DisplayFramebufferScale));
+    const auto render_extent = RenderExtentPx(r.get<const ViewportExtent>(viewport).Value);
     cb.setViewport(0, vk::Viewport{0.f, 0.f, float(render_extent.width), float(render_extent.height), 0.f, 1.f});
     cb.setScissor(0, vk::Rect2D{{0, 0}, render_extent});
 

@@ -27,6 +27,7 @@
 #include "physics/PhysicsTypes.h"
 #include "render/GpuBuffers.h"
 #include "render/Instance.h"
+#include "render/LightComponents.h"
 #include "render/MaterialComponents.h"
 #include "render/OneShotGpu.h"
 #include "render/Pipelines.h"
@@ -42,6 +43,7 @@
 #include "selection/SelectionGpu.h"
 #include "viewport/GizmoDrag.h"
 #include "viewport/InteractionComponents.h"
+#include "viewport/RenderExtent.h"
 #include "viewport/ViewportDisplay.h"
 #include "viewport/ViewportEvents.h"
 #include "viewport/ViewportInteractionState.h"
@@ -1702,8 +1704,7 @@ RenderRequest ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
                 for (const auto [_, feat] : r.view<const PbrMeshFeatures>().each()) pbr_mask |= feat.Mask;
                 if (pipelines.Main.Compiler.CompilePipelines(pbr_mask)) request(RenderRequest::ReRecord);
                 const bool want_transmission = active_lighting.RealTransmission && HasFeature(pbr_mask, PbrFeature::Transmission);
-                const auto render_extent_now = ComputeRenderExtentPx(r.get<const ViewportExtent>(viewport).Value, std::bit_cast<vec2>(ImGui::GetIO().DisplayFramebufferScale));
-                if (pipelines.Main.EnsureTransmissionResources(render_extent_now, vk.Device, vk.PhysicalDevice, want_transmission)) refresh_transmission_descriptor();
+                if (pipelines.Main.EnsureTransmissionResources(RenderExtentPx(r.get<const ViewportExtent>(viewport).Value), vk.Device, vk.PhysicalDevice, want_transmission)) refresh_transmission_descriptor();
             } else if (pipelines.Main.EnsureTransmissionResources({}, vk.Device, vk.PhysicalDevice, false)) {
                 refresh_transmission_descriptor();
             }
@@ -1716,8 +1717,7 @@ RenderRequest ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
         !reactive<changes::InteractionMode>(r).empty() ||
         !reactive<changes::TransformEnd>(r).empty() ||
         light_count_changed) {
-        const auto logical_extent = r.get<const ViewportExtent>(viewport).Value;
-        const auto render_extent = ComputeRenderExtentPx(logical_extent, std::bit_cast<vec2>(ImGui::GetIO().DisplayFramebufferScale));
+        const auto render_extent = RenderExtentPx(r.get<const ViewportExtent>(viewport).Value);
         const float aspect = render_extent.width == 0 || render_extent.height == 0 ? 1.f : float(render_extent.width) / float(render_extent.height);
         // When looking through a scene camera, keep the ViewCamera's widened FOV in sync
         // with the current viewport aspect ratio (handles viewport resize).

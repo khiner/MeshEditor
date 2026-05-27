@@ -18,8 +18,9 @@
 #include "mesh/MeshStore.h"
 #include "mesh/Primitives.h"
 #include "physics/PhysicsUi.h"
-#include "render/GpuBuffers.h"
+#include "render/GpuBufferAccessors.h"
 #include "render/Instance.h"
+#include "render/LightComponents.h"
 #include "render/PbrFeature.h"
 #include "render/Textures.h"
 #include "scene/Defaults.h"
@@ -242,7 +243,6 @@ constexpr auto MetadataTableFlags = ImGuiTableFlags_Borders | ImGuiTableFlags_Ro
 } // namespace
 
 static void RenderEntityControls(entt::registry &r, entt::entity viewport, entt::entity active_entity) {
-    auto &buffers = r.ctx().get<GpuBuffers>();
     auto &meshes = r.ctx().get<MeshStore>();
     auto &textures = r.ctx().get<TextureStore>();
     if (active_entity == entt::null) {
@@ -491,7 +491,8 @@ static void RenderEntityControls(entt::registry &r, entt::entity viewport, entt:
             auto &material_store = r.ctx().get<MaterialStore>();
             auto &texture_store = textures;
             std::span<const uint32_t> primitive_materials = meshes.GetPrimitiveMaterialIndices(active_mesh.GetStoreId());
-            const auto material_count = buffers.Materials.Count();
+            const auto materials = GetMaterials(r);
+            const auto material_count = uint32_t(materials.size());
             const auto material_name = [&](uint32_t index) {
                 if (index < material_store.Names.size() && !material_store.Names[index].empty()) return std::string{material_store.Names[index]};
                 return std::format("Material{}", index);
@@ -537,7 +538,7 @@ static void RenderEntityControls(entt::registry &r, entt::entity viewport, entt:
                     EndCombo();
                 }
 
-                auto &material = buffers.Materials.Get(material_index);
+                auto &material = materials[material_index];
                 const auto edit_texture_slot = [&](const char *label, uint32_t &slot) {
                     std::string preview = "None";
                     bool has_match = false;
@@ -703,7 +704,7 @@ static void RenderEntityControls(entt::registry &r, entt::entity viewport, entt:
     }
     if (r.all_of<LightIndex>(active_entity) &&
         CollapsingHeader("Light", ImGuiTreeNodeFlags_DefaultOpen)) {
-        auto light = buffers.Lights.Get(r.get<const LightIndex>(active_entity).Value);
+        auto light = GetLights(r)[r.get<const LightIndex>(active_entity).Value];
         bool changed{false};
 
         const char *type_names[]{"Directional", "Point", "Spot"};
@@ -744,7 +745,7 @@ static void RenderEntityControls(entt::registry &r, entt::entity viewport, entt:
     if (const auto *instance = r.try_get<Instance>(active_entity); instance && r.all_of<Mesh>(instance->Entity)) {
         const bool has_sound = r.all_of<SoundVerticesModel>(active_entity);
         if (CollapsingHeader("Audio", has_sound ? ImGuiTreeNodeFlags_DefaultOpen : 0)) {
-            DrawObjectAudioControls(r, viewport, active_entity, GetMeshEntity(r, active_entity), buffers.SelectionBitset.Data());
+            DrawObjectAudioControls(r, viewport, active_entity, GetMeshEntity(r, active_entity), r.get<const SelectionBitsetRef>(viewport).Value.data());
             if (const auto *active_mic = r.try_get<RealImpactActiveMicrophone>(active_entity)) {
                 SeparatorText("Microphone");
                 Text("Active: %s", GetName(r, active_mic->Entity).c_str());
@@ -827,7 +828,6 @@ static void RenderEntityControls(entt::registry &r, entt::entity viewport, entt:
 }
 
 void RenderControls(entt::registry &r, entt::entity viewport) {
-    auto &buffers = r.ctx().get<GpuBuffers>();
     if (BeginTabBar("Scene controls")) {
         if (BeginTabItem("Object")) {
             {
@@ -872,7 +872,7 @@ void RenderControls(entt::registry &r, entt::entity viewport) {
                         if (const auto *instance = r.try_get<Instance>(active_entity); instance && r.all_of<Mesh>(instance->Entity)) {
                             const auto *br = r.try_get<const MeshSelectionBitsetRange>(instance->Entity);
                             const uint32_t selected_count = br ?
-                                selection::CountSelected(buffers.SelectionBitset.Data(), br->Offset, br->Count) :
+                                selection::CountSelected(r.get<const SelectionBitsetRef>(viewport).Value.data(), br->Offset, br->Count) :
                                 0;
                             Text("Editing %s: %u selected", label(edit_mode).data(), selected_count);
                         }

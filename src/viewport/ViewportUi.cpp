@@ -14,8 +14,9 @@
 #include "gizmo/TransformGizmo.h"
 #include "gltf/SourceAssets.h"
 #include "mesh/MeshStore.h"
-#include "render/GpuBuffers.h"
+#include "render/GpuBufferAccessors.h"
 #include "render/Instance.h"
+#include "render/PickConstants.h"
 #include "render/Textures.h"
 #include "scene/Defaults.h"
 #include "scene/SceneGraph.h"
@@ -28,6 +29,7 @@
 #include "viewport/FrameState.h"
 #include "viewport/GizmoDrag.h"
 #include "viewport/InteractionComponents.h"
+#include "viewport/RenderExtent.h"
 #include "viewport/ViewportEvents.h"
 #include "viewport/ViewportIcons.h"
 #include "viewport/ViewportInteractionState.h"
@@ -215,7 +217,7 @@ void Interact(entt::registry &r, entt::entity viewport, FrameState &frame) {
     }
 
     const auto logical_extent = r.get<const ViewportExtent>(viewport).Value;
-    const auto render_extent = ComputeRenderExtentPx(logical_extent, std::bit_cast<vec2>(GetIO().DisplayFramebufferScale));
+    const auto render_extent = RenderExtentPx(logical_extent);
     if (logical_extent.x == 0 || logical_extent.y == 0 || render_extent.width == 0 || render_extent.height == 0) return;
 
     const auto interaction_mode = r.get<const Interaction>(viewport).Mode;
@@ -425,7 +427,6 @@ void Interact(entt::registry &r, entt::entity viewport, FrameState &frame) {
 }
 
 void InteractOverlay(entt::registry &r, entt::entity viewport, FrameState &frame) {
-    auto &buffers = r.ctx().get<GpuBuffers>();
     auto &meshes = r.ctx().get<MeshStore>();
     auto &environments = r.ctx().get<EnvironmentStore>();
     const auto &icons = r.get<const ViewportIcons>(viewport);
@@ -601,7 +602,7 @@ void InteractOverlay(entt::registry &r, entt::entity viewport, FrameState &frame
                     render_pbr_controls(r.get<const RenderedLighting>(viewport), "RenderedLighting");
                 } else if (current_mode == ViewportShadingMode::Solid) {
                     SeparatorText("Solid lighting");
-                    auto &lights = buffers.GetWorkspaceLights();
+                    auto &lights = GetWorkspaceLights(r);
                     bool changed = false;
                     if (Button("Reset##Lighting")) {
                         lights = Defaults::WorkspaceLights;
@@ -830,7 +831,7 @@ void InteractOverlay(entt::registry &r, entt::entity viewport, FrameState &frame
         if (bone_mode) return !bone_selected_view.empty();
         if (selected_view.empty()) return false;
         if (!mesh_edit_mode) return true;
-        const auto *bits = buffers.SelectionBitset.Data();
+        const auto *bits = r.get<const SelectionBitsetRef>(viewport).Value.data();
         for (const auto [e, instance] : r.view<const Instance, const Selected>(entt::exclude<ScaleLocked>).each()) {
             if (const auto *br = r.try_get<const MeshSelectionBitsetRange>(instance.Entity)) {
                 if (selection::CountSelected(bits, br->Offset, br->Count) > 0) return true;

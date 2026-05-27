@@ -7,6 +7,7 @@
 #include "physics/PhysicsTypes.h"
 #include "render/Bindless.h"
 #include "render/GpuBuffers.h"
+#include "render/MaterialComponents.h"
 #include "render/OneShotGpu.h"
 #include "render/Textures.h"
 

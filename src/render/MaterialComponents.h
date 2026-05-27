@@ -5,6 +5,10 @@
 #include <string>
 #include <vector>
 
+struct MaterialStore {
+    std::vector<std::string> Names;
+};
+
 struct MaterialDirty {
     uint32_t Index{0};
 };
