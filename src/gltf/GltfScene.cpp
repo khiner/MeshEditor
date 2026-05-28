@@ -2199,17 +2199,17 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
             );
         } else if (object.ObjectType == gltf::Object::Type::Camera && object.CameraIndex && *object.CameraIndex < asset.cameras.size()) {
             const auto &cam = asset.cameras[*object.CameraIndex];
-            object_entity = ::AddCamera(r, ctx.Meshes, ctx.Buffers, {.Name = object_name, .Transform = object.LocalTransform, .Select = MeshInstanceCreateInfo::SelectBehavior::None});
+            object_entity = ::AddCamera(r, ctx.Meshes, {.Name = object_name, .Transform = object.LocalTransform, .Select = MeshInstanceCreateInfo::SelectBehavior::None});
             r.replace<::Camera>(object_entity, ConvertCamera(cam));
             r.emplace<SourceCameraIndex>(object_entity, *object.CameraIndex);
             if (!cam.name.empty()) r.emplace<CameraName>(object_entity, std::string{cam.name});
         } else if (object.ObjectType == gltf::Object::Type::Light && object.LightIndex && *object.LightIndex < asset.lights.size()) {
             const auto &light = asset.lights[*object.LightIndex];
-            object_entity = ::AddLight(r, ctx.Meshes, ctx.Buffers, {.Name = object_name, .Transform = object.LocalTransform, .Select = MeshInstanceCreateInfo::SelectBehavior::None}, ConvertLight(light));
+            object_entity = ::AddLight(r, ctx.Meshes, {.Name = object_name, .Transform = object.LocalTransform, .Select = MeshInstanceCreateInfo::SelectBehavior::None}, ConvertLight(light));
             r.emplace<SourceLightIndex>(object_entity, *object.LightIndex);
             if (!light.name.empty()) r.emplace<LightName>(object_entity, std::string{light.name});
         } else {
-            object_entity = ::AddEmpty(r, ctx.Meshes, ctx.Buffers, {.Name = object_name, .Transform = object.LocalTransform, .Select = MeshInstanceCreateInfo::SelectBehavior::None});
+            object_entity = ::AddEmpty(r, ctx.Meshes, {.Name = object_name, .Transform = object.LocalTransform, .Select = MeshInstanceCreateInfo::SelectBehavior::None});
         }
         // Companion instances for non-triangle primitives, parented under primary with identity local.
         if (object.ObjectType == gltf::Object::Type::Mesh && object.MeshIndex && *object.MeshIndex < extra_entities_per_mesh.size()) {

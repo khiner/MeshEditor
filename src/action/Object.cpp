@@ -7,7 +7,7 @@
 #include "mesh/MeshStore.h"
 #include "mesh/Primitives.h"
 #include "object/ObjectOps.h"
-#include "render/GpuBufferAccessors.h"
+#include "render/GpuBufferOps.h"
 #include "render/Instance.h"
 #include "render/LightComponents.h"
 #include "render/MeshBuffers.h"
@@ -23,7 +23,6 @@ namespace {
 
 entt::entity DuplicateOne(entt::registry &r, entt::entity e, bool &was_mesh_duplicate) {
     auto &meshes = r.ctx().get<MeshStore>();
-    auto &buffers = r.ctx().get<GpuBuffers>();
     const ObjectCreateInfo create_info{
         .Name = std::format("{}_copy", GetName(r, e)),
         // Duplicate is created at root, so its local must match source's world.
@@ -49,7 +48,7 @@ entt::entity DuplicateOne(entt::registry &r, entt::entity e, bool &was_mesh_dupl
             }
             return copy_entity;
         }
-        return ::AddEmpty(r, meshes, buffers, create_info);
+        return ::AddEmpty(r, meshes, create_info);
     }
 
     // Bone sub-entities (head/tail joints, bone instances) are not independently duplicable.
@@ -57,9 +56,9 @@ entt::entity DuplicateOne(entt::registry &r, entt::entity e, bool &was_mesh_dupl
 
     // Object extras (Camera, Empty, Light) have Instance but create their own wireframe mesh.
     if (r.all_of<ObjectExtrasTag>(r.get<Instance>(e).Entity)) {
-        if (const auto *src_cd = r.try_get<Camera>(e)) return ::AddCamera(r, meshes, buffers, create_info, *src_cd);
-        if (r.all_of<LightIndex>(e)) return ::AddLight(r, meshes, buffers, create_info, GetLight(r, r.get<const LightIndex>(e).Value));
-        return ::AddEmpty(r, meshes, buffers, create_info);
+        if (const auto *src_cd = r.try_get<Camera>(e)) return ::AddCamera(r, meshes, create_info, *src_cd);
+        if (r.all_of<LightIndex>(e)) return ::AddLight(r, meshes, create_info, GetLight(r, r.get<const LightIndex>(e).Value));
+        return ::AddEmpty(r, meshes, create_info);
     }
 
     const auto mesh_entity = r.get<Instance>(e).Entity;
@@ -78,7 +77,6 @@ entt::entity DuplicateOne(entt::registry &r, entt::entity e, bool &was_mesh_dupl
 
 entt::entity DuplicateLinkedOne(entt::registry &r, entt::entity e) {
     auto &meshes = r.ctx().get<MeshStore>();
-    auto &buffers = r.ctx().get<GpuBuffers>();
     if (r.all_of<BoneSubPartOf>(e)) return entt::null;
     if (!r.all_of<Instance>(e)) {
         const auto select_behavior = r.all_of<Selected>(e) ? MeshInstanceCreateInfo::SelectBehavior::Additive : MeshInstanceCreateInfo::SelectBehavior::None;
@@ -96,7 +94,7 @@ entt::entity DuplicateLinkedOne(entt::registry &r, entt::entity e) {
             ::CreateBoneInstances(r, meshes, e_new, armature->Entity);
             return e_new;
         }
-        return ::AddEmpty(r, meshes, buffers, {.Name = std::format("{}_copy", GetName(r, e)), .Transform = Transform{r.get<const WorldTransform>(e)}, .Select = select_behavior});
+        return ::AddEmpty(r, meshes, {.Name = std::format("{}_copy", GetName(r, e)), .Transform = Transform{r.get<const WorldTransform>(e)}, .Select = select_behavior});
     }
 
     const auto mesh_entity = r.get<Instance>(e).Entity;
@@ -125,7 +123,6 @@ entt::entity DuplicateLinkedOne(entt::registry &r, entt::entity e) {
 
 namespace action::object {
 void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
-    auto &buffers = r.ctx().get<GpuBuffers>();
     auto &meshes = r.ctx().get<MeshStore>();
     auto begin_translate = [&] { r.emplace_or_replace<StartScreenTransform>(viewport, TransformGizmo::TransformType::Translate); };
     // Hand off Active to the duplicate and drop the source from the selection.
@@ -197,7 +194,7 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
             [&](ClearParent) {
                 for (const auto e : r.view<Selected>()) ::ClearParent(r, e);
             },
-            [&](const AddEmpty &a) { ::AddEmpty(r, meshes, buffers, *a.Info); begin_translate(); },
+            [&](const AddEmpty &a) { ::AddEmpty(r, meshes, *a.Info); begin_translate(); },
             [&](const AddArmature &a) {
                 const auto &info = *a.Info;
                 const auto data_entity = r.create();
@@ -213,8 +210,8 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
                 ::CreateBoneInstances(r, meshes, entity, data_entity);
                 begin_translate();
             },
-            [&](const AddCamera &a) { ::AddCamera(r, meshes, buffers, *a.Info, a.Props); begin_translate(); },
-            [&](const AddLight &a) { ::AddLight(r, meshes, buffers, *a.Info); begin_translate(); },
+            [&](const AddCamera &a) { ::AddCamera(r, meshes, *a.Info, a.Props); begin_translate(); },
+            [&](const AddLight &a) { ::AddLight(r, meshes, *a.Info); begin_translate(); },
             [&](const AddMeshPrimitive &a) {
                 const auto [mesh_entity, _] = ::AddMesh(r, meshes, meshes.CreateMesh(primitive::CreateMesh(a.Shape), {}, {}), *a.Info);
                 r.emplace<PrimitiveShape>(mesh_entity, a.Shape);

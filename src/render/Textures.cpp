@@ -2,14 +2,21 @@
 #include "File.h"
 #include "gltf/Image.h"
 #include "image/ImageDecode.h"
+#include "mesh/MeshStore.h"
 #include "render/Bindless.h"
+#include "render/GpuBuffers.h"
 #include "render/IblPrefilterPipelines.h"
+#include "render/MaterialComponents.h"
+#include "render/MaterialImport.h"
+#include "render/OneShotGpu.h"
 #include "render/TextureRefs.h"
 
 #include <basisu_transcoder.h>
 #include <entt/entity/registry.hpp>
 
 #include <bit>
+#include <iostream>
+#include <unordered_map>
 
 static void SubmitWait(vk::Queue queue, vk::CommandBuffer command_buffer, vk::Fence fence, vk::Device device) {
     vk::SubmitInfo submit{};
@@ -958,4 +965,114 @@ HdriRefs GetHdriRefs(entt::registry &r) {
     refs.Names.reserve(environments.Hdris.size());
     for (const auto &hdri : environments.Hdris) refs.Names.emplace_back(hdri.Name);
     return refs;
+}
+
+void ImportObjPlyMaterials(entt::registry &r, std::span<const ObjPlyMaterial> materials, const std::filesystem::path &mesh_path, uint32_t mesh_store_id) {
+    const auto &vk = r.ctx().get<const VulkanResources>();
+    const auto &one_shot = r.ctx().get<const OneShotGpu>();
+    auto &slots = r.ctx().get<DescriptorSlots>();
+    auto &buffers = r.ctx().get<GpuBuffers>();
+    auto &meshes = r.ctx().get<MeshStore>();
+    auto &textures = r.ctx().get<TextureStore>();
+
+    auto obj_batch = BeginTextureUploadBatch(vk.Device, *one_shot.Pool, buffers.Ctx);
+    std::unordered_map<std::string, uint32_t> texture_slot_cache;
+    const auto resolve_texture_slot =
+        [&](
+            const std::optional<std::filesystem::path> &source_texture_path,
+            TextureColorSpace color_space,
+            std::string_view material_name, std::string_view texture_label
+        ) -> uint32_t {
+        if (!source_texture_path) return InvalidSlot;
+        auto texture_path = *source_texture_path;
+        if (texture_path.is_relative()) texture_path = mesh_path.parent_path() / texture_path;
+        texture_path = texture_path.lexically_normal();
+
+        const auto cache_key = std::format("{}|{}", texture_path.generic_string(), color_space == TextureColorSpace::Srgb ? "sRGB" : "Linear");
+        if (const auto it = texture_slot_cache.find(cache_key); it != texture_slot_cache.end()) return it->second;
+
+        std::string encoded;
+        try {
+            encoded = File::Read(texture_path);
+        } catch (const std::exception &e) {
+            std::cerr << std::format(
+                "Warning: Failed to read OBJ texture '{}' for material '{}' ({}) in '{}': {}\n",
+                texture_path.string(), material_name, texture_label, mesh_path.string(), e.what()
+            );
+            return InvalidSlot;
+        }
+
+        auto texture = CreateTextureEntryFromEncoded(
+            vk,
+            obj_batch,
+            slots,
+            std::as_bytes(std::span{encoded}),
+            texture_path.filename().string(),
+            std::format("{} ({})", texture_path.filename().string(), color_space == TextureColorSpace::Srgb ? "sRGB" : "Linear"),
+            color_space,
+            vk::SamplerAddressMode::eRepeat,
+            vk::SamplerAddressMode::eRepeat,
+            SamplerConfig{}
+        );
+        if (!texture) {
+            std::cerr << std::format(
+                "Warning: Failed to decode OBJ texture '{}' for material '{}' ({}) in '{}': {}\n",
+                texture_path.string(), material_name, texture_label, mesh_path.string(), texture.error()
+            );
+            return InvalidSlot;
+        }
+
+        const auto sampler_slot = texture->SamplerSlot;
+        textures.Textures.emplace_back(std::move(*texture));
+        texture_slot_cache.emplace(cache_key, sampler_slot);
+        return sampler_slot;
+    };
+
+    std::vector<uint32_t> scene_material_indices(materials.size(), 0u);
+    std::vector<std::string> names;
+    names.reserve(materials.size());
+    buffers.Materials.Reserve(buffers.Materials.Count() + materials.size());
+    for (uint32_t material_index = 0; material_index < materials.size(); ++material_index) {
+        const auto &source = materials[material_index];
+        const auto material_name = source.Name.empty() ? std::format("Material{}", material_index) : source.Name;
+        const auto base_color_texture = resolve_texture_slot(source.BaseColorTexturePath, TextureColorSpace::Srgb, material_name, "baseColor");
+        const auto normal_texture = resolve_texture_slot(source.NormalTexturePath, TextureColorSpace::Linear, material_name, "normal");
+        scene_material_indices[material_index] = buffers.Materials.Append({
+            .BaseColorFactor = source.BaseColorFactor,
+            .MetallicFactor = std::clamp(source.MetallicFactor, 0.f, 1.f),
+            .RoughnessFactor = std::clamp(source.RoughnessFactor, 0.f, 1.f),
+            .AlphaMode = (source.BaseColorFactor.w < 1.f || source.HasAlphaTexture) ?
+                MaterialAlphaMode::Blend :
+                MaterialAlphaMode::Opaque,
+            .BaseColorTexture = {.Slot = base_color_texture != InvalidSlot ? base_color_texture : textures.WhiteTextureSlot},
+            .NormalTexture = {.Slot = normal_texture},
+        });
+        names.emplace_back(material_name);
+    }
+    SubmitTextureUploadBatch(obj_batch, vk.Queue, *one_shot.Fence, vk.Device);
+
+    auto &material_store = r.ctx().get<MaterialStore>();
+    material_store.Names.insert(material_store.Names.end(), std::make_move_iterator(names.begin()), std::make_move_iterator(names.end()));
+
+    if (auto primitive_materials = meshes.GetPrimitiveMaterialIndices(mesh_store_id); !primitive_materials.empty()) {
+        const auto fallback = scene_material_indices.front();
+        for (auto &primitive_material : primitive_materials) {
+            primitive_material = primitive_material < scene_material_indices.size() ? scene_material_indices[primitive_material] : fallback;
+        }
+    }
+}
+
+void ResetImportedTexturesAndMaterials(entt::registry &r) {
+    auto &slots = r.ctx().get<DescriptorSlots>();
+    auto &buffers = r.ctx().get<GpuBuffers>();
+    auto &textures = r.ctx().get<TextureStore>();
+    // Index 0 is the default white texture (permanent); imported textures start at index 1.
+    if (textures.Textures.size() > 1) {
+        ReleaseSamplerSlots(slots, CollectSamplerSlots(std::span<const TextureEntry>{textures.Textures}.subspan(1)));
+        textures.Textures.erase(textures.Textures.begin() + 1, textures.Textures.end());
+    }
+    textures.WhiteTextureSlot = textures.Textures.empty() ? InvalidSlot : textures.Textures.front().SamplerSlot;
+
+    if (buffers.Materials.Count() > 1) buffers.Materials.SetCount(1u);
+    if (auto &ms = r.ctx().get<MaterialStore>(); ms.Names.size() > 1) ms.Names.erase(ms.Names.begin() + 1, ms.Names.end());
 }

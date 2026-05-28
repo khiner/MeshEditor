@@ -14,7 +14,7 @@
 #include "gizmo/TransformGizmo.h"
 #include "gltf/SourceAssets.h"
 #include "mesh/MeshStore.h"
-#include "render/GpuBufferAccessors.h"
+#include "render/GpuBufferOps.h"
 #include "render/Instance.h"
 #include "render/PickConstants.h"
 #include "render/TextureRefs.h"

@@ -18,7 +18,7 @@
 #include "mesh/MeshStore.h"
 #include "mesh/Primitives.h"
 #include "physics/PhysicsUi.h"
-#include "render/GpuBufferAccessors.h"
+#include "render/GpuBufferOps.h"
 #include "render/Instance.h"
 #include "render/LightComponents.h"
 #include "render/PbrFeature.h"

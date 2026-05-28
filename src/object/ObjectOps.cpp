@@ -1,7 +1,6 @@
 #include "object/ObjectOps.h"
 
 #include "CameraTypes.h"
-#include "File.h"
 #include "Path.h"
 #include "armature/Armature.h"
 #include "armature/ArmatureComponents.h"
@@ -13,12 +12,11 @@
 #include "object/ObjectComponents.h"
 #include "object/PendingSync.h"
 #include "physics/PhysicsTypes.h"
-#include "render/GpuBuffers.h"
+#include "render/GpuBufferOps.h"
 #include "render/Instance.h"
 #include "render/LightComponents.h"
-#include "render/MaterialComponents.h"
-#include "render/OneShotGpu.h"
-#include "render/Textures.h"
+#include "render/MaterialImport.h"
+#include "render/MeshBuffers.h"
 #include "scene/Defaults.h"
 #include "scene/SceneGraph.h"
 #include "scene/SceneGraphOps.h"
@@ -30,7 +28,7 @@
 
 #include <entt/entity/registry.hpp>
 
-#include <iostream>
+#include <format>
 
 using std::ranges::any_of, std::ranges::find, std::ranges::to;
 
@@ -106,14 +104,14 @@ std::pair<entt::entity, entt::entity> AddMesh(entt::registry &r, MeshStore &mesh
     return {mesh_entity, info ? AddMeshInstance(r, mesh_entity, *info) : entt::null};
 }
 
-entt::entity CreateExtrasBufferEntity(entt::registry &r, MeshStore &meshes, GpuBuffers &buffers, std::span<const vec3> positions, std::span<const uint8_t> vertex_classes, std::span<const uint32_t> edge_indices) {
+entt::entity CreateExtrasBufferEntity(entt::registry &r, MeshStore &meshes, std::span<const vec3> positions, std::span<const uint8_t> vertex_classes, std::span<const uint32_t> edge_indices) {
     const auto buffer_entity = r.create();
     const auto store_id = meshes.AllocateVertexBuffer(positions, {}).first;
     r.emplace<MeshBuffers>(buffer_entity, meshes.GetVerticesRange(store_id), SlottedRange{}, SlottedRange{}, SlottedRange{});
     r.emplace<ObjectExtrasTag>(buffer_entity);
     r.emplace<VertexStoreId>(buffer_entity, store_id);
     if (!vertex_classes.empty()) {
-        r.emplace<VertexClass>(buffer_entity, buffers.VertexClassBuffer.Allocate(vertex_classes).Offset);
+        r.emplace<VertexClass>(buffer_entity, AllocateVertexClasses(r, vertex_classes));
     }
     if (!edge_indices.empty()) {
         r.emplace<PendingEdgeIndices>(buffer_entity, std::vector<uint32_t>(edge_indices.begin(), edge_indices.end()));
@@ -121,8 +119,8 @@ entt::entity CreateExtrasBufferEntity(entt::registry &r, MeshStore &meshes, GpuB
     return buffer_entity;
 }
 
-entt::entity CreateExtrasObject(entt::registry &r, MeshStore &meshes, GpuBuffers &buffers, std::span<const vec3> positions, std::span<const uint8_t> vertex_classes, std::span<const uint32_t> edge_indices, ObjectType type, ObjectCreateInfo info, std::string_view default_name) {
-    const auto buffer_entity = CreateExtrasBufferEntity(r, meshes, buffers, positions, vertex_classes, edge_indices);
+entt::entity CreateExtrasObject(entt::registry &r, MeshStore &meshes, std::span<const vec3> positions, std::span<const uint8_t> vertex_classes, std::span<const uint32_t> edge_indices, ObjectType type, ObjectCreateInfo info, std::string_view default_name) {
+    const auto buffer_entity = CreateExtrasBufferEntity(r, meshes, positions, vertex_classes, edge_indices);
     const auto e = r.create();
     r.emplace<ObjectKind>(e, type);
     r.emplace<Instance>(e, buffer_entity);
@@ -134,16 +132,16 @@ entt::entity CreateExtrasObject(entt::registry &r, MeshStore &meshes, GpuBuffers
     return e;
 }
 
-entt::entity AddEmpty(entt::registry &r, MeshStore &meshes, GpuBuffers &buffers, ObjectCreateInfo info) {
+entt::entity AddEmpty(entt::registry &r, MeshStore &meshes, ObjectCreateInfo info) {
     static constexpr vec3 positions[] = {{0, 0, 0}, {1, 0, 0}, {0, 0, 0}, {0, 1, 0}, {0, 0, 0}, {0, 0, -1}};
     static constexpr uint32_t edges[] = {0, 1, 2, 3, 4, 5};
-    return CreateExtrasObject(r, meshes, buffers, positions, {}, edges, ObjectType::Empty, std::move(info), "Empty");
+    return CreateExtrasObject(r, meshes, positions, {}, edges, ObjectType::Empty, std::move(info), "Empty");
 }
 
-entt::entity AddCamera(entt::registry &r, MeshStore &meshes, GpuBuffers &buffers, ObjectCreateInfo info, std::optional<Camera> props) {
+entt::entity AddCamera(entt::registry &r, MeshStore &meshes, ObjectCreateInfo info, std::optional<Camera> props) {
     const Camera camera = props.value_or(Camera{Defaults::PerspectiveCamera});
     auto mesh = BuildCameraFrustumMesh(camera);
-    const auto entity = CreateExtrasObject(r, meshes, buffers, mesh.Positions, {}, mesh.CreateEdgeIndices(), ObjectType::Camera, std::move(info), "Camera");
+    const auto entity = CreateExtrasObject(r, meshes, mesh.Positions, {}, mesh.CreateEdgeIndices(), ObjectType::Camera, std::move(info), "Camera");
     r.emplace<Camera>(entity, camera);
     return entity;
 }
@@ -206,10 +204,10 @@ void CreateBoneInstances(entt::registry &r, MeshStore &meshes, entt::entity arm_
     arm_obj.JointEntity = joint_entity;
 }
 
-entt::entity AddLight(entt::registry &r, MeshStore &meshes, GpuBuffers &buffers, ObjectCreateInfo info, std::optional<PunctualLight> props) {
+entt::entity AddLight(entt::registry &r, MeshStore &meshes, ObjectCreateInfo info, std::optional<PunctualLight> props) {
     auto light = props.value_or(Defaults::MakePunctualLight(PunctualLightType::Point));
     auto wireframe = BuildLightMesh(light);
-    const auto entity = CreateExtrasObject(r, meshes, buffers, wireframe.Data.Positions, wireframe.VertexClasses, {}, ObjectType::Light, std::move(info), "Light");
+    const auto entity = CreateExtrasObject(r, meshes, wireframe.Data.Positions, wireframe.VertexClasses, {}, ObjectType::Light, std::move(info), "Light");
     r.emplace<LightIndex>(entity, r.storage<LightIndex>().size());
     r.emplace<SubmitDirty>(entity);
     r.emplace<LightWireframeDirty>(entity);
@@ -230,28 +228,24 @@ bool AnyComponentRefersTo(entt::registry &r, F C::*field, entt::entity target) {
 
 void DestroyArmatureData(entt::registry &r, entt::entity arm_obj_entity) {
     auto &meshes = r.ctx().get<MeshStore>();
-    auto &buffers = r.ctx().get<GpuBuffers>();
     auto &arm = r.get<ArmatureObject>(arm_obj_entity);
     if (arm.JointEntity != entt::null) {
-        if (auto *mb = r.try_get<MeshBuffers>(arm.JointEntity)) buffers.Release(*mb);
+        if (auto *mb = r.try_get<MeshBuffers>(arm.JointEntity)) ReleaseMeshBuffers(r, *mb);
         if (auto *ref = r.try_get<VertexStoreId>(arm.JointEntity)) meshes.Release(ref->StoreId);
-        if (auto *models = r.try_get<ModelsBuffer>(arm.JointEntity)) buffers.Instances.Free(models->InstanceRange);
+        if (auto *models = r.try_get<ModelsBuffer>(arm.JointEntity)) FreeInstanceRange(r, models->InstanceRange);
         r.remove<MeshBuffers, VertexStoreId, ModelsBuffer, PendingHide>(arm.JointEntity);
         r.destroy(arm.JointEntity);
         arm.JointEntity = entt::null;
     }
-    if (auto *mb = r.try_get<MeshBuffers>(arm_obj_entity)) buffers.Release(*mb);
-    if (auto *adj = r.try_get<BoneAdjacencyIndices>(arm_obj_entity)) buffers.EdgeIndexBuffer.Release(adj->Indices);
+    if (auto *mb = r.try_get<MeshBuffers>(arm_obj_entity)) ReleaseMeshBuffers(r, *mb);
+    if (auto *adj = r.try_get<BoneAdjacencyIndices>(arm_obj_entity)) ReleaseEdgeIndices(r, adj->Indices);
     if (auto *ref = r.try_get<VertexStoreId>(arm_obj_entity)) meshes.Release(ref->StoreId);
-    if (auto *models = r.try_get<ModelsBuffer>(arm_obj_entity)) buffers.Instances.Free(models->InstanceRange);
+    if (auto *models = r.try_get<ModelsBuffer>(arm_obj_entity)) FreeInstanceRange(r, models->InstanceRange);
     r.remove<MeshBuffers, VertexStoreId, ModelsBuffer, BoneAdjacencyIndices, PendingHide>(arm_obj_entity);
 }
 
 void Destroy(entt::registry &r, entt::entity viewport, entt::entity e) {
-    auto &slots = r.ctx().get<DescriptorSlots>();
-    auto &buffers = r.ctx().get<GpuBuffers>();
     auto &meshes = r.ctx().get<MeshStore>();
-    auto &textures = r.ctx().get<TextureStore>();
     if (r.all_of<LookingThrough>(e)) {
         r.replace<ViewCamera>(viewport, r.get<LookingThrough>(e).SavedViewCamera);
         r.remove<LookingThrough>(e);
@@ -336,12 +330,12 @@ void Destroy(entt::registry &r, entt::entity viewport, entt::entity e) {
         if (!AnyComponentRefersTo(r, &Instance::Entity, buffer_entity)) {
             if (auto *mesh_buffers = r.try_get<MeshBuffers>(buffer_entity)) {
                 if (const auto *vcr = r.try_get<VertexClass>(buffer_entity)) {
-                    buffers.VertexClassBuffer.Release({vcr->Offset, mesh_buffers->Vertices.Count});
+                    ReleaseVertexClasses(r, vcr->Offset, mesh_buffers->Vertices.Count);
                 }
-                buffers.Release(*mesh_buffers);
+                ReleaseMeshBuffers(r, *mesh_buffers);
             }
             if (const auto *vs = r.try_get<VertexStoreId>(buffer_entity)) meshes.Release(vs->StoreId);
-            if (const auto *models = r.try_get<ModelsBuffer>(buffer_entity)) buffers.Instances.Free(models->InstanceRange);
+            if (const auto *models = r.try_get<ModelsBuffer>(buffer_entity)) FreeInstanceRange(r, models->InstanceRange);
             r.destroy(buffer_entity);
         }
     }
@@ -354,17 +348,7 @@ void Destroy(entt::registry &r, entt::entity viewport, entt::entity e) {
     }
 
     // If no instances remain, release all imported textures and reset to the default material.
-    if (r.view<Instance>().empty()) {
-        // Index 0 is the default white texture (permanent); imported textures start at index 1.
-        if (textures.Textures.size() > 1) {
-            ReleaseSamplerSlots(slots, CollectSamplerSlots(std::span<const TextureEntry>{textures.Textures}.subspan(1)));
-            textures.Textures.erase(textures.Textures.begin() + 1, textures.Textures.end());
-        }
-        textures.WhiteTextureSlot = textures.Textures.empty() ? InvalidSlot : textures.Textures.front().SamplerSlot;
-
-        if (buffers.Materials.Count() > 1) buffers.Materials.SetCount(1u);
-        if (auto &ms = r.ctx().get<MaterialStore>(); ms.Names.size() > 1) ms.Names.erase(ms.Names.begin() + 1, ms.Names.end());
-    }
+    if (r.view<Instance>().empty()) ResetImportedTexturesAndMaterials(r);
 }
 
 void ClearMeshes(entt::registry &r, entt::entity viewport) {
@@ -375,102 +359,11 @@ std::pair<entt::entity, entt::entity> ImportMesh(
     entt::registry &r,
     const std::filesystem::path &path, MeshInstanceCreateInfo info
 ) {
-    const auto &vk = r.ctx().get<const VulkanResources>();
-    const auto &one_shot = r.ctx().get<const OneShotGpu>();
-    auto &slots = r.ctx().get<DescriptorSlots>();
-    auto &buffers = r.ctx().get<GpuBuffers>();
     auto &meshes = r.ctx().get<MeshStore>();
-    auto &textures = r.ctx().get<TextureStore>();
     auto result = meshes.LoadMesh(path);
     if (!result) throw std::runtime_error(result.error());
 
-    if (!result->Materials.empty()) {
-        auto obj_batch = BeginTextureUploadBatch(vk.Device, *one_shot.Pool, buffers.Ctx);
-        std::unordered_map<std::string, uint32_t> texture_slot_cache;
-        const auto resolve_texture_slot =
-            [&](
-                const std::optional<std::filesystem::path> &source_texture_path,
-                TextureColorSpace color_space,
-                std::string_view material_name, std::string_view texture_label
-            ) -> uint32_t {
-            if (!source_texture_path) return InvalidSlot;
-            auto texture_path = *source_texture_path;
-            if (texture_path.is_relative()) texture_path = path.parent_path() / texture_path;
-            texture_path = texture_path.lexically_normal();
-
-            const auto cache_key = std::format("{}|{}", texture_path.generic_string(), color_space == TextureColorSpace::Srgb ? "sRGB" : "Linear");
-            if (const auto it = texture_slot_cache.find(cache_key); it != texture_slot_cache.end()) return it->second;
-
-            std::string encoded;
-            try {
-                encoded = File::Read(texture_path);
-            } catch (const std::exception &e) {
-                std::cerr << std::format(
-                    "Warning: Failed to read OBJ texture '{}' for material '{}' ({}) in '{}': {}\n",
-                    texture_path.string(), material_name, texture_label, path.string(), e.what()
-                );
-                return InvalidSlot;
-            }
-
-            auto texture = CreateTextureEntryFromEncoded(
-                vk,
-                obj_batch,
-                slots,
-                std::as_bytes(std::span{encoded}),
-                texture_path.filename().string(),
-                std::format("{} ({})", texture_path.filename().string(), color_space == TextureColorSpace::Srgb ? "sRGB" : "Linear"),
-                color_space,
-                vk::SamplerAddressMode::eRepeat,
-                vk::SamplerAddressMode::eRepeat,
-                SamplerConfig{}
-            );
-            if (!texture) {
-                std::cerr << std::format(
-                    "Warning: Failed to decode OBJ texture '{}' for material '{}' ({}) in '{}': {}\n",
-                    texture_path.string(), material_name, texture_label, path.string(), texture.error()
-                );
-                return InvalidSlot;
-            }
-
-            const auto sampler_slot = texture->SamplerSlot;
-            textures.Textures.emplace_back(std::move(*texture));
-            texture_slot_cache.emplace(cache_key, sampler_slot);
-            return sampler_slot;
-        };
-
-        std::vector<uint32_t> scene_material_indices(result->Materials.size(), 0u);
-        std::vector<std::string> names;
-        names.reserve(result->Materials.size());
-        buffers.Materials.Reserve(buffers.Materials.Count() + result->Materials.size());
-        for (uint32_t material_index = 0; material_index < result->Materials.size(); ++material_index) {
-            const auto &source = result->Materials[material_index];
-            const auto material_name = source.Name.empty() ? std::format("Material{}", material_index) : source.Name;
-            const auto base_color_texture = resolve_texture_slot(source.BaseColorTexturePath, TextureColorSpace::Srgb, material_name, "baseColor");
-            const auto normal_texture = resolve_texture_slot(source.NormalTexturePath, TextureColorSpace::Linear, material_name, "normal");
-            scene_material_indices[material_index] = buffers.Materials.Append({
-                .BaseColorFactor = source.BaseColorFactor,
-                .MetallicFactor = std::clamp(source.MetallicFactor, 0.f, 1.f),
-                .RoughnessFactor = std::clamp(source.RoughnessFactor, 0.f, 1.f),
-                .AlphaMode = (source.BaseColorFactor.w < 1.f || source.HasAlphaTexture) ?
-                    MaterialAlphaMode::Blend :
-                    MaterialAlphaMode::Opaque,
-                .BaseColorTexture = {.Slot = base_color_texture != InvalidSlot ? base_color_texture : textures.WhiteTextureSlot},
-                .NormalTexture = {.Slot = normal_texture},
-            });
-            names.emplace_back(material_name);
-        }
-        SubmitTextureUploadBatch(obj_batch, vk.Queue, *one_shot.Fence, vk.Device);
-
-        auto &material_store = r.ctx().get<MaterialStore>();
-        material_store.Names.insert(material_store.Names.end(), std::make_move_iterator(names.begin()), std::make_move_iterator(names.end()));
-
-        if (auto primitive_materials = meshes.GetPrimitiveMaterialIndices(result->Mesh.GetStoreId()); !primitive_materials.empty()) {
-            const auto fallback = scene_material_indices.front();
-            for (auto &primitive_material : primitive_materials) {
-                primitive_material = primitive_material < scene_material_indices.size() ? scene_material_indices[primitive_material] : fallback;
-            }
-        }
-    }
+    if (!result->Materials.empty()) ImportObjPlyMaterials(r, result->Materials, path, result->Mesh.GetStoreId());
 
     const auto entities = ::AddMesh(r, meshes, std::move(result->Mesh), std::move(info));
     r.emplace<Path>(entities.first, path);

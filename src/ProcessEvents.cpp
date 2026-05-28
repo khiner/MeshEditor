@@ -402,7 +402,6 @@ SyncResult SyncModelsBuffers(entt::registry &r) {
 }
 
 void EnsureWireframes(entt::registry &r, entt::entity viewport) {
-    auto &buffers = r.ctx().get<GpuBuffers>();
     auto &meshes = r.ctx().get<MeshStore>();
     auto &shape_buffers = r.ctx().get<ColliderShapeBuffers>();
     const auto &settings = r.get<const ViewportDisplay>(viewport);
@@ -419,7 +418,7 @@ void EnsureWireframes(entt::registry &r, entt::entity viewport) {
     auto ensure_buffer = [&](ColliderShapeBuffer kind, auto generator) {
         if (r.valid(buf(kind))) return;
         auto mesh = generator();
-        if (!mesh.Positions.empty()) buf(kind) = ::CreateExtrasBufferEntity(r, meshes, buffers, mesh.Positions, {}, mesh.EdgeIndices);
+        if (!mesh.Positions.empty()) buf(kind) = ::CreateExtrasBufferEntity(r, meshes, mesh.Positions, {}, mesh.EdgeIndices);
     };
     ensure_buffer(Box, physics_debug::UnitBox);
     ensure_buffer(Sphere, physics_debug::UnitSphere);
@@ -556,7 +555,7 @@ void EnsureWireframes(entt::registry &r, entt::entity viewport) {
             const auto *tm = r.try_get<const TetMeshData>(instance->Entity);
             if (!tm || tm->Positions.empty()) continue;
 
-            const auto tet_buf = ::CreateExtrasBufferEntity(r, meshes, buffers, tm->Positions, {}, tm->EdgeIndices);
+            const auto tet_buf = ::CreateExtrasBufferEntity(r, meshes, tm->Positions, {}, tm->EdgeIndices);
             r.emplace<TetWireframe>(entity, make_instance(tet_buf, entity));
         }
     }

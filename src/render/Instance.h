@@ -1,8 +1,6 @@
 #pragma once
 
-// Permanent linkage to the entity holding shared GPU buffers (MeshBuffers + ModelsBuffer).
-// Every instance entity gets this component.
-// For mesh-specific operations, check r.all_of<Mesh>(instance.Entity).
+// Link to the entity holding shared GPU buffers
 struct Instance {
     entt::entity Entity;
 };
