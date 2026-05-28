@@ -4,11 +4,8 @@
 #include "action/Bone.h"
 #include "action/Object.h"
 #include "audio/SoundVertices.h"
+#include "gpu/ViewportTheme.h"
 #include "mesh/MeshStore.h"
-#include "render/GpuBuffers.h"
-#include "render/OneShotGpu.h"
-#include "render/Pipelines.h"
-#include "render/Textures.h"
 #include "scene/Entity.h"
 #include "selection/Selection.h"
 #include "selection/SelectionBitset.h"
@@ -44,7 +41,6 @@ bool SetInteractionMode(entt::registry &r, entt::entity viewport, InteractionMod
     r.clear<VertexForce>();
 
     auto &meshes = r.ctx().get<MeshStore>();
-    auto &buffers = r.ctx().get<GpuBuffers>();
     if (r.get<const Interaction>(viewport).Mode == InteractionMode::Edit) {
         // Keep bitset ranges + bits so element selections survive toggling Edit mode off and back on.
         for (const auto [mesh_entity, br, mesh] : r.view<const MeshSelectionBitsetRange, const Mesh>().each()) {
@@ -59,7 +55,7 @@ bool SetInteractionMode(entt::registry &r, entt::entity viewport, InteractionMod
             for (const auto [_, br] : r.view<const MeshSelectionBitsetRange>().each()) {
                 next_offset = std::max(next_offset, (br.Offset + br.Count + 31) / 32 * 32);
             }
-            auto *bits = buffers.SelectionBitset.Data();
+            auto *bits = r.get<SelectionBitsetRef>(viewport).Value.data();
             for (const auto mesh_entity : selection::GetSelectedMeshEntities(r)) {
                 if (r.all_of<MeshSelectionBitsetRange>(mesh_entity)) continue;
                 const auto &mesh = r.get<const Mesh>(mesh_entity);
@@ -75,26 +71,6 @@ bool SetInteractionMode(entt::registry &r, entt::entity viewport, InteractionMod
     r.patch<Interaction>(viewport, [mode](auto &s) { s.Mode = mode; });
     r.patch<ViewportTheme>(viewport, [](auto &) {});
     return true;
-}
-
-void SetStudioEnvironment(entt::registry &r, uint32_t index) {
-    const auto &vk = r.ctx().get<const VulkanResources>();
-    const auto &pipelines = r.ctx().get<const Pipelines>();
-    const auto &one_shot = r.ctx().get<const OneShotGpu>();
-    auto &slots = r.ctx().get<DescriptorSlots>();
-    auto &buffers = r.ctx().get<GpuBuffers>();
-    auto &environments = r.ctx().get<EnvironmentStore>();
-    auto &hdri = environments.Hdris[index];
-    if (!hdri.Prefiltered) {
-        hdri.Prefiltered = CreateIblFromHdri(
-            vk, slots,
-            pipelines.IblPrefilter, hdri.Path, hdri.Name,
-            *one_shot.Pool, *one_shot.Fence, buffers.Ctx
-        );
-    }
-    const auto &pre = *hdri.Prefiltered;
-    environments.ActiveHdriIndex = index;
-    environments.StudioWorld = {.Ibl = MakeIblSamplers(pre, environments), .Name = hdri.Name};
 }
 
 void Delete(const entt::registry &r, entt::entity viewport) {

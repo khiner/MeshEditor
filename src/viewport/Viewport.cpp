@@ -212,6 +212,22 @@ bool SubmitViewport(entt::registry &r, entt::entity viewport, vk::Fence viewport
 }
 } // namespace
 
+void SetStudioEnvironment(entt::registry &r, uint32_t index) {
+    const auto &vk = r.ctx().get<const VulkanResources>();
+    const auto &pipelines = r.ctx().get<const Pipelines>();
+    const auto &one_shot = r.ctx().get<const OneShotGpu>();
+    auto &slots = r.ctx().get<DescriptorSlots>();
+    auto &buffers = r.ctx().get<GpuBuffers>();
+    auto &environments = r.ctx().get<EnvironmentStore>();
+    auto &hdri = environments.Hdris[index];
+    if (!hdri.Prefiltered) {
+        hdri.Prefiltered = CreateIblFromHdri(vk, slots, pipelines.IblPrefilter, hdri.Path, hdri.Name, *one_shot.Pool, *one_shot.Fence, buffers.Ctx);
+    }
+    const auto &pre = *hdri.Prefiltered;
+    environments.ActiveHdriIndex = index;
+    environments.StudioWorld = {.Ibl = MakeIblSamplers(pre, environments), .Name = hdri.Name};
+}
+
 entt::entity InitViewport(entt::registry &r, VulkanResources vc) {
     InitStoreCtx(r, vc);
     auto &slots = r.ctx().get<DescriptorSlots>();
