@@ -8,7 +8,6 @@
 
 #include <array>
 #include <functional>
-#include <utility>
 
 struct DrawListBuilder;
 struct SelectionDrawInfo;

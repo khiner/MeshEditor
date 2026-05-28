@@ -1,7 +1,8 @@
 #pragma once
 
-#include <cstdint>
 #include <entt/entity/fwd.hpp>
+
+#include <cstdint>
 #include <optional>
 
 struct PhysicsSimulationSettings;

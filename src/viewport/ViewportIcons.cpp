@@ -1,44 +1,38 @@
 #include "viewport/ViewportIcons.h"
 
 #include "Paths.h"
-#include "render/GpuBuffers.h"
-#include "render/OneShotGpu.h"
-#include "render/Pipelines.h" // ColorSubresourceRange
-#include "render/Textures.h"
+#include "render/SvgUpload.h"
 
 #include <entt/entity/registry.hpp>
 
 void LoadViewportIcons(entt::registry &r, entt::entity viewport) {
-    const auto &vk = r.ctx().get<const VulkanResources>();
-    const auto &one_shot = r.ctx().get<const OneShotGpu>();
-    auto &buffers = r.ctx().get<GpuBuffers>();
-    auto &icons = r.emplace<ViewportIcons>(viewport);
-    const auto svg_path = Paths::Res() / "svg";
-    auto batch = BeginTextureUploadBatch(vk.Device, *one_shot.Pool, buffers.Ctx);
-    const auto RenderBitmap = [&vk, &batch](std::span<const std::byte> data, uint32_t width, uint32_t height) {
-        return RenderBitmapToImage(vk, batch, data, width, height, Format::Color, ColorSubresourceRange);
-    };
-
-    const std::pair<std::unique_ptr<SvgResource> *, std::string_view> entries[] = {
-        {&icons.Transform.Select, "select.svg"},
-        {&icons.Transform.SelectBox, "select_box.svg"},
-        {&icons.Transform.Move, "move.svg"},
-        {&icons.Transform.Rotate, "rotate.svg"},
-        {&icons.Transform.Scale, "scale.svg"},
-        {&icons.Transform.Universal, "transform.svg"},
-        {&icons.Shading.Wireframe, "shading_wire.svg"},
-        {&icons.Shading.Solid, "shading_solid.svg"},
-        {&icons.Shading.MaterialPreview, "shading_texture.svg"},
-        {&icons.Shading.Rendered, "shading_rendered.svg"},
-        {&icons.Overlay, "overlay.svg"},
-        {&icons.Anim.Play, "play.svg"},
-        {&icons.Anim.Pause, "pause.svg"},
-        {&icons.Anim.JumpStart, "jump_start.svg"},
-        {&icons.Anim.JumpEnd, "jump_end.svg"},
-    };
-    for (const auto &[svg, name] : entries) {
-        *svg = std::make_unique<SvgResource>(vk.Device, RenderBitmap, svg_path / name);
-    }
-
-    SubmitTextureUploadBatch(batch, vk.Queue, *one_shot.Fence, vk.Device);
+    const auto dir = Paths::Res() / "svg";
+    SvgUploadBatch batch{r};
+    r.emplace<ViewportIcons>(
+        viewport,
+        ViewportIcons{
+            .Transform = {
+                .Select = LoadSvg(batch, dir / "select.svg"),
+                .SelectBox = LoadSvg(batch, dir / "select_box.svg"),
+                .Move = LoadSvg(batch, dir / "move.svg"),
+                .Rotate = LoadSvg(batch, dir / "rotate.svg"),
+                .Scale = LoadSvg(batch, dir / "scale.svg"),
+                .Universal = LoadSvg(batch, dir / "transform.svg"),
+            },
+            .Shading = {
+                .Wireframe = LoadSvg(batch, dir / "shading_wire.svg"),
+                .Solid = LoadSvg(batch, dir / "shading_solid.svg"),
+                .MaterialPreview = LoadSvg(batch, dir / "shading_texture.svg"),
+                .Rendered = LoadSvg(batch, dir / "shading_rendered.svg"),
+            },
+            .Overlay = LoadSvg(batch, dir / "overlay.svg"),
+            .Anim = {
+                .Play = LoadSvg(batch, dir / "play.svg"),
+                .Pause = LoadSvg(batch, dir / "pause.svg"),
+                .JumpStart = LoadSvg(batch, dir / "jump_start.svg"),
+                .JumpEnd = LoadSvg(batch, dir / "jump_end.svg"),
+            },
+        }
+    );
+    SubmitSvgUpload(batch);
 }

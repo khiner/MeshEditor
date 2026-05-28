@@ -6,8 +6,6 @@
 
 #include <entt/entity/fwd.hpp>
 
-#include <cstdint>
-
 enum class ViewportShadingMode : uint8_t {
     Wireframe,
     Solid,

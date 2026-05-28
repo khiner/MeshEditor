@@ -2,7 +2,6 @@
 
 #include "numeric/vec2.h"
 
-#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <functional>

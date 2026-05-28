@@ -2,7 +2,6 @@
 
 #include "gpu/Element.h"
 
-#include <cstdint>
 #include <span>
 #include <vector>
 

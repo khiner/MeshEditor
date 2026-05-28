@@ -5,10 +5,8 @@
 
 #include <entt/entity/fwd.hpp>
 
-#include <cstdint>
 #include <optional>
 #include <span>
-#include <utility>
 #include <vector>
 
 struct ElementRange;

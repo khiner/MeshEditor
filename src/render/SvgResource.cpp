@@ -1,6 +1,12 @@
 #include "render/SvgResource.h"
 
-#include "vulkan/Image.h"
+#include "render/GpuBuffers.h"
+#include "render/OneShotGpu.h"
+#include "render/Pipelines.h" // Format::Color, ColorSubresourceRange
+#include "render/SvgUpload.h"
+#include "render/Textures.h"
+
+#include <entt/entity/registry.hpp>
 
 #include "imgui.h"
 #include "lunasvg.h"
@@ -87,4 +93,35 @@ SvgResource::~SvgResource() = default;
 std::optional<std::filesystem::path> SvgResource::Draw() { return Imp->Draw(); }
 void SvgResource::DrawIcon(vec2 size) const {
     if (const auto *t = Imp->Texture.get()) ImGui::Image(ImTextureID(VkDescriptorSet(t->DescriptorSet)), {size.x, size.y}, {t->Uv0.x, t->Uv0.y}, {t->Uv1.x, t->Uv1.y});
+}
+
+struct SvgUploadBatch::Impl {
+    const VulkanResources &Vk;
+    const OneShotGpu &OneShot;
+    TextureUploadBatch Batch;
+
+    explicit Impl(entt::registry &r)
+        : Vk(r.ctx().get<const VulkanResources>()), OneShot(r.ctx().get<const OneShotGpu>()),
+          Batch(BeginTextureUploadBatch(Vk.Device, *OneShot.Pool, r.ctx().get<GpuBuffers>().Ctx)) {}
+};
+
+SvgUploadBatch::SvgUploadBatch(entt::registry &r) : Imp(std::make_unique<Impl>(r)) {}
+SvgUploadBatch::~SvgUploadBatch() = default;
+
+std::unique_ptr<SvgResource> LoadSvg(SvgUploadBatch &batch, std::filesystem::path path) {
+    const auto render_bitmap = [&batch](std::span<const std::byte> data, uint32_t width, uint32_t height) {
+        return RenderBitmapToImage(batch.Imp->Vk, batch.Imp->Batch, data, width, height, Format::Color, ColorSubresourceRange);
+    };
+    return std::make_unique<SvgResource>(batch.Imp->Vk.Device, render_bitmap, std::move(path));
+}
+
+void SubmitSvgUpload(SvgUploadBatch &batch) {
+    SubmitTextureUploadBatch(batch.Imp->Batch, batch.Imp->Vk.Queue, *batch.Imp->OneShot.Fence, batch.Imp->Vk.Device);
+}
+
+std::unique_ptr<SvgResource> LoadSvg(entt::registry &r, std::filesystem::path path) {
+    SvgUploadBatch batch{r};
+    auto svg = LoadSvg(batch, std::move(path));
+    SubmitSvgUpload(batch);
+    return svg;
 }

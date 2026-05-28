@@ -9,6 +9,8 @@
 #include "audio/AudioSystem.h"
 #include "audio/FaustDSP.h"
 #include "gizmo/TransformGizmoTypes.h"
+#include "render/SvgResource.h"
+#include "render/SvgUpload.h"
 #include "scene/SceneControlsUi.h"
 #include "viewport/FrameState.h"
 #include "viewport/Viewport.h"
@@ -346,7 +348,7 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
     const auto CreateSvg = [device = *vc->Device, &r, &wd](std::unique_ptr<SvgResource> &svg, fs::path path) {
         // Wait for previous frame's ImGui render to complete, since it may have sampled the old texture.
         CheckVk(device.waitForFences({wd.Frames[wd.FrameIndex].Fence}, true, UINT64_MAX));
-        MakeSvgResource(r, svg, std::move(path));
+        svg = LoadSvg(r, std::move(path));
     };
     auto &faust_dsp = r.emplace<FaustDSP>(viewport, CreateSvg);
     RegisterAudioComponentHandlers(r, viewport);

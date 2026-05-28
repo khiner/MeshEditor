@@ -21,7 +21,6 @@
 #include "render/MaterialComponents.h"
 #include "render/OneShotGpu.h"
 #include "render/Pipelines.h"
-#include "render/SvgResource.h"
 #include "render/Textures.h"
 #include "render/VkFenceWait.h"
 #include "scene/Defaults.h"
@@ -356,18 +355,6 @@ void DeinitViewport(entt::registry &r, entt::entity viewport) {
     // in GpuBuffers.Ctx) before TearDownStoreCtx erases GpuBuffers and while the device is alive.
     if (r.valid(viewport)) r.destroy(viewport);
     TearDownStoreCtx(r);
-}
-
-void MakeSvgResource(entt::registry &r, std::unique_ptr<SvgResource> &svg, std::filesystem::path path) {
-    const auto &vk = r.ctx().get<const VulkanResources>();
-    const auto &one_shot = r.ctx().get<const OneShotGpu>();
-    auto &buffers = r.ctx().get<GpuBuffers>();
-    auto svg_batch = BeginTextureUploadBatch(vk.Device, *one_shot.Pool, buffers.Ctx);
-    const auto RenderBitmap = [&vk, &svg_batch](std::span<const std::byte> data, uint32_t width, uint32_t height) {
-        return RenderBitmapToImage(vk, svg_batch, data, width, height, Format::Color, ColorSubresourceRange);
-    };
-    svg = std::make_unique<SvgResource>(vk.Device, RenderBitmap, std::move(path));
-    SubmitTextureUploadBatch(svg_batch, vk.Queue, *one_shot.Fence, vk.Device);
 }
 
 void StartRecording(entt::registry &r, entt::entity viewport, std::filesystem::path path, int fps) {

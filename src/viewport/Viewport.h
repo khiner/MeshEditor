@@ -6,8 +6,6 @@
 
 #include <filesystem>
 
-struct SvgResource;
-
 // Initialize the viewport singleton entity and all ctx-resident GPU stores, pipelines, and reactive subscriptions.
 // Returns the viewport entity carrying viewport-level components.
 entt::entity InitViewport(entt::registry &, VulkanResources);
@@ -33,7 +31,5 @@ void StopRecording(entt::registry &, entt::entity viewport);
 void CaptureRecordFrame(entt::registry &, entt::entity viewport);
 bool IsRecording(const entt::registry &, entt::entity viewport);
 uint64_t CapturedFrameCount(const entt::registry &, entt::entity viewport);
-
-void MakeSvgResource(entt::registry &, std::unique_ptr<SvgResource> &, std::filesystem::path);
 
 std::string DebugBufferHeapUsage(const entt::registry &);
