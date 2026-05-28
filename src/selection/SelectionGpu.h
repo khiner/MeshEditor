@@ -1,10 +1,8 @@
 #pragma once
 
 #include "render/Bindless.h"
-#include "selection/SelectionQueries.h"
 
 #include <entt/entity/fwd.hpp>
-#include <vulkan/vulkan.hpp>
 
 #include <array>
 #include <functional>

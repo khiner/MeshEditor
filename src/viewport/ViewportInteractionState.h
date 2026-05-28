@@ -1,7 +1,6 @@
 #pragma once
 
 #include "gizmo/TransformGizmoTypes.h"
-#include "viewport/ViewCamera.h"
 
 // Presence indicates active transform
 struct PendingTransform {
@@ -19,9 +18,4 @@ struct StartScreenTransform {
 struct TransformGizmoState {
     TransformGizmo::Config Config;
     TransformGizmo::Mode Mode;
-};
-
-// At most one camera carries this component at a time.
-struct LookingThrough {
-    ViewCamera SavedViewCamera; // The pre-look-through ViewCamera, restored on exit.
 };

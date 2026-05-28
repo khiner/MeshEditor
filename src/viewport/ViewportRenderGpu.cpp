@@ -19,6 +19,7 @@
 #include "selection/SelectionGpu.h"
 #include "viewport/InteractionComponents.h"
 #include "viewport/RenderExtent.h"
+#include "viewport/ViewCamera.h"
 #include "viewport/ViewportDisplay.h"
 #include "viewport/ViewportInteractionState.h"
 

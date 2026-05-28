@@ -23,8 +23,8 @@
 #include "scene/WorldTransform.h"
 #include "selection/SelectionComponents.h"
 #include "selection/SelectionOps.h"
+#include "viewport/ViewCamera.h"
 #include "viewport/ViewportEvents.h"
-#include "viewport/ViewportInteractionState.h"
 
 #include <entt/entity/registry.hpp>
 

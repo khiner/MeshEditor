@@ -22,6 +22,7 @@
 #include "selection/Selection.h"
 #include "selection/SelectionBitset.h"
 #include "selection/SelectionComponents.h"
+#include "selection/SelectionQueries.h"
 #include "viewport/RenderExtent.h"
 #include "viewport/ViewportDisplay.h"
 #include "viewport/ViewportRenderGpu.h"

@@ -59,3 +59,8 @@ private:
     void ApplyDistance(float new_distance); // Updates Distance and scales orthographic Mag in lockstep.
     vec3 YAxis() const; // May be flipped depending on pitch.
 };
+
+// At most one camera carries this component at a time.
+struct LookingThrough {
+    ViewCamera SavedViewCamera; // The pre-look-through ViewCamera, restored on exit.
+};

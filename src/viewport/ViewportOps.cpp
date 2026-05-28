@@ -11,7 +11,7 @@
 #include "selection/SelectionBitset.h"
 #include "selection/SelectionComponents.h"
 #include "viewport/InteractionComponents.h"
-#include "viewport/ViewportInteractionState.h"
+#include "viewport/ViewCamera.h"
 
 #include <entt/entity/registry.hpp>
 
