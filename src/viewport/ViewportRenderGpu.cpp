@@ -579,7 +579,8 @@ void RecordRenderCommandBuffer(entt::registry &r, entt::entity viewport, vk::Com
     }
 
     FlushDrawList(r, vk.Device, draw_list, buffers.RenderDraw);
-    const auto render_extent = RenderExtentPx(r.get<const ViewportExtent>(viewport).Value);
+    const auto render_extent_px = RenderExtentPx(r.get<const ViewportExtent>(viewport).Value);
+    const vk::Extent2D render_extent{render_extent_px.x, render_extent_px.y};
 
     cb.begin({vk::CommandBufferUsageFlagBits::eSimultaneousUse});
     cb.setViewport(0, vk::Viewport{0.f, 0.f, float(render_extent.width), float(render_extent.height), 0.f, 1.f});

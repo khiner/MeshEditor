@@ -71,6 +71,9 @@ entt::entity WireRegistry(entt::registry &r) {
 }
 
 void TearDownStoreCtx(entt::registry &r) {
+    // Mesh's dtor calls back into MeshStore, so clear Mesh while the store is still alive.
+    r.clear<Mesh>();
+
     auto &slots = r.ctx().get<DescriptorSlots>();
     auto &textures = r.ctx().get<TextureStore>();
     auto &environments = r.ctx().get<EnvironmentStore>();

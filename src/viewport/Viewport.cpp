@@ -109,7 +109,8 @@ bool SubmitViewport(entt::registry &r, entt::entity viewport, vk::Fence viewport
         logical_extent = new_logical_extent;
         r.patch<ViewportExtent>(viewport, [](auto &) {});
     }
-    const auto render_extent = RenderExtentPx(logical_extent);
+    const auto render_extent_px = RenderExtentPx(logical_extent);
+    const vk::Extent2D render_extent{render_extent_px.x, render_extent_px.y};
     const auto current_render_extent = pipelines.Main.Resources ? ToExtent2D(pipelines.Main.Resources->ColorImage.Extent) : vk::Extent2D{};
     const bool render_extent_changed = current_render_extent.width != render_extent.width || current_render_extent.height != render_extent.height;
     if (render_extent_changed && !extent_changed) {

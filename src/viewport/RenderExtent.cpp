@@ -5,7 +5,7 @@
 #include <algorithm>
 #include <cstdint>
 
-vk::Extent2D RenderExtentPx(uvec2 logical_extent) {
+uvec2 RenderExtentPx(uvec2 logical_extent) {
     const auto scale = ImGui::GetIO().DisplayFramebufferScale;
     const auto scaled = [](uint32_t l, float s) -> uint32_t {
         if (l == 0u) return 0u;

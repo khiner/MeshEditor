@@ -17,14 +17,14 @@
 #include "render/GpuBufferAccessors.h"
 #include "render/Instance.h"
 #include "render/PickConstants.h"
-#include "render/Textures.h"
+#include "render/TextureRefs.h"
 #include "scene/Defaults.h"
 #include "scene/SceneGraph.h"
 #include "scene/WorldTransform.h"
 #include "selection/Selection.h"
 #include "selection/SelectionBitset.h"
 #include "selection/SelectionComponents.h"
-#include "selection/SelectionGpu.h"
+#include "selection/SelectionQueries.h"
 #include "ui/FieldEdit.h"
 #include "viewport/FrameState.h"
 #include "viewport/GizmoDrag.h"
@@ -76,14 +76,14 @@ std::vector<SelectionHit> ResolveHits(entt::registry &r, const std::vector<entt:
     return hits;
 }
 
-std::optional<std::pair<uvec2, uvec2>> ComputeBoxSelectPixels(vec2 start, vec2 end, vec2 window_pos, uvec2 logical_extent, vk::Extent2D render_extent) {
+std::optional<std::pair<uvec2, uvec2>> ComputeBoxSelectPixels(vec2 start, vec2 end, vec2 window_pos, uvec2 logical_extent, uvec2 render_extent) {
     static constexpr float DragThresholdSq{2 * 2};
     if (glm::distance2(start, end) <= DragThresholdSq) return {};
 
     const vec2 logical_size{float(logical_extent.x), float(logical_extent.y)};
     const vec2 render_scale{
-        logical_extent.x > 0u ? float(render_extent.width) / float(logical_extent.x) : 1.f,
-        logical_extent.y > 0u ? float(render_extent.height) / float(logical_extent.y) : 1.f
+        logical_extent.x > 0u ? float(render_extent.x) / float(logical_extent.x) : 1.f,
+        logical_extent.y > 0u ? float(render_extent.y) / float(logical_extent.y) : 1.f
     };
     const auto box_min = glm::min(start, end) - window_pos;
     const auto box_max = glm::max(start, end) - window_pos;
@@ -91,8 +91,8 @@ std::optional<std::pair<uvec2, uvec2>> ComputeBoxSelectPixels(vec2 start, vec2 e
     const auto local_max = glm::clamp(glm::max(box_min, box_max), vec2{0}, logical_size);
     const auto render_min = local_min * render_scale;
     const auto render_max = local_max * render_scale;
-    const uvec2 box_min_px{glm::floor(render_min.x), glm::floor(float(render_extent.height) - render_max.y)};
-    const uvec2 box_max_px{glm::ceil(render_max.x), glm::ceil(float(render_extent.height) - render_min.y)};
+    const uvec2 box_min_px{glm::floor(render_min.x), glm::floor(float(render_extent.y) - render_max.y)};
+    const uvec2 box_max_px{glm::ceil(render_max.x), glm::ceil(float(render_extent.y) - render_min.y)};
     return std::pair{box_min_px, box_max_px};
 }
 
@@ -218,7 +218,7 @@ void Interact(entt::registry &r, entt::entity viewport, FrameState &frame) {
 
     const auto logical_extent = r.get<const ViewportExtent>(viewport).Value;
     const auto render_extent = RenderExtentPx(logical_extent);
-    if (logical_extent.x == 0 || logical_extent.y == 0 || render_extent.width == 0 || render_extent.height == 0) return;
+    if (logical_extent.x == 0 || logical_extent.y == 0 || render_extent.x == 0 || render_extent.y == 0) return;
 
     const auto interaction_mode = r.get<const Interaction>(viewport).Mode;
     const auto active_entity = FindActiveEntity(r);
@@ -372,15 +372,15 @@ void Interact(entt::registry &r, entt::entity viewport, FrameState &frame) {
     }
 
     const vec2 render_scale{
-        logical_extent.x > 0u ? float(render_extent.width) / float(logical_extent.x) : 1.0f,
-        logical_extent.y > 0u ? float(render_extent.height) / float(logical_extent.y) : 1.0f
+        logical_extent.x > 0u ? float(render_extent.x) / float(logical_extent.x) : 1.0f,
+        logical_extent.y > 0u ? float(render_extent.y) / float(logical_extent.y) : 1.0f
     };
     const auto mouse_pos_rel = GetMousePos() - GetCursorScreenPos();
     const auto mouse_pos_render = ToGlm(mouse_pos_rel) * render_scale;
-    const float max_x = float(std::max(render_extent.width, 1u) - 1u);
-    const float max_y = float(std::max(render_extent.height, 1u) - 1u);
+    const float max_x = float(std::max(render_extent.x, 1u) - 1u);
+    const float max_y = float(std::max(render_extent.y, 1u) - 1u);
     // Flip y-coordinate: ImGui uses top-left origin, but Vulkan gl_FragCoord uses bottom-left origin
-    const uvec2 mouse_px{glm::clamp(mouse_pos_render.x, 0.0f, max_x), glm::clamp(float(render_extent.height) - mouse_pos_render.y, 0.0f, max_y)};
+    const uvec2 mouse_px{glm::clamp(mouse_pos_render.x, 0.0f, max_x), glm::clamp(float(render_extent.y) - mouse_pos_render.y, 0.0f, max_y)};
 
     if (interaction_mode == InteractionMode::Excite) {
         if (IsMouseClicked(ImGuiMouseButton_Left)) {
@@ -428,7 +428,6 @@ void Interact(entt::registry &r, entt::entity viewport, FrameState &frame) {
 
 void InteractOverlay(entt::registry &r, entt::entity viewport, FrameState &frame) {
     auto &meshes = r.ctx().get<MeshStore>();
-    auto &environments = r.ctx().get<EnvironmentStore>();
     const auto &icons = r.get<const ViewportIcons>(viewport);
     const rect viewport_rect{ToGlm(GetWindowPos()), ToGlm(GetContentRegionAvail())};
     const bool active_transform = TransformGizmo::IsUsing(r, viewport);
@@ -570,11 +569,11 @@ void InteractOverlay(entt::registry &r, entt::entity viewport, FrameState &frame
                                 action::Emit(action::view::SetSourceIblIntensity{v});
                         }
                     } else {
-                        const auto &current_name = environments.Hdris[environments.ActiveHdriIndex].Name;
-                        if (BeginCombo("Environment", current_name.c_str())) {
-                            for (uint32_t i = 0; i < environments.Hdris.size(); ++i) {
-                                const bool selected = (i == environments.ActiveHdriIndex);
-                                if (Selectable(environments.Hdris[i].Name.c_str(), selected)) action::Emit(action::view::SetStudioEnvironment{i});
+                        const auto hdris = GetHdriRefs(r);
+                        if (BeginCombo("Environment", hdris.Names[hdris.ActiveIndex].c_str())) {
+                            for (uint32_t i = 0; i < hdris.Names.size(); ++i) {
+                                const bool selected = (i == hdris.ActiveIndex);
+                                if (Selectable(hdris.Names[i].c_str(), selected)) action::Emit(action::view::SetStudioEnvironment{i});
                                 if (selected) SetItemDefaultFocus();
                             }
                             EndCombo();

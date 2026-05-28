@@ -950,3 +950,12 @@ std::vector<TextureRef> GetTextureRefs(entt::registry &r) {
     for (const auto &t : store.Textures) refs.emplace_back(t.SamplerSlot, t.Name);
     return refs;
 }
+
+HdriRefs GetHdriRefs(entt::registry &r) {
+    const auto &environments = r.ctx().get<EnvironmentStore>();
+    HdriRefs refs;
+    refs.ActiveIndex = environments.ActiveHdriIndex;
+    refs.Names.reserve(environments.Hdris.size());
+    for (const auto &hdri : environments.Hdris) refs.Names.emplace_back(hdri.Name);
+    return refs;
+}

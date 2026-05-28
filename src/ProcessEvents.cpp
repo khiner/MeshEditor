@@ -1704,7 +1704,8 @@ RenderRequest ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
                 for (const auto [_, feat] : r.view<const PbrMeshFeatures>().each()) pbr_mask |= feat.Mask;
                 if (pipelines.Main.Compiler.CompilePipelines(pbr_mask)) request(RenderRequest::ReRecord);
                 const bool want_transmission = active_lighting.RealTransmission && HasFeature(pbr_mask, PbrFeature::Transmission);
-                if (pipelines.Main.EnsureTransmissionResources(RenderExtentPx(r.get<const ViewportExtent>(viewport).Value), vk.Device, vk.PhysicalDevice, want_transmission)) refresh_transmission_descriptor();
+                const auto te_px = RenderExtentPx(r.get<const ViewportExtent>(viewport).Value);
+                if (pipelines.Main.EnsureTransmissionResources({te_px.x, te_px.y}, vk.Device, vk.PhysicalDevice, want_transmission)) refresh_transmission_descriptor();
             } else if (pipelines.Main.EnsureTransmissionResources({}, vk.Device, vk.PhysicalDevice, false)) {
                 refresh_transmission_descriptor();
             }
@@ -1718,7 +1719,7 @@ RenderRequest ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
         !reactive<changes::TransformEnd>(r).empty() ||
         light_count_changed) {
         const auto render_extent = RenderExtentPx(r.get<const ViewportExtent>(viewport).Value);
-        const float aspect = render_extent.width == 0 || render_extent.height == 0 ? 1.f : float(render_extent.width) / float(render_extent.height);
+        const float aspect = render_extent.x == 0 || render_extent.y == 0 ? 1.f : float(render_extent.x) / float(render_extent.y);
         // When looking through a scene camera, keep the ViewCamera's widened FOV in sync
         // with the current viewport aspect ratio (handles viewport resize).
         if (const auto camera = LookThroughCameraEntity(r); camera != entt::null) {
@@ -1745,7 +1746,7 @@ RenderRequest ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
         const auto *pending = r.try_get<const PendingTransform>(viewport);
         // ScreenPixelScale: world-space size per pixel at unit distance (perspective) or absolute (ortho).
         // Sign encodes camera type: positive = perspective (shader multiplies by distance), negative = orthographic.
-        const float screen_pixel_scale = ScreenPixelScale(camera.Data, std::max(float(render_extent.height), 1.f));
+        const float screen_pixel_scale = ScreenPixelScale(camera.Data, std::max(float(render_extent.y), 1.f));
         const auto proj = camera.Projection(aspect);
         buffers.SceneViewUBO.Update(as_bytes(SceneViewUBO{
             .ViewProj = proj * camera.View(),
@@ -1769,7 +1770,7 @@ RenderRequest ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
             .PendingRotation = pending ? pending->Delta.R : quat{1, 0, 0, 0},
             .PendingScale = pending ? pending->Delta.S : vec3{1},
             .ScreenPixelScale = screen_pixel_scale,
-            .ViewportSize = {float(render_extent.width), float(render_extent.height)},
+            .ViewportSize = render_extent,
             .FaceFirstTriSlot = meshes.GetFaceFirstTriangleSlot(),
             .BoneDeformSlot = meshes.GetBoneDeformSlot(),
             .ArmatureDeformSlot = buffers.ArmatureDeformBuffer.Buffer.Slot,
