@@ -14,7 +14,6 @@ struct DeleteSelected {};
 struct ClearSelectedTransforms {
     bool Position{false}, Rotation{false}, Scale{false};
 };
-// BoneDisplayScale is written without firing the reactive.
 // All of these target the active bone (FindActiveBone(R)).
 struct SetEditHeadTailRoll {
     vec3 LocalP;

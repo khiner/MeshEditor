@@ -110,7 +110,7 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
                     }
                 }
                 for (const auto &[e, local] : a.Locals) r.patch<Transform>(e, [&](auto &t) { t = local; });
-                for (const auto &[e, length] : a.BoneDisplayScales) r.get_or_emplace<BoneDisplayScale>(e).Value = length;
+                for (const auto &[e, length] : a.BoneDisplayScales) r.emplace_or_replace<BoneDisplayScale>(e, length);
             },
             [&](const DragGizmoMeshEdit &a) {
                 for (const auto &[_, instance_entity] : ::selection::ComputePrimaryEditInstances(r, false)) {
@@ -155,7 +155,7 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
                     });
                 }
                 for (const auto [e, sbl] : r.view<const StartBoneLength>().each()) {
-                    r.get_or_emplace<BoneDisplayScale>(e).Value = sbl.Value;
+                    r.emplace_or_replace<BoneDisplayScale>(e, sbl.Value);
                 }
                 r.emplace_or_replace<StartScreenTransform>(viewport, *a.Value);
             },

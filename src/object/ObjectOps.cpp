@@ -50,9 +50,10 @@ void OnDestroyName(entt::registry &r, entt::entity e) {
 }
 
 void AssignRenderInstanceObjectId(entt::registry &r, entt::entity e) {
-    auto &ri = r.get<RenderInstance>(e);
-    if (ri.ObjectId != 0) return;
-    if (auto *counter = r.ctx().find<ObjectIdCounter>()) ri.ObjectId = counter->Next++;
+    if (r.get<const RenderInstance>(e).ObjectId != 0) return;
+    if (auto *counter = r.ctx().find<ObjectIdCounter>()) {
+        r.patch<RenderInstance>(e, [counter](auto &ri) { ri.ObjectId = counter->Next++; });
+    }
 }
 
 void EmitPendingHideOnRenderInstanceDestroy(entt::registry &r, entt::entity e) {

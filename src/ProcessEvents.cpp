@@ -327,14 +327,14 @@ SyncResult SyncModelsBuffers(entt::registry &r) {
             }
         });
         // Fixup BufferIndex on remaining RenderInstances for this buffer entity.
-        for (auto [other_entity, ri] : r.view<RenderInstance>().each()) {
+        for (auto [_, ri] : r.view<RenderInstance>().each()) {
             if (ri.Entity != buffer_entity || ri.BufferIndex == UINT32_MAX) continue;
             // Count how many erased indices were below this instance's index.
             uint32_t shift = 0;
             for (const auto erased_idx : indices) {
                 if (erased_idx < ri.BufferIndex) ++shift;
             }
-            if (shift > 0) r.patch<RenderInstance>(other_entity, [shift](auto &r) { r.BufferIndex -= shift; });
+            if (shift > 0) ri.BufferIndex -= shift;
         }
         r.remove<PendingHide>(buffer_entity);
     }

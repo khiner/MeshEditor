@@ -229,7 +229,7 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
             [&](const SetEditHeadTailRoll &a) {
                 const auto e = FindActiveBone(r);
                 r.patch<Transform>(e, [&](auto &t) { t.P = a.LocalP; t.R = a.LocalR; });
-                r.get<BoneDisplayScale>(e).Value = a.DisplayScale;
+                r.replace<BoneDisplayScale>(e, a.DisplayScale);
             },
             [&](const SetConstraintTarget &a) {
                 r.patch<BoneConstraints>(FindActiveBone(r), [&](auto &cs) { cs.Stack[a.Index].TargetEntity = a.Target; });
