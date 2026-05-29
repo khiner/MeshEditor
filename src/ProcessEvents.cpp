@@ -301,6 +301,7 @@ struct SyncResult {
     std::vector<entt::entity> NewlyInserted; // Entities inserted into GPU buffers — callers must write their WorldTransform before submit.
     std::vector<entt::entity> NewMeshEntities; // Mesh entities needing deferred index buffer creation.
     std::vector<entt::entity> NewExtrasEntities; // Non-mesh buffer entities (extras/bone/joint) needing deferred index creation.
+    bool Compacted{false}; // Instances were compact-erased (hides) — caller must request Submit.
 };
 } // namespace
 
@@ -316,16 +317,17 @@ SyncResult SyncModelsBuffers(entt::registry &r) {
     }
 
     // Hides — compact-erase removed instances within their entity's range in the shared InstanceArena.
+    bool compacted = false;
     for (auto [buffer_entity, pending] : r.view<PendingHide>().each()) {
         // Sort descending so erasing from back-to-front avoids index shifting within the batch.
         auto &indices = pending.BufferIndices;
         std::sort(indices.begin(), indices.end(), std::greater<>());
-        r.patch<ModelsBuffer>(buffer_entity, [&](auto &mb) {
-            for (const auto global_idx : indices) {
-                buffers.Instances.CompactErase(global_idx, mb.InstanceRange.Offset + mb.InstanceCount);
-                --mb.InstanceCount;
-            }
-        });
+        auto &mb = r.get<ModelsBuffer>(buffer_entity);
+        for (const auto global_idx : indices) {
+            buffers.Instances.CompactErase(global_idx, mb.InstanceRange.Offset + mb.InstanceCount);
+            --mb.InstanceCount;
+        }
+        compacted = true;
         // Fixup BufferIndex on remaining RenderInstances for this buffer entity.
         for (auto [_, ri] : r.view<RenderInstance>().each()) {
             if (ri.Entity != buffer_entity || ri.BufferIndex == UINT32_MAX) continue;
@@ -396,10 +398,9 @@ SyncResult SyncModelsBuffers(entt::registry &r) {
         buffers.Instances.ObjectIdBuffer.Update(as_bytes(object_ids), vk::DeviceSize(base_index) * sizeof(uint32_t));
         buffers.Instances.StateBuffer.Update(as_bytes(states), vk::DeviceSize(base_index) * sizeof(uint8_t));
         mb.InstanceCount = new_total;
-        // No r.patch needed — ProcessComponentEvents handles Submit explicitly.
         newly_inserted.insert(newly_inserted.end(), entities.begin(), entities.end());
     }
-    return {std::move(newly_inserted), std::move(new_mesh_entities), std::move(new_extras_entities)};
+    return {std::move(newly_inserted), std::move(new_mesh_entities), std::move(new_extras_entities), compacted};
 }
 
 void EnsureWireframes(entt::registry &r, entt::entity viewport) {
@@ -814,7 +815,7 @@ RenderRequest ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
     EnsureWireframes(r, viewport);
 
     auto sync = SyncModelsBuffers(r); // Runs first so BufferIndex is valid for all downstream code.
-    if (!sync.NewlyInserted.empty()) request(RenderRequest::Submit);
+    if (!sync.NewlyInserted.empty() || sync.Compacted) request(RenderRequest::Submit);
     const std::unordered_set<entt::entity> newly_inserted_set(sync.NewlyInserted.begin(), sync.NewlyInserted.end());
     const auto is_newly_inserted = [&](entt::entity e) { return newly_inserted_set.contains(e); };
 
@@ -1030,13 +1031,12 @@ RenderRequest ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
         struct StateWrite {
             uint32_t index;
             uint8_t state;
-            entt::entity buffer_entity;
         };
         std::vector<StateWrite> state_writes;
         const auto collect_instance_state = [&](entt::entity instance_entity) {
             if (is_newly_inserted(instance_entity)) return;
             if (const auto *ri = r.try_get<RenderInstance>(instance_entity); ri && ri->BufferIndex != UINT32_MAX) {
-                state_writes.push_back({ri->BufferIndex, InstanceStateBits(r, instance_entity), ri->Entity});
+                state_writes.push_back({ri->BufferIndex, InstanceStateBits(r, instance_entity)});
             }
         };
         // Update SelectedInstanceCount on mesh entities before per-entity processing.
@@ -1071,10 +1071,8 @@ RenderRequest ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
         if (!state_writes.empty()) {
             std::sort(state_writes.begin(), state_writes.end(), [](const auto &a, const auto &b) { return a.index < b.index; });
             auto states = buffers.Instances.GetMutableStates();
-            for (const auto &w : state_writes) {
-                states[w.index] = w.state;
-                r.patch<ModelsBuffer>(w.buffer_entity);
-            }
+            for (const auto &w : state_writes) states[w.index] = w.state;
+            request(RenderRequest::Submit);
         }
     }
     { // Bone selection changes — tag armature objects for GPU state sync.
@@ -1236,7 +1234,6 @@ RenderRequest ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
         }
         request(RenderRequest::Submit);
     }
-    if (!reactive<changes::ModelsBuffer>(r).empty()) request(RenderRequest::Submit);
     if (!reactive<changes::ViewportTheme>(r).empty()) {
         UpdateDerivedColors(r.get<ViewportTheme>(viewport));
         r.get<colors::AxesArray>(viewport) = colors::MakeAxes(r.get<const ViewportTheme>(viewport).AxisColors);
@@ -1445,7 +1442,6 @@ RenderRequest ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
                     buffers.Instances.UpdateState(ri->BufferIndex, state);
                 }
             }
-            r.patch<ModelsBuffer>(arm_obj_entity);
             if (arm_obj.JointEntity != entt::null && r.valid(arm_obj.JointEntity)) {
                 for (const auto b : bone_entities) {
                     const auto *joints = r.try_get<const BoneJointEntities>(b);
@@ -1459,8 +1455,8 @@ RenderRequest ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
                         }
                     }
                 }
-                r.patch<ModelsBuffer>(arm_obj.JointEntity);
             }
+            request(RenderRequest::Submit);
         }
         r.clear<BoneInstanceStateDirty>();
 

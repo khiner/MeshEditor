@@ -111,7 +111,7 @@ void PatchMorphWeights(DrawListBuilder &dl, size_t draws_before, const DeformSlo
 // AppendExtrasDraw is templated on the customize_draw callable, so it lives at file scope rather than in an anon ns.
 void AppendExtrasDraw(entt::registry &r, const InstanceArena &instances, DrawListBuilder &dl, DrawBatchInfo &batch, auto &&customize_draw) {
     batch = dl.BeginBatch();
-    for (auto [entity, mesh_buffers, models] : r.view<ObjectExtrasTag, MeshBuffers, ModelsBuffer>().each()) {
+    for (auto [entity, mesh_buffers, models] : r.view<ObjectExtrasTag, const MeshBuffers, const ModelsBuffer>().each()) {
         if (mesh_buffers.EdgeIndices.Count == 0) continue;
         auto draw = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.EdgeIndices, instances);
         if (const auto *vcr = r.try_get<VertexClass>(entity)) draw.VertexClassOffset = vcr->Offset;
@@ -246,7 +246,7 @@ void RecordRenderCommandBuffer(entt::registry &r, entt::entity viewport, vk::Com
 
         std::vector<MeshEntityData> mesh_entities;
         mesh_entities.reserve(r.storage<MeshBuffers>().size());
-        for (auto [entity, mesh_buffers, models] : r.view<MeshBuffers, ModelsBuffer>().each()) {
+        for (auto [entity, mesh_buffers, models] : r.view<const MeshBuffers, const ModelsBuffer>().each()) {
             std::optional<uint32_t> primary_bi;
             if (auto it = primary_edit_instances.find(entity); it != primary_edit_instances.end()) {
                 primary_bi = r.get<RenderInstance>(it->second).BufferIndex;

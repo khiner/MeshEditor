@@ -250,7 +250,6 @@ entt::entity InitViewport(entt::registry &r, VulkanResources vc) {
     track<changes::SoundVertices>(r).on<SoundVertices>(On::Create | On::Destroy);
     track<changes::SoundVerticesUpdated>(r).on<SoundVertices>(On::Update);
     track<changes::VertexForce>(r).on<VertexForce>(On::Create | On::Destroy);
-    track<changes::ModelsBuffer>(r).on<ModelsBuffer>(On::Update);
     track<changes::NewBufferEntity>(r).on<MeshBuffers>(On::Create);
     track<changes::RenderInstanceCreated>(r).on<RenderInstance>(On::Create);
     track<changes::ViewportDisplay>(r).on<ViewportDisplay>(On::Create | On::Update);

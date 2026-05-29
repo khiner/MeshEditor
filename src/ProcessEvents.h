@@ -11,4 +11,5 @@ enum class RenderRequest : uint8_t {
 
 // Drains Pending* markers, reactive trackers, and dirty sets accumulated since the last frame.
 // Returns the strongest render request triggered by this frame's changes.
+// **This is the only place where direct by-ref component mutations (instead of `patch`) are allowed.**
 RenderRequest ProcessComponentEvents(entt::registry &, entt::entity viewport);
