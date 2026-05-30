@@ -46,9 +46,6 @@ struct ImportMesh {
     std::filesystem::path Path;
     std::unique_ptr<MeshInstanceCreateInfo> Info;
 };
-struct ReplaceMesh {
-    std::unique_ptr<MeshData> Data;
-};
 // `Mask=0` removes the component. Targets the active mesh entity.
 struct SetPbrMeshFeaturesMask {
     uint32_t Mask;
@@ -57,10 +54,11 @@ struct SetPbrMeshFeaturesMask {
 using Actions = std::variant<
     Delete, Duplicate, DuplicateLinked, ToggleHidden, SetSelectedVisible, SetSelectedSmoothShading,
     ParentToActive, ClearParent,
-    AddEmpty, AddArmature, AddCamera, AddLight, AddMeshPrimitive, ImportMesh, ReplaceMesh, SetPbrMeshFeaturesMask>;
+    AddEmpty, AddArmature, AddCamera, AddLight, AddMeshPrimitive, ImportMesh, SetPbrMeshFeaturesMask>;
 
 using Action = MergedVariantT<
     Actions,
+    Replace<PrimitiveShape>,
     Replace<PunctualLight>, ReplaceActive<PunctualLight>,
     Replace<MaterialDirty>, Replace<MeshMaterialAssignment>, Replace<MeshMaterialSlotSelection>,
     Update<std::optional<uint32_t>>>;

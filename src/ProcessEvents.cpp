@@ -7,6 +7,7 @@
 #include "Timer.h"
 #include "TransformMath.h"
 #include "Variant.h"
+#include "action/Selection.h"
 #include "animation/AnimationData.h"
 #include "animation/AnimationTimeline.h"
 #include "animation/MorphWeightState.h"
@@ -30,6 +31,7 @@
 #include "render/LightComponents.h"
 #include "render/MaterialComponents.h"
 #include "render/OneShotGpu.h"
+#include "render/PickConstants.h"
 #include "render/Pipelines.h"
 #include "render/Textures.h"
 #include "scene/Defaults.h"
@@ -42,6 +44,7 @@
 #include "selection/SelectionComponents.h"
 #include "selection/SelectionGpu.h"
 #include "selection/SelectionQueries.h"
+#include "viewport/FrameState.h"
 #include "viewport/GizmoDrag.h"
 #include "viewport/InteractionComponents.h"
 #include "viewport/RenderExtent.h"
@@ -833,6 +836,40 @@ RenderRequest ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
                 for (const auto e : baseline->SelectedEntities)
                     if (r.valid(e)) r.emplace_or_replace<Selected>(e);
             for (const auto &hit : hits) r.emplace_or_replace<Selected>(hit.Entity);
+        }
+    }
+    if (const auto *pending = r.try_get<const PendingPick>(viewport)) {
+        const auto mouse_px = pending->MousePx;
+        const bool shift = pending->Shift, cycle = pending->Cycle;
+        r.remove<PendingPick>(viewport);
+
+        const bool bone_mode = r.get<const Interaction>(viewport).Mode == InteractionMode::Pose || IsBoneEditMode(r, viewport);
+        const auto active = bone_mode ? FindActiveBone(r) : FindActiveEntity(r);
+        const auto logical_extent = r.get<const ViewportExtent>(viewport).Value;
+        const auto render_extent = RenderExtentPx(logical_extent);
+        const float render_scale = std::max(
+            logical_extent.x > 0u ? float(render_extent.x) / float(logical_extent.x) : 1.f,
+            logical_extent.y > 0u ? float(render_extent.y) / float(logical_extent.y) : 1.f
+        );
+        const auto radius = std::max(1u, uint32_t(float(ObjectSelectRadiusPx) * render_scale + 0.5f));
+        auto &frame = r.get<FrameState>(viewport);
+        const auto hits = ResolveHits(r, RunObjectPick(r, viewport, frame.ObjectPickEpochTag, mouse_px, radius), bone_mode);
+        const auto pick = hits.empty() ? std::optional<SelectionHit>{} : [&]() -> std::optional<SelectionHit> {
+            if (!cycle) return hits.front();
+            // Re-click at the same spot: advance from the currently-active hit to the next overlapping one.
+            const auto *bs = r.try_get<const BoneSelection>(active);
+            auto it = std::ranges::find_if(hits, [&](const SelectionHit &h) { return h.Entity == active && (!h.Part || (bs && bs->Has(*h.Part))); });
+            return it != hits.end() && ++it != hits.end() ? *it : hits.front();
+        }();
+        using namespace action::selection;
+        if (pick && shift) {
+            if (active == pick->Entity && !bone_mode) Apply(r, viewport, ToggleSelected{pick->Entity});
+            else if (bone_mode) Apply(r, viewport, ExtendBoneActive{pick->Entity, pick->Part, true});
+            else Apply(r, viewport, ExtendActive{pick->Entity});
+        } else if (pick || !shift) {
+            if (pick && bone_mode) Apply(r, viewport, SelectBone{pick->Entity, pick->Part, false});
+            else if (pick) Apply(r, viewport, Select{pick->Entity});
+            else Apply(r, viewport, DeselectAll{});
         }
     }
 

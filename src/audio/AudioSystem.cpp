@@ -744,7 +744,12 @@ void DrawObjectAudioControls(
                     if (auto it = find(verts, active->Handle); it != verts.end()) excite_idx = distance(verts.begin(), it);
                 }
                 r.get<FaustDSP>(viewport).Set(ExciteIndexParamName, excite_idx);
-                action::Emit(action::audio::AcceptModalGenerationResult{std::make_unique<action::audio::AcceptModalGenerationResult::Data>(std::move(result->Modes), std::move(result->Tets))});
+                // Intentional registry write outside of Apply: the background solver kicked off by
+                // SubmitModalForm has finished, so its result is applied directly here, not as its own action.
+                if (!r.all_of<ScaleLocked>(e)) r.emplace<ScaleLocked>(e);
+                r.emplace_or_replace<ModalModes>(e, std::move(result->Modes));
+                r.emplace_or_replace<TetMeshData>(mesh_entity, std::move(result->Tets));
+                SetModel(r, viewport, e, SoundVerticesModel::Modal);
                 return;
             }
         }

@@ -41,6 +41,13 @@ struct PendingBoxSelect {
     bool Additive;
 };
 
+// Object/bone click pick awaiting GPU resolution. Cycle advances to the next overlapping hit.
+struct PendingPick {
+    uvec2 MousePx;
+    bool Shift;
+    bool Cycle;
+};
+
 // Non-owning span over the GPU-mapped SelectionBitset words.
 struct SelectionBitsetRef {
     std::span<uint32_t> Value;

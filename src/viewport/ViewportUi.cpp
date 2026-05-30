@@ -1,7 +1,6 @@
 #include "viewport/ViewportUi.h"
 #include "Camera.h"
 #include "Timer.h"
-#include "TransformMath.h"
 #include "action/Audio.h"
 #include "action/Bone.h"
 #include "action/Object.h"
@@ -16,10 +15,8 @@
 #include "mesh/MeshStore.h"
 #include "render/GpuBufferOps.h"
 #include "render/Instance.h"
-#include "render/PickConstants.h"
 #include "render/TextureRefs.h"
 #include "scene/Defaults.h"
-#include "scene/SceneGraph.h"
 #include "scene/WorldTransform.h"
 #include "selection/Selection.h"
 #include "selection/SelectionBitset.h"
@@ -40,7 +37,7 @@
 
 #include "gizmo/OrientationGizmo.h"
 
-using std::ranges::any_of, std::ranges::find_if, std::ranges::fold_left;
+using std::ranges::any_of, std::ranges::fold_left;
 using std::views::transform;
 
 using namespace ImGui;
@@ -309,7 +306,6 @@ void Interact(entt::registry &r, entt::entity viewport, FrameState &frame) {
     const auto arm_obj_entity = FindArmatureObject(r, active_entity);
     const bool active_is_armature = arm_obj_entity != entt::null;
     const bool bone_mode = interaction_mode == InteractionMode::Pose || (interaction_mode == InteractionMode::Edit && active_is_armature);
-    const auto deselect_all = [&] { action::Emit(action::selection::DeselectAll{}); };
     if (r.get<const BoxSelectState>(viewport).Gesture == SelectionGesture::Box && interaction_mode != InteractionMode::Excite) {
         if (IsMouseClicked(ImGuiMouseButton_Left)) {
             frame.BoxSelectStart = frame.BoxSelectEnd = ToGlm(GetMousePos());
@@ -367,26 +363,11 @@ void Interact(entt::registry &r, entt::entity viewport, FrameState &frame) {
         const bool toggle = IsKeyDown(ImGuiMod_Shift) || IsKeyDown(ImGuiMod_Ctrl) || IsKeyDown(ImGuiMod_Super);
         action::Emit(action::selection::ApplyEditElementClick{.MousePx = mouse_px, .Toggle = toggle});
     } else if (interaction_mode == InteractionMode::Object || bone_mode) {
-        const auto scaled_pick_radius = std::max(1u, uint32_t(float(ObjectSelectRadiusPx) * std::max(render_scale.x, render_scale.y) + 0.5f));
-        const auto active = bone_mode ? FindActiveBone(r) : active_entity;
-        const auto hits = ResolveHits(r, RunObjectPick(r, viewport, frame.ObjectPickEpochTag, mouse_px, scaled_pick_radius), bone_mode);
-        const auto pick = hits.empty() ? std::optional<SelectionHit>{} : [&] {
-            if (ImLengthSqr(CurrentClickPos - PrevClickPos) > 16) return hits.front();
-            const auto *bs = r.try_get<BoneSelection>(active);
-            auto it = find_if(hits, [&](const SelectionHit &h) { return h.Entity == active && (!h.Part || (bs && bs->Has(*h.Part))); });
-            return it != hits.end() && ++it != hits.end() ? *it : hits.front();
-        }();
         const bool shift = IsKeyDown(ImGuiMod_Shift);
-        // Bone-mode sub-part: merge on shift (intentional part accumulation), replace otherwise.
-        if (pick && shift) {
-            if (active == pick->Entity && !bone_mode) action::Emit(action::selection::ToggleSelected{pick->Entity});
-            else if (bone_mode) action::Emit(action::selection::ExtendBoneActive{pick->Entity, pick->Part, true});
-            else action::Emit(action::selection::ExtendActive{pick->Entity});
-        } else if (pick || !shift) {
-            if (pick && bone_mode) action::Emit(action::selection::SelectBone{pick->Entity, pick->Part, false});
-            else if (pick) action::Emit(action::selection::Select{pick->Entity});
-            else deselect_all();
-        }
+        // Store only the pixel; the GPU pick + selection resolution run in ProcessComponentEvents.
+        // A re-click at the same spot cycles to the next overlapping hit.
+        if (ImLengthSqr(CurrentClickPos - PrevClickPos) > 16) action::Emit(action::selection::Pick{mouse_px, shift});
+        else action::Emit(action::selection::PickCycle{mouse_px, shift});
     }
 }
 
@@ -803,17 +784,8 @@ void InteractOverlay(entt::registry &r, entt::entity viewport, FrameState &frame
         return false;
     }();
     if (has_transform_target) { // Transform gizmo
-        // Transform all root selected entities (whose parent is not also selected) around their average position,
-        // using the active entity's rotation/scale.
-        // Non-root selected entities already follow their parent's transform.
-        const auto is_parent_selected = [&](entt::entity e) {
-            if (const auto *node = r.try_get<SceneNode>(e)) {
-                if (node->Parent == entt::null) return false;
-                return bone_mode ? r.all_of<BoneSelection>(node->Parent) : r.all_of<Selected>(node->Parent);
-            }
-            return false;
-        };
-
+        // Transform all root selected entities (whose parent is not also selected) around their average
+        // position, using the active entity's rotation/scale.
         const auto gizmo_active_entity = bone_mode ? FindActiveBone(r) : active_entity;
         const auto active_transform = [&]() -> Transform {
             if (gizmo_active_entity == entt::null) return {};
@@ -821,20 +793,7 @@ void InteractOverlay(entt::registry &r, entt::entity viewport, FrameState &frame
             return wt;
         }();
 
-        std::vector<entt::entity> root_selected;
-        if (bone_edit_mode) {
-            // Edit mode: all selected bones are roots (rest-pose edits don't propagate during drag).
-            for (const auto e : bone_selected_view) root_selected.emplace_back(e);
-        } else if (bone_mode) {
-            // Pose mode: filter out children whose parent is also selected (FK propagates).
-            for (const auto e : bone_selected_view) {
-                if (!is_parent_selected(e)) root_selected.emplace_back(e);
-            }
-        } else {
-            for (const auto e : selected_view) {
-                if (!is_parent_selected(e)) root_selected.emplace_back(e);
-            }
-        }
+        const auto root_selected = RootSelectedForTransform(r, viewport);
         const auto root_count = root_selected.size();
         const auto edit_transform_instances = mesh_edit_mode ?
             selection::ComputePrimaryEditInstances(r, false) :
@@ -906,71 +865,8 @@ void InteractOverlay(entt::registry &r, entt::entity viewport, FrameState &frame
                     .Value = std::make_unique<PendingTransform>(PendingTransform{ts.P, ts.R, td}),
                 });
             } else {
-                // Object mode: apply transform to entity components immediately during drag.
-                // Compute new world result, then convert to local for parented entities.
-                action::view::DragGizmo update;
-                const auto make_local = [&](entt::entity e, const Transform &world, const Transform &pd) {
-                    Transform local;
-                    local.P = glm::conjugate(pd.R) * ((world.P - pd.P) / pd.S);
-                    local.R = glm::conjugate(pd.R) * world.R;
-                    local.S = r.all_of<ScaleLocked>(e) ? r.get<const Transform>(e).S : world.S / pd.S;
-                    update.Locals.emplace_back(e, local);
-                };
-                // On the first drag frame, StartTransform isn't in the registry yet (handler emplaces on apply).
-                // Current WorldTransform IS the drag start in that case, since nothing has moved yet.
-                const auto get_start = [&](entt::entity e) -> std::pair<Transform, Transform> {
-                    if (const auto *st = r.try_get<const StartTransform>(e)) return {st->T, st->ParentDelta};
-                    return {r.get<const WorldTransform>(e), ToTransform(GetParentDelta(r, e))};
-                };
-                const auto get_start_bone_length = [&](entt::entity e) -> std::optional<float> {
-                    if (const auto *sbl = r.try_get<const StartBoneLength>(e)) return sbl->Value;
-                    if (const auto *ds = r.try_get<const BoneDisplayScale>(e)) return ds->Value;
-                    return std::nullopt;
-                };
-
-                const auto rot = ts.R, rT = glm::conjugate(rot);
-                for (const auto e : root_selected) {
-                    const auto [ts_e, start_pd] = get_start(e);
-
-                    // Head/tail-only bone transform: stretch/rotate bone instead of moving it rigidly.
-                    if (bone_edit_mode) {
-                        // Use current parent WT for world→local (parent may have been moved earlier in this loop).
-                        const auto pd = ToTransform(GetParentDelta(r, e));
-                        const auto sbl = get_start_bone_length(e);
-                        const auto *parts = r.try_get<BoneSelection>(e);
-                        if (sbl && parts) {
-                            const bool tip_only = parts->Tip && !parts->Root && !parts->Body;
-                            const bool root_only = parts->Root && !parts->Tip && !parts->Body;
-                            if (tip_only || root_only) {
-                                const auto transform_point = [&](vec3 p) { return td.P + ts.P + glm::rotate(td.R, rot * (rT * (p - ts.P) * td.S)); };
-
-                                const float bone_length = *sbl;
-                                const auto start_head = ts_e.P;
-                                const auto start_tail = start_head + glm::rotate(ts_e.R, vec3{0, bone_length, 0});
-                                const auto new_head = tip_only ? start_head : transform_point(start_head);
-                                const auto new_tail = root_only ? start_tail : transform_point(start_tail);
-                                const auto dir = new_tail - new_head;
-                                const auto new_length = glm::length(dir);
-                                constexpr float eps = 1e-6f;
-                                const auto new_world_rot = new_length > eps ? glm::rotation(glm::normalize(glm::rotate(ts_e.R, vec3{0, 1, 0})), dir / new_length) * ts_e.R : ts_e.R;
-                                update.BoneDisplayScales.emplace_back(e, std::max(new_length, eps));
-                                make_local(e, {new_head, new_world_rot, ts_e.S}, pd);
-                                continue;
-                            }
-                        }
-
-                        // Full bone transform in bone edit mode.
-                        const auto offset = ts_e.P - ts.P;
-                        make_local(e, {td.P + ts.P + glm::rotate(td.R, rot * (rT * offset * td.S)), glm::normalize(td.R * ts_e.R), ts_e.S}, pd);
-                        continue;
-                    }
-
-                    // Object mode / non-bone transform.
-                    const bool frozen = r.all_of<ScaleLocked>(e);
-                    const auto offset = ts_e.P - ts.P;
-                    make_local(e, {td.P + ts.P + glm::rotate(td.R, frozen ? offset : rot * (rT * offset * td.S)), glm::normalize(td.R * ts_e.R), frozen ? ts_e.S : td.S * ts_e.S}, start_pd);
-                }
-                action::Emit(std::move(update));
+                // Object/bone mode: store the gizmo pivot + delta. Apply recomputes per-entity transforms.
+                action::Emit(action::view::DragGizmo{.Value = std::make_unique<PendingTransform>(PendingTransform{ts.P, ts.R, td})});
             }
         } else if (!start_transform_view.empty()) {
             action::Emit(action::view::EndGizmoDrag{});

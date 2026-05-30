@@ -53,10 +53,11 @@ struct SetTransformRotationFromUi {
     quat R;
     RotationUiVariant UiVariant;
 };
-// Handler snapshots `StartTransform`/`StartBoneLength` for any affected entity that doesn't yet have one.
+// Gizmo drag intent: the gizmo's start pivot and delta (heap-held to keep the variant small, as in
+// DragGizmoMeshEdit). Apply recomputes each selected entity's transform from the current selection
+// and its StartTransform/StartBoneLength snapshot.
 struct DragGizmo {
-    std::vector<std::pair<entt::entity, Transform>> Locals;
-    std::vector<std::pair<entt::entity, float>> BoneDisplayScales;
+    std::unique_ptr<PendingTransform> Value;
 };
 struct DragGizmoMeshEdit {
     std::unique_ptr<PendingTransform> Value;

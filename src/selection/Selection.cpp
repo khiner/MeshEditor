@@ -4,6 +4,7 @@
 #include "mesh/MeshComponents.h"
 #include "render/Instance.h"
 #include "scene/Entity.h"
+#include "scene/SceneGraph.h"
 #include "selection/SelectionBitset.h"
 #include "selection/SelectionComponents.h"
 #include "viewport/InteractionComponents.h"
@@ -60,6 +61,31 @@ entt::entity FindActiveBone(const entt::registry &r) {
 bool IsBoneEditMode(const entt::registry &r, entt::entity viewport) {
     if (r.get<const Interaction>(viewport).Mode != InteractionMode::Edit) return false;
     return FindArmatureObject(r, FindActiveEntity(r)) != entt::null;
+}
+
+std::vector<entt::entity> RootSelectedForTransform(const entt::registry &r, entt::entity viewport) {
+    const auto mode = r.get<const Interaction>(viewport).Mode;
+    const auto arm_obj = FindArmatureObject(r, FindActiveEntity(r));
+    const bool bone_edit_mode = mode == InteractionMode::Edit && arm_obj != entt::null;
+    const bool bone_mode = bone_edit_mode || (mode == InteractionMode::Pose && arm_obj != entt::null);
+    const auto is_parent_selected = [&](entt::entity e) {
+        const auto *node = r.try_get<const SceneNode>(e);
+        if (!node || node->Parent == entt::null) return false;
+        return bone_mode ? r.all_of<BoneSelection>(node->Parent) : r.all_of<Selected>(node->Parent);
+    };
+    std::vector<entt::entity> root_selected;
+    // Edit mode: all selected bones are roots (rest-pose edits don't propagate during drag).
+    // Pose/object mode: drop children whose parent is also selected (the parent's transform propagates).
+    if (bone_edit_mode) {
+        for (const auto e : r.view<const BoneSelection>()) root_selected.emplace_back(e);
+    } else if (bone_mode) {
+        for (const auto e : r.view<const BoneSelection>())
+            if (!is_parent_selected(e)) root_selected.emplace_back(e);
+    } else {
+        for (const auto e : r.view<const Selected>())
+            if (!is_parent_selected(e)) root_selected.emplace_back(e);
+    }
+    return root_selected;
 }
 
 bool CanDuplicate(const entt::registry &r, entt::entity viewport) {

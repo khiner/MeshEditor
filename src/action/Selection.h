@@ -42,6 +42,16 @@ struct ApplyBoxSelect {
     std::pair<uvec2, uvec2> BoxPx;
     bool Additive;
 };
+// Object/bone click pick at a pixel; the hit entity is resolved against current scene state when applied.
+struct Pick {
+    uvec2 MousePx;
+    bool Shift;
+};
+// Re-click at the same spot to cycle to the next overlapping hit under the cursor.
+struct PickCycle {
+    uvec2 MousePx;
+    bool Shift;
+};
 struct ApplyEditElementClick {
     uvec2 MousePx;
     bool Toggle;
@@ -58,7 +68,7 @@ struct ApplyTreeSelection {
 using Actions = std::variant<
     Select, ToggleSelected, SelectBone, ExtendActive, ExtendBoneActive, SetBoneSelectionPart,
     DeselectAll, SelectAll, SnapshotBoxSelectBaseline, ClearBoxSelectBaseline,
-    ApplyBoxSelect, ApplyEditElementClick, ApplyTreeSelection>;
+    ApplyBoxSelect, Pick, PickCycle, ApplyEditElementClick, ApplyTreeSelection>;
 using Action = Actions;
 
 void Apply(entt::registry &, entt::entity viewport, const Action &);

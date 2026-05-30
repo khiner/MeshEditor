@@ -42,13 +42,6 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
                 r.emplace_or_replace<AcousticMaterial>(GetActiveMeshEntity(r), r.get<const ModalModelCreateInfo>(e).Material);
                 r.remove<ModalModelCreateInfo>(e);
             },
-            [&](const AcceptModalGenerationResult &a) {
-                const auto e = FindActiveEntity(r);
-                if (!r.all_of<ScaleLocked>(e)) r.emplace<ScaleLocked>(e);
-                r.emplace_or_replace<ModalModes>(e, a.D->Modes);
-                r.emplace_or_replace<TetMeshData>(GetActiveMeshEntity(r), a.D->Tets);
-                ::SetModel(r, viewport, e, SoundVerticesModel::Modal);
-            },
             [&](const AssignVertexSamples &a) {
                 auto frames = LoadAudioFrames(a.Path.string());
                 if (!frames.empty()) ::AssignVertexSample(r, viewport, FindActiveEntity(r), a.MeshVertices, a.Path, std::move(frames));

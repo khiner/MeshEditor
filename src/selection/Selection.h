@@ -21,6 +21,10 @@ entt::entity FindArmatureObject(const entt::registry &, entt::entity);
 // Returns entt::null if no bone is active
 entt::entity FindActiveBone(const entt::registry &);
 
+// Selected entities that drive a gizmo transform: bones in pose/edit mode else objects, excluding any
+// whose parent is also selected (the parent's transform already propagates to them).
+std::vector<entt::entity> RootSelectedForTransform(const entt::registry &, entt::entity viewport);
+
 struct EditTransformContext {
     std::unordered_map<entt::entity, entt::entity> TransformInstances; // excludes frozen, for transforms
 };

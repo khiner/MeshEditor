@@ -101,16 +101,83 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
                 r.patch<Transform>(e, [&](auto &t) { t.R = a.R; });
             },
             [&](const DragGizmo &a) {
-                for (const auto &[e, _] : a.Locals) {
-                    if (!r.all_of<StartTransform>(e)) r.emplace<StartTransform>(e, r.get<WorldTransform>(e), ToTransform(GetParentDelta(r, e)));
-                }
-                for (const auto &[e, _] : a.BoneDisplayScales) {
-                    if (!r.all_of<StartBoneLength>(e)) {
-                        if (const auto *ds = r.try_get<BoneDisplayScale>(e)) r.emplace<StartBoneLength>(e, ds->Value);
+                const bool bone_edit_mode = IsBoneEditMode(r, viewport);
+                const auto root_selected = RootSelectedForTransform(r, viewport);
+
+                const Transform ts{a.Value->Pivot, a.Value->PivotR, vec3{1}}; // only P/R are used
+                const auto &td = a.Value->Delta;
+
+                std::vector<std::pair<entt::entity, Transform>> locals;
+                std::vector<std::pair<entt::entity, float>> bone_scales;
+                const auto make_local = [&](entt::entity e, const Transform &world, const Transform &pd) {
+                    Transform local;
+                    local.P = glm::conjugate(pd.R) * ((world.P - pd.P) / pd.S);
+                    local.R = glm::conjugate(pd.R) * world.R;
+                    local.S = r.all_of<ScaleLocked>(e) ? r.get<const Transform>(e).S : world.S / pd.S;
+                    locals.emplace_back(e, local);
+                };
+                // On the first drag frame StartTransform isn't snapshotted yet, so current WorldTransform is the start.
+                const auto get_start = [&](entt::entity e) -> std::pair<Transform, Transform> {
+                    if (const auto *st = r.try_get<const StartTransform>(e)) return {st->T, st->ParentDelta};
+                    return {r.get<const WorldTransform>(e), ToTransform(GetParentDelta(r, e))};
+                };
+                const auto get_start_bone_length = [&](entt::entity e) -> std::optional<float> {
+                    if (const auto *sbl = r.try_get<const StartBoneLength>(e)) return sbl->Value;
+                    if (const auto *ds = r.try_get<const BoneDisplayScale>(e)) return ds->Value;
+                    return std::nullopt;
+                };
+
+                const auto rot = ts.R, rT = glm::conjugate(rot);
+                for (const auto e : root_selected) {
+                    const auto [ts_e, start_pd] = get_start(e);
+
+                    // Head/tail-only bone transform: stretch/rotate bone instead of moving it rigidly.
+                    if (bone_edit_mode) {
+                        // Use current parent WT for world→local (parent may have been moved earlier in this loop).
+                        const auto pd = ToTransform(GetParentDelta(r, e));
+                        const auto sbl = get_start_bone_length(e);
+                        const auto *parts = r.try_get<BoneSelection>(e);
+                        if (sbl && parts) {
+                            const bool tip_only = parts->Tip && !parts->Root && !parts->Body;
+                            const bool root_only = parts->Root && !parts->Tip && !parts->Body;
+                            if (tip_only || root_only) {
+                                const auto transform_point = [&](vec3 p) { return td.P + ts.P + glm::rotate(td.R, rot * (rT * (p - ts.P) * td.S)); };
+
+                                const float bone_length = *sbl;
+                                const auto start_head = ts_e.P;
+                                const auto start_tail = start_head + glm::rotate(ts_e.R, vec3{0, bone_length, 0});
+                                const auto new_head = tip_only ? start_head : transform_point(start_head);
+                                const auto new_tail = root_only ? start_tail : transform_point(start_tail);
+                                const auto dir = new_tail - new_head;
+                                const auto new_length = glm::length(dir);
+                                constexpr float eps = 1e-6f;
+                                const auto new_world_rot = new_length > eps ? glm::rotation(glm::normalize(glm::rotate(ts_e.R, vec3{0, 1, 0})), dir / new_length) * ts_e.R : ts_e.R;
+                                bone_scales.emplace_back(e, std::max(new_length, eps));
+                                make_local(e, {new_head, new_world_rot, ts_e.S}, pd);
+                                continue;
+                            }
+                        }
+
+                        // Full bone transform in bone edit mode.
+                        const auto offset = ts_e.P - ts.P;
+                        make_local(e, {td.P + ts.P + glm::rotate(td.R, rot * (rT * offset * td.S)), glm::normalize(td.R * ts_e.R), ts_e.S}, pd);
+                        continue;
                     }
+
+                    // Object mode / non-bone transform.
+                    const bool frozen = r.all_of<ScaleLocked>(e);
+                    const auto offset = ts_e.P - ts.P;
+                    make_local(e, {td.P + ts.P + glm::rotate(td.R, frozen ? offset : rot * (rT * offset * td.S)), glm::normalize(td.R * ts_e.R), frozen ? ts_e.S : td.S * ts_e.S}, start_pd);
                 }
-                for (const auto &[e, local] : a.Locals) r.patch<Transform>(e, [&](auto &t) { t = local; });
-                for (const auto &[e, length] : a.BoneDisplayScales) r.emplace_or_replace<BoneDisplayScale>(e, length);
+
+                // Snapshot starts before patching so later patches don't perturb the snapshot, then apply.
+                for (const auto &[e, _] : locals)
+                    if (!r.all_of<StartTransform>(e)) r.emplace<StartTransform>(e, r.get<WorldTransform>(e), ToTransform(GetParentDelta(r, e)));
+                for (const auto &[e, _] : bone_scales)
+                    if (!r.all_of<StartBoneLength>(e))
+                        if (const auto *ds = r.try_get<BoneDisplayScale>(e)) r.emplace<StartBoneLength>(e, ds->Value);
+                for (const auto &[e, local] : locals) r.patch<Transform>(e, [&](auto &t) { t = local; });
+                for (const auto &[e, length] : bone_scales) r.emplace_or_replace<BoneDisplayScale>(e, length);
             },
             [&](const DragGizmoMeshEdit &a) {
                 for (const auto &[_, instance_entity] : ::selection::ComputePrimaryEditInstances(r, false)) {

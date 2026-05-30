@@ -218,15 +218,18 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
                 begin_translate();
             },
             [&](const ImportMesh &a) { r.emplace_or_replace<PendingImportMesh>(viewport, a.Path, *a.Info); },
-            [&](const ReplaceMesh &a) {
-                const auto e = GetActiveMeshEntity(r);
+            // Editing a primitive's params: replace the shape and regenerate its mesh from it.
+            // Override the generic component-only Replace<T> below.
+            [&](const Replace<PrimitiveShape> &a) {
+                const auto e = a.Entity;
                 if (e == entt::null || ::selection::HasScaleLockedInstance(r, e)) return;
+                r.emplace_or_replace<PrimitiveShape>(e, a.Value);
 
                 if (auto *mb = r.try_get<MeshBuffers>(e)) ReleaseMeshBuffers(r, *mb);
                 r.erase<MeshBuffers>(e);
                 r.erase<Mesh>(e);
 
-                auto new_mesh = meshes.CreateMesh(MeshData{*a.Data}, {}, {});
+                auto new_mesh = meshes.CreateMesh(primitive::CreateMesh(a.Value), {}, {});
                 r.emplace<MeshBuffers>(e, meshes.GetVerticesRange(new_mesh.GetStoreId()), SlottedRange{}, SlottedRange{}, SlottedRange{});
                 r.emplace<Mesh>(e, std::move(new_mesh));
                 r.emplace_or_replace<MeshGeometryDirty>(e);

@@ -33,13 +33,6 @@ struct OpenModalForm {
 };
 struct CancelModalForm {};
 struct SubmitModalForm {};
-struct AcceptModalGenerationResult {
-    struct Data {
-        ModalModes Modes;
-        TetMeshData Tets;
-    };
-    std::unique_ptr<Data> D;
-};
 // Frames are loaded from Path when applied, not stored.
 struct AssignVertexSamples {
     std::vector<uint32_t> MeshVertices;
@@ -65,7 +58,7 @@ struct ClearExciteImpacts {};
 using Actions = std::variant<
     SetModel, SetExciteVertex, SetActiveElementFromDsp,
     StartExcite, StopExcite, DeleteSoundObject, StartRecording,
-    OpenModalForm, CancelModalForm, SubmitModalForm, AcceptModalGenerationResult,
+    OpenModalForm, CancelModalForm, SubmitModalForm,
     AssignVertexSamples, RemoveVertexSamples, ActivateRealImpactMicrophone, SetModalFormMaterial,
     ApplyExciteImpact, ClearExciteImpacts>;
 

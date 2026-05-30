@@ -74,9 +74,11 @@ constexpr std::string Capitalize(std::string_view str) {
     return result;
 }
 
-std::optional<MeshData> PrimitiveEditor(PrimitiveShape &shape) {
+// Renders sliders for the shape's parameters and returns the edited shape if any changed.
+std::optional<PrimitiveShape> PrimitiveEditor(const PrimitiveShape &shape) {
     static constexpr float MinSize = 0.01f, MaxSize = 100.f, SizeSpeed = 0.01f;
-    return std::visit([](auto &s) -> std::optional<MeshData> {
+    PrimitiveShape edited = shape;
+    const bool changed = std::visit([](auto &s) {
         using T = std::decay_t<decltype(s)>;
         bool changed = false;
         if constexpr (std::is_same_v<T, primitive::Plane>) {
@@ -123,10 +125,10 @@ std::optional<MeshData> PrimitiveEditor(PrimitiveShape &shape) {
             changed |= SliderInt("Slices", &slices, 3, 128);
             if (changed) s.Slices = uint(slices);
         }
-        if (changed) return primitive::CreateMesh(s);
-        return {};
+        return changed;
     },
-                      shape);
+                                    edited);
+    return changed ? std::optional{edited} : std::nullopt;
 }
 
 std::string to_string(InteractionMode mode) {
@@ -473,8 +475,8 @@ static void RenderEntityControls(entt::registry &r, entt::entity viewport, entt:
             if (frozen) BeginDisabled();
             if (const auto update_label = std::format("Edit primitive{}", frozen ? " (frozen)" : "");
                 CollapsingHeader(update_label.c_str()) && !frozen) {
-                if (auto primitive_mesh = PrimitiveEditor(*prim_shape)) {
-                    action::Emit(action::object::ReplaceMesh{std::make_unique<MeshData>(std::move(*primitive_mesh))});
+                if (auto new_shape = PrimitiveEditor(*prim_shape)) {
+                    action::Emit(action::Replace<PrimitiveShape>{active_mesh_entity, *new_shape});
                 }
             }
             if (frozen) EndDisabled();
