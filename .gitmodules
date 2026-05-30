@@ -55,3 +55,9 @@
 [submodule "lib/ut"]
 	path = lib/ut
 	url = git@github.com:boost-ext/ut.git
+[submodule "lib/readerwriterqueue"]
+	path = lib/readerwriterqueue
+	url = git@github.com:cameron314/readerwriterqueue.git
+[submodule "lib/zpp_bits"]
+	path = lib/zpp_bits
+	url = git@github.com:eyalz800/zpp_bits.git

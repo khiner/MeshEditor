@@ -164,6 +164,7 @@ include_directories(
     SYSTEM lib/tinyply/source
     SYSTEM lib/lunasvg/plutovg/source
     SYSTEM lib/JoltPhysics
+    SYSTEM lib/zpp_bits
 
     SYSTEM PkgConfig::FFTW3F
     src
@@ -263,7 +264,7 @@ set_target_properties(${PROJECT_NAME} PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAK
 target_compile_options(${PROJECT_NAME} PRIVATE -Wall -Wextra -Wno-elaborated-enum-base)
 
 add_definitions(-DTETLIBRARY)
-add_definitions(-DIMGUI_DEFINE_MATH_OPERATORS -DGLM_ENABLE_EXPERIMENTAL)
+add_definitions(-DIMGUI_DEFINE_MATH_OPERATORS -DGLM_ENABLE_EXPERIMENTAL -DZPP_BITS_AUTODETECT_MEMBERS_MODE=1)
 add_definitions(-DMA_NO_ENGINE) # Reduce MA build size
 
 add_subdirectory(tests)
