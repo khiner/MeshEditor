@@ -43,21 +43,21 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
             [&](RemoveTriggerNodes) { r.remove<TriggerNodes>(FindActiveEntity(r)); },
             [&](const ToggleFilterEntity &a) {
                 r.patch<CollisionFilter>(a.FilterEntity, [&](CollisionFilter &f) {
-                    auto &vec = f.*(a.Field);
+                    auto &vec = a.Which == ToggleFilterEntity::List::Systems ? f.Systems : f.CollideSystems;
                     if (a.Add) {
                         if (std::find(vec.begin(), vec.end(), a.SystemEntity) == vec.end()) vec.push_back(a.SystemEntity);
                     } else std::erase(vec, a.SystemEntity);
                 });
             },
             [&]<typename T>(const SetJointVecItem<T> &a) {
-                r.patch<PhysicsJointDef>(a.JointDefEntity, [&](PhysicsJointDef &d) { (d.*(a.Field))[a.Index] = *a.Value; });
+                r.patch<PhysicsJointDef>(a.JointDefEntity, [&](PhysicsJointDef &d) { (d.*JointVecMember<T>)[a.Index] = *a.Value; });
             },
             [&]<typename T>(const AddJointVecItem<T> &a) {
-                r.patch<PhysicsJointDef>(a.JointDefEntity, [&](PhysicsJointDef &d) { (d.*(a.Field)).push_back({}); });
+                r.patch<PhysicsJointDef>(a.JointDefEntity, [&](PhysicsJointDef &d) { (d.*JointVecMember<T>).push_back({}); });
             },
             [&]<typename T>(const DeleteJointVecItem<T> &a) {
                 r.patch<PhysicsJointDef>(a.JointDefEntity, [&](PhysicsJointDef &d) {
-                    auto &vec = d.*(a.Field);
+                    auto &vec = d.*JointVecMember<T>;
                     vec.erase(vec.begin() + a.Index);
                 });
             },

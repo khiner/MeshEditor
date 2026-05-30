@@ -9,8 +9,6 @@
 #include "object/ObjectCreateInfo.h"
 #include "render/MaterialComponents.h"
 
-#include <filesystem>
-
 namespace action::object {
 struct Delete {};
 struct Duplicate {};
@@ -43,7 +41,7 @@ struct AddMeshPrimitive {
     std::unique_ptr<MeshInstanceCreateInfo> Info;
 };
 struct ImportMesh {
-    std::filesystem::path Path;
+    std::string Path; // not fs::path so the action serializes natively
     std::unique_ptr<MeshInstanceCreateInfo> Info;
 };
 // `Mask=0` removes the component. Targets the active mesh entity.

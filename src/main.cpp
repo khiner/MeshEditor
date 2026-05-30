@@ -238,7 +238,7 @@ std::expected<void, std::string> LoadFile(entt::registry &r, entt::entity viewpo
             return std::unexpected(std::format("Error loading glTF file '{}': {}", path.string(), result.error()));
         }
     } else if (ext == ".obj" || ext == ".ply") {
-        action::object::Apply(r, viewport, action::object::ImportMesh{path, std::make_unique<MeshInstanceCreateInfo>(MeshInstanceCreateInfo{.Name = path.stem().string()})});
+        action::object::Apply(r, viewport, action::object::ImportMesh{path.string(), std::make_unique<MeshInstanceCreateInfo>(MeshInstanceCreateInfo{.Name = path.stem().string()})});
     } else {
         return std::unexpected(std::format("Unsupported file format: '{}'", ext));
     }

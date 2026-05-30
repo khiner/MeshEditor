@@ -64,6 +64,6 @@ SetName SetNameOf(entt::entity e, std::string name) {
 template<typename T>
 CreateNamed CreateNamedOf(std::string_view prefix) {
     RegisterNamed<T>();
-    return {entt::type_hash<T>::value(), prefix};
+    return {entt::type_hash<T>::value(), std::string{prefix}};
 }
 } // namespace action

@@ -7,7 +7,6 @@
 #include <entt/entity/fwd.hpp>
 
 #include <string>
-#include <string_view>
 #include <variant>
 
 namespace action {
@@ -62,7 +61,7 @@ struct SetName {
 // Create a new entity carrying the component identified by `ComponentType`, named "<Prefix> <ordinal>".
 struct CreateNamed {
     entt::id_type ComponentType;
-    std::string_view Prefix;
+    std::string Prefix;
 };
 
 namespace detail {

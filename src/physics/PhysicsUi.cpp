@@ -117,7 +117,7 @@ size_t CountFilterUses(const entt::registry &r, entt::entity filter) {
 void RenderCollisionFilterBody(entt::registry &r, entt::entity filter_e) {
     const auto &filter = r.get<const CollisionFilter>(filter_e);
     RenderSystemMultiSelect(r, "Member of", filter.Systems, [&](entt::entity se, bool add) {
-        return action::physics::ToggleFilterEntity{filter_e, &CollisionFilter::Systems, se, add};
+        return action::physics::ToggleFilterEntity{filter_e, action::physics::ToggleFilterEntity::List::Systems, se, add};
     });
 
     int mode = int(filter.Mode);
@@ -133,7 +133,7 @@ void RenderCollisionFilterBody(entt::registry &r, entt::entity filter_e) {
     if (mode != int(CollideMode::All)) {
         Indent();
         RenderSystemMultiSelect(r, "##collide", filter.CollideSystems, [&](entt::entity se, bool add) {
-            return action::physics::ToggleFilterEntity{filter_e, &CollisionFilter::CollideSystems, se, add};
+            return action::physics::ToggleFilterEntity{filter_e, action::physics::ToggleFilterEntity::List::CollideSystems, se, add};
         });
         if (filter.CollideSystems.empty() && mode == int(CollideMode::Allowlist)) {
             TextColored(ImVec4{0.9f, 0.7f, 0.3f, 1}, "No systems selected — this filter collides with nothing.");
@@ -368,7 +368,7 @@ void physics_ui::RenderTab(entt::registry &r, entt::entity viewport) {
                         const auto edit_limit = [&](auto &&fn) {
                             auto edit = limit;
                             fn(edit);
-                            return action::physics::SetJointVecItem<PhysicsJointLimit>{jd_entity, &PhysicsJointDef::Limits, li, std::make_unique<PhysicsJointLimit>(std::move(edit))};
+                            return action::physics::SetJointVecItem<PhysicsJointLimit>{jd_entity, li, std::make_unique<PhysicsJointLimit>(std::move(edit))};
                         };
                         TextUnformatted("Linear axes:");
                         SameLine();
@@ -417,8 +417,8 @@ void physics_ui::RenderTab(entt::registry &r, entt::entity viewport) {
                     }
                     PopID();
                 }
-                if (delete_limit) action::Emit(action::physics::DeleteJointVecItem<PhysicsJointLimit>{jd_entity, &PhysicsJointDef::Limits, *delete_limit});
-                if (Button("Add limit")) action::Emit(action::physics::AddJointVecItem<PhysicsJointLimit>{jd_entity, &PhysicsJointDef::Limits});
+                if (delete_limit) action::Emit(action::physics::DeleteJointVecItem<PhysicsJointLimit>{jd_entity, *delete_limit});
+                if (Button("Add limit")) action::Emit(action::physics::AddJointVecItem<PhysicsJointLimit>{jd_entity});
 
                 Spacing();
 
@@ -433,7 +433,7 @@ void physics_ui::RenderTab(entt::registry &r, entt::entity viewport) {
                         const auto edit_drive = [&](auto &&fn) {
                             auto edit = drive;
                             fn(edit);
-                            return action::physics::SetJointVecItem<PhysicsJointDrive>{jd_entity, &PhysicsJointDef::Drives, di, std::make_unique<PhysicsJointDrive>(std::move(edit))};
+                            return action::physics::SetJointVecItem<PhysicsJointDrive>{jd_entity, di, std::make_unique<PhysicsJointDrive>(std::move(edit))};
                         };
                         if (int type = int(drive.Type); Combo("Type", &type, "Linear\0Angular\0")) action::Emit(edit_drive([&](auto &e) { e.Type = PhysicsDriveType(type); }));
                         if (int axis = drive.Axis; Combo("Axis", &axis, "X\0Y\0Z\0")) action::Emit(edit_drive([&](auto &e) { e.Axis = uint8_t(axis); }));
@@ -449,8 +449,8 @@ void physics_ui::RenderTab(entt::registry &r, entt::entity viewport) {
                     }
                     PopID();
                 }
-                if (delete_drive) action::Emit(action::physics::DeleteJointVecItem<PhysicsJointDrive>{jd_entity, &PhysicsJointDef::Drives, *delete_drive});
-                if (Button("Add drive")) action::Emit(action::physics::AddJointVecItem<PhysicsJointDrive>{jd_entity, &PhysicsJointDef::Drives});
+                if (delete_drive) action::Emit(action::physics::DeleteJointVecItem<PhysicsJointDrive>{jd_entity, *delete_drive});
+                if (Button("Add drive")) action::Emit(action::physics::AddJointVecItem<PhysicsJointDrive>{jd_entity});
             }
         );
     }

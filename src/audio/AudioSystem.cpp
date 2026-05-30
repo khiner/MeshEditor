@@ -830,7 +830,7 @@ void DrawObjectAudioControls(
             if (const auto assign_label = n > 1 ? std::format("Assign sample to {} vertices…", n) : std::string{with_sample ? "Replace sample…" : "Assign sample…"};
                 Button(assign_label.c_str())) {
                 if (auto path = PickAudioFile(); !path.empty())
-                    action::Emit(action::audio::AssignVertexSamples{std::move(op_vertices), std::move(path)});
+                    action::Emit(action::audio::AssignVertexSamples{std::move(op_vertices), path.string()});
             }
             if (n == 0) EndDisabled();
             if (with_sample > 0) {

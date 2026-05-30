@@ -40,28 +40,32 @@ struct RemoveTriggerNodes {};
 
 // `Add=true` appends iff not present; `Add=false` erases all occurrences.
 struct ToggleFilterEntity {
+    enum class List : uint8_t { Systems,
+                                CollideSystems };
     entt::entity FilterEntity;
-    std::vector<entt::entity> CollisionFilter::*Field;
+    List Which;
     entt::entity SystemEntity;
     bool Add;
 };
 
+// Maps a joint-vec-item element type to the PhysicsJointDef vector it targets.
+template<typename T> inline constexpr std::vector<T> PhysicsJointDef::*JointVecMember = nullptr;
+template<> inline constexpr std::vector<PhysicsJointLimit> PhysicsJointDef::*JointVecMember<PhysicsJointLimit> = &PhysicsJointDef::Limits;
+template<> inline constexpr std::vector<PhysicsJointDrive> PhysicsJointDef::*JointVecMember<PhysicsJointDrive> = &PhysicsJointDef::Drives;
+
 template<typename T>
 struct SetJointVecItem {
     entt::entity JointDefEntity;
-    std::vector<T> PhysicsJointDef::*Field;
     uint32_t Index;
     std::unique_ptr<T> Value;
 };
 template<typename T>
 struct AddJointVecItem {
     entt::entity JointDefEntity;
-    std::vector<T> PhysicsJointDef::*Field;
 };
 template<typename T>
 struct DeleteJointVecItem {
     entt::entity JointDefEntity;
-    std::vector<T> PhysicsJointDef::*Field;
     uint32_t Index;
 };
 
