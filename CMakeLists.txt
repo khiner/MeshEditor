@@ -165,6 +165,7 @@ include_directories(
     SYSTEM lib/lunasvg/plutovg/source
     SYSTEM lib/JoltPhysics
     SYSTEM lib/zpp_bits
+    SYSTEM lib/readerwriterqueue
 
     SYSTEM PkgConfig::FFTW3F
     src

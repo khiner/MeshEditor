@@ -1,7 +1,7 @@
 #include "viewport/ViewportOps.h"
 
-#include "action/Action.h"
 #include "action/Bone.h"
+#include "action/Emit.h"
 #include "action/Object.h"
 #include "audio/SoundVertices.h"
 #include "gpu/ViewportTheme.h"

@@ -1,7 +1,7 @@
 #include "Paths.h"
 #include "Timer.h"
 #include "Window.h"
-#include "action/Action.h"
+#include "action/Emit.h"
 #include "action/Io.h"
 #include "action/Object.h"
 #include "animation/TimelineUi.h"
@@ -381,6 +381,7 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
     const Uint64 capture_interval_ns = 1'000'000'000ULL / Uint64(record_fps);
     Uint64 next_capture_ns = 0; // Initialized when recording starts.
     bool done = false;
+    action::StartLog(); // Record each applied action to the write-behind log.
     while (!done) {
         SDL_Event event;
         while (SDL_PollEvent(&event)) {
@@ -697,6 +698,7 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
         }
     }
 
+    action::StopLog(); // Flush and join the log writer before teardown.
     vc->Device->waitIdle();
 
     audio_device.Uninit();

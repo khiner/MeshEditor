@@ -1,23 +1,25 @@
 #include "action/Action.h"
+#include "action/Emit.h"
+#include "action/Log.h"
 
-#include "action/Audio.h"
-#include "action/Bone.h"
-#include "action/Io.h"
-#include "action/Object.h"
-#include "action/Physics.h"
-#include "action/Selection.h"
-#include "action/Timeline.h"
-#include "action/View.h"
-#include "viewport/ViewportInteractionState.h" // PendingTransform
+#include <zpp_bits.h>
 
 using namespace action;
 
 namespace {
-using Action = MergedVariantT<
-    Core,
-    selection::Action, object::Action, view::Action,
-    action::physics::Action, audio::Action, bone::Action, timeline::Action, io::Action>;
 std::optional<Action> Staged;
+
+std::optional<std::ofstream> LogStream;
+std::optional<WriteBehindLog<Action>> Log;
+
+// Serialize action into a reused buffer and append its bytes to the log stream.
+// Runs only on the writer thread.
+void SerializeAction(const Action &a, std::ostream &out) {
+    static thread_local std::vector<std::byte> buffer;
+    zpp::bits::out archive{buffer};
+    if (zpp::bits::failure(SerializeVariant(archive, a))) return; // e.g. a null owning pointer; drop rather than write a partial record
+    out.write(reinterpret_cast<const char *>(buffer.data()), std::streamsize(archive.position()));
+}
 } // namespace
 
 namespace action {
@@ -25,24 +27,41 @@ template<typename ActionType> void Emit(ActionType a) {
     if (!Staged) Staged.emplace(std::move(a)); // First action emitted in the frame wins.
 }
 
+void StartLog() {
+    LogStream.emplace(OpenLogStream());
+    Log.emplace(*LogStream, &SerializeAction);
+}
+void StopLog() {
+    if (Log) Log->Stop();
+    Log.reset();
+    LogStream.reset();
+}
+
 void ApplyEmitted(entt::registry &r, entt::entity viewport) {
     if (!Staged) return;
 
-    std::visit(
-        [&]<typename T>(T &&a) {
+    // Apply the action, then record it to the log.
+    auto recorded = std::visit(
+        [&]<typename T>(T &&a) -> Action {
             using L = std::decay_t<T>;
-            if constexpr (is_variant_member_v<L, selection::Action>) selection::Apply(r, viewport, selection::Action{std::forward<T>(a)});
-            else if constexpr (is_variant_member_v<L, object::Action>) object::Apply(r, viewport, object::Action{std::forward<T>(a)});
-            else if constexpr (is_variant_member_v<L, view::Action>) view::Apply(r, viewport, view::Action{std::forward<T>(a)});
-            else if constexpr (is_variant_member_v<L, action::physics::Action>) action::physics::Apply(r, viewport, action::physics::Action{std::forward<T>(a)});
-            else if constexpr (is_variant_member_v<L, audio::Action>) audio::Apply(r, viewport, audio::Action{std::forward<T>(a)});
-            else if constexpr (is_variant_member_v<L, bone::Action>) bone::Apply(r, viewport, bone::Action{std::forward<T>(a)});
-            else if constexpr (is_variant_member_v<L, timeline::Action>) timeline::Apply(r, viewport, timeline::Action{std::forward<T>(a)});
-            else if constexpr (is_variant_member_v<L, io::Action>) io::Apply(r, viewport, io::Action{std::forward<T>(a)});
-            else Apply(r, viewport, Core{std::forward<T>(a)});
+            auto apply_keep = [&]<typename DomainV>() -> Action {
+                DomainV dv{std::move(a)};
+                Apply(r, viewport, dv);
+                return Action{std::in_place_type<L>, std::move(std::get<L>(dv))};
+            };
+            if constexpr (is_variant_member_v<L, selection::Action>) return apply_keep.template operator()<selection::Action>();
+            else if constexpr (is_variant_member_v<L, object::Action>) return apply_keep.template operator()<object::Action>();
+            else if constexpr (is_variant_member_v<L, view::Action>) return apply_keep.template operator()<view::Action>();
+            else if constexpr (is_variant_member_v<L, action::physics::Action>) return apply_keep.template operator()<action::physics::Action>();
+            else if constexpr (is_variant_member_v<L, audio::Action>) return apply_keep.template operator()<audio::Action>();
+            else if constexpr (is_variant_member_v<L, bone::Action>) return apply_keep.template operator()<bone::Action>();
+            else if constexpr (is_variant_member_v<L, timeline::Action>) return apply_keep.template operator()<timeline::Action>();
+            else if constexpr (is_variant_member_v<L, io::Action>) return apply_keep.template operator()<io::Action>();
+            else return apply_keep.template operator()<Core>();
         },
         std::move(*Staged)
     );
+    if (Log) Log->Enqueue(std::move(recorded));
     Staged.reset();
 }
 

@@ -10,7 +10,6 @@
 using uint = uint32_t;
 
 namespace {
-
 int GetVertexIndex(const tetgenio &tets, uint element, uint vertex) { return tets.tetrahedronlist[element * 4 + vertex]; }
 
 const glm::dvec3 &GetVertex(const tetgenio &tets, int element, int vertex) {

@@ -47,3 +47,18 @@ target_link_libraries(MeshEditorTests PRIVATE
 
 target_compile_definitions(MeshEditorTests PRIVATE GLM_ENABLE_EXPERIMENTAL DEBUG_BUILD)
 target_compile_options(MeshEditorTests PRIVATE -Wall -Wextra -Wno-missing-field-initializers -Wno-elaborated-enum-base)
+
+# Standalone: serializes every Action alternative through zpp::bits. Header-only (no GPU/registry),
+# so it needs only the action headers (and the generated GPU schema headers they pull in).
+add_executable(MeshEditorActionSerializeTest ActionSerializeTest.cpp)
+add_dependencies(MeshEditorActionSerializeTest generate_gpu_schema)
+target_include_directories(MeshEditorActionSerializeTest PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_BINARY_DIR}
+    ${Vulkan_INCLUDE_DIRS}
+    SYSTEM ${CMAKE_SOURCE_DIR}/lib/glm
+    SYSTEM ${CMAKE_SOURCE_DIR}/lib/entt/src
+)
+target_link_libraries(MeshEditorActionSerializeTest PRIVATE Boost::ut)
+target_compile_definitions(MeshEditorActionSerializeTest PRIVATE GLM_ENABLE_EXPERIMENTAL DEBUG_BUILD)
+target_compile_options(MeshEditorActionSerializeTest PRIVATE -Wall -Wextra -Wno-missing-field-initializers -Wno-elaborated-enum-base)

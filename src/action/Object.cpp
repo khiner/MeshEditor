@@ -20,7 +20,6 @@
 using std::ranges::to;
 
 namespace {
-
 entt::entity DuplicateOne(entt::registry &r, entt::entity e, bool &was_mesh_duplicate) {
     auto &meshes = r.ctx().get<MeshStore>();
     const ObjectCreateInfo create_info{

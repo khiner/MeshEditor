@@ -14,7 +14,6 @@
 #include <span>
 
 namespace {
-
 using TransformGizmo::Interaction;
 using TransformGizmo::InteractionOp;
 using TransformGizmo::LocalTransformDelta;
@@ -103,7 +102,6 @@ std::string_view ToString(const GizmoInteraction &g) {
 } // namespace TransformGizmo
 
 namespace {
-
 using enum InteractionOp;
 
 constexpr InteractionOp AxisOp(uint32_t axis_i) {

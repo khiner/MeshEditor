@@ -13,8 +13,8 @@
 // instantiates — adding a `ui::Edit{R, emit}` site doesn't force `UpdateActive<T>` for every T
 // the entity-bound form already uses.
 
-#include "action/Action.h"
 #include "action/Build.h"
+#include "action/Emit.h"
 #include "scene/Entity.h" // FindActiveEntity
 
 #include <imgui.h>
