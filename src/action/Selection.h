@@ -37,16 +37,9 @@ struct DeselectAll {};
 struct SelectAll {};
 struct SnapshotBoxSelectBaseline {};
 struct ClearBoxSelectBaseline {};
-struct BoneHit {
-    entt::entity Entity;
-    std::optional<BoneSel> Part;
-};
-struct ApplyBoxSelectObjectHits {
-    std::vector<entt::entity> Hits;
-    bool Additive;
-};
-struct ApplyBoxSelectBoneHits {
-    std::vector<BoneHit> Hits;
+// Box rectangle in render pixels; the hit entities are resolved against current scene state when applied.
+struct ApplyBoxSelect {
+    std::pair<uvec2, uvec2> BoxPx;
     bool Additive;
 };
 struct ApplyEditElementClick {
@@ -65,7 +58,7 @@ struct ApplyTreeSelection {
 using Actions = std::variant<
     Select, ToggleSelected, SelectBone, ExtendActive, ExtendBoneActive, SetBoneSelectionPart,
     DeselectAll, SelectAll, SnapshotBoxSelectBaseline, ClearBoxSelectBaseline,
-    ApplyBoxSelectObjectHits, ApplyBoxSelectBoneHits, ApplyEditElementClick, ApplyTreeSelection>;
+    ApplyBoxSelect, ApplyEditElementClick, ApplyTreeSelection>;
 using Action = Actions;
 
 void Apply(entt::registry &, entt::entity viewport, const Action &);

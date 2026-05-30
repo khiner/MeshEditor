@@ -2,6 +2,7 @@
 
 #include "gpu/Element.h"
 #include "numeric/vec2.h"
+#include "selection/BoneSelection.h"
 
 #include <entt/entity/fwd.hpp>
 
@@ -10,6 +11,19 @@
 #include <vector>
 
 struct ElementRange;
+
+// A logical selection target: an entity, plus (in bone mode) which part of a bone was hit.
+struct SelectionHit {
+    entt::entity Entity;
+    std::optional<BoneSel> Part{};
+    bool operator==(const SelectionHit &) const = default;
+};
+
+// Map raw GPU pick/box-select instances to logical selection targets.
+// In bone mode, body + joint spheres collapse to one entry per bone.
+// merge_parts: true merges multiple parts to nullopt (= all parts); false keeps the first (closest) part.
+// In object mode, bones fall through to SubElementOf like any other sub-element, collapsing to the armature.
+std::vector<SelectionHit> ResolveHits(entt::registry &, const std::vector<entt::entity> &raw, bool bone_mode, bool merge_parts = false);
 
 // Vulkan-free GPU pick/box-select queries, so interaction/UI consumers need not
 // include the (vulkan-heavy) SelectionGpu header.

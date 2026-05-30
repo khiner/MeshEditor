@@ -35,6 +35,12 @@ struct PendingEditElementClick {
     bool Toggle;
 };
 
+// Object/bone box-select awaiting GPU resolution against current scene state.
+struct PendingBoxSelect {
+    std::pair<uvec2, uvec2> BoxPx;
+    bool Additive;
+};
+
 // Non-owning span over the GPU-mapped SelectionBitset words.
 struct SelectionBitsetRef {
     std::span<uint32_t> Value;

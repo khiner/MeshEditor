@@ -12,13 +12,6 @@
 
 namespace action::selection {
 void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
-    auto apply_box_select = [&]<typename Tag>(bool additive, auto restore_baseline, auto apply_hits) {
-        r.clear<Tag>();
-        if (additive) {
-            if (const auto *baseline = r.try_get<const AdditiveBoxSelectBaseline>(viewport)) restore_baseline(*baseline);
-        }
-        apply_hits();
-    };
     auto merge_bone_sel = [&](entt::entity e, const std::optional<BoneSel> &part, bool additive) {
         const auto sel = part ? BoneSelection::From(*part) : BoneSelection{};
         const auto *cur = r.try_get<BoneSelection>(e);
@@ -84,19 +77,8 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
                 r.emplace_or_replace<AdditiveBoxSelectBaseline>(viewport, std::move(baseline));
             },
             [&](ClearBoxSelectBaseline) { r.remove<AdditiveBoxSelectBaseline>(viewport); },
-            [&](const ApplyBoxSelectObjectHits &a) {
-                apply_box_select.template operator()<Selected>(
-                    a.Additive,
-                    [&](const AdditiveBoxSelectBaseline &b) {
-                        for (const auto e : b.SelectedEntities) {
-                            if (r.valid(e)) r.emplace_or_replace<Selected>(e);
-                        }
-                    },
-                    [&] {
-                        for (const auto e : a.Hits) r.emplace_or_replace<Selected>(e);
-                    }
-                );
-            },
+            // Box-select stores only the rectangle; the GPU pick + hit resolution run in ProcessComponentEvents.
+            [&](const ApplyBoxSelect &a) { r.emplace_or_replace<PendingBoxSelect>(viewport, a.BoxPx, a.Additive); },
             [&](const ApplyEditElementClick &a) {
                 end_box_select_interaction();
                 r.emplace_or_replace<PendingEditElementClick>(viewport, a.MousePx, a.Toggle);
@@ -126,19 +108,6 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
                         }
                     }
                 }
-            },
-            [&](const ApplyBoxSelectBoneHits &a) {
-                apply_box_select.template operator()<BoneSelection>(
-                    a.Additive,
-                    [&](const AdditiveBoxSelectBaseline &b) {
-                        for (const auto &[e, sel] : b.BoneSelections) {
-                            if (r.valid(e)) r.emplace_or_replace<BoneSelection>(e, sel);
-                        }
-                    },
-                    [&] {
-                        for (const auto &[entity, part] : a.Hits) merge_bone_sel(entity, part, a.Additive);
-                    }
-                );
             },
             [&](SelectAll) {
                 const auto interaction_mode = r.get<const Interaction>(viewport).Mode;

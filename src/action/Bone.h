@@ -1,6 +1,5 @@
 #pragma once
 
-#include "numeric/mat4.h"
 #include "numeric/quat.h"
 #include "numeric/vec3.h"
 
@@ -28,9 +27,13 @@ struct SetConstraintInfluence {
     uint32_t Index;
     float Influence;
 };
-struct SetConstraintChildOfInverse {
+// Bake inverse(target_world) * bone_world so the current relative pose becomes the constraint's rest offset.
+struct BakeConstraintChildOfInverse {
     uint32_t Index;
-    std::unique_ptr<mat4> Inverse;
+};
+// Reset the Child-Of inverse to identity (no offset).
+struct ClearConstraintChildOfInverse {
+    uint32_t Index;
 };
 struct DeleteConstraint {
     uint32_t Index;
@@ -44,7 +47,8 @@ struct AddConstraint {
 using Actions = std::variant<
     Add, Extrude, DuplicateSelected, DeleteSelected, ClearSelectedTransforms,
     SetEditHeadTailRoll,
-    SetConstraintTarget, SetConstraintInfluence, SetConstraintChildOfInverse,
+    SetConstraintTarget, SetConstraintInfluence,
+    BakeConstraintChildOfInverse, ClearConstraintChildOfInverse,
     DeleteConstraint, AddConstraint>;
 using Action = Actions;
 

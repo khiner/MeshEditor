@@ -40,7 +40,7 @@
 
 #include "gizmo/OrientationGizmo.h"
 
-using std::ranges::any_of, std::ranges::contains, std::ranges::find, std::ranges::find_if, std::ranges::fold_left;
+using std::ranges::any_of, std::ranges::find_if, std::ranges::fold_left;
 using std::views::transform;
 
 using namespace ImGui;
@@ -48,33 +48,6 @@ using namespace ImGui;
 namespace {
 constexpr vec2 ToGlm(ImVec2 v) { return std::bit_cast<vec2>(v); }
 constexpr float WheelOrbitRadPerUnit{0.05f}, WheelZoomStep{1.04f};
-
-struct SelectionHit {
-    entt::entity Entity;
-    std::optional<BoneSel> Part{};
-    bool operator==(const SelectionHit &) const = default;
-};
-
-// Map raw GPU pick/box-select instances to logical selection targets.
-// In bone mode, body + joint spheres collapse to one entry per bone.
-// merge_parts: true merges multiple parts to nullopt (= all parts); false keeps the first (closest) part.
-// In object mode, bones fall through to SubElementOf like any other sub-element, collapsing to the armature.
-std::vector<SelectionHit> ResolveHits(entt::registry &r, const std::vector<entt::entity> &raw, bool bone_mode, bool merge_parts = false) {
-    std::vector<SelectionHit> hits;
-    for (const auto e : raw) {
-        if (bone_mode && r.all_of<BoneIndex>(e)) {
-            if (auto it = find(hits, e, &SelectionHit::Entity); it == hits.end()) hits.emplace_back(e, BoneSel::Body);
-            else if (merge_parts) it->Part = {};
-        } else if (bone_mode && r.all_of<BoneSubPartOf>(e)) {
-            const auto &sub = r.get<BoneSubPartOf>(e);
-            if (auto it = find(hits, sub.BoneEntity, &SelectionHit::Entity); it == hits.end()) hits.emplace_back(sub.BoneEntity, sub.IsTip ? BoneSel::Tip : BoneSel::Root);
-            else if (merge_parts) it->Part = {};
-        } else if (!bone_mode) {
-            if (const auto target = r.all_of<SubElementOf>(e) ? r.get<SubElementOf>(e).Parent : e; !contains(hits, target, &SelectionHit::Entity)) hits.emplace_back(target);
-        }
-    }
-    return hits;
-}
 
 std::optional<std::pair<uvec2, uvec2>> ComputeBoxSelectPixels(vec2 start, vec2 end, vec2 window_pos, uvec2 logical_extent, uvec2 render_extent) {
     static constexpr float DragThresholdSq{2 * 2};
@@ -348,18 +321,9 @@ void Interact(entt::registry &r, entt::entity viewport, FrameState &frame) {
                 if (interaction_mode == InteractionMode::Edit && !active_is_armature) {
                     Timer timer{"BoxSelectElements (all)"};
                     RunBoxSelectElements(r, viewport, GetBitsetRangesForSelected(r), edit_mode, *box_px, is_additive);
-                } else if (bone_mode) {
-                    const auto hits = ResolveHits(r, RunBoxSelect(r, viewport, *box_px), bone_mode, true);
-                    std::vector<action::selection::BoneHit> bone_hits;
-                    bone_hits.reserve(hits.size());
-                    for (const auto &[entity, part] : hits) bone_hits.emplace_back(entity, part);
-                    action::Emit(action::selection::ApplyBoxSelectBoneHits{.Hits = std::move(bone_hits), .Additive = is_additive});
-                } else if (interaction_mode == InteractionMode::Object) {
-                    const auto hits = ResolveHits(r, RunBoxSelect(r, viewport, *box_px), bone_mode, true);
-                    std::vector<entt::entity> entities;
-                    entities.reserve(hits.size());
-                    for (const auto &[entity, _] : hits) entities.push_back(entity);
-                    action::Emit(action::selection::ApplyBoxSelectObjectHits{.Hits = std::move(entities), .Additive = is_additive});
+                } else {
+                    // Object/bone box-select: the hit set is resolved against current scene state when applied.
+                    action::Emit(action::selection::ApplyBoxSelect{.BoxPx = *box_px, .Additive = is_additive});
                 }
             }
         } else if (!IsMouseDown(ImGuiMouseButton_Left) && frame.BoxSelectStart) {

@@ -50,9 +50,9 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
                 ::SetModel(r, viewport, e, SoundVerticesModel::Modal);
             },
             [&](const AssignVertexSamples &a) {
-                ::AssignVertexSample(r, viewport, FindActiveEntity(r), a.D->MeshVertices, a.D->Path, std::vector<float>{a.D->Frames});
+                auto frames = LoadAudioFrames(a.Path.string());
+                if (!frames.empty()) ::AssignVertexSample(r, viewport, FindActiveEntity(r), a.MeshVertices, a.Path, std::move(frames));
             },
-            [&](SetVertexSamples a) { ::SetVertexSamples(r, viewport, a.SoundEntity, a.MeshVertices, std::move(a.Samples)); },
             [&](const ActivateRealImpactMicrophone &a) {
                 const auto dir = r.get<const Path>(r.get<const Instance>(a.TargetSoundEntity).Entity).Value.parent_path();
                 const auto &vertex_indices = r.get<const RealImpactVertices>(a.TargetSoundEntity).Vertices;

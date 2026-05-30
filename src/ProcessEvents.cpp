@@ -809,6 +809,32 @@ RenderRequest ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
         }
         if (!ranges.empty() && (!toggle || hit)) r.emplace_or_replace<SelectionBitsDirty>(viewport);
     }
+    if (const auto *pending = r.try_get<const PendingBoxSelect>(viewport)) {
+        const auto box_px = pending->BoxPx;
+        const bool additive = pending->Additive;
+        r.remove<PendingBoxSelect>(viewport);
+
+        const bool bone_mode = r.get<const Interaction>(viewport).Mode == InteractionMode::Pose || IsBoneEditMode(r, viewport);
+        const auto hits = ResolveHits(r, RunBoxSelect(r, viewport, box_px), bone_mode, true);
+        const auto *baseline = additive ? r.try_get<const AdditiveBoxSelectBaseline>(viewport) : nullptr;
+        if (bone_mode) {
+            r.clear<BoneSelection>();
+            if (baseline)
+                for (const auto &[e, sel] : baseline->BoneSelections)
+                    if (r.valid(e)) r.emplace_or_replace<BoneSelection>(e, sel);
+            for (const auto &hit : hits) {
+                const auto sel = hit.Part ? BoneSelection::From(*hit.Part) : BoneSelection{};
+                const auto *cur = r.try_get<BoneSelection>(hit.Entity);
+                r.emplace_or_replace<BoneSelection>(hit.Entity, additive && cur ? *cur | sel : sel);
+            }
+        } else {
+            r.clear<Selected>();
+            if (baseline)
+                for (const auto e : baseline->SelectedEntities)
+                    if (r.valid(e)) r.emplace_or_replace<Selected>(e);
+            for (const auto &hit : hits) r.emplace_or_replace<Selected>(hit.Entity);
+        }
+    }
 
     // Create/destroy wireframe overlay instances and their buffer entities before SyncModelsBuffers
     // consumes the RenderInstance/NewBufferEntity reactive events they fire.

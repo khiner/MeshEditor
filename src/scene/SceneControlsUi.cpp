@@ -448,18 +448,11 @@ static void RenderEntityControls(entt::registry &r, entt::entity viewport, entt:
                     EndCombo();
                 }
                 if (std::holds_alternative<ChildOfData>(c.Data)) {
-                    if (Button("Set Inverse") && c.TargetEntity != entt::null && r.valid(c.TargetEntity)) {
-                        // Bake inverse(target_world) * bone_world so current relative pose becomes the new rest.
-                        const auto *twt = r.try_get<const WorldTransform>(c.TargetEntity);
-                        const auto *bwt = r.try_get<const WorldTransform>(active_bone_entity);
-                        if (twt && bwt) {
-                            const mat4 inv = glm::inverse(ToMatrix(*twt)) * ToMatrix(*bwt);
-                            action::Emit(action::bone::SetConstraintChildOfInverse{uint32_t(i), std::make_unique<mat4>(inv)});
-                        }
-                    }
+                    if (Button("Set Inverse") && c.TargetEntity != entt::null && r.valid(c.TargetEntity))
+                        action::Emit(action::bone::BakeConstraintChildOfInverse{uint32_t(i)});
                     SameLine();
                     if (Button("Clear Inverse"))
-                        action::Emit(action::bone::SetConstraintChildOfInverse{uint32_t(i), std::make_unique<mat4>(I4)});
+                        action::Emit(action::bone::ClearConstraintChildOfInverse{uint32_t(i)});
                 }
                 if (float influence = c.Influence; SliderFloat("Influence", &influence, 0.f, 1.f))
                     action::Emit(action::bone::SetConstraintInfluence{uint32_t(i), influence});

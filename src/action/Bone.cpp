@@ -237,8 +237,18 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
             [&](const SetConstraintInfluence &a) {
                 r.patch<BoneConstraints>(FindActiveBone(r), [&](auto &cs) { cs.Stack[a.Index].Influence = a.Influence; });
             },
-            [&](const SetConstraintChildOfInverse &a) {
-                r.patch<BoneConstraints>(FindActiveBone(r), [&](auto &cs) { std::get<ChildOfData>(cs.Stack[a.Index].Data).InverseMatrix = *a.Inverse; });
+            [&](const BakeConstraintChildOfInverse &a) {
+                const auto bone = FindActiveBone(r);
+                r.patch<BoneConstraints>(bone, [&](auto &cs) {
+                    const auto target = cs.Stack[a.Index].TargetEntity;
+                    const auto *twt = r.try_get<const WorldTransform>(target);
+                    const auto *bwt = r.try_get<const WorldTransform>(bone);
+                    // Bake inverse(target_world) * bone_world so the current relative pose becomes the new rest.
+                    if (twt && bwt) std::get<ChildOfData>(cs.Stack[a.Index].Data).InverseMatrix = glm::inverse(ToMatrix(*twt)) * ToMatrix(*bwt);
+                });
+            },
+            [&](const ClearConstraintChildOfInverse &a) {
+                r.patch<BoneConstraints>(FindActiveBone(r), [&](auto &cs) { std::get<ChildOfData>(cs.Stack[a.Index].Data).InverseMatrix = I4; });
             },
             [&](const DeleteConstraint &a) {
                 r.patch<BoneConstraints>(FindActiveBone(r), [&](auto &cs) { cs.Stack.erase(cs.Stack.begin() + a.Index); });

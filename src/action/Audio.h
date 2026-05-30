@@ -40,18 +40,10 @@ struct AcceptModalGenerationResult {
     };
     std::unique_ptr<Data> D;
 };
+// Frames are loaded from Path when applied, not stored.
 struct AssignVertexSamples {
-    struct Data {
-        std::vector<uint32_t> MeshVertices;
-        std::filesystem::path Path;
-        std::vector<float> Frames;
-    };
-    std::unique_ptr<Data> D;
-};
-struct SetVertexSamples {
-    entt::entity SoundEntity;
     std::vector<uint32_t> MeshVertices;
-    std::vector<std::pair<std::filesystem::path, std::vector<float>>> Samples;
+    std::filesystem::path Path;
 };
 // Load samples for the target sound entity from `MicrophoneEntity` and mark that mic active.
 struct ActivateRealImpactMicrophone {
@@ -74,7 +66,7 @@ using Actions = std::variant<
     SetModel, SetExciteVertex, SetActiveElementFromDsp,
     StartExcite, StopExcite, DeleteSoundObject, StartRecording,
     OpenModalForm, CancelModalForm, SubmitModalForm, AcceptModalGenerationResult,
-    AssignVertexSamples, SetVertexSamples, RemoveVertexSamples, ActivateRealImpactMicrophone, SetModalFormMaterial,
+    AssignVertexSamples, RemoveVertexSamples, ActivateRealImpactMicrophone, SetModalFormMaterial,
     ApplyExciteImpact, ClearExciteImpacts>;
 
 using Action = MergedVariantT<Actions, Replace<RealImpactActiveMicrophone>>;

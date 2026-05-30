@@ -610,14 +610,13 @@ struct ModalGenerationResult {
 };
 std::unique_ptr<Worker<ModalGenerationResult>> DspGenerator;
 
-LoadedSample PickAndLoadAudio() {
+fs::path PickAudioFile() {
     static const std::array filters{nfdfilteritem_t{"Audio", "wav,mp3,flac,ogg,opus"}};
     nfdchar_t *path = nullptr;
     if (NFD_OpenDialog(&path, filters.data(), filters.size(), "") != NFD_OKAY) return {};
     fs::path file_path{path};
-    auto frames = LoadAudioFrames(path);
     NFD_FreePath(path);
-    return {std::move(file_path), std::move(frames)};
+    return file_path;
 }
 
 // Render the modal model create/edit form. Assumes ModalModelCreateInfo is present on `e`.
@@ -825,8 +824,8 @@ void DrawObjectAudioControls(
             if (n == 0) BeginDisabled();
             if (const auto assign_label = n > 1 ? std::format("Assign sample to {} vertices…", n) : std::string{with_sample ? "Replace sample…" : "Assign sample…"};
                 Button(assign_label.c_str())) {
-                auto [path, frames] = PickAndLoadAudio();
-                if (!frames.empty()) action::Emit(action::audio::AssignVertexSamples{std::make_unique<action::audio::AssignVertexSamples::Data>(op_vertices, std::move(path), std::move(frames))});
+                if (auto path = PickAudioFile(); !path.empty())
+                    action::Emit(action::audio::AssignVertexSamples{std::move(op_vertices), std::move(path)});
             }
             if (n == 0) EndDisabled();
             if (with_sample > 0) {
