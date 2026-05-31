@@ -225,6 +225,10 @@ if(QUIET)
     target_compile_definitions(${PROJECT_NAME} PRIVATE QUIET)
 endif()
 
+# Max number of .mea replay logs to retain in the replay/ dir.
+set(REPLAY_LOG_RETAIN 5 CACHE STRING "Max number of .mea replay logs to keep")
+target_compile_definitions(${PROJECT_NAME} PRIVATE REPLAY_LOG_RETAIN=${REPLAY_LOG_RETAIN})
+
 # Optional local clones of glTF sample repos. When set and present, populate File submenus with their models.
 # Defaults to ../<repo> if it exists alongside this checkout, so a sibling clone is picked up automatically.
 function(_default_if_exists var rel_path)

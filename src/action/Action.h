@@ -13,7 +13,6 @@
 #include "viewport/ViewportInteractionState.h"
 
 #include "action/SerializeGlm.h"
-#include "action/SerializeVariant.h"
 
 namespace action {
 using Action = MergedVariantT<

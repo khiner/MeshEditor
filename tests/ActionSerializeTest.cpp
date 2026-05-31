@@ -1,13 +1,10 @@
 #include "Variant.h"
 #include "action/Action.h"
-
-#include <zpp_bits.h>
+#include "action/LogSerialize.h"
 
 #include <boost/ut.hpp>
 
-#include <cstddef>
-#include <memory>
-#include <vector>
+#include <sstream>
 
 using namespace action;
 
@@ -46,27 +43,48 @@ void EnsureSerializable(Action &a) {
         a
     );
 }
+
+std::stringstream MakeStream() { return std::stringstream{std::ios::in | std::ios::out | std::ios::binary}; }
 } // namespace
 
 int main() {
     using namespace boost::ut;
 
-    "every action alternative round-trips"_test = [] {
+    "every action round-trips through the log"_test = [] {
         for (std::size_t i = 0; i < std::variant_size_v<Action>; ++i) {
             Action a = DefaultAt(i);
             EnsureSerializable(a);
 
-            std::vector<std::byte> encoded;
-            expect(!zpp::bits::failure(SerializeVariant(zpp::bits::out{encoded}, a)));
+            auto out = MakeStream();
+            SerializeAction(a, out);
+            const auto encoded = out.str();
 
-            Action decoded;
-            expect(!zpp::bits::failure(DeserializeVariant(zpp::bits::in{encoded}, decoded)));
-            expect(decoded.index() == i);
+            std::vector<Action> decoded;
+            StreamActions(out, [&](Action &&d) { decoded.push_back(std::move(d)); });
+            expect(decoded.size() == 1u);
+            if (decoded.size() != 1u) continue;
+            expect(decoded[0].index() == i);
 
-            std::vector<std::byte> reencoded;
-            expect(!zpp::bits::failure(SerializeVariant(zpp::bits::out{reencoded}, decoded)));
-            const bool stable = encoded == reencoded; // bool so ut doesn't try to print std::byte operands
+            // Re-encoding the decoded action reproduces the same bytes.
+            auto reout = MakeStream();
+            SerializeAction(decoded[0], reout);
+            const bool stable = reout.str() == encoded;
             expect(stable);
         }
+    };
+
+    "back-to-back records read back in order"_test = [] {
+        auto out = MakeStream();
+        std::vector<std::size_t> written;
+        for (std::size_t i = 0; i < std::variant_size_v<Action>; ++i) {
+            Action a = DefaultAt(i);
+            EnsureSerializable(a);
+            SerializeAction(a, out);
+            written.push_back(i);
+        }
+        std::vector<std::size_t> read;
+        StreamActions(out, [&](Action &&d) { read.push_back(d.index()); });
+        const bool same = read == written;
+        expect(same);
     };
 }

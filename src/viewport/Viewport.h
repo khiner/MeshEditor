@@ -20,6 +20,11 @@ void RenderViewport(entt::registry &, entt::entity viewport, vk::Fence viewport_
 // Wait for pending viewport render to complete. No-op if no render pending.
 void WaitForRender(entt::registry &, entt::entity viewport);
 
+// Advance the viewport one step without presenting: process deferred component events and rebuild the
+// cached draw lists. Used to drive synchronous replay so that actions resolving against rendered state
+// (a click Pick, box select) settle against a fully-synced scene between applies, as they would live.
+void AdvanceViewportForReplay(entt::registry &, entt::entity viewport);
+
 // Record the viewport to an H.264 mp4 by piping frames to an `ffmpeg` subprocess.
 // When a look-through camera is active, captures only the framed sub-region matching
 // what the user sees inside the dimmed overlay. Locks to the initial capture extent;

@@ -2,9 +2,12 @@
 
 #include <readerwriterqueue.h>
 
+#include <cstdint>
+#include <filesystem>
 #include <fstream>
 #include <thread>
 #include <variant>
+#include <vector>
 
 namespace action {
 // Poison pill enqueued last at shutdown: wakes the writer and tells it to exit after it has drained
@@ -62,6 +65,16 @@ private:
     std::thread Writer;
 };
 
-// Create the `wbl/` dir and open a fresh `wbl/<unix_seconds>.wbl` append stream.
+// A `.mea` (Mesh Editor Action) log file in the replay dir, tagged with the unix-seconds timestamp parsed from its name.
+struct ReplayLogFile {
+    std::filesystem::path Path;
+    std::int64_t UnixSeconds;
+};
+
+// Replay logs found in the replay dir, sorted most-recent first.
+std::vector<ReplayLogFile> ListReplayLogs();
+
+// Create the `replay/` dir, retain only the newest REPLAY_LOG_RETAIN-1 logs, then open a fresh
+// `replay/<unix_seconds>.mea` append stream (so at most REPLAY_LOG_RETAIN logs exist after opening).
 std::ofstream OpenLogStream();
 } // namespace action

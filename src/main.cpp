@@ -3,6 +3,7 @@
 #include "Window.h"
 #include "action/Emit.h"
 #include "action/Io.h"
+#include "action/Log.h"
 #include "action/Object.h"
 #include "animation/TimelineUi.h"
 #include "audio/AudioDevice.h"
@@ -28,6 +29,7 @@
 #include <nfd.h>
 
 #include <csignal>
+#include <ctime>
 #include <exception>
 #include <fstream>
 #include <iostream>
@@ -432,7 +434,18 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
 
         if (BeginMainMenuBar()) {
             if (BeginMenu("File")) {
-                if (MenuItem("New", nullptr)) action::Emit(action::io::NewDefaultScene{});
+                if (MenuItem("New", nullptr)) action::NewProject(r, viewport);
+                if (BeginMenu("Replay")) {
+                    const auto logs = action::ListReplayLogs(); // Most-recent first; the newest is the live session's log.
+                    for (size_t i = 0; i < logs.size(); ++i) {
+                        const std::time_t t = logs[i].UnixSeconds;
+                        char date[32];
+                        std::strftime(date, sizeof date, "%Y-%m-%d %H:%M:%S", std::localtime(&t));
+                        const auto label = i == 0 ? std::format("Current ({})", date) : std::string{date};
+                        if (MenuItem(label.c_str())) action::NewProject(r, viewport, logs[i].Path, &AdvanceViewportForReplay);
+                    }
+                    EndMenu();
+                }
                 if (MenuItem("Load glTF", nullptr)) {
                     static const std::array filters{nfdfilteritem_t{"glTF scene", "gltf,glb"}};
                     nfdchar_t *nfd_path;
@@ -667,7 +680,8 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
                         play = false;
                     }
                 } else {
-                    action::Emit(action::io::NewDefaultScene{});
+                    // Apply directly rather than Emit: the initial scene is init, not a logged user action.
+                    action::io::Apply(r, viewport, action::io::NewDefaultScene{});
                 }
             } else if (GetFrameCount() == 3 && play) {
                 // Wait to play until scene load (frame 1) has settled and one render frame has elapsed.

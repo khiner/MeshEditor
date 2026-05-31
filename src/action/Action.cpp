@@ -1,8 +1,7 @@
 #include "action/Action.h"
 #include "action/Emit.h"
 #include "action/Log.h"
-
-#include <zpp_bits.h>
+#include "action/LogSerialize.h"
 
 using namespace action;
 
@@ -12,36 +11,10 @@ std::optional<Action> Staged;
 std::optional<std::ofstream> LogStream;
 std::optional<WriteBehindLog<Action>> Log;
 
-// Serialize action into a reused buffer and append its bytes to the log stream.
-// Runs only on the writer thread.
-void SerializeAction(const Action &a, std::ostream &out) {
-    static thread_local std::vector<std::byte> buffer;
-    zpp::bits::out archive{buffer};
-    if (zpp::bits::failure(SerializeVariant(archive, a))) return; // e.g. a null owning pointer; drop rather than write a partial record
-    out.write(reinterpret_cast<const char *>(buffer.data()), std::streamsize(archive.position()));
-}
-} // namespace
-
-namespace action {
-template<typename ActionType> void Emit(ActionType a) {
-    if (!Staged) Staged.emplace(std::move(a)); // First action emitted in the frame wins.
-}
-
-void StartLog() {
-    LogStream.emplace(OpenLogStream());
-    Log.emplace(*LogStream, &SerializeAction);
-}
-void StopLog() {
-    if (Log) Log->Stop();
-    Log.reset();
-    LogStream.reset();
-}
-
-void ApplyEmitted(entt::registry &r, entt::entity viewport) {
-    if (!Staged) return;
-
-    // Apply the action, then record it to the log.
-    auto recorded = std::visit(
+// Apply a merged action by routing its alternative to the owning domain's `Apply`, then return the
+// action re-wrapped (its payload was moved into the domain variant to apply, so move it back out).
+Action ApplyAction(entt::registry &r, entt::entity viewport, Action &&action) {
+    return std::visit(
         [&]<typename T>(T &&a) -> Action {
             using L = std::decay_t<T>;
             auto apply_keep = [&]<typename DomainV>() -> Action {
@@ -59,10 +32,53 @@ void ApplyEmitted(entt::registry &r, entt::entity viewport) {
             else if constexpr (is_variant_member_v<L, io::Action>) return apply_keep.template operator()<io::Action>();
             else return apply_keep.template operator()<Core>();
         },
-        std::move(*Staged)
+        std::move(action)
     );
+}
+} // namespace
+
+namespace action {
+template<typename ActionType> void Emit(ActionType a) {
+    if (!Staged) Staged.emplace(std::move(a)); // First action emitted in the frame wins.
+}
+
+void StartLog() {
+    LogStream.emplace(OpenLogStream());
+    Log.emplace(*LogStream, &SerializeAction);
+}
+void StopLog() {
+    if (Log) Log->Stop();
+    Log.reset();
+    LogStream.reset(); // flush and close before checking the file on disk
+    // The just-closed log is the newest file in the replay dir. Drop it if this session recorded nothing.
+    if (auto logs = ListReplayLogs(); !logs.empty()) {
+        std::error_code ec;
+        if (std::filesystem::file_size(logs.front().Path, ec) == 0 && !ec) std::filesystem::remove(logs.front().Path, ec);
+    }
+}
+
+void ApplyEmitted(entt::registry &r, entt::entity viewport) {
+    if (!Staged) return;
+
+    // Apply the action, then record it to the log.
+    auto recorded = ApplyAction(r, viewport, std::move(*Staged));
     if (Log) Log->Enqueue(std::move(recorded));
     Staged.reset();
+}
+
+void NewProject(entt::registry &r, entt::entity viewport, const std::filesystem::path &replay_path, ReplayTick tick) {
+    StopLog();
+    io::Apply(r, viewport, io::NewDefaultScene{});
+    // Replay the log on top of the default scene, faster than real time: apply each action, ticking the
+    // viewport between them so click-picks and box-selects resolve against a redrawn scene as they did live.
+    if (std::ifstream in{replay_path, std::ios::binary}) {
+        if (tick) tick(r, viewport); // sync the rebuilt scene before the first action resolves
+        StreamActions(in, [&](Action &&a) {
+            ApplyAction(r, viewport, std::move(a));
+            if (tick) tick(r, viewport);
+        });
+    }
+    StartLog(); // replayed actions above are not re-logged; the new session logs from here
 }
 
 std::size_t ActionSize() { return sizeof(Action); }

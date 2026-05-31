@@ -437,6 +437,25 @@ void RenderViewport(entt::registry &r, entt::entity viewport, vk::Fence viewport
     DrawOverlay(r, viewport, r.get<FrameState>(viewport));
 }
 
+void AdvanceViewportForReplay(entt::registry &r, entt::entity viewport) {
+    const auto &vk = r.ctx().get<const VulkanResources>();
+    auto &buffers = r.ctx().get<GpuBuffers>();
+    auto &resources = r.get<ViewportRenderResources>(viewport);
+
+    const auto render_request = ProcessComponentEvents(r, viewport);
+
+    if (auto descriptor_updates = buffers.Ctx.GetDeferredDescriptorUpdates(); !descriptor_updates.empty()) {
+        vk.Device.updateDescriptorSets(std::move(descriptor_updates), {});
+        buffers.Ctx.ClearDeferredDescriptorUpdates();
+    }
+    // Rebuild cached draw lists (incl. the selection list a click Pick replays) so the next replayed action sees current state.
+    if (render_request == RenderRequest::ReRecord) {
+        RecordRenderCommandBuffer(r, viewport, *resources.RenderCommandBuffer);
+    } else if (render_request == RenderRequest::ReRecordSilhouette && r.get<const DrawState>(viewport).MainDrawCount > 0) {
+        RecordRenderCommandBuffer(r, viewport, *resources.RenderCommandBuffer, /*silhouette_only=*/true);
+    }
+}
+
 void WaitForRender(entt::registry &r, entt::entity viewport) {
     auto &frame = r.get<FrameState>(viewport);
     if (!frame.RenderPending) return;
