@@ -332,6 +332,8 @@ struct PhysicsState {
 
     std::unordered_map<entt::entity, uint32_t> BodySubGroups; // entity -> KHRCollisionFilter SubGroupID.
 
+    std::vector<BodyID> PendingBodyRemovals; // queued for batched removal
+
     bool JointsDirty{false};
 
     float DefaultPenetrationSlop{0}, DefaultSpeculativeContactDistance{0};
@@ -935,17 +937,32 @@ void AddBody(PhysicsState &s, entt::registry &r, entt::entity entity) {
     s.JointsDirty = true;
 }
 
-void RemoveBody(PhysicsState &s, entt::registry &r, entt::entity entity) {
-    const auto *handle = r.try_get<const PhysicsBodyHandle>(entity);
-    if (!handle || handle->BodyId == UINT32_MAX) return;
+// on_destroy<PhysicsBodyHandle>: captures the BodyId before the component is erased (on component removal or
+// full entity destroy), so the body can be dropped in the next batched flush.
+void OnDestroyPhysicsBody(entt::registry &r, entt::entity entity) {
+    auto *s = r.ctx().find<PhysicsState>();
+    if (!s) return; // registry teardown after physics::Deinit erased the state
+    if (const auto &handle = r.get<const PhysicsBodyHandle>(entity); handle.BodyId != UINT32_MAX) {
+        s->PendingBodyRemovals.emplace_back(handle.BodyId);
+    }
+    s->BodySubGroups.erase(entity);
+    s->JointsDirty = true;
+}
+
+// Batched removal of bodies queued by OnDestroyPhysicsBody. See PendingBodyRemovals.
+void FlushPendingBodyRemovals(PhysicsState &s) {
+    auto &ids = s.PendingBodyRemovals;
+    if (ids.empty()) return;
     auto &bi = s.System.GetBodyInterface();
-    BodyID id{handle->BodyId};
-    bi.RemoveBody(id);
-    bi.DestroyBody(id);
+    bi.RemoveBodies(ids.data(), int(ids.size()));
+    bi.DestroyBodies(ids.data(), int(ids.size()));
+    ids.clear();
+}
+
+// Drops the entity's body; the on_destroy hook queues the Jolt removal.
+void RemoveBody(entt::registry &r, entt::entity entity) {
     r.remove<PhysicsBodyHandle>(entity);
     r.remove<BodyPoseCache>(entity);
-    s.BodySubGroups.erase(entity);
-    s.JointsDirty = true;
 }
 
 void ApplyMassPropertiesFromShape(PhysicsState &s, const entt::registry &r, entt::entity entity) {
@@ -1065,7 +1082,7 @@ void OnShapeChange(PhysicsState &s, entt::registry &r, entt::entity e) {
     const bool has_body = r.all_of<PhysicsBodyHandle>(e);
     const auto compound_owner = FindCompoundParentBody(r, e);
     if (!has_shape) {
-        if (has_body) RemoveBody(s, r, e);
+        if (has_body) RemoveBody(r, e);
         else if (compound_owner != entt::null) ApplyShape(s, r, compound_owner);
         return;
     }
@@ -1079,7 +1096,7 @@ void OnMotionChange(PhysicsState &s, entt::registry &r, entt::entity e) {
     const bool has_motion = r.all_of<PhysicsMotion>(e);
     const bool has_body = r.all_of<PhysicsBodyHandle>(e);
     if (!has_motion) {
-        if (has_body) RemoveBody(s, r, e);
+        if (has_body) RemoveBody(r, e);
         if (r.all_of<ColliderShape>(e)) AddBody(s, r, e); // demote: rebuild as static
         return;
     }
@@ -1089,7 +1106,7 @@ void OnMotionChange(PhysicsState &s, entt::registry &r, entt::entity e) {
         const auto *handle = r.try_get<const PhysicsBodyHandle>(e);
         const bool is_static = s.System.GetBodyInterface().GetMotionType(BodyID{handle->BodyId}) == EMotionType::Static;
         if (is_static) {
-            RemoveBody(s, r, e);
+            RemoveBody(r, e);
             AddBody(s, r, e);
         } else {
             ApplyMotion(s, r, e);
@@ -1108,7 +1125,7 @@ void OnTriggerChange(PhysicsState &s, entt::registry &r, entt::entity e) {
     if (!r.valid(e)) return;
     // Body's sensor flag (part of BodyCreationSettings) is baked at create, so any transition requires a full rebuild.
     // AddBody is a no-op when no shape is available.
-    if (r.all_of<PhysicsBodyHandle>(e)) RemoveBody(s, r, e);
+    if (r.all_of<PhysicsBodyHandle>(e)) RemoveBody(r, e);
     AddBody(s, r, e);
 }
 
@@ -1195,13 +1212,9 @@ void Rebuild(entt::registry &r) {
     // Clear existing constraints and bodies.
     for (auto &[_, c] : s.ConstraintsByJoint) s.System.RemoveConstraint(c);
     s.ConstraintsByJoint.clear();
-    auto &bi = s.System.GetBodyInterface();
-    for (auto [entity, handle] : r.view<PhysicsBodyHandle>().each()) {
-        bi.RemoveBody(BodyID{handle.BodyId});
-        bi.DestroyBody(BodyID{handle.BodyId});
-    }
-    r.clear<PhysicsBodyHandle>();
+    r.clear<PhysicsBodyHandle>(); // OnDestroyPhysicsBody queues every body for the batched removal below
     r.clear<BodyPoseCache>();
+    FlushPendingBodyRemovals(s);
     s.Baked = {};
     s.FilterRef->Update(r);
     s.FilterRef->Reset();
@@ -1337,6 +1350,7 @@ bool AdvancePlayback(entt::registry &r, entt::entity viewport, int from_frame, i
 void Init(entt::registry &r) {
     auto &state = r.ctx().emplace<PhysicsState>();
     state.ContactListener.R = &r;
+    r.on_destroy<PhysicsBodyHandle>().connect<&OnDestroyPhysicsBody>();
 
     track<changes::PhysicsMotion>(r).on<PhysicsMotion>(On::Create | On::Update | On::Destroy);
     track<changes::PhysicsShape>(r).on<ColliderShape>(On::Create | On::Update | On::Destroy);
@@ -1364,6 +1378,9 @@ void Init(entt::registry &r) {
         for (auto e : reactive<changes::PhysicsMaterial>(r)) OnMaterialChange(s, r, e);
         for (auto e : reactive<changes::PhysicsTrigger>(r)) OnTriggerChange(s, r, e);
         FlushJoints(s, r, joint_events);
+        // Destroy bodies queued by OnDestroyPhysicsBody together, after FlushJoints has cleared the
+        // constraints that referenced them (Jolt asserts on destroying a body still in a constraint).
+        FlushPendingBodyRemovals(s);
     });
 }
 
