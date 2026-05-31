@@ -822,9 +822,11 @@ RenderRequest ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
         const auto *baseline = additive ? r.try_get<const AdditiveBoxSelectBaseline>(viewport) : nullptr;
         if (bone_mode) {
             r.clear<BoneSelection>();
-            if (baseline)
-                for (const auto &[e, sel] : baseline->BoneSelections)
+            if (baseline) {
+                for (const auto &[e, sel] : baseline->BoneSelections) {
                     if (r.valid(e)) r.emplace_or_replace<BoneSelection>(e, sel);
+                }
+            }
             for (const auto &hit : hits) {
                 const auto sel = hit.Part ? BoneSelection::From(*hit.Part) : BoneSelection{};
                 const auto *cur = r.try_get<BoneSelection>(hit.Entity);
@@ -832,9 +834,11 @@ RenderRequest ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
             }
         } else {
             r.clear<Selected>();
-            if (baseline)
-                for (const auto e : baseline->SelectedEntities)
+            if (baseline) {
+                for (const auto e : baseline->SelectedEntities) {
                     if (r.valid(e)) r.emplace_or_replace<Selected>(e);
+                }
+            }
             for (const auto &hit : hits) r.emplace_or_replace<Selected>(hit.Entity);
         }
     }
@@ -1192,7 +1196,7 @@ RenderRequest ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
             const bool look_through_view = r.all_of<LookingThrough>(camera_entity);
             const auto buffer_entity = r.get<Instance>(camera_entity).Entity;
             meshes.SetPositions(r.get<const VertexStoreId>(buffer_entity).StoreId, BuildCameraFrustumMesh(*cd, look_through_view).Positions);
-            r.emplace_or_replace<SubmitDirty>(buffer_entity);
+            request(RenderRequest::Submit);
             // If looking through this camera, trigger a ViewCamera update so the SceneView
             // handler re-derives the widened FOV from the updated camera.
             if (look_through_view) r.patch<ViewCamera>(viewport, [](auto &) {});
@@ -1234,7 +1238,11 @@ RenderRequest ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
         buffers.Lights.SetCount(required_count);
         light_count_changed = true;
     }
-    if (!reactive<changes::Submit>(r).empty() || light_count_changed) request(RenderRequest::Submit);
+    if (light_count_changed) request(RenderRequest::Submit);
+    if (!reactive<changes::WorkspaceLights>(r).empty()) {
+        buffers.WorkspaceLightsUBO.Update(as_bytes(r.get<const WorkspaceLights>(viewport)));
+        request(RenderRequest::Submit);
+    }
     for (auto light_entity : r.view<LightWireframeDirty, LightIndex, Instance>()) {
         const auto light = buffers.Lights.Get(r.get<const LightIndex>(light_entity).Value);
         auto wireframe = BuildLightMesh(light);
@@ -1901,7 +1909,7 @@ RenderRequest ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
         if (storage.info() == entt::type_id<entt::reactive>()) storage.clear();
     }
     destroy_tracker.Storage.clear();
-    r.clear<MeshGeometryDirty, MeshMaterialAssignment, MaterialDirty, SubmitDirty, LightWireframeDirty>();
+    r.clear<MeshGeometryDirty, MeshMaterialAssignment, MaterialDirty, LightWireframeDirty>();
 
     return render_request;
 }

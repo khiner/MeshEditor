@@ -89,14 +89,49 @@ std::pair<vk::Offset3D, vk::Extent2D> GetCaptureRegion(const entt::registry &r) 
     return {{int32_t(full.width - w) / 2, int32_t(full.height - h) / 2, 0}, {w, h}};
 }
 
+// Push descriptor writes deferred during buffer (re)allocation.
+void FlushDescriptorUpdates(vk::Device device, mvk::BufferContext &ctx) {
+    auto updates = ctx.GetDeferredDescriptorUpdates();
+    if (updates.empty()) return;
+    const Timer timer{"UpdateBufferDescriptorSets"};
+    device.updateDescriptorSets(std::move(updates), {});
+    ctx.ClearDeferredDescriptorUpdates();
+}
+
+// Submit the recorded command buffer. RenderFence must be unsignaled (reset by the prior WaitForRender).
+void SubmitRecordedFrame(entt::registry &r, entt::entity viewport) {
+    const auto &vk = r.ctx().get<const VulkanResources>();
+    auto &buffers = r.ctx().get<GpuBuffers>();
+    auto &resources = r.get<ViewportRenderResources>(viewport);
+    // Always ensure DrawDataSlot points to render draw data before submitting (may have been overwritten by a selection pass).
+    buffers.SceneViewUBO.Update(as_bytes(buffers.RenderDraw.DrawData.Slot), offsetof(SceneViewUBO, DrawDataSlot));
+    vk::SubmitInfo submit;
+#ifdef MVK_FORCE_STAGED_TRANSFERS
+    const std::array command_buffers{*resources.TransferCommandBuffer, *resources.RenderCommandBuffer};
+    submit.setCommandBuffers(command_buffers);
+#else
+    submit.setCommandBuffers(*resources.RenderCommandBuffer);
+#endif
+    vk.Queue.submit(submit, *resources.RenderFence);
+    r.get<FrameState>(viewport).RenderPending = true;
+}
+
+// Re-record the command buffer for `render_request`. `force_full` records the full buffer even when the request wouldn't.
+void RecordViewportFrame(entt::registry &r, entt::entity viewport, RenderRequest render_request, bool force_full = false) {
+    auto &resources = r.get<ViewportRenderResources>(viewport);
+    if (render_request == RenderRequest::ReRecord || force_full) {
+        RecordRenderCommandBuffer(r, viewport, *resources.RenderCommandBuffer);
+    } else if (render_request == RenderRequest::ReRecordSilhouette && r.get<const DrawState>(viewport).MainDrawCount > 0) {
+        RecordRenderCommandBuffer(r, viewport, *resources.RenderCommandBuffer, /*silhouette_only=*/true);
+    }
+}
+
 bool SubmitViewport(entt::registry &r, entt::entity viewport, vk::Fence viewport_consumer_fence) {
     const auto &vk = r.ctx().get<const VulkanResources>();
     const auto &sel_slots = r.get<const SelectionSlots>(viewport);
     auto &slots = r.ctx().get<DescriptorSlots>();
     auto &buffers = r.ctx().get<GpuBuffers>();
     auto &pipelines = r.ctx().get<Pipelines>();
-    auto &resources = r.get<ViewportRenderResources>(viewport);
-    auto &frame = r.get<FrameState>(viewport);
     auto &logical_extent = r.get<ViewportExtent>(viewport).Value;
     const auto content_region = ImGui::GetContentRegionAvail();
     const uvec2 new_logical_extent{
@@ -118,12 +153,7 @@ bool SubmitViewport(entt::registry &r, entt::entity viewport, vk::Fence viewport
     }
 
     const auto render_request = ProcessComponentEvents(r, viewport);
-
-    if (auto descriptor_updates = buffers.Ctx.GetDeferredDescriptorUpdates(); !descriptor_updates.empty()) {
-        const Timer timer{"SubmitViewport->UpdateBufferDescriptorSets"};
-        vk.Device.updateDescriptorSets(std::move(descriptor_updates), {});
-        buffers.Ctx.ClearDeferredDescriptorUpdates();
-    }
+    FlushDescriptorUpdates(vk.Device, buffers.Ctx);
     if (!extent_changed && !render_extent_changed && render_request == RenderRequest::None) return false;
 
     const Timer timer{"SubmitViewport"};
@@ -180,34 +210,15 @@ bool SubmitViewport(entt::registry &r, entt::entity viewport, vk::Fence viewport
                 {}
             );
         }
-        if (auto descriptor_updates = buffers.Ctx.GetDeferredDescriptorUpdates(); !descriptor_updates.empty()) {
-            vk.Device.updateDescriptorSets(std::move(descriptor_updates), {});
-            buffers.Ctx.ClearDeferredDescriptorUpdates();
-        }
+        FlushDescriptorUpdates(vk.Device, buffers.Ctx);
     }
 
 #ifdef MVK_FORCE_STAGED_TRANSFERS
-    RecordTransferCommandBuffer(r, viewport, *resources.TransferCommandBuffer);
+    RecordTransferCommandBuffer(r, viewport, *r.get<ViewportRenderResources>(viewport).TransferCommandBuffer);
 #endif
 
-    if (render_request == RenderRequest::ReRecord || extent_changed || render_extent_changed) {
-        RecordRenderCommandBuffer(r, viewport, *resources.RenderCommandBuffer);
-    } else if (render_request == RenderRequest::ReRecordSilhouette && r.get<const DrawState>(viewport).MainDrawCount > 0) {
-        RecordRenderCommandBuffer(r, viewport, *resources.RenderCommandBuffer, /*silhouette_only=*/true);
-    }
-
-    // Always ensure DrawDataSlot points to render draw data before submitting (may have been overwritten by a selection pass).
-    buffers.SceneViewUBO.Update(as_bytes(buffers.RenderDraw.DrawData.Slot), offsetof(SceneViewUBO, DrawDataSlot));
-
-    vk::SubmitInfo submit;
-#ifdef MVK_FORCE_STAGED_TRANSFERS
-    const std::array command_buffers{*resources.TransferCommandBuffer, *resources.RenderCommandBuffer};
-    submit.setCommandBuffers(command_buffers);
-#else
-    submit.setCommandBuffers(*resources.RenderCommandBuffer);
-#endif
-    vk.Queue.submit(submit, *resources.RenderFence);
-    frame.RenderPending = true;
+    RecordViewportFrame(r, viewport, render_request, extent_changed || render_extent_changed);
+    SubmitRecordedFrame(r, viewport);
     return extent_changed || render_extent_changed;
 }
 } // namespace
@@ -254,7 +265,7 @@ entt::entity InitViewport(entt::registry &r, VulkanResources vc) {
     track<changes::RenderInstanceCreated>(r).on<RenderInstance>(On::Create);
     track<changes::ViewportDisplay>(r).on<ViewportDisplay>(On::Create | On::Update);
     track<changes::InteractionMode>(r).on<Interaction>(On::Create | On::Update);
-    track<changes::Submit>(r).on<SubmitDirty>(On::Create);
+    track<changes::WorkspaceLights>(r).on<WorkspaceLights>(On::Update);
     track<changes::ViewportTheme>(r).on<ViewportTheme>(On::Create | On::Update);
     track<changes::Materials>(r).on<MaterialDirty>(On::Create | On::Update);
     track<changes::ActiveMaterialVariant>(r).on<MaterialVariants>(On::Create | On::Update);
@@ -298,6 +309,7 @@ entt::entity InitViewport(entt::registry &r, VulkanResources vc) {
     r.emplace<ViewCamera>(viewport, Defaults::ViewCamera);
     r.emplace<MaterialPreviewLighting>(viewport, false, false, 1.f, 0.f);
     r.emplace<RenderedLighting>(viewport, true, true, 1.f, 0.f);
+    r.emplace<WorkspaceLights>(viewport, Defaults::WorkspaceLights);
     r.emplace<ViewportExtent>(viewport);
     r.emplace<PlaybackFrame>(viewport);
     r.emplace<LastEvaluatedFrame>(viewport);
@@ -325,7 +337,7 @@ entt::entity InitViewport(entt::registry &r, VulkanResources vc) {
     r.emplace<SelectionStale>(viewport); // Initial state: fragments need rendering on first selection use.
     physics::ApplySimulationSettings(r, r.emplace<PhysicsSimulationSettings>(viewport));
 
-    buffers.WorkspaceLightsUBO.Update(as_bytes(Defaults::WorkspaceLights));
+    buffers.WorkspaceLightsUBO.Update(as_bytes(r.get<const WorkspaceLights>(viewport)));
     ResetObjectPickKeys(buffers);
 
     auto init_batch = BeginTextureUploadBatch(vc.Device, *one_shot.Pool, buffers.Ctx);
@@ -437,23 +449,20 @@ void RenderViewport(entt::registry &r, entt::entity viewport, vk::Fence viewport
     DrawOverlay(r, viewport, r.get<FrameState>(viewport));
 }
 
-void AdvanceViewportForReplay(entt::registry &r, entt::entity viewport) {
+void AdvanceViewport(entt::registry &r, entt::entity viewport) {
     const auto &vk = r.ctx().get<const VulkanResources>();
     auto &buffers = r.ctx().get<GpuBuffers>();
-    auto &resources = r.get<ViewportRenderResources>(viewport);
 
     const auto render_request = ProcessComponentEvents(r, viewport);
+    FlushDescriptorUpdates(vk.Device, buffers.Ctx);
+    RecordViewportFrame(r, viewport, render_request);
+}
 
-    if (auto descriptor_updates = buffers.Ctx.GetDeferredDescriptorUpdates(); !descriptor_updates.empty()) {
-        vk.Device.updateDescriptorSets(std::move(descriptor_updates), {});
-        buffers.Ctx.ClearDeferredDescriptorUpdates();
-    }
-    // Rebuild cached draw lists (incl. the selection list a click Pick replays) so the next replayed action sees current state.
-    if (render_request == RenderRequest::ReRecord) {
-        RecordRenderCommandBuffer(r, viewport, *resources.RenderCommandBuffer);
-    } else if (render_request == RenderRequest::ReRecordSilhouette && r.get<const DrawState>(viewport).MainDrawCount > 0) {
-        RecordRenderCommandBuffer(r, viewport, *resources.RenderCommandBuffer, /*silhouette_only=*/true);
-    }
+void PresentViewport(entt::registry &r, entt::entity viewport) {
+    // Wait synchronously: callers run mid-frame, before the next SubmitViewport whose
+    // ProcessComponentEvents would otherwise race this command buffer's GPU reads.
+    SubmitRecordedFrame(r, viewport);
+    WaitForRender(r, viewport);
 }
 
 void WaitForRender(entt::registry &r, entt::entity viewport) {

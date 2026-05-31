@@ -247,6 +247,16 @@ std::expected<void, std::string> LoadFile(entt::registry &r, entt::entity viewpo
     return {};
 }
 
+namespace {
+// Reset to the default scene, optionally replaying a `.mea` log on top.
+void NewProject(entt::registry &r, entt::entity viewport, const fs::path &replay_path = {}) {
+    action::StopLog();
+    action::io::Apply(r, viewport, action::io::NewDefaultScene{});
+    if (action::ReplayLog(r, viewport, replay_path, &AdvanceViewport)) PresentViewport(r, viewport);
+    action::StartLog();
+}
+} // namespace
+
 void run(const char *initial_file, bool quiet, bool play, float play_duration, fs::path record_path, int record_fps) {
     Timer::Enabled = !quiet;
 
@@ -434,7 +444,7 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
 
         if (BeginMainMenuBar()) {
             if (BeginMenu("File")) {
-                if (MenuItem("New", nullptr)) action::NewProject(r, viewport);
+                if (MenuItem("New", nullptr)) NewProject(r, viewport);
                 if (BeginMenu("Replay")) {
                     const auto logs = action::ListReplayLogs(); // Most-recent first; the newest is the live session's log.
                     for (size_t i = 0; i < logs.size(); ++i) {
@@ -442,7 +452,7 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
                         char date[32];
                         std::strftime(date, sizeof date, "%Y-%m-%d %H:%M:%S", std::localtime(&t));
                         const auto label = i == 0 ? std::format("Current ({})", date) : std::string{date};
-                        if (MenuItem(label.c_str())) action::NewProject(r, viewport, logs[i].Path, &AdvanceViewportForReplay);
+                        if (MenuItem(label.c_str())) NewProject(r, viewport, logs[i].Path);
                     }
                     EndMenu();
                 }

@@ -6,7 +6,7 @@ struct Selected {}; struct ActiveInstance {}; struct BoneSelection {}; struct Re
 struct MeshActiveElement {}; struct MeshGeometry {}; struct MeshMaterial {};
 struct SoundVertices {}; struct SoundVerticesUpdated {}; struct VertexForce {};
 struct NewBufferEntity {}; struct RenderInstanceCreated {};
-struct ViewportDisplay {}; struct InteractionMode {}; struct Submit {}; struct Rotation {};
+struct ViewportDisplay {}; struct InteractionMode {}; struct WorkspaceLights {}; struct Rotation {};
 struct ViewportTheme {}; struct Materials {}; struct PbrSpecialization {}; struct ActiveMaterialVariant {};
 struct SceneView {}; struct CameraLens {}; struct TransformPending {};
 struct TransformEnd {}; struct WorldTransform {}; struct TransformDirty {};

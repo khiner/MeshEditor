@@ -66,19 +66,15 @@ void ApplyEmitted(entt::registry &r, entt::entity viewport) {
     Staged.reset();
 }
 
-void NewProject(entt::registry &r, entt::entity viewport, const std::filesystem::path &replay_path, ReplayTick tick) {
-    StopLog();
-    io::Apply(r, viewport, io::NewDefaultScene{});
-    // Replay the log on top of the default scene, faster than real time: apply each action, ticking the
-    // viewport between them so click-picks and box-selects resolve against a redrawn scene as they did live.
-    if (std::ifstream in{replay_path, std::ios::binary}) {
-        if (tick) tick(r, viewport); // sync the rebuilt scene before the first action resolves
-        StreamActions(in, [&](Action &&a) {
-            ApplyAction(r, viewport, std::move(a));
-            if (tick) tick(r, viewport);
-        });
-    }
-    StartLog(); // replayed actions above are not re-logged; the new session logs from here
+bool ReplayLog(entt::registry &r, entt::entity viewport, const std::filesystem::path &replay_path, ReplayTick tick) {
+    std::ifstream in{replay_path, std::ios::binary};
+    if (!in) return false;
+    tick(r, viewport);
+    StreamActions(in, [&](Action &&a) {
+        ApplyAction(r, viewport, std::move(a));
+        tick(r, viewport);
+    });
+    return true;
 }
 
 std::size_t ActionSize() { return sizeof(Action); }

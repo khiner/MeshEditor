@@ -13,7 +13,6 @@
 #include "gizmo/TransformGizmo.h"
 #include "gltf/SourceAssets.h"
 #include "mesh/MeshStore.h"
-#include "render/GpuBufferOps.h"
 #include "render/Instance.h"
 #include "render/TextureRefs.h"
 #include "scene/Defaults.h"
@@ -27,7 +26,6 @@
 #include "viewport/GizmoDrag.h"
 #include "viewport/InteractionComponents.h"
 #include "viewport/RenderExtent.h"
-#include "viewport/ViewportEvents.h"
 #include "viewport/ViewportIcons.h"
 #include "viewport/ViewportInteractionState.h"
 #include "viewport/ViewportOps.h"
@@ -546,7 +544,7 @@ void InteractOverlay(entt::registry &r, entt::entity viewport, FrameState &frame
                     render_pbr_controls(r.get<const RenderedLighting>(viewport), "RenderedLighting");
                 } else if (current_mode == ViewportShadingMode::Solid) {
                     SeparatorText("Solid lighting");
-                    auto &lights = GetWorkspaceLights(r);
+                    auto lights = r.get<const WorkspaceLights>(viewport);
                     bool changed = false;
                     if (Button("Reset##Lighting")) {
                         lights = Defaults::WorkspaceLights;
@@ -586,7 +584,7 @@ void InteractOverlay(entt::registry &r, entt::entity viewport, FrameState &frame
                             PopID();
                         }
                     }
-                    if (changed) action::Emit(action::SetTagOf<SubmitDirty>(viewport, true));
+                    if (changed) action::Emit(action::Replace<WorkspaceLights>{viewport, std::make_unique<WorkspaceLights>(lights)});
                 }
 
                 if (current_mode == ViewportShadingMode::MaterialPreview || current_mode == ViewportShadingMode::Rendered) {

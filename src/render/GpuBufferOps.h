@@ -4,9 +4,7 @@
 #include "SlottedRange.h"
 #include "gpu/PBRMaterial.h"
 #include "gpu/PunctualLight.h"
-#include "gpu/WorkspaceLights.h"
 
-#include <cstdint>
 #include <span>
 
 #include <entt/entity/fwd.hpp>
@@ -20,7 +18,6 @@ struct MeshBuffers;
 // need not include the full (vulkan-heavy) GpuBuffers header.
 std::span<PBRMaterial> GetMaterials(entt::registry &);
 std::span<const PunctualLight> GetLights(entt::registry &);
-WorkspaceLights &GetWorkspaceLights(entt::registry &);
 PunctualLight GetLight(entt::registry &, uint32_t index);
 mvk::BufferContext &GetBufferContext(entt::registry &);
 void ReleaseMeshBuffers(entt::registry &, MeshBuffers &);

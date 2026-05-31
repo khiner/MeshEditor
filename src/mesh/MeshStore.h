@@ -10,7 +10,6 @@
 
 #include <expected>
 #include <filesystem>
-#include <memory>
 #include <unordered_set>
 
 namespace mvk {

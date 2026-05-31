@@ -6,10 +6,20 @@
 #include "gizmo/TransformGizmoTypes.h"
 #include "gpu/Element.h"
 #include "gpu/InteractionMode.h"
+#include "gpu/WorkspaceLights.h"
 #include "scene/RotationUi.h"
 #include "viewport/ViewportDisplay.h"
 
 struct PendingTransform;
+
+namespace action {
+// Heap-allocate big types to keep the variant small.
+template<>
+struct Replace<WorkspaceLights> {
+    entt::entity Entity;
+    std::unique_ptr<WorkspaceLights> Value;
+};
+} // namespace action
 
 namespace action::view {
 struct SetInteractionMode {
@@ -103,7 +113,7 @@ using Actions = std::variant<
 
 using Action = MergedVariantT<
     Actions,
-    Replace<::Camera>, ReplaceActive<::Camera>,
+    Replace<::Camera>, ReplaceActive<::Camera>, Replace<WorkspaceLights>,
     Update<TransformGizmo::Type>, Update<TransformGizmo::Mode>,
     Update<DebugChannel>>;
 

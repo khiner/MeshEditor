@@ -7,7 +7,6 @@
 
 // Reactive tags and deferred requests consumed (and cleared) by ProcessComponentEvents.
 
-struct SubmitDirty {}; // Generic tag for events that only require command buffer submission (not re-record)
 struct MeshGeometryDirty {}; // Request overlay + element-state buffer refresh after mesh geometry changes
 struct LightWireframeDirty {};
 

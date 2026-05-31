@@ -2,6 +2,8 @@
 
 #include <readerwriterqueue.h>
 
+#include <entt/entity/fwd.hpp>
+
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -77,4 +79,16 @@ std::vector<ReplayLogFile> ListReplayLogs();
 // Create the `replay/` dir, retain only the newest REPLAY_LOG_RETAIN-1 logs, then open a fresh
 // `replay/<unix_seconds>.mea` append stream (so at most REPLAY_LOG_RETAIN logs exist after opening).
 std::ofstream OpenLogStream();
+
+// Open a fresh `.mea` log and start its writer thread.
+void StartLog();
+// Flush and join the writer, dropping the just-opened log file if nothing was recorded.
+void StopLog();
+
+// Advances the viewport between replayed actions so those resolving against rendered state see it up to date.
+using ReplayTick = void (*)(entt::registry &, entt::entity viewport);
+
+// Apply each action in a `.mea` log to the current scene, ticking via `tick` between them. Replayed actions
+// are not re-logged. False if the log can't be opened.
+bool ReplayLog(entt::registry &, entt::entity viewport, const std::filesystem::path &, ReplayTick tick);
 } // namespace action

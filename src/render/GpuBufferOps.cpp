@@ -13,7 +13,6 @@ std::span<const PunctualLight> GetLights(entt::registry &r) {
     const auto &lights = r.ctx().get<GpuBuffers>().Lights;
     return {lights.Data(), lights.Count()};
 }
-WorkspaceLights &GetWorkspaceLights(entt::registry &r) { return r.ctx().get<GpuBuffers>().GetWorkspaceLights(); }
 PunctualLight GetLight(entt::registry &r, uint32_t index) { return r.ctx().get<GpuBuffers>().Lights.Get(index); }
 mvk::BufferContext &GetBufferContext(entt::registry &r) { return r.ctx().get<GpuBuffers>().Ctx; }
 

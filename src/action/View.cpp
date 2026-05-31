@@ -235,6 +235,7 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
             [&]<typename Field>(const Update<Field> &a) { ApplyUpdate(r, viewport, a); },
             [&](const Replace<::Camera> &a) { r.emplace_or_replace<::Camera>(a.Entity, a.Value); },
             [&](const ReplaceActive<::Camera> &a) { r.emplace_or_replace<::Camera>(FindActiveEntity(r), a.Value); },
+            [&](const Replace<WorkspaceLights> &a) { r.replace<WorkspaceLights>(a.Entity, *a.Value); },
         },
         action
     );

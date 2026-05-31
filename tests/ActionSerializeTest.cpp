@@ -36,6 +36,7 @@ void EnsureSerializable(Action &a) {
             [](action::physics::SetJointVecItem<PhysicsJointDrive> &x) { x.Value = std::make_unique<PhysicsJointDrive>(); },
             [](Replace<PhysicsMotion> &x) { x.Value = std::make_unique<PhysicsMotion>(); },
             [](ReplaceActive<PhysicsMotion> &x) { x.Value = std::make_unique<PhysicsMotion>(); },
+            [](Replace<WorkspaceLights> &x) { x.Value = std::make_unique<WorkspaceLights>(); },
             [](audio::OpenModalForm &x) { x.Info = std::make_unique<ModalModelCreateInfo>(); },
             [](audio::SetModalFormMaterial &x) { x.Material = std::make_unique<AcousticMaterial>(); },
             [](auto &) {},

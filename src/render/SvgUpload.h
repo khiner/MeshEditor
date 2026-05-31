@@ -7,8 +7,7 @@
 
 struct SvgResource;
 
-// Vulkan-free SVG upload state. LoadSvg records uploads into it; SubmitSvgUpload flushes them
-// in one GPU submit. Opaque (pimpl) so icon/UI loaders need not pull the upload (vulkan) headers.
+// LoadSvg accumulates uploads into a batch, and SubmitSvgUpload flushes them in one submit.
 struct SvgUploadBatch {
     struct Impl;
     explicit SvgUploadBatch(entt::registry &);
@@ -21,5 +20,5 @@ struct SvgUploadBatch {
 std::unique_ptr<SvgResource> LoadSvg(SvgUploadBatch &, std::filesystem::path);
 void SubmitSvgUpload(SvgUploadBatch &);
 
-// Load and submit a one-shot batch.
+// Convenience method to load and submit a one-shot batch.
 std::unique_ptr<SvgResource> LoadSvg(entt::registry &, std::filesystem::path);

@@ -189,8 +189,6 @@ struct GpuBuffers {
         IdentityIndexCount = count;
     }
 
-    WorkspaceLights &GetWorkspaceLights() { return *reinterpret_cast<WorkspaceLights *>(WorkspaceLightsUBO.GetMappedData().data()); }
-
     mvk::BufferContext Ctx;
     BufferArena<Vertex> VertexBuffer;
     BufferArena<uint32_t> FaceIndexBuffer, EdgeIndexBuffer, VertexIndexBuffer;

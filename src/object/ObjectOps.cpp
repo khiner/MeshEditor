@@ -210,7 +210,6 @@ entt::entity AddLight(entt::registry &r, MeshStore &meshes, ObjectCreateInfo inf
     auto wireframe = BuildLightMesh(light);
     const auto entity = CreateExtrasObject(r, meshes, wireframe.Data.Positions, wireframe.VertexClasses, {}, ObjectType::Light, std::move(info), "Light");
     r.emplace<LightIndex>(entity, r.storage<LightIndex>().size());
-    r.emplace<SubmitDirty>(entity);
     r.emplace<LightWireframeDirty>(entity);
     // Defer SetLight: TransformSlotOffset needs InstanceArena slot and RenderInstance.BufferIndex,
     // which aren't available until SyncModelsBuffers runs. Store light data temporarily;
