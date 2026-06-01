@@ -13,9 +13,10 @@ entt::entity InitEngine(entt::registry &, VulkanResources, CreateSvgResource);
 // are freed before their owning pool, and ctx stores are torn down in dependency order.
 void DeinitViewport(entt::registry &, entt::entity viewport);
 
-// Reset all per-document viewport state to defaults and build the default scene.
+// Reset all per-document viewport state to defaults, leaving the scene empty.
 void SetupScene(entt::registry &, entt::entity viewport);
-// Destroy all scene content and reset scene-singleton ctx state.
+
+void AddDefaultSceneContent(entt::registry &);
 void ClearScene(entt::registry &, entt::entity viewport);
 
 // Submit GPU render (nonblocking), draw the final image into the current ImGui window, and draw overlays.

@@ -256,7 +256,9 @@ namespace {
 // Reset to the default scene, optionally replaying a `.mea` log on top.
 void NewProject(entt::registry &r, entt::entity viewport, const fs::path &replay_path = {}) {
     action::StopLog();
-    action::io::Apply(r, viewport, action::io::NewDefaultScene{});
+    ClearScene(r, viewport);
+    SetupScene(r, viewport);
+    AddDefaultSceneContent(r);
     if (action::ReplayLog(r, viewport, replay_path, &AdvanceViewport)) PresentViewport(r, viewport);
     action::StartLog();
 }
@@ -364,6 +366,7 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
     };
     const auto viewport = InitEngine(r, VulkanResources{*vc->Instance, vc->PhysicalDevice, *vc->Device, vc->QueueFamily, vc->Queue}, CreateSvg);
     SetupScene(r, viewport); // Before the first frame reads viewport state.
+    AddDefaultSceneContent(r);
 
     auto &faust_dsp = r.get<FaustDSP>(viewport);
 
@@ -446,7 +449,14 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
 
         if (BeginMainMenuBar()) {
             if (BeginMenu("File")) {
-                if (MenuItem("New", nullptr)) NewProject(r, viewport);
+                if (BeginMenu("New")) {
+                    if (MenuItem("Default")) NewProject(r, viewport);
+                    if (MenuItem("Empty")) {
+                        NewProject(r, viewport);
+                        action::Emit(action::io::Clear{}); // Recorded on the fresh log so replay reconstructs the empty scene.
+                    }
+                    EndMenu();
+                }
                 if (BeginMenu("Replay")) {
                     const auto logs = action::ListReplayLogs(); // Most-recent first; the newest is the live session's log.
                     for (size_t i = 0; i < logs.size(); ++i) {

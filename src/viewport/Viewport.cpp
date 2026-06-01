@@ -382,7 +382,9 @@ void SetupScene(entt::registry &r, entt::entity viewport) {
     const auto forest = find(hdris, "forest", &HdriEntry::Name);
     SetStudioEnvironment(r, forest != hdris.end() ? std::distance(hdris.begin(), forest) : 0);
     r.emplace_or_replace<PendingSceneWorldClear>(viewport); // Release any IBL sampler slots and restore EmptySceneWorld next pass.
+}
 
+void AddDefaultSceneContent(entt::registry &r) {
     // Default scene: a cube, a light, and a camera (startup.blend layout).
     auto &meshes = r.ctx().get<MeshStore>();
     constexpr PrimitiveShape default_shape{primitive::Cuboid{}};

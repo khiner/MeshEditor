@@ -27,10 +27,7 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
     const auto fail = [&](std::string message) { r.ctx().get<Errors>().Messages.push_back(std::move(message)); };
     std::visit(
         overloaded{
-            [&](const NewDefaultScene &) {
-                ClearScene(r, viewport);
-                SetupScene(r, viewport);
-            },
+            [&](const Clear &) { ClearScene(r, viewport); },
             [&](const SaveGltf &a) {
                 auto &c = r.ctx();
                 if (auto save = gltf::SaveGltf(a.Path, {r, viewport, c.get<GpuBuffers>(), c.get<MeshStore>(), c.get<TextureStore>(), &c.get<const VulkanResources>(), &GetBufferContext(r)}); !save) {
