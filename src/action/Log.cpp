@@ -1,5 +1,7 @@
 #include "action/Log.h"
 
+#include "Paths.h"
+
 #include <algorithm>
 #include <charconv>
 #include <chrono>
@@ -12,7 +14,7 @@
 
 namespace action {
 namespace {
-const std::filesystem::path ReplayDir{"replay"};
+std::filesystem::path ReplayDir() { return Paths::Base() / "replay"; }
 constexpr std::string_view LogExt{".mea"};
 
 // Parse the unix-seconds timestamp encoded in a `<unix_seconds>.mea` log's stem.
@@ -28,7 +30,7 @@ std::optional<std::int64_t> ParseTimestamp(const std::filesystem::path &path) {
 std::vector<ReplayLogFile> ListReplayLogs() {
     std::vector<ReplayLogFile> logs;
     std::error_code ec;
-    for (const auto &entry : std::filesystem::directory_iterator{ReplayDir, ec}) {
+    for (const auto &entry : std::filesystem::directory_iterator{ReplayDir(), ec}) {
         if (const auto seconds = ParseTimestamp(entry.path())) logs.push_back({entry.path(), *seconds});
     }
     std::ranges::sort(logs, std::ranges::greater{}, &ReplayLogFile::UnixSeconds);
@@ -36,7 +38,7 @@ std::vector<ReplayLogFile> ListReplayLogs() {
 }
 
 std::ofstream OpenLogStream() {
-    std::filesystem::create_directories(ReplayDir);
+    std::filesystem::create_directories(ReplayDir());
     // Retain only the newest REPLAY_LOG_RETAIN-1 logs so this session's new log brings the total to at most REPLAY_LOG_RETAIN.
     auto logs = ListReplayLogs();
     for (std::size_t i = REPLAY_LOG_RETAIN - 1; i < logs.size(); ++i) {
@@ -44,6 +46,6 @@ std::ofstream OpenLogStream() {
         std::filesystem::remove(logs[i].Path, ec);
     }
     const auto unix_sec = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
-    return std::ofstream{ReplayDir / (std::to_string(unix_sec) + std::string{LogExt}), std::ios::binary | std::ios::app};
+    return std::ofstream{ReplayDir() / (std::to_string(unix_sec) + std::string{LogExt}), std::ios::binary | std::ios::app};
 }
 } // namespace action
