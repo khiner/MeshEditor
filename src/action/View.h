@@ -88,10 +88,13 @@ struct SetActiveTool {
     Tool Value;
 };
 
-// Latched transform-type for the next gizmo drag. `nullopt` clears the latch (consumed by InteractOverlay).
-struct SetStartScreenTransform {
-    std::optional<TransformGizmo::TransformType> Value;
+// Latch a transform-type for the next gizmo drag, reverting any in-progress drag to its start (the
+// mid-drag G/R/S switch). Aborts the staged gesture; live-only, not recorded.
+struct LatchScreenTransform {
+    TransformGizmo::TransformType Value;
 };
+// Clear the screen-transform latch once consumed by InteractOverlay. Live-only bookkeeping, not recorded.
+struct ClearScreenTransformLatch {};
 
 // Studio HDRI / image-based lighting environment for the viewport.
 struct SetStudioEnvironment {
@@ -108,7 +111,7 @@ using Actions = std::variant<
     ResetViewCamera, ResetViewportTheme, ResetPbrLighting,
     SetViewCameraTarget, SetViewCameraLens, SetViewCameraTargetDirection,
     SetRotationUiMode, SetTransformRotationFromUi,
-    DragGizmo, DragGizmoMeshEdit, EndGizmoDrag, SetActiveTool, SetStartScreenTransform,
+    DragGizmo, DragGizmoMeshEdit, EndGizmoDrag, SetActiveTool, LatchScreenTransform, ClearScreenTransformLatch,
     SetStudioEnvironment, SetSourceIblIntensity>;
 
 using Action = MergedVariantT<

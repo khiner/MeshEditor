@@ -24,4 +24,7 @@ using Action = MergedVariantT<
 // E.g. replaying a save would clobber a file.
 template<typename T> inline constexpr bool Recordable = true;
 template<> inline constexpr bool Recordable<io::SaveGltf> = false;
+// Latch state is live-only: the recorded DragGizmo already encodes the resolved transform.
+template<> inline constexpr bool Recordable<view::LatchScreenTransform> = false;
+template<> inline constexpr bool Recordable<view::ClearScreenTransformLatch> = false;
 } // namespace action

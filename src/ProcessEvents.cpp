@@ -816,29 +816,35 @@ RenderRequest ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
         const bool additive = pending->Additive;
         r.remove<PendingBoxSelect>(viewport);
 
-        const bool bone_mode = r.get<const Interaction>(viewport).Mode == InteractionMode::Pose || IsBoneEditMode(r, viewport);
-        const auto hits = ResolveHits(r, RunBoxSelect(r, viewport, box_px), bone_mode, true);
-        const auto *baseline = additive ? r.try_get<const AdditiveBoxSelectBaseline>(viewport) : nullptr;
-        if (bone_mode) {
-            r.clear<BoneSelection>();
-            if (baseline) {
-                for (const auto &[e, sel] : baseline->BoneSelections) {
-                    if (r.valid(e)) r.emplace_or_replace<BoneSelection>(e, sel);
-                }
-            }
-            for (const auto &hit : hits) {
-                const auto sel = hit.Part ? BoneSelection::From(*hit.Part) : BoneSelection{};
-                const auto *cur = r.try_get<BoneSelection>(hit.Entity);
-                r.emplace_or_replace<BoneSelection>(hit.Entity, additive && cur ? *cur | sel : sel);
-            }
+        const auto &interaction = r.get<const Interaction>(viewport);
+        if (interaction.Mode == InteractionMode::Edit && FindArmatureObject(r, FindActiveEntity(r)) == entt::null) {
+            // Edit-mode element box-select resolves straight into the GPU selection buffers.
+            RunBoxSelectElements(r, viewport, GetBitsetRangesForSelected(r), r.get<const EditMode>(viewport).Value, box_px, additive);
         } else {
-            r.clear<Selected>();
-            if (baseline) {
-                for (const auto e : baseline->SelectedEntities) {
-                    if (r.valid(e)) r.emplace_or_replace<Selected>(e);
+            const bool bone_mode = interaction.Mode == InteractionMode::Pose || IsBoneEditMode(r, viewport);
+            const auto hits = ResolveHits(r, RunBoxSelect(r, viewport, box_px), bone_mode, true);
+            const auto *baseline = additive ? r.try_get<const AdditiveBoxSelectBaseline>(viewport) : nullptr;
+            if (bone_mode) {
+                r.clear<BoneSelection>();
+                if (baseline) {
+                    for (const auto &[e, sel] : baseline->BoneSelections) {
+                        if (r.valid(e)) r.emplace_or_replace<BoneSelection>(e, sel);
+                    }
                 }
+                for (const auto &hit : hits) {
+                    const auto sel = hit.Part ? BoneSelection::From(*hit.Part) : BoneSelection{};
+                    const auto *cur = r.try_get<BoneSelection>(hit.Entity);
+                    r.emplace_or_replace<BoneSelection>(hit.Entity, additive && cur ? *cur | sel : sel);
+                }
+            } else {
+                r.clear<Selected>();
+                if (baseline) {
+                    for (const auto e : baseline->SelectedEntities) {
+                        if (r.valid(e)) r.emplace_or_replace<Selected>(e);
+                    }
+                }
+                for (const auto &hit : hits) r.emplace_or_replace<Selected>(hit.Entity);
             }
-            for (const auto &hit : hits) r.emplace_or_replace<Selected>(hit.Entity);
         }
     }
     if (const auto *pending = r.try_get<const PendingPick>(viewport)) {

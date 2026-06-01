@@ -334,8 +334,11 @@ static void RenderEntityControls(entt::registry &r, entt::entity viewport, entt:
             // In Pose mode, edit the active bone rather than the armature.
             const bool is_pose_bone = r.get<const Interaction>(viewport).Mode == InteractionMode::Pose && active_bone_entity != entt::null;
             const auto transform_entity = is_pose_bone ? active_bone_entity : active_entity;
-            ui::Edit transform_edit{r, transform_entity};
-            transform_edit.Drag<&Transform::P>("Position", 0.01f);
+            // Object mode records UpdateActive so replay resolves the active entity id-free (via the
+            // replayed selection), like the gizmo. Pose mode is entity-bound: the active form resolves
+            // the active object, not the active bone.
+            if (is_pose_bone) ui::Edit{r, transform_entity}.Drag<&Transform::P>("Position", 0.01f);
+            else ui::Edit{r}.Drag<&Transform::P>("Position", 0.01f);
             // Rotation editor (RotationUiVariant is reactively created; may not exist yet on the first frame)
             if (const auto *rotation_ui_ptr = r.try_get<const RotationUiVariant>(transform_entity)) {
                 int mode_i = rotation_ui_ptr->index();
@@ -377,7 +380,9 @@ static void RenderEntityControls(entt::registry &r, entt::entity viewport, entt:
 
             const bool frozen = r.all_of<ScaleLocked>(transform_entity);
             if (frozen) BeginDisabled();
-            transform_edit.Drag<&Transform::S>(std::format("Scale{}", frozen ? " (frozen)" : "").c_str(), 0.01f, 0.01f, 10);
+            const auto scale_label = std::format("Scale{}", frozen ? " (frozen)" : "");
+            if (is_pose_bone) ui::Edit{r, transform_entity}.Drag<&Transform::S>(scale_label.c_str(), 0.01f, 0.01f, 10);
+            else ui::Edit{r}.Drag<&Transform::S>(scale_label.c_str(), 0.01f, 0.01f, 10);
             if (frozen) EndDisabled();
         }
         Spacing();
@@ -475,9 +480,8 @@ static void RenderEntityControls(entt::registry &r, entt::entity viewport, entt:
             if (frozen) BeginDisabled();
             if (const auto update_label = std::format("Edit primitive{}", frozen ? " (frozen)" : "");
                 CollapsingHeader(update_label.c_str()) && !frozen) {
-                if (auto new_shape = PrimitiveEditor(*prim_shape)) {
-                    action::Emit(action::Replace<PrimitiveShape>{active_mesh_entity, *new_shape});
-                }
+                auto new_shape = PrimitiveEditor(*prim_shape);
+                ui::Gesture(bool(new_shape), [&] { return action::Replace<PrimitiveShape>{active_mesh_entity, *new_shape}; });
             }
             if (frozen) EndDisabled();
         }
@@ -689,7 +693,7 @@ static void RenderEntityControls(entt::registry &r, entt::entity viewport, entt:
             // Use the camera's distance from world origin as the conversion distance.
             const float distance = std::max(glm::length(r.get<WorldTransform>(active_entity).P), 1.f);
             auto edited = *cd;
-            if (RenderCameraLensEditor(edited, distance)) action::Emit(action::ReplaceActive<Camera>{edited});
+            ui::Gesture(RenderCameraLensEditor(edited, distance), [&] { return action::ReplaceActive<Camera>{edited}; });
             Separator();
             if (LookThroughCameraEntity(r) == active_entity) {
                 if (Button("Exit camera view")) action::Emit(action::view::ExitLookThroughCamera{});
@@ -735,7 +739,7 @@ static void RenderEntityControls(entt::registry &r, entt::entity viewport, entt:
                 changed = true;
             }
         }
-        if (changed) action::Emit(action::ReplaceActive<PunctualLight>{light});
+        ui::Gesture(changed, [&] { return action::ReplaceActive<PunctualLight>{light}; });
     }
     // Audio controls (mesh instance = sound object or eligible to become one; microphone)
     if (const auto *instance = r.try_get<Instance>(active_entity); instance && r.all_of<Mesh>(instance->Entity)) {
@@ -1060,10 +1064,14 @@ void RenderControls(entt::registry &r, entt::entity viewport) {
             const auto extent = r.get<const ViewportExtent>(viewport).Value;
             const float viewport_aspect = extent.x == 0 || extent.y == 0 ? 1.f : float(extent.x) / float(extent.y);
             if (Button("Reset##Camera")) action::Emit(action::view::ResetViewCamera{});
-            if (vec3 target = camera.Target; SliderFloat3("Target", &target.x, -10, 10))
-                action::Emit(action::view::SetViewCameraTarget{target});
-            if (Camera lens = camera.Data; RenderCameraLensEditor(lens, camera.Distance, viewport_aspect))
-                action::Emit(action::view::SetViewCameraLens{lens});
+            {
+                vec3 target = camera.Target;
+                ui::Gesture(SliderFloat3("Target", &target.x, -10, 10), [&] { return action::view::SetViewCameraTarget{target}; });
+            }
+            {
+                Camera lens = camera.Data;
+                ui::Gesture(RenderCameraLensEditor(lens, camera.Distance, viewport_aspect), [&] { return action::view::SetViewCameraLens{lens}; });
+            }
             EndTabItem();
         }
 

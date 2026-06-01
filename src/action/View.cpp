@@ -205,11 +205,7 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
                     r.patch<BoxSelectState>(viewport, [&](auto &b) { b.Gesture = g; });
                 }
             },
-            [&](const SetStartScreenTransform &a) {
-                if (!a.Value) {
-                    r.remove<StartScreenTransform>(viewport);
-                    return;
-                }
+            [&](const LatchScreenTransform &a) {
                 // Mid-drag switch is a cancel-restart: revert any in-progress drag to its start state.
                 // StartTransform / StartBoneLength components stay so the next drag (under the new latched type) reuses them.
                 r.remove<PendingTransform>(viewport);
@@ -224,8 +220,9 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
                 for (const auto [e, sbl] : r.view<const StartBoneLength>().each()) {
                     r.emplace_or_replace<BoneDisplayScale>(e, sbl.Value);
                 }
-                r.emplace_or_replace<StartScreenTransform>(viewport, *a.Value);
+                r.emplace_or_replace<StartScreenTransform>(viewport, a.Value);
             },
+            [&](ClearScreenTransformLatch) { r.remove<StartScreenTransform>(viewport); },
             [&](const SetViewportShading &a) {
                 r.patch<ViewportDisplay>(viewport, [&](auto &s) {
                     s.ViewportShading = a.Mode;

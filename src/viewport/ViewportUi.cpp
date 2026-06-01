@@ -1,6 +1,5 @@
 #include "viewport/ViewportUi.h"
 #include "Camera.h"
-#include "Timer.h"
 #include "action/Audio.h"
 #include "action/Bone.h"
 #include "action/Object.h"
@@ -202,9 +201,9 @@ void Interact(entt::registry &r, entt::entity viewport, FrameState &frame) {
     constexpr auto VKey = ImGuiInputFlags_RouteGlobal;
     if (TransformGizmo::IsUsing(r, viewport)) {
         // During an active transform, only allow transform switching shortcuts.
-        if (Shortcut(ImGuiKey_G, VKey) && transform_shortcuts_enabled) action::Emit(action::view::SetStartScreenTransform{TransformGizmo::TransformType::Translate});
-        else if (Shortcut(ImGuiKey_R, VKey) && transform_shortcuts_enabled) action::Emit(action::view::SetStartScreenTransform{TransformGizmo::TransformType::Rotate});
-        else if (Shortcut(ImGuiKey_S, VKey) && scale_shortcut_enabled) action::Emit(action::view::SetStartScreenTransform{TransformGizmo::TransformType::Scale});
+        if (Shortcut(ImGuiKey_G, VKey) && transform_shortcuts_enabled) action::EmitCancel(action::view::LatchScreenTransform{TransformGizmo::TransformType::Translate});
+        else if (Shortcut(ImGuiKey_R, VKey) && transform_shortcuts_enabled) action::EmitCancel(action::view::LatchScreenTransform{TransformGizmo::TransformType::Rotate});
+        else if (Shortcut(ImGuiKey_S, VKey) && scale_shortcut_enabled) action::EmitCancel(action::view::LatchScreenTransform{TransformGizmo::TransformType::Scale});
     } else {
         if (Shortcut(ImGuiKey_Space, VKey)) action::Emit(action::timeline::TogglePlay{});
         else if (Shortcut(ImGuiKey_Z, VKey)) {
@@ -270,9 +269,9 @@ void Interact(entt::registry &r, entt::entity viewport, FrameState &frame) {
                 // Start transform gizmo in both Object and Edit modes.
                 // In Edit mode, shader applies transform to selected vertices.
                 // In Object mode, shader applies transform to selected instances.
-                action::Emit(action::view::SetStartScreenTransform{TransformGizmo::TransformType::Translate});
-            } else if (Shortcut(ImGuiKey_R, VKey) && transform_shortcuts_enabled) action::Emit(action::view::SetStartScreenTransform{TransformGizmo::TransformType::Rotate});
-            else if (Shortcut(ImGuiKey_S, VKey) && scale_shortcut_enabled) action::Emit(action::view::SetStartScreenTransform{TransformGizmo::TransformType::Scale});
+                action::EmitCancel(action::view::LatchScreenTransform{TransformGizmo::TransformType::Translate});
+            } else if (Shortcut(ImGuiKey_R, VKey) && transform_shortcuts_enabled) action::EmitCancel(action::view::LatchScreenTransform{TransformGizmo::TransformType::Rotate});
+            else if (Shortcut(ImGuiKey_S, VKey) && scale_shortcut_enabled) action::EmitCancel(action::view::LatchScreenTransform{TransformGizmo::TransformType::Scale});
             else if (Shortcut(ImGuiKey_H, VKey)) action::Emit(action::object::ToggleHidden{});
             else if (Shortcut(ImGuiMod_Ctrl | ImGuiKey_P, VKey)) action::Emit(action::object::ParentToActive{});
             else if (Shortcut(ImGuiMod_Alt | ImGuiKey_P, VKey)) action::Emit(action::object::ClearParent{});
@@ -307,24 +306,22 @@ void Interact(entt::registry &r, entt::entity viewport, FrameState &frame) {
     if (r.get<const BoxSelectState>(viewport).Gesture == SelectionGesture::Box && interaction_mode != InteractionMode::Excite) {
         if (IsMouseClicked(ImGuiMouseButton_Left)) {
             frame.BoxSelectStart = frame.BoxSelectEnd = ToGlm(GetMousePos());
+            frame.BoxSelectStaged = false;
             if (IsKeyDown(ImGuiMod_Shift)) action::Emit(action::selection::SnapshotBoxSelectBaseline{});
         } else if (IsMouseDown(ImGuiMouseButton_Left) && frame.BoxSelectStart) {
             frame.BoxSelectEnd = ToGlm(GetMousePos());
             if (const auto box_px = ComputeBoxSelectPixels(*frame.BoxSelectStart, *frame.BoxSelectEnd, ToGlm(GetCursorScreenPos()), logical_extent, render_extent); box_px) {
                 const bool is_additive = r.all_of<AdditiveBoxSelectBaseline>(viewport);
-                if (interaction_mode == InteractionMode::Edit && !active_is_armature) {
-                    Timer timer{"BoxSelectElements (all)"};
-                    RunBoxSelectElements(r, viewport, GetBitsetRangesForSelected(r), edit_mode, *box_px, is_additive);
-                } else {
-                    // Object/bone box-select: the hit set is resolved against current scene state when applied.
-                    action::Emit(action::selection::ApplyBoxSelect{.BoxPx = *box_px, .Additive = is_additive});
-                }
+                frame.BoxSelectStaged = true;
+                // The hit set (object/bone instances or edit-mode elements) is resolved in ProcessComponentEvents.
+                action::EmitStaged(action::selection::ApplyBoxSelect{.BoxPx = *box_px, .Additive = is_additive});
             }
         } else if (!IsMouseDown(ImGuiMouseButton_Left) && frame.BoxSelectStart) {
-            const bool was_drag = IsMouseDragPastThreshold(ImGuiMouseButton_Left);
             frame.BoxSelectStart.reset();
             frame.BoxSelectEnd.reset();
-            if (was_drag) action::Emit(action::selection::ClearBoxSelectBaseline{});
+            // Gated on the same condition that staged, so a staged box-select always commits.
+            if (frame.BoxSelectStaged) action::Emit(action::selection::ClearBoxSelectBaseline{});
+            frame.BoxSelectStaged = false;
         }
         if (frame.BoxSelectStart) return;
     }
@@ -859,12 +856,12 @@ void InteractOverlay(entt::registry &r, entt::entity viewport, FrameState &frame
             if (mesh_edit_mode) {
                 // Mesh Edit mode: store pending transform for shader-based preview.
                 // Actual vertex positions are only modified on commit.
-                action::Emit(action::view::DragGizmoMeshEdit{
+                action::EmitStaged(action::view::DragGizmoMeshEdit{
                     .Value = std::make_unique<PendingTransform>(PendingTransform{ts.P, ts.R, td}),
                 });
             } else {
                 // Object/bone mode: store the gizmo pivot + delta. Apply recomputes per-entity transforms.
-                action::Emit(action::view::DragGizmo{.Value = std::make_unique<PendingTransform>(PendingTransform{ts.P, ts.R, td})});
+                action::EmitStaged(action::view::DragGizmo{.Value = std::make_unique<PendingTransform>(PendingTransform{ts.P, ts.R, td})});
             }
         } else if (!start_transform_view.empty()) {
             action::Emit(action::view::EndGizmoDrag{});
@@ -875,7 +872,7 @@ void InteractOverlay(entt::registry &r, entt::entity viewport, FrameState &frame
         if (interact_result) gizmo.RenderTransform->P = interact_result->Start.P + interact_result->Delta.P;
     }
 
-    if (r.all_of<StartScreenTransform>(viewport)) action::Emit(action::view::SetStartScreenTransform{});
+    if (r.all_of<StartScreenTransform>(viewport)) action::Emit(action::view::ClearScreenTransformLatch{});
 }
 
 void DrawOverlay(entt::registry &r, entt::entity viewport, FrameState &frame) {

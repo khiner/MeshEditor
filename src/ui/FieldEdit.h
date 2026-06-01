@@ -1,16 +1,16 @@
 #pragma once
 
-// ui::Edit — terse, single-line wrappers around ImGui controls that read a field, run the
-// widget, and forward an `action::UpdateOf<Ms...>` to the caller-supplied `action::Emit` sink
-// if the user changed it.
+// ui::Edit — terse, single-line wrappers around ImGui controls that read a field, run the widget,
+// and feed any change into action gesture grouping: a drag stages each frame and commits one
+// `action::UpdateOf<Ms...>` on release; an instantaneous edit stages and commits in a single frame.
 //
-// Bound to (registry, emit) and optionally an entity:
-//   `ui::Edit{R, emit}`     — reads/writes target the registry's active entity. Emits UpdateActive<T>
-//                             (reads resolve via FindActiveEntity(R) at Run time).
-//   `ui::Edit{R, emit, E}`  — reads from E and writes carry E. Emits Update<T>.
+// Bound to a registry, optionally an entity:
+//   `ui::Edit{R}`     — reads/writes target the registry's active entity. Emits UpdateActive<T>
+//                       (reads resolve via FindActiveEntity(R) at Run time).
+//   `ui::Edit{R, E}`  — reads from E and writes carry E. Emits Update<T>.
 //
 // `HasEntity` is a template bool (deduced via the constructor) so only the relevant code path
-// instantiates — adding a `ui::Edit{R, emit}` site doesn't force `UpdateActive<T>` for every T
+// instantiates — adding a `ui::Edit{R}` site doesn't force `UpdateActive<T>` for every T
 // the entity-bound form already uses.
 
 #include "action/Build.h"
@@ -19,7 +19,30 @@
 
 #include <imgui.h>
 
+#include <functional>
+
 namespace ui {
+
+namespace detail {
+// Reverts the one in-progress widget gesture to its start value (ImGui has a single active item, so
+// one slot suffices). Set when a widget activates, consumed on an aborted edit (Escape / no-op release).
+inline std::function<void()> GestureCancel;
+// A composite-editor gesture (several sub-widgets, one action) is staging an uncommitted value.
+inline bool CompositeGestureOpen = false;
+} // namespace detail
+
+// Group a composite editor (several sub-widgets emitting one whole-value action, so ui::Edit's per-field
+// grouping doesn't apply) into one record per drag: stage while editing, commit when the drag releases.
+template<typename MakeAction>
+void Gesture(bool changed, MakeAction &&make) {
+    if (changed) {
+        action::EmitStaged(make());
+        detail::CompositeGestureOpen = true;
+    } else if (detail::CompositeGestureOpen && !ImGui::IsAnyItemActive()) {
+        action::Commit();
+        detail::CompositeGestureOpen = false;
+    }
+}
 
 // Walk a chain Ms... from the outermost object down to the leaf field.
 template<auto M, auto... Rest>
@@ -63,15 +86,45 @@ struct Edit {
     template<class T, class Reg>
     const T &GetConst(Reg &r, entt::entity e) { return r.template get<const T>(e); }
 
-    // Read field, hand a mutable copy to `widget`, emit update if the widget returns true.
+    // Read field, hand a mutable copy to `widget`, and feed the result into gesture grouping: a drag
+    // stages each frame and commits one record on release; an instantaneous edit stages+commits in one
+    // frame; an aborted edit (Escape) reverts to the gesture's start value.
     template<auto... Ms, class Widget>
     bool Run(Widget widget) {
-        action::detail::last_field<Prefix..., Ms...> v = ReadChain<Prefix..., Ms...>(GetConst<action::detail::first_class<Prefix..., Ms...>>(R, ReadFrom()));
-        if (!widget(v)) return false;
+        using Field = action::detail::last_field<Prefix..., Ms...>;
+        Field v = ReadChain<Prefix..., Ms...>(GetConst<action::detail::first_class<Prefix..., Ms...>>(R, ReadFrom()));
+        const Field original = v;
+        const bool changed = widget(v);
 
-        if constexpr (HasEntity) action::Emit(action::UpdateOf<Prefix..., Ms...>(E, v));
-        else action::Emit(action::UpdateOf<Prefix..., Ms...>(v));
-        return true;
+        // Build the field's update — entity-bound (Update) or active (UpdateActive).
+        auto update = [&](const Field &val) {
+            if constexpr (HasEntity) return action::UpdateOf<Prefix..., Ms...>(E, val);
+            else return action::UpdateOf<Prefix..., Ms...>(val);
+        };
+
+        // Capture the gesture's start update so an aborted edit can revert.
+        if (ImGui::IsItemActivated()) detail::GestureCancel = [revert = update(original)] { action::EmitCancel(revert); };
+
+        if (ImGui::IsItemDeactivatedAfterEdit()) { // Gesture committed: release / Enter / instantaneous widget.
+            if (changed) action::EmitStaged(update(v));
+            action::Commit();
+            detail::GestureCancel = nullptr;
+            return changed;
+        }
+        if (ImGui::IsItemDeactivated()) { // Gesture aborted (Escape / no-op release): revert to start, record nothing.
+            if (detail::GestureCancel) {
+                detail::GestureCancel();
+                detail::GestureCancel = nullptr;
+            }
+            return false;
+        }
+        if (changed) {
+            action::EmitStaged(update(v));
+            // An edit on an item that isn't held (e.g. a combo selection) is instantaneous: commit now
+            // rather than waiting for a deactivation event that may not come.
+            if (!ImGui::IsItemActive()) action::Commit();
+        }
+        return changed;
     }
 
     template<auto... Ms>

@@ -398,20 +398,20 @@ void physics_ui::RenderTab(entt::registry &r, entt::entity viewport) {
                         if (Checkbox("Min", &has_min)) action::Emit(edit_limit([&](auto &e) { e.Min = has_min ? std::optional{min_val} : std::nullopt; }));
                         if (has_min) {
                             SameLine();
-                            if (DragFloat("##min", &min_val, 0.01f)) action::Emit(edit_limit([&](auto &e) { e.Min = min_val; }));
+                            ui::Gesture(DragFloat("##min", &min_val, 0.01f), [&] { return edit_limit([&](auto &e) { e.Min = min_val; }); });
                         }
                         if (Checkbox("Max", &has_max)) action::Emit(edit_limit([&](auto &e) { e.Max = has_max ? std::optional{max_val} : std::nullopt; }));
                         if (has_max) {
                             SameLine();
-                            if (DragFloat("##max", &max_val, 0.01f)) action::Emit(edit_limit([&](auto &e) { e.Max = max_val; }));
+                            ui::Gesture(DragFloat("##max", &max_val, 0.01f), [&] { return edit_limit([&](auto &e) { e.Max = max_val; }); });
                         }
 
                         bool soft = limit.Stiffness.has_value();
                         if (Checkbox("Soft limit", &soft)) action::Emit(edit_limit([&](auto &e) { e.Stiffness = soft ? std::optional{1000.0f} : std::nullopt; }));
                         if (limit.Stiffness) {
                             float stiffness = *limit.Stiffness, damping = limit.Damping;
-                            if (DragFloat("Stiffness", &stiffness, 1.0f, 0.0f, 1e6f)) action::Emit(edit_limit([&](auto &e) { e.Stiffness = stiffness; }));
-                            if (DragFloat("Damping", &damping, 0.1f, 0.0f, 1e4f)) action::Emit(edit_limit([&](auto &e) { e.Damping = damping; }));
+                            ui::Gesture(DragFloat("Stiffness", &stiffness, 1.0f, 0.0f, 1e6f), [&] { return edit_limit([&](auto &e) { e.Stiffness = stiffness; }); });
+                            ui::Gesture(DragFloat("Damping", &damping, 0.1f, 0.0f, 1e4f), [&] { return edit_limit([&](auto &e) { e.Damping = damping; }); });
                         }
                         TreePop();
                     }
@@ -440,11 +440,11 @@ void physics_ui::RenderTab(entt::registry &r, entt::entity viewport) {
                         if (int mode = int(drive.Mode); Combo("Mode", &mode, "Force\0Acceleration\0")) action::Emit(edit_drive([&](auto &e) { e.Mode = PhysicsDriveMode(mode); }));
                         float max_force = drive.MaxForce, pos_target = drive.PositionTarget, vel_target = drive.VelocityTarget;
                         float stiffness = drive.Stiffness, damping = drive.Damping;
-                        if (DragFloat("Max force", &max_force, 1.0f, 0.0f, 1e6f)) action::Emit(edit_drive([&](auto &e) { e.MaxForce = max_force; }));
-                        if (DragFloat("Position target", &pos_target, 0.01f)) action::Emit(edit_drive([&](auto &e) { e.PositionTarget = pos_target; }));
-                        if (DragFloat("Velocity target", &vel_target, 0.01f)) action::Emit(edit_drive([&](auto &e) { e.VelocityTarget = vel_target; }));
-                        if (DragFloat("Stiffness", &stiffness, 1.0f, 0.0f, 1e6f)) action::Emit(edit_drive([&](auto &e) { e.Stiffness = stiffness; }));
-                        if (DragFloat("Damping", &damping, 0.1f, 0.0f, 1e4f)) action::Emit(edit_drive([&](auto &e) { e.Damping = damping; }));
+                        ui::Gesture(DragFloat("Max force", &max_force, 1.0f, 0.0f, 1e6f), [&] { return edit_drive([&](auto &e) { e.MaxForce = max_force; }); });
+                        ui::Gesture(DragFloat("Position target", &pos_target, 0.01f), [&] { return edit_drive([&](auto &e) { e.PositionTarget = pos_target; }); });
+                        ui::Gesture(DragFloat("Velocity target", &vel_target, 0.01f), [&] { return edit_drive([&](auto &e) { e.VelocityTarget = vel_target; }); });
+                        ui::Gesture(DragFloat("Stiffness", &stiffness, 1.0f, 0.0f, 1e6f), [&] { return edit_drive([&](auto &e) { e.Stiffness = stiffness; }); });
+                        ui::Gesture(DragFloat("Damping", &damping, 0.1f, 0.0f, 1e4f), [&] { return edit_drive([&](auto &e) { e.Damping = damping; }); });
                         TreePop();
                     }
                     PopID();
@@ -490,8 +490,8 @@ void physics_ui::RenderEntityProperties(entt::registry &r, entt::entity entity, 
         SeparatorText("Collider");
 
         ui::Edit{r}.Check<&ColliderPolicy::AutoFitDims>("Auto-fit");
-        if (auto s = RenderShapeEditor(collider->Shape, r.get<const ColliderPolicy>(entity).AutoFitDims))
-            action::Emit(action::physics::SetColliderShape{*s, s->index() != collider->Shape.index()});
+        auto s = RenderShapeEditor(collider->Shape, r.get<const ColliderPolicy>(entity).AutoFitDims);
+        ui::Gesture(bool(s), [&] { return action::physics::SetColliderShape{*s, s->index() != collider->Shape.index()}; });
 
         RenderEntityCombo<PhysicsMaterial, &ColliderMaterial::PhysicsMaterialEntity>(r, entity, "Physics material", "No materials defined");
         RenderEntityCombo<CollisionFilter, &ColliderMaterial::CollisionFilterEntity>(r, entity, "Collision filter", "No filters defined");
@@ -561,7 +561,7 @@ void physics_ui::RenderEntityProperties(entt::registry &r, entt::entity entity, 
 
             motion_changed |= DragFloat("Damping translation", &edit.LinearDamping, 0.01f, 0.f, 1.f);
             motion_changed |= DragFloat("Damping rotation", &edit.AngularDamping, 0.01f, 0.f, 1.f);
-            if (motion_changed) action::Emit(action::ReplaceActive<PhysicsMotion>{std::make_unique<PhysicsMotion>(edit)});
+            ui::Gesture(motion_changed, [&] { return action::ReplaceActive<PhysicsMotion>{std::make_unique<PhysicsMotion>(edit)}; });
         }
     }
 

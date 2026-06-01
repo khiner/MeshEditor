@@ -12,6 +12,7 @@ struct FrameState {
     vec2 PreciseWheelDelta{0, 0};
     uint32_t ObjectPickEpochTag{255}; // 8-bit epoch encoded in object click keys; wraps with periodic key reset
     std::optional<vec2> BoxSelectStart, BoxSelectEnd;
+    bool BoxSelectStaged{false}; // A box-select staged this gesture, so its release emits the terminal action.
     bool OverlayControlsHovered{false};
     bool RenderPending{false}; // GPU render submitted but not yet waited on
 };
