@@ -2,6 +2,7 @@
 #include "CameraTypes.h"
 #include "Timer.h"
 #include "Variant.h"
+#include "action/Errors.h"
 #include "animation/AnimationTimeline.h"
 #include "audio/AudioSystem.h"
 #include "audio/RealImpact.h"
@@ -46,25 +47,24 @@ void NewDefaultScene(entt::registry &r, entt::entity viewport) {
 
 namespace action::io {
 void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
-    std::visit(overloaded{[&](NewDefaultScene) { ::NewDefaultScene(r, viewport); }}, action);
-}
-
-std::expected<void, std::string> Apply(entt::registry &r, entt::entity viewport, const FallibleActions &action) {
-    const auto &vk = r.ctx().get<const VulkanResources>();
-    auto &slots = r.ctx().get<DescriptorSlots>();
-    auto &buffers = r.ctx().get<GpuBuffers>();
-    auto &meshes = r.ctx().get<MeshStore>();
-    auto &textures = r.ctx().get<TextureStore>();
-    auto &environments = r.ctx().get<EnvironmentStore>();
-    return std::visit(
+    const auto fail = [&](std::string message) { r.ctx().get<Errors>().Messages.push_back(std::move(message)); };
+    std::visit(
         overloaded{
-            [&](const SaveGltf &a) -> std::expected<void, std::string> {
-                return gltf::SaveGltf(a.Path, {r, viewport, buffers, meshes, textures, &vk, &GetBufferContext(r)});
+            [&](const NewDefaultScene &) { ::NewDefaultScene(r, viewport); },
+            [&](const SaveGltf &a) {
+                auto &c = r.ctx();
+                if (auto save = gltf::SaveGltf(a.Path, {r, viewport, c.get<GpuBuffers>(), c.get<MeshStore>(), c.get<TextureStore>(), &c.get<const VulkanResources>(), &GetBufferContext(r)}); !save) {
+                    fail(std::format("Error saving glTF file '{}': {}", a.Path, save.error()));
+                }
             },
-            [&](const LoadGltf &a) -> std::expected<void, std::string> {
+            [&](const LoadGltf &a) {
                 const Timer timer{"LoadGltf"};
-                auto result = gltf::LoadGltf(a.Path, {r, viewport, slots, buffers, meshes, textures, environments});
-                if (!result) return std::unexpected{std::move(result.error())};
+                auto &c = r.ctx();
+                auto result = gltf::LoadGltf(a.Path, {r, viewport, c.get<DescriptorSlots>(), c.get<GpuBuffers>(), c.get<MeshStore>(), c.get<TextureStore>(), c.get<EnvironmentStore>()});
+                if (!result) {
+                    fail(std::format("Error loading glTF file '{}': {}", a.Path, result.error()));
+                    return;
+                }
 
                 if (result->FirstCameraObject != entt::null) {
                     const auto camera_entity = result->FirstCameraObject;
@@ -77,30 +77,34 @@ std::expected<void, std::string> Apply(entt::registry &r, entt::entity viewport,
                     r.get<LastEvaluatedFrame>(viewport).Value = -1;
                 }
                 r.emplace_or_replace<ProfileNextProcessComponentEvents>(viewport);
-                return {};
             },
-            [&](const LoadRealImpact &a) -> std::expected<void, std::string> {
-                auto object_name = RealImpact::ValidateDirectory(a.Directory);
-                if (!object_name) return std::unexpected(std::move(object_name.error()));
+            [&](const LoadRealImpact &a) {
+                const std::filesystem::path directory{a.Directory};
+                auto object_name = RealImpact::ValidateDirectory(directory);
+                if (!object_name) {
+                    fail(std::move(object_name.error()));
+                    return;
+                }
 
+                auto &meshes = r.ctx().get<MeshStore>();
                 ClearMeshes(r, viewport);
                 const auto [mesh_entity, instance_entity] = ImportMesh(
                     r,
-                    a.Directory / "transformed.obj",
+                    directory / "transformed.obj",
                     MeshInstanceCreateInfo{.Name = std::move(*object_name), .Transform = {.R = RealImpact::ObjectRotationToYUp}}
                 );
 
                 // Ignore the npy file's vertex indices: deduplication may have invalidated them. Look up by position instead.
                 std::vector<uint32_t> vertex_indices(RealImpact::NumImpactVertices);
                 {
-                    const auto impact_positions = RealImpact::LoadPositions(a.Directory);
+                    const auto impact_positions = RealImpact::LoadPositions(directory);
                     const auto &mesh = r.get<Mesh>(mesh_entity);
                     for (size_t i = 0; i < impact_positions.size(); ++i) {
                         vertex_indices[i] = *mesh.FindNearestVertex(impact_positions[i]);
                     }
                 }
 
-                const auto listener_points = RealImpact::LoadListenerPoints(a.Directory);
+                const auto listener_points = RealImpact::LoadListenerPoints(directory);
                 const auto [listener_mesh_entity, _] = ::AddMesh(r, meshes, meshes.CreateMesh(primitive::CreateMesh({primitive::Cylinder{0.5f * RealImpact::MicWidthMm / 1000.f, RealImpact::MicLengthMm / 1000.f}}), {}, {}));
                 for (const auto &listener_point : listener_points) {
                     static const auto rot_z = glm::angleAxis(float(M_PI_2), vec3{0, 0, 1}); // Cylinder's center is along the Y axis.
@@ -128,10 +132,9 @@ std::expected<void, std::string> Apply(entt::registry &r, entt::entity viewport,
                         }
                         r.emplace<ScaleLocked>(instance_entity);
                         r.emplace<RealImpactVertices>(instance_entity, vertex_indices);
-                        SetVertexSamples(r, viewport, instance_entity, vertex_indices, to<std::vector>(RealImpact::LoadSamples(a.Directory, listener_point.Index)));
+                        SetVertexSamples(r, viewport, instance_entity, vertex_indices, to<std::vector>(RealImpact::LoadSamples(directory, listener_point.Index)));
                     }
                 }
-                return {};
             },
         },
         action

@@ -60,9 +60,9 @@ void StopLog() {
 void ApplyEmitted(entt::registry &r, entt::entity viewport) {
     if (!Staged) return;
 
-    // Apply the action, then record it to the log.
+    // Apply the action, then record it to the log unless it is a non-recordable action (e.g. a file save).
     auto recorded = ApplyAction(r, viewport, std::move(*Staged));
-    if (Log) Log->Enqueue(std::move(recorded));
+    if (Log && std::visit([]<typename T>(const T &) { return Recordable<T>; }, recorded)) Log->Enqueue(std::move(recorded));
     Staged.reset();
 }
 

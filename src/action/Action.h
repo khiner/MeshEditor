@@ -19,4 +19,9 @@ using Action = MergedVariantT<
     Core,
     selection::Action, object::Action, view::Action,
     physics::Action, audio::Action, bone::Action, timeline::Action, io::Action>;
+
+// Actions are logged for replay unless they only produce an external artifact.
+// E.g. replaying a save would clobber a file.
+template<typename T> inline constexpr bool Recordable = true;
+template<> inline constexpr bool Recordable<io::SaveGltf> = false;
 } // namespace action

@@ -1,5 +1,6 @@
 #include "Stores.h"
 
+#include "action/Errors.h"
 #include "animation/AnimationTimeline.h"
 #include "mesh/MeshStore.h"
 #include "object/ExtrasComponents.h"
@@ -40,6 +41,7 @@ entt::entity WireRegistry(entt::registry &r) {
 
     r.ctx().emplace<NameRegistry>();
     r.ctx().emplace<ObjectIdCounter>();
+    r.ctx().emplace<action::Errors>();
     auto &materials = r.ctx().emplace<MaterialStore>();
     r.emplace<TimelineRange>(viewport);
     r.emplace<TimelinePlayback>(viewport);

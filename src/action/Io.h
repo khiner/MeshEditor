@@ -2,28 +2,27 @@
 
 #include <entt/entity/fwd.hpp>
 
-#include <expected>
-#include <filesystem>
+#include <string>
+#include <variant>
 
 // Scene/document lifecycle: new scene plus the file-IO actions that load and save it.
+// Paths are std::string (not fs::path) so the actions serialize natively into the log.
 namespace action::io {
 struct NewDefaultScene {};
 
 struct LoadGltf {
-    std::filesystem::path Path;
+    std::string Path;
 };
 struct SaveGltf {
-    std::filesystem::path Path;
+    std::string Path;
 };
 struct LoadRealImpact {
-    std::filesystem::path Directory;
+    std::string Directory;
 };
 
-using Actions = std::variant<NewDefaultScene>;
+using Actions = std::variant<NewDefaultScene, LoadGltf, SaveGltf, LoadRealImpact>;
 using Action = Actions;
-// File IO runs GPU work synchronously and reports failure inline.
-using FallibleActions = std::variant<LoadGltf, SaveGltf, LoadRealImpact>;
 
+// Handlers run GPU work synchronously; failures are reported through the registry's action::Errors sink.
 void Apply(entt::registry &, entt::entity viewport, const Action &);
-std::expected<void, std::string> Apply(entt::registry &, entt::entity viewport, const FallibleActions &);
 } // namespace action::io

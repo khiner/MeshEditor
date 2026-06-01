@@ -2,6 +2,7 @@
 #include "Timer.h"
 #include "Window.h"
 #include "action/Emit.h"
+#include "action/Errors.h"
 #include "action/Io.h"
 #include "action/Log.h"
 #include "action/Object.h"
@@ -239,19 +240,16 @@ GltfSampleTree BuildGltfSampleTree(const fs::path &root) {
     return tree;
 }
 
-// Load a file into the scene based on its extension.
-std::expected<void, std::string> LoadFile(entt::registry &r, entt::entity viewport, const fs::path &path) {
+// Emit an action to load a file into the scene based on its extension. Load errors surface via action::Errors.
+void LoadFile(entt::registry &r, const fs::path &path) {
     const auto ext = path.extension().string();
     if (ext == ".gltf" || ext == ".glb") {
-        if (auto result = action::io::Apply(r, viewport, action::io::LoadGltf{.Path = path}); !result) {
-            return std::unexpected(std::format("Error loading glTF file '{}': {}", path.string(), result.error()));
-        }
+        action::Emit(action::io::LoadGltf{.Path = path.string()});
     } else if (ext == ".obj" || ext == ".ply") {
-        action::object::Apply(r, viewport, action::object::ImportMesh{path.string(), std::make_unique<MeshInstanceCreateInfo>(MeshInstanceCreateInfo{.Name = path.stem().string()})});
+        action::Emit(action::object::ImportMesh{path.string(), std::make_unique<MeshInstanceCreateInfo>(MeshInstanceCreateInfo{.Name = path.stem().string()})});
     } else {
-        return std::unexpected(std::format("Unsupported file format: '{}'", ext));
+        r.ctx().get<action::Errors>().Messages.push_back(std::format("Unsupported file format: '{}'", ext));
     }
-    return {};
 }
 
 namespace {
@@ -467,7 +465,7 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
                     static const std::array filters{nfdfilteritem_t{"glTF scene", "gltf,glb"}};
                     nfdchar_t *nfd_path;
                     if (auto result = NFD_OpenDialog(&nfd_path, filters.data(), filters.size(), ""); result == NFD_OKAY) {
-                        if (auto load = LoadFile(r, viewport, fs::path(nfd_path)); !load) std::cerr << load.error() << std::endl;
+                        LoadFile(r, fs::path(nfd_path));
                         NFD_FreePath(nfd_path);
                     } else if (result != NFD_CANCEL) {
                         std::cerr << "Error opening file dialog: " << NFD_GetError() << std::endl;
@@ -496,9 +494,7 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
                             }
                         } else {
                             if (!passes(*it.File)) continue;
-                            if (MenuItem(it.File->Label.c_str())) {
-                                if (auto load = LoadFile(r, viewport, it.File->Path); !load) std::cerr << load.error() << std::endl;
-                            }
+                            if (MenuItem(it.File->Label.c_str())) LoadFile(r, it.File->Path);
                         }
                     }
                 };
@@ -549,7 +545,7 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
                     static const std::array filters{nfdfilteritem_t{"Mesh object", "obj,ply"}};
                     nfdchar_t *nfd_path;
                     if (auto result = NFD_OpenDialog(&nfd_path, filters.data(), filters.size(), ""); result == NFD_OKAY) {
-                        if (auto load = LoadFile(r, viewport, fs::path(nfd_path)); !load) std::cerr << load.error() << std::endl;
+                        LoadFile(r, fs::path(nfd_path));
                         NFD_FreePath(nfd_path);
                     } else if (result != NFD_CANCEL) {
                         std::cerr << "Error opening file dialog: " << NFD_GetError() << std::endl;
@@ -559,7 +555,7 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
                     static const std::vector<nfdfilteritem_t> filters{};
                     nfdchar_t *path;
                     if (auto result = NFD_PickFolder(&path, ""); result == NFD_OKAY) {
-                        if (auto load = action::io::Apply(r, viewport, action::io::LoadRealImpact{.Directory = fs::path{path}}); !load) std::cerr << load.error() << std::endl;
+                        action::Emit(action::io::LoadRealImpact{.Directory = std::string{path}});
                         NFD_FreePath(path);
                     } else if (result != NFD_CANCEL) {
                         std::cerr << "Error opening folder dialog: " << NFD_GetError() << std::endl;
@@ -569,7 +565,7 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
                     static const std::array filters{nfdfilteritem_t{"glTF scene", "gltf,glb"}};
                     nfdchar_t *nfd_path;
                     if (auto result = NFD_SaveDialog(&nfd_path, filters.data(), filters.size(), nullptr, "scene.gltf"); result == NFD_OKAY) {
-                        if (auto save = action::io::Apply(r, viewport, action::io::SaveGltf{.Path = fs::path(nfd_path)}); !save) std::cerr << save.error() << std::endl;
+                        action::Emit(action::io::SaveGltf{.Path = std::string{nfd_path}});
                         NFD_FreePath(nfd_path);
                     } else if (result != NFD_CANCEL) {
                         std::cerr << "Error opening save dialog: " << NFD_GetError() << std::endl;
@@ -693,10 +689,7 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
                 // static const auto DefaultRealImpactPath = fs::path{"../../"} / "RealImpact" / "dataset" / "22_Cup" / "preprocessed";
                 // if (fs::exists(DefaultRealImpactPath)) action::io::Apply(r, viewport, action::io::LoadRealImpact{.Directory = DefaultRealImpactPath});
                 if (initial_file) {
-                    if (auto result = LoadFile(r, viewport, fs::path(initial_file)); !result) {
-                        std::cerr << result.error() << std::endl;
-                        play = false;
-                    }
+                    LoadFile(r, fs::path(initial_file)); // Errors (and the play gate) are handled after ApplyEmitted.
                 } else {
                     // Apply directly rather than Emit: the initial scene is init, not a logged user action.
                     action::io::Apply(r, viewport, action::io::NewDefaultScene{});
@@ -710,6 +703,13 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
         }
 
         action::ApplyEmitted(r, viewport);
+
+        // Surface and clear any failures action handlers reported this frame.
+        if (auto &errors = r.ctx().get<action::Errors>().Messages; !errors.empty()) {
+            for (const auto &message : errors) std::cerr << message << std::endl;
+            if (GetFrameCount() == 1) play = false; // Don't auto-play if the initial file failed to load.
+            errors.clear();
+        }
 
         ImGui::Render();
         auto *draw_data = GetDrawData();
