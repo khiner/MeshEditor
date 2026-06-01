@@ -194,18 +194,17 @@ std::vector<GltfSample> CollectGltfSamples(const fs::path &root) {
     for (const auto &entry : fs::recursive_directory_iterator(root)) {
         const auto ext = entry.path().extension();
         if (!entry.is_regular_file() || (ext != ".glb" && ext != ".gltf")) continue;
-        auto p = entry.path();
-        auto stem = p.stem().string();
-        auto exts = ReadExtensionsUsed(p);
-        samples.push_back({std::move(stem), std::move(p), std::move(exts)});
+        samples.push_back({entry.path().filename().string(), entry.path(), ReadExtensionsUsed(entry.path())});
     }
     std::ranges::sort(samples, [](const auto &a, const auto &b) { return a.Path < b.Path; });
     return samples;
 }
 
-// Tree mirroring the directory structure under `root`. Single-file leaf dirs are collapsed:
-// the file is hoisted into its parent labeled by the leaf dir's name, so e.g.
-// samples/Robot_skinned/Robot_skinned.glb shows as one entry, not three nested submenus.
+// Tree mirroring the directory structure under `root`. Leaves always show the real filename, after collapsing
+// redundant levels (in order):
+//   - Merge a dir with no files and a single child into that child (AnimatedCube/glTF/ -> AnimatedCube/).
+//   - Flatten a dir holding one file whose stem repeats the dir name (AnimatedCube/AnimatedCube.gltf -> AnimatedCube.gltf).
+// So a single-variant model flattens fully, while a multi-variant model (Box/{glTF,glTF-Binary,...}) keeps its variants.
 GltfSampleTree BuildGltfSampleTree(const fs::path &root) {
     GltfSampleTree tree;
     for (auto &s : CollectGltfSamples(root)) {
@@ -215,20 +214,28 @@ GltfSampleTree BuildGltfSampleTree(const fs::path &root) {
         }
         node->Files.push_back(std::move(s));
     }
-    const auto collapse = [](this auto &&self, GltfSampleTree &n) -> void {
+    const auto flatten_named = [](this auto &&self, GltfSampleTree &n) -> void {
         for (auto it = n.Children.begin(); it != n.Children.end();) {
             self(it->second);
-            if (it->second.Children.empty() && it->second.Files.size() == 1) {
-                auto f = std::move(it->second.Files.front());
-                f.Label = it->first;
-                n.Files.push_back(std::move(f));
+            auto &child = it->second;
+            if (child.Children.empty() && child.Files.size() == 1 && it->first == child.Files.front().Path.stem().string()) {
+                n.Files.emplace_back(std::move(child.Files.front()));
                 it = n.Children.erase(it);
             } else {
                 ++it;
             }
         }
     };
-    collapse(tree);
+    const auto merge_sole_child = [](this auto &&self, GltfSampleTree &n) -> void {
+        for (auto &[_, child] : n.Children) self(child);
+        while (n.Files.empty() && n.Children.size() == 1) {
+            auto child = std::move(n.Children.begin()->second);
+            n.Children = std::move(child.Children);
+            n.Files = std::move(child.Files);
+        }
+    };
+    merge_sole_child(tree);
+    flatten_named(tree);
     return tree;
 }
 
@@ -497,9 +504,10 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
                 };
                 const auto render_submenu = [&](const char *label, const GltfSampleTree &tree) {
                     if (tree.Children.empty() && tree.Files.empty()) return;
-                    if (!BeginMenu(label)) return;
-                    render_tree(tree, [](const GltfSample &) { return true; });
-                    EndMenu();
+                    if (BeginMenu(label)) {
+                        render_tree(tree, [](const GltfSample &) { return true; });
+                        EndMenu();
+                    }
                 };
                 static const auto Examples = BuildGltfSampleTree(Paths::Res() / "examples");
                 render_submenu("Examples", Examples);
