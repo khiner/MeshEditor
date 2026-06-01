@@ -357,18 +357,15 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
 
     NFD_Init();
     entt::registry r;
-    const auto viewport = InitViewport(r, VulkanResources{*vc->Instance, vc->PhysicalDevice, *vc->Device, vc->QueueFamily, vc->Queue});
-
-    // Load transform mode icons
-    LoadViewportIcons(r, viewport);
-
     const auto CreateSvg = [device = *vc->Device, &r, &wd](std::unique_ptr<SvgResource> &svg, fs::path path) {
         // Wait for previous frame's ImGui render to complete, since it may have sampled the old texture.
         CheckVk(device.waitForFences({wd.Frames[wd.FrameIndex].Fence}, true, UINT64_MAX));
         svg = LoadSvg(r, std::move(path));
     };
-    auto &faust_dsp = r.emplace<FaustDSP>(viewport, CreateSvg);
-    RegisterAudioComponentHandlers(r, viewport);
+    const auto viewport = InitEngine(r, VulkanResources{*vc->Instance, vc->PhysicalDevice, *vc->Device, vc->QueueFamily, vc->Queue}, CreateSvg);
+    SetupScene(r, viewport); // Before the first frame reads viewport state.
+
+    auto &faust_dsp = r.get<FaustDSP>(viewport);
 
     struct AudioContext {
         FaustDSP *Dsp;
@@ -685,14 +682,12 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
             PopStyleVar();
 
             if (GetFrameCount() == 1) {
-                // Load initial content now that the viewport has an extent.
+                // Replace the startup default scene with the initial file, now that the viewport has an extent.
                 // static const auto DefaultRealImpactPath = fs::path{"../../"} / "RealImpact" / "dataset" / "22_Cup" / "preprocessed";
                 // if (fs::exists(DefaultRealImpactPath)) action::io::Apply(r, viewport, action::io::LoadRealImpact{.Directory = DefaultRealImpactPath});
                 if (initial_file) {
+                    ClearScene(r, viewport);
                     LoadFile(r, fs::path(initial_file)); // Errors (and the play gate) are handled after ApplyEmitted.
-                } else {
-                    // Apply directly rather than Emit: the initial scene is init, not a logged user action.
-                    action::io::Apply(r, viewport, action::io::NewDefaultScene{});
                 }
             } else if (GetFrameCount() == 3 && play) {
                 // Wait to play until scene load (frame 1) has settled and one render frame has elapsed.

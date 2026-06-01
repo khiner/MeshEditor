@@ -10,10 +10,16 @@
 #include "animation/AnimationTimeline.h"
 #include "armature/ArmatureComponents.h"
 #include "armature/BoneConstraint.h"
+#include "audio/AudioSystem.h"
+#include "audio/FaustDSP.h"
 #include "audio/SoundVertices.h"
 #include "gizmo/GizmoInteraction.h"
+#include "gltf/SourceAssets.h"
 #include "mesh/Mesh.h"
+#include "mesh/MeshStore.h"
+#include "mesh/Primitives.h"
 #include "object/ExtrasComponents.h"
+#include "object/ObjectComponents.h"
 #include "object/ObjectOps.h"
 #include "physics/PhysicsSystem.h"
 #include "physics/PhysicsTypes.h"
@@ -35,6 +41,7 @@
 #include "viewport/RenderExtent.h"
 #include "viewport/ViewportDisplay.h"
 #include "viewport/ViewportEvents.h"
+#include "viewport/ViewportIcons.h"
 #include "viewport/ViewportInteractionState.h"
 #include "viewport/ViewportOps.h"
 #include "viewport/ViewportRenderGpu.h"
@@ -47,7 +54,7 @@
 #include "render/GpuBuffers.h"
 #include "render/LightComponents.h"
 
-using std::ranges::find;
+using std::ranges::find, std::ranges::to;
 
 namespace {
 constexpr vk::Extent2D ToExtent2D(vk::Extent3D extent) { return {extent.width, extent.height}; }
@@ -239,7 +246,7 @@ void SetStudioEnvironment(entt::registry &r, uint32_t index) {
     environments.StudioWorld = {.Ibl = MakeIblSamplers(pre, environments), .Name = hdri.Name};
 }
 
-entt::entity InitViewport(entt::registry &r, VulkanResources vc) {
+entt::entity InitEngine(entt::registry &r, VulkanResources vc, CreateSvgResource create_svg) {
     InitStoreCtx(r, vc);
     auto &slots = r.ctx().get<DescriptorSlots>();
     auto &pipelines = r.ctx().emplace<Pipelines>(vc.Device, vc.PhysicalDevice, slots.GetSetLayout(), slots.GetSet());
@@ -265,7 +272,7 @@ entt::entity InitViewport(entt::registry &r, VulkanResources vc) {
     track<changes::RenderInstanceCreated>(r).on<RenderInstance>(On::Create);
     track<changes::ViewportDisplay>(r).on<ViewportDisplay>(On::Create | On::Update);
     track<changes::InteractionMode>(r).on<Interaction>(On::Create | On::Update);
-    track<changes::WorkspaceLights>(r).on<WorkspaceLights>(On::Update);
+    track<changes::WorkspaceLights>(r).on<WorkspaceLights>(On::Create | On::Update);
     track<changes::ViewportTheme>(r).on<ViewportTheme>(On::Create | On::Update);
     track<changes::Materials>(r).on<MaterialDirty>(On::Create | On::Update);
     track<changes::ActiveMaterialVariant>(r).on<MaterialVariants>(On::Create | On::Update);
@@ -301,19 +308,8 @@ entt::entity InitViewport(entt::registry &r, VulkanResources vc) {
 
     const auto viewport = WireRegistry(r);
     auto &buffers = r.ctx().get<GpuBuffers>();
-    r.emplace<ViewportDisplay>(viewport);
-    r.emplace<Interaction>(viewport);
-    r.emplace<EditMode>(viewport);
-    r.emplace<ViewportTheme>(viewport, Defaults::ViewportTheme);
-    r.emplace<colors::AxesArray>(viewport, colors::MakeAxes(Defaults::ViewportTheme.AxisColors));
-    r.emplace<ViewCamera>(viewport, Defaults::ViewCamera);
-    r.emplace<MaterialPreviewLighting>(viewport, false, false, 1.f, 0.f);
-    r.emplace<RenderedLighting>(viewport, true, true, 1.f, 0.f);
-    r.emplace<WorkspaceLights>(viewport, Defaults::WorkspaceLights);
+    // Engine-owned components. Document state lives in SetupScene.
     r.emplace<ViewportExtent>(viewport);
-    r.emplace<PlaybackFrame>(viewport);
-    r.emplace<LastEvaluatedFrame>(viewport);
-    r.emplace<EnabledInteractionModes>(viewport);
     r.emplace<SelectionBitsetRef>(viewport, std::span<uint32_t>{buffers.SelectionBitset.Data(), GpuBuffers::SelectionBitsetWords});
     r.emplace<SelectionSlots>(viewport, slots);
     r.emplace<DrawState>(viewport);
@@ -328,16 +324,8 @@ entt::entity InitViewport(entt::registry &r, VulkanResources vc) {
                                                      .RenderFence = vc.Device.createFenceUnique({}),
                                                      .ViewportTexture = {},
                                                  });
-    r.emplace<SelectionXRay>(viewport);
-    r.emplace<OrbitToActive>(viewport);
-    r.emplace<BoxSelectState>(viewport);
-    r.emplace<TransformGizmoState>(viewport);
-    r.emplace<GizmoInteraction>(viewport);
-    r.emplace<AnimationTimelineView>(viewport);
     r.emplace<SelectionStale>(viewport); // Initial state: fragments need rendering on first selection use.
-    physics::ApplySimulationSettings(r, r.emplace<PhysicsSimulationSettings>(viewport));
 
-    buffers.WorkspaceLightsUBO.Update(as_bytes(r.get<const WorkspaceLights>(viewport)));
     ResetObjectPickKeys(buffers);
 
     auto init_batch = BeginTextureUploadBatch(vc.Device, *one_shot.Pool, buffers.Ctx);
@@ -356,15 +344,72 @@ entt::entity InitViewport(entt::registry &r, VulkanResources vc) {
             environments.Hdris.emplace_back(HdriEntry{.Name = entry.path().stem().string(), .Path = entry.path(), .Prefiltered = {}});
         }
     }
-    std::ranges::sort(environments.Hdris, {}, &HdriEntry::Name);
-    const auto forest_it = find(environments.Hdris, "forest", &HdriEntry::Name);
-    environments.ActiveHdriIndex = forest_it != environments.Hdris.end() ? std::distance(environments.Hdris.begin(), forest_it) : 0;
-    SetStudioEnvironment(r, environments.ActiveHdriIndex);
-    environments.SceneWorld = {.Ibl = MakeIblSamplers(environments.EmptySceneWorld, environments), .Name = environments.EmptySceneWorld.Name};
+    std::ranges::sort(environments.Hdris, {}, &HdriEntry::Name); // SetupScene selects the active one.
 
     pipelines.CompileShaders();
 
+    LoadViewportIcons(r, viewport);
+    r.emplace<FaustDSP>(viewport, std::move(create_svg));
+    RegisterAudioComponentHandlers(r, viewport);
+
     return viewport;
+}
+
+void SetupScene(entt::registry &r, entt::entity viewport) {
+    r.emplace_or_replace<ViewportDisplay>(viewport);
+    r.emplace_or_replace<Interaction>(viewport);
+    r.emplace_or_replace<EditMode>(viewport);
+    r.emplace_or_replace<ViewportTheme>(viewport, Defaults::ViewportTheme);
+    r.emplace_or_replace<colors::AxesArray>(viewport, colors::MakeAxes(Defaults::ViewportTheme.AxisColors));
+    r.emplace_or_replace<ViewCamera>(viewport, Defaults::ViewCamera);
+    r.emplace_or_replace<MaterialPreviewLighting>(viewport, false, false, 1.f, 0.f);
+    r.emplace_or_replace<RenderedLighting>(viewport, true, true, 1.f, 0.f);
+    r.emplace_or_replace<WorkspaceLights>(viewport, Defaults::WorkspaceLights);
+    r.emplace_or_replace<PlaybackFrame>(viewport);
+    r.emplace_or_replace<LastEvaluatedFrame>(viewport);
+    r.emplace_or_replace<EnabledInteractionModes>(viewport);
+    r.emplace_or_replace<SelectionXRay>(viewport);
+    r.emplace_or_replace<OrbitToActive>(viewport);
+    r.emplace_or_replace<BoxSelectState>(viewport);
+    r.emplace_or_replace<TransformGizmoState>(viewport);
+    r.emplace_or_replace<GizmoInteraction>(viewport);
+    r.emplace_or_replace<AnimationTimelineView>(viewport);
+    r.emplace_or_replace<TimelineRange>(viewport);
+    r.emplace_or_replace<TimelinePlayback>(viewport);
+    physics::ApplySimulationSettings(r, r.emplace_or_replace<PhysicsSimulationSettings>(viewport));
+
+    const auto &hdris = r.ctx().get<EnvironmentStore>().Hdris;
+    const auto forest = find(hdris, "forest", &HdriEntry::Name);
+    SetStudioEnvironment(r, forest != hdris.end() ? std::distance(hdris.begin(), forest) : 0);
+    r.emplace_or_replace<PendingSceneWorldClear>(viewport); // Release any IBL sampler slots and restore EmptySceneWorld next pass.
+
+    // Default scene: a cube, a light, and a camera (startup.blend layout).
+    auto &meshes = r.ctx().get<MeshStore>();
+    constexpr PrimitiveShape default_shape{primitive::Cuboid{}};
+    const auto [mesh_entity, _] = ::AddMesh(r, meshes, meshes.CreateMesh(primitive::CreateMesh(default_shape), {}, {}), MeshInstanceCreateInfo{.Name = ToString(default_shape)});
+    r.emplace<PrimitiveShape>(mesh_entity, default_shape);
+
+    // startup.blend data, in Blender's frame (Z-up, -Y forward)
+    constexpr vec3 LightLoc{4.07625, 1.00545, 5.90386}, CameraLoc{7.358891, -6.925791, 4.958309}, CameraEulerXYZ{1.109319, 0, 0.815801};
+    constexpr float Lens{50}, SensorX{36}, RenderW{16}, RenderH{9};
+    // Blender Z-up -> MeshEditor Y-up is a -90° rotation about +X: (x, y, z) -> (x, z, -y)
+    const auto to_y_up_pos = [](vec3 v) { return vec3{v.x, v.z, -v.y}; };
+    const quat to_y_up_rot = glm::angleAxis(-float(M_PI_2), vec3{1, 0, 0});
+    // Matches Blender glTF exporter (cameras.py / yvof_blender_to_gltf): horizontal fit since render aspect > sensor aspect
+    const float hfov = 2 * std::atan(SensorX / (2 * Lens));
+    const float yfov = 2 * std::atan(std::tan(hfov * 0.5) * RenderH / RenderW);
+
+    ::AddLight(r, meshes, {.Name = "Light", .Transform = {.P = to_y_up_pos(LightLoc)}, .Select = MeshInstanceCreateInfo::SelectBehavior::None});
+    ::AddCamera(r, meshes, {.Name = "Camera", .Transform = {.P = to_y_up_pos(CameraLoc), .R = to_y_up_rot * quat{CameraEulerXYZ}}, .Select = MeshInstanceCreateInfo::SelectBehavior::None}, Perspective{.FieldOfViewRad = yfov, .FarClip = 1000, .NearClip = DefaultPerspectiveNearClip});
+}
+
+void ClearScene(entt::registry &r, entt::entity viewport) {
+    ClearMeshes(r, viewport);
+    for (const auto e : r.view<entt::entity>() | to<std::vector>()) {
+        if (e != viewport) r.destroy(e);
+    }
+    r.ctx().get<ObjectIdCounter>() = {};
+    r.remove<gltf::SourceAssets>(viewport); // Not entity-bound, so the sweep misses it.
 }
 
 void DeinitViewport(entt::registry &r, entt::entity viewport) {

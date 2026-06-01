@@ -1,17 +1,22 @@
 #pragma once
 
+#include "render/CreateSvgResource.h"
 #include "render/VulkanResources.h"
 
 #include <entt/entity/fwd.hpp>
 
 #include <filesystem>
 
-// Initialize the viewport singleton entity and all ctx-resident GPU stores, pipelines, and reactive subscriptions.
-// Returns the viewport entity carrying viewport-level components.
-entt::entity InitViewport(entt::registry &, VulkanResources);
-// Inverse of InitViewport. Must be called before clearing the registry so command buffers
+// Build the process-lifetime engine and return the viewport entity.
+entt::entity InitEngine(entt::registry &, VulkanResources, CreateSvgResource);
+// Inverse of InitEngine. Must be called before clearing the registry so command buffers
 // are freed before their owning pool, and ctx stores are torn down in dependency order.
 void DeinitViewport(entt::registry &, entt::entity viewport);
+
+// Reset all per-document viewport state to defaults and build the default scene.
+void SetupScene(entt::registry &, entt::entity viewport);
+// Destroy all scene content and reset scene-singleton ctx state.
+void ClearScene(entt::registry &, entt::entity viewport);
 
 // Submit GPU render (nonblocking), draw the final image into the current ImGui window, and draw overlays.
 // Call WaitForRender() before the ImGui frame samples the final image.

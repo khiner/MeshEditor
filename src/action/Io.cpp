@@ -14,6 +14,7 @@
 #include "render/GpuBufferOps.h"
 #include "scene/Defaults.h"
 #include "scene/WorldTransform.h"
+#include "viewport/Viewport.h"
 #include "viewport/ViewportEvents.h"
 #include "viewport/ViewportOps.h"
 
@@ -21,36 +22,15 @@
 
 using std::ranges::find_if, std::ranges::to;
 
-namespace {
-void NewDefaultScene(entt::registry &r, entt::entity viewport) {
-    ClearMeshes(r, viewport);
-
-    auto &meshes = r.ctx().get<MeshStore>();
-    constexpr PrimitiveShape default_shape{primitive::Cuboid{}};
-    const auto [mesh_entity, _] = ::AddMesh(r, meshes, meshes.CreateMesh(primitive::CreateMesh(default_shape), {}, {}), MeshInstanceCreateInfo{.Name = ToString(default_shape)});
-    r.emplace<PrimitiveShape>(mesh_entity, default_shape);
-
-    // startup.blend data, in Blender's frame (Z-up, -Y forward)
-    constexpr vec3 LightLoc{4.07625, 1.00545, 5.90386}, CameraLoc{7.358891, -6.925791, 4.958309}, CameraEulerXYZ{1.109319, 0, 0.815801};
-    constexpr float Lens{50}, SensorX{36}, RenderW{16}, RenderH{9};
-    // Blender Z-up -> MeshEditor Y-up is a -90° rotation about +X: (x, y, z) -> (x, z, -y)
-    const auto to_y_up_pos = [](vec3 v) { return vec3{v.x, v.z, -v.y}; };
-    const quat to_y_up_rot = glm::angleAxis(-float(M_PI_2), vec3{1, 0, 0});
-    // Matches Blender glTF exporter (cameras.py / yvof_blender_to_gltf): horizontal fit since render aspect > sensor aspect
-    const float hfov = 2 * std::atan(SensorX / (2 * Lens));
-    const float yfov = 2 * std::atan(std::tan(hfov * 0.5) * RenderH / RenderW);
-
-    ::AddLight(r, meshes, {.Name = "Light", .Transform = {.P = to_y_up_pos(LightLoc)}, .Select = MeshInstanceCreateInfo::SelectBehavior::None});
-    ::AddCamera(r, meshes, {.Name = "Camera", .Transform = {.P = to_y_up_pos(CameraLoc), .R = to_y_up_rot * quat{CameraEulerXYZ}}, .Select = MeshInstanceCreateInfo::SelectBehavior::None}, Perspective{.FieldOfViewRad = yfov, .FarClip = 1000, .NearClip = DefaultPerspectiveNearClip});
-}
-} // namespace
-
 namespace action::io {
 void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
     const auto fail = [&](std::string message) { r.ctx().get<Errors>().Messages.push_back(std::move(message)); };
     std::visit(
         overloaded{
-            [&](const NewDefaultScene &) { ::NewDefaultScene(r, viewport); },
+            [&](const NewDefaultScene &) {
+                ClearScene(r, viewport);
+                SetupScene(r, viewport);
+            },
             [&](const SaveGltf &a) {
                 auto &c = r.ctx();
                 if (auto save = gltf::SaveGltf(a.Path, {r, viewport, c.get<GpuBuffers>(), c.get<MeshStore>(), c.get<TextureStore>(), &c.get<const VulkanResources>(), &GetBufferContext(r)}); !save) {
