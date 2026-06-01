@@ -303,13 +303,13 @@ std::string GenerateDsp(entt::registry &r) {
 
 /***** Free functions for sound object control *****/
 
-void Stop(entt::registry &r, entt::entity viewport, entt::entity e) {
+void Stop(entt::registry &r, entt::entity e) {
     if (auto *samples = r.try_get<VertexSamples>(e)) samples->Stop();
-    if (r.all_of<ModalModes>(e)) r.get<FaustDSP>(viewport).Set(GateParamName, 0);
+    if (r.all_of<ModalModes>(e)) r.ctx().get<FaustDSP>().Set(GateParamName, 0);
 }
 
-void SetModel(entt::registry &r, entt::entity viewport, entt::entity e, SoundVerticesModel model) {
-    Stop(r, viewport, e);
+void SetModel(entt::registry &r, entt::entity e, SoundVerticesModel model) {
+    Stop(r, e);
 
     const bool is_sample = model == SoundVerticesModel::Samples && r.all_of<VertexSamples>(e);
     const bool is_modal = model == SoundVerticesModel::Modal && r.all_of<ModalModes>(e);
@@ -318,19 +318,19 @@ void SetModel(entt::registry &r, entt::entity viewport, entt::entity e, SoundVer
     r.emplace_or_replace<SoundVerticesModel>(e, model);
 }
 
-void SetVertex(entt::registry &r, entt::entity viewport, entt::entity e, uint32_t vertex) {
-    Stop(r, viewport, e);
-    if (r.all_of<ModalModes>(e)) r.get<FaustDSP>(viewport).Set(ExciteIndexParamName, vertex);
+void SetVertex(entt::registry &r, entt::entity e, uint32_t vertex) {
+    Stop(r, e);
+    if (r.all_of<ModalModes>(e)) r.ctx().get<FaustDSP>().Set(ExciteIndexParamName, vertex);
 }
 
 namespace {
-void SetVertexForce(entt::registry &r, entt::entity viewport, entt::entity e, float force) {
+void SetVertexForce(entt::registry &r, entt::entity e, float force) {
     const auto model = r.get<SoundVerticesModel>(e);
     // Update vertex force in the active model.
     if (model == SoundVerticesModel::Samples && force > 0) {
         if (r.all_of<VertexSamples>(e)) r.patch<VertexSamples>(e, [](auto &s) { s.Play(); });
     } else if (model == SoundVerticesModel::Modal && r.all_of<ModalModes>(e)) {
-        r.get<FaustDSP>(viewport).Set(GateParamName, force);
+        r.ctx().get<FaustDSP>().Set(GateParamName, force);
     }
 }
 
@@ -342,7 +342,7 @@ struct SoundVerticesDerivation {};
 } // namespace audio_changes
 } // namespace
 
-void RegisterAudioComponentHandlers(entt::registry &r, entt::entity viewport) {
+void RegisterAudioComponentHandlers(entt::registry &r) {
     track<audio_changes::VertexForce>(r).on<::VertexForce>(On::Create | On::Destroy);
     track<audio_changes::ModalModes>(r).on<::ModalModes>(On::Create | On::Destroy);
     track<audio_changes::SoundVerticesDerivation>(r)
@@ -350,7 +350,7 @@ void RegisterAudioComponentHandlers(entt::registry &r, entt::entity viewport) {
         .on<::ModalModes>(On::Create | On::Update | On::Destroy)
         .on<SoundVerticesModel>(On::Create | On::Update | On::Destroy);
 
-    RegisterComponentEventHandler(r, [viewport](entt::registry &r) {
+    RegisterComponentEventHandler(r, [](entt::registry &r) {
         // Rebuild SoundVertices from VertexSamples/ModalModes, selected by SoundVerticesModel.
         // Runs before any handler that reads SoundVertices.
         for (auto e : reactive<audio_changes::SoundVerticesDerivation>(r)) {
@@ -392,11 +392,11 @@ void RegisterAudioComponentHandlers(entt::registry &r, entt::entity viewport) {
                 const auto &excitable = r.get<const SoundVertices>(e);
                 if (auto vi = excitable.FindVertexIndex(vf->Vertex)) {
                     r.emplace_or_replace<MeshActiveElement>(r.get<const Instance>(e).Entity, vf->Vertex);
-                    SetVertex(r, viewport, e, *vi);
-                    SetVertexForce(r, viewport, e, vf->Force);
+                    SetVertex(r, e, *vi);
+                    SetVertexForce(r, e, vf->Force);
                 }
             } else {
-                SetVertexForce(r, viewport, e, 0.f);
+                SetVertexForce(r, e, 0.f);
             }
         }
         auto &modal_tracker = reactive<audio_changes::ModalModes>(r);
@@ -410,12 +410,13 @@ void RegisterAudioComponentHandlers(entt::registry &r, entt::entity viewport) {
                     r.remove<ModalDsp>(e);
                 }
             }
-            r.get<FaustDSP>(viewport).SetCode(GenerateDsp(r));
+            r.ctx().get<FaustDSP>().SetCode(GenerateDsp(r));
         }
     });
 }
 
-void ProcessAudio(FaustDSP &dsp, entt::registry &r, entt::entity viewport, AudioBuffer buffer) {
+void ProcessAudio(entt::registry &r, entt::entity viewport, AudioBuffer buffer) {
+    auto &dsp = r.ctx().get<FaustDSP>();
     dsp.Compute(buffer.FrameCount, &buffer.Input, &buffer.Output);
 
     for (const auto [entity, model] : r.view<SoundVerticesModel>().each()) {
@@ -743,13 +744,13 @@ void DrawObjectAudioControls(
                     const auto &verts = result->Modes.Vertices;
                     if (auto it = find(verts, active->Handle); it != verts.end()) excite_idx = distance(verts.begin(), it);
                 }
-                r.get<FaustDSP>(viewport).Set(ExciteIndexParamName, excite_idx);
+                r.ctx().get<FaustDSP>().Set(ExciteIndexParamName, excite_idx);
                 // Intentional registry write outside of Apply: the background solver kicked off by
                 // SubmitModalForm has finished, so its result is applied directly here, not as its own action.
                 if (!r.all_of<ScaleLocked>(e)) r.emplace<ScaleLocked>(e);
                 r.emplace_or_replace<ModalModes>(e, std::move(result->Modes));
                 r.emplace_or_replace<TetMeshData>(mesh_entity, std::move(result->Tets));
-                SetModel(r, viewport, e, SoundVerticesModel::Modal);
+                SetModel(r, e, SoundVerticesModel::Modal);
                 return;
             }
         }
@@ -881,7 +882,7 @@ void DrawObjectAudioControls(
     }
 
     // Poll the Faust DSP UI to see if the current excitation vertex has changed.
-    if (const auto excite_index = uint32_t(r.get<FaustDSP>(viewport).Get(ExciteIndexParamName));
+    if (const auto excite_index = uint32_t(r.ctx().get<FaustDSP>().Get(ExciteIndexParamName));
         active_vi != excite_index && excite_index < excitable->Vertices.size()) {
         action::Emit(action::audio::SetActiveElementFromDsp{excitable->Vertices[excite_index]});
     }
@@ -902,9 +903,9 @@ void DrawObjectAudioControls(
         }
     }
 
-    if (CollapsingHeader("DSP parameters")) r.get<FaustDSP>(viewport).DrawParams();
-    if (CollapsingHeader("DSP graph")) r.get<FaustDSP>(viewport).DrawGraph();
-    if (Button("Print DSP code")) std::println("DSP code:\n\n{}\n", r.get<FaustDSP>(viewport).GetCode());
+    if (CollapsingHeader("DSP parameters")) r.ctx().get<FaustDSP>().DrawParams();
+    if (CollapsingHeader("DSP graph")) r.ctx().get<FaustDSP>().DrawGraph();
+    if (Button("Print DSP code")) std::println("DSP code:\n\n{}\n", r.ctx().get<FaustDSP>().GetCode());
 
     const bool is_recording = recording && !recording->Complete();
     if (is_recording) BeginDisabled();

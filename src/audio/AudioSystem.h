@@ -21,9 +21,9 @@ struct Recording {
 };
 
 // Called from audio device callback.
-void ProcessAudio(FaustDSP &, entt::registry &, entt::entity viewport, AudioBuffer);
+void ProcessAudio(entt::registry &, entt::entity viewport, AudioBuffer);
 
-void RegisterAudioComponentHandlers(entt::registry &, entt::entity viewport);
+void RegisterAudioComponentHandlers(entt::registry &);
 void RemoveAudioComponents(entt::registry &, entt::entity sound_entity);
 
 // Draw the Audio controls for a sound object entity (has SoundVerticesModel).
@@ -63,6 +63,6 @@ void RemoveVertexSamples(
 // Decode any miniaudio-supported audio file to mono float frames at `SampleRate`. Returns empty on failure.
 std::vector<float> LoadAudioFrames(const std::string &file_path);
 
-void Stop(entt::registry &, entt::entity viewport, entt::entity sound_entity);
-void SetModel(entt::registry &, entt::entity viewport, entt::entity sound_entity, SoundVerticesModel);
-void SetVertex(entt::registry &, entt::entity viewport, entt::entity sound_entity, uint32_t vertex);
+void Stop(entt::registry &, entt::entity sound_entity);
+void SetModel(entt::registry &, entt::entity sound_entity, SoundVerticesModel);
+void SetVertex(entt::registry &, entt::entity sound_entity, uint32_t vertex);

@@ -66,7 +66,7 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
                     if (const auto ranges = GetBitsetRangesForSelected(r); !ranges.empty()) {
                         const auto element_count = std::ranges::fold_left(ranges, uint32_t{0}, [](uint32_t total, const auto &range) { return std::max(total, range.Offset + range.Count); });
                         const uint32_t bitset_words = (element_count + 31) / 32;
-                        const auto bits = r.get<const SelectionBitsetRef>(viewport).Value;
+                        const auto bits = r.ctx().get<const SelectionBitsetRef>().Value;
                         baseline.ElementBitset.assign(bits.begin(), bits.begin() + bitset_words);
                     }
                 } else if (bone_mode) {
@@ -125,7 +125,7 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
                     if (!arm_obj.BoneEntities.empty()) r.emplace<BoneActive>(arm_obj.BoneEntities.back());
                 } else if (interaction_mode == InteractionMode::Edit) {
                     const auto ranges = GetBitsetRangesForSelected(r);
-                    auto *bits = r.get<SelectionBitsetRef>(viewport).Value.data();
+                    auto *bits = r.ctx().get<SelectionBitsetRef>().Value.data();
                     for (const auto &range : ranges) ::selection::SelectAll(bits, range.Offset, range.Count);
                     if (!ranges.empty()) r.emplace_or_replace<SelectionBitsDirty>(viewport);
                 } else if (interaction_mode == InteractionMode::Object) {

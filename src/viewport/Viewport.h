@@ -24,13 +24,13 @@ void ClearScene(entt::registry &, entt::entity viewport);
 // If provided, waits on `viewport_consumer_fence` before destroying old resources on extent change.
 void RenderViewport(entt::registry &, entt::entity viewport, vk::Fence viewport_consumer_fence = {});
 // Wait for pending viewport render to complete. No-op if no render pending.
-void WaitForRender(entt::registry &, entt::entity viewport);
+void WaitForRender(entt::registry &);
 
 // Process deferred component events and rebuild draw lists, without presenting.
 void AdvanceViewport(entt::registry &, entt::entity viewport);
 
 // Synchronously submit and present the already-recorded frame.
-void PresentViewport(entt::registry &, entt::entity viewport);
+void PresentViewport(entt::registry &);
 
 // Record the viewport to an H.264 mp4 by piping frames to an `ffmpeg` subprocess.
 // When a look-through camera is active, captures only the framed sub-region matching

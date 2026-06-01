@@ -9,7 +9,6 @@
 #include "animation/TimelineUi.h"
 #include "audio/AudioDevice.h"
 #include "audio/AudioSystem.h"
-#include "audio/FaustDSP.h"
 #include "gizmo/TransformGizmoTypes.h"
 #include "render/SvgResource.h"
 #include "render/SvgUpload.h"
@@ -259,7 +258,7 @@ void NewProject(entt::registry &r, entt::entity viewport, const fs::path &replay
     ClearScene(r, viewport);
     SetupScene(r, viewport);
     AddDefaultSceneContent(r);
-    if (action::ReplayLog(r, viewport, replay_path, &AdvanceViewport)) PresentViewport(r, viewport);
+    if (action::ReplayLog(r, viewport, replay_path, &AdvanceViewport)) PresentViewport(r);
     action::StartLog();
 }
 } // namespace
@@ -368,18 +367,15 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
     SetupScene(r, viewport); // Before the first frame reads viewport state.
     AddDefaultSceneContent(r);
 
-    auto &faust_dsp = r.get<FaustDSP>(viewport);
-
     struct AudioContext {
-        FaustDSP *Dsp;
         entt::registry *R;
         entt::entity viewport;
     };
-    AudioContext audio_ctx{&faust_dsp, &r, viewport};
+    AudioContext audio_ctx{&r, viewport};
     AudioDevice audio_device{
         {.Callback = [](auto buffer, void *user_data) {
              auto &ctx = *static_cast<AudioContext *>(user_data);
-             ProcessAudio(*ctx.Dsp, *ctx.R, ctx.viewport, std::move(buffer));
+             ProcessAudio(*ctx.R, ctx.viewport, std::move(buffer));
          },
          .UserData = &audio_ctx}
     };
@@ -403,7 +399,7 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
         SDL_Event event;
         while (SDL_PollEvent(&event)) {
             if (event.type == SDL_EVENT_MOUSE_WHEEL) {
-                r.get<FrameState>(viewport).PreciseWheelDelta += vec2{-event.wheel.x, event.wheel.y};
+                r.ctx().get<FrameState>().PreciseWheelDelta += vec2{-event.wheel.x, event.wheel.y};
                 // SDL's pixel-derived deltas overscroll ImGui panels.
                 constexpr float ImGuiWheelScale = 0.3f;
                 event.wheel.x *= ImGuiWheelScale;
@@ -668,7 +664,7 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
                 Unindent(6);
                 PopStyleVar();
                 const auto scene_e = viewport;
-                if (auto a = RenderAnimationTimeline(r.get<const TimelineRange>(scene_e), r.get<const TimelinePlayback>(scene_e), r.get<const AnimationTimelineView>(scene_e), r.get<const ViewportIcons>(scene_e).Anim)) {
+                if (auto a = RenderAnimationTimeline(r.get<const TimelineRange>(scene_e), r.get<const TimelinePlayback>(scene_e), r.get<const AnimationTimelineView>(scene_e), r.ctx().get<const ViewportIcons>().Anim)) {
                     std::visit([](auto leaf) { action::Emit(leaf); }, std::move(*a));
                 }
             }
@@ -679,11 +675,11 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
         if (windows.Viewport.Visible) {
             PushStyleVar(ImGuiStyleVar_WindowPadding, {0, 0});
             if (Begin(windows.Viewport.Name, &windows.Viewport.Visible)) {
-                Interact(r, viewport, r.get<FrameState>(viewport));
+                Interact(r, viewport, r.ctx().get<FrameState>());
                 auto &dl = *ImGui::GetWindowDrawList();
                 dl.ChannelsSplit(2);
                 dl.ChannelsSetCurrent(1);
-                InteractOverlay(r, viewport, r.get<FrameState>(viewport));
+                InteractOverlay(r, viewport, r.ctx().get<FrameState>());
                 // Submit GPU render (nonblocking). WaitForRender() is called later, before RenderFrame() samples the final image.
                 RenderViewport(r, viewport, GetFrameCount() > 1 ? vk::Fence{wd.Frames[wd.FrameIndex].Fence} : vk::Fence{});
                 dl.ChannelsMerge();
@@ -719,7 +715,7 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
         ImGui::Render();
         auto *draw_data = GetDrawData();
         if (bool is_minimized = (draw_data->DisplaySize.x <= 0.0f || draw_data->DisplaySize.y <= 0.0f); !is_minimized) {
-            WaitForRender(r, viewport); // ImGui samples final image
+            WaitForRender(r); // ImGui samples final image
             // Lazy-start recording once the viewport has rendered at least once (so FinalColorImage has a valid extent).
             if (recording_mode && !IsRecording(r, viewport) && GetFrameCount() > 1) {
                 StartRecording(r, viewport, record_path, record_fps);

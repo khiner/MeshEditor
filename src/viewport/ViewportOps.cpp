@@ -55,7 +55,7 @@ bool SetInteractionMode(entt::registry &r, entt::entity viewport, InteractionMod
             for (const auto [_, br] : r.view<const MeshSelectionBitsetRange>().each()) {
                 next_offset = std::max(next_offset, (br.Offset + br.Count + 31) / 32 * 32);
             }
-            auto *bits = r.get<SelectionBitsetRef>(viewport).Value.data();
+            auto *bits = r.ctx().get<SelectionBitsetRef>().Value.data();
             for (const auto mesh_entity : selection::GetSelectedMeshEntities(r)) {
                 if (r.all_of<MeshSelectionBitsetRange>(mesh_entity)) continue;
                 const auto &mesh = r.get<const Mesh>(mesh_entity);

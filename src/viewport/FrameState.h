@@ -6,7 +6,7 @@
 #include <optional>
 
 // Per-frame scratch state produced and consumed within a single frame.
-// A component on the viewport entity; passed by reference into Interact/InteractOverlay/DrawOverlay so producers and consumers see the same instance.
+// A context singleton; passed by reference into Interact/InteractOverlay/DrawOverlay so producers and consumers see the same instance.
 struct FrameState {
     vec2 AccumulatedWrapMouseDelta{0, 0};
     vec2 PreciseWheelDelta{0, 0};

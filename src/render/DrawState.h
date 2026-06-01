@@ -37,20 +37,19 @@ struct SelectionDrawInfo {
     DrawBatchInfo Batch;
 };
 
-// Per-scene draw-list scratch storage. Re-populated each frame by RecordRenderCommandBuffer;
-// vector capacity is amortized across frames. Component on the viewport singleton entity.
+// Per-frame draw-list scratch storage
 struct DrawState {
     DrawListBuilder List;
     uint32_t MainDrawCount{0}; // Draws.size() after main batches, before silhouette
     uint32_t MainIndirectCount{0}; // IndirectCommands.size() after main batches
     DrawBatchInfo Silhouette;
     DrawBatchInfo FillOpaque, FillBlend;
-    DrawBatchInfo EdgeQuad, WireLine, Point;
-    DrawBatchInfo ExtrasLine;
+    DrawBatchInfo EdgeQuad, WireLine, Point, ExtrasLine;
     DrawBatchInfo BoneFill, BoneWire, BoneSphereFill, BoneSphereWire;
     DrawBatchInfo OverlayFaceNormals, OverlayVertexNormals;
 
     // Cached selection pass draw list — reused when only the camera changed.
     DrawListBuilder SelectionList;
     std::vector<SelectionDrawInfo> SelectionDraws;
+    bool SelectionStale{true}; // Selection fragment data no longer matches the scene. Cleared after RenderSelectionPass.
 };

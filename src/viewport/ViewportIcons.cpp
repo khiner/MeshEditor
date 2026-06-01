@@ -5,11 +5,10 @@
 
 #include <entt/entity/registry.hpp>
 
-void LoadViewportIcons(entt::registry &r, entt::entity viewport) {
+void LoadViewportIcons(entt::registry &r) {
     const auto dir = Paths::Res() / "svg";
     SvgUploadBatch batch{r};
-    r.emplace<ViewportIcons>(
-        viewport,
+    r.ctx().emplace<ViewportIcons>(
         ViewportIcons{
             .Transform = {
                 .Select = LoadSvg(batch, dir / "select.svg"),

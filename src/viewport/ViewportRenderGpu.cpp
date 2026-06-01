@@ -15,7 +15,6 @@
 #include "scene/Entity.h"
 #include "scene/WorldTransform.h"
 #include "selection/Selection.h"
-#include "selection/SelectionComponents.h"
 #include "selection/SelectionGpu.h"
 #include "viewport/InteractionComponents.h"
 #include "viewport/RenderExtent.h"
@@ -122,7 +121,7 @@ void AppendExtrasDraw(entt::registry &r, const InstanceArena &instances, DrawLis
 
 void RecordRenderCommandBuffer(entt::registry &r, entt::entity viewport, vk::CommandBuffer cb, bool silhouette_only) {
     const Timer timer{silhouette_only ? "RecordRenderCommandBuffer (silhouette)" : "RecordRenderCommandBuffer"};
-    if (!silhouette_only) r.emplace_or_replace<SelectionStale>(viewport);
+    if (!silhouette_only) r.ctx().get<DrawState>().SelectionStale = true;
 
     const auto &vk = r.ctx().get<const VulkanResources>();
     auto &buffers = r.ctx().get<GpuBuffers>();
@@ -140,8 +139,8 @@ void RecordRenderCommandBuffer(entt::registry &r, entt::entity viewport, vk::Com
         GetActivePbrLighting(r, viewport, settings.ViewportShading).RealTransmission &&
         pipelines.Main.Compiler.HasFeature(PbrFeature::Transmission);
 
-    const auto &sel_slots = r.get<const SelectionSlots>(viewport);
-    auto &draw = r.get<DrawState>(viewport);
+    const auto &sel_slots = r.ctx().get<const SelectionSlots>();
+    auto &draw = r.ctx().get<DrawState>();
     auto &draw_list = draw.List;
 
     // Build mesh_entity -> deform slots mapping for skinned meshes (edit mode shows rest pose)

@@ -741,7 +741,7 @@ static void RenderEntityControls(entt::registry &r, entt::entity viewport, entt:
     if (const auto *instance = r.try_get<Instance>(active_entity); instance && r.all_of<Mesh>(instance->Entity)) {
         const bool has_sound = r.all_of<SoundVerticesModel>(active_entity);
         if (CollapsingHeader("Audio", has_sound ? ImGuiTreeNodeFlags_DefaultOpen : 0)) {
-            DrawObjectAudioControls(r, viewport, active_entity, GetMeshEntity(r, active_entity), r.get<const SelectionBitsetRef>(viewport).Value.data());
+            DrawObjectAudioControls(r, viewport, active_entity, GetMeshEntity(r, active_entity), r.ctx().get<const SelectionBitsetRef>().Value.data());
             if (const auto *active_mic = r.try_get<RealImpactActiveMicrophone>(active_entity)) {
                 SeparatorText("Microphone");
                 Text("Active: %s", GetName(r, active_mic->Entity).c_str());
@@ -868,7 +868,7 @@ void RenderControls(entt::registry &r, entt::entity viewport) {
                         if (const auto *instance = r.try_get<Instance>(active_entity); instance && r.all_of<Mesh>(instance->Entity)) {
                             const auto *br = r.try_get<const MeshSelectionBitsetRange>(instance->Entity);
                             const uint32_t selected_count = br ?
-                                selection::CountSelected(r.get<const SelectionBitsetRef>(viewport).Value.data(), br->Offset, br->Count) :
+                                selection::CountSelected(r.ctx().get<const SelectionBitsetRef>().Value.data(), br->Offset, br->Count) :
                                 0;
                             Text("Editing %s: %u selected", label(edit_mode).data(), selected_count);
                         }

@@ -18,12 +18,12 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
                 r.emplace_or_replace<VertexForce>(a.InstanceEntity, a.VertexIndex, 1.f);
             },
             [&](ClearExciteImpacts) { r.clear<VertexForce>(); },
-            [&](const SetModel &a) { ::SetModel(r, viewport, FindActiveEntity(r), a.Model); },
+            [&](const SetModel &a) { ::SetModel(r, FindActiveEntity(r), a.Model); },
             [&](const SetExciteVertex &a) {
                 const auto e = FindActiveEntity(r);
                 r.remove<VertexForce>(e);
                 r.emplace_or_replace<MeshActiveElement>(GetActiveMeshEntity(r), a.MeshVertex);
-                ::SetVertex(r, viewport, e, a.VertexIndex);
+                ::SetVertex(r, e, a.VertexIndex);
             },
             [&](const SetActiveElementFromDsp &a) { r.emplace_or_replace<MeshActiveElement>(GetActiveMeshEntity(r), a.Vertex); },
             [&](const StartExcite &a) {
@@ -38,7 +38,7 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
             [&](CancelModalForm) { r.remove<ModalModelCreateInfo>(FindActiveEntity(r)); },
             [&](SubmitModalForm) {
                 const auto e = FindActiveEntity(r);
-                ::Stop(r, viewport, e);
+                ::Stop(r, e);
                 r.emplace_or_replace<AcousticMaterial>(GetActiveMeshEntity(r), r.get<const ModalModelCreateInfo>(e).Material);
                 r.remove<ModalModelCreateInfo>(e);
             },

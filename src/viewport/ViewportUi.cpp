@@ -371,7 +371,7 @@ void Interact(entt::registry &r, entt::entity viewport, FrameState &frame) {
 
 void InteractOverlay(entt::registry &r, entt::entity viewport, FrameState &frame) {
     auto &meshes = r.ctx().get<MeshStore>();
-    const auto &icons = r.get<const ViewportIcons>(viewport);
+    const auto &icons = r.ctx().get<const ViewportIcons>();
     const rect viewport_rect{ToGlm(GetWindowPos()), ToGlm(GetContentRegionAvail())};
     const bool active_transform = TransformGizmo::IsUsing(r, viewport);
     static constexpr float OrientationGizmoSize{84};
@@ -773,7 +773,7 @@ void InteractOverlay(entt::registry &r, entt::entity viewport, FrameState &frame
         if (bone_mode) return !bone_selected_view.empty();
         if (selected_view.empty()) return false;
         if (!mesh_edit_mode) return true;
-        const auto *bits = r.get<const SelectionBitsetRef>(viewport).Value.data();
+        const auto *bits = r.ctx().get<const SelectionBitsetRef>().Value.data();
         for (const auto [e, instance] : r.view<const Instance, const Selected>(entt::exclude<ScaleLocked>).each()) {
             if (const auto *br = r.try_get<const MeshSelectionBitsetRange>(instance.Entity)) {
                 if (selection::CountSelected(bits, br->Offset, br->Count) > 0) return true;
@@ -880,7 +880,7 @@ void InteractOverlay(entt::registry &r, entt::entity viewport, FrameState &frame
 
 void DrawOverlay(entt::registry &r, entt::entity viewport, FrameState &frame) {
     const rect viewport_rect{ToGlm(GetWindowPos()), ToGlm(GetContentRegionAvail())};
-    const auto &axes = r.get<const colors::AxesArray>(viewport);
+    const auto axes = colors::MakeAxes(r.get<const ViewportTheme>(viewport).AxisColors);
     const auto &camera = r.get<const ViewCamera>(viewport);
 
     OrientationGizmo::Render(axes);

@@ -131,7 +131,7 @@ void RenderElementSelectionPass(
     const auto &vk_res = r.ctx().get<const VulkanResources>();
     const auto &pipelines = r.ctx().get<const Pipelines>();
     const auto &one_shot = r.ctx().get<const OneShotGpu>();
-    const auto &sel_slots = r.get<const SelectionSlots>(viewport);
+    const auto &sel_slots = r.ctx().get<const SelectionSlots>();
     auto &meshes = r.ctx().get<MeshStore>();
     auto &buffers = r.ctx().get<GpuBuffers>();
 
@@ -271,7 +271,7 @@ void RenderElementSelectionPass(
     WaitFor(*one_shot.Fence, vk_res.Device);
 
     // Element selection pass overwrites the shared head image used for object selection.
-    r.emplace_or_replace<SelectionStale>(viewport);
+    r.ctx().get<DrawState>().SelectionStale = true;
 }
 
 } // namespace
@@ -288,7 +288,7 @@ std::optional<std::pair<entt::entity, uint32_t>> RunElementPickFromRanges(
     const auto &vk_res = r.ctx().get<const VulkanResources>();
     const auto &pipelines = r.ctx().get<const Pipelines>();
     const auto &one_shot = r.ctx().get<const OneShotGpu>();
-    const auto &sel_slots = r.get<const SelectionSlots>(viewport);
+    const auto &sel_slots = r.ctx().get<const SelectionSlots>();
     auto &buffers = r.ctx().get<GpuBuffers>();
     RenderElementSelectionPass(r, viewport, ranges, element, false, {}, {}, *one_shot.SelectionReady);
     if (const auto index = FindNearestPickedElement(
@@ -310,7 +310,7 @@ void RenderSelectionPassWith(entt::registry &r, entt::entity viewport, bool rend
     const Timer timer{"RenderSelectionPassWith"};
     const auto &vk = r.ctx().get<const VulkanResources>();
     const auto &one_shot = r.ctx().get<const OneShotGpu>();
-    const auto &sel_slots = r.get<const SelectionSlots>(viewport);
+    const auto &sel_slots = r.ctx().get<const SelectionSlots>();
     auto &buffers = r.ctx().get<GpuBuffers>();
     auto &pipelines = r.ctx().get<const Pipelines>();
     DrawListBuilder draw_list;
@@ -395,15 +395,15 @@ void RenderSelectionPass(entt::registry &r, entt::entity viewport, vk::Semaphore
     // Selection draw list is pre-built by RecordRenderCommandBuffer.
     RenderSelectionPassWith(
         r, viewport, false,
-        [&r, viewport](DrawListBuilder &draw_list) -> std::vector<SelectionDrawInfo> {
-            const auto &draw = r.get<const DrawState>(viewport);
+        [&r](DrawListBuilder &draw_list) -> std::vector<SelectionDrawInfo> {
+            const auto &draw = r.ctx().get<const DrawState>();
             draw_list = draw.SelectionList;
             return draw.SelectionDraws;
         },
         signal_semaphore
     );
 
-    r.remove<SelectionStale>(viewport);
+    r.ctx().get<DrawState>().SelectionStale = false;
 }
 
 void RunBoxSelectElements(entt::registry &r, entt::entity viewport, std::span<const ElementRange> ranges, Element element, std::pair<uvec2, uvec2> box_px, bool is_additive) {
@@ -448,7 +448,7 @@ std::optional<uint32_t> RunSoundVerticesVertexPick(entt::registry &r, entt::enti
     if (!instance) return {};
     const auto &vk = r.ctx().get<const VulkanResources>();
     const auto &one_shot = r.ctx().get<const OneShotGpu>();
-    const auto &sel_slots = r.get<const SelectionSlots>(viewport);
+    const auto &sel_slots = r.ctx().get<const SelectionSlots>();
     auto &buffers = r.ctx().get<GpuBuffers>();
     auto &meshes = r.ctx().get<MeshStore>();
     auto &pipelines = r.ctx().get<const Pipelines>();
@@ -469,7 +469,7 @@ std::optional<uint32_t> RunSoundVerticesVertexPick(entt::registry &r, entt::enti
         draw.ElementStateSlotOffset = {meshes.GetVertexStateSlot(), mesh_buffers.Vertices.Offset};
         AppendDraw(draw_list, batch, mesh_buffers.VertexIndices, models, draw, model_index);
         return std::vector{SelectionDrawInfo{SPT::SelectionElementVertex, batch}}; }, *one_shot.SelectionReady);
-    r.emplace_or_replace<SelectionStale>(viewport);
+    r.ctx().get<DrawState>().SelectionStale = true;
 
     return FindNearestPickedElement(
         buffers, pipelines.ElementPick, *one_shot.Cb,
@@ -483,7 +483,7 @@ std::optional<uint32_t> RunSoundVerticesVertexPick(entt::registry &r, entt::enti
 std::vector<entt::entity> RunObjectPick(entt::registry &r, entt::entity viewport, uint32_t &object_pick_epoch_tag, uvec2 mouse_px, uint32_t radius_px) {
     const auto &vk = r.ctx().get<const VulkanResources>();
     const auto &one_shot = r.ctx().get<const OneShotGpu>();
-    const auto &sel_slots = r.get<const SelectionSlots>(viewport);
+    const auto &sel_slots = r.ctx().get<const SelectionSlots>();
     auto &buffers = r.ctx().get<GpuBuffers>();
     auto &pipelines = r.ctx().get<const Pipelines>();
     const uint32_t next_object_id = r.ctx().get<const ObjectIdCounter>().Next;
@@ -491,7 +491,7 @@ std::vector<entt::entity> RunObjectPick(entt::registry &r, entt::entity viewport
     const uint32_t max_object_id = std::min(next_object_id - 1, GpuBuffers::MaxSelectableObjects);
     if (max_object_id == 0) return {};
 
-    const bool selection_rendered = r.all_of<SelectionStale>(viewport);
+    const bool selection_rendered = r.ctx().get<const DrawState>().SelectionStale;
     if (selection_rendered) RenderSelectionPass(r, viewport, *one_shot.SelectionReady);
 
     const Timer timer{"RunObjectPick"};
@@ -556,10 +556,10 @@ std::vector<entt::entity> RunObjectPick(entt::registry &r, entt::entity viewport
 }
 
 namespace {
-void DispatchBoxSelect(entt::registry &r, entt::entity viewport, uvec2 box_min, uvec2 box_max, uint32_t max_id, vk::Semaphore wait_semaphore) {
+void DispatchBoxSelect(entt::registry &r, uvec2 box_min, uvec2 box_max, uint32_t max_id, vk::Semaphore wait_semaphore) {
     const auto &vk = r.ctx().get<const VulkanResources>();
     const auto &one_shot = r.ctx().get<const OneShotGpu>();
-    const auto &sel_slots = r.get<const SelectionSlots>(viewport);
+    const auto &sel_slots = r.ctx().get<const SelectionSlots>();
     auto &buffers = r.ctx().get<GpuBuffers>();
     auto &pipelines = r.ctx().get<const Pipelines>();
     const uint32_t bitset_words = (max_id + 31) / 32;
@@ -593,9 +593,9 @@ std::vector<entt::entity> RunBoxSelect(entt::registry &r, entt::entity viewport,
     const uint32_t max_object_id = std::min(next_object_id - 1, GpuBuffers::MaxSelectableObjects);
 
     const Timer timer{"RunBoxSelect"};
-    const bool selection_rendered = r.all_of<SelectionStale>(viewport);
+    const bool selection_rendered = r.ctx().get<const DrawState>().SelectionStale;
     if (selection_rendered) RenderSelectionPass(r, viewport, *one_shot.SelectionReady);
-    DispatchBoxSelect(r, viewport, box_min, box_max, max_object_id, selection_rendered ? *one_shot.SelectionReady : vk::Semaphore{});
+    DispatchBoxSelect(r, box_min, box_max, max_object_id, selection_rendered ? *one_shot.SelectionReady : vk::Semaphore{});
 
     std::unordered_map<uint32_t, entt::entity> object_id_to_entity;
     for (const auto [e, ri] : r.view<RenderInstance>().each()) object_id_to_entity[ri.ObjectId] = e;
@@ -615,14 +615,14 @@ std::vector<entt::entity> RunBoxSelect(entt::registry &r, entt::entity viewport,
 }
 
 void DispatchUpdateSelectionStates(
-    entt::registry &r, entt::entity viewport,
+    entt::registry &r,
     std::span<const ElementRange> ranges, Element element
 ) {
     if (ranges.empty() || element == Element::None) return;
     const auto &vk_res = r.ctx().get<const VulkanResources>();
     const auto &pipelines = r.ctx().get<const Pipelines>();
     const auto &one_shot = r.ctx().get<const OneShotGpu>();
-    const auto &sel_slots = r.get<const SelectionSlots>(viewport);
+    const auto &sel_slots = r.ctx().get<const SelectionSlots>();
     auto &meshes = r.ctx().get<MeshStore>();
 
     auto cb = *one_shot.Cb;
@@ -684,7 +684,7 @@ void ApplySelectionStateUpdate(
 ) {
     auto &meshes = r.ctx().get<MeshStore>();
     auto &buffers = r.ctx().get<GpuBuffers>();
-    DispatchUpdateSelectionStates(r, viewport, ranges, element);
+    DispatchUpdateSelectionStates(r, ranges, element);
     if (element == Element::Vertex) {
         for (const auto &range : ranges) {
             const auto &mesh = r.get<const Mesh>(range.MeshEntity);

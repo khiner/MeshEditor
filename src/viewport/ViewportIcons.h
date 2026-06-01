@@ -21,5 +21,5 @@ struct ViewportIcons {
     AnimationIcons Anim;
 };
 
-// Emplaces ViewportIcons on `viewport` and uploads each SVG into its bitmap texture.
-void LoadViewportIcons(entt::registry &, entt::entity viewport);
+// Emplaces the ViewportIcons context singleton and uploads each SVG into its bitmap texture.
+void LoadViewportIcons(entt::registry &);

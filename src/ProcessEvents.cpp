@@ -26,6 +26,7 @@
 #include "physics/PhysicsDebugDraw.h"
 #include "physics/PhysicsSystem.h"
 #include "physics/PhysicsTypes.h"
+#include "render/DrawState.h"
 #include "render/GpuBuffers.h"
 #include "render/Instance.h"
 #include "render/LightComponents.h"
@@ -55,8 +56,6 @@
 
 #include "imgui.h"
 #include <glm/gtx/euler_angles.hpp>
-
-#include "ui/AxisColors.h" // Must be after imgui.h
 
 #include <iostream>
 
@@ -272,7 +271,7 @@ void SetEditMode(entt::registry &r, entt::entity viewport, Element mode) {
     if (clear_words > 0) memset(bits, 0, clear_words * sizeof(uint32_t));
 
     if (!old_ranges.empty()) {
-        DispatchUpdateSelectionStates(r, viewport, old_ranges, current_mode);
+        DispatchUpdateSelectionStates(r, old_ranges, current_mode);
         // Face mode also derives edge states via CPU; clear them when exiting face-select.
         if (current_mode == Element::Face) {
             for (const auto &p : pending) meshes.UpdateEdgeStatesFromFaces(r.get<const Mesh>(p.MeshEntity), {}, {});
@@ -856,7 +855,7 @@ RenderRequest ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
             logical_extent.y > 0u ? float(render_extent.y) / float(logical_extent.y) : 1.f
         );
         const auto radius = std::max(1u, uint32_t(float(ObjectSelectRadiusPx) * render_scale + 0.5f));
-        auto &frame = r.get<FrameState>(viewport);
+        auto &frame = r.ctx().get<FrameState>();
         const auto hits = ResolveHits(r, RunObjectPick(r, viewport, frame.ObjectPickEpochTag, mouse_px, radius), bone_mode);
         const auto pick = hits.empty() ? std::optional<SelectionHit>{} : [&]() -> std::optional<SelectionHit> {
             if (!cycle) return hits.front();
@@ -1307,7 +1306,6 @@ RenderRequest ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
     }
     if (!reactive<changes::ViewportTheme>(r).empty()) {
         UpdateDerivedColors(r.get<ViewportTheme>(viewport));
-        r.get<colors::AxesArray>(viewport) = colors::MakeAxes(r.get<const ViewportTheme>(viewport).AxisColors);
         auto theme = r.get<const ViewportTheme>(viewport);
         theme.EdgeWidth *= ImGui::GetIO().DisplayFramebufferScale.x;
         buffers.ViewportThemeUBO.Update(as_bytes(theme));
@@ -1761,7 +1759,7 @@ RenderRequest ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
             const auto refresh_transmission_descriptor = [&] {
                 const auto &main = pipelines.Main;
                 const vk::DescriptorImageInfo info = main.Transmission ? vk::DescriptorImageInfo{*main.Transmission->Sampler, *main.Transmission->Image.View, vk::ImageLayout::eShaderReadOnlyOptimal} : vk::DescriptorImageInfo{*main.Resources->NearestSampler, *main.Resources->ColorImage.View, vk::ImageLayout::eShaderReadOnlyOptimal};
-                vk.Device.updateDescriptorSets({slots.MakeSamplerWrite(r.get<const SelectionSlots>(viewport).TransmissionSampler, info)}, {});
+                vk.Device.updateDescriptorSets({slots.MakeSamplerWrite(r.ctx().get<const SelectionSlots>().TransmissionSampler, info)}, {});
                 request(RenderRequest::ReRecord);
             };
             if (shading == ViewportShadingMode::MaterialPreview || shading == ViewportShadingMode::Rendered) {
@@ -1851,12 +1849,12 @@ RenderRequest ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
             .BoneXRay = settings.ViewportShading == ViewportShadingMode::Wireframe ? 1u : 0u,
             // Polygon offset factor matching Blender's GPU_polygon_offset_calc (viewdist = max ortho extent)
             .NdcOffsetFactor = std::holds_alternative<Perspective>(camera.Data) ? proj[3][2] * -0.00125f : 0.000005f * std::max(std::abs(1.f / proj[0][0]), std::abs(1.f / proj[1][1])),
-            .TransmissionFramebufferSamplerSlot = r.get<const SelectionSlots>(viewport).TransmissionSampler,
+            .TransmissionFramebufferSamplerSlot = r.ctx().get<const SelectionSlots>().TransmissionSampler,
             .TransmissionFramebufferMipCount = pipelines.Main.Transmission ? pipelines.Main.Transmission->MipCount : 1u,
             .UseRealTransmission = (is_pbr_mode && active_lighting.RealTransmission && pipelines.Main.Transmission) ? 1u : 0u,
             .DebugChannel = is_pbr_mode ? settings.DebugChannel : DebugChannel::None,
         }));
-        r.emplace_or_replace<SelectionStale>(viewport);
+        r.ctx().get<DrawState>().SelectionStale = true;
         request(RenderRequest::Submit);
     }
 
@@ -1898,7 +1896,7 @@ RenderRequest ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
         }
         if (const auto *active = r.try_get<const MeshActiveElement>(mesh_entity)) active_handle = active->Handle;
         meshes.UpdateElementStates(mesh, Element::Vertex, selected_vertices, selected_edges, active_edges, selected_faces, active_handle, excited_handle);
-        r.emplace_or_replace<SelectionStale>(viewport);
+        r.ctx().get<DrawState>().SelectionStale = true;
     }
     if (!dirty_element_state_meshes.empty()) request(RenderRequest::Submit);
     if (r.all_of<ElementStatesDirty>(viewport)) {

@@ -49,8 +49,6 @@
 
 #include "imgui.h"
 
-#include "ui/AxisColors.h" // Must be after imgui.h
-
 #include "render/GpuBuffers.h"
 #include "render/LightComponents.h"
 
@@ -60,8 +58,8 @@ namespace {
 constexpr vk::Extent2D ToExtent2D(vk::Extent3D extent) { return {extent.width, extent.height}; }
 
 // Per-viewport render command buffers, fence, and the ImGui texture handle for the final color image.
-// Command buffers are allocated from OneShotGpu::Pool; DeinitViewport must remove this component
-// before OneShotGpu so the buffers are freed before their owning pool.
+// Command buffers are allocated from OneShotGpu::Pool; DeinitViewport must erase this context
+// singleton before OneShotGpu so the buffers are freed before their owning pool.
 struct ViewportRenderResources {
     vk::UniqueCommandBuffer RenderCommandBuffer;
 #ifdef MVK_FORCE_STAGED_TRANSFERS
@@ -106,10 +104,10 @@ void FlushDescriptorUpdates(vk::Device device, mvk::BufferContext &ctx) {
 }
 
 // Submit the recorded command buffer. RenderFence must be unsignaled (reset by the prior WaitForRender).
-void SubmitRecordedFrame(entt::registry &r, entt::entity viewport) {
+void SubmitRecordedFrame(entt::registry &r) {
     const auto &vk = r.ctx().get<const VulkanResources>();
     auto &buffers = r.ctx().get<GpuBuffers>();
-    auto &resources = r.get<ViewportRenderResources>(viewport);
+    auto &resources = r.ctx().get<ViewportRenderResources>();
     // Always ensure DrawDataSlot points to render draw data before submitting (may have been overwritten by a selection pass).
     buffers.SceneViewUBO.Update(as_bytes(buffers.RenderDraw.DrawData.Slot), offsetof(SceneViewUBO, DrawDataSlot));
     vk::SubmitInfo submit;
@@ -120,22 +118,22 @@ void SubmitRecordedFrame(entt::registry &r, entt::entity viewport) {
     submit.setCommandBuffers(*resources.RenderCommandBuffer);
 #endif
     vk.Queue.submit(submit, *resources.RenderFence);
-    r.get<FrameState>(viewport).RenderPending = true;
+    r.ctx().get<FrameState>().RenderPending = true;
 }
 
 // Re-record the command buffer for `render_request`. `force_full` records the full buffer even when the request wouldn't.
 void RecordViewportFrame(entt::registry &r, entt::entity viewport, RenderRequest render_request, bool force_full = false) {
-    auto &resources = r.get<ViewportRenderResources>(viewport);
+    auto &resources = r.ctx().get<ViewportRenderResources>();
     if (render_request == RenderRequest::ReRecord || force_full) {
         RecordRenderCommandBuffer(r, viewport, *resources.RenderCommandBuffer);
-    } else if (render_request == RenderRequest::ReRecordSilhouette && r.get<const DrawState>(viewport).MainDrawCount > 0) {
+    } else if (render_request == RenderRequest::ReRecordSilhouette && r.ctx().get<const DrawState>().MainDrawCount > 0) {
         RecordRenderCommandBuffer(r, viewport, *resources.RenderCommandBuffer, /*silhouette_only=*/true);
     }
 }
 
 bool SubmitViewport(entt::registry &r, entt::entity viewport, vk::Fence viewport_consumer_fence) {
     const auto &vk = r.ctx().get<const VulkanResources>();
-    const auto &sel_slots = r.get<const SelectionSlots>(viewport);
+    const auto &sel_slots = r.ctx().get<const SelectionSlots>();
     auto &slots = r.ctx().get<DescriptorSlots>();
     auto &buffers = r.ctx().get<GpuBuffers>();
     auto &pipelines = r.ctx().get<Pipelines>();
@@ -221,11 +219,11 @@ bool SubmitViewport(entt::registry &r, entt::entity viewport, vk::Fence viewport
     }
 
 #ifdef MVK_FORCE_STAGED_TRANSFERS
-    RecordTransferCommandBuffer(r, viewport, *r.get<ViewportRenderResources>(viewport).TransferCommandBuffer);
+    RecordTransferCommandBuffer(r, viewport, *r.ctx().get<ViewportRenderResources>().TransferCommandBuffer);
 #endif
 
     RecordViewportFrame(r, viewport, render_request, extent_changed || render_extent_changed);
-    SubmitRecordedFrame(r, viewport);
+    SubmitRecordedFrame(r);
     return extent_changed || render_extent_changed;
 }
 } // namespace
@@ -308,23 +306,23 @@ entt::entity InitEngine(entt::registry &r, VulkanResources vc, CreateSvgResource
 
     const auto viewport = WireRegistry(r);
     auto &buffers = r.ctx().get<GpuBuffers>();
-    // Engine-owned components. Document state lives in SetupScene.
+    // Engine-owned state. ViewportExtent stays a component (reactively tracked); the rest are
+    // single-instance context singletons. Document state lives in SetupScene.
     r.emplace<ViewportExtent>(viewport);
-    r.emplace<SelectionBitsetRef>(viewport, std::span<uint32_t>{buffers.SelectionBitset.Data(), GpuBuffers::SelectionBitsetWords});
-    r.emplace<SelectionSlots>(viewport, slots);
-    r.emplace<DrawState>(viewport);
-    r.emplace<FrameState>(viewport);
+    r.ctx().emplace<SelectionBitsetRef>(std::span<uint32_t>{buffers.SelectionBitset.Data(), GpuBuffers::SelectionBitsetWords});
+    r.ctx().emplace<SelectionSlots>(slots);
+    r.ctx().emplace<DrawState>();
+    r.ctx().emplace<FrameState>();
     const auto &one_shot = r.ctx().emplace<OneShotGpu>(MakeOneShotGpu(vc.Device, vc.QueueFamily));
     r.ctx().emplace<ColliderShapeBuffers>();
-    r.emplace<ViewportRenderResources>(viewport, ViewportRenderResources{
-                                                     .RenderCommandBuffer = std::move(vc.Device.allocateCommandBuffersUnique({*one_shot.Pool, vk::CommandBufferLevel::ePrimary, 1}).front()),
+    r.ctx().emplace<ViewportRenderResources>(ViewportRenderResources{
+        .RenderCommandBuffer = std::move(vc.Device.allocateCommandBuffersUnique({*one_shot.Pool, vk::CommandBufferLevel::ePrimary, 1}).front()),
 #ifdef MVK_FORCE_STAGED_TRANSFERS
-                                                     .TransferCommandBuffer = std::move(vc.Device.allocateCommandBuffersUnique({*one_shot.Pool, vk::CommandBufferLevel::ePrimary, 1}).front()),
+        .TransferCommandBuffer = std::move(vc.Device.allocateCommandBuffersUnique({*one_shot.Pool, vk::CommandBufferLevel::ePrimary, 1}).front()),
 #endif
-                                                     .RenderFence = vc.Device.createFenceUnique({}),
-                                                     .ViewportTexture = {},
-                                                 });
-    r.emplace<SelectionStale>(viewport); // Initial state: fragments need rendering on first selection use.
+        .RenderFence = vc.Device.createFenceUnique({}),
+        .ViewportTexture = {},
+    });
 
     ResetObjectPickKeys(buffers);
 
@@ -348,9 +346,9 @@ entt::entity InitEngine(entt::registry &r, VulkanResources vc, CreateSvgResource
 
     pipelines.CompileShaders();
 
-    LoadViewportIcons(r, viewport);
-    r.emplace<FaustDSP>(viewport, std::move(create_svg));
-    RegisterAudioComponentHandlers(r, viewport);
+    LoadViewportIcons(r);
+    r.ctx().emplace<FaustDSP>(std::move(create_svg));
+    RegisterAudioComponentHandlers(r);
 
     return viewport;
 }
@@ -360,7 +358,6 @@ void SetupScene(entt::registry &r, entt::entity viewport) {
     r.emplace_or_replace<Interaction>(viewport);
     r.emplace_or_replace<EditMode>(viewport);
     r.emplace_or_replace<ViewportTheme>(viewport, Defaults::ViewportTheme);
-    r.emplace_or_replace<colors::AxesArray>(viewport, colors::MakeAxes(Defaults::ViewportTheme.AxisColors));
     r.emplace_or_replace<ViewCamera>(viewport, Defaults::ViewCamera);
     r.emplace_or_replace<MaterialPreviewLighting>(viewport, false, false, 1.f, 0.f);
     r.emplace_or_replace<RenderedLighting>(viewport, true, true, 1.f, 0.f);
@@ -415,18 +412,22 @@ void ClearScene(entt::registry &r, entt::entity viewport) {
 }
 
 void DeinitViewport(entt::registry &r, entt::entity viewport) {
-    // Free command buffers before their owning pool (OneShotGpu, in ctx) is torn down.
-    if (r.valid(viewport)) {
-        r.remove<ViewportRenderResources>(viewport);
-        r.remove<VideoRecording>(viewport);
-    }
+    // Free GPU-resource-owning context singletons before TearDownStoreCtx erases their backing stores:
+    // command buffers before their pool (OneShotGpu), and the icon/Faust SVG images (VMA allocations in
+    // GpuBuffers.Ctx) and descriptor slots while GpuBuffers/DescriptorSlots and the device are still alive.
+    r.ctx().erase<ViewportRenderResources>();
+    r.ctx().erase<ViewportIcons>();
+    r.ctx().erase<FaustDSP>();
+    r.ctx().erase<SelectionSlots>();
+    r.ctx().erase<SelectionBitsetRef>();
+    r.ctx().erase<FrameState>();
+    r.ctx().erase<DrawState>();
+    if (r.valid(viewport)) r.remove<VideoRecording>(viewport);
     r.clear<Mesh>();
     r.ctx().erase<std::vector<ComponentEventHandler>>();
     r.ctx().erase<EntityDestroyTracker>();
     physics::Deinit(r);
     r.ctx().erase<Pipelines>();
-    // Destroy the viewport entity (frees ViewportIcons/FaustDSP SVG images, which are VMA allocations
-    // in GpuBuffers.Ctx) before TearDownStoreCtx erases GpuBuffers and while the device is alive.
     if (r.valid(viewport)) r.destroy(viewport);
     TearDownStoreCtx(r);
 }
@@ -482,10 +483,10 @@ void RenderViewport(entt::registry &r, entt::entity viewport, vk::Fence viewport
     if (SubmitViewport(r, viewport, viewport_consumer_fence)) {
         const auto &vk = r.ctx().get<const VulkanResources>();
         auto &pipelines = r.ctx().get<const Pipelines>();
-        r.get<ViewportRenderResources>(viewport).ViewportTexture =
+        r.ctx().get<ViewportRenderResources>().ViewportTexture =
             std::make_unique<mvk::ImGuiTexture>(vk.Device, *pipelines.Main.Resources->FinalColorImage.View, vec2{0, 1}, vec2{1, 0});
     }
-    if (const auto &t_ptr = r.get<const ViewportRenderResources>(viewport).ViewportTexture) {
+    if (const auto &t_ptr = r.ctx().get<const ViewportRenderResources>().ViewportTexture) {
         const auto p = ImGui::GetCursorScreenPos();
         const auto extent = r.get<const ViewportExtent>(viewport).Value;
         const auto &t = *t_ptr;
@@ -493,7 +494,7 @@ void RenderViewport(entt::registry &r, entt::entity viewport, vk::Fence viewport
     }
 
     dl.ChannelsSetCurrent(1);
-    DrawOverlay(r, viewport, r.get<FrameState>(viewport));
+    DrawOverlay(r, viewport, r.ctx().get<FrameState>());
 }
 
 void AdvanceViewport(entt::registry &r, entt::entity viewport) {
@@ -505,20 +506,20 @@ void AdvanceViewport(entt::registry &r, entt::entity viewport) {
     RecordViewportFrame(r, viewport, render_request);
 }
 
-void PresentViewport(entt::registry &r, entt::entity viewport) {
+void PresentViewport(entt::registry &r) {
     // Wait synchronously: callers run mid-frame, before the next SubmitViewport whose
     // ProcessComponentEvents would otherwise race this command buffer's GPU reads.
-    SubmitRecordedFrame(r, viewport);
-    WaitForRender(r, viewport);
+    SubmitRecordedFrame(r);
+    WaitForRender(r);
 }
 
-void WaitForRender(entt::registry &r, entt::entity viewport) {
-    auto &frame = r.get<FrameState>(viewport);
+void WaitForRender(entt::registry &r) {
+    auto &frame = r.ctx().get<FrameState>();
     if (!frame.RenderPending) return;
 
     const auto &vk = r.ctx().get<const VulkanResources>();
     const Timer timer{"WaitForRender"};
-    WaitFor(*r.get<const ViewportRenderResources>(viewport).RenderFence, vk.Device);
+    WaitFor(*r.ctx().get<const ViewportRenderResources>().RenderFence, vk.Device);
     r.ctx().get<GpuBuffers>().Ctx.ReclaimRetiredBuffers();
     frame.RenderPending = false;
 }

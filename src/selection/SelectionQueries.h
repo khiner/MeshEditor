@@ -44,6 +44,6 @@ std::optional<uint32_t> RunSoundVerticesVertexPick(entt::registry &, entt::entit
 std::optional<std::pair<entt::entity, uint32_t>> RunElementPickFromRanges(entt::registry &, entt::entity viewport, std::span<const ElementRange> ranges, Element, uvec2 mouse_px);
 
 // Dispatches the GPU compute pass that rewrites per-element state buffers from the SelectionBitset. Blocks on the one-shot fence.
-void DispatchUpdateSelectionStates(entt::registry &, entt::entity viewport, std::span<const ElementRange>, Element);
+void DispatchUpdateSelectionStates(entt::registry &, std::span<const ElementRange>, Element);
 // Runs DispatchUpdateSelectionStates, then derives the dependent edge/face/vertex state buffers CPU-side.
 void ApplySelectionStateUpdate(entt::registry &, entt::entity viewport, std::span<const ElementRange>, Element);

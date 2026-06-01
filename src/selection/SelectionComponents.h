@@ -28,7 +28,6 @@ struct AdditiveBoxSelectBaseline {
 // Flags on viewport, consumed and cleared by ProcessComponentEvents.
 struct SelectionBitsDirty {}; // Bitset written by Interact; dispatches the compute update.
 struct ElementStatesDirty {}; // Element state buffers updated by GPU compute; triggers a submit.
-struct SelectionStale {}; // Selection fragment data no longer matches current scene. Cleared after RenderSelectionPass.
 
 struct PendingEditElementClick {
     uvec2 MousePx;
