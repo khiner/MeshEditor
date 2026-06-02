@@ -56,9 +56,9 @@ using Actions = std::variant<
 
 using Action = MergedVariantT<
     Actions,
-    Replace<PrimitiveShape>,
+    ReplaceActive<PrimitiveShape>,
     Replace<PunctualLight>, ReplaceActive<PunctualLight>,
-    Replace<MaterialDirty>, Replace<MeshMaterialAssignment>, Replace<MeshMaterialSlotSelection>,
+    Replace<MaterialDirty>, ReplaceActive<MeshMaterialAssignment>, ReplaceActive<MeshMaterialSlotSelection>,
     Update<std::optional<uint32_t>>>;
 
 void Apply(entt::registry &, entt::entity viewport, const Action &);

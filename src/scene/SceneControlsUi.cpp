@@ -481,7 +481,7 @@ static void RenderEntityControls(entt::registry &r, entt::entity viewport, entt:
             if (const auto update_label = std::format("Edit primitive{}", frozen ? " (frozen)" : "");
                 CollapsingHeader(update_label.c_str()) && !frozen) {
                 auto new_shape = PrimitiveEditor(*prim_shape);
-                ui::Gesture(bool(new_shape), [&] { return action::Replace<PrimitiveShape>{active_mesh_entity, *new_shape}; });
+                ui::Gesture(bool(new_shape), [&] { return action::ReplaceActive<PrimitiveShape>{*new_shape}; });
             }
             if (frozen) EndDisabled();
         }
@@ -507,7 +507,7 @@ static void RenderEntityControls(entt::registry &r, entt::entity viewport, entt:
                 uint32_t slot_primitive = existing_slot ? existing_slot->PrimitiveIndex : 0u;
                 if (!existing_slot || slot_primitive > max_primitive) {
                     slot_primitive = std::min(slot_primitive, max_primitive);
-                    action::Emit(action::Replace<MeshMaterialSlotSelection>{active_mesh_entity, {slot_primitive}});
+                    action::Emit(action::ReplaceActive<MeshMaterialSlotSelection>{{slot_primitive}});
                 }
 
                 BeginChild("MaterialSlots", ImVec2(0, 110), true);
@@ -515,7 +515,7 @@ static void RenderEntityControls(entt::registry &r, entt::entity viewport, entt:
                     const uint32_t material_index = std::min(primitive_materials[primitive_index], material_count - 1);
                     if (const auto label = std::format("Slot {:L}: {}", primitive_index, material_name(material_index));
                         Selectable(label.c_str(), slot_primitive == primitive_index) && slot_primitive != primitive_index) {
-                        action::Emit(action::Replace<MeshMaterialSlotSelection>{active_mesh_entity, {primitive_index}});
+                        action::Emit(action::ReplaceActive<MeshMaterialSlotSelection>{{primitive_index}});
                         slot_primitive = primitive_index;
                     }
                 }
@@ -531,7 +531,7 @@ static void RenderEntityControls(entt::registry &r, entt::entity viewport, entt:
                     for (uint32_t i = 0; i < material_count; ++i) {
                         if (const auto option_name = material_name(i);
                             Selectable(option_name.c_str(), material_index == i)) {
-                            action::Emit(action::Replace<MeshMaterialAssignment>{active_mesh_entity, {slot_primitive, i}});
+                            action::Emit(action::ReplaceActive<MeshMaterialAssignment>{{slot_primitive, i}});
                             material_index = i;
                         }
                     }

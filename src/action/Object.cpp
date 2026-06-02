@@ -217,10 +217,8 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
                 begin_translate();
             },
             [&](const ImportMesh &a) { r.emplace_or_replace<PendingImportMesh>(viewport, a.Path, *a.Info); },
-            // Editing a primitive's params: replace the shape and regenerate its mesh from it.
-            // Override the generic component-only Replace<T> below.
-            [&](const Replace<PrimitiveShape> &a) {
-                const auto e = a.Entity;
+            [&](const ReplaceActive<PrimitiveShape> &a) {
+                const auto e = GetActiveMeshEntity(r);
                 if (e == entt::null || ::selection::HasScaleLockedInstance(r, e)) return;
                 r.emplace_or_replace<PrimitiveShape>(e, a.Value);
 
@@ -240,6 +238,7 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
             },
             [&]<typename Field>(const Update<Field> &a) { ApplyUpdate(r, viewport, a); },
             [&]<typename T>(const Replace<T> &a) { r.emplace_or_replace<T>(a.Entity, a.Value); },
+            [&]<typename T>(const ReplaceActive<T> &a) { r.emplace_or_replace<T>(GetActiveMeshEntity(r), a.Value); },
             [&](const ReplaceActive<PunctualLight> &a) {
                 const auto e = FindActiveEntity(r);
                 const auto *old = r.try_get<const PunctualLight>(e);
