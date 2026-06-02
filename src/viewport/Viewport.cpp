@@ -14,7 +14,6 @@
 #include "audio/FaustDSP.h"
 #include "audio/SoundVertices.h"
 #include "gizmo/GizmoInteraction.h"
-#include "gltf/SourceAssets.h"
 #include "mesh/Mesh.h"
 #include "mesh/MeshStore.h"
 #include "mesh/Primitives.h"
@@ -51,6 +50,8 @@
 
 #include "render/GpuBuffers.h"
 #include "render/LightComponents.h"
+
+#include <cassert>
 
 using std::ranges::find, std::ranges::to;
 
@@ -407,8 +408,17 @@ void ClearScene(entt::registry &r, entt::entity viewport) {
     for (const auto e : r.view<entt::entity>() | to<std::vector>()) {
         if (e != viewport) r.destroy(e);
     }
+    r.destroy(viewport);
     r.ctx().get<ObjectIdCounter>() = {};
-    r.remove<gltf::SourceAssets>(viewport); // Not entity-bound, so the sweep misses it.
+
+    // Reset the entity allocator for deterministic entity ids on replay.
+    r.storage<entt::entity>().clear();
+    r.storage<entt::entity>().start_from(entt::entity{0});
+
+    [[maybe_unused]] const auto recreated = r.create();
+    assert(recreated == viewport);
+    r.emplace<ViewportExtent>(viewport);
+    SetupScene(r, viewport);
 }
 
 void DeinitViewport(entt::registry &r, entt::entity viewport) {

@@ -256,7 +256,6 @@ namespace {
 void NewProject(entt::registry &r, entt::entity viewport, const fs::path &replay_path = {}) {
     action::StopLog();
     ClearScene(r, viewport);
-    SetupScene(r, viewport);
     AddDefaultSceneContent(r);
     if (action::ReplayLog(r, viewport, replay_path, &AdvanceViewport)) PresentViewport(r);
     action::StartLog();
