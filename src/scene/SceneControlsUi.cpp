@@ -1061,7 +1061,7 @@ void RenderControls(entt::registry &r, entt::entity viewport) {
 
         if (BeginTabItem("Camera")) {
             const auto &camera = r.get<const ViewCamera>(viewport);
-            const auto extent = r.get<const ViewportExtent>(viewport).Value;
+            const auto extent = r.ctx().get<ViewportExtent>().Value;
             const float viewport_aspect = extent.x == 0 || extent.y == 0 ? 1.f : float(extent.x) / float(extent.y);
             if (Button("Reset##Camera")) action::Emit(action::view::ResetViewCamera{});
             {

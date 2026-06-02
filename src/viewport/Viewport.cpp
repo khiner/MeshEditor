@@ -138,26 +138,19 @@ bool SubmitViewport(entt::registry &r, entt::entity viewport, vk::Fence viewport
     auto &slots = r.ctx().get<DescriptorSlots>();
     auto &buffers = r.ctx().get<GpuBuffers>();
     auto &pipelines = r.ctx().get<Pipelines>();
-    auto &logical_extent = r.get<ViewportExtent>(viewport).Value;
+    auto &logical_extent = r.ctx().get<ViewportExtent>().Value;
     const auto content_region = ImGui::GetContentRegionAvail();
     const uvec2 new_logical_extent{
         uint32_t(std::max(content_region.x, 0.0f)),
         uint32_t(std::max(content_region.y, 0.0f))
     };
     const bool extent_changed = logical_extent != new_logical_extent;
-    if (extent_changed) {
-        logical_extent = new_logical_extent;
-        r.patch<ViewportExtent>(viewport, [](auto &) {});
-    }
+    if (extent_changed) logical_extent = new_logical_extent;
     const auto render_extent_px = RenderExtentPx(logical_extent);
     const vk::Extent2D render_extent{render_extent_px.x, render_extent_px.y};
     const auto current_render_extent = pipelines.Main.Resources ? ToExtent2D(pipelines.Main.Resources->ColorImage.Extent) : vk::Extent2D{};
     const bool render_extent_changed = current_render_extent.width != render_extent.width || current_render_extent.height != render_extent.height;
-    if (render_extent_changed && !extent_changed) {
-        // Trigger SceneView update (projection, screen pixel scale) when DPI scale changes at fixed logical viewport size.
-        r.patch<ViewportExtent>(viewport, [](auto &) {});
-    }
-
+    // ProcessComponentEvents rebuilds the view when the window size changed.
     const auto render_request = ProcessComponentEvents(r, viewport);
     FlushDescriptorUpdates(vk.Device, buffers.Ctx);
     if (!extent_changed && !render_extent_changed && render_request == RenderRequest::None) return false;
@@ -284,7 +277,6 @@ entt::entity InitEngine(entt::registry &r, VulkanResources vc, CreateSvgResource
         .on<MaterialPreviewLighting>(On::Create | On::Update)
         .on<RenderedLighting>(On::Create | On::Update)
         .on<LightIndex>(On::Create | On::Destroy)
-        .on<ViewportExtent>(On::Create | On::Update)
         .on<EditMode>(On::Create | On::Update);
     track<changes::CameraLens>(r).on<Camera>(On::Create | On::Update).on<LookingThrough>(On::Create | On::Destroy);
     track<changes::Rotation>(r).on<Transform>(On::Create | On::Update);
@@ -307,9 +299,8 @@ entt::entity InitEngine(entt::registry &r, VulkanResources vc, CreateSvgResource
 
     const auto viewport = WireRegistry(r);
     auto &buffers = r.ctx().get<GpuBuffers>();
-    // Engine-owned state. ViewportExtent stays a component (reactively tracked); the rest are
-    // single-instance context singletons. Document state lives in SetupScene.
-    r.emplace<ViewportExtent>(viewport);
+    // Engine-owned context singletons (process-lifetime). Document state lives in SetupScene.
+    r.ctx().emplace<ViewportExtent>();
     r.ctx().emplace<SelectionBitsetRef>(std::span<uint32_t>{buffers.SelectionBitset.Data(), GpuBuffers::SelectionBitsetWords});
     r.ctx().emplace<SelectionSlots>(slots);
     r.ctx().emplace<DrawState>();
@@ -417,7 +408,6 @@ void ClearScene(entt::registry &r, entt::entity viewport) {
 
     [[maybe_unused]] const auto recreated = r.create();
     assert(recreated == viewport);
-    r.emplace<ViewportExtent>(viewport);
     SetupScene(r, viewport);
 }
 
@@ -498,7 +488,7 @@ void RenderViewport(entt::registry &r, entt::entity viewport, vk::Fence viewport
     }
     if (const auto &t_ptr = r.ctx().get<const ViewportRenderResources>().ViewportTexture) {
         const auto p = ImGui::GetCursorScreenPos();
-        const auto extent = r.get<const ViewportExtent>(viewport).Value;
+        const auto extent = r.ctx().get<ViewportExtent>().Value;
         const auto &t = *t_ptr;
         dl.AddImage(ImTextureID(VkDescriptorSet(t.DescriptorSet)), p, p + ImVec2{float(extent.x), float(extent.y)}, std::bit_cast<ImVec2>(t.Uv0), std::bit_cast<ImVec2>(t.Uv1));
     }

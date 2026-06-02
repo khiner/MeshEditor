@@ -41,7 +41,7 @@ struct RenderedLighting : PBRViewportLighting {}; // defaults: both ON (scene wo
 
 const PBRViewportLighting &GetActivePbrLighting(const entt::registry &, entt::entity viewport, ViewportShadingMode);
 
-// Logical (window) size of the viewport in pixels. Component on the viewport singleton entity.
+// Logical (window) size of the viewport in pixels. Engine state, held as a ctx singleton.
 struct ViewportExtent {
     uvec2 Value{};
 };

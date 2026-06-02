@@ -854,7 +854,7 @@ RenderRequest ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
 
         const bool bone_mode = r.get<const Interaction>(viewport).Mode == InteractionMode::Pose || IsBoneEditMode(r, viewport);
         const auto active = bone_mode ? FindActiveBone(r) : FindActiveEntity(r);
-        const auto logical_extent = r.get<const ViewportExtent>(viewport).Value;
+        const auto logical_extent = r.ctx().get<ViewportExtent>().Value;
         const auto render_extent = RenderExtentPx(logical_extent);
         const float render_scale = std::max(
             logical_extent.x > 0u ? float(render_extent.x) / float(logical_extent.x) : 1.f,
@@ -1775,7 +1775,7 @@ RenderRequest ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
                 for (const auto [_, feat] : r.view<const PbrMeshFeatures>().each()) pbr_mask |= feat.Mask;
                 if (pipelines.Main.Compiler.CompilePipelines(pbr_mask)) request(RenderRequest::ReRecord);
                 const bool want_transmission = active_lighting.RealTransmission && HasFeature(pbr_mask, PbrFeature::Transmission);
-                const auto te_px = RenderExtentPx(r.get<const ViewportExtent>(viewport).Value);
+                const auto te_px = RenderExtentPx(r.ctx().get<ViewportExtent>().Value);
                 if (pipelines.Main.EnsureTransmissionResources({te_px.x, te_px.y}, vk.Device, vk.PhysicalDevice, want_transmission)) refresh_transmission_descriptor();
             } else if (pipelines.Main.EnsureTransmissionResources({}, vk.Device, vk.PhysicalDevice, false)) {
                 refresh_transmission_descriptor();
@@ -1783,13 +1783,18 @@ RenderRequest ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
         }
     }
 
+    // Rebuild the view when the window size no longer matches the render image.
+    // SubmitViewport resizes that image right after this pass.
+    const auto render_extent = RenderExtentPx(r.ctx().get<ViewportExtent>().Value);
+    const auto built_extent = pipelines.Main.Resources ? pipelines.Main.Resources->ColorImage.Extent : vk::Extent3D{};
+    const bool view_extent_stale = render_extent.x != built_extent.width || render_extent.y != built_extent.height;
     if (!reactive<changes::SceneView>(r).empty() ||
         !reactive<changes::TransformPending>(r).empty() ||
         !reactive<changes::ViewportDisplay>(r).empty() ||
         !reactive<changes::InteractionMode>(r).empty() ||
         !reactive<changes::TransformEnd>(r).empty() ||
-        light_count_changed) {
-        const auto render_extent = RenderExtentPx(r.get<const ViewportExtent>(viewport).Value);
+        light_count_changed ||
+        view_extent_stale) {
         const float aspect = render_extent.x == 0 || render_extent.y == 0 ? 1.f : float(render_extent.x) / float(render_extent.y);
         // When looking through a scene camera, keep the ViewCamera's widened FOV in sync
         // with the current viewport aspect ratio (handles viewport resize).

@@ -183,7 +183,7 @@ void Interact(entt::registry &r, entt::entity viewport, FrameState &frame) {
         CurrentClickPos = GetIO().MouseClickedPos[0];
     }
 
-    const auto logical_extent = r.get<const ViewportExtent>(viewport).Value;
+    const auto logical_extent = r.ctx().get<ViewportExtent>().Value;
     const auto render_extent = RenderExtentPx(logical_extent);
     if (logical_extent.x == 0 || logical_extent.y == 0 || render_extent.x == 0 || render_extent.y == 0) return;
 
