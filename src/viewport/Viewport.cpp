@@ -37,7 +37,7 @@
 #include "viewport/FrameState.h"
 #include "viewport/GizmoDrag.h"
 #include "viewport/InteractionComponents.h"
-#include "viewport/RenderExtent.h"
+#include "viewport/ViewportConsumerFence.h"
 #include "viewport/ViewportDisplay.h"
 #include "viewport/ViewportEvents.h"
 #include "viewport/ViewportIcons.h"
@@ -68,6 +68,7 @@ struct ViewportRenderResources {
 #endif
     vk::UniqueFence RenderFence;
     std::unique_ptr<mvk::ImGuiTexture> ViewportTexture;
+    vk::ImageView ViewportTextureView{}; // The FinalColorImage view ViewportTexture was built from; recreate when it changes.
 };
 
 // Present on the viewport entity iff recording is active.
@@ -93,15 +94,6 @@ std::pair<vk::Offset3D, vk::Extent2D> GetCaptureRegion(const entt::registry &r) 
     const auto w = uint32_t(float(full.height) * cam_aspect * ratio) & ~1u;
     const auto h = uint32_t(float(full.height) * ratio) & ~1u;
     return {{int32_t(full.width - w) / 2, int32_t(full.height - h) / 2, 0}, {w, h}};
-}
-
-// Push descriptor writes deferred during buffer (re)allocation.
-void FlushDescriptorUpdates(vk::Device device, mvk::BufferContext &ctx) {
-    auto updates = ctx.GetDeferredDescriptorUpdates();
-    if (updates.empty()) return;
-    const Timer timer{"UpdateBufferDescriptorSets"};
-    device.updateDescriptorSets(std::move(updates), {});
-    ctx.ClearDeferredDescriptorUpdates();
 }
 
 // Submit the recorded command buffer. RenderFence must be unsignaled (reset by the prior WaitForRender).
@@ -132,93 +124,39 @@ void RecordViewportFrame(entt::registry &r, entt::entity viewport, RenderRequest
     }
 }
 
-bool SubmitViewport(entt::registry &r, entt::entity viewport, vk::Fence viewport_consumer_fence) {
+void SubmitViewport(entt::registry &r, entt::entity viewport) {
     const auto &vk = r.ctx().get<const VulkanResources>();
-    const auto &sel_slots = r.ctx().get<const SelectionSlots>();
-    auto &slots = r.ctx().get<DescriptorSlots>();
     auto &buffers = r.ctx().get<GpuBuffers>();
-    auto &pipelines = r.ctx().get<Pipelines>();
-    auto &logical_extent = r.ctx().get<ViewportExtent>().Value;
-    const auto content_region = ImGui::GetContentRegionAvail();
-    const uvec2 new_logical_extent{
-        uint32_t(std::max(content_region.x, 0.0f)),
-        uint32_t(std::max(content_region.y, 0.0f))
-    };
-    const bool extent_changed = logical_extent != new_logical_extent;
-    if (extent_changed) logical_extent = new_logical_extent;
-    const auto render_extent_px = RenderExtentPx(logical_extent);
-    const vk::Extent2D render_extent{render_extent_px.x, render_extent_px.y};
-    const auto current_render_extent = pipelines.Main.Resources ? ToExtent2D(pipelines.Main.Resources->ColorImage.Extent) : vk::Extent2D{};
-    const bool render_extent_changed = current_render_extent.width != render_extent.width || current_render_extent.height != render_extent.height;
-    // ProcessComponentEvents rebuilds the view when the window size changed.
+
+    // A resize (a ProcessComponentEvents side effect) always yields RenderRequest::ReRecord, so it needs no
+    // separate detection here.
     const auto render_request = ProcessComponentEvents(r, viewport);
-    FlushDescriptorUpdates(vk.Device, buffers.Ctx);
-    if (!extent_changed && !render_extent_changed && render_request == RenderRequest::None) return false;
+    buffers.Ctx.FlushDeferredDescriptorUpdates(vk.Device);
+    if (render_request == RenderRequest::None) return;
+    // Recording a zero-size viewport is a Vulkan error; skip until it has a non-zero extent.
+    const auto extent = r.ctx().get<const Pipelines>().BuiltColorExtent();
+    if (extent.width == 0 || extent.height == 0) return;
 
     const Timer timer{"SubmitViewport"};
-    if (extent_changed || render_extent_changed) {
-        if (viewport_consumer_fence) { // Wait for viewport consumer to finish sampling old resources
-            std::ignore = vk.Device.waitForFences(viewport_consumer_fence, VK_TRUE, UINT64_MAX);
-        }
-        pipelines.SetExtent(render_extent);
-        {
-            const auto shading = r.get<const ViewportDisplay>(viewport).ViewportShading;
-            const bool is_pbr = shading == ViewportShadingMode::MaterialPreview || shading == ViewportShadingMode::Rendered;
-            const bool want_transmission = is_pbr && GetActivePbrLighting(r, viewport, shading).RealTransmission && pipelines.Main.Compiler.HasFeature(PbrFeature::Transmission);
-            pipelines.Main.EnsureTransmissionResources(render_extent, vk.Device, vk.PhysicalDevice, want_transmission);
-        }
-        buffers.ResizeSelectionNodeBuffer(render_extent);
-        {
-            const Timer timer{"SubmitViewport->UpdateSelectionDescriptorSets"};
-            const auto head_image_info = vk::DescriptorImageInfo{
-                nullptr,
-                *pipelines.SelectionFragment.Resources->HeadImage.View,
-                vk::ImageLayout::eGeneral
-            };
-            const auto selection_counter = buffers.SelectionCounter.GetDescriptor();
-            const auto object_pick_key = buffers.ObjectPickKeys.GetDescriptor(GpuBuffers::MaxSelectableObjects);
-            const auto element_pick_candidates = buffers.ElementPickCandidates.GetDescriptor(GpuBuffers::ElementPickGroupCount);
-            const auto &sil = pipelines.Silhouette;
-            const auto &sil_edge = pipelines.SilhouetteEdge;
-            const auto &main = pipelines.Main;
-            const vk::DescriptorImageInfo silhouette_sampler{*sil.Resources->ImageSampler, *sil.Resources->OffscreenImage.View, vk::ImageLayout::eShaderReadOnlyOptimal};
-            const vk::DescriptorImageInfo object_id_sampler{*sil_edge.Resources->ImageSampler, *sil_edge.Resources->OffscreenImage.View, vk::ImageLayout::eShaderReadOnlyOptimal};
-            const vk::DescriptorImageInfo depth_sampler{*sil_edge.Resources->DepthSampler, *sil_edge.Resources->DepthImage.View, vk::ImageLayout::eDepthStencilReadOnlyOptimal};
-            const vk::DescriptorImageInfo color_sampler{*main.Resources->NearestSampler, *main.Resources->ColorImage.View, vk::ImageLayout::eShaderReadOnlyOptimal};
-            const vk::DescriptorImageInfo line_data_sampler{*main.Resources->NearestSampler, *main.Resources->LineDataImage.View, vk::ImageLayout::eShaderReadOnlyOptimal};
-            // Transmission resources are lazy. When unallocated, point the descriptor at ColorImage so the binding stays valid.
-            // The shader's UseRealTransmission flag is 0 in that state, so it's never sampled.
-            const vk::DescriptorImageInfo transmission_sampler = main.Transmission ? vk::DescriptorImageInfo{*main.Transmission->Sampler, *main.Transmission->Image.View, vk::ImageLayout::eShaderReadOnlyOptimal} : vk::DescriptorImageInfo{*main.Resources->NearestSampler, *main.Resources->ColorImage.View, vk::ImageLayout::eShaderReadOnlyOptimal};
-            const auto selection_bitset = buffers.SelectionBitset.GetDescriptor(GpuBuffers::SelectionBitsetWords);
-            const auto object_pick_seen_bitset = buffers.ObjectPickSeenBitset.GetDescriptor(GpuBuffers::ObjectPickBitsetWords);
-            vk.Device.updateDescriptorSets(
-                {
-                    slots.MakeImageWrite(sel_slots.HeadImage, head_image_info),
-                    slots.MakeBufferWrite({SlotType::Buffer, sel_slots.SelectionCounter}, selection_counter),
-                    slots.MakeBufferWrite({SlotType::Buffer, sel_slots.ObjectPickKey}, object_pick_key),
-                    slots.MakeBufferWrite({SlotType::Buffer, sel_slots.ElementPickCandidates}, element_pick_candidates),
-                    slots.MakeBufferWrite({SlotType::Buffer, sel_slots.ObjectPickSeenBits}, object_pick_seen_bitset),
-                    slots.MakeBufferWrite({SlotType::Buffer, sel_slots.SelectionBitset}, selection_bitset),
-                    slots.MakeSamplerWrite(sel_slots.ObjectIdSampler, object_id_sampler),
-                    slots.MakeSamplerWrite(sel_slots.DepthSampler, depth_sampler),
-                    slots.MakeSamplerWrite(sel_slots.SilhouetteSampler, silhouette_sampler),
-                    slots.MakeSamplerWrite(sel_slots.ColorSampler, color_sampler),
-                    slots.MakeSamplerWrite(sel_slots.LineDataSampler, line_data_sampler),
-                    slots.MakeSamplerWrite(sel_slots.TransmissionSampler, transmission_sampler),
-                },
-                {}
-            );
-        }
-        FlushDescriptorUpdates(vk.Device, buffers.Ctx);
-    }
-
 #ifdef MVK_FORCE_STAGED_TRANSFERS
     RecordTransferCommandBuffer(r, viewport, *r.ctx().get<ViewportRenderResources>().TransferCommandBuffer);
 #endif
 
-    RecordViewportFrame(r, viewport, render_request, extent_changed || render_extent_changed);
+    RecordViewportFrame(r, viewport, render_request);
     SubmitRecordedFrame(r);
-    return extent_changed || render_extent_changed;
+}
+
+// Drain component events, resize as needed, and record the frame. Returns false (skipping the record) when
+// the viewport has no non-zero extent yet. `force_full` records the full buffer even when the request wouldn't.
+bool AdvanceAndRecord(entt::registry &r, entt::entity viewport, bool force_full) {
+    const auto &vk = r.ctx().get<const VulkanResources>();
+    auto &buffers = r.ctx().get<GpuBuffers>();
+    const auto render_request = ProcessComponentEvents(r, viewport);
+    buffers.Ctx.FlushDeferredDescriptorUpdates(vk.Device);
+    const auto extent = r.ctx().get<const Pipelines>().BuiltColorExtent();
+    if (extent.width == 0 || extent.height == 0) return false; // Skip recording a zero-size viewport (no extent set yet).
+    RecordViewportFrame(r, viewport, render_request, force_full);
+    return true;
 }
 } // namespace
 
@@ -301,6 +239,7 @@ entt::entity InitEngine(entt::registry &r, VulkanResources vc, CreateSvgResource
     auto &buffers = r.ctx().get<GpuBuffers>();
     // Engine-owned context singletons (process-lifetime). Document state lives in SetupScene.
     r.ctx().emplace<ViewportExtent>();
+    r.ctx().emplace<ViewportConsumerFence>();
     r.ctx().emplace<SelectionBitsetRef>(std::span<uint32_t>{buffers.SelectionBitset.Data(), GpuBuffers::SelectionBitsetWords});
     r.ctx().emplace<SelectionSlots>(slots);
     r.ctx().emplace<DrawState>();
@@ -478,37 +417,41 @@ std::string DebugBufferHeapUsage(const entt::registry &r) {
 }
 
 void RenderViewport(entt::registry &r, entt::entity viewport, vk::Fence viewport_consumer_fence) {
+    // Stash the live consumer fence so the resize path waits on it before recreating resources.
+    // Cleared below so replay sees no live consumer.
+    r.ctx().get<ViewportConsumerFence>().Value = viewport_consumer_fence;
     auto &dl = *ImGui::GetWindowDrawList();
     dl.ChannelsSetCurrent(0);
-    if (SubmitViewport(r, viewport, viewport_consumer_fence)) {
-        const auto &vk = r.ctx().get<const VulkanResources>();
-        auto &pipelines = r.ctx().get<const Pipelines>();
-        r.ctx().get<ViewportRenderResources>().ViewportTexture =
-            std::make_unique<mvk::ImGuiTexture>(vk.Device, *pipelines.Main.Resources->FinalColorImage.View, vec2{0, 1}, vec2{1, 0});
+    SubmitViewport(r, viewport);
+    // Recreate the ImGui texture when the final color image view changed (a resize swaps the image).
+    auto &resources = r.ctx().get<ViewportRenderResources>();
+    if (const auto &pipelines = r.ctx().get<const Pipelines>(); pipelines.Main.Resources) {
+        if (const vk::ImageView view = *pipelines.Main.Resources->FinalColorImage.View; view != resources.ViewportTextureView) {
+            resources.ViewportTexture = std::make_unique<mvk::ImGuiTexture>(r.ctx().get<const VulkanResources>().Device, view, vec2{0, 1}, vec2{1, 0});
+            resources.ViewportTextureView = view;
+        }
     }
-    if (const auto &t_ptr = r.ctx().get<const ViewportRenderResources>().ViewportTexture) {
+    if (const auto &t_ptr = resources.ViewportTexture) {
         const auto p = ImGui::GetCursorScreenPos();
         const auto extent = r.ctx().get<ViewportExtent>().Value;
         const auto &t = *t_ptr;
         dl.AddImage(ImTextureID(VkDescriptorSet(t.DescriptorSet)), p, p + ImVec2{float(extent.x), float(extent.y)}, std::bit_cast<ImVec2>(t.Uv0), std::bit_cast<ImVec2>(t.Uv1));
     }
 
+    r.ctx().get<ViewportConsumerFence>().Value = vk::Fence{}; // No live consumer outside this call.
+
     dl.ChannelsSetCurrent(1);
     DrawOverlay(r, viewport, r.ctx().get<FrameState>());
 }
 
 void AdvanceViewport(entt::registry &r, entt::entity viewport) {
-    const auto &vk = r.ctx().get<const VulkanResources>();
-    auto &buffers = r.ctx().get<GpuBuffers>();
-
-    const auto render_request = ProcessComponentEvents(r, viewport);
-    FlushDescriptorUpdates(vk.Device, buffers.Ctx);
-    RecordViewportFrame(r, viewport, render_request);
+    AdvanceAndRecord(r, viewport, /*force_full=*/false);
 }
 
-void PresentViewport(entt::registry &r) {
-    // Wait synchronously: callers run mid-frame, before the next SubmitViewport whose
-    // ProcessComponentEvents would otherwise race this command buffer's GPU reads.
+void PresentViewport(entt::registry &r, entt::entity viewport) {
+    // Replay's ticks never render the color image and consumed the scene's reactive changes,
+    // so force a full record to render the final state regardless.
+    if (!AdvanceAndRecord(r, viewport, /*force_full=*/true)) return;
     SubmitRecordedFrame(r);
     WaitForRender(r);
 }

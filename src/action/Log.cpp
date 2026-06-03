@@ -45,7 +45,11 @@ std::ofstream OpenLogStream() {
         std::error_code ec;
         std::filesystem::remove(logs[i].Path, ec);
     }
-    const auto unix_sec = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
-    return std::ofstream{ReplayDir() / (std::to_string(unix_sec) + std::string{LogExt}), std::ios::binary | std::ios::app};
+    auto unix_sec = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+    auto path = ReplayDir() / (std::to_string(unix_sec) + std::string{LogExt});
+    // Filenames are unix-second timestamps. If one already exists (rapid New/Replay within a second),
+    // appending would corrupt it, so bump until the name is free — it stays the newest ("Current").
+    for (std::error_code ec; std::filesystem::exists(path, ec);) path = ReplayDir() / (std::to_string(++unix_sec) + std::string{LogExt});
+    return std::ofstream{path, std::ios::binary | std::ios::app};
 }
 } // namespace action

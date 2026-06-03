@@ -88,7 +88,8 @@ void StopLog();
 // Advances the viewport between replayed actions so those resolving against rendered state see it up to date.
 using ReplayTick = void (*)(entt::registry &, entt::entity viewport);
 
-// Apply each action in a `.mea` log to the current scene, ticking via `tick` between them. Replayed actions
-// are not re-logged. False if the log can't be opened.
+// Apply each action in a `.mea` log to the current scene, ticking via `tick` between them. Re-logs each
+// action into the active session log (caller must StartLog first) so the replayed scene stays reconstructable.
+// False if the log can't be opened.
 bool ReplayLog(entt::registry &, entt::entity viewport, const std::filesystem::path &, ReplayTick tick);
 } // namespace action

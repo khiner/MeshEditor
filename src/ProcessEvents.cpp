@@ -49,6 +49,7 @@
 #include "viewport/GizmoDrag.h"
 #include "viewport/InteractionComponents.h"
 #include "viewport/RenderExtent.h"
+#include "viewport/ViewportConsumerFence.h"
 #include "viewport/ViewportDisplay.h"
 #include "viewport/ViewportEvents.h"
 #include "viewport/ViewportInteractionState.h"
@@ -668,6 +669,78 @@ void UpdateWireframeTransforms(entt::registry &r) {
     }
 }
 
+namespace {
+// Resize the viewport's GPU render resources to match RenderExtentPx(ViewportExtent), recreating images and
+// rewriting selection descriptors. Returns true when a resize occurred.
+bool SyncViewportRenderResources(entt::registry &r, entt::entity viewport) {
+    auto &pipelines = r.ctx().get<Pipelines>();
+    const auto render_extent_px = RenderExtentPx(r.ctx().get<ViewportExtent>().Value);
+    const vk::Extent2D render_extent{render_extent_px.x, render_extent_px.y};
+    const auto built = pipelines.BuiltColorExtent();
+    if (built.width == render_extent.width && built.height == render_extent.height) return false;
+
+    const auto &vk = r.ctx().get<const VulkanResources>();
+    const auto &sel_slots = r.ctx().get<const SelectionSlots>();
+    auto &slots = r.ctx().get<DescriptorSlots>();
+    auto &buffers = r.ctx().get<GpuBuffers>();
+    // Wait for the live consumer (ImGui) to finish sampling the old resources before recreating them.
+    if (const auto fence = r.ctx().get<const ViewportConsumerFence>().Value) {
+        std::ignore = vk.Device.waitForFences(fence, VK_TRUE, UINT64_MAX);
+    }
+    pipelines.SetExtent(render_extent);
+    {
+        const auto shading = r.get<const ViewportDisplay>(viewport).ViewportShading;
+        const bool is_pbr = shading == ViewportShadingMode::MaterialPreview || shading == ViewportShadingMode::Rendered;
+        const bool want_transmission = is_pbr && GetActivePbrLighting(r, viewport, shading).RealTransmission && pipelines.Main.Compiler.HasFeature(PbrFeature::Transmission);
+        pipelines.Main.EnsureTransmissionResources(render_extent, vk.Device, vk.PhysicalDevice, want_transmission);
+    }
+    buffers.ResizeSelectionNodeBuffer(render_extent);
+    {
+        const Timer timer{"SyncViewportRenderResources->UpdateSelectionDescriptorSets"};
+        const auto head_image_info = vk::DescriptorImageInfo{
+            nullptr,
+            *pipelines.SelectionFragment.Resources->HeadImage.View,
+            vk::ImageLayout::eGeneral
+        };
+        const auto selection_counter = buffers.SelectionCounter.GetDescriptor();
+        const auto object_pick_key = buffers.ObjectPickKeys.GetDescriptor(GpuBuffers::MaxSelectableObjects);
+        const auto element_pick_candidates = buffers.ElementPickCandidates.GetDescriptor(GpuBuffers::ElementPickGroupCount);
+        const auto &sil = pipelines.Silhouette;
+        const auto &sil_edge = pipelines.SilhouetteEdge;
+        const auto &main = pipelines.Main;
+        const vk::DescriptorImageInfo silhouette_sampler{*sil.Resources->ImageSampler, *sil.Resources->OffscreenImage.View, vk::ImageLayout::eShaderReadOnlyOptimal};
+        const vk::DescriptorImageInfo object_id_sampler{*sil_edge.Resources->ImageSampler, *sil_edge.Resources->OffscreenImage.View, vk::ImageLayout::eShaderReadOnlyOptimal};
+        const vk::DescriptorImageInfo depth_sampler{*sil_edge.Resources->DepthSampler, *sil_edge.Resources->DepthImage.View, vk::ImageLayout::eDepthStencilReadOnlyOptimal};
+        const vk::DescriptorImageInfo color_sampler{*main.Resources->NearestSampler, *main.Resources->ColorImage.View, vk::ImageLayout::eShaderReadOnlyOptimal};
+        const vk::DescriptorImageInfo line_data_sampler{*main.Resources->NearestSampler, *main.Resources->LineDataImage.View, vk::ImageLayout::eShaderReadOnlyOptimal};
+        // Transmission resources are lazy. When unallocated, point the descriptor at ColorImage so the binding stays valid.
+        // The shader's UseRealTransmission flag is 0 in that state, so it's never sampled.
+        const vk::DescriptorImageInfo transmission_sampler = main.Transmission ? vk::DescriptorImageInfo{*main.Transmission->Sampler, *main.Transmission->Image.View, vk::ImageLayout::eShaderReadOnlyOptimal} : vk::DescriptorImageInfo{*main.Resources->NearestSampler, *main.Resources->ColorImage.View, vk::ImageLayout::eShaderReadOnlyOptimal};
+        const auto selection_bitset = buffers.SelectionBitset.GetDescriptor(GpuBuffers::SelectionBitsetWords);
+        const auto object_pick_seen_bitset = buffers.ObjectPickSeenBitset.GetDescriptor(GpuBuffers::ObjectPickBitsetWords);
+        vk.Device.updateDescriptorSets(
+            {
+                slots.MakeImageWrite(sel_slots.HeadImage, head_image_info),
+                slots.MakeBufferWrite({SlotType::Buffer, sel_slots.SelectionCounter}, selection_counter),
+                slots.MakeBufferWrite({SlotType::Buffer, sel_slots.ObjectPickKey}, object_pick_key),
+                slots.MakeBufferWrite({SlotType::Buffer, sel_slots.ElementPickCandidates}, element_pick_candidates),
+                slots.MakeBufferWrite({SlotType::Buffer, sel_slots.ObjectPickSeenBits}, object_pick_seen_bitset),
+                slots.MakeBufferWrite({SlotType::Buffer, sel_slots.SelectionBitset}, selection_bitset),
+                slots.MakeSamplerWrite(sel_slots.ObjectIdSampler, object_id_sampler),
+                slots.MakeSamplerWrite(sel_slots.DepthSampler, depth_sampler),
+                slots.MakeSamplerWrite(sel_slots.SilhouetteSampler, silhouette_sampler),
+                slots.MakeSamplerWrite(sel_slots.ColorSampler, color_sampler),
+                slots.MakeSamplerWrite(sel_slots.LineDataSampler, line_data_sampler),
+                slots.MakeSamplerWrite(sel_slots.TransmissionSampler, transmission_sampler),
+            },
+            {}
+        );
+    }
+    buffers.Ctx.FlushDeferredDescriptorUpdates(vk.Device);
+    return true;
+}
+} // namespace
+
 RenderRequest ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
     const auto &vk = r.ctx().get<const VulkanResources>();
     const auto &one_shot = r.ctx().get<const OneShotGpu>();
@@ -684,6 +757,10 @@ RenderRequest ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
 
     auto render_request = RenderRequest::None;
     auto request = [&render_request](RenderRequest req) { render_request = std::max(render_request, req); };
+
+    // Resize render resources before the pick handlers below resolve against the rendered scene.
+    const bool resized = SyncViewportRenderResources(r, viewport);
+    if (resized) request(RenderRequest::ReRecord);
 
     if (r.all_of<PendingShaderRecompile>(viewport)) {
         r.remove<PendingShaderRecompile>(viewport);
@@ -1783,18 +1860,15 @@ RenderRequest ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
         }
     }
 
-    // Rebuild the view when the window size no longer matches the render image.
-    // SubmitViewport resizes that image right after this pass.
+    // Rebuild the view UBO (aspect, projection, look-through widening, ViewportSize).
     const auto render_extent = RenderExtentPx(r.ctx().get<ViewportExtent>().Value);
-    const auto built_extent = pipelines.Main.Resources ? pipelines.Main.Resources->ColorImage.Extent : vk::Extent3D{};
-    const bool view_extent_stale = render_extent.x != built_extent.width || render_extent.y != built_extent.height;
     if (!reactive<changes::SceneView>(r).empty() ||
         !reactive<changes::TransformPending>(r).empty() ||
         !reactive<changes::ViewportDisplay>(r).empty() ||
         !reactive<changes::InteractionMode>(r).empty() ||
         !reactive<changes::TransformEnd>(r).empty() ||
         light_count_changed ||
-        view_extent_stale) {
+        resized) {
         const float aspect = render_extent.x == 0 || render_extent.y == 0 ? 1.f : float(render_extent.x) / float(render_extent.y);
         // When looking through a scene camera, keep the ViewCamera's widened FOV in sync
         // with the current viewport aspect ratio (handles viewport resize).

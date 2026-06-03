@@ -54,6 +54,7 @@ struct BufferContext {
     void ReclaimRetiredBuffers();
 
     std::vector<vk::WriteDescriptorSet> GetDeferredDescriptorUpdates();
+    void FlushDeferredDescriptorUpdates(vk::Device);
     void DeferDescriptorUpdate(TypedSlot slot, const vk::DescriptorBufferInfo &info) { DeferredDescriptorUpdates.insert_or_assign(slot, info); }
     void CancelDeferredDescriptorUpdate(TypedSlot slot) { DeferredDescriptorUpdates.erase(slot); }
     void ClearDeferredDescriptorUpdates() { DeferredDescriptorUpdates.clear(); }

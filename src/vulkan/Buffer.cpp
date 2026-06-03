@@ -1,4 +1,5 @@
 #include "Buffer.h"
+#include "Timer.h"
 #include "render/Bindless.h"
 
 #define VMA_IMPLEMENTATION
@@ -167,6 +168,14 @@ std::string BufferContext::DebugHeapUsage() const {
 
 std::vector<vk::WriteDescriptorSet> BufferContext::GetDeferredDescriptorUpdates() {
     return DeferredDescriptorUpdates | transform([&](const auto &kv) { return Slots.MakeBufferWrite(kv.first, kv.second); }) | to<std::vector>();
+}
+
+void BufferContext::FlushDeferredDescriptorUpdates(vk::Device device) {
+    auto updates = GetDeferredDescriptorUpdates();
+    if (updates.empty()) return;
+    const Timer timer{"UpdateBufferDescriptorSets"};
+    device.updateDescriptorSets(std::move(updates), {});
+    ClearDeferredDescriptorUpdates();
 }
 
 #ifdef MVK_FORCE_STAGED_TRANSFERS

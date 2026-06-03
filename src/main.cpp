@@ -6,6 +6,7 @@
 #include "action/Io.h"
 #include "action/Log.h"
 #include "action/Object.h"
+#include "action/View.h"
 #include "animation/TimelineUi.h"
 #include "audio/AudioDevice.h"
 #include "audio/AudioSystem.h"
@@ -15,6 +16,7 @@
 #include "scene/SceneControlsUi.h"
 #include "viewport/FrameState.h"
 #include "viewport/Viewport.h"
+#include "viewport/ViewportDisplay.h"
 #include "viewport/ViewportIcons.h"
 #include "viewport/ViewportUi.h"
 #include "vulkan/VulkanContext.h"
@@ -254,11 +256,22 @@ void LoadFile(entt::registry &r, const fs::path &path) {
 namespace {
 // Reset to the default scene, optionally replaying a `.mea` log on top.
 void NewProject(entt::registry &r, entt::entity viewport, const fs::path &replay_path = {}) {
+    // Invoked mid-frame from the menu: the prior frame may still be sampling the viewport resources replay is
+    // about to recreate, and replay has no consumer fence to wait on. Let the GPU finish all work first.
+    r.ctx().get<const VulkanResources>().Device.waitIdle();
     action::StopLog();
+    const auto live_extent = r.ctx().get<ViewportExtent>().Value; // Restore after replay's SetExtent actions change it.
     ClearScene(r, viewport);
     AddDefaultSceneContent(r);
-    if (action::ReplayLog(r, viewport, replay_path, &AdvanceViewport)) PresentViewport(r);
+    // Start the new session log before replaying so ReplayLog re-records the actions into it (otherwise the
+    // replayed log is consumed and replaying "Current" again reloads the default scene).
     action::StartLog();
+    if (action::ReplayLog(r, viewport, replay_path, &AdvanceViewport)) {
+        // Replay ran headless (resized selection resources but never presented the color image).
+        // Restore the live window extent and render the final replayed state once on-screen.
+        r.ctx().get<ViewportExtent>().Value = live_extent;
+        PresentViewport(r, viewport);
+    }
 }
 } // namespace
 
@@ -393,6 +406,7 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
     const Uint64 capture_interval_ns = 1'000'000'000ULL / Uint64(record_fps);
     Uint64 next_capture_ns = 0; // Initialized when recording starts.
     bool done = false;
+    bool viewport_resizing = false; // True while a resize drag is staged but not yet committed.
     action::StartLog(); // Record each applied action to the write-behind log.
     while (!done) {
         SDL_Event event;
@@ -673,12 +687,15 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
 
         if (windows.Viewport.Visible) {
             PushStyleVar(ImGuiStyleVar_WindowPadding, {0, 0});
+            uvec2 new_logical_extent{};
             if (Begin(windows.Viewport.Name, &windows.Viewport.Visible)) {
                 Interact(r, viewport, r.ctx().get<FrameState>());
                 auto &dl = *ImGui::GetWindowDrawList();
                 dl.ChannelsSplit(2);
                 dl.ChannelsSetCurrent(1);
                 InteractOverlay(r, viewport, r.ctx().get<FrameState>());
+                const auto content_region = ImGui::GetContentRegionAvail();
+                new_logical_extent = {uint32_t(std::max(content_region.x, 0.f)), uint32_t(std::max(content_region.y, 0.f))};
                 // Submit GPU render (nonblocking). WaitForRender() is called later, before RenderFrame() samples the final image.
                 RenderViewport(r, viewport, GetFrameCount() > 1 ? vk::Fence{wd.Frames[wd.FrameIndex].Fence} : vk::Fence{});
                 dl.ChannelsMerge();
@@ -699,6 +716,16 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
                 // Calling Play() on the same frame as LoadFile races physics setup.
                 action::Emit(action::timeline::Play{});
                 play = false;
+            }
+            // Record viewport resizes so replay restores the same render extent.
+            // A resize drag spans many frames: stage it and commit on mouse-up so the drag records a single SetExtent.
+            // Staged after the frame's other emits so those win the single-action buffer.
+            if (new_logical_extent != uvec2{} && r.ctx().get<const ViewportExtent>().Value != new_logical_extent) {
+                action::EmitStaged(action::view::SetExtent{new_logical_extent});
+                viewport_resizing = true;
+            } else if (viewport_resizing && !IsMouseDown(ImGuiMouseButton_Left)) {
+                action::Commit(); // Drag finished: flush the gesture's final staged SetExtent.
+                viewport_resizing = false;
             }
         }
 

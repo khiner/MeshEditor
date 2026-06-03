@@ -113,7 +113,8 @@ bool ReplayLog(entt::registry &r, entt::entity viewport, const std::filesystem::
     if (!in) return false;
     tick(r, viewport);
     StreamActions(in, [&](Action &&a) {
-        ApplyAction(r, viewport, std::move(a));
+        // Re-record each replayed action so the new session log reconstructs this scene.
+        RecordCommitted(ApplyAction(r, viewport, std::move(a)));
         tick(r, viewport);
     });
     return true;

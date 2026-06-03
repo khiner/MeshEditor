@@ -164,4 +164,7 @@ struct Pipelines {
 
     void SetExtent(vk::Extent2D);
     void CompileShaders();
+
+    // Zero before render resources exist.
+    vk::Extent3D BuiltColorExtent() const { return Main.Resources ? Main.Resources->ColorImage.Extent : vk::Extent3D{}; }
 };

@@ -96,6 +96,12 @@ struct LatchScreenTransform {
 // Clear the screen-transform latch once consumed by InteractOverlay. Live-only bookkeeping, not recorded.
 struct ClearScreenTransformLatch {};
 
+// Logical (window) size of the viewport. Apply only sets the ViewportExtent ctx value; the GPU resize
+// happens later as a ProcessComponentEvents side effect.
+struct SetExtent {
+    uvec2 Extent;
+};
+
 // Studio HDRI / image-based lighting environment for the viewport.
 struct SetStudioEnvironment {
     uint32_t Index;
@@ -112,7 +118,7 @@ using Actions = std::variant<
     SetViewCameraTarget, SetViewCameraLens, SetViewCameraTargetDirection,
     SetRotationUiMode, SetTransformRotationFromUi,
     DragGizmo, DragGizmoMeshEdit, EndGizmoDrag, SetActiveTool, LatchScreenTransform, ClearScreenTransformLatch,
-    SetStudioEnvironment, SetSourceIblIntensity>;
+    SetExtent, SetStudioEnvironment, SetSourceIblIntensity>;
 
 using Action = MergedVariantT<
     Actions,
