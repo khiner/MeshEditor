@@ -15,6 +15,7 @@ Update<detail::last_field<Ms...>> UpdateOf(entt::entity e, detail::last_field<Ms
     using F = detail::last_field<Ms...>;
     static_assert(std::is_trivially_copyable_v<F>, "Update<T> is for trivially-copyable fields only; use Replace<T> for complex types");
     RegisterUpdateable<C>();
+    if constexpr (HasLimits<Ms...>) RegisterLimits<Ms...>();
     return {Scope::Entity, e, entt::type_hash<C>::value(), uint16_t((detail::MemPtrOffset(Ms) + ...)), std::move(v)};
 }
 
@@ -25,6 +26,7 @@ Update<detail::last_field<Ms...>> UpdateOf(Scope scope, detail::last_field<Ms...
     using F = detail::last_field<Ms...>;
     static_assert(std::is_trivially_copyable_v<F>, "Update<T> is for trivially-copyable fields only; use Replace<T> for complex types");
     RegisterUpdateable<C>();
+    if constexpr (HasLimits<Ms...>) RegisterLimits<Ms...>();
     return {scope, null_entity, entt::type_hash<C>::value(), uint16_t((detail::MemPtrOffset(Ms) + ...)), std::move(v)};
 }
 

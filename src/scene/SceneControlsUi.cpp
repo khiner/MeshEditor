@@ -45,6 +45,13 @@ using std::ranges::any_of, std::ranges::distance, std::ranges::find, std::ranges
 
 using namespace ImGui;
 
+template<> struct FieldLimits<&Transform::S> {
+    static constexpr float Min = 0.01f, Max = 10;
+};
+template<> struct FieldLimits<&TransformGizmoState::Config, &TransformGizmo::Config::SnapValue> {
+    static constexpr float Min = 0.01f, Max = 100;
+};
+
 static void RenderObjectTree(entt::registry &, entt::entity viewport);
 static void RenderEntityControls(entt::registry &, entt::entity viewport, entt::entity active_entity);
 
@@ -366,8 +373,8 @@ static void RenderEntityControls(entt::registry &r, entt::entity viewport, entt:
             const bool frozen = r.all_of<ScaleLocked>(transform_entity);
             if (frozen) BeginDisabled();
             const auto scale_label = std::format("Scale{}", frozen ? " (frozen)" : "");
-            if (is_pose_bone) ui::Edit{r, transform_entity}.Drag<&Transform::S>(scale_label.c_str(), 0.01f, 0.01f, 10);
-            else ui::Edit{r}.Drag<&Transform::S>(scale_label.c_str(), 0.01f, 0.01f, 10);
+            if (is_pose_bone) ui::Edit{r, transform_entity}.Drag<&Transform::S>(scale_label.c_str(), 0.01f);
+            else ui::Edit{r}.Drag<&Transform::S>(scale_label.c_str(), 0.01f);
             if (frozen) EndDisabled();
         }
         Spacing();
@@ -386,7 +393,7 @@ static void RenderEntityControls(entt::registry &r, entt::entity viewport, entt:
             if (gizmo_state.Config.Snap) {
                 SameLine();
                 // todo link/unlink snap values
-                gizmo_edit.Drag<&TransformGizmoState::Config, &TransformGizmo::Config::SnapValue>("Snap", 1.f, 0.01f, 100.f);
+                gizmo_edit.Drag<&TransformGizmoState::Config, &TransformGizmo::Config::SnapValue>("Snap", 1.f);
             }
         }
         Spacing();

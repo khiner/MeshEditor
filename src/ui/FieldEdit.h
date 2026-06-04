@@ -21,8 +21,10 @@
 #include <imgui.h>
 
 #include <array>
+#include <cfloat>
 #include <cstring>
 #include <functional>
+#include <utility>
 
 namespace ui {
 
@@ -94,6 +96,20 @@ consteval ImGuiDataType ImGuiDt() {
     else if constexpr (std::same_as<F, float>) return ImGuiDataType_Float;
     else if constexpr (std::same_as<F, double>) return ImGuiDataType_Double;
     else static_assert(false, "ImGuiDt: unsupported scalar type");
+}
+
+// Map a field's FieldLimits to ImGui drag bounds. Unbounded → (0,0), ImGui's "no clamp". A one-sided limit
+// uses ±FLT_MAX on the open side so ImGui still clamps the bounded side.
+template<auto... Ms>
+constexpr std::pair<float, float> DragBounds() {
+    if constexpr (!HasLimits<Ms...>) return {0.f, 0.f};
+    else {
+        using L = FieldLimits<Ms...>;
+        float lo = -FLT_MAX, hi = FLT_MAX;
+        if constexpr (HasMin<Ms...>) lo = float(L::Min);
+        if constexpr (HasMax<Ms...>) hi = float(L::Max);
+        return {lo, hi};
+    }
 }
 
 template<bool HasEntity, auto... Prefix>
@@ -190,27 +206,32 @@ struct Edit {
         return Run<Ms...>([&](bool &v) { return ImGui::Checkbox(label, &v); });
     }
 
+    // Drag bounds come from the field's FieldLimits (none → unbounded).
     template<auto... Ms>
-    bool Drag(const char *label, float speed = 1.f, float lo = 0.f, float hi = 0.f, const char *fmt = "%.3f") {
+    bool Drag(const char *label, float speed = 1.f, const char *fmt = "%.3f") {
+        constexpr auto bounds = DragBounds<Prefix..., Ms...>();
         return Run<Ms...>([&](auto &v) {
             using F = std::remove_reference_t<decltype(v)>;
-            if constexpr (std::same_as<F, float>) return ui::DragFloat(label, &v, speed, lo, hi, fmt);
-            else if constexpr (std::same_as<F, vec3>) return ui::DragFloat3(label, &v.x, speed, lo, hi, fmt);
-            else if constexpr (std::same_as<F, vec4>) return ui::DragFloat4(label, &v.x, speed, lo, hi, fmt);
+            if constexpr (std::same_as<F, float>) return ui::DragFloat(label, &v, speed, bounds.first, bounds.second, fmt);
+            else if constexpr (std::same_as<F, vec3>) return ui::DragFloat3(label, &v.x, speed, bounds.first, bounds.second, fmt);
+            else if constexpr (std::same_as<F, vec4>) return ui::DragFloat4(label, &v.x, speed, bounds.first, bounds.second, fmt);
             else static_assert(false, "Edit::Drag: field type must be float, vec3, or vec4");
         },
                           /*delta_capable=*/true);
     }
 
+    // Slider bounds come from the field's FieldLimits, which must declare both Min and Max.
     template<auto... Ms>
-    bool Slider(const char *label, auto lo, auto hi, const char *fmt = nullptr) {
+    bool Slider(const char *label, const char *fmt = nullptr) {
+        static_assert(HasMin<Prefix..., Ms...> && HasMax<Prefix..., Ms...>, "Edit::Slider: field must declare FieldLimits with both Min and Max");
+        using L = FieldLimits<Prefix..., Ms...>;
         // A slider is a drag interaction, so it's delta-capable on Alt (integral fields copy instead).
         return Run<Ms...>([&](auto &v) {
             using F = std::remove_reference_t<decltype(v)>;
-            if constexpr (std::same_as<F, float>) return ImGui::SliderFloat(label, &v, F(lo), F(hi), fmt ? fmt : "%.3f");
-            else if constexpr (std::same_as<F, vec3>) return ImGui::SliderFloat3(label, &v.x, F(lo), F(hi), fmt ? fmt : "%.3f");
+            if constexpr (std::same_as<F, float>) return ImGui::SliderFloat(label, &v, F(L::Min), F(L::Max), fmt ? fmt : "%.3f");
+            else if constexpr (std::same_as<F, vec3>) return ImGui::SliderFloat3(label, &v.x, F(L::Min), F(L::Max), fmt ? fmt : "%.3f");
             else if constexpr (std::integral<F>) {
-                F lof = F(lo), hif = F(hi);
+                F lof = F(L::Min), hif = F(L::Max);
                 return ImGui::SliderScalar(label, ImGuiDt<F>(), &v, &lof, &hif);
             } else static_assert(false, "Edit::Slider: unsupported field type");
         },

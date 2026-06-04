@@ -11,6 +11,34 @@
 #include <entt/entity/registry.hpp>
 #include <format>
 
+template<> struct FieldLimits<&PhysicsSimulationSettings::SubstepsPerFrame> {
+    static constexpr uint32_t Min = 1, Max = 100;
+};
+template<> struct FieldLimits<&PhysicsSimulationSettings::SolverIterations> {
+    static constexpr uint32_t Min = 2, Max = 50;
+};
+template<> struct FieldLimits<&PhysicsSimulationSettings::TimeScale> {
+    static constexpr float Min = 0, Max = 10;
+};
+template<> struct FieldLimits<&PhysicsMaterial::StaticFriction> {
+    static constexpr float Min = 0, Max = 2;
+};
+template<> struct FieldLimits<&PhysicsMaterial::DynamicFriction> {
+    static constexpr float Min = 0, Max = 2;
+};
+template<> struct FieldLimits<&PhysicsMaterial::Restitution> {
+    static constexpr float Min = 0, Max = 1;
+};
+template<> struct FieldLimits<&PhysicsMotion::GravityFactor> {
+    static constexpr float Min = -10, Max = 10;
+};
+template<> struct FieldLimits<&PhysicsMotion::LinearDamping> {
+    static constexpr float Min = 0, Max = 1;
+};
+template<> struct FieldLimits<&PhysicsMotion::AngularDamping> {
+    static constexpr float Min = 0, Max = 1;
+};
+
 using namespace ImGui;
 
 namespace {
@@ -244,9 +272,9 @@ void physics_ui::RenderTab(entt::registry &r, entt::entity viewport) {
     Text("Bodies: %u", physics::BodyCount(r));
     {
         ui::Edit f{r, viewport};
-        f.Slider<&PhysicsSimulationSettings::SubstepsPerFrame>("Substeps per frame", 1u, 100u);
-        f.Slider<&PhysicsSimulationSettings::SolverIterations>("Solver iterations", 2u, 50u);
-        f.Slider<&PhysicsSimulationSettings::TimeScale>("Time scale", 0.f, 10.f, "%.2fx");
+        f.Slider<&PhysicsSimulationSettings::SubstepsPerFrame>("Substeps per frame");
+        f.Slider<&PhysicsSimulationSettings::SolverIterations>("Solver iterations");
+        f.Slider<&PhysicsSimulationSettings::TimeScale>("Time scale", "%.2fx");
         f.Drag<&PhysicsSimulationSettings::Gravity>("Gravity", 0.1f);
     }
 
@@ -262,9 +290,9 @@ void physics_ui::RenderTab(entt::registry &r, entt::entity viewport) {
             },
             [&](entt::entity mat_entity, const PhysicsMaterial &) {
                 ui::Edit f{r, mat_entity};
-                f.Slider<&PhysicsMaterial::StaticFriction>("Static friction", 0.f, 2.f);
-                f.Slider<&PhysicsMaterial::DynamicFriction>("Dynamic friction", 0.f, 2.f);
-                f.Slider<&PhysicsMaterial::Restitution>("Restitution", 0.f, 1.f);
+                f.Slider<&PhysicsMaterial::StaticFriction>("Static friction");
+                f.Slider<&PhysicsMaterial::DynamicFriction>("Dynamic friction");
+                f.Slider<&PhysicsMaterial::Restitution>("Restitution");
                 f.Enum<&PhysicsMaterial::FrictionCombine>("Friction combine", "Average\0Minimum\0Maximum\0Multiply\0");
                 f.Enum<&PhysicsMaterial::RestitutionCombine>("Restitution combine", "Average\0Minimum\0Maximum\0Multiply\0");
             }
@@ -518,12 +546,15 @@ void physics_ui::RenderEntityProperties(entt::registry &r, entt::entity entity, 
         // Mass/inertia/damping/gravity are only meaningful for Dynamic bodies.
         // Kinematic bodies move purely by velocity assignment; these fields are hidden to avoid noise.
         if (!motion->IsKinematic) {
-            PhysicsMotion edit = *motion;
-            bool motion_changed = ui::DragFloat("Gravity factor", &edit.GravityFactor, 0.01f, -10.f, 10.f);
+            ui::Edit f{r};
+            f.Drag<&PhysicsMotion::GravityFactor>("Gravity factor", 0.01f);
 
             Spacing();
             SeparatorText("Mass properties");
 
+            // Mass/inertia/CoM are std::optional with presence toggles, not flat fields Update can address.
+            PhysicsMotion edit = *motion;
+            bool motion_changed = false;
             float mass = edit.Mass.value_or(DefaultMass);
             if (ui::DragFloat("Mass", &mass, 0.1f, 0.001f, 1e6f, "%.3f kg")) {
                 edit.Mass = mass;
@@ -555,13 +586,13 @@ void physics_ui::RenderEntityProperties(entt::registry &r, entt::entity entity, 
                 motion_changed = true;
             }
             if (edit.CenterOfMass) motion_changed |= ui::DragFloat3("Center of mass", &edit.CenterOfMass->x, 0.01f);
+            ui::Gesture(motion_changed, [&, scope = ui::ScopeFromAlt()] { return action::Replace<PhysicsMotion>{.Scope = scope, .Value = std::make_unique<PhysicsMotion>(edit)}; });
 
             Spacing();
             SeparatorText("Dynamics");
 
-            motion_changed |= ui::DragFloat("Damping translation", &edit.LinearDamping, 0.01f, 0.f, 1.f);
-            motion_changed |= ui::DragFloat("Damping rotation", &edit.AngularDamping, 0.01f, 0.f, 1.f);
-            ui::Gesture(motion_changed, [&, scope = ui::ScopeFromAlt()] { return action::Replace<PhysicsMotion>{.Scope = scope, .Value = std::make_unique<PhysicsMotion>(edit)}; });
+            f.Drag<&PhysicsMotion::LinearDamping>("Damping translation", 0.01f);
+            f.Drag<&PhysicsMotion::AngularDamping>("Damping rotation", 0.01f);
         }
     }
 

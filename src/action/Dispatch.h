@@ -1,11 +1,14 @@
 #pragma once
 
+#include "FieldLimits.h"
 #include "action/Core.h"
 
 #include <entt/entity/registry.hpp>
+#include <glm/common.hpp>
 
 #include <cassert>
 #include <concepts>
+#include <cstdint>
 #include <cstring>
 #include <functional>
 #include <string>
@@ -57,6 +60,29 @@ struct TagRegistrar {
     TagRegistrar() { TagTable().insert_or_assign(entt::type_hash<Tag>::value(), &SetTagPresence<Tag>); }
 };
 
+// Field-value clamping, keyed by the same (component, field-offset) identity Update carries.
+inline uint64_t LimitsKey(entt::id_type comp, uint16_t offset) { return (uint64_t(comp) << 16) | offset; }
+inline auto &LimitsTable() {
+    static std::unordered_map<uint64_t, void (*)(void *)> table;
+    return table;
+}
+// Clamps a value to its field's FieldLimits (componentwise for vecs).
+template<auto... Ms>
+void ClampField(void *value) {
+    using F = last_field<Ms...>;
+    using L = FieldLimits<Ms...>;
+    F &v = *static_cast<F *>(value);
+    if constexpr (HasMin<Ms...>) v = glm::max(v, F(L::Min));
+    if constexpr (HasMax<Ms...>) v = glm::min(v, F(L::Max));
+}
+template<auto... Ms>
+struct LimitsRegistrar {
+    LimitsRegistrar() {
+        LimitsTable().insert_or_assign(LimitsKey(entt::type_hash<first_class<Ms...>>::value(), uint16_t((MemPtrOffset(Ms) + ...))), &ClampField<Ms...>);
+    }
+};
+template<auto... Ms> inline const LimitsRegistrar<Ms...> limits_registrar{};
+
 // Named-component dispatch: set a `.Name` field, or create an entity with an ordinal name.
 using NameFn = void (*)(entt::registry &, entt::entity, const std::string &);
 using CreateNamedFn = void (*)(entt::registry &, std::string_view prefix);
@@ -95,6 +121,13 @@ template<typename T> inline const NamedRegistrar<T> named_registrar{};
 template<typename C> void RegisterUpdateable() { (void)&detail::patch_registrar<C>; }
 template<typename Tag> void RegisterTaggable() { (void)&detail::tag_registrar<Tag>; }
 template<typename T> void RegisterNamed() { (void)&detail::named_registrar<T>; }
+// Called by UpdateOf for a field that declares FieldLimits, so the Apply path can clamp it.
+template<auto... Ms> void RegisterLimits() { (void)&detail::limits_registrar<Ms...>; }
+
+// Clamp `value` in place to its field's FieldLimits. A no-op for unbounded fields.
+inline void MaybeClamp(entt::id_type comp, uint16_t offset, void *value) {
+    if (const auto it = detail::LimitsTable().find(detail::LimitsKey(comp, offset)); it != detail::LimitsTable().end()) it->second(value);
+}
 
 template<typename Field>
 void ApplyUpdate(entt::registry &r, entt::entity e, entt::id_type component_type, uint16_t offset, const Field &value) {
@@ -131,13 +164,16 @@ void ApplyUpdate(entt::registry &r, entt::entity viewport, const Update<Field> &
                     std::memcpy(s.Bytes.data(), &start, sizeof(Field));
                     r.emplace_or_replace<DragFieldStart>(e, s);
                 }
-                const Field result = start + a.Value;
+                Field result = start + a.Value;
+                MaybeClamp(a.ComponentType, a.Offset, &result);
                 p.Patch(r, e, a.Offset, &result, sizeof(Field));
             });
             return;
         }
     }
-    ApplyUpdateScoped(r, viewport, a.Scope, a.Entity, a.ComponentType, a.Offset, &a.Value, sizeof(Field));
+    Field value = a.Value;
+    MaybeClamp(a.ComponentType, a.Offset, &value);
+    ApplyUpdateScoped(r, viewport, a.Scope, a.Entity, a.ComponentType, a.Offset, &value, sizeof(Field));
 }
 
 inline void ApplyTag(entt::registry &r, entt::entity e, entt::id_type tag_type, bool present) {
