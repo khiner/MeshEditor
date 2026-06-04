@@ -49,6 +49,7 @@ static void RenderObjectTree(entt::registry &, entt::entity viewport);
 static void RenderEntityControls(entt::registry &, entt::entity viewport, entt::entity active_entity);
 
 namespace {
+
 constexpr std::string_view ObjectTypeName(ObjectType type) {
     switch (type) {
         case ObjectType::Empty: return "Empty";
@@ -83,24 +84,24 @@ std::optional<PrimitiveShape> PrimitiveEditor(const PrimitiveShape &shape) {
         bool changed = false;
         if constexpr (std::is_same_v<T, primitive::Plane>) {
             vec2 size = s.HalfExtents * 2.f;
-            changed = DragFloat2("Size", &size.x, SizeSpeed, MinSize, MaxSize);
+            changed = ui::DragFloat2("Size", &size.x, SizeSpeed, MinSize, MaxSize);
             if (changed) s.HalfExtents = size / 2.f;
         } else if constexpr (std::is_same_v<T, primitive::Circle>) {
-            changed |= DragFloat("Radius", &s.Radius, SizeSpeed, MinSize, MaxSize);
+            changed |= ui::DragFloat("Radius", &s.Radius, SizeSpeed, MinSize, MaxSize);
             int segments = int(s.Segments);
             changed |= SliderInt("Segments", &segments, 3, 128);
             if (changed) s.Segments = uint(segments);
         } else if constexpr (std::is_same_v<T, primitive::Cuboid>) {
             vec3 size = s.HalfExtents * 2.f;
-            changed = DragFloat3("Size", &size.x, SizeSpeed, MinSize, MaxSize);
+            changed = ui::DragFloat3("Size", &size.x, SizeSpeed, MinSize, MaxSize);
             if (changed) s.HalfExtents = size / 2.f;
         } else if constexpr (std::is_same_v<T, primitive::IcoSphere>) {
-            changed |= DragFloat("Radius", &s.Radius, SizeSpeed, MinSize, MaxSize);
+            changed |= ui::DragFloat("Radius", &s.Radius, SizeSpeed, MinSize, MaxSize);
             int subdivisions = int(s.Subdivisions);
             changed |= SliderInt("Subdivisions", &subdivisions, 1, 6);
             if (changed) s.Subdivisions = uint(subdivisions);
         } else if constexpr (std::is_same_v<T, primitive::UVSphere>) {
-            changed |= DragFloat("Radius", &s.Radius, SizeSpeed, MinSize, MaxSize);
+            changed |= ui::DragFloat("Radius", &s.Radius, SizeSpeed, MinSize, MaxSize);
             int slices = int(s.Slices), stacks = int(s.Stacks);
             changed |= SliderInt("Slices", &slices, 3, 128);
             changed |= SliderInt("Stacks", &stacks, 2, 64);
@@ -109,8 +110,8 @@ std::optional<PrimitiveShape> PrimitiveEditor(const PrimitiveShape &shape) {
                 s.Stacks = uint(stacks);
             }
         } else if constexpr (std::is_same_v<T, primitive::Torus>) {
-            changed |= DragFloat("Major radius", &s.MajorRadius, SizeSpeed, MinSize, MaxSize);
-            changed |= DragFloat("Minor radius", &s.MinorRadius, SizeSpeed, MinSize, s.MajorRadius);
+            changed |= ui::DragFloat("Major radius", &s.MajorRadius, SizeSpeed, MinSize, MaxSize);
+            changed |= ui::DragFloat("Minor radius", &s.MinorRadius, SizeSpeed, MinSize, s.MajorRadius);
             int major_seg = int(s.MajorSegments), minor_seg = int(s.MinorSegments);
             changed |= SliderInt("Major segments", &major_seg, 3, 256);
             changed |= SliderInt("Minor segments", &minor_seg, 3, 256);
@@ -119,8 +120,8 @@ std::optional<PrimitiveShape> PrimitiveEditor(const PrimitiveShape &shape) {
                 s.MinorSegments = uint(minor_seg);
             }
         } else if constexpr (std::is_same_v<T, primitive::Cylinder> || std::is_same_v<T, primitive::Cone>) {
-            changed |= DragFloat("Radius", &s.Radius, SizeSpeed, MinSize, MaxSize);
-            changed |= DragFloat("Height", &s.Height, SizeSpeed, MinSize, MaxSize);
+            changed |= ui::DragFloat("Radius", &s.Radius, SizeSpeed, MinSize, MaxSize);
+            changed |= ui::DragFloat("Height", &s.Height, SizeSpeed, MinSize, MaxSize);
             int slices = int(s.Slices);
             changed |= SliderInt("Slices", &slices, 3, 128);
             if (changed) s.Slices = uint(slices);
@@ -306,13 +307,13 @@ static void RenderEntityControls(entt::registry &r, entt::entity viewport, entt:
             float roll_deg = glm::degrees(roll);
             float length = bone_length;
 
-            bool changed = DragFloat3("Head", &head[0], 0.01f);
-            changed |= DragFloat3("Tail", &tail[0], 0.01f);
-            if (DragFloat("Roll", &roll_deg, 1.f)) {
+            bool changed = ui::DragFloat3("Head", &head[0], 0.01f);
+            changed |= ui::DragFloat3("Tail", &tail[0], 0.01f);
+            if (ui::DragFloat("Roll", &roll_deg, 1.f)) {
                 roll = glm::radians(roll_deg);
                 changed = true;
             }
-            if (DragFloat("Length", &length, 0.01f, 0.001f, 0.f)) {
+            if (ui::DragFloat("Length", &length, 0.01f, 0.001f, 0.f)) {
                 tail = head + glm::normalize(tail - head) * std::max(length, 1e-4f);
                 changed = true;
             }
@@ -334,9 +335,8 @@ static void RenderEntityControls(entt::registry &r, entt::entity viewport, entt:
             // In Pose mode, edit the active bone rather than the armature.
             const bool is_pose_bone = r.get<const Interaction>(viewport).Mode == InteractionMode::Pose && active_bone_entity != entt::null;
             const auto transform_entity = is_pose_bone ? active_bone_entity : active_entity;
-            // Object mode records UpdateActive so replay resolves the active entity id-free (via the
-            // replayed selection), like the gizmo. Pose mode is entity-bound: the active form resolves
-            // the active object, not the active bone.
+            // Object mode uses the active form so replay resolves the active entity id-free and Alt-drag fans
+            // out to the selection. Pose mode is entity-bound (the active form would resolve the object).
             if (is_pose_bone) ui::Edit{r, transform_entity}.Drag<&Transform::P>("Position", 0.01f);
             else ui::Edit{r}.Drag<&Transform::P>("Position", 0.01f);
             // Rotation editor (RotationUiVariant is reactively created; may not exist yet on the first frame)
@@ -344,38 +344,23 @@ static void RenderEntityControls(entt::registry &r, entt::entity viewport, entt:
                 int mode_i = rotation_ui_ptr->index();
                 const char *modes[]{"Quat (WXYZ)", "XYZ Euler", "Axis Angle"};
                 if (Combo("Rotation mode", &mode_i, modes, IM_ARRAYSIZE(modes)))
-                    action::Emit(action::view::SetRotationUiMode{mode_i});
+                    action::Emit(action::view::SetRotationUiMode{mode_i, ui::ScopeFromAlt()});
                 auto ui_local = *rotation_ui_ptr;
+                bool changed = false;
                 std::visit(
                     overloaded{
-                        [&](RotationQuat &v) {
-                            if (DragFloat4("Rotation (quat WXYZ)", &v.Value[0], 0.01f))
-                                action::Emit(action::view::SetTransformRotationFromUi{glm::normalize(v.Value), ui_local});
-                        },
-                        [&](RotationEuler &v) {
-                            if (DragFloat3("Rotation (XYZ Euler, deg)", &v.Value[0], 1.f)) {
-                                const auto rads = glm::radians(v.Value);
-                                action::Emit(action::view::SetTransformRotationFromUi{
-                                    glm::normalize(glm::quat_cast(glm::eulerAngleXYZ(rads.x, rads.y, rads.z))),
-                                    ui_local,
-                                });
-                            }
-                        },
+                        [&](RotationQuat &v) { changed = ui::DragFloat4("Rotation (quat WXYZ)", &v.Value[0], 0.01f); },
+                        [&](RotationEuler &v) { changed = ui::DragFloat3("Rotation (XYZ Euler, deg)", &v.Value[0], 1.f); },
                         [&](RotationAxisAngle &v) {
-                            bool changed = DragFloat3("Rotation axis (XYZ)", &v.Value[0], 0.01f);
-                            changed |= DragFloat("Angle (deg)", &v.Value.w, 1.f);
-                            if (changed) {
-                                const auto axis = glm::normalize(vec3{v.Value});
-                                const auto angle = glm::radians(v.Value.w);
-                                action::Emit(action::view::SetTransformRotationFromUi{
-                                    glm::normalize(quat{std::cos(angle / 2), axis * std::sin(angle / 2)}),
-                                    ui_local,
-                                });
-                            }
+                            changed = ui::DragFloat3("Rotation axis (XYZ)", &v.Value[0], 0.01f);
+                            changed |= ui::DragFloat("Angle (deg)", &v.Value.w, 1.f);
                         },
                     },
                     ui_local
                 );
+                const quat new_rotation = ToRotation(ui_local);
+                // Alt-drag deltas the selection (delta-capable), it isn't a copy.
+                ui::Gesture(changed, [&] { return action::view::SetTransformRotationFromUi{new_rotation, ui_local, ui::ScopeFromAlt(true)}; });
             }
 
             const bool frozen = r.all_of<ScaleLocked>(transform_entity);
@@ -481,7 +466,7 @@ static void RenderEntityControls(entt::registry &r, entt::entity viewport, entt:
             if (const auto update_label = std::format("Edit primitive{}", frozen ? " (frozen)" : "");
                 CollapsingHeader(update_label.c_str()) && !frozen) {
                 auto new_shape = PrimitiveEditor(*prim_shape);
-                ui::Gesture(bool(new_shape), [&] { return action::ReplaceActive<PrimitiveShape>{*new_shape}; });
+                ui::Gesture(bool(new_shape), [&, scope = ui::ScopeFromAlt()] { return action::Replace<PrimitiveShape>{.Scope = scope, .Value = *new_shape}; });
             }
             if (frozen) EndDisabled();
         }
@@ -507,7 +492,7 @@ static void RenderEntityControls(entt::registry &r, entt::entity viewport, entt:
                 uint32_t slot_primitive = existing_slot ? existing_slot->PrimitiveIndex : 0u;
                 if (!existing_slot || slot_primitive > max_primitive) {
                     slot_primitive = std::min(slot_primitive, max_primitive);
-                    action::Emit(action::ReplaceActive<MeshMaterialSlotSelection>{{slot_primitive}});
+                    action::Emit(action::Replace<MeshMaterialSlotSelection>{.Scope = action::Scope::Active, .Value = {slot_primitive}});
                 }
 
                 BeginChild("MaterialSlots", ImVec2(0, 110), true);
@@ -515,7 +500,7 @@ static void RenderEntityControls(entt::registry &r, entt::entity viewport, entt:
                     const uint32_t material_index = std::min(primitive_materials[primitive_index], material_count - 1);
                     if (const auto label = std::format("Slot {:L}: {}", primitive_index, material_name(material_index));
                         Selectable(label.c_str(), slot_primitive == primitive_index) && slot_primitive != primitive_index) {
-                        action::Emit(action::ReplaceActive<MeshMaterialSlotSelection>{{primitive_index}});
+                        action::Emit(action::Replace<MeshMaterialSlotSelection>{.Scope = action::Scope::Active, .Value = {primitive_index}});
                         slot_primitive = primitive_index;
                     }
                 }
@@ -531,7 +516,7 @@ static void RenderEntityControls(entt::registry &r, entt::entity viewport, entt:
                     for (uint32_t i = 0; i < material_count; ++i) {
                         if (const auto option_name = material_name(i);
                             Selectable(option_name.c_str(), material_index == i)) {
-                            action::Emit(action::ReplaceActive<MeshMaterialAssignment>{{slot_primitive, i}});
+                            action::Emit(action::Replace<MeshMaterialAssignment>{.Scope = ui::ScopeFromAlt(), .Value = {slot_primitive, i}});
                             material_index = i;
                         }
                     }
@@ -568,9 +553,9 @@ static void RenderEntityControls(entt::registry &r, entt::entity viewport, entt:
                 };
                 const auto edit_uv_transform = [&](const char *offset_label, const char *scale_label, const char *rotation_label, vec2 &offset, vec2 &scale, float &rotation) {
                     bool changed = false;
-                    changed |= DragFloat2(offset_label, &offset.x, 0.01f);
-                    changed |= DragFloat2(scale_label, &scale.x, 0.01f);
-                    changed |= DragFloat(rotation_label, &rotation, 0.01f);
+                    changed |= ui::DragFloat2(offset_label, &offset.x, 0.01f);
+                    changed |= ui::DragFloat2(scale_label, &scale.x, 0.01f);
+                    changed |= ui::DragFloat(rotation_label, &rotation, 0.01f);
                     return changed;
                 };
                 const auto edit_texture_info = [&](const char *label, TextureInfo &tex) {
@@ -637,7 +622,7 @@ static void RenderEntityControls(entt::registry &r, entt::entity viewport, entt:
                     material_changed |= SliderFloat("Thickness", &material.Volume.ThicknessFactor, 0.f, 10.f);
                     material_changed |= edit_texture_info("Thickness", material.Volume.ThicknessTexture);
                     material_changed |= ColorEdit3("Attenuation color", &material.Volume.AttenuationColor.x);
-                    material_changed |= DragFloat("Attenuation distance", &material.Volume.AttenuationDistance, 0.01f, 0.f, 0.f, material.Volume.AttenuationDistance <= 0.f ? "Infinite" : "%.3f m");
+                    material_changed |= ui::DragFloat("Attenuation distance", &material.Volume.AttenuationDistance, 0.01f, 0.f, 0.f, material.Volume.AttenuationDistance <= 0.f ? "Infinite" : "%.3f m");
                 }
 
                 if (feature_toggle("Diffuse transmission", PbrFeature::DiffuseTrans)) {
@@ -683,8 +668,8 @@ static void RenderEntityControls(entt::registry &r, entt::entity viewport, entt:
                     material_changed |= edit_texture_info("Iridescence thickness", material.Iridescence.ThicknessTexture);
                 }
 
-                if (pbr_features_changed) action::Emit(action::object::SetPbrMeshFeaturesMask{pbr_features_mask});
-                if (material_changed) action::Emit(action::Replace<MaterialDirty>{viewport, {material_index}});
+                if (pbr_features_changed) action::Emit(action::object::SetPbrMeshFeaturesMask{pbr_features_mask, ui::ScopeFromAlt()});
+                if (material_changed) action::Emit(action::Replace<MaterialDirty>{.Entity = viewport, .Value = {material_index}});
             }
         }
     }
@@ -693,7 +678,7 @@ static void RenderEntityControls(entt::registry &r, entt::entity viewport, entt:
             // Use the camera's distance from world origin as the conversion distance.
             const float distance = std::max(glm::length(r.get<WorldTransform>(active_entity).P), 1.f);
             auto edited = *cd;
-            ui::Gesture(RenderCameraLensEditor(edited, distance), [&] { return action::ReplaceActive<Camera>{edited}; });
+            ui::Gesture(RenderCameraLensEditor(edited, distance), [&, scope = ui::ScopeFromAlt()] { return action::Replace<Camera>{.Scope = scope, .Value = edited}; });
             Separator();
             if (LookThroughCameraEntity(r) == active_entity) {
                 if (Button("Exit camera view")) action::Emit(action::view::ExitLookThroughCamera{});
@@ -739,7 +724,7 @@ static void RenderEntityControls(entt::registry &r, entt::entity viewport, entt:
                 changed = true;
             }
         }
-        ui::Gesture(changed, [&] { return action::ReplaceActive<PunctualLight>{light}; });
+        ui::Gesture(changed, [&, scope = ui::ScopeFromAlt()] { return action::Replace<PunctualLight>{.Scope = scope, .Value = light}; });
     }
     // Audio controls (mesh instance = sound object or eligible to become one; microphone)
     if (const auto *instance = r.try_get<Instance>(active_entity); instance && r.all_of<Mesh>(instance->Entity)) {

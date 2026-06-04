@@ -1292,25 +1292,8 @@ RenderRequest ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
                 continue;
             }
             const auto v = r.get<const Transform>(e).R;
-            if (auto *ui = r.try_get<RotationUiVariant>(e)) {
-                std::visit(
-                    overloaded{
-                        [&](RotationQuat &u) { u.Value = v; },
-                        [&](RotationEuler &u) {
-                            float x, y, z;
-                            glm::extractEulerAngleXYZ(glm::mat4_cast(v), x, y, z);
-                            u.Value = glm::degrees(vec3{x, y, z});
-                        },
-                        [&](RotationAxisAngle &u) {
-                            const auto q = glm::normalize(v);
-                            u.Value = {glm::axis(q), glm::degrees(glm::angle(q))};
-                        },
-                    },
-                    *ui
-                );
-            } else {
-                r.emplace<RotationUiVariant>(e, RotationQuat{v});
-            }
+            if (auto *ui = r.try_get<RotationUiVariant>(e)) *ui = ToUiVariant(v, ui->index());
+            else r.emplace<RotationUiVariant>(e, RotationQuat{v});
         }
     }
 

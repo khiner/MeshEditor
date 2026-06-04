@@ -3,6 +3,8 @@
 #include "action/Log.h"
 #include "action/LogSerialize.h"
 
+#include <entt/entity/registry.hpp>
+
 using namespace action;
 
 namespace {
@@ -94,17 +96,22 @@ void ApplyEmitted(entt::registry &r, entt::entity viewport) {
         Emitted.reset();
         auto recorded = ApplyAction(r, viewport, std::move(action));
         switch (phase) {
-            case Phase::Stage: Held = std::move(recorded); break; // Hold; supersede the prior step.
-            case Phase::Cancel: Held.reset(); break; // Discard the aborted gesture (revert already applied).
+            case Phase::Stage: Held = std::move(recorded); break; // Hold; supersede the prior step (baseline persists across steps).
+            case Phase::Cancel:
+                Held.reset();
+                r.clear<DragFieldStart>();
+                break; // Discard the aborted gesture (revert already applied).
             case Phase::Default:
                 CommitHeld();
                 RecordCommitted(std::move(recorded));
+                r.clear<DragFieldStart>();
                 break; // Commit gesture first, then record self.
         }
     }
     if (CommitRequested) {
         CommitHeld();
         CommitRequested = false;
+        r.clear<DragFieldStart>();
     }
 }
 
@@ -115,6 +122,7 @@ bool ReplayLog(entt::registry &r, entt::entity viewport, const std::filesystem::
     StreamActions(in, [&](Action &&a) {
         // Re-record each replayed action so the new session log reconstructs this scene.
         RecordCommitted(ApplyAction(r, viewport, std::move(a)));
+        r.clear<DragFieldStart>(); // each replayed action is one committed gesture
         tick(r, viewport);
     });
     return true;

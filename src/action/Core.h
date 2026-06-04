@@ -1,25 +1,38 @@
 #pragma once
 
+#include "entt_fwd.h"
 #include "numeric/vec3.h"
 #include "numeric/vec4.h"
 
 #include <entt/core/type_info.hpp>
 #include <entt/entity/fwd.hpp>
 
+#include <array>
+#include <cstddef>
 #include <string>
 #include <variant>
 
 namespace action {
-template<typename T>
-struct Update {
-    entt::entity Entity;
-    entt::id_type ComponentType;
-    uint16_t Offset;
-    T Value;
+// `Selected` copies the value to each selected entity.
+// `SelectedDelta` adds it as a delta to each selected entity's gesture-start value (number drags).
+enum class Scope : uint8_t {
+    Entity,
+    Active,
+    Selected,
+    SelectedDelta
+};
+
+// A field's value at the start of a SelectedDelta drag, so each step (and replay) computes start + delta.
+struct DragFieldStart {
+    entt::id_type Comp;
+    uint16_t Offset, Size;
+    std::array<std::byte, 16> Bytes; // fits the widest Update field (vec4)
 };
 
 template<typename T>
-struct UpdateActive {
+struct Update {
+    Scope Scope{Scope::Entity};
+    entt::entity Entity{null_entity}; // Scope::Entity only. Null targets the viewport
     entt::id_type ComponentType;
     uint16_t Offset;
     T Value;
@@ -27,12 +40,8 @@ struct UpdateActive {
 
 template<typename T>
 struct Replace {
-    entt::entity Entity;
-    T Value;
-};
-
-template<typename T>
-struct ReplaceActive {
+    Scope Scope{Scope::Entity};
+    entt::entity Entity{null_entity}; // Scope::Entity only
     T Value;
 };
 
@@ -41,12 +50,8 @@ struct DestroyEntity {
 };
 
 struct SetTag {
-    entt::entity Entity;
-    entt::id_type TagType;
-    bool Present;
-};
-
-struct SetActiveTag {
+    Scope Scope{Scope::Entity};
+    entt::entity Entity{null_entity}; // Scope::Entity only
     entt::id_type TagType;
     bool Present;
 };
@@ -90,9 +95,7 @@ template<auto... Ms> using last_field = field_of<last_v<Ms...>>;
 using Core = std::variant<
     Update<bool>, Update<uint8_t>, Update<uint32_t>, Update<float>, Update<double>,
     Update<vec3>, Update<vec4>, Update<entt::entity>,
-    UpdateActive<bool>, UpdateActive<uint8_t>, UpdateActive<uint32_t>, UpdateActive<float>, UpdateActive<double>,
-    UpdateActive<vec3>, UpdateActive<vec4>, UpdateActive<entt::entity>,
-    SetTag, SetActiveTag, DestroyEntity>;
+    SetTag, DestroyEntity>;
 
 void Apply(entt::registry &, entt::entity viewport, const Core &);
 } // namespace action

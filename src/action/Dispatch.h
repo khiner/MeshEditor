@@ -5,7 +5,9 @@
 #include <entt/entity/registry.hpp>
 
 #include <cassert>
+#include <concepts>
 #include <cstring>
+#include <functional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -15,6 +17,8 @@ namespace action {
 namespace detail {
 struct ComponentPatcher {
     void (*Patch)(entt::registry &, entt::entity, uint16_t offset, const void *src, uint16_t size);
+    void (*Read)(const entt::registry &, entt::entity, uint16_t offset, void *dst, uint16_t size); // for SelectedDelta baselines
+    bool (*Has)(const entt::registry &, entt::entity); // filters Active/Selected targets to those carrying C
     std::string_view Name; // entt::type_name<C> — for a startup manifest / debugging
 };
 inline auto &PatchTable() {
@@ -32,6 +36,12 @@ void PatchComponent(entt::registry &r, entt::entity e, uint16_t offset, const vo
     // Field is trivially copyable (enforced in UpdateOf), so a sized copy is equivalent to assignment.
     r.patch<C>(e, [&](C &c) { std::memcpy(reinterpret_cast<std::byte *>(&c) + offset, src, size); });
 }
+template<typename C>
+void ReadComponent(const entt::registry &r, entt::entity e, uint16_t offset, void *dst, uint16_t size) {
+    std::memcpy(dst, reinterpret_cast<const std::byte *>(&r.get<const C>(e)) + offset, size);
+}
+template<typename C>
+bool HasComponent(const entt::registry &r, entt::entity e) { return r.all_of<C>(e); }
 template<typename Tag>
 void SetTagPresence(entt::registry &r, entt::entity e, bool present) {
     if (present) r.emplace_or_replace<Tag>(e);
@@ -40,7 +50,7 @@ void SetTagPresence(entt::registry &r, entt::entity e, bool present) {
 
 template<typename C>
 struct PatchRegistrar {
-    PatchRegistrar() { PatchTable().insert_or_assign(entt::type_hash<C>::value(), ComponentPatcher{&PatchComponent<C>, entt::type_name<C>::value()}); }
+    PatchRegistrar() { PatchTable().insert_or_assign(entt::type_hash<C>::value(), ComponentPatcher{&PatchComponent<C>, &ReadComponent<C>, &HasComponent<C>, entt::type_name<C>::value()}); }
 };
 template<typename Tag>
 struct TagRegistrar {
@@ -93,10 +103,41 @@ void ApplyUpdate(entt::registry &r, entt::entity e, entt::id_type component_type
     it->second.Patch(r, e, offset, &value, sizeof(Field));
 }
 
-// An Update<Field> with no explicit entity (Entity == null) targets the viewport.
+// Resolve `scope` to its targets and patch each (Active/Selected hit only entities carrying the component).
+void ApplyUpdateScoped(entt::registry &, entt::entity viewport, Scope, entt::entity, entt::id_type component_type, uint16_t offset, const void *value, uint16_t size);
+void ApplyTagScoped(entt::registry &, entt::entity viewport, Scope, entt::entity, entt::id_type tag_type, bool present);
+void ForEachSelectedWith(entt::registry &, entt::id_type component_type, const std::function<void(entt::entity)> &fn);
+
+// Fields that support SelectedDelta (numeric drag).
+template<typename Field>
+inline constexpr bool DeltaField = std::same_as<Field, float> || std::same_as<Field, double> || std::same_as<Field, vec3> || std::same_as<Field, vec4>;
+
 template<typename Field>
 void ApplyUpdate(entt::registry &r, entt::entity viewport, const Update<Field> &a) {
-    ApplyUpdate(r, a.Entity != entt::null ? a.Entity : viewport, a.ComponentType, a.Offset, a.Value);
+    if constexpr (DeltaField<Field>) {
+        // Write start + delta to each selected entity, snapshotting the start on first apply so repeated
+        // staged steps and replay don't accumulate.
+        if (a.Scope == Scope::SelectedDelta) {
+            const auto it = detail::PatchTable().find(a.ComponentType);
+            assert(it != detail::PatchTable().end() && "SelectedDelta target component is not registered for dispatch");
+            const auto &p = it->second;
+            ForEachSelectedWith(r, a.ComponentType, [&](entt::entity e) {
+                Field start;
+                if (const auto *snap = r.try_get<DragFieldStart>(e); snap && snap->Comp == a.ComponentType && snap->Offset == a.Offset) {
+                    std::memcpy(&start, snap->Bytes.data(), sizeof(Field));
+                } else {
+                    p.Read(r, e, a.Offset, &start, sizeof(Field));
+                    DragFieldStart s{a.ComponentType, a.Offset, uint16_t(sizeof(Field)), {}};
+                    std::memcpy(s.Bytes.data(), &start, sizeof(Field));
+                    r.emplace_or_replace<DragFieldStart>(e, s);
+                }
+                const Field result = start + a.Value;
+                p.Patch(r, e, a.Offset, &result, sizeof(Field));
+            });
+            return;
+        }
+    }
+    ApplyUpdateScoped(r, viewport, a.Scope, a.Entity, a.ComponentType, a.Offset, &a.Value, sizeof(Field));
 }
 
 inline void ApplyTag(entt::registry &r, entt::entity e, entt::id_type tag_type, bool present) {

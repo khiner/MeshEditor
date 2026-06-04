@@ -196,22 +196,22 @@ std::optional<PhysicsShape> RenderShapeEditor(const PhysicsShape &in, bool auto_
     std::visit(
         overloaded{
             [&](physics::Box &s) {
-                if (!auto_fit) changed |= DragFloat3("Size", &s.Size.x, 0.01f, 0.01f, 100.f);
+                if (!auto_fit) changed |= ui::DragFloat3("Size", &s.Size.x, 0.01f, 0.01f, 100.f);
             },
             [&](physics::Sphere &s) {
-                if (!auto_fit) changed |= DragFloat("Radius", &s.Radius, 0.01f, 0.001f, 100.f);
+                if (!auto_fit) changed |= ui::DragFloat("Radius", &s.Radius, 0.01f, 0.001f, 100.f);
             },
             [&](physics::Capsule &s) {
                 if (auto_fit) return;
-                changed |= DragFloat("Height", &s.Height, 0.01f, 0.001f, 100.f);
-                changed |= DragFloat("Radius top", &s.RadiusTop, 0.01f, 0.001f, 100.f);
-                changed |= DragFloat("Radius bottom", &s.RadiusBottom, 0.01f, 0.001f, 100.f);
+                changed |= ui::DragFloat("Height", &s.Height, 0.01f, 0.001f, 100.f);
+                changed |= ui::DragFloat("Radius top", &s.RadiusTop, 0.01f, 0.001f, 100.f);
+                changed |= ui::DragFloat("Radius bottom", &s.RadiusBottom, 0.01f, 0.001f, 100.f);
             },
             [&](physics::Cylinder &s) {
                 if (auto_fit) return;
-                changed |= DragFloat("Height", &s.Height, 0.01f, 0.001f, 100.f);
-                changed |= DragFloat("Radius top", &s.RadiusTop, 0.01f, 0.001f, 100.f);
-                changed |= DragFloat("Radius bottom", &s.RadiusBottom, 0.01f, 0.001f, 100.f);
+                changed |= ui::DragFloat("Height", &s.Height, 0.01f, 0.001f, 100.f);
+                changed |= ui::DragFloat("Radius top", &s.RadiusTop, 0.01f, 0.001f, 100.f);
+                changed |= ui::DragFloat("Radius bottom", &s.RadiusBottom, 0.01f, 0.001f, 100.f);
             },
             [&](physics::Plane &s) {
                 // Plane normal is +Y; sizeX/sizeZ = 0 means infinite extent along that axis.
@@ -222,7 +222,7 @@ std::optional<PhysicsShape> RenderShapeEditor(const PhysicsShape &in, bool auto_
                 }
                 if (!infinite) {
                     vec2 size{s.SizeX, s.SizeZ};
-                    if (DragFloat2("Size (X, Z)", &size.x, 0.01f, 0.01f, 1000.f)) {
+                    if (ui::DragFloat2("Size (X, Z)", &size.x, 0.01f, 0.01f, 1000.f)) {
                         s.SizeX = size.x;
                         s.SizeZ = size.y;
                         changed = true;
@@ -398,20 +398,20 @@ void physics_ui::RenderTab(entt::registry &r, entt::entity viewport) {
                         if (Checkbox("Min", &has_min)) action::Emit(edit_limit([&](auto &e) { e.Min = has_min ? std::optional{min_val} : std::nullopt; }));
                         if (has_min) {
                             SameLine();
-                            ui::Gesture(DragFloat("##min", &min_val, 0.01f), [&] { return edit_limit([&](auto &e) { e.Min = min_val; }); });
+                            ui::Gesture(ui::DragFloat("##min", &min_val, 0.01f), [&] { return edit_limit([&](auto &e) { e.Min = min_val; }); });
                         }
                         if (Checkbox("Max", &has_max)) action::Emit(edit_limit([&](auto &e) { e.Max = has_max ? std::optional{max_val} : std::nullopt; }));
                         if (has_max) {
                             SameLine();
-                            ui::Gesture(DragFloat("##max", &max_val, 0.01f), [&] { return edit_limit([&](auto &e) { e.Max = max_val; }); });
+                            ui::Gesture(ui::DragFloat("##max", &max_val, 0.01f), [&] { return edit_limit([&](auto &e) { e.Max = max_val; }); });
                         }
 
                         bool soft = limit.Stiffness.has_value();
                         if (Checkbox("Soft limit", &soft)) action::Emit(edit_limit([&](auto &e) { e.Stiffness = soft ? std::optional{1000.0f} : std::nullopt; }));
                         if (limit.Stiffness) {
                             float stiffness = *limit.Stiffness, damping = limit.Damping;
-                            ui::Gesture(DragFloat("Stiffness", &stiffness, 1.0f, 0.0f, 1e6f), [&] { return edit_limit([&](auto &e) { e.Stiffness = stiffness; }); });
-                            ui::Gesture(DragFloat("Damping", &damping, 0.1f, 0.0f, 1e4f), [&] { return edit_limit([&](auto &e) { e.Damping = damping; }); });
+                            ui::Gesture(ui::DragFloat("Stiffness", &stiffness, 1.0f, 0.0f, 1e6f), [&] { return edit_limit([&](auto &e) { e.Stiffness = stiffness; }); });
+                            ui::Gesture(ui::DragFloat("Damping", &damping, 0.1f, 0.0f, 1e4f), [&] { return edit_limit([&](auto &e) { e.Damping = damping; }); });
                         }
                         TreePop();
                     }
@@ -440,11 +440,11 @@ void physics_ui::RenderTab(entt::registry &r, entt::entity viewport) {
                         if (int mode = int(drive.Mode); Combo("Mode", &mode, "Force\0Acceleration\0")) action::Emit(edit_drive([&](auto &e) { e.Mode = PhysicsDriveMode(mode); }));
                         float max_force = drive.MaxForce, pos_target = drive.PositionTarget, vel_target = drive.VelocityTarget;
                         float stiffness = drive.Stiffness, damping = drive.Damping;
-                        ui::Gesture(DragFloat("Max force", &max_force, 1.0f, 0.0f, 1e6f), [&] { return edit_drive([&](auto &e) { e.MaxForce = max_force; }); });
-                        ui::Gesture(DragFloat("Position target", &pos_target, 0.01f), [&] { return edit_drive([&](auto &e) { e.PositionTarget = pos_target; }); });
-                        ui::Gesture(DragFloat("Velocity target", &vel_target, 0.01f), [&] { return edit_drive([&](auto &e) { e.VelocityTarget = vel_target; }); });
-                        ui::Gesture(DragFloat("Stiffness", &stiffness, 1.0f, 0.0f, 1e6f), [&] { return edit_drive([&](auto &e) { e.Stiffness = stiffness; }); });
-                        ui::Gesture(DragFloat("Damping", &damping, 0.1f, 0.0f, 1e4f), [&] { return edit_drive([&](auto &e) { e.Damping = damping; }); });
+                        ui::Gesture(ui::DragFloat("Max force", &max_force, 1.0f, 0.0f, 1e6f), [&] { return edit_drive([&](auto &e) { e.MaxForce = max_force; }); });
+                        ui::Gesture(ui::DragFloat("Position target", &pos_target, 0.01f), [&] { return edit_drive([&](auto &e) { e.PositionTarget = pos_target; }); });
+                        ui::Gesture(ui::DragFloat("Velocity target", &vel_target, 0.01f), [&] { return edit_drive([&](auto &e) { e.VelocityTarget = vel_target; }); });
+                        ui::Gesture(ui::DragFloat("Stiffness", &stiffness, 1.0f, 0.0f, 1e6f), [&] { return edit_drive([&](auto &e) { e.Stiffness = stiffness; }); });
+                        ui::Gesture(ui::DragFloat("Damping", &damping, 0.1f, 0.0f, 1e4f), [&] { return edit_drive([&](auto &e) { e.Damping = damping; }); });
                         TreePop();
                     }
                     PopID();
@@ -483,7 +483,7 @@ void physics_ui::RenderEntityProperties(entt::registry &r, entt::entity entity, 
     SameLine();
     changed |= RadioButton("Dynamic", &motion_type, int(MType::Dynamic));
 
-    if (changed) action::Emit(action::physics::SetMotionType{MType(motion_type)});
+    if (changed) action::Emit(action::physics::SetMotionType{MType(motion_type), ui::ScopeFromAlt()});
 
     if (collider) { // Collider shape editing
         Spacing();
@@ -491,7 +491,7 @@ void physics_ui::RenderEntityProperties(entt::registry &r, entt::entity entity, 
 
         ui::Edit{r}.Check<&ColliderPolicy::AutoFitDims>("Auto-fit");
         auto s = RenderShapeEditor(collider->Shape, r.get<const ColliderPolicy>(entity).AutoFitDims);
-        ui::Gesture(bool(s), [&] { return action::physics::SetColliderShape{*s, s->index() != collider->Shape.index()}; });
+        ui::Gesture(bool(s), [&, scope = ui::ScopeFromAlt()] { return action::physics::SetColliderShape{*s, s->index() != collider->Shape.index(), scope}; });
 
         RenderEntityCombo<PhysicsMaterial, &ColliderMaterial::PhysicsMaterialEntity>(r, entity, "Physics material", "No materials defined");
         RenderEntityCombo<CollisionFilter, &ColliderMaterial::CollisionFilterEntity>(r, entity, "Collision filter", "No filters defined");
@@ -519,13 +519,13 @@ void physics_ui::RenderEntityProperties(entt::registry &r, entt::entity entity, 
         // Kinematic bodies move purely by velocity assignment; these fields are hidden to avoid noise.
         if (!motion->IsKinematic) {
             PhysicsMotion edit = *motion;
-            bool motion_changed = DragFloat("Gravity factor", &edit.GravityFactor, 0.01f, -10.f, 10.f);
+            bool motion_changed = ui::DragFloat("Gravity factor", &edit.GravityFactor, 0.01f, -10.f, 10.f);
 
             Spacing();
             SeparatorText("Mass properties");
 
             float mass = edit.Mass.value_or(DefaultMass);
-            if (DragFloat("Mass", &mass, 0.1f, 0.001f, 1e6f, "%.3f kg")) {
+            if (ui::DragFloat("Mass", &mass, 0.1f, 0.001f, 1e6f, "%.3f kg")) {
                 edit.Mass = mass;
                 motion_changed = true;
             }
@@ -542,9 +542,9 @@ void physics_ui::RenderEntityProperties(entt::registry &r, entt::entity entity, 
                 motion_changed = true;
             }
             if (edit.InertiaDiagonal) {
-                motion_changed |= DragFloat3("Inertia diagonal", &edit.InertiaDiagonal->x, 0.01f, 0.001f, 1e6f);
+                motion_changed |= ui::DragFloat3("Inertia diagonal", &edit.InertiaDiagonal->x, 0.01f, 0.001f, 1e6f);
                 vec3 euler_deg = glm::degrees(glm::eulerAngles(edit.InertiaOrientation.value_or(quat{1, 0, 0, 0})));
-                if (DragFloat3("Inertia orientation", &euler_deg.x, 0.1f)) {
+                if (ui::DragFloat3("Inertia orientation", &euler_deg.x, 0.1f)) {
                     edit.InertiaOrientation = quat{glm::radians(euler_deg)};
                     motion_changed = true;
                 }
@@ -554,14 +554,14 @@ void physics_ui::RenderEntityProperties(entt::registry &r, entt::entity entity, 
                 edit.CenterOfMass = has_com ? std::optional{vec3{0.0f}} : std::nullopt;
                 motion_changed = true;
             }
-            if (edit.CenterOfMass) motion_changed |= DragFloat3("Center of mass", &edit.CenterOfMass->x, 0.01f);
+            if (edit.CenterOfMass) motion_changed |= ui::DragFloat3("Center of mass", &edit.CenterOfMass->x, 0.01f);
 
             Spacing();
             SeparatorText("Dynamics");
 
-            motion_changed |= DragFloat("Damping translation", &edit.LinearDamping, 0.01f, 0.f, 1.f);
-            motion_changed |= DragFloat("Damping rotation", &edit.AngularDamping, 0.01f, 0.f, 1.f);
-            ui::Gesture(motion_changed, [&] { return action::ReplaceActive<PhysicsMotion>{std::make_unique<PhysicsMotion>(edit)}; });
+            motion_changed |= ui::DragFloat("Damping translation", &edit.LinearDamping, 0.01f, 0.f, 1.f);
+            motion_changed |= ui::DragFloat("Damping rotation", &edit.AngularDamping, 0.01f, 0.f, 1.f);
+            ui::Gesture(motion_changed, [&, scope = ui::ScopeFromAlt()] { return action::Replace<PhysicsMotion>{.Scope = scope, .Value = std::make_unique<PhysicsMotion>(edit)}; });
         }
     }
 

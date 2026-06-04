@@ -1,6 +1,7 @@
 #include "action/Object.h"
 #include "Timer.h"
 #include "action/Dispatch.h"
+#include "action/ScopeResolve.h"
 #include "armature/Armature.h"
 #include "armature/ArmatureComponents.h"
 #include "mesh/MeshComponents.h"
@@ -132,6 +133,19 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
         }
         r.remove<Selected>(src);
     };
+    // `fn` for each mesh entity a scope targets (the carried entity, the active mesh, or each selected mesh).
+    auto for_each_mesh_target = [&](Scope scope, entt::entity entity, auto &&fn) {
+        switch (scope) {
+            case Scope::Entity: fn(entity); break;
+            case Scope::Active:
+                if (const auto e = GetActiveMeshEntity(r); e != entt::null) fn(e);
+                break;
+            case Scope::Selected:
+            case Scope::SelectedDelta:
+                for (const auto e : ::selection::GetSelectedMeshEntities(r)) fn(e);
+                break;
+        }
+    };
     std::visit(
         overloaded{
             [&](Delete) {
@@ -217,36 +231,41 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
                 begin_translate();
             },
             [&](const ImportMesh &a) { r.emplace_or_replace<PendingImportMesh>(viewport, a.Path, *a.Info); },
-            [&](const ReplaceActive<PrimitiveShape> &a) {
-                const auto e = GetActiveMeshEntity(r);
-                if (e == entt::null || ::selection::HasScaleLockedInstance(r, e)) return;
-                r.emplace_or_replace<PrimitiveShape>(e, a.Value);
+            [&](const Replace<PrimitiveShape> &a) {
+                auto set_shape = [&](entt::entity e) {
+                    if (e == entt::null || ::selection::HasScaleLockedInstance(r, e)) return;
+                    r.emplace_or_replace<PrimitiveShape>(e, a.Value);
 
-                if (auto *mb = r.try_get<MeshBuffers>(e)) ReleaseMeshBuffers(r, *mb);
-                r.erase<MeshBuffers>(e);
-                r.erase<Mesh>(e);
+                    if (auto *mb = r.try_get<MeshBuffers>(e)) ReleaseMeshBuffers(r, *mb);
+                    r.erase<MeshBuffers>(e);
+                    r.erase<Mesh>(e);
 
-                auto new_mesh = meshes.CreateMesh(primitive::CreateMesh(a.Value), {}, {});
-                r.emplace<MeshBuffers>(e, meshes.GetVerticesRange(new_mesh.GetStoreId()), SlottedRange{}, SlottedRange{}, SlottedRange{});
-                r.emplace<Mesh>(e, std::move(new_mesh));
-                r.emplace_or_replace<MeshGeometryDirty>(e);
+                    auto new_mesh = meshes.CreateMesh(primitive::CreateMesh(a.Value), {}, {});
+                    r.emplace<MeshBuffers>(e, meshes.GetVerticesRange(new_mesh.GetStoreId()), SlottedRange{}, SlottedRange{}, SlottedRange{});
+                    r.emplace<Mesh>(e, std::move(new_mesh));
+                    r.emplace_or_replace<MeshGeometryDirty>(e);
+                };
+                for_each_mesh_target(a.Scope, a.Entity, set_shape);
             },
             [&](const SetPbrMeshFeaturesMask &a) {
-                const auto e = GetActiveMeshEntity(r);
-                if (a.Mask != 0u) r.emplace_or_replace<PbrMeshFeatures>(e, a.Mask);
-                else r.remove<PbrMeshFeatures>(e);
+                for_each_mesh_target(a.Scope, entt::null, [&](entt::entity e) {
+                    if (a.Mask != 0u) r.emplace_or_replace<PbrMeshFeatures>(e, a.Mask);
+                    else r.remove<PbrMeshFeatures>(e);
+                });
             },
             [&]<typename Field>(const Update<Field> &a) { ApplyUpdate(r, viewport, a); },
-            [&]<typename T>(const Replace<T> &a) { r.emplace_or_replace<T>(a.Entity, a.Value); },
-            [&]<typename T>(const ReplaceActive<T> &a) { r.emplace_or_replace<T>(GetActiveMeshEntity(r), a.Value); },
-            [&](const ReplaceActive<PunctualLight> &a) {
-                const auto e = FindActiveEntity(r);
-                const auto *old = r.try_get<const PunctualLight>(e);
-                const auto &n = a.Value;
-                if (!old || old->Type != n.Type || old->Range != n.Range || old->OuterConeCos != n.OuterConeCos || old->InnerConeCos != n.InnerConeCos) {
-                    r.emplace_or_replace<LightWireframeDirty>(e);
-                }
-                r.emplace_or_replace<PunctualLight>(e, n);
+            // Mesh-data components (material assignment / slot selection) live on the object's mesh entity.
+            [&]<typename T>(const Replace<T> &a) { for_each_mesh_target(a.Scope, a.Entity, [&](entt::entity e) { r.emplace_or_replace<T>(e, a.Value); }); },
+            [&](const Replace<PunctualLight> &a) {
+                auto set_light = [&](entt::entity e) {
+                    const auto *old = r.try_get<const PunctualLight>(e);
+                    const auto &n = a.Value;
+                    if (!old || old->Type != n.Type || old->Range != n.Range || old->OuterConeCos != n.OuterConeCos || old->InnerConeCos != n.InnerConeCos) {
+                        r.emplace_or_replace<LightWireframeDirty>(e);
+                    }
+                    r.emplace_or_replace<PunctualLight>(e, n);
+                };
+                ForEachReplaceTarget<PunctualLight>(r, a.Scope, a.Entity, set_light);
             },
         },
         action

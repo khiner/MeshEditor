@@ -8,17 +8,15 @@ namespace action {
 // Heap-allocate big types to keep the variant small.
 template<>
 struct Replace<PhysicsMotion> {
-    entt::entity Entity;
-    std::unique_ptr<PhysicsMotion> Value;
-};
-template<>
-struct ReplaceActive<PhysicsMotion> {
+    Scope Scope{Scope::Entity};
+    entt::entity Entity{null_entity};
     std::unique_ptr<PhysicsMotion> Value;
 };
 } // namespace action
 
 namespace action::physics {
-// SetMotionType / SetColliderShape / AddTrigger / RemoveTriggerNodes target the active entity.
+// AddTrigger / RemoveTriggerNodes target the active entity. SetMotionType / SetColliderShape target the
+// active or selected entities per Scope.
 struct SetMotionType {
     enum class Type : uint8_t {
         None,
@@ -27,12 +25,14 @@ struct SetMotionType {
         Dynamic
     };
     Type Value;
+    Scope Scope{Scope::Active};
 };
 
 // `LockKind=true` locks `ColliderPolicy.LockedKind`; set it when the variant alternative changed.
 struct SetColliderShape {
     PhysicsShape Shape;
     bool LockKind;
+    Scope Scope{Scope::Active};
 };
 
 struct AddTrigger {};
@@ -78,7 +78,7 @@ using Actions = std::variant<
 using Action = MergedVariantT<
     Actions,
     Update<CollideMode>, Update<PhysicsCombineMode>, Update<PhysicsDriveType>, Update<PhysicsDriveMode>,
-    Replace<PhysicsMotion>, ReplaceActive<PhysicsMotion>>;
+    Replace<PhysicsMotion>>;
 
 void Apply(entt::registry &, entt::entity viewport, const Action &);
 } // namespace action::physics

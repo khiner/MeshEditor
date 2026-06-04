@@ -44,9 +44,10 @@ struct ImportMesh {
     std::string Path; // not fs::path so the action serializes natively
     std::unique_ptr<MeshInstanceCreateInfo> Info;
 };
-// `Mask=0` removes the component. Targets the active mesh entity.
+// `Mask=0` removes the component. Targets the mesh entity.
 struct SetPbrMeshFeaturesMask {
     uint32_t Mask;
+    Scope Scope{Scope::Active};
 };
 
 using Actions = std::variant<
@@ -56,9 +57,8 @@ using Actions = std::variant<
 
 using Action = MergedVariantT<
     Actions,
-    ReplaceActive<PrimitiveShape>,
-    Replace<PunctualLight>, ReplaceActive<PunctualLight>,
-    Replace<MaterialDirty>, ReplaceActive<MeshMaterialAssignment>, ReplaceActive<MeshMaterialSlotSelection>,
+    Replace<PrimitiveShape>, Replace<PunctualLight>,
+    Replace<MaterialDirty>, Replace<MeshMaterialAssignment>, Replace<MeshMaterialSlotSelection>,
     Update<std::optional<uint32_t>>>;
 
 void Apply(entt::registry &, entt::entity viewport, const Action &);

@@ -1,6 +1,7 @@
 #include "action/View.h"
 #include "TransformMath.h"
 #include "action/Dispatch.h"
+#include "action/ScopeResolve.h"
 #include "armature/ArmatureComponents.h"
 #include "gltf/SourceAssets.h"
 #include "scene/Defaults.h"
@@ -15,6 +16,9 @@
 #include "viewport/ViewportInteractionState.h"
 #include "viewport/ViewportOps.h"
 
+#include <cstddef>
+#include <cstring>
+
 using std::ranges::find;
 
 namespace {
@@ -23,6 +27,26 @@ void ExitLookThrough(entt::registry &r, entt::entity viewport) {
     if (camera == entt::null) return;
     r.replace<ViewCamera>(viewport, r.get<LookingThrough>(camera).SavedViewCamera);
     r.remove<LookingThrough>(camera);
+}
+
+// Pack a representation to/from a vec4 (component layout only — the rotation math is ToRotation/ToUiVariant)
+// so a SelectedDelta drag can add a per-component delta.
+vec4 Flatten(const RotationUiVariant &v) {
+    return std::visit(
+        overloaded{
+            [](const RotationQuat &q) { return vec4{q.Value.x, q.Value.y, q.Value.z, q.Value.w}; },
+            [](const RotationEuler &e) { return vec4{e.Value, 0.f}; },
+            [](const RotationAxisAngle &a) { return a.Value; },
+        },
+        v
+    );
+}
+RotationUiVariant Unflatten(vec4 repr, std::size_t mode) {
+    switch (mode) {
+        case 1: return RotationEuler{vec3{repr}};
+        case 2: return RotationAxisAngle{repr};
+        default: return RotationQuat{quat{repr.w, repr.x, repr.y, repr.z}};
+    }
 }
 } // namespace
 
@@ -40,6 +64,34 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
     auto active_rotation_target = [&] {
         const auto bone = FindActiveBone(r);
         return r.get<const Interaction>(viewport).Mode == InteractionMode::Pose && bone != entt::null ? bone : FindActiveEntity(r);
+    };
+    // Selected/SelectedDelta fan out to the selected bones in Pose mode, else the selected objects.
+    // Any other scope resolves to the single active rotation target.
+    auto rotation_targets = [&](Scope scope) {
+        std::vector<entt::entity> targets;
+        if (scope != Scope::Selected && scope != Scope::SelectedDelta) {
+            if (const auto e = active_rotation_target(); e != entt::null) targets.push_back(e);
+        } else if (r.get<const Interaction>(viewport).Mode == InteractionMode::Pose) {
+            for (const auto e : r.view<BoneSelection>()) targets.push_back(e);
+        } else {
+            for (const auto e : r.view<Selected, RotationUiVariant>()) targets.push_back(e);
+        }
+        return targets;
+    };
+    // Gesture-start Transform.R, snapshotted into the shared DragFieldStart baseline on first apply.
+    auto rotation_start = [&](entt::entity e) -> quat {
+        static constexpr uint16_t r_off = offsetof(Transform, R);
+        const auto comp = entt::type_hash<Transform>::value();
+        if (const auto *s = r.try_get<DragFieldStart>(e); s && s->Comp == comp && s->Offset == r_off) {
+            quat q;
+            std::memcpy(&q, s->Bytes.data(), sizeof(quat));
+            return q;
+        }
+        const quat cur = r.get<const Transform>(e).R;
+        DragFieldStart s{comp, r_off, sizeof(quat), {}};
+        std::memcpy(s.Bytes.data(), &cur, sizeof(quat));
+        r.emplace_or_replace<DragFieldStart>(e, s);
+        return cur;
     };
     std::visit(
         overloaded{
@@ -91,15 +143,33 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
                 r.patch<ViewCamera>(viewport, [&](auto &c) { c.SetTargetDirection(a.Direction); });
             },
             [&](const SetRotationUiMode &a) {
-                const auto e = active_rotation_target();
-                r.replace<RotationUiVariant>(e, CreateVariantByIndex<RotationUiVariant>(a.Index));
-                r.patch<Transform>(e, [](auto &) {});
+                for (const auto e : rotation_targets(a.Scope)) {
+                    r.replace<RotationUiVariant>(e, CreateVariantByIndex<RotationUiVariant>(a.Index));
+                    r.patch<Transform>(e, [](auto &) {});
+                }
             },
             [&](const SetTransformRotationFromUi &a) {
-                const auto e = active_rotation_target();
-                r.replace<RotationUiVariant>(e, a.UiVariant);
-                r.emplace_or_replace<RotationUiDriving>(e);
-                r.patch<Transform>(e, [&](auto &t) { t.R = a.R; });
+                if (a.Scope == Scope::SelectedDelta) {
+                    // Add the active's delta to each selected entity's own start rotation, keeping their relative orientations.
+                    const auto active = active_rotation_target();
+                    if (active == entt::null) return;
+                    const auto mode = a.UiVariant.index();
+                    const vec4 delta = Flatten(a.UiVariant) - Flatten(ToUiVariant(rotation_start(active), mode));
+                    for (const auto e : rotation_targets(Scope::SelectedDelta)) {
+                        const quat rotation = ToRotation(Unflatten(Flatten(ToUiVariant(rotation_start(e), mode)) + delta, mode));
+                        r.patch<Transform>(e, [&](auto &t) { t.R = rotation; });
+                        if (e == active) { // keep the editor's representation stable; others re-sync from R
+                            r.replace<RotationUiVariant>(e, a.UiVariant);
+                            r.emplace_or_replace<RotationUiDriving>(e);
+                        }
+                    }
+                } else {
+                    for (const auto e : rotation_targets(a.Scope)) {
+                        r.replace<RotationUiVariant>(e, a.UiVariant);
+                        r.emplace_or_replace<RotationUiDriving>(e);
+                        r.patch<Transform>(e, [&](auto &t) { t.R = a.R; });
+                    }
+                }
             },
             [&](const DragGizmo &a) {
                 const bool bone_edit_mode = IsBoneEditMode(r, viewport);
@@ -231,8 +301,7 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
                 });
             },
             [&]<typename Field>(const Update<Field> &a) { ApplyUpdate(r, viewport, a); },
-            [&](const Replace<::Camera> &a) { r.emplace_or_replace<::Camera>(a.Entity, a.Value); },
-            [&](const ReplaceActive<::Camera> &a) { r.emplace_or_replace<::Camera>(FindActiveEntity(r), a.Value); },
+            [&](const Replace<::Camera> &a) { ForEachReplaceTarget<::Camera>(r, a.Scope, a.Entity, [&](entt::entity e) { r.emplace_or_replace<::Camera>(e, a.Value); }); },
             [&](const Replace<WorkspaceLights> &a) { r.replace<WorkspaceLights>(a.Entity, *a.Value); },
         },
         action

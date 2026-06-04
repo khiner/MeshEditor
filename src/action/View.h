@@ -57,11 +57,13 @@ struct SetViewCameraTargetDirection {
 // Targets the active bone in Pose mode, otherwise the active entity.
 struct SetRotationUiMode {
     int Index;
+    Scope Scope{Scope::Active};
 };
 // `R` must already be normalized. Targets the active bone in Pose mode, otherwise the active entity.
 struct SetTransformRotationFromUi {
     quat R;
     RotationUiVariant UiVariant;
+    Scope Scope{Scope::Active};
 };
 // Gizmo drag intent: the gizmo's start pivot and delta (heap-held to keep the variant small, as in
 // DragGizmoMeshEdit). Apply recomputes each selected entity's transform from the current selection
@@ -122,7 +124,7 @@ using Actions = std::variant<
 
 using Action = MergedVariantT<
     Actions,
-    Replace<::Camera>, ReplaceActive<::Camera>, Replace<WorkspaceLights>,
+    Replace<::Camera>, Replace<WorkspaceLights>,
     Update<TransformGizmo::Type>, Update<TransformGizmo::Mode>,
     Update<DebugChannel>>;
 
