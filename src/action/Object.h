@@ -55,7 +55,7 @@ template<typename Field>
 struct UpdatePrimitiveField {
     Scope Scope{Scope::Active};
     uint16_t Offset;
-    Field Value;
+    Field Value, Min, Max;
 };
 
 using Actions = std::variant<

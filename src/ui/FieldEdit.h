@@ -225,7 +225,6 @@ struct Edit {
     bool Slider(const char *label, const char *fmt = nullptr) {
         static_assert(HasMin<Prefix..., Ms...> && HasMax<Prefix..., Ms...>, "Edit::Slider: field must declare FieldLimits with both Min and Max");
         using L = FieldLimits<Prefix..., Ms...>;
-        // A slider is a drag interaction, so it's delta-capable on Alt (integral fields copy instead).
         return Run<Ms...>([&](auto &v) {
             using F = std::remove_reference_t<decltype(v)>;
             if constexpr (std::same_as<F, float>) return ImGui::SliderFloat(label, &v, F(L::Min), F(L::Max), fmt ? fmt : "%.3f");

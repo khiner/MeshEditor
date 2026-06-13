@@ -255,24 +255,30 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
                 const auto active = GetActiveMeshEntity(r);
                 if (active == entt::null || !r.all_of<PrimitiveShape>(active)) return;
                 const auto active_index = r.get<const PrimitiveShape>(active).index();
+                auto clamp_field = [&](Field v) {
+                    if constexpr (std::integral<Field>) return std::clamp(v, a.Min, a.Max);
+                    else return glm::clamp(v, a.Min, a.Max);
+                };
                 auto write = [&](entt::entity e, Field value) {
                     if (::selection::HasScaleLockedInstance(r, e)) return;
-                    if constexpr (DeltaField<Field>) value = glm::clamp(value, Field(primitive::MinSize), Field(primitive::MaxSize));
+                    value = clamp_field(value);
                     PrimitiveFieldPatcher.Patch(r, e, a.Offset, &value, sizeof(Field));
                     regen_primitive(e);
                 };
-                if constexpr (DeltaField<Field>) {
-                    // Add the active's delta to each same-shaped selection member's own start, keeping their relative sizes.
-                    if (a.Scope == Scope::SelectedDelta) {
-                        const Field delta = a.Value - FieldGestureStart<Field>(r, active, PrimitiveFieldPatcher, comp, a.Offset);
-                        for (const auto e : ::selection::GetSelectedMeshEntities(r)) {
-                            if (!r.all_of<PrimitiveShape>(e) || r.get<const PrimitiveShape>(e).index() != active_index) continue;
-                            write(e, FieldGestureStart<Field>(r, e, PrimitiveFieldPatcher, comp, a.Offset) + delta);
+                if (a.Scope == Scope::SelectedDelta) {
+                    // Add the active's delta to each member's own start, keeping their relative values.
+                    const auto active_start = FieldGestureStart<Field>(r, active, PrimitiveFieldPatcher, comp, a.Offset);
+                    for (const auto e : ::selection::GetSelectedMeshEntities(r)) {
+                        if (!r.all_of<PrimitiveShape>(e) || r.get<const PrimitiveShape>(e).index() != active_index) continue;
+                        const auto e_start = FieldGestureStart<Field>(r, e, PrimitiveFieldPatcher, comp, a.Offset);
+                        if constexpr (std::integral<Field>) {
+                            // Accumulate in a wider signed type so an unsigned field can't wrap on a downward delta.
+                            write(e, Field(std::clamp<int64_t>(int64_t(e_start) + int64_t(a.Value) - int64_t(active_start), int64_t(a.Min), int64_t(a.Max))));
+                        } else {
+                            write(e, e_start + (a.Value - active_start));
                         }
-                        return;
                     }
-                }
-                if (a.Scope == Scope::Selected) {
+                } else if (a.Scope == Scope::Selected) {
                     for (const auto e : ::selection::GetSelectedMeshEntities(r)) {
                         if (r.all_of<PrimitiveShape>(e) && r.get<const PrimitiveShape>(e).index() == active_index) write(e, a.Value);
                     }

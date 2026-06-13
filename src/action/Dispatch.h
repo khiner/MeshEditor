@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <cstring>
 #include <functional>
+#include <limits>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -139,11 +140,11 @@ void ApplyUpdate(entt::registry &r, entt::entity e, entt::id_type component_type
 // Resolve `scope` to its targets and patch each (Active/Selected hit only entities carrying the component).
 void ApplyUpdateScoped(entt::registry &, entt::entity viewport, Scope, entt::entity, entt::id_type component_type, uint16_t offset, const void *value, uint16_t size);
 void ApplyTagScoped(entt::registry &, entt::entity viewport, Scope, entt::entity, entt::id_type tag_type, bool present);
-void ForEachSelectedWith(entt::registry &, entt::id_type component_type, const std::function<void(entt::entity)> &fn);
+void ForEachSelectedWith(entt::registry &, entt::id_type component_type, const std::function<void(entt::entity)> &);
 
-// Fields that support SelectedDelta (numeric drag).
+// Arithmetic type fields that support SelectedDelta (numeric drag)
 template<typename Field>
-inline constexpr bool DeltaField = std::same_as<Field, float> || std::same_as<Field, double> || std::same_as<Field, vec2> || std::same_as<Field, vec3> || std::same_as<Field, vec4>;
+inline constexpr bool DeltaField = std::same_as<Field, float> || std::same_as<Field, double> || std::same_as<Field, vec2> || std::same_as<Field, vec3> || std::same_as<Field, vec4> || (std::integral<Field> && !std::same_as<Field, bool>);
 
 // The DragFieldStart snapshot if present, else the current value (read via `p`), which it snapshots keyed by comp + offset.
 template<typename Field>
@@ -169,7 +170,14 @@ void ApplyUpdate(entt::registry &r, entt::entity viewport, const Update<Field> &
             assert(it != detail::PatchTable().end() && "SelectedDelta target component is not registered for dispatch");
             const auto &p = it->second;
             ForEachSelectedWith(r, a.ComponentType, [&](entt::entity e) {
-                Field result = FieldGestureStart<Field>(r, e, p, a.ComponentType, a.Offset) + a.Value;
+                const Field start = FieldGestureStart<Field>(r, e, p, a.ComponentType, a.Offset);
+                Field result;
+                if constexpr (std::integral<Field>) {
+                    // Accumulate in a wider signed type and clamp to the field's range so a downward delta can't wrap.
+                    result = Field(std::clamp<int64_t>(int64_t(start) + int64_t(std::make_signed_t<Field>(a.Value)), int64_t(std::numeric_limits<Field>::min()), int64_t(std::numeric_limits<Field>::max())));
+                } else {
+                    result = start + a.Value;
+                }
                 MaybeClamp(a.ComponentType, a.Offset, &result);
                 p.Patch(r, e, a.Offset, &result, sizeof(Field));
             });

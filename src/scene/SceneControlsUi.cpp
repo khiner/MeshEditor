@@ -78,53 +78,53 @@ constexpr std::string Capitalize(std::string_view str) {
     return result;
 }
 
-// Renders sliders for the shape's parameters and returns the edited shape if any changed.
 // Draw the active primitive's fields, emitting a gesture-grouped update per field on change.
 void PrimitiveEditor(const PrimitiveShape &shape) {
     using primitive::MaxSize, primitive::MinSize;
-    static constexpr float SizeSpeed = 0.01f;
-    const auto field = [&]<class C, class F>(bool changed, F C::*member, F value, bool delta_capable) {
+    static constexpr float SizeSpeed = 0.01f, HalfMin = MinSize / 2.f, HalfMax = MaxSize / 2.f;
+
+    const auto field = [&]<class C, class F>(bool changed, F C::*member, F value, float lo, float hi) {
         ui::Gesture(changed, [=] {
-            return action::object::UpdatePrimitiveField<F>{ui::ScopeFromAlt(delta_capable), uint16_t(action::detail::MemPtrOffset(member)), value};
+            return action::object::UpdatePrimitiveField<F>{ui::ScopeFromAlt(true), uint16_t(action::detail::MemPtrOffset(member)), value, F(lo), F(hi)};
         });
     };
     std::visit([&](const auto &s) {
         using T = std::decay_t<decltype(s)>;
         if constexpr (std::is_same_v<T, primitive::Plane>) {
             vec2 size = s.HalfExtents * 2.f;
-            field(ui::DragFloat2("Size", &size.x, SizeSpeed, MinSize, MaxSize), &primitive::Plane::HalfExtents, size / 2.f, true);
+            field(ui::DragFloat2("Size", &size.x, SizeSpeed, MinSize, MaxSize), &primitive::Plane::HalfExtents, size / 2.f, HalfMin, HalfMax);
         } else if constexpr (std::is_same_v<T, primitive::Circle>) {
             float radius = s.Radius;
-            field(ui::DragFloat("Radius", &radius, SizeSpeed, MinSize, MaxSize), &primitive::Circle::Radius, radius, true);
-            int segments = int(s.Segments);
-            field(SliderInt("Segments", &segments, 3, 128), &primitive::Circle::Segments, uint32_t(segments), false);
+            field(ui::DragFloat("Radius", &radius, SizeSpeed, MinSize, MaxSize), &primitive::Circle::Radius, radius, MinSize, MaxSize);
+            uint32_t segments = s.Segments;
+            field(SliderUInt("Segments", &segments, 3, 128), &primitive::Circle::Segments, segments, 3, 128);
         } else if constexpr (std::is_same_v<T, primitive::Cuboid>) {
             vec3 size = s.HalfExtents * 2.f;
-            field(ui::DragFloat3("Size", &size.x, SizeSpeed, MinSize, MaxSize), &primitive::Cuboid::HalfExtents, size / 2.f, true);
+            field(ui::DragFloat3("Size", &size.x, SizeSpeed, MinSize, MaxSize), &primitive::Cuboid::HalfExtents, size / 2.f, HalfMin, HalfMax);
         } else if constexpr (std::is_same_v<T, primitive::IcoSphere>) {
             float radius = s.Radius;
-            field(ui::DragFloat("Radius", &radius, SizeSpeed, MinSize, MaxSize), &primitive::IcoSphere::Radius, radius, true);
-            int subdivisions = int(s.Subdivisions);
-            field(SliderInt("Subdivisions", &subdivisions, 1, 6), &primitive::IcoSphere::Subdivisions, uint32_t(subdivisions), false);
+            field(ui::DragFloat("Radius", &radius, SizeSpeed, MinSize, MaxSize), &primitive::IcoSphere::Radius, radius, MinSize, MaxSize);
+            uint32_t subdivisions = s.Subdivisions;
+            field(SliderUInt("Subdivisions", &subdivisions, 1, 6), &primitive::IcoSphere::Subdivisions, subdivisions, 1, 6);
         } else if constexpr (std::is_same_v<T, primitive::UVSphere>) {
             float radius = s.Radius;
-            field(ui::DragFloat("Radius", &radius, SizeSpeed, MinSize, MaxSize), &primitive::UVSphere::Radius, radius, true);
-            int slices = int(s.Slices), stacks = int(s.Stacks);
-            field(SliderInt("Slices", &slices, 3, 128), &primitive::UVSphere::Slices, uint32_t(slices), false);
-            field(SliderInt("Stacks", &stacks, 2, 64), &primitive::UVSphere::Stacks, uint32_t(stacks), false);
+            field(ui::DragFloat("Radius", &radius, SizeSpeed, MinSize, MaxSize), &primitive::UVSphere::Radius, radius, MinSize, MaxSize);
+            uint32_t slices = s.Slices, stacks = s.Stacks;
+            field(SliderUInt("Slices", &slices, 3, 128), &primitive::UVSphere::Slices, slices, 3, 128);
+            field(SliderUInt("Stacks", &stacks, 2, 64), &primitive::UVSphere::Stacks, stacks, 2, 64);
         } else if constexpr (std::is_same_v<T, primitive::Torus>) {
             float major = s.MajorRadius, minor = s.MinorRadius;
-            field(ui::DragFloat("Major radius", &major, SizeSpeed, MinSize, MaxSize), &primitive::Torus::MajorRadius, major, true);
-            field(ui::DragFloat("Minor radius", &minor, SizeSpeed, MinSize, s.MajorRadius), &primitive::Torus::MinorRadius, minor, true);
-            int major_seg = int(s.MajorSegments), minor_seg = int(s.MinorSegments);
-            field(SliderInt("Major segments", &major_seg, 3, 256), &primitive::Torus::MajorSegments, uint32_t(major_seg), false);
-            field(SliderInt("Minor segments", &minor_seg, 3, 256), &primitive::Torus::MinorSegments, uint32_t(minor_seg), false);
+            field(ui::DragFloat("Major radius", &major, SizeSpeed, MinSize, MaxSize), &primitive::Torus::MajorRadius, major, MinSize, MaxSize);
+            field(ui::DragFloat("Minor radius", &minor, SizeSpeed, MinSize, s.MajorRadius), &primitive::Torus::MinorRadius, minor, MinSize, s.MajorRadius);
+            uint32_t major_seg = s.MajorSegments, minor_seg = s.MinorSegments;
+            field(SliderUInt("Major segments", &major_seg, 3, 256), &primitive::Torus::MajorSegments, major_seg, 3, 256);
+            field(SliderUInt("Minor segments", &minor_seg, 3, 256), &primitive::Torus::MinorSegments, minor_seg, 3, 256);
         } else if constexpr (std::is_same_v<T, primitive::Cylinder> || std::is_same_v<T, primitive::Cone>) {
             float radius = s.Radius, height = s.Height;
-            field(ui::DragFloat("Radius", &radius, SizeSpeed, MinSize, MaxSize), &T::Radius, radius, true);
-            field(ui::DragFloat("Height", &height, SizeSpeed, MinSize, MaxSize), &T::Height, height, true);
-            int slices = int(s.Slices);
-            field(SliderInt("Slices", &slices, 3, 128), &T::Slices, uint32_t(slices), false);
+            field(ui::DragFloat("Radius", &radius, SizeSpeed, MinSize, MaxSize), &T::Radius, radius, MinSize, MaxSize);
+            field(ui::DragFloat("Height", &height, SizeSpeed, MinSize, MaxSize), &T::Height, height, MinSize, MaxSize);
+            uint32_t slices = s.Slices;
+            field(SliderUInt("Slices", &slices, 3, 128), &T::Slices, slices, 3, 128);
         }
     },
                shape);
