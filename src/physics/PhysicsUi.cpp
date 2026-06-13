@@ -11,33 +11,15 @@
 #include <entt/entity/registry.hpp>
 #include <format>
 
-template<> struct FieldLimits<&PhysicsSimulationSettings::SubstepsPerFrame> {
-    static constexpr uint32_t Min = 1, Max = 100;
-};
-template<> struct FieldLimits<&PhysicsSimulationSettings::SolverIterations> {
-    static constexpr uint32_t Min = 2, Max = 50;
-};
-template<> struct FieldLimits<&PhysicsSimulationSettings::TimeScale> {
-    static constexpr float Min = 0, Max = 10;
-};
-template<> struct FieldLimits<&PhysicsMaterial::StaticFriction> {
-    static constexpr float Min = 0, Max = 2;
-};
-template<> struct FieldLimits<&PhysicsMaterial::DynamicFriction> {
-    static constexpr float Min = 0, Max = 2;
-};
-template<> struct FieldLimits<&PhysicsMaterial::Restitution> {
-    static constexpr float Min = 0, Max = 1;
-};
-template<> struct FieldLimits<&PhysicsMotion::GravityFactor> {
-    static constexpr float Min = -10, Max = 10;
-};
-template<> struct FieldLimits<&PhysicsMotion::LinearDamping> {
-    static constexpr float Min = 0, Max = 1;
-};
-template<> struct FieldLimits<&PhysicsMotion::AngularDamping> {
-    static constexpr float Min = 0, Max = 1;
-};
+template<> struct FieldLimits<&PhysicsSimulationSettings::SubstepsPerFrame> : Within<1u, 100u> {};
+template<> struct FieldLimits<&PhysicsSimulationSettings::SolverIterations> : Within<2u, 50u> {};
+template<> struct FieldLimits<&PhysicsSimulationSettings::TimeScale> : Within<0.f, 10.f> {};
+template<> struct FieldLimits<&PhysicsMaterial::StaticFriction> : Within<0.f, 2.f> {};
+template<> struct FieldLimits<&PhysicsMaterial::DynamicFriction> : Within<0.f, 2.f> {};
+template<> struct FieldLimits<&PhysicsMaterial::Restitution> : Within<0.f, 1.f> {};
+template<> struct FieldLimits<&PhysicsMotion::GravityFactor> : Within<-10.f, 10.f> {};
+template<> struct FieldLimits<&PhysicsMotion::LinearDamping> : Within<0.f, 1.f> {};
+template<> struct FieldLimits<&PhysicsMotion::AngularDamping> : Within<0.f, 1.f> {};
 
 using namespace ImGui;
 

@@ -45,12 +45,8 @@ using std::ranges::any_of, std::ranges::distance, std::ranges::find, std::ranges
 
 using namespace ImGui;
 
-template<> struct FieldLimits<&Transform::S> {
-    static constexpr float Min = 0.01f, Max = 10;
-};
-template<> struct FieldLimits<&TransformGizmoState::Config, &TransformGizmo::Config::SnapValue> {
-    static constexpr float Min = 0.01f, Max = 100;
-};
+template<> struct FieldLimits<&Transform::S> : Within<0.01f, 10.f> {};
+template<> struct FieldLimits<&TransformGizmoState::Config, &TransformGizmo::Config::SnapValue> : Within<0.01f, 100.f> {};
 
 static void RenderObjectTree(entt::registry &, entt::entity viewport);
 static void RenderEntityControls(entt::registry &, entt::entity viewport, entt::entity active_entity);

@@ -9,17 +9,6 @@
 namespace action {
 // Ms... walks from the component down to the leaf field being written.
 template<auto... Ms>
-Update<detail::last_field<Ms...>> UpdateOf(entt::entity e, detail::last_field<Ms...> v) {
-    static_assert(sizeof...(Ms) > 0, "UpdateOf requires at least one member pointer");
-    using C = detail::first_class<Ms...>;
-    using F = detail::last_field<Ms...>;
-    static_assert(std::is_trivially_copyable_v<F>, "Update<T> is for trivially-copyable fields only; use Replace<T> for complex types");
-    RegisterUpdateable<C>();
-    if constexpr (HasLimits<Ms...>) RegisterLimits<Ms...>();
-    return {Scope::Entity, e, entt::type_hash<C>::value(), uint16_t((detail::MemPtrOffset(Ms) + ...)), std::move(v)};
-}
-
-template<auto... Ms>
 Update<detail::last_field<Ms...>> UpdateOf(Scope scope, detail::last_field<Ms...> v) {
     static_assert(sizeof...(Ms) > 0, "UpdateOf requires at least one member pointer");
     using C = detail::first_class<Ms...>;
@@ -28,6 +17,13 @@ Update<detail::last_field<Ms...>> UpdateOf(Scope scope, detail::last_field<Ms...
     RegisterUpdateable<C>();
     if constexpr (HasLimits<Ms...>) RegisterLimits<Ms...>();
     return {scope, null_entity, entt::type_hash<C>::value(), uint16_t((detail::MemPtrOffset(Ms) + ...)), std::move(v)};
+}
+
+template<auto... Ms>
+Update<detail::last_field<Ms...>> UpdateOf(entt::entity e, detail::last_field<Ms...> v) {
+    auto a = UpdateOf<Ms...>(Scope::Entity, std::move(v));
+    a.Entity = e;
+    return a;
 }
 
 template<auto... Ms>

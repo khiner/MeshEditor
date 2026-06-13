@@ -25,21 +25,11 @@
 #include <iostream>
 
 // Density and modulus stay positive. Poisson's ratio stays below 0.5 (avoid divide-by-zero). Rayleigh damping is non-negative.
-template<> struct FieldLimits<&ModalModelCreateInfo::Material, &AcousticMaterial::Properties, &AcousticMaterialProperties::Density> {
-    static constexpr double Min = 1;
-};
-template<> struct FieldLimits<&ModalModelCreateInfo::Material, &AcousticMaterial::Properties, &AcousticMaterialProperties::YoungModulus> {
-    static constexpr double Min = 1;
-};
-template<> struct FieldLimits<&ModalModelCreateInfo::Material, &AcousticMaterial::Properties, &AcousticMaterialProperties::PoissonRatio> {
-    static constexpr double Min = 0, Max = 0.49;
-};
-template<> struct FieldLimits<&ModalModelCreateInfo::Material, &AcousticMaterial::Properties, &AcousticMaterialProperties::Alpha> {
-    static constexpr double Min = 0;
-};
-template<> struct FieldLimits<&ModalModelCreateInfo::Material, &AcousticMaterial::Properties, &AcousticMaterialProperties::Beta> {
-    static constexpr double Min = 0;
-};
+template<> struct FieldLimits<&ModalModelCreateInfo::Material, &AcousticMaterial::Properties, &AcousticMaterialProperties::Density> : AtLeast<1.> {};
+template<> struct FieldLimits<&ModalModelCreateInfo::Material, &AcousticMaterial::Properties, &AcousticMaterialProperties::YoungModulus> : AtLeast<1.> {};
+template<> struct FieldLimits<&ModalModelCreateInfo::Material, &AcousticMaterial::Properties, &AcousticMaterialProperties::PoissonRatio> : Within<0., 0.49> {};
+template<> struct FieldLimits<&ModalModelCreateInfo::Material, &AcousticMaterial::Properties, &AcousticMaterialProperties::Alpha> : AtLeast<0.> {};
+template<> struct FieldLimits<&ModalModelCreateInfo::Material, &AcousticMaterial::Properties, &AcousticMaterialProperties::Beta> : AtLeast<0.> {};
 
 using std::ranges::distance, std::ranges::iota_view, std::ranges::find, std::ranges::nth_element, std::ranges::max_element, std::ranges::replace, std::ranges::to;
 using std::views::transform;
