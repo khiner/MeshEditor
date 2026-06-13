@@ -59,8 +59,9 @@ struct TagRegistrar {
     TagRegistrar() { TagTable().insert_or_assign(entt::type_hash<Tag>::value(), &SetTagPresence<Tag>); }
 };
 
-// Field-value clamping, keyed by the same (component, field-offset) identity Update carries.
-inline uint64_t LimitsKey(entt::id_type comp, uint16_t offset) { return (uint64_t(comp) << 16) | offset; }
+// Field-value clamping, keyed by (component, field-offset, field-size). Size separates a whole-field clamp
+// from a per-component clamp at the same offset.
+inline uint64_t LimitsKey(entt::id_type comp, uint16_t offset, uint16_t size) { return (uint64_t(comp) << 32) | (uint64_t(offset) << 16) | size; }
 inline auto &LimitsTable() {
     static std::unordered_map<uint64_t, void (*)(void *)> table;
     return table;
@@ -74,10 +75,28 @@ void ClampField(void *value) {
     if constexpr (HasMin<Ms...>) v = glm::max(v, F(L::Min));
     if constexpr (HasMax<Ms...>) v = glm::min(v, F(L::Max));
 }
+// Clamps one scalar component of a vec field to the field's (componentwise) FieldLimits.
+template<auto... Ms>
+void ClampComponent(void *value) {
+    using E = typename last_field<Ms...>::value_type;
+    using L = FieldLimits<Ms...>;
+    E &v = *static_cast<E *>(value);
+    if constexpr (HasMin<Ms...>) v = glm::max(v, E(L::Min));
+    if constexpr (HasMax<Ms...>) v = glm::min(v, E(L::Max));
+}
 template<auto... Ms>
 struct LimitsRegistrar {
     LimitsRegistrar() {
-        LimitsTable().insert_or_assign(LimitsKey(entt::type_hash<first_class<Ms...>>::value(), uint16_t((MemPtrOffset(Ms) + ...))), &ClampField<Ms...>);
+        using F = last_field<Ms...>;
+        const auto comp = entt::type_hash<first_class<Ms...>>::value();
+        const auto base = uint16_t((MemPtrOffset(Ms) + ...));
+        LimitsTable().insert_or_assign(LimitsKey(comp, base, sizeof(F)), &ClampField<Ms...>);
+        // A vec field can also be patched one component at a time, so register the same bounds per component.
+        if constexpr (requires { F::length(); }) {
+            using E = typename F::value_type;
+            for (typename F::length_type i = 0; i < F::length(); ++i)
+                LimitsTable().insert_or_assign(LimitsKey(comp, uint16_t(base + i * sizeof(E)), sizeof(E)), &ClampComponent<Ms...>);
+        }
     }
 };
 template<auto... Ms> inline const LimitsRegistrar<Ms...> limits_registrar{};
@@ -123,9 +142,9 @@ template<typename T> void RegisterNamed() { (void)&detail::named_registrar<T>; }
 // Called by UpdateOf for a field that declares FieldLimits, so the Apply path can clamp it.
 template<auto... Ms> void RegisterLimits() { (void)&detail::limits_registrar<Ms...>; }
 
-// Clamp `value` in place to its field's FieldLimits. A no-op for unbounded fields.
-inline void MaybeClamp(entt::id_type comp, uint16_t offset, void *value) {
-    if (const auto it = detail::LimitsTable().find(detail::LimitsKey(comp, offset)); it != detail::LimitsTable().end()) it->second(value);
+// Clamp `value` (a `size`-byte field or component) in place to its FieldLimits. A no-op for unbounded fields.
+inline void MaybeClamp(entt::id_type comp, uint16_t offset, uint16_t size, void *value) {
+    if (const auto it = detail::LimitsTable().find(detail::LimitsKey(comp, offset, size)); it != detail::LimitsTable().end()) it->second(value);
 }
 
 template<typename Field>
@@ -176,14 +195,14 @@ void ApplyUpdate(entt::registry &r, entt::entity viewport, const Update<Field> &
                 } else {
                     result = start + a.Value;
                 }
-                MaybeClamp(a.ComponentType, a.Offset, &result);
+                MaybeClamp(a.ComponentType, a.Offset, sizeof(Field), &result);
                 p.Patch(r, e, a.Offset, &result, sizeof(Field));
             });
             return;
         }
     }
     Field value = a.Value;
-    MaybeClamp(a.ComponentType, a.Offset, &value);
+    MaybeClamp(a.ComponentType, a.Offset, sizeof(Field), &value);
     ApplyUpdateScoped(r, viewport, a.Scope, a.Entity, a.ComponentType, a.Offset, &value, sizeof(Field));
 }
 
