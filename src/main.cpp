@@ -330,6 +330,8 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
     io.IniFilename = nullptr; // Disable ImGui's .ini file saving
     // Keep input state across Cmd+Tab so in-flight gizmo drags survive focus loss.
     io.ConfigDebugIgnoreFocusLoss = true;
+    // Blender-style click-to-edit: a click-release without dragging turns a Drag field into a text input.
+    io.ConfigDragClickToInputText = true;
 
     StyleColorsDark();
 

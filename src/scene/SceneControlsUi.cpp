@@ -356,9 +356,7 @@ static void RenderEntityControls(entt::registry &r, entt::entity viewport, entt:
                     },
                     ui_local
                 );
-                const quat new_rotation = ToRotation(ui_local);
-                // Alt-drag deltas the selection (delta-capable), it isn't a copy.
-                ui::Gesture(changed, [&] { return action::view::SetTransformRotationFromUi{new_rotation, ui_local, ui::ScopeFromAlt(true)}; });
+                ui::Gesture(changed, [&] { return action::view::SetTransformRotationFromUi{ToRotation(ui_local), ui_local, ui::ScopeFromAlt(true)}; });
             }
 
             const bool frozen = r.all_of<ScaleLocked>(transform_entity);
