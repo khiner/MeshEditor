@@ -8,6 +8,9 @@
 #include <variant>
 
 namespace primitive {
+// Bounds for the editable size fields of every primitive (radii, extents, height).
+constexpr float MinSize = 0.01f, MaxSize = 100.f;
+
 // Finite plane in the XZ plane (normal +Y), centered at origin.
 struct Plane {
     vec2 HalfExtents{1, 1};

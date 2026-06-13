@@ -143,28 +143,33 @@ void ForEachSelectedWith(entt::registry &, entt::id_type component_type, const s
 
 // Fields that support SelectedDelta (numeric drag).
 template<typename Field>
-inline constexpr bool DeltaField = std::same_as<Field, float> || std::same_as<Field, double> || std::same_as<Field, vec3> || std::same_as<Field, vec4>;
+inline constexpr bool DeltaField = std::same_as<Field, float> || std::same_as<Field, double> || std::same_as<Field, vec2> || std::same_as<Field, vec3> || std::same_as<Field, vec4>;
+
+// The DragFieldStart snapshot if present, else the current value (read via `p`), which it snapshots keyed by comp + offset.
+template<typename Field>
+Field FieldGestureStart(entt::registry &r, entt::entity e, const detail::ComponentPatcher &p, entt::id_type comp, uint16_t offset) {
+    static_assert(sizeof(Field) <= sizeof(DragFieldStart::Bytes));
+    Field start;
+    if (const auto *snap = r.try_get<DragFieldStart>(e); snap && snap->Comp == comp && snap->Offset == offset) {
+        std::memcpy(&start, snap->Bytes.data(), sizeof(Field));
+        return start;
+    }
+    p.Read(r, e, offset, &start, sizeof(Field));
+    DragFieldStart s{comp, offset, uint16_t(sizeof(Field)), {}};
+    std::memcpy(s.Bytes.data(), &start, sizeof(Field));
+    r.emplace_or_replace<DragFieldStart>(e, s);
+    return start;
+}
 
 template<typename Field>
 void ApplyUpdate(entt::registry &r, entt::entity viewport, const Update<Field> &a) {
     if constexpr (DeltaField<Field>) {
-        // Write start + delta to each selected entity, snapshotting the start on first apply so repeated
-        // staged steps and replay don't accumulate.
         if (a.Scope == Scope::SelectedDelta) {
             const auto it = detail::PatchTable().find(a.ComponentType);
             assert(it != detail::PatchTable().end() && "SelectedDelta target component is not registered for dispatch");
             const auto &p = it->second;
             ForEachSelectedWith(r, a.ComponentType, [&](entt::entity e) {
-                Field start;
-                if (const auto *snap = r.try_get<DragFieldStart>(e); snap && snap->Comp == a.ComponentType && snap->Offset == a.Offset) {
-                    std::memcpy(&start, snap->Bytes.data(), sizeof(Field));
-                } else {
-                    p.Read(r, e, a.Offset, &start, sizeof(Field));
-                    DragFieldStart s{a.ComponentType, a.Offset, uint16_t(sizeof(Field)), {}};
-                    std::memcpy(s.Bytes.data(), &start, sizeof(Field));
-                    r.emplace_or_replace<DragFieldStart>(e, s);
-                }
-                Field result = start + a.Value;
+                Field result = FieldGestureStart<Field>(r, e, p, a.ComponentType, a.Offset) + a.Value;
                 MaybeClamp(a.ComponentType, a.Offset, &result);
                 p.Patch(r, e, a.Offset, &result, sizeof(Field));
             });

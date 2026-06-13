@@ -1,6 +1,7 @@
 #pragma once
 
 #include "entt_fwd.h"
+#include "numeric/vec2.h"
 #include "numeric/vec3.h"
 #include "numeric/vec4.h"
 
@@ -94,7 +95,7 @@ template<auto... Ms> using last_field = field_of<last_v<Ms...>>;
 
 using Core = std::variant<
     Update<bool>, Update<uint8_t>, Update<uint32_t>, Update<float>, Update<double>,
-    Update<vec3>, Update<vec4>, Update<entt::entity>,
+    Update<vec2>, Update<vec3>, Update<vec4>, Update<entt::entity>,
     SetTag, DestroyEntity>;
 
 void Apply(entt::registry &, entt::entity viewport, const Core &);

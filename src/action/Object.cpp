@@ -21,6 +21,15 @@
 using std::ranges::to;
 
 namespace {
+// Read/write a field at `offset` within a PrimitiveShape's current alternative.
+void ReadPrimitiveField(const entt::registry &r, entt::entity e, uint16_t offset, void *dst, uint16_t size) {
+    std::visit([&](const auto &alt) { std::memcpy(dst, reinterpret_cast<const std::byte *>(&alt) + offset, size); }, r.get<const PrimitiveShape>(e));
+}
+void PatchPrimitiveField(entt::registry &r, entt::entity e, uint16_t offset, const void *src, uint16_t size) {
+    r.patch<PrimitiveShape>(e, [&](PrimitiveShape &s) { std::visit([&](auto &alt) { std::memcpy(reinterpret_cast<std::byte *>(&alt) + offset, src, size); }, s); });
+}
+inline const action::detail::ComponentPatcher PrimitiveFieldPatcher{&PatchPrimitiveField, &ReadPrimitiveField, &action::detail::HasComponent<PrimitiveShape>, "PrimitiveShape"};
+
 entt::entity DuplicateOne(entt::registry &r, entt::entity e, bool &was_mesh_duplicate) {
     auto &meshes = r.ctx().get<MeshStore>();
     const ObjectCreateInfo create_info{
@@ -133,6 +142,16 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
         }
         r.remove<Selected>(src);
     };
+    // Rebuild a primitive mesh entity's geometry from its current PrimitiveShape.
+    auto regen_primitive = [&](entt::entity e) {
+        if (auto *mb = r.try_get<MeshBuffers>(e)) ReleaseMeshBuffers(r, *mb);
+        r.erase<MeshBuffers>(e);
+        r.erase<Mesh>(e);
+        auto new_mesh = meshes.CreateMesh(primitive::CreateMesh(r.get<const PrimitiveShape>(e)), {}, {});
+        r.emplace<MeshBuffers>(e, meshes.GetVerticesRange(new_mesh.GetStoreId()), SlottedRange{}, SlottedRange{}, SlottedRange{});
+        r.emplace<Mesh>(e, std::move(new_mesh));
+        r.emplace_or_replace<MeshGeometryDirty>(e);
+    };
     // `fn` for each mesh entity a scope targets (the carried entity, the active mesh, or each selected mesh).
     auto for_each_mesh_target = [&](Scope scope, entt::entity entity, auto &&fn) {
         switch (scope) {
@@ -231,21 +250,35 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
                 begin_translate();
             },
             [&](const ImportMesh &a) { r.emplace_or_replace<PendingImportMesh>(viewport, a.Path, *a.Info); },
-            [&](const Replace<PrimitiveShape> &a) {
-                auto set_shape = [&](entt::entity e) {
-                    if (e == entt::null || ::selection::HasScaleLockedInstance(r, e)) return;
-                    r.emplace_or_replace<PrimitiveShape>(e, a.Value);
-
-                    if (auto *mb = r.try_get<MeshBuffers>(e)) ReleaseMeshBuffers(r, *mb);
-                    r.erase<MeshBuffers>(e);
-                    r.erase<Mesh>(e);
-
-                    auto new_mesh = meshes.CreateMesh(primitive::CreateMesh(a.Value), {}, {});
-                    r.emplace<MeshBuffers>(e, meshes.GetVerticesRange(new_mesh.GetStoreId()), SlottedRange{}, SlottedRange{}, SlottedRange{});
-                    r.emplace<Mesh>(e, std::move(new_mesh));
-                    r.emplace_or_replace<MeshGeometryDirty>(e);
+            [&]<typename Field>(const UpdatePrimitiveField<Field> &a) {
+                static const auto comp = entt::type_hash<PrimitiveShape>::value();
+                const auto active = GetActiveMeshEntity(r);
+                if (active == entt::null || !r.all_of<PrimitiveShape>(active)) return;
+                const auto active_index = r.get<const PrimitiveShape>(active).index();
+                auto write = [&](entt::entity e, Field value) {
+                    if (::selection::HasScaleLockedInstance(r, e)) return;
+                    if constexpr (DeltaField<Field>) value = glm::clamp(value, Field(primitive::MinSize), Field(primitive::MaxSize));
+                    PrimitiveFieldPatcher.Patch(r, e, a.Offset, &value, sizeof(Field));
+                    regen_primitive(e);
                 };
-                for_each_mesh_target(a.Scope, a.Entity, set_shape);
+                if constexpr (DeltaField<Field>) {
+                    // Add the active's delta to each same-shaped selection member's own start, keeping their relative sizes.
+                    if (a.Scope == Scope::SelectedDelta) {
+                        const Field delta = a.Value - FieldGestureStart<Field>(r, active, PrimitiveFieldPatcher, comp, a.Offset);
+                        for (const auto e : ::selection::GetSelectedMeshEntities(r)) {
+                            if (!r.all_of<PrimitiveShape>(e) || r.get<const PrimitiveShape>(e).index() != active_index) continue;
+                            write(e, FieldGestureStart<Field>(r, e, PrimitiveFieldPatcher, comp, a.Offset) + delta);
+                        }
+                        return;
+                    }
+                }
+                if (a.Scope == Scope::Selected) {
+                    for (const auto e : ::selection::GetSelectedMeshEntities(r)) {
+                        if (r.all_of<PrimitiveShape>(e) && r.get<const PrimitiveShape>(e).index() == active_index) write(e, a.Value);
+                    }
+                } else {
+                    write(active, a.Value);
+                }
             },
             [&](const SetPbrMeshFeaturesMask &a) {
                 for_each_mesh_target(a.Scope, entt::null, [&](entt::entity e) {

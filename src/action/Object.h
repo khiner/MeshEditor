@@ -50,14 +50,23 @@ struct SetPbrMeshFeaturesMask {
     Scope Scope{Scope::Active};
 };
 
+// Update the field at byte `Offset` of the active primitive's current shape alternative.
+template<typename Field>
+struct UpdatePrimitiveField {
+    Scope Scope{Scope::Active};
+    uint16_t Offset;
+    Field Value;
+};
+
 using Actions = std::variant<
     Delete, Duplicate, DuplicateLinked, ToggleHidden, SetSelectedVisible, SetSelectedSmoothShading,
     ParentToActive, ClearParent,
-    AddEmpty, AddArmature, AddCamera, AddLight, AddMeshPrimitive, ImportMesh, SetPbrMeshFeaturesMask>;
+    AddEmpty, AddArmature, AddCamera, AddLight, AddMeshPrimitive, ImportMesh, SetPbrMeshFeaturesMask,
+    UpdatePrimitiveField<float>, UpdatePrimitiveField<vec2>, UpdatePrimitiveField<vec3>, UpdatePrimitiveField<uint32_t>>;
 
 using Action = MergedVariantT<
     Actions,
-    Replace<PrimitiveShape>, Replace<PunctualLight>,
+    Replace<PunctualLight>,
     Replace<MaterialDirty>, Replace<MeshMaterialAssignment>, Replace<MeshMaterialSlotSelection>,
     Update<std::optional<uint32_t>>>;
 

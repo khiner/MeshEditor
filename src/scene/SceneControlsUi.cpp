@@ -79,60 +79,55 @@ constexpr std::string Capitalize(std::string_view str) {
 }
 
 // Renders sliders for the shape's parameters and returns the edited shape if any changed.
-std::optional<PrimitiveShape> PrimitiveEditor(const PrimitiveShape &shape) {
-    static constexpr float MinSize = 0.01f, MaxSize = 100.f, SizeSpeed = 0.01f;
-    PrimitiveShape edited = shape;
-    const bool changed = std::visit([](auto &s) {
+// Draw the active primitive's fields, emitting a gesture-grouped update per field on change.
+void PrimitiveEditor(const PrimitiveShape &shape) {
+    using primitive::MaxSize, primitive::MinSize;
+    static constexpr float SizeSpeed = 0.01f;
+    const auto field = [&]<class C, class F>(bool changed, F C::*member, F value, bool delta_capable) {
+        ui::Gesture(changed, [=] {
+            return action::object::UpdatePrimitiveField<F>{ui::ScopeFromAlt(delta_capable), uint16_t(action::detail::MemPtrOffset(member)), value};
+        });
+    };
+    std::visit([&](const auto &s) {
         using T = std::decay_t<decltype(s)>;
-        bool changed = false;
         if constexpr (std::is_same_v<T, primitive::Plane>) {
             vec2 size = s.HalfExtents * 2.f;
-            changed = ui::DragFloat2("Size", &size.x, SizeSpeed, MinSize, MaxSize);
-            if (changed) s.HalfExtents = size / 2.f;
+            field(ui::DragFloat2("Size", &size.x, SizeSpeed, MinSize, MaxSize), &primitive::Plane::HalfExtents, size / 2.f, true);
         } else if constexpr (std::is_same_v<T, primitive::Circle>) {
-            changed |= ui::DragFloat("Radius", &s.Radius, SizeSpeed, MinSize, MaxSize);
+            float radius = s.Radius;
+            field(ui::DragFloat("Radius", &radius, SizeSpeed, MinSize, MaxSize), &primitive::Circle::Radius, radius, true);
             int segments = int(s.Segments);
-            changed |= SliderInt("Segments", &segments, 3, 128);
-            if (changed) s.Segments = uint(segments);
+            field(SliderInt("Segments", &segments, 3, 128), &primitive::Circle::Segments, uint32_t(segments), false);
         } else if constexpr (std::is_same_v<T, primitive::Cuboid>) {
             vec3 size = s.HalfExtents * 2.f;
-            changed = ui::DragFloat3("Size", &size.x, SizeSpeed, MinSize, MaxSize);
-            if (changed) s.HalfExtents = size / 2.f;
+            field(ui::DragFloat3("Size", &size.x, SizeSpeed, MinSize, MaxSize), &primitive::Cuboid::HalfExtents, size / 2.f, true);
         } else if constexpr (std::is_same_v<T, primitive::IcoSphere>) {
-            changed |= ui::DragFloat("Radius", &s.Radius, SizeSpeed, MinSize, MaxSize);
+            float radius = s.Radius;
+            field(ui::DragFloat("Radius", &radius, SizeSpeed, MinSize, MaxSize), &primitive::IcoSphere::Radius, radius, true);
             int subdivisions = int(s.Subdivisions);
-            changed |= SliderInt("Subdivisions", &subdivisions, 1, 6);
-            if (changed) s.Subdivisions = uint(subdivisions);
+            field(SliderInt("Subdivisions", &subdivisions, 1, 6), &primitive::IcoSphere::Subdivisions, uint32_t(subdivisions), false);
         } else if constexpr (std::is_same_v<T, primitive::UVSphere>) {
-            changed |= ui::DragFloat("Radius", &s.Radius, SizeSpeed, MinSize, MaxSize);
+            float radius = s.Radius;
+            field(ui::DragFloat("Radius", &radius, SizeSpeed, MinSize, MaxSize), &primitive::UVSphere::Radius, radius, true);
             int slices = int(s.Slices), stacks = int(s.Stacks);
-            changed |= SliderInt("Slices", &slices, 3, 128);
-            changed |= SliderInt("Stacks", &stacks, 2, 64);
-            if (changed) {
-                s.Slices = uint(slices);
-                s.Stacks = uint(stacks);
-            }
+            field(SliderInt("Slices", &slices, 3, 128), &primitive::UVSphere::Slices, uint32_t(slices), false);
+            field(SliderInt("Stacks", &stacks, 2, 64), &primitive::UVSphere::Stacks, uint32_t(stacks), false);
         } else if constexpr (std::is_same_v<T, primitive::Torus>) {
-            changed |= ui::DragFloat("Major radius", &s.MajorRadius, SizeSpeed, MinSize, MaxSize);
-            changed |= ui::DragFloat("Minor radius", &s.MinorRadius, SizeSpeed, MinSize, s.MajorRadius);
+            float major = s.MajorRadius, minor = s.MinorRadius;
+            field(ui::DragFloat("Major radius", &major, SizeSpeed, MinSize, MaxSize), &primitive::Torus::MajorRadius, major, true);
+            field(ui::DragFloat("Minor radius", &minor, SizeSpeed, MinSize, s.MajorRadius), &primitive::Torus::MinorRadius, minor, true);
             int major_seg = int(s.MajorSegments), minor_seg = int(s.MinorSegments);
-            changed |= SliderInt("Major segments", &major_seg, 3, 256);
-            changed |= SliderInt("Minor segments", &minor_seg, 3, 256);
-            if (changed) {
-                s.MajorSegments = uint(major_seg);
-                s.MinorSegments = uint(minor_seg);
-            }
+            field(SliderInt("Major segments", &major_seg, 3, 256), &primitive::Torus::MajorSegments, uint32_t(major_seg), false);
+            field(SliderInt("Minor segments", &minor_seg, 3, 256), &primitive::Torus::MinorSegments, uint32_t(minor_seg), false);
         } else if constexpr (std::is_same_v<T, primitive::Cylinder> || std::is_same_v<T, primitive::Cone>) {
-            changed |= ui::DragFloat("Radius", &s.Radius, SizeSpeed, MinSize, MaxSize);
-            changed |= ui::DragFloat("Height", &s.Height, SizeSpeed, MinSize, MaxSize);
+            float radius = s.Radius, height = s.Height;
+            field(ui::DragFloat("Radius", &radius, SizeSpeed, MinSize, MaxSize), &T::Radius, radius, true);
+            field(ui::DragFloat("Height", &height, SizeSpeed, MinSize, MaxSize), &T::Height, height, true);
             int slices = int(s.Slices);
-            changed |= SliderInt("Slices", &slices, 3, 128);
-            if (changed) s.Slices = uint(slices);
+            field(SliderInt("Slices", &slices, 3, 128), &T::Slices, uint32_t(slices), false);
         }
-        return changed;
     },
-                                    edited);
-    return changed ? std::optional{edited} : std::nullopt;
+               shape);
 }
 
 std::string to_string(InteractionMode mode) {
@@ -468,8 +463,7 @@ static void RenderEntityControls(entt::registry &r, entt::entity viewport, entt:
             if (frozen) BeginDisabled();
             if (const auto update_label = std::format("Edit primitive{}", frozen ? " (frozen)" : "");
                 CollapsingHeader(update_label.c_str()) && !frozen) {
-                auto new_shape = PrimitiveEditor(*prim_shape);
-                ui::Gesture(bool(new_shape), [&, scope = ui::ScopeFromAlt()] { return action::Replace<PrimitiveShape>{.Scope = scope, .Value = *new_shape}; });
+                PrimitiveEditor(*prim_shape);
             }
             if (frozen) EndDisabled();
         }
