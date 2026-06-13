@@ -11,7 +11,7 @@
 // Note: `Transform.R` is the source of truth. These are for slider values only.
 // `RotationUiVariant` is reactively synced from `Transform.R` in ProcessComponentEvents.
 struct RotationQuat {
-    quat Value; // wxyz
+    quat Value; // xyzw
 };
 struct RotationEuler {
     vec3 Value; // xyz degrees

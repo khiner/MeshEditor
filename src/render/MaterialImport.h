@@ -1,10 +1,9 @@
 #pragma once
 
-#include <cstdint>
+#include <entt/entity/fwd.hpp>
+
 #include <filesystem>
 #include <span>
-
-#include <entt/entity/fwd.hpp>
 
 struct ObjPlyMaterial;
 

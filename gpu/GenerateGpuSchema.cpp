@@ -1,7 +1,5 @@
 #include <algorithm>
-#include <cctype>
 #include <charconv>
-#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -387,12 +385,8 @@ void EmitEnum(
 int main(int argc, char **argv) {
     if (argc != 4) return 1;
 
-    const std::filesystem::path build_dir{argv[1]};
-    const std::filesystem::path source_dir{argv[2]};
-    const std::filesystem::path schema_relative_path{argv[3]};
-    const std::filesystem::path schema_path = source_dir / schema_relative_path;
-    const auto glsl_dir = build_dir / "shaders";
-    const auto cpp_dir = build_dir / "gpu";
+    const std::filesystem::path build_dir{argv[1]}, source_dir{argv[2]}, schema_relative_path{argv[3]}, schema_path{source_dir / schema_relative_path};
+    const auto glsl_dir{build_dir / "shaders"}, cpp_dir{build_dir / "gpu"};
 
     std::error_code fs_error;
     std::filesystem::create_directories(glsl_dir, fs_error);
@@ -405,10 +399,8 @@ int main(int argc, char **argv) {
     std::vector<StructDef> structs;
     if (!ParseSchema(schema_path, bindings, enums, structs)) return 1;
 
-    const auto bindless_glsl_path = glsl_dir / "BindlessBindings.glsl";
-    const auto bindless_header_path = cpp_dir / "BindlessBindings.h";
-    std::ofstream bindless_glsl{bindless_glsl_path, std::ios::binary};
-    std::ofstream bindless_header{bindless_header_path, std::ios::binary};
+    const auto bindless_glsl_path{glsl_dir / "BindlessBindings.glsl"}, bindless_header_path{cpp_dir / "BindlessBindings.h"};
+    std::ofstream bindless_glsl{bindless_glsl_path, std::ios::binary}, bindless_header{bindless_header_path, std::ios::binary};
     if (!bindless_glsl || !bindless_header) return 1;
 
     bindless_glsl << "#ifndef BINDLESS_BINDINGS_GLSL\n\n"
@@ -456,8 +448,7 @@ int main(int argc, char **argv) {
     for (const auto &def : structs) {
         const auto glsl_path = glsl_dir / (def.Name + ".glsl");
         const auto cpp_path = cpp_dir / (def.Name + ".h");
-        std::ofstream glsl_out{glsl_path, std::ios::binary};
-        std::ofstream cpp_out{cpp_path, std::ios::binary};
+        std::ofstream glsl_out{glsl_path, std::ios::binary}, cpp_out{cpp_path, std::ios::binary};
         if (!glsl_out || !cpp_out) return 1;
 
         const auto guard = ToMacroName(def.Name, "GLSL");

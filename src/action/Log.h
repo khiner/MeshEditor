@@ -4,7 +4,6 @@
 
 #include <entt/entity/fwd.hpp>
 
-#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <thread>

@@ -347,7 +347,7 @@ static void RenderEntityControls(entt::registry &r, entt::entity viewport, entt:
                 bool changed = false;
                 std::visit(
                     overloaded{
-                        [&](RotationQuat &v) { changed = ui::DragFloat4("Rotation (quat WXYZ)", &v.Value[0], 0.01f); },
+                        [&](RotationQuat &v) { changed = ui::DragFloat4("Rotation (quat XYZW)", &v.Value[0], 0.01f); },
                         [&](RotationEuler &v) { changed = ui::DragFloat3("Rotation (XYZ Euler, deg)", &v.Value[0], 1.f); },
                         [&](RotationAxisAngle &v) {
                             changed = ui::DragFloat3("Rotation axis (XYZ)", &v.Value[0], 0.01f);

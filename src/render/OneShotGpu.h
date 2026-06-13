@@ -2,8 +2,6 @@
 
 #include <vulkan/vulkan.hpp>
 
-#include <cstdint>
-
 // One-shot GPU sync primitives for synchronous passes (selection compute, element pick,
 // glTF load, texture uploads, etc.). Owns its Vk resources directly; the render-pipeline
 // command buffers are allocated from `Pool` and freed before this component is destroyed.

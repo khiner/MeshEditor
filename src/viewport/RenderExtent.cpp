@@ -3,7 +3,6 @@
 #include <imgui.h>
 
 #include <algorithm>
-#include <cstdint>
 
 uvec2 RenderExtentPx(uvec2 logical_extent) {
     const auto scale = ImGui::GetIO().DisplayFramebufferScale;

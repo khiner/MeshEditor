@@ -29,25 +29,6 @@ void ExitLookThrough(entt::registry &r, entt::entity viewport) {
     r.remove<LookingThrough>(camera);
 }
 
-// Pack a representation to/from a vec4 (component layout only — the rotation math is ToRotation/ToUiVariant)
-// so a SelectedDelta drag can add a per-component delta.
-vec4 Flatten(const RotationUiVariant &v) {
-    return std::visit(
-        overloaded{
-            [](const RotationQuat &q) { return vec4{q.Value.x, q.Value.y, q.Value.z, q.Value.w}; },
-            [](const RotationEuler &e) { return vec4{e.Value, 0.f}; },
-            [](const RotationAxisAngle &a) { return a.Value; },
-        },
-        v
-    );
-}
-RotationUiVariant Unflatten(vec4 repr, std::size_t mode) {
-    switch (mode) {
-        case 1: return RotationEuler{vec3{repr}};
-        case 2: return RotationAxisAngle{repr};
-        default: return RotationQuat{quat{repr.w, repr.x, repr.y, repr.z}};
-    }
-}
 } // namespace
 
 namespace action::view {
@@ -150,13 +131,12 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
             },
             [&](const SetTransformRotationFromUi &a) {
                 if (a.Scope == Scope::SelectedDelta) {
-                    // Add the active's delta to each selected entity's own start rotation, keeping their relative orientations.
+                    // Rotate each selected entity by the same relative rotation the active turned through.
                     const auto active = active_rotation_target();
                     if (active == entt::null) return;
-                    const auto mode = a.UiVariant.index();
-                    const vec4 delta = Flatten(a.UiVariant) - Flatten(ToUiVariant(rotation_start(active), mode));
+                    const quat delta = a.R * glm::conjugate(rotation_start(active));
                     for (const auto e : rotation_targets(Scope::SelectedDelta)) {
-                        const quat rotation = ToRotation(Unflatten(Flatten(ToUiVariant(rotation_start(e), mode)) + delta, mode));
+                        const quat rotation = glm::normalize(delta * rotation_start(e));
                         r.patch<Transform>(e, [&](auto &t) { t.R = rotation; });
                         if (e == active) { // keep the editor's representation stable; others re-sync from R
                             r.replace<RotationUiVariant>(e, a.UiVariant);

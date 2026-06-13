@@ -7,8 +7,6 @@
 
 #include <entt/entity/registry.hpp>
 
-#include <algorithm>
-
 using std::ranges::contains, std::ranges::find;
 
 void Select(entt::registry &r, entt::entity e) {

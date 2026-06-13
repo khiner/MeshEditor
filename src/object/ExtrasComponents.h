@@ -4,7 +4,6 @@
 
 #include <array>
 #include <cstddef>
-#include <cstdint>
 
 enum class ColliderShapeBuffer : uint8_t {
     Box,
