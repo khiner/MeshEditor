@@ -112,6 +112,11 @@ struct SetSourceIblIntensity {
     float Intensity;
 };
 
+// Make `Scene` the active scene shown in the viewport.
+struct SetActiveScene {
+    entt::entity Scene;
+};
+
 using Actions = std::variant<
     SetInteractionMode, CycleInteractionMode, SetEditMode,
     EnterLookThroughCamera, ExitLookThroughCamera,
@@ -120,7 +125,7 @@ using Actions = std::variant<
     SetViewCameraTarget, SetViewCameraLens, SetViewCameraTargetDirection,
     SetRotationUiMode, SetTransformRotationFromUi,
     DragGizmo, DragGizmoMeshEdit, EndGizmoDrag, SetActiveTool, LatchScreenTransform, ClearScreenTransformLatch,
-    SetExtent, SetStudioEnvironment, SetSourceIblIntensity>;
+    SetExtent, SetStudioEnvironment, SetSourceIblIntensity, SetActiveScene>;
 
 using Action = MergedVariantT<
     Actions,

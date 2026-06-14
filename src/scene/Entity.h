@@ -3,9 +3,21 @@
 #include <entt/entity/fwd.hpp>
 
 #include <string>
+#include <vector>
 
 struct Name {
     std::string Value;
+};
+
+// A scene: a named, possibly empty grouping of objects.
+struct Scene {
+    std::string Name;
+};
+// Tag on the currently shown scene.
+struct ActiveScene {};
+// Scenes this object is in. Absent when there's only one scene (everything's in it).
+struct SceneMembership {
+    std::vector<entt::entity> Scenes;
 };
 
 // Invariants:

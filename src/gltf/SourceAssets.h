@@ -2,7 +2,6 @@
 
 #include "Image.h"
 #include "ImageBasedLight.h"
-#include "entt_fwd.h"
 #include "vulkan/Slots.h"
 
 // Source-form glTF data preserved across round-trip but not consumed by the runtime, stored on ECS
@@ -94,25 +93,12 @@ struct Sampler {
     std::string Name;
 };
 
-struct SourceScene {
-    std::string Name;
-    std::vector<uint32_t> RootNodeIndices;
-};
-
 // Source-form scene-level data on the viewport — encoded image bytes, sampler-config collapse, asset.* metadata, etc.
 // Cameras/lights round-trip via per-entity components above.
 struct SourceAssets {
     std::string Copyright, Generator, MinVersion;
     std::string AssetExtras, AssetExtensions; // raw minified JSON
-    std::vector<SourceScene> Scenes;
-    uint32_t ActiveSceneIndex{0}; // Becomes `asset.defaultScene` on save — the user's current view persists.
-    // Per source node: bitmask of which scenes the node belongs to (bit s set ⇒ in scene s).
-    // Empty / single-scene files leave this empty (everything is in the only scene).
-    std::vector<uint32_t> NodeSceneMasks;
     std::vector<std::string> ExtensionsRequired;
-    // Object entities (objects + armatures) created from this glTF, in load order.
-    // Source of truth for selection / scene-switch — pre-existing entities aren't here, so they aren't affected.
-    std::vector<entt::entity> ObjectEntities;
     std::unordered_map<uint64_t, std::string> ExtrasByEntity;
     std::vector<MaterialSourceMeta> MaterialMetas;
     std::vector<Texture> Textures;

@@ -65,6 +65,14 @@ struct SourcePhysicsJointDefIndex {
     uint32_t Value{};
 };
 
+// If present, object was created by a glTF import.
+struct GltfObject {};
+
+// A `Scene`'s index in the source `scenes` array, kept to preserve scene order on save.
+struct SourceSceneIndex {
+    uint32_t Value{};
+};
+
 // Source mesh slot — Triangles/Lines/Points entities sharing a `SourceMeshIndex` distinguished by this.
 enum class MeshKind : uint8_t {
     Triangles,
@@ -155,10 +163,8 @@ struct SaveContext {
 std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &, LoadContext);
 std::expected<void, std::string> SaveGltf(const std::filesystem::path &, const SaveContext &);
 
-// Switch which glTF scene is "active" - toggles RenderInstance on object entities so only the
-// nodes belonging to `scene_index` (per `SourceAssets::NodeSceneMasks`) render.
-// No-op if the asset is single-scene or the index is invalid / unchanged.
-void SwitchActiveScene(entt::registry &, entt::entity viewport, uint32_t scene_index);
+// Make `scene` the active scene shown in the viewport. No-op if it's already active or not a scene.
+void SwitchActiveScene(entt::registry &, entt::entity scene);
 
 // Mirrors fastgltf::Category bit values (asserted in .cpp). Used as the category half of
 // `SourceAssets::ExtrasByEntity` keys, which the loader writes via fastgltf's parse callback.

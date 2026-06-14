@@ -3,6 +3,7 @@
 #include "action/Dispatch.h"
 #include "action/ScopeResolve.h"
 #include "armature/ArmatureComponents.h"
+#include "gltf/GltfScene.h"
 #include "gltf/SourceAssets.h"
 #include "scene/Defaults.h"
 #include "scene/Entity.h"
@@ -110,6 +111,7 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
                 r.patch<gltf::SourceAssets>(viewport, [&](auto &sa) { if (sa.ImageBasedLight) sa.ImageBasedLight->Intensity = a.Intensity; });
                 poke_active_lighting();
             },
+            [&](const SetActiveScene &a) { gltf::SwitchActiveScene(r, a.Scene); },
             [&](ResetViewCamera) { patch_camera_stopped([](auto &c) { c = Defaults::ViewCamera; }); },
             [&](ResetViewportTheme) { r.emplace_or_replace<ViewportTheme>(viewport, Defaults::ViewportTheme); },
             [&](const ResetPbrLighting &a) {

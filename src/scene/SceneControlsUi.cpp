@@ -860,15 +860,23 @@ void RenderControls(entt::registry &r, entt::entity viewport) {
                 }
                 PopID();
             }
-            if (auto *sa = r.try_get<gltf::SourceAssets>(viewport); sa && sa->Scenes.size() > 1) {
-                const auto &active_name = sa->Scenes[sa->ActiveSceneIndex].Name;
-                const auto preview = NamedOr(active_name, "Scene ", sa->ActiveSceneIndex);
-                if (BeginCombo("Scene", preview.c_str())) {
-                    for (uint32_t i = 0; i < sa->Scenes.size(); ++i) {
-                        const bool selected = i == sa->ActiveSceneIndex;
-                        if (Selectable(NamedOr(sa->Scenes[i].Name, "Scene ", i).c_str(), selected) && !selected) {
-                            gltf::SwitchActiveScene(r, viewport, i);
-                        }
+            if (r.view<const Scene>().size() > 1) {
+                std::vector<entt::entity> scenes;
+                for (const auto e : r.view<const Scene>()) scenes.emplace_back(e);
+                std::ranges::sort(scenes, {}, [&](entt::entity e) {
+                    const auto *si = r.try_get<const SourceSceneIndex>(e);
+                    return si ? si->Value : std::numeric_limits<uint32_t>::max();
+                });
+                entt::entity active = entt::null;
+                for (const auto e : r.view<const ActiveScene>()) active = e;
+                const auto scene_label = [&](entt::entity e) {
+                    const auto *si = r.try_get<const SourceSceneIndex>(e);
+                    return NamedOr(r.get<const Scene>(e).Name, "Scene ", si ? si->Value : 0u);
+                };
+                if (active != entt::null && BeginCombo("Scene", scene_label(active).c_str())) {
+                    for (const auto e : scenes) {
+                        const bool selected = e == active;
+                        if (Selectable(scene_label(e).c_str(), selected) && !selected) action::Emit(action::view::SetActiveScene{e});
                         if (selected) SetItemDefaultFocus();
                     }
                     EndCombo();
@@ -1072,21 +1080,6 @@ void RenderControls(entt::registry &r, entt::entity viewport) {
                 }
                 if (!sa->ExtensionsRequired.empty() && CollapsingHeader("Extensions required", ImGuiTreeNodeFlags_DefaultOpen)) {
                     for (const auto &e : sa->ExtensionsRequired) BulletText("%s", e.c_str());
-                }
-                if (CollapsingHeader("Counts", ImGuiTreeNodeFlags_DefaultOpen)) {
-                    Text("Source nodes: %zu", r.view<const SourceNodeIndex>().size());
-                    Text("Meshes: %zu", r.view<const MeshName>().size());
-                    Text("Materials: %zu", sa->MaterialMetas.size());
-                    Text("Textures: %zu", sa->Textures.size());
-                    Text("Images: %zu", sa->Images.size());
-                    Text("Samplers: %zu", sa->Samplers.size());
-                    Text("Animations: %zu", sa->AnimationOrder.size());
-                    Text("Skins: %zu", r.view<const SkinName>().size());
-                    Text("Cameras: %zu", r.view<const CameraName>().size());
-                    Text("Lights: %zu", r.view<const LightName>().size());
-                    Text("Physics materials: %zu", r.view<const SourcePhysicsMaterialIndex>().size());
-                    Text("Collision filters: %zu", r.view<const SourceCollisionFilterIndex>().size());
-                    Text("Physics joints: %zu", r.view<const SourcePhysicsJointDefIndex>().size());
                 }
                 if (!sa->Images.empty() && CollapsingHeader("Image registry")) {
                     if (BeginTable("Images", 5, MetadataTableFlags)) {

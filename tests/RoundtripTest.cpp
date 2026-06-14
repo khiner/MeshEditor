@@ -382,6 +382,23 @@ bool QuaternionsEqual(simdjson::dom::array a, simdjson::dom::array b) {
     return eq_signed(1.0) || eq_signed(-1.0);
 }
 
+// glTF `scene.nodes` is an unordered set (schema: uniqueItems), so compare the root indices as a
+// multiset — we emit them ascending, source order is arbitrary.
+bool SameNumberMultiset(simdjson::dom::array a, simdjson::dom::array b) {
+    const auto collect = [](simdjson::dom::array arr, std::vector<double> &out) {
+        for (auto e : arr) {
+            if (!IsNumber(e.type())) return false;
+            out.emplace_back(AsNumber(e));
+        }
+        return true;
+    };
+    std::vector<double> va, vb;
+    if (!collect(a, va) || !collect(b, vb) || va.size() != vb.size()) return false;
+    std::ranges::sort(va);
+    std::ranges::sort(vb);
+    return va == vb;
+}
+
 void CompareJson(simdjson::dom::element a, simdjson::dom::element b, std::string_view path, std::vector<Diff> &out, simdjson::dom::element root_a, simdjson::dom::element root_b) {
     const auto ta = a.type(), tb = b.type();
     // Numbers compare with epsilon regardless of int/uint/double subtype.
@@ -409,6 +426,10 @@ void CompareJson(simdjson::dom::element a, simdjson::dom::element b, std::string
         if (!QuaternionsEqual(a, b)) {
             out.emplace_back(std::string(path), "quaternion mismatch");
         }
+        return;
+    }
+    if (ta == ElType::ARRAY && NormalizePath(path) == "scenes[*].nodes") {
+        if (!SameNumberMultiset(a, b)) out.emplace_back(std::string(path), "scene root set mismatch");
         return;
     }
     switch (ta) {
