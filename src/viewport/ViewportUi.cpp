@@ -216,7 +216,7 @@ void Interact(entt::registry &r, entt::entity viewport, FrameState &frame) {
             const auto &settings = r.get<const ViewportDisplay>(viewport);
             action::Emit(action::view::SetViewportShading{.Mode = settings.ViewportShading == ViewportShadingMode::Wireframe ? settings.FillMode : ViewportShadingMode::Wireframe});
         } else if (Shortcut(ImGuiMod_Alt | ImGuiKey_Z, VKey)) {
-            r.replace<SelectionXRay>(viewport, !r.get<const SelectionXRay>(viewport).Value);
+            action::Emit(action::UpdateOf<&SelectionXRay::Value>(viewport, !r.get<const SelectionXRay>(viewport).Value));
         }
         // Tab uses default RouteFocused (not VKey/RouteGlobal) so widget tabbing in panels keeps working.
         const bool tab_no_mods = Shortcut(ImGuiKey_Tab);
@@ -856,12 +856,10 @@ void InteractOverlay(entt::registry &r, entt::entity viewport, FrameState &frame
             if (mesh_edit_mode) {
                 // Mesh Edit mode: store pending transform for shader-based preview.
                 // Actual vertex positions are only modified on commit.
-                action::EmitStaged(action::view::DragGizmoMeshEdit{
-                    .Value = std::make_unique<PendingTransform>(PendingTransform{ts.P, ts.R, td}),
-                });
+                action::EmitStaged(action::view::DragGizmoMeshEdit{std::make_unique<PendingTransform>(ts.P, ts.R, td)});
             } else {
                 // Object/bone mode: store the gizmo pivot + delta. Apply recomputes per-entity transforms.
-                action::EmitStaged(action::view::DragGizmo{.Value = std::make_unique<PendingTransform>(PendingTransform{ts.P, ts.R, td})});
+                action::EmitStaged(action::view::DragGizmo{std::make_unique<PendingTransform>(ts.P, ts.R, td)});
             }
         } else if (!start_transform_view.empty()) {
             action::Emit(action::view::EndGizmoDrag{});

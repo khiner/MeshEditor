@@ -829,13 +829,12 @@ void RenderControls(entt::registry &r, entt::entity viewport) {
                     interaction_mode_changed |= RadioButton(to_string(mode).c_str(), &interaction_mode_value, int(mode));
                 }
                 if (interaction_mode_changed) action::Emit(action::view::SetInteractionMode{.Mode = InteractionMode(interaction_mode_value)});
+                ui::Edit viewport_edit{r, viewport};
                 if (interaction_mode == InteractionMode::Edit || interaction_mode == InteractionMode::Excite) {
-                    bool orbit = r.get<const OrbitToActive>(viewport).Value;
-                    if (Checkbox("Orbit to active", &orbit)) r.replace<OrbitToActive>(viewport, orbit);
+                    viewport_edit.Check<&OrbitToActive::Value>("Orbit to active");
                 }
                 if (interaction_mode == InteractionMode::Edit) {
-                    bool xray = r.get<const SelectionXRay>(viewport).Value;
-                    if (Checkbox("X-ray selection", &xray)) r.replace<SelectionXRay>(viewport, xray);
+                    viewport_edit.Check<&SelectionXRay::Value>("X-ray selection");
                 }
                 if (interaction_mode == InteractionMode::Edit && !active_is_armature_rc) {
                     AlignTextToFramePadding();
@@ -844,9 +843,7 @@ void RenderControls(entt::registry &r, entt::entity viewport) {
                     for (const auto element : Elements) {
                         auto name = Capitalize(label(element));
                         SameLine();
-                        if (RadioButton(name.c_str(), &type_interaction_mode, int(element))) {
-                            action::Emit(action::view::SetEditMode{.Mode = element});
-                        }
+                        if (RadioButton(name.c_str(), &type_interaction_mode, int(element))) action::Emit(action::view::SetEditMode{.Mode = element});
                     }
                     if (const auto active_entity = FindActiveEntity(r); active_entity != entt::null) {
                         if (const auto *instance = r.try_get<Instance>(active_entity); instance && r.all_of<Mesh>(instance->Entity)) {
@@ -987,6 +984,7 @@ void RenderControls(entt::registry &r, entt::entity viewport) {
                     f.Set<&ViewportDisplay::ClearColor>(color);
                 }
             }
+            // Intentional direct registry mutation outside Apply - not replayable document state.
             if (Button("Recompile shaders")) r.emplace_or_replace<PendingShaderRecompile>(viewport);
 
             if (!r.view<Selected>().empty()) {

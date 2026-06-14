@@ -371,8 +371,9 @@ void DeinitViewport(entt::registry &r, entt::entity viewport) {
     TearDownStoreCtx(r);
 }
 
+// Intentionally mutates VideoRecording outside Apply (not replayed).
 void StartRecording(entt::registry &r, entt::entity viewport, std::filesystem::path path, int fps) {
-    StopRecording(r, viewport);
+    r.remove<VideoRecording>(viewport);
     auto &pipelines = r.ctx().get<const Pipelines>();
     if (!pipelines.Main.Resources) {
         std::println(stderr, "StartRecording: render resources not ready");
@@ -380,14 +381,7 @@ void StartRecording(entt::registry &r, entt::entity viewport, std::filesystem::p
     }
     const auto region = GetCaptureRegion(r);
     const auto &vk = r.ctx().get<const VulkanResources>();
-    r.emplace<VideoRecording>(viewport, VideoRecording{
-                                            .Recorder = std::make_unique<VideoRecorder>(vk, std::move(path), region.first, region.second, fps),
-                                            .Region = region,
-                                        });
-}
-
-void StopRecording(entt::registry &r, entt::entity viewport) {
-    r.remove<VideoRecording>(viewport);
+    r.emplace<VideoRecording>(viewport, VideoRecording{.Recorder = std::make_unique<VideoRecorder>(vk, std::move(path), region.first, region.second, fps), .Region = region});
 }
 
 bool IsRecording(const entt::registry &r, entt::entity viewport) {
@@ -406,7 +400,7 @@ void CaptureRecordFrame(entt::registry &r, entt::entity viewport) {
     if (!rec || !rec->Recorder || !rec->Recorder->IsActive() || !pipelines.Main.Resources) return;
     if (GetCaptureRegion(r) != rec->Region) {
         std::println(stderr, "Viewport: capture region changed; stopping recording.");
-        StopRecording(r, viewport);
+        r.remove<VideoRecording>(viewport); // Intentional direct registry mutation outside Apply
         return;
     }
     rec->Recorder->CaptureFrame(*pipelines.Main.Resources->FinalColorImage.Image);

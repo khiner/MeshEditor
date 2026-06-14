@@ -38,7 +38,6 @@ void PresentViewport(entt::registry &, entt::entity viewport);
 // what the user sees inside the dimmed overlay. Locks to the initial capture extent;
 // any resize or look-through change stops recording.
 void StartRecording(entt::registry &, entt::entity viewport, std::filesystem::path, int fps);
-void StopRecording(entt::registry &, entt::entity viewport);
 // Copy the current FinalColorImage to the recorder. No-op if not recording.
 // Call after WaitForRender() so the source image is coherent.
 void CaptureRecordFrame(entt::registry &, entt::entity viewport);
