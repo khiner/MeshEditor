@@ -2480,7 +2480,10 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
             for (const auto mesh_instance_entity : skinned_it->second) {
                 if (!r.valid(mesh_instance_entity) || !r.all_of<Instance>(mesh_instance_entity)) continue;
                 r.emplace_or_replace<ArmatureModifier>(mesh_instance_entity, armature_data_entity, armature_entity);
-                SetParentKeepWorld(r, mesh_instance_entity, armature_entity);
+                // The spec ignores a skinned mesh node's own transform.
+                // Identity-parent it to the armature so its world transform is the armature's (the joint deform's space).
+                r.emplace_or_replace<Transform>(mesh_instance_entity, Transform{});
+                SetParent(r, mesh_instance_entity, armature_entity);
             }
         } else {
             return std::unexpected{std::format("glTF import failed '{}': skin {} is used but no mesh instances were emitted for skin binding.", source_path.string(), skin_index)};
@@ -4099,6 +4102,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         // but the emitted node tree keeps them via SourceParentNodeIndex.
         // When the source parent differs from the EnTT parent, derive the local from world transforms.
         const Transform local_transform = [&] {
+            if (r.all_of<ArmatureModifier>(entity)) return Transform{}; // Skinned mesh node transform is spec-ignored.
             const auto *spi = r.try_get<const SourceParentNodeIndex>(entity);
             const auto *node = r.try_get<const SceneNode>(entity);
             if (const auto pit = spi ? source_to_dense.find(spi->Value) : source_to_dense.end(); pit != source_to_dense.end()) {
