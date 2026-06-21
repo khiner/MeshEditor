@@ -715,8 +715,8 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
                 }
             } else if (GetFrameCount() == 3 && play) {
                 // Wait to play until scene load (frame 1) has settled and one render frame has elapsed.
-                // Calling Play() on the same frame as LoadFile races physics setup.
-                action::Emit(action::timeline::Play{});
+                // Starting on the same frame as LoadFile races physics setup.
+                action::Emit(action::timeline::StartPresentation{});
                 play = false;
             }
             // Record viewport resizes so replay restores the same render extent.

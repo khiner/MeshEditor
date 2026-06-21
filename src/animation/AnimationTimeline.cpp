@@ -61,7 +61,7 @@ std::optional<action::timeline::Action> RenderAnimationTimeline(const TimelineRa
         SetCursorScreenPos(transport_p);
         if (IconButton("jump_start", icons.JumpStart.get(), ImDrawFlags_RoundCornersLeft)) action = action::timeline::JumpToStart{};
         SetCursorScreenPos({transport_p.x + h, transport_p.y});
-        if (IconButton("play_pause", playback.Playing ? icons.Pause.get() : icons.Play.get(), ImDrawFlags_RoundCornersNone)) action = action::timeline::TogglePlay{};
+        if (IconButton("play_pause", playback.Playing ? icons.Pause.get() : icons.Play.get(), ImDrawFlags_RoundCornersNone)) action = action::timeline::TogglePlay{playback.CurrentFrame};
         SetCursorScreenPos({transport_p.x + h * 2, transport_p.y});
         if (IconButton("jump_end", icons.JumpEnd.get(), ImDrawFlags_RoundCornersRight)) action = action::timeline::JumpToEnd{};
     }

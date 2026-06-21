@@ -6,6 +6,7 @@
 #include "action/Selection.h"
 #include "action/Timeline.h"
 #include "action/View.h"
+#include "animation/AnimationTimeline.h"
 #include "armature/ArmatureComponents.h"
 #include "audio/SoundVertices.h"
 #include "gizmo/GizmoInteraction.h"
@@ -205,7 +206,7 @@ void Interact(entt::registry &r, entt::entity viewport, FrameState &frame) {
         else if (Shortcut(ImGuiKey_R, VKey) && transform_shortcuts_enabled) action::EmitCancel(action::view::LatchScreenTransform{TransformGizmo::TransformType::Rotate});
         else if (Shortcut(ImGuiKey_S, VKey) && scale_shortcut_enabled) action::EmitCancel(action::view::LatchScreenTransform{TransformGizmo::TransformType::Scale});
     } else {
-        if (Shortcut(ImGuiKey_Space, VKey)) action::Emit(action::timeline::TogglePlay{});
+        if (Shortcut(ImGuiKey_Space, VKey)) action::Emit(action::timeline::TogglePlay{r.get<const TimelinePlayback>(viewport).CurrentFrame});
         else if (Shortcut(ImGuiKey_Z, VKey)) {
             const auto current = r.get<const ViewportDisplay>(viewport).ViewportShading;
             const auto next = current == ViewportShadingMode::Solid ? ViewportShadingMode::MaterialPreview :

@@ -9,11 +9,14 @@ namespace action::timeline {
 void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
     std::visit(
         overloaded{
-            [&](Play) {
+            [&](StartPresentation) {
                 r.patch<ViewportDisplay>(viewport, [](auto &s) { s.ViewportShading = s.FillMode = ViewportShadingMode::MaterialPreview; s.ShowOverlays = false; });
-                r.patch<TimelinePlayback>(viewport, [](auto &p) { p.Playing = !p.Playing; });
+                r.patch<TimelinePlayback>(viewport, [](auto &p) { p.Playing = true; });
             },
-            [&](TogglePlay) { r.patch<TimelinePlayback>(viewport, [](auto &p) { p.Playing = !p.Playing; }); },
+            [&](const TogglePlay &a) {
+                r.patch<TimelinePlayback>(viewport, [&](auto &p) { p.Playing = !p.Playing; p.CurrentFrame = a.Frame; });
+                r.get<PlaybackFrame>(viewport).Value = a.Frame;
+            },
             [&](const SetFrame &a) {
                 r.patch<TimelinePlayback>(viewport, [&](auto &p) { p.CurrentFrame = a.Frame; });
                 r.get<PlaybackFrame>(viewport).Value = a.Frame;
