@@ -391,15 +391,16 @@ void RenderSelectionPassWith(entt::registry &r, [[maybe_unused]] entt::entity vi
 void RenderSelectionPass(entt::registry &r, entt::entity viewport, vk::Semaphore signal_semaphore) {
     const Timer timer{"RenderSelectionPass"};
 
-    // Selection draw list is pre-built by RecordRenderCommandBuffer.
+    // Render depth so the selection-fragment pass has a valid depth attachment to load, even right after a resize recreated it.
+    // Object-pick ignores depth, so its contents and the silhouette draws don't matter.
     RenderSelectionPassWith(
-        r, viewport, false,
+        r, viewport, /*render_depth=*/true,
         [&r](DrawListBuilder &draw_list) -> std::vector<SelectionDrawInfo> {
             const auto &draw = r.ctx().get<const DrawState>();
             draw_list = draw.SelectionList;
             return draw.SelectionDraws;
         },
-        signal_semaphore
+        signal_semaphore, /*render_silhouette=*/false
     );
 
     r.ctx().get<DrawState>().SelectionStale = false;
