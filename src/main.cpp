@@ -444,6 +444,11 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
         ImGui_ImplVulkan_NewFrame();
         ImGui_ImplSDL3_NewFrame();
         elapsed_play_time += io.DeltaTime;
+        {
+            auto &frame = r.ctx().get<FrameState>();
+            frame.DeltaTime = io.DeltaTime;
+            frame.DisplayFramebufferScale = {io.DisplayFramebufferScale.x, io.DisplayFramebufferScale.y};
+        }
         NewFrame();
 
         auto dockspace_id = DockSpaceOverViewport(0, nullptr, ImGuiDockNodeFlags_PassthruCentralNode | ImGuiDockNodeFlags_AutoHideTabBar);

@@ -55,7 +55,6 @@
 #include "viewport/ViewportInteractionState.h"
 #include "viewport/ViewportOps.h"
 
-#include "imgui.h"
 #include <glm/gtx/euler_angles.hpp>
 
 #include <iostream>
@@ -674,7 +673,7 @@ namespace {
 // rewriting selection descriptors. Returns true when a resize occurred.
 bool SyncViewportRenderResources(entt::registry &r, entt::entity viewport) {
     auto &pipelines = r.ctx().get<Pipelines>();
-    const auto render_extent_px = RenderExtentPx(r.ctx().get<ViewportExtent>().Value);
+    const auto render_extent_px = RenderExtentPx(r);
     const vk::Extent2D render_extent{render_extent_px.x, render_extent_px.y};
     const auto built = pipelines.BuiltColorExtent();
     if (built.width == render_extent.width && built.height == render_extent.height) return false;
@@ -932,7 +931,7 @@ RenderRequest ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
         const bool bone_mode = r.get<const Interaction>(viewport).Mode == InteractionMode::Pose || IsBoneEditMode(r, viewport);
         const auto active = bone_mode ? FindActiveBone(r) : FindActiveEntity(r);
         const auto logical_extent = r.ctx().get<ViewportExtent>().Value;
-        const auto render_extent = RenderExtentPx(logical_extent);
+        const auto render_extent = RenderExtentPx(r);
         const float render_scale = std::max(
             logical_extent.x > 0u ? float(render_extent.x) / float(logical_extent.x) : 1.f,
             logical_extent.y > 0u ? float(render_extent.y) / float(logical_extent.y) : 1.f
@@ -1373,7 +1372,7 @@ RenderRequest ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
     if (!reactive<changes::ViewportTheme>(r).empty()) {
         UpdateDerivedColors(r.get<ViewportTheme>(viewport));
         auto theme = r.get<const ViewportTheme>(viewport);
-        theme.EdgeWidth *= ImGui::GetIO().DisplayFramebufferScale.x;
+        theme.EdgeWidth *= r.ctx().get<FrameState>().DisplayFramebufferScale.x;
         buffers.ViewportThemeUBO.Update(as_bytes(theme));
         request(RenderRequest::Submit);
     }
@@ -1473,7 +1472,7 @@ RenderRequest ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
         auto &playback = r.get<TimelinePlayback>(viewport);
         auto &pf = r.get<PlaybackFrame>(viewport).Value;
         if (playback.Playing) {
-            pf += ImGui::GetIO().DeltaTime * range.Fps;
+            pf += r.ctx().get<FrameState>().DeltaTime * range.Fps;
             if (pf > float(range.EndFrame)) pf = float(range.StartFrame);
             const int new_frame = int(std::floor(pf));
             if (new_frame != playback.CurrentFrame) r.patch<TimelinePlayback>(viewport, [&](auto &p) { p.CurrentFrame = new_frame; });
@@ -1835,7 +1834,7 @@ RenderRequest ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
                 for (const auto [_, feat] : r.view<const PbrMeshFeatures>().each()) pbr_mask |= feat.Mask;
                 if (pipelines.Main.Compiler.CompilePipelines(pbr_mask)) request(RenderRequest::ReRecord);
                 const bool want_transmission = active_lighting.RealTransmission && HasFeature(pbr_mask, PbrFeature::Transmission);
-                const auto te_px = RenderExtentPx(r.ctx().get<ViewportExtent>().Value);
+                const auto te_px = RenderExtentPx(r);
                 if (pipelines.Main.EnsureTransmissionResources({te_px.x, te_px.y}, vk.Device, vk.PhysicalDevice, want_transmission)) refresh_transmission_descriptor();
             } else if (pipelines.Main.EnsureTransmissionResources({}, vk.Device, vk.PhysicalDevice, false)) {
                 refresh_transmission_descriptor();
@@ -1844,7 +1843,7 @@ RenderRequest ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
     }
 
     // Rebuild the view UBO (aspect, projection, look-through widening, ViewportSize).
-    const auto render_extent = RenderExtentPx(r.ctx().get<ViewportExtent>().Value);
+    const auto render_extent = RenderExtentPx(r);
     if (!reactive<changes::SceneView>(r).empty() ||
         !reactive<changes::TransformPending>(r).empty() ||
         !reactive<changes::ViewportDisplay>(r).empty() ||

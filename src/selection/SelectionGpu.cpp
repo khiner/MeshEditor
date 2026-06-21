@@ -24,7 +24,6 @@
 #include "selection/SelectionComponents.h"
 #include "selection/SelectionQueries.h"
 #include "viewport/RenderExtent.h"
-#include "viewport/ViewportDisplay.h"
 #include "viewport/ViewportRenderGpu.h"
 
 #include <entt/entity/registry.hpp>
@@ -206,7 +205,7 @@ void RenderElementSelectionPass(
         );
     }
 
-    const auto render_extent_px = RenderExtentPx(r.ctx().get<ViewportExtent>().Value);
+    const auto render_extent_px = RenderExtentPx(r);
     const vk::Extent2D render_extent{render_extent_px.x, render_extent_px.y};
     cb.setViewport(0, vk::Viewport{0.f, 0.f, float(render_extent.width), float(render_extent.height), 0.f, 1.f});
     cb.setScissor(0, vk::Rect2D{{0, 0}, render_extent});
@@ -342,7 +341,7 @@ void RenderSelectionPassWith(entt::registry &r, [[maybe_unused]] entt::entity vi
         vk::ImageMemoryBarrier{vk::AccessFlagBits::eTransferWrite, vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite, vk::ImageLayout::eGeneral, vk::ImageLayout::eGeneral, {}, {}, *head_image.Image, ColorSubresourceRange}
     );
 
-    const auto render_extent_px = RenderExtentPx(r.ctx().get<ViewportExtent>().Value);
+    const auto render_extent_px = RenderExtentPx(r);
     const vk::Extent2D render_extent{render_extent_px.x, render_extent_px.y};
     cb.setViewport(0, vk::Viewport{0.f, 0.f, float(render_extent.width), float(render_extent.height), 0.f, 1.f});
     cb.setScissor(0, vk::Rect2D{{0, 0}, render_extent});

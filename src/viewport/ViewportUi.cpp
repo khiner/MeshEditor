@@ -185,8 +185,7 @@ void Interact(entt::registry &r, entt::entity viewport, FrameState &frame) {
     }
 
     const auto logical_extent = r.ctx().get<ViewportExtent>().Value;
-    const auto render_extent = RenderExtentPx(logical_extent);
-    if (logical_extent.x == 0 || logical_extent.y == 0 || render_extent.x == 0 || render_extent.y == 0) return;
+    if (logical_extent.x == 0 || logical_extent.y == 0) return;
 
     const auto interaction_mode = r.get<const Interaction>(viewport).Mode;
     const auto active_entity = FindActiveEntity(r);
@@ -300,6 +299,7 @@ void Interact(entt::registry &r, entt::entity viewport, FrameState &frame) {
     }
     if (OrientationGizmo::IsActive() || frame.OverlayControlsHovered) return;
 
+    const auto render_extent = RenderExtentPx(r);
     const auto edit_mode = r.get<const EditMode>(viewport).Value;
     const auto arm_obj_entity = FindArmatureObject(r, active_entity);
     const bool active_is_armature = arm_obj_entity != entt::null;
