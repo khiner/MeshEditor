@@ -1067,8 +1067,9 @@ void RenderControls(entt::registry &r, entt::entity viewport) {
         }
 
         if (const auto *sa = r.try_get<const gltf::SourceAssets>(viewport)) {
-            if (BeginTabItem("glTF metadata")) {
-                const bool has_asset = !sa->Generator.empty() || !sa->Copyright.empty() || !sa->MinVersion.empty() || !sa->AssetExtras.empty() || !sa->AssetExtensions.empty();
+            const bool has_asset = !sa->Generator.empty() || !sa->Copyright.empty() || !sa->MinVersion.empty() || !sa->AssetExtras.empty() || !sa->AssetExtensions.empty();
+            const bool has_content = has_asset || !sa->ExtensionsRequired.empty() || !sa->Images.empty() || !sa->Textures.empty() || !sa->Samplers.empty();
+            if (has_content && BeginTabItem("glTF metadata")) {
                 if (has_asset && CollapsingHeader("Asset", ImGuiTreeNodeFlags_DefaultOpen)) {
                     if (!sa->Generator.empty()) Text("Generator: %s", sa->Generator.c_str());
                     if (!sa->Copyright.empty()) Text("Copyright: %s", sa->Copyright.c_str());
