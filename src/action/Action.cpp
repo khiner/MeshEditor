@@ -2,6 +2,7 @@
 #include "action/Emit.h"
 #include "action/Log.h"
 #include "action/LogSerialize.h"
+#include "animation/AnimationTimeline.h"
 
 #include <entt/entity/registry.hpp>
 
@@ -66,6 +67,11 @@ template<typename ActionType> void Emit(ActionType a) { Buffer(std::move(a), Pha
 template<typename ActionType> void EmitStaged(ActionType a) { Buffer(std::move(a), Phase::Stage); }
 template<typename ActionType> void EmitCancel(ActionType a) { Buffer(std::move(a), Phase::Cancel); }
 void Commit() { CommitRequested = true; }
+
+void StopPlaybackIfPlaying(entt::registry &r, entt::entity viewport) {
+    const auto &playback = r.get<const TimelinePlayback>(viewport);
+    if (playback.Playing) RecordCommitted(ApplyAction(r, viewport, Action{timeline::TogglePlay{playback.CurrentFrame}}));
+}
 
 void StartLog() {
     LogStream.emplace(OpenLogStream());

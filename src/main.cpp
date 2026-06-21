@@ -259,6 +259,7 @@ void NewProject(entt::registry &r, entt::entity viewport, const fs::path &replay
     // Invoked mid-frame from the menu: the prior frame may still be sampling the viewport resources replay is
     // about to recreate, and replay has no consumer fence to wait on. Let the GPU finish all work first.
     r.ctx().get<const VulkanResources>().Device.waitIdle();
+    action::StopPlaybackIfPlaying(r, viewport);
     action::StopLog();
     const auto live_extent = r.ctx().get<ViewportExtent>().Value; // Restore after replay's SetExtent actions change it.
     ClearScene(r, viewport);
