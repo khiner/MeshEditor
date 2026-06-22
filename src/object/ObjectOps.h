@@ -35,7 +35,8 @@ void ApplySelectBehavior(entt::registry &, entt::entity, MeshInstanceCreateInfo:
 std::pair<entt::entity, entt::entity> AddMesh(entt::registry &, MeshStore &, CreatedMesh &&, std::optional<MeshInstanceCreateInfo> = {});
 entt::entity AddMeshInstance(entt::registry &, entt::entity mesh_entity, MeshInstanceCreateInfo);
 
-entt::entity CreateExtrasBufferEntity(entt::registry &, MeshStore &, std::span<const vec3> positions, std::span<const uint8_t> vertex_classes = {}, std::span<const uint32_t> edge_indices = {});
+// `derived` marks rebuilt overlay geometry (e.g. collider wireframes) the snapshot doesn't persist.
+entt::entity CreateExtrasBufferEntity(entt::registry &, MeshStore &, std::span<const vec3> positions, std::span<const uint8_t> vertex_classes = {}, std::span<const uint32_t> edge_indices = {}, bool derived = false);
 entt::entity CreateExtrasObject(entt::registry &, MeshStore &, std::span<const vec3> positions, std::span<const uint8_t> vertex_classes, ObjectType, ObjectCreateInfo, std::string_view default_name);
 
 entt::entity AddEmpty(entt::registry &, MeshStore &, ObjectCreateInfo = {});

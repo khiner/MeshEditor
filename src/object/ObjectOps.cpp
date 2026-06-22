@@ -135,11 +135,12 @@ std::pair<entt::entity, entt::entity> AddMesh(entt::registry &r, MeshStore &, Cr
     return {mesh_entity, info ? AddMeshInstance(r, mesh_entity, *info) : entt::null};
 }
 
-entt::entity CreateExtrasBufferEntity(entt::registry &r, MeshStore &meshes, std::span<const vec3> positions, std::span<const uint8_t> vertex_classes, std::span<const uint32_t> edge_indices) {
+entt::entity CreateExtrasBufferEntity(entt::registry &r, MeshStore &meshes, std::span<const vec3> positions, std::span<const uint8_t> vertex_classes, std::span<const uint32_t> edge_indices, bool derived) {
     const auto buffer_entity = r.create();
-    const auto store_id = meshes.AllocateVertexBuffer(positions, {}).first;
+    const auto store_id = meshes.AllocateVertexBuffer(positions, {}, derived).first;
     r.emplace<ObjectExtrasTag>(buffer_entity);
     r.emplace<VertexStoreId>(buffer_entity, store_id);
+    if (derived) r.emplace<OverlayExtra>(buffer_entity);
     if (!vertex_classes.empty()) {
         r.emplace<VertexClass>(buffer_entity, AllocateVertexClasses(r, vertex_classes));
     }

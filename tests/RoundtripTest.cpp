@@ -253,33 +253,6 @@ bool MatchesExact(std::string_view norm, const Exception (&list)[N]) {
     return false;
 }
 
-// --- Snapshot round-trip whitelist ---
-// Sample stems whose import-domain Persistent set does not yet reconstruct exactly after a
-// SaveState -> LoadState -> ProcessComponentEvents -> SaveState cycle. Each is a TODO for the
-// snapshot work; remove a stem from this list once its state round-trips. Names are sample stems
-// (file basename without extension), matching the `test(...)` labels.
-constexpr std::string_view SnapshotRoundtripFailures[]{
-    // Physics samples: rigid-body / joint / collider state from KHR_physics_rigid_bodies doesn't
-    // yet reconstruct exactly across a snapshot cycle.
-    "Filtering",
-    "JointTypes",
-    "Materials_Friction",
-    "Materials_Restitution",
-    "MotionProperties",
-    "ShapeTypes",
-    "Triggers",
-    "WaterWheel",
-    // Skinned robot from the physics sample set (armature + physics).
-    "Robot_skinned",
-};
-
-bool IsSnapshotRoundtripFailure(std::string_view name) {
-    for (const auto n : SnapshotRoundtripFailures) {
-        if (n == name) return true;
-    }
-    return false;
-}
-
 bool IsExpectedDivergence(std::string_view path) {
     const auto norm = NormalizePath(path);
     if (MatchesExact(norm, DefaultOmissionExactExceptions)) return true;
@@ -714,9 +687,9 @@ int main() {
         r.remove<PendingTextureUploads>(scene);
     };
 
-    // Round-trip each import through SaveState -> restore -> SaveState and byte-compare, catching state that doesn't reconstruct.
-    // Scenes that don't yet reconstruct are whitelisted in SnapshotRoundtripFailures.
-    // One that starts matching fails the test, prompting its removal. restore_fx is the restore target.
+    // Round-trip each import through SaveState -> restore -> SaveState and byte-compare, catching state that
+    // doesn't reconstruct. restore_fx is the restore target. A SaveState that hits an unclassified component
+    // throws and surfaces as a ut failure with the message.
     SceneFixture restore_fx{vk_resources};
     for (const auto &src : samples) {
         const auto sample_name = src.stem().string();
@@ -726,32 +699,14 @@ int main() {
             const auto load = gltf::LoadGltf(src, load_ctx(fx.R, fx.Viewport));
             if (!load) return; // Loader limitation on source (e.g., unsupported extension); not a snapshot concern.
 
-            // Round-trips the import-domain state and returns the byte diff. May throw if SaveState hits a
-            // component it can't classify yet — a real snapshot gap, surfaced (not swallowed) for non-whitelisted scenes.
-            const auto round_trip = [&] {
-                ProcessComponentEvents(fx.R, fx.Viewport);
-                const auto before = snapshot::SaveState(fx.R);
-                ProcessComponentEvents(restore_fx.R, restore_fx.Viewport);
-                ClearScene(restore_fx.R, restore_fx.Viewport);
-                snapshot::LoadState(restore_fx.R, before);
-                ProcessComponentEvents(restore_fx.R, restore_fx.Viewport);
-                const auto after = snapshot::SaveState(restore_fx.R);
-                return snapshot::Compare(before, after);
-            };
-
-            if (!IsSnapshotRoundtripFailure(sample_name)) {
-                const auto diff = round_trip(); // exceptions propagate to ut as a failure with the message
-                expect(diff.Equal) << "glTF-import round-trip diverged at byte" << diff.FirstDifferingByte;
-                return;
-            }
-            // Whitelisted: tolerate divergence or a classification exception. Flag if it now round-trips
-            // cleanly so the stem can be removed from SnapshotRoundtripFailures.
-            bool clean = false;
-            try {
-                clean = round_trip().Equal;
-            } catch (...) {
-            }
-            expect(!clean) << "whitelisted snapshot round-trip now succeeds; remove" << sample_name << "from SnapshotRoundtripFailures";
+            ProcessComponentEvents(fx.R, fx.Viewport);
+            const auto before = snapshot::SaveState(fx.R);
+            ProcessComponentEvents(restore_fx.R, restore_fx.Viewport);
+            ClearScene(restore_fx.R, restore_fx.Viewport);
+            snapshot::LoadState(restore_fx.R, before);
+            ProcessComponentEvents(restore_fx.R, restore_fx.Viewport);
+            const auto diff = snapshot::Compare(before, snapshot::SaveState(restore_fx.R));
+            expect(diff.Equal) << "glTF-import round-trip diverged at byte" << diff.FirstDifferingByte;
         };
     }
 

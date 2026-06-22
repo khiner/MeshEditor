@@ -26,4 +26,7 @@ const std::unordered_map<entt::id_type, SnapshotEntry> &SnapshotTable();
 
 // Throws if any live component pool is classified neither Persistent nor Derived.
 void VerifyCoverage(const entt::registry &);
+
+// True for wholly-derived entities (reactively-rebuilt wireframe overlays) that must not be serialized.
+bool SnapshotSkipsEntity(const entt::registry &, entt::entity);
 } // namespace snapshot

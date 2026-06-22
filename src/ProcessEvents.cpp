@@ -424,7 +424,7 @@ void EnsureWireframes(entt::registry &r, entt::entity viewport) {
     auto ensure_buffer = [&](ColliderShapeBuffer kind, auto generator) {
         if (r.valid(buf(kind))) return;
         auto mesh = generator();
-        if (!mesh.Positions.empty()) buf(kind) = ::CreateExtrasBufferEntity(r, meshes, mesh.Positions, {}, mesh.EdgeIndices);
+        if (!mesh.Positions.empty()) buf(kind) = ::CreateExtrasBufferEntity(r, meshes, mesh.Positions, {}, mesh.EdgeIndices, /*derived=*/true);
     };
     ensure_buffer(Box, physics_debug::UnitBox);
     ensure_buffer(Sphere, physics_debug::UnitSphere);
@@ -465,6 +465,7 @@ void EnsureWireframes(entt::registry &r, entt::entity viewport) {
         r.emplace<Transform>(inst);
         r.emplace<WorldTransform>(inst);
         r.emplace<SubElementOf>(inst, parent);
+        r.emplace<OverlayExtra>(inst);
         Show(r, inst);
         return inst;
     };
@@ -561,7 +562,7 @@ void EnsureWireframes(entt::registry &r, entt::entity viewport) {
             const auto *tm = r.try_get<const TetMeshData>(instance->Entity);
             if (!tm || tm->Positions.empty()) continue;
 
-            const auto tet_buf = ::CreateExtrasBufferEntity(r, meshes, tm->Positions, {}, tm->EdgeIndices);
+            const auto tet_buf = ::CreateExtrasBufferEntity(r, meshes, tm->Positions, {}, tm->EdgeIndices, /*derived=*/true);
             r.emplace<TetWireframe>(entity, make_instance(tet_buf, entity));
         }
     }
@@ -1708,7 +1709,16 @@ RenderRequest ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
                     if (!has_dirty) continue;
                 }
 
-                const mat4 armature_world_inv = has_any_constraint ? glm::inverse(ToMatrix(r.get<const WorldTransform>(arm_obj_entity))) : I4;
+                // WorldTransform is derived and may not be rebuilt yet (e.g. just after a snapshot restore),
+                // so compose the armature object's world transform on demand from its parent chain.
+                const auto world_matrix = [&](this const auto &self, entt::entity e) -> mat4 {
+                    if (const auto *wt = r.try_get<const WorldTransform>(e)) return ToMatrix(*wt);
+                    const auto *t = r.try_get<const Transform>(e);
+                    const mat4 local = t ? ToMatrix(*t) : I4;
+                    const auto *node = r.try_get<const SceneNode>(e);
+                    return node && node->Parent != entt::null ? self(node->Parent) * r.get<const ParentInverse>(e).M * local : local;
+                };
+                const mat4 armature_world_inv = has_any_constraint ? glm::inverse(world_matrix(arm_obj_entity)) : I4;
 
                 bool need_sync = has_any_constraint || pose_state_created;
                 bool rest_pose_edited = false;

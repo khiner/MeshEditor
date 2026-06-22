@@ -134,8 +134,8 @@ using Persistent = type_list<
 using Derived = type_list<
     RenderInstance, WorldTransform, PosedLocal, MeshBuffers, BoneAdjacencyIndices, ModelsBuffer, VertexClass, BBoxWireframe,
     TetWireframe, MaterialDirty, LightIndex, EnabledInteractionModes, PhysicsVelocity, ColliderMaterial,
-    PhysicsBodyHandle, PhysicsConstraintHandle, ColliderWireframe, BoneInstanceStateDirty, ArmaturePoseState,
-    MorphWeightGpuRange, AdditiveBoxSelectBaseline, SelectionBitsDirty, ElementStatesDirty, PendingEditElementClick,
+    PhysicsBodyHandle, PhysicsConstraintHandle, BodyPoseCache, ColliderWireframe, BoneInstanceStateDirty, ArmaturePoseState,
+    MorphWeightGpuRange, AdditiveBoxSelectBaseline, SelectionBitsDirty, ElementStatesDirty, PendingEditElementClick, OverlayExtra,
     PendingBoxSelect, PendingPick, PendingTextureUploads, SelectionBitsetRef, BoxSelectState, SelectedInstanceCount, PlaybackFrame,
     PhysicsCacheInvalid, RotationUiVariant, RotationUiDriving, GizmoInteraction, PendingTransform, StartScreenTransform>;
 
@@ -193,4 +193,6 @@ void VerifyCoverage(const entt::registry &r) {
     for (const auto &name : unclassified) (msg += "\n  ") += name;
     throw std::runtime_error(msg);
 }
+
+bool SnapshotSkipsEntity(const entt::registry &r, entt::entity e) { return r.all_of<OverlayExtra>(e); }
 } // namespace snapshot

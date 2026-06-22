@@ -300,16 +300,6 @@ private:
         s.mCombinedRestitution = ApplyCombineMode(pick(rc(m1), rc(m2)), b1.GetRestitution(), b2.GetRestitution());
     }
 };
-
-struct CachedPose {
-    vec3 P;
-    quat R;
-};
-
-// Per-body pose timeline indexed by frame. nullopt slot means body not yet simulated at that frame.
-struct BodyPoseCache {
-    std::vector<std::optional<CachedPose>> Frames;
-};
 } // namespace
 
 // All Jolt-side physics state. Lives in the registry context (see physics::Init); the physics:: free

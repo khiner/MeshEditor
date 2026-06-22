@@ -85,7 +85,8 @@ struct MeshStore {
 
     // Allocate vertex-only store entry (no topology, no face/edge/primitive/material buffers).
     // Returns {storeId, vertexRange}. Release via Release(storeId).
-    std::pair<uint32_t, Range> AllocateVertexBuffer(std::span<const vec3> positions, const MeshVertexAttributes &attrs);
+    // `extras` routes vertices into a separate non-serialized arena for derived overlay geometry the snapshot omits.
+    std::pair<uint32_t, Range> AllocateVertexBuffer(std::span<const vec3> positions, const MeshVertexAttributes &attrs, bool extras = false);
 
     void SetPositions(const Mesh &, std::span<const vec3>);
     void SetPositions(uint32_t store_id, std::span<const vec3>); // Position-only, no normals. For topology-free entries.
@@ -171,6 +172,7 @@ private:
         uint32_t TriangleCount{0};
         std::vector<float> DefaultMorphWeights{};
         std::vector<PrimitiveTriangleRange> PrimitiveTriangleRanges{};
+        bool Extras{false}; // Vertices live in the non-serialized ExtrasVerticesBuffer (derived overlay geometry).
         bool Alive{false};
     };
 

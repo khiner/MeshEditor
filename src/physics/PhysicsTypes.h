@@ -198,6 +198,16 @@ struct PhysicsConstraintHandle {
     uint32_t ConstraintIndex{UINT32_MAX};
 };
 
+struct CachedPose {
+    vec3 P;
+    quat R;
+};
+
+// Per-body pose timeline indexed by frame, rebuilt by physics playback. nullopt slot means body not yet simulated at that frame.
+struct BodyPoseCache {
+    std::vector<std::optional<CachedPose>> Frames;
+};
+
 // Links a collider entity to its wireframe overlay instance(s).
 // Cylinder/Capsule use 6 instances (2 ring/cap + 4 side lines), Box/Sphere use 1.
 struct ColliderWireframe {
