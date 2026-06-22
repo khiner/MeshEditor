@@ -274,14 +274,25 @@ Transform ComposeWithDelta(const Transform &rest, const Transform &delta) {
 }
 
 Transform AbsoluteToDelta(const Transform &rest, const Transform &absolute) {
-    const auto inv_r = glm::inverse(rest.R);
+    const auto inv_r = glm::conjugate(rest.R); // inverse for unit quaternion
     return {.P = inv_r * (absolute.P - rest.P), .R = glm::normalize(inv_r * absolute.R), .S = absolute.S / rest.S};
 }
 
 void EvaluateAnimationDeltas(const AnimationClip &clip, float time, std::span<const ArmatureBone> bones, std::span<Transform> deltas) {
-    for (uint32_t i = 0; i < bones.size(); ++i) deltas[i] = ComposeWithDelta(bones[i].RestLocal, deltas[i]);
+    // Evaluate the clip in place, then convert only the components it animated back to delta-from-rest.
     EvaluateAnimation(clip, time, deltas);
-    for (uint32_t i = 0; i < bones.size(); ++i) deltas[i] = AbsoluteToDelta(bones[i].RestLocal, deltas[i]);
+    for (const auto &channel : clip.Channels) {
+        if (channel.Target == AnimationPath::Weights) continue; // morph weights, not a bone Transform
+        if (channel.BoneIndex >= deltas.size() || channel.BoneIndex == InvalidBoneIndex || channel.TimesSeconds.empty()) continue;
+        const auto &rest = bones[channel.BoneIndex].RestLocal;
+        auto &d = deltas[channel.BoneIndex]; // the animated component currently holds the clip's absolute value
+        switch (channel.Target) {
+            case AnimationPath::Translation: d.P = glm::conjugate(rest.R) * (d.P - rest.P); break;
+            case AnimationPath::Rotation: d.R = glm::normalize(glm::conjugate(rest.R) * d.R); break;
+            case AnimationPath::Scale: d.S = d.S / rest.S; break;
+            default: break;
+        }
+    }
 }
 
 namespace {

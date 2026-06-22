@@ -2786,6 +2786,19 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
         if (max_dur > 0) r.patch<TimelineRange>(viewport, [&](auto &r) { r.EndFrame = int(std::ceil(max_dur * r.Fps)); });
     }
 
+    // Bake the active animation's first frame into the bone Transforms so an imported armature opens posed rather than at bind.
+    for (const auto [arm_obj_entity, arm_obj] : r.view<const ArmatureObject>().each()) {
+        const auto *anim = r.try_get<const ArmatureAnimation>(arm_obj.Entity);
+        if (!anim || anim->ActiveClipIndex >= anim->Clips.size()) continue;
+        const auto &armature = r.get<const Armature>(arm_obj.Entity);
+        std::vector<Transform> deltas(armature.Bones.size()); // identity = rest pose
+        EvaluateAnimationDeltas(anim->Clips[anim->ActiveClipIndex], 0.f, armature.Bones, deltas);
+        for (uint32_t i = 0; i < armature.Bones.size() && i < arm_obj.BoneEntities.size(); ++i) {
+            const auto posed = ComposeWithDelta(armature.Bones[i].RestLocal, deltas[i]);
+            r.patch<Transform>(arm_obj.BoneEntities[i], [&](auto &t) { t.P = posed.P; t.R = posed.R; }); // S left at bind, matching PCE bone sync
+        }
+    }
+
     if (source_ibl) {
         if (auto *prev = r.try_get<PendingEnvironmentImport>(viewport)) prev_pending_env_backup = *prev;
         const auto [diffuse_slot, specular_slot] = AllocateIblCubeSlots(ctx.Slots);
