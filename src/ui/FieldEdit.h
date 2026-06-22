@@ -22,10 +22,7 @@
 #include <imgui_internal.h> // TempInputIsActive
 
 #include <array>
-#include <cfloat>
-#include <cstring>
 #include <functional>
-#include <utility>
 
 namespace ui {
 

@@ -314,7 +314,7 @@ void Interact(entt::registry &r, entt::entity viewport, FrameState &frame) {
             if (const auto box_px = ComputeBoxSelectPixels(*frame.BoxSelectStart, *frame.BoxSelectEnd, ToGlm(GetCursorScreenPos()), logical_extent, render_extent); box_px) {
                 const bool is_additive = r.all_of<AdditiveBoxSelectBaseline>(viewport);
                 frame.BoxSelectStaged = true;
-                // The hit set (object/bone instances or edit-mode elements) is resolved in ProcessComponentEvents.
+                // The hit set (object/bone instances or edit-mode elements) is resolved later.
                 action::EmitStaged(action::selection::ApplyBoxSelect{.BoxPx = *box_px, .Additive = is_additive});
             }
         } else if (!IsMouseDown(ImGuiMouseButton_Left) && frame.BoxSelectStart) {
@@ -360,7 +360,7 @@ void Interact(entt::registry &r, entt::entity viewport, FrameState &frame) {
         action::Emit(action::selection::ApplyEditElementClick{.MousePx = mouse_px, .Toggle = toggle});
     } else if (interaction_mode == InteractionMode::Object || bone_mode) {
         const bool shift = IsKeyDown(ImGuiMod_Shift);
-        // Store only the pixel; the GPU pick + selection resolution run in ProcessComponentEvents.
+        // Store only the pixel, the GPU pick and selection resolution run later.
         // A re-click at the same spot cycles to the next overlapping hit.
         if (ImLengthSqr(CurrentClickPos - PrevClickPos) > 16) action::Emit(action::selection::Pick{mouse_px, shift});
         else action::Emit(action::selection::PickCycle{mouse_px, shift});
@@ -514,7 +514,7 @@ void InteractOverlay(entt::registry &r, entt::entity viewport, FrameState &frame
                         if (BeginCombo("Environment", hdris.Names[hdris.ActiveIndex].c_str())) {
                             for (uint32_t i = 0; i < hdris.Names.size(); ++i) {
                                 const bool selected = (i == hdris.ActiveIndex);
-                                if (Selectable(hdris.Names[i].c_str(), selected)) action::Emit(action::view::SetStudioEnvironment{i});
+                                if (Selectable(hdris.Names[i].c_str(), selected)) action::Emit(action::view::SetStudioEnvironment{hdris.Names[i]});
                                 if (selected) SetItemDefaultFocus();
                             }
                             EndCombo();
@@ -801,7 +801,7 @@ void InteractOverlay(entt::registry &r, entt::entity viewport, FrameState &frame
             // (using a representative selected instance for world transform).
             uint32_t vertex_count = 0;
             for (const auto &[mesh_entity, instance_entity] : edit_transform_instances) {
-                const auto &mesh = r.get<const Mesh>(mesh_entity);
+                const auto &mesh = GetMesh(r, mesh_entity);
                 const auto vertex_states = meshes.GetVertexStates(mesh.GetStoreId());
                 const auto vertices = mesh.GetVerticesSpan();
                 const auto &wt = r.get<const WorldTransform>(instance_entity);

@@ -3,6 +3,9 @@
 #include "gpu/Element.h"
 #include "gpu/Vertex.h"
 
+#include <entt/entity/fwd.hpp>
+
+#include <optional>
 #include <span>
 #include <vector>
 
@@ -97,28 +100,49 @@ static constexpr uint32_t InvalidStoreId{~0u};
 
 struct MeshStore;
 
-// Half-edge polymesh data structure
+// Plain half-edge connectivity for one mesh, a registry component the Mesh view below reads.
+// `in_place_delete` keeps element addresses stable, so a Mesh view's cached pointer into the pool survives other entities' deletions.
+struct MeshConnectivity {
+    static constexpr bool in_place_delete = true;
+
+    struct Halfedge {
+        he::VH Vertex;
+        he::HH Next;
+        he::HH Opposite;
+        he::FH Face; // Left face (invalid for boundary halfedges)
+    };
+    struct Face {
+        he::HH Halfedge; // One of the boundary halfedges
+    };
+
+    uint32_t VertexCount{0};
+    std::vector<he::HH> OutgoingHalfedges;
+    std::vector<Halfedge> Halfedges;
+    std::vector<he::EH> HalfedgeToEdge;
+    std::vector<he::HH> Edges; // Maps edge index to its halfedge at index 0
+    std::vector<Face> Faces;
+};
+
+// Build connectivity from polygon faces (vertex-index lists), edge pairs, or a vertex count only (no topology).
+MeshConnectivity BuildConnectivity(std::span<const std::vector<uint32_t>> faces, uint32_t vertex_count);
+MeshConnectivity BuildConnectivity(std::span<const std::array<uint32_t, 2>> edges, uint32_t vertex_count);
+
+// Lightweight, copyable view over a mesh: its connectivity (owned by MeshStore) plus its vertex data (read via StoreId).
+// Holds no ownership, the MeshStore entry is released when the entity's MeshHandle is destroyed.
+// Obtain one via MeshStore::GetMesh(StoreId).
 struct Mesh {
     using VH = he::VH;
     using HH = he::HH;
     using EH = he::EH;
     using FH = he::FH;
 
-    Mesh(MeshStore &, uint32_t store_id, std::vector<std::vector<uint32_t>> &&faces);
-    Mesh(MeshStore &, uint32_t store_id, std::vector<std::array<uint32_t, 2>> &&edges, uint32_t vertex_count);
-    Mesh(MeshStore &, uint32_t store_id, uint32_t vertex_count);
-    Mesh(MeshStore &, uint32_t store_id, const Mesh &src);
+    Mesh() = default;
+    Mesh(const MeshStore &store, uint32_t store_id, const MeshConnectivity &c) : Store(&store), StoreId(store_id), C(&c) {}
 
-    Mesh(const Mesh &) = delete;
-    Mesh &operator=(const Mesh &) = delete;
-    Mesh(Mesh &&) noexcept;
-    Mesh &operator=(Mesh &&) noexcept;
-    ~Mesh();
-
-    uint32_t VertexCount() const { return VertexCountValue; }
-    uint32_t EdgeCount() const { return Edges.size(); }
-    uint32_t FaceCount() const { return Faces.size(); }
-    uint32_t HalfEdgeCount() const { return Halfedges.size(); }
+    uint32_t VertexCount() const { return C->VertexCount; }
+    uint32_t EdgeCount() const { return C->Edges.size(); }
+    uint32_t FaceCount() const { return C->Faces.size(); }
+    uint32_t HalfEdgeCount() const { return C->Halfedges.size(); }
 
     const vec3 &GetPosition(VH) const;
     const vec3 &GetNormal(VH) const;
@@ -126,18 +150,19 @@ struct Mesh {
     std::span<const Vertex> GetVerticesSpan() const;
 
     uint32_t GetStoreId() const { return StoreId; }
+    const MeshConnectivity &GetConnectivity() const { return *C; }
     uint32_t TriangleIndexCount() const; // Cached triangle count * 3
 
     // Halfedge navigation
     HH GetHalfedge(EH eh, uint32_t i) const {
-        const auto h0 = Edges[*eh];
-        return i == 0 ? h0 : (i == 1 && h0 ? Halfedges[*h0].Opposite : HH{});
+        const auto h0 = C->Edges[*eh];
+        return i == 0 ? h0 : (i == 1 && h0 ? C->Halfedges[*h0].Opposite : HH{});
     }
-    HH GetOppositeHalfedge(HH hh) const { return Halfedges[*hh].Opposite; }
-    EH GetEdge(HH hh) const { return HalfedgeToEdge[*hh]; }
-    FH GetFace(HH hh) const { return Halfedges[*hh].Face; }
+    HH GetOppositeHalfedge(HH hh) const { return C->Halfedges[*hh].Opposite; }
+    EH GetEdge(HH hh) const { return C->HalfedgeToEdge[*hh]; }
+    FH GetFace(HH hh) const { return C->Halfedges[*hh].Face; }
     VH GetFromVertex(HH) const;
-    VH GetToVertex(HH hh) const { return Halfedges[*hh].Vertex; }
+    VH GetToVertex(HH hh) const { return C->Halfedges[*hh].Vertex; }
 
     // Valence
     bool Empty() const { return VertexCount() == 0; }
@@ -238,7 +263,7 @@ struct Mesh {
         using CirculatorBase::CirculatorBase;
 
         VH operator*() const { return M->GetToVertex(CurrentHalfedge); }
-        HH advance() const { return M->Halfedges[*CurrentHalfedge].Next; }
+        HH advance() const { return M->C->Halfedges[*CurrentHalfedge].Next; }
         operator bool() const { return bool(CurrentHalfedge); }
     };
     struct FaceVertexRange {
@@ -250,11 +275,11 @@ struct Mesh {
     // Iterate the vertices of a face.
     // Use for range-based for loops:
     //   for (auto vh : fv_range(fh)) { ... }
-    FaceVertexRange fv_range(FH fh) const { return {this, Faces[*fh].Halfedge}; }
+    FaceVertexRange fv_range(FH fh) const { return {this, C->Faces[*fh].Halfedge}; }
     // Iterator positioned at the first vertex of a face.
     // Use for manual iterator control with pre-increment:
     //   auto it = cfv_iter(fh); auto v0 = **it; auto v1 = **(++it);
-    FaceVertexIterator cfv_iter(FH fh) const { return {this, Faces[*fh].Halfedge, Faces[*fh].Halfedge}; }
+    FaceVertexIterator cfv_iter(FH fh) const { return {this, C->Faces[*fh].Halfedge, C->Faces[*fh].Halfedge}; }
 
     struct VertexOutgoingHalfedgeIterator : CirculatorBase {
         using difference_type = std::ptrdiff_t;
@@ -263,8 +288,8 @@ struct Mesh {
 
         HH operator*() const { return CurrentHalfedge; }
         HH advance() const {
-            const auto opp = M->Halfedges[*CurrentHalfedge].Opposite;
-            return opp ? M->Halfedges[*opp].Next : HH{};
+            const auto opp = M->C->Halfedges[*CurrentHalfedge].Opposite;
+            return opp ? M->C->Halfedges[*opp].Next : HH{};
         }
     };
     struct VertexOutgoingHalfedgeRange {
@@ -274,7 +299,7 @@ struct Mesh {
         VertexOutgoingHalfedgeIterator end() const { return {Mesh, HH{}, StartHalfedge}; } // Invalid HH as sentinel
     };
     VertexOutgoingHalfedgeRange voh_range(VH vh) const {
-        return {this, vh && *vh < OutgoingHalfedges.size() ? OutgoingHalfedges[*vh] : HH{}};
+        return {this, vh && *vh < C->OutgoingHalfedges.size() ? C->OutgoingHalfedges[*vh] : HH{}};
     }
 
     struct FaceHalfedgeIterator : CirculatorBase {
@@ -284,7 +309,7 @@ struct Mesh {
         using CirculatorBase::CirculatorBase;
 
         HH operator*() const { return CurrentHalfedge; }
-        HH advance() const { return M->Halfedges[*CurrentHalfedge].Next; }
+        HH advance() const { return M->C->Halfedges[*CurrentHalfedge].Next; }
     };
     struct FaceHalfedgeRange {
         const Mesh *Mesh; // Always valid, never null
@@ -292,27 +317,16 @@ struct Mesh {
         FaceHalfedgeIterator begin() const { return {Mesh, StartHalfedge, StartHalfedge}; }
         FaceHalfedgeIterator end() const { return {Mesh, HH{}, StartHalfedge}; } // Invalid HH as sentinel
     };
-    FaceHalfedgeRange fh_range(FH fh) const { return {this, Faces[*fh].Halfedge}; }
+    FaceHalfedgeRange fh_range(FH fh) const { return {this, C->Faces[*fh].Halfedge}; }
 
 private:
-    struct Halfedge {
-        VH Vertex; // To vertex
-        HH Next; // Next halfedge in face
-        HH Opposite; // Opposite halfedge
-        FH Face; // Left face (invalid for boundary halfedges)
-    };
-
-    struct Face {
-        HH Halfedge; // One of the boundary halfedges
-    };
-
-    // Vertex data (ranges stay stable until a mesh resizes its vertex count)
-    MeshStore *Store{};
+    const MeshStore *Store{};
     uint32_t StoreId{InvalidStoreId};
-    uint32_t VertexCountValue{0};
-    std::vector<HH> OutgoingHalfedges;
-    std::vector<Halfedge> Halfedges;
-    std::vector<EH> HalfedgeToEdge;
-    std::vector<HH> Edges; // Maps edge index to its halfedge at index 0
-    std::vector<Face> Faces;
+    const MeshConnectivity *C{};
 };
+
+// Resolve an entity's MeshHandle to a Mesh view via the registry's MeshStore.
+// GetMesh asserts the entity has a mesh, TryGetMesh returns nullopt when it doesn't.
+Mesh GetMesh(const entt::registry &, entt::entity);
+std::optional<Mesh> TryGetMesh(const entt::registry &, entt::entity);
+bool HasMesh(const entt::registry &, entt::entity);

@@ -26,6 +26,11 @@ struct VertexStoreId {
     uint32_t StoreId;
 };
 
+// The canonical handle to a mesh's vertex data in MeshStore.
+struct MeshHandle {
+    uint32_t StoreId{~0u};
+};
+
 // Cameras, lights, empties
 struct ObjectExtrasTag {};
 

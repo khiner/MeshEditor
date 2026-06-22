@@ -17,7 +17,6 @@
 #include "render/OneShotGpu.h"
 #include "render/Pipelines.h"
 #include "render/VkFenceWait.h"
-#include "render/VulkanResources.h"
 #include "scene/Entity.h"
 #include "selection/Selection.h"
 #include "selection/SelectionBitset.h"
@@ -25,6 +24,7 @@
 #include "selection/SelectionQueries.h"
 #include "viewport/RenderExtent.h"
 #include "viewport/ViewportRenderGpu.h"
+#include "vulkan/VulkanResources.h"
 
 #include <entt/entity/registry.hpp>
 
@@ -160,7 +160,7 @@ void RenderElementSelectionPass(
     for (const auto &range : ranges) {
         const auto &mesh_buffers = r.get<MeshBuffers>(range.MeshEntity);
         const auto &models = r.get<ModelsBuffer>(range.MeshEntity);
-        const auto &mesh = r.get<Mesh>(range.MeshEntity);
+        const auto &mesh = GetMesh(r, range.MeshEntity);
         const auto &indices = element == Element::Vertex ? mesh_buffers.VertexIndices :
             element == Element::Edge                     ? mesh_buffers.EdgeIndices :
                                                            mesh_buffers.FaceIndices;
@@ -455,7 +455,7 @@ std::optional<uint32_t> RunSoundVerticesVertexPick(entt::registry &r, entt::enti
 
     const Timer timer{"RunSoundVerticesVertexPick"};
     const auto mesh_entity = instance->Entity;
-    const auto &mesh = r.get<Mesh>(mesh_entity);
+    const auto &mesh = GetMesh(r, mesh_entity);
     const uint32_t vertex_count = mesh.VertexCount();
     if (vertex_count == 0) return {};
 
@@ -637,7 +637,7 @@ void DispatchUpdateSelectionStates(
     cb.bindDescriptorSets(vk::PipelineBindPoint::eCompute, *compute.PipelineLayout, 0, compute.GetDescriptorSet(), {});
 
     for (const auto &range : ranges) {
-        const auto &mesh = r.get<const Mesh>(range.MeshEntity);
+        const auto &mesh = GetMesh(r, range.MeshEntity);
         const auto &mesh_buffers = r.get<const MeshBuffers>(range.MeshEntity);
         const auto *active_element = r.try_get<const MeshActiveElement>(range.MeshEntity);
 
@@ -687,14 +687,14 @@ void ApplySelectionStateUpdate(
     DispatchUpdateSelectionStates(r, ranges, element);
     if (element == Element::Vertex) {
         for (const auto &range : ranges) {
-            const auto &mesh = r.get<const Mesh>(range.MeshEntity);
+            const auto &mesh = GetMesh(r, range.MeshEntity);
             meshes.UpdateEdgeStatesFromVertices(mesh);
             meshes.UpdateFaceStatesFromVertices(mesh);
         }
     } else if (element == Element::Face || element == Element::Edge) {
         const auto *bits = buffers.SelectionBitset.Data();
         for (const auto &range : ranges) {
-            const auto &mesh = r.get<const Mesh>(range.MeshEntity);
+            const auto &mesh = GetMesh(r, range.MeshEntity);
             const auto selected_handles = selection::ScanBitsetRange(bits, range.Offset, range.Count);
             std::optional<uint32_t> active_handle;
             if (const auto *active = r.try_get<const MeshActiveElement>(range.MeshEntity); active && active->Handle < range.Count) {

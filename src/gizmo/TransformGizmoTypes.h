@@ -47,6 +47,6 @@ struct Config {
     bool Snap{false};
 };
 
-// True while a gizmo drag is in progress
+// Defined in viewport/ViewportOps.cpp, without imgui included so non-UI code can query gizmo state headless.
 bool IsUsing(const entt::registry &, entt::entity viewport);
 } // namespace TransformGizmo

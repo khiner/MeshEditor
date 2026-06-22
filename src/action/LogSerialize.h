@@ -28,7 +28,7 @@ inline constexpr auto FixedSizes = []<std::size_t... Is>(std::index_sequence<Is.
 }(std::make_index_sequence<std::variant_size_v<Action>>{});
 
 // Construct alternative `index` of Action and decode it from `bytes`. False on bad index or decode error.
-inline bool DecodeAlternative(Action &a, std::uint32_t index, std::span<const std::byte> bytes) {
+inline bool DecodeAlternative(Action &a, uint32_t index, std::span<const std::byte> bytes) {
     bool ok = false;
     [&]<std::size_t... Is>(std::index_sequence<Is...>) {
         ((Is == index ? (void)(a.emplace<Is>(), ok = !zpp::bits::failure(zpp::bits::in{bytes}(std::get<Is>(a)))) : void()), ...);
@@ -41,7 +41,7 @@ inline bool DecodeAlternative(Action &a, std::uint32_t index, std::span<const st
 inline void SerializeAction(const Action &a, std::ostream &out) {
     static thread_local std::vector<std::byte> buffer;
     zpp::bits::out archive{buffer};
-    if (zpp::bits::failure(archive(std::uint32_t(a.index())))) return;
+    if (zpp::bits::failure(archive(uint32_t(a.index())))) return;
     const bool ok = std::visit(
         [&](const auto &alt) {
             using Alt = std::decay_t<decltype(alt)>;
@@ -49,10 +49,10 @@ inline void SerializeAction(const Action &a, std::ostream &out) {
                 return !zpp::bits::failure(archive(alt));
             } else {
                 const auto len_pos = archive.position();
-                if (zpp::bits::failure(archive(std::uint32_t{0}))) return false; // reserve the length; filled in once known
+                if (zpp::bits::failure(archive(uint32_t{0}))) return false; // reserve the length; filled in once known
                 const auto start = archive.position();
                 if (zpp::bits::failure(archive(alt))) return false; // e.g. a null owning pointer; drop the record
-                const auto len = std::uint32_t(archive.position() - start);
+                const auto len = uint32_t(archive.position() - start);
                 std::memcpy(buffer.data() + len_pos, &len, sizeof len);
                 return true;
             }
@@ -67,11 +67,11 @@ inline void SerializeAction(const Action &a, std::ostream &out) {
 // of stream length. Stops at a truncated or corrupt tail.
 void StreamActions(std::istream &in, auto &&on_action) {
     std::vector<std::byte> bytes;
-    std::uint32_t index;
+    uint32_t index;
     while (in.read(reinterpret_cast<char *>(&index), sizeof index)) {
         if (index >= detail::FixedSizes.size()) return; // corrupt index
-        std::uint32_t len;
-        if (const auto fixed = detail::FixedSizes[index]) len = std::uint32_t(*fixed);
+        uint32_t len;
+        if (const auto fixed = detail::FixedSizes[index]) len = uint32_t(*fixed);
         else if (!in.read(reinterpret_cast<char *>(&len), sizeof len)) return; // truncated
         bytes.resize(len);
         if (len && !in.read(reinterpret_cast<char *>(bytes.data()), len)) return; // truncated

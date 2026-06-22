@@ -45,10 +45,13 @@ struct Armature {
     BoneId AddBone(std::string_view name, std::optional<BoneId> parent_bone_id, const Transform &rest_local, std::optional<uint32_t> joint_node_index = {});
     bool RemoveBone(BoneId bone_id); // Returns true if bone was found and removed.
     void FinalizeStructure(); // Rebuild derived caches and increment version. Call after AddBone/RemoveBone.
+    void RebuildCaches(); // Rebuild derived caches (BoneIdToIndex, dense topology, RestWorld) from canonical bone data. No version bump.
     void ResolveAnimationIndices(AnimationClip &) const; // Resolve TargetBoneId -> BoneIndex for all bone channels.
     void RecomputeRestWorld(); // Recompute RestWorld/InvRestWorld from RestLocal (no reordering).
     void RecomputeInverseBindMatrices(); // Update IBMs from current RestWorld after rest pose edits.
 };
+
+// Canonical bone structure, rest pose, and imported skin (not the pose itself, which lives in the bone entity Transforms).
 
 std::vector<uint32_t> CollectBonesForDeletion(const entt::registry &, entt::entity arm_obj_entity);
 

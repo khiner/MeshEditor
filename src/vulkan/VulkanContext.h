@@ -1,15 +1,14 @@
 #pragma once
 
+#include "vulkan/VulkanResources.h"
+
 #include <vulkan/vulkan.hpp>
 
 constexpr auto VkApiVersion = VK_API_VERSION_1_4;
 
-// Headless-capable Vulkan bootstrap. Pass swapchain-related extensions in `instance_extensions`
-// (and set `with_swapchain=true`) for windowed rendering; pass empty + `with_swapchain=false`
-// for tests or other offscreen use.
+// For offscreen/test use pass empty `instance_extensions` and `with_swapchain=false`.
 struct VulkanContext {
     VulkanContext(std::vector<const char *> instance_extensions, bool with_swapchain = true);
-    ~VulkanContext() = default;
 
     vk::UniqueInstance Instance;
     vk::PhysicalDevice PhysicalDevice;
@@ -17,6 +16,7 @@ struct VulkanContext {
 
     uint32_t QueueFamily{uint32_t(-1)};
     vk::Queue Queue;
-    vk::UniquePipelineCache PipelineCache;
-    vk::UniqueDescriptorPool DescriptorPool;
+
+    // Non-owning handle view
+    VulkanResources Resources() const { return {*Instance, PhysicalDevice, *Device, QueueFamily, Queue}; }
 };

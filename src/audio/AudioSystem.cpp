@@ -672,7 +672,7 @@ void DrawModalCreateForm(
     SeparatorText("SoundVertices vertices");
     if (has_excitable) f.Check<&MMCI::CopySoundVertices>("Copy excitable vertices");
     if (!has_excitable || !info.CopySoundVertices) {
-        const uint32_t num_vertices = r.get<Mesh>(mesh_entity).VertexCount();
+        const uint32_t num_vertices = GetMesh(r, mesh_entity).VertexCount();
         const uint32_t min_vertices = 1, max_vertices = num_vertices;
         if (uint32_t v = std::min(info.NumVertices, num_vertices);
             SliderScalar("Num excitable vertices", ImGuiDataType_U32, &v, &min_vertices, &max_vertices))
@@ -681,7 +681,7 @@ void DrawModalCreateForm(
 
     if (Button(modal_modes ? "Update" : "Create")) {
         const auto material = info.Material;
-        const auto &mesh = r.get<const Mesh>(mesh_entity);
+        const auto &mesh = GetMesh(r, mesh_entity);
         const uint32_t num_vertices = mesh.VertexCount();
         auto new_sound_vertices = info.CopySoundVertices && r.all_of<SoundVertices>(e) ?
             r.get<const SoundVertices>(e) :
@@ -715,7 +715,7 @@ std::vector<uint32_t> GetSampleOpVertices(const entt::registry &r, entt::entity 
     const auto *inst = r.try_get<const Instance>(sound_entity);
     if (!inst) return {};
     const auto mesh_entity = inst->Entity;
-    const auto *mesh = r.try_get<const Mesh>(mesh_entity);
+    const auto mesh = TryGetMesh(r, mesh_entity);
     if (!mesh) return {};
 
     const auto mode = r.get<const Interaction>(viewport).Mode;

@@ -4,6 +4,8 @@
 #include "ImageBasedLight.h"
 #include "vulkan/Slots.h"
 
+#include <map>
+
 // Source-form glTF data preserved across round-trip but not consumed by the runtime, stored on ECS
 // components. Lives apart from the loader (GltfScene.h) so consumers that only read/write these
 // components don't pull in the glTF import/export machinery.
@@ -99,7 +101,7 @@ struct SourceAssets {
     std::string Copyright, Generator, MinVersion;
     std::string AssetExtras, AssetExtensions; // raw minified JSON
     std::vector<std::string> ExtensionsRequired;
-    std::unordered_map<uint64_t, std::string> ExtrasByEntity;
+    std::map<uint64_t, std::string> ExtrasByEntity; // ordered so the snapshot serializes deterministically
     std::vector<MaterialSourceMeta> MaterialMetas;
     std::vector<Texture> Textures;
     std::vector<Image> Images;
@@ -108,3 +110,6 @@ struct SourceAssets {
     std::optional<ImageBasedLight> ImageBasedLight; // source IBL definition; runtime keeps the prefiltered cubemap
 };
 } // namespace gltf
+
+// Canonical source-form glTF assets on the viewport (image bytes, IBL, material/texture/sampler metadata).
+// Not re-derivable from runtime/GPU state, the source of truth for re-export and texture/IBL restore.

@@ -112,7 +112,11 @@ struct SourceMatrixTransform {
 // Source name was empty; populate auto-synthesizes one for usability, build skips emit.
 struct SourceEmptyName {};
 
-// Per-primitive data that `MeshStore::CreateMesh` consumes and discards. On the Triangles entity.
+// Edit-stable glTF provenance not re-derivable from runtime state.
+// Covers round-trip ordering, referencing, and source-form names and transforms.
+
+// Source per-primitive layout retained on the Triangles entity after `CreateMesh` flattens primitives.
+// Drives runtime material-variant resolution, carries morph tangent deltas the arena doesn't store, and preserves the structure for faithful glTF re-export.
 struct MeshSourceLayout {
     std::vector<uint32_t> VertexCounts;
     std::vector<uint32_t> AttributeFlags;
@@ -130,7 +134,7 @@ struct MeshSourceLayout {
 namespace gltf {
 struct LoadContext {
     entt::registry &R;
-    entt::entity viewport;
+    entt::entity Viewport;
     DescriptorSlots &Slots;
     GpuBuffers &Buffers;
     MeshStore &Meshes;
@@ -151,7 +155,7 @@ struct SaveOptions {
 // For plain passthrough saves they may be null.
 struct SaveContext {
     const entt::registry &R;
-    entt::entity viewport;
+    entt::entity Viewport;
     const GpuBuffers &Buffers;
     const MeshStore &Meshes;
     const TextureStore &Textures;

@@ -6,15 +6,14 @@
 #include "Reactive.h"
 #include "Stores.h"
 #include "Timer.h"
-#include "VideoRecorder.h"
 #include "animation/AnimationTimeline.h"
 #include "armature/ArmatureComponents.h"
 #include "armature/BoneConstraint.h"
-#include "audio/AudioSystem.h"
-#include "audio/FaustDSP.h"
 #include "audio/SoundVertices.h"
 #include "gizmo/GizmoInteraction.h"
+#include "gltf/SourceAssets.h"
 #include "mesh/Mesh.h"
+#include "mesh/MeshComponents.h"
 #include "mesh/MeshStore.h"
 #include "mesh/Primitives.h"
 #include "object/ExtrasComponents.h"
@@ -23,6 +22,7 @@
 #include "physics/PhysicsSystem.h"
 #include "physics/PhysicsTypes.h"
 #include "render/DrawState.h"
+#include "render/Instance.h"
 #include "render/MaterialComponents.h"
 #include "render/OneShotGpu.h"
 #include "render/Pipelines.h"
@@ -40,13 +40,9 @@
 #include "viewport/ViewportConsumerFence.h"
 #include "viewport/ViewportDisplay.h"
 #include "viewport/ViewportEvents.h"
-#include "viewport/ViewportIcons.h"
 #include "viewport/ViewportInteractionState.h"
 #include "viewport/ViewportOps.h"
 #include "viewport/ViewportRenderGpu.h"
-#include "viewport/ViewportUi.h"
-
-#include "imgui.h"
 
 #include "render/GpuBuffers.h"
 #include "render/LightComponents.h"
@@ -56,44 +52,16 @@
 using std::ranges::find, std::ranges::to;
 
 namespace {
-constexpr vk::Extent2D ToExtent2D(vk::Extent3D extent) { return {extent.width, extent.height}; }
-
-// Per-viewport render command buffers, fence, and the ImGui texture handle for the final color image.
-// Command buffers are allocated from OneShotGpu::Pool; DeinitViewport must erase this context
-// singleton before OneShotGpu so the buffers are freed before their owning pool.
 struct ViewportRenderResources {
     vk::UniqueCommandBuffer RenderCommandBuffer;
 #ifdef MVK_FORCE_STAGED_TRANSFERS
     vk::UniqueCommandBuffer TransferCommandBuffer;
 #endif
     vk::UniqueFence RenderFence;
-    std::unique_ptr<mvk::ImGuiTexture> ViewportTexture;
-    vk::ImageView ViewportTextureView{}; // The FinalColorImage view ViewportTexture was built from; recreate when it changes.
-};
-
-// Present on the viewport entity iff recording is active.
-struct VideoRecording {
-    std::unique_ptr<VideoRecorder> Recorder;
-    std::pair<vk::Offset3D, vk::Extent2D> Region; // Locked at StartRecording.
 };
 
 void ResetObjectPickKeys(GpuBuffers &buffers) {
     std::fill_n(buffers.ObjectPickKeys.Data(), GpuBuffers::MaxSelectableObjects, std::numeric_limits<uint32_t>::max());
-}
-
-std::pair<vk::Offset3D, vk::Extent2D> GetCaptureRegion(const entt::registry &r) {
-    auto &pipelines = r.ctx().get<const Pipelines>();
-    const auto full = ToExtent2D(pipelines.Main.Resources->FinalColorImage.Extent);
-    const auto camera = LookThroughCameraEntity(r);
-    const auto *cd = camera != entt::null ? r.try_get<Camera>(camera) : nullptr;
-    if (!cd) return {{0, 0, 0}, full};
-
-    const auto cam_aspect = AspectRatio(*cd);
-    const auto ratio = LookThroughFrameRatio(cam_aspect, float(full.width) / float(full.height));
-    // yuv420p requires even width/height.
-    const auto w = uint32_t(float(full.height) * cam_aspect * ratio) & ~1u;
-    const auto h = uint32_t(float(full.height) * ratio) & ~1u;
-    return {{int32_t(full.width - w) / 2, int32_t(full.height - h) / 2, 0}, {w, h}};
 }
 
 // Submit the recorded command buffer. RenderFence must be unsignaled (reset by the prior WaitForRender).
@@ -124,16 +92,22 @@ void RecordViewportFrame(entt::registry &r, entt::entity viewport, RenderRequest
     }
 }
 
-void SubmitViewport(entt::registry &r, entt::entity viewport) {
-    const auto &vk = r.ctx().get<const VulkanResources>();
-    auto &buffers = r.ctx().get<GpuBuffers>();
-
-    // A resize (a ProcessComponentEvents side effect) always yields RenderRequest::ReRecord, so it needs no
-    // separate detection here.
+// Drain component events, resize as needed, and record the frame.
+// Returns false (skipping the record) when the viewport has no non-zero extent yet.
+// `force_full` records the full buffer regardless of the requested region.
+bool AdvanceAndRecord(entt::registry &r, entt::entity viewport, bool force_full) {
     const auto render_request = ProcessComponentEvents(r, viewport);
-    buffers.Ctx.FlushDeferredDescriptorUpdates(vk.Device);
+    const auto extent = r.ctx().get<const Pipelines>().BuiltColorExtent();
+    if (extent.width == 0 || extent.height == 0) return false;
+    RecordViewportFrame(r, viewport, render_request, force_full);
+    return true;
+}
+} // namespace
+
+void SubmitViewport(entt::registry &r, entt::entity viewport) {
+    const auto render_request = ProcessComponentEvents(r, viewport);
     if (render_request == RenderRequest::None) return;
-    // Recording a zero-size viewport is a Vulkan error; skip until it has a non-zero extent.
+
     const auto extent = r.ctx().get<const Pipelines>().BuiltColorExtent();
     if (extent.width == 0 || extent.height == 0) return;
 
@@ -145,20 +119,6 @@ void SubmitViewport(entt::registry &r, entt::entity viewport) {
     RecordViewportFrame(r, viewport, render_request);
     SubmitRecordedFrame(r);
 }
-
-// Drain component events, resize as needed, and record the frame. Returns false (skipping the record) when
-// the viewport has no non-zero extent yet. `force_full` records the full buffer even when the request wouldn't.
-bool AdvanceAndRecord(entt::registry &r, entt::entity viewport, bool force_full) {
-    const auto &vk = r.ctx().get<const VulkanResources>();
-    auto &buffers = r.ctx().get<GpuBuffers>();
-    const auto render_request = ProcessComponentEvents(r, viewport);
-    buffers.Ctx.FlushDeferredDescriptorUpdates(vk.Device);
-    const auto extent = r.ctx().get<const Pipelines>().BuiltColorExtent();
-    if (extent.width == 0 || extent.height == 0) return false; // Skip recording a zero-size viewport (no extent set yet).
-    RecordViewportFrame(r, viewport, render_request, force_full);
-    return true;
-}
-} // namespace
 
 void SetStudioEnvironment(entt::registry &r, uint32_t index) {
     const auto &vk = r.ctx().get<const VulkanResources>();
@@ -176,7 +136,13 @@ void SetStudioEnvironment(entt::registry &r, uint32_t index) {
     environments.StudioWorld = {.Ibl = MakeIblSamplers(pre, environments), .Name = hdri.Name};
 }
 
-entt::entity InitEngine(entt::registry &r, VulkanResources vc, CreateSvgResource create_svg) {
+void SetStudioEnvironment(entt::registry &r, std::string_view name) {
+    const auto &hdris = r.ctx().get<const EnvironmentStore>().Hdris;
+    const auto it = find(hdris, name, &HdriEntry::Name);
+    SetStudioEnvironment(r, it != hdris.end() ? uint32_t(std::distance(hdris.begin(), it)) : 0u);
+}
+
+entt::entity InitEngine(entt::registry &r, VulkanResources vc) {
     InitStoreCtx(r, vc);
     auto &slots = r.ctx().get<DescriptorSlots>();
     auto &pipelines = r.ctx().emplace<Pipelines>(vc.Device, vc.PhysicalDevice, slots.GetSetLayout(), slots.GetSet());
@@ -205,6 +171,10 @@ entt::entity InitEngine(entt::registry &r, VulkanResources vc, CreateSvgResource
     track<changes::WorkspaceLights>(r).on<WorkspaceLights>(On::Create | On::Update);
     track<changes::ViewportTheme>(r).on<ViewportTheme>(On::Create | On::Update);
     track<changes::Materials>(r).on<MaterialDirty>(On::Create | On::Update);
+    track<changes::MaterializedTextures>(r).on<MaterializedTextures>(On::Create | On::Update);
+    track<changes::StudioEnvironment>(r).on<StudioEnvironment>(On::Create | On::Update);
+    track<changes::SceneWorld>(r).on<gltf::SourceAssets>(On::Create | On::Update);
+    track<changes::PunctualLight>(r).on<PunctualLight>(On::Create | On::Update);
     track<changes::ActiveMaterialVariant>(r).on<MaterialVariants>(On::Create | On::Update);
     track<changes::PbrSpecialization>(r)
         .on<PbrMeshFeatures>(On::Create | On::Update | On::Destroy)
@@ -230,6 +200,10 @@ entt::entity InitEngine(entt::registry &r, VulkanResources vc, CreateSvgResource
     r.on_destroy<Name>().connect<&OnDestroyName>();
     r.on_construct<RenderInstance>().connect<&AssignRenderInstanceObjectId>();
     r.on_destroy<RenderInstance>().connect<&EmitPendingHideOnRenderInstanceDestroy>();
+    r.on_construct<Instance>().connect<&OnConstructInstance>();
+    r.on_construct<Hidden>().connect<&OnConstructHidden>();
+    r.on_construct<MeshHandle>().connect<&OnConstructMeshHandle>();
+    r.on_construct<VertexStoreId>().connect<&OnConstructVertexStoreId>();
     // BoneConstraints edits change the resolved local Transform; poke it to drive the WorldTransform recompute.
     r.on_update<BoneConstraints>().connect<+[](entt::registry &r, entt::entity e) {
         r.patch<Transform>(e, [](auto &) {});
@@ -252,7 +226,6 @@ entt::entity InitEngine(entt::registry &r, VulkanResources vc, CreateSvgResource
         .TransferCommandBuffer = std::move(vc.Device.allocateCommandBuffersUnique({*one_shot.Pool, vk::CommandBufferLevel::ePrimary, 1}).front()),
 #endif
         .RenderFence = vc.Device.createFenceUnique({}),
-        .ViewportTexture = {},
     });
 
     ResetObjectPickKeys(buffers);
@@ -266,6 +239,11 @@ entt::entity InitEngine(entt::registry &r, VulkanResources vc, CreateSvgResource
     // Blender's default world background color (linear RGB) - flat ambient-only IBL when no scene world is provided.
     environments.EmptySceneWorld = BuildFlatColorEnvironment(vc, init_batch, slots, vec3{0.05f}, "EmptySceneWorld");
     SubmitTextureUploadBatch(init_batch, vc.Queue, *one_shot.Fence, vc.Device);
+    // Default scene world (no imported EXT-IBL). The reactive SceneWorld pass swaps in an imported world when
+    // a glTF with EXT_lights_image_based is loaded or restored, and ClearScene restores this default.
+    environments.SceneWorld = {.Ibl = MakeIblSamplers(environments.EmptySceneWorld, environments), .Name = environments.EmptySceneWorld.Name};
+    // Safe placeholder until the reactive StudioEnvironment pass prefilters the selected HDRI on the first tick.
+    environments.StudioWorld = environments.SceneWorld;
 
     std::error_code ec;
     for (const auto &entry : std::filesystem::directory_iterator{images_dir / "studiolights" / "world", ec}) {
@@ -276,10 +254,6 @@ entt::entity InitEngine(entt::registry &r, VulkanResources vc, CreateSvgResource
     std::ranges::sort(environments.Hdris, {}, &HdriEntry::Name); // SetupScene selects the active one.
 
     pipelines.CompileShaders();
-
-    LoadViewportIcons(r);
-    r.ctx().emplace<FaustDSP>(std::move(create_svg));
-    RegisterAudioComponentHandlers(r);
 
     return viewport;
 }
@@ -306,10 +280,8 @@ void SetupScene(entt::registry &r, entt::entity viewport) {
     r.emplace_or_replace<TimelinePlayback>(viewport);
     physics::ApplySimulationSettings(r, r.emplace_or_replace<PhysicsSimulationSettings>(viewport));
 
-    const auto &hdris = r.ctx().get<EnvironmentStore>().Hdris;
-    const auto forest = find(hdris, "forest", &HdriEntry::Name);
-    SetStudioEnvironment(r, forest != hdris.end() ? std::distance(hdris.begin(), forest) : 0);
-    r.emplace_or_replace<PendingSceneWorldClear>(viewport); // Release any IBL sampler slots and restore EmptySceneWorld next pass.
+    // Default studio-environment selection.
+    r.emplace_or_replace<StudioEnvironment>(viewport, std::string{"forest"});
 }
 
 void AddDefaultSceneContent(entt::registry &r) {
@@ -335,15 +307,36 @@ void AddDefaultSceneContent(entt::registry &r) {
 
 void ClearScene(entt::registry &r, entt::entity viewport) {
     ClearMeshes(r, viewport);
+
+    // Release any imported (EXT-IBL) scene world and restore the empty default, so a subsequent restore starts
+    // bare and its reactive SceneWorld pass rebuilds the imported world from the restored SourceAssets.
+    auto &environments = r.ctx().get<EnvironmentStore>();
+    if (environments.ImportedSceneWorld) {
+        auto &slots = r.ctx().get<DescriptorSlots>();
+        ReleaseCubeSamplerSlot(slots, environments.ImportedSceneWorld->DiffuseEnv.SamplerSlot);
+        ReleaseCubeSamplerSlot(slots, environments.ImportedSceneWorld->SpecularEnv.SamplerSlot);
+        environments.ImportedSceneWorld.reset();
+        environments.SceneWorldRotation = mat3{1.f};
+        environments.SceneWorld = {.Ibl = MakeIblSamplers(environments.EmptySceneWorld, environments), .Name = environments.EmptySceneWorld.Name};
+    }
+
+    // Lights live in a Derived GPU buffer keyed by LightIndex (also Derived). Clear it so restored lights are
+    // re-registered from their (Persistent) PunctualLight starting at slot 0, with no stale entries.
+    r.ctx().get<GpuBuffers>().Lights.SetCount(0);
+
+    // Destroy instances before the buffer entities they reference.
+    for (const auto e : r.view<RenderInstance>() | to<std::vector>()) r.destroy(e);
     for (const auto e : r.view<entt::entity>() | to<std::vector>()) {
         if (e != viewport) r.destroy(e);
     }
     r.destroy(viewport);
     r.ctx().get<ObjectIdCounter>() = {};
 
-    // Reset the entity allocator for deterministic entity ids on replay.
+    // Reset the entity and mesh-store allocators to their fresh-start state, so replaying a scene from this baseline re-allocates identical ids.
+    // Descriptor slots need no reset, since their RangeAllocator is order-independent.
     r.storage<entt::entity>().clear();
     r.storage<entt::entity>().start_from(entt::entity{0});
+    r.ctx().get<MeshStore>().Clear();
 
     [[maybe_unused]] const auto recreated = r.create();
     assert(recreated == viewport);
@@ -351,17 +344,11 @@ void ClearScene(entt::registry &r, entt::entity viewport) {
 }
 
 void DeinitViewport(entt::registry &r, entt::entity viewport) {
-    // Free GPU-resource-owning context singletons before TearDownStoreCtx erases their backing stores:
-    // command buffers before their pool (OneShotGpu), and the icon/Faust SVG images (VMA allocations in
-    // GpuBuffers.Ctx) and descriptor slots while GpuBuffers/DescriptorSlots and the device are still alive.
     r.ctx().erase<ViewportRenderResources>();
-    r.ctx().erase<ViewportIcons>();
-    r.ctx().erase<FaustDSP>();
     r.ctx().erase<SelectionSlots>();
     r.ctx().erase<SelectionBitsetRef>();
     r.ctx().erase<FrameState>();
     r.ctx().erase<DrawState>();
-    if (r.valid(viewport)) r.remove<VideoRecording>(viewport);
     r.clear<Mesh>();
     r.ctx().erase<std::vector<ComponentEventHandler>>();
     r.ctx().erase<EntityDestroyTracker>();
@@ -371,76 +358,7 @@ void DeinitViewport(entt::registry &r, entt::entity viewport) {
     TearDownStoreCtx(r);
 }
 
-// Intentionally mutates VideoRecording outside Apply (not replayed).
-void StartRecording(entt::registry &r, entt::entity viewport, std::filesystem::path path, int fps) {
-    r.remove<VideoRecording>(viewport);
-    auto &pipelines = r.ctx().get<const Pipelines>();
-    if (!pipelines.Main.Resources) {
-        std::println(stderr, "StartRecording: render resources not ready");
-        return;
-    }
-    const auto region = GetCaptureRegion(r);
-    const auto &vk = r.ctx().get<const VulkanResources>();
-    r.emplace<VideoRecording>(viewport, VideoRecording{.Recorder = std::make_unique<VideoRecorder>(vk, std::move(path), region.first, region.second, fps), .Region = region});
-}
-
-bool IsRecording(const entt::registry &r, entt::entity viewport) {
-    const auto *rec = r.try_get<VideoRecording>(viewport);
-    return rec && rec->Recorder && rec->Recorder->IsActive();
-}
-
-uint64_t CapturedFrameCount(const entt::registry &r, entt::entity viewport) {
-    const auto *rec = r.try_get<VideoRecording>(viewport);
-    return rec && rec->Recorder ? rec->Recorder->CapturedFrameCount() : 0;
-}
-
-void CaptureRecordFrame(entt::registry &r, entt::entity viewport) {
-    auto &pipelines = r.ctx().get<const Pipelines>();
-    auto *rec = r.try_get<VideoRecording>(viewport);
-    if (!rec || !rec->Recorder || !rec->Recorder->IsActive() || !pipelines.Main.Resources) return;
-    if (GetCaptureRegion(r) != rec->Region) {
-        std::println(stderr, "Viewport: capture region changed; stopping recording.");
-        r.remove<VideoRecording>(viewport); // Intentional direct registry mutation outside Apply
-        return;
-    }
-    rec->Recorder->CaptureFrame(*pipelines.Main.Resources->FinalColorImage.Image);
-}
-
-std::string DebugBufferHeapUsage(const entt::registry &r) {
-    return r.ctx().get<const GpuBuffers>().Ctx.DebugHeapUsage();
-}
-
-void RenderViewport(entt::registry &r, entt::entity viewport, vk::Fence viewport_consumer_fence) {
-    // Stash the live consumer fence so the resize path waits on it before recreating resources.
-    // Cleared below so replay sees no live consumer.
-    r.ctx().get<ViewportConsumerFence>().Value = viewport_consumer_fence;
-    auto &dl = *ImGui::GetWindowDrawList();
-    dl.ChannelsSetCurrent(0);
-    SubmitViewport(r, viewport);
-    // Recreate the ImGui texture when the final color image view changed (a resize swaps the image).
-    auto &resources = r.ctx().get<ViewportRenderResources>();
-    if (const auto &pipelines = r.ctx().get<const Pipelines>(); pipelines.Main.Resources) {
-        if (const vk::ImageView view = *pipelines.Main.Resources->FinalColorImage.View; view != resources.ViewportTextureView) {
-            resources.ViewportTexture = std::make_unique<mvk::ImGuiTexture>(r.ctx().get<const VulkanResources>().Device, view, vec2{0, 1}, vec2{1, 0});
-            resources.ViewportTextureView = view;
-        }
-    }
-    if (const auto &t_ptr = resources.ViewportTexture) {
-        const auto p = ImGui::GetCursorScreenPos();
-        const auto extent = r.ctx().get<ViewportExtent>().Value;
-        const auto &t = *t_ptr;
-        dl.AddImage(ImTextureID(VkDescriptorSet(t.DescriptorSet)), p, p + ImVec2{float(extent.x), float(extent.y)}, std::bit_cast<ImVec2>(t.Uv0), std::bit_cast<ImVec2>(t.Uv1));
-    }
-
-    r.ctx().get<ViewportConsumerFence>().Value = vk::Fence{}; // No live consumer outside this call.
-
-    dl.ChannelsSetCurrent(1);
-    DrawOverlay(r, viewport, r.ctx().get<FrameState>());
-}
-
-void AdvanceViewport(entt::registry &r, entt::entity viewport) {
-    AdvanceAndRecord(r, viewport, /*force_full=*/false);
-}
+void AdvanceViewport(entt::registry &r, entt::entity viewport) { AdvanceAndRecord(r, viewport, /*force_full=*/false); }
 
 void PresentViewport(entt::registry &r, entt::entity viewport) {
     // Replay's ticks never render the color image and consumed the scene's reactive changes,

@@ -14,7 +14,7 @@ struct EditMode {
 };
 
 // Interaction modes available for cycling/selection. Singleton on viewport.
-// Excite is added/removed reactively based on whether the scene has any SoundVertices.
+// Excite is present only when the scene has any SoundVertices.
 struct EnabledInteractionModes {
     std::set<InteractionMode> Value{InteractionMode::Object, InteractionMode::Edit, InteractionMode::Pose};
 };

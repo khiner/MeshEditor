@@ -9,7 +9,7 @@
 #include <span>
 
 struct Armature;
-struct Mesh;
+struct CreatedMesh;
 struct MeshStore;
 
 std::string CreateName(entt::registry &, std::string_view prefix);
@@ -18,6 +18,12 @@ void OnDestroyName(entt::registry &, entt::entity);
 // Reactive handlers for RenderInstance lifecycle.
 void AssignRenderInstanceObjectId(entt::registry &, entt::entity);
 void EmitPendingHideOnRenderInstanceDestroy(entt::registry &, entt::entity);
+// Keep RenderInstance in sync with Instance + !Hidden.
+void OnConstructInstance(entt::registry &, entt::entity);
+void OnConstructHidden(entt::registry &, entt::entity);
+// Create the (Derived) MeshBuffers when a mesh/vertex-store handle is constructed.
+void OnConstructMeshHandle(entt::registry &, entt::entity);
+void OnConstructVertexStoreId(entt::registry &, entt::entity);
 
 // Idempotent visibility helpers; emplace/remove RenderInstance, the reactive handlers do the rest.
 void Show(entt::registry &, entt::entity);
@@ -26,11 +32,11 @@ void Hide(entt::registry &, entt::entity);
 void ApplySelectBehavior(entt::registry &, entt::entity, MeshInstanceCreateInfo::SelectBehavior);
 
 // Entity creation. None apply SelectBehavior — callers do that after.
-std::pair<entt::entity, entt::entity> AddMesh(entt::registry &, MeshStore &, Mesh &&, std::optional<MeshInstanceCreateInfo> = {});
+std::pair<entt::entity, entt::entity> AddMesh(entt::registry &, MeshStore &, CreatedMesh &&, std::optional<MeshInstanceCreateInfo> = {});
 entt::entity AddMeshInstance(entt::registry &, entt::entity mesh_entity, MeshInstanceCreateInfo);
 
 entt::entity CreateExtrasBufferEntity(entt::registry &, MeshStore &, std::span<const vec3> positions, std::span<const uint8_t> vertex_classes = {}, std::span<const uint32_t> edge_indices = {});
-entt::entity CreateExtrasObject(entt::registry &, MeshStore &, std::span<const vec3> positions, std::span<const uint8_t> vertex_classes, std::span<const uint32_t> edge_indices, ObjectType, ObjectCreateInfo, std::string_view default_name);
+entt::entity CreateExtrasObject(entt::registry &, MeshStore &, std::span<const vec3> positions, std::span<const uint8_t> vertex_classes, ObjectType, ObjectCreateInfo, std::string_view default_name);
 
 entt::entity AddEmpty(entt::registry &, MeshStore &, ObjectCreateInfo = {});
 entt::entity AddCamera(entt::registry &, MeshStore &, ObjectCreateInfo = {}, std::optional<Camera> = {});

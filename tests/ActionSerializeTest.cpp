@@ -1,5 +1,4 @@
 #include "Variant.h"
-#include "action/Action.h"
 #include "action/LogSerialize.h"
 
 #include <boost/ut.hpp>

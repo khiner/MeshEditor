@@ -20,3 +20,5 @@ struct BoneConstraint {
 struct BoneConstraints {
     std::vector<BoneConstraint> Stack;
 };
+
+// User-authored pose constraint stack.

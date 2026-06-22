@@ -77,9 +77,9 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
                 r.emplace_or_replace<AdditiveBoxSelectBaseline>(viewport, std::move(baseline));
             },
             [&](ClearBoxSelectBaseline) { r.remove<AdditiveBoxSelectBaseline>(viewport); },
-            // Box-select stores only the rectangle; the GPU pick + hit resolution run in ProcessComponentEvents.
+            // Box-select stores only the rectangle, the GPU pick and hit resolution run later.
             [&](const ApplyBoxSelect &a) { r.emplace_or_replace<PendingBoxSelect>(viewport, a.BoxPx, a.Additive); },
-            // Click pick stores only the pixel; the GPU pick + selection resolution run in ProcessComponentEvents.
+            // Click pick stores only the pixel, the GPU pick and selection resolution run later.
             [&](const Pick &a) { r.emplace_or_replace<PendingPick>(viewport, a.MousePx, a.Shift, false); },
             [&](const PickCycle &a) { r.emplace_or_replace<PendingPick>(viewport, a.MousePx, a.Shift, true); },
             [&](const ApplyEditElementClick &a) {

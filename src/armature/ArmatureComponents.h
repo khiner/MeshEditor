@@ -60,9 +60,11 @@ struct BoneAttachment {
     BoneId Bone;
 };
 
+// Derived from the bone entity Transforms plus the Armature rest pose.
+// BonePoseDelta is the bone Transform relative to rest, BonePoseWorld and GpuDeformRange follow.
 struct ArmaturePoseState {
-    std::vector<Transform> BonePoseDelta; // Animation delta from rest (identity = at rest). Persistent across frames.
-    std::vector<Transform> BoneUserOffset; // Additive user offset per bone (identity = no offset). Applied on top of animation.
+    std::vector<Transform> BonePoseDelta; // Bone Transform relative to rest (identity = at rest)
+    std::vector<Transform> BoneUserOffset; // Additive user offset per bone during an active drag
     std::vector<mat4> BonePoseWorld; // Per-bone pose world in armature-local space, post-constraint. Scratch, reused across frames.
     Range GpuDeformRange; // Allocation in shared ArmatureDeformBuffer arena. Count == 0 means not yet allocated.
 };

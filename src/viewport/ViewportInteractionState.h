@@ -15,6 +15,7 @@ struct StartScreenTransform {
     TransformGizmo::TransformType Value;
 };
 
+// Current gizmo config/mode (editor state).
 struct TransformGizmoState {
     TransformGizmo::Config Config;
     TransformGizmo::Mode Mode;

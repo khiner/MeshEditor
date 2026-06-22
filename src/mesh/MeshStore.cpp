@@ -4,6 +4,7 @@
 #include "vulkan/BufferArena.h"
 
 #include <glm/geometric.hpp>
+#include <zpp_bits.h>
 
 #define TINYOBJLOADER_IMPLEMENTATION
 #include "tiny_obj_loader.h"
@@ -393,7 +394,68 @@ struct MeshStore::Buffers {
     mvk::Buffer FaceStateBuffer; // Mirrors FaceFirstTriangleBuffer
     BufferArena<uint8_t> EdgeStateBuffer;
     BufferArena<uint32_t> TriangleFaceIdBuffer; // 1-indexed map from face triangles (in mesh face order) to source face ID
+
+    // Visit every BufferArena in a fixed order, so Serialize/Deserialize stay in lockstep.
+    void ForEachArena(auto &&f) {
+        f(VerticesBuffer);
+        f(FaceFirstTriangleBuffer);
+        f(FacePrimitiveBuffer);
+        f(PrimitiveMaterialBuffer);
+        f(BoneDeformBuffer);
+        f(MorphTargetBuffer);
+        f(EdgeStateBuffer);
+        f(TriangleFaceIdBuffer);
+    }
+    static constexpr std::size_t ArenaCount = 8;
 };
+
+namespace {
+// Save/restore a plain mirror buffer (no allocator) by its used byte region.
+std::vector<std::byte> SaveBuffer(const mvk::Buffer &b) {
+    const auto mapped = b.GetMappedData();
+    const auto used = std::min(std::size_t(b.UsedSize), mapped.size());
+    return {mapped.begin(), mapped.begin() + used};
+}
+void RestoreBuffer(mvk::Buffer &b, std::span<const std::byte> bytes) {
+    b.Reserve(bytes.size());
+    if (!bytes.empty()) b.Update(bytes, 0);
+    b.UsedSize = bytes.size();
+}
+} // namespace
+
+std::vector<std::byte> MeshStore::Serialize() const {
+    std::vector<ArenaState> arenas;
+    arenas.reserve(Buffers::ArenaCount);
+    B->ForEachArena([&](const auto &a) { arenas.push_back(a.Save()); });
+    const auto vertex_state = SaveBuffer(B->VertexStateBuffer);
+    const auto face_state = SaveBuffer(B->FaceStateBuffer);
+
+    // Serialize from non-const copies: zpp mis-encodes a const aggregate this large, and these match the types Deserialize reads back into.
+    auto entries = Entries;
+    auto free_ids = FreeIds;
+    std::vector<std::byte> out;
+    zpp::bits::out archive{out};
+    if (zpp::bits::failure(archive(arenas, vertex_state, face_state, entries, free_ids))) return {};
+    out.resize(archive.position());
+    return out;
+}
+
+void MeshStore::Deserialize(std::span<const std::byte> bytes) {
+    std::vector<ArenaState> arenas;
+    std::vector<std::byte> vertex_state, face_state;
+    std::vector<Entry> entries;
+    std::vector<uint32_t> free_ids;
+    zpp::bits::in archive{bytes};
+    if (zpp::bits::failure(archive(arenas, vertex_state, face_state, entries, free_ids))) return;
+    if (arenas.size() != Buffers::ArenaCount) return;
+
+    std::size_t i = 0;
+    B->ForEachArena([&](auto &a) { a.Restore(std::move(arenas[i++])); });
+    RestoreBuffer(B->VertexStateBuffer, vertex_state);
+    RestoreBuffer(B->FaceStateBuffer, face_state);
+    Entries = std::move(entries);
+    FreeIds = std::move(free_ids);
+}
 
 MeshStore::MeshStore(mvk::BufferContext &ctx) : B{std::make_unique<Buffers>(ctx)} {}
 MeshStore::~MeshStore() = default;
@@ -520,7 +582,7 @@ void MeshStore::CommitReserves() {
     Pending = {};
 }
 
-Mesh MeshStore::CreateMesh(MeshData &&data, MeshVertexAttributes &&attrs, MeshPrimitives &&primitives, std::optional<ArmatureDeformData> deform, std::optional<MorphTargetData> morph) {
+CreatedMesh MeshStore::CreateMesh(MeshData &&data, MeshVertexAttributes &&attrs, MeshPrimitives &&primitives, std::optional<ArmatureDeformData> deform, std::optional<MorphTargetData> morph) {
     const uint32_t vertex_count = data.Positions.size();
     auto [id, vertices] = AllocateVertexBuffer(data.Positions, attrs);
     auto &entry = Entries[id];
@@ -638,11 +700,14 @@ Mesh MeshStore::CreateMesh(MeshData &&data, MeshVertexAttributes &&attrs, MeshPr
         }
     }
 
-    auto mesh = [&]() -> Mesh {
-        if (!data.Faces.empty()) return {*this, id, std::move(data.Faces)};
-        if (!data.Edges.empty()) return {*this, id, std::move(data.Edges), vertex_count};
-        return {*this, id, vertex_count};
+    MeshConnectivity conn = [&] {
+        if (!data.Faces.empty()) return BuildConnectivity(data.Faces, vertex_count);
+        if (!data.Edges.empty()) return BuildConnectivity(data.Edges, vertex_count);
+        MeshConnectivity c;
+        c.VertexCount = vertex_count;
+        return c;
     }();
+    const Mesh mesh{*this, id, conn};
 
     if (!data.Faces.empty() && !attrs.Normals) {
         UpdateNormals(mesh);
@@ -650,10 +715,10 @@ Mesh MeshStore::CreateMesh(MeshData &&data, MeshVertexAttributes &&attrs, MeshPr
 
     entry.EdgeStates = B->EdgeStateBuffer.Allocate(mesh.EdgeCount() * 2);
     ClearElementStates(vertices, entry.FaceData, entry.EdgeStates);
-    return mesh;
+    return {id, std::move(conn)};
 }
 
-Mesh MeshStore::CloneMesh(const Mesh &mesh) {
+CreatedMesh MeshStore::CloneMesh(const Mesh &mesh) {
     const auto src_id = mesh.GetStoreId();
     const auto src_vertices = GetVertices(src_id);
     const auto vertices = AllocateVertices(src_vertices.size());
@@ -680,8 +745,9 @@ Mesh MeshStore::CloneMesh(const Mesh &mesh) {
         .Alive = true,
     });
 
+    MeshConnectivity conn = mesh.GetConnectivity();
     ClearElementStates(vertices, faces, edge_states);
-    return {*this, id, mesh};
+    return {id, std::move(conn)};
 }
 
 std::expected<MeshWithMaterials, std::string> MeshStore::LoadMesh(const std::filesystem::path &path) {
@@ -729,6 +795,15 @@ void MeshStore::Release(uint32_t id) {
     B->MorphTargetBuffer.Release(entry.MorphTargets);
     entry = {};
     FreeIds.emplace_back(id);
+}
+
+void MeshStore::Clear() {
+    B->ForEachArena([](auto &a) { a.Reset(); });
+    B->VertexStateBuffer.UsedSize = 0;
+    B->FaceStateBuffer.UsedSize = 0;
+    Entries.clear();
+    FreeIds.clear();
+    Pending = {};
 }
 
 // Mirror buffer helpers — uint8_t state per element, sizeof == 1.
@@ -926,11 +1001,11 @@ void MeshStore::UpdateVertexStatesFromElements(const Mesh &mesh, std::span<const
 
 uint32_t MeshStore::AcquireId(Entry &&entry) {
     if (!FreeIds.empty()) {
-        const auto id = FreeIds.back();
+        const auto reused = FreeIds.back();
         FreeIds.pop_back();
-        Entries[id] = std::move(entry);
-        return id;
+        Entries[reused] = std::move(entry);
+        return reused;
     }
     Entries.emplace_back(std::move(entry));
-    return Entries.size() - 1;
+    return uint32_t(Entries.size() - 1);
 }

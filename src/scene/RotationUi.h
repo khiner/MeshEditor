@@ -8,8 +8,7 @@
 #include <variant>
 
 // Mutually exclusive structs to track rotation representation.
-// Note: `Transform.R` is the source of truth. These are for slider values only.
-// `RotationUiVariant` is reactively synced from `Transform.R` in ProcessComponentEvents.
+// `Transform.R` is the source of truth, these hold slider values only.
 struct RotationQuat {
     quat Value; // xyzw
 };
@@ -25,6 +24,5 @@ using RotationUiVariant = std::variant<RotationQuat, RotationEuler, RotationAxis
 quat ToRotation(const RotationUiVariant &); // normalized
 RotationUiVariant ToUiVariant(quat, std::size_t mode); // `mode` = variant alternative
 
-// Tag: the UI is driving Transform.R this frame — reactive sync should not overwrite RotationUiVariant.
-// Emplaced by the rotation slider UI before setting Transform.R; cleared by ProcessComponentEvents.
+// Tag: the UI is driving Transform.R this frame, so the reverse sync shouldn't overwrite RotationUiVariant.
 struct RotationUiDriving {};

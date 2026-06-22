@@ -70,3 +70,4 @@ struct GizmoInteraction {
 
     bool IsUsing() const { return Start.has_value(); }
 };
+// Live, transient hover/drag handoff state.

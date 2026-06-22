@@ -1,6 +1,6 @@
 #pragma once
 
-#include "render/VulkanResources.h"
+#include "vulkan/VulkanResources.h"
 
 #include <entt/entity/fwd.hpp>
 

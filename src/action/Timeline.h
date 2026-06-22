@@ -25,8 +25,7 @@ struct SetView {
     float PixelsPerFrame, ViewCenterFrame;
 };
 
-using Actions = std::variant<TogglePlay, StartPresentation, SetFrame, SetStartFrame, SetEndFrame, JumpToStart, JumpToEnd, SetView>;
-using Action = Actions;
+using Action = std::variant<TogglePlay, StartPresentation, SetFrame, SetStartFrame, SetEndFrame, JumpToStart, JumpToEnd, SetView>;
 
 void Apply(entt::registry &, entt::entity viewport, const Action &);
 } // namespace action::timeline

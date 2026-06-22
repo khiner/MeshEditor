@@ -1,17 +1,22 @@
 #pragma once
 
 #include "render/CreateSvgResource.h"
-#include "render/VulkanResources.h"
+#include "vulkan/VulkanResources.h"
 
 #include <entt/entity/fwd.hpp>
 
 #include <filesystem>
 
 // Build the process-lifetime engine and return the viewport entity.
-entt::entity InitEngine(entt::registry &, VulkanResources, CreateSvgResource);
-// Inverse of InitEngine. Must be called before clearing the registry so command buffers
-// are freed before their owning pool, and ctx stores are torn down in dependency order.
+entt::entity InitEngine(entt::registry &, VulkanResources);
 void DeinitViewport(entt::registry &, entt::entity viewport);
+
+// App-only presentation/media layered on InitEngine.
+void InitViewportMedia(entt::registry &, CreateSvgResource);
+void DeinitViewportMedia(entt::registry &);
+
+// Engine entry point for RenderViewport (presentation): run ProcessComponentEvents, record, and submit the frame.
+void SubmitViewport(entt::registry &, entt::entity viewport);
 
 // Reset all per-document viewport state to defaults, leaving the scene empty.
 void SetupScene(entt::registry &, entt::entity viewport);

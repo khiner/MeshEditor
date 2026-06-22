@@ -25,6 +25,7 @@
 #include "scene/SceneGraph.h"
 #include "scene/SceneGraphOps.h"
 #include "scene/WorldTransform.h"
+#include "viewport/ViewportDisplay.h"
 
 #include <entt/entity/registry.hpp>
 #include <fastgltf/base64.hpp>
@@ -94,9 +95,9 @@ struct Object {
 };
 
 namespace {
-using ExtrasMap = std::unordered_map<uint64_t, std::string>;
+using ExtrasMap = std::map<uint64_t, std::string>;
 
-uint64_t ExtrasKey(fastgltf::Category cat, std::size_t idx) { return (uint64_t(std::uint32_t(cat)) << 32) | uint64_t(idx); }
+uint64_t ExtrasKey(fastgltf::Category cat, std::size_t idx) { return (uint64_t(uint32_t(cat)) << 32) | uint64_t(idx); }
 void CollectExtras(simdjson::dom::object *extras, std::size_t idx, fastgltf::Category cat, void *userPtr) {
     if (!extras || !userPtr) return;
     static_cast<ExtrasMap *>(userPtr)->emplace(ExtrasKey(cat, idx), simdjson::minify(*extras));
@@ -1822,7 +1823,7 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
     }
 
     auto &r = ctx.R;
-    const auto viewport = ctx.viewport;
+    const auto viewport = ctx.Viewport;
     auto &texture_store = ctx.Textures;
     const auto texture_start = texture_store.Textures.size();
     const auto material_start = ctx.Buffers.Materials.Count();
@@ -2029,6 +2030,21 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
         store.Names.insert(store.Names.end(), std::make_move_iterator(material_names.begin()), std::make_move_iterator(material_names.end()));
     }
 
+    // Capture resolved texture descriptors (Persistent) before the uploads are moved away, so a snapshot can re-materialize them into the same bindless slots.
+    // Emplaced only on success, after the rollback guard is disarmed.
+    std::vector<MaterializedTexture> materialized_textures;
+    materialized_textures.reserve(new_pending_textures.size());
+    for (const auto &t : new_pending_textures) {
+        materialized_textures.emplace_back(MaterializedTexture{
+            .SamplerSlot = t.SamplerSlot,
+            .SourceImageIndex = std::get<PendingTextureUpload::GltfImageRef>(t.Source).ImageIndex,
+            .ColorSpace = t.ColorSpace,
+            .WrapS = t.WrapS,
+            .WrapT = t.WrapT,
+            .Sampler = t.Sampler,
+            .Name = t.Name,
+        });
+    }
     if (!new_pending_textures.empty()) {
         auto &pending = r.get_or_emplace<PendingTextureUploads>(viewport);
         pending.Items.insert(pending.Items.end(), std::make_move_iterator(new_pending_textures.begin()), std::make_move_iterator(new_pending_textures.end()));
@@ -2489,17 +2505,7 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
             return std::unexpected{std::format("glTF import failed '{}': skin {} is used but no mesh instances were emitted for skin binding.", source_path.string(), skin_index)};
         }
 
-        // Create pose state — GPU deform buffer allocation is deferred until later.
-        const auto bone_count = armature.Bones.size();
-        r.emplace<ArmaturePoseState>(
-            armature_data_entity,
-            ArmaturePoseState{
-                .BonePoseDelta = std::vector<Transform>(bone_count),
-                .BoneUserOffset = std::vector<Transform>(bone_count),
-                .BonePoseWorld = std::vector<mat4>(bone_count, I4),
-                .GpuDeformRange = {},
-            }
-        );
+        // Bone instances only, their pose state is built later from the bone Transforms and rest pose.
         ::CreateBoneInstances(r, ctx.Meshes, armature_entity, armature_data_entity);
         // Mark each bone entity with its source joint NodeIndex (for SaveScene round-trip).
         const auto &bone_entities_for_source = r.get<const ArmatureObject>(armature_entity).BoneEntities;
@@ -2587,7 +2593,7 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
     }
 
     // Set up morph weight state for mesh instances with morph targets.
-    // GPU allocation is deferred until later (GpuWeightRange left as default {0,0}).
+    // The GPU range (MorphWeightGpuRange) is allocated later.
     // Build a map: node_index -> mesh instance entity, for resolving weight animation channels.
     std::unordered_map<uint32_t, entt::entity> morph_instance_by_node;
     for (const auto &object : source_objects) {
@@ -2607,7 +2613,7 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
             std::copy_n(object.NodeWeights->begin(), std::min(uint32_t(object.NodeWeights->size()), morph.TargetCount), w.begin());
             return w;
         }();
-        r.emplace<MorphWeightState>(instance_entity, MorphWeightState{.Weights = std::move(weights), .GpuWeightRange = {}});
+        r.emplace<MorphWeightState>(instance_entity, MorphWeightState{.Weights = std::move(weights)});
         morph_instance_by_node[object.NodeIndex] = instance_entity;
     }
 
@@ -2795,7 +2801,7 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
         EvaluateAnimationDeltas(anim->Clips[anim->ActiveClipIndex], 0.f, armature.Bones, deltas);
         for (uint32_t i = 0; i < armature.Bones.size() && i < arm_obj.BoneEntities.size(); ++i) {
             const auto posed = ComposeWithDelta(armature.Bones[i].RestLocal, deltas[i]);
-            r.patch<Transform>(arm_obj.BoneEntities[i], [&](auto &t) { t.P = posed.P; t.R = posed.R; }); // S left at bind, matching PCE bone sync
+            r.patch<Transform>(arm_obj.BoneEntities[i], [&](auto &t) { t.P = posed.P; t.R = posed.R; }); // S left at bind pose
         }
     }
 
@@ -2808,6 +2814,9 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
     } else {
         r.emplace_or_replace<PendingSceneWorldClear>(viewport);
     }
+    // Import-time UX default: show an imported world, hide the (empty) default world.
+    // Kept out of the reactive world passes so a snapshot restore reproduces the saved WorldOpacity rather than re-forcing this.
+    if (r.all_of<RenderedLighting>(viewport)) r.patch<RenderedLighting>(viewport, [&](auto &l) { l.WorldOpacity = source_ibl ? 1.f : 0.f; });
 
     // First-class scene entities, one per source scene. The default scene is the active one.
     std::vector<entt::entity> scene_entities;
@@ -2833,6 +2842,10 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
     }
     ApplySceneVisibility(r);
     ApplyActiveSceneSelection(r);
+    if (!materialized_textures.empty()) {
+        auto &manifest = r.get_or_emplace<MaterializedTextures>(viewport);
+        manifest.Items.insert(manifest.Items.end(), std::make_move_iterator(materialized_textures.begin()), std::make_move_iterator(materialized_textures.end()));
+    }
     import_rollback_guard.Enabled = false;
 
     return gltf::LoadResult{.FirstCameraObject = first_camera_object_entity, .ImportedAnimation = imported_animation};
@@ -2867,7 +2880,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
     // recoverable from registry/GPU state. Cameras and lights emit below from per-entity
     // components (see CameraName/LightName). Materials emit directly from PBRMaterial (GPU buffer)
     // + per-material `MaterialSourceMeta` delta, no intermediate type.
-    const auto *src_assets = r.try_get<const gltf::SourceAssets>(sc.viewport);
+    const auto *src_assets = r.try_get<const gltf::SourceAssets>(sc.Viewport);
     // Source-form scene-level metadata (Copyright/Generator/MinVersion/Asset.*, DefaultScene,
     // ExtensionsRequired/MaterialVariants/ExtrasByEntity, Textures/Images/Samplers/IBL) is read
     // directly from `src_assets` at each emit site below (no intermediate aggregate).
@@ -2885,11 +2898,11 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
     // appended after the source range so they round-trip through save.
     std::unordered_map<entt::entity, uint32_t> mesh_entity_to_index;
     uint32_t mesh_count = 0;
-    for (const auto [e, _, smi] : r.view<const Mesh, const SourceMeshIndex>().each()) {
+    for (const auto [e, _, smi] : r.view<const MeshHandle, const SourceMeshIndex>().each()) {
         mesh_entity_to_index[e] = smi.Value;
         mesh_count = std::max(mesh_count, smi.Value + 1u);
     }
-    for (const auto e : r.view<const Mesh>()) {
+    for (const auto e : r.view<const MeshHandle>()) {
         if (!mesh_entity_to_index.contains(e)) mesh_entity_to_index[e] = mesh_count++;
     }
 
@@ -2924,7 +2937,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             camera_entity_to_index[entity] = camera_entities_ordered.size();
             camera_entities_ordered.emplace_back(entity);
         }
-        auto light_view = r.view<const LightIndex>();
+        auto light_view = r.view<const PunctualLight>();
         for (const auto &[_, entity] : ordered_by_source.operator()<SourceLightIndex>(light_view)) {
             light_entity_to_index[entity] = light_entities_ordered.size();
             light_entities_ordered.emplace_back(entity);
@@ -3457,7 +3470,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         } else if (img.SourceDataUri && !view.empty()) {
             const auto fg_mime = FromMimeType(emit_mime);
             const auto mime_str = fg_mime == fastgltf::MimeType::None ? std::string{} : std::string{fastgltf::getMimeTypeString(fg_mime)};
-            const auto data_uri = "data:" + mime_str + ";base64," + fastgltf::base64::encode(reinterpret_cast<const std::uint8_t *>(view.data()), view.size());
+            const auto data_uri = "data:" + mime_str + ";base64," + fastgltf::base64::encode(reinterpret_cast<const uint8_t *>(view.data()), view.size());
             asset.images.emplace_back(fastgltf::Image{
                 .data = fastgltf::sources::URI{.fileByteOffset = 0, .uri = fastgltf::URI{data_uri}, .mimeType = fastgltf::MimeType::None},
                 .name = ToFgStr(img.Name),
@@ -3632,7 +3645,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         // per-mesh vertex buffer; re-slice here by primitive range. Vertex/face/skin/morph data
         // is read straight from MeshStore — no per-mesh contiguous vectors materialized.
         if (group.Triangles != entt::null) {
-            const auto &mesh = r.get<const Mesh>(group.Triangles);
+            const auto &mesh = GetMesh(r, group.Triangles);
             const auto store_id = mesh.GetStoreId();
             const auto vertices = meshes.GetVertices(store_id);
             const auto total_vcount = vertices.size();
@@ -3834,7 +3847,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
 
         // --- Line primitive ---
         if (group.Lines != entt::null) {
-            const auto &mesh = r.get<const Mesh>(group.Lines);
+            const auto &mesh = GetMesh(r, group.Lines);
             const auto vertices = meshes.GetVertices(mesh.GetStoreId());
             if (!vertices.empty() && mesh.EdgeCount() > 0) {
                 std::vector<uint32_t> idx;
@@ -3861,7 +3874,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
 
         // --- Point primitive ---
         if (group.Points != entt::null) {
-            const auto &mesh = r.get<const Mesh>(group.Points);
+            const auto &mesh = GetMesh(r, group.Points);
             const auto vertices = meshes.GetVertices(mesh.GetStoreId());
             if (!vertices.empty()) {
                 fastgltf::pmr::SmallVector<fastgltf::Attribute, 4> attrs;
@@ -3948,7 +3961,8 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
     asset.lights.reserve(light_entities_ordered.size());
     for (const auto entity : light_entities_ordered) {
         const auto *ln = r.try_get<const LightName>(entity);
-        const auto &pl = sc.Buffers.Lights.Get(r.get<const LightIndex>(entity).Value);
+        // Read the canonical per-light data (PunctualLight), not the Derived GPU Lights buffer.
+        const auto &pl = r.get<const PunctualLight>(entity);
         asset.lights.emplace_back(ConvertLightToFg(pl, ln ? ln->Value : std::string_view{}));
     }
 
@@ -4341,7 +4355,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
     if (any_material([](const auto &m) { return m.clearcoat != nullptr; })) asset.extensionsUsed.emplace_back("KHR_materials_clearcoat");
     if (any_material([](const auto &m) { return m.anisotropy != nullptr; })) asset.extensionsUsed.emplace_back("KHR_materials_anisotropy");
     if (any_material([](const auto &m) { return m.iridescence != nullptr; })) asset.extensionsUsed.emplace_back("KHR_materials_iridescence");
-    if (const auto *mv = sc.R.try_get<const ::MaterialVariants>(sc.viewport); mv && !mv->Names.empty()) {
+    if (const auto *mv = sc.R.try_get<const ::MaterialVariants>(sc.Viewport); mv && !mv->Names.empty()) {
         asset.materialVariants.reserve(mv->Names.size());
         for (const auto &v : mv->Names) asset.materialVariants.emplace_back(v);
         asset.extensionsUsed.emplace_back("KHR_materials_variants");

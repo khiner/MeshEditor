@@ -106,7 +106,7 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
                 r.patch<ViewCamera>(viewport, [&](auto &camera) { camera.ZoomBy(a.Factor); });
             },
             [&](const SetExtent &a) { r.ctx().get<ViewportExtent>().Value = a.Extent; },
-            [&](const SetStudioEnvironment &a) { r.emplace_or_replace<PendingSetStudioEnvironment>(viewport, a.Index); poke_active_lighting(); },
+            [&](const SetStudioEnvironment &a) { r.emplace_or_replace<StudioEnvironment>(viewport, a.Name); poke_active_lighting(); },
             [&](const SetSourceIblIntensity &a) {
                 r.patch<gltf::SourceAssets>(viewport, [&](auto &sa) { if (sa.ImageBasedLight) sa.ImageBasedLight->Intensity = a.Intensity; });
                 poke_active_lighting();

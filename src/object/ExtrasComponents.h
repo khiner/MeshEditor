@@ -25,3 +25,4 @@ struct BBoxWireframe {
 struct TetWireframe {
     entt::entity Instance{null_entity};
 };
+// Wireframe overlays — rebuilt reactively from the collider/bbox/tet state they visualize.

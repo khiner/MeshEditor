@@ -279,10 +279,10 @@ static void RenderEntityControls(entt::registry &r, entt::entity viewport, entt:
     Text("Object type: %s", ObjectTypeName(object_type).data());
     const auto active_bone_entity = FindActiveBone(r);
     const auto *active_instance = r.try_get<Instance>(active_entity);
-    const bool is_mesh_instance = active_instance && r.all_of<Mesh>(active_instance->Entity);
+    const bool is_mesh_instance = active_instance && HasMesh(r, active_instance->Entity);
     if (is_mesh_instance) {
         const auto active_mesh_entity = active_instance->Entity;
-        const auto &active_mesh = r.get<const Mesh>(active_mesh_entity);
+        const auto &active_mesh = GetMesh(r, active_mesh_entity);
         TextUnformatted(
             std::format("Vertices | Edges | Faces: {:L} | {:L} | {:L}", active_mesh.VertexCount(), active_mesh.EdgeCount(), active_mesh.FaceCount()).c_str()
         );
@@ -467,7 +467,7 @@ static void RenderEntityControls(entt::registry &r, entt::entity viewport, entt:
         }
 
         if (CollapsingHeader("Material")) {
-            const auto &active_mesh = r.get<const Mesh>(active_mesh_entity);
+            const auto &active_mesh = GetMesh(r, active_mesh_entity);
             auto &material_store = r.ctx().get<MaterialStore>();
             const auto texture_refs = GetTextureRefs(r);
             std::span<const uint32_t> primitive_materials = meshes.GetPrimitiveMaterialIndices(active_mesh.GetStoreId());
@@ -722,7 +722,7 @@ static void RenderEntityControls(entt::registry &r, entt::entity viewport, entt:
         ui::Gesture(changed, [&, scope = ui::ScopeFromAlt()] { return action::Replace<PunctualLight>{.Scope = scope, .Value = light}; });
     }
     // Audio controls (mesh instance = sound object or eligible to become one; microphone)
-    if (const auto *instance = r.try_get<Instance>(active_entity); instance && r.all_of<Mesh>(instance->Entity)) {
+    if (const auto *instance = r.try_get<Instance>(active_entity); instance && HasMesh(r, instance->Entity)) {
         const bool has_sound = r.all_of<SoundVerticesModel>(active_entity);
         if (CollapsingHeader("Audio", has_sound ? ImGuiTreeNodeFlags_DefaultOpen : 0)) {
             DrawObjectAudioControls(r, viewport, active_entity, GetMeshEntity(r, active_entity), r.ctx().get<const SelectionBitsetRef>().Value.data());
@@ -846,7 +846,7 @@ void RenderControls(entt::registry &r, entt::entity viewport) {
                         if (RadioButton(name.c_str(), &type_interaction_mode, int(element))) action::Emit(action::view::SetEditMode{.Mode = element});
                     }
                     if (const auto active_entity = FindActiveEntity(r); active_entity != entt::null) {
-                        if (const auto *instance = r.try_get<Instance>(active_entity); instance && r.all_of<Mesh>(instance->Entity)) {
+                        if (const auto *instance = r.try_get<Instance>(active_entity); instance && HasMesh(r, instance->Entity)) {
                             const auto *br = r.try_get<const MeshSelectionBitsetRange>(instance->Entity);
                             const uint32_t selected_count = br ?
                                 selection::CountSelected(r.ctx().get<const SelectionBitsetRef>().Value.data(), br->Offset, br->Count) :
@@ -939,7 +939,7 @@ void RenderControls(entt::registry &r, entt::entity viewport) {
                     if (mixed_visible) PopItemFlag();
 
                     const auto face_mesh_entities = selection::GetSelectedMeshEntities(r) |
-                        std::views::filter([&](entt::entity me) { return r.get<const Mesh>(me).FaceCount() > 0; }) |
+                        std::views::filter([&](entt::entity me) { return GetMesh(r, me).FaceCount() > 0; }) |
                         to<std::vector>();
                     if (!face_mesh_entities.empty()) {
                         const bool any_smooth = any_of(face_mesh_entities, [&](entt::entity me) { return r.all_of<SmoothShading>(me); });
@@ -1253,6 +1253,7 @@ static void RenderObjectTree(entt::registry &r, entt::entity viewport) {
             if (request.Type == ImGuiSelectionRequestType_SetAll) {
                 if (request.Selected) {
                     for (const auto e : visible_entities) add_target(e, true);
+                    if (const auto nav = FromSelectionUserData(nav_item); nav != entt::null) out.NavToActive = nav;
                 } else {
                     const auto nav = FromSelectionUserData(nav_item);
                     out.Clear = nav != entt::null && r.all_of<BoneIndex>(nav) ? Clear::BonesOnly : Clear::All;
@@ -1260,6 +1261,9 @@ static void RenderObjectTree(entt::registry &r, entt::entity viewport) {
                 continue;
             }
             if (request.Type != ImGuiSelectionRequestType_SetRange) continue;
+
+            // The request reflects this frame's input. ImGui's NavIdItem catches up next frame.
+            if (request.Selected) out.NavToActive = FromSelectionUserData(request.RangeDirection >= 0 ? request.RangeLastItem : request.RangeFirstItem);
 
             const auto first = FromSelectionUserData(request.RangeFirstItem), last = FromSelectionUserData(request.RangeLastItem);
             const auto first_it = find(visible_entities, first), last_it = find(visible_entities, last);
@@ -1273,7 +1277,6 @@ static void RenderObjectTree(entt::registry &r, entt::entity viewport) {
             const auto [i0, i1] = std::minmax(first_i, last_i);
             for (auto i = i0; i <= i1; ++i) add_target(visible_entities[i], request.Selected);
         }
-        if (const auto nav = FromSelectionUserData(nav_item); nav != entt::null) out.NavToActive = nav;
     };
 
     const int total_selected = r.storage<Selected>().size() + r.storage<BoneSelection>().size();

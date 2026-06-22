@@ -17,5 +17,6 @@ struct ExtrasWireframe {
     void AddDiamond(float radius, uint8_t vclass, vec3 axis1, vec3 axis2, vec3 center = {});
 };
 
+MeshData BuildEmptyMesh(); // Plain-axes empty: three axis line segments from the origin.
 MeshData BuildCameraFrustumMesh(const Camera &, bool look_through_view = false);
 ExtrasWireframe BuildLightMesh(const PunctualLight &);

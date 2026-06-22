@@ -75,7 +75,7 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
                 std::vector<uint32_t> vertex_indices(RealImpact::NumImpactVertices);
                 {
                     const auto impact_positions = RealImpact::LoadPositions(directory);
-                    const auto &mesh = r.get<Mesh>(mesh_entity);
+                    const auto &mesh = GetMesh(r, mesh_entity);
                     for (size_t i = 0; i < impact_positions.size(); ++i) {
                         vertex_indices[i] = *mesh.FindNearestVertex(impact_positions[i]);
                     }

@@ -17,6 +17,7 @@
 #include "render/LightComponents.h"
 #include "render/MaterialImport.h"
 #include "render/MeshBuffers.h"
+#include "render/Textures.h"
 #include "scene/Defaults.h"
 #include "scene/SceneGraph.h"
 #include "scene/SceneGraphOps.h"
@@ -62,13 +63,42 @@ void EmitPendingHideOnRenderInstanceDestroy(entt::registry &r, entt::entity e) {
     r.get_or_emplace<PendingHide>(ri.Entity).BufferIndices.push_back(ri.BufferIndex);
 }
 
+namespace {
+// RenderInstance is derived from Instance + !Hidden.
+// ObjectId 0 means on_construct<RenderInstance> fills it. BufferIndex UINT32_MAX means SyncModelsBuffers assigns it.
+void EnsureRenderInstance(entt::registry &r, entt::entity e) {
+    if (!r.all_of<RenderInstance>(e)) r.emplace<RenderInstance>(e, r.get<Instance>(e).Entity, UINT32_MAX, 0u);
+}
+} // namespace
+
+// An instance renders unless Hidden: create its RenderInstance on construction, drop it when Hidden appears.
+// These keep RenderInstance in lockstep with Instance + !Hidden, including on snapshot restore (which emplaces
+// Instance and Hidden in either order).
+void OnConstructInstance(entt::registry &r, entt::entity e) {
+    if (!r.all_of<Hidden>(e)) EnsureRenderInstance(r, e);
+}
+void OnConstructHidden(entt::registry &r, entt::entity e) {
+    if (r.all_of<RenderInstance>(e)) r.remove<RenderInstance>(e);
+}
+
 void Show(entt::registry &r, entt::entity e) {
-    if (r.all_of<RenderInstance>(e)) return;
-    r.emplace<RenderInstance>(e, r.get<Instance>(e).Entity, UINT32_MAX, 0u); // ObjectId 0 → on_construct fills it.
+    r.remove<Hidden>(e);
+    if (r.all_of<Instance>(e)) EnsureRenderInstance(r, e); // re-show after a prior Hide
 }
 
 void Hide(entt::registry &r, entt::entity e) {
-    if (r.all_of<RenderInstance>(e)) r.remove<RenderInstance>(e);
+    r.emplace_or_replace<Hidden>(e); // OnConstructHidden removes the RenderInstance
+}
+
+// Create MeshBuffers when its canonical handle is constructed (MeshHandle for full meshes, VertexStoreId for vertex-only extras), so a bare restore rebuilds it.
+// The index ranges fill in afterward.
+void OnConstructMeshHandle(entt::registry &r, entt::entity e) {
+    auto &meshes = r.ctx().get<MeshStore>();
+    r.emplace<MeshBuffers>(e, meshes.GetVerticesRange(r.get<const MeshHandle>(e).StoreId), SlottedRange{}, SlottedRange{}, SlottedRange{});
+}
+void OnConstructVertexStoreId(entt::registry &r, entt::entity e) {
+    auto &meshes = r.ctx().get<MeshStore>();
+    r.emplace<MeshBuffers>(e, meshes.GetVerticesRange(r.get<const VertexStoreId>(e).StoreId), SlottedRange{}, SlottedRange{}, SlottedRange{});
 }
 
 void ApplySelectBehavior(entt::registry &r, entt::entity e, MeshInstanceCreateInfo::SelectBehavior behavior) {
@@ -98,17 +128,16 @@ entt::entity AddMeshInstance(entt::registry &r, entt::entity mesh_entity, MeshIn
     return e;
 }
 
-std::pair<entt::entity, entt::entity> AddMesh(entt::registry &r, MeshStore &meshes, Mesh &&mesh, std::optional<MeshInstanceCreateInfo> info) {
+std::pair<entt::entity, entt::entity> AddMesh(entt::registry &r, MeshStore &, CreatedMesh &&mesh, std::optional<MeshInstanceCreateInfo> info) {
     const auto mesh_entity = r.create();
-    r.emplace<MeshBuffers>(mesh_entity, meshes.GetVerticesRange(mesh.GetStoreId()), SlottedRange{}, SlottedRange{}, SlottedRange{});
-    r.emplace<Mesh>(mesh_entity, std::move(mesh));
+    r.emplace<MeshConnectivity>(mesh_entity, std::move(mesh.Connectivity));
+    r.emplace<MeshHandle>(mesh_entity, MeshHandle{mesh.StoreId});
     return {mesh_entity, info ? AddMeshInstance(r, mesh_entity, *info) : entt::null};
 }
 
 entt::entity CreateExtrasBufferEntity(entt::registry &r, MeshStore &meshes, std::span<const vec3> positions, std::span<const uint8_t> vertex_classes, std::span<const uint32_t> edge_indices) {
     const auto buffer_entity = r.create();
     const auto store_id = meshes.AllocateVertexBuffer(positions, {}).first;
-    r.emplace<MeshBuffers>(buffer_entity, meshes.GetVerticesRange(store_id), SlottedRange{}, SlottedRange{}, SlottedRange{});
     r.emplace<ObjectExtrasTag>(buffer_entity);
     r.emplace<VertexStoreId>(buffer_entity, store_id);
     if (!vertex_classes.empty()) {
@@ -120,8 +149,9 @@ entt::entity CreateExtrasBufferEntity(entt::registry &r, MeshStore &meshes, std:
     return buffer_entity;
 }
 
-entt::entity CreateExtrasObject(entt::registry &r, MeshStore &meshes, std::span<const vec3> positions, std::span<const uint8_t> vertex_classes, std::span<const uint32_t> edge_indices, ObjectType type, ObjectCreateInfo info, std::string_view default_name) {
-    const auto buffer_entity = CreateExtrasBufferEntity(r, meshes, positions, vertex_classes, edge_indices);
+entt::entity CreateExtrasObject(entt::registry &r, MeshStore &meshes, std::span<const vec3> positions, std::span<const uint8_t> vertex_classes, ObjectType type, ObjectCreateInfo info, std::string_view default_name) {
+    // Vertices go into the arena here. The wireframe edges are derived from the object's params later, so none are passed or stored.
+    const auto buffer_entity = CreateExtrasBufferEntity(r, meshes, positions, vertex_classes);
     const auto e = r.create();
     r.emplace<ObjectKind>(e, type);
     r.emplace<Instance>(e, buffer_entity);
@@ -134,15 +164,14 @@ entt::entity CreateExtrasObject(entt::registry &r, MeshStore &meshes, std::span<
 }
 
 entt::entity AddEmpty(entt::registry &r, MeshStore &meshes, ObjectCreateInfo info) {
-    static constexpr vec3 positions[] = {{0, 0, 0}, {1, 0, 0}, {0, 0, 0}, {0, 1, 0}, {0, 0, 0}, {0, 0, -1}};
-    static constexpr uint32_t edges[] = {0, 1, 2, 3, 4, 5};
-    return CreateExtrasObject(r, meshes, positions, {}, edges, ObjectType::Empty, std::move(info), "Empty");
+    const auto mesh = BuildEmptyMesh();
+    return CreateExtrasObject(r, meshes, mesh.Positions, {}, ObjectType::Empty, std::move(info), "Empty");
 }
 
 entt::entity AddCamera(entt::registry &r, MeshStore &meshes, ObjectCreateInfo info, std::optional<Camera> props) {
     const Camera camera = props.value_or(Camera{Defaults::PerspectiveCamera});
     auto mesh = BuildCameraFrustumMesh(camera);
-    const auto entity = CreateExtrasObject(r, meshes, mesh.Positions, {}, mesh.CreateEdgeIndices(), ObjectType::Camera, std::move(info), "Camera");
+    const auto entity = CreateExtrasObject(r, meshes, mesh.Positions, {}, ObjectType::Camera, std::move(info), "Camera");
     r.emplace<Camera>(entity, camera);
     return entity;
 }
@@ -182,7 +211,6 @@ void CreateBoneInstances(entt::registry &r, MeshStore &meshes, entt::entity arm_
 
     const auto bone_data = primitive::BoneOctahedron(1.f);
     const auto bone_store_id = meshes.AllocateVertexBuffer(bone_data.Mesh.Positions, bone_data.Attrs).first;
-    r.emplace<MeshBuffers>(arm_obj_entity, meshes.GetVerticesRange(bone_store_id), SlottedRange{}, SlottedRange{}, SlottedRange{});
     r.emplace<VertexStoreId>(arm_obj_entity, bone_store_id);
 
     std::vector<entt::entity> bone_entities(n);
@@ -198,7 +226,6 @@ void CreateBoneInstances(entt::registry &r, MeshStore &meshes, entt::entity arm_
     const auto sphere_store_id = meshes.AllocateVertexBuffer(sphere_data.Mesh.Positions, {}).first;
     const auto joint_entity = r.create();
     r.emplace<BoneJoint>(joint_entity);
-    r.emplace<MeshBuffers>(joint_entity, meshes.GetVerticesRange(sphere_store_id), SlottedRange{}, SlottedRange{}, SlottedRange{});
     r.emplace<VertexStoreId>(joint_entity, sphere_store_id);
 
     for (const auto bone_entity : arm_obj.BoneEntities) CreateBoneJoints(r, arm_obj_entity, bone_entity, joint_entity);
@@ -208,12 +235,9 @@ void CreateBoneInstances(entt::registry &r, MeshStore &meshes, entt::entity arm_
 entt::entity AddLight(entt::registry &r, MeshStore &meshes, ObjectCreateInfo info, std::optional<PunctualLight> props) {
     auto light = props.value_or(Defaults::MakePunctualLight(PunctualLightType::Point));
     auto wireframe = BuildLightMesh(light);
-    const auto entity = CreateExtrasObject(r, meshes, wireframe.Data.Positions, wireframe.VertexClasses, {}, ObjectType::Light, std::move(info), "Light");
-    r.emplace<LightIndex>(entity, r.storage<LightIndex>().size());
+    const auto entity = CreateExtrasObject(r, meshes, wireframe.Data.Positions, wireframe.VertexClasses, ObjectType::Light, std::move(info), "Light");
     r.emplace<LightWireframeDirty>(entity);
-    // Defer SetLight: TransformSlotOffset needs InstanceArena slot and RenderInstance.BufferIndex,
-    // which aren't available until SyncModelsBuffers runs. Store light data temporarily;
-    // ProcessComponentEvents syncs the slot after SyncModelsBuffers.
+    // PunctualLight is the canonical per-light data, the GPU Lights buffer is registered from it later.
     r.emplace<PunctualLight>(entity, light);
     return entity;
 }
@@ -267,7 +291,7 @@ void Destroy(entt::registry &r, entt::entity viewport, entt::entity e) {
 
     entt::entity buffer_entity = entt::null;
     if (const auto *instance = r.try_get<Instance>(e)) {
-        if (r.all_of<Mesh>(instance->Entity) || r.all_of<ObjectExtrasTag>(instance->Entity)) buffer_entity = instance->Entity;
+        if (HasMesh(r, instance->Entity) || r.all_of<ObjectExtrasTag>(instance->Entity)) buffer_entity = instance->Entity;
         Hide(r, e);
     }
     std::vector<entt::entity> armature_data_entities;
@@ -347,8 +371,12 @@ void Destroy(entt::registry &r, entt::entity viewport, entt::entity e) {
         if (!is_used) r.destroy(armature_data_entity);
     }
 
-    // If no instances remain, release all imported textures and reset to the default material.
-    if (r.view<Instance>().empty()) ResetImportedTexturesAndMaterials(r);
+    // If no instances remain, release all imported textures and reset to the default material. The texture
+    // manifest (Persistent restore input) tracks the released imported textures, so clear it in lockstep.
+    if (r.view<Instance>().empty()) {
+        ResetImportedTexturesAndMaterials(r);
+        r.remove<MaterializedTextures>(viewport);
+    }
 }
 
 void ClearMeshes(entt::registry &r, entt::entity viewport) {
@@ -363,7 +391,7 @@ std::pair<entt::entity, entt::entity> ImportMesh(
     auto result = meshes.LoadMesh(path);
     if (!result) throw std::runtime_error(result.error());
 
-    if (!result->Materials.empty()) ImportObjPlyMaterials(r, result->Materials, path, result->Mesh.GetStoreId());
+    if (!result->Materials.empty()) ImportObjPlyMaterials(r, result->Materials, path, result->Mesh.StoreId);
 
     const auto entities = ::AddMesh(r, meshes, std::move(result->Mesh), std::move(info));
     r.emplace<Path>(entities.first, path);

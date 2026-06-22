@@ -1,6 +1,7 @@
 #include "Paths.h"
 #include "Timer.h"
 #include "Window.h"
+#include "action/ActionApply.h"
 #include "action/Emit.h"
 #include "action/Errors.h"
 #include "action/Io.h"
@@ -14,6 +15,9 @@
 #include "render/SvgResource.h"
 #include "render/SvgUpload.h"
 #include "scene/SceneControlsUi.h"
+#include "snapshot/ReplayTestFixture.h"
+#include "snapshot/SaveState.h"
+#include "snapshot/SceneSnapshot.h"
 #include "viewport/FrameState.h"
 #include "viewport/Viewport.h"
 #include "viewport/ViewportDisplay.h"
@@ -36,6 +40,7 @@
 #include <fstream>
 #include <iostream>
 #include <map>
+#include <print>
 #include <set>
 
 static_assert(null_entity == entt::null, "null_entity does not match entt::null");
@@ -255,15 +260,26 @@ void LoadFile(entt::registry &r, const fs::path &path) {
 
 namespace {
 // Reset to the default scene, optionally replaying a `.mea` log on top.
-void NewProject(entt::registry &r, entt::entity viewport, const fs::path &replay_path = {}) {
+void NewProject(entt::registry &r, entt::entity viewport, const fs::path &replay_path = {}, bool with_default_content = true, [[maybe_unused]] bool is_current_replay = false) {
     // Invoked mid-frame from the menu: the prior frame may still be sampling the viewport resources replay is
     // about to recreate, and replay has no consumer fence to wait on. Let the GPU finish all work first.
     r.ctx().get<const VulkanResources>().Device.waitIdle();
     action::StopPlaybackIfPlaying(r, viewport);
+#ifdef DEBUG_BUILD
+    // Replay test: replaying the live session's *own* log should reproduce the live scene exactly. Only then is
+    // the current scene a valid `expected` — replaying a past session's log has nothing to do with live state,
+    // so the check (and fixture write) is gated to the current log. Snapshot now, replay below, and compare.
+    const bool replay_check = !replay_path.empty() && is_current_replay;
+    std::vector<std::byte> expected;
+    if (replay_check) expected = snapshot::SnapshotSceneState(r);
+#endif
     action::StopLog();
     const auto live_extent = r.ctx().get<ViewportExtent>().Value; // Restore after replay's SetExtent actions change it.
     ClearScene(r, viewport);
-    AddDefaultSceneContent(r);
+    // The default scene content is the implicit replay baseline (a fresh app replays no actions). New->Empty
+    // skips building it live to avoid flashing it for a frame before the recorded Clear applies; replay still
+    // rebuilds the baseline and the logged Clear reconstructs the empty scene.
+    if (with_default_content) AddDefaultSceneContent(r);
     // Start the new session log before replaying so ReplayLog re-records the actions into it (otherwise the
     // replayed log is consumed and replaying "Current" again reloads the default scene).
     action::StartLog();
@@ -272,8 +288,36 @@ void NewProject(entt::registry &r, entt::entity viewport, const fs::path &replay
         // Restore the live window extent and render the final replayed state once on-screen.
         r.ctx().get<ViewportExtent>().Value = live_extent;
         PresentViewport(r, viewport);
+#ifdef DEBUG_BUILD
+        if (replay_check) {
+            const auto actual = snapshot::SnapshotSceneState(r);
+            if (const auto diff = snapshot::Compare(expected, actual); !diff.Equal) {
+                snapshot::WriteReplayTestFixture(replay_path, expected, actual);
+            }
+        }
+#endif
     }
 }
+
+#ifdef DEBUG_BUILD
+// Save the full persistent state, clear+restore it, run one update pass, and compare the re-saved state.
+// Proves the snapshot mechanism reproduces the saved image byte-for-byte across arenas, serialize/restore, and exact entity-handle recreation.
+void ValidateSnapshotRoundTrip(entt::registry &r, entt::entity viewport) {
+    r.ctx().get<const VulkanResources>().Device.waitIdle();
+    action::StopPlaybackIfPlaying(r, viewport);
+    const auto before = snapshot::SaveState(r);
+    ClearScene(r, viewport);
+    snapshot::LoadState(r, before);
+    AdvanceViewport(r, viewport);
+    const auto after = snapshot::SaveState(r);
+    if (const auto diff = snapshot::Compare(before, after); diff.Equal) {
+        std::println(stderr, "[snapshot] round-trip OK ({} bytes)", before.size());
+    } else {
+        std::println(stderr, "[snapshot] round-trip DIVERGED at byte {} (before {} / after {})", diff.FirstDifferingByte, before.size(), after.size());
+    }
+    PresentViewport(r, viewport);
+}
+#endif
 } // namespace
 
 void run(const char *initial_file, bool quiet, bool play, float play_duration, fs::path record_path, int record_fps) {
@@ -293,6 +337,16 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
     uint extensions_count = 0;
     const char *const *instance_extensions_raw = SDL_Vulkan_GetInstanceExtensions(&extensions_count);
     auto vc = std::make_unique<VulkanContext>(std::vector<const char *>{instance_extensions_raw, instance_extensions_raw + extensions_count});
+
+    const std::array imgui_pool_sizes{
+        vk::DescriptorPoolSize{vk::DescriptorType::eCombinedImageSampler, 16},
+        vk::DescriptorPoolSize{vk::DescriptorType::eSampledImage, 8},
+        vk::DescriptorPoolSize{vk::DescriptorType::eSampler, 2}, // IMGUI_IMPL_VULKAN_MINIMUM_SAMPLER_POOL_SIZE
+        vk::DescriptorPoolSize{vk::DescriptorType::eUniformBuffer, 8},
+        vk::DescriptorPoolSize{vk::DescriptorType::eStorageBuffer, 8},
+        vk::DescriptorPoolSize{vk::DescriptorType::eStorageImage, 4},
+    };
+    auto imgui_descriptor_pool = vc->Device->createDescriptorPoolUnique({vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet, 64, imgui_pool_sizes});
 
     constexpr static uint MinImageCount = 2;
     ImGui_ImplVulkanH_Window wd;
@@ -344,11 +398,11 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
         .Device = *vc->Device,
         .QueueFamily = vc->QueueFamily,
         .Queue = vc->Queue,
-        .DescriptorPool = *vc->DescriptorPool,
+        .DescriptorPool = *imgui_descriptor_pool,
         .DescriptorPoolSize = 0,
         .MinImageCount = MinImageCount,
         .ImageCount = wd.ImageCount,
-        .PipelineCache = *vc->PipelineCache,
+        .PipelineCache = VK_NULL_HANDLE,
         .PipelineInfoMain = {
             .RenderPass = wd.RenderPass,
             .Subpass = 0,
@@ -378,19 +432,20 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
         CheckVk(device.waitForFences({wd.Frames[wd.FrameIndex].Fence}, true, UINT64_MAX));
         svg = LoadSvg(r, std::move(path));
     };
-    const auto viewport = InitEngine(r, VulkanResources{*vc->Instance, vc->PhysicalDevice, *vc->Device, vc->QueueFamily, vc->Queue}, CreateSvg);
+    const auto viewport = InitEngine(r, vc->Resources());
+    InitViewportMedia(r, CreateSvg);
     SetupScene(r, viewport); // Before the first frame reads viewport state.
     AddDefaultSceneContent(r);
 
     struct AudioContext {
         entt::registry *R;
-        entt::entity viewport;
+        entt::entity Viewport;
     };
     AudioContext audio_ctx{&r, viewport};
     AudioDevice audio_device{
         {.Callback = [](auto buffer, void *user_data) {
              auto &ctx = *static_cast<AudioContext *>(user_data);
-             ProcessAudio(*ctx.R, ctx.viewport, std::move(buffer));
+             ProcessAudio(*ctx.R, ctx.Viewport, std::move(buffer));
          },
          .UserData = &audio_ctx}
     };
@@ -469,7 +524,7 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
                 if (BeginMenu("New")) {
                     if (MenuItem("Default")) NewProject(r, viewport);
                     if (MenuItem("Empty")) {
-                        NewProject(r, viewport);
+                        NewProject(r, viewport, {}, /*with_default_content=*/false);
                         action::Emit(action::io::Clear{}); // Recorded on the fresh log so replay reconstructs the empty scene.
                     }
                     EndMenu();
@@ -481,10 +536,13 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
                         char date[32];
                         std::strftime(date, sizeof date, "%Y-%m-%d %H:%M:%S", std::localtime(&t));
                         const auto label = i == 0 ? std::format("Current ({})", date) : std::string{date};
-                        if (MenuItem(label.c_str())) NewProject(r, viewport, logs[i].Path);
+                        if (MenuItem(label.c_str())) NewProject(r, viewport, logs[i].Path, /*with_default_content=*/true, /*is_current_replay=*/i == 0);
                     }
                     EndMenu();
                 }
+#ifdef DEBUG_BUILD
+                if (MenuItem("Validate snapshot round-trip")) ValidateSnapshotRoundTrip(r, viewport);
+#endif
                 if (MenuItem("Load glTF", nullptr)) {
                     static const std::array filters{nfdfilteritem_t{"glTF scene", "gltf,glb"}};
                     nfdchar_t *nfd_path;
@@ -773,6 +831,7 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
 
     // Tear down the viewport and its ctx-resident GPU stores in order before clearing the registry,
     // so GpuBuffers (and its VMA allocator) outlives the MeshStore allocations that retire into it.
+    DeinitViewportMedia(r); // App-only media (icons/Faust/ImGui texture), while the device + GpuBuffers are alive.
     DeinitViewport(r, viewport);
 
     ImGui_ImplVulkan_Shutdown();
@@ -782,6 +841,7 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
     ImGui_ImplVulkanH_DestroyWindow(*vc->Instance, *vc->Device, &wd, nullptr);
     vkDestroySurfaceKHR(*vc->Instance, wd.Surface, nullptr);
     wd.Surface = {};
+    imgui_descriptor_pool.reset();
     vc.reset();
 
     SDL_DestroyWindow(window);

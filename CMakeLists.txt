@@ -209,6 +209,8 @@ set_source_files_properties(src/physics/PhysicsSystem.cpp PROPERTIES COMPILE_FLA
 
 if(CMAKE_BUILD_TYPE MATCHES Debug)
     target_compile_definitions(${PROJECT_NAME} PRIVATE DEBUG_BUILD)
+    # Replay tests: File->Replay->Current writes a fixture here when replay diverges from the live scene state.
+    target_compile_definitions(${PROJECT_NAME} PRIVATE REPLAY_FIXTURE_DIR="${CMAKE_SOURCE_DIR}/tests/replay")
 elseif(CMAKE_BUILD_TYPE MATCHES Release)
     target_compile_definitions(${PROJECT_NAME} PRIVATE RELEASE_BUILD)
 endif()

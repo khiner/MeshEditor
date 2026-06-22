@@ -6,3 +6,4 @@
 struct LightIndex {
     uint32_t Value{0};
 };
+// Index into the shared lights buffer.

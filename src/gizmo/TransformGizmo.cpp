@@ -14,12 +14,7 @@
 #include <span>
 
 namespace {
-using TransformGizmo::Interaction;
-using TransformGizmo::InteractionOp;
-using TransformGizmo::LocalTransformDelta;
-using TransformGizmo::NumericInput;
-using TransformGizmo::StartContext;
-using TransformGizmo::TransformType;
+using namespace TransformGizmo;
 
 // Per-frame view parameters, derived fresh from the camera/viewport/mouse each Interact and Render.
 struct ViewFrame {
@@ -70,8 +65,6 @@ constexpr state::Color Color;
 } // namespace
 
 namespace TransformGizmo {
-bool IsUsing(const entt::registry &r, entt::entity viewport) { return r.get<const GizmoInteraction>(viewport).IsUsing(); }
-
 std::string_view ToString(const GizmoInteraction &g) {
     using enum InteractionOp;
 

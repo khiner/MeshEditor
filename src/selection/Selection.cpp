@@ -35,7 +35,7 @@ bool HasScaleLockedInstance(const entt::registry &r, entt::entity e) {
 std::unordered_set<entt::entity> GetSelectedMeshEntities(const entt::registry &r) {
     std::unordered_set<entt::entity> entities;
     for (const auto [e, instance] : r.view<const Instance, const Selected>().each()) {
-        if (r.all_of<Mesh>(instance.Entity)) entities.emplace(instance.Entity);
+        if (HasMesh(r, instance.Entity)) entities.emplace(instance.Entity);
     }
     return entities;
 }

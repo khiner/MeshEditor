@@ -11,7 +11,6 @@
 #include "render/Drawing.h"
 #include "render/Instance.h"
 #include "render/Pipelines.h"
-#include "render/VulkanResources.h"
 #include "scene/Entity.h"
 #include "scene/WorldTransform.h"
 #include "selection/Selection.h"
@@ -21,6 +20,7 @@
 #include "viewport/ViewCamera.h"
 #include "viewport/ViewportDisplay.h"
 #include "viewport/ViewportInteractionState.h"
+#include "vulkan/VulkanResources.h"
 
 #include <entt/entity/registry.hpp>
 
@@ -70,7 +70,7 @@ std::unordered_map<entt::entity, DeformSlots> BuildDeformSlots(const entt::regis
     std::unordered_map<entt::entity, DeformSlots> result;
     for (const auto [_, instance, modifier] : r.view<const Instance, const ArmatureModifier>().each()) {
         if (result.contains(instance.Entity)) continue;
-        const auto &mesh = r.get<const Mesh>(instance.Entity);
+        const auto &mesh = GetMesh(r, instance.Entity);
         const auto bone_deform = meshes.GetBoneDeformRange(mesh.GetStoreId());
         if (bone_deform.Count == 0) continue;
         if (const auto *pose_state = r.try_get<const ArmaturePoseState>(modifier.ArmatureEntity)) {
@@ -84,15 +84,15 @@ std::unordered_map<entt::entity, DeformSlots> BuildDeformSlots(const entt::regis
         }
     }
     // Add morph target slots for mesh instances with morph data (per-instance weights)
-    for (const auto [instance_entity, instance, morph_state, ri] : r.view<const Instance, const MorphWeightState, const RenderInstance>().each()) {
+    for (const auto [instance_entity, instance, gpu_range, ri] : r.view<const Instance, const MorphWeightGpuRange, const RenderInstance>().each()) {
         const auto mesh_entity = instance.Entity;
-        const auto &mesh = r.get<const Mesh>(mesh_entity);
+        const auto &mesh = GetMesh(r, mesh_entity);
         const auto morph_range = meshes.GetMorphTargetRange(mesh.GetStoreId());
         if (morph_range.Count == 0) continue;
         auto &slots = result[mesh_entity];
         slots.MorphDeformOffset = morph_range.Offset;
         slots.MorphTargetCount = meshes.GetMorphTargetCount(mesh.GetStoreId());
-        slots.MorphWeightsByBufferIndex[ri.BufferIndex] = morph_state.GpuWeightRange.Offset;
+        slots.MorphWeightsByBufferIndex[ri.BufferIndex] = gpu_range.Weights.Offset;
     }
     return result;
 }
@@ -213,7 +213,7 @@ void RecordRenderCommandBuffer(entt::registry &r, entt::entity viewport, vk::Com
             for (const auto [entity, _, wt] : r.view<const RenderInstance, const WorldTransform>().each()) {
                 entt::entity mesh_entity = entity;
                 if (const auto *instance = r.try_get<const Instance>(entity)) mesh_entity = instance->Entity;
-                if (!r.valid(mesh_entity) || !r.all_of<Mesh>(mesh_entity)) continue;
+                if (!r.valid(mesh_entity) || !HasMesh(r, mesh_entity)) continue;
                 const auto delta = wt.P - camera_position;
                 const auto distance2 = dot(delta, delta);
                 if (const auto it = farthest_distance2_by_mesh.find(mesh_entity); it != farthest_distance2_by_mesh.end()) {
@@ -237,7 +237,7 @@ void RecordRenderCommandBuffer(entt::registry &r, entt::entity viewport, vk::Com
             entt::entity Entity;
             const MeshBuffers &Buf;
             const ModelsBuffer &Mod;
-            const Mesh *MeshComp; // nullptr if entity has no Mesh component
+            std::optional<Mesh> MeshComp;
             const DeformSlots &Deform;
             std::optional<uint32_t> PrimaryEditBufferIndex;
             bool IsSoundVertices, IsBone, IsBoneJoint, IsExtras, Smooth;
@@ -251,7 +251,7 @@ void RecordRenderCommandBuffer(entt::registry &r, entt::entity viewport, vk::Com
                 primary_bi = r.get<RenderInstance>(it->second).BufferIndex;
             }
             const bool is_bone_joint = r.all_of<BoneJoint>(entity);
-            mesh_entities.emplace_back(entity, mesh_buffers, models, r.try_get<const Mesh>(entity), get_deform_slots(entity), primary_bi, excitable_mesh_entities.contains(entity), r.all_of<ArmatureObject>(entity) || is_bone_joint, is_bone_joint, r.all_of<ObjectExtrasTag>(entity), r.all_of<SmoothShading>(entity));
+            mesh_entities.emplace_back(entity, mesh_buffers, models, TryGetMesh(r, entity), get_deform_slots(entity), primary_bi, excitable_mesh_entities.contains(entity), r.all_of<ArmatureObject>(entity) || is_bone_joint, is_bone_joint, r.all_of<ObjectExtrasTag>(entity), r.all_of<SmoothShading>(entity));
         }
 
         // Entity -> mesh_entities index map for blend_mesh_order lookup

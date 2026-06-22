@@ -8,8 +8,11 @@
 #include "gpu/BoneDeformVertex.h"
 #include "gpu/MorphTargetVertex.h"
 
+#include <cstddef>
 #include <expected>
 #include <filesystem>
+#include <memory>
+#include <span>
 #include <unordered_set>
 
 namespace mvk {
@@ -26,8 +29,15 @@ struct ObjPlyMaterial {
     bool HasAlphaTexture{false};
 };
 
+// A freshly created mesh: its store id plus the half-edge connectivity the caller attaches to the entity
+// (as a MeshConnectivity component). MeshStore owns no connectivity, so it hands ownership back here.
+struct CreatedMesh {
+    uint32_t StoreId;
+    MeshConnectivity Connectivity;
+};
+
 struct MeshWithMaterials {
-    Mesh Mesh;
+    CreatedMesh Mesh;
     std::vector<ObjPlyMaterial> Materials;
 };
 
@@ -68,8 +78,9 @@ struct MeshStore {
     // Reserve all arenas for accumulated plans, then reset.
     void CommitReserves();
 
-    Mesh CreateMesh(MeshData &&, MeshVertexAttributes &&, MeshPrimitives &&, std::optional<ArmatureDeformData> = {}, std::optional<MorphTargetData> = {});
-    Mesh CloneMesh(const Mesh &);
+    CreatedMesh CreateMesh(MeshData &&, MeshVertexAttributes &&, MeshPrimitives &&, std::optional<ArmatureDeformData> = {}, std::optional<MorphTargetData> = {});
+    CreatedMesh CloneMesh(const Mesh &);
+
     std::expected<MeshWithMaterials, std::string> LoadMesh(const std::filesystem::path &);
 
     // Allocate vertex-only store entry (no topology, no face/edge/primitive/material buffers).
@@ -136,6 +147,16 @@ struct MeshStore {
     void UpdateNormals(const Mesh &, bool skip_nonzero = false);
 
     void Release(uint32_t id);
+
+    // Reset all arenas + the StoreId table to empty (keeping GPU allocations for reuse). Call only on a full
+    // scene clear, where no live entity references a StoreId, so StoreId/offset allocation restarts
+    // deterministically — the mesh-arena analog of the entity-allocator reset in ClearScene.
+    void Clear();
+
+    // Serialize all mesh arenas and the StoreId->Range entry table to a self-contained blob, and restore from one.
+    // Restore writes the bytes back into the existing GPU buffers and re-establishes the entries, keeping every Range/StoreId offset valid.
+    std::vector<std::byte> Serialize() const;
+    void Deserialize(std::span<const std::byte>);
 
 private:
     struct Buffers;

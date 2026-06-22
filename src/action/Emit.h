@@ -1,11 +1,9 @@
 #pragma once
 
-#include <entt/entity/fwd.hpp>
-
 #include <cstddef>
 
 namespace action {
-// All of these buffer at most one action per frame (first emitted wins), applied in ApplyEmitted.
+// All of these buffer at most one action per frame (first emitted wins), applied in ApplyEmitted (ActionApply.h).
 // A gesture (gizmo drag, box-select, slider) is `EmitStaged`* steps bracketed by a commit or cancel.
 
 // Apply at end of frame and record. Commits any open gesture first, so gesture terminals are plain Emit.
@@ -17,12 +15,6 @@ template<typename ActionType> void EmitStaged(ActionType);
 template<typename ActionType> void EmitCancel(ActionType);
 // Commit the open gesture (flush its held step) without emitting an action — for terminal-less gestures.
 void Commit();
-
-// Apply this frame's buffered action / gesture transition (if any).
-void ApplyEmitted(entt::registry &, entt::entity viewport);
-
-// Synchronously apply + record a playback-stop if playing.
-void StopPlaybackIfPlaying(entt::registry &, entt::entity viewport);
 
 std::size_t ActionSize();
 } // namespace action

@@ -98,15 +98,16 @@ struct LatchScreenTransform {
 // Clear the screen-transform latch once consumed by InteractOverlay. Live-only bookkeeping, not recorded.
 struct ClearScreenTransformLatch {};
 
-// Logical (window) size of the viewport. Apply only sets the ViewportExtent ctx value; the GPU resize
-// happens later as a ProcessComponentEvents side effect.
+// Logical (window) size of the viewport.
+// Apply only sets the ViewportExtent ctx value, the GPU resize happens later.
 struct SetExtent {
     uvec2 Extent;
 };
 
-// Studio HDRI / image-based lighting environment for the viewport.
+// Set the viewport's studio HDRI / image-based lighting environment.
+// Identified by source HDRI name (not the directory-scan index) so it stays stable across runs.
 struct SetStudioEnvironment {
-    uint32_t Index;
+    std::string Name;
 };
 struct SetSourceIblIntensity {
     float Intensity;

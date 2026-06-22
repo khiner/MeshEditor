@@ -36,6 +36,11 @@ void ExtrasWireframe::AddDiamond(float radius, uint8_t vclass, vec3 axis1, vec3 
     for (uint32_t i = 0; i < 4; ++i) AddEdge(base + i, base + (i + 1) % 4);
 }
 
+MeshData BuildEmptyMesh() {
+    // Three axis line segments (a "plain axes" empty): +X, +Y, -Z from the origin.
+    return {.Positions = {{0, 0, 0}, {1, 0, 0}, {0, 0, 0}, {0, 1, 0}, {0, 0, 0}, {0, 0, -1}}, .Edges = {{0, 1}, {2, 3}, {4, 5}}};
+}
+
 MeshData BuildCameraFrustumMesh(const Camera &camera, bool look_through_view) {
     // Matches Blender's overlay (overlay_camera.hh / overlay_shape.cc) at default cam.drawsize=1:
     // BKE_camera_view_frame_ex sets r_drawsize = drawsize/2 = 0.5, so the frame is 1 unit wide

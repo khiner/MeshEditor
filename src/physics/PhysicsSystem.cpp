@@ -775,8 +775,8 @@ Ref<Shape> BuildLeafShape(const entt::registry &r, entt::entity entity, const Co
         shape_proto = physics::ConvexHull{};
     }
     const auto mesh_entity = IsMeshBackedShape(shape_proto) ? cs.MeshEntity : null_entity;
-    const auto *mesh = mesh_entity != null_entity ? r.try_get<const Mesh>(mesh_entity) : nullptr;
-    auto js = CreateJoltShape(shape_proto, mesh, owner_motion == nullptr);
+    const auto mesh = mesh_entity != null_entity ? TryGetMesh(r, mesh_entity) : std::nullopt;
+    auto js = CreateJoltShape(shape_proto, mesh ? &*mesh : nullptr, owner_motion == nullptr);
     if (!js) return {};
     js->SetUserData(ShapeFilterUserData(filter_entity));
     // Offset is in entity-local pre-scale coords (matches CenterOfMass convention) — translate before scaling.
@@ -820,8 +820,8 @@ BodyShape BuildBodyShape(const entt::registry &r, entt::entity entity, const KHR
         const auto *cm = r.try_get<const ColliderMaterial>(entity);
         out.FilterEntity = ResolveFilterEntity(r, cm ? cm->CollisionFilterEntity : null_entity);
         const auto mesh_entity = IsMeshBackedShape(collider->Shape) ? collider->MeshEntity : null_entity;
-        const auto *mesh = mesh_entity != null_entity ? r.try_get<const Mesh>(mesh_entity) : nullptr;
-        auto js = CreateJoltShape(collider->Shape, mesh);
+        const auto mesh = mesh_entity != null_entity ? TryGetMesh(r, mesh_entity) : std::nullopt;
+        auto js = CreateJoltShape(collider->Shape, mesh ? &*mesh : nullptr);
         if (!js) return out;
         if (collider->LocalOffset != vec3{0}) js = new RotatedTranslatedShape(ToJolt(collider->LocalOffset), Quat::sIdentity(), js);
         const auto *t = r.try_get<const WorldTransform>(entity);

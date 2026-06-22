@@ -35,3 +35,4 @@ struct MeshBuffers {
 struct BoneAdjacencyIndices {
     SlottedRange Indices;
 };
+// GPU vertex and index buffer ranges for a mesh.

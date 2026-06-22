@@ -2,6 +2,7 @@
 
 #include "action/Errors.h"
 #include "animation/AnimationTimeline.h"
+#include "mesh/MeshComponents.h"
 #include "mesh/MeshStore.h"
 #include "object/ExtrasComponents.h"
 #include "object/ObjectComponents.h"
@@ -25,7 +26,15 @@ void InitStoreCtx(entt::registry &r, VulkanResources vk) {
     r.ctx().emplace<EnvironmentStore>();
 }
 
+namespace {
+// A MeshHandle owns the lifetime of its MeshStore entry: releasing it frees the connectivity + arenas.
+void OnDestroyMeshHandle(entt::registry &r, entt::entity e) {
+    r.ctx().get<MeshStore>().Release(r.get<MeshHandle>(e).StoreId);
+}
+} // namespace
+
 entt::entity WireRegistry(entt::registry &r) {
+    r.on_destroy<MeshHandle>().connect<&OnDestroyMeshHandle>();
     r.on_construct<PhysicsMotion>().connect<&entt::registry::emplace<PhysicsVelocity>>();
     r.on_destroy<PhysicsMotion>().connect<&entt::registry::remove<PhysicsVelocity>>();
     r.on_construct<ColliderShape>().connect<&entt::registry::emplace<ColliderMaterial>>();
@@ -73,8 +82,8 @@ entt::entity WireRegistry(entt::registry &r) {
 }
 
 void TearDownStoreCtx(entt::registry &r) {
-    // Mesh's dtor calls back into MeshStore, so clear Mesh while the store is still alive.
-    r.clear<Mesh>();
+    // Releasing a MeshHandle calls back into MeshStore, so clear handles while the store is still alive.
+    r.clear<MeshHandle>();
 
     auto &slots = r.ctx().get<DescriptorSlots>();
     auto &textures = r.ctx().get<TextureStore>();

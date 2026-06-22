@@ -18,10 +18,10 @@ std::filesystem::path ReplayDir() { return Paths::Base() / "replay"; }
 constexpr std::string_view LogExt{".mea"};
 
 // Parse the unix-seconds timestamp encoded in a `<unix_seconds>.mea` log's stem.
-std::optional<std::int64_t> ParseTimestamp(const std::filesystem::path &path) {
+std::optional<uint32_t> ParseTimestamp(const std::filesystem::path &path) {
     if (path.extension() != LogExt) return std::nullopt;
     const auto stem = path.stem().string();
-    std::int64_t seconds;
+    uint32_t seconds;
     if (auto [_, ec] = std::from_chars(stem.data(), stem.data() + stem.size(), seconds); ec != std::errc{}) return std::nullopt;
     return seconds;
 }
@@ -45,7 +45,7 @@ std::ofstream OpenLogStream() {
         std::error_code ec;
         std::filesystem::remove(logs[i].Path, ec);
     }
-    auto unix_sec = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+    auto unix_sec = uint32_t(std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count());
     auto path = ReplayDir() / (std::to_string(unix_sec) + std::string{LogExt});
     // Filenames are unix-second timestamps. If one already exists (rapid New/Replay within a second),
     // appending would corrupt it, so bump until the name is free — it stays the newest ("Current").

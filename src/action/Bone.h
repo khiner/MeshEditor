@@ -44,13 +44,12 @@ struct AddConstraint {
     BoneConstraintKind Kind;
 };
 
-using Actions = std::variant<
+using Action = std::variant<
     Add, Extrude, DuplicateSelected, DeleteSelected, ClearSelectedTransforms,
     SetEditHeadTailRoll,
     SetConstraintTarget, SetConstraintInfluence,
     BakeConstraintChildOfInverse, ClearConstraintChildOfInverse,
     DeleteConstraint, AddConstraint>;
-using Action = Actions;
 
 void Apply(entt::registry &, entt::entity viewport, const Action &);
 } // namespace action::bone

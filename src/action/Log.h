@@ -69,7 +69,7 @@ private:
 // A `.mea` (Mesh Editor Action) log file in the replay dir, tagged with the unix-seconds timestamp parsed from its name.
 struct ReplayLogFile {
     std::filesystem::path Path;
-    std::int64_t UnixSeconds;
+    uint32_t UnixSeconds;
 };
 
 // Replay logs found in the replay dir, sorted most-recent first.

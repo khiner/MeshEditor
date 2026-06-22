@@ -3,9 +3,9 @@
 #include "gltf/ImageBasedLight.h"
 #include "gpu/IblSamplers.h"
 #include "numeric/mat3.h"
-#include "render/VulkanResources.h"
 #include "vulkan/Buffer.h"
 #include "vulkan/Image.h"
+#include "vulkan/VulkanResources.h"
 
 #include <expected>
 #include <filesystem>
@@ -113,6 +113,20 @@ struct PendingTextureUpload {
 };
 struct PendingTextureUploads {
     std::vector<PendingTextureUpload> Items;
+};
+
+// An imported texture's upload descriptor, recording the bindless slot baked into its PBRMaterial.
+// The pixel source lives in gltf::SourceAssets::Images, keyed by SourceImageIndex.
+struct MaterializedTexture {
+    uint32_t SamplerSlot;
+    uint32_t SourceImageIndex; // index into gltf::SourceAssets::Images
+    TextureColorSpace ColorSpace;
+    vk::SamplerAddressMode WrapS, WrapT;
+    SamplerConfig Sampler;
+    std::string Name;
+};
+struct MaterializedTextures {
+    std::vector<MaterializedTexture> Items;
 };
 
 struct PendingEnvironmentImport {

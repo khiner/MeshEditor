@@ -25,9 +25,9 @@ struct AdditiveBoxSelectBaseline {
     std::vector<uint32_t> ElementBitset;
 };
 
-// Flags on viewport, consumed and cleared by ProcessComponentEvents.
-struct SelectionBitsDirty {}; // Bitset written by Interact; dispatches the compute update.
-struct ElementStatesDirty {}; // Element state buffers updated by GPU compute; triggers a submit.
+// Transient dirty flags on the viewport.
+struct SelectionBitsDirty {}; // The bitset changed, the compute update is pending.
+struct ElementStatesDirty {}; // The element state buffers changed, a submit is pending.
 
 struct PendingEditElementClick {
     uvec2 MousePx;

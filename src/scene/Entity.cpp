@@ -24,7 +24,7 @@ entt::entity FindActiveEntity(const entt::registry &registry) {
 }
 
 entt::entity GetMeshEntity(const entt::registry &r, entt::entity e) {
-    if (const auto *instance = r.try_get<Instance>(e); instance && r.all_of<Mesh>(instance->Entity)) return instance->Entity;
+    if (const auto *instance = r.try_get<Instance>(e); instance && HasMesh(r, instance->Entity)) return instance->Entity;
     return entt::null;
 }
 entt::entity GetActiveMeshEntity(const entt::registry &r) {

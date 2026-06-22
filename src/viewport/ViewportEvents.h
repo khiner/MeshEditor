@@ -5,23 +5,19 @@
 
 #include <filesystem>
 
-// Reactive tags and deferred requests consumed (and cleared) by ProcessComponentEvents.
+// Reactive tags and deferred requests, consumed and cleared once per frame.
 
 struct MeshGeometryDirty {}; // Request overlay + element-state buffer refresh after mesh geometry changes
 struct LightWireframeDirty {};
 
-struct ProfileNextProcessComponentEvents {}; // Profile the next ProcessComponentEvents pass.
+struct ProfileNextProcessComponentEvents {};
 
-struct PendingSetStudioEnvironment {
-    uint32_t Index;
-};
 struct PendingSetEditMode {
     Element Mode;
 };
 struct PendingShaderRecompile {};
 
-// Pending mesh import (file load + texture uploads).
-// Apply emits this; ProcessComponentEvents performs the GPU work, then removes it.
+// Pending mesh import (file load + texture uploads), consumed once the GPU work completes.
 struct PendingImportMesh {
     std::filesystem::path Path;
     MeshInstanceCreateInfo Info;

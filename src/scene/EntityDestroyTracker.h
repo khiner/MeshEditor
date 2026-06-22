@@ -5,8 +5,7 @@
 #include <entt/entity/registry.hpp>
 
 // Unmanaged reactive storage tracking entity destruction.
-// Unlike managed storage (via r.storage<entt::reactive>()), this keeps entities after destruction
-// until manually cleared, allowing ProcessComponentEvents to detect that entities were deleted.
+// Unlike managed storage (via r.storage<entt::reactive>()), this keeps destroyed entities until manually cleared, so deletions stay observable across a frame.
 struct EntityDestroyTracker {
     entt::storage_for_t<entt::reactive> Storage;
 

@@ -4,6 +4,7 @@
 #include "action/Emit.h"
 #include "action/Object.h"
 #include "audio/SoundVertices.h"
+#include "gizmo/GizmoInteraction.h"
 #include "gpu/ViewportTheme.h"
 #include "mesh/MeshStore.h"
 #include "scene/Entity.h"
@@ -28,6 +29,10 @@ entt::entity LookThroughCameraEntity(const entt::registry &r) {
     auto view = r.view<LookingThrough>();
     return view.empty() ? entt::null : *view.begin();
 }
+
+namespace TransformGizmo {
+bool IsUsing(const entt::registry &r, entt::entity viewport) { return r.get<const GizmoInteraction>(viewport).IsUsing(); }
+} // namespace TransformGizmo
 
 bool SetInteractionMode(entt::registry &r, entt::entity viewport, InteractionMode mode) {
     if (r.get<const Interaction>(viewport).Mode == mode) return false;
@@ -58,7 +63,7 @@ bool SetInteractionMode(entt::registry &r, entt::entity viewport, InteractionMod
             auto *bits = r.ctx().get<SelectionBitsetRef>().Value.data();
             for (const auto mesh_entity : selection::GetSelectedMeshEntities(r)) {
                 if (r.all_of<MeshSelectionBitsetRange>(mesh_entity)) continue;
-                const auto &mesh = r.get<const Mesh>(mesh_entity);
+                const auto &mesh = GetMesh(r, mesh_entity);
                 const uint32_t count = selection::GetElementCount(mesh, edit_element);
                 if (count == 0) continue;
 

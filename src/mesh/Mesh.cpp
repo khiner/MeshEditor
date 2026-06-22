@@ -1,6 +1,8 @@
 #include "Mesh.h"
+#include "MeshComponents.h"
 #include "MeshStore.h"
 
+#include <entt/entity/registry.hpp>
 #include <glm/gtx/norm.hpp>
 
 #include <algorithm>
@@ -11,7 +13,7 @@ using std::ranges::any_of, std::ranges::find_if, std::ranges::distance;
 namespace {
 constexpr uint64_t MakeEdgeKey(uint from, uint to) { return (uint64_t(from) << 32) | to; }
 
-// Flat open-addressing map reused across Mesh constructions via thread_local.
+// Flat open-addressing map reused across connectivity builds via thread_local.
 // Key 0 is the empty sentinel (self-loop edges are impossible).
 struct EdgeMap {
     void reset(size_t n) {
@@ -51,129 +53,104 @@ private:
 };
 } // namespace
 
-Mesh::Mesh(MeshStore &store, uint32_t store_id, std::vector<std::vector<uint>> &&faces)
-    : Store(&store), StoreId(store_id), VertexCountValue(store.GetVertices(store_id).size()) {
-    OutgoingHalfedges.resize(VertexCountValue);
+MeshConnectivity BuildConnectivity(std::span<const std::vector<uint32_t>> faces, uint32_t vertex_count) {
+    using Halfedge = MeshConnectivity::Halfedge;
+    MeshConnectivity c;
+    c.VertexCount = vertex_count;
+    c.OutgoingHalfedges.resize(vertex_count);
 
     size_t total_halfedges = 0;
     for (const auto &face : faces) total_halfedges += face.size();
-    Faces.reserve(faces.size());
-    Halfedges.reserve(total_halfedges);
-    HalfedgeToEdge.reserve(total_halfedges);
-    Edges.reserve(total_halfedges / 2 + 1);
+    c.Faces.reserve(faces.size());
+    c.Halfedges.reserve(total_halfedges);
+    c.HalfedgeToEdge.reserve(total_halfedges);
+    c.Edges.reserve(total_halfedges / 2 + 1);
     static thread_local EdgeMap halfedge_map;
     halfedge_map.reset(total_halfedges);
     for (const auto &face : faces) {
         assert(face.size() >= 3);
 
-        const auto fi = Faces.size();
-        const auto start_he_i = Halfedges.size();
-        Faces.emplace_back(HH(start_he_i));
+        const auto fi = c.Faces.size();
+        const auto start_he_i = c.Halfedges.size();
+        c.Faces.emplace_back(he::HH(start_he_i));
 
         // Create halfedges, find opposites, and create edges
         for (size_t i = 0; i < face.size(); ++i) {
             const auto to_v = face[i];
             const auto from_v = face[i == 0 ? face.size() - 1 : i - 1];
-            Halfedges.emplace_back(Halfedge{
-                .Vertex = VH(to_v),
-                .Next = HH(start_he_i + (i + 1) % face.size()),
-                .Opposite = HH{},
-                .Face = FH(fi),
+            c.Halfedges.emplace_back(Halfedge{
+                .Vertex = he::VH(to_v),
+                .Next = he::HH(start_he_i + (i + 1) % face.size()),
+                .Opposite = he::HH{},
+                .Face = he::FH(fi),
             });
 
-            const HH hh(start_he_i + i);
-            if (!OutgoingHalfedges[from_v]) OutgoingHalfedges[from_v] = hh;
+            const he::HH hh(start_he_i + i);
+            if (!c.OutgoingHalfedges[from_v]) c.OutgoingHalfedges[from_v] = hh;
             halfedge_map.insert(MakeEdgeKey(from_v, to_v), hh);
 
             // Look for opposite halfedge (from previously added faces)
             if (const auto *opposite = halfedge_map.find(MakeEdgeKey(to_v, from_v))) {
-                Halfedges[*hh].Opposite = *opposite;
-                Halfedges[**opposite].Opposite = hh;
-                HalfedgeToEdge.emplace_back(HalfedgeToEdge[**opposite]);
+                c.Halfedges[*hh].Opposite = *opposite;
+                c.Halfedges[**opposite].Opposite = hh;
+                c.HalfedgeToEdge.emplace_back(c.HalfedgeToEdge[**opposite]);
             } else {
                 // Create new edge
-                Edges.emplace_back(hh);
-                HalfedgeToEdge.emplace_back(Edges.size() - 1);
+                c.Edges.emplace_back(hh);
+                c.HalfedgeToEdge.emplace_back(c.Edges.size() - 1);
             }
         }
     }
+    return c;
 }
 
-Mesh::Mesh(MeshStore &store, uint32_t store_id, std::vector<std::array<uint32_t, 2>> &&edges, uint32_t vertex_count)
-    : Store(&store), StoreId(store_id), VertexCountValue(vertex_count) {
-    OutgoingHalfedges.resize(VertexCountValue);
+MeshConnectivity BuildConnectivity(std::span<const std::array<uint32_t, 2>> edges, uint32_t vertex_count) {
+    using Halfedge = MeshConnectivity::Halfedge;
+    MeshConnectivity c;
+    c.VertexCount = vertex_count;
+    c.OutgoingHalfedges.resize(vertex_count);
 
     for (const auto &[a, b] : edges) {
-        const auto h0 = HH(Halfedges.size());
-        const auto h1 = HH(Halfedges.size() + 1);
-        Halfedges.emplace_back(Halfedge{.Vertex = VH(b), .Next = HH{}, .Opposite = h1, .Face = FH{}});
-        Halfedges.emplace_back(Halfedge{.Vertex = VH(a), .Next = HH{}, .Opposite = h0, .Face = FH{}});
+        const auto h0 = he::HH(c.Halfedges.size());
+        const auto h1 = he::HH(c.Halfedges.size() + 1);
+        c.Halfedges.emplace_back(Halfedge{.Vertex = he::VH(b), .Next = he::HH{}, .Opposite = h1, .Face = he::FH{}});
+        c.Halfedges.emplace_back(Halfedge{.Vertex = he::VH(a), .Next = he::HH{}, .Opposite = h0, .Face = he::FH{}});
 
-        Edges.emplace_back(h0);
-        HalfedgeToEdge.emplace_back(Edges.size() - 1);
-        HalfedgeToEdge.emplace_back(Edges.size() - 1);
+        c.Edges.emplace_back(h0);
+        c.HalfedgeToEdge.emplace_back(c.Edges.size() - 1);
+        c.HalfedgeToEdge.emplace_back(c.Edges.size() - 1);
 
-        if (!OutgoingHalfedges[a]) OutgoingHalfedges[a] = h0;
-        if (!OutgoingHalfedges[b]) OutgoingHalfedges[b] = h1;
+        if (!c.OutgoingHalfedges[a]) c.OutgoingHalfedges[a] = h0;
+        if (!c.OutgoingHalfedges[b]) c.OutgoingHalfedges[b] = h1;
     }
+    return c;
 }
 
-Mesh::Mesh(MeshStore &store, uint32_t store_id, uint32_t vertex_count)
-    : Store(&store), StoreId(store_id), VertexCountValue(vertex_count) {}
-
-Mesh::Mesh(MeshStore &store, uint32_t store_id, const Mesh &src)
-    : Store(&store), StoreId(store_id),
-      VertexCountValue(src.VertexCountValue),
-      OutgoingHalfedges(src.OutgoingHalfedges),
-      Halfedges(src.Halfedges),
-      HalfedgeToEdge(src.HalfedgeToEdge),
-      Edges(src.Edges),
-      Faces(src.Faces) {}
-
-Mesh::Mesh(Mesh &&other) noexcept
-    : Store(std::exchange(other.Store, nullptr)),
-      StoreId(std::exchange(other.StoreId, InvalidStoreId)),
-      VertexCountValue(std::exchange(other.VertexCountValue, 0)),
-      OutgoingHalfedges(std::move(other.OutgoingHalfedges)),
-      Halfedges(std::move(other.Halfedges)),
-      HalfedgeToEdge(std::move(other.HalfedgeToEdge)),
-      Edges(std::move(other.Edges)),
-      Faces(std::move(other.Faces)) {}
-
-Mesh &Mesh::operator=(Mesh &&other) noexcept {
-    if (this != &other) {
-        if (Store && StoreId != InvalidStoreId) Store->Release(StoreId);
-        Store = std::exchange(other.Store, nullptr);
-        StoreId = std::exchange(other.StoreId, InvalidStoreId);
-        VertexCountValue = std::exchange(other.VertexCountValue, 0);
-        OutgoingHalfedges = std::move(other.OutgoingHalfedges);
-        Halfedges = std::move(other.Halfedges);
-        HalfedgeToEdge = std::move(other.HalfedgeToEdge);
-        Edges = std::move(other.Edges);
-        Faces = std::move(other.Faces);
-    }
-    return *this;
+Mesh GetMesh(const entt::registry &r, entt::entity e) {
+    return {r.ctx().get<const MeshStore>(), r.get<const MeshHandle>(e).StoreId, r.get<const MeshConnectivity>(e)};
 }
-
-Mesh::~Mesh() {
-    if (Store && StoreId != InvalidStoreId) Store->Release(StoreId);
+std::optional<Mesh> TryGetMesh(const entt::registry &r, entt::entity e) {
+    const auto *handle = r.try_get<const MeshHandle>(e);
+    if (!handle) return std::nullopt;
+    return Mesh{r.ctx().get<const MeshStore>(), handle->StoreId, r.get<const MeshConnectivity>(e)};
 }
+bool HasMesh(const entt::registry &r, entt::entity e) { return r.all_of<MeshHandle>(e); }
 
 he::VH Mesh::GetFromVertex(HH hh) const {
-    assert(*hh < Halfedges.size());
-    if (const auto opp = Halfedges[*hh].Opposite) return Halfedges[*opp].Vertex;
+    assert(*hh < C->Halfedges.size());
+    if (const auto opp = C->Halfedges[*hh].Opposite) return C->Halfedges[*opp].Vertex;
 
     // For boundary halfedges, find the previous halfedge in the face loop
-    const auto range = FaceHalfedgeRange{this, Halfedges[*hh].Next};
-    auto it = find_if(range, [&](HH h) { return Halfedges[*h].Next == hh; });
-    return it != range.end() ? Halfedges[**it].Vertex : VH{};
+    const auto range = FaceHalfedgeRange{this, C->Halfedges[*hh].Next};
+    auto it = find_if(range, [&](HH h) { return C->Halfedges[*h].Next == hh; });
+    return it != range.end() ? C->Halfedges[**it].Vertex : VH{};
 }
 
 uint Mesh::GetValence(VH vh) const { return distance(voh_range(vh)); }
 uint Mesh::GetValence(FH fh) const { return distance(fh_range(fh)); }
 
 vec3 Mesh::CalcFaceCentroid(FH fh) const {
-    assert(*fh < Faces.size());
+    assert(*fh < C->Faces.size());
     const auto vertices = Store->GetVertices(StoreId);
     vec3 centroid{0};
     uint count{0};
@@ -185,10 +162,10 @@ vec3 Mesh::CalcFaceCentroid(FH fh) const {
 }
 
 float Mesh::CalcEdgeLength(HH hh) const {
-    assert(*hh < Halfedges.size());
+    assert(*hh < C->Halfedges.size());
     const auto vertices = GetVerticesSpan();
     const auto from_v = GetFromVertex(hh);
-    const auto to_v = Halfedges[*hh].Vertex;
+    const auto to_v = C->Halfedges[*hh].Vertex;
     if (!from_v || !to_v) return 0;
     return glm::length(vertices[*to_v].Position - vertices[*from_v].Position);
 }

@@ -6,6 +6,8 @@
 
 #include <entt/entity/fwd.hpp>
 
+#include <string>
+
 enum class ViewportShadingMode : uint8_t {
     Wireframe,
     Solid,
@@ -38,6 +40,13 @@ struct PBRViewportLighting {
 // Two distinct ECS component types sharing the same layout, with different defaults
 struct MaterialPreviewLighting : PBRViewportLighting {}; // defaults: both OFF (studio HDRI)
 struct RenderedLighting : PBRViewportLighting {}; // defaults: both ON (scene world/lights)
+
+// The active studio HDRI environment, by source name so it stays stable across runs (unlike the directory-scan index).
+struct StudioEnvironment {
+    std::string Name;
+};
+
+// Editor display/lighting settings on the viewport entity.
 
 const PBRViewportLighting &GetActivePbrLighting(const entt::registry &, entt::entity viewport, ViewportShadingMode);
 

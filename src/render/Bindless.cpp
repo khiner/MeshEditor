@@ -1,5 +1,6 @@
 #include "render/Bindless.h"
 
+#include <algorithm>
 #include <ranges>
 
 using std::ranges::count_if, std::views::transform, std::ranges::to;
@@ -97,24 +98,14 @@ DescriptorSlots::DescriptorSlots(vk::Device device, const vk::PhysicalDeviceDesc
     };
     DescriptorPool = Device.createDescriptorPoolUnique({vk::DescriptorPoolCreateFlagBits::eUpdateAfterBind | vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet, 1, uint32_t(pool_sizes.size()), pool_sizes.data()});
     DescriptorSet = std::move(Device.allocateDescriptorSetsUnique({*DescriptorPool, 1, &*SetLayout}).front());
-
-    std::ranges::transform(indices, FreeSlots.begin(), [&](uint32_t i) {
-        return iota(uint32_t{0}, GetMaxDescriptors(props, BindingDefs[i].Kind)) | std::views::reverse | to<std::vector>();
-    });
 }
 
-uint32_t DescriptorSlots::Allocate(SlotType type) {
-    auto &free_list = FreeSlots[size_t(type)];
-    if (free_list.empty()) throw std::runtime_error(std::format("Bindless {} slots exhausted", BindingDefs[size_t(type)].Name));
-
-    const auto slot = free_list.back();
-    free_list.pop_back();
-    return slot;
-}
-
-void DescriptorSlots::Release(TypedSlot slot) {
-    FreeSlots[size_t(slot.Type)].emplace_back(slot.Slot);
-}
+// A slot is a count-1 range. RangeAllocator hands out the lowest available offset deterministically (a function
+// of the free set, not of release order), so allocations survive a scene clear + replay byte-identically — no
+// free-list reset needed: releasing the scene's slots restores the canonical free set on its own.
+uint32_t DescriptorSlots::Allocate(SlotType type) { return Allocators[size_t(type)].Allocate(1).Offset; }
+bool DescriptorSlots::Reserve(SlotType type, uint32_t slot) { return Allocators[size_t(type)].Reserve({slot, 1}); }
+void DescriptorSlots::Release(TypedSlot slot) { Allocators[size_t(slot.Type)].Free({slot.Slot, 1}); }
 
 vk::WriteDescriptorSet DescriptorSlots::MakeBufferWrite(TypedSlot slot, const vk::DescriptorBufferInfo &info) const {
     const auto [binding, descriptor] = BindingFor(slot.Type);

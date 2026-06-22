@@ -9,14 +9,13 @@ struct PendingHide {
     std::vector<uint32_t> BufferIndices;
 };
 
-// Placed on viewport. Accumulates light buffer indices during Destroy();
-// batch-compacted in ProcessComponentEvents.
+// Placed on viewport. Accumulates light buffer indices during Destroy(), batch-compacted later.
 struct PendingLightRemovals {
     std::vector<uint32_t> Indices;
 };
 
-// Placed on extras buffer entities at creation. Consumed by ProcessComponentEvents
-// to create edge index buffers, then removed.
+// Transient edge indices for a collider/tet wireframe, consumed when the edge index buffer is built then removed.
+// Camera/light/empty extras instead derive their edges from the object's params.
 struct PendingEdgeIndices {
     std::vector<uint32_t> Indices;
 };

@@ -65,11 +65,10 @@ struct ApplyTreeSelection {
     ClearKind Clear{ClearKind::None};
 };
 
-using Actions = std::variant<
+using Action = std::variant<
     Select, ToggleSelected, SelectBone, ExtendActive, ExtendBoneActive, SetBoneSelectionPart,
     DeselectAll, SelectAll, SnapshotBoxSelectBaseline, ClearBoxSelectBaseline,
     ApplyBoxSelect, Pick, PickCycle, ApplyEditElementClick, ApplyTreeSelection>;
-using Action = Actions;
 
 void Apply(entt::registry &, entt::entity viewport, const Action &);
 } // namespace action::selection

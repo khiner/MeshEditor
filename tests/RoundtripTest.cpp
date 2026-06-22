@@ -1,8 +1,19 @@
-#include "Stores.h"
+#include "Path.h"
+#include "Paths.h"
+#include "ProcessEvents.h"
 #include "gltf/GltfScene.h"
+#include "gpu/PunctualLight.h"
 #include "image/ImageDecode.h"
+#include "mesh/MeshComponents.h"
+#include "mesh/MeshStore.h"
+#include "mesh/PrimitiveType.h"
+#include "mesh/Primitives.h"
 #include "render/GpuBuffers.h"
 #include "render/Textures.h"
+#include "scene/Entity.h"
+#include "snapshot/SaveState.h"
+#include "snapshot/SceneSnapshot.h"
+#include "viewport/Viewport.h"
 #include "vulkan/VulkanContext.h"
 
 #include <boost/ut.hpp>
@@ -530,6 +541,9 @@ size_t CompareGltfJson(const fs::path &a_path, const fs::path &b_path, std::stri
 int main() {
     using namespace boost::ut;
 
+    // res/ and shaders/ are symlinked into the CMake build dir. InitEngine compiles shaders and loads LUTs from there.
+    Paths::Init(MESHEDITOR_BUILD_DIR);
+
     const auto tmp_root = MakeRoundtripDir();
 
     std::vector<fs::path> samples;
@@ -540,25 +554,82 @@ int main() {
 
     // Headless Vulkan fixture shared across all ECS-roundtrip samples (device init is expensive).
     VulkanContext vk_ctx{{}, /*with_swapchain=*/false};
-    const VulkanResources vk_resources{*vk_ctx.Instance, vk_ctx.PhysicalDevice, *vk_ctx.Device, vk_ctx.QueueFamily, vk_ctx.Queue};
+    const VulkanResources vk_resources = vk_ctx.Resources();
 
-    // RAII registry wrapper that initializes the scene stores in ctx and tears them down before destruction.
     struct SceneFixture {
         entt::registry R;
-        entt::entity viewport;
-        explicit SceneFixture(VulkanResources vk) {
-            InitStoreCtx(R, vk);
-            viewport = WireRegistry(R);
+        entt::entity Viewport;
+
+        explicit SceneFixture(VulkanResources vk) : Viewport(InitEngine(R, vk)) { SetupScene(R, Viewport); }
+        ~SceneFixture() { DeinitViewport(R, Viewport); }
+    };
+
+    // SaveState → restore into a fresh registry->SaveState again must match byte-for-byte, exercising every
+    // encoding (Tag/Bytes/Serialized), the mesh arena blob, and exact entity-handle recreation.
+    "snapshot save/restore round trip"_test = [&] {
+        std::vector<std::byte> before;
+        {
+            SceneFixture f{vk_resources};
+            auto &meshes = f.R.ctx().get<MeshStore>();
+            auto created = meshes.CreateMesh(primitive::CreateMesh(primitive::Cuboid{}), {}, {});
+            const auto e = f.R.create();
+            f.R.emplace<MeshConnectivity>(e, std::move(created.Connectivity)); // Serialized (heap)
+            f.R.emplace<MeshHandle>(e, MeshHandle{created.StoreId}); // Bytes
+            f.R.emplace<Name>(e, "Cube"); // Serialized (string)
+            f.R.emplace<ObjectKind>(e, ObjectType::Mesh); // Bytes
+            f.R.emplace<MeshActiveElement>(e, 7u); // Bytes
+            f.R.emplace<Selected>(e); // Tag
+            f.R.emplace<Path>(e, "/tmp/scene.gltf"); // Serialized (std::filesystem::path)
+
+            const auto light = f.R.create();
+            f.R.emplace<PunctualLight>(light, PunctualLight{.Range = 12.f, .Color = {0.2f, 0.4f, 0.6f}, .Intensity = 3.f}); // Bytes (generated POD)
+            f.R.emplace<Name>(light, "Lamp");
+
+            ProcessComponentEvents(f.R, f.Viewport);
+            before = snapshot::SaveState(f.R);
+            expect(before.size() > sizeof(uint64_t));
         }
-        ~SceneFixture() { TearDownStoreCtx(R); }
-        SceneFixture(const SceneFixture &) = delete;
-        SceneFixture &operator=(const SceneFixture &) = delete;
+
+        // Restore into a fresh registry - the re-saved image must match byte-for-byte.
+        SceneFixture f{vk_resources};
+        snapshot::LoadState(f.R, before);
+        ProcessComponentEvents(f.R, f.Viewport);
+        const auto after = snapshot::SaveState(f.R);
+        const auto diff = snapshot::Compare(before, after);
+        expect(diff.Equal) << "round-trip diverged at byte" << diff.FirstDifferingByte << "of" << before.size() << "/" << after.size();
+    };
+
+    // MeshConnectivity uses in_place_delete, so erasing a mesh leaves a tombstone slot in its pool.
+    // SaveState must skip tombstones (a sparse_set yields them but value() asserts on them) — regression for the crash
+    // when saving after a New->Empty clear removed the default cube.
+    "snapshot save skips in_place_delete tombstones"_test = [&] {
+        SceneFixture f{vk_resources};
+        auto &meshes = f.R.ctx().get<MeshStore>();
+        const auto keep = f.R.create();
+        auto kept = meshes.CreateMesh(primitive::CreateMesh(primitive::Cuboid{}), {}, {});
+        f.R.emplace<MeshConnectivity>(keep, std::move(kept.Connectivity));
+        f.R.emplace<MeshHandle>(keep, MeshHandle{kept.StoreId});
+
+        const auto gone = f.R.create();
+        auto removed = meshes.CreateMesh(primitive::CreateMesh(primitive::Cuboid{}), {}, {});
+        f.R.emplace<MeshConnectivity>(gone, std::move(removed.Connectivity));
+        f.R.emplace<MeshHandle>(gone, MeshHandle{removed.StoreId});
+        f.R.destroy(gone); // leaves a MeshConnectivity tombstone in the pool
+
+        ProcessComponentEvents(f.R, f.Viewport);
+        const auto before = snapshot::SaveState(f.R); // must not assert on the tombstone
+        SceneFixture g{vk_resources};
+        snapshot::LoadState(g.R, before);
+        ProcessComponentEvents(g.R, g.Viewport);
+        const auto after = snapshot::SaveState(g.R);
+        const auto diff = snapshot::Compare(before, after);
+        expect(diff.Equal) << "tombstone round-trip diverged at byte" << diff.FirstDifferingByte;
     };
 
     const auto load_ctx = [](entt::registry &r, entt::entity e) {
         return gltf::LoadContext{
             .R = r,
-            .viewport = e,
+            .Viewport = e,
             .Slots = r.ctx().get<DescriptorSlots>(),
             .Buffers = r.ctx().get<GpuBuffers>(),
             .Meshes = r.ctx().get<MeshStore>(),
@@ -570,7 +641,7 @@ int main() {
         auto &buffers = r.ctx().get<GpuBuffers>();
         return gltf::SaveContext{
             .R = r,
-            .viewport = e,
+            .Viewport = e,
             .Buffers = buffers,
             .Meshes = r.ctx().get<MeshStore>(),
             .Textures = r.ctx().get<TextureStore>(),
@@ -584,11 +655,11 @@ int main() {
 
         test(sample_name) = [&] {
             SceneFixture fx{vk_resources};
-            auto load = gltf::LoadGltf(src, load_ctx(fx.R, fx.viewport));
+            auto load = gltf::LoadGltf(src, load_ctx(fx.R, fx.Viewport));
             if (!load) return; // Loader limitation on source (e.g., unsupported extension); not a roundtrip concern.
 
             const auto out_path = tmp_root / (sample_name + ".gltf");
-            auto save = gltf::SaveGltf(out_path, save_ctx(fx.R, fx.viewport));
+            auto save = gltf::SaveGltf(out_path, save_ctx(fx.R, fx.Viewport));
             expect(save.has_value()) << "SaveGltf failed: " << (save ? "" : save.error());
             if (!save) return;
 
@@ -618,18 +689,43 @@ int main() {
         r.remove<PendingTextureUploads>(scene);
     };
 
+    // Snapshot round-trip of a real glTF import: byte-compares the import-domain Persistent set (Source*,
+    // materials, SourceAssets, armature/morph, ...) to catch state that doesn't reconstruct.
+    const auto snapshot_import_roundtrip = [&](const fs::path &sample) {
+        if (!fs::exists(sample)) return;
+        test("snapshot round trip (" + sample.stem().string() + ")") = [&] {
+            SceneFixture f1{vk_resources};
+            auto load = gltf::LoadGltf(sample, load_ctx(f1.R, f1.Viewport));
+            expect(load.has_value()) << "import failed";
+            if (!load) return;
+            ProcessComponentEvents(f1.R, f1.Viewport);
+            const auto before = snapshot::SaveState(f1.R);
+
+            SceneFixture f2{vk_resources};
+            snapshot::LoadState(f2.R, before);
+            ProcessComponentEvents(f2.R, f2.Viewport);
+            const auto after = snapshot::SaveState(f2.R);
+            const auto diff = snapshot::Compare(before, after);
+            expect(diff.Equal) << "glTF-import round-trip diverged at byte" << diff.FirstDifferingByte << "of" << before.size() << "/" << after.size();
+        };
+    };
+    snapshot_import_roundtrip("../glTF-Sample-Assets/Models/BoxTextured/glTF/BoxTextured.gltf");
+    snapshot_import_roundtrip("../glTF-Sample-Assets/Models/RiggedFigure/glTF/RiggedFigure.gltf"); // skinned armature + animation
+    snapshot_import_roundtrip("../glTF-Sample-Assets/Models/AnimatedMorphCube/glTF/AnimatedMorphCube.gltf"); // morph weights + animation
+    snapshot_import_roundtrip("../glTF-Sample-Assets/Models/SimpleMorph/glTF/SimpleMorph.gltf"); // static authored node morph weights
+    snapshot_import_roundtrip("../glTF-Sample-Assets/Models/MaterialsVariantsShoe/glTF/MaterialsVariantsShoe.gltf"); // KHR_materials_variants
+
     const auto edit_root = tmp_root / "edits";
     fs::create_directories(edit_root);
 
     // Mark the embedded variant's image dirty; saved bytes must pixel-equal the GPU readback.
-    const fs::path box_embedded = "../glTF-Sample-Assets/Models/BoxTextured/glTF-Embedded/BoxTextured.gltf";
-    if (fs::exists(box_embedded)) {
+    if (const fs::path box_embedded = "../glTF-Sample-Assets/Models/BoxTextured/glTF-Embedded/BoxTextured.gltf"; fs::exists(box_embedded)) {
         test("dirty_image_re_encodes_pixel_equal") = [&] {
             SceneFixture fx{vk_resources};
-            auto load = gltf::LoadGltf(box_embedded, load_ctx(fx.R, fx.viewport));
+            auto load = gltf::LoadGltf(box_embedded, load_ctx(fx.R, fx.Viewport));
             expect(load.has_value()) << "load failed";
             if (!load) return;
-            materialize_textures(fx.R, fx.viewport);
+            materialize_textures(fx.R, fx.Viewport);
 
             // Skip the WireRegistry default-white RawPixels texture (no SourceImageIndex link).
             const auto &textures = fx.R.ctx().get<TextureStore>();
@@ -648,18 +744,18 @@ int main() {
             expect(original_pixels.has_value()) << "readback failed";
             if (!original_pixels) return;
 
-            fx.R.get<gltf::SourceAssets>(fx.viewport).Images.front().IsDirty = true;
+            fx.R.get<gltf::SourceAssets>(fx.Viewport).Images.front().IsDirty = true;
 
             const auto out_path = edit_root / "BoxTextured-dirty.gltf";
-            auto save = gltf::SaveGltf(out_path, save_ctx(fx.R, fx.viewport));
+            auto save = gltf::SaveGltf(out_path, save_ctx(fx.R, fx.Viewport));
             expect(save.has_value()) << "save failed: " << (save ? "" : save.error());
             if (!save) return;
 
             SceneFixture fx2{vk_resources};
-            auto reload = gltf::LoadGltf(out_path, load_ctx(fx2.R, fx2.viewport));
+            auto reload = gltf::LoadGltf(out_path, load_ctx(fx2.R, fx2.Viewport));
             expect(reload.has_value()) << "reload failed";
             if (!reload) return;
-            const auto &reloaded = fx2.R.get<const gltf::SourceAssets>(fx2.viewport).Images;
+            const auto &reloaded = fx2.R.get<const gltf::SourceAssets>(fx2.Viewport).Images;
             expect(reloaded.size() == 1u);
             // PNG re-encode is lossless, so decoded pixels must match the pre-edit GPU readback.
             auto decoded = DecodeImageRgba8(reloaded.front().Bytes, reloaded.front().Name);
@@ -686,23 +782,23 @@ int main() {
             expect(fs::exists(staged_png)) << "fixture missing PNG";
 
             SceneFixture fx{vk_resources};
-            auto load = gltf::LoadGltf(staged_gltf, load_ctx(fx.R, fx.viewport));
+            auto load = gltf::LoadGltf(staged_gltf, load_ctx(fx.R, fx.Viewport));
             expect(load.has_value()) << "load failed";
             if (!load) return;
-            materialize_textures(fx.R, fx.viewport);
+            materialize_textures(fx.R, fx.Viewport);
 
             fs::rename(staged_png, stage_dir / "CesiumLogoFlat.png.moved");
 
             const auto out_path = edit_root / "BoxTextured-fallback.gltf";
-            auto save = gltf::SaveGltf(out_path, save_ctx(fx.R, fx.viewport));
+            auto save = gltf::SaveGltf(out_path, save_ctx(fx.R, fx.Viewport));
             expect(save.has_value()) << "save failed: " << (save ? "" : save.error());
             if (!save) return;
 
             SceneFixture fx2{vk_resources};
-            auto reload = gltf::LoadGltf(out_path, load_ctx(fx2.R, fx2.viewport));
+            auto reload = gltf::LoadGltf(out_path, load_ctx(fx2.R, fx2.Viewport));
             expect(reload.has_value()) << "reload failed";
             if (!reload) return;
-            const auto &reloaded = fx2.R.get<const gltf::SourceAssets>(fx2.viewport).Images;
+            const auto &reloaded = fx2.R.get<const gltf::SourceAssets>(fx2.Viewport).Images;
             expect(reloaded.size() == 1u);
             if (reloaded.empty()) return;
             expect(reloaded.front().Uri.empty()) << "fallback should drop the URI";

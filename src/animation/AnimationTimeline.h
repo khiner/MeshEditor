@@ -24,7 +24,7 @@ struct PlaybackFrame {
     float Value{1.0f};
 };
 
-// Last frame where armature poses were evaluated. Singleton on viewport.
+// Frame the current armature/morph/node poses were evaluated at. Singleton on viewport.
 struct LastEvaluatedFrame {
     int Value{-1};
 };

@@ -3,6 +3,7 @@
 #include "BBox.h"
 #include "Camera.h"
 #include "Changes.h"
+#include "File.h"
 #include "Reactive.h"
 #include "Timer.h"
 #include "TransformMath.h"
@@ -114,7 +115,7 @@ vec3 ComputeElementLocalPosition(const Mesh &mesh, Element element, uint32_t han
 }
 
 vec3 ComputeElementWorldPosition(const entt::registry &r, entt::entity instance_entity, Element element, uint32_t handle) {
-    const auto &mesh = r.get<Mesh>(r.get<Instance>(instance_entity).Entity);
+    const auto &mesh = GetMesh(r, r.get<Instance>(instance_entity).Entity);
     const auto &wt = r.get<WorldTransform>(instance_entity);
     return {wt.P + glm::rotate(wt.R, wt.S * ComputeElementLocalPosition(mesh, element, handle))};
 }
@@ -124,7 +125,7 @@ void RederiveCollider(entt::registry &r, entt::entity e) {
     const auto *policy = r.try_get<const ColliderPolicy>(e);
     if (!cs || !policy) return;
     const auto mesh_entity = cs->MeshEntity != null_entity ? cs->MeshEntity : FindMeshEntity(r, e);
-    const auto *mesh = r.try_get<const Mesh>(mesh_entity);
+    const auto mesh = TryGetMesh(r, mesh_entity);
     if (!mesh) return;
 
     const auto verts = mesh->GetVerticesSpan();
@@ -255,7 +256,8 @@ void SetEditMode(entt::registry &r, entt::entity viewport, Element mode) {
     std::vector<PendingConvert> pending;
     std::vector<ElementRange> old_ranges;
     uint32_t old_max_end = 0;
-    for (auto [mesh_entity, br, mesh] : r.view<MeshSelectionBitsetRange, const Mesh>().each()) {
+    for (auto [mesh_entity, br, _] : r.view<MeshSelectionBitsetRange, const MeshHandle>().each()) {
+        const auto mesh = GetMesh(r, mesh_entity);
         const uint32_t old_count = br.Count, new_count = selection::GetElementCount(mesh, mode);
         auto from_handles = selection::ScanBitsetRange(bits, br.Offset, old_count);
         if (old_count > 0) old_ranges.emplace_back(mesh_entity, br.Offset, old_count);
@@ -274,7 +276,7 @@ void SetEditMode(entt::registry &r, entt::entity viewport, Element mode) {
         DispatchUpdateSelectionStates(r, old_ranges, current_mode);
         // Face mode also derives edge states via CPU; clear them when exiting face-select.
         if (current_mode == Element::Face) {
-            for (const auto &p : pending) meshes.UpdateEdgeStatesFromFaces(r.get<const Mesh>(p.MeshEntity), {}, {});
+            for (const auto &p : pending) meshes.UpdateEdgeStatesFromFaces(GetMesh(r, p.MeshEntity), {}, {});
         }
     }
 
@@ -284,7 +286,7 @@ void SetEditMode(entt::registry &r, entt::entity viewport, Element mode) {
         auto &br = r.get<MeshSelectionBitsetRange>(p.MeshEntity);
         br.Offset = next_offset;
         br.Count = p.NewCount;
-        const auto &mesh = r.get<const Mesh>(p.MeshEntity);
+        const auto &mesh = GetMesh(r, p.MeshEntity);
         for (const uint32_t h : selection::ConvertSelectionElement(p.FromHandles, mesh, current_mode, mode)) {
             if (h >= p.NewCount) continue;
             const uint32_t gbit = next_offset + h;
@@ -313,7 +315,7 @@ SyncResult SyncModelsBuffers(entt::registry &r) {
     std::vector<entt::entity> new_mesh_entities, new_extras_entities;
     for (auto e : reactive<changes::NewBufferEntity>(r)) {
         if (!r.valid(e) || !r.all_of<MeshBuffers>(e)) continue;
-        if (r.all_of<Mesh>(e)) new_mesh_entities.push_back(e);
+        if (HasMesh(r, e)) new_mesh_entities.push_back(e);
         else if (r.all_of<ObjectExtrasTag>(e) || r.all_of<ArmatureObject>(e) || r.all_of<BoneJoint>(e))
             new_extras_entities.push_back(e);
     }
@@ -527,7 +529,7 @@ void EnsureWireframes(entt::registry &r, entt::entity viewport) {
             if (r.all_of<BBoxWireframe>(entity)) continue;
 
             const auto *instance = r.try_get<const Instance>(entity);
-            if (instance && r.all_of<Mesh>(instance->Entity)) r.emplace<BBoxWireframe>(entity, make_instance(buf(Box), entity));
+            if (instance && HasMesh(r, instance->Entity)) r.emplace<BBoxWireframe>(entity, make_instance(buf(Box), entity));
         }
     }
 
@@ -643,7 +645,7 @@ void UpdateWireframeTransforms(entt::registry &r) {
         const auto *instance = r.try_get<const Instance>(entity);
         if (!wt || !instance) continue;
 
-        const auto *mesh = r.try_get<const Mesh>(instance->Entity);
+        const auto mesh = TryGetMesh(r, instance->Entity);
         if (!mesh) continue;
 
         const bool parent_moved = wt_changed.contains(entity);
@@ -767,6 +769,34 @@ RenderRequest ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
         request(RenderRequest::ReRecord);
     }
 
+    // Re-upload restored textures into their exact recorded slots.
+    // A free slot means a restore (re-upload it), an already-live slot means import already materialized it this session (skip).
+    if (!reactive<changes::MaterializedTextures>(r).empty()) {
+        if (const auto *manifest = r.try_get<const MaterializedTextures>(viewport)) {
+            auto *src_assets = r.try_get<gltf::SourceAssets>(viewport);
+            auto &pending = r.get_or_emplace<PendingTextureUploads>(viewport);
+            for (const auto &t : manifest->Items) {
+                if (!slots.Reserve(SlotType::Sampler, t.SamplerSlot)) continue;
+                // External-URI images drop their encoded Bytes after the original upload (SourceAbsPath is the persistence), so re-read them from disk before decoding.
+                if (src_assets && t.SourceImageIndex < src_assets->Images.size()) {
+                    auto &img = src_assets->Images[t.SourceImageIndex];
+                    if (img.Bytes.empty() && !img.SourceAbsPath.empty() && std::filesystem::is_regular_file(img.SourceAbsPath)) {
+                        const auto encoded = File::Read(img.SourceAbsPath);
+                        img.Bytes.assign(reinterpret_cast<const std::byte *>(encoded.data()), reinterpret_cast<const std::byte *>(encoded.data()) + encoded.size());
+                    }
+                }
+                pending.Items.emplace_back(PendingTextureUpload{
+                    .SamplerSlot = t.SamplerSlot,
+                    .Source = PendingTextureUpload::GltfImageRef{t.SourceImageIndex},
+                    .ColorSpace = t.ColorSpace,
+                    .WrapS = t.WrapS,
+                    .WrapT = t.WrapT,
+                    .Sampler = t.Sampler,
+                    .Name = t.Name,
+                });
+            }
+        }
+    }
     if (auto *pending_tex = r.try_get<PendingTextureUploads>(viewport); pending_tex && !pending_tex->Items.empty()) {
         const auto *src = r.try_get<const gltf::SourceAssets>(viewport);
         static const std::vector<gltf::Image> empty_images;
@@ -784,6 +814,16 @@ RenderRequest ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
         SubmitTextureUploadBatch(batch, vk.Queue, *one_shot.Fence, vk.Device);
         r.remove<PendingTextureUploads>(viewport);
     }
+    // Rebuild an imported (EXT-IBL) scene world from restored SourceAssets, whose prefiltered cubemap ClearScene released.
+    // Re-emit the import only on restore (import time already emitted it), allocating fresh IBL cube slots since they aren't baked into materials.
+    if (!reactive<changes::SceneWorld>(r).empty()) {
+        const auto *src = r.try_get<const gltf::SourceAssets>(viewport);
+        if (src && src->ImageBasedLight && !environments.ImportedSceneWorld && !r.all_of<PendingEnvironmentImport>(viewport)) {
+            const auto [diffuse_slot, specular_slot] = AllocateIblCubeSlots(slots);
+            r.emplace_or_replace<PendingEnvironmentImport>(viewport, *src->ImageBasedLight, diffuse_slot, specular_slot);
+            r.remove<PendingSceneWorldClear>(viewport);
+        }
+    }
     // PendingSceneWorldClear takes precedence: a non-EXT load arrived after a previous EXT-IBL load
     // and the import is now stale. Cancel any pending import (release its allocated slots) before reset.
     if (r.all_of<PendingSceneWorldClear>(viewport)) {
@@ -800,7 +840,6 @@ RenderRequest ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
         }
         env.SceneWorldRotation = mat3{1.f};
         env.SceneWorld = {.Ibl = MakeIblSamplers(env.EmptySceneWorld, env), .Name = env.EmptySceneWorld.Name};
-        r.patch<RenderedLighting>(viewport, [](auto &l) { l.WorldOpacity = 0.f; });
         r.remove<PendingSceneWorldClear>(viewport);
     }
     if (auto *pending_env = r.try_get<PendingEnvironmentImport>(viewport)) {
@@ -817,7 +856,6 @@ RenderRequest ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
                 env.ImportedSceneWorld = std::move(*pre);
                 env.SceneWorldRotation = glm::mat3_cast(pending_env->Source.Rotation);
                 env.SceneWorld = {.Ibl = MakeIblSamplers(*env.ImportedSceneWorld, env), .Name = env.ImportedSceneWorld->Name};
-                r.patch<RenderedLighting>(viewport, [](auto &l) { l.WorldOpacity = 1.f; });
             } else {
                 std::cerr << std::format("Warning: Failed to materialize EXT_lights_image_based '{}': {}\n", pending_env->Source.Name, pre.error());
                 ReleaseCubeSamplerSlot(slots, pending_env->DiffuseCubeSlot);
@@ -836,12 +874,12 @@ RenderRequest ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
         }
     }
 
-    // Pending* handlers run before the reactive checks so their patches land in trackers in time.
-    if (const auto *pending = r.try_get<const PendingSetStudioEnvironment>(viewport)) {
-        const auto index = pending->Index;
-        r.remove<PendingSetStudioEnvironment>(viewport);
-        SetStudioEnvironment(r, index);
+    // Prefilter and activate the studio HDRI named by the StudioEnvironment selection whenever it changes.
+    if (!reactive<changes::StudioEnvironment>(r).empty()) {
+        SetStudioEnvironment(r, r.get<const StudioEnvironment>(viewport).Name);
     }
+
+    // Pending* handlers run before the reactive checks so their patches land in trackers in time.
     if (const auto *pending = r.try_get<const PendingSetEditMode>(viewport)) {
         const auto mode = pending->Mode;
         r.remove<PendingSetEditMode>(viewport);
@@ -967,9 +1005,31 @@ RenderRequest ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
     const std::unordered_set<entt::entity> newly_inserted_set(sync.NewlyInserted.begin(), sync.NewlyInserted.end());
     const auto is_newly_inserted = [&](entt::entity e) { return newly_inserted_set.contains(e); };
 
-    // Deferred ArmatureDeform allocation for newly created ArmaturePoseState (GpuDeformRange.Count == 0).
-    // Two-pass: count total joints, single Reserve, then per-armature Allocate + ComputeDeformMatrices.
+    // Build ArmaturePoseState for any armature missing one, computing each bone's pose delta from its Transform relative to rest.
+    bool pose_state_created = false;
+    for (const auto [arm_obj_entity, arm_obj_comp] : r.view<const ArmatureObject>().each()) {
+        const auto data_entity = arm_obj_comp.Entity;
+        const auto *armature = r.try_get<const Armature>(data_entity);
+        if (!armature || armature->Bones.empty() || r.all_of<ArmaturePoseState>(data_entity)) continue;
+        const auto n = armature->Bones.size();
+        ArmaturePoseState pose_state{
+            .BonePoseDelta = std::vector<Transform>(n),
+            .BoneUserOffset = std::vector<Transform>(n),
+            .BonePoseWorld = std::vector<mat4>(n, I4),
+            .GpuDeformRange = {},
+        };
+        for (uint32_t i = 0; i < n && i < arm_obj_comp.BoneEntities.size(); ++i) {
+            const auto &rest = armature->Bones[i].RestLocal;
+            const auto &bt = r.get<const Transform>(arm_obj_comp.BoneEntities[i]);
+            pose_state.BonePoseDelta[i] = AbsoluteToDelta(rest, {bt.P, bt.R, rest.S});
+        }
+        r.emplace<ArmaturePoseState>(data_entity, std::move(pose_state));
+        pose_state_created = true;
+    }
+
     {
+        // Allocate ArmatureDeform for newly created ArmaturePoseState (GpuDeformRange.Count == 0).
+        // Count total joints, single Reserve, then per-armature Allocate.
         uint32_t total_joints = 0;
         std::vector<entt::entity> pending_armatures; // armature data entities
         for (const auto [arm_obj_entity, arm_obj_comp] : r.view<const ArmatureObject>().each()) {
@@ -985,52 +1045,46 @@ RenderRequest ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
             auto &pose_state = r.get<ArmaturePoseState>(arm_data_entity);
             const auto &armature = r.get<const Armature>(arm_data_entity);
             pose_state.GpuDeformRange = buffers.ArmatureDeformBuffer.Allocate(armature.ImportedSkin->OrderedJointNodeIndices.size());
-            for (uint32_t i = 0; i < armature.Bones.size() && i < pose_state.BonePoseWorld.size(); ++i) {
-                pose_state.BonePoseWorld[i] = armature.Bones[i].RestWorld;
-            }
-            ComputeDeformMatrices(
-                armature, pose_state.BonePoseWorld,
-                armature.ImportedSkin->InverseBindMatrices,
-                buffers.ArmatureDeformBuffer.GetMutable(pose_state.GpuDeformRange)
-            );
         }
         if (!pending_armatures.empty()) request(RenderRequest::ReRecord);
     }
 
-    // Deferred MorphWeights allocation for newly created MorphWeightState (GpuWeightRange.Count == 0).
-    // Two-pass: count total weights, single Reserve, then per-instance Allocate + copy.
     {
+        // Allocate MorphWeights for newly created MorphWeightState (GpuWeightRange.Count == 0).
+        // Count total weights, single Reserve, then per-instance Allocate + copy.
         uint32_t total_weights = 0;
         std::vector<entt::entity> pending_morphs;
         for (auto [entity, morph_state] : r.view<MorphWeightState>().each()) {
-            if (morph_state.GpuWeightRange.Count > 0 || morph_state.Weights.empty()) continue;
+            if (morph_state.Weights.empty()) continue;
+            const auto *gpu = r.try_get<const MorphWeightGpuRange>(entity);
+            if (gpu && gpu->Weights.Count > 0) continue;
             total_weights += morph_state.Weights.size();
             pending_morphs.push_back(entity);
         }
         buffers.MorphWeightBuffer.ReserveAdditional(total_weights);
         for (const auto entity : pending_morphs) {
-            auto &morph_state = r.get<MorphWeightState>(entity);
-            morph_state.GpuWeightRange = buffers.MorphWeightBuffer.Allocate(morph_state.Weights.size());
-            auto gpu_weights = buffers.MorphWeightBuffer.GetMutable(morph_state.GpuWeightRange);
+            const auto &morph_state = r.get<const MorphWeightState>(entity);
+            const auto range = buffers.MorphWeightBuffer.Allocate(morph_state.Weights.size());
+            r.emplace_or_replace<MorphWeightGpuRange>(entity, MorphWeightGpuRange{range});
+            auto gpu_weights = buffers.MorphWeightBuffer.GetMutable(range);
             std::copy(morph_state.Weights.begin(), morph_state.Weights.end(), gpu_weights.begin());
         }
         if (!pending_morphs.empty()) request(RenderRequest::ReRecord);
     }
 
     // Deferred index buffer creation for new mesh entities.
-    // Pass 1: count total indices using cached triangle counts (no topology iteration).
-    // Pass 2: write directly into GPU-mapped memory (zero temporary allocations).
+    // Count total indices, then write directly into GPU-mapped memory.
     if (!sync.NewMeshEntities.empty()) {
         uint32_t total_face = 0, total_edge = 0, total_vertex = 0;
         for (auto entity : sync.NewMeshEntities) {
-            const auto &mesh = r.get<const Mesh>(entity);
+            const auto &mesh = GetMesh(r, entity);
             total_face += mesh.TriangleIndexCount();
             total_edge += mesh.EdgeCount() * 2;
             total_vertex += mesh.VertexCount();
         }
         buffers.ReserveAdditionalIndices(total_face, total_edge, total_vertex);
         for (auto entity : sync.NewMeshEntities) {
-            const auto &mesh = r.get<const Mesh>(entity);
+            const auto &mesh = GetMesh(r, entity);
             r.patch<MeshBuffers>(entity, [&](auto &mb) {
                 if (const auto tri_idx_count = mesh.TriangleIndexCount(); tri_idx_count > 0) {
                     auto [sr, dest] = buffers.AllocateIndices(tri_idx_count, IndexKind::Face);
@@ -1086,6 +1140,15 @@ RenderRequest ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
             }
         }
         buffers.ReserveAdditionalIndices(total_face, total_edge, total_vertex);
+
+        // Map each camera/light/empty extras buffer entity back to its object, so a restored buffer entity (whose
+        // transient PendingEdgeIndices is gone) can re-derive its wireframe edges from the object's params.
+        std::unordered_map<entt::entity, entt::entity> extras_object;
+        for (auto [object, kind, instance] : r.view<const ObjectKind, const Instance>().each()) {
+            if (kind.Value == ObjectType::Camera || kind.Value == ObjectType::Light || kind.Value == ObjectType::Empty) {
+                extras_object.emplace(instance.Entity, object);
+            }
+        }
         for (auto entity : sync.NewExtrasEntities) {
             if (r.all_of<ArmatureObject>(entity)) {
                 r.patch<MeshBuffers>(entity, [&](auto &mb) {
@@ -1104,22 +1167,37 @@ RenderRequest ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
                     mb.EdgeIndices = buffers.CreateIndices(pending->Indices, IndexKind::Edge);
                 });
                 r.remove<PendingEdgeIndices>(entity);
+            } else if (const auto it = extras_object.find(entity); it != extras_object.end() && r.get<const MeshBuffers>(entity).EdgeIndices.Count == 0 && !r.all_of<LightWireframeDirty>(it->second)) {
+                // Derive the wireframe for camera/light/empty extras from the object's params, since they store no edge indices.
+                const auto object = it->second;
+                if (const auto *light = r.try_get<const PunctualLight>(object)) {
+                    const auto wireframe = BuildLightMesh(*light);
+                    r.patch<MeshBuffers>(entity, [&](auto &mb) { mb.EdgeIndices = buffers.CreateIndices(wireframe.Data.CreateEdgeIndices(), IndexKind::Edge); });
+                    if (!wireframe.VertexClasses.empty()) r.emplace_or_replace<VertexClass>(entity, buffers.VertexClassBuffer.Allocate(std::span<const uint8_t>(wireframe.VertexClasses)).Offset);
+                } else {
+                    const auto edges = r.all_of<Camera>(object) ? BuildCameraFrustumMesh(r.get<const Camera>(object)).CreateEdgeIndices() : BuildEmptyMesh().CreateEdgeIndices();
+                    if (!edges.empty()) r.patch<MeshBuffers>(entity, [&](auto &mb) { mb.EdgeIndices = buffers.CreateIndices(edges, IndexKind::Edge); });
+                }
             }
         }
         request(RenderRequest::ReRecord);
     }
 
-    { // Sync deferred light slot offsets (needs valid InstanceArena slot and RenderInstance.BufferIndex from SyncModelsBuffers).
-        std::vector<entt::entity> synced_lights;
-        for (auto [entity, light, light_index, instance] : r.view<PunctualLight, LightIndex, Instance>().each()) {
-            if (const auto *ri = r.try_get<const RenderInstance>(entity)) {
-                light.TransformSlotOffset = {buffers.Instances.TransformBuffer.Slot, ri->BufferIndex};
-                buffers.Lights.Set(light_index.Value, light);
-                synced_lights.push_back(entity);
-            }
+    { // Register changed lights into the GPU Lights buffer, the single path for both new and restored lights.
+        bool synced = false;
+        for (const auto entity : reactive<changes::PunctualLight>(r)) {
+            if (!r.valid(entity) || !r.all_of<PunctualLight, Instance>(entity)) continue;
+            const auto *ri = r.try_get<const RenderInstance>(entity);
+            if (!ri || ri->BufferIndex == UINT32_MAX) continue;
+            const auto index = r.all_of<LightIndex>(entity) ? r.get<const LightIndex>(entity).Value : buffers.Lights.Count();
+            if (!r.all_of<LightIndex>(entity)) r.emplace<LightIndex>(entity, index);
+            // Write a copy with the transform slot offset, leaving the authored component untouched.
+            auto gpu_light = r.get<const PunctualLight>(entity);
+            gpu_light.TransformSlotOffset = {buffers.Instances.TransformBuffer.Slot, ri->BufferIndex};
+            buffers.Lights.Set(index, gpu_light);
+            synced = true;
         }
-        if (!synced_lights.empty()) request(RenderRequest::Submit);
-        for (auto e : synced_lights) r.remove<PunctualLight>(e);
+        if (synced) request(RenderRequest::Submit);
     }
 
     // Batch-compact light buffer for destroyed lights (indices collected in Destroy()).
@@ -1189,7 +1267,7 @@ RenderRequest ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
         };
         // Update SelectedInstanceCount on mesh entities before per-entity processing.
         for (auto instance_entity : selected_tracker) {
-            if (const auto *instance = r.try_get<Instance>(instance_entity); instance && r.all_of<Mesh>(instance->Entity)) {
+            if (const auto *instance = r.try_get<Instance>(instance_entity); instance && HasMesh(r, instance->Entity)) {
                 auto &sc = r.get_or_emplace<SelectedInstanceCount>(instance->Entity);
                 sc.Value += r.all_of<Selected>(instance_entity) ? 1 : -1;
             }
@@ -1197,7 +1275,7 @@ RenderRequest ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
         for (auto instance_entity : selected_tracker) {
             collect_instance_state(instance_entity);
             if (const auto arm = FindArmatureObject(r, instance_entity); arm != entt::null) r.emplace_or_replace<BoneInstanceStateDirty>(arm);
-            if (const auto *instance = r.try_get<Instance>(instance_entity); instance && r.all_of<Mesh>(instance->Entity)) {
+            if (const auto *instance = r.try_get<Instance>(instance_entity); instance && HasMesh(r, instance->Entity)) {
                 const auto mesh_entity = instance->Entity;
                 if (r.all_of<Selected>(instance_entity)) {
                     dirty_overlay_meshes.insert(mesh_entity);
@@ -1345,7 +1423,7 @@ RenderRequest ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
             if (r.get_or_emplace<SelectedInstanceCount>(mesh_entity).Value > 0) dirty_overlay_meshes.insert(mesh_entity);
             if (auto *br = r.try_get<MeshSelectionBitsetRange>(mesh_entity); br && edit_mode != Element::None) {
                 // Topology changed: zero stale selection bits and update count.
-                const auto &mesh = r.get<const Mesh>(mesh_entity);
+                const auto &mesh = GetMesh(r, mesh_entity);
                 const uint32_t new_count = selection::GetElementCount(mesh, edit_mode);
                 const uint32_t max_words = (std::max(br->Count, new_count) + 31) / 32;
                 memset(&buffers.SelectionBitset.Data()[br->Offset / 32], 0, max_words * sizeof(uint32_t));
@@ -1359,7 +1437,7 @@ RenderRequest ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
     if (auto &tracker = reactive<changes::MeshMaterial>(r); !tracker.empty()) {
         for (auto mesh_entity : tracker) {
             const auto *assignment = r.try_get<const MeshMaterialAssignment>(mesh_entity);
-            const auto *mesh = r.try_get<const Mesh>(mesh_entity);
+            const auto mesh = TryGetMesh(r, mesh_entity);
             if (!assignment || !mesh) continue;
             const auto material_count = buffers.Materials.Count();
             if (material_count == 0u) continue;
@@ -1386,7 +1464,8 @@ RenderRequest ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
     if (!reactive<changes::ActiveMaterialVariant>(r).empty()) {
         const auto *mv = r.try_get<const MaterialVariants>(viewport);
         const auto active = mv ? mv->Active : std::nullopt;
-        for (const auto [_, layout, mesh] : r.view<const MeshSourceLayout, const Mesh>().each()) {
+        for (const auto [e, layout, _] : r.view<const MeshSourceLayout, const MeshHandle>().each()) {
+            const auto mesh = GetMesh(r, e);
             auto primitive_materials = meshes.GetPrimitiveMaterialIndices(mesh.GetStoreId());
             for (std::size_t i = 0; i < layout.DefaultMaterials.size(); ++i) {
                 const auto &mapping = layout.VariantMappings[i];
@@ -1422,7 +1501,7 @@ RenderRequest ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
                 // This keeps linked instances from receiving duplicate per-instance edits.
                 for (const auto &[mesh_entity, instance_entity] : edit_transform_context.TransformInstances) {
                     if (selection::HasScaleLockedInstance(r, mesh_entity)) continue;
-                    const auto &mesh = r.get<const Mesh>(mesh_entity);
+                    const auto &mesh = GetMesh(r, mesh_entity);
                     const auto vertex_states = meshes.GetVertexStates(mesh.GetStoreId());
                     const auto vertices = mesh.GetVerticesSpan();
                     const auto &wt = r.get<const WorldTransform>(instance_entity);
@@ -1514,15 +1593,15 @@ RenderRequest ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
 
         if (anim_advanced) {
             // Evaluate morph weight animations
-            for (auto [entity, morph_anim, morph_state, instance] :
-                 r.view<const MorphWeightAnimation, MorphWeightState, const Instance>().each()) {
+            for (auto [entity, morph_anim, morph_state, gpu_range, instance] :
+                 r.view<const MorphWeightAnimation, MorphWeightState, const MorphWeightGpuRange, const Instance>().each()) {
                 if (morph_anim.Clips.empty() || morph_anim.ActiveClipIndex >= morph_anim.Clips.size()) continue;
                 const auto &clip = morph_anim.Clips[morph_anim.ActiveClipIndex];
-                const auto &mesh = r.get<const Mesh>(instance.Entity);
+                const auto &mesh = GetMesh(r, instance.Entity);
                 const auto default_weights = meshes.GetDefaultMorphWeights(mesh.GetStoreId());
                 std::copy(default_weights.begin(), default_weights.end(), morph_state.Weights.begin());
                 EvaluateMorphWeights(clip, clip_time(clip), morph_state.Weights);
-                auto gpu_weights = buffers.MorphWeightBuffer.GetMutable(morph_state.GpuWeightRange);
+                auto gpu_weights = buffers.MorphWeightBuffer.GetMutable(gpu_range.Weights);
                 std::copy(morph_state.Weights.begin(), morph_state.Weights.end(), gpu_weights.begin());
                 request_rerecord = true;
             }
@@ -1596,7 +1675,8 @@ RenderRequest ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
 
         // Bone pose sync: classify bone changes, update pose deltas, compute deform matrices.
         // Runs before the reactive WorldTransform pass so bone sync's Transform patches are included.
-        const bool bones_need_refresh = anim_advanced || mode_changed;
+        // A new pose state has no GPU deform yet — refresh fills it from the reconstructed pose.
+        const bool bones_need_refresh = anim_advanced || mode_changed || pose_state_created;
         if (bones_need_refresh || !reactive<changes::TransformDirty>(r).empty() || !reactive<changes::TransformEnd>(r).empty()) {
             const auto &local_changes = reactive<changes::TransformDirty>(r);
             const auto &transform_end = reactive<changes::TransformEnd>(r);
@@ -1625,7 +1705,7 @@ RenderRequest ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
 
                 const mat4 armature_world_inv = has_any_constraint ? glm::inverse(ToMatrix(r.get<const WorldTransform>(arm_obj_entity))) : I4;
 
-                bool need_sync = has_any_constraint;
+                bool need_sync = has_any_constraint || pose_state_created;
                 bool rest_pose_edited = false;
                 for (uint32_t i = 0; i < arm_obj_comp.BoneEntities.size(); ++i) {
                     const auto b = arm_obj_comp.BoneEntities[i];
@@ -1638,14 +1718,12 @@ RenderRequest ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
                         if (mode_changed) {
                             // Entering Edit mode: snap to rest pose.
                             local = {rest.P, rest.R, rest.S};
-                            should_patch = true;
-                            need_sync = true;
+                            should_patch = need_sync = true;
                         } else if (transform_end.contains(b) || (local_changes.contains(b) && !r.all_of<StartTransform>(b))) {
                             // Commit Edit mode transform (gizmo drag end or UI slider edit).
                             armature.Bones[i].RestLocal.P = bt.P;
                             armature.Bones[i].RestLocal.R = bt.R;
-                            rest_pose_edited = true;
-                            need_sync = true;
+                            rest_pose_edited = need_sync = true;
                         }
                     } else if (const auto *st = r.try_get<const StartTransform>(b)) {
                         // Active drag: compute user offset into BoneUserOffset (additive on top of animation).
@@ -1661,18 +1739,16 @@ RenderRequest ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
                         const Transform gizmo_local{bt.P, bt.R, rest.S};
                         pose_state->BoneUserOffset[i] = AbsoluteToDelta(grab_delta, AbsoluteToDelta(rest, gizmo_local));
                         local = ComposeWithDelta(rest, ComposeWithDelta(pose_state->BonePoseDelta[i], pose_state->BoneUserOffset[i]));
-                        should_patch = true;
-                        need_sync = true;
+                        should_patch = need_sync = true;
                     } else if (transform_end.contains(b)) {
                         // Commit drag: bake current P/R into delta, clear offset.
                         pose_state->BonePoseDelta[i] = AbsoluteToDelta(rest, {bt.P, bt.R, rest.S});
                         pose_state->BoneUserOffset[i] = {};
                         need_sync = true;
-                    } else if (bones_need_refresh) {
-                        // Animation advanced or leaving Edit mode: recompute entity P/R from deltas.
+                    } else if ((anim_advanced || mode_changed) && !pose_state_created) {
+                        // Recompute entity P/R from deltas
                         local = ComposeWithDelta(rest, ComposeWithDelta(pose_state->BonePoseDelta[i], pose_state->BoneUserOffset[i]));
-                        should_patch = true;
-                        need_sync = true;
+                        should_patch = need_sync = true;
                     } else if (local_changes.contains(b)) {
                         // Manual transform: bake if position actually changed.
                         if (const auto expected = ComposeWithDelta(rest, ComposeWithDelta(pose_state->BonePoseDelta[i], pose_state->BoneUserOffset[i]));
@@ -1741,15 +1817,21 @@ RenderRequest ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
             const auto update_wt = [&](this const auto &self, entt::entity e, bool propagate) -> void {
                 const auto *node = r.try_get<SceneNode>(e);
                 const auto &t = r.get<const Transform>(e);
-                node && node->Parent != entt::null ? r.emplace_or_replace<WorldTransform>(e, ToTransform(GetParentDelta(r, e) * ToMatrix(t))) : r.emplace_or_replace<WorldTransform>(e, t);
+                if (node && node->Parent != entt::null) {
+                    if (!r.all_of<WorldTransform>(node->Parent)) self(node->Parent, false); // GetParentDelta reads the parent's WorldTransform
+                    r.emplace_or_replace<WorldTransform>(e, ToTransform(GetParentDelta(r, e) * ToMatrix(t)));
+                } else {
+                    r.emplace_or_replace<WorldTransform>(e, t);
+                }
                 if (propagate) {
                     for (const auto child : Children{&r, e}) self(child, true);
                 }
             };
             const bool bone_edit = is_edit_mode && FindArmatureObject(r, FindActiveEntity(r)) != entt::null;
             for (auto e : dirty) {
-                // Skip newly inserted entities — their WorldTransform is already correct from creation.
-                if (r.valid(e) && !is_newly_inserted(e)) update_wt(e, !(bone_edit && r.all_of<StartTransform>(e)));
+                // Skip a newly inserted entity that already has its WorldTransform from creation, since snapshot treats it as derived.
+                // TODO make WorldTransform purely derived, not eagerly computed.
+                if (r.valid(e) && !(is_newly_inserted(e) && r.all_of<WorldTransform>(e))) update_wt(e, !(bone_edit && r.all_of<StartTransform>(e)));
             }
         }
         UpdateWireframeTransforms(r); // Needs updated WorldTransforms
@@ -1927,7 +2009,7 @@ RenderRequest ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
 
     const auto &settings = r.get<const ViewportDisplay>(viewport);
     for (const auto mesh_entity : dirty_overlay_meshes) {
-        const auto &mesh = r.get<const Mesh>(mesh_entity);
+        const auto &mesh = GetMesh(r, mesh_entity);
         r.patch<MeshBuffers>(mesh_entity, [&](auto &mesh_buffers) {
             for (const auto element : NormalElements) {
                 if (ElementMaskContains(settings.NormalOverlays, element)) {
@@ -1950,7 +2032,7 @@ RenderRequest ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
     // Update mesh element state buffers (Excite mode only; Edit mode handled by GPU compute)
     for (const auto mesh_entity : dirty_element_state_meshes) {
         if (interaction_mode != InteractionMode::Excite) continue;
-        const auto &mesh = r.get<const Mesh>(mesh_entity);
+        const auto &mesh = GetMesh(r, mesh_entity);
         std::unordered_set<VH> selected_vertices;
         std::unordered_set<EH> selected_edges, active_edges;
         std::unordered_set<FH> selected_faces;
@@ -1976,5 +2058,6 @@ RenderRequest ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
     destroy_tracker.Storage.clear();
     r.clear<MeshGeometryDirty, MeshMaterialAssignment, MaterialDirty, LightWireframeDirty>();
 
+    buffers.Ctx.FlushDeferredDescriptorUpdates(vk.Device);
     return render_request;
 }

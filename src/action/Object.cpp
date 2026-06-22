@@ -73,7 +73,7 @@ entt::entity DuplicateOne(entt::registry &r, entt::entity e, bool &was_mesh_dupl
     const auto mesh_entity = r.get<Instance>(e).Entity;
     const auto e_new = ::AddMesh(
         r, meshes,
-        meshes.CloneMesh(r.get<const Mesh>(mesh_entity)),
+        meshes.CloneMesh(GetMesh(r, mesh_entity)),
         MeshInstanceCreateInfo{.Name = create_info.Name, .Transform = create_info.Transform, .Select = create_info.Select, .Visible = r.all_of<RenderInstance>(e)}
     );
     if (auto prim_shape = r.try_get<PrimitiveShape>(mesh_entity)) r.emplace<PrimitiveShape>(e_new.first, *prim_shape);
@@ -145,11 +145,11 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
     // Rebuild a primitive mesh entity's geometry from its current PrimitiveShape.
     auto regen_primitive = [&](entt::entity e) {
         if (auto *mb = r.try_get<MeshBuffers>(e)) ReleaseMeshBuffers(r, *mb);
-        r.erase<MeshBuffers>(e);
-        r.erase<Mesh>(e);
+        // Erasing MeshHandle fires on_destroy, releasing the old store entry.
+        r.erase<MeshBuffers, MeshHandle, MeshConnectivity>(e);
         auto new_mesh = meshes.CreateMesh(primitive::CreateMesh(r.get<const PrimitiveShape>(e)), {}, {});
-        r.emplace<MeshBuffers>(e, meshes.GetVerticesRange(new_mesh.GetStoreId()), SlottedRange{}, SlottedRange{}, SlottedRange{});
-        r.emplace<Mesh>(e, std::move(new_mesh));
+        r.emplace<MeshConnectivity>(e, std::move(new_mesh.Connectivity));
+        r.emplace<MeshHandle>(e, MeshHandle{new_mesh.StoreId});
         r.emplace_or_replace<MeshGeometryDirty>(e);
     };
     // `fn` for each mesh entity a scope targets (the carried entity, the active mesh, or each selected mesh).
@@ -180,8 +180,8 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
                 for (const auto e : entities) {
                     if (!r.all_of<Instance>(e) || r.all_of<BoneSubPartOf>(e)) continue;
                     const auto mesh_entity = r.get<Instance>(e).Entity;
-                    if (r.all_of<ObjectExtrasTag>(mesh_entity) || !r.all_of<Mesh>(mesh_entity)) continue;
-                    meshes.PlanClone(r.get<const Mesh>(mesh_entity));
+                    if (r.all_of<ObjectExtrasTag>(mesh_entity) || !HasMesh(r, mesh_entity)) continue;
+                    meshes.PlanClone(GetMesh(r, mesh_entity));
                 }
                 meshes.CommitReserves();
 
@@ -211,7 +211,7 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
             },
             [&](const SetSelectedSmoothShading &a) {
                 for (const auto me : ::selection::GetSelectedMeshEntities(r)) {
-                    if (r.get<const Mesh>(me).FaceCount() == 0) continue;
+                    if (GetMesh(r, me).FaceCount() == 0) continue;
                     if (a.Smooth) r.emplace_or_replace<SmoothShading>(me);
                     else r.remove<SmoothShading>(me);
                 }
