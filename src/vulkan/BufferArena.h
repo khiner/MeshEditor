@@ -1,50 +1,12 @@
 #pragma once
 
 #include "Buffer.h"
-#include "Range.h"
+#include "RangeAllocator.h"
 #include "SlottedRange.h"
 
-#include <ranges>
-
-struct RangeAllocator {
-    Range Allocate(uint32_t count) {
-        if (count == 0) return {};
-
-        auto it = std::ranges::min_element(FreeBlocks, {}, [count](const auto &b) {
-            return b.Count >= count ? b.Count : std::numeric_limits<uint32_t>::max();
-        });
-        if (it != FreeBlocks.end() && it->Count >= count) {
-            uint32_t offset = it->Offset;
-            if (it->Count == count) FreeBlocks.erase(it);
-            else *it = {it->Offset + count, it->Count - count};
-            return {offset, count};
-        }
-        return {std::exchange(EndOffset, EndOffset + count), count};
-    }
-
-    void Free(Range range) {
-        if (range.Count == 0) return;
-
-        auto it = std::ranges::lower_bound(FreeBlocks, range.Offset, {}, &Range::Offset);
-        auto start = range.Offset, end = start + range.Count;
-        if (it != FreeBlocks.begin()) {
-            if (auto prev = std::prev(it); prev->Offset + prev->Count == start) {
-                start = prev->Offset;
-                it = FreeBlocks.erase(prev);
-            }
-        }
-        if (it != FreeBlocks.end() && end == it->Offset) {
-            end = it->Offset + it->Count;
-            it = FreeBlocks.erase(it);
-        }
-        FreeBlocks.insert(it, {start, end - start});
-    }
-
-    uint32_t HighWaterMark() const { return EndOffset; }
-
-private:
-    std::vector<Range> FreeBlocks;
-    uint32_t EndOffset{0};
+struct ArenaState {
+    std::vector<std::byte> Bytes;
+    RangeAllocator::State Allocator;
 };
 
 template<typename T>
@@ -98,6 +60,26 @@ struct BufferArena {
     Range Clone(Range src) { return src.Count > 0 ? Allocate(Get(src)) : Range{}; }
 
     SlottedRange Slotted(Range r) const { return {r, Buffer.Slot}; }
+
+    // Reset to empty: used size and allocator go to zero, keeping the GPU allocation for reuse.
+    void Reset() {
+        Buffer.UsedSize = 0;
+        Allocator = {};
+    }
+
+    // Capture/restore the whole arena (see ArenaState).
+    ArenaState Save() const {
+        const auto used = std::size_t(Buffer.UsedSize);
+        const auto mapped = Buffer.GetMappedData();
+        const auto count = std::min(used, mapped.size());
+        return {{mapped.begin(), mapped.begin() + count}, Allocator.Save()};
+    }
+    void Restore(ArenaState state) {
+        Buffer.Reserve(state.Bytes.size());
+        Buffer.Update(state.Bytes, 0);
+        Buffer.UsedSize = state.Bytes.size();
+        Allocator.Restore(std::move(state.Allocator));
+    }
 
     mvk::Buffer Buffer;
 
