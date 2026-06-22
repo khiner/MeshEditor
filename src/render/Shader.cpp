@@ -4,8 +4,22 @@
 
 #include <ranges>
 #include <shaderc/shaderc.hpp>
+#include <unordered_map>
 
 using std::views::transform, std::ranges::find_if, std::ranges::to;
+
+namespace {
+// A file the compile depends on, with its mtime.
+struct ShaderDep {
+    std::filesystem::path Path;
+    std::filesystem::file_time_type Mtime;
+};
+
+ShaderDep MakeDep(const std::filesystem::path &path) {
+    std::error_code ec;
+    return {path, std::filesystem::last_write_time(path, ec)};
+}
+} // namespace
 
 static std::filesystem::path ResolveIncludePath(const std::filesystem::path &requested) {
     auto candidate = Paths::Shaders() / requested;
@@ -16,12 +30,16 @@ static std::filesystem::path ResolveIncludePath(const std::filesystem::path &req
 
 class ShaderIncluder : public shaderc::CompileOptions::IncluderInterface {
 public:
+    // Records each include into `deps` so the cache can detect edits to them.
+    explicit ShaderIncluder(std::vector<ShaderDep> &deps) : Deps(deps) {}
+
     shaderc_include_result *GetInclude(
         const char *requested_source, shaderc_include_type, const char *, size_t
     ) override {
         auto *result = new shaderc_include_result;
         try {
             const auto resolved_path = ResolveIncludePath(requested_source);
+            Deps.emplace_back(MakeDep(resolved_path));
             auto *include = new IncludeData{File::Read(resolved_path), resolved_path.string()};
             result->source_name = include->Name.c_str();
             result->source_name_length = include->Name.size();
@@ -49,6 +67,7 @@ private:
         std::string Content;
         std::string Name;
     };
+    std::vector<ShaderDep> &Deps;
 };
 
 Shaders::Shaders(std::vector<ShaderTypePath> type_paths)
@@ -80,12 +99,34 @@ Shaders::~Shaders() = default;
 
 Shaders &Shaders::operator=(Shaders &&) = default;
 
-static vk::UniqueShaderModule CompileToModule(vk::Device device, ShaderType type, const std::filesystem::path &path) {
+namespace {
+struct CachedSpirv {
+    std::vector<uint32_t> Code;
+    std::vector<ShaderDep> Deps; // source + includes, with mtimes at compile time
+};
+
+// SPIR-V cache keyed by source path; shaderc compilation dominates engine init. Single-threaded.
+std::unordered_map<std::string, CachedSpirv> SpirvCache;
+
+bool DepsUnchanged(const std::vector<ShaderDep> &deps) {
+    std::error_code ec;
+    for (const auto &dep : deps) {
+        const auto mtime = std::filesystem::last_write_time(dep.Path, ec);
+        if (ec || mtime != dep.Mtime) return false;
+    }
+    return true;
+}
+
+std::vector<uint32_t> CompileToSpirv(ShaderType type, const std::filesystem::path &path) {
+    auto &cached = SpirvCache[path.string()];
+    if (!cached.Code.empty() && DepsUnchanged(cached.Deps)) return cached.Code;
+
     static const shaderc::Compiler compiler;
+    std::vector<ShaderDep> deps{MakeDep(path)};
     shaderc::CompileOptions compile_opts;
     compile_opts.SetGenerateDebugInfo();
     compile_opts.SetOptimizationLevel(shaderc_optimization_level_performance);
-    compile_opts.SetIncluder(std::make_unique<ShaderIncluder>());
+    compile_opts.SetIncluder(std::make_unique<ShaderIncluder>(deps));
     const auto kind = [type] {
         switch (type) {
             case ShaderType::eVertex: return shaderc_glsl_vertex_shader;
@@ -98,7 +139,13 @@ static vk::UniqueShaderModule CompileToModule(vk::Device device, ShaderType type
     if (result.GetCompilationStatus() != shaderc_compilation_status_success) {
         throw std::runtime_error(std::format("Error compiling shader {}:\n{}", path.string(), result.GetErrorMessage()));
     }
-    const std::vector<uint32_t> spirv{result.cbegin(), result.cend()};
+    cached = {{result.cbegin(), result.cend()}, std::move(deps)};
+    return cached.Code;
+}
+} // namespace
+
+static vk::UniqueShaderModule CompileToModule(vk::Device device, ShaderType type, const std::filesystem::path &path) {
+    const auto spirv = CompileToSpirv(type, path);
     return device.createShaderModuleUnique({{}, spirv});
 }
 
