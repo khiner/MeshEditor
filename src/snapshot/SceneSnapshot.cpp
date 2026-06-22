@@ -37,7 +37,7 @@ std::vector<std::byte> SnapshotSceneState(const entt::registry &r) {
         // Sort by integral id so byte order doesn't depend on pool insertion order.
         std::vector<entt::entity> ents;
         for (const auto e : *set) {
-            if (e != entt::tombstone) ents.push_back(e);
+            if (e != entt::tombstone && !(entry.SkipEntity && entry.SkipEntity(r, e))) ents.push_back(e);
         }
         if (ents.empty()) continue;
         std::ranges::sort(ents, {}, [](entt::entity e) { return entt::to_integral(e); });

@@ -1005,25 +1005,26 @@ RenderRequest ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
     const std::unordered_set<entt::entity> newly_inserted_set(sync.NewlyInserted.begin(), sync.NewlyInserted.end());
     const auto is_newly_inserted = [&](entt::entity e) { return newly_inserted_set.contains(e); };
 
-    // Build ArmaturePoseState for any armature missing one, computing each bone's pose delta from its Transform relative to rest.
+    // Build the derived ArmaturePoseState for any armature missing one.
+    // ArmaturePose (canonical) is restored or starts at rest; bone Transforms are recomputed from it.
     bool pose_state_created = false;
     for (const auto [arm_obj_entity, arm_obj_comp] : r.view<const ArmatureObject>().each()) {
         const auto data_entity = arm_obj_comp.Entity;
         const auto *armature = r.try_get<const Armature>(data_entity);
         if (!armature || armature->Bones.empty() || r.all_of<ArmaturePoseState>(data_entity)) continue;
         const auto n = armature->Bones.size();
-        ArmaturePoseState pose_state{
-            .BonePoseDelta = std::vector<Transform>(n),
-            .BoneUserOffset = std::vector<Transform>(n),
-            .BonePoseWorld = std::vector<mat4>(n, I4),
-            .GpuDeformRange = {},
-        };
+        if (!r.all_of<ArmaturePose>(data_entity)) r.emplace<ArmaturePose>(data_entity, std::vector<Transform>(n));
+        r.emplace<ArmaturePoseState>(
+            data_entity,
+            ArmaturePoseState{.BoneUserOffset = std::vector<Transform>(n), .BonePoseWorld = std::vector<mat4>(n, I4), .GpuDeformRange = {}}
+        );
+        // Bone Transform is derived (unserialized), so reconstruct it from rest + delta. Scale stays at rest.
+        const auto &deltas = r.get<const ArmaturePose>(data_entity).BoneDeltas;
         for (uint32_t i = 0; i < n && i < arm_obj_comp.BoneEntities.size(); ++i) {
             const auto &rest = armature->Bones[i].RestLocal;
-            const auto &bt = r.get<const Transform>(arm_obj_comp.BoneEntities[i]);
-            pose_state.BonePoseDelta[i] = AbsoluteToDelta(rest, {bt.P, bt.R, rest.S});
+            const auto posed = ComposeWithDelta(rest, deltas[i]);
+            r.emplace_or_replace<Transform>(arm_obj_comp.BoneEntities[i], Transform{posed.P, posed.R, rest.S});
         }
-        r.emplace<ArmaturePoseState>(data_entity, std::move(pose_state));
         pose_state_created = true;
     }
 
@@ -1579,14 +1580,14 @@ RenderRequest ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
         bool request_rerecord = false;
         if (anim_advanced) {
             for (const auto [arm_obj_entity, arm_obj_comp] : r.view<const ArmatureObject>().each()) {
-                auto *pose_state = r.try_get<ArmaturePoseState>(arm_obj_comp.Entity);
-                if (!pose_state) continue;
+                auto *pose = r.try_get<ArmaturePose>(arm_obj_comp.Entity);
+                if (!pose) continue;
                 const auto &armature = r.get<const Armature>(arm_obj_comp.Entity);
                 if (!armature.ImportedSkin) continue;
                 if (const auto *anim = r.try_get<const ArmatureAnimation>(arm_obj_comp.Entity);
                     anim && !anim->Clips.empty() && anim->ActiveClipIndex < anim->Clips.size()) {
                     const auto &clip = anim->Clips[anim->ActiveClipIndex];
-                    EvaluateAnimationDeltas(clip, clip_time(clip), armature.Bones, pose_state->BonePoseDelta);
+                    EvaluateAnimationDeltas(clip, clip_time(clip), armature.Bones, pose->BoneDeltas);
                 }
             }
         }
@@ -1605,15 +1606,18 @@ RenderRequest ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
                 std::copy(morph_state.Weights.begin(), morph_state.Weights.end(), gpu_weights.begin());
                 request_rerecord = true;
             }
-            // Evaluate glTF node transform animations (empties/meshes/cameras/lights).
-            for (auto [entity, node_anim] : r.view<const NodeTransformAnimation>().each()) {
-                if (node_anim.Clips.empty() || node_anim.ActiveClipIndex >= node_anim.Clips.size()) continue;
-                const auto &clip = node_anim.Clips[node_anim.ActiveClipIndex];
-                std::array<Transform, 1> local_pose{node_anim.RestLocal};
-                EvaluateAnimation(clip, clip_time(clip), local_pose);
-                r.replace<Transform>(entity, local_pose.front());
-                request_rerecord = true;
-            }
+        }
+
+        // Evaluate node TRS animations into PosedLocal, leaving Transform at the authored local.
+        // Runs when the frame advanced or PosedLocal is missing (first frame / restore).
+        for (auto [entity, node_anim] : r.view<const NodeTransformAnimation>().each()) {
+            if (node_anim.Clips.empty() || node_anim.ActiveClipIndex >= node_anim.Clips.size()) continue;
+            if (!anim_advanced && r.all_of<PosedLocal>(entity)) continue;
+            const auto &clip = node_anim.Clips[node_anim.ActiveClipIndex];
+            std::array<Transform, 1> local_pose{r.get<const Transform>(entity)};
+            EvaluateAnimation(clip, clip_time(clip), local_pose);
+            r.emplace_or_replace<PosedLocal>(entity, local_pose.front());
+            request_rerecord = true;
         }
         if (request_rerecord) request(RenderRequest::ReRecord);
     }
@@ -1683,6 +1687,7 @@ RenderRequest ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
             for (const auto [arm_obj_entity, arm_obj_comp] : r.view<const ArmatureObject>().each()) {
                 auto *pose_state = r.try_get<ArmaturePoseState>(arm_obj_comp.Entity);
                 if (!pose_state) continue;
+                auto &deltas = r.get<ArmaturePose>(arm_obj_comp.Entity).BoneDeltas;
                 auto &armature = r.get<Armature>(arm_obj_comp.Entity);
                 if (!armature.ImportedSkin) continue;
 
@@ -1709,7 +1714,7 @@ RenderRequest ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
                 bool rest_pose_edited = false;
                 for (uint32_t i = 0; i < arm_obj_comp.BoneEntities.size(); ++i) {
                     const auto b = arm_obj_comp.BoneEntities[i];
-                    if (i >= pose_state->BonePoseDelta.size()) continue;
+                    if (i >= deltas.size()) continue;
                     const auto &rest = armature.Bones[i].RestLocal;
                     const auto &bt = r.get<const Transform>(b);
                     Transform local{bt.P, bt.R, rest.S}; // Default; branches that recompute overwrite it.
@@ -1738,24 +1743,26 @@ RenderRequest ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
                         );
                         const Transform gizmo_local{bt.P, bt.R, rest.S};
                         pose_state->BoneUserOffset[i] = AbsoluteToDelta(grab_delta, AbsoluteToDelta(rest, gizmo_local));
-                        local = ComposeWithDelta(rest, ComposeWithDelta(pose_state->BonePoseDelta[i], pose_state->BoneUserOffset[i]));
+                        local = ComposeWithDelta(rest, ComposeWithDelta(deltas[i], pose_state->BoneUserOffset[i]));
                         should_patch = need_sync = true;
                     } else if (transform_end.contains(b)) {
-                        // Commit drag: bake current P/R into delta, clear offset.
-                        pose_state->BonePoseDelta[i] = AbsoluteToDelta(rest, {bt.P, bt.R, rest.S});
+                        // Commit drag: bake P/R into the delta, then re-derive Transform so it stays Compose(rest, delta).
+                        deltas[i] = AbsoluteToDelta(rest, {bt.P, bt.R, rest.S});
                         pose_state->BoneUserOffset[i] = {};
-                        need_sync = true;
-                    } else if ((anim_advanced || mode_changed) && !pose_state_created) {
-                        // Recompute entity P/R from deltas
-                        local = ComposeWithDelta(rest, ComposeWithDelta(pose_state->BonePoseDelta[i], pose_state->BoneUserOffset[i]));
+                        local = ComposeWithDelta(rest, deltas[i]);
+                        should_patch = need_sync = true;
+                    } else if (anim_advanced || mode_changed || pose_state_created) {
+                        // Recompute entity P/R from the delta (also derives Transform on first load).
+                        local = ComposeWithDelta(rest, ComposeWithDelta(deltas[i], pose_state->BoneUserOffset[i]));
                         should_patch = need_sync = true;
                     } else if (local_changes.contains(b)) {
-                        // Manual transform: bake if position actually changed.
-                        if (const auto expected = ComposeWithDelta(rest, ComposeWithDelta(pose_state->BonePoseDelta[i], pose_state->BoneUserOffset[i]));
+                        // Manual transform: bake if P/R changed, then re-derive.
+                        if (const auto expected = ComposeWithDelta(rest, ComposeWithDelta(deltas[i], pose_state->BoneUserOffset[i]));
                             bt.P != expected.P || bt.R != expected.R) {
-                            pose_state->BonePoseDelta[i] = AbsoluteToDelta(rest, {bt.P, bt.R, rest.S});
+                            deltas[i] = AbsoluteToDelta(rest, {bt.P, bt.R, rest.S});
                             pose_state->BoneUserOffset[i] = {};
-                            need_sync = true;
+                            local = ComposeWithDelta(rest, deltas[i]);
+                            should_patch = need_sync = true;
                         }
                     }
 
@@ -1816,7 +1823,8 @@ RenderRequest ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
         if (const auto &dirty = reactive<changes::TransformDirty>(r); !dirty.empty()) {
             const auto update_wt = [&](this const auto &self, entt::entity e, bool propagate) -> void {
                 const auto *node = r.try_get<SceneNode>(e);
-                const auto &t = r.get<const Transform>(e);
+                const auto *posed = r.try_get<const PosedLocal>(e); // animated node: compose world from the pose
+                const Transform &t = posed ? static_cast<const Transform &>(*posed) : r.get<const Transform>(e);
                 if (node && node->Parent != entt::null) {
                     if (!r.all_of<WorldTransform>(node->Parent)) self(node->Parent, false); // GetParentDelta reads the parent's WorldTransform
                     r.emplace_or_replace<WorldTransform>(e, ToTransform(GetParentDelta(r, e) * ToMatrix(t)));

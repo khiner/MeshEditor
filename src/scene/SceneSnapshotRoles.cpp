@@ -69,6 +69,11 @@ inline constexpr void (*CustomEmplace)(entt::registry &, entt::entity, std::span
 template<> inline constexpr auto CustomEmplace<ViewCamera> = &EmplaceViewCamera;
 template<> inline constexpr auto CustomEmplace<LookingThrough> = &EmplaceLookingThrough;
 
+// Specialized to skip entities whose value is derived (a bone's Transform comes from RestLocal + ArmaturePose).
+template<class C>
+inline constexpr bool (*SkipEntityFor)(const entt::registry &, entt::entity) = nullptr;
+template<> inline constexpr auto SkipEntityFor<Transform> = +[](const entt::registry &r, entt::entity e) { return r.all_of<BoneIndex>(e); };
+
 // Per-encoding (de)serialization thunks the table dispatches through.
 
 // Trivially-copyable (or empty-tag) component, restored by memcpy.
@@ -117,7 +122,7 @@ using Persistent = type_list<
     PhysicsSimulationSettings, PhysicsMaterial, CollisionSystem, CollisionFilter, PhysicsJointDef, PhysicsMotion,
     ColliderShape, ColliderPolicy, TriggerTag, TriggerNodes, PhysicsJoint,
     Armature, ArmatureObject, BoneJointEntities, BoneJoint, BoneSubPartOf, BoneActive, BoneSelection,
-    BoneConstraints, ArmatureModifier, BoneIndex, BoneDisplayScale, BoneAttachment, ArmatureAnimation,
+    BoneConstraints, ArmatureModifier, BoneIndex, BoneDisplayScale, BoneAttachment, ArmatureAnimation, ArmaturePose,
     NodeTransformAnimation, MorphWeightAnimation, MorphWeightState,
     SourceNodeIndex, SourceParentNodeIndex, SourceSiblingIndex, SourceMeshIndex, SourceCameraIndex,
     SourceLightIndex, SourcePhysicsMaterialIndex, SourceCollisionFilterIndex, SourcePhysicsJointDefIndex,
@@ -127,7 +132,7 @@ using Persistent = type_list<
 // Reconstructed from the Persistent set by ProcessComponentEvents, on_construct, and reactive handlers.
 // Never serialized, listed only so VerifyCoverage treats them as intentionally excluded.
 using Derived = type_list<
-    RenderInstance, WorldTransform, MeshBuffers, BoneAdjacencyIndices, ModelsBuffer, VertexClass, BBoxWireframe,
+    RenderInstance, WorldTransform, PosedLocal, MeshBuffers, BoneAdjacencyIndices, ModelsBuffer, VertexClass, BBoxWireframe,
     TetWireframe, MaterialDirty, LightIndex, EnabledInteractionModes, PhysicsVelocity, ColliderMaterial,
     PhysicsBodyHandle, PhysicsConstraintHandle, ColliderWireframe, BoneInstanceStateDirty, ArmaturePoseState,
     MorphWeightGpuRange, AdditiveBoxSelectBaseline, SelectionBitsDirty, ElementStatesDirty, PendingEditElementClick,
@@ -148,11 +153,11 @@ using ForceSerialize = type_list<
 template<class C>
 snapshot::SnapshotEntry MakeEntry() {
     using snapshot::Encoding;
-    if constexpr (std::is_empty_v<C>) return {Encoding::Tag, 0, nullptr, &EmplaceTrivial<C>};
-    else if constexpr (CustomEmplace<C> != nullptr) return {Encoding::Serialized, 0, &SerializeThunk<C>, CustomEmplace<C>};
-    else if constexpr (entt::type_list_contains_v<ForceSerialize, C>) return {Encoding::Serialized, 0, &SerializeThunk<C>, &EmplaceSerialized<C>};
-    else if constexpr (std::is_trivially_copyable_v<C>) return {Encoding::Bytes, sizeof(C), nullptr, &EmplaceTrivial<C>};
-    else return {Encoding::Serialized, 0, &SerializeThunk<C>, &EmplaceSerialized<C>};
+    if constexpr (std::is_empty_v<C>) return {Encoding::Tag, 0, nullptr, &EmplaceTrivial<C>, SkipEntityFor<C>};
+    else if constexpr (CustomEmplace<C> != nullptr) return {Encoding::Serialized, 0, &SerializeThunk<C>, CustomEmplace<C>, SkipEntityFor<C>};
+    else if constexpr (entt::type_list_contains_v<ForceSerialize, C>) return {Encoding::Serialized, 0, &SerializeThunk<C>, &EmplaceSerialized<C>, SkipEntityFor<C>};
+    else if constexpr (std::is_trivially_copyable_v<C>) return {Encoding::Bytes, sizeof(C), nullptr, &EmplaceTrivial<C>, SkipEntityFor<C>};
+    else return {Encoding::Serialized, 0, &SerializeThunk<C>, &EmplaceSerialized<C>, SkipEntityFor<C>};
 }
 
 template<class... Cs>

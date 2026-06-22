@@ -9,6 +9,13 @@ struct WorldTransform : Transform {
 };
 // World-space transform, composed from the local Transform and parent chain.
 
+// Evaluated local pose of an animated node (its Transform stays the authored local).
+// When present, the world transform composes from this instead of Transform. Derived.
+struct PosedLocal : Transform {
+    using Transform::Transform;
+    PosedLocal(const Transform &t) : Transform{t} {}
+};
+
 // World-space forward direction for a camera entity (matches glTF: cameras look down -Z).
 inline vec3 CameraForward(const WorldTransform &wt) {
     return -glm::normalize(glm::rotate(wt.R, vec3{0.f, 0.f, 1.f}));

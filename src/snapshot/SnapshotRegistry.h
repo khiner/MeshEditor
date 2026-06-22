@@ -18,6 +18,7 @@ struct SnapshotEntry {
     uint32_t Size; // value bytes for Encoding::Bytes
     void (*Serialize)(const void *component, std::vector<std::byte> &out); // for Encoding::Serialized
     void (*Emplace)(entt::registry &, entt::entity, std::span<const std::byte>); // inverse: decode + emplace_or_replace
+    bool (*SkipEntity)(const entt::registry &, entt::entity); // optional: skip entities whose value is derived (null = serialize all)
 };
 
 // Persistent-component serializer table, built lazily from the hardcoded Persistent list on first use.

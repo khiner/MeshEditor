@@ -50,12 +50,10 @@ struct MorphWeightClip {
     std::vector<MorphWeightChannel> Channels;
 };
 
-// Component on scene object entities with imported glTF node TRS animation data.
-// Clips target this entity only; channels use BoneIndex=0 and are evaluated against RestLocal.
+// Imported glTF node TRS animation. Clips target this entity, evaluated against its authored Transform.
 struct NodeTransformAnimation {
     std::vector<AnimationClip> Clips;
     uint32_t ActiveClipIndex{0};
-    Transform RestLocal{};
 };
 
 struct MorphWeightAnimation {

@@ -193,6 +193,7 @@ entt::entity InitEngine(entt::registry &r, VulkanResources vc) {
     track<changes::TransformEnd>(r).on<StartTransform>(On::Destroy);
     track<changes::TransformDirty>(r)
         .on<Transform>(On::Create | On::Update)
+        .on<PosedLocal>(On::Create | On::Update)
         .on<SceneNode>(On::Create | On::Update)
         .on<BoneDisplayScale>(On::Update);
     r.ctx().emplace<EntityDestroyTracker>().Bind(r);

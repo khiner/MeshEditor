@@ -26,8 +26,8 @@ void RebuildBoneStructure(entt::registry &r, entt::entity viewport, entt::entity
     armature.FinalizeStructure();
     armature.RecomputeRestWorld();
 
+    if (auto *pose = r.try_get<ArmaturePose>(arm_data_entity)) pose->BoneDeltas.assign(armature.Bones.size(), Transform{});
     if (auto *ps = r.try_get<ArmaturePoseState>(arm_data_entity)) {
-        ps->BonePoseDelta.assign(armature.Bones.size(), Transform{});
         ps->BoneUserOffset.assign(armature.Bones.size(), Transform{});
         ps->BonePoseWorld.assign(armature.Bones.size(), I4);
     }

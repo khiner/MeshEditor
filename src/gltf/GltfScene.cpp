@@ -2652,11 +2652,10 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
             existing->Clips.emplace_back(std::move(resolved_clip));
             return;
         }
-        const auto binding_it = node_anim_bindings.find(object_entity);
-        if (binding_it == node_anim_bindings.end()) return;
+        if (!node_anim_bindings.contains(object_entity)) return; // needs a known local transform
         r.emplace<NodeTransformAnimation>(
             object_entity,
-            NodeTransformAnimation{.Clips = {std::move(resolved_clip)}, .ActiveClipIndex = 0, .RestLocal = binding_it->second}
+            NodeTransformAnimation{.Clips = {std::move(resolved_clip)}, .ActiveClipIndex = 0}
         );
     };
 
@@ -2790,19 +2789,6 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
             for (const auto &clip : anim.Clips) max_dur = std::max(max_dur, clip.DurationSeconds);
         }
         if (max_dur > 0) r.patch<TimelineRange>(viewport, [&](auto &r) { r.EndFrame = int(std::ceil(max_dur * r.Fps)); });
-    }
-
-    // Bake the active animation's first frame into the bone Transforms so an imported armature opens posed rather than at bind.
-    for (const auto [arm_obj_entity, arm_obj] : r.view<const ArmatureObject>().each()) {
-        const auto *anim = r.try_get<const ArmatureAnimation>(arm_obj.Entity);
-        if (!anim || anim->ActiveClipIndex >= anim->Clips.size()) continue;
-        const auto &armature = r.get<const Armature>(arm_obj.Entity);
-        std::vector<Transform> deltas(armature.Bones.size()); // identity = rest pose
-        EvaluateAnimationDeltas(anim->Clips[anim->ActiveClipIndex], 0.f, armature.Bones, deltas);
-        for (uint32_t i = 0; i < armature.Bones.size() && i < arm_obj.BoneEntities.size(); ++i) {
-            const auto posed = ComposeWithDelta(armature.Bones[i].RestLocal, deltas[i]);
-            r.patch<Transform>(arm_obj.BoneEntities[i], [&](auto &t) { t.P = posed.P; t.R = posed.R; }); // S left at bind pose
-        }
     }
 
     if (source_ibl) {
@@ -4053,6 +4039,16 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         }
     };
 
+    // A bone's Transform is the live pose; its joint node TRS must be the rest (animation channels carry the motion).
+    // The rest lives in the Armature, so map each bone to it. (Non-bone nodes keep their authored local in Transform.)
+    std::unordered_map<entt::entity, Transform> bone_rest;
+    for (const auto [ao_entity, ao] : r.view<const ArmatureObject>().each()) {
+        const auto &arm = r.get<const Armature>(ao.Entity);
+        for (uint32_t i = 0; i < ao.BoneEntities.size() && i < arm.Bones.size(); ++i) {
+            if (ao.BoneEntities[i] != entt::null) bone_rest.emplace(ao.BoneEntities[i], arm.Bones[i].RestLocal);
+        }
+    }
+
     // Nodes — each fastgltf::Node is emitted directly from per-entity registry components,
     // no parallel staging struct. `entity == null` slots fall through with default fields
     // (gaps in the source SourceNodeIndex sequence).
@@ -4140,6 +4136,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
                     }
                 }
             }
+            if (const auto it = bone_rest.find(entity); it != bone_rest.end()) return it->second;
             return r.get<const Transform>(entity);
         }();
 
