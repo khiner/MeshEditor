@@ -24,6 +24,7 @@
 #include "render/DrawState.h"
 #include "render/Instance.h"
 #include "render/MaterialComponents.h"
+#include "render/MaterialImport.h"
 #include "render/OneShotGpu.h"
 #include "render/Pipelines.h"
 #include "render/Textures.h"
@@ -307,6 +308,8 @@ void AddDefaultSceneContent(entt::registry &r) {
 }
 
 void ClearScene(entt::registry &r, entt::entity viewport) {
+    // Clear physics while its components still exist, so the next load isn't tripped by stale entity keys.
+    physics::Clear(r);
     ClearMeshes(r, viewport);
 
     // Release any imported (EXT-IBL) scene world and restore the empty default, so a subsequent restore starts
@@ -321,6 +324,10 @@ void ClearScene(entt::registry &r, entt::entity viewport) {
         environments.SceneWorld = {.Ibl = MakeIblSamplers(environments.EmptySceneWorld, environments), .Name = environments.EmptySceneWorld.Name};
     }
 
+    // Reset imported textures + materials to the default. ClearMeshes does this only when the last instance is
+    // destroyed, which skinned scenes never reach (bone-visual instances outlive the mesh), so do it explicitly.
+    ResetImportedTexturesAndMaterials(r);
+
     // Lights live in a Derived GPU buffer keyed by LightIndex (also Derived). Clear it so restored lights are
     // re-registered from their (Persistent) PunctualLight starting at slot 0, with no stale entries.
     r.ctx().get<GpuBuffers>().Lights.SetCount(0);
@@ -332,6 +339,10 @@ void ClearScene(entt::registry &r, entt::entity viewport) {
     }
     r.destroy(viewport);
     r.ctx().get<ObjectIdCounter>() = {};
+
+    // Drop ColliderShapeBuffers' cached handles to the wireframe buffer entities destroyed above, so
+    // EnsureWireframes rebuilds them instead of mistaking a reused entity id for a live buffer.
+    r.ctx().get<ColliderShapeBuffers>().Entities.fill(entt::entity{entt::null});
 
     // Reset the entity and mesh-store allocators to their fresh-start state, so replaying a scene from this baseline re-allocates identical ids.
     // Descriptor slots need no reset, since their RangeAllocator is order-independent.

@@ -1207,9 +1207,7 @@ void OnPhysicsJointDefChange(PhysicsState &s, entt::registry &r, entt::entity e)
     if (destroyed) ClearDanglingRefs<&PhysicsJoint::JointDefEntity>(r, e);
 }
 
-void Rebuild(entt::registry &r) {
-    auto &s = r.ctx().get<PhysicsState>();
-    // Clear existing constraints and bodies.
+void ClearSimulation(PhysicsState &s, entt::registry &r) {
     for (auto &[_, c] : s.ConstraintsByJoint) s.System.RemoveConstraint(c);
     s.ConstraintsByJoint.clear();
     r.clear<PhysicsBodyHandle>(); // OnDestroyPhysicsBody queues every body for the batched removal below
@@ -1219,6 +1217,11 @@ void Rebuild(entt::registry &r) {
     s.FilterRef->Update(r);
     s.FilterRef->Reset();
     s.BodySubGroups.clear();
+}
+
+void Rebuild(entt::registry &r) {
+    auto &s = r.ctx().get<PhysicsState>();
+    ClearSimulation(s, r);
 
     for (auto [e, _] : r.view<const Transform>().each()) {
         const auto *node = r.try_get<const SceneNode>(e);
@@ -1385,4 +1388,8 @@ void Init(entt::registry &r) {
 }
 
 void Deinit(entt::registry &r) { r.ctx().erase<PhysicsState>(); }
+
+void Clear(entt::registry &r) {
+    if (auto *s = r.ctx().find<PhysicsState>()) ClearSimulation(*s, r);
+}
 } // namespace physics

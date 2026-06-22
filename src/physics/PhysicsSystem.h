@@ -9,6 +9,8 @@ struct PhysicsSimulationSettings;
 namespace physics {
 void Init(entt::registry &);
 void Deinit(entt::registry &);
+// Remove all bodies and constraints, keeping the system initialized (unlike Deinit). For a full scene clear.
+void Clear(entt::registry &);
 
 uint32_t BodyCount(const entt::registry &);
 

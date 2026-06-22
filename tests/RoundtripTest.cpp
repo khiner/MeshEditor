@@ -672,11 +672,14 @@ int main() {
         };
     };
 
+    SceneFixture fx{vk_resources};
     for (const auto &src : samples) {
         const auto sample_name = src.stem().string();
 
         test(sample_name) = [&] {
-            SceneFixture fx{vk_resources};
+            ProcessComponentEvents(fx.R, fx.Viewport);
+            ClearScene(fx.R, fx.Viewport);
+
             const auto load = gltf::LoadGltf(src, load_ctx(fx.R, fx.Viewport));
             if (!load) return; // Loader limitation on source (e.g., unsupported extension); not a roundtrip concern.
 
@@ -711,27 +714,28 @@ int main() {
         r.remove<PendingTextureUploads>(scene);
     };
 
-    // Snapshot round-trip of a real glTF import: byte-compares the import-domain Persistent set (Source*,
-    // materials, SourceAssets, armature/morph, ...) to catch state that doesn't reconstruct. Run for every
-    // sample. Scenes whose state doesn't yet reconstruct exactly are whitelisted in SnapshotRoundtripFailures
-    // above: each is a known gap to close as snapshot coverage grows. A whitelisted scene that starts matching
-    // fails the test, prompting its removal from the list.
+    // Round-trip each import through SaveState -> restore -> SaveState and byte-compare, catching state that doesn't reconstruct.
+    // Scenes that don't yet reconstruct are whitelisted in SnapshotRoundtripFailures.
+    // One that starts matching fails the test, prompting its removal. restore_fx is the restore target.
+    SceneFixture restore_fx{vk_resources};
     for (const auto &src : samples) {
         const auto sample_name = src.stem().string();
         test("snapshot round trip (" + sample_name + ")") = [&] {
-            SceneFixture f1{vk_resources};
-            const auto load = gltf::LoadGltf(src, load_ctx(f1.R, f1.Viewport));
+            ProcessComponentEvents(fx.R, fx.Viewport);
+            ClearScene(fx.R, fx.Viewport);
+            const auto load = gltf::LoadGltf(src, load_ctx(fx.R, fx.Viewport));
             if (!load) return; // Loader limitation on source (e.g., unsupported extension); not a snapshot concern.
 
             // Round-trips the import-domain state and returns the byte diff. May throw if SaveState hits a
             // component it can't classify yet — a real snapshot gap, surfaced (not swallowed) for non-whitelisted scenes.
             const auto round_trip = [&] {
-                ProcessComponentEvents(f1.R, f1.Viewport);
-                const auto before = snapshot::SaveState(f1.R);
-                SceneFixture f2{vk_resources};
-                snapshot::LoadState(f2.R, before);
-                ProcessComponentEvents(f2.R, f2.Viewport);
-                const auto after = snapshot::SaveState(f2.R);
+                ProcessComponentEvents(fx.R, fx.Viewport);
+                const auto before = snapshot::SaveState(fx.R);
+                ProcessComponentEvents(restore_fx.R, restore_fx.Viewport);
+                ClearScene(restore_fx.R, restore_fx.Viewport);
+                snapshot::LoadState(restore_fx.R, before);
+                ProcessComponentEvents(restore_fx.R, restore_fx.Viewport);
+                const auto after = snapshot::SaveState(restore_fx.R);
                 return snapshot::Compare(before, after);
             };
 
