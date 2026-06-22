@@ -402,7 +402,7 @@ SyncResult SyncModelsBuffers(entt::registry &r) {
         buffers.Instances.ObjectIdBuffer.Update(as_bytes(object_ids), vk::DeviceSize(base_index) * sizeof(uint32_t));
         buffers.Instances.StateBuffer.Update(as_bytes(states), vk::DeviceSize(base_index) * sizeof(uint8_t));
         mb.InstanceCount = new_total;
-        newly_inserted.insert(newly_inserted.end(), entities.begin(), entities.end());
+        newly_inserted.append_range(entities);
     }
     return {std::move(newly_inserted), std::move(new_mesh_entities), std::move(new_extras_entities), compacted};
 }

@@ -22,6 +22,7 @@
 
 namespace {
 namespace fs = std::filesystem;
+using std::ranges::to, std::views::join, std::views::transform;
 
 std::vector<fs::path> CollectGltfSamples(const fs::path &root) {
     std::vector<fs::path> out;
@@ -58,10 +59,15 @@ fs::path MakeRoundtripDir() {
     return dir;
 }
 
+// Sample assets are checked out as siblings of the repo root. Anchor every sample path at
+// MESHEDITOR_SOURCE_DIR (the repo root, baked in by CMake) so the test finds them regardless of the
+// working directory it's launched from.
 constexpr std::string_view SampleRoots[]{
     "../glTF-Sample-Assets/Models",
     "../glTF_Physics/samples",
 };
+
+fs::path SamplePath(std::string_view relative_to_repo_root) { return fs::path{MESHEDITOR_SOURCE_DIR} / relative_to_repo_root; }
 
 // --- Expected-divergence list ---
 // Each entry documents a JSON path where re-export is known to diverge from source,
@@ -247,6 +253,33 @@ bool MatchesExact(std::string_view norm, const Exception (&list)[N]) {
     return false;
 }
 
+// --- Snapshot round-trip whitelist ---
+// Sample stems whose import-domain Persistent set does not yet reconstruct exactly after a
+// SaveState -> LoadState -> ProcessComponentEvents -> SaveState cycle. Each is a TODO for the
+// snapshot work; remove a stem from this list once its state round-trips. Names are sample stems
+// (file basename without extension), matching the `test(...)` labels.
+constexpr std::string_view SnapshotRoundtripFailures[]{
+    // Physics samples: rigid-body / joint / collider state from KHR_physics_rigid_bodies doesn't
+    // yet reconstruct exactly across a snapshot cycle.
+    "Filtering",
+    "JointTypes",
+    "Materials_Friction",
+    "Materials_Restitution",
+    "MotionProperties",
+    "ShapeTypes",
+    "Triggers",
+    "WaterWheel",
+    // Skinned robot from the physics sample set (armature + physics).
+    "Robot_skinned",
+};
+
+bool IsSnapshotRoundtripFailure(std::string_view name) {
+    for (const auto n : SnapshotRoundtripFailures) {
+        if (n == name) return true;
+    }
+    return false;
+}
+
 bool IsExpectedDivergence(std::string_view path) {
     const auto norm = NormalizePath(path);
     if (MatchesExact(norm, DefaultOmissionExactExceptions)) return true;
@@ -262,8 +295,7 @@ bool IsExpectedDivergence(std::string_view path) {
 // --- Generic JSON comparator ---
 
 struct Diff {
-    std::string Path;
-    std::string Message;
+    std::string Path, Message;
 };
 
 // Float-ish tolerance: glTF numbers round-trip through JSON text, so small loss is expected.
@@ -275,8 +307,7 @@ constexpr double RelEps = 1e-3;
 bool NumberEq(double a, double b) {
     if (a == b) return true;
     if (std::isnan(a) || std::isnan(b)) return std::isnan(a) == std::isnan(b);
-    const double diff = std::abs(a - b);
-    const double scale = std::max({1.0, std::abs(a), std::abs(b)});
+    const double diff = std::abs(a - b), scale = std::max({1.0, std::abs(a), std::abs(b)});
     return diff <= AbsEps || diff <= RelEps * scale;
 }
 
@@ -309,12 +340,8 @@ std::string_view TypeName(ElType t) {
     return "?";
 }
 
-std::string JoinKey(std::string_view path, std::string_view key) {
-    return path.empty() ? std::string(key) : std::format("{}.{}", path, key);
-}
-std::string JoinIndex(std::string_view path, size_t i) {
-    return std::format("{}[{}]", path, i);
-}
+std::string JoinKey(std::string_view path, std::string_view key) { return path.empty() ? std::string{key} : std::format("{}.{}", path, key); }
+std::string JoinIndex(std::string_view path, size_t i) { return std::format("{}[{}]", path, i); }
 
 // --- Semantic accessor-reference resolution ---
 // Several JSON paths hold a numeric accessor index whose index value is emission-order-dependent
@@ -545,15 +572,10 @@ int main() {
     Paths::Init(MESHEDITOR_BUILD_DIR);
 
     const auto tmp_root = MakeRoundtripDir();
-
-    std::vector<fs::path> samples;
-    for (const auto root : SampleRoots) {
-        auto found = CollectGltfSamples(root);
-        samples.insert(samples.end(), found.begin(), found.end());
-    }
+    const auto samples = SampleRoots | transform([](auto root) { return CollectGltfSamples(SamplePath(root)); }) | join | to<std::vector>();
 
     // Headless Vulkan fixture shared across all ECS-roundtrip samples (device init is expensive).
-    VulkanContext vk_ctx{{}, /*with_swapchain=*/false};
+    const VulkanContext vk_ctx{{}, /*with_swapchain=*/false};
     const VulkanResources vk_resources = vk_ctx.Resources();
 
     struct SceneFixture {
@@ -655,11 +677,11 @@ int main() {
 
         test(sample_name) = [&] {
             SceneFixture fx{vk_resources};
-            auto load = gltf::LoadGltf(src, load_ctx(fx.R, fx.Viewport));
+            const auto load = gltf::LoadGltf(src, load_ctx(fx.R, fx.Viewport));
             if (!load) return; // Loader limitation on source (e.g., unsupported extension); not a roundtrip concern.
 
             const auto out_path = tmp_root / (sample_name + ".gltf");
-            auto save = gltf::SaveGltf(out_path, save_ctx(fx.R, fx.Viewport));
+            const auto save = gltf::SaveGltf(out_path, save_ctx(fx.R, fx.Viewport));
             expect(save.has_value()) << "SaveGltf failed: " << (save ? "" : save.error());
             if (!save) return;
 
@@ -671,9 +693,9 @@ int main() {
     // Drains PendingTextureUploads onto the GPU — ProcessComponentEvents minus the env /
     // sync passes — so the edit tests below can read texture pixels back.
     const auto materialize_textures = [&](entt::registry &r, entt::entity scene) {
-        auto pool = vk_resources.Device.createCommandPoolUnique({{}, vk_resources.QueueFamily});
-        auto fence = vk_resources.Device.createFenceUnique({});
-        auto *pending = r.try_get<PendingTextureUploads>(scene);
+        const auto pool = vk_resources.Device.createCommandPoolUnique({{}, vk_resources.QueueFamily});
+        const auto fence = vk_resources.Device.createFenceUnique({});
+        const auto *pending = r.try_get<const PendingTextureUploads>(scene);
         const auto *src = r.try_get<const gltf::SourceAssets>(scene);
         if (!pending || pending->Items.empty() || !src) return;
         auto &buffers = r.ctx().get<GpuBuffers>();
@@ -690,39 +712,53 @@ int main() {
     };
 
     // Snapshot round-trip of a real glTF import: byte-compares the import-domain Persistent set (Source*,
-    // materials, SourceAssets, armature/morph, ...) to catch state that doesn't reconstruct.
-    const auto snapshot_import_roundtrip = [&](const fs::path &sample) {
-        if (!fs::exists(sample)) return;
-        test("snapshot round trip (" + sample.stem().string() + ")") = [&] {
+    // materials, SourceAssets, armature/morph, ...) to catch state that doesn't reconstruct. Run for every
+    // sample. Scenes whose state doesn't yet reconstruct exactly are whitelisted in SnapshotRoundtripFailures
+    // above: each is a known gap to close as snapshot coverage grows. A whitelisted scene that starts matching
+    // fails the test, prompting its removal from the list.
+    for (const auto &src : samples) {
+        const auto sample_name = src.stem().string();
+        test("snapshot round trip (" + sample_name + ")") = [&] {
             SceneFixture f1{vk_resources};
-            auto load = gltf::LoadGltf(sample, load_ctx(f1.R, f1.Viewport));
-            expect(load.has_value()) << "import failed";
-            if (!load) return;
-            ProcessComponentEvents(f1.R, f1.Viewport);
-            const auto before = snapshot::SaveState(f1.R);
+            const auto load = gltf::LoadGltf(src, load_ctx(f1.R, f1.Viewport));
+            if (!load) return; // Loader limitation on source (e.g., unsupported extension); not a snapshot concern.
 
-            SceneFixture f2{vk_resources};
-            snapshot::LoadState(f2.R, before);
-            ProcessComponentEvents(f2.R, f2.Viewport);
-            const auto after = snapshot::SaveState(f2.R);
-            const auto diff = snapshot::Compare(before, after);
-            expect(diff.Equal) << "glTF-import round-trip diverged at byte" << diff.FirstDifferingByte << "of" << before.size() << "/" << after.size();
+            // Round-trips the import-domain state and returns the byte diff. May throw if SaveState hits a
+            // component it can't classify yet — a real snapshot gap, surfaced (not swallowed) for non-whitelisted scenes.
+            const auto round_trip = [&] {
+                ProcessComponentEvents(f1.R, f1.Viewport);
+                const auto before = snapshot::SaveState(f1.R);
+                SceneFixture f2{vk_resources};
+                snapshot::LoadState(f2.R, before);
+                ProcessComponentEvents(f2.R, f2.Viewport);
+                const auto after = snapshot::SaveState(f2.R);
+                return snapshot::Compare(before, after);
+            };
+
+            if (!IsSnapshotRoundtripFailure(sample_name)) {
+                const auto diff = round_trip(); // exceptions propagate to ut as a failure with the message
+                expect(diff.Equal) << "glTF-import round-trip diverged at byte" << diff.FirstDifferingByte;
+                return;
+            }
+            // Whitelisted: tolerate divergence or a classification exception. Flag if it now round-trips
+            // cleanly so the stem can be removed from SnapshotRoundtripFailures.
+            bool clean = false;
+            try {
+                clean = round_trip().Equal;
+            } catch (...) {
+            }
+            expect(!clean) << "whitelisted snapshot round-trip now succeeds; remove" << sample_name << "from SnapshotRoundtripFailures";
         };
-    };
-    snapshot_import_roundtrip("../glTF-Sample-Assets/Models/BoxTextured/glTF/BoxTextured.gltf");
-    snapshot_import_roundtrip("../glTF-Sample-Assets/Models/RiggedFigure/glTF/RiggedFigure.gltf"); // skinned armature + animation
-    snapshot_import_roundtrip("../glTF-Sample-Assets/Models/AnimatedMorphCube/glTF/AnimatedMorphCube.gltf"); // morph weights + animation
-    snapshot_import_roundtrip("../glTF-Sample-Assets/Models/SimpleMorph/glTF/SimpleMorph.gltf"); // static authored node morph weights
-    snapshot_import_roundtrip("../glTF-Sample-Assets/Models/MaterialsVariantsShoe/glTF/MaterialsVariantsShoe.gltf"); // KHR_materials_variants
+    }
 
     const auto edit_root = tmp_root / "edits";
     fs::create_directories(edit_root);
 
     // Mark the embedded variant's image dirty; saved bytes must pixel-equal the GPU readback.
-    if (const fs::path box_embedded = "../glTF-Sample-Assets/Models/BoxTextured/glTF-Embedded/BoxTextured.gltf"; fs::exists(box_embedded)) {
+    if (const fs::path box_embedded = SamplePath("../glTF-Sample-Assets/Models/BoxTextured/glTF-Embedded/BoxTextured.gltf"); fs::exists(box_embedded)) {
         test("dirty_image_re_encodes_pixel_equal") = [&] {
             SceneFixture fx{vk_resources};
-            auto load = gltf::LoadGltf(box_embedded, load_ctx(fx.R, fx.Viewport));
+            const auto load = gltf::LoadGltf(box_embedded, load_ctx(fx.R, fx.Viewport));
             expect(load.has_value()) << "load failed";
             if (!load) return;
             materialize_textures(fx.R, fx.Viewport);
@@ -738,27 +774,27 @@ int main() {
             }
             expect(tex != nullptr) << "BoxTextured image was not materialized";
             if (!tex) return;
-            auto pool = vk_resources.Device.createCommandPoolUnique({{}, vk_resources.QueueFamily});
-            auto fence = vk_resources.Device.createFenceUnique({});
-            auto original_pixels = ReadbackTextureRgba8(vk_resources, fx.R.ctx().get<GpuBuffers>().Ctx, *pool, *fence, *tex);
+            const auto pool = vk_resources.Device.createCommandPoolUnique({{}, vk_resources.QueueFamily});
+            const auto fence = vk_resources.Device.createFenceUnique({});
+            const auto original_pixels = ReadbackTextureRgba8(vk_resources, fx.R.ctx().get<GpuBuffers>().Ctx, *pool, *fence, *tex);
             expect(original_pixels.has_value()) << "readback failed";
             if (!original_pixels) return;
 
             fx.R.get<gltf::SourceAssets>(fx.Viewport).Images.front().IsDirty = true;
 
             const auto out_path = edit_root / "BoxTextured-dirty.gltf";
-            auto save = gltf::SaveGltf(out_path, save_ctx(fx.R, fx.Viewport));
+            const auto save = gltf::SaveGltf(out_path, save_ctx(fx.R, fx.Viewport));
             expect(save.has_value()) << "save failed: " << (save ? "" : save.error());
             if (!save) return;
 
             SceneFixture fx2{vk_resources};
-            auto reload = gltf::LoadGltf(out_path, load_ctx(fx2.R, fx2.Viewport));
+            const auto reload = gltf::LoadGltf(out_path, load_ctx(fx2.R, fx2.Viewport));
             expect(reload.has_value()) << "reload failed";
             if (!reload) return;
             const auto &reloaded = fx2.R.get<const gltf::SourceAssets>(fx2.Viewport).Images;
             expect(reloaded.size() == 1u);
             // PNG re-encode is lossless, so decoded pixels must match the pre-edit GPU readback.
-            auto decoded = DecodeImageRgba8(reloaded.front().Bytes, reloaded.front().Name);
+            const auto decoded = DecodeImageRgba8(reloaded.front().Bytes, reloaded.front().Name);
             expect(decoded.has_value()) << "reloaded image failed to decode";
             if (!decoded) return;
             expect(decoded->Width == tex->Width);
@@ -769,7 +805,7 @@ int main() {
     }
 
     // Move the external PNG aside between load and save; the embed-as-PNG fallback should fire.
-    const fs::path box_external = "../glTF-Sample-Assets/Models/BoxTextured/glTF/BoxTextured.gltf";
+    const fs::path box_external = SamplePath("../glTF-Sample-Assets/Models/BoxTextured/glTF/BoxTextured.gltf");
     if (fs::exists(box_external)) {
         test("missing_external_source_falls_back_to_embedded_png") = [&] {
             const auto stage_dir = edit_root / "BoxTextured-external";
@@ -782,7 +818,7 @@ int main() {
             expect(fs::exists(staged_png)) << "fixture missing PNG";
 
             SceneFixture fx{vk_resources};
-            auto load = gltf::LoadGltf(staged_gltf, load_ctx(fx.R, fx.Viewport));
+            const auto load = gltf::LoadGltf(staged_gltf, load_ctx(fx.R, fx.Viewport));
             expect(load.has_value()) << "load failed";
             if (!load) return;
             materialize_textures(fx.R, fx.Viewport);
@@ -790,12 +826,12 @@ int main() {
             fs::rename(staged_png, stage_dir / "CesiumLogoFlat.png.moved");
 
             const auto out_path = edit_root / "BoxTextured-fallback.gltf";
-            auto save = gltf::SaveGltf(out_path, save_ctx(fx.R, fx.Viewport));
+            const auto save = gltf::SaveGltf(out_path, save_ctx(fx.R, fx.Viewport));
             expect(save.has_value()) << "save failed: " << (save ? "" : save.error());
             if (!save) return;
 
             SceneFixture fx2{vk_resources};
-            auto reload = gltf::LoadGltf(out_path, load_ctx(fx2.R, fx2.Viewport));
+            const auto reload = gltf::LoadGltf(out_path, load_ctx(fx2.R, fx2.Viewport));
             expect(reload.has_value()) << "reload failed";
             if (!reload) return;
             const auto &reloaded = fx2.R.get<const gltf::SourceAssets>(fx2.Viewport).Images;

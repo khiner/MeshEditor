@@ -594,7 +594,7 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
                 static const auto SampleAssetsExtensions = [] {
                     std::set<std::string> exts;
                     [&](this auto &&self, const GltfSampleTree &n) -> void {
-                        for (const auto &f : n.Files) exts.insert(f.Extensions.begin(), f.Extensions.end());
+                        for (const auto &f : n.Files) exts.insert_range(f.Extensions);
                         for (const auto &[_, c] : n.Children) self(c);
                     }(SampleAssets);
                     return exts;

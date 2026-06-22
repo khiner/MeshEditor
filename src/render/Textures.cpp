@@ -137,7 +137,7 @@ std::expected<CubemapEntry, std::string> CreateCubemapEntryFromMipFacesF32(
         for (uint32_t face = 0; face < 6u; ++face) {
             const auto &src = mip_faces[mip][face].Pixels;
             copies.emplace_back(vk::BufferImageCopy{offset_bytes, 0, 0, vk::ImageSubresourceLayers{vk::ImageAspectFlagBits::eColor, mip, face, 1}, {0, 0, 0}, {size, size, 1}});
-            pixels.insert(pixels.end(), src.begin(), src.end());
+            pixels.append_range(src);
             offset_bytes += src.size() * sizeof(float);
         }
     }

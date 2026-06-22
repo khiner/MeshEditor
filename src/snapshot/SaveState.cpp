@@ -48,7 +48,7 @@ void AppendLengthPrefixed(std::vector<std::byte> &out, std::span<const std::byte
     const uint64_t len = section.size();
     const auto *len_bytes = reinterpret_cast<const std::byte *>(&len);
     out.insert(out.end(), len_bytes, len_bytes + sizeof(len));
-    out.insert(out.end(), section.begin(), section.end());
+    out.append_range(section);
 }
 
 // Reads a length-prefixed section from the front of `bytes`, advancing it past the section. Returns the
@@ -73,7 +73,7 @@ std::vector<std::byte> SaveState(const entt::registry &r) {
     out.reserve(2 * sizeof(uint64_t) + scene.size() + materials.size() + mesh.size());
     AppendLengthPrefixed(out, scene);
     AppendLengthPrefixed(out, materials);
-    out.insert(out.end(), mesh.begin(), mesh.end()); // trailing section, no length prefix
+    out.append_range(mesh); // trailing section, no length prefix
     return out;
 }
 
