@@ -24,6 +24,7 @@ void OnConstructHidden(entt::registry &, entt::entity);
 // Create the (Derived) MeshBuffers when a mesh/vertex-store handle is constructed.
 void OnConstructMeshHandle(entt::registry &, entt::entity);
 void OnConstructVertexStoreId(entt::registry &, entt::entity);
+void OnConstructOverlayVertexStoreId(entt::registry &, entt::entity);
 
 // Idempotent visibility helpers; emplace/remove RenderInstance, the reactive handlers do the rest.
 void Show(entt::registry &, entt::entity);
@@ -35,9 +36,9 @@ void ApplySelectBehavior(entt::registry &, entt::entity, MeshInstanceCreateInfo:
 std::pair<entt::entity, entt::entity> AddMesh(entt::registry &, MeshStore &, CreatedMesh &&, std::optional<MeshInstanceCreateInfo> = {});
 entt::entity AddMeshInstance(entt::registry &, entt::entity mesh_entity, MeshInstanceCreateInfo);
 
-// `derived` marks rebuilt overlay geometry (e.g. collider wireframes) the snapshot doesn't persist.
-entt::entity CreateExtrasBufferEntity(entt::registry &, MeshStore &, std::span<const vec3> positions, std::span<const uint8_t> vertex_classes = {}, std::span<const uint32_t> edge_indices = {}, bool derived = false);
-entt::entity CreateExtrasObject(entt::registry &, MeshStore &, std::span<const vec3> positions, std::span<const uint8_t> vertex_classes, ObjectType, ObjectCreateInfo, std::string_view default_name);
+// Creates a vertex-only buffer entity for derived overlay geometry (collider/bbox/tet wireframes).
+entt::entity CreateExtrasBufferEntity(entt::registry &, MeshStore &, std::span<const vec3> positions, std::span<const uint32_t> edge_indices = {});
+entt::entity CreateExtrasObject(entt::registry &, ObjectType, ObjectCreateInfo, std::string_view default_name);
 
 entt::entity AddEmpty(entt::registry &, MeshStore &, ObjectCreateInfo = {});
 entt::entity AddCamera(entt::registry &, MeshStore &, ObjectCreateInfo = {}, std::optional<Camera> = {});

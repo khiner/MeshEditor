@@ -17,9 +17,6 @@
 #include "viewport/ViewportInteractionState.h"
 #include "viewport/ViewportOps.h"
 
-#include <cstddef>
-#include <cstring>
-
 using std::ranges::find;
 
 namespace {

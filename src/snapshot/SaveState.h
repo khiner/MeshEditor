@@ -2,7 +2,6 @@
 
 #include <entt/entity/fwd.hpp>
 
-#include <cstddef>
 #include <span>
 #include <vector>
 

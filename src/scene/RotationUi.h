@@ -4,7 +4,6 @@
 #include "numeric/vec3.h"
 #include "numeric/vec4.h"
 
-#include <cstddef>
 #include <variant>
 
 // Mutually exclusive structs to track rotation representation.

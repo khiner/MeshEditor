@@ -8,7 +8,6 @@
 #include "gpu/BoneDeformVertex.h"
 #include "gpu/MorphTargetVertex.h"
 
-#include <cstddef>
 #include <expected>
 #include <filesystem>
 #include <memory>
@@ -85,11 +84,14 @@ struct MeshStore {
 
     // Allocate vertex-only store entry (no topology, no face/edge/primitive/material buffers).
     // Returns {storeId, vertexRange}. Release via Release(storeId).
-    // `extras` routes vertices into a separate non-serialized arena for derived overlay geometry the snapshot omits.
-    std::pair<uint32_t, Range> AllocateVertexBuffer(std::span<const vec3> positions, const MeshVertexAttributes &attrs, bool extras = false);
+    std::pair<uint32_t, Range> AllocateVertexBuffer(std::span<const vec3> positions, const MeshVertexAttributes &attrs);
+
+    // Like AllocateVertexBuffer, but in the separate overlay store (its own arena and id space).
+    std::pair<uint32_t, Range> AllocateOverlayVertexBuffer(std::span<const vec3> positions);
+    SlottedRange GetOverlayVerticesRange(uint32_t id) const;
+    void ReleaseOverlay(uint32_t id);
 
     void SetPositions(const Mesh &, std::span<const vec3>);
-    void SetPositions(uint32_t store_id, std::span<const vec3>); // Position-only, no normals. For topology-free entries.
     void SetPosition(const Mesh &, uint32_t index, vec3 position); // Single vertex, no normal update
 
     std::span<const Vertex> GetVertices(uint32_t id) const;
@@ -172,12 +174,15 @@ private:
         uint32_t TriangleCount{0};
         std::vector<float> DefaultMorphWeights{};
         std::vector<PrimitiveTriangleRange> PrimitiveTriangleRanges{};
-        bool Extras{false}; // Vertices live in the non-serialized ExtrasVerticesBuffer (derived overlay geometry).
         bool Alive{false};
     };
 
     std::vector<Entry> Entries{};
     std::vector<uint32_t> FreeIds{};
+
+    // Overlay store: vertex range per id.
+    std::vector<Range> OverlayEntries{};
+    std::vector<uint32_t> OverlayFreeIds{};
 
     struct PendingReserves {
         uint32_t Vertices{}, Faces{}, Triangles{}, EdgeStates{};

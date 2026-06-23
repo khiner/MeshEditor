@@ -166,6 +166,7 @@ entt::entity InitEngine(entt::registry &r, VulkanResources vc) {
     track<changes::SoundVerticesUpdated>(r).on<SoundVertices>(On::Update);
     track<changes::VertexForce>(r).on<VertexForce>(On::Create | On::Destroy);
     track<changes::NewBufferEntity>(r).on<MeshBuffers>(On::Create);
+    track<changes::ObjectCreated>(r).on<ObjectKind>(On::Create);
     track<changes::RenderInstanceCreated>(r).on<RenderInstance>(On::Create);
     track<changes::ViewportDisplay>(r).on<ViewportDisplay>(On::Create | On::Update);
     track<changes::InteractionMode>(r).on<Interaction>(On::Create | On::Update);
@@ -206,6 +207,7 @@ entt::entity InitEngine(entt::registry &r, VulkanResources vc) {
     r.on_construct<Hidden>().connect<&OnConstructHidden>();
     r.on_construct<MeshHandle>().connect<&OnConstructMeshHandle>();
     r.on_construct<VertexStoreId>().connect<&OnConstructVertexStoreId>();
+    r.on_construct<OverlayVertexStoreId>().connect<&OnConstructOverlayVertexStoreId>();
     // BoneConstraints edits change the resolved local Transform; poke it to drive the WorldTransform recompute.
     r.on_update<BoneConstraints>().connect<+[](entt::registry &r, entt::entity e) {
         r.patch<Transform>(e, [](auto &) {});

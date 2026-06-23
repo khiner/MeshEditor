@@ -9,7 +9,6 @@
 #include <entt/entity/fwd.hpp>
 
 #include <array>
-#include <cstddef>
 #include <string>
 #include <variant>
 

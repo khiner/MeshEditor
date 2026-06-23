@@ -203,7 +203,7 @@ struct CachedPose {
     quat R;
 };
 
-// Per-body pose timeline indexed by frame, rebuilt by physics playback. nullopt slot means body not yet simulated at that frame.
+// Per-body pose timeline indexed by frame. A nullopt slot means the body wasn't simulated at that frame.
 struct BodyPoseCache {
     std::vector<std::optional<CachedPose>> Frames;
 };

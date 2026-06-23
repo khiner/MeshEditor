@@ -424,7 +424,10 @@ void EnsureWireframes(entt::registry &r, entt::entity viewport) {
     auto ensure_buffer = [&](ColliderShapeBuffer kind, auto generator) {
         if (r.valid(buf(kind))) return;
         auto mesh = generator();
-        if (!mesh.Positions.empty()) buf(kind) = ::CreateExtrasBufferEntity(r, meshes, mesh.Positions, {}, mesh.EdgeIndices, /*derived=*/true);
+        if (!mesh.Positions.empty()) {
+            buf(kind) = ::CreateExtrasBufferEntity(r, meshes, mesh.Positions, mesh.EdgeIndices);
+            r.emplace<OverlayExtra>(buf(kind));
+        }
     };
     ensure_buffer(Box, physics_debug::UnitBox);
     ensure_buffer(Sphere, physics_debug::UnitSphere);
@@ -562,9 +565,46 @@ void EnsureWireframes(entt::registry &r, entt::entity viewport) {
             const auto *tm = r.try_get<const TetMeshData>(instance->Entity);
             if (!tm || tm->Positions.empty()) continue;
 
-            const auto tet_buf = ::CreateExtrasBufferEntity(r, meshes, tm->Positions, {}, tm->EdgeIndices, /*derived=*/true);
+            const auto tet_buf = ::CreateExtrasBufferEntity(r, meshes, tm->Positions, tm->EdgeIndices);
+            r.emplace<OverlayExtra>(tet_buf);
             r.emplace<TetWireframe>(entity, make_instance(tet_buf, entity));
         }
+    }
+}
+
+// Build a camera/light/empty gizmo's wireframe from the object's params, replacing any existing one.
+void RebuildGizmoGeometry(entt::registry &r, MeshStore &meshes, GpuBuffers &buffers, entt::entity object, entt::entity buffer, ObjectType type) {
+    MeshData data;
+    std::vector<uint8_t> vertex_classes;
+    if (type == ObjectType::Light) {
+        auto wf = BuildLightMesh(r.get<const PunctualLight>(object));
+        data = std::move(wf.Data);
+        vertex_classes = std::move(wf.VertexClasses);
+    } else if (type == ObjectType::Camera) {
+        data = BuildCameraFrustumMesh(r.get<const Camera>(object), r.all_of<LookingThrough>(object));
+    } else {
+        data = BuildEmptyMesh();
+    }
+
+    // Release the existing wireframe before rebuilding.
+    if (r.all_of<OverlayVertexStoreId>(buffer)) {
+        if (const auto *vcr = r.try_get<const VertexClass>(buffer)) {
+            buffers.VertexClassBuffer.Release({vcr->Offset, r.get<const MeshBuffers>(buffer).Vertices.Count});
+            r.remove<VertexClass>(buffer);
+        }
+        meshes.ReleaseOverlay(r.get<const OverlayVertexStoreId>(buffer).StoreId);
+        if (auto *mb = r.try_get<MeshBuffers>(buffer)) buffers.Release(*mb);
+        r.erase<MeshBuffers>(buffer);
+        r.remove<OverlayVertexStoreId>(buffer);
+    }
+
+    // Emplacing the handle builds MeshBuffers (vertices) via on-construct; add the edges after.
+    r.emplace<OverlayVertexStoreId>(buffer, meshes.AllocateOverlayVertexBuffer(data.Positions).first);
+    if (const auto edges = data.CreateEdgeIndices(); !edges.empty()) {
+        r.patch<MeshBuffers>(buffer, [&](auto &mb) { mb.EdgeIndices = buffers.CreateIndices(edges, IndexKind::Edge); });
+    }
+    if (!vertex_classes.empty()) {
+        r.emplace<VertexClass>(buffer, buffers.VertexClassBuffer.Allocate(std::span<const uint8_t>(vertex_classes)).Offset);
     }
 }
 
@@ -1001,6 +1041,25 @@ RenderRequest ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
     // consumes the RenderInstance/NewBufferEntity reactive events they fire.
     EnsureWireframes(r, viewport);
 
+    // Keep camera/light/empty gizmo wireframes in sync with their objects: rebuild on object creation and on a
+    // shape-affecting param change (a light's color/intensity edit changes no geometry, so it isn't triggered).
+    {
+        const auto rebuild = [&](entt::entity object, ObjectType type) {
+            if (const auto *inst = r.try_get<const Instance>(object); inst && r.valid(inst->Entity)) {
+                RebuildGizmoGeometry(r, meshes, buffers, object, inst->Entity, type);
+                request(RenderRequest::Submit);
+            }
+        };
+        for (auto object : reactive<changes::ObjectCreated>(r)) {
+            // Cameras rebuild via their lens reactive below; here, lights and empties.
+            if (const auto type = r.get<const ObjectKind>(object).Value; type == ObjectType::Light || type == ObjectType::Empty) rebuild(object, type);
+        }
+        for (auto object : reactive<changes::CameraLens>(r)) {
+            if (r.all_of<Camera>(object)) rebuild(object, ObjectType::Camera);
+        }
+        for (auto object : r.view<LightWireframeDirty>()) rebuild(object, ObjectType::Light);
+    }
+
     auto sync = SyncModelsBuffers(r); // Runs first so BufferIndex is valid for all downstream code.
     if (!sync.NewlyInserted.empty() || sync.Compacted) request(RenderRequest::Submit);
     const std::unordered_set<entt::entity> newly_inserted_set(sync.NewlyInserted.begin(), sync.NewlyInserted.end());
@@ -1108,8 +1167,7 @@ RenderRequest ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
         request(RenderRequest::ReRecord);
     }
 
-    // Deferred index buffer creation for new extras/bone/joint buffer entities.
-    // Light buffer entities are skipped — LightWireframeDirty handles their full rebuild.
+    // Deferred index buffer creation for new bone/joint buffer entities.
     if (!sync.NewExtrasEntities.empty()) {
         auto flatten_tri_indices = [](const std::vector<std::vector<uint32_t>> &faces) {
             std::vector<uint32_t> indices;
@@ -1143,14 +1201,6 @@ RenderRequest ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
         }
         buffers.ReserveAdditionalIndices(total_face, total_edge, total_vertex);
 
-        // Map each camera/light/empty extras buffer entity back to its object, so a restored buffer entity (whose
-        // transient PendingEdgeIndices is gone) can re-derive its wireframe edges from the object's params.
-        std::unordered_map<entt::entity, entt::entity> extras_object;
-        for (auto [object, kind, instance] : r.view<const ObjectKind, const Instance>().each()) {
-            if (kind.Value == ObjectType::Camera || kind.Value == ObjectType::Light || kind.Value == ObjectType::Empty) {
-                extras_object.emplace(instance.Entity, object);
-            }
-        }
         for (auto entity : sync.NewExtrasEntities) {
             if (r.all_of<ArmatureObject>(entity)) {
                 r.patch<MeshBuffers>(entity, [&](auto &mb) {
@@ -1169,17 +1219,6 @@ RenderRequest ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
                     mb.EdgeIndices = buffers.CreateIndices(pending->Indices, IndexKind::Edge);
                 });
                 r.remove<PendingEdgeIndices>(entity);
-            } else if (const auto it = extras_object.find(entity); it != extras_object.end() && r.get<const MeshBuffers>(entity).EdgeIndices.Count == 0 && !r.all_of<LightWireframeDirty>(it->second)) {
-                // Derive the wireframe for camera/light/empty extras from the object's params, since they store no edge indices.
-                const auto object = it->second;
-                if (const auto *light = r.try_get<const PunctualLight>(object)) {
-                    const auto wireframe = BuildLightMesh(*light);
-                    r.patch<MeshBuffers>(entity, [&](auto &mb) { mb.EdgeIndices = buffers.CreateIndices(wireframe.Data.CreateEdgeIndices(), IndexKind::Edge); });
-                    if (!wireframe.VertexClasses.empty()) r.emplace_or_replace<VertexClass>(entity, buffers.VertexClassBuffer.Allocate(std::span<const uint8_t>(wireframe.VertexClasses)).Offset);
-                } else {
-                    const auto edges = r.all_of<Camera>(object) ? BuildCameraFrustumMesh(r.get<const Camera>(object)).CreateEdgeIndices() : BuildEmptyMesh().CreateEdgeIndices();
-                    if (!edges.empty()) r.patch<MeshBuffers>(entity, [&](auto &mb) { mb.EdgeIndices = buffers.CreateIndices(edges, IndexKind::Edge); });
-                }
             }
         }
         request(RenderRequest::ReRecord);
@@ -1353,15 +1392,8 @@ RenderRequest ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
         if (const auto *inst = r.try_get<const Instance>(instance_entity)) dirty_element_state_meshes.insert(inst->Entity);
     }
     for (auto camera_entity : reactive<changes::CameraLens>(r)) {
-        if (const auto *cd = r.try_get<Camera>(camera_entity)) {
-            const bool look_through_view = r.all_of<LookingThrough>(camera_entity);
-            const auto buffer_entity = r.get<Instance>(camera_entity).Entity;
-            meshes.SetPositions(r.get<const VertexStoreId>(buffer_entity).StoreId, BuildCameraFrustumMesh(*cd, look_through_view).Positions);
-            request(RenderRequest::Submit);
-            // If looking through this camera, trigger a ViewCamera update so the SceneView
-            // handler re-derives the widened FOV from the updated camera.
-            if (look_through_view) r.patch<ViewCamera>(viewport, [](auto &) {});
-        }
+        // When looking through this camera, refresh the ViewCamera so the view picks up its FOV.
+        if (r.all_of<Camera>(camera_entity) && r.all_of<LookingThrough>(camera_entity)) r.patch<ViewCamera>(viewport, [](auto &) {});
     }
     { // Sync RotationUiVariant from Rotation, but skip entities where the UI is driving the change.
         for (auto e : reactive<changes::Rotation>(r)) {
@@ -1386,37 +1418,6 @@ RenderRequest ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
     if (!reactive<changes::WorkspaceLights>(r).empty()) {
         buffers.WorkspaceLightsUBO.Update(as_bytes(r.get<const WorkspaceLights>(viewport)));
         request(RenderRequest::Submit);
-    }
-    for (auto light_entity : r.view<LightWireframeDirty, LightIndex, Instance>()) {
-        const auto light = buffers.Lights.Get(r.get<const LightIndex>(light_entity).Value);
-        auto wireframe = BuildLightMesh(light);
-        const auto buffer_entity = r.get<Instance>(light_entity).Entity;
-
-        // Release old vertex classes (need old vertex count from MeshBuffers before releasing)
-        if (const auto *old_vcr = r.try_get<VertexClass>(buffer_entity)) {
-            buffers.VertexClassBuffer.Release({old_vcr->Offset, r.get<const MeshBuffers>(buffer_entity).Vertices.Count});
-            r.remove<VertexClass>(buffer_entity);
-        }
-
-        auto &vs = r.get<VertexStoreId>(buffer_entity);
-        meshes.Release(vs.StoreId);
-        if (auto *mb = r.try_get<MeshBuffers>(buffer_entity)) buffers.Release(*mb);
-        r.erase<MeshBuffers>(buffer_entity);
-
-        const auto [store_id, vertices] = meshes.AllocateVertexBuffer(wireframe.Data.Positions, {});
-        vs.StoreId = store_id;
-
-        r.emplace<MeshBuffers>(
-            buffer_entity, meshes.GetVerticesRange(store_id),
-            SlottedRange{},
-            buffers.CreateIndices(wireframe.Data.CreateEdgeIndices(), IndexKind::Edge),
-            SlottedRange{}
-        );
-        if (!wireframe.VertexClasses.empty()) {
-            const auto range = buffers.VertexClassBuffer.Allocate(std::span<const uint8_t>(wireframe.VertexClasses));
-            r.emplace<VertexClass>(buffer_entity, range.Offset);
-        }
-        request(RenderRequest::ReRecord);
     }
     if (auto &tracker = reactive<changes::MeshGeometry>(r); !tracker.empty()) {
         const auto edit_mode = r.get<const EditMode>(viewport).Value;

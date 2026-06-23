@@ -379,7 +379,7 @@ struct MeshStore::Buffers {
           BoneDeformBuffer{ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::BoneDeformBuffer},
           MorphTargetBuffer{ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::MorphTargetBuffer},
           VerticesBuffer{ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::VertexBuffer},
-          ExtrasVerticesBuffer{ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::VertexBuffer},
+          OverlayVerticesBuffer{ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::VertexBuffer},
           VertexStateBuffer{ctx, 0, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer},
           FaceStateBuffer{ctx, 0, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer},
           EdgeStateBuffer{ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer},
@@ -391,9 +391,8 @@ struct MeshStore::Buffers {
     BufferArena<BoneDeformVertex> BoneDeformBuffer;
     BufferArena<MorphTargetVertex> MorphTargetBuffer;
     BufferArena<Vertex> VerticesBuffer;
-    // Derived overlay geometry (collider/bbox/tet wireframes), rebuilt by ProcessComponentEvents. Excluded from
-    // ForEachArena so it is never serialized. No state mirror — overlays are never edited.
-    BufferArena<Vertex> ExtrasVerticesBuffer;
+    // Overlay geometry, kept out of ForEachArena so Serialize skips it. No state mirror (overlays aren't edited).
+    BufferArena<Vertex> OverlayVerticesBuffer;
     mvk::Buffer VertexStateBuffer; // Mirrors VerticesBuffer
     mvk::Buffer FaceStateBuffer; // Mirrors FaceFirstTriangleBuffer
     BufferArena<uint8_t> EdgeStateBuffer;
@@ -437,15 +436,6 @@ std::vector<std::byte> MeshStore::Serialize() const {
     // Serialize from non-const copies: zpp mis-encodes a const aggregate this large, and these match the types Deserialize reads back into.
     auto entries = Entries;
     auto free_ids = FreeIds;
-    // Extras vertices live in the non-serialized ExtrasVerticesBuffer and are rebuilt on restore, so exclude each
-    // entry from the image: blank it and free its slot. The freed slots form an ascending tail block the
-    // back-popping rebuild reuses exactly, leaving the persistent free list unchanged, so the next save matches.
-    for (uint32_t i = 0; i < entries.size(); ++i) {
-        if (entries[i].Extras) {
-            entries[i] = {};
-            free_ids.push_back(i);
-        }
-    }
     std::vector<std::byte> out;
     zpp::bits::out archive{out};
     if (zpp::bits::failure(archive(arenas, vertex_state, face_state, entries, free_ids))) return {};
@@ -475,15 +465,9 @@ MeshStore::~MeshStore() = default;
 MeshStore::MeshStore(MeshStore &&) noexcept = default;
 MeshStore &MeshStore::operator=(MeshStore &&) noexcept = default;
 
-// Vertex readback is for real meshes only (Mesh objects, glTF export); overlay extras never reach here.
 std::span<const Vertex> MeshStore::GetVertices(uint32_t id) const { return B->VerticesBuffer.Get(Entries.at(id).Vertices); }
 std::span<Vertex> MeshStore::GetVertices(uint32_t id) { return B->VerticesBuffer.GetMutable(Entries.at(id).Vertices); }
-// Resolves the arena: unlike readback, this is reached for overlay extras too, since the VertexStoreId
-// on-construct handler builds MeshBuffers for both real and overlay buffer entities.
-SlottedRange MeshStore::GetVerticesRange(uint32_t id) const {
-    const auto &e = Entries.at(id);
-    return (e.Extras ? B->ExtrasVerticesBuffer : B->VerticesBuffer).Slotted(e.Vertices);
-}
+SlottedRange MeshStore::GetVerticesRange(uint32_t id) const { return B->VerticesBuffer.Slotted(Entries.at(id).Vertices); }
 SlottedRange MeshStore::GetBoneDeformRange(uint32_t id) const { return B->BoneDeformBuffer.Slotted(Entries.at(id).BoneDeform); }
 SlottedRange MeshStore::GetMorphTargetRange(uint32_t id) const { return B->MorphTargetBuffer.Slotted(Entries.at(id).MorphTargets); }
 
@@ -540,13 +524,10 @@ void MeshStore::UpdateNormals(const Mesh &mesh, bool skip_nonzero) {
     }
 }
 
-std::pair<uint32_t, Range> MeshStore::AllocateVertexBuffer(std::span<const vec3> positions, const MeshVertexAttributes &attrs, bool extras) {
-    const uint32_t vertex_count = positions.size();
-    auto &arena = extras ? B->ExtrasVerticesBuffer : B->VerticesBuffer;
-    const auto vertices = extras ? arena.Allocate(vertex_count) : AllocateVertices(vertex_count);
-    auto vertex_span = arena.GetMutable(vertices);
-    for (uint32_t i = 0; i < vertex_count; ++i) {
-        vertex_span[i] = {
+namespace {
+void WriteVertices(std::span<Vertex> dst, std::span<const vec3> positions, const MeshVertexAttributes &attrs) {
+    for (uint32_t i = 0; i < positions.size(); ++i) {
+        dst[i] = {
             .Position = positions[i],
             .Tangent = attrs.Tangents ? (*attrs.Tangents)[i] : vec4{0.f, 0.f, 0.f, 1.f},
             .Color = attrs.Colors0 ? (*attrs.Colors0)[i] : vec4{1.f},
@@ -557,9 +538,37 @@ std::pair<uint32_t, Range> MeshStore::AllocateVertexBuffer(std::span<const vec3>
         };
     }
     if (attrs.Normals) {
-        for (uint32_t i = 0; i < vertex_count; ++i) vertex_span[i].Normal = (*attrs.Normals)[i];
+        for (uint32_t i = 0; i < positions.size(); ++i) dst[i].Normal = (*attrs.Normals)[i];
     }
-    return {AcquireId({.Vertices = vertices, .FaceData = {}, .Extras = extras, .Alive = true}), vertices};
+}
+} // namespace
+
+std::pair<uint32_t, Range> MeshStore::AllocateVertexBuffer(std::span<const vec3> positions, const MeshVertexAttributes &attrs) {
+    const auto vertices = AllocateVertices(positions.size());
+    WriteVertices(B->VerticesBuffer.GetMutable(vertices), positions, attrs);
+    return {AcquireId({.Vertices = vertices, .FaceData = {}, .Alive = true}), vertices};
+}
+
+std::pair<uint32_t, Range> MeshStore::AllocateOverlayVertexBuffer(std::span<const vec3> positions) {
+    const auto vertices = B->OverlayVerticesBuffer.Allocate(positions.size());
+    WriteVertices(B->OverlayVerticesBuffer.GetMutable(vertices), positions, {});
+    if (!OverlayFreeIds.empty()) {
+        const auto id = OverlayFreeIds.back();
+        OverlayFreeIds.pop_back();
+        OverlayEntries[id] = vertices;
+        return {id, vertices};
+    }
+    OverlayEntries.push_back(vertices);
+    return {uint32_t(OverlayEntries.size() - 1), vertices};
+}
+
+SlottedRange MeshStore::GetOverlayVerticesRange(uint32_t id) const { return B->OverlayVerticesBuffer.Slotted(OverlayEntries.at(id)); }
+
+void MeshStore::ReleaseOverlay(uint32_t id) {
+    if (id >= OverlayEntries.size()) return;
+    B->OverlayVerticesBuffer.Release(OverlayEntries[id]);
+    OverlayEntries[id] = {};
+    OverlayFreeIds.push_back(id);
 }
 
 void MeshStore::PlanCreate(const MeshData &data, const MeshPrimitives &primitives, bool has_deform, uint32_t morph_target_count) {
@@ -793,10 +802,6 @@ void MeshStore::SetPositions(const Mesh &mesh, std::span<const vec3> positions) 
     for (size_t i = 0; i < positions.size(); ++i) vertex_span[i].Position = positions[i];
     UpdateNormals(mesh);
 }
-void MeshStore::SetPositions(uint32_t store_id, std::span<const vec3> positions) {
-    auto vertex_span = B->VerticesBuffer.GetMutable(Entries.at(store_id).Vertices);
-    for (size_t i = 0; i < positions.size(); ++i) vertex_span[i].Position = positions[i];
-}
 void MeshStore::SetPosition(const Mesh &mesh, uint32_t index, vec3 position) {
     B->VerticesBuffer.GetMutable(Entries.at(mesh.GetStoreId()).Vertices)[index].Position = position;
     // Caller is responsible for updating normals
@@ -805,8 +810,7 @@ void MeshStore::SetPosition(const Mesh &mesh, uint32_t index, vec3 position) {
 void MeshStore::Release(uint32_t id) {
     if (id >= Entries.size() || !Entries[id].Alive) return;
     auto &entry = Entries[id];
-    // Reached for overlay buffer teardown too, so free into the arena the entry was allocated from.
-    (entry.Extras ? B->ExtrasVerticesBuffer : B->VerticesBuffer).Release(entry.Vertices);
+    B->VerticesBuffer.Release(entry.Vertices);
     B->TriangleFaceIdBuffer.Release(entry.TriangleFaceIds);
     B->FaceFirstTriangleBuffer.Release(entry.FaceData);
     B->FacePrimitiveBuffer.Release(entry.FacePrimitives);
@@ -820,11 +824,13 @@ void MeshStore::Release(uint32_t id) {
 
 void MeshStore::Clear() {
     B->ForEachArena([](auto &a) { a.Reset(); });
-    B->ExtrasVerticesBuffer.Reset();
+    B->OverlayVerticesBuffer.Reset();
     B->VertexStateBuffer.UsedSize = 0;
     B->FaceStateBuffer.UsedSize = 0;
     Entries.clear();
     FreeIds.clear();
+    OverlayEntries.clear();
+    OverlayFreeIds.clear();
     Pending = {};
 }
 

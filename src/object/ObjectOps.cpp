@@ -25,7 +25,6 @@
 #include "selection/SelectionComponents.h"
 #include "selection/SelectionOps.h"
 #include "viewport/ViewCamera.h"
-#include "viewport/ViewportEvents.h"
 
 #include <entt/entity/registry.hpp>
 
@@ -90,7 +89,8 @@ void Hide(entt::registry &r, entt::entity e) {
     r.emplace_or_replace<Hidden>(e); // OnConstructHidden removes the RenderInstance
 }
 
-// Create MeshBuffers when its canonical handle is constructed (MeshHandle for full meshes, VertexStoreId for vertex-only extras), so a bare restore rebuilds it.
+// Build MeshBuffers when a vertex handle is constructed.
+// MeshHandle = full meshes, VertexStoreId = vertex-only extras, OverlayVertexStoreId = overlays.
 // The index ranges fill in afterward.
 void OnConstructMeshHandle(entt::registry &r, entt::entity e) {
     auto &meshes = r.ctx().get<MeshStore>();
@@ -99,6 +99,10 @@ void OnConstructMeshHandle(entt::registry &r, entt::entity e) {
 void OnConstructVertexStoreId(entt::registry &r, entt::entity e) {
     auto &meshes = r.ctx().get<MeshStore>();
     r.emplace<MeshBuffers>(e, meshes.GetVerticesRange(r.get<const VertexStoreId>(e).StoreId), SlottedRange{}, SlottedRange{}, SlottedRange{});
+}
+void OnConstructOverlayVertexStoreId(entt::registry &r, entt::entity e) {
+    auto &meshes = r.ctx().get<MeshStore>();
+    r.emplace<MeshBuffers>(e, meshes.GetOverlayVerticesRange(r.get<const OverlayVertexStoreId>(e).StoreId), SlottedRange{}, SlottedRange{}, SlottedRange{});
 }
 
 void ApplySelectBehavior(entt::registry &r, entt::entity e, MeshInstanceCreateInfo::SelectBehavior behavior) {
@@ -135,24 +139,20 @@ std::pair<entt::entity, entt::entity> AddMesh(entt::registry &r, MeshStore &, Cr
     return {mesh_entity, info ? AddMeshInstance(r, mesh_entity, *info) : entt::null};
 }
 
-entt::entity CreateExtrasBufferEntity(entt::registry &r, MeshStore &meshes, std::span<const vec3> positions, std::span<const uint8_t> vertex_classes, std::span<const uint32_t> edge_indices, bool derived) {
+entt::entity CreateExtrasBufferEntity(entt::registry &r, MeshStore &meshes, std::span<const vec3> positions, std::span<const uint32_t> edge_indices) {
     const auto buffer_entity = r.create();
-    const auto store_id = meshes.AllocateVertexBuffer(positions, {}, derived).first;
     r.emplace<ObjectExtrasTag>(buffer_entity);
-    r.emplace<VertexStoreId>(buffer_entity, store_id);
-    if (derived) r.emplace<OverlayExtra>(buffer_entity);
-    if (!vertex_classes.empty()) {
-        r.emplace<VertexClass>(buffer_entity, AllocateVertexClasses(r, vertex_classes));
-    }
+    r.emplace<OverlayVertexStoreId>(buffer_entity, meshes.AllocateOverlayVertexBuffer(positions).first);
     if (!edge_indices.empty()) {
         r.emplace<PendingEdgeIndices>(buffer_entity, std::vector<uint32_t>(edge_indices.begin(), edge_indices.end()));
     }
     return buffer_entity;
 }
 
-entt::entity CreateExtrasObject(entt::registry &r, MeshStore &meshes, std::span<const vec3> positions, std::span<const uint8_t> vertex_classes, ObjectType type, ObjectCreateInfo info, std::string_view default_name) {
-    // Vertices go into the arena here. The wireframe edges are derived from the object's params later, so none are passed or stored.
-    const auto buffer_entity = CreateExtrasBufferEntity(r, meshes, positions, vertex_classes);
+entt::entity CreateExtrasObject(entt::registry &r, ObjectType type, ObjectCreateInfo info, std::string_view default_name) {
+    // The buffer starts empty; its wireframe is built later from the object's params.
+    const auto buffer_entity = r.create();
+    r.emplace<ObjectExtrasTag>(buffer_entity);
     const auto e = r.create();
     r.emplace<ObjectKind>(e, type);
     r.emplace<Instance>(e, buffer_entity);
@@ -164,16 +164,13 @@ entt::entity CreateExtrasObject(entt::registry &r, MeshStore &meshes, std::span<
     return e;
 }
 
-entt::entity AddEmpty(entt::registry &r, MeshStore &meshes, ObjectCreateInfo info) {
-    const auto mesh = BuildEmptyMesh();
-    return CreateExtrasObject(r, meshes, mesh.Positions, {}, ObjectType::Empty, std::move(info), "Empty");
+entt::entity AddEmpty(entt::registry &r, MeshStore &, ObjectCreateInfo info) {
+    return CreateExtrasObject(r, ObjectType::Empty, std::move(info), "Empty");
 }
 
-entt::entity AddCamera(entt::registry &r, MeshStore &meshes, ObjectCreateInfo info, std::optional<Camera> props) {
-    const Camera camera = props.value_or(Camera{Defaults::PerspectiveCamera});
-    auto mesh = BuildCameraFrustumMesh(camera);
-    const auto entity = CreateExtrasObject(r, meshes, mesh.Positions, {}, ObjectType::Camera, std::move(info), "Camera");
-    r.emplace<Camera>(entity, camera);
+entt::entity AddCamera(entt::registry &r, MeshStore &, ObjectCreateInfo info, std::optional<Camera> props) {
+    const auto entity = CreateExtrasObject(r, ObjectType::Camera, std::move(info), "Camera");
+    r.emplace<Camera>(entity, props.value_or(Camera{Defaults::PerspectiveCamera}));
     return entity;
 }
 
@@ -233,13 +230,10 @@ void CreateBoneInstances(entt::registry &r, MeshStore &meshes, entt::entity arm_
     arm_obj.JointEntity = joint_entity;
 }
 
-entt::entity AddLight(entt::registry &r, MeshStore &meshes, ObjectCreateInfo info, std::optional<PunctualLight> props) {
-    auto light = props.value_or(Defaults::MakePunctualLight(PunctualLightType::Point));
-    auto wireframe = BuildLightMesh(light);
-    const auto entity = CreateExtrasObject(r, meshes, wireframe.Data.Positions, wireframe.VertexClasses, ObjectType::Light, std::move(info), "Light");
-    r.emplace<LightWireframeDirty>(entity);
+entt::entity AddLight(entt::registry &r, MeshStore &, ObjectCreateInfo info, std::optional<PunctualLight> props) {
+    const auto entity = CreateExtrasObject(r, ObjectType::Light, std::move(info), "Light");
     // PunctualLight is the canonical per-light data, the GPU Lights buffer is registered from it later.
-    r.emplace<PunctualLight>(entity, light);
+    r.emplace<PunctualLight>(entity, props.value_or(Defaults::MakePunctualLight(PunctualLightType::Point)));
     return entity;
 }
 
@@ -360,6 +354,7 @@ void Destroy(entt::registry &r, entt::entity viewport, entt::entity e) {
                 ReleaseMeshBuffers(r, *mesh_buffers);
             }
             if (const auto *vs = r.try_get<VertexStoreId>(buffer_entity)) meshes.Release(vs->StoreId);
+            if (const auto *ov = r.try_get<OverlayVertexStoreId>(buffer_entity)) meshes.ReleaseOverlay(ov->StoreId);
             if (const auto *models = r.try_get<ModelsBuffer>(buffer_entity)) FreeInstanceRange(r, models->InstanceRange);
             r.destroy(buffer_entity);
         }

@@ -23,7 +23,6 @@ mvk::BufferContext &GetBufferContext(entt::registry &);
 void ReleaseMeshBuffers(entt::registry &, MeshBuffers &);
 
 // Vulkan-free buffer mutations.
-uint32_t AllocateVertexClasses(entt::registry &, std::span<const uint8_t>);
 void ReleaseVertexClasses(entt::registry &, uint32_t offset, uint32_t count);
 void FreeInstanceRange(entt::registry &, Range);
 void ReleaseEdgeIndices(entt::registry &, const SlottedRange &);
