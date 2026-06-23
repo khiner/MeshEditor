@@ -11,7 +11,7 @@ std::vector<std::byte> SnapshotSceneState(const entt::registry &);
 
 struct SnapshotDiff {
     bool Equal;
-    std::size_t FirstDifferingByte; // == min size when unequal, == size when equal
+    size_t FirstDifferingByte; // == min size when unequal, == size when equal
 };
 SnapshotDiff Compare(std::span<const std::byte> expected, std::span<const std::byte> actual);
 

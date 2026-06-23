@@ -20,7 +20,7 @@ namespace {
 std::vector<std::byte> SerializeMaterials(const entt::registry &r) {
     const auto &materials = r.ctx().get<const GpuBuffers>().Materials;
     const auto mapped = materials.Buffer.GetMappedData();
-    const auto used = std::min(std::size_t(materials.Buffer.UsedSize), mapped.size());
+    const auto used = std::min(size_t(materials.Buffer.UsedSize), mapped.size());
     std::vector<std::byte> material_bytes{mapped.begin(), mapped.begin() + used};
     auto names = r.ctx().get<const MaterialStore>().Names;
 

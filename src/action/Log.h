@@ -24,7 +24,7 @@ class WriteBehindLog {
 public:
     using Serializer = void (*)(const T &, std::ostream &);
 
-    WriteBehindLog(std::ostream &out, Serializer serialize, std::size_t initial_capacity = 1024)
+    WriteBehindLog(std::ostream &out, Serializer serialize, size_t initial_capacity = 1024)
         : Queue(initial_capacity), Out(out), Serialize(serialize), Writer([this] { Run(); }) {}
     ~WriteBehindLog() { Stop(); }
 

@@ -10,8 +10,8 @@ using namespace action;
 namespace {
 // A merged Action holding alternative `idx`, default-constructed.
 // (Can't use CreateVariantByIndex - it builds a constexpr table and copies, but Action is move-only bc of unique_ptrs)
-Action DefaultAt(std::size_t idx) {
-    return [&]<std::size_t... Is>(std::index_sequence<Is...>) -> Action {
+Action DefaultAt(size_t idx) {
+    return [&]<size_t... Is>(std::index_sequence<Is...>) -> Action {
         Action a;
         ((Is == idx ? (void)a.emplace<Is>() : void()), ...);
         return a;
@@ -50,7 +50,7 @@ int main() {
     using namespace boost::ut;
 
     "every action round-trips through the log"_test = [] {
-        for (std::size_t i = 0; i < std::variant_size_v<Action>; ++i) {
+        for (size_t i = 0; i < std::variant_size_v<Action>; ++i) {
             Action a = DefaultAt(i);
             EnsureSerializable(a);
 
@@ -74,14 +74,14 @@ int main() {
 
     "back-to-back records read back in order"_test = [] {
         auto out = MakeStream();
-        std::vector<std::size_t> written;
-        for (std::size_t i = 0; i < std::variant_size_v<Action>; ++i) {
+        std::vector<size_t> written;
+        for (size_t i = 0; i < std::variant_size_v<Action>; ++i) {
             Action a = DefaultAt(i);
             EnsureSerializable(a);
             SerializeAction(a, out);
             written.push_back(i);
         }
-        std::vector<std::size_t> read;
+        std::vector<size_t> read;
         StreamActions(out, [&](Action &&d) { read.push_back(d.index()); });
         const bool same = read == written;
         expect(same);

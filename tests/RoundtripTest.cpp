@@ -245,7 +245,7 @@ bool SubtreeMatches(std::string_view normalized_path, std::string_view pattern) 
     return next == '.' || next == '[';
 }
 
-template<std::size_t N>
+template<size_t N>
 bool MatchesExact(std::string_view norm, const Exception (&list)[N]) {
     for (const auto &ex : list) {
         if (norm == ex.Pattern) return true;
@@ -375,7 +375,7 @@ void CompareAccessorShape(simdjson::dom::element src, simdjson::dom::element out
 bool QuaternionsEqual(simdjson::dom::array a, simdjson::dom::array b) {
     if (a.size() != 4 || b.size() != 4) return false;
     const auto to_quat = [](simdjson::dom::array arr, std::array<double, 4> &out) {
-        std::size_t i = 0;
+        size_t i = 0;
         for (auto e : arr) {
             if (!IsNumber(e.type())) return false;
             out[i++] = AsNumber(e);
@@ -385,7 +385,7 @@ bool QuaternionsEqual(simdjson::dom::array a, simdjson::dom::array b) {
     std::array<double, 4> va{}, vb{};
     if (!to_quat(a, va) || !to_quat(b, vb)) return false;
     const auto eq_signed = [&](double sign) {
-        for (std::size_t i = 0; i < 4; ++i) {
+        for (size_t i = 0; i < 4; ++i) {
             if (!NumberEq(va[i], sign * vb[i])) return false;
         }
         return true;

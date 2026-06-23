@@ -14,11 +14,11 @@
 // A matrix serializes as its columns, each a vec handled by the vec hook.
 namespace glm {
 template<length_t L, typename T, qualifier Q>
-auto serialize(const vec<L, T, Q> &) -> zpp::bits::members<std::size_t(L)>;
+auto serialize(const vec<L, T, Q> &) -> zpp::bits::members<size_t(L)>;
 template<typename T, qualifier Q>
 auto serialize(const qua<T, Q> &) -> zpp::bits::members<4>;
 template<length_t C, length_t R, typename T, qualifier Q>
-auto serialize(const mat<C, R, T, Q> &) -> zpp::bits::members<std::size_t(C)>;
+auto serialize(const mat<C, R, T, Q> &) -> zpp::bits::members<size_t(C)>;
 
 template<length_t L, typename T, qualifier Q>
 constexpr auto serialize(auto &archive, vec<L, T, Q> &v) {

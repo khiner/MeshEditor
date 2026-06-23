@@ -70,7 +70,7 @@ std::vector<std::byte> SnapshotSceneState(const entt::registry &r) {
 
 SnapshotDiff Compare(std::span<const std::byte> expected, std::span<const std::byte> actual) {
     const auto n = std::min(expected.size(), actual.size());
-    for (std::size_t i = 0; i < n; ++i) {
+    for (size_t i = 0; i < n; ++i) {
         if (expected[i] != actual[i]) return {false, i};
     }
     if (expected.size() != actual.size()) return {false, n};
@@ -79,7 +79,7 @@ SnapshotDiff Compare(std::span<const std::byte> expected, std::span<const std::b
 
 void RestoreSceneState(entt::registry &r, std::span<const std::byte> bytes) {
     const auto &table = SnapshotTable();
-    std::size_t pos = 0;
+    size_t pos = 0;
     const auto read = [&](auto &value) {
         if (pos + sizeof(value) > bytes.size()) return false;
         std::memcpy(&value, bytes.data() + pos, sizeof(value));

@@ -21,7 +21,7 @@ using RotationUiVariant = std::variant<RotationQuat, RotationEuler, RotationAxis
 
 // Single home for the conversion between `Transform.R` (the source of truth) and a UI representation.
 quat ToRotation(const RotationUiVariant &); // normalized
-RotationUiVariant ToUiVariant(quat, std::size_t mode); // `mode` = variant alternative
+RotationUiVariant ToUiVariant(quat, size_t mode); // `mode` = variant alternative
 
 // Tag: the UI is driving Transform.R this frame, so the reverse sync shouldn't overwrite RotationUiVariant.
 struct RotationUiDriving {};

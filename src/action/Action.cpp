@@ -19,7 +19,7 @@ template<typename ActionType> void EmitStaged(ActionType a) { Buffer(std::move(a
 template<typename ActionType> void EmitCancel(ActionType a) { Buffer(std::move(a), Phase::Cancel); }
 void Commit() { CommitRequested = true; }
 
-std::size_t ActionSize() { return sizeof(Action); }
+size_t ActionSize() { return sizeof(Action); }
 
 Drained Drain() {
     Drained drained{std::move(Emitted), CommitRequested};
@@ -32,7 +32,7 @@ Drained Drain() {
 namespace {
 // Force instantiation of every Emit* entry point for every action type so call sites in other TUs link.
 using EmitPtr = void (*)();
-template<std::size_t... I>
+template<size_t... I>
 std::array<EmitPtr, 3 * sizeof...(I)> AllEmits(std::index_sequence<I...>) {
     const auto inst = [](auto fn) { return reinterpret_cast<EmitPtr>(fn); };
     return {

@@ -17,9 +17,9 @@
 namespace action {
 namespace detail {
 // Serialized byte count per alternative when fixed-length, or nullopt when length-prefixed.
-inline constexpr auto FixedSizes = []<std::size_t... Is>(std::index_sequence<Is...>) {
-    return std::array<std::optional<std::size_t>, sizeof...(Is)>{
-        [] -> std::optional<std::size_t> {
+inline constexpr auto FixedSizes = []<size_t... Is>(std::index_sequence<Is...>) {
+    return std::array<std::optional<size_t>, sizeof...(Is)>{
+        [] -> std::optional<size_t> {
             using Alt = std::variant_alternative_t<Is, Action>;
             if constexpr (zpp::bits::concepts::byte_serializable<Alt>) return std::is_empty_v<Alt> ? 0 : sizeof(Alt);
             else return std::nullopt;
@@ -30,7 +30,7 @@ inline constexpr auto FixedSizes = []<std::size_t... Is>(std::index_sequence<Is.
 // Construct alternative `index` of Action and decode it from `bytes`. False on bad index or decode error.
 inline bool DecodeAlternative(Action &a, uint32_t index, std::span<const std::byte> bytes) {
     bool ok = false;
-    [&]<std::size_t... Is>(std::index_sequence<Is...>) {
+    [&]<size_t... Is>(std::index_sequence<Is...>) {
         ((Is == index ? (void)(a.emplace<Is>(), ok = !zpp::bits::failure(zpp::bits::in{bytes}(std::get<Is>(a)))) : void()), ...);
     }(std::make_index_sequence<std::variant_size_v<Action>>{});
     return ok;

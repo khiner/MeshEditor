@@ -41,7 +41,7 @@ std::ofstream OpenLogStream() {
     std::filesystem::create_directories(ReplayDir());
     // Retain only the newest REPLAY_LOG_RETAIN-1 logs so this session's new log brings the total to at most REPLAY_LOG_RETAIN.
     auto logs = ListReplayLogs();
-    for (std::size_t i = REPLAY_LOG_RETAIN - 1; i < logs.size(); ++i) {
+    for (size_t i = REPLAY_LOG_RETAIN - 1; i < logs.size(); ++i) {
         std::error_code ec;
         std::filesystem::remove(logs[i].Path, ec);
     }

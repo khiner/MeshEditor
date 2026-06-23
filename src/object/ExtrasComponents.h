@@ -13,7 +13,7 @@ enum class ColliderShapeBuffer : uint8_t {
     Count
 };
 struct ColliderShapeBuffers {
-    std::array<entt::entity, std::size_t(ColliderShapeBuffer::Count)> Entities{
+    std::array<entt::entity, size_t(ColliderShapeBuffer::Count)> Entities{
         null_entity, null_entity, null_entity, null_entity, null_entity
     };
 };

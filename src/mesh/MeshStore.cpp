@@ -409,14 +409,14 @@ struct MeshStore::Buffers {
         f(EdgeStateBuffer);
         f(TriangleFaceIdBuffer);
     }
-    static constexpr std::size_t ArenaCount = 8;
+    static constexpr size_t ArenaCount = 8;
 };
 
 namespace {
 // Save/restore a plain mirror buffer (no allocator) by its used byte region.
 std::vector<std::byte> SaveBuffer(const mvk::Buffer &b) {
     const auto mapped = b.GetMappedData();
-    const auto used = std::min(std::size_t(b.UsedSize), mapped.size());
+    const auto used = std::min(size_t(b.UsedSize), mapped.size());
     return {mapped.begin(), mapped.begin() + used};
 }
 void RestoreBuffer(mvk::Buffer &b, std::span<const std::byte> bytes) {
@@ -452,7 +452,7 @@ void MeshStore::Deserialize(std::span<const std::byte> bytes) {
     if (zpp::bits::failure(archive(arenas, vertex_state, face_state, entries, free_ids))) return;
     if (arenas.size() != Buffers::ArenaCount) return;
 
-    std::size_t i = 0;
+    size_t i = 0;
     B->ForEachArena([&](auto &a) { a.Restore(std::move(arenas[i++])); });
     RestoreBuffer(B->VertexStateBuffer, vertex_state);
     RestoreBuffer(B->FaceStateBuffer, face_state);

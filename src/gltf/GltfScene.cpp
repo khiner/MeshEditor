@@ -97,23 +97,23 @@ struct Object {
 namespace {
 using ExtrasMap = std::map<uint64_t, std::string>;
 
-uint64_t ExtrasKey(fastgltf::Category cat, std::size_t idx) { return (uint64_t(uint32_t(cat)) << 32) | uint64_t(idx); }
-void CollectExtras(simdjson::dom::object *extras, std::size_t idx, fastgltf::Category cat, void *userPtr) {
+uint64_t ExtrasKey(fastgltf::Category cat, size_t idx) { return (uint64_t(uint32_t(cat)) << 32) | uint64_t(idx); }
+void CollectExtras(simdjson::dom::object *extras, size_t idx, fastgltf::Category cat, void *userPtr) {
     if (!extras || !userPtr) return;
     static_cast<ExtrasMap *>(userPtr)->emplace(ExtrasKey(cat, idx), simdjson::minify(*extras));
 }
-std::optional<std::string> EmitExtras(std::size_t idx, fastgltf::Category cat, void *userPtr) {
+std::optional<std::string> EmitExtras(size_t idx, fastgltf::Category cat, void *userPtr) {
     if (!userPtr) return std::nullopt;
     const auto &m = *static_cast<const ExtrasMap *>(userPtr);
     if (const auto it = m.find(ExtrasKey(cat, idx)); it != m.end()) return it->second;
     return std::nullopt;
 }
 
-std::optional<uint32_t> ToIndex(std::size_t index, std::size_t upper_bound) {
+std::optional<uint32_t> ToIndex(size_t index, size_t upper_bound) {
     if (index >= upper_bound) return {};
     return index;
 }
-std::optional<uint32_t> ToIndex(const fastgltf::Optional<std::size_t> &index, std::size_t upper_bound) {
+std::optional<uint32_t> ToIndex(const fastgltf::Optional<size_t> &index, size_t upper_bound) {
     if (!index) return {};
     return ToIndex(*index, upper_bound);
 }
@@ -517,7 +517,7 @@ std::expected<void, std::string> AppendPrimitive(
                 std::vector<vec4> Weights;
             };
             std::vector<InfluenceSet> sets(influence_accessors.size());
-            for (std::size_t set_index = 0; set_index < sets.size(); ++set_index) {
+            for (size_t set_index = 0; set_index < sets.size(); ++set_index) {
                 auto &s = sets[set_index];
                 const auto [j_acc, w_acc] = influence_accessors[set_index];
                 s.Joints.resize(position_accessor.count);
@@ -533,7 +533,7 @@ std::expected<void, std::string> AppendPrimitive(
             std::vector<std::pair<uint32_t, float>> all(total_influences);
             const auto top4_end = all.begin() + 4;
             const auto by_weight = [](const auto &a, const auto &b) { return a.second > b.second; };
-            for (std::size_t i = 0; i < position_accessor.count; ++i) {
+            for (size_t i = 0; i < position_accessor.count; ++i) {
                 uint32_t n = 0;
                 for (const auto &s : sets) {
                     const auto &j = s.Joints[i];
@@ -561,12 +561,12 @@ std::expected<void, std::string> AppendPrimitive(
         if (!morph) {
             morph.emplace();
             morph->TargetCount = target_count;
-            morph->PositionDeltas.resize(std::size_t(target_count) * base_vertex, vec3{0.f});
+            morph->PositionDeltas.resize(size_t(target_count) * base_vertex, vec3{0.f});
         }
         if (morph->TargetCount != target_count) return std::unexpected{"glTF primitive morph target count mismatch between primitives of the same mesh."};
 
         const auto prev_pos_size = morph->PositionDeltas.size();
-        morph->PositionDeltas.resize(prev_pos_size + std::size_t(target_count) * prim_vertex_count, vec3{0.f});
+        morph->PositionDeltas.resize(prev_pos_size + size_t(target_count) * prim_vertex_count, vec3{0.f});
         const auto any_target_has = [&](std::string_view name) {
             for (uint32_t t = 0; t < target_count; ++t) {
                 if (primitive.findTargetAttribute(t, name) != primitive.targets[t].end()) return true;
@@ -580,49 +580,49 @@ std::expected<void, std::string> AppendPrimitive(
         }
         if (prim_has_normal_deltas || !morph->NormalDeltas.empty()) {
             const auto prev_norm_size = morph->NormalDeltas.size();
-            morph->NormalDeltas.resize(prev_norm_size + std::size_t(target_count) * prim_vertex_count, vec3{0.f});
+            morph->NormalDeltas.resize(prev_norm_size + size_t(target_count) * prim_vertex_count, vec3{0.f});
         }
         if (prim_has_tangent_deltas && morph->TangentDeltas.empty() && prev_pos_size > 0) {
             morph->TangentDeltas.resize(prev_pos_size, vec3{0.f});
         }
         if (prim_has_tangent_deltas || !morph->TangentDeltas.empty()) {
             const auto prev_tan_size = morph->TangentDeltas.size();
-            morph->TangentDeltas.resize(prev_tan_size + std::size_t(target_count) * prim_vertex_count, vec3{0.f});
+            morph->TangentDeltas.resize(prev_tan_size + size_t(target_count) * prim_vertex_count, vec3{0.f});
         }
         for (uint32_t t = 0; t < target_count; ++t) {
             if (auto pos_it = primitive.findTargetAttribute(t, "POSITION"); pos_it != primitive.targets[t].end()) {
                 const auto &target_accessor = asset.accessors[pos_it->accessorIndex];
                 if (target_accessor.count == prim_vertex_count) {
-                    fastgltf::copyFromAccessor<vec3>(asset, target_accessor, &morph->PositionDeltas[prev_pos_size + std::size_t(t) * prim_vertex_count]);
+                    fastgltf::copyFromAccessor<vec3>(asset, target_accessor, &morph->PositionDeltas[prev_pos_size + size_t(t) * prim_vertex_count]);
                 }
             }
             if (!morph->NormalDeltas.empty()) {
                 if (auto norm_it = primitive.findTargetAttribute(t, "NORMAL"); norm_it != primitive.targets[t].end()) {
                     const auto &norm_accessor = asset.accessors[norm_it->accessorIndex];
-                    const auto prev_norm_size = morph->NormalDeltas.size() - std::size_t(target_count) * prim_vertex_count;
+                    const auto prev_norm_size = morph->NormalDeltas.size() - size_t(target_count) * prim_vertex_count;
                     if (norm_accessor.count == prim_vertex_count) {
-                        fastgltf::copyFromAccessor<vec3>(asset, norm_accessor, &morph->NormalDeltas[prev_norm_size + std::size_t(t) * prim_vertex_count]);
+                        fastgltf::copyFromAccessor<vec3>(asset, norm_accessor, &morph->NormalDeltas[prev_norm_size + size_t(t) * prim_vertex_count]);
                     }
                 }
             }
             if (!morph->TangentDeltas.empty()) {
                 if (auto tan_it = primitive.findTargetAttribute(t, "TANGENT"); tan_it != primitive.targets[t].end()) {
                     const auto &tan_accessor = asset.accessors[tan_it->accessorIndex];
-                    const auto prev_tan_size = morph->TangentDeltas.size() - std::size_t(target_count) * prim_vertex_count;
+                    const auto prev_tan_size = morph->TangentDeltas.size() - size_t(target_count) * prim_vertex_count;
                     if (tan_accessor.count == prim_vertex_count) {
-                        fastgltf::copyFromAccessor<vec3>(asset, tan_accessor, &morph->TangentDeltas[prev_tan_size + std::size_t(t) * prim_vertex_count]);
+                        fastgltf::copyFromAccessor<vec3>(asset, tan_accessor, &morph->TangentDeltas[prev_tan_size + size_t(t) * prim_vertex_count]);
                     }
                 }
             }
         }
     } else if (morph) {
         const uint32_t prim_vertex_count = position_accessor.count;
-        morph->PositionDeltas.resize(morph->PositionDeltas.size() + std::size_t(morph->TargetCount) * prim_vertex_count, vec3{0.f});
+        morph->PositionDeltas.resize(morph->PositionDeltas.size() + size_t(morph->TargetCount) * prim_vertex_count, vec3{0.f});
         if (!morph->NormalDeltas.empty()) {
-            morph->NormalDeltas.resize(morph->NormalDeltas.size() + std::size_t(morph->TargetCount) * prim_vertex_count, vec3{0.f});
+            morph->NormalDeltas.resize(morph->NormalDeltas.size() + size_t(morph->TargetCount) * prim_vertex_count, vec3{0.f});
         }
         if (!morph->TangentDeltas.empty()) {
-            morph->TangentDeltas.resize(morph->TangentDeltas.size() + std::size_t(morph->TargetCount) * prim_vertex_count, vec3{0.f});
+            morph->TangentDeltas.resize(morph->TangentDeltas.size() + size_t(morph->TargetCount) * prim_vertex_count, vec3{0.f});
         }
     }
 
@@ -699,7 +699,7 @@ std::expected<fastgltf::Asset, std::string> ParseAsset(const std::filesystem::pa
 
 // Always emplaces a MeshData so meshes stays index-aligned with asset.meshes; callers
 // check Triangles/Lines/Points presence before referencing the mesh.
-std::expected<uint32_t, std::string> EnsureMeshData(const fastgltf::Asset &asset, uint32_t source_mesh_index, std::vector<MeshData> &meshes, std::unordered_map<uint32_t, uint32_t> &mesh_index_map, std::size_t material_count) {
+std::expected<uint32_t, std::string> EnsureMeshData(const fastgltf::Asset &asset, uint32_t source_mesh_index, std::vector<MeshData> &meshes, std::unordered_map<uint32_t, uint32_t> &mesh_index_map, size_t material_count) {
     if (const auto it = mesh_index_map.find(source_mesh_index); it != mesh_index_map.end()) return it->second;
 
     ::MeshData mesh;
@@ -755,13 +755,13 @@ std::expected<uint32_t, std::string> EnsureMeshData(const fastgltf::Asset &asset
         const auto target_count = mesh_morph->TargetCount;
         const auto repack_channel = [&](std::vector<vec3> &channel) {
             if (channel.empty()) return;
-            std::vector<vec3> repacked(std::size_t(target_count) * total_verts, vec3{0.f});
+            std::vector<vec3> repacked(size_t(target_count) * total_verts, vec3{0.f});
             uint32_t src_off{0}, dst_vert_off{0};
             for (const auto prim_verts : vertex_counts) {
                 if (prim_verts == 0) continue;
                 for (uint32_t t = 0; t < target_count; ++t) {
                     for (uint32_t v = 0; v < prim_verts; ++v) {
-                        repacked[std::size_t(t) * total_verts + dst_vert_off + v] = channel[src_off + std::size_t(t) * prim_verts + v];
+                        repacked[size_t(t) * total_verts + dst_vert_off + v] = channel[src_off + size_t(t) * prim_verts + v];
                     }
                 }
                 src_off += target_count * prim_verts;
@@ -777,7 +777,7 @@ std::expected<uint32_t, std::string> EnsureMeshData(const fastgltf::Asset &asset
     // Read default morph target weights from mesh
     if (mesh_morph && !source_mesh.weights.empty()) {
         mesh_morph->DefaultWeights.resize(mesh_morph->TargetCount, 0.f);
-        const auto copy_count = std::min(source_mesh.weights.size(), std::size_t(mesh_morph->TargetCount));
+        const auto copy_count = std::min(source_mesh.weights.size(), size_t(mesh_morph->TargetCount));
         std::copy_n(source_mesh.weights.begin(), copy_count, mesh_morph->DefaultWeights.begin());
     } else if (mesh_morph) {
         mesh_morph->DefaultWeights.assign(mesh_morph->TargetCount, 0.f);
@@ -878,7 +878,7 @@ std::optional<uint32_t> ComputeCommonAncestor(const std::vector<uint32_t> &nodes
     for (uint32_t i = 1; i < nodes.size() && !common_path.empty(); ++i) {
         const auto path = build_root_path(nodes[i]);
         const auto common_count = std::min(common_path.size(), path.size());
-        std::size_t prefix = 0;
+        size_t prefix = 0;
         while (prefix < common_count && common_path[prefix] == path[prefix]) ++prefix;
         common_path.resize(prefix);
     }
@@ -1132,7 +1132,7 @@ fastgltf::Optional<T> ToFgOpt(const std::optional<U> &o, Fn &&fn) { return o ? f
 
 std::optional<fastgltf::AccessorBoundsArray> MakeBounds(std::initializer_list<double> vals) {
     auto arr = fastgltf::AccessorBoundsArray::ForType<double>(vals.size());
-    std::size_t i = 0;
+    size_t i = 0;
     for (const double v : vals) arr.set<double>(i++, v);
     return arr;
 }
@@ -1157,7 +1157,7 @@ uint32_t AppendField(std::vector<std::byte> &buffer, std::span<const V> data, T 
     const uint32_t offset = buffer.size();
     buffer.resize(offset + data.size() * sizeof(T));
     auto *out = reinterpret_cast<T *>(buffer.data() + offset);
-    for (std::size_t i = 0; i < data.size(); ++i) out[i] = data[i].*field;
+    for (size_t i = 0; i < data.size(); ++i) out[i] = data[i].*field;
     while (buffer.size() % 4 != 0) buffer.emplace_back(std::byte{0});
     return offset;
 }
@@ -1240,7 +1240,7 @@ fastgltf::Camera ConvertCameraToFg(const ::Camera &cam, std::string_view name) {
     return fastgltf::Camera{.camera = std::move(camera), .name = ToFgStr(name)};
 }
 
-std::optional<ImageBasedLight> ConvertIBL(const fastgltf::Asset &asset, std::size_t scene_index) {
+std::optional<ImageBasedLight> ConvertIBL(const fastgltf::Asset &asset, size_t scene_index) {
     const auto ibl_idx = ToIndex(asset.scenes[scene_index].imageBasedLightIndex, asset.imageBasedLights.size());
     if (!ibl_idx) return std::nullopt;
     const auto &src_ibl = asset.imageBasedLights[*ibl_idx];
@@ -1253,12 +1253,12 @@ std::optional<ImageBasedLight> ConvertIBL(const fastgltf::Asset &asset, std::siz
     ibl.SpecularImageIndicesByMip.reserve(src_ibl.specularImages.size());
     for (const auto &mip : src_ibl.specularImages) {
         std::array<uint32_t, 6> faces{};
-        for (std::size_t face = 0; face < 6; ++face) faces[face] = mip[face];
+        for (size_t face = 0; face < 6; ++face) faces[face] = mip[face];
         ibl.SpecularImageIndicesByMip.emplace_back(faces);
     }
     if (src_ibl.irradianceCoefficients) {
         std::array<vec3, 9> coefficients{};
-        for (std::size_t i = 0; i < 9; ++i) {
+        for (size_t i = 0; i < 9; ++i) {
             coefficients[i] = {(*src_ibl.irradianceCoefficients)[i][0], (*src_ibl.irradianceCoefficients)[i][1], (*src_ibl.irradianceCoefficients)[i][2]};
         }
         ibl.IrradianceCoefficients = coefficients;
@@ -1552,8 +1552,8 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
         } else {
             const auto &fm = std::get<fastgltf::math::fmat4x4>(fg_transform);
             mat4 m{};
-            for (std::size_t c = 0; c < 4; ++c) {
-                for (std::size_t r = 0; r < 4; ++r) m[c][r] = fm[c][r];
+            for (size_t c = 0; c < 4; ++c) {
+                for (size_t r = 0; r < 4; ++r) m[c][r] = fm[c][r];
             }
             source_matrices[node_index] = m;
 
@@ -2666,7 +2666,7 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
     animation_order.reserve(asset.animations.size());
     struct ChannelTargetSpec {
         AnimationPath Path;
-        std::size_t ComponentCount;
+        size_t ComponentCount;
     };
     for (const auto &anim : asset.animations) {
         std::unordered_map<entt::entity, ::AnimationClip> armature_clips_by_entity;
@@ -3165,7 +3165,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             .bufferIndex = 0,
             .byteOffset = offset,
             .byteLength = length,
-            .byteStride = ToFgOpt<std::size_t>(stride),
+            .byteStride = ToFgOpt<size_t>(stride),
             .target = ToFgOpt<fastgltf::BufferTarget>(target),
             .meshoptCompression = nullptr,
             .name = {},
@@ -3482,11 +3482,11 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
     asset.textures.reserve(sa.Textures.size());
     for (const auto &t : sa.Textures) {
         asset.textures.emplace_back(fastgltf::Texture{
-            .samplerIndex = ToFgOpt<std::size_t>(t.SamplerIndex),
-            .imageIndex = ToFgOpt<std::size_t>(t.ImageIndex),
-            .basisuImageIndex = ToFgOpt<std::size_t>(t.BasisuImageIndex),
-            .ddsImageIndex = ToFgOpt<std::size_t>(t.DdsImageIndex),
-            .webpImageIndex = ToFgOpt<std::size_t>(t.WebpImageIndex),
+            .samplerIndex = ToFgOpt<size_t>(t.SamplerIndex),
+            .imageIndex = ToFgOpt<size_t>(t.ImageIndex),
+            .basisuImageIndex = ToFgOpt<size_t>(t.BasisuImageIndex),
+            .ddsImageIndex = ToFgOpt<size_t>(t.DdsImageIndex),
+            .webpImageIndex = ToFgOpt<size_t>(t.WebpImageIndex),
             .name = ToFgStr(t.Name),
         });
     }
@@ -3771,11 +3771,11 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
                     prim_targets.reserve(target_count);
                     for (uint32_t t = 0; t < target_count; ++t) {
                         fastgltf::pmr::SmallVector<fastgltf::Attribute, 4> tattrs;
-                        const auto target_slice = mt_span.subspan(std::size_t(t) * total_vcount + offset, pcount);
+                        const auto target_slice = mt_span.subspan(size_t(t) * total_vcount + offset, pcount);
                         tattrs.emplace_back(fastgltf::Attribute{"POSITION", AddFieldAccessor.template operator()<vec3>(target_slice, &MorphTargetVertex::PositionDelta, fastgltf::AccessorType::Vec3, fastgltf::BufferTarget::ArrayBuffer)});
                         if (has_normal_deltas) tattrs.emplace_back(fastgltf::Attribute{"NORMAL", AddFieldAccessor.template operator()<vec3>(target_slice, &MorphTargetVertex::NormalDelta, fastgltf::AccessorType::Vec3, fastgltf::BufferTarget::ArrayBuffer)});
                         if (has_tangent_deltas) {
-                            const std::span<const vec3> tan_deltas(layout.MorphTangentDeltas.data() + std::size_t(t) * total_vcount + offset, pcount);
+                            const std::span<const vec3> tan_deltas(layout.MorphTangentDeltas.data() + size_t(t) * total_vcount + offset, pcount);
                             tattrs.emplace_back(fastgltf::Attribute{"TANGENT", AddVec3Accessor(tan_deltas, false, fastgltf::BufferTarget::ArrayBuffer)});
                         }
                         prim_targets.emplace_back(std::move(tattrs));
@@ -3785,12 +3785,12 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
                 if (indices_per_prim[prim_idx].empty()) continue;
                 // Empty HasSourceIndices falls back to emitting (preserves legacy behavior).
                 const bool emit_indices = prim_idx < layout.HasSourceIndices.size() ? layout.HasSourceIndices[prim_idx] != 0 : true;
-                fastgltf::Optional<std::size_t> indices_accessor;
+                fastgltf::Optional<size_t> indices_accessor;
                 if (emit_indices) {
                     indices_accessor = AddDataAccessor(std::span<const uint32_t>(indices_per_prim[prim_idx]), fastgltf::AccessorType::Scalar, fastgltf::ComponentType::UnsignedInt, fastgltf::BufferTarget::ElementArrayBuffer);
                 }
 
-                fastgltf::Optional<std::size_t> material_index;
+                fastgltf::Optional<size_t> material_index;
                 if (prim_idx < primitive_materials.size()) {
                     // Reverse populate's +1 material-index shift; `~0u` (registry default) = don't emit.
                     const auto reg_idx = primitive_materials[prim_idx];
@@ -3798,14 +3798,14 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
                     if (mat < save_material_count) material_index = mat;
                 }
 
-                std::vector<fastgltf::Optional<std::size_t>> mappings;
+                std::vector<fastgltf::Optional<size_t>> mappings;
                 if (prim_idx < layout.VariantMappings.size()) {
                     for (const auto &m : layout.VariantMappings[prim_idx]) {
                         // Same +1 shift unwind as primitive_materials above.
                         if (m.has_value() && *m >= 1) {
                             const auto mat = *m - 1;
                             if (mat < save_material_count) {
-                                mappings.emplace_back(std::size_t(mat));
+                                mappings.emplace_back(size_t(mat));
                                 continue;
                             }
                         }
@@ -3912,11 +3912,11 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         if (!arm.ImportedSkin) continue;
         const auto source_skin_index = arm.ImportedSkin->SkinIndex;
 
-        fastgltf::pmr::MaybeSmallVector<std::size_t> joints;
+        fastgltf::pmr::MaybeSmallVector<size_t> joints;
         joints.reserve(arm.ImportedSkin->OrderedJointNodeIndices.size());
         for (const auto j : arm.ImportedSkin->OrderedJointNodeIndices) joints.emplace_back(j);
 
-        const auto ibm = [&]() -> fastgltf::Optional<std::size_t> {
+        const auto ibm = [&]() -> fastgltf::Optional<size_t> {
             if (arm.ImportedSkin->InverseBindMatrices.empty()) return {};
             return AddDataAccessor(std::span<const mat4>(arm.ImportedSkin->InverseBindMatrices), fastgltf::AccessorType::Mat4, fastgltf::ComponentType::Float);
         }();
@@ -3932,7 +3932,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         skin_remap[source_skin_index] = asset.skins.size();
         asset.skins.emplace_back(fastgltf::Skin{
             .inverseBindMatrices = ibm,
-            .skeleton = ToFgOpt<std::size_t>(arm.ImportedSkin->SkeletonNodeIndex),
+            .skeleton = ToFgOpt<size_t>(arm.ImportedSkin->SkeletonNodeIndex),
             .joints = std::move(joints),
             .name = ToFgStr(skin_name),
         });
@@ -3989,8 +3989,8 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             s
         );
     };
-    std::map<ShapeKey, std::size_t> shape_index_by_key;
-    const auto emit_shape_index = [&](const fastgltf::Shape &s) -> std::size_t {
+    std::map<ShapeKey, size_t> shape_index_by_key;
+    const auto emit_shape_index = [&](const fastgltf::Shape &s) -> size_t {
         const auto key = shape_key(s);
         if (auto it = shape_index_by_key.find(key); it != shape_index_by_key.end()) return it->second;
         asset.shapes.emplace_back(s);
@@ -4005,7 +4005,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         const auto *cs = r.try_get<const ColliderShape>(owner);
         if (!cs) return;
         const bool is_trigger = r.all_of<TriggerTag>(owner);
-        fastgltf::Optional<std::size_t> collider_mesh_idx;
+        fastgltf::Optional<size_t> collider_mesh_idx;
         if (cs->MeshEntity != null_entity) {
             if (const auto mit = mesh_entity_to_index.find(cs->MeshEntity); mit != mesh_entity_to_index.end()) collider_mesh_idx = mit->second;
         }
@@ -4058,7 +4058,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
     for (uint32_t ni = 0; ni < total_node_count; ++ni) {
         const auto entity = node_to_entity[ni];
 
-        fastgltf::pmr::MaybeSmallVector<std::size_t> children;
+        fastgltf::pmr::MaybeSmallVector<size_t> children;
         if (const auto cit = children_by_parent.find(ni); cit != children_by_parent.end()) {
             children.reserve(cit->second.size());
             for (const auto &[_, child_idx] : cit->second) children.emplace_back(child_idx);
@@ -4101,7 +4101,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             continue;
         }
 
-        fastgltf::Optional<std::size_t> mesh_index, camera_index, light_index, skin_index;
+        fastgltf::Optional<size_t> mesh_index, camera_index, light_index, skin_index;
         if (const auto *inst = r.try_get<const Instance>(entity)) {
             if (const auto it = mesh_entity_to_index.find(inst->Entity); it != mesh_entity_to_index.end()) mesh_index = it->second;
         }
@@ -4186,7 +4186,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         // Offset colliders emit their geometry on a synthetic child — strip the cs contribution here.
         const bool has_offset_child = entity_to_offset_child.contains(entity);
         const bool cs_on_owner = cs && !has_offset_child;
-        fastgltf::Optional<std::size_t> collider_mesh_idx;
+        fastgltf::Optional<size_t> collider_mesh_idx;
         if (cs_on_owner && cs->MeshEntity != null_entity) {
             if (const auto mit = mesh_entity_to_index.find(cs->MeshEntity); mit != mesh_entity_to_index.end()) collider_mesh_idx = mit->second;
         }
@@ -4240,8 +4240,8 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         const auto fg_transform = [&]() -> std::variant<fastgltf::TRS, fastgltf::math::fmat4x4> {
             if (source_matrix) {
                 fastgltf::math::fmat4x4 out;
-                for (std::size_t c = 0; c < 4; ++c) {
-                    for (std::size_t r2 = 0; r2 < 4; ++r2) out[c][r2] = source_matrix->Value[c][r2];
+                for (size_t c = 0; c < 4; ++c) {
+                    for (size_t r2 = 0; r2 < 4; ++r2) out[c][r2] = source_matrix->Value[c][r2];
                 }
                 return out;
             }
@@ -4276,7 +4276,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
 
     // EXT_lights_image_based: a single IBL is preserved across round-trip, attached to the
     // default scene (per-scene IBL preservation isn't modeled — see header round-trip gaps).
-    fastgltf::Optional<std::size_t> default_scene_ibl_index;
+    fastgltf::Optional<size_t> default_scene_ibl_index;
     if (sa.ImageBasedLight) {
         const auto &src_ibl = *sa.ImageBasedLight;
         fastgltf::ImageBasedLight ibl{
@@ -4289,27 +4289,27 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         };
         ibl.specularImages.reserve(src_ibl.SpecularImageIndicesByMip.size());
         for (const auto &mip : src_ibl.SpecularImageIndicesByMip) {
-            std::array<std::size_t, 6> faces{};
-            for (std::size_t face = 0; face < 6; ++face) faces[face] = mip[face];
+            std::array<size_t, 6> faces{};
+            for (size_t face = 0; face < 6; ++face) faces[face] = mip[face];
             ibl.specularImages.emplace_back(faces);
         }
         if (src_ibl.IrradianceCoefficients) {
             std::array<fastgltf::math::fvec3, 9> coeffs{};
-            for (std::size_t i = 0; i < 9; ++i) {
+            for (size_t i = 0; i < 9; ++i) {
                 const auto &c = (*src_ibl.IrradianceCoefficients)[i];
                 coeffs[i] = {c.x, c.y, c.z};
             }
             ibl.irradianceCoefficients = coeffs;
         }
         asset.imageBasedLights.emplace_back(std::move(ibl));
-        default_scene_ibl_index = std::size_t{0};
+        default_scene_ibl_index = size_t{0};
     }
 
     if (!scenes_ordered.empty()) {
         // Emit every scene, including empty ones (valid glTF). Default = the active scene.
-        std::optional<std::size_t> active_emitted;
+        std::optional<size_t> active_emitted;
         for (const auto se : scenes_ordered) {
-            fastgltf::pmr::MaybeSmallVector<std::size_t> scene_roots;
+            fastgltf::pmr::MaybeSmallVector<size_t> scene_roots;
             for (const auto ni : compute_roots(se)) scene_roots.emplace_back(ni);
             if (se == active_scene) active_emitted = asset.scenes.size();
             asset.scenes.emplace_back(fastgltf::Scene{.nodeIndices = std::move(scene_roots), .imageBasedLightIndex = {}, .name = ToFgStr(r.get<const Scene>(se).Name)});
@@ -4318,7 +4318,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         if (default_scene_ibl_index) asset.scenes[*asset.defaultScene].imageBasedLightIndex = default_scene_ibl_index;
     } else {
         // No scene entities (non-glTF / runtime-built): synthesize a single scene from current roots.
-        fastgltf::pmr::MaybeSmallVector<std::size_t> scene_roots;
+        fastgltf::pmr::MaybeSmallVector<size_t> scene_roots;
         for (const auto ni : compute_roots(entt::null)) scene_roots.emplace_back(ni);
         asset.scenes.emplace_back(fastgltf::Scene{
             .nodeIndices = std::move(scene_roots),

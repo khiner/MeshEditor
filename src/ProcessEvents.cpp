@@ -1470,7 +1470,7 @@ RenderRequest ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
         for (const auto [e, layout, _] : r.view<const MeshSourceLayout, const MeshHandle>().each()) {
             const auto mesh = GetMesh(r, e);
             auto primitive_materials = meshes.GetPrimitiveMaterialIndices(mesh.GetStoreId());
-            for (std::size_t i = 0; i < layout.DefaultMaterials.size(); ++i) {
+            for (size_t i = 0; i < layout.DefaultMaterials.size(); ++i) {
                 const auto &mapping = layout.VariantMappings[i];
                 primitive_materials[i] = active && *active < mapping.size() && mapping[*active] ?
                     *mapping[*active] :

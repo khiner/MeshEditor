@@ -69,7 +69,7 @@ struct BufferArena {
 
     // Capture/restore the whole arena (see ArenaState).
     ArenaState Save() const {
-        const auto used = std::size_t(Buffer.UsedSize);
+        const auto used = size_t(Buffer.UsedSize);
         const auto mapped = Buffer.GetMappedData();
         const auto count = std::min(used, mapped.size());
         return {{mapped.begin(), mapped.begin() + count}, Allocator.Save()};

@@ -16,5 +16,5 @@ template<typename ActionType> void EmitCancel(ActionType);
 // Commit the open gesture (flush its held step) without emitting an action — for terminal-less gestures.
 void Commit();
 
-std::size_t ActionSize();
+size_t ActionSize();
 } // namespace action

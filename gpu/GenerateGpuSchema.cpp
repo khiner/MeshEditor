@@ -414,7 +414,6 @@ int main(int argc, char **argv) {
     bindless_header << "#pragma once\n\n"
                     << GeneratedComment(schema_relative_path)
                     << "#include <array>\n"
-                    << "#include <cstddef>\n"
                     << "#include <cstdint>\n"
                     << "#include <string_view>\n\n"
                     << "enum class BindKind : uint8_t {\n"

@@ -25,7 +25,7 @@ quat ToRotation(const RotationUiVariant &v) {
     );
 }
 
-RotationUiVariant ToUiVariant(quat rotation, std::size_t mode) {
+RotationUiVariant ToUiVariant(quat rotation, size_t mode) {
     switch (mode) {
         case 1: {
             float x, y, z;
