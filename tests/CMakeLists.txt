@@ -45,9 +45,6 @@ add_executable(MeshEditorTests
     ${CMAKE_SOURCE_DIR}/src/action/Selection.cpp
 )
 
-# PhysicsSystem.cpp subclasses Jolt GroupFilter; Jolt is built with -fno-rtti so this file must match.
-set_source_files_properties(${CMAKE_SOURCE_DIR}/src/physics/PhysicsSystem.cpp PROPERTIES COMPILE_FLAGS "-fno-rtti")
-
 add_dependencies(MeshEditorTests generate_gpu_schema)
 
 target_include_directories(MeshEditorTests PRIVATE
@@ -73,7 +70,7 @@ target_link_libraries(MeshEditorTests PRIVATE
 )
 
 target_compile_definitions(MeshEditorTests PRIVATE GLM_ENABLE_EXPERIMENTAL DEBUG_BUILD MESHEDITOR_BUILD_DIR="${CMAKE_BINARY_DIR}" MESHEDITOR_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
-target_compile_options(MeshEditorTests PRIVATE -Wall -Wextra -Wno-missing-field-initializers -Wno-elaborated-enum-base)
+target_compile_options(MeshEditorTests PRIVATE -Wall -Wextra -Wno-missing-field-initializers -Wno-elaborated-enum-base -fno-rtti)
 
 # Standalone: serializes every Action alternative through zpp::bits. Header-only (no GPU/registry),
 # so it needs only the action headers (and the generated GPU schema headers they pull in).
@@ -88,4 +85,4 @@ target_include_directories(MeshEditorActionSerializeTest PRIVATE
 )
 target_link_libraries(MeshEditorActionSerializeTest PRIVATE Boost::ut)
 target_compile_definitions(MeshEditorActionSerializeTest PRIVATE GLM_ENABLE_EXPERIMENTAL DEBUG_BUILD)
-target_compile_options(MeshEditorActionSerializeTest PRIVATE -Wall -Wextra -Wno-missing-field-initializers -Wno-elaborated-enum-base)
+target_compile_options(MeshEditorActionSerializeTest PRIVATE -Wall -Wextra -Wno-missing-field-initializers -Wno-elaborated-enum-base -fno-rtti)

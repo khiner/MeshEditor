@@ -204,9 +204,6 @@ endif()
 
 target_link_libraries(${PROJECT_NAME} PRIVATE SDL3::SDL3 ${Vulkan_LIBRARIES} GPUOpen::VulkanMemoryAllocator ${SHADERC_LIB} nfd faustlib tetgen PkgConfig::FFTW3F lunasvg fastgltf::fastgltf basisu_transcoder Jolt)
 
-# PhysicsSystem.cpp subclasses Jolt GroupFilter; Jolt is built with -fno-rtti so this file must match.
-set_source_files_properties(src/physics/PhysicsSystem.cpp PROPERTIES COMPILE_FLAGS "-fno-rtti")
-
 if(CMAKE_BUILD_TYPE MATCHES Debug)
     target_compile_definitions(${PROJECT_NAME} PRIVATE DEBUG_BUILD)
     # Replay tests: File->Replay->Current writes a fixture here when replay diverges from the live scene state.
@@ -268,7 +265,7 @@ foreach(target IN LISTS disable_warning_targets)
 endforeach()
 
 set_target_properties(${PROJECT_NAME} PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
-target_compile_options(${PROJECT_NAME} PRIVATE -Wall -Wextra -Wno-elaborated-enum-base)
+target_compile_options(${PROJECT_NAME} PRIVATE -Wall -Wextra -Wno-elaborated-enum-base -fno-rtti)
 
 add_definitions(-DTETLIBRARY)
 add_definitions(-DIMGUI_DEFINE_MATH_OPERATORS -DGLM_ENABLE_EXPERIMENTAL -DZPP_BITS_AUTODETECT_MEMBERS_MODE=1)

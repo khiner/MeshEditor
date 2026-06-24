@@ -11,7 +11,6 @@ Copied and heavily modified the bits needed for reading .npy files from
 #include <fstream>
 #include <numeric>
 #include <ranges>
-#include <typeindex>
 
 namespace npy {
 /*
@@ -213,38 +212,25 @@ constexpr header_t parse_header(std::string_view header) {
     return {parse_descr(parse_str(dict_map["descr"])), shape, parse_bool(dict_map["fortran_order"])};
 }
 
-template<typename T>
-constexpr std::type_index type_idx() { return std::type_index(typeid(T)); }
-template<typename T>
-constexpr std::pair<std::type_index, dtype_t> dtype_entry(char endian, char kind) {
-    return {type_idx<T>(), {endian, kind, sizeof(T)}};
-}
-
 constexpr char endian_char = (big_endian ? big_endian_char : little_endian_char);
-const std::unordered_map<std::type_index, dtype_t> dtype_map{
-    dtype_entry<char>(no_endian_char, 'i'),
-    dtype_entry<signed char>(no_endian_char, 'i'),
-    dtype_entry<short>(endian_char, 'i'),
-    dtype_entry<int>(endian_char, 'i'),
-    dtype_entry<long>(endian_char, 'i'),
-    dtype_entry<long long>(endian_char, 'i'),
-    dtype_entry<unsigned char>(no_endian_char, 'u'),
-    dtype_entry<unsigned short>(endian_char, 'u'),
-    dtype_entry<unsigned int>(endian_char, 'u'),
-    dtype_entry<unsigned long>(endian_char, 'u'),
-    dtype_entry<unsigned long long>(endian_char, 'u'),
-    dtype_entry<float>(endian_char, 'f'),
-    dtype_entry<double>(endian_char, 'f'),
-    dtype_entry<long double>(endian_char, 'f'),
-    dtype_entry<std::complex<float>>(endian_char, 'c'),
-    dtype_entry<std::complex<double>>(endian_char, 'c'),
-    dtype_entry<std::complex<long double>>(endian_char, 'c'),
-};
+
+template<typename T> constexpr bool is_complex_v = false;
+template<typename T> constexpr bool is_complex_v<std::complex<T>> = true;
+
+// numpy dtype for a C++ scalar, resolved at compile time (no RTTI). `char` maps to signed 'i'.
+template<typename T>
+constexpr dtype_t dtype_for() {
+    constexpr char byteorder = sizeof(T) == 1 ? no_endian_char : endian_char;
+    if constexpr (is_complex_v<T>) return {byteorder, 'c', sizeof(T)};
+    else if constexpr (std::is_floating_point_v<T>) return {byteorder, 'f', sizeof(T)};
+    else if constexpr (std::is_same_v<T, char> || std::is_signed_v<T>) return {byteorder, 'i', sizeof(T)};
+    else return {byteorder, 'u', sizeof(T)};
+}
 
 // `in` stream position will be after the header after returning.
 template<typename Scalar> inline header_t read_header(std::istream &in) {
     auto header = parse_header(read_header(in));
-    if (const auto dtype = dtype_map.at(type_idx<Scalar>()); header.dtype != dtype) throw std::runtime_error("Formatting error: typestrings do not match.");
+    if (const auto dtype = dtype_for<Scalar>(); header.dtype != dtype) throw std::runtime_error("Formatting error: typestrings do not match.");
 
     return header;
 }
