@@ -2,6 +2,7 @@
 
 #include <entt/entity/fwd.hpp>
 
+#include <optional>
 #include <span>
 #include <unordered_map>
 #include <vector>
@@ -29,4 +30,7 @@ void VerifyCoverage(const entt::registry &);
 
 // True for wholly-derived entities (reactively-rebuilt wireframe overlays) that must not be serialized.
 bool SnapshotSkipsEntity(const entt::registry &, entt::entity);
+
+// Equality for two component values of the provided type. Returns nullopt if the type can't be compared.
+std::optional<bool> ComponentValuesEqual(entt::id_type, const void *, const void *);
 } // namespace snapshot

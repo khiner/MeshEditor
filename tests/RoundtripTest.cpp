@@ -13,12 +13,17 @@
 #include "scene/Entity.h"
 #include "snapshot/SaveState.h"
 #include "snapshot/SceneSnapshot.h"
+#include "snapshot/SnapshotRoles.h"
 #include "viewport/Viewport.h"
 #include "vulkan/VulkanContext.h"
 
 #include <boost/ut.hpp>
 #include <entt/entity/registry.hpp>
 #include <simdjson.h>
+
+#include <cstring>
+#include <map>
+#include <set>
 
 namespace {
 namespace fs = std::filesystem;
@@ -536,6 +541,99 @@ size_t CompareGltfJson(const fs::path &a_path, const fs::path &b_path, std::stri
     }
     return unexpected.size();
 }
+
+// Allocation-handle components (GPU buffer slots, Jolt body ids) whose value is a build-order handle, not state, so they're ignored.
+constexpr std::string_view DerivedValueDivergence[]{
+    "RenderInstance",
+    "ModelsBuffer",
+    "BoneAdjacencyIndices",
+    "PhysicsBodyHandle",
+    "MorphWeightGpuRange",
+};
+
+// Assert two registries match: same component set per entity, and equal values except the known-derived divergences above.
+void CompareRegistries(std::string_view name, entt::registry &a, entt::registry &b) {
+    using namespace boost::ut;
+    const auto components_by_entity = [](entt::registry &r) {
+        std::map<entt::entity, std::set<std::string>> m;
+        for (auto [id, set] : r.storage()) {
+            const std::string_view tn{set.info().name()};
+            if (tn.starts_with("entt::")) continue; // entity / reactive storages, not components
+            for (const auto e : set) {
+                if (e != entt::tombstone) m[e].insert(std::string{tn});
+            }
+        }
+        return m;
+    };
+    const auto ca = components_by_entity(a), cb = components_by_entity(b);
+
+    std::map<std::string, int> only_a_comps, only_b_comps, diff_comps;
+    int only_a = 0, only_b = 0, diffs = 0;
+    for (const auto &[e, comps] : ca) {
+        const auto it = cb.find(e);
+        if (it == cb.end()) {
+            ++only_a;
+            for (const auto &c : comps) ++only_a_comps[c];
+        } else if (comps != it->second) {
+            ++diffs;
+            for (const auto &c : comps)
+                if (!it->second.contains(c)) ++diff_comps["-" + c];
+            for (const auto &c : it->second)
+                if (!comps.contains(c)) ++diff_comps["+" + c];
+        }
+    }
+    for (const auto &[e, comps] : cb) {
+        if (!ca.contains(e)) {
+            ++only_b;
+            for (const auto &c : comps) ++only_b_comps[c];
+        }
+    }
+
+    // ComponentValuesEqual handles the per-type compare (field-wise where memcmp is unsafe). nullopt means the type
+    // can't be compared (a derived component with no serializer, e.g. MeshBuffers), so it's skipped.
+    std::map<entt::id_type, entt::sparse_set *> b_set;
+    for (auto [id, set] : b.storage()) b_set[set.info().hash()] = &set;
+    std::map<std::string, int> value_diffs;
+    for (auto [id, a_set] : a.storage()) {
+        const std::string_view tn{a_set.info().name()};
+        if (tn.starts_with("entt::")) continue;
+        const auto hash = a_set.info().hash();
+        const auto bit = b_set.find(hash);
+        if (bit == b_set.end()) continue;
+        auto *b_set_p = bit->second;
+        for (const auto e : a_set) {
+            if (e == entt::tombstone || !b_set_p->contains(e)) continue;
+            const auto eq = snapshot::ComponentValuesEqual(hash, a_set.value(e), b_set_p->value(e));
+            if (eq && !*eq) ++value_diffs[std::string{tn}];
+        }
+    }
+
+    // Presence must match exactly - no exclusions, unlike the value check below.
+    const auto present_detail = [&] {
+        std::string s;
+        const auto dump = [&](const char *label, const std::map<std::string, int> &h) {
+            if (h.empty()) return;
+            s += std::format(" {}:", label);
+            for (const auto &[c, n] : h) s += std::format(" {}({})", c, n);
+        };
+        dump("only-in-fx", only_a_comps);
+        dump("only-in-restore", only_b_comps);
+        dump("comp-set-diff(-fx/+restore)", diff_comps);
+        return s;
+    };
+    expect(only_a == 0 && only_b == 0 && diffs == 0)
+        << name << "presence diverged - only-in-fx=" << only_a << " only-in-restore=" << only_b
+        << " comp-set-diffs=" << diffs << present_detail();
+
+    // Values must match for every component except the known-derived divergences.
+    std::map<std::string, int> unexpected;
+    for (const auto &[type, n] : value_diffs) {
+        if (std::ranges::find(DerivedValueDivergence, type) == std::ranges::end(DerivedValueDivergence)) unexpected.emplace(type, n);
+    }
+    std::string unexpected_detail;
+    for (const auto &[type, n] : unexpected) unexpected_detail += std::format(" {}({})", type, n);
+    expect(unexpected.empty()) << name << "value diverged for non-derived component(s):" << unexpected_detail;
+}
 } // namespace
 
 int main() {
@@ -645,13 +743,20 @@ int main() {
         };
     };
 
+    // The test never renders, so WaitForRender (the only caller of ReclaimRetiredBuffers) never runs and retired arena
+    // buffers would pile up until the GPU OOMs. Reclaim at each clear - safe since no frame is ever in flight here.
+    const auto clear_scene = [](entt::registry &r, entt::entity vp) {
+        ClearScene(r, vp);
+        r.ctx().get<GpuBuffers>().Ctx.ReclaimRetiredBuffers();
+    };
+
     SceneFixture fx{vk_resources};
     for (const auto &src : samples) {
         const auto sample_name = src.stem().string();
 
         test(sample_name) = [&] {
             ProcessComponentEvents(fx.R, fx.Viewport);
-            ClearScene(fx.R, fx.Viewport);
+            clear_scene(fx.R, fx.Viewport);
 
             const auto load = gltf::LoadGltf(src, load_ctx(fx.R, fx.Viewport));
             if (!load) return; // Loader limitation on source (e.g., unsupported extension); not a roundtrip concern.
@@ -695,18 +800,36 @@ int main() {
         const auto sample_name = src.stem().string();
         test("snapshot round trip (" + sample_name + ")") = [&] {
             ProcessComponentEvents(fx.R, fx.Viewport);
-            ClearScene(fx.R, fx.Viewport);
+            clear_scene(fx.R, fx.Viewport);
             const auto load = gltf::LoadGltf(src, load_ctx(fx.R, fx.Viewport));
             if (!load) return; // Loader limitation on source (e.g., unsupported extension); not a snapshot concern.
 
             ProcessComponentEvents(fx.R, fx.Viewport);
             const auto before = snapshot::SaveState(fx.R);
             ProcessComponentEvents(restore_fx.R, restore_fx.Viewport);
-            ClearScene(restore_fx.R, restore_fx.Viewport);
+            clear_scene(restore_fx.R, restore_fx.Viewport);
             snapshot::LoadState(restore_fx.R, before);
             ProcessComponentEvents(restore_fx.R, restore_fx.Viewport);
             const auto diff = snapshot::Compare(before, snapshot::SaveState(restore_fx.R));
             expect(diff.Equal) << "glTF-import round-trip diverged at byte" << diff.FirstDifferingByte;
+        };
+    }
+
+    // Assert fresh-load and restored registries match, including derived components the byte round-trip can't see.
+    for (const auto &src : samples) {
+        const auto sample_name = src.stem().string();
+        test("full-state restore (" + sample_name + ")") = [&] {
+            ProcessComponentEvents(fx.R, fx.Viewport);
+            clear_scene(fx.R, fx.Viewport);
+            const auto load = gltf::LoadGltf(src, load_ctx(fx.R, fx.Viewport));
+            if (!load) return;
+            ProcessComponentEvents(fx.R, fx.Viewport);
+            const auto before = snapshot::SaveState(fx.R);
+            ProcessComponentEvents(restore_fx.R, restore_fx.Viewport);
+            clear_scene(restore_fx.R, restore_fx.Viewport);
+            snapshot::LoadState(restore_fx.R, before);
+            ProcessComponentEvents(restore_fx.R, restore_fx.Viewport);
+            CompareRegistries(sample_name, fx.R, restore_fx.R);
         };
     }
 

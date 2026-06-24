@@ -20,7 +20,7 @@ add_executable(MeshEditorTests
     ${CMAKE_SOURCE_DIR}/src/mesh/MeshStore.cpp
     ${CMAKE_SOURCE_DIR}/src/snapshot/SceneSnapshot.cpp
     ${CMAKE_SOURCE_DIR}/src/snapshot/SaveState.cpp
-    ${CMAKE_SOURCE_DIR}/src/scene/SceneSnapshotRoles.cpp
+    ${CMAKE_SOURCE_DIR}/src/snapshot/SnapshotRoles.cpp
     ${CMAKE_SOURCE_DIR}/src/vulkan/Buffer.cpp
     ${CMAKE_SOURCE_DIR}/src/vulkan/Image.cpp
     ${CMAKE_SOURCE_DIR}/src/vulkan/VulkanContext.cpp

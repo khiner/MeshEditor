@@ -1,5 +1,5 @@
 #include "snapshot/SceneSnapshot.h"
-#include "snapshot/SnapshotRegistry.h"
+#include "snapshot/SnapshotRoles.h"
 
 #include <entt/entity/registry.hpp>
 
@@ -32,9 +32,8 @@ std::vector<std::byte> SnapshotSceneState(const entt::registry &r) {
     std::vector<std::byte> out;
     for (const auto [id, set] : pools) {
         const auto &entry = table.at(id);
-        // An in-place-delete pool keeps deleted slots in its iteration as tombstones (not real entities) - skip them.
-        // Like the empty-pool skip, a pool with no live entities reflects deletion history, not state, so omit it entirely.
-        // Sort by integral id so byte order doesn't depend on pool insertion order.
+        // Skip tombstones (in-place-delete leaves them in iteration) and omit pools with no live entities, since both
+        // reflect deletion history, not state. Sort by integral id so byte order doesn't depend on insertion order.
         std::vector<entt::entity> ents;
         for (const auto e : *set) {
             if (e != entt::tombstone && !SnapshotSkipsEntity(r, e) && !(entry.SkipEntity && entry.SkipEntity(r, e))) ents.push_back(e);

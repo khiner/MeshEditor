@@ -6,7 +6,7 @@
 #include <vector>
 
 namespace snapshot {
-// A deterministic byte image of the registry's Persistent components (see scene/SceneSnapshotRoles.cpp).
+// A deterministic byte image of the registry's Persistent components (see snapshot/SnapshotRoles.cpp).
 std::vector<std::byte> SnapshotSceneState(const entt::registry &);
 
 struct SnapshotDiff {

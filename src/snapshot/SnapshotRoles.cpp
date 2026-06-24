@@ -30,7 +30,7 @@
 #include "scene/WorldTransform.h"
 #include "selection/BoneSelection.h"
 #include "selection/SelectionComponents.h"
-#include "snapshot/SnapshotRegistry.h"
+#include "snapshot/SnapshotRoles.h"
 #include "viewport/InteractionComponents.h"
 #include "viewport/ViewCamera.h"
 #include "viewport/ViewCameraSerialize.h"
@@ -120,7 +120,7 @@ using Persistent = type_list<
     SelectionXRay, ViewportDisplay, MaterialPreviewLighting, RenderedLighting, StudioEnvironment, TransformGizmoState,
     TimelineRange, TimelinePlayback, AnimationTimelineView, LastEvaluatedFrame,
     PhysicsSimulationSettings, PhysicsMaterial, CollisionSystem, CollisionFilter, PhysicsJointDef, PhysicsMotion,
-    ColliderShape, ColliderPolicy, TriggerTag, TriggerNodes, PhysicsJoint,
+    ColliderShape, ColliderMaterial, ColliderPolicy, PhysicsVelocity, TriggerTag, TriggerNodes, PhysicsJoint,
     Armature, ArmatureObject, BoneJointEntities, BoneJoint, BoneSubPartOf, BoneActive, BoneSelection,
     BoneConstraints, ArmatureModifier, BoneIndex, BoneDisplayScale, BoneAttachment, ArmatureAnimation, ArmaturePose,
     NodeTransformAnimation, MorphWeightAnimation, MorphWeightState,
@@ -133,7 +133,7 @@ using Persistent = type_list<
 // Never serialized, listed only so VerifyCoverage treats them as intentionally excluded.
 using Derived = type_list<
     RenderInstance, WorldTransform, PosedLocal, MeshBuffers, BoneAdjacencyIndices, ModelsBuffer, VertexClass, BBoxWireframe,
-    TetWireframe, MaterialDirty, LightIndex, EnabledInteractionModes, PhysicsVelocity, ColliderMaterial,
+    TetWireframe, MaterialDirty, LightIndex, EnabledInteractionModes,
     PhysicsBodyHandle, PhysicsConstraintHandle, BodyPoseCache, ColliderWireframe, BoneInstanceStateDirty, ArmaturePoseState,
     MorphWeightGpuRange, AdditiveBoxSelectBaseline, SelectionBitsDirty, ElementStatesDirty, PendingEditElementClick, OverlayExtra, OverlayVertexStoreId,
     PendingBoxSelect, PendingPick, PendingTextureUploads, SelectionBitsetRef, BoxSelectState, SelectedInstanceCount, PlaybackFrame,
@@ -147,6 +147,38 @@ using ForceSerialize = type_list<
     Camera, PrimitiveShape, ColliderShape, PhysicsMotion, // variant / optional
     ViewportDisplay, MaterialPreviewLighting, RenderedLighting, TransformGizmoState, // padding
     TimelinePlayback, PhysicsJoint, BoneSubPartOf>; // padding
+
+// Derived components that are memcmp-unsafe (variant/optional/padding), compared field-wise instead of by memcmp.
+using ForceFieldwise = type_list<RotationUiVariant>;
+
+// True when memcmp would be wrong for C (heap-backed, or a variant/optional/padded type), so compare it field-wise.
+template<class C>
+inline constexpr bool NeedsFieldwise =
+    CustomEmplace<C> != nullptr ||
+    entt::type_list_contains_v<ForceSerialize, C> ||
+    entt::type_list_contains_v<ForceFieldwise, C> ||
+    (entt::type_list_contains_v<Persistent, C> && !std::is_trivially_copyable_v<C>);
+
+template<class C>
+bool ValuesEqual(const void *a, const void *b) {
+    if constexpr (std::is_empty_v<C>) {
+        return true;
+    } else if constexpr (NeedsFieldwise<C>) {
+        std::vector<std::byte> ba, bb;
+        SerializeThunk<C>(a, ba);
+        SerializeThunk<C>(b, bb);
+        return ba == bb;
+    } else {
+        return std::memcmp(a, b, sizeof(C)) == 0;
+    }
+}
+
+// nullptr => incomparable: a non-trivially-copyable derived component with no serializer, so it's skipped.
+template<class C>
+constexpr bool (*MakeComparator())(const void *, const void *) {
+    if constexpr (std::is_empty_v<C> || NeedsFieldwise<C> || std::is_trivially_copyable_v<C>) return &ValuesEqual<C>;
+    else return nullptr;
+}
 
 // Encoding deduced from the type: empty -> Tag; CustomEmplace or ForceSerialize -> Serialized (zpp);
 // trivially copyable -> Bytes (memcpy); else Serialized. CustomEmplace handles non-default-constructible types.
@@ -189,10 +221,25 @@ void VerifyCoverage(const entt::registry &r) {
     if (unclassified.empty()) return;
 
     std::string msg = "snapshot: component(s) in registry storage are classified neither Persistent nor Derived "
-                      "(add to a list in SceneSnapshotRoles.cpp):";
+                      "(add to a list in SnapshotRoles.cpp):";
     for (const auto &name : unclassified) (msg += "\n  ") += name;
     throw std::runtime_error(msg);
 }
 
 bool SnapshotSkipsEntity(const entt::registry &r, entt::entity e) { return r.all_of<OverlayExtra>(e); }
+
+std::optional<bool> ComponentValuesEqual(entt::id_type type_hash, const void *a, const void *b) {
+    using Comparator = bool (*)(const void *, const void *);
+    static const auto comparators = [] {
+        std::unordered_map<entt::id_type, Comparator> m;
+        const auto add = [&]<class... Cs>(type_list<Cs...>) {
+            (m.emplace(entt::type_hash<Cs>::value(), MakeComparator<Cs>()), ...);
+        };
+        add(entt::type_list_cat_t<Persistent, Derived>{});
+        return m;
+    }();
+    const auto it = comparators.find(type_hash);
+    if (it == comparators.end() || it->second == nullptr) return std::nullopt;
+    return it->second(a, b);
+}
 } // namespace snapshot

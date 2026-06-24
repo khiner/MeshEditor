@@ -31,13 +31,19 @@ namespace {
 void OnDestroyMeshHandle(entt::registry &r, entt::entity e) {
     r.ctx().get<MeshStore>().Release(r.get<MeshHandle>(e).StoreId);
 }
+
+// on_construct hook: default-create C, but only if absent, so a snapshot-restored C isn't clobbered or double-emplaced.
+template<typename C>
+void EmplaceIfAbsent(entt::registry &r, entt::entity e) {
+    if (!r.all_of<C>(e)) r.emplace<C>(e);
+}
 } // namespace
 
 entt::entity WireRegistry(entt::registry &r) {
     r.on_destroy<MeshHandle>().connect<&OnDestroyMeshHandle>();
-    r.on_construct<PhysicsMotion>().connect<&entt::registry::emplace<PhysicsVelocity>>();
+    r.on_construct<PhysicsMotion>().connect<&EmplaceIfAbsent<PhysicsVelocity>>();
     r.on_destroy<PhysicsMotion>().connect<&entt::registry::remove<PhysicsVelocity>>();
-    r.on_construct<ColliderShape>().connect<&entt::registry::emplace<ColliderMaterial>>();
+    r.on_construct<ColliderShape>().connect<&EmplaceIfAbsent<ColliderMaterial>>();
     r.on_destroy<ColliderShape>().connect<&entt::registry::remove<ColliderMaterial>>();
 
     const auto &vk = r.ctx().get<const VulkanResources>();
