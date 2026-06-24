@@ -25,15 +25,15 @@ Then, the hammer is positioned at the next impact point, and the process repeats
 namespace RealImpact {
 namespace fs = std::filesystem;
 
-static constexpr uint NumListenerPoints = 600; // Number of unique listener positions
-static constexpr uint NumImpactVertices = 5; // Number of recorded impact points on each object
-static constexpr uint NumMics = 15; // Number of microphones in the vertical microphone array
+static constexpr uint32_t NumListenerPoints = 600; // Number of unique listener positions
+static constexpr uint32_t NumImpactVertices = 5; // Number of recorded impact points on each object
+static constexpr uint32_t NumMics = 15; // Number of microphones in the vertical microphone array
 static constexpr float MicBarLengthMm = 1890 - 70; // Height of the microphone array, in mm
 // Authors use a Dayton Audio EMM6 calibrated measurement microphone.
 // Measurements from https://www.amazon.com/Dayton-Audio-EMM-6-Measurement-Microphone/dp/B002KI8X40
 static constexpr float MicLengthMm = 190.5, MicWidthMm = 22.352;
 // Listener point closest to the front-center of the object's hemisphere of microphone positions.
-static constexpr uint CenteredListenerIndex = 263;
+static constexpr uint32_t CenteredListenerIndex = 263;
 // RealImpact meshes are Z-up; rotate to MeshEditor's Y-up frame and flip 180° so the object faces forward.
 extern const quat ObjectRotationToYUp;
 

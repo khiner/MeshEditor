@@ -335,7 +335,7 @@ inline BoneSphereData BoneSphereDisc(float radius = 0.05f, uint32_t segments = 3
     std::vector<vec3> positions;
     positions.reserve(segments + 1);
     for (uint32_t i = 0; i < segments; ++i) {
-        float angle = 2.f * 3.14159265f * float(i) / float(segments);
+        const float angle = 2.f * 3.14159265f * float(i) / float(segments);
         positions.push_back({radius * std::cos(angle), radius * std::sin(angle), 0});
     }
     positions.push_back({0, 0, 0}); // center

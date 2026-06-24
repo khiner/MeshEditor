@@ -86,7 +86,7 @@ constexpr ObjectLayer NonMoving{0}, Moving{1}, NumLayers{2};
 
 namespace BPLayers {
 constexpr BroadPhaseLayer NonMoving{0}, Moving{1};
-constexpr uint NumLayers = 2;
+constexpr uint32_t NumLayers{2};
 } // namespace BPLayers
 
 class BPLayerInterface final : public BroadPhaseLayerInterface {
@@ -95,7 +95,7 @@ public:
         Mapping[Layers::NonMoving] = BPLayers::NonMoving;
         Mapping[Layers::Moving] = BPLayers::Moving;
     }
-    uint GetNumBroadPhaseLayers() const override { return BPLayers::NumLayers; }
+    uint32_t GetNumBroadPhaseLayers() const override { return BPLayers::NumLayers; }
     BroadPhaseLayer GetBroadPhaseLayer(ObjectLayer layer) const override { return Mapping[layer]; }
     const char *GetBroadPhaseLayerName(BroadPhaseLayer layer) const override {
         if (layer == BPLayers::NonMoving) return "NON_MOVING";
@@ -367,7 +367,7 @@ namespace {
 constexpr float PlaneThickness{1e-3f}; // Y-thickness of the BoxShape used as a finite-plane / non-static-infinite-plane fallback
 
 Ref<Shape> CreateJoltShape(const PhysicsShape &shape, const Mesh *mesh, bool body_is_static = false) {
-    Ref<Shape> js = std::visit(
+    const Ref<Shape> js = std::visit(
         overloaded{
             // KHR spec uses full size, Jolt uses half-extents.
             [](const physics::Box &s) -> Ref<Shape> { return new BoxShape(ToJolt(s.Size * 0.5f)); },
@@ -400,7 +400,7 @@ Ref<Shape> CreateJoltShape(const PhysicsShape &shape, const Mesh *mesh, bool bod
                 Array<Vec3> points;
                 points.reserve(verts.size());
                 for (const auto &v : verts) points.emplace_back(v.Position.x, v.Position.y, v.Position.z);
-                ConvexHullShapeSettings settings(points.data(), points.size());
+                const ConvexHullShapeSettings settings(points.data(), points.size());
                 if (const auto r = settings.Create(); r.IsValid()) return r.Get();
                 return {};
             },
@@ -416,7 +416,7 @@ Ref<Shape> CreateJoltShape(const PhysicsShape &shape, const Mesh *mesh, bool bod
                 for (size_t i = 0; i + 2 < indices.size(); i += 3) {
                     triangles.emplace_back(indices[i], indices[i + 1], indices[i + 2]);
                 }
-                MeshShapeSettings settings{std::move(vertices), std::move(triangles)};
+                const MeshShapeSettings settings{std::move(vertices), std::move(triangles)};
                 if (const auto r = settings.Create(); r.IsValid()) return r.Get();
                 return {};
             },
@@ -489,10 +489,10 @@ void ConfigureJointSettings(SixDOFConstraintSettings &settings, const PhysicsJoi
                 }
             }
         };
-        for (uint8_t a : limit.LinearAxes) {
+        for (const uint8_t a : limit.LinearAxes) {
             if (a < 3) configure_axis(SixDOFConstraintSettings::EAxis(a));
         }
-        for (uint8_t a : limit.AngularAxes) {
+        for (const uint8_t a : limit.AngularAxes) {
             if (a < 3) configure_axis(SixDOFConstraintSettings::EAxis(a + 3));
         }
     }
@@ -531,9 +531,9 @@ int DetectHingeAxis(const PhysicsJointDef &def) {
     for (const auto &lim : def.Limits) {
         const float lo = lim.Min.value_or(-FLT_MAX), hi = lim.Max.value_or(FLT_MAX);
         if (std::abs(lo) >= 0.09f || std::abs(hi) >= 0.09f) return -1; // ~5° / 9cm tolerance
-        for (uint8_t a : lim.LinearAxes)
+        for (const uint8_t a : lim.LinearAxes)
             if (a < 3) linear_locked[a] = true;
-        for (uint8_t a : lim.AngularAxes)
+        for (const uint8_t a : lim.AngularAxes)
             if (a < 3) angular_locked[a] = true;
     }
     for (int i = 0; i < 3; ++i)
@@ -968,7 +968,7 @@ void ApplyMassPropertiesFromShape(PhysicsState &s, const entt::registry &r, entt
     if (motion->InertiaDiagonal) return; // explicit override wins
     if (motion->Mass == 0.0f) return; // KHR §128 infinite mass — handled separately
 
-    BodyLockWrite lock(s.System->GetBodyLockInterface(), BodyID{handle->BodyId});
+    const BodyLockWrite lock(s.System->GetBodyLockInterface(), BodyID{handle->BodyId});
     if (!lock.Succeeded()) return;
     auto &body = lock.GetBody();
     if (!body.IsDynamic()) return; // sensors, static, kinematic skip
@@ -1009,7 +1009,7 @@ void ApplyMotion(PhysicsState &s, const entt::registry &r, entt::entity entity) 
     bi.SetGravityFactor(id, motion->GravityFactor);
 
     {
-        BodyLockWrite lock(s.System->GetBodyLockInterface(), id);
+        const BodyLockWrite lock(s.System->GetBodyLockInterface(), id);
         if (!lock.Succeeded()) return;
         auto &body = lock.GetBody();
         if (!body.IsDynamic() && !body.IsKinematic()) return;
@@ -1059,7 +1059,7 @@ void ApplyMaterial(PhysicsState &s, const entt::registry &r, entt::entity entity
         }
     }
 
-    BodyLockWrite lock(s.System->GetBodyLockInterface(), id);
+    const BodyLockWrite lock(s.System->GetBodyLockInterface(), id);
     if (lock.Succeeded()) {
         auto &body = lock.GetBody();
         auto *leaf = const_cast<Shape *>(body.GetShape());

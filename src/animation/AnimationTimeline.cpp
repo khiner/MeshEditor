@@ -39,7 +39,7 @@ bool IconButton(const char *id, const SvgResource *icon, ImDrawFlags corners = I
 int ComputeMajorStep(float pixels_per_frame) {
     static constexpr float MinLabelSpacingPx{80};
     static constexpr int steps[]{1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000};
-    for (int s : steps) {
+    for (const int s : steps) {
         if (s * pixels_per_frame >= MinLabelSpacingPx) return s;
     }
     return steps[std::size(steps) - 1];

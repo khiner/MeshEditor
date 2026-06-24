@@ -11,13 +11,13 @@
 using std::ranges::find_if, std::ranges::distance;
 
 namespace {
-constexpr uint64_t MakeEdgeKey(uint from, uint to) { return (uint64_t(from) << 32) | to; }
+constexpr uint64_t MakeEdgeKey(uint32_t from, uint32_t to) { return (uint64_t(from) << 32) | to; }
 
 // Flat open-addressing map reused across connectivity builds via thread_local.
 // Key 0 is the empty sentinel (self-loop edges are impossible).
 struct EdgeMap {
     void reset(size_t n) {
-        size_t cap = std::bit_ceil(n * 2 | 16u);
+        const size_t cap = std::bit_ceil(n * 2 | 16u);
         Data.assign(cap, {});
         Mask = cap - 1;
     }
@@ -146,14 +146,14 @@ he::VH Mesh::GetFromVertex(HH hh) const {
     return it != range.end() ? C->Halfedges[**it].Vertex : VH{};
 }
 
-uint Mesh::GetValence(VH vh) const { return distance(voh_range(vh)); }
-uint Mesh::GetValence(FH fh) const { return distance(fh_range(fh)); }
+uint32_t Mesh::GetValence(VH vh) const { return distance(voh_range(vh)); }
+uint32_t Mesh::GetValence(FH fh) const { return distance(fh_range(fh)); }
 
 vec3 Mesh::CalcFaceCentroid(FH fh) const {
     assert(*fh < C->Faces.size());
     const auto vertices = Store->GetVertices(StoreId);
     vec3 centroid{0};
-    uint count{0};
+    uint32_t count{0};
     for (auto vh : fv_range(fh)) {
         centroid += vertices[*vh].Position;
         count++;
@@ -207,8 +207,8 @@ vec3 Mesh::GetNormal(FH fh) const {
 std::span<const Vertex> Mesh::GetVerticesSpan() const { return Store->GetVertices(StoreId); }
 uint32_t Mesh::TriangleIndexCount() const { return Store->GetTriangleCount(StoreId) * 3; }
 
-void Mesh::WriteTriangleIndices(std::span<uint> dest) const {
-    uint i = 0;
+void Mesh::WriteTriangleIndices(std::span<uint32_t> dest) const {
+    uint32_t i = 0;
     for (const auto fh : faces()) {
         auto fv_it = cfv_iter(fh);
         const auto v0 = *fv_it++;
@@ -223,17 +223,17 @@ void Mesh::WriteTriangleIndices(std::span<uint> dest) const {
     }
 }
 
-std::vector<uint> Mesh::CreateTriangleIndices() const {
-    uint count = 0;
+std::vector<uint32_t> Mesh::CreateTriangleIndices() const {
+    uint32_t count = 0;
     for (const auto fh : faces()) count += (GetValence(fh) - 2) * 3;
-    std::vector<uint> indices(count);
+    std::vector<uint32_t> indices(count);
     WriteTriangleIndices(indices);
     return indices;
 }
 
-void Mesh::WriteEdgeIndices(std::span<uint> dest) const {
-    uint i = 0;
-    for (uint ei = 0; ei < EdgeCount(); ++ei) {
+void Mesh::WriteEdgeIndices(std::span<uint32_t> dest) const {
+    uint32_t i = 0;
+    for (uint32_t ei = 0; ei < EdgeCount(); ++ei) {
         const auto heh = GetHalfedge(EH{ei}, 0);
         const auto v_from = GetFromVertex(heh);
         const auto v_to = GetToVertex(heh);

@@ -2054,7 +2054,7 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
         auto plan = [&](const std::optional<::MeshData> &data) { if (data) ctx.Meshes.PlanCreate(*data); };
         for (const auto &scene_mesh : source_meshes) {
             if (scene_mesh.Triangles) {
-                uint32_t morph_targets = scene_mesh.MorphData ? scene_mesh.MorphData->TargetCount : 0;
+                const uint32_t morph_targets = scene_mesh.MorphData ? scene_mesh.MorphData->TargetCount : 0;
                 ctx.Meshes.PlanCreate(*scene_mesh.Triangles, scene_mesh.TrianglePrimitives, scene_mesh.DeformData.has_value(), morph_targets);
             }
             plan(scene_mesh.Lines);
@@ -3526,7 +3526,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         pbr.Iridescence.Texture.Slot = meta.TextureSlots[MTS_Iridescence];
         pbr.Iridescence.ThicknessTexture.Slot = meta.TextureSlots[MTS_IridescenceThickness];
 
-        std::string name = (!meta.NameWasEmpty && i < names.size()) ? names[i] : std::string{};
+        const std::string name = (!meta.NameWasEmpty && i < names.size()) ? names[i] : std::string{};
         // Un-fold load's `EmissiveFactor *= strength` for emissive_strength round-trip.
         vec3 emissive_factor = pbr.EmissiveFactor;
         if (meta.EmissiveStrength && *meta.EmissiveStrength != 0.f) emissive_factor /= *meta.EmissiveStrength;

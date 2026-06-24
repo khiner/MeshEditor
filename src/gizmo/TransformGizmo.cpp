@@ -409,8 +409,8 @@ std::optional<std::pair<ImVec2, ImVec2>> ClipRayToRect(const rect &r, ImVec2 p, 
     const auto t0 = (r_min - p) * d_inv;
     const auto t1 = (r_max - p) * d_inv;
     const auto tmin = ImMin(t0, t1), tmax = ImMax(t0, t1);
-    float t_enter = std::max(tmin.x, tmin.y);
-    float t_exit = std::min(tmax.x, tmax.y);
+    const float t_enter = std::max(tmin.x, tmin.y);
+    const float t_exit = std::min(tmax.x, tmax.y);
     if (t_enter > t_exit) return {}; // No intersection
 
     return {{p + d * t_enter, p + d * t_exit}};

@@ -195,7 +195,7 @@ void DrawNamedEntityList(entt::registry &r, const char *id, const char *add_labe
 // Returns the edited shape iff the user changed something.
 // When `auto_fit`, dim widgets for BBox-fittable kinds are hidden — the fitter owns them.
 std::optional<PhysicsShape> RenderShapeEditor(const PhysicsShape &in, bool auto_fit) {
-    static const char *shape_names[]{"Box", "Sphere", "Capsule", "Cylinder", "Plane", "Convex Hull", "Triangle Mesh"};
+    static const char *const shape_names[]{"Box", "Sphere", "Capsule", "Cylinder", "Plane", "Convex Hull", "Triangle Mesh"};
     auto out = in;
     bool changed = false;
     if (auto shape_type_i = int(out.index());
@@ -366,7 +366,7 @@ void physics_ui::RenderTab(entt::registry &r, entt::entity viewport) {
                 return n;
             },
             [&](entt::entity jd_entity, const PhysicsJointDef &jd) {
-                static const char *axis_names[]{"X", "Y", "Z"};
+                static const char *const axis_names[]{"X", "Y", "Z"};
                 std::optional<uint32_t> delete_limit;
                 for (uint32_t li = 0; li < jd.Limits.size(); ++li) {
                     PushID(int(li));

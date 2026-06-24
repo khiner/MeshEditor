@@ -7,7 +7,7 @@
 #include "faust/dsp/llvm-dsp.h"
 
 namespace {
-constexpr uint SampleRate = 48'000; // todo respect device sample rate
+constexpr uint32_t SampleRate = 48'000; // todo respect device sample rate
 const fs::path FaustSvgDir{"MeshEditor-svg"};
 } // namespace
 
@@ -16,7 +16,7 @@ FaustDSP::~FaustDSP() {
     Uninit();
 }
 
-void FaustDSP::Compute(uint n, const Sample **input, Sample **output) const {
+void FaustDSP::Compute(uint32_t n, const Sample **input, Sample **output) const {
     if (Dsp) Dsp->compute(n, const_cast<Sample **>(input), output);
 }
 

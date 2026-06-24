@@ -67,11 +67,11 @@ void RenderFrame(vk::Device device, vk::Queue queue, ImGui_ImplVulkanH_Window &w
     CheckVk(err);
 
     const auto &fd = wd.Frames[wd.FrameIndex];
-    vk::Fence fd_fence{fd.Fence};
+    const vk::Fence fd_fence{fd.Fence};
     CheckVk(device.waitForFences(fd_fence, true, UINT64_MAX));
     device.resetFences(fd_fence);
     device.resetCommandPool(fd.CommandPool);
-    vk::CommandBuffer command_buffer{fd.CommandBuffer};
+    const vk::CommandBuffer command_buffer{fd.CommandBuffer};
     command_buffer.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
     constexpr static vk::ClearValue clear_color{{0.45f, 0.55f, 0.60f, 1.f}};
     command_buffer.beginRenderPass({wd.RenderPass, fd.Framebuffer, {{0, 0}, {uint32_t(wd.Width), uint32_t(wd.Height)}}, 1, &clear_color}, vk::SubpassContents::eInline);
@@ -79,18 +79,18 @@ void RenderFrame(vk::Device device, vk::Queue queue, ImGui_ImplVulkanH_Window &w
     command_buffer.endRenderPass();
     command_buffer.end();
 
-    vk::Semaphore wait_semaphores[]{image_acquired_semaphore};
-    vk::PipelineStageFlags wait_stage{vk::PipelineStageFlagBits::eColorAttachmentOutput};
-    vk::CommandBuffer command_buffers[]{command_buffer};
-    vk::Semaphore signal_semaphores[]{wd.FrameSemaphores[wd.SemaphoreIndex].RenderCompleteSemaphore};
+    const vk::Semaphore wait_semaphores[]{image_acquired_semaphore};
+    const vk::PipelineStageFlags wait_stage{vk::PipelineStageFlagBits::eColorAttachmentOutput};
+    const vk::CommandBuffer command_buffers[]{command_buffer};
+    const vk::Semaphore signal_semaphores[]{wd.FrameSemaphores[wd.SemaphoreIndex].RenderCompleteSemaphore};
     queue.submit(vk::SubmitInfo{wait_semaphores, wait_stage, command_buffers, signal_semaphores}, fd_fence);
 }
 void PresentFrame(vk::Queue queue, ImGui_ImplVulkanH_Window &wd) {
     if (RebuildSwapchain) return;
 
-    vk::Semaphore wait_semaphores[]{wd.FrameSemaphores[wd.SemaphoreIndex].RenderCompleteSemaphore};
-    vk::SwapchainKHR swapchains[]{wd.Swapchain};
-    uint32_t image_indices[]{wd.FrameIndex};
+    const vk::Semaphore wait_semaphores[]{wd.FrameSemaphores[wd.SemaphoreIndex].RenderCompleteSemaphore};
+    const vk::SwapchainKHR swapchains[]{wd.Swapchain};
+    const uint32_t image_indices[]{wd.FrameIndex};
     auto result = queue.presentKHR({wait_semaphores, swapchains, image_indices});
     if (result == vk::Result::eErrorOutOfDateKHR || result == vk::Result::eSuboptimalKHR) {
         RebuildSwapchain = true;
@@ -334,7 +334,7 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
         SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_MAXIMIZED | SDL_WINDOW_HIGH_PIXEL_DENSITY
     );
 
-    uint extensions_count = 0;
+    uint32_t extensions_count = 0;
     const char *const *instance_extensions_raw = SDL_Vulkan_GetInstanceExtensions(&extensions_count);
     auto vc = std::make_unique<VulkanContext>(std::vector<const char *>{instance_extensions_raw, instance_extensions_raw + extensions_count});
 
@@ -348,7 +348,7 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
     };
     auto imgui_descriptor_pool = vc->Device->createDescriptorPoolUnique({vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet, 64, imgui_pool_sizes});
 
-    constexpr static uint MinImageCount = 2;
+    constexpr static uint32_t MinImageCount = 2;
     ImGui_ImplVulkanH_Window wd;
     { // Set up Vulkan window.
         VkSurfaceKHR surface;
@@ -367,9 +367,9 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
         wd.SurfaceFormat = ImGui_ImplVulkanH_SelectSurfaceFormat(vc->PhysicalDevice, wd.Surface, requestSurfaceImageFormat, (size_t)IM_COUNTOF(requestSurfaceImageFormat), requestSurfaceColorSpace);
 
 #ifdef IMGUI_UNLIMITED_FRAME_RATE
-        VkPresentModeKHR present_modes[] = {VK_PRESENT_MODE_MAILBOX_KHR, VK_PRESENT_MODE_IMMEDIATE_KHR, VK_PRESENT_MODE_FIFO_KHR};
+        const VkPresentModeKHR present_modes[] = {VK_PRESENT_MODE_MAILBOX_KHR, VK_PRESENT_MODE_IMMEDIATE_KHR, VK_PRESENT_MODE_FIFO_KHR};
 #else
-        VkPresentModeKHR present_modes[] = {VK_PRESENT_MODE_FIFO_KHR};
+        const VkPresentModeKHR present_modes[] = {VK_PRESENT_MODE_FIFO_KHR};
 #endif
         wd.PresentMode = ImGui_ImplVulkanH_SelectPresentMode(vc->PhysicalDevice, wd.Surface, &present_modes[0], IM_COUNTOF(present_modes));
         ImGui_ImplVulkanH_CreateOrResizeWindow(*vc->Instance, vc->PhysicalDevice, *vc->Device, &wd, vc->QueueFamily, nullptr, w, h, MinImageCount, 0);
@@ -806,7 +806,7 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
 
         ImGui::Render();
         auto *draw_data = GetDrawData();
-        if (bool is_minimized = (draw_data->DisplaySize.x <= 0.0f || draw_data->DisplaySize.y <= 0.0f); !is_minimized) {
+        if (const bool is_minimized = (draw_data->DisplaySize.x <= 0.0f || draw_data->DisplaySize.y <= 0.0f); !is_minimized) {
             WaitForRender(r); // ImGui samples final image
             // Lazy-start recording once the viewport has rendered at least once (so FinalColorImage has a valid extent).
             if (recording_mode && !IsRecording(r, viewport) && GetFrameCount() > 1) {

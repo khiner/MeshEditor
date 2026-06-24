@@ -124,13 +124,8 @@ std::vector<ListenerPoint> LoadListenerPoints(const fs::path &directory) {
     const auto mic_ids = npy::read_npy<long>(directory / "micID.npy");
     const auto angles = npy::read_npy<long>(directory / "angle.npy");
     const auto distances = npy::read_npy<long>(directory / "distance.npy");
-    return iota_view{0u, NumListenerPoints} | transform([&](uint i) {
-               return ListenerPoint{
-                   .Index = i,
-                   .MicId = mic_ids.data[i],
-                   .DistanceMm = distances.data[i],
-                   .AngleDeg = angles.data[i]
-               };
+    return iota_view{0u, NumListenerPoints} | transform([&](uint32_t i) {
+               return ListenerPoint{.Index = i, .MicId = mic_ids.data[i], .DistanceMm = distances.data[i], .AngleDeg = angles.data[i]};
            }) |
         to<std::vector>();
 }
@@ -138,9 +133,9 @@ std::vector<ListenerPoint> LoadListenerPoints(const fs::path &directory) {
 std::array<vec3, NumImpactVertices> LoadPositions(const fs::path &directory) {
     std::array<vec3, NumImpactVertices> impact_positions;
     // const auto vertex_ids = npy::read_npy<long>(directory / "vertexID.npy").data;
-    // for (uint i = 0; i < NumImpactVertices; ++i) VertexIndices[i] = vertex_ids[i * NumListenerPoints];
+    // for (uint32_t i = 0; i < NumImpactVertices; ++i) VertexIndices[i] = vertex_ids[i * NumListenerPoints];
     const auto vertex_xyzs = npy::read_npy<double>(directory / "vertexXYZ.npy").data;
-    for (uint i = 0; i < NumImpactVertices; ++i) {
+    for (uint32_t i = 0; i < NumImpactVertices; ++i) {
         const size_t vi = i * 3 * NumListenerPoints;
         impact_positions[i] = {vertex_xyzs[vi], vertex_xyzs[vi + 1], vertex_xyzs[vi + 2]};
     }
@@ -157,7 +152,7 @@ std::array<LoadedSample, NumImpactVertices> LoadSamples(const fs::path &director
     const size_t frames_per_impact = header.shape[1];
     std::array<LoadedSample, NumImpactVertices> all_samples;
     float max_sample = 0;
-    for (uint i = 0; i < NumImpactVertices; ++i) {
+    for (uint32_t i = 0; i < NumImpactVertices; ++i) {
         // All listener points are recorded before the vertex moves.
         // The offset is calculated relative to the current stream read position.
         const size_t advance_frames = (i == 0 ? listener_point_index : (NumListenerPoints - 1)) * frames_per_impact;

@@ -263,7 +263,7 @@ MeshDataWithMaterials ReadPly(const std::filesystem::path &path) {
     else if (vertices->t == tinyply::Type::FLOAT64) AddVertices(reinterpret_cast<const double *>(vertices->buffer.get()));
     else throw std::runtime_error{"Unsupported vertex type"};
 
-    std::span face_buf{faces->buffer.get(), faces->buffer.size_bytes()};
+    const std::span face_buf{faces->buffer.get(), faces->buffer.size_bytes()};
     size_t idx_size;
     switch (faces->t) {
         case tinyply::Type::UINT32:
@@ -282,7 +282,7 @@ MeshDataWithMaterials ReadPly(const std::filesystem::path &path) {
         std::vector<uint> face_verts;
         face_verts.reserve(face_size);
         for (uint8_t v = 0; v < face_size; ++v) {
-            uint vi = 0;
+            uint32_t vi = 0;
             std::memcpy(&vi, &face_buf[offset], idx_size);
             offset += idx_size;
             face_verts.emplace_back(vi);

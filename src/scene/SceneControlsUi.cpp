@@ -148,7 +148,7 @@ bool RenderCameraLensEditor(Camera &camera, float distance, std::optional<float>
     bool lens_changed = false;
 
     int proj_i = std::holds_alternative<Orthographic>(camera) ? 1 : 0;
-    const char *proj_names[]{"Perspective", "Orthographic"};
+    const char *const proj_names[]{"Perspective", "Orthographic"};
     if (Combo("Projection", &proj_i, proj_names, IM_ARRAYSIZE(proj_names))) {
         if (proj_i == 0 && !std::holds_alternative<Perspective>(camera)) {
             camera = PerspectiveFromOrthographic(std::get<Orthographic>(camera), distance);
@@ -340,7 +340,7 @@ static void RenderEntityControls(entt::registry &r, entt::entity viewport, entt:
             // Rotation editor (RotationUiVariant is reactively created; may not exist yet on the first frame)
             if (const auto *rotation_ui_ptr = r.try_get<const RotationUiVariant>(transform_entity)) {
                 int mode_i = rotation_ui_ptr->index();
-                const char *modes[]{"Quat (WXYZ)", "XYZ Euler", "Axis Angle"};
+                const char *const modes[]{"Quat (WXYZ)", "XYZ Euler", "Axis Angle"};
                 if (Combo("Rotation mode", &mode_i, modes, IM_ARRAYSIZE(modes)))
                     action::Emit(action::view::SetRotationUiMode{mode_i, ui::ScopeFromAlt()});
                 auto ui_local = *rotation_ui_ptr;
@@ -470,7 +470,7 @@ static void RenderEntityControls(entt::registry &r, entt::entity viewport, entt:
             const auto &active_mesh = GetMesh(r, active_mesh_entity);
             auto &material_store = r.ctx().get<MaterialStore>();
             const auto texture_refs = GetTextureRefs(r);
-            std::span<const uint32_t> primitive_materials = meshes.GetPrimitiveMaterialIndices(active_mesh.GetStoreId());
+            const std::span<const uint32_t> primitive_materials = meshes.GetPrimitiveMaterialIndices(active_mesh.GetStoreId());
             const auto materials = GetMaterials(r);
             const auto material_count = uint32_t(materials.size());
             const auto material_name = [&](uint32_t index) {
@@ -687,7 +687,7 @@ static void RenderEntityControls(entt::registry &r, entt::entity viewport, entt:
         auto light = GetLights(r)[r.get<const LightIndex>(active_entity).Value];
         bool changed{false};
 
-        const char *type_names[]{"Directional", "Point", "Spot"};
+        const char *const type_names[]{"Directional", "Point", "Spot"};
         if (int type_i = int(light.Type); Combo("Type", &type_i, type_names, IM_ARRAYSIZE(type_names))) {
             auto next = Defaults::MakePunctualLight(PunctualLightType(type_i));
             next.TransformSlotOffset = light.TransformSlotOffset;

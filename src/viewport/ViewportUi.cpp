@@ -394,7 +394,7 @@ void InteractOverlay(entt::registry &r, entt::entity viewport, FrameState &frame
         const bool transform_enabled = !edit_transform_locked;
         const bool scale_enabled = transform_enabled && !has_frozen_selected;
 
-        ui::Edit gizmo_edit{r, viewport};
+        const ui::Edit gizmo_edit{r, viewport};
         const auto transform_type = r.get<const TransformGizmoState>(viewport).Config.Type;
         if (!transform_enabled && transform_type != None) {
             gizmo_edit.Set<&TransformGizmoState::Config, &TransformGizmo::Config::Type>(None);
@@ -562,7 +562,7 @@ void InteractOverlay(entt::registry &r, entt::entity viewport, FrameState &frame
                         return false;
                     };
                     changed |= linear_color_edit("Ambient color", lights.AmbientColor);
-                    static const char *light_names[]{"Light 1", "Light 2", "Light 3", "Light 4"};
+                    static const char *const light_names[]{"Light 1", "Light 2", "Light 3", "Light 4"};
                     for (int i = 0; i < 4; i++) {
                         auto &light = lights.Lights[i];
                         if (CollapsingHeader(light_names[i])) {

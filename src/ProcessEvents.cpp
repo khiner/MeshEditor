@@ -2053,8 +2053,6 @@ RenderRequest ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
         if (interaction_mode != InteractionMode::Excite) continue;
         const auto &mesh = GetMesh(r, mesh_entity);
         std::unordered_set<VH> selected_vertices;
-        std::unordered_set<EH> selected_edges, active_edges;
-        std::unordered_set<FH> selected_faces;
         std::optional<uint32_t> active_handle, excited_handle;
         for (auto [entity, instance, excitable] : r.view<const Instance, const SoundVertices>().each()) {
             if (instance.Entity != mesh_entity) continue;
@@ -2063,7 +2061,7 @@ RenderRequest ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
             break;
         }
         if (const auto *active = r.try_get<const MeshActiveElement>(mesh_entity)) active_handle = active->Handle;
-        meshes.UpdateElementStates(mesh, Element::Vertex, selected_vertices, selected_edges, active_edges, selected_faces, active_handle, excited_handle);
+        meshes.UpdateElementStates(mesh, Element::Vertex, selected_vertices, {}, {}, {}, active_handle, excited_handle);
         r.ctx().get<DrawState>().SelectionStale = true;
     }
     if (!dirty_element_state_meshes.empty()) request(RenderRequest::Submit);

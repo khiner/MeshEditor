@@ -109,7 +109,7 @@ entt::entity DuplicateLinkedOne(entt::registry &r, entt::entity e) {
     const auto mesh_entity = r.get<Instance>(e).Entity;
     const auto e_new = r.create();
     {
-        uint instance_count = 0; // Count instances for naming (first duplicated instance is _1, etc.)
+        uint32_t instance_count{0}; // Count instances for naming (first duplicated instance is _1, etc.)
         for (const auto [_, instance] : r.view<Instance>().each()) {
             if (instance.Entity == mesh_entity) ++instance_count;
         }

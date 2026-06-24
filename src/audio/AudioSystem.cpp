@@ -35,7 +35,7 @@ using std::ranges::distance, std::ranges::iota_view, std::ranges::find, std::ran
 using std::views::transform;
 
 static constexpr std::string_view ExciteIndexParamName{"Excite index"}, GateParamName{"Gate"};
-static constexpr uint SampleRate = 48'000; // todo respect device sample rate
+static constexpr uint32_t SampleRate = 48'000; // todo respect device sample rate
 
 // Per-sound-object component. Maps mesh vertex handles to sample keys in the scene-level AudioSamples store.
 // Only vertices that have a sample appear in the map.
@@ -98,7 +98,7 @@ void ReleaseSample(entt::registry &r, entt::entity viewport, const fs::path &pat
 } // namespace
 
 std::vector<float> LoadAudioFrames(const std::string &file_path) {
-    ma_decoder_config config = ma_decoder_config_init(ma_format_f32, 1, SampleRate);
+    const ma_decoder_config config = ma_decoder_config_init(ma_format_f32, 1, SampleRate);
     ma_decoder decoder;
     if (ma_decoder_init_file(file_path.c_str(), &config, &decoder) != MA_SUCCESS) {
         std::cerr << std::format("Failed to open audio file: {}\n", file_path);
@@ -129,7 +129,7 @@ void AssignVertexSample(
     // `frames` is consumed on the first new-path insertion; subsequent AcquireSample calls
     // see the path already in the store and only bump refcount, so the moved-from vector is ignored.
     bool vs_changed = false;
-    for (uint32_t mv : mesh_vertices) {
+    for (const uint32_t mv : mesh_vertices) {
         auto [it, inserted] = vs.PathByVertex.try_emplace(mv, path);
         if (!inserted) {
             if (it->second == path) continue;
@@ -151,7 +151,7 @@ void RemoveVertexSamples(
     if (!vs || mesh_vertices.empty()) return;
     vs->Stop();
     bool vs_changed = false;
-    for (uint32_t mv : mesh_vertices) {
+    for (const uint32_t mv : mesh_vertices) {
         const auto it = vs->PathByVertex.find(mv);
         if (it == vs->PathByVertex.end()) continue;
         ReleaseSample(r, viewport, it->second);
@@ -257,7 +257,7 @@ ModalDsp GenerateModalDsp(std::string_view model_name, const ModalModes &modes, 
     static constexpr std::string_view ModelGain{"gain = hslider(\"Gain[scale:log]\",0.2,0,0.5,0.01)"};
     static constexpr std::string_view ModelT60Scale{"t60Scale = hslider(\"t60[scale:log][tooltip: Scale T60 decay values of all modes by the same amount.]\",1,0.1,10,0.01)"};
     const auto model_freq = std::format("freq = hslider(\"Frequency[scale:log][tooltip: Fundamental frequency of the model]\",{},50,16000,1)", fundamental_freq);
-    const uint num_excitable = sound_vertices.Vertices.size();
+    const uint32_t num_excitable = sound_vertices.Vertices.size();
     const auto model_ex_pos = std::format("exPos = nentry(\"{}\",{},0,{},1)", ExciteIndexParamName, (num_excitable - 1) / 2, num_excitable - 1);
     const auto model = GenerateModalModelDsp(modes, "modalModel", freq_control);
     const auto model_definition = std::format("{} = environment {{\n{}\n{};\n{};\n{};\n{};\n}};", model_name, model, ModelGain, model_freq, model_ex_pos, ModelT60Scale);
@@ -433,14 +433,14 @@ void ProcessAudio(entt::registry &r, entt::entity viewport, AudioBuffer buffer) 
             const auto path = ActiveSamplePath(r, entity);
             if (!path) continue;
             const auto &impact_samples = GetSampleFrames(r, viewport, *path);
-            for (uint i = 0; i < buffer.FrameCount; ++i) {
+            for (uint32_t i = 0; i < buffer.FrameCount; ++i) {
                 buffer.Output[i] += samples->Frame < impact_samples.size() ? impact_samples[samples->Frame++] : 0.0f;
             }
         } else if (model == SoundVerticesModel::Modal) {
             if (auto *recording = r.try_get<Recording>(entity)) {
                 if (recording->Frame == 0) dsp.Set(GateParamName, 1);
                 if (!recording->Complete()) {
-                    for (uint i = 0; i < buffer.FrameCount && !recording->Complete(); ++i) {
+                    for (uint32_t i = 0; i < buffer.FrameCount && !recording->Complete(); ++i) {
                         recording->Record(buffer.Output[i]);
                     }
                     if (recording->Complete()) dsp.Set(GateParamName, 0);
@@ -455,22 +455,22 @@ using namespace ImGui;
 /***** Sound object *****/
 
 namespace {
-constexpr void ApplyCosineWindow(float *w, uint n, const float *coeff, uint ncoeff) {
+constexpr void ApplyCosineWindow(float *w, uint32_t n, const float *coeff, uint32_t ncoeff) {
     if (n == 1) {
         w[0] = 1.0;
         return;
     }
 
-    const uint wlength = n;
-    for (uint i = 0; i < n; ++i) {
+    const uint32_t wlength = n;
+    for (uint32_t i = 0; i < n; ++i) {
         float wi = 0.0;
-        for (uint j = 0; j < ncoeff; ++j) wi += coeff[j] * __cospi(float(2 * i * j) / float(wlength));
+        for (uint32_t j = 0; j < ncoeff; ++j) wi += coeff[j] * __cospi(float(2 * i * j) / float(wlength));
         w[i] = wi;
     }
 }
 
 // Create Blackman-Harris window
-constexpr std::vector<float> CreateBlackmanHarris(uint n) {
+constexpr std::vector<float> CreateBlackmanHarris(uint32_t n) {
     std::vector<float> window(n);
     static constexpr float coeff[4] = {0.35875, -0.48829, 0.14128, -0.01168};
     ApplyCosineWindow(window.data(), n, coeff, sizeof(coeff) / sizeof(float));
@@ -479,7 +479,7 @@ constexpr std::vector<float> CreateBlackmanHarris(uint n) {
 
 constexpr std::vector<float> ApplyWindow(const std::vector<float> &window, const float *data) {
     std::vector<float> windowed(window.size());
-    for (uint i = 0; i < window.size(); ++i) windowed[i] = window[i] * data[i];
+    for (uint32_t i = 0; i < window.size(); ++i) windowed[i] = window[i] * data[i];
     return windowed;
 }
 
@@ -518,14 +518,14 @@ constexpr ImVec2 ChartSize{-1, 160};
 
 // Capture a short audio segment shortly after the impact for FFT.
 FFTData ComputeFft(const std::vector<float> &frames) {
-    static constexpr uint FftStartFrame = 30, FftEndFrame = SampleRate / 16;
+    static constexpr uint32_t FftStartFrame = 30, FftEndFrame = SampleRate / 16;
     static const auto BHWindow = CreateBlackmanHarris(FftEndFrame - FftStartFrame);
     return {ApplyWindow(BHWindow, frames.data() + FftStartFrame)};
 }
 
 // If `normalize_max` is set, normalize the data to this maximum value.
 void WriteWav(const std::vector<float> &frames, fs::path file_path, std::optional<float> normalize_max = {}) {
-    static ma_encoder_config WavEncoderConfig = ma_encoder_config_init(ma_encoding_format_wav, ma_format_f32, 1, SampleRate);
+    static const ma_encoder_config WavEncoderConfig = ma_encoder_config_init(ma_encoding_format_wav, ma_format_f32, 1, SampleRate);
     static ma_encoder WavEncoder;
     if (auto status = ma_encoder_init_file(file_path.c_str(), &WavEncoderConfig, &WavEncoder); status != MA_SUCCESS) {
         throw std::runtime_error(std::format("Failed to initialize wav file {}. Status: {}", file_path.string(), uint(status)));
@@ -558,7 +558,7 @@ void PlotMagnitudeSpectrum(const std::vector<float> &frames, std::string_view la
     }
     if (ImPlot::BeginPlot(label.data(), ChartSize)) {
         static constexpr float MinDb = -200;
-        const uint N = fft.NumReal, N2 = N / 2;
+        const uint32_t N = fft.NumReal, N2 = N / 2;
         const float fs = SampleRate; // todo flexible sample rate
         const float fs_n = SampleRate / float(N);
         static std::vector<float> frequency(N2), magnitude(N2);
@@ -566,7 +566,7 @@ void PlotMagnitudeSpectrum(const std::vector<float> &frames, std::string_view la
         magnitude.resize(N2);
 
         const auto *data = fft.Complex;
-        for (uint i = 0; i < N2; i++) {
+        for (uint32_t i = 0; i < N2; i++) {
             frequency[i] = fs_n * float(i);
             magnitude[i] = 20.0f * log10f(sqrtf(data[i][0] * data[i][0] + data[i][1] * data[i][1]) / float(N2));
         }
@@ -828,7 +828,7 @@ void DrawObjectAudioControls(
         if (sample_ops_available) {
             std::vector<uint32_t> op_with_sample;
             if (samples) {
-                for (uint32_t mv : op_vertices) {
+                for (const uint32_t mv : op_vertices) {
                     if (samples->PathByVertex.contains(mv)) op_with_sample.push_back(mv);
                 }
             }
@@ -921,8 +921,8 @@ void DrawObjectAudioControls(
 
     if (samples && recording && recording->Complete()) {
         // const auto &modal_fft = ..., &impact_fft = ...;
-        // uint ModeCount() const { return modes.Freqs.size(); }
-        // const uint n_test_modes = std::min(ModeCount(), 10u);
+        // uint32_t ModeCount() const { return modes.Freqs.size(); }
+        // const uint32_t n_test_modes = std::min(ModeCount(), 10u);
         // Uncomment to cache `n_test_modes` peak frequencies for display in the spectrum plot.
         // RMSE is abyssmal in most cases...
         // const float rmse = RMSE(GetPeakFrequencies(modal_fft, n_test_modes), GetPeakFrequencies(impact_fft, n_test_modes));

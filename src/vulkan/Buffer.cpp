@@ -135,7 +135,7 @@ BufferContext::BufferContext(vk::PhysicalDevice pd, vk::Device d, vk::Instance i
     create_info.device = d;
     create_info.instance = instance;
 #ifndef RELEASE_BUILD
-    VmaDeviceMemoryCallbacks memory_callbacks{LoggingVmaAllocate, LoggingVmaFree, nullptr};
+    const VmaDeviceMemoryCallbacks memory_callbacks{LoggingVmaAllocate, LoggingVmaFree, nullptr};
     create_info.pDeviceMemoryCallbacks = &memory_callbacks;
 #endif
     if (vmaCreateAllocator(&create_info, &Vma) != VK_SUCCESS) {

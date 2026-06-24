@@ -6,8 +6,6 @@
 #include <format>
 #include <vector>
 
-using uint = uint32_t;
-
 namespace {
 void DataCallback(ma_device *device, void *output, const void *input, ma_uint32 frame_count) {
     auto cb = reinterpret_cast<AudioDeviceCallback *>(device->pUserData);
@@ -27,7 +25,7 @@ ma_device Device;
 
 std::vector<ma_device_info *> DeviceInfos[Idx(IO::Count)];
 std::vector<std::string> DeviceNames[Idx(IO::Count)];
-std::vector<uint> NativeSampleRates[Idx(IO::Count)];
+std::vector<uint32_t> NativeSampleRates[Idx(IO::Count)];
 
 const ma_device_info *GetDeviceInfo(IO io, std::string_view device_name) {
     for (const ma_device_info *info : DeviceInfos[Idx(io)]) {
@@ -40,7 +38,7 @@ const ma_device_id *GetDeviceId(IO io, std::string_view device_name) {
     return device_info ? &device_info->id : nullptr;
 }
 
-std::string GetSampleRateName(IO io, const uint sample_rate) {
+std::string GetSampleRateName(IO io, const uint32_t sample_rate) {
     const auto &rates = NativeSampleRates[Idx(io)];
     const bool is_native = std::find(rates.begin(), rates.end(), sample_rate) != rates.end();
     return std::format("{}{}", sample_rate, is_native ? "*" : "");
@@ -56,7 +54,7 @@ AudioDevice::~AudioDevice() {
 
 void AudioDevice::Init() {
     if (ma_context_init(nullptr, 0, nullptr, &AudioContext) != MA_SUCCESS) throw std::runtime_error(std::format("Failed to initialize audio context."));
-    static uint PlaybackDeviceCount, CaptureDeviceCount;
+    static uint32_t PlaybackDeviceCount, CaptureDeviceCount;
     static ma_device_info *PlaybackDeviceInfos, *CaptureDeviceInfos;
     if (ma_context_get_devices(&AudioContext, &PlaybackDeviceInfos, &PlaybackDeviceCount, &CaptureDeviceInfos, &CaptureDeviceCount)) {
         throw std::runtime_error("Failed to get audio devices.");
@@ -66,11 +64,11 @@ void AudioDevice::Init() {
         DeviceNames[Idx(io)].clear();
         NativeSampleRates[Idx(io)].clear();
     }
-    for (uint i = 0; i < CaptureDeviceCount; ++i) {
+    for (uint32_t i = 0; i < CaptureDeviceCount; ++i) {
         DeviceInfos[Idx(IO::In)].emplace_back(&CaptureDeviceInfos[i]);
         DeviceNames[Idx(IO::In)].push_back(CaptureDeviceInfos[i].name);
     }
-    for (uint i = 0; i < PlaybackDeviceCount; ++i) {
+    for (uint32_t i = 0; i < PlaybackDeviceCount; ++i) {
         DeviceInfos[Idx(IO::Out)].emplace_back(&PlaybackDeviceInfos[i]);
         DeviceNames[Idx(IO::Out)].push_back(PlaybackDeviceInfos[i].name);
     }
@@ -92,7 +90,7 @@ void AudioDevice::Init() {
     if (ma_context_get_device_info(&AudioContext, ma_device_type_playback, config.playback.pDeviceID, &out_device_info) != MA_SUCCESS) {
         throw std::runtime_error("Failed to get audio output device info.");
     }
-    for (uint i = 0; i < out_device_info.nativeDataFormatCount; ++i) {
+    for (uint32_t i = 0; i < out_device_info.nativeDataFormatCount; ++i) {
         const auto &native_format = out_device_info.nativeDataFormats[i];
         NativeSampleRates[Idx(IO::Out)].emplace_back(native_format.sampleRate);
     }
@@ -157,7 +155,7 @@ void AudioDevice::RenderControls() {
         EndCombo();
     }
     if (BeginCombo("Sample rate", GetSampleRateName(IO::Out, SampleRate).c_str())) {
-        for (uint option : NativeSampleRates[Idx(IO::Out)]) {
+        for (const uint32_t option : NativeSampleRates[Idx(IO::Out)]) {
             const bool is_selected = option == SampleRate;
             if (Selectable(GetSampleRateName(IO::Out, option).c_str(), is_selected) && !is_selected) {
                 SampleRate = option;
