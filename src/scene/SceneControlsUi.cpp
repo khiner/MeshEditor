@@ -83,7 +83,7 @@ void PrimitiveEditor(const PrimitiveShape &shape) {
     using primitive::MaxSize, primitive::MinSize;
     static constexpr float SizeSpeed = 0.01f, HalfMin = MinSize / 2.f, HalfMax = MaxSize / 2.f;
 
-    const auto field = [&]<class C, class F>(bool changed, F C::*member, F value, float lo, float hi) {
+    const auto field = [&]<typename C, typename F>(bool changed, F C::*member, F value, float lo, float hi) {
         ui::Gesture(changed, [=] {
             return action::object::UpdatePrimitiveField<F>{ui::ScopeFromAlt(true), uint16_t(action::detail::MemPtrOffset(member)), value, F(lo), F(hi)};
         });

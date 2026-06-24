@@ -71,7 +71,7 @@ struct CreateNamed {
 
 namespace detail {
 template<auto> struct member_traits;
-template<class C, class F, F C::*P>
+template<typename C, typename F, F C::*P>
 struct member_traits<P> {
     using Class = C;
     using Field = F;

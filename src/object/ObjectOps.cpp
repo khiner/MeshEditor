@@ -239,7 +239,7 @@ entt::entity AddLight(entt::registry &r, MeshStore &, ObjectCreateInfo info, std
 
 namespace {
 // True if any component of type C has `C.*field == target`.
-template<class C, class F>
+template<typename C, typename F>
 bool AnyComponentRefersTo(entt::registry &r, F C::*field, entt::entity target) {
     return any_of(r.view<C>().each(), [=](const auto &entry) { return std::get<1>(entry).*field == target; });
 }

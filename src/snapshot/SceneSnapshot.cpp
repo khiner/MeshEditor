@@ -8,7 +8,7 @@
 
 namespace snapshot {
 namespace {
-template<class T>
+template<typename T>
 void Append(std::vector<std::byte> &out, const T &value) {
     static_assert(std::is_trivially_copyable_v<T>);
     const auto *p = reinterpret_cast<const std::byte *>(&value);

@@ -2,10 +2,10 @@
 
 #include <variant>
 
-template<class... Ts> struct overloaded : Ts... {
+template<typename... Ts> struct overloaded : Ts... {
     using Ts::operator()...;
 };
-template<class... Ts> overloaded(Ts...) -> overloaded<Ts...>;
+template<typename... Ts> overloaded(Ts...) -> overloaded<Ts...>;
 
 // Default-construct a variant by runtime index.
 template<typename V> V CreateVariantByIndex(size_t i) {

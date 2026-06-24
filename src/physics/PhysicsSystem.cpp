@@ -1126,8 +1126,8 @@ void OnTriggerChange(PhysicsState &s, entt::registry &r, entt::entity e) {
 }
 
 // Deduce the owner class from a data-member pointer
-template<class M> struct ptr_class;
-template<class C, class V> struct ptr_class<V C::*> {
+template<typename M> struct ptr_class;
+template<typename C, typename V> struct ptr_class<V C::*> {
     using type = C;
 };
 

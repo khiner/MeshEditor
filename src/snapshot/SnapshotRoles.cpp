@@ -64,13 +64,13 @@ void EmplaceLookingThrough(entt::registry &r, entt::entity e, std::span<const st
 
 // A component that zpp can serialize but can't default-construct specializes this to a custom emplacer,
 // which the table builder uses instead of EmplaceSerialized.
-template<class C>
+template<typename C>
 inline constexpr void (*CustomEmplace)(entt::registry &, entt::entity, std::span<const std::byte>) = nullptr;
 template<> inline constexpr auto CustomEmplace<ViewCamera> = &EmplaceViewCamera;
 template<> inline constexpr auto CustomEmplace<LookingThrough> = &EmplaceLookingThrough;
 
 // Specialized to skip entities whose value is derived (a bone's Transform comes from RestLocal + ArmaturePose).
-template<class C>
+template<typename C>
 inline constexpr bool (*SkipEntityFor)(const entt::registry &, entt::entity) = nullptr;
 template<> inline constexpr auto SkipEntityFor<Transform> = +[](const entt::registry &r, entt::entity e) { return r.all_of<BoneIndex>(e); };
 
@@ -78,7 +78,7 @@ template<> inline constexpr auto SkipEntityFor<Transform> = +[](const entt::regi
 
 // Trivially-copyable (or empty-tag) component, restored by memcpy.
 // Aligned storage (not `C value;`) so non-default-constructible trivially-copyable types work, since memcpy creates the object (implicit-lifetime).
-template<class C>
+template<typename C>
 void EmplaceTrivial(entt::registry &r, entt::entity e, std::span<const std::byte> bytes) {
     if constexpr (std::is_empty_v<C>) {
         r.emplace_or_replace<C>(e);
@@ -89,7 +89,7 @@ void EmplaceTrivial(entt::registry &r, entt::entity e, std::span<const std::byte
     }
 }
 
-template<class C>
+template<typename C>
 void SerializeThunk(const void *component, std::vector<std::byte> &out) {
     thread_local std::vector<std::byte> buffer;
     buffer.clear();
@@ -100,7 +100,7 @@ void SerializeThunk(const void *component, std::vector<std::byte> &out) {
     out.insert(out.end(), buffer.begin(), buffer.begin() + archive.position());
 }
 
-template<class C>
+template<typename C>
 void EmplaceSerialized(entt::registry &r, entt::entity e, std::span<const std::byte> bytes) {
     C value;
     if (zpp::bits::failure(zpp::bits::in{bytes}(value))) return;
@@ -152,14 +152,14 @@ using ForceSerialize = type_list<
 using ForceFieldwise = type_list<RotationUiVariant>;
 
 // True when memcmp would be wrong for C (heap-backed, or a variant/optional/padded type), so compare it field-wise.
-template<class C>
+template<typename C>
 inline constexpr bool NeedsFieldwise =
     CustomEmplace<C> != nullptr ||
     entt::type_list_contains_v<ForceSerialize, C> ||
     entt::type_list_contains_v<ForceFieldwise, C> ||
     (entt::type_list_contains_v<Persistent, C> && !std::is_trivially_copyable_v<C>);
 
-template<class C>
+template<typename C>
 bool ValuesEqual(const void *a, const void *b) {
     if constexpr (std::is_empty_v<C>) {
         return true;
@@ -174,7 +174,7 @@ bool ValuesEqual(const void *a, const void *b) {
 }
 
 // nullptr => incomparable: a non-trivially-copyable derived component with no serializer, so it's skipped.
-template<class C>
+template<typename C>
 constexpr bool (*MakeComparator())(const void *, const void *) {
     if constexpr (std::is_empty_v<C> || NeedsFieldwise<C> || std::is_trivially_copyable_v<C>) return &ValuesEqual<C>;
     else return nullptr;
@@ -182,7 +182,7 @@ constexpr bool (*MakeComparator())(const void *, const void *) {
 
 // Encoding deduced from the type: empty -> Tag; CustomEmplace or ForceSerialize -> Serialized (zpp);
 // trivially copyable -> Bytes (memcpy); else Serialized. CustomEmplace handles non-default-constructible types.
-template<class C>
+template<typename C>
 snapshot::SnapshotEntry MakeEntry() {
     using snapshot::Encoding;
     if constexpr (std::is_empty_v<C>) return {Encoding::Tag, 0, nullptr, &EmplaceTrivial<C>, SkipEntityFor<C>};
@@ -192,11 +192,11 @@ snapshot::SnapshotEntry MakeEntry() {
     else return {Encoding::Serialized, 0, &SerializeThunk<C>, &EmplaceSerialized<C>, SkipEntityFor<C>};
 }
 
-template<class... Cs>
+template<typename... Cs>
 std::array<entt::id_type, sizeof...(Cs)> TypeHashes(type_list<Cs...>) {
     return {entt::type_hash<Cs>::value()...};
 }
-template<class... Cs>
+template<typename... Cs>
 std::array<std::pair<entt::id_type, snapshot::SnapshotEntry>, sizeof...(Cs)> TypeEntries(type_list<Cs...>) {
     return {std::pair{entt::type_hash<Cs>::value(), MakeEntry<Cs>()}...};
 }
@@ -232,7 +232,7 @@ std::optional<bool> ComponentValuesEqual(entt::id_type type_hash, const void *a,
     using Comparator = bool (*)(const void *, const void *);
     static const auto comparators = [] {
         std::unordered_map<entt::id_type, Comparator> m;
-        const auto add = [&]<class... Cs>(type_list<Cs...>) {
+        const auto add = [&]<typename... Cs>(type_list<Cs...>) {
             (m.emplace(entt::type_hash<Cs>::value(), MakeComparator<Cs>()), ...);
         };
         add(entt::type_list_cat_t<Persistent, Derived>{});

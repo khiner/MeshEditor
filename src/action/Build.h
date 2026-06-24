@@ -30,13 +30,13 @@ template<auto... Ms>
 Update<detail::last_field<Ms...>> UpdateOf(detail::last_field<Ms...> v) { return UpdateOf<Ms...>(Scope::Active, std::move(v)); }
 
 // Member pointer passed as a runtime value rather than an NTTP.
-template<class C, class F>
+template<typename C, typename F>
 Update<F> UpdateOf(entt::entity e, F C::*m, F v) {
     static_assert(std::is_trivially_copyable_v<F>);
     RegisterUpdateable<C>();
     return {Scope::Entity, e, entt::type_hash<C>::value(), uint16_t(detail::MemPtrOffset(m)), std::move(v)};
 }
-template<class C, class F>
+template<typename C, typename F>
 Update<F> UpdateOf(F C::*m, F v) {
     static_assert(std::is_trivially_copyable_v<F>);
     RegisterUpdateable<C>();

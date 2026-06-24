@@ -32,7 +32,7 @@ std::string DisplayName(std::string_view name, std::string_view fmt, auto &&...a
     return std::format("<{}>", std::vformat(fmt, std::make_format_args(args...)));
 }
 
-template<class T>
+template<typename T>
 void RenderNameEdit(entt::entity e, const std::string &current) {
     char buf[128];
     snprintf(buf, sizeof(buf), "%s", current.c_str());
@@ -40,8 +40,8 @@ void RenderNameEdit(entt::entity e, const std::string &current) {
 }
 
 // Deduce owner class from a data-member pointer (entt::entity Owner::*).
-template<class M> struct ptr_class;
-template<class C, class V> struct ptr_class<V C::*> {
+template<typename M> struct ptr_class;
+template<typename C, typename V> struct ptr_class<V C::*> {
     using type = C;
 };
 
@@ -49,7 +49,7 @@ template<class C, class V> struct ptr_class<V C::*> {
 // Returns the currently-selected Target (or nullptr if none/invalid). Emits when the user picks a new entry.
 // When `empty_preview` is non-null and the registry has no Target entities, renders a disabled combo with that preview.
 // `entity` is the active entity (used for the read; the write targets active via the no-entity UpdateOf).
-template<class Target, auto Field>
+template<typename Target, auto Field>
 const Target *RenderEntityCombo(entt::registry &r, entt::entity entity, const char *label, const char *empty_preview = nullptr) {
     using Owner = typename ptr_class<decltype(Field)>::type;
     const auto view = r.view<const Target>();
@@ -76,7 +76,7 @@ std::string SystemDisplayName(const entt::registry &r, entt::entity e) {
     return !r.all_of<const CollisionSystem>(e) ? "<invalid>" : DisplayName(r.get<const CollisionSystem>(e).Name, "{:x}", uint32_t(e));
 }
 
-template<class T>
+template<typename T>
 void ToggleInVector(std::vector<T> &v, T e, bool add) {
     if (add) {
         if (std::find(v.begin(), v.end(), e) == v.end()) v.push_back(e);
@@ -87,7 +87,7 @@ void ToggleInVector(std::vector<T> &v, T e, bool add) {
 
 // Multi-select combo over all CollisionSystem entities. `on_toggle(system, now_member)` returns
 // the action for that change. Renders a disabled combo with "No systems defined" when none exist.
-template<class Fn>
+template<typename Fn>
 void RenderSystemMultiSelect(const entt::registry &r, const char *label, const std::vector<entt::entity> &selection, Fn on_toggle) {
     const auto view = r.view<const CollisionSystem>();
     if (view.begin() == view.end()) {
@@ -168,7 +168,7 @@ void DrawMatrixCell(ImDrawList *dl, ImVec2 p_min, ImVec2 p_max, bool a_to_b, boo
 
 // List view of named entities with use-count, Delete/Add buttons, and per-entry body.
 // `body(e, x)` renders the row's editable body and emits any actions.
-template<class T>
+template<typename T>
 void DrawNamedEntityList(entt::registry &r, const char *id, const char *add_label, std::string_view prefix, auto &&count, auto &&body) {
     PushID(id);
     entt::entity delete_entity = entt::null;

@@ -83,7 +83,7 @@ decltype(auto) ReadChain(const auto &obj) {
     else return ReadChain<Rest...>(obj.*M);
 }
 
-template<class F>
+template<typename F>
 consteval ImGuiDataType ImGuiDt() {
     if constexpr (std::same_as<F, int8_t>) return ImGuiDataType_S8;
     else if constexpr (std::same_as<F, uint8_t>) return ImGuiDataType_U8;
@@ -129,13 +129,13 @@ struct Edit {
         else return FindActiveEntity(R);
     }
 
-    template<class T, class Reg>
+    template<typename T, typename Reg>
     const T &GetConst(Reg &r, entt::entity e) { return r.template get<const T>(e); }
 
     // Read field, hand a mutable copy to `widget`, and feed the result into gesture grouping: a drag stages
     // each frame and commits one record on release, an instantaneous edit stages+commits in one frame, and
     // an aborted edit (Escape) reverts to the gesture's start value.
-    template<auto... Ms, class Widget>
+    template<auto... Ms, typename Widget>
     bool Run(Widget widget, bool delta_capable = false) {
         using Field = action::detail::last_field<Prefix..., Ms...>;
         Field v = ReadChain<Prefix..., Ms...>(GetConst<action::detail::first_class<Prefix..., Ms...>>(R, ReadFrom()));
