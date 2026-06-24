@@ -19,6 +19,7 @@
 #include "object/ExtrasComponents.h"
 #include "object/ObjectComponents.h"
 #include "object/ObjectOps.h"
+#include "object/PendingSync.h"
 #include "physics/PhysicsSystem.h"
 #include "physics/PhysicsTypes.h"
 #include "render/DrawState.h"
@@ -200,16 +201,46 @@ entt::entity InitEngine(entt::registry &r, VulkanResources vc) {
         .on<BoneDisplayScale>(On::Update);
     r.ctx().emplace<EntityDestroyTracker>().Bind(r);
 
-    r.on_destroy<Name>().connect<&OnDestroyName>();
-    r.on_construct<RenderInstance>().connect<&AssignRenderInstanceObjectId>();
-    r.on_destroy<RenderInstance>().connect<&EmitPendingHideOnRenderInstanceDestroy>();
-    r.on_construct<Instance>().connect<&OnConstructInstance>();
-    r.on_construct<Hidden>().connect<&OnConstructHidden>();
-    r.on_construct<MeshHandle>().connect<&OnConstructMeshHandle>();
-    r.on_construct<VertexStoreId>().connect<&OnConstructVertexStoreId>();
-    r.on_construct<OverlayVertexStoreId>().connect<&OnConstructOverlayVertexStoreId>();
+    r.on_destroy<Name>().connect<[](entt::registry &r, entt::entity e) {
+        if (auto *registry = r.ctx().find<NameRegistry>()) registry->Names.erase(r.get<const Name>(e).Value);
+    }>();
+    // Assign a stable ObjectId (0 means unassigned) on RenderInstance construction.
+    r.on_construct<RenderInstance>().connect<[](entt::registry &r, entt::entity e) {
+        if (r.get<const RenderInstance>(e).ObjectId != 0) return;
+        if (auto *counter = r.ctx().find<ObjectIdCounter>()) {
+            r.patch<RenderInstance>(e, [counter](auto &ri) { ri.ObjectId = counter->Next++; });
+        }
+    }>();
+    r.on_destroy<RenderInstance>().connect<[](entt::registry &r, entt::entity e) {
+        const auto &ri = r.get<const RenderInstance>(e);
+        if (ri.BufferIndex == UINT32_MAX) return; // Same-frame show+hide — never synced to GPU.
+        r.get_or_emplace<PendingHide>(ri.Entity).BufferIndices.push_back(ri.BufferIndex);
+    }>();
+    // An instance renders unless Hidden: create its RenderInstance on construction, drop it when Hidden appears.
+    // Together these keep RenderInstance in lockstep with Instance + !Hidden, including on snapshot restore
+    // (which emplaces Instance and Hidden in either order).
+    r.on_construct<Instance>().connect<[](entt::registry &r, entt::entity e) {
+        if (!r.all_of<Hidden>(e) && !r.all_of<RenderInstance>(e)) r.emplace<RenderInstance>(e, r.get<Instance>(e).Entity, UINT32_MAX, 0u);
+    }>();
+    r.on_construct<Hidden>().connect<[](entt::registry &r, entt::entity e) {
+        if (r.all_of<RenderInstance>(e)) r.remove<RenderInstance>(e);
+    }>();
+    // Build MeshBuffers when a vertex handle is constructed (MeshHandle = full meshes,
+    // VertexStoreId = vertex-only extras, OverlayVertexStoreId = overlays). Index ranges fill in afterward.
+    r.on_construct<MeshHandle>().connect<[](entt::registry &r, entt::entity e) {
+        auto &meshes = r.ctx().get<MeshStore>();
+        r.emplace<MeshBuffers>(e, meshes.GetVerticesRange(r.get<const MeshHandle>(e).StoreId), SlottedRange{}, SlottedRange{}, SlottedRange{});
+    }>();
+    r.on_construct<VertexStoreId>().connect<[](entt::registry &r, entt::entity e) {
+        auto &meshes = r.ctx().get<MeshStore>();
+        r.emplace<MeshBuffers>(e, meshes.GetVerticesRange(r.get<const VertexStoreId>(e).StoreId), SlottedRange{}, SlottedRange{}, SlottedRange{});
+    }>();
+    r.on_construct<OverlayVertexStoreId>().connect<[](entt::registry &r, entt::entity e) {
+        auto &meshes = r.ctx().get<MeshStore>();
+        r.emplace<MeshBuffers>(e, meshes.GetOverlayVerticesRange(r.get<const OverlayVertexStoreId>(e).StoreId), SlottedRange{}, SlottedRange{}, SlottedRange{});
+    }>();
     // BoneConstraints edits change the resolved local Transform; poke it to drive the WorldTransform recompute.
-    r.on_update<BoneConstraints>().connect<+[](entt::registry &r, entt::entity e) {
+    r.on_update<BoneConstraints>().connect<[](entt::registry &r, entt::entity e) {
         r.patch<Transform>(e, [](auto &) {});
     }>();
 

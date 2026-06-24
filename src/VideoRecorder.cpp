@@ -21,7 +21,6 @@ std::string BuildFfmpegCommand(const std::filesystem::path &out, vk::Extent2D ex
     );
 }
 
-bool IsFfmpegAvailable() { return std::system("command -v ffmpeg >/dev/null 2>&1") == 0; }
 } // namespace
 
 VideoRecorder::VideoRecorder(
@@ -33,7 +32,7 @@ VideoRecorder::VideoRecorder(
         std::println(stderr, "VideoRecorder: viewport extent is zero; not recording.");
         return;
     }
-    if (!IsFfmpegAvailable()) {
+    if (std::system("command -v ffmpeg >/dev/null 2>&1") != 0) {
         std::println(stderr, "VideoRecorder: 'ffmpeg' not found on PATH; not recording.");
         return;
     }

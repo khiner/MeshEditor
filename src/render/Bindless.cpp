@@ -117,10 +117,6 @@ vk::WriteDescriptorSet DescriptorSlots::MakeImageWrite(uint32_t slot, const vk::
     return {*DescriptorSet, binding, slot, 1, descriptor, &info, nullptr};
 }
 
-vk::WriteDescriptorSet DescriptorSlots::MakeUniformWrite(TypedSlot slot, const vk::DescriptorBufferInfo &info) const {
-    return MakeBufferWrite(slot, info);
-}
-
 vk::WriteDescriptorSet DescriptorSlots::MakeSamplerWrite(uint32_t slot, const vk::DescriptorImageInfo &info) const {
     const auto [binding, descriptor] = BindingFor(SlotType::Sampler);
     return {*DescriptorSet, binding, slot, 1, descriptor, &info, nullptr};

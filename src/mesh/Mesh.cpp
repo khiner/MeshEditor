@@ -8,7 +8,7 @@
 #include <algorithm>
 #include <bit>
 
-using std::ranges::any_of, std::ranges::find_if, std::ranges::distance;
+using std::ranges::find_if, std::ranges::distance;
 
 namespace {
 constexpr uint64_t MakeEdgeKey(uint from, uint to) { return (uint64_t(from) << 32) | to; }
@@ -206,24 +206,6 @@ vec3 Mesh::GetNormal(FH fh) const {
 }
 std::span<const Vertex> Mesh::GetVerticesSpan() const { return Store->GetVertices(StoreId); }
 uint32_t Mesh::TriangleIndexCount() const { return Store->GetTriangleCount(StoreId) * 3; }
-
-bool Mesh::VertexBelongsToFace(VH vh, FH fh) const {
-    return vh && fh && any_of(fv_range(fh), [vh](const auto &fv) { return fv == vh; });
-}
-
-bool Mesh::VertexBelongsToEdge(VH vh, EH eh) const {
-    return vh && eh && any_of(voh_range(vh), [&](const auto &heh) { return GetEdge(heh) == eh; });
-}
-
-bool Mesh::VertexBelongsToFaceEdge(VH vh, FH fh, EH eh) const {
-    return fh && eh && any_of(voh_range(vh), [&](const auto &heh) {
-               return GetEdge(heh) == eh && (GetFace(heh) == fh || GetFace(GetOppositeHalfedge(heh)) == fh);
-           });
-}
-
-bool Mesh::EdgeBelongsToFace(EH eh, FH fh) const {
-    return eh && fh && any_of(fh_range(fh), [&](const auto &heh) { return GetEdge(heh) == eh; });
-}
 
 void Mesh::WriteTriangleIndices(std::span<uint> dest) const {
     uint i = 0;

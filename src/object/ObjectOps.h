@@ -13,18 +13,6 @@ struct CreatedMesh;
 struct MeshStore;
 
 std::string CreateName(entt::registry &, std::string_view prefix);
-void OnDestroyName(entt::registry &, entt::entity);
-
-// Reactive handlers for RenderInstance lifecycle.
-void AssignRenderInstanceObjectId(entt::registry &, entt::entity);
-void EmitPendingHideOnRenderInstanceDestroy(entt::registry &, entt::entity);
-// Keep RenderInstance in sync with Instance + !Hidden.
-void OnConstructInstance(entt::registry &, entt::entity);
-void OnConstructHidden(entt::registry &, entt::entity);
-// Create the (Derived) MeshBuffers when a mesh/vertex-store handle is constructed.
-void OnConstructMeshHandle(entt::registry &, entt::entity);
-void OnConstructVertexStoreId(entt::registry &, entt::entity);
-void OnConstructOverlayVertexStoreId(entt::registry &, entt::entity);
 
 // Idempotent visibility helpers; emplace/remove RenderInstance, the reactive handlers do the rest.
 void Show(entt::registry &, entt::entity);

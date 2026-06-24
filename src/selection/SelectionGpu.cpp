@@ -33,11 +33,6 @@ constexpr vk::Extent2D ToExtent2D(vk::Extent3D extent) { return {extent.width, e
 const vk::ClearColorValue Transparent{0, 0, 0, 0};
 const std::vector<vk::ClearValue> SilhouetteClearValues{{vk::ClearDepthStencilValue{1, 0}}, {Transparent}};
 
-std::optional<uint32_t> GetModelBufferIndex(const entt::registry &r, entt::entity e) {
-    if (const auto *ri = r.try_get<RenderInstance>(e)) return ri->BufferIndex;
-    return {};
-}
-
 void ResetObjectPickKeys(GpuBuffers &buffers) {
     std::fill_n(buffers.ObjectPickKeys.Data(), GpuBuffers::MaxSelectableObjects, std::numeric_limits<uint32_t>::max());
 }
@@ -113,10 +108,10 @@ void AppendSelectedSilhouetteDraws(const entt::registry &r, DrawListBuilder &dra
         const auto buffer_entity = inst->Entity;
         const auto &mesh_buffers = r.get<MeshBuffers>(buffer_entity);
         const auto &models = r.get<ModelsBuffer>(buffer_entity);
-        if (const auto model_index = GetModelBufferIndex(r, e)) {
+        if (const auto *ri = r.try_get<RenderInstance>(e)) {
             auto draw = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.FaceIndices, buffers.Instances);
             draw.ObjectIdSlot = buffers.Instances.ObjectIdBuffer.Slot;
-            AppendDraw(draw_list, silhouette_batch, mesh_buffers.FaceIndices, models, draw, *model_index);
+            AppendDraw(draw_list, silhouette_batch, mesh_buffers.FaceIndices, models, draw, ri->BufferIndex);
         }
     }
 }

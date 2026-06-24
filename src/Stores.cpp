@@ -27,11 +27,6 @@ void InitStoreCtx(entt::registry &r, VulkanResources vk) {
 }
 
 namespace {
-// A MeshHandle owns the lifetime of its MeshStore entry: releasing it frees the connectivity + arenas.
-void OnDestroyMeshHandle(entt::registry &r, entt::entity e) {
-    r.ctx().get<MeshStore>().Release(r.get<MeshHandle>(e).StoreId);
-}
-
 // on_construct hook: default-create C, but only if absent, so a snapshot-restored C isn't clobbered or double-emplaced.
 template<typename C>
 void EmplaceIfAbsent(entt::registry &r, entt::entity e) {
@@ -40,7 +35,9 @@ void EmplaceIfAbsent(entt::registry &r, entt::entity e) {
 } // namespace
 
 entt::entity WireRegistry(entt::registry &r) {
-    r.on_destroy<MeshHandle>().connect<&OnDestroyMeshHandle>();
+    r.on_destroy<MeshHandle>().connect<[](entt::registry &r, entt::entity e) {
+        r.ctx().get<MeshStore>().Release(r.get<MeshHandle>(e).StoreId);
+    }>();
     r.on_construct<PhysicsMotion>().connect<&EmplaceIfAbsent<PhysicsVelocity>>();
     r.on_destroy<PhysicsMotion>().connect<&entt::registry::remove<PhysicsVelocity>>();
     r.on_construct<ColliderShape>().connect<&EmplaceIfAbsent<ColliderMaterial>>();

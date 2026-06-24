@@ -45,23 +45,6 @@ std::string CreateName(entt::registry &r, std::string_view prefix) {
     return prefix_str;
 }
 
-void OnDestroyName(entt::registry &r, entt::entity e) {
-    if (auto *registry = r.ctx().find<NameRegistry>()) registry->Names.erase(r.get<const Name>(e).Value);
-}
-
-void AssignRenderInstanceObjectId(entt::registry &r, entt::entity e) {
-    if (r.get<const RenderInstance>(e).ObjectId != 0) return;
-    if (auto *counter = r.ctx().find<ObjectIdCounter>()) {
-        r.patch<RenderInstance>(e, [counter](auto &ri) { ri.ObjectId = counter->Next++; });
-    }
-}
-
-void EmitPendingHideOnRenderInstanceDestroy(entt::registry &r, entt::entity e) {
-    const auto &ri = r.get<const RenderInstance>(e);
-    if (ri.BufferIndex == UINT32_MAX) return; // Same-frame show+hide — never synced to GPU.
-    r.get_or_emplace<PendingHide>(ri.Entity).BufferIndices.push_back(ri.BufferIndex);
-}
-
 namespace {
 // RenderInstance is derived from Instance + !Hidden.
 // ObjectId 0 means on_construct<RenderInstance> fills it. BufferIndex UINT32_MAX means SyncModelsBuffers assigns it.
@@ -70,16 +53,6 @@ void EnsureRenderInstance(entt::registry &r, entt::entity e) {
 }
 } // namespace
 
-// An instance renders unless Hidden: create its RenderInstance on construction, drop it when Hidden appears.
-// These keep RenderInstance in lockstep with Instance + !Hidden, including on snapshot restore (which emplaces
-// Instance and Hidden in either order).
-void OnConstructInstance(entt::registry &r, entt::entity e) {
-    if (!r.all_of<Hidden>(e)) EnsureRenderInstance(r, e);
-}
-void OnConstructHidden(entt::registry &r, entt::entity e) {
-    if (r.all_of<RenderInstance>(e)) r.remove<RenderInstance>(e);
-}
-
 void Show(entt::registry &r, entt::entity e) {
     r.remove<Hidden>(e);
     if (r.all_of<Instance>(e)) EnsureRenderInstance(r, e); // re-show after a prior Hide
@@ -87,22 +60,6 @@ void Show(entt::registry &r, entt::entity e) {
 
 void Hide(entt::registry &r, entt::entity e) {
     r.emplace_or_replace<Hidden>(e); // OnConstructHidden removes the RenderInstance
-}
-
-// Build MeshBuffers when a vertex handle is constructed.
-// MeshHandle = full meshes, VertexStoreId = vertex-only extras, OverlayVertexStoreId = overlays.
-// The index ranges fill in afterward.
-void OnConstructMeshHandle(entt::registry &r, entt::entity e) {
-    auto &meshes = r.ctx().get<MeshStore>();
-    r.emplace<MeshBuffers>(e, meshes.GetVerticesRange(r.get<const MeshHandle>(e).StoreId), SlottedRange{}, SlottedRange{}, SlottedRange{});
-}
-void OnConstructVertexStoreId(entt::registry &r, entt::entity e) {
-    auto &meshes = r.ctx().get<MeshStore>();
-    r.emplace<MeshBuffers>(e, meshes.GetVerticesRange(r.get<const VertexStoreId>(e).StoreId), SlottedRange{}, SlottedRange{}, SlottedRange{});
-}
-void OnConstructOverlayVertexStoreId(entt::registry &r, entt::entity e) {
-    auto &meshes = r.ctx().get<MeshStore>();
-    r.emplace<MeshBuffers>(e, meshes.GetOverlayVerticesRange(r.get<const OverlayVertexStoreId>(e).StoreId), SlottedRange{}, SlottedRange{}, SlottedRange{});
 }
 
 void ApplySelectBehavior(entt::registry &r, entt::entity e, MeshInstanceCreateInfo::SelectBehavior behavior) {

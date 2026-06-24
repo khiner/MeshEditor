@@ -514,7 +514,6 @@ std::optional<float> EstimateFundamentalFrequency(const FFTData &fft) {
     return std::nullopt;
 }
 
-constexpr float LinearToDb(float linear) { return 20.0f * log10f(linear); }
 constexpr ImVec2 ChartSize{-1, 160};
 
 // Capture a short audio segment shortly after the impact for FFT.
@@ -569,7 +568,7 @@ void PlotMagnitudeSpectrum(const std::vector<float> &frames, std::string_view la
         const auto *data = fft.Complex;
         for (uint i = 0; i < N2; i++) {
             frequency[i] = fs_n * float(i);
-            magnitude[i] = LinearToDb(sqrtf(data[i][0] * data[i][0] + data[i][1] * data[i][1]) / float(N2));
+            magnitude[i] = 20.0f * log10f(sqrtf(data[i][0] * data[i][0] + data[i][1] * data[i][1]) / float(N2));
         }
 
         ImPlot::SetupAxes("Frequency (Hz)", "Magnitude (dB)");

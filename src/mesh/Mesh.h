@@ -175,12 +175,6 @@ struct Mesh {
     float CalcFaceArea(FH) const;
     VH FindNearestVertex(vec3) const;
 
-    // Topological queries
-    bool VertexBelongsToFace(VH, FH) const;
-    bool VertexBelongsToEdge(VH, EH) const;
-    bool VertexBelongsToFaceEdge(VH, FH, EH) const;
-    bool EdgeBelongsToFace(EH, FH) const;
-
     std::vector<uint32_t> CreateTriangleIndices() const; // Allocates + returns triangulated face indices
     void WriteTriangleIndices(std::span<uint32_t> dest) const; // Write triangulated face indices into dest
     void WriteEdgeIndices(std::span<uint32_t> dest) const; // Write edge line segment indices into dest

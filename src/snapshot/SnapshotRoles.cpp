@@ -72,7 +72,7 @@ template<> inline constexpr auto CustomEmplace<LookingThrough> = &EmplaceLooking
 // Specialized to skip entities whose value is derived (a bone's Transform comes from RestLocal + ArmaturePose).
 template<typename C>
 inline constexpr bool (*SkipEntityFor)(const entt::registry &, entt::entity) = nullptr;
-template<> inline constexpr auto SkipEntityFor<Transform> = +[](const entt::registry &r, entt::entity e) { return r.all_of<BoneIndex>(e); };
+template<> inline constexpr auto SkipEntityFor<Transform> = [](const entt::registry &r, entt::entity e) { return r.all_of<BoneIndex>(e); };
 
 // Per-encoding (de)serialization thunks the table dispatches through.
 
