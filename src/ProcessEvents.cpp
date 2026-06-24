@@ -1835,9 +1835,10 @@ RenderRequest ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
             };
             const bool bone_edit = is_edit_mode && FindArmatureObject(r, FindActiveEntity(r)) != entt::null;
             for (auto e : dirty) {
-                // Skip a newly inserted entity that already has its WorldTransform from creation, since snapshot treats it as derived.
-                // TODO make WorldTransform purely derived, not eagerly computed.
-                if (r.valid(e) && !(is_newly_inserted(e) && r.all_of<WorldTransform>(e))) update_wt(e, !(bone_edit && r.all_of<StartTransform>(e)));
+                // WorldTransform is derived. Recompute it for every entity with a changed local pose, including freshly
+                // created ones whose eager WorldTransform still holds the rest-pose Transform, not the evaluated PosedLocal.
+                // TODO derive it purely here: drop the imperative emplaces, compute each entity once, parent-first.
+                if (r.valid(e)) update_wt(e, !(bone_edit && r.all_of<StartTransform>(e)));
             }
         }
         UpdateWireframeTransforms(r); // Needs updated WorldTransforms
