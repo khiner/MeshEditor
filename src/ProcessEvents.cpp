@@ -1395,19 +1395,6 @@ RenderRequest ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
         // When looking through this camera, refresh the ViewCamera so the view picks up its FOV.
         if (r.all_of<Camera>(camera_entity) && r.all_of<LookingThrough>(camera_entity)) r.patch<ViewCamera>(viewport, [](auto &) {});
     }
-    { // Sync RotationUiVariant from Rotation, but skip entities where the UI is driving the change.
-        for (auto e : reactive<changes::Rotation>(r)) {
-            if (!r.all_of<Transform>(e)) continue;
-            if (r.all_of<RotationUiDriving>(e)) {
-                r.remove<RotationUiDriving>(e);
-                continue;
-            }
-            const auto v = r.get<const Transform>(e).R;
-            if (auto *ui = r.try_get<RotationUiVariant>(e)) *ui = ToUiVariant(v, ui->index());
-            else r.emplace<RotationUiVariant>(e, RotationQuat{v});
-        }
-    }
-
     bool light_count_changed = false;
     if (const uint32_t required_count = r.storage<LightIndex>().size();
         buffers.Lights.Count() != required_count) {
@@ -1907,6 +1894,18 @@ RenderRequest ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
                 for (const auto &w : wt_writes) transforms[w.index] = w.wt;
                 request(RenderRequest::Submit);
             }
+        }
+    }
+    { // Sync RotationUiVariant from Transform. Must run after bone block.
+        for (auto e : reactive<changes::Rotation>(r)) {
+            if (!r.all_of<Transform>(e)) continue;
+            if (r.all_of<RotationUiDriving>(e)) {
+                r.remove<RotationUiDriving>(e);
+                continue;
+            }
+            const auto v = r.get<const Transform>(e).R;
+            if (auto *ui = r.try_get<RotationUiVariant>(e)) *ui = ToUiVariant(v, ui->index());
+            else r.emplace<RotationUiVariant>(e, RotationQuat{v});
         }
     }
     // If looking through a camera and it moved (animation or manual edit), snap the ViewCamera.
