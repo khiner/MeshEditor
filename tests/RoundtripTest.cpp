@@ -542,16 +542,8 @@ size_t CompareGltfJson(const fs::path &a_path, const fs::path &b_path, std::stri
     return unexpected.size();
 }
 
-// Allocation-handle components (GPU buffer slots, Jolt body ids) whose value is a build-order handle, not state, so they're ignored.
-constexpr std::string_view DerivedValueDivergence[]{
-    "RenderInstance",
-    "ModelsBuffer",
-    "BoneAdjacencyIndices",
-    "PhysicsBodyHandle",
-    "MorphWeightGpuRange",
-};
-
-// Assert two registries match: same component set per entity, and equal values except the known-derived divergences above.
+// Assert two registries match: same components per entity, and equal values for every comparable component.
+// Even allocation handles (GPU slots, Jolt body ids) reconstruct identically from a clean per-scene baseline — nothing is exempt.
 void CompareRegistries(std::string_view name, entt::registry &a, entt::registry &b) {
     using namespace boost::ut;
     const auto components_by_entity = [](entt::registry &r) {
@@ -625,14 +617,10 @@ void CompareRegistries(std::string_view name, entt::registry &a, entt::registry 
         << name << "presence diverged - only-in-fx=" << only_a << " only-in-restore=" << only_b
         << " comp-set-diffs=" << diffs << present_detail();
 
-    // Values must match for every component except the known-derived divergences.
-    std::map<std::string, int> unexpected;
-    for (const auto &[type, n] : value_diffs) {
-        if (std::ranges::find(DerivedValueDivergence, type) == std::ranges::end(DerivedValueDivergence)) unexpected.emplace(type, n);
-    }
-    std::string unexpected_detail;
-    for (const auto &[type, n] : unexpected) unexpected_detail += std::format(" {}({})", type, n);
-    expect(unexpected.empty()) << name << "value diverged for non-derived component(s):" << unexpected_detail;
+    // Every comparable component must hold an identical value in both registries.
+    std::string value_detail;
+    for (const auto &[type, n] : value_diffs) value_detail += std::format(" {}({})", type, n);
+    expect(value_diffs.empty()) << name << "value diverged for component(s):" << value_detail;
 }
 } // namespace
 

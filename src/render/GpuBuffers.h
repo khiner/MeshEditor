@@ -73,6 +73,12 @@ struct InstanceArena {
         return {reinterpret_cast<Transform *>(mapped.data()), mapped.size() / sizeof(Transform)};
     }
 
+    // Reset to empty: used size and allocator go to zero, keeping the GPU allocations for reuse.
+    void Reset() {
+        Allocator = {};
+        ForEachBuffer([](mvk::Buffer &buf, size_t) { buf.UsedSize = 0; });
+    }
+
     mvk::Buffer TransformBuffer, ObjectIdBuffer, StateBuffer;
 
 private:
@@ -110,20 +116,19 @@ struct GpuBuffers {
           EdgeIndexBuffer{Ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::IndexBuffer},
           VertexIndexBuffer{Ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::IndexBuffer},
           Instances{Ctx},
+          Lights{Ctx, sizeof(PunctualLight), vk::BufferUsageFlagBits::eStorageBuffer, SlotType::LightBuffer},
+          Materials{Ctx, sizeof(PBRMaterial), vk::BufferUsageFlagBits::eStorageBuffer, SlotType::MaterialBuffer},
           SceneViewUBO{Ctx, sizeof(SceneViewUBO), vk::BufferUsageFlagBits::eUniformBuffer, SlotType::SceneViewUBO},
           ViewportThemeUBO{Ctx, sizeof(ViewportTheme), vk::BufferUsageFlagBits::eUniformBuffer, SlotType::ViewportThemeUBO},
           WorkspaceLightsUBO{Ctx, sizeof(WorkspaceLights), vk::BufferUsageFlagBits::eUniformBuffer, SlotType::WorkspaceLightsUBO},
-          RenderDraw{Ctx},
-          SelectionDraw{Ctx},
-          Lights{Ctx, sizeof(PunctualLight), vk::BufferUsageFlagBits::eStorageBuffer, SlotType::LightBuffer},
-          Materials{Ctx, sizeof(PBRMaterial), vk::BufferUsageFlagBits::eStorageBuffer, SlotType::MaterialBuffer},
-          IdentityIndexBuffer{Ctx, 0, mvk::MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eIndexBuffer},
+          RenderDraw{Ctx}, SelectionDraw{Ctx},
           SelectionNodeBuffer{Ctx, sizeof(SelectionNode), vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer},
           SelectionCounter{Ctx, sizeof(SelectionCounters), mvk::MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eStorageBuffer},
           ObjectPickKeys{Ctx, MaxSelectableObjects * sizeof(uint32_t), mvk::MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eStorageBuffer},
           ObjectPickSeenBitset{Ctx, ObjectPickBitsetWords * sizeof(uint32_t), mvk::MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eStorageBuffer},
           SelectionBitset{Ctx, SelectionBitsetWords * sizeof(uint32_t), mvk::MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eStorageBuffer},
-          ElementPickCandidates{Ctx, ElementPickGroupCount * sizeof(ElementPickCandidate), mvk::MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eStorageBuffer} {}
+          ElementPickCandidates{Ctx, ElementPickGroupCount * sizeof(ElementPickCandidate), mvk::MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eStorageBuffer},
+          IdentityIndexBuffer{Ctx, 0, mvk::MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eIndexBuffer} {}
 
     void ReserveAdditionalIndices(uint32_t face, uint32_t edge, uint32_t vertex) {
         FaceIndexBuffer.ReserveAdditional(face);
@@ -176,9 +181,23 @@ struct GpuBuffers {
         const uint64_t desired_nodes = pixels == 0 ? 1 : pixels * SelectionNodesPerPixel;
         const uint64_t max_nodes = std::max<uint64_t>(1, MaxSelectionNodeBytes / sizeof(SelectionNode));
         const uint32_t final_count = std::min<uint64_t>(std::min(desired_nodes, max_nodes), std::numeric_limits<uint32_t>::max());
-        if (final_count == SelectionNodeCapacity) return;
-        SelectionNodeCapacity = final_count;
-        SelectionNodeBuffer = {Ctx, SelectionNodeCapacity * sizeof(SelectionNode), vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer};
+        if (final_count != SelectionNodeCapacity) {
+            SelectionNodeCapacity = final_count;
+            SelectionNodeBuffer = {Ctx, SelectionNodeCapacity * sizeof(SelectionNode), vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer};
+        }
+    }
+
+    // Empty the scene arenas on clear so the next load's derived handles (BufferIndex, InstanceRange, morph/bone
+    // ranges) rebuild from a clean baseline rather than on a prior scene's leftover residue.
+    void ResetSceneArenas() {
+        VertexBuffer.Reset();
+        FaceIndexBuffer.Reset();
+        EdgeIndexBuffer.Reset();
+        VertexIndexBuffer.Reset();
+        ArmatureDeformBuffer.Reset();
+        MorphWeightBuffer.Reset();
+        VertexClassBuffer.Reset();
+        Instances.Reset();
     }
 
     void EnsureIdentityIndexBuffer(uint32_t count) {
@@ -190,22 +209,33 @@ struct GpuBuffers {
     }
 
     mvk::BufferContext Ctx;
+
+    // Per-scene arenas
     BufferArena<Vertex> VertexBuffer;
     BufferArena<uint32_t> FaceIndexBuffer, EdgeIndexBuffer, VertexIndexBuffer;
-    InstanceArena Instances;
-    mvk::Buffer SceneViewUBO, ViewportThemeUBO, WorkspaceLightsUBO;
-    DrawBufferPair RenderDraw, SelectionDraw;
-    TypedBuffer<PunctualLight> Lights;
-    TypedBuffer<PBRMaterial> Materials;
-    mvk::Buffer IdentityIndexBuffer;
-    uint32_t IdentityIndexCount{0};
-    uint32_t SelectionNodeCapacity{1};
-    mvk::Buffer SelectionNodeBuffer;
     BufferArena<mat4> ArmatureDeformBuffer{Ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::ArmatureDeformBuffer};
     BufferArena<float> MorphWeightBuffer{Ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::MorphWeightBuffer};
     BufferArena<uint8_t> VertexClassBuffer{Ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::VertexClassBuffer};
-    // CPU readback buffers (host-visible)
+    InstanceArena Instances;
+
+    // Per-scene resource tables — reset via their own paths (Lights.SetCount(0) / ResetImportedTexturesAndMaterials)
+    TypedBuffer<PunctualLight> Lights;
+    TypedBuffer<PBRMaterial> Materials;
+
+    // Per-frame uniforms
+    mvk::Buffer SceneViewUBO, ViewportThemeUBO, WorkspaceLightsUBO;
+
+    // Draw-command buffers
+    DrawBufferPair RenderDraw, SelectionDraw;
+
+    // Selection / picking — GPU buffers + host-visible readback
+    uint32_t SelectionNodeCapacity{1};
+    mvk::Buffer SelectionNodeBuffer;
     TypedBuffer<SelectionCounters> SelectionCounter;
     TypedBuffer<uint32_t> ObjectPickKeys, ObjectPickSeenBitset, SelectionBitset;
     TypedBuffer<ElementPickCandidate> ElementPickCandidates;
+
+    // Shared identity index buffer. Grown on demand, not scene-scoped.
+    mvk::Buffer IdentityIndexBuffer;
+    uint32_t IdentityIndexCount{0};
 };

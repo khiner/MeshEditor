@@ -118,7 +118,7 @@ using Persistent = type_list<
     MeshMaterialAssignment, MeshMaterialSlotSelection, MaterialVariants, MaterializedTextures, PbrMeshFeatures,
     PrimitiveShape, Path, Camera, ViewCamera, LookingThrough, Interaction, EditMode, OrbitToActive,
     SelectionXRay, ViewportDisplay, MaterialPreviewLighting, RenderedLighting, StudioEnvironment, TransformGizmoState,
-    TimelineRange, TimelinePlayback, AnimationTimelineView, LastEvaluatedFrame,
+    TimelineRange, TimelinePlayback, AnimationTimelineView,
     PhysicsSimulationSettings, PhysicsMaterial, CollisionSystem, CollisionFilter, PhysicsJointDef, PhysicsMotion,
     ColliderShape, ColliderMaterial, ColliderPolicy, PhysicsVelocity, TriggerTag, TriggerNodes, PhysicsJoint,
     Armature, ArmatureObject, BoneJointEntities, BoneJoint, BoneSubPartOf, BoneActive, BoneSelection,
@@ -133,7 +133,7 @@ using Persistent = type_list<
 // Never serialized, listed only so VerifyCoverage treats them as intentionally excluded.
 using Derived = type_list<
     RenderInstance, WorldTransform, PosedLocal, MeshBuffers, BoneAdjacencyIndices, ModelsBuffer, VertexClass, BBoxWireframe,
-    TetWireframe, MaterialDirty, LightIndex, EnabledInteractionModes,
+    TetWireframe, MaterialDirty, LightIndex, EnabledInteractionModes, LastEvaluatedFrame,
     PhysicsBodyHandle, PhysicsConstraintHandle, BodyPoseCache, ColliderWireframe, BoneInstanceStateDirty, ArmaturePoseState,
     MorphWeightGpuRange, AdditiveBoxSelectBaseline, SelectionBitsDirty, ElementStatesDirty, PendingEditElementClick, OverlayExtra, OverlayVertexStoreId,
     PendingBoxSelect, PendingPick, PendingTextureUploads, SelectionBitsetRef, BoxSelectState, SelectedInstanceCount, PlaybackFrame,

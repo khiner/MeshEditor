@@ -346,11 +346,12 @@ void ClearScene(entt::registry &r, entt::entity viewport) {
     // EnsureWireframes rebuilds them instead of mistaking a reused entity id for a live buffer.
     r.ctx().get<ColliderShapeBuffers>().Entities.fill(entt::entity{entt::null});
 
-    // Reset the entity and mesh-store allocators to their fresh-start state, so replaying a scene from this baseline re-allocates identical ids.
-    // Descriptor slots need no reset, since their RangeAllocator is order-independent.
+    // Reset the entity, mesh-store, and GPU-arena allocators to their fresh-start state, so replaying a scene from this
+    // baseline re-allocates identical ids and GPU handles. Descriptor slots need no reset, since their RangeAllocator is order-independent.
     r.storage<entt::entity>().clear();
     r.storage<entt::entity>().start_from(entt::entity{0});
     r.ctx().get<MeshStore>().Clear();
+    r.ctx().get<GpuBuffers>().ResetSceneArenas();
 
     [[maybe_unused]] const auto recreated = r.create();
     assert(recreated == viewport);
