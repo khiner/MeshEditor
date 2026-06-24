@@ -28,6 +28,7 @@ static std::filesystem::path ResolveIncludePath(const std::filesystem::path &req
     throw std::runtime_error(std::format("Failed to resolve shader path '{}'", requested.string()));
 }
 
+namespace {
 class ShaderIncluder : public shaderc::CompileOptions::IncluderInterface {
 public:
     // Records each include into `deps` so the cache can detect edits to them.
@@ -69,6 +70,7 @@ private:
     };
     std::vector<ShaderDep> &Deps;
 };
+} // namespace
 
 Shaders::Shaders(std::vector<ShaderTypePath> type_paths)
     : Resources(type_paths | transform([](const auto &tp) {

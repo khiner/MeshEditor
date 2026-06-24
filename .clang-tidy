@@ -4,6 +4,7 @@ Checks: >
   -*,
   misc-const-correctness,
   misc-unused-using-decls,
+  misc-use-internal-linkage,
   readability-qualified-auto,
   readability-make-member-function-const,
   readability-container-size-empty,

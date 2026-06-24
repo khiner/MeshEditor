@@ -303,6 +303,7 @@ private:
 };
 } // namespace
 
+namespace {
 // All Jolt-side physics state. Lives in the registry context (see physics::Init); the physics:: free
 // functions resolve it from the registry. Plain data holder — behavior lives in the functions below.
 struct PhysicsState {
@@ -363,7 +364,6 @@ struct PhysicsState {
     }
 };
 
-namespace {
 constexpr float PlaneThickness{1e-3f}; // Y-thickness of the BoxShape used as a finite-plane / non-static-infinite-plane fallback
 
 Ref<Shape> CreateJoltShape(const PhysicsShape &shape, const Mesh *mesh, bool body_is_static = false) {

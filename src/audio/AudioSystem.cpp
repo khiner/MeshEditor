@@ -37,6 +37,7 @@ using std::views::transform;
 static constexpr std::string_view ExciteIndexParamName{"Excite index"}, GateParamName{"Gate"};
 static constexpr uint32_t SampleRate = 48'000; // todo respect device sample rate
 
+namespace {
 // Per-sound-object component. Maps mesh vertex handles to sample keys in the scene-level AudioSamples store.
 // Only vertices that have a sample appear in the map.
 struct VertexSamples {
@@ -66,7 +67,6 @@ struct AudioSamples {
     std::unordered_map<fs::path, Entry> ByPath;
 };
 
-namespace {
 const std::vector<float> &GetSampleFrames(const entt::registry &r, entt::entity viewport, const fs::path &path) {
     static const std::vector<float> EmptyFrames{};
     if (path.empty()) return EmptyFrames;
@@ -174,6 +174,7 @@ void SetVertexSamples(
     }
 }
 
+namespace {
 // Returns the index (into SoundVertices::Vertices) of the active vertex for this instance entity,
 // derived from MeshActiveElement on the mesh entity. Returns 0 if no active element is set.
 uint32_t GetActiveVertexIndex(const entt::registry &r, entt::entity instance_entity) {
@@ -201,7 +202,6 @@ struct ModalDsp {
     std::string Name, Definition, Eval;
 };
 
-namespace {
 // Generate DSP code from modal modes.
 std::string GenerateModalModelDsp(const ModalModes &modes, std::string_view model_name, bool freq_control) {
     const auto &freqs = modes.Freqs;

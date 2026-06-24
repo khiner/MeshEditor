@@ -105,9 +105,7 @@ void PatchMorphWeights(DrawListBuilder &dl, size_t draws_before, const DeformSlo
         }
     }
 }
-} // namespace
-
-// AppendExtrasDraw is templated on the customize_draw callable, so it lives at file scope rather than in an anon ns.
+// AppendExtrasDraw is templated on the customize_draw callable.
 void AppendExtrasDraw(entt::registry &r, const InstanceArena &instances, DrawListBuilder &dl, DrawBatchInfo &batch, auto &&customize_draw) {
     batch = dl.BeginBatch();
     for (auto [entity, mesh_buffers, models] : r.view<ObjectExtrasTag, const MeshBuffers, const ModelsBuffer>().each()) {
@@ -118,6 +116,7 @@ void AppendExtrasDraw(entt::registry &r, const InstanceArena &instances, DrawLis
         AppendDraw(dl, batch, mesh_buffers.EdgeIndices, models, draw);
     }
 }
+} // namespace
 
 void RecordRenderCommandBuffer(entt::registry &r, entt::entity viewport, vk::CommandBuffer cb, bool silhouette_only) {
     const Timer timer{silhouette_only ? "RecordRenderCommandBuffer (silhouette)" : "RecordRenderCommandBuffer"};

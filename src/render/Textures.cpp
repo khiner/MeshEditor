@@ -264,10 +264,12 @@ StagingAlloc AllocStaging(TextureUploadBatch &batch, std::span<const std::byte> 
     return alloc;
 }
 
+namespace {
 uint32_t ComputeMipLevelCount(uint32_t width, uint32_t height) {
     const auto max_dim = std::max(width, height);
     return max_dim > 0 ? std::bit_width(max_dim) : 1u;
 }
+} // namespace
 
 std::vector<uint32_t> CollectSamplerSlots(std::span<const TextureEntry> textures) {
     std::vector<uint32_t> sampler_slots;

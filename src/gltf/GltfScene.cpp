@@ -41,6 +41,7 @@
 // (so arena reserves happen before any CreateMesh), and then drains into ECS.
 // Batch-commit is what blocks a single-pass collapse since the vertex/face data outlives the parse.
 namespace gltf {
+namespace {
 struct MeshData {
     std::optional<::MeshData> Triangles, Lines, Points;
     ::MeshVertexAttributes TriangleAttrs, LineAttrs, PointAttrs;
@@ -94,7 +95,6 @@ struct Object {
     std::string Name;
 };
 
-namespace {
 using ExtrasMap = std::map<uint64_t, std::string>;
 
 uint64_t ExtrasKey(fastgltf::Category cat, size_t idx) { return (uint64_t(uint32_t(cat)) << 32) | uint64_t(idx); }

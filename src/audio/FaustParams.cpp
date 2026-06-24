@@ -8,6 +8,7 @@ using namespace ImGui;
 
 using std::ranges::find;
 
+namespace {
 bool RadioButtons(const char *label, float *value, const std::span<std::string> names, const std::span<double> values) {
     PushID(label);
     BeginGroup();
@@ -25,6 +26,7 @@ bool RadioButtons(const char *label, float *value, const std::span<std::string> 
 
     return changed;
 }
+} // namespace
 
 void FaustParams::DrawItem(const Item &item) {
     const auto type = item.type;

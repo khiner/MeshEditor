@@ -307,7 +307,6 @@ struct SyncResult {
     std::vector<entt::entity> NewExtrasEntities; // Non-mesh buffer entities (extras/bone/joint) needing deferred index creation.
     bool Compacted{false}; // Instances were compact-erased (hides) — caller must request Submit.
 };
-} // namespace
 
 SyncResult SyncModelsBuffers(entt::registry &r) {
     auto &buffers = r.ctx().get<GpuBuffers>();
@@ -711,7 +710,6 @@ void UpdateWireframeTransforms(entt::registry &r) {
     }
 }
 
-namespace {
 // Resize the viewport's GPU render resources to match RenderExtentPx(ViewportExtent), recreating images and
 // rewriting selection descriptors. Returns true when a resize occurred.
 bool SyncViewportRenderResources(entt::registry &r, entt::entity viewport) {

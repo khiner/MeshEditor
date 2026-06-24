@@ -144,6 +144,7 @@ bool PushFont(FontFamily family) {
 } // namespace MeshEditor
 */
 
+namespace {
 struct GltfSample {
     std::string Label;
     fs::path Path;
@@ -258,7 +259,6 @@ void LoadFile(entt::registry &r, const fs::path &path) {
     }
 }
 
-namespace {
 // Reset to the default scene, optionally replaying a `.mea` log on top.
 void NewProject(entt::registry &r, entt::entity viewport, const fs::path &replay_path = {}, bool with_default_content = true, [[maybe_unused]] bool is_current_replay = false) {
     // Invoked mid-frame from the menu: the prior frame may still be sampling the viewport resources replay is
@@ -318,7 +318,6 @@ void ValidateSnapshotRoundTrip(entt::registry &r, entt::entity viewport) {
     PresentViewport(r, viewport);
 }
 #endif
-} // namespace
 
 void run(const char *initial_file, bool quiet, bool play, float play_duration, const fs::path &record_path, int record_fps) {
     Timer::Enabled = !quiet;
@@ -847,6 +846,7 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, c
     SDL_DestroyWindow(window);
     SDL_Quit();
 }
+} // namespace
 
 int main(int argc, char **argv) {
     // VideoRecorder pipes frames to ffmpeg via popen; ignore SIGPIPE so writes return EPIPE instead of killing us.
