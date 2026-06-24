@@ -1,0 +1,26 @@
+#!/bin/bash
+
+# Runs clang-tidy over src/ using the checks configured in .clang-tidy.
+# Pass a file or directory to lint just that target; defaults to all of src/.
+#   script/Tidy
+#   script/Tidy src/physics/PhysicsSystem.cpp
+# Exits non-zero if any findings remain.
+
+set -uo pipefail
+
+ScriptDir="$(cd "$(dirname "${0}")" && pwd)"
+ProjectRootDir="$(dirname "${ScriptDir}")"
+
+Target="${1:-${ProjectRootDir}/src/}"
+
+Findings="$(
+    run-clang-tidy -p "${ProjectRootDir}/build" -quiet "${Target}" 2>&1 |
+        grep -oE "${ProjectRootDir}/src/[^ ]+: warning:.*\[[a-z-]+\]" | sort -u
+)"
+
+if [[ -n "${Findings}" ]]; then
+    echo "${Findings}"
+    echo "$(echo "${Findings}" | wc -l | tr -d ' ') finding(s)."
+    exit 1
+fi
+echo "clang-tidy: clean."

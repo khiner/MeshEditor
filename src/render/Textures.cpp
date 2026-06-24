@@ -928,7 +928,7 @@ std::expected<TextureEntry, std::string> MaterializeTextureEntry(
             return std::unexpected{std::format("Failed to transcode KTX2 image '{}' mip {}.", source.Name, mip)};
         }
 
-        copies.emplace_back(vk::BufferImageCopy{offset, 0, 0, vk::ImageSubresourceLayers{vk::ImageAspectFlagBits::eColor, mip, 0, 1}, vk::Offset3D{0, 0, 0}, vk::Extent3D{mip_w, mip_h, 1}});
+        copies.emplace_back(offset, 0, 0, vk::ImageSubresourceLayers{vk::ImageAspectFlagBits::eColor, mip, 0, 1}, vk::Offset3D{0, 0, 0}, vk::Extent3D{mip_w, mip_h, 1});
         offset += mip_bytes;
     }
 

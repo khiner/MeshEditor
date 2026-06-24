@@ -188,7 +188,7 @@ template<typename OptT>
         out.UvOffset = ToVec2(opt->transform->uvOffset);
         out.UvScale = ToVec2(opt->transform->uvScale);
         if (const auto tc_override = ToIndex(opt->transform->texCoordIndex, std::numeric_limits<uint32_t>::max())) {
-            if (meta) meta->SourceTexCoordOverride = *tc_override;
+            if (meta) meta->SourceTexCoordOverride = tc_override;
             out.TexCoord = *tc_override;
         }
     }
@@ -290,7 +290,7 @@ std::expected<Image, std::string> ReadImage(const fastgltf::Asset &asset, uint32
 // primitives of the same topology. NORMAL and COLOR_0 are backfilled with zeros where absent
 // so the merged vertex range stays channel-aligned.
 void AppendNonTrianglePrimitive(const fastgltf::Asset &asset, const fastgltf::Primitive &primitive, ::MeshData &target, ::MeshVertexAttributes &attrs) {
-    const auto position_it = primitive.findAttribute("POSITION");
+    const auto *const position_it = primitive.findAttribute("POSITION");
     if (position_it == primitive.attributes.end()) return;
 
     const auto &position_accessor = asset.accessors[position_it->accessorIndex];
@@ -300,7 +300,7 @@ void AppendNonTrianglePrimitive(const fastgltf::Asset &asset, const fastgltf::Pr
     target.Positions.resize(base_vertex + position_accessor.count);
     fastgltf::copyFromAccessor<vec3>(asset, position_accessor, &target.Positions[base_vertex]);
 
-    if (const auto normal_it = primitive.findAttribute("NORMAL"); normal_it != primitive.attributes.end()) {
+    if (const auto *const normal_it = primitive.findAttribute("NORMAL"); normal_it != primitive.attributes.end()) {
         if (!attrs.Normals) {
             attrs.Normals.emplace();
             attrs.Normals->resize(base_vertex, vec3{0.f});
@@ -313,7 +313,7 @@ void AppendNonTrianglePrimitive(const fastgltf::Asset &asset, const fastgltf::Pr
     }
 
     // CPU stores vec4 regardless of source; track whether any primitive used VEC3.
-    if (const auto color_it = primitive.findAttribute("COLOR_0"); color_it != primitive.attributes.end()) {
+    if (const auto *const color_it = primitive.findAttribute("COLOR_0"); color_it != primitive.attributes.end()) {
         if (!attrs.Colors0) {
             attrs.Colors0.emplace();
             attrs.Colors0->resize(base_vertex, vec4{1.f});
@@ -378,7 +378,7 @@ std::expected<void, std::string> AppendPrimitive(
         primitive.type != fastgltf::PrimitiveType::TriangleStrip &&
         primitive.type != fastgltf::PrimitiveType::TriangleFan) return {};
 
-    const auto position_it = primitive.findAttribute("POSITION");
+    const auto *const position_it = primitive.findAttribute("POSITION");
     if (position_it == primitive.attributes.end()) return {};
 
     const bool has_joints = primitive.findAttribute("JOINTS_0") != primitive.attributes.end();
@@ -392,7 +392,7 @@ std::expected<void, std::string> AppendPrimitive(
     mesh.Positions.resize(base_vertex + position_accessor.count);
     fastgltf::copyFromAccessor<vec3>(asset, position_accessor, &mesh.Positions[base_vertex]);
 
-    if (const auto normal_it = primitive.findAttribute("NORMAL"); normal_it != primitive.attributes.end()) {
+    if (const auto *const normal_it = primitive.findAttribute("NORMAL"); normal_it != primitive.attributes.end()) {
         attribute_flags |= MeshAttributeBit_Normal;
         if (!attrs.Normals) {
             attrs.Normals.emplace();
@@ -405,7 +405,7 @@ std::expected<void, std::string> AppendPrimitive(
         attrs.Normals->resize(base_vertex + position_accessor.count, vec3{0.f});
     }
 
-    if (const auto tangent_it = primitive.findAttribute("TANGENT"); tangent_it != primitive.attributes.end()) {
+    if (const auto *const tangent_it = primitive.findAttribute("TANGENT"); tangent_it != primitive.attributes.end()) {
         attribute_flags |= MeshAttributeBit_Tangent;
         if (!attrs.Tangents) {
             attrs.Tangents.emplace();
@@ -421,7 +421,7 @@ std::expected<void, std::string> AppendPrimitive(
         attrs.Tangents->resize(base_vertex + position_accessor.count, vec4{0.f, 0.f, 0.f, 1.f});
     }
 
-    if (const auto color_it = primitive.findAttribute("COLOR_0"); color_it != primitive.attributes.end()) {
+    if (const auto *const color_it = primitive.findAttribute("COLOR_0"); color_it != primitive.attributes.end()) {
         attribute_flags |= MeshAttributeBit_Color0;
         if (!attrs.Colors0) {
             attrs.Colors0.emplace();
@@ -449,7 +449,7 @@ std::expected<void, std::string> AppendPrimitive(
 
     const auto append_uv_set = [&](uint32_t set_index, std::optional<std::vector<vec2>> &uv_set, uint32_t present_bit) -> std::expected<void, std::string> {
         const auto uv_name = std::format("TEXCOORD_{}", set_index);
-        if (const auto uv_it = primitive.findAttribute(uv_name); uv_it != primitive.attributes.end()) {
+        if (const auto *const uv_it = primitive.findAttribute(uv_name); uv_it != primitive.attributes.end()) {
             attribute_flags |= present_bit;
             if (!uv_set) {
                 uv_set.emplace();
@@ -490,8 +490,8 @@ std::expected<void, std::string> AppendPrimitive(
         for (uint32_t set_index = 0;; ++set_index) {
             const auto j_name = std::format("JOINTS_{}", set_index);
             const auto w_name = std::format("WEIGHTS_{}", set_index);
-            const auto j_it = primitive.findAttribute(j_name);
-            const auto w_it = primitive.findAttribute(w_name);
+            const auto *const j_it = primitive.findAttribute(j_name);
+            const auto *const w_it = primitive.findAttribute(w_name);
             if (j_it == primitive.attributes.end() && w_it == primitive.attributes.end()) break;
             if ((j_it == primitive.attributes.end()) != (w_it == primitive.attributes.end())) {
                 return std::unexpected{std::format("glTF primitive has {} without {} (or vice versa).", j_name, w_name)};
@@ -590,14 +590,14 @@ std::expected<void, std::string> AppendPrimitive(
             morph->TangentDeltas.resize(prev_tan_size + size_t(target_count) * prim_vertex_count, vec3{0.f});
         }
         for (uint32_t t = 0; t < target_count; ++t) {
-            if (auto pos_it = primitive.findTargetAttribute(t, "POSITION"); pos_it != primitive.targets[t].end()) {
+            if (const auto *pos_it = primitive.findTargetAttribute(t, "POSITION"); pos_it != primitive.targets[t].end()) {
                 const auto &target_accessor = asset.accessors[pos_it->accessorIndex];
                 if (target_accessor.count == prim_vertex_count) {
                     fastgltf::copyFromAccessor<vec3>(asset, target_accessor, &morph->PositionDeltas[prev_pos_size + size_t(t) * prim_vertex_count]);
                 }
             }
             if (!morph->NormalDeltas.empty()) {
-                if (auto norm_it = primitive.findTargetAttribute(t, "NORMAL"); norm_it != primitive.targets[t].end()) {
+                if (const auto *norm_it = primitive.findTargetAttribute(t, "NORMAL"); norm_it != primitive.targets[t].end()) {
                     const auto &norm_accessor = asset.accessors[norm_it->accessorIndex];
                     const auto prev_norm_size = morph->NormalDeltas.size() - size_t(target_count) * prim_vertex_count;
                     if (norm_accessor.count == prim_vertex_count) {
@@ -606,7 +606,7 @@ std::expected<void, std::string> AppendPrimitive(
                 }
             }
             if (!morph->TangentDeltas.empty()) {
-                if (auto tan_it = primitive.findTargetAttribute(t, "TANGENT"); tan_it != primitive.targets[t].end()) {
+                if (const auto *tan_it = primitive.findTargetAttribute(t, "TANGENT"); tan_it != primitive.targets[t].end()) {
                     const auto &tan_accessor = asset.accessors[tan_it->accessorIndex];
                     const auto prev_tan_size = morph->TangentDeltas.size() - size_t(target_count) * prim_vertex_count;
                     if (tan_accessor.count == prim_vertex_count) {

@@ -15,7 +15,7 @@ struct DrawListBuilder {
     std::vector<vk::DrawIndexedIndirectCommand> IndirectCommands;
     uint32_t MaxIndexCount{0};
 
-    DrawBatchInfo BeginBatch() { return {uint32_t(Draws.size()), 0, IndirectCommands.size() * sizeof(vk::DrawIndexedIndirectCommand)}; }
+    DrawBatchInfo BeginBatch() const { return {uint32_t(Draws.size()), 0, IndirectCommands.size() * sizeof(vk::DrawIndexedIndirectCommand)}; }
 
     void Append(DrawBatchInfo &batch, const DrawData &draw, uint32_t index_count, uint32_t instance_count) {
         if (index_count == 0 || instance_count == 0) return;
@@ -26,7 +26,7 @@ struct DrawListBuilder {
             Draws.emplace_back(per_instance);
         }
         const uint32_t first_instance = draw_data_start - batch.DrawDataSlotOffset;
-        IndirectCommands.emplace_back(vk::DrawIndexedIndirectCommand{index_count, instance_count, 0, 0, first_instance});
+        IndirectCommands.emplace_back(index_count, instance_count, 0, 0, first_instance);
         MaxIndexCount = std::max(MaxIndexCount, index_count);
         ++batch.DrawCount;
     }

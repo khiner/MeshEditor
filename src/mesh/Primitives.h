@@ -3,6 +3,7 @@
 #include "MeshAttributes.h"
 #include "PrimitiveType.h"
 
+#include <numbers>
 #include <ranges>
 #include <vector>
 
@@ -57,7 +58,7 @@ inline MeshData CreateMesh(const Cuboid &p) {
 
 inline MeshData CreateMesh(const IcoSphere &p) {
     const auto [radius, recursion_level] = p;
-    static const float t = (1.f + sqrt(5.f)) / 2.f;
+    static const float t = std::numbers::phi_v<float>;
     // clang-format off
     std::vector<vec3> vertices{
         {-1, t, 0}, {1, t, 0}, {-1, -t, 0}, {1, -t, 0},
@@ -335,10 +336,10 @@ inline BoneSphereData BoneSphereDisc(float radius = 0.05f, uint32_t segments = 3
     std::vector<vec3> positions;
     positions.reserve(segments + 1);
     for (uint32_t i = 0; i < segments; ++i) {
-        const float angle = 2.f * 3.14159265f * float(i) / float(segments);
-        positions.push_back({radius * std::cos(angle), radius * std::sin(angle), 0});
+        const float angle = 2.f * std::numbers::pi_v<float> * float(i) / float(segments);
+        positions.emplace_back(radius * std::cos(angle), radius * std::sin(angle), 0);
     }
-    positions.push_back({0, 0, 0}); // center
+    positions.emplace_back(0, 0, 0); // center
 
     // Triangle fan as triangle list
     std::vector<std::vector<uint32_t>> faces;

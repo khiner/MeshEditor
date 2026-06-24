@@ -35,7 +35,7 @@ struct VideoRecording {
 };
 
 std::pair<vk::Offset3D, vk::Extent2D> GetCaptureRegion(const entt::registry &r) {
-    auto &pipelines = r.ctx().get<const Pipelines>();
+    const auto &pipelines = r.ctx().get<const Pipelines>();
     const auto full = ToExtent2D(pipelines.Main.Resources->FinalColorImage.Extent);
     const auto camera = LookThroughCameraEntity(r);
     const auto *cd = camera != entt::null ? r.try_get<Camera>(camera) : nullptr;
@@ -50,7 +50,7 @@ std::pair<vk::Offset3D, vk::Extent2D> GetCaptureRegion(const entt::registry &r) 
 }
 } // namespace
 
-void InitViewportMedia(entt::registry &r, CreateSvgResource create_svg) {
+void InitViewportMedia(entt::registry &r, CreateSvgResource &&create_svg) {
     LoadViewportIcons(r);
     r.ctx().emplace<FaustDSP>(std::move(create_svg));
     RegisterAudioComponentHandlers(r);
@@ -92,16 +92,16 @@ void RenderViewport(entt::registry &r, entt::entity viewport, vk::Fence viewport
 }
 
 // Intentionally mutates VideoRecording outside Apply (not replayed).
-void StartRecording(entt::registry &r, entt::entity viewport, std::filesystem::path path, int fps) {
+void StartRecording(entt::registry &r, entt::entity viewport, const std::filesystem::path &path, int fps) {
     r.remove<VideoRecording>(viewport);
-    auto &pipelines = r.ctx().get<const Pipelines>();
+    const auto &pipelines = r.ctx().get<const Pipelines>();
     if (!pipelines.Main.Resources) {
         std::println(stderr, "StartRecording: render resources not ready");
         return;
     }
     const auto region = GetCaptureRegion(r);
     const auto &vk = r.ctx().get<const VulkanResources>();
-    r.emplace<VideoRecording>(viewport, VideoRecording{.Recorder = std::make_unique<VideoRecorder>(vk, std::move(path), region.first, region.second, fps), .Region = region});
+    r.emplace<VideoRecording>(viewport, VideoRecording{.Recorder = std::make_unique<VideoRecorder>(vk, path, region.first, region.second, fps), .Region = region});
 }
 
 bool IsRecording(const entt::registry &r, entt::entity viewport) {
@@ -115,7 +115,7 @@ uint64_t CapturedFrameCount(const entt::registry &r, entt::entity viewport) {
 }
 
 void CaptureRecordFrame(entt::registry &r, entt::entity viewport) {
-    auto &pipelines = r.ctx().get<const Pipelines>();
+    const auto &pipelines = r.ctx().get<const Pipelines>();
     auto *rec = r.try_get<VideoRecording>(viewport);
     if (!rec || !rec->Recorder || !rec->Recorder->IsActive() || !pipelines.Main.Resources) return;
     if (GetCaptureRegion(r) != rec->Region) {

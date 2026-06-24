@@ -76,7 +76,7 @@ entt::entity DuplicateOne(entt::registry &r, entt::entity e, bool &was_mesh_dupl
         meshes.CloneMesh(GetMesh(r, mesh_entity)),
         MeshInstanceCreateInfo{.Name = create_info.Name, .Transform = create_info.Transform, .Select = create_info.Select, .Visible = r.all_of<RenderInstance>(e)}
     );
-    if (auto prim_shape = r.try_get<PrimitiveShape>(mesh_entity)) r.emplace<PrimitiveShape>(e_new.first, *prim_shape);
+    if (auto *prim_shape = r.try_get<PrimitiveShape>(mesh_entity)) r.emplace<PrimitiveShape>(e_new.first, *prim_shape);
     if (r.all_of<SmoothShading>(mesh_entity)) r.emplace<SmoothShading>(e_new.first);
     if (const auto *armature_modifier = r.try_get<ArmatureModifier>(e)) r.emplace<ArmatureModifier>(e_new.second, *armature_modifier);
     if (const auto *bone_attachment = r.try_get<BoneAttachment>(e)) r.emplace<BoneAttachment>(e_new.second, *bone_attachment);

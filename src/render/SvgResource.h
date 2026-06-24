@@ -19,11 +19,11 @@ struct ImageResource;
 using BitmapToImage = std::function<mvk::ImageResource(std::span<const std::byte> data, uint32_t width, uint32_t height)>;
 
 struct SvgResource {
-    SvgResource(vk::Device, BitmapToImage, std::filesystem::path);
+    SvgResource(vk::Device, const BitmapToImage &, std::filesystem::path);
     ~SvgResource();
 
     // Returns the clicked link path.
-    std::optional<std::filesystem::path> Draw();
+    std::optional<std::filesystem::path> Draw() const;
     // Draw icon at given size (no interaction)
     void DrawIcon(vec2 size) const;
 

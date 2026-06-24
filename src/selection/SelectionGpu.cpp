@@ -306,7 +306,7 @@ void RenderSelectionPassWith(entt::registry &r, [[maybe_unused]] entt::entity vi
     const auto &one_shot = r.ctx().get<const OneShotGpu>();
     const auto &sel_slots = r.ctx().get<const SelectionSlots>();
     auto &buffers = r.ctx().get<GpuBuffers>();
-    auto &pipelines = r.ctx().get<const Pipelines>();
+    const auto &pipelines = r.ctx().get<const Pipelines>();
     DrawListBuilder draw_list;
     DrawBatchInfo silhouette_batch{};
     if (render_depth) {
@@ -446,7 +446,7 @@ std::optional<uint32_t> RunSoundVerticesVertexPick(entt::registry &r, entt::enti
     const auto &sel_slots = r.ctx().get<const SelectionSlots>();
     auto &buffers = r.ctx().get<GpuBuffers>();
     auto &meshes = r.ctx().get<MeshStore>();
-    auto &pipelines = r.ctx().get<const Pipelines>();
+    const auto &pipelines = r.ctx().get<const Pipelines>();
 
     const Timer timer{"RunSoundVerticesVertexPick"};
     const auto mesh_entity = instance->Entity;
@@ -480,7 +480,7 @@ std::vector<entt::entity> RunObjectPick(entt::registry &r, entt::entity viewport
     const auto &one_shot = r.ctx().get<const OneShotGpu>();
     const auto &sel_slots = r.ctx().get<const SelectionSlots>();
     auto &buffers = r.ctx().get<GpuBuffers>();
-    auto &pipelines = r.ctx().get<const Pipelines>();
+    const auto &pipelines = r.ctx().get<const Pipelines>();
     const uint32_t next_object_id = r.ctx().get<const ObjectIdCounter>().Next;
     if (next_object_id <= 1) return {}; // No objects have been assigned IDs yet
     const uint32_t max_object_id = std::min(next_object_id - 1, GpuBuffers::MaxSelectableObjects);
@@ -556,7 +556,7 @@ void DispatchBoxSelect(entt::registry &r, uvec2 box_min, uvec2 box_max, uint32_t
     const auto &one_shot = r.ctx().get<const OneShotGpu>();
     const auto &sel_slots = r.ctx().get<const SelectionSlots>();
     auto &buffers = r.ctx().get<GpuBuffers>();
-    auto &pipelines = r.ctx().get<const Pipelines>();
+    const auto &pipelines = r.ctx().get<const Pipelines>();
     const uint32_t bitset_words = (max_id + 31) / 32;
     memset(buffers.SelectionBitset.Data(), 0, bitset_words * sizeof(uint32_t));
 

@@ -12,7 +12,7 @@ entt::entity InitEngine(entt::registry &, VulkanResources);
 void DeinitViewport(entt::registry &, entt::entity viewport);
 
 // App-only presentation/media layered on InitEngine.
-void InitViewportMedia(entt::registry &, CreateSvgResource);
+void InitViewportMedia(entt::registry &, CreateSvgResource &&);
 void DeinitViewportMedia(entt::registry &);
 
 // Engine entry point for RenderViewport (presentation): run ProcessComponentEvents, record, and submit the frame.
@@ -42,7 +42,7 @@ void PresentViewport(entt::registry &, entt::entity viewport);
 // When a look-through camera is active, captures only the framed sub-region matching
 // what the user sees inside the dimmed overlay. Locks to the initial capture extent;
 // any resize or look-through change stops recording.
-void StartRecording(entt::registry &, entt::entity viewport, std::filesystem::path, int fps);
+void StartRecording(entt::registry &, entt::entity viewport, const std::filesystem::path &, int fps);
 // Copy the current FinalColorImage to the recorder. No-op if not recording.
 // Call after WaitForRender() so the source image is coherent.
 void CaptureRecordFrame(entt::registry &, entt::entity viewport);

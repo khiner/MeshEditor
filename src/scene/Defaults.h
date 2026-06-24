@@ -12,7 +12,7 @@ constexpr float Pi{std::numbers::pi_v<float>};
 void UpdateDerivedColors(ViewportTheme &);
 
 struct Defaults {
-    inline static constexpr vec3 WorldUp{0, 1, 0};
+    static constexpr vec3 WorldUp{0, 1, 0};
     static ViewCamera ViewCamera;
     static WorkspaceLights WorkspaceLights;
     static ViewportTheme ViewportTheme;

@@ -30,6 +30,6 @@ private:
     std::string OutDeviceName;
     uint32_t SampleRate{48'000};
 
-    void OnVolumeChange();
+    void OnVolumeChange() const;
     void Restart();
 };

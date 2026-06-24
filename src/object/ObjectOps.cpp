@@ -34,7 +34,7 @@ using std::ranges::any_of, std::ranges::find, std::ranges::to;
 
 std::string CreateName(entt::registry &r, std::string_view prefix) {
     auto &registry = r.ctx().get<NameRegistry>();
-    const std::string prefix_str{prefix};
+    std::string prefix_str{prefix};
     for (uint32_t i = 0; i < std::numeric_limits<uint32_t>::max(); ++i) {
         if (auto name = i == 0 ? prefix_str : std::format("{}_{}", prefix, i); !registry.Names.contains(name)) {
             registry.Names.insert(name);

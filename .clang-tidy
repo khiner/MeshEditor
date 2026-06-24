@@ -1,0 +1,46 @@
+# Static-analysis whitelist. Add checks to `Checks` (comma-separated, `-*` disables the defaults).
+# Run all src TUs: script/Tidy        Run one file: script/Tidy src/physics/PhysicsSystem.cpp
+Checks: >
+  -*,
+  misc-const-correctness,
+  misc-unused-using-decls,
+  readability-qualified-auto,
+  readability-make-member-function-const,
+  readability-container-size-empty,
+  readability-redundant-string-cstr,
+  readability-redundant-casting,
+  readability-redundant-inline-specifier,
+  readability-simplify-boolean-expr,
+  readability-use-std-min-max,
+  readability-static-definition-in-anonymous-namespace,
+  performance-unnecessary-value-param,
+  performance-unnecessary-copy-initialization,
+  performance-for-range-copy,
+  performance-implicit-conversion-in-loop,
+  performance-noexcept-move-constructor,
+  performance-no-automatic-move,
+  bugprone-use-after-move,
+  bugprone-dangling-handle,
+  bugprone-integer-division,
+  bugprone-macro-parentheses,
+  bugprone-too-small-loop-variable,
+  bugprone-move-forwarding-reference,
+  bugprone-incorrect-roundings,
+  bugprone-misplaced-widening-cast,
+  bugprone-optional-value-conversion,
+  bugprone-multi-level-implicit-pointer-conversion,
+  modernize-use-nullptr,
+  modernize-use-override,
+  modernize-use-emplace,
+  modernize-use-default-member-init,
+  modernize-use-std-numbers,
+  modernize-min-max-use-initializer-list,
+  modernize-concat-nested-namespaces,
+  cppcoreguidelines-prefer-member-initializer
+# Only report diagnostics from our own headers, not lib/ or the SDK.
+HeaderFilterRegex: '/MeshEditor/src/'
+WarningsAsErrors: ''
+CheckOptions:
+  # Keep the `x ? true : false` style simplifications, but not the DeMorgan rewrites
+  # (they often force negated/renamed forms that read worse than the original).
+  readability-simplify-boolean-expr.SimplifyDeMorgan: false

@@ -10,7 +10,7 @@
 struct VideoRecorder {
     VideoRecorder(
         const VulkanResources &,
-        std::filesystem::path output_path, vk::Offset3D offset, vk::Extent2D extent, int fps
+        const std::filesystem::path &output_path, vk::Offset3D offset, vk::Extent2D extent, int fps
     );
     ~VideoRecorder();
 

@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <format>
+#include <numbers>
 #include <span>
 
 namespace {
@@ -319,7 +320,7 @@ std::string ConstraintText(InteractionOp op, TransformGizmo::Mode mode) {
 
 // "[-(text|)] = value" or just "value" if not active.
 std::string NumericDisplayStr(const NumericInput &num, float computed_value, std::string_view value_fmt) {
-    const auto val = std::vformat(value_fmt, std::make_format_args(computed_value));
+    auto val = std::vformat(value_fmt, std::make_format_args(computed_value));
     if (!num.Active()) return val;
     return num.Negate ? std::format("[-({}|)] = {}", num.Str, val) : std::format("[{}|] = {}", num.Str, val);
 }
@@ -358,9 +359,9 @@ std::string ValueLabel(Interaction i, vec3 v, TransformGizmo::Mode mode, const N
         }
         case Rotate: {
             if (i.Op == Trackball) {
-                return std::format("Trackball: {:.2f}°, {:.2f}°", v[0] * 180.f / float(M_PI), v[1] * 180.f / float(M_PI));
+                return std::format("Trackball: {:.2f}°, {:.2f}°", v[0] * 180.f / std::numbers::pi_v<float>, v[1] * 180.f / std::numbers::pi_v<float>);
             }
-            const float deg = v[0] * 180.f / float(M_PI);
+            const float deg = v[0] * 180.f / std::numbers::pi_v<float>;
             return std::format("Rotation: {}°{}", NumericDisplayStr(num, deg, "{:.2f}"), con);
         }
     }
@@ -957,7 +958,7 @@ std::optional<Result> Interact(GizmoInteraction &g, const GizmoTransform &transf
                 g.Delta.S = s;
                 return Result{ts, {.S = s}};
             }
-            g.Delta.RotationAngle = value * float(M_PI) / 180.f;
+            g.Delta.RotationAngle = value * std::numbers::pi_v<float> / 180.f;
             if (op == Trackball) {
                 g.Delta.RotationYawPitch = {g.Delta.RotationAngle, 0};
                 return Result{ts, {.R = glm::angleAxis(g.Delta.RotationAngle, cam_basis[1])}};

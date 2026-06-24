@@ -30,7 +30,7 @@ Action ApplyAction(entt::registry &r, entt::entity viewport, Action &&action) {
         [&]<typename T>(T &&a) -> Action {
             using L = std::decay_t<T>;
             auto apply_keep = [&]<typename DomainV>() -> Action {
-                DomainV dv{std::move(a)};
+                DomainV dv{std::forward<T>(a)};
                 Apply(r, viewport, dv);
                 return Action{std::in_place_type<L>, std::move(std::get<L>(dv))};
             };

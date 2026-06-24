@@ -7,6 +7,8 @@
 #include "tetgen.h"
 #include <Spectra/SymGEigsShiftSolver.h>
 
+#include <algorithm>
+
 using uint = uint32_t;
 
 namespace {
@@ -267,7 +269,7 @@ ModalModes ComputeModes(
     while (highest_mode_i > lowest_mode_i && mode_freqs[highest_mode_i - 1] > max_mode_freq) --highest_mode_i;
 
     // Adjust modes to include only the requested range.
-    const uint n_modes = std::min(std::min(opts.NumModes, fem_n_modes), highest_mode_i - lowest_mode_i);
+    const uint n_modes = std::min({opts.NumModes, fem_n_modes, highest_mode_i - lowest_mode_i});
     mode_freqs.erase(mode_freqs.begin(), mode_freqs.begin() + lowest_mode_i);
     mode_freqs.resize(n_modes);
     mode_t60s.erase(mode_t60s.begin(), mode_t60s.begin() + lowest_mode_i);
@@ -285,7 +287,7 @@ ModalModes ComputeModes(
             for (uint vi = 0; vi < vertex_dim; ++vi) gain += pow(eigenvectors(ev_i + vi, mode + lowest_mode_i), 2);
 
             gains[ex_pos][mode] = sqrt(gain);
-            if (gains[ex_pos][mode] > max_gain) max_gain = gains[ex_pos][mode];
+            max_gain = std::max(max_gain, gains[ex_pos][mode]);
         }
         for (float &gain : gains[ex_pos]) gain /= max_gain;
     }

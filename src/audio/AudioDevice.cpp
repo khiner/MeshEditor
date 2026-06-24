@@ -8,7 +8,7 @@
 
 namespace {
 void DataCallback(ma_device *device, void *output, const void *input, ma_uint32 frame_count) {
-    auto cb = reinterpret_cast<AudioDeviceCallback *>(device->pUserData);
+    auto *cb = reinterpret_cast<AudioDeviceCallback *>(device->pUserData);
     cb->Callback(AudioBuffer{device->sampleRate, device->playback.channels, frame_count, (const float *)input, (float *)output}, cb->UserData);
 }
 
@@ -66,11 +66,11 @@ void AudioDevice::Init() {
     }
     for (uint32_t i = 0; i < CaptureDeviceCount; ++i) {
         DeviceInfos[Idx(IO::In)].emplace_back(&CaptureDeviceInfos[i]);
-        DeviceNames[Idx(IO::In)].push_back(CaptureDeviceInfos[i].name);
+        DeviceNames[Idx(IO::In)].emplace_back(CaptureDeviceInfos[i].name);
     }
     for (uint32_t i = 0; i < PlaybackDeviceCount; ++i) {
         DeviceInfos[Idx(IO::Out)].emplace_back(&PlaybackDeviceInfos[i]);
-        DeviceNames[Idx(IO::Out)].push_back(PlaybackDeviceInfos[i].name);
+        DeviceNames[Idx(IO::Out)].emplace_back(PlaybackDeviceInfos[i].name);
     }
 
     ma_device_config config = ma_device_config_init(ma_device_type_playback);
@@ -81,7 +81,7 @@ void AudioDevice::Init() {
     config.dataCallback = DataCallback;
     config.pUserData = &Callback;
 
-    if (ma_device_init(NULL, &config, &Device) != MA_SUCCESS) {
+    if (ma_device_init(nullptr, &config, &Device) != MA_SUCCESS) {
         throw std::runtime_error("Failed to open audio output device.");
     }
 
@@ -121,7 +121,7 @@ void AudioDevice::Uninit() {
     ma_device_uninit(&Device);
 }
 
-void AudioDevice::OnVolumeChange() { ma_device_set_master_volume(&Device, Muted ? 0 : Volume); }
+void AudioDevice::OnVolumeChange() const { ma_device_set_master_volume(&Device, Muted ? 0 : Volume); }
 
 void AudioDevice::Restart() {
     const bool was_on = On;

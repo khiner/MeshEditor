@@ -3,7 +3,7 @@
 #include <fstream>
 
 namespace File {
-inline std::string Read(const std::filesystem::path path) {
+inline std::string Read(const std::filesystem::path &path) {
     std::ifstream f{path, std::ios::in | std::ios::binary};
     const auto size = std::filesystem::file_size(path);
     std::string result(size, '\0');

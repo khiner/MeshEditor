@@ -6,7 +6,7 @@
 #include <shaderc/shaderc.hpp>
 #include <unordered_map>
 
-using std::views::transform, std::ranges::find_if, std::ranges::to;
+using std::views::transform, std::ranges::to;
 
 namespace {
 // A file the compile depends on, with its mtime.

@@ -14,6 +14,7 @@
 #include "render/PickConstants.h"
 #include "vulkan/BufferArena.h"
 
+#include <algorithm>
 #include <numeric>
 
 struct DrawBufferPair {
@@ -65,10 +66,10 @@ struct InstanceArena {
     }
 
     void UpdateState(uint32_t index, uint8_t state) { StateBuffer.Update(as_bytes(state), vk::DeviceSize(index) * sizeof(uint8_t)); }
-    std::span<uint8_t> GetMutableStates() {
+    std::span<uint8_t> GetMutableStates() const {
         return {reinterpret_cast<uint8_t *>(StateBuffer.GetMutableRange(0, StateBuffer.UsedSize).data()), StateBuffer.UsedSize};
     }
-    std::span<Transform> GetMutableTransforms() {
+    std::span<Transform> GetMutableTransforms() const {
         auto mapped = TransformBuffer.GetMutableRange(0, TransformBuffer.UsedSize);
         return {reinterpret_cast<Transform *>(mapped.data()), mapped.size() / sizeof(Transform)};
     }
@@ -180,7 +181,7 @@ struct GpuBuffers {
         const uint64_t pixels = uint64_t(extent.width) * extent.height;
         const uint64_t desired_nodes = pixels == 0 ? 1 : pixels * SelectionNodesPerPixel;
         const uint64_t max_nodes = std::max<uint64_t>(1, MaxSelectionNodeBytes / sizeof(SelectionNode));
-        const uint32_t final_count = std::min<uint64_t>(std::min(desired_nodes, max_nodes), std::numeric_limits<uint32_t>::max());
+        const uint32_t final_count = std::min<uint64_t>({desired_nodes, max_nodes, std::numeric_limits<uint32_t>::max()});
         if (final_count != SelectionNodeCapacity) {
             SelectionNodeCapacity = final_count;
             SelectionNodeBuffer = {Ctx, SelectionNodeCapacity * sizeof(SelectionNode), vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer};

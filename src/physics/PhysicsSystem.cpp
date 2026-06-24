@@ -36,6 +36,7 @@
 #include "Jolt/Physics/PhysicsSystem.h"
 #include "Jolt/RegisterTypes.h"
 
+#include <algorithm>
 #include <iostream>
 
 JPH_SUPPRESS_WARNINGS
@@ -45,7 +46,7 @@ using namespace JPH::literals;
 
 namespace {
 inline Vec3 ToJolt(vec3 v) { return {v.x, v.y, v.z}; }
-inline vec3 FromJolt(RVec3 v) { return {float(v.GetX()), float(v.GetY()), float(v.GetZ())}; }
+inline vec3 FromJolt(RVec3 v) { return {v.GetX(), v.GetY(), v.GetZ()}; }
 inline Quat ToJolt(quat q) { return {q.x, q.y, q.z, q.w}; }
 inline quat FromJolt(Quat q) { return {q.GetW(), q.GetX(), q.GetY(), q.GetZ()}; }
 
@@ -328,9 +329,8 @@ struct PhysicsState {
 
     float DefaultPenetrationSlop{0}, DefaultSpeculativeContactDistance{0};
 
-    PhysicsState() {
+    PhysicsState() : FilterRef(new KHRCollisionFilter()) {
         ResetSystem();
-        FilterRef = new KHRCollisionFilter();
         ContactListener.Filter = FilterRef.GetPtr();
     }
 
@@ -484,7 +484,7 @@ void ConfigureJointSettings(SixDOFConstraintSettings &settings, const PhysicsJoi
                     // Jolt's SixDOFConstraint has no spring path for angular limits — they're treated as hard.
                     // (See lib/JoltPhysics for an in-progress local patch adding this; not yet upstream.)
                     static constexpr const char *AxisNames[]{"X", "Y", "Z"};
-                    const auto label = def.Name.empty() ? "<unnamed>" : def.Name.c_str();
+                    const auto *const label = def.Name.empty() ? "<unnamed>" : def.Name.c_str();
                     std::cerr << std::format("Warning: joint '{}': soft angular limit on {} ignored (Jolt SixDOFConstraint lacks angular spring limits).\n", label, AxisNames[int(axis) - int(SixDOFConstraintSettings::EAxis::NumTranslation)]);
                 }
             }
@@ -601,9 +601,9 @@ void RecomputeSceneScale(PhysicsState &s, const entt::registry &r) {
         std::visit(
             overloaded{
                 [&](const physics::Sphere &s) { min_dim = std::min(min_dim, s.Radius); },
-                [&](const physics::Box &s) { min_dim = std::min(min_dim, std::min({s.Size.x, s.Size.y, s.Size.z})); },
-                [&](const physics::Capsule &s) { min_dim = std::min(min_dim, std::min({s.RadiusTop, s.RadiusBottom, s.Height})); },
-                [&](const physics::Cylinder &s) { min_dim = std::min(min_dim, std::min({s.RadiusTop, s.RadiusBottom, s.Height})); },
+                [&](const physics::Box &s) { min_dim = std::min({min_dim, s.Size.x, s.Size.y, s.Size.z}); },
+                [&](const physics::Capsule &s) { min_dim = std::min({min_dim, s.RadiusTop, s.RadiusBottom, s.Height}); },
+                [&](const physics::Cylinder &s) { min_dim = std::min({min_dim, s.RadiusTop, s.RadiusBottom, s.Height}); },
                 [](const auto &) {}, // Plane / mesh shapes — no analytic size
             },
             collider.Shape

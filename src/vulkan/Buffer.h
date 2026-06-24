@@ -97,9 +97,9 @@ struct Buffer {
     Buffer(BufferContext &, std::span<const std::byte>, MemoryUsage, vk::BufferUsageFlags = {});
 
     Buffer(const Buffer &) = delete;
-    Buffer(Buffer &&);
+    Buffer(Buffer &&) noexcept;
     Buffer &operator=(const Buffer &) = delete;
-    Buffer &operator=(Buffer &&);
+    Buffer &operator=(Buffer &&) noexcept;
     ~Buffer();
 
     void Update(std::span<const std::byte>, vk::DeviceSize offset = 0);
@@ -115,7 +115,7 @@ struct Buffer {
     vk::DeviceSize GetAllocatedSize() const;
     void Write(std::span<const std::byte>, vk::DeviceSize offset = 0) const;
     void Move(vk::DeviceSize from, vk::DeviceSize to, vk::DeviceSize size) const;
-    std::span<std::byte> GetMutableRange(vk::DeviceSize offset, vk::DeviceSize size);
+    std::span<std::byte> GetMutableRange(vk::DeviceSize offset, vk::DeviceSize size) const;
     vk::DescriptorBufferInfo GetDescriptor() const { return {operator*(), 0, vk::WholeSize}; }
 
     BufferContext &Ctx;

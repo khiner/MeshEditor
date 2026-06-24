@@ -9,7 +9,7 @@
 struct Timer {
     static inline bool Enabled{true};
 
-    Timer(std::string_view name) : Name{name}, InitialDepth{Depth++}, Seq{uint32_t(Pending.size())} {
+    Timer(std::string_view name) : Name{name}, Seq{uint32_t(Pending.size())} {
         Pending.emplace_back(InitialDepth, Name, 0.f);
     }
     ~Timer() {
@@ -26,7 +26,7 @@ struct Timer {
 private:
     std::string_view Name;
     std::chrono::steady_clock::time_point Start{std::chrono::steady_clock::now()};
-    uint32_t InitialDepth, Seq;
+    uint32_t InitialDepth{Depth++}, Seq;
 
     struct Entry {
         uint32_t Depth;

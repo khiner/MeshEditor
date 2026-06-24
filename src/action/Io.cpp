@@ -102,7 +102,7 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
                         r.emplace<RealImpactActiveMicrophone>(instance_entity, listener_instance_entity);
 
                         auto material_name = RealImpact::FindMaterialName(r.get<Name>(instance_entity).Value);
-                        if (const auto real_impact_material = material_name ?
+                        if (const auto *const real_impact_material = material_name ?
                                 find_if(materials::acoustic::All, [name = *material_name](const AcousticMaterial &m) { return m.Name == name; }) :
                                 std::ranges::end(materials::acoustic::All)) {
                             r.emplace<AcousticMaterial>(mesh_entity, *real_impact_material);

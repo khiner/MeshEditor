@@ -3,6 +3,7 @@
 #include "numeric/mat4.h"
 #include "numeric/vec4.h"
 
+#include <numbers>
 #include <regex>
 
 using std::ranges::max_element, std::ranges::iota_view, std::ranges::to;
@@ -81,7 +82,7 @@ const std::unordered_map<std::string_view, std::string_view> MaterialNameForObje
 } // namespace
 
 namespace RealImpact {
-const quat ObjectRotationToYUp = glm::angleAxis(-float(M_PI_2), vec3{1, 0, 0}) * glm::angleAxis(float(M_PI), vec3{0, 0, 1});
+const quat ObjectRotationToYUp = glm::angleAxis(-float(M_PI_2), vec3{1, 0, 0}) * glm::angleAxis(std::numbers::pi_v<float>, vec3{0, 0, 1});
 
 std::expected<std::string, std::string> ValidateDirectory(const fs::path &directory) {
     if (!fs::is_directory(directory)) return std::unexpected(std::format("RealImpact directory does not exist: {}", directory.string()));

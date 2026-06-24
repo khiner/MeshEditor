@@ -387,7 +387,7 @@ static void RenderEntityControls(entt::registry &r, entt::entity viewport, entt:
         }
         Spacing();
         if (TreeNode("Debug")) {
-            if (const auto label = TransformGizmo::ToString(r.get<const GizmoInteraction>(viewport)); label != "") {
+            if (const auto label = TransformGizmo::ToString(r.get<const GizmoInteraction>(viewport)); !label.empty()) {
                 Text("%s op: %s", TransformGizmo::IsUsing(r, viewport) ? "Active" : "Hovered", label.data());
             } else {
                 TextUnformatted("Not hovering");

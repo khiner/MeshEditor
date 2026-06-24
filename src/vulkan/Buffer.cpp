@@ -254,7 +254,7 @@ Buffer::Buffer(BufferContext &ctx, vk::DeviceSize size, MemoryUsage mem, vk::Buf
 Buffer::Buffer(BufferContext &ctx, std::span<const std::byte> data, MemoryUsage mem, vk::BufferUsageFlags usage)
     : Buffer(ctx, data.size(), mem, usage) { Update(data); }
 
-Buffer::Buffer(Buffer &&other)
+Buffer::Buffer(Buffer &&other) noexcept
     : Ctx(other.Ctx), Slot(other.Slot), UsedSize(other.UsedSize), Usage(other.Usage), Memory(other.Memory),
       DeviceBuffer(std::move(other.DeviceBuffer)),
 #ifdef MVK_FORCE_STAGED_TRANSFERS
@@ -264,7 +264,7 @@ Buffer::Buffer(Buffer &&other)
     other.Slot = InvalidSlot;
 }
 
-Buffer &Buffer::operator=(Buffer &&other) {
+Buffer &Buffer::operator=(Buffer &&other) noexcept {
     if (this != &other) {
         Retire();
         if (Slot != InvalidSlot) Ctx.Slots.Release({Type, Slot});
@@ -316,7 +316,7 @@ std::span<const std::byte> Buffer::GetMappedData() const {
 #endif
 }
 
-std::span<std::byte> Buffer::GetMappedData() {
+std::span<std::byte> Buffer::GetMappedData() { // NOLINT(readability-make-member-function-const) non-const half of a const/non-const accessor pair
 #ifdef MVK_FORCE_STAGED_TRANSFERS
     return HostBuffer->GetMappedData();
 #else
@@ -327,7 +327,7 @@ std::span<std::byte> Buffer::GetMappedData() {
 void Buffer::Write(std::span<const std::byte> data, vk::DeviceSize offset) const { DeviceBuffer->Write(data, offset); }
 void Buffer::Move(vk::DeviceSize from, vk::DeviceSize to, vk::DeviceSize size) const { DeviceBuffer->Move(from, to, size); }
 
-std::span<std::byte> Buffer::GetMutableRange(vk::DeviceSize offset, vk::DeviceSize size) {
+std::span<std::byte> Buffer::GetMutableRange(vk::DeviceSize offset, vk::DeviceSize size) const {
 #ifdef MVK_FORCE_STAGED_TRANSFERS
     // Assume the whole range is modified and schedule a copy.
     Ctx.DeferCopy(HostBuffer->Get(), DeviceBuffer->Get(), offset, size);

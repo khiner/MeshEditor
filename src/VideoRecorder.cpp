@@ -25,7 +25,7 @@ std::string BuildFfmpegCommand(const std::filesystem::path &out, vk::Extent2D ex
 
 VideoRecorder::VideoRecorder(
     const VulkanResources &vk_res,
-    std::filesystem::path output_path, vk::Offset3D offset, vk::Extent2D extent, int fps
+    const std::filesystem::path &output_path, vk::Offset3D offset, vk::Extent2D extent, int fps
 ) : Device{vk_res.Device}, Queue{vk_res.Queue}, Offset{offset}, Ex{extent},
     FrameBytes{extent.width * extent.height * 4} {
     if (extent.width == 0 || extent.height == 0) {

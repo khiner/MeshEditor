@@ -289,7 +289,7 @@ void RecordRenderCommandBuffer(entt::registry &r, entt::entity viewport, vk::Com
                         // Draw primary with element state first, then all without (depth LESS won't overwrite)
                         auto primary_draw = dd;
                         primary_draw.ElementStateSlotOffset = face_state_buffer;
-                        append_fill_draw(primary_draw, index_count, *e.PrimaryEditBufferIndex);
+                        append_fill_draw(primary_draw, index_count, e.PrimaryEditBufferIndex);
                         auto other_draw = dd;
                         other_draw.ElementStateSlotOffset = {};
                         append_fill_draw(other_draw, index_count, std::nullopt);
@@ -415,7 +415,7 @@ void RecordRenderCommandBuffer(entt::registry &r, entt::entity viewport, vk::Com
                 auto dd = MakeDrawData(e.Buf.Vertices, e.Buf.EdgeIndices, buffers.Instances, e.Deform.BoneDeformOffset, e.Deform.ArmatureDeformOffset, e.Deform.MorphDeformOffset, e.Deform.MorphTargetCount);
                 dd.ElementStateSlotOffset = meshes.GetEdgeStateRange(e.MeshComp->GetStoreId());
                 const auto db = draw_list.Draws.size();
-                if (e.PrimaryEditBufferIndex) AppendDraw(draw_list, draw.EdgeQuad, e.Buf.EdgeIndices.Count * 3, e.Mod, dd, *e.PrimaryEditBufferIndex);
+                if (e.PrimaryEditBufferIndex) AppendDraw(draw_list, draw.EdgeQuad, e.Buf.EdgeIndices.Count * 3, e.Mod, dd, e.PrimaryEditBufferIndex);
                 else if (e.IsSoundVertices) AppendDraw(draw_list, draw.EdgeQuad, e.Buf.EdgeIndices.Count * 3, e.Mod, dd);
                 PatchMorphWeights(draw_list, db, e.Deform);
                 patch_edit_pending_local_transform(db, e.Entity);
@@ -448,7 +448,7 @@ void RecordRenderCommandBuffer(entt::registry &r, entt::entity viewport, vk::Com
             dd.ElementStateSlotOffset = {meshes.GetVertexStateSlot(), e.Buf.Vertices.Offset};
             const auto db = draw_list.Draws.size();
             if (is_point_mesh) AppendDraw(draw_list, draw.Point, e.Buf.VertexIndices, e.Mod, dd);
-            else if (e.PrimaryEditBufferIndex) AppendDraw(draw_list, draw.Point, e.Buf.VertexIndices, e.Mod, dd, *e.PrimaryEditBufferIndex);
+            else if (e.PrimaryEditBufferIndex) AppendDraw(draw_list, draw.Point, e.Buf.VertexIndices, e.Mod, dd, e.PrimaryEditBufferIndex);
             else if (e.IsSoundVertices) AppendDraw(draw_list, draw.Point, e.Buf.VertexIndices, e.Mod, dd);
             PatchMorphWeights(draw_list, db, e.Deform);
             patch_edit_pending_local_transform(db, e.Entity);
@@ -484,7 +484,7 @@ void RecordRenderCommandBuffer(entt::registry &r, entt::entity viewport, vk::Com
                     auto dd = MakeDrawData(e.Buf.Vertices, indices, buffers.Instances, e.Deform.BoneDeformOffset, e.Deform.ArmatureDeformOffset, e.Deform.MorphDeformOffset, e.Deform.MorphTargetCount);
                     dd.ObjectIdSlot = buffers.Instances.ObjectIdBuffer.Slot;
                     const auto db = sel_list.Draws.size();
-                    if (e.PrimaryEditBufferIndex) AppendDraw(sel_list, batch, indices, e.Mod, dd, *e.PrimaryEditBufferIndex);
+                    if (e.PrimaryEditBufferIndex) AppendDraw(sel_list, batch, indices, e.Mod, dd, e.PrimaryEditBufferIndex);
                     else AppendDraw(sel_list, batch, indices, e.Mod, dd);
                     PatchMorphWeights(sel_list, db, e.Deform);
                 }
@@ -563,7 +563,7 @@ void RecordRenderCommandBuffer(entt::registry &r, entt::entity viewport, vk::Com
             const auto mesh_entity = r.get<Instance>(e).Entity;
             const auto &mesh_buffers = r.get<MeshBuffers>(mesh_entity);
             const auto &models = r.get<ModelsBuffer>(mesh_entity);
-            const auto deform = get_deform_slots(mesh_entity);
+            const auto &deform = get_deform_slots(mesh_entity);
             auto dd = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.FaceIndices, buffers.Instances, deform.BoneDeformOffset, deform.ArmatureDeformOffset, deform.MorphDeformOffset, deform.MorphTargetCount);
             dd.ObjectIdSlot = buffers.Instances.ObjectIdBuffer.Slot;
             const auto draws_before = draw_list.Draws.size();

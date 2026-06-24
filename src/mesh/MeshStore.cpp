@@ -38,7 +38,7 @@ ObjPlyMaterial ToObjPlyMaterial(const tinyobj::material_t &material, uint32_t in
 
     const auto shininess = std::max(material.shininess, 0.f);
     const auto roughness = std::clamp(std::sqrt(2.f / (shininess + 2.f)), 0.04f, 1.f);
-    const auto specular_strength = std::max(ks.x, std::max(ks.y, ks.z));
+    const auto specular_strength = std::max({ks.x, ks.y, ks.z});
     const auto metallic = std::clamp((specular_strength - 0.04f) / (1.f - 0.04f), 0.f, 1.f);
     const auto base_color = glm::mix(kd, ks, metallic);
     const auto alpha = std::clamp(material.dissolve, 0.f, 1.f);
@@ -836,7 +836,7 @@ void MeshStore::Clear() {
 
 // Mirror buffer helpers — uint8_t state per element, sizeof == 1.
 static void SyncMirror(mvk::Buffer &mirror, Range range) {
-    auto end = vk::DeviceSize(range.Offset + range.Count);
+    auto end = vk::DeviceSize(range.Offset) + range.Count;
     mirror.Reserve(end);
     mirror.UsedSize = std::max(mirror.UsedSize, end);
 }

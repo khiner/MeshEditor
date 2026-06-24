@@ -58,7 +58,7 @@ void CheckVk(vk::Result err) {
 
 bool RebuildSwapchain = false;
 void RenderFrame(vk::Device device, vk::Queue queue, ImGui_ImplVulkanH_Window &wd, ImDrawData *draw_data) {
-    auto image_acquired_semaphore = wd.FrameSemaphores[wd.SemaphoreIndex].ImageAcquiredSemaphore;
+    auto *image_acquired_semaphore = wd.FrameSemaphores[wd.SemaphoreIndex].ImageAcquiredSemaphore;
     const auto err = device.acquireNextImageKHR(wd.Swapchain, UINT64_MAX, image_acquired_semaphore, nullptr, &wd.FrameIndex);
     if (err == vk::Result::eErrorOutOfDateKHR || err == vk::Result::eSuboptimalKHR) {
         RebuildSwapchain = true;
@@ -320,7 +320,7 @@ void ValidateSnapshotRoundTrip(entt::registry &r, entt::entity viewport) {
 #endif
 } // namespace
 
-void run(const char *initial_file, bool quiet, bool play, float play_duration, fs::path record_path, int record_fps) {
+void run(const char *initial_file, bool quiet, bool play, float play_duration, const fs::path &record_path, int record_fps) {
     Timer::Enabled = !quiet;
 
     SDL_SetHint(SDL_HINT_MAC_SCROLL_MOMENTUM, "1");
@@ -427,13 +427,13 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
 
     NFD_Init();
     entt::registry r;
-    const auto CreateSvg = [device = *vc->Device, &r, &wd](std::unique_ptr<SvgResource> &svg, fs::path path) {
+    auto create_svg = [device = *vc->Device, &r, &wd](std::unique_ptr<SvgResource> &svg, fs::path path) {
         // Wait for previous frame's ImGui render to complete, since it may have sampled the old texture.
         CheckVk(device.waitForFences({wd.Frames[wd.FrameIndex].Fence}, true, UINT64_MAX));
         svg = LoadSvg(r, std::move(path));
     };
     const auto viewport = InitEngine(r, vc->Resources());
-    InitViewportMedia(r, CreateSvg);
+    InitViewportMedia(r, std::move(create_svg));
     SetupScene(r, viewport); // Before the first frame reads viewport state.
     AddDefaultSceneContent(r);
 

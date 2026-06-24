@@ -25,8 +25,7 @@ From Table 4 in the [Kleinpat paper](https://graphics.stanford.edu/projects/klei
 | Steel         | 7850 | 2.0E11 | 0.29| 5  | 3E-8 |
 */
 
-namespace materials {
-namespace acoustic {
+namespace materials::acoustic {
 constexpr AcousticMaterial
     Ceramic{"Ceramic", {2700, 7.2E10, 0.19, 6, 1E-7}},
     Glass{"Glass", {2600, 6.2E10, 0.20, 1, 1E-7}},
@@ -37,5 +36,4 @@ constexpr AcousticMaterial
     Steel{"Steel", {7850, 2.0E11, 0.29, 5, 3E-8}};
 
 constexpr std::array All{Ceramic, Glass, Wood, Plastic, Iron, Polycarbonate, Steel};
-} // namespace acoustic
-} // namespace materials
+} // namespace materials::acoustic

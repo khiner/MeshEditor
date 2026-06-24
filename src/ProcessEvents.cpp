@@ -66,7 +66,7 @@ using std::views::iota;
 namespace {
 using namespace he;
 
-static inline const std::vector<Element> NormalElements{Element::Vertex, Element::Face};
+const std::vector<Element> NormalElements{Element::Vertex, Element::Face};
 
 std::vector<uint> CreateNormalIndices(const Mesh &mesh, Element element) {
     if (element == Element::None || element == Element::Edge) return {};
@@ -1015,7 +1015,7 @@ RenderRequest ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
             logical_extent.x > 0u ? float(render_extent.x) / float(logical_extent.x) : 1.f,
             logical_extent.y > 0u ? float(render_extent.y) / float(logical_extent.y) : 1.f
         );
-        const auto radius = std::max(1u, uint32_t(float(ObjectSelectRadiusPx) * render_scale + 0.5f));
+        const auto radius = std::max(1u, uint32_t(std::lround(float(ObjectSelectRadiusPx) * render_scale)));
         auto &frame = r.ctx().get<FrameState>();
         const auto hits = ResolveHits(r, RunObjectPick(r, viewport, frame.ObjectPickEpochTag, mouse_px, radius), bone_mode);
         const auto pick = hits.empty() ? std::optional<SelectionHit>{} : [&]() -> std::optional<SelectionHit> {

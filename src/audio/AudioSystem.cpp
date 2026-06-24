@@ -136,7 +136,7 @@ void AssignVertexSample(
             ReleaseSample(r, viewport, it->second);
             it->second = path;
         }
-        AcquireSample(r, viewport, path, std::move(frames));
+        AcquireSample(r, viewport, path, std::move(frames)); // NOLINT(bugprone-use-after-move) only the first new-path call reads frames
         vs_changed = true;
     }
     if (vs_changed) r.patch<VertexSamples>(e, [](auto &) {});
@@ -524,7 +524,7 @@ FFTData ComputeFft(const std::vector<float> &frames) {
 }
 
 // If `normalize_max` is set, normalize the data to this maximum value.
-void WriteWav(const std::vector<float> &frames, fs::path file_path, std::optional<float> normalize_max = {}) {
+void WriteWav(const std::vector<float> &frames, const fs::path &file_path, std::optional<float> normalize_max = {}) {
     static const ma_encoder_config WavEncoderConfig = ma_encoder_config_init(ma_encoding_format_wav, ma_format_f32, 1, SampleRate);
     static ma_encoder WavEncoder;
     if (auto status = ma_encoder_init_file(file_path.c_str(), &WavEncoderConfig, &WavEncoder); status != MA_SUCCESS) {
@@ -596,7 +596,7 @@ std::optional<size_t> PlotModeData(
         ImPlot::SetupAxes(x_label.data(), y_label.data());
         ImPlot::SetupAxesLimits(-0.5f, data.size() - 0.5f, 0, max_value, ImPlotCond_Always);
         if (ImPlot::IsPlotHovered()) {
-            if (auto i = size_t(ImPlot::GetPlotMousePos().x + 0.5f); i >= 0 && i < data.size()) hovered_index = i;
+            if (auto i = std::lround(ImPlot::GetPlotMousePos().x); i >= 0 && i < std::ssize(data)) hovered_index = i;
         }
         if (!highlight_index) {
             ImPlot::PlotBars("", data.data(), data.size(), BarSize);
@@ -896,7 +896,10 @@ void DrawObjectAudioControls(
         std::optional<size_t> new_hovered_index;
         if (auto hovered = PlotModeData(modes.Freqs, "Mode frequencies", "", "Frequency (Hz)", hovered_mode_index)) new_hovered_index = hovered;
         if (auto hovered = PlotModeData(modes.T60s, "Mode T60s", "", "T60 decay time (s)", hovered_mode_index)) new_hovered_index = hovered;
-        if (auto hovered = PlotModeData(modes.Gains[active_vi], "Mode gains", "Mode index", "Gain", hovered_mode_index, 1.f)) new_hovered_index = hovered;
+        const auto *active_gains = active_vi < modes.Gains.size() ? &modes.Gains[active_vi] : nullptr;
+        if (active_gains) {
+            if (auto hovered = PlotModeData(*active_gains, "Mode gains", "Mode index", "Gain", hovered_mode_index, 1.f)) new_hovered_index = hovered;
+        }
         if (hovered_mode_index = new_hovered_index; hovered_mode_index && *hovered_mode_index < modes.Freqs.size()) {
             const auto index = *hovered_mode_index;
             Text(
@@ -904,7 +907,7 @@ void DrawObjectAudioControls(
                 modes.Freqs[index],
                 modes.Freqs[index] * modes.OriginalFundamentalFreq / modes.Freqs[0],
                 modes.T60s[index],
-                modes.Gains[active_vi][index]
+                active_gains && index < active_gains->size() ? (*active_gains)[index] : 0.f
             );
         }
     }
