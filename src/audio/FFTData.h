@@ -18,7 +18,7 @@ struct FFTData {
           Plan(std::exchange(other.Plan, nullptr)),
           NumReal(other.NumReal) {}
 
-    const FFTData &operator=(FFTData &&other) noexcept {
+    FFTData &operator=(FFTData &&other) noexcept {
         if (this != &other) {
             Complex = std::exchange(other.Complex, nullptr);
             Plan = std::exchange(other.Plan, nullptr);

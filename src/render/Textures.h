@@ -16,7 +16,7 @@ struct IblPrefilterPipelines;
 
 namespace gltf {
 struct Image;
-}
+} // namespace gltf
 
 struct TextureEntry {
     mvk::ImageResource Image;

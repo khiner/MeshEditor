@@ -504,9 +504,7 @@ void CompareJson(simdjson::dom::element a, simdjson::dom::element b, std::string
             break; // numbers handled above
     }
 }
-} // namespace
 
-namespace {
 // Compares two parsed gltf JSON files A and B with the existing exception list. Reports up to
 // 20 unexpected diffs to stderr. Returns the count of unexpected diffs.
 size_t CompareGltfJson(const fs::path &a_path, const fs::path &b_path, std::string_view sample_name) {

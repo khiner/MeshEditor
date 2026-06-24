@@ -32,7 +32,7 @@ struct TextureStore;
 struct VulkanResources;
 namespace mvk {
 struct BufferContext;
-}
+} // namespace mvk
 
 // Per-entity source-index sidecars for stable round-trip ordering / referencing. Build uses these
 // rather than `SceneNode` (which has been mutated by skinning/armature re-parenting) and rather

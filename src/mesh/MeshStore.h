@@ -16,7 +16,7 @@
 
 namespace mvk {
 struct BufferContext;
-}
+} // namespace mvk
 
 struct ObjPlyMaterial {
     vec4 BaseColorFactor;

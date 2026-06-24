@@ -9,7 +9,7 @@
 namespace {
 void DataCallback(ma_device *device, void *output, const void *input, ma_uint32 frame_count) {
     auto *cb = reinterpret_cast<AudioDeviceCallback *>(device->pUserData);
-    cb->Callback(AudioBuffer{device->sampleRate, device->playback.channels, frame_count, (const float *)input, (float *)output}, cb->UserData);
+    cb->Callback(AudioBuffer{device->sampleRate, device->playback.channels, frame_count, static_cast<const float *>(input), static_cast<float *>(output)}, cb->UserData);
 }
 
 enum class IO : uint8_t {

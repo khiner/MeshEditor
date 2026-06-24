@@ -581,9 +581,7 @@ void PlotMagnitudeSpectrum(const std::vector<float> &frames, std::string_view la
         ImPlot::EndPlot();
     }
 }
-} // namespace
 
-namespace {
 // Returns the index of the hovered mode, if any.
 std::optional<size_t> PlotModeData(
     const std::vector<float> &data, std::string_view label, std::string_view x_label, std::string_view y_label,

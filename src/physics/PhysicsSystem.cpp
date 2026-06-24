@@ -301,9 +301,7 @@ private:
         s.mCombinedRestitution = ApplyCombineMode(pick(rc(m1), rc(m2)), b1.GetRestitution(), b2.GetRestitution());
     }
 };
-} // namespace
 
-namespace {
 // All Jolt-side physics state. Lives in the registry context (see physics::Init); the physics:: free
 // functions resolve it from the registry. Plain data holder — behavior lives in the functions below.
 struct PhysicsState {
@@ -591,9 +589,7 @@ struct JoltInit {
         Factory::sInstance = nullptr;
     }
 } sJoltInit;
-} // namespace
 
-namespace {
 void RecomputeSceneScale(PhysicsState &s, const entt::registry &r) {
     // Scale physics tolerances to scene size (default slop is too large for small scenes).
     float min_dim = std::numeric_limits<float>::max();
