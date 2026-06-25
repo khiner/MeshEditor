@@ -1,4 +1,3 @@
-#include "Variant.h"
 #include "action/LogSerialize.h"
 
 #include <boost/ut.hpp>
@@ -18,26 +17,22 @@ Action DefaultAt(size_t idx) {
     }(std::make_index_sequence<std::variant_size_v<Action>>{});
 }
 
-// Owning-pointer alternatives default to a null pointer, which zpp::bits won't serialize.
-// Give them a payload - an enqueued action is never null.
+template<class> constexpr bool IsUniquePtr = false;
+template<class T, class D> constexpr bool IsUniquePtr<std::unique_ptr<T, D>> = true;
+
+// Fill null owning pointers (zpp::bits can't serialize null) so every alternative round-trips.
 void EnsureSerializable(Action &a) {
     std::visit(
-        overloaded{
-            [](object::AddEmpty &x) { x.Info = std::make_unique<ObjectCreateInfo>(); },
-            [](object::AddArmature &x) { x.Info = std::make_unique<ObjectCreateInfo>(); },
-            [](object::AddCamera &x) { x.Info = std::make_unique<ObjectCreateInfo>(); },
-            [](object::AddLight &x) { x.Info = std::make_unique<ObjectCreateInfo>(); },
-            [](object::AddMeshPrimitive &x) { x.Info = std::make_unique<MeshInstanceCreateInfo>(); },
-            [](object::ImportMesh &x) { x.Info = std::make_unique<MeshInstanceCreateInfo>(); },
-            [](view::DragGizmo &x) { x.Value = std::make_unique<PendingTransform>(); },
-            [](view::DragGizmoMeshEdit &x) { x.Value = std::make_unique<PendingTransform>(); },
-            [](action::physics::SetJointVecItem<PhysicsJointLimit> &x) { x.Value = std::make_unique<PhysicsJointLimit>(); },
-            [](action::physics::SetJointVecItem<PhysicsJointDrive> &x) { x.Value = std::make_unique<PhysicsJointDrive>(); },
-            [](Replace<PhysicsMotion> &x) { x.Value = std::make_unique<PhysicsMotion>(); },
-            [](Replace<WorkspaceLights> &x) { x.Value = std::make_unique<WorkspaceLights>(); },
-            [](audio::OpenModalForm &x) { x.Info = std::make_unique<ModalModelCreateInfo>(); },
-            [](audio::SetModalFormMaterial &x) { x.Material = std::make_unique<AcousticMaterial>(); },
-            [](auto &) {},
+        [](auto &alt) {
+            zpp::bits::visit_members(alt, [](auto &...members) {
+                ([](auto &m) {
+                    using M = std::decay_t<decltype(m)>;
+                    if constexpr (IsUniquePtr<M>) {
+                        if (!m) m = std::make_unique<typename M::element_type>();
+                    }
+                }(members),
+                 ...);
+            });
         },
         a
     );
