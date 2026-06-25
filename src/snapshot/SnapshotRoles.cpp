@@ -159,6 +159,23 @@ inline constexpr bool NeedsFieldwise =
     entt::type_list_contains_v<ForceFieldwise, C> ||
     (entt::type_list_contains_v<Persistent, C> && !std::is_trivially_copyable_v<C>);
 
+// Guard: a trivially-copyable component with a variant/optional has indeterminate bytes, so it must be field-wise (NeedsFieldwise), not memcpy'd.
+// Padding-only cases aren't statically detectable and stay listed by hand in ForceSerialize.
+template<typename> inline constexpr bool IsVariantOrOptional = false;
+template<typename... Ts> inline constexpr bool IsVariantOrOptional<std::variant<Ts...>> = true;
+template<typename T> inline constexpr bool IsVariantOrOptional<std::optional<T>> = true;
+
+template<typename C>
+consteval bool HoldsVariantOrOptional() {
+    if constexpr (IsVariantOrOptional<C>) return true;
+    else if constexpr (std::is_trivially_copyable_v<C> && std::is_aggregate_v<C>) // non-aggregates (e.g. ViewCamera) aren't reflectable; they use CustomEmplace
+        return zpp::bits::visit_members_types<C>([]<typename... Ms>() { return (IsVariantOrOptional<std::remove_cvref_t<Ms>> || ...); });
+    else return false;
+}
+template<typename... Cs>
+consteval bool VariantComponentsFieldwise(type_list<Cs...>) { return (... && (!HoldsVariantOrOptional<Cs>() || NeedsFieldwise<Cs>)); }
+static_assert(VariantComponentsFieldwise(Persistent{}), "A trivially-copyable Persistent component holds a std::variant/std::optional but would be memcpy-serialized. Add it to ForceSerialize.");
+
 template<typename C>
 bool ValuesEqual(const void *a, const void *b) {
     if constexpr (std::is_empty_v<C>) {
