@@ -930,9 +930,17 @@ RenderRequest ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
         r.remove<PendingImportMesh>(viewport);
         ImportMesh(r, path, std::move(info));
     }
+    // Selection resolves on the GPU through SceneViewUBO.ViewProj, and replay doesn't log view-camera navigation,
+    // so each pending selection carries the view-projection it was recorded with: stamp it for the resolve.
+    // No restore needed - the UBO ends the frame live regardless: a view change re-fills it at the rebuild below
+    // (which runs after selection), and if the view didn't change the captured view already equals the live one.
+    const auto stamp_view_proj = [&buffers](const mat4 &view_proj) {
+        buffers.SceneViewUBO.Update(as_bytes(view_proj), offsetof(SceneViewUBO, ViewProj));
+    };
     if (const auto *pending = r.try_get<const PendingEditElementClick>(viewport)) {
         const auto mouse_px = pending->MousePx;
         const bool toggle = pending->Toggle;
+        stamp_view_proj(pending->ViewProj);
         r.remove<PendingEditElementClick>(viewport);
 
         const auto edit_mode = r.get<const EditMode>(viewport).Value;
@@ -967,6 +975,7 @@ RenderRequest ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
     if (const auto *pending = r.try_get<const PendingBoxSelect>(viewport)) {
         const auto box_px = pending->BoxPx;
         const bool additive = pending->Additive;
+        stamp_view_proj(pending->ViewProj);
         r.remove<PendingBoxSelect>(viewport);
 
         const auto &interaction = r.get<const Interaction>(viewport);
@@ -1003,6 +1012,7 @@ RenderRequest ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
     if (const auto *pending = r.try_get<const PendingPick>(viewport)) {
         const auto mouse_px = pending->MousePx;
         const bool shift = pending->Shift, cycle = pending->Cycle;
+        stamp_view_proj(pending->ViewProj);
         r.remove<PendingPick>(viewport);
 
         const bool bone_mode = r.get<const Interaction>(viewport).Mode == InteractionMode::Pose || IsBoneEditMode(r, viewport);

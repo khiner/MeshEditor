@@ -300,6 +300,11 @@ void Interact(entt::registry &r, entt::entity viewport, FrameState &frame) {
     if (OrientationGizmo::IsActive() || frame.OverlayControlsHovered) return;
 
     const auto render_extent = RenderExtentPx(r);
+    // View-projection of the currently displayed view, recorded into pixel-selection actions so replay
+    // (which doesn't log navigation) resolves the stored pixels against the same view.
+    const auto &view_camera = r.get<const ViewCamera>(viewport);
+    const float selection_aspect = render_extent.y == 0u ? 1.f : float(render_extent.x) / float(render_extent.y);
+    const mat4 selection_view_proj = view_camera.Projection(selection_aspect) * view_camera.View();
     const auto edit_mode = r.get<const EditMode>(viewport).Value;
     const auto arm_obj_entity = FindArmatureObject(r, active_entity);
     const bool active_is_armature = arm_obj_entity != entt::null;
@@ -315,7 +320,7 @@ void Interact(entt::registry &r, entt::entity viewport, FrameState &frame) {
                 const bool is_additive = r.all_of<AdditiveBoxSelectBaseline>(viewport);
                 frame.BoxSelectStaged = true;
                 // The hit set (object/bone instances or edit-mode elements) is resolved later.
-                action::EmitStaged(action::selection::ApplyBoxSelect{.BoxPx = *box_px, .Additive = is_additive});
+                action::EmitStaged(action::selection::ApplyBoxSelect{.BoxPx = *box_px, .Additive = is_additive, .ViewProj = std::make_unique<mat4>(selection_view_proj)});
             }
         } else if (!IsMouseDown(ImGuiMouseButton_Left) && frame.BoxSelectStart) {
             frame.BoxSelectStart.reset();
@@ -357,13 +362,13 @@ void Interact(entt::registry &r, entt::entity viewport, FrameState &frame) {
 
     if (interaction_mode == InteractionMode::Edit && !active_is_armature) {
         const bool toggle = IsKeyDown(ImGuiMod_Shift) || IsKeyDown(ImGuiMod_Ctrl) || IsKeyDown(ImGuiMod_Super);
-        action::Emit(action::selection::ApplyEditElementClick{.MousePx = mouse_px, .Toggle = toggle});
+        action::Emit(action::selection::ApplyEditElementClick{.MousePx = mouse_px, .Toggle = toggle, .ViewProj = std::make_unique<mat4>(selection_view_proj)});
     } else if (interaction_mode == InteractionMode::Object || bone_mode) {
         const bool shift = IsKeyDown(ImGuiMod_Shift);
         // Store only the pixel, the GPU pick and selection resolution run later.
         // A re-click at the same spot cycles to the next overlapping hit.
-        if (ImLengthSqr(CurrentClickPos - PrevClickPos) > 16) action::Emit(action::selection::Pick{mouse_px, shift});
-        else action::Emit(action::selection::PickCycle{mouse_px, shift});
+        if (ImLengthSqr(CurrentClickPos - PrevClickPos) > 16) action::Emit(action::selection::Pick{mouse_px, shift, std::make_unique<mat4>(selection_view_proj)});
+        else action::Emit(action::selection::PickCycle{mouse_px, shift, std::make_unique<mat4>(selection_view_proj)});
     }
 }
 

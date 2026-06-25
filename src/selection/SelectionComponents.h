@@ -1,5 +1,6 @@
 #pragma once
 
+#include "numeric/mat4.h"
 #include "numeric/vec2.h"
 #include "selection/BoneSelection.h"
 
@@ -29,15 +30,18 @@ struct AdditiveBoxSelectBaseline {
 struct SelectionBitsDirty {}; // The bitset changed, the compute update is pending.
 struct ElementStatesDirty {}; // The element state buffers changed, a submit is pending.
 
+// ViewProj is the record-time view-projection, stamped into SceneViewUBO so replay resolves pixels against it.
 struct PendingEditElementClick {
     uvec2 MousePx;
     bool Toggle;
+    mat4 ViewProj;
 };
 
 // Object/bone box-select awaiting GPU resolution against current scene state.
 struct PendingBoxSelect {
     std::pair<uvec2, uvec2> BoxPx;
     bool Additive;
+    mat4 ViewProj;
 };
 
 // Object/bone click pick awaiting GPU resolution. Cycle advances to the next overlapping hit.
@@ -45,6 +49,7 @@ struct PendingPick {
     uvec2 MousePx;
     bool Shift;
     bool Cycle;
+    mat4 ViewProj;
 };
 
 // Non-owning span over the GPU-mapped SelectionBitset words.

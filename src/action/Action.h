@@ -27,4 +27,12 @@ template<> inline constexpr bool Recordable<io::SaveGltf> = false;
 // Latch state is live-only: the recorded DragGizmo already encodes the resolved transform.
 template<> inline constexpr bool Recordable<view::LatchScreenTransform> = false;
 template<> inline constexpr bool Recordable<view::ClearScreenTransformLatch> = false;
+// View-camera navigation is not recorded. For selection replay correctness, selection actions hold the ViewProj.
+// The snapshot still stores the ViewCamera.
+template<> inline constexpr bool Recordable<view::OrbitViewCamera> = false;
+template<> inline constexpr bool Recordable<view::ZoomViewCamera> = false;
+template<> inline constexpr bool Recordable<view::ResetViewCamera> = false;
+template<> inline constexpr bool Recordable<view::SetViewCameraTarget> = false;
+template<> inline constexpr bool Recordable<view::SetViewCameraLens> = false;
+template<> inline constexpr bool Recordable<view::SetViewCameraTargetDirection> = false;
 } // namespace action

@@ -78,13 +78,13 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
             },
             [&](ClearBoxSelectBaseline) { r.remove<AdditiveBoxSelectBaseline>(viewport); },
             // Box-select stores only the rectangle, the GPU pick and hit resolution run later.
-            [&](const ApplyBoxSelect &a) { r.emplace_or_replace<PendingBoxSelect>(viewport, a.BoxPx, a.Additive); },
+            [&](const ApplyBoxSelect &a) { r.emplace_or_replace<PendingBoxSelect>(viewport, a.BoxPx, a.Additive, *a.ViewProj); },
             // Click pick stores only the pixel, the GPU pick and selection resolution run later.
-            [&](const Pick &a) { r.emplace_or_replace<PendingPick>(viewport, a.MousePx, a.Shift, false); },
-            [&](const PickCycle &a) { r.emplace_or_replace<PendingPick>(viewport, a.MousePx, a.Shift, true); },
+            [&](const Pick &a) { r.emplace_or_replace<PendingPick>(viewport, a.MousePx, a.Shift, false, *a.ViewProj); },
+            [&](const PickCycle &a) { r.emplace_or_replace<PendingPick>(viewport, a.MousePx, a.Shift, true, *a.ViewProj); },
             [&](const ApplyEditElementClick &a) {
                 end_box_select_interaction();
-                r.emplace_or_replace<PendingEditElementClick>(viewport, a.MousePx, a.Toggle);
+                r.emplace_or_replace<PendingEditElementClick>(viewport, a.MousePx, a.Toggle, *a.ViewProj);
             },
             [&](const ApplyTreeSelection &a) {
                 using Clear = ApplyTreeSelection::ClearKind;

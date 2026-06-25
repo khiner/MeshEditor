@@ -19,6 +19,7 @@
 #include "snapshot/SaveState.h"
 #include "snapshot/SceneSnapshot.h"
 #include "viewport/FrameState.h"
+#include "viewport/ViewCamera.h"
 #include "viewport/Viewport.h"
 #include "viewport/ViewportDisplay.h"
 #include "viewport/ViewportIcons.h"
@@ -275,6 +276,8 @@ void NewProject(entt::registry &r, entt::entity viewport, const fs::path &replay
 #endif
     action::StopLog();
     const auto live_extent = r.ctx().get<ViewportExtent>().Value; // Restore after replay's SetExtent actions change it.
+    // View-camera navigation isn't recorded, so replay must not disturb the live view. Restore it afterward.
+    auto live_view_camera = r.get<ViewCamera>(viewport);
     ClearScene(r, viewport);
     // The default scene content is the implicit replay baseline (a fresh app replays no actions). New->Empty
     // skips building it live to avoid flashing it for a frame before the recorded Clear applies; replay still
@@ -285,8 +288,9 @@ void NewProject(entt::registry &r, entt::entity viewport, const fs::path &replay
     action::StartLog();
     if (action::ReplayLog(r, viewport, replay_path, &AdvanceViewport)) {
         // Replay ran headless (resized selection resources but never presented the color image).
-        // Restore the live window extent and render the final replayed state once on-screen.
+        // Restore the live window extent and view camera, then render the final replayed state once on-screen.
         r.ctx().get<ViewportExtent>().Value = live_extent;
+        r.emplace_or_replace<ViewCamera>(viewport, std::move(live_view_camera));
         PresentViewport(r, viewport);
 #ifdef DEBUG_BUILD
         if (replay_check) {
