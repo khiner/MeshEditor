@@ -1912,7 +1912,7 @@ RenderRequest ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
     if (const auto camera = LookThroughCameraEntity(r); camera != entt::null &&
         reactive<changes::WorldTransform>(r).contains(camera)) {
         const auto &wt = r.get<WorldTransform>(camera);
-        r.replace<ViewCamera>(viewport, ViewCamera{wt.P, wt.P + CameraForward(wt), r.get<Camera>(camera)});
+        r.replace<ViewCamera>(viewport, ViewCamera{wt.P, wt.R, r.get<Camera>(camera)});
     }
     { // Keep targeted PBR specialization mask in sync when one of its inputs changes.
         // Run before the UBO update below so Transmission pipeline is settled when the UBO reads it.

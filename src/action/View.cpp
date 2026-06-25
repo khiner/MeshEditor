@@ -90,8 +90,7 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
                 if (e == entt::null) return;
                 SetLookThrough(r, viewport, e);
                 const auto &wt = r.get<WorldTransform>(e);
-                const vec3 fwd = CameraForward(wt), away = -fwd;
-                r.patch<ViewCamera>(viewport, [&](auto &vc) { vc.AnimateTo(wt.P + fwd, {std::atan2(away.z, away.x), std::asin(away.y)}, 1.f); });
+                r.patch<ViewCamera>(viewport, [&](auto &vc) { vc.AnimateToLookThrough(wt.P, glm::normalize(wt.R), 1.f); });
             },
             [&](ExitLookThroughCamera) { ExitLookThrough(r, viewport); },
             [&](const OrbitViewCamera &a) {

@@ -3,15 +3,9 @@
 #include <glm/gtc/matrix_transform.hpp>
 
 namespace {
-constexpr float WrapYaw(float angle) { return glm::mod(angle, glm::two_pi<float>()); }
-constexpr float WrapPitch(float angle) { return glm::atan(glm::sin(angle), glm::cos(angle)); }
-constexpr float ShortestAngleDelta(float from, float to) {
-    const float d = to - from;
-    return std::atan2(std::sin(d), std::cos(d)); // in (-pi, pi]
-}
-
-inline constexpr float MinDistance{0.001f};
-inline constexpr uint32_t DurationFrames{12}; // ~200ms at 60fps.
+constexpr vec3 WorldUp{0, 1, 0};
+constexpr float MinDistance{0.001f};
+constexpr uint32_t DurationFrames{12}; // ~200ms at 60fps.
 
 constexpr float Smoothstep(float t) { return t * t * (3.f - 2.f * t); }
 } // namespace
@@ -47,12 +41,16 @@ ray ViewCamera::PixelToWorldRay(vec2 mouse_px, rect viewport) const {
     return {Position() + view_dir * NearClip() + basis[0] * (ndc.x * mag.x) + basis[1] * (ndc.y * mag.y), view_dir};
 }
 
-vec3 ViewCamera::YAxis() const {
-    const bool is_flipped = YawPitch.y > glm::half_pi<float>() || YawPitch.y < -glm::half_pi<float>();
-    return {0, (is_flipped ? -1.f : 1.f), 0};
+quat ViewCamera::OrientationFromAway(vec3 away) {
+    away = glm::normalize(away);
+    auto right = glm::cross(WorldUp, away);
+    const float right_len = glm::length(right);
+    // Near the poles (away ~ ±WorldUp) the horizontal axis is ambiguous; pick a default azimuth.
+    right = right_len > 1e-4f ? right / right_len : vec3{1, 0, 0};
+    return glm::quat_cast(mat3{right, glm::cross(away, right), away});
 }
 
-mat4 ViewCamera::View() const { return glm::lookAt(Position(), Target, YAxis()); }
+mat4 ViewCamera::View() const { return glm::lookAt(Position(), Target, Up()); }
 mat4 ViewCamera::Projection(float aspect_ratio) const {
     if (const auto *perspective = std::get_if<Perspective>(&Data)) {
         if (perspective->FarClip) return glm::perspectiveRH_ZO(perspective->FieldOfViewRad, aspect_ratio, perspective->NearClip, *perspective->FarClip);
@@ -63,11 +61,9 @@ mat4 ViewCamera::Projection(float aspect_ratio) const {
     const vec2 mag{orthographic.Mag.y * aspect_ratio, orthographic.Mag.y};
     return glm::orthoRH_ZO(-mag.x, mag.x, -mag.y, mag.y, orthographic.NearClip, orthographic.FarClip);
 }
-vec3 ViewCamera::Forward() const { return {glm::cos(YawPitch.x) * glm::cos(YawPitch.y), glm::sin(YawPitch.y), glm::sin(YawPitch.x) * glm::cos(YawPitch.y)}; }
 mat3 ViewCamera::Basis() const {
-    const auto forward = Forward();
-    const auto right = glm::normalize(glm::cross(YAxis(), forward));
-    return {right, glm::cross(forward, right), -forward};
+    const auto m = glm::mat3_cast(Orientation); // {Right, Up, Away}
+    return {m[0], m[1], -m[2]}; // {Right, Up, -Forward}
 }
 
 void ViewCamera::ApplyDistance(float new_distance) {
@@ -78,7 +74,8 @@ void ViewCamera::ApplyDistance(float new_distance) {
 void ViewCamera::RotateBy(vec2 delta) {
     if (delta == vec2{0}) return;
     Anim.reset();
-    YawPitch = {WrapYaw(YawPitch.x + delta.x), WrapPitch(YawPitch.y + delta.y)};
+    // Turntable: yaw about world up, pitch about the camera's local right axis
+    Orientation = glm::normalize(glm::angleAxis(-delta.x, WorldUp) * Orientation * glm::angleAxis(-delta.y, vec3{1, 0, 0}));
 }
 
 void ViewCamera::ZoomBy(float factor) {
@@ -87,18 +84,14 @@ void ViewCamera::ZoomBy(float factor) {
     ApplyDistance(std::max(Distance * factor, MinDistance));
 }
 
-void ViewCamera::SetTargetDirection(vec3 direction) {
-    AnimateTo(Target, {atan2(direction.z, direction.x), asin(direction.y)}, Distance);
-}
+void ViewCamera::SetTargetDirection(vec3 away) { AnimateTo(Target, OrientationFromAway(away), Distance); }
 
-void ViewCamera::AnimateTo(vec3 target, vec2 yaw_pitch, float distance) {
+void ViewCamera::AnimateTo(vec3 target, quat orientation, float distance) {
     distance = std::max(distance, MinDistance);
-    // Unwrap dst yaw/pitch around src so a straight lerp takes the shortest path through angle space.
-    const vec2 dst_yp{
-        YawPitch.x + ShortestAngleDelta(YawPitch.x, WrapYaw(yaw_pitch.x)),
-        YawPitch.y + ShortestAngleDelta(YawPitch.y, WrapPitch(yaw_pitch.y)),
-    };
-    if (target == Target && distance == Distance && dst_yp == YawPitch) {
+    orientation = glm::normalize(orientation);
+    // Take the shorter of the two equivalent quaternions so the slerp follows the shortest arc.
+    if (glm::dot(Orientation, orientation) < 0.f) orientation = -orientation;
+    if (target == Target && distance == Distance && orientation == Orientation) {
         Anim.reset();
         return;
     }
@@ -107,10 +100,17 @@ void ViewCamera::AnimateTo(vec3 target, vec2 yaw_pitch, float distance) {
         .DstTarget = target,
         .SrcDistance = Distance,
         .DstDistance = distance,
-        .SrcYawPitch = YawPitch,
-        .DstYawPitch = dst_yp,
+        .SrcOrientation = Orientation,
+        .DstOrientation = orientation,
         .Frame = 0,
     };
+}
+
+void ViewCamera::AnimateToLookThrough(vec3 camera_position, quat orientation, float distance) {
+    orientation = glm::normalize(orientation);
+    distance = std::max(distance, MinDistance);
+    // Position() == Target + Distance * Forward(), with Forward() == orientation * +Z at the destination.
+    AnimateTo(camera_position - orientation * vec3{0, 0, 1} * distance, orientation, distance);
 }
 
 bool ViewCamera::Tick() {
@@ -120,7 +120,7 @@ bool ViewCamera::Tick() {
     const float k = Smoothstep(t);
     Target = glm::mix(Anim->SrcTarget, Anim->DstTarget, k);
     ApplyDistance(glm::mix(Anim->SrcDistance, Anim->DstDistance, k));
-    YawPitch = {WrapYaw(glm::mix(Anim->SrcYawPitch.x, Anim->DstYawPitch.x, k)), WrapPitch(glm::mix(Anim->SrcYawPitch.y, Anim->DstYawPitch.y, k))};
+    Orientation = glm::slerp(Anim->SrcOrientation, Anim->DstOrientation, k);
     if (Anim->Frame >= DurationFrames) Anim.reset();
     return true;
 }

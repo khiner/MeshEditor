@@ -15,8 +15,3 @@ struct PosedLocal : Transform {
     using Transform::Transform;
     PosedLocal(const Transform &t) : Transform{t} {}
 };
-
-// World-space forward direction for a camera entity (matches glTF: cameras look down -Z).
-inline vec3 CameraForward(const WorldTransform &wt) {
-    return -glm::normalize(glm::rotate(wt.R, vec3{0.f, 0.f, 1.f}));
-}

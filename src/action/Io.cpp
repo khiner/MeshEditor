@@ -47,7 +47,7 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
                     const auto camera_entity = result->FirstCameraObject;
                     SetLookThrough(r, viewport, camera_entity);
                     const auto &wt = r.get<WorldTransform>(camera_entity);
-                    r.replace<ViewCamera>(viewport, ViewCamera{wt.P, wt.P + CameraForward(wt), r.get<Camera>(camera_entity)});
+                    r.replace<ViewCamera>(viewport, ViewCamera{wt.P, wt.R, r.get<Camera>(camera_entity)});
                 }
                 if (result->ImportedAnimation) {
                     JumpToStartFrame(r, viewport);
