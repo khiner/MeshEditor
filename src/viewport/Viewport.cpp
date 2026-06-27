@@ -99,12 +99,16 @@ void RecordViewportFrame(entt::registry &r, entt::entity viewport, RenderRequest
 // `force_full` records the full buffer regardless of the requested region.
 bool AdvanceAndRecord(entt::registry &r, entt::entity viewport, bool force_full) {
     const auto render_request = ProcessComponentEvents(r, viewport);
-    const auto extent = r.ctx().get<const Pipelines>().BuiltColorExtent();
-    if (extent.width == 0 || extent.height == 0) return false;
+    if (!ViewportImageReady(r)) return false;
     RecordViewportFrame(r, viewport, render_request, force_full);
     return true;
 }
 } // namespace
+
+bool ViewportImageReady(const entt::registry &r) {
+    const auto extent = r.ctx().get<const Pipelines>().BuiltColorExtent();
+    return extent.width != 0 && extent.height != 0;
+}
 
 void SubmitViewport(entt::registry &r, entt::entity viewport, vk::Fence viewport_consumer_fence) {
     // Stash the consumer fence for the resize path to wait on before recreating resources. Cleared after so replay sees none.
@@ -112,9 +116,7 @@ void SubmitViewport(entt::registry &r, entt::entity viewport, vk::Fence viewport
     const auto render_request = ProcessComponentEvents(r, viewport);
     r.ctx().get<ViewportConsumerFence>().Value = vk::Fence{};
     if (render_request == RenderRequest::None) return;
-
-    const auto extent = r.ctx().get<const Pipelines>().BuiltColorExtent();
-    if (extent.width == 0 || extent.height == 0) return;
+    if (!ViewportImageReady(r)) return;
 
     const Timer timer{"SubmitViewport"};
 #ifdef MVK_FORCE_STAGED_TRANSFERS

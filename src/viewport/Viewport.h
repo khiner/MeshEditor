@@ -35,9 +35,11 @@ void WaitForRender(entt::registry &);
 // Process deferred component events and rebuild draw lists, without presenting.
 void AdvanceViewport(entt::registry &, entt::entity viewport);
 
-// Resume on-screen display after a headless replay: render the current scene at the current ViewportExtent
-// and present synchronously.
+// Resume on-screen display after a headless replay: render the current scene at the current ViewportExtent and present synchronously.
 void PresentViewport(entt::registry &, entt::entity viewport);
+
+// True once the viewport's color image has been built and rendered at a valid extent.
+bool ViewportImageReady(const entt::registry &);
 
 // Record the viewport to an H.264 mp4 by piping frames to an `ffmpeg` subprocess.
 // When a look-through camera is active, captures only the framed sub-region matching

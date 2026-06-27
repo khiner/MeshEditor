@@ -469,6 +469,17 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, c
     bool done = false;
     bool viewport_resizing = false; // True while a resize drag is staged but not yet committed.
     action::StartLog(); // Record each applied action to the write-behind log.
+    if (initial_file) {
+        ClearScene(r, viewport);
+        LoadFile(r, fs::path(initial_file));
+        action::ApplyEmitted(r, viewport);
+        AdvanceViewport(r, viewport); // Derive the loaded scene before frame 1 reads it.
+        if (auto &errors = r.ctx().get<action::Errors>().Messages; !errors.empty()) {
+            for (const auto &message : errors) std::cerr << message << std::endl;
+            play = false; // Don't auto-play if the initial file failed to load.
+            errors.clear();
+        }
+    }
     while (!done) {
         SDL_Event event;
         while (SDL_PollEvent(&event)) {
@@ -772,17 +783,9 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, c
         }
 
         // Remaining emits go after Interact so Interact wins the single-action buffer.
-        if (GetFrameCount() == 1) {
-            // Replace the startup default scene with the initial file, now that the viewport has an extent.
-            // static const auto DefaultRealImpactPath = fs::path{"../../"} / "RealImpact" / "dataset" / "22_Cup" / "preprocessed";
-            // if (fs::exists(DefaultRealImpactPath)) action::io::Apply(r, viewport, action::io::LoadRealImpact{.Directory = DefaultRealImpactPath});
-            if (initial_file) {
-                ClearScene(r, viewport);
-                LoadFile(r, fs::path(initial_file)); // Errors (and the play gate) are handled after ApplyEmitted.
-            }
-        } else if (GetFrameCount() == 2 && play) {
-            // Wait to play until the scene load (frame 1) has settled and one render frame has elapsed.
-            // Starting on the same frame as LoadFile races physics setup.
+        if (GetFrameCount() == 2 && play) {
+            // Wait until frame 1 has sized and rendered the loaded scene. Emitting on frame 1 would take its
+            // single-action buffer from SetExtent (reintroducing a black frame), and racing physics setup.
             action::Emit(action::timeline::StartPresentation{});
             play = false;
         }
@@ -802,7 +805,6 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, c
         // Surface and clear any failures action handlers reported this frame.
         if (auto &errors = r.ctx().get<action::Errors>().Messages; !errors.empty()) {
             for (const auto &message : errors) std::cerr << message << std::endl;
-            if (GetFrameCount() == 1) play = false; // Don't auto-play if the initial file failed to load.
             errors.clear();
         }
 
@@ -823,8 +825,8 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, c
         auto *draw_data = GetDrawData();
         if (const bool is_minimized = (draw_data->DisplaySize.x <= 0.0f || draw_data->DisplaySize.y <= 0.0f); !is_minimized) {
             WaitForRender(r); // ImGui samples final image
-            // Lazy-start recording once the viewport has rendered at least once (so FinalColorImage has a valid extent).
-            if (recording_mode && !IsRecording(r, viewport) && GetFrameCount() > 1) {
+            // Start recording on the first frame the viewport image is ready.
+            if (recording_mode && !IsRecording(r, viewport) && ViewportImageReady(r)) {
                 StartRecording(r, viewport, record_path, record_fps);
                 if (IsRecording(r, viewport)) next_capture_ns = SDL_GetTicksNS();
                 else done = true;
