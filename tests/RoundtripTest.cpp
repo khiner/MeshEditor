@@ -781,13 +781,13 @@ int main(int argc, const char **argv) {
         r.remove<PendingTextureUploads>(scene);
     };
 
-    // Round-trip each import through SaveState -> restore -> SaveState and byte-compare, catching state that
-    // doesn't reconstruct. restore_fx is the restore target. A SaveState that hits an unclassified component
-    // throws and surfaces as a ut failure with the message.
+    // Round-trip each import through SaveState -> restore -> SaveState, then:
+    // - byte-compare the SaveState image: covers mesh arenas and material buffer.
+    // - CompareRegistries: covers derived components the byte image omits.
     SceneFixture restore_fx{vk_resources};
     for (const auto &src : samples) {
         const auto sample_name = src.stem().string();
-        test("snapshot round trip (" + sample_name + ")") = [&] {
+        test("round trip (" + sample_name + ")") = [&] {
             ProcessComponentEvents(fx.R, fx.Viewport);
             clear_scene(fx.R, fx.Viewport);
             const auto load = gltf::LoadGltf(src, load_ctx(fx.R, fx.Viewport));
@@ -799,25 +799,9 @@ int main(int argc, const char **argv) {
             clear_scene(restore_fx.R, restore_fx.Viewport);
             snapshot::LoadState(restore_fx.R, before);
             ProcessComponentEvents(restore_fx.R, restore_fx.Viewport);
-            const auto diff = snapshot::Compare(before, snapshot::SaveState(restore_fx.R));
-            expect(diff.Equal) << "glTF-import round-trip diverged at byte" << diff.FirstDifferingByte;
-        };
-    }
 
-    // Assert fresh-load and restored registries match, including derived components the byte round-trip can't see.
-    for (const auto &src : samples) {
-        const auto sample_name = src.stem().string();
-        test("full-state restore (" + sample_name + ")") = [&] {
-            ProcessComponentEvents(fx.R, fx.Viewport);
-            clear_scene(fx.R, fx.Viewport);
-            const auto load = gltf::LoadGltf(src, load_ctx(fx.R, fx.Viewport));
-            if (!load) return;
-            ProcessComponentEvents(fx.R, fx.Viewport);
-            const auto before = snapshot::SaveState(fx.R);
-            ProcessComponentEvents(restore_fx.R, restore_fx.Viewport);
-            clear_scene(restore_fx.R, restore_fx.Viewport);
-            snapshot::LoadState(restore_fx.R, before);
-            ProcessComponentEvents(restore_fx.R, restore_fx.Viewport);
+            const auto diff = snapshot::Compare(before, snapshot::SaveState(restore_fx.R));
+            expect(diff.Equal) << "SaveState image diverged at byte" << diff.FirstDifferingByte;
             CompareRegistries(sample_name, fx.R, restore_fx.R);
         };
     }
