@@ -106,8 +106,11 @@ bool AdvanceAndRecord(entt::registry &r, entt::entity viewport, bool force_full)
 }
 } // namespace
 
-void SubmitViewport(entt::registry &r, entt::entity viewport) {
+void SubmitViewport(entt::registry &r, entt::entity viewport, vk::Fence viewport_consumer_fence) {
+    // Stash the consumer fence for the resize path to wait on before recreating resources. Cleared after so replay sees none.
+    r.ctx().get<ViewportConsumerFence>().Value = viewport_consumer_fence;
     const auto render_request = ProcessComponentEvents(r, viewport);
+    r.ctx().get<ViewportConsumerFence>().Value = vk::Fence{};
     if (render_request == RenderRequest::None) return;
 
     const auto extent = r.ctx().get<const Pipelines>().BuiltColorExtent();
@@ -338,7 +341,6 @@ void AddDefaultSceneContent(entt::registry &r) {
 
     ::AddLight(r, meshes, {.Name = "Light", .Transform = {.P = to_y_up_pos(LightLoc)}, .Select = MeshInstanceCreateInfo::SelectBehavior::None});
     ::AddCamera(r, meshes, {.Name = "Camera", .Transform = {.P = to_y_up_pos(CameraLoc), .R = to_y_up_rot * quat{CameraEulerXYZ}}, .Select = MeshInstanceCreateInfo::SelectBehavior::None}, Perspective{.FieldOfViewRad = yfov, .FarClip = 1000, .NearClip = DefaultPerspectiveNearClip});
-    BuildMissingWorldTransforms(r);
 }
 
 void ClearScene(entt::registry &r, entt::entity viewport) {

@@ -7,7 +7,6 @@
 #include "render/GpuBuffers.h"
 #include "render/Pipelines.h"
 #include "viewport/FrameState.h"
-#include "viewport/ViewportConsumerFence.h"
 #include "viewport/ViewportDisplay.h"
 #include "viewport/ViewportIcons.h"
 #include "viewport/ViewportOps.h"
@@ -63,13 +62,9 @@ void DeinitViewportMedia(entt::registry &r) {
     r.ctx().erase<FaustDSP>();
 }
 
-void RenderViewport(entt::registry &r, entt::entity viewport, vk::Fence viewport_consumer_fence) {
-    // Stash the live consumer fence so the resize path waits on it before recreating resources.
-    // Cleared below so replay sees no live consumer.
-    r.ctx().get<ViewportConsumerFence>().Value = viewport_consumer_fence;
+void DisplayViewport(entt::registry &r, entt::entity viewport) {
     auto &dl = *ImGui::GetWindowDrawList();
     dl.ChannelsSetCurrent(0);
-    SubmitViewport(r, viewport);
     // Recreate the ImGui texture when the final color image view changed (a resize swaps the image).
     auto &tex = r.ctx().get<ViewportTextureState>();
     if (const auto &pipelines = r.ctx().get<const Pipelines>(); pipelines.Main.Resources) {
@@ -84,8 +79,6 @@ void RenderViewport(entt::registry &r, entt::entity viewport, vk::Fence viewport
         const auto &t = *t_ptr;
         dl.AddImage(ImTextureID(VkDescriptorSet(t.DescriptorSet)), p, p + ImVec2{float(extent.x), float(extent.y)}, std::bit_cast<ImVec2>(t.Uv0), std::bit_cast<ImVec2>(t.Uv1));
     }
-
-    r.ctx().get<ViewportConsumerFence>().Value = vk::Fence{}; // No live consumer outside this call.
 
     dl.ChannelsSetCurrent(1);
     DrawOverlay(r, viewport, r.ctx().get<FrameState>());

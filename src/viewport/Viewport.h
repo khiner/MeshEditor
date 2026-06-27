@@ -15,8 +15,10 @@ void DeinitViewport(entt::registry &, entt::entity viewport);
 void InitViewportMedia(entt::registry &, CreateSvgResource &&);
 void DeinitViewportMedia(entt::registry &);
 
-// Engine entry point for RenderViewport (presentation): run ProcessComponentEvents, record, and submit the frame.
-void SubmitViewport(entt::registry &, entt::entity viewport);
+// Run ProcessComponentEvents, then record and submit the GPU render (nonblocking).
+// `viewport_consumer_fence`, if set, is waited on before old resources are destroyed on an extent change.
+// Call WaitForRender() before the ImGui frame samples the final image.
+void SubmitViewport(entt::registry &, entt::entity viewport, vk::Fence viewport_consumer_fence = {});
 
 // Reset all per-document viewport state to defaults, leaving the scene empty.
 void SetupScene(entt::registry &, entt::entity viewport);
@@ -24,10 +26,9 @@ void SetupScene(entt::registry &, entt::entity viewport);
 void AddDefaultSceneContent(entt::registry &);
 void ClearScene(entt::registry &, entt::entity viewport);
 
-// Submit GPU render (nonblocking), draw the final image into the current ImGui window, and draw overlays.
-// Call WaitForRender() before the ImGui frame samples the final image.
-// If provided, waits on `viewport_consumer_fence` before destroying old resources on extent change.
-void RenderViewport(entt::registry &, entt::entity viewport, vk::Fence viewport_consumer_fence = {});
+// Draw the recorded viewport image into the current ImGui window, then draw overlays.
+// Call after SubmitViewport, inside the viewport's Begin block.
+void DisplayViewport(entt::registry &, entt::entity viewport);
 // Wait for pending viewport render to complete. No-op if no render pending.
 void WaitForRender(entt::registry &);
 

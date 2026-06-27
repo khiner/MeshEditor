@@ -279,9 +279,8 @@ void NewProject(entt::registry &r, entt::entity viewport, const fs::path &replay
     // View-camera navigation isn't recorded, so replay must not disturb the live view. Restore it afterward.
     auto live_view_camera = r.get<ViewCamera>(viewport);
     ClearScene(r, viewport);
-    // The default scene content is the implicit replay baseline (a fresh app replays no actions). New->Empty
-    // skips building it live to avoid flashing it for a frame before the recorded Clear applies; replay still
-    // rebuilds the baseline and the logged Clear reconstructs the empty scene.
+    // Default content is the replay baseline.
+    // New->Empty skips building it live to avoid a one-frame flash before its recorded Clear applies.
     if (with_default_content) AddDefaultSceneContent(r);
     // Start the new session log before replaying so ReplayLog re-records the actions into it (otherwise the
     // replayed log is consumed and replaying "Current" again reloads the default scene).
@@ -439,6 +438,7 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, c
     InitViewportMedia(r, std::move(create_svg));
     SetupScene(r, viewport); // Before the first frame reads viewport state.
     AddDefaultSceneContent(r);
+    AdvanceViewport(r, viewport); // Prime derived state before the first frame reads it.
 
     struct AudioContext {
         entt::registry *R;
@@ -754,10 +754,13 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, c
             PopStyleVar();
         }
 
+        // Keep the viewport window open across the apply/derive/render below so the image draws back into it before End().
+        uvec2 new_logical_extent{};
+        bool viewport_open = false;
         if (windows.Viewport.Visible) {
             PushStyleVar(ImGuiStyleVar_WindowPadding, {0, 0});
-            uvec2 new_logical_extent{};
-            if (Begin(windows.Viewport.Name, &windows.Viewport.Visible)) {
+            viewport_open = Begin(windows.Viewport.Name, &windows.Viewport.Visible);
+            if (viewport_open) {
                 Interact(r, viewport, r.ctx().get<FrameState>());
                 auto &dl = *ImGui::GetWindowDrawList();
                 dl.ChannelsSplit(2);
@@ -765,37 +768,33 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, c
                 InteractOverlay(r, viewport, r.ctx().get<FrameState>());
                 const auto content_region = ImGui::GetContentRegionAvail();
                 new_logical_extent = {uint32_t(std::max(content_region.x, 0.f)), uint32_t(std::max(content_region.y, 0.f))};
-                // Submit GPU render (nonblocking). WaitForRender() is called later, before RenderFrame() samples the final image.
-                RenderViewport(r, viewport, GetFrameCount() > 1 ? vk::Fence{wd.Frames[wd.FrameIndex].Fence} : vk::Fence{});
-                dl.ChannelsMerge();
             }
-            End();
-            PopStyleVar();
+        }
 
-            if (GetFrameCount() == 1) {
-                // Replace the startup default scene with the initial file, now that the viewport has an extent.
-                // static const auto DefaultRealImpactPath = fs::path{"../../"} / "RealImpact" / "dataset" / "22_Cup" / "preprocessed";
-                // if (fs::exists(DefaultRealImpactPath)) action::io::Apply(r, viewport, action::io::LoadRealImpact{.Directory = DefaultRealImpactPath});
-                if (initial_file) {
-                    ClearScene(r, viewport);
-                    LoadFile(r, fs::path(initial_file)); // Errors (and the play gate) are handled after ApplyEmitted.
-                }
-            } else if (GetFrameCount() == 3 && play) {
-                // Wait to play until scene load (frame 1) has settled and one render frame has elapsed.
-                // Starting on the same frame as LoadFile races physics setup.
-                action::Emit(action::timeline::StartPresentation{});
-                play = false;
+        // Remaining emits go after Interact so Interact wins the single-action buffer.
+        if (GetFrameCount() == 1) {
+            // Replace the startup default scene with the initial file, now that the viewport has an extent.
+            // static const auto DefaultRealImpactPath = fs::path{"../../"} / "RealImpact" / "dataset" / "22_Cup" / "preprocessed";
+            // if (fs::exists(DefaultRealImpactPath)) action::io::Apply(r, viewport, action::io::LoadRealImpact{.Directory = DefaultRealImpactPath});
+            if (initial_file) {
+                ClearScene(r, viewport);
+                LoadFile(r, fs::path(initial_file)); // Errors (and the play gate) are handled after ApplyEmitted.
             }
-            // Record viewport resizes so replay restores the same render extent.
-            // A resize drag spans many frames: stage it and commit on mouse-up so the drag records a single SetExtent.
-            // Staged after the frame's other emits so those win the single-action buffer.
-            if (new_logical_extent != uvec2{} && r.ctx().get<const ViewportExtent>().Value != new_logical_extent) {
-                action::EmitStaged(action::view::SetExtent{new_logical_extent});
-                viewport_resizing = true;
-            } else if (viewport_resizing && !IsMouseDown(ImGuiMouseButton_Left)) {
-                action::Commit(); // Drag finished: flush the gesture's final staged SetExtent.
-                viewport_resizing = false;
-            }
+        } else if (GetFrameCount() == 2 && play) {
+            // Wait to play until the scene load (frame 1) has settled and one render frame has elapsed.
+            // Starting on the same frame as LoadFile races physics setup.
+            action::Emit(action::timeline::StartPresentation{});
+            play = false;
+        }
+        // Record viewport resizes so replay restores the same render extent.
+        // A resize drag spans many frames: stage it and commit on mouse-up so the drag records a single SetExtent.
+        // Staged after the frame's other emits so those win the single-action buffer.
+        if (new_logical_extent != uvec2{} && r.ctx().get<const ViewportExtent>().Value != new_logical_extent) {
+            action::EmitStaged(action::view::SetExtent{new_logical_extent});
+            viewport_resizing = true;
+        } else if (viewport_resizing && !IsMouseDown(ImGuiMouseButton_Left)) {
+            action::Commit(); // Drag finished: flush the gesture's final staged SetExtent.
+            viewport_resizing = false;
         }
 
         action::ApplyEmitted(r, viewport);
@@ -805,6 +804,19 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, c
             for (const auto &message : errors) std::cerr << message << std::endl;
             if (GetFrameCount() == 1) play = false; // Don't auto-play if the initial file failed to load.
             errors.clear();
+        }
+
+        // Derive this frame's applied actions and submit the GPU render (nonblocking). WaitForRender() runs later, before RenderFrame() samples the image.
+        SubmitViewport(r, viewport, GetFrameCount() > 1 ? vk::Fence{wd.Frames[wd.FrameIndex].Fence} : vk::Fence{});
+
+        if (viewport_open) {
+            // Draw the rendered image and overlays into the open viewport window.
+            DisplayViewport(r, viewport);
+            ImGui::GetWindowDrawList()->ChannelsMerge();
+        }
+        if (windows.Viewport.Visible) {
+            End();
+            PopStyleVar();
         }
 
         ImGui::Render();
