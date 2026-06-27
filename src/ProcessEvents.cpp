@@ -934,8 +934,10 @@ RenderRequest ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
     // so each pending selection carries the view-projection it was recorded with: stamp it for the resolve.
     // No restore needed - the UBO ends the frame live regardless: a view change re-fills it at the rebuild below
     // (which runs after selection), and if the view didn't change the captured view already equals the live one.
-    const auto stamp_view_proj = [&buffers](const mat4 &view_proj) {
+    // Stamping a recorded view invalidates the selection buffer, so mark it stale to force a re-render against it.
+    const auto stamp_view_proj = [&r, &buffers](const mat4 &view_proj) {
         buffers.SceneViewUBO.Update(as_bytes(view_proj), offsetof(SceneViewUBO, ViewProj));
+        r.ctx().get<DrawState>().SelectionStale = true;
     };
     if (const auto *pending = r.try_get<const PendingEditElementClick>(viewport)) {
         const auto mouse_px = pending->MousePx;
