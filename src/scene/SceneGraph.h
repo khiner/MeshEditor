@@ -44,3 +44,9 @@ struct Children {
 
 mat4 GetParentDelta(const entt::registry &, entt::entity);
 entt::entity GetParentEntity(const entt::registry &, entt::entity);
+
+// Build WorldTransform for `e`, and any ancestor still missing one, from local Transforms.
+void EnsureWorldTransform(entt::registry &, entt::entity);
+
+// Build WorldTransform for any entity that has none yet.
+void BuildMissingWorldTransforms(entt::registry &);

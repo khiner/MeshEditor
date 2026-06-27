@@ -81,7 +81,6 @@ entt::entity AddMeshInstance(entt::registry &r, entt::entity mesh_entity, MeshIn
     r.emplace<Instance>(e, mesh_entity);
     r.emplace<ObjectKind>(e, ObjectType::Mesh);
     r.emplace<Transform>(e, info.Transform);
-    r.emplace<WorldTransform>(e, info.Transform);
     r.emplace<Name>(e, CreateName(r, info.Name));
     Show(r, e);
     if (!info.Visible) Hide(r, e);
@@ -114,7 +113,6 @@ entt::entity CreateExtrasObject(entt::registry &r, ObjectType type, ObjectCreate
     r.emplace<ObjectKind>(e, type);
     r.emplace<Instance>(e, buffer_entity);
     r.emplace<Transform>(e, info.Transform);
-    r.emplace<WorldTransform>(e, info.Transform);
     r.emplace<Name>(e, CreateName(r, info.Name.empty() ? default_name : info.Name));
     Show(r, e);
     ApplySelectBehavior(r, e, info.Select);
@@ -141,7 +139,6 @@ entt::entity CreateBoneEntity(entt::registry &r, entt::entity arm_obj_entity, co
     r.emplace<BoneDisplayScale>(bone_entity, ComputeBoneDisplayScale(armature, bone_index));
     const Transform bone_transform{bone.RestLocal.P, bone.RestLocal.R, vec3{1}};
     r.emplace<Transform>(bone_entity, bone_transform);
-    r.emplace<WorldTransform>(bone_entity, bone_transform);
     SetParent(r, bone_entity, parent_entity);
     Show(r, bone_entity);
     return bone_entity;

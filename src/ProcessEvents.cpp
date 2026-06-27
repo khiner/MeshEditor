@@ -798,6 +798,8 @@ RenderRequest ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
     auto render_request = RenderRequest::None;
     auto request = [&render_request](RenderRequest req) { render_request = std::max(render_request, req); };
 
+    BuildMissingWorldTransforms(r);
+
     // Resize render resources before the pick handlers below resolve against the rendered scene.
     const bool resized = SyncViewportRenderResources(r, viewport);
     if (resized) request(RenderRequest::ReRecord);
@@ -1707,16 +1709,7 @@ RenderRequest ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
                     if (!has_dirty) continue;
                 }
 
-                // WorldTransform is derived and may not be rebuilt yet (e.g. just after a snapshot restore),
-                // so compose the armature object's world transform on demand from its parent chain.
-                const auto world_matrix = [&](this const auto &self, entt::entity e) -> mat4 {
-                    if (const auto *wt = r.try_get<const WorldTransform>(e)) return ToMatrix(*wt);
-                    const auto *t = r.try_get<const Transform>(e);
-                    const mat4 local = t ? ToMatrix(*t) : I4;
-                    const auto *node = r.try_get<const SceneNode>(e);
-                    return node && node->Parent != entt::null ? self(node->Parent) * r.get<const ParentInverse>(e).M * local : local;
-                };
-                const mat4 armature_world_inv = has_any_constraint ? glm::inverse(world_matrix(arm_obj_entity)) : I4;
+                const mat4 armature_world_inv = has_any_constraint ? glm::inverse(ToMatrix(r.get<const WorldTransform>(arm_obj_entity))) : I4;
 
                 bool need_sync = has_any_constraint || pose_state_created;
                 bool rest_pose_edited = false;
@@ -1826,36 +1819,37 @@ RenderRequest ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
                 }
             }
         }
-        // Recompute WorldTransform for all entities with changed local transforms or parenting.
-        // Runs after bone sync so bone Transform patches are included in a single pass.
+        // Recompute WorldTransform for entities whose local pose or parenting changed, and the descendants they drive.
         if (const auto &dirty = reactive<changes::TransformDirty>(r); !dirty.empty()) {
-            const auto update_wt = [&](this const auto &self, entt::entity e, bool propagate) -> void {
-                const auto *node = r.try_get<SceneNode>(e);
+            const bool bone_edit = is_edit_mode && FindArmatureObject(r, FindActiveEntity(r)) != entt::null;
+            std::unordered_set<entt::entity> recompute;
+            const auto collect = [&](this const auto &self, entt::entity e, bool propagate) -> void {
+                if (!recompute.insert(e).second) return;
+                if (propagate)
+                    for (const auto child : Children{&r, e}) self(child, true);
+            };
+            for (const auto e : dirty) {
+                if (r.valid(e)) collect(e, !(bone_edit && r.all_of<StartTransform>(e)));
+            }
+
+            std::unordered_set<entt::entity> done;
+            const auto compute = [&](this const auto &self, entt::entity e) -> void {
+                if (!done.insert(e).second) return;
+                const auto *node = r.try_get<const SceneNode>(e);
+                if (node && node->Parent != entt::null && (recompute.contains(node->Parent) || !r.all_of<WorldTransform>(node->Parent))) {
+                    self(node->Parent); // parent must be current before GetParentDelta reads it
+                }
                 const auto *posed = r.try_get<const PosedLocal>(e); // animated node: compose world from the pose
                 const Transform &t = posed ? static_cast<const Transform &>(*posed) : r.get<const Transform>(e);
-                if (node && node->Parent != entt::null) {
-                    if (!r.all_of<WorldTransform>(node->Parent)) self(node->Parent, false); // GetParentDelta reads the parent's WorldTransform
-                    r.emplace_or_replace<WorldTransform>(e, ToTransform(GetParentDelta(r, e) * ToMatrix(t)));
-                } else {
-                    r.emplace_or_replace<WorldTransform>(e, t);
-                }
-                if (propagate) {
-                    for (const auto child : Children{&r, e}) self(child, true);
-                }
+                if (node && node->Parent != entt::null) r.emplace_or_replace<WorldTransform>(e, ToTransform(GetParentDelta(r, e) * ToMatrix(t)));
+                else r.emplace_or_replace<WorldTransform>(e, t);
             };
-            const bool bone_edit = is_edit_mode && FindArmatureObject(r, FindActiveEntity(r)) != entt::null;
-            for (auto e : dirty) {
-                // WorldTransform is derived. Recompute it for every entity with a changed local pose, including freshly
-                // created ones whose eager WorldTransform still holds the rest-pose Transform, not the evaluated PosedLocal.
-                // TODO derive it purely here: drop the imperative emplaces, compute each entity once, parent-first.
-                if (r.valid(e)) update_wt(e, !(bone_edit && r.all_of<StartTransform>(e)));
-            }
+            for (const auto e : recompute) compute(e);
         }
         UpdateWireframeTransforms(r); // Needs updated WorldTransforms
-
-        // Batch WorldTransform writes: collect all (BufferIndex, WorldTransform) pairs,
-        // sort by BufferIndex for cache-friendly access, then write via single GetMutableRange.
         {
+            // Batch WorldTransform writes: collect all (BufferIndex, WorldTransform) pairs,
+            // sort by BufferIndex for cache-friendly access, then write via single GetMutableRange.
             const auto &wt_reactive = reactive<changes::WorldTransform>(r);
             struct WtWrite {
                 uint32_t index;

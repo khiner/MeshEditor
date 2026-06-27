@@ -77,14 +77,26 @@ void LinkChildToParent(entt::registry &r, entt::entity child, entt::entity paren
 }
 } // namespace
 
+void EnsureWorldTransform(entt::registry &r, entt::entity e) {
+    if (r.all_of<WorldTransform>(e)) return;
+    const auto *t = r.try_get<const Transform>(e);
+    if (!t) return;
+    if (const auto *node = r.try_get<const SceneNode>(e); node && node->Parent != entt::null) EnsureWorldTransform(r, node->Parent);
+    r.emplace<WorldTransform>(e, ToTransform(GetParentDelta(r, e) * ToMatrix(*t)));
+}
+
 void UpdateWorldTransformRecursive(entt::registry &r, entt::entity e) {
     const auto *t = r.try_get<const Transform>(e);
     if (!t) return;
-
-    const auto *node = r.try_get<const SceneNode>(e);
-    const auto world = node && node->Parent != entt::null ? ToTransform(ToMatrix(r.get<const WorldTransform>(node->Parent)) * r.get<const ParentInverse>(e).M * ToMatrix(*t)) : *t;
-    r.emplace_or_replace<WorldTransform>(e, world);
+    if (const auto *node = r.try_get<const SceneNode>(e); node && node->Parent != entt::null) EnsureWorldTransform(r, node->Parent);
+    r.emplace_or_replace<WorldTransform>(e, ToTransform(GetParentDelta(r, e) * ToMatrix(*t)));
     for (const auto child : Children{&r, e}) UpdateWorldTransformRecursive(r, child);
+}
+
+void BuildMissingWorldTransforms(entt::registry &r) {
+    std::vector<entt::entity> missing;
+    for (const auto e : r.view<const Transform>(entt::exclude<WorldTransform>)) missing.push_back(e);
+    for (const auto e : missing) EnsureWorldTransform(r, e);
 }
 
 void SetParent(entt::registry &r, entt::entity child, entt::entity parent) {
@@ -96,7 +108,9 @@ void SetParent(entt::registry &r, entt::entity child, entt::entity parent) {
 
 void SetParentKeepWorld(entt::registry &r, entt::entity child, entt::entity parent) {
     if (child == entt::null || parent == entt::null || child == parent) return;
-    const auto child_world = r.all_of<WorldTransform>(child) ? ToMatrix(r.get<const WorldTransform>(child)) : I4;
+    EnsureWorldTransform(r, child);
+    EnsureWorldTransform(r, parent);
+    const auto child_world = ToMatrix(r.get<const WorldTransform>(child));
     const auto parent_world_inv = glm::inverse(ToMatrix(r.get<const WorldTransform>(parent)));
     LinkChildToParent(r, child, parent);
     r.emplace<ParentInverse>(child, I4);

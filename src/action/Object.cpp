@@ -47,7 +47,6 @@ entt::entity DuplicateOne(entt::registry &r, entt::entity e, bool &was_mesh_dupl
             r.emplace<ObjectKind>(copy_entity, ObjectType::Armature);
             r.emplace<ArmatureObject>(copy_entity, data_entity);
             r.emplace<Transform>(copy_entity, create_info.Transform);
-            r.emplace<WorldTransform>(copy_entity, create_info.Transform);
             r.emplace<Name>(copy_entity, ::CreateName(r, create_info.Name.empty() ? "Armature" : create_info.Name));
             ::ApplySelectBehavior(r, copy_entity, create_info.Select);
             ::CreateBoneInstances(r, meshes, copy_entity, data_entity);
@@ -97,8 +96,6 @@ entt::entity DuplicateLinkedOne(entt::registry &r, entt::entity e) {
             r.emplace<ArmatureObject>(e_new, armature->Entity);
             const Transform t{r.get<const WorldTransform>(e)};
             r.emplace_or_replace<Transform>(e_new, t);
-            r.emplace<WorldTransform>(e_new, t);
-
             ::ApplySelectBehavior(r, e_new, select_behavior);
             ::CreateBoneInstances(r, meshes, e_new, armature->Entity);
             return e_new;
@@ -119,7 +116,6 @@ entt::entity DuplicateLinkedOne(entt::registry &r, entt::entity e) {
     r.emplace<ObjectKind>(e_new, ObjectType::Mesh);
     const Transform t_new{r.get<const WorldTransform>(e)};
     r.emplace_or_replace<Transform>(e_new, t_new);
-    r.emplace<WorldTransform>(e_new, t_new);
     Show(r, e_new);
     if (const auto *armature_modifier = r.try_get<ArmatureModifier>(e)) r.emplace<ArmatureModifier>(e_new, *armature_modifier);
     if (const auto *bone_attachment = r.try_get<BoneAttachment>(e)) r.emplace<BoneAttachment>(e_new, *bone_attachment);
@@ -236,7 +232,6 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
                 r.emplace<ObjectKind>(entity, ObjectType::Armature);
                 r.emplace<ArmatureObject>(entity, data_entity);
                 r.emplace<Transform>(entity, info.Transform);
-                r.emplace<WorldTransform>(entity, info.Transform);
                 r.emplace<Name>(entity, ::CreateName(r, info.Name.empty() ? "Armature" : info.Name));
                 ::ApplySelectBehavior(r, entity, info.Select);
                 ::CreateBoneInstances(r, meshes, entity, data_entity);

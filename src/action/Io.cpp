@@ -13,7 +13,6 @@
 #include "object/ObjectOps.h"
 #include "render/GpuBufferOps.h"
 #include "scene/Defaults.h"
-#include "scene/WorldTransform.h"
 #include "viewport/Viewport.h"
 #include "viewport/ViewportEvents.h"
 #include "viewport/ViewportOps.h"
@@ -43,12 +42,8 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
                     return;
                 }
 
-                if (result->FirstCameraObject != entt::null) {
-                    const auto camera_entity = result->FirstCameraObject;
-                    SetLookThrough(r, viewport, camera_entity);
-                    const auto &wt = r.get<WorldTransform>(camera_entity);
-                    r.replace<ViewCamera>(viewport, ViewCamera{wt.P, wt.R, r.get<Camera>(camera_entity)});
-                }
+                // ProcessComponentEvents snaps ViewCamera to the looked-through camera once its WorldTransform is built.
+                if (result->FirstCameraObject != entt::null) SetLookThrough(r, viewport, result->FirstCameraObject);
                 if (result->ImportedAnimation) {
                     JumpToStartFrame(r, viewport);
                     r.get<LastEvaluatedFrame>(viewport).Value = -1;

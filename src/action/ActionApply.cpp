@@ -3,6 +3,7 @@
 #include "action/Log.h"
 #include "action/LogSerialize.h"
 #include "animation/AnimationTimeline.h"
+#include "scene/SceneGraph.h"
 
 #include <entt/entity/registry.hpp>
 
@@ -94,6 +95,7 @@ void ApplyEmitted(entt::registry &r, entt::entity viewport) {
                 r.clear<DragFieldStart>();
                 break;
         }
+        BuildMissingWorldTransforms(r);
     }
     if (drained.CommitRequested) {
         CommitHeld();

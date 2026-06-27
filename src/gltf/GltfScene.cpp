@@ -2475,7 +2475,6 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
         r.emplace<ArmatureObject>(armature_entity, armature_data_entity);
         const auto t = ToTransform(traversal.WorldTransforms[*anchor_node_index]);
         r.emplace<Transform>(armature_entity, t);
-        r.emplace<WorldTransform>(armature_entity, t);
         r.emplace<Name>(armature_entity, ::CreateName(r, skin_name.empty() ? std::format("{}_Armature{}", name_prefix, skin_index) : skin_name));
         if (skin_name.empty()) r.emplace<SourceEmptyName>(armature_entity);
         else r.emplace<SkinName>(armature_entity, skin_name);
@@ -2538,6 +2537,7 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
                 if (!bone.JointNodeIndex) continue;
                 const auto target = find_physics_ancestor_entity(*bone.JointNodeIndex);
                 if (target == entt::null) continue;
+                EnsureWorldTransform(r, target);
                 r.emplace<BoneConstraints>(
                     arm_obj.BoneEntities[i],
                     BoneConstraints{
@@ -4049,6 +4049,19 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         }
     }
 
+    // Pose-independent world transform: bones use their rest pose (RestLocal), everything else its authored
+    // Transform. Keeps the flattened-bone export below stable regardless of the current animation frame.
+    std::unordered_map<entt::entity, mat4> rest_world;
+    const auto rest_world_of = [&](this const auto &self, entt::entity e) -> mat4 {
+        if (const auto it = rest_world.find(e); it != rest_world.end()) return it->second;
+        const auto bit = bone_rest.find(e);
+        const mat4 local = ToMatrix(bit != bone_rest.end() ? bit->second : r.get<const Transform>(e));
+        const auto *node = r.try_get<const SceneNode>(e);
+        const mat4 world = node && node->Parent != entt::null ? self(node->Parent) * r.get<const ParentInverse>(e).M * local : local;
+        rest_world.emplace(e, world);
+        return world;
+    };
+
     // Nodes — each fastgltf::Node is emitted directly from per-entity registry components,
     // no parallel staging struct. `entity == null` slots fall through with default fields
     // (gaps in the source SourceNodeIndex sequence).
@@ -4122,8 +4135,8 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         const auto &world_transform = r.get<const WorldTransform>(entity);
 
         // Bones with non-joint source ancestors are flattened on import (EnTT parent is the previous joint/armature),
-        // but the emitted node tree keeps them via SourceParentNodeIndex.
-        // When the source parent differs from the EnTT parent, derive the local from world transforms.
+        // but the emitted node tree keeps them via SourceParentNodeIndex. When the source parent differs from the
+        // EnTT parent, derive the local from rest-world transforms so it doesn't drift with the animation frame.
         const Transform local_transform = [&] {
             if (r.all_of<ArmatureModifier>(entity)) return Transform{}; // Skinned mesh node transform is spec-ignored.
             const auto *spi = r.try_get<const SourceParentNodeIndex>(entity);
@@ -4131,9 +4144,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             if (const auto pit = spi ? source_to_dense.find(spi->Value) : source_to_dense.end(); pit != source_to_dense.end()) {
                 const auto src_parent = node_to_entity[pit->second];
                 if (src_parent != entt::null && (!node || node->Parent != src_parent)) {
-                    if (const auto *parent_wt = r.try_get<const WorldTransform>(src_parent)) {
-                        return ToTransform(glm::inverse(ToMatrix(*parent_wt)) * ToMatrix(world_transform));
-                    }
+                    return ToTransform(glm::inverse(rest_world_of(src_parent)) * rest_world_of(entity));
                 }
             }
             if (const auto it = bone_rest.find(entity); it != bone_rest.end()) return it->second;

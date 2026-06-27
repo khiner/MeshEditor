@@ -749,6 +749,7 @@ int main(int argc, const char **argv) {
 
             const auto load = gltf::LoadGltf(src, load_ctx(fx.R, fx.Viewport));
             if (!load) return; // Loader limitation on source (e.g., unsupported extension); not a roundtrip concern.
+            ProcessComponentEvents(fx.R, fx.Viewport); // mirror prod: a frame runs (posing skinned models) before save
 
             const auto out_path = tmp_root / (sample_name + ".gltf");
             const auto save = gltf::SaveGltf(out_path, save_ctx(fx.R, fx.Viewport));
