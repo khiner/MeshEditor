@@ -625,7 +625,7 @@ void CompareRegistries(std::string_view name, entt::registry &a, entt::registry 
 int main(int argc, const char **argv) {
     using namespace boost::ut;
 
-    // Optional test-name filter, e.g. `MeshEditorTests "round trip (BoxTextured)"`.
+    // Optional test-name filter, e.g. `MeshEditorTests BoxTextured`.
     if (argc > 1) cfg<override> = {.filter = argv[1]};
 
     // res/ and shaders/ are symlinked into the CMake build dir. InitEngine compiles shaders and loads LUTs from there.
@@ -739,7 +739,12 @@ int main(int argc, const char **argv) {
         r.ctx().get<GpuBuffers>().Ctx.ReclaimRetiredBuffers();
     };
 
+    // Each sample is loaded once, then checked two ways:
+    // - gltf JSON round-trip: SaveGltf -> CompareGltfJson against source.
+    // - snapshot round-trip: SaveState -> restore -> SaveState again, byte-compared, plus
+    //   CompareRegistries for derived components the byte image omits.
     SceneFixture fx{vk_resources};
+    SceneFixture restore_fx{vk_resources};
     for (const auto &src : samples) {
         const auto sample_name = src.stem().string();
 
@@ -748,16 +753,26 @@ int main(int argc, const char **argv) {
             clear_scene(fx.R, fx.Viewport);
 
             const auto load = gltf::LoadGltf(src, load_ctx(fx.R, fx.Viewport));
-            if (!load) return; // Loader limitation on source (e.g., unsupported extension); not a roundtrip concern.
+            if (!load) return; // Loader limitation on source (e.g., unsupported extension); skips both round-trips.
             ProcessComponentEvents(fx.R, fx.Viewport); // mirror prod: a frame runs (posing skinned models) before save
 
             const auto out_path = tmp_root / (sample_name + ".gltf");
             const auto save = gltf::SaveGltf(out_path, save_ctx(fx.R, fx.Viewport));
             expect(save.has_value()) << "SaveGltf failed: " << (save ? "" : save.error());
-            if (!save) return;
+            if (save) {
+                const auto unexpected = CompareGltfJson(src, out_path, sample_name);
+                expect(unexpected == 0) << unexpected << " unexpected JSON diff(s)";
+            }
 
-            const auto unexpected = CompareGltfJson(src, out_path, sample_name);
-            expect(unexpected == 0) << unexpected << " unexpected JSON diff(s)";
+            const auto before = snapshot::SaveState(fx.R);
+            ProcessComponentEvents(restore_fx.R, restore_fx.Viewport);
+            clear_scene(restore_fx.R, restore_fx.Viewport);
+            snapshot::LoadState(restore_fx.R, before);
+            ProcessComponentEvents(restore_fx.R, restore_fx.Viewport);
+
+            const auto diff = snapshot::Compare(before, snapshot::SaveState(restore_fx.R));
+            expect(diff.Equal) << "SaveState image diverged at byte" << diff.FirstDifferingByte;
+            CompareRegistries(sample_name, fx.R, restore_fx.R);
         };
     }
 
@@ -781,31 +796,6 @@ int main(int argc, const char **argv) {
         SubmitTextureUploadBatch(batch, vk_resources.Queue, *fence, vk_resources.Device);
         r.remove<PendingTextureUploads>(scene);
     };
-
-    // Round-trip each import through SaveState -> restore -> SaveState, then:
-    // - byte-compare the SaveState image: covers mesh arenas and material buffer.
-    // - CompareRegistries: covers derived components the byte image omits.
-    SceneFixture restore_fx{vk_resources};
-    for (const auto &src : samples) {
-        const auto sample_name = src.stem().string();
-        test("round trip (" + sample_name + ")") = [&] {
-            ProcessComponentEvents(fx.R, fx.Viewport);
-            clear_scene(fx.R, fx.Viewport);
-            const auto load = gltf::LoadGltf(src, load_ctx(fx.R, fx.Viewport));
-            if (!load) return; // Loader limitation on source (e.g., unsupported extension); not a snapshot concern.
-
-            ProcessComponentEvents(fx.R, fx.Viewport);
-            const auto before = snapshot::SaveState(fx.R);
-            ProcessComponentEvents(restore_fx.R, restore_fx.Viewport);
-            clear_scene(restore_fx.R, restore_fx.Viewport);
-            snapshot::LoadState(restore_fx.R, before);
-            ProcessComponentEvents(restore_fx.R, restore_fx.Viewport);
-
-            const auto diff = snapshot::Compare(before, snapshot::SaveState(restore_fx.R));
-            expect(diff.Equal) << "SaveState image diverged at byte" << diff.FirstDifferingByte;
-            CompareRegistries(sample_name, fx.R, restore_fx.R);
-        };
-    }
 
     const auto edit_root = tmp_root / "edits";
     fs::create_directories(edit_root);
