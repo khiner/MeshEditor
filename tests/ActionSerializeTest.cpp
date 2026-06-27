@@ -41,8 +41,11 @@ void EnsureSerializable(Action &a) {
 std::stringstream MakeStream() { return std::stringstream{std::ios::in | std::ios::out | std::ios::binary}; }
 } // namespace
 
-int main() {
+int main(int argc, const char **argv) {
     using namespace boost::ut;
+
+    // Optional test-name filter, e.g. `MeshEditorActionSerializeTest "every action*"`.
+    if (argc > 1) cfg<override> = {.filter = argv[1]};
 
     "every action round-trips through the log"_test = [] {
         for (size_t i = 0; i < std::variant_size_v<Action>; ++i) {

@@ -622,8 +622,11 @@ void CompareRegistries(std::string_view name, entt::registry &a, entt::registry 
 }
 } // namespace
 
-int main() {
+int main(int argc, const char **argv) {
     using namespace boost::ut;
+
+    // Optional test-name filter, e.g. `MeshEditorTests "round trip (BoxTextured)"`.
+    if (argc > 1) cfg<override> = {.filter = argv[1]};
 
     // res/ and shaders/ are symlinked into the CMake build dir. InitEngine compiles shaders and loads LUTs from there.
     Paths::Init(MESHEDITOR_BUILD_DIR);
