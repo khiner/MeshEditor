@@ -104,6 +104,7 @@ void ApplyEmitted(entt::registry &r, entt::entity viewport) {
 bool ReplayLog(entt::registry &r, entt::entity viewport, const std::filesystem::path &replay_path, ReplayTick tick) {
     std::ifstream in{replay_path, std::ios::binary};
     if (!in) return false;
+
     tick(r, viewport);
     StreamActions(in, [&](Action &&a) {
         // Re-record each replayed action so the new session log reconstructs this scene.

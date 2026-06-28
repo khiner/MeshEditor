@@ -285,6 +285,8 @@ void NewProject(entt::registry &r, entt::entity viewport, const fs::path &replay
         r.ctx().get<ViewportExtent>().Value = live_extent;
         SetViewCameraState(r, viewport, std::move(live_view_cameras));
         PresentViewport(r, viewport);
+    } else {
+        AdvanceViewport(r, viewport);
     }
 }
 
