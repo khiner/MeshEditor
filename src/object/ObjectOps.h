@@ -33,7 +33,7 @@ entt::entity AddCamera(entt::registry &, MeshStore &, ObjectCreateInfo = {}, std
 entt::entity AddLight(entt::registry &, MeshStore &, ObjectCreateInfo = {}, std::optional<PunctualLight> = {});
 
 // Loads a mesh file (with its materials/textures) and creates the mesh + instance entities.
-std::pair<entt::entity, entt::entity> ImportMesh(entt::registry &, const std::filesystem::path &, MeshInstanceCreateInfo);
+std::pair<entt::entity, entt::entity> ImportMesh(entt::registry &, const std::filesystem::path &, MeshInstanceCreateInfo, bool deduplicate = false);
 
 // Object teardown (counterpart to the Add* creators above).
 void Destroy(entt::registry &, entt::entity viewport, entt::entity);

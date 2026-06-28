@@ -307,13 +307,8 @@ std::pair<MeshData, MeshVertexAttributes> DeduplicateVertices(MeshData &&mesh, M
     // which breaks texture mapping and shading.
     // However, this breaks RealImpact/excitation behavior.
     // const bool has_vertex_channels =
-    //     attrs.Normals.has_value() ||
-    //     attrs.Tangents.has_value() ||
-    //     attrs.Colors0.has_value() ||
-    //     attrs.TexCoords0.has_value() ||
-    //     attrs.TexCoords1.has_value() ||
-    //     attrs.TexCoords2.has_value() ||
-    //     attrs.TexCoords3.has_value();
+    //     attrs.Normals.has_value() || attrs.Tangents.has_value() || attrs.Colors0.has_value() ||
+    //     attrs.TexCoords0.has_value() || attrs.TexCoords1.has_value() || attrs.TexCoords2.has_value() || attrs.TexCoords3.has_value();
     // if (has_vertex_channels) return {std::move(mesh), std::move(attrs)};
 
     struct VertexHash {
@@ -779,7 +774,7 @@ CreatedMesh MeshStore::CloneMesh(const Mesh &mesh) {
     return {id, std::move(conn)};
 }
 
-std::expected<MeshWithMaterials, std::string> MeshStore::LoadMesh(const std::filesystem::path &path) {
+std::expected<MeshWithMaterials, std::string> MeshStore::LoadMesh(const std::filesystem::path &path, bool deduplicate) {
     auto ext = path.extension().string();
     std::ranges::transform(ext, ext.begin(), [](unsigned char c) { return std::tolower(c); });
     MeshDataWithMaterials source;
@@ -790,7 +785,7 @@ std::expected<MeshWithMaterials, std::string> MeshStore::LoadMesh(const std::fil
     } catch (const std::exception &e) {
         return std::unexpected{e.what()};
     }
-    auto [mesh, attrs] = DeduplicateVertices(std::move(source.Mesh), std::move(source.Attrs));
+    auto [mesh, attrs] = deduplicate ? DeduplicateVertices(std::move(source.Mesh), std::move(source.Attrs)) : std::pair{std::move(source.Mesh), std::move(source.Attrs)};
     return MeshWithMaterials{
         .Mesh = CreateMesh(std::move(mesh), std::move(attrs), std::move(source.Primitives)),
         .Materials = std::move(source.Materials),

@@ -42,7 +42,6 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
                     return;
                 }
 
-                // ProcessComponentEvents snaps ViewCamera to the looked-through camera once its WorldTransform is built.
                 if (result->FirstCameraObject != entt::null) SetLookThrough(r, viewport, result->FirstCameraObject);
                 if (result->ImportedAnimation) {
                     JumpToStartFrame(r, viewport);
@@ -63,7 +62,8 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
                 const auto [mesh_entity, instance_entity] = ImportMesh(
                     r,
                     directory / "transformed.obj",
-                    MeshInstanceCreateInfo{.Name = std::move(*object_name), .Transform = {.R = RealImpact::ObjectRotationToYUp}}
+                    MeshInstanceCreateInfo{.Name = std::move(*object_name), .Transform = {.R = RealImpact::ObjectRotationToYUp}},
+                    true // Deduplicate vertices by position
                 );
 
                 // Ignore the npy file's vertex indices: deduplication may have invalidated them. Look up by position instead.

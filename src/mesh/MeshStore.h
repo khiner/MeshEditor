@@ -80,7 +80,8 @@ struct MeshStore {
     CreatedMesh CreateMesh(MeshData &&, MeshVertexAttributes &&, MeshPrimitives &&, std::optional<ArmatureDeformData> = {}, std::optional<MorphTargetData> = {});
     CreatedMesh CloneMesh(const Mesh &);
 
-    std::expected<MeshWithMaterials, std::string> LoadMesh(const std::filesystem::path &);
+    // `deduplicate` merges coincident-position vertices, discarding per-corner split normals/UVs.
+    std::expected<MeshWithMaterials, std::string> LoadMesh(const std::filesystem::path &, bool deduplicate = false);
 
     // Allocate vertex-only store entry (no topology, no face/edge/primitive/material buffers).
     // Returns {storeId, vertexRange}. Release via Release(storeId).

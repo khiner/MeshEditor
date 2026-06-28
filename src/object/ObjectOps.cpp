@@ -333,12 +333,9 @@ void ClearMeshes(entt::registry &r, entt::entity viewport) {
     for (const auto e : r.view<Instance>(entt::exclude<SubElementOf>) | to<std::vector>()) Destroy(r, viewport, e);
 }
 
-std::pair<entt::entity, entt::entity> ImportMesh(
-    entt::registry &r,
-    const std::filesystem::path &path, MeshInstanceCreateInfo info
-) {
+std::pair<entt::entity, entt::entity> ImportMesh(entt::registry &r, const std::filesystem::path &path, MeshInstanceCreateInfo info, bool deduplicate) {
     auto &meshes = r.ctx().get<MeshStore>();
-    auto result = meshes.LoadMesh(path);
+    auto result = meshes.LoadMesh(path, deduplicate);
     if (!result) throw std::runtime_error(result.error());
 
     if (!result->Materials.empty()) ImportObjPlyMaterials(r, result->Materials, path, result->Mesh.StoreId);
