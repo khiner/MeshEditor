@@ -169,8 +169,7 @@ void RecordRenderCommandBuffer(entt::registry &r, entt::entity viewport, vk::Com
         const auto active = FindActiveEntity(r);
         for (const auto [e, instance, ok, ri] : r.view<const Instance, const Selected, const ObjectKind, const RenderInstance>().each()) {
             if (ok.Value != ObjectType::Mesh) continue;
-            auto &primary = primary_edit_instances[instance.Entity];
-            if (primary == entt::entity{} || e == active) primary = e;
+            if (auto &primary = primary_edit_instances[instance.Entity]; primary == entt::entity{} || e == active) primary = e;
             if (has_pending_transform && !r.all_of<ScaleLocked>(e)) {
                 auto &primary_uf = edit_transform_context.TransformInstances[instance.Entity];
                 if (primary_uf == entt::entity{} || e == active) primary_uf = e;

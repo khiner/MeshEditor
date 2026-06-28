@@ -428,10 +428,11 @@ static void RenderEntityControls(entt::registry &r, entt::entity viewport, entt:
                     if (Selectable("None", c.TargetEntity == entt::null))
                         action::Emit(action::bone::SetConstraintTarget{uint32_t(i), entt::null});
                     for (auto [te, kind, name] : r.view<const ObjectKind, const Name>().each()) {
-                        if (r.any_of<BoneIndex, BoneSubPartOf, BoneJoint, SubElementOf>(te)) continue;
-                        const std::string label = name.Value.empty() ? IdString(te) : name.Value;
-                        if (Selectable(label.c_str(), te == c.TargetEntity))
-                            action::Emit(action::bone::SetConstraintTarget{uint32_t(i), te});
+                        if (!r.any_of<BoneIndex, BoneSubPartOf, BoneJoint, SubElementOf>(te)) {
+                            const std::string label = name.Value.empty() ? IdString(te) : name.Value;
+                            if (Selectable(label.c_str(), te == c.TargetEntity))
+                                action::Emit(action::bone::SetConstraintTarget{uint32_t(i), te});
+                        }
                     }
                     EndCombo();
                 }
@@ -824,9 +825,10 @@ void RenderControls(entt::registry &r, entt::entity viewport) {
                 const bool pose_allowed = active_is_armature_rc;
                 for (const auto mode : r.get<const EnabledInteractionModes>(viewport).Value) {
                     if (mode == InteractionMode::Edit && !edit_allowed) continue;
-                    if (mode == InteractionMode::Pose && !pose_allowed) continue;
-                    SameLine();
-                    interaction_mode_changed |= RadioButton(to_string(mode).c_str(), &interaction_mode_value, int(mode));
+                    if (mode != InteractionMode::Pose || pose_allowed) {
+                        SameLine();
+                        interaction_mode_changed |= RadioButton(to_string(mode).c_str(), &interaction_mode_value, int(mode));
+                    }
                 }
                 if (interaction_mode_changed) action::Emit(action::view::SetInteractionMode{.Mode = InteractionMode(interaction_mode_value)});
                 ui::Edit viewport_edit{r, viewport};
@@ -1339,9 +1341,10 @@ static void RenderObjectTree(entt::registry &r, entt::entity viewport) {
 
     bool has_root = false;
     for (const auto [entity, _] : r.view<const Name>().each()) {
-        if (const auto *node = r.try_get<SceneNode>(entity); node && node->Parent != entt::null) continue;
-        has_root = true;
-        render_entity(render_entity, entity);
+        if (const auto *node = r.try_get<SceneNode>(entity); !node || node->Parent == entt::null) {
+            has_root = true;
+            render_entity(render_entity, entity);
+        }
     }
     if (!has_root) TextDisabled("No objects");
 

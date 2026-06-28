@@ -150,7 +150,7 @@ MeshDataWithMaterials ReadObj(const std::filesystem::path &path) {
         if (const auto it = material_to_local_index.find(material_id); it != material_to_local_index.end()) return it->second;
         const uint32_t local_index = result.Materials.size();
         if (material_id >= 0 && material_id < int(materials.size())) {
-            result.Materials.emplace_back(ToObjPlyMaterial(materials[size_t(material_id)], uint32_t(material_id), path.parent_path()));
+            result.Materials.emplace_back(ToObjPlyMaterial(materials[material_id], material_id, path.parent_path()));
         } else {
             result.Materials.emplace_back(DefaultMaterial());
         }

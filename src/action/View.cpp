@@ -49,11 +49,11 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
     auto rotation_targets = [&](Scope scope) {
         std::vector<entt::entity> targets;
         if (scope != Scope::Selected && scope != Scope::SelectedDelta) {
-            if (const auto e = active_rotation_target(); e != entt::null) targets.push_back(e);
+            if (const auto e = active_rotation_target(); e != entt::null) targets.emplace_back(e);
         } else if (r.get<const Interaction>(viewport).Mode == InteractionMode::Pose) {
-            for (const auto e : r.view<BoneSelection>()) targets.push_back(e);
+            for (const auto e : r.view<BoneSelection>()) targets.emplace_back(e);
         } else {
-            for (const auto e : r.view<Selected, RotationUiVariant>()) targets.push_back(e);
+            for (const auto e : r.view<Selected, RotationUiVariant>()) targets.emplace_back(e);
         }
         return targets;
     };

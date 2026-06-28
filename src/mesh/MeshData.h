@@ -12,8 +12,8 @@ struct MeshData {
         std::vector<uint32_t> indices;
         indices.reserve(Edges.size() * 2);
         for (const auto &[a, b] : Edges) {
-            indices.push_back(a);
-            indices.push_back(b);
+            indices.emplace_back(a);
+            indices.emplace_back(b);
         }
         return indices;
     }

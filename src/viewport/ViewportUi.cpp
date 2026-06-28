@@ -811,9 +811,10 @@ void InteractOverlay(entt::registry &r, entt::entity viewport, FrameState &frame
                 const auto vertices = mesh.GetVerticesSpan();
                 const auto &wt = r.get<const WorldTransform>(instance_entity);
                 for (uint32_t vi = 0; vi < vertex_states.size(); ++vi) {
-                    if ((vertex_states[vi] & ElementStateSelected) == 0u) continue;
-                    pivot += wt.P + glm::rotate(wt.R, wt.S * vertices[vi].Position);
-                    ++vertex_count;
+                    if ((vertex_states[vi] & ElementStateSelected) != 0u) {
+                        pivot += wt.P + glm::rotate(wt.R, wt.S * vertices[vi].Position);
+                        ++vertex_count;
+                    }
                 }
             }
             if (vertex_count > 0) pivot /= float(vertex_count);
@@ -905,8 +906,7 @@ void DrawOverlay(entt::registry &r, entt::entity viewport, FrameState &frame) {
         };
         // Top-level objects: draw dot at own position.
         for (const auto [e, wt] : r.view<const WorldTransform>(entt::exclude<SubElementOf>).each()) {
-            if (!r.any_of<Active, Selected>(e)) continue;
-            draw_dot(wt.P, r.all_of<Active>(e));
+            if (r.any_of<Active, Selected>(e)) draw_dot(wt.P, r.all_of<Active>(e));
         }
     }
 

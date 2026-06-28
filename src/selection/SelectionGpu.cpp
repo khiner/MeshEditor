@@ -526,9 +526,10 @@ std::vector<entt::entity> RunObjectPick(entt::registry &r, entt::entity viewport
         const auto it = object_id_to_entity.find(object_id);
         if (it == object_id_to_entity.end()) continue;
         const uint32_t packed_key = keys[idx];
-        if ((packed_key >> 24) != epoch_inv) continue;
-        const uint32_t layer = r.any_of<BoneIndex, BoneSubPartOf>(it->second) ? 0u : 1u;
-        hits.emplace_back(SortedHit{(packed_key >> 16) & 0xffu, layer, packed_key & 0xffffu, it->second});
+        if ((packed_key >> 24) == epoch_inv) {
+            const uint32_t layer = r.any_of<BoneIndex, BoneSubPartOf>(it->second) ? 0u : 1u;
+            hits.emplace_back(SortedHit{(packed_key >> 16) & 0xffu, layer, packed_key & 0xffffu, it->second});
+        }
     }
     std::ranges::sort(hits);
 

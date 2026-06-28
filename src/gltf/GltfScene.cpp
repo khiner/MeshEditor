@@ -1309,9 +1309,10 @@ void ApplyActiveSceneSelection(entt::registry &r) {
     // Armatures (no SourceNodeIndex) fall to the end via uint max.
     std::vector<std::pair<uint32_t, entt::entity>> ordered;
     for (const auto e : r.view<const GltfObject, const ObjectKind>()) {
-        if (!EntityInActiveScene(r, active_scene, e)) continue;
-        const auto *sni = r.try_get<const SourceNodeIndex>(e);
-        ordered.emplace_back(sni ? sni->Value : std::numeric_limits<uint32_t>::max(), e);
+        if (EntityInActiveScene(r, active_scene, e)) {
+            const auto *sni = r.try_get<const SourceNodeIndex>(e);
+            ordered.emplace_back(sni ? sni->Value : std::numeric_limits<uint32_t>::max(), e);
+        }
     }
     std::ranges::sort(ordered);
 
@@ -1747,10 +1748,11 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
 
     std::vector<bool> is_object_emitted(asset.nodes.size(), false);
     for (uint32_t node_index = 0; node_index < asset.nodes.size(); ++node_index) {
-        if (!traversal.InScene[node_index]) continue;
-        // Joint nodes are bone-only unless they also carry renderable mesh data.
-        const bool has_mesh = ToIndex(asset.nodes[node_index].meshIndex, asset.meshes.size()).has_value();
-        is_object_emitted[node_index] = has_mesh || !is_joint[node_index];
+        if (traversal.InScene[node_index]) {
+            // Joint nodes are bone-only unless they also carry renderable mesh data.
+            const bool has_mesh = ToIndex(asset.nodes[node_index].meshIndex, asset.meshes.size()).has_value();
+            is_object_emitted[node_index] = has_mesh || !is_joint[node_index];
+        }
     }
 
     std::vector<std::optional<uint32_t>> nearest_object_ancestor(asset.nodes.size());
@@ -2211,13 +2213,14 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
         if (object.ObjectType == gltf::Object::Type::Mesh && object.MeshIndex && *object.MeshIndex < extra_entities_per_mesh.size()) {
             const auto &extras = extra_entities_per_mesh[*object.MeshIndex];
             for (const auto extra_entity : {extras.Lines, extras.Points}) {
-                if (extra_entity == entt::null || extra_entity == primary_mesh_entity) continue;
-                const auto extra_instance = ::AddMeshInstance(
-                    r,
-                    extra_entity,
-                    {.Name = object_name, .Transform = Transform{}, .Select = MeshInstanceCreateInfo::SelectBehavior::None, .Visible = true}
-                );
-                SetParent(r, extra_instance, object_entity);
+                if (extra_entity != entt::null && extra_entity != primary_mesh_entity) {
+                    const auto extra_instance = ::AddMeshInstance(
+                        r,
+                        extra_entity,
+                        {.Name = object_name, .Transform = Transform{}, .Select = MeshInstanceCreateInfo::SelectBehavior::None, .Visible = true}
+                    );
+                    SetParent(r, extra_instance, object_entity);
+                }
             }
         }
 
@@ -2247,8 +2250,9 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
         const auto child_it = object_entities_by_node.find(object.NodeIndex);
         if (child_it == object_entities_by_node.end()) continue;
         const auto parent_it = object_entities_by_node.find(*object.ParentNodeIndex);
-        if (parent_it == object_entities_by_node.end()) continue;
-        SetParent(r, child_it->second, parent_it->second);
+        if (parent_it != object_entities_by_node.end()) {
+            SetParent(r, child_it->second, parent_it->second);
+        }
     }
 
     // Stubs for out-of-scene nodes (referenced only by non-default scenes) so build emits them
@@ -2536,18 +2540,19 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
                 const auto &bone = armature.Bones[i];
                 if (!bone.JointNodeIndex) continue;
                 const auto target = find_physics_ancestor_entity(*bone.JointNodeIndex);
-                if (target == entt::null) continue;
-                EnsureWorldTransform(r, target);
-                r.emplace<BoneConstraints>(
-                    arm_obj.BoneEntities[i],
-                    BoneConstraints{
-                        .Stack = {BoneConstraint{
-                            .TargetEntity = target,
-                            .Influence = 1.f,
-                            .Data = ChildOfData{.InverseMatrix = glm::inverse(ToMatrix(r.get<const WorldTransform>(target))) * (armature_world * bone.RestWorld)},
-                        }}
-                    }
-                );
+                if (target != entt::null) {
+                    EnsureWorldTransform(r, target);
+                    r.emplace<BoneConstraints>(
+                        arm_obj.BoneEntities[i],
+                        BoneConstraints{
+                            .Stack = {BoneConstraint{
+                                .TargetEntity = target,
+                                .Influence = 1.f,
+                                .Data = ChildOfData{.InverseMatrix = glm::inverse(ToMatrix(r.get<const WorldTransform>(target))) * (armature_world * bone.RestWorld)},
+                            }}
+                        }
+                    );
+                }
             }
         }
     }
@@ -2587,8 +2592,9 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
         const auto armature_data_entity = entry.second;
         const auto &armature = r.get<const Armature>(armature_data_entity);
         for (const auto &bone : armature.Bones) {
-            if (!bone.JointNodeIndex) continue;
-            armature_targets_by_joint_node[*bone.JointNodeIndex].emplace_back(armature_data_entity, bone.Id);
+            if (bone.JointNodeIndex) {
+                armature_targets_by_joint_node[*bone.JointNodeIndex].emplace_back(armature_data_entity, bone.Id);
+            }
         }
     }
 
@@ -2622,8 +2628,9 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
     std::unordered_map<entt::entity, Transform> node_anim_bindings;
     node_anim_bindings.reserve(object_entities_by_node.size());
     for (const auto &[node_index, object_entity] : object_entities_by_node) {
-        if (!r.valid(object_entity) || node_index >= local_transforms.size()) continue;
-        node_anim_bindings.emplace(object_entity, local_transforms[node_index]);
+        if (r.valid(object_entity) && node_index < local_transforms.size()) {
+            node_anim_bindings.emplace(object_entity, local_transforms[node_index]);
+        }
     }
 
     bool imported_animation = false;
@@ -2756,12 +2763,12 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
             if (joint_node_indices.contains(target_node_index)) continue;
 
             const auto object_it = object_entities_by_node.find(target_node_index);
-            if (object_it == object_entities_by_node.end() || !r.valid(object_it->second)) continue;
-
-            auto &resolved_clip = node_clips_by_entity
-                                      .try_emplace(object_it->second, ::AnimationClip{.Name = anim_name, .DurationSeconds = 0.f, .Channels = {}})
-                                      .first->second;
-            resolved_clip.Channels.emplace_back(::AnimationChannel{.BoneIndex = 0, .Target = target_spec->Path, .Interp = interp, .TimesSeconds = std::move(times), .Values = std::move(values)});
+            if (object_it != object_entities_by_node.end() && r.valid(object_it->second)) {
+                auto &resolved_clip = node_clips_by_entity
+                                          .try_emplace(object_it->second, ::AnimationClip{.Name = anim_name, .DurationSeconds = 0.f, .Channels = {}})
+                                          .first->second;
+                resolved_clip.Channels.emplace_back(::AnimationChannel{.BoneIndex = 0, .Target = target_spec->Path, .Interp = interp, .TimesSeconds = std::move(times), .Values = std::move(values)});
+            }
         }
 
         if (!any_channel) continue;
@@ -3066,8 +3073,9 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
     for (const auto entity : object_view) {
         if (object_view.get<const ObjectKind>(entity).Value == ObjectType::Armature) continue; // → gltf::Skin, handled separately.
         const auto it = entity_to_node_index.find(entity);
-        if (it == entity_to_node_index.end() || it->second >= total_node_count) continue;
-        node_instance_worlds[it->second].emplace_back(r.get<const WorldTransform>(entity));
+        if (it != entity_to_node_index.end() && it->second < total_node_count) {
+            node_instance_worlds[it->second].emplace_back(r.get<const WorldTransform>(entity));
+        }
     }
 
     // Asset is declared early so collision filters can be emitted directly into
@@ -3312,10 +3320,11 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         for (const auto &clip : anim.Clips) {
             const auto idx = get_or_create_clip_index(clip.Name, clip.DurationSeconds);
             for (const auto &ch : clip.Channels) {
-                if (ch.BoneIndex == InvalidBoneIndex || ch.BoneIndex >= arm.Bones.size()) continue;
-                const auto &bone = arm.Bones[ch.BoneIndex];
-                if (!bone.JointNodeIndex) continue;
-                push_channel(idx, *bone.JointNodeIndex, ch.Target, ch.Interp, ch.TimesSeconds, ch.Values);
+                if (ch.BoneIndex != InvalidBoneIndex && ch.BoneIndex < arm.Bones.size()) {
+                    if (const auto &bone = arm.Bones[ch.BoneIndex]; bone.JointNodeIndex) {
+                        push_channel(idx, *bone.JointNodeIndex, ch.Target, ch.Interp, ch.TimesSeconds, ch.Values);
+                    }
+                }
             }
         }
     }
@@ -3325,9 +3334,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         if (!node_idx) continue;
         for (const auto &clip : anim.Clips) {
             const auto idx = get_or_create_clip_index(clip.Name, clip.DurationSeconds);
-            for (const auto &ch : clip.Channels) {
-                push_channel(idx, *node_idx, AnimationPath::Weights, ch.Interp, ch.TimesSeconds, ch.Values);
-            }
+            for (const auto &ch : clip.Channels) push_channel(idx, *node_idx, AnimationPath::Weights, ch.Interp, ch.TimesSeconds, ch.Values);
         }
     }
     // Node transform animation: target = the object entity's node index.
@@ -3336,9 +3343,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         if (!node_idx) continue;
         for (const auto &clip : anim.Clips) {
             const auto idx = get_or_create_clip_index(clip.Name, clip.DurationSeconds);
-            for (const auto &ch : clip.Channels) {
-                push_channel(idx, *node_idx, ch.Target, ch.Interp, ch.TimesSeconds, ch.Values);
-            }
+            for (const auto &ch : clip.Channels) push_channel(idx, *node_idx, ch.Target, ch.Interp, ch.TimesSeconds, ch.Values);
         }
     }
 
@@ -3415,6 +3420,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         if (img.IsDirty && !ktx2_or_dds) {
             auto re = reencode_from_gpu(i, img.MimeType, img.Name);
             if (!re) return std::unexpected{std::move(re.error())};
+
             owned = std::move(re->first);
             emit_mime = re->second;
             view = owned;
@@ -3805,7 +3811,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
                         if (m.has_value() && *m >= 1) {
                             const auto mat = *m - 1;
                             if (mat < save_material_count) {
-                                mappings.emplace_back(size_t(mat));
+                                mappings.emplace_back(mat);
                                 continue;
                             }
                         }

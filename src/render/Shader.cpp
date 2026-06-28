@@ -82,7 +82,7 @@ Shaders::Shaders(std::vector<ShaderTypePath> type_paths)
                         size_t offset = 0;
                         for (const auto &[id, value] : tp.SpecializationConstants) {
                             spec.Entries.emplace_back(vk::SpecializationMapEntry{id, uint32_t(offset), sizeof(uint32_t)});
-                            spec.Data.push_back(value);
+                            spec.Data.emplace_back(value);
                             offset += sizeof(uint32_t);
                         }
                         spec.Info = vk::SpecializationInfo{

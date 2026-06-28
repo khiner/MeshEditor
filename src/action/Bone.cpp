@@ -257,7 +257,7 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
                 const auto e = FindActiveBone(r);
                 if (!r.all_of<BoneConstraints>(e)) r.emplace<BoneConstraints>(e);
                 r.patch<BoneConstraints>(e, [&](auto &cs) {
-                    cs.Stack.push_back(a.Kind == BoneConstraintKind::ChildOf ? BoneConstraint{.Data = ChildOfData{}} : BoneConstraint{.Data = CopyTransformsData{}});
+                    cs.Stack.emplace_back(a.Kind == BoneConstraintKind::ChildOf ? BoneConstraint{.Data = ChildOfData{}} : BoneConstraint{.Data = CopyTransformsData{}});
                 });
             },
         },

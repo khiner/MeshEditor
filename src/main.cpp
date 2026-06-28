@@ -203,8 +203,9 @@ std::vector<GltfSample> CollectGltfSamples(const fs::path &root) {
     std::vector<GltfSample> samples;
     for (const auto &entry : fs::recursive_directory_iterator(root)) {
         const auto ext = entry.path().extension();
-        if (!entry.is_regular_file() || (ext != ".glb" && ext != ".gltf")) continue;
-        samples.push_back({entry.path().filename().string(), entry.path(), ReadExtensionsUsed(entry.path())});
+        if (entry.is_regular_file() && (ext == ".glb" || ext == ".gltf")) {
+            samples.emplace_back(entry.path().filename().string(), entry.path(), ReadExtensionsUsed(entry.path()));
+        }
     }
     std::ranges::sort(samples, [](const auto &a, const auto &b) { return a.Path < b.Path; });
     return samples;
@@ -222,7 +223,7 @@ GltfSampleTree BuildGltfSampleTree(const fs::path &root) {
         for (const auto &c : s.Path.lexically_relative(root).parent_path()) {
             node = &node->Children[c.string()];
         }
-        node->Files.push_back(std::move(s));
+        node->Files.emplace_back(std::move(s));
     }
     const auto flatten_named = [](this auto &&self, GltfSampleTree &n) -> void {
         for (auto it = n.Children.begin(); it != n.Children.end();) {
@@ -257,7 +258,7 @@ void LoadFile(entt::registry &r, const fs::path &path) {
     } else if (ext == ".obj" || ext == ".ply") {
         action::Emit(action::object::ImportMesh{path.string(), std::make_unique<MeshInstanceCreateInfo>(MeshInstanceCreateInfo{.Name = path.stem().string()})});
     } else {
-        r.ctx().get<action::Errors>().Messages.push_back(std::format("Unsupported file format: '{}'", ext));
+        r.ctx().get<action::Errors>().Messages.emplace_back(std::format("Unsupported file format: '{}'", ext));
     }
 }
 
@@ -518,9 +519,10 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, c
             if (event.type == SDL_EVENT_DROP_FILE) LoadFile(r, event.drop.data);
             // SDL3 backend invalidates MousePos to -FLT_MAX on leave when no mouse button is held,
             // which flings a keyboard-initiated (G/R/S) transform offscreen when switching focus.
-            if (event.type == SDL_EVENT_WINDOW_MOUSE_LEAVE && TransformGizmo::IsUsing(r, viewport)) continue;
-            ImGui_ImplSDL3_ProcessEvent(&event);
-            done = event.type == SDL_EVENT_QUIT || (event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED && event.window.windowID == SDL_GetWindowID(window));
+            if (event.type != SDL_EVENT_WINDOW_MOUSE_LEAVE || !TransformGizmo::IsUsing(r, viewport)) {
+                ImGui_ImplSDL3_ProcessEvent(&event);
+                done = event.type == SDL_EVENT_QUIT || (event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED && event.window.windowID == SDL_GetWindowID(window));
+            }
         }
         const float elapsed = recording_mode ? float(CapturedFrameCount(r, viewport)) / float(record_fps) : elapsed_play_time;
         if (play_duration > 0 && elapsed >= play_duration) done = true;
@@ -627,8 +629,8 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, c
                     };
                     std::vector<Item> items;
                     items.reserve(n.Children.size() + n.Files.size());
-                    for (const auto &[name, c] : n.Children) items.push_back({&name, &c, nullptr});
-                    for (const auto &f : n.Files) items.push_back({&f.Label, nullptr, &f});
+                    for (const auto &[name, c] : n.Children) items.emplace_back(&name, &c, nullptr);
+                    for (const auto &f : n.Files) items.emplace_back(&f.Label, nullptr, &f);
                     std::ranges::sort(items, {}, [](const Item &it) { return *it.Name; });
                     for (const auto &it : items) {
                         if (it.Child) {

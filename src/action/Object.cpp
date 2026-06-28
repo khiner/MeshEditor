@@ -174,10 +174,10 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
 
                 // Pre-reserve arenas to avoid per-CloneMesh buffer growth.
                 for (const auto e : entities) {
-                    if (!r.all_of<Instance>(e) || r.all_of<BoneSubPartOf>(e)) continue;
-                    const auto mesh_entity = r.get<Instance>(e).Entity;
-                    if (r.all_of<ObjectExtrasTag>(mesh_entity) || !HasMesh(r, mesh_entity)) continue;
-                    meshes.PlanClone(GetMesh(r, mesh_entity));
+                    if (r.all_of<Instance>(e) && !r.all_of<BoneSubPartOf>(e)) {
+                        const auto mesh_entity = r.get<Instance>(e).Entity;
+                        if (!r.all_of<ObjectExtrasTag>(mesh_entity) && HasMesh(r, mesh_entity)) meshes.PlanClone(GetMesh(r, mesh_entity));
+                    }
                 }
                 meshes.CommitReserves();
 

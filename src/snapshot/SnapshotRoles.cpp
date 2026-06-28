@@ -232,8 +232,9 @@ void VerifyCoverage(const entt::registry &r) {
     for (auto [id, set] : r.storage()) {
         if (set.empty()) continue;
         const auto &info = set.info();
-        if (std::string_view{info.name()}.starts_with("entt::")) continue; // entity / reactive storages, not components
-        if (!ClassifiedHashes.contains(info.hash())) unclassified.emplace(info.name());
+        if (!std::string_view{info.name()}.starts_with("entt::")) { // skip entt:: entity / reactive storages, not components
+            if (!ClassifiedHashes.contains(info.hash())) unclassified.emplace(info.name());
+        }
     }
     if (unclassified.empty()) return;
 

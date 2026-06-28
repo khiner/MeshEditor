@@ -782,9 +782,10 @@ Ref<Shape> BuildLeafShape(const entt::registry &r, entt::entity entity, const Co
 void GatherCompoundChildren(const entt::registry &r, entt::entity owner, std::vector<entt::entity> &out) {
     const auto walk = [&](this auto &self, entt::entity e) -> void {
         for (auto child : Children{&r, e}) {
-            if (r.all_of<PhysicsMotion>(child)) continue;
-            if (r.all_of<ColliderShape>(child)) out.emplace_back(child);
-            self(child);
+            if (!r.all_of<PhysicsMotion>(child)) {
+                if (r.all_of<ColliderShape>(child)) out.emplace_back(child);
+                self(child);
+            }
         }
     };
     walk(owner);

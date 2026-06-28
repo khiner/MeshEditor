@@ -139,9 +139,7 @@ void Armature::FinalizeStructure() {
 
 void Armature::ResolveAnimationIndices(AnimationClip &clip) const {
     for (auto &channel : clip.Channels) {
-        if (channel.TargetBoneId == InvalidBoneId) continue;
-        const auto index = FindBoneIndex(channel.TargetBoneId);
-        channel.BoneIndex = index.value_or(InvalidBoneIndex);
+        if (channel.TargetBoneId != InvalidBoneId) channel.BoneIndex = FindBoneIndex(channel.TargetBoneId).value_or(InvalidBoneIndex);
     }
 }
 
@@ -159,8 +157,9 @@ void Armature::RecomputeInverseBindMatrices() {
     auto &ibms = ImportedSkin->InverseBindMatrices;
     for (uint32_t j = 0; j < JointOrderToBoneIndex.size() && j < ibms.size(); ++j) {
         const auto bone_index = JointOrderToBoneIndex[j];
-        if (bone_index == InvalidBoneIndex || bone_index >= Bones.size()) continue;
-        ibms[j] = Bones[bone_index].InvRestWorld;
+        if (bone_index != InvalidBoneIndex && bone_index < Bones.size()) {
+            ibms[j] = Bones[bone_index].InvRestWorld;
+        }
     }
 }
 

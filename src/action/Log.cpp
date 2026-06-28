@@ -31,7 +31,7 @@ std::vector<ReplayLogFile> ListReplayLogs() {
     std::vector<ReplayLogFile> logs;
     std::error_code ec;
     for (const auto &entry : std::filesystem::directory_iterator{ReplayDir(), ec}) {
-        if (const auto seconds = ParseTimestamp(entry.path())) logs.push_back({entry.path(), *seconds});
+        if (const auto seconds = ParseTimestamp(entry.path())) logs.emplace_back(entry.path(), *seconds);
     }
     std::ranges::sort(logs, std::ranges::greater{}, &ReplayLogFile::UnixSeconds);
     return logs;

@@ -72,7 +72,7 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
                 } else if (bone_mode) {
                     for (const auto e : r.view<BoneSelection>()) baseline.BoneSelections.emplace_back(e, r.get<BoneSelection>(e));
                 } else if (interaction_mode == InteractionMode::Object) {
-                    for (const auto e : r.view<Selected>()) baseline.SelectedEntities.push_back(e);
+                    for (const auto e : r.view<Selected>()) baseline.SelectedEntities.emplace_back(e);
                 }
                 r.emplace_or_replace<AdditiveBoxSelectBaseline>(viewport, std::move(baseline));
             },

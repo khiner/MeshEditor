@@ -200,7 +200,7 @@ std::optional<PhysicsShape> RenderShapeEditor(const PhysicsShape &in, bool auto_
     bool changed = false;
     if (auto shape_type_i = int(out.index());
         Combo("Shape", &shape_type_i, shape_names, IM_ARRAYSIZE(shape_names))) {
-        out = CreateVariantByIndex<PhysicsShape>(size_t(shape_type_i));
+        out = CreateVariantByIndex<PhysicsShape>(shape_type_i);
         changed = true;
     }
     std::visit(
@@ -595,8 +595,9 @@ void physics_ui::RenderEntityProperties(entt::registry &r, entt::entity entity, 
             BeginCombo("Connected node", cn_label.c_str())) {
             if (Selectable("None", cn == null_entity)) action::Emit(action::UpdateOf<&PhysicsJoint::ConnectedNode>(entt::entity{null_entity}));
             for (auto ne : r.view<const SceneNode>()) {
-                if (ne == entity) continue; // self-connection is meaningless
-                if (Selectable(GetName(r, ne).c_str(), cn == ne)) action::Emit(action::UpdateOf<&PhysicsJoint::ConnectedNode>(ne));
+                if (ne != entity) {
+                    if (Selectable(GetName(r, ne).c_str(), cn == ne)) action::Emit(action::UpdateOf<&PhysicsJoint::ConnectedNode>(ne));
+                }
             }
             EndCombo();
         }

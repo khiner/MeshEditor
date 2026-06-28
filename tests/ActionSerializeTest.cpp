@@ -49,7 +49,7 @@ int main(int argc, const char **argv) {
 
     "every action round-trips through the log"_test = [] {
         for (size_t i = 0; i < std::variant_size_v<Action>; ++i) {
-            Action a = DefaultAt(i);
+            auto a = DefaultAt(i);
             EnsureSerializable(a);
 
             auto out = MakeStream();
@@ -57,7 +57,7 @@ int main(int argc, const char **argv) {
             const auto encoded = out.str();
 
             std::vector<Action> decoded;
-            StreamActions(out, [&](Action &&d) { decoded.push_back(std::move(d)); });
+            StreamActions(out, [&](Action &&d) { decoded.emplace_back(std::move(d)); });
             expect(decoded.size() == 1u);
             if (decoded.size() != 1u) continue;
             expect(decoded[0].index() == i);
@@ -74,13 +74,13 @@ int main(int argc, const char **argv) {
         auto out = MakeStream();
         std::vector<size_t> written;
         for (size_t i = 0; i < std::variant_size_v<Action>; ++i) {
-            Action a = DefaultAt(i);
+            auto a = DefaultAt(i);
             EnsureSerializable(a);
             SerializeAction(a, out);
-            written.push_back(i);
+            written.emplace_back(i);
         }
         std::vector<size_t> read;
-        StreamActions(out, [&](Action &&d) { read.push_back(d.index()); });
+        StreamActions(out, [&](Action &&d) { read.emplace_back(d.index()); });
         const bool same = read == written;
         expect(same);
     };

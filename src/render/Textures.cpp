@@ -797,7 +797,7 @@ std::vector<std::byte> ReadbackImageRgba8(
     SubmitWait(vk.Queue, *cb, fence, vk.Device);
 
     const auto mapped = staging.GetMappedData();
-    return std::vector<std::byte>{mapped.begin(), mapped.begin() + size_t(byte_size)};
+    return std::vector<std::byte>{mapped.begin(), mapped.begin() + byte_size};
 }
 
 std::expected<std::vector<std::byte>, std::string> ReadbackTextureRgba8(

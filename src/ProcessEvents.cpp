@@ -288,9 +288,10 @@ void SetEditMode(entt::registry &r, entt::entity viewport, Element mode) {
         br.Count = p.NewCount;
         const auto &mesh = GetMesh(r, p.MeshEntity);
         for (const uint32_t h : selection::ConvertSelectionElement(p.FromHandles, mesh, current_mode, mode)) {
-            if (h >= p.NewCount) continue;
-            const uint32_t gbit = next_offset + h;
-            bits[gbit >> 5] |= 1u << (gbit & 31u);
+            if (h < p.NewCount) {
+                const uint32_t gbit = next_offset + h;
+                bits[gbit >> 5] |= 1u << (gbit & 31u);
+            }
         }
         if (p.NewCount > 0) new_ranges.emplace_back(p.MeshEntity, next_offset, p.NewCount);
         next_offset = (next_offset + p.NewCount + 31) / 32 * 32;
@@ -314,9 +315,8 @@ SyncResult SyncModelsBuffers(entt::registry &r) {
     std::vector<entt::entity> new_mesh_entities, new_extras_entities;
     for (auto e : reactive<changes::NewBufferEntity>(r)) {
         if (!r.valid(e) || !r.all_of<MeshBuffers>(e)) continue;
-        if (HasMesh(r, e)) new_mesh_entities.push_back(e);
-        else if (r.all_of<ObjectExtrasTag>(e) || r.all_of<ArmatureObject>(e) || r.all_of<BoneJoint>(e))
-            new_extras_entities.push_back(e);
+        if (HasMesh(r, e)) new_mesh_entities.emplace_back(e);
+        else if (r.all_of<ObjectExtrasTag>(e) || r.all_of<ArmatureObject>(e) || r.all_of<BoneJoint>(e)) new_extras_entities.emplace_back(e);
     }
 
     // Hides — compact-erase removed instances within their entity's range in the shared InstanceArena.
@@ -351,9 +351,9 @@ SyncResult SyncModelsBuffers(entt::registry &r) {
     std::unordered_map<entt::entity, std::vector<entt::entity>> shows_by_buffer;
     for (auto entity : reactive<changes::RenderInstanceCreated>(r)) {
         if (!r.valid(entity) || !r.all_of<RenderInstance>(entity)) continue;
+
         const auto &ri = r.get<const RenderInstance>(entity);
-        if (ri.BufferIndex != UINT32_MAX) continue; // already synced
-        shows_by_buffer[ri.Entity].push_back(entity);
+        if (ri.BufferIndex == UINT32_MAX) shows_by_buffer[ri.Entity].emplace_back(entity);
     }
     // Pre-reserve InstanceArena for all new instances to avoid per-Allocate growth checks.
     {
@@ -514,13 +514,13 @@ void EnsureWireframes(entt::registry &r, entt::entity viewport) {
     // Remove wireframe instances for colliders that no longer exist.
     std::vector<entt::entity> orphans;
     for (auto [entity, cw] : r.view<ColliderWireframe>().each()) {
-        if (!r.all_of<ColliderShape>(entity)) orphans.push_back(entity);
+        if (!r.all_of<ColliderShape>(entity)) orphans.emplace_back(entity);
     }
     drop_wireframes(orphans);
 
     std::vector<entt::entity> bbox_stale;
     for (auto [entity, bw] : r.view<BBoxWireframe>().each()) {
-        if (!show_bbox || !r.all_of<Selected>(entity)) bbox_stale.push_back(entity);
+        if (!show_bbox || !r.all_of<Selected>(entity)) bbox_stale.emplace_back(entity);
     }
     for (auto e : bbox_stale) {
         if (auto &bw = r.get<BBoxWireframe>(e); r.valid(bw.Instance)) Destroy(r, viewport, bw.Instance);
@@ -529,10 +529,10 @@ void EnsureWireframes(entt::registry &r, entt::entity viewport) {
 
     if (show_bbox) {
         for (auto entity : r.view<Selected>()) {
-            if (r.all_of<BBoxWireframe>(entity)) continue;
-
-            const auto *instance = r.try_get<const Instance>(entity);
-            if (instance && HasMesh(r, instance->Entity)) r.emplace<BBoxWireframe>(entity, make_instance(buf(Box), entity));
+            if (!r.all_of<BBoxWireframe>(entity)) {
+                const auto *instance = r.try_get<const Instance>(entity);
+                if (instance && HasMesh(r, instance->Entity)) r.emplace<BBoxWireframe>(entity, make_instance(buf(Box), entity));
+            }
         }
     }
 
@@ -543,12 +543,12 @@ void EnsureWireframes(entt::registry &r, entt::entity viewport) {
         const auto *inst = r.try_get<const Instance>(entity);
         const auto *tm = inst ? r.try_get<const TetMeshData>(inst->Entity) : nullptr;
         if (!show_tets || !r.all_of<Selected>(entity) || !tm || tm->Positions.empty()) {
-            tet_stale.push_back(entity);
+            tet_stale.emplace_back(entity);
             continue;
         }
         const auto *wi = r.try_get<const Instance>(tw.Instance);
         const auto *mb = wi ? r.try_get<const MeshBuffers>(wi->Entity) : nullptr;
-        if (!mb || mb->Vertices.Count != tm->Positions.size()) tet_stale.push_back(entity);
+        if (!mb || mb->Vertices.Count != tm->Positions.size()) tet_stale.emplace_back(entity);
     }
     for (auto e : tet_stale) {
         if (auto &tw = r.get<TetWireframe>(e); r.valid(tw.Instance)) Destroy(r, viewport, tw.Instance);
@@ -703,10 +703,10 @@ void UpdateWireframeTransforms(entt::registry &r) {
     }
 
     for (auto [entity, tw] : r.view<const TetWireframe>().each()) {
-        if (!r.valid(tw.Instance)) continue;
-
-        const auto *wt = r.try_get<const WorldTransform>(entity);
-        if (wt && (wt_changed.contains(entity) || wt_changed.contains(tw.Instance))) r.replace<WorldTransform>(tw.Instance, *wt);
+        if (r.valid(tw.Instance)) {
+            const auto *wt = r.try_get<const WorldTransform>(entity);
+            if (wt && (wt_changed.contains(entity) || wt_changed.contains(tw.Instance))) r.replace<WorldTransform>(tw.Instance, *wt);
+        }
     }
 }
 
@@ -1109,9 +1109,10 @@ RenderRequest ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
             auto *pose_state = r.try_get<ArmaturePoseState>(arm_obj_comp.Entity);
             if (!pose_state || pose_state->GpuDeformRange.Count > 0) continue;
             const auto *armature = r.try_get<const Armature>(arm_obj_comp.Entity);
-            if (!armature || !armature->ImportedSkin) continue;
-            total_joints += armature->ImportedSkin->OrderedJointNodeIndices.size();
-            pending_armatures.push_back(arm_obj_comp.Entity);
+            if (armature && armature->ImportedSkin) {
+                total_joints += armature->ImportedSkin->OrderedJointNodeIndices.size();
+                pending_armatures.emplace_back(arm_obj_comp.Entity);
+            }
         }
         buffers.ArmatureDeformBuffer.ReserveAdditional(total_joints);
         for (const auto arm_data_entity : pending_armatures) {
@@ -1129,10 +1130,12 @@ RenderRequest ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
         std::vector<entt::entity> pending_morphs;
         for (auto [entity, morph_state] : r.view<MorphWeightState>().each()) {
             if (morph_state.Weights.empty()) continue;
+
             const auto *gpu = r.try_get<const MorphWeightGpuRange>(entity);
-            if (gpu && gpu->Weights.Count > 0) continue;
-            total_weights += morph_state.Weights.size();
-            pending_morphs.push_back(entity);
+            if (!gpu || gpu->Weights.Count == 0) {
+                total_weights += morph_state.Weights.size();
+                pending_morphs.emplace_back(entity);
+            }
         }
         buffers.MorphWeightBuffer.ReserveAdditional(total_weights);
         for (const auto entity : pending_morphs) {
@@ -1315,7 +1318,7 @@ RenderRequest ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
         const auto collect_instance_state = [&](entt::entity instance_entity) {
             if (is_newly_inserted(instance_entity)) return;
             if (const auto *ri = r.try_get<RenderInstance>(instance_entity); ri && ri->BufferIndex != UINT32_MAX) {
-                state_writes.push_back({ri->BufferIndex, InstanceStateBits(r, instance_entity)});
+                state_writes.emplace_back(ri->BufferIndex, InstanceStateBits(r, instance_entity));
             }
         };
         // Update SelectedInstanceCount on mesh entities before per-entity processing.
@@ -1444,8 +1447,9 @@ RenderRequest ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
             const auto material_count = buffers.Materials.Count();
             if (material_count == 0u) continue;
             auto primitive_materials = meshes.GetPrimitiveMaterialIndices(mesh->GetStoreId());
-            if (assignment->PrimitiveIndex >= primitive_materials.size()) continue;
-            primitive_materials[assignment->PrimitiveIndex] = std::min(assignment->MaterialIndex, material_count - 1u);
+            if (assignment->PrimitiveIndex < primitive_materials.size()) {
+                primitive_materials[assignment->PrimitiveIndex] = std::min(assignment->MaterialIndex, material_count - 1u);
+            }
         }
         request(RenderRequest::Submit);
     }
@@ -1518,9 +1522,10 @@ RenderRequest ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
                         const auto offset = glm::rotate(pending.Delta.R, pending.Delta.S * (world_rel - pivot_rel));
                         const auto new_rel = pivot_rel + offset + pending.Delta.P;
                         const auto new_local = inv_scale * glm::rotate(inv_rot, new_rel);
-                        if (glm::length2(new_local - local_pos) <= 1e-12f) continue;
-                        meshes.SetPosition(mesh, vi, new_local);
-                        any_moved = true;
+                        if (glm::length2(new_local - local_pos) > 1e-12f) {
+                            meshes.SetPosition(mesh, vi, new_local);
+                            any_moved = true;
+                        }
                     }
                     if (any_moved) {
                         meshes.UpdateNormals(mesh);
@@ -1777,8 +1782,7 @@ RenderRequest ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
                             for (const auto &c : cs->Stack) {
                                 if (c.TargetEntity == null_entity || !r.valid(c.TargetEntity)) continue;
                                 const auto *twt = r.try_get<const WorldTransform>(c.TargetEntity);
-                                if (!twt) continue;
-                                local = ApplyBoneConstraint(c, local, parent_pose_world, armature_world_inv, ToMatrix(*twt));
+                                if (twt) local = ApplyBoneConstraint(c, local, parent_pose_world, armature_world_inv, ToMatrix(*twt));
                             }
                             if (local.P != before.P || local.R != before.R) should_patch = true;
                         }
@@ -1869,20 +1873,20 @@ RenderRequest ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
 
                 auto display_wt = *wt;
                 if (const auto *ds = r.try_get<BoneDisplayScale>(e)) display_wt.S = vec3{ds->Value};
-                wt_writes.push_back({ri->BufferIndex, display_wt});
+                wt_writes.emplace_back(ri->BufferIndex, display_wt);
                 // Bone joint sphere transforms (head and tail).
                 if (const auto *joints = r.try_get<const BoneJointEntities>(e); joints && r.all_of<BoneDisplayScale>(e)) {
                     const float bone_length = r.get<BoneDisplayScale>(e).Value;
                     const float sphere_scale = bone_length * 0.06f;
                     if (joints->Head != entt::null) {
                         if (const auto *jri = r.try_get<const RenderInstance>(joints->Head)) {
-                            wt_writes.push_back({jri->BufferIndex, Transform{wt->P, {1, 0, 0, 0}, vec3{sphere_scale}}});
+                            wt_writes.emplace_back(jri->BufferIndex, Transform{wt->P, {1, 0, 0, 0}, vec3{sphere_scale}});
                         }
                     }
                     if (joints->Tail != entt::null) {
                         if (const auto *jri = r.try_get<const RenderInstance>(joints->Tail)) {
                             const vec3 tail_pos = wt->P + wt->R * vec3{0, bone_length, 0};
-                            wt_writes.push_back({jri->BufferIndex, Transform{tail_pos, {1, 0, 0, 0}, vec3{sphere_scale}}});
+                            wt_writes.emplace_back(jri->BufferIndex, Transform{tail_pos, {1, 0, 0, 0}, vec3{sphere_scale}});
                         }
                     }
                 }

@@ -23,7 +23,7 @@ using std::ranges::find_if, std::ranges::to;
 
 namespace action::io {
 void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
-    const auto fail = [&](std::string message) { r.ctx().get<Errors>().Messages.push_back(std::move(message)); };
+    const auto fail = [&](std::string message) { r.ctx().get<Errors>().Messages.emplace_back(std::move(message)); };
     std::visit(
         overloaded{
             [&](const Clear &) { ClearScene(r, viewport); },

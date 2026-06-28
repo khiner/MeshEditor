@@ -422,16 +422,11 @@ void CompareJson(simdjson::dom::element a, simdjson::dom::element b, std::string
         if (IsAccessorRefPath(NormalizePath(path))) {
             const auto src_acc = ResolveAccessor(root_a, size_t(AsNumber(a)));
             const auto out_acc = ResolveAccessor(root_b, size_t(AsNumber(b)));
-            if (!src_acc || !out_acc) {
-                out.emplace_back(std::string(path), "accessor reference out of range");
-            } else {
-                CompareAccessorShape(*src_acc, *out_acc, path, out);
-            }
+            if (!src_acc || !out_acc) out.emplace_back(std::string(path), "accessor reference out of range");
+            else CompareAccessorShape(*src_acc, *out_acc, path, out);
             return;
         }
-        if (!NumberEq(AsNumber(a), AsNumber(b))) {
-            out.emplace_back(std::string(path), std::format("number {} vs {}", AsNumber(a), AsNumber(b)));
-        }
+        if (!NumberEq(AsNumber(a), AsNumber(b))) out.emplace_back(std::string(path), std::format("number {} vs {}", AsNumber(a), AsNumber(b)));
         return;
     }
     if (ta != tb) {
@@ -439,9 +434,7 @@ void CompareJson(simdjson::dom::element a, simdjson::dom::element b, std::string
         return;
     }
     if (ta == ElType::ARRAY && NormalizePath(path) == "nodes[*].rotation") {
-        if (!QuaternionsEqual(a, b)) {
-            out.emplace_back(std::string(path), "quaternion mismatch");
-        }
+        if (!QuaternionsEqual(a, b)) out.emplace_back(std::string(path), "quaternion mismatch");
         return;
     }
     if (ta == ElType::ARRAY && NormalizePath(path) == "scenes[*].nodes") {
@@ -475,9 +468,7 @@ void CompareJson(simdjson::dom::element a, simdjson::dom::element b, std::string
         case ElType::ARRAY: {
             simdjson::dom::array aa = a, bb = b;
             const auto asz = aa.size(), bsz = bb.size();
-            if (asz != bsz) {
-                out.emplace_back(std::string(path), std::format("array size {} vs {}", asz, bsz));
-            }
+            if (asz != bsz) out.emplace_back(std::string(path), std::format("array size {} vs {}", asz, bsz));
             size_t i = 0;
             auto ia = aa.begin(), ib = bb.begin();
             while (ia != aa.end() && ib != bb.end()) {
@@ -530,12 +521,8 @@ size_t CompareGltfJson(const fs::path &a_path, const fs::path &b_path, std::stri
         constexpr size_t MaxReport = 20;
         std::cerr << "  " << unexpected.size() << " unexpected JSON diff(s) in " << sample_name
                   << " (" << expected << " expected-divergence diff(s) filtered):\n";
-        for (size_t i = 0; i < unexpected.size() && i < MaxReport; ++i) {
-            std::cerr << "    " << unexpected[i].Path << ": " << unexpected[i].Message << "\n";
-        }
-        if (unexpected.size() > MaxReport) {
-            std::cerr << "    ... and " << (unexpected.size() - MaxReport) << " more\n";
-        }
+        for (size_t i = 0; i < unexpected.size() && i < MaxReport; ++i) std::cerr << "    " << unexpected[i].Path << ": " << unexpected[i].Message << "\n";
+        if (unexpected.size() > MaxReport) std::cerr << "    ... and " << (unexpected.size() - MaxReport) << " more\n";
     }
     return unexpected.size();
 }
@@ -566,10 +553,12 @@ void CompareRegistries(std::string_view name, entt::registry &a, entt::registry 
             for (const auto &c : comps) ++only_a_comps[c];
         } else if (comps != it->second) {
             ++diffs;
-            for (const auto &c : comps)
+            for (const auto &c : comps) {
                 if (!it->second.contains(c)) ++diff_comps["-" + c];
-            for (const auto &c : it->second)
+            }
+            for (const auto &c : it->second) {
                 if (!comps.contains(c)) ++diff_comps["+" + c];
+            }
         }
     }
     for (const auto &[e, comps] : cb) {
@@ -590,6 +579,7 @@ void CompareRegistries(std::string_view name, entt::registry &a, entt::registry 
         const auto hash = a_set.info().hash();
         const auto bit = b_set.find(hash);
         if (bit == b_set.end()) continue;
+
         auto *b_set_p = bit->second;
         for (const auto e : a_set) {
             if (e == entt::tombstone || !b_set_p->contains(e)) continue;
@@ -867,6 +857,7 @@ int main(int argc, const char **argv) {
             const auto load = gltf::LoadGltf(staged_gltf, load_ctx(fx.R, fx.Viewport));
             expect(load.has_value()) << "load failed";
             if (!load) return;
+
             materialize_textures(fx.R, fx.Viewport);
 
             fs::rename(staged_png, stage_dir / "CesiumLogoFlat.png.moved");
@@ -880,9 +871,11 @@ int main(int argc, const char **argv) {
             const auto reload = gltf::LoadGltf(out_path, load_ctx(fx2.R, fx2.Viewport));
             expect(reload.has_value()) << "reload failed";
             if (!reload) return;
+
             const auto &reloaded = fx2.R.get<const gltf::SourceAssets>(fx2.Viewport).Images;
             expect(reloaded.size() == 1u);
             if (reloaded.empty()) return;
+
             expect(reloaded.front().Uri.empty()) << "fallback should drop the URI";
             expect(reloaded.front().MimeType == gltf::MimeType::PNG);
         };

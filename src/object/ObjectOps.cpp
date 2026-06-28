@@ -270,7 +270,7 @@ void Destroy(entt::registry &r, entt::entity viewport, entt::entity e) {
     }
 
     if (const auto *light_index = r.try_get<LightIndex>(e)) {
-        r.get_or_emplace<PendingLightRemovals>(viewport).Indices.push_back(light_index->Value);
+        r.get_or_emplace<PendingLightRemovals>(viewport).Indices.emplace_back(light_index->Value);
     }
 
     if (r.all_of<ArmatureObject>(e)) {
@@ -314,11 +314,12 @@ void Destroy(entt::registry &r, entt::entity viewport, entt::entity e) {
         }
     }
     for (const auto armature_data_entity : armature_data_entities) {
-        if (!r.valid(armature_data_entity)) continue;
-        const bool is_used = AnyComponentRefersTo(r, &ArmatureObject::Entity, armature_data_entity) ||
-            AnyComponentRefersTo(r, &ArmatureModifier::ArmatureEntity, armature_data_entity) ||
-            AnyComponentRefersTo(r, &BoneAttachment::ArmatureEntity, armature_data_entity);
-        if (!is_used) r.destroy(armature_data_entity);
+        if (r.valid(armature_data_entity)) {
+            const bool is_used = AnyComponentRefersTo(r, &ArmatureObject::Entity, armature_data_entity) ||
+                AnyComponentRefersTo(r, &ArmatureModifier::ArmatureEntity, armature_data_entity) ||
+                AnyComponentRefersTo(r, &BoneAttachment::ArmatureEntity, armature_data_entity);
+            if (!is_used) r.destroy(armature_data_entity);
+        }
     }
 
     // If no instances remain, release all imported textures and reset to the default material. The texture

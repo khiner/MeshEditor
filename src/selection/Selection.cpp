@@ -17,10 +17,9 @@ std::unordered_map<entt::entity, entt::entity> ComputePrimaryEditInstances(const
     std::unordered_map<entt::entity, entt::entity> primaries;
     const auto active = FindActiveEntity(r);
     for (const auto [e, instance, ok, ri] : r.view<const Instance, const Selected, const ObjectKind, const RenderInstance>().each()) {
-        if (ok.Value != ObjectType::Mesh) continue;
-        if (!include_scale_locked && r.all_of<ScaleLocked>(e)) continue;
-        auto &primary = primaries[instance.Entity];
-        if (primary == entt::entity{} || e == active) primary = e;
+        if (ok.Value == ObjectType::Mesh && (include_scale_locked || !r.all_of<ScaleLocked>(e))) {
+            if (auto &primary = primaries[instance.Entity]; primary == entt::entity{} || e == active) primary = e;
+        }
     }
     return primaries;
 }
