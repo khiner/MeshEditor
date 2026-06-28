@@ -29,15 +29,12 @@ static void SubmitWait(vk::Queue queue, vk::CommandBuffer command_buffer, vk::Fe
 }
 
 namespace {
-void TransitionImage(
-    vk::CommandBuffer cb, vk::PipelineStageFlags src_stage, vk::PipelineStageFlags dst_stage,
-    vk::AccessFlags src_access, vk::AccessFlags dst_access, vk::ImageLayout old_layout, vk::ImageLayout new_layout, vk::Image image, vk::ImageSubresourceRange range
-) {
-    cb.pipelineBarrier(src_stage, dst_stage, {}, {}, {}, vk::ImageMemoryBarrier{src_access, dst_access, old_layout, new_layout, {}, {}, image, range});
-}
-
 vk::SamplerCreateInfo LinearSamplerCreateInfo(vk::SamplerAddressMode address_mode, float max_lod) {
     return {{}, vk::Filter::eLinear, vk::Filter::eLinear, vk::SamplerMipmapMode::eLinear, address_mode, address_mode, address_mode, 0.f, VK_FALSE, 1.f, VK_FALSE, vk::CompareOp::eNever, 0.f, max_lod, vk::BorderColor::eIntOpaqueBlack, VK_FALSE};
+}
+
+vk::SamplerCreateInfo MakeSamplerCreateInfo(const SamplerConfig &cfg, vk::SamplerAddressMode wrap_s, vk::SamplerAddressMode wrap_t, float max_lod) {
+    return {{}, cfg.MagFilter, cfg.MinFilter, cfg.MipmapMode, wrap_s, wrap_t, vk::SamplerAddressMode::eRepeat, 0.f, VK_FALSE, 1.f, VK_FALSE, vk::CompareOp::eNever, 0.f, max_lod, vk::BorderColor::eIntOpaqueBlack, VK_FALSE};
 }
 
 vk::Format ToTextureFormat(TextureColorSpace color_space) { return color_space == TextureColorSpace::Srgb ? vk::Format::eR8G8B8A8Srgb : vk::Format::eR8G8B8A8Unorm; }
@@ -163,16 +160,7 @@ std::expected<CubemapEntry, std::string> CreateCubemapEntryFromMipFacesF32(
     auto [staging_buf, staging_base] = AllocStaging(batch, as_bytes(std::span<const float>{pixels}));
     for (auto &copy : copies) copy.bufferOffset += staging_base;
     const vk::ImageSubresourceRange full_range{vk::ImageAspectFlagBits::eColor, 0, uint32_t(mip_faces.size()), 0, 6};
-    auto &cb = *batch.Cb;
-    TransitionImage(
-        cb, vk::PipelineStageFlagBits::eTopOfPipe, vk::PipelineStageFlagBits::eTransfer, {}, vk::AccessFlagBits::eTransferWrite,
-        vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal, *image.Image, full_range
-    );
-    cb.copyBufferToImage(staging_buf, *image.Image, vk::ImageLayout::eTransferDstOptimal, copies);
-    TransitionImage(
-        cb, vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eFragmentShader, vk::AccessFlagBits::eTransferWrite, vk::AccessFlagBits::eShaderRead,
-        vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eShaderReadOnlyOptimal, *image.Image, full_range
-    );
+    mvk::RecordBufferToImageUpload(*batch.Cb, staging_buf, *image.Image, copies, full_range);
 
     auto sampler = vk.Device.createSamplerUnique(LinearSamplerCreateInfo(vk::SamplerAddressMode::eClampToEdge, mip_faces.size()));
     WriteCubeSamplerDescriptor(slots, vk.Device, pre_allocated_slot, *sampler, *image.View);
@@ -216,12 +204,9 @@ TextureEntry CreateCompressedTextureEntry(
     const vk::ImageSubresourceRange full_range{vk::ImageAspectFlagBits::eColor, 0, mip_levels, 0, 1};
     auto [staging_buf, staging_base] = AllocStaging(batch, all_mip_data);
     for (auto &copy : copies) copy.bufferOffset += staging_base;
-    auto &cb = *batch.Cb;
-    TransitionImage(cb, vk::PipelineStageFlagBits::eTopOfPipe, vk::PipelineStageFlagBits::eTransfer, {}, vk::AccessFlagBits::eTransferWrite, vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal, *image.Image, full_range);
-    cb.copyBufferToImage(staging_buf, *image.Image, vk::ImageLayout::eTransferDstOptimal, copies);
-    TransitionImage(cb, vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eFragmentShader, vk::AccessFlagBits::eTransferWrite, vk::AccessFlagBits::eShaderRead, vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eShaderReadOnlyOptimal, *image.Image, full_range);
+    mvk::RecordBufferToImageUpload(*batch.Cb, staging_buf, *image.Image, copies, full_range);
 
-    auto sampler = vk.Device.createSamplerUnique(vk::SamplerCreateInfo{{}, sampler_cfg.MagFilter, sampler_cfg.MinFilter, sampler_cfg.MipmapMode, wrap_s, wrap_t, vk::SamplerAddressMode::eRepeat, 0.f, VK_FALSE, 1.f, VK_FALSE, vk::CompareOp::eNever, 0.f, float(mip_levels), vk::BorderColor::eIntOpaqueBlack, VK_FALSE});
+    auto sampler = vk.Device.createSamplerUnique(MakeSamplerCreateInfo(sampler_cfg, wrap_s, wrap_t, float(mip_levels)));
     vk.Device.updateDescriptorSets({slots.MakeSamplerWrite(pre_allocated_slot, {*sampler, *image.View, vk::ImageLayout::eShaderReadOnlyOptimal})}, {});
     return {.Image = std::move(image), .Sampler = std::move(sampler), .SamplerSlot = pre_allocated_slot, .Width = width, .Height = height, .MipLevels = mip_levels, .Name = std::move(name)};
 }
@@ -363,7 +348,7 @@ TextureEntry CreateTextureEntryAtSlot(
     auto [staging_buf, staging_offset] = AllocStaging(batch, pixels_rgba8);
     const vk::ImageSubresourceRange full_range{vk::ImageAspectFlagBits::eColor, 0, mip_levels, 0, 1};
     auto &cb = *batch.Cb;
-    TransitionImage(
+    mvk::TransitionImage(
         cb, vk::PipelineStageFlagBits::eTopOfPipe, vk::PipelineStageFlagBits::eTransfer, {}, vk::AccessFlagBits::eTransferWrite,
         vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal, *image.Image, full_range
     );
@@ -376,7 +361,7 @@ TextureEntry CreateTextureEntryAtSlot(
 
     int32_t mip_width = width, mip_height = height;
     for (uint32_t mip = 1; mip < mip_levels; ++mip) {
-        TransitionImage(
+        mvk::TransitionImage(
             cb, vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eTransfer, vk::AccessFlagBits::eTransferWrite, vk::AccessFlagBits::eTransferRead,
             vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eTransferSrcOptimal, *image.Image, vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eColor, mip - 1, 1, 0, 1}
         );
@@ -393,7 +378,7 @@ TextureEntry CreateTextureEntryAtSlot(
             },
             vk::Filter::eLinear
         );
-        TransitionImage(
+        mvk::TransitionImage(
             cb, vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eFragmentShader, vk::AccessFlagBits::eTransferRead, vk::AccessFlagBits::eShaderRead,
             vk::ImageLayout::eTransferSrcOptimal, vk::ImageLayout::eShaderReadOnlyOptimal, *image.Image, vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eColor, mip - 1, 1, 0, 1}
         );
@@ -402,31 +387,12 @@ TextureEntry CreateTextureEntryAtSlot(
         mip_height = std::max(1, mip_height / 2);
     }
 
-    TransitionImage(
+    mvk::TransitionImage(
         cb, vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eFragmentShader, vk::AccessFlagBits::eTransferWrite, vk::AccessFlagBits::eShaderRead,
         vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eShaderReadOnlyOptimal, *image.Image, vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eColor, mip_levels - 1, 1, 0, 1}
     );
 
-    auto sampler = vk.Device.createSamplerUnique(
-        vk::SamplerCreateInfo{
-            {},
-            sampler_cfg.MagFilter,
-            sampler_cfg.MinFilter,
-            sampler_cfg.MipmapMode,
-            wrap_s,
-            wrap_t,
-            vk::SamplerAddressMode::eRepeat,
-            0.f,
-            VK_FALSE,
-            1.f,
-            VK_FALSE,
-            vk::CompareOp::eNever,
-            0.f,
-            sampler_cfg.UsesMipmaps ? float(mip_levels) : 0.f,
-            vk::BorderColor::eIntOpaqueBlack,
-            VK_FALSE,
-        }
-    );
+    auto sampler = vk.Device.createSamplerUnique(MakeSamplerCreateInfo(sampler_cfg, wrap_s, wrap_t, sampler_cfg.UsesMipmaps ? float(mip_levels) : 0.f));
 
     const vk::DescriptorImageInfo sampler_info{*sampler, *image.View, vk::ImageLayout::eShaderReadOnlyOptimal};
     vk.Device.updateDescriptorSets({slots.MakeSamplerWrite(pre_allocated_slot, sampler_info)}, {});
@@ -577,22 +543,8 @@ EnvironmentPrefiltered CreateIblFromHdri(
         {{}, vk::ImageType::e2D, rgba32f, vk::Extent3D{eq_w, eq_h, 1}, 1, 1, vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferDst, vk::SharingMode::eExclusive},
         {{}, {}, vk::ImageViewType::e2D, rgba32f, {}, one_2d}
     );
-    {
-        auto &cb = *batch.Cb;
-        TransitionImage(
-            cb, vk::PipelineStageFlagBits::eTopOfPipe, vk::PipelineStageFlagBits::eTransfer, {}, vk::AccessFlagBits::eTransferWrite,
-            vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal, *equirect.Image, one_2d
-        );
-        cb.copyBufferToImage(
-            eq_staging_buf, *equirect.Image,
-            vk::ImageLayout::eTransferDstOptimal,
-            vk::BufferImageCopy{eq_staging_offset, 0, 0, vk::ImageSubresourceLayers{vk::ImageAspectFlagBits::eColor, 0, 0, 1}, {0, 0, 0}, {eq_w, eq_h, 1}}
-        );
-        TransitionImage(
-            cb, vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eComputeShader, vk::AccessFlagBits::eTransferWrite, vk::AccessFlagBits::eShaderRead,
-            vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eShaderReadOnlyOptimal, *equirect.Image, one_2d
-        );
-    }
+    const vk::BufferImageCopy eq_copy{eq_staging_offset, 0, 0, vk::ImageSubresourceLayers{vk::ImageAspectFlagBits::eColor, 0, 0, 1}, {0, 0, 0}, {eq_w, eq_h, 1}};
+    mvk::RecordBufferToImageUpload(*batch.Cb, eq_staging_buf, *equirect.Image, {&eq_copy, 1}, one_2d, vk::PipelineStageFlagBits::eComputeShader);
 
     // 3. Create raw cubemap (512×512, full mip chain, storage+sampled+transfer).
     const uint32_t raw_size = 512, raw_mips = ComputeMipLevelCount(raw_size, raw_size);
@@ -692,24 +644,24 @@ EnvironmentPrefiltered CreateIblFromHdri(
         auto &cb = *batch.Cb;
         // --- Initial layout transitions ---
         // raw cube mip 0: Undefined → General (storage write by EquirectToCubemap)
-        TransitionImage(
+        mvk::TransitionImage(
             cb, vk::PipelineStageFlagBits::eTopOfPipe, vk::PipelineStageFlagBits::eComputeShader, {}, vk::AccessFlagBits::eShaderWrite,
             vk::ImageLayout::eUndefined, vk::ImageLayout::eGeneral, *raw_cube.Image, vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eColor, 0, 1, 0, 6}
         );
         // raw cube mips 1..N: Undefined → TransferDstOptimal (blit targets for mipmap generation)
         if (raw_mips > 1) {
-            TransitionImage(
+            mvk::TransitionImage(
                 cb, vk::PipelineStageFlagBits::eTopOfPipe, vk::PipelineStageFlagBits::eTransfer, {}, vk::AccessFlagBits::eTransferWrite,
                 vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal, *raw_cube.Image, vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eColor, 1, raw_mips - 1, 0, 6}
             );
         }
         // diffuse: Undefined → General
-        TransitionImage(
+        mvk::TransitionImage(
             cb, vk::PipelineStageFlagBits::eTopOfPipe, vk::PipelineStageFlagBits::eComputeShader, {}, vk::AccessFlagBits::eShaderWrite,
             vk::ImageLayout::eUndefined, vk::ImageLayout::eGeneral, *diff_cube.Image, diff_range
         );
         // specular all mips: Undefined → General
-        TransitionImage(
+        mvk::TransitionImage(
             cb, vk::PipelineStageFlagBits::eTopOfPipe, vk::PipelineStageFlagBits::eComputeShader, {}, vk::AccessFlagBits::eShaderWrite,
             vk::ImageLayout::eUndefined, vk::ImageLayout::eGeneral, *spec_cube.Image, spec_full
         );
@@ -721,7 +673,7 @@ EnvironmentPrefiltered CreateIblFromHdri(
         cb.dispatch((raw_size + 7) / 8, (raw_size + 7) / 8, 6);
 
         // raw cube mip 0: General → TransferSrcOptimal (source for mipmap blit chain)
-        TransitionImage(
+        mvk::TransitionImage(
             cb, vk::PipelineStageFlagBits::eComputeShader, vk::PipelineStageFlagBits::eTransfer, vk::AccessFlagBits::eShaderWrite, vk::AccessFlagBits::eTransferRead,
             vk::ImageLayout::eGeneral, vk::ImageLayout::eTransferSrcOptimal, *raw_cube.Image, vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eColor, 0, 1, 0, 6}
         );
@@ -743,19 +695,19 @@ EnvironmentPrefiltered CreateIblFromHdri(
                 vk::Filter::eLinear
             );
             // mip N-1: TransferSrcOptimal → ShaderReadOnlyOptimal (done as blit source)
-            TransitionImage(
+            mvk::TransitionImage(
                 cb, vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eComputeShader, vk::AccessFlagBits::eTransferRead, vk::AccessFlagBits::eShaderRead,
                 vk::ImageLayout::eTransferSrcOptimal, vk::ImageLayout::eShaderReadOnlyOptimal, *raw_cube.Image, vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eColor, mip - 1, 1, 0, 6}
             );
             if (mip < raw_mips - 1) {
                 // mip N: TransferDstOptimal → TransferSrcOptimal (source for next blit)
-                TransitionImage(
+                mvk::TransitionImage(
                     cb, vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eTransfer, vk::AccessFlagBits::eTransferWrite, vk::AccessFlagBits::eTransferRead,
                     vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eTransferSrcOptimal, *raw_cube.Image, vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eColor, mip, 1, 0, 6}
                 );
             } else {
                 // Last mip: TransferDstOptimal → ShaderReadOnlyOptimal
-                TransitionImage(
+                mvk::TransitionImage(
                     cb, vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eComputeShader, vk::AccessFlagBits::eTransferWrite, vk::AccessFlagBits::eShaderRead,
                     vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eShaderReadOnlyOptimal, *raw_cube.Image, vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eColor, mip, 1, 0, 6}
                 );
@@ -770,7 +722,7 @@ EnvironmentPrefiltered CreateIblFromHdri(
         cb.dispatch((diff_size + 7) / 8, (diff_size + 7) / 8, 6);
 
         // diffuse: General → ShaderReadOnlyOptimal
-        TransitionImage(
+        mvk::TransitionImage(
             cb, vk::PipelineStageFlagBits::eComputeShader, vk::PipelineStageFlagBits::eFragmentShader, vk::AccessFlagBits::eShaderWrite, vk::AccessFlagBits::eShaderRead,
             vk::ImageLayout::eGeneral, vk::ImageLayout::eShaderReadOnlyOptimal, *diff_cube.Image, diff_range
         );
@@ -790,7 +742,7 @@ EnvironmentPrefiltered CreateIblFromHdri(
         }
 
         // specular: General → ShaderReadOnlyOptimal
-        TransitionImage(
+        mvk::TransitionImage(
             cb, vk::PipelineStageFlagBits::eComputeShader, vk::PipelineStageFlagBits::eFragmentShader, vk::AccessFlagBits::eShaderWrite, vk::AccessFlagBits::eShaderRead,
             vk::ImageLayout::eGeneral, vk::ImageLayout::eShaderReadOnlyOptimal, *spec_cube.Image, spec_full
         );
