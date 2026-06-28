@@ -475,7 +475,7 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, c
     action::StartLog(); // Record each applied action to the write-behind log.
     if (initial_file) {
         ClearScene(r, viewport);
-        LoadFile(r, fs::path(initial_file));
+        LoadFile(r, initial_file);
         action::ApplyEmitted(r, viewport);
         AdvanceViewport(r, viewport);
         if (auto &errors = r.ctx().get<action::Errors>().Messages; !errors.empty()) {
@@ -515,6 +515,7 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, c
                 event.wheel.x *= ImGuiWheelScale;
                 event.wheel.y *= ImGuiWheelScale;
             }
+            if (event.type == SDL_EVENT_DROP_FILE) LoadFile(r, event.drop.data);
             // SDL3 backend invalidates MousePos to -FLT_MAX on leave when no mouse button is held,
             // which flings a keyboard-initiated (G/R/S) transform offscreen when switching focus.
             if (event.type == SDL_EVENT_WINDOW_MOUSE_LEAVE && TransformGizmo::IsUsing(r, viewport)) continue;
@@ -585,7 +586,7 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, c
                 const auto import_dialog = [&r](const auto &filters) {
                     nfdchar_t *nfd_path;
                     if (auto result = NFD_OpenDialog(&nfd_path, filters.data(), filters.size(), ""); result == NFD_OKAY) {
-                        LoadFile(r, fs::path(nfd_path));
+                        LoadFile(r, nfd_path);
                         NFD_FreePath(nfd_path);
                     } else if (result != NFD_CANCEL) {
                         std::cerr << "Error opening file dialog: " << NFD_GetError() << std::endl;
