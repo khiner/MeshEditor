@@ -12,23 +12,8 @@
 #include "selection/SelectionBitset.h"
 #include "selection/SelectionComponents.h"
 #include "viewport/InteractionComponents.h"
-#include "viewport/ViewCamera.h"
 
 #include <entt/entity/registry.hpp>
-
-void SetLookThrough(entt::registry &r, entt::entity viewport, entt::entity target) {
-    const auto previous = LookThroughCameraEntity(r);
-    if (previous == target) return;
-    // Preserve the saved view across camera switches; only capture fresh on first entry.
-    auto saved = previous != entt::null ? r.get<LookingThrough>(previous).SavedViewCamera : r.get<ViewCamera>(viewport);
-    if (previous != entt::null) r.remove<LookingThrough>(previous);
-    r.emplace<LookingThrough>(target, std::move(saved));
-}
-
-entt::entity LookThroughCameraEntity(const entt::registry &r) {
-    auto view = r.view<LookingThrough>();
-    return view.empty() ? entt::null : *view.begin();
-}
 
 namespace TransformGizmo {
 bool IsUsing(const entt::registry &r, entt::entity viewport) { return r.get<const GizmoInteraction>(viewport).IsUsing(); }

@@ -8,10 +8,6 @@
 
 // Viewport/camera-state operations: applied imperatively (not via PendingX components).
 
-// Make `target` the look-through camera, preserving the saved view across switches.
-void SetLookThrough(entt::registry &, entt::entity viewport, entt::entity target);
-entt::entity LookThroughCameraEntity(const entt::registry &); // entt::null if none.
-
 // Switches interaction mode, seeding/clearing per-mesh selection ranges as needed. Returns false if the switch is disallowed.
 bool SetInteractionMode(entt::registry &, entt::entity viewport, InteractionMode);
 

@@ -24,7 +24,7 @@
 #include "scene/WorldTransform.h"
 #include "selection/SelectionComponents.h"
 #include "selection/SelectionOps.h"
-#include "viewport/ViewCamera.h"
+#include "viewport/ViewCameraOps.h"
 
 #include <entt/entity/registry.hpp>
 
@@ -219,10 +219,7 @@ void DestroyArmatureData(entt::registry &r, entt::entity arm_obj_entity) {
 
 void Destroy(entt::registry &r, entt::entity viewport, entt::entity e) {
     auto &meshes = r.ctx().get<MeshStore>();
-    if (r.all_of<LookingThrough>(e)) {
-        r.replace<ViewCamera>(viewport, r.get<LookingThrough>(e).SavedViewCamera);
-        r.remove<LookingThrough>(e);
-    }
+    if (r.all_of<LookingThrough>(e)) ClearLookThrough(r, viewport);
     { // Clear relationships
         ClearParent(r, e);
         std::vector<entt::entity> children;

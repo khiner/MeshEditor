@@ -31,13 +31,12 @@
 #include "selection/SelectionComponents.h"
 #include "ui/FieldEdit.h"
 #include "viewport/InteractionComponents.h"
+#include "viewport/ViewCameraOps.h"
 #include "viewport/ViewportEvents.h"
 #include "viewport/ViewportInteractionState.h"
 #include "viewport/ViewportOps.h"
 
 #include <entt/entity/registry.hpp>
-#include <glm/gtx/euler_angles.hpp>
-#include <imgui_internal.h>
 
 #include <format>
 

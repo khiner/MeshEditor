@@ -13,21 +13,12 @@
 #include "selection/SelectionComponents.h"
 #include "viewport/GizmoDrag.h"
 #include "viewport/InteractionComponents.h"
+#include "viewport/ViewCameraOps.h"
 #include "viewport/ViewportEvents.h"
 #include "viewport/ViewportInteractionState.h"
 #include "viewport/ViewportOps.h"
 
 using std::ranges::find;
-
-namespace {
-void ExitLookThrough(entt::registry &r, entt::entity viewport) {
-    const auto camera = LookThroughCameraEntity(r);
-    if (camera == entt::null) return;
-    r.replace<ViewCamera>(viewport, r.get<LookingThrough>(camera).SavedViewCamera);
-    r.remove<LookingThrough>(camera);
-}
-
-} // namespace
 
 namespace action::view {
 void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
@@ -87,20 +78,14 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
             [&](const SetEditMode &a) { r.emplace_or_replace<PendingSetEditMode>(viewport, a.Mode); },
             [&](EnterLookThroughCamera) {
                 const auto e = FindActiveEntity(r);
-                if (e == entt::null) return;
+                if (e == entt::null || !r.all_of<Camera>(e)) return;
                 SetLookThrough(r, viewport, e);
                 const auto &wt = r.get<WorldTransform>(e);
-                r.patch<ViewCamera>(viewport, [&](auto &vc) { vc.AnimateToLookThrough(wt.P, glm::normalize(wt.R), 1.f); });
+                r.patch<ViewCamera>(viewport, [&](auto &vc) { vc.AnimateToLookThrough(wt.P, wt.R, 1.f); });
             },
-            [&](ExitLookThroughCamera) { ExitLookThrough(r, viewport); },
-            [&](const OrbitViewCamera &a) {
-                ExitLookThrough(r, viewport);
-                r.patch<ViewCamera>(viewport, [&](auto &camera) { camera.RotateBy(a.DeltaRad); });
-            },
-            [&](const ZoomViewCamera &a) {
-                ExitLookThrough(r, viewport);
-                r.patch<ViewCamera>(viewport, [&](auto &camera) { camera.ZoomBy(a.Factor); });
-            },
+            [&](ExitLookThroughCamera) { ClearLookThrough(r, viewport); },
+            [&](const OrbitViewCamera &a) { r.patch<ViewCamera>(viewport, [&](auto &camera) { camera.RotateBy(a.DeltaRad); }); },
+            [&](const ZoomViewCamera &a) { r.patch<ViewCamera>(viewport, [&](auto &camera) { camera.ZoomBy(a.Factor); }); },
             [&](const SetExtent &a) { r.ctx().get<ViewportExtent>().Value = a.Extent; },
             [&](const SetStudioEnvironment &a) { r.emplace_or_replace<StudioEnvironment>(viewport, a.Name); poke_active_lighting(); },
             [&](const SetSourceIblIntensity &a) {
@@ -117,10 +102,7 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
             },
             [&](const SetViewCameraTarget &a) { patch_camera_stopped([&](auto &c) { c.Target = a.Target; }); },
             [&](const SetViewCameraLens &a) { patch_camera_stopped([&](auto &c) { c.Data = a.Data; }); },
-            [&](const SetViewCameraTargetDirection &a) {
-                ExitLookThrough(r, viewport);
-                r.patch<ViewCamera>(viewport, [&](auto &c) { c.SetTargetDirection(a.Direction); });
-            },
+            [&](const SetViewCameraTargetDirection &a) { r.patch<ViewCamera>(viewport, [&](auto &c) { c.SetTargetDirection(a.Direction); }); },
             [&](const SetRotationUiMode &a) {
                 for (const auto e : rotation_targets(a.Scope)) {
                     r.replace<RotationUiVariant>(e, CreateVariantByIndex<RotationUiVariant>(a.Index));

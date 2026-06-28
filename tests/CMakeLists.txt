@@ -32,6 +32,7 @@ add_executable(MeshEditorTests
     ${CMAKE_SOURCE_DIR}/src/viewport/ViewportOps.cpp
     ${CMAKE_SOURCE_DIR}/src/viewport/RenderExtent.cpp
     ${CMAKE_SOURCE_DIR}/src/viewport/ViewCamera.cpp
+    ${CMAKE_SOURCE_DIR}/src/viewport/ViewCameraOps.cpp
     ${CMAKE_SOURCE_DIR}/src/viewport/ViewportDisplay.cpp
     ${CMAKE_SOURCE_DIR}/src/render/Pipelines.cpp
     ${CMAKE_SOURCE_DIR}/src/render/Shader.cpp

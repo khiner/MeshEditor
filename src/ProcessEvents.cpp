@@ -50,6 +50,7 @@
 #include "viewport/GizmoDrag.h"
 #include "viewport/InteractionComponents.h"
 #include "viewport/RenderExtent.h"
+#include "viewport/ViewCameraOps.h"
 #include "viewport/ViewportConsumerFence.h"
 #include "viewport/ViewportDisplay.h"
 #include "viewport/ViewportEvents.h"

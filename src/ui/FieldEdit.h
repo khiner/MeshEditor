@@ -18,7 +18,6 @@
 #include "scene/Entity.h" // FindActiveEntity
 #include "selection/SelectionComponents.h" // Selected
 
-#include <imgui.h>
 #include <imgui_internal.h> // TempInputIsActive
 
 #include <array>

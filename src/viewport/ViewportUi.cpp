@@ -26,12 +26,12 @@
 #include "viewport/GizmoDrag.h"
 #include "viewport/InteractionComponents.h"
 #include "viewport/RenderExtent.h"
+#include "viewport/ViewCameraOps.h"
 #include "viewport/ViewportIcons.h"
 #include "viewport/ViewportInteractionState.h"
 #include "viewport/ViewportOps.h"
 
 #include <entt/entity/registry.hpp>
-#include <imgui_internal.h>
 
 #include "gizmo/OrientationGizmo.h"
 
@@ -95,6 +95,12 @@ bool IsSingleClicked(ImGuiMouseButton button) {
         if (was_escape_pressed) return false;
     }
     return IsMouseReleased(button) && !IsMouseDragPastThreshold(button);
+}
+
+// Nav isn't recorded, so the look-through exit can't ride on it. While looking through, the first nav input emits the recorded exit instead.
+void EmitViewNav(const entt::registry &r, auto &&nav) {
+    if (LookThroughCameraEntity(r) != entt::null) action::Emit(action::view::ExitLookThroughCamera{});
+    else action::Emit(std::forward<decltype(nav)>(nav));
 }
 
 struct OverlayIconButtonInfo {
@@ -294,8 +300,8 @@ void Interact(entt::registry &r, entt::entity viewport, FrameState &frame) {
     // Mouse wheel for camera rotation, Cmd+wheel to zoom.
     const auto &io = GetIO();
     if (const vec2 wheel = std::exchange(frame.PreciseWheelDelta, vec2{0}); wheel != vec2{0, 0}) {
-        if (io.KeyCtrl || io.KeySuper) action::Emit(action::view::ZoomViewCamera{.Factor = std::pow(WheelZoomStep, -wheel.y)});
-        else action::Emit(action::view::OrbitViewCamera{.DeltaRad = wheel * WheelOrbitRadPerUnit});
+        if (io.KeyCtrl || io.KeySuper) EmitViewNav(r, action::view::ZoomViewCamera{.Factor = std::pow(WheelZoomStep, -wheel.y)});
+        else EmitViewNav(r, action::view::OrbitViewCamera{.DeltaRad = wheel * WheelOrbitRadPerUnit});
     }
     if (OrientationGizmo::IsActive() || frame.OverlayControlsHovered) return;
 
@@ -753,8 +759,8 @@ void InteractOverlay(entt::registry &r, entt::entity viewport, FrameState &frame
         if (auto interaction = OrientationGizmo::Interact(pos, OrientationGizmoSize, camera, !active_transform && !any_popup_open)) {
             std::visit(
                 overloaded{
-                    [&](OrientationGizmo::RotateBy r) { action::Emit(action::view::OrbitViewCamera{r.Delta}); },
-                    [&](OrientationGizmo::AlignTo a) { action::Emit(action::view::SetViewCameraTargetDirection{a.Direction}); },
+                    [&](OrientationGizmo::RotateBy rot) { EmitViewNav(r, action::view::OrbitViewCamera{rot.Delta}); },
+                    [&](OrientationGizmo::AlignTo a) { EmitViewNav(r, action::view::SetViewCameraTargetDirection{a.Direction}); },
                 },
                 *interaction
             );

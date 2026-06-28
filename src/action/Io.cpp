@@ -13,9 +13,9 @@
 #include "object/ObjectOps.h"
 #include "render/GpuBufferOps.h"
 #include "scene/Defaults.h"
+#include "viewport/ViewCameraOps.h"
 #include "viewport/Viewport.h"
 #include "viewport/ViewportEvents.h"
-#include "viewport/ViewportOps.h"
 
 #include <entt/entity/registry.hpp>
 
