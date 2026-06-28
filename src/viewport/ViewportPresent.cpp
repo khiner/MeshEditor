@@ -5,13 +5,14 @@
 #include "audio/AudioSystem.h"
 #include "audio/FaustDSP.h"
 #include "render/GpuBuffers.h"
+#include "render/OneShotGpu.h"
 #include "render/Pipelines.h"
+#include "render/Textures.h"
 #include "viewport/FrameState.h"
 #include "viewport/ViewportDisplay.h"
 #include "viewport/ViewportIcons.h"
 #include "viewport/ViewportOps.h"
 #include "viewport/ViewportUi.h"
-#include "vulkan/Image.h"
 
 #include "imgui.h"
 #include <entt/entity/registry.hpp>
@@ -94,7 +95,8 @@ void StartRecording(entt::registry &r, entt::entity viewport, const std::filesys
     }
     const auto region = GetCaptureRegion(r);
     const auto &vk = r.ctx().get<const VulkanResources>();
-    r.emplace<VideoRecording>(viewport, VideoRecording{.Recorder = std::make_unique<VideoRecorder>(vk, path, region.first, region.second, fps), .Region = region});
+    auto &buffers = r.ctx().get<GpuBuffers>();
+    r.emplace<VideoRecording>(viewport, VideoRecording{.Recorder = std::make_unique<VideoRecorder>(vk, buffers.Ctx, path, region.first, region.second, fps), .Region = region});
 }
 
 bool IsRecording(const entt::registry &r, entt::entity viewport) {
@@ -117,6 +119,34 @@ void CaptureRecordFrame(entt::registry &r, entt::entity viewport) {
         return;
     }
     rec->Recorder->CaptureFrame(*pipelines.Main.Resources->FinalColorImage.Image);
+}
+
+std::expected<ViewportImageRgba8, std::string> ReadbackViewportImage(entt::registry &r) {
+    const auto &pipelines = r.ctx().get<const Pipelines>();
+    if (!pipelines.Main.Resources) return std::unexpected{"render resources not ready"};
+
+    const auto [offset, extent] = GetCaptureRegion(r);
+    if (extent.width == 0 || extent.height == 0) return std::unexpected{"viewport extent is zero"};
+
+    const auto &vk = r.ctx().get<const VulkanResources>();
+    const auto &one_shot = r.ctx().get<const OneShotGpu>();
+    const auto bgra = ReadbackImageRgba8(vk, r.ctx().get<GpuBuffers>().Ctx, *one_shot.Pool, *one_shot.Fence, *pipelines.Main.Resources->FinalColorImage.Image, offset, extent);
+
+    // Convert BGRA (Format::Color) to RGBA and flip vertically: the viewport renders with a
+    // negative-height Vulkan viewport, so row 0 in image memory is the bottom of the screen.
+    std::vector<std::byte> rgba8(bgra.size());
+    for (uint32_t y = 0; y < extent.height; ++y) {
+        const std::byte *src = bgra.data() + size_t(y) * extent.width * 4;
+        std::byte *dst = rgba8.data() + size_t(extent.height - 1 - y) * extent.width * 4;
+        for (uint32_t x = 0; x < extent.width; ++x) {
+            dst[x * 4 + 0] = src[x * 4 + 2];
+            dst[x * 4 + 1] = src[x * 4 + 1];
+            dst[x * 4 + 2] = src[x * 4 + 0];
+            dst[x * 4 + 3] = src[x * 4 + 3];
+        }
+    }
+
+    return ViewportImageRgba8{std::move(rgba8), extent.width, extent.height};
 }
 
 std::string DebugBufferHeapUsage(const entt::registry &r) {

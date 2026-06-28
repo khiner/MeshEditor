@@ -1,15 +1,17 @@
 #pragma once
 
+#include "vulkan/Buffer.h"
 #include "vulkan/VulkanResources.h"
 
 #include <filesystem>
+#include <optional>
 
 // Captures a sub-rect of the viewport's final color image each frame and pipes raw BGRA bytes
 // to an `ffmpeg` subprocess for on-the-fly H.264 encoding. `ffmpeg` must be on PATH; if it isn't,
 // IsActive() is false and CaptureFrame is a no-op. The capture region is locked at construction.
 struct VideoRecorder {
     VideoRecorder(
-        const VulkanResources &,
+        const VulkanResources &, mvk::BufferContext &,
         const std::filesystem::path &output_path, vk::Offset3D offset, vk::Extent2D extent, int fps
     );
     ~VideoRecorder();
@@ -41,9 +43,7 @@ private:
     vk::UniqueCommandBuffer CommandBuffer;
     vk::UniqueFence Fence;
 
-    vk::UniqueBuffer Buffer;
-    vk::UniqueDeviceMemory Memory;
-    void *Mapped{nullptr};
+    std::optional<mvk::Buffer> Staging;
 
     std::unique_ptr<std::FILE, PipeCloser> Pipe;
     uint64_t FrameCount{0};

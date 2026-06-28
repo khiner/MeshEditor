@@ -3,7 +3,9 @@
 #include <entt/entity/fwd.hpp>
 
 namespace action::timeline {
-// Enter presentation view (material-preview shading, overlays off) and start playback.
+// Enter presentation view (material-preview shading, overlays off) without starting playback.
+struct EnterPresentation {};
+// Enter presentation view and start playback.
 struct StartPresentation {};
 
 // Frame pins CurrentFrame on apply, so a recorded stop replays to the same frame.
@@ -25,7 +27,7 @@ struct SetView {
     float PixelsPerFrame, ViewCenterFrame;
 };
 
-using Action = std::variant<TogglePlay, StartPresentation, SetFrame, SetStartFrame, SetEndFrame, JumpToStart, JumpToEnd, SetView>;
+using Action = std::variant<TogglePlay, StartPresentation, SetFrame, SetStartFrame, SetEndFrame, JumpToStart, JumpToEnd, SetView, EnterPresentation>;
 
 void Apply(entt::registry &, entt::entity viewport, const Action &);
 } // namespace action::timeline

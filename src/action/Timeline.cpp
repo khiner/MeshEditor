@@ -7,10 +7,14 @@
 
 namespace action::timeline {
 void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
+    const auto enter_presentation = [&] {
+        r.patch<ViewportDisplay>(viewport, [](auto &s) { s.ViewportShading = s.FillMode = ViewportShadingMode::MaterialPreview; s.ShowOverlays = false; });
+    };
     std::visit(
         overloaded{
+            [&](EnterPresentation) { enter_presentation(); },
             [&](StartPresentation) {
-                r.patch<ViewportDisplay>(viewport, [](auto &s) { s.ViewportShading = s.FillMode = ViewportShadingMode::MaterialPreview; s.ShowOverlays = false; });
+                enter_presentation();
                 r.patch<TimelinePlayback>(viewport, [](auto &p) { p.Playing = true; });
             },
             [&](const TogglePlay &a) {

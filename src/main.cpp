@@ -12,6 +12,7 @@
 #include "audio/AudioDevice.h"
 #include "audio/AudioSystem.h"
 #include "gizmo/TransformGizmoTypes.h"
+#include "image/ImageEncode.h"
 #include "render/SvgResource.h"
 #include "render/SvgUpload.h"
 #include "scene/SceneControlsUi.h"
@@ -322,7 +323,26 @@ void ValidateSnapshotRoundTrip(entt::registry &r, entt::entity viewport) {
 }
 #endif
 
-void run(const char *initial_file, bool quiet, bool play, float play_duration, const fs::path &record_path, int record_fps) {
+// Read back the viewport and write it to `path`, choosing the encoder by extension (defaulting to .png).
+// Returns the resolved output path on success.
+std::expected<fs::path, std::string> SaveScreenshot(entt::registry &r, const fs::path &path) {
+    auto image = ReadbackViewportImage(r);
+    if (!image) return std::unexpected{std::move(image.error())};
+
+    auto ext = path.extension().string();
+    std::ranges::transform(ext, ext.begin(), [](unsigned char c) { return std::tolower(c); });
+    auto out_path = ext.empty() ? fs::path{path}.replace_extension(".png") : path;
+    const auto name = out_path.filename().string();
+    const auto encoded = ext == ".jpg" || ext == ".jpeg" ? EncodeImageJpegRgba8(image->Pixels, image->Width, image->Height, 95, name) : EncodeImagePngRgba8(image->Pixels, image->Width, image->Height, name);
+    if (!encoded) return std::unexpected{std::move(encoded.error())};
+
+    std::ofstream out{out_path, std::ios::binary};
+    out.write(reinterpret_cast<const char *>(encoded->data()), std::streamsize(encoded->size()));
+    if (!out) return std::unexpected{std::format("failed to write '{}'", out_path.string())};
+    return out_path;
+}
+
+void run(const char *initial_file, bool quiet, bool play, float play_duration, const fs::path &record_path, const fs::path &screenshot_path, int record_fps) {
     Timer::Enabled = !quiet;
 
     SDL_SetHint(SDL_HINT_MAC_SCROLL_MOMENTUM, "1");
@@ -385,10 +405,8 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, c
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard | ImGuiConfigFlags_NavEnableGamepad | ImGuiConfigFlags_DockingEnable;
     // io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable; // Enable Multi-Viewport / Platform Windows
     io.IniFilename = nullptr; // Disable ImGui's .ini file saving
-    // Keep input state across Cmd+Tab so in-flight gizmo drags survive focus loss.
-    io.ConfigDebugIgnoreFocusLoss = true;
-    // Blender-style click-to-edit: a click-release without dragging turns a Drag field into a text input.
-    io.ConfigDragClickToInputText = true;
+    io.ConfigDebugIgnoreFocusLoss = true; // Keep input state across Cmd+Tab so in-flight gizmo drags survive focus loss.
+    io.ConfigDragClickToInputText = true; // A click-release without dragging turns a Drag field into a text input.
 
     StyleColorsDark();
 
@@ -454,39 +472,46 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, c
     };
     audio_device.Start();
 
-    WindowsState windows;
-
-    // Main loop.
-    // Sim always uses the real `io.DeltaTime` from SDL, so sim-clock = wall-clock (1:1 real-time) whether
-    // or not we're recording. Recording just samples the already-live viewport: a wall-clock accumulator
-    // captures one frame every `1/record_fps` seconds, decimating if the display refreshes faster than the
-    // video's fps. This keeps the in-app preview and the recorded video playing at the exact same rate —
-    // the file is a faithful sample of what you saw on screen.
-    const bool recording_mode = !record_path.empty();
-    float elapsed_play_time = 0;
-    const Uint64 capture_interval_ns = 1'000'000'000ULL / Uint64(record_fps);
-    Uint64 next_capture_ns = 0; // Initialized when recording starts.
-    bool done = false;
-    bool viewport_resizing = false; // True while a resize drag is staged but not yet committed.
     action::StartLog(); // Record each applied action to the write-behind log.
     if (initial_file) {
         ClearScene(r, viewport);
         LoadFile(r, fs::path(initial_file));
         action::ApplyEmitted(r, viewport);
-        AdvanceViewport(r, viewport); // Derive the loaded scene before frame 1 reads it.
+        AdvanceViewport(r, viewport);
         if (auto &errors = r.ctx().get<action::Errors>().Messages; !errors.empty()) {
             for (const auto &message : errors) std::cerr << message << std::endl;
             play = false; // Don't auto-play if the initial file failed to load.
             errors.clear();
         }
     }
+
+    const bool recording_mode = !record_path.empty(), screenshot_mode = !screenshot_path.empty();
+    // Enter presentation mode so the first rendered frame matches the capture.
+    // Playback start and the capture itself wait until the viewport settles.
+    if (play || screenshot_mode || recording_mode) {
+        action::Emit(action::timeline::EnterPresentation{});
+        action::ApplyEmitted(r, viewport);
+        AdvanceViewport(r, viewport);
+    }
+
+    // Sim always uses the real `io.DeltaTime` from SDL, so sim-clock = wall-clock (1:1 real-time) whether or not we're recording.
+    // Recording just samples the already-live viewport: a wall-clock accumulator captures one frame every `1/record_fps` seconds,
+    // decimating if the display refreshes faster than the video's fps.
+    // This keeps the in-app preview and the recorded video playing at the exact same rate.
+    const uint64_t capture_interval_ns{1'000'000'000ULL / uint64_t(record_fps)};
+    uint64_t next_capture_ns{0}; // Initialized when recording starts.
+    float elapsed_play_time{0};
+    bool playback_started{false}, screenshot_saved{false};
+    bool viewport_resizing{false}; // True while a resize drag is staged but not yet committed.
+    bool done{false};
+    WindowsState windows;
     while (!done) {
         SDL_Event event;
         while (SDL_PollEvent(&event)) {
             if (event.type == SDL_EVENT_MOUSE_WHEEL) {
                 r.ctx().get<FrameState>().PreciseWheelDelta += vec2{-event.wheel.x, event.wheel.y};
                 // SDL's pixel-derived deltas overscroll ImGui panels.
-                constexpr float ImGuiWheelScale = 0.3f;
+                constexpr float ImGuiWheelScale{0.3};
                 event.wheel.x *= ImGuiWheelScale;
                 event.wheel.y *= ImGuiWheelScale;
             }
@@ -781,13 +806,13 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, c
                 new_logical_extent = {uint32_t(std::max(content_region.x, 0.f)), uint32_t(std::max(content_region.y, 0.f))};
             }
         }
+        const bool viewport_settled = new_logical_extent != uvec2{} && new_logical_extent == r.ctx().get<const ViewportExtent>().Value;
 
-        // Remaining emits go after Interact so Interact wins the single-action buffer.
-        if (GetFrameCount() == 2 && play) {
-            // Wait until frame 1 has sized and rendered the loaded scene. Emitting on frame 1 would take its
-            // single-action buffer from SetExtent (reintroducing a black frame), and racing physics setup.
+        // Remaining emits go after Interact so it wins the single-action buffer.
+        // Start playback once settled, for play or video (the screenshot stays on the held frame).
+        if (!playback_started && viewport_settled && (play || recording_mode)) {
             action::Emit(action::timeline::StartPresentation{});
-            play = false;
+            playback_started = true;
         }
         // Record viewport resizes so replay restores the same render extent.
         // A resize drag spans many frames: stage it and commit on mouse-up so the drag records a single SetExtent.
@@ -825,8 +850,14 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, c
         auto *draw_data = GetDrawData();
         if (const bool is_minimized = (draw_data->DisplaySize.x <= 0.0f || draw_data->DisplaySize.y <= 0.0f); !is_minimized) {
             WaitForRender(r); // ImGui samples final image
-            // Start recording on the first frame the viewport image is ready.
-            if (recording_mode && !IsRecording(r, viewport) && ViewportImageReady(r)) {
+            // Save the image, then exit unless recording or a play duration is still running.
+            if (screenshot_mode && !screenshot_saved && viewport_settled) {
+                if (auto saved = SaveScreenshot(r, screenshot_path); saved) std::println("Saved screenshot: {}", saved->string());
+                else std::println(stderr, "Screenshot: {}", saved.error());
+                screenshot_saved = true;
+                if (!recording_mode && play_duration <= 0) done = true;
+            }
+            if (recording_mode && !IsRecording(r, viewport) && viewport_settled) {
                 StartRecording(r, viewport, record_path, record_fps);
                 if (IsRecording(r, viewport)) next_capture_ns = SDL_GetTicksNS();
                 else done = true;
@@ -892,7 +923,7 @@ int main(int argc, char **argv) {
     const char *initial_file = nullptr;
     bool play = false;
     float play_duration = 0;
-    fs::path record_path;
+    fs::path record_path, screenshot_path;
     int record_fps = 60;
 #ifdef QUIET
     bool quiet = true;
@@ -906,11 +937,12 @@ int main(int argc, char **argv) {
             play = true;
             if (std::next(it) != args.end() && looks_numeric(*std::next(it))) play_duration = std::atof(*++it);
         } else if (a == "--record" && std::next(it) != args.end()) record_path = *++it;
+        else if (a == "--screenshot" && std::next(it) != args.end()) screenshot_path = *++it;
         else if (a == "--fps" && std::next(it) != args.end()) record_fps = std::atoi(*++it);
         else if (!a.starts_with('-') && !initial_file) initial_file = *it;
     }
     if (record_fps <= 0) record_fps = 60;
 
-    run(initial_file, quiet, play, play_duration, std::move(record_path), record_fps);
+    run(initial_file, quiet, play, play_duration, std::move(record_path), std::move(screenshot_path), record_fps);
     return 0;
 }

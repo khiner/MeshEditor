@@ -26,4 +26,6 @@ void RecordBufferToSampledImageUpload(
     vk::CommandBuffer, vk::Buffer src, vk::Image dst, uint32_t width, uint32_t height, vk::ImageSubresourceRange subresource_range,
     vk::DeviceSize buffer_offset = 0
 );
+// Copy a color sub-rect (mip 0) of `src` to `dst`, transitioning eShaderReadOnlyOptimal -> transfer-src and back.
+void RecordImageToBufferCopy(vk::CommandBuffer, vk::Image src, vk::Buffer dst, vk::Offset3D, vk::Extent2D);
 } // namespace mvk

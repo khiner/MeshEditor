@@ -174,6 +174,14 @@ std::expected<TextureEntry, std::string> CreateTextureEntryFromEncoded(
 uint32_t AllocateSamplerSlot(DescriptorSlots &);
 std::pair<uint32_t, uint32_t> AllocateIblCubeSlots(DescriptorSlots &); // {diffuse, specular}
 
+// Copy an image sub-rect (mip 0) to host memory as raw 4x8-bit bytes, in the image's native channel
+// order and memory row order. Synchronous: submits and blocks on `fence`. The image's resting layout
+// (eShaderReadOnlyOptimal) is restored on completion.
+std::vector<std::byte> ReadbackImageRgba8(
+    const VulkanResources &, mvk::BufferContext &,
+    vk::CommandPool, vk::Fence, vk::Image, vk::Offset3D, vk::Extent2D
+);
+
 // Read mip 0 of an RGBA8 texture back to host memory. Synchronous: submits to `queue`, blocks on
 // `fence`. The texture's resting layout (eShaderReadOnlyOptimal) is restored on completion.
 std::expected<std::vector<std::byte>, std::string> ReadbackTextureRgba8(

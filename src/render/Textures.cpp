@@ -826,44 +826,16 @@ IblSamplers MakeIblSamplers(const EnvironmentPrefiltered &pre, const Environment
     };
 }
 
-std::expected<std::vector<std::byte>, std::string> ReadbackTextureRgba8(
+std::vector<std::byte> ReadbackImageRgba8(
     const VulkanResources &vk, mvk::BufferContext &buf_ctx,
-    vk::CommandPool cmd_pool, vk::Fence fence, const TextureEntry &entry
+    vk::CommandPool cmd_pool, vk::Fence fence, vk::Image image, vk::Offset3D offset, vk::Extent2D extent
 ) {
-    if (entry.Width == 0 || entry.Height == 0) {
-        return std::unexpected{std::format("Texture '{}' has zero dimension {}x{}.", entry.Name, entry.Width, entry.Height)};
-    }
-    const vk::DeviceSize byte_size = vk::DeviceSize(entry.Width) * vk::DeviceSize(entry.Height) * 4u;
+    const vk::DeviceSize byte_size = vk::DeviceSize(extent.width) * vk::DeviceSize(extent.height) * 4u;
     mvk::Buffer staging{buf_ctx, byte_size, mvk::MemoryUsage::CpuOnly, vk::BufferUsageFlagBits::eTransferDst};
 
-    auto cbs = vk.Device.allocateCommandBuffersUnique({cmd_pool, vk::CommandBufferLevel::ePrimary, 1});
-    auto cb = std::move(cbs.front());
+    auto cb = std::move(vk.Device.allocateCommandBuffersUnique({cmd_pool, vk::CommandBufferLevel::ePrimary, 1}).front());
     cb->begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
-
-    const vk::ImageSubresourceRange mip0{vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1};
-    TransitionImage(
-        *cb, vk::PipelineStageFlagBits::eFragmentShader, vk::PipelineStageFlagBits::eTransfer,
-        vk::AccessFlagBits::eShaderRead, vk::AccessFlagBits::eTransferRead,
-        vk::ImageLayout::eShaderReadOnlyOptimal, vk::ImageLayout::eTransferSrcOptimal,
-        *entry.Image.Image, mip0
-    );
-    cb->copyImageToBuffer(
-        *entry.Image.Image, vk::ImageLayout::eTransferSrcOptimal, *staging,
-        vk::BufferImageCopy{
-            0,
-            0,
-            0,
-            vk::ImageSubresourceLayers{vk::ImageAspectFlagBits::eColor, 0, 0, 1},
-            vk::Offset3D{0, 0, 0},
-            vk::Extent3D{entry.Width, entry.Height, 1},
-        }
-    );
-    TransitionImage(
-        *cb, vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eFragmentShader,
-        vk::AccessFlagBits::eTransferRead, vk::AccessFlagBits::eShaderRead,
-        vk::ImageLayout::eTransferSrcOptimal, vk::ImageLayout::eShaderReadOnlyOptimal,
-        *entry.Image.Image, mip0
-    );
+    mvk::RecordImageToBufferCopy(*cb, image, *staging, offset, extent);
     cb->pipelineBarrier(
         vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eHost, {},
         vk::MemoryBarrier{vk::AccessFlagBits::eTransferWrite, vk::AccessFlagBits::eHostRead}, {}, {}
@@ -874,6 +846,16 @@ std::expected<std::vector<std::byte>, std::string> ReadbackTextureRgba8(
 
     const auto mapped = staging.GetMappedData();
     return std::vector<std::byte>{mapped.begin(), mapped.begin() + size_t(byte_size)};
+}
+
+std::expected<std::vector<std::byte>, std::string> ReadbackTextureRgba8(
+    const VulkanResources &vk, mvk::BufferContext &buf_ctx,
+    vk::CommandPool cmd_pool, vk::Fence fence, const TextureEntry &entry
+) {
+    if (entry.Width == 0 || entry.Height == 0) {
+        return std::unexpected{std::format("Texture '{}' has zero dimension {}x{}.", entry.Name, entry.Width, entry.Height)};
+    }
+    return ReadbackImageRgba8(vk, buf_ctx, cmd_pool, fence, *entry.Image.Image, {0, 0, 0}, {entry.Width, entry.Height});
 }
 
 std::expected<TextureEntry, std::string> MaterializeTextureEntry(

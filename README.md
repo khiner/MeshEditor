@@ -155,16 +155,20 @@ $ git clone --recurse-submodules git@github.com:khiner/MeshEditor.git
 $ cd MeshEditor
 $ ./script/Clean # optionally clean first
 $ ./script/Build [--release]
-$ cd build && ./MeshEditor [file] [--quiet|-q] [--play [seconds]] [--record path.mp4 [--fps N]]
+$ cd build && ./MeshEditor [file] [--quiet|-q] [--play [seconds]] [--record path.mp4 [--fps N]] [--screenshot path.png]
 ```
 
 * `file` can be a `.gltf`, `.glb`, `.obj`, or `.ply`. Without a file, a default cube is loaded.
 * `--quiet` / `-q` suppresses timer output.
-* `--play [seconds]` starts in play mode (material preview shading, overlays hidden, animation/physics running).
-Optional `[seconds]` auto-exits after the given duration. See `--record` below for how the duration is interpreted.
-* `--record path.mp4` writes the viewport as an H.264 `.mp4` via a `ffmpeg` subprocess (must be on `PATH`).
+All of `--play`, `--record`, and `--screenshot` use the presentation look (material preview shading, overlays hidden). `--play` and `--record` also run the animation/physics; `--screenshot` holds the first frame.
+
+* `--play [seconds]` starts playback. Optional `[seconds]` auto-exits after the given duration. See `--record` below for how the duration is interpreted.
+* `--record path.mp4` runs playback and writes the viewport as an H.264 `.mp4` via a `ffmpeg` subprocess (must be on `PATH`).
 When a look-through camera is active, only the camera-frame sub-rect (the area inside the dimmed overlay) is recorded. Otherwise the full viewport is recorded.
 * `--fps N` sets the recording framerate (default 60).
+* `--screenshot path.png` writes a single image. The format is chosen by extension (`.png`, `.jpg`/`.jpeg`), which is optional and defaults to `.png`. The captured region matches `--record`. On its own it exits after writing; combined with `--play [seconds]` or `--record` it grabs the frame and keeps running.
+
+The flags can be combined freely.
 
 **Timing**: the sim runs at wall-clock rate. Recording samples the viewport at `fps`, so the file plays at the same rate as the in-app preview. `--play N` exits after N seconds — wall-clock when interactive, video-seconds when recording.
 

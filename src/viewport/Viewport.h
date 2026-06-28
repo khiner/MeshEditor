@@ -5,6 +5,7 @@
 
 #include <entt/entity/fwd.hpp>
 
+#include <expected>
 #include <filesystem>
 
 // Build the process-lifetime engine and return the viewport entity.
@@ -51,5 +52,14 @@ void StartRecording(entt::registry &, entt::entity viewport, const std::filesyst
 void CaptureRecordFrame(entt::registry &, entt::entity viewport);
 bool IsRecording(const entt::registry &, entt::entity viewport);
 uint64_t CapturedFrameCount(const entt::registry &, entt::entity viewport);
+
+// Upright, tightly-packed RGBA8 pixels read back from the viewport's final color image.
+struct ViewportImageRgba8 {
+    std::vector<std::byte> Pixels;
+    uint32_t Width, Height;
+};
+// Read back the current FinalColorImage as upright RGBA8 (the framed sub-region matching recording).
+// Call after WaitForRender() so the source image is coherent. Returns an error message on failure.
+std::expected<ViewportImageRgba8, std::string> ReadbackViewportImage(entt::registry &);
 
 std::string DebugBufferHeapUsage(const entt::registry &);
