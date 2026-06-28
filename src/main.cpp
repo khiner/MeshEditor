@@ -582,8 +582,7 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, c
 #ifdef DEBUG_BUILD
                 if (MenuItem("Validate snapshot round-trip")) ValidateSnapshotRoundTrip(r, viewport);
 #endif
-                if (MenuItem("Load glTF", nullptr)) {
-                    static const std::array filters{nfdfilteritem_t{"glTF scene", "gltf,glb"}};
+                const auto import_dialog = [&r](const auto &filters) {
                     nfdchar_t *nfd_path;
                     if (auto result = NFD_OpenDialog(&nfd_path, filters.data(), filters.size(), ""); result == NFD_OKAY) {
                         LoadFile(r, fs::path(nfd_path));
@@ -591,6 +590,30 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, c
                     } else if (result != NFD_CANCEL) {
                         std::cerr << "Error opening file dialog: " << NFD_GetError() << std::endl;
                     }
+                };
+                if (BeginMenu("Import")) {
+                    if (MenuItem("glTF 2.0 (.glb/.gltf)")) {
+                        static constexpr std::array filters{nfdfilteritem_t{"glTF scene", "gltf,glb"}};
+                        import_dialog(filters);
+                    }
+                    if (MenuItem("Wavefront (.obj)")) {
+                        static constexpr std::array filters{nfdfilteritem_t{"Wavefront OBJ", "obj"}};
+                        import_dialog(filters);
+                    }
+                    if (MenuItem("Stanford PLY (.ply)")) {
+                        static constexpr std::array filters{nfdfilteritem_t{"Stanford PLY", "ply"}};
+                        import_dialog(filters);
+                    }
+                    if (MenuItem("RealImpact")) {
+                        nfdchar_t *path;
+                        if (auto result = NFD_PickFolder(&path, ""); result == NFD_OKAY) {
+                            action::Emit(action::io::LoadRealImpact{.Directory = std::string{path}});
+                            NFD_FreePath(path);
+                        } else if (result != NFD_CANCEL) {
+                            std::cerr << "Error opening folder dialog: " << NFD_GetError() << std::endl;
+                        }
+                    }
+                    EndMenu();
                 }
                 const auto render_tree = [&](this auto &&self, const GltfSampleTree &n, const auto &passes) -> void {
                     const auto has_visible = [&](this auto &&rec, const GltfSampleTree &m) -> bool {
@@ -662,26 +685,6 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, c
                 static const auto PhysicsTree = BuildGltfSampleTree(GLTF_PHYSICS_DIR);
                 render_submenu("glTF_Physics Samples", PhysicsTree);
 #endif
-                if (MenuItem("Load OBJ/PLY", nullptr)) {
-                    static const std::array filters{nfdfilteritem_t{"Mesh object", "obj,ply"}};
-                    nfdchar_t *nfd_path;
-                    if (auto result = NFD_OpenDialog(&nfd_path, filters.data(), filters.size(), ""); result == NFD_OKAY) {
-                        LoadFile(r, fs::path(nfd_path));
-                        NFD_FreePath(nfd_path);
-                    } else if (result != NFD_CANCEL) {
-                        std::cerr << "Error opening file dialog: " << NFD_GetError() << std::endl;
-                    }
-                }
-                if (MenuItem("Load RealImpact", nullptr)) {
-                    static const std::vector<nfdfilteritem_t> filters{};
-                    nfdchar_t *path;
-                    if (auto result = NFD_PickFolder(&path, ""); result == NFD_OKAY) {
-                        action::Emit(action::io::LoadRealImpact{.Directory = std::string{path}});
-                        NFD_FreePath(path);
-                    } else if (result != NFD_CANCEL) {
-                        std::cerr << "Error opening folder dialog: " << NFD_GetError() << std::endl;
-                    }
-                }
                 if (MenuItem("Save glTF", nullptr)) {
                     static const std::array filters{nfdfilteritem_t{"glTF scene", "gltf,glb"}};
                     nfdchar_t *nfd_path;
