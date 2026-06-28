@@ -459,6 +459,9 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, c
     InitViewportMedia(r, std::move(create_svg));
     SetupScene(r, viewport); // Before the first frame reads viewport state.
     AddDefaultSceneContent(r);
+    // Capture the DPI scale (only set during NewFrame) before priming DPI-scaled GPU state like edge-line width.
+    ImGui_ImplSDL3_NewFrame();
+    r.ctx().get<FrameState>().DisplayFramebufferScale = {io.DisplayFramebufferScale.x, io.DisplayFramebufferScale.y};
     AdvanceViewport(r, viewport); // Prime derived state before the first frame reads it.
 
     struct AudioContext {
@@ -543,11 +546,7 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, c
         ImGui_ImplVulkan_NewFrame();
         ImGui_ImplSDL3_NewFrame();
         elapsed_play_time += io.DeltaTime;
-        {
-            auto &frame = r.ctx().get<FrameState>();
-            frame.DeltaTime = io.DeltaTime;
-            frame.DisplayFramebufferScale = {io.DisplayFramebufferScale.x, io.DisplayFramebufferScale.y};
-        }
+        r.ctx().get<FrameState>().DeltaTime = io.DeltaTime;
         NewFrame();
 
         auto dockspace_id = DockSpaceOverViewport(0, nullptr, ImGuiDockNodeFlags_PassthruCentralNode | ImGuiDockNodeFlags_AutoHideTabBar);
