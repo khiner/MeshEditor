@@ -263,19 +263,11 @@ void LoadFile(entt::registry &r, const fs::path &path) {
 }
 
 // Reset to the default scene, optionally replaying a `.mea` log on top.
-void NewProject(entt::registry &r, entt::entity viewport, const fs::path &replay_path = {}, bool with_default_content = true, [[maybe_unused]] bool is_current_replay = false) {
+void NewProject(entt::registry &r, entt::entity viewport, const fs::path &replay_path = {}, bool with_default_content = true) {
     // Invoked mid-frame from the menu: the prior frame may still be sampling the viewport resources replay is
     // about to recreate, and replay has no consumer fence to wait on. Let the GPU finish all work first.
     r.ctx().get<const VulkanResources>().Device.waitIdle();
     action::StopPlaybackIfPlaying(r, viewport);
-#ifdef DEBUG_BUILD
-    // Replay test: replaying the live session's *own* log should reproduce the live scene exactly. Only then is
-    // the current scene a valid `expected` — replaying a past session's log has nothing to do with live state,
-    // so the check (and fixture write) is gated to the current log. Snapshot now, replay below, and compare.
-    const bool replay_check = !replay_path.empty() && is_current_replay;
-    std::vector<std::byte> expected;
-    if (replay_check) expected = snapshot::SnapshotSceneState(r);
-#endif
     action::StopLog();
     const auto live_extent = r.ctx().get<ViewportExtent>().Value; // Restore after replay's SetExtent actions change it.
     // View-camera navigation isn't recorded, so save and restore afterward to not disturb the live view.
@@ -293,32 +285,42 @@ void NewProject(entt::registry &r, entt::entity viewport, const fs::path &replay
         r.ctx().get<ViewportExtent>().Value = live_extent;
         SetViewCameraState(r, viewport, std::move(live_view_cameras));
         PresentViewport(r, viewport);
-#ifdef DEBUG_BUILD
-        if (replay_check) {
-            const auto actual = snapshot::SnapshotSceneState(r);
-            if (const auto diff = snapshot::Compare(expected, actual); !diff.Equal) {
-                snapshot::WriteReplayTestFixture(replay_path, expected, actual);
-            }
-        }
-#endif
     }
 }
 
 #ifdef DEBUG_BUILD
-// Save the full persistent state, clear+restore it, run one update pass, and compare the re-saved state.
-// Proves the snapshot mechanism reproduces the saved image byte-for-byte across arenas, serialize/restore, and exact entity-handle recreation.
-void ValidateSnapshotRoundTrip(entt::registry &r, entt::entity viewport) {
+// Validate replay then snapshot correctness, aborting on the first divergence:
+// - Replay: replaying the current log onto a fresh scene must reproduce the saved image (writes a replay-test fixture on failure).
+// - Round-trip: save, clear, restore must reproduce the saved image.
+void ValidateRoundTrip(entt::registry &r, entt::entity viewport) {
     r.ctx().get<const VulkanResources>().Device.waitIdle();
     action::StopPlaybackIfPlaying(r, viewport);
+
+    const auto logs = action::ListReplayLogs(); // Most-recent first; the newest is the live session's log.
+    if (logs.empty()) {
+        std::println(stderr, "[snapshot] replay SKIPPED (no log)");
+    } else {
+        const auto &current_log = logs.front().Path;
+        const auto expected = snapshot::SnapshotSceneState(r);
+        NewProject(r, viewport, current_log);
+        const auto actual = snapshot::SnapshotSceneState(r);
+        if (const auto diff = snapshot::Compare(expected, actual); !diff.Equal) {
+            std::println(stderr, "[snapshot] replay DIVERGED at byte {} (expected {} / actual {})", diff.FirstDifferingByte, expected.size(), actual.size());
+            if (const auto fixture_dir = snapshot::WriteReplayTestFixture(current_log, expected, actual); !fixture_dir.empty()) {
+                std::println(stderr, "[snapshot] wrote replay-test fixture to {}", fixture_dir.string());
+            }
+            std::abort();
+        }
+    }
+
     const auto before = snapshot::SaveState(r);
     ClearScene(r, viewport);
     snapshot::LoadState(r, before);
     AdvanceViewport(r, viewport);
     const auto after = snapshot::SaveState(r);
-    if (const auto diff = snapshot::Compare(before, after); diff.Equal) {
-        std::println(stderr, "[snapshot] round-trip OK ({} bytes)", before.size());
-    } else {
+    if (const auto diff = snapshot::Compare(before, after); !diff.Equal) {
         std::println(stderr, "[snapshot] round-trip DIVERGED at byte {} (before {} / after {})", diff.FirstDifferingByte, before.size(), after.size());
+        std::abort();
     }
     PresentViewport(r, viewport);
 }
@@ -578,12 +580,12 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, c
                         char date[32];
                         std::strftime(date, sizeof date, "%Y-%m-%d %H:%M:%S", std::localtime(&t));
                         const auto label = i == 0 ? std::format("Current ({})", date) : std::string{date};
-                        if (MenuItem(label.c_str())) NewProject(r, viewport, logs[i].Path, /*with_default_content=*/true, /*is_current_replay=*/i == 0);
+                        if (MenuItem(label.c_str())) NewProject(r, viewport, logs[i].Path);
                     }
                     EndMenu();
                 }
 #ifdef DEBUG_BUILD
-                if (MenuItem("Validate snapshot round-trip")) ValidateSnapshotRoundTrip(r, viewport);
+                if (MenuItem("Validate roundtrip")) ValidateRoundTrip(r, viewport);
 #endif
                 const auto import_dialog = [&r](const auto &filters) {
                     nfdchar_t *nfd_path;
