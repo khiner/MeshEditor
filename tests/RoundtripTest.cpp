@@ -64,12 +64,12 @@ fs::path MakeRoundtripDir() {
     return dir;
 }
 
-// Sample assets are checked out as siblings of the repo root. Anchor every sample path at
+// Sample assets live in submodules under external/. Anchor every sample path at
 // MESHEDITOR_SOURCE_DIR (the repo root, baked in by CMake) so the test finds them regardless of the
 // working directory it's launched from.
 constexpr std::string_view SampleRoots[]{
-    "../glTF-Sample-Assets/Models",
-    "../glTF_Physics/samples",
+    "external/glTF-Sample-Assets/Models",
+    "external/glTF_Physics/samples",
 };
 
 fs::path SamplePath(std::string_view relative_to_repo_root) { return fs::path{MESHEDITOR_SOURCE_DIR} / relative_to_repo_root; }
@@ -791,7 +791,7 @@ int main(int argc, const char **argv) {
     fs::create_directories(edit_root);
 
     // Mark the embedded variant's image dirty; saved bytes must pixel-equal the GPU readback.
-    if (const fs::path box_embedded = SamplePath("../glTF-Sample-Assets/Models/BoxTextured/glTF-Embedded/BoxTextured.gltf"); fs::exists(box_embedded)) {
+    if (const fs::path box_embedded = SamplePath("external/glTF-Sample-Assets/Models/BoxTextured/glTF-Embedded/BoxTextured.gltf"); fs::exists(box_embedded)) {
         test("dirty_image_re_encodes_pixel_equal") = [&] {
             SceneFixture fx{vk_resources};
             const auto load = gltf::LoadGltf(box_embedded, load_ctx(fx.R, fx.Viewport));
@@ -841,7 +841,7 @@ int main(int argc, const char **argv) {
     }
 
     // Move the external PNG aside between load and save; the embed-as-PNG fallback should fire.
-    const fs::path box_external = SamplePath("../glTF-Sample-Assets/Models/BoxTextured/glTF/BoxTextured.gltf");
+    const fs::path box_external = SamplePath("external/glTF-Sample-Assets/Models/BoxTextured/glTF/BoxTextured.gltf");
     if (fs::exists(box_external)) {
         test("missing_external_source_falls_back_to_embedded_png") = [&] {
             const auto stage_dir = edit_root / "BoxTextured-external";

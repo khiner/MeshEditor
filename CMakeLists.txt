@@ -228,35 +228,10 @@ endif()
 set(REPLAY_LOG_RETAIN 5 CACHE STRING "Max number of .actions replay logs to keep")
 target_compile_definitions(${PROJECT_NAME} PRIVATE REPLAY_LOG_RETAIN=${REPLAY_LOG_RETAIN})
 
-# Optional local clones of glTF sample repos. When set and present, populate File submenus with their models.
-# Defaults to ../<repo> if it exists alongside this checkout, so a sibling clone is picked up automatically.
-function(_default_if_exists var rel_path)
-    if(IS_DIRECTORY "${CMAKE_SOURCE_DIR}/${rel_path}")
-        set(${var} "${CMAKE_SOURCE_DIR}/${rel_path}" PARENT_SCOPE)
-    else()
-        set(${var} "" PARENT_SCOPE)
-    endif()
-endfunction()
-
-_default_if_exists(_gltf_sample_assets_default "../glTF-Sample-Assets")
-set(GLTF_SAMPLE_ASSETS_DIR "${_gltf_sample_assets_default}" CACHE PATH "Path to a local clone of github.com/KhronosGroup/glTF-Sample-Assets")
-if(GLTF_SAMPLE_ASSETS_DIR)
-    if(IS_DIRECTORY "${GLTF_SAMPLE_ASSETS_DIR}")
-        target_compile_definitions(${PROJECT_NAME} PRIVATE GLTF_SAMPLE_ASSETS_DIR="${GLTF_SAMPLE_ASSETS_DIR}")
-    else()
-        message(WARNING "GLTF_SAMPLE_ASSETS_DIR='${GLTF_SAMPLE_ASSETS_DIR}' is not a directory; submenu disabled.")
-    endif()
-endif()
-
-_default_if_exists(_gltf_physics_default "../glTF_Physics")
-set(GLTF_PHYSICS_DIR "${_gltf_physics_default}" CACHE PATH "Path to a local clone of github.com/eoineoineoin/glTF_Physics")
-if(GLTF_PHYSICS_DIR)
-    if(IS_DIRECTORY "${GLTF_PHYSICS_DIR}")
-        target_compile_definitions(${PROJECT_NAME} PRIVATE GLTF_PHYSICS_DIR="${GLTF_PHYSICS_DIR}")
-    else()
-        message(WARNING "GLTF_PHYSICS_DIR='${GLTF_PHYSICS_DIR}' is not a directory; submenu disabled.")
-    endif()
-endif()
+# glTF sample repos (git submodules under external/) populate File submenus with their models.
+target_compile_definitions(${PROJECT_NAME} PRIVATE
+    GLTF_SAMPLE_ASSETS_DIR="${CMAKE_SOURCE_DIR}/external/glTF-Sample-Assets"
+    GLTF_PHYSICS_DIR="${CMAKE_SOURCE_DIR}/external/glTF_Physics")
 
 # Disable lib warnings
 # staticlib is faustlib (can't use alias target)

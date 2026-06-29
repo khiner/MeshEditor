@@ -202,18 +202,9 @@ For discrete GPUs, enable staged transfers:
 $ cmake -B build -DMVK_FORCE_STAGED_TRANSFERS=ON .
 ```
 
-**glTF sample submenus** (optional): clone [glTF-Sample-Assets](https://github.com/KhronosGroup/glTF-Sample-Assets) and/or [glTF_Physics](https://github.com/eoineoineoin/glTF_Physics) to populate `File > glTF Samples` and `File > glTF_Physics Samples` with one entry per model (`.glb` preferred, `.gltf` fallback). Submenus are hidden when the path is unset or invalid.
-
-CMake settings (cached, defaults used if they exist, otherwise empty):
-- `GLTF_SAMPLE_ASSETS_DIR`: defaults to `../glTF-Sample-Assets`
-- `GLTF_PHYSICS_DIR`: defaults to `../glTF_Physics`
-
+**glTF sample submenus**: [glTF-Sample-Assets](https://github.com/KhronosGroup/glTF-Sample-Assets) and [glTF_Physics](https://github.com/eoineoineoin/glTF_Physics) are git submodules under `external/`, populating `File > glTF Samples` and `File > glTF_Physics Samples`. These submenus are empty if the submodules aren't initialized:
 ```shell
-# Use the defaults: clone as siblings of MeshEditor, then configure normally.
-$ git clone https://github.com/KhronosGroup/glTF-Sample-Assets ../glTF-Sample-Assets
-$ git clone https://github.com/eoineoineoin/glTF_Physics ../glTF_Physics
-# Or point elsewhere explicitly (overrides the default):
-$ cmake -B build -DGLTF_SAMPLE_ASSETS_DIR=/path/to/glTF-Sample-Assets -DGLTF_PHYSICS_DIR=/path/to/glTF_Physics .
+$ git submodule update --init external/glTF-Sample-Assets external/glTF_Physics
 ```
 
 **Quiet mode**: Disable timer output at compile time (equivalent to always passing `--quiet`):
@@ -223,8 +214,8 @@ $ cmake -B build -DQUIET=ON .
 
 ### Tests
 
-WIP glTF roundtrip tests.
-Currently expects [`glTF-Sample-Assets`](https://github.com/KhronosGroup/glTF-Sample-Assets) and [`glTF_Physics`](https://github.com/eoineoineoin/glTF_Physics) cloned alongside `MeshEditor/`.
+Unit tests, including glTF roundtrip tests.
+The roundtrip tests require the `external/glTF-Sample-Assets` and `external/glTF_Physics` submodules (see above).
 
 ```shell
 $ ./script/Build --test
@@ -233,12 +224,11 @@ $ ./build/tests/MeshEditorTests
 
 ### Update submodules
 
-All submodules are in the `lib` directory.
-Currently, no submodules are forked.
+Submodules live in `lib` (libraries) and `external` (glTF sample assets).
 Here is my process for updating to the tip of all the submodule branches:
 
 ```sh
-$ git submodule update --remote lib/{submodule}
+$ git submodule update --remote {path}/{submodule}
 $ git add .
 $ git cm -m "Update {submodule} ..."
 ```
