@@ -28,7 +28,7 @@ std::filesystem::path WriteReplayTestFixture(const std::filesystem::path &replay
     const auto dir = root / std::to_string(unix_sec);
     std::error_code ec;
     std::filesystem::create_directories(dir, ec);
-    std::filesystem::copy_file(replay_log, dir / "log.mea", std::filesystem::copy_options::overwrite_existing, ec);
+    std::filesystem::copy_file(replay_log, dir / "log.actions", std::filesystem::copy_options::overwrite_existing, ec);
     WriteBytes(dir / "expected.snap", expected);
     WriteBytes(dir / "actual.snap", actual);
     return dir;

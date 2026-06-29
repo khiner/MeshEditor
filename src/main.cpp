@@ -262,7 +262,7 @@ void LoadFile(entt::registry &r, const fs::path &path) {
     }
 }
 
-// Reset to the default scene, optionally replaying a `.mea` log on top.
+// Reset to the default scene, optionally replaying a `.actions` log on top.
 void NewProject(entt::registry &r, entt::entity viewport, const fs::path &replay_path = {}, bool with_default_content = true) {
     // Invoked mid-frame from the menu: the prior frame may still be sampling the viewport resources replay is
     // about to recreate, and replay has no consumer fence to wait on. Let the GPU finish all work first.

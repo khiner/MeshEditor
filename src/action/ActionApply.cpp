@@ -18,7 +18,7 @@ std::optional<Action> Held; // Last staged step of the in-progress gesture, awai
 std::optional<std::ofstream> LogStream;
 std::optional<WriteBehindLog<Action>> Log;
 
-// Record a committed change to the .mea log.
+// Record a committed change to the .actions log.
 void RecordCommitted(Action &&a) {
     if (Log && std::visit([]<typename T>(const T &) { return Recordable<std::decay_t<T>>; }, a)) Log->Enqueue(std::move(a));
 }
@@ -107,9 +107,8 @@ bool ReplayLog(entt::registry &r, entt::entity viewport, const std::filesystem::
 
     tick(r, viewport);
     StreamActions(in, [&](Action &&a) {
-        // Re-record each replayed action so the new session log reconstructs this scene.
         RecordCommitted(ApplyAction(r, viewport, std::move(a)));
-        r.clear<DragFieldStart>(); // each replayed action is one committed gesture
+        r.clear<DragFieldStart>(); // Each replayed action is one committed gesture.
         tick(r, viewport);
     });
     return true;

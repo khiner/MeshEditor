@@ -10,7 +10,7 @@
 #include <span>
 #include <vector>
 
-// Write and read actions in the `.mea` log. Each record is one action: a uint32 variant index followed by
+// Write and read actions in the `.actions` log. Each record is one action: a uint32 variant index followed by
 // the action's serialized bytes. For byte-serializable alternatives the bytes are raw and fixed-length
 // (sizeof, or 0 for an empty struct); other alternatives prefix their bytes with a uint32 length, so a
 // reader can read one record at a time without scanning.

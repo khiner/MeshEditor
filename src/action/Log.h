@@ -66,7 +66,7 @@ private:
     std::thread Writer;
 };
 
-// A `.mea` (Mesh Editor Action) log file in the replay dir, tagged with the unix-seconds timestamp parsed from its name.
+// A `.actions` log file in the replay dir, tagged with the unix-seconds timestamp parsed from its name.
 struct ReplayLogFile {
     std::filesystem::path Path;
     uint32_t UnixSeconds;
@@ -76,10 +76,10 @@ struct ReplayLogFile {
 std::vector<ReplayLogFile> ListReplayLogs();
 
 // Create the `replay/` dir, retain only the newest REPLAY_LOG_RETAIN-1 logs, then open a fresh
-// `replay/<unix_seconds>.mea` append stream (so at most REPLAY_LOG_RETAIN logs exist after opening).
+// `replay/<unix_seconds>.actions` append stream (so at most REPLAY_LOG_RETAIN logs exist after opening).
 std::ofstream OpenLogStream();
 
-// Open a fresh `.mea` log and start its writer thread.
+// Open a fresh `.actions` log and start its writer thread.
 void StartLog();
 // Flush and join the writer, dropping the just-opened log file if nothing was recorded.
 void StopLog();
@@ -87,7 +87,7 @@ void StopLog();
 // Advances the viewport between replayed actions so those resolving against rendered state see it up to date.
 using ReplayTick = void (*)(entt::registry &, entt::entity viewport);
 
-// Apply each action in a `.mea` log to the current scene, ticking via `tick` between them. Re-logs each
+// Apply each action in a `.actions` log to the current scene, ticking via `tick` between them. Re-logs each
 // action into the active session log (caller must StartLog first) so the replayed scene stays reconstructable.
 // False if the log can't be opened.
 bool ReplayLog(entt::registry &, entt::entity viewport, const std::filesystem::path &, ReplayTick tick);

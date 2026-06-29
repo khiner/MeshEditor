@@ -15,9 +15,9 @@
 namespace action {
 namespace {
 std::filesystem::path ReplayDir() { return Paths::Base() / "replay"; }
-constexpr std::string_view LogExt{".mea"};
+constexpr std::string_view LogExt{".actions"};
 
-// Parse the unix-seconds timestamp encoded in a `<unix_seconds>.mea` log's stem.
+// Parse the unix-seconds timestamp encoded in a `<unix_seconds>.actions` log's stem.
 std::optional<uint32_t> ParseTimestamp(const std::filesystem::path &path) {
     if (path.extension() != LogExt) return std::nullopt;
     const auto stem = path.stem().string();
