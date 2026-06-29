@@ -3,7 +3,7 @@
 #include <cstddef>
 
 namespace action {
-// All of these buffer at most one action per frame (first emitted wins), applied in ApplyEmitted (ActionApply.h).
+// All of these buffer at most one action per frame (first emitted wins), applied in `ApplyEmitted`.
 // A gesture (gizmo drag, box-select, slider) is `EmitStaged`* steps bracketed by a commit or cancel.
 
 // Apply at end of frame and record. Commits any open gesture first, so gesture terminals are plain Emit.

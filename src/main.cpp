@@ -1,4 +1,5 @@
 #include "Paths.h"
+#include "ProcessEvents.h"
 #include "Timer.h"
 #include "Window.h"
 #include "action/ActionApply.h"
@@ -6,7 +7,6 @@
 #include "action/Errors.h"
 #include "action/Io.h"
 #include "action/Log.h"
-#include "action/Object.h"
 #include "action/View.h"
 #include "animation/TimelineUi.h"
 #include "audio/AudioDevice.h"
@@ -250,22 +250,16 @@ GltfSampleTree BuildGltfSampleTree(const fs::path &root) {
     return tree;
 }
 
-// Emit an action to load a file into the scene based on its extension. Load errors surface via action::Errors.
-void LoadFile(entt::registry &r, const fs::path &path) {
-    const auto ext = path.extension().string();
-    if (ext == ".gltf" || ext == ".glb") {
-        action::Emit(action::io::LoadGltf{.Path = path.string()});
-    } else if (ext == ".obj" || ext == ".ply") {
-        action::Emit(action::object::ImportMesh{path.string(), std::make_unique<MeshInstanceCreateInfo>(MeshInstanceCreateInfo{.Name = path.stem().string()})});
-    } else {
-        r.ctx().get<action::Errors>().Messages.emplace_back(std::format("Unsupported file format: '{}'", ext));
-    }
+// Apply `action` now and settle the scene's derived state, for actions that must take effect outside the main loop.
+template<typename ActionType> void Perform(entt::registry &r, entt::entity viewport, ActionType action) {
+    action::Emit(std::move(action));
+    action::ApplyEmitted(r, viewport);
+    ProcessComponentEvents(r, viewport);
 }
 
-// Reset to the default scene, optionally replaying a `.actions` log on top.
+// Reset to the default scene, optionally replaying an action log on top.
 void NewProject(entt::registry &r, entt::entity viewport, const fs::path &replay_path = {}, bool with_default_content = true) {
-    // Invoked mid-frame from the menu: the prior frame may still be sampling the viewport resources replay is
-    // about to recreate, and replay has no consumer fence to wait on. Let the GPU finish all work first.
+    // Called mid-frame: the GPU may still be using viewport resources we're about to recreate, with no fence to wait on.
     r.ctx().get<const VulkanResources>().Device.waitIdle();
     action::StopPlaybackIfPlaying(r, viewport);
     action::StopLog();
@@ -273,20 +267,15 @@ void NewProject(entt::registry &r, entt::entity viewport, const fs::path &replay
     // View-camera navigation isn't recorded, so save and restore afterward to not disturb the live view.
     auto live_view_cameras = GetViewCameraState(r, viewport);
     ClearScene(r, viewport);
-    // Default content is the replay baseline.
-    // New->Empty skips building it live to avoid a one-frame flash before its recorded Clear applies.
-    if (with_default_content) AddDefaultSceneContent(r);
-    // Start the new session log before replaying so ReplayLog re-records the actions into it (otherwise the
-    // replayed log is consumed and replaying "Current" again reloads the default scene).
+    // An action-less log replays as an empty scene. Start the log before seeding/replaying so those actions re-record into it.
     action::StartLog();
-    if (action::ReplayLog(r, viewport, replay_path, &AdvanceViewport)) {
-        // Replay ran headless (resized selection resources but never presented the color image).
-        // Restore the live window extent and view camera, then render the final replayed state once on-screen.
+    if (with_default_content) {
+        action::Emit(action::io::LoadDefaultScene{});
+    } else if (action::ReplayLog(r, viewport, replay_path, [](entt::registry &r, entt::entity viewport) { ProcessComponentEvents(r, viewport); })) {
+        // Replay ran headless: restore the live extent and view camera, then present the final state.
         r.ctx().get<ViewportExtent>().Value = live_extent;
         SetViewCameraState(r, viewport, std::move(live_view_cameras));
         PresentViewport(r, viewport);
-    } else {
-        AdvanceViewport(r, viewport);
     }
 }
 
@@ -304,7 +293,7 @@ void ValidateRoundTrip(entt::registry &r, entt::entity viewport) {
     } else {
         const auto &current_log = logs.front().Path;
         const auto expected = snapshot::SnapshotSceneState(r);
-        NewProject(r, viewport, current_log);
+        NewProject(r, viewport, current_log, /*with_default_content=*/false);
         const auto actual = snapshot::SnapshotSceneState(r);
         if (const auto diff = snapshot::Compare(expected, actual); !diff.Equal) {
             std::println(stderr, "[snapshot] replay DIVERGED at byte {} (expected {} / actual {})", diff.FirstDifferingByte, expected.size(), actual.size());
@@ -318,7 +307,7 @@ void ValidateRoundTrip(entt::registry &r, entt::entity viewport) {
     const auto before = snapshot::SaveState(r);
     ClearScene(r, viewport);
     snapshot::LoadState(r, before);
-    AdvanceViewport(r, viewport);
+    ProcessComponentEvents(r, viewport);
     const auto after = snapshot::SaveState(r);
     if (const auto diff = snapshot::Compare(before, after); !diff.Equal) {
         std::println(stderr, "[snapshot] round-trip DIVERGED at byte {} (before {} / after {})", diff.FirstDifferingByte, before.size(), after.size());
@@ -460,11 +449,10 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, c
     const auto viewport = InitEngine(r, vc->Resources());
     InitViewportMedia(r, std::move(create_svg));
     SetupScene(r, viewport); // Before the first frame reads viewport state.
-    AddDefaultSceneContent(r);
     // Capture the DPI scale (only set during NewFrame) before priming DPI-scaled GPU state like edge-line width.
     ImGui_ImplSDL3_NewFrame();
     r.ctx().get<FrameState>().DisplayFramebufferScale = {io.DisplayFramebufferScale.x, io.DisplayFramebufferScale.y};
-    AdvanceViewport(r, viewport); // Prime derived state before the first frame reads it.
+    ProcessComponentEvents(r, viewport); // Prime derived state before the first frame reads it.
 
     struct AudioContext {
         entt::registry *R;
@@ -481,25 +469,24 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, c
     audio_device.Start();
 
     action::StartLog(); // Record each applied action to the write-behind log.
+
+    // Seed the scene with the first recorded action: the initial file if given, else the default scene.
     if (initial_file) {
-        ClearScene(r, viewport);
-        LoadFile(r, initial_file);
-        action::ApplyEmitted(r, viewport);
-        AdvanceViewport(r, viewport);
+        Perform(r, viewport, action::io::Load{.Path = initial_file});
         if (auto &errors = r.ctx().get<action::Errors>().Messages; !errors.empty()) {
             for (const auto &message : errors) std::cerr << message << std::endl;
             play = false; // Don't auto-play if the initial file failed to load.
             errors.clear();
         }
+    } else {
+        Perform(r, viewport, action::io::LoadDefaultScene{});
     }
 
     const bool recording_mode = !record_path.empty(), screenshot_mode = !screenshot_path.empty();
-    // Enter presentation mode so the first rendered frame matches the capture.
-    // Playback start and the capture itself wait until the viewport settles.
     if (play || screenshot_mode || recording_mode) {
-        action::Emit(action::timeline::EnterPresentation{});
-        action::ApplyEmitted(r, viewport);
-        AdvanceViewport(r, viewport);
+        // Enter presentation mode so the first rendered frame matches the capture.
+        // Playback start and the capture itself wait until the viewport settles.
+        Perform(r, viewport, action::timeline::EnterPresentation{});
     }
 
     // Sim always uses the real `io.DeltaTime` from SDL, so sim-clock = wall-clock (1:1 real-time) whether or not we're recording.
@@ -523,7 +510,7 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, c
                 event.wheel.x *= ImGuiWheelScale;
                 event.wheel.y *= ImGuiWheelScale;
             }
-            if (event.type == SDL_EVENT_DROP_FILE) LoadFile(r, event.drop.data);
+            if (event.type == SDL_EVENT_DROP_FILE) action::Emit(action::io::Load{.Path = event.drop.data});
             // SDL3 backend invalidates MousePos to -FLT_MAX on leave when no mouse button is held,
             // which flings a keyboard-initiated (G/R/S) transform offscreen when switching focus.
             if (event.type != SDL_EVENT_WINDOW_MOUSE_LEAVE || !TransformGizmo::IsUsing(r, viewport)) {
@@ -568,10 +555,8 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, c
             if (BeginMenu("File")) {
                 if (BeginMenu("New")) {
                     if (MenuItem("Default")) NewProject(r, viewport);
-                    if (MenuItem("Empty")) {
-                        NewProject(r, viewport, {}, /*with_default_content=*/false);
-                        action::Emit(action::io::Clear{}); // Recorded on the fresh log so replay reconstructs the empty scene.
-                    }
+                    // An empty project is an action-less log, so nothing to record here.
+                    if (MenuItem("Empty")) NewProject(r, viewport, {}, /*with_default_content=*/false);
                     EndMenu();
                 }
                 if (BeginMenu("Replay")) {
@@ -581,17 +566,17 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, c
                         char date[32];
                         std::strftime(date, sizeof date, "%Y-%m-%d %H:%M:%S", std::localtime(&t));
                         const auto label = i == 0 ? std::format("Current ({})", date) : std::string{date};
-                        if (MenuItem(label.c_str())) NewProject(r, viewport, logs[i].Path);
+                        if (MenuItem(label.c_str())) NewProject(r, viewport, logs[i].Path, /*with_default_content=*/false);
                     }
                     EndMenu();
                 }
 #ifdef DEBUG_BUILD
                 if (MenuItem("Validate roundtrip")) ValidateRoundTrip(r, viewport);
 #endif
-                const auto import_dialog = [&r](const auto &filters) {
+                const auto import_dialog = [](const auto &filters) {
                     nfdchar_t *nfd_path;
                     if (auto result = NFD_OpenDialog(&nfd_path, filters.data(), filters.size(), ""); result == NFD_OKAY) {
-                        LoadFile(r, nfd_path);
+                        action::Emit(action::io::Load{.Path = nfd_path});
                         NFD_FreePath(nfd_path);
                     } else if (result != NFD_CANCEL) {
                         std::cerr << "Error opening file dialog: " << NFD_GetError() << std::endl;
@@ -644,7 +629,7 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, c
                             }
                         } else {
                             if (!passes(*it.File)) continue;
-                            if (MenuItem(it.File->Label.c_str())) LoadFile(r, it.File->Path);
+                            if (MenuItem(it.File->Label.c_str())) action::Emit(action::io::Load{.Path = it.File->Path.string()});
                         }
                     }
                 };

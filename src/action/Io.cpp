@@ -22,33 +22,46 @@
 using std::ranges::find_if, std::ranges::to;
 
 namespace action::io {
+namespace {
+// Load a glTF/glb and apply its camera/animation side effects.
+void LoadGltfFile(entt::registry &r, entt::entity viewport, const std::string &path) {
+    const Timer timer{"LoadGltf"};
+    auto &c = r.ctx();
+    auto result = gltf::LoadGltf(path, {r, viewport, c.get<DescriptorSlots>(), c.get<GpuBuffers>(), c.get<MeshStore>(), c.get<TextureStore>(), c.get<EnvironmentStore>()});
+    if (!result) {
+        c.get<Errors>().Messages.emplace_back(std::format("Error loading glTF file '{}': {}", path, result.error()));
+        return;
+    }
+
+    if (result->FirstCameraObject != entt::null) SetLookThrough(r, viewport, result->FirstCameraObject);
+    if (result->ImportedAnimation) {
+        JumpToStartFrame(r, viewport);
+        r.get<LastEvaluatedFrame>(viewport).Value = -1;
+    }
+    r.emplace_or_replace<ProfileNextProcessComponentEvents>(viewport);
+}
+} // namespace
+
 void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
     const auto fail = [&](std::string message) { r.ctx().get<Errors>().Messages.emplace_back(std::move(message)); };
     std::visit(
         overloaded{
             [&](const Clear &) { ClearScene(r, viewport); },
+            [&](const LoadDefaultScene &) { AddDefaultSceneContent(r); },
+            [&](const Load &a) {
+                const std::filesystem::path path{a.Path};
+                const auto ext = path.extension().string();
+                if (ext == ".gltf" || ext == ".glb") LoadGltfFile(r, viewport, a.Path);
+                else if (ext == ".obj" || ext == ".ply") RequestImportMesh(r, viewport, path, MeshInstanceCreateInfo{.Name = path.stem().string()});
+                else fail(std::format("Unsupported file format: '{}'", ext));
+            },
             [&](const SaveGltf &a) {
                 auto &c = r.ctx();
                 if (auto save = gltf::SaveGltf(a.Path, {r, viewport, c.get<GpuBuffers>(), c.get<MeshStore>(), c.get<TextureStore>(), &c.get<const VulkanResources>(), &GetBufferContext(r)}); !save) {
                     fail(std::format("Error saving glTF file '{}': {}", a.Path, save.error()));
                 }
             },
-            [&](const LoadGltf &a) {
-                const Timer timer{"LoadGltf"};
-                auto &c = r.ctx();
-                auto result = gltf::LoadGltf(a.Path, {r, viewport, c.get<DescriptorSlots>(), c.get<GpuBuffers>(), c.get<MeshStore>(), c.get<TextureStore>(), c.get<EnvironmentStore>()});
-                if (!result) {
-                    fail(std::format("Error loading glTF file '{}': {}", a.Path, result.error()));
-                    return;
-                }
-
-                if (result->FirstCameraObject != entt::null) SetLookThrough(r, viewport, result->FirstCameraObject);
-                if (result->ImportedAnimation) {
-                    JumpToStartFrame(r, viewport);
-                    r.get<LastEvaluatedFrame>(viewport).Value = -1;
-                }
-                r.emplace_or_replace<ProfileNextProcessComponentEvents>(viewport);
-            },
+            [&](const LoadGltf &a) { LoadGltfFile(r, viewport, a.Path); },
             [&](const LoadRealImpact &a) {
                 const std::filesystem::path directory{a.Directory};
                 auto object_name = RealImpact::ValidateDirectory(directory);

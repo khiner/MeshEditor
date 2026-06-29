@@ -10,7 +10,13 @@
 namespace action::io {
 // Clear all scene content, leaving an empty scene.
 struct Clear {};
+// Populate the default scene content.
+struct LoadDefaultScene {};
 
+// Load a file into the scene, choosing the importer by extension.
+struct Load {
+    std::string Path;
+};
 struct LoadGltf {
     std::string Path;
 };
@@ -21,7 +27,7 @@ struct LoadRealImpact {
     std::string Directory;
 };
 
-using Action = std::variant<Clear, LoadGltf, SaveGltf, LoadRealImpact>;
+using Action = std::variant<Clear, LoadDefaultScene, Load, LoadGltf, SaveGltf, LoadRealImpact>;
 
 // Handlers run GPU work synchronously; failures are reported through the registry's action::Errors sink.
 void Apply(entt::registry &, entt::entity viewport, const Action &);

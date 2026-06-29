@@ -25,6 +25,7 @@
 #include "selection/SelectionComponents.h"
 #include "selection/SelectionOps.h"
 #include "viewport/ViewCameraOps.h"
+#include "viewport/ViewportEvents.h"
 
 #include <entt/entity/registry.hpp>
 
@@ -342,4 +343,8 @@ std::pair<entt::entity, entt::entity> ImportMesh(entt::registry &r, const std::f
     r.emplace<Path>(entities.first, path);
     r.emplace<SmoothShading>(entities.first);
     return entities;
+}
+
+void RequestImportMesh(entt::registry &r, entt::entity viewport, std::filesystem::path path, MeshInstanceCreateInfo info) {
+    r.emplace_or_replace<PendingImportMesh>(viewport, std::move(path), std::move(info));
 }

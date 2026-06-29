@@ -244,7 +244,7 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
                 r.emplace<PrimitiveShape>(mesh_entity, a.Shape);
                 begin_translate();
             },
-            [&](const ImportMesh &a) { r.emplace_or_replace<PendingImportMesh>(viewport, a.Path, *a.Info); },
+            [&](const ImportMesh &a) { RequestImportMesh(r, viewport, a.Path, *a.Info); },
             [&]<typename Field>(const UpdatePrimitiveField<Field> &a) {
                 static const auto comp = entt::type_hash<PrimitiveShape>::value();
                 const auto active = GetActiveMeshEntity(r);

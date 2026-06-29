@@ -35,6 +35,9 @@ entt::entity AddLight(entt::registry &, MeshStore &, ObjectCreateInfo = {}, std:
 // Loads a mesh file (with its materials/textures) and creates the mesh + instance entities.
 std::pair<entt::entity, entt::entity> ImportMesh(entt::registry &, const std::filesystem::path &, MeshInstanceCreateInfo, bool deduplicate = false);
 
+// Schedules a deferred mesh import.
+void RequestImportMesh(entt::registry &, entt::entity viewport, std::filesystem::path, MeshInstanceCreateInfo);
+
 // Object teardown (counterpart to the Add* creators above).
 void Destroy(entt::registry &, entt::entity viewport, entt::entity);
 void ClearMeshes(entt::registry &, entt::entity viewport);
