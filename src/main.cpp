@@ -553,12 +553,52 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, c
 
         if (BeginMainMenuBar()) {
             if (BeginMenu("File")) {
+                // The `.state` document Save writes to without prompting. Empty until the scene is opened from or saved to a file.
+                static fs::path current_state_path;
                 if (BeginMenu("New")) {
-                    if (MenuItem("Default")) NewProject(r, viewport);
-                    // An empty project is an action-less log, so nothing to record here.
-                    if (MenuItem("Empty")) NewProject(r, viewport, {}, /*with_default_content=*/false);
+                    if (MenuItem("Default")) {
+                        current_state_path.clear();
+                        NewProject(r, viewport);
+                    }
+                    if (MenuItem("Empty")) {
+                        current_state_path.clear();
+                        NewProject(r, viewport, {}, /*with_default_content=*/false);
+                    }
                     EndMenu();
                 }
+                if (MenuItem("Open")) {
+                    static constexpr std::array filters{nfdfilteritem_t{"Scene state", "state"}, nfdfilteritem_t{"Action log", "actions"}};
+                    nfdchar_t *nfd_path;
+                    if (auto result = NFD_OpenDialog(&nfd_path, filters.data(), filters.size(), ""); result == NFD_OKAY) {
+                        if (const fs::path path = nfd_path; path.extension() == ".actions") {
+                            current_state_path.clear();
+                            NewProject(r, viewport, path, /*with_default_content=*/false);
+                        } else {
+                            current_state_path = path;
+                            action::Emit(action::io::Load{.Path = path});
+                        }
+                        NFD_FreePath(nfd_path);
+                    } else if (result != NFD_CANCEL) {
+                        std::cerr << "Error opening file dialog: " << NFD_GetError() << std::endl;
+                    }
+                }
+                const auto save_state_as = [&] {
+                    static const std::array filters{nfdfilteritem_t{"Scene state", "state"}};
+                    nfdchar_t *nfd_path;
+                    if (auto result = NFD_SaveDialog(&nfd_path, filters.data(), filters.size(), nullptr, "scene.state"); result == NFD_OKAY) {
+                        current_state_path = nfd_path;
+                        if (current_state_path.extension() != ".state") current_state_path += ".state"; // NFD doesn't force the filter's extension.
+                        action::Emit(action::io::SaveState{.Path = current_state_path});
+                        NFD_FreePath(nfd_path);
+                    } else if (result != NFD_CANCEL) {
+                        std::cerr << "Error opening save dialog: " << NFD_GetError() << std::endl;
+                    }
+                };
+                if (MenuItem("Save")) {
+                    if (current_state_path.empty()) save_state_as();
+                    else action::Emit(action::io::SaveState{.Path = current_state_path});
+                }
+                if (MenuItem("Save as...")) save_state_as();
                 if (BeginMenu("Replay")) {
                     const auto logs = action::ListReplayLogs(); // Most-recent first; the newest is the live session's log.
                     for (size_t i = 0; i < logs.size(); ++i) {
@@ -570,9 +610,6 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, c
                     }
                     EndMenu();
                 }
-#ifdef DEBUG_BUILD
-                if (MenuItem("Validate roundtrip")) ValidateRoundTrip(r, viewport);
-#endif
                 const auto import_dialog = [](const auto &filters) {
                     nfdchar_t *nfd_path;
                     if (auto result = NFD_OpenDialog(&nfd_path, filters.data(), filters.size(), ""); result == NFD_OKAY) {
@@ -686,6 +723,9 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, c
                         std::cerr << "Error opening save dialog: " << NFD_GetError() << std::endl;
                     }
                 }
+#ifdef DEBUG_BUILD
+                if (MenuItem("[Debug] Roundtrip")) ValidateRoundTrip(r, viewport);
+#endif
                 EndMenu();
             }
             if (BeginMenu("Windows")) {

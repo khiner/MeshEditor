@@ -13,11 +13,14 @@
 #include "object/ObjectOps.h"
 #include "render/GpuBufferOps.h"
 #include "scene/Defaults.h"
+#include "snapshot/SaveState.h"
 #include "viewport/ViewCameraOps.h"
 #include "viewport/Viewport.h"
 #include "viewport/ViewportEvents.h"
 
 #include <entt/entity/registry.hpp>
+
+#include <fstream>
 
 using std::ranges::find_if, std::ranges::to;
 
@@ -53,13 +56,35 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
                 const auto ext = path.extension().string();
                 if (ext == ".gltf" || ext == ".glb") LoadGltfFile(r, viewport, a.Path);
                 else if (ext == ".obj" || ext == ".ply") RequestImportMesh(r, viewport, path, MeshInstanceCreateInfo{.Name = path.stem().string()});
-                else fail(std::format("Unsupported file format: '{}'", ext));
+                else if (ext == ".state") {
+                    std::ifstream in{path, std::ios::binary | std::ios::ate};
+                    if (!in) {
+                        fail(std::format("Error opening state file '{}'", path.string()));
+                        return;
+                    }
+                    std::vector<std::byte> bytes(size_t(in.tellg()));
+                    in.seekg(0);
+                    in.read(reinterpret_cast<char *>(bytes.data()), std::streamsize(bytes.size()));
+                    // ClearScene recreates viewport GPU resources the previous frame may still be using.
+                    r.ctx().get<const VulkanResources>().Device.waitIdle();
+                    ClearScene(r, viewport);
+                    snapshot::LoadState(r, bytes);
+                } else fail(std::format("Unsupported file format: '{}'", ext));
             },
             [&](const SaveGltf &a) {
                 auto &c = r.ctx();
                 if (auto save = gltf::SaveGltf(a.Path, {r, viewport, c.get<GpuBuffers>(), c.get<MeshStore>(), c.get<TextureStore>(), &c.get<const VulkanResources>(), &GetBufferContext(r)}); !save) {
                     fail(std::format("Error saving glTF file '{}': {}", a.Path.string(), save.error()));
                 }
+            },
+            [&](const SaveState &a) {
+                const auto bytes = snapshot::SaveState(r);
+                std::ofstream out{a.Path, std::ios::binary};
+                if (!out) {
+                    fail(std::format("Error opening state file '{}' for writing", a.Path.string()));
+                    return;
+                }
+                out.write(reinterpret_cast<const char *>(bytes.data()), std::streamsize(bytes.size()));
             },
             [&](const LoadGltf &a) { LoadGltfFile(r, viewport, a.Path); },
             [&](const LoadRealImpact &a) {
