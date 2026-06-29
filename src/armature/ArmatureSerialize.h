@@ -3,8 +3,6 @@
 #include "action/SerializeGlm.h" // glm hooks for Transform/mat4 members
 #include "armature/Armature.h"
 
-#include <zpp_bits.h>
-
 // Serialize only the Armature's canonical data, rebuilding the derived caches (BoneIdToIndex, dense topology, RestWorld, JointOrderToBoneIndex) on load.
 // This keeps the snapshot deterministic, since BoneIdToIndex is an unordered_map with unstable iteration order.
 

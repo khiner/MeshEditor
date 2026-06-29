@@ -8,9 +8,6 @@
 #include <entt/entity/registry.hpp>
 #include <zpp_bits.h>
 
-#include <cstdint>
-#include <cstring>
-
 namespace snapshot {
 namespace {
 // The PBRMaterial GPU array (GpuBuffers::Materials) is canonical material state with no per-entity

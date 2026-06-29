@@ -1,4 +1,5 @@
 #include "CameraTypes.h"
+#include "Path.h"
 #include "PathSerialize.h"
 #include "gpu/PunctualLight.h"
 #include "gpu/Transform.h"

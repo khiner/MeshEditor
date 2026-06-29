@@ -2,11 +2,10 @@
 
 #include <entt/entity/fwd.hpp>
 
-#include <string>
+#include <filesystem>
 #include <variant>
 
 // Scene/document lifecycle: new scene plus the file-IO actions that load and save it.
-// Paths are std::string (not fs::path) so the actions serialize natively into the log.
 namespace action::io {
 // Clear all scene content, leaving an empty scene.
 struct Clear {};
@@ -15,16 +14,16 @@ struct LoadDefaultScene {};
 
 // Load a file into the scene, choosing the importer by extension.
 struct Load {
-    std::string Path;
+    std::filesystem::path Path;
 };
 struct LoadGltf {
-    std::string Path;
+    std::filesystem::path Path;
 };
 struct SaveGltf {
-    std::string Path;
+    std::filesystem::path Path;
 };
 struct LoadRealImpact {
-    std::string Directory;
+    std::filesystem::path Directory;
 };
 
 using Action = std::variant<Clear, LoadDefaultScene, Load, LoadGltf, SaveGltf, LoadRealImpact>;

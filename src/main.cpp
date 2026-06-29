@@ -598,7 +598,7 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, c
                     if (MenuItem("RealImpact")) {
                         nfdchar_t *path;
                         if (auto result = NFD_PickFolder(&path, ""); result == NFD_OKAY) {
-                            action::Emit(action::io::LoadRealImpact{.Directory = std::string{path}});
+                            action::Emit(action::io::LoadRealImpact{.Directory = path});
                             NFD_FreePath(path);
                         } else if (result != NFD_CANCEL) {
                             std::cerr << "Error opening folder dialog: " << NFD_GetError() << std::endl;
@@ -629,7 +629,7 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, c
                             }
                         } else {
                             if (!passes(*it.File)) continue;
-                            if (MenuItem(it.File->Label.c_str())) action::Emit(action::io::Load{.Path = it.File->Path.string()});
+                            if (MenuItem(it.File->Label.c_str())) action::Emit(action::io::Load{.Path = it.File->Path});
                         }
                     }
                 };
@@ -680,7 +680,7 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, c
                     static const std::array filters{nfdfilteritem_t{"glTF scene", "gltf,glb"}};
                     nfdchar_t *nfd_path;
                     if (auto result = NFD_SaveDialog(&nfd_path, filters.data(), filters.size(), nullptr, "scene.gltf"); result == NFD_OKAY) {
-                        action::Emit(action::io::SaveGltf{.Path = std::string{nfd_path}});
+                        action::Emit(action::io::SaveGltf{.Path = nfd_path});
                         NFD_FreePath(nfd_path);
                     } else if (result != NFD_CANCEL) {
                         std::cerr << "Error opening save dialog: " << NFD_GetError() << std::endl;

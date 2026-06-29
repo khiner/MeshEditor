@@ -6,7 +6,6 @@
 
 #include <entt/entity/registry.hpp>
 
-#include <filesystem>
 #include <fstream>
 #include <optional>
 

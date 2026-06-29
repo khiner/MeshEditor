@@ -24,12 +24,12 @@ using std::ranges::find_if, std::ranges::to;
 namespace action::io {
 namespace {
 // Load a glTF/glb and apply its camera/animation side effects.
-void LoadGltfFile(entt::registry &r, entt::entity viewport, const std::string &path) {
+void LoadGltfFile(entt::registry &r, entt::entity viewport, const std::filesystem::path &path) {
     const Timer timer{"LoadGltf"};
     auto &c = r.ctx();
     auto result = gltf::LoadGltf(path, {r, viewport, c.get<DescriptorSlots>(), c.get<GpuBuffers>(), c.get<MeshStore>(), c.get<TextureStore>(), c.get<EnvironmentStore>()});
     if (!result) {
-        c.get<Errors>().Messages.emplace_back(std::format("Error loading glTF file '{}': {}", path, result.error()));
+        c.get<Errors>().Messages.emplace_back(std::format("Error loading glTF file '{}': {}", path.string(), result.error()));
         return;
     }
 
@@ -49,7 +49,7 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
             [&](const Clear &) { ClearScene(r, viewport); },
             [&](const LoadDefaultScene &) { AddDefaultSceneContent(r); },
             [&](const Load &a) {
-                const std::filesystem::path path{a.Path};
+                const auto &path = a.Path;
                 const auto ext = path.extension().string();
                 if (ext == ".gltf" || ext == ".glb") LoadGltfFile(r, viewport, a.Path);
                 else if (ext == ".obj" || ext == ".ply") RequestImportMesh(r, viewport, path, MeshInstanceCreateInfo{.Name = path.stem().string()});
@@ -58,12 +58,12 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
             [&](const SaveGltf &a) {
                 auto &c = r.ctx();
                 if (auto save = gltf::SaveGltf(a.Path, {r, viewport, c.get<GpuBuffers>(), c.get<MeshStore>(), c.get<TextureStore>(), &c.get<const VulkanResources>(), &GetBufferContext(r)}); !save) {
-                    fail(std::format("Error saving glTF file '{}': {}", a.Path, save.error()));
+                    fail(std::format("Error saving glTF file '{}': {}", a.Path.string(), save.error()));
                 }
             },
             [&](const LoadGltf &a) { LoadGltfFile(r, viewport, a.Path); },
             [&](const LoadRealImpact &a) {
-                const std::filesystem::path directory{a.Directory};
+                const auto &directory = a.Directory;
                 auto object_name = RealImpact::ValidateDirectory(directory);
                 if (!object_name) {
                     fail(std::move(object_name.error()));

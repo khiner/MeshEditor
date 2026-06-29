@@ -9,9 +9,8 @@
 
 #include <zpp_bits.h>
 
-// zpp::bits can't reflect or byte-copy glm's vec/quat/mat, so each gets two ADL hooks.
-// A `members<N>` count stops zpp structured-binding them (a hard error for their anonymous unions under C++26), plus a component-wise serialize.
-// A matrix serializes as its columns, each a vec handled by the vec hook.
+// zpp::bits can't reflect glm's vec/quat/mat, so each gets two ADL hooks: a members<N> count to stop zpp
+// structured-binding their anonymous unions, plus a component-wise serialize (a matrix serializes as its vec columns).
 namespace glm {
 template<length_t L, typename T, qualifier Q>
 auto serialize(const vec<L, T, Q> &) -> zpp::bits::members<size_t(L)>;

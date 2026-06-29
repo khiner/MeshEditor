@@ -7,6 +7,8 @@
 #include "audio/RealImpactComponents.h"
 #include "mesh/TetMeshData.h"
 
+#include <filesystem>
+
 namespace action::audio {
 struct SetModel {
     SoundVerticesModel Model;
@@ -34,7 +36,7 @@ struct SubmitModalForm {};
 // Frames are loaded from Path when applied, not stored.
 struct AssignVertexSamples {
     std::vector<uint32_t> MeshVertices;
-    std::string Path; // not fs::path so the action serializes natively
+    std::filesystem::path Path;
 };
 // Load samples for the target sound entity from `MicrophoneEntity` and mark that mic active.
 struct ActivateRealImpactMicrophone {
