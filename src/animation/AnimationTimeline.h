@@ -4,8 +4,8 @@
 
 // Timeline configuration. Changes here invalidate baked physics frames.
 struct TimelineRange {
-    int StartFrame{1}, EndFrame{100};
-    float Fps{24.0f};
+    int StartFrame{1}, EndFrame{250};
+    float Fps{24.f};
 };
 
 // Per-tick playback state. Mutated every play frame; does not affect physics cache.
@@ -15,13 +15,13 @@ struct TimelinePlayback {
 };
 
 struct AnimationTimelineView {
-    float PixelsPerFrame{8.0f};
-    float ViewCenterFrame{50.0f}; // Frame at horizontal center of visible scroll region
+    float PixelsPerFrame{4.5f};
+    float ViewCenterFrame{125.f}; // Frame at horizontal center of visible scroll region
 };
 
 // Smooth float frame position for playback, advanced by Render. Singleton on viewport.
 struct PlaybackFrame {
-    float Value{1.0f};
+    float Value{1.f};
 };
 
 // Frame the current armature/morph/node poses were evaluated at. Singleton on viewport.
