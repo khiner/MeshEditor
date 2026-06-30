@@ -37,7 +37,7 @@ std::vector<ReplayLogFile> ListReplayLogs() {
     return logs;
 }
 
-std::ofstream OpenLogStream() {
+std::pair<std::ofstream, std::filesystem::path> OpenLogStream() {
     std::filesystem::create_directories(ReplayDir());
     // Retain only the newest REPLAY_LOG_RETAIN-1 logs so this session's new log brings the total to at most REPLAY_LOG_RETAIN.
     auto logs = ListReplayLogs();
@@ -50,6 +50,6 @@ std::ofstream OpenLogStream() {
     // Filenames are unix-second timestamps. If one already exists (rapid New/Replay within a second),
     // appending would corrupt it, so bump until the name is free — it stays the newest ("Current").
     for (std::error_code ec; std::filesystem::exists(path, ec);) path = ReplayDir() / (std::to_string(++unix_sec) + std::string{LogExt});
-    return std::ofstream{path, std::ios::binary | std::ios::app};
+    return {std::ofstream{path, std::ios::binary | std::ios::app}, std::move(path)};
 }
 } // namespace action

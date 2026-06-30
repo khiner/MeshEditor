@@ -16,6 +16,7 @@ std::optional<Action> Held; // Last staged step of the in-progress gesture, awai
 
 std::optional<std::ofstream> LogStream;
 std::optional<WriteBehindLog<Action>> Log;
+std::filesystem::path LogPath; // Currently-open `.actions` log, empty when none.
 
 // Record a committed change to the .actions log.
 void RecordCommitted(Action &&a) {
@@ -57,18 +58,25 @@ void CommitHeld() {
 
 namespace action {
 void StartLog() {
-    LogStream.emplace(OpenLogStream());
+    auto [stream, path] = OpenLogStream();
+    LogPath = std::move(path);
+    LogStream.emplace(std::move(stream));
     Log.emplace(*LogStream, &SerializeAction);
 }
-void StopLog() {
+std::filesystem::path StopLog() {
     if (Log) Log->Stop();
     Log.reset();
     LogStream.reset(); // flush and close before checking the file on disk
-    // The just-closed log is the newest file in the replay dir. Drop it if this session recorded nothing.
-    if (auto logs = ListReplayLogs(); !logs.empty()) {
-        std::error_code ec;
-        if (std::filesystem::file_size(logs.front().Path, ec) == 0 && !ec) std::filesystem::remove(logs.front().Path, ec);
+    auto path = std::exchange(LogPath, {});
+    if (path.empty()) return {};
+
+    // Drop the just-closed log if nothing was recorded.
+    std::error_code ec;
+    if (std::filesystem::file_size(path, ec) == 0 && !ec) {
+        std::filesystem::remove(path, ec);
+        return {};
     }
+    return path;
 }
 
 void StopPlaybackIfPlaying(entt::registry &r, entt::entity viewport) {

@@ -75,14 +75,13 @@ struct ReplayLogFile {
 // Replay logs found in the replay dir, sorted most-recent first.
 std::vector<ReplayLogFile> ListReplayLogs();
 
-// Create the `replay/` dir, retain only the newest REPLAY_LOG_RETAIN-1 logs, then open a fresh
-// `replay/<unix_seconds>.actions` append stream (so at most REPLAY_LOG_RETAIN logs exist after opening).
-std::ofstream OpenLogStream();
+// Open a fresh `replay/*.actions` log (pruning old ones), returning its stream and path.
+std::pair<std::ofstream, std::filesystem::path> OpenLogStream();
 
 // Open a fresh `.actions` log and start its writer thread.
 void StartLog();
-// Flush and join the writer, dropping the just-opened log file if nothing was recorded.
-void StopLog();
+// Flush and join the writer. Returns the log path, or empty if nothing was recorded (the empty file is dropped).
+std::filesystem::path StopLog();
 
 // Advances the viewport between replayed actions so those resolving against rendered state see it up to date.
 using ReplayTick = void (*)(entt::registry &, entt::entity viewport);

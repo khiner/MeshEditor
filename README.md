@@ -155,10 +155,11 @@ $ git clone --recurse-submodules git@github.com:khiner/MeshEditor.git
 $ cd MeshEditor
 $ ./script/Clean # optionally clean first
 $ ./script/Build [--release]
-$ cd build && ./MeshEditor [file] [--quiet|-q] [--play [seconds]] [--record path.mp4 [--fps N]] [--screenshot path.png]
+$ cd build && ./MeshEditor [file|--empty] [--quiet|-q] [--play [seconds]] [--record path.mp4 [--fps N]] [--screenshot path.png] [--render basename]
 ```
 
-* `file` can be a `.gltf`, `.glb`, `.obj`, or `.ply`. Without a file, a default cube is loaded.
+* `file` can be a `.gltf`, `.glb`, `.obj`, `.ply`, `.state` (scene snapshot), or `.actions` (replayed action log). No file loads the default scene.
+* `--empty` starts with an empty scene instead of the default scene.
 * `--quiet` / `-q` suppresses timer output.
 All of `--play`, `--record`, and `--screenshot` use the presentation look (material preview shading, overlays hidden). `--play` and `--record` also run the animation/physics; `--screenshot` holds the first frame.
 

@@ -7,8 +7,6 @@
 
 // Scene/document lifecycle: new scene plus the file-IO actions that load and save it.
 namespace action::io {
-// Clear all scene content, leaving an empty scene.
-struct Clear {};
 // Populate the default scene content.
 struct LoadDefaultScene {};
 
@@ -30,7 +28,7 @@ struct LoadRealImpact {
     std::filesystem::path Directory;
 };
 
-using Action = std::variant<Clear, LoadDefaultScene, Load, LoadGltf, SaveGltf, LoadRealImpact, SaveState>;
+using Action = std::variant<LoadDefaultScene, Load, LoadGltf, SaveGltf, LoadRealImpact, SaveState>;
 
 // Handlers run GPU work synchronously; failures are reported through the registry's action::Errors sink.
 void Apply(entt::registry &, entt::entity viewport, const Action &);

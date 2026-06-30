@@ -49,7 +49,6 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
     const auto fail = [&](std::string message) { r.ctx().get<Errors>().Messages.emplace_back(std::move(message)); };
     std::visit(
         overloaded{
-            [&](const Clear &) { ClearScene(r, viewport); },
             [&](const LoadDefaultScene &) { AddDefaultSceneContent(r); },
             [&](const Load &a) {
                 const auto &path = a.Path;

@@ -385,8 +385,21 @@ void FrameSceneFront(entt::registry &r, entt::entity viewport, float aspect_rati
     r.replace<ViewCamera>(viewport, ViewCamera{center + vec3{0, 0, distance}, center, Camera{fit}});
 }
 
-void run(const char *initial_file, bool quiet, bool play, float play_duration, fs::path record_path, fs::path screenshot_path, int record_fps, const fs::path &render_basename, bool empty) {
+// Headless capture options from the CLI. `--render` is a preset for the full scene corpus; `--screenshot`/`--record` target one output.
+struct CaptureRequest {
+    bool Play{false};
+    float PlayDuration{0}; // 0 = run until playback completes one loop.
+    int Fps{60};
+    fs::path RecordPath, ScreenshotPath;
+    fs::path RenderBasename; // Output basename, no extension.
+};
+
+void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest &capture) {
     Timer::Enabled = !quiet;
+
+    bool play = capture.Play;
+    const float play_duration = capture.PlayDuration;
+    const int record_fps = capture.Fps;
 
     SDL_SetHint(SDL_HINT_MAC_SCROLL_MOMENTUM, "1");
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) throw std::runtime_error(std::format("SDL_Init error: {}", SDL_GetError()));
@@ -519,19 +532,37 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
 
     action::StartLog(); // Record each applied action to the write-behind log.
 
-    // Seed the scene with the first recorded action: the initial file if given, else the default scene.
+    // Seed the scene's first recorded action: the initial file, else the default scene.
     if (initial_file) {
-        Perform(r, viewport, action::io::Load{.Path = initial_file});
-        if (auto &errors = r.ctx().get<action::Errors>().Messages; !errors.empty()) {
-            for (const auto &message : errors) std::cerr << message << std::endl;
-            play = false; // Don't auto-play if the initial file failed to load.
-            errors.clear();
+        if (const fs::path path = initial_file; path.extension() == ".actions") {
+            NewProject(r, viewport, path, /*with_default_content=*/false);
+        } else {
+            Perform(r, viewport, action::io::Load{.Path = initial_file});
+            if (auto &errors = r.ctx().get<action::Errors>().Messages; !errors.empty()) {
+                for (const auto &message : errors) std::cerr << message << std::endl;
+                errors.clear();
+                play = false; // Don't auto-play if the initial file failed to load.
+            }
         }
-    } else {
+    } else if (!empty) {
         Perform(r, viewport, action::io::LoadDefaultScene{});
     }
 
+    fs::path record_path = capture.RecordPath, screenshot_path = capture.ScreenshotPath, corpus_actions_path;
+    const bool render_mode = !capture.RenderBasename.empty();
+    if (render_mode) {
+        const auto with = [&](const char *ext) { return fs::path{capture.RenderBasename.string() + ext}; };
+        Perform(r, viewport, action::io::SaveState{.Path = with(".state")});
+        corpus_actions_path = with(".actions");
+        const bool dynamic = r.view<const PhysicsMotion>().size() > 0 ||
+            r.view<const NodeTransformAnimation>().size() > 0 ||
+            r.view<const MorphWeightAnimation>().size() > 0;
+        if (dynamic) record_path = with(".mp4");
+        else screenshot_path = with(".png");
+    }
+
     const bool recording_mode = !record_path.empty(), screenshot_mode = !screenshot_path.empty();
+    const bool capture_single_loop = render_mode; // Corpus video captures exactly one playback loop.
     if (play || screenshot_mode || recording_mode) {
         // Enter presentation mode so the first rendered frame matches the capture.
         // Playback start and the capture itself wait until the viewport settles.
@@ -545,9 +576,8 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
     const uint64_t capture_interval_ns{1'000'000'000ULL / uint64_t(record_fps)};
     uint64_t next_capture_ns{0}; // Initialized when recording starts.
     float elapsed_play_time{0};
-    bool playback_started{false}, screenshot_saved{false};
-
-    bool view_framed{false};
+    int render_last_frame{-1}; // Last timeline frame captured in render mode, for one-loop wrap detection.
+    bool playback_started{false}, screenshot_saved{false}, view_framed{false};
     bool viewport_resizing{false}; // True while a resize drag is staged but not yet committed.
     bool done{false};
     WindowsState windows;
@@ -561,7 +591,11 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
                 event.wheel.x *= ImGuiWheelScale;
                 event.wheel.y *= ImGuiWheelScale;
             }
-            if (event.type == SDL_EVENT_DROP_FILE) action::Emit(action::io::Load{.Path = event.drop.data});
+            // Replay a dropped `.actions` log through NewProject; load any other file as a single action.
+            if (event.type == SDL_EVENT_DROP_FILE) {
+                if (const fs::path dropped = event.drop.data; dropped.extension() == ".actions") NewProject(r, viewport, dropped, /*with_default_content=*/false);
+                else action::Emit(action::io::Load{.Path = dropped});
+            }
             // SDL3 backend invalidates MousePos to -FLT_MAX on leave when no mouse button is held,
             // which flings a keyboard-initiated (G/R/S) transform offscreen when switching focus.
             if (event.type != SDL_EVENT_WINDOW_MOUSE_LEAVE || !TransformGizmo::IsUsing(r, viewport)) {
@@ -951,16 +985,25 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, f
                 if (IsRecording(r, viewport)) next_capture_ns = SDL_GetTicksNS();
                 else done = true;
             }
-            if (IsRecording(r, viewport) && SDL_GetTicksNS() >= next_capture_ns) {
-                CaptureRecordFrame(r, viewport);
-                next_capture_ns += capture_interval_ns;
+            if (IsRecording(r, viewport)) {
+                const int cur_frame = r.get<const TimelinePlayback>(viewport).CurrentFrame;
+                if (capture_single_loop && render_last_frame >= 0 && cur_frame < render_last_frame) {
+                    done = true;
+                } else if (SDL_GetTicksNS() >= next_capture_ns) {
+                    CaptureRecordFrame(r, viewport);
+                    next_capture_ns += capture_interval_ns;
+                    render_last_frame = cur_frame;
+                }
             }
             RenderFrame(*vc->Device, vc->Queue, wd, draw_data);
             PresentFrame(vc->Queue, wd);
         }
     }
 
-    action::StopLog(); // Flush and join the log writer before teardown.
+    if (const fs::path session_log = action::StopLog(); !corpus_actions_path.empty() && !session_log.empty()) {
+        std::error_code ec;
+        fs::copy_file(session_log, corpus_actions_path, fs::copy_options::overwrite_existing, ec);
+    }
     vc->Device->waitIdle();
 
     audio_device.Uninit();
@@ -1008,10 +1051,8 @@ int main(int argc, char **argv) {
     };
 
     const char *initial_file = nullptr;
-    bool play = false;
-    float play_duration = 0;
-    fs::path record_path, screenshot_path;
-    int record_fps = 60;
+    bool empty = false;
+    CaptureRequest capture;
 #ifdef QUIET
     bool quiet = true;
 #else
@@ -1021,15 +1062,17 @@ int main(int argc, char **argv) {
         const std::string_view a{*it};
         if (a == "--quiet" || a == "-q") quiet = true;
         else if (a == "--play") {
-            play = true;
-            if (std::next(it) != args.end() && looks_numeric(*std::next(it))) play_duration = std::atof(*++it);
-        } else if (a == "--record" && std::next(it) != args.end()) record_path = *++it;
-        else if (a == "--screenshot" && std::next(it) != args.end()) screenshot_path = *++it;
-        else if (a == "--fps" && std::next(it) != args.end()) record_fps = std::atoi(*++it);
+            capture.Play = true;
+            if (std::next(it) != args.end() && looks_numeric(*std::next(it))) capture.PlayDuration = std::atof(*++it);
+        } else if (a == "--record" && std::next(it) != args.end()) capture.RecordPath = *++it;
+        else if (a == "--screenshot" && std::next(it) != args.end()) capture.ScreenshotPath = *++it;
+        else if (a == "--render" && std::next(it) != args.end()) capture.RenderBasename = *++it;
+        else if (a == "--empty") empty = true;
+        else if (a == "--fps" && std::next(it) != args.end()) capture.Fps = std::atoi(*++it);
         else if (!a.starts_with('-') && !initial_file) initial_file = *it;
     }
-    if (record_fps <= 0) record_fps = 60;
+    if (capture.Fps <= 0) capture.Fps = 60;
 
-    run(initial_file, quiet, play, play_duration, std::move(record_path), std::move(screenshot_path), record_fps);
+    run(initial_file, quiet, empty, capture);
     return 0;
 }
