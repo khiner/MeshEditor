@@ -246,3 +246,12 @@ void Mesh::WriteEdgeIndices(std::span<uint32_t> dest) const {
         dest[i++] = *v_to;
     }
 }
+
+BBox Mesh::GetBBox() const {
+    BBox b;
+    for (const auto &v : GetVerticesSpan()) {
+        b.Min = glm::min(b.Min, v.Position);
+        b.Max = glm::max(b.Max, v.Position);
+    }
+    return b;
+}

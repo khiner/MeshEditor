@@ -1,6 +1,5 @@
 #include "ProcessEvents.h"
 
-#include "BBox.h"
 #include "Camera.h"
 #include "Changes.h"
 #include "File.h"
@@ -131,14 +130,7 @@ void RederiveCollider(entt::registry &r, entt::entity e) {
 
     const auto verts = mesh->GetVerticesSpan();
     const bool has_verts = !verts.empty();
-    const auto bbox = [&] {
-        BBox b;
-        for (const auto &v : verts) {
-            b.Min = glm::min(b.Min, v.Position);
-            b.Max = glm::max(b.Max, v.Position);
-        }
-        return b;
-    }();
+    const auto bbox = mesh->GetBBox();
     const vec3 bbox_center = has_verts ? (bbox.Min + bbox.Max) * 0.5f : vec3{0};
     const vec3 bbox_extents = has_verts ? (bbox.Max - bbox.Min) : vec3{0};
 
@@ -694,11 +686,7 @@ void UpdateWireframeTransforms(entt::registry &r) {
         const bool newly_created = wt_changed.contains(bw.Instance);
         if (!parent_moved && !mesh_changed && !newly_created) continue;
 
-        BBox aabb;
-        for (const auto &v : mesh->GetVerticesSpan()) {
-            aabb.Min = glm::min(aabb.Min, v.Position);
-            aabb.Max = glm::max(aabb.Max, v.Position);
-        }
+        const auto aabb = mesh->GetBBox();
         const auto size = aabb.Max - aabb.Min, center = (aabb.Min + aabb.Max) * 0.5f;
         r.replace<WorldTransform>(bw.Instance, ToTransform(ToMatrix(*wt) * glm::translate(mat4{1}, center) * glm::scale(mat4{1}, size)));
     }

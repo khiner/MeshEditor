@@ -1,5 +1,6 @@
 #pragma once
 
+#include "BBox.h"
 #include "gpu/Element.h"
 #include "gpu/Vertex.h"
 
@@ -148,6 +149,7 @@ struct Mesh {
     const vec3 &GetNormal(VH) const;
     vec3 GetNormal(FH) const;
     std::span<const Vertex> GetVerticesSpan() const;
+    BBox GetBBox() const; // Local-space
 
     uint32_t GetStoreId() const { return StoreId; }
     const MeshConnectivity &GetConnectivity() const { return *C; }

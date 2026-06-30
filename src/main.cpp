@@ -1,6 +1,7 @@
 #include "Paths.h"
 #include "ProcessEvents.h"
 #include "Timer.h"
+#include "TransformMath.h"
 #include "Window.h"
 #include "action/ActionApply.h"
 #include "action/Emit.h"
@@ -8,14 +9,20 @@
 #include "action/Io.h"
 #include "action/Log.h"
 #include "action/View.h"
+#include "animation/AnimationData.h"
 #include "animation/TimelineUi.h"
 #include "audio/AudioDevice.h"
 #include "audio/AudioSystem.h"
 #include "gizmo/TransformGizmoTypes.h"
 #include "image/ImageEncode.h"
+#include "mesh/Mesh.h"
+#include "mesh/MeshComponents.h"
+#include "physics/PhysicsTypes.h"
 #include "render/SvgResource.h"
 #include "render/SvgUpload.h"
+#include "scene/Entity.h"
 #include "scene/SceneControlsUi.h"
+#include "scene/WorldTransform.h"
 #include "snapshot/ReplayTestFixture.h"
 #include "snapshot/SaveState.h"
 #include "snapshot/SceneSnapshot.h"
@@ -336,7 +343,49 @@ std::expected<fs::path, std::string> SaveScreenshot(entt::registry &r, const fs:
     return out_path;
 }
 
-void run(const char *initial_file, bool quiet, bool play, float play_duration, const fs::path &record_path, const fs::path &screenshot_path, int record_fps) {
+// Frame a camera-less scene from a straight-on front view. No-op on an empty scene.
+void FrameSceneFront(entt::registry &r, entt::entity viewport, float aspect_ratio) {
+    const auto &cam = r.get<const ViewCamera>(viewport);
+    const auto *persp = std::get_if<Perspective>(&cam.Data); // The launch view camera is always perspective.
+    if (!persp) return;
+
+    // Front view (camera on +Z, looking down -Z), at the tightest distance that keeps every vertex in frame.
+    const float ty = std::tan(persp->FieldOfViewRad * 0.5f), tx = aspect_ratio * ty;
+    constexpr float lowest = std::numeric_limits<float>::lowest();
+    float up = lowest, down = lowest, right = lowest, left = lowest;
+    BBox scene;
+    for (const auto [e, ri, wt] : r.view<const RenderInstance, const WorldTransform>().each()) {
+        const auto mesh = TryGetMesh(r, FindMeshEntity(r, e));
+        if (!mesh) continue;
+
+        const auto m = ToMatrix(wt);
+        for (const auto &vtx : mesh->GetVerticesSpan()) {
+            const vec3 v{m * vec4{vtx.Position, 1.f}};
+            scene.Min = glm::min(scene.Min, v);
+            scene.Max = glm::max(scene.Max, v);
+            up = std::max(up, v.y / ty + v.z);
+            down = std::max(down, -v.y / ty + v.z);
+            right = std::max(right, v.x / tx + v.z);
+            left = std::max(left, -v.x / tx + v.z);
+        }
+    }
+    if (glm::any(glm::greaterThan(scene.Min, scene.Max))) return;
+
+    const auto center = (scene.Min + scene.Max) * 0.5f;
+    constexpr float Padding{1.25f}; // So the camera isn't exactly tight to the scene
+    const float distance = Padding * (std::max({up - center.y / ty, down + center.y / ty, right - center.x / tx, left + center.x / tx}) - center.z);
+    if (distance <= 0.f) return;
+
+    // Clip planes bracket the scene depth so nothing is z-clipped.
+    const float plane_reach = 6 * glm::length(scene.Max - scene.Min);
+    auto fit = *persp;
+    fit.FarClip = distance + plane_reach;
+    fit.NearClip = std::max(distance - plane_reach, *fit.FarClip / 10000.f);
+
+    r.replace<ViewCamera>(viewport, ViewCamera{center + vec3{0, 0, distance}, center, Camera{fit}});
+}
+
+void run(const char *initial_file, bool quiet, bool play, float play_duration, fs::path record_path, fs::path screenshot_path, int record_fps, const fs::path &render_basename, bool empty) {
     Timer::Enabled = !quiet;
 
     SDL_SetHint(SDL_HINT_MAC_SCROLL_MOMENTUM, "1");
@@ -497,6 +546,8 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, c
     uint64_t next_capture_ns{0}; // Initialized when recording starts.
     float elapsed_play_time{0};
     bool playback_started{false}, screenshot_saved{false};
+
+    bool view_framed{false};
     bool viewport_resizing{false}; // True while a resize drag is staged but not yet committed.
     bool done{false};
     WindowsState windows;
@@ -841,6 +892,10 @@ void run(const char *initial_file, bool quiet, bool play, float play_duration, c
             }
         }
         const bool viewport_settled = new_logical_extent != uvec2{} && new_logical_extent == r.ctx().get<const ViewportExtent>().Value;
+        if (!view_framed && viewport_settled && (play || screenshot_mode || recording_mode) && r.view<const Camera>().empty()) {
+            FrameSceneFront(r, viewport, float(new_logical_extent.x) / float(new_logical_extent.y));
+            view_framed = true;
+        }
 
         // Remaining emits go after Interact so it wins the single-action buffer.
         // Start playback once settled, for play or video (the screenshot stays on the held frame).
@@ -937,9 +992,7 @@ int main(int argc, char **argv) {
 
     std::set_terminate([]() {
         try {
-            if (auto eptr = std::current_exception()) {
-                std::rethrow_exception(eptr);
-            }
+            if (auto eptr = std::current_exception()) std::rethrow_exception(eptr);
         } catch (const std::exception &e) {
             std::println(stderr, "{}", e.what());
         } catch (...) {
