@@ -44,7 +44,6 @@
 #include <nfd.h>
 
 #include <csignal>
-#include <ctime>
 #include <exception>
 #include <fstream>
 #include <iostream>
@@ -343,16 +342,18 @@ std::expected<fs::path, std::string> SaveScreenshot(entt::registry &r, const fs:
     return out_path;
 }
 
-// Frame a camera-less scene from a straight-on front view. No-op on an empty scene.
-void FrameSceneFront(entt::registry &r, entt::entity viewport, float aspect_ratio) {
+// Slide the view camera along its current view axis until the scene's longest visual side spans the middle half of the view. No-op if empty.
+void FrameScene(entt::registry &r, entt::entity viewport, float aspect_ratio) {
     const auto &cam = r.get<const ViewCamera>(viewport);
     const auto *persp = std::get_if<Perspective>(&cam.Data); // The launch view camera is always perspective.
     if (!persp) return;
 
-    // Front view (camera on +Z, looking down -Z), at the tightest distance that keeps every vertex in frame.
-    const float ty = std::tan(persp->FieldOfViewRad * 0.5f), tx = aspect_ratio * ty;
+    // Keep the current orientation; measure each vertex against this camera's basis.
+    const vec3 right = cam.Orientation * vec3{1, 0, 0}, up = cam.Orientation * vec3{0, 1, 0}, away = cam.Forward();
+    // Half the real frustum tangents, so a vertex reaching the (narrower) edge only fills the middle half of the true view.
+    const float ty = 0.5f * std::tan(persp->FieldOfViewRad * 0.5f), tx = aspect_ratio * ty;
     constexpr float lowest = std::numeric_limits<float>::lowest();
-    float up = lowest, down = lowest, right = lowest, left = lowest;
+    float top = lowest, bottom = lowest, rgt = lowest, lft = lowest;
     BBox scene;
     for (const auto [e, ri, wt] : r.view<const RenderInstance, const WorldTransform>().each()) {
         const auto mesh = TryGetMesh(r, FindMeshEntity(r, e));
@@ -363,17 +364,18 @@ void FrameSceneFront(entt::registry &r, entt::entity viewport, float aspect_rati
             const vec3 v{m * vec4{vtx.Position, 1.f}};
             scene.Min = glm::min(scene.Min, v);
             scene.Max = glm::max(scene.Max, v);
-            up = std::max(up, v.y / ty + v.z);
-            down = std::max(down, -v.y / ty + v.z);
-            right = std::max(right, v.x / tx + v.z);
-            left = std::max(left, -v.x / tx + v.z);
+            const float a = glm::dot(v, right), b = glm::dot(v, up), f = glm::dot(v, away);
+            top = std::max(top, b / ty + f);
+            bottom = std::max(bottom, -b / ty + f);
+            rgt = std::max(rgt, a / tx + f);
+            lft = std::max(lft, -a / tx + f);
         }
     }
     if (glm::any(glm::greaterThan(scene.Min, scene.Max))) return;
 
     const auto center = (scene.Min + scene.Max) * 0.5f;
-    constexpr float Padding{1.25f}; // So the camera isn't exactly tight to the scene
-    const float distance = Padding * (std::max({up - center.y / ty, down + center.y / ty, right - center.x / tx, left + center.x / tx}) - center.z);
+    const float ca = glm::dot(center, right), cb = glm::dot(center, up), cf = glm::dot(center, away);
+    const float distance = std::max({top - cb / ty, bottom + cb / ty, rgt - ca / tx, lft + ca / tx}) - cf;
     if (distance <= 0.f) return;
 
     // Clip planes bracket the scene depth so nothing is z-clipped.
@@ -382,7 +384,7 @@ void FrameSceneFront(entt::registry &r, entt::entity viewport, float aspect_rati
     fit.FarClip = distance + plane_reach;
     fit.NearClip = std::max(distance - plane_reach, *fit.FarClip / 10000.f);
 
-    r.replace<ViewCamera>(viewport, ViewCamera{center + vec3{0, 0, distance}, center, Camera{fit}});
+    r.replace<ViewCamera>(viewport, ViewCamera{center + distance * away, center, Camera{fit}});
 }
 
 // Headless capture options from the CLI. `--render` is a preset for the full scene corpus; `--screenshot`/`--record` target one output.
@@ -563,7 +565,8 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
 
     const bool recording_mode = !record_path.empty(), screenshot_mode = !screenshot_path.empty();
     const bool capture_single_loop = render_mode; // Corpus video captures exactly one playback loop.
-    if (play || screenshot_mode || recording_mode) {
+    const bool presenting = play || screenshot_mode || recording_mode;
+    if (presenting) {
         // Enter presentation mode so the first rendered frame matches the capture.
         // Playback start and the capture itself wait until the viewport settles.
         Perform(r, viewport, action::timeline::EnterPresentation{});
@@ -926,9 +929,9 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
             }
         }
         const bool viewport_settled = new_logical_extent != uvec2{} && new_logical_extent == r.ctx().get<const ViewportExtent>().Value;
-        if (!view_framed && viewport_settled && (play || screenshot_mode || recording_mode) && r.view<const Camera>().empty()) {
-            FrameSceneFront(r, viewport, float(new_logical_extent.x) / float(new_logical_extent.y));
-            view_framed = true;
+        if (!view_framed && presenting && r.view<const Camera>().empty() && new_logical_extent != uvec2{}) {
+            FrameScene(r, viewport, float(new_logical_extent.x) / float(new_logical_extent.y));
+            view_framed = viewport_settled;
         }
 
         // Remaining emits go after Interact so it wins the single-action buffer.
