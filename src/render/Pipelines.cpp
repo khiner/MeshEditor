@@ -405,7 +405,7 @@ MainPipeline::TransmissionResourcesT::TransmissionResourcesT(
 }
 
 bool MainPipeline::EnsureTransmissionResources(vk::Extent2D extent, vk::Device d, vk::PhysicalDevice pd, bool wanted) {
-    if (!wanted) {
+    if (!wanted || !Resources) {
         if (!Transmission) return false;
         Transmission.reset();
         return true;
