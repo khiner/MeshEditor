@@ -9,6 +9,7 @@
 // A context singleton; passed by reference into Interact/InteractOverlay/DrawOverlay so producers and consumers see the same instance.
 struct FrameState {
     float DeltaTime{0}; // Seconds since the last frame (drives playback advance)
+    bool FixedFrameStep{false}; // Playback advances exactly one timeline frame per tick (deterministic render mode)
     vec2 DisplayFramebufferScale{1, 1}; // Logical-to-physical pixel scale (DPI)
     vec2 AccumulatedWrapMouseDelta{0, 0};
     vec2 PreciseWheelDelta{0, 0};

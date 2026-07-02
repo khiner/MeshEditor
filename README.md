@@ -187,6 +187,7 @@ $ git lfs pull
 
 Regenerate the corpus with `./script/Render`.
 It needs a display and the glTF submodules, plus `ffmpeg` on `PATH` for videos.
+Rendering is fixed-step (one tick per timeline frame) and GPU-paced, so artifacts are deterministic on a given machine: after regenerating, `git status` shows only scenes whose rendering actually changed.
 
 ## Stack
 

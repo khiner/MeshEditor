@@ -412,7 +412,7 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
 
     bool play = capture.Play;
     const float play_duration = capture.PlayDuration;
-    const int record_fps = capture.Fps;
+    const bool render_mode = !capture.RenderBasename.empty();
 
     SDL_SetHint(SDL_HINT_MAC_SCROLL_MOMENTUM, "1");
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) throw std::runtime_error(std::format("SDL_Init error: {}", SDL_GetError()));
@@ -458,11 +458,15 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
         wd.SurfaceFormat = ImGui_ImplVulkanH_SelectSurfaceFormat(vc->PhysicalDevice, wd.Surface, requestSurfaceImageFormat, (size_t)IM_COUNTOF(requestSurfaceImageFormat), requestSurfaceColorSpace);
 
 #ifdef IMGUI_UNLIMITED_FRAME_RATE
-        const VkPresentModeKHR present_modes[] = {VK_PRESENT_MODE_MAILBOX_KHR, VK_PRESENT_MODE_IMMEDIATE_KHR, VK_PRESENT_MODE_FIFO_KHR};
+        const bool unthrottled = true;
 #else
-        const VkPresentModeKHR present_modes[] = {VK_PRESENT_MODE_FIFO_KHR};
+        // Render mode is GPU-paced: content is fixed-step per tick, so present pacing only affects wall time.
+        const bool unthrottled = render_mode;
 #endif
-        wd.PresentMode = ImGui_ImplVulkanH_SelectPresentMode(vc->PhysicalDevice, wd.Surface, &present_modes[0], IM_COUNTOF(present_modes));
+        const VkPresentModeKHR unthrottled_modes[]{VK_PRESENT_MODE_MAILBOX_KHR, VK_PRESENT_MODE_IMMEDIATE_KHR, VK_PRESENT_MODE_FIFO_KHR};
+        wd.PresentMode = unthrottled ?
+            ImGui_ImplVulkanH_SelectPresentMode(vc->PhysicalDevice, wd.Surface, &unthrottled_modes[0], IM_COUNTOF(unthrottled_modes)) :
+            VK_PRESENT_MODE_FIFO_KHR; // Always supported.
         ImGui_ImplVulkanH_CreateOrResizeWindow(*vc->Instance, vc->PhysicalDevice, *vc->Device, &wd, vc->QueueFamily, nullptr, w, h, MinImageCount, 0);
     }
 
@@ -562,7 +566,6 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
     }
 
     fs::path record_path = capture.RecordPath, screenshot_path = capture.ScreenshotPath, corpus_actions_path;
-    const bool render_mode = !capture.RenderBasename.empty();
     if (render_mode) {
         const auto with = [&](const char *ext) { return fs::path{capture.RenderBasename.string() + ext}; };
         corpus_actions_path = with(".actions");
@@ -576,21 +579,21 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
 
     const bool recording_mode = !record_path.empty(), screenshot_mode = !screenshot_path.empty();
     const bool presenting = play || screenshot_mode || recording_mode;
-    if (presenting) {
-        // Enter presentation mode so the first rendered frame matches the capture.
-        // Playback start and the capture itself wait until the viewport settles.
-        Perform(r, viewport, action::timeline::EnterPresentation{});
-    }
+    // Enter presentation mode so the first rendered frame matches the capture.
+    // Playback start and the capture itself wait until the viewport settles.
+    if (presenting) Perform(r, viewport, action::timeline::EnterPresentation{});
 
-    // Sim always uses the real `io.DeltaTime` from SDL, so sim-clock = wall-clock (1:1 real-time) whether or not we're recording.
-    // Recording just samples the already-live viewport: a wall-clock accumulator captures one frame every `1/record_fps` seconds,
-    // decimating if the display refreshes faster than the video's fps.
-    // This keeps the in-app preview and the recorded video playing at the exact same rate.
-    const uint64_t capture_interval_ns{1'000'000'000ULL / uint64_t(record_fps)};
+    // Interactively (including `--record`), sim-clock = wall-clock.
+    // Recording samples the live viewport every `1/record_fps` seconds, so the video plays at the same rate as the in-app preview.
+    // Render mode instead runs a fixed-step clock: one timeline frame per tick, and every tick is captured.
+    r.ctx().get<FrameState>().FixedFrameStep = render_mode;
+    const float timeline_fps = r.get<const TimelineRange>(viewport).Fps;
+    const float render_dt = 1.f / timeline_fps;
+    const int record_fps = render_mode ? int(std::lround(timeline_fps)) : capture.Fps;
+    const uint64_t capture_interval_ns{1'000'000'000ULL / uint64_t(capture.Fps)};
     uint64_t next_capture_ns{0}; // Initialized when recording starts.
     float elapsed_play_time{0};
-    int render_last_frame{-1}; // Last timeline frame captured in render mode, for one-loop wrap detection.
-    uint32_t next_render_clip{1}; // Next clip to capture once the current loop wraps.
+    uint32_t next_render_clip{1}; // Next clip to capture once the current loop finishes.
     uint32_t next_render_variant{0}; // Next material variant to capture once the default image saves.
     bool playback_started{false}, screenshot_saved{false}, view_framed{false};
     bool viewport_resizing{false}; // True while a resize drag is staged but not yet committed.
@@ -635,7 +638,8 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
         ImGui_ImplVulkan_NewFrame();
         ImGui_ImplSDL3_NewFrame();
         elapsed_play_time += io.DeltaTime;
-        r.ctx().get<FrameState>().DeltaTime = io.DeltaTime;
+        // Scene-affecting code reads FrameState::DeltaTime. `io.DeltaTime` is wall-clock, UI-only.
+        r.ctx().get<FrameState>().DeltaTime = render_mode ? render_dt : io.DeltaTime;
         NewFrame();
 
         auto dockspace_id = DockSpaceOverViewport(0, nullptr, ImGuiDockNodeFlags_PassthruCentralNode | ImGuiDockNodeFlags_AutoHideTabBar);
@@ -948,7 +952,8 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
 
         // Remaining emits go after Interact so it wins the single-action buffer.
         // Start playback once settled, for play or video (the screenshot stays on the held frame).
-        if (!playback_started && viewport_settled && (play || recording_mode)) {
+        // Render mode waits one more tick, until recording has begun, so the start frame is captured.
+        if (!playback_started && viewport_settled && (play || (render_mode ? IsRecording(r, viewport) : recording_mode))) {
             action::Emit(action::timeline::StartPresentation{});
             playback_started = true;
         }
@@ -1011,31 +1016,30 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
                 else done = true;
             }
             if (IsRecording(r, viewport)) {
-                const int cur_frame = r.get<const TimelinePlayback>(viewport).CurrentFrame;
-                // Render video: each loop wrap, advance to the next clip, or stop after the last.
-                if (render_mode && render_last_frame >= 0 && cur_frame < render_last_frame) {
-                    bool switched = false;
-                    const auto switch_clips = [&]<typename Anim>() {
-                        for (const auto [entity, anim] : r.view<const Anim>().each()) {
-                            if (next_render_clip < anim.Clips.size()) {
-                                Perform(r, viewport, action::UpdateOf<&Anim::ActiveClipIndex>(entity, next_render_clip));
-                                switched = true;
+                if (render_mode) {
+                    // Fixed step: every tick is one timeline frame; capture each. At a loop's last frame,
+                    // switch each multi-clip component to its next clip, or stop after the last.
+                    // Emitted, not Performed: a mid-loop Perform would advance playback an extra tick.
+                    CaptureRecordFrame(r, viewport);
+                    if (r.get<const TimelinePlayback>(viewport).CurrentFrame == r.get<const TimelineRange>(viewport).EndFrame) {
+                        bool switched = false;
+                        const auto switch_clips = [&]<typename Anim>() {
+                            for (const auto [entity, anim] : r.view<const Anim>().each()) {
+                                if (next_render_clip < anim.Clips.size()) {
+                                    action::Emit(action::UpdateOf<&Anim::ActiveClipIndex>(entity, next_render_clip));
+                                    switched = true;
+                                }
                             }
-                        }
-                    };
-                    switch_clips.template operator()<ArmatureAnimation>();
-                    switch_clips.template operator()<MorphWeightAnimation>();
-                    switch_clips.template operator()<NodeTransformAnimation>();
-                    if (switched) {
-                        ++next_render_clip;
-                        render_last_frame = -1;
-                    } else {
-                        done = true;
+                        };
+                        switch_clips.template operator()<ArmatureAnimation>();
+                        switch_clips.template operator()<MorphWeightAnimation>();
+                        switch_clips.template operator()<NodeTransformAnimation>();
+                        if (switched) ++next_render_clip;
+                        else done = true;
                     }
                 } else if (SDL_GetTicksNS() >= next_capture_ns) {
                     CaptureRecordFrame(r, viewport);
                     next_capture_ns += capture_interval_ns;
-                    render_last_frame = cur_frame;
                 }
             }
             RenderFrame(*vc->Device, vc->Queue, wd, draw_data);

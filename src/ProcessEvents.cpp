@@ -1588,7 +1588,8 @@ RenderRequest ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
         auto &playback = r.get<TimelinePlayback>(viewport);
         auto &pf = r.get<PlaybackFrame>(viewport).Value;
         if (playback.Playing) {
-            pf += r.ctx().get<FrameState>().DeltaTime * range.Fps;
+            const auto &frame_state = r.ctx().get<FrameState>();
+            pf += frame_state.FixedFrameStep ? 1.f : frame_state.DeltaTime * range.Fps;
             if (pf > float(range.EndFrame)) pf = float(range.StartFrame);
             const int new_frame = int(std::floor(pf));
             if (new_frame != playback.CurrentFrame) r.patch<TimelinePlayback>(viewport, [&](auto &p) { p.CurrentFrame = new_frame; });
