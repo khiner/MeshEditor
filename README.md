@@ -177,7 +177,7 @@ The flags can be combined freely.
 ### Render corpus
 
 `render/` holds committed demo output for every scene in the corpus, mirroring the source layout: the built-in Empty and Default scenes, the `res/examples/` projects, and the glTF samples under `external/`. (The redundant `glTF-Binary` and `glTF-Embedded` variants are skipped since they render identically.)
-Each leaf has a visual (`.png` for static scenes, `.mp4` for animated ones), the `.actions` replay log, a `.log` of console output, and a `run.sh` that opens that scene in the app.
+Each leaf has a visual (`.png` for static scenes, `.mp4` for animated ones - one timeline loop per animation clip, back-to-back), the `.actions` replay log, a `.log` of console output, and a `run.sh` that opens that scene in the app.
 
 Binary artifacts are stored in [git-lfs](https://git-lfs.com); fetch them after cloning:
 ```shell

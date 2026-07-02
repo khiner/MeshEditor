@@ -29,7 +29,7 @@ rendered=0
 skipped=0
 skips=()
 
-SceneTimeoutSecs=30 # Shouldn't get hit in normal operation, catches hangs.
+SceneTimeoutSecs=60 # Shouldn't get hit in normal operation, catches hangs.
 
 # Run "$@" with a timeout (macOS has no `timeout`): background it, race a killer, wait.
 run_with_timeout() {

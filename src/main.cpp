@@ -4,6 +4,7 @@
 #include "TransformMath.h"
 #include "Window.h"
 #include "action/ActionApply.h"
+#include "action/Build.h"
 #include "action/Emit.h"
 #include "action/Errors.h"
 #include "action/Io.h"
@@ -11,6 +12,7 @@
 #include "action/View.h"
 #include "animation/AnimationData.h"
 #include "animation/TimelineUi.h"
+#include "armature/ArmatureComponents.h"
 #include "audio/AudioDevice.h"
 #include "audio/AudioSystem.h"
 #include "gizmo/TransformGizmoTypes.h"
@@ -564,6 +566,7 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
         const auto with = [&](const char *ext) { return fs::path{capture.RenderBasename.string() + ext}; };
         corpus_actions_path = with(".actions");
         const bool dynamic = r.view<const PhysicsMotion>().size() > 0 ||
+            r.view<const ArmatureAnimation>().size() > 0 ||
             r.view<const NodeTransformAnimation>().size() > 0 ||
             r.view<const MorphWeightAnimation>().size() > 0;
         if (dynamic) record_path = with(".mp4");
@@ -571,7 +574,6 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
     }
 
     const bool recording_mode = !record_path.empty(), screenshot_mode = !screenshot_path.empty();
-    const bool capture_single_loop = render_mode; // Corpus video captures exactly one playback loop.
     const bool presenting = play || screenshot_mode || recording_mode;
     if (presenting) {
         // Enter presentation mode so the first rendered frame matches the capture.
@@ -587,6 +589,7 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
     uint64_t next_capture_ns{0}; // Initialized when recording starts.
     float elapsed_play_time{0};
     int render_last_frame{-1}; // Last timeline frame captured in render mode, for one-loop wrap detection.
+    uint32_t next_render_clip{1}; // Next clip to capture once the current loop wraps.
     bool playback_started{false}, screenshot_saved{false}, view_framed{false};
     bool viewport_resizing{false}; // True while a resize drag is staged but not yet committed.
     bool done{false};
@@ -997,8 +1000,26 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
             }
             if (IsRecording(r, viewport)) {
                 const int cur_frame = r.get<const TimelinePlayback>(viewport).CurrentFrame;
-                if (capture_single_loop && render_last_frame >= 0 && cur_frame < render_last_frame) {
-                    done = true;
+                // Render video: each loop wrap, advance to the next clip, or stop after the last.
+                if (render_mode && render_last_frame >= 0 && cur_frame < render_last_frame) {
+                    bool switched = false;
+                    const auto switch_clips = [&]<typename Anim>() {
+                        for (const auto [entity, anim] : r.view<const Anim>().each()) {
+                            if (next_render_clip < anim.Clips.size()) {
+                                Perform(r, viewport, action::UpdateOf<&Anim::ActiveClipIndex>(entity, next_render_clip));
+                                switched = true;
+                            }
+                        }
+                    };
+                    switch_clips.template operator()<ArmatureAnimation>();
+                    switch_clips.template operator()<MorphWeightAnimation>();
+                    switch_clips.template operator()<NodeTransformAnimation>();
+                    if (switched) {
+                        ++next_render_clip;
+                        render_last_frame = -1;
+                    } else {
+                        done = true;
+                    }
                 } else if (SDL_GetTicksNS() >= next_capture_ns) {
                     CaptureRecordFrame(r, viewport);
                     next_capture_ns += capture_interval_ns;
