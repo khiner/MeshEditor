@@ -1,0 +1,4 @@
+[in#0/rawvideo @ 0x73cc0c000] Packet corrupt (stream = 0, dts = 1712).
+[in#0/rawvideo @ 0x73d024000] corrupt input packet in stream 0
+[rawvideo @ 0x73d02ce00] Invalid buffer size, packet size 17869824 < expected frame_size 17873856
+[vist#0:0/rawvideo @ 0x73cc04180] [dec:rawvideo @ 0x73d0243c0] Error submitting packet to decoder: Invalid argument

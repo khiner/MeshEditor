@@ -168,10 +168,25 @@ All of `--play`, `--record`, and `--screenshot` use the presentation look (mater
 When a look-through camera is active, only the camera-frame sub-rect (the area inside the dimmed overlay) is recorded. Otherwise the full viewport is recorded.
 * `--fps N` sets the recording framerate (default 60).
 * `--screenshot path.png` writes a single image. The format is chosen by extension (`.png`, `.jpg`/`.jpeg`), which is optional and defaults to `.png`. The captured region matches `--record`. On its own it exits after writing; combined with `--play [seconds]` or `--record` it grabs the frame and keeps running.
+* `--render basename` writes the scene's corpus artifacts under `basename.*` (used by `./script/Render` — see [Render corpus](#render-corpus)).
 
 The flags can be combined freely.
 
 **Timing**: the sim runs at wall-clock rate. Recording samples the viewport at `fps`, so the file plays at the same rate as the in-app preview. `--play N` exits after N seconds — wall-clock when interactive, video-seconds when recording.
+
+### Render corpus
+
+`render/` holds committed demo output for every scene in the corpus, mirroring the source layout: the built-in Empty and Default scenes, the `res/examples/` projects, and the glTF samples under `external/`. (The redundant `glTF-Binary` and `glTF-Embedded` variants are skipped since they render identically.)
+Each leaf has a visual (`.png` for static scenes, `.mp4` for animated ones), the `.actions` replay log, a `.log` of console output, and a `run.sh` that opens that scene in the app.
+
+Binary artifacts are stored in [git-lfs](https://git-lfs.com); fetch them after cloning:
+```shell
+$ git lfs install
+$ git lfs pull
+```
+
+Regenerate the corpus with `./script/Render`.
+It needs a display and the glTF submodules, plus `ffmpeg` on `PATH` for videos.
 
 ## Stack
 

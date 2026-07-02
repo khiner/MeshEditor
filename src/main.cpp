@@ -562,7 +562,6 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
     const bool render_mode = !capture.RenderBasename.empty();
     if (render_mode) {
         const auto with = [&](const char *ext) { return fs::path{capture.RenderBasename.string() + ext}; };
-        Perform(r, viewport, action::io::SaveState{.Path = with(".state")});
         corpus_actions_path = with(".actions");
         const bool dynamic = r.view<const PhysicsMotion>().size() > 0 ||
             r.view<const NodeTransformAnimation>().size() > 0 ||

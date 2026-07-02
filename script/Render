@@ -1,0 +1,105 @@
+#!/bin/bash
+
+# (Re-)generate the committed `render/` corpus — see the "Render corpus" section in README.md for what each
+# scene's leaf contains. Covers Empty, Default, res/examples, and all glTF samples under external/. Run from anywhere.
+
+set -uo pipefail
+
+ScriptDir="$(cd "$(dirname "${0}")" && pwd)"
+ProjectRootDir="$(dirname "${ScriptDir}")"
+cd "${ProjectRootDir}"
+
+Exe="build/MeshEditor"
+RenderDir="render"
+
+# Build the Debug executable first (never release, per repo policy).
+"${ScriptDir}/Build"
+
+# The glTF portion of the corpus needs the sample submodules. Warn but continue if they're missing.
+GltfRoots=()
+for root in external/glTF-Sample-Assets external/glTF_Physics; do
+    if [ -d "${root}" ] && [ -n "$(find "${root}" -type f \( -iname '*.gltf' -o -iname '*.glb' \) -print -quit 2>/dev/null)" ]; then
+        GltfRoots+=("${root}")
+    else
+        echo "WARNING: '${root}' has no glTF samples (run: git submodule update --init ${root}). Skipping it." >&2
+    fi
+done
+
+rendered=0
+skipped=0
+skips=()
+
+SceneTimeoutSecs=30 # Shouldn't get hit in normal operation, catches hangs.
+
+# Run "$@" with a timeout (macOS has no `timeout`): background it, race a killer, wait.
+run_with_timeout() {
+    local secs="$1"; shift
+    "$@" &
+    local pid=$!
+    ( sleep "${secs}"; kill -9 "${pid}" 2>/dev/null ) &
+    local watcher=$!
+    wait "${pid}" 2>/dev/null
+    kill -9 "${watcher}" 2>/dev/null
+    wait "${watcher}" 2>/dev/null
+}
+
+# Render one scene. $1: output basename under render/ (no extension). $2..: MeshEditor args selecting the scene.
+render_scene() {
+    local out="$1"; shift
+    mkdir -p "$(dirname "${out}")"
+    # Clear prior artifacts so failure detection is accurate and stale files never linger.
+    rm -f "${out}.png" "${out}.jpg" "${out}.mp4" "${out}.actions" "${out}.log"
+    # Capture the app's stdout+stderr (load errors, frame counts, any hang evidence) alongside the render.
+    run_with_timeout "${SceneTimeoutSecs}" "./${Exe}" "$@" --render "${out}" -q >"${out}.log" 2>&1
+    # Always (re)write the one-command reproducer, even if the render failed, so the leaf is self-documenting.
+    # It loads the source scene directly (no capture, no project-file regeneration — that's this script's job).
+    {
+        echo '#!/bin/bash'
+        echo '# Load this scene in the app. Run from the repository root.'
+        printf 'exec ./%s' "${Exe}"
+        [ "$#" -gt 0 ] && printf ' %q' "$@"
+        printf '\n'
+    } > "$(dirname "${out}")/run.sh"
+    chmod +x "$(dirname "${out}")/run.sh"
+    if [ -f "${out}.png" ] || [ -f "${out}.mp4" ]; then
+        rendered=$((rendered + 1))
+        echo "  ok   ${out}"
+    else
+        skipped=$((skipped + 1))
+        skips+=("${out}")
+        echo "  SKIP ${out} (no output; load failed or unsupported encoding)" >&2
+    fi
+}
+
+echo "Rendering corpus into ${RenderDir}/ ..."
+
+# Built-in scenes (no source file).
+render_scene "${RenderDir}/Empty/Empty" --empty
+render_scene "${RenderDir}/Default/Default"
+
+# res/examples and every glTF sample, mirrored 1:1 under render/.
+# glTF_Physics/tests/ are conformance unit tests (not demo samples): they render empty/degenerate and some
+# hang the physics solver, so they're excluded.
+prev_out=""
+while IFS= read -r P; do
+    [ -n "${P}" ] || continue
+    out="${RenderDir}/${P%.*}"
+    # A model with both .gltf and .glb in one directory collides on a single output leaf (the sort makes them
+    # adjacent): they're the same scene, so render it once.
+    [ "${out}" = "${prev_out}" ] && continue
+    prev_out="${out}"
+    render_scene "${out}" "${P}"
+done < <(
+    # Skip the redundant `glTF-Binary` and `glTF-Embedded` variant dirs: every such model also ships a
+    # `glTF` variant that renders identically (same asset, just a different container/encoding), so those
+    # renders would be duplicates.
+    find res/examples ${GltfRoots[@]+"${GltfRoots[@]}"} -type f \( -iname '*.gltf' -o -iname '*.glb' \) \
+        -not -path '*/glTF_Physics/tests/*' -not -path '*/glTF-Binary/*' -not -path '*/glTF-Embedded/*' 2>/dev/null | sort
+)
+
+echo
+echo "Done: ${rendered} rendered, ${skipped} skipped."
+if [ "${skipped}" -gt 0 ]; then
+    echo "Skipped:"
+    for s in "${skips[@]}"; do echo "  ${s}"; done
+fi

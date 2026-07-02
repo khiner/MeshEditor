@@ -1,0 +1,6 @@
+vkAllocateMemory: 32.00 MB type=1
+Error loading glTF file 'external/glTF-Sample-Assets/Models/VirtualCity/glTF-Draco/VirtualCity.gltf': Failed to parse glTF 'external/glTF-Sample-Assets/Models/VirtualCity/glTF-Draco/VirtualCity.gltf': Missing required extensions: KHR_draco_mesh_compression
+vkAllocateMemory: 128.00 MB type=1
+Saved screenshot: render/external/glTF-Sample-Assets/Models/VirtualCity/glTF-Draco/VirtualCity.png
+vkFreeMemory: 128.00 MB type=1
+vkFreeMemory: 32.00 MB type=1

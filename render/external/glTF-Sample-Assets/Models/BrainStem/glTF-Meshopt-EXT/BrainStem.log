@@ -1,0 +1,6 @@
+vkAllocateMemory: 32.00 MB type=1
+Error loading glTF file 'external/glTF-Sample-Assets/Models/BrainStem/glTF-Meshopt-EXT/BrainStem.gltf': Failed to parse glTF 'external/glTF-Sample-Assets/Models/BrainStem/glTF-Meshopt-EXT/BrainStem.gltf': Missing required extensions: EXT_meshopt_compression
+vkAllocateMemory: 128.00 MB type=1
+Saved screenshot: render/external/glTF-Sample-Assets/Models/BrainStem/glTF-Meshopt-EXT/BrainStem.png
+vkFreeMemory: 128.00 MB type=1
+vkFreeMemory: 32.00 MB type=1
