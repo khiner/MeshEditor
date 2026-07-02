@@ -11,6 +11,6 @@ struct ViewportTheme {}; struct Materials {}; struct PbrSpecialization {}; struc
 struct MaterializedTextures {}; struct StudioEnvironment {}; struct SceneWorld {}; struct PunctualLight {};
 struct SceneView {}; struct CameraLens {}; struct TransformPending {};
 struct TransformEnd {}; struct WorldTransform {}; struct TransformDirty {};
-struct TimelineRange {};
+struct TimelineRange {}; struct ActiveAnimationClip {};
 } // namespace changes
 // clang-format on

@@ -6,6 +6,7 @@
 #include "Reactive.h"
 #include "Stores.h"
 #include "Timer.h"
+#include "animation/AnimationData.h"
 #include "animation/AnimationTimeline.h"
 #include "armature/ArmatureComponents.h"
 #include "armature/BoneConstraint.h"
@@ -204,6 +205,10 @@ entt::entity InitEngine(entt::registry &r, VulkanResources vc) {
         .on<PosedLocal>(On::Create | On::Update)
         .on<SceneNode>(On::Create | On::Update)
         .on<BoneDisplayScale>(On::Update);
+    track<changes::ActiveAnimationClip>(r)
+        .on<ArmatureAnimation>(On::Update)
+        .on<MorphWeightAnimation>(On::Update)
+        .on<NodeTransformAnimation>(On::Update);
     r.ctx().emplace<EntityDestroyTracker>().Bind(r);
 
     r.on_destroy<Name>().connect<[](entt::registry &r, entt::entity e) {

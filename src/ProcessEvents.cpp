@@ -1595,7 +1595,7 @@ RenderRequest ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
         } else {
             pf = float(playback.CurrentFrame);
         }
-        anim_advanced = playback.CurrentFrame != r.get<LastEvaluatedFrame>(viewport).Value;
+        anim_advanced = playback.CurrentFrame != r.get<LastEvaluatedFrame>(viewport).Value || !reactive<changes::ActiveAnimationClip>(r).empty();
 
         const bool cache_invalid = r.all_of<PhysicsCacheInvalid>(viewport);
         if (cache_invalid) r.remove<PhysicsCacheInvalid>(viewport);
