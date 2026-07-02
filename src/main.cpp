@@ -17,6 +17,7 @@
 #include "image/ImageEncode.h"
 #include "mesh/Mesh.h"
 #include "mesh/MeshComponents.h"
+#include "object/ExtrasComponents.h"
 #include "physics/PhysicsTypes.h"
 #include "render/SvgResource.h"
 #include "render/SvgUpload.h"
@@ -356,12 +357,19 @@ void FrameScene(entt::registry &r, entt::entity viewport, float aspect_ratio) {
     float top = lowest, bottom = lowest, rgt = lowest, lft = lowest;
     BBox scene;
     for (const auto [e, ri, wt] : r.view<const RenderInstance, const WorldTransform>().each()) {
-        const auto mesh = TryGetMesh(r, FindMeshEntity(r, e));
-        if (!mesh) continue;
+        BBox local;
+        if (const auto *db = r.try_get<const DeformedBounds>(e); db) {
+            local = db->Box;
+        } else {
+            const auto mesh = TryGetMesh(r, FindMeshEntity(r, e));
+            if (!mesh) continue;
+            local = mesh->GetBBox();
+        }
+        if (glm::any(glm::greaterThan(local.Min, local.Max))) continue;
 
         const auto m = ToMatrix(wt);
-        for (const auto &vtx : mesh->GetVerticesSpan()) {
-            const vec3 v{m * vec4{vtx.Position, 1.f}};
+        for (int c = 0; c < 8; ++c) {
+            const vec3 v{m * vec4{(c & 1) ? local.Max.x : local.Min.x, (c & 2) ? local.Max.y : local.Min.y, (c & 4) ? local.Max.z : local.Min.z, 1.f}};
             scene.Min = glm::min(scene.Min, v);
             scene.Max = glm::max(scene.Max, v);
             const float a = glm::dot(v, right), b = glm::dot(v, up), f = glm::dot(v, away);

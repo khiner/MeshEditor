@@ -601,7 +601,45 @@ void RebuildGizmoGeometry(entt::registry &r, MeshStore &meshes, GpuBuffers &buff
     }
 }
 
-void UpdateWireframeTransforms(entt::registry &r) {
+// Mesh-local bounds after morph and skin deformation, matching the vertex shader. Nullopt if undeformed.
+std::optional<BBox> ComputeDeformedLocalBBox(const entt::registry &r, MeshStore &meshes, GpuBuffers &buffers, entt::entity object, const Mesh &mesh) {
+    const uint32_t store_id = mesh.GetStoreId();
+
+    std::span<const BoneDeformVertex> bone;
+    std::span<const mat4> deform;
+    if (const auto *mod = r.try_get<const ArmatureModifier>(object)) {
+        if (const auto *pose = r.try_get<const ArmaturePoseState>(mod->ArmatureEntity); pose && pose->GpuDeformRange.Count > 0) {
+            bone = meshes.GetBoneDeform(store_id);
+            deform = buffers.ArmatureDeformBuffer.Get(pose->GpuDeformRange);
+        }
+    }
+    std::span<const MorphTargetVertex> morph;
+    std::span<const float> weights;
+    if (const auto *ms = r.try_get<const MorphWeightState>(object); ms && !ms->Weights.empty()) {
+        morph = meshes.GetMorphTargets(store_id);
+        weights = ms->Weights;
+    }
+    if (bone.empty() && weights.empty()) return std::nullopt;
+
+    const auto verts = mesh.GetVerticesSpan();
+    const auto vtx_count = uint32_t(verts.size());
+    BBox box;
+    for (uint32_t i = 0; i < vtx_count; ++i) {
+        vec3 p = verts[i].Position;
+        for (uint32_t t = 0; t < weights.size(); ++t) p += weights[t] * morph[t * vtx_count + i].PositionDelta;
+        if (!bone.empty()) {
+            const auto &bd = bone[i];
+            const mat4 m = bd.Weights.x * deform[bd.Joints.x] + bd.Weights.y * deform[bd.Joints.y] +
+                bd.Weights.z * deform[bd.Joints.z] + bd.Weights.w * deform[bd.Joints.w];
+            p = vec3{m * vec4{p, 1.f}};
+        }
+        box.Min = glm::min(box.Min, p);
+        box.Max = glm::max(box.Max, p);
+    }
+    return box;
+}
+
+void UpdateWireframeTransforms(entt::registry &r, const std::unordered_set<entt::entity> &deformed_bounds_changed) {
     if (r.view<ColliderWireframe>().empty() && r.view<BBoxWireframe>().empty() && r.view<TetWireframe>().empty()) return;
 
     const auto &wt_changed = reactive<changes::WorldTransform>(r);
@@ -685,9 +723,11 @@ void UpdateWireframeTransforms(entt::registry &r) {
         const bool parent_moved = wt_changed.contains(entity);
         const bool mesh_changed = mesh_geom_changed.contains(instance->Entity);
         const bool newly_created = wt_changed.contains(bw.Instance);
-        if (!parent_moved && !mesh_changed && !newly_created) continue;
+        const bool bounds_changed = deformed_bounds_changed.contains(entity);
+        if (!parent_moved && !mesh_changed && !newly_created && !bounds_changed) continue;
 
-        const auto aabb = mesh->GetBBox();
+        const auto *db = r.try_get<const DeformedBounds>(entity);
+        const auto aabb = db ? db->Box : mesh->GetBBox();
         const auto size = aabb.Max - aabb.Min, center = (aabb.Min + aabb.Max) * 0.5f;
         r.replace<WorldTransform>(bw.Instance, ToTransform(ToMatrix(*wt) * glm::translate(mat4{1}, center) * glm::scale(mat4{1}, size)));
     }
@@ -1840,7 +1880,25 @@ RenderRequest ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
             };
             for (const auto e : recompute) compute(e);
         }
-        UpdateWireframeTransforms(r); // Needs updated WorldTransforms
+        // Cache deformed bounds: once per instance, then per-frame only while a bbox wireframe shows it.
+        std::unordered_set<entt::entity> deformed_bounds_changed;
+        {
+            const auto &geom_changed = reactive<changes::MeshGeometry>(r);
+            for (const auto object : r.view<const Instance, const RenderInstance>()) {
+                if (!r.any_of<ArmatureModifier, MorphWeightState>(object)) continue;
+                const auto &instance = r.get<const Instance>(object);
+                if (!r.all_of<BBoxWireframe>(object) && r.all_of<DeformedBounds>(object) && !geom_changed.contains(instance.Entity)) continue;
+                const auto mesh = TryGetMesh(r, instance.Entity);
+                if (!mesh) continue;
+                if (auto box = ComputeDeformedLocalBBox(r, meshes, buffers, object, *mesh)) {
+                    r.emplace_or_replace<DeformedBounds>(object, DeformedBounds{*box});
+                    deformed_bounds_changed.insert(object);
+                } else {
+                    r.remove<DeformedBounds>(object);
+                }
+            }
+        }
+        UpdateWireframeTransforms(r, deformed_bounds_changed); // Needs updated WorldTransforms
         {
             // Batch WorldTransform writes: collect all (BufferIndex, WorldTransform) pairs,
             // sort by BufferIndex for cache-friendly access, then write via single GetMutableRange.
