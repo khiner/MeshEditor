@@ -29,7 +29,7 @@ rendered=0
 skipped=0
 skips=()
 
-SceneTimeoutSecs=60 # Shouldn't get hit in normal operation, catches hangs.
+SceneTimeoutSecs=90 # Shouldn't get hit in normal operation, catches hangs. (ChronographWatch legitimately plays for 60s.)
 
 # Run "$@" with a timeout (macOS has no `timeout`): background it, race a killer, wait.
 run_with_timeout() {
@@ -48,7 +48,8 @@ render_scene() {
     local out="$1"; shift
     mkdir -p "$(dirname "${out}")"
     # Clear prior artifacts so failure detection is accurate and stale files never linger.
-    rm -f "${out}.png" "${out}.jpg" "${out}.mp4" "${out}.actions" "${out}.log"
+    # The glob covers per-material-variant images ("<name>.<variant>.png").
+    rm -f "${out}.png" "${out}".*.png "${out}.jpg" "${out}.mp4" "${out}.actions" "${out}.log"
     # Capture the app's stdout+stderr (load errors, frame counts, any hang evidence) alongside the render.
     run_with_timeout "${SceneTimeoutSecs}" "./${Exe}" "$@" --render "${out}" -q >"${out}.log" 2>&1
     # Always (re)write the one-command reproducer, even if the render failed, so the leaf is self-documenting.

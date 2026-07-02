@@ -21,6 +21,7 @@
 #include "mesh/MeshComponents.h"
 #include "object/ExtrasComponents.h"
 #include "physics/PhysicsTypes.h"
+#include "render/MaterialComponents.h"
 #include "render/SvgResource.h"
 #include "render/SvgUpload.h"
 #include "scene/Entity.h"
@@ -590,6 +591,7 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
     float elapsed_play_time{0};
     int render_last_frame{-1}; // Last timeline frame captured in render mode, for one-loop wrap detection.
     uint32_t next_render_clip{1}; // Next clip to capture once the current loop wraps.
+    uint32_t next_render_variant{0}; // Next material variant to capture once the default image saves.
     bool playback_started{false}, screenshot_saved{false}, view_framed{false};
     bool viewport_resizing{false}; // True while a resize drag is staged but not yet committed.
     bool done{false};
@@ -990,8 +992,18 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
             if (screenshot_mode && !screenshot_saved && viewport_settled) {
                 if (auto saved = SaveScreenshot(r, screenshot_path); saved) std::println("Saved screenshot: {}", saved->string());
                 else std::println(stderr, "Screenshot: {}", saved.error());
-                screenshot_saved = true;
-                if (!recording_mode && play_duration <= 0) done = true;
+                // After the default, save one image per material variant.
+                const auto *mv = render_mode ? r.try_get<const MaterialVariants>(viewport) : nullptr;
+                if (mv && next_render_variant < mv->Names.size()) {
+                    auto name = mv->Names[next_render_variant].empty() ? std::format("Variant {}", next_render_variant) : mv->Names[next_render_variant];
+                    std::ranges::replace(name, '/', '-');
+                    screenshot_path = fs::path{capture.RenderBasename.string() + "." + name + ".png"};
+                    action::Emit(action::UpdateOf<&MaterialVariants::Active>(viewport, std::optional{next_render_variant}));
+                    ++next_render_variant;
+                } else {
+                    screenshot_saved = true;
+                    if (!recording_mode && play_duration <= 0) done = true;
+                }
             }
             if (recording_mode && !IsRecording(r, viewport) && viewport_settled) {
                 StartRecording(r, viewport, record_path, record_fps);
