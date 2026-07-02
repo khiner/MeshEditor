@@ -1,8 +1,8 @@
 vkAllocateMemory: 32.00 MB type=1
 vkAllocateMemory: 64.00 MB type=1
 vkAllocateMemory: 128.00 MB type=1
-VideoRecorder: 1662x1662 @ 60fps -> render/external/glTF-Sample-Assets/Models/DiffuseTransmissionPlant/glTF/DiffuseTransmissionPlant.mp4
-VideoRecorder: wrote 997 frames (ffmpeg status=0)
+VideoRecorder: 1662x1662 @ 24fps -> render/external/glTF-Sample-Assets/Models/DiffuseTransmissionPlant/glTF/DiffuseTransmissionPlant.mp4
+VideoRecorder: wrote 400 frames (ffmpeg status=0)
 vkFreeMemory: 128.00 MB type=1
 vkFreeMemory: 64.00 MB type=1
 vkFreeMemory: 32.00 MB type=1

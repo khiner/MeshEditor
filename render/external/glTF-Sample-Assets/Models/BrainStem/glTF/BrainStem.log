@@ -1,4 +1,8 @@
-[in#0/rawvideo @ 0x8a8c14000] Packet corrupt (stream = 0, dts = 1720).
-[in#0/rawvideo @ 0x8a9020000] corrupt input packet in stream 0
-[rawvideo @ 0x8a9024e00] Invalid buffer size, packet size 9293312 < expected frame_size 17873856
-[vist#0:0/rawvideo @ 0x8a8c04180] [dec:rawvideo @ 0x8a90203c0] Error submitting packet to decoder: Invalid argument
+vkAllocateMemory: 32.00 MB type=1
+vkAllocateMemory: 64.00 MB type=1
+vkAllocateMemory: 128.00 MB type=1
+VideoRecorder: 2418x1848 @ 24fps -> render/external/glTF-Sample-Assets/Models/BrainStem/glTF/BrainStem.mp4
+VideoRecorder: wrote 838 frames (ffmpeg status=0)
+vkFreeMemory: 128.00 MB type=1
+vkFreeMemory: 64.00 MB type=1
+vkFreeMemory: 32.00 MB type=1

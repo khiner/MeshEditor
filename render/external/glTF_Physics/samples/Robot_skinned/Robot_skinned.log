@@ -4,9 +4,7 @@ Warning: joint '<unnamed>': soft angular limit on X ignored (Jolt SixDOFConstrai
 Warning: joint '<unnamed>': soft angular limit on Z ignored (Jolt SixDOFConstraint lacks angular spring limits).
 vkFreeMemory: 64.00 MB type=1
 vkAllocateMemory: 128.00 MB type=1
-VideoRecorder: 2176x1224 @ 60fps -> render/external/glTF_Physics/samples/Robot_skinned/Robot_skinned.mp4
-Warning: joint '<unnamed>': soft angular limit on X ignored (Jolt SixDOFConstraint lacks angular spring limits).
-Warning: joint '<unnamed>': soft angular limit on Z ignored (Jolt SixDOFConstraint lacks angular spring limits).
-VideoRecorder: wrote 622 frames (ffmpeg status=0)
+VideoRecorder: 2176x1224 @ 24fps -> render/external/glTF_Physics/samples/Robot_skinned/Robot_skinned.mp4
+VideoRecorder: wrote 250 frames (ffmpeg status=0)
 vkFreeMemory: 128.00 MB type=1
 vkFreeMemory: 32.00 MB type=1

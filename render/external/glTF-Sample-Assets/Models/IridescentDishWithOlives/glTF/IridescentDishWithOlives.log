@@ -2,7 +2,7 @@ vkAllocateMemory: 32.00 MB type=1
 vkAllocateMemory: 64.00 MB type=1
 vkFreeMemory: 64.00 MB type=1
 vkAllocateMemory: 128.00 MB type=1
-VideoRecorder: 2176x1224 @ 60fps -> render/external/glTF-Sample-Assets/Models/IridescentDishWithOlives/glTF/IridescentDishWithOlives.mp4
-VideoRecorder: wrote 397 frames (ffmpeg status=0)
+VideoRecorder: 2176x1224 @ 24fps -> render/external/glTF-Sample-Assets/Models/IridescentDishWithOlives/glTF/IridescentDishWithOlives.mp4
+VideoRecorder: wrote 160 frames (ffmpeg status=0)
 vkFreeMemory: 128.00 MB type=1
 vkFreeMemory: 32.00 MB type=1

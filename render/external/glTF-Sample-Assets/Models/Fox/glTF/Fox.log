@@ -1,5 +1,6 @@
 vkAllocateMemory: 32.00 MB type=1
 vkAllocateMemory: 128.00 MB type=1
-Saved screenshot: render/external/glTF-Sample-Assets/Models/Fox/glTF/Fox.png
+VideoRecorder: 2418x1848 @ 24fps -> render/external/glTF-Sample-Assets/Models/Fox/glTF/Fox.mp4
+VideoRecorder: wrote 246 frames (ffmpeg status=0)
 vkFreeMemory: 128.00 MB type=1
 vkFreeMemory: 32.00 MB type=1

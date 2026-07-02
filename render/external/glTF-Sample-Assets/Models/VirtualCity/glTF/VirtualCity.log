@@ -1,4 +1,8 @@
-[in#0/rawvideo @ 0x8a502c000] Packet corrupt (stream = 0, dts = 1718).
-[in#0/rawvideo @ 0x8a5028000] corrupt input packet in stream 0
-[rawvideo @ 0x8a4c08e00] Invalid buffer size, packet size 10641408 < expected frame_size 10653696
-[vist#0:0/rawvideo @ 0x8a5020180] [dec:rawvideo @ 0x8a50283c0] Error submitting packet to decoder: Invalid argument
+vkAllocateMemory: 32.00 MB type=1
+vkAllocateMemory: 64.00 MB type=1
+vkAllocateMemory: 128.00 MB type=1
+VideoRecorder: 2176x1224 @ 24fps -> render/external/glTF-Sample-Assets/Models/VirtualCity/glTF/VirtualCity.mp4
+VideoRecorder: wrote 720 frames (ffmpeg status=0)
+vkFreeMemory: 128.00 MB type=1
+vkFreeMemory: 64.00 MB type=1
+vkFreeMemory: 32.00 MB type=1
