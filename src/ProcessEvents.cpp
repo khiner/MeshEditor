@@ -521,6 +521,7 @@ void EnsureWireframes(entt::registry &r, entt::entity viewport) {
     }
 
     if (show_bbox) {
+        ensure_buffer(Box, physics_debug::UnitBox); // Removing a deselected bbox above may have freed the shared Box buffer.
         for (auto entity : r.view<Selected>()) {
             if (!r.all_of<BBoxWireframe>(entity)) {
                 const auto *instance = r.try_get<const Instance>(entity);
