@@ -953,7 +953,7 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
         // Remaining emits go after Interact so it wins the single-action buffer.
         // Start playback once settled, for play or video (the screenshot stays on the held frame).
         // Render mode waits one more tick, until recording has begun, so the start frame is captured.
-        if (!playback_started && viewport_settled && (play || (render_mode ? IsRecording(r, viewport) : recording_mode))) {
+        if (!playback_started && viewport_settled && (render_mode ? IsRecording(r, viewport) : (play || recording_mode))) {
             action::Emit(action::timeline::StartPresentation{});
             playback_started = true;
         }
@@ -1119,6 +1119,11 @@ int main(int argc, char **argv) {
         else if (!a.starts_with('-') && !initial_file) initial_file = *it;
     }
     if (capture.Fps <= 0) capture.Fps = 60;
+    // Render mode derives its own output paths from the basename.
+    if (!capture.RenderBasename.empty() && (!capture.RecordPath.empty() || !capture.ScreenshotPath.empty())) {
+        std::println(stderr, "--render cannot be combined with --record or --screenshot");
+        return 1;
+    }
 
     run(initial_file, quiet, empty, capture);
     return 0;

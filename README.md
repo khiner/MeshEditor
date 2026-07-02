@@ -170,7 +170,7 @@ When a look-through camera is active, only the camera-frame sub-rect (the area i
 * `--screenshot path.png` writes a single image. The format is chosen by extension (`.png`, `.jpg`/`.jpeg`), which is optional and defaults to `.png`. The captured region matches `--record`. On its own it exits after writing; combined with `--play [seconds]` or `--record` it grabs the frame and keeps running.
 * `--render basename` writes the scene's corpus artifacts under `basename.*` (used by `./script/Render` — see [Render corpus](#render-corpus)).
 
-The flags can be combined freely.
+The flags can be combined freely, except `--render` excludes `--record` and `--screenshot` (it derives its own outputs). `--render --play N` caps the video at N seconds.
 
 **Timing**: the sim runs at wall-clock rate. Recording samples the viewport at `fps`, so the file plays at the same rate as the in-app preview. `--play N` exits after N seconds — wall-clock when interactive, video-seconds when recording.
 
