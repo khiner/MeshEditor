@@ -93,6 +93,7 @@ PBR render features that are not needed by the scene (because the feature isn't 
 | `KHR_lights_punctual` | ✅ | Imported into MeshEditor light entities |
 | `KHR_texture_transform` | ✅ | |
 | `KHR_texture_basisu` | ✅ | KTX2 transcoded via [basis_universal](https://github.com/BinomialLLC/basis_universal). BC7/ETC2/RGBA32 target selected based on device support |
+| `EXT_texture_webp` | ✅ | Decoded via [libwebp](https://github.com/webmproject/libwebp). Edited textures re-encode to lossless WebP on export |
 | `KHR_materials_emissive_strength` | ✅ | |
 | `KHR_materials_unlit` | ✅ | |
 | `KHR_materials_specular` | ✅ | |
@@ -155,7 +156,7 @@ $ git clone --recurse-submodules git@github.com:khiner/MeshEditor.git
 $ cd MeshEditor
 $ ./script/Clean # optionally clean first
 $ ./script/Build [--release]
-$ cd build && ./MeshEditor [file|--empty] [--quiet|-q] [--headless] [--play [seconds]] [--record path.mp4 [--fps N]] [--screenshot path.png] [--render basename]
+$ cd build && ./MeshEditor [file|--empty] [--quiet|-q] [--headless] [--play [seconds]] [--record path.mp4 [--fps N]] [--screenshot path.webp] [--render basename]
 ```
 
 * `file` can be a `.gltf`, `.glb`, `.obj`, `.ply`, `.state` (scene snapshot), or `.actions` (replayed action log). No file loads the default scene.
@@ -167,7 +168,7 @@ All of `--play`, `--record`, and `--screenshot` use the presentation look (mater
 * `--record path.mp4` runs playback and writes the viewport as an H.264 `.mp4` via a `ffmpeg` subprocess (must be on `PATH`).
 When a look-through camera is active, only the camera-frame sub-rect (the area inside the dimmed overlay) is recorded. Otherwise the full viewport is recorded.
 * `--fps N` sets the recording framerate (default 60).
-* `--screenshot path.png` writes a single image. The format is chosen by extension (`.png`, `.jpg`/`.jpeg`), which is optional and defaults to `.png`. The captured region matches `--record`. On its own it exits after writing; combined with `--play [seconds]` or `--record` it grabs the frame and keeps running.
+* `--screenshot path.webp` writes a single image. The format is chosen by extension (`.webp` lossless, `.png`, `.jpg`/`.jpeg`), which is optional and defaults to `.webp`. The captured region matches `--record`. On its own it exits after writing; combined with `--play [seconds]` or `--record` it grabs the frame and keeps running.
 * `--render basename` writes the scene's corpus artifacts under `basename.*` (used by `./script/Render` — see [Render corpus](#render-corpus)).
 * `--render-queue dir` renders one scene per `dir/*.job` file (`basename<TAB>scene arg`) in a single headless process, and parallel workers can safely share one queue. Used by `./script/Render`, combinable only with `-q`.
 * `--headless` runs without a window: the viewport renders offscreen at a fixed 1280x800 (2x pixel density) extent, and any capture flags read it back. Without a capture flag it renders one frame and exits, and a duration-less `--play` exits after one timeline loop.
@@ -179,7 +180,7 @@ The flags can be combined freely, except `--render` excludes `--record` and `--s
 ### Render corpus
 
 `render/` holds committed demo output for every scene in the corpus, mirroring the source layout: the built-in Empty and Default scenes, the `res/examples/` projects, and the glTF samples under `external/`. (The redundant `glTF-Binary` and `glTF-Embedded` variants are skipped since they render identically.)
-Each leaf has a visual (`.png` for static scenes, plus one per material variant, `.mp4` for animated ones - one timeline loop per animation clip, back-to-back), the `.actions` replay log, a `.log` of console output, and a `run.sh` that opens that scene in the app.
+Each leaf has a visual (lossless `.webp` for static scenes, plus one per material variant, `.mp4` for animated ones - one timeline loop per animation clip, back-to-back), the `.actions` replay log, a `.log` of console output, and a `run.sh` that opens that scene in the app.
 
 Binary artifacts are stored in [git-lfs](https://git-lfs.com); fetch them after cloning:
 ```shell
@@ -204,6 +205,7 @@ Rendering is fixed-step (one tick per timeline frame) and GPU-paced at a fixed e
 - [fastgltf](https://github.com/spnda/fastgltf) glTF 2.0 scene loading
 - [JoltPhysics](https://github.com/jrouwe/JoltPhysics): Rigid body physics
 - [basis_universal](https://github.com/BinomialLLC/basis_universal) KTX2 texture transcoding (`KHR_texture_basisu`)
+- [libwebp](https://github.com/webmproject/libwebp) WebP texture decoding and lossless snapshot/texture encoding (`EXT_texture_webp`)
 - [tinyobjloader](https://github.com/tinyobjloader/tinyobjloader) and [tinyply](https://github.com/ddiakopoulos/tinyply): `.obj` and `.ply` mesh loading
 - [lunasvg](https://github.com/sammycage/lunasvg): Render Faust SVGs to bitmaps, parse SVG link bounding boxes, render SVG icons
 - [fftw](https://www.fftw.org/) compute spectrograms (visualized with ImPlot)

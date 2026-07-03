@@ -6,6 +6,8 @@
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include <plutovg-stb-image-write.h>
 
+#include <webp/encode.h>
+
 namespace {
 void AppendToVector(void *ctx, void *data, int size) {
     if (size <= 0) return;
@@ -13,6 +15,14 @@ void AppendToVector(void *ctx, void *data, int size) {
     const auto offset = out->size();
     out->resize(offset + size);
     std::memcpy(out->data() + offset, data, size);
+}
+
+int WebPAppendToVector(const uint8_t *data, size_t size, const WebPPicture *picture) {
+    auto *out = static_cast<std::vector<std::byte> *>(picture->custom_ptr);
+    const auto offset = out->size();
+    out->resize(offset + size);
+    std::memcpy(out->data() + offset, data, size);
+    return 1;
 }
 
 std::expected<void, std::string> ValidateInput(std::span<const std::byte> rgba8, uint32_t width, uint32_t height, std::string_view name) {
@@ -35,6 +45,32 @@ EncodeImagePngRgba8(std::span<const std::byte> rgba8, uint32_t width, uint32_t h
     if (!stbi_write_png_to_func(&AppendToVector, &out, width, height, 4, rgba8.data(), width * 4)) {
         return std::unexpected{std::format("Failed to PNG-encode image '{}'.", name)};
     }
+    return out;
+}
+
+std::expected<std::vector<std::byte>, std::string>
+EncodeImageWebpRgba8(std::span<const std::byte> rgba8, uint32_t width, uint32_t height, std::string_view name) {
+    if (auto valid = ValidateInput(rgba8, width, height, name); !valid) return std::unexpected{std::move(valid.error())};
+
+    WebPConfig config;
+    WebPPicture picture;
+    if (!WebPConfigInit(&config) || !WebPConfigLosslessPreset(&config, 9) || !WebPPictureInit(&picture)) {
+        return std::unexpected{std::format("Failed to initialize WebP encoder for image '{}'.", name)};
+    }
+    config.exact = 1; // Preserve RGB values in fully-transparent pixels.
+
+    picture.use_argb = 1;
+    picture.width = int(width);
+    picture.height = int(height);
+    std::vector<std::byte> out;
+    picture.writer = WebPAppendToVector;
+    picture.custom_ptr = &out;
+
+    const bool ok = WebPPictureImportRGBA(&picture, reinterpret_cast<const uint8_t *>(rgba8.data()), int(width) * 4) && WebPEncode(&config, &picture);
+    const auto error_code = picture.error_code;
+    WebPPictureFree(&picture);
+    if (!ok) return std::unexpected{std::format("Failed to WebP-encode image '{}' (error {}).", name, int(error_code))};
+
     return out;
 }
 

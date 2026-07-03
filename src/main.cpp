@@ -333,7 +333,7 @@ void ValidateRoundTrip(entt::registry &r, entt::entity viewport) {
 }
 #endif
 
-// Read back the viewport and write it to `path`, choosing the encoder by extension (defaulting to .png).
+// Read back the viewport and write it to `path`, choosing the encoder by extension (defaulting to .webp).
 // Returns the resolved output path on success.
 std::expected<fs::path, std::string> SaveScreenshot(entt::registry &r, const fs::path &path) {
     auto image = ReadbackViewportImage(r);
@@ -341,9 +341,11 @@ std::expected<fs::path, std::string> SaveScreenshot(entt::registry &r, const fs:
 
     auto ext = path.extension().string();
     std::ranges::transform(ext, ext.begin(), [](unsigned char c) { return std::tolower(c); });
-    auto out_path = ext.empty() ? fs::path{path}.replace_extension(".png") : path;
+    auto out_path = ext.empty() ? fs::path{path}.replace_extension(".webp") : path;
     const auto name = out_path.filename().string();
-    const auto encoded = ext == ".jpg" || ext == ".jpeg" ? EncodeImageJpegRgba8(image->Pixels, image->Width, image->Height, 95, name) : EncodeImagePngRgba8(image->Pixels, image->Width, image->Height, name);
+    const auto encoded = ext == ".jpg" || ext == ".jpeg" ? EncodeImageJpegRgba8(image->Pixels, image->Width, image->Height, 95, name) :
+        ext == ".png"                                    ? EncodeImagePngRgba8(image->Pixels, image->Width, image->Height, name) :
+                                                           EncodeImageWebpRgba8(image->Pixels, image->Width, image->Height, name);
     if (!encoded) return std::unexpected{std::move(encoded.error())};
 
     std::ofstream out{out_path, std::ios::binary};
@@ -481,7 +483,7 @@ struct CaptureDriver {
                 r.view<const NodeTransformAnimation>().size() > 0 ||
                 r.view<const MorphWeightAnimation>().size() > 0;
             if (dynamic) RecordPath = with(".mp4");
-            else ScreenshotPath = with(".png");
+            else ScreenshotPath = with(".webp");
         }
         const float timeline_fps = r.get<const TimelineRange>(viewport).Fps;
         RenderDt = 1.f / timeline_fps;
@@ -528,7 +530,7 @@ struct CaptureDriver {
             if (mv && NextRenderVariant < mv->Names.size()) {
                 auto name = mv->Names[NextRenderVariant].empty() ? std::format("Variant {}", NextRenderVariant) : mv->Names[NextRenderVariant];
                 std::ranges::replace(name, '/', '-');
-                ScreenshotPath = fs::path{RenderBasename.string() + "." + name + ".png"};
+                ScreenshotPath = fs::path{RenderBasename.string() + "." + name + ".webp"};
                 action::Emit(action::UpdateOf<&MaterialVariants::Active>(viewport, std::optional{NextRenderVariant}));
                 ++NextRenderVariant;
             } else {
@@ -1270,7 +1272,7 @@ void RunHeadlessQueue(const fs::path &spool, bool quiet) {
             std::fflush(stderr);
             ::dup2(launcher_out, STDOUT_FILENO);
             ::dup2(launcher_err, STDERR_FILENO);
-            if (fs::exists(out + ".png") || fs::exists(out + ".mp4")) std::println("ok   {}", out);
+            if (fs::exists(out + ".webp") || fs::exists(out + ".mp4")) std::println("ok   {}", out);
             else std::println("SKIP {} (no output; load failed or unsupported encoding)", out);
             std::fflush(stdout); // Stdout is typically a block-buffered pipe, so make the line visible now.
         }

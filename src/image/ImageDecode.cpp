@@ -2,12 +2,29 @@
 
 #include <format>
 
-// Decode imported image bytes (PNG/JPEG/HDR/etc.) to fixed RGBA layouts for GPU uploads.
+// Decode imported image bytes (PNG/JPEG/WebP/HDR/etc.) to fixed RGBA layouts for GPU uploads.
 #define STB_IMAGE_STATIC
 #define STB_IMAGE_IMPLEMENTATION
 #include <plutovg-stb-image.h>
 
+#include <webp/decode.h>
+
 namespace {
+bool IsWebp(std::span<const std::byte> bytes) {
+    return bytes.size() >= 12 && std::memcmp(bytes.data(), "RIFF", 4) == 0 && std::memcmp(bytes.data() + 8, "WEBP", 4) == 0;
+}
+
+std::expected<DecodedImage, std::string> DecodeWebpRgba8(std::span<const std::byte> encoded, std::string_view image_name) {
+    int width{0}, height{0};
+    uint8_t *pixels = WebPDecodeRGBA(reinterpret_cast<const uint8_t *>(encoded.data()), encoded.size(), &width, &height);
+    if (!pixels) return std::unexpected{std::format("Failed to decode WebP image '{}'.", image_name)};
+
+    DecodedImage decoded{.Pixels = std::vector<std::byte>(size_t(width) * size_t(height) * 4u), .Width = uint32_t(width), .Height = uint32_t(height)};
+    std::memcpy(decoded.Pixels.data(), pixels, decoded.Pixels.size());
+    WebPFree(pixels);
+    return decoded;
+}
+
 std::string StbiFailureReasonOrUnknown() {
     const char *reason = stbi_failure_reason();
     return reason ? reason : "unknown stb_image error";
@@ -41,6 +58,7 @@ std::expected<Result, std::string> DecodeImage(std::string_view image_name, Load
 
 std::expected<DecodedImage, std::string> DecodeImageRgba8(std::span<const std::byte> encoded, std::string_view image_name) {
     if (encoded.empty()) return std::unexpected{std::format("Image '{}' has no encoded bytes.", image_name)};
+    if (IsWebp(encoded)) return DecodeWebpRgba8(encoded, image_name);
     return DecodeImage<DecodedImage, std::byte>(image_name, [&](int *w, int *h, int *c) -> void * {
         return stbi_load_from_memory(reinterpret_cast<const stbi_uc *>(encoded.data()), encoded.size(), w, h, c, 4);
     });

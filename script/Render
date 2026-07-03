@@ -20,7 +20,7 @@ SceneTimeoutSecs=120 # Catches hangs. Renders are GPU-paced, not real-time, and 
 
 # True if the scene with output basename $1 produced its visual artifact.
 has_output() {
-    [ -f "$1.png" ] || [ -f "$1.mp4" ]
+    [ -f "$1.webp" ] || [ -f "$1.mp4" ]
 }
 
 # Build the Debug executable first (never release, per repo policy).
@@ -46,13 +46,13 @@ prepare_scene() {
     mkdir -p "$(dirname "${out}")"
     # The prior artifact's size estimates render cost, for scheduling expensive scenes first.
     local cost=0 f
-    for f in "${out}.mp4" "${out}.png"; do
+    for f in "${out}.mp4" "${out}.webp" "${out}.png"; do
         [ -f "${f}" ] && cost=$(($(stat -f%z "${f}") + cost))
     done
     costs+=("${cost}")
     # Clear prior artifacts so failure detection is accurate and stale files never linger.
-    # The glob covers per-material-variant images ("<name>.<variant>.png").
-    rm -f "${out}.png" "${out}".*.png "${out}.jpg" "${out}.mp4" "${out}.actions" "${out}.log"
+    # The glob covers per-material-variant images ("<name>.<variant>.webp").
+    rm -f "${out}.webp" "${out}".*.webp "${out}.png" "${out}".*.png "${out}.jpg" "${out}.mp4" "${out}.actions" "${out}.log"
     # Always write the one-command reproducer, even if the render later fails, so the leaf is self-documenting.
     # It loads the source scene directly (no capture, no project-file regeneration — that's this script's job).
     {

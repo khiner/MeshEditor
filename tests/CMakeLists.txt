@@ -54,6 +54,7 @@ target_include_directories(MeshEditorTests PRIVATE
     SYSTEM ${CMAKE_SOURCE_DIR}/lib/glm
     SYSTEM ${CMAKE_SOURCE_DIR}/lib/entt/src
     SYSTEM ${CMAKE_SOURCE_DIR}/lib/simdjson/include
+    SYSTEM ${CMAKE_SOURCE_DIR}/lib/libwebp/src
     SYSTEM ${CMAKE_SOURCE_DIR}/lib/VulkanMemoryAllocator/include
     SYSTEM ${CMAKE_SOURCE_DIR}/lib/basis_universal/transcoder
     SYSTEM ${CMAKE_SOURCE_DIR}/lib/JoltPhysics
@@ -69,6 +70,7 @@ target_link_libraries(MeshEditorTests PRIVATE
     basisu_transcoder
     ${SHADERC_LIB}
     Jolt
+    webp
 )
 
 target_compile_definitions(MeshEditorTests PRIVATE GLM_ENABLE_EXPERIMENTAL DEBUG_BUILD MESHEDITOR_BUILD_DIR="${CMAKE_BINARY_DIR}" MESHEDITOR_SOURCE_DIR="${CMAKE_SOURCE_DIR}")

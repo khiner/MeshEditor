@@ -71,3 +71,6 @@
 [submodule "lib/simdjson"]
 	path = lib/simdjson
 	url = git@github.com:simdjson/simdjson.git
+[submodule "lib/libwebp"]
+	path = lib/libwebp
+	url = git@github.com:webmproject/libwebp.git

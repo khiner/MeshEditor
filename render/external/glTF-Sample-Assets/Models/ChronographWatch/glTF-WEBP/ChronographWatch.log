@@ -1,2 +1,2 @@
-Error loading glTF file 'external/glTF-Sample-Assets/Models/ChronographWatch/glTF-WEBP/ChronographWatch.gltf': Failed to parse glTF 'external/glTF-Sample-Assets/Models/ChronographWatch/glTF-WEBP/ChronographWatch.gltf': Missing required extensions: EXT_texture_webp
-Saved screenshot: render/external/glTF-Sample-Assets/Models/ChronographWatch/glTF-WEBP/ChronographWatch.png
+VideoRecorder: 2560x1600 @ 24fps -> render/external/glTF-Sample-Assets/Models/ChronographWatch/glTF-WEBP/ChronographWatch.mp4
+VideoRecorder: wrote 1440 frames (ffmpeg status=0)

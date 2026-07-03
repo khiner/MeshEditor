@@ -1,2 +1,2 @@
-Error loading glTF file 'external/glTF-Sample-Assets/Models/SunglassesKhronos/glTF-Draco/SunglassesKhronos.gltf': Failed to parse glTF 'external/glTF-Sample-Assets/Models/SunglassesKhronos/glTF-Draco/SunglassesKhronos.gltf': Missing required extensions: KHR_draco_mesh_compression, EXT_texture_webp
-Saved screenshot: render/external/glTF-Sample-Assets/Models/SunglassesKhronos/glTF-Draco/SunglassesKhronos.png
+Error loading glTF file 'external/glTF-Sample-Assets/Models/SunglassesKhronos/glTF-Draco/SunglassesKhronos.gltf': Failed to parse glTF 'external/glTF-Sample-Assets/Models/SunglassesKhronos/glTF-Draco/SunglassesKhronos.gltf': Missing required extensions: KHR_draco_mesh_compression
+Saved screenshot: render/external/glTF-Sample-Assets/Models/SunglassesKhronos/glTF-Draco/SunglassesKhronos.webp

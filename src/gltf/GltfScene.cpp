@@ -157,6 +157,17 @@ MimeType ToMimeType(fastgltf::MimeType mime_type) {
     return MimeType::None;
 }
 
+// Identify an encoded image by its magic bytes, or None if unrecognized.
+MimeType SniffMimeType(std::span<const std::byte> bytes) {
+    const auto *u8 = reinterpret_cast<const uint8_t *>(bytes.data());
+    if (bytes.size() >= 4 && u8[0] == 0x89 && u8[1] == 0x50 && u8[2] == 0x4E && u8[3] == 0x47) return MimeType::PNG;
+    if (bytes.size() >= 3 && u8[0] == 0xFF && u8[1] == 0xD8 && u8[2] == 0xFF) return MimeType::JPEG;
+    if (bytes.size() >= 12 && std::memcmp(bytes.data(), "RIFF", 4) == 0 && std::memcmp(bytes.data() + 8, "WEBP", 4) == 0) return MimeType::WEBP;
+    static constexpr uint8_t Ktx2Magic[12]{0xAB, 0x4B, 0x54, 0x58, 0x20, 0x32, 0x30, 0xBB, 0x0D, 0x0A, 0x1A, 0x0A};
+    if (bytes.size() >= 12 && std::memcmp(bytes.data(), Ktx2Magic, 12) == 0) return MimeType::KTX2;
+    return MimeType::None;
+}
+
 MaterialAlphaMode ToAlphaMode(fastgltf::AlphaMode alpha_mode) {
     switch (alpha_mode) {
         case fastgltf::AlphaMode::Opaque: return MaterialAlphaMode::Opaque;
@@ -278,11 +289,7 @@ std::expected<Image, std::string> ReadImage(const fastgltf::Asset &asset, uint32
         image.data
     );
     if (!read_result) return std::unexpected{std::move(read_result.error())};
-    if (image_result.MimeType == MimeType::None && image_result.Bytes.size() >= 12) {
-        // basist::g_ktx2_file_identifier
-        static constexpr uint8_t Ktx2Magic[12]{0xAB, 0x4B, 0x54, 0x58, 0x20, 0x32, 0x30, 0xBB, 0x0D, 0x0A, 0x1A, 0x0A};
-        if (std::memcmp(image_result.Bytes.data(), Ktx2Magic, 12) == 0) image_result.MimeType = MimeType::KTX2;
-    }
+    if (image_result.MimeType == MimeType::None) image_result.MimeType = SniffMimeType(image_result.Bytes);
     return image_result;
 }
 
@@ -661,7 +668,7 @@ std::expected<fastgltf::Asset, std::string> ParseAsset(const std::filesystem::pa
     auto gltf_file = fastgltf::MappedGltfFile::FromPath(path);
     if (gltf_file.error() != fastgltf::Error::None) return std::unexpected{std::format("Failed to open glTF file '{}': {}", path.string(), fastgltf::getErrorMessage(gltf_file.error()))};
 
-    static constexpr auto EnabledExtensions = fastgltf::Extensions::KHR_mesh_quantization | fastgltf::Extensions::EXT_mesh_gpu_instancing | fastgltf::Extensions::KHR_lights_punctual | fastgltf::Extensions::EXT_lights_image_based | fastgltf::Extensions::KHR_texture_transform | fastgltf::Extensions::KHR_materials_emissive_strength | fastgltf::Extensions::KHR_materials_unlit | fastgltf::Extensions::KHR_texture_basisu | fastgltf::Extensions::KHR_materials_specular | fastgltf::Extensions::KHR_materials_sheen | fastgltf::Extensions::KHR_materials_ior | fastgltf::Extensions::KHR_materials_dispersion | fastgltf::Extensions::KHR_materials_transmission | fastgltf::Extensions::KHR_materials_diffuse_transmission | fastgltf::Extensions::KHR_materials_volume | fastgltf::Extensions::KHR_materials_clearcoat | fastgltf::Extensions::KHR_materials_anisotropy | fastgltf::Extensions::KHR_materials_iridescence | fastgltf::Extensions::KHR_materials_variants | fastgltf::Extensions::KHR_node_visibility | fastgltf::Extensions::KHR_implicit_shapes | fastgltf::Extensions::KHR_physics_rigid_bodies;
+    static constexpr auto EnabledExtensions = fastgltf::Extensions::KHR_mesh_quantization | fastgltf::Extensions::EXT_mesh_gpu_instancing | fastgltf::Extensions::KHR_lights_punctual | fastgltf::Extensions::EXT_lights_image_based | fastgltf::Extensions::KHR_texture_transform | fastgltf::Extensions::KHR_materials_emissive_strength | fastgltf::Extensions::KHR_materials_unlit | fastgltf::Extensions::KHR_texture_basisu | fastgltf::Extensions::EXT_texture_webp | fastgltf::Extensions::KHR_materials_specular | fastgltf::Extensions::KHR_materials_sheen | fastgltf::Extensions::KHR_materials_ior | fastgltf::Extensions::KHR_materials_dispersion | fastgltf::Extensions::KHR_materials_transmission | fastgltf::Extensions::KHR_materials_diffuse_transmission | fastgltf::Extensions::KHR_materials_volume | fastgltf::Extensions::KHR_materials_clearcoat | fastgltf::Extensions::KHR_materials_anisotropy | fastgltf::Extensions::KHR_materials_iridescence | fastgltf::Extensions::KHR_materials_variants | fastgltf::Extensions::KHR_node_visibility | fastgltf::Extensions::KHR_implicit_shapes | fastgltf::Extensions::KHR_physics_rigid_bodies;
     fastgltf::Parser parser{EnabledExtensions};
     if (extras_out) {
         parser.setUserPointer(extras_out);
@@ -1077,14 +1084,14 @@ fastgltf::MimeType FromMimeType(MimeType m) {
     return fastgltf::MimeType::None;
 }
 // Encode tightly-packed RGBA8 pixels to the container for `mime`, dispatching to the generic encoders.
-// WebP / KTX2 / DDS aren't supported — returns an error so callers can fall back (typically to PNG).
+// KTX2 and DDS aren't supported and return an error.
 std::expected<std::vector<std::byte>, std::string>
 EncodeImageRgba8ForMime(MimeType mime, std::span<const std::byte> rgba8, uint32_t width, uint32_t height, int jpeg_quality, std::string_view name) {
     using enum MimeType;
     switch (mime) {
         case PNG: return EncodeImagePngRgba8(rgba8, width, height, name);
         case JPEG: return EncodeImageJpegRgba8(rgba8, width, height, jpeg_quality, name);
-        case WEBP: return std::unexpected{std::format("WebP encoding not supported for image '{}'; caller should fall back to PNG.", name)};
+        case WEBP: return EncodeImageWebpRgba8(rgba8, width, height, name);
         case KTX2: return std::unexpected{std::format("KTX2 encoding not supported for image '{}' (no basisu encoder vendored).", name)};
         case DDS: return std::unexpected{std::format("DDS encoding not supported for image '{}'.", name)};
         case GltfBuffer:
@@ -3366,20 +3373,6 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
     for (const auto &tex : sc.Textures.Textures) {
         if (tex.SourceImageIndex != UINT32_MAX) texture_for_image.emplace(tex.SourceImageIndex, &tex);
     }
-    const auto magic_matches = [](std::span<const std::byte> b, gltf::MimeType mime) {
-        const auto *u8 = reinterpret_cast<const uint8_t *>(b.data());
-        using enum gltf::MimeType;
-        switch (mime) {
-            case PNG: return b.size() >= 4 && u8[0] == 0x89 && u8[1] == 0x50 && u8[2] == 0x4E && u8[3] == 0x47;
-            case JPEG: return b.size() >= 3 && u8[0] == 0xFF && u8[1] == 0xD8 && u8[2] == 0xFF;
-            case WEBP: return b.size() >= 12 && u8[8] == 0x57 && u8[9] == 0x45 && u8[10] == 0x42 && u8[11] == 0x50;
-            case KTX2: {
-                static constexpr uint8_t Magic[12]{0xAB, 0x4B, 0x54, 0x58, 0x20, 0x32, 0x30, 0xBB, 0x0D, 0x0A, 0x1A, 0x0A};
-                return b.size() >= 12 && std::memcmp(b.data(), Magic, 12) == 0;
-            }
-            default: return false;
-        }
-    };
     // Lazy: command pool / fence are created on the first GPU readback only.
     vk::UniqueCommandPool save_pool;
     vk::UniqueFence save_fence;
@@ -3400,7 +3393,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         } else if (target == gltf::MimeType::PNG) {
             return std::unexpected{std::move(enc.error())};
         } else {
-            // Unsupported encoder (WebP / KTX2 / DDS): fall back to PNG.
+            // Encoding failed: fall back to PNG.
             std::cerr << std::format("Warning: image '{}': {} — falling back to PNG.\n", name, enc.error());
             auto png = EncodeImagePngRgba8(*rgba8, w, h, name);
             if (!png) return std::unexpected{std::move(png.error())};
@@ -3437,7 +3430,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             bool ok = false;
             if (exists) {
                 if (!validate) ok = true;
-                else if (auto b = ReadFileBytes(img.SourceAbsPath)) ok = magic_matches(*b, img.MimeType);
+                else if (auto b = ReadFileBytes(img.SourceAbsPath)) ok = SniffMimeType(*b) == img.MimeType;
             }
             if (ok) {
                 emit_external_uri = true;
@@ -4393,6 +4386,9 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             return false;
         };
         if (std::ranges::any_of(asset.materials, material_has_xf)) asset.extensionsUsed.emplace_back("KHR_texture_transform");
+    }
+    if (std::ranges::any_of(asset.textures, [](const auto &t) { return t.webpImageIndex.has_value(); })) {
+        asset.extensionsUsed.emplace_back("EXT_texture_webp");
     }
 
     // Finalize buffer. sources::Vector owns our binary blob; FileExporter writes it as a sibling .bin.
