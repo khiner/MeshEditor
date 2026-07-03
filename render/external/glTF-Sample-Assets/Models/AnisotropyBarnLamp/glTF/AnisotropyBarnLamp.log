@@ -1,7 +1,7 @@
 vkAllocateMemory: 32.00 MB type=1
 vkAllocateMemory: 64.00 MB type=1
-vkFreeMemory: 64.00 MB type=1
 vkAllocateMemory: 128.00 MB type=1
 Saved screenshot: render/external/glTF-Sample-Assets/Models/AnisotropyBarnLamp/glTF/AnisotropyBarnLamp.png
 vkFreeMemory: 128.00 MB type=1
+vkFreeMemory: 64.00 MB type=1
 vkFreeMemory: 32.00 MB type=1

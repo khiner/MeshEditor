@@ -5,7 +5,7 @@
 #include <entt/entity/fwd.hpp>
 
 #include <filesystem>
-#include <fstream>
+#include <ostream>
 #include <thread>
 #include <variant>
 #include <vector>
@@ -75,11 +75,13 @@ struct ReplayLogFile {
 // Replay logs found in the replay dir, sorted most-recent first.
 std::vector<ReplayLogFile> ListReplayLogs();
 
-// Open a fresh `replay/*.actions` log (pruning old ones), returning its stream and path.
-std::pair<std::ofstream, std::filesystem::path> OpenLogStream();
+// Reserve a fresh `replay/*.actions` path (pruning old logs).
+std::filesystem::path ReserveReplayLogPath();
 
 // Open a fresh `.actions` log and start its writer thread.
 void StartLog();
+// Same, but log directly to `path` instead of a fresh log in the replay dir.
+void StartLog(std::filesystem::path path);
 // Flush and join the writer. Returns the log path, or empty if nothing was recorded (the empty file is dropped).
 std::filesystem::path StopLog();
 

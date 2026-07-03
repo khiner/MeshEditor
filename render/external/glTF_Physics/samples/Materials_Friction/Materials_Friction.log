@@ -1,6 +1,6 @@
 vkAllocateMemory: 32.00 MB type=1
 vkAllocateMemory: 128.00 MB type=1
-VideoRecorder: 2176x1224 @ 24fps -> render/external/glTF_Physics/samples/Materials_Friction/Materials_Friction.mp4
+VideoRecorder: 2304x1294 @ 24fps -> render/external/glTF_Physics/samples/Materials_Friction/Materials_Friction.mp4
 VideoRecorder: wrote 250 frames (ffmpeg status=0)
 vkFreeMemory: 128.00 MB type=1
 vkFreeMemory: 32.00 MB type=1

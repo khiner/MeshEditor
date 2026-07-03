@@ -1,9 +1,7 @@
 vkAllocateMemory: 32.00 MB type=1
 vkAllocateMemory: 64.00 MB type=1
 vkAllocateMemory: 128.00 MB type=1
-vkFreeMemory: 128.00 MB type=1
 vkFreeMemory: 64.00 MB type=1
-vkAllocateMemory: 128.00 MB type=1
 Saved screenshot: render/external/glTF-Sample-Assets/Models/MaterialsVariantsShoe/glTF/MaterialsVariantsShoe.png
 Saved screenshot: render/external/glTF-Sample-Assets/Models/MaterialsVariantsShoe/glTF/MaterialsVariantsShoe.midnight.png
 Saved screenshot: render/external/glTF-Sample-Assets/Models/MaterialsVariantsShoe/glTF/MaterialsVariantsShoe.beach.png

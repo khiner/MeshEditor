@@ -57,12 +57,16 @@ void CommitHeld() {
 } // namespace
 
 namespace action {
-void StartLog() {
-    auto [stream, path] = OpenLogStream();
+void StartLog(std::filesystem::path path) {
+    if (const auto parent = path.parent_path(); !parent.empty()) {
+        std::error_code ec;
+        std::filesystem::create_directories(parent, ec);
+    }
     LogPath = std::move(path);
-    LogStream.emplace(std::move(stream));
+    LogStream.emplace(LogPath, std::ios::binary | std::ios::trunc);
     Log.emplace(*LogStream, &SerializeAction);
 }
+void StartLog() { StartLog(ReserveReplayLogPath()); }
 std::filesystem::path StopLog() {
     if (Log) Log->Stop();
     Log.reset();

@@ -1,8 +1,8 @@
 vkAllocateMemory: 32.00 MB type=1
 vkAllocateMemory: 64.00 MB type=1
-vkFreeMemory: 64.00 MB type=1
 vkAllocateMemory: 128.00 MB type=1
-VideoRecorder: 2418x1848 @ 24fps -> render/external/glTF-Sample-Assets/Models/CesiumMilkTruck/glTF/CesiumMilkTruck.mp4
+VideoRecorder: 2560x1600 @ 24fps -> render/external/glTF-Sample-Assets/Models/CesiumMilkTruck/glTF/CesiumMilkTruck.mp4
 VideoRecorder: wrote 30 frames (ffmpeg status=0)
 vkFreeMemory: 128.00 MB type=1
+vkFreeMemory: 64.00 MB type=1
 vkFreeMemory: 32.00 MB type=1

@@ -2,6 +2,7 @@
 
 # (Re-)generate the committed `render/` corpus — see the "Render corpus" section in README.md for what each
 # scene's leaf contains. Covers Empty, Default, res/examples, and all glTF samples under external/. Run from anywhere.
+# Scenes render headless (no window) and in parallel. Set JOBS to change the worker count.
 
 set -uo pipefail
 
@@ -11,6 +12,42 @@ cd "${ProjectRootDir}"
 
 Exe="build/MeshEditor"
 RenderDir="render"
+Jobs="${JOBS:-8}"
+
+SceneTimeoutSecs=120 # Catches hangs. Renders are GPU-paced, not real-time, and parallel renders contend for the GPU.
+
+# Run "$@" with a timeout (macOS has no `timeout`): background it, race a killer, wait.
+run_with_timeout() {
+    local secs="$1"; shift
+    "$@" &
+    local pid=$!
+    ( sleep "${secs}"; kill -9 "${pid}" 2>/dev/null ) &
+    local watcher=$!
+    wait "${pid}" 2>/dev/null
+    kill -9 "${watcher}" 2>/dev/null
+    wait "${watcher}" 2>/dev/null
+}
+
+# True if the scene with output basename $1 produced its visual artifact.
+has_output() {
+    [ -f "$1.png" ] || [ -f "$1.mp4" ]
+}
+
+# Worker mode (self-invoked via xargs below): render one prepared scene, then exit.
+# $2 is "<output basename>\t<scene arg>" (empty scene arg = default scene).
+if [ "${1:-}" = "--render-one" ]; then
+    entry="$2"
+    out="${entry%%$'\t'*}"
+    arg="${entry#*$'\t'}"
+    # Capture the app's stdout+stderr (load errors, frame counts, any hang evidence) alongside the render.
+    run_with_timeout "${SceneTimeoutSecs}" "./${Exe}" ${arg:+"${arg}"} --headless --render "${out}" -q >"${out}.log" 2>&1
+    if has_output "${out}"; then
+        echo "  ok   ${out}"
+    else
+        echo "  SKIP ${out} (no output; load failed or unsupported encoding)" >&2
+    fi
+    exit 0
+fi
 
 # Build the Debug executable first (never release, per repo policy).
 "${ScriptDir}/Build"
@@ -25,58 +62,32 @@ for root in external/glTF-Sample-Assets external/glTF_Physics; do
     fi
 done
 
-rendered=0
-skipped=0
-skips=()
-
-SceneTimeoutSecs=30 # Catches hangs. Renders are GPU-paced, not real-time; the biggest scene is 1440 frames.
-
-# Run "$@" with a timeout (macOS has no `timeout`): background it, race a killer, wait.
-run_with_timeout() {
-    local secs="$1"; shift
-    "$@" &
-    local pid=$!
-    ( sleep "${secs}"; kill -9 "${pid}" 2>/dev/null ) &
-    local watcher=$!
-    wait "${pid}" 2>/dev/null
-    kill -9 "${watcher}" 2>/dev/null
-    wait "${watcher}" 2>/dev/null
-}
-
-# Render one scene. $1: output basename under render/ (no extension). $2..: MeshEditor args selecting the scene.
-render_scene() {
-    local out="$1"; shift
+# Prepare one scene's leaf and queue it for rendering. $1: output basename under render/ (no extension).
+# $2 (optional): MeshEditor arg selecting the scene. Leaf prep stays in this (serial) parent so the
+# committed run.sh files are deterministic regardless of worker completion order.
+entries=()
+prepare_scene() {
+    local out="$1" arg="${2-}"
     mkdir -p "$(dirname "${out}")"
     # Clear prior artifacts so failure detection is accurate and stale files never linger.
     # The glob covers per-material-variant images ("<name>.<variant>.png").
     rm -f "${out}.png" "${out}".*.png "${out}.jpg" "${out}.mp4" "${out}.actions" "${out}.log"
-    # Capture the app's stdout+stderr (load errors, frame counts, any hang evidence) alongside the render.
-    run_with_timeout "${SceneTimeoutSecs}" "./${Exe}" "$@" --render "${out}" -q >"${out}.log" 2>&1
-    # Always (re)write the one-command reproducer, even if the render failed, so the leaf is self-documenting.
+    # Always write the one-command reproducer, even if the render later fails, so the leaf is self-documenting.
     # It loads the source scene directly (no capture, no project-file regeneration — that's this script's job).
     {
         echo '#!/bin/bash'
         echo '# Load this scene in the app. Run from the repository root.'
         printf 'exec ./%s' "${Exe}"
-        [ "$#" -gt 0 ] && printf ' %q' "$@"
+        [ -n "${arg}" ] && printf ' %q' "${arg}"
         printf '\n'
     } > "$(dirname "${out}")/run.sh"
     chmod +x "$(dirname "${out}")/run.sh"
-    if [ -f "${out}.png" ] || [ -f "${out}.mp4" ]; then
-        rendered=$((rendered + 1))
-        echo "  ok   ${out}"
-    else
-        skipped=$((skipped + 1))
-        skips+=("${out}")
-        echo "  SKIP ${out} (no output; load failed or unsupported encoding)" >&2
-    fi
+    entries+=("${out}"$'\t'"${arg}")
 }
 
-echo "Rendering corpus into ${RenderDir}/ ..."
-
 # Built-in scenes (no source file).
-render_scene "${RenderDir}/Empty/Empty" --empty
-render_scene "${RenderDir}/Default/Default"
+prepare_scene "${RenderDir}/Empty/Empty" --empty
+prepare_scene "${RenderDir}/Default/Default"
 
 # res/examples and every glTF sample, mirrored 1:1 under render/.
 # glTF_Physics/tests/ are conformance unit tests (not demo samples): they render empty/degenerate and some
@@ -89,7 +100,7 @@ while IFS= read -r P; do
     # adjacent): they're the same scene, so render it once.
     [ "${out}" = "${prev_out}" ] && continue
     prev_out="${out}"
-    render_scene "${out}" "${P}"
+    prepare_scene "${out}" "${P}"
 done < <(
     # Skip the redundant `glTF-Binary` and `glTF-Embedded` variant dirs: every such model also ships a
     # `glTF` variant that renders identically (same asset, just a different container/encoding), so those
@@ -97,6 +108,28 @@ done < <(
     find res/examples ${GltfRoots[@]+"${GltfRoots[@]}"} -type f \( -iname '*.gltf' -o -iname '*.glb' \) \
         -not -path '*/glTF_Physics/tests/*' -not -path '*/glTF-Binary/*' -not -path '*/glTF-Embedded/*' 2>/dev/null | sort
 )
+
+echo "Rendering corpus into ${RenderDir}/ (${#entries[@]} scenes, ${Jobs} parallel headless workers)..."
+printf '%s\0' "${entries[@]}" | xargs -0 -P "${Jobs}" -n 1 "$0" --render-one
+
+# Tally from the artifacts (worker output order is nondeterministic under parallelism), retrying each
+# failure once, serially — GPU contention can transiently kill a render (Metal device-loss).
+rendered=0
+skipped=0
+skips=()
+for entry in "${entries[@]}"; do
+    out="${entry%%$'\t'*}"
+    if ! has_output "${out}"; then
+        echo "  retrying ${out}"
+        "$0" --render-one "${entry}"
+    fi
+    if has_output "${out}"; then
+        rendered=$((rendered + 1))
+    else
+        skipped=$((skipped + 1))
+        skips+=("${out}")
+    fi
+done
 
 echo
 echo "Done: ${rendered} rendered, ${skipped} skipped."

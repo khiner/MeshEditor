@@ -155,7 +155,7 @@ $ git clone --recurse-submodules git@github.com:khiner/MeshEditor.git
 $ cd MeshEditor
 $ ./script/Clean # optionally clean first
 $ ./script/Build [--release]
-$ cd build && ./MeshEditor [file|--empty] [--quiet|-q] [--play [seconds]] [--record path.mp4 [--fps N]] [--screenshot path.png] [--render basename]
+$ cd build && ./MeshEditor [file|--empty] [--quiet|-q] [--headless] [--play [seconds]] [--record path.mp4 [--fps N]] [--screenshot path.png] [--render basename]
 ```
 
 * `file` can be a `.gltf`, `.glb`, `.obj`, `.ply`, `.state` (scene snapshot), or `.actions` (replayed action log). No file loads the default scene.
@@ -169,10 +169,11 @@ When a look-through camera is active, only the camera-frame sub-rect (the area i
 * `--fps N` sets the recording framerate (default 60).
 * `--screenshot path.png` writes a single image. The format is chosen by extension (`.png`, `.jpg`/`.jpeg`), which is optional and defaults to `.png`. The captured region matches `--record`. On its own it exits after writing; combined with `--play [seconds]` or `--record` it grabs the frame and keeps running.
 * `--render basename` writes the scene's corpus artifacts under `basename.*` (used by `./script/Render` — see [Render corpus](#render-corpus)).
+* `--headless` runs without a window: the viewport renders offscreen at a fixed 1280x800 (2x pixel density) extent, and any capture flags read it back. Without a capture flag it renders one frame and exits, and a duration-less `--play` exits after one timeline loop.
 
 The flags can be combined freely, except `--render` excludes `--record` and `--screenshot` (it derives its own outputs). `--render --play N` caps the video at N seconds.
 
-**Timing**: the sim runs at wall-clock rate. Recording samples the viewport at `fps`, so the file plays at the same rate as the in-app preview. `--play N` exits after N seconds — wall-clock when interactive, video-seconds when recording.
+**Timing**: interactively, the sim runs at wall-clock rate. Recording samples the viewport at `fps`, so the file plays at the same rate as the in-app preview. `--play N` exits after N seconds — wall-clock when interactive, video-seconds when recording. Headless runs (and `--render` anywhere) are instead fixed-step and GPU-paced: one timeline frame per tick with every tick captured, so output is deterministic and `--fps` is unused.
 
 ### Render corpus
 
@@ -186,8 +187,8 @@ $ git lfs pull
 ```
 
 Regenerate the corpus with `./script/Render`.
-It needs a display and the glTF submodules, plus `ffmpeg` on `PATH` for videos.
-Rendering is fixed-step (one tick per timeline frame) and GPU-paced, so artifacts are deterministic on a given machine: after regenerating, `git status` shows only scenes whose rendering actually changed.
+Scenes render headless (no window or display needed) and in parallel (`JOBS` sets the worker count, default 8). It needs the glTF submodules, plus `ffmpeg` on `PATH` for videos.
+Rendering is fixed-step (one tick per timeline frame) and GPU-paced at a fixed extent, so artifacts are deterministic: after regenerating, `git status` shows only scenes whose rendering actually changed.
 
 ## Stack
 

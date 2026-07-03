@@ -398,7 +398,10 @@ void FrameScene(entt::registry &r, entt::entity viewport, float aspect_ratio) {
     r.replace<ViewCamera>(viewport, ViewCamera{center + distance * away, center, Camera{fit}});
 }
 
-// Headless capture options from the CLI. `--render` is a preset for the full scene corpus; `--screenshot`/`--record` target one output.
+// The default window size, doubling as the headless viewport extent.
+constexpr uvec2 DefaultWindowSize{1280, 800};
+
+// Capture options from the CLI. `--render` is a preset for the full scene corpus; `--screenshot`/`--record` target one output.
 struct CaptureRequest {
     bool Play{false};
     float PlayDuration{0}; // 0 = run until playback completes one loop.
@@ -407,11 +410,195 @@ struct CaptureRequest {
     fs::path RenderBasename; // Output basename, no extension.
 };
 
+// Surface and clear any failures action handlers reported this frame. Returns true if there were any.
+bool ReportActionErrors(entt::registry &r) {
+    auto &errors = r.ctx().get<action::Errors>().Messages;
+    if (errors.empty()) return false;
+    for (const auto &message : errors) std::cerr << message << std::endl;
+    errors.clear();
+    return true;
+}
+
+// Seed the scene's first recorded action: the initial file, else the default scene.
+// Returns false if the initial file failed to load.
+bool SeedScene(entt::registry &r, entt::entity viewport, const char *initial_file, bool empty) {
+    if (initial_file) {
+        if (const fs::path path = initial_file; path.extension() == ".actions") {
+            NewProject(r, viewport, path, /*with_default_content=*/false);
+        } else {
+            Perform(r, viewport, action::io::Load{.Path = initial_file});
+            if (ReportActionErrors(r)) return false;
+        }
+    } else if (!empty) {
+        Perform(r, viewport, action::io::LoadDefaultScene{});
+    }
+    return true;
+}
+
+// The corpus `.actions` leaf `--render` logs to, empty outside render mode.
+fs::path CorpusActionsPath(const CaptureRequest &capture) {
+    return capture.RenderBasename.empty() ? fs::path{} : fs::path{capture.RenderBasename.string() + ".actions"};
+}
+
+// Start recording applied actions to the write-behind log. Render mode logs directly at the corpus
+// leaf, so parallel renders never touch the shared replay dir.
+void StartSessionLog(const CaptureRequest &capture) {
+    if (const auto corpus = CorpusActionsPath(capture); corpus.empty()) action::StartLog();
+    else action::StartLog(corpus);
+}
+
+// Stop the session log. Render mode's log usually already is the corpus `.actions` — copy only
+// when a replayed initial file restarted the log in the replay dir.
+void FinishSessionLog(const CaptureRequest &capture) {
+    const auto corpus = CorpusActionsPath(capture);
+    if (const fs::path session_log = action::StopLog(); !corpus.empty() && !session_log.empty() && session_log != corpus) {
+        std::error_code ec;
+        fs::copy_file(session_log, corpus, fs::copy_options::overwrite_existing, ec);
+    }
+}
+
+// Per-frame capture orchestration shared by the windowed and headless run loops: scene framing,
+// playback start, the screenshot + material-variant sequence, video recording (with render mode's
+// per-clip loops), and run completion.
+struct CaptureDriver {
+    // `fixed_step` runs the sim on a fixed-step, GPU-paced clock: one timeline frame per tick, every
+    // tick captured, video fps = timeline fps. Render mode is always fixed-step and headless runs pass
+    // true. Otherwise the sim runs at wall-clock rate and recording samples it every `1/Fps` seconds.
+    CaptureDriver(entt::registry &r, entt::entity viewport, const CaptureRequest &capture, bool play, bool fixed_step)
+        : Play(play), PlayDuration(capture.PlayDuration),
+          FixedStep(fixed_step || !capture.RenderBasename.empty()),
+          RecordPath(capture.RecordPath), ScreenshotPath(capture.ScreenshotPath), RenderBasename(capture.RenderBasename) {
+        if (RenderMode()) {
+            const auto with = [&](const char *ext) { return fs::path{capture.RenderBasename.string() + ext}; };
+            const bool dynamic = r.view<const PhysicsMotion>().size() > 0 ||
+                r.view<const ArmatureAnimation>().size() > 0 ||
+                r.view<const NodeTransformAnimation>().size() > 0 ||
+                r.view<const MorphWeightAnimation>().size() > 0;
+            if (dynamic) RecordPath = with(".mp4");
+            else ScreenshotPath = with(".png");
+        }
+        const float timeline_fps = r.get<const TimelineRange>(viewport).Fps;
+        RenderDt = 1.f / timeline_fps;
+        RecordFps = FixedStep ? int(std::lround(timeline_fps)) : capture.Fps;
+    }
+
+    bool RenderMode() const { return !RenderBasename.empty(); }
+    bool RecordingMode() const { return !RecordPath.empty(); }
+    bool ScreenshotMode() const { return !ScreenshotPath.empty(); }
+    bool Presenting() const { return Play || ScreenshotMode() || RecordingMode(); }
+
+    bool DurationElapsed(const entt::registry &r, entt::entity viewport) const {
+        if (PlayDuration <= 0) return false;
+        const float elapsed = RecordingMode() ? float(CapturedFrameCount(r, viewport)) / float(RecordFps) : ElapsedPlayTime;
+        return elapsed >= PlayDuration;
+    }
+
+    // Emit this frame's capture-driven actions. Call before ApplyEmitted, with `settled` true once
+    // the viewport is at its final extent with the image built.
+    void EmitFrameActions(entt::registry &r, entt::entity viewport, bool settled, uvec2 extent) {
+        if (!ViewFramed && Presenting() && r.view<const Camera>().empty() && extent != uvec2{}) {
+            FrameScene(r, viewport, float(extent.x) / float(extent.y));
+            ViewFramed = settled;
+        }
+        // Start playback once settled, for play or video (the screenshot stays on the held frame).
+        // Fixed-step recording waits one more tick, until recording has begun, so the start frame is captured.
+        const bool ready = RenderMode() || (FixedStep && RecordingMode()) ? IsRecording(r, viewport) : (Play || RecordingMode());
+        if (!PlaybackStarted && settled && ready) {
+            action::Emit(action::timeline::StartPresentation{});
+            PlaybackStarted = true;
+        }
+    }
+
+    // Save/record the frame. Call after WaitForRender so the source image is coherent.
+    // Returns true when capture is complete and the run should end.
+    bool CaptureFrame(entt::registry &r, entt::entity viewport, bool settled) {
+        bool done = false;
+        // Save the image, then finish unless recording or a play duration is still running.
+        if (ScreenshotMode() && !ScreenshotSaved && settled) {
+            if (auto saved = SaveScreenshot(r, ScreenshotPath); saved) std::println("Saved screenshot: {}", saved->string());
+            else std::println(stderr, "Screenshot: {}", saved.error());
+            // After the default, save one image per material variant.
+            const auto *mv = RenderMode() ? r.try_get<const MaterialVariants>(viewport) : nullptr;
+            if (mv && NextRenderVariant < mv->Names.size()) {
+                auto name = mv->Names[NextRenderVariant].empty() ? std::format("Variant {}", NextRenderVariant) : mv->Names[NextRenderVariant];
+                std::ranges::replace(name, '/', '-');
+                ScreenshotPath = fs::path{RenderBasename.string() + "." + name + ".png"};
+                action::Emit(action::UpdateOf<&MaterialVariants::Active>(viewport, std::optional{NextRenderVariant}));
+                ++NextRenderVariant;
+            } else {
+                ScreenshotSaved = true;
+                if (!RecordingMode() && PlayDuration <= 0) done = true;
+            }
+        }
+        if (RecordingMode() && !IsRecording(r, viewport) && settled) {
+            StartRecording(r, viewport, RecordPath, RecordFps);
+            if (IsRecording(r, viewport)) NextCaptureNs = SDL_GetTicksNS();
+            else done = true;
+        }
+        const bool loop_end = r.get<const TimelinePlayback>(viewport).CurrentFrame == r.get<const TimelineRange>(viewport).EndFrame;
+        if (IsRecording(r, viewport)) {
+            if (FixedStep) {
+                // Fixed step: every tick is one timeline frame and each is captured.
+                // Clip switches are Emitted, not Performed: a mid-loop Perform would advance playback an extra tick.
+                CaptureRecordFrame(r, viewport);
+                if (loop_end) {
+                    if (RenderMode()) {
+                        bool switched = false;
+                        const auto switch_clips = [&]<typename Anim>() {
+                            for (const auto [entity, anim] : r.view<const Anim>().each()) {
+                                if (NextRenderClip < anim.Clips.size()) {
+                                    action::Emit(action::UpdateOf<&Anim::ActiveClipIndex>(entity, NextRenderClip));
+                                    switched = true;
+                                }
+                            }
+                        };
+                        switch_clips.template operator()<ArmatureAnimation>();
+                        switch_clips.template operator()<MorphWeightAnimation>();
+                        switch_clips.template operator()<NodeTransformAnimation>();
+                        if (switched) ++NextRenderClip;
+                        else done = true;
+                    } else if (PlayDuration <= 0) {
+                        done = true;
+                    }
+                }
+            } else if (SDL_GetTicksNS() >= NextCaptureNs) {
+                CaptureRecordFrame(r, viewport);
+                NextCaptureNs += 1'000'000'000ULL / uint64_t(RecordFps);
+            }
+        } else if (FixedStep && !RecordingMode() && PlaybackStarted && PlayDuration <= 0 && loop_end) {
+            // A duration-less fixed-step play run (headless --play) ends after one timeline loop.
+            done = true;
+        }
+        return done;
+    }
+
+    bool Play;
+    float PlayDuration;
+    bool FixedStep;
+    fs::path RecordPath, ScreenshotPath, RenderBasename;
+    float RenderDt; // Fixed-step seconds per tick (one timeline frame).
+    int RecordFps;
+    uint64_t NextCaptureNs{0}; // Wall-clock recording: next capture time, initialized when recording starts.
+    float ElapsedPlayTime{0}; // Caller-accumulated sim seconds, for the play-duration cap.
+    uint32_t NextRenderClip{1}; // Next clip to capture once the current loop finishes.
+    uint32_t NextRenderVariant{0}; // Next material variant to capture once the default image saves.
+    bool PlaybackStarted{false}, ScreenshotSaved{false}, ViewFramed{false};
+};
+
+// Start the session log, seed the scene (recorded as the log's first action), and enter presentation
+// mode so the first rendered frame matches the capture.
+CaptureDriver BeginCaptureSession(entt::registry &r, entt::entity viewport, const CaptureRequest &capture, const char *initial_file, bool empty, bool fixed_step) {
+    StartSessionLog(capture);
+    const bool play = SeedScene(r, viewport, initial_file, empty) && capture.Play;
+    CaptureDriver driver{r, viewport, capture, play, fixed_step};
+    if (driver.Presenting()) Perform(r, viewport, action::timeline::EnterPresentation{});
+    r.ctx().get<FrameState>().FixedFrameStep = driver.FixedStep;
+    return driver;
+}
+
 void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest &capture) {
     Timer::Enabled = !quiet;
 
-    bool play = capture.Play;
-    const float play_duration = capture.PlayDuration;
     const bool render_mode = !capture.RenderBasename.empty();
 
     SDL_SetHint(SDL_HINT_MAC_SCROLL_MOMENTUM, "1");
@@ -421,7 +608,7 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
     else throw std::runtime_error(std::format("SDL_GetBasePath error: {}", SDL_GetError()));
 
     auto *window = SDL_CreateWindow(
-        "MeshEditor", 1280, 800,
+        "MeshEditor", int(DefaultWindowSize.x), int(DefaultWindowSize.y),
         SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_MAXIMIZED | SDL_WINDOW_HIGH_PIXEL_DENSITY
     );
 
@@ -547,55 +734,8 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
     };
     audio_device.Start();
 
-    action::StartLog(); // Record each applied action to the write-behind log.
+    auto driver = BeginCaptureSession(r, viewport, capture, initial_file, empty, /*fixed_step=*/false);
 
-    // Seed the scene's first recorded action: the initial file, else the default scene.
-    if (initial_file) {
-        if (const fs::path path = initial_file; path.extension() == ".actions") {
-            NewProject(r, viewport, path, /*with_default_content=*/false);
-        } else {
-            Perform(r, viewport, action::io::Load{.Path = initial_file});
-            if (auto &errors = r.ctx().get<action::Errors>().Messages; !errors.empty()) {
-                for (const auto &message : errors) std::cerr << message << std::endl;
-                errors.clear();
-                play = false; // Don't auto-play if the initial file failed to load.
-            }
-        }
-    } else if (!empty) {
-        Perform(r, viewport, action::io::LoadDefaultScene{});
-    }
-
-    fs::path record_path = capture.RecordPath, screenshot_path = capture.ScreenshotPath, corpus_actions_path;
-    if (render_mode) {
-        const auto with = [&](const char *ext) { return fs::path{capture.RenderBasename.string() + ext}; };
-        corpus_actions_path = with(".actions");
-        const bool dynamic = r.view<const PhysicsMotion>().size() > 0 ||
-            r.view<const ArmatureAnimation>().size() > 0 ||
-            r.view<const NodeTransformAnimation>().size() > 0 ||
-            r.view<const MorphWeightAnimation>().size() > 0;
-        if (dynamic) record_path = with(".mp4");
-        else screenshot_path = with(".png");
-    }
-
-    const bool recording_mode = !record_path.empty(), screenshot_mode = !screenshot_path.empty();
-    const bool presenting = play || screenshot_mode || recording_mode;
-    // Enter presentation mode so the first rendered frame matches the capture.
-    // Playback start and the capture itself wait until the viewport settles.
-    if (presenting) Perform(r, viewport, action::timeline::EnterPresentation{});
-
-    // Interactively (including `--record`), sim-clock = wall-clock.
-    // Recording samples the live viewport every `1/record_fps` seconds, so the video plays at the same rate as the in-app preview.
-    // Render mode instead runs a fixed-step clock: one timeline frame per tick, and every tick is captured.
-    r.ctx().get<FrameState>().FixedFrameStep = render_mode;
-    const float timeline_fps = r.get<const TimelineRange>(viewport).Fps;
-    const float render_dt = 1.f / timeline_fps;
-    const int record_fps = render_mode ? int(std::lround(timeline_fps)) : capture.Fps;
-    const uint64_t capture_interval_ns{1'000'000'000ULL / uint64_t(capture.Fps)};
-    uint64_t next_capture_ns{0}; // Initialized when recording starts.
-    float elapsed_play_time{0};
-    uint32_t next_render_clip{1}; // Next clip to capture once the current loop finishes.
-    uint32_t next_render_variant{0}; // Next material variant to capture once the default image saves.
-    bool playback_started{false}, screenshot_saved{false}, view_framed{false};
     bool viewport_resizing{false}; // True while a resize drag is staged but not yet committed.
     bool done{false};
     WindowsState windows;
@@ -621,8 +761,7 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
                 done = event.type == SDL_EVENT_QUIT || (event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED && event.window.windowID == SDL_GetWindowID(window));
             }
         }
-        const float elapsed = recording_mode ? float(CapturedFrameCount(r, viewport)) / float(record_fps) : elapsed_play_time;
-        if (play_duration > 0 && elapsed >= play_duration) done = true;
+        if (driver.DurationElapsed(r, viewport)) done = true;
 
         if (RebuildSwapchain) {
             int w, h;
@@ -637,9 +776,9 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
 
         ImGui_ImplVulkan_NewFrame();
         ImGui_ImplSDL3_NewFrame();
-        elapsed_play_time += io.DeltaTime;
+        driver.ElapsedPlayTime += io.DeltaTime;
         // Scene-affecting code reads FrameState::DeltaTime. `io.DeltaTime` is wall-clock, UI-only.
-        r.ctx().get<FrameState>().DeltaTime = render_mode ? render_dt : io.DeltaTime;
+        r.ctx().get<FrameState>().DeltaTime = driver.FixedStep ? driver.RenderDt : io.DeltaTime;
         NewFrame();
 
         auto dockspace_id = DockSpaceOverViewport(0, nullptr, ImGuiDockNodeFlags_PassthruCentralNode | ImGuiDockNodeFlags_AutoHideTabBar);
@@ -945,18 +1084,8 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
             }
         }
         const bool viewport_settled = new_logical_extent != uvec2{} && new_logical_extent == r.ctx().get<const ViewportExtent>().Value;
-        if (!view_framed && presenting && r.view<const Camera>().empty() && new_logical_extent != uvec2{}) {
-            FrameScene(r, viewport, float(new_logical_extent.x) / float(new_logical_extent.y));
-            view_framed = viewport_settled;
-        }
-
         // Remaining emits go after Interact so it wins the single-action buffer.
-        // Start playback once settled, for play or video (the screenshot stays on the held frame).
-        // Render mode waits one more tick, until recording has begun, so the start frame is captured.
-        if (!playback_started && viewport_settled && (render_mode ? IsRecording(r, viewport) : (play || recording_mode))) {
-            action::Emit(action::timeline::StartPresentation{});
-            playback_started = true;
-        }
+        driver.EmitFrameActions(r, viewport, viewport_settled, new_logical_extent);
         // Record viewport resizes so replay restores the same render extent.
         // A resize drag spans many frames: stage it and commit on mouse-up so the drag records a single SetExtent.
         // Staged after the frame's other emits so those win the single-action buffer.
@@ -969,12 +1098,7 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
         }
 
         action::ApplyEmitted(r, viewport);
-
-        // Surface and clear any failures action handlers reported this frame.
-        if (auto &errors = r.ctx().get<action::Errors>().Messages; !errors.empty()) {
-            for (const auto &message : errors) std::cerr << message << std::endl;
-            errors.clear();
-        }
+        ReportActionErrors(r);
 
         // Derive this frame's applied actions and submit the GPU render (nonblocking). WaitForRender() runs later, before RenderFrame() samples the image.
         SubmitViewport(r, viewport, GetFrameCount() > 1 ? vk::Fence{wd.Frames[wd.FrameIndex].Fence} : vk::Fence{});
@@ -993,64 +1117,13 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
         auto *draw_data = GetDrawData();
         if (const bool is_minimized = (draw_data->DisplaySize.x <= 0.0f || draw_data->DisplaySize.y <= 0.0f); !is_minimized) {
             WaitForRender(r); // ImGui samples final image
-            // Save the image, then exit unless recording or a play duration is still running.
-            if (screenshot_mode && !screenshot_saved && viewport_settled) {
-                if (auto saved = SaveScreenshot(r, screenshot_path); saved) std::println("Saved screenshot: {}", saved->string());
-                else std::println(stderr, "Screenshot: {}", saved.error());
-                // After the default, save one image per material variant.
-                const auto *mv = render_mode ? r.try_get<const MaterialVariants>(viewport) : nullptr;
-                if (mv && next_render_variant < mv->Names.size()) {
-                    auto name = mv->Names[next_render_variant].empty() ? std::format("Variant {}", next_render_variant) : mv->Names[next_render_variant];
-                    std::ranges::replace(name, '/', '-');
-                    screenshot_path = fs::path{capture.RenderBasename.string() + "." + name + ".png"};
-                    action::Emit(action::UpdateOf<&MaterialVariants::Active>(viewport, std::optional{next_render_variant}));
-                    ++next_render_variant;
-                } else {
-                    screenshot_saved = true;
-                    if (!recording_mode && play_duration <= 0) done = true;
-                }
-            }
-            if (recording_mode && !IsRecording(r, viewport) && viewport_settled) {
-                StartRecording(r, viewport, record_path, record_fps);
-                if (IsRecording(r, viewport)) next_capture_ns = SDL_GetTicksNS();
-                else done = true;
-            }
-            if (IsRecording(r, viewport)) {
-                if (render_mode) {
-                    // Fixed step: every tick is one timeline frame; capture each. At a loop's last frame,
-                    // switch each multi-clip component to its next clip, or stop after the last.
-                    // Emitted, not Performed: a mid-loop Perform would advance playback an extra tick.
-                    CaptureRecordFrame(r, viewport);
-                    if (r.get<const TimelinePlayback>(viewport).CurrentFrame == r.get<const TimelineRange>(viewport).EndFrame) {
-                        bool switched = false;
-                        const auto switch_clips = [&]<typename Anim>() {
-                            for (const auto [entity, anim] : r.view<const Anim>().each()) {
-                                if (next_render_clip < anim.Clips.size()) {
-                                    action::Emit(action::UpdateOf<&Anim::ActiveClipIndex>(entity, next_render_clip));
-                                    switched = true;
-                                }
-                            }
-                        };
-                        switch_clips.template operator()<ArmatureAnimation>();
-                        switch_clips.template operator()<MorphWeightAnimation>();
-                        switch_clips.template operator()<NodeTransformAnimation>();
-                        if (switched) ++next_render_clip;
-                        else done = true;
-                    }
-                } else if (SDL_GetTicksNS() >= next_capture_ns) {
-                    CaptureRecordFrame(r, viewport);
-                    next_capture_ns += capture_interval_ns;
-                }
-            }
+            if (driver.CaptureFrame(r, viewport, viewport_settled)) done = true;
             RenderFrame(*vc->Device, vc->Queue, wd, draw_data);
             PresentFrame(vc->Queue, wd);
         }
     }
 
-    if (const fs::path session_log = action::StopLog(); !corpus_actions_path.empty() && !session_log.empty()) {
-        std::error_code ec;
-        fs::copy_file(session_log, corpus_actions_path, fs::copy_options::overwrite_existing, ec);
-    }
+    FinishSessionLog(capture);
     vc->Device->waitIdle();
 
     audio_device.Uninit();
@@ -1072,6 +1145,53 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
     vc.reset();
 
     SDL_DestroyWindow(window);
+    SDL_Quit();
+}
+
+// Run without a window: no SDL video, ImGui, audio, or file dialogs. The viewport renders offscreen
+// on a fixed-step, GPU-paced clock, and capture reads it back. Exits after one rendered frame when
+// there is nothing to capture or play.
+void RunHeadless(const char *initial_file, bool quiet, bool empty, const CaptureRequest &capture) {
+    Timer::Enabled = !quiet;
+
+    if (!SDL_Init(0)) throw std::runtime_error(std::format("SDL_Init error: {}", SDL_GetError())); // Base path only, no subsystems.
+    if (const char *base = SDL_GetBasePath()) Paths::Init(base);
+    else throw std::runtime_error(std::format("SDL_GetBasePath error: {}", SDL_GetError()));
+
+    auto vc = std::make_unique<VulkanContext>(std::vector<const char *>{}, /*with_swapchain=*/false);
+    entt::registry r;
+    const auto viewport = InitEngine(r, vc->Resources());
+    SetupScene(r, viewport);
+    auto &frame_state = r.ctx().get<FrameState>();
+    frame_state.DisplayFramebufferScale = {2, 2}; // Match the app's retina rendering (pixel density and DPI-scaled GPU state like edge-line width).
+    ProcessComponentEvents(r, viewport); // Prime derived state before the first frame reads it.
+
+    auto driver = BeginCaptureSession(r, viewport, capture, initial_file, empty, /*fixed_step=*/true);
+    // Emitted, not Performed: the resize must happen inside the first tick's SubmitViewport for that
+    // frame to render the recreated images correctly.
+    action::Emit(action::view::SetExtent{DefaultWindowSize});
+
+    frame_state.DeltaTime = driver.RenderDt;
+    bool done{false};
+    while (!done) {
+        if (driver.DurationElapsed(r, viewport)) break;
+        const auto extent = r.ctx().get<const ViewportExtent>().Value;
+        const bool settled = ViewportImageReady(r);
+        driver.EmitFrameActions(r, viewport, settled, extent);
+        action::ApplyEmitted(r, viewport);
+        ReportActionErrors(r);
+        SubmitViewport(r, viewport);
+        WaitForRender(r);
+        if (driver.CaptureFrame(r, viewport, settled)) done = true;
+        // Headless has no window to close: without anything to capture or play, one settled frame is the whole run.
+        if (!driver.Presenting() && settled) done = true;
+        driver.ElapsedPlayTime += frame_state.DeltaTime;
+    }
+
+    FinishSessionLog(capture);
+    vc->Device->waitIdle();
+    DeinitViewport(r, viewport);
+    vc.reset();
     SDL_Quit();
 }
 } // namespace
@@ -1098,7 +1218,7 @@ int main(int argc, char **argv) {
     };
 
     const char *initial_file = nullptr;
-    bool empty = false;
+    bool empty = false, headless = false;
     CaptureRequest capture;
 #ifdef QUIET
     bool quiet = true;
@@ -1115,6 +1235,7 @@ int main(int argc, char **argv) {
         else if (a == "--screenshot" && std::next(it) != args.end()) capture.ScreenshotPath = *++it;
         else if (a == "--render" && std::next(it) != args.end()) capture.RenderBasename = *++it;
         else if (a == "--empty") empty = true;
+        else if (a == "--headless") headless = true;
         else if (a == "--fps" && std::next(it) != args.end()) capture.Fps = std::atoi(*++it);
         else if (!a.starts_with('-') && !initial_file) initial_file = *it;
     }
@@ -1125,6 +1246,7 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    run(initial_file, quiet, empty, capture);
+    if (headless) RunHeadless(initial_file, quiet, empty, capture);
+    else run(initial_file, quiet, empty, capture);
     return 0;
 }
