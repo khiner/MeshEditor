@@ -40,9 +40,16 @@ done
 # $2 (optional): MeshEditor arg selecting the scene. Leaf prep stays in this (serial) parent so the
 # committed run.sh files are deterministic regardless of worker completion order.
 entries=()
+costs=()
 prepare_scene() {
     local out="$1" arg="${2-}"
     mkdir -p "$(dirname "${out}")"
+    # The prior artifact's size estimates render cost, for scheduling expensive scenes first.
+    local cost=0 f
+    for f in "${out}.mp4" "${out}.png"; do
+        [ -f "${f}" ] && cost=$(($(stat -f%z "${f}") + cost))
+    done
+    costs+=("${cost}")
     # Clear prior artifacts so failure detection is accurate and stale files never linger.
     # The glob covers per-material-variant images ("<name>.<variant>.png").
     rm -f "${out}.png" "${out}".*.png "${out}.jpg" "${out}.mp4" "${out}.actions" "${out}.log"
@@ -101,7 +108,13 @@ spool_jobs() {
 # Unclaimed jobs left in the spool.
 count_jobs() { find "${Spool}" -maxdepth 1 -name '*.job' | wc -l; }
 
-spool_jobs "${entries[@]}"
+# Spool expensive scenes first so the longest renders overlap the rest of the queue.
+# New scenes (no prior artifact) go last.
+ordered=()
+while IFS= read -r line; do ordered+=("${line#*$'\t'}"); done < <(
+    for i in "${!entries[@]}"; do printf '%s\t%s\n' "${costs[${i}]}" "${entries[${i}]}"; done | sort -rn
+)
+spool_jobs "${ordered[@]}"
 
 # Run the app on the spool, killing and respawning it when a scene hangs.
 run_worker() {
