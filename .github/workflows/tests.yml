@@ -1,0 +1,49 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install dependencies
+        run: brew install llvm fftw ninja vulkan-headers vulkan-loader molten-vk shaderc
+
+      - name: ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: ${{ runner.os }}-tests
+
+      # LLVM_CONFIG points faust's configure at brew's keg-only llvm (it is not on PATH).
+      - name: Configure
+        run: >
+          cmake -B build -G Ninja
+          -DCMAKE_BUILD_TYPE=Debug
+          -DCMAKE_C_COMPILER=/opt/homebrew/opt/llvm/bin/clang
+          -DCMAKE_CXX_COMPILER=/opt/homebrew/opt/llvm/bin/clang++
+          -DCMAKE_C_COMPILER_LAUNCHER=ccache
+          -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+          -DLLVM_CONFIG=/opt/homebrew/opt/llvm/bin/llvm-config
+
+      - name: Build tests
+        run: cmake --build build --target MeshEditorTests MeshEditorActionSerializeTest
+
+      - name: Run tests
+        run: |
+          VK_DRIVER_FILES="$(brew --prefix molten-vk)/etc/vulkan/icd.d/MoltenVK_icd.json"
+          export VK_DRIVER_FILES
+          ./build/tests/MeshEditorActionSerializeTest
+          ./build/tests/MeshEditorTests
