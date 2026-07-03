@@ -35,6 +35,8 @@ struct PBRViewportLighting {
     // Render the scene into a transmission framebuffer (with mips) and sample it at the
     // refracted ray exit point, instead of approximating refraction by sampling the IBL.
     bool RealTransmission{true};
+    // Exposure in EV stops. Scales linear color by 2^EV before tone mapping.
+    float ExposureEV{0.f};
 };
 
 // Two distinct ECS component types sharing the same layout, with different defaults

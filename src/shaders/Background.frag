@@ -22,6 +22,6 @@ void main() {
     const float lod = clamp(SceneViewUBO.BackgroundBlur, 0.0, 1.0) * float(mip_count - 1u);
     const vec3 linear = textureLod(
         CubeSamplers[nonuniformEXT(SceneViewUBO.Ibl.SpecularEnvSamplerSlot)], env_dir, lod
-    ).rgb * SceneViewUBO.EnvIntensity;
+    ).rgb * SceneViewUBO.EnvIntensity * SceneViewUBO.Exposure;
     OutColor = vec4(linearTosRGB(toneMapPBRNeutral(linear)), SceneViewUBO.WorldOpacity);
 }

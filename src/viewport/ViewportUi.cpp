@@ -542,6 +542,8 @@ void InteractOverlay(entt::registry &r, entt::entity viewport, FrameState &frame
                     if (bool v = lighting.RealTransmission; Checkbox("Real transmission", &v))
                         apply_update(&PBRViewportLighting::RealTransmission, v);
                     if (IsItemHovered()) SetTooltip("Sample transmission from a pre-rendered scene framebuffer instead of from the IBL.");
+                    if (float v = lighting.ExposureEV; SliderFloat("Exposure", &v, -10.f, 10.f, "%.1f EV"))
+                        apply_update(&PBRViewportLighting::ExposureEV, v);
                     PopID();
                 };
 

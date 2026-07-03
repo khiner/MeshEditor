@@ -2048,6 +2048,7 @@ RenderRequest ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
             .LightSlot = buffers.Lights.Slot(),
             .UseSceneLightsRender = use_scene_lights ? 1u : 0u,
             .EnvIntensity = env_intensity,
+            .Exposure = std::exp2(active_lighting.ExposureEV),
             .EnvRotation = env_rotation,
             .BackgroundBlur = background_blur,
             .WorldOpacity = world_opacity,

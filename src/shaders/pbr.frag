@@ -210,7 +210,7 @@ void main() {
             if (base_color.a < material.AlphaCutoff) discard;
             base_color.a = 1.0;
         }
-        OutColor = vec4(linearTosRGB(toneMapPBRNeutral(base_color.rgb)), base_color.a);
+        OutColor = vec4(linearTosRGB(toneMapPBRNeutral(base_color.rgb * SceneViewUBO.Exposure)), base_color.a);
         return;
     }
 
@@ -547,6 +547,8 @@ void main() {
         OutColor = vec4(dbg, base_color.a);
         return;
     }
+
+    color *= SceneViewUBO.Exposure;
 
     if (FaceOverlayFlags != 0u) {
         const bool is_edit_face = SceneViewUBO.InteractionMode == InteractionMode_Edit && SceneViewUBO.EditElement == Element_Face;

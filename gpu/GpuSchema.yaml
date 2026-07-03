@@ -215,6 +215,8 @@ structs:
         type: u32
       - name: EnvIntensity
         type: float
+      - name: Exposure
+        type: float
       - name: EnvRotation
         type: mat3
       - name: BackgroundBlur
