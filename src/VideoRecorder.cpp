@@ -13,10 +13,12 @@ std::string BuildFfmpegCommand(const std::filesystem::path &out, vk::Extent2D ex
     // Input: raw BGRA frames on stdin with declared size/framerate.
     // `-vf vflip`: the viewport uses a negative-height Vulkan viewport so row 0 in image
     // memory is the bottom of the screen; flip rows to get upright video.
-    // Output: H.264 in yuv420p
+    // Output: H.264 in yuv444p (full chroma) at crf 10 to preserve edge/aliasing detail.
+    // An unchanged render produces a byte-identical file.
     return std::format(
         "ffmpeg -y -loglevel warning -f rawvideo -pix_fmt bgra -s {}x{} -r {} -i - "
-        "-vf vflip -c:v libx264 -pix_fmt yuv420p -preset medium -crf 18 \"{}\"",
+        "-vf vflip -c:v libx264 -pix_fmt yuv444p -preset medium -crf 10 "
+        "-x264-params keyint=infinite:threads=8 -bitexact \"{}\"",
         extent.width, extent.height, fps, out.string()
     );
 }

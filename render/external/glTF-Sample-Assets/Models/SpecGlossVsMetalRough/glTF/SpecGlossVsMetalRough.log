@@ -1,5 +1,5 @@
 vkAllocateMemory: 32.00 MB type=1
-Error loading glTF file 'external/glTF-Sample-Assets/Models/SpecGlossVsMetalRough/glTF/SpecGlossVsMetalRough.gltf': Failed to parse glTF 'external/glTF-Sample-Assets/Models/SpecGlossVsMetalRough/glTF/SpecGlossVsMetalRough.gltf': An extension required by the glTF is not supported by fastgltf.
+Error loading glTF file 'external/glTF-Sample-Assets/Models/SpecGlossVsMetalRough/glTF/SpecGlossVsMetalRough.gltf': Failed to parse glTF 'external/glTF-Sample-Assets/Models/SpecGlossVsMetalRough/glTF/SpecGlossVsMetalRough.gltf': Missing required extensions: KHR_materials_pbrSpecularGlossiness
 vkAllocateMemory: 128.00 MB type=1
 Saved screenshot: render/external/glTF-Sample-Assets/Models/SpecGlossVsMetalRough/glTF/SpecGlossVsMetalRough.png
 vkFreeMemory: 128.00 MB type=1
