@@ -1651,7 +1651,7 @@ RenderRequest ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
             if (node_anim.Clips.empty() || node_anim.ActiveClipIndex >= node_anim.Clips.size()) continue;
             if (!anim_advanced && r.all_of<PosedLocal>(entity)) continue;
             const auto &clip = node_anim.Clips[node_anim.ActiveClipIndex];
-            std::array<Transform, 1> local_pose{r.get<const Transform>(entity)};
+            std::array local_pose{r.get<const Transform>(entity)};
             EvaluateAnimation(clip, clip_time(clip), local_pose);
             r.emplace_or_replace<PosedLocal>(entity, local_pose.front());
             request_rerecord = true;

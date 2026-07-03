@@ -22,6 +22,7 @@ struct PipelineRenderer {
 
 namespace Format {
 inline constexpr auto Color = vk::Format::eB8G8R8A8Unorm;
+inline constexpr auto HdrColor = vk::Format::eR16G16B16A16Sfloat;
 inline constexpr auto Depth = vk::Format::eD32Sfloat;
 inline constexpr auto Float = vk::Format::eR32Sfloat;
 inline constexpr auto Float2 = vk::Format::eR32G32Sfloat;
@@ -32,7 +33,7 @@ inline constexpr auto Uint = vk::Format::eR32Uint;
 // Compiles a PBR pipeline shaped to the scene's active feature set via Vulkan specialization constants.
 // Vert + frag VkShaderModules are compiled once; only vkCreateGraphicsPipeline runs on mask changes.
 struct PbrCompiler {
-    PbrCompiler(PipelineContext, vk::RenderPass);
+    PbrCompiler(PipelineContext, vk::RenderPass, vk::RenderPass prepass_render_pass);
 
     enum class Variant {
         Opaque,
@@ -47,7 +48,7 @@ struct PbrCompiler {
 
 private:
     void CompileModules();
-    vk::UniquePipeline CreateTargetedPipeline(const vk::SpecializationInfo &frag_spec, bool depth_write) const;
+    vk::UniquePipeline CreateTargetedPipeline(const vk::SpecializationInfo &frag_spec, bool depth_write, vk::RenderPass) const;
 
     vk::Device Device;
     vk::UniquePipelineCache Cache;
@@ -55,7 +56,7 @@ private:
     vk::UniquePipelineLayout Layout;
     vk::DescriptorSetLayout SetLayout;
     vk::DescriptorSet Set;
-    vk::RenderPass RenderPass;
+    vk::RenderPass RenderPass, PrepassRenderPass;
 
     PbrFeatureMask Mask{0};
     vk::UniquePipeline OpaqueTargeted, BlendTargeted, OpaquePrepass;
@@ -73,6 +74,7 @@ struct MainPipeline {
     };
 
     // Mip chain + framebuffer backing real-transmission sampling.
+    // Scene-linear HDR (no exposure/tone map/sRGB), so the main pass samples true radiance.
     // Allocated on demand only when a scene material uses KHR_materials_transmission and the user toggle is on.
     struct TransmissionResourcesT {
         TransmissionResourcesT(vk::Extent2D, vk::Device, vk::PhysicalDevice, vk::RenderPass, vk::ImageView depth_view, vk::ImageView line_data_view);
@@ -91,6 +93,9 @@ struct MainPipeline {
     bool EnsureTransmissionResources(vk::Extent2D, vk::Device, vk::PhysicalDevice, bool wanted);
 
     PipelineRenderer Renderer;
+    // Transmission pre-pass: same attachment layout as Renderer but an HDR color target.
+    vk::UniqueRenderPass PrepassRenderPass;
+    ShaderPipeline PrepassBackground; // Background variant outputting scene-linear radiance
     vk::UniqueRenderPass LineAARenderPass;
     ShaderPipeline LineAAComposite;
     std::unique_ptr<ResourcesT> Resources;

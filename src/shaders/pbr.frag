@@ -49,9 +49,10 @@ layout(constant_id = 3) const bool ENABLE_CLEARCOAT     = true;
 layout(constant_id = 4) const bool ENABLE_SHEEN         = true;
 layout(constant_id = 5) const bool ENABLE_ANISOTROPY    = true;
 layout(constant_id = 6) const bool ENABLE_IRIDESCENCE   = true;
-// Pre-pass pipelines disable framebuffer sampling so transmission materials drawn into the
-// transmission framebuffer don't recursively sample their own attachment.
-layout(constant_id = 7) const bool ALLOW_REAL_TRANSMISSION_SAMPLING = true;
+// Rendering into the HDR transmission framebuffer: discards transmission materials (they must
+// not sample their own attachment) and outputs scene-linear radiance (no exposure/tone map/sRGB),
+// so the main pass samples true linear light and applies the display transform exactly once.
+layout(constant_id = 7) const bool TRANSMISSION_PREPASS = false;
 
 layout(location = 0) in vec3 WorldNormal;
 layout(location = 1) in vec3 WorldPosition;
@@ -210,7 +211,9 @@ void main() {
             if (base_color.a < material.AlphaCutoff) discard;
             base_color.a = 1.0;
         }
-        OutColor = vec4(linearTosRGB(toneMapPBRNeutral(base_color.rgb * SceneViewUBO.Exposure)), base_color.a);
+        OutColor = TRANSMISSION_PREPASS
+            ? base_color
+            : vec4(linearToDisplay(base_color.rgb * SceneViewUBO.Exposure), base_color.a);
         return;
     }
 
@@ -269,7 +272,7 @@ void main() {
         }
     }
     // When building the transmission framebuffer, drop transmission fragments so opaque geometry behind them is preserved.
-    if (!ALLOW_REAL_TRANSMISSION_SAMPLING && transmission_factor > 0.0) discard;
+    if (TRANSMISSION_PREPASS && transmission_factor > 0.0) discard;
     // KHR_materials_diffuse_transmission
     float diffuse_transmission_factor = 0.0;
     vec3 diffuse_transmission_color = vec3(0.0);
@@ -440,7 +443,7 @@ void main() {
         f_diffuse = mix(f_diffuse, f_diffuse_transmission, diffuse_transmission_factor);
     }
     if (transmission_factor > 0.0) {
-        const bool real = ALLOW_REAL_TRANSMISSION_SAMPLING
+        const bool real = !TRANSMISSION_PREPASS
             && SceneViewUBO.UseRealTransmission != 0u
             && SceneViewUBO.TransmissionFramebufferSamplerSlot != INVALID_SLOT;
         vec3 f_transmission = getVolumeRefraction(n, v, WorldPosition, world_thickness, perceptual_roughness, material.Ior, material.Dispersion, real) * base_color.rgb;
@@ -548,7 +551,7 @@ void main() {
         return;
     }
 
-    color *= SceneViewUBO.Exposure;
+    if (!TRANSMISSION_PREPASS) color *= SceneViewUBO.Exposure;
 
     if (FaceOverlayFlags != 0u) {
         const bool is_edit_face = SceneViewUBO.InteractionMode == InteractionMode_Edit && SceneViewUBO.EditElement == Element_Face;
@@ -557,7 +560,6 @@ void main() {
         color = mix(color, overlay, selected.a);
     }
 
-    color = toneMapPBRNeutral(color);
-    color = linearTosRGB(color);
+    if (!TRANSMISSION_PREPASS) color = linearToDisplay(color);
     OutColor = vec4(color, base_color.a);
 }

@@ -28,7 +28,24 @@ using std::ranges::any_of;
 
 namespace {
 constexpr vk::Extent2D ToExtent2D(vk::Extent3D extent) { return {extent.width, extent.height}; }
-constexpr vk::ClearColorValue ToClearColor(vec4 c) { return {std::array<float, 4>{c.r, c.g, c.b, c.a}}; }
+constexpr vk::ClearColorValue ToClearColor(vec4 c) { return {std::array{c.r, c.g, c.b, c.a}}; }
+// Inverse of the shader's display transform (toneMapPBRNeutral then sRGB encode), ignoring the tone
+// map's desaturation term (not invertible, and negligible near the compression knee). Maps the
+// display-referred clear color back to scene-linear for the HDR transmission pre-pass target.
+vec3 DisplayToSceneLinear(vec3 color) {
+    color = glm::pow(color, vec3{2.2f});
+    constexpr float StartCompression = 0.8f - 0.04f;
+    constexpr float D = 1.f - StartCompression;
+    // The forward compression asymptotes to 1, so clamp just below to keep the inverse finite.
+    if (const float peak = std::min(std::max({color.r, color.g, color.b}), 0.999f); peak >= StartCompression) {
+        const float original_peak = D * D / (1.f - peak) - D + StartCompression;
+        color *= original_peak / peak;
+    }
+    // Undo the black-level offset. The forward maps min channel x to 6.25x² for x < 0.08, else x - 0.04.
+    const float x = std::min({color.r, color.g, color.b});
+    const float offset = x < 0.04f ? 0.4f * std::sqrt(x) - x : 0.04f;
+    return color + offset;
+}
 const vk::ClearColorValue Transparent{0, 0, 0, 0};
 const std::vector<vk::ClearValue> SilhouetteClearValues{{vk::ClearDepthStencilValue{1, 0}}, {Transparent}};
 DrawData MakeDrawData(const RenderBuffers &rb, uint32_t vertex_slot, const InstanceArena &instances) {
@@ -134,8 +151,9 @@ void RecordRenderCommandBuffer(entt::registry &r, entt::entity viewport, vk::Com
     const bool is_wireframe_mode = settings.ViewportShading == ViewportShadingMode::Wireframe;
     const bool show_rendered = settings.ViewportShading == ViewportShadingMode::MaterialPreview || settings.ViewportShading == ViewportShadingMode::Rendered;
     const bool show_fill = !is_wireframe_mode, show_overlays = settings.ShowOverlays;
+    const auto &active_lighting = GetActivePbrLighting(r, viewport, settings.ViewportShading);
     const bool real_transmission = show_rendered &&
-        GetActivePbrLighting(r, viewport, settings.ViewportShading).RealTransmission &&
+        active_lighting.RealTransmission &&
         pipelines.Main.Compiler.HasFeature(PbrFeature::Transmission);
 
     const auto &sel_slots = r.ctx().get<const SelectionSlots>();
@@ -645,13 +663,20 @@ void RecordRenderCommandBuffer(entt::registry &r, entt::entity viewport, vk::Com
         {vk::ClearColorValue{std::array<float, 4>{0, 0, 0, 0}}},
     };
 
-    // Real-transmission pre-pass: render Background + FillOpaque into TransmissionImage mip 0.
-    // The PBR shader samples this in the main pass at the refracted exit point projected to NDC.
-    // The OpaquePrepass spec-constant variant disables framebuffer sampling, so transmission
-    // materials drawn here don't recursively read the attachment they're writing into.
+    // Real-transmission pre-pass: render Background + FillOpaque into TransmissionImage mip 0 in
+    // scene-linear HDR, sampled by the main pass at the refracted exit point. TRANSMISSION_PREPASS
+    // variants skip the display transform and drop transmission materials (no self-sampling).
     if (real_transmission && main.Transmission) {
-        cb.beginRenderPass({*main.Renderer.RenderPass, *main.Transmission->Framebuffer, main_rect, main_clear_values}, vk::SubpassContents::eInline);
-        main.Renderer.ShaderPipelines.at(SPT::Background).RenderQuad(cb);
+        // Clear with the display clear color mapped back to scene-linear and un-exposed, so the
+        // refracted view of the empty backdrop displays as the same clear color after the main pass.
+        const vec3 clear_linear = DisplayToSceneLinear(vec3{settings.ClearColor}) / std::exp2(active_lighting.ExposureEV);
+        const std::array prepass_clear_values{
+            vk::ClearValue{vk::ClearDepthStencilValue{1, 0}},
+            vk::ClearValue{ToClearColor(vec4{clear_linear, settings.ClearColor.a})},
+            vk::ClearValue{Transparent},
+        };
+        cb.beginRenderPass({*main.PrepassRenderPass, *main.Transmission->Framebuffer, main_rect, prepass_clear_values}, vk::SubpassContents::eInline);
+        main.PrepassBackground.RenderQuad(cb);
         if (buffers.IdentityIndexCount > 0 && show_fill) {
             cb.bindIndexBuffer(*buffers.IdentityIndexBuffer, 0, vk::IndexType::eUint32);
             record_pbr_batch(draw.FillOpaque, PbrCompiler::Variant::OpaquePrepass);

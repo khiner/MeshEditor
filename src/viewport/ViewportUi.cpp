@@ -542,7 +542,8 @@ void InteractOverlay(entt::registry &r, entt::entity viewport, FrameState &frame
                     if (bool v = lighting.RealTransmission; Checkbox("Real transmission", &v))
                         apply_update(&PBRViewportLighting::RealTransmission, v);
                     if (IsItemHovered()) SetTooltip("Sample transmission from a pre-rendered scene framebuffer instead of from the IBL.");
-                    if (float v = lighting.ExposureEV; SliderFloat("Exposure", &v, -10.f, 10.f, "%.1f EV"))
+                    // AlwaysClamp: extreme typed EV values overflow exp2 into inf/NaN in the renderer.
+                    if (float v = lighting.ExposureEV; SliderFloat("Exposure", &v, -10.f, 10.f, "%.1f EV", ImGuiSliderFlags_AlwaysClamp))
                         apply_update(&PBRViewportLighting::ExposureEV, v);
                     PopID();
                 };

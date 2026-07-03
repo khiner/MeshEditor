@@ -359,7 +359,7 @@ std::pair<MeshData, MeshVertexAttributes> DeduplicateVertices(MeshData &&mesh, M
         deduped.Faces.emplace_back(std::move(new_face));
     }
     deduped.Edges.reserve(mesh.Edges.size());
-    for (const auto &edge : mesh.Edges) deduped.Edges.emplace_back(std::array<uint32_t, 2>{remap[edge[0]], remap[edge[1]]});
+    for (const auto &edge : mesh.Edges) deduped.Edges.emplace_back(std::array{remap[edge[0]], remap[edge[1]]});
 
     return {std::move(deduped), std::move(deduped_attrs)};
 }

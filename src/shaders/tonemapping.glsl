@@ -14,6 +14,8 @@ vec3 sRGBToLinear(vec3 color) {
     return pow(color, vec3(GAMMA));
 }
 
+// DisplayToSceneLinear in ViewportRenderGpu.cpp is the CPU inverse of the display transform
+// (toneMapPBRNeutral then linearTosRGB) and must track changes here.
 vec3 toneMapPBRNeutral(vec3 color) {
     const float startCompression = 0.8 - 0.04;
     const float desaturation = 0.15;
@@ -31,6 +33,11 @@ vec3 toneMapPBRNeutral(vec3 color) {
 
     const float g = 1.0 - 1.0 / (desaturation * (peak - newPeak) + 1.0);
     return mix(color, vec3(newPeak), g);
+}
+
+// Display transform: tone map, then sRGB encode.
+vec3 linearToDisplay(vec3 color) {
+    return linearTosRGB(toneMapPBRNeutral(color));
 }
 
 #endif

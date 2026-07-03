@@ -8,6 +8,9 @@
 
 layout(set = 0, binding = BINDING_CubeSampler) uniform samplerCube CubeSamplers[];
 
+// Output scene-linear radiance (no exposure/tone map/sRGB) for the HDR transmission pre-pass.
+layout(constant_id = 0) const bool TRANSMISSION_PREPASS = false;
+
 layout(location = 0) in vec2 InNDC;
 layout(location = 0) out vec4 OutColor;
 
@@ -22,6 +25,8 @@ void main() {
     const float lod = clamp(SceneViewUBO.BackgroundBlur, 0.0, 1.0) * float(mip_count - 1u);
     const vec3 linear = textureLod(
         CubeSamplers[nonuniformEXT(SceneViewUBO.Ibl.SpecularEnvSamplerSlot)], env_dir, lod
-    ).rgb * SceneViewUBO.EnvIntensity * SceneViewUBO.Exposure;
-    OutColor = vec4(linearTosRGB(toneMapPBRNeutral(linear)), SceneViewUBO.WorldOpacity);
+    ).rgb * SceneViewUBO.EnvIntensity;
+    OutColor = TRANSMISSION_PREPASS
+        ? vec4(linear, SceneViewUBO.WorldOpacity)
+        : vec4(linearToDisplay(linear * SceneViewUBO.Exposure), SceneViewUBO.WorldOpacity);
 }
