@@ -142,7 +142,6 @@ add_custom_target(generate_gpu_schema DEPENDS ${GPU_SCHEMA_STAMP})
 add_dependencies(${PROJECT_NAME} generate_gpu_schema)
 
 include_directories(
-    ${Vulkan_INCLUDE_DIRS}
     ${ImguiDir}
     ${ImguiDir}/backends
     ${ImplotDir}
@@ -166,9 +165,11 @@ include_directories(
     SYSTEM lib/JoltPhysics
     SYSTEM lib/zpp_bits
     SYSTEM lib/readerwriterqueue
+    SYSTEM lib/simdjson/include
 
     SYSTEM PkgConfig::FFTW3F
     src
+    ${Vulkan_INCLUDE_DIRS} # Last: may shadow vendored headers
 )
 
 # Symlink resources next to the executable.
@@ -202,7 +203,7 @@ if(APPLE)
   target_link_libraries(${PROJECT_NAME} PRIVATE "-framework Accelerate")
 endif()
 
-target_link_libraries(${PROJECT_NAME} PRIVATE SDL3::SDL3 ${Vulkan_LIBRARIES} GPUOpen::VulkanMemoryAllocator ${SHADERC_LIB} nfd faustlib tetgen PkgConfig::FFTW3F lunasvg fastgltf::fastgltf basisu_transcoder Jolt)
+target_link_libraries(${PROJECT_NAME} PRIVATE SDL3::SDL3 ${Vulkan_LIBRARIES} GPUOpen::VulkanMemoryAllocator ${SHADERC_LIB} nfd faustlib tetgen PkgConfig::FFTW3F lunasvg fastgltf::fastgltf simdjson::simdjson basisu_transcoder Jolt)
 
 if(CMAKE_BUILD_TYPE MATCHES Debug)
     target_compile_definitions(${PROJECT_NAME} PRIVATE DEBUG_BUILD)

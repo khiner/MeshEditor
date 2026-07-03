@@ -68,3 +68,6 @@
 [submodule "external/glTF-Sample-Assets"]
 	path = external/glTF-Sample-Assets
 	url = git@github.com:KhronosGroup/glTF-Sample-Assets.git
+[submodule "lib/simdjson"]
+	path = lib/simdjson
+	url = git@github.com:simdjson/simdjson.git

@@ -313,6 +313,7 @@ std::string_view TypeName(ElType t) {
         case ElType::UINT64: return "uint64";
         case ElType::DOUBLE: return "double";
         case ElType::BOOL: return "bool";
+        case ElType::BIGINT: return "bigint";
         case ElType::NULL_VALUE: return "null";
     }
     return "?";

@@ -51,17 +51,18 @@ add_dependencies(MeshEditorTests generate_gpu_schema)
 target_include_directories(MeshEditorTests PRIVATE
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_BINARY_DIR}
-    ${Vulkan_INCLUDE_DIRS}
     SYSTEM ${CMAKE_SOURCE_DIR}/lib/glm
     SYSTEM ${CMAKE_SOURCE_DIR}/lib/entt/src
-    SYSTEM ${CMAKE_SOURCE_DIR}/lib/fastgltf/deps/simdjson
+    SYSTEM ${CMAKE_SOURCE_DIR}/lib/simdjson/include
     SYSTEM ${CMAKE_SOURCE_DIR}/lib/VulkanMemoryAllocator/include
     SYSTEM ${CMAKE_SOURCE_DIR}/lib/basis_universal/transcoder
     SYSTEM ${CMAKE_SOURCE_DIR}/lib/JoltPhysics
+    ${Vulkan_INCLUDE_DIRS} # Last: may shadow vendored headers
 )
 
 target_link_libraries(MeshEditorTests PRIVATE
     fastgltf::fastgltf
+    simdjson::simdjson
     Boost::ut
     ${Vulkan_LIBRARIES}
     GPUOpen::VulkanMemoryAllocator
@@ -80,9 +81,9 @@ add_dependencies(MeshEditorActionSerializeTest generate_gpu_schema)
 target_include_directories(MeshEditorActionSerializeTest PRIVATE
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_BINARY_DIR}
-    ${Vulkan_INCLUDE_DIRS}
     SYSTEM ${CMAKE_SOURCE_DIR}/lib/glm
     SYSTEM ${CMAKE_SOURCE_DIR}/lib/entt/src
+    ${Vulkan_INCLUDE_DIRS}
 )
 target_link_libraries(MeshEditorActionSerializeTest PRIVATE Boost::ut)
 target_compile_definitions(MeshEditorActionSerializeTest PRIVATE GLM_ENABLE_EXPERIMENTAL DEBUG_BUILD)

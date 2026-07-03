@@ -7,7 +7,12 @@ add_subdirectory(lunasvg)
 add_subdirectory(tinyobjloader)
 add_subdirectory(tinyply)
 
+# fastgltf links this simdjson::simdjson target
+add_subdirectory(simdjson)
+target_compile_options(simdjson PRIVATE -w)
+
 set(FASTGLTF_ENABLE_KHR_PHYSICS_RIGID_BODIES ON CACHE BOOL "" FORCE)
+set(FASTGLTF_ENABLE_INSTALL OFF CACHE BOOL "" FORCE) # We provide our own simdjson target.
 add_subdirectory(fastgltf)
 target_compile_options(fastgltf PRIVATE -w)
 
