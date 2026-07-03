@@ -55,6 +55,9 @@
 #include <print>
 #include <set>
 
+#include <fcntl.h>
+#include <unistd.h>
+
 static_assert(null_entity == entt::null, "null_entity does not match entt::null");
 
 using std::ranges::any_of, std::ranges::all_of;
@@ -267,11 +270,15 @@ template<typename ActionType> void Perform(entt::registry &r, entt::entity viewp
     ProcessComponentEvents(r, viewport);
 }
 
-// Reset to the default scene, optionally replaying an action log on top.
-void NewProject(entt::registry &r, entt::entity viewport, const fs::path &replay_path = {}, bool with_default_content = true) {
-    // Called mid-frame: the GPU may still be using viewport resources we're about to recreate, with no fence to wait on.
+// Finish in-flight GPU work and stop playback, so scene structure can be safely torn down.
+void QuiesceScene(entt::registry &r, entt::entity viewport) {
     r.ctx().get<const VulkanResources>().Device.waitIdle();
     action::StopPlaybackIfPlaying(r, viewport);
+}
+
+// Reset to the default scene, optionally replaying an action log on top.
+void NewProject(entt::registry &r, entt::entity viewport, const fs::path &replay_path = {}, bool with_default_content = true) {
+    QuiesceScene(r, viewport);
     action::StopLog();
     const auto live_extent = r.ctx().get<ViewportExtent>().Value; // Restore after replay's SetExtent actions change it.
     // View-camera navigation isn't recorded, so save and restore afterward to not disturb the live view.
@@ -294,8 +301,7 @@ void NewProject(entt::registry &r, entt::entity viewport, const fs::path &replay
 // - Replay: replaying the current log onto a fresh scene must reproduce the saved image (writes a replay-test fixture on failure).
 // - Round-trip: save, clear, restore must reproduce the saved image.
 void ValidateRoundTrip(entt::registry &r, entt::entity viewport) {
-    r.ctx().get<const VulkanResources>().Device.waitIdle();
-    action::StopPlaybackIfPlaying(r, viewport);
+    QuiesceScene(r, viewport);
 
     const auto logs = action::ListReplayLogs(); // Most-recent first; the newest is the live session's log.
     if (logs.empty()) {
@@ -406,8 +412,8 @@ struct CaptureRequest {
     bool Play{false};
     float PlayDuration{0}; // 0 = run until playback completes one loop.
     int Fps{60};
-    fs::path RecordPath, ScreenshotPath;
-    fs::path RenderBasename; // Output basename, no extension.
+    fs::path RecordPath{}, ScreenshotPath{};
+    fs::path RenderBasename{}; // Output basename, no extension.
 };
 
 // Surface and clear any failures action handlers reported this frame. Returns true if there were any.
@@ -1148,29 +1154,14 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
     SDL_Quit();
 }
 
-// Run without a window: no SDL video, ImGui, audio, or file dialogs. The viewport renders offscreen
-// on a fixed-step, GPU-paced clock, and capture reads it back. Exits after one rendered frame when
-// there is nothing to capture or play.
-void RunHeadless(const char *initial_file, bool quiet, bool empty, const CaptureRequest &capture) {
-    Timer::Enabled = !quiet;
-
-    if (!SDL_Init(0)) throw std::runtime_error(std::format("SDL_Init error: {}", SDL_GetError())); // Base path only, no subsystems.
-    if (const char *base = SDL_GetBasePath()) Paths::Init(base);
-    else throw std::runtime_error(std::format("SDL_GetBasePath error: {}", SDL_GetError()));
-
-    auto vc = std::make_unique<VulkanContext>(std::vector<const char *>{}, /*with_swapchain=*/false);
-    entt::registry r;
-    const auto viewport = InitEngine(r, vc->Resources());
-    SetupScene(r, viewport);
-    auto &frame_state = r.ctx().get<FrameState>();
-    frame_state.DisplayFramebufferScale = {2, 2}; // Match the app's retina rendering (pixel density and DPI-scaled GPU state like edge-line width).
-    ProcessComponentEvents(r, viewport); // Prime derived state before the first frame reads it.
-
+// Seed the scene, run the fixed-step capture loop, and finish the session log.
+void RunHeadlessScene(entt::registry &r, entt::entity viewport, const char *initial_file, bool empty, const CaptureRequest &capture) {
     auto driver = BeginCaptureSession(r, viewport, capture, initial_file, empty, /*fixed_step=*/true);
     // Emitted, not Performed: the resize must happen inside the first tick's SubmitViewport for that
     // frame to render the recreated images correctly.
     action::Emit(action::view::SetExtent{DefaultWindowSize});
 
+    auto &frame_state = r.ctx().get<FrameState>();
     frame_state.DeltaTime = driver.RenderDt;
     bool done{false};
     while (!done) {
@@ -1187,12 +1178,105 @@ void RunHeadless(const char *initial_file, bool quiet, bool empty, const Capture
         if (!driver.Presenting() && settled) done = true;
         driver.ElapsedPlayTime += frame_state.DeltaTime;
     }
-
     FinishSessionLog(capture);
+}
+
+// Run without a window: no SDL video, ImGui, audio, or file dialogs. The viewport renders offscreen
+// on a fixed-step, GPU-paced clock, and capture reads it back. Initializes the engine, runs `scenes`,
+// and tears down.
+void RunHeadlessEngine(bool quiet, auto &&scenes) {
+    Timer::Enabled = !quiet;
+
+    if (!SDL_Init(0)) throw std::runtime_error(std::format("SDL_Init error: {}", SDL_GetError())); // Base path only, no subsystems.
+    if (const char *base = SDL_GetBasePath()) Paths::Init(base);
+    else throw std::runtime_error(std::format("SDL_GetBasePath error: {}", SDL_GetError()));
+
+    auto vc = std::make_unique<VulkanContext>(std::vector<const char *>{}, /*with_swapchain=*/false);
+    entt::registry r;
+    const auto viewport = InitEngine(r, vc->Resources());
+    SetupScene(r, viewport);
+    r.ctx().get<FrameState>().DisplayFramebufferScale = {2, 2}; // Match the app's retina rendering (pixel density and DPI-scaled GPU state like edge-line width).
+    ProcessComponentEvents(r, viewport); // Prime derived state before the first frame reads it.
+
+    scenes(r, viewport);
+
     vc->Device->waitIdle();
     DeinitViewport(r, viewport);
     vc.reset();
     SDL_Quit();
+}
+
+// Headless single-scene run. Exits after one rendered frame when there is nothing to capture or play.
+void RunHeadless(const char *initial_file, bool quiet, bool empty, const CaptureRequest &capture) {
+    RunHeadlessEngine(quiet, [&](entt::registry &r, entt::entity viewport) {
+        RunHeadlessScene(r, viewport, initial_file, empty, capture);
+    });
+}
+
+// A corpus render job spooled by `script/Render`: one `.job` file per scene, holding
+// "<output basename>\t<scene arg>" (scene arg: a file path, "--empty", or empty for the default scene).
+struct RenderJob {
+    fs::path OutBasename;
+    std::string SceneArg;
+};
+
+// Claim the next pending job by renaming it to `.claimed`. The rename is atomic, so parallel
+// workers pulling from one spool never render the same scene twice.
+std::optional<RenderJob> ClaimRenderJob(const fs::path &spool) {
+    std::vector<fs::path> pending;
+    std::error_code ec;
+    for (const auto &entry : fs::directory_iterator{spool, ec}) {
+        if (entry.path().extension() == ".job") pending.emplace_back(entry.path());
+    }
+    std::ranges::sort(pending);
+    for (const auto &path : pending) {
+        auto claimed = path;
+        claimed += ".claimed";
+        std::error_code rename_ec;
+        fs::rename(path, claimed, rename_ec);
+        if (rename_ec) continue; // Another worker claimed it first.
+        std::ifstream in{claimed};
+        std::string line;
+        if (!std::getline(in, line)) continue;
+        const auto tab = line.find('\t');
+        if (tab == std::string::npos) continue;
+        return RenderJob{line.substr(0, tab), line.substr(tab + 1)};
+    }
+    return std::nullopt;
+}
+
+// Render every job in the spool with one engine, clearing the scene between jobs.
+// Each scene's console output goes to its `.log`, and stdout gets one line per finished scene.
+void RunHeadlessQueue(const fs::path &spool, bool quiet) {
+    RunHeadlessEngine(quiet, [&](entt::registry &r, entt::entity viewport) {
+        const int launcher_out = ::dup(STDOUT_FILENO), launcher_err = ::dup(STDERR_FILENO);
+        while (const auto job = ClaimRenderJob(spool)) {
+            const auto out = job->OutBasename.string();
+            std::fflush(stdout);
+            std::fflush(stderr);
+            if (const int log_fd = ::open((out + ".log").c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644); log_fd >= 0) {
+                ::dup2(log_fd, STDOUT_FILENO);
+                ::dup2(log_fd, STDERR_FILENO);
+                ::close(log_fd);
+            }
+            const bool empty = job->SceneArg == "--empty";
+            const char *initial_file = !empty && !job->SceneArg.empty() ? job->SceneArg.c_str() : nullptr;
+            RunHeadlessScene(r, viewport, initial_file, empty, CaptureRequest{.RenderBasename = job->OutBasename});
+            // Reset for the next job, finalizing any in-progress recording.
+            QuiesceScene(r, viewport);
+            ClearScene(r, viewport);
+            ProcessComponentEvents(r, viewport); // Settle the reset so the next scene loads from the same baseline as a fresh engine.
+            std::fflush(stdout);
+            std::fflush(stderr);
+            ::dup2(launcher_out, STDOUT_FILENO);
+            ::dup2(launcher_err, STDERR_FILENO);
+            if (fs::exists(out + ".png") || fs::exists(out + ".mp4")) std::println("ok   {}", out);
+            else std::println("SKIP {} (no output; load failed or unsupported encoding)", out);
+            std::fflush(stdout); // Stdout is typically a block-buffered pipe, so make the line visible now.
+        }
+        ::close(launcher_out);
+        ::close(launcher_err);
+    });
 }
 } // namespace
 
@@ -1219,6 +1303,7 @@ int main(int argc, char **argv) {
 
     const char *initial_file = nullptr;
     bool empty = false, headless = false;
+    fs::path render_queue;
     CaptureRequest capture;
 #ifdef QUIET
     bool quiet = true;
@@ -1234,6 +1319,7 @@ int main(int argc, char **argv) {
         } else if (a == "--record" && std::next(it) != args.end()) capture.RecordPath = *++it;
         else if (a == "--screenshot" && std::next(it) != args.end()) capture.ScreenshotPath = *++it;
         else if (a == "--render" && std::next(it) != args.end()) capture.RenderBasename = *++it;
+        else if (a == "--render-queue" && std::next(it) != args.end()) render_queue = *++it;
         else if (a == "--empty") empty = true;
         else if (a == "--headless") headless = true;
         else if (a == "--fps" && std::next(it) != args.end()) capture.Fps = std::atoi(*++it);
@@ -1245,8 +1331,14 @@ int main(int argc, char **argv) {
         std::println(stderr, "--render cannot be combined with --record or --screenshot");
         return 1;
     }
+    // Queue mode is headless and derives everything from each job.
+    if (!render_queue.empty() && (initial_file || !capture.RenderBasename.empty() || !capture.RecordPath.empty() || !capture.ScreenshotPath.empty())) {
+        std::println(stderr, "--render-queue cannot be combined with a scene file or capture flags");
+        return 1;
+    }
 
-    if (headless) RunHeadless(initial_file, quiet, empty, capture);
+    if (!render_queue.empty()) RunHeadlessQueue(render_queue, quiet);
+    else if (headless) RunHeadless(initial_file, quiet, empty, capture);
     else run(initial_file, quiet, empty, capture);
     return 0;
 }

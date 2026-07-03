@@ -24,7 +24,7 @@
 
 #include <entt/entity/registry.hpp>
 
-using std::ranges::any_of;
+using std::ranges::any_of, std::ranges::to;
 
 namespace {
 constexpr vk::Extent2D ToExtent2D(vk::Extent3D extent) { return {extent.width, extent.height}; }
@@ -243,7 +243,11 @@ void RecordRenderCommandBuffer(entt::registry &r, entt::entity viewport, vk::Com
             std::ranges::sort(
                 blend_mesh_order,
                 [&](const auto a, const auto b) {
-                    return farthest_distance2_by_mesh.at(a) > farthest_distance2_by_mesh.at(b);
+                    // Break equal-distance ties (common for instances sharing a transform) by entity
+                    // id, so the blend order — and thus the composited image — is deterministic.
+                    const auto da = farthest_distance2_by_mesh.at(a), db = farthest_distance2_by_mesh.at(b);
+                    if (da != db) return da > db;
+                    return a < b;
                 }
             );
         }
@@ -259,9 +263,16 @@ void RecordRenderCommandBuffer(entt::registry &r, entt::entity viewport, vk::Com
             bool IsSoundVertices, IsBone, IsBoneJoint, IsExtras, Smooth;
         };
 
+        // Draw order resolves coincident surfaces, and pool iteration order varies with scene-load
+        // history, so draw in descending entity id order (a fresh registry's iteration order).
+        auto mesh_entity_order = r.view<const MeshBuffers, const ModelsBuffer>() | to<std::vector>();
+        std::ranges::sort(mesh_entity_order, std::ranges::greater{});
+
         std::vector<MeshEntityData> mesh_entities;
-        mesh_entities.reserve(r.storage<MeshBuffers>().size());
-        for (auto [entity, mesh_buffers, models] : r.view<const MeshBuffers, const ModelsBuffer>().each()) {
+        mesh_entities.reserve(mesh_entity_order.size());
+        for (const auto entity : mesh_entity_order) {
+            const auto &mesh_buffers = r.get<const MeshBuffers>(entity);
+            const auto &models = r.get<const ModelsBuffer>(entity);
             std::optional<uint32_t> primary_bi;
             if (auto it = primary_edit_instances.find(entity); it != primary_edit_instances.end()) {
                 primary_bi = r.get<RenderInstance>(it->second).BufferIndex;

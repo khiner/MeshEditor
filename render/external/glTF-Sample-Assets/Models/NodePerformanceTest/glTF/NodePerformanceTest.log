@@ -1,7 +1,1 @@
-vkAllocateMemory: 32.00 MB type=1
-vkAllocateMemory: 128.00 MB type=1
-vkAllocateMemory: 256.00 MB type=1
 Saved screenshot: render/external/glTF-Sample-Assets/Models/NodePerformanceTest/glTF/NodePerformanceTest.png
-vkFreeMemory: 256.00 MB type=1
-vkFreeMemory: 32.00 MB type=1
-vkFreeMemory: 128.00 MB type=1

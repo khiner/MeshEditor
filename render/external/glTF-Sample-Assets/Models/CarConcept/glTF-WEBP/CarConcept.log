@@ -1,6 +1,2 @@
-vkAllocateMemory: 32.00 MB type=1
 Error loading glTF file 'external/glTF-Sample-Assets/Models/CarConcept/glTF-WEBP/CarConcept.gltf': Failed to parse glTF 'external/glTF-Sample-Assets/Models/CarConcept/glTF-WEBP/CarConcept.gltf': Missing required extensions: EXT_texture_webp
-vkAllocateMemory: 128.00 MB type=1
 Saved screenshot: render/external/glTF-Sample-Assets/Models/CarConcept/glTF-WEBP/CarConcept.png
-vkFreeMemory: 128.00 MB type=1
-vkFreeMemory: 32.00 MB type=1

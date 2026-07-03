@@ -169,6 +169,7 @@ When a look-through camera is active, only the camera-frame sub-rect (the area i
 * `--fps N` sets the recording framerate (default 60).
 * `--screenshot path.png` writes a single image. The format is chosen by extension (`.png`, `.jpg`/`.jpeg`), which is optional and defaults to `.png`. The captured region matches `--record`. On its own it exits after writing; combined with `--play [seconds]` or `--record` it grabs the frame and keeps running.
 * `--render basename` writes the scene's corpus artifacts under `basename.*` (used by `./script/Render` — see [Render corpus](#render-corpus)).
+* `--render-queue dir` renders one scene per `dir/*.job` file (`basename<TAB>scene arg`) in a single headless process, and parallel workers can safely share one queue. Used by `./script/Render`, combinable only with `-q`.
 * `--headless` runs without a window: the viewport renders offscreen at a fixed 1280x800 (2x pixel density) extent, and any capture flags read it back. Without a capture flag it renders one frame and exits, and a duration-less `--play` exits after one timeline loop.
 
 The flags can be combined freely, except `--render` excludes `--record` and `--screenshot` (it derives its own outputs). `--render --play N` caps the video at N seconds.

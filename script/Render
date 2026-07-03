@@ -2,7 +2,9 @@
 
 # (Re-)generate the committed `render/` corpus — see the "Render corpus" section in README.md for what each
 # scene's leaf contains. Covers Empty, Default, res/examples, and all glTF samples under external/. Run from anywhere.
-# Scenes render headless (no window) and in parallel. Set JOBS to change the worker count.
+# Scenes render headless (no window) in a pool of persistent worker processes: each worker initializes the
+# engine once and pulls scenes from a shared job spool (`--render-queue`), clearing the scene between jobs.
+# Set JOBS to change the worker count.
 
 set -uo pipefail
 
@@ -16,38 +18,10 @@ Jobs="${JOBS:-8}"
 
 SceneTimeoutSecs=120 # Catches hangs. Renders are GPU-paced, not real-time, and parallel renders contend for the GPU.
 
-# Run "$@" with a timeout (macOS has no `timeout`): background it, race a killer, wait.
-run_with_timeout() {
-    local secs="$1"; shift
-    "$@" &
-    local pid=$!
-    ( sleep "${secs}"; kill -9 "${pid}" 2>/dev/null ) &
-    local watcher=$!
-    wait "${pid}" 2>/dev/null
-    kill -9 "${watcher}" 2>/dev/null
-    wait "${watcher}" 2>/dev/null
-}
-
 # True if the scene with output basename $1 produced its visual artifact.
 has_output() {
     [ -f "$1.png" ] || [ -f "$1.mp4" ]
 }
-
-# Worker mode (self-invoked via xargs below): render one prepared scene, then exit.
-# $2 is "<output basename>\t<scene arg>" (empty scene arg = default scene).
-if [ "${1:-}" = "--render-one" ]; then
-    entry="$2"
-    out="${entry%%$'\t'*}"
-    arg="${entry#*$'\t'}"
-    # Capture the app's stdout+stderr (load errors, frame counts, any hang evidence) alongside the render.
-    run_with_timeout "${SceneTimeoutSecs}" "./${Exe}" ${arg:+"${arg}"} --headless --render "${out}" -q >"${out}.log" 2>&1
-    if has_output "${out}"; then
-        echo "  ok   ${out}"
-    else
-        echo "  SKIP ${out} (no output; load failed or unsupported encoding)" >&2
-    fi
-    exit 0
-fi
 
 # Build the Debug executable first (never release, per repo policy).
 "${ScriptDir}/Build"
@@ -109,20 +83,75 @@ done < <(
         -not -path '*/glTF_Physics/tests/*' -not -path '*/glTF-Binary/*' -not -path '*/glTF-Embedded/*' 2>/dev/null | sort
 )
 
-echo "Rendering corpus into ${RenderDir}/ (${#entries[@]} scenes, ${Jobs} parallel headless workers)..."
-printf '%s\0' "${entries[@]}" | xargs -0 -P "${Jobs}" -n 1 "$0" --render-one
+echo "Rendering corpus into ${RenderDir}/ (${#entries[@]} scenes, ${Jobs} headless workers)..."
 
-# Tally from the artifacts (worker output order is nondeterministic under parallelism), retrying each
-# failure once, serially — GPU contention can transiently kill a render (Metal device-loss).
+# Spool one `.job` file per scene. Workers claim jobs by atomic rename, so the pool load-balances itself.
+Spool="$(mktemp -d "${TMPDIR:-/tmp}/MeshEditorRenderSpool.XXXXXX")"
+trap 'rm -rf "${Spool}"' EXIT
+
+# Write one numbered `.job` file per argument into the spool.
+spool_jobs() {
+    local i=0 entry
+    for entry; do
+        printf '%s\n' "${entry}" > "$(printf '%s/%04d.job' "${Spool}" "${i}")"
+        i=$((i + 1))
+    done
+}
+
+# Unclaimed jobs left in the spool.
+count_jobs() { find "${Spool}" -maxdepth 1 -name '*.job' | wc -l; }
+
+spool_jobs "${entries[@]}"
+
+# Run the app on the spool, killing and respawning it when a scene hangs.
+run_worker() {
+    local fifo="${Spool}/worker$1.fifo" pid line read_status remaining
+    mkfifo "${fifo}"
+    while :; do
+        remaining="$(count_jobs)"
+        [ "${remaining}" -gt 0 ] || break
+        "./${Exe}" --render-queue "${Spool}" -q >"${fifo}" &
+        pid=$!
+        exec 3<"${fifo}"
+        while :; do
+            IFS= read -r -t "${SceneTimeoutSecs}" -u 3 line
+            read_status=$?
+            [ "${read_status}" -eq 0 ] || break
+            echo "  ${line}"
+        done
+        exec 3<&-
+        [ "${read_status}" -gt 128 ] && kill -9 "${pid}" 2>/dev/null
+        wait "${pid}" 2>/dev/null
+        # An exit that claimed no job means the app can't start (or the queue drained meanwhile), so don't respawn into a crash loop.
+        [ "$(count_jobs)" -eq "${remaining}" ] && break
+    done
+}
+
+worker=1
+while [ "${worker}" -le "${Jobs}" ]; do
+    run_worker "${worker}" &
+    worker=$((worker + 1))
+done
+wait
+
+# Retry failures once through a single fresh worker (Metal device-loss).
+retries=()
+for entry in "${entries[@]}"; do
+    has_output "${entry%%$'\t'*}" || retries+=("${entry}")
+done
+if [ "${#retries[@]}" -gt 0 ]; then
+    rm -f "${Spool}"/*.job "${Spool}"/*.job.claimed
+    for entry in "${retries[@]}"; do echo "  retrying ${entry%%$'\t'*}"; done
+    spool_jobs "${retries[@]}"
+    run_worker retry
+fi
+
+# Tally from the artifacts (worker output order is nondeterministic under parallelism).
 rendered=0
 skipped=0
 skips=()
 for entry in "${entries[@]}"; do
     out="${entry%%$'\t'*}"
-    if ! has_output "${out}"; then
-        echo "  retrying ${out}"
-        "$0" --render-one "${entry}"
-    fi
     if has_output "${out}"; then
         rendered=$((rendered + 1))
     else

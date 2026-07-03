@@ -45,10 +45,10 @@ std::string FormatBytes(uint32_t bytes) {
 
 #ifndef RELEASE_BUILD
 void LoggingVmaAllocate(VmaAllocator, uint32_t memory_type, VkDeviceMemory, VkDeviceSize size, void *) {
-    std::println("vkAllocateMemory: {} type={}", FormatBytes(size), memory_type);
+    if (Timer::Enabled) std::println("vkAllocateMemory: {} type={}", FormatBytes(size), memory_type);
 }
 void LoggingVmaFree(VmaAllocator, uint32_t memory_type, VkDeviceMemory, VkDeviceSize size, void *) {
-    std::println("vkFreeMemory: {} type={}", FormatBytes(size), memory_type);
+    if (Timer::Enabled) std::println("vkFreeMemory: {} type={}", FormatBytes(size), memory_type);
 }
 #endif
 

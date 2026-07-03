@@ -1,6 +1,2 @@
-vkAllocateMemory: 32.00 MB type=1
 Error loading glTF file 'external/glTF-Sample-Assets/Models/Duck/glTF-Draco/Duck.gltf': Failed to parse glTF 'external/glTF-Sample-Assets/Models/Duck/glTF-Draco/Duck.gltf': Missing required extensions: KHR_draco_mesh_compression
-vkAllocateMemory: 128.00 MB type=1
 Saved screenshot: render/external/glTF-Sample-Assets/Models/Duck/glTF-Draco/Duck.png
-vkFreeMemory: 128.00 MB type=1
-vkFreeMemory: 32.00 MB type=1

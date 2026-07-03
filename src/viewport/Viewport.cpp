@@ -95,13 +95,18 @@ void RecordViewportFrame(entt::registry &r, entt::entity viewport, RenderRequest
     }
 }
 
+// Take the pending render request, leaving none pending.
+RenderRequest TakeRenderRequest(entt::registry &r) {
+    return std::exchange(r.ctx().get<PendingRenderRequest>().Value, RenderRequest::None);
+}
+
 // Drain component events, resize as needed, and record the frame.
 // Returns false (skipping the record) when the viewport has no non-zero extent yet.
 // `force_full` records the full buffer regardless of the requested region.
 bool AdvanceAndRecord(entt::registry &r, entt::entity viewport, bool force_full) {
-    const auto render_request = ProcessComponentEvents(r, viewport);
+    ProcessComponentEvents(r, viewport);
     if (!ViewportImageReady(r)) return false;
-    RecordViewportFrame(r, viewport, render_request, force_full);
+    RecordViewportFrame(r, viewport, TakeRenderRequest(r), force_full);
     return true;
 }
 } // namespace
@@ -114,10 +119,11 @@ bool ViewportImageReady(const entt::registry &r) {
 void SubmitViewport(entt::registry &r, entt::entity viewport, vk::Fence viewport_consumer_fence) {
     // Stash the consumer fence for the resize path to wait on before recreating resources. Cleared after so replay sees none.
     r.ctx().get<ViewportConsumerFence>().Value = viewport_consumer_fence;
-    const auto render_request = ProcessComponentEvents(r, viewport);
+    ProcessComponentEvents(r, viewport);
     r.ctx().get<ViewportConsumerFence>().Value = vk::Fence{};
-    if (render_request == RenderRequest::None) return;
     if (!ViewportImageReady(r)) return;
+    const auto render_request = TakeRenderRequest(r);
+    if (render_request == RenderRequest::None) return;
 
     const Timer timer{"SubmitViewport"};
 #ifdef MVK_FORCE_STAGED_TRANSFERS
@@ -263,6 +269,7 @@ entt::entity InitEngine(entt::registry &r, VulkanResources vc) {
     r.ctx().emplace<SelectionSlots>(slots);
     r.ctx().emplace<DrawState>();
     r.ctx().emplace<FrameState>();
+    r.ctx().emplace<PendingRenderRequest>();
     const auto &one_shot = r.ctx().emplace<OneShotGpu>(MakeOneShotGpu(vc.Device, vc.QueueFamily));
     r.ctx().emplace<ColliderShapeBuffers>();
     r.ctx().emplace<ViewportRenderResources>(ViewportRenderResources{
@@ -404,6 +411,7 @@ void DeinitViewport(entt::registry &r, entt::entity viewport) {
     r.ctx().erase<SelectionSlots>();
     r.ctx().erase<SelectionBitsetRef>();
     r.ctx().erase<FrameState>();
+    r.ctx().erase<PendingRenderRequest>();
     r.ctx().erase<DrawState>();
     r.clear<Mesh>();
     r.ctx().erase<std::vector<ComponentEventHandler>>();

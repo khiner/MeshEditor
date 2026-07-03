@@ -1,10 +1,4 @@
-vkAllocateMemory: 32.00 MB type=1
-vkAllocateMemory: 64.00 MB type=1
-vkAllocateMemory: 128.00 MB type=1
 Saved screenshot: render/external/glTF-Sample-Assets/Models/CarConcept/glTF/CarConcept.png
 Saved screenshot: render/external/glTF-Sample-Assets/Models/CarConcept/glTF/CarConcept.Carmine Candy.png
 Saved screenshot: render/external/glTF-Sample-Assets/Models/CarConcept/glTF/CarConcept.Pearly Swirly.png
 Saved screenshot: render/external/glTF-Sample-Assets/Models/CarConcept/glTF/CarConcept.Torched Graphite.png
-vkFreeMemory: 128.00 MB type=1
-vkFreeMemory: 64.00 MB type=1
-vkFreeMemory: 32.00 MB type=1

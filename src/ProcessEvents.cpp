@@ -811,7 +811,7 @@ bool SyncViewportRenderResources(entt::registry &r, entt::entity viewport) {
 }
 } // namespace
 
-RenderRequest ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
+void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
     const auto &vk = r.ctx().get<const VulkanResources>();
     const auto &one_shot = r.ctx().get<const OneShotGpu>();
     auto &slots = r.ctx().get<DescriptorSlots>();
@@ -825,8 +825,8 @@ RenderRequest ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
     std::optional<Timer> timer;
     if (profile) timer.emplace("ProcessComponentEvents");
 
-    auto render_request = RenderRequest::None;
-    auto request = [&render_request](RenderRequest req) { render_request = std::max(render_request, req); };
+    auto &pending_render = r.ctx().get<PendingRenderRequest>().Value;
+    auto request = [&pending_render](RenderRequest req) { pending_render = std::max(pending_render, req); };
 
     BuildMissingWorldTransforms(r);
 
@@ -2134,5 +2134,4 @@ RenderRequest ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
     r.clear<MeshGeometryDirty, MeshMaterialAssignment, MaterialDirty, LightWireframeDirty>();
 
     buffers.Ctx.FlushDeferredDescriptorUpdates(vk.Device);
-    return render_request;
 }
