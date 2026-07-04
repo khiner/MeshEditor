@@ -96,6 +96,8 @@ VulkanContext::VulkanContext(std::vector<const char *> enabled_extensions, bool 
 
     vk::PhysicalDeviceFeatures device_features{};
     device_features.multiDrawIndirect = VK_TRUE;
+    RequireFeature(PhysicalDevice.getFeatures().drawIndirectFirstInstance, "drawIndirectFirstInstance");
+    device_features.drawIndirectFirstInstance = VK_TRUE; // Indirect draw commands have non-zero firstInstance.
     device_features.fragmentStoresAndAtomics = VK_TRUE;
     device_features.independentBlend = VK_TRUE;
 
