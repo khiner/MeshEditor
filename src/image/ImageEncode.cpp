@@ -54,7 +54,7 @@ EncodeImageWebpRgba8(std::span<const std::byte> rgba8, uint32_t width, uint32_t 
 
     WebPConfig config;
     WebPPicture picture;
-    if (!WebPConfigInit(&config) || !WebPConfigLosslessPreset(&config, 9) || !WebPPictureInit(&picture)) {
+    if (!WebPConfigInit(&config) || !WebPConfigLosslessPreset(&config, 1) || !WebPPictureInit(&picture)) {
         return std::unexpected{std::format("Failed to initialize WebP encoder for image '{}'.", name)};
     }
     config.exact = 1; // Preserve RGB values in fully-transparent pixels.

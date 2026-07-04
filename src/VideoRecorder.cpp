@@ -17,7 +17,7 @@ std::string BuildFfmpegCommand(const std::filesystem::path &out, vk::Extent2D ex
     // An unchanged render produces a byte-identical file.
     return std::format(
         "ffmpeg -y -loglevel warning -f rawvideo -pix_fmt bgra -s {}x{} -r {} -i - "
-        "-vf vflip -c:v libx264 -pix_fmt yuv444p -preset medium -crf 10 "
+        "-vf vflip -c:v libx264 -pix_fmt yuv444p -preset veryfast -crf 10 "
         "-x264-params keyint=infinite:threads=8 -bitexact \"{}\"",
         extent.width, extent.height, fps, out.string()
     );
