@@ -17,5 +17,9 @@ for arg in "$@"; do
 done
 
 echo "Building $target in $build_type mode..."
-CC=clang CXX=clang++ cmake -G Ninja -S "${ProjectRootDir}" -B "${ProjectRootDir}/build" -DCMAKE_BUILD_TYPE="$build_type"
-cmake --build "${ProjectRootDir}/build" --config "$build_type" --target "$target"
+BuildDir="${ProjectRootDir}/build"
+# Configure only when unconfigured or the build type changed. Ninja reconfigures on CMake file changes.
+if [ ! -f "${BuildDir}/build.ninja" ] || ! grep -qx "CMAKE_BUILD_TYPE:STRING=${build_type}" "${BuildDir}/CMakeCache.txt"; then
+    CC=clang CXX=clang++ cmake -G Ninja -S "${ProjectRootDir}" -B "${BuildDir}" -DCMAKE_BUILD_TYPE="$build_type"
+fi
+cmake --build "${BuildDir}" --config "$build_type" --target "$target"
