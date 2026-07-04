@@ -31,6 +31,7 @@ jobs:
       - name: Configure
         run: >
           cmake -B build -G Ninja
+          -DMESHEDITOR_APP=OFF
           -DCMAKE_BUILD_TYPE=Debug
           -DCMAKE_C_COMPILER=/opt/homebrew/opt/llvm/bin/clang
           -DCMAKE_CXX_COMPILER=/opt/homebrew/opt/llvm/bin/clang++
