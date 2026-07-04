@@ -605,7 +605,7 @@ CaptureDriver BeginCaptureSession(entt::registry &r, entt::entity viewport, cons
 }
 
 void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest &capture) {
-    Timer::Enabled = !quiet;
+    LogEnabled = !quiet;
 
     const bool render_mode = !capture.RenderBasename.empty();
 
@@ -1187,7 +1187,7 @@ void RunHeadlessScene(entt::registry &r, entt::entity viewport, const char *init
 // on a fixed-step, GPU-paced clock, and capture reads it back. Initializes the engine, runs `scenes`,
 // and tears down.
 void RunHeadlessEngine(bool quiet, auto &&scenes) {
-    Timer::Enabled = !quiet;
+    LogEnabled = !quiet;
 
     if (!SDL_Init(0)) throw std::runtime_error(std::format("SDL_Init error: {}", SDL_GetError())); // Base path only, no subsystems.
     if (const char *base = SDL_GetBasePath()) Paths::Init(base);
