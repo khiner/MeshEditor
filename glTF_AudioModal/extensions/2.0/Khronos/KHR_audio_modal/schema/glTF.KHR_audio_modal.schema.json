@@ -1,0 +1,25 @@
+{
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "$id": "glTF.KHR_audio_modal.schema.json",
+    "title": "KHR_audio_modal glTF Document Extension",
+    "type": "object",
+    "description": "Modal sound models and acoustic materials defined by this document.",
+    "allOf": [ { "$ref": "glTFProperty.schema.json" } ],
+    "properties": {
+        "models": {
+            "type": "array",
+            "description": "An array of modal sound models, instanced by nodes.",
+            "items": { "$ref": "glTF.KHR_audio_modal.model.schema.json" },
+            "minItems": 1
+        },
+        "materials": {
+            "type": "array",
+            "description": "An array of acoustic materials, referenced by modal models.",
+            "items": { "$ref": "glTF.KHR_audio_modal.material.schema.json" },
+            "minItems": 1
+        },
+        "extensions": { },
+        "extras": { }
+    },
+    "required": [ "models" ]
+}

@@ -1,0 +1,39 @@
+{
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "$id": "glTF.KHR_audio_modal.material.schema.json",
+    "title": "KHR_audio_modal Acoustic Material",
+    "type": "object",
+    "description": "The physical parameters a modal model was derived from.",
+    "allOf": [ { "$ref": "glTFChildOfRootProperty.schema.json" } ],
+    "properties": {
+        "density": {
+            "type": "number",
+            "description": "Mass density, in kg/m^3.",
+            "exclusiveMinimum": 0.0
+        },
+        "youngsModulus": {
+            "type": "number",
+            "description": "Young's modulus, in Pa.",
+            "exclusiveMinimum": 0.0
+        },
+        "poissonRatio": {
+            "type": "number",
+            "description": "Poisson's ratio.",
+            "exclusiveMinimum": -1.0,
+            "exclusiveMaximum": 0.5
+        },
+        "alpha": {
+            "type": "number",
+            "description": "Mass-proportional Rayleigh damping coefficient, in 1/s.",
+            "minimum": 0.0
+        },
+        "beta": {
+            "type": "number",
+            "description": "Stiffness-proportional Rayleigh damping coefficient, in s.",
+            "minimum": 0.0
+        },
+        "name": { },
+        "extensions": { },
+        "extras": { }
+    }
+}

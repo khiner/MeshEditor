@@ -1,0 +1,23 @@
+{
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "$id": "node.KHR_audio_modal.schema.json",
+    "title": "KHR_audio_modal glTF Node Extension",
+    "type": "object",
+    "description": "Instances a modal sound model on this node.",
+    "allOf": [ { "$ref": "glTFProperty.schema.json" } ],
+    "properties": {
+        "model": {
+            "allOf": [ { "$ref": "glTFid.schema.json" } ],
+            "description": "The index of the modal model instanced by this node."
+        },
+        "gain": {
+            "type": "number",
+            "description": "Linear amplitude scale applied to this instance's output.",
+            "minimum": 0.0,
+            "default": 1.0
+        },
+        "extensions": { },
+        "extras": { }
+    },
+    "required": [ "model" ]
+}

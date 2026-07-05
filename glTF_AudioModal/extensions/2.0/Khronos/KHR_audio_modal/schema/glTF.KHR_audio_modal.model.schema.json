@@ -1,0 +1,38 @@
+{
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "$id": "glTF.KHR_audio_modal.model.schema.json",
+    "title": "KHR_audio_modal Modal Model",
+    "type": "object",
+    "description": "A precomputed modal sound model: per-mode frequencies, decay rates, and mode shapes sampled at surface points.",
+    "allOf": [ { "$ref": "glTFChildOfRootProperty.schema.json" } ],
+    "properties": {
+        "frequencies": {
+            "allOf": [ { "$ref": "glTFid.schema.json" } ],
+            "description": "The index of the accessor of per-mode observed frequencies, in Hz. Values MUST be positive. The accessor type MUST be \"SCALAR\" and the component type MUST be FLOAT."
+        },
+        "decayRates": {
+            "allOf": [ { "$ref": "glTFid.schema.json" } ],
+            "description": "The index of the accessor of per-mode amplitude decay rates, in 1/s. Values MUST be non-negative. The accessor type MUST be \"SCALAR\", the component type MUST be FLOAT, and the count MUST equal the count of `frequencies`."
+        },
+        "positions": {
+            "allOf": [ { "$ref": "glTFid.schema.json" } ],
+            "description": "The index of the accessor of sample point positions on the object's surface, in the node's local space. The accessor type MUST be \"VEC3\" and the component type MUST be FLOAT."
+        },
+        "shapes": {
+            "allOf": [ { "$ref": "glTFid.schema.json" } ],
+            "description": "The index of the accessor of per-mode, per-sample-point displacement vectors, mode-major. The accessor type MUST be \"VEC3\", the component type MUST be FLOAT, and the count MUST equal the count of `frequencies` times the count of `positions`."
+        },
+        "indices": {
+            "allOf": [ { "$ref": "glTFid.schema.json" } ],
+            "description": "The index of the accessor of triangle indices into the sample points, defining an interpolation surface. The accessor type MUST be \"SCALAR\", the component type MUST be UNSIGNED_INT or UNSIGNED_SHORT, the count MUST be a multiple of 3, and values MUST be less than the count of `positions`."
+        },
+        "material": {
+            "allOf": [ { "$ref": "glTFid.schema.json" } ],
+            "description": "The index of the acoustic material this model was derived from."
+        },
+        "name": { },
+        "extensions": { },
+        "extras": { }
+    },
+    "required": [ "frequencies", "decayRates", "positions", "shapes" ]
+}
