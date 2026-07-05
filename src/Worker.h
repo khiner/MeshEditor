@@ -1,6 +1,6 @@
 #pragma once
 
-#include "imspinner.h"
+#include "imspinner_dots.h"
 
 #include <future>
 

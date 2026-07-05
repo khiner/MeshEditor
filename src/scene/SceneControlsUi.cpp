@@ -415,7 +415,7 @@ static void RenderEntityControls(entt::registry &r, entt::entity viewport, entt:
                 else return "?";
             },
                                                 c.Data);
-            const bool expanded = TreeNodeEx("##node", ImGuiTreeNodeFlags_SpanTextWidth, "%s", type_label);
+            const bool expanded = TreeNodeEx("##node", ImGuiTreeNodeFlags_SpanLabelWidth, "%s", type_label);
             SameLine();
             if (SmallButton("X")) delete_index = uint32_t(i);
             if (expanded) {

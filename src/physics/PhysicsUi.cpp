@@ -175,7 +175,7 @@ void DrawNamedEntityList(entt::registry &r, const char *id, const char *add_labe
     for (auto [e, x] : r.view<T>().each()) {
         PushID(uint32_t(e));
         const auto label = DisplayName(x.Name, "{:x}", uint32_t(e));
-        const bool expanded = TreeNodeEx("##node", ImGuiTreeNodeFlags_SpanTextWidth, "%s", label.c_str());
+        const bool expanded = TreeNodeEx("##node", ImGuiTreeNodeFlags_SpanLabelWidth, "%s", label.c_str());
         SameLine();
         TextDisabled("(%zu)", count(e));
         SameLine();
@@ -371,7 +371,7 @@ void physics_ui::RenderTab(entt::registry &r, entt::entity viewport) {
                 for (uint32_t li = 0; li < jd.Limits.size(); ++li) {
                     PushID(int(li));
                     const auto &limit = jd.Limits[li];
-                    const bool limit_expanded = TreeNodeEx("##node", ImGuiTreeNodeFlags_SpanTextWidth, "Limit %u", li);
+                    const bool limit_expanded = TreeNodeEx("##node", ImGuiTreeNodeFlags_SpanLabelWidth, "Limit %u", li);
                     SameLine();
                     if (SmallButton("X")) delete_limit = li;
                     if (limit_expanded) {
@@ -436,7 +436,7 @@ void physics_ui::RenderTab(entt::registry &r, entt::entity viewport) {
                 for (uint32_t di = 0; di < jd.Drives.size(); ++di) {
                     PushID(int(di + 1000));
                     const auto &drive = jd.Drives[di];
-                    const bool drive_expanded = TreeNodeEx("##node", ImGuiTreeNodeFlags_SpanTextWidth, "Drive %u", di);
+                    const bool drive_expanded = TreeNodeEx("##node", ImGuiTreeNodeFlags_SpanLabelWidth, "Drive %u", di);
                     SameLine();
                     if (SmallButton("X")) delete_drive = di;
                     if (drive_expanded) {
