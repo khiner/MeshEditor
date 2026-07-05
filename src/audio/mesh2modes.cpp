@@ -275,13 +275,11 @@ ModalModes ComputeModes(
     mode_t60s.erase(mode_t60s.begin(), mode_t60s.begin() + lowest_mode_i);
     mode_t60s.resize(n_modes);
 
-    const uint n_ex_pos = std::min(opts.ExPos.size(), size_t(num_vertices));
-    // Retain the mode shape 3-vector at each excitation position. Spectra returns M-orthonormal
-    // eigenvectors, so these are already mass-normalized (the spec's mode shapes, in kg^-1/2).
-    std::vector<std::vector<vec3>> shapes(n_ex_pos); // Mode shapes by [excitation position][mode]
-    for (size_t ex_pos = 0; ex_pos < n_ex_pos; ++ex_pos) { // For each excitation position
-        // If no `ExPos` was provided, distribute excitation positions linearly.
-        const uint ev_i = vertex_dim * (ex_pos < opts.ExPos.size() ? opts.ExPos[ex_pos] : ex_pos * num_vertices / n_ex_pos);
+    // One mode shape 3-vector per excitable vertex, so `shapes` stays the same length as `ExPos`.
+    // Spectra returns M-orthonormal eigenvectors, so these are already mass-normalized (kg^-1/2).
+    std::vector<std::vector<vec3>> shapes(opts.ExPos.size()); // Mode shapes by [excitation position][mode]
+    for (size_t ex_pos = 0; ex_pos < shapes.size(); ++ex_pos) {
+        const uint ev_i = vertex_dim * opts.ExPos[ex_pos];
         shapes[ex_pos] = std::vector<vec3>(n_modes);
         for (uint mode = 0; mode < n_modes; ++mode) {
             for (uint vi = 0; vi < vertex_dim; ++vi) shapes[ex_pos][mode][vi] = eigenvectors(ev_i + vi, mode + lowest_mode_i);

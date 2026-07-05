@@ -712,9 +712,11 @@ void DrawModalCreateForm(
         const auto material = info.Material;
         const auto &mesh = GetMesh(r, mesh_entity);
         const uint32_t num_vertices = mesh.VertexCount();
+        // Cap at the vertex count so excitation positions stay distinct (no vertex sampled twice).
+        const uint32_t ex_count = std::min(info.NumVertices, num_vertices);
         auto new_sound_vertices = info.CopySoundVertices && r.all_of<SoundVertices>(e) ?
             r.get<const SoundVertices>(e) :
-            SoundVertices{iota_view{0u, info.NumVertices} | transform([&](uint32_t i) { return i * num_vertices / info.NumVertices; }) | to<std::vector<uint32_t>>()};
+            SoundVertices{iota_view{0u, ex_count} | transform([&](uint32_t i) { return i * num_vertices / ex_count; }) | to<std::vector<uint32_t>>()};
         constexpr float ScaleFactor{2}; // Mode freq estimates for RealImpact meshes seem to be consistently about twice as high as recordings.
         const vec3 tet_scale = ScaleFactor * r.get<const WorldTransform>(e).S;
         auto tets = GenerateTets(mesh, tet_scale, {.PreserveSurface = true, .Quality = info.QualityTets});
