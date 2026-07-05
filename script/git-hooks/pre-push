@@ -1,0 +1,94 @@
+#!/bin/bash
+
+# Keeps the committed render corpus and the published site in lockstep with every push,
+# making `git push` the only publish command.
+#
+# script/Render self-restores GPU-noise-only diffs (script/VideosEquivalent), so any
+# surviving render/ diff is a real content change. Real changes are amended into HEAD and
+# pushed from inside the hook (the inner push re-runs the hook and takes the clean path),
+# then the original pre-amend push is aborted — git's rejection error for it is expected.
+# On a clean tree, outgoing render/ changes are published via the blog repo's
+# deploy_render_data.sh before the push proceeds. A publish failure aborts the push.
+#
+# RENDER_PREPUSH_INNER guards the recursion: a dirty render/ on the inner push means
+# regeneration drifted beyond the accepted noise envelope. Fail loudly.
+#
+# Install after a fresh clone: cp script/git-hooks/pre-push-dispatch .git/hooks/pre-push
+
+set -uo pipefail
+
+remote="$1"
+
+RepoRoot="$(git rev-parse --show-toplevel)"
+cd "${RepoRoot}"
+
+DeployScript="${RepoRoot}/../blog/scripts/deploy_render_data.sh"
+
+# Outgoing-ref lines: "<local_ref> <local_sha> <remote_ref> <remote_sha>".
+RefLines=()
+while IFS= read -r line; do
+    [ -n "${line}" ] && RefLines+=("${line}")
+done
+
+# Pure deletions push no commits.
+outgoing=0
+for line in "${RefLines[@]}"; do
+    read -r _ local_sha _ _ <<<"${line}"
+    [[ "${local_sha}" =~ ^0+$ ]] || outgoing=1
+done
+[ "${outgoing}" -eq 1 ] || exit 0
+
+script/Render </dev/null || { echo "pre-push: script/Render failed, aborting push" >&2; exit 1; }
+
+if [ -n "$(git status --porcelain -- render/)" ]; then
+    if [ -n "${RENDER_PREPUSH_INNER:-}" ]; then
+        echo "pre-push: render/ is still dirty after re-rendering the just-amended commit." >&2
+        echo "Regeneration is nondeterministic beyond the accepted GPU-noise envelope" >&2
+        echo "(script/VideosEquivalent). Investigate before pushing." >&2
+        exit 1
+    fi
+    branch="$(git symbolic-ref --quiet HEAD || true)"
+    read -r local_ref local_sha remote_ref _ <<<"${RefLines[0]}"
+    if [ "${#RefLines[@]}" -ne 1 ] || [ "${local_ref}" != "${branch}" ] || \
+       [ "${local_sha}" != "$(git rev-parse HEAD)" ]; then
+        echo "pre-push: render/ changed, but this isn't a simple push of the checked-out branch," >&2
+        echo "so refusing to amend. Commit the render/ changes and push again." >&2
+        exit 1
+    fi
+    if ! git diff --cached --quiet; then
+        echo "pre-push: refusing to amend render/ changes into HEAD: the index has staged changes." >&2
+        exit 1
+    fi
+    git add -A -- render/
+    git commit --amend --no-edit --quiet
+    echo "pre-push: amended render changes into HEAD ($(git rev-parse --short HEAD)), pushing it..."
+    if RENDER_PREPUSH_INNER=1 git push "${remote}" "${local_ref}:${remote_ref}"; then
+        echo "pre-push: amended commit pushed. The rejection below refers to the original,"
+        echo "pre-push: pre-amend push and is expected."
+    else
+        echo "pre-push: push of the amended commit failed" >&2
+    fi
+    exit 1
+fi
+
+# A brand-new remote ref has no diff base, so publish to be safe — the deploy rsyncs by
+# checksum, so a false positive costs a comparison pass, not a re-upload.
+publish=0
+for line in "${RefLines[@]}"; do
+    read -r _ local_sha _ remote_sha <<<"${line}"
+    [[ "${local_sha}" =~ ^0+$ ]] && continue
+    if [[ "${remote_sha}" =~ ^0+$ ]] || \
+       [ -n "$(git diff --name-only "${remote_sha}..${local_sha}" -- render/ 2>/dev/null)" ]; then
+        publish=1
+    fi
+done
+
+if [ "${publish}" -eq 1 ]; then
+    echo "pre-push: outgoing commits touch render/, publishing to karlhiner.com..."
+    "${DeployScript}" "${RepoRoot}/render" </dev/null || {
+        echo "pre-push: publish failed, aborting push to keep the site and repo in lockstep" >&2
+        exit 1
+    }
+fi
+
+exit 0
