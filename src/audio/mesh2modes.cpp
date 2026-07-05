@@ -276,23 +276,19 @@ ModalModes ComputeModes(
     mode_t60s.resize(n_modes);
 
     const uint n_ex_pos = std::min(opts.ExPos.size(), size_t(num_vertices));
-    std::vector<std::vector<float>> gains(n_ex_pos); // Mode gains by [exitation position][mode]
+    // Retain the mode shape 3-vector at each excitation position. Spectra returns M-orthonormal
+    // eigenvectors, so these are already mass-normalized (the spec's mode shapes, in kg^-1/2).
+    std::vector<std::vector<vec3>> shapes(n_ex_pos); // Mode shapes by [excitation position][mode]
     for (size_t ex_pos = 0; ex_pos < n_ex_pos; ++ex_pos) { // For each excitation position
         // If no `ExPos` was provided, distribute excitation positions linearly.
         const uint ev_i = vertex_dim * (ex_pos < opts.ExPos.size() ? opts.ExPos[ex_pos] : ex_pos * num_vertices / n_ex_pos);
-        gains[ex_pos] = std::vector<float>(n_modes);
-        float max_gain = 0;
+        shapes[ex_pos] = std::vector<vec3>(n_modes);
         for (uint mode = 0; mode < n_modes; ++mode) {
-            float gain = 0;
-            for (uint vi = 0; vi < vertex_dim; ++vi) gain += pow(eigenvectors(ev_i + vi, mode + lowest_mode_i), 2);
-
-            gains[ex_pos][mode] = sqrt(gain);
-            max_gain = std::max(max_gain, gains[ex_pos][mode]);
+            for (uint vi = 0; vi < vertex_dim; ++vi) shapes[ex_pos][mode][vi] = eigenvectors(ev_i + vi, mode + lowest_mode_i);
         }
-        for (float &gain : gains[ex_pos]) gain /= max_gain;
     }
 
-    return {std::move(mode_freqs), std::move(mode_t60s), std::move(gains), std::move(opts.ExPos), lowest_mode_freq_orig};
+    return {std::move(mode_freqs), std::move(mode_t60s), std::move(shapes), std::move(opts.ExPos), lowest_mode_freq_orig};
 }
 } // namespace
 

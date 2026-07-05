@@ -205,10 +205,10 @@ struct ModalDsp {
 // Generate DSP code from modal modes.
 std::string GenerateModalModelDsp(const ModalModes &modes, std::string_view model_name, bool freq_control) {
     const auto &freqs = modes.Freqs;
-    const auto &gains = modes.Gains;
+    const auto &shapes = modes.Shapes;
     const auto &t60s = modes.T60s;
     const auto n_modes = freqs.size();
-    const auto n_ex_pos = gains.size();
+    const auto n_ex_pos = shapes.size();
 
     std::stringstream dsp;
     dsp << model_name << "(" << (freq_control ? "freq," : "")
@@ -230,13 +230,15 @@ std::string GenerateModalModelDsp(const ModalModes &modes, std::string_view mode
     else dsp << "modeFreqsUnscaled(mode)";
     dsp << ";\n";
 
+    // Interim scalar excitation gain is the mode shape magnitude |phi|, keeping mass-normalization intact (no per-position rescaling).
+    // Direction-aware projection phi.j lands with vector excitation.
     dsp << "modesGains(p,n) = waveform{";
-    for (size_t ex_pos = 0; ex_pos < gains.size(); ++ex_pos) {
-        for (size_t mode = 0; mode < gains[ex_pos].size(); ++mode) {
-            dsp << gains[ex_pos][mode];
+    for (size_t ex_pos = 0; ex_pos < shapes.size(); ++ex_pos) {
+        for (size_t mode = 0; mode < shapes[ex_pos].size(); ++mode) {
+            dsp << glm::length(shapes[ex_pos][mode]);
             if (mode < n_modes - 1) dsp << ",";
         }
-        if (ex_pos < gains.size() - 1) dsp << ",";
+        if (ex_pos < shapes.size() - 1) dsp << ",";
     }
     dsp << "},int(p*nModes+n) : rdtable" << (freq_control ? " : select2(modeFreqs(n)<(ma.SR/2-1),0)" : "") << ";\n";
 
@@ -895,18 +897,20 @@ void DrawObjectAudioControls(
         std::optional<size_t> new_hovered_index;
         if (auto hovered = PlotModeData(modes.Freqs, "Mode frequencies", "", "Frequency (Hz)", hovered_mode_index)) new_hovered_index = hovered;
         if (auto hovered = PlotModeData(modes.T60s, "Mode T60s", "", "T60 decay time (s)", hovered_mode_index)) new_hovered_index = hovered;
-        const auto *active_gains = active_vi < modes.Gains.size() ? &modes.Gains[active_vi] : nullptr;
-        if (active_gains) {
-            if (auto hovered = PlotModeData(*active_gains, "Mode gains", "Mode index", "Gain", hovered_mode_index, 1.f)) new_hovered_index = hovered;
+        const std::vector<float> active_gains = active_vi < modes.Shapes.size() ?
+            modes.Shapes[active_vi] | transform([](const vec3 &s) { return glm::length(s); }) | to<std::vector<float>>() :
+            std::vector<float>{};
+        if (!active_gains.empty()) {
+            if (auto hovered = PlotModeData(active_gains, "Mode gains", "Mode index", "Gain", hovered_mode_index)) new_hovered_index = hovered;
         }
         if (hovered_mode_index = new_hovered_index; hovered_mode_index && *hovered_mode_index < modes.Freqs.size()) {
             const auto index = *hovered_mode_index;
             Text(
-                "Mode %lu: Freq (scaled) %.2f Hz, Freq (FEM) %.2f, T60 %.2f s, Gain %.2f dB", index,
+                "Mode %lu: Freq (scaled) %.2f Hz, Freq (FEM) %.2f, T60 %.2f s, Gain %.4f", index,
                 modes.Freqs[index],
                 modes.Freqs[index] * modes.OriginalFundamentalFreq / modes.Freqs[0],
                 modes.T60s[index],
-                active_gains && index < active_gains->size() ? (*active_gains)[index] : 0.f
+                index < active_gains.size() ? active_gains[index] : 0.f
             );
         }
     }
