@@ -35,6 +35,7 @@ using std::ranges::distance, std::ranges::iota_view, std::ranges::find, std::ran
 using std::views::transform;
 
 static constexpr std::string_view ExciteIndexParamName{"Excite index"}, GateParamName{"Gate"};
+static constexpr std::string_view ImpulseXParamName{"Impulse X"}, ImpulseYParamName{"Impulse Y"}, ImpulseZParamName{"Impulse Z"};
 static constexpr uint32_t SampleRate = 48'000; // todo respect device sample rate
 
 namespace {
@@ -212,41 +213,44 @@ std::string GenerateModalModelDsp(const ModalModes &modes, std::string_view mode
 
     std::stringstream dsp;
     dsp << model_name << "(" << (freq_control ? "freq," : "")
-        << "exPos,t60Scale) = _ <: "
+        << "exPos,t60Scale,jx,jy,jz) = _ <: "
            "par(mode,nModes,pm.modeFilter(modeFreqs(mode),modesT60s(mode),"
-           "modesGains(int(exPos),mode))) :> /(nModes)\n"
+           "modeGain(int(exPos),mode,jx,jy,jz))) :> /(nModes)\n"
         << "with{\n"
         << "nModes = " << n_modes << ";\n";
     if (n_ex_pos > 1) dsp << "nExPos = " << n_ex_pos << ";\n";
 
+    const auto csv = [&dsp](auto &&range) {
+        bool first = true;
+        for (const auto v : range) {
+            if (!first) dsp << ",";
+            dsp << v;
+            first = false;
+        }
+    };
+
     dsp << "modeFreqsUnscaled(n) = waveform{";
-    for (size_t mode = 0; mode < n_modes; ++mode) {
-        dsp << freqs[mode];
-        if (mode < n_modes - 1) dsp << ",";
-    }
+    csv(freqs);
     dsp << "},int(n) : rdtable;\n";
     dsp << "modeFreqs(mode) = ";
     if (freq_control) dsp << "freq*modeFreqsUnscaled(mode)/modeFreqsUnscaled(0)";
     else dsp << "modeFreqsUnscaled(mode)";
     dsp << ";\n";
 
-    // Interim scalar excitation gain is the mode shape magnitude |phi|, keeping mass-normalization intact (no per-position rescaling).
-    // Direction-aware projection phi.j lands with vector excitation.
-    dsp << "modesGains(p,n) = waveform{";
-    for (size_t ex_pos = 0; ex_pos < shapes.size(); ++ex_pos) {
-        for (size_t mode = 0; mode < shapes[ex_pos].size(); ++mode) {
-            dsp << glm::length(shapes[ex_pos][mode]);
-            if (mode < n_modes - 1) dsp << ",";
-        }
-        if (ex_pos < shapes.size() - 1) dsp << ",";
-    }
-    dsp << "},int(p*nModes+n) : rdtable" << (freq_control ? " : select2(modeFreqs(n)<(ma.SR/2-1),0)" : "") << ";\n";
+    // Mode gain is the impulse projected onto the mass-normalized shape (a = dot(phi, j)). One table per axis.
+    const auto emit_shape_table = [&](std::string_view name, int axis) {
+        dsp << name << "(p,n) = waveform{";
+        csv(shapes | std::views::join | transform([axis](const vec3 &s) { return s[axis]; }));
+        dsp << "},int(p*nModes+n) : rdtable;\n";
+    };
+    emit_shape_table("modesShapeX", 0);
+    emit_shape_table("modesShapeY", 1);
+    emit_shape_table("modesShapeZ", 2);
+    dsp << "modeGain(p,n,jx,jy,jz) = (modesShapeX(p,n)*jx+modesShapeY(p,n)*jy+modesShapeZ(p,n)*jz)"
+        << (freq_control ? " : select2(modeFreqs(n)<(ma.SR/2-1),0)" : "") << ";\n";
 
     dsp << "modesT60s(n) = t60Scale * (waveform{";
-    for (size_t mode = 0; mode < n_modes; ++mode) {
-        dsp << t60s[mode];
-        if (mode < n_modes - 1) dsp << ",";
-    }
+    csv(t60s);
     dsp << "},int(n) : rdtable);\n";
     dsp << "};\n";
 
@@ -266,7 +270,10 @@ ModalDsp GenerateModalDsp(std::string_view model_name, const ModalModes &modes, 
 
     constexpr std::string_view ToSAH{" : ba.sAndH(gate)"}; // add a sample and hold on the gate in serial
     const auto freq = freq_control ? std::format("{}.freq{},", model_name, ToSAH) : "";
-    const auto model_eval = std::format("{}.modalModel({}{}.exPos{},{}.t60Scale{})*{}.gain", model_name, freq, model_name, ToSAH, model_name, ToSAH, model_name);
+    const auto model_eval = std::format(
+        "{0}.modalModel({1}{0}.exPos{2},{0}.t60Scale{2},jx{2},jy{2},jz{2})*{0}.gain",
+        model_name, freq, ToSAH
+    );
     return {std::string(model_name), model_definition, model_eval};
 }
 
@@ -280,6 +287,12 @@ std::string GenerateDsp(entt::registry &r) {
     static constexpr std::string_view Hammer{"hammer(trig,hardness,size) = en.ar(att,att,trig)*no.noise : fi.lowpass(3,ctoff)\nwith{ ctoff = (1-size)*9500+500; att = (1-hardness)*0.01+0.001; }"};
     static constexpr std::string_view HammerEval = "hammer(gate,hammerHardness,hammerSize)";
     static const auto HammerDefinition = std::format("{};\n{};\n{};\n{};", HammerGate, HammerHardness, HammerSize, Hammer);
+
+    // Node-local impulse direction of the current strike, shared by all models and held on the gate.
+    static const auto ImpulseDefinition = std::format(
+        "jx = nentry(\"{}\",0,-1,1,0.0001);\njy = nentry(\"{}\",0,-1,1,0.0001);\njz = nentry(\"{}\",0,-1,1,0.0001);",
+        ImpulseXParamName, ImpulseYParamName, ImpulseZParamName
+    );
 
     const auto count = view.size();
     std::stringstream modal_definitions;
@@ -303,8 +316,8 @@ std::string GenerateDsp(entt::registry &r) {
     // Since models are in a tab group when there are multiple, the gate param needs to be one level deeper for its path to match.
     if (multiple_models) hammer = std::format("vgroup(\"\", {})", hammer);
     return std::format(
-        "import(\"stdfaust.lib\");\n\n{}\n\n{}\n\n{}\n\nprocess = {} <: {}{} :> {};\n",
-        HammerDefinition, switch_definition, modal_definitions.str(), hammer, switch_eval, models_eval.str(), mix
+        "import(\"stdfaust.lib\");\n\n{}\n\n{}\n\n{}\n\n{}\n\nprocess = {} <: {}{} :> {};\n",
+        HammerDefinition, ImpulseDefinition, switch_definition, modal_definitions.str(), hammer, switch_eval, models_eval.str(), mix
     );
 }
 
@@ -341,6 +354,20 @@ void SetVertexForce(entt::registry &r, entt::entity e, float force) {
     } else if (model == SoundVerticesModel::Modal && r.all_of<ModalModes>(e)) {
         r.ctx().get<FaustDSP>().Set(GateParamName, force);
     }
+}
+
+// Unit surface normal at a mesh vertex, the default strike impulse direction.
+vec3 StrikeImpulseDir(const Mesh &mesh, uint32_t vertex) { return glm::normalize(mesh.GetNormal(Mesh::VH{vertex})); }
+
+// Set the strike's node-local impulse direction to the excited vertex's surface normal.
+// Physics-driven contacts will supply a real contact impulse here instead.
+void SetExciteImpulse(entt::registry &r, entt::entity e, uint32_t vertex) {
+    if (!r.all_of<ModalModes>(e)) return;
+    const auto j = StrikeImpulseDir(GetMesh(r, r.get<const Instance>(e).Entity), vertex);
+    auto &dsp = r.ctx().get<FaustDSP>();
+    dsp.Set(ImpulseXParamName, j.x);
+    dsp.Set(ImpulseYParamName, j.y);
+    dsp.Set(ImpulseZParamName, j.z);
 }
 
 // Reactive change types for audio system
@@ -402,6 +429,7 @@ void RegisterAudioComponentHandlers(entt::registry &r) {
                 if (auto vi = excitable.FindVertexIndex(vf->Vertex)) {
                     r.emplace_or_replace<MeshActiveElement>(r.get<const Instance>(e).Entity, vf->Vertex);
                     SetVertex(r, e, *vi);
+                    SetExciteImpulse(r, e, vf->Vertex);
                     SetVertexForce(r, e, vf->Force);
                 }
             } else {
@@ -897,9 +925,11 @@ void DrawObjectAudioControls(
         std::optional<size_t> new_hovered_index;
         if (auto hovered = PlotModeData(modes.Freqs, "Mode frequencies", "", "Frequency (Hz)", hovered_mode_index)) new_hovered_index = hovered;
         if (auto hovered = PlotModeData(modes.T60s, "Mode T60s", "", "T60 decay time (s)", hovered_mode_index)) new_hovered_index = hovered;
-        const std::vector<float> active_gains = active_vi < modes.Shapes.size() ?
-            modes.Shapes[active_vi] | transform([](const vec3 &s) { return glm::length(s); }) | to<std::vector<float>>() :
-            std::vector<float>{};
+        const auto active_gains = [&]() -> std::vector<float> {
+            if (active_vi >= modes.Shapes.size()) return {};
+            const auto n = StrikeImpulseDir(GetMesh(r, mesh_entity), excitable->Vertices[active_vi]);
+            return modes.Shapes[active_vi] | transform([&](const vec3 &s) { return std::abs(glm::dot(s, n)); }) | to<std::vector<float>>();
+        }();
         if (!active_gains.empty()) {
             if (auto hovered = PlotModeData(active_gains, "Mode gains", "Mode index", "Gain", hovered_mode_index)) new_hovered_index = hovered;
         }
