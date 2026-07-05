@@ -356,18 +356,38 @@ void SetVertexForce(entt::registry &r, entt::entity e, float force) {
     }
 }
 
-// Unit surface normal at a mesh vertex, the default strike impulse direction.
-vec3 StrikeImpulseDir(const Mesh &mesh, uint32_t vertex) { return glm::normalize(mesh.GetNormal(Mesh::VH{vertex})); }
+// Strike impact angle relative to the surface, as a joystick position in the unit disk. Center strikes
+// along the surface normal, the rim tilts the impulse 90 degrees into the tangent plane. UI-only.
+vec2 ImpulseAngle{0, 0};
 
-// Set the strike's node-local impulse direction to the excited vertex's surface normal.
-// Physics-driven contacts will supply a real contact impulse here instead.
-void SetExciteImpulse(entt::registry &r, entt::entity e, uint32_t vertex) {
-    if (!r.all_of<ModalModes>(e)) return;
-    const auto j = StrikeImpulseDir(GetMesh(r, r.get<const Instance>(e).Entity), vertex);
-    auto &dsp = r.ctx().get<FaustDSP>();
+void SetImpulse(const FaustDSP &dsp, vec3 j) {
     dsp.Set(ImpulseXParamName, j.x);
     dsp.Set(ImpulseYParamName, j.y);
     dsp.Set(ImpulseZParamName, j.z);
+}
+
+// Unit surface normal at a mesh vertex.
+vec3 VertexNormal(const Mesh &mesh, uint32_t vertex) { return glm::normalize(mesh.GetNormal(Mesh::VH{vertex})); }
+
+// Tilt a unit normal toward the surface by a joystick position in the unit disk (center leaves it along n).
+vec3 TiltAlongNormal(vec3 n, vec2 joy) {
+    const float r = glm::length(joy);
+    if (r < 1e-6f) return n;
+    // Orthonormal tangent basis from the normal (Duff et al. 2017).
+    const float s = n.z >= 0 ? 1.f : -1.f;
+    const float a = -1.f / (s + n.z);
+    const float b = n.x * n.y * a;
+    const vec3 t{1.f + s * n.x * n.x * a, s * b, -s * n.x};
+    const vec3 bt{b, s + n.y * n.y * a, -n.y};
+    const float theta = std::min(r, 1.f) * 1.57079633f; // radius maps to [0, pi/2]
+    return std::cos(theta) * n + std::sin(theta) * (joy.x * t + joy.y * bt) / r;
+}
+
+// Point the strike impulse along the excited vertex's normal, tilted by the current impact angle.
+void SetExciteImpulse(entt::registry &r, entt::entity e, uint32_t vertex) {
+    if (!r.all_of<ModalModes>(e)) return;
+    const auto n = VertexNormal(GetMesh(r, r.get<const Instance>(e).Entity), vertex);
+    SetImpulse(r.ctx().get<FaustDSP>(), TiltAlongNormal(n, ImpulseAngle));
 }
 
 // Reactive change types for audio system
@@ -763,6 +783,29 @@ std::vector<uint32_t> GetSampleOpVertices(const entt::registry &r, entt::entity 
     if (edit_elem == Element::Vertex) return handles;
     return selection::ConvertSelectionElement(handles, *mesh, edit_elem, Element::Vertex);
 }
+
+// Circular pad returning a position in the unit disk (center = zero). Drag to set, right-click recenters.
+bool ImpulseJoystick(vec2 &pos) {
+    constexpr float radius{32.f};
+    const auto p0 = GetCursorScreenPos();
+    InvisibleButton("impulse", {radius * 2, radius * 2}, ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight);
+    const ImVec2 center{p0.x + radius, p0.y + radius};
+    bool changed = false;
+    if (IsItemActive() && IsMouseDown(ImGuiMouseButton_Left)) {
+        const auto m = GetIO().MousePos;
+        pos = {(m.x - center.x) / radius, -(m.y - center.y) / radius};
+        if (const float len = glm::length(pos); len > 1.f) pos /= len;
+        changed = true;
+    } else if (IsItemClicked(ImGuiMouseButton_Right)) {
+        pos = {0, 0};
+        changed = true;
+    }
+    auto &dl = *GetWindowDrawList();
+    dl.AddCircleFilled(center, radius, GetColorU32(ImGuiCol_FrameBg));
+    dl.AddCircle(center, radius, GetColorU32(ImGuiCol_Border));
+    dl.AddCircleFilled({center.x + pos.x * radius, center.y - pos.y * radius}, 4.f, GetColorU32(IsItemActive() ? ImGuiCol_SliderGrabActive : ImGuiCol_SliderGrab));
+    return changed;
+}
 } // namespace
 
 void DrawObjectAudioControls(
@@ -852,6 +895,13 @@ void DrawObjectAudioControls(
         if (IsItemActivated()) action::Emit(action::audio::StartExcite{active_vertex});
         else if (IsItemDeactivated()) action::Emit(action::audio::StopExcite{});
         if (!can_excite) EndDisabled();
+
+        if (model == SoundVerticesModel::Modal) {
+            TextUnformatted("Impact angle");
+            SameLine();
+            MeshEditor::HelpMarker("Strike direction relative to the surface.\nCenter hits perpendicular to the surface. Edge hits tangent to the surface.\nRight-click to recenter.");
+            ImpulseJoystick(ImpulseAngle);
+        }
     }
 
     // Sample ops + waveform (rendered when in Samples mode or when no model exists yet).
@@ -929,8 +979,8 @@ void DrawObjectAudioControls(
         if (auto hovered = PlotModeData(modes.T60s, "Mode T60s", "", "T60 decay time (s)", hovered_mode_index)) new_hovered_index = hovered;
         const auto active_gains = [&]() -> std::vector<float> {
             if (active_vi >= modes.Shapes.size()) return {};
-            const auto n = StrikeImpulseDir(GetMesh(r, mesh_entity), excitable->Vertices[active_vi]);
-            return modes.Shapes[active_vi] | transform([&](const vec3 &s) { return std::abs(glm::dot(s, n)); }) | to<std::vector<float>>();
+            const auto j = TiltAlongNormal(VertexNormal(GetMesh(r, mesh_entity), excitable->Vertices[active_vi]), ImpulseAngle);
+            return modes.Shapes[active_vi] | transform([&](const vec3 &s) { return std::abs(glm::dot(s, j)); }) | to<std::vector<float>>();
         }();
         if (!active_gains.empty()) {
             if (auto hovered = PlotModeData(active_gains, "Mode gains", "Mode index", "Gain", hovered_mode_index)) new_hovered_index = hovered;
