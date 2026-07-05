@@ -417,7 +417,9 @@ void RegisterAudioComponentHandlers(entt::registry &r) {
                     r.remove<ModalDsp>(e);
                 }
             }
-            r.ctx().get<FaustDSP>().SetCode(GenerateDsp(r));
+            auto &dsp = r.ctx().get<FaustDSP>();
+            dsp.SetCode(GenerateDsp(r));
+            if (const auto &error = dsp.GetError(); !error.empty()) std::println(stderr, "Faust DSP init failed: {}", error);
         }
     });
 }
@@ -909,9 +911,11 @@ void DrawObjectAudioControls(
         }
     }
 
-    if (CollapsingHeader("DSP parameters")) r.ctx().get<FaustDSP>().DrawParams();
-    if (CollapsingHeader("DSP graph")) r.ctx().get<FaustDSP>().DrawGraph();
-    if (Button("Print DSP code")) std::println("DSP code:\n\n{}\n", r.ctx().get<FaustDSP>().GetCode());
+    auto &faust_dsp = r.ctx().get<FaustDSP>();
+    if (const auto &error = faust_dsp.GetError(); !error.empty()) TextColored(ImVec4{0.9f, 0.4f, 0.4f, 1}, "%s", error.c_str());
+    if (CollapsingHeader("DSP parameters")) faust_dsp.DrawParams();
+    if (CollapsingHeader("DSP graph")) faust_dsp.DrawGraph();
+    if (Button("Print DSP code")) std::println("DSP code:\n\n{}\n", faust_dsp.GetCode());
 
     const bool is_recording = recording && !recording->Complete();
     if (is_recording) BeginDisabled();

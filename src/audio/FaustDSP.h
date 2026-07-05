@@ -7,6 +7,8 @@ using Sample = float;
 
 #include "render/CreateSvgResource.h"
 
+#include <expected>
+
 namespace fs = std::filesystem;
 
 class CTree;
@@ -27,6 +29,7 @@ struct FaustDSP {
         Update();
     }
     std::string_view GetCode() const { return Code; }
+    const std::string &GetError() const { return ErrorMessage; }
 
     void Compute(uint32_t n, const Sample **input, Sample **output) const;
 
@@ -39,7 +42,8 @@ struct FaustDSP {
     Sample *GetZone(std::string_view param_label) const;
 
 private:
-    void Init();
+    std::expected<void, std::string> CreateDsp();
+    std::expected<void, std::string> Init();
     void Uninit();
     void Update();
     void DestroyDsp();

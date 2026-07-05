@@ -1,6 +1,7 @@
 #include "FaustDSP.h"
 
 #include "FaustParams.h"
+#include "Paths.h"
 #include "render/SvgResource.h"
 
 #include "draw/drawschema.hh" // faust/compiler/draw/drawschema.hh
@@ -8,13 +9,11 @@
 
 namespace {
 constexpr uint32_t SampleRate = 48'000; // todo respect device sample rate
-const fs::path FaustSvgDir{"MeshEditor-svg"};
+fs::path FaustSvgDir() { return Paths::Base() / "MeshEditor-svg"; }
 } // namespace
 
 FaustDSP::FaustDSP(CreateSvgResource create_svg) : CreateSvg(std::move(create_svg)) {}
-FaustDSP::~FaustDSP() {
-    Uninit();
-}
+FaustDSP::~FaustDSP() { Uninit(); }
 
 void FaustDSP::Compute(uint32_t n, const Sample **input, Sample **output) const {
     if (Dsp) Dsp->compute(n, const_cast<Sample **>(input), output);
@@ -24,9 +23,10 @@ void FaustDSP::DrawParams() {
     if (Params) Params->Draw();
 }
 void FaustDSP::DrawGraph() {
-    if (!fs::exists(FaustSvgDir)) SaveSvg();
+    if (!Box) return;
 
-    if (const auto faust_svg_path = FaustSvgDir / SelectedSvgPath; fs::exists(faust_svg_path)) {
+    if (!fs::exists(FaustSvgDir())) SaveSvg();
+    if (const auto faust_svg_path = FaustSvgDir() / SelectedSvgPath; fs::exists(faust_svg_path)) {
         if (!FaustSvg || FaustSvg->Path != faust_svg_path) CreateSvg(FaustSvg, faust_svg_path);
         if (auto clickedLinkOpt = FaustSvg->Draw()) SelectedSvgPath = std::move(*clickedLinkOpt);
     }
@@ -45,41 +45,43 @@ Sample *FaustDSP::GetZone(std::string_view param_label) const {
     return Params ? Params->getZoneForLabel(param_label.data()) : nullptr;
 }
 
-void FaustDSP::SaveSvg() { drawSchema(Box, FaustSvgDir.c_str(), "svg"); }
+void FaustDSP::SaveSvg() { drawSchema(Box, FaustSvgDir().c_str(), "svg"); }
 
-void FaustDSP::Init() {
-    if (Code.empty()) return;
-
-    createLibContext();
-
+std::expected<void, std::string> FaustDSP::CreateDsp() {
     static constexpr std::string AppName{"MeshEditor"};
-    static const std::string LibrariesPath{std::filesystem::relative("../lib/faust/libraries")};
+    static const fs::path LibrariesPath{(Paths::Base() / "../lib/faust/libraries").lexically_normal()};
     std::vector<const char *> argv{"-I", LibrariesPath.c_str()};
     if (std::is_same_v<Sample, double>) argv.push_back("-double");
     const int argc = argv.size();
 
     static int num_inputs, num_outputs;
-    Box = DSPToBoxes(AppName, Code, argc, argv.data(), &num_inputs, &num_outputs, ErrorMessage);
+    std::string error;
+    Box = DSPToBoxes(AppName, Code, argc, argv.data(), &num_inputs, &num_outputs, error);
+    if (!Box || !error.empty()) return std::unexpected{error.empty() ? "`DSPToBoxes` did not produce a result." : error};
 
-    if (Box && ErrorMessage.empty()) {
-        static constexpr int optimize_level = -1;
-        DspFactory = createDSPFactoryFromBoxes(AppName, Box, argc, argv.data(), "", ErrorMessage, optimize_level);
-        if (DspFactory) {
-            if (ErrorMessage.empty()) {
-                Dsp = DspFactory->createDSPInstance();
-                if (!Dsp) ErrorMessage = "Successfully created Faust DSP factory, but could not create the Faust DSP instance.";
+    static constexpr int optimize_level = -1;
+    DspFactory = createDSPFactoryFromBoxes(AppName, Box, argc, argv.data(), "", error, optimize_level);
+    if (!DspFactory || !error.empty()) return std::unexpected{error.empty() ? "Could not create the Faust DSP factory." : error};
 
-                Dsp->init(SampleRate); // todo follow device sample rate
-                Params = std::make_unique<FaustParams>();
-                Dsp->buildUserInterface(Params.get());
-            } else {
-                deleteDSPFactory(DspFactory);
-                DspFactory = nullptr;
-            }
-        }
-    } else if (!Box && ErrorMessage.empty()) {
-        ErrorMessage = "`DSPToBoxes` returned no error but did not produce a result.";
+    Dsp = DspFactory->createDSPInstance();
+    if (!Dsp) return std::unexpected{"Created the Faust DSP factory, but could not create the DSP instance."};
+
+    Dsp->init(SampleRate); // todo follow device sample rate
+    Params = std::make_unique<FaustParams>();
+    Dsp->buildUserInterface(Params.get());
+    return {};
+}
+
+std::expected<void, std::string> FaustDSP::Init() {
+    if (Code.empty()) return {};
+
+    createLibContext();
+    auto result = CreateDsp();
+    if (!result) {
+        DestroyDsp();
+        Box = nullptr;
     }
+    return result;
 }
 void FaustDSP::Uninit() {
     if (Dsp || DspFactory) DestroyDsp();
@@ -89,12 +91,13 @@ void FaustDSP::Uninit() {
 
     FaustSvg.reset();
     SelectedSvgPath = RootSvgPath;
-    if (fs::exists(FaustSvgDir)) fs::remove_all(FaustSvgDir);
+    if (fs::exists(FaustSvgDir())) fs::remove_all(FaustSvgDir());
 }
 
 void FaustDSP::Update() {
     Uninit();
-    Init();
+    auto result = Init();
+    ErrorMessage = result ? "" : std::move(result).error();
 }
 
 void FaustDSP::DestroyDsp() {
