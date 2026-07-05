@@ -1,0 +1,106 @@
+#!/usr/bin/env python3
+# Exit 0 when two videos decode identically except for GPU render noise: at most MaxDiffFrames
+# frames, each with a tiny summed pixel difference. Anything beyond that exits 1. Prints
+# per-frame difference stats.
+#
+# The corpus should be byte-identical across runs, and everything we control provably is:
+# with identical inputs and bit-identical Metal command streams, Apple's driver still renders
+# an occasional pixel one LSB off on sub-pixel-thin geometry. This tolerance absorbs exactly
+# that defect and nothing else. Delete it once ~16 VirtualCity renders produce one hash.
+#
+# Usage: VideosEquivalent <a> <b>
+import subprocess
+import sys
+
+MaxDiffFrames = 2 # Observed max independently flipped frames per run.
+MaxFrameDiffSum = 4096 # Sum of |channel deltas| per frame. Observed worst case is 1142.
+
+FFMPEG = "ffmpeg"
+
+
+def frame_hashes(path):
+    """Return (dimensions, [per-frame md5]) from a single decode pass, as a completion callback."""
+    proc = subprocess.Popen(
+        [FFMPEG, "-nostdin", "-loglevel", "error", "-i", path, "-f", "framemd5", "-"],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+    )
+
+    def wait():
+        out, err = proc.communicate()
+        if proc.returncode != 0:
+            sys.exit(f"ffmpeg framemd5 failed for {path}: {err.strip()}")
+        dims, hashes = None, []
+        for line in out.splitlines():
+            if line.startswith("#dimensions 0:"):
+                dims = line.split(":")[1].strip()
+            elif line and not line.startswith("#"):
+                hashes.append(line.rsplit(",", 1)[1].strip())
+        return dims, hashes
+
+    return wait
+
+
+def decode_frames(path, indices, dims):
+    """Return {index: raw RGB24 frame bytes} from a single decode pass."""
+    select = "+".join(f"eq(n\\,{i})" for i in indices)
+    r = subprocess.run(
+        [FFMPEG, "-nostdin", "-loglevel", "error", "-i", path,
+         "-vf", f"select={select}", "-fps_mode", "passthrough", "-vframes", str(len(indices)),
+         "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
+        capture_output=True,
+    )
+    w, h = map(int, dims.split("x"))
+    frame_bytes = w * h * 3
+    if r.returncode != 0 or len(r.stdout) != frame_bytes * len(indices):
+        sys.exit(f"ffmpeg frame decode failed for {path} frames {indices}")
+    ordered = sorted(indices)
+    return {i: r.stdout[k * frame_bytes:(k + 1) * frame_bytes] for k, i in enumerate(ordered)}
+
+
+def frame_diff_sum(a, b, dims):
+    """Return the sum of absolute channel differences between two RGB24 frames."""
+    w, h = map(int, dims.split("x"))
+    row_bytes = w * 3
+    total = 0
+    for y in range(h):
+        row_a, row_b = a[y * row_bytes:(y + 1) * row_bytes], b[y * row_bytes:(y + 1) * row_bytes]
+        if row_a != row_b:
+            total += sum(abs(pa - pb) for pa, pb in zip(row_a, row_b))
+    return total
+
+
+def main():
+    if len(sys.argv) != 3:
+        sys.exit(f"usage: {sys.argv[0]} <a> <b>")
+    path_a, path_b = sys.argv[1], sys.argv[2]
+
+    wait_a, wait_b = frame_hashes(path_a), frame_hashes(path_b)
+    dims_a, hashes_a = wait_a()
+    dims_b, hashes_b = wait_b()
+    if dims_a != dims_b:
+        print(f"dimensions differ: {dims_a} vs {dims_b}")
+        return 1
+    if len(hashes_a) != len(hashes_b):
+        print(f"frame counts differ: {len(hashes_a)} vs {len(hashes_b)}")
+        return 1
+
+    differing = [i for i, (x, y) in enumerate(zip(hashes_a, hashes_b)) if x != y]
+    if len(differing) > MaxDiffFrames:
+        print(f"{len(differing)} frames differ (> {MaxDiffFrames})")
+        return 1
+    if not differing:
+        return 0
+
+    frames_a = decode_frames(path_a, differing, dims_a)
+    frames_b = decode_frames(path_b, differing, dims_a)
+    for i in differing:
+        diff_sum = frame_diff_sum(frames_a[i], frames_b[i], dims_a)
+        if diff_sum > MaxFrameDiffSum:
+            print(f"frame {i}: diff sum {diff_sum} > {MaxFrameDiffSum}")
+            return 1
+        print(f"frame {i}: diff sum {diff_sum}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
