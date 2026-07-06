@@ -143,11 +143,13 @@ public:
 
 private:
     void addUiItem(const ItemType type, const char *label, Real *zone, Real min = 0, Real max = 0, Real init = 0, Real step = 0) {
+        fFullPaths.emplace_back(buildPath(label));
+        ZoneForLabel[label] = zone;
+        if (isHidden(zone)) return;
+
         Item item{type, label, zone, min, max, init, step, fTooltip.contains(zone) ? fTooltip.at(zone).c_str() : nullptr};
         if (fLogSet.contains(zone)) item.logscale = true;
         activeGroup().items.emplace_back(std::move(item));
-        fFullPaths.emplace_back(buildPath(label));
-        ZoneForLabel[label] = zone;
     }
 
     Item &activeGroup() { return Groups.empty() ? Root : *Groups.top(); }

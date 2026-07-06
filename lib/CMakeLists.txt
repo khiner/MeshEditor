@@ -24,6 +24,7 @@ set(WEBP_BUILD_EXTRAS OFF CACHE BOOL "" FORCE)
 add_subdirectory(libwebp)
 
 set(FASTGLTF_ENABLE_KHR_PHYSICS_RIGID_BODIES ON CACHE BOOL "" FORCE)
+set(FASTGLTF_ENABLE_KHR_AUDIO_MODAL ON CACHE BOOL "" FORCE)
 set(FASTGLTF_ENABLE_INSTALL OFF CACHE BOOL "" FORCE) # We provide our own simdjson target.
 add_subdirectory(fastgltf)
 target_compile_options(fastgltf PRIVATE -w)

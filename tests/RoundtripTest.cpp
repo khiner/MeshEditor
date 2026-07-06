@@ -1,6 +1,9 @@
 #include "Path.h"
 #include "Paths.h"
 #include "ProcessEvents.h"
+#include "audio/AcousticMaterial.h"
+#include "audio/AudioTypes.h"
+#include "audio/ModalModes.h"
 #include "gltf/GltfScene.h"
 #include "gpu/PunctualLight.h"
 #include "image/ImageDecode.h"
@@ -9,6 +12,7 @@
 #include "mesh/PrimitiveType.h"
 #include "mesh/Primitives.h"
 #include "render/GpuBuffers.h"
+#include "render/Instance.h"
 #include "render/Textures.h"
 #include "scene/Entity.h"
 #include "snapshot/SaveState.h"
@@ -224,6 +228,18 @@ constexpr Exception OtherExactExceptions[]{
     {"nodes[*].extensions.KHR_lights_punctual.light", "renumbered to match the un-deduped lights table"},
 };
 
+// Check that a KHR_audio_modal model's accessor reference has the given type and count.
+// At namespace scope so `==` is the builtin comparison, not a boost::ut expression.
+bool AccessorShapeIs(simdjson::dom::element root, simdjson::dom::element model, std::string_view key, std::string_view type, uint64_t count) {
+    uint64_t idx;
+    if (model[key].get_uint64().get(idx) != simdjson::SUCCESS) return false;
+    auto acc = root["accessors"].at(idx);
+    std::string_view t;
+    uint64_t c = 0;
+    return acc["type"].get_string().get(t) == simdjson::SUCCESS && t == type &&
+        acc["count"].get_uint64().get(c) == simdjson::SUCCESS && c == count;
+}
+
 std::string NormalizePath(std::string_view path) {
     std::string out;
     out.reserve(path.size());
@@ -288,6 +304,8 @@ bool NumberEq(double a, double b) {
     const double diff = std::abs(a - b), scale = std::max({1.0, std::abs(a), std::abs(b)});
     return diff <= AbsEps || diff <= RelEps * scale;
 }
+
+bool Vec3Eq(const vec3 &a, const vec3 &b) { return NumberEq(a.x, b.x) && NumberEq(a.y, b.y) && NumberEq(a.z, b.z); }
 
 using ElType = simdjson::dom::element_type;
 
@@ -879,6 +897,170 @@ int main(int argc, const char **argv) {
 
             expect(reloaded.front().Uri.empty()) << "fallback should drop the URI";
             expect(reloaded.front().MimeType == gltf::MimeType::PNG);
+        };
+    }
+
+    // KHR_audio_modal: attach a modal model to a loaded mesh node, export, and re-import. The modes,
+    // shapes, positions, gain, and acoustic material must survive, and the emitted JSON must match the schema.
+    if (const fs::path box = SamplePath("external/glTF-Sample-Assets/Models/Box/glTF/Box.gltf"); fs::exists(box)) {
+        test("audio_modal_round_trip") = [&] {
+            SceneFixture fx{vk_resources};
+            const auto load = gltf::LoadGltf(box, load_ctx(fx.R, fx.Viewport));
+            expect(load.has_value()) << "Box load failed";
+            if (!load) return;
+
+            // Find the mesh-instance node and its mesh entity.
+            entt::entity node = entt::null, mesh_entity = entt::null;
+            for (auto e : fx.R.view<const Instance, const SourceNodeIndex>()) {
+                const auto inst_entity = fx.R.get<const Instance>(e).Entity;
+                if (fx.R.all_of<MeshHandle>(inst_entity)) {
+                    node = e;
+                    mesh_entity = inst_entity;
+                    break;
+                }
+            }
+            expect(node != entt::null) << "no mesh instance node in Box";
+            if (node == entt::null) return;
+
+            // Author a small modal model: model on the node, derivation material on the mesh.
+            ModalModes modes;
+            modes.Freqs = {110.f, 275.5f, 431.2f};
+            modes.T60s = {1.5f, 0.8f, 0.32f};
+            modes.Positions = {{0.f, 0.f, 0.f}, {0.4f, -0.2f, 0.1f}};
+            modes.Shapes = {
+                {{0.1f, 0.2f, -0.3f}, {0.02f, -0.11f, 0.4f}, {-0.05f, 0.06f, 0.07f}},
+                {{-0.2f, 0.15f, 0.25f}, {0.3f, 0.1f, -0.2f}, {0.01f, -0.02f, 0.03f}},
+            };
+            modes.OriginalFundamentalFreq = modes.Freqs.front();
+            fx.R.emplace<ModalModes>(node, modes);
+            fx.R.emplace<ModalGain>(node, ModalGain{0.6f});
+            fx.R.emplace_or_replace<AcousticMaterial>(mesh_entity, materials::acoustic::Ceramic);
+
+            const auto out_path = edit_root / "audio_modal.gltf";
+            const auto save = gltf::SaveGltf(out_path, save_ctx(fx.R, fx.Viewport));
+            expect(save.has_value()) << "save failed: " << (save ? "" : save.error());
+            if (!save) return;
+
+            // --- Schema-shape checks on the emitted JSON. ---
+            {
+                simdjson::dom::parser p;
+                simdjson::dom::element doc;
+                expect(p.load(out_path.string()).get(doc) == simdjson::SUCCESS) << "emitted json failed to parse";
+
+                bool lists_extension = false;
+                for (auto e : doc["extensionsUsed"]) {
+                    if (std::string_view{e} == "KHR_audio_modal") lists_extension = true;
+                }
+                expect(lists_extension) << "KHR_audio_modal missing from extensionsUsed";
+
+                auto ext = doc["extensions"]["KHR_audio_modal"];
+                simdjson::dom::array models_json;
+                expect(ext["models"].get_array().get(models_json) == simdjson::SUCCESS) << "models array missing";
+                expect(models_json.size() == 1u) << "expected one model";
+                simdjson::dom::array materials_json;
+                expect(ext["materials"].get_array().get(materials_json) == simdjson::SUCCESS) << "materials array missing";
+                expect(materials_json.size() == 1u) << "expected one material";
+
+                simdjson::dom::element model0;
+                expect(models_json.at(0).get(model0) == simdjson::SUCCESS) << "model[0] missing";
+                expect(AccessorShapeIs(doc, model0, "frequencies", "SCALAR", 3)) << "frequencies accessor shape";
+                expect(AccessorShapeIs(doc, model0, "decayRates", "SCALAR", 3)) << "decayRates accessor shape";
+                expect(AccessorShapeIs(doc, model0, "positions", "VEC3", 2)) << "positions accessor shape";
+                expect(AccessorShapeIs(doc, model0, "shapes", "VEC3", 6)) << "shapes accessor shape (mode-major M*P)";
+
+                // A node carries the extension referencing the model.
+                bool found_node = false;
+                for (auto n : doc["nodes"]) {
+                    uint64_t m;
+                    if (n["extensions"]["KHR_audio_modal"]["model"].get_uint64().get(m) != simdjson::SUCCESS) continue;
+                    found_node = true;
+                    expect(m == 0u) << "node model index";
+                }
+                expect(found_node) << "no node instances the modal model";
+            }
+
+            // --- Re-import and compare against the authored model. ---
+            SceneFixture fx2{vk_resources};
+            const auto reload = gltf::LoadGltf(out_path, load_ctx(fx2.R, fx2.Viewport));
+            expect(reload.has_value()) << "reload failed";
+            if (!reload) return;
+
+            entt::entity rnode = entt::null;
+            for (auto e : fx2.R.view<const ModalModes>()) {
+                rnode = e;
+                break;
+            }
+            expect(rnode != entt::null) << "no modal model after reload";
+            if (rnode == entt::null) return;
+
+            const auto &rm = fx2.R.get<const ModalModes>(rnode);
+            const auto vecs_eq = [](std::span<const float> a, std::span<const float> b) {
+                if (a.size() != b.size()) return false;
+                for (size_t i = 0; i < a.size(); ++i) {
+                    if (!NumberEq(a[i], b[i])) return false;
+                }
+                return true;
+            };
+            expect(vecs_eq(rm.Freqs, modes.Freqs)) << "frequencies diverged";
+            expect(vecs_eq(rm.T60s, modes.T60s)) << "T60s diverged";
+            expect(rm.Positions.size() == modes.Positions.size()) << "positions count diverged";
+            for (size_t i = 0; i < rm.Positions.size() && i < modes.Positions.size(); ++i) {
+                expect(Vec3Eq(rm.Positions[i], modes.Positions[i])) << "position diverged";
+            }
+            expect(rm.Shapes.size() == modes.Shapes.size()) << "shape point count diverged";
+            for (size_t p = 0; p < rm.Shapes.size() && p < modes.Shapes.size(); ++p) {
+                expect(rm.Shapes[p].size() == modes.Shapes[p].size()) << "shape mode count diverged";
+                for (size_t m = 0; m < rm.Shapes[p].size() && m < modes.Shapes[p].size(); ++m) {
+                    expect(Vec3Eq(rm.Shapes[p][m], modes.Shapes[p][m])) << "shape vector diverged";
+                }
+            }
+
+            const auto *rgain = fx2.R.try_get<const ModalGain>(rnode);
+            expect(rgain != nullptr && NumberEq(rgain->Value, 0.6f)) << "gain diverged";
+
+            const auto *rinst = fx2.R.try_get<const Instance>(rnode);
+            expect(rinst != nullptr) << "modal node lost its mesh instance";
+            const auto *rmat = rinst ? fx2.R.try_get<const AcousticMaterial>(rinst->Entity) : nullptr;
+            expect(rmat != nullptr) << "acoustic material not restored on mesh";
+            if (rmat) {
+                expect(rmat->Name == materials::acoustic::Ceramic.Name) << "material name diverged";
+                const auto &pa = rmat->Properties;
+                const auto &pb = materials::acoustic::Ceramic.Properties;
+                expect(NumberEq(pa.Density, pb.Density) && NumberEq(pa.YoungModulus, pb.YoungModulus) && NumberEq(pa.PoissonRatio, pb.PoissonRatio) && NumberEq(pa.Alpha, pb.Alpha) && NumberEq(pa.Beta, pb.Beta)) << "material properties diverged";
+            }
+
+            // Import maps sample points to mesh vertices and marks the entity modal, so it is a playable sound object.
+            expect(rm.Vertices.size() == modes.Positions.size()) << "sample points not mapped to mesh vertices";
+            expect(fx2.R.all_of<SoundVerticesModel>(rnode) && fx2.R.get<const SoundVerticesModel>(rnode) == SoundVerticesModel::Modal) << "imported model not set up as a modal sound object";
+        };
+    }
+
+    // Decode-only lock: a hand-authored KHR_audio_modal file (mesh-less node, spec-allowed) must import
+    // to the exact modal values, independent of our own encoder.
+    if (const fs::path fixture = SamplePath("tests/fixtures/KHR_audio_modal.gltf"); fs::exists(fixture)) {
+        test("audio_modal_decode_fixture") = [&] {
+            SceneFixture fx{vk_resources};
+            const auto load = gltf::LoadGltf(fixture, load_ctx(fx.R, fx.Viewport));
+            expect(load.has_value()) << "fixture load failed";
+            if (!load) return;
+
+            entt::entity node = entt::null;
+            for (auto e : fx.R.view<const ModalModes>()) {
+                node = e;
+                break;
+            }
+            expect(node != entt::null) << "fixture produced no modal model";
+            if (node == entt::null) return;
+
+            const auto &m = fx.R.get<const ModalModes>(node);
+            expect(m.Freqs.size() == 1u && NumberEq(m.Freqs[0], 220.0)) << "frequency";
+            constexpr double ExpectedT60 = 6.907755278982137 / 2.0; // ln(1000) / decayRate(2.0)
+            expect(m.T60s.size() == 1u && NumberEq(m.T60s[0], ExpectedT60)) << "T60 from decay rate";
+            expect(m.Positions.size() == 1u && Vec3Eq(m.Positions[0], {1.5f, -0.5f, 0.25f})) << "position";
+            expect(m.Shapes.size() == 1u && m.Shapes[0].size() == 1u && Vec3Eq(m.Shapes[0][0], {0.3f, 0.4f, -0.6f})) << "shape";
+
+            const auto *gain = fx.R.try_get<const ModalGain>(node);
+            expect(gain != nullptr && NumberEq(gain->Value, 0.75)) << "gain";
         };
     }
 }

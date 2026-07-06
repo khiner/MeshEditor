@@ -9,6 +9,9 @@
 #include "animation/MorphWeightState.h"
 #include "armature/Armature.h"
 #include "armature/ArmatureComponents.h"
+#include "audio/AcousticMaterial.h"
+#include "audio/AudioTypes.h"
+#include "audio/ModalModes.h"
 #include "image/ImageEncode.h"
 #include "mesh/MeshAttributes.h"
 #include "mesh/MeshComponents.h"
@@ -568,12 +571,12 @@ std::expected<void, std::string> AppendPrimitive(
         if (!morph) {
             morph.emplace();
             morph->TargetCount = target_count;
-            morph->PositionDeltas.resize(size_t(target_count) * base_vertex, vec3{0.f});
+            morph->PositionDeltas.resize(target_count * base_vertex, vec3{0.f});
         }
         if (morph->TargetCount != target_count) return std::unexpected{"glTF primitive morph target count mismatch between primitives of the same mesh."};
 
         const auto prev_pos_size = morph->PositionDeltas.size();
-        morph->PositionDeltas.resize(prev_pos_size + size_t(target_count) * prim_vertex_count, vec3{0.f});
+        morph->PositionDeltas.resize(prev_pos_size + target_count * prim_vertex_count, vec3{0.f});
         const auto any_target_has = [&](std::string_view name) {
             for (uint32_t t = 0; t < target_count; ++t) {
                 if (primitive.findTargetAttribute(t, name) != primitive.targets[t].end()) return true;
@@ -587,49 +590,49 @@ std::expected<void, std::string> AppendPrimitive(
         }
         if (prim_has_normal_deltas || !morph->NormalDeltas.empty()) {
             const auto prev_norm_size = morph->NormalDeltas.size();
-            morph->NormalDeltas.resize(prev_norm_size + size_t(target_count) * prim_vertex_count, vec3{0.f});
+            morph->NormalDeltas.resize(prev_norm_size + target_count * prim_vertex_count, vec3{0.f});
         }
         if (prim_has_tangent_deltas && morph->TangentDeltas.empty() && prev_pos_size > 0) {
             morph->TangentDeltas.resize(prev_pos_size, vec3{0.f});
         }
         if (prim_has_tangent_deltas || !morph->TangentDeltas.empty()) {
             const auto prev_tan_size = morph->TangentDeltas.size();
-            morph->TangentDeltas.resize(prev_tan_size + size_t(target_count) * prim_vertex_count, vec3{0.f});
+            morph->TangentDeltas.resize(prev_tan_size + target_count * prim_vertex_count, vec3{0.f});
         }
         for (uint32_t t = 0; t < target_count; ++t) {
             if (const auto *pos_it = primitive.findTargetAttribute(t, "POSITION"); pos_it != primitive.targets[t].end()) {
                 const auto &target_accessor = asset.accessors[pos_it->accessorIndex];
                 if (target_accessor.count == prim_vertex_count) {
-                    fastgltf::copyFromAccessor<vec3>(asset, target_accessor, &morph->PositionDeltas[prev_pos_size + size_t(t) * prim_vertex_count]);
+                    fastgltf::copyFromAccessor<vec3>(asset, target_accessor, &morph->PositionDeltas[prev_pos_size + t * prim_vertex_count]);
                 }
             }
             if (!morph->NormalDeltas.empty()) {
                 if (const auto *norm_it = primitive.findTargetAttribute(t, "NORMAL"); norm_it != primitive.targets[t].end()) {
                     const auto &norm_accessor = asset.accessors[norm_it->accessorIndex];
-                    const auto prev_norm_size = morph->NormalDeltas.size() - size_t(target_count) * prim_vertex_count;
+                    const auto prev_norm_size = morph->NormalDeltas.size() - target_count * prim_vertex_count;
                     if (norm_accessor.count == prim_vertex_count) {
-                        fastgltf::copyFromAccessor<vec3>(asset, norm_accessor, &morph->NormalDeltas[prev_norm_size + size_t(t) * prim_vertex_count]);
+                        fastgltf::copyFromAccessor<vec3>(asset, norm_accessor, &morph->NormalDeltas[prev_norm_size + t * prim_vertex_count]);
                     }
                 }
             }
             if (!morph->TangentDeltas.empty()) {
                 if (const auto *tan_it = primitive.findTargetAttribute(t, "TANGENT"); tan_it != primitive.targets[t].end()) {
                     const auto &tan_accessor = asset.accessors[tan_it->accessorIndex];
-                    const auto prev_tan_size = morph->TangentDeltas.size() - size_t(target_count) * prim_vertex_count;
+                    const auto prev_tan_size = morph->TangentDeltas.size() - target_count * prim_vertex_count;
                     if (tan_accessor.count == prim_vertex_count) {
-                        fastgltf::copyFromAccessor<vec3>(asset, tan_accessor, &morph->TangentDeltas[prev_tan_size + size_t(t) * prim_vertex_count]);
+                        fastgltf::copyFromAccessor<vec3>(asset, tan_accessor, &morph->TangentDeltas[prev_tan_size + t * prim_vertex_count]);
                     }
                 }
             }
         }
     } else if (morph) {
         const uint32_t prim_vertex_count = position_accessor.count;
-        morph->PositionDeltas.resize(morph->PositionDeltas.size() + size_t(morph->TargetCount) * prim_vertex_count, vec3{0.f});
+        morph->PositionDeltas.resize(morph->PositionDeltas.size() + morph->TargetCount * prim_vertex_count, vec3{0.f});
         if (!morph->NormalDeltas.empty()) {
-            morph->NormalDeltas.resize(morph->NormalDeltas.size() + size_t(morph->TargetCount) * prim_vertex_count, vec3{0.f});
+            morph->NormalDeltas.resize(morph->NormalDeltas.size() + morph->TargetCount * prim_vertex_count, vec3{0.f});
         }
         if (!morph->TangentDeltas.empty()) {
-            morph->TangentDeltas.resize(morph->TangentDeltas.size() + size_t(morph->TargetCount) * prim_vertex_count, vec3{0.f});
+            morph->TangentDeltas.resize(morph->TangentDeltas.size() + morph->TargetCount * prim_vertex_count, vec3{0.f});
         }
     }
 
@@ -668,7 +671,7 @@ std::expected<fastgltf::Asset, std::string> ParseAsset(const std::filesystem::pa
     auto gltf_file = fastgltf::MappedGltfFile::FromPath(path);
     if (gltf_file.error() != fastgltf::Error::None) return std::unexpected{std::format("Failed to open glTF file '{}': {}", path.string(), fastgltf::getErrorMessage(gltf_file.error()))};
 
-    static constexpr auto EnabledExtensions = fastgltf::Extensions::KHR_mesh_quantization | fastgltf::Extensions::EXT_mesh_gpu_instancing | fastgltf::Extensions::KHR_lights_punctual | fastgltf::Extensions::EXT_lights_image_based | fastgltf::Extensions::KHR_texture_transform | fastgltf::Extensions::KHR_materials_emissive_strength | fastgltf::Extensions::KHR_materials_unlit | fastgltf::Extensions::KHR_texture_basisu | fastgltf::Extensions::EXT_texture_webp | fastgltf::Extensions::KHR_materials_specular | fastgltf::Extensions::KHR_materials_sheen | fastgltf::Extensions::KHR_materials_ior | fastgltf::Extensions::KHR_materials_dispersion | fastgltf::Extensions::KHR_materials_transmission | fastgltf::Extensions::KHR_materials_diffuse_transmission | fastgltf::Extensions::KHR_materials_volume | fastgltf::Extensions::KHR_materials_clearcoat | fastgltf::Extensions::KHR_materials_anisotropy | fastgltf::Extensions::KHR_materials_iridescence | fastgltf::Extensions::KHR_materials_variants | fastgltf::Extensions::KHR_node_visibility | fastgltf::Extensions::KHR_implicit_shapes | fastgltf::Extensions::KHR_physics_rigid_bodies;
+    static constexpr auto EnabledExtensions = fastgltf::Extensions::KHR_mesh_quantization | fastgltf::Extensions::EXT_mesh_gpu_instancing | fastgltf::Extensions::KHR_lights_punctual | fastgltf::Extensions::EXT_lights_image_based | fastgltf::Extensions::KHR_texture_transform | fastgltf::Extensions::KHR_materials_emissive_strength | fastgltf::Extensions::KHR_materials_unlit | fastgltf::Extensions::KHR_texture_basisu | fastgltf::Extensions::EXT_texture_webp | fastgltf::Extensions::KHR_materials_specular | fastgltf::Extensions::KHR_materials_sheen | fastgltf::Extensions::KHR_materials_ior | fastgltf::Extensions::KHR_materials_dispersion | fastgltf::Extensions::KHR_materials_transmission | fastgltf::Extensions::KHR_materials_diffuse_transmission | fastgltf::Extensions::KHR_materials_volume | fastgltf::Extensions::KHR_materials_clearcoat | fastgltf::Extensions::KHR_materials_anisotropy | fastgltf::Extensions::KHR_materials_iridescence | fastgltf::Extensions::KHR_materials_variants | fastgltf::Extensions::KHR_node_visibility | fastgltf::Extensions::KHR_implicit_shapes | fastgltf::Extensions::KHR_physics_rigid_bodies | fastgltf::Extensions::KHR_audio_modal;
     fastgltf::Parser parser{EnabledExtensions};
     if (extras_out) {
         parser.setUserPointer(extras_out);
@@ -762,13 +765,13 @@ std::expected<uint32_t, std::string> EnsureMeshData(const fastgltf::Asset &asset
         const auto target_count = mesh_morph->TargetCount;
         const auto repack_channel = [&](std::vector<vec3> &channel) {
             if (channel.empty()) return;
-            std::vector<vec3> repacked(size_t(target_count) * total_verts, vec3{0.f});
+            std::vector<vec3> repacked(target_count * total_verts, vec3{0.f});
             uint32_t src_off{0}, dst_vert_off{0};
             for (const auto prim_verts : vertex_counts) {
                 if (prim_verts == 0) continue;
                 for (uint32_t t = 0; t < target_count; ++t) {
                     for (uint32_t v = 0; v < prim_verts; ++v) {
-                        repacked[size_t(t) * total_verts + dst_vert_off + v] = channel[src_off + size_t(t) * prim_verts + v];
+                        repacked[t * total_verts + dst_vert_off + v] = channel[src_off + t * prim_verts + v];
                     }
                 }
                 src_off += target_count * prim_verts;
@@ -1130,6 +1133,8 @@ fastgltf::CombineMode FromCombine(PhysicsCombineMode m) {
 // fastgltf's name fields are pmr::string (doesn't implicit-copy from std::string).
 using FgString = std::remove_cvref_t<decltype(fastgltf::Material::name)>;
 FgString ToFgStr(std::string_view s) { return FgString{s}; }
+
+constexpr double Ln1000 = 3 * std::numbers::ln10;
 
 // fastgltf::Optional<T> doesn't implicit-convert from std::optional<U>.
 template<typename T, typename U>
@@ -2386,6 +2391,95 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
                     entity,
                     PhysicsJoint{.ConnectedNode = nit != object_entities_by_node.end() ? nit->second : entt::null, .JointDefEntity = def_entity, .EnableCollision = jd.EnableCollision}
                 );
+            }
+        }
+    }
+
+    // KHR_audio_modal: rebuild modal models & acoustic materials and attach them to each instancing node and its mesh entity.
+    if (!asset.audioModalModels.empty()) {
+        std::vector<AcousticMaterial> acoustic_materials;
+        acoustic_materials.reserve(asset.audioModalMaterials.size());
+        for (const auto &m : asset.audioModalMaterials) {
+            acoustic_materials.emplace_back(AcousticMaterial{
+                .Name = std::string{m.name},
+                .Properties = {
+                    .Density = m.density.value_or(0.0),
+                    .YoungModulus = m.youngsModulus.value_or(0.0),
+                    .PoissonRatio = m.poissonRatio.value_or(0.0),
+                    .Alpha = m.alpha.value_or(0.0),
+                    .Beta = m.beta.value_or(0.0),
+                },
+            });
+        }
+
+        const auto read_scalars = [&](size_t accessor_index) {
+            const auto &acc = asset.accessors[accessor_index];
+            std::vector<float> out(acc.count);
+            fastgltf::copyFromAccessor<float>(asset, acc, out.data());
+            return out;
+        };
+        const auto read_vec3s = [&](size_t accessor_index) {
+            const auto &acc = asset.accessors[accessor_index];
+            std::vector<vec3> out(acc.count);
+            fastgltf::copyFromAccessor<vec3>(asset, acc, out.data());
+            return out;
+        };
+
+        std::vector<ModalModes> models;
+        models.reserve(asset.audioModalModels.size());
+        for (const auto &m : asset.audioModalModels) {
+            ModalModes modes;
+            modes.Freqs = read_scalars(m.frequencies);
+            const auto decay_rates = read_scalars(m.decayRates);
+            modes.T60s.resize(decay_rates.size());
+            for (size_t i = 0; i < decay_rates.size(); ++i) modes.T60s[i] = decay_rates[i] > 0 ? float(Ln1000 / decay_rates[i]) : 0.f;
+            modes.Positions = read_vec3s(m.positions);
+            // Shapes arrive mode-major (element m*P + i) and are stored position-major as Shapes[point][mode].
+            const auto shapes_flat = read_vec3s(m.shapes);
+            const uint32_t n_modes = modes.Freqs.size(), n_points = modes.Positions.size();
+            modes.Shapes.assign(n_points, std::vector<vec3>(n_modes));
+            for (uint32_t mode = 0; mode < n_modes; ++mode) {
+                for (uint32_t i = 0; i < n_points; ++i) modes.Shapes[i][mode] = shapes_flat[mode * n_points + i];
+            }
+            modes.OriginalFundamentalFreq = modes.Freqs.empty() ? 0.f : modes.Freqs.front();
+            models.emplace_back(std::move(modes));
+        }
+
+        for (uint32_t node_index = 0; node_index < asset.nodes.size(); ++node_index) {
+            const auto &source_node = asset.nodes[node_index];
+            if (!source_node.audioModal.has_value()) continue;
+            const auto &instance = *source_node.audioModal;
+            if (instance.model >= models.size()) continue;
+            const auto it = object_entities_by_node.find(node_index);
+            if (it == object_entities_by_node.end()) continue;
+            const auto entity = it->second;
+
+            const auto *inst = r.try_get<const Instance>(entity);
+            auto model = models[instance.model];
+            // Map each sample point to its nearest render-mesh vertex so the model stays excitable.
+            if (inst && r.all_of<MeshHandle>(inst->Entity) && !model.Positions.empty()) {
+                const auto mesh = GetMesh(r, inst->Entity);
+                model.Vertices.resize(model.Positions.size());
+                for (size_t i = 0; i < model.Positions.size(); ++i) {
+                    uint32_t nearest = 0;
+                    float nearest_d2 = -1.f;
+                    for (uint32_t v = 0; v < mesh.VertexCount(); ++v) {
+                        const auto d = model.Positions[i] - mesh.GetPosition(Mesh::VH{v});
+                        if (const float d2 = glm::dot(d, d); nearest_d2 < 0.f || d2 < nearest_d2) {
+                            nearest_d2 = d2;
+                            nearest = v;
+                        }
+                    }
+                    model.Vertices[i] = nearest;
+                }
+            }
+            // A model without sample-to-vertex mapping (e.g. a mesh-less node) stays passive data.
+            const bool excitable = !model.Vertices.empty();
+            r.emplace<ModalModes>(entity, std::move(model));
+            if (excitable) r.emplace<SoundVerticesModel>(entity, SoundVerticesModel::Modal);
+            if (instance.gain != fastgltf::num(1)) r.emplace<ModalGain>(entity, ModalGain{instance.gain});
+            if (const auto &mat_idx = asset.audioModalModels[instance.model].material; inst && mat_idx.has_value() && *mat_idx < acoustic_materials.size()) {
+                r.emplace_or_replace<AcousticMaterial>(inst->Entity, acoustic_materials[*mat_idx]);
             }
         }
     }
@@ -3770,11 +3864,11 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
                     prim_targets.reserve(target_count);
                     for (uint32_t t = 0; t < target_count; ++t) {
                         fastgltf::pmr::SmallVector<fastgltf::Attribute, 4> tattrs;
-                        const auto target_slice = mt_span.subspan(size_t(t) * total_vcount + offset, pcount);
+                        const auto target_slice = mt_span.subspan(t * total_vcount + offset, pcount);
                         tattrs.emplace_back(fastgltf::Attribute{"POSITION", AddFieldAccessor.template operator()<vec3>(target_slice, &MorphTargetVertex::PositionDelta, fastgltf::AccessorType::Vec3, fastgltf::BufferTarget::ArrayBuffer)});
                         if (has_normal_deltas) tattrs.emplace_back(fastgltf::Attribute{"NORMAL", AddFieldAccessor.template operator()<vec3>(target_slice, &MorphTargetVertex::NormalDelta, fastgltf::AccessorType::Vec3, fastgltf::BufferTarget::ArrayBuffer)});
                         if (has_tangent_deltas) {
-                            const std::span<const vec3> tan_deltas(layout.MorphTangentDeltas.data() + size_t(t) * total_vcount + offset, pcount);
+                            const std::span<const vec3> tan_deltas(layout.MorphTangentDeltas.data() + t * total_vcount + offset, pcount);
                             tattrs.emplace_back(fastgltf::Attribute{"TANGENT", AddVec3Accessor(tan_deltas, false, fastgltf::BufferTarget::ArrayBuffer)});
                         }
                         prim_targets.emplace_back(std::move(tattrs));
@@ -4067,6 +4161,8 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
     asset.nodes.reserve(total_node_count);
     bool uses_gpu_instancing = false;
     bool uses_physics_rigid_bodies = false;
+    // KHR_audio_modal acoustic materials, deduped by value across model instances.
+    std::vector<AcousticMaterial> audio_modal_materials;
     for (uint32_t ni = 0; ni < total_node_count; ++ni) {
         const auto entity = node_to_entity[ni];
 
@@ -4099,6 +4195,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
                 .instancingAttributes = {},
                 .name = {},
                 .physicsRigidBody = std::move(rb),
+                .audioModal = {},
                 .visible = true,
                 .selectable = true,
                 .hoverable = true,
@@ -4262,6 +4359,58 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             };
         }();
 
+        // KHR_audio_modal: emit the node's modal model and instance.
+        fastgltf::Optional<fastgltf::AudioModal> audio_modal;
+        if (const auto *modes = r.try_get<const ModalModes>(entity); modes && !modes->Freqs.empty()) {
+            const uint32_t n_modes = modes->Freqs.size(), n_points = modes->Positions.size();
+
+            // decayRates d = ln(1000)/T60 (T60 == 0 is the undamped sentinel, d = 0).
+            std::vector<float> decay_rates(n_modes);
+            for (uint32_t m = 0; m < n_modes; ++m) decay_rates[m] = modes->T60s[m] > 0 ? float(Ln1000 / modes->T60s[m]) : 0.f;
+
+            // shapes are mode-major on the wire: element m*P + i is mode m at sample point i.
+            std::vector<vec3> shapes(n_modes * n_points);
+            for (uint32_t m = 0; m < n_modes; ++m) {
+                for (uint32_t i = 0; i < n_points; ++i) shapes[m * n_points + i] = modes->Shapes[i][m];
+            }
+
+            fastgltf::AudioModalModel model{
+                .frequencies = AddDataAccessor(std::span<const float>(modes->Freqs), fastgltf::AccessorType::Scalar, fastgltf::ComponentType::Float),
+                .decayRates = AddDataAccessor(std::span<const float>(decay_rates), fastgltf::AccessorType::Scalar, fastgltf::ComponentType::Float),
+                .positions = AddDataAccessor(std::span<const vec3>(modes->Positions), fastgltf::AccessorType::Vec3, fastgltf::ComponentType::Float),
+                .shapes = AddDataAccessor(std::span<const vec3>(shapes), fastgltf::AccessorType::Vec3, fastgltf::ComponentType::Float),
+                .indices = {},
+                .material = {},
+                .name = ToFgStr(node_name),
+            };
+
+            // The derivation material lives on the mesh entity. Reuse an identical material already emitted.
+            if (const auto *inst = r.try_get<const Instance>(entity)) {
+                if (const auto *mat = r.try_get<const AcousticMaterial>(inst->Entity)) {
+                    auto mit = std::ranges::find_if(audio_modal_materials, [&](const AcousticMaterial &m) { return m.Name == mat->Name && m.Properties == mat->Properties; });
+                    if (mit == audio_modal_materials.end()) {
+                        model.material = asset.audioModalMaterials.size();
+                        const auto &p = mat->Properties;
+                        asset.audioModalMaterials.emplace_back(fastgltf::AudioModalMaterial{
+                            .density = p.Density,
+                            .youngsModulus = p.YoungModulus,
+                            .poissonRatio = p.PoissonRatio,
+                            .alpha = p.Alpha,
+                            .beta = p.Beta,
+                            .name = ToFgStr(mat->Name),
+                        });
+                        audio_modal_materials.emplace_back(*mat);
+                    } else {
+                        model.material = std::distance(audio_modal_materials.begin(), mit);
+                    }
+                }
+            }
+
+            const auto *gain = r.try_get<const ModalGain>(entity);
+            audio_modal = fastgltf::AudioModal{.model = asset.audioModalModels.size(), .gain = fastgltf::num(gain ? gain->Value : 1.f)};
+            asset.audioModalModels.emplace_back(std::move(model));
+        }
+
         asset.nodes.emplace_back(fastgltf::Node{
             .meshIndex = mesh_index,
             .skinIndex = skin_index,
@@ -4273,6 +4422,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             .instancingAttributes = std::move(instancing),
             .name = ToFgStr(node_name),
             .physicsRigidBody = std::move(physics_rigid_body),
+            .audioModal = audio_modal,
             .visible = [&] {
                 if (!fully_hidden[ni]) return true;
                 const auto *spi = r.try_get<const SourceParentNodeIndex>(entity);
@@ -4348,6 +4498,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         asset.extensionsUsed.emplace_back("KHR_physics_rigid_bodies");
     }
     if (!asset.shapes.empty()) asset.extensionsUsed.emplace_back("KHR_implicit_shapes");
+    if (!asset.audioModalModels.empty()) asset.extensionsUsed.emplace_back("KHR_audio_modal");
     if (!asset.imageBasedLights.empty()) asset.extensionsUsed.emplace_back("EXT_lights_image_based");
     const auto any_material = [&](auto pred) { return std::ranges::any_of(asset.materials, pred); };
     if (any_material([](const auto &m) { return m.unlit; })) asset.extensionsUsed.emplace_back("KHR_materials_unlit");

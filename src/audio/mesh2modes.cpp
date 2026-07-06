@@ -193,6 +193,7 @@ struct ComputeModesOpts {
     uint NumModes{20}; // Number of synthesized modes
     uint NumFemModes{100}; // Number of modes to be computed with Finite Element Analysis (FEA)
     std::vector<uint> ExPos{}; // Excitation positions
+    std::vector<vec3> Positions{}; // Node-local positions of each excitation position, parallel to ExPos
     AcousticMaterialProperties Material{};
 };
 
@@ -286,13 +287,20 @@ ModalModes ComputeModes(
         }
     }
 
-    return {std::move(mode_freqs), std::move(mode_t60s), std::move(shapes), std::move(opts.ExPos), lowest_mode_freq_orig};
+    return {std::move(mode_freqs), std::move(mode_t60s), std::move(shapes), std::move(opts.ExPos), std::move(opts.Positions), lowest_mode_freq_orig};
 }
 } // namespace
 
-ModalModes m2f::mesh2modes(const tetgenio &tets, const AcousticMaterialProperties &material, const std::vector<uint> &excitable_vertices, std::optional<float> fundamental_freq) {
+ModalModes m2f::mesh2modes(const tetgenio &tets, const AcousticMaterialProperties &material, const std::vector<uint> &excitable_vertices, vec3 scale, std::optional<float> fundamental_freq) {
     const auto M = GenerateMassMatrix(tets, material.Density);
     const auto K = ComputeStiffnessMatrix(tets, material);
+    // Recover node-local sample positions from the scaled tet points.
+    const dvec3 inv_scale{1.0 / scale.x, 1.0 / scale.y, 1.0 / scale.z};
+    std::vector<vec3> positions(excitable_vertices.size());
+    for (size_t i = 0; i < excitable_vertices.size(); ++i) {
+        const auto &p = reinterpret_cast<const glm::dvec3 &>(tets.pointlist[3 * excitable_vertices[i]]);
+        positions[i] = vec3{p * inv_scale};
+    }
     return ComputeModes(
         M, K, tets.numberofpoints, 3,
         {
@@ -303,6 +311,7 @@ ModalModes m2f::mesh2modes(const tetgenio &tets, const AcousticMaterialPropertie
             .NumFemModes = 80, // number of modes to be computed for the finite element analysis
             // Convert to signed ints.
             .ExPos = excitable_vertices,
+            .Positions = std::move(positions),
             .Material = std::move(material),
         }
     );

@@ -246,8 +246,9 @@ std::string GenerateModalModelDsp(const ModalModes &modes, std::string_view mode
     emit_shape_table("modesShapeX", 0);
     emit_shape_table("modesShapeY", 1);
     emit_shape_table("modesShapeZ", 2);
+    // Mute modes at or above Nyquist so they cannot alias.
     dsp << "modeGain(p,n,jx,jy,jz) = (modesShapeX(p,n)*jx+modesShapeY(p,n)*jy+modesShapeZ(p,n)*jz)"
-        << (freq_control ? " : select2(modeFreqs(n)<(ma.SR/2-1),0)" : "") << ";\n";
+        << " : select2(modeFreqs(n)<(ma.SR/2-1),0);\n";
 
     dsp << "modesT60s(n) = t60Scale * (waveform{";
     csv(t60s);
@@ -289,8 +290,9 @@ std::string GenerateDsp(entt::registry &r) {
     static const auto HammerDefinition = std::format("{};\n{};\n{};\n{};", HammerGate, HammerHardness, HammerSize, Hammer);
 
     // Node-local impulse direction of the current strike, shared by all models and held on the gate.
+    // Hidden from the parameter UI: the impact-angle joystick drives these on each strike.
     static const auto ImpulseDefinition = std::format(
-        "jx = nentry(\"{}\",0,-1,1,0.0001);\njy = nentry(\"{}\",0,-1,1,0.0001);\njz = nentry(\"{}\",0,-1,1,0.0001);",
+        "jx = nentry(\"{}[hidden:1]\",0,-1,1,0.0001);\njy = nentry(\"{}[hidden:1]\",0,-1,1,0.0001);\njz = nentry(\"{}[hidden:1]\",0,-1,1,0.0001);",
         ImpulseXParamName, ImpulseYParamName, ImpulseZParamName
     );
 
@@ -459,7 +461,7 @@ void RegisterAudioComponentHandlers(entt::registry &r) {
         auto &modal_tracker = reactive<audio_changes::ModalModes>(r);
         if (!modal_tracker.empty()) {
             for (auto e : modal_tracker) {
-                if (r.valid(e) && r.all_of<::ModalModes>(e)) {
+                if (r.valid(e) && r.all_of<::ModalModes, SoundVertices>(e)) {
                     auto name = GetName(r, e);
                     replace(name, ' ', '_');
                     r.emplace_or_replace<ModalDsp>(e, GenerateModalDsp(name, r.get<const ::ModalModes>(e), r.get<const SoundVertices>(e), true));
@@ -750,7 +752,7 @@ void DrawModalCreateForm(
         DspGenerator = std::make_unique<Worker<ModalGenerationResult>>(
             parent_window, "Generating modal audio model...",
             [tets = std::move(tets), tet_scale, material_props, sound_vertices = std::move(new_sound_vertices), fundamental]() mutable {
-                return ModalGenerationResult{m2f::mesh2modes(*tets, material_props, sound_vertices.Vertices, fundamental), BuildTetMeshData(*tets, tet_scale)};
+                return ModalGenerationResult{m2f::mesh2modes(*tets, material_props, sound_vertices.Vertices, tet_scale, fundamental), BuildTetMeshData(*tets, tet_scale)};
             }
         );
     }
