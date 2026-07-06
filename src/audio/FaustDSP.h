@@ -24,8 +24,9 @@ struct FaustDSP {
     FaustDSP(CreateSvgResource);
     ~FaustDSP();
 
-    void SetCode(std::string_view code) {
+    void SetCode(std::string_view code, uint32_t sample_rate) {
         Code = code;
+        SampleRate = sample_rate;
         Update();
     }
     std::string_view GetCode() const { return Code; }
@@ -56,6 +57,7 @@ private:
     std::unique_ptr<FaustParams> Params;
 
     std::string Code, ErrorMessage;
+    uint32_t SampleRate{48'000}; // Output rate this DSP was last compiled at.
 
     constexpr static std::string_view RootSvgPath{"process.svg"};
     fs::path SelectedSvgPath{RootSvgPath};

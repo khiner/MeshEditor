@@ -8,7 +8,6 @@
 #include "faust/dsp/llvm-dsp.h"
 
 namespace {
-constexpr uint32_t SampleRate = 48'000; // todo respect device sample rate
 fs::path FaustSvgDir() { return Paths::Base() / "MeshEditor-svg"; }
 } // namespace
 
@@ -66,7 +65,7 @@ std::expected<void, std::string> FaustDSP::CreateDsp() {
     Dsp = DspFactory->createDSPInstance();
     if (!Dsp) return std::unexpected{"Created the Faust DSP factory, but could not create the DSP instance."};
 
-    Dsp->init(SampleRate); // todo follow device sample rate
+    Dsp->init(SampleRate);
     Params = std::make_unique<FaustParams>();
     Dsp->buildUserInterface(Params.get());
     return {};

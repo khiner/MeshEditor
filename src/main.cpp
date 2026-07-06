@@ -14,7 +14,7 @@
 #include "animation/TimelineUi.h"
 #include "armature/ArmatureComponents.h"
 #include "audio/AudioDevice.h"
-#include "audio/AudioSystem.h"
+#include "audio/AudioTypes.h"
 #include "gizmo/TransformGizmoTypes.h"
 #include "image/ImageEncode.h"
 #include "mesh/Mesh.h"
@@ -728,19 +728,8 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
     r.ctx().get<FrameState>().DisplayFramebufferScale = {io.DisplayFramebufferScale.x, io.DisplayFramebufferScale.y};
     ProcessComponentEvents(r, viewport); // Prime derived state before the first frame reads it.
 
-    struct AudioContext {
-        entt::registry *R;
-        entt::entity Viewport;
-    };
-    AudioContext audio_ctx{&r, viewport};
-    AudioDevice audio_device{
-        {.Callback = [](auto buffer, void *user_data) {
-             auto &ctx = *static_cast<AudioContext *>(user_data);
-             ProcessAudio(*ctx.R, ctx.Viewport, std::move(buffer));
-         },
-         .UserData = &audio_ctx}
-    };
-    audio_device.Start();
+    auto &audio_device = r.ctx().emplace<AudioDeviceResource>(r, viewport);
+    ConfigureAudioDevice(audio_device, r.get<const AudioOutputConfig>(viewport), r.get<const AudioOutputMix>(viewport));
 
     auto driver = BeginCaptureSession(r, viewport, capture, initial_file, empty, /*fixed_step=*/false);
 
@@ -1049,7 +1038,7 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
                     EndTabItem();
                 }
                 if (BeginTabItem("Audio device")) {
-                    audio_device.RenderControls();
+                    DrawAudioDeviceControls(r, viewport);
                     EndTabItem();
                 }
                 EndTabBar();
@@ -1134,7 +1123,7 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
     FinishSessionLog(capture);
     vc->Device->waitIdle();
 
-    audio_device.Uninit();
+    r.ctx().erase<AudioDeviceResource>(); // Stops and uninitializes the output device.
     NFD_Quit();
 
     // Tear down the viewport and its ctx-resident GPU stores in order before clearing the registry,

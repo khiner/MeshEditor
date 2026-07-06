@@ -1,4 +1,5 @@
 #include "AudioSystem.h"
+#include "AudioDevice.h"
 #include "FFTData.h"
 #include "FaustDSP.h"
 #include "Reactive.h"
@@ -397,6 +398,8 @@ namespace audio_changes {
 struct VertexForce {};
 struct ModalModes {};
 struct SoundVerticesDerivation {};
+struct AudioConfig {};
+struct AudioMix {};
 } // namespace audio_changes
 } // namespace
 
@@ -407,6 +410,8 @@ void RegisterAudioComponentHandlers(entt::registry &r) {
         .on<VertexSamples>(On::Create | On::Update | On::Destroy)
         .on<::ModalModes>(On::Create | On::Update | On::Destroy)
         .on<SoundVerticesModel>(On::Create | On::Update | On::Destroy);
+    track<audio_changes::AudioConfig>(r).on<AudioOutputConfig>(On::Create | On::Update);
+    track<audio_changes::AudioMix>(r).on<AudioOutputMix>(On::Create | On::Update);
 
     RegisterComponentEventHandler(r, [](entt::registry &r) {
         // Rebuild SoundVertices from VertexSamples/ModalModes, selected by SoundVerticesModel.
@@ -458,8 +463,24 @@ void RegisterAudioComponentHandlers(entt::registry &r) {
                 SetVertexForce(r, e, 0.f);
             }
         }
+        // Reconcile the live output device: a config change re-inits (and may change the negotiated rate),
+        // a mix change just applies level/on-off.
+        bool device_rate_changed = false;
+        if (auto *res = r.ctx().find<AudioDeviceResource>()) {
+            if (auto &config_tracker = reactive<audio_changes::AudioConfig>(r); !config_tracker.empty()) {
+                const uint32_t prev_rate = res->SampleRate;
+                for (auto e : config_tracker) {
+                    if (r.valid(e) && r.all_of<AudioOutputConfig, AudioOutputMix>(e)) ConfigureAudioDevice(*res, r.get<const AudioOutputConfig>(e), r.get<const AudioOutputMix>(e));
+                }
+                device_rate_changed = res->SampleRate != prev_rate;
+            }
+            for (auto e : reactive<audio_changes::AudioMix>(r)) {
+                if (r.valid(e) && r.all_of<AudioOutputMix>(e)) ApplyAudioMix(*res, r.get<const AudioOutputMix>(e));
+            }
+        }
+
         auto &modal_tracker = reactive<audio_changes::ModalModes>(r);
-        if (!modal_tracker.empty()) {
+        if (!modal_tracker.empty() || device_rate_changed) {
             for (auto e : modal_tracker) {
                 if (r.valid(e) && r.all_of<::ModalModes, SoundVertices>(e)) {
                     auto name = GetName(r, e);
@@ -469,8 +490,10 @@ void RegisterAudioComponentHandlers(entt::registry &r) {
                     r.remove<ModalDsp>(e);
                 }
             }
+            const auto *res = r.ctx().find<AudioDeviceResource>();
+            const uint32_t sample_rate = res && res->SampleRate ? res->SampleRate : 48'000u;
             auto &dsp = r.ctx().get<FaustDSP>();
-            dsp.SetCode(GenerateDsp(r));
+            dsp.SetCode(GenerateDsp(r), sample_rate);
             if (const auto &error = dsp.GetError(); !error.empty()) std::println(stderr, "Faust DSP init failed: {}", error);
         }
     });

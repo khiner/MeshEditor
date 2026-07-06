@@ -1,174 +1,129 @@
 #include "AudioDevice.h"
 
+#include "AudioSystem.h"
+#include "action/Audio.h" // Replace<AudioOutputConfig>
+#include "action/Emit.h"
+#include "ui/FieldEdit.h"
+
 #include "imgui.h"
 #include "miniaudio.h"
 
+#include <entt/entity/registry.hpp>
+
 #include <format>
-#include <vector>
+
+template<> struct FieldLimits<&AudioOutputMix::Volume> : Within<0., 1.> {};
 
 namespace {
-void DataCallback(ma_device *device, void *output, const void *input, ma_uint32 frame_count) {
-    auto *cb = reinterpret_cast<AudioDeviceCallback *>(device->pUserData);
-    cb->Callback(AudioBuffer{device->sampleRate, device->playback.channels, frame_count, static_cast<const float *>(input), static_cast<float *>(output)}, cb->UserData);
-}
-
-enum class IO : uint8_t {
-    In,
-    Out,
-    Count,
-};
-constexpr IO AllIo[]{IO::In, IO::Out};
-constexpr auto Idx(IO io) { return uint8_t(io); }
-
-ma_context AudioContext;
+ma_context Context;
 ma_device Device;
+bool ContextInitialized = false;
 
-std::vector<ma_device_info *> DeviceInfos[Idx(IO::Count)];
-std::vector<std::string> DeviceNames[Idx(IO::Count)];
-std::vector<uint32_t> NativeSampleRates[Idx(IO::Count)];
-
-const ma_device_info *GetDeviceInfo(IO io, std::string_view device_name) {
-    for (const ma_device_info *info : DeviceInfos[Idx(io)]) {
-        if (info->name == device_name) return info;
-    }
-    return nullptr;
-}
-const ma_device_id *GetDeviceId(IO io, std::string_view device_name) {
-    const auto *device_info = GetDeviceInfo(io, device_name);
-    return device_info ? &device_info->id : nullptr;
+void DataCallback(ma_device *device, void *output, const void *input, ma_uint32 frame_count) {
+    auto &res = *reinterpret_cast<AudioDeviceResource *>(device->pUserData);
+    ProcessAudio(*res.R, res.Viewport, AudioBuffer{device->sampleRate, device->playback.channels, frame_count, static_cast<const float *>(input), static_cast<float *>(output)});
 }
 
-std::string GetSampleRateName(IO io, const uint32_t sample_rate) {
-    const auto &rates = NativeSampleRates[Idx(io)];
+std::string SampleRateName(const AudioDeviceResource &res, uint32_t sample_rate) {
+    const auto &rates = res.NativeSampleRates;
     const bool is_native = std::find(rates.begin(), rates.end(), sample_rate) != rates.end();
     return std::format("{}{}", sample_rate, is_native ? "*" : "");
 }
 } // namespace
 
-AudioDevice::AudioDevice(AudioDeviceCallback data_callback) : Callback(std::move(data_callback)) {
-    Init();
-}
-AudioDevice::~AudioDevice() {
-    Uninit();
-}
-
-void AudioDevice::Init() {
-    if (ma_context_init(nullptr, 0, nullptr, &AudioContext) != MA_SUCCESS) throw std::runtime_error(std::format("Failed to initialize audio context."));
-    static uint32_t PlaybackDeviceCount, CaptureDeviceCount;
-    static ma_device_info *PlaybackDeviceInfos, *CaptureDeviceInfos;
-    if (ma_context_get_devices(&AudioContext, &PlaybackDeviceInfos, &PlaybackDeviceCount, &CaptureDeviceInfos, &CaptureDeviceCount)) {
-        throw std::runtime_error("Failed to get audio devices.");
+AudioDeviceResource::AudioDeviceResource(entt::registry &r, entt::entity viewport) : R(&r), Viewport(viewport) {}
+AudioDeviceResource::~AudioDeviceResource() {
+    if (Initialized) ma_device_uninit(&Device);
+    if (ContextInitialized) {
+        ma_context_uninit(&Context);
+        ContextInitialized = false;
     }
-    for (auto io : AllIo) {
-        DeviceInfos[Idx(io)].clear();
-        DeviceNames[Idx(io)].clear();
-        NativeSampleRates[Idx(io)].clear();
-    }
-    for (uint32_t i = 0; i < CaptureDeviceCount; ++i) {
-        DeviceInfos[Idx(IO::In)].emplace_back(&CaptureDeviceInfos[i]);
-        DeviceNames[Idx(IO::In)].emplace_back(CaptureDeviceInfos[i].name);
-    }
-    for (uint32_t i = 0; i < PlaybackDeviceCount; ++i) {
-        DeviceInfos[Idx(IO::Out)].emplace_back(&PlaybackDeviceInfos[i]);
-        DeviceNames[Idx(IO::Out)].emplace_back(PlaybackDeviceInfos[i].name);
-    }
-
-    ma_device_config config = ma_device_config_init(ma_device_type_playback);
-    config.playback.pDeviceID = GetDeviceId(IO::Out, OutDeviceName);
-    config.playback.format = ma_format_f32;
-    config.playback.channels = 1;
-    config.sampleRate = SampleRate;
-    config.dataCallback = DataCallback;
-    config.pUserData = &Callback;
-
-    if (ma_device_init(nullptr, &config, &Device) != MA_SUCCESS) {
-        throw std::runtime_error("Failed to open audio output device.");
-    }
-
-    // `ma_context_get_devices` doesn't return native sample rates, so we need to get the device info for the specific device.
-    ma_device_info out_device_info;
-    if (ma_context_get_device_info(&AudioContext, ma_device_type_playback, config.playback.pDeviceID, &out_device_info) != MA_SUCCESS) {
-        throw std::runtime_error("Failed to get audio output device info.");
-    }
-    for (uint32_t i = 0; i < out_device_info.nativeDataFormatCount; ++i) {
-        const auto &native_format = out_device_info.nativeDataFormats[i];
-        NativeSampleRates[Idx(IO::Out)].emplace_back(native_format.sampleRate);
-    }
-
-    OutDeviceName = out_device_info.name;
-    SampleRate = Device.sampleRate;
 }
 
-void AudioDevice::Start() {
-    if (!ma_device_is_started(&Device) && ma_device_start(&Device) != MA_SUCCESS) {
+void ConfigureAudioDevice(AudioDeviceResource &res, const AudioOutputConfig &config, const AudioOutputMix &mix) {
+    if (!ContextInitialized) {
+        if (ma_context_init(nullptr, 0, nullptr, &Context) != MA_SUCCESS) throw std::runtime_error("Failed to initialize audio context.");
+        ContextInitialized = true;
+    }
+    if (res.Initialized) {
         ma_device_uninit(&Device);
-        throw std::runtime_error("Failed to start audio output device.");
+        res.Initialized = false;
     }
-    On = true;
+
+    ma_device_info *playback_infos, *capture_infos;
+    ma_uint32 playback_count, capture_count;
+    if (ma_context_get_devices(&Context, &playback_infos, &playback_count, &capture_infos, &capture_count) != MA_SUCCESS) throw std::runtime_error("Failed to get audio devices.");
+    res.OutDeviceNames.clear();
+    const ma_device_id *device_id = nullptr;
+    for (ma_uint32 i = 0; i < playback_count; ++i) {
+        res.OutDeviceNames.emplace_back(playback_infos[i].name);
+        if (config.DeviceName == playback_infos[i].name) device_id = &playback_infos[i].id;
+    }
+
+    ma_device_config device_config = ma_device_config_init(ma_device_type_playback);
+    device_config.playback.pDeviceID = device_id;
+    device_config.playback.format = ma_format_f32;
+    device_config.playback.channels = 1;
+    device_config.sampleRate = config.SampleRate; // 0 = device default
+    device_config.coreaudio.allowNominalSampleRateChange = MA_TRUE; // Drive the OS device rate instead of resampling.
+    device_config.dataCallback = DataCallback;
+    device_config.pUserData = &res;
+    if (ma_device_init(nullptr, &device_config, &Device) != MA_SUCCESS) throw std::runtime_error("Failed to open audio output device.");
+    res.Initialized = true;
+
+    // `ma_context_get_devices` omits native rates, so query the picked device for its format list.
+    res.NativeSampleRates.clear();
+    if (ma_device_info info; ma_context_get_device_info(&Context, ma_device_type_playback, device_id, &info) == MA_SUCCESS) {
+        for (ma_uint32 i = 0; i < info.nativeDataFormatCount; ++i) res.NativeSampleRates.emplace_back(info.nativeDataFormats[i].sampleRate);
+    }
+    res.SampleRate = Device.sampleRate;
+
+    ApplyAudioMix(res, mix);
 }
 
-void AudioDevice::Stop() {
-    On = false;
-    if (!ma_device_is_started(&Device)) return;
-
-    if (ma_device_stop(&Device) != MA_SUCCESS) {
-        ma_device_uninit(&Device);
+void ApplyAudioMix(AudioDeviceResource &res, const AudioOutputMix &mix) {
+    if (!res.Initialized) return;
+    ma_device_set_master_volume(&Device, mix.Muted ? 0.f : mix.Volume);
+    if (const bool started = ma_device_is_started(&Device); mix.On && !started) {
+        if (ma_device_start(&Device) != MA_SUCCESS) throw std::runtime_error("Failed to start audio output device.");
+    } else if (!mix.On && started) {
+        ma_device_stop(&Device);
     }
 }
 
-void AudioDevice::Uninit() {
-    Stop();
-    ma_device_uninit(&Device);
-}
+void DrawAudioDeviceControls(entt::registry &r, entt::entity viewport) {
+    using namespace ImGui;
+    const auto &config = r.get<const AudioOutputConfig>(viewport);
+    const auto &mix = r.get<const AudioOutputMix>(viewport);
+    const auto &res = r.ctx().get<const AudioDeviceResource>();
+    ui::Edit f{r, viewport};
 
-void AudioDevice::OnVolumeChange() const { ma_device_set_master_volume(&Device, Muted ? 0 : Volume); }
-
-void AudioDevice::Restart() {
-    const bool was_on = On;
-    Uninit();
-    Init();
-    if (was_on) Start();
-}
-
-using namespace ImGui;
-
-void AudioDevice::RenderControls() {
-    if (Checkbox("On", &On)) {
-        if (On) Start();
-        else Stop();
-    }
-    if (!On) {
+    f.Check<&AudioOutputMix::On>("On");
+    if (!mix.On) {
         TextUnformatted("Audio device: Not started");
         return;
     }
 
-    if (BeginCombo("Output device", OutDeviceName.c_str())) {
-        for (const auto &option : DeviceNames[Idx(IO::Out)]) {
-            const bool is_selected = option == OutDeviceName;
-            if (Selectable(option.c_str(), is_selected) && !is_selected) {
-                OutDeviceName = option;
-                SampleRate = 0; // Use the default sample rate when changing devices.
-                Restart();
-            }
+    if (BeginCombo("Output device", config.DeviceName.empty() ? "System default" : config.DeviceName.c_str())) {
+        for (const auto &name : res.OutDeviceNames) {
+            const bool is_selected = name == config.DeviceName;
+            if (Selectable(name.c_str(), is_selected) && !is_selected) action::Emit(action::Replace<AudioOutputConfig>{.Entity = viewport, .Value = {.DeviceName = name, .SampleRate = 0}});
             if (is_selected) SetItemDefaultFocus();
         }
         EndCombo();
     }
-    if (BeginCombo("Sample rate", GetSampleRateName(IO::Out, SampleRate).c_str())) {
-        for (const uint32_t option : NativeSampleRates[Idx(IO::Out)]) {
-            const bool is_selected = option == SampleRate;
-            if (Selectable(GetSampleRateName(IO::Out, option).c_str(), is_selected) && !is_selected) {
-                SampleRate = option;
-                Restart();
-            }
+    if (BeginCombo("Sample rate", SampleRateName(res, res.SampleRate).c_str())) {
+        for (const uint32_t option : res.NativeSampleRates) {
+            const bool is_selected = option == res.SampleRate;
+            if (Selectable(SampleRateName(res, option).c_str(), is_selected) && !is_selected) f.Set<&AudioOutputConfig::SampleRate>(option);
             if (is_selected) SetItemDefaultFocus();
         }
         EndCombo();
     }
 
-    if (Checkbox("Muted", &Muted)) OnVolumeChange();
+    f.Check<&AudioOutputMix::Muted>("Muted");
     SameLine();
-    if (Muted) BeginDisabled();
-    if (SliderFloat("Volume", &Volume, 0, 1, nullptr)) OnVolumeChange();
-    if (Muted) EndDisabled();
+    if (mix.Muted) BeginDisabled();
+    f.Slider<&AudioOutputMix::Volume>("Volume");
+    if (mix.Muted) EndDisabled();
 }

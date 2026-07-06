@@ -2,6 +2,23 @@
 
 #include "AcousticMaterial.h"
 
+#include <cstdint>
+#include <string>
+
+// Persistent audio output device selection. `SampleRate` is the desired rate (0 = device default).
+// Changing either re-initializes the device.
+struct AudioOutputConfig {
+    std::string DeviceName;
+    uint32_t SampleRate{0};
+};
+
+// Persistent audio output level. Changing these applies without re-initializing the device.
+struct AudioOutputMix {
+    bool On{true};
+    bool Muted{false};
+    float Volume{1.f};
+};
+
 enum class SoundVerticesModel {
     // Play back recordings of impacts on the object at provided listener points/vertices.
     Samples,

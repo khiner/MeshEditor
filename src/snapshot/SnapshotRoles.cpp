@@ -13,6 +13,7 @@
 #include "armature/ArmatureComponents.h"
 #include "armature/ArmatureSerialize.h"
 #include "armature/BoneConstraint.h"
+#include "audio/AudioTypes.h"
 #include "gizmo/GizmoInteraction.h"
 #include "gltf/GltfScene.h"
 #include "mesh/Mesh.h"
@@ -117,7 +118,7 @@ using Persistent = type_list<
     ScaleLocked, Instance, Hidden, SceneNode, ParentInverse, MeshHandle, VertexStoreId, ObjectExtrasTag,
     SmoothShading, MeshConnectivity,
     MeshMaterialAssignment, MeshMaterialSlotSelection, MaterialVariants, MaterializedTextures, PbrMeshFeatures,
-    PrimitiveShape, Path, Camera, ViewCamera, LookingThrough, Interaction, EditMode, OrbitToActive,
+    PrimitiveShape, Path, Camera, ViewCamera, LookingThrough, Interaction, EditMode, OrbitToActive, AudioOutputConfig, AudioOutputMix,
     SelectionXRay, ViewportDisplay, MaterialPreviewLighting, RenderedLighting, StudioEnvironment, TransformGizmoState,
     TimelineRange, TimelinePlayback, AnimationTimelineView,
     PhysicsSimulationSettings, PhysicsMaterial, CollisionSystem, CollisionFilter, PhysicsJointDef, PhysicsMotion,
@@ -146,7 +147,7 @@ using Derived = type_list<
 // (ViewCamera/LookingThrough have the same problem but are already serialized through their CustomEmplace above.)
 using ForceSerialize = type_list<
     Camera, PrimitiveShape, ColliderShape, PhysicsMotion, // variant / optional
-    ViewportDisplay, MaterialPreviewLighting, RenderedLighting, TransformGizmoState, // padding
+    ViewportDisplay, MaterialPreviewLighting, RenderedLighting, TransformGizmoState, AudioOutputMix, // padding
     TimelinePlayback, PhysicsJoint, BoneSubPartOf>; // padding
 
 // Derived components that are memcmp-unsafe (variant/optional/padding), compared field-wise instead of by memcmp.
