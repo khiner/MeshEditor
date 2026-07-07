@@ -82,15 +82,25 @@ Companion reference for the spec in `extensions/2.0/Khronos/KHR_audio_modal/`. N
 
 ## Excitation semantics: impulse + position
 
-**Decision.** An excitation is (j in N·s, p, t₀), both expressed node-locally: p by the full inverse global transform, j rotated only (physical magnitude preserved). Sustained contacts are impulse sequences, optionally low-pass-shaped.
+**Decision.** An excitation is (j in N·s, p, t₀), both expressed node-locally: p by the full inverse global transform, j rotated only (physical magnitude preserved). Sustained contacts are impulse sequences, optionally shaped by the contact-force spectrum.
 
 **Why.** Impulse + position is exactly the currency of `KHR_physics_rigid_bodies`' `rigid_body/applyPointImpulse` interactivity node — the one place the physics spec exposes "how hard and where." The physics spec deliberately does not standardize contact-event plumbing, so this spec matches: it defines what an excitation *is*, and leaves how the runtime obtains one out of scope (using the physics spec's own out-of-scope phrasing style). j is rotated but not scaled into local space because impulses are physical quantities; geometry scale effects are carried by the shape-rescaling rules instead. Contact-duration shaping is SHOULD-level and lightweight (Hertz τ derivation is possible from the material but deliberately not required — WaveBlender's version needs curvature and effective mass, far too heavy to mandate).
+
+**Spectrum, not attenuation.** Scaling aₙ by F̂(fₙ) is the physical mechanism: a force of duration τ carries little spectral energy above roughly 1/(2τ), so high modes are never driven rather than filtered after the fact. Driving a resonator with the sampled pulse produces F̂(fₙ) with no filter to tune. An output low-pass reaches a similar result more coarsely, with a hand-tuned cutoff unrelated to contact mechanics.
+
+**Temporal only.** A point impulse captures contact duration alone (the rolloff near 1/(2τ)). The finite contact *patch* (spatial averaging of φₙ, low-passing high spatial modes) and higher damping in soft materials (already in d) are out of scope, the former needing a contact radius the model does not carry.
 
 ## Synthesis: normative relative levels, free implementation
 
 **Decision.** The normative output is the superposition Σ aₙ e^(−dₙt) sin(2πfₙt) with relative amplitudes across modes/excitations/instances normative and absolute level implementation-defined; any resonator with matching impulse response is admissible.
 
 **Why.** This pins down what cross-implementation consistency actually requires (the *balance* of the sound) without dictating architecture — biquad banks (MeshEditor/Faust), complex one-pole updates, frequency-domain synthesis, and full wave solvers all qualify. Absolute level is the audio analog of exposure in rendering: platform/mixing territory. Sine phase is specified for definiteness but phase is perceptually irrelevant; the literature uses the same form.
+
+## Acceleration noise in scope, mass properties self-contained
+
+**Decision.** Rigid-body acceleration noise (the contact "click") is a SHOULD-level render feature driven by the same excitation as the modes, radiated omnidirectionally. Mass, center of mass, and inertia live in an optional `massProperties` block mirroring `KHR_physics_rigid_bodies`. When absent they MAY come from that physics extension or from watertight geometry plus ρ, with the model's own values authoritative.
+
+**Why.** It is not a modal-core limitation but a cheap peer mechanism on the same impulse, and the primary sound for small stiff bodies whose modes are ultrasonic (which the old exclusion left silent). Its analytic form (Δv = j/M, Δω = I⁻¹(r×j), half-sine acceleration, dipole ∝ ρ₀V·a) needs no precomputed radiation data. Mass properties stay self-contained because an extension owns its data: a sibling as the primary source would drop the audio when physics is absent, and the model wins conflicts because acoustic mass and gameplay physics mass legitimately differ. Omnidirectional render matches the approximation the modal core already makes, directivity deferred like FFAT.
 
 ## Nyquist culling is a MUST
 
@@ -118,7 +128,7 @@ Everything excluded *composes with* the modal core rather than replacing it:
 - **Propagation/spatialization/listeners** — `KHR_audio_graph`/`KHR_audio_emitter`/platform territory; this extension only produces a monophonic source at the node.
 - **Contact-event plumbing** — matches KHR_physics_rigid_bodies' own scoping.
 - **Scrape/roll excitation synthesis** (surface profiles, fractal noise, speed-scaled filters) — a Phya-style *surface* descriptor is a coherent future sibling; the spec's impulse-sequence + low-pass language keeps the seam open.
-- **Nonlinear/thin-shell coupling, fracture, acceleration noise, sample hybrids** — known limitations of linear modal synthesis, documented as validity bounds (Authoring Notes) rather than half-specified features.
+- **Nonlinear/thin-shell coupling, fracture, sample hybrids** — known limitations of linear modal synthesis, documented as validity bounds (Authoring Notes) rather than half-specified features.
 - **Analysis itself** — authoring-time; appendix documents the standard pipeline informatively.
 
 **Anti-pattern deliberately avoided.** MPEG-4 Structured Audio standardized a programmable synthesis language and saw zero adoption; every surviving system in the survey ships declarative data with fixed resonator-bank semantics. This spec is strictly the latter.
@@ -127,8 +137,8 @@ Everything excluded *composes with* the modal core rather than replacing it:
 
 - Extension is purely additive: `extensionsUsed` only; assets SHOULD NOT list it in `extensionsRequired`.
 - Required per model: `frequencies`, `decayRates`, `positions`, `shapes`. Required per node object: `model`.
-- Optional: `indices` (fallback: nearest-point), `material` (fallback: no rescaling/re-derivation/contact-duration estimation), `gain` (default 1.0), `name`.
-- Renderer latitude: mode-subset rendering MAY, barycentric interpolation SHOULD, uniform-scale adjustment SHOULD, duration shaping SHOULD; aliasing prohibition and linear superposition and per-instance state MUST.
+- Optional: `indices` (fallback: nearest-point), `material` (fallback: no rescaling/re-derivation/contact-duration estimation), `massProperties` (fallback: physics extension or watertight geometry + ρ), `gain` (default 1.0), `name`.
+- Renderer latitude: mode-subset rendering MAY, barycentric interpolation SHOULD, uniform-scale adjustment SHOULD, duration shaping SHOULD, acceleration noise SHOULD; aliasing prohibition and linear superposition and per-instance state MUST.
 
 ## Deferred / future work
 

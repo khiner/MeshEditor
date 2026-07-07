@@ -28,11 +28,13 @@ Written against the glTF 2.0 spec.
   - [Modes](#modes)
   - [Sample Points](#sample-points)
   - [Accessor Requirements](#accessor-requirements)
+  - [Mass Properties](#mass-properties)
 - [Acoustic Materials](#acoustic-materials)
 - [Attaching Models to Nodes](#attaching-models-to-nodes)
 - [Audio Rendering](#audio-rendering)
   - [Excitation](#excitation)
   - [Synthesis](#synthesis)
+  - [Acceleration Noise](#acceleration-noise)
 - [Node Transforms and Scale](#node-transforms-and-scale)
 - [Interaction with Other Extensions](#interaction-with-other-extensions)
 - [Scope and Exclusions](#scope-and-exclusions)
@@ -113,6 +115,7 @@ Each modal model has the following properties:
 | **shapes** | `integer` | Accessor of per-mode, per-sample-point displacement vectors. | :white_check_mark: Yes |
 | **indices** | `integer` | Accessor of triangle indices into the sample points, defining an interpolation surface. | No |
 | **material** | `integer` | The index of the acoustic material the model was derived from. | No |
+| **massProperties** | `object` | The object's mass, center of mass, and inertia, used for [acceleration noise](#acceleration-noise) and mass-based scaling. | No |
 
 ### Modes
 
@@ -141,6 +144,19 @@ With *M* modes and *P* sample points:
 | `indices` | `"SCALAR"` | `5125` (UNSIGNED_INT) or `5123` (UNSIGNED_SHORT) | multiple of 3 |
 
 *M* and *P* MUST each be at least 1. `shapes` is mode-major: element *m*·*P* + *i* is the shape of mode *m* at sample point *i*. Rendering only the first *N* modes therefore reads a prefix of each accessor. `indices` values MUST be less than *P*. All accessor values MUST be finite (no `NaN` or infinity).
+
+### Mass Properties
+
+`massProperties` records the object's rigid-body mass distribution, at the model's reference size ([Node Transforms and Scale](#node-transforms-and-scale)). It is optional, and is consumed by [acceleration noise](#acceleration-noise) and by mass-based adjustments. Its fields mirror `KHR_physics_rigid_bodies`' rigid-body motion so values are interchangeable.
+
+| | Type | Description | Required |
+|-|-|-|-|
+| **mass** | `number` | Mass in kg. | :white_check_mark: Yes |
+| **centerOfMass** | `number[3]` | Center of mass in the node's local space. Default `[0,0,0]`. | No |
+| **inertiaDiagonal** | `number[3]` | Principal moments of inertia, in kg·m². Default `[0,0,0]` (a point mass). | No |
+| **inertiaOrientation** | `number[4]` | Unit quaternion rotating the principal inertia axes into local space. Default `[0,0,0,1]`. | No |
+
+When a model omits `massProperties`, an implementation MAY obtain the same quantities from `KHR_physics_rigid_bodies`' rigid-body properties, or compute them from the node's mesh and ρ when the material specifies ρ and the mesh is watertight.
 
 ## Acoustic Materials
 
@@ -190,7 +206,7 @@ The excitation amplitude of mode *n* is the projection of the impulse onto the m
 
 *a*ₙ = **φ**ₙ(**p**) · **j**
 
-Sustained or non-instantaneous contacts MAY be rendered as a sequence of impulses. Implementations SHOULD attenuate the high-frequency content of excitations from soft or slow contacts (e.g. by low-pass filtering the impulse train, or scaling *a*ₙ by the spectrum of a finite-duration force pulse at *f*ₙ).
+A contact applies force over a finite duration τ, the Hertz contact time, longer for softer and heavier contacts. Each mode is excited by that force's spectrum at its frequency, so implementations SHOULD scale each *a*ₙ by *F̂*(*f*ₙ), the force-pulse spectrum normalized to *F̂*(0) = 1. A half-sine pulse of duration τ is the recommended default: *F̂* is near unity well below 1/(2τ), reaches −3 dB near 1/(2τ), and about −10 dB at 1/τ, so a mode well above 1/τ is barely excited. A resonator bank MAY realize this by driving each mode with the sampled pulse in place of an ideal impulse, which produces the same per-mode scaling without a separate filtering step. Sustained contacts MAY be rendered as a sequence of such excitations.
 
 ### Synthesis
 
@@ -206,6 +222,18 @@ where *g* is the instance `gain` and *a*ₙₖ is the excitation amplitude of mo
 - Implementations MAY render only a subset of modes (e.g. the first *N*, or a psychoacoustically culled set) to meet performance constraints.
 
 Model parameters are continuous-time. Synthesis at any output sample rate MUST NOT change pitch or decay.
+
+### Acceleration Noise
+
+Besides ringing its modes, a struck body recoils as a whole: the contact accelerates its rigid-body degrees of freedom, radiating a short broadband transient (the contact "click"). It is distinct from the modal response and is the dominant sound for small, stiff bodies whose modes lie above the audible range. Implementations SHOULD render it when the object's [mass properties](#mass-properties) are available.
+
+The same excitation (impulse **j** at position **p**, contact time τ) drives it. With mass *M*, center of mass **c**, and inertia **I** (all in the node's local space), the contact imparts a linear and angular velocity change
+
+Δ**v** = **j** / *M*,  Δ**ω** = **I**⁻¹ ((**p** − **c**) × **j**)
+
+delivered over the contact through the same finite force pulse used for the excitation (∫ **F** d*t* = **j**), so the body's rigid acceleration follows that pulse's shape. The radiated transient is proportional to this acceleration and to the body's displaced volume, and is broadband up to ≈1/τ, so shorter contacts click brighter. Implementations SHOULD superpose it on the modal output as a monophonic source at the node origin ([Synthesis](#synthesis)).
+
+Its relative shape and scaling with contact strength are normative. Its absolute level, like the modal output's, is implementation-defined. The transient radiates as a dipole, so it is directional. Rendering it omnidirectionally is the same approximation this specification already makes for modal radiation, and accurate directional acceleration-noise radiation is out of scope ([Scope and Exclusions](#scope-and-exclusions)).
 
 ## Node Transforms and Scale
 
@@ -229,12 +257,12 @@ An acoustic material is distinct from a physics material (friction, restitution)
 
 The following are deliberately out of scope. Each composes *with* the modal core rather than replacing it, and may be layered by future extensions:
 
-- **Acoustic radiation transfer** (listener-position-dependent, per-mode amplitude fields, e.g. FFAT maps or multipole expansions). Without it, a model radiates omnidirectionally.
+- **Acoustic radiation transfer** (listener-position-dependent, per-mode amplitude fields, e.g. FFAT maps or multipole expansions). Without it, a model radiates omnidirectionally, including [acceleration noise](#acceleration-noise) directivity.
 - **Sound propagation and spatialization**: distance attenuation, occlusion, reverberation, and listener modeling belong to audio-emitter and platform layers.
 - **Contact-event plumbing**: how a physics engine reports impulses to the audio system is application logic.
 - **Sustained-contact excitation synthesis**: surface roughness profiles and scrape/roll force models. This extension defines only how a given excitation drives the modes.
 - **Nonlinear vibration**: mode coupling in thin shells (cymbals, sheet metal), fracture, and contact-dependent damping.
-- **Rigid-body acceleration noise** and recorded-sample hybrids for objects whose modes are above audible range.
+- **Recorded-sample hybrids**: mixing recorded impact audio with the synthesized modes for detail beyond linear modal synthesis.
 - **Modal analysis itself**: meshing, FEM, and eigensolves happen at authoring time ([Appendix A](#appendix-a-deriving-modal-data)).
 
 ## Authoring Notes
@@ -268,12 +296,14 @@ Modal model and acoustic material data are static and not addressable.
 
 ## References
 
+- K. L. Johnson. *Contact Mechanics.* Cambridge University Press, 1985.
 - K. van den Doel, D. K. Pai. *The Sounds of Physical Shapes.* Presence 7(4), 1998.
 - K. van den Doel, P. G. Kry, D. K. Pai. *FoleyAutomatic: Physically-based Sound Effects for Interactive Simulation and Animation.* SIGGRAPH 2001.
 - J. F. O'Brien, C. Shen, C. M. Gatchalian. *Synthesizing Sounds from Rigid-Body Simulations.* SCA 2002.
 - D. L. James, J. Barbič, D. K. Pai. *Precomputed Acoustic Transfer: Output-sensitive, Accurate Sound Generation for Geometrically Complex Vibration Sources.* SIGGRAPH 2006.
 - C. Zheng, D. L. James. *Rigid-Body Fracture Sound with Precomputed Soundbanks.* SIGGRAPH 2010.
 - C. Zheng, D. L. James. *Toward High-Quality Modal Contact Sound.* SIGGRAPH 2011.
+- J. N. Chadwick, C. Zheng, D. L. James. *Precomputed Acceleration Noise for Improved Rigid-Body Sound.* SIGGRAPH 2012.
 - T. R. Langlois, S. S. An, K. K. Jin, D. L. James. *Eigenmode Compression for Modal Sound Models.* SIGGRAPH 2014.
 - J.-H. Wang, D. L. James. *KleinPAT: Optimal Mode Conflation for Time-Domain Precomputation of Acoustic Transfer.* SIGGRAPH 2019.
 - S. Clarke et al. *RealImpact: A Dataset of Impact Sound Fields for Real Objects.* CVPR 2023.

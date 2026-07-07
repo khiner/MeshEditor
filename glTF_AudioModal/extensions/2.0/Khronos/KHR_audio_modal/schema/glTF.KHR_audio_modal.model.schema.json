@@ -30,6 +30,44 @@
             "allOf": [ { "$ref": "glTFid.schema.json" } ],
             "description": "The index of the acoustic material this model was derived from."
         },
+        "massProperties": {
+            "type": "object",
+            "description": "The object's rigid-body mass distribution at the model's reference size, used for acceleration noise and mass-based scaling. Fields mirror KHR_physics_rigid_bodies' rigid-body motion.",
+            "properties": {
+                "mass": {
+                    "type": "number",
+                    "description": "Mass in kg.",
+                    "exclusiveMinimum": 0
+                },
+                "centerOfMass": {
+                    "type": "array",
+                    "description": "Center of mass in the node's local space.",
+                    "items": { "type": "number" },
+                    "minItems": 3,
+                    "maxItems": 3,
+                    "default": [ 0, 0, 0 ]
+                },
+                "inertiaDiagonal": {
+                    "type": "array",
+                    "description": "Principal moments of inertia, in kg*m^2.",
+                    "items": { "type": "number", "minimum": 0 },
+                    "minItems": 3,
+                    "maxItems": 3,
+                    "default": [ 0, 0, 0 ]
+                },
+                "inertiaOrientation": {
+                    "type": "array",
+                    "description": "Unit quaternion (x, y, z, w) rotating the principal inertia axes into local space.",
+                    "items": { "type": "number" },
+                    "minItems": 4,
+                    "maxItems": 4,
+                    "default": [ 0, 0, 0, 1 ]
+                },
+                "extensions": { },
+                "extras": { }
+            },
+            "required": [ "mass" ]
+        },
         "name": { },
         "extensions": { },
         "extras": { }
