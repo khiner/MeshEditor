@@ -2456,6 +2456,7 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
 
             const auto *inst = r.try_get<const Instance>(entity);
             auto model = models[instance.model];
+            model.BakedScale = ToTransform(traversal.WorldTransforms[node_index]).S;
             // Map each sample point to its nearest render-mesh vertex so the model stays excitable.
             if (inst && r.all_of<MeshHandle>(inst->Entity) && !model.Positions.empty()) {
                 const auto mesh = GetMesh(r, inst->Entity);

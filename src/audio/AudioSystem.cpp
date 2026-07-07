@@ -204,79 +204,93 @@ struct ModalDsp {
     std::string Name, Definition, Eval;
 };
 
-// Generate DSP code from modal modes.
-std::string GenerateModalModelDsp(const ModalModes &modes, std::string_view model_name, bool freq_control) {
+// `scale` (runtime param) is the uniform scale relative to the baked size: frequencies shift by 1/scale.
+// When `alpha` (Rayleigh damping) is known, decay rates are also rescaled.
+std::string GenerateModalModelDsp(const ModalModes &modes, std::string_view model_name, std::optional<double> alpha) {
     const auto &freqs = modes.Freqs;
     const auto &shapes = modes.Shapes;
     const auto &t60s = modes.T60s;
     const auto n_modes = freqs.size();
-    const auto n_ex_pos = shapes.size();
 
     std::stringstream dsp;
-    dsp << model_name << "(" << (freq_control ? "freq," : "")
-        << "exPos,t60Scale,jx,jy,jz) = _ <: "
-           "par(mode,nModes,pm.modeFilter(modeFreqs(mode),modesT60s(mode),"
-           "modeGain(int(exPos),mode,jx,jy,jz))) :> /(nModes)\n"
+    dsp << model_name << "(scale,freq,exPos,t60Scale,jx,jy,jz) = _ <: "
+                         "par(mode,nModes,pm.modeFilter(modeFreqs(mode),modesT60s(mode),"
+                         "modeGain(int(exPos),mode,jx,jy,jz))) :> /(nModes)\n"
         << "with{\n"
         << "nModes = " << n_modes << ";\n";
-    if (n_ex_pos > 1) dsp << "nExPos = " << n_ex_pos << ";\n";
 
-    const auto csv = [&dsp](auto &&range) {
+    const auto emit_table = [&](std::string_view head, std::string_view index, auto &&range) {
+        dsp << head << " = waveform{";
         bool first = true;
         for (const auto v : range) {
             if (!first) dsp << ",";
             dsp << v;
             first = false;
         }
+        dsp << "}," << index << " : rdtable;\n";
     };
 
-    dsp << "modeFreqsUnscaled(n) = waveform{";
-    csv(freqs);
-    dsp << "},int(n) : rdtable;\n";
-    dsp << "modeFreqs(mode) = ";
-    if (freq_control) dsp << "freq*modeFreqsUnscaled(mode)/modeFreqsUnscaled(0)";
-    else dsp << "modeFreqsUnscaled(mode)";
-    dsp << ";\n";
+    emit_table("modeFreqsUnscaled(n)", "int(n)", freqs);
+    // Retune factor freq/modeFreqsUnscaled(0) times size factor 1/scale, applied to the damped frequency.
+    // Scaling the damped frequency approximates rescaling the undamped omega to within order (d/omega)^2.
+    dsp << "modeFreqs(mode) = (freq/modeFreqsUnscaled(0)/scale)*modeFreqsUnscaled(mode);\n";
 
     // Mode gain is the impulse projected onto the mass-normalized shape (a = dot(phi, j)). One table per axis.
-    const auto emit_shape_table = [&](std::string_view name, int axis) {
-        dsp << name << "(p,n) = waveform{";
-        csv(shapes | std::views::join | transform([axis](const vec3 &s) { return s[axis]; }));
-        dsp << "},int(p*nModes+n) : rdtable;\n";
-    };
-    emit_shape_table("modesShapeX", 0);
-    emit_shape_table("modesShapeY", 1);
-    emit_shape_table("modesShapeZ", 2);
+    for (int axis = 0; axis < 3; ++axis) {
+        emit_table(std::format("modesShape{}(p,n)", "XYZ"[axis]), "int(p*nModes+n)", shapes | std::views::join | transform([axis](const vec3 &s) { return s[axis]; }));
+    }
     // Mute modes at or above Nyquist so they cannot alias.
     dsp << "modeGain(p,n,jx,jy,jz) = (modesShapeX(p,n)*jx+modesShapeY(p,n)*jy+modesShapeZ(p,n)*jz)"
         << " : select2(modeFreqs(n)<(ma.SR/2-1),0);\n";
 
-    dsp << "modesT60s(n) = t60Scale * (waveform{";
-    csv(t60s);
-    dsp << "},int(n) : rdtable);\n";
+    emit_table("modeT60sUnscaled(n)", "int(n)", t60s);
+    if (alpha) {
+        // Uniform scaling sends omega -> omega/scale, so d = (alpha + beta*omega^2)/2 becomes
+        // d' = alpha/2 + (d - alpha/2)/scale^2, then T60 = ln(1000)/d'. (T60 == 0 is the undamped sentinel.)
+        const std::string ln1000 = std::format("{:.10g}", std::log(1000.0));
+        const std::string half_alpha = std::format("{:.10g}", *alpha / 2);
+        dsp << std::format(
+            "modesT60s(n) = t60Scale * select2(modeT60sUnscaled(n)>0, 0, {0}/max(1e-9, {1} + ({0}/max(1e-9,modeT60sUnscaled(n)) - {1})/(scale*scale)));\n",
+            ln1000, half_alpha
+        );
+    } else {
+        dsp << "modesT60s(n) = t60Scale * modeT60sUnscaled(n);\n";
+    }
     dsp << "};\n";
 
     return dsp.str();
 }
 
-// Note: Frequency control is not physically accurate as it doesn't scale mode dampings.
-ModalDsp GenerateModalDsp(std::string_view model_name, const ModalModes &modes, const SoundVertices &sound_vertices, bool freq_control) {
+std::string ScaleParamLabel(entt::entity e) { return std::format("scale_{}", entt::to_integral(e)); }
+
+ModalDsp GenerateModalDsp(const entt::registry &r, entt::entity e) {
+    auto model_name = GetName(r, e);
+    replace(model_name, ' ', '_');
+    const auto &modes = r.get<const ModalModes>(e);
+    const auto &sound_vertices = r.get<const SoundVertices>(e);
+    // Rayleigh alpha (on the mesh entity) lets `scale` rescale decay rates, not just pitch.
+    std::optional<double> alpha;
+    if (const auto *inst = r.try_get<const Instance>(e)) {
+        if (const auto *mat = r.try_get<const AcousticMaterial>(inst->Entity)) alpha = mat->Properties.Alpha;
+    }
+
     const float fundamental_freq = modes.Freqs.front();
     static constexpr std::string_view ModelGain{"gain = hslider(\"Gain[scale:log]\",0.2,0,0.5,0.01)"};
     static constexpr std::string_view ModelT60Scale{"t60Scale = hslider(\"t60[scale:log][tooltip: Scale T60 decay values of all modes by the same amount.]\",1,0.1,10,0.01)"};
     const auto model_freq = std::format("freq = hslider(\"Frequency[scale:log][tooltip: Fundamental frequency of the model]\",{},50,16000,1)", fundamental_freq);
     const uint32_t num_excitable = sound_vertices.Vertices.size();
     const auto model_ex_pos = std::format("exPos = nentry(\"{}\",{},0,{},1)", ExciteIndexParamName, (num_excitable - 1) / 2, num_excitable - 1);
-    const auto model = GenerateModalModelDsp(modes, "modalModel", freq_control);
-    const auto model_definition = std::format("{} = environment {{\n{}\n{};\n{};\n{};\n{};\n}};", model_name, model, ModelGain, model_freq, model_ex_pos, ModelT60Scale);
-
-    constexpr std::string_view ToSAH{" : ba.sAndH(gate)"}; // add a sample and hold on the gate in serial
-    const auto freq = freq_control ? std::format("{}.freq{},", model_name, ToSAH) : "";
-    const auto model_eval = std::format(
-        "{0}.modalModel({1}{0}.exPos{2},{0}.t60Scale{2},jx{2},jy{2},jz{2})*{0}.gain",
-        model_name, freq, ToSAH
-    );
-    return {std::string(model_name), model_definition, model_eval};
+    const auto model_scale = std::format("scale = nentry(\"{}[hidden:1]\",1,0.001,1000,0.0001)", ScaleParamLabel(e));
+    const auto model = GenerateModalModelDsp(modes, "modalModel", alpha);
+    // The eval's scale^(-3/2) is the mass-normalization amplitude law: mass grows as scale^3, so a larger object rings quieter per impulse.
+    return {
+        model_name,
+        std::format("{} = environment {{\n{}\n{};\n{};\n{};\n{};\n{};\n}};", model_name, model, ModelGain, model_freq, model_ex_pos, ModelT60Scale, model_scale),
+        std::format(
+            "{0}.modalModel({0}.scale,{0}.freq{1},{0}.exPos{1},{0}.t60Scale{1},jx{1},jy{1},jz{1})*{0}.gain*(({0}.scale)^(-1.5))",
+            std::move(model_name), " : ba.sAndH(gate)"
+        )
+    };
 }
 
 std::string GenerateDsp(entt::registry &r) {
@@ -393,6 +407,30 @@ void SetExciteImpulse(entt::registry &r, entt::entity e, uint32_t vertex) {
     SetImpulse(r.ctx().get<FaustDSP>(), TiltAlongNormal(n, ImpulseAngle));
 }
 
+// Push the model's scale relative to its baked size.
+// Nonuniform scale is treated as uniform at the mean axes size.
+// (Not physically correct but recomputing modes isn't feasible.)
+void SetModalScale(const entt::registry &r, entt::entity e) {
+    const auto *modes = r.try_get<const ModalModes>(e);
+    const auto *world = r.try_get<const WorldTransform>(e);
+    if (!modes || !world) return;
+
+    // Reduce a (possibly non-uniform or mirrored) scale to a positive scalar size.
+    const auto size = [](vec3 s) { const auto a = glm::abs(s); return (a.x + a.y + a.z) / 3.f; };
+    if (const float baked = size(modes->BakedScale); baked > 0) {
+        r.ctx().get<FaustDSP>().Set(ScaleParamLabel(e), std::clamp(size(world->S) / baked, 0.001f, 1000.f));
+    }
+}
+
+// Survives the frame-end clear, so the audio handler picks up world-transform changes made after it already ran, on the following frame.
+struct ModalScaleTracker {
+    entt::storage_for_t<entt::reactive> Storage;
+    void Bind(entt::registry &r) {
+        Storage.bind(r);
+        Storage.on_update<WorldTransform>();
+    }
+};
+
 // Reactive change types for audio system
 namespace audio_changes {
 struct VertexForce {};
@@ -406,6 +444,7 @@ struct AudioMix {};
 void RegisterAudioComponentHandlers(entt::registry &r) {
     track<audio_changes::VertexForce>(r).on<::VertexForce>(On::Create | On::Destroy);
     track<audio_changes::ModalModes>(r).on<::ModalModes>(On::Create | On::Destroy);
+    r.ctx().emplace<ModalScaleTracker>().Bind(r);
     track<audio_changes::SoundVerticesDerivation>(r)
         .on<VertexSamples>(On::Create | On::Update | On::Destroy)
         .on<::ModalModes>(On::Create | On::Update | On::Destroy)
@@ -480,22 +519,26 @@ void RegisterAudioComponentHandlers(entt::registry &r) {
         }
 
         auto &modal_tracker = reactive<audio_changes::ModalModes>(r);
-        if (!modal_tracker.empty() || device_rate_changed) {
+        const bool recompiled = !modal_tracker.empty() || device_rate_changed;
+        if (recompiled) {
             for (auto e : modal_tracker) {
-                if (r.valid(e) && r.all_of<::ModalModes, SoundVertices>(e)) {
-                    auto name = GetName(r, e);
-                    replace(name, ' ', '_');
-                    r.emplace_or_replace<ModalDsp>(e, GenerateModalDsp(name, r.get<const ::ModalModes>(e), r.get<const SoundVertices>(e), true));
-                } else if (r.valid(e)) {
-                    r.remove<ModalDsp>(e);
-                }
+                if (r.valid(e) && r.all_of<::ModalModes, SoundVertices>(e)) r.emplace_or_replace<ModalDsp>(e, GenerateModalDsp(r, e));
+                else if (r.valid(e)) r.remove<ModalDsp>(e);
             }
             const auto *res = r.ctx().find<AudioDeviceResource>();
             const uint32_t sample_rate = res && res->SampleRate ? res->SampleRate : 48'000u;
             auto &dsp = r.ctx().get<FaustDSP>();
             dsp.SetCode(GenerateDsp(r), sample_rate);
             if (const auto &error = dsp.GetError(); !error.empty()) std::println(stderr, "Faust DSP init failed: {}", error);
+            // Recompiling resets all param zones, so re-push every model's scale factor.
+            for (auto e : r.view<const ModalDsp>()) SetModalScale(r, e);
         }
+        // Retune models whose node was rescaled.
+        auto &scale_tracker = r.ctx().get<ModalScaleTracker>();
+        for (auto e : scale_tracker.Storage) {
+            if (r.valid(e) && r.all_of<ModalModes, ModalDsp>(e)) SetModalScale(r, e);
+        }
+        scale_tracker.Storage.clear();
     });
 }
 
@@ -763,7 +806,8 @@ void DrawModalCreateForm(
             r.get<const SoundVertices>(e) :
             SoundVertices{iota_view{0u, ex_count} | transform([&](uint32_t i) { return i * num_vertices / ex_count; }) | to<std::vector<uint32_t>>()};
         constexpr float ScaleFactor{2}; // Mode freq estimates for RealImpact meshes seem to be consistently about twice as high as recordings.
-        const vec3 tet_scale = ScaleFactor * r.get<const WorldTransform>(e).S;
+        const vec3 node_scale = r.get<const WorldTransform>(e).S;
+        const vec3 tet_scale = ScaleFactor * node_scale;
         auto tets = GenerateTets(mesh, tet_scale, {.PreserveSurface = true, .Quality = info.QualityTets});
         std::optional<float> fundamental;
         if (const auto path = ActiveSamplePath(r, e)) {
@@ -774,8 +818,10 @@ void DrawModalCreateForm(
         action::Emit(action::audio::SubmitModalForm{});
         DspGenerator = std::make_unique<Worker<ModalGenerationResult>>(
             parent_window, "Generating modal audio model...",
-            [tets = std::move(tets), tet_scale, material_props, sound_vertices = std::move(new_sound_vertices), fundamental]() mutable {
-                return ModalGenerationResult{m2f::mesh2modes(*tets, material_props, sound_vertices.Vertices, tet_scale, fundamental), BuildTetMeshData(*tets, tet_scale)};
+            [tets = std::move(tets), tet_scale, node_scale, material_props, sound_vertices = std::move(new_sound_vertices), fundamental]() mutable {
+                auto modes = m2f::mesh2modes(*tets, material_props, sound_vertices.Vertices, tet_scale, fundamental);
+                modes.BakedScale = node_scale;
+                return ModalGenerationResult{std::move(modes), BuildTetMeshData(*tets, tet_scale)};
             }
         );
     }
@@ -853,7 +899,6 @@ void DrawObjectAudioControls(
                 r.ctx().get<FaustDSP>().Set(ExciteIndexParamName, excite_idx);
                 // Intentional registry write outside of Apply: the background solver kicked off by
                 // SubmitModalForm has finished, so its result is applied directly here, not as its own action.
-                if (!r.all_of<ScaleLocked>(e)) r.emplace<ScaleLocked>(e);
                 r.emplace_or_replace<ModalModes>(e, std::move(result->Modes));
                 r.emplace_or_replace<TetMeshData>(mesh_entity, std::move(result->Tets));
                 SetModel(r, e, SoundVerticesModel::Modal);
