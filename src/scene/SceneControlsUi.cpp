@@ -10,6 +10,7 @@
 #include "animation/AnimationData.h"
 #include "armature/Armature.h"
 #include "armature/ArmatureComponents.h"
+#include "audio/AudioDevice.h"
 #include "audio/AudioSystem.h"
 #include "gizmo/GizmoInteraction.h"
 #include "gizmo/TransformGizmo.h"
@@ -1064,6 +1065,14 @@ void RenderControls(entt::registry &r, entt::entity viewport) {
 
         if (BeginTabItem("Physics")) {
             physics_ui::RenderTab(r, viewport);
+            EndTabItem();
+        }
+
+        if (BeginTabItem("Audio")) {
+            if (CollapsingHeader("Device", ImGuiTreeNodeFlags_DefaultOpen)) DrawAudioDeviceControls(r, viewport);
+            if (!r.view<const SoundVerticesModel>().empty() && CollapsingHeader("Striker", ImGuiTreeNodeFlags_DefaultOpen)) {
+                DrawStrikerControls(r, viewport);
+            }
             EndTabItem();
         }
 

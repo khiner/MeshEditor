@@ -10,7 +10,9 @@
 #include "armature/Armature.h"
 #include "armature/ArmatureComponents.h"
 #include "audio/AcousticMaterial.h"
+#include "audio/AudioSystem.h"
 #include "audio/AudioTypes.h"
+#include "audio/ContactModel.h"
 #include "audio/ModalModes.h"
 #include "image/ImageEncode.h"
 #include "mesh/MeshAttributes.h"
@@ -2477,6 +2479,30 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
             // A model without sample-to-vertex mapping (e.g. a mesh-less node) stays passive data.
             const bool excitable = !model.Vertices.empty();
             r.emplace<ModalModes>(entity, std::move(model));
+            if (const auto &mp = asset.audioModalModels[instance.model].massProperties; mp.has_value()) {
+                const auto &q = mp->inertiaOrientation;
+                r.emplace<MassProperties>(
+                    entity,
+                    MassProperties{
+                        .Mass = mp->mass,
+                        .CenterOfMass = ToVec3(mp->centerOfMass),
+                        .InertiaDiagonal = ToVec3(mp->inertiaDiagonal),
+                        .InertiaOrientation = glm::quat(q[3], q[0], q[1], q[2]),
+                    }
+                );
+            } else if (const auto *motion = r.try_get<const PhysicsMotion>(entity); motion && motion->Mass) {
+                // A model without its own mass properties falls back to the node's KHR_physics_rigid_bodies motion.
+                r.emplace<MassProperties>(
+                    entity,
+                    MassProperties{
+                        .Mass = *motion->Mass,
+                        .CenterOfMass = motion->CenterOfMass.value_or(vec3{0}),
+                        .InertiaDiagonal = motion->InertiaDiagonal.value_or(vec3{0}),
+                        .InertiaOrientation = motion->InertiaOrientation.value_or(quat{1, 0, 0, 0}),
+                    }
+                );
+            }
+            UpdateContactDynamics(r, entity);
             if (excitable) r.emplace<SoundVerticesModel>(entity, SoundVerticesModel::Modal);
             if (instance.gain != fastgltf::num(1)) r.emplace<ModalGain>(entity, ModalGain{instance.gain});
             if (const auto &mat_idx = asset.audioModalModels[instance.model].material; inst && mat_idx.has_value() && *mat_idx < acoustic_materials.size()) {
@@ -4382,8 +4408,18 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
                 .shapes = AddDataAccessor(std::span<const vec3>(shapes), fastgltf::AccessorType::Vec3, fastgltf::ComponentType::Float),
                 .indices = {},
                 .material = {},
+                .massProperties = {},
                 .name = ToFgStr(node_name),
             };
+            if (const auto *mp = r.try_get<const MassProperties>(entity)) {
+                const auto &q = mp->InertiaOrientation;
+                model.massProperties = fastgltf::AudioModalMassProperties{
+                    .mass = fastgltf::num(mp->Mass),
+                    .centerOfMass = {mp->CenterOfMass.x, mp->CenterOfMass.y, mp->CenterOfMass.z},
+                    .inertiaDiagonal = {mp->InertiaDiagonal.x, mp->InertiaDiagonal.y, mp->InertiaDiagonal.z},
+                    .inertiaOrientation = {q.x, q.y, q.z, q.w},
+                };
+            }
 
             // The derivation material lives on the mesh entity. Reuse an identical material already emitted.
             if (const auto *inst = r.try_get<const Instance>(entity)) {

@@ -14,6 +14,7 @@
 #include "armature/ArmatureSerialize.h"
 #include "armature/BoneConstraint.h"
 #include "audio/AudioTypes.h"
+#include "audio/ContactModel.h"
 #include "gizmo/GizmoInteraction.h"
 #include "gltf/GltfScene.h"
 #include "mesh/Mesh.h"
@@ -118,7 +119,7 @@ using Persistent = type_list<
     ScaleLocked, Instance, Hidden, SceneNode, ParentInverse, MeshHandle, VertexStoreId, ObjectExtrasTag,
     SmoothShading, MeshConnectivity,
     MeshMaterialAssignment, MeshMaterialSlotSelection, MaterialVariants, MaterializedTextures, PbrMeshFeatures,
-    PrimitiveShape, Path, Camera, ViewCamera, LookingThrough, Interaction, EditMode, OrbitToActive, AudioOutputConfig, AudioOutputMix,
+    PrimitiveShape, Path, Camera, ViewCamera, LookingThrough, Interaction, EditMode, OrbitToActive, AudioOutputConfig, AudioOutputMix, Striker,
     SelectionXRay, ViewportDisplay, MaterialPreviewLighting, RenderedLighting, StudioEnvironment, TransformGizmoState,
     TimelineRange, TimelinePlayback, AnimationTimelineView,
     PhysicsSimulationSettings, PhysicsMaterial, CollisionSystem, CollisionFilter, PhysicsJointDef, PhysicsMotion,

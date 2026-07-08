@@ -18,6 +18,8 @@ add_executable(MeshEditorTests
     ${CMAKE_SOURCE_DIR}/src/TransformMath.cpp
     ${CMAKE_SOURCE_DIR}/src/mesh/Mesh.cpp
     ${CMAKE_SOURCE_DIR}/src/mesh/MeshStore.cpp
+    ${CMAKE_SOURCE_DIR}/src/audio/ContactModel.cpp
+    ${CMAKE_SOURCE_DIR}/src/audio/ContactDynamics.cpp
     ${CMAKE_SOURCE_DIR}/src/snapshot/SceneSnapshot.cpp
     ${CMAKE_SOURCE_DIR}/src/snapshot/SaveState.cpp
     ${CMAKE_SOURCE_DIR}/src/snapshot/SnapshotRoles.cpp
@@ -90,3 +92,13 @@ target_include_directories(MeshEditorActionSerializeTest PRIVATE
 target_link_libraries(MeshEditorActionSerializeTest PRIVATE Boost::ut)
 target_compile_definitions(MeshEditorActionSerializeTest PRIVATE GLM_ENABLE_EXPERIMENTAL DEBUG_BUILD)
 target_compile_options(MeshEditorActionSerializeTest PRIVATE -Wall -Wextra -Wno-missing-field-initializers -Wno-elaborated-enum-base -fno-rtti)
+
+# Standalone: the Hertz contact-time math is pure (no GPU/registry/mesh), so it needs only ContactModel.cpp.
+add_executable(MeshEditorContactModelTest ContactModelTest.cpp ${CMAKE_SOURCE_DIR}/src/audio/ContactModel.cpp)
+target_include_directories(MeshEditorContactModelTest PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    SYSTEM ${CMAKE_SOURCE_DIR}/lib/glm
+)
+target_link_libraries(MeshEditorContactModelTest PRIVATE Boost::ut)
+target_compile_definitions(MeshEditorContactModelTest PRIVATE GLM_ENABLE_EXPERIMENTAL DEBUG_BUILD)
+target_compile_options(MeshEditorContactModelTest PRIVATE -Wall -Wextra -Wno-missing-field-initializers -Wno-elaborated-enum-base -fno-rtti)

@@ -3,6 +3,7 @@
 #include "Variant.h"
 #include "action/Core.h"
 #include "audio/AudioTypes.h"
+#include "audio/ContactModel.h"
 #include "audio/ModalModes.h"
 #include "audio/RealImpactComponents.h"
 #include "mesh/TetMeshData.h"
@@ -62,7 +63,7 @@ using Actions = std::variant<
     AssignVertexSamples, RemoveVertexSamples, ActivateRealImpactMicrophone, SetModalFormMaterial,
     ApplyExciteImpact, ClearExciteImpacts>;
 
-using Action = MergedVariantT<Actions, Replace<RealImpactActiveMicrophone>, Replace<AudioOutputConfig>, Replace<AudioOutputMix>>;
+using Action = MergedVariantT<Actions, Replace<RealImpactActiveMicrophone>, Replace<AudioOutputConfig>, Replace<AudioOutputMix>, Replace<Striker>>;
 
 void Apply(entt::registry &, entt::entity viewport, const Action &);
 } // namespace action::audio

@@ -1032,17 +1032,7 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
         if (windows.ImPlotDemo.Visible) ImPlot::ShowDemoWindow(&windows.ImPlotDemo.Visible);
 
         if (windows.SceneControls.Visible) {
-            if (Begin(windows.SceneControls.Name, &windows.SceneControls.Visible) && BeginTabBar("Controls")) {
-                if (BeginTabItem("Scene")) {
-                    RenderControls(r, viewport);
-                    EndTabItem();
-                }
-                if (BeginTabItem("Audio device")) {
-                    DrawAudioDeviceControls(r, viewport);
-                    EndTabItem();
-                }
-                EndTabBar();
-            }
+            if (Begin(windows.SceneControls.Name, &windows.SceneControls.Visible)) RenderControls(r, viewport);
             End();
         }
 

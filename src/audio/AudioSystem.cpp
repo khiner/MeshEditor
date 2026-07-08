@@ -14,6 +14,7 @@
 #include "ui/FieldEdit.h"
 #include "viewport/InteractionComponents.h"
 
+#include "ContactModel.h"
 #include "implot.h"
 #include "mesh2modes.h"
 #include "miniaudio.h"
@@ -32,11 +33,16 @@ template<> struct FieldLimits<&ModalModelCreateInfo::Material, &AcousticMaterial
 template<> struct FieldLimits<&ModalModelCreateInfo::Material, &AcousticMaterial::Properties, &AcousticMaterialProperties::Alpha> : AtLeast<0.> {};
 template<> struct FieldLimits<&ModalModelCreateInfo::Material, &AcousticMaterial::Properties, &AcousticMaterialProperties::Beta> : AtLeast<0.> {};
 
+// Striker capsule dimensions, in meters.
+template<> struct FieldLimits<&Striker::TipRadius> : Within<0.0005, 0.1> {};
+template<> struct FieldLimits<&Striker::Length> : Within<0.001, 1.> {};
+
 using std::ranges::distance, std::ranges::iota_view, std::ranges::find, std::ranges::nth_element, std::ranges::max_element, std::ranges::replace, std::ranges::to;
 using std::views::transform;
 
 static constexpr std::string_view ExciteIndexParamName{"Excite index"}, GateParamName{"Gate"};
 static constexpr std::string_view ImpulseXParamName{"Impulse X"}, ImpulseYParamName{"Impulse Y"}, ImpulseZParamName{"Impulse Z"};
+static constexpr std::string_view ContactTimeParamName{"Contact time"};
 static constexpr uint32_t SampleRate = 48'000; // todo respect device sample rate
 
 namespace {
@@ -298,7 +304,8 @@ std::string GenerateDsp(entt::registry &r) {
     if (view.empty()) return "";
 
     static const auto ContactGate = std::format("gate = button(\"../../{}[tooltip: Applies the current parameters and excites the vertex.]\")", GateParamName);
-    static constexpr std::string_view ContactTime{"contactTime = hslider(\"Contact time[unit:ms][scale:log][tooltip: Duration of the contact force pulse. Shorter contact excites higher modes (harder, brighter impact); longer contact rolls off high modes (softer).]\",0.1,0.05,20,0.01)"};
+    // Contact duration in ms, driven per strike from the Hertz contact time (material, effective mass, curvature, speed).
+    static const auto ContactTime = std::format("contactTime = nentry(\"{}[hidden:1]\",0.1,{},{},0.001)", ContactTimeParamName, MinContactTime * 1000, MaxContactTime * 1000);
     // Half-sine force pulse of duration tau on the gate's rising edge, normalized to unit sample-sum so its spectrum is flat at DC.
     // Each mode is scaled by that spectrum at its frequency: near-flat below ~1/tau, rolling off above, so shorter contact is brighter.
     // Magnitude |j| rides in the mode gains, not the pulse.
@@ -410,11 +417,31 @@ vec3 TiltAlongNormal(vec3 n, vec2 joy) {
     return std::cos(theta) * n + std::sin(theta) * (joy.x * t + joy.y * bt) / r;
 }
 
-// Point the strike impulse along the excited vertex's normal, tilted by the current impact angle.
-void SetExciteImpulse(entt::registry &r, entt::entity e, uint32_t vertex) {
-    if (!r.all_of<ModalModes>(e)) return;
+// Strike direction: the excited vertex's normal, tilted by the current impact angle.
+vec3 ExciteDirection(const entt::registry &r, entt::entity e, uint32_t vertex) {
     const auto n = VertexNormal(GetMesh(r, r.get<const Instance>(e).Entity), vertex);
-    SetImpulse(r.ctx().get<FaustDSP>(), TiltAlongNormal(n, ImpulseAngle));
+    return TiltAlongNormal(n, ImpulseAngle);
+}
+
+// Drive the per-strike contact time from the Hertz model. Leaves the DSP default when the object lacks
+// the material or precomputed dynamics the estimate needs.
+void SetExciteContactTime(entt::registry &r, entt::entity e, uint32_t excitable_index, vec3 impact_dir, float contact_speed) {
+    const auto *cd = r.try_get<const ContactDynamics>(e);
+    const auto *modes = r.try_get<const ModalModes>(e);
+    if (!cd || !modes) return;
+    const auto *mat = r.try_get<const AcousticMaterial>(r.get<const Instance>(e).Entity);
+    if (!mat) return;
+
+    // Current uniform scale relative to the baked size (contact time scales linearly with it).
+    const auto size = [](vec3 v) { const auto a = glm::abs(v); return (a.x + a.y + a.z) / 3.f; };
+    const auto *world = r.try_get<const WorldTransform>(e);
+    const float baked = size(modes->BakedScale);
+    const float scale_ratio = world && baked > 0 ? size(world->S) / baked : 1.f;
+
+    const auto *device = r.ctx().find<AudioDeviceResource>();
+    const auto *striker = device ? r.try_get<const Striker>(device->Viewport) : nullptr;
+    const double tau = EstimateContactTime(*cd, excitable_index, impact_dir, contact_speed, mat->Properties, striker ? *striker : Striker{}, scale_ratio);
+    r.ctx().get<FaustDSP>().Set(ContactTimeParamName, float(tau * 1000)); // seconds -> ms
 }
 
 // Push the model's scale relative to its baked size.
@@ -505,7 +532,11 @@ void RegisterAudioComponentHandlers(entt::registry &r) {
                 if (auto vi = excitable.FindVertexIndex(vf->Vertex)) {
                     r.emplace_or_replace<MeshActiveElement>(r.get<const Instance>(e).Entity, vf->Vertex);
                     SetVertex(r, e, *vi);
-                    SetExciteImpulse(r, e, vf->Vertex);
+                    if (r.all_of<ModalModes>(e)) {
+                        const vec3 dir = ExciteDirection(r, e, vf->Vertex);
+                        SetImpulse(r.ctx().get<FaustDSP>(), dir);
+                        SetExciteContactTime(r, e, *vi, dir, vf->ContactSpeed);
+                    }
                     SetVertexForce(r, e, vf->Force);
                 }
             } else {
@@ -742,6 +773,7 @@ std::optional<size_t> PlotModeData(
 struct ModalGenerationResult {
     ModalModes Modes;
     TetMeshData Tets;
+    MassProperties Mass;
 };
 std::unique_ptr<Worker<ModalGenerationResult>> DspGenerator;
 
@@ -829,9 +861,9 @@ void DrawModalCreateForm(
         DspGenerator = std::make_unique<Worker<ModalGenerationResult>>(
             parent_window, "Generating modal audio model...",
             [tets = std::move(tets), tet_scale, node_scale, material_props, sound_vertices = std::move(new_sound_vertices), fundamental]() mutable {
-                auto modes = m2f::mesh2modes(*tets, material_props, sound_vertices.Vertices, tet_scale, fundamental);
-                modes.BakedScale = node_scale;
-                return ModalGenerationResult{std::move(modes), BuildTetMeshData(*tets, tet_scale)};
+                auto result = m2f::mesh2modes(*tets, material_props, sound_vertices.Vertices, tet_scale, node_scale, fundamental);
+                result.Modes.BakedScale = node_scale;
+                return ModalGenerationResult{std::move(result.Modes), BuildTetMeshData(*tets, tet_scale), std::move(result.MassProps)};
             }
         );
     }
@@ -909,8 +941,10 @@ void DrawObjectAudioControls(
                 r.ctx().get<FaustDSP>().Set(ExciteIndexParamName, excite_idx);
                 // Intentional registry write outside of Apply: the background solver kicked off by
                 // SubmitModalForm has finished, so its result is applied directly here, not as its own action.
+                r.emplace_or_replace<MassProperties>(e, result->Mass);
                 r.emplace_or_replace<ModalModes>(e, std::move(result->Modes));
                 r.emplace_or_replace<TetMeshData>(mesh_entity, std::move(result->Tets));
+                UpdateContactDynamics(r, e); // Hertz contact time inputs, from the mass properties and mesh curvature.
                 SetModel(r, e, SoundVerticesModel::Modal);
                 return;
             }
@@ -1111,5 +1145,24 @@ void DrawObjectAudioControls(
 }
 
 void RemoveAudioComponents(entt::registry &r, entt::entity e) {
-    r.remove<ScaleLocked, SoundVertices, Recording, SoundVerticesModel, ModalModes, ModalDsp, VertexSamples, ModalModelCreateInfo, RealImpactActiveMicrophone, RealImpactVertices>(e);
+    r.remove<ScaleLocked, SoundVertices, Recording, SoundVerticesModel, ModalModes, MassProperties, ContactDynamics, ModalDsp, VertexSamples, ModalModelCreateInfo, RealImpactActiveMicrophone, RealImpactVertices>(e);
+}
+
+void DrawStrikerControls(entt::registry &r, entt::entity viewport) {
+    const auto &striker = r.get<const Striker>(viewport);
+    // A material change replaces the whole striker (it holds a string); the sliders below edit their fields in place.
+    if (BeginCombo("Material", striker.Material.Name.c_str())) {
+        for (const auto &choice : materials::acoustic::All) {
+            const bool is_selected = choice.Name == striker.Material.Name;
+            if (Selectable(choice.Name.c_str(), is_selected) && !is_selected)
+                action::Emit(action::Replace<Striker>{.Entity = viewport, .Value = {choice, striker.TipRadius, striker.Length}});
+            if (is_selected) SetItemDefaultFocus();
+        }
+        EndCombo();
+    }
+    ui::Edit f{r, viewport};
+    f.Slider<&Striker::TipRadius>("Tip radius (m)", "%.4f");
+    f.Slider<&Striker::Length>("Length (m)", "%.3f");
+    Text("Mass: %.3g kg", StrikerMass(striker));
+    MeshEditor::HelpMarker("The virtual mallet that strikes objects, a rounded-tip cylinder whose mass comes from its material density and size. A harder material or a shorter (lighter) capsule makes a brighter contact. The tip radius sets the contact curvature.");
 }

@@ -11,6 +11,7 @@
 #include "armature/ArmatureComponents.h"
 #include "armature/BoneConstraint.h"
 #include "audio/AudioTypes.h"
+#include "audio/ContactModel.h"
 #include "audio/SoundVertices.h"
 #include "gizmo/GizmoInteraction.h"
 #include "gltf/SourceAssets.h"
@@ -322,6 +323,7 @@ void SetupScene(entt::registry &r, entt::entity viewport) {
     r.emplace_or_replace<WorkspaceLights>(viewport, Defaults::WorkspaceLights);
     r.emplace_or_replace<AudioOutputConfig>(viewport);
     r.emplace_or_replace<AudioOutputMix>(viewport);
+    r.emplace_or_replace<Striker>(viewport);
     r.emplace_or_replace<PlaybackFrame>(viewport);
     r.emplace_or_replace<LastEvaluatedFrame>(viewport);
     r.emplace_or_replace<EnabledInteractionModes>(viewport);

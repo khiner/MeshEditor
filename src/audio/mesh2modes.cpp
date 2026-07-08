@@ -5,7 +5,9 @@
 #include "numeric/vec3.h"
 
 #include "tetgen.h"
+#include <Eigen/Eigenvalues>
 #include <Spectra/SymGEigsShiftSolver.h>
+#include <glm/gtc/quaternion.hpp>
 
 #include <algorithm>
 
@@ -29,6 +31,64 @@ double GetElementDeterminant(const tetgenio &tets, int el) {
 }
 double GetElementVolume(const tetgenio &tets, int el) {
     return GetTetVolume(GetVertex(tets, el, 0), GetVertex(tets, el, 1), GetVertex(tets, el, 2), GetVertex(tets, el, 3));
+}
+
+// Lumped-vertex rigid-body mass properties in SI at the baked size: each tet's volume splits evenly onto its four
+// vertices as point masses. `scale` maps tet coordinates to node-local, `length_to_si` maps node-local lengths to meters.
+MassProperties ComputeMassProperties(const tetgenio &tets, double density, vec3 scale, double length_to_si) {
+    const int nverts = tets.numberofpoints;
+    const dvec3 inv_scale{1.0 / scale.x, 1.0 / scale.y, 1.0 / scale.z};
+    std::vector<dvec3> pos(nverts);
+    for (int i = 0; i < nverts; ++i) pos[i] = reinterpret_cast<const dvec3 &>(tets.pointlist[3 * i]) * inv_scale;
+
+    std::vector<double> vol(nverts, 0.0);
+    for (int el = 0; el < tets.numberoftetrahedra; ++el) {
+        const int *t = &tets.tetrahedronlist[el * 4];
+        const double quarter = GetTetVolume(pos[t[0]], pos[t[1]], pos[t[2]], pos[t[3]]) * 0.25;
+        for (int c = 0; c < 4; ++c) vol[t[c]] += quarter;
+    }
+
+    double total = 0;
+    dvec3 com{0};
+    for (int i = 0; i < nverts; ++i) {
+        total += vol[i];
+        com += vol[i] * pos[i];
+    }
+    if (total <= 0) return {};
+    com /= total;
+
+    // Point-mass inertia about the center of mass, sum of vol * (|r|^2 I - r r^T), scaled to SI (inertia integral ~ length^5).
+    const double s = length_to_si;
+    Eigen::Matrix3d inertia = Eigen::Matrix3d::Zero();
+    for (int i = 0; i < nverts; ++i) {
+        const dvec3 r = pos[i] - com;
+        const double rr = glm::dot(r, r);
+        inertia(0, 0) += vol[i] * (rr - r.x * r.x);
+        inertia(1, 1) += vol[i] * (rr - r.y * r.y);
+        inertia(2, 2) += vol[i] * (rr - r.z * r.z);
+        inertia(0, 1) -= vol[i] * r.x * r.y;
+        inertia(0, 2) -= vol[i] * r.x * r.z;
+        inertia(1, 2) -= vol[i] * r.y * r.z;
+    }
+    inertia(1, 0) = inertia(0, 1);
+    inertia(2, 0) = inertia(0, 2);
+    inertia(2, 1) = inertia(1, 2);
+    inertia *= density * s * s * s * s * s;
+
+    const Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> es(inertia);
+    const auto &evals = es.eigenvalues();
+    const auto &evecs = es.eigenvectors();
+    glm::mat3 axes;
+    for (int c = 0; c < 3; ++c)
+        for (int r = 0; r < 3; ++r) axes[c][r] = float(evecs(r, c));
+    if (glm::determinant(axes) < 0) axes[0] = -axes[0]; // ensure a proper rotation for the quaternion
+
+    return {
+        density * total * s * s * s,
+        vec3{com},
+        vec3{float(evals[0]), float(evals[1]), float(evals[2])},
+        glm::normalize(glm::quat_cast(axes)),
+    };
 }
 
 constexpr uint NumTetElementVertices{4};
@@ -291,7 +351,10 @@ ModalModes ComputeModes(
 }
 } // namespace
 
-ModalModes m2f::mesh2modes(const tetgenio &tets, const AcousticMaterialProperties &material, const std::vector<uint> &excitable_vertices, vec3 scale, std::optional<float> fundamental_freq) {
+m2f::ModalResult m2f::mesh2modes(const tetgenio &tets, const AcousticMaterialProperties &material, const std::vector<uint> &excitable_vertices, vec3 scale, vec3 baked_scale, std::optional<float> fundamental_freq) {
+    const double density = material.Density;
+    const double length_to_si = (double(baked_scale.x) + baked_scale.y + baked_scale.z) / 3.0;
+    auto mass_props = ComputeMassProperties(tets, density, scale, length_to_si);
     const auto M = GenerateMassMatrix(tets, material.Density);
     const auto K = ComputeStiffnessMatrix(tets, material);
     // Recover node-local sample positions from the scaled tet points.
@@ -301,18 +364,16 @@ ModalModes m2f::mesh2modes(const tetgenio &tets, const AcousticMaterialPropertie
         const auto &p = reinterpret_cast<const glm::dvec3 &>(tets.pointlist[3 * excitable_vertices[i]]);
         positions[i] = vec3{p * inv_scale};
     }
-    return ComputeModes(
-        M, K, tets.numberofpoints, 3,
-        {
-            .MinModeFreq = 20,
-            .MaxModeFreq = 16'000,
-            .FundamentalFreq = fundamental_freq,
-            .NumModes = 30, // number of synthesized modes, starting with the lowest frequency in the provided min/max range
-            .NumFemModes = 80, // number of modes to be computed for the finite element analysis
-            // Convert to signed ints.
-            .ExPos = excitable_vertices,
-            .Positions = std::move(positions),
-            .Material = std::move(material),
-        }
-    );
+    return {ComputeModes(M, K, tets.numberofpoints, 3, {
+                                                           .MinModeFreq = 20,
+                                                           .MaxModeFreq = 16'000,
+                                                           .FundamentalFreq = fundamental_freq,
+                                                           .NumModes = 30, // number of synthesized modes, starting with the lowest frequency in the provided min/max range
+                                                           .NumFemModes = 80, // number of modes to be computed for the finite element analysis
+                                                           // Convert to signed ints.
+                                                           .ExPos = excitable_vertices,
+                                                           .Positions = std::move(positions),
+                                                           .Material = std::move(material),
+                                                       }),
+            std::move(mass_props)};
 }
