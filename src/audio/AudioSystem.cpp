@@ -297,12 +297,22 @@ std::string GenerateDsp(entt::registry &r) {
     auto view = r.view<const ModalDsp>();
     if (view.empty()) return "";
 
-    static const auto HammerGate = std::format("gate = button(\"../../{}[tooltip: Applies the current parameters and excites the vertex.]\")", GateParamName);
-    static constexpr std::string_view HammerHardness{"hammerHardness = hslider(\"Hammer hardness\",0.9,0,1,0.01)"};
-    static constexpr std::string_view HammerSize{"hammerSize = hslider(\"Hammer size\",0.1,0,1,0.01)"};
-    static constexpr std::string_view Hammer{"hammer(trig,hardness,size) = en.ar(att,att,trig)*no.noise : fi.lowpass(3,ctoff)\nwith{ ctoff = (1-size)*9500+500; att = (1-hardness)*0.01+0.001; }"};
-    static constexpr std::string_view HammerEval = "hammer(gate,hammerHardness,hammerSize)";
-    static const auto HammerDefinition = std::format("{};\n{};\n{};\n{};", HammerGate, HammerHardness, HammerSize, Hammer);
+    static const auto ContactGate = std::format("gate = button(\"../../{}[tooltip: Applies the current parameters and excites the vertex.]\")", GateParamName);
+    static constexpr std::string_view ContactTime{"contactTime = hslider(\"Contact time[unit:ms][scale:log][tooltip: Duration of the contact force pulse. Shorter contact excites higher modes (harder, brighter impact); longer contact rolls off high modes (softer).]\",0.1,0.05,20,0.01)"};
+    // Half-sine force pulse of duration tau on the gate's rising edge, normalized to unit sample-sum so its spectrum is flat at DC.
+    // Each mode is scaled by that spectrum at its frequency: near-flat below ~1/tau, rolling off above, so shorter contact is brighter.
+    // Magnitude |j| rides in the mode gains, not the pulse.
+    static constexpr std::string_view Contact{
+        "contact(trig,ms) = sin(ma.PI*ph)*(ph<1)*gamma\n"
+        "with{\n"
+        "  tau = ms/1000;\n"
+        "  step = 1.0/(tau*ma.SR);\n"
+        "  gamma = ma.PI/2*step;\n"
+        "  ph = (select2(trig>trig',_+step,0) : min(1.0)) ~ _;\n"
+        "}"
+    };
+    static constexpr std::string_view ContactEval = "contact(gate,contactTime)";
+    static const auto ContactDefinition = std::format("{};\n{};\n{};", ContactGate, ContactTime, Contact);
 
     // Node-local impulse direction of the current strike, shared by all models and held on the gate.
     // Hidden from the parameter UI: the impact-angle joystick drives these on each strike.
@@ -329,12 +339,12 @@ std::string GenerateDsp(entt::registry &r) {
     const auto switch_definition = multiple_models ? std::format("N={};\nswitchN(n, s) = par(i, n , _*(i==s));\nmodelIndex = nentry(\"Excite model\", 0, 0, N-1, 1);", count) : "";
     const std::string_view switch_eval = multiple_models ? "switchN(N, modelIndex) : " : "";
     const std::string_view mix = multiple_models ? "/(N)" : "_";
-    auto hammer = std::format("vgroup(\"Hammer\", {})", HammerEval);
+    auto contact = std::format("vgroup(\"Contact\", {})", ContactEval);
     // Since models are in a tab group when there are multiple, the gate param needs to be one level deeper for its path to match.
-    if (multiple_models) hammer = std::format("vgroup(\"\", {})", hammer);
+    if (multiple_models) contact = std::format("vgroup(\"\", {})", contact);
     return std::format(
         "import(\"stdfaust.lib\");\n\n{}\n\n{}\n\n{}\n\n{}\n\nprocess = {} <: {}{} :> {};\n",
-        HammerDefinition, ImpulseDefinition, switch_definition, modal_definitions.str(), hammer, switch_eval, models_eval.str(), mix
+        ContactDefinition, ImpulseDefinition, switch_definition, modal_definitions.str(), contact, switch_eval, models_eval.str(), mix
     );
 }
 
