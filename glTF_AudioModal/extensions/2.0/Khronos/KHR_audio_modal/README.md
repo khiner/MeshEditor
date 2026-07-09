@@ -196,7 +196,7 @@ Multiple nodes MAY reference the same model. Each instance MUST have independent
 
 ## Audio Rendering
 
-A conformant audio renderer synthesizes each model instance's response to contact events as follows. Sound propagation from the node to the listener is out of scope. The synthesized signal SHOULD be treated as a monophonic source located at the node's origin.
+A conformant audio renderer synthesizes each model instance's response to contact events as follows. This defines a source *signal* only. How that signal radiates into the scene (directivity, distance, occlusion, reverberation) is out of scope: an implementation MAY layer any radiation or propagation model over it, and absent one SHOULD treat it as a monophonic source at the node's origin.
 
 ### Excitation
 
@@ -231,9 +231,9 @@ The same excitation (impulse **j** at position **p**, contact time τ) drives it
 
 Δ**v** = **j** / *M*,  Δ**ω** = **I**⁻¹ ((**p** − **c**) × **j**)
 
-delivered over the contact through the same finite force pulse used for the excitation (∫ **F** d*t* = **j**), so the body's rigid acceleration follows that pulse's shape. The radiated transient is proportional to this acceleration and to the body's displaced volume, and is broadband up to ≈1/τ, so shorter contacts click brighter. Implementations SHOULD superpose it on the modal output as a monophonic source at the node origin ([Synthesis](#synthesis)).
+delivered over the contact through the same finite force pulse used for the excitation (∫ **F** d*t* = **j**), so the body's rigid acceleration follows that pulse's shape. A compact body recoiling without changing volume radiates as an acoustic dipole, whose pressure is proportional to the *time-derivative* of that acceleration and to the body's displaced volume. The source signal therefore has that derivative shape, broadband up to ≈1/τ, so shorter contacts click brighter. A resonator bank MAY produce it directly as the derivative of the contact force pulse, scaled per strike, and superpose it on the modal output ([Synthesis](#synthesis)).
 
-Its relative shape and scaling with contact strength are normative. Its absolute level, like the modal output's, is implementation-defined. The transient radiates as a dipole, so it is directional. Rendering it omnidirectionally is the same approximation this specification already makes for modal radiation, and accurate directional acceleration-noise radiation is out of scope ([Scope and Exclusions](#scope-and-exclusions)).
+Its relative shape and scaling with contact strength are normative. Its absolute level, like the modal output's, is implementation-defined. Its dipole directivity, like all radiation here, is out of scope: rendered omnidirectionally by default (the same approximation the modal core makes), or shaped by whatever radiation model an implementation layers on ([Scope and Exclusions](#scope-and-exclusions)).
 
 ## Node Transforms and Scale
 

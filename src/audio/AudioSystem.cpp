@@ -42,7 +42,7 @@ using std::views::transform;
 
 static constexpr std::string_view ExciteIndexParamName{"Excite index"}, GateParamName{"Gate"};
 static constexpr std::string_view ImpulseXParamName{"Impulse X"}, ImpulseYParamName{"Impulse Y"}, ImpulseZParamName{"Impulse Z"};
-static constexpr std::string_view ContactTimeParamName{"Contact time"};
+static constexpr std::string_view ContactTimeParamName{"Contact time"}, AccelAmpParamName{"Accel amp"};
 static constexpr uint32_t SampleRate = 48'000; // todo respect device sample rate
 
 namespace {
@@ -328,6 +328,13 @@ std::string GenerateDsp(entt::registry &r) {
         ImpulseXParamName, ImpulseYParamName, ImpulseZParamName
     );
 
+    // Acceleration noise: the rigid-body click, rendered as the time-derivative of the contact force pulse.
+    // accelAmp scales it per strike, clickGain sets the level.
+    static const auto AccelAmp = std::format("accelAmp = nentry(\"{}[hidden:1]\",0,0,1e6,1e-9)", AccelAmpParamName);
+    static constexpr std::string_view ClickGain{"clickGain = hslider(\"Click[scale:log][tooltip: Level of the rigid-body acceleration-noise click.]\",1,0,100,0.01)"};
+    static constexpr std::string_view Click{"click = (_ <: (_, mem)) : - : *(accelAmp*clickGain)"};
+    static const auto ClickDefinition = std::format("{};\n{};\n{};", AccelAmp, ClickGain, Click);
+
     const auto count = view.size();
     std::stringstream modal_definitions;
     for (auto [_, dsp] : view.each()) modal_definitions << dsp.Definition << "\n\n";
@@ -350,8 +357,8 @@ std::string GenerateDsp(entt::registry &r) {
     // Since models are in a tab group when there are multiple, the gate param needs to be one level deeper for its path to match.
     if (multiple_models) contact = std::format("vgroup(\"\", {})", contact);
     return std::format(
-        "import(\"stdfaust.lib\");\n\n{}\n\n{}\n\n{}\n\n{}\n\nprocess = {} <: {}{} :> {};\n",
-        ContactDefinition, ImpulseDefinition, switch_definition, modal_definitions.str(), contact, switch_eval, models_eval.str(), mix
+        "import(\"stdfaust.lib\");\n\n{}\n\n{}\n\n{}\n\n{}\n\n{}\n\nprocess = {} <: (({}{} :> {}), click) :> _;\n",
+        ContactDefinition, ClickDefinition, ImpulseDefinition, switch_definition, modal_definitions.str(), contact, switch_eval, models_eval.str(), mix
     );
 }
 
@@ -423,14 +430,17 @@ vec3 ExciteDirection(const entt::registry &r, entt::entity e, uint32_t vertex) {
     return TiltAlongNormal(n, ImpulseAngle);
 }
 
-// Drive the per-strike contact time from the Hertz model. Leaves the DSP default when the object lacks
-// the material or precomputed dynamics the estimate needs.
-void SetExciteContactTime(entt::registry &r, entt::entity e, uint32_t excitable_index, vec3 impact_dir, float contact_speed) {
+// Drive the per-strike contact time and acceleration-noise amplitude from the Hertz model. Clears the click
+// and leaves the contact-time default when the object lacks the material or precomputed dynamics these need.
+void SetExciteContact(entt::registry &r, entt::entity e, uint32_t excitable_index, vec3 impact_dir, float contact_speed) {
+    auto &dsp = r.ctx().get<FaustDSP>();
     const auto *cd = r.try_get<const ContactDynamics>(e);
     const auto *modes = r.try_get<const ModalModes>(e);
-    if (!cd || !modes) return;
     const auto *mat = r.try_get<const AcousticMaterial>(r.get<const Instance>(e).Entity);
-    if (!mat) return;
+    if (!cd || !modes || !mat) {
+        dsp.Set(AccelAmpParamName, 0.f);
+        return;
+    }
 
     // Current uniform scale relative to the baked size (contact time scales linearly with it).
     const auto size = [](vec3 v) { const auto a = glm::abs(v); return (a.x + a.y + a.z) / 3.f; };
@@ -439,9 +449,15 @@ void SetExciteContactTime(entt::registry &r, entt::entity e, uint32_t excitable_
     const float scale_ratio = world && baked > 0 ? size(world->S) / baked : 1.f;
 
     const auto *device = r.ctx().find<AudioDeviceResource>();
-    const auto *striker = device ? r.try_get<const Striker>(device->Viewport) : nullptr;
-    const double tau = EstimateContactTime(*cd, excitable_index, impact_dir, contact_speed, mat->Properties, striker ? *striker : Striker{}, scale_ratio);
-    r.ctx().get<FaustDSP>().Set(ContactTimeParamName, float(tau * 1000)); // seconds -> ms
+    const auto *striker_ptr = device ? r.try_get<const Striker>(device->Viewport) : nullptr;
+    const Striker striker = striker_ptr ? *striker_ptr : Striker{};
+
+    const double tau = EstimateContactTime(*cd, excitable_index, impact_dir, contact_speed, mat->Properties, striker, scale_ratio);
+    dsp.Set(ContactTimeParamName, float(tau * 1000)); // seconds -> ms
+
+    // Per-strike acceleration-noise amplitude: the impulse magnitude scaled down by material density.
+    const double impulse = ReducedContactMass(*cd, excitable_index, impact_dir, striker) * std::abs(double(contact_speed));
+    dsp.Set(AccelAmpParamName, float(impulse / mat->Properties.Density));
 }
 
 // Push the model's scale relative to its baked size.
@@ -535,7 +551,7 @@ void RegisterAudioComponentHandlers(entt::registry &r) {
                     if (r.all_of<ModalModes>(e)) {
                         const vec3 dir = ExciteDirection(r, e, vf->Vertex);
                         SetImpulse(r.ctx().get<FaustDSP>(), dir);
-                        SetExciteContactTime(r, e, *vi, dir, vf->ContactSpeed);
+                        SetExciteContact(r, e, *vi, dir, vf->ContactSpeed);
                     }
                     SetVertexForce(r, e, vf->Force);
                 }
