@@ -1,15 +1,18 @@
 #include "mesh2modes.h"
 
 #include "AcousticMaterialProperties.h"
-#include "numeric/mat3.h"
 #include "numeric/vec3.h"
 
 #include "tetgen.h"
 #include <Eigen/Eigenvalues>
 #include <Spectra/SymGEigsShiftSolver.h>
 #include <glm/gtc/quaternion.hpp>
+#include <glm/gtx/norm.hpp>
 
 #include <algorithm>
+#include <array>
+#include <limits>
+#include <unordered_map>
 
 using uint = uint32_t;
 
@@ -28,9 +31,6 @@ double GetTetVolume(const dvec3 &a, const dvec3 &b, const dvec3 &c, const dvec3 
 }
 double GetElementDeterminant(const tetgenio &tets, int el) {
     return GetTetDeterminant(GetVertex(tets, el, 0), GetVertex(tets, el, 1), GetVertex(tets, el, 2), GetVertex(tets, el, 3));
-}
-double GetElementVolume(const tetgenio &tets, int el) {
-    return GetTetVolume(GetVertex(tets, el, 0), GetVertex(tets, el, 1), GetVertex(tets, el, 2), GetVertex(tets, el, 3));
 }
 
 // Lumped-vertex rigid-body mass properties in SI at the baked size: each tet's volume splits evenly onto its four
@@ -94,27 +94,19 @@ MassProperties ComputeMassProperties(const tetgenio &tets, double density, vec3 
 constexpr uint NumTetElementVertices{4};
 constexpr uint NEV = NumTetElementVertices; // convenience
 
-using ElementMatrix = double[NEV][NEV];
-
-struct ElementData {
-    double volume;
-    dvec3 Phig[NEV]; // gradient of a basis function
-
-    dmat3 A(uint i, uint j) const { return volume * glm::outerProduct(Phig[j], Phig[i]); }
-    double B(uint i, uint j, const ElementMatrix &dots) const { return volume * dots[i][j]; }
-    dvec3 C(uint i, uint j, uint k, const ElementMatrix &dots) const { return volume * dots[j][k] * Phig[i]; }
-    double D(uint i, uint j, uint k, uint l, const ElementMatrix &dots) const { return volume * dots[i][j] * dots[k][l]; }
+// Per-element volume and linear basis-function gradients.
+struct ElementBasis {
+    double Volume;
+    dvec3 Phig[NEV]; // gradient of each corner's basis function
 };
 
-// Computes the St.Venant-Kirchhoff coefficients for each tetrahedral element.
-std::vector<ElementData> StVKABCD(const tetgenio &tets) {
-    std::vector<ElementData> elements(tets.numberoftetrahedra);
+std::vector<ElementBasis> ComputeElementBases(const tetgenio &tets) {
+    std::vector<ElementBasis> elements(tets.numberoftetrahedra);
     dvec3 columns[2];
     for (uint el = 0; el < elements.size(); ++el) {
         auto &element = elements[el];
-        // Create the element data structure for a tet
         const double det = GetElementDeterminant(tets, el);
-        element.volume = fabs(det / 6);
+        element.Volume = fabs(det / 6);
         for (uint i = 0; i < NEV; ++i) {
             for (uint j = 0; j < 3; ++j) {
                 uint ni = 0;
@@ -128,122 +120,176 @@ std::vector<ElementData> StVKABCD(const tetgenio &tets) {
                             nj++;
                         }
                     }
-                    const int sign = (i + j) % 2 == 0 ? -1 : 1;
-                    element.Phig[i][j] = sign * dot(dvec3{1}, cross(columns[0], columns[1])) / det;
                     ++ni;
                 }
+                const int sign = (i + j) % 2 == 0 ? -1 : 1;
+                element.Phig[i][j] = sign * dot(dvec3{1}, cross(columns[0], columns[1])) / det;
             }
         }
     }
     return elements;
 }
 
-// Compute the tangent stiffness matrix of a StVK elastic deformable object.
-// As a special case, the routine can compute the stiffness matrix in the rest configuration.
-// `vertexDisplacements` is an array of vertex deformations, of length 3*n, where n is the total number of mesh vertices.
-// (Since we assume displacements are small for linear modal analysis, we neglect displacement terms.)
-Eigen::SparseMatrix<double> ComputeStiffnessMatrix(const tetgenio &tets, const AcousticMaterialProperties &material /*, const double *vertex_displacements*/) {
-    const uint ne = tets.numberoftetrahedra;
-    std::vector<Eigen::Triplet<double>> triplets;
-    triplets.reserve(ne * NEV * NEV * 9);
+/***** Quadratic (10-node) tetrahedral elements *****/
 
-    const double lambda = material.Lambda();
-    const double mu = material.Mu();
-    const auto coeffs = StVKABCD(tets);
-    ElementMatrix dots; // Cache dot products between basis gradients for current element
-    for (uint el = 0; el < ne; ++el) {
-        const auto &ed = coeffs[el];
-        for (uint i = 0; i < NEV; ++i) {
-            for (uint j = 0; j < NEV; ++j) {
-                dots[i][j] = dot(ed.Phig[i], ed.Phig[j]);
-            }
+// Polynomial in barycentric coordinates: a sum of c * l0^e0 * l1^e1 * l2^e2 * l3^e3 terms.
+struct BaryTerm {
+    double Coeff;
+    std::array<int, 4> Exp;
+};
+using BaryPoly = std::vector<BaryTerm>;
+
+BaryPoly Multiply(const BaryPoly &a, const BaryPoly &b) {
+    BaryPoly product;
+    product.reserve(a.size() * b.size());
+    for (const auto &ta : a) {
+        for (const auto &tb : b) {
+            product.push_back({ta.Coeff * tb.Coeff, {ta.Exp[0] + tb.Exp[0], ta.Exp[1] + tb.Exp[1], ta.Exp[2] + tb.Exp[2], ta.Exp[3] + tb.Exp[3]}});
         }
-        for (uint c = 0; c < NEV; ++c) {
-            for (uint a = 0; a < NEV; ++a) {
-                /*
-                const auto &qa = reinterpret_cast<const dvec3 &>(vertex_displacements[3 * GetVertexIndex(tets, el, a)]);
-                // Quadratic terms
-                dmat3 quad_mat{0};
-                {
-                    for (uint e = 0; e < NEV; e++) {
-                        const dvec3 C0 = lambda * ed.C(c, a, e, dots) + mu * (ed.C(e, a, c, dots) + ed.C(a, e, c, dots));
-                        const dvec3 C1 = lambda * ed.C(e, a, c, dots) + mu * (ed.C(c, e, a, dots) + ed.C(a, e, c, dots));
-                        const dvec3 C2 = lambda * ed.C(a, e, c, dots) + mu * (ed.C(c, a, e, dots) + ed.C(e, a, c, dots));
-                        quad_mat += glm::outerProduct(C0, qa) + glm::outerProduct(qa, C1) + dmat3{dot(qa, C2)};
+    }
+    return product;
+}
+
+// Integral over a straight-sided tet, divided by its volume: int l^e dV = 6V * prod(e!) / (sum(e) + 3)!
+double UnitIntegral(const BaryPoly &p) {
+    static constexpr double Factorial[]{1, 1, 2, 6, 24, 120, 720, 5040};
+    double sum = 0;
+    for (const auto &t : p) {
+        const auto &e = t.Exp;
+        sum += t.Coeff * 6 * Factorial[e[0]] * Factorial[e[1]] * Factorial[e[2]] * Factorial[e[3]] / Factorial[e[0] + e[1] + e[2] + e[3] + 3];
+    }
+    return sum;
+}
+
+constexpr uint NumQuadNodes{10};
+// Local edge nodes 4-9 sit at the midpoints of these corner pairs.
+constexpr uint EdgeCorners[6][2]{{0, 1}, {0, 2}, {0, 3}, {1, 2}, {1, 3}, {2, 3}};
+
+// Exact unit-volume integrals of the 10-node shape functions: corners N_i = l_i(2l_i - 1),
+// edges N_ij = 4 l_i l_j. All integrals are polynomial, so the factorial formula is exact.
+struct QuadBasis {
+    double Mass[NumQuadNodes][NumQuadNodes]; // int N_a N_b dV / V
+    double Grad[NumQuadNodes][4][NumQuadNodes][4]; // int (dN_a/dl_k)(dN_b/dl_l) dV / V
+};
+
+const QuadBasis &GetQuadBasis() {
+    static const QuadBasis basis = [] {
+        std::array<BaryPoly, NumQuadNodes> n;
+        std::array<std::array<BaryPoly, 4>, NumQuadNodes> dn;
+        for (int i = 0; i < 4; ++i) {
+            n[i] = {{2, {2 * (i == 0), 2 * (i == 1), 2 * (i == 2), 2 * (i == 3)}}, {-1, {i == 0, i == 1, i == 2, i == 3}}};
+            dn[i][i] = {{4, {i == 0, i == 1, i == 2, i == 3}}, {-1, {0, 0, 0, 0}}};
+        }
+        for (uint e = 0; e < 6; ++e) {
+            const int i = EdgeCorners[e][0], j = EdgeCorners[e][1];
+            n[4 + e] = {{4, {i == 0 || j == 0, i == 1 || j == 1, i == 2 || j == 2, i == 3 || j == 3}}};
+            dn[4 + e][i] = {{4, {j == 0, j == 1, j == 2, j == 3}}};
+            dn[4 + e][j] = {{4, {i == 0, i == 1, i == 2, i == 3}}};
+        }
+        QuadBasis b;
+        for (uint a = 0; a < NumQuadNodes; ++a) {
+            for (uint c = 0; c < NumQuadNodes; ++c) {
+                b.Mass[a][c] = UnitIntegral(Multiply(n[a], n[c]));
+                for (int k = 0; k < 4; ++k) {
+                    for (int l = 0; l < 4; ++l) {
+                        b.Grad[a][k][c][l] = dn[a][k].empty() || dn[c][l].empty() ? 0 : UnitIntegral(Multiply(dn[a][k], dn[c][l]));
                     }
                 }
-                // Cubic terms
-                dmat3 cubic_mat{0};
-                {
-                    for (uint b = 0; b < NEV; b++) {
-                        const auto &qb = reinterpret_cast<const dvec3 &>(vertex_displacements[3 * GetVertexIndex(tets, el, b)]);
-                        for (uint e = 0; e < NEV; e++) {
-                            const double D0 = lambda * ed.D(a, c, b, e, dots) + mu * (ed.D(a, e, b, c, dots) + ed.D(a, b, c, e, dots));
-                            const double D1 = 0.5 * lambda * ed.D(a, b, c, e, dots) + mu * ed.D(a, c, b, e, dots);
-                            cubic_mat += D0 * glm::outerProduct(qa, qb) + dmat3{dot(qa, qb) * D1};
+            }
+        }
+        return b;
+    }();
+    return basis;
+}
+
+// Global node ids of each element's 10 nodes: the 4 corners, then unique midside ids per edge,
+// numbered after all corner nodes. Midside coordinates stay implicit (straight-sided elements).
+struct QuadMesh {
+    std::vector<std::array<uint, NumQuadNodes>> ElementNodes;
+    uint NodeCount;
+};
+
+QuadMesh BuildQuadMesh(const tetgenio &tets) {
+    QuadMesh quad;
+    quad.ElementNodes.resize(tets.numberoftetrahedra);
+    quad.NodeCount = tets.numberofpoints;
+    std::unordered_map<uint64_t, uint> edge_nodes;
+    edge_nodes.reserve(tets.numberoftetrahedra * 2);
+    for (uint el = 0; el < uint(tets.numberoftetrahedra); ++el) {
+        auto &nodes = quad.ElementNodes[el];
+        for (uint c = 0; c < 4; ++c) nodes[c] = GetVertexIndex(tets, el, c);
+        for (uint e = 0; e < 6; ++e) {
+            const uint a = nodes[EdgeCorners[e][0]], b = nodes[EdgeCorners[e][1]];
+            const uint64_t key = (uint64_t(std::min(a, b)) << 32) | std::max(a, b);
+            const auto [it, inserted] = edge_nodes.try_emplace(key, quad.NodeCount);
+            if (inserted) ++quad.NodeCount;
+            nodes[4 + e] = it->second;
+        }
+    }
+    return quad;
+}
+
+struct MassStiffness {
+    Eigen::SparseMatrix<double> Mass, Stiffness;
+};
+
+// Isotropic linear-elastic mass and stiffness over 10-node elements. Basis gradients in physical
+// coordinates are dN_a/dx = sum_k (dN_a/dl_k) grad(l_k), with grad(l_k) the linear-tet gradients (Phig).
+// Only the lower triangle is filled (the eigensolver reads matrices as self-adjoint).
+MassStiffness AssembleQuadratic(const tetgenio &tets, const QuadMesh &quad, const AcousticMaterialProperties &material) {
+    const auto &basis = GetQuadBasis();
+    const auto coeffs = ComputeElementBases(tets);
+    const double lambda = material.Lambda();
+    const double mu = material.Mu();
+
+    std::vector<Eigen::Triplet<double>> mass_triplets, stiffness_triplets;
+    mass_triplets.reserve(quad.ElementNodes.size() * NumQuadNodes * (NumQuadNodes + 1) / 2 * 3);
+    stiffness_triplets.reserve(quad.ElementNodes.size() * NumQuadNodes * (NumQuadNodes + 1) / 2 * 9);
+    for (uint el = 0; el < quad.ElementNodes.size(); ++el) {
+        const auto &ed = coeffs[el];
+        const auto &nodes = quad.ElementNodes[el];
+        // Per-element gradient outer products: Outer[k][l][p][q] = Phig[k][p] * Phig[l][q].
+        double outer[4][4][3][3];
+        for (int k = 0; k < 4; ++k) {
+            for (int l = 0; l < 4; ++l) {
+                for (uint p = 0; p < 3; ++p) {
+                    for (uint q = 0; q < 3; ++q) outer[k][l][p][q] = ed.Phig[k][p] * ed.Phig[l][q];
+                }
+            }
+        }
+        for (uint a = 0; a < NumQuadNodes; ++a) {
+            for (uint c = 0; c < NumQuadNodes; ++c) {
+                const uint row = 3 * nodes[a], col = 3 * nodes[c];
+                if (row < col) continue;
+
+                const double m = material.Density * ed.Volume * basis.Mass[a][c];
+                for (uint k = 0; k < 3; ++k) mass_triplets.emplace_back(row + k, col + k, m);
+
+                // G[p][q] = int (dN_a/dx_p)(dN_c/dx_q) dV / V
+                double g[3][3]{};
+                for (int k = 0; k < 4; ++k) {
+                    for (int l = 0; l < 4; ++l) {
+                        const double w = basis.Grad[a][k][c][l];
+                        if (w == 0) continue;
+                        for (uint p = 0; p < 3; ++p) {
+                            for (uint q = 0; q < 3; ++q) g[p][q] += w * outer[k][l][p][q];
                         }
                     }
                 }
-                */
-
-                // Linear terms
-                const auto lin_mat = dmat3{mu * ed.B(a, c, dots)} + lambda * ed.A(c, a) + mu * ed.A(a, c);
-
-                // const dmat3 total_block = lin_mat + quad_mat + cubic_mat;
-                const dmat3 total_block = lin_mat;
-                const auto vi_a = 3 * GetVertexIndex(tets, el, a), vi_c = 3 * GetVertexIndex(tets, el, c);
-                for (uint k = 0; k < 3; ++k) {
-                    for (uint l = 0; l < 3; ++l) {
-                        triplets.emplace_back(vi_c + k, vi_a + l, total_block[k][l]);
+                const double trace = g[0][0] + g[1][1] + g[2][2];
+                for (uint p = 0; p < 3; ++p) {
+                    for (uint q = 0; q < (row == col ? p + 1 : 3u); ++q) {
+                        stiffness_triplets.emplace_back(row + p, col + q, ed.Volume * (lambda * g[p][q] + mu * g[q][p] + (p == q ? mu * trace : 0)));
                     }
                 }
             }
         }
     }
-
-    const uint n = 3 * tets.numberofpoints;
-    Eigen::SparseMatrix<double> stiffness(n, n);
-    stiffness.setFromTriplets(triplets.begin(), triplets.end());
-    return stiffness;
-}
-
-// Each scalar matrix entry is augmented to a 3x3 diagonal block.
-// The resulting matrix is 3*n x 3*n, where n is the number of vertices.
-Eigen::SparseMatrix<double> GenerateMassMatrix(const tetgenio &tets, double density) {
-    const uint ne = tets.numberoftetrahedra;
-    std::vector<Eigen::Triplet<double>> triplets;
-    triplets.reserve(ne * NEV * NEV * 3);
-
-    // Consistent mass matrix coefficients for a tetrahedron.
-    // (See Rao, The Finite Element Method in Engineering, 2004.)
-    static constexpr double coeffs[]{
-        2, 1, 1, 1,
-        1, 2, 1, 1,
-        1, 1, 2, 1,
-        1, 1, 1, 2
-    };
-
-    for (uint el = 0; el < ne; ++el) {
-        const double factor = density * GetElementVolume(tets, el) / 20.0;
-        for (uint i = 0; i < NEV; i++) {
-            const auto vi = GetVertexIndex(tets, el, i);
-            const auto row_base = 3 * vi;
-            for (uint j = 0; j < NEV; ++j) {
-                const auto vj = GetVertexIndex(tets, el, j);
-                const auto col_base = 3 * vj;
-                const auto entry = factor * coeffs[NEV * j + i];
-                // Augment to a 3x3 block (scalar times the identity matrix)
-                for (uint k = 0; k < 3; ++k) {
-                    triplets.emplace_back(row_base + k, col_base + k, entry);
-                }
-            }
-        }
-    }
-
-    const uint n = 3 * tets.numberofpoints;
-    Eigen::SparseMatrix<double> mass(n, n);
-    mass.setFromTriplets(triplets.begin(), triplets.end());
-    return mass;
+    const uint n = 3 * quad.NodeCount;
+    MassStiffness ms{Eigen::SparseMatrix<double>{n, n}, Eigen::SparseMatrix<double>{n, n}};
+    ms.Mass.setFromTriplets(mass_triplets.begin(), mass_triplets.end());
+    ms.Stiffness.setFromTriplets(stiffness_triplets.begin(), stiffness_triplets.end());
+    return ms;
 }
 
 struct ComputeModesOpts {
@@ -280,7 +326,6 @@ ModalModes ComputeModes(
     if (eigs.info() != Spectra::CompInfo::Successful) return {};
 
     const auto eigenvalues = eigs.eigenvalues();
-    const auto eigenvectors = eigs.eigenvectors();
 
     /** Compute modes frequencies/gains/T60s **/
     std::vector<float> mode_freqs(fem_n_modes), mode_t60s(fem_n_modes);
@@ -306,7 +351,9 @@ ModalModes ComputeModes(
             continue;
         }
         mode_freqs[mode] = damped_hz(omega_i, c_from_omega(omega_i));
-        if (lowest_mode_i == fem_n_modes && mode_freqs[mode] > 1e-6f) {
+        // Rigid-body modes carry numerically tiny but nonzero eigenvalues, so a mode is valid
+        // only at or above the audible floor.
+        if (lowest_mode_i == fem_n_modes && mode_freqs[mode] >= opts.MinModeFreq) {
             lowest_mode_i = mode;
             lowest_mode_freq_orig = mode_freqs[mode];
         }
@@ -338,6 +385,7 @@ ModalModes ComputeModes(
 
     // One mode shape 3-vector per excitable vertex, so `shapes` stays the same length as `ExPos`.
     // Spectra returns M-orthonormal eigenvectors, so these are already mass-normalized (kg^-1/2).
+    const auto eigenvectors = eigs.eigenvectors(lowest_mode_i + n_modes);
     std::vector<std::vector<vec3>> shapes(opts.ExPos.size()); // Mode shapes by [excitation position][mode]
     for (size_t ex_pos = 0; ex_pos < shapes.size(); ++ex_pos) {
         const uint ev_i = vertex_dim * opts.ExPos[ex_pos];
@@ -347,33 +395,42 @@ ModalModes ComputeModes(
         }
     }
 
-    return {std::move(mode_freqs), std::move(mode_t60s), std::move(shapes), std::move(opts.ExPos), std::move(opts.Positions), lowest_mode_freq_orig};
+    return {std::move(mode_freqs), std::move(mode_t60s), std::move(shapes), {}, std::move(opts.Positions), lowest_mode_freq_orig};
 }
 } // namespace
 
-modal::ModalResult modal::mesh2modes(const tetgenio &tets, const AcousticMaterialProperties &material, const std::vector<uint> &excitable_vertices, vec3 scale, vec3 baked_scale, std::optional<float> fundamental_freq) {
-    const double density = material.Density;
+modal::ModalResult modal::mesh2modes(const tetgenio &tets, const AcousticMaterialProperties &material, const std::vector<vec3> &excite_positions, vec3 baked_scale, std::optional<float> fundamental_freq) {
     const double length_to_si = (double(baked_scale.x) + baked_scale.y + baked_scale.z) / 3.0;
-    auto mass_props = ComputeMassProperties(tets, density, scale, length_to_si);
-    const auto M = GenerateMassMatrix(tets, material.Density);
-    const auto K = ComputeStiffnessMatrix(tets, material);
-    // Recover node-local sample positions from the scaled tet points.
-    const dvec3 inv_scale{1.0 / scale.x, 1.0 / scale.y, 1.0 / scale.z};
-    std::vector<vec3> positions(excitable_vertices.size());
-    for (size_t i = 0; i < excitable_vertices.size(); ++i) {
-        const auto &p = reinterpret_cast<const glm::dvec3 &>(tets.pointlist[3 * excitable_vertices[i]]);
-        positions[i] = vec3{p * inv_scale};
+    auto mass_props = ComputeMassProperties(tets, material.Density, baked_scale, length_to_si);
+
+    const auto quad = BuildQuadMesh(tets);
+    const auto [M, K] = AssembleQuadratic(tets, quad, material);
+
+    // Sample each excitation position at its nearest tet point, recovering node-local coordinates.
+    const dvec3 inv_scale{1.0 / baked_scale.x, 1.0 / baked_scale.y, 1.0 / baked_scale.z};
+    std::vector<uint> excite_points(excite_positions.size());
+    std::vector<vec3> positions(excite_positions.size());
+    for (size_t i = 0; i < excite_positions.size(); ++i) {
+        const dvec3 p{excite_positions[i]};
+        double best = std::numeric_limits<double>::max();
+        for (int v = 0; v < tets.numberofpoints; ++v) {
+            const auto &q = reinterpret_cast<const dvec3 &>(tets.pointlist[3 * v]);
+            if (const double d = glm::distance2(p, q); d < best) {
+                best = d;
+                excite_points[i] = v;
+            }
+        }
+        positions[i] = vec3{reinterpret_cast<const dvec3 &>(tets.pointlist[3 * excite_points[i]]) * inv_scale};
     }
-    return {ComputeModes(M, K, tets.numberofpoints, 3, {
-                                                           .MinModeFreq = 20,
-                                                           .MaxModeFreq = 16'000,
-                                                           .FundamentalFreq = fundamental_freq,
-                                                           .NumModes = 30, // number of synthesized modes, starting with the lowest frequency in the provided min/max range
-                                                           .NumFemModes = 80, // number of modes to be computed for the finite element analysis
-                                                           // Convert to signed ints.
-                                                           .ExPos = excitable_vertices,
-                                                           .Positions = std::move(positions),
-                                                           .Material = std::move(material),
-                                                       }),
+    return {ComputeModes(M, K, quad.NodeCount, 3, {
+                                                      .MinModeFreq = 20,
+                                                      .MaxModeFreq = 16'000,
+                                                      .FundamentalFreq = fundamental_freq,
+                                                      .NumModes = 30,
+                                                      .NumFemModes = 80,
+                                                      .ExPos = std::move(excite_points),
+                                                      .Positions = std::move(positions),
+                                                      .Material = material,
+                                                  }),
             std::move(mass_props)};
 }

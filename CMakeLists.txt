@@ -32,6 +32,12 @@ find_package(PkgConfig REQUIRED)
 pkg_search_module(FFTW3F REQUIRED fftw3f IMPORTED_TARGET)
 find_package(Vulkan REQUIRED)
 
+if(APPLE)
+    set(EIGEN3_INCLUDE_DIR /opt/homebrew/include/eigen3)
+else()
+    set(EIGEN3_INCLUDE_DIR /usr/include/eigen3)
+endif()
+
 set(ImguiDir lib/imgui)
 set(ImplotDir lib/implot)
 
@@ -191,14 +197,12 @@ if(MESHEDITOR_APP)
     )
     add_dependencies(${PROJECT_NAME} generate_gpu_schema)
 
+    target_include_directories(${PROJECT_NAME} PRIVATE ${EIGEN3_INCLUDE_DIR})
     if(APPLE)
-        target_include_directories(${PROJECT_NAME} PRIVATE /opt/homebrew/include/eigen3)
         target_link_libraries(${PROJECT_NAME} PRIVATE "-framework Accelerate")
-    else()
-        target_include_directories(${PROJECT_NAME} PRIVATE /usr/include/eigen3)
     endif()
 
-    target_link_libraries(${PROJECT_NAME} PRIVATE SDL3::SDL3 ${Vulkan_LIBRARIES} GPUOpen::VulkanMemoryAllocator ${SHADERC_LIB} nfd tetgen PkgConfig::FFTW3F lunasvg fastgltf::fastgltf simdjson::simdjson basisu_transcoder Jolt webp)
+    target_link_libraries(${PROJECT_NAME} PRIVATE SDL3::SDL3 ${Vulkan_LIBRARIES} GPUOpen::VulkanMemoryAllocator ${SHADERC_LIB} nfd tetgen meshoptimizer PkgConfig::FFTW3F lunasvg fastgltf::fastgltf simdjson::simdjson basisu_transcoder Jolt webp)
 
     if(CMAKE_BUILD_TYPE MATCHES Debug)
         target_compile_definitions(${PROJECT_NAME} PRIVATE DEBUG_BUILD)

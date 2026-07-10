@@ -41,4 +41,5 @@ struct ModalModelCreateInfo {
     uint32_t NumVertices{10};
     bool CopySoundVertices{true}; // Only used if excitable component is already present.
     bool QualityTets{false};
+    float SolveResolution{1}; // Fraction of surface triangles used for the modal solve. Lower is faster and less accurate.
 };

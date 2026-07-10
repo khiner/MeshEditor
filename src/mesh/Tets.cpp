@@ -1,21 +1,29 @@
 #include "mesh/Tets.h"
-#include "mesh/Mesh.h"
 
+#include "meshoptimizer.h"
 #include "tetgen.h"
 
 #include <format>
 
-std::unique_ptr<tetgenio> GenerateTets(const Mesh &mesh, vec3 scale, TetGenOptions options) {
+std::unique_ptr<tetgenio> GenerateTets(std::vector<vec3> positions, std::vector<uint32_t> triangle_indices, TetGenOptions options) {
     static constexpr int TriVerts = 3;
+    if (options.SimplifyRatio < 1) {
+        // Quadric edge-collapse to the target triangle count, then drop unreferenced vertices.
+        const auto target_indices = std::max<size_t>(size_t(triangle_indices.size() * options.SimplifyRatio) / 3 * 3, 12);
+        std::vector<uint32_t> simplified(triangle_indices.size());
+        simplified.resize(meshopt_simplify(simplified.data(), triangle_indices.data(), triangle_indices.size(), &positions[0].x, positions.size(), sizeof(vec3), target_indices, 0.05f, 0, nullptr));
+        positions.resize(meshopt_optimizeVertexFetch(positions.data(), simplified.data(), simplified.size(), positions.data(), positions.size(), sizeof(vec3)));
+        triangle_indices = std::move(simplified);
+    }
+
     tetgenio in;
-    const auto triangle_indices = mesh.CreateTriangleIndices();
-    in.numberofpoints = mesh.VertexCount();
+    in.numberofpoints = positions.size();
     in.pointlist = new REAL[in.numberofpoints * TriVerts];
     for (uint32_t i = 0; i < uint32_t(in.numberofpoints); ++i) {
-        const auto &p = mesh.GetPosition(Mesh::VH{i});
-        in.pointlist[i * TriVerts] = p.x * scale.x;
-        in.pointlist[i * TriVerts + 1] = p.y * scale.y;
-        in.pointlist[i * TriVerts + 2] = p.z * scale.z;
+        const auto &p = positions[i];
+        in.pointlist[i * TriVerts] = p.x;
+        in.pointlist[i * TriVerts + 1] = p.y;
+        in.pointlist[i * TriVerts + 2] = p.z;
     }
     in.numberoffacets = triangle_indices.size() / TriVerts;
     in.facetlist = new tetgenio::facet[in.numberoffacets];

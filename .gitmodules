@@ -71,3 +71,6 @@
 [submodule "lib/libwebp"]
 	path = lib/libwebp
 	url = git@github.com:webmproject/libwebp.git
+[submodule "lib/meshoptimizer"]
+	path = lib/meshoptimizer
+	url = git@github.com:zeux/meshoptimizer.git

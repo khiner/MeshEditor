@@ -4,6 +4,7 @@ add_subdirectory(VulkanMemoryAllocator SYSTEM)
 add_subdirectory(tetgen)
 target_compile_options(tetgen PRIVATE -w)
 add_subdirectory(lunasvg)
+add_subdirectory(meshoptimizer)
 add_subdirectory(tinyobjloader)
 add_subdirectory(tinyply)
 

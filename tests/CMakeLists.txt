@@ -93,6 +93,20 @@ target_link_libraries(MeshEditorActionSerializeTest PRIVATE Boost::ut)
 target_compile_definitions(MeshEditorActionSerializeTest PRIVATE GLM_ENABLE_EXPERIMENTAL DEBUG_BUILD)
 target_compile_options(MeshEditorActionSerializeTest PRIVATE -Wall -Wextra -Wno-missing-field-initializers -Wno-elaborated-enum-base -fno-rtti)
 
+# Standalone: the modal FEM solver reads tet geometry directly, so it needs only mesh2modes.cpp and
+# Tets.cpp with tetgen, meshoptimizer, Eigen, and Spectra.
+add_executable(MeshEditorModalSolverTest ModalSolverTest.cpp ${CMAKE_SOURCE_DIR}/src/audio/mesh2modes.cpp ${CMAKE_SOURCE_DIR}/src/mesh/Tets.cpp)
+target_include_directories(MeshEditorModalSolverTest PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${EIGEN3_INCLUDE_DIR}
+    SYSTEM ${CMAKE_SOURCE_DIR}/lib/glm
+    SYSTEM ${CMAKE_SOURCE_DIR}/lib/spectra/include
+    SYSTEM ${CMAKE_SOURCE_DIR}/lib/tetgen
+)
+target_link_libraries(MeshEditorModalSolverTest PRIVATE Boost::ut tetgen meshoptimizer)
+target_compile_definitions(MeshEditorModalSolverTest PRIVATE GLM_ENABLE_EXPERIMENTAL DEBUG_BUILD TETLIBRARY)
+target_compile_options(MeshEditorModalSolverTest PRIVATE -Wall -Wextra -Wno-missing-field-initializers -Wno-elaborated-enum-base -fno-rtti)
+
 # Standalone: the Hertz contact-time math is pure (no GPU/registry/mesh), so it needs only ContactModel.cpp.
 add_executable(MeshEditorContactModelTest ContactModelTest.cpp ${CMAKE_SOURCE_DIR}/src/audio/ContactModel.cpp)
 target_include_directories(MeshEditorContactModelTest PRIVATE

@@ -14,7 +14,9 @@ struct ModalResult {
     MassProperties MassProps;
 };
 
-// Sample positions are divided by `scale` (the tet scale) to recover node-local coordinates. `baked_scale` (the node's
-// world scale) converts those node-local lengths to SI for the mass properties.
-ModalResult mesh2modes(const tetgenio &, const AcousticMaterialProperties &, const std::vector<uint32_t> &excitable_vertices, vec3 scale, vec3 baked_scale, std::optional<float> fundamental_freq);
+// FEM modal analysis over quadratic (10-node) tetrahedral elements. Tet geometry is in SI meters,
+// so frequencies are in Hz and eigenvectors are mass-normalized. Each excitation position (SI) is
+// sampled at its nearest tet point. `baked_scale` (the node's world scale) recovers node-local
+// sample positions. ModalModes::Vertices is left empty.
+ModalResult mesh2modes(const tetgenio &, const AcousticMaterialProperties &, const std::vector<vec3> &excite_positions, vec3 baked_scale, std::optional<float> fundamental_freq);
 } // namespace modal

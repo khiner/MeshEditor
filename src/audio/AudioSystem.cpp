@@ -35,6 +35,7 @@ template<> struct FieldLimits<&ModalModelCreateInfo::Material, &AcousticMaterial
 template<> struct FieldLimits<&ModalModelCreateInfo::Material, &AcousticMaterial::Properties, &AcousticMaterialProperties::PoissonRatio> : Within<0., 0.49> {};
 template<> struct FieldLimits<&ModalModelCreateInfo::Material, &AcousticMaterial::Properties, &AcousticMaterialProperties::Alpha> : AtLeast<0.> {};
 template<> struct FieldLimits<&ModalModelCreateInfo::Material, &AcousticMaterial::Properties, &AcousticMaterialProperties::Beta> : AtLeast<0.> {};
+template<> struct FieldLimits<&ModalModelCreateInfo::SolveResolution> : Within<0.05, 1.> {};
 
 // Striker capsule dimensions, in meters.
 template<> struct FieldLimits<&Striker::TipRadius> : Within<0.0005, 0.1> {};
@@ -212,7 +213,7 @@ std::optional<fs::path> ActiveSamplePath(const entt::registry &r, entt::entity i
 /***** Modal synthesis bank *****/
 
 // Base output level of a modal object. ModalGain scales relative to this.
-constexpr float ModalLevel{0.4f};
+constexpr float ModalLevel{0.14f};
 
 // Reduce a (possibly non-uniform or mirrored) world scale to a positive size ratio relative to the baked size.
 float UniformScaleRatio(const entt::registry &r, entt::entity e, const ModalModes &modes) {
@@ -752,6 +753,8 @@ void DrawModalCreateForm(
     SeparatorText("Tet mesh");
     f.Check<&MMCI::QualityTets>("Quality");
     MeshEditor::HelpMarker("Add new Steiner points to the interior of the tet mesh to improve model quality.");
+    f.Slider<&MMCI::SolveResolution>("Solve resolution");
+    MeshEditor::HelpMarker("Fraction of surface triangles used for the modal solve. Lower is faster and less accurate.");
 
     SeparatorText("SoundVertices vertices");
     if (has_excitable) f.Check<&MMCI::CopySoundVertices>("Copy excitable vertices");
@@ -772,23 +775,27 @@ void DrawModalCreateForm(
         auto new_sound_vertices = info.CopySoundVertices && r.all_of<SoundVertices>(e) ?
             r.get<const SoundVertices>(e) :
             SoundVertices{iota_view{0u, ex_count} | transform([&](uint32_t i) { return i * num_vertices / ex_count; }) | to<std::vector<uint32_t>>()};
-        constexpr float ScaleFactor{2}; // Mode freq estimates for RealImpact meshes seem to be consistently about twice as high as recordings.
+        // Positions are scaled to the node's world scale, so the solver works in SI meters.
         const vec3 node_scale = r.get<const WorldTransform>(e).S;
-        const vec3 tet_scale = ScaleFactor * node_scale;
-        auto tets = GenerateTets(mesh, tet_scale, {.PreserveSurface = true, .Quality = info.QualityTets});
+        std::vector<vec3> positions(num_vertices);
+        for (uint32_t i = 0; i < num_vertices; ++i) positions[i] = mesh.GetPosition(Mesh::VH{i}) * node_scale;
+        auto excite_positions = new_sound_vertices.Vertices | transform([&](uint32_t v) { return positions[v]; }) | to<std::vector<vec3>>();
         std::optional<float> fundamental;
         if (const auto path = ActiveSamplePath(r, e)) {
             const auto &frames = GetSampleFrames(r, viewport, *path);
             if (!frames.empty()) fundamental = EstimateFundamentalFrequency(ComputeFft(frames));
         }
         const auto material_props = material.Properties;
+        const TetGenOptions tet_options{.PreserveSurface = true, .Quality = info.QualityTets, .SimplifyRatio = info.SolveResolution};
         action::Emit(action::audio::SubmitModalForm{});
         ModalGenerator = std::make_unique<Worker<ModalGenerationResult>>(
             parent_window, "Generating modal audio model...",
-            [tets = std::move(tets), tet_scale, node_scale, material_props, sound_vertices = std::move(new_sound_vertices), fundamental]() mutable {
-                auto result = modal::mesh2modes(*tets, material_props, sound_vertices.Vertices, tet_scale, node_scale, fundamental);
+            [positions = std::move(positions), triangle_indices = mesh.CreateTriangleIndices(), tet_options, node_scale, material_props, sound_vertices = std::move(new_sound_vertices), excite_positions = std::move(excite_positions), fundamental]() mutable {
+                const auto tets = GenerateTets(std::move(positions), std::move(triangle_indices), tet_options);
+                auto result = modal::mesh2modes(*tets, material_props, excite_positions, node_scale, fundamental);
+                result.Modes.Vertices = std::move(sound_vertices.Vertices);
                 result.Modes.BakedScale = node_scale;
-                return ModalGenerationResult{std::move(result.Modes), BuildTetMeshData(*tets, tet_scale), std::move(result.MassProps)};
+                return ModalGenerationResult{std::move(result.Modes), BuildTetMeshData(*tets, node_scale), std::move(result.MassProps)};
             }
         );
     }
