@@ -94,7 +94,7 @@ Companion reference for the spec in `extensions/2.0/Khronos/KHR_audio_modal/`. N
 
 **Decision.** The normative output is the superposition Σ aₙ e^(−dₙt) sin(2πfₙt) with relative amplitudes across modes/excitations/instances normative and absolute level implementation-defined; any resonator with matching impulse response is admissible.
 
-**Why.** This pins down what cross-implementation consistency actually requires (the *balance* of the sound) without dictating architecture — biquad banks (MeshEditor/Faust), complex one-pole updates, frequency-domain synthesis, and full wave solvers all qualify. Absolute level is the audio analog of exposure in rendering: platform/mixing territory. Sine phase is specified for definiteness but phase is perceptually irrelevant; the literature uses the same form.
+**Why.** This pins down what cross-implementation consistency actually requires (the *balance* of the sound) without dictating architecture — biquad banks, complex one-pole updates (MeshEditor), frequency-domain synthesis, and full wave solvers all qualify. Absolute level is the audio analog of exposure in rendering: platform/mixing territory. Sine phase is specified for definiteness but phase is perceptually irrelevant; the literature uses the same form.
 
 ## Acceleration noise in scope, mass properties self-contained
 
@@ -106,7 +106,7 @@ Companion reference for the spec in `extensions/2.0/Khronos/KHR_audio_modal/`. N
 
 **Decision.** Implementations MUST NOT produce aliased output from modes at or above the output Nyquist frequency; equivalently, such modes contribute no output.
 
-**Why MUST.** A resonator instantiated above Nyquist doesn't drop the mode — it aliases, folding to fs − f: a ghost partial with no physical interpretation. There is no legitimate rendering of such a mode at that output rate, so the requirement forbids exactly one thing (aliased garbage) and permits every real architecture: skipping (MeshEditor's Faust already does — `select2(modeFreqs(n) < ma.SR/2 − 1, 0)`), or high internal rates with anti-aliased decimation (WaveBlender), where the mode is equivalently absent from the output. As a MUST it guarantees the predictability that matters: an asset with modes to 20 kHz played through a 32 kHz output must sound like a low-passed version of itself, never gain inharmonic tones.
+**Why MUST.** A resonator instantiated above Nyquist doesn't drop the mode — it aliases, folding to fs − f: a ghost partial with no physical interpretation. There is no legitimate rendering of such a mode at that output rate, so the requirement forbids exactly one thing (aliased garbage) and permits every real architecture: skipping (MeshEditor mutes modes at or above Nyquist), or high internal rates with anti-aliased decimation (WaveBlender), where the mode is equivalently absent from the output. As a MUST it guarantees the predictability that matters: an asset with modes to 20 kHz played through a 32 kHz output must sound like a low-passed version of itself, never gain inharmonic tones.
 
 ## Scale semantics
 

@@ -31,8 +31,8 @@ Audio-specific features:
 * Volume / Mute
 * Generate an efficient physical audio model for any mesh. (See [Physical audio modeling](#physical-audio-modeling).)
   - Click on an audio mesh to excite the nearest vertex, or trigger a selected vertex in the audio menu
-  - Edit model DSP params in real-time (via an embedded ImGui Faust parameter editor)
-  - View/navigate the generated audio graph (via an embedded Faust SVG diagram navigator)
+  - Strike any number of objects and vertices concurrently (polyphonic modal synthesis)
+  - Edit synth params (gain, fundamental frequency, decay scale, click level) in real-time
 * Load [RealImpact](https://samuelpclarke.com/realimpact/) datasets, including the object mesh and instanced cylinders for each microphone position.
 
 Noteworthy dev bits:
@@ -50,9 +50,13 @@ Noteworthy dev bits:
 This project supports generating an efficient physical audio model for any mesh using Linear Modal Analysis/Synthesis
 
 The physical audio modeling was originally implemented as a final project for PHYS-6260 - Computational Physics at Georgia Tech during my Master's.
-It's gotten a lot of work since then, but the details laid out in [the final report](paper/PAMofPassiveRigidBodies.pdf) are still the same, as well as this 36X48 poster:
+It's gotten a lot of work since then. The basics of the model generation process laid out in [the final report](paper/PAMofPassiveRigidBodies.pdf) and this 36X48 poster still hold, but the synthesis architecture has since been replaced (see below).
 
 ![](paper/ProjectPoster36X48.png)
+
+The report and poster describe rendering modal models with [Faust](https://github.com/grame-cncm/faust): MeshEditor generated Faust DSP code from the modal analysis results and JIT-compiled it to a native audio graph with LLVM.
+Faust has since been replaced with a custom modal resonator bank to support many simultaneously sounding objects with physics collision impacts.
+The last commit using Faust code generation is [31a817dd](https://github.com/khiner/MeshEditor/commit/31a817ddf1fd28d1b7aa1724e3e166b9c0eb58e4).
 
 #### Impact audio experiments
 
@@ -197,7 +201,6 @@ Rendering is fixed-step (one tick per timeline frame) and GPU-paced at a fixed e
 - [Vulkan](https://www.vulkan.org/) + [ImGui](https://github.com/ocornut/imgui) + [SDL3](https://github.comlibsdl-org/SDL): Graphics + immediate-mode UI/UX
 - [glm](https://github.com/g-truc/glm): Small numeric vector/matrix types + math
 - [entt](https://github.com/skypjack/entt): Entity Component System (ECS) for an efficient and scalable mixin-style architectural pattern
-- [Faust](https://github.com/grame-cncm/faust): Functional audio programming language, used to render modal audio models to audio graphs
 - [miniaudio](https://github.com/mackron/miniaudio): Audio stream I/O
 - [tetgen](https://github.com/libigl/tetgen): Fast conversion of triangular 3D surface meshes into tetrahedral volume meshes
 - [Spectra](https://github.com/yixuan/spectra) Estimate eigenvalues/vectors for modal analysis
@@ -207,7 +210,7 @@ Rendering is fixed-step (one tick per timeline frame) and GPU-paced at a fixed e
 - [basis_universal](https://github.com/BinomialLLC/basis_universal) KTX2 texture transcoding (`KHR_texture_basisu`)
 - [libwebp](https://github.com/webmproject/libwebp) WebP texture decoding and lossless snapshot/texture encoding (`EXT_texture_webp`)
 - [tinyobjloader](https://github.com/tinyobjloader/tinyobjloader) and [tinyply](https://github.com/ddiakopoulos/tinyply): `.obj` and `.ply` mesh loading
-- [lunasvg](https://github.com/sammycage/lunasvg): Render Faust SVGs to bitmaps, parse SVG link bounding boxes, render SVG icons
+- [lunasvg](https://github.com/sammycage/lunasvg): Render SVG icons to bitmaps
 - [fftw](https://www.fftw.org/) compute spectrograms (visualized with ImPlot)
 - [ImPlot](https://github.com/epezent/implot): Plotting
 - [nativefiledialog-extended](https://github.com/btzynativefiledialog-extended): Native file dialogs (TODO SDL3 now has `SDL_Dialog`)

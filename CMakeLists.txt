@@ -15,8 +15,6 @@ if(APPLE)
     enable_language(OBJC) # Needed for nativefiledialog
 endif()
 
-set(STATIC_FAUST on CACHE BOOL "Build Static Faust library" FORCE)
-
 add_subdirectory(lib)
 
 add_library(basisu_transcoder STATIC
@@ -27,13 +25,6 @@ target_include_directories(basisu_transcoder SYSTEM PUBLIC lib/basis_universal/t
 target_compile_options(basisu_transcoder PRIVATE -w -fno-strict-aliasing $<$<COMPILE_LANGUAGE:CXX>:-include exception>)
 
 # Ignore lib warnings
-target_compile_options(staticlib PRIVATE -w) # Faust (can't use alias target)
-if(APPLE)
-    # Faust statically links LLVM, which references zstd/xml2 by bare -l. On macOS they live under
-    # the Homebrew prefix, off the default link path.
-    execute_process(COMMAND brew --prefix OUTPUT_VARIABLE HOMEBREW_PREFIX OUTPUT_STRIP_TRAILING_WHITESPACE)
-    target_link_directories(staticlib INTERFACE ${HOMEBREW_PREFIX}/lib)
-endif()
 file(GLOB_RECURSE LIB_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/lib/*.c ${CMAKE_CURRENT_SOURCE_DIR}/lib/*.cpp)
 set_source_files_properties(${LIB_SOURCES} PROPERTIES COMPILE_FLAGS "-w")
 
@@ -118,13 +109,6 @@ include_directories(
     SYSTEM lib/entt/src
     SYSTEM lib/miniaudio/extras/miniaudio_split
     SYSTEM lib/tetgen
-    SYSTEM lib/faust/architecture
-    # Remaining faust includes for `drawschema.hh`
-    SYSTEM lib/faust/compiler
-    SYSTEM lib/faust/compiler/errors
-    SYSTEM lib/faust/compiler/tlib
-    SYSTEM lib/faust/compiler/boxes
-
     SYSTEM lib/spectra/include
     SYSTEM lib/tinyobjloader
     SYSTEM lib/tinyply/source
@@ -214,7 +198,7 @@ if(MESHEDITOR_APP)
         target_include_directories(${PROJECT_NAME} PRIVATE /usr/include/eigen3)
     endif()
 
-    target_link_libraries(${PROJECT_NAME} PRIVATE SDL3::SDL3 ${Vulkan_LIBRARIES} GPUOpen::VulkanMemoryAllocator ${SHADERC_LIB} nfd faustlib tetgen PkgConfig::FFTW3F lunasvg fastgltf::fastgltf simdjson::simdjson basisu_transcoder Jolt webp)
+    target_link_libraries(${PROJECT_NAME} PRIVATE SDL3::SDL3 ${Vulkan_LIBRARIES} GPUOpen::VulkanMemoryAllocator ${SHADERC_LIB} nfd tetgen PkgConfig::FFTW3F lunasvg fastgltf::fastgltf simdjson::simdjson basisu_transcoder Jolt webp)
 
     if(CMAKE_BUILD_TYPE MATCHES Debug)
         target_compile_definitions(${PROJECT_NAME} PRIVATE DEBUG_BUILD)
@@ -248,12 +232,6 @@ if(MESHEDITOR_APP)
     set_target_properties(${PROJECT_NAME} PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
     target_compile_options(${PROJECT_NAME} PRIVATE -Wall -Wextra -Wno-elaborated-enum-base -fno-rtti)
 endif()
-
-# Disable lib warnings
-# staticlib is faustlib (can't use alias target)
-foreach(target IN LISTS disable_warning_targets)
-    target_compile_options(${target} PRIVATE -w)
-endforeach()
 
 add_definitions(-DTETLIBRARY)
 add_definitions(-DIMGUI_DEFINE_MATH_OPERATORS -DGLM_ENABLE_EXPERIMENTAL -DZPP_BITS_AUTODETECT_MEMBERS_MODE=1)

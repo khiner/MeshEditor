@@ -324,6 +324,7 @@ void SetupScene(entt::registry &r, entt::entity viewport) {
     r.emplace_or_replace<AudioOutputConfig>(viewport);
     r.emplace_or_replace<AudioOutputMix>(viewport);
     r.emplace_or_replace<Striker>(viewport);
+    r.emplace_or_replace<ModalSoundControls>(viewport);
     r.emplace_or_replace<PlaybackFrame>(viewport);
     r.emplace_or_replace<LastEvaluatedFrame>(viewport);
     r.emplace_or_replace<EnabledInteractionModes>(viewport);

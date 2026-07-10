@@ -8,8 +8,6 @@
 #include <span>
 #include <vector>
 
-struct FaustDSP;
-
 struct Recording {
     Recording(uint32_t frame_count) : Frames(frame_count) {}
     std::vector<float> Frames;
@@ -72,4 +70,3 @@ std::vector<float> LoadAudioFrames(const std::string &file_path);
 
 void Stop(entt::registry &, entt::entity sound_entity);
 void SetModel(entt::registry &, entt::entity sound_entity, SoundVerticesModel);
-void SetVertex(entt::registry &, entt::entity sound_entity, uint32_t vertex);

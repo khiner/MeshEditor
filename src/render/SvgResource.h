@@ -6,7 +6,6 @@
 #include <filesystem>
 #include <functional>
 #include <memory>
-#include <optional>
 #include <span>
 
 namespace vk {
@@ -22,8 +21,6 @@ struct SvgResource {
     SvgResource(vk::Device, const BitmapToImage &, std::filesystem::path);
     ~SvgResource();
 
-    // Returns the clicked link path.
-    std::optional<std::filesystem::path> Draw() const;
     // Draw icon at given size (no interaction)
     void DrawIcon(vec2 size) const;
 

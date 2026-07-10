@@ -1,6 +1,5 @@
 #pragma once
 
-#include "render/CreateSvgResource.h"
 #include "vulkan/VulkanResources.h"
 
 #include <entt/entity/fwd.hpp>
@@ -13,7 +12,7 @@ entt::entity InitEngine(entt::registry &, VulkanResources);
 void DeinitViewport(entt::registry &, entt::entity viewport);
 
 // App-only presentation/media layered on InitEngine.
-void InitViewportMedia(entt::registry &, CreateSvgResource &&);
+void InitViewportMedia(entt::registry &);
 void DeinitViewportMedia(entt::registry &);
 
 // Run ProcessComponentEvents, then record and submit the GPU render (nonblocking).

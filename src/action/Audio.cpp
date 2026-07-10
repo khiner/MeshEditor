@@ -23,9 +23,8 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
                 const auto e = FindActiveEntity(r);
                 r.remove<VertexForce>(e);
                 r.emplace_or_replace<MeshActiveElement>(GetActiveMeshEntity(r), a.MeshVertex);
-                ::SetVertex(r, e, a.VertexIndex);
+                ::Stop(r, e);
             },
-            [&](const SetActiveElementFromDsp &a) { r.emplace_or_replace<MeshActiveElement>(GetActiveMeshEntity(r), a.Vertex); },
             [&](const StartExcite &a) {
                 const auto e = FindActiveEntity(r);
                 r.remove<VertexForce>(e);

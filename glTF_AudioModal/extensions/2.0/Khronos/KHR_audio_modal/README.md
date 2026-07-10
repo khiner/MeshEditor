@@ -292,7 +292,7 @@ Modal model and acoustic material data are static and not addressable.
 
 ## Known Implementations
 
-- [MeshEditor](https://github.com/khiner/MeshEditor) — authoring (FEM modal analysis from meshes) and rendering (Faust-based resonator bank), with extension import/export in progress.
+- [MeshEditor](https://github.com/khiner/MeshEditor) — authoring (FEM modal analysis from meshes) and rendering (coupled-form resonator bank), with extension import/export in progress.
 
 ## References
 

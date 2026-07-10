@@ -27,7 +27,6 @@ jobs:
         with:
           key: ${{ runner.os }}-tests
 
-      # LLVM_CONFIG points faust's configure at brew's keg-only llvm (it is not on PATH).
       - name: Configure
         run: >
           cmake -B build -G Ninja
@@ -37,7 +36,6 @@ jobs:
           -DCMAKE_CXX_COMPILER=/opt/homebrew/opt/llvm/bin/clang++
           -DCMAKE_C_COMPILER_LAUNCHER=ccache
           -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
-          -DLLVM_CONFIG=/opt/homebrew/opt/llvm/bin/llvm-config
 
       - name: Build tests
         run: cmake --build build --target MeshEditorTests MeshEditorActionSerializeTest

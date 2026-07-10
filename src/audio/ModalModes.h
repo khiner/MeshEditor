@@ -18,3 +18,9 @@ struct ModalModes {
 struct ModalGain {
     float Value{1.f};
 };
+
+// Per-instance synth tuning.
+struct ModalTuning {
+    float FundamentalFreq{0.f}; // Target frequency of the first mode, Hz. All modes shift proportionally. 0 keeps the baked tuning.
+    float T60Scale{1.f}; // Multiplies every mode's T60.
+};

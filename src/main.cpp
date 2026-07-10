@@ -22,8 +22,6 @@
 #include "object/ExtrasComponents.h"
 #include "physics/PhysicsTypes.h"
 #include "render/MaterialComponents.h"
-#include "render/SvgResource.h"
-#include "render/SvgUpload.h"
 #include "scene/Entity.h"
 #include "scene/SceneControlsUi.h"
 #include "scene/WorldTransform.h"
@@ -715,13 +713,8 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
 
     NFD_Init();
     entt::registry r;
-    auto create_svg = [device = *vc->Device, &r, &wd](std::unique_ptr<SvgResource> &svg, fs::path path) {
-        // Wait for previous frame's ImGui render to complete, since it may have sampled the old texture.
-        CheckVk(device.waitForFences({wd.Frames[wd.FrameIndex].Fence}, true, UINT64_MAX));
-        svg = LoadSvg(r, std::move(path));
-    };
     const auto viewport = InitEngine(r, vc->Resources());
-    InitViewportMedia(r, std::move(create_svg));
+    InitViewportMedia(r);
     SetupScene(r, viewport); // Before the first frame reads viewport state.
     // Capture the DPI scale (only set during NewFrame) before priming DPI-scaled GPU state like edge-line width.
     ImGui_ImplSDL3_NewFrame();
@@ -1118,7 +1111,7 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
 
     // Tear down the viewport and its ctx-resident GPU stores in order before clearing the registry,
     // so GpuBuffers (and its VMA allocator) outlives the MeshStore allocations that retire into it.
-    DeinitViewportMedia(r); // App-only media (icons/Faust/ImGui texture), while the device + GpuBuffers are alive.
+    DeinitViewportMedia(r); // App-only media (icons/modal audio/ImGui texture), while the device + GpuBuffers are alive.
     DeinitViewport(r, viewport);
 
     ImGui_ImplVulkan_Shutdown();

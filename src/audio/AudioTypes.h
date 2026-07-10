@@ -19,6 +19,11 @@ struct AudioOutputMix {
     float Volume{1.f};
 };
 
+// Viewport-level modal synthesis controls.
+struct ModalSoundControls {
+    float ClickGain{1.f}; // Level of the rigid-body acceleration-noise click.
+};
+
 enum class SoundVerticesModel {
     // Play back recordings of impacts on the object at provided listener points/vertices.
     Samples,

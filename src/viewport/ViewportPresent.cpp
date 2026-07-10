@@ -3,7 +3,7 @@
 #include "Camera.h"
 #include "VideoRecorder.h"
 #include "audio/AudioSystem.h"
-#include "audio/FaustDSP.h"
+#include "audio/ModalAudio.h"
 #include "render/GpuBuffers.h"
 #include "render/OneShotGpu.h"
 #include "render/Pipelines.h"
@@ -50,9 +50,9 @@ std::pair<vk::Offset3D, vk::Extent2D> GetCaptureRegion(const entt::registry &r) 
 }
 } // namespace
 
-void InitViewportMedia(entt::registry &r, CreateSvgResource &&create_svg) {
+void InitViewportMedia(entt::registry &r) {
     LoadViewportIcons(r);
-    r.ctx().emplace<FaustDSP>(std::move(create_svg));
+    r.ctx().emplace<ModalAudio>();
     RegisterAudioComponentHandlers(r);
     r.ctx().emplace<ViewportTextureState>();
 }
@@ -60,7 +60,7 @@ void InitViewportMedia(entt::registry &r, CreateSvgResource &&create_svg) {
 void DeinitViewportMedia(entt::registry &r) {
     r.ctx().erase<ViewportTextureState>();
     r.ctx().erase<ViewportIcons>();
-    r.ctx().erase<FaustDSP>();
+    r.ctx().erase<ModalAudio>();
 }
 
 void DisplayViewport(entt::registry &r, entt::entity viewport) {

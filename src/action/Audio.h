@@ -18,9 +18,6 @@ struct SetExciteVertex {
     uint32_t VertexIndex; // Indexes `SoundVertices::Vertices`
     uint32_t MeshVertex; // Mesh handle stored at `SoundVertices::Vertices[VertexIndex]`
 };
-struct SetActiveElementFromDsp {
-    uint32_t Vertex;
-};
 struct StartExcite {
     uint32_t Vertex;
 };
@@ -57,7 +54,7 @@ struct ApplyExciteImpact {
 struct ClearExciteImpacts {};
 
 using Actions = std::variant<
-    SetModel, SetExciteVertex, SetActiveElementFromDsp,
+    SetModel, SetExciteVertex,
     StartExcite, StopExcite, DeleteSoundObject, StartRecording,
     OpenModalForm, CancelModalForm, SubmitModalForm,
     AssignVertexSamples, RemoveVertexSamples, ActivateRealImpactMicrophone, SetModalFormMaterial,
