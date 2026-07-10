@@ -17,8 +17,5 @@ struct SvgUploadBatch {
     std::unique_ptr<Impl> Imp;
 };
 
-std::unique_ptr<SvgResource> LoadSvg(SvgUploadBatch &, std::filesystem::path);
+std::unique_ptr<SvgResource> LoadSvg(SvgUploadBatch &, const std::filesystem::path &);
 void SubmitSvgUpload(SvgUploadBatch &);
-
-// Convenience method to load and submit a one-shot batch.
-std::unique_ptr<SvgResource> LoadSvg(entt::registry &, std::filesystem::path);

@@ -512,9 +512,9 @@ void RegisterAudioComponentHandlers(entt::registry &r) {
     });
 }
 
-void ProcessAudio(entt::registry &r, entt::entity viewport, AudioBuffer buffer) {
-    std::fill_n(buffer.Output, buffer.FrameCount, 0.f);
-    RenderModal(r.ctx().get<ModalAudio>(), buffer.Output, buffer.FrameCount);
+void ProcessAudio(entt::registry &r, entt::entity viewport, float *output, uint32_t frame_count) {
+    std::fill_n(output, frame_count, 0.f);
+    RenderModal(r.ctx().get<ModalAudio>(), output, frame_count);
 
     for (const auto [entity, model] : r.view<SoundVerticesModel>().each()) {
         if (model == SoundVerticesModel::Samples) {
@@ -523,13 +523,13 @@ void ProcessAudio(entt::registry &r, entt::entity viewport, AudioBuffer buffer) 
             const auto path = ActiveSamplePath(r, entity);
             if (!path) continue;
             const auto &impact_samples = GetSampleFrames(r, viewport, *path);
-            for (uint32_t i = 0; i < buffer.FrameCount; ++i) {
-                buffer.Output[i] += samples->Frame < impact_samples.size() ? impact_samples[samples->Frame++] : 0.0f;
+            for (uint32_t i = 0; i < frame_count; ++i) {
+                output[i] += samples->Frame < impact_samples.size() ? impact_samples[samples->Frame++] : 0.0f;
             }
         } else if (model == SoundVerticesModel::Modal) {
             if (auto *recording = r.try_get<Recording>(entity)) {
-                for (uint32_t i = 0; i < buffer.FrameCount && !recording->Complete(); ++i) {
-                    recording->Record(buffer.Output[i]);
+                for (uint32_t i = 0; i < frame_count && !recording->Complete(); ++i) {
+                    recording->Record(output[i]);
                 }
             }
         }
@@ -700,7 +700,7 @@ struct ModalGenerationResult {
     TetMeshData Tets;
     MassProperties Mass;
 };
-std::unique_ptr<Worker<ModalGenerationResult>> DspGenerator;
+std::unique_ptr<Worker<ModalGenerationResult>> ModalGenerator;
 
 fs::path PickAudioFile() {
     static const std::array filters{nfdfilteritem_t{"Audio", "wav,mp3,flac,ogg,opus"}};
@@ -783,10 +783,10 @@ void DrawModalCreateForm(
         }
         const auto material_props = material.Properties;
         action::Emit(action::audio::SubmitModalForm{});
-        DspGenerator = std::make_unique<Worker<ModalGenerationResult>>(
+        ModalGenerator = std::make_unique<Worker<ModalGenerationResult>>(
             parent_window, "Generating modal audio model...",
             [tets = std::move(tets), tet_scale, node_scale, material_props, sound_vertices = std::move(new_sound_vertices), fundamental]() mutable {
-                auto result = m2f::mesh2modes(*tets, material_props, sound_vertices.Vertices, tet_scale, node_scale, fundamental);
+                auto result = modal::mesh2modes(*tets, material_props, sound_vertices.Vertices, tet_scale, node_scale, fundamental);
                 result.Modes.BakedScale = node_scale;
                 return ModalGenerationResult{std::move(result.Modes), BuildTetMeshData(*tets, tet_scale), std::move(result.MassProps)};
             }
@@ -852,9 +852,9 @@ void DrawObjectAudioControls(
 ) {
     if (e == entt::null || mesh_entity == entt::null) return;
 
-    if (auto &dsp_generator = DspGenerator) {
-        if (auto result = dsp_generator->Render()) {
-            dsp_generator.reset();
+    if (auto &generator = ModalGenerator) {
+        if (auto result = generator->Render()) {
+            generator.reset();
             if (result->Modes.Freqs.empty()) {
                 std::cerr << "Modal model computation failed.\n";
             } else {

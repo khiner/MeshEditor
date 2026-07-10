@@ -351,7 +351,7 @@ ModalModes ComputeModes(
 }
 } // namespace
 
-m2f::ModalResult m2f::mesh2modes(const tetgenio &tets, const AcousticMaterialProperties &material, const std::vector<uint> &excitable_vertices, vec3 scale, vec3 baked_scale, std::optional<float> fundamental_freq) {
+modal::ModalResult modal::mesh2modes(const tetgenio &tets, const AcousticMaterialProperties &material, const std::vector<uint> &excitable_vertices, vec3 scale, vec3 baked_scale, std::optional<float> fundamental_freq) {
     const double density = material.Density;
     const double length_to_si = (double(baked_scale.x) + baked_scale.y + baked_scale.z) / 3.0;
     auto mass_props = ComputeMassProperties(tets, density, scale, length_to_si);

@@ -1,6 +1,5 @@
 #pragma once
 
-#include "AudioBuffer.h"
 #include "AudioTypes.h"
 #include <entt/entity/fwd.hpp>
 
@@ -19,7 +18,7 @@ struct Recording {
 };
 
 // Called from audio device callback.
-void ProcessAudio(entt::registry &, entt::entity viewport, AudioBuffer);
+void ProcessAudio(entt::registry &, entt::entity viewport, float *output, uint32_t frame_count);
 
 void RegisterAudioComponentHandlers(entt::registry &);
 void RemoveAudioComponents(entt::registry &, entt::entity sound_entity);

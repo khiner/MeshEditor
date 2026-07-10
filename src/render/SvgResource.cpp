@@ -43,8 +43,8 @@ private:
     static constexpr float Scale{1.5}; // Scale factor for rendering SVG to bitmap
 };
 
-SvgResource::SvgResource(vk::Device device, const BitmapToImage &render, std::filesystem::path path)
-    : Path(std::move(path)), Imp(std::make_unique<SvgResource::Impl>(device, render, Path)) {}
+SvgResource::SvgResource(vk::Device device, const BitmapToImage &render, const std::filesystem::path &path)
+    : Imp(std::make_unique<SvgResource::Impl>(device, render, path)) {}
 SvgResource::~SvgResource() = default;
 
 void SvgResource::DrawIcon(vec2 size) const {
@@ -64,20 +64,13 @@ struct SvgUploadBatch::Impl {
 SvgUploadBatch::SvgUploadBatch(entt::registry &r) : Imp(std::make_unique<Impl>(r)) {}
 SvgUploadBatch::~SvgUploadBatch() = default;
 
-std::unique_ptr<SvgResource> LoadSvg(SvgUploadBatch &batch, std::filesystem::path path) {
+std::unique_ptr<SvgResource> LoadSvg(SvgUploadBatch &batch, const std::filesystem::path &path) {
     const auto render_bitmap = [&batch](std::span<const std::byte> data, uint32_t width, uint32_t height) {
         return RenderBitmapToImage(batch.Imp->Vk, batch.Imp->Batch, data, width, height, Format::Color, ColorSubresourceRange);
     };
-    return std::make_unique<SvgResource>(batch.Imp->Vk.Device, render_bitmap, std::move(path));
+    return std::make_unique<SvgResource>(batch.Imp->Vk.Device, render_bitmap, path);
 }
 
 void SubmitSvgUpload(SvgUploadBatch &batch) {
     SubmitTextureUploadBatch(batch.Imp->Batch, batch.Imp->Vk.Queue, *batch.Imp->OneShot.Fence, batch.Imp->Vk.Device);
-}
-
-std::unique_ptr<SvgResource> LoadSvg(entt::registry &r, std::filesystem::path path) {
-    SvgUploadBatch batch{r};
-    auto svg = LoadSvg(batch, std::move(path));
-    SubmitSvgUpload(batch);
-    return svg;
 }

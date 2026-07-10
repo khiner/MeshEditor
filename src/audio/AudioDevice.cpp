@@ -19,9 +19,9 @@ ma_context Context;
 ma_device Device;
 bool ContextInitialized = false;
 
-void DataCallback(ma_device *device, void *output, const void *input, ma_uint32 frame_count) {
+void DataCallback(ma_device *device, void *output, const void *, ma_uint32 frame_count) {
     auto &res = *reinterpret_cast<AudioDeviceResource *>(device->pUserData);
-    ProcessAudio(*res.R, res.Viewport, AudioBuffer{device->sampleRate, device->playback.channels, frame_count, static_cast<const float *>(input), static_cast<float *>(output)});
+    ProcessAudio(*res.R, res.Viewport, static_cast<float *>(output), frame_count);
 }
 
 std::string SampleRateName(const AudioDeviceResource &res, uint32_t sample_rate) {
