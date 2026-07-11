@@ -3,6 +3,8 @@
 #include "ProcessEvents.h"
 #include "audio/AcousticMaterial.h"
 #include "audio/AudioTypes.h"
+#include "audio/ContactModel.h"
+#include "audio/ModalModelFile.h"
 #include "audio/ModalModes.h"
 #include "gltf/GltfScene.h"
 #include "gpu/PunctualLight.h"
@@ -11,6 +13,7 @@
 #include "mesh/MeshStore.h"
 #include "mesh/PrimitiveType.h"
 #include "mesh/Primitives.h"
+#include "mesh/TetMeshData.h"
 #include "render/GpuBuffers.h"
 #include "render/Instance.h"
 #include "render/Textures.h"
@@ -629,6 +632,24 @@ void CompareRegistries(std::string_view name, entt::registry &a, entt::registry 
     for (const auto &[type, n] : value_diffs) value_detail += std::format(" {}({})", type, n);
     expect(value_diffs.empty()) << name << "value diverged for component(s):" << value_detail;
 }
+
+const ModalModelData SampleModal{
+    .Modes = {
+        .Freqs = {110.f, 275.5f},
+        .T60s = {1.5f, 0.8f},
+        .Shapes = {{{0.1f, 0.2f, -0.3f}, {0.02f, -0.11f, 0.4f}}, {{-0.2f, 0.15f, 0.25f}, {0.3f, 0.1f, -0.2f}}},
+        .Vertices = {0, 1},
+        .Positions = {{0.f, 0.f, 0.f}, {0.4f, -0.2f, 0.1f}},
+    },
+    .Mass = {2.5, {0.1f, 0.2f, 0.3f}, {0.4f, 0.5f, 0.6f}, {1.f, 0.f, 0.f, 0.f}},
+    .Tets = {{{0.f, 0.f, 0.f}, {1.f, 0.f, 0.f}}, {0, 1}},
+    .Summary = {
+        .Eigenvalues = {4.7e5, 3.0e6},
+        .Shapes = {{{0.1f, 0.2f, -0.3f}, {0.02f, -0.11f, 0.4f}}, {{-0.2f, 0.15f, 0.25f}, {0.3f, 0.1f, -0.2f}}},
+        .SolvedMaterial = materials::acoustic::Ceramic.Properties,
+        .TetInputsHash = 0x1234abcd,
+    },
+};
 } // namespace
 
 int main(int argc, const char **argv) {
@@ -676,6 +697,18 @@ int main(int argc, const char **argv) {
             f.R.emplace<PunctualLight>(light, PunctualLight{.Range = 12.f, .Color = {0.2f, 0.4f, 0.6f}, .Intensity = 3.f}); // Bytes (generated POD)
             f.R.emplace<Name>(light, "Lamp");
 
+            // A modal sound object on the cube, exercising the audio component serializers.
+            const auto sound = f.R.create();
+            f.R.emplace<Instance>(sound, Instance{e});
+            f.R.emplace<ModalModes>(sound, SampleModal.Modes); // Serialized (nested vectors)
+            f.R.emplace<MassProperties>(sound, SampleModal.Mass); // Bytes
+            f.R.emplace<ModalEigenSummary>(sound, SampleModal.Summary); // Serialized (nested vectors)
+            f.R.emplace<SoundVerticesModel>(sound, SoundVerticesModel::Modal); // Bytes (enum)
+            f.R.emplace<ModalGain>(sound, ModalGain{0.6f}); // Bytes
+            f.R.emplace<ModalTuning>(sound, ModalTuning{440.f, 1.2f}); // Bytes
+            f.R.emplace<AcousticMaterial>(e, materials::acoustic::Ceramic); // Serialized (string)
+            f.R.emplace<TetMeshData>(e, SampleModal.Tets); // Serialized (vectors)
+
             ProcessComponentEvents(f.R, f.Viewport);
             before = snapshot::SaveState(f.R);
             expect(before.size() > sizeof(uint64_t));
@@ -688,6 +721,18 @@ int main(int argc, const char **argv) {
         const auto after = snapshot::SaveState(f.R);
         const auto diff = snapshot::Compare(before, after);
         expect(diff.Equal) << "round-trip diverged at byte" << diff.FirstDifferingByte << "of" << before.size() << "/" << after.size();
+    };
+
+    // Modal solve result files must round-trip exactly (they are the replayed source of modal
+    // components) and be write-once (identical content reuses the stored file).
+    "modal model file round trip"_test = [] {
+        const auto relative = SaveModalModelFile(SampleModal);
+        expect(!relative.empty());
+        const auto loaded = LoadModalModelFile(relative);
+        expect(bool(loaded));
+        if (!loaded) return;
+        expect(*loaded == SampleModal);
+        expect(SaveModalModelFile(SampleModal) == relative);
     };
 
     // MeshConnectivity uses in_place_delete, so erasing a mesh leaves a tombstone slot in its pool.

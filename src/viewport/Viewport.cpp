@@ -12,6 +12,8 @@
 #include "armature/BoneConstraint.h"
 #include "audio/AudioTypes.h"
 #include "audio/ContactModel.h"
+#include "audio/ModalAudio.h"
+#include "audio/ModalWarmStart.h"
 #include "audio/SoundVertices.h"
 #include "gizmo/GizmoInteraction.h"
 #include "gltf/SourceAssets.h"
@@ -399,6 +401,15 @@ void ClearScene(entt::registry &r, entt::entity viewport) {
     // Drop ColliderShapeBuffers' cached handles to the wireframe buffer entities destroyed above, so
     // EnsureWireframes rebuilds them instead of mistaking a reused entity id for a live buffer.
     r.ctx().get<ColliderShapeBuffers>().Entities.fill(entt::entity{entt::null});
+
+    // Drop the modal synthesis bank's slots for the same reason: its entities are gone, and the
+    // next scene's reused entity ids must not retune stale slots. A rebuild follows the next solve or load.
+    if (auto *modal_audio = r.ctx().find<ModalAudio>()) {
+        std::scoped_lock lock{modal_audio->StructureMutex};
+        ClearModalObjects(*modal_audio);
+    }
+    // The warm-start basis seeds re-solves of a mesh from the cleared scene, so drop it too.
+    r.ctx().erase<ModalWarmStart>();
 
     // Reset the entity, mesh-store, and GPU-arena allocators to their fresh-start state, so replaying a scene from this
     // baseline re-allocates identical ids and GPU handles. Descriptor slots need no reset, since their RangeAllocator is order-independent.

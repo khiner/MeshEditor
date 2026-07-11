@@ -27,8 +27,11 @@ void RemoveAudioComponents(entt::registry &, entt::entity sound_entity);
 void DrawStrikerControls(entt::registry &, entt::entity viewport);
 
 // Rebuild the entity's ContactDynamics from its MassProperties, ModalModes, and mesh (surface curvature).
-// Removes ContactDynamics when the inputs are missing. Call after emplacing MassProperties and ModalModes.
+// Removes ContactDynamics when the inputs are missing.
 void UpdateContactDynamics(entt::registry &, entt::entity sound_entity);
+
+// Apply a modal solve result file (relative to ModalModelsDir()) to the sound entity.
+void ApplyModalModel(entt::registry &, entt::entity sound_entity, const std::filesystem::path &relative_path);
 
 // Draw the Audio controls for a sound object entity (has SoundVerticesModel).
 // `selection_bits` is the raw SelectionBitset pointer (used in Edit mode for SampleOpVertices); may be null.

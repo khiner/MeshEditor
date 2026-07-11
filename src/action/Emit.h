@@ -8,6 +8,9 @@ namespace action {
 
 // Apply at end of frame and record. Commits any open gesture first, so gesture terminals are plain Emit.
 template<typename ActionType> void Emit(ActionType);
+// Emit, reporting whether the action was buffered (false when this frame's slot is already taken).
+// For system-generated actions, which retry on a later frame rather than drop.
+template<typename ActionType> bool TryEmit(ActionType);
 // A live-preview gesture step: apply for feedback, hold as the gesture's latest step (superseding the
 // prior), and record only when the gesture commits.
 template<typename ActionType> void EmitStaged(ActionType);

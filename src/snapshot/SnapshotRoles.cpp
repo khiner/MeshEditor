@@ -13,13 +13,18 @@
 #include "armature/ArmatureComponents.h"
 #include "armature/ArmatureSerialize.h"
 #include "armature/BoneConstraint.h"
+#include "audio/AcousticMaterial.h"
 #include "audio/AudioTypes.h"
 #include "audio/ContactModel.h"
+#include "audio/ModalEigenSummary.h"
+#include "audio/ModalModes.h"
+#include "audio/SoundVertices.h"
 #include "gizmo/GizmoInteraction.h"
 #include "gltf/GltfScene.h"
 #include "mesh/Mesh.h"
 #include "mesh/MeshComponents.h"
 #include "mesh/PrimitiveType.h"
+#include "mesh/TetMeshData.h"
 #include "object/ExtrasComponents.h"
 #include "physics/PhysicsTypes.h"
 #include "render/Instance.h"
@@ -120,6 +125,7 @@ using Persistent = type_list<
     SmoothShading, MeshConnectivity,
     MeshMaterialAssignment, MeshMaterialSlotSelection, MaterialVariants, MaterializedTextures, PbrMeshFeatures,
     PrimitiveShape, Path, Camera, ViewCamera, LookingThrough, Interaction, EditMode, OrbitToActive, AudioOutputConfig, AudioOutputMix, Striker, ModalSoundControls,
+    AcousticMaterial, SoundVerticesModel, ModalModes, ModalGain, ModalTuning, MassProperties, TetMeshData, ModalEigenSummary,
     SelectionXRay, ViewportDisplay, MaterialPreviewLighting, RenderedLighting, StudioEnvironment, TransformGizmoState,
     TimelineRange, TimelinePlayback, AnimationTimelineView,
     PhysicsSimulationSettings, PhysicsMaterial, CollisionSystem, CollisionFilter, PhysicsJointDef, PhysicsMotion,
@@ -140,7 +146,8 @@ using Derived = type_list<
     PhysicsBodyHandle, PhysicsConstraintHandle, BodyPoseCache, ColliderWireframe, BoneInstanceStateDirty, ArmaturePoseState,
     MorphWeightGpuRange, AdditiveBoxSelectBaseline, SelectionBitsDirty, ElementStatesDirty, PendingEditElementClick, OverlayExtra, OverlayVertexStoreId,
     PendingBoxSelect, PendingPick, PendingTextureUploads, SelectionBitsetRef, BoxSelectState, SelectedInstanceCount, PlaybackFrame,
-    PhysicsCacheInvalid, RotationUiVariant, RotationUiDriving, GizmoInteraction, PendingTransform, StartScreenTransform>;
+    PhysicsCacheInvalid, RotationUiVariant, RotationUiDriving, GizmoInteraction, PendingTransform, StartScreenTransform,
+    SoundVertices, ContactDynamics>;
 
 // Trivially copyable, but the raw object bytes are nondeterministic: a std::variant's inactive alternative or a
 // std::optional's disengaged storage holds uninitialized memory, and struct padding is never written. memcpy would

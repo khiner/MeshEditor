@@ -20,6 +20,8 @@ add_executable(MeshEditorTests
     ${CMAKE_SOURCE_DIR}/src/mesh/MeshStore.cpp
     ${CMAKE_SOURCE_DIR}/src/audio/ContactModel.cpp
     ${CMAKE_SOURCE_DIR}/src/audio/ContactDynamics.cpp
+    ${CMAKE_SOURCE_DIR}/src/audio/ModalAudio.cpp
+    ${CMAKE_SOURCE_DIR}/src/audio/ModalModelFile.cpp
     ${CMAKE_SOURCE_DIR}/src/snapshot/SceneSnapshot.cpp
     ${CMAKE_SOURCE_DIR}/src/snapshot/SaveState.cpp
     ${CMAKE_SOURCE_DIR}/src/snapshot/SnapshotRoles.cpp
@@ -53,6 +55,7 @@ add_dependencies(MeshEditorTests generate_gpu_schema)
 target_include_directories(MeshEditorTests PRIVATE
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_BINARY_DIR}
+    ${EIGEN3_INCLUDE_DIR}
     SYSTEM ${CMAKE_SOURCE_DIR}/lib/glm
     SYSTEM ${CMAKE_SOURCE_DIR}/lib/entt/src
     SYSTEM ${CMAKE_SOURCE_DIR}/lib/simdjson/include

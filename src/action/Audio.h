@@ -9,6 +9,7 @@
 #include "mesh/TetMeshData.h"
 
 #include <filesystem>
+#include <optional>
 
 namespace action::audio {
 struct SetModel {
@@ -31,6 +32,18 @@ struct OpenModalForm {
 };
 struct CancelModalForm {};
 struct SubmitModalForm {};
+// Apply a completed modal solve from its result file.
+// `Path` is relative to the modal results dir (see audio/ModalModelFile.h).
+struct ApplyModalModel {
+    entt::entity SoundEntity;
+    std::filesystem::path Path;
+};
+// Close the modal form and re-derive the modal model from the entity's eigen summary,
+// which is exact for material edits at unchanged Poisson ratio (see modal::RescaleModes).
+struct RescaleModalModel {
+    std::unique_ptr<AcousticMaterial> Material;
+    std::optional<float> FundamentalFreq;
+};
 // Frames are loaded from Path when applied, not stored.
 struct AssignVertexSamples {
     std::vector<uint32_t> MeshVertices;
@@ -56,7 +69,7 @@ struct ClearExciteImpacts {};
 using Actions = std::variant<
     SetModel, SetExciteVertex,
     StartExcite, StopExcite, DeleteSoundObject, StartRecording,
-    OpenModalForm, CancelModalForm, SubmitModalForm,
+    OpenModalForm, CancelModalForm, SubmitModalForm, ApplyModalModel, RescaleModalModel,
     AssignVertexSamples, RemoveVertexSamples, ActivateRealImpactMicrophone, SetModalFormMaterial,
     ApplyExciteImpact, ClearExciteImpacts>;
 

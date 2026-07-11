@@ -12,6 +12,8 @@ struct ModalModes {
     std::vector<vec3> Positions; // Node-local sample point positions, one per excitation position in Shapes
     float OriginalFundamentalFreq{Freqs.empty() ? 0 : Freqs.front()}; // Unscaled fundamental frequency, directly from FEM
     vec3 BakedScale{1.f}; // Node world-scale the modes were baked at. Later uniform scale changes retune relative to this.
+
+    bool operator==(const ModalModes &) const = default;
 };
 
 // Per-instance

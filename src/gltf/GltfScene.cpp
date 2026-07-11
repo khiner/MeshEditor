@@ -10,7 +10,6 @@
 #include "armature/Armature.h"
 #include "armature/ArmatureComponents.h"
 #include "audio/AcousticMaterial.h"
-#include "audio/AudioSystem.h"
 #include "audio/AudioTypes.h"
 #include "audio/ContactModel.h"
 #include "audio/ModalModes.h"
@@ -2502,7 +2501,6 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
                     }
                 );
             }
-            UpdateContactDynamics(r, entity);
             if (excitable) r.emplace<SoundVerticesModel>(entity, SoundVerticesModel::Modal);
             if (instance.gain != fastgltf::num(1)) r.emplace<ModalGain>(entity, ModalGain{instance.gain});
             if (const auto &mat_idx = asset.audioModalModels[instance.model].material; inst && mat_idx.has_value() && *mat_idx < acoustic_materials.size()) {

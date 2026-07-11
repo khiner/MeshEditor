@@ -16,6 +16,8 @@ struct MassProperties {
     vec3 CenterOfMass{0}; // node-local units
     vec3 InertiaDiagonal{0}; // principal moments, kg·m²
     glm::quat InertiaOrientation{1, 0, 0, 0}; // principal inertia axes -> node-local
+
+    bool operator==(const MassProperties &) const = default;
 };
 
 // Per-object contact dynamics, precomputed at the baked size. Node-local lengths are converted to SI.

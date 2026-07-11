@@ -15,6 +15,11 @@ template<typename ActionType> void Buffer(ActionType a, Phase phase) {
 
 namespace action {
 template<typename ActionType> void Emit(ActionType a) { Buffer(std::move(a), Phase::Record); }
+template<typename ActionType> bool TryEmit(ActionType a) {
+    if (Emitted) return false;
+    Buffer(std::move(a), Phase::Record);
+    return true;
+}
 template<typename ActionType> void EmitStaged(ActionType a) { Buffer(std::move(a), Phase::Stage); }
 template<typename ActionType> void EmitCancel(ActionType a) { Buffer(std::move(a), Phase::Cancel); }
 void Commit() { CommitRequested = true; }
@@ -33,10 +38,11 @@ namespace {
 // Force instantiation of every Emit* entry point for every action type so call sites in other TUs link.
 using EmitPtr = void (*)();
 template<size_t... I>
-std::array<EmitPtr, 3 * sizeof...(I)> AllEmits(std::index_sequence<I...>) {
+std::array<EmitPtr, 4 * sizeof...(I)> AllEmits(std::index_sequence<I...>) {
     const auto inst = [](auto fn) { return reinterpret_cast<EmitPtr>(fn); };
     return {
         inst(static_cast<void (*)(std::variant_alternative_t<I, Action>)>(&Emit))...,
+        inst(static_cast<bool (*)(std::variant_alternative_t<I, Action>)>(&TryEmit))...,
         inst(static_cast<void (*)(std::variant_alternative_t<I, Action>)>(&EmitStaged))...,
         inst(static_cast<void (*)(std::variant_alternative_t<I, Action>)>(&EmitCancel))...,
     };

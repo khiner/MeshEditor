@@ -15,6 +15,8 @@
 #include "viewport/InteractionComponents.h"
 
 #include "ContactModel.h"
+#include "ModalModelFile.h"
+#include "ModalWarmStart.h"
 #include "implot.h"
 #include "mesh2modes.h"
 #include "miniaudio.h"
@@ -388,6 +390,7 @@ struct ModalModes {};
 struct ModalParams {};
 struct RecordingStart {};
 struct SoundVerticesDerivation {};
+struct ContactDynamicsDerivation {};
 struct AudioConfig {};
 struct AudioMix {};
 } // namespace audio_changes
@@ -406,6 +409,9 @@ void RegisterAudioComponentHandlers(entt::registry &r) {
         .on<VertexSamples>(On::Create | On::Update | On::Destroy)
         .on<::ModalModes>(On::Create | On::Update | On::Destroy)
         .on<SoundVerticesModel>(On::Create | On::Update | On::Destroy);
+    track<audio_changes::ContactDynamicsDerivation>(r)
+        .on<MassProperties>(On::Create | On::Update | On::Destroy)
+        .on<::ModalModes>(On::Create | On::Update | On::Destroy);
     track<audio_changes::AudioConfig>(r).on<AudioOutputConfig>(On::Create | On::Update);
     track<audio_changes::AudioMix>(r).on<AudioOutputMix>(On::Create | On::Update);
 
@@ -444,6 +450,10 @@ void RegisterAudioComponentHandlers(entt::registry &r) {
                     r.emplace_or_replace<MeshActiveElement>(mesh_entity, sv.Vertices.front());
                 }
             }
+        }
+        // Refresh contact dynamics before the strike loop below reads them.
+        for (auto e : reactive<audio_changes::ContactDynamicsDerivation>(r)) {
+            if (r.valid(e)) UpdateContactDynamics(r, e);
         }
         // A created or replaced VertexForce is a strike. Contact pulses are one-shot.
         for (auto e : reactive<audio_changes::VertexForce>(r)) {
@@ -697,11 +707,27 @@ std::optional<size_t> PlotModeData(
     return hovered_index;
 }
 struct ModalGenerationResult {
-    ModalModes Modes;
-    TetMeshData Tets;
-    MassProperties Mass;
+    std::filesystem::path ModelPath; // Result file, relative to ModalModelsDir(). Empty when the solve failed
+    std::shared_ptr<const Eigen::MatrixXf> Basis; // Full eigenvector basis, seeding the next solve
+    size_t TetInputsHash;
 };
 std::unique_ptr<Worker<ModalGenerationResult>> ModalGenerator;
+// A completed solve's apply action, held until the per-frame action slot accepts it.
+std::optional<action::audio::ApplyModalModel> PendingModalApply;
+
+// Identifies the tet-mesh inputs of a modal solve. Identical inputs produce identical tet
+// topology, so a basis solved over them can warm-start the next solve (e.g. a material edit).
+size_t HashTetInputs(const std::vector<vec3> &positions, const std::vector<uint32_t> &triangle_indices, TetGenOptions opts) {
+    const auto bytes = [](const auto &v) { return std::string_view{reinterpret_cast<const char *>(v.data()), v.size() * sizeof(v[0])}; };
+    const std::hash<std::string_view> hash;
+    size_t seed = hash(bytes(positions));
+    const auto combine = [&seed](size_t v) { seed ^= v + 0x9e3779b97f4a7c15 + (seed << 6) + (seed >> 2); };
+    combine(hash(bytes(triangle_indices)));
+    combine(std::hash<bool>{}(opts.PreserveSurface));
+    combine(std::hash<bool>{}(opts.Quality));
+    combine(std::hash<float>{}(opts.SimplifyRatio));
+    return seed;
+}
 
 fs::path PickAudioFile() {
     static const std::array filters{nfdfilteritem_t{"Audio", "wav,mp3,flac,ogg,opus"}};
@@ -787,17 +813,35 @@ void DrawModalCreateForm(
         }
         const auto material_props = material.Properties;
         const TetGenOptions tet_options{.PreserveSurface = true, .Quality = info.QualityTets, .SimplifyRatio = info.SolveResolution};
-        action::Emit(action::audio::SubmitModalForm{});
-        ModalGenerator = std::make_unique<Worker<ModalGenerationResult>>(
-            parent_window, "Generating modal audio model...",
-            [positions = std::move(positions), triangle_indices = mesh.CreateTriangleIndices(), tet_options, node_scale, material_props, sound_vertices = std::move(new_sound_vertices), excite_positions = std::move(excite_positions), fundamental]() mutable {
-                const auto tets = GenerateTets(std::move(positions), std::move(triangle_indices), tet_options);
-                auto result = modal::mesh2modes(*tets, material_props, excite_positions, node_scale, {.FundamentalFreq = fundamental});
-                result.Modes.Vertices = std::move(sound_vertices.Vertices);
-                result.Modes.BakedScale = node_scale;
-                return ModalGenerationResult{std::move(result.Modes), BuildTetMeshData(*tets, node_scale), std::move(result.MassProps)};
-            }
-        );
+        auto triangle_indices = mesh.CreateTriangleIndices();
+        const auto tet_inputs_hash = HashTetInputs(positions, triangle_indices, tet_options);
+
+        // A material edit at unchanged tets, excitation vertices, and Poisson ratio rescales the
+        // prior solve exactly, so take that path instead of re-solving.
+        const auto *summary = r.try_get<const ModalEigenSummary>(e);
+        const auto *old_modes = r.try_get<const ModalModes>(e);
+        if (summary && old_modes && summary->TetInputsHash == tet_inputs_hash &&
+            material_props.PoissonRatio == summary->SolvedMaterial.PoissonRatio && new_sound_vertices.Vertices == old_modes->Vertices) {
+            action::Emit(action::audio::RescaleModalModel{std::make_unique<AcousticMaterial>(material), fundamental});
+        } else {
+            action::Emit(action::audio::SubmitModalForm{});
+            // The most recent solve's basis seeds this one when it was over the same tets.
+            std::shared_ptr<const Eigen::MatrixXf> warm_basis;
+            if (const auto *warm = r.ctx().find<ModalWarmStart>(); warm && warm->TetInputsHash == tet_inputs_hash) warm_basis = warm->Basis;
+            ModalGenerator = std::make_unique<Worker<ModalGenerationResult>>(
+                parent_window, "Generating modal audio model...",
+                [positions = std::move(positions), triangle_indices = std::move(triangle_indices), tet_options, node_scale, material_props, sound_vertices = std::move(new_sound_vertices), excite_positions = std::move(excite_positions), fundamental, warm_basis = std::move(warm_basis), tet_inputs_hash]() mutable {
+                    const auto tets = GenerateTets(std::move(positions), std::move(triangle_indices), tet_options);
+                    auto result = modal::mesh2modes(*tets, material_props, excite_positions, node_scale, {.FundamentalFreq = fundamental}, {.SeedBasis = warm_basis.get(), .KeepBasis = true});
+                    result.Modes.Vertices = std::move(sound_vertices.Vertices);
+                    result.Modes.BakedScale = node_scale;
+                    result.Summary.TetInputsHash = tet_inputs_hash;
+                    auto basis = result.Basis.size() > 0 ? std::make_shared<Eigen::MatrixXf>(std::move(result.Basis)) : nullptr;
+                    auto model_path = result.Modes.Freqs.empty() ? fs::path{} : SaveModalModelFile({std::move(result.Modes), result.MassProps, BuildTetMeshData(*tets, node_scale), std::move(result.Summary)});
+                    return ModalGenerationResult{std::move(model_path), std::move(basis), tet_inputs_hash};
+                }
+            );
+        }
     }
     SameLine();
     if (Button("Cancel")) action::Emit(action::audio::CancelModalForm{});
@@ -857,22 +901,19 @@ void DrawObjectAudioControls(
     entt::registry &r, entt::entity viewport, entt::entity e, entt::entity mesh_entity,
     const uint32_t *selection_bits
 ) {
+    if (PendingModalApply && action::TryEmit(*PendingModalApply)) PendingModalApply.reset();
     if (e == entt::null || mesh_entity == entt::null) return;
 
     if (auto &generator = ModalGenerator) {
         if (auto result = generator->Render()) {
             generator.reset();
-            if (result->Modes.Freqs.empty()) {
+            // Intentional registry-ctx write outside Apply: the warm-start slot is a derived memo, not scene input.
+            if (result->Basis) r.ctx().insert_or_assign(ModalWarmStart{result->TetInputsHash, std::move(result->Basis)});
+            if (result->ModelPath.empty()) {
                 std::cerr << "Modal model computation failed.\n";
             } else {
-                // Intentional registry write outside of Apply: the background solver kicked off by
-                // SubmitModalForm has finished, so its result is applied directly here, not as its own action.
-                r.emplace_or_replace<MassProperties>(e, result->Mass);
-                r.emplace_or_replace<ModalModes>(e, std::move(result->Modes));
-                r.emplace_or_replace<TetMeshData>(mesh_entity, std::move(result->Tets));
-                UpdateContactDynamics(r, e); // Hertz contact time inputs, from the mass properties and mesh curvature.
-                SetModel(r, e, SoundVerticesModel::Modal);
-                return;
+                PendingModalApply = action::audio::ApplyModalModel{e, std::move(result->ModelPath)};
+                if (action::TryEmit(*PendingModalApply)) PendingModalApply.reset();
             }
         }
     }
@@ -1070,7 +1111,24 @@ void DrawObjectAudioControls(
 }
 
 void RemoveAudioComponents(entt::registry &r, entt::entity e) {
-    r.remove<ScaleLocked, SoundVertices, Recording, SoundVerticesModel, ModalModes, ModalGain, ModalTuning, MassProperties, ContactDynamics, VertexSamples, ModalModelCreateInfo, RealImpactActiveMicrophone, RealImpactVertices>(e);
+    r.remove<ScaleLocked, SoundVertices, Recording, SoundVerticesModel, ModalModes, ModalGain, ModalTuning, MassProperties, ContactDynamics, ModalEigenSummary, VertexSamples, ModalModelCreateInfo, RealImpactActiveMicrophone, RealImpactVertices>(e);
+}
+
+void ApplyModalModel(entt::registry &r, entt::entity e, const fs::path &relative_path) {
+    if (!r.valid(e) || !r.all_of<Instance>(e)) {
+        std::cerr << std::format("Modal model target entity is gone, skipping {}.\n", relative_path.string());
+        return;
+    }
+    auto data = LoadModalModelFile(relative_path);
+    if (!data) {
+        std::cerr << std::format("Failed to load modal model file {}.\n", (ModalModelsDir() / relative_path).string());
+        return;
+    }
+    r.emplace_or_replace<MassProperties>(e, data->Mass);
+    r.emplace_or_replace<ModalModes>(e, std::move(data->Modes));
+    r.emplace_or_replace<ModalEigenSummary>(e, std::move(data->Summary));
+    r.emplace_or_replace<TetMeshData>(r.get<const Instance>(e).Entity, std::move(data->Tets));
+    SetModel(r, e, SoundVerticesModel::Modal);
 }
 
 void DrawStrikerControls(entt::registry &r, entt::entity viewport) {
