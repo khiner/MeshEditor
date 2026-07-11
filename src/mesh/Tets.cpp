@@ -3,6 +3,7 @@
 #include "meshoptimizer.h"
 #include "tetgen.h"
 
+#include <filesystem>
 #include <format>
 
 std::unique_ptr<tetgenio> GenerateTets(std::vector<vec3> positions, std::vector<uint32_t> triangle_indices, TetGenOptions options) {
@@ -40,10 +41,15 @@ std::unique_ptr<tetgenio> GenerateTets(std::vector<vec3> positions, std::vector<
         }
     }
 
-    auto result = std::make_unique<tetgenio>();
     // (-Q) Quiet: no terminal output except errors.
-    const auto flags = std::format("peQ{}{}", options.PreserveSurface ? "Y" : "", options.Quality ? "q" : "");
-    tetrahedralize(const_cast<char *>(flags.c_str()), &in, result.get());
+    auto flags = std::format("peQ{}{}", options.PreserveSurface ? "Y" : "", options.Quality ? "q" : "");
+    tetgenbehavior behavior;
+    behavior.parse_commandline(flags.data());
+    // On a self-intersecting input, tetgen writes diagnostic files next to `outfilename`.
+    const auto diagnostic_base = (std::filesystem::temp_directory_path() / "tetgen").string();
+    std::strncpy(behavior.outfilename, diagnostic_base.c_str(), sizeof(behavior.outfilename) - 1);
+    auto result = std::make_unique<tetgenio>();
+    tetrahedralize(&behavior, &in, result.get());
     return result;
 }
 
