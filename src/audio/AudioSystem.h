@@ -30,6 +30,10 @@ void DrawStrikerControls(entt::registry &, entt::entity viewport);
 // Removes ContactDynamics when the inputs are missing.
 void UpdateContactDynamics(entt::registry &, entt::entity sound_entity);
 
+// Density ratio of the mesh's current acoustic material to the density the entity's modal model was
+// solved at. Mass properties are stored at the solved density and scale linearly by this. 1 when unknown.
+double ModalDensityRatio(const entt::registry &, entt::entity sound_entity);
+
 // Apply a modal solve result file (relative to ModalModelsDir()) to the sound entity.
 void ApplyModalModel(entt::registry &, entt::entity sound_entity, const std::filesystem::path &relative_path);
 
@@ -39,6 +43,10 @@ void DrawObjectAudioControls(
     entt::registry &, entt::entity viewport, entt::entity sound_entity, entt::entity mesh_entity,
     const uint32_t *selection_bits
 );
+
+// Draw the in-flight modal solve jobs as a progress overlay anchored to the current window's
+// lower-left corner. Call inside the viewport window.
+void DrawModalJobsOverlay(entt::registry &);
 
 // {path, frames} pair — path is an fs::path used as a dedup key in the scene-level sample store.
 // For on-disk audio this is the absolute file path; for synthetic sources (e.g. RealImpact) it is a

@@ -9,8 +9,10 @@
 #include <cstdint>
 #include <vector>
 
-// Rigid-body mass properties in SI units, at the object's baked size. Mirrors KHR_audio_modal `massProperties`:
-// principal moments plus the rotation of the principal axes into node-local space.
+// Rigid-body mass properties in SI units, at the object's baked size and the solved material's
+// density (ModalEigenSummary::SolvedMaterial). Mass and inertia are linear in density.
+// Mirrors KHR_audio_modal `massProperties`: principal moments plus the rotation of the principal
+// axes into node-local space.
 struct MassProperties {
     double Mass{0}; // kg
     vec3 CenterOfMass{0}; // node-local units

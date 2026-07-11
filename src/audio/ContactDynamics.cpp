@@ -1,6 +1,7 @@
 #include "AudioSystem.h"
 
 #include "ContactModel.h"
+#include "ModalEigenSummary.h"
 #include "ModalModes.h"
 #include "mesh/Mesh.h"
 #include "render/Instance.h"
@@ -30,6 +31,13 @@ float MeanCurvature(const Mesh &mesh, uint32_t vertex) {
 }
 } // namespace
 
+double ModalDensityRatio(const entt::registry &r, entt::entity e) {
+    const auto *summary = r.try_get<const ModalEigenSummary>(e);
+    const auto *inst = r.try_get<const Instance>(e);
+    const auto *mat = inst ? r.try_get<const AcousticMaterial>(inst->Entity) : nullptr;
+    return summary && mat && summary->SolvedMaterial.Density > 0 ? mat->Properties.Density / summary->SolvedMaterial.Density : 1.0;
+}
+
 void UpdateContactDynamics(entt::registry &r, entt::entity e) {
     const auto *mp = r.try_get<const MassProperties>(e);
     const auto *modes = r.try_get<const ModalModes>(e);
@@ -41,9 +49,10 @@ void UpdateContactDynamics(entt::registry &r, entt::entity e) {
     }
     const auto size = [](vec3 v) { const auto a = glm::abs(v); return (a.x + a.y + a.z) / 3.f; };
     const float baked_scale = std::max(size(modes->BakedScale), 1e-6f);
+    const double rho_ratio = ModalDensityRatio(r, e);
     ContactDynamics cd;
-    cd.Mass = mp->Mass;
-    cd.InverseInertia = InverseInertiaTensor(*mp);
+    cd.Mass = mp->Mass * rho_ratio;
+    cd.InverseInertia = InverseInertiaTensor(*mp) * float(1 / rho_ratio);
     cd.ContactArm.reserve(modes->Vertices.size());
     cd.Curvature.reserve(modes->Vertices.size());
     for (size_t i = 0; i < modes->Vertices.size(); ++i) {

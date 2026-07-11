@@ -1,7 +1,5 @@
 #pragma once
 
-#include "AcousticMaterial.h"
-
 #include <cstdint>
 #include <string>
 
@@ -35,11 +33,11 @@ enum class SoundVerticesModel {
     Modal,
 };
 
-// If an entity has this component, user has opened the modal model create/edit pane.
-struct ModalModelCreateInfo {
-    AcousticMaterial Material{materials::acoustic::All.front()};
+// Modal solve inputs beyond the mesh and its acoustic material: tet meshing options and the
+// excitation vertex selection. Per sound entity.
+struct ModalSolveSettings {
     uint32_t NumVertices{10};
-    bool CopySoundVertices{true}; // Only used if excitable component is already present.
-    bool QualityTets{false};
     float SolveResolution{1}; // Fraction of surface triangles used for the modal solve. Lower is faster and less accurate.
+    bool CopySoundVertices{true}; // Solve at the existing excitable vertices when present.
+    bool QualityTets{false};
 };

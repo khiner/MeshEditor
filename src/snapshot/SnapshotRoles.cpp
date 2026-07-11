@@ -125,7 +125,7 @@ using Persistent = type_list<
     SmoothShading, MeshConnectivity,
     MeshMaterialAssignment, MeshMaterialSlotSelection, MaterialVariants, MaterializedTextures, PbrMeshFeatures,
     PrimitiveShape, Path, Camera, ViewCamera, LookingThrough, Interaction, EditMode, OrbitToActive, AudioOutputConfig, AudioOutputMix, Striker, ModalSoundControls,
-    AcousticMaterial, SoundVerticesModel, ModalModes, ModalGain, ModalTuning, MassProperties, TetMeshData, ModalEigenSummary,
+    AcousticMaterial, SoundVerticesModel, ModalModes, ModalGain, ModalTuning, ModalSolveSettings, MassProperties, TetMeshData, ModalEigenSummary,
     SelectionXRay, ViewportDisplay, MaterialPreviewLighting, RenderedLighting, StudioEnvironment, TransformGizmoState,
     TimelineRange, TimelinePlayback, AnimationTimelineView,
     PhysicsSimulationSettings, PhysicsMaterial, CollisionSystem, CollisionFilter, PhysicsJointDef, PhysicsMotion,
@@ -156,7 +156,7 @@ using Derived = type_list<
 using ForceSerialize = type_list<
     Camera, PrimitiveShape, ColliderShape, PhysicsMotion, // variant / optional
     ViewportDisplay, MaterialPreviewLighting, RenderedLighting, TransformGizmoState, AudioOutputMix, // padding
-    TimelinePlayback, PhysicsJoint, BoneSubPartOf>; // padding
+    TimelinePlayback, PhysicsJoint, BoneSubPartOf, ModalSolveSettings>; // padding
 
 // Derived components that are memcmp-unsafe (variant/optional/padding), compared field-wise instead of by memcmp.
 using ForceFieldwise = type_list<RotationUiVariant>;

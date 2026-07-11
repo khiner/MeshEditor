@@ -10,6 +10,7 @@
 #include "armature/Armature.h"
 #include "armature/ArmatureComponents.h"
 #include "audio/AcousticMaterial.h"
+#include "audio/AudioSystem.h"
 #include "audio/AudioTypes.h"
 #include "audio/ContactModel.h"
 #include "audio/ModalModes.h"
@@ -4410,11 +4411,15 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
                 .name = ToFgStr(node_name),
             };
             if (const auto *mp = r.try_get<const MassProperties>(entity)) {
+                // Mass properties are stored at the solved material's density. The emitted model
+                // references the mesh's current material, so mass and inertia scale to match it.
+                const double rho_ratio = ModalDensityRatio(r, entity);
                 const auto &q = mp->InertiaOrientation;
+                const vec3 inertia = mp->InertiaDiagonal * float(rho_ratio);
                 model.massProperties = fastgltf::AudioModalMassProperties{
-                    .mass = fastgltf::num(mp->Mass),
+                    .mass = fastgltf::num(mp->Mass * rho_ratio),
                     .centerOfMass = {mp->CenterOfMass.x, mp->CenterOfMass.y, mp->CenterOfMass.z},
-                    .inertiaDiagonal = {mp->InertiaDiagonal.x, mp->InertiaDiagonal.y, mp->InertiaDiagonal.z},
+                    .inertiaDiagonal = {inertia.x, inertia.y, inertia.z},
                     .inertiaOrientation = {q.x, q.y, q.z, q.w},
                 };
             }

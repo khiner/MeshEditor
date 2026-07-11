@@ -3,7 +3,6 @@
 #include "audio/AudioSystem.h"
 #include "audio/RealImpact.h"
 #include "audio/SoundVertices.h"
-#include "audio/mesh2modes.h"
 #include "render/Instance.h"
 #include "scene/Entity.h"
 #include <entt/entity/registry.hpp>
@@ -34,39 +33,12 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
             [&](StopExcite) { r.remove<VertexForce>(FindActiveEntity(r)); },
             [&](DeleteSoundObject) { RemoveAudioComponents(r, FindActiveEntity(r)); },
             [&](const StartRecording &a) { r.emplace_or_replace<Recording>(FindActiveEntity(r), a.FrameCount); },
-            [&](const OpenModalForm &a) { r.emplace_or_replace<ModalModelCreateInfo>(FindActiveEntity(r), *a.Info); },
-            [&](CancelModalForm) { r.remove<ModalModelCreateInfo>(FindActiveEntity(r)); },
-            [&](SubmitModalForm) {
+            [&](SetupModalModel) {
                 const auto e = FindActiveEntity(r);
-                ::Stop(r, e);
-                r.emplace_or_replace<AcousticMaterial>(GetActiveMeshEntity(r), r.get<const ModalModelCreateInfo>(e).Material);
-                r.remove<ModalModelCreateInfo>(e);
+                if (!r.all_of<ModalSolveSettings>(e)) r.emplace<ModalSolveSettings>(e);
+                if (const auto mesh_e = GetActiveMeshEntity(r); !r.all_of<AcousticMaterial>(mesh_e)) r.emplace<AcousticMaterial>(mesh_e, materials::acoustic::All.front());
             },
             [&](const ApplyModalModel &a) { ::ApplyModalModel(r, a.SoundEntity, a.Path); },
-            [&](const RescaleModalModel &a) {
-                const auto e = FindActiveEntity(r);
-                ::Stop(r, e);
-                const auto mesh_entity = GetActiveMeshEntity(r);
-                const auto *summary = r.try_get<const ModalEigenSummary>(e);
-                const auto *modes = r.try_get<const ModalModes>(e);
-                if (summary && modes) {
-                    if (auto rescaled = modal::RescaleModes(*summary, *modes, a.Material->Properties, {.FundamentalFreq = a.FundamentalFreq})) {
-                        // Mass and inertia are linear in density, so they rescale from the mesh's current material.
-                        if (const auto *mat = r.try_get<const AcousticMaterial>(mesh_entity)) {
-                            if (const auto *mp = r.try_get<const MassProperties>(e)) {
-                                const double rho_ratio = a.Material->Properties.Density / mat->Properties.Density;
-                                auto scaled_mp = *mp;
-                                scaled_mp.Mass *= rho_ratio;
-                                scaled_mp.InertiaDiagonal *= float(rho_ratio);
-                                r.emplace_or_replace<MassProperties>(e, scaled_mp);
-                            }
-                        }
-                        r.emplace_or_replace<ModalModes>(e, std::move(*rescaled));
-                    }
-                }
-                r.emplace_or_replace<AcousticMaterial>(mesh_entity, *a.Material);
-                r.remove<ModalModelCreateInfo>(e);
-            },
             [&](const AssignVertexSamples &a) {
                 auto frames = LoadAudioFrames(a.Path.string());
                 if (!frames.empty()) ::AssignVertexSample(r, viewport, FindActiveEntity(r), a.MeshVertices, a.Path, std::move(frames));
@@ -79,7 +51,6 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
                 r.emplace_or_replace<RealImpactActiveMicrophone>(a.TargetSoundEntity, a.MicrophoneEntity);
             },
             [&](const RemoveVertexSamples &a) { ::RemoveVertexSamples(r, viewport, FindActiveEntity(r), a.MeshVertices); },
-            [&](const SetModalFormMaterial &a) { r.patch<ModalModelCreateInfo>(FindActiveEntity(r), [&](auto &info) { info.Material = *a.Material; }); },
             [&]<typename T>(const Replace<T> &a) { r.emplace_or_replace<T>(a.Entity, a.Value); },
         },
         action

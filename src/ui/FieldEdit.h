@@ -253,16 +253,16 @@ struct Edit {
 
     // Slider bounds come from the field's FieldLimits, which must declare both Min and Max.
     template<auto... Ms>
-    bool Slider(const char *label, const char *fmt = nullptr) {
+    bool Slider(const char *label, const char *fmt = nullptr, ImGuiSliderFlags flags = 0) {
         static_assert(HasMin<Prefix..., Ms...> && HasMax<Prefix..., Ms...>, "Edit::Slider: field must declare FieldLimits with both Min and Max");
         using L = FieldLimits<Prefix..., Ms...>;
         return Run<Ms...>([&](auto &v) {
             using F = std::remove_reference_t<decltype(v)>;
-            if constexpr (std::same_as<F, float>) return ImGui::SliderFloat(label, &v, F(L::Min), F(L::Max), fmt ? fmt : "%.3f");
-            else if constexpr (std::same_as<F, vec3>) return ImGui::SliderFloat3(label, &v.x, F(L::Min), F(L::Max), fmt ? fmt : "%.3f");
-            else if constexpr (std::integral<F>) {
+            if constexpr (std::same_as<F, float>) return ImGui::SliderFloat(label, &v, F(L::Min), F(L::Max), fmt ? fmt : "%.3f", flags);
+            else if constexpr (std::same_as<F, vec3>) return ImGui::SliderFloat3(label, &v.x, F(L::Min), F(L::Max), fmt ? fmt : "%.3f", flags);
+            else if constexpr (std::same_as<F, double> || std::integral<F>) {
                 F lof = F(L::Min), hif = F(L::Max);
-                return ImGui::SliderScalar(label, ImGuiDt<F>(), &v, &lof, &hif);
+                return ImGui::SliderScalar(label, ImGuiDt<F>(), &v, &lof, &hif, fmt, flags);
             } else static_assert(false, "Edit::Slider: unsupported field type");
         },
                           /*delta_capable=*/true);

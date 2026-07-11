@@ -4,6 +4,7 @@
 #include "Variant.h"
 #include "action/Errors.h"
 #include "animation/AnimationTimeline.h"
+#include "audio/AcousticMaterial.h"
 #include "audio/AudioSystem.h"
 #include "audio/RealImpact.h"
 #include "audio/RealImpactComponents.h"

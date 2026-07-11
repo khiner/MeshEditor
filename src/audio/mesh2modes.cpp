@@ -5,6 +5,7 @@
 
 #include "AcousticMaterialProperties.h"
 #include "CholeskyShiftInvert.h"
+#include "Job.h"
 #include "numeric/vec3.h"
 
 #include "tetgen.h"
@@ -324,7 +325,8 @@ struct SubspaceResult {
 SubspaceResult SubspaceIterate(
     const CholeskyShiftInvert &op, const Eigen::SparseMatrix<double> &M,
     uint nev, uint p, double sigma, double tol, uint max_iters,
-    const Eigen::MatrixXf &x0 // warm-start basis, its columns seed the leading panel columns
+    const Eigen::MatrixXf &x0, // warm-start basis, its columns seed the leading panel columns
+    JobMonitor *monitor = nullptr
 ) {
     const uint n = M.rows();
     const auto Msa = M.selfadjointView<Eigen::Lower>();
@@ -352,6 +354,8 @@ SubspaceResult SubspaceIterate(
 
     Eigen::VectorXd prev_lambda = Eigen::VectorXd::Constant(nev, std::numeric_limits<double>::max());
     for (uint iter = 0; iter < max_iters; ++iter) {
+        // A cancelled solve stops between block iterations, leaving the result empty.
+        if (monitor && monitor->Cancelled()) return result;
         const uint w = p - c;
         Eigen::MatrixXd Xbar(n, w);
         op.solve_panel(MX.data(), Xbar.data(), int(w)); // (K - sigma*M) Xbar = M X
@@ -396,6 +400,7 @@ SubspaceResult SubspaceIterate(
             theta_locked.segment(c, newly_locked) = es.eigenvalues().head(newly_locked);
             c += newly_locked;
         }
+        if (monitor) monitor->Progress.store(0.3f + 0.65f * float(c) / float(nev), std::memory_order_relaxed);
         result.Iterations = iter + 1;
         if (c >= nev) {
             result.Eigenvalues = prev_lambda;
@@ -414,6 +419,7 @@ struct ComputeModesOpts {
     std::vector<vec3> Positions{}; // Node-local positions of each excitation position, parallel to ExPos
     AcousticMaterialProperties Material{};
     modal::SolveReuse Reuse{};
+    JobMonitor *Monitor{};
 };
 
 // `summary_out` receives the solved eigenpairs at the excitation positions, and `basis_out`
@@ -438,8 +444,11 @@ ModalModes ComputeModes(
     // Negative shift: K - sigma*M is positive definite, and the smallest
     // eigenvalues sit nearest the shift, so they still converge first.
     const double sigma = -pow(2 * M_PI * config.MinModeFreq, 2);
+    auto *monitor = opts.Monitor;
+    if (monitor && monitor->Cancelled()) return {};
     OpType op{K, M, profile.Factorize, profile.OpSolve};
     BOpType Bop{M};
+    if (monitor) monitor->Progress.store(0.3f, std::memory_order_relaxed);
     // A basis solved over a different mesh cannot seed this solve, so it falls back to a cold solve.
     const auto &reuse = opts.Reuse;
     // Subspace iteration re-converges a warm-start basis in a few block iterations.
@@ -450,13 +459,15 @@ ModalModes ComputeModes(
     const auto eig_start = std::chrono::steady_clock::now();
     if (use_subspace) {
         op.set_shift(sigma);
-        subspace = SubspaceIterate(op, M, fem_n_modes, std::min(fem_n_modes + 15, n), sigma, config.WarmTolerance, config.MaxRestarts, *reuse.SeedBasis);
+        subspace = SubspaceIterate(op, M, fem_n_modes, std::min(fem_n_modes + 15, n), sigma, config.WarmTolerance, config.MaxRestarts, *reuse.SeedBasis, monitor);
         profile.OpApplications = subspace.OpApplications;
         profile.Restarts = subspace.Iterations;
         if (subspace.Eigenvalues.size() == 0) return {};
         eigenvalues = subspace.Eigenvalues;
     } else {
+        if (monitor && monitor->Cancelled()) return {};
         // The solver factorizes K - sigma*M in its constructor (via set_shift).
+        // Spectra's compute runs to completion, so a cold solve reports no progress and cancels only at stage boundaries.
         eigs.emplace(op, Bop, fem_n_modes, basis_size, sigma);
         eigs->init();
         eigs->compute(Spectra::SortRule::LargestMagn, config.MaxRestarts, config.Tolerance, Spectra::SortRule::SmallestAlge);
@@ -565,15 +576,17 @@ std::optional<ModalModes> modal::RescaleModes(const ModalEigenSummary &summary, 
     return modes;
 }
 
-modal::ModalResult modal::mesh2modes(const tetgenio &tets, const AcousticMaterialProperties &material, const std::vector<vec3> &excite_positions, vec3 baked_scale, SolverConfig config, SolveReuse reuse) {
+modal::ModalResult modal::mesh2modes(const tetgenio &tets, const AcousticMaterialProperties &material, const std::vector<vec3> &excite_positions, vec3 baked_scale, SolverConfig config, SolveReuse reuse, JobMonitor *monitor) {
     SolveProfile profile;
     const double length_to_si = (double(baked_scale.x) + baked_scale.y + baked_scale.z) / 3.0;
     auto mass_props = Timed(profile.MassProps, [&] { return ComputeMassProperties(tets, material.Density, baked_scale, length_to_si); });
 
+    if (monitor) monitor->Progress.store(0.1f, std::memory_order_relaxed);
     const auto quad = Timed(profile.QuadMesh, [&] { return BuildQuadMesh(tets); });
     const auto [M, K] = Timed(profile.Assemble, [&] { return AssembleQuadratic(tets, quad, material); });
     profile.Dofs = 3 * quad.NodeCount;
     profile.StiffnessNonZeros = K.nonZeros();
+    if (monitor && monitor->Cancelled()) return {};
 
     // Sample each excitation position at its nearest tet point, recovering node-local coordinates.
     auto [excite_points, positions] = Timed(profile.SampleExcite, [&] {
@@ -602,6 +615,7 @@ modal::ModalResult modal::mesh2modes(const tetgenio &tets, const AcousticMateria
                                                            .Positions = std::move(positions),
                                                            .Material = material,
                                                            .Reuse = reuse,
+                                                           .Monitor = monitor,
                                                        },
                               profile, summary, reuse.KeepBasis ? &basis : nullptr);
     return {std::move(modes), std::move(mass_props), profile, std::move(summary), std::move(basis)};

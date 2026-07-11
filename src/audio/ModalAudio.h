@@ -76,6 +76,9 @@ uint32_t AddModalObject(ModalAudio &, entt::entity, const ModalModes &);
 // Set an object's resonator coefficients from per-mode frequencies (Hz) and T60s (s).
 // Out-of-range and undamped modes are muted. Safe against concurrent rendering.
 void TuneModalObject(ModalAudio &, uint32_t object, std::span<const float> freqs, std::span<const float> t60s);
+// Overwrite an object's mode shapes in place. Returns false when the mode or shape layout differs.
+// Element-wise writes to stable arrays, safe against concurrent rendering.
+bool SetModalObjectShapes(ModalAudio &, uint32_t object, const ModalModes &);
 // The object slot holding this entity, if any.
 std::optional<uint32_t> FindModalObject(const ModalAudio &, entt::entity);
 

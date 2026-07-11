@@ -14,6 +14,7 @@
 #include "animation/TimelineUi.h"
 #include "armature/ArmatureComponents.h"
 #include "audio/AudioDevice.h"
+#include "audio/AudioSystem.h"
 #include "audio/AudioTypes.h"
 #include "gizmo/TransformGizmoTypes.h"
 #include "image/ImageEncode.h"
@@ -1059,6 +1060,7 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
                 dl.ChannelsSplit(2);
                 dl.ChannelsSetCurrent(1);
                 InteractOverlay(r, viewport, r.ctx().get<FrameState>());
+                DrawModalJobsOverlay(r);
                 const auto content_region = ImGui::GetContentRegionAvail();
                 new_logical_extent = {uint32_t(std::max(content_region.x, 0.f)), uint32_t(std::max(content_region.y, 0.f))};
             }

@@ -151,6 +151,23 @@ void TuneModalObject(ModalAudio &m, uint32_t object, std::span<const float> freq
     }
 }
 
+bool SetModalObjectShapes(ModalAudio &m, uint32_t object, const ModalModes &modes) {
+    const auto begin = m.ShapeOffset[object];
+    const auto end = object + 1 < m.ShapeOffset.size() ? m.ShapeOffset[object + 1] : uint32_t(m.ShapeX.size());
+    const auto count = uint32_t(modes.Freqs.size());
+    if (m.ModeCount[object] != count || end - begin != count * modes.Shapes.size()) return false;
+    uint32_t i = begin;
+    for (const auto &row : modes.Shapes) {
+        for (const auto &shape : row) {
+            m.ShapeX[i] = shape.x;
+            m.ShapeY[i] = shape.y;
+            m.ShapeZ[i] = shape.z;
+            ++i;
+        }
+    }
+    return true;
+}
+
 std::optional<uint32_t> FindModalObject(const ModalAudio &m, entt::entity e) {
     if (auto it = std::ranges::find(m.Entities, e); it != m.Entities.end()) {
         return uint32_t(std::ranges::distance(m.Entities.begin(), it));

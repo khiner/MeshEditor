@@ -18,6 +18,7 @@
 #include "mesh/MeshComponents.h"
 #include "mesh/MeshStore.h"
 #include "mesh/Primitives.h"
+#include "mesh/TetMeshData.h"
 #include "physics/PhysicsUi.h"
 #include "render/GpuBufferOps.h"
 #include "render/Instance.h"
