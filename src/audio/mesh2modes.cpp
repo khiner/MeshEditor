@@ -11,12 +11,45 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <limits>
 #include <unordered_map>
 
 using uint = uint32_t;
 
 namespace {
+double SecondsSince(std::chrono::steady_clock::time_point start) {
+    return std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+}
+
+// Runs `compute`, storing its wall-clock duration in `seconds`.
+auto Timed(double &seconds, auto &&compute) {
+    const auto start = std::chrono::steady_clock::now();
+    auto result = compute();
+    seconds = SecondsSince(start);
+    return result;
+}
+
+// Forwards shift-invert ops to the inner operator, accumulating factorization and solve time.
+template<typename Op> struct TimedOp {
+    using Scalar = typename Op::Scalar;
+
+    Op &Inner;
+    double &FactorizeSeconds, &SolveSeconds;
+
+    Eigen::Index rows() const { return Inner.rows(); }
+    Eigen::Index cols() const { return Inner.cols(); }
+    void set_shift(const Scalar &sigma) {
+        const auto start = std::chrono::steady_clock::now();
+        Inner.set_shift(sigma);
+        FactorizeSeconds += SecondsSince(start);
+    }
+    void perform_op(const Scalar *x_in, Scalar *y_out) const {
+        const auto start = std::chrono::steady_clock::now();
+        Inner.perform_op(x_in, y_out);
+        SolveSeconds += SecondsSince(start);
+    }
+};
 int GetVertexIndex(const tetgenio &tets, uint element, uint vertex) { return tets.tetrahedronlist[element * 4 + vertex]; }
 
 const glm::dvec3 &GetVertex(const tetgenio &tets, int element, int vertex) {
@@ -293,11 +326,7 @@ MassStiffness AssembleQuadratic(const tetgenio &tets, const QuadMesh &quad, cons
 }
 
 struct ComputeModesOpts {
-    float MinModeFreq{20}; // Lowest mode freq
-    float MaxModeFreq{16'000}; // Highest mode freq
-    std::optional<float> FundamentalFreq{}; // Scale mode freqs so the lowest mode is at this fundamental
-    uint NumModes{20}; // Number of synthesized modes
-    uint NumFemModes{100}; // Number of modes to be computed with Finite Element Analysis (FEA)
+    modal::SolverConfig Config{};
     std::vector<uint> ExPos{}; // Excitation positions
     std::vector<vec3> Positions{}; // Node-local positions of each excitation position, parallel to ExPos
     AcousticMaterialProperties Material{};
@@ -307,22 +336,30 @@ ModalModes ComputeModes(
     const Eigen::SparseMatrix<double> &M,
     const Eigen::SparseMatrix<double> &K,
     uint num_vertices, uint vertex_dim,
-    ComputeModesOpts opts
+    ComputeModesOpts opts,
+    modal::SolveProfile &profile
 ) {
     /** Compute mass/stiffness eigenvalues and eigenvectors **/
     using OpType = Spectra::SymShiftInvert<double, Eigen::Sparse, Eigen::Sparse>;
     using BOpType = Spectra::SparseSymMatProd<double>;
     using Spectra::GEigsMode::ShiftInvert;
 
+    const auto &config = opts.Config;
     const uint n = num_vertices * vertex_dim;
-    const uint fem_n_modes = std::min(opts.NumFemModes, n - 1);
-    const uint convergence_ratio = std::min(std::max(2 * fem_n_modes + 1, 20u), n);
-    const double sigma = pow(2 * M_PI * opts.MinModeFreq, 2);
+    const uint fem_n_modes = std::min(config.NumFemModes, n - 1);
+    const uint basis_size = std::min(std::max(2 * fem_n_modes + 1, 20u), n); // Lanczos basis vector count (ncv)
+    const double sigma = pow(2 * M_PI * config.MinModeFreq, 2);
     OpType op{K, M};
     BOpType Bop{M};
-    Spectra::SymGEigsShiftSolver<OpType, BOpType, ShiftInvert> eigs{op, Bop, fem_n_modes, convergence_ratio, sigma};
+    TimedOp<OpType> timed_op{op, profile.Factorize, profile.OpSolve};
+    const auto eig_start = std::chrono::steady_clock::now();
+    // The solver factorizes K - sigma*M in its constructor (via set_shift).
+    Spectra::SymGEigsShiftSolver<TimedOp<OpType>, BOpType, ShiftInvert> eigs{timed_op, Bop, fem_n_modes, basis_size, sigma};
     eigs.init();
-    eigs.compute(Spectra::SortRule::LargestMagn, 100, 1e-8, Spectra::SortRule::SmallestAlge);
+    eigs.compute(Spectra::SortRule::LargestMagn, config.MaxRestarts, config.Tolerance, Spectra::SortRule::SmallestAlge);
+    profile.Iterate = SecondsSince(eig_start) - profile.Factorize;
+    profile.OpApplications = eigs.num_operations();
+    profile.Restarts = eigs.num_iterations();
     if (eigs.info() != Spectra::CompInfo::Successful) return {};
 
     const auto eigenvalues = eigs.eigenvalues();
@@ -353,7 +390,7 @@ ModalModes ComputeModes(
         mode_freqs[mode] = damped_hz(omega_i, c_from_omega(omega_i));
         // Rigid-body modes carry numerically tiny but nonzero eigenvalues, so a mode is valid
         // only at or above the audible floor.
-        if (lowest_mode_i == fem_n_modes && mode_freqs[mode] >= opts.MinModeFreq) {
+        if (lowest_mode_i == fem_n_modes && mode_freqs[mode] >= config.MinModeFreq) {
             lowest_mode_i = mode;
             lowest_mode_freq_orig = mode_freqs[mode];
         }
@@ -363,7 +400,7 @@ ModalModes ComputeModes(
     // Scale all modes so the lowest valid mode is at the configured fundamental frequency,
     // and calculate T60s from the scaled frequencies.
     static const double ln_1000 = std::log(1000);
-    const float freq_scale = opts.FundamentalFreq ? *opts.FundamentalFreq / lowest_mode_freq_orig : 1.f;
+    const float freq_scale = config.FundamentalFreq ? *config.FundamentalFreq / lowest_mode_freq_orig : 1.f;
     for (uint mode = lowest_mode_i; mode < fem_n_modes; ++mode) {
         const double omega_s = omega_undamped[mode] * freq_scale; // scaled rad/s
         const double c = c_from_omega(omega_s);
@@ -372,12 +409,12 @@ ModalModes ComputeModes(
     }
     // Keep modes that are only above the max frequency because of scaling.
     // This allows changing the fundamental without losing the higher modes.
-    const float max_mode_freq = opts.MaxModeFreq * std::max(1.f, freq_scale);
+    const float max_mode_freq = config.MaxModeFreq * std::max(1.f, freq_scale);
     uint highest_mode_i = fem_n_modes;
     while (highest_mode_i > lowest_mode_i && mode_freqs[highest_mode_i - 1] > max_mode_freq) --highest_mode_i;
 
     // Adjust modes to include only the requested range.
-    const uint n_modes = std::min({opts.NumModes, fem_n_modes, highest_mode_i - lowest_mode_i});
+    const uint n_modes = std::min({config.NumModes, fem_n_modes, highest_mode_i - lowest_mode_i});
     mode_freqs.erase(mode_freqs.begin(), mode_freqs.begin() + lowest_mode_i);
     mode_freqs.resize(n_modes);
     mode_t60s.erase(mode_t60s.begin(), mode_t60s.begin() + lowest_mode_i);
@@ -385,7 +422,7 @@ ModalModes ComputeModes(
 
     // One mode shape 3-vector per excitable vertex, so `shapes` stays the same length as `ExPos`.
     // Spectra returns M-orthonormal eigenvectors, so these are already mass-normalized (kg^-1/2).
-    const auto eigenvectors = eigs.eigenvectors(lowest_mode_i + n_modes);
+    const auto eigenvectors = Timed(profile.Extract, [&] { return eigs.eigenvectors(lowest_mode_i + n_modes); });
     std::vector<std::vector<vec3>> shapes(opts.ExPos.size()); // Mode shapes by [excitation position][mode]
     for (size_t ex_pos = 0; ex_pos < shapes.size(); ++ex_pos) {
         const uint ev_i = vertex_dim * opts.ExPos[ex_pos];
@@ -399,38 +436,41 @@ ModalModes ComputeModes(
 }
 } // namespace
 
-modal::ModalResult modal::mesh2modes(const tetgenio &tets, const AcousticMaterialProperties &material, const std::vector<vec3> &excite_positions, vec3 baked_scale, std::optional<float> fundamental_freq) {
+modal::ModalResult modal::mesh2modes(const tetgenio &tets, const AcousticMaterialProperties &material, const std::vector<vec3> &excite_positions, vec3 baked_scale, SolverConfig config) {
+    SolveProfile profile;
     const double length_to_si = (double(baked_scale.x) + baked_scale.y + baked_scale.z) / 3.0;
-    auto mass_props = ComputeMassProperties(tets, material.Density, baked_scale, length_to_si);
+    auto mass_props = Timed(profile.MassProps, [&] { return ComputeMassProperties(tets, material.Density, baked_scale, length_to_si); });
 
-    const auto quad = BuildQuadMesh(tets);
-    const auto [M, K] = AssembleQuadratic(tets, quad, material);
+    const auto quad = Timed(profile.QuadMesh, [&] { return BuildQuadMesh(tets); });
+    const auto [M, K] = Timed(profile.Assemble, [&] { return AssembleQuadratic(tets, quad, material); });
+    profile.Dofs = 3 * quad.NodeCount;
+    profile.StiffnessNonZeros = K.nonZeros();
 
     // Sample each excitation position at its nearest tet point, recovering node-local coordinates.
-    const dvec3 inv_scale{1.0 / baked_scale.x, 1.0 / baked_scale.y, 1.0 / baked_scale.z};
-    std::vector<uint> excite_points(excite_positions.size());
-    std::vector<vec3> positions(excite_positions.size());
-    for (size_t i = 0; i < excite_positions.size(); ++i) {
-        const dvec3 p{excite_positions[i]};
-        double best = std::numeric_limits<double>::max();
-        for (int v = 0; v < tets.numberofpoints; ++v) {
-            const auto &q = reinterpret_cast<const dvec3 &>(tets.pointlist[3 * v]);
-            if (const double d = glm::distance2(p, q); d < best) {
-                best = d;
-                excite_points[i] = v;
+    auto [excite_points, positions] = Timed(profile.SampleExcite, [&] {
+        const dvec3 inv_scale{1.0 / baked_scale.x, 1.0 / baked_scale.y, 1.0 / baked_scale.z};
+        std::vector<uint> points(excite_positions.size());
+        std::vector<vec3> local(excite_positions.size());
+        for (size_t i = 0; i < excite_positions.size(); ++i) {
+            const dvec3 p{excite_positions[i]};
+            double best = std::numeric_limits<double>::max();
+            for (int v = 0; v < tets.numberofpoints; ++v) {
+                const auto &q = reinterpret_cast<const dvec3 &>(tets.pointlist[3 * v]);
+                if (const double d = glm::distance2(p, q); d < best) {
+                    best = d;
+                    points[i] = v;
+                }
             }
+            local[i] = vec3{reinterpret_cast<const dvec3 &>(tets.pointlist[3 * points[i]]) * inv_scale};
         }
-        positions[i] = vec3{reinterpret_cast<const dvec3 &>(tets.pointlist[3 * excite_points[i]]) * inv_scale};
-    }
-    return {ComputeModes(M, K, quad.NodeCount, 3, {
-                                                      .MinModeFreq = 20,
-                                                      .MaxModeFreq = 16'000,
-                                                      .FundamentalFreq = fundamental_freq,
-                                                      .NumModes = 30,
-                                                      .NumFemModes = 80,
-                                                      .ExPos = std::move(excite_points),
-                                                      .Positions = std::move(positions),
-                                                      .Material = material,
-                                                  }),
-            std::move(mass_props)};
+        return std::pair{std::move(points), std::move(local)};
+    });
+    auto modes = ComputeModes(M, K, quad.NodeCount, 3, {
+                                                           .Config = std::move(config),
+                                                           .ExPos = std::move(excite_points),
+                                                           .Positions = std::move(positions),
+                                                           .Material = material,
+                                                       },
+                              profile);
+    return {std::move(modes), std::move(mass_props), profile};
 }

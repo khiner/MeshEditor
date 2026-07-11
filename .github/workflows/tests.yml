@@ -18,6 +18,8 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
+        env:
+          GIT_LFS_SKIP_SMUDGE: 1 # The RealImpact submodule's git-lfs meshes are only needed by the modal-corpus job
 
       - name: Install dependencies
         run: brew install llvm fftw ninja vulkan-headers vulkan-loader molten-vk shaderc
@@ -46,3 +48,62 @@ jobs:
           export VK_DRIVER_FILES
           ./build/tests/MeshEditorActionSerializeTest
           ./build/tests/MeshEditorTests
+
+  # Solves the full RealImpact mesh corpus and publishes the per-sample modes and profile
+  # as a text artifact, tracking how commits change mode values and solve timing.
+  modal-corpus:
+    runs-on: macos-15
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+        env:
+          GIT_LFS_SKIP_SMUDGE: 1 # Fetched below through the lfs cache
+
+      - name: RealImpact corpus commit
+        id: corpus
+        run: echo "sha=$(git rev-parse @:external/RealImpact)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache RealImpact meshes
+        uses: actions/cache@v4
+        with:
+          path: .git/modules/external/RealImpact/lfs
+          key: realimpact-lfs-${{ steps.corpus.outputs.sha }}
+
+      - name: Fetch RealImpact meshes
+        run: git -C external/RealImpact lfs pull
+
+      - name: Install dependencies
+        run: brew install llvm fftw ninja vulkan-headers vulkan-loader molten-vk shaderc eigen
+
+      - name: ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: ${{ runner.os }}-modal-corpus
+
+      - name: Configure
+        run: >
+          cmake -B build -G Ninja
+          -DMESHEDITOR_APP=OFF
+          -DCMAKE_BUILD_TYPE=Debug
+          -DCMAKE_C_COMPILER=/opt/homebrew/opt/llvm/bin/clang
+          -DCMAKE_CXX_COMPILER=/opt/homebrew/opt/llvm/bin/clang++
+          -DCMAKE_C_COMPILER_LAUNCHER=ccache
+          -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+
+      - name: Build
+        run: cmake --build build --target MeshEditorModalSolverTest MeshEditorModalSolverBench
+
+      - name: Run modal solver test
+        run: ./build/tests/MeshEditorModalSolverTest
+
+      - name: Run modal corpus
+        shell: bash
+        run: ./build/tests/MeshEditorModalSolverBench --corpus | tee modal-corpus.txt
+
+      - name: Upload corpus artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: modal-corpus
+          path: modal-corpus.txt

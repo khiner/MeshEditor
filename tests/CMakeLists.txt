@@ -93,6 +93,10 @@ target_link_libraries(MeshEditorActionSerializeTest PRIVATE Boost::ut)
 target_compile_definitions(MeshEditorActionSerializeTest PRIVATE GLM_ENABLE_EXPERIMENTAL DEBUG_BUILD)
 target_compile_options(MeshEditorActionSerializeTest PRIVATE -Wall -Wextra -Wno-missing-field-initializers -Wno-elaborated-enum-base -fno-rtti)
 
+# Default RealImpact dataset location for the modal solver test and bench: the corpus submodule.
+# Overridable here (cmake -D) or at runtime with the REALIMPACT_DATASET_DIR env var.
+set(REALIMPACT_DATASET_DIR "${CMAKE_SOURCE_DIR}/external/RealImpact/dataset" CACHE PATH "RealImpact dataset directory")
+
 # Standalone: the modal FEM solver reads tet geometry directly, so it needs only mesh2modes.cpp and
 # Tets.cpp with tetgen, meshoptimizer, Eigen, and Spectra.
 add_executable(MeshEditorModalSolverTest ModalSolverTest.cpp ${CMAKE_SOURCE_DIR}/src/audio/mesh2modes.cpp ${CMAKE_SOURCE_DIR}/src/mesh/Tets.cpp)
@@ -104,8 +108,26 @@ target_include_directories(MeshEditorModalSolverTest PRIVATE
     SYSTEM ${CMAKE_SOURCE_DIR}/lib/tetgen
 )
 target_link_libraries(MeshEditorModalSolverTest PRIVATE Boost::ut tetgen meshoptimizer)
-target_compile_definitions(MeshEditorModalSolverTest PRIVATE GLM_ENABLE_EXPERIMENTAL DEBUG_BUILD TETLIBRARY)
+target_compile_definitions(MeshEditorModalSolverTest PRIVATE GLM_ENABLE_EXPERIMENTAL DEBUG_BUILD TETLIBRARY REALIMPACT_DATASET_DIR="${REALIMPACT_DATASET_DIR}")
 target_compile_options(MeshEditorModalSolverTest PRIVATE -Wall -Wextra -Wno-missing-field-initializers -Wno-elaborated-enum-base -fno-rtti)
+
+# Standalone: times each stage of the modal solve pipeline across RealImpact samples.
+# RealImpact.cpp provides the object-name-to-material mapping.
+add_executable(MeshEditorModalSolverBench ModalSolverBench.cpp
+    ${CMAKE_SOURCE_DIR}/src/audio/mesh2modes.cpp
+    ${CMAKE_SOURCE_DIR}/src/audio/RealImpact.cpp
+    ${CMAKE_SOURCE_DIR}/src/mesh/Tets.cpp
+)
+target_include_directories(MeshEditorModalSolverBench PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${EIGEN3_INCLUDE_DIR}
+    SYSTEM ${CMAKE_SOURCE_DIR}/lib/glm
+    SYSTEM ${CMAKE_SOURCE_DIR}/lib/spectra/include
+    SYSTEM ${CMAKE_SOURCE_DIR}/lib/tetgen
+)
+target_link_libraries(MeshEditorModalSolverBench PRIVATE tetgen meshoptimizer)
+target_compile_definitions(MeshEditorModalSolverBench PRIVATE GLM_ENABLE_EXPERIMENTAL DEBUG_BUILD TETLIBRARY REALIMPACT_DATASET_DIR="${REALIMPACT_DATASET_DIR}")
+target_compile_options(MeshEditorModalSolverBench PRIVATE -Wall -Wextra -Wno-missing-field-initializers -Wno-elaborated-enum-base -fno-rtti)
 
 # Standalone: the Hertz contact-time math is pure (no GPU/registry/mesh), so it needs only ContactModel.cpp.
 add_executable(MeshEditorContactModelTest ContactModelTest.cpp ${CMAKE_SOURCE_DIR}/src/audio/ContactModel.cpp)

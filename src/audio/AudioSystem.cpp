@@ -792,7 +792,7 @@ void DrawModalCreateForm(
             parent_window, "Generating modal audio model...",
             [positions = std::move(positions), triangle_indices = mesh.CreateTriangleIndices(), tet_options, node_scale, material_props, sound_vertices = std::move(new_sound_vertices), excite_positions = std::move(excite_positions), fundamental]() mutable {
                 const auto tets = GenerateTets(std::move(positions), std::move(triangle_indices), tet_options);
-                auto result = modal::mesh2modes(*tets, material_props, excite_positions, node_scale, fundamental);
+                auto result = modal::mesh2modes(*tets, material_props, excite_positions, node_scale, {.FundamentalFreq = fundamental});
                 result.Modes.Vertices = std::move(sound_vertices.Vertices);
                 result.Modes.BakedScale = node_scale;
                 return ModalGenerationResult{std::move(result.Modes), BuildTetMeshData(*tets, node_scale), std::move(result.MassProps)};

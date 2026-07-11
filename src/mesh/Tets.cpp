@@ -41,7 +41,8 @@ std::unique_ptr<tetgenio> GenerateTets(std::vector<vec3> positions, std::vector<
     }
 
     auto result = std::make_unique<tetgenio>();
-    const auto flags = std::format("pe{}{}", options.PreserveSurface ? "Y" : "", options.Quality ? "q" : "");
+    // (-Q) Quiet: no terminal output except errors.
+    const auto flags = std::format("peQ{}{}", options.PreserveSurface ? "Y" : "", options.Quality ? "q" : "");
     tetrahedralize(const_cast<char *>(flags.c_str()), &in, result.get());
     return result;
 }
