@@ -3,9 +3,10 @@
 #include "MeshAttributes.h"
 #include "PrimitiveType.h"
 
+#include <glm/geometric.hpp>
+
 #include <numbers>
 #include <ranges>
-#include <vector>
 
 using std::views::transform, std::ranges::iota_view, std::ranges::to;
 

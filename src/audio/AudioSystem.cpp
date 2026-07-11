@@ -397,6 +397,16 @@ struct AudioMix {};
 } // namespace
 
 void RegisterAudioComponentHandlers(entt::registry &r) {
+    RegisterSceneClearHandler(r, [](entt::registry &r) {
+        // Drop the modal synthesis bank's slots: the scene's entities are gone, and the next scene's
+        // reused entity ids must not retune stale slots. A rebuild follows the next solve or load.
+        auto &m = r.ctx().get<ModalAudio>();
+        std::scoped_lock lock{m.StructureMutex};
+        ClearModalObjects(m);
+        // The warm-start basis seeds re-solves of a mesh from the cleared scene, so drop it too.
+        r.ctx().erase<ModalWarmStart>();
+    });
+
     track<audio_changes::VertexForce>(r).on<::VertexForce>(On::Create | On::Update | On::Destroy);
     track<audio_changes::ModalModes>(r).on<::ModalModes>(On::Create | On::Update | On::Destroy);
     track<audio_changes::ModalParams>(r)

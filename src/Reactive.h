@@ -43,3 +43,22 @@ inline void RegisterComponentEventHandler(entt::registry &r, ComponentEventHandl
     // emplace is a no-op if the type already exists (try_emplace semantics).
     r.ctx().emplace<std::vector<ComponentEventHandler>>().emplace_back(std::move(handler));
 }
+
+// Domain-registered handlers SetupScene runs on the viewport entity to emplace per-scene default components.
+struct SceneSetupHandlers {
+    std::vector<std::function<void(entt::registry &, entt::entity viewport)>> Handlers;
+};
+
+// Domain-registered handlers ClearScene runs after destroying all scene entities and before resetting the
+// entity allocator, to drop derived caches keyed by the destroyed scene's entity ids.
+struct SceneClearHandlers {
+    std::vector<std::function<void(entt::registry &)>> Handlers;
+};
+
+inline void RegisterSceneSetupHandler(entt::registry &r, std::function<void(entt::registry &, entt::entity)> handler) {
+    r.ctx().emplace<SceneSetupHandlers>().Handlers.emplace_back(std::move(handler));
+}
+
+inline void RegisterSceneClearHandler(entt::registry &r, std::function<void(entt::registry &)> handler) {
+    r.ctx().emplace<SceneClearHandlers>().Handlers.emplace_back(std::move(handler));
+}

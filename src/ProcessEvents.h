@@ -14,6 +14,9 @@ struct PendingRenderRequest {
     RenderRequest Value{RenderRequest::None};
 };
 
+// Registers the reactive trackers ProcessComponentEvents drains and this system's scene setup/clear handlers.
+void RegisterSceneComponentHandlers(entt::registry &);
+
 // Drains Pending* markers, reactive trackers, and dirty sets accumulated since the last frame.
 // Render work triggered by the drained changes accumulates in PendingRenderRequest.
 // **This is the only place where direct by-ref component mutations (instead of `patch`) are allowed.**

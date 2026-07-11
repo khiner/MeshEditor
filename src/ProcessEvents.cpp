@@ -13,7 +13,10 @@
 #include "animation/MorphWeightState.h"
 #include "armature/Armature.h"
 #include "armature/ArmatureComponents.h"
+#include "audio/AudioTypes.h"
+#include "audio/ContactModel.h"
 #include "audio/SoundVertices.h"
+#include "gizmo/GizmoInteraction.h"
 #include "gltf/GltfScene.h"
 #include "mesh/MeshStore.h"
 #include "mesh/Primitives.h"
@@ -2134,4 +2137,87 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
     r.clear<MeshGeometryDirty, MeshMaterialAssignment, MaterialDirty, LightWireframeDirty>();
 
     buffers.Ctx.FlushDeferredDescriptorUpdates(vk.Device);
+}
+
+void RegisterSceneComponentHandlers(entt::registry &r) {
+    // Reactive storage subscriptions for deferred once-per-frame processing
+    track<changes::TimelineRange>(r).on<TimelineRange>(On::Update);
+    track<changes::Selected>(r).on<Selected>(On::Create | On::Destroy);
+    track<changes::ActiveInstance>(r).on<Active>(On::Create | On::Destroy);
+    track<changes::BoneSelection>(r).on<BoneSelection>(On::Create | On::Update | On::Destroy).on<BoneActive>(On::Create | On::Destroy);
+    track<changes::Rerecord>(r)
+        .on<RenderInstance>(On::Create | On::Destroy)
+        .on<Active>(On::Create | On::Destroy)
+        .on<StartTransform>(On::Create | On::Destroy)
+        .on<EditMode>(On::Create | On::Update)
+        .on<SmoothShading>(On::Create | On::Destroy);
+    track<changes::MeshActiveElement>(r).on<MeshActiveElement>(On::Create | On::Update);
+    track<changes::MeshGeometry>(r).on<MeshGeometryDirty>(On::Create);
+    track<changes::MeshMaterial>(r).on<MeshMaterialAssignment>(On::Create | On::Update);
+    track<changes::SoundVertices>(r).on<SoundVertices>(On::Create | On::Destroy);
+    track<changes::SoundVerticesUpdated>(r).on<SoundVertices>(On::Update);
+    track<changes::VertexForce>(r).on<VertexForce>(On::Create | On::Destroy);
+    track<changes::NewBufferEntity>(r).on<MeshBuffers>(On::Create);
+    track<changes::ObjectCreated>(r).on<ObjectKind>(On::Create);
+    track<changes::RenderInstanceCreated>(r).on<RenderInstance>(On::Create);
+    track<changes::ViewportDisplay>(r).on<ViewportDisplay>(On::Create | On::Update);
+    track<changes::InteractionMode>(r).on<Interaction>(On::Create | On::Update);
+    track<changes::WorkspaceLights>(r).on<WorkspaceLights>(On::Create | On::Update);
+    track<changes::ViewportTheme>(r).on<ViewportTheme>(On::Create | On::Update);
+    track<changes::Materials>(r).on<MaterialDirty>(On::Create | On::Update);
+    track<changes::MaterializedTextures>(r).on<MaterializedTextures>(On::Create | On::Update);
+    track<changes::StudioEnvironment>(r).on<StudioEnvironment>(On::Create | On::Update);
+    track<changes::SceneWorld>(r).on<gltf::SourceAssets>(On::Create | On::Update);
+    track<changes::PunctualLight>(r).on<PunctualLight>(On::Create | On::Update);
+    track<changes::ActiveMaterialVariant>(r).on<MaterialVariants>(On::Create | On::Update);
+    track<changes::PbrSpecialization>(r)
+        .on<PbrMeshFeatures>(On::Create | On::Update | On::Destroy)
+        .on<MaterialPreviewLighting>(On::Create | On::Update)
+        .on<RenderedLighting>(On::Create | On::Update);
+    track<changes::SceneView>(r)
+        .on<ViewCamera>(On::Create | On::Update)
+        .on<MaterialPreviewLighting>(On::Create | On::Update)
+        .on<RenderedLighting>(On::Create | On::Update)
+        .on<LightIndex>(On::Create | On::Destroy)
+        .on<EditMode>(On::Create | On::Update);
+    track<changes::CameraLens>(r).on<Camera>(On::Create | On::Update).on<LookingThrough>(On::Create | On::Destroy);
+    track<changes::Rotation>(r).on<Transform>(On::Create | On::Update);
+    track<changes::WorldTransform>(r).on<WorldTransform>(On::Create | On::Update);
+    track<changes::TransformPending>(r).on<PendingTransform>(On::Create | On::Update);
+    track<changes::TransformEnd>(r).on<StartTransform>(On::Destroy);
+    track<changes::TransformDirty>(r)
+        .on<Transform>(On::Create | On::Update)
+        .on<PosedLocal>(On::Create | On::Update)
+        .on<SceneNode>(On::Create | On::Update)
+        .on<BoneDisplayScale>(On::Update);
+    track<changes::ActiveAnimationClip>(r)
+        .on<ArmatureAnimation>(On::Update)
+        .on<MorphWeightAnimation>(On::Update)
+        .on<NodeTransformAnimation>(On::Update);
+    r.ctx().emplace<EntityDestroyTracker>().Bind(r);
+
+    // BoneConstraints edits change the resolved local Transform; poke it to drive the WorldTransform recompute.
+    r.on_update<BoneConstraints>().connect<[](entt::registry &r, entt::entity e) {
+        r.patch<Transform>(e, [](auto &) {});
+    }>();
+
+    RegisterSceneSetupHandler(r, [](entt::registry &r, entt::entity viewport) {
+        r.emplace_or_replace<AudioOutputConfig>(viewport);
+        r.emplace_or_replace<AudioOutputMix>(viewport);
+        r.emplace_or_replace<Striker>(viewport);
+        r.emplace_or_replace<ModalSoundControls>(viewport);
+        r.emplace_or_replace<PlaybackFrame>(viewport);
+        r.emplace_or_replace<LastEvaluatedFrame>(viewport);
+        r.emplace_or_replace<AnimationTimelineView>(viewport);
+        r.emplace_or_replace<TimelineRange>(viewport);
+        r.emplace_or_replace<TimelinePlayback>(viewport);
+        r.emplace_or_replace<SelectionXRay>(viewport);
+        r.emplace_or_replace<BoxSelectState>(viewport);
+        r.emplace_or_replace<GizmoInteraction>(viewport);
+    });
+    RegisterSceneClearHandler(r, [](entt::registry &r) {
+        // Drop ColliderShapeBuffers' cached handles to the destroyed wireframe buffer entities, so
+        // EnsureWireframes rebuilds them instead of mistaking a reused entity id for a live buffer.
+        r.ctx().get<ColliderShapeBuffers>().Entities.fill(entt::entity{entt::null});
+    });
 }

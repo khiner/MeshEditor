@@ -1,35 +1,18 @@
 #include "viewport/Viewport.h"
-#include "Camera.h"
-#include "Changes.h"
+#include "CameraTypes.h"
 #include "Paths.h"
 #include "ProcessEvents.h"
 #include "Reactive.h"
 #include "Stores.h"
 #include "Timer.h"
-#include "animation/AnimationData.h"
-#include "animation/AnimationTimeline.h"
-#include "armature/ArmatureComponents.h"
-#include "armature/BoneConstraint.h"
-#include "audio/AudioTypes.h"
-#include "audio/ContactModel.h"
-#include "audio/ModalAudio.h"
-#include "audio/ModalWarmStart.h"
-#include "audio/SoundVertices.h"
-#include "gizmo/GizmoInteraction.h"
-#include "gltf/SourceAssets.h"
 #include "mesh/Mesh.h"
-#include "mesh/MeshComponents.h"
 #include "mesh/MeshStore.h"
 #include "mesh/Primitives.h"
-#include "object/ExtrasComponents.h"
 #include "object/ObjectComponents.h"
 #include "object/ObjectOps.h"
-#include "object/PendingSync.h"
 #include "physics/PhysicsSystem.h"
 #include "physics/PhysicsTypes.h"
 #include "render/DrawState.h"
-#include "render/Instance.h"
-#include "render/MaterialComponents.h"
 #include "render/MaterialImport.h"
 #include "render/OneShotGpu.h"
 #include "render/Pipelines.h"
@@ -37,22 +20,17 @@
 #include "render/VkFenceWait.h"
 #include "scene/Defaults.h"
 #include "scene/EntityDestroyTracker.h"
-#include "scene/SceneGraph.h"
-#include "scene/WorldTransform.h"
 #include "selection/SelectionComponents.h"
 #include "selection/SelectionGpu.h"
 #include "viewport/FrameState.h"
-#include "viewport/GizmoDrag.h"
 #include "viewport/InteractionComponents.h"
 #include "viewport/ViewportConsumerFence.h"
 #include "viewport/ViewportDisplay.h"
-#include "viewport/ViewportEvents.h"
 #include "viewport/ViewportInteractionState.h"
 #include "viewport/ViewportOps.h"
 #include "viewport/ViewportRenderGpu.h"
 
 #include "render/GpuBuffers.h"
-#include "render/LightComponents.h"
 
 #include <cassert>
 
@@ -165,104 +143,7 @@ entt::entity InitEngine(entt::registry &r, VulkanResources vc) {
     auto &slots = r.ctx().get<DescriptorSlots>();
     auto &pipelines = r.ctx().emplace<Pipelines>(vc.Device, vc.PhysicalDevice, slots.GetSetLayout(), slots.GetSet());
     physics::Init(r);
-    // Reactive storage subscriptions for deferred once-per-frame processing
-    track<changes::TimelineRange>(r).on<TimelineRange>(On::Update);
-    track<changes::Selected>(r).on<Selected>(On::Create | On::Destroy);
-    track<changes::ActiveInstance>(r).on<Active>(On::Create | On::Destroy);
-    track<changes::BoneSelection>(r).on<BoneSelection>(On::Create | On::Update | On::Destroy).on<BoneActive>(On::Create | On::Destroy);
-    track<changes::Rerecord>(r)
-        .on<RenderInstance>(On::Create | On::Destroy)
-        .on<Active>(On::Create | On::Destroy)
-        .on<StartTransform>(On::Create | On::Destroy)
-        .on<EditMode>(On::Create | On::Update)
-        .on<SmoothShading>(On::Create | On::Destroy);
-    track<changes::MeshActiveElement>(r).on<MeshActiveElement>(On::Create | On::Update);
-    track<changes::MeshGeometry>(r).on<MeshGeometryDirty>(On::Create);
-    track<changes::MeshMaterial>(r).on<MeshMaterialAssignment>(On::Create | On::Update);
-    track<changes::SoundVertices>(r).on<SoundVertices>(On::Create | On::Destroy);
-    track<changes::SoundVerticesUpdated>(r).on<SoundVertices>(On::Update);
-    track<changes::VertexForce>(r).on<VertexForce>(On::Create | On::Destroy);
-    track<changes::NewBufferEntity>(r).on<MeshBuffers>(On::Create);
-    track<changes::ObjectCreated>(r).on<ObjectKind>(On::Create);
-    track<changes::RenderInstanceCreated>(r).on<RenderInstance>(On::Create);
-    track<changes::ViewportDisplay>(r).on<ViewportDisplay>(On::Create | On::Update);
-    track<changes::InteractionMode>(r).on<Interaction>(On::Create | On::Update);
-    track<changes::WorkspaceLights>(r).on<WorkspaceLights>(On::Create | On::Update);
-    track<changes::ViewportTheme>(r).on<ViewportTheme>(On::Create | On::Update);
-    track<changes::Materials>(r).on<MaterialDirty>(On::Create | On::Update);
-    track<changes::MaterializedTextures>(r).on<MaterializedTextures>(On::Create | On::Update);
-    track<changes::StudioEnvironment>(r).on<StudioEnvironment>(On::Create | On::Update);
-    track<changes::SceneWorld>(r).on<gltf::SourceAssets>(On::Create | On::Update);
-    track<changes::PunctualLight>(r).on<PunctualLight>(On::Create | On::Update);
-    track<changes::ActiveMaterialVariant>(r).on<MaterialVariants>(On::Create | On::Update);
-    track<changes::PbrSpecialization>(r)
-        .on<PbrMeshFeatures>(On::Create | On::Update | On::Destroy)
-        .on<MaterialPreviewLighting>(On::Create | On::Update)
-        .on<RenderedLighting>(On::Create | On::Update);
-    track<changes::SceneView>(r)
-        .on<ViewCamera>(On::Create | On::Update)
-        .on<MaterialPreviewLighting>(On::Create | On::Update)
-        .on<RenderedLighting>(On::Create | On::Update)
-        .on<LightIndex>(On::Create | On::Destroy)
-        .on<EditMode>(On::Create | On::Update);
-    track<changes::CameraLens>(r).on<Camera>(On::Create | On::Update).on<LookingThrough>(On::Create | On::Destroy);
-    track<changes::Rotation>(r).on<Transform>(On::Create | On::Update);
-    track<changes::WorldTransform>(r).on<WorldTransform>(On::Create | On::Update);
-    track<changes::TransformPending>(r).on<PendingTransform>(On::Create | On::Update);
-    track<changes::TransformEnd>(r).on<StartTransform>(On::Destroy);
-    track<changes::TransformDirty>(r)
-        .on<Transform>(On::Create | On::Update)
-        .on<PosedLocal>(On::Create | On::Update)
-        .on<SceneNode>(On::Create | On::Update)
-        .on<BoneDisplayScale>(On::Update);
-    track<changes::ActiveAnimationClip>(r)
-        .on<ArmatureAnimation>(On::Update)
-        .on<MorphWeightAnimation>(On::Update)
-        .on<NodeTransformAnimation>(On::Update);
-    r.ctx().emplace<EntityDestroyTracker>().Bind(r);
-
-    r.on_destroy<Name>().connect<[](entt::registry &r, entt::entity e) {
-        if (auto *registry = r.ctx().find<NameRegistry>()) registry->Names.erase(r.get<const Name>(e).Value);
-    }>();
-    // Assign a stable ObjectId (0 means unassigned) on RenderInstance construction.
-    r.on_construct<RenderInstance>().connect<[](entt::registry &r, entt::entity e) {
-        if (r.get<const RenderInstance>(e).ObjectId != 0) return;
-        if (auto *counter = r.ctx().find<ObjectIdCounter>()) {
-            r.patch<RenderInstance>(e, [counter](auto &ri) { ri.ObjectId = counter->Next++; });
-        }
-    }>();
-    r.on_destroy<RenderInstance>().connect<[](entt::registry &r, entt::entity e) {
-        const auto &ri = r.get<const RenderInstance>(e);
-        if (ri.BufferIndex == UINT32_MAX) return; // Same-frame show+hide — never synced to GPU.
-        r.get_or_emplace<PendingHide>(ri.Entity).BufferIndices.push_back(ri.BufferIndex);
-    }>();
-    // An instance renders unless Hidden: create its RenderInstance on construction, drop it when Hidden appears.
-    // Together these keep RenderInstance in lockstep with Instance + !Hidden, including on snapshot restore
-    // (which emplaces Instance and Hidden in either order).
-    r.on_construct<Instance>().connect<[](entt::registry &r, entt::entity e) {
-        if (!r.all_of<Hidden>(e) && !r.all_of<RenderInstance>(e)) r.emplace<RenderInstance>(e, r.get<Instance>(e).Entity, UINT32_MAX, 0u);
-    }>();
-    r.on_construct<Hidden>().connect<[](entt::registry &r, entt::entity e) {
-        if (r.all_of<RenderInstance>(e)) r.remove<RenderInstance>(e);
-    }>();
-    // Build MeshBuffers when a vertex handle is constructed (MeshHandle = full meshes,
-    // VertexStoreId = vertex-only extras, OverlayVertexStoreId = overlays). Index ranges fill in afterward.
-    r.on_construct<MeshHandle>().connect<[](entt::registry &r, entt::entity e) {
-        auto &meshes = r.ctx().get<MeshStore>();
-        r.emplace<MeshBuffers>(e, meshes.GetVerticesRange(r.get<const MeshHandle>(e).StoreId), SlottedRange{}, SlottedRange{}, SlottedRange{});
-    }>();
-    r.on_construct<VertexStoreId>().connect<[](entt::registry &r, entt::entity e) {
-        auto &meshes = r.ctx().get<MeshStore>();
-        r.emplace<MeshBuffers>(e, meshes.GetVerticesRange(r.get<const VertexStoreId>(e).StoreId), SlottedRange{}, SlottedRange{}, SlottedRange{});
-    }>();
-    r.on_construct<OverlayVertexStoreId>().connect<[](entt::registry &r, entt::entity e) {
-        auto &meshes = r.ctx().get<MeshStore>();
-        r.emplace<MeshBuffers>(e, meshes.GetOverlayVerticesRange(r.get<const OverlayVertexStoreId>(e).StoreId), SlottedRange{}, SlottedRange{}, SlottedRange{});
-    }>();
-    // BoneConstraints edits change the resolved local Transform; poke it to drive the WorldTransform recompute.
-    r.on_update<BoneConstraints>().connect<[](entt::registry &r, entt::entity e) {
-        r.patch<Transform>(e, [](auto &) {});
-    }>();
+    RegisterSceneComponentHandlers(r);
 
     const auto viewport = WireRegistry(r);
     auto &buffers = r.ctx().get<GpuBuffers>();
@@ -275,7 +156,6 @@ entt::entity InitEngine(entt::registry &r, VulkanResources vc) {
     r.ctx().emplace<FrameState>();
     r.ctx().emplace<PendingRenderRequest>();
     const auto &one_shot = r.ctx().emplace<OneShotGpu>(MakeOneShotGpu(vc.Device, vc.QueueFamily));
-    r.ctx().emplace<ColliderShapeBuffers>();
     r.ctx().emplace<ViewportRenderResources>(ViewportRenderResources{
         .RenderCommandBuffer = std::move(vc.Device.allocateCommandBuffersUnique({*one_shot.Pool, vk::CommandBufferLevel::ePrimary, 1}).front()),
 #ifdef MVK_FORCE_STAGED_TRANSFERS
@@ -323,25 +203,16 @@ void SetupScene(entt::registry &r, entt::entity viewport) {
     r.emplace_or_replace<MaterialPreviewLighting>(viewport, false, false, 1.f, 0.f);
     r.emplace_or_replace<RenderedLighting>(viewport, true, true, 1.f, 0.f);
     r.emplace_or_replace<WorkspaceLights>(viewport, Defaults::WorkspaceLights);
-    r.emplace_or_replace<AudioOutputConfig>(viewport);
-    r.emplace_or_replace<AudioOutputMix>(viewport);
-    r.emplace_or_replace<Striker>(viewport);
-    r.emplace_or_replace<ModalSoundControls>(viewport);
-    r.emplace_or_replace<PlaybackFrame>(viewport);
-    r.emplace_or_replace<LastEvaluatedFrame>(viewport);
     r.emplace_or_replace<EnabledInteractionModes>(viewport);
-    r.emplace_or_replace<SelectionXRay>(viewport);
     r.emplace_or_replace<OrbitToActive>(viewport);
-    r.emplace_or_replace<BoxSelectState>(viewport);
     r.emplace_or_replace<TransformGizmoState>(viewport);
-    r.emplace_or_replace<GizmoInteraction>(viewport);
-    r.emplace_or_replace<AnimationTimelineView>(viewport);
-    r.emplace_or_replace<TimelineRange>(viewport);
-    r.emplace_or_replace<TimelinePlayback>(viewport);
     physics::ApplySimulationSettings(r, r.emplace_or_replace<PhysicsSimulationSettings>(viewport));
 
     // Default studio-environment selection.
     r.emplace_or_replace<StudioEnvironment>(viewport, std::string{"forest"});
+
+    // Domain-registered per-scene defaults.
+    for (const auto &handler : r.ctx().get<SceneSetupHandlers>().Handlers) handler(r, viewport);
 }
 
 void AddDefaultSceneContent(entt::registry &r) {
@@ -398,18 +269,8 @@ void ClearScene(entt::registry &r, entt::entity viewport) {
     r.destroy(viewport);
     r.ctx().get<ObjectIdCounter>() = {};
 
-    // Drop ColliderShapeBuffers' cached handles to the wireframe buffer entities destroyed above, so
-    // EnsureWireframes rebuilds them instead of mistaking a reused entity id for a live buffer.
-    r.ctx().get<ColliderShapeBuffers>().Entities.fill(entt::entity{entt::null});
-
-    // Drop the modal synthesis bank's slots for the same reason: its entities are gone, and the
-    // next scene's reused entity ids must not retune stale slots. A rebuild follows the next solve or load.
-    if (auto *modal_audio = r.ctx().find<ModalAudio>()) {
-        std::scoped_lock lock{modal_audio->StructureMutex};
-        ClearModalObjects(*modal_audio);
-    }
-    // The warm-start basis seeds re-solves of a mesh from the cleared scene, so drop it too.
-    r.ctx().erase<ModalWarmStart>();
+    // Reset domain caches keyed by the destroyed entities' ids, before the allocator reset lets the next scene reuse them.
+    for (const auto &handler : r.ctx().get<SceneClearHandlers>().Handlers) handler(r);
 
     // Reset the entity, mesh-store, and GPU-arena allocators to their fresh-start state, so replaying a scene from this
     // baseline re-allocates identical ids and GPU handles. Descriptor slots need no reset, since their RangeAllocator is order-independent.
