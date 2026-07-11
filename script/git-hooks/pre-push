@@ -29,6 +29,8 @@ RefLines=()
 while IFS= read -r line; do
     [ -n "${line}" ] && RefLines+=("${line}")
 done
+# Bash before 4.4 (macOS's /bin/bash) errors on expanding an empty array under set -u.
+[ "${#RefLines[@]}" -gt 0 ] || exit 0
 
 # Pure deletions push no commits.
 outgoing=0
