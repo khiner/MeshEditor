@@ -2,7 +2,6 @@
 #include "action/ActionDrain.h"
 #include "action/Log.h"
 #include "action/LogSerialize.h"
-#include "animation/AnimationTimeline.h"
 
 #include <entt/entity/registry.hpp>
 
@@ -20,32 +19,18 @@ std::filesystem::path LogPath; // Currently-open `.actions` log, empty when none
 
 // Record a committed change to the .actions log.
 void RecordCommitted(Action &&a) {
-    if (Log && std::visit([]<typename T>(const T &) { return Recordable<std::decay_t<T>>; }, a)) Log->Enqueue(std::move(a));
+    if (Log && IsRecordable(a)) Log->Enqueue(std::move(a));
 }
 
-// Apply a merged action by routing its alternative to the owning domain's `Apply`, then return the
-// action re-wrapped (its payload was moved into the domain variant to apply, so move it back out).
-Action ApplyAction(entt::registry &r, entt::entity viewport, Action &&action) {
-    return std::visit(
-        [&]<typename T>(T &&a) -> Action {
-            using L = std::decay_t<T>;
-            auto apply_keep = [&]<typename DomainV>() -> Action {
-                DomainV dv{std::forward<T>(a)};
-                Apply(r, viewport, dv);
-                return Action{std::in_place_type<L>, std::move(std::get<L>(dv))};
-            };
-            if constexpr (is_variant_member_v<L, selection::Action>) return apply_keep.template operator()<selection::Action>();
-            else if constexpr (is_variant_member_v<L, object::Action>) return apply_keep.template operator()<object::Action>();
-            else if constexpr (is_variant_member_v<L, view::Action>) return apply_keep.template operator()<view::Action>();
-            else if constexpr (is_variant_member_v<L, action::physics::Action>) return apply_keep.template operator()<action::physics::Action>();
-            else if constexpr (is_variant_member_v<L, audio::Action>) return apply_keep.template operator()<audio::Action>();
-            else if constexpr (is_variant_member_v<L, bone::Action>) return apply_keep.template operator()<bone::Action>();
-            else if constexpr (is_variant_member_v<L, timeline::Action>) return apply_keep.template operator()<timeline::Action>();
-            else if constexpr (is_variant_member_v<L, io::Action>) return apply_keep.template operator()<io::Action>();
-            else return apply_keep.template operator()<Core>();
-        },
-        std::move(action)
-    );
+// Route the action to its domain's Apply.
+void ApplyAction(entt::registry &r, entt::entity viewport, const Action &action) {
+    std::visit([&](const auto &dv) { Apply(r, viewport, dv); }, action);
+}
+
+// Apply and record as one committed action.
+void ApplyRecord(entt::registry &r, entt::entity viewport, Action &&a) {
+    ApplyAction(r, viewport, a);
+    RecordCommitted(std::move(a));
 }
 
 void CommitHeld() {
@@ -83,25 +68,24 @@ std::filesystem::path StopLog() {
     return path;
 }
 
-void StopPlaybackIfPlaying(entt::registry &r, entt::entity viewport) {
-    const auto &playback = r.get<const TimelinePlayback>(viewport);
-    if (playback.Playing) RecordCommitted(ApplyAction(r, viewport, Action{timeline::TogglePlay{playback.CurrentFrame}}));
+template<typename ActionType> void ApplyNow(entt::registry &r, entt::entity viewport, ActionType a) {
+    ApplyRecord(r, viewport, MakeAction(std::move(a)));
 }
 
 void ApplyEmitted(entt::registry &r, entt::entity viewport) {
     auto drained = Drain();
     if (drained.Emitted) {
         auto [action, phase] = std::move(*drained.Emitted);
-        auto recorded = ApplyAction(r, viewport, std::move(action));
+        ApplyAction(r, viewport, action);
         switch (phase) {
-            case Phase::Stage: Held = std::move(recorded); break;
+            case Phase::Stage: Held = std::move(action); break;
             case Phase::Cancel:
                 Held.reset();
                 r.clear<DragFieldStart>();
                 break;
             case Phase::Record:
                 CommitHeld();
-                RecordCommitted(std::move(recorded));
+                RecordCommitted(std::move(action));
                 r.clear<DragFieldStart>();
                 break;
         }
@@ -110,6 +94,8 @@ void ApplyEmitted(entt::registry &r, entt::entity viewport) {
         CommitHeld();
         r.clear<DragFieldStart>();
     }
+    // System-generated actions apply in addition to the user action, without touching any open gesture.
+    for (auto &a : drained.System) ApplyRecord(r, viewport, std::move(a));
 }
 
 bool ReplayLog(entt::registry &r, entt::entity viewport, const std::filesystem::path &replay_path, ReplayTick tick) {
@@ -118,10 +104,24 @@ bool ReplayLog(entt::registry &r, entt::entity viewport, const std::filesystem::
 
     tick(r, viewport);
     StreamActions(in, [&](Action &&a) {
-        RecordCommitted(ApplyAction(r, viewport, std::move(a)));
+        ApplyRecord(r, viewport, std::move(a));
         r.clear<DragFieldStart>(); // Each replayed action is one committed gesture.
         tick(r, viewport);
     });
     return true;
 }
 } // namespace action
+
+namespace {
+// Force instantiation of ApplyNow for every leaf action type so call sites in other TUs link.
+using ApplyNowPtr = void (*)();
+template<typename DV> constexpr auto DomainApplyNows() {
+    return []<size_t... I>(std::index_sequence<I...>) {
+        const auto inst = [](auto fn) { return reinterpret_cast<ApplyNowPtr>(fn); };
+        return std::array<ApplyNowPtr, sizeof...(I)>{
+            inst(static_cast<void (*)(entt::registry &, entt::entity, std::variant_alternative_t<I, DV>)>(&ApplyNow))...,
+        };
+    }(std::make_index_sequence<std::variant_size_v<DV>>{});
+}
+const auto _ = MapDomains([]<typename DV>() { return DomainApplyNows<DV>(); });
+} // namespace

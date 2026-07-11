@@ -263,15 +263,15 @@ GltfSampleTree BuildGltfSampleTree(const fs::path &root) {
 
 // Apply `action` now and settle the scene's derived state, for actions that must take effect outside the main loop.
 template<typename ActionType> void Perform(entt::registry &r, entt::entity viewport, ActionType action) {
-    action::Emit(std::move(action));
-    action::ApplyEmitted(r, viewport);
+    action::ApplyNow(r, viewport, std::move(action));
     ProcessComponentEvents(r, viewport);
 }
 
 // Finish in-flight GPU work and stop playback, so scene structure can be safely torn down.
 void QuiesceScene(entt::registry &r, entt::entity viewport) {
     r.ctx().get<const VulkanResources>().Device.waitIdle();
-    action::StopPlaybackIfPlaying(r, viewport);
+    const auto &playback = r.get<const TimelinePlayback>(viewport);
+    if (playback.Playing) action::ApplyNow(r, viewport, action::timeline::TogglePlay{playback.CurrentFrame});
 }
 
 // Reset to the default scene, optionally replaying an action log on top.

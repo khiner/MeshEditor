@@ -9,12 +9,14 @@ enum class Phase {
     Cancel, // Apply a revert and discard the held step, recording nothing.
 };
 
-// This frame's drained emission: the winning action + its phase (first emit wins, empty if none), and the standalone commit-request flag.
+// This frame's drained emission: the winning user action + its phase (first emit wins, empty if none),
+// the system-generated actions, and the standalone commit-request flag.
 struct Drained {
     std::optional<std::pair<Action, Phase>> Emitted;
+    std::vector<Action> System;
     bool CommitRequested;
 };
 
-// Return and reset this frame's emitted action and commit-request flag.
+// Return and reset this frame's user action, system actions, and commit-request flag.
 Drained Drain();
 } // namespace action

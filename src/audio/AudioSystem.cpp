@@ -722,8 +722,6 @@ struct ModalGenerationResult {
     size_t TetInputsHash;
 };
 std::unique_ptr<Worker<ModalGenerationResult>> ModalGenerator;
-// A completed solve's apply action, held until the per-frame action slot accepts it.
-std::optional<action::audio::ApplyModalModel> PendingModalApply;
 
 // Identifies the tet-mesh inputs of a modal solve. Identical inputs produce identical tet
 // topology, so a basis solved over them can warm-start the next solve (e.g. a material edit).
@@ -911,7 +909,6 @@ void DrawObjectAudioControls(
     entt::registry &r, entt::entity viewport, entt::entity e, entt::entity mesh_entity,
     const uint32_t *selection_bits
 ) {
-    if (PendingModalApply && action::TryEmit(*PendingModalApply)) PendingModalApply.reset();
     if (e == entt::null || mesh_entity == entt::null) return;
 
     if (auto &generator = ModalGenerator) {
@@ -922,8 +919,7 @@ void DrawObjectAudioControls(
             if (result->ModelPath.empty()) {
                 std::cerr << "Modal model computation failed.\n";
             } else {
-                PendingModalApply = action::audio::ApplyModalModel{e, std::move(result->ModelPath)};
-                if (action::TryEmit(*PendingModalApply)) PendingModalApply.reset();
+                action::EmitSystem(action::audio::ApplyModalModel{e, std::move(result->ModelPath)});
             }
         }
     }
