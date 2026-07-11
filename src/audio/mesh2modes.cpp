@@ -1,10 +1,13 @@
+// Run Eigen's large dense products (Lanczos orthogonalization) on Accelerate's BLAS.
+#define EIGEN_USE_BLAS
+
 #include "mesh2modes.h"
 
 #include "AcousticMaterialProperties.h"
+#include "CholeskyShiftInvert.h"
 #include "numeric/vec3.h"
 
 #include "tetgen.h"
-#include <Accelerate/Accelerate.h>
 #include <Eigen/Eigenvalues>
 #include <Spectra/SymGEigsShiftSolver.h>
 #include <glm/gtc/quaternion.hpp>
@@ -31,56 +34,6 @@ auto Timed(double &seconds, auto &&compute) {
     return result;
 }
 
-// Shift-invert operator for Spectra, y = (K - sigma*M)^-1 x, backed by Accelerate's sparse Cholesky.
-// The shift must be negative: K is positive semidefinite and M is positive definite, so
-// K - sigma*M is then positive definite as Cholesky requires. Reads the lower triangles of K and M.
-// Accumulates factorization and solve wall-clock time into the provided references.
-struct CholeskyShiftInvert {
-    using Scalar = double;
-
-    const Eigen::SparseMatrix<double> &K, &M;
-    double &FactorizeSeconds, &SolveSeconds;
-    SparseOpaqueFactorization_Double Factorization{};
-    bool Factorized{false};
-
-    ~CholeskyShiftInvert() {
-        if (Factorized) SparseCleanup(Factorization);
-    }
-
-    Eigen::Index rows() const { return K.rows(); }
-    Eigen::Index cols() const { return K.cols(); }
-
-    void set_shift(const Scalar &sigma) {
-        const auto start = std::chrono::steady_clock::now();
-        Eigen::SparseMatrix<double> shifted = K - sigma * M;
-        // Accelerate reads CSC arrays, matching Eigen's layout apart from the long column starts.
-        std::vector<long> column_starts(shifted.cols() + 1);
-        std::copy_n(shifted.outerIndexPtr(), column_starts.size(), column_starts.begin());
-        const SparseMatrix_Double shifted_matrix{
-            .structure = {
-                .rowCount = int(shifted.rows()),
-                .columnCount = int(shifted.cols()),
-                .columnStarts = column_starts.data(),
-                .rowIndices = shifted.innerIndexPtr(),
-                .attributes = {.triangle = SparseLowerTriangle, .kind = SparseSymmetric},
-                .blockSize = 1,
-            },
-            .data = shifted.valuePtr(),
-        };
-        if (Factorized) SparseCleanup(Factorization);
-        Factorization = SparseFactor(SparseFactorizationCholesky, shifted_matrix);
-        Factorized = true;
-        if (Factorization.status != SparseStatusOK) throw std::runtime_error("Modal shift-invert factorization failed.");
-        FactorizeSeconds += SecondsSince(start);
-    }
-
-    void perform_op(const Scalar *x_in, Scalar *y_out) const {
-        const auto start = std::chrono::steady_clock::now();
-        const int n = int(K.rows());
-        SparseSolve(Factorization, DenseVector_Double{n, const_cast<double *>(x_in)}, DenseVector_Double{n, y_out});
-        SolveSeconds += SecondsSince(start);
-    }
-};
 int GetVertexIndex(const tetgenio &tets, uint element, uint vertex) { return tets.tetrahedronlist[element * 4 + vertex]; }
 
 const glm::dvec3 &GetVertex(const tetgenio &tets, int element, int vertex) {

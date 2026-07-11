@@ -99,7 +99,7 @@ set(REALIMPACT_DATASET_DIR "${CMAKE_SOURCE_DIR}/external/RealImpact/dataset" CAC
 
 # Standalone: the modal FEM solver reads tet geometry directly, so it needs only mesh2modes.cpp and
 # Tets.cpp with tetgen, meshoptimizer, Eigen, and Spectra.
-add_executable(MeshEditorModalSolverTest ModalSolverTest.cpp ${CMAKE_SOURCE_DIR}/src/audio/mesh2modes.cpp ${CMAKE_SOURCE_DIR}/src/mesh/Tets.cpp)
+add_executable(MeshEditorModalSolverTest ModalSolverTest.cpp ${CMAKE_SOURCE_DIR}/src/audio/mesh2modes.cpp ${CMAKE_SOURCE_DIR}/src/audio/CholeskyShiftInvert.cpp ${CMAKE_SOURCE_DIR}/src/mesh/Tets.cpp)
 target_include_directories(MeshEditorModalSolverTest PRIVATE
     ${CMAKE_SOURCE_DIR}/src
     ${EIGEN3_INCLUDE_DIR}
@@ -115,6 +115,7 @@ target_compile_options(MeshEditorModalSolverTest PRIVATE -Wall -Wextra -Wno-miss
 # RealImpact.cpp provides the object-name-to-material mapping.
 add_executable(MeshEditorModalSolverBench ModalSolverBench.cpp
     ${CMAKE_SOURCE_DIR}/src/audio/mesh2modes.cpp
+    ${CMAKE_SOURCE_DIR}/src/audio/CholeskyShiftInvert.cpp
     ${CMAKE_SOURCE_DIR}/src/audio/RealImpact.cpp
     ${CMAKE_SOURCE_DIR}/src/mesh/Tets.cpp
 )
