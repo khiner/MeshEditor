@@ -4,6 +4,7 @@
 #include "numeric/vec3.h"
 
 #include "tetgen.h"
+#include <Accelerate/Accelerate.h>
 #include <Eigen/Eigenvalues>
 #include <Spectra/SymGEigsShiftSolver.h>
 #include <glm/gtc/quaternion.hpp>
@@ -30,23 +31,53 @@ auto Timed(double &seconds, auto &&compute) {
     return result;
 }
 
-// Forwards shift-invert ops to the inner operator, accumulating factorization and solve time.
-template<typename Op> struct TimedOp {
-    using Scalar = typename Op::Scalar;
+// Shift-invert operator for Spectra, y = (K - sigma*M)^-1 x, backed by Accelerate's sparse Cholesky.
+// The shift must be negative: K is positive semidefinite and M is positive definite, so
+// K - sigma*M is then positive definite as Cholesky requires. Reads the lower triangles of K and M.
+// Accumulates factorization and solve wall-clock time into the provided references.
+struct CholeskyShiftInvert {
+    using Scalar = double;
 
-    Op &Inner;
+    const Eigen::SparseMatrix<double> &K, &M;
     double &FactorizeSeconds, &SolveSeconds;
+    SparseOpaqueFactorization_Double Factorization{};
+    bool Factorized{false};
 
-    Eigen::Index rows() const { return Inner.rows(); }
-    Eigen::Index cols() const { return Inner.cols(); }
+    ~CholeskyShiftInvert() {
+        if (Factorized) SparseCleanup(Factorization);
+    }
+
+    Eigen::Index rows() const { return K.rows(); }
+    Eigen::Index cols() const { return K.cols(); }
+
     void set_shift(const Scalar &sigma) {
         const auto start = std::chrono::steady_clock::now();
-        Inner.set_shift(sigma);
+        Eigen::SparseMatrix<double> shifted = K - sigma * M;
+        // Accelerate reads CSC arrays, matching Eigen's layout apart from the long column starts.
+        std::vector<long> column_starts(shifted.cols() + 1);
+        std::copy_n(shifted.outerIndexPtr(), column_starts.size(), column_starts.begin());
+        const SparseMatrix_Double shifted_matrix{
+            .structure = {
+                .rowCount = int(shifted.rows()),
+                .columnCount = int(shifted.cols()),
+                .columnStarts = column_starts.data(),
+                .rowIndices = shifted.innerIndexPtr(),
+                .attributes = {.triangle = SparseLowerTriangle, .kind = SparseSymmetric},
+                .blockSize = 1,
+            },
+            .data = shifted.valuePtr(),
+        };
+        if (Factorized) SparseCleanup(Factorization);
+        Factorization = SparseFactor(SparseFactorizationCholesky, shifted_matrix);
+        Factorized = true;
+        if (Factorization.status != SparseStatusOK) throw std::runtime_error("Modal shift-invert factorization failed.");
         FactorizeSeconds += SecondsSince(start);
     }
+
     void perform_op(const Scalar *x_in, Scalar *y_out) const {
         const auto start = std::chrono::steady_clock::now();
-        Inner.perform_op(x_in, y_out);
+        const int n = int(K.rows());
+        SparseSolve(Factorization, DenseVector_Double{n, const_cast<double *>(x_in)}, DenseVector_Double{n, y_out});
         SolveSeconds += SecondsSince(start);
     }
 };
@@ -340,7 +371,7 @@ ModalModes ComputeModes(
     modal::SolveProfile &profile
 ) {
     /** Compute mass/stiffness eigenvalues and eigenvectors **/
-    using OpType = Spectra::SymShiftInvert<double, Eigen::Sparse, Eigen::Sparse>;
+    using OpType = CholeskyShiftInvert;
     using BOpType = Spectra::SparseSymMatProd<double>;
     using Spectra::GEigsMode::ShiftInvert;
 
@@ -348,13 +379,14 @@ ModalModes ComputeModes(
     const uint n = num_vertices * vertex_dim;
     const uint fem_n_modes = std::min(config.NumFemModes, n - 1);
     const uint basis_size = std::min(std::max(2 * fem_n_modes + 1, 20u), n); // Lanczos basis vector count (ncv)
-    const double sigma = pow(2 * M_PI * config.MinModeFreq, 2);
-    OpType op{K, M};
+    // Negative shift: K - sigma*M is positive definite, and the smallest
+    // eigenvalues sit nearest the shift, so they still converge first.
+    const double sigma = -pow(2 * M_PI * config.MinModeFreq, 2);
+    OpType op{K, M, profile.Factorize, profile.OpSolve};
     BOpType Bop{M};
-    TimedOp<OpType> timed_op{op, profile.Factorize, profile.OpSolve};
     const auto eig_start = std::chrono::steady_clock::now();
     // The solver factorizes K - sigma*M in its constructor (via set_shift).
-    Spectra::SymGEigsShiftSolver<TimedOp<OpType>, BOpType, ShiftInvert> eigs{timed_op, Bop, fem_n_modes, basis_size, sigma};
+    Spectra::SymGEigsShiftSolver<OpType, BOpType, ShiftInvert> eigs{op, Bop, fem_n_modes, basis_size, sigma};
     eigs.init();
     eigs.compute(Spectra::SortRule::LargestMagn, config.MaxRestarts, config.Tolerance, Spectra::SortRule::SmallestAlge);
     profile.Iterate = SecondsSince(eig_start) - profile.Factorize;
@@ -367,7 +399,7 @@ ModalModes ComputeModes(
     /** Compute modes frequencies/gains/T60s **/
     std::vector<float> mode_freqs(fem_n_modes), mode_t60s(fem_n_modes);
     std::vector<double> omega_undamped(fem_n_modes);
-    const double lambda_eps = sigma * 1e-10; // scale-aware near-zero cutoff
+    const double lambda_eps = std::fabs(sigma) * 1e-10; // scale-aware near-zero cutoff
     for (uint mode = 0; mode < fem_n_modes; ++mode) {
         const double lambda_i = eigenvalues[mode];
         omega_undamped[mode] = lambda_i > lambda_eps ? std::sqrt(lambda_i) : 0;

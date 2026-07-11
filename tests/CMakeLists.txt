@@ -107,7 +107,7 @@ target_include_directories(MeshEditorModalSolverTest PRIVATE
     SYSTEM ${CMAKE_SOURCE_DIR}/lib/spectra/include
     SYSTEM ${CMAKE_SOURCE_DIR}/lib/tetgen
 )
-target_link_libraries(MeshEditorModalSolverTest PRIVATE Boost::ut tetgen meshoptimizer)
+target_link_libraries(MeshEditorModalSolverTest PRIVATE Boost::ut tetgen meshoptimizer "-framework Accelerate")
 target_compile_definitions(MeshEditorModalSolverTest PRIVATE GLM_ENABLE_EXPERIMENTAL DEBUG_BUILD TETLIBRARY REALIMPACT_DATASET_DIR="${REALIMPACT_DATASET_DIR}")
 target_compile_options(MeshEditorModalSolverTest PRIVATE -Wall -Wextra -Wno-missing-field-initializers -Wno-elaborated-enum-base -fno-rtti)
 
@@ -125,7 +125,7 @@ target_include_directories(MeshEditorModalSolverBench PRIVATE
     SYSTEM ${CMAKE_SOURCE_DIR}/lib/spectra/include
     SYSTEM ${CMAKE_SOURCE_DIR}/lib/tetgen
 )
-target_link_libraries(MeshEditorModalSolverBench PRIVATE tetgen meshoptimizer)
+target_link_libraries(MeshEditorModalSolverBench PRIVATE tetgen meshoptimizer "-framework Accelerate")
 target_compile_definitions(MeshEditorModalSolverBench PRIVATE GLM_ENABLE_EXPERIMENTAL DEBUG_BUILD TETLIBRARY REALIMPACT_DATASET_DIR="${REALIMPACT_DATASET_DIR}")
 target_compile_options(MeshEditorModalSolverBench PRIVATE -Wall -Wextra -Wno-missing-field-initializers -Wno-elaborated-enum-base -fno-rtti)
 
