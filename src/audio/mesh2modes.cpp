@@ -331,7 +331,7 @@ ModalModes ComputeModes(
     const auto &config = opts.Config;
     const uint n = num_vertices * vertex_dim;
     const uint fem_n_modes = std::min(config.NumFemModes, n - 1);
-    const uint basis_size = std::min(std::max(2 * fem_n_modes + 1, 20u), n); // Lanczos basis vector count (ncv)
+    const uint basis_size = std::min(std::max(fem_n_modes + 20, 20u), n); // Lanczos basis vector count (ncv)
     // Negative shift: K - sigma*M is positive definite, and the smallest
     // eigenvalues sit nearest the shift, so they still converge first.
     const double sigma = -pow(2 * M_PI * config.MinModeFreq, 2);
