@@ -14,7 +14,7 @@ struct SolverConfig {
     float MinModeFreq{20}; // Hz
     float MaxModeFreq{16'000}; // Hz
     uint32_t NumModes{30}; // Synthesized modes kept from the FEM eigenpairs
-    uint32_t NumFemModes{80}; // Eigenpairs requested from the eigensolver
+    uint32_t NumFemModes{45}; // Eigenpairs requested from the eigensolver
     double Tolerance{1e-8}; // Eigensolver convergence tolerance
     uint32_t MaxRestarts{100}; // Eigensolver restart limit
     std::optional<float> FundamentalFreq{}; // Scale mode freqs so the lowest mode is at this fundamental
