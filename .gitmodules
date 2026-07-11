@@ -74,3 +74,6 @@
 [submodule "lib/meshoptimizer"]
 	path = lib/meshoptimizer
 	url = git@github.com:zeux/meshoptimizer.git
+[submodule "external/RealImpact"]
+	path = external/RealImpact
+	url = git@github.com:khiner/RealImpact.git
