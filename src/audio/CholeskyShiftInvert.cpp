@@ -51,3 +51,12 @@ void CholeskyShiftInvert::perform_op(const Scalar *x_in, Scalar *y_out) const {
     SparseSolve(Factor->Opaque, DenseVector_Double{n, const_cast<double *>(x_in)}, DenseVector_Double{n, y_out});
     SolveSeconds += SecondsSince(start);
 }
+
+void CholeskyShiftInvert::solve_panel(const Scalar *b_in, Scalar *x_out, int width) const {
+    const auto start = std::chrono::steady_clock::now();
+    const int n = int(K.rows());
+    const DenseMatrix_Double b{n, width, n, SparseAttributes_t{}, const_cast<double *>(b_in)};
+    const DenseMatrix_Double x{n, width, n, SparseAttributes_t{}, x_out};
+    SparseSolve(Factor->Opaque, b, x);
+    SolveSeconds += SecondsSince(start);
+}

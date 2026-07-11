@@ -62,8 +62,14 @@ const AcousticMaterial &MaterialForSample(const std::string &sample_dir) {
     return materials::acoustic::All.front();
 }
 
+// RMS shape magnitude of one mode across excitation positions (mode shape signs are arbitrary).
+double RmsGain(const ModalModes &modes, size_t m) {
+    double gain_sq = 0;
+    for (const auto &shape : modes.Shapes) gain_sq += double(glm::dot(shape[m], shape[m]));
+    return std::sqrt(gain_sq / modes.Shapes.size());
+}
+
 // One block per sample: geometry and profile lines, then one line per mode.
-// Gain is the RMS shape magnitude across excitation positions (mode shape signs are arbitrary).
 void PrintCorpusSample(const BenchResult &r, const modal::ModalResult &result) {
     const auto &p = r.Profile;
     std::println("=== {} ({}) ===", r.Name, r.Material);
@@ -73,47 +79,53 @@ void PrintCorpusSample(const BenchResult &r, const modal::ModalResult &result) {
     const auto &modes = result.Modes;
     std::println("modes: {}", modes.Freqs.size());
     for (size_t m = 0; m < modes.Freqs.size(); ++m) {
-        double gain_sq = 0;
-        for (const auto &shape : modes.Shapes) gain_sq += double(glm::dot(shape[m], shape[m]));
-        const double gain = std::sqrt(gain_sq / modes.Shapes.size());
-        std::println("  {:>2}: {:>9.2f} Hz, t60 {:>7.3f} s, gain {:.3e}", m + 1, modes.Freqs[m], modes.T60s[m], gain);
+        std::println("  {:>2}: {:>9.2f} Hz, t60 {:>7.3f} s, gain {:.3e}", m + 1, modes.Freqs[m], modes.T60s[m], RmsGain(modes, m));
     }
     std::println("");
 }
 
-std::optional<BenchResult> RunSample(const fs::path &dataset, const std::string &name, float ratio, bool corpus) {
+// A sample's preprocessed surface, with excitation positions spread evenly across its
+// vertices like the app's default. Prints and returns empty on failure.
+struct LoadedSample {
+    SurfaceMesh Surface;
+    std::vector<vec3> ExcitePositions;
+    double LoadSeconds;
+};
+
+std::optional<LoadedSample> LoadSample(const fs::path &dataset, const std::string &name) {
     const auto obj_path = dataset / name / "preprocessed" / "transformed.obj";
-    if (!fs::exists(obj_path)) {
-        std::println("skipping {}: {} not found", name, obj_path.string());
-        return {};
-    }
-
-    BenchResult r{.Name = name};
-    const auto &material = MaterialForSample(name);
-    r.Material = material.Name;
-
-    auto load_start = std::chrono::steady_clock::now();
+    const auto load_start = std::chrono::steady_clock::now();
     auto surface = LoadObj(obj_path);
-    r.LoadSeconds = SecondsSince(load_start);
+    const double load_seconds = SecondsSince(load_start);
     if (!surface || surface->Positions.empty()) {
         std::println("skipping {}: failed to load {}", name, obj_path.string());
         return {};
     }
-    r.SurfaceTris = surface->TriangleIndices.size() / 3;
-
-    // Excitation positions spread evenly across surface vertices, like the app's default.
     const auto num_verts = surface->Positions.size();
     std::vector<vec3> excite_positions(NumExcitePositions);
     for (uint32_t i = 0; i < NumExcitePositions; ++i) excite_positions[i] = surface->Positions[i * num_verts / NumExcitePositions];
+    return LoadedSample{std::move(*surface), std::move(excite_positions), load_seconds};
+}
+
+std::optional<BenchResult> RunSample(const fs::path &dataset, const std::string &name, float ratio, bool corpus) {
+    auto sample = LoadSample(dataset, name);
+    if (!sample) return {};
+    auto &surface = sample->Surface;
+
+    BenchResult r{.Name = name};
+    const auto &material = MaterialForSample(name);
+    r.Material = material.Name;
+    r.LoadSeconds = sample->LoadSeconds;
+    r.SurfaceTris = surface.TriangleIndices.size() / 3;
 
     // tetgen signals failure (e.g. a self-intersecting surface) by throwing an int.
     try {
         const auto tets_start = std::chrono::steady_clock::now();
-        const auto tets = GenerateTets(std::move(surface->Positions), std::move(surface->TriangleIndices), {.PreserveSurface = true, .SimplifyRatio = ratio});
+        const auto tets = GenerateTets(std::move(surface.Positions), std::move(surface.TriangleIndices), {.PreserveSurface = true, .SimplifyRatio = ratio});
         r.TetsSeconds = SecondsSince(tets_start);
         r.TetCount = tets->numberoftetrahedra;
 
-        const auto result = modal::mesh2modes(*tets, material.Properties, excite_positions, vec3{1}, SolveConfig);
+        const auto result = modal::mesh2modes(*tets, material.Properties, sample->ExcitePositions, vec3{1}, SolveConfig);
         r.Profile = result.Profile;
         r.NumModes = result.Modes.Freqs.size();
         r.FundamentalHz = r.NumModes > 0 ? result.Modes.Freqs.front() : 0;
@@ -125,6 +137,67 @@ std::optional<BenchResult> RunSample(const fs::path &dataset, const std::string 
         std::println("skipping {}: tetgen failed with code {}", name, code);
     }
     return {};
+}
+
+// Synthetic interactive-edit loop. Solve once cold keeping the eigenpairs, then compare a cold
+// re-solve against a reusing one for a Poisson ratio edit (warm-started subspace iteration) and
+// a Young's modulus and density edit (analytically scaled eigenpairs, no eigensolve).
+bool RunEditLoop(const fs::path &dataset, const std::string &name, float ratio) {
+    auto sample = LoadSample(dataset, name);
+    if (!sample) return false;
+
+    const auto material = MaterialForSample(name).Properties;
+    try {
+        const auto tets = GenerateTets(std::move(sample->Surface.Positions), std::move(sample->Surface.TriangleIndices), {.PreserveSurface = true, .SimplifyRatio = ratio});
+        const auto initial = modal::mesh2modes(*tets, material, sample->ExcitePositions, vec3{1}, SolveConfig, {.KeepBasis = true});
+
+        const auto f1 = [](const ModalModes &m) { return m.Freqs.empty() ? 0.f : m.Freqs.front(); };
+        const auto timed_solve = [&](const AcousticMaterialProperties &edited, modal::SolveReuse reuse) {
+            const auto start = std::chrono::steady_clock::now();
+            auto result = modal::mesh2modes(*tets, edited, sample->ExcitePositions, vec3{1}, SolveConfig, reuse);
+            return std::pair{std::move(result), SecondsSince(start)};
+        };
+        const auto report = [&](std::string_view label, const modal::ModalResult &cold, double cold_seconds, const ModalModes &reused, double reuse_seconds, uint32_t ops, uint32_t iters) {
+            double max_gain_dev = 0;
+            if (cold.Modes.Freqs.size() == reused.Freqs.size()) {
+                for (size_t m = 0; m < cold.Modes.Freqs.size(); ++m) {
+                    const double c = RmsGain(cold.Modes, m), w = RmsGain(reused, m);
+                    if (c > 0) max_gain_dev = std::max(max_gain_dev, std::abs(w - c) / c);
+                }
+            }
+            std::println(
+                "{:<26} {:<11} cold {:>6.2f} s ({:>4} ops) -> reuse {:>5.2f} s ({:>4} ops, {:>2} iters): {:>7.2f}x | modes {} vs {}, f1 {:.1f} vs {:.1f}, max gain dev {:.1e}{}",
+                name, label, cold_seconds, cold.Profile.OpApplications, reuse_seconds, ops, iters,
+                cold_seconds / reuse_seconds, cold.Modes.Freqs.size(), reused.Freqs.size(), f1(cold.Modes), f1(reused), max_gain_dev,
+                cold.Modes.Freqs.size() == reused.Freqs.size() && std::abs(f1(cold.Modes) - f1(reused)) < 0.05f ? "" : "  MISMATCH"
+            );
+        };
+
+        auto nu_edited = material;
+        nu_edited.PoissonRatio = std::min(nu_edited.PoissonRatio + 0.02, 0.49);
+        {
+            const auto [cold, cold_seconds] = timed_solve(nu_edited, {});
+            const auto [warm, warm_seconds] = timed_solve(nu_edited, {.SeedBasis = &initial.Basis});
+            report("nu edit:", cold, cold_seconds, warm.Modes, warm_seconds, warm.Profile.OpApplications, warm.Profile.Restarts);
+        }
+
+        auto scaled = material;
+        scaled.YoungModulus *= 1.5;
+        scaled.Density *= 0.8;
+        {
+            const auto [cold, cold_seconds] = timed_solve(scaled, {});
+            const auto rescale_start = std::chrono::steady_clock::now();
+            const auto rescaled = modal::RescaleModes(initial.Summary, initial.Modes, scaled, SolveConfig);
+            const double rescale_seconds = SecondsSince(rescale_start);
+            report("E/rho edit:", cold, cold_seconds, rescaled.value_or(ModalModes{}), rescale_seconds, 0, 0);
+        }
+        return true;
+    } catch (const std::exception &e) {
+        std::println("skipping {}: solve failed: {}", name, e.what());
+    } catch (int code) {
+        std::println("skipping {}: tetgen failed with code {}", name, code);
+    }
+    return false;
 }
 
 void PrintHeader() {
@@ -170,11 +243,13 @@ int main(int argc, char **argv) {
     float ratio = 1;
     bool all = false;
     bool corpus = false;
+    bool edit_loop = false;
     std::vector<std::string> names;
     for (int i = 1; i < argc; ++i) {
         const std::string_view arg{argv[i]};
         if (arg == "--all") all = true;
         else if (arg == "--corpus") corpus = true;
+        else if (arg == "--edit-loop") edit_loop = true;
         else if (arg == "--ratio" && i + 1 < argc) ratio = std::stof(argv[++i]);
         else if (arg == "--dataset" && i + 1 < argc) dataset = argv[++i];
         else names.emplace_back(arg);
@@ -195,6 +270,12 @@ int main(int argc, char **argv) {
         }
     }
 
+    if (edit_loop) {
+        std::println("edit loop: perturb Poisson ratio by +0.02 at fixed tet topology, cold vs warm-started re-solve");
+        bool any = false;
+        for (const auto &name : names) any |= RunEditLoop(dataset, name, ratio);
+        return any ? 0 : 1;
+    }
     if (corpus) {
         std::println("modal solve corpus: {} samples, simplify ratio {:.2f}, {} excitation positions", names.size(), ratio, NumExcitePositions);
         std::println("solver config: modes {:g}-{:g} Hz, keep {} of {} eigenpairs, tolerance {:g}, max restarts {}", SolveConfig.MinModeFreq, SolveConfig.MaxModeFreq, SolveConfig.NumModes, SolveConfig.NumFemModes, SolveConfig.Tolerance, SolveConfig.MaxRestarts);

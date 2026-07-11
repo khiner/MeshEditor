@@ -17,6 +17,8 @@
 #include <array>
 #include <chrono>
 #include <limits>
+#include <optional>
+#include <random>
 #include <unordered_map>
 
 using uint = uint32_t;
@@ -309,19 +311,120 @@ MassStiffness AssembleQuadratic(const tetgenio &tets, const QuadMesh &quad, cons
     return ms;
 }
 
+// Block subspace iteration on the shifted pencil, seeded with a prior solve's eigenvector basis.
+// Each iteration solves (K - sigma*M) Xbar = M X across the whole panel in one pass over the
+// Cholesky factor, then Rayleigh-Ritz projects the pencil onto span(Xbar). Ritz vectors are
+// M-orthonormal by construction. Converges the leading `nev` pairs, ascending.
+struct SubspaceResult {
+    Eigen::VectorXd Eigenvalues; // ascending, size nev, empty when convergence failed
+    Eigen::MatrixXd Eigenvectors; // n x nev, M-orthonormal
+    uint Iterations{}, OpApplications{};
+};
+
+SubspaceResult SubspaceIterate(
+    const CholeskyShiftInvert &op, const Eigen::SparseMatrix<double> &M,
+    uint nev, uint p, double sigma, double tol, uint max_iters,
+    const Eigen::MatrixXf &x0 // warm-start basis, its columns seed the leading panel columns
+) {
+    const uint n = M.rows();
+    const auto Msa = M.selfadjointView<Eigen::Lower>();
+
+    // The iteration carries M X rather than X itself: the panel solve, the projections, and the
+    // deflation all consume M-products, and Ritz vectors are only materialized when locked.
+    Eigen::MatrixXd MX(n, p);
+    {
+        Eigen::MatrixXd X(n, p);
+        std::mt19937_64 rng{20260710};
+        std::normal_distribution<double> gauss;
+        const uint seeded = std::min(uint(x0.cols()), p);
+        X.leftCols(seeded) = x0.leftCols(seeded).cast<double>();
+        for (uint j = seeded; j < p; ++j)
+            for (uint i = 0; i < n; ++i) X(i, j) = gauss(rng);
+        MX.noalias() = Msa * X;
+    }
+
+    SubspaceResult result;
+    // Locked (converged) leading Ritz pairs, ascending. Locked vectors leave the iterated
+    // panel: the active block is deflated against them instead of re-solved.
+    Eigen::MatrixXd XL(n, nev), MXL(n, nev);
+    Eigen::VectorXd theta_locked(nev);
+    uint c = 0; // locked count
+
+    Eigen::VectorXd prev_lambda = Eigen::VectorXd::Constant(nev, std::numeric_limits<double>::max());
+    for (uint iter = 0; iter < max_iters; ++iter) {
+        const uint w = p - c;
+        Eigen::MatrixXd Xbar(n, w);
+        op.solve_panel(MX.data(), Xbar.data(), int(w)); // (K - sigma*M) Xbar = M X
+        result.OpApplications += w;
+
+        // Kr = Xbar^T (K - sigma*M) Xbar = Xbar^T M X, corrected below for deflation.
+        Eigen::MatrixXd Kr = Xbar.transpose() * MX;
+        Eigen::MatrixXd MXbar = Msa * Xbar;
+
+        // Deflate against locked pairs. Locked pairs satisfy (K - sigma*M) x = theta M x to
+        // within tol, which reduces the deflated projection to the -C^T theta C correction.
+        if (c > 0) {
+            const Eigen::MatrixXd C = XL.leftCols(c).transpose() * MXbar;
+            Xbar.noalias() -= XL.leftCols(c) * C;
+            MXbar.noalias() -= MXL.leftCols(c) * C;
+            Kr.noalias() -= C.transpose() * theta_locked.head(c).asDiagonal() * C;
+        }
+        Eigen::MatrixXd Mr = Xbar.transpose() * MXbar;
+
+        // Rescale columns to unit M-norm to keep the small GEVP well-conditioned.
+        Kr = (0.5 * (Kr + Kr.transpose())).eval();
+        Mr = (0.5 * (Mr + Mr.transpose())).eval();
+        const Eigen::VectorXd dscale = Mr.diagonal().cwiseSqrt().cwiseInverse();
+        Kr = dscale.asDiagonal() * Kr * dscale.asDiagonal();
+        Mr = dscale.asDiagonal() * Mr * dscale.asDiagonal();
+        const Eigen::GeneralizedSelfAdjointEigenSolver<Eigen::MatrixXd> es(Kr, Mr);
+        if (es.info() != Eigen::Success) return result;
+
+        const Eigen::MatrixXd q = dscale.asDiagonal() * es.eigenvectors();
+
+        // Lock the leading prefix of active pairs whose eigenvalue settled, keeping ascending order.
+        uint newly_locked = 0;
+        for (uint i = 0; i < w && c + i < nev; ++i) {
+            const double lambda = es.eigenvalues()[i] + sigma;
+            const double rel = std::abs(lambda - prev_lambda[c + i]) / std::max(std::abs(lambda), std::abs(sigma));
+            prev_lambda[c + i] = lambda;
+            if (newly_locked == i && rel < tol) ++newly_locked;
+        }
+        if (newly_locked > 0) {
+            XL.middleCols(c, newly_locked).noalias() = Xbar * q.leftCols(newly_locked);
+            MXL.middleCols(c, newly_locked).noalias() = MXbar * q.leftCols(newly_locked);
+            theta_locked.segment(c, newly_locked) = es.eigenvalues().head(newly_locked);
+            c += newly_locked;
+        }
+        result.Iterations = iter + 1;
+        if (c >= nev) {
+            result.Eigenvalues = prev_lambda;
+            result.Eigenvectors = std::move(XL);
+            return result;
+        }
+        // Rotate the maintained M X onto the remaining active Ritz vectors.
+        MX.noalias() = MXbar * q.rightCols(w - newly_locked);
+    }
+    return result;
+}
+
 struct ComputeModesOpts {
     modal::SolverConfig Config{};
     std::vector<uint> ExPos{}; // Excitation positions
     std::vector<vec3> Positions{}; // Node-local positions of each excitation position, parallel to ExPos
     AcousticMaterialProperties Material{};
+    modal::SolveReuse Reuse{};
 };
 
+// `summary_out` receives the solved eigenpairs at the excitation positions, and `basis_out`
+// (when non-null) the full eigenvector basis.
 ModalModes ComputeModes(
     const Eigen::SparseMatrix<double> &M,
     const Eigen::SparseMatrix<double> &K,
     uint num_vertices, uint vertex_dim,
     ComputeModesOpts opts,
-    modal::SolveProfile &profile
+    modal::SolveProfile &profile,
+    ModalEigenSummary &summary_out, Eigen::MatrixXf *basis_out
 ) {
     /** Compute mass/stiffness eigenvalues and eigenvectors **/
     using OpType = CholeskyShiftInvert;
@@ -337,28 +440,62 @@ ModalModes ComputeModes(
     const double sigma = -pow(2 * M_PI * config.MinModeFreq, 2);
     OpType op{K, M, profile.Factorize, profile.OpSolve};
     BOpType Bop{M};
+    // A basis solved over a different mesh cannot seed this solve, so it falls back to a cold solve.
+    const auto &reuse = opts.Reuse;
+    // Subspace iteration re-converges a warm-start basis in a few block iterations.
+    const bool use_subspace = reuse.SeedBasis != nullptr && reuse.SeedBasis->rows() == Eigen::Index(n) && reuse.SeedBasis->cols() >= Eigen::Index(fem_n_modes);
+    std::optional<Spectra::SymGEigsShiftSolver<OpType, BOpType, ShiftInvert>> eigs;
+    SubspaceResult subspace;
+    Eigen::VectorXd eigenvalues;
     const auto eig_start = std::chrono::steady_clock::now();
-    // The solver factorizes K - sigma*M in its constructor (via set_shift).
-    Spectra::SymGEigsShiftSolver<OpType, BOpType, ShiftInvert> eigs{op, Bop, fem_n_modes, basis_size, sigma};
-    eigs.init();
-    eigs.compute(Spectra::SortRule::LargestMagn, config.MaxRestarts, config.Tolerance, Spectra::SortRule::SmallestAlge);
+    if (use_subspace) {
+        op.set_shift(sigma);
+        subspace = SubspaceIterate(op, M, fem_n_modes, std::min(fem_n_modes + 15, n), sigma, config.WarmTolerance, config.MaxRestarts, *reuse.SeedBasis);
+        profile.OpApplications = subspace.OpApplications;
+        profile.Restarts = subspace.Iterations;
+        if (subspace.Eigenvalues.size() == 0) return {};
+        eigenvalues = subspace.Eigenvalues;
+    } else {
+        // The solver factorizes K - sigma*M in its constructor (via set_shift).
+        eigs.emplace(op, Bop, fem_n_modes, basis_size, sigma);
+        eigs->init();
+        eigs->compute(Spectra::SortRule::LargestMagn, config.MaxRestarts, config.Tolerance, Spectra::SortRule::SmallestAlge);
+        profile.OpApplications = eigs->num_operations();
+        profile.Restarts = eigs->num_iterations();
+        if (eigs->info() != Spectra::CompInfo::Successful) return {};
+        eigenvalues = eigs->eigenvalues();
+    }
     profile.Iterate = SecondsSince(eig_start) - profile.Factorize;
-    profile.OpApplications = eigs.num_operations();
-    profile.Restarts = eigs.num_iterations();
-    if (eigs.info() != Spectra::CompInfo::Successful) return {};
+    // The eigenvectors are M-orthonormal, so shapes are already mass-normalized (kg^-1/2).
+    const Eigen::MatrixXd eigenvectors = Timed(profile.Extract, [&]() -> Eigen::MatrixXd {
+        return use_subspace ? std::move(subspace.Eigenvectors) : eigs->eigenvectors();
+    });
+    std::vector<std::vector<vec3>> shapes(opts.ExPos.size(), std::vector<vec3>(fem_n_modes));
+    for (size_t ex_pos = 0; ex_pos < shapes.size(); ++ex_pos) {
+        const uint ev_i = vertex_dim * opts.ExPos[ex_pos];
+        for (uint mode = 0; mode < fem_n_modes; ++mode) {
+            for (uint vi = 0; vi < vertex_dim; ++vi) shapes[ex_pos][mode][vi] = eigenvectors(ev_i + vi, mode);
+        }
+    }
+    summary_out = {{eigenvalues.begin(), eigenvalues.end()}, shapes, opts.Material, 0};
+    if (basis_out) *basis_out = eigenvectors.cast<float>();
 
-    const auto eigenvalues = eigs.eigenvalues();
+    return modal::PostprocessModes(summary_out.Eigenvalues, shapes, 1.f, opts.Material, config, std::move(opts.Positions));
+}
+} // namespace
 
-    /** Compute modes frequencies/gains/T60s **/
+ModalModes modal::PostprocessModes(std::span<const double> eigenvalues, const std::vector<std::vector<vec3>> &shapes, float shape_scale, const AcousticMaterialProperties &material, const SolverConfig &config, std::vector<vec3> positions) {
+    const uint fem_n_modes = eigenvalues.size();
     std::vector<float> mode_freqs(fem_n_modes), mode_t60s(fem_n_modes);
     std::vector<double> omega_undamped(fem_n_modes);
-    const double lambda_eps = std::fabs(sigma) * 1e-10; // scale-aware near-zero cutoff
+    // Scale-aware near-zero cutoff, relative to the eigensolver shift.
+    const double lambda_eps = pow(2 * M_PI * config.MinModeFreq, 2) * 1e-10;
     for (uint mode = 0; mode < fem_n_modes; ++mode) {
         const double lambda_i = eigenvalues[mode];
         omega_undamped[mode] = lambda_i > lambda_eps ? std::sqrt(lambda_i) : 0;
     }
 
-    const auto c_from_omega = [&material = opts.Material](double omega) { return material.Alpha + material.Beta * (omega * omega); };
+    const auto c_from_omega = [&material](double omega) { return material.Alpha + material.Beta * (omega * omega); };
     const auto damped_hz = [&](double omega, double c) {
         const double omega_d_sq = omega * omega - 0.25 * c * c;
         return omega_d_sq > 0 ? std::sqrt(omega_d_sq) / (2 * M_PI) : 0;
@@ -405,23 +542,30 @@ ModalModes ComputeModes(
     mode_t60s.erase(mode_t60s.begin(), mode_t60s.begin() + lowest_mode_i);
     mode_t60s.resize(n_modes);
 
-    // One mode shape 3-vector per excitable vertex, so `shapes` stays the same length as `ExPos`.
-    // Spectra returns M-orthonormal eigenvectors, so these are already mass-normalized (kg^-1/2).
-    const auto eigenvectors = Timed(profile.Extract, [&] { return eigs.eigenvectors(lowest_mode_i + n_modes); });
-    std::vector<std::vector<vec3>> shapes(opts.ExPos.size()); // Mode shapes by [excitation position][mode]
+    // One mode shape 3-vector per excitable vertex, so `out_shapes` stays the same length as `shapes`.
+    std::vector<std::vector<vec3>> out_shapes(shapes.size(), std::vector<vec3>(n_modes));
     for (size_t ex_pos = 0; ex_pos < shapes.size(); ++ex_pos) {
-        const uint ev_i = vertex_dim * opts.ExPos[ex_pos];
-        shapes[ex_pos] = std::vector<vec3>(n_modes);
-        for (uint mode = 0; mode < n_modes; ++mode) {
-            for (uint vi = 0; vi < vertex_dim; ++vi) shapes[ex_pos][mode][vi] = eigenvectors(ev_i + vi, mode + lowest_mode_i);
-        }
+        for (uint mode = 0; mode < n_modes; ++mode) out_shapes[ex_pos][mode] = shapes[ex_pos][mode + lowest_mode_i] * shape_scale;
     }
 
-    return {std::move(mode_freqs), std::move(mode_t60s), std::move(shapes), {}, std::move(opts.Positions), lowest_mode_freq_orig};
+    return {std::move(mode_freqs), std::move(mode_t60s), std::move(out_shapes), {}, std::move(positions), lowest_mode_freq_orig};
 }
-} // namespace
 
-modal::ModalResult modal::mesh2modes(const tetgenio &tets, const AcousticMaterialProperties &material, const std::vector<vec3> &excite_positions, vec3 baked_scale, SolverConfig config) {
+std::optional<ModalModes> modal::RescaleModes(const ModalEigenSummary &summary, const ModalModes &current, const AcousticMaterialProperties &material, SolverConfig config) {
+    if (summary.Eigenvalues.empty() || material.PoissonRatio != summary.SolvedMaterial.PoissonRatio) return {};
+
+    const double rho_ratio = material.Density / summary.SolvedMaterial.Density;
+    const double eigenvalue_scale = (material.YoungModulus / summary.SolvedMaterial.YoungModulus) / rho_ratio;
+    auto eigenvalues = summary.Eigenvalues;
+    for (auto &v : eigenvalues) v *= eigenvalue_scale;
+
+    auto modes = PostprocessModes(eigenvalues, summary.Shapes, float(1 / std::sqrt(rho_ratio)), material, config, current.Positions);
+    modes.Vertices = current.Vertices;
+    modes.BakedScale = current.BakedScale;
+    return modes;
+}
+
+modal::ModalResult modal::mesh2modes(const tetgenio &tets, const AcousticMaterialProperties &material, const std::vector<vec3> &excite_positions, vec3 baked_scale, SolverConfig config, SolveReuse reuse) {
     SolveProfile profile;
     const double length_to_si = (double(baked_scale.x) + baked_scale.y + baked_scale.z) / 3.0;
     auto mass_props = Timed(profile.MassProps, [&] { return ComputeMassProperties(tets, material.Density, baked_scale, length_to_si); });
@@ -450,12 +594,15 @@ modal::ModalResult modal::mesh2modes(const tetgenio &tets, const AcousticMateria
         }
         return std::pair{std::move(points), std::move(local)};
     });
+    ModalEigenSummary summary;
+    Eigen::MatrixXf basis;
     auto modes = ComputeModes(M, K, quad.NodeCount, 3, {
                                                            .Config = std::move(config),
                                                            .ExPos = std::move(excite_points),
                                                            .Positions = std::move(positions),
                                                            .Material = material,
+                                                           .Reuse = reuse,
                                                        },
-                              profile);
-    return {std::move(modes), std::move(mass_props), profile};
+                              profile, summary, reuse.KeepBasis ? &basis : nullptr);
+    return {std::move(modes), std::move(mass_props), profile, std::move(summary), std::move(basis)};
 }
