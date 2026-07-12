@@ -41,6 +41,7 @@
 #include "imgui_impl_vulkan.h"
 #include "imgui_internal.h"
 #include "implot.h"
+#include "imspinner_demo.h"
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_vulkan.h>
 #include <entt/entity/registry.hpp>
@@ -779,6 +780,7 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
             auto animation_node_id = DockBuilderSplitNode(dockspace_id, ImGuiDir_Down, 0.1f, nullptr, &dockspace_id);
             DockBuilderDockWindow(windows.Debug.Name, extra_node_id);
             DockBuilderDockWindow(windows.ImGuiDemo.Name, extra_node_id);
+            DockBuilderDockWindow(windows.ImSpinnerDemo.Name, extra_node_id);
             DockBuilderDockWindow(windows.ImPlotDemo.Name, extra_node_id);
             DockBuilderDockWindow(windows.SceneControls.Name, controls_node_id);
             DockBuilderDockWindow(windows.Animation.Name, animation_node_id);
@@ -965,6 +967,7 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
             if (BeginMenu("Windows")) {
                 MenuItem(windows.Debug.Name, nullptr, &windows.Debug.Visible);
                 MenuItem(windows.ImGuiDemo.Name, nullptr, &windows.ImGuiDemo.Visible);
+                MenuItem(windows.ImSpinnerDemo.Name, nullptr, &windows.ImSpinnerDemo.Visible);
                 MenuItem(windows.ImPlotDemo.Name, nullptr, &windows.ImPlotDemo.Visible);
                 MenuItem(windows.SceneControls.Name, nullptr, &windows.SceneControls.Visible);
                 MenuItem(windows.Animation.Name, nullptr, &windows.Animation.Visible);
@@ -1023,6 +1026,10 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
             End();
         }
         if (windows.ImGuiDemo.Visible) ImGui::ShowDemoWindow(&windows.ImGuiDemo.Visible);
+        if (windows.ImSpinnerDemo.Visible) {
+            if (Begin(windows.ImSpinnerDemo.Name, &windows.ImSpinnerDemo.Visible)) ImSpinner::demoSpinners();
+            End();
+        }
         if (windows.ImPlotDemo.Visible) ImPlot::ShowDemoWindow(&windows.ImPlotDemo.Visible);
 
         if (windows.SceneControls.Visible) {

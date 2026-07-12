@@ -11,6 +11,7 @@ struct WindowsState {
         Viewport{"Viewport"},
         Animation{"Animation"},
         ImGuiDemo{"Dear ImGui Demo", false},
+        ImSpinnerDemo{"ImSpinner Demo", false},
         ImPlotDemo{"ImPlot Demo", false},
         Debug{"Debug", false};
 };
