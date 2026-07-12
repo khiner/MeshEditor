@@ -751,7 +751,7 @@ void RegisterAudioComponentHandlers(entt::registry &r) {
             if (auto &config_tracker = reactive<audio_changes::AudioConfig>(r); !config_tracker.empty()) {
                 const uint32_t prev_rate = res->SampleRate;
                 for (auto e : config_tracker) {
-                    if (r.valid(e) && r.all_of<AudioOutputConfig, AudioOutputMix>(e)) ConfigureAudioDevice(*res, r.get<const AudioOutputConfig>(e), r.get<const AudioOutputMix>(e));
+                    if (r.valid(e) && r.all_of<AudioOutputConfig, AudioOutputMix>(e)) ReconcileAudioDevice(*res, r.get<const AudioOutputConfig>(e), r.get<const AudioOutputMix>(e));
                 }
                 device_rate_changed = res->SampleRate != prev_rate;
             }

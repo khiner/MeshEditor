@@ -40,43 +40,48 @@ AudioDeviceResource::~AudioDeviceResource() {
     }
 }
 
-void ConfigureAudioDevice(AudioDeviceResource &res, const AudioOutputConfig &config, const AudioOutputMix &mix) {
+// Reopen only when the device or rate changes (miniaudio rebinds both at init). Volume, mute, and on/off apply live.
+void ReconcileAudioDevice(AudioDeviceResource &res, const AudioOutputConfig &config, const AudioOutputMix &mix) {
     if (!ContextInitialized) {
         if (ma_context_init(nullptr, 0, nullptr, &Context) != MA_SUCCESS) throw std::runtime_error("Failed to initialize audio context.");
         ContextInitialized = true;
     }
-    if (res.Initialized) {
-        ma_device_uninit(&Device);
-        res.Initialized = false;
-    }
+    if (!res.Initialized || config.DeviceName != res.DeviceName || config.SampleRate != res.RequestedSampleRate) {
+        if (res.Initialized) {
+            ma_device_uninit(&Device);
+            res.Initialized = false;
+        }
 
-    ma_device_info *playback_infos, *capture_infos;
-    ma_uint32 playback_count, capture_count;
-    if (ma_context_get_devices(&Context, &playback_infos, &playback_count, &capture_infos, &capture_count) != MA_SUCCESS) throw std::runtime_error("Failed to get audio devices.");
-    res.OutDeviceNames.clear();
-    const ma_device_id *device_id = nullptr;
-    for (ma_uint32 i = 0; i < playback_count; ++i) {
-        res.OutDeviceNames.emplace_back(playback_infos[i].name);
-        if (config.DeviceName == playback_infos[i].name) device_id = &playback_infos[i].id;
-    }
+        ma_device_info *playback_infos, *capture_infos;
+        ma_uint32 playback_count, capture_count;
+        if (ma_context_get_devices(&Context, &playback_infos, &playback_count, &capture_infos, &capture_count) != MA_SUCCESS) throw std::runtime_error("Failed to get audio devices.");
+        res.OutDeviceNames.clear();
+        const ma_device_id *device_id = nullptr;
+        for (ma_uint32 i = 0; i < playback_count; ++i) {
+            res.OutDeviceNames.emplace_back(playback_infos[i].name);
+            if (config.DeviceName == playback_infos[i].name) device_id = &playback_infos[i].id;
+        }
 
-    ma_device_config device_config = ma_device_config_init(ma_device_type_playback);
-    device_config.playback.pDeviceID = device_id;
-    device_config.playback.format = ma_format_f32;
-    device_config.playback.channels = 1;
-    device_config.sampleRate = config.SampleRate; // 0 = device default
-    device_config.coreaudio.allowNominalSampleRateChange = MA_TRUE; // Drive the OS device rate instead of resampling.
-    device_config.dataCallback = DataCallback;
-    device_config.pUserData = &res;
-    if (ma_device_init(nullptr, &device_config, &Device) != MA_SUCCESS) throw std::runtime_error("Failed to open audio output device.");
-    res.Initialized = true;
+        ma_device_config device_config = ma_device_config_init(ma_device_type_playback);
+        device_config.playback.pDeviceID = device_id;
+        device_config.playback.format = ma_format_f32;
+        device_config.playback.channels = 1;
+        device_config.sampleRate = config.SampleRate; // 0 = device default
+        device_config.coreaudio.allowNominalSampleRateChange = MA_TRUE; // Drive the OS device rate instead of resampling.
+        device_config.dataCallback = DataCallback;
+        device_config.pUserData = &res;
+        if (ma_device_init(nullptr, &device_config, &Device) != MA_SUCCESS) throw std::runtime_error("Failed to open audio output device.");
+        res.Initialized = true;
+        res.DeviceName = config.DeviceName;
+        res.RequestedSampleRate = config.SampleRate;
 
-    // `ma_context_get_devices` omits native rates, so query the picked device for its format list.
-    res.NativeSampleRates.clear();
-    if (ma_device_info info; ma_context_get_device_info(&Context, ma_device_type_playback, device_id, &info) == MA_SUCCESS) {
-        for (ma_uint32 i = 0; i < info.nativeDataFormatCount; ++i) res.NativeSampleRates.emplace_back(info.nativeDataFormats[i].sampleRate);
+        // `ma_context_get_devices` omits native rates, so query the picked device for its format list.
+        res.NativeSampleRates.clear();
+        if (ma_device_info info; ma_context_get_device_info(&Context, ma_device_type_playback, device_id, &info) == MA_SUCCESS) {
+            for (ma_uint32 i = 0; i < info.nativeDataFormatCount; ++i) res.NativeSampleRates.emplace_back(info.nativeDataFormats[i].sampleRate);
+        }
+        res.SampleRate = Device.sampleRate;
     }
-    res.SampleRate = Device.sampleRate;
 
     ApplyAudioMix(res, mix);
 }

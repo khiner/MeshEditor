@@ -4,7 +4,6 @@
 #include <string>
 
 // Persistent audio output device selection. `SampleRate` is the desired rate (0 = device default).
-// Changing either re-initializes the device.
 struct AudioOutputConfig {
     std::string DeviceName;
     uint32_t SampleRate{0};

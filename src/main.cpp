@@ -801,7 +801,7 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
     ProcessComponentEvents(r, viewport); // Prime derived state before the first frame reads it.
 
     auto &audio_device = r.ctx().emplace<AudioDeviceResource>(r, viewport);
-    ConfigureAudioDevice(audio_device, r.get<const AudioOutputConfig>(viewport), r.get<const AudioOutputMix>(viewport));
+    ReconcileAudioDevice(audio_device, r.get<const AudioOutputConfig>(viewport), r.get<const AudioOutputMix>(viewport));
 
     auto driver = BeginCaptureSession(r, viewport, capture, initial_file, empty, /*fixed_step=*/false);
 

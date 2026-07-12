@@ -21,8 +21,12 @@ struct AudioDeviceResource {
     std::vector<std::string> OutDeviceNames;
     std::vector<uint32_t> NativeSampleRates;
     bool Initialized{false};
+
+    // Selection the live device was opened with, to reconcile against and reopen only on a real change.
+    std::string DeviceName; // Empty selects the system default.
+    uint32_t RequestedSampleRate{0}; // 0 selects the device default.
 };
 
-void ConfigureAudioDevice(AudioDeviceResource &, const AudioOutputConfig &, const AudioOutputMix &);
+void ReconcileAudioDevice(AudioDeviceResource &, const AudioOutputConfig &, const AudioOutputMix &);
 void ApplyAudioMix(AudioDeviceResource &, const AudioOutputMix &);
 void DrawAudioDeviceControls(entt::registry &, entt::entity viewport);
