@@ -971,13 +971,24 @@ void DrawModalModelSection(entt::registry &r, entt::entity viewport, entt::entit
     SeparatorText("Excitation vertices");
     const uint32_t num_vertices = GetMesh(r, mesh_entity).VertexCount();
     const bool has_excitable = r.all_of<SoundVertices>(e);
-    if (has_excitable) fs.Check<&ModalSolveSettings::CopySoundVertices>("Copy excitable vertices");
-    if (!has_excitable || !settings->CopySoundVertices) {
-        const uint32_t min_vertices = 1, max_vertices = num_vertices;
-        if (uint32_t v = std::clamp(settings->NumVertices, 1u, num_vertices);
-            SliderScalar("Num excitable vertices", ImGuiDataType_U32, &v, &min_vertices, &max_vertices))
-            fs.Set<&ModalSolveSettings::NumVertices>(v);
+    const bool reuse = has_excitable && settings->CopySoundVertices;
+    if (has_excitable) {
+        PushID("ExcitationVertices");
+        int source = reuse ? 0 : 1;
+        bool source_changed = RadioButton("Reuse existing", &source, 0);
+        SameLine();
+        source_changed |= RadioButton("Evenly spaced", &source, 1);
+        PopID();
+        if (source_changed) fs.Set<&ModalSolveSettings::CopySoundVertices>(source == 0);
+        MeshEditor::HelpMarker("Reuse existing: Solve at the object's current excitation vertices.\nEvenly spaced: Solve at new positions spread over the mesh.");
     }
+    if (reuse) BeginDisabled();
+    const uint32_t min_vertices = 1, max_vertices = num_vertices;
+    // Reuse shows the actual count of existing excitation vertices, else the editable target count.
+    if (uint32_t v = reuse ? uint32_t(r.get<const SoundVertices>(e).Vertices.size()) : std::clamp(settings->NumVertices, 1u, num_vertices);
+        SliderScalar("Count", ImGuiDataType_U32, &v, &min_vertices, &max_vertices))
+        fs.Set<&ModalSolveSettings::NumVertices>(v);
+    if (reuse) EndDisabled();
 
     if (!r.all_of<ModalModes>(e)) {
         if (IsSolving(r, e)) TextDisabled("Solving...");
