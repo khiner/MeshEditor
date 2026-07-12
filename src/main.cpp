@@ -54,6 +54,7 @@
 #include <csignal>
 #include <exception>
 #include <fstream>
+#include <future>
 #include <iostream>
 #include <map>
 #include <print>
@@ -266,6 +267,30 @@ GltfSampleTree BuildGltfSampleTree(const fs::path &root) {
     flatten_named(tree);
     return tree;
 }
+
+// The File menu's sample-asset trees, scanned once off-thread at startup.
+struct GltfSampleTrees {
+    GltfSampleTree Examples, SampleAssets, Physics;
+    std::set<std::string> SampleAssetsExtensions;
+};
+
+GltfSampleTrees BuildSampleTrees() {
+    GltfSampleTrees t;
+    t.Examples = BuildGltfSampleTree(Paths::Res() / "examples");
+#ifdef GLTF_SAMPLE_ASSETS_DIR
+    t.SampleAssets = BuildGltfSampleTree(fs::path{GLTF_SAMPLE_ASSETS_DIR} / "Models");
+    [&](this auto &&self, const GltfSampleTree &n) -> void {
+        for (const auto &f : n.Files) t.SampleAssetsExtensions.insert_range(f.Extensions);
+        for (const auto &[_, c] : n.Children) self(c);
+    }(t.SampleAssets);
+#endif
+#ifdef GLTF_PHYSICS_DIR
+    t.Physics = BuildGltfSampleTree(GLTF_PHYSICS_DIR);
+#endif
+    return t;
+}
+
+std::future<GltfSampleTrees> SampleTreesFuture;
 
 // Apply `action` now and settle the scene's derived state, for actions that must take effect outside the main loop.
 template<typename ActionType> void Perform(entt::registry &r, entt::entity viewport, ActionType action) {
@@ -803,6 +828,8 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
     auto &audio_device = r.ctx().emplace<AudioDeviceResource>(r, viewport);
     ReconcileAudioDevice(audio_device, r.get<const AudioOutputConfig>(viewport), r.get<const AudioOutputMix>(viewport));
 
+    SampleTreesFuture = std::async(std::launch::async, BuildSampleTrees);
+
     auto driver = BeginCaptureSession(r, viewport, capture, initial_file, empty, /*fixed_step=*/false);
 
     bool viewport_resizing{false}; // True while a resize drag is staged but not yet committed.
@@ -952,42 +979,31 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
                         EndMenu();
                     }
                 };
-                static const auto Examples = BuildGltfSampleTree(Paths::Res() / "examples");
-                render_submenu("Examples", Examples);
-#ifdef GLTF_SAMPLE_ASSETS_DIR
-                static const auto SampleAssets = BuildGltfSampleTree(fs::path{GLTF_SAMPLE_ASSETS_DIR} / "Models");
-                static const auto SampleAssetsExtensions = [] {
-                    std::set<std::string> exts;
-                    [&](this auto &&self, const GltfSampleTree &n) -> void {
-                        for (const auto &f : n.Files) exts.insert_range(f.Extensions);
-                        for (const auto &[_, c] : n.Children) self(c);
-                    }(SampleAssets);
-                    return exts;
-                }();
-                static std::set<std::string> SampleAssetsFilter;
-                if (!SampleAssets.Files.empty() || !SampleAssets.Children.empty()) {
-                    if (BeginMenu("glTF Samples")) {
-                        if (BeginMenu("Filter extensions")) {
-                            PushItemFlag(ImGuiItemFlags_AutoClosePopups, false);
-                            for (const auto &ext : SampleAssetsExtensions) {
-                                const bool checked = SampleAssetsFilter.contains(ext);
-                                if (MenuItem(ext.c_str(), nullptr, checked)) {
-                                    if (checked) SampleAssetsFilter.erase(ext);
-                                    else SampleAssetsFilter.insert(ext);
+                static std::optional<GltfSampleTrees> trees;
+                if (!trees && SampleTreesFuture.valid() && SampleTreesFuture.wait_for(std::chrono::seconds{0}) == std::future_status::ready) trees = SampleTreesFuture.get();
+                if (trees) {
+                    render_submenu("Examples", trees->Examples);
+                    static std::set<std::string> sample_assets_filter;
+                    if (!trees->SampleAssets.Files.empty() || !trees->SampleAssets.Children.empty()) {
+                        if (BeginMenu("glTF Samples")) {
+                            if (BeginMenu("Filter extensions")) {
+                                PushItemFlag(ImGuiItemFlags_AutoClosePopups, false);
+                                for (const auto &ext : trees->SampleAssetsExtensions) {
+                                    const bool checked = sample_assets_filter.contains(ext);
+                                    if (MenuItem(ext.c_str(), nullptr, checked)) {
+                                        if (checked) sample_assets_filter.erase(ext);
+                                        else sample_assets_filter.insert(ext);
+                                    }
                                 }
+                                PopItemFlag();
+                                EndMenu();
                             }
-                            PopItemFlag();
+                            render_tree(trees->SampleAssets, [](const GltfSample &f) { return all_of(sample_assets_filter, [&](const auto &e) { return f.Extensions.contains(e); }); });
                             EndMenu();
                         }
-                        render_tree(SampleAssets, [](const GltfSample &f) { return all_of(SampleAssetsFilter, [&](const auto &e) { return f.Extensions.contains(e); }); });
-                        EndMenu();
                     }
+                    render_submenu("glTF_Physics Samples", trees->Physics);
                 }
-#endif
-#ifdef GLTF_PHYSICS_DIR
-                static const auto PhysicsTree = BuildGltfSampleTree(GLTF_PHYSICS_DIR);
-                render_submenu("glTF_Physics Samples", PhysicsTree);
-#endif
                 if (MenuItem("Save glTF", nullptr)) {
                     static constexpr std::array filters{FileDialog::Filter{"glTF scene", "gltf;glb"}};
                     FileDialog::ShowSave(filters, "scene.gltf", [](const fs::path &path) { action::Emit(action::io::SaveGltf{.Path = path}); });
