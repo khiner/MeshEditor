@@ -116,7 +116,7 @@ PBR render features that are not needed by the scene (because the feature isn't 
 | `KHR_node_visibility` | ✅ | Load and roundtrip are conformant. However, hiding a parent in the app without also hiding its descendants is dropped, since glTF can't express "parent invisible, children visible." |
 | `KHR_animation_pointer` | ⬜ | Too much complexity for now, will add when I get to arbitrary property animation. |
 | `EXT_lights_image_based` | ✅ | Imported as Scene IBL when present |
-| `EXT_meshopt_compression` | ⬜ | Not taking on the meshopt dependency for now |
+| `EXT_meshopt_compression` | ✅ | Compressed bufferViews decoded via [meshoptimizer](https://github.com/zeux/meshoptimizer) at import; geometry re-emits uncompressed on export |
 
 ## Build & run
 

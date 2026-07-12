@@ -158,6 +158,7 @@ constexpr Exception DefaultOmissionExactExceptions[]{
     {"materials[*].occlusionTexture.extensions.KHR_texture_transform.offset", "default [0,0] offset omitted"},
     {"materials[*].occlusionTexture.extensions.KHR_texture_transform.scale", "default [1,1] scale omitted"},
     {"materials[*].occlusionTexture.extensions.KHR_texture_transform.rotation", "default 0 rotation omitted"},
+    {"materials[*].extensions.KHR_materials_volume.thicknessTexture.extensions.KHR_texture_transform.offset", "default [0,0] offset omitted"},
     {"materials[*].extensions.KHR_materials_diffuse_transmission.diffuseTransmissionColorFactor", "default [1,1,1] omitted"},
     {"materials[*].extensions.KHR_materials_anisotropy.anisotropyRotation", "default 0.0 omitted"},
     {"materials[*].extensions.KHR_materials_anisotropy.anisotropyStrength", "default 0.0 omitted"},

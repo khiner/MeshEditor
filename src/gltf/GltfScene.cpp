@@ -32,6 +32,8 @@
 #include "scene/WorldTransform.h"
 #include "viewport/ViewportDisplay.h"
 
+#include "meshoptimizer.h"
+
 #include <entt/entity/registry.hpp>
 #include <fastgltf/base64.hpp>
 #include <fastgltf/core.hpp>
@@ -669,11 +671,68 @@ std::expected<void, std::string> AppendPrimitive(
     return {};
 }
 
+// Raw bytes of a loaded buffer. Meshopt compressed data is referenced by buffer index, not bufferView.
+std::optional<std::span<const std::byte>> BufferBytes(const fastgltf::Buffer &buffer) {
+    return std::visit(
+        fastgltf::visitor{
+            [](const fastgltf::sources::Array &a) -> std::optional<std::span<const std::byte>> { return std::span{a.bytes.data(), a.bytes.size()}; },
+            [](const fastgltf::sources::Vector &v) -> std::optional<std::span<const std::byte>> { return std::span{v.bytes.data(), v.bytes.size()}; },
+            [](const fastgltf::sources::ByteView &b) -> std::optional<std::span<const std::byte>> { return b.bytes; },
+            [](const auto &) -> std::optional<std::span<const std::byte>> { return std::nullopt; },
+        },
+        buffer.data
+    );
+}
+
+// Expands each EXT_meshopt_compression bufferView into a fresh buffer of decoded bytes and repoints the
+// view at it, so accessor reads see ordinary uncompressed data.
+std::expected<void, std::string> DecodeMeshoptCompression(fastgltf::Asset &asset) {
+    using fastgltf::MeshoptCompressionMode, fastgltf::MeshoptCompressionFilter;
+    for (auto &view : asset.bufferViews) {
+        if (!view.meshoptCompression) continue;
+        const auto &comp = *view.meshoptCompression;
+        if (comp.bufferIndex >= asset.buffers.size()) return std::unexpected{"references an invalid buffer index"};
+        const auto source = BufferBytes(asset.buffers[comp.bufferIndex]);
+        if (!source) return std::unexpected{"source buffer has no readable data"};
+        if (comp.byteOffset + comp.byteLength > source->size()) return std::unexpected{"source range is out of bounds"};
+
+        const auto *src = reinterpret_cast<const unsigned char *>(source->data() + comp.byteOffset);
+        std::vector<std::byte> decoded(comp.count * comp.byteStride);
+        auto *dst = reinterpret_cast<unsigned char *>(decoded.data());
+        const int rc = [&] {
+            switch (comp.mode) {
+                case MeshoptCompressionMode::Attributes: return meshopt_decodeVertexBuffer(dst, comp.count, comp.byteStride, src, comp.byteLength);
+                case MeshoptCompressionMode::Triangles: return meshopt_decodeIndexBuffer(dst, comp.count, comp.byteStride, src, comp.byteLength);
+                case MeshoptCompressionMode::Indices: return meshopt_decodeIndexSequence(dst, comp.count, comp.byteStride, src, comp.byteLength);
+            }
+            return -1;
+        }();
+        if (rc != 0) return std::unexpected{"decode failed"};
+
+        switch (comp.filter) {
+            case MeshoptCompressionFilter::None: break;
+            case MeshoptCompressionFilter::Octahedral: meshopt_decodeFilterOct(dst, comp.count, comp.byteStride); break;
+            case MeshoptCompressionFilter::Quaternion: meshopt_decodeFilterQuat(dst, comp.count, comp.byteStride); break;
+            case MeshoptCompressionFilter::Exponential: meshopt_decodeFilterExp(dst, comp.count, comp.byteStride); break;
+        }
+
+        const auto decoded_length = decoded.size();
+        auto &new_buffer = asset.buffers.emplace_back();
+        new_buffer.byteLength = decoded_length;
+        new_buffer.data = fastgltf::sources::Array{fastgltf::StaticVector<std::byte>::fromVector(std::move(decoded))};
+        view.bufferIndex = asset.buffers.size() - 1;
+        view.byteOffset = 0;
+        view.byteLength = decoded_length;
+        view.meshoptCompression = nullptr;
+    }
+    return {};
+}
+
 std::expected<fastgltf::Asset, std::string> ParseAsset(const std::filesystem::path &path, ExtrasMap *extras_out = nullptr) {
     auto gltf_file = fastgltf::MappedGltfFile::FromPath(path);
     if (gltf_file.error() != fastgltf::Error::None) return std::unexpected{std::format("Failed to open glTF file '{}': {}", path.string(), fastgltf::getErrorMessage(gltf_file.error()))};
 
-    static constexpr auto EnabledExtensions = fastgltf::Extensions::KHR_mesh_quantization | fastgltf::Extensions::EXT_mesh_gpu_instancing | fastgltf::Extensions::KHR_lights_punctual | fastgltf::Extensions::EXT_lights_image_based | fastgltf::Extensions::KHR_texture_transform | fastgltf::Extensions::KHR_materials_emissive_strength | fastgltf::Extensions::KHR_materials_unlit | fastgltf::Extensions::KHR_texture_basisu | fastgltf::Extensions::EXT_texture_webp | fastgltf::Extensions::KHR_materials_specular | fastgltf::Extensions::KHR_materials_sheen | fastgltf::Extensions::KHR_materials_ior | fastgltf::Extensions::KHR_materials_dispersion | fastgltf::Extensions::KHR_materials_transmission | fastgltf::Extensions::KHR_materials_diffuse_transmission | fastgltf::Extensions::KHR_materials_volume | fastgltf::Extensions::KHR_materials_clearcoat | fastgltf::Extensions::KHR_materials_anisotropy | fastgltf::Extensions::KHR_materials_iridescence | fastgltf::Extensions::KHR_materials_variants | fastgltf::Extensions::KHR_node_visibility | fastgltf::Extensions::KHR_implicit_shapes | fastgltf::Extensions::KHR_physics_rigid_bodies | fastgltf::Extensions::KHR_audio_modal;
+    static constexpr auto EnabledExtensions = fastgltf::Extensions::KHR_mesh_quantization | fastgltf::Extensions::EXT_meshopt_compression | fastgltf::Extensions::EXT_mesh_gpu_instancing | fastgltf::Extensions::KHR_lights_punctual | fastgltf::Extensions::EXT_lights_image_based | fastgltf::Extensions::KHR_texture_transform | fastgltf::Extensions::KHR_materials_emissive_strength | fastgltf::Extensions::KHR_materials_unlit | fastgltf::Extensions::KHR_texture_basisu | fastgltf::Extensions::EXT_texture_webp | fastgltf::Extensions::KHR_materials_specular | fastgltf::Extensions::KHR_materials_sheen | fastgltf::Extensions::KHR_materials_ior | fastgltf::Extensions::KHR_materials_dispersion | fastgltf::Extensions::KHR_materials_transmission | fastgltf::Extensions::KHR_materials_diffuse_transmission | fastgltf::Extensions::KHR_materials_volume | fastgltf::Extensions::KHR_materials_clearcoat | fastgltf::Extensions::KHR_materials_anisotropy | fastgltf::Extensions::KHR_materials_iridescence | fastgltf::Extensions::KHR_materials_variants | fastgltf::Extensions::KHR_node_visibility | fastgltf::Extensions::KHR_implicit_shapes | fastgltf::Extensions::KHR_physics_rigid_bodies | fastgltf::Extensions::KHR_audio_modal;
     fastgltf::Parser parser{EnabledExtensions};
     if (extras_out) {
         parser.setUserPointer(extras_out);
@@ -706,7 +765,11 @@ std::expected<fastgltf::Asset, std::string> ParseAsset(const std::filesystem::pa
         return std::unexpected{std::format("Failed to parse glTF '{}': {}", path.string(), fastgltf::getErrorMessage(parsed.error()))};
     }
 
-    return std::move(parsed.get());
+    auto &asset = parsed.get();
+    if (auto decoded = DecodeMeshoptCompression(asset); !decoded) {
+        return std::unexpected{std::format("Failed to decode EXT_meshopt_compression in '{}': {}", path.string(), decoded.error())};
+    }
+    return std::move(asset);
 }
 
 // Always emplaces a MeshData so meshes stays index-aligned with asset.meshes; callers

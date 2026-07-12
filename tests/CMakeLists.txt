@@ -73,6 +73,7 @@ target_link_libraries(MeshEditorTests PRIVATE
     ${Vulkan_LIBRARIES}
     GPUOpen::VulkanMemoryAllocator
     basisu_transcoder
+    meshoptimizer
     ${SHADERC_LIB}
     Jolt
     webp

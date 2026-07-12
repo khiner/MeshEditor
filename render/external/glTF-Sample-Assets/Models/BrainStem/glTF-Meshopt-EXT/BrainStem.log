@@ -1,2 +1,2 @@
-Error loading glTF file 'external/glTF-Sample-Assets/Models/BrainStem/glTF-Meshopt-EXT/BrainStem.gltf': Failed to parse glTF 'external/glTF-Sample-Assets/Models/BrainStem/glTF-Meshopt-EXT/BrainStem.gltf': Missing required extensions: EXT_meshopt_compression
-Saved screenshot: render/external/glTF-Sample-Assets/Models/BrainStem/glTF-Meshopt-EXT/BrainStem.webp
+VideoRecorder: 2560x1600 @ 24fps -> render/external/glTF-Sample-Assets/Models/BrainStem/glTF-Meshopt-EXT/BrainStem.mp4
+VideoRecorder: wrote 838 frames (ffmpeg status=0)

@@ -4,11 +4,12 @@
 // - Additional skin influence sets (JOINTS_1+, WEIGHTS_1+) are compressed at import to the top 4 weights per vertex (sorted, renormalized).
 //  (The spec does permit this single set of 4 - see glTF 2.0 §3.7.3.1.)
 // - KHR_mesh_quantization: quantized attributes decode to FLOAT at import, save always emits FLOAT
+// - EXT_meshopt_compression: compressed bufferViews decode to plain data at import, save always emits uncompressed
 // - EXT_mesh_gpu_instancing: per-instance TRS round-trips, but custom instancing attributes (`_FOO`) beyond TRANSLATION/ROTATION/SCALE aren't retained
 // - EXT_lights_image_based: per-scene IBL assignments collapse to a single source IBL on the default scene
 //
 // Unsupported (neither imported nor re-emitted):
-// - KHR_draco_mesh_compression, EXT_meshopt_compression: files relying on these to carry geometry
+// - KHR_draco_mesh_compression: files relying on this to carry geometry
 //   will load with empty/missing vertex data, or fail entirely if the extension is listed as required.
 // - KHR_animation_pointer: animation channels targeting extension pointer paths are silently dropped at import (along with their samplers).
 //   The static value the pointer targets still round-trips. E.g. KHR_node_visibility per-node `visible` flags persist - only their animation is lost.
