@@ -233,7 +233,7 @@ float UniformScaleRatio(const entt::registry &r, entt::entity e, const ModalMode
 // Uniform scaling sends omega -> omega/scale, so when Rayleigh alpha (on the mesh entity) is known,
 // d = (alpha + beta*omega^2)/2 becomes d' = alpha/2 + (d - alpha/2)/scale^2, then T60 = ln(1000)/d'.
 // (T60 == 0 is the undamped sentinel and stays 0, muting the mode.)
-void RetuneModalObject(const entt::registry &r, ModalAudio &m, uint32_t slot, entt::entity e) {
+void RetuneModalObject(const entt::registry &r, ModalBank &b, uint32_t slot, entt::entity e) {
     const auto &modes = r.get<const ModalModes>(e);
     const auto mode_count = modes.Freqs.size();
     if (mode_count == 0) return;
@@ -261,26 +261,28 @@ void RetuneModalObject(const entt::registry &r, ModalAudio &m, uint32_t slot, en
         if (alpha) d = float(*alpha / 2) + (d - float(*alpha / 2)) / (scale * scale);
         t60s[k] = t60_scale * Ln1000 / std::max(d, 1e-9f);
     }
-    TuneModalObject(m, slot, freqs, t60s);
+    TuneModalObject(b, slot, freqs, t60s);
 
     // The scale^(-3/2) is the mass-normalization amplitude law: mass grows as scale^3, so a larger object rings quieter per impulse.
     const auto *gain = r.try_get<const ModalGain>(e);
-    m.OutGain[slot] = ModalLevel * (gain ? gain->Value : 1.f) * std::pow(scale, -1.5f) / float(mode_count);
+    b.OutGain[slot] = ModalLevel * (gain ? gain->Value : 1.f) * std::pow(scale, -1.5f) / float(mode_count);
 }
 
-// Rebuild the bank from every modal sound object. Structural, so it briefly excludes the audio thread.
+// Rebuild the bank from every modal sound object. The replacement is built off-lock, so the audio
+// thread keeps rendering the old bank until InstallModalBank swaps it in under a brief lock.
 void RebuildModalBank(entt::registry &r) {
     auto &m = r.ctx().get<ModalAudio>();
-    const std::scoped_lock lock{m.StructureMutex};
-    ClearModalObjects(m);
     const auto *res = r.ctx().find<AudioDeviceResource>();
-    m.SampleRate = res && res->SampleRate ? float(res->SampleRate) : 48'000.f;
+
+    ModalBank next;
+    next.SampleRate = res && res->SampleRate ? float(res->SampleRate) : 48'000.f;
     for (auto e : r.view<const ModalModes, const SoundVertices>()) {
         const auto &modes = r.get<const ModalModes>(e);
         if (modes.Freqs.empty()) continue;
-        const auto slot = AddModalObject(m, e, modes);
-        RetuneModalObject(r, m, slot, e);
+        const auto slot = AddModalObject(next, e, modes);
+        RetuneModalObject(r, next, slot, e);
     }
+    InstallModalBank(m, next);
 }
 
 } // namespace
@@ -291,7 +293,7 @@ void Stop(entt::registry &r, entt::entity e) {
     if (auto *samples = r.try_get<VertexSamples>(e)) samples->Stop();
     if (r.all_of<ModalModes>(e)) {
         auto &m = r.ctx().get<ModalAudio>();
-        if (auto slot = FindModalObject(m, e)) EnqueueModalEvent(m, {.Kind = ModalEventKind::Silence, .Object = *slot});
+        if (auto slot = FindModalObject(m.Bank, e)) EnqueueModalEvent(m, {.Kind = ModalEventKind::Silence, .Object = *slot});
     }
 }
 
@@ -339,7 +341,7 @@ vec3 ExciteDirection(const entt::registry &r, entt::entity e, uint32_t vertex) {
 // Impulse magnitude rides in the mode excitation gains, not the pulse.
 void TriggerModalStrike(entt::registry &r, entt::entity e, uint32_t excitable_index, float force, float contact_speed) {
     auto &m = r.ctx().get<ModalAudio>();
-    const auto slot = FindModalObject(m, e);
+    const auto slot = FindModalObject(m.Bank, e);
     if (!slot) return;
 
     const auto &modes = r.get<const ModalModes>(e);
@@ -360,7 +362,7 @@ void TriggerModalStrike(entt::registry &r, entt::entity e, uint32_t excitable_in
         // Per-strike acceleration-noise amplitude: the impulse magnitude scaled down by material density.
         accel_amp = ReducedContactMass(*cd, excitable_index, dir, striker) * std::abs(double(contact_speed)) / mat->Properties.Density;
     }
-    const float step = float(1.0 / (tau * m.SampleRate));
+    const float step = float(1.0 / (tau * m.Bank.SampleRate));
     EnqueueModalEvent(
         m,
         {
@@ -624,8 +626,8 @@ void RegisterAudioComponentHandlers(entt::registry &r) {
         // Drop the modal synthesis bank's slots: the scene's entities are gone, and the next scene's
         // reused entity ids must not retune stale slots. A rebuild follows the next solve or load.
         auto &m = r.ctx().get<ModalAudio>();
-        const std::scoped_lock lock{m.StructureMutex};
-        ClearModalObjects(m);
+        ModalBank empty;
+        InstallModalBank(m, empty);
         // The warm-start basis seeds re-solves of a mesh from the cleared scene, so drop it too.
         r.ctx().get<ModalWarmStart>() = {};
         // In-flight solves target entities from the cleared scene. Their results are discarded on arrival.
@@ -783,9 +785,9 @@ void RegisterAudioComponentHandlers(entt::registry &r) {
                 if (rebuild) break;
                 const auto *modes = r.valid(e) ? r.try_get<const ::ModalModes>(e) : nullptr;
                 const bool active = modes && !modes->Freqs.empty() && r.all_of<SoundVertices>(e);
-                const auto slot = FindModalObject(m, e);
+                const auto slot = FindModalObject(m.Bank, e);
                 if (!active && !slot) continue;
-                if (active && slot && SetModalObjectShapes(m, *slot, *modes)) RetuneModalObject(r, m, *slot, e);
+                if (active && slot && SetModalObjectShapes(m.Bank, *slot, *modes)) RetuneModalObject(r, m.Bank, *slot, e);
                 else rebuild = true;
             }
             if (rebuild) RebuildModalBank(r);
@@ -796,13 +798,13 @@ void RegisterAudioComponentHandlers(entt::registry &r) {
             for (auto e : reactive<audio_changes::ModalParams>(r)) {
                 if (!r.valid(e)) continue;
                 if (const auto *controls = r.try_get<const ModalSoundControls>(e)) m.ClickGain = controls->ClickGain;
-                if (auto slot = FindModalObject(m, e)) RetuneModalObject(r, m, *slot, e);
+                if (auto slot = FindModalObject(m.Bank, e)) RetuneModalObject(r, m.Bank, *slot, e);
             }
             // Retune objects whose node was rescaled.
             auto &scale_tracker = r.ctx().get<ModalScaleTracker>();
             for (auto e : scale_tracker.Storage) {
                 if (!r.valid(e)) continue;
-                if (auto slot = FindModalObject(m, e)) RetuneModalObject(r, m, *slot, e);
+                if (auto slot = FindModalObject(m.Bank, e)) RetuneModalObject(r, m.Bank, *slot, e);
             }
             scale_tracker.Storage.clear();
         }

@@ -27,12 +27,9 @@ struct ModalEvent {
     float AccelAmp{0}; // Acceleration-noise click amplitude
 };
 
-// All modal synthesis state, struct-of-arrays.
-// Each mode is a coupled-form (complex one-pole) resonator: z <- z*c + excitation, output Im(z).
-// The main thread builds and retunes the bank, holding StructureMutex for structural changes.
-// The audio thread renders under try_lock and owns the states, impacts, and scratch buffers.
-// Element-wise coefficient and gain writes to stable arrays are lock-free.
-struct ModalAudio {
+// The modal synthesis bank, struct-of-arrays. Each mode is a coupled-form (complex one-pole)
+// resonator: z <- z*c + excitation, output Im(z).
+struct ModalBank {
     // Per-mode, objects concatenated. Object o owns modes [ModeOffset[o], ModeOffset[o] + ModeCount[o]).
     std::vector<float> CoeffRe, CoeffIm; // Resonator coefficient c = decay * exp(i*2*pi*freq/SR). Zero mutes the mode.
     std::vector<float> StateRe, StateIm; // Resonator state z
@@ -54,6 +51,15 @@ struct ModalAudio {
     std::vector<float> ImpactGamma, ImpactAccelAmp, ImpactPrevForce;
 
     float SampleRate{48'000};
+};
+
+// All modal synthesis state.
+// The main thread builds a replacement bank off-lock and swaps it into the live bank under StructureMutex.
+// The audio thread renders under try_lock and owns the bank's state, the impacts, and the scratch buffers.
+// Element-wise coefficient and gain writes to the live bank's stable arrays are safe against concurrent rendering.
+struct ModalAudio {
+    ModalBank Bank;
+
     float ClickGain{1}; // Level of the rigid-body acceleration-noise click
 
     // Single-producer (main thread) single-consumer (audio thread) event queue.
@@ -69,18 +75,19 @@ struct ModalAudio {
     std::vector<uint32_t> ObjectImpactScratch;
 };
 
-// Drop all objects, impacts, and pending events. Hold StructureMutex.
-void ClearModalObjects(ModalAudio &);
-// Append an object slot with zeroed state, coefficients, and gain and return its index. Hold StructureMutex.
-uint32_t AddModalObject(ModalAudio &, entt::entity, const ModalModes &);
+// Append an object slot with zeroed state, coefficients, and gain and return its index.
+uint32_t AddModalObject(ModalBank &, entt::entity, const ModalModes &);
+// Take StructureMutex and swap a freshly built bank into the live one, dropping pending events.
+// The old bank moves into `next` and frees off-lock when `next` goes out of scope.
+void InstallModalBank(ModalAudio &, ModalBank &next);
 // Set an object's resonator coefficients from per-mode frequencies (Hz) and T60s (s).
 // Out-of-range and undamped modes are muted. Safe against concurrent rendering.
-void TuneModalObject(ModalAudio &, uint32_t object, std::span<const float> freqs, std::span<const float> t60s);
+void TuneModalObject(ModalBank &, uint32_t object, std::span<const float> freqs, std::span<const float> t60s);
 // Overwrite an object's mode shapes in place. Returns false when the mode or shape layout differs.
 // Element-wise writes to stable arrays, safe against concurrent rendering.
-bool SetModalObjectShapes(ModalAudio &, uint32_t object, const ModalModes &);
+bool SetModalObjectShapes(ModalBank &, uint32_t object, const ModalModes &);
 // The object slot holding this entity, if any.
-std::optional<uint32_t> FindModalObject(const ModalAudio &, entt::entity);
+std::optional<uint32_t> FindModalObject(const ModalBank &, entt::entity);
 
 // Enqueue an event from the main thread. Dropped when the queue is full.
 void EnqueueModalEvent(ModalAudio &, const ModalEvent &);
