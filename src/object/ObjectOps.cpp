@@ -77,7 +77,7 @@ void ApplySelectBehavior(entt::registry &r, entt::entity e, MeshInstanceCreateIn
     }
 }
 
-entt::entity AddMeshInstance(entt::registry &r, entt::entity mesh_entity, MeshInstanceCreateInfo info) {
+entt::entity AddMeshInstance(entt::registry &r, entt::entity mesh_entity, const MeshInstanceCreateInfo &info) {
     const auto e = r.create();
     r.emplace<Instance>(e, mesh_entity);
     r.emplace<ObjectKind>(e, ObjectType::Mesh);
@@ -106,7 +106,7 @@ entt::entity CreateExtrasBufferEntity(entt::registry &r, MeshStore &meshes, std:
     return buffer_entity;
 }
 
-entt::entity CreateExtrasObject(entt::registry &r, ObjectType type, ObjectCreateInfo info, std::string_view default_name) {
+entt::entity CreateExtrasObject(entt::registry &r, ObjectType type, const ObjectCreateInfo &info, std::string_view default_name) {
     // The buffer starts empty; its wireframe is built later from the object's params.
     const auto buffer_entity = r.create();
     r.emplace<ObjectExtrasTag>(buffer_entity);
@@ -120,12 +120,12 @@ entt::entity CreateExtrasObject(entt::registry &r, ObjectType type, ObjectCreate
     return e;
 }
 
-entt::entity AddEmpty(entt::registry &r, MeshStore &, ObjectCreateInfo info) {
-    return CreateExtrasObject(r, ObjectType::Empty, std::move(info), "Empty");
+entt::entity AddEmpty(entt::registry &r, MeshStore &, const ObjectCreateInfo &info) {
+    return CreateExtrasObject(r, ObjectType::Empty, info, "Empty");
 }
 
-entt::entity AddCamera(entt::registry &r, MeshStore &, ObjectCreateInfo info, std::optional<Camera> props) {
-    const auto entity = CreateExtrasObject(r, ObjectType::Camera, std::move(info), "Camera");
+entt::entity AddCamera(entt::registry &r, MeshStore &, const ObjectCreateInfo &info, std::optional<Camera> props) {
+    const auto entity = CreateExtrasObject(r, ObjectType::Camera, info, "Camera");
     r.emplace<Camera>(entity, props.value_or(Camera{Defaults::PerspectiveCamera}));
     return entity;
 }
@@ -185,8 +185,8 @@ void CreateBoneInstances(entt::registry &r, MeshStore &meshes, entt::entity arm_
     arm_obj.JointEntity = joint_entity;
 }
 
-entt::entity AddLight(entt::registry &r, MeshStore &, ObjectCreateInfo info, std::optional<PunctualLight> props) {
-    const auto entity = CreateExtrasObject(r, ObjectType::Light, std::move(info), "Light");
+entt::entity AddLight(entt::registry &r, MeshStore &, const ObjectCreateInfo &info, std::optional<PunctualLight> props) {
+    const auto entity = CreateExtrasObject(r, ObjectType::Light, info, "Light");
     // PunctualLight is the canonical per-light data, the GPU Lights buffer is registered from it later.
     r.emplace<PunctualLight>(entity, props.value_or(Defaults::MakePunctualLight(PunctualLightType::Point)));
     return entity;

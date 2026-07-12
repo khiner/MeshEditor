@@ -22,15 +22,15 @@ void ApplySelectBehavior(entt::registry &, entt::entity, MeshInstanceCreateInfo:
 
 // Entity creation. None apply SelectBehavior — callers do that after.
 std::pair<entt::entity, entt::entity> AddMesh(entt::registry &, MeshStore &, CreatedMesh &&, std::optional<MeshInstanceCreateInfo> = {});
-entt::entity AddMeshInstance(entt::registry &, entt::entity mesh_entity, MeshInstanceCreateInfo);
+entt::entity AddMeshInstance(entt::registry &, entt::entity mesh_entity, const MeshInstanceCreateInfo &);
 
 // Creates a vertex-only buffer entity for derived overlay geometry (collider/bbox/tet wireframes).
 entt::entity CreateExtrasBufferEntity(entt::registry &, MeshStore &, std::span<const vec3> positions, std::span<const uint32_t> edge_indices = {});
-entt::entity CreateExtrasObject(entt::registry &, ObjectType, ObjectCreateInfo, std::string_view default_name);
+entt::entity CreateExtrasObject(entt::registry &, ObjectType, const ObjectCreateInfo &, std::string_view default_name);
 
-entt::entity AddEmpty(entt::registry &, MeshStore &, ObjectCreateInfo = {});
-entt::entity AddCamera(entt::registry &, MeshStore &, ObjectCreateInfo = {}, std::optional<Camera> = {});
-entt::entity AddLight(entt::registry &, MeshStore &, ObjectCreateInfo = {}, std::optional<PunctualLight> = {});
+entt::entity AddEmpty(entt::registry &, MeshStore &, const ObjectCreateInfo & = {});
+entt::entity AddCamera(entt::registry &, MeshStore &, const ObjectCreateInfo & = {}, std::optional<Camera> = {});
+entt::entity AddLight(entt::registry &, MeshStore &, const ObjectCreateInfo & = {}, std::optional<PunctualLight> = {});
 
 // Loads a mesh file (with its materials/textures) and creates the mesh + instance entities.
 std::pair<entt::entity, entt::entity> ImportMesh(entt::registry &, const std::filesystem::path &, MeshInstanceCreateInfo, bool deduplicate = false);

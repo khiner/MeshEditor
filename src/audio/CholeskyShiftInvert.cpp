@@ -35,7 +35,7 @@ void CholeskyShiftInvert::set_shift(const Scalar &sigma) {
             .columnCount = int(shifted.cols()),
             .columnStarts = column_starts.data(),
             .rowIndices = shifted.innerIndexPtr(),
-            .attributes = {.triangle = SparseLowerTriangle, .kind = SparseSymmetric},
+            .attributes = {.transpose = false, .triangle = SparseLowerTriangle, .kind = SparseSymmetric, ._reserved = 0, ._allocatedBySparse = false},
             .blockSize = 1,
         },
         .data = shifted.valuePtr(),

@@ -184,7 +184,7 @@ void EnqueueModalEvent(ModalAudio &m, const ModalEvent &e) {
 
 void RenderModal(ModalAudio &m, float *out, uint32_t frame_count) {
     if (frame_count == 0) return;
-    std::unique_lock lock{m.StructureMutex, std::try_to_lock};
+    const std::unique_lock lock{m.StructureMutex, std::try_to_lock};
     if (!lock.owns_lock()) return;
     DrainEvents(m);
 

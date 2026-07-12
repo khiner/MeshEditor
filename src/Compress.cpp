@@ -41,7 +41,7 @@ bool Compress(const fs::path &src, const fs::path &dst) {
     std::ofstream out{dst, std::ios::binary | std::ios::trunc};
     if (!out) return false;
 
-    std::unique_ptr<ZSTD_CCtx, decltype(&ZSTD_freeCCtx)> cctx{ZSTD_createCCtx(), ZSTD_freeCCtx};
+    const std::unique_ptr<ZSTD_CCtx, decltype(&ZSTD_freeCCtx)> cctx{ZSTD_createCCtx(), ZSTD_freeCCtx};
     if (!cctx) return false;
 
     ZSTD_CCtx_setParameter(cctx.get(), ZSTD_c_compressionLevel, CompressionLevel);
@@ -75,7 +75,7 @@ bool Decompress(const fs::path &src, const fs::path &dst) {
     std::ifstream in{src, std::ios::binary};
     if (!in) return false;
 
-    std::unique_ptr<ZSTD_DCtx, decltype(&ZSTD_freeDCtx)> dctx{ZSTD_createDCtx(), ZSTD_freeDCtx};
+    const std::unique_ptr<ZSTD_DCtx, decltype(&ZSTD_freeDCtx)> dctx{ZSTD_createDCtx(), ZSTD_freeDCtx};
     if (!dctx) return false;
 
     std::error_code ec;

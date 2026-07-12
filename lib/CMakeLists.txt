@@ -1,5 +1,6 @@
 add_subdirectory(ut)
 add_subdirectory(nativefiledialog-extended)
+target_compile_options(nfd PRIVATE -w)
 add_subdirectory(VulkanMemoryAllocator SYSTEM)
 add_subdirectory(tetgen)
 target_compile_options(tetgen PRIVATE -w)

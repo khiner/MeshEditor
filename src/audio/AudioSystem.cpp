@@ -272,7 +272,7 @@ void RetuneModalObject(const entt::registry &r, ModalAudio &m, uint32_t slot, en
 // Rebuild the bank from every modal sound object. Structural, so it briefly excludes the audio thread.
 void RebuildModalBank(entt::registry &r) {
     auto &m = r.ctx().get<ModalAudio>();
-    std::scoped_lock lock{m.StructureMutex};
+    const std::scoped_lock lock{m.StructureMutex};
     ClearModalObjects(m);
     const auto *res = r.ctx().find<AudioDeviceResource>();
     m.SampleRate = res && res->SampleRate ? float(res->SampleRate) : 48'000.f;
@@ -625,7 +625,7 @@ void RegisterAudioComponentHandlers(entt::registry &r) {
         // Drop the modal synthesis bank's slots: the scene's entities are gone, and the next scene's
         // reused entity ids must not retune stale slots. A rebuild follows the next solve or load.
         auto &m = r.ctx().get<ModalAudio>();
-        std::scoped_lock lock{m.StructureMutex};
+        const std::scoped_lock lock{m.StructureMutex};
         ClearModalObjects(m);
         // The warm-start basis seeds re-solves of a mesh from the cleared scene, so drop it too.
         r.ctx().get<ModalWarmStart>() = {};
