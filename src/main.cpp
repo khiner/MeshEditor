@@ -1,5 +1,6 @@
 #include "Compress.h"
 #include "File.h"
+#include "FileDialog.h"
 #include "Paths.h"
 #include "ProcessEvents.h"
 #include "Timer.h"
@@ -49,7 +50,6 @@
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_vulkan.h>
 #include <entt/entity/registry.hpp>
-#include <nfd.h>
 
 #include <csignal>
 #include <exception>
@@ -791,7 +791,6 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
 
     InitFonts();
 
-    NFD_Init();
     entt::registry r;
     const auto viewport = InitEngine(r, vc->Resources());
     InitViewportMedia(r);
@@ -828,6 +827,7 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
             }
         }
         if (driver.DurationElapsed(r, viewport)) done = true;
+        FileDialog::Pump(); // Runs callbacks for file dialogs the user completed since last frame.
 
         if (RebuildSwapchain) {
             int w, h;
@@ -869,26 +869,16 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
                     EndMenu();
                 }
                 if (MenuItem("Open")) {
-                    static constexpr std::array filters{nfdfilteritem_t{"MeshEditor project", "project"}, nfdfilteritem_t{"Scene state", "state"}, nfdfilteritem_t{"Action log", "actions"}};
-                    nfdchar_t *nfd_path;
-                    if (auto result = NFD_OpenDialog(&nfd_path, filters.data(), filters.size(), ""); result == NFD_OKAY) {
-                        OpenFile(r, viewport, nfd_path);
-                        NFD_FreePath(nfd_path);
-                    } else if (result != NFD_CANCEL) {
-                        std::cerr << "Error opening file dialog: " << NFD_GetError() << std::endl;
-                    }
+                    static constexpr std::array filters{FileDialog::Filter{"MeshEditor project", "project"}, FileDialog::Filter{"Scene state", "state"}, FileDialog::Filter{"Action log", "actions"}};
+                    FileDialog::ShowOpen(filters, [&](const fs::path &path) { OpenFile(r, viewport, path); });
                 }
                 const auto save_project_as = [&] {
-                    static constexpr std::array filters{nfdfilteritem_t{"MeshEditor project", "project"}};
-                    nfdchar_t *nfd_path;
-                    if (auto result = NFD_SaveDialog(&nfd_path, filters.data(), filters.size(), nullptr, "scene.project"); result == NFD_OKAY) {
-                        fs::path path = nfd_path;
-                        if (path.extension() != ProjectExt) path += ProjectExt; // NFD doesn't force the filter's extension.
+                    static constexpr std::array filters{FileDialog::Filter{"MeshEditor project", "project"}};
+                    FileDialog::ShowSave(filters, "scene.project", [&](const fs::path &picked) {
+                        auto path = picked;
+                        if (path.extension() != ProjectExt) path += ProjectExt; // The dialog doesn't force the filter's extension.
                         SaveProjectFile(r, viewport, path);
-                        NFD_FreePath(nfd_path);
-                    } else if (result != NFD_CANCEL) {
-                        std::cerr << "Error opening save dialog: " << NFD_GetError() << std::endl;
-                    }
+                    });
                 };
                 if (MenuItem("Save")) {
                     if (CurrentProjectPath.empty()) save_project_as();
@@ -907,36 +897,24 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
                     }
                     EndMenu();
                 }
-                const auto import_dialog = [](const auto &filters) {
-                    nfdchar_t *nfd_path;
-                    if (auto result = NFD_OpenDialog(&nfd_path, filters.data(), filters.size(), ""); result == NFD_OKAY) {
-                        action::Emit(action::io::Load{.Path = nfd_path});
-                        NFD_FreePath(nfd_path);
-                    } else if (result != NFD_CANCEL) {
-                        std::cerr << "Error opening file dialog: " << NFD_GetError() << std::endl;
-                    }
+                const auto import_dialog = [](std::span<const FileDialog::Filter> filters) {
+                    FileDialog::ShowOpen(filters, [](const fs::path &path) { action::Emit(action::io::Load{.Path = path}); });
                 };
                 if (BeginMenu("Import")) {
                     if (MenuItem("glTF 2.0 (.glb/.gltf)")) {
-                        static constexpr std::array filters{nfdfilteritem_t{"glTF scene", "gltf,glb"}};
+                        static constexpr std::array filters{FileDialog::Filter{"glTF scene", "gltf;glb"}};
                         import_dialog(filters);
                     }
                     if (MenuItem("Wavefront (.obj)")) {
-                        static constexpr std::array filters{nfdfilteritem_t{"Wavefront OBJ", "obj"}};
+                        static constexpr std::array filters{FileDialog::Filter{"Wavefront OBJ", "obj"}};
                         import_dialog(filters);
                     }
                     if (MenuItem("Stanford PLY (.ply)")) {
-                        static constexpr std::array filters{nfdfilteritem_t{"Stanford PLY", "ply"}};
+                        static constexpr std::array filters{FileDialog::Filter{"Stanford PLY", "ply"}};
                         import_dialog(filters);
                     }
                     if (MenuItem("RealImpact")) {
-                        nfdchar_t *path;
-                        if (auto result = NFD_PickFolder(&path, ""); result == NFD_OKAY) {
-                            action::Emit(action::io::LoadRealImpact{.Directory = path});
-                            NFD_FreePath(path);
-                        } else if (result != NFD_CANCEL) {
-                            std::cerr << "Error opening folder dialog: " << NFD_GetError() << std::endl;
-                        }
+                        FileDialog::ShowPickFolder([](const fs::path &path) { action::Emit(action::io::LoadRealImpact{.Directory = path}); });
                     }
                     EndMenu();
                 }
@@ -1011,14 +989,8 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
                 render_submenu("glTF_Physics Samples", PhysicsTree);
 #endif
                 if (MenuItem("Save glTF", nullptr)) {
-                    static const std::array filters{nfdfilteritem_t{"glTF scene", "gltf,glb"}};
-                    nfdchar_t *nfd_path;
-                    if (auto result = NFD_SaveDialog(&nfd_path, filters.data(), filters.size(), nullptr, "scene.gltf"); result == NFD_OKAY) {
-                        action::Emit(action::io::SaveGltf{.Path = nfd_path});
-                        NFD_FreePath(nfd_path);
-                    } else if (result != NFD_CANCEL) {
-                        std::cerr << "Error opening save dialog: " << NFD_GetError() << std::endl;
-                    }
+                    static constexpr std::array filters{FileDialog::Filter{"glTF scene", "gltf;glb"}};
+                    FileDialog::ShowSave(filters, "scene.gltf", [](const fs::path &path) { action::Emit(action::io::SaveGltf{.Path = path}); });
                 }
 #ifdef DEBUG_BUILD
                 if (MenuItem("[Debug] Roundtrip")) ValidateRoundTrip(r, viewport);
@@ -1177,7 +1149,6 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
     vc->Device->waitIdle();
 
     r.ctx().erase<AudioDeviceResource>(); // Stops and uninitializes the output device.
-    NFD_Quit();
 
     // Tear down the viewport and its ctx-resident GPU stores in order before clearing the registry,
     // so GpuBuffers (and its VMA allocator) outlives the MeshStore allocations that retire into it.

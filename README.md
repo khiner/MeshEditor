@@ -213,7 +213,6 @@ Rendering is fixed-step (one tick per timeline frame) and GPU-paced at a fixed e
 - [lunasvg](https://github.com/sammycage/lunasvg): Render SVG icons to bitmaps
 - [fftw](https://www.fftw.org/) compute spectrograms (visualized with ImPlot)
 - [ImPlot](https://github.com/epezent/implot): Plotting
-- [nativefiledialog-extended](https://github.com/btzynativefiledialog-extended): Native file dialogs (TODO SDL3 now has `SDL_Dialog`)
 - [boost-ext/ut](https://github.com/boost-ext/ut): Testing
 
 ## Development

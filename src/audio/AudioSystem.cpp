@@ -1,6 +1,7 @@
 #include "AudioSystem.h"
 #include "AudioDevice.h"
 #include "FFTData.h"
+#include "FileDialog.h"
 #include "Job.h"
 #include "ModalAudio.h"
 #include "Reactive.h"
@@ -25,8 +26,6 @@
 #include "tetgen.h" // Needed for `unique_ptr<tetgenio>` dereference.
 
 #include "ui/HelpMarker.h" // depends on imgui
-
-#include <nfd.h>
 
 #include <iostream>
 #include <numbers>
@@ -927,15 +926,6 @@ std::optional<size_t> PlotModeData(
 
     return hovered_index;
 }
-fs::path PickAudioFile() {
-    static const std::array filters{nfdfilteritem_t{"Audio", "wav,mp3,flac,ogg,opus"}};
-    nfdchar_t *path = nullptr;
-    if (NFD_OpenDialog(&path, filters.data(), filters.size(), "") != NFD_OKAY) return {};
-    fs::path file_path{path};
-    NFD_FreePath(path);
-    return file_path;
-}
-
 void DrawModalModelSection(entt::registry &r, entt::entity viewport, entt::entity e, entt::entity mesh_entity) {
     const auto *settings = r.try_get<const ModalSolveSettings>(e);
     const auto *material = r.try_get<const AcousticMaterial>(mesh_entity);
@@ -1133,7 +1123,10 @@ void DrawObjectAudioControls(
             if (n == 0) BeginDisabled();
             if (const auto assign_label = n > 1 ? std::format("Assign sample to {} vertices…", n) : std::string{with_sample ? "Replace sample…" : "Assign sample…"};
                 Button(assign_label.c_str())) {
-                if (auto path = PickAudioFile(); !path.empty()) action::Emit(action::audio::AssignVertexSamples{std::move(op_vertices), std::move(path)});
+                static constexpr std::array filters{FileDialog::Filter{"Audio", "wav;mp3;flac;ogg;opus"}};
+                FileDialog::ShowOpen(filters, [verts = op_vertices](const fs::path &path) mutable {
+                    action::Emit(action::audio::AssignVertexSamples{std::move(verts), path});
+                });
             }
             if (n == 0) EndDisabled();
             if (with_sample > 0) {

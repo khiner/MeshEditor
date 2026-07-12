@@ -12,10 +12,6 @@ set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -stdlib=libc++")
 
 add_compile_options(-Wno-missing-field-initializers)
 
-if(APPLE)
-    enable_language(OBJC) # Needed for nativefiledialog
-endif()
-
 add_subdirectory(lib)
 
 # Full zstd (compress + decompress).
@@ -172,7 +168,7 @@ if(MESHEDITOR_APP)
     set(SDL_HAPTIC OFF CACHE BOOL "" FORCE)
     set(SDL_POWER OFF CACHE BOOL "" FORCE)
     set(SDL_SENSOR OFF CACHE BOOL "" FORCE)
-    set(SDL_DIALOG OFF CACHE BOOL "" FORCE)
+    set(SDL_DIALOG ON CACHE BOOL "" FORCE) # Native file dialogs.
     set(SDL_TRAY OFF CACHE BOOL "" FORCE)
     FetchContent_Declare(
         SDL3
@@ -205,7 +201,7 @@ if(MESHEDITOR_APP)
         target_link_libraries(${PROJECT_NAME} PRIVATE "-framework Accelerate")
     endif()
 
-    target_link_libraries(${PROJECT_NAME} PRIVATE SDL3::SDL3 ${Vulkan_LIBRARIES} GPUOpen::VulkanMemoryAllocator ${SHADERC_LIB} nfd tetgen meshoptimizer PkgConfig::FFTW3F lunasvg fastgltf::fastgltf simdjson::simdjson basisu_transcoder Jolt webp)
+    target_link_libraries(${PROJECT_NAME} PRIVATE SDL3::SDL3 ${Vulkan_LIBRARIES} GPUOpen::VulkanMemoryAllocator ${SHADERC_LIB} tetgen meshoptimizer PkgConfig::FFTW3F lunasvg fastgltf::fastgltf simdjson::simdjson basisu_transcoder Jolt webp)
 
     if(CMAKE_BUILD_TYPE MATCHES Debug)
         target_compile_definitions(${PROJECT_NAME} PRIVATE DEBUG_BUILD)
