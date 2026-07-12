@@ -4,6 +4,7 @@ project(MeshEditor LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_EXTENSIONS OFF)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON) # Emit build/compile_commands.json for clangd.
 set(CMAKE_CXX_FLAGS "-O2")
 set(CMAKE_C_FLAGS "-O2")
 
@@ -17,9 +18,10 @@ endif()
 
 add_subdirectory(lib)
 
+# Full zstd (compress + decompress).
 add_library(basisu_transcoder STATIC
     lib/basis_universal/transcoder/basisu_transcoder.cpp
-    lib/basis_universal/zstd/zstddeclib.c
+    lib/basis_universal/zstd/zstd.c
 )
 target_include_directories(basisu_transcoder SYSTEM PUBLIC lib/basis_universal/transcoder)
 target_compile_options(basisu_transcoder PRIVATE -w -fno-strict-aliasing $<$<COMPILE_LANGUAGE:CXX>:-include exception>)
@@ -124,6 +126,7 @@ include_directories(
     SYSTEM lib/readerwriterqueue
     SYSTEM lib/simdjson/include
     SYSTEM lib/libwebp/src
+    SYSTEM lib/basis_universal/zstd
 
     SYSTEM PkgConfig::FFTW3F
     src
@@ -224,9 +227,9 @@ if(MESHEDITOR_APP)
         target_compile_definitions(${PROJECT_NAME} PRIVATE QUIET)
     endif()
 
-    # Max number of .actions replay logs to retain in the replay/ dir.
-    set(REPLAY_LOG_RETAIN 5 CACHE STRING "Max number of .actions replay logs to keep")
-    target_compile_definitions(${PROJECT_NAME} PRIVATE REPLAY_LOG_RETAIN=${REPLAY_LOG_RETAIN})
+    # Max number of scratch sessions to retain in the restore/ dir.
+    set(RESTORE_SESSION_RETAIN 5 CACHE STRING "Max number of scratch sessions to keep")
+    target_compile_definitions(${PROJECT_NAME} PRIVATE RESTORE_SESSION_RETAIN=${RESTORE_SESSION_RETAIN})
 
     # glTF sample repos (git submodules under external/) populate File submenus with their models.
     target_compile_definitions(${PROJECT_NAME} PRIVATE

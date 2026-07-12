@@ -1,13 +1,11 @@
 #pragma once
 
-#include <fstream>
+#include <expected>
+#include <filesystem>
+#include <string>
+#include <vector>
 
 namespace File {
-inline std::string Read(const std::filesystem::path &path) {
-    std::ifstream f{path, std::ios::in | std::ios::binary};
-    const auto size = std::filesystem::file_size(path);
-    std::string result(size, '\0');
-    f.read(result.data(), size);
-    return result;
-}
+std::expected<std::vector<std::byte>, std::string> Read(const std::filesystem::path &);
+std::expected<std::string, std::string> ReadAsString(const std::filesystem::path &);
 } // namespace File

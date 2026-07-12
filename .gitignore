@@ -15,3 +15,4 @@ paper/**/*.bbl
 paper/**/*.blg
 paper/**/*.out
 paper/**/*.synctex.gz
+compile_commands.json

@@ -11,18 +11,17 @@
 #include <vector>
 
 namespace action {
-// Poison pill enqueued last at shutdown: wakes the writer and tells it to exit after it has drained
-// every real record ahead of it in the FIFO.
+// Poison pill enqueued last at shutdown:
+// Wakes the writer and tells it to exit after it has drained every real record ahead of it in the FIFO.
 struct Stop {};
 
-// Single-producer/single-consumer write-behind log. The producer thread calls Enqueue with zero IO
-// or serialization; a dedicated writer thread serializes each record and appends it to `out`. Generic
-// over the record type `T` and a `Serialize(const T&, std::ostream&)` callback, so it stays unaware of
-// what it is logging. `out` must outlive the log.
-template<typename T>
+// SPSC write-behind log:
+// Producer calls Enqueue with no IO or serialization.
+// Writer thread serializes each record and appends it to `out`.
+template<typename RecordType>
 class WriteBehindLog {
 public:
-    using Serializer = void (*)(const T &, std::ostream &);
+    using Serializer = void (*)(const RecordType &, std::ostream &);
 
     WriteBehindLog(std::ostream &out, Serializer serialize, size_t initial_capacity = 1024)
         : Queue(initial_capacity), Out(out), Serialize(serialize), Writer([this] { Run(); }) {}
@@ -32,7 +31,7 @@ public:
     WriteBehindLog &operator=(const WriteBehindLog &) = delete;
 
     // Push a record onto the queue and return immediately: no IO, no serialization, no blocking.
-    void Enqueue(T &&record) { Queue.enqueue(Record{std::move(record)}); }
+    void Enqueue(RecordType &&record) { Queue.enqueue(Record{std::move(record)}); }
 
     // Enqueue the poison pill and join the writer, which drains all prior records first. Idempotent.
     void Stop() {
@@ -42,9 +41,9 @@ public:
     }
 
 private:
-    using Record = std::variant<T, action::Stop>;
+    using Record = std::variant<RecordType, action::Stop>;
 
-    // Block for a record, then drain the rest of the burst before a single flush.
+    // Block for a record, drain the rest of the burst, then flush.
     void Run() {
         Record item;
         for (bool stopping = false; !stopping;) {
@@ -54,7 +53,7 @@ private:
                     stopping = true;
                     break;
                 }
-                Serialize(std::get<T>(item), Out);
+                Serialize(std::get<RecordType>(item), Out);
             } while (Queue.try_dequeue(item));
             Out.flush();
         }
@@ -66,30 +65,24 @@ private:
     std::thread Writer;
 };
 
-// A `.actions` log file in the replay dir, tagged with the unix-seconds timestamp parsed from its name.
-struct ReplayLogFile {
+struct RestoreSession {
     std::filesystem::path Path;
     uint32_t UnixSeconds;
 };
+// Working restore directories, sorted most-recent first.
+std::vector<RestoreSession> ListRestoreSessions();
+// Create and return a new working restore directory, pruning old ones.
+std::filesystem::path ReserveRestoreSession();
 
-// Replay logs found in the replay dir, sorted most-recent first.
-std::vector<ReplayLogFile> ListReplayLogs();
-
-// Reserve a fresh `replay/*.actions` path (pruning old logs).
-std::filesystem::path ReserveReplayLogPath();
-
-// Open a fresh `.actions` log and start its writer thread.
-void StartLog();
-// Same, but log directly to `path` instead of a fresh log in the replay dir.
-void StartLog(std::filesystem::path path);
-// Flush and join the writer. Returns the log path, or empty if nothing was recorded (the empty file is dropped).
+// Open the action log and start its writer thread. Truncates unless `append`.
+void StartLog(std::filesystem::path, bool append = false);
+// Flush and join the writer. Returns the log path, or empty if nothing was recorded (an empty new log is dropped).
 std::filesystem::path StopLog();
 
-// Advances the viewport between replayed actions so those resolving against rendered state see it up to date.
+// Advance the viewport between actions so actions read updated derived state.
 using ReplayTick = void (*)(entt::registry &, entt::entity viewport);
 
-// Apply each action in a `.actions` log to the current scene, ticking via `tick` between them. Re-logs each
-// action into the active session log (caller must StartLog first) so the replayed scene stays reconstructable.
+// Apply each action to the current scene after the first `skip` records, ticking between them.
 // False if the log can't be opened.
-bool ReplayLog(entt::registry &, entt::entity viewport, const std::filesystem::path &, ReplayTick tick);
+bool ReplayLog(entt::registry &, entt::entity viewport, const std::filesystem::path &, ReplayTick, uint64_t skip = 0);
 } // namespace action

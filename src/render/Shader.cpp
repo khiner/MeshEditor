@@ -41,7 +41,7 @@ public:
         try {
             const auto resolved_path = ResolveIncludePath(requested_source);
             Deps.emplace_back(MakeDep(resolved_path));
-            auto *include = new IncludeData{File::Read(resolved_path), resolved_path.string()};
+            auto *include = new IncludeData{File::ReadAsString(resolved_path).value(), resolved_path.string()};
             result->source_name = include->Name.c_str();
             result->source_name_length = include->Name.size();
             result->content = include->Content.c_str();
@@ -137,7 +137,9 @@ std::vector<uint32_t> CompileToSpirv(ShaderType type, const std::filesystem::pat
             default: throw std::runtime_error(std::format("Unsupported shader stage {}", vk::to_string(type)));
         }
     }();
-    const auto result = compiler.CompileGlslToSpv(File::Read(path), kind, "", compile_opts);
+    const auto source = File::ReadAsString(path);
+    if (!source) throw std::runtime_error(source.error());
+    const auto result = compiler.CompileGlslToSpv(*source, kind, "", compile_opts);
     if (result.GetCompilationStatus() != shaderc_compilation_status_success) {
         throw std::runtime_error(std::format("Error compiling shader {}:\n{}", path.string(), result.GetErrorMessage()));
     }

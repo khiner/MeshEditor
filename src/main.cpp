@@ -1,9 +1,12 @@
+#include "Compress.h"
+#include "File.h"
 #include "Paths.h"
 #include "ProcessEvents.h"
 #include "Timer.h"
 #include "TransformMath.h"
 #include "Window.h"
 #include "action/ActionApply.h"
+#include "action/ActionIndex.h"
 #include "action/Build.h"
 #include "action/Emit.h"
 #include "action/Errors.h"
@@ -16,6 +19,7 @@
 #include "audio/AudioDevice.h"
 #include "audio/AudioSystem.h"
 #include "audio/AudioTypes.h"
+#include "audio/ModalModelFile.h"
 #include "gizmo/TransformGizmoTypes.h"
 #include "image/ImageEncode.h"
 #include "mesh/Mesh.h"
@@ -276,24 +280,105 @@ void QuiesceScene(entt::registry &r, entt::entity viewport) {
     if (playback.Playing) action::ApplyNow(r, viewport, action::timeline::TogglePlay{playback.CurrentFrame});
 }
 
-// Reset to the default scene, optionally replaying an action log on top.
-void NewProject(entt::registry &r, entt::entity viewport, const fs::path &replay_path = {}, bool with_default_content = true) {
-    QuiesceScene(r, viewport);
-    action::StopLog();
-    const auto live_extent = r.ctx().get<ViewportExtent>().Value; // Restore after replay's SetExtent actions change it.
-    // View-camera navigation isn't recorded, so save and restore afterward to not disturb the live view.
+constexpr std::string_view SessionLogName{"session.actions"}, ProjectStateName{"project.state"}, ProjectExt{".project"}, ActionsExt{".actions"};
+fs::path CurrentProjectPath;
+
+// Replay action log, restore the current viewport extent and camera, and present.
+void ReplayPreservingView(entt::registry &r, entt::entity viewport, const fs::path &log_path, uint64_t skip = 0) {
+    const auto live_extent = r.ctx().get<ViewportExtent>().Value;
     auto live_view_cameras = GetViewCameraState(r, viewport);
-    ClearScene(r, viewport);
-    // An action-less log replays as an empty scene. Start the log before seeding/replaying so those actions re-record into it.
-    action::StartLog();
-    if (with_default_content) {
-        action::Emit(action::io::LoadDefaultScene{});
-    } else if (action::ReplayLog(r, viewport, replay_path, [](entt::registry &r, entt::entity viewport) { ProcessComponentEvents(r, viewport); })) {
-        // Replay ran headless: restore the live extent and view camera, then present the final state.
+    if (action::ReplayLog(r, viewport, log_path, [](entt::registry &r, entt::entity viewport) { ProcessComponentEvents(r, viewport); }, skip)) {
         r.ctx().get<ViewportExtent>().Value = live_extent;
         SetViewCameraState(r, viewport, std::move(live_view_cameras));
         PresentViewport(r, viewport);
     }
+}
+
+void StartScratchSession(entt::registry &r, entt::entity viewport) {
+    QuiesceScene(r, viewport);
+    action::StopLog();
+    Paths::SetProject(action::ReserveRestoreSession());
+    ClearScene(r, viewport);
+    action::StartLog(Paths::Project() / SessionLogName);
+    CurrentProjectPath.clear();
+}
+
+// Reset to a fresh scratch session with the default scene, or an empty one.
+void NewScene(entt::registry &r, entt::entity viewport, bool empty) {
+    StartScratchSession(r, viewport);
+    if (!empty) action::Emit(action::io::LoadDefaultScene{});
+}
+
+// Replay a standalone `.actions` log into a fresh scratch session.
+void ReplayLogIntoNewSession(entt::registry &r, entt::entity viewport, const fs::path &log_path) {
+    StartScratchSession(r, viewport);
+    ReplayPreservingView(r, viewport, log_path);
+}
+
+// Load a snapshot file and return its action-log position.
+uint64_t LoadStateBase(entt::registry &r, entt::entity viewport, const fs::path &path) {
+    const auto bytes = File::Read(path).value_or(std::vector<std::byte>{});
+    r.ctx().get<const VulkanResources>().Device.waitIdle();
+    ClearScene(r, viewport);
+    snapshot::LoadState(r, bytes);
+    ProcessComponentEvents(r, viewport);
+    return r.all_of<ActionIndex>(viewport) ? r.get<ActionIndex>(viewport).Index : 0;
+}
+
+// Load the base snapshot (if any), replay the session log past the base's action index, and re-open the log for appending.
+void OpenProjectDir(entt::registry &r, entt::entity viewport, const fs::path &working_dir) {
+    QuiesceScene(r, viewport);
+    action::StopLog();
+    CurrentProjectPath.clear();
+    Paths::SetProject(working_dir);
+    const auto state_path = working_dir / ProjectStateName, log_path = working_dir / SessionLogName;
+    uint64_t skip = 0;
+    if (std::error_code ec; fs::exists(state_path, ec)) skip = LoadStateBase(r, viewport, state_path);
+    else ClearScene(r, viewport);
+    ReplayPreservingView(r, viewport, log_path, skip);
+    action::StartLog(log_path, /*append=*/true);
+}
+
+// Decompress a `.project` archive into a fresh working directory and open it.
+void OpenProjectFile(entt::registry &r, entt::entity viewport, const fs::path &archive_path) {
+    const auto working_dir = action::ReserveRestoreSession();
+    if (!Decompress(archive_path, working_dir)) {
+        std::println(stderr, "Failed to open project '{}'", archive_path.string());
+        return;
+    }
+    OpenProjectDir(r, viewport, working_dir);
+    CurrentProjectPath = archive_path;
+}
+
+void OpenFile(entt::registry &r, entt::entity viewport, const fs::path &path) {
+    if (const auto ext = path.extension(); ext == ProjectExt) OpenProjectFile(r, viewport, path);
+    else if (ext == ActionsExt) ReplayLogIntoNewSession(r, viewport, path);
+    else action::Emit(action::io::Load{.Path = path});
+}
+
+// Snapshot the scene and compress the working directory into `archive_path`.
+void SaveProjectFile(entt::registry &r, entt::entity viewport, const fs::path &archive_path) {
+    Perform(r, viewport, action::io::SaveState{.Path = Paths::Project() / ProjectStateName});
+    const auto log_path = Paths::Project() / SessionLogName;
+    action::StopLog(); // flush the log before archiving
+    const bool ok = Compress(Paths::Project(), archive_path);
+    action::StartLog(log_path, /*append=*/true);
+    if (!ok) {
+        std::println(stderr, "Failed to save project '{}'", archive_path.string());
+        return;
+    }
+    CurrentProjectPath = archive_path;
+}
+
+// Drop the session log and modal media, keeping the current scene as a fresh snapshot.
+void ClearHistory(entt::registry &r, entt::entity viewport) {
+    r.emplace_or_replace<ActionIndex>(viewport); // reset log position (write outside Apply: session bookkeeping)
+    Perform(r, viewport, action::io::SaveState{.Path = Paths::Project() / ProjectStateName});
+    action::StopLog();
+    std::error_code ec;
+    fs::remove(Paths::Project() / SessionLogName, ec);
+    fs::remove_all(ModalModelsDir(), ec);
+    action::StartLog(Paths::Project() / SessionLogName);
 }
 
 #ifdef DEBUG_BUILD
@@ -303,13 +388,12 @@ void NewProject(entt::registry &r, entt::entity viewport, const fs::path &replay
 void ValidateRoundTrip(entt::registry &r, entt::entity viewport) {
     QuiesceScene(r, viewport);
 
-    const auto logs = action::ListReplayLogs(); // Most-recent first; the newest is the live session's log.
-    if (logs.empty()) {
+    const auto current_log = Paths::Project() / SessionLogName;
+    if (std::error_code ec; !fs::exists(current_log, ec)) {
         std::println(stderr, "[snapshot] replay SKIPPED (no log)");
     } else {
-        const auto &current_log = logs.front().Path;
         const auto expected = snapshot::SnapshotSceneState(r);
-        NewProject(r, viewport, current_log, /*with_default_content=*/false);
+        ReplayLogIntoNewSession(r, viewport, current_log);
         const auto actual = snapshot::SnapshotSceneState(r);
         if (const auto diff = snapshot::Compare(expected, actual); !diff.Equal) {
             std::println(stderr, "[snapshot] replay DIVERGED at byte {} (expected {} / actual {})", diff.FirstDifferingByte, expected.size(), actual.size());
@@ -427,42 +511,30 @@ bool ReportActionErrors(entt::registry &r) {
     return true;
 }
 
-// Seed the scene's first recorded action: the initial file, else the default scene.
-// Returns false if the initial file failed to load.
-bool SeedScene(entt::registry &r, entt::entity viewport, const char *initial_file, bool empty) {
+// Seed this run's initial scene and session log. Returns false if the initial file failed to load.
+bool SeedScene(entt::registry &r, entt::entity viewport, const CaptureRequest &capture, const char *initial_file, bool empty) {
     if (initial_file) {
-        if (const fs::path path = initial_file; path.extension() == ".actions") {
-            NewProject(r, viewport, path, /*with_default_content=*/false);
-        } else {
-            Perform(r, viewport, action::io::Load{.Path = initial_file});
-            if (ReportActionErrors(r)) return false;
+        if (const fs::path path = initial_file; path.extension() == ProjectExt) {
+            OpenProjectFile(r, viewport, path);
+            return true;
+        } else if (path.extension() == ActionsExt) {
+            ReplayLogIntoNewSession(r, viewport, path);
+            return true;
         }
-    } else if (!empty) {
-        Perform(r, viewport, action::io::LoadDefaultScene{});
     }
+    if (capture.RenderBasename.empty()) {
+        Paths::SetProject(action::ReserveRestoreSession());
+        action::StartLog(Paths::Project() / SessionLogName);
+    } else {
+        Paths::SetProject(capture.RenderBasename.parent_path());
+        action::StartLog(fs::path{capture.RenderBasename.string() + ".actions"});
+    }
+    if (initial_file) {
+        Perform(r, viewport, action::io::Load{.Path = initial_file});
+        return !ReportActionErrors(r);
+    }
+    if (!empty) Perform(r, viewport, action::io::LoadDefaultScene{});
     return true;
-}
-
-// The corpus `.actions` leaf `--render` logs to, empty outside render mode.
-fs::path CorpusActionsPath(const CaptureRequest &capture) {
-    return capture.RenderBasename.empty() ? fs::path{} : fs::path{capture.RenderBasename.string() + ".actions"};
-}
-
-// Start recording applied actions to the write-behind log. Render mode logs directly at the corpus
-// leaf, so parallel renders never touch the shared replay dir.
-void StartSessionLog(const CaptureRequest &capture) {
-    if (const auto corpus = CorpusActionsPath(capture); corpus.empty()) action::StartLog();
-    else action::StartLog(corpus);
-}
-
-// Stop the session log. Render mode's log usually already is the corpus `.actions` — copy only
-// when a replayed initial file restarted the log in the replay dir.
-void FinishSessionLog(const CaptureRequest &capture) {
-    const auto corpus = CorpusActionsPath(capture);
-    if (const fs::path session_log = action::StopLog(); !corpus.empty() && !session_log.empty() && session_log != corpus) {
-        std::error_code ec;
-        fs::copy_file(session_log, corpus, fs::copy_options::overwrite_existing, ec);
-    }
 }
 
 // Per-frame capture orchestration shared by the windowed and headless run loops: scene framing,
@@ -593,15 +665,22 @@ struct CaptureDriver {
     bool PlaybackStarted{false}, ScreenshotSaved{false}, ViewFramed{false};
 };
 
-// Start the session log, seed the scene (recorded as the log's first action), and enter presentation
-// mode so the first rendered frame matches the capture.
+// Seed the scene and its session log, then enter presentation mode so the first rendered frame matches the capture.
 CaptureDriver BeginCaptureSession(entt::registry &r, entt::entity viewport, const CaptureRequest &capture, const char *initial_file, bool empty, bool fixed_step) {
-    StartSessionLog(capture);
-    const bool play = SeedScene(r, viewport, initial_file, empty) && capture.Play;
+    const bool play = SeedScene(r, viewport, capture, initial_file, empty) && capture.Play;
     CaptureDriver driver{r, viewport, capture, play, fixed_step};
     if (driver.Presenting()) Perform(r, viewport, action::timeline::EnterPresentation{});
     r.ctx().get<FrameState>().FixedFrameStep = driver.FixedStep;
     return driver;
+}
+
+// Resolve the executable base dir (read-only resources) and the writable per-user data dir.
+void InitPaths() {
+    const char *base = SDL_GetBasePath();
+    char *user_data = SDL_GetPrefPath("", "MeshEditor");
+    if (!base || !user_data) throw std::runtime_error(std::format("SDL path error: {}", SDL_GetError()));
+    Paths::Init(base, user_data);
+    SDL_free(user_data);
 }
 
 void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest &capture) {
@@ -612,8 +691,7 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
     SDL_SetHint(SDL_HINT_MAC_SCROLL_MOMENTUM, "1");
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) throw std::runtime_error(std::format("SDL_Init error: {}", SDL_GetError()));
 
-    if (const char *base = SDL_GetBasePath()) Paths::Init(base);
-    else throw std::runtime_error(std::format("SDL_GetBasePath error: {}", SDL_GetError()));
+    InitPaths();
 
     auto *window = SDL_CreateWindow(
         "MeshEditor", int(DefaultWindowSize.x), int(DefaultWindowSize.y),
@@ -741,11 +819,7 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
                 event.wheel.x *= ImGuiWheelScale;
                 event.wheel.y *= ImGuiWheelScale;
             }
-            // Replay a dropped `.actions` log through NewProject; load any other file as a single action.
-            if (event.type == SDL_EVENT_DROP_FILE) {
-                if (const fs::path dropped = event.drop.data; dropped.extension() == ".actions") NewProject(r, viewport, dropped, /*with_default_content=*/false);
-                else action::Emit(action::io::Load{.Path = dropped});
-            }
+            if (event.type == SDL_EVENT_DROP_FILE) OpenFile(r, viewport, event.drop.data);
             // SDL3 backend invalidates MousePos to -FLT_MAX on leave when no mouse button is held,
             // which flings a keyboard-initiated (G/R/S) transform offscreen when switching focus.
             if (event.type != SDL_EVENT_WINDOW_MOUSE_LEAVE || !TransformGizmo::IsUsing(r, viewport)) {
@@ -789,60 +863,47 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
 
         if (BeginMainMenuBar()) {
             if (BeginMenu("File")) {
-                // The `.state` document Save writes to without prompting. Empty until the scene is opened from or saved to a file.
-                static fs::path current_state_path;
                 if (BeginMenu("New")) {
-                    if (MenuItem("Default")) {
-                        current_state_path.clear();
-                        NewProject(r, viewport);
-                    }
-                    if (MenuItem("Empty")) {
-                        current_state_path.clear();
-                        NewProject(r, viewport, {}, /*with_default_content=*/false);
-                    }
+                    if (MenuItem("Default")) NewScene(r, viewport, /*empty=*/false);
+                    if (MenuItem("Empty")) NewScene(r, viewport, /*empty=*/true);
                     EndMenu();
                 }
                 if (MenuItem("Open")) {
-                    static constexpr std::array filters{nfdfilteritem_t{"Scene state", "state"}, nfdfilteritem_t{"Action log", "actions"}};
+                    static constexpr std::array filters{nfdfilteritem_t{"MeshEditor project", "project"}, nfdfilteritem_t{"Scene state", "state"}, nfdfilteritem_t{"Action log", "actions"}};
                     nfdchar_t *nfd_path;
                     if (auto result = NFD_OpenDialog(&nfd_path, filters.data(), filters.size(), ""); result == NFD_OKAY) {
-                        if (const fs::path path = nfd_path; path.extension() == ".actions") {
-                            current_state_path.clear();
-                            NewProject(r, viewport, path, /*with_default_content=*/false);
-                        } else {
-                            current_state_path = path;
-                            action::Emit(action::io::Load{.Path = path});
-                        }
+                        OpenFile(r, viewport, nfd_path);
                         NFD_FreePath(nfd_path);
                     } else if (result != NFD_CANCEL) {
                         std::cerr << "Error opening file dialog: " << NFD_GetError() << std::endl;
                     }
                 }
-                const auto save_state_as = [&] {
-                    static const std::array filters{nfdfilteritem_t{"Scene state", "state"}};
+                const auto save_project_as = [&] {
+                    static constexpr std::array filters{nfdfilteritem_t{"MeshEditor project", "project"}};
                     nfdchar_t *nfd_path;
-                    if (auto result = NFD_SaveDialog(&nfd_path, filters.data(), filters.size(), nullptr, "scene.state"); result == NFD_OKAY) {
-                        current_state_path = nfd_path;
-                        if (current_state_path.extension() != ".state") current_state_path += ".state"; // NFD doesn't force the filter's extension.
-                        action::Emit(action::io::SaveState{.Path = current_state_path});
+                    if (auto result = NFD_SaveDialog(&nfd_path, filters.data(), filters.size(), nullptr, "scene.project"); result == NFD_OKAY) {
+                        fs::path path = nfd_path;
+                        if (path.extension() != ProjectExt) path += ProjectExt; // NFD doesn't force the filter's extension.
+                        SaveProjectFile(r, viewport, path);
                         NFD_FreePath(nfd_path);
                     } else if (result != NFD_CANCEL) {
                         std::cerr << "Error opening save dialog: " << NFD_GetError() << std::endl;
                     }
                 };
                 if (MenuItem("Save")) {
-                    if (current_state_path.empty()) save_state_as();
-                    else action::Emit(action::io::SaveState{.Path = current_state_path});
+                    if (CurrentProjectPath.empty()) save_project_as();
+                    else SaveProjectFile(r, viewport, CurrentProjectPath);
                 }
-                if (MenuItem("Save as...")) save_state_as();
-                if (BeginMenu("Replay")) {
-                    const auto logs = action::ListReplayLogs(); // Most-recent first; the newest is the live session's log.
-                    for (size_t i = 0; i < logs.size(); ++i) {
-                        const std::time_t t = logs[i].UnixSeconds;
+                if (MenuItem("Save as...")) save_project_as();
+                if (MenuItem("Clear history")) ClearHistory(r, viewport);
+                if (BeginMenu("Restore")) {
+                    const auto sessions = action::ListRestoreSessions(); // Most-recent first; the newest is the live session.
+                    for (size_t i = 0; i < sessions.size(); ++i) {
+                        const std::time_t t = sessions[i].UnixSeconds;
                         char date[32];
                         std::strftime(date, sizeof date, "%Y-%m-%d %H:%M:%S", std::localtime(&t));
                         const auto label = i == 0 ? std::format("Current ({})", date) : std::string{date};
-                        if (MenuItem(label.c_str())) NewProject(r, viewport, logs[i].Path, /*with_default_content=*/false);
+                        if (MenuItem(label.c_str())) OpenProjectDir(r, viewport, sessions[i].Path);
                     }
                     EndMenu();
                 }
@@ -1112,7 +1173,7 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
         }
     }
 
-    FinishSessionLog(capture);
+    action::StopLog();
     vc->Device->waitIdle();
 
     r.ctx().erase<AudioDeviceResource>(); // Stops and uninitializes the output device.
@@ -1161,7 +1222,7 @@ void RunHeadlessScene(entt::registry &r, entt::entity viewport, const char *init
         if (!driver.Presenting() && settled) done = true;
         driver.ElapsedPlayTime += frame_state.DeltaTime;
     }
-    FinishSessionLog(capture);
+    action::StopLog();
 }
 
 // Run without a window: no SDL video, ImGui, audio, or file dialogs. The viewport renders offscreen
@@ -1171,8 +1232,7 @@ void RunHeadlessEngine(bool quiet, auto &&scenes) {
     LogEnabled = !quiet;
 
     if (!SDL_Init(0)) throw std::runtime_error(std::format("SDL_Init error: {}", SDL_GetError())); // Base path only, no subsystems.
-    if (const char *base = SDL_GetBasePath()) Paths::Init(base);
-    else throw std::runtime_error(std::format("SDL_GetBasePath error: {}", SDL_GetError()));
+    InitPaths();
 
     auto vc = std::make_unique<VulkanContext>(std::vector<const char *>{}, /*with_swapchain=*/false);
     entt::registry r;

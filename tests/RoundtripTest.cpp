@@ -660,9 +660,10 @@ int main(int argc, const char **argv) {
     if (argc > 1) cfg<override> = {.filter = argv[1]};
 
     // res/ and shaders/ are symlinked into the CMake build dir. InitEngine compiles shaders and loads LUTs from there.
-    Paths::Init(MESHEDITOR_BUILD_DIR);
+    Paths::Init(MESHEDITOR_BUILD_DIR, MESHEDITOR_BUILD_DIR);
 
     const auto tmp_root = MakeRoundtripDir();
+    Paths::SetProject(tmp_root); // Modal-file round-trip writes under ModalModelsDir() = Project()/modal.
     const auto samples = SampleRoots | transform([](auto root) { return CollectGltfSamples(SamplePath(root)); }) | join | to<std::vector>();
 
     // Headless Vulkan fixture shared across all ECS-roundtrip samples (device init is expensive).

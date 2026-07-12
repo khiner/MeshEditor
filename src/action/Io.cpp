@@ -1,5 +1,6 @@
 #include "action/Io.h"
 #include "CameraTypes.h"
+#include "File.h"
 #include "Timer.h"
 #include "Variant.h"
 #include "action/Errors.h"
@@ -57,18 +58,15 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
                 if (ext == ".gltf" || ext == ".glb") LoadGltfFile(r, viewport, a.Path);
                 else if (ext == ".obj" || ext == ".ply") RequestImportMesh(r, viewport, path, MeshInstanceCreateInfo{.Name = path.stem().string()});
                 else if (ext == ".state") {
-                    std::ifstream in{path, std::ios::binary | std::ios::ate};
-                    if (!in) {
-                        fail(std::format("Error opening state file '{}'", path.string()));
+                    const auto bytes = File::Read(path);
+                    if (!bytes) {
+                        fail(bytes.error());
                         return;
                     }
-                    std::vector<std::byte> bytes(size_t(in.tellg()));
-                    in.seekg(0);
-                    in.read(reinterpret_cast<char *>(bytes.data()), std::streamsize(bytes.size()));
                     // ClearScene recreates viewport GPU resources the previous frame may still be using.
                     r.ctx().get<const VulkanResources>().Device.waitIdle();
                     ClearScene(r, viewport);
-                    snapshot::LoadState(r, bytes);
+                    snapshot::LoadState(r, *bytes);
                 } else fail(std::format("Unsupported file format: '{}'", ext));
             },
             [&](const SaveGltf &a) {

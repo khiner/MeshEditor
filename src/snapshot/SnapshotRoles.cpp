@@ -6,6 +6,7 @@
 #include "gpu/ViewportTheme.h"
 #include "gpu/WorkspaceLights.h"
 
+#include "action/ActionIndex.h"
 #include "animation/AnimationData.h"
 #include "animation/AnimationTimeline.h"
 #include "animation/MorphWeightState.h"
@@ -126,7 +127,7 @@ using Persistent = type_list<
     MeshMaterialAssignment, MeshMaterialSlotSelection, MaterialVariants, MaterializedTextures, PbrMeshFeatures,
     PrimitiveShape, Path, Camera, ViewCamera, LookingThrough, Interaction, EditMode, OrbitToActive, AudioOutputConfig, AudioOutputMix, Striker, ModalSoundControls,
     AcousticMaterial, SoundVerticesModel, ModalModes, ModalGain, ModalTuning, ModalSolveSettings, MassProperties, TetMeshData, ModalEigenSummary,
-    SelectionXRay, ViewportDisplay, MaterialPreviewLighting, RenderedLighting, StudioEnvironment, TransformGizmoState,
+    SelectionXRay, ViewportDisplay, MaterialPreviewLighting, RenderedLighting, StudioEnvironment, TransformGizmoState, ActionIndex,
     TimelineRange, TimelinePlayback, AnimationTimelineView,
     PhysicsSimulationSettings, PhysicsMaterial, CollisionSystem, CollisionFilter, PhysicsJointDef, PhysicsMotion,
     ColliderShape, ColliderMaterial, ColliderPolicy, PhysicsVelocity, TriggerTag, TriggerNodes, PhysicsJoint,

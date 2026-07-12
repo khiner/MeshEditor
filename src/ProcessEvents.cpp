@@ -855,7 +855,7 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
                 if (src_assets && t.SourceImageIndex < src_assets->Images.size()) {
                     auto &img = src_assets->Images[t.SourceImageIndex];
                     if (img.Bytes.empty() && !img.SourceAbsPath.empty() && std::filesystem::is_regular_file(img.SourceAbsPath)) {
-                        const auto encoded = File::Read(img.SourceAbsPath);
+                        const auto encoded = File::ReadAsString(img.SourceAbsPath).value_or(std::string{});
                         img.Bytes.assign(reinterpret_cast<const std::byte *>(encoded.data()), reinterpret_cast<const std::byte *>(encoded.data()) + encoded.size());
                     }
                 }

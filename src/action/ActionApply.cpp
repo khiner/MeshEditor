@@ -1,5 +1,6 @@
 #include "action/ActionApply.h"
 #include "action/ActionDrain.h"
+#include "action/ActionIndex.h"
 #include "action/Log.h"
 #include "action/LogSerialize.h"
 
@@ -17,9 +18,11 @@ std::optional<std::ofstream> LogStream;
 std::optional<WriteBehindLog<Action>> Log;
 std::filesystem::path LogPath; // Currently-open `.actions` log, empty when none.
 
-// Record a committed change to the .actions log.
-void RecordCommitted(Action &&a) {
-    if (Log && IsRecordable(a)) Log->Enqueue(std::move(a));
+// Advance the action index and append the committed change to the .actions log (when one is open).
+void RecordCommitted(entt::registry &r, entt::entity viewport, Action &&a) {
+    if (!IsRecordable(a)) return;
+    ++r.get_or_emplace<ActionIndex>(viewport).Index;
+    if (Log) Log->Enqueue(std::move(a));
 }
 
 // Route the action to its domain's Apply.
@@ -30,28 +33,27 @@ void ApplyAction(entt::registry &r, entt::entity viewport, const Action &action)
 // Apply and record as one committed action.
 void ApplyRecord(entt::registry &r, entt::entity viewport, Action &&a) {
     ApplyAction(r, viewport, a);
-    RecordCommitted(std::move(a));
+    RecordCommitted(r, viewport, std::move(a));
 }
 
-void CommitHeld() {
+void CommitHeld(entt::registry &r, entt::entity viewport) {
     if (Held) {
-        RecordCommitted(std::move(*Held));
+        RecordCommitted(r, viewport, std::move(*Held));
         Held.reset();
     }
 }
 } // namespace
 
 namespace action {
-void StartLog(std::filesystem::path path) {
+void StartLog(std::filesystem::path path, bool append) {
     if (const auto parent = path.parent_path(); !parent.empty()) {
         std::error_code ec;
         std::filesystem::create_directories(parent, ec);
     }
     LogPath = std::move(path);
-    LogStream.emplace(LogPath, std::ios::binary | std::ios::trunc);
+    LogStream.emplace(LogPath, std::ios::binary | (append ? std::ios::app : std::ios::trunc));
     Log.emplace(*LogStream, &SerializeAction);
 }
-void StartLog() { StartLog(ReserveReplayLogPath()); }
 std::filesystem::path StopLog() {
     if (Log) Log->Stop();
     Log.reset();
@@ -84,23 +86,30 @@ void ApplyEmitted(entt::registry &r, entt::entity viewport) {
                 r.clear<DragFieldStart>();
                 break;
             case Phase::Record:
-                CommitHeld();
-                RecordCommitted(std::move(action));
+                CommitHeld(r, viewport);
+                RecordCommitted(r, viewport, std::move(action));
                 r.clear<DragFieldStart>();
                 break;
         }
     }
     if (drained.CommitRequested) {
-        CommitHeld();
+        CommitHeld(r, viewport);
         r.clear<DragFieldStart>();
     }
     // System-generated actions apply in addition to the user action, without touching any open gesture.
     for (auto &a : drained.System) ApplyRecord(r, viewport, std::move(a));
 }
 
-bool ReplayLog(entt::registry &r, entt::entity viewport, const std::filesystem::path &replay_path, ReplayTick tick) {
+bool ReplayLog(entt::registry &r, entt::entity viewport, const std::filesystem::path &replay_path, ReplayTick tick, uint64_t skip) {
     std::ifstream in{replay_path, std::ios::binary};
     if (!in) return false;
+
+    // Skip records already captured by the base snapshot.
+    for (uint64_t i = 0; i < skip; ++i) {
+        uint32_t len;
+        if (!in.read(reinterpret_cast<char *>(&len), sizeof len)) return true;
+        in.seekg(len, std::ios::cur);
+    }
 
     tick(r, viewport);
     StreamActions(in, [&](Action &&a) {

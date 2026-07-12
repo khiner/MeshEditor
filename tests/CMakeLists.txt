@@ -29,6 +29,7 @@ add_executable(MeshEditorTests
     ${CMAKE_SOURCE_DIR}/src/vulkan/Image.cpp
     ${CMAKE_SOURCE_DIR}/src/vulkan/VulkanContext.cpp
     ${CMAKE_SOURCE_DIR}/src/vulkan/FindMemoryType.cpp
+    ${CMAKE_SOURCE_DIR}/src/File.cpp
     ${CMAKE_SOURCE_DIR}/src/Paths.cpp
     ${CMAKE_SOURCE_DIR}/src/ProcessEvents.cpp
     ${CMAKE_SOURCE_DIR}/src/viewport/Viewport.cpp
@@ -82,8 +83,7 @@ target_link_libraries(MeshEditorTests PRIVATE
 target_compile_definitions(MeshEditorTests PRIVATE GLM_ENABLE_EXPERIMENTAL DEBUG_BUILD MESHEDITOR_BUILD_DIR="${CMAKE_BINARY_DIR}" MESHEDITOR_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 target_compile_options(MeshEditorTests PRIVATE -Wall -Wextra -Wno-missing-field-initializers -Wno-elaborated-enum-base -fno-rtti)
 
-# Standalone: serializes every Action alternative through zpp::bits. Header-only (no GPU/registry),
-# so it needs only the action headers (and the generated GPU schema headers they pull in).
+# Serializes every Action alternative through zpp::bits.
 add_executable(MeshEditorActionSerializeTest ActionSerializeTest.cpp)
 add_dependencies(MeshEditorActionSerializeTest generate_gpu_schema)
 target_include_directories(MeshEditorActionSerializeTest PRIVATE
@@ -97,12 +97,8 @@ target_link_libraries(MeshEditorActionSerializeTest PRIVATE Boost::ut)
 target_compile_definitions(MeshEditorActionSerializeTest PRIVATE GLM_ENABLE_EXPERIMENTAL DEBUG_BUILD)
 target_compile_options(MeshEditorActionSerializeTest PRIVATE -Wall -Wextra -Wno-missing-field-initializers -Wno-elaborated-enum-base -fno-rtti)
 
-# Default RealImpact dataset location for the modal solver test and bench: the corpus submodule.
-# Overridable here (cmake -D) or at runtime with the REALIMPACT_DATASET_DIR env var.
 set(REALIMPACT_DATASET_DIR "${CMAKE_SOURCE_DIR}/external/RealImpact/dataset" CACHE PATH "RealImpact dataset directory")
 
-# Standalone: the modal FEM solver reads tet geometry directly, so it needs only mesh2modes.cpp and
-# Tets.cpp with tetgen, meshoptimizer, Eigen, and Spectra.
 add_executable(MeshEditorModalSolverTest ModalSolverTest.cpp ${CMAKE_SOURCE_DIR}/src/audio/mesh2modes.cpp ${CMAKE_SOURCE_DIR}/src/audio/CholeskyShiftInvert.cpp ${CMAKE_SOURCE_DIR}/src/mesh/Tets.cpp)
 target_include_directories(MeshEditorModalSolverTest PRIVATE
     ${CMAKE_SOURCE_DIR}/src
@@ -115,8 +111,7 @@ target_link_libraries(MeshEditorModalSolverTest PRIVATE Boost::ut tetgen meshopt
 target_compile_definitions(MeshEditorModalSolverTest PRIVATE GLM_ENABLE_EXPERIMENTAL DEBUG_BUILD TETLIBRARY REALIMPACT_DATASET_DIR="${REALIMPACT_DATASET_DIR}")
 target_compile_options(MeshEditorModalSolverTest PRIVATE -Wall -Wextra -Wno-missing-field-initializers -Wno-elaborated-enum-base -fno-rtti)
 
-# Standalone: times each stage of the modal solve pipeline across RealImpact samples.
-# RealImpact.cpp provides the object-name-to-material mapping.
+# Times each stage of the modal solve pipeline across RealImpact samples.
 add_executable(MeshEditorModalSolverBench ModalSolverBench.cpp
     ${CMAKE_SOURCE_DIR}/src/audio/mesh2modes.cpp
     ${CMAKE_SOURCE_DIR}/src/audio/CholeskyShiftInvert.cpp
@@ -134,7 +129,14 @@ target_link_libraries(MeshEditorModalSolverBench PRIVATE tetgen meshoptimizer "-
 target_compile_definitions(MeshEditorModalSolverBench PRIVATE GLM_ENABLE_EXPERIMENTAL DEBUG_BUILD TETLIBRARY REALIMPACT_DATASET_DIR="${REALIMPACT_DATASET_DIR}")
 target_compile_options(MeshEditorModalSolverBench PRIVATE -Wall -Wextra -Wno-missing-field-initializers -Wno-elaborated-enum-base -fno-rtti)
 
-# Standalone: the Hertz contact-time math is pure (no GPU/registry/mesh), so it needs only ContactModel.cpp.
+add_executable(MeshEditorCompressTest CompressTest.cpp ${CMAKE_SOURCE_DIR}/src/Compress.cpp)
+target_include_directories(MeshEditorCompressTest PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    SYSTEM ${CMAKE_SOURCE_DIR}/lib/basis_universal/zstd
+)
+target_link_libraries(MeshEditorCompressTest PRIVATE Boost::ut basisu_transcoder)
+target_compile_options(MeshEditorCompressTest PRIVATE -Wall -Wextra -Wno-missing-field-initializers -Wno-elaborated-enum-base -fno-rtti)
+
 add_executable(MeshEditorContactModelTest ContactModelTest.cpp ${CMAKE_SOURCE_DIR}/src/audio/ContactModel.cpp)
 target_include_directories(MeshEditorContactModelTest PRIVATE
     ${CMAKE_SOURCE_DIR}/src

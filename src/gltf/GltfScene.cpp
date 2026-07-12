@@ -1,5 +1,6 @@
 #include "GltfScene.h"
 
+#include "File.h"
 #include "Path.h"
 #include "Timer.h"
 #include "TransformMath.h"
@@ -213,20 +214,6 @@ template<typename OptT>
     return out;
 }
 
-std::expected<std::vector<std::byte>, std::string> ReadFileBytes(const std::filesystem::path &path) {
-    std::ifstream file(path, std::ios::binary | std::ios::ate);
-    if (!file) return std::unexpected{std::format("Failed to open image file '{}'.", path.string())};
-
-    const auto end = file.tellg();
-    if (end <= 0) return std::vector<std::byte>{};
-
-    std::vector<std::byte> bytes(end);
-    file.seekg(0, std::ios::beg);
-    file.read(reinterpret_cast<char *>(bytes.data()), std::streamsize(end));
-    if (!file) return std::unexpected{std::format("Failed to read image file '{}'.", path.string())};
-    return bytes;
-}
-
 std::expected<Image, std::string> ReadImage(const fastgltf::Asset &asset, uint32_t image_index, const std::filesystem::path &base_dir) {
     if (image_index >= asset.images.size()) return std::unexpected{std::format("glTF image index {} is out of range.", image_index)};
     const auto &image = asset.images[image_index];
@@ -272,7 +259,7 @@ std::expected<Image, std::string> ReadImage(const fastgltf::Asset &asset, uint32
                 auto image_path = uri.uri.fspath();
                 if (image_path.is_relative()) image_path = base_dir / image_path;
                 image_path = image_path.lexically_normal();
-                auto bytes = ReadFileBytes(image_path);
+                auto bytes = File::Read(image_path);
                 if (!bytes) return std::unexpected{std::move(bytes.error())};
                 // Hold bytes only until upload — they're cleared once the texture materializes,
                 // since SourceAbsPath is the persistence for external URIs.
@@ -3613,7 +3600,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             bool ok = false;
             if (exists) {
                 if (!validate) ok = true;
-                else if (auto b = ReadFileBytes(img.SourceAbsPath)) ok = SniffMimeType(*b) == img.MimeType;
+                else if (auto b = File::Read(img.SourceAbsPath)) ok = SniffMimeType(*b) == img.MimeType;
             }
             if (ok) {
                 emit_external_uri = true;

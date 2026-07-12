@@ -874,7 +874,7 @@ std::expected<TextureEntry, std::string> MaterializeTextureEntry(
 }
 
 TextureEntry CreateDefaultLutTexture(const VulkanResources &vk, TextureUploadBatch &batch, DescriptorSlots &slots, const std::filesystem::path &lut_path, std::string_view name) {
-    const auto encoded = File::Read(lut_path);
+    const auto encoded = File::ReadAsString(lut_path).value_or(std::string{});
     const auto lut_path_str = lut_path.string();
     auto texture = CreateTextureEntryFromEncoded(
         vk, batch, slots,
@@ -927,16 +927,15 @@ void ImportObjPlyMaterials(entt::registry &r, std::span<const ObjPlyMaterial> ma
         const auto cache_key = std::format("{}|{}", texture_path.generic_string(), color_space == TextureColorSpace::Srgb ? "sRGB" : "Linear");
         if (const auto it = texture_slot_cache.find(cache_key); it != texture_slot_cache.end()) return it->second;
 
-        std::string encoded;
-        try {
-            encoded = File::Read(texture_path);
-        } catch (const std::exception &e) {
+        const auto read = File::ReadAsString(texture_path);
+        if (!read) {
             std::cerr << std::format(
                 "Warning: Failed to read OBJ texture '{}' for material '{}' ({}) in '{}': {}\n",
-                texture_path.string(), material_name, texture_label, mesh_path.string(), e.what()
+                texture_path.string(), material_name, texture_label, mesh_path.string(), read.error()
             );
             return InvalidSlot;
         }
+        const std::string &encoded = *read;
 
         auto texture = CreateTextureEntryFromEncoded(
             vk,

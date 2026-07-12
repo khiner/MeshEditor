@@ -1,5 +1,6 @@
 #include "ModalModelFile.h"
 
+#include "File.h"
 #include "Paths.h"
 #include "action/SerializeGlm.h"
 
@@ -18,19 +19,9 @@ std::vector<std::byte> Serialize(const ModalModelData &data) {
     if (zpp::bits::failure(archive(const_cast<ModalModelData &>(data)))) return {};
     return bytes;
 }
-
-std::optional<std::vector<std::byte>> ReadFileBytes(const fs::path &path) {
-    std::ifstream in{path, std::ios::binary | std::ios::ate};
-    if (!in) return {};
-    std::vector<std::byte> bytes(in.tellg());
-    in.seekg(0);
-    in.read(reinterpret_cast<char *>(bytes.data()), bytes.size());
-    if (!in) return {};
-    return bytes;
-}
 } // namespace
 
-fs::path ModalModelsDir() { return Paths::Base() / "modal"; }
+fs::path ModalModelsDir() { return Paths::Project() / "modal"; }
 
 fs::path SaveModalModelFile(const ModalModelData &data) {
     const auto bytes = Serialize(data);
@@ -48,7 +39,7 @@ fs::path SaveModalModelFile(const ModalModelData &data) {
         auto name = suffix == 0 ? std::format("{:016x}.modal", hash) : std::format("{:016x}-{}.modal", hash, suffix);
         const auto path = dir / name;
         if (fs::exists(path)) {
-            if (ReadFileBytes(path) == bytes) return name;
+            if (File::Read(path) == bytes) return name;
             continue;
         }
         std::ofstream out{path, std::ios::binary};
@@ -58,8 +49,8 @@ fs::path SaveModalModelFile(const ModalModelData &data) {
 }
 
 std::optional<ModalModelData> LoadModalModelFile(const fs::path &relative) {
-    const auto bytes = ReadFileBytes(ModalModelsDir() / relative);
-    if (!bytes) return {};
+    const auto bytes = File::Read(ModalModelsDir() / relative);
+    if (!bytes || bytes->empty()) return {};
 
     ModalModelData data;
     if (zpp::bits::failure(zpp::bits::in{*bytes}(data))) return {};
