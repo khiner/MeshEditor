@@ -42,6 +42,9 @@ template<> struct FieldLimits<&AcousticMaterial::Properties, &AcousticMaterialPr
 template<> struct FieldLimits<&AcousticMaterial::Properties, &AcousticMaterialProperties::Alpha> : Within<0., 200.> {};
 template<> struct FieldLimits<&AcousticMaterial::Properties, &AcousticMaterialProperties::Beta> : Within<1e-9, 1e-4> {};
 template<> struct FieldLimits<&ModalSolveSettings::SolveResolution> : Within<0.05, 1.> {};
+template<> struct FieldLimits<&ModalSolveSettings::NumModes> : Within<1., 128.> {};
+template<> struct FieldLimits<&ModalSolveSettings::MinModeFreq> : Within<20., 20000.> {};
+template<> struct FieldLimits<&ModalSolveSettings::MaxModeFreq> : Within<20., 20000.> {};
 
 // Striker capsule dimensions, in meters.
 template<> struct FieldLimits<&Striker::TipRadius> : Within<0.0005, 0.1> {};
@@ -51,7 +54,10 @@ template<> struct FieldLimits<&Striker::Length> : Within<0.001, 1.> {};
 template<> struct FieldLimits<&ModalGain::Value> : Within<0., 2.> {};
 template<> struct FieldLimits<&ModalTuning::FundamentalFreq> : Within<20., 16000.> {};
 template<> struct FieldLimits<&ModalTuning::T60Scale> : Within<0.1, 10.> {};
+template<> struct FieldLimits<&ModalSoundControls::ModalLevel> : Within<0., 1.> {};
 template<> struct FieldLimits<&ModalSoundControls::ClickGain> : Within<0., 10.> {};
+template<> struct FieldLimits<&ModalSoundControls::SampleGain> : Within<0., 4.> {};
+template<> struct FieldLimits<&ModalSoundControls::MaxImpacts> : Within<1., 4096.> {};
 template<> struct FieldLimits<&ModalSoundControls::MinContactImpulse> : Within<0., 5.> {};
 template<> struct FieldLimits<&ModalSoundControls::MinContactSpeed> : Within<0., 5.> {};
 
@@ -223,15 +229,28 @@ std::optional<fs::path> ActiveSamplePath(const entt::registry &r, entt::entity i
 
 /***** Modal synthesis bank *****/
 
-// Base output level of a modal object. ModalGain scales relative to this.
-constexpr float ModalLevel{0.14f};
-
 // Reduce a (possibly non-uniform or mirrored) world scale to a positive size ratio relative to the baked size.
 float UniformScaleRatio(const entt::registry &r, entt::entity e, const ModalModes &modes) {
     const auto size = [](vec3 v) { const auto a = glm::abs(v); return (a.x + a.y + a.z) / 3.f; };
     const auto *world = r.try_get<const WorldTransform>(e);
     const float baked = size(modes.BakedScale);
     return world && baked > 0 ? std::clamp(size(world->S) / baked, 0.001f, 1000.f) : 1.f;
+}
+
+// Output level of a modal object: global modal level, the object's gain, and the mass-normalized amplitude law for its size.
+// The scale^(-3/2) is the mass-normalized shape amplitude: mass grows as scale^3 and the shape scales as mass^(-1/2).
+float ModalOutGain(const entt::registry &r, entt::entity e, float scale, size_t mode_count) {
+    const auto controls = r.view<const ModalSoundControls>();
+    const float modal_level = controls.size() ? r.get<const ModalSoundControls>(controls.front()).ModalLevel : ModalSoundControls{}.ModalLevel;
+    const auto *gain = r.try_get<const ModalGain>(e);
+    return modal_level * (gain ? gain->Value : 1.f) * std::pow(scale, -1.5f) / float(mode_count);
+}
+
+// Rewrite only slot's output level from the object's current gain and size, leaving the resonator
+// coefficients untouched. For gain/level changes that don't alter the modes.
+void SetModalOutGain(const entt::registry &r, ModalBank &b, uint32_t slot, entt::entity e) {
+    const auto &modes = r.get<const ModalModes>(e);
+    b.OutGain[slot] = ModalOutGain(r, e, UniformScaleRatio(r, e, modes), modes.Freqs.size());
 }
 
 // Recompute an object's resonator coefficients and output gain.
@@ -268,10 +287,7 @@ void RetuneModalObject(const entt::registry &r, ModalBank &b, uint32_t slot, ent
         t60s[k] = t60_scale * Ln1000 / std::max(d, 1e-9f);
     }
     TuneModalObject(b, slot, freqs, t60s);
-
-    // The scale^(-3/2) is the mass-normalized shape amplitude: mass grows as scale^3 and the shape scales as mass^(-1/2).
-    const auto *gain = r.try_get<const ModalGain>(e);
-    b.OutGain[slot] = ModalLevel * (gain ? gain->Value : 1.f) * std::pow(scale, -1.5f) / float(mode_count);
+    b.OutGain[slot] = ModalOutGain(r, e, scale, mode_count);
 }
 
 // Rebuild the bank from every modal sound object. The replacement is built off-lock, so the audio
@@ -314,8 +330,8 @@ void SetModel(entt::registry &r, entt::entity e, SoundVerticesModel model) {
 }
 
 namespace {
-// Strike impact angle relative to the surface, as a joystick position in the unit disk. Center strikes
-// along the surface normal, the rim tilts the impulse 90 degrees into the tangent plane. UI-only.
+// Strike impact angle relative to the surface.
+// Center strikes along surface normal, rim tilts impulse 90 degrees into the tangent plane. UI-only.
 vec2 ImpulseAngle{0, 0};
 
 // Unit surface normal at a mesh vertex.
@@ -420,7 +436,9 @@ struct ModalScaleTracker {
 namespace audio_changes {
 struct VertexForce {};
 struct ModalModes {};
-struct ModalParams {};
+struct ModalGain {};
+struct ModalTuning {};
+struct ModalSoundControls {};
 struct RecordingStart {};
 struct SoundVerticesDerivation {};
 struct ContactDynamicsDerivation {};
@@ -531,10 +549,10 @@ void CancelModalSolves(entt::registry &r, entt::entity e) {
 // Exact re-derivation of `modes` for `props` (see modal::RescaleModes). A fundamental pinned at
 // solve time (e.g. matched to a recording) stays pinned. Empty when the edit is not exactly
 // scalable (Poisson ratio differs).
-std::optional<ModalModes> RescaledModes(const ModalEigenSummary &summary, const ModalModes &modes, const AcousticMaterialProperties &props) {
+std::optional<ModalModes> RescaledModes(const ModalEigenSummary &summary, const ModalModes &modes, const AcousticMaterialProperties &props, const ModalSolveSettings &settings) {
     std::optional<float> fundamental;
     if (!modes.Freqs.empty() && modes.OriginalFundamentalFreq > 0 && modes.Freqs.front() != modes.OriginalFundamentalFreq) fundamental = modes.Freqs.front();
-    return modal::RescaleModes(summary, modes, props, {.FundamentalFreq = fundamental});
+    return modal::RescaleModes(summary, modes, props, {.MinModeFreq = settings.MinModeFreq, .MaxModeFreq = settings.MaxModeFreq, .NumModes = settings.NumModes, .FundamentalFreq = fundamental});
 }
 
 // A synth tuning still at its default (fundamental == the old model's lowest mode) follows the
@@ -554,7 +572,8 @@ void ReplaceModalModes(entt::registry &r, entt::entity e, ModalModes new_modes) 
 // not scalable and leaves the model as-is until a re-solve.
 void RescaleModalObject(entt::registry &r, entt::entity e, const AcousticMaterialProperties &props) {
     const auto &modes = r.get<const ModalModes>(e);
-    auto rescaled = RescaledModes(r.get<const ModalEigenSummary>(e), modes, props);
+    const auto *settings = r.try_get<const ModalSolveSettings>(e);
+    auto rescaled = RescaledModes(r.get<const ModalEigenSummary>(e), modes, props, settings ? *settings : ModalSolveSettings{});
     if (rescaled && *rescaled != modes) ReplaceModalModes(r, e, std::move(*rescaled));
 }
 
@@ -610,9 +629,14 @@ bool ModalModelStale(const entt::registry &r, entt::entity e, entt::entity mesh_
     if (!summary) return true;
     if (summary->TetInputsHash != inputs.Hash) return true;
     if (inputs.Vertices != r.get<const ModalModes>(e).Vertices) return true;
+    const auto &settings = r.get<const ModalSolveSettings>(e);
+    if (settings.NumModes != summary->SolvedNumModes || settings.MinModeFreq != summary->SolvedMinModeFreq || settings.MaxModeFreq != summary->SolvedMaxModeFreq) return true;
     const auto *mat = r.try_get<const AcousticMaterial>(mesh_entity);
     return mat && mat->Properties.PoissonRatio != summary->SolvedMaterial.PoissonRatio;
 }
+
+// Extra eigenpairs solved past NumModes, covering rigid-body and out-of-band modes the post-process drops.
+constexpr uint32_t FemModeMargin{15};
 
 // Launch an async solve for the entity from its current components, unless one is already running
 // or the baked model matches the inputs.
@@ -633,21 +657,32 @@ void LaunchModalSolve(entt::registry &r, entt::entity viewport, entt::entity e) 
             fundamental = EstimateFundamentalFrequency(ComputeFft(frames, sr), sr);
         }
     }
+    const auto &settings = r.get<const ModalSolveSettings>(e);
+    const modal::SolverConfig solver_config{
+        .MinModeFreq = settings.MinModeFreq,
+        .MaxModeFreq = settings.MaxModeFreq,
+        .NumModes = settings.NumModes,
+        .NumFemModes = settings.NumModes + FemModeMargin,
+        .FundamentalFreq = fundamental,
+    };
     auto excite_positions = inputs.Vertices | transform([&](uint32_t v) { return inputs.Positions[v]; }) | to<std::vector<vec3>>();
     // The most recent solve's basis seeds this one when it was over the same tets.
     std::shared_ptr<const Eigen::MatrixXf> warm_basis;
     if (const auto &warm = r.ctx().get<const ModalWarmStart>(); warm.Basis && warm.TetInputsHash == inputs.Hash) warm_basis = warm.Basis;
-    auto work = [inputs = std::move(inputs), material_props = material->Properties, excite_positions = std::move(excite_positions), fundamental, warm_basis = std::move(warm_basis)](JobMonitor &monitor) mutable -> ModalGenerationResult {
+    auto work = [inputs = std::move(inputs), material_props = material->Properties, excite_positions = std::move(excite_positions), solver_config, warm_basis = std::move(warm_basis)](JobMonitor &monitor) mutable -> ModalGenerationResult {
         auto tets = GenerateTets(std::move(inputs.Positions), std::move(inputs.TriangleIndices), inputs.TetOptions);
         if (monitor.Cancelled()) return {};
         if (!tets) {
             std::cerr << "Tetrahedralization failed: " << tets.error() << ".\n";
             return {};
         }
-        auto result = modal::mesh2modes(**tets, material_props, excite_positions, inputs.NodeScale, {.FundamentalFreq = fundamental}, {.SeedBasis = warm_basis.get(), .KeepBasis = true}, &monitor);
+        auto result = modal::mesh2modes(**tets, material_props, excite_positions, inputs.NodeScale, solver_config, {.SeedBasis = warm_basis.get(), .KeepBasis = true}, &monitor);
         result.Modes.Vertices = std::move(inputs.Vertices);
         result.Modes.BakedScale = inputs.NodeScale;
         result.Summary.TetInputsHash = inputs.Hash;
+        result.Summary.SolvedMinModeFreq = solver_config.MinModeFreq;
+        result.Summary.SolvedMaxModeFreq = solver_config.MaxModeFreq;
+        result.Summary.SolvedNumModes = solver_config.NumModes;
         auto basis = result.Basis.size() > 0 ? std::make_shared<Eigen::MatrixXf>(std::move(result.Basis)) : nullptr;
         auto model_path = result.Modes.Freqs.empty() ? fs::path{} : SaveModalModelFile({std::move(result.Modes), result.MassProps, BuildTetMeshData(**tets, inputs.NodeScale), std::move(result.Summary)});
         return {std::move(model_path), std::move(basis), inputs.Hash};
@@ -677,10 +712,9 @@ void RegisterAudioComponentHandlers(entt::registry &r) {
 
     track<audio_changes::VertexForce>(r).on<::VertexForce>(On::Create | On::Update | On::Destroy);
     track<audio_changes::ModalModes>(r).on<::ModalModes>(On::Create | On::Update | On::Destroy);
-    track<audio_changes::ModalParams>(r)
-        .on<ModalGain>(On::Update)
-        .on<ModalTuning>(On::Update)
-        .on<ModalSoundControls>(On::Create | On::Update);
+    track<audio_changes::ModalGain>(r).on<ModalGain>(On::Update);
+    track<audio_changes::ModalTuning>(r).on<ModalTuning>(On::Update);
+    track<audio_changes::ModalSoundControls>(r).on<ModalSoundControls>(On::Create | On::Update);
     track<audio_changes::RecordingStart>(r).on<Recording>(On::Create | On::Update);
     r.ctx().emplace<ModalScaleTracker>().Bind(r);
     track<audio_changes::SoundVerticesDerivation>(r)
@@ -714,7 +748,6 @@ void RegisterAudioComponentHandlers(entt::registry &r) {
         }
         // A material edit rescales every modal model derived from that mesh.
         for (auto mesh_e : reactive<audio_changes::AcousticMaterialEdit>(r)) {
-            if (!r.valid(mesh_e) || !r.all_of<AcousticMaterial>(mesh_e)) continue;
             const auto &props = r.get<const AcousticMaterial>(mesh_e).Properties;
             for (auto e : r.view<const ModalEigenSummary, const ::ModalModes, const Instance>()) {
                 if (r.get<const Instance>(e).Entity == mesh_e) RescaleModalObject(r, e, props);
@@ -723,7 +756,6 @@ void RegisterAudioComponentHandlers(entt::registry &r) {
         // Rebuild SoundVertices from VertexSamples/ModalModes, selected by SoundVerticesModel.
         // Runs before any handler that reads SoundVertices.
         for (auto e : reactive<audio_changes::SoundVerticesDerivation>(r)) {
-            if (!r.valid(e)) continue;
             const auto *model = r.try_get<const SoundVerticesModel>(e);
             std::vector<uint32_t> new_vertices;
             if (model) {
@@ -740,9 +772,7 @@ void RegisterAudioComponentHandlers(entt::registry &r) {
                 continue;
             }
             if (auto *sv = r.try_get<SoundVertices>(e)) {
-                if (sv->Vertices != new_vertices) {
-                    r.patch<SoundVertices>(e, [&](auto &sv) { sv.Vertices = std::move(new_vertices); });
-                }
+                if (sv->Vertices != new_vertices) r.patch<SoundVertices>(e, [&](auto &sv) { sv.Vertices = std::move(new_vertices); });
             } else {
                 r.emplace<SoundVertices>(e, std::move(new_vertices));
             }
@@ -750,18 +780,14 @@ void RegisterAudioComponentHandlers(entt::registry &r) {
             const auto mesh_entity = r.get<const Instance>(e).Entity;
             const auto &sv = r.get<const SoundVertices>(e);
             if (const auto *active = r.try_get<const MeshActiveElement>(mesh_entity)) {
-                if (!sv.FindVertexIndex(active->Handle)) {
-                    r.emplace_or_replace<MeshActiveElement>(mesh_entity, sv.Vertices.front());
-                }
+                if (!sv.FindVertexIndex(active->Handle)) r.emplace_or_replace<MeshActiveElement>(mesh_entity, sv.Vertices.front());
             }
         }
         // Refresh contact dynamics before the strike loop below reads them.
-        for (auto e : reactive<audio_changes::ContactDynamicsDerivation>(r)) {
-            if (r.valid(e)) UpdateContactDynamics(r, e);
-        }
+        for (auto e : reactive<audio_changes::ContactDynamicsDerivation>(r)) UpdateContactDynamics(r, e);
         // A created or replaced VertexForce is a strike. Contact pulses are one-shot.
         for (auto e : reactive<audio_changes::VertexForce>(r)) {
-            if (!r.valid(e) || !r.all_of<SoundVerticesModel>(e)) continue;
+            if (!r.all_of<SoundVerticesModel>(e)) continue;
             const auto *vf = r.try_get<::VertexForce>(e);
             if (!vf || vf->Force <= 0) continue;
             const auto &excitable = r.get<const SoundVertices>(e);
@@ -777,7 +803,7 @@ void RegisterAudioComponentHandlers(entt::registry &r) {
         }
         // A new recording strikes the object at its active vertex, so the take captures the impact from its onset.
         for (auto e : reactive<audio_changes::RecordingStart>(r)) {
-            if (!r.valid(e) || !r.all_of<ModalModes, SoundVertices, Recording>(e)) continue;
+            if (!r.all_of<ModalModes, SoundVertices, Recording>(e)) continue;
             if (r.get<const Recording>(e).Frame == 0) TriggerModalStrike(r, e, GetActiveVertexIndex(r, e), 1.f, 1.f);
         }
         // Last step's collisions strike the objects they hit.
@@ -787,7 +813,7 @@ void RegisterAudioComponentHandlers(entt::registry &r) {
             std::vector<const ContactImpact *> strongest; // one entry per distinct struck modal object
             for (const auto &c : contacts->Events) {
                 if (c.Impulse < controls.MinContactImpulse || c.Speed < controls.MinContactSpeed) continue;
-                if (!r.valid(c.Entity) || !r.all_of<ModalModes, SoundVertices, SoundVerticesModel>(c.Entity)) continue;
+                if (!r.all_of<ModalModes, SoundVertices, SoundVerticesModel>(c.Entity)) continue;
                 if (r.get<SoundVerticesModel>(c.Entity) != SoundVerticesModel::Modal) continue;
                 const auto it = std::ranges::find_if(strongest, [&](const ContactImpact *s) { return s->Entity == c.Entity; });
                 if (it == strongest.end()) strongest.push_back(&c);
@@ -817,12 +843,12 @@ void RegisterAudioComponentHandlers(entt::registry &r) {
             if (auto &config_tracker = reactive<audio_changes::AudioConfig>(r); !config_tracker.empty()) {
                 const uint32_t prev_rate = res->SampleRate;
                 for (auto e : config_tracker) {
-                    if (r.valid(e) && r.all_of<AudioOutputConfig, AudioOutputMix>(e)) ReconcileAudioDevice(*res, r.get<const AudioOutputConfig>(e), r.get<const AudioOutputMix>(e));
+                    if (r.all_of<AudioOutputConfig, AudioOutputMix>(e)) ReconcileAudioDevice(*res, r.get<const AudioOutputConfig>(e), r.get<const AudioOutputMix>(e));
                 }
                 device_rate_changed = res->SampleRate != prev_rate;
             }
             for (auto e : reactive<audio_changes::AudioMix>(r)) {
-                if (r.valid(e) && r.all_of<AudioOutputMix>(e)) ApplyAudioMix(*res, r.get<const AudioOutputMix>(e));
+                if (r.all_of<AudioOutputMix>(e)) ApplyAudioMix(*res, r.get<const AudioOutputMix>(e));
             }
         }
 
@@ -832,7 +858,6 @@ void RegisterAudioComponentHandlers(entt::registry &r) {
             // acoustic material), so the synth controls and the modal editor always have state to edit.
             // Intentional registry writes outside Apply: derived defaults for a new model.
             for (auto e : modal_tracker) {
-                if (!r.valid(e) || !r.all_of<::ModalModes>(e)) continue;
                 const auto &modes = r.get<const ::ModalModes>(e);
                 if (!r.all_of<ModalTuning>(e)) r.emplace<ModalTuning>(e, modes.Freqs.empty() ? 0.f : modes.Freqs.front(), 1.f);
                 if (!r.all_of<ModalGain>(e)) r.emplace<ModalGain>(e);
@@ -858,18 +883,23 @@ void RegisterAudioComponentHandlers(entt::registry &r) {
             }
             if (rebuild) RebuildModalBank(r);
         }
-        // Retune objects whose gain or tuning changed, and apply the viewport click level.
         {
             auto &m = r.ctx().get<ModalAudio>();
-            for (auto e : reactive<audio_changes::ModalParams>(r)) {
-                if (!r.valid(e)) continue;
-                if (const auto *controls = r.try_get<const ModalSoundControls>(e)) m.ClickGain = controls->ClickGain;
+            for (auto e : reactive<audio_changes::ModalGain>(r)) {
+                if (auto slot = FindModalObject(m.Bank, e)) SetModalOutGain(r, m.Bank, *slot, e);
+            }
+            for (auto e : reactive<audio_changes::ModalTuning>(r)) {
                 if (auto slot = FindModalObject(m.Bank, e)) RetuneModalObject(r, m.Bank, *slot, e);
+            }
+            for (auto e : reactive<audio_changes::ModalSoundControls>(r)) {
+                const auto &controls = r.get<const ModalSoundControls>(e);
+                m.ClickGain = controls.ClickGain;
+                m.MaxImpacts = controls.MaxImpacts;
+                for (uint32_t slot = 0; slot < uint32_t(m.Bank.Entities.size()); ++slot) SetModalOutGain(r, m.Bank, slot, m.Bank.Entities[slot]);
             }
             // Retune objects whose node was rescaled.
             auto &scale_tracker = r.ctx().get<ModalScaleTracker>();
             for (auto e : scale_tracker.Storage) {
-                if (!r.valid(e)) continue;
                 if (auto slot = FindModalObject(m.Bank, e)) RetuneModalObject(r, m.Bank, *slot, e);
             }
             scale_tracker.Storage.clear();
@@ -881,6 +911,8 @@ void ProcessAudio(entt::registry &r, entt::entity viewport, float *output, uint3
     std::fill_n(output, frame_count, 0.f);
     RenderModal(r.ctx().get<ModalAudio>(), output, frame_count);
 
+    const auto *controls = r.try_get<const ModalSoundControls>(viewport);
+    const float sample_gain = controls ? controls->SampleGain : ModalSoundControls{}.SampleGain;
     for (const auto [entity, model] : r.view<SoundVerticesModel>().each()) {
         if (model == SoundVerticesModel::Samples) {
             auto *samples = r.try_get<VertexSamples>(entity);
@@ -889,13 +921,11 @@ void ProcessAudio(entt::registry &r, entt::entity viewport, float *output, uint3
             if (!path) continue;
             const auto &impact_samples = GetSampleFrames(r, viewport, *path);
             for (uint32_t i = 0; i < frame_count; ++i) {
-                output[i] += samples->Frame < impact_samples.size() ? impact_samples[samples->Frame++] : 0.0f;
+                output[i] += (samples->Frame < impact_samples.size() ? impact_samples[samples->Frame++] : 0.0f) * sample_gain;
             }
         } else if (model == SoundVerticesModel::Modal) {
             if (auto *recording = r.try_get<Recording>(entity)) {
-                for (uint32_t i = 0; i < frame_count && !recording->Complete(); ++i) {
-                    recording->Record(output[i]);
-                }
+                for (uint32_t i = 0; i < frame_count && !recording->Complete(); ++i) recording->Record(output[i]);
             }
         }
     }
@@ -1032,6 +1062,16 @@ void DrawModalModelSection(entt::registry &r, entt::entity viewport, entt::entit
     MeshEditor::HelpMarker("Add new Steiner points to the interior of the tet mesh to improve model quality.");
     fs.Slider<&ModalSolveSettings::SolveResolution>("Solve resolution");
     MeshEditor::HelpMarker("Fraction of surface triangles used for the modal solve. Lower is faster and less accurate.");
+
+    SeparatorText("Modes");
+    fs.Slider<&ModalSolveSettings::NumModes>("Count##modes");
+    MeshEditor::HelpMarker("Modes kept from the solve. More modes are richer and costlier.");
+    {
+        float lo = settings->MinModeFreq, hi = settings->MaxModeFreq;
+        const bool changed = DragFloatRange2("Frequency band (Hz)", &lo, &hi, 1.f, 20.f, 20000.f, "%.0f", "%.0f");
+        if (changed) action::EmitStaged(action::UpdateOf<&ModalSolveSettings::MinModeFreq>(e, lo));
+        ui::Gesture(changed, [&] { return action::UpdateOf<&ModalSolveSettings::MaxModeFreq>(e, hi); });
+    }
 
     SeparatorText("Excitation vertices");
     const uint32_t num_vertices = GetMesh(r, mesh_entity).VertexCount();
@@ -1280,13 +1320,6 @@ void DrawObjectAudioControls(
         fe.Slider<&ModalGain::Value>("Gain");
         fe.Drag<&ModalTuning::FundamentalFreq>("Fundamental (Hz)", 1.f, "%.1f");
         fe.Slider<&ModalTuning::T60Scale>("T60 scale");
-        SeparatorText("All objects");
-        ui::Edit fv{r, viewport};
-        fv.Slider<&ModalSoundControls::ClickGain>("Click");
-        MeshEditor::HelpMarker("Level of the rigid-body acceleration-noise click.");
-        fv.Slider<&ModalSoundControls::MinContactImpulse>("Min contact impulse", "%.3f");
-        fv.Slider<&ModalSoundControls::MinContactSpeed>("Min contact speed", "%.3f");
-        MeshEditor::HelpMarker("A physics collision sounds only above both floors.");
     }
 
     const bool is_recording = recording && !recording->Complete();
@@ -1336,7 +1369,8 @@ void ApplyModalModel(entt::registry &r, entt::entity e, const fs::path &relative
     // The material may have been edited while the solve ran. The rescale is exact, so the fresh
     // model lands consistent with the mesh's current material.
     if (const auto *mat = r.try_get<const AcousticMaterial>(mesh_entity); mat && mat->Properties != data->Summary.SolvedMaterial) {
-        if (auto rescaled = RescaledModes(data->Summary, data->Modes, mat->Properties)) data->Modes = std::move(*rescaled);
+        const auto *settings = r.try_get<const ModalSolveSettings>(e);
+        if (auto rescaled = RescaledModes(data->Summary, data->Modes, mat->Properties, settings ? *settings : ModalSolveSettings{})) data->Modes = std::move(*rescaled);
     }
     r.emplace_or_replace<MassProperties>(e, data->Mass);
     ReplaceModalModes(r, e, std::move(data->Modes));
@@ -1345,23 +1379,40 @@ void ApplyModalModel(entt::registry &r, entt::entity e, const fs::path &relative
     SetModel(r, e, SoundVerticesModel::Modal);
 }
 
-void DrawStrikerControls(entt::registry &r, entt::entity viewport) {
-    const auto &striker = r.get<const Striker>(viewport);
-    // A material change replaces the whole striker (it holds a string); the sliders below edit their fields in place.
-    if (BeginCombo("Material", striker.Material.Name.c_str())) {
-        for (const auto &choice : materials::acoustic::All) {
-            const bool is_selected = choice.Name == striker.Material.Name;
-            if (Selectable(choice.Name.c_str(), is_selected) && !is_selected)
-                action::Emit(action::Replace<Striker>{.Entity = viewport, .Value = {choice, striker.TipRadius, striker.Length}});
-            if (is_selected) SetItemDefaultFocus();
-        }
-        EndCombo();
-    }
+void DrawGlobalSynthControls(entt::registry &r, entt::entity viewport) {
     ui::Edit f{r, viewport};
-    f.Slider<&Striker::TipRadius>("Tip radius (m)", "%.4f");
-    f.Slider<&Striker::Length>("Length (m)", "%.3f");
-    Text("Mass: %.3g kg", StrikerMass(striker));
-    MeshEditor::HelpMarker("The virtual mallet that strikes objects, a rounded-tip cylinder whose mass comes from its material density and size. A harder material or a shorter (lighter) capsule makes a brighter contact. The tip radius sets the contact curvature.");
+    if (!r.view<const ModalModes>().empty() && CollapsingHeader("Modal synthesis", ImGuiTreeNodeFlags_DefaultOpen)) {
+        f.Slider<&ModalSoundControls::ModalLevel>("Modal gain");
+        MeshEditor::HelpMarker("Gain on every modal object's resonator output.");
+        f.Slider<&ModalSoundControls::ClickGain>("Click");
+        MeshEditor::HelpMarker("Level of the rigid-body acceleration-noise click.");
+        f.Slider<&ModalSoundControls::MaxImpacts>("Max impacts");
+        MeshEditor::HelpMarker("Cap on simultaneous in-flight contact pulses.");
+        f.Slider<&ModalSoundControls::MinContactImpulse>("Min contact impulse", "%.3f");
+        f.Slider<&ModalSoundControls::MinContactSpeed>("Min contact speed", "%.3f");
+        MeshEditor::HelpMarker("A physics collision sounds only above both floors.");
+
+        SeparatorText("Striker");
+        const auto &striker = r.get<const Striker>(viewport);
+        // A material change replaces the whole striker (it holds a string); the sliders below edit their fields in place.
+        if (BeginCombo("Material", striker.Material.Name.c_str())) {
+            for (const auto &choice : materials::acoustic::All) {
+                const bool is_selected = choice.Name == striker.Material.Name;
+                if (Selectable(choice.Name.c_str(), is_selected) && !is_selected)
+                    action::Emit(action::Replace<Striker>{.Entity = viewport, .Value = {choice, striker.TipRadius, striker.Length}});
+                if (is_selected) SetItemDefaultFocus();
+            }
+            EndCombo();
+        }
+        f.Slider<&Striker::TipRadius>("Tip radius (m)", "%.4f");
+        f.Slider<&Striker::Length>("Length (m)", "%.3f");
+        Text("Mass: %.3g kg", StrikerMass(striker));
+        MeshEditor::HelpMarker("The mallet that strikes objects. A harder material or lighter capsule brightens the contact, and the tip radius sets its curvature.");
+    }
+    if (!r.view<const VertexSamples>().empty() && CollapsingHeader("Samples", ImGuiTreeNodeFlags_DefaultOpen)) {
+        f.Slider<&ModalSoundControls::SampleGain>("Sample gain");
+        MeshEditor::HelpMarker("Level of impact-sample playback.");
+    }
 }
 
 void DrawModalJobsOverlay(entt::registry &r) {

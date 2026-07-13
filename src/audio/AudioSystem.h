@@ -23,8 +23,8 @@ void ProcessAudio(entt::registry &, entt::entity viewport, float *output, uint32
 void RegisterAudioComponentHandlers(entt::registry &);
 void RemoveAudioComponents(entt::registry &, entt::entity sound_entity);
 
-// Draw the global striker (mallet) controls.
-void DrawStrikerControls(entt::registry &, entt::entity viewport);
+// Draw the viewport-global audio synthesis controls.
+void DrawGlobalSynthControls(entt::registry &, entt::entity viewport);
 
 // Rebuild the entity's ContactDynamics from its MassProperties, ModalModes, and mesh (surface curvature).
 // Removes ContactDynamics when the inputs are missing.

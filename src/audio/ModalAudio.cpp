@@ -8,7 +8,6 @@
 #include <numbers>
 
 namespace {
-constexpr uint32_t MaxImpacts{1024};
 // Modes are rendered in fixed-width lanes so the sample loop vectorizes across modes.
 constexpr uint32_t Lanes{8};
 // An object whose gain-weighted state energy falls below this (with no active impacts) is zeroed and skipped.
@@ -34,8 +33,9 @@ void RemoveImpact(ModalBank &b, uint32_t i) {
     swap_remove(b.ImpactPrevForce);
 }
 
-void ActivateImpact(ModalBank &b, const ModalEvent &e) {
-    if (b.ImpactObject.size() >= MaxImpacts) return;
+void ActivateImpact(ModalAudio &m, const ModalEvent &e) {
+    auto &b = m.Bank;
+    if (b.ImpactObject.size() >= m.MaxImpacts) return;
     b.ImpactObject.push_back(e.Object);
     b.ImpactExPos.push_back(e.ExPos);
     b.ImpactSamplesLeft.push_back(uint32_t(std::ceil(1.f / e.PulseStep)));
@@ -70,7 +70,7 @@ void DrainEvents(ModalAudio &m) {
         const auto &e = m.Events[read % ModalAudio::EventCapacity];
         if (e.Object >= m.Bank.Entities.size()) continue;
         if (e.Kind == ModalEventKind::Impact) {
-            if (e.PulseStep > 0) ActivateImpact(m.Bank, e);
+            if (e.PulseStep > 0) ActivateImpact(m, e);
         } else {
             SilenceObject(m.Bank, e.Object);
         }

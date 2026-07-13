@@ -189,8 +189,11 @@ bool RenderCameraLensEditor(Camera &camera, float distance, std::optional<float>
         const float far_max = std::max(orthographic->NearClip + MinNearFarDelta, MaxFarClip);
         lens_changed |= SliderFloat("X Mag", &orthographic->Mag.x, 0.01f, 100.f);
         lens_changed |= SliderFloat("Y Mag", &orthographic->Mag.y, 0.01f, 100.f);
-        lens_changed |= SliderFloat("Near clip", &orthographic->NearClip, MinNearClip, orthographic->FarClip - MinNearFarDelta);
-        lens_changed |= SliderFloat("Far clip", &orthographic->FarClip, orthographic->NearClip + MinNearFarDelta, far_max);
+        // DragFloatRange2 keeps near <= far but allows them to meet, so re-open the minimum gap after.
+        if (DragFloatRange2("Clip (near/far)", &orthographic->NearClip, &orthographic->FarClip, 0.5f, MinNearClip, far_max)) {
+            orthographic->FarClip = std::max(orthographic->FarClip, orthographic->NearClip + MinNearFarDelta);
+            lens_changed = true;
+        }
     }
     return lens_changed;
 }
@@ -660,8 +663,7 @@ static void RenderEntityControls(entt::registry &r, entt::entity viewport, entt:
                     material_changed |= SliderFloat("Iridescence factor", &material.Iridescence.Factor, 0.f, 1.f);
                     material_changed |= edit_texture_info("Iridescence", material.Iridescence.Texture);
                     material_changed |= SliderFloat("Iridescence IOR", &material.Iridescence.Ior, 1.0f, 5.0f);
-                    material_changed |= SliderFloat("Thickness min", &material.Iridescence.ThicknessMinimum, 0.f, 1000.f, "%.0f nm");
-                    material_changed |= SliderFloat("Thickness max", &material.Iridescence.ThicknessMaximum, 1.f, 1000.f, "%.0f nm");
+                    material_changed |= DragFloatRange2("Thickness (nm)", &material.Iridescence.ThicknessMinimum, &material.Iridescence.ThicknessMaximum, 1.f, 0.f, 1000.f, "%.0f nm", "%.0f nm");
                     material_changed |= edit_texture_info("Iridescence thickness", material.Iridescence.ThicknessTexture);
                 }
 
@@ -1071,9 +1073,7 @@ void RenderControls(entt::registry &r, entt::entity viewport) {
 
         if (BeginTabItem("Audio")) {
             if (CollapsingHeader("Device", ImGuiTreeNodeFlags_DefaultOpen)) DrawAudioDeviceControls(r, viewport);
-            if (!r.view<const SoundVerticesModel>().empty() && CollapsingHeader("Striker", ImGuiTreeNodeFlags_DefaultOpen)) {
-                DrawStrikerControls(r, viewport);
-            }
+            DrawGlobalSynthControls(r, viewport);
             EndTabItem();
         }
 

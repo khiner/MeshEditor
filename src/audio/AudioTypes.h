@@ -18,7 +18,10 @@ struct AudioOutputMix {
 
 // Viewport-level modal synthesis controls.
 struct ModalSoundControls {
+    float ModalLevel{0.5f}; // Gain on every modal object's resonator output.
     float ClickGain{1.f}; // Level of the rigid-body acceleration-noise click.
+    float SampleGain{1.f}; // Level of impact-sample playback.
+    uint32_t MaxImpacts{1024}; // Cap on simultaneous in-flight contact pulses.
     // A physics collision sounds only when its impulse (kg·m/s) and approach speed (m/s) clear these floors.
     // They keep settling and micro-jitter contacts from buzzing.
     float MinContactImpulse{0.05f}, MinContactSpeed{0.05f};
@@ -42,4 +45,6 @@ struct ModalSolveSettings {
     float SolveResolution{1}; // Fraction of surface triangles used for the modal solve. Lower is faster and less accurate.
     bool CopySoundVertices{true}; // Solve at the existing excitable vertices when present.
     bool QualityTets{false};
+    uint32_t NumModes{30}; // Modes kept from the solve.
+    float MinModeFreq{20}, MaxModeFreq{16'000}; // Synthesized frequency band, Hz.
 };

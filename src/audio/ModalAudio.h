@@ -61,6 +61,7 @@ struct ModalAudio {
     ModalBank Bank;
 
     float ClickGain{1}; // Level of the rigid-body acceleration-noise click
+    uint32_t MaxImpacts{1024}; // Cap on simultaneous in-flight contact pulses
 
     // Single-producer (main thread) single-consumer (audio thread) event queue.
     static constexpr uint32_t EventCapacity{256}; // Power of two
