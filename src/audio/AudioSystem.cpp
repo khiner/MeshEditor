@@ -269,7 +269,7 @@ void RetuneModalObject(const entt::registry &r, ModalBank &b, uint32_t slot, ent
     }
     TuneModalObject(b, slot, freqs, t60s);
 
-    // The scale^(-3/2) is the mass-normalization amplitude law: mass grows as scale^3, so a larger object rings quieter per impulse.
+    // The scale^(-3/2) is the mass-normalized shape amplitude: mass grows as scale^3 and the shape scales as mass^(-1/2).
     const auto *gain = r.try_get<const ModalGain>(e);
     b.OutGain[slot] = ModalLevel * (gain ? gain->Value : 1.f) * std::pow(scale, -1.5f) / float(mode_count);
 }

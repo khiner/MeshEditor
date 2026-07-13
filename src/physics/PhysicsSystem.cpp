@@ -1166,6 +1166,36 @@ void OnTriggerChange(PhysicsState &s, entt::registry &r, entt::entity e) {
     AddBody(s, r, e);
 }
 
+// Authored Transform edit: mirror the new world pose onto e's body and any descendant bodies.
+// Scale is baked into the shape, so rebuild on a scale change, detected once on e via WorldTransform.S.
+// (The simulator never writes S, so it holds the built scale) since it rescales every descendant.
+void OnPoseChange(PhysicsState &s, entt::registry &r, entt::entity e) {
+    if (!r.valid(e)) return;
+    std::vector<entt::entity> bodies;
+    const auto gather = [&](this auto &&self, entt::entity x) -> void {
+        if (r.all_of<PhysicsBodyHandle>(x)) bodies.emplace_back(x);
+        for (auto child : Children{&r, x}) self(child);
+    };
+    gather(e);
+    if (bodies.empty()) return;
+
+    const auto *ewt = r.try_get<const WorldTransform>(e);
+    const vec3 old_scale = ewt ? ewt->S : vec3{1};
+    UpdateWorldTransformRecursive(r, e);
+    ewt = r.try_get<const WorldTransform>(e);
+    const bool scale_changed = ewt && ewt->S != old_scale;
+
+    auto &bi = s.System->GetBodyInterface();
+    for (auto b : bodies) {
+        const auto *t = r.try_get<const WorldTransform>(b);
+        if (!t) continue;
+        if (scale_changed) ApplyShape(s, r, b);
+        const BodyID id{r.get<const PhysicsBodyHandle>(b).BodyId};
+        const auto activation = bi.GetMotionType(id) == EMotionType::Static ? EActivation::DontActivate : EActivation::Activate;
+        bi.SetPositionAndRotation(id, ToJolt(t->P), ToJolt(glm::normalize(t->R)), activation);
+    }
+}
+
 // Deduce the owner class from a data-member pointer
 template<typename M> struct ptr_class;
 template<typename C, typename V> struct ptr_class<V C::*> {
@@ -1350,6 +1380,7 @@ bool AdvancePlayback(entt::registry &r, entt::entity viewport, int from_frame, i
     // Any physics-mutating change invalidates cached future frames so the next play-forward re-bakes.
     if (!reactive<changes::PhysicsShape>(r).empty() ||
         !reactive<changes::PhysicsMotion>(r).empty() ||
+        !reactive<changes::PhysicsPose>(r).empty() ||
         !reactive<changes::PhysicsMaterial>(r).empty() ||
         !reactive<changes::PhysicsTrigger>(r).empty() ||
         !reactive<changes::PhysicsJoint>(r).empty() ||
@@ -1425,6 +1456,7 @@ void Init(entt::registry &r) {
 
     track<changes::PhysicsMotion>(r).on<PhysicsMotion>(On::Create | On::Update | On::Destroy);
     track<changes::PhysicsShape>(r).on<ColliderShape>(On::Create | On::Update | On::Destroy);
+    track<changes::PhysicsPose>(r).on<Transform>(On::Update);
     track<changes::ColliderPolicy>(r).on<::ColliderPolicy>(On::Create | On::Update);
     track<changes::PhysicsMaterial>(r).on<ColliderMaterial>(On::Update);
     track<changes::PhysicsTrigger>(r).on<TriggerTag>(On::Create | On::Destroy);
@@ -1448,6 +1480,7 @@ void Init(entt::registry &r) {
         for (auto e : reactive<changes::PhysicsMotion>(r)) OnMotionChange(s, r, e);
         for (auto e : reactive<changes::PhysicsMaterial>(r)) OnMaterialChange(s, r, e);
         for (auto e : reactive<changes::PhysicsTrigger>(r)) OnTriggerChange(s, r, e);
+        for (auto e : reactive<changes::PhysicsPose>(r)) OnPoseChange(s, r, e);
         FlushJoints(s, r, joint_events);
         // Destroy bodies queued by OnDestroyPhysicsBody together, after FlushJoints has cleared the
         // constraints that referenced them (Jolt asserts on destroying a body still in a constraint).
