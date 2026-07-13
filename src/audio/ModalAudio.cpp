@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cmath>
 #include <numbers>
+#include <thread>
 
 namespace {
 // Modes are rendered in fixed-width lanes so the sample loop vectorizes across modes.
@@ -33,9 +34,8 @@ void RemoveImpact(ModalBank &b, uint32_t i) {
     swap_remove(b.ImpactPrevForce);
 }
 
-void ActivateImpact(ModalAudio &m, const ModalEvent &e) {
-    auto &b = m.Bank;
-    if (b.ImpactObject.size() >= m.MaxImpacts) return;
+void ActivateImpact(const ModalAudio &m, ModalBank &b, const ModalEvent &e) {
+    if (b.ImpactObject.size() >= m.MaxImpacts.load(std::memory_order_relaxed)) return;
     b.ImpactObject.push_back(e.Object);
     b.ImpactExPos.push_back(e.ExPos);
     b.ImpactSamplesLeft.push_back(uint32_t(std::ceil(1.f / e.PulseStep)));
@@ -44,7 +44,7 @@ void ActivateImpact(ModalAudio &m, const ModalEvent &e) {
     b.ImpactJz.push_back(e.Jz);
     b.ImpactPhaseRe.push_back(1.f);
     b.ImpactPhaseIm.push_back(0.f);
-    const float theta = std::numbers::pi_v<float> * e.PulseStep;
+    const auto theta = std::numbers::pi_v<float> * e.PulseStep;
     b.ImpactRotRe.push_back(std::cos(theta));
     b.ImpactRotIm.push_back(std::sin(theta));
     b.ImpactGamma.push_back(e.PulseGamma);
@@ -63,27 +63,34 @@ void SilenceObject(ModalBank &b, uint32_t o) {
     }
 }
 
-void DrainEvents(ModalAudio &m) {
+void DrainEvents(ModalAudio &m, ModalBank &b) {
     auto read = m.EventRead.load(std::memory_order_relaxed);
     const auto write = m.EventWrite.load(std::memory_order_acquire);
     for (; read != write; ++read) {
         const auto &e = m.Events[read % ModalAudio::EventCapacity];
-        if (e.Object >= m.Bank.Entities.size()) continue;
+        if (e.Object >= b.Entities.size()) continue;
         if (e.Kind == ModalEventKind::Impact) {
-            if (e.PulseStep > 0) ActivateImpact(m, e);
+            if (e.PulseStep > 0) ActivateImpact(m, b, e);
         } else {
-            SilenceObject(m.Bank, e.Object);
+            SilenceObject(b, e.Object);
         }
     }
     m.EventRead.store(read, std::memory_order_release);
 }
 } // namespace
 
+ModalAudio::ModalAudio() : Live{std::make_unique<ModalBank>()}, Published{Live.get()} {}
+
 void InstallModalBank(ModalAudio &m, ModalBank &next) {
-    const std::scoped_lock lock{m.StructureMutex};
-    std::swap(m.Bank, next);
-    // Pending events target slots in the old layout, so drop them.
-    m.EventRead.store(m.EventWrite.load(std::memory_order_relaxed), std::memory_order_relaxed);
+    const auto old = std::move(m.Live);
+    m.Live = std::make_unique<ModalBank>(std::move(next));
+    m.FlushEvents.store(true, std::memory_order_relaxed); // Before Published so the adopting callback observes it.
+    m.Published.store(m.Live.get(), std::memory_order_seq_cst);
+    // Wait out a callback still rendering the old bank, then free `old` here on the main thread.
+    // Pending events targeted the old layout. The audio thread drops them when it adopts the new bank.
+    if (const auto seq = m.ReaderSeq.load(std::memory_order_seq_cst); seq & 1) {
+        while (m.ReaderSeq.load(std::memory_order_seq_cst) == seq) std::this_thread::yield();
+    }
 }
 
 uint32_t AddModalObject(ModalBank &b, entt::entity e, const ModalModes &modes) {
@@ -110,8 +117,8 @@ uint32_t AddModalObject(ModalBank &b, entt::entity e, const ModalModes &modes) {
 }
 
 void TuneModalObject(ModalBank &b, uint32_t object, std::span<const float> freqs, std::span<const float> t60s) {
-    const uint32_t k0 = b.ModeOffset[object];
-    const uint32_t count = std::min(b.ModeCount[object], uint32_t(std::min(freqs.size(), t60s.size())));
+    const auto k0 = b.ModeOffset[object];
+    const auto count = std::min(b.ModeCount[object], uint32_t(std::min(freqs.size(), t60s.size())));
     const float sr = b.SampleRate;
     for (uint32_t k = 0; k < count; ++k) {
         const float freq = freqs[k], t60 = t60s[k];
@@ -120,8 +127,8 @@ void TuneModalObject(ModalBank &b, uint32_t object, std::span<const float> freqs
             b.CoeffIm[k0 + k] = 0.f;
             continue;
         }
-        const float decay = std::pow(1e-3f, 1.f / (t60 * sr));
-        const float omega = 2 * std::numbers::pi_v<float> * freq / sr;
+        const auto decay = std::pow(1e-3f, 1.f / (t60 * sr));
+        const auto omega = 2 * std::numbers::pi_v<float> * freq / sr;
         b.CoeffRe[k0 + k] = decay * std::cos(omega);
         b.CoeffIm[k0 + k] = decay * std::sin(omega);
     }
@@ -132,7 +139,7 @@ bool SetModalObjectShapes(ModalBank &b, uint32_t object, const ModalModes &modes
     const auto end = object + 1 < b.ShapeOffset.size() ? b.ShapeOffset[object + 1] : uint32_t(b.ShapeX.size());
     const auto count = uint32_t(modes.Freqs.size());
     if (b.ModeCount[object] != count || end - begin != count * modes.Shapes.size()) return false;
-    uint32_t i = begin;
+    auto i = begin;
     for (const auto &row : modes.Shapes) {
         for (const auto &shape : row) {
             b.ShapeX[i] = shape.x;
@@ -160,24 +167,32 @@ void EnqueueModalEvent(ModalAudio &m, const ModalEvent &e) {
 
 void RenderModal(ModalAudio &m, float *out, uint32_t frame_count) {
     if (frame_count == 0) return;
-    const std::unique_lock lock{m.StructureMutex, std::try_to_lock};
-    if (!lock.owns_lock()) return;
-    DrainEvents(m);
-    auto &b = m.Bank;
+
+    // Mark this callback's generation, then load the live bank. The main thread waits for this generation
+    // to advance before freeing a replaced bank, so the pointer is always valid and the audio thread never blocks.
+    const auto seq = m.ReaderSeq.load(std::memory_order_relaxed);
+    m.ReaderSeq.store(seq + 1, std::memory_order_seq_cst);
+    ModalBank &b = *m.Published.load(std::memory_order_seq_cst);
+    // A newly published bank invalidates queued events that targeted the old slot layout.
+    if (m.FlushEvents.exchange(false, std::memory_order_relaxed)) {
+        m.EventRead.store(m.EventWrite.load(std::memory_order_relaxed), std::memory_order_relaxed);
+    }
+    DrainEvents(m, b);
+    const auto click_gain = m.ClickGain.load(std::memory_order_relaxed);
 
     // Per-impact half-sine force curves for this block, plus the acceleration-noise click (the force derivative).
     const auto impact_count = uint32_t(b.ImpactObject.size());
     m.ForceScratch.resize(size_t(impact_count) * frame_count);
     for (uint32_t i = 0; i < impact_count; ++i) {
         float phase_re = b.ImpactPhaseRe[i], phase_im = b.ImpactPhaseIm[i];
-        const float rot_re = b.ImpactRotRe[i], rot_im = b.ImpactRotIm[i];
-        const float gamma = b.ImpactGamma[i];
-        const float click = b.ImpactAccelAmp[i] * m.ClickGain;
-        float prev = b.ImpactPrevForce[i];
+        const auto rot_re = b.ImpactRotRe[i], rot_im = b.ImpactRotIm[i];
+        const auto gamma = b.ImpactGamma[i];
+        const auto click = b.ImpactAccelAmp[i] * click_gain;
+        auto prev = b.ImpactPrevForce[i];
         auto left = b.ImpactSamplesLeft[i];
-        float *force = &m.ForceScratch[size_t(i) * frame_count];
+        auto *force = &m.ForceScratch[size_t(i) * frame_count];
         for (uint32_t s = 0; s < frame_count; ++s) {
-            float cur = 0.f;
+            float cur{0.f};
             if (left > 0) {
                 const float re = phase_re * rot_re - phase_im * rot_im;
                 phase_im = phase_re * rot_im + phase_im * rot_re;
@@ -205,13 +220,13 @@ void RenderModal(ModalAudio &m, float *out, uint32_t frame_count) {
         }
         if (!b.Ringing[o] && obj_impacts.empty()) continue;
 
-        const uint32_t k0 = b.ModeOffset[o], count = b.ModeCount[o];
-        const uint32_t shape0 = b.ShapeOffset[o];
-        const float out_gain = b.OutGain[o];
+        const auto k0 = b.ModeOffset[o], count = b.ModeCount[o];
+        const auto shape0 = b.ShapeOffset[o];
+        const auto out_gain = std::atomic_ref{b.OutGain[o]}.load(std::memory_order_relaxed);
         m.GainScratch.resize(obj_impacts.size() * Lanes);
         float energy = 0.f;
         for (uint32_t k = 0; k < count; k += Lanes) {
-            const uint32_t width = std::min(Lanes, count - k);
+            const auto width = std::min(Lanes, count - k);
             float z_re[Lanes]{}, z_im[Lanes]{}, c_re[Lanes]{}, c_im[Lanes]{};
             for (uint32_t l = 0; l < width; ++l) {
                 z_re[l] = b.StateRe[k0 + k + l];
@@ -222,9 +237,9 @@ void RenderModal(ModalAudio &m, float *out, uint32_t frame_count) {
             // Excitation gain of each impact for each mode in the chunk: the impulse projected onto the shape.
             for (size_t t = 0; t < obj_impacts.size(); ++t) {
                 const auto i = obj_impacts[t];
-                const uint32_t base = shape0 + b.ImpactExPos[i] * count + k;
-                const float jx = b.ImpactJx[i], jy = b.ImpactJy[i], jz = b.ImpactJz[i];
-                float *gain = &m.GainScratch[t * Lanes];
+                const auto base = shape0 + b.ImpactExPos[i] * count + k;
+                const auto jx = b.ImpactJx[i], jy = b.ImpactJy[i], jz = b.ImpactJz[i];
+                auto *gain = &m.GainScratch[t * Lanes];
                 for (uint32_t l = 0; l < Lanes; ++l) {
                     gain[l] = l < width ? b.ShapeX[base + l] * jx + b.ShapeY[base + l] * jy + b.ShapeZ[base + l] * jz : 0.f;
                 }
@@ -232,14 +247,14 @@ void RenderModal(ModalAudio &m, float *out, uint32_t frame_count) {
             for (uint32_t s = 0; s < frame_count; ++s) {
                 float excite[Lanes]{};
                 for (size_t t = 0; t < obj_impacts.size(); ++t) {
-                    const float force = m.ForceScratch[size_t(obj_impacts[t]) * frame_count + s];
+                    const auto force = m.ForceScratch[size_t(obj_impacts[t]) * frame_count + s];
                     if (force == 0.f) continue;
-                    const float *gain = &m.GainScratch[t * Lanes];
+                    const auto *gain = &m.GainScratch[t * Lanes];
                     for (uint32_t l = 0; l < Lanes; ++l) excite[l] += force * gain[l];
                 }
                 float acc = 0.f;
                 for (uint32_t l = 0; l < Lanes; ++l) {
-                    const float re = z_re[l] * c_re[l] - z_im[l] * c_im[l] + excite[l];
+                    const auto re = z_re[l] * c_re[l] - z_im[l] * c_im[l] + excite[l];
                     z_im[l] = z_re[l] * c_im[l] + z_im[l] * c_re[l];
                     z_re[l] = re;
                     acc += z_im[l];
@@ -259,4 +274,5 @@ void RenderModal(ModalAudio &m, float *out, uint32_t frame_count) {
     for (uint32_t i = uint32_t(b.ImpactObject.size()); i-- > 0;) {
         if (b.ImpactSamplesLeft[i] == 0) RemoveImpact(b, i);
     }
+    m.ReaderSeq.store(seq + 2, std::memory_order_release);
 }

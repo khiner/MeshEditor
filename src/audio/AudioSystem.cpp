@@ -250,7 +250,7 @@ float ModalOutGain(const entt::registry &r, entt::entity e, float scale, size_t 
 // coefficients untouched. For gain/level changes that don't alter the modes.
 void SetModalOutGain(const entt::registry &r, ModalBank &b, uint32_t slot, entt::entity e) {
     const auto &modes = r.get<const ModalModes>(e);
-    b.OutGain[slot] = ModalOutGain(r, e, UniformScaleRatio(r, e, modes), modes.Freqs.size());
+    std::atomic_ref{b.OutGain[slot]}.store(ModalOutGain(r, e, UniformScaleRatio(r, e, modes), modes.Freqs.size()), std::memory_order_relaxed);
 }
 
 // Recompute an object's resonator coefficients and output gain.
@@ -287,7 +287,7 @@ void RetuneModalObject(const entt::registry &r, ModalBank &b, uint32_t slot, ent
         t60s[k] = t60_scale * Ln1000 / std::max(d, 1e-9f);
     }
     TuneModalObject(b, slot, freqs, t60s);
-    b.OutGain[slot] = ModalOutGain(r, e, scale, mode_count);
+    std::atomic_ref{b.OutGain[slot]}.store(ModalOutGain(r, e, scale, mode_count), std::memory_order_relaxed);
 }
 
 // Rebuild the bank from every modal sound object. The replacement is built off-lock, so the audio
@@ -315,7 +315,7 @@ void Stop(entt::registry &r, entt::entity e) {
     if (auto *samples = r.try_get<VertexSamples>(e)) samples->Stop();
     if (r.all_of<ModalModes>(e)) {
         auto &m = r.ctx().get<ModalAudio>();
-        if (auto slot = FindModalObject(m.Bank, e)) EnqueueModalEvent(m, {.Kind = ModalEventKind::Silence, .Object = *slot});
+        if (auto slot = FindModalObject(LiveBank(m), e)) EnqueueModalEvent(m, {.Kind = ModalEventKind::Silence, .Object = *slot});
     }
 }
 
@@ -379,7 +379,8 @@ struct PhysicsStrike {
 // `physics`, when set, is a real collision; when unset the strike is a manual mallet hit.
 void TriggerModalStrike(entt::registry &r, entt::entity e, uint32_t excitable_index, float force, float contact_speed, std::optional<PhysicsStrike> physics = std::nullopt) {
     auto &m = r.ctx().get<ModalAudio>();
-    const auto slot = FindModalObject(m.Bank, e);
+    const auto &bank = LiveBank(m);
+    const auto slot = FindModalObject(bank, e);
     if (!slot) return;
 
     const auto &modes = r.get<const ModalModes>(e);
@@ -406,7 +407,7 @@ void TriggerModalStrike(entt::registry &r, entt::entity e, uint32_t excitable_in
         // A manual one is nominal, so estimate it from the reduced mass and approach speed.
         accel_amp = physics ? double(force) / mat->Properties.Density : ReducedContactMass(*cd, excitable_index, dir, imp) * std::abs(double(contact_speed)) / mat->Properties.Density;
     }
-    const auto step = float(1.0 / (tau * m.Bank.SampleRate));
+    const auto step = float(1.0 / (tau * bank.SampleRate));
     EnqueueModalEvent(
         m,
         {
@@ -871,36 +872,43 @@ void RegisterAudioComponentHandlers(entt::registry &r) {
             // A same-layout model replacement (e.g. a material rescale) retunes and reshapes its bank
             // slot in place, without excluding the audio thread. Anything else is structural.
             auto &m = r.ctx().get<ModalAudio>();
-            bool rebuild = device_rate_changed;
+            bool rebuild = false;
             for (auto e : modal_tracker) {
                 if (rebuild) break;
                 const auto *modes = r.valid(e) ? r.try_get<const ::ModalModes>(e) : nullptr;
                 const bool active = modes && !modes->Freqs.empty() && r.all_of<SoundVertices>(e);
-                const auto slot = FindModalObject(m.Bank, e);
+                const auto slot = FindModalObject(LiveBank(m), e);
                 if (!active && !slot) continue;
-                if (active && slot && SetModalObjectShapes(m.Bank, *slot, *modes)) RetuneModalObject(r, m.Bank, *slot, e);
+                if (active && slot && SetModalObjectShapes(LiveBank(m), *slot, *modes)) RetuneModalObject(r, LiveBank(m), *slot, e);
                 else rebuild = true;
             }
-            if (rebuild) RebuildModalBank(r);
+            if (rebuild) {
+                RebuildModalBank(r);
+            } else if (device_rate_changed) {
+                // A rate change keeps the layout but rebakes every coefficient.
+                LiveBank(m).SampleRate = float(DeviceSampleRate(r));
+                for (uint32_t slot = 0; slot < uint32_t(LiveBank(m).Entities.size()); ++slot) RetuneModalObject(r, LiveBank(m), slot, LiveBank(m).Entities[slot]);
+            }
         }
         {
             auto &m = r.ctx().get<ModalAudio>();
+            auto &bank = LiveBank(m);
             for (auto e : reactive<audio_changes::ModalGain>(r)) {
-                if (auto slot = FindModalObject(m.Bank, e)) SetModalOutGain(r, m.Bank, *slot, e);
+                if (auto slot = FindModalObject(bank, e)) SetModalOutGain(r, bank, *slot, e);
             }
             for (auto e : reactive<audio_changes::ModalTuning>(r)) {
-                if (auto slot = FindModalObject(m.Bank, e)) RetuneModalObject(r, m.Bank, *slot, e);
+                if (auto slot = FindModalObject(bank, e)) RetuneModalObject(r, bank, *slot, e);
             }
             for (auto e : reactive<audio_changes::ModalSoundControls>(r)) {
                 const auto &controls = r.get<const ModalSoundControls>(e);
-                m.ClickGain = controls.ClickGain;
-                m.MaxImpacts = controls.MaxImpacts;
-                for (uint32_t slot = 0; slot < uint32_t(m.Bank.Entities.size()); ++slot) SetModalOutGain(r, m.Bank, slot, m.Bank.Entities[slot]);
+                m.ClickGain.store(controls.ClickGain, std::memory_order_relaxed);
+                m.MaxImpacts.store(controls.MaxImpacts, std::memory_order_relaxed);
+                for (uint32_t slot = 0; slot < uint32_t(bank.Entities.size()); ++slot) SetModalOutGain(r, bank, slot, bank.Entities[slot]);
             }
             // Retune objects whose node was rescaled.
             auto &scale_tracker = r.ctx().get<ModalScaleTracker>();
             for (auto e : scale_tracker.Storage) {
-                if (auto slot = FindModalObject(m.Bank, e)) RetuneModalObject(r, m.Bank, *slot, e);
+                if (auto slot = FindModalObject(bank, e)) RetuneModalObject(r, bank, *slot, e);
             }
             scale_tracker.Storage.clear();
         }

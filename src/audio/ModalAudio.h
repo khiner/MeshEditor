@@ -4,7 +4,7 @@
 
 #include <array>
 #include <atomic>
-#include <mutex>
+#include <memory>
 #include <optional>
 #include <span>
 #include <vector>
@@ -53,33 +53,36 @@ struct ModalBank {
     float SampleRate{48'000};
 };
 
-// All modal synthesis state.
-// The main thread builds a replacement bank off-lock and swaps it into the live bank under StructureMutex.
-// The audio thread renders under try_lock and owns the bank's state, the impacts, and the scratch buffers.
-// Element-wise coefficient and gain writes to the live bank's stable arrays are safe against concurrent rendering.
+// All modal synthesis state. The audio thread reads the live bank via Published under a ReaderSeq generation.
+// The main thread publishes a replacement and frees the old bank once that generation advances, never blocking audio.
+// Coefficient writes stay plain (a contracting one-pole keeps a torn read a one-buffer transient).
 struct ModalAudio {
-    ModalBank Bank;
+    ModalAudio();
 
-    float ClickGain{1}; // Level of the rigid-body acceleration-noise click
-    uint32_t MaxImpacts{1024}; // Cap on simultaneous in-flight contact pulses
+    std::unique_ptr<ModalBank> Live; // Main-thread owner of the currently published bank
+    std::atomic<ModalBank *> Published; // The audio thread loads this once per callback
+    std::atomic<uint64_t> ReaderSeq{0}; // Audio-thread generation, odd while a callback renders
+
+    std::atomic<float> ClickGain{1}; // Level of the rigid-body acceleration-noise click
+    std::atomic<uint32_t> MaxImpacts{1024}; // Cap on simultaneous in-flight contact pulses
 
     // Single-producer (main thread) single-consumer (audio thread) event queue.
     static constexpr uint32_t EventCapacity{256}; // Power of two
     std::array<ModalEvent, EventCapacity> Events;
     std::atomic<uint32_t> EventWrite{0}, EventRead{0};
-
-    std::mutex StructureMutex;
+    std::atomic<bool> FlushEvents{false}; // Main thread sets on publish. The audio thread drops events that targeted the old layout.
 
     // Audio-thread scratch, kept across blocks.
-    std::vector<float> ForceScratch;
-    std::vector<float> GainScratch;
+    std::vector<float> ForceScratch, GainScratch;
     std::vector<uint32_t> ObjectImpactScratch;
 };
 
+// The live bank, for main-thread reads and in-place writes.
+inline ModalBank &LiveBank(ModalAudio &m) { return *m.Live; }
+
 // Append an object slot with zeroed state, coefficients, and gain and return its index.
 uint32_t AddModalObject(ModalBank &, entt::entity, const ModalModes &);
-// Take StructureMutex and swap a freshly built bank into the live one, dropping pending events.
-// The old bank moves into `next` and frees off-lock when `next` goes out of scope.
+// Publish a freshly built bank as the live one and free the previous one.
 void InstallModalBank(ModalAudio &, ModalBank &next);
 // Set an object's resonator coefficients from per-mode frequencies (Hz) and T60s (s).
 // Out-of-range and undamped modes are muted. Safe against concurrent rendering.
@@ -93,6 +96,5 @@ std::optional<uint32_t> FindModalObject(const ModalBank &, entt::entity);
 // Enqueue an event from the main thread. Dropped when the queue is full.
 void EnqueueModalEvent(ModalAudio &, const ModalEvent &);
 
-// Add `frame_count` mono samples of modal synthesis into `out`, on the audio thread.
-// Skips the block when a structural change holds the lock.
+// Add `frame_count` mono samples of modal synthesis into `out`, on the audio thread. Never blocks.
 void RenderModal(ModalAudio &, float *out, uint32_t frame_count);
