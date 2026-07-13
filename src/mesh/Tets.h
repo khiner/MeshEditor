@@ -4,6 +4,10 @@
 
 #include "numeric/vec3.h"
 
+#include <expected>
+#include <memory>
+#include <string>
+
 // See https://wias-berlin.de/software/tetgen/1.5/doc/manual/manual005.html
 struct TetGenOptions {
     // (-Y) Input boundary edges and faces of the PLC are preserved in the generated tetrahedral mesh.
@@ -17,7 +21,8 @@ struct TetGenOptions {
 
 class tetgenio;
 
-std::unique_ptr<tetgenio> GenerateTets(std::vector<vec3> positions, std::vector<uint32_t> triangle_indices, TetGenOptions);
+// The error string names the tetgen failure (e.g. a self-intersecting input surface).
+std::expected<std::unique_ptr<tetgenio>, std::string> GenerateTets(std::vector<vec3> positions, std::vector<uint32_t> triangle_indices, TetGenOptions);
 
 // positions are divided by `scale`.
 TetMeshData BuildTetMeshData(const tetgenio &, vec3 scale);

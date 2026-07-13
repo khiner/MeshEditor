@@ -107,6 +107,13 @@ std::optional<LoadedSample> LoadSample(const fs::path &dataset, const std::strin
     return LoadedSample{std::move(*surface), std::move(excite_positions), load_seconds};
 }
 
+std::unique_ptr<tetgenio> TryGenerateTets(const std::string &name, std::vector<vec3> positions, std::vector<uint32_t> triangle_indices, float ratio) {
+    auto tets = GenerateTets(std::move(positions), std::move(triangle_indices), {.PreserveSurface = true, .SimplifyRatio = ratio});
+    if (tets) return std::move(*tets);
+    std::println("skipping {}: tetgen failed: {}", name, tets.error());
+    return nullptr;
+}
+
 std::optional<BenchResult> RunSample(const fs::path &dataset, const std::string &name, float ratio, bool corpus) {
     auto sample = LoadSample(dataset, name);
     if (!sample) return {};
@@ -118,11 +125,11 @@ std::optional<BenchResult> RunSample(const fs::path &dataset, const std::string 
     r.LoadSeconds = sample->LoadSeconds;
     r.SurfaceTris = surface.TriangleIndices.size() / 3;
 
-    // tetgen signals failure (e.g. a self-intersecting surface) by throwing an int.
     try {
         const auto tets_start = std::chrono::steady_clock::now();
-        const auto tets = GenerateTets(std::move(surface.Positions), std::move(surface.TriangleIndices), {.PreserveSurface = true, .SimplifyRatio = ratio});
+        const auto tets = TryGenerateTets(name, std::move(surface.Positions), std::move(surface.TriangleIndices), ratio);
         r.TetsSeconds = SecondsSince(tets_start);
+        if (!tets) return {};
         r.TetCount = tets->numberoftetrahedra;
 
         const auto result = modal::mesh2modes(*tets, material.Properties, sample->ExcitePositions, vec3{1}, SolveConfig);
@@ -133,8 +140,6 @@ std::optional<BenchResult> RunSample(const fs::path &dataset, const std::string 
         return r;
     } catch (const std::exception &e) {
         std::println("skipping {}: solve failed: {}", name, e.what());
-    } catch (int code) {
-        std::println("skipping {}: tetgen failed with code {}", name, code);
     }
     return {};
 }
@@ -148,7 +153,8 @@ bool RunEditLoop(const fs::path &dataset, const std::string &name, float ratio) 
 
     const auto material = MaterialForSample(name).Properties;
     try {
-        const auto tets = GenerateTets(std::move(sample->Surface.Positions), std::move(sample->Surface.TriangleIndices), {.PreserveSurface = true, .SimplifyRatio = ratio});
+        const auto tets = TryGenerateTets(name, std::move(sample->Surface.Positions), std::move(sample->Surface.TriangleIndices), ratio);
+        if (!tets) return false;
         const auto initial = modal::mesh2modes(*tets, material, sample->ExcitePositions, vec3{1}, SolveConfig, {.KeepBasis = true});
 
         const auto f1 = [](const ModalModes &m) { return m.Freqs.empty() ? 0.f : m.Freqs.front(); };
@@ -194,8 +200,6 @@ bool RunEditLoop(const fs::path &dataset, const std::string &name, float ratio) 
         return true;
     } catch (const std::exception &e) {
         std::println("skipping {}: solve failed: {}", name, e.what());
-    } catch (int code) {
-        std::println("skipping {}: tetgen failed with code {}", name, code);
     }
     return false;
 }

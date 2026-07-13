@@ -638,14 +638,18 @@ void LaunchModalSolve(entt::registry &r, entt::entity viewport, entt::entity e) 
     std::shared_ptr<const Eigen::MatrixXf> warm_basis;
     if (const auto &warm = r.ctx().get<const ModalWarmStart>(); warm.Basis && warm.TetInputsHash == inputs.Hash) warm_basis = warm.Basis;
     auto work = [inputs = std::move(inputs), material_props = material->Properties, excite_positions = std::move(excite_positions), fundamental, warm_basis = std::move(warm_basis)](JobMonitor &monitor) mutable -> ModalGenerationResult {
-        const auto tets = GenerateTets(std::move(inputs.Positions), std::move(inputs.TriangleIndices), inputs.TetOptions);
+        auto tets = GenerateTets(std::move(inputs.Positions), std::move(inputs.TriangleIndices), inputs.TetOptions);
         if (monitor.Cancelled()) return {};
-        auto result = modal::mesh2modes(*tets, material_props, excite_positions, inputs.NodeScale, {.FundamentalFreq = fundamental}, {.SeedBasis = warm_basis.get(), .KeepBasis = true}, &monitor);
+        if (!tets) {
+            std::cerr << "Tetrahedralization failed: " << tets.error() << ".\n";
+            return {};
+        }
+        auto result = modal::mesh2modes(**tets, material_props, excite_positions, inputs.NodeScale, {.FundamentalFreq = fundamental}, {.SeedBasis = warm_basis.get(), .KeepBasis = true}, &monitor);
         result.Modes.Vertices = std::move(inputs.Vertices);
         result.Modes.BakedScale = inputs.NodeScale;
         result.Summary.TetInputsHash = inputs.Hash;
         auto basis = result.Basis.size() > 0 ? std::make_shared<Eigen::MatrixXf>(std::move(result.Basis)) : nullptr;
-        auto model_path = result.Modes.Freqs.empty() ? fs::path{} : SaveModalModelFile({std::move(result.Modes), result.MassProps, BuildTetMeshData(*tets, inputs.NodeScale), std::move(result.Summary)});
+        auto model_path = result.Modes.Freqs.empty() ? fs::path{} : SaveModalModelFile({std::move(result.Modes), result.MassProps, BuildTetMeshData(**tets, inputs.NodeScale), std::move(result.Summary)});
         return {std::move(model_path), std::move(basis), inputs.Hash};
     };
     // Intentional registry-ctx write outside Apply: transient background-job bookkeeping.

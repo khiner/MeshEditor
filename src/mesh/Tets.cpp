@@ -6,7 +6,22 @@
 #include <filesystem>
 #include <format>
 
-std::unique_ptr<tetgenio> GenerateTets(std::vector<vec3> positions, std::vector<uint32_t> triangle_indices, TetGenOptions options) {
+namespace {
+std::string TetGenErrorMessage(int code) {
+    switch (code) {
+        case 1: return "out of memory";
+        case 2: return "internal tetgen error";
+        case 3: return "the input surface mesh contains self-intersections";
+        case 4: return "a very small input feature size was detected";
+        case 5: return "two very close input facets were detected";
+        case 10: return "an input error was detected";
+        case 200: return "the input boundary contains Steiner points";
+        default: return std::format("tetgen error code {}", code);
+    }
+}
+} // namespace
+
+std::expected<std::unique_ptr<tetgenio>, std::string> GenerateTets(std::vector<vec3> positions, std::vector<uint32_t> triangle_indices, TetGenOptions options) {
     static constexpr int TriVerts = 3;
     if (options.SimplifyRatio < 1) {
         // Quadric edge-collapse to the target triangle count, then drop unreferenced vertices.
@@ -49,7 +64,11 @@ std::unique_ptr<tetgenio> GenerateTets(std::vector<vec3> positions, std::vector<
     const auto diagnostic_base = (std::filesystem::temp_directory_path() / "tetgen").string();
     std::strncpy(behavior.outfilename, diagnostic_base.c_str(), sizeof(behavior.outfilename) - 1);
     auto result = std::make_unique<tetgenio>();
-    tetrahedralize(&behavior, &in, result.get());
+    try {
+        tetrahedralize(&behavior, &in, result.get());
+    } catch (int code) { // tetgen throws an int on failure, e.g. a self-intersecting or non-watertight surface.
+        return std::unexpected(TetGenErrorMessage(code));
+    }
     return result;
 }
 

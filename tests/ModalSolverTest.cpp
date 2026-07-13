@@ -217,11 +217,13 @@ int main() {
         const std::vector<vec3> excite{surface->Positions.front()};
         const auto n_verts = surface->Positions.size(), n_tris = surface->TriangleIndices.size() / 3;
         const auto tets = GenerateTets(std::move(surface->Positions), std::move(surface->TriangleIndices), {.PreserveSurface = true});
-        std::println("--- RealImpact bowl: {} welded verts, {} tris -> {} tet nodes, {} tets ---", n_verts, n_tris, tets->numberofpoints, tets->numberoftetrahedra);
+        expect(tets.has_value());
+        if (!tets) return;
+        std::println("--- RealImpact bowl: {} welded verts, {} tris -> {} tet nodes, {} tets ---", n_verts, n_tris, (*tets)->numberofpoints, (*tets)->numberoftetrahedra);
 
         constexpr AcousticMaterialProperties Ceramic{.Density = 2700, .YoungModulus = 7.2e10, .PoissonRatio = 0.19, .Alpha = 5, .Beta = 1e-8};
         const auto start = std::chrono::steady_clock::now();
-        const auto result = modal::mesh2modes(*tets, Ceramic, excite, vec3{1}, {});
+        const auto result = modal::mesh2modes(**tets, Ceramic, excite, vec3{1}, {});
         const auto seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
         expect(!result.Modes.Freqs.empty());
         std::println("{:6.2f} s, {} modes, f1 {:8.1f} Hz", seconds, result.Modes.Freqs.size(), result.Modes.Freqs.empty() ? 0.0 : double(result.Modes.Freqs.front()));
