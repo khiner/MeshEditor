@@ -68,15 +68,17 @@ void AssignVertexSample(
     std::span<const uint32_t> mesh_vertices, std::filesystem::path, std::vector<float> &&frames
 );
 
-// Remove samples from every mesh vertex in `mesh_vertices`. Removes audio components if the
-// sound object ends up empty and has no modal model.
+// Remove samples from every mesh vertex in `mesh_vertices`.
+// Removes audio components if the sound object ends up empty and has no modal model.
 void RemoveVertexSamples(
     entt::registry &, entt::entity viewport, entt::entity sound_entity,
     std::span<const uint32_t> mesh_vertices
 );
 
-// Decode any miniaudio-supported audio file to mono float frames at `SampleRate`. Returns empty on failure.
-std::vector<float> LoadAudioFrames(const std::string &file_path);
+uint32_t DeviceSampleRate(const entt::registry &);
+
+// Decode any miniaudio-supported audio file to mono float frames at `sample_rate`. Returns empty on failure.
+std::vector<float> LoadAudioFrames(const std::string &file_path, uint32_t sample_rate);
 
 void Stop(entt::registry &, entt::entity sound_entity);
 void SetModel(entt::registry &, entt::entity sound_entity, SoundVerticesModel);

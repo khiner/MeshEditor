@@ -2540,6 +2540,18 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
                         .InertiaOrientation = glm::quat(q[3], q[0], q[1], q[2]),
                     }
                 );
+                // A dynamic rigid body is authoritative for contact dynamics (see UpdateContactDynamics), so its
+                // mass, not the model's, drives the sound. Warn when the two disagree; agreement needs no report.
+                if (const auto *motion = r.try_get<const PhysicsMotion>(entity); motion && IsAuthoritativeDynamicBody(*motion)) {
+                    const float body_mass = motion->Mass.value_or(DefaultMass);
+                    if (std::abs(body_mass - float(mp->mass)) > 1e-3f * std::max(body_mass, float(mp->mass))) {
+                        const auto name = source_node.name.empty() ? std::format("node {}", node_index) : std::string{source_node.name};
+                        std::cerr << std::format(
+                            "Warning: '{}': KHR_audio_modal mass ({:.4g} kg) disagrees with its KHR_physics_rigid_bodies rigid body ({:.4g} kg); using the rigid body for contact dynamics.\n",
+                            name, mp->mass, body_mass
+                        );
+                    }
+                }
             } else if (const auto *motion = r.try_get<const PhysicsMotion>(entity); motion && motion->Mass) {
                 // A model without its own mass properties falls back to the node's KHR_physics_rigid_bodies motion.
                 r.emplace<MassProperties>(

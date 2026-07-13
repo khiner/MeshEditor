@@ -147,6 +147,10 @@ struct PhysicsMotion {
     float LinearDamping{0.04f}, AngularDamping{0.1f};
 };
 
+// A force-driven, positive-mass rigid body, whose mass properties are authoritative for the object's
+// contact dynamics. A kinematic or zero-mass (infinite) body is not.
+inline bool IsAuthoritativeDynamicBody(const PhysicsMotion &m) { return !m.IsKinematic && m.Mass.value_or(DefaultMass) > 0; }
+
 // Present iff PhysicsMotion is present.
 struct PhysicsVelocity {
     vec3 Linear{0}, Angular{0};

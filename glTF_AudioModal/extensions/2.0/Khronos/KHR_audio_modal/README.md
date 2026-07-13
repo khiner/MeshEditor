@@ -147,7 +147,7 @@ With *M* modes and *P* sample points:
 
 ### Mass Properties
 
-`massProperties` records the object's rigid-body mass distribution, at the model's reference size ([Node Transforms and Scale](#node-transforms-and-scale)). It is optional, and is consumed by [acceleration noise](#acceleration-noise) and by mass-based adjustments. Its fields mirror `KHR_physics_rigid_bodies`' rigid-body motion so values are interchangeable.
+`massProperties` records the object's rigid-body mass distribution, at the model's reference size ([Node Transforms and Scale](#node-transforms-and-scale)). It is optional, and is consumed by [acceleration noise](#acceleration-noise) and by mass-based adjustments. Its fields mirror `KHR_physics_rigid_bodies`' rigid-body motion, so the same physical body can be described in either extension.
 
 | | Type | Description | Required |
 |-|-|-|-|
@@ -156,7 +156,9 @@ With *M* modes and *P* sample points:
 | **inertiaDiagonal** | `number[3]` | Principal moments of inertia, in kg·m². Default `[0,0,0]` (a point mass). | No |
 | **inertiaOrientation** | `number[4]` | Unit quaternion rotating the principal inertia axes into local space. Default `[0,0,0,1]`. | No |
 
-When a model omits `massProperties`, an implementation MAY obtain the same quantities from `KHR_physics_rigid_bodies`' rigid-body properties, or compute them from the node's mesh and ρ when the material specifies ρ and the mesh is watertight.
+When the node also has a `KHR_physics_rigid_bodies` dynamic rigid body, that body's mass properties are authoritative for contact dynamics, and this extension's `massProperties`, if present, MUST be ignored. The two describe one physical body, and grounding the sound in the mass the simulation integrates keeps the audible impact consistent with the visible motion. Authored values SHOULD agree. A kinematic or static rigid body carries no finite mass for the object, so this extension's `massProperties` apply in that case.
+
+When a model omits `massProperties` and no rigid body supplies them, an implementation MAY compute the same quantities from the node's mesh and ρ when the material specifies ρ and the mesh is watertight.
 
 ## Acoustic Materials
 

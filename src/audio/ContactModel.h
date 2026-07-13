@@ -40,19 +40,30 @@ struct Striker {
     float Length{0.19f}; // m; cylinder length (~0.5 kg of steel at the default radius)
 };
 
+// The impactor side of a Hertz contact: elastic compliance, tip curvature, and inverse mass. A strike's virtual
+// mallet and a colliding rigid body both reduce to this. InvMass 0 models an immovable impactor.
+struct Impactor {
+    AcousticMaterialProperties Material{};
+    double Curvature{0}; // mean surface curvature at the contact, 1/m
+    double InvMass{0}; // kg⁻¹
+};
+
 // Striker mass in kg: material density times capsule volume.
 double StrikerMass(const Striker &);
+
+// The mallet reduced to its impactor contribution.
+Impactor StrikerImpactor(const Striker &);
 
 // Inverse inertia tensor (kg⁻¹·m⁻²) reconstructed from the principal moments and orientation.
 glm::mat3 InverseInertiaTensor(const MassProperties &);
 
 // Reduced mass (kg) at the contact: the object's translational and rotational response to an off-center
-// impulse, combined with the striker. Drives the Hertz contact time and the impulse magnitude.
-double ReducedContactMass(const ContactDynamics &, uint32_t excitable_index, vec3 impact_direction, const Striker &);
+// impulse, combined with the impactor. Drives the Hertz contact time and the impulse magnitude.
+double ReducedContactMass(const ContactDynamics &, uint32_t excitable_index, vec3 impact_direction, const Impactor &);
 
-// Hertz contact time in seconds for a strike at `excitable_index`, from the object and striker at `contact_speed`,
+// Hertz contact time in seconds for a strike at `excitable_index`, from the object and impactor at `contact_speed`,
 // scaled by `scale_ratio` for the object's current size.
-double EstimateContactTime(const ContactDynamics &, uint32_t excitable_index, vec3 impact_direction, double contact_speed, const AcousticMaterialProperties &object_material, const Striker &, double scale_ratio);
+double EstimateContactTime(const ContactDynamics &, uint32_t excitable_index, vec3 impact_direction, double contact_speed, const AcousticMaterialProperties &object_material, const Impactor &, double scale_ratio);
 
 // Bounds on the derived contact time (seconds), guarding degenerate curvature, speed, and scale.
 inline constexpr double MinContactTime = 2e-5, MaxContactTime = 5e-2;

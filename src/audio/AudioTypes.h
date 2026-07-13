@@ -19,6 +19,9 @@ struct AudioOutputMix {
 // Viewport-level modal synthesis controls.
 struct ModalSoundControls {
     float ClickGain{1.f}; // Level of the rigid-body acceleration-noise click.
+    // A physics collision sounds only when its impulse (kg·m/s) and approach speed (m/s) clear these floors.
+    // They keep settling and micro-jitter contacts from buzzing.
+    float MinContactImpulse{0.05f}, MinContactSpeed{0.05f};
 };
 
 enum class SoundVerticesModel {

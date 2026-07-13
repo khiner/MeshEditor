@@ -1,6 +1,7 @@
 // All Jolt includes are isolated to this file.
 #include "PhysicsSystem.h"
 #include "PhysicsChanges.h"
+#include "PhysicsContact.h"
 #include "PhysicsTypes.h"
 #include "Reactive.h"
 #include "TransformMath.h"
@@ -16,6 +17,7 @@
 #include "Jolt/Core/JobSystemThreadPool.h"
 #include "Jolt/Physics/Body/BodyCreationSettings.h"
 #include "Jolt/Physics/Collision/CollideShape.h"
+#include "Jolt/Physics/Collision/EstimateCollisionResponse.h"
 #include "Jolt/Physics/Collision/Shape/BoxShape.h"
 #include "Jolt/Physics/Collision/Shape/CapsuleShape.h"
 #include "Jolt/Physics/Collision/Shape/ConvexHullShape.h"
@@ -38,6 +40,7 @@
 
 #include <algorithm>
 #include <iostream>
+#include <mutex>
 
 JPH_SUPPRESS_WARNINGS
 
@@ -249,10 +252,22 @@ public:
 //    (0 = no filter), looked up in the KHRCollisionFilter's mask table. Jolt's CollisionGroup handles
 //    body-level filtering; this covers compound bodies where sub-shapes have different filters.
 // 2. KHR_physics_rigid_bodies friction/restitution combine modes.
+// 3. Reports each new solid contact's impulse for the audio system (see RawContacts).
 class KHRContactListener : public ContactListener {
 public:
     const entt::registry *R{nullptr};
     const KHRCollisionFilter *Filter{nullptr};
+
+    // One qualifying new contact. Bodies are stored by index; the drain resolves them to entities and
+    // splits the impulse into a per-body impact. Filled from multiple threads during PhysicsSystem::Update.
+    struct RawContact {
+        uint32_t Body1Index, Body2Index;
+        Vec3 Point, Direction; // world space; Direction is the unit impulse on body 2 (body 1 gets its negation)
+        float Impulse, Speed;
+        float InvMass1, InvMass2; // inverse masses, kg⁻¹; 0 for static/kinematic bodies
+    };
+    std::mutex ContactMutex;
+    std::vector<RawContact> RawContacts;
 
     ValidateResult OnContactValidate(const Body &b1, const Body &b2, RVec3Arg, const CollideShapeResult &result) override {
         if (!Filter) return ValidateResult::AcceptAllContactsForThisBodyPair;
@@ -265,14 +280,39 @@ public:
         return ValidateResult::AcceptContact;
     }
 
-    void OnContactAdded(const Body &b1, const Body &b2, const ContactManifold &, ContactSettings &s) override {
+    void OnContactAdded(const Body &b1, const Body &b2, const ContactManifold &manifold, ContactSettings &s) override {
         CombineMaterials(b1, b2, s);
+        CollectImpact(b1, b2, manifold, s);
     }
     void OnContactPersisted(const Body &b1, const Body &b2, const ContactManifold &, ContactSettings &s) override {
         CombineMaterials(b1, b2, s);
     }
 
 private:
+    // Reports a new solid contact's impulse and approach speed. The audio system decides audibility.
+    void CollectImpact(const Body &b1, const Body &b2, const ContactManifold &manifold, const ContactSettings &s) {
+        if (b1.IsSensor() || b2.IsSensor() || manifold.mRelativeContactPointsOn1.empty()) return;
+
+        // Full contact impulse on body 2: the normal (Hertz) part plus the tangential friction part.
+        CollisionEstimationResult est;
+        EstimateCollisionResponse(b1, b2, manifold, est, s.mCombinedFriction, s.mCombinedRestitution, 1.0f, 4);
+        Vec3 j = Vec3::sZero();
+        for (const auto &i : est.mImpulses) j += i.mContactImpulse * manifold.mWorldSpaceNormal + i.mFrictionImpulse1 * est.mTangent1 + i.mFrictionImpulse2 * est.mTangent2;
+        const float impulse = j.Length();
+        if (impulse < 1e-6f) return; // separating or speculative contact; no impulse to strike with
+
+        // Contact centroid and the normal approach speed, which drives the Hertz contact time.
+        Vec3 point = Vec3::sZero();
+        for (uint i = 0; i < manifold.mRelativeContactPointsOn1.size(); ++i) point += manifold.mRelativeContactPointsOn1[i];
+        const RVec3 world_point = manifold.mBaseOffset + point / float(manifold.mRelativeContactPointsOn1.size());
+        const float speed = std::abs((b1.GetPointVelocity(world_point) - b2.GetPointVelocity(world_point)).Dot(manifold.mWorldSpaceNormal));
+
+        const float inv_mass1 = b1.IsDynamic() ? b1.GetMotionProperties()->GetInverseMass() : 0.f;
+        const float inv_mass2 = b2.IsDynamic() ? b2.GetMotionProperties()->GetInverseMass() : 0.f;
+        const std::scoped_lock lock{ContactMutex};
+        RawContacts.emplace_back(b1.GetID().GetIndex(), b2.GetID().GetIndex(), Vec3{world_point}, j / impulse, impulse, speed, inv_mass1, inv_mass2);
+    }
+
     const ::PhysicsMaterial *LookupMaterial(uint64_t userdata) const {
         if (!R || userdata == NoMaterialSentinel) return nullptr;
         const auto e = entt::entity(uint32_t(userdata));
@@ -321,6 +361,8 @@ struct PhysicsState {
     MeshVsMeshShapeFilter MeshFilter;
 
     std::unordered_map<entt::entity, uint32_t> BodySubGroups; // entity -> KHRCollisionFilter SubGroupID.
+    std::unordered_map<uint32_t, entt::entity> EntityByBodyIndex; // BodyID index -> owning entity, for contact-impact routing.
+    std::vector<KHRContactListener::RawContact> ContactDrainScratch; // reused each step so the swap doesn't free the accumulator
 
     std::vector<BodyID> PendingBodyRemovals; // queued for batched removal
 
@@ -918,6 +960,7 @@ void AddBody(PhysicsState &s, entt::registry &r, entt::entity entity) {
     const auto *body = bi.CreateBody(bcs);
     if (!body) return;
     bi.AddBody(body->GetID(), motion_type == EMotionType::Static ? EActivation::DontActivate : EActivation::Activate);
+    s.EntityByBodyIndex[body->GetID().GetIndex()] = entity;
     r.emplace_or_replace<PhysicsBodyHandle>(entity, PhysicsBodyHandle{body->GetID().GetIndexAndSequenceNumber()});
     r.emplace_or_replace<BodyPoseCache>(entity);
 
@@ -937,6 +980,7 @@ void OnDestroyPhysicsBody(entt::registry &r, entt::entity entity) {
     if (!s) return; // registry teardown after physics::Deinit erased the state
     if (const auto &handle = r.get<const PhysicsBodyHandle>(entity); handle.BodyId != UINT32_MAX) {
         s->PendingBodyRemovals.emplace_back(handle.BodyId);
+        s->EntityByBodyIndex.erase(BodyID{handle.BodyId}.GetIndex());
     }
     s->BodySubGroups.erase(entity);
     s->JointsDirty = true;
@@ -1210,6 +1254,9 @@ void ClearSimulation(PhysicsState &s, entt::registry &r) {
     s.FilterRef->Update(r);
     s.FilterRef->Reset();
     s.BodySubGroups.clear();
+    s.EntityByBodyIndex.clear();
+    s.ContactListener.RawContacts.clear();
+    r.ctx().get<PhysicsContactImpacts>().Events.clear();
 }
 
 void Rebuild(entt::registry &r) {
@@ -1234,6 +1281,32 @@ void Rebuild(entt::registry &r) {
 void ClearCache(entt::registry &r) { r.ctx().get<PhysicsState>().Baked = {}; }
 // Stale slots past the new frontier get overwritten on the next bake.
 bool HasBodies(const entt::registry &r) { return r.ctx().get<PhysicsState>().System->GetNumBodies() > 0; }
+
+// Resolve this step's raw contacts into per-body impacts for the audio system to drain.
+// Both bodies of a pair radiate: body 2 takes the impulse direction, body 1 its negation.
+void CollectContactImpacts(PhysicsState &s, entt::registry &r) {
+    auto &raw = s.ContactDrainScratch;
+    {
+        const std::scoped_lock lock{s.ContactListener.ContactMutex};
+        raw.swap(s.ContactListener.RawContacts);
+    }
+    auto &out = r.ctx().get<PhysicsContactImpacts>().Events;
+    const auto resolve = [&](uint32_t body_index) {
+        const auto it = s.EntityByBodyIndex.find(body_index);
+        return it != s.EntityByBodyIndex.end() ? it->second : null_entity;
+    };
+    for (const auto &c : raw) {
+        const vec3 dir = FromJolt(c.Direction), point = FromJolt(c.Point);
+        const auto e1 = resolve(c.Body1Index), e2 = resolve(c.Body2Index);
+        // Each struck body radiates, driven by the other body as its acoustic impactor.
+        const auto emit = [&](entt::entity self, entt::entity other, vec3 d, float other_inv_mass) {
+            if (self != null_entity) out.emplace_back(ContactImpact{.Entity = self, .Other = other, .Point = point, .Direction = d, .Impulse = c.Impulse, .Speed = c.Speed, .OtherInvMass = other_inv_mass});
+        };
+        emit(e1, e2, -dir, c.InvMass2);
+        emit(e2, e1, dir, c.InvMass1);
+    }
+    raw.clear();
+}
 
 } // namespace
 
@@ -1297,6 +1370,7 @@ bool AdvancePlayback(entt::registry &r, entt::entity viewport, int from_frame, i
         const auto &settings = r.get<const PhysicsSimulationSettings>(viewport);
         const float dt = fps > 0 ? 1.f / fps : 1.f / 60.f;
         s.System->Update(dt * settings.TimeScale, settings.SubstepsPerFrame, &s.TempAllocator, &s.JobSystem);
+        CollectContactImpacts(s, r);
         // Sync Jolt -> ECS WorldTransform only. PhysicsVelocity is authored-only; live velocity stays in Jolt.
         // WT is owned by the simulator during sim; local Transform is the authored pose, restored on Rebuild.
         const auto &bi = s.System->GetBodyInterface();
@@ -1346,6 +1420,7 @@ bool AdvancePlayback(entt::registry &r, entt::entity viewport, int from_frame, i
 void Init(entt::registry &r) {
     auto &state = r.ctx().emplace<PhysicsState>();
     state.ContactListener.R = &r;
+    r.ctx().emplace<PhysicsContactImpacts>();
     r.on_destroy<PhysicsBodyHandle>().connect<&OnDestroyPhysicsBody>();
 
     track<changes::PhysicsMotion>(r).on<PhysicsMotion>(On::Create | On::Update | On::Destroy);

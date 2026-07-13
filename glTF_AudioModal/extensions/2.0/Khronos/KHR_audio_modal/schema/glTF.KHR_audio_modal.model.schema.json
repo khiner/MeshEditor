@@ -32,7 +32,7 @@
         },
         "massProperties": {
             "type": "object",
-            "description": "The object's rigid-body mass distribution at the model's reference size, used for acceleration noise and mass-based scaling. Fields mirror KHR_physics_rigid_bodies' rigid-body motion.",
+            "description": "The object's rigid-body mass distribution at the model's reference size, used for acceleration noise and mass-based scaling. Fields mirror KHR_physics_rigid_bodies' rigid-body motion. When the node has a dynamic KHR_physics_rigid_bodies body, that body's mass properties are authoritative and these are ignored for contact dynamics.",
             "properties": {
                 "mass": {
                     "type": "number",

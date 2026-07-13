@@ -10,6 +10,7 @@
 #include "audio/SoundVertices.h"
 #include "mesh/Mesh.h"
 #include "mesh/Tets.h"
+#include "physics/PhysicsContact.h"
 #include "render/Instance.h"
 #include "scene/WorldTransform.h"
 #include "selection/SelectionBitset.h"
@@ -51,11 +52,16 @@ template<> struct FieldLimits<&ModalGain::Value> : Within<0., 2.> {};
 template<> struct FieldLimits<&ModalTuning::FundamentalFreq> : Within<20., 16000.> {};
 template<> struct FieldLimits<&ModalTuning::T60Scale> : Within<0.1, 10.> {};
 template<> struct FieldLimits<&ModalSoundControls::ClickGain> : Within<0., 10.> {};
+template<> struct FieldLimits<&ModalSoundControls::MinContactImpulse> : Within<0., 5.> {};
+template<> struct FieldLimits<&ModalSoundControls::MinContactSpeed> : Within<0., 5.> {};
 
 using std::ranges::iota_view, std::ranges::nth_element, std::ranges::max_element, std::ranges::to;
 using std::views::transform;
 
-static constexpr uint32_t SampleRate = 48'000; // todo respect device sample rate
+uint32_t DeviceSampleRate(const entt::registry &r) {
+    const auto *res = r.ctx().find<AudioDeviceResource>();
+    return res && res->SampleRate ? res->SampleRate : 48'000;
+}
 
 namespace {
 // Per-sound-object component. Maps mesh vertex handles to sample keys in the scene-level AudioSamples store.
@@ -117,8 +123,8 @@ void ReleaseSample(entt::registry &r, entt::entity viewport, const fs::path &pat
 }
 } // namespace
 
-std::vector<float> LoadAudioFrames(const std::string &file_path) {
-    const ma_decoder_config config = ma_decoder_config_init(ma_format_f32, 1, SampleRate);
+std::vector<float> LoadAudioFrames(const std::string &file_path, uint32_t sample_rate) {
+    const ma_decoder_config config = ma_decoder_config_init(ma_format_f32, 1, sample_rate);
     ma_decoder decoder;
     if (ma_decoder_init_file(file_path.c_str(), &config, &decoder) != MA_SUCCESS) {
         std::cerr << std::format("Failed to open audio file: {}\n", file_path);
@@ -335,18 +341,34 @@ vec3 ExciteDirection(const entt::registry &r, entt::entity e, uint32_t vertex) {
     return TiltAlongNormal(n, ImpulseAngle);
 }
 
+// Mean curvature (1/m) of the solid sphere with this mass and density. 0 for an immovable body.
+double SphereEquivalentCurvature(double density, double inv_mass) { return std::cbrt(4.0 * std::numbers::pi / 3.0 * density * inv_mass); }
+
+// Excitable index whose node-local sample position is nearest `local_point`.
+uint32_t NearestExcitableIndex(const std::vector<vec3> &positions, vec3 local_point) {
+    const auto dist2 = [&](vec3 p) { return glm::dot(p - local_point, p - local_point); };
+    return std::ranges::min_element(positions, {}, dist2) - positions.begin();
+}
+
+// A strike from a physics collision. Its presence marks `force` as the true contact impulse, not a nominal level.
+struct PhysicsStrike {
+    vec3 Direction; // node-local contact direction
+    Impactor Impactor; // striking body's impactor
+};
+
 // Estimate the strike's contact parameters from the Hertz model and enqueue the impact.
 // The half-sine contact-force pulse of duration tau has unit sample sum, so its spectrum is flat
 // at DC and rolls off above ~1/tau: shorter contact is brighter.
 // Impulse magnitude rides in the mode excitation gains, not the pulse.
-void TriggerModalStrike(entt::registry &r, entt::entity e, uint32_t excitable_index, float force, float contact_speed) {
+// `physics`, when set, is a real collision; when unset the strike is a manual mallet hit.
+void TriggerModalStrike(entt::registry &r, entt::entity e, uint32_t excitable_index, float force, float contact_speed, std::optional<PhysicsStrike> physics = std::nullopt) {
     auto &m = r.ctx().get<ModalAudio>();
     const auto slot = FindModalObject(m.Bank, e);
     if (!slot) return;
 
     const auto &modes = r.get<const ModalModes>(e);
     if (excitable_index >= modes.Vertices.size()) return;
-    const vec3 dir = ExciteDirection(r, e, modes.Vertices[excitable_index]);
+    const vec3 dir = physics ? glm::normalize(physics->Direction) : ExciteDirection(r, e, modes.Vertices[excitable_index]);
 
     const auto *cd = r.try_get<const ContactDynamics>(e);
     const auto *mat = r.try_get<const AcousticMaterial>(r.get<const Instance>(e).Entity);
@@ -354,15 +376,21 @@ void TriggerModalStrike(entt::registry &r, entt::entity e, uint32_t excitable_in
     double tau = 1e-4; // seconds
     double accel_amp = 0;
     if (cd && mat) {
-        const auto *device = r.ctx().find<AudioDeviceResource>();
-        const auto *striker_ptr = device ? r.try_get<const Striker>(device->Viewport) : nullptr;
-        const Striker striker = striker_ptr ? *striker_ptr : Striker{};
+        Impactor imp;
+        if (physics) {
+            imp = physics->Impactor;
+        } else {
+            const auto *device = r.ctx().find<AudioDeviceResource>();
+            const auto *striker_ptr = device ? r.try_get<const Striker>(device->Viewport) : nullptr;
+            imp = StrikerImpactor(striker_ptr ? *striker_ptr : Striker{});
+        }
         // Contact time scales linearly with the object's current size.
-        tau = EstimateContactTime(*cd, excitable_index, dir, contact_speed, mat->Properties, striker, UniformScaleRatio(r, e, modes));
-        // Per-strike acceleration-noise amplitude: the impulse magnitude scaled down by material density.
-        accel_amp = ReducedContactMass(*cd, excitable_index, dir, striker) * std::abs(double(contact_speed)) / mat->Properties.Density;
+        tau = EstimateContactTime(*cd, excitable_index, dir, contact_speed, mat->Properties, imp, UniformScaleRatio(r, e, modes));
+        // Acceleration-noise amplitude: contact impulse over density. A physics `force` is the true impulse.
+        // A manual one is nominal, so estimate it from the reduced mass and approach speed.
+        accel_amp = physics ? double(force) / mat->Properties.Density : ReducedContactMass(*cd, excitable_index, dir, imp) * std::abs(double(contact_speed)) / mat->Properties.Density;
     }
-    const float step = float(1.0 / (tau * m.Bank.SampleRate));
+    const auto step = float(1.0 / (tau * m.Bank.SampleRate));
     EnqueueModalEvent(
         m,
         {
@@ -431,7 +459,7 @@ constexpr std::vector<float> ApplyWindow(const std::vector<float> &window, const
     return windowed;
 }
 
-std::optional<float> EstimateFundamentalFrequency(const FFTData &fft) {
+std::optional<float> EstimateFundamentalFrequency(const FFTData &fft, uint32_t sample_rate) {
     const auto *data = fft.Complex;
     const size_t n_bins = fft.NumReal / 2 + 1;
 
@@ -447,7 +475,7 @@ std::optional<float> EstimateFundamentalFrequency(const FFTData &fft) {
     const float threshold = upper[upper.size() / 2] + 15.f;
 
     constexpr size_t W{15}; // Prominence window
-    const size_t min_bin = 50 * fft.NumReal / SampleRate;
+    const size_t min_bin = 50 * fft.NumReal / sample_rate;
     for (size_t i = std::max(min_bin, W); i < n_bins - W; ++i) {
         // Local maximum?
         if (mag_db[i] <= mag_db[i - 1] || mag_db[i] <= mag_db[i + 1] || mag_db[i] < threshold) continue;
@@ -457,16 +485,17 @@ std::optional<float> EstimateFundamentalFrequency(const FFTData &fft) {
         float local_sum = 0;
         for (size_t j = i - W; j <= i + W; ++j) local_sum += mag_db[j];
         const float local_mean = local_sum / (2 * W + 1);
-        if (mag_db[i] - local_mean >= ProminenceThresholdDb) return i * SampleRate / fft.NumReal;
+        if (mag_db[i] - local_mean >= ProminenceThresholdDb) return i * sample_rate / fft.NumReal;
     }
     return std::nullopt;
 }
 
 // Capture a short audio segment shortly after the impact for FFT.
-FFTData ComputeFft(const std::vector<float> &frames) {
-    static constexpr uint32_t FftStartFrame = 30, FftEndFrame = SampleRate / 16;
-    static const auto BHWindow = CreateBlackmanHarris(FftEndFrame - FftStartFrame);
-    return {ApplyWindow(BHWindow, frames.data() + FftStartFrame)};
+FFTData ComputeFft(const std::vector<float> &frames, uint32_t sample_rate) {
+    constexpr uint32_t FftStartFrame = 30;
+    const uint32_t FftEndFrame = sample_rate / 16;
+    const auto window = CreateBlackmanHarris(FftEndFrame - FftStartFrame);
+    return {ApplyWindow(window, frames.data() + FftStartFrame)};
 }
 
 /***** Modal solve jobs *****/
@@ -599,7 +628,10 @@ void LaunchModalSolve(entt::registry &r, entt::entity viewport, entt::entity e) 
     std::optional<float> fundamental;
     if (const auto path = ActiveSamplePath(r, e)) {
         const auto &frames = GetSampleFrames(r, viewport, *path);
-        if (!frames.empty()) fundamental = EstimateFundamentalFrequency(ComputeFft(frames));
+        if (!frames.empty()) {
+            const auto sr = DeviceSampleRate(r);
+            fundamental = EstimateFundamentalFrequency(ComputeFft(frames, sr), sr);
+        }
     }
     auto excite_positions = inputs.Vertices | transform([&](uint32_t v) { return inputs.Positions[v]; }) | to<std::vector<vec3>>();
     // The most recent solve's basis seeds this one when it was over the same tets.
@@ -744,6 +776,36 @@ void RegisterAudioComponentHandlers(entt::registry &r) {
             if (!r.valid(e) || !r.all_of<ModalModes, SoundVertices, Recording>(e)) continue;
             if (r.get<const Recording>(e).Frame == 0) TriggerModalStrike(r, e, GetActiveVertexIndex(r, e), 1.f, 1.f);
         }
+        // Last step's collisions strike the objects they hit.
+        // Keep the strongest impact per object so a multi-point landing reads as one strike.
+        if (auto *contacts = r.ctx().find<PhysicsContactImpacts>(); contacts && !contacts->Events.empty()) {
+            const auto &controls = r.get<const ModalSoundControls>(r.view<const ModalSoundControls>().front());
+            std::vector<const ContactImpact *> strongest; // one entry per distinct struck modal object
+            for (const auto &c : contacts->Events) {
+                if (c.Impulse < controls.MinContactImpulse || c.Speed < controls.MinContactSpeed) continue;
+                if (!r.valid(c.Entity) || !r.all_of<ModalModes, SoundVertices, SoundVerticesModel>(c.Entity)) continue;
+                if (r.get<SoundVerticesModel>(c.Entity) != SoundVerticesModel::Modal) continue;
+                const auto it = std::ranges::find_if(strongest, [&](const ContactImpact *s) { return s->Entity == c.Entity; });
+                if (it == strongest.end()) strongest.push_back(&c);
+                else if (c.Impulse > (*it)->Impulse) *it = &c;
+            }
+            for (const auto *c : strongest) {
+                const auto &modes = r.get<const ModalModes>(c->Entity);
+                if (modes.Positions.empty()) continue;
+                // Bring the world-space contact into the object's node-local frame the modes are defined in.
+                const auto &wt = r.get<const WorldTransform>(c->Entity);
+                const quat inv_rot = glm::conjugate(wt.R);
+                const vec3 local_point = (inv_rot * (c->Point - wt.P)) / wt.S;
+                const vec3 local_dir = inv_rot * c->Direction;
+                // The other body is the impactor: its stiffness, mass, and (sphere-equivalent) curvature shape the contact time.
+                const auto *other_inst = r.valid(c->Other) ? r.try_get<const Instance>(c->Other) : nullptr;
+                const auto *other_mat = other_inst ? r.try_get<const AcousticMaterial>(other_inst->Entity) : nullptr;
+                const auto other_props = other_mat ? other_mat->Properties : materials::acoustic::Steel.Properties;
+                const Impactor impactor{.Material = other_props, .Curvature = SphereEquivalentCurvature(other_props.Density, c->OtherInvMass), .InvMass = c->OtherInvMass};
+                TriggerModalStrike(r, c->Entity, NearestExcitableIndex(modes.Positions, local_point), c->Impulse, c->Speed, PhysicsStrike{local_dir, impactor});
+            }
+            contacts->Events.clear();
+        }
         // Reconcile the live output device: a config change re-inits (and may change the negotiated rate),
         // a mix change just applies level/on-off.
         bool device_rate_changed = false;
@@ -843,16 +905,16 @@ namespace {
 constexpr ImVec2 ChartSize{-1, 160};
 
 // If `normalize_max` is set, normalize the data to this maximum value.
-void WriteWav(const std::vector<float> &frames, const fs::path &file_path, std::optional<float> normalize_max = {}) {
-    static const ma_encoder_config WavEncoderConfig = ma_encoder_config_init(ma_encoding_format_wav, ma_format_f32, 1, SampleRate);
-    static ma_encoder WavEncoder;
-    if (auto status = ma_encoder_init_file(file_path.c_str(), &WavEncoderConfig, &WavEncoder); status != MA_SUCCESS) {
+void WriteWav(const std::vector<float> &frames, const fs::path &file_path, uint32_t sample_rate, std::optional<float> normalize_max = {}) {
+    const ma_encoder_config config = ma_encoder_config_init(ma_encoding_format_wav, ma_format_f32, 1, sample_rate);
+    ma_encoder encoder;
+    if (auto status = ma_encoder_init_file(file_path.c_str(), &config, &encoder); status != MA_SUCCESS) {
         throw std::runtime_error(std::format("Failed to initialize wav file {}. Status: {}", file_path.string(), uint(status)));
     }
     const float mult = normalize_max ? *normalize_max / *max_element(frames) : 1.0f;
     const auto frames_normed = frames | transform([mult](float f) { return f * mult; }) | to<std::vector>();
-    ma_encoder_write_pcm_frames(&WavEncoder, frames_normed.data(), frames_normed.size(), nullptr);
-    ma_encoder_uninit(&WavEncoder);
+    ma_encoder_write_pcm_frames(&encoder, frames_normed.data(), frames_normed.size(), nullptr);
+    ma_encoder_uninit(&encoder);
 }
 
 void PlotFrames(const std::vector<float> &frames, std::string_view label = "Waveform", std::optional<uint> highlight_frame = {}) {
@@ -868,18 +930,17 @@ void PlotFrames(const std::vector<float> &frames, std::string_view label = "Wave
     }
 }
 
-void PlotMagnitudeSpectrum(const std::vector<float> &frames, std::string_view label = "Magnitude spectrum", std::optional<float> highlight_freq = {}) {
+void PlotMagnitudeSpectrum(const std::vector<float> &frames, uint32_t sample_rate, std::string_view label = "Magnitude spectrum", std::optional<float> highlight_freq = {}) {
     static const std::vector<float> *frames_ptr{&frames};
-    static FFTData fft{ComputeFft(frames)};
+    static FFTData fft{ComputeFft(frames, sample_rate)};
     if (&frames != frames_ptr) {
-        fft = ComputeFft(frames);
+        fft = ComputeFft(frames, sample_rate);
         frames_ptr = &frames;
     }
     if (ImPlot::BeginPlot(label.data(), ChartSize)) {
         static constexpr float MinDb = -200;
         const uint32_t N = fft.NumReal, N2 = N / 2;
-        const float fs = SampleRate; // todo flexible sample rate
-        const float fs_n = SampleRate / float(N);
+        const auto fs_n = float(sample_rate) / float(N);
         static std::vector<float> frequency(N2), magnitude(N2);
         frequency.resize(N2);
         magnitude.resize(N2);
@@ -891,7 +952,7 @@ void PlotMagnitudeSpectrum(const std::vector<float> &frames, std::string_view la
         }
 
         ImPlot::SetupAxes("Frequency (Hz)", "Magnitude (dB)");
-        ImPlot::SetupAxisLimits(ImAxis_X1, 0, fs / 2, ImGuiCond_Always);
+        ImPlot::SetupAxisLimits(ImAxis_X1, 0, float(sample_rate) / 2, ImGuiCond_Always);
         ImPlot::SetupAxisLimits(ImAxis_Y1, MinDb, 0, ImGuiCond_Always);
         if (highlight_freq) {
             ImPlot::PlotInfLines("##Highlight", &(*highlight_freq), 1, {ImPlotProp_LineColor, ImGui::GetStyleColorVec4(ImGuiCol_PlotLinesHovered)});
@@ -1081,6 +1142,7 @@ void DrawObjectAudioControls(
     auto model = has_model ? r.get<SoundVerticesModel>(e) : SoundVerticesModel::Samples;
     const auto *recording = r.try_get<const Recording>(e);
     const uint32_t active_vi = excitable ? GetActiveVertexIndex(r, e) : 0;
+    const auto sample_rate = DeviceSampleRate(r); // for the spectrum plots below
 
     if (samples && modal_modes) {
         PushID("SelectAudioModel");
@@ -1155,7 +1217,7 @@ void DrawObjectAudioControls(
             const auto &frames = GetSampleFrames(r, viewport, *path);
             if (!frames.empty()) {
                 PlotFrames(frames, "Waveform", samples->Stopped ? std::optional<uint>{} : std::optional{samples->Frame});
-                PlotMagnitudeSpectrum(frames, "Spectrum");
+                PlotMagnitudeSpectrum(frames, sample_rate, "Spectrum");
             }
         }
     }
@@ -1182,7 +1244,7 @@ void DrawObjectAudioControls(
         const auto &frames = recording->Frames;
         PlotFrames(frames, "Modal impact waveform");
         const auto highlight_freq = hovered_mode_index ? std::optional{modes.Freqs[*hovered_mode_index]} : std::nullopt;
-        PlotMagnitudeSpectrum(frames, "Modal impact spectrum", highlight_freq);
+        PlotMagnitudeSpectrum(frames, sample_rate, "Modal impact spectrum", highlight_freq);
     }
 
     if (CollapsingHeader("Modal data charts")) {
@@ -1214,9 +1276,13 @@ void DrawObjectAudioControls(
         fe.Slider<&ModalGain::Value>("Gain");
         fe.Drag<&ModalTuning::FundamentalFreq>("Fundamental (Hz)", 1.f, "%.1f");
         fe.Slider<&ModalTuning::T60Scale>("T60 scale");
+        SeparatorText("All objects");
         ui::Edit fv{r, viewport};
         fv.Slider<&ModalSoundControls::ClickGain>("Click");
-        MeshEditor::HelpMarker("Level of the rigid-body acceleration-noise click, shared by all objects.");
+        MeshEditor::HelpMarker("Level of the rigid-body acceleration-noise click.");
+        fv.Slider<&ModalSoundControls::MinContactImpulse>("Min contact impulse", "%.3f");
+        fv.Slider<&ModalSoundControls::MinContactSpeed>("Min contact speed", "%.3f");
+        MeshEditor::HelpMarker("A physics collision sounds only above both floors.");
     }
 
     const bool is_recording = recording && !recording->Complete();
@@ -1238,9 +1304,10 @@ void DrawObjectAudioControls(
             const auto name = GetName(r, e);
             // Save wav files for both the modal and real-world impact sounds.
             static const auto WavOutDir = fs::path{".."} / "audio_samples";
-            WriteWav(recording->Frames, WavOutDir / std::format("{}-modal", name));
+            const auto sr = DeviceSampleRate(r);
+            WriteWav(recording->Frames, WavOutDir / std::format("{}-modal", name), sr);
             if (const auto path = ActiveSamplePath(r, e)) {
-                WriteWav(GetSampleFrames(r, viewport, *path), WavOutDir / std::format("{}-impact", name));
+                WriteWav(GetSampleFrames(r, viewport, *path), WavOutDir / std::format("{}-impact", name), sr);
             }
         }
     }
