@@ -6,6 +6,7 @@
 
 #include <entt/entity/fwd.hpp>
 
+#include <optional>
 #include <string>
 
 enum class ViewportShadingMode : uint8_t {
@@ -26,6 +27,13 @@ enum class AnisotropicFilterLevel : uint8_t {
 // Levels are consecutive powers of two: Off->1, X2->2, ... X16->16.
 constexpr float ToMaxAnisotropy(AnisotropicFilterLevel level) { return float(1u << unsigned(level)); }
 
+// Accumulation motion blur (Material Preview/Rendered only, while playing or scrubbing).
+// Shutter is the time in frames between shutter open and close, centered on the frame (Blender's default).
+struct MotionBlur {
+    float Shutter{0.5f};
+    uint8_t Samples{8}; // Sub-frame renders averaged per output frame.
+};
+
 // Component on the viewport singleton entity. Changes require command buffer re-recording.
 struct ViewportDisplay {
     ViewportShadingMode ViewportShading{ViewportShadingMode::Solid};
@@ -37,7 +45,11 @@ struct ViewportDisplay {
     uint8_t NormalOverlays{0}; // Bitmask of Element
     DebugChannel DebugChannel{DebugChannel::None};
     AnisotropicFilterLevel AnisotropicFilter{AnisotropicFilterLevel::X16};
+    std::optional<MotionBlur> MotionBlur; // Disengaged = off.
 };
+
+constexpr MotionBlur EffectiveMotionBlur(const ViewportDisplay &d) { return d.MotionBlur.value_or(MotionBlur{}); }
+constexpr uint32_t MotionBlurSamples(const ViewportDisplay &d) { return std::max(1u, uint32_t(EffectiveMotionBlur(d).Samples)); }
 
 // Scene lights/world toggles + studio env controls
 struct PBRViewportLighting {

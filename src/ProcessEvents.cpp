@@ -784,11 +784,10 @@ bool SyncViewportRenderResources(entt::registry &r, entt::entity viewport) {
         const vk::DescriptorImageInfo silhouette_sampler{*sil.Resources->ImageSampler, *sil.Resources->OffscreenImage.View, vk::ImageLayout::eShaderReadOnlyOptimal};
         const vk::DescriptorImageInfo object_id_sampler{*sil_edge.Resources->ImageSampler, *sil_edge.Resources->OffscreenImage.View, vk::ImageLayout::eShaderReadOnlyOptimal};
         const vk::DescriptorImageInfo depth_sampler{*sil_edge.Resources->DepthSampler, *sil_edge.Resources->DepthImage.View, vk::ImageLayout::eDepthStencilReadOnlyOptimal};
-        const vk::DescriptorImageInfo color_sampler{*main.Resources->NearestSampler, *main.Resources->ColorImage.View, vk::ImageLayout::eShaderReadOnlyOptimal};
+        const auto color_sampler = main.ColorSamplerInfo();
         const vk::DescriptorImageInfo line_data_sampler{*main.Resources->NearestSampler, *main.Resources->LineDataImage.View, vk::ImageLayout::eShaderReadOnlyOptimal};
-        // Transmission resources are lazy. When unallocated, point the descriptor at ColorImage so the binding stays valid.
-        // The shader's UseRealTransmission flag is 0 in that state, so it's never sampled.
-        const vk::DescriptorImageInfo transmission_sampler = main.Transmission ? vk::DescriptorImageInfo{*main.Transmission->Sampler, *main.Transmission->Image.View, vk::ImageLayout::eShaderReadOnlyOptimal} : vk::DescriptorImageInfo{*main.Resources->NearestSampler, *main.Resources->ColorImage.View, vk::ImageLayout::eShaderReadOnlyOptimal};
+        const auto transmission_sampler = main.TransmissionSamplerInfo();
+        const auto motion_blur_accum_sampler = main.MotionBlurAccumSamplerInfo();
         const auto selection_bitset = buffers.SelectionBitset.GetDescriptor(GpuBuffers::SelectionBitsetWords);
         const auto object_pick_seen_bitset = buffers.ObjectPickSeenBitset.GetDescriptor(GpuBuffers::ObjectPickBitsetWords);
         vk.Device.updateDescriptorSets(
@@ -805,6 +804,7 @@ bool SyncViewportRenderResources(entt::registry &r, entt::entity viewport) {
                 slots.MakeSamplerWrite(sel_slots.ColorSampler, color_sampler),
                 slots.MakeSamplerWrite(sel_slots.LineDataSampler, line_data_sampler),
                 slots.MakeSamplerWrite(sel_slots.TransmissionSampler, transmission_sampler),
+                slots.MakeSamplerWrite(sel_slots.MotionBlurAccumSampler, motion_blur_accum_sampler),
             },
             {}
         );
@@ -1606,28 +1606,35 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
         const auto &range = r.get<const TimelineRange>(viewport);
         auto &playback = r.get<TimelinePlayback>(viewport);
         auto &pf = r.get<PlaybackFrame>(viewport).Value;
-        if (playback.Playing) {
-            const auto &frame_state = r.ctx().get<FrameState>();
-            pf += frame_state.FixedFrameStep ? 1.f : frame_state.DeltaTime * range.Fps;
-            if (pf > float(range.EndFrame)) pf = float(range.StartFrame);
-            const int new_frame = int(std::floor(pf));
-            if (new_frame != playback.CurrentFrame) r.patch<TimelinePlayback>(viewport, [&](auto &p) { p.CurrentFrame = new_frame; });
-        } else {
-            pf = float(playback.CurrentFrame);
-        }
-        anim_advanced = playback.CurrentFrame != r.get<LastEvaluatedFrame>(viewport).Value || !reactive<changes::ActiveAnimationClip>(r).empty();
+        auto &frame_state = r.ctx().get<FrameState>();
+        anim_advanced = [&] {
+            // A motion blur sub-frame pins `pf`; hold the displayed frame and re-evaluate poses there.
+            if (frame_state.MotionBlurSubFrame) return true;
+            if (playback.Playing) {
+                pf += frame_state.FixedFrameStep ? 1.f : frame_state.DeltaTime * range.Fps;
+                if (pf > float(range.EndFrame)) pf = float(range.StartFrame);
+                const int new_frame = int(std::floor(pf));
+                if (new_frame != playback.CurrentFrame) r.patch<TimelinePlayback>(viewport, [&](auto &p) { p.CurrentFrame = new_frame; });
+            } else {
+                pf = float(playback.CurrentFrame);
+            }
+            return playback.CurrentFrame != r.get<LastEvaluatedFrame>(viewport).Value || !reactive<changes::ActiveAnimationClip>(r).empty();
+        }();
 
         const bool cache_invalid = r.all_of<PhysicsCacheInvalid>(viewport);
         if (cache_invalid) r.remove<PhysicsCacheInvalid>(viewport);
         const bool range_changed = !reactive<changes::TimelineRange>(r).empty();
         const int from = r.get<LastEvaluatedFrame>(viewport).Value;
+        // A motion-blur sub-frame pins the frame (from == to), so this no-ops; bodies come from interpolation instead.
         if (physics::AdvancePlayback(r, viewport, from, playback.CurrentFrame, range.StartFrame, range.EndFrame, range.Fps, range_changed, cache_invalid)) {
             request(RenderRequest::Submit);
         }
 
         if (anim_advanced) r.get<LastEvaluatedFrame>(viewport).Value = playback.CurrentFrame;
         // Timeline frames are displayed 1-based, but animation time starts at t=0 on frame 1.
-        const auto eval_seconds = float(std::max(0, playback.CurrentFrame - 1)) / range.Fps;
+        // A motion-blur sub-frame samples the continuous `pf` to evaluate clips between frames; the normal
+        // path stays on the integer frame.
+        const auto eval_seconds = (frame_state.MotionBlurSubFrame ? std::max(0.f, pf - 1.f) : float(std::max(0, playback.CurrentFrame - 1))) / range.Fps;
         const auto clip_time = [eval_seconds](const auto &clip) {
             return clip.DurationSeconds > 0 ? std::fmod(eval_seconds, clip.DurationSeconds) : 0.f;
         };
@@ -1999,8 +2006,7 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
             // SubmitViewport's full descriptor block runs only on resize, so write the transmission sampler
             // descriptor inline whenever EnsureTransmissionResources flips state.
             const auto refresh_transmission_descriptor = [&] {
-                const auto &main = pipelines.Main;
-                const vk::DescriptorImageInfo info = main.Transmission ? vk::DescriptorImageInfo{*main.Transmission->Sampler, *main.Transmission->Image.View, vk::ImageLayout::eShaderReadOnlyOptimal} : vk::DescriptorImageInfo{*main.Resources->NearestSampler, *main.Resources->ColorImage.View, vk::ImageLayout::eShaderReadOnlyOptimal};
+                const auto info = pipelines.Main.TransmissionSamplerInfo();
                 vk.Device.updateDescriptorSets({slots.MakeSamplerWrite(r.ctx().get<const SelectionSlots>().TransmissionSampler, info)}, {});
                 request(RenderRequest::ReRecord);
             };

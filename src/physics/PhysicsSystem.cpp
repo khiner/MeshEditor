@@ -1338,6 +1338,43 @@ void CollectContactImpacts(PhysicsState &s, entt::registry &r) {
     raw.clear();
 }
 
+// Write a body's world pose to ECS and propagate it to the body's children.
+void SyncBodyWorldTransform(entt::registry &r, entt::entity entity, const vec3 &pos, const quat &rot) {
+    r.patch<WorldTransform>(entity, [&](WorldTransform &t) {
+        t.P = pos;
+        t.R = rot;
+    });
+    for (const auto child : Children{&r, entity}) UpdateWorldTransformRecursive(r, child);
+}
+
+// Step the sim one frame, collect contacts, record `frame`'s poses into the cache, and sync active
+// bodies to WorldTransform. Advances the bake frontier.
+void BakeFrame(entt::registry &r, entt::entity viewport, PhysicsState &s, uint32_t frame, float fps) {
+    // Each collision step integrates (dt * TimeScale) / SubstepsPerFrame seconds of sim time.
+    const auto &settings = r.get<const PhysicsSimulationSettings>(viewport);
+    const float dt = fps > 0 ? 1.f / fps : 1.f / 60.f;
+    s.System->Update(dt * settings.TimeScale, settings.SubstepsPerFrame, &s.TempAllocator, &s.JobSystem);
+    CollectContactImpacts(s, r);
+    // Sync Jolt -> ECS WorldTransform only. PhysicsVelocity is authored-only; live velocity stays in Jolt.
+    // WT is owned by the simulator during sim; local Transform is the authored pose, restored on Rebuild.
+    const auto &bi = s.System->GetBodyInterface();
+    const bool record = frame >= s.CacheStartFrame && frame <= s.CacheEndFrame;
+    const auto idx = frame - s.CacheStartFrame;
+    for (auto [entity, handle, cache] : r.view<const PhysicsBodyHandle, BodyPoseCache>().each()) {
+        const BodyID id{handle.BodyId};
+        if (bi.GetMotionType(id) == EMotionType::Static) continue; // No pose change to cache or sync.
+        const auto pos = FromJolt(bi.GetPosition(id));
+        const auto rot = FromJolt(bi.GetRotation(id));
+        if (record) {
+            if (cache.Frames.size() <= idx) cache.Frames.resize(idx + 1);
+            cache.Frames[idx] = CachedPose{pos, rot};
+        }
+        if (!bi.IsActive(id)) continue;
+        SyncBodyWorldTransform(r, entity, pos, rot);
+    }
+    if (record) s.Baked = frame;
+}
+
 } // namespace
 
 namespace physics {
@@ -1397,34 +1434,7 @@ bool AdvancePlayback(entt::registry &r, entt::entity viewport, int from_frame, i
     // The cache is the timeline: bake one step past the frontier, restore within it, or reset at the range start.
     if (from_frame == to_frame) return false; // playhead didn't move
     if (to_frame == from_frame + 1 && (!s.Baked || uint32_t(to_frame) > *s.Baked)) {
-        // Bake one new frame. Each collision step integrates (dt * TimeScale) / SubstepsPerFrame seconds of sim time.
-        const auto &settings = r.get<const PhysicsSimulationSettings>(viewport);
-        const float dt = fps > 0 ? 1.f / fps : 1.f / 60.f;
-        s.System->Update(dt * settings.TimeScale, settings.SubstepsPerFrame, &s.TempAllocator, &s.JobSystem);
-        CollectContactImpacts(s, r);
-        // Sync Jolt -> ECS WorldTransform only. PhysicsVelocity is authored-only; live velocity stays in Jolt.
-        // WT is owned by the simulator during sim; local Transform is the authored pose, restored on Rebuild.
-        const auto &bi = s.System->GetBodyInterface();
-        const uint32_t frame = to_frame;
-        const bool record = frame >= s.CacheStartFrame && frame <= s.CacheEndFrame;
-        const auto idx = frame - s.CacheStartFrame;
-        for (auto [entity, handle, cache] : r.view<const PhysicsBodyHandle, BodyPoseCache>().each()) {
-            const BodyID id{handle.BodyId};
-            if (bi.GetMotionType(id) == EMotionType::Static) continue; // No pose change to cache or sync.
-            const auto pos = FromJolt(bi.GetPosition(id));
-            const auto rot = FromJolt(bi.GetRotation(id));
-            if (record) {
-                if (cache.Frames.size() <= idx) cache.Frames.resize(idx + 1);
-                cache.Frames[idx] = CachedPose{pos, rot};
-            }
-            if (!bi.IsActive(id)) continue;
-            r.patch<WorldTransform>(entity, [&](WorldTransform &t) {
-                t.P = pos;
-                t.R = rot;
-            });
-            for (const auto child : Children{&r, entity}) UpdateWorldTransformRecursive(r, child);
-        }
-        if (record) s.Baked = frame;
+        BakeFrame(r, viewport, s, uint32_t(to_frame), fps);
     } else if (s.Baked && uint32_t(to_frame) > s.CacheStartFrame && uint32_t(to_frame) <= *s.Baked) {
         // Restore a cached frame without re-simulating.
         const auto idx = uint32_t(to_frame) - s.CacheStartFrame;
@@ -1434,11 +1444,7 @@ bool AdvancePlayback(entt::registry &r, entt::entity viewport, int from_frame, i
             const auto &p = *cache.Frames[idx];
             // DontActivate: scrub/replay shouldn't wake sleeping bodies. The cache is the timeline, not a sim resume point.
             bi.SetPositionAndRotationWhenChanged(BodyID{handle.BodyId}, ToJolt(p.P), ToJolt(p.R), EActivation::DontActivate);
-            r.patch<WorldTransform>(entity, [&](WorldTransform &t) {
-                t.P = p.P;
-                t.R = p.R;
-            });
-            for (const auto child : Children{&r, entity}) UpdateWorldTransformRecursive(r, child);
+            SyncBodyWorldTransform(r, entity, p.P, p.R);
         }
     } else if (to_frame == range_start_frame) {
         Rebuild(r); // Reset sim: covers wrap-after-play and user-initiated jump-to-start.
@@ -1446,6 +1452,32 @@ bool AdvancePlayback(entt::registry &r, entt::entity viewport, int from_frame, i
         return false; // scrub past the bake frontier — hold current pose until play resumes baking
     }
     return true;
+}
+
+void BakeThrough(entt::registry &r, entt::entity viewport, int through_frame, float fps) {
+    if (!HasBodies(r)) return;
+    auto &s = r.ctx().get<PhysicsState>();
+    if (!s.Baked) return; // Bake ahead only from a contiguous frontier, where the live sim matches Baked.
+    const uint32_t target = std::min(uint32_t(std::max(through_frame, 1)), s.CacheEndFrame);
+    while (*s.Baked < target) BakeFrame(r, viewport, s, *s.Baked + 1, fps);
+}
+
+void SamplePosesAtFrame(entt::registry &r, float frame) {
+    if (!HasBodies(r)) return;
+    auto &s = r.ctx().get<PhysicsState>();
+    if (!s.Baked) return;
+    // Interpolate cached poses at the (possibly fractional) frame, clamped to the baked range.
+    const float clamped = std::clamp(frame, float(s.CacheStartFrame), float(*s.Baked));
+    const uint32_t lo = uint32_t(std::floor(clamped));
+    const uint32_t hi = std::min(lo + 1, *s.Baked);
+    const float t = clamped - float(lo);
+    const auto lo_idx = lo - s.CacheStartFrame, hi_idx = hi - s.CacheStartFrame;
+    for (auto [entity, handle, cache] : r.view<const PhysicsBodyHandle, const BodyPoseCache>().each()) {
+        if (lo_idx >= cache.Frames.size() || !cache.Frames[lo_idx]) continue; // Body not simulated at this frame.
+        const auto &a = *cache.Frames[lo_idx];
+        const auto &b = hi_idx < cache.Frames.size() && cache.Frames[hi_idx] ? *cache.Frames[hi_idx] : a;
+        SyncBodyWorldTransform(r, entity, glm::mix(a.P, b.P, t), glm::slerp(a.R, b.R, t));
+    }
 }
 
 void Init(entt::registry &r) {

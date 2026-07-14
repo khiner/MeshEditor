@@ -132,7 +132,7 @@ using Action = MergedVariantT<
     Actions,
     Replace<::Camera>, Replace<WorkspaceLights>,
     Update<TransformGizmo::Type>, Update<TransformGizmo::Mode>,
-    Update<DebugChannel>, Update<AnisotropicFilterLevel>>;
+    Update<DebugChannel>, Update<AnisotropicFilterLevel>, Update<std::optional<MotionBlur>>>;
 
 void Apply(entt::registry &, entt::entity viewport, const Action &);
 } // namespace action::view

@@ -15,23 +15,24 @@ using SelectionBuildFn = std::function<std::vector<SelectionDrawInfo>(DrawListBu
 // RAII for the descriptor-slot leases used by the selection compute/render pipeline.
 struct SelectionSlots {
     uint32_t HeadImage{}, SelectionCounter{}, ObjectPickKey{}, ElementPickCandidates{}, ObjectPickSeenBits{}, SelectionBitset{};
-    uint32_t ObjectIdSampler{}, DepthSampler{}, SilhouetteSampler{}, ColorSampler{}, LineDataSampler{}, TransmissionSampler{};
+    uint32_t ObjectIdSampler{}, DepthSampler{}, SilhouetteSampler{}, ColorSampler{}, LineDataSampler{}, TransmissionSampler{}, MotionBlurAccumSampler{};
 
     using Entry = std::pair<SlotType, uint32_t SelectionSlots::*>;
-    static constexpr std::array<Entry, 12> Entries{{
-        {SlotType::Image, &SelectionSlots::HeadImage},
-        {SlotType::Buffer, &SelectionSlots::SelectionCounter},
-        {SlotType::Buffer, &SelectionSlots::ObjectPickKey},
-        {SlotType::Buffer, &SelectionSlots::ElementPickCandidates},
-        {SlotType::Buffer, &SelectionSlots::ObjectPickSeenBits},
-        {SlotType::Buffer, &SelectionSlots::SelectionBitset},
-        {SlotType::Sampler, &SelectionSlots::ObjectIdSampler},
-        {SlotType::Sampler, &SelectionSlots::DepthSampler},
-        {SlotType::Sampler, &SelectionSlots::SilhouetteSampler},
-        {SlotType::Sampler, &SelectionSlots::ColorSampler},
-        {SlotType::Sampler, &SelectionSlots::LineDataSampler},
-        {SlotType::Sampler, &SelectionSlots::TransmissionSampler},
-    }};
+    static constexpr std::array Entries{
+        Entry{SlotType::Image, &SelectionSlots::HeadImage},
+        Entry{SlotType::Buffer, &SelectionSlots::SelectionCounter},
+        Entry{SlotType::Buffer, &SelectionSlots::ObjectPickKey},
+        Entry{SlotType::Buffer, &SelectionSlots::ElementPickCandidates},
+        Entry{SlotType::Buffer, &SelectionSlots::ObjectPickSeenBits},
+        Entry{SlotType::Buffer, &SelectionSlots::SelectionBitset},
+        Entry{SlotType::Sampler, &SelectionSlots::ObjectIdSampler},
+        Entry{SlotType::Sampler, &SelectionSlots::DepthSampler},
+        Entry{SlotType::Sampler, &SelectionSlots::SilhouetteSampler},
+        Entry{SlotType::Sampler, &SelectionSlots::ColorSampler},
+        Entry{SlotType::Sampler, &SelectionSlots::LineDataSampler},
+        Entry{SlotType::Sampler, &SelectionSlots::TransmissionSampler},
+        Entry{SlotType::Sampler, &SelectionSlots::MotionBlurAccumSampler},
+    };
 
     explicit SelectionSlots(DescriptorSlots &slots) : Slots(&slots) {
         for (const auto &[type, field] : Entries) this->*field = slots.Allocate(type);

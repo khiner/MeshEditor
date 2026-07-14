@@ -997,6 +997,20 @@ void RenderControls(entt::registry &r, entt::entity viewport) {
                 "8x\0"
                 "16x\0"
             );
+            if (CollapsingHeader("Motion blur")) {
+                if (bool enabled = settings.MotionBlur.has_value(); Checkbox("Enabled", &enabled)) {
+                    f.Set<&ViewportDisplay::MotionBlur>(enabled ? std::optional{MotionBlur{}} : std::optional<MotionBlur>{});
+                }
+                if (settings.MotionBlur) {
+                    auto mb = *settings.MotionBlur;
+                    bool changed = SliderFloat("Shutter (frames)", &mb.Shutter, 0.f, 2.f);
+                    if (uint32_t samples = mb.Samples; SliderUInt("Samples", &samples, 2, 32)) {
+                        mb.Samples = uint8_t(samples);
+                        changed = true;
+                    }
+                    if (changed) f.Set<&ViewportDisplay::MotionBlur>(std::optional{mb});
+                }
+            }
             // Intentional direct registry mutation outside Apply - not replayable document state.
             if (Button("Recompile shaders")) r.emplace_or_replace<PendingShaderRecompile>(viewport);
 

@@ -5,6 +5,7 @@
 #include "Reactive.h"
 #include "Stores.h"
 #include "Timer.h"
+#include "animation/AnimationTimeline.h"
 #include "mesh/Mesh.h"
 #include "mesh/MeshStore.h"
 #include "mesh/Primitives.h"
@@ -42,6 +43,7 @@ struct ViewportRenderResources {
 #ifdef MVK_FORCE_STAGED_TRANSFERS
     vk::UniqueCommandBuffer TransferCommandBuffer;
 #endif
+    vk::UniqueCommandBuffer MotionBlurCommandBuffer; // Reused for the clear/accumulate/resolve motion blur passes.
     vk::UniqueFence RenderFence;
 };
 
@@ -91,6 +93,81 @@ bool AdvanceAndRecord(entt::registry &r, entt::entity viewport, bool force_full)
     RecordViewportFrame(r, viewport, TakeRenderRequest(r), force_full);
     return true;
 }
+
+// Motion blur applies in MaterialPreview/Rendered while playing, scrubbing, or capturing.
+bool MotionBlurActive(const entt::registry &r, entt::entity viewport) {
+    const auto &display = r.get<const ViewportDisplay>(viewport);
+    if (display.ViewportShading != ViewportShadingMode::MaterialPreview && display.ViewportShading != ViewportShadingMode::Rendered) return false;
+    const auto &frame_state = r.ctx().get<const FrameState>();
+    if (!display.MotionBlur && !frame_state.Capturing) return false;
+    return r.get<const TimelinePlayback>(viewport).Playing || frame_state.Scrubbing || frame_state.Capturing;
+}
+
+// Render N sub-frame samples across the shutter (centered on the current frame), average them in
+// scene-linear, then draw overlays sharp over the blur. Restores the settled frame afterward.
+void RunMotionBlurAccumulation(entt::registry &r, entt::entity viewport) {
+    const Timer timer{"RunMotionBlurAccumulation"};
+    const auto &vk = r.ctx().get<const VulkanResources>();
+    auto &pipelines = r.ctx().get<Pipelines>();
+    auto &resources = r.ctx().get<ViewportRenderResources>();
+    auto &frame_state = r.ctx().get<FrameState>();
+
+    const auto &display = r.get<const ViewportDisplay>(viewport);
+    const auto mb = EffectiveMotionBlur(display);
+    const auto samples = MotionBlurSamples(display);
+    const auto &range = r.get<const TimelineRange>(viewport);
+    const auto &playback = r.get<const TimelinePlayback>(viewport);
+    const int current_frame = playback.CurrentFrame;
+    const float settled_pf = r.get<const PlaybackFrame>(viewport).Value;
+
+    // Shutter centered on the current frame (Blender's default), clamped to the timeline range.
+    const float half = mb.Shutter * 0.5f;
+    const float lo = std::max(float(range.StartFrame), float(current_frame) - half);
+    const float hi = std::min(float(range.EndFrame), float(current_frame) + half);
+
+    // Cache physics through the shutter's forward half so centered sampling has both endpoints (forward playback only).
+    if (playback.Playing) physics::BakeThrough(r, viewport, int(std::ceil(hi)), range.Fps);
+
+    // Allocate the accum target on first use; point its sampler descriptor at it once allocated.
+    if (pipelines.Main.EnsureMotionBlurResources(vk.Device, vk.PhysicalDevice)) {
+        const auto info = pipelines.Main.MotionBlurAccumSamplerInfo();
+        vk.Device.updateDescriptorSets({r.ctx().get<DescriptorSlots>().MakeSamplerWrite(r.ctx().get<const SelectionSlots>().MotionBlurAccumSampler, info)}, {});
+    }
+
+    const auto main_cb = *resources.RenderCommandBuffer;
+
+    // Evaluate poses at `pf` (animation + physics), then record and run one frame of `phase`.
+    // Each sub-frame rewrites the mapped pose buffers the previous one is still reading, so the frames can't overlap.
+    const auto render_at = [&](float pf, RenderPhase phase) {
+        physics::SamplePosesAtFrame(r, pf);
+        r.get<PlaybackFrame>(viewport).Value = pf;
+        frame_state.MotionBlurSubFrame = true;
+        ProcessComponentEvents(r, viewport);
+        frame_state.MotionBlurSubFrame = false;
+        TakeRenderRequest(r);
+        RecordRenderCommandBuffer(r, viewport, main_cb, /*silhouette_only=*/false, phase);
+        SubmitRecordedFrame(r);
+        WaitForRender(r);
+    };
+
+    { // Zero the accumulation. Its own submit: the sub-frame renders additively blend onto it.
+        const auto mb_cb = *resources.MotionBlurCommandBuffer;
+        const auto fence = *resources.RenderFence;
+        RecordMotionBlurClear(r, mb_cb);
+        vk.Queue.submit(vk::SubmitInfo{}.setCommandBuffers(mb_cb), fence);
+        WaitFor(fence, vk.Device);
+    }
+
+    // Shade the scene at each sub-frame time, each render accumulating itself.
+    for (uint32_t i = 0; i < samples; ++i) {
+        render_at(samples == 1 ? float(current_frame) : lo + (hi - lo) * (float(i) + 0.5f) / float(samples), RenderPhase::SceneAccumulate);
+    }
+    // Average the accumulation, lay down the settled frame's depth, and draw overlays sharp over the blur.
+    render_at(float(current_frame), RenderPhase::ResolveOverlays);
+
+    r.get<PlaybackFrame>(viewport).Value = settled_pf;
+    frame_state.RenderPending = false; // All motion blur submits were waited on internally.
+}
 } // namespace
 
 bool ViewportImageReady(const entt::registry &r) {
@@ -104,6 +181,21 @@ void SubmitViewport(entt::registry &r, entt::entity viewport, vk::Fence viewport
     ProcessComponentEvents(r, viewport);
     r.ctx().get<ViewportConsumerFence>().Value = vk::Fence{};
     if (!ViewportImageReady(r)) return;
+    auto &frame_state = r.ctx().get<FrameState>();
+    if (MotionBlurActive(r, viewport)) {
+        // Each accumulation costs many renders, so only run one when something changed.
+        // (Otherwise the frame already on screen is what it would produce.)
+        if (TakeRenderRequest(r) != RenderRequest::None) {
+            RunMotionBlurAccumulation(r, viewport);
+            frame_state.MotionBlurred = true;
+        }
+        return;
+    }
+    // Blur just ended (playback stopped, or the playhead was released): replace the blurred frame with a sharp one.
+    if (frame_state.MotionBlurred) {
+        frame_state.MotionBlurred = false;
+        r.ctx().get<PendingRenderRequest>().Value = RenderRequest::ReRecord;
+    }
     const auto render_request = TakeRenderRequest(r);
     if (render_request == RenderRequest::None) return;
 
@@ -161,6 +253,7 @@ entt::entity InitEngine(entt::registry &r, VulkanResources vc) {
 #ifdef MVK_FORCE_STAGED_TRANSFERS
         .TransferCommandBuffer = std::move(vc.Device.allocateCommandBuffersUnique({*one_shot.Pool, vk::CommandBufferLevel::ePrimary, 1}).front()),
 #endif
+        .MotionBlurCommandBuffer = std::move(vc.Device.allocateCommandBuffersUnique({*one_shot.Pool, vk::CommandBufferLevel::ePrimary, 1}).front()),
         .RenderFence = vc.Device.createFenceUnique({}),
     });
 

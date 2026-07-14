@@ -18,4 +18,8 @@ struct FrameState {
     bool BoxSelectStaged{false}; // A box-select staged this gesture, so its release emits the terminal action.
     bool OverlayControlsHovered{false};
     bool RenderPending{false}; // GPU render submitted but not yet waited on
+    bool Scrubbing{false}; // Timeline frame marker is held
+    bool MotionBlurred{false}; // Last viewport render was motion blurred
+    bool MotionBlurSubFrame{false}; // A pinned sub-frame pf is being evaluated for motion blur accumulation
+    bool Capturing{false}; // A video-recording run is active; forces motion blur on regardless of the viewport toggle
 };

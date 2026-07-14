@@ -87,10 +87,27 @@ struct MainPipeline {
         vk::UniqueFramebuffer Framebuffer;
     };
 
+    // Scene-linear HDR target that motion blur additively accumulates sub-frame renders into.
+    // Allocated on demand only while motion blur is active. Sampled through ResourcesT::NearestSampler.
+    struct MotionBlurResourcesT {
+        MotionBlurResourcesT(vk::Extent2D, vk::Device, vk::PhysicalDevice, vk::RenderPass accum_render_pass);
+
+        mvk::ImageResource AccumImage;
+        vk::UniqueFramebuffer Framebuffer;
+    };
+
     void SetExtent(vk::Extent2D, vk::Device, vk::PhysicalDevice);
     // Idempotent: allocates if `wanted` and not already at the right extent; releases if not wanted.
     // Returns true when the allocated state changed (caller should re-write the descriptor write).
     bool EnsureTransmissionResources(vk::Extent2D, vk::Device, vk::PhysicalDevice, bool wanted);
+    // Allocate the motion blur accumulation target at the current color extent if absent. Returns true when it was allocated.
+    bool EnsureMotionBlurResources(vk::Device, vk::PhysicalDevice);
+
+    vk::DescriptorImageInfo ColorSamplerInfo() const;
+    // Transmission and motion blur targets are lazy. Both fall back to ColorImage when unallocated so the
+    // binding stays valid; nothing samples them in that state.
+    vk::DescriptorImageInfo TransmissionSamplerInfo() const;
+    vk::DescriptorImageInfo MotionBlurAccumSamplerInfo() const;
 
     PipelineRenderer Renderer;
     // Transmission pre-pass: same attachment layout as Renderer but an HDR color target.
@@ -98,8 +115,11 @@ struct MainPipeline {
     ShaderPipeline PrepassBackground; // Background variant outputting scene-linear radiance
     vk::UniqueRenderPass LineAARenderPass;
     ShaderPipeline LineAAComposite;
+    vk::UniqueRenderPass MotionBlurAccumRenderPass; // Single HDR attachment, load + additive blend.
+    ShaderPipeline MotionBlurAccumulate;
     std::unique_ptr<ResourcesT> Resources;
     std::unique_ptr<TransmissionResourcesT> Transmission;
+    std::unique_ptr<MotionBlurResourcesT> MotionBlur;
 
     PbrCompiler Compiler;
 };

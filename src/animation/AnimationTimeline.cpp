@@ -46,8 +46,9 @@ int ComputeMajorStep(float pixels_per_frame) {
 }
 } // namespace
 
-std::optional<action::timeline::Action> RenderAnimationTimeline(const TimelineRange &range, const TimelinePlayback &playback, const AnimationTimelineView &view, const AnimationIcons &icons) {
+std::optional<action::timeline::Action> RenderAnimationTimeline(const TimelineRange &range, const TimelinePlayback &playback, const AnimationTimelineView &view, const AnimationIcons &icons, bool &scrubbing) {
     std::optional<action::timeline::Action> action;
+    scrubbing = false;
 
     // --- Transport bar ---
     const float w = GetContentRegionAvail().x;
@@ -156,8 +157,12 @@ std::optional<action::timeline::Action> RenderAnimationTimeline(const TimelineRa
         const auto &io = GetIO();
         // Click/drag in header to scrub frame
         const bool in_header = io.MousePos.y >= p0.y && io.MousePos.y < p0.y + HeaderHeight;
-        if ((in_header && IsMouseClicked(ImGuiMouseButton_Left)) || (timeline_active && IsMouseDragging(ImGuiMouseButton_Left) && io.MouseClickedPos[0].y < p0.y + HeaderHeight)) {
-            action = action::timeline::SetFrame{int(std::round(x_to_frame(io.MousePos.x)))};
+        // Held from the header click until release, whether or not the frame is moving this tick.
+        scrubbing = timeline_active && io.MouseClickedPos[0].y < p0.y + HeaderHeight;
+        if ((in_header && IsMouseClicked(ImGuiMouseButton_Left)) || (scrubbing && IsMouseDragging(ImGuiMouseButton_Left))) {
+            if (const int frame = int(std::round(x_to_frame(io.MousePos.x))); frame != playback.CurrentFrame) {
+                action = action::timeline::SetFrame{frame};
+            }
         }
         // Vertical scroll (or pinch) → zoom, horizontal scroll → pan
         if (io.MouseWheel != 0.0f) {

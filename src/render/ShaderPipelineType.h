@@ -2,6 +2,7 @@
 
 enum class ShaderPipelineType {
     Fill,
+    FillDepth,
     EdgeQuad,
     Line,
     LineOverlayFaceNormals,
@@ -9,6 +10,7 @@ enum class ShaderPipelineType {
     Point,
     Grid,
     Background,
+    MotionBlurResolve,
     SilhouetteDepthObject,
     SilhouetteEdgeDepthObject,
     SilhouetteEdgeDepth,

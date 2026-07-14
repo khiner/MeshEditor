@@ -23,4 +23,10 @@ std::optional<uint32_t> BakedThrough(const entt::registry &); // nullopt if noth
 
 // Advance physics playback from from_frame to to_frame. Returns true if a body pose changed.
 bool AdvancePlayback(entt::registry &, entt::entity viewport, int from_frame, int to_frame, int range_start_frame, int range_end_frame, float fps, bool range_changed, bool cache_invalid);
+
+// Bake the cache forward to `through_frame` (capped at the cache end), from a contiguous frontier only.
+void BakeThrough(entt::registry &, entt::entity viewport, int through_frame, float fps);
+
+// Interpolate cached body poses at a (possibly fractional) frame into WorldTransform.
+void SamplePosesAtFrame(entt::registry &, float frame);
 } // namespace physics

@@ -135,9 +135,13 @@ void AppendExtrasDraw(entt::registry &r, const InstanceArena &instances, DrawLis
 }
 } // namespace
 
-void RecordRenderCommandBuffer(entt::registry &r, entt::entity viewport, vk::CommandBuffer cb, bool silhouette_only) {
+void RecordRenderCommandBuffer(entt::registry &r, entt::entity viewport, vk::CommandBuffer cb, bool silhouette_only, RenderPhase phase) {
     const Timer timer{silhouette_only ? "RecordRenderCommandBuffer (silhouette)" : "RecordRenderCommandBuffer"};
     if (!silhouette_only) r.ctx().get<DrawState>().SelectionStale = true;
+    // Motion blur renders the scene and its overlays in separate phases so the overlays stay sharp over a blurred scene.
+    // Full renders both together.
+    const bool draw_scene = phase != RenderPhase::ResolveOverlays;
+    const bool draw_overlays = phase != RenderPhase::SceneAccumulate;
 
     const auto &vk = r.ctx().get<const VulkanResources>();
     auto &buffers = r.ctx().get<GpuBuffers>();
@@ -634,7 +638,7 @@ void RecordRenderCommandBuffer(entt::registry &r, entt::entity viewport, vk::Com
         cb.pipelineBarrier(src_stages, vk::PipelineStageFlagBits::eFragmentShader, {}, {}, {}, barriers);
     };
 
-    const bool has_silhouette = render_silhouette && draw.Silhouette.DrawCount > 0;
+    const bool has_silhouette = render_silhouette && draw.Silhouette.DrawCount > 0 && draw_overlays; // Selection outline is an overlay.
     if (has_silhouette) { // Silhouette depth/object pass
         const auto &silhouette = pipelines.Silhouette;
         const vk::Rect2D rect{{0, 0}, ToExtent2D(silhouette.Resources->OffscreenImage.Extent)};
@@ -677,7 +681,7 @@ void RecordRenderCommandBuffer(entt::registry &r, entt::entity viewport, vk::Com
     // Real-transmission pre-pass: render Background + FillOpaque into TransmissionImage mip 0 in
     // scene-linear HDR, sampled by the main pass at the refracted exit point. TRANSMISSION_PREPASS
     // variants skip the display transform and drop transmission materials (no self-sampling).
-    if (real_transmission && main.Transmission) {
+    if (real_transmission && main.Transmission && draw_scene) {
         // Clear with the display clear color mapped back to scene-linear and un-exposed, so the
         // refracted view of the empty backdrop displays as the same clear color after the main pass.
         const vec3 clear_linear = DisplayToSceneLinear(vec3{settings.ClearColor}) / std::exp2(active_lighting.ExposureEV);
@@ -749,19 +753,37 @@ void RecordRenderCommandBuffer(entt::registry &r, entt::entity viewport, vk::Com
         );
     }
 
+    // Each motion blur sub-frame wrote the blur target as a color attachment; transition it for sampling below.
+    if (phase == RenderPhase::ResolveOverlays) {
+        const std::array accum_barriers{
+            vk::ImageMemoryBarrier{vk::AccessFlagBits::eColorAttachmentWrite, vk::AccessFlagBits::eShaderRead, vk::ImageLayout::eColorAttachmentOptimal, vk::ImageLayout::eShaderReadOnlyOptimal, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, *main.MotionBlur->AccumImage.Image, ColorSubresourceRange},
+        };
+        sync_fragment_shader_reads(vk::PipelineStageFlagBits::eColorAttachmentOutput, accum_barriers);
+    }
+
     // Main rendering pass
     cb.beginRenderPass({*main.Renderer.RenderPass, *main.Resources->Framebuffer, main_rect, main_clear_values}, vk::SubpassContents::eInline);
 
     // MoltenVK/Metal workaround: the grid's late depth test (it writes gl_FragDepth) misreads fast-cleared depth.
     // If no triangle draws will resolve the fast-clear before the grid, re-clear depth up front, before any depth writes.
-    if (show_overlays && settings.ShowGrid && !has_silhouette && draw.FillOpaque.DrawCount == 0) {
+    if (draw_overlays && show_overlays && settings.ShowGrid && !has_silhouette && draw.FillOpaque.DrawCount == 0) {
         const vk::ClearAttachment grid_depth_resolve{vk::ImageAspectFlagBits::eDepth, 0, vk::ClearDepthStencilValue{1.f, 0}};
         const vk::ClearRect grid_clear_rect{{{0, 0}, ToExtent2D(main.Resources->ColorImage.Extent)}, 0, 1};
         cb.clearAttachments(grid_depth_resolve, grid_clear_rect);
     }
 
     // Background environment (PBR modes only; shader discards when WorldOpacity == 0 or no env slot)
-    if (show_rendered) main.Renderer.ShaderPipelines.at(SPT::Background).RenderQuad(cb);
+    if (show_rendered && draw_scene) main.Renderer.ShaderPipelines.at(SPT::Background).RenderQuad(cb);
+    // Fill the color target with the averaged motion blur sub-frames, for the depth and overlays below to draw over.
+    if (phase == RenderPhase::ResolveOverlays) {
+        const auto &resolve = main.Renderer.ShaderPipelines.at(SPT::MotionBlurResolve);
+        const struct {
+            uint32_t AccumSamplerSlot;
+            float InvSamples;
+        } resolve_pc{sel_slots.MotionBlurAccumSampler, 1.f / float(MotionBlurSamples(settings))};
+        cb.pushConstants(*resolve.PipelineLayout, vk::ShaderStageFlagBits::eFragment, 0, sizeof(resolve_pc), &resolve_pc);
+        resolve.RenderQuad(cb);
+    }
 
     // Silhouette edge depth (not color! we render it before mesh depth to avoid overwriting closer depths with further ones)
     if (has_silhouette) {
@@ -773,23 +795,27 @@ void RecordRenderCommandBuffer(entt::registry &r, entt::entity viewport, vk::Com
 
     if (buffers.IdentityIndexCount > 0) { // Meshes
         cb.bindIndexBuffer(*buffers.IdentityIndexBuffer, 0, vk::IndexType::eUint32);
-        // Solid faces
+        // Solid faces. ResolveOverlays writes depth only, for overlays to occlude against (blend faces never wrote depth).
         if (show_fill) {
-            if (show_rendered) {
+            if (!draw_scene) {
+                record_draw_batch(main.Renderer, SPT::FillDepth, draw.FillOpaque);
+            } else if (show_rendered) {
                 record_pbr_batch(draw.FillOpaque, PbrCompiler::Variant::Opaque);
                 record_pbr_batch(draw.FillBlend, PbrCompiler::Variant::Blend);
             } else {
                 record_draw_batch(main.Renderer, SPT::Fill, draw.FillOpaque);
             }
         }
-        // Edit mode edges as triangle quads with self-AA
-        record_draw_batch(main.Renderer, SPT::EdgeQuad, draw.EdgeQuad);
-        // Wireframe/line mesh edges as GPU lines (LineAA composite handles AA)
-        record_draw_batch(main.Renderer, SPT::Line, draw.WireLine);
-        // Vertex points (always recorded — batch is empty when nothing qualifies)
-        record_draw_batch(main.Renderer, SPT::Point, draw.Point);
-        // Object extras (cameras, lights, empties)
-        record_draw_batch(main.Renderer, SPT::ObjectExtrasLine, draw.ExtrasLine);
+        if (draw_overlays) {
+            // Edit mode edges as triangle quads with self-AA
+            record_draw_batch(main.Renderer, SPT::EdgeQuad, draw.EdgeQuad);
+            // Wireframe/line mesh edges as GPU lines (LineAA composite handles AA)
+            record_draw_batch(main.Renderer, SPT::Line, draw.WireLine);
+            // Vertex points (always recorded — batch is empty when nothing qualifies)
+            record_draw_batch(main.Renderer, SPT::Point, draw.Point);
+            // Object extras (cameras, lights, empties)
+            record_draw_batch(main.Renderer, SPT::ObjectExtrasLine, draw.ExtrasLine);
+        }
     }
 
     // Silhouette edge color (rendered ontop of meshes)
@@ -817,19 +843,19 @@ void RecordRenderCommandBuffer(entt::registry &r, entt::entity viewport, vk::Com
         silhouette_edc.RenderQuad(cb);
     }
 
-    if (buffers.IdentityIndexCount > 0) { // Selection overlays
+    if (draw_overlays && buffers.IdentityIndexCount > 0) { // Selection overlays
         cb.bindIndexBuffer(*buffers.IdentityIndexBuffer, 0, vk::IndexType::eUint32);
         record_draw_batch(main.Renderer, SPT::LineOverlayFaceNormals, draw.OverlayFaceNormals);
         record_draw_batch(main.Renderer, SPT::LineOverlayVertexNormals, draw.OverlayVertexNormals);
     }
 
     // Grid lines texture (drawn before bone depth clear so grid remains depth-tested against scene meshes)
-    if (show_overlays && settings.ShowGrid) {
+    if (draw_overlays && show_overlays && settings.ShowGrid) {
         main.Renderer.ShaderPipelines.at(SPT::Grid).RenderQuad(cb);
     }
 
     { // Bone X-ray: clear depth so bones are never occluded by scene meshes (only mutually occlude each other)
-        if (draw.BoneFill.DrawCount > 0 || draw.BoneSphereFill.DrawCount > 0) {
+        if (draw_overlays && (draw.BoneFill.DrawCount > 0 || draw.BoneSphereFill.DrawCount > 0)) {
             cb.bindIndexBuffer(*buffers.IdentityIndexBuffer, 0, vk::IndexType::eUint32);
             const vk::ClearAttachment depth_clear{vk::ImageAspectFlagBits::eDepth, 0, vk::ClearDepthStencilValue{1.f, 0}};
             const auto extent = main.Resources->ColorImage.Extent;
@@ -859,14 +885,14 @@ void RecordRenderCommandBuffer(entt::registry &r, entt::entity viewport, vk::Com
     // The render pass ExternalFragReadDependency should cover this, but MoltenVK needs an explicit barrier
     // to flush the Metal render encoder's color writes before the next encoder samples them.
     {
-        const std::array main_to_lineaa_barriers{
+        const std::array main_out_barriers{
             make_shader_read_barrier(vk::AccessFlagBits::eColorAttachmentWrite, vk::ImageLayout::eShaderReadOnlyOptimal, *main.Resources->ColorImage.Image, ColorSubresourceRange),
             make_shader_read_barrier(vk::AccessFlagBits::eColorAttachmentWrite, vk::ImageLayout::eShaderReadOnlyOptimal, *main.Resources->LineDataImage.Image, ColorSubresourceRange),
         };
-        sync_fragment_shader_reads(vk::PipelineStageFlagBits::eColorAttachmentOutput, main_to_lineaa_barriers);
+        sync_fragment_shader_reads(vk::PipelineStageFlagBits::eColorAttachmentOutput, main_out_barriers);
     }
 
-    { // Line AA composite pass: blends anti-aliased lines from LineDataImage onto ColorImage → FinalColorImage
+    if (draw_overlays) { // Line AA composite pass: blends anti-aliased lines from LineDataImage onto ColorImage → FinalColorImage
         const vk::ClearValue clear_value{vk::ClearColorValue{std::array<float, 4>{0, 0, 0, 1}}};
         const vk::Rect2D rect{{0, 0}, ToExtent2D(main.Resources->FinalColorImage.Extent)};
         cb.beginRenderPass({*main.LineAARenderPass, *main.Resources->LineAAFramebuffer, rect, clear_value}, vk::SubpassContents::eInline);
@@ -876,7 +902,30 @@ void RecordRenderCommandBuffer(entt::registry &r, entt::entity viewport, vk::Com
         cb.pushConstants(*main.LineAAComposite.PipelineLayout, vk::ShaderStageFlagBits::eFragment, 0, sizeof(line_aa_pc), &line_aa_pc);
         main.LineAAComposite.RenderQuad(cb);
         cb.endRenderPass();
+    } else { // SceneAccumulate sums this sub-frame into the motion blur target instead. It draws no lines to composite.
+        cb.beginRenderPass({*main.MotionBlurAccumRenderPass, *main.MotionBlur->Framebuffer, main_rect}, vk::SubpassContents::eInline);
+        const uint32_t accum_pc = sel_slots.ColorSampler;
+        cb.pushConstants(*main.MotionBlurAccumulate.PipelineLayout, vk::ShaderStageFlagBits::eFragment, 0, sizeof(accum_pc), &accum_pc);
+        main.MotionBlurAccumulate.RenderQuad(cb);
+        cb.endRenderPass();
     }
 
+    cb.end();
+}
+
+void RecordMotionBlurClear(entt::registry &r, vk::CommandBuffer cb) {
+    const auto &main = r.ctx().get<const Pipelines>().Main;
+    const auto image = *main.MotionBlur->AccumImage.Image;
+    cb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
+    // Undefined -> transfer-dst, clear to zero, then transfer-dst -> color-attachment so the additive load starts clean.
+    cb.pipelineBarrier(
+        vk::PipelineStageFlagBits::eTopOfPipe, vk::PipelineStageFlagBits::eTransfer, {}, {}, {},
+        vk::ImageMemoryBarrier{{}, vk::AccessFlagBits::eTransferWrite, vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, image, ColorSubresourceRange}
+    );
+    cb.clearColorImage(image, vk::ImageLayout::eTransferDstOptimal, vk::ClearColorValue{std::array{0.f, 0.f, 0.f, 0.f}}, ColorSubresourceRange);
+    cb.pipelineBarrier(
+        vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eColorAttachmentOutput, {}, {}, {},
+        vk::ImageMemoryBarrier{vk::AccessFlagBits::eTransferWrite, vk::AccessFlagBits::eColorAttachmentWrite, vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eColorAttachmentOptimal, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, image, ColorSubresourceRange}
+    );
     cb.end();
 }

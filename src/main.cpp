@@ -696,6 +696,8 @@ CaptureDriver BeginCaptureSession(entt::registry &r, entt::entity viewport, cons
     CaptureDriver driver{r, viewport, capture, play, fixed_step};
     if (driver.Presenting()) Perform(r, viewport, action::timeline::EnterPresentation{});
     r.ctx().get<FrameState>().FixedFrameStep = driver.FixedStep;
+    // Force motion blur on for the whole recording run (not still-screenshot renders).
+    r.ctx().get<FrameState>().Capturing = driver.RecordingMode();
     return driver;
 }
 
@@ -1086,6 +1088,7 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
             End();
         }
 
+        bool scrubbing = false; // Timeline frame marker held this frame; gates motion blur.
         if (windows.Animation.Visible) {
             PushStyleVar(ImGuiStyleVar_WindowPadding, {0, 0});
             if (Begin(windows.Animation.Name, &windows.Animation.Visible, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse)) {
@@ -1096,13 +1099,14 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
                 Unindent(6);
                 PopStyleVar();
                 const auto scene_e = viewport;
-                if (auto a = RenderAnimationTimeline(r.get<const TimelineRange>(scene_e), r.get<const TimelinePlayback>(scene_e), r.get<const AnimationTimelineView>(scene_e), r.ctx().get<const ViewportIcons>().Anim)) {
+                if (auto a = RenderAnimationTimeline(r.get<const TimelineRange>(scene_e), r.get<const TimelinePlayback>(scene_e), r.get<const AnimationTimelineView>(scene_e), r.ctx().get<const ViewportIcons>().Anim, scrubbing)) {
                     std::visit([](auto leaf) { action::Emit(leaf); }, std::move(*a));
                 }
             }
             End();
             PopStyleVar();
         }
+        r.ctx().get<FrameState>().Scrubbing = scrubbing;
 
         // Keep the viewport window open across the apply/derive/render below so the image draws back into it before End().
         uvec2 new_logical_extent{};

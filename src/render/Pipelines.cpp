@@ -129,6 +129,18 @@ void PbrCompiler::RecompileModules() {
 // Write-only for LineData attachment (used by line pipelines as their 2nd color blend state).
 static const vk::PipelineColorBlendAttachmentState LineDataBlend = CreateColorBlendAttachment(false);
 
+// Additive blend so successive motion blur sub-frames sum into the accumulation target.
+static constexpr vk::PipelineColorBlendAttachmentState AdditiveBlend{
+    true,
+    vk::BlendFactor::eOne,
+    vk::BlendFactor::eOne,
+    vk::BlendOp::eAdd,
+    vk::BlendFactor::eOne,
+    vk::BlendFactor::eOne,
+    vk::BlendOp::eAdd,
+    vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG | vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA,
+};
+
 // `transmission_prepass` selects the variant that outputs scene-linear radiance for the HDR transmission target.
 static ShaderPipeline CreateBackgroundPipeline(const PipelineContext &ctx, bool transmission_prepass) {
     return ctx.CreateGraphics(
@@ -136,6 +148,16 @@ static ShaderPipeline CreateBackgroundPipeline(const PipelineContext &ctx, bool 
         {},
         vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleStrip,
         {CreateColorBlendAttachment(true), NoWriteBlend}, CreateDepthStencil(false, false)
+    );
+}
+
+// Fullscreen textured quad into a single color attachment: no depth, fragment-only push constants.
+static ShaderPipeline CreateQuadPipeline(const PipelineContext &ctx, std::filesystem::path frag, vk::PipelineColorBlendAttachmentState blend, uint32_t push_constant_size) {
+    return ctx.CreateGraphics(
+        {{{ShaderType::eVertex, "TexQuad.vert"}, {ShaderType::eFragment, std::move(frag)}}},
+        {},
+        vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleStrip,
+        {blend}, {}, vk::PushConstantRange{vk::ShaderStageFlagBits::eFragment, 0, push_constant_size}
     );
 }
 
@@ -158,6 +180,15 @@ static vk::UniqueRenderPass CreateMainRenderPass(vk::Device d, vk::Format color_
     return d.createRenderPassUnique({{}, attachments, subpass, dependencies});
 }
 
+// One color attachment, no depth, always stored. Backs each of the fullscreen-quad passes.
+static vk::UniqueRenderPass CreateColorOnlyRenderPass(vk::Device d, vk::Format format, vk::AttachmentLoadOp load, vk::ImageLayout initial, vk::ImageLayout final) {
+    const vk::AttachmentDescription attachment{{}, format, vk::SampleCountFlagBits::e1, load, vk::AttachmentStoreOp::eStore, {}, {}, initial, final};
+    const vk::AttachmentReference color_ref{0, vk::ImageLayout::eColorAttachmentOptimal};
+    const vk::SubpassDescription subpass{{}, vk::PipelineBindPoint::eGraphics, 0, nullptr, 1, &color_ref};
+    const std::array dependencies{ExternalFragReadDependency()};
+    return d.createRenderPassUnique({{}, attachment, subpass, dependencies});
+}
+
 static PipelineRenderer CreateMainRenderer(
     vk::Device d,
     vk::DescriptorSetLayout shared_layout, vk::DescriptorSet shared_set
@@ -174,6 +205,15 @@ static PipelineRenderer CreateMainRenderer(
             {},
             vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleList,
             {CreateColorBlendAttachment(true), NoWriteBlend}, CreateDepthStencil(), draw_pc
+        )
+    );
+    pipelines.emplace(
+        SPT::FillDepth,
+        ctx.CreateGraphics(
+            {{{ShaderType::eVertex, "PositionTransform.vert"}}},
+            {},
+            vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleList,
+            {NoWriteBlend, NoWriteBlend}, CreateDepthStencil(), draw_pc
         )
     );
     pipelines.emplace(
@@ -233,6 +273,17 @@ static PipelineRenderer CreateMainRenderer(
         )
     );
     pipelines.emplace(SPT::Background, CreateBackgroundPipeline(ctx, false));
+    // Fills the color target with the averaged motion blur accumulation, which overlays then draw over.
+    pipelines.emplace(
+        SPT::MotionBlurResolve,
+        ctx.CreateGraphics(
+            {{{ShaderType::eVertex, "TexQuad.vert"}, {ShaderType::eFragment, "MotionBlurResolve.frag"}}},
+            {},
+            vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleStrip,
+            {CreateColorBlendAttachment(false), NoWriteBlend}, CreateDepthStencil(false, false),
+            vk::PushConstantRange{vk::ShaderStageFlagBits::eFragment, 0, sizeof(uint32_t) * 2}
+        )
+    );
 
     // Render the silhouette edge depth regardless of the tested depth value.
     // We should be able to just disable depth tests and enable depth writes, but it seems that some GPUs or drivers
@@ -297,44 +348,16 @@ static PipelineRenderer CreateMainRenderer(
     return {CreateMainRenderPass(d, Format::Color), std::move(pipelines)};
 }
 
-static vk::UniqueRenderPass CreateLineAARenderPass(vk::Device d) {
-    const vk::AttachmentDescription attachment{
-        {},
-        Format::Color,
-        vk::SampleCountFlagBits::e1,
-        vk::AttachmentLoadOp::eDontCare,
-        vk::AttachmentStoreOp::eStore,
-        {},
-        {},
-        vk::ImageLayout::eUndefined,
-        vk::ImageLayout::eShaderReadOnlyOptimal,
-    };
-    const vk::AttachmentReference color_ref{0, vk::ImageLayout::eColorAttachmentOptimal};
-    const vk::SubpassDescription subpass{{}, vk::PipelineBindPoint::eGraphics, 0, nullptr, 1, &color_ref};
-    const std::array dependencies{ExternalFragReadDependency()};
-    return d.createRenderPassUnique({{}, attachment, subpass, dependencies});
-}
-
 MainPipeline::MainPipeline(
     vk::Device d,
     vk::DescriptorSetLayout shared_layout, vk::DescriptorSet shared_set
 ) : Renderer{CreateMainRenderer(d, shared_layout, shared_set)},
     PrepassRenderPass{CreateMainRenderPass(d, Format::HdrColor)},
     PrepassBackground{CreateBackgroundPipeline({d, shared_layout, shared_set}, true)},
-    LineAARenderPass{CreateLineAARenderPass(d)},
-    LineAAComposite{
-        d,
-        Shaders{{{ShaderType::eVertex, "TexQuad.vert"}, {ShaderType::eFragment, "LineAA.frag"}}},
-        {},
-        vk::PolygonMode::eFill,
-        vk::PrimitiveTopology::eTriangleStrip,
-        {CreateColorBlendAttachment(false)},
-        {},
-        vk::PushConstantRange{vk::ShaderStageFlagBits::eFragment, 0, sizeof(uint32_t) * 2},
-        0.f,
-        shared_layout,
-        shared_set
-    },
+    LineAARenderPass{CreateColorOnlyRenderPass(d, Format::Color, vk::AttachmentLoadOp::eDontCare, vk::ImageLayout::eUndefined, vk::ImageLayout::eShaderReadOnlyOptimal)},
+    LineAAComposite{CreateQuadPipeline({d, shared_layout, shared_set}, "LineAA.frag", CreateColorBlendAttachment(false), sizeof(uint32_t) * 2)},
+    MotionBlurAccumRenderPass{CreateColorOnlyRenderPass(d, Format::HdrColor, vk::AttachmentLoadOp::eLoad, vk::ImageLayout::eColorAttachmentOptimal, vk::ImageLayout::eColorAttachmentOptimal)},
+    MotionBlurAccumulate{CreateQuadPipeline({d, shared_layout, shared_set}, "MotionBlurAccumulate.frag", AdditiveBlend, sizeof(uint32_t))},
     Compiler{{d, shared_layout, shared_set}, *Renderer.RenderPass, *PrepassRenderPass} {}
 
 static uint32_t MipCount(vk::Extent2D extent) {
@@ -377,6 +400,34 @@ void MainPipeline::SetExtent(vk::Extent2D extent, vk::Device d, vk::PhysicalDevi
     Resources = std::make_unique<ResourcesT>(extent, d, pd, *Renderer.RenderPass, *LineAARenderPass);
     // Resize invalidates any existing transmission framebuffer (it shares this struct's depth/linedata views).
     Transmission.reset();
+    // The accumulation target is extent-sized; drop it so it is reallocated at the new extent on the next MB frame.
+    MotionBlur.reset();
+}
+
+MainPipeline::MotionBlurResourcesT::MotionBlurResourcesT(
+    vk::Extent2D extent, vk::Device d, vk::PhysicalDevice pd, vk::RenderPass accum_render_pass
+) : AccumImage{mvk::CreateImage(d, pd, {{}, vk::ImageType::e2D, Format::HdrColor, vk::Extent3D{extent, 1}, 1, 1, vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eTransferDst, vk::SharingMode::eExclusive}, {{}, {}, vk::ImageViewType::e2D, Format::HdrColor, {}, ColorSubresourceRange})} {
+    const std::array image_views{*AccumImage.View};
+    Framebuffer = d.createFramebufferUnique({{}, accum_render_pass, image_views, extent.width, extent.height, 1});
+}
+
+bool MainPipeline::EnsureMotionBlurResources(vk::Device d, vk::PhysicalDevice pd) {
+    if (MotionBlur || !Resources) return false; // SetExtent drops it, so an allocated target is always at the color extent.
+    const auto extent = Resources->ColorImage.Extent;
+    MotionBlur = std::make_unique<MotionBlurResourcesT>(vk::Extent2D{extent.width, extent.height}, d, pd, *MotionBlurAccumRenderPass);
+    return true;
+}
+
+vk::DescriptorImageInfo MainPipeline::ColorSamplerInfo() const {
+    return {*Resources->NearestSampler, *Resources->ColorImage.View, vk::ImageLayout::eShaderReadOnlyOptimal};
+}
+vk::DescriptorImageInfo MainPipeline::TransmissionSamplerInfo() const {
+    if (!Transmission) return ColorSamplerInfo();
+    return {*Transmission->Sampler, *Transmission->Image.View, vk::ImageLayout::eShaderReadOnlyOptimal};
+}
+vk::DescriptorImageInfo MainPipeline::MotionBlurAccumSamplerInfo() const {
+    if (!MotionBlur) return ColorSamplerInfo();
+    return {*Resources->NearestSampler, *MotionBlur->AccumImage.View, vk::ImageLayout::eShaderReadOnlyOptimal};
 }
 
 MainPipeline::TransmissionResourcesT::TransmissionResourcesT(
@@ -709,6 +760,7 @@ void Pipelines::CompileShaders() {
     Main.Renderer.CompileShaders();
     Main.PrepassBackground.Compile(*Main.PrepassRenderPass);
     Main.LineAAComposite.Compile(*Main.LineAARenderPass);
+    Main.MotionBlurAccumulate.Compile(*Main.MotionBlurAccumRenderPass);
     Main.Compiler.RecompileModules();
     Silhouette.Renderer.CompileShaders();
     SilhouetteEdge.Renderer.CompileShaders();
