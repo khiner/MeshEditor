@@ -33,8 +33,10 @@ vk::SamplerCreateInfo LinearSamplerCreateInfo(vk::SamplerAddressMode address_mod
     return {{}, vk::Filter::eLinear, vk::Filter::eLinear, vk::SamplerMipmapMode::eLinear, address_mode, address_mode, address_mode, 0.f, VK_FALSE, 1.f, VK_FALSE, vk::CompareOp::eNever, 0.f, max_lod, vk::BorderColor::eIntOpaqueBlack, VK_FALSE};
 }
 
-vk::SamplerCreateInfo MakeSamplerCreateInfo(const SamplerConfig &cfg, vk::SamplerAddressMode wrap_s, vk::SamplerAddressMode wrap_t, float max_lod) {
-    return {{}, cfg.MagFilter, cfg.MinFilter, cfg.MipmapMode, wrap_s, wrap_t, vk::SamplerAddressMode::eRepeat, 0.f, VK_FALSE, 1.f, VK_FALSE, vk::CompareOp::eNever, 0.f, max_lod, vk::BorderColor::eIntOpaqueBlack, VK_FALSE};
+vk::SamplerCreateInfo MakeSamplerCreateInfo(const SamplerConfig &cfg, vk::SamplerAddressMode wrap_s, vk::SamplerAddressMode wrap_t, float max_lod, float max_anisotropy) {
+    // Anisotropic filtering only applies with a mip chain.
+    const bool anisotropic = cfg.UsesMipmaps && max_anisotropy > 1.f;
+    return {{}, cfg.MagFilter, cfg.MinFilter, cfg.MipmapMode, wrap_s, wrap_t, vk::SamplerAddressMode::eRepeat, 0.f, anisotropic ? VK_TRUE : VK_FALSE, anisotropic ? max_anisotropy : 1.f, VK_FALSE, vk::CompareOp::eNever, 0.f, max_lod, vk::BorderColor::eIntOpaqueBlack, VK_FALSE};
 }
 
 vk::Format ToTextureFormat(TextureColorSpace color_space) { return color_space == TextureColorSpace::Srgb ? vk::Format::eR8G8B8A8Srgb : vk::Format::eR8G8B8A8Unorm; }
@@ -206,9 +208,9 @@ TextureEntry CreateCompressedTextureEntry(
     for (auto &copy : copies) copy.bufferOffset += staging_base;
     mvk::RecordBufferToImageUpload(*batch.Cb, staging_buf, *image.Image, copies, full_range);
 
-    auto sampler = vk.Device.createSamplerUnique(MakeSamplerCreateInfo(sampler_cfg, wrap_s, wrap_t, float(mip_levels)));
+    auto sampler = vk.Device.createSamplerUnique(MakeSamplerCreateInfo(sampler_cfg, wrap_s, wrap_t, float(mip_levels), vk.MaxSamplerAnisotropy));
     vk.Device.updateDescriptorSets({slots.MakeSamplerWrite(pre_allocated_slot, {*sampler, *image.View, vk::ImageLayout::eShaderReadOnlyOptimal})}, {});
-    return {.Image = std::move(image), .Sampler = std::move(sampler), .SamplerSlot = pre_allocated_slot, .Width = width, .Height = height, .MipLevels = mip_levels, .Name = std::move(name)};
+    return {.Image = std::move(image), .Sampler = std::move(sampler), .SamplerSlot = pre_allocated_slot, .Width = width, .Height = height, .MipLevels = mip_levels, .Config = sampler_cfg, .WrapS = wrap_s, .WrapT = wrap_t, .Name = std::move(name)};
 }
 } // namespace
 
@@ -267,6 +269,20 @@ std::vector<uint32_t> CollectSamplerSlots(std::span<const TextureEntry> textures
 
 void ReleaseSamplerSlots(DescriptorSlots &slots, std::span<const uint32_t> sampler_slots) {
     for (const auto sampler_slot : sampler_slots) slots.Release({SlotType::Sampler, sampler_slot});
+}
+
+float ClampMaxAnisotropy(const VulkanResources &vk, float requested) {
+    return vk.PhysicalDevice.getFeatures().samplerAnisotropy ? std::min(requested, vk.PhysicalDevice.getProperties().limits.maxSamplerAnisotropy) : 1.f;
+}
+
+void RebuildTextureSamplers(const VulkanResources &vk, DescriptorSlots &slots, TextureStore &textures, float max_anisotropy) {
+    // Wait for in-flight frames before destroying the live samplers.
+    vk.Device.waitIdle();
+    for (auto &entry : textures.Textures) {
+        const float max_lod = entry.Config.UsesMipmaps ? float(entry.MipLevels) : 0.f;
+        entry.Sampler = vk.Device.createSamplerUnique(MakeSamplerCreateInfo(entry.Config, entry.WrapS, entry.WrapT, max_lod, max_anisotropy));
+        vk.Device.updateDescriptorSets({slots.MakeSamplerWrite(entry.SamplerSlot, {*entry.Sampler, *entry.Image.View, vk::ImageLayout::eShaderReadOnlyOptimal})}, {});
+    }
 }
 
 void ReleaseCubeSamplerSlot(DescriptorSlots &slots, uint32_t sampler_slot) {
@@ -392,12 +408,12 @@ TextureEntry CreateTextureEntryAtSlot(
         vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eShaderReadOnlyOptimal, *image.Image, vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eColor, mip_levels - 1, 1, 0, 1}
     );
 
-    auto sampler = vk.Device.createSamplerUnique(MakeSamplerCreateInfo(sampler_cfg, wrap_s, wrap_t, sampler_cfg.UsesMipmaps ? float(mip_levels) : 0.f));
+    auto sampler = vk.Device.createSamplerUnique(MakeSamplerCreateInfo(sampler_cfg, wrap_s, wrap_t, sampler_cfg.UsesMipmaps ? float(mip_levels) : 0.f, vk.MaxSamplerAnisotropy));
 
     const vk::DescriptorImageInfo sampler_info{*sampler, *image.View, vk::ImageLayout::eShaderReadOnlyOptimal};
     vk.Device.updateDescriptorSets({slots.MakeSamplerWrite(pre_allocated_slot, sampler_info)}, {});
 
-    return {.Image = std::move(image), .Sampler = std::move(sampler), .SamplerSlot = pre_allocated_slot, .Width = width, .Height = height, .MipLevels = mip_levels, .Name = std::move(name)};
+    return {.Image = std::move(image), .Sampler = std::move(sampler), .SamplerSlot = pre_allocated_slot, .Width = width, .Height = height, .MipLevels = mip_levels, .Config = sampler_cfg, .WrapS = wrap_s, .WrapT = wrap_t, .Name = std::move(name)};
 }
 } // namespace
 

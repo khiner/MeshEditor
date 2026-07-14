@@ -100,6 +100,7 @@ VulkanContext::VulkanContext(std::vector<const char *> enabled_extensions, bool 
     device_features.drawIndirectFirstInstance = VK_TRUE; // Indirect draw commands have non-zero firstInstance.
     device_features.fragmentStoresAndAtomics = VK_TRUE;
     device_features.independentBlend = VK_TRUE;
+    if (PhysicalDevice.getFeatures().samplerAnisotropy) device_features.samplerAnisotropy = VK_TRUE;
 
     std::vector<const char *> device_extensions;
     if (with_swapchain) {

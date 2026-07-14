@@ -18,11 +18,20 @@ namespace gltf {
 struct Image;
 } // namespace gltf
 
+struct SamplerConfig {
+    vk::Filter MinFilter, MagFilter;
+    vk::SamplerMipmapMode MipmapMode;
+    bool UsesMipmaps;
+};
+
 struct TextureEntry {
     mvk::ImageResource Image;
     vk::UniqueSampler Sampler;
     uint32_t SamplerSlot;
     uint32_t Width, Height, MipLevels;
+    // Sampler build inputs, retained so the sampler can be rebuilt.
+    SamplerConfig Config;
+    vk::SamplerAddressMode WrapS, WrapT;
     std::string Name;
     // Index into `gltf::SourceAssets::Images` for textures materialized from a `GltfImageRef`;
     // UINT32_MAX for raw-pixel uploads (LUTs, SVG bitmaps). Used by SaveGltf for re-encode lookup.
@@ -79,12 +88,6 @@ struct EnvironmentStore {
     EnvironmentStore &operator=(const EnvironmentStore &) = delete;
     EnvironmentStore(EnvironmentStore &&) = default;
     EnvironmentStore &operator=(EnvironmentStore &&) = default;
-};
-
-struct SamplerConfig {
-    vk::Filter MinFilter, MagFilter;
-    vk::SamplerMipmapMode MipmapMode;
-    bool UsesMipmaps;
 };
 
 enum class TextureColorSpace : uint8_t {
@@ -155,6 +158,10 @@ StagingAlloc AllocStaging(TextureUploadBatch &, std::span<const std::byte>);
 
 std::vector<uint32_t> CollectSamplerSlots(std::span<const TextureEntry>);
 void ReleaseSamplerSlots(DescriptorSlots &, std::span<const uint32_t>);
+// Clamp a requested anisotropy to the device limit (1 when unsupported).
+float ClampMaxAnisotropy(const VulkanResources &, float requested);
+// Recreate all texture samplers at the given max anisotropy.
+void RebuildTextureSamplers(const VulkanResources &, DescriptorSlots &, TextureStore &, float max_anisotropy);
 void ReleaseCubeSamplerSlot(DescriptorSlots &, uint32_t);
 void ReleaseEnvironmentSamplerSlots(DescriptorSlots &, const EnvironmentStore &);
 mvk::ImageResource RenderBitmapToImage(const VulkanResources &, TextureUploadBatch &, std::span<const std::byte> data, uint32_t width, uint32_t height, vk::Format, vk::ImageSubresourceRange);

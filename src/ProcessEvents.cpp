@@ -1518,6 +1518,12 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
     if (!reactive<changes::ViewportDisplay>(r).empty()) {
         request(RenderRequest::ReRecord);
         dirty_overlay_meshes.merge(selection::GetSelectedMeshEntities(r));
+        auto &vk_mut = r.ctx().get<VulkanResources>();
+        if (const float requested = ClampMaxAnisotropy(vk_mut, ToMaxAnisotropy(r.get<const ViewportDisplay>(viewport).AnisotropicFilter));
+            requested != vk_mut.MaxSamplerAnisotropy) {
+            vk_mut.MaxSamplerAnisotropy = requested;
+            RebuildTextureSamplers(vk_mut, r.ctx().get<DescriptorSlots>(), r.ctx().get<TextureStore>(), requested);
+        }
     }
     if (!reactive<changes::InteractionMode>(r).empty()) {
         request(RenderRequest::ReRecord);

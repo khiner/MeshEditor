@@ -15,6 +15,17 @@ enum class ViewportShadingMode : uint8_t {
     Rendered,
 };
 
+enum class AnisotropicFilterLevel : uint8_t {
+    Off,
+    X2,
+    X4,
+    X8,
+    X16
+};
+
+// Levels are consecutive powers of two: Off->1, X2->2, ... X16->16.
+constexpr float ToMaxAnisotropy(AnisotropicFilterLevel level) { return float(1u << unsigned(level)); }
+
 // Component on the viewport singleton entity. Changes require command buffer re-recording.
 struct ViewportDisplay {
     ViewportShadingMode ViewportShading{ViewportShadingMode::Solid};
@@ -25,6 +36,7 @@ struct ViewportDisplay {
     bool ShowOverlays{true}; // Master toggle for all overlays
     uint8_t NormalOverlays{0}; // Bitmask of Element
     DebugChannel DebugChannel{DebugChannel::None};
+    AnisotropicFilterLevel AnisotropicFilter{AnisotropicFilterLevel::X16};
 };
 
 // Scene lights/world toggles + studio env controls

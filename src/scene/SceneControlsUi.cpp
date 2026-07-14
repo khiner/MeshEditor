@@ -989,6 +989,14 @@ void RenderControls(entt::registry &r, entt::entity viewport) {
                     f.Set<&ViewportDisplay::ClearColor>(color);
                 }
             }
+            f.Enum<&ViewportDisplay::AnisotropicFilter>(
+                "Anisotropic filtering",
+                "Off\0"
+                "2x\0"
+                "4x\0"
+                "8x\0"
+                "16x\0"
+            );
             // Intentional direct registry mutation outside Apply - not replayable document state.
             if (Button("Recompile shaders")) r.emplace_or_replace<PendingShaderRecompile>(viewport);
 

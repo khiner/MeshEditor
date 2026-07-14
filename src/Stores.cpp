@@ -15,10 +15,12 @@
 #include "render/OneShotGpu.h"
 #include "render/Textures.h"
 #include "scene/Entity.h"
+#include "viewport/ViewportDisplay.h"
 
 #include <entt/entity/registry.hpp>
 
 void InitStoreCtx(entt::registry &r, VulkanResources vk) {
+    vk.MaxSamplerAnisotropy = ClampMaxAnisotropy(vk, ToMaxAnisotropy(ViewportDisplay{}.AnisotropicFilter));
     r.ctx().emplace<VulkanResources>(vk);
     auto &slots = r.ctx().emplace<DescriptorSlots>(
         vk.Device,
