@@ -1586,6 +1586,16 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
 
     const bool mode_changed = !reactive<changes::InteractionMode>(r).empty();
     bool anim_advanced;
+    // A moving pose or weight changes the recorded draw list only through the transparent sort (rendered shading with a blend-mode material).
+    // Otherwise its values reach the GPU via already-bound buffers.
+    const auto anim_render_request = [&] {
+        const auto shading = r.get<const ViewportDisplay>(viewport).ViewportShading;
+        if (shading != ViewportShadingMode::MaterialPreview && shading != ViewportShadingMode::Rendered) return RenderRequest::Submit;
+        for (uint32_t i = 0, n = buffers.Materials.Count(); i < n; ++i) {
+            if (buffers.Materials.Get(i).AlphaMode == MaterialAlphaMode::Blend) return RenderRequest::ReRecord;
+        }
+        return RenderRequest::Submit;
+    }();
     { // Animation timeline tick
         const auto &range = r.get<const TimelineRange>(viewport);
         auto &playback = r.get<TimelinePlayback>(viewport);
@@ -1659,7 +1669,7 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
             r.emplace_or_replace<PosedLocal>(entity, local_pose.front());
             request_rerecord = true;
         }
-        if (request_rerecord) request(RenderRequest::ReRecord);
+        if (request_rerecord) request(anim_render_request);
     }
     { // Bones
         // GPU instance state
@@ -1853,7 +1863,7 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
                             buffers.ArmatureDeformBuffer.GetMutable(pose_state->GpuDeformRange)
                         );
                     }
-                    request(RenderRequest::ReRecord);
+                    request(anim_render_request);
                 }
             }
         }
