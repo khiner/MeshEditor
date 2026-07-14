@@ -58,7 +58,7 @@
 	url = git@github.com:eyalz800/zpp_bits.git
 [submodule "external/glTF_Physics"]
 	path = external/glTF_Physics
-	url = git@github.com:eoineoineoin/glTF_Physics.git
+	url = git@github.com:khiner/glTF_Physics.git
 [submodule "external/glTF-Sample-Assets"]
 	path = external/glTF-Sample-Assets
 	url = git@github.com:KhronosGroup/glTF-Sample-Assets.git
