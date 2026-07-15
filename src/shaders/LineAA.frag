@@ -9,7 +9,8 @@ layout(location = 0) in vec2 TexCoord;
 layout(location = 0) out vec4 OutColor;
 
 layout(push_constant) uniform PushConstants {
-    uint ColorSamplerSlot;
+    uint SceneColorSamplerSlot;
+    uint OverlayColorSamplerSlot;
     uint LineDataSamplerSlot;
 } pc;
 
@@ -54,9 +55,12 @@ void main() {
         }
     }
 
-    vec4 out_color = texture(Samplers[pc.ColorSamplerSlot], TexCoord);
+    // The overlay layer is premultiplied, so alpha interpolates along with color: borrowing a
+    // neighbor's line at partial coverage yields that line's color at that coverage.
+    vec4 overlay = texture(Samplers[pc.OverlayColorSamplerSlot], TexCoord);
     if (max_coverage > 0.0) {
-        out_color.rgb = mix(out_color.rgb, texture(Samplers[pc.ColorSamplerSlot], best_uv).rgb, max_coverage);
+        overlay = mix(overlay, texture(Samplers[pc.OverlayColorSamplerSlot], best_uv), max_coverage);
     }
-    OutColor = out_color;
+    const vec3 scene = texture(Samplers[pc.SceneColorSamplerSlot], TexCoord).rgb;
+    OutColor = vec4(scene * (1.0 - overlay.a) + overlay.rgb, 1.0);
 }

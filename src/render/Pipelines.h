@@ -66,18 +66,20 @@ struct MainPipeline {
     MainPipeline(vk::Device, vk::DescriptorSetLayout shared_layout = {}, vk::DescriptorSet shared_set = {});
 
     struct ResourcesT {
-        ResourcesT(vk::Extent2D, vk::Device, vk::PhysicalDevice, vk::RenderPass, vk::RenderPass line_aa_render_pass);
+        ResourcesT(vk::Extent2D, vk::Device, vk::PhysicalDevice, vk::RenderPass scene_render_pass, vk::RenderPass overlay_render_pass, vk::RenderPass line_aa_render_pass);
 
-        mvk::ImageResource DepthImage, ColorImage, LineDataImage, FinalColorImage;
+        // SceneColorImage holds the shaded scene. OverlayColorImage holds display-referred overlays
+        // over transparent, merged onto the scene in the line AA composite.
+        mvk::ImageResource DepthImage, SceneColorImage, OverlayColorImage, LineDataImage, FinalColorImage;
         vk::UniqueSampler NearestSampler;
-        vk::UniqueFramebuffer Framebuffer, LineAAFramebuffer;
+        vk::UniqueFramebuffer SceneFramebuffer, OverlayFramebuffer, LineAAFramebuffer;
     };
 
     // Mip chain + framebuffer backing real-transmission sampling.
     // Scene-linear HDR (no exposure/tone map/sRGB), so the main pass samples true radiance.
     // Allocated on demand only when a scene material uses KHR_materials_transmission and the user toggle is on.
     struct TransmissionResourcesT {
-        TransmissionResourcesT(vk::Extent2D, vk::Device, vk::PhysicalDevice, vk::RenderPass, vk::ImageView depth_view, vk::ImageView line_data_view);
+        TransmissionResourcesT(vk::Extent2D, vk::Device, vk::PhysicalDevice, vk::RenderPass, vk::ImageView depth_view);
 
         mvk::ImageResource Image;
         vk::UniqueImageView Mip0View;
@@ -103,14 +105,17 @@ struct MainPipeline {
     // Allocate the motion blur accumulation target at the current color extent if absent. Returns true when it was allocated.
     bool EnsureMotionBlurResources(vk::Device, vk::PhysicalDevice);
 
-    vk::DescriptorImageInfo ColorSamplerInfo() const;
-    // Transmission and motion blur targets are lazy. Both fall back to ColorImage when unallocated so the
-    // binding stays valid; nothing samples them in that state.
+    vk::DescriptorImageInfo SceneColorSamplerInfo() const;
+    vk::DescriptorImageInfo OverlayColorSamplerInfo() const;
+    // Transmission and motion blur targets are lazy. Both fall back to the scene color when unallocated
+    // so the binding stays valid; nothing samples them in that state.
     vk::DescriptorImageInfo TransmissionSamplerInfo() const;
     vk::DescriptorImageInfo MotionBlurAccumSamplerInfo() const;
 
-    PipelineRenderer Renderer;
-    // Transmission pre-pass: same attachment layout as Renderer but an HDR color target.
+    // Scene: depth + shaded scene color. Overlays: the scene's depth loaded for occlusion,
+    // plus a display-referred overlay color target and the line data driving its AA.
+    PipelineRenderer SceneRenderer, OverlayRenderer;
+    // Transmission pre-pass: same attachment layout as SceneRenderer but an HDR color target.
     vk::UniqueRenderPass PrepassRenderPass;
     ShaderPipeline PrepassBackground; // Background variant outputting scene-linear radiance
     vk::UniqueRenderPass LineAARenderPass;
@@ -191,5 +196,5 @@ struct Pipelines {
     void CompileShaders();
 
     // Zero before render resources exist.
-    vk::Extent3D BuiltColorExtent() const { return Main.Resources ? Main.Resources->ColorImage.Extent : vk::Extent3D{}; }
+    vk::Extent3D BuiltColorExtent() const { return Main.Resources ? Main.Resources->SceneColorImage.Extent : vk::Extent3D{}; }
 };

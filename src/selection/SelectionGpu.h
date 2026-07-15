@@ -15,7 +15,7 @@ using SelectionBuildFn = std::function<std::vector<SelectionDrawInfo>(DrawListBu
 // RAII for the descriptor-slot leases used by the selection compute/render pipeline.
 struct SelectionSlots {
     uint32_t HeadImage{}, SelectionCounter{}, ObjectPickKey{}, ElementPickCandidates{}, ObjectPickSeenBits{}, SelectionBitset{};
-    uint32_t ObjectIdSampler{}, DepthSampler{}, SilhouetteSampler{}, ColorSampler{}, LineDataSampler{}, TransmissionSampler{}, MotionBlurAccumSampler{};
+    uint32_t ObjectIdSampler{}, DepthSampler{}, SilhouetteSampler{}, SceneColorSampler{}, OverlayColorSampler{}, LineDataSampler{}, TransmissionSampler{}, MotionBlurAccumSampler{};
 
     using Entry = std::pair<SlotType, uint32_t SelectionSlots::*>;
     static constexpr std::array Entries{
@@ -28,7 +28,8 @@ struct SelectionSlots {
         Entry{SlotType::Sampler, &SelectionSlots::ObjectIdSampler},
         Entry{SlotType::Sampler, &SelectionSlots::DepthSampler},
         Entry{SlotType::Sampler, &SelectionSlots::SilhouetteSampler},
-        Entry{SlotType::Sampler, &SelectionSlots::ColorSampler},
+        Entry{SlotType::Sampler, &SelectionSlots::SceneColorSampler},
+        Entry{SlotType::Sampler, &SelectionSlots::OverlayColorSampler},
         Entry{SlotType::Sampler, &SelectionSlots::LineDataSampler},
         Entry{SlotType::Sampler, &SelectionSlots::TransmissionSampler},
         Entry{SlotType::Sampler, &SelectionSlots::MotionBlurAccumSampler},

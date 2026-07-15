@@ -784,7 +784,8 @@ bool SyncViewportRenderResources(entt::registry &r, entt::entity viewport) {
         const vk::DescriptorImageInfo silhouette_sampler{*sil.Resources->ImageSampler, *sil.Resources->OffscreenImage.View, vk::ImageLayout::eShaderReadOnlyOptimal};
         const vk::DescriptorImageInfo object_id_sampler{*sil_edge.Resources->ImageSampler, *sil_edge.Resources->OffscreenImage.View, vk::ImageLayout::eShaderReadOnlyOptimal};
         const vk::DescriptorImageInfo depth_sampler{*sil_edge.Resources->DepthSampler, *sil_edge.Resources->DepthImage.View, vk::ImageLayout::eDepthStencilReadOnlyOptimal};
-        const auto color_sampler = main.ColorSamplerInfo();
+        const auto scene_color_sampler = main.SceneColorSamplerInfo();
+        const auto overlay_color_sampler = main.OverlayColorSamplerInfo();
         const vk::DescriptorImageInfo line_data_sampler{*main.Resources->NearestSampler, *main.Resources->LineDataImage.View, vk::ImageLayout::eShaderReadOnlyOptimal};
         const auto transmission_sampler = main.TransmissionSamplerInfo();
         const auto motion_blur_accum_sampler = main.MotionBlurAccumSamplerInfo();
@@ -801,7 +802,8 @@ bool SyncViewportRenderResources(entt::registry &r, entt::entity viewport) {
                 slots.MakeSamplerWrite(sel_slots.ObjectIdSampler, object_id_sampler),
                 slots.MakeSamplerWrite(sel_slots.DepthSampler, depth_sampler),
                 slots.MakeSamplerWrite(sel_slots.SilhouetteSampler, silhouette_sampler),
-                slots.MakeSamplerWrite(sel_slots.ColorSampler, color_sampler),
+                slots.MakeSamplerWrite(sel_slots.SceneColorSampler, scene_color_sampler),
+                slots.MakeSamplerWrite(sel_slots.OverlayColorSampler, overlay_color_sampler),
                 slots.MakeSamplerWrite(sel_slots.LineDataSampler, line_data_sampler),
                 slots.MakeSamplerWrite(sel_slots.TransmissionSampler, transmission_sampler),
                 slots.MakeSamplerWrite(sel_slots.MotionBlurAccumSampler, motion_blur_accum_sampler),

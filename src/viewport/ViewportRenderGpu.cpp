@@ -671,11 +671,17 @@ void RecordRenderCommandBuffer(entt::registry &r, entt::entity viewport, vk::Com
     }
 
     const auto &main = pipelines.Main;
-    const vk::Rect2D main_rect{{0, 0}, ToExtent2D(main.Resources->ColorImage.Extent)};
-    const std::vector<vk::ClearValue> main_clear_values{
+    const vk::Rect2D main_rect{{0, 0}, ToExtent2D(main.Resources->SceneColorImage.Extent)};
+    const std::vector<vk::ClearValue> scene_clear_values{
         {vk::ClearDepthStencilValue{1, 0}},
         {ToClearColor(settings.ClearColor)},
-        {vk::ClearColorValue{std::array<float, 4>{0, 0, 0, 0}}},
+    };
+    // Depth loads from the scene pass, so its clear value is unused. Both color targets clear to
+    // transparent: the composite merges the overlay layer over the scene by its alpha.
+    const std::vector<vk::ClearValue> overlay_clear_values{
+        {vk::ClearDepthStencilValue{1, 0}},
+        {Transparent},
+        {Transparent},
     };
 
     // Real-transmission pre-pass: render Background + FillOpaque into TransmissionImage mip 0 in
@@ -761,22 +767,14 @@ void RecordRenderCommandBuffer(entt::registry &r, entt::entity viewport, vk::Com
         sync_fragment_shader_reads(vk::PipelineStageFlagBits::eColorAttachmentOutput, accum_barriers);
     }
 
-    // Main rendering pass
-    cb.beginRenderPass({*main.Renderer.RenderPass, *main.Resources->Framebuffer, main_rect, main_clear_values}, vk::SubpassContents::eInline);
-
-    // MoltenVK/Metal workaround: the grid's late depth test (it writes gl_FragDepth) misreads fast-cleared depth.
-    // If no triangle draws will resolve the fast-clear before the grid, re-clear depth up front, before any depth writes.
-    if (draw_overlays && show_overlays && settings.ShowGrid && !has_silhouette && draw.FillOpaque.DrawCount == 0) {
-        const vk::ClearAttachment grid_depth_resolve{vk::ImageAspectFlagBits::eDepth, 0, vk::ClearDepthStencilValue{1.f, 0}};
-        const vk::ClearRect grid_clear_rect{{{0, 0}, ToExtent2D(main.Resources->ColorImage.Extent)}, 0, 1};
-        cb.clearAttachments(grid_depth_resolve, grid_clear_rect);
-    }
+    // Scene pass: shaded scene into its own color target, and the depth the overlay pass occludes against.
+    cb.beginRenderPass({*main.SceneRenderer.RenderPass, *main.Resources->SceneFramebuffer, main_rect, scene_clear_values}, vk::SubpassContents::eInline);
 
     // Background environment (PBR modes only; shader discards when WorldOpacity == 0 or no env slot)
-    if (show_rendered && draw_scene) main.Renderer.ShaderPipelines.at(SPT::Background).RenderQuad(cb);
-    // Fill the color target with the averaged motion blur sub-frames, for the depth and overlays below to draw over.
+    if (show_rendered && draw_scene) main.SceneRenderer.ShaderPipelines.at(SPT::Background).RenderQuad(cb);
+    // Fill the scene target with the averaged motion blur sub-frames, for the depth and overlays below to draw over.
     if (phase == RenderPhase::ResolveOverlays) {
-        const auto &resolve = main.Renderer.ShaderPipelines.at(SPT::MotionBlurResolve);
+        const auto &resolve = main.SceneRenderer.ShaderPipelines.at(SPT::MotionBlurResolve);
         const struct {
             uint32_t AccumSamplerSlot;
             float InvSamples;
@@ -787,40 +785,71 @@ void RecordRenderCommandBuffer(entt::registry &r, entt::entity viewport, vk::Com
 
     // Silhouette edge depth (not color! we render it before mesh depth to avoid overwriting closer depths with further ones)
     if (has_silhouette) {
-        const auto &silhouette_depth = main.Renderer.ShaderPipelines.at(SPT::SilhouetteEdgeDepth);
+        const auto &silhouette_depth = main.SceneRenderer.ShaderPipelines.at(SPT::SilhouetteEdgeDepth);
         const uint32_t depth_sampler_index = sel_slots.DepthSampler;
         cb.pushConstants(*silhouette_depth.PipelineLayout, vk::ShaderStageFlagBits::eFragment, 0, sizeof(depth_sampler_index), &depth_sampler_index);
         silhouette_depth.RenderQuad(cb);
     }
 
-    if (buffers.IdentityIndexCount > 0) { // Meshes
+    // Solid faces. ResolveOverlays writes depth only, for overlays to occlude against (blend faces never wrote depth).
+    if (buffers.IdentityIndexCount > 0 && show_fill) {
         cb.bindIndexBuffer(*buffers.IdentityIndexBuffer, 0, vk::IndexType::eUint32);
-        // Solid faces. ResolveOverlays writes depth only, for overlays to occlude against (blend faces never wrote depth).
-        if (show_fill) {
-            if (!draw_scene) {
-                record_draw_batch(main.Renderer, SPT::FillDepth, draw.FillOpaque);
-            } else if (show_rendered) {
-                record_pbr_batch(draw.FillOpaque, PbrCompiler::Variant::Opaque);
-                record_pbr_batch(draw.FillBlend, PbrCompiler::Variant::Blend);
-            } else {
-                record_draw_batch(main.Renderer, SPT::Fill, draw.FillOpaque);
-            }
+        if (!draw_scene) {
+            record_draw_batch(main.SceneRenderer, SPT::FillDepth, draw.FillOpaque);
+        } else if (show_rendered) {
+            record_pbr_batch(draw.FillOpaque, PbrCompiler::Variant::Opaque);
+            record_pbr_batch(draw.FillBlend, PbrCompiler::Variant::Blend);
+        } else {
+            record_draw_batch(main.SceneRenderer, SPT::Fill, draw.FillOpaque);
         }
-        if (draw_overlays) {
-            // Edit mode edges as triangle quads with self-AA
-            record_draw_batch(main.Renderer, SPT::EdgeQuad, draw.EdgeQuad);
-            // Wireframe/line mesh edges as GPU lines (LineAA composite handles AA)
-            record_draw_batch(main.Renderer, SPT::Line, draw.WireLine);
-            // Vertex points (always recorded — batch is empty when nothing qualifies)
-            record_draw_batch(main.Renderer, SPT::Point, draw.Point);
-            // Object extras (cameras, lights, empties)
-            record_draw_batch(main.Renderer, SPT::ObjectExtrasLine, draw.ExtrasLine);
-        }
+    }
+    cb.endRenderPass();
+
+    // The render pass ExternalFragReadDependency should cover this, but MoltenVK needs an explicit barrier
+    // to flush the Metal render encoder's color writes before the next encoder samples them.
+    {
+        const std::array scene_out_barriers{
+            make_shader_read_barrier(vk::AccessFlagBits::eColorAttachmentWrite, vk::ImageLayout::eShaderReadOnlyOptimal, *main.Resources->SceneColorImage.Image, ColorSubresourceRange),
+        };
+        sync_fragment_shader_reads(vk::PipelineStageFlagBits::eColorAttachmentOutput, scene_out_barriers);
+    }
+
+    if (!draw_overlays) { // SceneAccumulate sums this sub-frame into the motion blur target. It draws no overlays to composite.
+        cb.beginRenderPass({*main.MotionBlurAccumRenderPass, *main.MotionBlur->Framebuffer, main_rect}, vk::SubpassContents::eInline);
+        const uint32_t accum_pc = sel_slots.SceneColorSampler;
+        cb.pushConstants(*main.MotionBlurAccumulate.PipelineLayout, vk::ShaderStageFlagBits::eFragment, 0, sizeof(accum_pc), &accum_pc);
+        main.MotionBlurAccumulate.RenderQuad(cb);
+        cb.endRenderPass();
+        cb.end();
+        return;
+    }
+
+    // Overlay pass: display-referred overlays over transparent, depth-tested against the scene above.
+    cb.beginRenderPass({*main.OverlayRenderer.RenderPass, *main.Resources->OverlayFramebuffer, main_rect, overlay_clear_values}, vk::SubpassContents::eInline);
+
+    // MoltenVK/Metal workaround: the grid's late depth test (it writes gl_FragDepth) misreads fast-cleared depth.
+    // Re-clear depth up front when the scene pass left no triangle draws to resolve the fast-clear.
+    if (show_overlays && settings.ShowGrid && !has_silhouette && draw.FillOpaque.DrawCount == 0) {
+        const vk::ClearAttachment grid_depth_resolve{vk::ImageAspectFlagBits::eDepth, 0, vk::ClearDepthStencilValue{1.f, 0}};
+        const vk::ClearRect grid_clear_rect{main_rect, 0, 1};
+        cb.clearAttachments(grid_depth_resolve, grid_clear_rect);
+    }
+
+    if (buffers.IdentityIndexCount > 0) {
+        cb.bindIndexBuffer(*buffers.IdentityIndexBuffer, 0, vk::IndexType::eUint32);
+        // Edit mode edges as triangle quads with self-AA
+        record_draw_batch(main.OverlayRenderer, SPT::EdgeQuad, draw.EdgeQuad);
+        // Wireframe/line mesh edges as GPU lines (LineAA composite handles AA)
+        record_draw_batch(main.OverlayRenderer, SPT::Line, draw.WireLine);
+        // Vertex points (always recorded — batch is empty when nothing qualifies)
+        record_draw_batch(main.OverlayRenderer, SPT::Point, draw.Point);
+        // Object extras (cameras, lights, empties)
+        record_draw_batch(main.OverlayRenderer, SPT::ObjectExtrasLine, draw.ExtrasLine);
     }
 
     // Silhouette edge color (rendered ontop of meshes)
     if (has_silhouette) {
-        const auto &silhouette_edc = main.Renderer.ShaderPipelines.at(SPT::SilhouetteEdgeColor);
+        const auto &silhouette_edc = main.OverlayRenderer.ShaderPipelines.at(SPT::SilhouetteEdgeColor);
         // In mesh Edit mode, suppress active silhouette (element selection drives active state differently).
         // In armature Edit/Pose mode, the active bone gets the active-color silhouette.
         const auto active_entity = FindActiveEntity(r);
@@ -845,68 +874,58 @@ void RecordRenderCommandBuffer(entt::registry &r, entt::entity viewport, vk::Com
 
     if (draw_overlays && buffers.IdentityIndexCount > 0) { // Selection overlays
         cb.bindIndexBuffer(*buffers.IdentityIndexBuffer, 0, vk::IndexType::eUint32);
-        record_draw_batch(main.Renderer, SPT::LineOverlayFaceNormals, draw.OverlayFaceNormals);
-        record_draw_batch(main.Renderer, SPT::LineOverlayVertexNormals, draw.OverlayVertexNormals);
+        record_draw_batch(main.OverlayRenderer, SPT::LineOverlayFaceNormals, draw.OverlayFaceNormals);
+        record_draw_batch(main.OverlayRenderer, SPT::LineOverlayVertexNormals, draw.OverlayVertexNormals);
     }
 
     // Grid lines texture (drawn before bone depth clear so grid remains depth-tested against scene meshes)
     if (draw_overlays && show_overlays && settings.ShowGrid) {
-        main.Renderer.ShaderPipelines.at(SPT::Grid).RenderQuad(cb);
+        main.OverlayRenderer.ShaderPipelines.at(SPT::Grid).RenderQuad(cb);
     }
 
     { // Bone X-ray: clear depth so bones are never occluded by scene meshes (only mutually occlude each other)
         if (draw_overlays && (draw.BoneFill.DrawCount > 0 || draw.BoneSphereFill.DrawCount > 0)) {
             cb.bindIndexBuffer(*buffers.IdentityIndexBuffer, 0, vk::IndexType::eUint32);
             const vk::ClearAttachment depth_clear{vk::ImageAspectFlagBits::eDepth, 0, vk::ClearDepthStencilValue{1.f, 0}};
-            const auto extent = main.Resources->ColorImage.Extent;
-            const vk::ClearRect clear_rect{{{0, 0}, ToExtent2D(extent)}, 0, 1};
-            cb.clearAttachments(depth_clear, clear_rect);
+            cb.clearAttachments(depth_clear, vk::ClearRect{main_rect, 0, 1});
 
             // In Object+wireframe mode, show only outlines (no fills).
             // In Edit/Pose+wireframe, fills are semitransparent and write far-plane depth (via shader) so wires are never occluded.
             const bool object_wireframe = is_wireframe_mode && interaction_mode == InteractionMode::Object;
             if (!object_wireframe) {
-                record_draw_batch(main.Renderer, SPT::BoneFill, draw.BoneFill);
-                record_draw_batch(main.Renderer, SPT::BoneSphereFill, draw.BoneSphereFill);
+                record_draw_batch(main.OverlayRenderer, SPT::BoneFill, draw.BoneFill);
+                record_draw_batch(main.OverlayRenderer, SPT::BoneSphereFill, draw.BoneSphereFill);
             }
             // In non-wireframe Object mode, "Outline selected" off suppresses bone wire outlines.
             // In wireframe+Object mode, wires are the only bone visualization so always show them.
             const bool hide_bone_outlines = !is_wireframe_mode && interaction_mode == InteractionMode::Object &&
                 (!show_overlays || !settings.ShowOutlineSelected);
             if (!hide_bone_outlines) {
-                record_draw_batch(main.Renderer, SPT::BoneWire, draw.BoneWire);
-                record_draw_batch(main.Renderer, SPT::BoneSphereWire, draw.BoneSphereWire);
+                record_draw_batch(main.OverlayRenderer, SPT::BoneWire, draw.BoneWire);
+                record_draw_batch(main.OverlayRenderer, SPT::BoneSphereWire, draw.BoneSphereWire);
             }
         }
     }
 
     cb.endRenderPass();
 
-    // The render pass ExternalFragReadDependency should cover this, but MoltenVK needs an explicit barrier
-    // to flush the Metal render encoder's color writes before the next encoder samples them.
     {
-        const std::array main_out_barriers{
-            make_shader_read_barrier(vk::AccessFlagBits::eColorAttachmentWrite, vk::ImageLayout::eShaderReadOnlyOptimal, *main.Resources->ColorImage.Image, ColorSubresourceRange),
+        const std::array overlay_out_barriers{
+            make_shader_read_barrier(vk::AccessFlagBits::eColorAttachmentWrite, vk::ImageLayout::eShaderReadOnlyOptimal, *main.Resources->OverlayColorImage.Image, ColorSubresourceRange),
             make_shader_read_barrier(vk::AccessFlagBits::eColorAttachmentWrite, vk::ImageLayout::eShaderReadOnlyOptimal, *main.Resources->LineDataImage.Image, ColorSubresourceRange),
         };
-        sync_fragment_shader_reads(vk::PipelineStageFlagBits::eColorAttachmentOutput, main_out_barriers);
+        sync_fragment_shader_reads(vk::PipelineStageFlagBits::eColorAttachmentOutput, overlay_out_barriers);
     }
 
-    if (draw_overlays) { // Line AA composite pass: blends anti-aliased lines from LineDataImage onto ColorImage → FinalColorImage
+    { // Line AA composite pass: anti-aliases the overlay layer using LineDataImage and merges it over the scene → FinalColorImage
         const vk::ClearValue clear_value{vk::ClearColorValue{std::array<float, 4>{0, 0, 0, 1}}};
         const vk::Rect2D rect{{0, 0}, ToExtent2D(main.Resources->FinalColorImage.Extent)};
         cb.beginRenderPass({*main.LineAARenderPass, *main.Resources->LineAAFramebuffer, rect, clear_value}, vk::SubpassContents::eInline);
         const struct {
-            uint32_t ColorSamplerSlot, LineDataSamplerSlot;
-        } line_aa_pc{sel_slots.ColorSampler, sel_slots.LineDataSampler};
+            uint32_t SceneColorSamplerSlot, OverlayColorSamplerSlot, LineDataSamplerSlot;
+        } line_aa_pc{sel_slots.SceneColorSampler, sel_slots.OverlayColorSampler, sel_slots.LineDataSampler};
         cb.pushConstants(*main.LineAAComposite.PipelineLayout, vk::ShaderStageFlagBits::eFragment, 0, sizeof(line_aa_pc), &line_aa_pc);
         main.LineAAComposite.RenderQuad(cb);
-        cb.endRenderPass();
-    } else { // SceneAccumulate sums this sub-frame into the motion blur target instead. It draws no lines to composite.
-        cb.beginRenderPass({*main.MotionBlurAccumRenderPass, *main.MotionBlur->Framebuffer, main_rect}, vk::SubpassContents::eInline);
-        const uint32_t accum_pc = sel_slots.ColorSampler;
-        cb.pushConstants(*main.MotionBlurAccumulate.PipelineLayout, vk::ShaderStageFlagBits::eFragment, 0, sizeof(accum_pc), &accum_pc);
-        main.MotionBlurAccumulate.RenderQuad(cb);
         cb.endRenderPass();
     }
 
