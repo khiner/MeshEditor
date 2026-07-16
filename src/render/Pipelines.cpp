@@ -17,6 +17,8 @@ enum class OverlayKind : uint32_t {
 };
 constexpr std::array PbrSpecFeatures{PbrFeature::Punctual, PbrFeature::Transmission, PbrFeature::DiffuseTrans, PbrFeature::Clearcoat, PbrFeature::Sheen, PbrFeature::Anisotropy, PbrFeature::Iridescence};
 
+constexpr vk::PushConstantRange MainDrawPushConstantRange{vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, sizeof(MainDrawPushConstants)};
+
 constexpr vk::SubpassDependency ExternalFragReadDependency() {
     return {
         0,
@@ -46,11 +48,10 @@ const ShaderPipeline &PipelineRenderer::Bind(vk::CommandBuffer cb, SPT spt) cons
 // attachment for depth-only scene pipelines.
 static constexpr vk::PipelineColorBlendAttachmentState NoWriteBlend{};
 
-PbrCompiler::PbrCompiler(PipelineContext ctx, vk::RenderPass rp, vk::RenderPass prepass_rp)
-    : Device(ctx.Device), Cache(Device.createPipelineCacheUnique({})), SetLayout(ctx.SharedLayout), Set(ctx.SharedSet), RenderPass(rp), PrepassRenderPass(prepass_rp) {
+PbrCompiler::PbrCompiler(PipelineContext ctx, vk::RenderPass rp)
+    : Device(ctx.Device), Cache(Device.createPipelineCacheUnique({})), SetLayout(ctx.SharedLayout), Set(ctx.SharedSet), RenderPass(rp) {
     CompileModules();
-    const vk::PushConstantRange draw_pc{vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, sizeof(MainDrawPushConstants)};
-    Layout = Device.createPipelineLayoutUnique({{}, 1, &SetLayout, 1, &draw_pc});
+    Layout = Device.createPipelineLayoutUnique({{}, 1, &SetLayout, 1, &MainDrawPushConstantRange});
 }
 
 void PbrCompiler::CompileModules() {
@@ -93,15 +94,15 @@ bool PbrCompiler::CompilePipelines(PbrFeatureMask mask) {
     std::array<vk::SpecializationMapEntry, TotalConstants> entries{};
     for (uint32_t i = 0; i < TotalConstants; ++i) entries[i] = vk::SpecializationMapEntry{i, i * uint32_t(sizeof(uint32_t)), uint32_t(sizeof(uint32_t))};
     for (uint32_t i = 0; i < N; ++i) data[i] = ::HasFeature(mask, PbrSpecFeatures[i]) ? 1u : 0u;
-    data[N] = 0u; // main pipelines: render for display (framebuffer sampling, full display transform)
+    data[N] = 0u; // main pipelines: exposed radiance, sampling the transmission framebuffer
     const vk::SpecializationInfo spec_main{TotalConstants, entries.data(), TotalConstants * sizeof(uint32_t), data.data()};
     const Timer timer{"PBR pipeline compile"};
     OpaqueTargeted = CreateTargetedPipeline(spec_main, true, RenderPass);
     BlendTargeted = CreateTargetedPipeline(spec_main, false, RenderPass);
     if (::HasFeature(mask, PbrFeature::Transmission)) {
-        data[N] = 1u; // pre-pass pipeline: scene-linear output, no framebuffer self-sampling
+        data[N] = 1u; // pre-pass pipeline: un-exposed radiance, no framebuffer self-sampling
         const vk::SpecializationInfo spec_prepass{TotalConstants, entries.data(), TotalConstants * sizeof(uint32_t), data.data()};
-        OpaquePrepass = CreateTargetedPipeline(spec_prepass, true, PrepassRenderPass);
+        OpaquePrepass = CreateTargetedPipeline(spec_prepass, true, RenderPass);
     } else {
         OpaquePrepass.reset();
     }
@@ -142,7 +143,7 @@ static constexpr vk::PipelineColorBlendAttachmentState AdditiveBlend{
     vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG | vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA,
 };
 
-// `transmission_prepass` selects the variant that outputs scene-linear radiance for the HDR transmission target.
+// `transmission_prepass` selects the variant that skips exposure, which the main pass applies after sampling.
 static ShaderPipeline CreateBackgroundPipeline(const PipelineContext &ctx, bool transmission_prepass) {
     return ctx.CreateGraphics(
         {{{ShaderType::eVertex, "Background.vert"}, {ShaderType::eFragment, "Background.frag", {{0, transmission_prepass ? 1u : 0u}}}}},
@@ -162,13 +163,13 @@ static ShaderPipeline CreateQuadPipeline(const PipelineContext &ctx, std::filesy
     );
 }
 
-// Depth + a single scene color attachment. Depth is stored for the overlay pass to load and occlude against.
-// Also backs the transmission pre-pass, which shares this structure with an HDR color target.
-static vk::UniqueRenderPass CreateSceneRenderPass(vk::Device d, vk::Format color_format) {
+// Depth + a single scene-linear color attachment. Depth is stored for the overlay pass to load and
+// occlude against. Also backs the transmission pre-pass, which renders into its own framebuffer.
+static vk::UniqueRenderPass CreateSceneRenderPass(vk::Device d) {
     const std::vector<vk::AttachmentDescription> attachments{
         {{}, Format::Depth, vk::SampleCountFlagBits::e1, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eStore, vk::AttachmentLoadOp::eDontCare, vk::AttachmentStoreOp::eDontCare, vk::ImageLayout::eUndefined, vk::ImageLayout::eDepthStencilAttachmentOptimal},
-        // Color: cleared to background, stored for sampling in the line AA composite pass.
-        {{}, color_format, vk::SampleCountFlagBits::e1, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eStore, {}, {}, vk::ImageLayout::eUndefined, vk::ImageLayout::eShaderReadOnlyOptimal},
+        // Color: cleared transparent, stored for sampling in the viewport composite.
+        {{}, Format::HdrColor, vk::SampleCountFlagBits::e1, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eStore, {}, {}, vk::ImageLayout::eUndefined, vk::ImageLayout::eShaderReadOnlyOptimal},
     };
     const vk::AttachmentReference depth_attachment_ref{0, vk::ImageLayout::eDepthStencilAttachmentOptimal};
     const vk::AttachmentReference color_attachment_ref{1, vk::ImageLayout::eColorAttachmentOptimal};
@@ -178,7 +179,7 @@ static vk::UniqueRenderPass CreateSceneRenderPass(vk::Device d, vk::Format color
 }
 
 // The scene's depth loaded for occlusion, a display-referred overlay color target over transparent,
-// and the line data driving overlay AA. Both color targets are sampled by the line AA composite.
+// and the line data driving overlay AA. Both color targets are sampled by the viewport composite.
 static vk::UniqueRenderPass CreateOverlayRenderPass(vk::Device d) {
     const std::vector<vk::AttachmentDescription> attachments{
         {{}, Format::Depth, vk::SampleCountFlagBits::e1, vk::AttachmentLoadOp::eLoad, vk::AttachmentStoreOp::eDontCare, vk::AttachmentLoadOp::eDontCare, vk::AttachmentStoreOp::eDontCare, vk::ImageLayout::eDepthStencilAttachmentOptimal, vk::ImageLayout::eDepthStencilAttachmentOptimal},
@@ -223,7 +224,6 @@ static PipelineRenderer CreateSceneRenderer(
     vk::DescriptorSetLayout shared_layout, vk::DescriptorSet shared_set
 ) {
     const PipelineContext ctx{d, shared_layout, shared_set};
-    const vk::PushConstantRange draw_pc{vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, sizeof(MainDrawPushConstants)};
 
     // Can't construct this map in-place with pairs because `ShaderPipeline` doesn't have a copy constructor.
     std::unordered_map<SPT, ShaderPipeline> pipelines;
@@ -233,7 +233,7 @@ static PipelineRenderer CreateSceneRenderer(
             {{{ShaderType::eVertex, "VertexTransform.vert"}, {ShaderType::eFragment, "WorkspaceLighting.frag"}}},
             {},
             vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleList,
-            {CreateColorBlendAttachment(true)}, CreateDepthStencil(), draw_pc
+            {CreateColorBlendAttachment(true)}, CreateDepthStencil(), MainDrawPushConstantRange
         )
     );
     pipelines.emplace(
@@ -242,7 +242,7 @@ static PipelineRenderer CreateSceneRenderer(
             {{{ShaderType::eVertex, "PositionTransform.vert"}}},
             {},
             vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleList,
-            {NoWriteBlend}, CreateDepthStencil(), draw_pc
+            {NoWriteBlend}, CreateDepthStencil(), MainDrawPushConstantRange
         )
     );
     pipelines.emplace(SPT::Background, CreateBackgroundPipeline(ctx, false));
@@ -270,7 +270,7 @@ static PipelineRenderer CreateSceneRenderer(
             vk::PushConstantRange{vk::ShaderStageFlagBits::eFragment, 0, sizeof(uint32_t)}
         )
     );
-    return {CreateSceneRenderPass(d, Format::Color), std::move(pipelines)};
+    return {CreateSceneRenderPass(d), std::move(pipelines)};
 }
 
 static PipelineRenderer CreateOverlayRenderer(
@@ -278,7 +278,6 @@ static PipelineRenderer CreateOverlayRenderer(
     vk::DescriptorSetLayout shared_layout, vk::DescriptorSet shared_set
 ) {
     const PipelineContext ctx{d, shared_layout, shared_set};
-    const vk::PushConstantRange draw_pc{vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, sizeof(MainDrawPushConstants)};
 
     std::unordered_map<SPT, ShaderPipeline> pipelines;
     pipelines.emplace(
@@ -287,7 +286,7 @@ static PipelineRenderer CreateOverlayRenderer(
             {{{ShaderType::eVertex, "EdgeQuad.vert"}, {ShaderType::eFragment, "EdgeQuad.frag"}}},
             {},
             vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleList,
-            {CreateColorBlendAttachment(true), NoWriteBlend}, CreateDepthStencil(true, false, vk::CompareOp::eLessOrEqual), draw_pc
+            {CreateColorBlendAttachment(true), NoWriteBlend}, CreateDepthStencil(true, false, vk::CompareOp::eLessOrEqual), MainDrawPushConstantRange
         )
     );
     pipelines.emplace(
@@ -296,7 +295,7 @@ static PipelineRenderer CreateOverlayRenderer(
             {{{ShaderType::eVertex, "VertexTransform.vert", {{1, 1u}}}, {ShaderType::eFragment, "VertexColor.frag"}}},
             {},
             vk::PolygonMode::eFill, vk::PrimitiveTopology::eLineList,
-            {CreateColorBlendAttachment(true), LineDataBlend}, CreateDepthStencil(true, true, vk::CompareOp::eLessOrEqual), draw_pc
+            {CreateColorBlendAttachment(true), LineDataBlend}, CreateDepthStencil(true, true, vk::CompareOp::eLessOrEqual), MainDrawPushConstantRange
         )
     );
     pipelines.emplace(
@@ -305,7 +304,7 @@ static PipelineRenderer CreateOverlayRenderer(
             {{{ShaderType::eVertex, "ObjectExtras.vert"}, {ShaderType::eFragment, "VertexColor.frag"}}},
             {},
             vk::PolygonMode::eFill, vk::PrimitiveTopology::eLineList,
-            {CreateColorBlendAttachment(true), LineDataBlend}, CreateDepthStencil(true, true, vk::CompareOp::eLessOrEqual), draw_pc
+            {CreateColorBlendAttachment(true), LineDataBlend}, CreateDepthStencil(true, true, vk::CompareOp::eLessOrEqual), MainDrawPushConstantRange
         )
     );
     const auto make_overlay_pipeline = [&](OverlayKind overlay_kind) {
@@ -314,7 +313,7 @@ static PipelineRenderer CreateOverlayRenderer(
               {ShaderType::eFragment, "VertexColor.frag"}}},
             {},
             vk::PolygonMode::eFill, vk::PrimitiveTopology::eLineList,
-            {CreateColorBlendAttachment(true), LineDataBlend}, CreateDepthStencil(true, true, vk::CompareOp::eLessOrEqual), draw_pc
+            {CreateColorBlendAttachment(true), LineDataBlend}, CreateDepthStencil(true, true, vk::CompareOp::eLessOrEqual), MainDrawPushConstantRange
         );
     };
     pipelines.emplace(SPT::LineOverlayFaceNormals, make_overlay_pipeline(OverlayKind::FaceNormal));
@@ -325,7 +324,7 @@ static PipelineRenderer CreateOverlayRenderer(
             {{{ShaderType::eVertex, "VertexPoint.vert"}, {ShaderType::eFragment, "VertexPoint.frag"}}},
             {},
             vk::PolygonMode::eFill, vk::PrimitiveTopology::ePointList,
-            {CreateColorBlendAttachment(true), NoWriteBlend}, CreateDepthStencil(true, true, vk::CompareOp::eLessOrEqual), draw_pc
+            {CreateColorBlendAttachment(true), NoWriteBlend}, CreateDepthStencil(true, true, vk::CompareOp::eLessOrEqual), MainDrawPushConstantRange
         )
     );
     pipelines.emplace(
@@ -354,7 +353,7 @@ static PipelineRenderer CreateOverlayRenderer(
             {{{ShaderType::eVertex, "BoneSolid.vert"}, {ShaderType::eFragment, "BoneSolid.frag"}}},
             {},
             vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleList,
-            {CreateColorBlendAttachment(true), NoWriteBlend}, CreateDepthStencil(), draw_pc, 2.0f
+            {CreateColorBlendAttachment(true), NoWriteBlend}, CreateDepthStencil(), MainDrawPushConstantRange, 2.0f
         )
     );
     pipelines.emplace(
@@ -363,7 +362,7 @@ static PipelineRenderer CreateOverlayRenderer(
             {{{ShaderType::eVertex, "BoneWire.vert"}, {ShaderType::eFragment, "VertexColor.frag"}}},
             {},
             vk::PolygonMode::eFill, vk::PrimitiveTopology::eLineList,
-            {CreateColorBlendAttachment(true), LineDataBlend}, CreateDepthStencil(true, false, vk::CompareOp::eLessOrEqual), draw_pc
+            {CreateColorBlendAttachment(true), LineDataBlend}, CreateDepthStencil(true, false, vk::CompareOp::eLessOrEqual), MainDrawPushConstantRange
         )
     );
     pipelines.emplace(
@@ -372,7 +371,7 @@ static PipelineRenderer CreateOverlayRenderer(
             {{{ShaderType::eVertex, "BoneSphere.vert"}, {ShaderType::eFragment, "BoneSphere.frag"}}},
             {},
             vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleList,
-            {CreateColorBlendAttachment(true), NoWriteBlend}, CreateDepthStencil(true, true, vk::CompareOp::eLessOrEqual), draw_pc
+            {CreateColorBlendAttachment(true), NoWriteBlend}, CreateDepthStencil(true, true, vk::CompareOp::eLessOrEqual), MainDrawPushConstantRange
         )
     );
     pipelines.emplace(
@@ -381,7 +380,7 @@ static PipelineRenderer CreateOverlayRenderer(
             {{{ShaderType::eVertex, "BoneSphereWire.vert"}, {ShaderType::eFragment, "VertexColor.frag"}}},
             {},
             vk::PolygonMode::eFill, vk::PrimitiveTopology::eLineList,
-            {CreateColorBlendAttachment(true), LineDataBlend}, CreateDepthStencil(true, false, vk::CompareOp::eLessOrEqual), draw_pc
+            {CreateColorBlendAttachment(true), LineDataBlend}, CreateDepthStencil(true, false, vk::CompareOp::eLessOrEqual), MainDrawPushConstantRange
         )
     );
     return {CreateOverlayRenderPass(d), std::move(pipelines)};
@@ -392,13 +391,12 @@ MainPipeline::MainPipeline(
     vk::DescriptorSetLayout shared_layout, vk::DescriptorSet shared_set
 ) : SceneRenderer{CreateSceneRenderer(d, shared_layout, shared_set)},
     OverlayRenderer{CreateOverlayRenderer(d, shared_layout, shared_set)},
-    PrepassRenderPass{CreateSceneRenderPass(d, Format::HdrColor)},
     PrepassBackground{CreateBackgroundPipeline({d, shared_layout, shared_set}, true)},
-    LineAARenderPass{CreateColorOnlyRenderPass(d, Format::Color, vk::AttachmentLoadOp::eDontCare, vk::ImageLayout::eUndefined, vk::ImageLayout::eShaderReadOnlyOptimal)},
-    LineAAComposite{CreateQuadPipeline({d, shared_layout, shared_set}, "LineAA.frag", CreateColorBlendAttachment(false), sizeof(uint32_t) * 3)},
+    CompositeRenderPass{CreateColorOnlyRenderPass(d, Format::Color, vk::AttachmentLoadOp::eDontCare, vk::ImageLayout::eUndefined, vk::ImageLayout::eShaderReadOnlyOptimal)},
+    ViewportComposite{CreateQuadPipeline({d, shared_layout, shared_set}, "ViewportComposite.frag", CreateColorBlendAttachment(false), sizeof(uint32_t) * 4 + sizeof(vec4))},
     MotionBlurAccumRenderPass{CreateColorOnlyRenderPass(d, Format::HdrColor, vk::AttachmentLoadOp::eLoad, vk::ImageLayout::eColorAttachmentOptimal, vk::ImageLayout::eColorAttachmentOptimal)},
     MotionBlurAccumulate{CreateQuadPipeline({d, shared_layout, shared_set}, "MotionBlurAccumulate.frag", AdditiveBlend, sizeof(uint32_t))},
-    Compiler{{d, shared_layout, shared_set}, *SceneRenderer.RenderPass, *PrepassRenderPass} {}
+    Compiler{{d, shared_layout, shared_set}, *SceneRenderer.RenderPass} {}
 
 static uint32_t MipCount(vk::Extent2D extent) {
     uint32_t levels = 1;
@@ -411,9 +409,9 @@ static uint32_t MipCount(vk::Extent2D extent) {
 }
 
 MainPipeline::ResourcesT::ResourcesT(
-    vk::Extent2D extent, vk::Device d, vk::PhysicalDevice pd, vk::RenderPass scene_render_pass, vk::RenderPass overlay_render_pass, vk::RenderPass line_aa_render_pass
+    vk::Extent2D extent, vk::Device d, vk::PhysicalDevice pd, vk::RenderPass scene_render_pass, vk::RenderPass overlay_render_pass, vk::RenderPass composite_render_pass
 ) : DepthImage{mvk::CreateImage(d, pd, {{}, vk::ImageType::e2D, Format::Depth, vk::Extent3D{extent, 1}, 1, 1, vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eDepthStencilAttachment, vk::SharingMode::eExclusive}, {{}, {}, vk::ImageViewType::e2D, Format::Depth, {}, DepthSubresourceRange})},
-    SceneColorImage{mvk::CreateImage(d, pd, {{}, vk::ImageType::e2D, Format::Color, vk::Extent3D{extent, 1}, 1, 1, vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eColorAttachment, vk::SharingMode::eExclusive}, {{}, {}, vk::ImageViewType::e2D, Format::Color, {}, ColorSubresourceRange})},
+    SceneColorImage{mvk::CreateImage(d, pd, {{}, vk::ImageType::e2D, Format::HdrColor, vk::Extent3D{extent, 1}, 1, 1, vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eColorAttachment, vk::SharingMode::eExclusive}, {{}, {}, vk::ImageViewType::e2D, Format::HdrColor, {}, ColorSubresourceRange})},
     OverlayColorImage{mvk::CreateImage(d, pd, {{}, vk::ImageType::e2D, Format::Color, vk::Extent3D{extent, 1}, 1, 1, vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eColorAttachment, vk::SharingMode::eExclusive}, {{}, {}, vk::ImageViewType::e2D, Format::Color, {}, ColorSubresourceRange})},
     LineDataImage{mvk::CreateImage(d, pd, {{}, vk::ImageType::e2D, Format::LineData, vk::Extent3D{extent, 1}, 1, 1, vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eColorAttachment, vk::SharingMode::eExclusive}, {{}, {}, vk::ImageViewType::e2D, Format::LineData, {}, ColorSubresourceRange})},
     // eTransferSrc enables video-recording readback via vkCmdCopyImageToBuffer.
@@ -437,15 +435,15 @@ MainPipeline::ResourcesT::ResourcesT(
     }
     {
         const std::array image_views{*FinalColorImage.View};
-        LineAAFramebuffer = d.createFramebufferUnique({{}, line_aa_render_pass, image_views, extent.width, extent.height, 1});
+        CompositeFramebuffer = d.createFramebufferUnique({{}, composite_render_pass, image_views, extent.width, extent.height, 1});
     }
 }
 
 void MainPipeline::SetExtent(vk::Extent2D extent, vk::Device d, vk::PhysicalDevice pd) {
-    Resources = std::make_unique<ResourcesT>(extent, d, pd, *SceneRenderer.RenderPass, *OverlayRenderer.RenderPass, *LineAARenderPass);
+    Resources = std::make_unique<ResourcesT>(extent, d, pd, *SceneRenderer.RenderPass, *OverlayRenderer.RenderPass, *CompositeRenderPass);
     // Resize invalidates any existing transmission framebuffer (it shares this struct's depth view).
     Transmission.reset();
-    // The accumulation target is extent-sized; drop it so it is reallocated at the new extent on the next MB frame.
+    // The accumulation target is extent-sized. Drop it so it is reallocated at the new extent on the next MB frame.
     MotionBlur.reset();
 }
 
@@ -500,8 +498,8 @@ MainPipeline::TransmissionResourcesT::TransmissionResourcesT(
         float(::MipCount(extent)),
     })} {
     Mip0View = d.createImageViewUnique({{}, *Image.Image, vk::ImageViewType::e2D, Format::HdrColor, {}, ColorSubresourceRange});
-    // Pre-pass framebuffer uses the pre-pass render pass (scene structure, HDR color target).
-    // The depth view is owned by ResourcesT; both passes loadOp=Clear so prior contents don't matter.
+    // The pre-pass renders through the scene render pass into the transmission image's mip 0.
+    // The depth view is owned by ResourcesT. Both passes loadOp=Clear so prior contents don't matter.
     const std::array image_views{depth_view, *Mip0View};
     Framebuffer = d.createFramebufferUnique({{}, render_pass, image_views, extent.width, extent.height, 1});
 }
@@ -513,7 +511,7 @@ bool MainPipeline::EnsureTransmissionResources(vk::Extent2D extent, vk::Device d
         return true;
     }
     if (Transmission && Transmission->Extent.width == extent.width && Transmission->Extent.height == extent.height) return false;
-    Transmission = std::make_unique<TransmissionResourcesT>(extent, d, pd, *PrepassRenderPass, *Resources->DepthImage.View);
+    Transmission = std::make_unique<TransmissionResourcesT>(extent, d, pd, *SceneRenderer.RenderPass, *Resources->DepthImage.View);
     return true;
 }
 
@@ -529,7 +527,6 @@ static PipelineRenderer CreateSilhouetteRenderer(vk::Device d, vk::DescriptorSet
     const vk::SubpassDescription subpass{{}, vk::PipelineBindPoint::eGraphics, 0, nullptr, 1, &color_attachment_ref, nullptr, &depth_attachment_ref};
 
     const PipelineContext ctx{d, shared_layout, shared_set};
-    const vk::PushConstantRange draw_pc{vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, sizeof(MainDrawPushConstants)};
     std::unordered_map<SPT, ShaderPipeline> pipelines;
     pipelines.emplace(
         SPT::SilhouetteDepthObject,
@@ -537,7 +534,7 @@ static PipelineRenderer CreateSilhouetteRenderer(vk::Device d, vk::DescriptorSet
             {{{ShaderType::eVertex, "PositionTransform.vert"}, {ShaderType::eFragment, "DepthObject.frag"}}},
             {},
             vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleList,
-            {CreateColorBlendAttachment(false)}, CreateDepthStencil(), draw_pc
+            {CreateColorBlendAttachment(false)}, CreateDepthStencil(), MainDrawPushConstantRange
         )
     );
     return {d.createRenderPassUnique({{}, attachments, subpass}), std::move(pipelines)};
@@ -807,8 +804,8 @@ void Pipelines::SetExtent(vk::Extent2D extent) {
 void Pipelines::CompileShaders() {
     Main.SceneRenderer.CompileShaders();
     Main.OverlayRenderer.CompileShaders();
-    Main.PrepassBackground.Compile(*Main.PrepassRenderPass);
-    Main.LineAAComposite.Compile(*Main.LineAARenderPass);
+    Main.PrepassBackground.Compile(*Main.SceneRenderer.RenderPass);
+    Main.ViewportComposite.Compile(*Main.CompositeRenderPass);
     Main.MotionBlurAccumulate.Compile(*Main.MotionBlurAccumRenderPass);
     Main.Compiler.RecompileModules();
     Silhouette.Renderer.CompileShaders();

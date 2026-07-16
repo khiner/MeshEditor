@@ -49,9 +49,8 @@ layout(constant_id = 3) const bool ENABLE_CLEARCOAT     = true;
 layout(constant_id = 4) const bool ENABLE_SHEEN         = true;
 layout(constant_id = 5) const bool ENABLE_ANISOTROPY    = true;
 layout(constant_id = 6) const bool ENABLE_IRIDESCENCE   = true;
-// Rendering into the HDR transmission framebuffer: discards transmission materials (they must
-// not sample their own attachment) and outputs scene-linear radiance (no exposure/tone map/sRGB),
-// so the main pass samples true linear light and applies the display transform exactly once.
+// Rendering into the transmission framebuffer: discards transmission materials (they must not
+// sample their own attachment) and skips exposure, which the main pass applies after sampling.
 layout(constant_id = 7) const bool TRANSMISSION_PREPASS = false;
 
 layout(location = 0) in vec3 WorldNormal;
@@ -213,7 +212,7 @@ void main() {
         }
         OutColor = TRANSMISSION_PREPASS
             ? base_color
-            : vec4(linearToDisplay(base_color.rgb * SceneViewUBO.Exposure), base_color.a);
+            : vec4(base_color.rgb * SceneViewUBO.Exposure, base_color.a);
         return;
     }
 
@@ -286,7 +285,7 @@ void main() {
             diffuse_transmission_color *= texture(Samplers[nonuniformEXT(material.DiffuseTransmission.ColorTexture.Slot)], GetUv(material.DiffuseTransmission.ColorTexture)).rgb;
         }
     }
-    // KHR_materials_volume: ThicknessFactor is model-space; multiply by world scale for Beer's law.
+    // KHR_materials_volume: ThicknessFactor is model-space, so multiply by world scale for Beer's law.
     float world_thickness = material.Volume.ThicknessFactor * WorldScale;
     if (material.Volume.ThicknessTexture.Slot != INVALID_SLOT) {
         world_thickness *= texture(Samplers[nonuniformEXT(material.Volume.ThicknessTexture.Slot)], GetUv(material.Volume.ThicknessTexture)).g;
@@ -309,7 +308,7 @@ void main() {
         }
         cc_perceptual_roughness = clamp(cc_perceptual_roughness, 0.0, 1.0);
         cc_alpha_roughness = cc_perceptual_roughness * cc_perceptual_roughness;
-        // Clearcoat normal defaults to the geometric normal; optionally overridden by its own normal map.
+        // Clearcoat normal defaults to the geometric normal, optionally overridden by its own normal map.
         // Uses the same tangent basis (t, b from normal_info) as the base material.
         if (material.Clearcoat.NormalTexture.Slot != INVALID_SLOT) {
             vec3 cc_ntex = texture(Samplers[nonuniformEXT(material.Clearcoat.NormalTexture.Slot)], GetUv(material.Clearcoat.NormalTexture)).rgb * 2.0 - vec3(1.0);
@@ -331,7 +330,7 @@ void main() {
         anisotropy_dir = vec2(cos(material.Anisotropy.Rotation), sin(material.Anisotropy.Rotation));
         if (material.Anisotropy.Texture.Slot != INVALID_SLOT) {
             const vec3 anisotropySample = texture(Samplers[nonuniformEXT(material.Anisotropy.Texture.Slot)], GetUv(material.Anisotropy.Texture)).rgb;
-            // Texture RG encodes direction in [0,1]; remap to [-1,1] then rotate by material angle.
+            // Texture RG encodes direction in [0,1]. Remap to [-1,1] then rotate by material angle.
             const vec2 texDir = anisotropySample.xy * 2.0 - vec2(1.0);
             const mat2 rotMatrix = mat2(anisotropy_dir.x, anisotropy_dir.y, -anisotropy_dir.y, anisotropy_dir.x);
             anisotropy_dir = normalize(rotMatrix * texDir);
@@ -501,7 +500,8 @@ void main() {
         base_color.a = 1.0;
     }
 
-    // When active, replace the shaded color with the named property; skip tonemap and face-overlay.
+    // When active, replace the shaded color with the named property. Skips exposure and face-overlay,
+    // and the composite passes these values through untransformed.
     if (SceneViewUBO.DebugChannel != DebugChannel_None) {
         vec3 dbg = vec3(0.0);
         switch (SceneViewUBO.DebugChannel) {
@@ -560,6 +560,5 @@ void main() {
         color = mix(color, overlay, selected.a);
     }
 
-    if (!TRANSMISSION_PREPASS) color = linearToDisplay(color);
     OutColor = vec4(color, base_color.a);
 }

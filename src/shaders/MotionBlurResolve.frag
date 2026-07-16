@@ -2,7 +2,6 @@
 #extension GL_EXT_nonuniform_qualifier : require
 
 #include "SceneUBO.glsl"
-#include "tonemapping.glsl"
 
 layout(set = 0, binding = BINDING_Sampler) uniform sampler2D Samplers[];
 
@@ -14,8 +13,7 @@ layout(push_constant) uniform PushConstants {
     float InvSamples; // 1 / sample count.
 } pc;
 
-// Average the accumulated scene-linear samples and re-apply the display transform.
+// Average the summed sub-frames. Color and coverage are both premultiplied, so both scale together.
 void main() {
-    const vec3 accum = texture(Samplers[pc.AccumSamplerSlot], TexCoord).rgb;
-    OutColor = vec4(linearToDisplay(accum * pc.InvSamples), 1.0);
+    OutColor = texture(Samplers[pc.AccumSamplerSlot], TexCoord) * pc.InvSamples;
 }

@@ -19,5 +19,5 @@ void main() {
     float mix_w = smoothstep(LINE_SMOOTH_START, LINE_SMOOTH_END, dist);
 
     OutColor = vec4(Color.rgb, Color.a * (1.0 - mix_w));
-    OutLineData = vec4(0.0); // Opt out of LineAA composite (edge quads handle their own AA).
+    OutLineData = vec4(0.0); // Opt out of composite AA (edge quads handle their own).
 }

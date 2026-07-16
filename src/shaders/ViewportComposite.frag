@@ -2,6 +2,7 @@
 #extension GL_EXT_nonuniform_qualifier : require
 
 #include "SceneUBO.glsl"
+#include "tonemapping.glsl"
 
 layout(set = 0, binding = BINDING_Sampler) uniform sampler2D Samplers[];
 
@@ -12,6 +13,9 @@ layout(push_constant) uniform PushConstants {
     uint SceneColorSamplerSlot;
     uint OverlayColorSamplerSlot;
     uint LineDataSamplerSlot;
+    // The active view transform: 0 encodes only, 1 tone maps first, 2 passes debug values through.
+    uint ViewTransform;
+    vec4 Backdrop; // Display-referred viewport background.
 } pc;
 
 // Decode the perpendicular direction from encoded xy channels
@@ -61,6 +65,14 @@ void main() {
     if (max_coverage > 0.0) {
         overlay = mix(overlay, texture(Samplers[pc.OverlayColorSamplerSlot], best_uv), max_coverage);
     }
-    const vec3 scene = texture(Samplers[pc.SceneColorSamplerSlot], TexCoord).rgb;
-    OutColor = vec4(scene * (1.0 - overlay.a) + overlay.rgb, 1.0);
+
+    // The scene layer is premultiplied. Recover radiance for the view transform, then re-apply
+    // coverage, so partial-coverage pixels keep their weight.
+    const vec4 scene = texture(Samplers[pc.SceneColorSamplerSlot], TexCoord);
+    const vec3 radiance = scene.a > 0.0 ? scene.rgb / scene.a : vec3(0.0);
+    const vec3 scene_display = pc.ViewTransform == 2u ? radiance :
+        pc.ViewTransform == 1u ? linearToDisplay(radiance) : linearTosRGB(radiance);
+    // The backdrop is UI. It sits under the scene in display space, and the view transform skips it.
+    const vec3 base = scene_display * scene.a + pc.Backdrop.rgb * (1.0 - scene.a);
+    OutColor = vec4(base * (1.0 - overlay.a) + overlay.rgb, 1.0);
 }

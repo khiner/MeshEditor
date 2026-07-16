@@ -28,24 +28,6 @@ using std::ranges::any_of, std::ranges::to;
 
 namespace {
 constexpr vk::Extent2D ToExtent2D(vk::Extent3D extent) { return {extent.width, extent.height}; }
-constexpr vk::ClearColorValue ToClearColor(vec4 c) { return {std::array{c.r, c.g, c.b, c.a}}; }
-// Inverse of the shader's display transform (toneMapPBRNeutral then sRGB encode), ignoring the tone
-// map's desaturation term (not invertible, and negligible near the compression knee). Maps the
-// display-referred clear color back to scene-linear for the HDR transmission pre-pass target.
-vec3 DisplayToSceneLinear(vec3 color) {
-    color = glm::pow(color, vec3{2.2f});
-    constexpr float StartCompression = 0.8f - 0.04f;
-    constexpr float D = 1.f - StartCompression;
-    // The forward compression asymptotes to 1, so clamp just below to keep the inverse finite.
-    if (const float peak = std::min(std::max({color.r, color.g, color.b}), 0.999f); peak >= StartCompression) {
-        const float original_peak = D * D / (1.f - peak) - D + StartCompression;
-        color *= original_peak / peak;
-    }
-    // Undo the black-level offset. The forward maps min channel x to 6.25x² for x < 0.08, else x - 0.04.
-    const float x = std::min({color.r, color.g, color.b});
-    const float offset = x < 0.04f ? 0.4f * std::sqrt(x) - x : 0.04f;
-    return color + offset;
-}
 const vk::ClearColorValue Transparent{0, 0, 0, 0};
 const std::vector<vk::ClearValue> SilhouetteClearValues{{vk::ClearDepthStencilValue{1, 0}}, {Transparent}};
 DrawData MakeDrawData(const RenderBuffers &rb, uint32_t vertex_slot, const InstanceArena &instances) {
@@ -225,7 +207,7 @@ void RecordRenderCommandBuffer(entt::registry &r, entt::entity viewport, vk::Com
         std::vector<entt::entity> blend_mesh_order;
         if (show_rendered) {
             // Transparent pass ordering: sort mesh draws back-to-front by camera distance.
-            // This is a mesh-level approximation; interpenetrating transparent geometry may still require
+            // This is a mesh-level approximation. Interpenetrating transparent geometry may still require
             // per-primitive sorting or OIT for fully correct compositing.
             const auto camera_position = r.get<const ViewCamera>(viewport).Position();
             std::unordered_map<entt::entity, float> farthest_distance2_by_mesh;
@@ -634,6 +616,9 @@ void RecordRenderCommandBuffer(entt::registry &r, entt::entity viewport, vk::Com
     const auto make_shader_read_barrier = [](vk::AccessFlags src_access, vk::ImageLayout layout, vk::Image image, const vk::ImageSubresourceRange &range) {
         return vk::ImageMemoryBarrier{src_access, vk::AccessFlagBits::eShaderRead, layout, layout, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, image, range};
     };
+    const auto color_read_barrier = [&](vk::Image image) {
+        return make_shader_read_barrier(vk::AccessFlagBits::eColorAttachmentWrite, vk::ImageLayout::eShaderReadOnlyOptimal, image, ColorSubresourceRange);
+    };
     const auto sync_fragment_shader_reads = [&](vk::PipelineStageFlags src_stages, auto &&barriers) {
         cb.pipelineBarrier(src_stages, vk::PipelineStageFlagBits::eFragmentShader, {}, {}, {}, barriers);
     };
@@ -649,7 +634,7 @@ void RecordRenderCommandBuffer(entt::registry &r, entt::entity viewport, vk::Com
 
         // Silhouette pass offscreen color writes -> edge pass fragment sampling.
         const std::array silhouette_to_edge_barriers{
-            make_shader_read_barrier(vk::AccessFlagBits::eColorAttachmentWrite, vk::ImageLayout::eShaderReadOnlyOptimal, *silhouette.Resources->OffscreenImage.Image, ColorSubresourceRange),
+            color_read_barrier(*silhouette.Resources->OffscreenImage.Image),
         };
         sync_fragment_shader_reads(vk::PipelineStageFlagBits::eColorAttachmentOutput, silhouette_to_edge_barriers);
 
@@ -665,16 +650,17 @@ void RecordRenderCommandBuffer(entt::registry &r, entt::entity viewport, vk::Com
         // Edge pass depth/color writes -> main pass silhouette sampling.
         const std::array edge_to_main_barriers{
             make_shader_read_barrier(vk::AccessFlagBits::eDepthStencilAttachmentWrite, vk::ImageLayout::eDepthStencilReadOnlyOptimal, *silhouette_edge.Resources->DepthImage.Image, DepthSubresourceRange),
-            make_shader_read_barrier(vk::AccessFlagBits::eColorAttachmentWrite, vk::ImageLayout::eShaderReadOnlyOptimal, *silhouette_edge.Resources->OffscreenImage.Image, ColorSubresourceRange),
+            color_read_barrier(*silhouette_edge.Resources->OffscreenImage.Image),
         };
         sync_fragment_shader_reads(vk::PipelineStageFlagBits::eLateFragmentTests | vk::PipelineStageFlagBits::eColorAttachmentOutput, edge_to_main_barriers);
     }
 
     const auto &main = pipelines.Main;
     const vk::Rect2D main_rect{{0, 0}, ToExtent2D(main.Resources->SceneColorImage.Extent)};
+    // Transparent: alpha marks where the scene drew, and the composite fills the rest with the backdrop.
     const std::vector<vk::ClearValue> scene_clear_values{
         {vk::ClearDepthStencilValue{1, 0}},
-        {ToClearColor(settings.ClearColor)},
+        {Transparent},
     };
     // Depth loads from the scene pass, so its clear value is unused. Both color targets clear to
     // transparent: the composite merges the overlay layer over the scene by its alpha.
@@ -684,19 +670,17 @@ void RecordRenderCommandBuffer(entt::registry &r, entt::entity viewport, vk::Com
         {Transparent},
     };
 
-    // Real-transmission pre-pass: render Background + FillOpaque into TransmissionImage mip 0 in
-    // scene-linear HDR, sampled by the main pass at the refracted exit point. TRANSMISSION_PREPASS
-    // variants skip the display transform and drop transmission materials (no self-sampling).
+    // Real-transmission pre-pass: render Background + FillOpaque into TransmissionImage mip 0,
+    // sampled by the scene pass at the refracted exit point. TRANSMISSION_PREPASS variants skip
+    // exposure and drop transmission materials (no self-sampling).
     if (real_transmission && main.Transmission && draw_scene) {
-        // Clear with the display clear color mapped back to scene-linear and un-exposed, so the
-        // refracted view of the empty backdrop displays as the same clear color after the main pass.
-        const vec3 clear_linear = DisplayToSceneLinear(vec3{settings.ClearColor}) / std::exp2(active_lighting.ExposureEV);
+        // Refraction sees the world, and nothing where there is no world. The viewport backdrop is
+        // display-referred UI drawn with the overlays, so it never reaches this buffer.
         const std::array prepass_clear_values{
             vk::ClearValue{vk::ClearDepthStencilValue{1, 0}},
-            vk::ClearValue{ToClearColor(vec4{clear_linear, settings.ClearColor.a})},
             vk::ClearValue{Transparent},
         };
-        cb.beginRenderPass({*main.PrepassRenderPass, *main.Transmission->Framebuffer, main_rect, prepass_clear_values}, vk::SubpassContents::eInline);
+        cb.beginRenderPass({*main.SceneRenderer.RenderPass, *main.Transmission->Framebuffer, main_rect, prepass_clear_values}, vk::SubpassContents::eInline);
         main.PrepassBackground.RenderQuad(cb);
         if (buffers.IdentityIndexCount > 0 && show_fill) {
             cb.bindIndexBuffer(*buffers.IdentityIndexBuffer, 0, vk::IndexType::eUint32);
@@ -705,7 +689,7 @@ void RecordRenderCommandBuffer(entt::registry &r, entt::entity viewport, vk::Com
         cb.endRenderPass();
 
         // Generate mip chain via linear blits. After the render pass, mip 0 is in eShaderReadOnlyOptimal
-        // (per attachment finalLayout); we re-transition it for blits, then leave all mips in eShaderReadOnlyOptimal.
+        // per attachment finalLayout. Re-transition it for blits, then leave all mips in eShaderReadOnlyOptimal.
         const auto mip_count = main.Transmission->MipCount;
         const auto image = *main.Transmission->Image.Image;
         // mip 0: shaderRO -> transferSrc
@@ -759,7 +743,7 @@ void RecordRenderCommandBuffer(entt::registry &r, entt::entity viewport, vk::Com
         );
     }
 
-    // Each motion blur sub-frame wrote the blur target as a color attachment; transition it for sampling below.
+    // Each motion blur sub-frame wrote the blur target as a color attachment. Transition it for sampling below.
     if (phase == RenderPhase::ResolveOverlays) {
         const std::array accum_barriers{
             vk::ImageMemoryBarrier{vk::AccessFlagBits::eColorAttachmentWrite, vk::AccessFlagBits::eShaderRead, vk::ImageLayout::eColorAttachmentOptimal, vk::ImageLayout::eShaderReadOnlyOptimal, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, *main.MotionBlur->AccumImage.Image, ColorSubresourceRange},
@@ -770,7 +754,7 @@ void RecordRenderCommandBuffer(entt::registry &r, entt::entity viewport, vk::Com
     // Scene pass: shaded scene into its own color target, and the depth the overlay pass occludes against.
     cb.beginRenderPass({*main.SceneRenderer.RenderPass, *main.Resources->SceneFramebuffer, main_rect, scene_clear_values}, vk::SubpassContents::eInline);
 
-    // Background environment (PBR modes only; shader discards when WorldOpacity == 0 or no env slot)
+    // Background environment (PBR modes only). The shader discards when WorldOpacity == 0 or there is no env slot.
     if (show_rendered && draw_scene) main.SceneRenderer.ShaderPipelines.at(SPT::Background).RenderQuad(cb);
     // Fill the scene target with the averaged motion blur sub-frames, for the depth and overlays below to draw over.
     if (phase == RenderPhase::ResolveOverlays) {
@@ -809,7 +793,7 @@ void RecordRenderCommandBuffer(entt::registry &r, entt::entity viewport, vk::Com
     // to flush the Metal render encoder's color writes before the next encoder samples them.
     {
         const std::array scene_out_barriers{
-            make_shader_read_barrier(vk::AccessFlagBits::eColorAttachmentWrite, vk::ImageLayout::eShaderReadOnlyOptimal, *main.Resources->SceneColorImage.Image, ColorSubresourceRange),
+            color_read_barrier(*main.Resources->SceneColorImage.Image),
         };
         sync_fragment_shader_reads(vk::PipelineStageFlagBits::eColorAttachmentOutput, scene_out_barriers);
     }
@@ -839,7 +823,7 @@ void RecordRenderCommandBuffer(entt::registry &r, entt::entity viewport, vk::Com
         cb.bindIndexBuffer(*buffers.IdentityIndexBuffer, 0, vk::IndexType::eUint32);
         // Edit mode edges as triangle quads with self-AA
         record_draw_batch(main.OverlayRenderer, SPT::EdgeQuad, draw.EdgeQuad);
-        // Wireframe/line mesh edges as GPU lines (LineAA composite handles AA)
+        // Wireframe/line mesh edges as GPU lines (the composite handles AA)
         record_draw_batch(main.OverlayRenderer, SPT::Line, draw.WireLine);
         // Vertex points (always recorded — batch is empty when nothing qualifies)
         record_draw_batch(main.OverlayRenderer, SPT::Point, draw.Point);
@@ -911,21 +895,25 @@ void RecordRenderCommandBuffer(entt::registry &r, entt::entity viewport, vk::Com
 
     {
         const std::array overlay_out_barriers{
-            make_shader_read_barrier(vk::AccessFlagBits::eColorAttachmentWrite, vk::ImageLayout::eShaderReadOnlyOptimal, *main.Resources->OverlayColorImage.Image, ColorSubresourceRange),
-            make_shader_read_barrier(vk::AccessFlagBits::eColorAttachmentWrite, vk::ImageLayout::eShaderReadOnlyOptimal, *main.Resources->LineDataImage.Image, ColorSubresourceRange),
+            color_read_barrier(*main.Resources->OverlayColorImage.Image),
+            color_read_barrier(*main.Resources->LineDataImage.Image),
         };
         sync_fragment_shader_reads(vk::PipelineStageFlagBits::eColorAttachmentOutput, overlay_out_barriers);
     }
 
-    { // Line AA composite pass: anti-aliases the overlay layer using LineDataImage and merges it over the scene → FinalColorImage
+    { // Composite: anti-alias the overlay layer using LineDataImage, view-transform the scene, merge into FinalColorImage
         const vk::ClearValue clear_value{vk::ClearColorValue{std::array<float, 4>{0, 0, 0, 1}}};
         const vk::Rect2D rect{{0, 0}, ToExtent2D(main.Resources->FinalColorImage.Extent)};
-        cb.beginRenderPass({*main.LineAARenderPass, *main.Resources->LineAAFramebuffer, rect, clear_value}, vk::SubpassContents::eInline);
+        cb.beginRenderPass({*main.CompositeRenderPass, *main.Resources->CompositeFramebuffer, rect, clear_value}, vk::SubpassContents::eInline);
+        // Debug channels write their own already-viewable values, so they pass through untransformed.
+        const uint32_t view_transform = settings.DebugChannel != DebugChannel::None ? 2u : show_rendered ? 1u :
+                                                                                                           0u;
         const struct {
-            uint32_t SceneColorSamplerSlot, OverlayColorSamplerSlot, LineDataSamplerSlot;
-        } line_aa_pc{sel_slots.SceneColorSampler, sel_slots.OverlayColorSampler, sel_slots.LineDataSampler};
-        cb.pushConstants(*main.LineAAComposite.PipelineLayout, vk::ShaderStageFlagBits::eFragment, 0, sizeof(line_aa_pc), &line_aa_pc);
-        main.LineAAComposite.RenderQuad(cb);
+            uint32_t SceneColorSamplerSlot, OverlayColorSamplerSlot, LineDataSamplerSlot, ViewTransform;
+            vec4 Backdrop;
+        } composite_pc{sel_slots.SceneColorSampler, sel_slots.OverlayColorSampler, sel_slots.LineDataSampler, view_transform, settings.ClearColor};
+        cb.pushConstants(*main.ViewportComposite.PipelineLayout, vk::ShaderStageFlagBits::eFragment, 0, sizeof(composite_pc), &composite_pc);
+        main.ViewportComposite.RenderQuad(cb);
         cb.endRenderPass();
     }
 

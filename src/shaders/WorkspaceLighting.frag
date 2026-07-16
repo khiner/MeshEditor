@@ -118,5 +118,5 @@ void main() {
             sRGBToLinear(selected.rgb);
         color = mix(color, overlay, selected.a);
     }
-    OutColor = vec4(linearTosRGB(color), InColor.a);
+    OutColor = vec4(color, InColor.a);
 }

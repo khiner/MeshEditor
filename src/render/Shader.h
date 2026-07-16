@@ -55,8 +55,7 @@ constexpr vk::PipelineDepthStencilStateCreateInfo CreateDepthStencil(bool test =
         1.f
     };
 }
-// Straight-alpha source over an associated destination: color picks up src alpha, and alpha
-// accumulates coverage as src.a + dst.a * (1 - src.a), leaving the target premultiplied.
+// Straight-alpha source over an associated destination, leaving the target premultiplied.
 constexpr vk::PipelineColorBlendAttachmentState CreateColorBlendAttachment(bool blend = true) {
     if (blend) {
         return {
