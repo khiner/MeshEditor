@@ -740,11 +740,14 @@ void RecordRenderCommandBuffer(entt::registry &r, entt::entity viewport, vk::Com
     if (has_silhouette) { // Silhouette depth/object pass
         const GpuScope scope{profile, cb, "Silhouette"};
         const auto &silhouette = pipelines.Silhouette;
-        const vk::Rect2D rect{{0, 0}, ToExtent2D(silhouette.Resources->OffscreenImage.Extent)};
-        cb.beginRenderPass({*silhouette.Renderer.RenderPass, *silhouette.Resources->Framebuffer, rect, SilhouetteClearValues}, vk::SubpassContents::eInline);
-        cb.bindIndexBuffer(*buffers.IdentityIndexBuffer, 0, vk::IndexType::eUint32);
-        record_draw_batch(silhouette.Renderer, SPT::SilhouetteDepthObject, draw.Silhouette);
-        cb.endRenderPass();
+        {
+            const GpuScope geom_scope{profile, cb, "SilhouetteGeom"};
+            const vk::Rect2D rect{{0, 0}, ToExtent2D(silhouette.Resources->OffscreenImage.Extent)};
+            cb.beginRenderPass({*silhouette.Renderer.RenderPass, *silhouette.Resources->Framebuffer, rect, SilhouetteClearValues}, vk::SubpassContents::eInline);
+            cb.bindIndexBuffer(*buffers.IdentityIndexBuffer, 0, vk::IndexType::eUint32);
+            record_draw_batch(silhouette.Renderer, SPT::SilhouetteDepthObject, draw.Silhouette);
+            cb.endRenderPass();
+        }
 
         // Silhouette pass offscreen color writes -> edge pass fragment sampling.
         const std::array silhouette_to_edge_barriers{
@@ -752,6 +755,7 @@ void RecordRenderCommandBuffer(entt::registry &r, entt::entity viewport, vk::Com
         };
         sync_fragment_shader_reads(vk::PipelineStageFlagBits::eColorAttachmentOutput, silhouette_to_edge_barriers);
 
+        const GpuScope edge_scope{profile, cb, "SilhouetteEdge"};
         const auto &silhouette_edge = pipelines.SilhouetteEdge;
         const vk::Rect2D edge_rect{{0, 0}, ToExtent2D(silhouette_edge.Resources->OffscreenImage.Extent)};
         cb.beginRenderPass({*silhouette_edge.Renderer.RenderPass, *silhouette_edge.Resources->Framebuffer, edge_rect, SilhouetteClearValues}, vk::SubpassContents::eInline);

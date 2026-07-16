@@ -64,7 +64,10 @@ void SubmitRecordedFrame(entt::registry &r) {
 #else
     submit.setCommandBuffers(*resources.RenderCommandBuffer);
 #endif
-    vk.Queue.submit(submit, *resources.RenderFence);
+    {
+        const CpuScope scope{r.ctx().get<Profile>(), "QueueSubmit"};
+        vk.Queue.submit(submit, *resources.RenderFence);
+    }
     r.ctx().get<FrameState>().RenderPending = true;
 }
 
@@ -160,7 +163,10 @@ void RenderMotionBlurredFrame(entt::registry &r, entt::entity viewport) {
     // Evaluate the scene at `pf` (animation + physics, which also moves the view when looking
     // through an animated camera). Each evaluation rewrites the mapped pose buffers in place.
     const auto evaluate_at = [&](float pf) {
-        physics::SamplePosesAtFrame(r, pf);
+        {
+            const CpuScope scope{r.ctx().get<Profile>(), "SamplePoses"};
+            physics::SamplePosesAtFrame(r, pf);
+        }
         r.get<PlaybackFrame>(viewport).Value = pf;
         frame_state.MotionBlurSubFrame = true;
         ProcessComponentEvents(r, viewport);
@@ -464,7 +470,10 @@ void WaitForRender(entt::registry &r) {
     if (!frame.RenderPending) return;
 
     const auto &vk = r.ctx().get<const VulkanResources>();
-    WaitFor(*r.ctx().get<const ViewportRenderResources>().RenderFence, vk.Device);
+    {
+        const CpuScope scope{r.ctx().get<Profile>(), "WaitGpu"};
+        WaitFor(*r.ctx().get<const ViewportRenderResources>().RenderFence, vk.Device);
+    }
     r.ctx().get<Profile>().Resolve(vk.Device);
     r.ctx().get<GpuBuffers>().Ctx.ReclaimRetiredBuffers();
     frame.RenderPending = false;

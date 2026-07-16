@@ -25,6 +25,8 @@ struct Profile {
 
     // Fold the finished submit's timestamps into the run. Call once its fence has signaled.
     void Resolve(vk::Device);
+    // Drop every collected sample. Call with no scope open.
+    void ClearStats();
     void Report() const;
 
 private:

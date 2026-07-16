@@ -86,10 +86,16 @@ void Profile::Resolve(vk::Device device) {
     ResetRecording();
 }
 
+void Profile::ClearStats() {
+    assert(OpenCpu.empty() && OpenGpu.empty() && "Profile: clear with a scope open");
+    GpuStats.clear();
+    CpuStats.clear();
+}
+
 void Profile::ReportTable(std::string_view title, const std::vector<Stat> &stats) {
     if (stats.empty()) return;
-    // The outermost scope spans everything timed, so its total is what the rest divide up.
-    const auto root = std::ranges::find(stats, 0u, &Stat::Depth);
+    // The scope with the largest total spans everything timed, so it is what the rest divide up.
+    const auto root = std::ranges::max_element(stats, {}, [](const Stat &s) { return Total(s.Ms); });
     const auto root_ms = root == stats.end() ? 0.f : Total(root->Ms);
     const auto share = [&](float ms) { return root_ms > 0 ? 100.f * ms / root_ms : 0.f; };
 
@@ -100,7 +106,7 @@ void Profile::ReportTable(std::string_view title, const std::vector<Stat> &stats
         auto sorted = stat.Ms;
         std::ranges::sort(sorted);
         const auto sum = Total(sorted);
-        if (stat.Depth == 1) claimed += sum;
+        if (stat.Depth == root->Depth + 1) claimed += sum;
         const auto name = std::string(stat.Depth * 2, ' ') + std::string{stat.Name};
         std::println(
             "  {:<28} {:>6} {:>9.3f} {:>9.3f} {:>9.3f} {:>9.3f} {:>10.1f} {:>7.1f}",

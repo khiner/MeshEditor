@@ -37,6 +37,7 @@
 #include "render/OneShotGpu.h"
 #include "render/PickConstants.h"
 #include "render/Pipelines.h"
+#include "render/Profile.h"
 #include "render/Textures.h"
 #include "scene/Defaults.h"
 #include "scene/EntityDestroyTracker.h"
@@ -833,6 +834,8 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
     if (profile) r.remove<ProfileNextProcessComponentEvents>(viewport);
     std::optional<Timer> timer;
     if (profile) timer.emplace("ProcessComponentEvents");
+    std::optional<CpuScope> profile_scope;
+    if (auto *p = r.ctx().find<Profile>()) profile_scope.emplace(*p, "ProcessEvents");
 
     auto &pending_render = r.ctx().get<PendingRenderRequest>().Value;
     auto request = [&pending_render](RenderRequest req) { pending_render = std::max(pending_render, req); };

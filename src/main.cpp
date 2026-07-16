@@ -527,6 +527,7 @@ struct CaptureRequest {
     fs::path RecordPath{}, ScreenshotPath{};
     fs::path RenderBasename{}; // Output basename, no extension.
     std::optional<uint8_t> MotionBlurSteps{}; // Disengaged = leave the viewport's own setting alone.
+    int BenchFrames{0}; // Headless: re-render every tick and exit after this many frames.
 };
 
 // Surface and clear any failures action handlers reported this frame. Returns true if there were any.
@@ -696,7 +697,8 @@ struct CaptureDriver {
 CaptureDriver BeginCaptureSession(entt::registry &r, entt::entity viewport, const CaptureRequest &capture, const char *initial_file, bool empty, bool fixed_step) {
     const bool play = SeedScene(r, viewport, capture, initial_file, empty) && capture.Play;
     CaptureDriver driver{r, viewport, capture, play, fixed_step};
-    if (driver.Presenting()) Perform(r, viewport, action::timeline::EnterPresentation{});
+    // A benchmark run keeps the editor view, so frames and screenshots cover what the editor draws.
+    if (driver.Presenting() && capture.BenchFrames == 0) Perform(r, viewport, action::timeline::EnterPresentation{});
     r.ctx().get<FrameState>().FixedFrameStep = driver.FixedStep;
     // Force motion blur on for the whole recording run (not still-screenshot renders).
     r.ctx().get<FrameState>().Capturing = driver.RecordingMode();
@@ -1203,19 +1205,41 @@ void RunHeadlessScene(entt::registry &r, entt::entity viewport, const char *init
 
     auto &frame_state = r.ctx().get<FrameState>();
     frame_state.DeltaTime = driver.RenderDt;
+    int bench_frames = capture.BenchFrames;
+    bool profile_cleared{false};
     bool done{false};
     while (!done) {
         if (driver.DurationElapsed(r, viewport)) break;
         const auto extent = r.ctx().get<const ViewportExtent>().Value;
         const bool settled = ViewportImageReady(r);
-        driver.EmitFrameActions(r, viewport, settled, extent);
-        action::ApplyEmitted(r, viewport);
-        ReportActionErrors(r);
-        SubmitViewport(r, viewport);
-        WaitForRender(r);
-        if (driver.CaptureFrame(r, viewport, settled)) done = true;
-        // Headless has no window to close: without anything to capture or play, one settled frame is the whole run.
-        if (!driver.Presenting() && settled) done = true;
+        // Scene-load work (mesh and texture upload) dwarfs a frame: keep it out of the profile.
+        if (settled && !profile_cleared) {
+            r.ctx().get<Profile>().ClearStats();
+            profile_cleared = true;
+        }
+        {
+            const CpuScope scope{r.ctx().get<Profile>(), "Frame"};
+            driver.EmitFrameActions(r, viewport, settled, extent);
+            action::ApplyEmitted(r, viewport);
+            ReportActionErrors(r);
+            SubmitViewport(r, viewport);
+            WaitForRender(r);
+        }
+        if (bench_frames > 0) {
+            // Benchmark: force a render every settled tick (direct request write) and exit after the requested count.
+            if (settled && --bench_frames == 0) {
+                if (driver.ScreenshotMode()) {
+                    if (auto saved = SaveScreenshot(r, driver.ScreenshotPath); saved) std::println("Saved screenshot: {}", saved->string());
+                    else std::println(stderr, "Screenshot: {}", saved.error());
+                }
+                done = true;
+            }
+            r.ctx().get<PendingRenderRequest>().Value = RenderRequest::ReRecord;
+        } else {
+            if (driver.CaptureFrame(r, viewport, settled)) done = true;
+            // Headless has no window to close: without anything to capture or play, one settled frame is the whole run.
+            if (!driver.Presenting() && settled) done = true;
+        }
         driver.ElapsedPlayTime += frame_state.DeltaTime;
     }
     action::StopLog();
@@ -1363,6 +1387,7 @@ int main(int argc, char **argv) {
         else if (a == "--headless") headless = true;
         else if (a == "--fps" && std::next(it) != args.end()) capture.Fps = std::atoi(*++it);
         else if (a == "--motion-blur" && std::next(it) != args.end()) capture.MotionBlurSteps = uint8_t(std::max(1, std::atoi(*++it)));
+        else if (a == "--frames" && std::next(it) != args.end()) capture.BenchFrames = std::atoi(*++it);
         else if (a == "--profile") Profile::Enabled = true;
         else if (!a.starts_with('-') && !initial_file) initial_file = *it;
     }

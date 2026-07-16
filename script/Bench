@@ -1,13 +1,14 @@
 #!/bin/bash
 
-# Time the motion-blurred viewport on one animated scene and report where GPU time goes.
+# Time the viewport on one scene and report where GPU and CPU time goes.
 # The scene renders headless on a fixed step, so every run walks the same frames in the same order.
 # Run from anywhere.
 #
 # Usage: script/Bench [scene] [steps]
 #   scene  A glTF sample name under external/glTF-Sample-Assets/Models, or a path to a scene file.
 #          Default BrainStem: it is skinned, animates in place, and holds steady screen coverage.
-#   steps  MotionBlur::Steps (default 1).
+#   steps  MotionBlur::Steps (default 1). 0 renders without playback or blur: the scene re-records
+#          and re-renders every tick (FRAMES ticks, default 400), which suits static scenes.
 #
 # REPS sets the timed repetition count (default 3). One warm-up run precedes them and is discarded.
 #
@@ -23,6 +24,7 @@ cd "${ProjectRootDir}"
 Scene="${1:-BrainStem}"
 Steps="${2:-1}"
 Reps="${REPS:-3}"
+Frames="${FRAMES:-400}"
 Exe="build/MeshEditor"
 
 # A bare sample name resolves against the glTF sample models.
@@ -41,9 +43,13 @@ fi
 Work="$(mktemp -d "${TMPDIR:-/tmp}/MeshEditorBench.XXXXXX")"
 trap 'rm -rf "${Work}"' EXIT
 
-# The scene must animate: motion blur engages only while playback runs.
+# Blur engages only during playback, so steps >= 1 needs an animated scene.
 run_once() {
-    "./${Exe}" "${ScenePath}" --headless --play --motion-blur "${Steps}" --profile > "$1" 2>&1
+    if [ "${Steps}" -ge 1 ]; then
+        "./${Exe}" "${ScenePath}" --headless --play --motion-blur "${Steps}" --profile > "$1" 2>&1
+    else
+        "./${Exe}" "${ScenePath}" --headless --frames "${Frames}" --profile > "$1" 2>&1
+    fi
 }
 
 echo "Benchmarking ${ScenePath} at Steps=${Steps} (${Reps} reps after a warm-up)..."
@@ -72,7 +78,7 @@ cat "${Work}"/rep*.log | awk '
         if (!(key in calls)) order[++n] = key
         calls[key] += $2
         total[key] += $7
-        if (!(section in root)) root[section] = key
+        if (!(section in root) || total[key] > total[root[section]]) root[section] = key
     }
     END {
         for (i = 1; i <= n; i++) {
