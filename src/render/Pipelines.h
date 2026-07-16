@@ -94,12 +94,12 @@ struct MainPipeline {
     // steps. Allocated on demand only while motion blur is active, and sampled through
     // ResourcesT::NearestSampler. VelocityFramebuffer borrows ResourcesT's depth view.
     struct MotionBlurResourcesT {
-        MotionBlurResourcesT(vk::Extent2D, vk::Device, vk::PhysicalDevice, vk::RenderPass accum_render_pass, vk::RenderPass velocity_render_pass, vk::ImageView depth_view);
+        MotionBlurResourcesT(vk::Extent2D, vk::Device, vk::PhysicalDevice, vk::RenderPass accum_render_pass, vk::RenderPass velocity_render_pass, vk::RenderPass gather_render_pass, vk::ImageView depth_view);
 
         // TileImage holds each 32x32 tile's largest motion, GatherImage the blurred scene.
         mvk::ImageResource AccumImage, VelocityImage, TileImage, GatherImage;
         vk::Extent2D TileExtent{};
-        vk::UniqueFramebuffer Framebuffer, VelocityFramebuffer;
+        vk::UniqueFramebuffer Framebuffer, VelocityFramebuffer, GatherFramebuffer;
     };
 
     void SetExtent(vk::Extent2D, vk::Device, vk::PhysicalDevice);
@@ -117,9 +117,8 @@ struct MainPipeline {
     vk::DescriptorImageInfo MotionBlurAccumSamplerInfo() const;
     vk::DescriptorImageInfo VelocitySamplerInfo() const;
     vk::DescriptorImageInfo SceneDepthSamplerInfo() const;
-    // Storage images the motion blur compute passes write. Only valid while MotionBlur is allocated.
+    // Storage image the motion blur compute passes write. Only valid while MotionBlur is allocated.
     vk::DescriptorImageInfo MotionBlurTileImageInfo() const;
-    vk::DescriptorImageInfo MotionBlurGatherImageInfo() const;
     vk::DescriptorImageInfo MotionBlurGatherSamplerInfo() const;
 
     // Scene: depth + scene-linear HDR color. Overlays: the scene's depth loaded for occlusion,
@@ -135,6 +134,10 @@ struct MainPipeline {
     // its own value alone. Later steps load what the earlier ones summed.
     vk::UniqueRenderPass MotionBlurAccumClearRenderPass, MotionBlurAccumRenderPass;
     ShaderPipeline MotionBlurAccumulate;
+    // Fullscreen pass that blurs the scene along its screen motion into GatherImage, whose
+    // attachment write keeps the output compressed for the accumulate and composite reads.
+    vk::UniqueRenderPass MotionBlurGatherRenderPass;
+    ShaderPipeline MotionBlurGather;
     std::unique_ptr<ResourcesT> Resources;
     std::unique_ptr<TransmissionResourcesT> Transmission;
     std::unique_ptr<MotionBlurResourcesT> MotionBlur;
@@ -203,9 +206,9 @@ struct Pipelines {
     SilhouetteEdgePipeline SilhouetteEdge;
     SelectionFragmentPipeline SelectionFragment;
     ComputePipeline ObjectPick, ElementPick, BoxSelect, UpdateSelectionState;
-    // Motion blur post-process: reduce motion to tiles, spread each tile's motion over the tiles it
-    // crosses, then gather colour along it.
-    ComputePipeline MotionBlurTilesFlatten, MotionBlurTilesDilate, MotionBlurGather;
+    // Motion blur tile reduction: reduce motion to tiles, then spread each tile's motion over the
+    // tiles it crosses. Main.MotionBlurGather blurs the scene along the result.
+    ComputePipeline MotionBlurTilesFlatten, MotionBlurTilesDilate;
     IblPrefilterPipelines IblPrefilter;
 
     void SetExtent(vk::Extent2D);

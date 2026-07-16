@@ -787,9 +787,6 @@ structs:
       - name: TileIndirectionSlot
         type: u32
         default: InvalidSlot
-      - name: OutColorImageSlot
-        type: u32
-        default: InvalidSlot
       - name: MotionScale
         type: vec2
       - name: DepthScale

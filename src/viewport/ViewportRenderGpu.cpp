@@ -151,17 +151,16 @@ void RecordMotionBlurPostFx(entt::registry &r, vk::CommandBuffer cb, entt::entit
 
     // Depth stops being an attachment here so the gather can classify samples against it.
     cb.pipelineBarrier(
-        vk::PipelineStageFlagBits::eLateFragmentTests, vk::PipelineStageFlagBits::eComputeShader, {}, {}, {},
+        vk::PipelineStageFlagBits::eLateFragmentTests, vk::PipelineStageFlagBits::eFragmentShader, {}, {}, {},
         {{vk::AccessFlagBits::eDepthStencilAttachmentWrite, vk::AccessFlagBits::eShaderRead,
           vk::ImageLayout::eDepthStencilAttachmentOptimal, vk::ImageLayout::eDepthStencilReadOnlyOptimal,
           VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, *main.Resources->DepthImage.Image, DepthSubresourceRange}}
     );
-    // The tile image and the gather output are only ever touched by compute.
-    const auto to_general = [&](vk::Image image) {
-        return vk::ImageMemoryBarrier{{}, vk::AccessFlagBits::eShaderWrite, vk::ImageLayout::eUndefined, vk::ImageLayout::eGeneral, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, image, ColorSubresourceRange};
-    };
-    const std::array general_barriers{to_general(*main.MotionBlur->TileImage.Image), to_general(*main.MotionBlur->GatherImage.Image)};
-    cb.pipelineBarrier(vk::PipelineStageFlagBits::eTopOfPipe, vk::PipelineStageFlagBits::eComputeShader, {}, {}, {}, general_barriers);
+    // The tile image is only ever touched by compute.
+    cb.pipelineBarrier(
+        vk::PipelineStageFlagBits::eTopOfPipe, vk::PipelineStageFlagBits::eComputeShader, {}, {}, {},
+        {{{}, vk::AccessFlagBits::eShaderWrite, vk::ImageLayout::eUndefined, vk::ImageLayout::eGeneral, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, *main.MotionBlur->TileImage.Image, ColorSubresourceRange}}
+    );
 
     const auto compute_to_compute = [&] {
         cb.pipelineBarrier(
@@ -197,23 +196,31 @@ void RecordMotionBlurPostFx(entt::registry &r, vk::CommandBuffer cb, entt::entit
             {divide_ceil(tile_extent.width, 8), divide_ceil(tile_extent.height, 8), 1}
         );
     }
-    compute_to_compute();
-    { // One thread per pixel.
-        const GpuScope scope{profile, cb, "BlurGather"};
-        dispatch(
-            pipelines.MotionBlurGather,
-            MotionBlurGatherPushConstants{
-                sel_slots.SceneDepthSampler, sel_slots.VelocitySampler, sel_slots.SceneColorSampler,
-                sel_slots.MotionBlurTileImage, sel_slots.MotionBlurTileIndirection, sel_slots.MotionBlurGatherImage,
-                MotionScale, mb.BleedingBias, noise_offset
-            },
-            {divide_ceil(rect.extent.width, 8), divide_ceil(rect.extent.height, 8), 1}
-        );
-    }
-    // The accumulate pass or the composite samples the gather output next.
+    // The tile reduction hands off to the gather's fragment reads.
     cb.pipelineBarrier(
         vk::PipelineStageFlagBits::eComputeShader, vk::PipelineStageFlagBits::eFragmentShader, {},
         {{vk::AccessFlagBits::eShaderWrite, vk::AccessFlagBits::eShaderRead}}, {}, {}
+    );
+    { // One fullscreen pass, blurring the scene along its motion into the gather attachment.
+        const GpuScope scope{profile, cb, "BlurGather"};
+        cb.beginRenderPass({*main.MotionBlurGatherRenderPass, *main.MotionBlur->GatherFramebuffer, rect, {}}, vk::SubpassContents::eInline);
+        const auto &gather = main.MotionBlurGather;
+        const MotionBlurGatherPushConstants gather_pc{
+            sel_slots.SceneDepthSampler, sel_slots.VelocitySampler, sel_slots.SceneColorSampler,
+            sel_slots.MotionBlurTileImage, sel_slots.MotionBlurTileIndirection,
+            MotionScale, mb.BleedingBias, noise_offset
+        };
+        cb.pushConstants(*gather.PipelineLayout, vk::ShaderStageFlagBits::eFragment, 0, sizeof(gather_pc), &gather_pc);
+        gather.RenderQuad(cb);
+        cb.endRenderPass();
+    }
+    // The accumulate pass or the composite samples the gather output next. The render pass leaves
+    // it shader-readable, and MoltenVK needs the explicit barrier to flush the encoder's writes.
+    cb.pipelineBarrier(
+        vk::PipelineStageFlagBits::eColorAttachmentOutput, vk::PipelineStageFlagBits::eFragmentShader, {}, {}, {},
+        {{vk::AccessFlagBits::eColorAttachmentWrite, vk::AccessFlagBits::eShaderRead,
+          vk::ImageLayout::eShaderReadOnlyOptimal, vk::ImageLayout::eShaderReadOnlyOptimal,
+          VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, *main.MotionBlur->GatherImage.Image, ColorSubresourceRange}}
     );
 }
 
@@ -907,15 +914,11 @@ void RecordRenderCommandBuffer(entt::registry &r, entt::entity viewport, vk::Com
     // The render pass ExternalFragReadDependency should cover this, but MoltenVK needs an explicit barrier
     // to flush the Metal render encoder's color writes before the next encoder samples them.
     {
+        // The gather or the composite samples the scene next, both in fragment shaders.
         const std::array scene_out_barriers{
             color_read_barrier(*main.Resources->SceneColorImage.Image),
         };
-        // The gather samples the scene in compute. Every other phase samples it in the composite.
-        cb.pipelineBarrier(
-            vk::PipelineStageFlagBits::eColorAttachmentOutput,
-            blur ? vk::PipelineStageFlagBits::eComputeShader : vk::PipelineStageFlagBits::eFragmentShader,
-            {}, {}, {}, scene_out_barriers
-        );
+        sync_fragment_shader_reads(vk::PipelineStageFlagBits::eColorAttachmentOutput, scene_out_barriers);
     }
 
     if (blur) RecordMotionBlurPostFx(r, cb, viewport, main_rect, record_draw_batch);

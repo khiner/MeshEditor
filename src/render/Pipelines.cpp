@@ -462,6 +462,8 @@ MainPipeline::MainPipeline(
     MotionBlurAccumClearRenderPass{CreateColorOnlyRenderPass(d, Format::HdrColor, vk::AttachmentLoadOp::eClear, vk::ImageLayout::eUndefined, vk::ImageLayout::eColorAttachmentOptimal)},
     MotionBlurAccumRenderPass{CreateColorOnlyRenderPass(d, Format::HdrColor, vk::AttachmentLoadOp::eLoad, vk::ImageLayout::eColorAttachmentOptimal, vk::ImageLayout::eColorAttachmentOptimal)},
     MotionBlurAccumulate{CreateQuadPipeline({d, shared_layout, shared_set}, "MotionBlurAccumulate.frag", AdditiveBlend, sizeof(uint32_t))},
+    MotionBlurGatherRenderPass{CreateColorOnlyRenderPass(d, Format::HdrColor, vk::AttachmentLoadOp::eDontCare, vk::ImageLayout::eUndefined, vk::ImageLayout::eShaderReadOnlyOptimal)},
+    MotionBlurGather{CreateQuadPipeline({d, shared_layout, shared_set}, "MotionBlurGather.frag", CreateColorBlendAttachment(false), sizeof(MotionBlurGatherPushConstants))},
     Compiler{{d, shared_layout, shared_set}, *SceneRenderer.RenderPass} {}
 
 static uint32_t MipCount(vk::Extent2D extent) {
@@ -515,11 +517,11 @@ void MainPipeline::SetExtent(vk::Extent2D extent, vk::Device d, vk::PhysicalDevi
 }
 
 MainPipeline::MotionBlurResourcesT::MotionBlurResourcesT(
-    vk::Extent2D extent, vk::Device d, vk::PhysicalDevice pd, vk::RenderPass accum_render_pass, vk::RenderPass velocity_render_pass, vk::ImageView depth_view
+    vk::Extent2D extent, vk::Device d, vk::PhysicalDevice pd, vk::RenderPass accum_render_pass, vk::RenderPass velocity_render_pass, vk::RenderPass gather_render_pass, vk::ImageView depth_view
 ) : AccumImage{mvk::CreateImage(d, pd, {{}, vk::ImageType::e2D, Format::HdrColor, vk::Extent3D{extent, 1}, 1, 1, vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eColorAttachment, vk::SharingMode::eExclusive}, {{}, {}, vk::ImageViewType::e2D, Format::HdrColor, {}, ColorSubresourceRange})},
     VelocityImage{mvk::CreateImage(d, pd, {{}, vk::ImageType::e2D, Format::Velocity, vk::Extent3D{extent, 1}, 1, 1, vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eColorAttachment, vk::SharingMode::eExclusive}, {{}, {}, vk::ImageViewType::e2D, Format::Velocity, {}, ColorSubresourceRange})},
     TileImage{mvk::CreateImage(d, pd, {{}, vk::ImageType::e2D, Format::HdrColor, vk::Extent3D{DivideCeil(extent, MotionBlurTileSize), 1}, 1, 1, vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eStorage, vk::SharingMode::eExclusive}, {{}, {}, vk::ImageViewType::e2D, Format::HdrColor, {}, ColorSubresourceRange})},
-    GatherImage{mvk::CreateImage(d, pd, {{}, vk::ImageType::e2D, Format::HdrColor, vk::Extent3D{extent, 1}, 1, 1, vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eStorage | vk::ImageUsageFlagBits::eSampled, vk::SharingMode::eExclusive}, {{}, {}, vk::ImageViewType::e2D, Format::HdrColor, {}, ColorSubresourceRange})},
+    GatherImage{mvk::CreateImage(d, pd, {{}, vk::ImageType::e2D, Format::HdrColor, vk::Extent3D{extent, 1}, 1, 1, vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eSampled, vk::SharingMode::eExclusive}, {{}, {}, vk::ImageViewType::e2D, Format::HdrColor, {}, ColorSubresourceRange})},
     TileExtent{DivideCeil(extent, MotionBlurTileSize)} {
     {
         const std::array image_views{*AccumImage.View};
@@ -529,12 +531,16 @@ MainPipeline::MotionBlurResourcesT::MotionBlurResourcesT(
         const std::array image_views{depth_view, *VelocityImage.View};
         VelocityFramebuffer = d.createFramebufferUnique({{}, velocity_render_pass, image_views, extent.width, extent.height, 1});
     }
+    {
+        const std::array image_views{*GatherImage.View};
+        GatherFramebuffer = d.createFramebufferUnique({{}, gather_render_pass, image_views, extent.width, extent.height, 1});
+    }
 }
 
 bool MainPipeline::EnsureMotionBlurResources(vk::Device d, vk::PhysicalDevice pd) {
     if (MotionBlur || !Resources) return false; // SetExtent drops it, so an allocated target is always at the color extent.
     const auto extent = Resources->SceneColorImage.Extent;
-    MotionBlur = std::make_unique<MotionBlurResourcesT>(vk::Extent2D{extent.width, extent.height}, d, pd, *MotionBlurAccumRenderPass, *VelocityRenderer.RenderPass, *Resources->DepthImage.View);
+    MotionBlur = std::make_unique<MotionBlurResourcesT>(vk::Extent2D{extent.width, extent.height}, d, pd, *MotionBlurAccumRenderPass, *VelocityRenderer.RenderPass, *MotionBlurGatherRenderPass, *Resources->DepthImage.View);
     return true;
 }
 
@@ -562,12 +568,9 @@ vk::DescriptorImageInfo MainPipeline::SceneDepthSamplerInfo() const {
 vk::DescriptorImageInfo MainPipeline::MotionBlurTileImageInfo() const {
     return {{}, *MotionBlur->TileImage.View, vk::ImageLayout::eGeneral};
 }
-vk::DescriptorImageInfo MainPipeline::MotionBlurGatherImageInfo() const {
-    return {{}, *MotionBlur->GatherImage.View, vk::ImageLayout::eGeneral};
-}
 vk::DescriptorImageInfo MainPipeline::MotionBlurGatherSamplerInfo() const {
     if (!MotionBlur) return SceneColorSamplerInfo();
-    return {*Resources->NearestSampler, *MotionBlur->GatherImage.View, vk::ImageLayout::eGeneral};
+    return {*Resources->NearestSampler, *MotionBlur->GatherImage.View, vk::ImageLayout::eShaderReadOnlyOptimal};
 }
 
 MainPipeline::TransmissionResourcesT::TransmissionResourcesT(
@@ -898,12 +901,6 @@ Pipelines::Pipelines(
         selection_layout,
         selection_set
     },
-    MotionBlurGather{
-        d, Shaders{{{ShaderType::eCompute, "MotionBlurGather.comp"}}},
-        vk::PushConstantRange{vk::ShaderStageFlagBits::eCompute, 0, sizeof(MotionBlurGatherPushConstants)},
-        selection_layout,
-        selection_set
-    },
     IblPrefilter{d} {}
 
 void Pipelines::SetExtent(vk::Extent2D extent) {
@@ -920,6 +917,7 @@ void Pipelines::CompileShaders() {
     Main.PrepassBackground.Compile(*Main.SceneRenderer.RenderPass);
     Main.ViewportComposite.Compile(*Main.CompositeRenderPass);
     Main.MotionBlurAccumulate.Compile(*Main.MotionBlurAccumRenderPass);
+    Main.MotionBlurGather.Compile(*Main.MotionBlurGatherRenderPass);
     Main.Compiler.RecompileModules();
     Silhouette.Renderer.CompileShaders();
     SilhouetteEdge.Renderer.CompileShaders();
@@ -930,5 +928,4 @@ void Pipelines::CompileShaders() {
     UpdateSelectionState.Compile();
     MotionBlurTilesFlatten.Compile();
     MotionBlurTilesDilate.Compile();
-    MotionBlurGather.Compile();
 }

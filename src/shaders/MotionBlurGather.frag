@@ -2,11 +2,11 @@
 #extension GL_EXT_nonuniform_qualifier : require
 #extension GL_EXT_scalar_block_layout : require
 
-layout(local_size_x = 8, local_size_y = 8) in;
-
 #include "SceneUBO.glsl"
 #include "MotionBlurGatherPushConstants.glsl"
 #include "MotionBlurShared.glsl"
+
+layout(location = 0) out vec4 OutColor;
 
 layout(set = 0, binding = BINDING_Sampler) uniform sampler2D Samplers[];
 layout(set = 0, binding = BINDING_Image, rgba16f) uniform image2D HdrImages[];
@@ -100,9 +100,8 @@ float InterleavedGradientNoise(vec2 pixel, float seed, float offset) {
 }
 
 void main() {
-    const ivec2 texel = ivec2(gl_GlobalInvocationID.xy);
+    const ivec2 texel = ivec2(gl_FragCoord.xy);
     const ivec2 extent = textureSize(Samplers[pc.ColorSamplerSlot], 0);
-    if (any(greaterThanEqual(texel, extent))) return;
 
     const vec2 uv = (vec2(texel) + 0.5) / vec2(extent);
     const float center_depth = LinearDepth(texelFetch(Samplers[pc.DepthSamplerSlot], texel, 0).r);
@@ -152,5 +151,5 @@ void main() {
     // Samples that passed the direction test but failed depth or spread leave a weight deficit.
     // Fill it with the background rather than darkening the pixel.
     const float blend_fac = clamp(1.0 - accum.Weight.y / accum.Weight.z, 0.0, 1.0);
-    imageStore(HdrImages[pc.OutColorImageSlot], texel, (accum.Fg / accum.Weight.z) + center_color * blend_fac);
+    OutColor = (accum.Fg / accum.Weight.z) + center_color * blend_fac;
 }

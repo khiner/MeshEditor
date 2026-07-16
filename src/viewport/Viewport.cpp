@@ -150,7 +150,6 @@ void RenderMotionBlurredFrame(entt::registry &r, entt::entity viewport) {
         const auto velocity = main.VelocitySamplerInfo();
         const auto gather_sampler = main.MotionBlurGatherSamplerInfo();
         const auto tile_image = main.MotionBlurTileImageInfo();
-        const auto gather_image = main.MotionBlurGatherImageInfo();
         const auto tile_indirection = buffers.MotionBlurTileIndirection.GetDescriptor();
         vk.Device.updateDescriptorSets(
             {
@@ -158,7 +157,6 @@ void RenderMotionBlurredFrame(entt::registry &r, entt::entity viewport) {
                 slots.MakeSamplerWrite(sel_slots.VelocitySampler, velocity),
                 slots.MakeSamplerWrite(sel_slots.MotionBlurGatherSampler, gather_sampler),
                 slots.MakeImageWrite(sel_slots.MotionBlurTileImage, tile_image),
-                slots.MakeImageWrite(sel_slots.MotionBlurGatherImage, gather_image),
                 slots.MakeBufferWrite({SlotType::Buffer, sel_slots.MotionBlurTileIndirection}, tile_indirection),
             },
             {}
