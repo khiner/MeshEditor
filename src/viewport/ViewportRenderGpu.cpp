@@ -1,5 +1,4 @@
 #include "viewport/ViewportRenderGpu.h"
-#include "Timer.h"
 #include "animation/AnimationTimeline.h"
 #include "animation/MorphWeightState.h"
 #include "armature/ArmatureComponents.h"
@@ -15,6 +14,7 @@
 #include "render/Drawing.h"
 #include "render/Instance.h"
 #include "render/Pipelines.h"
+#include "render/Profile.h"
 #include "scene/Entity.h"
 #include "scene/WorldTransform.h"
 #include "selection/Selection.h"
@@ -53,7 +53,7 @@ void FlushDrawList(entt::registry &r, vk::Device device, const DrawListBuilder &
 #ifdef MVK_FORCE_STAGED_TRANSFERS
 void RecordTransferCommandBuffer(entt::registry &r, entt::entity viewport, vk::CommandBuffer cb) {
     auto &buffers = r.ctx().get<GpuBuffers>();
-    const Timer timer{"RecordTransferCommandBuffer"};
+    const CpuScope scope{r.ctx().get<Profile>(), "RecordTransferCommandBuffer"};
     cb.reset({});
     cb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
     buffers.Ctx.RecordDeferredCopies(cb);
@@ -127,6 +127,7 @@ void RecordMotionBlurPostFx(entt::registry &r, vk::CommandBuffer cb, entt::entit
     const auto &sel_slots = r.ctx().get<const SelectionSlots>();
     const auto &buffers = r.ctx().get<const GpuBuffers>();
     const auto &draw = r.ctx().get<const DrawState>();
+    auto &profile = r.ctx().get<Profile>();
     const auto &settings = r.get<const ViewportDisplay>(viewport);
     const auto mb = EffectiveMotionBlur(settings);
     // The second half of each motion vector is stored pointing backward, which the negative y undoes.
@@ -136,6 +137,7 @@ void RecordMotionBlurPostFx(entt::registry &r, vk::CommandBuffer cb, entt::entit
     const float noise_offset = glm::fract(r.get<const PlaybackFrame>(viewport).Value);
 
     { // Screen motion, depth-tested against the scene so only front-most surfaces contribute.
+        const GpuScope scope{profile, cb, "Velocity"};
         const std::array velocity_clear{vk::ClearValue{vk::ClearDepthStencilValue{1, 0}}, vk::ClearValue{Transparent}};
         cb.beginRenderPass({*main.VelocityRenderer.RenderPass, *main.MotionBlur->VelocityFramebuffer, rect, velocity_clear}, vk::SubpassContents::eInline);
         if (buffers.IdentityIndexCount > 0 && draw.FillOpaque.DrawCount > 0) {
@@ -161,8 +163,10 @@ void RecordMotionBlurPostFx(entt::registry &r, vk::CommandBuffer cb, entt::entit
     const std::array general_barriers{to_general(*main.MotionBlur->TileImage.Image), to_general(*main.MotionBlur->GatherImage.Image)};
     cb.pipelineBarrier(vk::PipelineStageFlagBits::eTopOfPipe, vk::PipelineStageFlagBits::eComputeShader, {}, {}, {}, general_barriers);
 
-    // Every tile must start empty: an untouched entry would read as tile (0,0)'s motion.
-    cb.fillBuffer(*buffers.MotionBlurTileIndirection, 0, vk::WholeSize, 0);
+    { // Every tile must start empty: an untouched entry would read as tile (0,0)'s motion.
+        const GpuScope scope{profile, cb, "BlurTileClear"};
+        cb.fillBuffer(*buffers.MotionBlurTileIndirection, 0, vk::WholeSize, 0);
+    }
     cb.pipelineBarrier(
         vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eComputeShader, {}, {},
         {{vk::AccessFlagBits::eTransferWrite, vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, *buffers.MotionBlurTileIndirection, 0, vk::WholeSize}}, {}
@@ -184,30 +188,36 @@ void RecordMotionBlurPostFx(entt::registry &r, vk::CommandBuffer cb, entt::entit
     static constexpr auto divide_ceil = [](uint32_t v, uint32_t d) { return (v + d - 1) / d; };
 
     const auto tile_extent = main.MotionBlur->TileExtent;
-    // One workgroup per tile: the flatten shader's local size is the tile size.
-    dispatch(
-        pipelines.MotionBlurTilesFlatten,
-        MotionBlurTilesFlattenPushConstants{sel_slots.VelocitySampler, sel_slots.MotionBlurTileImage, MotionScale},
-        {tile_extent.width, tile_extent.height, 1}
-    );
+    { // One workgroup per tile: the flatten shader's local size is the tile size.
+        const GpuScope scope{profile, cb, "BlurTilesFlatten"};
+        dispatch(
+            pipelines.MotionBlurTilesFlatten,
+            MotionBlurTilesFlattenPushConstants{sel_slots.VelocitySampler, sel_slots.MotionBlurTileImage, MotionScale},
+            {tile_extent.width, tile_extent.height, 1}
+        );
+    }
     compute_to_compute();
-    // One thread per tile.
-    dispatch(
-        pipelines.MotionBlurTilesDilate,
-        MotionBlurTilesDilatePushConstants{sel_slots.MotionBlurTileImage, sel_slots.MotionBlurTileIndirection},
-        {divide_ceil(tile_extent.width, 8), divide_ceil(tile_extent.height, 8), 1}
-    );
+    { // One thread per tile.
+        const GpuScope scope{profile, cb, "BlurTilesDilate"};
+        dispatch(
+            pipelines.MotionBlurTilesDilate,
+            MotionBlurTilesDilatePushConstants{sel_slots.MotionBlurTileImage, sel_slots.MotionBlurTileIndirection},
+            {divide_ceil(tile_extent.width, 8), divide_ceil(tile_extent.height, 8), 1}
+        );
+    }
     compute_to_compute();
-    // One thread per pixel.
-    dispatch(
-        pipelines.MotionBlurGather,
-        MotionBlurGatherPushConstants{
-            sel_slots.SceneDepthSampler, sel_slots.VelocitySampler, sel_slots.SceneColorSampler,
-            sel_slots.MotionBlurTileImage, sel_slots.MotionBlurTileIndirection, sel_slots.MotionBlurGatherImage,
-            MotionScale, mb.BleedingBias, noise_offset
-        },
-        {divide_ceil(rect.extent.width, 8), divide_ceil(rect.extent.height, 8), 1}
-    );
+    { // One thread per pixel.
+        const GpuScope scope{profile, cb, "BlurGather"};
+        dispatch(
+            pipelines.MotionBlurGather,
+            MotionBlurGatherPushConstants{
+                sel_slots.SceneDepthSampler, sel_slots.VelocitySampler, sel_slots.SceneColorSampler,
+                sel_slots.MotionBlurTileImage, sel_slots.MotionBlurTileIndirection, sel_slots.MotionBlurGatherImage,
+                MotionScale, mb.BleedingBias, noise_offset
+            },
+            {divide_ceil(rect.extent.width, 8), divide_ceil(rect.extent.height, 8), 1}
+        );
+    }
     // The accumulate pass or the composite samples the gather output next.
     cb.pipelineBarrier(
         vk::PipelineStageFlagBits::eComputeShader, vk::PipelineStageFlagBits::eFragmentShader, {},
@@ -218,7 +228,9 @@ void RecordMotionBlurPostFx(entt::registry &r, vk::CommandBuffer cb, entt::entit
 } // namespace
 
 void RecordRenderCommandBuffer(entt::registry &r, entt::entity viewport, vk::CommandBuffer cb, bool silhouette_only, RenderPhase phase) {
-    const Timer timer{silhouette_only ? "RecordRenderCommandBuffer (silhouette)" : "RecordRenderCommandBuffer"};
+    auto &profile = r.ctx().get<Profile>();
+    // A scope name holds no spaces, so the report table stays machine-readable.
+    const CpuScope scope{profile, silhouette_only ? "RecordRenderCommandBufferSilhouette" : "RecordRenderCommandBuffer"};
     if (!silhouette_only) r.ctx().get<DrawState>().SelectionStale = true;
     // The multi-step blur splits the scene and its overlays across two phases so the overlays stay
     // sharp over the averaged steps. Full and BlurredFull draw both in one.
@@ -696,6 +708,7 @@ void RecordRenderCommandBuffer(entt::registry &r, entt::entity viewport, vk::Com
     const vk::Extent2D render_extent{render_extent_px.x, render_extent_px.y};
 
     cb.begin({vk::CommandBufferUsageFlagBits::eSimultaneousUse});
+    profile.BeginRecording(cb);
     cb.setViewport(0, vk::Viewport{0.f, 0.f, float(render_extent.width), float(render_extent.height), 0.f, 1.f});
     cb.setScissor(0, vk::Rect2D{{0, 0}, render_extent});
     const uint32_t transform_vertex_state_slot = is_edit_mode ? meshes.GetVertexStateSlot() : InvalidSlot;
@@ -725,6 +738,7 @@ void RecordRenderCommandBuffer(entt::registry &r, entt::entity viewport, vk::Com
 
     const bool has_silhouette = render_silhouette && draw.Silhouette.DrawCount > 0 && draw_overlays; // Selection outline is an overlay.
     if (has_silhouette) { // Silhouette depth/object pass
+        const GpuScope scope{profile, cb, "Silhouette"};
         const auto &silhouette = pipelines.Silhouette;
         const vk::Rect2D rect{{0, 0}, ToExtent2D(silhouette.Resources->OffscreenImage.Extent)};
         cb.beginRenderPass({*silhouette.Renderer.RenderPass, *silhouette.Resources->Framebuffer, rect, SilhouetteClearValues}, vk::SubpassContents::eInline);
@@ -774,6 +788,7 @@ void RecordRenderCommandBuffer(entt::registry &r, entt::entity viewport, vk::Com
     // sampled by the scene pass at the refracted exit point. TRANSMISSION_PREPASS variants skip
     // exposure and drop transmission materials (no self-sampling).
     if (real_transmission && main.Transmission && draw_scene) {
+        const GpuScope scope{profile, cb, "TransmissionPrepass"};
         // Refraction sees the world, and nothing where there is no world. The viewport backdrop is
         // display-referred UI drawn with the overlays, so it never reaches this buffer.
         const std::array prepass_clear_values{
@@ -851,43 +866,45 @@ void RecordRenderCommandBuffer(entt::registry &r, entt::entity viewport, vk::Com
         sync_fragment_shader_reads(vk::PipelineStageFlagBits::eColorAttachmentOutput, accum_barriers);
     }
 
-    // Scene pass: shaded scene into its own color target, and the depth the overlay pass occludes against.
-    cb.beginRenderPass({*main.SceneRenderer.RenderPass, *main.Resources->SceneFramebuffer, main_rect, scene_clear_values}, vk::SubpassContents::eInline);
+    { // Scene pass: shaded scene into its own color target, and the depth the overlay pass occludes against.
+        const GpuScope scope{profile, cb, draw_scene ? "ScenePass" : "SceneDepthPass"};
+        cb.beginRenderPass({*main.SceneRenderer.RenderPass, *main.Resources->SceneFramebuffer, main_rect, scene_clear_values}, vk::SubpassContents::eInline);
 
-    // Background environment (PBR modes only). The shader discards when WorldOpacity == 0 or there is no env slot.
-    if (show_rendered && draw_scene) main.SceneRenderer.ShaderPipelines.at(SPT::Background).RenderQuad(cb);
-    // Fill the scene target with the averaged steps, for the depth and overlays below to draw over.
-    if (phase == RenderPhase::BlurResolve) {
-        const auto &resolve = main.SceneRenderer.ShaderPipelines.at(SPT::MotionBlurResolve);
-        const struct {
-            uint32_t AccumSamplerSlot;
-            float InvSteps;
-        } resolve_pc{sel_slots.MotionBlurAccumSampler, 1.f / float(MotionBlurSteps(settings))};
-        cb.pushConstants(*resolve.PipelineLayout, vk::ShaderStageFlagBits::eFragment, 0, sizeof(resolve_pc), &resolve_pc);
-        resolve.RenderQuad(cb);
-    }
-
-    // Silhouette edge depth (not color! we render it before mesh depth to avoid overwriting closer depths with further ones)
-    if (has_silhouette) {
-        const auto &silhouette_depth = main.SceneRenderer.ShaderPipelines.at(SPT::SilhouetteEdgeDepth);
-        const uint32_t depth_sampler_index = sel_slots.DepthSampler;
-        cb.pushConstants(*silhouette_depth.PipelineLayout, vk::ShaderStageFlagBits::eFragment, 0, sizeof(depth_sampler_index), &depth_sampler_index);
-        silhouette_depth.RenderQuad(cb);
-    }
-
-    // Solid faces. BlurResolve writes depth only, for overlays to occlude against (blend faces never wrote depth).
-    if (buffers.IdentityIndexCount > 0 && show_fill) {
-        cb.bindIndexBuffer(*buffers.IdentityIndexBuffer, 0, vk::IndexType::eUint32);
-        if (!draw_scene) {
-            record_draw_batch(main.SceneRenderer, SPT::FillDepth, draw.FillOpaque);
-        } else if (show_rendered) {
-            record_pbr_batch(draw.FillOpaque, PbrCompiler::Variant::Opaque);
-            record_pbr_batch(draw.FillBlend, PbrCompiler::Variant::Blend);
-        } else {
-            record_draw_batch(main.SceneRenderer, SPT::Fill, draw.FillOpaque);
+        // Background environment (PBR modes only). The shader discards when WorldOpacity == 0 or there is no env slot.
+        if (show_rendered && draw_scene) main.SceneRenderer.ShaderPipelines.at(SPT::Background).RenderQuad(cb);
+        // Fill the scene target with the averaged steps, for the depth and overlays below to draw over.
+        if (phase == RenderPhase::BlurResolve) {
+            const auto &resolve = main.SceneRenderer.ShaderPipelines.at(SPT::MotionBlurResolve);
+            const struct {
+                uint32_t AccumSamplerSlot;
+                float InvSteps;
+            } resolve_pc{sel_slots.MotionBlurAccumSampler, 1.f / float(MotionBlurSteps(settings))};
+            cb.pushConstants(*resolve.PipelineLayout, vk::ShaderStageFlagBits::eFragment, 0, sizeof(resolve_pc), &resolve_pc);
+            resolve.RenderQuad(cb);
         }
+
+        // Silhouette edge depth (not color! we render it before mesh depth to avoid overwriting closer depths with further ones)
+        if (has_silhouette) {
+            const auto &silhouette_depth = main.SceneRenderer.ShaderPipelines.at(SPT::SilhouetteEdgeDepth);
+            const uint32_t depth_sampler_index = sel_slots.DepthSampler;
+            cb.pushConstants(*silhouette_depth.PipelineLayout, vk::ShaderStageFlagBits::eFragment, 0, sizeof(depth_sampler_index), &depth_sampler_index);
+            silhouette_depth.RenderQuad(cb);
+        }
+
+        // Solid faces. BlurResolve writes depth only, for overlays to occlude against (blend faces never wrote depth).
+        if (buffers.IdentityIndexCount > 0 && show_fill) {
+            cb.bindIndexBuffer(*buffers.IdentityIndexBuffer, 0, vk::IndexType::eUint32);
+            if (!draw_scene) {
+                record_draw_batch(main.SceneRenderer, SPT::FillDepth, draw.FillOpaque);
+            } else if (show_rendered) {
+                record_pbr_batch(draw.FillOpaque, PbrCompiler::Variant::Opaque);
+                record_pbr_batch(draw.FillBlend, PbrCompiler::Variant::Blend);
+            } else {
+                record_draw_batch(main.SceneRenderer, SPT::Fill, draw.FillOpaque);
+            }
+        }
+        cb.endRenderPass();
     }
-    cb.endRenderPass();
 
     const bool blur = phase == RenderPhase::BlurredFull || IsBlurAccumulate(phase);
 
@@ -908,14 +925,18 @@ void RecordRenderCommandBuffer(entt::registry &r, entt::entity viewport, vk::Com
     if (blur) RecordMotionBlurPostFx(r, cb, viewport, main_rect, record_draw_batch);
 
     if (!draw_overlays) { // BlurAccumulate sums this step's blurred scene in. It draws no overlays to composite.
-        // The first step clears the target as it draws, so the sum starts from this step alone.
-        const auto accum_pass = phase == RenderPhase::BlurAccumulateFirst ? *main.MotionBlurAccumClearRenderPass : *main.MotionBlurAccumRenderPass;
-        const std::array accum_clear{vk::ClearValue{Transparent}};
-        cb.beginRenderPass({accum_pass, *main.MotionBlur->Framebuffer, main_rect, accum_clear}, vk::SubpassContents::eInline);
-        const uint32_t accum_pc = sel_slots.MotionBlurGatherSampler;
-        cb.pushConstants(*main.MotionBlurAccumulate.PipelineLayout, vk::ShaderStageFlagBits::eFragment, 0, sizeof(accum_pc), &accum_pc);
-        main.MotionBlurAccumulate.RenderQuad(cb);
-        cb.endRenderPass();
+        {
+            const GpuScope scope{profile, cb, "BlurAccumulate"};
+            // The first step clears the target as it draws, so the sum starts from this step alone.
+            const auto accum_pass = phase == RenderPhase::BlurAccumulateFirst ? *main.MotionBlurAccumClearRenderPass : *main.MotionBlurAccumRenderPass;
+            const std::array accum_clear{vk::ClearValue{Transparent}};
+            cb.beginRenderPass({accum_pass, *main.MotionBlur->Framebuffer, main_rect, accum_clear}, vk::SubpassContents::eInline);
+            const uint32_t accum_pc = sel_slots.MotionBlurGatherSampler;
+            cb.pushConstants(*main.MotionBlurAccumulate.PipelineLayout, vk::ShaderStageFlagBits::eFragment, 0, sizeof(accum_pc), &accum_pc);
+            main.MotionBlurAccumulate.RenderQuad(cb);
+            cb.endRenderPass();
+        }
+        profile.EndRecording(cb);
         cb.end();
         return;
     }
@@ -930,90 +951,92 @@ void RecordRenderCommandBuffer(entt::registry &r, entt::entity viewport, vk::Com
         );
     }
 
-    // Overlay pass: display-referred overlays over transparent, depth-tested against the scene above.
-    cb.beginRenderPass({*main.OverlayRenderer.RenderPass, *main.Resources->OverlayFramebuffer, main_rect, overlay_clear_values}, vk::SubpassContents::eInline);
+    { // Overlay pass: display-referred overlays over transparent, depth-tested against the scene above.
+        const GpuScope scope{profile, cb, "OverlayPass"};
+        cb.beginRenderPass({*main.OverlayRenderer.RenderPass, *main.Resources->OverlayFramebuffer, main_rect, overlay_clear_values}, vk::SubpassContents::eInline);
 
-    // MoltenVK/Metal workaround: the grid's late depth test (it writes gl_FragDepth) misreads fast-cleared depth.
-    // Re-clear depth up front when the scene pass left no triangle draws to resolve the fast-clear.
-    if (show_overlays && settings.ShowGrid && !has_silhouette && draw.FillOpaque.DrawCount == 0) {
-        const vk::ClearAttachment grid_depth_resolve{vk::ImageAspectFlagBits::eDepth, 0, vk::ClearDepthStencilValue{1.f, 0}};
-        const vk::ClearRect grid_clear_rect{main_rect, 0, 1};
-        cb.clearAttachments(grid_depth_resolve, grid_clear_rect);
-    }
-
-    if (buffers.IdentityIndexCount > 0) {
-        cb.bindIndexBuffer(*buffers.IdentityIndexBuffer, 0, vk::IndexType::eUint32);
-        // Edit mode edges as triangle quads with self-AA
-        record_draw_batch(main.OverlayRenderer, SPT::EdgeQuad, draw.EdgeQuad);
-        // Wireframe/line mesh edges as GPU lines (the composite handles AA)
-        record_draw_batch(main.OverlayRenderer, SPT::Line, draw.WireLine);
-        // Vertex points (always recorded — batch is empty when nothing qualifies)
-        record_draw_batch(main.OverlayRenderer, SPT::Point, draw.Point);
-        // Object extras (cameras, lights, empties)
-        record_draw_batch(main.OverlayRenderer, SPT::ObjectExtrasLine, draw.ExtrasLine);
-    }
-
-    // Silhouette edge color (rendered ontop of meshes)
-    if (has_silhouette) {
-        const auto &silhouette_edc = main.OverlayRenderer.ShaderPipelines.at(SPT::SilhouetteEdgeColor);
-        // In mesh Edit mode, suppress active silhouette (element selection drives active state differently).
-        // In armature Edit/Pose mode, the active bone gets the active-color silhouette.
-        const auto active_entity = FindActiveEntity(r);
-        const auto active_bone = FindActiveBone(r);
-        const bool armature_mode = FindArmatureObject(r, active_entity) != entt::null;
-        uint32_t active_object_id = 0;
-        if (armature_mode && active_bone != entt::null) {
-            if (r.all_of<RenderInstance>(active_bone)) {
-                active_object_id = r.get<RenderInstance>(active_bone).ObjectId;
-            }
-        } else if (!is_edit_mode) {
-            if (active_entity != entt::null && r.all_of<RenderInstance>(active_entity)) {
-                active_object_id = r.get<RenderInstance>(active_entity).ObjectId;
-            }
+        // MoltenVK/Metal workaround: the grid's late depth test (it writes gl_FragDepth) misreads fast-cleared depth.
+        // Re-clear depth up front when the scene pass left no triangle draws to resolve the fast-clear.
+        if (show_overlays && settings.ShowGrid && !has_silhouette && draw.FillOpaque.DrawCount == 0) {
+            const vk::ClearAttachment grid_depth_resolve{vk::ImageAspectFlagBits::eDepth, 0, vk::ClearDepthStencilValue{1.f, 0}};
+            const vk::ClearRect grid_clear_rect{main_rect, 0, 1};
+            cb.clearAttachments(grid_depth_resolve, grid_clear_rect);
         }
-        const SilhouetteEdgeColorPushConstants pc{
-            TransformGizmo::IsUsing(r, viewport) && interaction_mode == InteractionMode::Object, sel_slots.ObjectIdSampler, active_object_id
-        };
-        cb.pushConstants(*silhouette_edc.PipelineLayout, vk::ShaderStageFlagBits::eFragment, 0, sizeof(pc), &pc);
-        silhouette_edc.RenderQuad(cb);
-    }
 
-    if (draw_overlays && buffers.IdentityIndexCount > 0) { // Selection overlays
-        cb.bindIndexBuffer(*buffers.IdentityIndexBuffer, 0, vk::IndexType::eUint32);
-        record_draw_batch(main.OverlayRenderer, SPT::LineOverlayFaceNormals, draw.OverlayFaceNormals);
-        record_draw_batch(main.OverlayRenderer, SPT::LineOverlayVertexNormals, draw.OverlayVertexNormals);
-    }
-
-    // Grid lines texture (drawn before bone depth clear so grid remains depth-tested against scene meshes)
-    if (draw_overlays && show_overlays && settings.ShowGrid) {
-        main.OverlayRenderer.ShaderPipelines.at(SPT::Grid).RenderQuad(cb);
-    }
-
-    { // Bone X-ray: clear depth so bones are never occluded by scene meshes (only mutually occlude each other)
-        if (draw_overlays && (draw.BoneFill.DrawCount > 0 || draw.BoneSphereFill.DrawCount > 0)) {
+        if (buffers.IdentityIndexCount > 0) {
             cb.bindIndexBuffer(*buffers.IdentityIndexBuffer, 0, vk::IndexType::eUint32);
-            const vk::ClearAttachment depth_clear{vk::ImageAspectFlagBits::eDepth, 0, vk::ClearDepthStencilValue{1.f, 0}};
-            cb.clearAttachments(depth_clear, vk::ClearRect{main_rect, 0, 1});
+            // Edit mode edges as triangle quads with self-AA
+            record_draw_batch(main.OverlayRenderer, SPT::EdgeQuad, draw.EdgeQuad);
+            // Wireframe/line mesh edges as GPU lines (the composite handles AA)
+            record_draw_batch(main.OverlayRenderer, SPT::Line, draw.WireLine);
+            // Vertex points (always recorded — batch is empty when nothing qualifies)
+            record_draw_batch(main.OverlayRenderer, SPT::Point, draw.Point);
+            // Object extras (cameras, lights, empties)
+            record_draw_batch(main.OverlayRenderer, SPT::ObjectExtrasLine, draw.ExtrasLine);
+        }
 
-            // In Object+wireframe mode, show only outlines (no fills).
-            // In Edit/Pose+wireframe, fills are semitransparent and write far-plane depth (via shader) so wires are never occluded.
-            const bool object_wireframe = is_wireframe_mode && interaction_mode == InteractionMode::Object;
-            if (!object_wireframe) {
-                record_draw_batch(main.OverlayRenderer, SPT::BoneFill, draw.BoneFill);
-                record_draw_batch(main.OverlayRenderer, SPT::BoneSphereFill, draw.BoneSphereFill);
+        // Silhouette edge color (rendered ontop of meshes)
+        if (has_silhouette) {
+            const auto &silhouette_edc = main.OverlayRenderer.ShaderPipelines.at(SPT::SilhouetteEdgeColor);
+            // In mesh Edit mode, suppress active silhouette (element selection drives active state differently).
+            // In armature Edit/Pose mode, the active bone gets the active-color silhouette.
+            const auto active_entity = FindActiveEntity(r);
+            const auto active_bone = FindActiveBone(r);
+            const bool armature_mode = FindArmatureObject(r, active_entity) != entt::null;
+            uint32_t active_object_id = 0;
+            if (armature_mode && active_bone != entt::null) {
+                if (r.all_of<RenderInstance>(active_bone)) {
+                    active_object_id = r.get<RenderInstance>(active_bone).ObjectId;
+                }
+            } else if (!is_edit_mode) {
+                if (active_entity != entt::null && r.all_of<RenderInstance>(active_entity)) {
+                    active_object_id = r.get<RenderInstance>(active_entity).ObjectId;
+                }
             }
-            // In non-wireframe Object mode, "Outline selected" off suppresses bone wire outlines.
-            // In wireframe+Object mode, wires are the only bone visualization so always show them.
-            const bool hide_bone_outlines = !is_wireframe_mode && interaction_mode == InteractionMode::Object &&
-                (!show_overlays || !settings.ShowOutlineSelected);
-            if (!hide_bone_outlines) {
-                record_draw_batch(main.OverlayRenderer, SPT::BoneWire, draw.BoneWire);
-                record_draw_batch(main.OverlayRenderer, SPT::BoneSphereWire, draw.BoneSphereWire);
+            const SilhouetteEdgeColorPushConstants pc{
+                TransformGizmo::IsUsing(r, viewport) && interaction_mode == InteractionMode::Object, sel_slots.ObjectIdSampler, active_object_id
+            };
+            cb.pushConstants(*silhouette_edc.PipelineLayout, vk::ShaderStageFlagBits::eFragment, 0, sizeof(pc), &pc);
+            silhouette_edc.RenderQuad(cb);
+        }
+
+        if (draw_overlays && buffers.IdentityIndexCount > 0) { // Selection overlays
+            cb.bindIndexBuffer(*buffers.IdentityIndexBuffer, 0, vk::IndexType::eUint32);
+            record_draw_batch(main.OverlayRenderer, SPT::LineOverlayFaceNormals, draw.OverlayFaceNormals);
+            record_draw_batch(main.OverlayRenderer, SPT::LineOverlayVertexNormals, draw.OverlayVertexNormals);
+        }
+
+        // Grid lines texture (drawn before bone depth clear so grid remains depth-tested against scene meshes)
+        if (draw_overlays && show_overlays && settings.ShowGrid) {
+            main.OverlayRenderer.ShaderPipelines.at(SPT::Grid).RenderQuad(cb);
+        }
+
+        { // Bone X-ray: clear depth so bones are never occluded by scene meshes (only mutually occlude each other)
+            if (draw_overlays && (draw.BoneFill.DrawCount > 0 || draw.BoneSphereFill.DrawCount > 0)) {
+                cb.bindIndexBuffer(*buffers.IdentityIndexBuffer, 0, vk::IndexType::eUint32);
+                const vk::ClearAttachment depth_clear{vk::ImageAspectFlagBits::eDepth, 0, vk::ClearDepthStencilValue{1.f, 0}};
+                cb.clearAttachments(depth_clear, vk::ClearRect{main_rect, 0, 1});
+
+                // In Object+wireframe mode, show only outlines (no fills).
+                // In Edit/Pose+wireframe, fills are semitransparent and write far-plane depth (via shader) so wires are never occluded.
+                const bool object_wireframe = is_wireframe_mode && interaction_mode == InteractionMode::Object;
+                if (!object_wireframe) {
+                    record_draw_batch(main.OverlayRenderer, SPT::BoneFill, draw.BoneFill);
+                    record_draw_batch(main.OverlayRenderer, SPT::BoneSphereFill, draw.BoneSphereFill);
+                }
+                // In non-wireframe Object mode, "Outline selected" off suppresses bone wire outlines.
+                // In wireframe+Object mode, wires are the only bone visualization so always show them.
+                const bool hide_bone_outlines = !is_wireframe_mode && interaction_mode == InteractionMode::Object &&
+                    (!show_overlays || !settings.ShowOutlineSelected);
+                if (!hide_bone_outlines) {
+                    record_draw_batch(main.OverlayRenderer, SPT::BoneWire, draw.BoneWire);
+                    record_draw_batch(main.OverlayRenderer, SPT::BoneSphereWire, draw.BoneSphereWire);
+                }
             }
         }
-    }
 
-    cb.endRenderPass();
+        cb.endRenderPass();
+    }
 
     {
         const std::array overlay_out_barriers{
@@ -1024,6 +1047,7 @@ void RecordRenderCommandBuffer(entt::registry &r, entt::entity viewport, vk::Com
     }
 
     { // Composite: anti-alias the overlay layer using LineDataImage, view-transform the scene, merge into FinalColorImage
+        const GpuScope scope{profile, cb, "Composite"};
         const vk::ClearValue clear_value{vk::ClearColorValue{std::array<float, 4>{0, 0, 0, 1}}};
         const vk::Rect2D rect{{0, 0}, ToExtent2D(main.Resources->FinalColorImage.Extent)};
         cb.beginRenderPass({*main.CompositeRenderPass, *main.Resources->CompositeFramebuffer, rect, clear_value}, vk::SubpassContents::eInline);
@@ -1040,6 +1064,7 @@ void RecordRenderCommandBuffer(entt::registry &r, entt::entity viewport, vk::Com
         main.ViewportComposite.RenderQuad(cb);
         cb.endRenderPass();
     }
+    profile.EndRecording(cb);
 
     cb.end();
 }

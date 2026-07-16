@@ -4,6 +4,7 @@ add_executable(MeshEditorTests
     ${CMAKE_SOURCE_DIR}/src/armature/Armature.cpp
     ${CMAKE_SOURCE_DIR}/src/render/Bindless.cpp
     ${CMAKE_SOURCE_DIR}/src/render/GpuBufferOps.cpp
+    ${CMAKE_SOURCE_DIR}/src/render/Profile.cpp
     ${CMAKE_SOURCE_DIR}/src/scene/Entity.cpp
     ${CMAKE_SOURCE_DIR}/src/object/ExtrasMesh.cpp
     ${CMAKE_SOURCE_DIR}/src/image/ImageDecode.cpp

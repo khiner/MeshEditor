@@ -1,9 +1,9 @@
 #include "Compress.h"
 #include "File.h"
 #include "FileDialog.h"
+#include "LogEnabled.h"
 #include "Paths.h"
 #include "ProcessEvents.h"
-#include "Timer.h"
 #include "TransformMath.h"
 #include "Window.h"
 #include "action/ActionApply.h"
@@ -28,6 +28,7 @@
 #include "object/ExtrasComponents.h"
 #include "physics/PhysicsTypes.h"
 #include "render/MaterialComponents.h"
+#include "render/Profile.h"
 #include "scene/Entity.h"
 #include "scene/SceneControlsUi.h"
 #include "scene/WorldTransform.h"
@@ -525,6 +526,7 @@ struct CaptureRequest {
     int Fps{60};
     fs::path RecordPath{}, ScreenshotPath{};
     fs::path RenderBasename{}; // Output basename, no extension.
+    std::optional<uint8_t> MotionBlurSteps{}; // Disengaged = leave the viewport's own setting alone.
 };
 
 // Surface and clear any failures action handlers reported this frame. Returns true if there were any.
@@ -698,6 +700,9 @@ CaptureDriver BeginCaptureSession(entt::registry &r, entt::entity viewport, cons
     r.ctx().get<FrameState>().FixedFrameStep = driver.FixedStep;
     // Force motion blur on for the whole recording run (not still-screenshot renders).
     r.ctx().get<FrameState>().Capturing = driver.RecordingMode();
+    if (capture.MotionBlurSteps) {
+        Perform(r, viewport, action::UpdateOf<&ViewportDisplay::MotionBlur>(viewport, std::optional{MotionBlur{.Steps = *capture.MotionBlurSteps}}));
+    }
     return driver;
 }
 
@@ -1357,6 +1362,8 @@ int main(int argc, char **argv) {
         else if (a == "--empty") empty = true;
         else if (a == "--headless") headless = true;
         else if (a == "--fps" && std::next(it) != args.end()) capture.Fps = std::atoi(*++it);
+        else if (a == "--motion-blur" && std::next(it) != args.end()) capture.MotionBlurSteps = uint8_t(std::max(1, std::atoi(*++it)));
+        else if (a == "--profile") Profile::Enabled = true;
         else if (!a.starts_with('-') && !initial_file) initial_file = *it;
     }
     if (capture.Fps <= 0) capture.Fps = 60;

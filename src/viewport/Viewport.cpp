@@ -4,7 +4,6 @@
 #include "ProcessEvents.h"
 #include "Reactive.h"
 #include "Stores.h"
-#include "Timer.h"
 #include "animation/AnimationTimeline.h"
 #include "mesh/Mesh.h"
 #include "mesh/MeshStore.h"
@@ -17,6 +16,7 @@
 #include "render/MaterialImport.h"
 #include "render/OneShotGpu.h"
 #include "render/Pipelines.h"
+#include "render/Profile.h"
 #include "render/Textures.h"
 #include "render/VkFenceWait.h"
 #include "scene/Defaults.h"
@@ -106,7 +106,6 @@ bool MotionBlurActive(const entt::registry &r, entt::entity viewport) {
 // renders once and blurs along its own screen motion, and several steps average together. Overlays
 // stay sharp over the blur. Restores the settled frame afterward.
 void RenderMotionBlurredFrame(entt::registry &r, entt::entity viewport) {
-    const Timer timer{"RenderMotionBlurredFrame"};
     const auto &vk = r.ctx().get<const VulkanResources>();
     auto &pipelines = r.ctx().get<Pipelines>();
     auto &resources = r.ctx().get<ViewportRenderResources>();
@@ -228,6 +227,7 @@ bool ViewportImageReady(const entt::registry &r) {
 }
 
 void SubmitViewport(entt::registry &r, entt::entity viewport, vk::Fence viewport_consumer_fence) {
+    const CpuScope scope{r.ctx().get<Profile>(), "SubmitViewport"};
     // Stash the consumer fence for the resize path to wait on before recreating resources. Cleared after so replay sees none.
     r.ctx().get<ViewportConsumerFence>().Value = viewport_consumer_fence;
     ProcessComponentEvents(r, viewport);
@@ -250,8 +250,6 @@ void SubmitViewport(entt::registry &r, entt::entity viewport, vk::Fence viewport
     }
     const auto render_request = TakeRenderRequest(r);
     if (render_request == RenderRequest::None) return;
-
-    const Timer timer{"SubmitViewport"};
 #ifdef MVK_FORCE_STAGED_TRANSFERS
     RecordTransferCommandBuffer(r, viewport, *r.ctx().get<ViewportRenderResources>().TransferCommandBuffer);
 #endif
@@ -286,6 +284,7 @@ entt::entity InitEngine(entt::registry &r, VulkanResources vc) {
     InitStoreCtx(r, vc);
     auto &slots = r.ctx().get<DescriptorSlots>();
     auto &pipelines = r.ctx().emplace<Pipelines>(vc.Device, vc.PhysicalDevice, slots.GetSetLayout(), slots.GetSet());
+    r.ctx().emplace<Profile>(vc.Device, vc.PhysicalDevice);
     physics::Init(r);
     RegisterSceneComponentHandlers(r);
 
@@ -439,6 +438,8 @@ void DeinitViewport(entt::registry &r, entt::entity viewport) {
     r.ctx().erase<std::vector<ComponentEventHandler>>();
     r.ctx().erase<EntityDestroyTracker>();
     physics::Deinit(r);
+    r.ctx().get<const Profile>().Report();
+    r.ctx().erase<Profile>();
     r.ctx().erase<Pipelines>();
     if (r.valid(viewport)) r.destroy(viewport);
     TearDownStoreCtx(r);
@@ -459,8 +460,8 @@ void WaitForRender(entt::registry &r) {
     if (!frame.RenderPending) return;
 
     const auto &vk = r.ctx().get<const VulkanResources>();
-    const Timer timer{"WaitForRender"};
     WaitFor(*r.ctx().get<const ViewportRenderResources>().RenderFence, vk.Device);
+    r.ctx().get<Profile>().Resolve(vk.Device);
     r.ctx().get<GpuBuffers>().Ctx.ReclaimRetiredBuffers();
     frame.RenderPending = false;
 }

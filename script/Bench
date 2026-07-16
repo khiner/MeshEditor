@@ -1,0 +1,87 @@
+#!/bin/bash
+
+# Time the motion-blurred viewport on one animated scene and report where GPU time goes.
+# The scene renders headless on a fixed step, so every run walks the same frames in the same order.
+# Run from anywhere.
+#
+# Usage: script/Bench [scene] [steps]
+#   scene  A glTF sample name under external/glTF-Sample-Assets/Models, or a path to a scene file.
+#          Default BrainStem: it is skinned, animates in place, and holds steady screen coverage.
+#   steps  MotionBlur::Steps (default 1).
+#
+# REPS sets the timed repetition count (default 3). One warm-up run precedes them and is discarded.
+#
+# The share column holds steady even when the clock does not, so it is the one to optimize against.
+# A change smaller than the run-to-run spread needs both variants interleaved.
+
+set -uo pipefail
+
+ScriptDir="$(cd "$(dirname "${0}")" && pwd)"
+ProjectRootDir="$(dirname "${ScriptDir}")"
+cd "${ProjectRootDir}"
+
+Scene="${1:-BrainStem}"
+Steps="${2:-1}"
+Reps="${REPS:-3}"
+Exe="build/MeshEditor"
+
+# A bare sample name resolves against the glTF sample models.
+ScenePath="${Scene}"
+if [ ! -f "${ScenePath}" ]; then
+    ScenePath="external/glTF-Sample-Assets/Models/${Scene}/glTF/${Scene}.gltf"
+fi
+if [ ! -f "${ScenePath}" ]; then
+    echo "No such scene: '${Scene}' (looked for '${ScenePath}')" >&2
+    echo "Pass a sample name (e.g. BrainStem, Fox) or a path to a scene file." >&2
+    exit 1
+fi
+
+"${ScriptDir}/Build" || exit 1
+
+Work="$(mktemp -d "${TMPDIR:-/tmp}/MeshEditorBench.XXXXXX")"
+trap 'rm -rf "${Work}"' EXIT
+
+# The scene must animate: motion blur engages only while playback runs.
+run_once() {
+    "./${Exe}" "${ScenePath}" --headless --play --motion-blur "${Steps}" --profile > "$1" 2>&1
+}
+
+echo "Benchmarking ${ScenePath} at Steps=${Steps} (${Reps} reps after a warm-up)..."
+run_once "${Work}/warmup.log"
+if ! grep -q "GPU pass timings" "${Work}/warmup.log"; then
+    echo "The run produced no blurred frames. Its output:" >&2
+    tail -20 "${Work}/warmup.log" >&2
+    exit 1
+fi
+
+rep=1
+while [ "${rep}" -le "${Reps}" ]; do
+    run_once "${Work}/rep${rep}.log"
+    # Per-rep frame cost, to show how far the reps drifted from each other.
+    awk -v rep="${rep}" '/^  Submit /{printf "  rep %s: %.3f ms/submit\n", rep, $3}' "${Work}/rep${rep}.log"
+    rep=$((rep + 1))
+done
+
+# Aggregate every rep's tables: sum each scope's total and calls, then recompute the mean and share.
+# A table row is the only line with all eight columns, which skips anything else the run printed.
+# First-seen order is the order the work runs in.
+cat "${Work}"/rep*.log | awk '
+    /^(GPU pass timings|CPU timings)$/ { section = $0; next }
+    NF == 8 && $2 ~ /^[0-9]+$/ {
+        key = section SUBSEP $1
+        if (!(key in calls)) order[++n] = key
+        calls[key] += $2
+        total[key] += $7
+        if (!(section in root)) root[section] = key
+    }
+    END {
+        for (i = 1; i <= n; i++) {
+            key = order[i]
+            split(key, field, SUBSEP)
+            if (field[1] != shown) {
+                shown = field[1]
+                printf "\n  %s\n  %-22s %8s %10s %8s\n", shown, "scope", "calls", "mean ms", "share"
+            }
+            printf "  %-22s %8d %10.3f %7.1f%%\n", field[2], calls[key], total[key] / calls[key], 100 * total[key] / total[root[shown]]
+        }
+    }'
