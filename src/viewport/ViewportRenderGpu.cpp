@@ -951,7 +951,13 @@ void RecordRenderCommandBuffer(entt::registry &r, entt::entity viewport, vk::Com
     // reaches it, and the composite skips reading it and its line data at all. Every draw in the pass
     // below goes through here or sets the flag itself.
     bool overlay_layer_drawn = false;
-    { // Overlay pass: display-referred overlays over transparent, depth-tested against the scene above.
+    // Everything the pass could draw. With nothing to draw, the composite reads neither overlay layer.
+    const bool overlay_pass_needed = has_silhouette ||
+        (show_overlays && settings.ShowGrid) ||
+        draw.EdgeQuad.DrawCount > 0 || draw.WireLine.DrawCount > 0 || draw.Point.DrawCount > 0 || draw.ExtrasLine.DrawCount > 0 ||
+        draw.OverlayFaceNormals.DrawCount > 0 || draw.OverlayVertexNormals.DrawCount > 0 ||
+        draw.BoneFill.DrawCount > 0 || draw.BoneWire.DrawCount > 0 || draw.BoneSphereFill.DrawCount > 0 || draw.BoneSphereWire.DrawCount > 0;
+    if (overlay_pass_needed) { // Overlay pass: display-referred overlays over transparent, depth-tested against the scene above.
         const GpuScope scope{profile, cb, "OverlayPass"};
         cb.beginRenderPass({*main.OverlayRenderer.RenderPass, *main.Resources->OverlayFramebuffer, main_rect, overlay_clear_values}, vk::SubpassContents::eInline);
 
@@ -999,20 +1005,20 @@ void RecordRenderCommandBuffer(entt::registry &r, entt::entity viewport, vk::Com
             silhouette_edc.RenderQuad(cb);
         }
 
-        if (draw_overlays && buffers.IdentityIndexCount > 0) { // Selection overlays
+        if (buffers.IdentityIndexCount > 0) { // Selection overlays
             cb.bindIndexBuffer(*buffers.IdentityIndexBuffer, 0, vk::IndexType::eUint32);
             record_overlay_batch(SPT::LineOverlayFaceNormals, draw.OverlayFaceNormals);
             record_overlay_batch(SPT::LineOverlayVertexNormals, draw.OverlayVertexNormals);
         }
 
         // Grid plane (drawn before bone depth clear so grid remains depth-tested against scene meshes)
-        if (draw_overlays && show_overlays && settings.ShowGrid) {
+        if (show_overlays && settings.ShowGrid) {
             overlay_layer_drawn = true;
             main.OverlayRenderer.ShaderPipelines.at(SPT::Grid).Draw(cb, 9);
         }
 
         { // Bone X-ray: clear depth so bones are never occluded by scene meshes (only mutually occlude each other)
-            if (draw_overlays && (draw.BoneFill.DrawCount > 0 || draw.BoneSphereFill.DrawCount > 0)) {
+            if (draw.BoneFill.DrawCount > 0 || draw.BoneSphereFill.DrawCount > 0) {
                 cb.bindIndexBuffer(*buffers.IdentityIndexBuffer, 0, vk::IndexType::eUint32);
                 const vk::ClearAttachment depth_clear{vk::ImageAspectFlagBits::eDepth, 0, vk::ClearDepthStencilValue{1.f, 0}};
                 cb.clearAttachments(depth_clear, vk::ClearRect{main_rect, 0, 1});
@@ -1038,7 +1044,7 @@ void RecordRenderCommandBuffer(entt::registry &r, entt::entity viewport, vk::Com
         cb.endRenderPass();
     }
 
-    {
+    if (overlay_layer_drawn) {
         const std::array overlay_out_barriers{
             color_read_barrier(*main.Resources->OverlayColorImage.Image),
             color_read_barrier(*main.Resources->LineDataImage.Image),
