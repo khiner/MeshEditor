@@ -755,6 +755,9 @@ structs:
       - name: TileImageSlot
         type: u32
         default: InvalidSlot
+      - name: TileIndirectionSlot
+        type: u32
+        default: InvalidSlot
       - name: MotionScale
         type: vec2
   - name: MotionBlurTilesDilatePushConstants

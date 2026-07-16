@@ -1,5 +1,6 @@
 #version 450
 #extension GL_EXT_nonuniform_qualifier : require
+#extension GL_EXT_scalar_block_layout : require
 
 // One workgroup per tile, so the workgroup id is the tile coordinate. Each thread reduces a fixed
 // share of the tile's pixels on its own, and only its winner reaches shared memory.
@@ -13,6 +14,9 @@ const int FlattenBlocks = MotionBlurTileSize / FlattenThreads;
 
 layout(set = 0, binding = BINDING_Sampler) uniform sampler2D Samplers[];
 layout(set = 0, binding = BINDING_Image, rgba16f) uniform image2D HdrImages[];
+layout(set = 0, binding = BINDING_Buffer, scalar) buffer MotionBlurTileIndirection {
+    uint Entries[];
+} TileIndirections[];
 
 shared uint PayloadPrev;
 shared uint PayloadNext;
@@ -30,6 +34,11 @@ void main() {
     if (gl_LocalInvocationIndex == 0u) {
         PayloadPrev = 0u;
         PayloadNext = 0u;
+        // Zero this tile's indirection entries: an untouched entry would read as tile (0,0)'s
+        // motion. The barrier before the dilate pass orders these writes ahead of its atomics.
+        const uvec2 tile_extent = uvec2(imageSize(HdrImages[pc.TileImageSlot]));
+        TileIndirections[pc.TileIndirectionSlot].Entries[MotionTileIndex(MotionPrev, gl_WorkGroupID.xy, tile_extent)] = 0u;
+        TileIndirections[pc.TileIndirectionSlot].Entries[MotionTileIndex(MotionNext, gl_WorkGroupID.xy, tile_extent)] = 0u;
     }
     barrier();
 

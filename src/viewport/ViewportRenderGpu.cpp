@@ -163,15 +163,6 @@ void RecordMotionBlurPostFx(entt::registry &r, vk::CommandBuffer cb, entt::entit
     const std::array general_barriers{to_general(*main.MotionBlur->TileImage.Image), to_general(*main.MotionBlur->GatherImage.Image)};
     cb.pipelineBarrier(vk::PipelineStageFlagBits::eTopOfPipe, vk::PipelineStageFlagBits::eComputeShader, {}, {}, {}, general_barriers);
 
-    { // Every tile must start empty: an untouched entry would read as tile (0,0)'s motion.
-        const GpuScope scope{profile, cb, "BlurTileClear"};
-        cb.fillBuffer(*buffers.MotionBlurTileIndirection, 0, vk::WholeSize, 0);
-    }
-    cb.pipelineBarrier(
-        vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eComputeShader, {}, {},
-        {{vk::AccessFlagBits::eTransferWrite, vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, *buffers.MotionBlurTileIndirection, 0, vk::WholeSize}}, {}
-    );
-
     const auto compute_to_compute = [&] {
         cb.pipelineBarrier(
             vk::PipelineStageFlagBits::eComputeShader, vk::PipelineStageFlagBits::eComputeShader, {},
@@ -189,10 +180,11 @@ void RecordMotionBlurPostFx(entt::registry &r, vk::CommandBuffer cb, entt::entit
 
     const auto tile_extent = main.MotionBlur->TileExtent;
     { // One workgroup per tile, which the flatten shader reduces to that tile's largest motion.
+        // It also zeroes its tile's indirection entries.
         const GpuScope scope{profile, cb, "BlurTilesFlatten"};
         dispatch(
             pipelines.MotionBlurTilesFlatten,
-            MotionBlurTilesFlattenPushConstants{sel_slots.VelocitySampler, sel_slots.MotionBlurTileImage, MotionScale},
+            MotionBlurTilesFlattenPushConstants{sel_slots.VelocitySampler, sel_slots.MotionBlurTileImage, sel_slots.MotionBlurTileIndirection, MotionScale},
             {tile_extent.width, tile_extent.height, 1}
         );
     }
