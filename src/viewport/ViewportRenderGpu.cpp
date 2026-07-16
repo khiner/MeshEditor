@@ -969,14 +969,6 @@ void RecordRenderCommandBuffer(entt::registry &r, entt::entity viewport, vk::Com
             record_draw_batch(main.OverlayRenderer, spt, batch);
         };
 
-        // MoltenVK/Metal workaround: the grid's late depth test (it writes gl_FragDepth) misreads fast-cleared depth.
-        // Re-clear depth up front when the scene pass left no triangle draws to resolve the fast-clear.
-        if (show_overlays && settings.ShowGrid && !has_silhouette && draw.FillOpaque.DrawCount == 0) {
-            const vk::ClearAttachment grid_depth_resolve{vk::ImageAspectFlagBits::eDepth, 0, vk::ClearDepthStencilValue{1.f, 0}};
-            const vk::ClearRect grid_clear_rect{main_rect, 0, 1};
-            cb.clearAttachments(grid_depth_resolve, grid_clear_rect);
-        }
-
         if (buffers.IdentityIndexCount > 0) {
             cb.bindIndexBuffer(*buffers.IdentityIndexBuffer, 0, vk::IndexType::eUint32);
             // Edit mode edges as triangle quads with self-AA
@@ -1021,10 +1013,10 @@ void RecordRenderCommandBuffer(entt::registry &r, entt::entity viewport, vk::Com
             record_overlay_batch(SPT::LineOverlayVertexNormals, draw.OverlayVertexNormals);
         }
 
-        // Grid lines texture (drawn before bone depth clear so grid remains depth-tested against scene meshes)
+        // Grid plane (drawn before bone depth clear so grid remains depth-tested against scene meshes)
         if (draw_overlays && show_overlays && settings.ShowGrid) {
             overlay_layer_drawn = true;
-            main.OverlayRenderer.ShaderPipelines.at(SPT::Grid).RenderQuad(cb);
+            main.OverlayRenderer.ShaderPipelines.at(SPT::Grid).Draw(cb, 9);
         }
 
         { // Bone X-ray: clear depth so bones are never occluded by scene meshes (only mutually occlude each other)

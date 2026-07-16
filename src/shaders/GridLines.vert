@@ -2,26 +2,19 @@
 
 #include "SceneUBO.glsl"
 
-layout(location = 0) out vec3 RayOrigin;
-layout(location = 1) out vec3 RayDir;
+layout(location = 0) out vec4 PlanePos;
 
-// Triangle strip.
-const vec2 QuadPositions[4] = vec2[](vec2(-1, -1), vec2(1, -1), vec2(-1, 1), vec2(1, 1));
+// The grid plane y = 0: three triangles fanned around the origin with outer vertices at infinity
+// (w = 0), so rasterization supplies the plane's depth and the early depth test skips hidden fragments.
+const float R3 = 0.86602540378; // sin(120 degrees)
+// Outer directions 120 degrees apart: each triangle covers one third of the plane.
+const vec4 Verts[9] = vec4[](
+    vec4(0, 0, 0, 1), vec4(1, 0, 0, 0), vec4(-0.5, 0, R3, 0),
+    vec4(0, 0, 0, 1), vec4(-0.5, 0, R3, 0), vec4(-0.5, 0, -R3, 0),
+    vec4(0, 0, 0, 1), vec4(-0.5, 0, -R3, 0), vec4(1, 0, 0, 0)
+);
 
 void main() {
-    const vec2 p = QuadPositions[gl_VertexIndex];
-    const mat3 proj3 = mat3(SceneViewUBO.ViewProj) * transpose(SceneViewUBO.ViewRotation);
-    const mat3 inv_rot = transpose(SceneViewUBO.ViewRotation);
-    if (SceneViewUBO.ScreenPixelScale < 0.0) {
-        // Orthographic: parallel rays, varying origin
-        // proj3 diagonal = (1/mag.x, 1/mag.y, ...) for orthoRH_ZO
-        RayOrigin = SceneViewUBO.CameraPosition + inv_rot * vec3(p.x / proj3[0][0], p.y / proj3[1][1], 0.0);
-        RayDir = inv_rot * vec3(0.0, 0.0, -1.0);
-    } else {
-        // Perspective: common origin, varying direction
-        RayOrigin = SceneViewUBO.CameraPosition;
-        RayDir = inv_rot * vec3(p.x / proj3[0][0], p.y / proj3[1][1], -1.0);
-    }
-
-    gl_Position = vec4(p, 0, 1);
+    PlanePos = Verts[gl_VertexIndex];
+    gl_Position = SceneViewUBO.ViewProj * PlanePos;
 }

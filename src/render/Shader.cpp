@@ -226,10 +226,10 @@ void ShaderPipeline::Compile(vk::RenderPass render_pass) {
     Pipeline = std::move(pipeline_result.value);
 }
 
-void ShaderPipeline::RenderQuad(vk::CommandBuffer cb) const {
+void ShaderPipeline::Draw(vk::CommandBuffer cb, uint32_t vertex_count) const {
     cb.bindPipeline(vk::PipelineBindPoint::eGraphics, *Pipeline);
     cb.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *PipelineLayout, 0, 1, &DescriptorSet, 0, nullptr);
-    cb.draw(4, 1, 0, 0); // Draw a full-screen quad triangle strip.
+    cb.draw(vertex_count, 1, 0, 0);
 }
 
 ComputePipeline::ComputePipeline(vk::Device d, Shaders &&shaders, std::optional<vk::PushConstantRange> push_constant_range, vk::DescriptorSetLayout set_layout, vk::DescriptorSet set)

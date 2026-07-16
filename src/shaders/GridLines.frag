@@ -5,8 +5,7 @@
 #include "SceneUBO.glsl"
 #include "ViewportTheme.glsl"
 
-layout(location = 0) in vec3 RayOrigin;
-layout(location = 1) in vec3 RayDir;
+layout(location = 0) in vec4 PlanePos;
 
 layout(location = 0) out vec4 Color;
 
@@ -31,12 +30,7 @@ vec4 BlendGrids(vec4 a, vec4 b) {
 }
 
 void main() {
-    const float t = -RayOrigin.y / RayDir.y;
-    if (t <= 0) discard;
-
-    const vec3 pos_3d = RayOrigin + t * RayDir;
-    const vec4 clip_space_pos = SceneViewUBO.ViewProj * vec4(pos_3d, 1);
-    gl_FragDepth = clip_space_pos.z / clip_space_pos.w;
+    const vec3 pos_3d = PlanePos.xyz / PlanePos.w;
 
     const vec3 to_camera = SceneViewUBO.CameraPosition - pos_3d;
     const float dist = length(to_camera);

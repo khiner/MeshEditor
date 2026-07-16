@@ -396,7 +396,7 @@ static PipelineRenderer CreateOverlayRenderer(
         ctx.CreateGraphics(
             {{{ShaderType::eVertex, "GridLines.vert"}, {ShaderType::eFragment, "GridLines.frag"}}},
             {},
-            vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleStrip,
+            vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleList,
             {CreateColorBlendAttachment(true), NoWriteBlend}, CreateDepthStencil(true, false)
         )
     );

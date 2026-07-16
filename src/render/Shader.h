@@ -115,7 +115,9 @@ struct ShaderPipeline {
 
     void Compile(vk::RenderPass); // Recompile all shaders and update `Pipeline`.
 
-    void RenderQuad(vk::CommandBuffer) const;
+    // Bind and draw `vertex_count` un-indexed vertices (the shader supplies positions).
+    void Draw(vk::CommandBuffer, uint32_t vertex_count) const;
+    void RenderQuad(vk::CommandBuffer cb) const { Draw(cb, 4); } // Full-screen quad triangle strip.
 };
 
 struct ComputePipeline {
