@@ -44,6 +44,7 @@ struct ViewportRenderResources {
     vk::UniqueCommandBuffer TransferCommandBuffer;
 #endif
     vk::UniqueFence RenderFence;
+    RenderPhase RecordedPhase{RenderPhase::Full}; // What RenderCommandBuffer currently holds.
 };
 
 void ResetObjectPickKeys(GpuBuffers &buffers) {
@@ -76,8 +77,10 @@ void RecordViewportFrame(entt::registry &r, entt::entity viewport, RenderRequest
     auto &resources = r.ctx().get<ViewportRenderResources>();
     if (render_request == RenderRequest::ReRecord || force_full) {
         RecordRenderCommandBuffer(r, viewport, *resources.RenderCommandBuffer);
+        resources.RecordedPhase = RenderPhase::Full;
     } else if (render_request == RenderRequest::ReRecordSilhouette && r.ctx().get<const DrawState>().MainDrawCount > 0) {
         RecordRenderCommandBuffer(r, viewport, *resources.RenderCommandBuffer, /*silhouette_only=*/true);
+        resources.RecordedPhase = RenderPhase::Full;
     }
 }
 
@@ -132,6 +135,8 @@ void RenderMotionBlurredFrame(entt::registry &r, entt::entity viewport) {
 
     const auto main_cb = *resources.RenderCommandBuffer;
     auto &buffers = r.ctx().get<GpuBuffers>();
+    // Every blurred frame moves the scene under any selection data, recorded or not.
+    r.ctx().get<DrawState>().SelectionStale = true;
 
     // Allocate the blur targets on first use, then point every descriptor that reaches them at the
     // new images. They are lazy, so these slots hold fallbacks until now.
@@ -192,8 +197,14 @@ void RenderMotionBlurredFrame(entt::registry &r, entt::entity viewport) {
     const auto render_at = [&](float pf, RenderPhase phase) {
         evaluate_at(pf);
         stamp_velocity_poses();
-        TakeRenderRequest(r);
-        RecordRenderCommandBuffer(r, viewport, main_cb, /*silhouette_only=*/false, phase);
+        // Poses and view state reach the GPU through buffers the recorded commands already read,
+        // so the recording goes stale only when the draw list or the phase changes.
+        if (TakeRenderRequest(r) >= RenderRequest::ReRecordSilhouette || resources.RecordedPhase != phase) {
+            RecordRenderCommandBuffer(r, viewport, main_cb, /*silhouette_only=*/false, phase);
+            resources.RecordedPhase = phase;
+        }
+        // Land any descriptor updates a pose-capture buffer growth deferred.
+        buffers.Ctx.FlushDeferredDescriptorUpdates(vk.Device);
         SubmitRecordedFrame(r);
         WaitForRender(r);
     };
@@ -247,7 +258,9 @@ void SubmitViewport(entt::registry &r, entt::entity viewport, vk::Fence viewport
     if (MotionBlurActive(r, viewport)) {
         // A blurred frame costs several scene evaluations, so only run one when something changed.
         // (Otherwise the frame already on screen is what it would produce.)
-        if (TakeRenderRequest(r) != RenderRequest::None) {
+        if (const auto request = TakeRenderRequest(r); request != RenderRequest::None) {
+            // Leave the request pending so the per-step render sees any re-record demand, like a resize recreating framebuffers.
+            r.ctx().get<PendingRenderRequest>().Value = request;
             RenderMotionBlurredFrame(r, viewport);
             frame_state.MotionBlurred = true;
         }

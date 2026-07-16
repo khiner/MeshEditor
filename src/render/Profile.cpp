@@ -83,7 +83,7 @@ void Profile::Resolve(vk::Device device) {
             GpuStats[StatIndex(GpuStats, span.Name, span.Depth)].Ms.emplace_back(float(ns * 1e-6));
         }
     }
-    ResetRecording();
+    // Spans stay registered: a resubmitted recording rewrites its queries and resolves here again.
 }
 
 void Profile::ClearStats() {
