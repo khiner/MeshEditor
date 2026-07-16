@@ -4,7 +4,8 @@
 # scene's leaf contains. Covers Empty, Default, res/examples, and all glTF samples under external/. Run from anywhere.
 # Scenes render headless (no window) in a pool of persistent worker processes: each worker initializes the
 # engine once and pulls scenes from a shared job spool (`--render-queue`), clearing the scene between jobs.
-# Set JOBS to change the worker count.
+# Set JOBS to change the worker count, and COMPARE_VIDEOS=1 to restore videos that differ from HEAD
+# only by GPU render noise.
 
 set -uo pipefail
 
@@ -15,6 +16,7 @@ cd "${ProjectRootDir}"
 Exe="build/MeshEditor"
 RenderDir="render"
 Jobs="${JOBS:-8}"
+CompareVideos="${COMPARE_VIDEOS:-}"
 
 SceneTimeoutSecs=120 # Catches hangs. Renders are GPU-paced, not real-time, and parallel renders contend for the GPU.
 
@@ -160,16 +162,18 @@ if [ "${#retries[@]}" -gt 0 ]; then
 fi
 
 # Restore committed videos that differ only by GPU render noise (see script/VideosEquivalent).
-while IFS= read -r f; do
-    committed="${Spool}/committed.mp4"
-    git cat-file --filters "HEAD:${f}" > "${committed}" 2>/dev/null || continue
-    if stats="$("${ScriptDir}/VideosEquivalent" "${committed}" "${f}")"; then
-        git checkout -- "${f}"
-        echo "Render noise only (${stats//$'\n'/; }): restored ${f}"
-    else
-        echo "Content changed (${stats//$'\n'/; }): ${f}"
-    fi
-done < <(git diff --name-only -- "${RenderDir}" | grep '\.mp4$')
+if [ -n "${CompareVideos}" ]; then
+    while IFS= read -r f; do
+        committed="${Spool}/committed.mp4"
+        git cat-file --filters "HEAD:${f}" > "${committed}" 2>/dev/null || continue
+        if stats="$("${ScriptDir}/VideosEquivalent" "${committed}" "${f}")"; then
+            git checkout -- "${f}"
+            echo "Render noise only (${stats//$'\n'/; }): restored ${f}"
+        else
+            echo "Content changed (${stats//$'\n'/; }): ${f}"
+        fi
+    done < <(git diff --name-only -- "${RenderDir}" | grep '\.mp4$')
+fi
 
 # Tally from the artifacts (worker output order is nondeterministic under parallelism).
 rendered=0

@@ -3,7 +3,7 @@
 # Keeps the committed render corpus and the published site in lockstep with every push,
 # making `git push` the only publish command.
 #
-# script/Render self-restores GPU-noise-only diffs (script/VideosEquivalent), so any
+# COMPARE_VIDEOS has script/Render restore GPU-noise-only diffs (script/VideosEquivalent), so any
 # surviving render/ diff is a real content change. Real changes are amended into HEAD and
 # pushed from inside the hook (the inner push re-runs the hook and takes the clean path),
 # then the original pre-amend push is aborted — git's rejection error for it is expected.
@@ -40,7 +40,7 @@ for line in "${RefLines[@]}"; do
 done
 [ "${outgoing}" -eq 1 ] || exit 0
 
-script/Render </dev/null || { echo "pre-push: script/Render failed, aborting push" >&2; exit 1; }
+COMPARE_VIDEOS=1 script/Render </dev/null || { echo "pre-push: script/Render failed, aborting push" >&2; exit 1; }
 
 if [ -n "$(git status --porcelain -- render/)" ]; then
     if [ -n "${RENDER_PREPUSH_INNER:-}" ]; then
