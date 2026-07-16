@@ -791,7 +791,6 @@ bool SyncViewportRenderResources(entt::registry &r, entt::entity viewport) {
         const auto motion_blur_accum_sampler = main.MotionBlurAccumSamplerInfo();
         const auto velocity_sampler = main.VelocitySamplerInfo();
         const auto scene_depth_sampler = main.SceneDepthSamplerInfo();
-        const auto motion_blur_tile_indirection = buffers.MotionBlurTileIndirection.GetDescriptor(GpuBuffers::MotionBlurTileIndirectionWords);
         const auto selection_bitset = buffers.SelectionBitset.GetDescriptor(GpuBuffers::SelectionBitsetWords);
         const auto object_pick_seen_bitset = buffers.ObjectPickSeenBitset.GetDescriptor(GpuBuffers::ObjectPickBitsetWords);
         vk.Device.updateDescriptorSets(
@@ -812,7 +811,6 @@ bool SyncViewportRenderResources(entt::registry &r, entt::entity viewport) {
                 slots.MakeSamplerWrite(sel_slots.MotionBlurAccumSampler, motion_blur_accum_sampler),
                 slots.MakeSamplerWrite(sel_slots.VelocitySampler, velocity_sampler),
                 slots.MakeSamplerWrite(sel_slots.SceneDepthSampler, scene_depth_sampler),
-                slots.MakeBufferWrite({SlotType::Buffer, sel_slots.MotionBlurTileIndirection}, motion_blur_tile_indirection),
             },
             {}
         );

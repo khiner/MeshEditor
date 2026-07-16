@@ -1,12 +1,15 @@
 #version 450
 #extension GL_EXT_nonuniform_qualifier : require
 
-// One workgroup per tile: the group size and the tile size are the same, so the workgroup id is
-// the tile coordinate and the local id fits the payload's 8-bit thread fields.
-layout(local_size_x = 32, local_size_y = 32) in;
+// One workgroup per tile, so the workgroup id is the tile coordinate. Each thread reduces a fixed
+// share of the tile's pixels on its own, and only its winner reaches shared memory.
+layout(local_size_x = 8, local_size_y = 8) in;
 
 #include "MotionBlurTilesFlattenPushConstants.glsl"
 #include "MotionBlurShared.glsl"
+
+const int FlattenThreads = 8;
+const int FlattenBlocks = MotionBlurTileSize / FlattenThreads;
 
 layout(set = 0, binding = BINDING_Sampler) uniform sampler2D Samplers[];
 layout(set = 0, binding = BINDING_Image, rgba16f) uniform image2D HdrImages[];
@@ -16,13 +19,11 @@ shared uint PayloadNext;
 shared vec2 MaxMotionPrev;
 shared vec2 MaxMotionNext;
 
-// Reduction payload: motion length in the high bits so atomicMax sorts by it, thread id below
-// so the winner can identify itself and broadcast its vector.
-uint PackLocal(vec2 motion, uvec2 thread_id) {
-    return (min(uint(ceil(length(motion))), 0xFFFFu) << 16u) | (thread_id.y << 8) | thread_id.x;
-}
-uvec2 UnpackLocal(uint payload) {
-    return uvec2(payload & 0xFFu, (payload >> 8) & 0xFFu);
+// Reduction payload: motion length in the high bits so atomicMax sorts by it, and the pixel's place
+// in the tile below. Every pixel gets a distinct payload, so one thread alone holds the tile's
+// winner and can broadcast its vector. Equal-length pixels resolve by position, row first.
+uint PackLocal(vec2 motion, uvec2 tile_coord) {
+    return (min(uint(ceil(length(motion))), 0xFFFFu) << 16u) | (tile_coord.y << 5) | tile_coord.x;
 }
 
 void main() {
@@ -38,29 +39,37 @@ void main() {
     vec2 local_max_next = vec2(0.0);
 
     const ivec2 render_size = textureSize(Samplers[pc.VelocitySamplerSlot], 0);
-    const ivec2 texel = min(ivec2(gl_GlobalInvocationID.xy), render_size - 1);
-    const vec2 uv = (vec2(texel) + 0.5) / vec2(render_size);
-    vec4 motion = texelFetch(Samplers[pc.VelocitySamplerSlot], texel, 0);
+    const ivec2 tile_origin = ivec2(gl_WorkGroupID.xy) * MotionBlurTileSize;
 
-    // Clip to the viewport in NDC so a streak stops at the frame edge. The next-motion is stored
-    // pointing backward, so negating it aims the ray the way the motion actually goes.
-    vec2 line_clip;
-    line_clip.x = LineUnitSquareIntersectDistSafe(uv * 2.0 - 1.0, motion.xy * 2.0);
-    line_clip.y = LineUnitSquareIntersectDistSafe(uv * 2.0 - 1.0, -motion.zw * 2.0);
-    motion *= min(line_clip, vec2(1.0)).xxyy;
-    // UV to pixels, then to shutter-relative motion. Past here both halves point forward in time.
-    motion *= vec2(render_size).xyxy;
-    motion *= pc.MotionScale.xxyy;
+    // Each step reads one thread-sized block of the tile, so neighbouring threads read neighbouring
+    // pixels. Pixels past the render edge clamp onto the edge pixel, which a max reduction absorbs.
+    for (int i = 0; i < FlattenBlocks * FlattenBlocks; ++i) {
+        const ivec2 block = ivec2(i % FlattenBlocks, i / FlattenBlocks) * FlattenThreads;
+        const uvec2 tile_coord = uvec2(block) + gl_LocalInvocationID.xy;
+        const ivec2 texel = min(tile_origin + ivec2(tile_coord), render_size - 1);
+        const vec2 uv = (vec2(texel) + 0.5) / vec2(render_size);
+        vec4 motion = texelFetch(Samplers[pc.VelocitySamplerSlot], texel, 0);
 
-    const uint sample_prev = PackLocal(motion.xy, gl_LocalInvocationID.xy);
-    if (local_payload_prev < sample_prev) {
-        local_payload_prev = sample_prev;
-        local_max_prev = motion.xy;
-    }
-    const uint sample_next = PackLocal(motion.zw, gl_LocalInvocationID.xy);
-    if (local_payload_next < sample_next) {
-        local_payload_next = sample_next;
-        local_max_next = motion.zw;
+        // Clip to the viewport in NDC so a streak stops at the frame edge. The next-motion is stored
+        // pointing backward, so negating it aims the ray the way the motion actually goes.
+        vec2 line_clip;
+        line_clip.x = LineUnitSquareIntersectDistSafe(uv * 2.0 - 1.0, motion.xy * 2.0);
+        line_clip.y = LineUnitSquareIntersectDistSafe(uv * 2.0 - 1.0, -motion.zw * 2.0);
+        motion *= min(line_clip, vec2(1.0)).xxyy;
+        // UV to pixels, then to shutter-relative motion. Past here both halves point forward in time.
+        motion *= vec2(render_size).xyxy;
+        motion *= pc.MotionScale.xxyy;
+
+        const uint sample_prev = PackLocal(motion.xy, tile_coord);
+        if (local_payload_prev < sample_prev) {
+            local_payload_prev = sample_prev;
+            local_max_prev = motion.xy;
+        }
+        const uint sample_next = PackLocal(motion.zw, tile_coord);
+        if (local_payload_next < sample_next) {
+            local_payload_next = sample_next;
+            local_max_next = motion.zw;
+        }
     }
 
     atomicMax(PayloadPrev, local_payload_prev);
@@ -68,8 +77,8 @@ void main() {
     barrier();
 
     // The winning thread publishes its own vector, which avoids an atomic max over floats.
-    if (UnpackLocal(PayloadPrev) == gl_LocalInvocationID.xy) MaxMotionPrev = local_max_prev;
-    if (UnpackLocal(PayloadNext) == gl_LocalInvocationID.xy) MaxMotionNext = local_max_next;
+    if (local_payload_prev == PayloadPrev) MaxMotionPrev = local_max_prev;
+    if (local_payload_next == PayloadNext) MaxMotionNext = local_max_next;
     barrier();
 
     if (gl_LocalInvocationIndex == 0u) {

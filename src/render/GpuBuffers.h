@@ -109,10 +109,6 @@ struct GpuBuffers {
     static constexpr uint32_t ElementPickGroupCount{(ElementPickPixelCount + ElementPickGroupSize - 1) / ElementPickGroupSize};
     static constexpr uint32_t SelectionNodesPerPixel{10};
     static constexpr uint32_t MaxSelectionNodeBytes{64 * 1024 * 1024};
-    // Motion blur's tile indirection table, one entry per tile per motion direction. Tile
-    // coordinates pack into 9 bits, so 512 is the widest grid it addresses.
-    static constexpr uint32_t MotionBlurMaxTile{512};
-    static constexpr uint32_t MotionBlurTileIndirectionWords{2 * MotionBlurMaxTile * MotionBlurMaxTile};
 
     GpuBuffers(vk::PhysicalDevice pd, vk::Device d, vk::Instance instance, DescriptorSlots &slots)
         : Ctx{pd, d, instance, slots},
@@ -132,7 +128,7 @@ struct GpuBuffers {
           ObjectPickKeys{Ctx, MaxSelectableObjects * sizeof(uint32_t), mvk::MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eStorageBuffer},
           ObjectPickSeenBitset{Ctx, ObjectPickBitsetWords * sizeof(uint32_t), mvk::MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eStorageBuffer},
           SelectionBitset{Ctx, SelectionBitsetWords * sizeof(uint32_t), mvk::MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eStorageBuffer},
-          MotionBlurTileIndirection{Ctx, MotionBlurTileIndirectionWords * sizeof(uint32_t), mvk::MemoryUsage::GpuOnly, vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eTransferDst},
+          MotionBlurTileIndirection{Ctx, 0, mvk::MemoryUsage::GpuOnly, vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eTransferDst},
           ElementPickCandidates{Ctx, ElementPickGroupCount * sizeof(ElementPickCandidate), mvk::MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eStorageBuffer},
           IdentityIndexBuffer{Ctx, 0, mvk::MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eIndexBuffer} {}
 
@@ -180,6 +176,12 @@ struct GpuBuffers {
             case IndexKind::Edge: return EdgeIndexBuffer;
             case IndexKind::Vertex: return VertexIndexBuffer;
         }
+    }
+
+    // Motion blur's tile indirection table: one entry per tile, per motion direction. Sized alongside
+    // the blur's other targets, so it costs nothing until a frame is blurred.
+    void ResizeMotionBlurTileIndirection(vk::Extent2D tile_extent) {
+        MotionBlurTileIndirection.SetCount(2 * tile_extent.width * tile_extent.height);
     }
 
     void ResizeSelectionNodeBuffer(vk::Extent2D extent) {

@@ -188,7 +188,7 @@ void RecordMotionBlurPostFx(entt::registry &r, vk::CommandBuffer cb, entt::entit
     static constexpr auto divide_ceil = [](uint32_t v, uint32_t d) { return (v + d - 1) / d; };
 
     const auto tile_extent = main.MotionBlur->TileExtent;
-    { // One workgroup per tile: the flatten shader's local size is the tile size.
+    { // One workgroup per tile, which the flatten shader reduces to that tile's largest motion.
         const GpuScope scope{profile, cb, "BlurTilesFlatten"};
         dispatch(
             pipelines.MotionBlurTilesFlatten,
@@ -951,9 +951,19 @@ void RecordRenderCommandBuffer(entt::registry &r, entt::entity viewport, vk::Com
         );
     }
 
+    // The layer clears transparent, so an untouched one composites to nothing. Track whether anything
+    // reaches it, and the composite skips reading it and its line data at all. Every draw in the pass
+    // below goes through here or sets the flag itself.
+    bool overlay_layer_drawn = false;
     { // Overlay pass: display-referred overlays over transparent, depth-tested against the scene above.
         const GpuScope scope{profile, cb, "OverlayPass"};
         cb.beginRenderPass({*main.OverlayRenderer.RenderPass, *main.Resources->OverlayFramebuffer, main_rect, overlay_clear_values}, vk::SubpassContents::eInline);
+
+        const auto record_overlay_batch = [&](SPT spt, const DrawBatchInfo &batch) {
+            if (batch.DrawCount == 0) return;
+            overlay_layer_drawn = true;
+            record_draw_batch(main.OverlayRenderer, spt, batch);
+        };
 
         // MoltenVK/Metal workaround: the grid's late depth test (it writes gl_FragDepth) misreads fast-cleared depth.
         // Re-clear depth up front when the scene pass left no triangle draws to resolve the fast-clear.
@@ -966,17 +976,18 @@ void RecordRenderCommandBuffer(entt::registry &r, entt::entity viewport, vk::Com
         if (buffers.IdentityIndexCount > 0) {
             cb.bindIndexBuffer(*buffers.IdentityIndexBuffer, 0, vk::IndexType::eUint32);
             // Edit mode edges as triangle quads with self-AA
-            record_draw_batch(main.OverlayRenderer, SPT::EdgeQuad, draw.EdgeQuad);
+            record_overlay_batch(SPT::EdgeQuad, draw.EdgeQuad);
             // Wireframe/line mesh edges as GPU lines (the composite handles AA)
-            record_draw_batch(main.OverlayRenderer, SPT::Line, draw.WireLine);
+            record_overlay_batch(SPT::Line, draw.WireLine);
             // Vertex points (always recorded — batch is empty when nothing qualifies)
-            record_draw_batch(main.OverlayRenderer, SPT::Point, draw.Point);
+            record_overlay_batch(SPT::Point, draw.Point);
             // Object extras (cameras, lights, empties)
-            record_draw_batch(main.OverlayRenderer, SPT::ObjectExtrasLine, draw.ExtrasLine);
+            record_overlay_batch(SPT::ObjectExtrasLine, draw.ExtrasLine);
         }
 
         // Silhouette edge color (rendered ontop of meshes)
         if (has_silhouette) {
+            overlay_layer_drawn = true;
             const auto &silhouette_edc = main.OverlayRenderer.ShaderPipelines.at(SPT::SilhouetteEdgeColor);
             // In mesh Edit mode, suppress active silhouette (element selection drives active state differently).
             // In armature Edit/Pose mode, the active bone gets the active-color silhouette.
@@ -1002,12 +1013,13 @@ void RecordRenderCommandBuffer(entt::registry &r, entt::entity viewport, vk::Com
 
         if (draw_overlays && buffers.IdentityIndexCount > 0) { // Selection overlays
             cb.bindIndexBuffer(*buffers.IdentityIndexBuffer, 0, vk::IndexType::eUint32);
-            record_draw_batch(main.OverlayRenderer, SPT::LineOverlayFaceNormals, draw.OverlayFaceNormals);
-            record_draw_batch(main.OverlayRenderer, SPT::LineOverlayVertexNormals, draw.OverlayVertexNormals);
+            record_overlay_batch(SPT::LineOverlayFaceNormals, draw.OverlayFaceNormals);
+            record_overlay_batch(SPT::LineOverlayVertexNormals, draw.OverlayVertexNormals);
         }
 
         // Grid lines texture (drawn before bone depth clear so grid remains depth-tested against scene meshes)
         if (draw_overlays && show_overlays && settings.ShowGrid) {
+            overlay_layer_drawn = true;
             main.OverlayRenderer.ShaderPipelines.at(SPT::Grid).RenderQuad(cb);
         }
 
@@ -1021,16 +1033,16 @@ void RecordRenderCommandBuffer(entt::registry &r, entt::entity viewport, vk::Com
                 // In Edit/Pose+wireframe, fills are semitransparent and write far-plane depth (via shader) so wires are never occluded.
                 const bool object_wireframe = is_wireframe_mode && interaction_mode == InteractionMode::Object;
                 if (!object_wireframe) {
-                    record_draw_batch(main.OverlayRenderer, SPT::BoneFill, draw.BoneFill);
-                    record_draw_batch(main.OverlayRenderer, SPT::BoneSphereFill, draw.BoneSphereFill);
+                    record_overlay_batch(SPT::BoneFill, draw.BoneFill);
+                    record_overlay_batch(SPT::BoneSphereFill, draw.BoneSphereFill);
                 }
                 // In non-wireframe Object mode, "Outline selected" off suppresses bone wire outlines.
                 // In wireframe+Object mode, wires are the only bone visualization so always show them.
                 const bool hide_bone_outlines = !is_wireframe_mode && interaction_mode == InteractionMode::Object &&
                     (!show_overlays || !settings.ShowOutlineSelected);
                 if (!hide_bone_outlines) {
-                    record_draw_batch(main.OverlayRenderer, SPT::BoneWire, draw.BoneWire);
-                    record_draw_batch(main.OverlayRenderer, SPT::BoneSphereWire, draw.BoneSphereWire);
+                    record_overlay_batch(SPT::BoneWire, draw.BoneWire);
+                    record_overlay_batch(SPT::BoneSphereWire, draw.BoneSphereWire);
                 }
             }
         }
@@ -1057,9 +1069,9 @@ void RecordRenderCommandBuffer(entt::registry &r, entt::entity viewport, vk::Com
         // BlurredFull leaves the finished scene in the gather target, which holds the scene color it blurred.
         const uint32_t scene_sampler = phase == RenderPhase::BlurredFull ? sel_slots.MotionBlurGatherSampler : sel_slots.SceneColorSampler;
         const struct {
-            uint32_t SceneColorSamplerSlot, OverlayColorSamplerSlot, LineDataSamplerSlot, ViewTransform;
+            uint32_t SceneColorSamplerSlot, OverlayColorSamplerSlot, LineDataSamplerSlot, ViewTransform, HasOverlay;
             vec4 Backdrop;
-        } composite_pc{scene_sampler, sel_slots.OverlayColorSampler, sel_slots.LineDataSampler, view_transform, settings.ClearColor};
+        } composite_pc{scene_sampler, sel_slots.OverlayColorSampler, sel_slots.LineDataSampler, view_transform, overlay_layer_drawn, settings.ClearColor};
         cb.pushConstants(*main.ViewportComposite.PipelineLayout, vk::ShaderStageFlagBits::eFragment, 0, sizeof(composite_pc), &composite_pc);
         main.ViewportComposite.RenderQuad(cb);
         cb.endRenderPass();

@@ -6,9 +6,6 @@
 // "A Fast and Stable Feature-Aware Motion Blur Filter" by Guertin, McGuire, and Nowrouzezahrai.
 
 const int MotionBlurTileSize = 32;
-// Tile coordinates pack into 9 bits each, so this is the widest tile grid the indirection
-// table addresses. At 32 pixels per tile that covers renders up to 16384 pixels wide.
-const int MotionBlurMaxTile = 512;
 
 const uint MotionPrev = 0u;
 const uint MotionNext = 1u;
@@ -18,6 +15,7 @@ const uint MotionNext = 1u;
 //   bits 31..18: length in pixels, clamped to 16383
 //   bits 17..9 : tile x
 //   bits 8..0  : tile y
+// Nine bits reach 512 tiles a side, which at 32 pixels per tile covers renders up to 16384 across.
 uint MotionTilePack(vec2 motion, uvec2 tile) {
     const uint velocity = min(uint(ceil(length(motion))), 0x3FFFu);
     return (velocity << 18u) | ((tile.x & 0x1FFu) << 9u) | (tile.y & 0x1FFu);
@@ -25,8 +23,9 @@ uint MotionTilePack(vec2 motion, uvec2 tile) {
 ivec2 MotionTileUnpack(uint data) {
     return ivec2((data >> 9u) & 0x1FFu, data & 0x1FFu);
 }
-uint MotionTileIndex(uint motion_step, uvec2 tile) {
-    return tile.x + tile.y * uint(MotionBlurMaxTile) + motion_step * uint(MotionBlurMaxTile) * uint(MotionBlurMaxTile);
+// The table holds one entry per tile, per motion direction, sized to the render's own tile grid.
+uint MotionTileIndex(uint motion_step, uvec2 tile, uvec2 tile_extent) {
+    return tile.x + tile.y * tile_extent.x + motion_step * tile_extent.x * tile_extent.y;
 }
 
 // Distance along `line_direction` at which a ray from `line_origin` leaves the [-1,1] square.

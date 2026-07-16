@@ -458,7 +458,7 @@ MainPipeline::MainPipeline(
     VelocityRenderer{CreateVelocityRenderer(d, shared_layout, shared_set)},
     PrepassBackground{CreateBackgroundPipeline({d, shared_layout, shared_set}, true)},
     CompositeRenderPass{CreateColorOnlyRenderPass(d, Format::Color, vk::AttachmentLoadOp::eDontCare, vk::ImageLayout::eUndefined, vk::ImageLayout::eShaderReadOnlyOptimal)},
-    ViewportComposite{CreateQuadPipeline({d, shared_layout, shared_set}, "ViewportComposite.frag", CreateColorBlendAttachment(false), sizeof(uint32_t) * 4 + sizeof(vec4))},
+    ViewportComposite{CreateQuadPipeline({d, shared_layout, shared_set}, "ViewportComposite.frag", CreateColorBlendAttachment(false), sizeof(uint32_t) * 5 + sizeof(vec4))},
     MotionBlurAccumClearRenderPass{CreateColorOnlyRenderPass(d, Format::HdrColor, vk::AttachmentLoadOp::eClear, vk::ImageLayout::eUndefined, vk::ImageLayout::eColorAttachmentOptimal)},
     MotionBlurAccumRenderPass{CreateColorOnlyRenderPass(d, Format::HdrColor, vk::AttachmentLoadOp::eLoad, vk::ImageLayout::eColorAttachmentOptimal, vk::ImageLayout::eColorAttachmentOptimal)},
     MotionBlurAccumulate{CreateQuadPipeline({d, shared_layout, shared_set}, "MotionBlurAccumulate.frag", AdditiveBlend, sizeof(uint32_t))},

@@ -1,5 +1,6 @@
 #version 450
 #extension GL_EXT_nonuniform_qualifier : require
+#extension GL_EXT_scalar_block_layout : require
 
 #include "SceneUBO.glsl"
 #include "tonemapping.glsl"
@@ -9,12 +10,14 @@ layout(set = 0, binding = BINDING_Sampler) uniform sampler2D Samplers[];
 layout(location = 0) in vec2 TexCoord;
 layout(location = 0) out vec4 OutColor;
 
-layout(push_constant) uniform PushConstants {
+// Scalar layout packs this the way the host struct does, matching the generated push constants.
+layout(push_constant, scalar) uniform PushConstants {
     uint SceneColorSamplerSlot;
     uint OverlayColorSamplerSlot;
     uint LineDataSamplerSlot;
     // The active view transform: 0 encodes only, 1 tone maps first, 2 passes debug values through.
     uint ViewTransform;
+    uint HasOverlay; // Zero when the overlay pass drew nothing, leaving the layer transparent.
     vec4 Backdrop; // Display-referred viewport background.
 } pc;
 
@@ -29,7 +32,8 @@ const float DISC_RADIUS = 0.5641895835477563 * 1.05; // M_1_SQRTPI * 1.05
 const float LINE_SMOOTH_START = 0.5 - DISC_RADIUS;
 const float LINE_SMOOTH_END = 0.5 + DISC_RADIUS;
 
-void main() {
+// The overlay layer at `uv`, anti-aliased by borrowing the strongest line covering this pixel.
+vec4 ResolveOverlay(vec2 uv) {
     const vec2 texel_size = 1.0 / SceneViewUBO.ViewportSize;
 
     // Check center + 4 orthogonal neighbors for line data, expand AA coverage.
@@ -42,10 +46,10 @@ void main() {
     );
 
     float max_coverage = 0.0;
-    vec2 best_uv = TexCoord;
+    vec2 best_uv = uv;
 
     for (int i = 0; i < 5; i++) {
-        const vec2 n_uv = TexCoord + offsets[i] * texel_size;
+        const vec2 n_uv = uv + offsets[i] * texel_size;
         const vec4 n_line = texture(Samplers[pc.LineDataSamplerSlot], n_uv);
         if (n_line.a < 0.5) continue; // No line data at this sample
 
@@ -61,10 +65,13 @@ void main() {
 
     // The overlay layer is premultiplied, so alpha interpolates along with color: borrowing a
     // neighbor's line at partial coverage yields that line's color at that coverage.
-    vec4 overlay = texture(Samplers[pc.OverlayColorSamplerSlot], TexCoord);
-    if (max_coverage > 0.0) {
-        overlay = mix(overlay, texture(Samplers[pc.OverlayColorSamplerSlot], best_uv), max_coverage);
-    }
+    const vec4 overlay = texture(Samplers[pc.OverlayColorSamplerSlot], uv);
+    if (max_coverage == 0.0) return overlay;
+    return mix(overlay, texture(Samplers[pc.OverlayColorSamplerSlot], best_uv), max_coverage);
+}
+
+void main() {
+    const vec4 overlay = pc.HasOverlay != 0u ? ResolveOverlay(TexCoord) : vec4(0.0);
 
     // The scene layer is premultiplied. Recover radiance for the view transform, then re-apply
     // coverage, so partial-coverage pixels keep their weight.

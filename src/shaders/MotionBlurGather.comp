@@ -116,12 +116,13 @@ void main() {
 
     // Jitter the tile lookup by up to a quarter tile so tile edges do not show as banding.
     rand.x = rand.x * 2.0 - 1.0;
+    const ivec2 tile_extent = imageSize(HdrImages[pc.TileImageSlot]);
     ivec2 tile = (texel + ivec2(int(rand.x * float(MotionBlurTileSize) * 0.25))) / MotionBlurTileSize;
-    tile = clamp(tile, ivec2(0), imageSize(HdrImages[pc.TileImageSlot]) - 1);
+    tile = clamp(tile, ivec2(0), tile_extent - 1);
 
     // Tile motion is already in pixels with both halves pointing forward.
-    const ivec2 tile_prev = MotionTileUnpack(TileIndirections[pc.TileIndirectionSlot].Entries[MotionTileIndex(MotionPrev, uvec2(tile))]);
-    const ivec2 tile_next = MotionTileUnpack(TileIndirections[pc.TileIndirectionSlot].Entries[MotionTileIndex(MotionNext, uvec2(tile))]);
+    const ivec2 tile_prev = MotionTileUnpack(TileIndirections[pc.TileIndirectionSlot].Entries[MotionTileIndex(MotionPrev, uvec2(tile), uvec2(tile_extent))]);
+    const ivec2 tile_next = MotionTileUnpack(TileIndirections[pc.TileIndirectionSlot].Entries[MotionTileIndex(MotionNext, uvec2(tile), uvec2(tile_extent))]);
     const vec4 max_motion = vec4(
         imageLoad(HdrImages[pc.TileImageSlot], tile_prev).xy,
         imageLoad(HdrImages[pc.TileImageSlot], tile_next).zw

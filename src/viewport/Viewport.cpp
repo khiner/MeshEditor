@@ -127,17 +127,23 @@ void RenderMotionBlurredFrame(entt::registry &r, entt::entity viewport) {
     // Cache physics through the shutter's forward half so centered sampling has both endpoints (forward playback only).
     if (playback.Playing) physics::BakeThrough(r, viewport, int(std::ceil(hi)), range.Fps);
 
+    const auto main_cb = *resources.RenderCommandBuffer;
+    auto &buffers = r.ctx().get<GpuBuffers>();
+
     // Allocate the blur targets on first use, then point every descriptor that reaches them at the
     // new images. They are lazy, so these slots hold fallbacks until now.
     if (pipelines.Main.EnsureMotionBlurResources(vk.Device, vk.PhysicalDevice)) {
         auto &slots = r.ctx().get<DescriptorSlots>();
         const auto &sel_slots = r.ctx().get<const SelectionSlots>();
         const auto &main = pipelines.Main;
+        // The tile grid the targets were built around decides how many entries the table holds.
+        buffers.ResizeMotionBlurTileIndirection(main.MotionBlur->TileExtent);
         const auto accum = main.MotionBlurAccumSamplerInfo();
         const auto velocity = main.VelocitySamplerInfo();
         const auto gather_sampler = main.MotionBlurGatherSamplerInfo();
         const auto tile_image = main.MotionBlurTileImageInfo();
         const auto gather_image = main.MotionBlurGatherImageInfo();
+        const auto tile_indirection = buffers.MotionBlurTileIndirection.GetDescriptor();
         vk.Device.updateDescriptorSets(
             {
                 slots.MakeSamplerWrite(sel_slots.MotionBlurAccumSampler, accum),
@@ -145,13 +151,11 @@ void RenderMotionBlurredFrame(entt::registry &r, entt::entity viewport) {
                 slots.MakeSamplerWrite(sel_slots.MotionBlurGatherSampler, gather_sampler),
                 slots.MakeImageWrite(sel_slots.MotionBlurTileImage, tile_image),
                 slots.MakeImageWrite(sel_slots.MotionBlurGatherImage, gather_image),
+                slots.MakeBufferWrite({SlotType::Buffer, sel_slots.MotionBlurTileIndirection}, tile_indirection),
             },
             {}
         );
     }
-
-    const auto main_cb = *resources.RenderCommandBuffer;
-    auto &buffers = r.ctx().get<GpuBuffers>();
 
     // Evaluate the scene at `pf` (animation + physics, which also moves the view when looking
     // through an animated camera). Each evaluation rewrites the mapped pose buffers in place.

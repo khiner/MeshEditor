@@ -50,8 +50,8 @@ void main() {
             for (int y = min_tile.y; y <= max_tile.y; ++y) {
                 const ivec2 tile = ivec2(x, y);
                 if (!IsInsideMotionLine(tile, origin, normal)) continue;
-                atomicMax(TileIndirections[pc.TileIndirectionSlot].Entries[MotionTileIndex(MotionPrev, uvec2(tile))], payload_prev);
-                atomicMax(TileIndirections[pc.TileIndirectionSlot].Entries[MotionTileIndex(MotionNext, uvec2(tile))], payload_next);
+                atomicMax(TileIndirections[pc.TileIndirectionSlot].Entries[MotionTileIndex(MotionPrev, uvec2(tile), uvec2(tile_extent))], payload_prev);
+                atomicMax(TileIndirections[pc.TileIndirectionSlot].Entries[MotionTileIndex(MotionNext, uvec2(tile), uvec2(tile_extent))], payload_next);
             }
         }
     }
