@@ -3,6 +3,9 @@
 #include "gpu/BoxSelectPushConstants.h"
 #include "gpu/ElementPickPushConstants.h"
 #include "gpu/MainDrawPushConstants.h"
+#include "gpu/MotionBlurGatherPushConstants.h"
+#include "gpu/MotionBlurTilesDilatePushConstants.h"
+#include "gpu/MotionBlurTilesFlattenPushConstants.h"
 #include "gpu/ObjectPickPushConstants.h"
 #include "gpu/SelectionDrawPushConstants.h"
 #include "gpu/SelectionElementPushConstants.h"
@@ -18,6 +21,14 @@ enum class OverlayKind : uint32_t {
 constexpr std::array PbrSpecFeatures{PbrFeature::Punctual, PbrFeature::Transmission, PbrFeature::DiffuseTrans, PbrFeature::Clearcoat, PbrFeature::Sheen, PbrFeature::Anisotropy, PbrFeature::Iridescence};
 
 constexpr vk::PushConstantRange MainDrawPushConstantRange{vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, sizeof(MainDrawPushConstants)};
+
+// Motion blur reduces the frame to tiles of this many pixels a side. The flatten pass runs one
+// workgroup per tile, so its local size must match.
+constexpr uint32_t MotionBlurTileSize = 32;
+
+constexpr vk::Extent2D DivideCeil(vk::Extent2D extent, uint32_t d) {
+    return {(extent.width + d - 1) / d, (extent.height + d - 1) / d};
+}
 
 constexpr vk::SubpassDependency ExternalFragReadDependency() {
     return {
@@ -210,6 +221,59 @@ static vk::UniqueRenderPass CreateOverlayRenderPass(vk::Device d) {
     return d.createRenderPassUnique({{}, attachments, subpass, dependencies});
 }
 
+// The scene's depth loaded so only front-most surfaces contribute motion, and the screen motion out.
+static vk::UniqueRenderPass CreateVelocityRenderPass(vk::Device d) {
+    const std::vector<vk::AttachmentDescription> attachments{
+        // Depth is stored so it keeps the scene pass's values: the gather classifies samples against
+        // them, and the single-step path's overlay pass occludes against them.
+        {{}, Format::Depth, vk::SampleCountFlagBits::e1, vk::AttachmentLoadOp::eLoad, vk::AttachmentStoreOp::eStore, vk::AttachmentLoadOp::eDontCare, vk::AttachmentStoreOp::eDontCare, vk::ImageLayout::eDepthStencilAttachmentOptimal, vk::ImageLayout::eDepthStencilAttachmentOptimal},
+        // Cleared to zero, which reads as static wherever no geometry draws.
+        {{}, Format::Velocity, vk::SampleCountFlagBits::e1, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eStore, {}, {}, vk::ImageLayout::eUndefined, vk::ImageLayout::eShaderReadOnlyOptimal},
+    };
+    const vk::AttachmentReference depth_attachment_ref{0, vk::ImageLayout::eDepthStencilAttachmentOptimal};
+    const vk::AttachmentReference color_attachment_ref{1, vk::ImageLayout::eColorAttachmentOptimal};
+    const vk::SubpassDescription subpass{{}, vk::PipelineBindPoint::eGraphics, 0, nullptr, 1, &color_attachment_ref, nullptr, &depth_attachment_ref};
+    const std::array dependencies{
+        // The scene pass's depth writes must land before this pass tests against them.
+        vk::SubpassDependency{
+            vk::SubpassExternal,
+            0,
+            vk::PipelineStageFlagBits::eLateFragmentTests,
+            vk::PipelineStageFlagBits::eEarlyFragmentTests,
+            vk::AccessFlagBits::eDepthStencilAttachmentWrite,
+            vk::AccessFlagBits::eDepthStencilAttachmentRead,
+            {},
+        },
+        ExternalFragReadDependency(),
+    };
+    return d.createRenderPassUnique({{}, attachments, subpass, dependencies});
+}
+
+static PipelineRenderer CreateVelocityRenderer(vk::Device d, vk::DescriptorSetLayout shared_layout, vk::DescriptorSet shared_set) {
+    const PipelineContext ctx{d, shared_layout, shared_set};
+    std::unordered_map<SPT, ShaderPipeline> pipelines;
+    pipelines.emplace(
+        SPT::Velocity,
+        ctx.CreateGraphics(
+            {{{ShaderType::eVertex, "Velocity.vert"}, {ShaderType::eFragment, "Velocity.frag"}}},
+            {},
+            vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleList,
+            {CreateColorBlendAttachment(false)}, CreateDepthStencil(true, false, vk::CompareOp::eLessOrEqual), MainDrawPushConstantRange
+        )
+    );
+    // The background sits at the far plane, so this writes exactly where no geometry drew.
+    pipelines.emplace(
+        SPT::BackgroundVelocity,
+        ctx.CreateGraphics(
+            {{{ShaderType::eVertex, "Background.vert"}, {ShaderType::eFragment, "BackgroundVelocity.frag"}}},
+            {},
+            vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleStrip,
+            {CreateColorBlendAttachment(false)}, CreateDepthStencil(true, false, vk::CompareOp::eLessOrEqual)
+        )
+    );
+    return {CreateVelocityRenderPass(d), std::move(pipelines)};
+}
+
 // One color attachment, no depth, always stored. Backs each of the fullscreen-quad passes.
 static vk::UniqueRenderPass CreateColorOnlyRenderPass(vk::Device d, vk::Format format, vk::AttachmentLoadOp load, vk::ImageLayout initial, vk::ImageLayout final) {
     const vk::AttachmentDescription attachment{{}, format, vk::SampleCountFlagBits::e1, load, vk::AttachmentStoreOp::eStore, {}, {}, initial, final};
@@ -391,9 +455,11 @@ MainPipeline::MainPipeline(
     vk::DescriptorSetLayout shared_layout, vk::DescriptorSet shared_set
 ) : SceneRenderer{CreateSceneRenderer(d, shared_layout, shared_set)},
     OverlayRenderer{CreateOverlayRenderer(d, shared_layout, shared_set)},
+    VelocityRenderer{CreateVelocityRenderer(d, shared_layout, shared_set)},
     PrepassBackground{CreateBackgroundPipeline({d, shared_layout, shared_set}, true)},
     CompositeRenderPass{CreateColorOnlyRenderPass(d, Format::Color, vk::AttachmentLoadOp::eDontCare, vk::ImageLayout::eUndefined, vk::ImageLayout::eShaderReadOnlyOptimal)},
     ViewportComposite{CreateQuadPipeline({d, shared_layout, shared_set}, "ViewportComposite.frag", CreateColorBlendAttachment(false), sizeof(uint32_t) * 4 + sizeof(vec4))},
+    MotionBlurAccumClearRenderPass{CreateColorOnlyRenderPass(d, Format::HdrColor, vk::AttachmentLoadOp::eClear, vk::ImageLayout::eUndefined, vk::ImageLayout::eColorAttachmentOptimal)},
     MotionBlurAccumRenderPass{CreateColorOnlyRenderPass(d, Format::HdrColor, vk::AttachmentLoadOp::eLoad, vk::ImageLayout::eColorAttachmentOptimal, vk::ImageLayout::eColorAttachmentOptimal)},
     MotionBlurAccumulate{CreateQuadPipeline({d, shared_layout, shared_set}, "MotionBlurAccumulate.frag", AdditiveBlend, sizeof(uint32_t))},
     Compiler{{d, shared_layout, shared_set}, *SceneRenderer.RenderPass} {}
@@ -410,7 +476,8 @@ static uint32_t MipCount(vk::Extent2D extent) {
 
 MainPipeline::ResourcesT::ResourcesT(
     vk::Extent2D extent, vk::Device d, vk::PhysicalDevice pd, vk::RenderPass scene_render_pass, vk::RenderPass overlay_render_pass, vk::RenderPass composite_render_pass
-) : DepthImage{mvk::CreateImage(d, pd, {{}, vk::ImageType::e2D, Format::Depth, vk::Extent3D{extent, 1}, 1, 1, vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eDepthStencilAttachment, vk::SharingMode::eExclusive}, {{}, {}, vk::ImageViewType::e2D, Format::Depth, {}, DepthSubresourceRange})},
+    // eSampled: the motion blur gather reads depth to sort samples in front of or behind each pixel.
+) : DepthImage{mvk::CreateImage(d, pd, {{}, vk::ImageType::e2D, Format::Depth, vk::Extent3D{extent, 1}, 1, 1, vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eDepthStencilAttachment | vk::ImageUsageFlagBits::eSampled, vk::SharingMode::eExclusive}, {{}, {}, vk::ImageViewType::e2D, Format::Depth, {}, DepthSubresourceRange})},
     SceneColorImage{mvk::CreateImage(d, pd, {{}, vk::ImageType::e2D, Format::HdrColor, vk::Extent3D{extent, 1}, 1, 1, vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eColorAttachment, vk::SharingMode::eExclusive}, {{}, {}, vk::ImageViewType::e2D, Format::HdrColor, {}, ColorSubresourceRange})},
     OverlayColorImage{mvk::CreateImage(d, pd, {{}, vk::ImageType::e2D, Format::Color, vk::Extent3D{extent, 1}, 1, 1, vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eColorAttachment, vk::SharingMode::eExclusive}, {{}, {}, vk::ImageViewType::e2D, Format::Color, {}, ColorSubresourceRange})},
     LineDataImage{mvk::CreateImage(d, pd, {{}, vk::ImageType::e2D, Format::LineData, vk::Extent3D{extent, 1}, 1, 1, vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eColorAttachment, vk::SharingMode::eExclusive}, {{}, {}, vk::ImageViewType::e2D, Format::LineData, {}, ColorSubresourceRange})},
@@ -448,16 +515,26 @@ void MainPipeline::SetExtent(vk::Extent2D extent, vk::Device d, vk::PhysicalDevi
 }
 
 MainPipeline::MotionBlurResourcesT::MotionBlurResourcesT(
-    vk::Extent2D extent, vk::Device d, vk::PhysicalDevice pd, vk::RenderPass accum_render_pass
-) : AccumImage{mvk::CreateImage(d, pd, {{}, vk::ImageType::e2D, Format::HdrColor, vk::Extent3D{extent, 1}, 1, 1, vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eTransferDst, vk::SharingMode::eExclusive}, {{}, {}, vk::ImageViewType::e2D, Format::HdrColor, {}, ColorSubresourceRange})} {
-    const std::array image_views{*AccumImage.View};
-    Framebuffer = d.createFramebufferUnique({{}, accum_render_pass, image_views, extent.width, extent.height, 1});
+    vk::Extent2D extent, vk::Device d, vk::PhysicalDevice pd, vk::RenderPass accum_render_pass, vk::RenderPass velocity_render_pass, vk::ImageView depth_view
+) : AccumImage{mvk::CreateImage(d, pd, {{}, vk::ImageType::e2D, Format::HdrColor, vk::Extent3D{extent, 1}, 1, 1, vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eColorAttachment, vk::SharingMode::eExclusive}, {{}, {}, vk::ImageViewType::e2D, Format::HdrColor, {}, ColorSubresourceRange})},
+    VelocityImage{mvk::CreateImage(d, pd, {{}, vk::ImageType::e2D, Format::Velocity, vk::Extent3D{extent, 1}, 1, 1, vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eColorAttachment, vk::SharingMode::eExclusive}, {{}, {}, vk::ImageViewType::e2D, Format::Velocity, {}, ColorSubresourceRange})},
+    TileImage{mvk::CreateImage(d, pd, {{}, vk::ImageType::e2D, Format::HdrColor, vk::Extent3D{DivideCeil(extent, MotionBlurTileSize), 1}, 1, 1, vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eStorage, vk::SharingMode::eExclusive}, {{}, {}, vk::ImageViewType::e2D, Format::HdrColor, {}, ColorSubresourceRange})},
+    GatherImage{mvk::CreateImage(d, pd, {{}, vk::ImageType::e2D, Format::HdrColor, vk::Extent3D{extent, 1}, 1, 1, vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eStorage | vk::ImageUsageFlagBits::eSampled, vk::SharingMode::eExclusive}, {{}, {}, vk::ImageViewType::e2D, Format::HdrColor, {}, ColorSubresourceRange})},
+    TileExtent{DivideCeil(extent, MotionBlurTileSize)} {
+    {
+        const std::array image_views{*AccumImage.View};
+        Framebuffer = d.createFramebufferUnique({{}, accum_render_pass, image_views, extent.width, extent.height, 1});
+    }
+    {
+        const std::array image_views{depth_view, *VelocityImage.View};
+        VelocityFramebuffer = d.createFramebufferUnique({{}, velocity_render_pass, image_views, extent.width, extent.height, 1});
+    }
 }
 
 bool MainPipeline::EnsureMotionBlurResources(vk::Device d, vk::PhysicalDevice pd) {
     if (MotionBlur || !Resources) return false; // SetExtent drops it, so an allocated target is always at the color extent.
     const auto extent = Resources->SceneColorImage.Extent;
-    MotionBlur = std::make_unique<MotionBlurResourcesT>(vk::Extent2D{extent.width, extent.height}, d, pd, *MotionBlurAccumRenderPass);
+    MotionBlur = std::make_unique<MotionBlurResourcesT>(vk::Extent2D{extent.width, extent.height}, d, pd, *MotionBlurAccumRenderPass, *VelocityRenderer.RenderPass, *Resources->DepthImage.View);
     return true;
 }
 
@@ -474,6 +551,23 @@ vk::DescriptorImageInfo MainPipeline::TransmissionSamplerInfo() const {
 vk::DescriptorImageInfo MainPipeline::MotionBlurAccumSamplerInfo() const {
     if (!MotionBlur) return SceneColorSamplerInfo();
     return {*Resources->NearestSampler, *MotionBlur->AccumImage.View, vk::ImageLayout::eShaderReadOnlyOptimal};
+}
+vk::DescriptorImageInfo MainPipeline::VelocitySamplerInfo() const {
+    if (!MotionBlur) return SceneColorSamplerInfo();
+    return {*Resources->NearestSampler, *MotionBlur->VelocityImage.View, vk::ImageLayout::eShaderReadOnlyOptimal};
+}
+vk::DescriptorImageInfo MainPipeline::SceneDepthSamplerInfo() const {
+    return {*Resources->NearestSampler, *Resources->DepthImage.View, vk::ImageLayout::eDepthStencilReadOnlyOptimal};
+}
+vk::DescriptorImageInfo MainPipeline::MotionBlurTileImageInfo() const {
+    return {{}, *MotionBlur->TileImage.View, vk::ImageLayout::eGeneral};
+}
+vk::DescriptorImageInfo MainPipeline::MotionBlurGatherImageInfo() const {
+    return {{}, *MotionBlur->GatherImage.View, vk::ImageLayout::eGeneral};
+}
+vk::DescriptorImageInfo MainPipeline::MotionBlurGatherSamplerInfo() const {
+    if (!MotionBlur) return SceneColorSamplerInfo();
+    return {*Resources->NearestSampler, *MotionBlur->GatherImage.View, vk::ImageLayout::eGeneral};
 }
 
 MainPipeline::TransmissionResourcesT::TransmissionResourcesT(
@@ -792,6 +886,24 @@ Pipelines::Pipelines(
         selection_layout,
         selection_set
     },
+    MotionBlurTilesFlatten{
+        d, Shaders{{{ShaderType::eCompute, "MotionBlurTilesFlatten.comp"}}},
+        vk::PushConstantRange{vk::ShaderStageFlagBits::eCompute, 0, sizeof(MotionBlurTilesFlattenPushConstants)},
+        selection_layout,
+        selection_set
+    },
+    MotionBlurTilesDilate{
+        d, Shaders{{{ShaderType::eCompute, "MotionBlurTilesDilate.comp"}}},
+        vk::PushConstantRange{vk::ShaderStageFlagBits::eCompute, 0, sizeof(MotionBlurTilesDilatePushConstants)},
+        selection_layout,
+        selection_set
+    },
+    MotionBlurGather{
+        d, Shaders{{{ShaderType::eCompute, "MotionBlurGather.comp"}}},
+        vk::PushConstantRange{vk::ShaderStageFlagBits::eCompute, 0, sizeof(MotionBlurGatherPushConstants)},
+        selection_layout,
+        selection_set
+    },
     IblPrefilter{d} {}
 
 void Pipelines::SetExtent(vk::Extent2D extent) {
@@ -804,6 +916,7 @@ void Pipelines::SetExtent(vk::Extent2D extent) {
 void Pipelines::CompileShaders() {
     Main.SceneRenderer.CompileShaders();
     Main.OverlayRenderer.CompileShaders();
+    Main.VelocityRenderer.CompileShaders();
     Main.PrepassBackground.Compile(*Main.SceneRenderer.RenderPass);
     Main.ViewportComposite.Compile(*Main.CompositeRenderPass);
     Main.MotionBlurAccumulate.Compile(*Main.MotionBlurAccumRenderPass);
@@ -815,4 +928,7 @@ void Pipelines::CompileShaders() {
     ElementPick.Compile();
     BoxSelect.Compile();
     UpdateSelectionState.Compile();
+    MotionBlurTilesFlatten.Compile();
+    MotionBlurTilesDilate.Compile();
+    MotionBlurGather.Compile();
 }

@@ -1,0 +1,58 @@
+#version 450
+#extension GL_EXT_nonuniform_qualifier : require
+#extension GL_EXT_scalar_block_layout : require
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+#include "MotionBlurTilesDilatePushConstants.glsl"
+#include "MotionBlurShared.glsl"
+
+layout(set = 0, binding = BINDING_Image, rgba16f) uniform image2D HdrImages[];
+layout(set = 0, binding = BINDING_Buffer, scalar) buffer MotionBlurTileIndirection {
+    uint Entries[];
+} TileIndirections[];
+
+// A tile's own bounding circle plus the line's, both of radius sqrt(1/2), sum to sqrt(2).
+const float TileCoverRadius = 1.41421356237309504880;
+
+vec2 SafeNormalize(vec2 v) {
+    const float len_sq = dot(v, v);
+    return len_sq > 1e-35 ? v * inversesqrt(len_sq) : vec2(1.0, 0.0);
+}
+
+bool IsInsideMotionLine(ivec2 tile, vec2 origin, vec2 normal) {
+    return abs(dot(normal, origin - vec2(tile))) < TileCoverRadius;
+}
+
+void main() {
+    const ivec2 src_tile = ivec2(gl_GlobalInvocationID.xy);
+    const ivec2 tile_extent = imageSize(HdrImages[pc.TileImageSlot]);
+    if (any(greaterThanEqual(src_tile, tile_extent))) return;
+
+    const vec4 max_motion = imageLoad(HdrImages[pc.TileImageSlot], src_tile);
+    const uint payload_prev = MotionTilePack(max_motion.xy, uvec2(src_tile));
+    const uint payload_next = MotionTilePack(max_motion.zw, uvec2(src_tile));
+
+    // Conservatively rasterize each motion vector's line and claim every tile it crosses, so a
+    // pixel far from this one still learns that fast motion reaches it. Both halves claim both
+    // planes: a tile touched by either direction is a candidate for both, which weights better.
+    for (int half_i = 0; half_i < 2; ++half_i) {
+        const vec2 motion = half_i == 0 ? max_motion.xy : max_motion.zw;
+        const ivec2 far_tile = src_tile + ivec2(sign(motion) * ceil(abs(motion) / float(MotionBlurTileSize)));
+        const ivec2 min_tile = max(min(far_tile, src_tile), ivec2(0));
+        const ivec2 max_tile = min(max(far_tile, src_tile), tile_extent - 1);
+
+        const vec2 dir = SafeNormalize(motion);
+        const vec2 origin = vec2(src_tile);
+        const vec2 normal = vec2(-dir.y, dir.x); // The line's perpendicular, rotated 90 degrees.
+
+        for (int x = min_tile.x; x <= max_tile.x; ++x) {
+            for (int y = min_tile.y; y <= max_tile.y; ++y) {
+                const ivec2 tile = ivec2(x, y);
+                if (!IsInsideMotionLine(tile, origin, normal)) continue;
+                atomicMax(TileIndirections[pc.TileIndirectionSlot].Entries[MotionTileIndex(MotionPrev, uvec2(tile))], payload_prev);
+                atomicMax(TileIndirections[pc.TileIndirectionSlot].Entries[MotionTileIndex(MotionNext, uvec2(tile))], payload_next);
+            }
+        }
+    }
+}

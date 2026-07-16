@@ -1,10 +1,14 @@
 #include "viewport/ViewportRenderGpu.h"
 #include "Timer.h"
+#include "animation/AnimationTimeline.h"
 #include "animation/MorphWeightState.h"
 #include "armature/ArmatureComponents.h"
 #include "audio/SoundVertices.h"
 #include "gizmo/TransformGizmoTypes.h"
 #include "gpu/MainDrawPushConstants.h"
+#include "gpu/MotionBlurGatherPushConstants.h"
+#include "gpu/MotionBlurTilesDilatePushConstants.h"
+#include "gpu/MotionBlurTilesFlattenPushConstants.h"
 #include "gpu/SilhouetteEdgeColorPushConstants.h"
 #include "gpu/SilhouetteEdgeDepthObjectPushConstants.h"
 #include "mesh/MeshStore.h"
@@ -115,15 +119,111 @@ void AppendExtrasDraw(entt::registry &r, const InstanceArena &instances, DrawLis
         AppendDraw(dl, batch, mesh_buffers.EdgeIndices, models, draw);
     }
 }
+// Render this step's screen motion, reduce it to tiles, spread each tile's motion over the tiles it
+// crosses, then gather the scene along it. Leaves the blurred scene in GatherImage.
+void RecordMotionBlurPostFx(entt::registry &r, vk::CommandBuffer cb, entt::entity viewport, vk::Rect2D rect, auto &&record_draw_batch) {
+    const auto &pipelines = r.ctx().get<const Pipelines>();
+    const auto &main = pipelines.Main;
+    const auto &sel_slots = r.ctx().get<const SelectionSlots>();
+    const auto &buffers = r.ctx().get<const GpuBuffers>();
+    const auto &draw = r.ctx().get<const DrawState>();
+    const auto &settings = r.get<const ViewportDisplay>(viewport);
+    const auto mb = EffectiveMotionBlur(settings);
+    // The second half of each motion vector is stored pointing backward, which the negative y undoes.
+    constexpr vec2 MotionScale{1.f, -1.f};
+    // Offset the gather's dither per step, so averaging several steps smooths the tile jitter
+    // instead of reinforcing one pattern. Step centres never share a sub-frame time.
+    const float noise_offset = glm::fract(r.get<const PlaybackFrame>(viewport).Value);
+
+    { // Screen motion, depth-tested against the scene so only front-most surfaces contribute.
+        const std::array velocity_clear{vk::ClearValue{vk::ClearDepthStencilValue{1, 0}}, vk::ClearValue{Transparent}};
+        cb.beginRenderPass({*main.VelocityRenderer.RenderPass, *main.MotionBlur->VelocityFramebuffer, rect, velocity_clear}, vk::SubpassContents::eInline);
+        if (buffers.IdentityIndexCount > 0 && draw.FillOpaque.DrawCount > 0) {
+            cb.bindIndexBuffer(*buffers.IdentityIndexBuffer, 0, vk::IndexType::eUint32);
+            record_draw_batch(main.VelocityRenderer, SPT::Velocity, draw.FillOpaque);
+        }
+        // The background sits at infinity, so only view rotation moves it.
+        main.VelocityRenderer.ShaderPipelines.at(SPT::BackgroundVelocity).RenderQuad(cb);
+        cb.endRenderPass();
+    }
+
+    // Depth stops being an attachment here so the gather can classify samples against it.
+    cb.pipelineBarrier(
+        vk::PipelineStageFlagBits::eLateFragmentTests, vk::PipelineStageFlagBits::eComputeShader, {}, {}, {},
+        {{vk::AccessFlagBits::eDepthStencilAttachmentWrite, vk::AccessFlagBits::eShaderRead,
+          vk::ImageLayout::eDepthStencilAttachmentOptimal, vk::ImageLayout::eDepthStencilReadOnlyOptimal,
+          VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, *main.Resources->DepthImage.Image, DepthSubresourceRange}}
+    );
+    // The tile image and the gather output are only ever touched by compute.
+    const auto to_general = [&](vk::Image image) {
+        return vk::ImageMemoryBarrier{{}, vk::AccessFlagBits::eShaderWrite, vk::ImageLayout::eUndefined, vk::ImageLayout::eGeneral, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, image, ColorSubresourceRange};
+    };
+    const std::array general_barriers{to_general(*main.MotionBlur->TileImage.Image), to_general(*main.MotionBlur->GatherImage.Image)};
+    cb.pipelineBarrier(vk::PipelineStageFlagBits::eTopOfPipe, vk::PipelineStageFlagBits::eComputeShader, {}, {}, {}, general_barriers);
+
+    // Every tile must start empty: an untouched entry would read as tile (0,0)'s motion.
+    cb.fillBuffer(*buffers.MotionBlurTileIndirection, 0, vk::WholeSize, 0);
+    cb.pipelineBarrier(
+        vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eComputeShader, {}, {},
+        {{vk::AccessFlagBits::eTransferWrite, vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, *buffers.MotionBlurTileIndirection, 0, vk::WholeSize}}, {}
+    );
+
+    const auto compute_to_compute = [&] {
+        cb.pipelineBarrier(
+            vk::PipelineStageFlagBits::eComputeShader, vk::PipelineStageFlagBits::eComputeShader, {},
+            {{vk::AccessFlagBits::eShaderWrite, vk::AccessFlagBits::eShaderRead}}, {}, {}
+        );
+    };
+
+    const auto dispatch = [&](const ComputePipeline &compute, auto &&pc, uvec3 groups) {
+        cb.bindPipeline(vk::PipelineBindPoint::eCompute, *compute.Pipeline);
+        cb.bindDescriptorSets(vk::PipelineBindPoint::eCompute, *compute.PipelineLayout, 0, compute.GetDescriptorSet(), {});
+        cb.pushConstants(*compute.PipelineLayout, vk::ShaderStageFlagBits::eCompute, 0, sizeof(pc), &pc);
+        cb.dispatch(groups.x, groups.y, groups.z);
+    };
+    static constexpr auto divide_ceil = [](uint32_t v, uint32_t d) { return (v + d - 1) / d; };
+
+    const auto tile_extent = main.MotionBlur->TileExtent;
+    // One workgroup per tile: the flatten shader's local size is the tile size.
+    dispatch(
+        pipelines.MotionBlurTilesFlatten,
+        MotionBlurTilesFlattenPushConstants{sel_slots.VelocitySampler, sel_slots.MotionBlurTileImage, MotionScale},
+        {tile_extent.width, tile_extent.height, 1}
+    );
+    compute_to_compute();
+    // One thread per tile.
+    dispatch(
+        pipelines.MotionBlurTilesDilate,
+        MotionBlurTilesDilatePushConstants{sel_slots.MotionBlurTileImage, sel_slots.MotionBlurTileIndirection},
+        {divide_ceil(tile_extent.width, 8), divide_ceil(tile_extent.height, 8), 1}
+    );
+    compute_to_compute();
+    // One thread per pixel.
+    dispatch(
+        pipelines.MotionBlurGather,
+        MotionBlurGatherPushConstants{
+            sel_slots.SceneDepthSampler, sel_slots.VelocitySampler, sel_slots.SceneColorSampler,
+            sel_slots.MotionBlurTileImage, sel_slots.MotionBlurTileIndirection, sel_slots.MotionBlurGatherImage,
+            MotionScale, mb.BleedingBias, noise_offset
+        },
+        {divide_ceil(rect.extent.width, 8), divide_ceil(rect.extent.height, 8), 1}
+    );
+    // The accumulate pass or the composite samples the gather output next.
+    cb.pipelineBarrier(
+        vk::PipelineStageFlagBits::eComputeShader, vk::PipelineStageFlagBits::eFragmentShader, {},
+        {{vk::AccessFlagBits::eShaderWrite, vk::AccessFlagBits::eShaderRead}}, {}, {}
+    );
+}
+
 } // namespace
 
 void RecordRenderCommandBuffer(entt::registry &r, entt::entity viewport, vk::CommandBuffer cb, bool silhouette_only, RenderPhase phase) {
     const Timer timer{silhouette_only ? "RecordRenderCommandBuffer (silhouette)" : "RecordRenderCommandBuffer"};
     if (!silhouette_only) r.ctx().get<DrawState>().SelectionStale = true;
-    // Motion blur renders the scene and its overlays in separate phases so the overlays stay sharp over a blurred scene.
-    // Full renders both together.
-    const bool draw_scene = phase != RenderPhase::ResolveOverlays;
-    const bool draw_overlays = phase != RenderPhase::SceneAccumulate;
+    // The multi-step blur splits the scene and its overlays across two phases so the overlays stay
+    // sharp over the averaged steps. Full and BlurredFull draw both in one.
+    const bool draw_scene = phase != RenderPhase::BlurResolve;
+    const bool draw_overlays = !IsBlurAccumulate(phase);
 
     const auto &vk = r.ctx().get<const VulkanResources>();
     auto &buffers = r.ctx().get<GpuBuffers>();
@@ -743,8 +843,8 @@ void RecordRenderCommandBuffer(entt::registry &r, entt::entity viewport, vk::Com
         );
     }
 
-    // Each motion blur sub-frame wrote the blur target as a color attachment. Transition it for sampling below.
-    if (phase == RenderPhase::ResolveOverlays) {
+    // Each step summed itself into the blur target as a color attachment. Transition it for sampling below.
+    if (phase == RenderPhase::BlurResolve) {
         const std::array accum_barriers{
             vk::ImageMemoryBarrier{vk::AccessFlagBits::eColorAttachmentWrite, vk::AccessFlagBits::eShaderRead, vk::ImageLayout::eColorAttachmentOptimal, vk::ImageLayout::eShaderReadOnlyOptimal, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, *main.MotionBlur->AccumImage.Image, ColorSubresourceRange},
         };
@@ -756,13 +856,13 @@ void RecordRenderCommandBuffer(entt::registry &r, entt::entity viewport, vk::Com
 
     // Background environment (PBR modes only). The shader discards when WorldOpacity == 0 or there is no env slot.
     if (show_rendered && draw_scene) main.SceneRenderer.ShaderPipelines.at(SPT::Background).RenderQuad(cb);
-    // Fill the scene target with the averaged motion blur sub-frames, for the depth and overlays below to draw over.
-    if (phase == RenderPhase::ResolveOverlays) {
+    // Fill the scene target with the averaged steps, for the depth and overlays below to draw over.
+    if (phase == RenderPhase::BlurResolve) {
         const auto &resolve = main.SceneRenderer.ShaderPipelines.at(SPT::MotionBlurResolve);
         const struct {
             uint32_t AccumSamplerSlot;
-            float InvSamples;
-        } resolve_pc{sel_slots.MotionBlurAccumSampler, 1.f / float(MotionBlurSamples(settings))};
+            float InvSteps;
+        } resolve_pc{sel_slots.MotionBlurAccumSampler, 1.f / float(MotionBlurSteps(settings))};
         cb.pushConstants(*resolve.PipelineLayout, vk::ShaderStageFlagBits::eFragment, 0, sizeof(resolve_pc), &resolve_pc);
         resolve.RenderQuad(cb);
     }
@@ -775,7 +875,7 @@ void RecordRenderCommandBuffer(entt::registry &r, entt::entity viewport, vk::Com
         silhouette_depth.RenderQuad(cb);
     }
 
-    // Solid faces. ResolveOverlays writes depth only, for overlays to occlude against (blend faces never wrote depth).
+    // Solid faces. BlurResolve writes depth only, for overlays to occlude against (blend faces never wrote depth).
     if (buffers.IdentityIndexCount > 0 && show_fill) {
         cb.bindIndexBuffer(*buffers.IdentityIndexBuffer, 0, vk::IndexType::eUint32);
         if (!draw_scene) {
@@ -789,23 +889,45 @@ void RecordRenderCommandBuffer(entt::registry &r, entt::entity viewport, vk::Com
     }
     cb.endRenderPass();
 
+    const bool blur = phase == RenderPhase::BlurredFull || IsBlurAccumulate(phase);
+
     // The render pass ExternalFragReadDependency should cover this, but MoltenVK needs an explicit barrier
     // to flush the Metal render encoder's color writes before the next encoder samples them.
     {
         const std::array scene_out_barriers{
             color_read_barrier(*main.Resources->SceneColorImage.Image),
         };
-        sync_fragment_shader_reads(vk::PipelineStageFlagBits::eColorAttachmentOutput, scene_out_barriers);
+        // The gather samples the scene in compute. Every other phase samples it in the composite.
+        cb.pipelineBarrier(
+            vk::PipelineStageFlagBits::eColorAttachmentOutput,
+            blur ? vk::PipelineStageFlagBits::eComputeShader : vk::PipelineStageFlagBits::eFragmentShader,
+            {}, {}, {}, scene_out_barriers
+        );
     }
 
-    if (!draw_overlays) { // SceneAccumulate sums this sub-frame into the motion blur target. It draws no overlays to composite.
-        cb.beginRenderPass({*main.MotionBlurAccumRenderPass, *main.MotionBlur->Framebuffer, main_rect}, vk::SubpassContents::eInline);
-        const uint32_t accum_pc = sel_slots.SceneColorSampler;
+    if (blur) RecordMotionBlurPostFx(r, cb, viewport, main_rect, record_draw_batch);
+
+    if (!draw_overlays) { // BlurAccumulate sums this step's blurred scene in. It draws no overlays to composite.
+        // The first step clears the target as it draws, so the sum starts from this step alone.
+        const auto accum_pass = phase == RenderPhase::BlurAccumulateFirst ? *main.MotionBlurAccumClearRenderPass : *main.MotionBlurAccumRenderPass;
+        const std::array accum_clear{vk::ClearValue{Transparent}};
+        cb.beginRenderPass({accum_pass, *main.MotionBlur->Framebuffer, main_rect, accum_clear}, vk::SubpassContents::eInline);
+        const uint32_t accum_pc = sel_slots.MotionBlurGatherSampler;
         cb.pushConstants(*main.MotionBlurAccumulate.PipelineLayout, vk::ShaderStageFlagBits::eFragment, 0, sizeof(accum_pc), &accum_pc);
         main.MotionBlurAccumulate.RenderQuad(cb);
         cb.endRenderPass();
         cb.end();
         return;
+    }
+
+    // The gather read depth as a texture. Hand it back as an attachment for the overlay pass to write.
+    if (blur) {
+        cb.pipelineBarrier(
+            vk::PipelineStageFlagBits::eComputeShader, vk::PipelineStageFlagBits::eEarlyFragmentTests, {}, {}, {},
+            {{vk::AccessFlagBits::eShaderRead, vk::AccessFlagBits::eDepthStencilAttachmentWrite,
+              vk::ImageLayout::eDepthStencilReadOnlyOptimal, vk::ImageLayout::eDepthStencilAttachmentOptimal,
+              VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, *main.Resources->DepthImage.Image, DepthSubresourceRange}}
+        );
     }
 
     // Overlay pass: display-referred overlays over transparent, depth-tested against the scene above.
@@ -908,31 +1030,16 @@ void RecordRenderCommandBuffer(entt::registry &r, entt::entity viewport, vk::Com
         // Debug channels write their own already-viewable values, so they pass through untransformed.
         const uint32_t view_transform = settings.DebugChannel != DebugChannel::None ? 2u : show_rendered ? 1u :
                                                                                                            0u;
+        // BlurredFull leaves the finished scene in the gather target, which holds the scene color it blurred.
+        const uint32_t scene_sampler = phase == RenderPhase::BlurredFull ? sel_slots.MotionBlurGatherSampler : sel_slots.SceneColorSampler;
         const struct {
             uint32_t SceneColorSamplerSlot, OverlayColorSamplerSlot, LineDataSamplerSlot, ViewTransform;
             vec4 Backdrop;
-        } composite_pc{sel_slots.SceneColorSampler, sel_slots.OverlayColorSampler, sel_slots.LineDataSampler, view_transform, settings.ClearColor};
+        } composite_pc{scene_sampler, sel_slots.OverlayColorSampler, sel_slots.LineDataSampler, view_transform, settings.ClearColor};
         cb.pushConstants(*main.ViewportComposite.PipelineLayout, vk::ShaderStageFlagBits::eFragment, 0, sizeof(composite_pc), &composite_pc);
         main.ViewportComposite.RenderQuad(cb);
         cb.endRenderPass();
     }
 
-    cb.end();
-}
-
-void RecordMotionBlurClear(entt::registry &r, vk::CommandBuffer cb) {
-    const auto &main = r.ctx().get<const Pipelines>().Main;
-    const auto image = *main.MotionBlur->AccumImage.Image;
-    cb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
-    // Undefined -> transfer-dst, clear to zero, then transfer-dst -> color-attachment so the additive load starts clean.
-    cb.pipelineBarrier(
-        vk::PipelineStageFlagBits::eTopOfPipe, vk::PipelineStageFlagBits::eTransfer, {}, {}, {},
-        vk::ImageMemoryBarrier{{}, vk::AccessFlagBits::eTransferWrite, vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, image, ColorSubresourceRange}
-    );
-    cb.clearColorImage(image, vk::ImageLayout::eTransferDstOptimal, vk::ClearColorValue{std::array{0.f, 0.f, 0.f, 0.f}}, ColorSubresourceRange);
-    cb.pipelineBarrier(
-        vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eColorAttachmentOutput, {}, {}, {},
-        vk::ImageMemoryBarrier{vk::AccessFlagBits::eTransferWrite, vk::AccessFlagBits::eColorAttachmentWrite, vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eColorAttachmentOptimal, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, image, ColorSubresourceRange}
-    );
     cb.end();
 }

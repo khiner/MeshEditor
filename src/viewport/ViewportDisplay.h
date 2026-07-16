@@ -27,11 +27,15 @@ enum class AnisotropicFilterLevel : uint8_t {
 // Levels are consecutive powers of two: Off->1, X2->2, ... X16->16.
 constexpr float ToMaxAnisotropy(AnisotropicFilterLevel level) { return float(1u << unsigned(level)); }
 
-// Accumulation motion blur (Material Preview/Rendered only, while playing or scrubbing).
+// Motion blur (Material Preview/Rendered only, while playing or scrubbing). Each step renders the
+// scene once and blurs it along its own screen motion, so a single step already covers the whole
+// shutter. More steps subdivide the shutter and average the results, which pays off when motion
+// curves enough within the shutter for a straight blur to show.
 // Shutter is the time in frames between shutter open and close, centered on the frame (Blender's default).
 struct MotionBlur {
     float Shutter{0.5f};
-    uint8_t Samples{8}; // Sub-frame renders averaged per output frame.
+    uint8_t Steps{1};
+    float BleedingBias{100.f}; // How sharply the blur separates a moving object from what is behind it.
 };
 
 // Component on the viewport singleton entity. Changes require command buffer re-recording.
@@ -49,7 +53,7 @@ struct ViewportDisplay {
 };
 
 constexpr MotionBlur EffectiveMotionBlur(const ViewportDisplay &d) { return d.MotionBlur.value_or(MotionBlur{}); }
-constexpr uint32_t MotionBlurSamples(const ViewportDisplay &d) { return std::max(1u, uint32_t(EffectiveMotionBlur(d).Samples)); }
+constexpr uint32_t MotionBlurSteps(const ViewportDisplay &d) { return std::max(1u, uint32_t(EffectiveMotionBlur(d).Steps)); }
 
 // Scene lights/world toggles + studio env controls
 struct PBRViewportLighting {

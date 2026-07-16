@@ -254,6 +254,25 @@ structs:
         type: u32
       - name: MorphWeightsSlot
         type: u32
+      # Poses at the shutter's open and close, for the velocity pass. The current-frame
+      # per-draw offsets index these, so only the buffer slots differ. The view moves too
+      # when looking through an animated camera, so each pose carries its own projection.
+      - name: PrevViewProj
+        type: mat4
+      - name: NextViewProj
+        type: mat4
+      - name: PrevModelSlot
+        type: u32
+      - name: NextModelSlot
+        type: u32
+      - name: PrevArmatureDeformSlot
+        type: u32
+      - name: NextArmatureDeformSlot
+        type: u32
+      - name: PrevMorphWeightsSlot
+        type: u32
+      - name: NextMorphWeightsSlot
+        type: u32
       - name: VertexClassSlot
         type: u32
       - name: MaterialSlot
@@ -726,6 +745,54 @@ structs:
     fields:
       - name: SilhouetteSamplerIndex
         type: u32
+  # MotionScale.y is negative, which un-inverts the next-motion the velocity pass stores backward.
+  - name: MotionBlurTilesFlattenPushConstants
+    push_constant: true
+    fields:
+      - name: VelocitySamplerSlot
+        type: u32
+        default: InvalidSlot
+      - name: TileImageSlot
+        type: u32
+        default: InvalidSlot
+      - name: MotionScale
+        type: vec2
+  - name: MotionBlurTilesDilatePushConstants
+    push_constant: true
+    fields:
+      - name: TileImageSlot
+        type: u32
+        default: InvalidSlot
+      - name: TileIndirectionSlot
+        type: u32
+        default: InvalidSlot
+  - name: MotionBlurGatherPushConstants
+    push_constant: true
+    fields:
+      - name: DepthSamplerSlot
+        type: u32
+        default: InvalidSlot
+      - name: VelocitySamplerSlot
+        type: u32
+        default: InvalidSlot
+      - name: ColorSamplerSlot
+        type: u32
+        default: InvalidSlot
+      - name: TileImageSlot
+        type: u32
+        default: InvalidSlot
+      - name: TileIndirectionSlot
+        type: u32
+        default: InvalidSlot
+      - name: OutColorImageSlot
+        type: u32
+        default: InvalidSlot
+      - name: MotionScale
+        type: vec2
+      - name: DepthScale
+        type: float
+      - name: NoiseOffset
+        type: float
   - name: UpdateSelectionStatePushConstants
     push_constant: true
     fields:

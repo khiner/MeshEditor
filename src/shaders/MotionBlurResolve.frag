@@ -10,10 +10,10 @@ layout(location = 0) out vec4 OutColor;
 
 layout(push_constant) uniform PushConstants {
     uint AccumSamplerSlot;
-    float InvSamples; // 1 / sample count.
+    float InvSteps; // 1 / step count.
 } pc;
 
-// Average the summed sub-frames. Color and coverage are both premultiplied, so both scale together.
+// Average the summed steps. Color and coverage are both premultiplied, so both scale together.
 void main() {
-    OutColor = texture(Samplers[pc.AccumSamplerSlot], TexCoord) * pc.InvSamples;
+    OutColor = texture(Samplers[pc.AccumSamplerSlot], TexCoord) * pc.InvSteps;
 }

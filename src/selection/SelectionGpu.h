@@ -15,7 +15,8 @@ using SelectionBuildFn = std::function<std::vector<SelectionDrawInfo>(DrawListBu
 // RAII for the descriptor-slot leases used by the selection compute/render pipeline.
 struct SelectionSlots {
     uint32_t HeadImage{}, SelectionCounter{}, ObjectPickKey{}, ElementPickCandidates{}, ObjectPickSeenBits{}, SelectionBitset{};
-    uint32_t ObjectIdSampler{}, DepthSampler{}, SilhouetteSampler{}, SceneColorSampler{}, OverlayColorSampler{}, LineDataSampler{}, TransmissionSampler{}, MotionBlurAccumSampler{};
+    uint32_t MotionBlurTileImage{}, MotionBlurGatherImage{}, MotionBlurTileIndirection{};
+    uint32_t ObjectIdSampler{}, DepthSampler{}, SilhouetteSampler{}, SceneColorSampler{}, OverlayColorSampler{}, LineDataSampler{}, TransmissionSampler{}, MotionBlurAccumSampler{}, SceneDepthSampler{}, VelocitySampler{}, MotionBlurGatherSampler{};
 
     using Entry = std::pair<SlotType, uint32_t SelectionSlots::*>;
     static constexpr std::array Entries{
@@ -25,6 +26,9 @@ struct SelectionSlots {
         Entry{SlotType::Buffer, &SelectionSlots::ElementPickCandidates},
         Entry{SlotType::Buffer, &SelectionSlots::ObjectPickSeenBits},
         Entry{SlotType::Buffer, &SelectionSlots::SelectionBitset},
+        Entry{SlotType::Image, &SelectionSlots::MotionBlurTileImage},
+        Entry{SlotType::Image, &SelectionSlots::MotionBlurGatherImage},
+        Entry{SlotType::Buffer, &SelectionSlots::MotionBlurTileIndirection},
         Entry{SlotType::Sampler, &SelectionSlots::ObjectIdSampler},
         Entry{SlotType::Sampler, &SelectionSlots::DepthSampler},
         Entry{SlotType::Sampler, &SelectionSlots::SilhouetteSampler},
@@ -33,6 +37,9 @@ struct SelectionSlots {
         Entry{SlotType::Sampler, &SelectionSlots::LineDataSampler},
         Entry{SlotType::Sampler, &SelectionSlots::TransmissionSampler},
         Entry{SlotType::Sampler, &SelectionSlots::MotionBlurAccumSampler},
+        Entry{SlotType::Sampler, &SelectionSlots::SceneDepthSampler},
+        Entry{SlotType::Sampler, &SelectionSlots::VelocitySampler},
+        Entry{SlotType::Sampler, &SelectionSlots::MotionBlurGatherSampler},
     };
 
     explicit SelectionSlots(DescriptorSlots &slots) : Slots(&slots) {

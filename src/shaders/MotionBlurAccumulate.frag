@@ -9,11 +9,11 @@ layout(location = 0) in vec2 TexCoord;
 layout(location = 0) out vec4 OutColor;
 
 layout(push_constant) uniform PushConstants {
-    uint SceneColorSamplerSlot;
+    uint GatherSamplerSlot;
 } pc;
 
-// Sum the sub-frame into the accumulation target (additive blend). The scene target is premultiplied,
-// so alpha sums alongside color and a blurred edge keeps its partial coverage of the backdrop.
+// Sum this step's blurred scene into the accumulation target (additive blend). The gather output is
+// premultiplied, so alpha sums alongside color and a blurred edge keeps its partial coverage of the backdrop.
 void main() {
-    OutColor = texture(Samplers[pc.SceneColorSamplerSlot], TexCoord);
+    OutColor = texture(Samplers[pc.GatherSamplerSlot], TexCoord);
 }

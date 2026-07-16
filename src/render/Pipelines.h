@@ -27,6 +27,7 @@ inline constexpr auto Depth = vk::Format::eD32Sfloat;
 inline constexpr auto Float = vk::Format::eR32Sfloat;
 inline constexpr auto Float2 = vk::Format::eR32G32Sfloat;
 inline constexpr auto LineData = vk::Format::eR8G8B8A8Unorm;
+inline constexpr auto Velocity = vk::Format::eR16G16B16A16Sfloat; // (prev->current, current->next) screen motion
 inline constexpr auto Uint = vk::Format::eR32Uint;
 } // namespace Format
 
@@ -89,20 +90,23 @@ struct MainPipeline {
         vk::UniqueFramebuffer Framebuffer;
     };
 
-    // Scene-linear HDR target that motion blur additively accumulates sub-frame renders into.
-    // Allocated on demand only while motion blur is active. Sampled through ResourcesT::NearestSampler.
+    // Motion blur's own targets: the screen motion the gather walks, and the radiance summed across
+    // steps. Allocated on demand only while motion blur is active, and sampled through
+    // ResourcesT::NearestSampler. VelocityFramebuffer borrows ResourcesT's depth view.
     struct MotionBlurResourcesT {
-        MotionBlurResourcesT(vk::Extent2D, vk::Device, vk::PhysicalDevice, vk::RenderPass accum_render_pass);
+        MotionBlurResourcesT(vk::Extent2D, vk::Device, vk::PhysicalDevice, vk::RenderPass accum_render_pass, vk::RenderPass velocity_render_pass, vk::ImageView depth_view);
 
-        mvk::ImageResource AccumImage;
-        vk::UniqueFramebuffer Framebuffer;
+        // TileImage holds each 32x32 tile's largest motion, GatherImage the blurred scene.
+        mvk::ImageResource AccumImage, VelocityImage, TileImage, GatherImage;
+        vk::Extent2D TileExtent{};
+        vk::UniqueFramebuffer Framebuffer, VelocityFramebuffer;
     };
 
     void SetExtent(vk::Extent2D, vk::Device, vk::PhysicalDevice);
     // Idempotent: allocates if `wanted` and not already at the right extent, and releases if not wanted.
     // Returns true when the allocated state changed (caller should re-write the descriptor write).
     bool EnsureTransmissionResources(vk::Extent2D, vk::Device, vk::PhysicalDevice, bool wanted);
-    // Allocate the motion blur accumulation target at the current color extent if absent. Returns true when it was allocated.
+    // Allocate the motion blur targets at the current color extent if absent. Returns true when they were allocated.
     bool EnsureMotionBlurResources(vk::Device, vk::PhysicalDevice);
 
     vk::DescriptorImageInfo SceneColorSamplerInfo() const;
@@ -111,15 +115,25 @@ struct MainPipeline {
     // unallocated so the binding stays valid. Nothing samples them in that state.
     vk::DescriptorImageInfo TransmissionSamplerInfo() const;
     vk::DescriptorImageInfo MotionBlurAccumSamplerInfo() const;
+    vk::DescriptorImageInfo VelocitySamplerInfo() const;
+    vk::DescriptorImageInfo SceneDepthSamplerInfo() const;
+    // Storage images the motion blur compute passes write. Only valid while MotionBlur is allocated.
+    vk::DescriptorImageInfo MotionBlurTileImageInfo() const;
+    vk::DescriptorImageInfo MotionBlurGatherImageInfo() const;
+    vk::DescriptorImageInfo MotionBlurGatherSamplerInfo() const;
 
     // Scene: depth + scene-linear HDR color. Overlays: the scene's depth loaded for occlusion,
     // plus a display-referred overlay color target and the line data driving its AA.
     PipelineRenderer SceneRenderer, OverlayRenderer;
+    // Motion blur's screen-motion pass, depth-tested against the scene so only front-most surfaces contribute.
+    PipelineRenderer VelocityRenderer;
     // Background variant that skips exposure, for the transmission pre-pass.
     ShaderPipeline PrepassBackground;
     vk::UniqueRenderPass CompositeRenderPass;
     ShaderPipeline ViewportComposite;
-    vk::UniqueRenderPass MotionBlurAccumRenderPass; // Single HDR attachment, load + additive blend.
+    // Single HDR attachment, additive blend. The first step clears the target, so it starts from
+    // its own value alone. Later steps load what the earlier ones summed.
+    vk::UniqueRenderPass MotionBlurAccumClearRenderPass, MotionBlurAccumRenderPass;
     ShaderPipeline MotionBlurAccumulate;
     std::unique_ptr<ResourcesT> Resources;
     std::unique_ptr<TransmissionResourcesT> Transmission;
@@ -189,6 +203,9 @@ struct Pipelines {
     SilhouetteEdgePipeline SilhouetteEdge;
     SelectionFragmentPipeline SelectionFragment;
     ComputePipeline ObjectPick, ElementPick, BoxSelect, UpdateSelectionState;
+    // Motion blur post-process: reduce motion to tiles, spread each tile's motion over the tiles it
+    // crosses, then gather colour along it.
+    ComputePipeline MotionBlurTilesFlatten, MotionBlurTilesDilate, MotionBlurGather;
     IblPrefilterPipelines IblPrefilter;
 
     void SetExtent(vk::Extent2D);

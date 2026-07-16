@@ -109,6 +109,10 @@ struct GpuBuffers {
     static constexpr uint32_t ElementPickGroupCount{(ElementPickPixelCount + ElementPickGroupSize - 1) / ElementPickGroupSize};
     static constexpr uint32_t SelectionNodesPerPixel{10};
     static constexpr uint32_t MaxSelectionNodeBytes{64 * 1024 * 1024};
+    // Motion blur's tile indirection table, one entry per tile per motion direction. Tile
+    // coordinates pack into 9 bits, so 512 is the widest grid it addresses.
+    static constexpr uint32_t MotionBlurMaxTile{512};
+    static constexpr uint32_t MotionBlurTileIndirectionWords{2 * MotionBlurMaxTile * MotionBlurMaxTile};
 
     GpuBuffers(vk::PhysicalDevice pd, vk::Device d, vk::Instance instance, DescriptorSlots &slots)
         : Ctx{pd, d, instance, slots},
@@ -128,6 +132,7 @@ struct GpuBuffers {
           ObjectPickKeys{Ctx, MaxSelectableObjects * sizeof(uint32_t), mvk::MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eStorageBuffer},
           ObjectPickSeenBitset{Ctx, ObjectPickBitsetWords * sizeof(uint32_t), mvk::MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eStorageBuffer},
           SelectionBitset{Ctx, SelectionBitsetWords * sizeof(uint32_t), mvk::MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eStorageBuffer},
+          MotionBlurTileIndirection{Ctx, MotionBlurTileIndirectionWords * sizeof(uint32_t), mvk::MemoryUsage::GpuOnly, vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eTransferDst},
           ElementPickCandidates{Ctx, ElementPickGroupCount * sizeof(ElementPickCandidate), mvk::MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eStorageBuffer},
           IdentityIndexBuffer{Ctx, 0, mvk::MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eIndexBuffer} {}
 
@@ -219,6 +224,33 @@ struct GpuBuffers {
     BufferArena<uint8_t> VertexClassBuffer{Ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::VertexClassBuffer};
     InstanceArena Instances;
 
+    // Poses at the shutter's open and close, for motion blur's velocity pass. Each is a whole-buffer
+    // copy of its live counterpart, so the per-draw offsets index them unchanged.
+    struct VelocityPose {
+        VelocityPose(mvk::BufferContext &ctx)
+            : Transforms(ctx, 0, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::ModelBuffer),
+              ArmatureDeform(ctx, 0, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::ArmatureDeformBuffer),
+              MorphWeights(ctx, 0, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::MorphWeightBuffer) {}
+
+        mvk::Buffer Transforms, ArmatureDeform, MorphWeights;
+        // Looking through an animated camera moves the view too, so each pose carries its own.
+        mat4 ViewProj{1};
+    };
+    VelocityPose ShutterOpen{Ctx}, ShutterClose{Ctx};
+
+    // Snapshot the live pose into `dst`. Call once the scene is evaluated at the wanted time.
+    void CaptureVelocityPose(VelocityPose &dst) {
+        static constexpr auto copy_whole = [](const mvk::Buffer &src, mvk::Buffer &dst) {
+            dst.Reserve(src.UsedSize);
+            dst.Update(src.GetMappedData().subspan(0, src.UsedSize));
+            dst.UsedSize = src.UsedSize;
+        };
+        copy_whole(Instances.TransformBuffer, dst.Transforms);
+        copy_whole(ArmatureDeformBuffer.Buffer, dst.ArmatureDeform);
+        copy_whole(MorphWeightBuffer.Buffer, dst.MorphWeights);
+        dst.ViewProj = reinterpret_cast<const ::SceneViewUBO *>(SceneViewUBO.GetMappedData().data())->ViewProj;
+    }
+
     // Per-scene resource tables — reset via their own paths (Lights.SetCount(0) / ResetImportedTexturesAndMaterials)
     TypedBuffer<PunctualLight> Lights;
     TypedBuffer<PBRMaterial> Materials;
@@ -233,7 +265,7 @@ struct GpuBuffers {
     uint32_t SelectionNodeCapacity{1};
     mvk::Buffer SelectionNodeBuffer;
     TypedBuffer<SelectionCounters> SelectionCounter;
-    TypedBuffer<uint32_t> ObjectPickKeys, ObjectPickSeenBitset, SelectionBitset;
+    TypedBuffer<uint32_t> ObjectPickKeys, ObjectPickSeenBitset, SelectionBitset, MotionBlurTileIndirection;
     TypedBuffer<ElementPickCandidate> ElementPickCandidates;
 
     // Shared identity index buffer. Grown on demand, not scene-scoped.
