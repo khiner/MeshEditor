@@ -258,7 +258,7 @@ void Destroy(entt::registry &r, entt::entity viewport, entt::entity e) {
             }
         }
     }
-    if (const auto *bw = r.try_get<BBoxWireframe>(e); bw && r.valid(bw->Instance)) {
+    if (const auto *bw = r.try_get<AABBWireframe>(e); bw && r.valid(bw->Instance)) {
         Hide(r, bw->Instance);
         r.destroy(bw->Instance);
     }

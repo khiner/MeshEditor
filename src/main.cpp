@@ -27,6 +27,7 @@
 #include "mesh/MeshComponents.h"
 #include "object/ExtrasComponents.h"
 #include "physics/PhysicsTypes.h"
+#include "render/GpuBuffers.h"
 #include "render/MaterialComponents.h"
 #include "render/Profile.h"
 #include "scene/Entity.h"
@@ -472,16 +473,12 @@ void FrameScene(entt::registry &r, entt::entity viewport, float aspect_ratio) {
     const float ty = 0.5f * std::tan(persp->FieldOfViewRad * 0.5f), tx = aspect_ratio * ty;
     constexpr float lowest = std::numeric_limits<float>::lowest();
     float top = lowest, bottom = lowest, rgt = lowest, lft = lowest;
-    BBox scene;
+    const auto &buffers = r.ctx().get<const GpuBuffers>();
+    AABB scene;
     for (const auto [e, ri, wt] : r.view<const RenderInstance, const WorldTransform>().each()) {
-        BBox local;
-        if (const auto *db = r.try_get<const DeformedBounds>(e); db) {
-            local = db->Box;
-        } else {
-            const auto mesh = TryGetMesh(r, FindMeshEntity(r, e));
-            if (!mesh) continue;
-            local = mesh->GetBBox();
-        }
+        if (ri.BufferIndex == UINT32_MAX) continue;
+        // Extras (gizmo/wireframe) instances hold an empty AABB, excluded by the invalid check below.
+        const auto &local = buffers.Instances.GetBounds(ri.BufferIndex);
         if (glm::any(glm::greaterThan(local.Min, local.Max))) continue;
 
         const auto m = ToMatrix(wt);

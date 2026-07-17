@@ -248,8 +248,8 @@ void Mesh::WriteEdgeIndices(std::span<uint32_t> dest) const {
     }
 }
 
-BBox Mesh::GetBBox() const {
-    BBox b;
+AABB Mesh::CalcAABB() const {
+    AABB b;
     for (const auto &v : GetVerticesSpan()) {
         b.Min = glm::min(b.Min, v.Position);
         b.Max = glm::max(b.Max, v.Position);

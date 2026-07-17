@@ -1,5 +1,6 @@
 #pragma once
 
+#include "AABB.h"
 #include "gpu/ElementPickCandidate.h"
 #include "gpu/PBRMaterial.h"
 #include "gpu/PunctualLight.h"
@@ -25,13 +26,14 @@ struct DrawBufferPair {
           Indirect(ctx, 0, mvk::MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eIndirectBuffer) {}
 };
 
-// Shared arena for per-instance GPU data (transforms, object IDs, instance states).
-// Uses a single RangeAllocator so all 3 buffers share the same instance offsets.
+// Shared arena for per-instance GPU data (transforms, object IDs, instance states, local-space bounds).
+// Uses a single RangeAllocator so all buffers share the same instance offsets.
 struct InstanceArena {
     InstanceArena(mvk::BufferContext &ctx)
         : TransformBuffer(ctx, 0, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::ModelBuffer),
           ObjectIdBuffer(ctx, 0, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::ObjectIdBuffer),
-          StateBuffer(ctx, 0, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::InstanceStateBuffer) {}
+          StateBuffer(ctx, 0, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::InstanceStateBuffer),
+          BoundsBuffer(ctx, 0, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer) {}
 
     Range Allocate(uint32_t count) {
         const auto range = Allocator.Allocate(count);
@@ -43,7 +45,7 @@ struct InstanceArena {
 
     void Free(Range range) { Allocator.Free(range); }
 
-    // Compact-erase: shift [global_index+1, range_end) down by 1 in all 3 buffers.
+    // Compact-erase: shift [global_index+1, range_end) down by 1 in all buffers.
     void CompactErase(uint32_t global_index, uint32_t range_end) {
         const auto count = range_end - global_index - 1;
         if (count == 0) return;
@@ -52,7 +54,7 @@ struct InstanceArena {
         });
     }
 
-    // Copy `count` elements from src_offset to dst_offset across all 3 buffers.
+    // Copy `count` elements from src_offset to dst_offset across all buffers.
     void CopyInstances(uint32_t src_offset, uint32_t dst_offset, uint32_t count) {
         if (count == 0 || src_offset == dst_offset) return;
         ForEachBuffer([&](mvk::Buffer &buf, size_t sz) {
@@ -61,14 +63,16 @@ struct InstanceArena {
     }
 
     // Pre-reserve capacity for `count` additional instances to avoid per-Allocate growth.
-    void ReserveAdditional(uint32_t count) {
-        EnsureCapacity(vk::DeviceSize(Allocator.HighWaterMark()) + count);
-    }
+    void ReserveAdditional(uint32_t count) { EnsureCapacity(vk::DeviceSize(Allocator.HighWaterMark()) + count); }
 
     void UpdateState(uint32_t index, uint8_t state) { StateBuffer.Update(as_bytes(state), vk::DeviceSize(index) * sizeof(uint8_t)); }
-    std::span<uint8_t> GetMutableStates() const {
-        return {reinterpret_cast<uint8_t *>(StateBuffer.GetMutableRange(0, StateBuffer.UsedSize).data()), StateBuffer.UsedSize};
+    void UpdateBounds(uint32_t index, const AABB &bounds) { BoundsBuffer.Update(as_bytes(bounds), vk::DeviceSize(index) * sizeof(AABB)); }
+    const AABB &GetBounds(uint32_t index) const { return reinterpret_cast<const AABB *>(BoundsBuffer.GetMappedData().data())[index]; }
+    std::span<AABB> GetMutableBounds(Range range) const {
+        auto mapped = BoundsBuffer.GetMutableRange(vk::DeviceSize(range.Offset) * sizeof(AABB), vk::DeviceSize(range.Count) * sizeof(AABB));
+        return {reinterpret_cast<AABB *>(mapped.data()), range.Count};
     }
+    std::span<uint8_t> GetMutableStates() const { return {reinterpret_cast<uint8_t *>(StateBuffer.GetMutableRange(0, StateBuffer.UsedSize).data()), StateBuffer.UsedSize}; }
     std::span<Transform> GetMutableTransforms() const {
         auto mapped = TransformBuffer.GetMutableRange(0, TransformBuffer.UsedSize);
         return {reinterpret_cast<Transform *>(mapped.data()), mapped.size() / sizeof(Transform)};
@@ -80,13 +84,14 @@ struct InstanceArena {
         ForEachBuffer([](mvk::Buffer &buf, size_t) { buf.UsedSize = 0; });
     }
 
-    mvk::Buffer TransformBuffer, ObjectIdBuffer, StateBuffer;
+    mvk::Buffer TransformBuffer, ObjectIdBuffer, StateBuffer, BoundsBuffer;
 
 private:
     void ForEachBuffer(auto &&fn) {
         fn(TransformBuffer, sizeof(Transform));
         fn(ObjectIdBuffer, sizeof(uint32_t));
         fn(StateBuffer, sizeof(uint8_t));
+        fn(BoundsBuffer, sizeof(AABB));
     }
 
     void EnsureCapacity(vk::DeviceSize end) {

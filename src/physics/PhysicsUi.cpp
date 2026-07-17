@@ -219,7 +219,7 @@ void DrawNamedEntityList(entt::registry &r, const char *id, const char *add_labe
 }
 
 // Returns the edited shape iff the user changed something.
-// When `auto_fit`, dim widgets for BBox-fittable kinds are hidden — the fitter owns them.
+// When `auto_fit`, dim widgets for AABB-fittable kinds are hidden — the fitter owns them.
 std::optional<PhysicsShape> RenderShapeEditor(const PhysicsShape &in, bool auto_fit) {
     static const char *const shape_names[]{"Box", "Sphere", "Capsule", "Cylinder", "Plane", "Convex Hull", "Triangle Mesh"};
     auto out = in;

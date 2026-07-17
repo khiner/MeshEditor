@@ -1,6 +1,5 @@
 #pragma once
 
-#include "BBox.h"
 #include "entt_fwd.h"
 
 #include <array>
@@ -19,13 +18,11 @@ struct ColliderShapeBuffers {
     };
 };
 
-struct BBoxWireframe {
+struct AABBWireframe {
     entt::entity Instance{null_entity};
 };
-// Mesh-local bounds after morph/skin deformation. Only present on deformed instances.
-struct DeformedBounds {
-    BBox Box;
-};
+// Present when the object's bounds slot in the instance arena holds morph/skin-deformed bounds.
+struct DeformedBounds {};
 struct TetWireframe {
     entt::entity Instance{null_entity};
 };

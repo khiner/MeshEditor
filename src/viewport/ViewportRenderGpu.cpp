@@ -596,7 +596,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, vk::CommandBuffer cb,
             patch_edit_pending_local_transform(db, e.Entity);
         }
 
-        { // Normal overlay + bbox batches
+        { // Normal overlay + AABB batches
             const auto vertex_slot = buffers.VertexBuffer.Buffer.Slot;
             draw.OverlayFaceNormals = draw_list.BeginBatch();
             for (const auto &e : mesh_entities) {

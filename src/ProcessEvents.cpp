@@ -143,9 +143,9 @@ void RederiveCollider(entt::registry &r, entt::entity e) {
 
     const auto verts = mesh->GetVerticesSpan();
     const bool has_verts = !verts.empty();
-    const auto bbox = mesh->GetBBox();
-    const vec3 bbox_center = has_verts ? (bbox.Min + bbox.Max) * 0.5f : vec3{0};
-    const vec3 bbox_extents = has_verts ? (bbox.Max - bbox.Min) : vec3{0};
+    const auto aabb = mesh->CalcAABB();
+    const vec3 aabb_center = has_verts ? (aabb.Min + aabb.Max) * 0.5f : vec3{0};
+    const vec3 aabb_extents = has_verts ? (aabb.Max - aabb.Min) : vec3{0};
 
     PhysicsShape shape = cs->Shape;
     // AutoFitDims off -> user owns kind, dims, and offset. Preserve them.
@@ -201,9 +201,9 @@ void RederiveCollider(entt::registry &r, entt::entity e) {
             }
             return {c, radius};
         };
-        // Tightest radius for an axis-aligned (Y-axis) cylinder/capsule centered at bbox_center.
+        // Tightest radius for an axis-aligned (Y-axis) cylinder/capsule centered at aabb_center.
         const auto xz_radius = [&] {
-            const vec2 c{bbox_center.x, bbox_center.z};
+            const vec2 c{aabb_center.x, aabb_center.z};
             float r = 0;
             for (const auto &v : verts) r = glm::max(r, glm::length(vec2{v.Position.x, v.Position.z} - c));
             return r;
@@ -212,8 +212,8 @@ void RederiveCollider(entt::registry &r, entt::entity e) {
         std::visit(
             overloaded{
                 [&](physics::Box &s) {
-                    s.Size = bbox_extents;
-                    local_offset = bbox_center;
+                    s.Size = aabb_extents;
+                    local_offset = aabb_center;
                 },
                 [&](physics::Sphere &s) {
                     const auto [c, radius] = ritter();
@@ -223,15 +223,15 @@ void RederiveCollider(entt::registry &r, entt::entity e) {
                 [&](physics::Cylinder &s) {
                     const float radius = xz_radius();
                     s.RadiusTop = s.RadiusBottom = radius;
-                    s.Height = glm::max(physics::MinShapeHeight, bbox_extents.y);
-                    local_offset = bbox_center;
+                    s.Height = glm::max(physics::MinShapeHeight, aabb_extents.y);
+                    local_offset = aabb_center;
                 },
                 [&](physics::Capsule &s) {
                     const float radius = xz_radius();
                     s.RadiusTop = s.RadiusBottom = radius;
-                    // 2r ≥ bbox.y degenerates toward a sphere; clamp height to keep it spec-valid.
-                    s.Height = glm::max(physics::MinShapeHeight, bbox_extents.y - 2.f * radius);
-                    local_offset = bbox_center;
+                    // 2r ≥ aabb.y degenerates toward a sphere; clamp height to keep it spec-valid.
+                    s.Height = glm::max(physics::MinShapeHeight, aabb_extents.y - 2.f * radius);
+                    local_offset = aabb_center;
                 },
                 [](auto &) {}, // Plane, ConvexHull, TriangleMesh: no fittable dims, offset stays 0
             },
@@ -351,7 +351,7 @@ SyncResult SyncModelsBuffers(entt::registry &r) {
     }
 
     // Shows — batch-insert new instances into GPU buffers. Creates ModelsBuffer on first use.
-    // WorldTransform is NOT written here — only ObjectIds and InstanceStates.
+    // WorldTransform is NOT written here — only ObjectIds, InstanceStates, and Bounds.
     // Callers must ensure WorldTransform is written before submit (see newly_inserted return value).
     std::vector<entt::entity> newly_inserted;
     std::unordered_map<entt::entity, std::vector<entt::entity>> shows_by_buffer;
@@ -402,10 +402,14 @@ SyncResult SyncModelsBuffers(entt::registry &r) {
             object_ids[j] = r.get<const RenderInstance>(instance_entity).ObjectId;
             states[j] = InstanceStateBits(r, instance_entity);
         }
-        // Write ObjectIds and InstanceStates at the new slots. WorldTransform slots are left unwritten —
+        // Write ObjectIds, InstanceStates, and Bounds at the new slots. WorldTransform slots are left unwritten —
         // the WorldTransform reactive pass writes them before submit.
         buffers.Instances.ObjectIdBuffer.Update(as_bytes(object_ids), vk::DeviceSize(base_index) * sizeof(uint32_t));
         buffers.Instances.StateBuffer.Update(as_bytes(states), vk::DeviceSize(base_index) * sizeof(uint8_t));
+        // All undeformed instances of a mesh share its local AABB. Deformed objects get their
+        // per-object bounds written in the deformed-bounds pass later this call.
+        const auto mesh = TryGetMesh(r, buffer_entity);
+        std::ranges::fill(buffers.Instances.GetMutableBounds({base_index, n}), mesh ? mesh->CalcAABB() : AABB{});
         mb.InstanceCount = new_total;
         newly_inserted.append_range(entities);
     }
@@ -416,11 +420,11 @@ void EnsureWireframes(entt::registry &r, entt::entity viewport) {
     auto &meshes = r.ctx().get<MeshStore>();
     auto &shape_buffers = r.ctx().get<ColliderShapeBuffers>();
     const auto &settings = r.get<const ViewportDisplay>(viewport);
-    const bool show_bbox = settings.ShowBoundingBoxes;
+    const bool show_aabb = settings.ShowBoundingBoxes;
     const bool show_tets = settings.ShowTetWireframe;
     if (r.view<const ColliderShape>().empty() && r.view<ColliderWireframe>().empty() &&
-        r.view<BBoxWireframe>().empty() && r.view<TetWireframe>().empty() &&
-        !show_bbox && !show_tets) return;
+        r.view<AABBWireframe>().empty() && r.view<TetWireframe>().empty() &&
+        !show_aabb && !show_tets) return;
 
     using enum ColliderShapeBuffer;
     auto buf = [&](ColliderShapeBuffer kind) -> entt::entity & { return shape_buffers.Entities[uint8_t(kind)]; };
@@ -524,21 +528,21 @@ void EnsureWireframes(entt::registry &r, entt::entity viewport) {
     }
     drop_wireframes(orphans);
 
-    std::vector<entt::entity> bbox_stale;
-    for (auto [entity, bw] : r.view<BBoxWireframe>().each()) {
-        if (!show_bbox || !r.all_of<Selected>(entity)) bbox_stale.emplace_back(entity);
+    std::vector<entt::entity> aabb_stale;
+    for (auto [entity, bw] : r.view<AABBWireframe>().each()) {
+        if (!show_aabb || !r.all_of<Selected>(entity)) aabb_stale.emplace_back(entity);
     }
-    for (auto e : bbox_stale) {
-        if (auto &bw = r.get<BBoxWireframe>(e); r.valid(bw.Instance)) Destroy(r, viewport, bw.Instance);
-        r.remove<BBoxWireframe>(e);
+    for (auto e : aabb_stale) {
+        if (auto &bw = r.get<AABBWireframe>(e); r.valid(bw.Instance)) Destroy(r, viewport, bw.Instance);
+        r.remove<AABBWireframe>(e);
     }
 
-    if (show_bbox) {
-        ensure_buffer(Box, physics_debug::UnitBox); // Removing a deselected bbox above may have freed the shared Box buffer.
+    if (show_aabb) {
+        ensure_buffer(Box, physics_debug::UnitBox); // Removing a deselected aabb above may have freed the shared Box buffer.
         for (auto entity : r.view<Selected>()) {
-            if (!r.all_of<BBoxWireframe>(entity)) {
+            if (!r.all_of<AABBWireframe>(entity)) {
                 const auto *instance = r.try_get<const Instance>(entity);
-                if (instance && HasMesh(r, instance->Entity)) r.emplace<BBoxWireframe>(entity, make_instance(buf(Box), entity));
+                if (instance && HasMesh(r, instance->Entity)) r.emplace<AABBWireframe>(entity, make_instance(buf(Box), entity));
             }
         }
     }
@@ -615,7 +619,7 @@ void RebuildGizmoGeometry(entt::registry &r, MeshStore &meshes, GpuBuffers &buff
 }
 
 // Mesh-local bounds after morph and skin deformation, matching the vertex shader. Nullopt if undeformed.
-std::optional<BBox> ComputeDeformedLocalBBox(const entt::registry &r, MeshStore &meshes, GpuBuffers &buffers, entt::entity object, const Mesh &mesh) {
+std::optional<AABB> ComputeDeformedLocalAABB(const entt::registry &r, MeshStore &meshes, GpuBuffers &buffers, entt::entity object, const Mesh &mesh) {
     const uint32_t store_id = mesh.GetStoreId();
 
     std::span<const BoneDeformVertex> bone;
@@ -636,7 +640,7 @@ std::optional<BBox> ComputeDeformedLocalBBox(const entt::registry &r, MeshStore 
 
     const auto verts = mesh.GetVerticesSpan();
     const auto vtx_count = uint32_t(verts.size());
-    BBox box;
+    AABB aabb;
     for (uint32_t i = 0; i < vtx_count; ++i) {
         vec3 p = verts[i].Position;
         for (uint32_t t = 0; t < weights.size(); ++t) p += weights[t] * morph[t * vtx_count + i].PositionDelta;
@@ -646,14 +650,14 @@ std::optional<BBox> ComputeDeformedLocalBBox(const entt::registry &r, MeshStore 
                 bd.Weights.z * deform[bd.Joints.z] + bd.Weights.w * deform[bd.Joints.w];
             p = vec3{m * vec4{p, 1.f}};
         }
-        box.Min = glm::min(box.Min, p);
-        box.Max = glm::max(box.Max, p);
+        aabb.Min = glm::min(aabb.Min, p);
+        aabb.Max = glm::max(aabb.Max, p);
     }
-    return box;
+    return aabb;
 }
 
 void UpdateWireframeTransforms(entt::registry &r, const std::unordered_set<entt::entity> &deformed_bounds_changed) {
-    if (r.view<ColliderWireframe>().empty() && r.view<BBoxWireframe>().empty() && r.view<TetWireframe>().empty()) return;
+    if (r.view<ColliderWireframe>().empty() && r.view<AABBWireframe>().empty() && r.view<TetWireframe>().empty()) return;
 
     const auto &wt_changed = reactive<changes::WorldTransform>(r);
     const auto &shape_changed = reactive<changes::PhysicsShape>(r);
@@ -722,16 +726,17 @@ void UpdateWireframeTransforms(entt::registry &r, const std::unordered_set<entt:
         );
     }
 
-    // Recompute BBox when the mesh geometry changed, the parent moved, or the wireframe instance was just created this frame.
-    for (auto [entity, bw] : r.view<const BBoxWireframe>().each()) {
+    // Reposition the AABB wireframe when the mesh geometry or bounds changed, the parent moved, or the wireframe instance was just created this frame.
+    const auto &buffers = r.ctx().get<const GpuBuffers>();
+    for (auto [entity, bw] : r.view<const AABBWireframe>().each()) {
         if (!r.valid(bw.Instance)) continue;
 
         const auto *wt = r.try_get<const WorldTransform>(entity);
         const auto *instance = r.try_get<const Instance>(entity);
         if (!wt || !instance) continue;
 
-        const auto mesh = TryGetMesh(r, instance->Entity);
-        if (!mesh) continue;
+        const auto *ri = r.try_get<const RenderInstance>(entity);
+        if (!ri || ri->BufferIndex == UINT32_MAX) continue;
 
         const bool parent_moved = wt_changed.contains(entity);
         const bool mesh_changed = mesh_geom_changed.contains(instance->Entity);
@@ -739,8 +744,7 @@ void UpdateWireframeTransforms(entt::registry &r, const std::unordered_set<entt:
         const bool bounds_changed = deformed_bounds_changed.contains(entity);
         if (!parent_moved && !mesh_changed && !newly_created && !bounds_changed) continue;
 
-        const auto *db = r.try_get<const DeformedBounds>(entity);
-        const auto aabb = db ? db->Box : mesh->GetBBox();
+        const auto &aabb = buffers.Instances.GetBounds(ri->BufferIndex);
         const auto size = aabb.Max - aabb.Min, center = (aabb.Min + aabb.Max) * 0.5f;
         r.replace<WorldTransform>(bw.Instance, ToTransform(ToMatrix(*wt) * glm::translate(mat4{1}, center) * glm::scale(mat4{1}, size)));
     }
@@ -1911,21 +1915,38 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
             };
             for (const auto e : recompute) compute(e);
         }
-        // Cache deformed bounds: once per instance, then per-frame only while a bbox wireframe shows it.
+        // Write deformed bounds into the object's instance slot: once per inserted instance, then
+        // per-frame only while an AABB wireframe shows it. Undeformed objects keep the shared mesh
+        // AABB their slot already holds.
         std::unordered_set<entt::entity> deformed_bounds_changed;
         {
             const auto &geom_changed = reactive<changes::MeshGeometry>(r);
+            // Refresh the shared local AABB in every instance slot of each changed mesh. Runs after
+            // every MeshGeometryDirty producer in this call, including edit-mode transform commits.
+            for (const auto mesh_entity : geom_changed) {
+                const auto *models = r.try_get<const ModelsBuffer>(mesh_entity);
+                if (!models || models->InstanceCount == 0) continue;
+                if (const auto mesh = TryGetMesh(r, mesh_entity)) {
+                    std::ranges::fill(buffers.Instances.GetMutableBounds({models->InstanceRange.Offset, models->InstanceCount}), mesh->CalcAABB());
+                }
+            }
             for (const auto object : r.view<const Instance, const RenderInstance>()) {
                 if (!r.any_of<ArmatureModifier, MorphWeightState>(object)) continue;
                 const auto &instance = r.get<const Instance>(object);
-                if (!r.all_of<BBoxWireframe>(object) && r.all_of<DeformedBounds>(object) && !geom_changed.contains(instance.Entity)) continue;
+                const bool deformed_stored = r.all_of<DeformedBounds>(object);
+                if (!r.all_of<AABBWireframe>(object) && deformed_stored && !geom_changed.contains(instance.Entity) && !is_newly_inserted(object)) continue;
                 const auto mesh = TryGetMesh(r, instance.Entity);
                 if (!mesh) continue;
-                if (auto box = ComputeDeformedLocalBBox(r, meshes, buffers, object, *mesh)) {
-                    r.emplace_or_replace<DeformedBounds>(object, DeformedBounds{*box});
+                const auto buffer_index = r.get<const RenderInstance>(object).BufferIndex;
+                if (buffer_index == UINT32_MAX) continue;
+                if (const auto aabb = ComputeDeformedLocalAABB(r, meshes, buffers, object, *mesh)) {
+                    buffers.Instances.UpdateBounds(buffer_index, *aabb);
+                    if (!deformed_stored) r.emplace<DeformedBounds>(object);
                     deformed_bounds_changed.insert(object);
-                } else {
+                } else if (deformed_stored) {
+                    buffers.Instances.UpdateBounds(buffer_index, mesh->CalcAABB());
                     r.remove<DeformedBounds>(object);
+                    deformed_bounds_changed.insert(object);
                 }
             }
         }

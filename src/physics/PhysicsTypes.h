@@ -173,7 +173,7 @@ struct ColliderMaterial {
 struct TriggerTag {};
 
 // Engine-only collider derivation policy, not serialized to glTF.
-// AutoFitDims: refit ColliderShape dimensions to the mesh BBox on mesh changes.
+// AutoFitDims: refit ColliderShape dimensions to the mesh AABB on mesh changes.
 // LockedKind: user picked the variant from the dropdown — engine never auto-changes the kind.
 struct ColliderPolicy {
     bool AutoFitDims{true}, LockedKind{false};
