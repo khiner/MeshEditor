@@ -22,6 +22,11 @@ layout(location = 11) flat out float WorldScale;
 // edge_pos is smooth (interpolated), giving the current position along the line.
 layout(location = 12) flat out vec2 EdgeStart;
 layout(location = 13) out vec2 EdgePos;
+#ifdef VELOCITY_OUTPUT
+// Screen motion across the shutter, as (prev->current, current->next) in UV space.
+// Both halves point the same way, so the gather can walk either direction with one vector.
+layout(location = 14) out vec4 Motion;
+#endif
 
 layout(constant_id = 0) const uint OverlayKind = 0u;
 layout(constant_id = 1) const uint IsLineDraw = 0u;
@@ -33,6 +38,26 @@ vec3 ComputeWorldPos(DrawData draw, Transform world, uint vertex_index) {
     pos = ApplyArmatureDeform(draw, pos, vertex_index, n);
     return apply_pending_transform(draw, world, pos, vertex_index);
 }
+
+#ifdef VELOCITY_OUTPUT
+// World position of `vert` under one pose. The per-draw offsets are shared across poses,
+// so a pose is selected purely by its buffer slots.
+vec3 PoseWorldPos(DrawData draw, Vertex vert, uint idx, uint model_slot, uint armature_slot, uint morph_slot) {
+    vec3 normal = vert.Normal;
+    vec3 pos = vert.Position;
+    ApplyMorphDeform(draw, pos, idx, normal, morph_slot);
+    const vec3 local_pos = ApplyArmatureDeform(draw, pos, idx, normal, armature_slot);
+    const Transform world = ModelBuffers[nonuniformEXT(model_slot)].Models[draw.FirstInstance];
+    return apply_pending_transform(draw, world, local_pos, idx);
+}
+
+// Each pose projects through its own view: looking through an animated camera moves the view
+// across the shutter too, and a pure camera move is motion like any other.
+vec2 ProjectToUv(mat4 view_proj, vec3 world_pos) {
+    const vec4 clip = view_proj * vec4(world_pos, 1.0);
+    return clip.xy / clip.w;
+}
+#endif
 
 void main() {
     const DrawData draw = GetDrawData();
@@ -136,6 +161,18 @@ void main() {
     }
     WorldScale = (world.S.x + world.S.y + world.S.z) / 3.0;
     gl_Position = SceneViewUBO.ViewProj * vec4(world_pos, 1.0);
+#ifdef VELOCITY_OUTPUT
+    {
+        const vec3 prev = PoseWorldPos(draw, vert, idx, SceneViewUBO.PrevModelSlot, SceneViewUBO.PrevArmatureDeformSlot, SceneViewUBO.PrevMorphWeightsSlot);
+        const vec3 next = PoseWorldPos(draw, vert, idx, SceneViewUBO.NextModelSlot, SceneViewUBO.NextArmatureDeformSlot, SceneViewUBO.NextMorphWeightsSlot);
+        const vec2 curr_uv = ProjectToUv(SceneViewUBO.ViewProj, world_pos);
+        const vec2 prev_uv = ProjectToUv(SceneViewUBO.PrevViewProj, prev);
+        const vec2 next_uv = ProjectToUv(SceneViewUBO.NextViewProj, next);
+        // NDC spans 2 units across the viewport, so halving converts these to UV. The second half is
+        // stored pointing backward like the first, which the gather's motion scale undoes.
+        Motion = vec4(prev_uv - curr_uv, curr_uv - next_uv) * 0.5;
+    }
+#endif
     if (IsLineDraw != 0u) {
         gl_Position.z -= NdcOffsetFactor() * 1.0; // Push lines in front of faces (Blender: edge_ndc_offset_)
         // Convert clip-space to pixel coordinates matching gl_FragCoord.xy ([0, ViewportSize])

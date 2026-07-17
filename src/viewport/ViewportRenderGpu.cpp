@@ -119,14 +119,13 @@ void AppendExtrasDraw(entt::registry &r, const InstanceArena &instances, DrawLis
         AppendDraw(dl, batch, mesh_buffers.EdgeIndices, models, draw);
     }
 }
-// Render this step's screen motion, reduce it to tiles, spread each tile's motion over the tiles it
-// crosses, then gather the scene along it. Leaves the blurred scene in GatherImage.
-void RecordMotionBlurPostFx(entt::registry &r, vk::CommandBuffer cb, entt::entity viewport, vk::Rect2D rect, auto &&record_draw_batch) {
+// Reduce this step's screen motion to tiles, spread each tile's motion over the tiles it crosses,
+// then gather the scene along it. Leaves the blurred scene in GatherImage. The scene pass already
+// wrote the motion into the velocity attachment.
+void RecordMotionBlurPostFx(entt::registry &r, vk::CommandBuffer cb, entt::entity viewport, vk::Rect2D rect) {
     const auto &pipelines = r.ctx().get<const Pipelines>();
     const auto &main = pipelines.Main;
     const auto &sel_slots = r.ctx().get<const SelectionSlots>();
-    const auto &buffers = r.ctx().get<const GpuBuffers>();
-    const auto &draw = r.ctx().get<const DrawState>();
     auto &profile = r.ctx().get<Profile>();
     const auto &settings = r.get<const ViewportDisplay>(viewport);
     const auto mb = EffectiveMotionBlur(settings);
@@ -135,19 +134,6 @@ void RecordMotionBlurPostFx(entt::registry &r, vk::CommandBuffer cb, entt::entit
     // Offset the gather's dither per step, so averaging several steps smooths the tile jitter
     // instead of reinforcing one pattern. Step centres never share a sub-frame time.
     const float noise_offset = glm::fract(r.get<const PlaybackFrame>(viewport).Value);
-
-    { // Screen motion, depth-tested against the scene so only front-most surfaces contribute.
-        const GpuScope scope{profile, cb, "Velocity"};
-        const std::array velocity_clear{vk::ClearValue{vk::ClearDepthStencilValue{1, 0}}, vk::ClearValue{Transparent}};
-        cb.beginRenderPass({*main.VelocityRenderer.RenderPass, *main.MotionBlur->VelocityFramebuffer, rect, velocity_clear}, vk::SubpassContents::eInline);
-        if (buffers.IdentityIndexCount > 0 && draw.FillOpaque.DrawCount > 0) {
-            cb.bindIndexBuffer(*buffers.IdentityIndexBuffer, 0, vk::IndexType::eUint32);
-            record_draw_batch(main.VelocityRenderer, SPT::Velocity, draw.FillOpaque);
-        }
-        // The background sits at infinity, so only view rotation moves it.
-        main.VelocityRenderer.ShaderPipelines.at(SPT::BackgroundVelocity).RenderQuad(cb);
-        cb.endRenderPass();
-    }
 
     // Depth stops being an attachment here so the gather can classify samples against it.
     cb.pipelineBarrier(
@@ -779,6 +765,12 @@ void RecordRenderCommandBuffer(entt::registry &r, entt::entity viewport, vk::Com
         {vk::ClearDepthStencilValue{1, 0}},
         {Transparent},
     };
+    // The velocity attachment clears to zero motion.
+    const std::vector<vk::ClearValue> scene_velocity_clear_values{
+        {vk::ClearDepthStencilValue{1, 0}},
+        {Transparent},
+        {Transparent},
+    };
     // Depth loads from the scene pass, so its clear value is unused. Both color targets clear to
     // transparent: the composite merges the overlay layer over the scene by its alpha.
     const std::vector<vk::ClearValue> overlay_clear_values{
@@ -869,12 +861,22 @@ void RecordRenderCommandBuffer(entt::registry &r, entt::entity viewport, vk::Com
         sync_fragment_shader_reads(vk::PipelineStageFlagBits::eColorAttachmentOutput, accum_barriers);
     }
 
+    // Blurred steps render the scene through the velocity render pass variant, so opaque geometry
+    // writes its screen motion alongside its color.
+    const bool blur = phase == RenderPhase::BlurredFull || IsBlurAccumulate(phase);
+
     { // Scene pass: shaded scene into its own color target, and the depth the overlay pass occludes against.
         const GpuScope scope{profile, cb, draw_scene ? "ScenePass" : "SceneDepthPass"};
-        cb.beginRenderPass({*main.SceneRenderer.RenderPass, *main.Resources->SceneFramebuffer, main_rect, scene_clear_values}, vk::SubpassContents::eInline);
+        const auto &scene_renderer = blur ? main.SceneVelocityRenderer : main.SceneRenderer;
+        const auto scene_framebuffer = blur ? *main.MotionBlur->SceneVelocityFramebuffer : *main.Resources->SceneFramebuffer;
+        const auto &pass_clear_values = blur ? scene_velocity_clear_values : scene_clear_values;
+        cb.beginRenderPass({*scene_renderer.RenderPass, scene_framebuffer, main_rect, pass_clear_values}, vk::SubpassContents::eInline);
 
+        // Screen motion for every pixel geometry leaves uncovered. The background sits at infinity,
+        // so only view rotation moves it. Geometry overwrites it wherever it lands.
+        if (blur) scene_renderer.ShaderPipelines.at(SPT::BackgroundVelocity).RenderQuad(cb);
         // Background environment (PBR modes only). The shader discards when WorldOpacity == 0 or there is no env slot.
-        if (show_rendered && draw_scene) main.SceneRenderer.ShaderPipelines.at(SPT::Background).RenderQuad(cb);
+        if (show_rendered && draw_scene) scene_renderer.ShaderPipelines.at(SPT::Background).RenderQuad(cb);
         // Fill the scene target with the averaged steps, for the depth and overlays below to draw over.
         if (phase == RenderPhase::BlurResolve) {
             const auto &resolve = main.SceneRenderer.ShaderPipelines.at(SPT::MotionBlurResolve);
@@ -888,7 +890,7 @@ void RecordRenderCommandBuffer(entt::registry &r, entt::entity viewport, vk::Com
 
         // Silhouette edge depth (not color! we render it before mesh depth to avoid overwriting closer depths with further ones)
         if (has_silhouette) {
-            const auto &silhouette_depth = main.SceneRenderer.ShaderPipelines.at(SPT::SilhouetteEdgeDepth);
+            const auto &silhouette_depth = scene_renderer.ShaderPipelines.at(SPT::SilhouetteEdgeDepth);
             const uint32_t depth_sampler_index = sel_slots.DepthSampler;
             cb.pushConstants(*silhouette_depth.PipelineLayout, vk::ShaderStageFlagBits::eFragment, 0, sizeof(depth_sampler_index), &depth_sampler_index);
             silhouette_depth.RenderQuad(cb);
@@ -900,8 +902,8 @@ void RecordRenderCommandBuffer(entt::registry &r, entt::entity viewport, vk::Com
             if (!draw_scene) {
                 record_draw_batch(main.SceneRenderer, SPT::FillDepth, draw.FillOpaque);
             } else if (show_rendered) {
-                record_pbr_batch(draw.FillOpaque, PbrCompiler::Variant::Opaque);
-                record_pbr_batch(draw.FillBlend, PbrCompiler::Variant::Blend);
+                record_pbr_batch(draw.FillOpaque, blur ? PbrCompiler::Variant::OpaqueVelocity : PbrCompiler::Variant::Opaque);
+                record_pbr_batch(draw.FillBlend, blur ? PbrCompiler::Variant::BlendVelocity : PbrCompiler::Variant::Blend);
             } else {
                 record_draw_batch(main.SceneRenderer, SPT::Fill, draw.FillOpaque);
             }
@@ -909,19 +911,28 @@ void RecordRenderCommandBuffer(entt::registry &r, entt::entity viewport, vk::Com
         cb.endRenderPass();
     }
 
-    const bool blur = phase == RenderPhase::BlurredFull || IsBlurAccumulate(phase);
-
     // The render pass ExternalFragReadDependency should cover this, but MoltenVK needs an explicit barrier
     // to flush the Metal render encoder's color writes before the next encoder samples them.
-    {
-        // The gather or the composite samples the scene next, both in fragment shaders.
+    if (blur) {
+        // The tile flatten (compute) samples the velocity, and the gather (fragment) samples both.
+        const std::array scene_out_barriers{
+            color_read_barrier(*main.Resources->SceneColorImage.Image),
+            color_read_barrier(*main.MotionBlur->VelocityImage.Image),
+        };
+        cb.pipelineBarrier(
+            vk::PipelineStageFlagBits::eColorAttachmentOutput,
+            vk::PipelineStageFlagBits::eFragmentShader | vk::PipelineStageFlagBits::eComputeShader,
+            {}, {}, {}, scene_out_barriers
+        );
+    } else {
+        // The composite samples the scene next, in a fragment shader.
         const std::array scene_out_barriers{
             color_read_barrier(*main.Resources->SceneColorImage.Image),
         };
         sync_fragment_shader_reads(vk::PipelineStageFlagBits::eColorAttachmentOutput, scene_out_barriers);
     }
 
-    if (blur) RecordMotionBlurPostFx(r, cb, viewport, main_rect, record_draw_batch);
+    if (blur) RecordMotionBlurPostFx(r, cb, viewport, main_rect);
 
     if (!draw_overlays) { // BlurAccumulate sums this step's blurred scene in. It draws no overlays to composite.
         {

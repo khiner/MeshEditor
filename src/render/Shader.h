@@ -9,12 +9,14 @@ using ShaderType = vk::ShaderStageFlagBits;
 // Compile a single GLSL shader to a VkShaderModule (no specialization).
 // Specialization constants are applied at pipeline creation via VkSpecializationInfo,
 // so this only needs to run once per shader file — not once per feature-mask variant.
-vk::UniqueShaderModule CompileShaderModule(vk::Device, ShaderType, const std::filesystem::path &relative_path);
+// Defines are preprocessor macros, for variants that change the shader interface itself.
+vk::UniqueShaderModule CompileShaderModule(vk::Device, ShaderType, const std::filesystem::path &relative_path, const std::vector<std::string> &defines = {});
 
 struct ShaderTypePath {
     ShaderType Type;
     std::filesystem::path Path; // Paths are relative to the `shaders` directory
     std::vector<std::pair<uint32_t, uint32_t>> SpecializationConstants{}; // (constant_id → value)
+    std::vector<std::string> Defines{}; // Preprocessor macros defined for this compile
 };
 
 struct Shaders {

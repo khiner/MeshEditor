@@ -10,7 +10,6 @@ enum class ShaderPipelineType {
     Point,
     Grid,
     Background,
-    Velocity,
     BackgroundVelocity,
     MotionBlurResolve,
     SilhouetteDepthObject,

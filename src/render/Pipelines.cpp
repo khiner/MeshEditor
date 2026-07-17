@@ -59,8 +59,8 @@ const ShaderPipeline &PipelineRenderer::Bind(vk::CommandBuffer cb, SPT spt) cons
 // attachment for depth-only scene pipelines.
 static constexpr vk::PipelineColorBlendAttachmentState NoWriteBlend{};
 
-PbrCompiler::PbrCompiler(PipelineContext ctx, vk::RenderPass rp)
-    : Device(ctx.Device), Cache(Device.createPipelineCacheUnique({})), SetLayout(ctx.SharedLayout), Set(ctx.SharedSet), RenderPass(rp) {
+PbrCompiler::PbrCompiler(PipelineContext ctx, vk::RenderPass scene, vk::RenderPass scene_velocity)
+    : Device(ctx.Device), Cache(Device.createPipelineCacheUnique({})), SetLayout(ctx.SharedLayout), Set(ctx.SharedSet), RenderPass(scene), VelocityRenderPass(scene_velocity) {
     CompileModules();
     Layout = Device.createPipelineLayoutUnique({{}, 1, &SetLayout, 1, &MainDrawPushConstantRange});
 }
@@ -68,9 +68,11 @@ PbrCompiler::PbrCompiler(PipelineContext ctx, vk::RenderPass rp)
 void PbrCompiler::CompileModules() {
     VertModule = CompileShaderModule(Device, ShaderType::eVertex, "VertexTransform.vert");
     FragModule = CompileShaderModule(Device, ShaderType::eFragment, "pbr.frag");
+    VelocityVertModule = CompileShaderModule(Device, ShaderType::eVertex, "VertexTransform.vert", {"VELOCITY_OUTPUT"});
+    VelocityFragModule = CompileShaderModule(Device, ShaderType::eFragment, "pbr.frag", {"VELOCITY_OUTPUT"});
 }
 
-vk::UniquePipeline PbrCompiler::CreateTargetedPipeline(const vk::SpecializationInfo &frag_spec, bool depth_write, vk::RenderPass render_pass) const {
+vk::UniquePipeline PbrCompiler::CreateTargetedPipeline(const vk::SpecializationInfo &frag_spec, bool depth_write, Variant variant) const {
     static constexpr vk::PipelineViewportStateCreateInfo viewport_state{{}, 1, nullptr, 1, nullptr};
     static constexpr std::array dynamic_states{vk::DynamicState::eViewport, vk::DynamicState::eScissor};
     static const vk::PipelineDynamicStateCreateInfo dynamic_state{{}, dynamic_states};
@@ -79,16 +81,23 @@ vk::UniquePipeline PbrCompiler::CreateTargetedPipeline(const vk::SpecializationI
     static constexpr vk::PipelineInputAssemblyStateCreateInfo input_assembly{{}, vk::PrimitiveTopology::eTriangleList};
     static const vk::PipelineRasterizationStateCreateInfo raster{{}, false, false, vk::PolygonMode::eFill, {}, vk::FrontFace::eClockwise, false, 0.f, {}, 0.f, 1.f};
 
+    // Opaque geometry writes its screen motion into the velocity attachment. Blend geometry
+    // writes neither depth nor velocity, so its velocity twin masks the attachment off.
+    const bool velocity_pass = variant == Variant::OpaqueVelocity || variant == Variant::BlendVelocity;
+    const bool velocity_modules = variant == Variant::OpaqueVelocity;
     const std::array stages{
-        vk::PipelineShaderStageCreateInfo{{}, ShaderType::eVertex, *VertModule, "main"},
-        vk::PipelineShaderStageCreateInfo{{}, ShaderType::eFragment, *FragModule, "main", &frag_spec},
+        vk::PipelineShaderStageCreateInfo{{}, ShaderType::eVertex, velocity_modules ? *VelocityVertModule : *VertModule, "main"},
+        vk::PipelineShaderStageCreateInfo{{}, ShaderType::eFragment, velocity_modules ? *VelocityFragModule : *FragModule, "main", &frag_spec},
     };
     const auto depth_stencil = CreateDepthStencil(true, depth_write);
-    const std::array color_blend_attachments{CreateColorBlendAttachment(true)};
-    const vk::PipelineColorBlendStateCreateInfo color_blending{{}, false, vk::LogicOp::eCopy, color_blend_attachments.size(), color_blend_attachments.data()};
+    const std::array color_blend_attachments{
+        CreateColorBlendAttachment(true),
+        velocity_modules ? CreateColorBlendAttachment(false) : NoWriteBlend,
+    };
+    const vk::PipelineColorBlendStateCreateInfo color_blending{{}, false, vk::LogicOp::eCopy, velocity_pass ? 2u : 1u, color_blend_attachments.data()};
     auto result = Device.createGraphicsPipelineUnique(
         *Cache,
-        {{}, stages, &vertex_input, &input_assembly, nullptr, &viewport_state, &raster, &multisample_state, &depth_stencil, &color_blending, &dynamic_state, *Layout, render_pass}
+        {{}, stages, &vertex_input, &input_assembly, nullptr, &viewport_state, &raster, &multisample_state, &depth_stencil, &color_blending, &dynamic_state, *Layout, velocity_pass ? VelocityRenderPass : RenderPass}
     );
     if (result.result != vk::Result::eSuccess) {
         throw std::runtime_error(std::format("PbrCompiler: failed to create targeted pipeline: {}", vk::to_string(result.result)));
@@ -108,12 +117,14 @@ bool PbrCompiler::CompilePipelines(PbrFeatureMask mask) {
     data[N] = 0u; // main pipelines: exposed radiance, sampling the transmission framebuffer
     const vk::SpecializationInfo spec_main{TotalConstants, entries.data(), TotalConstants * sizeof(uint32_t), data.data()};
     const Timer timer{"PBR pipeline compile"};
-    OpaqueTargeted = CreateTargetedPipeline(spec_main, true, RenderPass);
-    BlendTargeted = CreateTargetedPipeline(spec_main, false, RenderPass);
+    OpaqueTargeted = CreateTargetedPipeline(spec_main, true, Variant::Opaque);
+    BlendTargeted = CreateTargetedPipeline(spec_main, false, Variant::Blend);
+    OpaqueVelocityTargeted = CreateTargetedPipeline(spec_main, true, Variant::OpaqueVelocity);
+    BlendVelocityTargeted = CreateTargetedPipeline(spec_main, false, Variant::BlendVelocity);
     if (::HasFeature(mask, PbrFeature::Transmission)) {
         data[N] = 1u; // pre-pass pipeline: un-exposed radiance, no framebuffer self-sampling
         const vk::SpecializationInfo spec_prepass{TotalConstants, entries.data(), TotalConstants * sizeof(uint32_t), data.data()};
-        OpaquePrepass = CreateTargetedPipeline(spec_prepass, true, RenderPass);
+        OpaquePrepass = CreateTargetedPipeline(spec_prepass, true, Variant::OpaquePrepass);
     } else {
         OpaquePrepass.reset();
     }
@@ -123,8 +134,11 @@ bool PbrCompiler::CompilePipelines(PbrFeatureMask mask) {
 }
 
 vk::PipelineLayout PbrCompiler::Bind(vk::CommandBuffer cb, Variant v) const {
-    const auto &pipeline = v == Variant::Opaque ? OpaqueTargeted : v == Variant::Blend ? BlendTargeted :
-                                                                                         OpaquePrepass;
+    const auto &pipeline = v == Variant::Opaque ? OpaqueTargeted :
+        v == Variant::Blend                     ? BlendTargeted :
+        v == Variant::OpaqueVelocity            ? OpaqueVelocityTargeted :
+        v == Variant::BlendVelocity             ? BlendVelocityTargeted :
+                                                  OpaquePrepass;
     cb.bindPipeline(vk::PipelineBindPoint::eGraphics, *pipeline);
     cb.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *Layout, 0, Set, {});
     return *Layout;
@@ -135,6 +149,8 @@ void PbrCompiler::RecompileModules() {
     CompileModules();
     OpaqueTargeted.reset();
     BlendTargeted.reset();
+    OpaqueVelocityTargeted.reset();
+    BlendVelocityTargeted.reset();
     OpaquePrepass.reset();
     CompilePipelines(Mask);
 }
@@ -221,57 +237,64 @@ static vk::UniqueRenderPass CreateOverlayRenderPass(vk::Device d) {
     return d.createRenderPassUnique({{}, attachments, subpass, dependencies});
 }
 
-// The scene's depth loaded so only front-most surfaces contribute motion, and the screen motion out.
-static vk::UniqueRenderPass CreateVelocityRenderPass(vk::Device d) {
+// The scene render pass plus a velocity attachment the geometry writes its screen motion into.
+// Motion blur steps render through this instead of the plain scene pass.
+static vk::UniqueRenderPass CreateSceneVelocityRenderPass(vk::Device d) {
     const std::vector<vk::AttachmentDescription> attachments{
-        // Depth is stored so it keeps the scene pass's values: the gather classifies samples against
-        // them, and the single-step path's overlay pass occludes against them.
-        {{}, Format::Depth, vk::SampleCountFlagBits::e1, vk::AttachmentLoadOp::eLoad, vk::AttachmentStoreOp::eStore, vk::AttachmentLoadOp::eDontCare, vk::AttachmentStoreOp::eDontCare, vk::ImageLayout::eDepthStencilAttachmentOptimal, vk::ImageLayout::eDepthStencilAttachmentOptimal},
-        // Cleared to zero, which reads as static wherever no geometry draws.
+        {{}, Format::Depth, vk::SampleCountFlagBits::e1, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eStore, vk::AttachmentLoadOp::eDontCare, vk::AttachmentStoreOp::eDontCare, vk::ImageLayout::eUndefined, vk::ImageLayout::eDepthStencilAttachmentOptimal},
+        // Color: cleared transparent, stored for sampling in the gather and the viewport composite.
+        {{}, Format::HdrColor, vk::SampleCountFlagBits::e1, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eStore, {}, {}, vk::ImageLayout::eUndefined, vk::ImageLayout::eShaderReadOnlyOptimal},
+        // Velocity: cleared to zero, which reads as static wherever nothing draws.
         {{}, Format::Velocity, vk::SampleCountFlagBits::e1, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eStore, {}, {}, vk::ImageLayout::eUndefined, vk::ImageLayout::eShaderReadOnlyOptimal},
     };
     const vk::AttachmentReference depth_attachment_ref{0, vk::ImageLayout::eDepthStencilAttachmentOptimal};
-    const vk::AttachmentReference color_attachment_ref{1, vk::ImageLayout::eColorAttachmentOptimal};
-    const vk::SubpassDescription subpass{{}, vk::PipelineBindPoint::eGraphics, 0, nullptr, 1, &color_attachment_ref, nullptr, &depth_attachment_ref};
-    const std::array dependencies{
-        // The scene pass's depth writes must land before this pass tests against them.
-        vk::SubpassDependency{
-            vk::SubpassExternal,
-            0,
-            vk::PipelineStageFlagBits::eLateFragmentTests,
-            vk::PipelineStageFlagBits::eEarlyFragmentTests,
-            vk::AccessFlagBits::eDepthStencilAttachmentWrite,
-            vk::AccessFlagBits::eDepthStencilAttachmentRead,
-            {},
-        },
-        ExternalFragReadDependency(),
+    const std::array color_attachment_refs{
+        vk::AttachmentReference{1, vk::ImageLayout::eColorAttachmentOptimal},
+        vk::AttachmentReference{2, vk::ImageLayout::eColorAttachmentOptimal},
     };
+    const vk::SubpassDescription subpass{{}, vk::PipelineBindPoint::eGraphics, 0, nullptr, uint32_t(color_attachment_refs.size()), color_attachment_refs.data(), nullptr, &depth_attachment_ref};
+    const std::array dependencies{ExternalFragReadDependency()};
     return d.createRenderPassUnique({{}, attachments, subpass, dependencies});
 }
 
-static PipelineRenderer CreateVelocityRenderer(vk::Device d, vk::DescriptorSetLayout shared_layout, vk::DescriptorSet shared_set) {
+// Fullscreen-quad twins for the scene+velocity render pass, keyed by the same SPTs the plain scene
+// pass binds. PBR geometry goes through PbrCompiler's velocity variants instead.
+static PipelineRenderer CreateSceneVelocityRenderer(vk::Device d, vk::DescriptorSetLayout shared_layout, vk::DescriptorSet shared_set) {
     const PipelineContext ctx{d, shared_layout, shared_set};
     std::unordered_map<SPT, ShaderPipeline> pipelines;
-    pipelines.emplace(
-        SPT::Velocity,
-        ctx.CreateGraphics(
-            {{{ShaderType::eVertex, "Velocity.vert"}, {ShaderType::eFragment, "Velocity.frag"}}},
-            {},
-            vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleList,
-            {CreateColorBlendAttachment(false)}, CreateDepthStencil(true, false, vk::CompareOp::eLessOrEqual), MainDrawPushConstantRange
-        )
-    );
-    // The background sits at the far plane, so this writes exactly where no geometry drew.
+    // Screen motion for every pixel geometry leaves uncovered. Drawn first, so geometry overwrites
+    // it wherever it lands, and the scene color stays untouched through the write mask.
     pipelines.emplace(
         SPT::BackgroundVelocity,
         ctx.CreateGraphics(
             {{{ShaderType::eVertex, "Background.vert"}, {ShaderType::eFragment, "BackgroundVelocity.frag"}}},
             {},
             vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleStrip,
-            {CreateColorBlendAttachment(false)}, CreateDepthStencil(true, false, vk::CompareOp::eLessOrEqual)
+            {NoWriteBlend, CreateColorBlendAttachment(false)}, CreateDepthStencil(false, false)
         )
     );
-    return {CreateVelocityRenderPass(d), std::move(pipelines)};
+    // The environment background writes color only: its motion comes from the quad above.
+    pipelines.emplace(
+        SPT::Background,
+        ctx.CreateGraphics(
+            {{{ShaderType::eVertex, "Background.vert"}, {ShaderType::eFragment, "Background.frag", {{0, 0u}}}}},
+            {},
+            vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleStrip,
+            {CreateColorBlendAttachment(true), NoWriteBlend}, CreateDepthStencil(false, false)
+        )
+    );
+    // Depth-only silhouette edge quad (see the scene renderer's twin for the depth-test rationale).
+    pipelines.emplace(
+        SPT::SilhouetteEdgeDepth,
+        ctx.CreateGraphics(
+            {{{ShaderType::eVertex, "TexQuad.vert"}, {ShaderType::eFragment, "SampleDepth.frag"}}},
+            {},
+            vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleStrip,
+            {NoWriteBlend, NoWriteBlend}, CreateDepthStencil(true, true, vk::CompareOp::eAlways),
+            vk::PushConstantRange{vk::ShaderStageFlagBits::eFragment, 0, sizeof(uint32_t)}
+        )
+    );
+    return {CreateSceneVelocityRenderPass(d), std::move(pipelines)};
 }
 
 // One color attachment, no depth, always stored. Backs each of the fullscreen-quad passes.
@@ -455,7 +478,7 @@ MainPipeline::MainPipeline(
     vk::DescriptorSetLayout shared_layout, vk::DescriptorSet shared_set
 ) : SceneRenderer{CreateSceneRenderer(d, shared_layout, shared_set)},
     OverlayRenderer{CreateOverlayRenderer(d, shared_layout, shared_set)},
-    VelocityRenderer{CreateVelocityRenderer(d, shared_layout, shared_set)},
+    SceneVelocityRenderer{CreateSceneVelocityRenderer(d, shared_layout, shared_set)},
     PrepassBackground{CreateBackgroundPipeline({d, shared_layout, shared_set}, true)},
     CompositeRenderPass{CreateColorOnlyRenderPass(d, Format::Color, vk::AttachmentLoadOp::eDontCare, vk::ImageLayout::eUndefined, vk::ImageLayout::eShaderReadOnlyOptimal)},
     ViewportComposite{CreateQuadPipeline({d, shared_layout, shared_set}, "ViewportComposite.frag", CreateColorBlendAttachment(false), sizeof(uint32_t) * 5 + sizeof(vec4))},
@@ -464,7 +487,7 @@ MainPipeline::MainPipeline(
     MotionBlurAccumulate{CreateQuadPipeline({d, shared_layout, shared_set}, "MotionBlurAccumulate.frag", AdditiveBlend, sizeof(uint32_t))},
     MotionBlurGatherRenderPass{CreateColorOnlyRenderPass(d, Format::HdrColor, vk::AttachmentLoadOp::eDontCare, vk::ImageLayout::eUndefined, vk::ImageLayout::eShaderReadOnlyOptimal)},
     MotionBlurGather{CreateQuadPipeline({d, shared_layout, shared_set}, "MotionBlurGather.frag", CreateColorBlendAttachment(false), sizeof(MotionBlurGatherPushConstants))},
-    Compiler{{d, shared_layout, shared_set}, *SceneRenderer.RenderPass} {}
+    Compiler{{d, shared_layout, shared_set}, *SceneRenderer.RenderPass, *SceneVelocityRenderer.RenderPass} {}
 
 static uint32_t MipCount(vk::Extent2D extent) {
     uint32_t levels = 1;
@@ -517,7 +540,7 @@ void MainPipeline::SetExtent(vk::Extent2D extent, vk::Device d, vk::PhysicalDevi
 }
 
 MainPipeline::MotionBlurResourcesT::MotionBlurResourcesT(
-    vk::Extent2D extent, vk::Device d, vk::PhysicalDevice pd, vk::RenderPass accum_render_pass, vk::RenderPass velocity_render_pass, vk::RenderPass gather_render_pass, vk::ImageView depth_view
+    vk::Extent2D extent, vk::Device d, vk::PhysicalDevice pd, vk::RenderPass accum_render_pass, vk::RenderPass scene_velocity_render_pass, vk::RenderPass gather_render_pass, vk::ImageView depth_view, vk::ImageView scene_color_view
 ) : AccumImage{mvk::CreateImage(d, pd, {{}, vk::ImageType::e2D, Format::HdrColor, vk::Extent3D{extent, 1}, 1, 1, vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eColorAttachment, vk::SharingMode::eExclusive}, {{}, {}, vk::ImageViewType::e2D, Format::HdrColor, {}, ColorSubresourceRange})},
     VelocityImage{mvk::CreateImage(d, pd, {{}, vk::ImageType::e2D, Format::Velocity, vk::Extent3D{extent, 1}, 1, 1, vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eColorAttachment, vk::SharingMode::eExclusive}, {{}, {}, vk::ImageViewType::e2D, Format::Velocity, {}, ColorSubresourceRange})},
     TileImage{mvk::CreateImage(d, pd, {{}, vk::ImageType::e2D, Format::HdrColor, vk::Extent3D{DivideCeil(extent, MotionBlurTileSize), 1}, 1, 1, vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eStorage, vk::SharingMode::eExclusive}, {{}, {}, vk::ImageViewType::e2D, Format::HdrColor, {}, ColorSubresourceRange})},
@@ -528,8 +551,8 @@ MainPipeline::MotionBlurResourcesT::MotionBlurResourcesT(
         Framebuffer = d.createFramebufferUnique({{}, accum_render_pass, image_views, extent.width, extent.height, 1});
     }
     {
-        const std::array image_views{depth_view, *VelocityImage.View};
-        VelocityFramebuffer = d.createFramebufferUnique({{}, velocity_render_pass, image_views, extent.width, extent.height, 1});
+        const std::array image_views{depth_view, scene_color_view, *VelocityImage.View};
+        SceneVelocityFramebuffer = d.createFramebufferUnique({{}, scene_velocity_render_pass, image_views, extent.width, extent.height, 1});
     }
     {
         const std::array image_views{*GatherImage.View};
@@ -540,7 +563,7 @@ MainPipeline::MotionBlurResourcesT::MotionBlurResourcesT(
 bool MainPipeline::EnsureMotionBlurResources(vk::Device d, vk::PhysicalDevice pd) {
     if (MotionBlur || !Resources) return false; // SetExtent drops it, so an allocated target is always at the color extent.
     const auto extent = Resources->SceneColorImage.Extent;
-    MotionBlur = std::make_unique<MotionBlurResourcesT>(vk::Extent2D{extent.width, extent.height}, d, pd, *MotionBlurAccumRenderPass, *VelocityRenderer.RenderPass, *MotionBlurGatherRenderPass, *Resources->DepthImage.View);
+    MotionBlur = std::make_unique<MotionBlurResourcesT>(vk::Extent2D{extent.width, extent.height}, d, pd, *MotionBlurAccumRenderPass, *SceneVelocityRenderer.RenderPass, *MotionBlurGatherRenderPass, *Resources->DepthImage.View, *Resources->SceneColorImage.View);
     return true;
 }
 
@@ -913,7 +936,7 @@ void Pipelines::SetExtent(vk::Extent2D extent) {
 void Pipelines::CompileShaders() {
     Main.SceneRenderer.CompileShaders();
     Main.OverlayRenderer.CompileShaders();
-    Main.VelocityRenderer.CompileShaders();
+    Main.SceneVelocityRenderer.CompileShaders();
     Main.PrepassBackground.Compile(*Main.SceneRenderer.RenderPass);
     Main.ViewportComposite.Compile(*Main.CompositeRenderPass);
     Main.MotionBlurAccumulate.Compile(*Main.MotionBlurAccumRenderPass);

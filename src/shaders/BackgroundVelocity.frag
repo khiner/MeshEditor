@@ -3,7 +3,8 @@
 #include "SceneUBO.glsl"
 
 layout(location = 0) in vec2 InNDC;
-layout(location = 0) out vec4 OutMotion;
+// Location 1: the scene pass's velocity attachment (the scene color at 0 is masked off).
+layout(location = 1) out vec4 OutMotion;
 
 // The background sits at infinity, so only view rotation moves it. Projecting the view ray as a
 // direction lands on the point at infinity along it, which is what the background shows.

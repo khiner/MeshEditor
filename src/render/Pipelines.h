@@ -32,13 +32,17 @@ inline constexpr auto Uint = vk::Format::eR32Uint;
 } // namespace Format
 
 // Compiles a PBR pipeline shaped to the scene's active feature set via Vulkan specialization constants.
-// Vert + frag VkShaderModules are compiled once. Only vkCreateGraphicsPipeline runs on mask changes.
+// VkShaderModules are compiled once. Only vkCreateGraphicsPipeline runs on mask changes.
+// The velocity variants render motion blur steps: they target the scene+velocity render pass, with
+// opaque geometry writing its screen motion from VELOCITY_OUTPUT shader modules.
 struct PbrCompiler {
-    PbrCompiler(PipelineContext, vk::RenderPass);
+    PbrCompiler(PipelineContext, vk::RenderPass scene, vk::RenderPass scene_velocity);
 
     enum class Variant {
         Opaque,
         Blend,
+        OpaqueVelocity,
+        BlendVelocity,
         OpaquePrepass
     };
 
@@ -49,18 +53,18 @@ struct PbrCompiler {
 
 private:
     void CompileModules();
-    vk::UniquePipeline CreateTargetedPipeline(const vk::SpecializationInfo &frag_spec, bool depth_write, vk::RenderPass) const;
+    vk::UniquePipeline CreateTargetedPipeline(const vk::SpecializationInfo &frag_spec, bool depth_write, Variant) const;
 
     vk::Device Device;
     vk::UniquePipelineCache Cache;
-    vk::UniqueShaderModule VertModule, FragModule;
+    vk::UniqueShaderModule VertModule, FragModule, VelocityVertModule, VelocityFragModule;
     vk::UniquePipelineLayout Layout;
     vk::DescriptorSetLayout SetLayout;
     vk::DescriptorSet Set;
-    vk::RenderPass RenderPass;
+    vk::RenderPass RenderPass, VelocityRenderPass;
 
     PbrFeatureMask Mask{0};
-    vk::UniquePipeline OpaqueTargeted, BlendTargeted, OpaquePrepass;
+    vk::UniquePipeline OpaqueTargeted, BlendTargeted, OpaqueVelocityTargeted, BlendVelocityTargeted, OpaquePrepass;
 };
 
 struct MainPipeline {
@@ -92,14 +96,14 @@ struct MainPipeline {
 
     // Motion blur's own targets: the screen motion the gather walks, and the radiance summed across
     // steps. Allocated on demand only while motion blur is active, and sampled through
-    // ResourcesT::NearestSampler. VelocityFramebuffer borrows ResourcesT's depth view.
+    // ResourcesT::NearestSampler. SceneVelocityFramebuffer borrows ResourcesT's depth and scene color views.
     struct MotionBlurResourcesT {
-        MotionBlurResourcesT(vk::Extent2D, vk::Device, vk::PhysicalDevice, vk::RenderPass accum_render_pass, vk::RenderPass velocity_render_pass, vk::RenderPass gather_render_pass, vk::ImageView depth_view);
+        MotionBlurResourcesT(vk::Extent2D, vk::Device, vk::PhysicalDevice, vk::RenderPass accum_render_pass, vk::RenderPass scene_velocity_render_pass, vk::RenderPass gather_render_pass, vk::ImageView depth_view, vk::ImageView scene_color_view);
 
         // TileImage holds each 32x32 tile's largest motion, GatherImage the blurred scene.
         mvk::ImageResource AccumImage, VelocityImage, TileImage, GatherImage;
         vk::Extent2D TileExtent{};
-        vk::UniqueFramebuffer Framebuffer, VelocityFramebuffer, GatherFramebuffer;
+        vk::UniqueFramebuffer Framebuffer, SceneVelocityFramebuffer, GatherFramebuffer;
     };
 
     void SetExtent(vk::Extent2D, vk::Device, vk::PhysicalDevice);
@@ -124,8 +128,9 @@ struct MainPipeline {
     // Scene: depth + scene-linear HDR color. Overlays: the scene's depth loaded for occlusion,
     // plus a display-referred overlay color target and the line data driving its AA.
     PipelineRenderer SceneRenderer, OverlayRenderer;
-    // Motion blur's screen-motion pass, depth-tested against the scene so only front-most surfaces contribute.
-    PipelineRenderer VelocityRenderer;
+    // Scene pass variant for motion blur steps, with a velocity attachment the geometry writes its
+    // screen motion into. Holds the fullscreen-quad twins the blurred scene pass binds.
+    PipelineRenderer SceneVelocityRenderer;
     // Background variant that skips exposure, for the transmission pre-pass.
     ShaderPipeline PrepassBackground;
     vk::UniqueRenderPass CompositeRenderPass;

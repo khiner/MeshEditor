@@ -119,8 +119,10 @@ bool DepsUnchanged(const std::vector<ShaderDep> &deps) {
     return true;
 }
 
-std::vector<uint32_t> CompileToSpirv(ShaderType type, const std::filesystem::path &path) {
-    auto &cached = SpirvCache[path.string()];
+std::vector<uint32_t> CompileToSpirv(ShaderType type, const std::filesystem::path &path, const std::vector<std::string> &defines) {
+    auto cache_key = path.string();
+    for (const auto &define : defines) cache_key += "|" + define;
+    auto &cached = SpirvCache[cache_key];
     if (!cached.Code.empty() && DepsUnchanged(cached.Deps)) return cached.Code;
 
     static const shaderc::Compiler compiler;
@@ -129,6 +131,7 @@ std::vector<uint32_t> CompileToSpirv(ShaderType type, const std::filesystem::pat
     compile_opts.SetGenerateDebugInfo();
     compile_opts.SetOptimizationLevel(shaderc_optimization_level_performance);
     compile_opts.SetIncluder(std::make_unique<ShaderIncluder>(deps));
+    for (const auto &define : defines) compile_opts.AddMacroDefinition(define);
     const auto kind = [type] {
         switch (type) {
             case ShaderType::eVertex: return shaderc_glsl_vertex_shader;
@@ -148,13 +151,13 @@ std::vector<uint32_t> CompileToSpirv(ShaderType type, const std::filesystem::pat
 }
 } // namespace
 
-static vk::UniqueShaderModule CompileToModule(vk::Device device, ShaderType type, const std::filesystem::path &path) {
-    const auto spirv = CompileToSpirv(type, path);
+static vk::UniqueShaderModule CompileToModule(vk::Device device, ShaderType type, const std::filesystem::path &path, const std::vector<std::string> &defines = {}) {
+    const auto spirv = CompileToSpirv(type, path, defines);
     return device.createShaderModuleUnique({{}, spirv});
 }
 
-vk::UniqueShaderModule CompileShaderModule(vk::Device device, ShaderType type, const std::filesystem::path &relative_path) {
-    return CompileToModule(device, type, Paths::Shaders() / relative_path);
+vk::UniqueShaderModule CompileShaderModule(vk::Device device, ShaderType type, const std::filesystem::path &relative_path, const std::vector<std::string> &defines) {
+    return CompileToModule(device, type, Paths::Shaders() / relative_path, defines);
 }
 
 std::vector<vk::PipelineShaderStageCreateInfo> Shaders::CompileAll(vk::Device device) {
@@ -162,7 +165,7 @@ std::vector<vk::PipelineShaderStageCreateInfo> Shaders::CompileAll(vk::Device de
         Resources | transform([device](auto &resource) {
             const auto type = resource.TypePath.Type;
             const auto path = Paths::Shaders() / resource.TypePath.Path;
-            resource.Module = CompileToModule(device, type, path);
+            resource.Module = CompileToModule(device, type, path, resource.TypePath.Defines);
             vk::PipelineShaderStageCreateInfo stage_info{vk::PipelineShaderStageCreateFlags{}, type, *resource.Module, "main"};
             if (resource.Specialization) stage_info.setPSpecializationInfo(&resource.Specialization->Info);
             return stage_info;

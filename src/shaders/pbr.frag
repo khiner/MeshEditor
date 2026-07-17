@@ -64,8 +64,14 @@ layout(location = 8) flat in uint MaterialIndex;
 layout(location = 9) in vec4 VertexColor;
 layout(location = 10) in vec4 WorldTangent;
 layout(location = 11) flat in float WorldScale;
+#ifdef VELOCITY_OUTPUT
+layout(location = 14) in vec4 Motion;
+#endif
 
 layout(location = 0) out vec4 OutColor;
+#ifdef VELOCITY_OUTPUT
+layout(location = 1) out vec4 OutMotion;
+#endif
 
 const uint INVALID_SLOT = 0xffffffffu;
 
@@ -192,6 +198,11 @@ NormalInfo GetNormalInfo(const PBRMaterial material) {
 }
 
 void main() {
+#ifdef VELOCITY_OUTPUT
+    // Written up front so every return path carries it. Discarded fragments write nothing,
+    // leaving the motion of whatever surface (or the background) shows through.
+    OutMotion = Motion;
+#endif
     const PBRMaterial material = MaterialBuffers[nonuniformEXT(SceneViewUBO.MaterialSlot)].Materials[MaterialIndex];
     if (material.DoubleSided == 0u && !IsFrontFacing(WorldNormal, WorldPosition)) discard;
 
