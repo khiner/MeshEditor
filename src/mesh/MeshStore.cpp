@@ -100,6 +100,14 @@ MeshDataWithMaterials ReadObj(const std::filesystem::path &path) {
     };
 
     std::unordered_map<ObjVertexKey, uint32_t, ObjVertexKeyHash> vertex_cache;
+    // Append the strided source element at `index` (when valid), else `fallback`.
+    const auto append_attr = [](auto &dst, const auto &src, int index, auto fallback) {
+        constexpr auto N = decltype(fallback)::length();
+        if (index >= 0 && size_t(index) * N + (N - 1) < src.size()) {
+            for (glm::length_t c = 0; c < N; ++c) fallback[c] = src[size_t(index) * N + c];
+        }
+        dst->emplace_back(fallback);
+    };
     const auto FindOrAddVertex = [&](const tinyobj::index_t &index) -> uint32_t {
         const ObjVertexKey key{.PositionIndex = index.vertex_index, .NormalIndex = index.normal_index, .TexCoordIndex = index.texcoord_index};
         if (const auto it = vertex_cache.find(key); it != vertex_cache.end()) return it->second;
@@ -115,28 +123,8 @@ MeshDataWithMaterials ReadObj(const std::filesystem::path &path) {
             attrib.vertices[size_t(index.vertex_index) * 3u + 2u]
         );
 
-        if (attrs.Normals) {
-            if (index.normal_index >= 0 && size_t(index.normal_index) * 3u + 2u < attrib.normals.size()) {
-                attrs.Normals->emplace_back(
-                    attrib.normals[size_t(index.normal_index) * 3u],
-                    attrib.normals[size_t(index.normal_index) * 3u + 1u],
-                    attrib.normals[size_t(index.normal_index) * 3u + 2u]
-                );
-            } else {
-                attrs.Normals->emplace_back(vec3{0.f});
-            }
-        }
-
-        if (attrs.TexCoords0) {
-            if (index.texcoord_index >= 0 && size_t(index.texcoord_index) * 2u + 1u < attrib.texcoords.size()) {
-                attrs.TexCoords0->emplace_back(
-                    attrib.texcoords[size_t(index.texcoord_index) * 2u],
-                    attrib.texcoords[size_t(index.texcoord_index) * 2u + 1u]
-                );
-            } else {
-                attrs.TexCoords0->emplace_back(vec2{0.f});
-            }
-        }
+        if (attrs.Normals) append_attr(attrs.Normals, attrib.normals, index.normal_index, vec3{0.f});
+        if (attrs.TexCoords0) append_attr(attrs.TexCoords0, attrib.texcoords, index.texcoord_index, vec2{0.f});
 
         vertex_cache.emplace(key, vertex_index);
         return vertex_index;

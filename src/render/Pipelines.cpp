@@ -54,6 +54,31 @@ constexpr vk::SubpassDependency ExternalFragReadDependency() {
     };
 }
 
+// Ordering for passes whose depth tests read a prior pass's depth writes, plus the shared frag-read dependency.
+std::array<vk::SubpassDependency, 2> DepthLoadDependencies() {
+    return {
+        vk::SubpassDependency{
+            vk::SubpassExternal,
+            0,
+            vk::PipelineStageFlagBits::eLateFragmentTests,
+            vk::PipelineStageFlagBits::eEarlyFragmentTests,
+            vk::AccessFlagBits::eDepthStencilAttachmentWrite,
+            vk::AccessFlagBits::eDepthStencilAttachmentRead | vk::AccessFlagBits::eDepthStencilAttachmentWrite,
+            {},
+        },
+        ExternalFragReadDependency(),
+    };
+}
+
+// Render pass with a single graphics subpass. Depth (when `has_depth`) is attachment 0; colors follow in order.
+vk::UniqueRenderPass CreateRenderPass(vk::Device d, std::span<const vk::AttachmentDescription> attachments, bool has_depth, std::span<const vk::SubpassDependency> dependencies = {}) {
+    static constexpr vk::AttachmentReference DepthRef{0, vk::ImageLayout::eDepthStencilAttachmentOptimal};
+    std::vector<vk::AttachmentReference> color_refs;
+    for (uint32_t i = has_depth ? 1u : 0u; i < attachments.size(); ++i) color_refs.emplace_back(i, vk::ImageLayout::eColorAttachmentOptimal);
+    const vk::SubpassDescription subpass{{}, vk::PipelineBindPoint::eGraphics, 0, nullptr, uint32_t(color_refs.size()), color_refs.data(), nullptr, has_depth ? &DepthRef : nullptr};
+    return d.createRenderPassUnique({{}, uint32_t(attachments.size()), attachments.data(), 1, &subpass, uint32_t(dependencies.size()), dependencies.data()});
+}
+
 } // namespace
 
 void PipelineRenderer::CompileShaders() {
@@ -175,25 +200,10 @@ static vk::UniqueRenderPass CreateSceneRenderPass(vk::Device d, bool load_depth 
         // Color: cleared transparent, stored for sampling in the viewport composite.
         {{}, Format::HdrColor, vk::SampleCountFlagBits::e1, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eStore, {}, {}, vk::ImageLayout::eUndefined, vk::ImageLayout::eShaderReadOnlyOptimal},
     };
-    const vk::AttachmentReference depth_attachment_ref{0, vk::ImageLayout::eDepthStencilAttachmentOptimal};
-    const vk::AttachmentReference color_attachment_ref{1, vk::ImageLayout::eColorAttachmentOptimal};
-    const vk::SubpassDescription subpass{{}, vk::PipelineBindPoint::eGraphics, 0, nullptr, 1, &color_attachment_ref, nullptr, &depth_attachment_ref};
     // The depth dependency orders the load variant's tests after the pre-pass's depth writes.
     // Both variants carry it so they stay render-pass compatible (compatibility requires equal
     // dependency counts), and it is pure ordering for the clear variant.
-    const std::array dependencies{
-        vk::SubpassDependency{
-            vk::SubpassExternal,
-            0,
-            vk::PipelineStageFlagBits::eLateFragmentTests,
-            vk::PipelineStageFlagBits::eEarlyFragmentTests,
-            vk::AccessFlagBits::eDepthStencilAttachmentWrite,
-            vk::AccessFlagBits::eDepthStencilAttachmentRead | vk::AccessFlagBits::eDepthStencilAttachmentWrite,
-            {},
-        },
-        ExternalFragReadDependency(),
-    };
-    return d.createRenderPassUnique({{}, attachments, subpass, dependencies});
+    return CreateRenderPass(d, attachments, true, DepthLoadDependencies());
 }
 
 // The scene's depth loaded for occlusion, a display-referred overlay color target over transparent,
@@ -206,26 +216,8 @@ static vk::UniqueRenderPass CreateOverlayRenderPass(vk::Device d) {
         // LineData: cleared to zero (alpha=0 means "no line here").
         {{}, Format::LineData, vk::SampleCountFlagBits::e1, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eStore, {}, {}, vk::ImageLayout::eUndefined, vk::ImageLayout::eShaderReadOnlyOptimal},
     };
-    const vk::AttachmentReference depth_attachment_ref{0, vk::ImageLayout::eDepthStencilAttachmentOptimal};
-    const std::array color_attachment_refs{
-        vk::AttachmentReference{1, vk::ImageLayout::eColorAttachmentOptimal},
-        vk::AttachmentReference{2, vk::ImageLayout::eColorAttachmentOptimal},
-    };
-    const vk::SubpassDescription subpass{{}, vk::PipelineBindPoint::eGraphics, 0, nullptr, uint32_t(color_attachment_refs.size()), color_attachment_refs.data(), nullptr, &depth_attachment_ref};
-    const std::array dependencies{
-        // The scene pass's depth writes must land before this pass tests against them.
-        vk::SubpassDependency{
-            vk::SubpassExternal,
-            0,
-            vk::PipelineStageFlagBits::eLateFragmentTests,
-            vk::PipelineStageFlagBits::eEarlyFragmentTests,
-            vk::AccessFlagBits::eDepthStencilAttachmentWrite,
-            vk::AccessFlagBits::eDepthStencilAttachmentRead | vk::AccessFlagBits::eDepthStencilAttachmentWrite,
-            {},
-        },
-        ExternalFragReadDependency(),
-    };
-    return d.createRenderPassUnique({{}, attachments, subpass, dependencies});
+    // The scene pass's depth writes must land before this pass tests against them.
+    return CreateRenderPass(d, attachments, true, DepthLoadDependencies());
 }
 
 // The scene render pass plus a velocity attachment the geometry writes its screen motion into.
@@ -238,14 +230,8 @@ static vk::UniqueRenderPass CreateSceneVelocityRenderPass(vk::Device d) {
         // Velocity: cleared to zero, which reads as static wherever nothing draws.
         {{}, Format::Velocity, vk::SampleCountFlagBits::e1, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eStore, {}, {}, vk::ImageLayout::eUndefined, vk::ImageLayout::eShaderReadOnlyOptimal},
     };
-    const vk::AttachmentReference depth_attachment_ref{0, vk::ImageLayout::eDepthStencilAttachmentOptimal};
-    const std::array color_attachment_refs{
-        vk::AttachmentReference{1, vk::ImageLayout::eColorAttachmentOptimal},
-        vk::AttachmentReference{2, vk::ImageLayout::eColorAttachmentOptimal},
-    };
-    const vk::SubpassDescription subpass{{}, vk::PipelineBindPoint::eGraphics, 0, nullptr, uint32_t(color_attachment_refs.size()), color_attachment_refs.data(), nullptr, &depth_attachment_ref};
     const std::array dependencies{ExternalFragReadDependency()};
-    return d.createRenderPassUnique({{}, attachments, subpass, dependencies});
+    return CreateRenderPass(d, attachments, true, dependencies);
 }
 
 // Fullscreen-quad twins for the scene+velocity render pass, keyed by the same SPTs the plain scene
@@ -265,10 +251,8 @@ static PipelineRenderer CreateSceneVelocityRenderer(const PipelineContext &ctx) 
 // One color attachment, no depth, always stored. Backs each of the fullscreen-quad passes.
 static vk::UniqueRenderPass CreateColorOnlyRenderPass(vk::Device d, vk::Format format, vk::AttachmentLoadOp load, vk::ImageLayout initial, vk::ImageLayout final) {
     const vk::AttachmentDescription attachment{{}, format, vk::SampleCountFlagBits::e1, load, vk::AttachmentStoreOp::eStore, {}, {}, initial, final};
-    const vk::AttachmentReference color_ref{0, vk::ImageLayout::eColorAttachmentOptimal};
-    const vk::SubpassDescription subpass{{}, vk::PipelineBindPoint::eGraphics, 0, nullptr, 1, &color_ref};
     const std::array dependencies{ExternalFragReadDependency()};
-    return d.createRenderPassUnique({{}, attachment, subpass, dependencies});
+    return CreateRenderPass(d, {&attachment, 1}, false, dependencies);
 }
 
 static PipelineRenderer CreateSceneRenderer(const PipelineContext &ctx) {
@@ -447,13 +431,9 @@ static PipelineRenderer CreateSilhouetteRenderer(const PipelineContext &ctx) {
         // Single-sampled offscreen "image" of two channels: depth and object ID.
         {{}, Format::Float2, vk::SampleCountFlagBits::e1, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eStore, {}, {}, vk::ImageLayout::eUndefined, vk::ImageLayout::eShaderReadOnlyOptimal},
     };
-    const vk::AttachmentReference depth_attachment_ref{0, vk::ImageLayout::eDepthStencilAttachmentOptimal};
-    const vk::AttachmentReference color_attachment_ref{1, vk::ImageLayout::eColorAttachmentOptimal};
-    const vk::SubpassDescription subpass{{}, vk::PipelineBindPoint::eGraphics, 0, nullptr, 1, &color_attachment_ref, nullptr, &depth_attachment_ref};
-
     std::unordered_map<SPT, ShaderPipeline> pipelines;
     pipelines.emplace(SPT::SilhouetteDepthObject, ctx.CreateGraphics({{{Vert, "PositionTransform.vert"}, {Frag, "DepthObject.frag"}}}, eTriangleList, {NoBlend}, CreateDepthStencil(), MainDrawPushConstantRange));
-    return {ctx.Device.createRenderPassUnique({{}, attachments, subpass}), std::move(pipelines)};
+    return {CreateRenderPass(ctx.Device, attachments, true), std::move(pipelines)};
 }
 
 SilhouettePipeline::SilhouettePipeline(const PipelineContext &ctx) : Renderer{CreateSilhouetteRenderer(ctx)} {}
@@ -475,13 +455,9 @@ static PipelineRenderer CreateSilhouetteEdgeRenderer(const PipelineContext &ctx)
         {{}, Format::Depth, vk::SampleCountFlagBits::e1, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eStore, {}, {}, vk::ImageLayout::eUndefined, vk::ImageLayout::eDepthStencilReadOnlyOptimal},
         {{}, Format::Float, vk::SampleCountFlagBits::e1, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eStore, {}, {}, vk::ImageLayout::eUndefined, vk::ImageLayout::eShaderReadOnlyOptimal},
     };
-    const vk::AttachmentReference depth_attachment_ref{0, vk::ImageLayout::eDepthStencilAttachmentOptimal};
-    const vk::AttachmentReference color_attachment_ref{1, vk::ImageLayout::eColorAttachmentOptimal};
-    const vk::SubpassDescription subpass{{}, vk::PipelineBindPoint::eGraphics, 0, nullptr, 1, &color_attachment_ref, nullptr, &depth_attachment_ref};
-
     std::unordered_map<SPT, ShaderPipeline> pipelines;
     pipelines.emplace(SPT::SilhouetteEdgeDepthObject, ctx.CreateGraphics({{{Vert, "TexQuad.vert"}, {Frag, "SilhouetteEdgeDepthObject.frag"}}}, eTriangleStrip, {NoBlend}, CreateDepthStencil(), FragPc(sizeof(uint32_t) * 2)));
-    return {ctx.Device.createRenderPassUnique({{}, attachments, subpass}), std::move(pipelines)};
+    return {CreateRenderPass(ctx.Device, attachments, true), std::move(pipelines)};
 }
 
 SilhouetteEdgePipeline::SilhouetteEdgePipeline(const PipelineContext &ctx) : Renderer{CreateSilhouetteEdgeRenderer(ctx)} {}
@@ -501,9 +477,6 @@ static PipelineRenderer CreateSelectionFragmentRenderer(const PipelineContext &c
     const std::vector<vk::AttachmentDescription> attachments{
         {{}, Format::Depth, vk::SampleCountFlagBits::e1, vk::AttachmentLoadOp::eLoad, vk::AttachmentStoreOp::eDontCare, vk::AttachmentLoadOp::eDontCare, vk::AttachmentStoreOp::eDontCare, vk::ImageLayout::eDepthStencilAttachmentOptimal, vk::ImageLayout::eDepthStencilAttachmentOptimal},
     };
-    const vk::AttachmentReference depth_attachment_ref{0, vk::ImageLayout::eDepthStencilAttachmentOptimal};
-    const vk::SubpassDescription subpass{{}, vk::PipelineBindPoint::eGraphics, 0, nullptr, 0, nullptr, nullptr, &depth_attachment_ref};
-
     constexpr vk::PushConstantRange draw_pc{Vert | Frag, 0, sizeof(SelectionDrawPushConstants)};
     constexpr vk::PushConstantRange element_pc{Vert | Frag, 0, sizeof(SelectionElementPushConstants)};
     struct Desc {
@@ -540,7 +513,7 @@ static PipelineRenderer CreateSelectionFragmentRenderer(const PipelineContext &c
     pipelines.emplace(SPT::SelectionFragmentLines, ctx.CreateGraphics({{{Vert, "PositionTransform.vert"}, {Frag, "SelectionFragment.frag"}}}, eLineList, {}, CreateDepthStencil(false, false), draw_pc));
     pipelines.emplace(SPT::SelectionObjectExtrasLines, ctx.CreateGraphics({{{Vert, "ObjectExtrasSelection.vert"}, {Frag, "SelectionFragment.frag"}}}, eLineList, {}, CreateDepthStencil(false, false), draw_pc));
     pipelines.emplace(SPT::SelectionFragmentPoints, ctx.CreateGraphics({{{Vert, "PositionTransform.vert"}, {Frag, "SelectionFragment.frag"}}}, ePointList, {}, CreateDepthStencil(false, false), draw_pc));
-    return {ctx.Device.createRenderPassUnique({{}, attachments, subpass}), std::move(pipelines)};
+    return {CreateRenderPass(ctx.Device, attachments, true), std::move(pipelines)};
 }
 
 SelectionFragmentPipeline::SelectionFragmentPipeline(const PipelineContext &ctx) : Renderer{CreateSelectionFragmentRenderer(ctx)} {}

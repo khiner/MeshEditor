@@ -173,6 +173,38 @@ std::optional<size_t> DrawOverlayIconButtonGroup(
     return clicked_index;
 }
 
+// Dropdown-arrow companion to an overlay icon-button group, spanning `size` at `pos`.
+// Opens `popup_id` on press (not release) so the popup is still in the stack and the open-check
+// gates correctly, matching how ImGui's own BeginCombo works (PressedOnClick).
+void DrawOverlayDropdownArrow(ImVec2 pos, ImVec2 size, const OverlayIconButtonStyle &style, const char *id, const char *popup_id, bool &any_hovered) {
+    const auto saved_cursor = GetCursorScreenPos();
+    SetCursorScreenPos(pos);
+    PushID(id);
+    InvisibleButton("##btn", size);
+    const bool arrow_hovered = IsItemHovered();
+    PopID();
+    SetCursorScreenPos(saved_cursor);
+
+    if (arrow_hovered) any_hovered = true;
+    const auto arrow_min = pos + style.Padding;
+    const auto arrow_max = pos + size - style.Padding;
+    const bool popup_open = IsPopupOpen(popup_id);
+    const auto bg_color = GetColorU32(popup_open ? ImGuiCol_ButtonActive : arrow_hovered ? ImGuiCol_ButtonHovered :
+                                                                                           ImGuiCol_Button);
+    auto &dl = *GetWindowDrawList();
+    dl.AddRectFilled(arrow_min, arrow_max, bg_color, style.CornerRounding, ImDrawFlags_RoundCornersRight);
+
+    const auto center = (arrow_min + arrow_max) * 0.5f;
+    constexpr float arrow_half = 3.5f;
+    dl.AddTriangleFilled(
+        center - ImVec2{arrow_half, arrow_half * 0.5f},
+        center + ImVec2{arrow_half, -arrow_half * 0.5f},
+        center + ImVec2{0.f, arrow_half * 0.5f},
+        GetColorU32(ImGuiCol_Text)
+    );
+    if (IsMouseClicked(0) && arrow_hovered && !popup_open) OpenPopup(popup_id);
+}
+
 } // namespace
 
 void Interact(entt::registry &r, entt::entity viewport, FrameState &frame) {
@@ -466,34 +498,7 @@ void InteractOverlay(entt::registry &r, entt::entity viewport, FrameState &frame
             });
         }
 
-        { // Dropdown arrow button
-            auto &dl = *GetWindowDrawList();
-            const auto saved_cursor = GetCursorScreenPos();
-            SetCursorScreenPos(start_pos + ImVec2{shading_button_w * 4.f, 0.f});
-            PushID("##ShadingArrow");
-            InvisibleButton("##btn", {shading_arrow_w, shading_button_h});
-            const bool arrow_hovered = IsItemHovered();
-            PopID();
-            SetCursorScreenPos(saved_cursor);
-
-            if (arrow_hovered) frame.OverlayControlsHovered = true;
-            const auto arrow_min = start_pos + ImVec2{shading_button_w * 4.f + shading_button_style.Padding.x, shading_button_style.Padding.y};
-            const auto arrow_max = start_pos + ImVec2{shading_button_w * 4.f + shading_arrow_w - shading_button_style.Padding.x, shading_button_h - shading_button_style.Padding.y};
-            const bool popup_open = IsPopupOpen("##ShadingDropdown");
-            const auto bg_color = GetColorU32(popup_open ? ImGuiCol_ButtonActive : arrow_hovered ? ImGuiCol_ButtonHovered :
-                                                                                                   ImGuiCol_Button);
-            dl.AddRectFilled(arrow_min, arrow_max, bg_color, shading_button_style.CornerRounding, ImDrawFlags_RoundCornersRight);
-
-            const auto center = (arrow_min + arrow_max) * 0.5f;
-            const auto arrow_half = 3.5f;
-            dl.AddTriangleFilled(
-                center - ImVec2{arrow_half, arrow_half * 0.5f},
-                center + ImVec2{arrow_half, -arrow_half * 0.5f},
-                center + ImVec2{0.f, arrow_half * 0.5f},
-                GetColorU32(ImGuiCol_Text)
-            );
-            if (IsMouseClicked(0) && arrow_hovered && !popup_open) OpenPopup("##ShadingDropdown");
-        }
+        DrawOverlayDropdownArrow(start_pos + ImVec2{shading_button_w * 4.f, 0.f}, {shading_arrow_w, shading_button_h}, shading_button_style, "##ShadingArrow", "##ShadingDropdown", frame.OverlayControlsHovered);
         { // Dropdown popup
             SetNextWindowPos(start_pos + ImVec2{shading_group_width, shading_button_h + 2.f}, ImGuiCond_Always, {1.f, 0.f});
             PushStyleVar(ImGuiStyleVar_WindowPadding, {8, 8});
@@ -704,38 +709,7 @@ void InteractOverlay(entt::registry &r, entt::entity viewport, FrameState &frame
                 action::Emit(action::UpdateOf<&ViewportDisplay::ShowOverlays>(viewport, !settings.ShowOverlays));
             }
         }
-        { // Dropdown arrow button
-            auto &dl = *GetWindowDrawList();
-
-            const auto saved_cursor = GetCursorScreenPos();
-            SetCursorScreenPos(group_start + ImVec2{icon_w, 0.f});
-            PushID("##OverlayArrow");
-            InvisibleButton("##btn", {arrow_w, button_h});
-            const bool arrow_hovered = IsItemHovered();
-            PopID();
-            SetCursorScreenPos(saved_cursor);
-
-            if (arrow_hovered) frame.OverlayControlsHovered = true;
-            const auto arrow_min = group_start + ImVec2{icon_w + shading_button_style.Padding.x, shading_button_style.Padding.y};
-            const auto arrow_max = group_start + ImVec2{icon_w + arrow_w - shading_button_style.Padding.x, button_h - shading_button_style.Padding.y};
-            const bool popup_open = IsPopupOpen("##OverlayDropdown");
-            const auto bg_color = GetColorU32(popup_open ? ImGuiCol_ButtonActive : arrow_hovered ? ImGuiCol_ButtonHovered :
-                                                                                                   ImGuiCol_Button);
-            dl.AddRectFilled(arrow_min, arrow_max, bg_color, shading_button_style.CornerRounding, ImDrawFlags_RoundCornersRight);
-
-            // Triangle arrow
-            const auto center = (arrow_min + arrow_max) * 0.5f;
-            const auto arrow_half = 3.5f;
-            dl.AddTriangleFilled(
-                center - ImVec2{arrow_half, arrow_half * 0.5f},
-                center + ImVec2{arrow_half, -arrow_half * 0.5f},
-                center + ImVec2{0.f, arrow_half * 0.5f},
-                GetColorU32(ImGuiCol_Text)
-            );
-            // Open on press (not release) so the popup is still in the stack and !popup_open gates correctly,
-            // matching how ImGui's own BeginCombo works (PressedOnClick).
-            if (IsMouseClicked(0) && arrow_hovered && !popup_open) OpenPopup("##OverlayDropdown");
-        }
+        DrawOverlayDropdownArrow(group_start + ImVec2{icon_w, 0.f}, {arrow_w, button_h}, shading_button_style, "##OverlayArrow", "##OverlayDropdown", frame.OverlayControlsHovered);
         { // Dropdown popup
             SetNextWindowPos(group_start + ImVec2{0.f, button_h + 2.f});
             PushStyleVar(ImGuiStyleVar_WindowPadding, {8, 8});
@@ -925,25 +899,22 @@ void DrawOverlay(entt::registry &r, entt::entity viewport, FrameState &frame) {
         const auto box_max = glm::max(*frame.BoxSelectStart, *frame.BoxSelectEnd);
         dl.AddRectFilled(std::bit_cast<ImVec2>(box_min), std::bit_cast<ImVec2>(box_max), IM_COL32(255, 255, 255, 30));
 
-        // Dashed outline
+        // Dashed outline: dashes step from `a` toward `b` along their one differing axis.
         static constexpr auto outline_color{IM_COL32(255, 255, 255, 200)};
         static constexpr float dash_size{4}, gap_size{4};
-        // Top
-        for (float x = box_min.x; x < box_max.x; x += dash_size + gap_size) {
-            dl.AddLine({x, box_min.y}, {glm::min(x + dash_size, box_max.x), box_min.y}, outline_color, 1.f);
-        }
-        // Bottom
-        for (float x = box_min.x; x < box_max.x; x += dash_size + gap_size) {
-            dl.AddLine({x, box_max.y}, {glm::min(x + dash_size, box_max.x), box_max.y}, outline_color, 1.f);
-        }
-        // Left
-        for (float y = box_min.y; y < box_max.y; y += dash_size + gap_size) {
-            dl.AddLine({box_min.x, y}, {box_min.x, glm::min(y + dash_size, box_max.y)}, outline_color, 1.f);
-        }
-        // Right
-        for (float y = box_min.y; y < box_max.y; y += dash_size + gap_size) {
-            dl.AddLine({box_max.x, y}, {box_max.x, glm::min(y + dash_size, box_max.y)}, outline_color, 1.f);
-        }
+        const auto dash_line = [&](vec2 a, vec2 b) {
+            const uint32_t axis = a.x == b.x ? 1 : 0;
+            for (float v = a[axis]; v < b[axis]; v += dash_size + gap_size) {
+                auto d0 = a, d1 = b;
+                d0[axis] = v;
+                d1[axis] = glm::min(v + dash_size, b[axis]);
+                dl.AddLine(std::bit_cast<ImVec2>(d0), std::bit_cast<ImVec2>(d1), outline_color, 1.f);
+            }
+        };
+        dash_line({box_min.x, box_min.y}, {box_max.x, box_min.y});
+        dash_line({box_min.x, box_max.y}, {box_max.x, box_max.y});
+        dash_line({box_min.x, box_min.y}, {box_min.x, box_max.y});
+        dash_line({box_max.x, box_min.y}, {box_max.x, box_max.y});
     }
 
     // Camera look-through frame overlay: show the looked-through camera's view as a centered frame.

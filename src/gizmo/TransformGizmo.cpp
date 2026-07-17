@@ -134,6 +134,22 @@ constexpr std::optional<std::pair<InteractionOp, InteractionOp>> PlaneAxes(Inter
 
 constexpr std::pair<uint32_t, uint32_t> PerpendicularAxes(uint32_t axis_i) { return {(axis_i + 1) % 3, (axis_i + 2) % 3}; }
 
+// Per-axis scale vector for `op`: the op's axis or plane axes get `v`, the rest stay 1 (uniform for Screen/XYZ).
+constexpr vec3 ScaleVecForOp(InteractionOp op, float v) {
+    if (op == AxisX || op == AxisY || op == AxisZ) {
+        vec3 s{1};
+        s[AxisIndex(op)] = v;
+        return s;
+    }
+    if (auto plane_axes = PlaneAxes(op)) {
+        vec3 s{1};
+        s[AxisIndex(plane_axes->first)] = v;
+        s[AxisIndex(plane_axes->second)] = v;
+        return s;
+    }
+    return vec3{v};
+}
+
 constexpr vec4 BuildPlane(vec3 p, const vec4 &p_normal) { return {vec3{p_normal}, glm::dot(p_normal, vec4{p, 1})}; }
 
 constexpr ImVec2 ImMin(ImVec2 lhs, ImVec2 rhs) { return {lhs.x < rhs.x ? lhs.x : rhs.x, lhs.y < rhs.y ? lhs.y : rhs.y}; }
@@ -336,9 +352,9 @@ std::string ValueLabel(Interaction i, vec3 v, TransformGizmo::Mode mode, const N
             const float dist = glm::length(v);
             auto d = [&](float val) { return std::format("D: {} ({:.4f}){}", NumericDisplayStr(num, val, "{:.4f}"), dist, con); };
             switch (i.Op) {
-                case AxisX: return d(v.x);
-                case AxisY: return d(v.y);
-                case AxisZ: return d(v.z);
+                case AxisX:
+                case AxisY:
+                case AxisZ: return d(v[AxisIndex(i.Op)]);
                 case YZ: return std::format("D: {:.4f}   D: {:.4f} ({:.4f}){}", v.y, v.z, dist, con);
                 case ZX: return std::format("D: {:.4f}   D: {:.4f} ({:.4f}){}", v.z, v.x, dist, con);
                 case XY: return std::format("D: {:.4f}   D: {:.4f} ({:.4f}){}", v.x, v.y, dist, con);
@@ -348,9 +364,9 @@ std::string ValueLabel(Interaction i, vec3 v, TransformGizmo::Mode mode, const N
         case Scale: {
             auto s = [&](float val) { return std::format("Scale: {}{}", NumericDisplayStr(num, val, "{:.4f}"), con); };
             switch (i.Op) {
-                case AxisX: return s(v.x);
-                case AxisY: return s(v.y);
-                case AxisZ: return s(v.z);
+                case AxisX:
+                case AxisY:
+                case AxisZ: return s(v[AxisIndex(i.Op)]);
                 case YZ: return std::format("Scale: {:.4f} : {:.4f}{}", v.y, v.z, con);
                 case ZX: return std::format("Scale: {:.4f} : {:.4f}{}", v.z, v.x, con);
                 case XY: return std::format("Scale: {:.4f} : {:.4f}{}", v.x, v.y, con);
@@ -790,18 +806,7 @@ LocalTransformDelta GetLocalTransformDelta(const ViewFrame &f, const GizmoIntera
     if (type == TransformType::Scale) {
         const auto o_px = std::bit_cast<vec2>(WsToPx(f, ts.P));
         const auto scale = glm::distance(f.MousePx, o_px) / glm::max(0.001f, glm::distance(g.Start->MousePx, o_px));
-        if (op == AxisX || op == AxisY || op == AxisZ) {
-            vec3 s{1};
-            s[AxisIndex(op)] = scale;
-            return {.S = s};
-        }
-        if (auto plane_axes = PlaneAxes(op)) {
-            vec3 s{1};
-            s[AxisIndex(plane_axes->first)] = scale;
-            s[AxisIndex(plane_axes->second)] = scale;
-            return {.S = s};
-        }
-        return {.S = vec3{scale}}; // uniform (Screen / XYZ)
+        return {.S = ScaleVecForOp(op, scale)};
     }
 
     const auto mouse_plane = mouse_ray(IntersectPlane(mouse_ray, plane));
@@ -941,20 +946,7 @@ std::optional<Result> Interact(GizmoInteraction &g, const GizmoTransform &transf
                 return Result{ts, {.P = p}};
             }
             if (type == TransformType::Scale) {
-                const auto s = [&]() -> vec3 {
-                    if (op == AxisX || op == AxisY || op == AxisZ) {
-                        vec3 s{1};
-                        s[AxisIndex(op)] = value;
-                        return s;
-                    }
-                    if (auto pa = PlaneAxes(op)) {
-                        vec3 s{1};
-                        s[AxisIndex(pa->first)] = value;
-                        s[AxisIndex(pa->second)] = value;
-                        return s;
-                    }
-                    return vec3{value};
-                }();
+                const auto s = ScaleVecForOp(op, value);
                 g.Delta.S = s;
                 return Result{ts, {.S = s}};
             }

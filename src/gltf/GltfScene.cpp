@@ -126,44 +126,77 @@ std::optional<uint32_t> ToIndex(const fastgltf::Optional<size_t> &index, size_t 
     return ToIndex(*index, upper_bound);
 }
 
-Filter ToFilter(fastgltf::Filter filter) {
-    switch (filter) {
-        case fastgltf::Filter::Nearest: return Filter::Nearest;
-        case fastgltf::Filter::Linear: return Filter::Linear;
-        case fastgltf::Filter::NearestMipMapNearest: return Filter::NearestMipMapNearest;
-        case fastgltf::Filter::LinearMipMapNearest: return Filter::LinearMipMapNearest;
-        case fastgltf::Filter::NearestMipMapLinear: return Filter::NearestMipMapLinear;
-        case fastgltf::Filter::LinearMipMapLinear: return Filter::LinearMipMapLinear;
+// Bidirectional fastgltf↔engine enum mapping over a pair table. Unmapped values return `fallback`.
+template<typename A, typename B, size_t N>
+constexpr B MapEnum(const std::pair<A, B> (&table)[N], A from, B fallback) {
+    for (const auto &[a, b] : table) {
+        if (a == from) return b;
     }
-    return Filter::LinearMipMapLinear;
+    return fallback;
 }
+template<typename A, typename B, size_t N>
+constexpr A MapEnumBack(const std::pair<A, B> (&table)[N], B from, A fallback) {
+    for (const auto &[a, b] : table) {
+        if (b == from) return a;
+    }
+    return fallback;
+}
+
+constexpr std::pair<fastgltf::Filter, Filter> FilterMap[]{
+    {fastgltf::Filter::Nearest, Filter::Nearest},
+    {fastgltf::Filter::Linear, Filter::Linear},
+    {fastgltf::Filter::NearestMipMapNearest, Filter::NearestMipMapNearest},
+    {fastgltf::Filter::LinearMipMapNearest, Filter::LinearMipMapNearest},
+    {fastgltf::Filter::NearestMipMapLinear, Filter::NearestMipMapLinear},
+    {fastgltf::Filter::LinearMipMapLinear, Filter::LinearMipMapLinear},
+};
+constexpr std::pair<fastgltf::Wrap, Wrap> WrapMap[]{
+    {fastgltf::Wrap::ClampToEdge, Wrap::ClampToEdge},
+    {fastgltf::Wrap::MirroredRepeat, Wrap::MirroredRepeat},
+    {fastgltf::Wrap::Repeat, Wrap::Repeat},
+};
+constexpr std::pair<fastgltf::MimeType, MimeType> MimeTypeMap[]{
+    {fastgltf::MimeType::None, MimeType::None},
+    {fastgltf::MimeType::JPEG, MimeType::JPEG},
+    {fastgltf::MimeType::PNG, MimeType::PNG},
+    {fastgltf::MimeType::KTX2, MimeType::KTX2},
+    {fastgltf::MimeType::DDS, MimeType::DDS},
+    {fastgltf::MimeType::GltfBuffer, MimeType::GltfBuffer},
+    {fastgltf::MimeType::OctetStream, MimeType::OctetStream},
+    {fastgltf::MimeType::WEBP, MimeType::WEBP},
+};
+constexpr std::pair<fastgltf::AlphaMode, MaterialAlphaMode> AlphaModeMap[]{
+    {fastgltf::AlphaMode::Opaque, MaterialAlphaMode::Opaque},
+    {fastgltf::AlphaMode::Mask, MaterialAlphaMode::Mask},
+    {fastgltf::AlphaMode::Blend, MaterialAlphaMode::Blend},
+};
+constexpr std::pair<fastgltf::AnimationInterpolation, AnimationInterpolation> InterpMap[]{
+    {fastgltf::AnimationInterpolation::Step, AnimationInterpolation::Step},
+    {fastgltf::AnimationInterpolation::Linear, AnimationInterpolation::Linear},
+    {fastgltf::AnimationInterpolation::CubicSpline, AnimationInterpolation::CubicSpline},
+};
+constexpr std::pair<fastgltf::AnimationPath, AnimationPath> PathMap[]{
+    {fastgltf::AnimationPath::Translation, AnimationPath::Translation},
+    {fastgltf::AnimationPath::Rotation, AnimationPath::Rotation},
+    {fastgltf::AnimationPath::Scale, AnimationPath::Scale},
+    {fastgltf::AnimationPath::Weights, AnimationPath::Weights},
+};
+constexpr std::pair<fastgltf::CombineMode, PhysicsCombineMode> CombineMap[]{
+    {fastgltf::CombineMode::Average, PhysicsCombineMode::Average},
+    {fastgltf::CombineMode::Minimum, PhysicsCombineMode::Minimum},
+    {fastgltf::CombineMode::Maximum, PhysicsCombineMode::Maximum},
+    {fastgltf::CombineMode::Multiply, PhysicsCombineMode::Multiply},
+};
+
+Filter ToFilter(fastgltf::Filter f) { return MapEnum(FilterMap, f, Filter::LinearMipMapLinear); }
 std::optional<Filter> ToFilter(const fastgltf::Optional<fastgltf::Filter> &filter) {
     if (!filter) return {};
     return ToFilter(*filter);
 }
-
-Wrap ToWrap(fastgltf::Wrap wrap) {
-    switch (wrap) {
-        case fastgltf::Wrap::ClampToEdge: return Wrap::ClampToEdge;
-        case fastgltf::Wrap::MirroredRepeat: return Wrap::MirroredRepeat;
-        case fastgltf::Wrap::Repeat: return Wrap::Repeat;
-    }
-    return Wrap::Repeat;
-}
-
-MimeType ToMimeType(fastgltf::MimeType mime_type) {
-    switch (mime_type) {
-        case fastgltf::MimeType::None: return MimeType::None;
-        case fastgltf::MimeType::JPEG: return MimeType::JPEG;
-        case fastgltf::MimeType::PNG: return MimeType::PNG;
-        case fastgltf::MimeType::KTX2: return MimeType::KTX2;
-        case fastgltf::MimeType::DDS: return MimeType::DDS;
-        case fastgltf::MimeType::GltfBuffer: return MimeType::GltfBuffer;
-        case fastgltf::MimeType::OctetStream: return MimeType::OctetStream;
-        case fastgltf::MimeType::WEBP: return MimeType::WEBP;
-    }
-    return MimeType::None;
-}
+Wrap ToWrap(fastgltf::Wrap w) { return MapEnum(WrapMap, w, Wrap::Repeat); }
+MimeType ToMimeType(fastgltf::MimeType m) { return MapEnum(MimeTypeMap, m, MimeType::None); }
+AnimationInterpolation ToInterp(fastgltf::AnimationInterpolation i) { return MapEnum(InterpMap, i, AnimationInterpolation::Linear); }
+PhysicsCombineMode ToCombineMode(fastgltf::CombineMode m) { return MapEnum(CombineMap, m, PhysicsCombineMode::Average); }
 
 // Identify an encoded image by its magic bytes, or None if unrecognized.
 MimeType SniffMimeType(std::span<const std::byte> bytes) {
@@ -176,14 +209,7 @@ MimeType SniffMimeType(std::span<const std::byte> bytes) {
     return MimeType::None;
 }
 
-MaterialAlphaMode ToAlphaMode(fastgltf::AlphaMode alpha_mode) {
-    switch (alpha_mode) {
-        case fastgltf::AlphaMode::Opaque: return MaterialAlphaMode::Opaque;
-        case fastgltf::AlphaMode::Mask: return MaterialAlphaMode::Mask;
-        case fastgltf::AlphaMode::Blend: return MaterialAlphaMode::Blend;
-    }
-    return MaterialAlphaMode::Opaque;
-}
+MaterialAlphaMode ToAlphaMode(fastgltf::AlphaMode m) { return MapEnum(AlphaModeMap, m, MaterialAlphaMode::Opaque); }
 
 vec2 ToVec2(const fastgltf::math::nvec2 &v) { return {v.x(), v.y()}; }
 vec3 ToVec3(const fastgltf::math::nvec3 &v) { return {v.x(), v.y(), v.z()}; }
@@ -213,6 +239,34 @@ template<typename OptT>
     }
     return out;
 }
+
+// Top-level material texture slots (PBRMaterial accessor, color space, glTF label), ordered to match MaterialTextureSlot.
+struct MaterialTextureSlotInfo {
+    ::TextureInfo &(*Get)(PBRMaterial &);
+    TextureColorSpace ColorSpace;
+    std::string_view Label;
+};
+constexpr std::array<MaterialTextureSlotInfo, MTS_Count> MaterialTextureSlots{{
+    {[](PBRMaterial &m) -> ::TextureInfo & { return m.BaseColorTexture; }, TextureColorSpace::Srgb, "baseColor"},
+    {[](PBRMaterial &m) -> ::TextureInfo & { return m.MetallicRoughnessTexture; }, TextureColorSpace::Linear, "metallicRoughness"},
+    {[](PBRMaterial &m) -> ::TextureInfo & { return m.NormalTexture; }, TextureColorSpace::Linear, "normal"},
+    {[](PBRMaterial &m) -> ::TextureInfo & { return m.OcclusionTexture; }, TextureColorSpace::Linear, "occlusion"},
+    {[](PBRMaterial &m) -> ::TextureInfo & { return m.EmissiveTexture; }, TextureColorSpace::Srgb, "emissive"},
+    {[](PBRMaterial &m) -> ::TextureInfo & { return m.Specular.Texture; }, TextureColorSpace::Linear, "specular"},
+    {[](PBRMaterial &m) -> ::TextureInfo & { return m.Specular.ColorTexture; }, TextureColorSpace::Srgb, "specularColor"},
+    {[](PBRMaterial &m) -> ::TextureInfo & { return m.Sheen.ColorTexture; }, TextureColorSpace::Srgb, "sheenColor"},
+    {[](PBRMaterial &m) -> ::TextureInfo & { return m.Sheen.RoughnessTexture; }, TextureColorSpace::Linear, "sheenRoughness"},
+    {[](PBRMaterial &m) -> ::TextureInfo & { return m.Transmission.Texture; }, TextureColorSpace::Linear, "transmission"},
+    {[](PBRMaterial &m) -> ::TextureInfo & { return m.DiffuseTransmission.Texture; }, TextureColorSpace::Linear, "diffuseTransmission"},
+    {[](PBRMaterial &m) -> ::TextureInfo & { return m.DiffuseTransmission.ColorTexture; }, TextureColorSpace::Srgb, "diffuseTransmissionColor"},
+    {[](PBRMaterial &m) -> ::TextureInfo & { return m.Volume.ThicknessTexture; }, TextureColorSpace::Linear, "thickness"},
+    {[](PBRMaterial &m) -> ::TextureInfo & { return m.Clearcoat.Texture; }, TextureColorSpace::Linear, "clearcoat"},
+    {[](PBRMaterial &m) -> ::TextureInfo & { return m.Clearcoat.RoughnessTexture; }, TextureColorSpace::Linear, "clearcoatRoughness"},
+    {[](PBRMaterial &m) -> ::TextureInfo & { return m.Clearcoat.NormalTexture; }, TextureColorSpace::Linear, "clearcoatNormal"},
+    {[](PBRMaterial &m) -> ::TextureInfo & { return m.Anisotropy.Texture; }, TextureColorSpace::Linear, "anisotropy"},
+    {[](PBRMaterial &m) -> ::TextureInfo & { return m.Iridescence.Texture; }, TextureColorSpace::Linear, "iridescence"},
+    {[](PBRMaterial &m) -> ::TextureInfo & { return m.Iridescence.ThicknessTexture; }, TextureColorSpace::Linear, "iridescenceThickness"},
+}};
 
 std::expected<Image, std::string> ReadImage(const fastgltf::Asset &asset, uint32_t image_index, const std::filesystem::path &base_dir) {
     if (image_index >= asset.images.size()) return std::unexpected{std::format("glTF image index {} is out of range.", image_index)};
@@ -290,6 +344,82 @@ std::expected<Image, std::string> ReadImage(const fastgltf::Asset &asset, uint32
 // Appends positions/edges from a non-triangle primitive into `target`, merging with prior
 // primitives of the same topology. NORMAL and COLOR_0 are backfilled with zeros where absent
 // so the merged vertex range stays channel-aligned.
+// Append `count` vertices of the optional `name` attribute, backfilling with `fill` where absent.
+// Sets `bit` in `flags` when present. With `check_count`, a count mismatch with POSITION is an error.
+template<typename T>
+std::expected<void, std::string> AppendVertexAttr(
+    const fastgltf::Asset &asset, const fastgltf::Primitive &primitive, std::string_view name,
+    std::optional<std::vector<T>> &attr, uint32_t base_vertex, size_t count, T fill,
+    uint32_t *flags = nullptr, uint32_t bit = 0, bool check_count = false
+) {
+    const auto *const it = primitive.findAttribute(name);
+    if (it == primitive.attributes.end()) {
+        if (attr) attr->resize(base_vertex + count, fill);
+        return {};
+    }
+    if (flags) *flags |= bit;
+    if (!attr) {
+        attr.emplace();
+        attr->resize(base_vertex, fill);
+    }
+    const auto &accessor = asset.accessors[it->accessorIndex];
+    if (check_count && accessor.count != count) {
+        return std::unexpected{std::format("glTF primitive {} count ({}) must match POSITION count ({}).", name, accessor.count, count)};
+    }
+    attr->resize(base_vertex + count, fill);
+    fastgltf::copyFromAccessor<T>(asset, accessor, &(*attr)[base_vertex]);
+    return {};
+}
+
+// CPU stores vec4 regardless of source; track whether any primitive used VEC3.
+// With `flags`, a present accessor with a mismatched count or a non-VEC3/VEC4 type is an error.
+std::expected<void, std::string> AppendColor0(
+    const fastgltf::Asset &asset, const fastgltf::Primitive &primitive, ::MeshVertexAttributes &attrs,
+    uint32_t base_vertex, size_t count, uint32_t *flags = nullptr
+) {
+    const auto *const color_it = primitive.findAttribute("COLOR_0");
+    if (color_it == primitive.attributes.end()) {
+        if (attrs.Colors0) attrs.Colors0->resize(base_vertex + count, vec4{1.f});
+        return {};
+    }
+    if (flags) *flags |= MeshAttributeBit_Color0;
+    if (!attrs.Colors0) {
+        attrs.Colors0.emplace();
+        attrs.Colors0->resize(base_vertex, vec4{1.f});
+    }
+    const auto &color_accessor = asset.accessors[color_it->accessorIndex];
+    if (flags && color_accessor.count != count) {
+        return std::unexpected{std::format("glTF primitive COLOR_0 count ({}) must match POSITION count ({}).", color_accessor.count, count)};
+    }
+    attrs.Colors0->resize(base_vertex + count, vec4{1.f});
+    if (color_accessor.type == fastgltf::AccessorType::Vec3) {
+        if (attrs.Colors0ComponentCount == 0) attrs.Colors0ComponentCount = 3;
+        std::vector<vec3> colors(count);
+        fastgltf::copyFromAccessor<vec3>(asset, color_accessor, colors.data());
+        for (uint32_t i = 0; i < count; ++i) (*attrs.Colors0)[base_vertex + i] = vec4{colors[i], 1.f};
+    } else if (color_accessor.type == fastgltf::AccessorType::Vec4) {
+        attrs.Colors0ComponentCount = 4;
+        fastgltf::copyFromAccessor<vec4>(asset, color_accessor, &(*attrs.Colors0)[base_vertex]);
+    } else if (flags) {
+        return std::unexpected{std::format("glTF primitive COLOR_0 accessor type must be VEC3 or VEC4, got type {}.", int(color_accessor.type))};
+    }
+    return {};
+}
+
+// Primitive indices, or iota over the vertex range when the primitive is non-indexed.
+std::vector<uint32_t> ReadIndices(const fastgltf::Asset &asset, const fastgltf::Primitive &primitive, size_t vertex_count) {
+    std::vector<uint32_t> indices;
+    if (primitive.indicesAccessor) {
+        const auto &index_accessor = asset.accessors[*primitive.indicesAccessor];
+        indices.resize(index_accessor.count);
+        fastgltf::copyFromAccessor<uint32_t>(asset, index_accessor, indices.data());
+    } else {
+        indices.resize(vertex_count);
+        std::iota(indices.begin(), indices.end(), 0u);
+    }
+    return indices;
+}
+
 void AppendNonTrianglePrimitive(const fastgltf::Asset &asset, const fastgltf::Primitive &primitive, ::MeshData &target, ::MeshVertexAttributes &attrs) {
     const auto *const position_it = primitive.findAttribute("POSITION");
     if (position_it == primitive.attributes.end()) return;
@@ -301,50 +431,12 @@ void AppendNonTrianglePrimitive(const fastgltf::Asset &asset, const fastgltf::Pr
     target.Positions.resize(base_vertex + position_accessor.count);
     fastgltf::copyFromAccessor<vec3>(asset, position_accessor, &target.Positions[base_vertex]);
 
-    if (const auto *const normal_it = primitive.findAttribute("NORMAL"); normal_it != primitive.attributes.end()) {
-        if (!attrs.Normals) {
-            attrs.Normals.emplace();
-            attrs.Normals->resize(base_vertex, vec3{0.f});
-        }
-        const auto &normal_accessor = asset.accessors[normal_it->accessorIndex];
-        attrs.Normals->resize(base_vertex + position_accessor.count, vec3{0.f});
-        fastgltf::copyFromAccessor<vec3>(asset, normal_accessor, &(*attrs.Normals)[base_vertex]);
-    } else if (attrs.Normals) {
-        attrs.Normals->resize(base_vertex + position_accessor.count, vec3{0.f});
-    }
-
-    // CPU stores vec4 regardless of source; track whether any primitive used VEC3.
-    if (const auto *const color_it = primitive.findAttribute("COLOR_0"); color_it != primitive.attributes.end()) {
-        if (!attrs.Colors0) {
-            attrs.Colors0.emplace();
-            attrs.Colors0->resize(base_vertex, vec4{1.f});
-        }
-        const auto &color_accessor = asset.accessors[color_it->accessorIndex];
-        attrs.Colors0->resize(base_vertex + position_accessor.count, vec4{1.f});
-        if (color_accessor.type == fastgltf::AccessorType::Vec3) {
-            if (attrs.Colors0ComponentCount == 0) attrs.Colors0ComponentCount = 3;
-            std::vector<vec3> colors(position_accessor.count);
-            fastgltf::copyFromAccessor<vec3>(asset, color_accessor, colors.data());
-            for (uint32_t i = 0; i < position_accessor.count; ++i) (*attrs.Colors0)[base_vertex + i] = vec4{colors[i], 1.f};
-        } else if (color_accessor.type == fastgltf::AccessorType::Vec4) {
-            attrs.Colors0ComponentCount = 4;
-            fastgltf::copyFromAccessor<vec4>(asset, color_accessor, &(*attrs.Colors0)[base_vertex]);
-        }
-    } else if (attrs.Colors0) {
-        attrs.Colors0->resize(base_vertex + position_accessor.count, vec4{1.f});
-    }
+    std::ignore = AppendVertexAttr(asset, primitive, "NORMAL", attrs.Normals, base_vertex, position_accessor.count, vec3{0.f});
+    std::ignore = AppendColor0(asset, primitive, attrs, base_vertex, position_accessor.count);
 
     if (primitive.type == fastgltf::PrimitiveType::Points) return;
 
-    std::vector<uint32_t> indices;
-    if (primitive.indicesAccessor) {
-        const auto &index_accessor = asset.accessors[*primitive.indicesAccessor];
-        indices.resize(index_accessor.count);
-        fastgltf::copyFromAccessor<uint32_t>(asset, index_accessor, indices.data());
-    } else {
-        indices.resize(position_accessor.count);
-        std::iota(indices.begin(), indices.end(), 0u);
-    }
+    const auto indices = ReadIndices(asset, primitive, position_accessor.count);
 
     switch (primitive.type) {
         case fastgltf::PrimitiveType::Points:
@@ -393,84 +485,15 @@ std::expected<void, std::string> AppendPrimitive(
     mesh.Positions.resize(base_vertex + position_accessor.count);
     fastgltf::copyFromAccessor<vec3>(asset, position_accessor, &mesh.Positions[base_vertex]);
 
-    if (const auto *const normal_it = primitive.findAttribute("NORMAL"); normal_it != primitive.attributes.end()) {
-        attribute_flags |= MeshAttributeBit_Normal;
-        if (!attrs.Normals) {
-            attrs.Normals.emplace();
-            attrs.Normals->resize(base_vertex, vec3{0.f});
-        }
-        const auto &normal_accessor = asset.accessors[normal_it->accessorIndex];
-        attrs.Normals->resize(base_vertex + position_accessor.count, vec3{0.f});
-        fastgltf::copyFromAccessor<vec3>(asset, normal_accessor, &(*attrs.Normals)[base_vertex]);
-    } else if (attrs.Normals) {
-        attrs.Normals->resize(base_vertex + position_accessor.count, vec3{0.f});
-    }
+    const auto vertex_count = position_accessor.count;
+    if (auto result = AppendVertexAttr(asset, primitive, "NORMAL", attrs.Normals, base_vertex, vertex_count, vec3{0.f}, &attribute_flags, MeshAttributeBit_Normal); !result) return result;
+    if (auto result = AppendVertexAttr(asset, primitive, "TANGENT", attrs.Tangents, base_vertex, vertex_count, vec4{0.f, 0.f, 0.f, 1.f}, &attribute_flags, MeshAttributeBit_Tangent, true); !result) return result;
+    if (auto result = AppendColor0(asset, primitive, attrs, base_vertex, vertex_count, &attribute_flags); !result) return result;
 
-    if (const auto *const tangent_it = primitive.findAttribute("TANGENT"); tangent_it != primitive.attributes.end()) {
-        attribute_flags |= MeshAttributeBit_Tangent;
-        if (!attrs.Tangents) {
-            attrs.Tangents.emplace();
-            attrs.Tangents->resize(base_vertex, vec4{0.f, 0.f, 0.f, 1.f});
-        }
-        const auto &tangent_accessor = asset.accessors[tangent_it->accessorIndex];
-        if (tangent_accessor.count != position_accessor.count) {
-            return std::unexpected{std::format("glTF primitive TANGENT count ({}) must match POSITION count ({}).", tangent_accessor.count, position_accessor.count)};
-        }
-        attrs.Tangents->resize(base_vertex + position_accessor.count, vec4{0.f, 0.f, 0.f, 1.f});
-        fastgltf::copyFromAccessor<vec4>(asset, tangent_accessor, &(*attrs.Tangents)[base_vertex]);
-    } else if (attrs.Tangents) {
-        attrs.Tangents->resize(base_vertex + position_accessor.count, vec4{0.f, 0.f, 0.f, 1.f});
+    const std::array uv_sets{&attrs.TexCoords0, &attrs.TexCoords1, &attrs.TexCoords2, &attrs.TexCoords3};
+    for (uint32_t set_index = 0; set_index < uv_sets.size(); ++set_index) {
+        if (auto result = AppendVertexAttr(asset, primitive, std::format("TEXCOORD_{}", set_index), *uv_sets[set_index], base_vertex, vertex_count, vec2{0.f}, &attribute_flags, MeshAttributeBit_TexCoord0 << set_index, true); !result) return result;
     }
-
-    if (const auto *const color_it = primitive.findAttribute("COLOR_0"); color_it != primitive.attributes.end()) {
-        attribute_flags |= MeshAttributeBit_Color0;
-        if (!attrs.Colors0) {
-            attrs.Colors0.emplace();
-            attrs.Colors0->resize(base_vertex, vec4{1.f});
-        }
-        const auto &color_accessor = asset.accessors[color_it->accessorIndex];
-        if (color_accessor.count != position_accessor.count) {
-            return std::unexpected{std::format("glTF primitive COLOR_0 count ({}) must match POSITION count ({}).", color_accessor.count, position_accessor.count)};
-        }
-        attrs.Colors0->resize(base_vertex + position_accessor.count, vec4{1.f});
-        if (color_accessor.type == fastgltf::AccessorType::Vec3) {
-            if (attrs.Colors0ComponentCount == 0) attrs.Colors0ComponentCount = 3;
-            std::vector<vec3> colors(position_accessor.count);
-            fastgltf::copyFromAccessor<vec3>(asset, color_accessor, colors.data());
-            for (uint32_t i = 0; i < position_accessor.count; ++i) (*attrs.Colors0)[base_vertex + i] = vec4{colors[i], 1.f};
-        } else if (color_accessor.type == fastgltf::AccessorType::Vec4) {
-            attrs.Colors0ComponentCount = 4;
-            fastgltf::copyFromAccessor<vec4>(asset, color_accessor, &(*attrs.Colors0)[base_vertex]);
-        } else {
-            return std::unexpected{std::format("glTF primitive COLOR_0 accessor type must be VEC3 or VEC4, got type {}.", int(color_accessor.type))};
-        }
-    } else if (attrs.Colors0) {
-        attrs.Colors0->resize(base_vertex + position_accessor.count, vec4{1.f});
-    }
-
-    const auto append_uv_set = [&](uint32_t set_index, std::optional<std::vector<vec2>> &uv_set, uint32_t present_bit) -> std::expected<void, std::string> {
-        const auto uv_name = std::format("TEXCOORD_{}", set_index);
-        if (const auto *const uv_it = primitive.findAttribute(uv_name); uv_it != primitive.attributes.end()) {
-            attribute_flags |= present_bit;
-            if (!uv_set) {
-                uv_set.emplace();
-                uv_set->resize(base_vertex, vec2{0.f});
-            }
-            const auto &uv_accessor = asset.accessors[uv_it->accessorIndex];
-            if (uv_accessor.count != position_accessor.count) {
-                return std::unexpected{std::format("glTF primitive {} count ({}) must match POSITION count ({}).", uv_name, uv_accessor.count, position_accessor.count)};
-            }
-            uv_set->resize(base_vertex + position_accessor.count, vec2{0.f});
-            fastgltf::copyFromAccessor<vec2>(asset, uv_accessor, &(*uv_set)[base_vertex]);
-        } else if (uv_set) {
-            uv_set->resize(base_vertex + position_accessor.count, vec2{0.f});
-        }
-        return {};
-    };
-    if (auto uv_result = append_uv_set(0, attrs.TexCoords0, MeshAttributeBit_TexCoord0); !uv_result) return uv_result;
-    if (auto uv_result = append_uv_set(1, attrs.TexCoords1, MeshAttributeBit_TexCoord1); !uv_result) return uv_result;
-    if (auto uv_result = append_uv_set(2, attrs.TexCoords2, MeshAttributeBit_TexCoord2); !uv_result) return uv_result;
-    if (auto uv_result = append_uv_set(3, attrs.TexCoords3, MeshAttributeBit_TexCoord3); !uv_result) return uv_result;
 
     if (has_joints && !deform) deform.emplace();
     const bool mesh_has_skin = deform && (!deform->Joints.empty() || !deform->Weights.empty());
@@ -627,15 +650,7 @@ std::expected<void, std::string> AppendPrimitive(
         }
     }
 
-    std::vector<uint32_t> indices;
-    if (primitive.indicesAccessor) {
-        const auto &index_accessor = asset.accessors[*primitive.indicesAccessor];
-        indices.resize(index_accessor.count);
-        fastgltf::copyFromAccessor<uint32_t>(asset, index_accessor, indices.data());
-    } else {
-        indices.resize(position_accessor.count);
-        std::iota(indices.begin(), indices.end(), 0u);
-    }
+    const auto indices = ReadIndices(asset, primitive, position_accessor.count);
     if (indices.size() < 3) return {};
 
     if (primitive.type == fastgltf::PrimitiveType::TriangleStrip) {
@@ -904,22 +919,22 @@ SceneTraversalData TraverseSceneNodes(const fastgltf::Asset &asset, const std::v
     return traversal;
 }
 
-std::optional<uint32_t> FindNearestJointAncestor(uint32_t node_index, const std::vector<std::optional<uint32_t>> &parents, const std::vector<bool> &is_joint_in_skin) {
+std::optional<uint32_t> FindNearestMarkedAncestor(uint32_t node_index, const std::vector<std::optional<uint32_t>> &parents, const std::vector<bool> &marked) {
     auto parent = parents[node_index];
     while (parent) {
-        if (is_joint_in_skin[*parent]) return parent;
+        if (marked[*parent]) return parent;
         parent = parents[*parent];
     }
     return {};
 }
 
-std::optional<uint32_t> FindNearestEmittedObjectAncestor(uint32_t node_index, const std::vector<std::optional<uint32_t>> &parents, const std::vector<bool> &is_object_emitted) {
-    auto parent = parents[node_index];
-    while (parent) {
-        if (is_object_emitted[*parent]) return parent;
-        parent = parents[*parent];
-    }
-    return {};
+// Append a non-empty clip onto an entity's Anim component, creating the component on first use.
+template<typename Anim, typename Clip>
+bool AppendClip(entt::registry &r, entt::entity e, Clip &&clip) {
+    if (clip.Channels.empty()) return false;
+    if (auto *existing = r.try_get<Anim>(e)) existing->Clips.emplace_back(std::forward<Clip>(clip));
+    else r.emplace<Anim>(e, Anim{.Clips = {std::forward<Clip>(clip)}});
+    return true;
 }
 
 std::optional<uint32_t> ComputeCommonAncestor(const std::vector<uint32_t> &nodes, const std::vector<std::optional<uint32_t>> &parents) {
@@ -1106,38 +1121,9 @@ PunctualLight ConvertLight(const fastgltf::Light &light) {
     return pl;
 }
 
-fastgltf::Filter FromFilter(Filter f) {
-    switch (f) {
-        case Filter::Nearest: return fastgltf::Filter::Nearest;
-        case Filter::Linear: return fastgltf::Filter::Linear;
-        case Filter::NearestMipMapNearest: return fastgltf::Filter::NearestMipMapNearest;
-        case Filter::LinearMipMapNearest: return fastgltf::Filter::LinearMipMapNearest;
-        case Filter::NearestMipMapLinear: return fastgltf::Filter::NearestMipMapLinear;
-        case Filter::LinearMipMapLinear: return fastgltf::Filter::LinearMipMapLinear;
-    }
-    return fastgltf::Filter::LinearMipMapLinear;
-}
-fastgltf::Wrap FromWrap(Wrap w) {
-    switch (w) {
-        case Wrap::ClampToEdge: return fastgltf::Wrap::ClampToEdge;
-        case Wrap::MirroredRepeat: return fastgltf::Wrap::MirroredRepeat;
-        case Wrap::Repeat: return fastgltf::Wrap::Repeat;
-    }
-    return fastgltf::Wrap::Repeat;
-}
-fastgltf::MimeType FromMimeType(MimeType m) {
-    switch (m) {
-        case MimeType::None: return fastgltf::MimeType::None;
-        case MimeType::JPEG: return fastgltf::MimeType::JPEG;
-        case MimeType::PNG: return fastgltf::MimeType::PNG;
-        case MimeType::KTX2: return fastgltf::MimeType::KTX2;
-        case MimeType::DDS: return fastgltf::MimeType::DDS;
-        case MimeType::GltfBuffer: return fastgltf::MimeType::GltfBuffer;
-        case MimeType::OctetStream: return fastgltf::MimeType::OctetStream;
-        case MimeType::WEBP: return fastgltf::MimeType::WEBP;
-    }
-    return fastgltf::MimeType::None;
-}
+fastgltf::Filter FromFilter(Filter f) { return MapEnumBack(FilterMap, f, fastgltf::Filter::LinearMipMapLinear); }
+fastgltf::Wrap FromWrap(Wrap w) { return MapEnumBack(WrapMap, w, fastgltf::Wrap::Repeat); }
+fastgltf::MimeType FromMimeType(MimeType m) { return MapEnumBack(MimeTypeMap, m, fastgltf::MimeType::None); }
 // Encode tightly-packed RGBA8 pixels to the container for `mime`, dispatching to the generic encoders.
 // KTX2 and DDS aren't supported and return an error.
 std::expected<std::vector<std::byte>, std::string>
@@ -1155,32 +1141,9 @@ EncodeImageRgba8ForMime(MimeType mime, std::span<const std::byte> rgba8, uint32_
     }
     return std::unexpected{std::format("Unhandled mime type for image '{}'.", name)};
 }
-fastgltf::AnimationInterpolation FromInterp(AnimationInterpolation i) {
-    switch (i) {
-        case AnimationInterpolation::Step: return fastgltf::AnimationInterpolation::Step;
-        case AnimationInterpolation::Linear: return fastgltf::AnimationInterpolation::Linear;
-        case AnimationInterpolation::CubicSpline: return fastgltf::AnimationInterpolation::CubicSpline;
-    }
-    return fastgltf::AnimationInterpolation::Linear;
-}
-fastgltf::AnimationPath FromPath(AnimationPath p) {
-    switch (p) {
-        case AnimationPath::Translation: return fastgltf::AnimationPath::Translation;
-        case AnimationPath::Rotation: return fastgltf::AnimationPath::Rotation;
-        case AnimationPath::Scale: return fastgltf::AnimationPath::Scale;
-        case AnimationPath::Weights: return fastgltf::AnimationPath::Weights;
-    }
-    return fastgltf::AnimationPath::Translation;
-}
-fastgltf::CombineMode FromCombine(PhysicsCombineMode m) {
-    switch (m) {
-        case PhysicsCombineMode::Average: return fastgltf::CombineMode::Average;
-        case PhysicsCombineMode::Minimum: return fastgltf::CombineMode::Minimum;
-        case PhysicsCombineMode::Maximum: return fastgltf::CombineMode::Maximum;
-        case PhysicsCombineMode::Multiply: return fastgltf::CombineMode::Multiply;
-    }
-    return fastgltf::CombineMode::Average;
-}
+fastgltf::AnimationInterpolation FromInterp(AnimationInterpolation i) { return MapEnumBack(InterpMap, i, fastgltf::AnimationInterpolation::Linear); }
+fastgltf::AnimationPath FromPath(AnimationPath p) { return MapEnumBack(PathMap, p, fastgltf::AnimationPath::Translation); }
+fastgltf::CombineMode FromCombine(PhysicsCombineMode m) { return MapEnumBack(CombineMap, m, fastgltf::CombineMode::Average); }
 
 // fastgltf's name fields are pmr::string (doesn't implicit-copy from std::string).
 using FgString = std::remove_cvref_t<decltype(fastgltf::Material::name)>;
@@ -1226,14 +1189,7 @@ uint32_t AppendField(std::vector<std::byte> &buffer, std::span<const V> data, T 
     return offset;
 }
 
-fastgltf::AlphaMode FromAlphaMode(MaterialAlphaMode m) {
-    switch (m) {
-        case MaterialAlphaMode::Opaque: return fastgltf::AlphaMode::Opaque;
-        case MaterialAlphaMode::Mask: return fastgltf::AlphaMode::Mask;
-        case MaterialAlphaMode::Blend: return fastgltf::AlphaMode::Blend;
-    }
-    return fastgltf::AlphaMode::Opaque;
-}
+fastgltf::AlphaMode FromAlphaMode(MaterialAlphaMode m) { return MapEnumBack(AlphaModeMap, m, fastgltf::AlphaMode::Opaque); }
 
 std::unique_ptr<fastgltf::TextureTransform> MakeTextureTransform(const ::TextureInfo &ti, const TextureTransformMeta *meta = nullptr) {
     const bool has_transform = ti.UvOffset.x != 0.f || ti.UvOffset.y != 0.f ||
@@ -1256,27 +1212,22 @@ void FillFgTextureInfo(fastgltf::TextureInfo &out, const ::TextureInfo &ti, cons
     out.transform = MakeTextureTransform(ti, meta);
 }
 
+template<typename Out>
+fastgltf::Optional<Out> ToFgTexInfoAs(const ::TextureInfo &ti, const TextureTransformMeta *meta, auto &&set_extra) {
+    if (ti.Slot == InvalidSlot) return {};
+    Out out;
+    FillFgTextureInfo(out, ti, meta);
+    set_extra(out);
+    return fastgltf::Optional<Out>{std::move(out)};
+}
 fastgltf::Optional<fastgltf::TextureInfo> ToFgTexInfo(const ::TextureInfo &ti, const TextureTransformMeta *meta = nullptr) {
-    if (ti.Slot == InvalidSlot) return {};
-    fastgltf::TextureInfo out;
-    FillFgTextureInfo(out, ti, meta);
-    return fastgltf::Optional<fastgltf::TextureInfo>{std::move(out)};
+    return ToFgTexInfoAs<fastgltf::TextureInfo>(ti, meta, [](auto &) {});
 }
-
 fastgltf::Optional<fastgltf::NormalTextureInfo> ToFgNormalTexInfo(const ::TextureInfo &ti, float scale, const TextureTransformMeta *meta = nullptr) {
-    if (ti.Slot == InvalidSlot) return {};
-    fastgltf::NormalTextureInfo out;
-    FillFgTextureInfo(out, ti, meta);
-    out.scale = scale;
-    return fastgltf::Optional<fastgltf::NormalTextureInfo>{std::move(out)};
+    return ToFgTexInfoAs<fastgltf::NormalTextureInfo>(ti, meta, [&](auto &o) { o.scale = scale; });
 }
-
 fastgltf::Optional<fastgltf::OcclusionTextureInfo> ToFgOcclusionTexInfo(const ::TextureInfo &ti, float strength, const TextureTransformMeta *meta = nullptr) {
-    if (ti.Slot == InvalidSlot) return {};
-    fastgltf::OcclusionTextureInfo out;
-    FillFgTextureInfo(out, ti, meta);
-    out.strength = strength;
-    return fastgltf::Optional<fastgltf::OcclusionTextureInfo>{std::move(out)};
+    return ToFgTexInfoAs<fastgltf::OcclusionTextureInfo>(ti, meta, [&](auto &o) { o.strength = strength; });
 }
 
 fastgltf::Camera ConvertCameraToFg(const ::Camera &cam, std::string_view name) {
@@ -1579,27 +1530,7 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
             };
         }
 
-        meta.TextureSlots = {
-            pbr.BaseColorTexture.Slot,
-            pbr.MetallicRoughnessTexture.Slot,
-            pbr.NormalTexture.Slot,
-            pbr.OcclusionTexture.Slot,
-            pbr.EmissiveTexture.Slot,
-            pbr.Specular.Texture.Slot,
-            pbr.Specular.ColorTexture.Slot,
-            pbr.Sheen.ColorTexture.Slot,
-            pbr.Sheen.RoughnessTexture.Slot,
-            pbr.Transmission.Texture.Slot,
-            pbr.DiffuseTransmission.Texture.Slot,
-            pbr.DiffuseTransmission.ColorTexture.Slot,
-            pbr.Volume.ThicknessTexture.Slot,
-            pbr.Clearcoat.Texture.Slot,
-            pbr.Clearcoat.RoughnessTexture.Slot,
-            pbr.Clearcoat.NormalTexture.Slot,
-            pbr.Anisotropy.Texture.Slot,
-            pbr.Iridescence.Texture.Slot,
-            pbr.Iridescence.ThicknessTexture.Slot,
-        };
+        for (uint32_t s = 0; s < MTS_Count; ++s) meta.TextureSlots[s] = MaterialTextureSlots[s].Get(pbr).Slot;
         material_metas.emplace_back(std::move(meta));
         source_materials.emplace_back(std::move(pbr));
     }
@@ -1660,14 +1591,6 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
     // so they're emitted in the consumer block below.
     std::vector<entt::entity> physics_material_entities, physics_jointdef_entities;
     {
-        const auto ToCombineMode = [](fastgltf::CombineMode m) {
-            switch (m) {
-                case fastgltf::CombineMode::Minimum: return PhysicsCombineMode::Minimum;
-                case fastgltf::CombineMode::Maximum: return PhysicsCombineMode::Maximum;
-                case fastgltf::CombineMode::Multiply: return PhysicsCombineMode::Multiply;
-                default: return PhysicsCombineMode::Average;
-            }
-        };
         physics_material_entities.reserve(asset.physicsMaterials.size());
         for (uint32_t i = 0; i < asset.physicsMaterials.size(); ++i) {
             const auto &src = asset.physicsMaterials[i];
@@ -1821,7 +1744,7 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
 
     std::vector<std::optional<uint32_t>> nearest_object_ancestor(asset.nodes.size());
     for (uint32_t node_index = 0; node_index < asset.nodes.size(); ++node_index) {
-        nearest_object_ancestor[node_index] = FindNearestEmittedObjectAncestor(node_index, parents, is_object_emitted);
+        nearest_object_ancestor[node_index] = FindNearestMarkedAncestor(node_index, parents, is_object_emitted);
     }
 
     std::vector<Object> source_objects;
@@ -2053,39 +1976,10 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
             return {};
         };
         auto gpu_material = src_material;
-        if (auto result = [&]() -> std::expected<void, std::string> {
-                std::expected<void, std::string> resolve_result{};
-                const auto check = [&](TextureInfo &tex, TextureColorSpace color_space, std::string_view texture_label) {
-                    resolve_result = resolve_texture(tex, color_space, texture_label);
-                    return resolve_result.has_value();
-                };
-                if (
-                    !check(gpu_material.BaseColorTexture, TextureColorSpace::Srgb, "baseColor") ||
-                    !check(gpu_material.MetallicRoughnessTexture, TextureColorSpace::Linear, "metallicRoughness") ||
-                    !check(gpu_material.NormalTexture, TextureColorSpace::Linear, "normal") ||
-                    !check(gpu_material.OcclusionTexture, TextureColorSpace::Linear, "occlusion") ||
-                    !check(gpu_material.EmissiveTexture, TextureColorSpace::Srgb, "emissive") ||
-                    !check(gpu_material.Specular.Texture, TextureColorSpace::Linear, "specular") ||
-                    !check(gpu_material.Specular.ColorTexture, TextureColorSpace::Srgb, "specularColor") ||
-                    !check(gpu_material.Sheen.ColorTexture, TextureColorSpace::Srgb, "sheenColor") ||
-                    !check(gpu_material.Sheen.RoughnessTexture, TextureColorSpace::Linear, "sheenRoughness") ||
-                    !check(gpu_material.Transmission.Texture, TextureColorSpace::Linear, "transmission") ||
-                    !check(gpu_material.DiffuseTransmission.Texture, TextureColorSpace::Linear, "diffuseTransmission") ||
-                    !check(gpu_material.DiffuseTransmission.ColorTexture, TextureColorSpace::Srgb, "diffuseTransmissionColor") ||
-                    !check(gpu_material.Volume.ThicknessTexture, TextureColorSpace::Linear, "thickness") ||
-                    !check(gpu_material.Clearcoat.Texture, TextureColorSpace::Linear, "clearcoat") ||
-                    !check(gpu_material.Clearcoat.RoughnessTexture, TextureColorSpace::Linear, "clearcoatRoughness") ||
-                    !check(gpu_material.Clearcoat.NormalTexture, TextureColorSpace::Linear, "clearcoatNormal") ||
-                    !check(gpu_material.Anisotropy.Texture, TextureColorSpace::Linear, "anisotropy") ||
-                    !check(gpu_material.Iridescence.Texture, TextureColorSpace::Linear, "iridescence") ||
-                    !check(gpu_material.Iridescence.ThicknessTexture, TextureColorSpace::Linear, "iridescenceThickness")
-                ) {
-                    return std::unexpected{std::move(resolve_result.error())};
-                }
-                return {};
-            }();
-            !result) {
-            return std::unexpected{std::move(result.error())};
+        for (const auto &slot : MaterialTextureSlots) {
+            if (auto result = resolve_texture(slot.Get(gpu_material), slot.ColorSpace, slot.Label); !result) {
+                return std::unexpected{std::move(result.error())};
+            }
         }
         material_indices_by_gltf_material[material_index] = ctx.Buffers.Materials.Append(gpu_material);
         material_names.emplace_back(material_name);
@@ -2464,18 +2358,14 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
             });
         }
 
-        const auto read_scalars = [&](size_t accessor_index) {
+        const auto read_accessor = [&]<typename T>(size_t accessor_index) {
             const auto &acc = asset.accessors[accessor_index];
-            std::vector<float> out(acc.count);
-            fastgltf::copyFromAccessor<float>(asset, acc, out.data());
+            std::vector<T> out(acc.count);
+            fastgltf::copyFromAccessor<T>(asset, acc, out.data());
             return out;
         };
-        const auto read_vec3s = [&](size_t accessor_index) {
-            const auto &acc = asset.accessors[accessor_index];
-            std::vector<vec3> out(acc.count);
-            fastgltf::copyFromAccessor<vec3>(asset, acc, out.data());
-            return out;
-        };
+        const auto read_scalars = [&](size_t i) { return read_accessor.template operator()<float>(i); };
+        const auto read_vec3s = [&](size_t i) { return read_accessor.template operator()<vec3>(i); };
 
         std::vector<ModalModes> models;
         models.reserve(asset.audioModalModels.size());
@@ -2596,7 +2486,7 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
         std::unordered_map<uint32_t, std::optional<uint32_t>> joint_parent_map;
         joint_parent_map.reserve(source_joint_nodes.size());
         for (const auto joint_node_index : source_joint_nodes) {
-            joint_parent_map.emplace(joint_node_index, FindNearestJointAncestor(joint_node_index, parents, is_joint_in_skin));
+            joint_parent_map.emplace(joint_node_index, FindNearestMarkedAncestor(joint_node_index, parents, is_joint_in_skin));
         }
 
         auto ordered_joint_nodes = BuildParentBeforeChildJointOrder(source_joint_nodes, joint_parent_map, skin_index);
@@ -2823,24 +2713,6 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
     }
 
     bool imported_animation = false;
-    const auto append_armature_clip = [&](entt::entity target_data_entity, ::AnimationClip &&resolved_clip) {
-        if (resolved_clip.Channels.empty()) return;
-        imported_animation = true;
-        if (auto *existing = r.try_get<ArmatureAnimation>(target_data_entity)) {
-            existing->Clips.emplace_back(std::move(resolved_clip));
-        } else {
-            r.emplace<ArmatureAnimation>(target_data_entity, ArmatureAnimation{.Clips = {std::move(resolved_clip)}});
-        }
-    };
-    const auto append_morph_clip = [&](entt::entity instance_entity, MorphWeightClip &&resolved_clip) {
-        if (resolved_clip.Channels.empty()) return;
-        imported_animation = true;
-        if (auto *existing = r.try_get<MorphWeightAnimation>(instance_entity)) {
-            existing->Clips.emplace_back(std::move(resolved_clip));
-        } else {
-            r.emplace<MorphWeightAnimation>(instance_entity, MorphWeightAnimation{.Clips = {std::move(resolved_clip)}});
-        }
-    };
     const auto append_node_clip = [&](entt::entity object_entity, ::AnimationClip &&resolved_clip) {
         if (resolved_clip.Channels.empty()) return;
         imported_animation = true;
@@ -2900,14 +2772,7 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
             const auto &output_accessor = asset.accessors[sampler.outputAccessor];
             if (input_accessor.count == 0) continue;
 
-            const auto interp = [&]() {
-                switch (sampler.interpolation) {
-                    case fastgltf::AnimationInterpolation::Step: return AnimationInterpolation::Step;
-                    case fastgltf::AnimationInterpolation::Linear: return AnimationInterpolation::Linear;
-                    case fastgltf::AnimationInterpolation::CubicSpline: return AnimationInterpolation::CubicSpline;
-                }
-                return AnimationInterpolation::Linear;
-            }();
+            const auto interp = ToInterp(sampler.interpolation);
 
             std::vector<float> times(input_accessor.count);
             fastgltf::copyFromAccessor<float>(asset, input_accessor, times.data());
@@ -2967,8 +2832,8 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
         for (auto &[_, c] : morph_clips_by_entity) c.DurationSeconds = max_time;
         for (auto &[_, c] : node_clips_by_entity) c.DurationSeconds = max_time;
 
-        for (auto &[target_data_entity, resolved_clip] : armature_clips_by_entity) append_armature_clip(target_data_entity, std::move(resolved_clip));
-        for (auto &[instance_entity, resolved_clip] : morph_clips_by_entity) append_morph_clip(instance_entity, std::move(resolved_clip));
+        for (auto &[target_data_entity, resolved_clip] : armature_clips_by_entity) imported_animation |= AppendClip<ArmatureAnimation>(r, target_data_entity, std::move(resolved_clip));
+        for (auto &[instance_entity, resolved_clip] : morph_clips_by_entity) imported_animation |= AppendClip<MorphWeightAnimation>(r, instance_entity, std::move(resolved_clip));
         for (auto &[object_entity, resolved_clip] : node_clips_by_entity) append_node_clip(object_entity, std::move(resolved_clip));
     }
     r.patch<gltf::SourceAssets>(viewport, [&](auto &a) { a.AnimationOrder = std::move(animation_order); });
@@ -3686,25 +3551,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         const auto &meta = source_idx < material_metas.size() ? material_metas[source_idx] : DefaultMeta;
         const auto bits = meta.ExtensionPresence;
         // Restore source texture slots — PBRMaterial holds bindless slots; emit needs gltf indices.
-        pbr.BaseColorTexture.Slot = meta.TextureSlots[MTS_BaseColor];
-        pbr.MetallicRoughnessTexture.Slot = meta.TextureSlots[MTS_MetallicRoughness];
-        pbr.NormalTexture.Slot = meta.TextureSlots[MTS_Normal];
-        pbr.OcclusionTexture.Slot = meta.TextureSlots[MTS_Occlusion];
-        pbr.EmissiveTexture.Slot = meta.TextureSlots[MTS_Emissive];
-        pbr.Specular.Texture.Slot = meta.TextureSlots[MTS_Specular];
-        pbr.Specular.ColorTexture.Slot = meta.TextureSlots[MTS_SpecularColor];
-        pbr.Sheen.ColorTexture.Slot = meta.TextureSlots[MTS_SheenColor];
-        pbr.Sheen.RoughnessTexture.Slot = meta.TextureSlots[MTS_SheenRoughness];
-        pbr.Transmission.Texture.Slot = meta.TextureSlots[MTS_Transmission];
-        pbr.DiffuseTransmission.Texture.Slot = meta.TextureSlots[MTS_DiffuseTransmission];
-        pbr.DiffuseTransmission.ColorTexture.Slot = meta.TextureSlots[MTS_DiffuseTransmissionColor];
-        pbr.Volume.ThicknessTexture.Slot = meta.TextureSlots[MTS_VolumeThickness];
-        pbr.Clearcoat.Texture.Slot = meta.TextureSlots[MTS_Clearcoat];
-        pbr.Clearcoat.RoughnessTexture.Slot = meta.TextureSlots[MTS_ClearcoatRoughness];
-        pbr.Clearcoat.NormalTexture.Slot = meta.TextureSlots[MTS_ClearcoatNormal];
-        pbr.Anisotropy.Texture.Slot = meta.TextureSlots[MTS_Anisotropy];
-        pbr.Iridescence.Texture.Slot = meta.TextureSlots[MTS_Iridescence];
-        pbr.Iridescence.ThicknessTexture.Slot = meta.TextureSlots[MTS_IridescenceThickness];
+        for (uint32_t s = 0; s < MTS_Count; ++s) MaterialTextureSlots[s].Get(pbr).Slot = meta.TextureSlots[s];
 
         const std::string name = (!meta.NameWasEmpty && i < names.size()) ? names[i] : std::string{};
         // Un-fold load's `EmissiveFactor *= strength` for emissive_strength round-trip.
@@ -3805,6 +3652,18 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         const auto &group = mesh_groups[mi];
         fastgltf::pmr::MaybeSmallVector<fastgltf::Primitive, 2> primitives;
         fastgltf::pmr::MaybeSmallVector<fastgltf::num> default_weights;
+        // Non-triangle primitives carry no targets/material/mappings.
+        const auto push_prim = [&](fastgltf::PrimitiveType type, auto &&attrs, const fastgltf::Optional<size_t> &indices = {}) {
+            primitives.emplace_back(fastgltf::Primitive{
+                .attributes = std::forward<decltype(attrs)>(attrs),
+                .type = type,
+                .targets = {},
+                .indicesAccessor = indices,
+                .materialIndex = {},
+                .mappings = {},
+                .dracoCompression = nullptr,
+            });
+        };
 
         // --- Triangle primitives ---
         // Each source primitive owns a contiguous [offset, offset+count) slice of the merged
@@ -4026,15 +3885,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
                 fastgltf::pmr::SmallVector<fastgltf::Attribute, 4> attrs;
                 attrs.emplace_back(fastgltf::Attribute{"POSITION", AddPositionFieldAccessor.template operator()<Vertex>(vertices, &Vertex::Position, fastgltf::BufferTarget::ArrayBuffer)});
                 emit_non_triangle_attrs(attrs, vertices);
-                primitives.emplace_back(fastgltf::Primitive{
-                    .attributes = std::move(attrs),
-                    .type = fastgltf::PrimitiveType::Lines,
-                    .targets = {},
-                    .indicesAccessor = AddDataAccessor(std::span<const uint32_t>(idx), fastgltf::AccessorType::Scalar, fastgltf::ComponentType::UnsignedInt, fastgltf::BufferTarget::ElementArrayBuffer),
-                    .materialIndex = {},
-                    .mappings = {},
-                    .dracoCompression = nullptr,
-                });
+                push_prim(fastgltf::PrimitiveType::Lines, std::move(attrs), AddDataAccessor(std::span<const uint32_t>(idx), fastgltf::AccessorType::Scalar, fastgltf::ComponentType::UnsignedInt, fastgltf::BufferTarget::ElementArrayBuffer));
             }
         }
 
@@ -4046,15 +3897,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
                 fastgltf::pmr::SmallVector<fastgltf::Attribute, 4> attrs;
                 attrs.emplace_back(fastgltf::Attribute{"POSITION", AddPositionFieldAccessor.template operator()<Vertex>(vertices, &Vertex::Position, fastgltf::BufferTarget::ArrayBuffer)});
                 emit_non_triangle_attrs(attrs, vertices);
-                primitives.emplace_back(fastgltf::Primitive{
-                    .attributes = std::move(attrs),
-                    .type = fastgltf::PrimitiveType::Points,
-                    .targets = {},
-                    .indicesAccessor = {},
-                    .materialIndex = {},
-                    .mappings = {},
-                    .dracoCompression = nullptr,
-                });
+                push_prim(fastgltf::PrimitiveType::Points, std::move(attrs));
             }
         }
 
@@ -4064,15 +3907,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             const uint32_t pos_acc = AddVec3Accessor(std::span<const vec3>(&stub, 1), true, fastgltf::BufferTarget::ArrayBuffer);
             fastgltf::pmr::SmallVector<fastgltf::Attribute, 4> attrs;
             attrs.emplace_back(fastgltf::Attribute{"POSITION", pos_acc});
-            primitives.emplace_back(fastgltf::Primitive{
-                .attributes = std::move(attrs),
-                .type = fastgltf::PrimitiveType::Points,
-                .targets = {},
-                .indicesAccessor = {},
-                .materialIndex = {},
-                .mappings = {},
-                .dracoCompression = nullptr,
-            });
+            push_prim(fastgltf::PrimitiveType::Points, std::move(attrs));
         }
 
         asset.meshes.emplace_back(fastgltf::Mesh{.primitives = std::move(primitives), .weights = std::move(default_weights), .name = ToFgStr(group.Name)});
@@ -4267,26 +4102,11 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             auto rb = std::make_unique<fastgltf::PhysicsRigidBody>();
             populate_collider_extension(owner, *rb);
             uses_physics_rigid_bodies = true;
-            asset.nodes.emplace_back(fastgltf::Node{
-                .meshIndex = {},
-                .skinIndex = {},
-                .cameraIndex = {},
-                .lightIndex = {},
-                .children = std::move(children),
-                .weights = {},
-                .transform = fastgltf::TRS{
-                    .translation = {cs.LocalOffset.x, cs.LocalOffset.y, cs.LocalOffset.z},
-                    .rotation = fastgltf::math::fquat(0.f, 0.f, 0.f, 1.f),
-                    .scale = {1.f, 1.f, 1.f},
-                },
-                .instancingAttributes = {},
-                .name = {},
-                .physicsRigidBody = std::move(rb),
-                .audioModal = {},
-                .visible = true,
-                .selectable = true,
-                .hoverable = true,
-            });
+            fastgltf::Node node{};
+            node.children = std::move(children);
+            node.transform = fastgltf::TRS{.translation = {cs.LocalOffset.x, cs.LocalOffset.y, cs.LocalOffset.z}};
+            node.physicsRigidBody = std::move(rb);
+            asset.nodes.emplace_back(std::move(node));
             continue;
         }
 

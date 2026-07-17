@@ -1,6 +1,7 @@
 #include "action/Core.h"
 #include "Variant.h"
 #include "action/Dispatch.h"
+#include "action/ScopeResolve.h"
 #include "scene/Entity.h"
 #include "selection/SelectionComponents.h"
 
@@ -11,17 +12,11 @@ void ApplyUpdateScoped(entt::registry &r, entt::entity viewport, Scope scope, en
     auto it = detail::PatchTable().find(component_type);
     assert(it != detail::PatchTable().end() && "Update target component is not registered for dispatch");
     const auto &patcher = it->second;
-    switch (scope) {
-        case Scope::Entity: patcher.Patch(r, entity != null_entity ? entity : viewport, offset, value, size); break;
-        case Scope::Active:
-            if (const auto e = FindActiveEntity(r); e != null_entity && patcher.Has(r, e)) patcher.Patch(r, e, offset, value, size);
-            break;
-        case Scope::Selected:
-        case Scope::SelectedDelta: // non-numeric fields can't delta — copy
-            for (const auto e : r.view<Selected>())
-                if (patcher.Has(r, e)) patcher.Patch(r, e, offset, value, size);
-            break;
-    }
+    ForEachScopeTarget(
+        r, scope, entity, viewport,
+        [&](entt::entity e) { return patcher.Has(r, e); },
+        [&](entt::entity e) { patcher.Patch(r, e, offset, value, size); }
+    );
 }
 
 void ForEachSelectedWith(entt::registry &r, entt::id_type component_type, const std::function<void(entt::entity)> &fn) {
@@ -33,16 +28,7 @@ void ForEachSelectedWith(entt::registry &r, entt::id_type component_type, const 
 }
 
 void ApplyTagScoped(entt::registry &r, entt::entity viewport, Scope scope, entt::entity entity, entt::id_type tag_type, bool present) {
-    switch (scope) {
-        case Scope::Entity: ApplyTag(r, entity != null_entity ? entity : viewport, tag_type, present); break;
-        case Scope::Active:
-            if (const auto e = FindActiveEntity(r); e != null_entity) ApplyTag(r, e, tag_type, present);
-            break;
-        case Scope::Selected:
-        case Scope::SelectedDelta:
-            for (const auto e : r.view<Selected>()) ApplyTag(r, e, tag_type, present);
-            break;
-    }
+    ForEachScopeTarget(r, scope, entity, viewport, [](entt::entity) { return true; }, [&](entt::entity e) { ApplyTag(r, e, tag_type, present); });
 }
 
 void Apply(entt::registry &r, entt::entity viewport, const Core &action) {

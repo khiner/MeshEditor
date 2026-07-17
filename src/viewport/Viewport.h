@@ -32,9 +32,6 @@ void DisplayViewport(entt::registry &, entt::entity viewport);
 // Wait for pending viewport render to complete. No-op if no render pending.
 void WaitForRender(entt::registry &);
 
-// Process deferred component events and rebuild draw lists, without presenting.
-void AdvanceViewport(entt::registry &, entt::entity viewport);
-
 // Resume on-screen display after a headless replay: render the current scene at the current ViewportExtent and present synchronously.
 void PresentViewport(entt::registry &, entt::entity viewport);
 

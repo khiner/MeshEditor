@@ -788,6 +788,23 @@ int main(int argc, const char **argv) {
         };
     };
 
+    // Load/save with an expect-and-skip guard. The result value is only ever used for the guard —
+    // reloaded data is re-fetched from the registry.
+    const auto load_or_skip = [&](SceneFixture &f, const fs::path &p, const char *msg) {
+        const auto result = gltf::LoadGltf(p, load_ctx(f.R, f.Viewport));
+        expect(result.has_value()) << msg;
+        return result.has_value();
+    };
+    const auto save_or_skip = [&](SceneFixture &f, const fs::path &p) {
+        const auto result = gltf::SaveGltf(p, save_ctx(f.R, f.Viewport));
+        expect(result.has_value()) << "save failed: " << (result ? "" : result.error());
+        return result.has_value();
+    };
+    const auto first_modal_node = [](entt::registry &r) -> entt::entity {
+        for (auto e : r.view<const ModalModes>()) return e;
+        return entt::null;
+    };
+
     // The test never renders, so WaitForRender (the only caller of ReclaimRetiredBuffers) never runs and retired arena
     // buffers would pile up until the GPU OOMs. Reclaim at each clear - safe since no frame is ever in flight here.
     const auto clear_scene = [](entt::registry &r, entt::entity vp) {
@@ -860,9 +877,7 @@ int main(int argc, const char **argv) {
     if (const fs::path box_embedded = SamplePath("external/glTF-Sample-Assets/Models/BoxTextured/glTF-Embedded/BoxTextured.gltf"); fs::exists(box_embedded)) {
         test("dirty_image_re_encodes_pixel_equal") = [&] {
             SceneFixture fx{vk_resources};
-            const auto load = gltf::LoadGltf(box_embedded, load_ctx(fx.R, fx.Viewport));
-            expect(load.has_value()) << "load failed";
-            if (!load) return;
+            if (!load_or_skip(fx, box_embedded, "load failed")) return;
             materialize_textures(fx.R, fx.Viewport);
 
             // Skip the WireRegistry default-white RawPixels texture (no SourceImageIndex link).
@@ -885,14 +900,10 @@ int main(int argc, const char **argv) {
             fx.R.get<gltf::SourceAssets>(fx.Viewport).Images.front().IsDirty = true;
 
             const auto out_path = edit_root / "BoxTextured-dirty.gltf";
-            const auto save = gltf::SaveGltf(out_path, save_ctx(fx.R, fx.Viewport));
-            expect(save.has_value()) << "save failed: " << (save ? "" : save.error());
-            if (!save) return;
+            if (!save_or_skip(fx, out_path)) return;
 
             SceneFixture fx2{vk_resources};
-            const auto reload = gltf::LoadGltf(out_path, load_ctx(fx2.R, fx2.Viewport));
-            expect(reload.has_value()) << "reload failed";
-            if (!reload) return;
+            if (!load_or_skip(fx2, out_path, "reload failed")) return;
             const auto &reloaded = fx2.R.get<const gltf::SourceAssets>(fx2.Viewport).Images;
             expect(reloaded.size() == 1u);
             // PNG re-encode is lossless, so decoded pixels must match the pre-edit GPU readback.
@@ -920,23 +931,17 @@ int main(int argc, const char **argv) {
             expect(fs::exists(staged_png)) << "fixture missing PNG";
 
             SceneFixture fx{vk_resources};
-            const auto load = gltf::LoadGltf(staged_gltf, load_ctx(fx.R, fx.Viewport));
-            expect(load.has_value()) << "load failed";
-            if (!load) return;
+            if (!load_or_skip(fx, staged_gltf, "load failed")) return;
 
             materialize_textures(fx.R, fx.Viewport);
 
             fs::rename(staged_png, stage_dir / "CesiumLogoFlat.png.moved");
 
             const auto out_path = edit_root / "BoxTextured-fallback.gltf";
-            const auto save = gltf::SaveGltf(out_path, save_ctx(fx.R, fx.Viewport));
-            expect(save.has_value()) << "save failed: " << (save ? "" : save.error());
-            if (!save) return;
+            if (!save_or_skip(fx, out_path)) return;
 
             SceneFixture fx2{vk_resources};
-            const auto reload = gltf::LoadGltf(out_path, load_ctx(fx2.R, fx2.Viewport));
-            expect(reload.has_value()) << "reload failed";
-            if (!reload) return;
+            if (!load_or_skip(fx2, out_path, "reload failed")) return;
 
             const auto &reloaded = fx2.R.get<const gltf::SourceAssets>(fx2.Viewport).Images;
             expect(reloaded.size() == 1u);
@@ -952,9 +957,7 @@ int main(int argc, const char **argv) {
     if (const fs::path box = SamplePath("external/glTF-Sample-Assets/Models/Box/glTF/Box.gltf"); fs::exists(box)) {
         test("audio_modal_round_trip") = [&] {
             SceneFixture fx{vk_resources};
-            const auto load = gltf::LoadGltf(box, load_ctx(fx.R, fx.Viewport));
-            expect(load.has_value()) << "Box load failed";
-            if (!load) return;
+            if (!load_or_skip(fx, box, "Box load failed")) return;
 
             // Find the mesh-instance node and its mesh entity.
             entt::entity node = entt::null, mesh_entity = entt::null;
@@ -984,9 +987,7 @@ int main(int argc, const char **argv) {
             fx.R.emplace_or_replace<AcousticMaterial>(mesh_entity, materials::acoustic::Ceramic);
 
             const auto out_path = edit_root / "audio_modal.gltf";
-            const auto save = gltf::SaveGltf(out_path, save_ctx(fx.R, fx.Viewport));
-            expect(save.has_value()) << "save failed: " << (save ? "" : save.error());
-            if (!save) return;
+            if (!save_or_skip(fx, out_path)) return;
 
             // --- Schema-shape checks on the emitted JSON. ---
             {
@@ -1028,15 +1029,9 @@ int main(int argc, const char **argv) {
 
             // --- Re-import and compare against the authored model. ---
             SceneFixture fx2{vk_resources};
-            const auto reload = gltf::LoadGltf(out_path, load_ctx(fx2.R, fx2.Viewport));
-            expect(reload.has_value()) << "reload failed";
-            if (!reload) return;
+            if (!load_or_skip(fx2, out_path, "reload failed")) return;
 
-            entt::entity rnode = entt::null;
-            for (auto e : fx2.R.view<const ModalModes>()) {
-                rnode = e;
-                break;
-            }
+            const auto rnode = first_modal_node(fx2.R);
             expect(rnode != entt::null) << "no modal model after reload";
             if (rnode == entt::null) return;
 
@@ -1087,15 +1082,9 @@ int main(int argc, const char **argv) {
     if (const fs::path fixture = SamplePath("tests/fixtures/KHR_audio_modal.gltf"); fs::exists(fixture)) {
         test("audio_modal_decode_fixture") = [&] {
             SceneFixture fx{vk_resources};
-            const auto load = gltf::LoadGltf(fixture, load_ctx(fx.R, fx.Viewport));
-            expect(load.has_value()) << "fixture load failed";
-            if (!load) return;
+            if (!load_or_skip(fx, fixture, "fixture load failed")) return;
 
-            entt::entity node = entt::null;
-            for (auto e : fx.R.view<const ModalModes>()) {
-                node = e;
-                break;
-            }
+            const auto node = first_modal_node(fx.R);
             expect(node != entt::null) << "fixture produced no modal model";
             if (node == entt::null) return;
 

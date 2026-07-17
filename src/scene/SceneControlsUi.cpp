@@ -247,6 +247,18 @@ void RenderJsonBlock(const char *label, std::string_view json) {
 }
 
 constexpr auto MetadataTableFlags = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp;
+
+// Metadata table scaffolding: header columns, then `per_row(i)` fills each row's cells.
+void MetaTable(const char *id, std::initializer_list<const char *> cols, size_t rows, auto &&per_row) {
+    if (!BeginTable(id, int(cols.size()), MetadataTableFlags)) return;
+    for (const auto *col : cols) TableSetupColumn(col);
+    TableHeadersRow();
+    for (size_t i = 0; i < rows; ++i) {
+        TableNextRow();
+        per_row(i);
+    }
+    EndTable();
+}
 } // namespace
 
 static void RenderEntityControls(entt::registry &r, entt::entity viewport, entt::entity active_entity) {
@@ -603,6 +615,7 @@ static void RenderEntityControls(entt::registry &r, entt::entity viewport, entt:
 
                 auto pbr_features_mask = r.all_of<PbrMeshFeatures>(active_mesh_entity) ? r.get<const PbrMeshFeatures>(active_mesh_entity).Mask : 0u;
                 bool pbr_features_changed = false;
+                // Renders the section header when the feature is enabled.
                 const auto feature_toggle = [&](const char *label, PbrFeature feature) {
                     bool enabled = HasFeature(pbr_features_mask, feature);
                     if (Checkbox(label, &enabled)) {
@@ -610,11 +623,11 @@ static void RenderEntityControls(entt::registry &r, entt::entity viewport, entt:
                         else pbr_features_mask &= ~uint32_t(feature);
                         pbr_features_changed = true;
                     }
+                    if (enabled) SeparatorText(label);
                     return enabled;
                 };
 
                 if (feature_toggle("Transmission", PbrFeature::Transmission)) {
-                    SeparatorText("Transmission");
                     material_changed |= SliderFloat("Transmission factor", &material.Transmission.Factor, 0.f, 1.f);
                     material_changed |= edit_texture_info("Transmission", material.Transmission.Texture);
                     material_changed |= SliderFloat("Dispersion", &material.Dispersion, 0.f, 1.f);
@@ -626,7 +639,6 @@ static void RenderEntityControls(entt::registry &r, entt::entity viewport, entt:
                 }
 
                 if (feature_toggle("Diffuse transmission", PbrFeature::DiffuseTrans)) {
-                    SeparatorText("Diffuse transmission");
                     material_changed |= SliderFloat("Diffuse transmission factor", &material.DiffuseTransmission.Factor, 0.f, 1.f);
                     material_changed |= edit_texture_info("Diffuse transmission", material.DiffuseTransmission.Texture);
                     material_changed |= ColorEdit3("Diffuse transmission color", &material.DiffuseTransmission.ColorFactor.x);
@@ -634,7 +646,6 @@ static void RenderEntityControls(entt::registry &r, entt::entity viewport, entt:
                 }
 
                 if (feature_toggle("Clearcoat", PbrFeature::Clearcoat)) {
-                    SeparatorText("Clearcoat");
                     material_changed |= SliderFloat("Clearcoat factor", &material.Clearcoat.Factor, 0.f, 1.f);
                     material_changed |= edit_texture_info("Clearcoat", material.Clearcoat.Texture);
                     material_changed |= SliderFloat("Clearcoat roughness", &material.Clearcoat.RoughnessFactor, 0.f, 1.f);
@@ -644,14 +655,12 @@ static void RenderEntityControls(entt::registry &r, entt::entity viewport, entt:
                 }
 
                 if (feature_toggle("Anisotropy", PbrFeature::Anisotropy)) {
-                    SeparatorText("Anisotropy");
                     material_changed |= SliderFloat("Anisotropy strength", &material.Anisotropy.Strength, 0.f, 1.f);
                     material_changed |= SliderFloat("Anisotropy rotation", &material.Anisotropy.Rotation, 0.f, 6.2832f, "%.3f rad");
                     material_changed |= edit_texture_info("Anisotropy", material.Anisotropy.Texture);
                 }
 
                 if (feature_toggle("Sheen", PbrFeature::Sheen)) {
-                    SeparatorText("Sheen");
                     material_changed |= ColorEdit3("Sheen color", &material.Sheen.ColorFactor.x);
                     material_changed |= edit_texture_info("Sheen color", material.Sheen.ColorTexture);
                     material_changed |= SliderFloat("Sheen roughness", &material.Sheen.RoughnessFactor, 0.f, 1.f);
@@ -659,7 +668,6 @@ static void RenderEntityControls(entt::registry &r, entt::entity viewport, entt:
                 }
 
                 if (feature_toggle("Iridescence", PbrFeature::Iridescence)) {
-                    SeparatorText("Iridescence");
                     material_changed |= SliderFloat("Iridescence factor", &material.Iridescence.Factor, 0.f, 1.f);
                     material_changed |= edit_texture_info("Iridescence", material.Iridescence.Texture);
                     material_changed |= SliderFloat("Iridescence IOR", &material.Iridescence.Ior, 1.0f, 5.0f);
@@ -1115,107 +1123,78 @@ void RenderControls(entt::registry &r, entt::entity viewport) {
                     for (const auto &e : sa->ExtensionsRequired) BulletText("%s", e.c_str());
                 }
                 if (!sa->Images.empty() && CollapsingHeader("Image registry")) {
-                    if (BeginTable("Images", 5, MetadataTableFlags)) {
-                        TableSetupColumn("#");
-                        TableSetupColumn("Name");
-                        TableSetupColumn("Mime");
-                        TableSetupColumn("Source");
-                        TableSetupColumn("Bytes");
-                        TableHeadersRow();
-                        for (size_t i = 0; i < sa->Images.size(); ++i) {
-                            const auto &img = sa->Images[i];
-                            TableNextRow();
-                            TableNextColumn();
-                            Text("%zu", i);
-                            TableNextColumn();
-                            TextUnformatted(img.Name.c_str());
-                            TableNextColumn();
-                            TextUnformatted(MimeTypeName(img.MimeType).data());
-                            TableNextColumn();
-                            if (img.SourceDataUri) TextUnformatted("data URI");
-                            else if (!img.SourceAbsPath.empty()) TextUnformatted(img.SourceAbsPath.c_str());
-                            else TextUnformatted("embedded");
-                            TableNextColumn();
-                            if (img.Bytes.empty()) TextUnformatted(img.SourceAbsPath.empty() ? "—" : "external");
-                            else Text("%zu", img.Bytes.size());
-                            if (img.IsDirty) {
-                                SameLine();
-                                TextUnformatted("(dirty)");
-                            }
+                    MetaTable("Images", {"#", "Name", "Mime", "Source", "Bytes"}, sa->Images.size(), [&](size_t i) {
+                        const auto &img = sa->Images[i];
+                        TableNextColumn();
+                        Text("%zu", i);
+                        TableNextColumn();
+                        TextUnformatted(img.Name.c_str());
+                        TableNextColumn();
+                        TextUnformatted(MimeTypeName(img.MimeType).data());
+                        TableNextColumn();
+                        if (img.SourceDataUri) TextUnformatted("data URI");
+                        else if (!img.SourceAbsPath.empty()) TextUnformatted(img.SourceAbsPath.c_str());
+                        else TextUnformatted("embedded");
+                        TableNextColumn();
+                        if (img.Bytes.empty()) TextUnformatted(img.SourceAbsPath.empty() ? "—" : "external");
+                        else Text("%zu", img.Bytes.size());
+                        if (img.IsDirty) {
+                            SameLine();
+                            TextUnformatted("(dirty)");
                         }
-                        EndTable();
-                    }
+                    });
                 }
                 if (!sa->Textures.empty() && CollapsingHeader("Texture registry")) {
-                    if (BeginTable("Textures", 4, MetadataTableFlags)) {
-                        TableSetupColumn("#");
-                        TableSetupColumn("Name");
-                        TableSetupColumn("Sampler");
-                        TableSetupColumn("Image (default/WebP/Basisu/DDS)");
-                        TableHeadersRow();
-                        const auto idx_or_dash = [](const std::optional<uint32_t> &i) {
-                            return i ? std::format("{}", *i) : std::string{"—"};
-                        };
-                        for (size_t i = 0; i < sa->Textures.size(); ++i) {
-                            const auto &t = sa->Textures[i];
-                            TableNextRow();
-                            TableNextColumn();
-                            Text("%zu", i);
-                            TableNextColumn();
-                            TextUnformatted(t.Name.c_str());
-                            TableNextColumn();
-                            TextUnformatted(idx_or_dash(t.SamplerIndex).c_str());
-                            TableNextColumn();
-                            Text("%s / %s / %s / %s", idx_or_dash(t.ImageIndex).c_str(), idx_or_dash(t.WebpImageIndex).c_str(), idx_or_dash(t.BasisuImageIndex).c_str(), idx_or_dash(t.DdsImageIndex).c_str());
-                        }
-                        EndTable();
-                    }
+                    const auto idx_or_dash = [](const std::optional<uint32_t> &i) {
+                        return i ? std::format("{}", *i) : std::string{"—"};
+                    };
+                    MetaTable("Textures", {"#", "Name", "Sampler", "Image (default/WebP/Basisu/DDS)"}, sa->Textures.size(), [&](size_t i) {
+                        const auto &t = sa->Textures[i];
+                        TableNextColumn();
+                        Text("%zu", i);
+                        TableNextColumn();
+                        TextUnformatted(t.Name.c_str());
+                        TableNextColumn();
+                        TextUnformatted(idx_or_dash(t.SamplerIndex).c_str());
+                        TableNextColumn();
+                        Text("%s / %s / %s / %s", idx_or_dash(t.ImageIndex).c_str(), idx_or_dash(t.WebpImageIndex).c_str(), idx_or_dash(t.BasisuImageIndex).c_str(), idx_or_dash(t.DdsImageIndex).c_str());
+                    });
                 }
                 if (!sa->Samplers.empty() && CollapsingHeader("Sampler registry")) {
-                    if (BeginTable("Samplers", 5, MetadataTableFlags)) {
-                        TableSetupColumn("#");
-                        TableSetupColumn("Name");
-                        TableSetupColumn("Mag");
-                        TableSetupColumn("Min");
-                        TableSetupColumn("Wrap S/T");
-                        TableHeadersRow();
-                        const auto filter_name = [](gltf::Filter f) -> std::string_view {
-                            using F = gltf::Filter;
-                            switch (f) {
-                                case F::Nearest: return "Nearest";
-                                case F::Linear: return "Linear";
-                                case F::NearestMipMapNearest: return "Nearest/Nearest";
-                                case F::LinearMipMapNearest: return "Linear/Nearest";
-                                case F::NearestMipMapLinear: return "Nearest/Linear";
-                                case F::LinearMipMapLinear: return "Linear/Linear";
-                            }
-                            return "?";
-                        };
-                        const auto wrap_name = [](gltf::Wrap w) -> std::string_view {
-                            using W = gltf::Wrap;
-                            switch (w) {
-                                case W::ClampToEdge: return "Clamp";
-                                case W::MirroredRepeat: return "Mirror";
-                                case W::Repeat: return "Repeat";
-                            }
-                            return "?";
-                        };
-                        for (size_t i = 0; i < sa->Samplers.size(); ++i) {
-                            const auto &s = sa->Samplers[i];
-                            TableNextRow();
-                            TableNextColumn();
-                            Text("%zu", i);
-                            TableNextColumn();
-                            TextUnformatted(s.Name.c_str());
-                            TableNextColumn();
-                            TextUnformatted(s.MagFilter ? filter_name(*s.MagFilter).data() : "—");
-                            TableNextColumn();
-                            TextUnformatted(s.MinFilter ? filter_name(*s.MinFilter).data() : "—");
-                            TableNextColumn();
-                            Text("%s / %s", wrap_name(s.WrapS).data(), wrap_name(s.WrapT).data());
+                    const auto filter_name = [](gltf::Filter f) -> std::string_view {
+                        using F = gltf::Filter;
+                        switch (f) {
+                            case F::Nearest: return "Nearest";
+                            case F::Linear: return "Linear";
+                            case F::NearestMipMapNearest: return "Nearest/Nearest";
+                            case F::LinearMipMapNearest: return "Linear/Nearest";
+                            case F::NearestMipMapLinear: return "Nearest/Linear";
+                            case F::LinearMipMapLinear: return "Linear/Linear";
                         }
-                        EndTable();
-                    }
+                        return "?";
+                    };
+                    const auto wrap_name = [](gltf::Wrap w) -> std::string_view {
+                        using W = gltf::Wrap;
+                        switch (w) {
+                            case W::ClampToEdge: return "Clamp";
+                            case W::MirroredRepeat: return "Mirror";
+                            case W::Repeat: return "Repeat";
+                        }
+                        return "?";
+                    };
+                    MetaTable("Samplers", {"#", "Name", "Mag", "Min", "Wrap S/T"}, sa->Samplers.size(), [&](size_t i) {
+                        const auto &s = sa->Samplers[i];
+                        TableNextColumn();
+                        Text("%zu", i);
+                        TableNextColumn();
+                        TextUnformatted(s.Name.c_str());
+                        TableNextColumn();
+                        TextUnformatted(s.MagFilter ? filter_name(*s.MagFilter).data() : "—");
+                        TableNextColumn();
+                        TextUnformatted(s.MinFilter ? filter_name(*s.MinFilter).data() : "—");
+                        TableNextColumn();
+                        Text("%s / %s", wrap_name(s.WrapS).data(), wrap_name(s.WrapT).data());
+                    });
                 }
                 EndTabItem();
             }

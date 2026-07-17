@@ -9,18 +9,7 @@ layout(push_constant) uniform PC { uint FaceSize; };
 
 const float PI = 3.14159265358979323846;
 
-// OpenGL/Vulkan Y-up cubemap face convention (layer order: +X, -X, +Y, -Y, +Z, -Z).
-// uv is in [-1, 1] for the face's s/t axes.
-vec3 FaceDirection(uint face, vec2 uv) {
-    switch (face) {
-        case 0: return normalize(vec3(1.0, -uv.y, -uv.x));  // +X
-        case 1: return normalize(vec3(-1.0, -uv.y, uv.x));  // -X
-        case 2: return normalize(vec3(uv.x, 1.0, uv.y));    // +Y
-        case 3: return normalize(vec3(uv.x, -1.0, -uv.y));  // -Y
-        case 4: return normalize(vec3(uv.x, -uv.y, 1.0));   // +Z
-        default: return normalize(vec3(-uv.x, -uv.y, -1.0));// -Z
-    }
-}
+#include "CubemapFace.glsl"
 
 void main() {
     const uint face = gl_GlobalInvocationID.z;

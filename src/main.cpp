@@ -161,20 +161,6 @@ void InitFonts(float scale = 1.f) {
 
 } // namespace
 
-/*
-namespace MeshEditor {
-// Returns true if the font was changed.
-// **Only call `ImGui::PopFont` if `PushFont` returns true.**
-bool PushFont(FontFamily family) {
-    auto *new_font = family == FontFamily::Main ? MainFont : MonospaceFont;
-    if (ImGui::GetFont() == new_font) return false;
-
-    ImGui::PushFont(new_font);
-    return true;
-}
-} // namespace MeshEditor
-*/
-
 namespace {
 struct GltfSample {
     std::string Label;

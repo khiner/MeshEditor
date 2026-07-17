@@ -69,6 +69,16 @@ using std::views::iota;
 namespace {
 using namespace he;
 
+// Sort collected {BufferIndex, value} writes by index and flush them through the mutable span.
+// Returns whether anything was written.
+bool FlushIndexedWrites(auto &writes, auto &&span_getter) {
+    if (writes.empty()) return false;
+    std::sort(writes.begin(), writes.end(), [](const auto &a, const auto &b) { return a.first < b.first; });
+    auto span = span_getter();
+    for (const auto &[index, value] : writes) span[index] = value;
+    return true;
+}
+
 const std::vector<Element> NormalElements{Element::Vertex, Element::Face};
 
 std::vector<uint> CreateNormalIndices(const Mesh &mesh, Element element) {
@@ -1346,11 +1356,7 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
         // Collect instance state writes, then batch via GetMutableRange.
         // SyncModelsBuffers writes the full initial state for newly inserted instances,
         // so we skip those here to avoid redundant writes.
-        struct StateWrite {
-            uint32_t index;
-            uint8_t state;
-        };
-        std::vector<StateWrite> state_writes;
+        std::vector<std::pair<uint32_t, uint8_t>> state_writes;
         const auto collect_instance_state = [&](entt::entity instance_entity) {
             if (is_newly_inserted(instance_entity)) return;
             if (const auto *ri = r.try_get<RenderInstance>(instance_entity); ri && ri->BufferIndex != UINT32_MAX) {
@@ -1386,12 +1392,7 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
         }
 
         // Batch-write all collected instance state changes.
-        if (!state_writes.empty()) {
-            std::sort(state_writes.begin(), state_writes.end(), [](const auto &a, const auto &b) { return a.index < b.index; });
-            auto states = buffers.Instances.GetMutableStates();
-            for (const auto &w : state_writes) states[w.index] = w.state;
-            request(RenderRequest::Submit);
-        }
+        if (FlushIndexedWrites(state_writes, [&] { return buffers.Instances.GetMutableStates(); })) request(RenderRequest::Submit);
     }
     { // Bone selection changes — tag armature objects for GPU state sync.
         auto &bone_sel_tracker = reactive<changes::BoneSelection>(r);
@@ -1933,11 +1934,7 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
             // Batch WorldTransform writes: collect all (BufferIndex, WorldTransform) pairs,
             // sort by BufferIndex for cache-friendly access, then write via single GetMutableRange.
             const auto &wt_reactive = reactive<changes::WorldTransform>(r);
-            struct WtWrite {
-                uint32_t index;
-                WorldTransform wt;
-            };
-            std::vector<WtWrite> wt_writes;
+            std::vector<std::pair<uint32_t, WorldTransform>> wt_writes;
             wt_writes.reserve(wt_reactive.size() + sync.NewlyInserted.size());
 
             const auto collect_wt = [&](entt::entity e) {
@@ -1975,12 +1972,7 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
             for (auto e : sync.NewlyInserted) {
                 if (!wt_reactive.contains(e)) collect_wt(e);
             }
-            if (!wt_writes.empty()) {
-                std::sort(wt_writes.begin(), wt_writes.end(), [](const auto &a, const auto &b) { return a.index < b.index; });
-                auto transforms = buffers.Instances.GetMutableTransforms();
-                for (const auto &w : wt_writes) transforms[w.index] = w.wt;
-                request(RenderRequest::Submit);
-            }
+            if (FlushIndexedWrites(wt_writes, [&] { return buffers.Instances.GetMutableTransforms(); })) request(RenderRequest::Submit);
         }
     }
     { // Sync RotationUiVariant from Transform. Must run after bone block.

@@ -39,6 +39,32 @@ void RenderNameEdit(entt::entity e, const std::string &current) {
     if (InputText("Name", buf, sizeof(buf))) action::Emit(action::SetNameOf<T>(e, std::string{buf}));
 }
 
+// Editable list of joint-def vec items: a tree node per item with a delete button, plus an Add button.
+// `body(item, edit)` renders the fields, where edit(fn) copies the item, applies fn, and returns the Set action.
+template<typename T>
+void RenderJointVecList(entt::entity jd_entity, const std::vector<T> &items, const char *label, const char *add_label, int id_offset, auto &&body) {
+    std::optional<uint32_t> delete_index;
+    for (uint32_t i = 0; i < items.size(); ++i) {
+        PushID(int(i) + id_offset);
+        const auto &item = items[i];
+        const bool expanded = TreeNodeEx("##node", ImGuiTreeNodeFlags_SpanLabelWidth, "%s %u", label, i);
+        SameLine();
+        if (SmallButton("X")) delete_index = i;
+        if (expanded) {
+            const auto edit = [&](auto &&fn) {
+                auto e = item;
+                fn(e);
+                return action::physics::SetJointVecItem<T>{jd_entity, i, std::make_unique<T>(std::move(e))};
+            };
+            body(item, edit);
+            TreePop();
+        }
+        PopID();
+    }
+    if (delete_index) action::Emit(action::physics::DeleteJointVecItem<T>{jd_entity, *delete_index});
+    if (Button(add_label)) action::Emit(action::physics::AddJointVecItem<T>{jd_entity});
+}
+
 // Deduce owner class from a data-member pointer (entt::entity Owner::*).
 template<typename M> struct ptr_class;
 template<typename C, typename V> struct ptr_class<V C::*> {
@@ -367,100 +393,66 @@ void physics_ui::RenderTab(entt::registry &r, entt::entity viewport) {
             },
             [&](entt::entity jd_entity, const PhysicsJointDef &jd) {
                 static const char *const axis_names[]{"X", "Y", "Z"};
-                std::optional<uint32_t> delete_limit;
-                for (uint32_t li = 0; li < jd.Limits.size(); ++li) {
-                    PushID(int(li));
-                    const auto &limit = jd.Limits[li];
-                    const bool limit_expanded = TreeNodeEx("##node", ImGuiTreeNodeFlags_SpanLabelWidth, "Limit %u", li);
+                RenderJointVecList<PhysicsJointLimit>(jd_entity, jd.Limits, "Limit", "Add limit", 0, [&](const auto &limit, auto &&edit_limit) {
+                    TextUnformatted("Linear axes:");
                     SameLine();
-                    if (SmallButton("X")) delete_limit = li;
-                    if (limit_expanded) {
-                        const auto edit_limit = [&](auto &&fn) {
-                            auto edit = limit;
-                            fn(edit);
-                            return action::physics::SetJointVecItem<PhysicsJointLimit>{jd_entity, li, std::make_unique<PhysicsJointLimit>(std::move(edit))};
-                        };
-                        TextUnformatted("Linear axes:");
-                        SameLine();
-                        for (uint8_t a = 0; a < 3; ++a) {
-                            bool active = std::find(limit.LinearAxes.begin(), limit.LinearAxes.end(), a) != limit.LinearAxes.end();
-                            if (Checkbox(axis_names[a], &active)) action::Emit(edit_limit([&](auto &e) {
-                                if (active) e.LinearAxes.push_back(a);
-                                else std::erase(e.LinearAxes, a);
-                            }));
-                            if (a < 2) SameLine();
-                        }
-                        TextUnformatted("Angular axes:");
-                        SameLine();
-                        for (uint8_t a = 0; a < 3; ++a) {
-                            PushID(a + 3);
-                            bool active = std::find(limit.AngularAxes.begin(), limit.AngularAxes.end(), a) != limit.AngularAxes.end();
-                            if (Checkbox(axis_names[a], &active)) action::Emit(edit_limit([&](auto &e) {
-                                if (active) e.AngularAxes.push_back(a);
-                                else std::erase(e.AngularAxes, a);
-                            }));
-                            if (a < 2) SameLine();
-                            PopID();
-                        }
-
-                        bool has_min = limit.Min.has_value(), has_max = limit.Max.has_value();
-                        float min_val = limit.Min.value_or(0.0f), max_val = limit.Max.value_or(0.0f);
-                        if (Checkbox("Min", &has_min)) action::Emit(edit_limit([&](auto &e) { e.Min = has_min ? std::optional{min_val} : std::nullopt; }));
-                        if (has_min) {
-                            SameLine();
-                            ui::Gesture(ui::DragFloat("##min", &min_val, 0.01f), [&] { return edit_limit([&](auto &e) { e.Min = min_val; }); });
-                        }
-                        if (Checkbox("Max", &has_max)) action::Emit(edit_limit([&](auto &e) { e.Max = has_max ? std::optional{max_val} : std::nullopt; }));
-                        if (has_max) {
-                            SameLine();
-                            ui::Gesture(ui::DragFloat("##max", &max_val, 0.01f), [&] { return edit_limit([&](auto &e) { e.Max = max_val; }); });
-                        }
-
-                        bool soft = limit.Stiffness.has_value();
-                        if (Checkbox("Soft limit", &soft)) action::Emit(edit_limit([&](auto &e) { e.Stiffness = soft ? std::optional{1000.0f} : std::nullopt; }));
-                        if (limit.Stiffness) {
-                            float stiffness = *limit.Stiffness, damping = limit.Damping;
-                            ui::Gesture(ui::DragFloat("Stiffness", &stiffness, 1.0f, 0.0f, 1e6f), [&] { return edit_limit([&](auto &e) { e.Stiffness = stiffness; }); });
-                            ui::Gesture(ui::DragFloat("Damping", &damping, 0.1f, 0.0f, 1e4f), [&] { return edit_limit([&](auto &e) { e.Damping = damping; }); });
-                        }
-                        TreePop();
+                    for (uint8_t a = 0; a < 3; ++a) {
+                        bool active = std::find(limit.LinearAxes.begin(), limit.LinearAxes.end(), a) != limit.LinearAxes.end();
+                        if (Checkbox(axis_names[a], &active)) action::Emit(edit_limit([&](auto &e) {
+                            if (active) e.LinearAxes.push_back(a);
+                            else std::erase(e.LinearAxes, a);
+                        }));
+                        if (a < 2) SameLine();
                     }
-                    PopID();
-                }
-                if (delete_limit) action::Emit(action::physics::DeleteJointVecItem<PhysicsJointLimit>{jd_entity, *delete_limit});
-                if (Button("Add limit")) action::Emit(action::physics::AddJointVecItem<PhysicsJointLimit>{jd_entity});
+                    TextUnformatted("Angular axes:");
+                    SameLine();
+                    for (uint8_t a = 0; a < 3; ++a) {
+                        PushID(a + 3);
+                        bool active = std::find(limit.AngularAxes.begin(), limit.AngularAxes.end(), a) != limit.AngularAxes.end();
+                        if (Checkbox(axis_names[a], &active)) action::Emit(edit_limit([&](auto &e) {
+                            if (active) e.AngularAxes.push_back(a);
+                            else std::erase(e.AngularAxes, a);
+                        }));
+                        if (a < 2) SameLine();
+                        PopID();
+                    }
+
+                    bool has_min = limit.Min.has_value(), has_max = limit.Max.has_value();
+                    float min_val = limit.Min.value_or(0.0f), max_val = limit.Max.value_or(0.0f);
+                    if (Checkbox("Min", &has_min)) action::Emit(edit_limit([&](auto &e) { e.Min = has_min ? std::optional{min_val} : std::nullopt; }));
+                    if (has_min) {
+                        SameLine();
+                        ui::Gesture(ui::DragFloat("##min", &min_val, 0.01f), [&] { return edit_limit([&](auto &e) { e.Min = min_val; }); });
+                    }
+                    if (Checkbox("Max", &has_max)) action::Emit(edit_limit([&](auto &e) { e.Max = has_max ? std::optional{max_val} : std::nullopt; }));
+                    if (has_max) {
+                        SameLine();
+                        ui::Gesture(ui::DragFloat("##max", &max_val, 0.01f), [&] { return edit_limit([&](auto &e) { e.Max = max_val; }); });
+                    }
+
+                    bool soft = limit.Stiffness.has_value();
+                    if (Checkbox("Soft limit", &soft)) action::Emit(edit_limit([&](auto &e) { e.Stiffness = soft ? std::optional{1000.0f} : std::nullopt; }));
+                    if (limit.Stiffness) {
+                        float stiffness = *limit.Stiffness, damping = limit.Damping;
+                        ui::Gesture(ui::DragFloat("Stiffness", &stiffness, 1.0f, 0.0f, 1e6f), [&] { return edit_limit([&](auto &e) { e.Stiffness = stiffness; }); });
+                        ui::Gesture(ui::DragFloat("Damping", &damping, 0.1f, 0.0f, 1e4f), [&] { return edit_limit([&](auto &e) { e.Damping = damping; }); });
+                    }
+                });
 
                 Spacing();
 
-                std::optional<uint32_t> delete_drive;
-                for (uint32_t di = 0; di < jd.Drives.size(); ++di) {
-                    PushID(int(di + 1000));
-                    const auto &drive = jd.Drives[di];
-                    const bool drive_expanded = TreeNodeEx("##node", ImGuiTreeNodeFlags_SpanLabelWidth, "Drive %u", di);
-                    SameLine();
-                    if (SmallButton("X")) delete_drive = di;
-                    if (drive_expanded) {
-                        const auto edit_drive = [&](auto &&fn) {
-                            auto edit = drive;
-                            fn(edit);
-                            return action::physics::SetJointVecItem<PhysicsJointDrive>{jd_entity, di, std::make_unique<PhysicsJointDrive>(std::move(edit))};
-                        };
-                        if (int type = int(drive.Type); Combo("Type", &type, "Linear\0Angular\0")) action::Emit(edit_drive([&](auto &e) { e.Type = PhysicsDriveType(type); }));
-                        if (int axis = drive.Axis; Combo("Axis", &axis, "X\0Y\0Z\0")) action::Emit(edit_drive([&](auto &e) { e.Axis = uint8_t(axis); }));
-                        if (int mode = int(drive.Mode); Combo("Mode", &mode, "Force\0Acceleration\0")) action::Emit(edit_drive([&](auto &e) { e.Mode = PhysicsDriveMode(mode); }));
-                        float max_force = drive.MaxForce, pos_target = drive.PositionTarget, vel_target = drive.VelocityTarget;
-                        float stiffness = drive.Stiffness, damping = drive.Damping;
-                        ui::Gesture(ui::DragFloat("Max force", &max_force, 1.0f, 0.0f, 1e6f), [&] { return edit_drive([&](auto &e) { e.MaxForce = max_force; }); });
-                        ui::Gesture(ui::DragFloat("Position target", &pos_target, 0.01f), [&] { return edit_drive([&](auto &e) { e.PositionTarget = pos_target; }); });
-                        ui::Gesture(ui::DragFloat("Velocity target", &vel_target, 0.01f), [&] { return edit_drive([&](auto &e) { e.VelocityTarget = vel_target; }); });
-                        ui::Gesture(ui::DragFloat("Stiffness", &stiffness, 1.0f, 0.0f, 1e6f), [&] { return edit_drive([&](auto &e) { e.Stiffness = stiffness; }); });
-                        ui::Gesture(ui::DragFloat("Damping", &damping, 0.1f, 0.0f, 1e4f), [&] { return edit_drive([&](auto &e) { e.Damping = damping; }); });
-                        TreePop();
-                    }
-                    PopID();
-                }
-                if (delete_drive) action::Emit(action::physics::DeleteJointVecItem<PhysicsJointDrive>{jd_entity, *delete_drive});
-                if (Button("Add drive")) action::Emit(action::physics::AddJointVecItem<PhysicsJointDrive>{jd_entity});
+                RenderJointVecList<PhysicsJointDrive>(jd_entity, jd.Drives, "Drive", "Add drive", 1000, [&](const auto &drive, auto &&edit_drive) {
+                    if (int type = int(drive.Type); Combo("Type", &type, "Linear\0Angular\0")) action::Emit(edit_drive([&](auto &e) { e.Type = PhysicsDriveType(type); }));
+                    if (int axis = drive.Axis; Combo("Axis", &axis, "X\0Y\0Z\0")) action::Emit(edit_drive([&](auto &e) { e.Axis = uint8_t(axis); }));
+                    if (int mode = int(drive.Mode); Combo("Mode", &mode, "Force\0Acceleration\0")) action::Emit(edit_drive([&](auto &e) { e.Mode = PhysicsDriveMode(mode); }));
+                    float max_force = drive.MaxForce, pos_target = drive.PositionTarget, vel_target = drive.VelocityTarget;
+                    float stiffness = drive.Stiffness, damping = drive.Damping;
+                    ui::Gesture(ui::DragFloat("Max force", &max_force, 1.0f, 0.0f, 1e6f), [&] { return edit_drive([&](auto &e) { e.MaxForce = max_force; }); });
+                    ui::Gesture(ui::DragFloat("Position target", &pos_target, 0.01f), [&] { return edit_drive([&](auto &e) { e.PositionTarget = pos_target; }); });
+                    ui::Gesture(ui::DragFloat("Velocity target", &vel_target, 0.01f), [&] { return edit_drive([&](auto &e) { e.VelocityTarget = vel_target; }); });
+                    ui::Gesture(ui::DragFloat("Stiffness", &stiffness, 1.0f, 0.0f, 1e6f), [&] { return edit_drive([&](auto &e) { e.Stiffness = stiffness; }); });
+                    ui::Gesture(ui::DragFloat("Damping", &damping, 0.1f, 0.0f, 1e4f), [&] { return edit_drive([&](auto &e) { e.Damping = damping; }); });
+                });
             }
         );
     }

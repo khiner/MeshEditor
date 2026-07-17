@@ -30,6 +30,22 @@ void PatchPrimitiveField(entt::registry &r, entt::entity e, uint16_t offset, con
 }
 inline const action::detail::ComponentPatcher PrimitiveFieldPatcher{&PatchPrimitiveField, &ReadPrimitiveField, &action::detail::HasComponent<PrimitiveShape>, "PrimitiveShape"};
 
+// Create an armature object over `data_entity`, creating fresh armature data when null.
+entt::entity CreateArmatureObject(entt::registry &r, MeshStore &meshes, entt::entity data_entity, std::string_view name, const Transform &transform, MeshInstanceCreateInfo::SelectBehavior select) {
+    if (data_entity == entt::null) {
+        data_entity = r.create();
+        r.emplace<Armature>(data_entity);
+    }
+    const auto entity = r.create();
+    r.emplace<ObjectKind>(entity, ObjectType::Armature);
+    r.emplace<ArmatureObject>(entity, data_entity);
+    r.emplace<Transform>(entity, transform);
+    r.emplace<Name>(entity, ::CreateName(r, name.empty() ? "Armature" : name));
+    ::ApplySelectBehavior(r, entity, select);
+    ::CreateBoneInstances(r, meshes, entity, data_entity);
+    return entity;
+}
+
 entt::entity DuplicateOne(entt::registry &r, entt::entity e, bool &was_mesh_duplicate) {
     auto &meshes = r.ctx().get<MeshStore>();
     const ObjectCreateInfo create_info{
@@ -41,18 +57,9 @@ entt::entity DuplicateOne(entt::registry &r, entt::entity e, bool &was_mesh_dupl
 
     if (!r.all_of<Instance>(e)) {
         if (const auto object_type = r.all_of<ObjectKind>(e) ? r.get<const ObjectKind>(e).Value : ObjectType::Empty; object_type == ObjectType::Armature) {
-            const auto data_entity = r.create();
-            r.emplace<Armature>(data_entity);
-            const auto copy_entity = r.create();
-            r.emplace<ObjectKind>(copy_entity, ObjectType::Armature);
-            r.emplace<ArmatureObject>(copy_entity, data_entity);
-            r.emplace<Transform>(copy_entity, create_info.Transform);
-            r.emplace<Name>(copy_entity, ::CreateName(r, create_info.Name.empty() ? "Armature" : create_info.Name));
-            ::ApplySelectBehavior(r, copy_entity, create_info.Select);
-            ::CreateBoneInstances(r, meshes, copy_entity, data_entity);
+            const auto copy_entity = CreateArmatureObject(r, meshes, entt::null, create_info.Name, create_info.Transform, create_info.Select);
             if (const auto *src_armature = r.try_get<ArmatureObject>(e)) {
-                auto &dst = r.get<Armature>(data_entity);
-                dst = r.get<const Armature>(src_armature->Entity);
+                r.get<Armature>(r.get<const ArmatureObject>(copy_entity).Entity) = r.get<const Armature>(src_armature->Entity);
             }
             return copy_entity;
         }
@@ -90,15 +97,7 @@ entt::entity DuplicateLinkedOne(entt::registry &r, entt::entity e) {
         const auto select_behavior = r.all_of<Selected>(e) ? MeshInstanceCreateInfo::SelectBehavior::Additive : MeshInstanceCreateInfo::SelectBehavior::None;
 
         if (const auto *armature = r.try_get<ArmatureObject>(e)) {
-            const auto e_new = r.create();
-            r.emplace<Name>(e_new, ::CreateName(r, std::format("{}_copy", GetName(r, e))));
-            r.emplace<ObjectKind>(e_new, ObjectType::Armature);
-            r.emplace<ArmatureObject>(e_new, armature->Entity);
-            const Transform t{r.get<const WorldTransform>(e)};
-            r.emplace_or_replace<Transform>(e_new, t);
-            ::ApplySelectBehavior(r, e_new, select_behavior);
-            ::CreateBoneInstances(r, meshes, e_new, armature->Entity);
-            return e_new;
+            return CreateArmatureObject(r, meshes, armature->Entity, std::format("{}_copy", GetName(r, e)), Transform{r.get<const WorldTransform>(e)}, select_behavior);
         }
         return ::AddEmpty(r, meshes, {.Name = std::format("{}_copy", GetName(r, e)), .Transform = Transform{r.get<const WorldTransform>(e)}, .Select = select_behavior});
     }
@@ -223,17 +222,7 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
             },
             [&](const AddEmpty &a) { ::AddEmpty(r, meshes, *a.Info); begin_translate(); },
             [&](const AddArmature &a) {
-                const auto &info = *a.Info;
-                const auto data_entity = r.create();
-                r.emplace<Armature>(data_entity);
-
-                const auto entity = r.create();
-                r.emplace<ObjectKind>(entity, ObjectType::Armature);
-                r.emplace<ArmatureObject>(entity, data_entity);
-                r.emplace<Transform>(entity, info.Transform);
-                r.emplace<Name>(entity, ::CreateName(r, info.Name.empty() ? "Armature" : info.Name));
-                ::ApplySelectBehavior(r, entity, info.Select);
-                ::CreateBoneInstances(r, meshes, entity, data_entity);
+                CreateArmatureObject(r, meshes, entt::null, a.Info->Name, a.Info->Transform, a.Info->Select);
                 begin_translate();
             },
             [&](const AddCamera &a) { ::AddCamera(r, meshes, *a.Info, a.Props); begin_translate(); },

@@ -825,59 +825,24 @@ void RecordPhase(entt::registry &r, entt::entity viewport, vk::CommandBuffer cb,
         }
         cb.endRenderPass();
 
-        // Generate mip chain via linear blits. After the render pass, mip 0 is in eShaderReadOnlyOptimal
-        // per attachment finalLayout. Re-transition it for blits, then leave all mips in eShaderReadOnlyOptimal.
+        // Generate the mip chain. After the render pass, mip 0 is in eShaderReadOnlyOptimal per
+        // attachment finalLayout. Move every mip to eTransferDstOptimal, then blit down the chain,
+        // leaving all mips in eShaderReadOnlyOptimal for sampling in the main pass.
         const auto mip_count = main.Transmission->MipCount;
         const auto image = *main.Transmission->Image.Image;
-        // mip 0: shaderRO -> transferSrc
-        cb.pipelineBarrier(
-            vk::PipelineStageFlagBits::eFragmentShader, vk::PipelineStageFlagBits::eTransfer, {}, {}, {},
-            {{vk::AccessFlagBits::eShaderRead, vk::AccessFlagBits::eTransferRead,
-              vk::ImageLayout::eShaderReadOnlyOptimal, vk::ImageLayout::eTransferSrcOptimal,
-              VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, image,
-              vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}}}
+        mvk::TransitionImage(
+            cb, vk::PipelineStageFlagBits::eFragmentShader, vk::PipelineStageFlagBits::eTransfer,
+            vk::AccessFlagBits::eShaderRead, vk::AccessFlagBits::eTransferWrite,
+            vk::ImageLayout::eShaderReadOnlyOptimal, vk::ImageLayout::eTransferDstOptimal, image, {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}
         );
-        // mips 1..N-1: undefined -> transferDst
         if (mip_count > 1) {
-            cb.pipelineBarrier(
-                vk::PipelineStageFlagBits::eTopOfPipe, vk::PipelineStageFlagBits::eTransfer, {}, {}, {},
-                {{{}, vk::AccessFlagBits::eTransferWrite, vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, image, vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eColor, 1, mip_count - 1, 0, 1}}}
+            mvk::TransitionImage(
+                cb, vk::PipelineStageFlagBits::eTopOfPipe, vk::PipelineStageFlagBits::eTransfer,
+                {}, vk::AccessFlagBits::eTransferWrite,
+                vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal, image, {vk::ImageAspectFlagBits::eColor, 1, mip_count - 1, 0, 1}
             );
         }
-        int32_t mip_w = int32_t(main_rect.extent.width), mip_h = int32_t(main_rect.extent.height);
-        for (uint32_t mip = 1; mip < mip_count; ++mip) {
-            const int32_t next_w = std::max(1, mip_w / 2);
-            const int32_t next_h = std::max(1, mip_h / 2);
-            cb.blitImage(
-                image, vk::ImageLayout::eTransferSrcOptimal,
-                image, vk::ImageLayout::eTransferDstOptimal,
-                vk::ImageBlit{
-                    vk::ImageSubresourceLayers{vk::ImageAspectFlagBits::eColor, mip - 1, 0, 1},
-                    {vk::Offset3D{0, 0, 0}, vk::Offset3D{mip_w, mip_h, 1}},
-                    vk::ImageSubresourceLayers{vk::ImageAspectFlagBits::eColor, mip, 0, 1},
-                    {vk::Offset3D{0, 0, 0}, vk::Offset3D{next_w, next_h, 1}},
-                },
-                vk::Filter::eLinear
-            );
-            // Promote this mip from transferDst to transferSrc for the next iteration.
-            cb.pipelineBarrier(
-                vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eTransfer, {}, {}, {},
-                {{vk::AccessFlagBits::eTransferWrite, vk::AccessFlagBits::eTransferRead,
-                  vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eTransferSrcOptimal,
-                  VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, image,
-                  vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eColor, mip, 1, 0, 1}}}
-            );
-            mip_w = next_w;
-            mip_h = next_h;
-        }
-        // All mips currently in transferSrc — flip to shaderReadOnly for sampling in the main pass.
-        cb.pipelineBarrier(
-            vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eFragmentShader, {}, {}, {},
-            {{vk::AccessFlagBits::eTransferRead, vk::AccessFlagBits::eShaderRead,
-              vk::ImageLayout::eTransferSrcOptimal, vk::ImageLayout::eShaderReadOnlyOptimal,
-              VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, image,
-              vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eColor, 0, mip_count, 0, 1}}}
-        );
+        mvk::GenerateMipChain(cb, image, main_rect.extent.width, main_rect.extent.height, mip_count);
     }
 
     // Each step summed itself into the blur target as a color attachment. Transition it for sampling below.

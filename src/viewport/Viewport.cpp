@@ -495,8 +495,6 @@ void DeinitViewport(entt::registry &r, entt::entity viewport) {
     TearDownStoreCtx(r);
 }
 
-void AdvanceViewport(entt::registry &r, entt::entity viewport) { AdvanceAndRecord(r, viewport, /*force_full=*/false); }
-
 void PresentViewport(entt::registry &r, entt::entity viewport) {
     // Replay's ticks never render the color image and consumed the scene's reactive changes,
     // so force a full record to render the final state regardless.
