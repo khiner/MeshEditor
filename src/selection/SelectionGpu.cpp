@@ -220,7 +220,7 @@ void RenderElementSelectionPass(
     }
 
     FlushDrawList(r, vk_res.Device, draw_list, buffers.SelectionDraw);
-    buffers.SceneViewUBO.Update(as_bytes(buffers.SelectionDraw.DrawData.Slot), offsetof(SceneViewUBO, DrawDataSlot));
+    buffers.SetSceneViewDrawSlots(buffers.SelectionDraw);
 
     auto cb = *one_shot.Cb;
     cb.reset({});
@@ -326,7 +326,7 @@ void RenderSelectionPassWith(entt::registry &r, [[maybe_unused]] entt::entity vi
     const auto selection_draws = build_fn(draw_list);
 
     FlushDrawList(r, vk.Device, draw_list, buffers.SelectionDraw);
-    buffers.SceneViewUBO.Update(as_bytes(buffers.SelectionDraw.DrawData.Slot), offsetof(SceneViewUBO, DrawDataSlot));
+    buffers.SetSceneViewDrawSlots(buffers.SelectionDraw);
 
     auto cb = *one_shot.Cb;
     cb.reset({});

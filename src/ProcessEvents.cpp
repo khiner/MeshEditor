@@ -406,8 +406,8 @@ SyncResult SyncModelsBuffers(entt::registry &r) {
         // the WorldTransform reactive pass writes them before submit.
         buffers.Instances.ObjectIdBuffer.Update(as_bytes(object_ids), vk::DeviceSize(base_index) * sizeof(uint32_t));
         buffers.Instances.StateBuffer.Update(as_bytes(states), vk::DeviceSize(base_index) * sizeof(uint8_t));
-        // All undeformed instances of a mesh share its local AABB. Deformed objects get their
-        // per-object bounds written in the deformed-bounds pass later this call.
+        // Undeformed instances share the mesh's local AABB. The deformed-bounds pass overwrites
+        // deformed objects' slots later this call.
         const auto mesh = TryGetMesh(r, buffer_entity);
         std::ranges::fill(buffers.Instances.GetMutableBounds({base_index, n}), mesh ? mesh->CalcAABB() : AABB{});
         mb.InstanceCount = new_total;
@@ -1916,13 +1916,12 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
             for (const auto e : recompute) compute(e);
         }
         // Write deformed bounds into the object's instance slot: once per inserted instance, then
-        // per-frame only while an AABB wireframe shows it. Undeformed objects keep the shared mesh
-        // AABB their slot already holds.
+        // per-frame only while an AABB wireframe shows it.
         std::unordered_set<entt::entity> deformed_bounds_changed;
         {
             const auto &geom_changed = reactive<changes::MeshGeometry>(r);
-            // Refresh the shared local AABB in every instance slot of each changed mesh. Runs after
-            // every MeshGeometryDirty producer in this call, including edit-mode transform commits.
+            // Refresh the shared local AABB in every instance slot of each changed mesh.
+            // Runs after every MeshGeometryDirty producer in this call.
             for (const auto mesh_entity : geom_changed) {
                 const auto *models = r.try_get<const ModelsBuffer>(mesh_entity);
                 if (!models || models->InstanceCount == 0) continue;
@@ -2113,6 +2112,7 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
             .PrimitiveMaterialSlot = meshes.GetPrimitiveMaterialSlot(),
             .FacePrimitiveSlot = meshes.GetFacePrimitiveSlot(),
             .DrawDataSlot = buffers.RenderDraw.DrawData.Slot,
+            .VisibleIndexSlot = buffers.RenderDraw.VisibleIndices.Slot,
             .BoneXRay = settings.ViewportShading == ViewportShadingMode::Wireframe ? 1u : 0u,
             // Polygon offset factor matching Blender's GPU_polygon_offset_calc (viewdist = max ortho extent)
             .NdcOffsetFactor = std::holds_alternative<Perspective>(camera.Data) ? proj[3][2] * -0.00125f : 0.000005f * std::max(std::abs(1.f / proj[0][0]), std::abs(1.f / proj[1][1])),

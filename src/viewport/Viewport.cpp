@@ -56,8 +56,8 @@ void SubmitRecordedFrame(entt::registry &r) {
     const auto &vk = r.ctx().get<const VulkanResources>();
     auto &buffers = r.ctx().get<GpuBuffers>();
     auto &resources = r.ctx().get<ViewportRenderResources>();
-    // Always ensure DrawDataSlot points to render draw data before submitting (may have been overwritten by a selection pass).
-    buffers.SceneViewUBO.Update(as_bytes(buffers.RenderDraw.DrawData.Slot), offsetof(SceneViewUBO, DrawDataSlot));
+    // Always ensure the draw slots point to render draw data before submitting (a selection pass may have swapped them).
+    buffers.SetSceneViewDrawSlots(buffers.RenderDraw);
     vk::SubmitInfo submit;
 #ifdef MVK_FORCE_STAGED_TRANSFERS
     const std::array command_buffers{*resources.TransferCommandBuffer, *resources.RenderCommandBuffer};

@@ -4,6 +4,7 @@
 #include "armature/ArmatureComponents.h"
 #include "audio/SoundVertices.h"
 #include "gizmo/TransformGizmoTypes.h"
+#include "gpu/FrustumCullPushConstants.h"
 #include "gpu/MainDrawPushConstants.h"
 #include "gpu/MotionBlurGatherPushConstants.h"
 #include "gpu/MotionBlurTilesDilatePushConstants.h"
@@ -47,9 +48,13 @@ enum class FillSubset {
 
 void FlushDrawList(entt::registry &r, vk::Device device, const DrawListBuilder &draw_list, DrawBufferPair &pair) {
     auto &buffers = r.ctx().get<GpuBuffers>();
-    if (!draw_list.Draws.empty()) pair.DrawData.Update(as_bytes(draw_list.Draws));
+    buffers.EnsureIdentityIndexBuffer(std::max(draw_list.MaxIndexCount, uint32_t(draw_list.Draws.size())));
+    if (!draw_list.Draws.empty()) {
+        pair.DrawData.Update(as_bytes(draw_list.Draws));
+        pair.CullEntries.Update(as_bytes(draw_list.CullEntries));
+        pair.VisibleIndices.Update(buffers.IdentityIndexBuffer.GetMappedData().subspan(0, draw_list.Draws.size() * sizeof(uint32_t)));
+    }
     if (!draw_list.IndirectCommands.empty()) pair.Indirect.Update(as_bytes(draw_list.IndirectCommands));
-    buffers.EnsureIdentityIndexBuffer(draw_list.MaxIndexCount);
     if (auto descriptor_updates = buffers.Ctx.GetDeferredDescriptorUpdates(); !descriptor_updates.empty()) {
         device.updateDescriptorSets(std::move(descriptor_updates), {});
         buffers.Ctx.ClearDeferredDescriptorUpdates();
@@ -219,6 +224,49 @@ void RecordMotionBlurPostFx(entt::registry &r, vk::CommandBuffer cb, entt::entit
 } // namespace
 
 namespace {
+// Zero the render draw list's indirect instance counts, then refill them and the visible-index
+// remap from per-instance bounds tested against the view frustum.
+void RecordFrustumCull(vk::CommandBuffer cb, const Pipelines &pipelines, const GpuBuffers &buffers, const DrawListBuilder &draw_list, uint32_t ubo_offset) {
+    const profile::GpuScope cull_scope{"FrustumCull"};
+    const auto &cull = pipelines.FrustumCull;
+    // The previous submit's indirect and vertex reads complete before this one's cull writes.
+    cb.pipelineBarrier(
+        vk::PipelineStageFlagBits::eDrawIndirect | vk::PipelineStageFlagBits::eVertexShader,
+        vk::PipelineStageFlagBits::eComputeShader, {},
+        vk::MemoryBarrier{vk::AccessFlagBits::eIndirectCommandRead | vk::AccessFlagBits::eShaderRead, vk::AccessFlagBits::eShaderWrite | vk::AccessFlagBits::eShaderRead}, {}, {}
+    );
+    cb.bindPipeline(vk::PipelineBindPoint::eCompute, *cull.Pipeline);
+    const std::array cull_sets{cull.GetDescriptorSet(), cull.GetUboSet()};
+    cb.bindDescriptorSets(vk::PipelineBindPoint::eCompute, *cull.PipelineLayout, 0, uint32_t(cull_sets.size()), cull_sets.data(), 1, &ubo_offset);
+    FrustumCullPushConstants cull_pc{
+        .CommandsSlot = buffers.RenderDraw.Indirect.Slot,
+        .CullEntrySlot = buffers.RenderDraw.CullEntries.Slot,
+        .DrawDataSlot = buffers.RenderDraw.DrawData.Slot,
+        .VisibleIndexSlot = buffers.RenderDraw.VisibleIndices.Slot,
+        .BoundsSlot = buffers.Instances.BoundsBuffer.Slot,
+        .ModelSlot = buffers.Instances.TransformBuffer.Slot,
+        .EntryCount = uint32_t(draw_list.Draws.size()),
+        .CommandCount = uint32_t(draw_list.IndirectCommands.size()),
+    };
+    const auto dispatch = [&](uint32_t phase, uint32_t count) {
+        static constexpr uint32_t GroupSize{64};
+        cull_pc.Phase = phase;
+        cb.pushConstants(*cull.PipelineLayout, vk::ShaderStageFlagBits::eCompute, 0, sizeof(cull_pc), &cull_pc);
+        cb.dispatch((count + GroupSize - 1) / GroupSize, 1, 1);
+    };
+    dispatch(0, cull_pc.CommandCount);
+    cb.pipelineBarrier(
+        vk::PipelineStageFlagBits::eComputeShader, vk::PipelineStageFlagBits::eComputeShader, {},
+        vk::MemoryBarrier{vk::AccessFlagBits::eShaderWrite, vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite}, {}, {}
+    );
+    dispatch(1, cull_pc.EntryCount);
+    cb.pipelineBarrier(
+        vk::PipelineStageFlagBits::eComputeShader,
+        vk::PipelineStageFlagBits::eDrawIndirect | vk::PipelineStageFlagBits::eVertexShader, {},
+        vk::MemoryBarrier{vk::AccessFlagBits::eShaderWrite, vk::AccessFlagBits::eIndirectCommandRead | vk::AccessFlagBits::eShaderRead}, {}, {}
+    );
+}
+
 // Record one phase's passes into `cb`, which is already begun with viewport and scissor set.
 // `ubo_offset` selects the view UBO instance every bind in the phase reads.
 void RecordPhase(entt::registry &r, entt::entity viewport, vk::CommandBuffer cb, DrawListUse use, RenderPhase phase, uint32_t ubo_offset, float playback_frame) {
@@ -299,6 +347,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, vk::CommandBuffer cb,
 
     if (use == DrawListUse::Rebuild) {
         draw_list.Draws.clear();
+        draw_list.CullEntries.clear();
         draw_list.IndirectCommands.clear();
         draw_list.MaxIndexCount = 0;
 
@@ -467,12 +516,12 @@ void RecordPhase(entt::registry &r, entt::entity viewport, vk::CommandBuffer cb,
             draw.FillOpaquePrepass = {};
             draw.FillOpaqueTransmissive = {};
             if (show_rendered) {
-                draw.FillOpaque = draw_list.BeginBatch();
+                draw.FillOpaque = draw_list.BeginBatch(true);
                 for (const auto &e : mesh_entities) {
                     if (!e.IsBone) append_fill_mesh(draw.FillOpaque, e, false);
                 }
                 if (real_transmission) {
-                    draw.FillOpaquePrepass = draw_list.BeginBatch();
+                    draw.FillOpaquePrepass = draw_list.BeginBatch(true);
                     for (const auto &e : mesh_entities) {
                         if (!e.IsBone) append_fill_mesh(draw.FillOpaquePrepass, e, false, FillSubset::Prepass);
                     }
@@ -488,7 +537,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, vk::CommandBuffer cb,
                     }
                 }
             } else {
-                draw.FillOpaque = draw_list.BeginBatch();
+                draw.FillOpaque = draw_list.BeginBatch(true);
                 for (const auto &e : mesh_entities) {
                     if (!e.IsBone) append_fill_mesh(draw.FillOpaque, e, std::nullopt);
                 }
@@ -721,6 +770,12 @@ void RecordPhase(entt::registry &r, entt::entity viewport, vk::CommandBuffer cb,
     }
 
     if (use != DrawListUse::Reuse) FlushDrawList(r, vk.Device, draw_list, buffers.RenderDraw);
+
+    // Once per command buffer (later blur phases reuse the culled buffers). Re-executes on every
+    // submit with the current view.
+    if (phase != RenderPhase::BlurAccumulate && phase != RenderPhase::BlurResolve && !draw_list.Draws.empty()) {
+        RecordFrustumCull(cb, pipelines, buffers, draw_list, ubo_offset);
+    }
 
     const uint32_t transform_vertex_state_slot = is_edit_mode ? meshes.GetVertexStateSlot() : InvalidSlot;
     auto record_draw_batch = [&](const PipelineRenderer &renderer, SPT spt, const DrawBatchInfo &batch) {

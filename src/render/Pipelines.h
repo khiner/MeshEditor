@@ -216,6 +216,9 @@ struct Pipelines {
     SilhouetteEdgePipeline SilhouetteEdge;
     SelectionFragmentPipeline SelectionFragment;
     ComputePipeline ObjectPick, ElementPick, BoxSelect, UpdateSelectionState;
+    // Zeroes indirect instance counts, then refills them and the visible-index remap from
+    // per-instance bounds tested against the view frustum.
+    ComputePipeline FrustumCull;
     // Motion blur tile reduction: reduce motion to tiles, then spread each tile's motion over the
     // tiles it crosses. Main.MotionBlurGather blurs the scene along the result.
     ComputePipeline MotionBlurTilesFlatten, MotionBlurTilesDilate;

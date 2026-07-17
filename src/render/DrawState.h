@@ -1,5 +1,7 @@
 #pragma once
 
+#include "gpu/CullEntry.h"
+#include "gpu/CullFlag.h"
 #include "gpu/DrawData.h"
 #include "render/ShaderPipelineType.h"
 
@@ -8,22 +10,28 @@
 struct DrawBatchInfo {
     uint32_t DrawDataSlotOffset{0}, DrawCount{0};
     vk::DeviceSize IndirectOffset{0};
+    bool Cull{false};
 };
 
 struct DrawListBuilder {
     std::vector<DrawData> Draws;
+    std::vector<CullEntry> CullEntries; // Parallel to Draws, for the cull pass.
     std::vector<vk::DrawIndexedIndirectCommand> IndirectCommands;
     uint32_t MaxIndexCount{0};
 
-    DrawBatchInfo BeginBatch() const { return {uint32_t(Draws.size()), 0, IndirectCommands.size() * sizeof(vk::DrawIndexedIndirectCommand)}; }
+    // `cull` marks the batch frustum-cullable. Only order-independent (opaque) batches qualify:
+    // culling repacks a command's instances in arrival order.
+    DrawBatchInfo BeginBatch(bool cull = false) const { return {uint32_t(Draws.size()), 0, IndirectCommands.size() * sizeof(vk::DrawIndexedIndirectCommand), cull}; }
 
     void Append(DrawBatchInfo &batch, const DrawData &draw, uint32_t index_count, uint32_t instance_count) {
         if (index_count == 0 || instance_count == 0) return;
         const uint32_t draw_data_start = Draws.size();
+        const uint32_t cmd_index = uint32_t(IndirectCommands.size()) | (batch.Cull ? 0u : uint32_t(CullFlag::KeepOrder));
         for (uint32_t i = 0; i < instance_count; ++i) {
             DrawData per_instance = draw;
             per_instance.FirstInstance = draw.FirstInstance + i;
             Draws.emplace_back(per_instance);
+            CullEntries.emplace_back(cmd_index, draw_data_start);
         }
         const uint32_t first_instance = draw_data_start - batch.DrawDataSlotOffset;
         IndirectCommands.emplace_back(index_count, instance_count, 0, 0, first_instance);

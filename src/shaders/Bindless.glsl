@@ -42,6 +42,10 @@ layout(set = 0, binding = BINDING_DrawDataBuffer, scalar) readonly buffer DrawDa
     DrawData Draws[];
 } DrawDataBuffers[];
 
+layout(set = 0, binding = BINDING_Buffer, scalar) readonly buffer VisibleIndexBuffer {
+    uint Indices[];
+} VisibleIndexBuffers[];
+
 layout(set = 0, binding = BINDING_InstanceStateBuffer, scalar) readonly buffer InstanceStateBuffer {
     uint8_t States[];
 } InstanceStateBuffers[];
@@ -89,5 +93,6 @@ const uint STATE_ACTIVE = 1u << 1;
 const uint STATE_EXCITED = 1u << 2;
 
 DrawData GetDrawData() {
-    return DrawDataBuffers[nonuniformEXT(SceneViewUBO.DrawDataSlot)].Draws[pc.VertexTransform.DrawDataOffset + gl_InstanceIndex];
+    const uint dense = VisibleIndexBuffers[nonuniformEXT(SceneViewUBO.VisibleIndexSlot)].Indices[pc.VertexTransform.DrawDataOffset + gl_InstanceIndex];
+    return DrawDataBuffers[nonuniformEXT(SceneViewUBO.DrawDataSlot)].Draws[dense];
 }

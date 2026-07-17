@@ -110,6 +110,13 @@ enums:
       - name: IridescenceThickness
       - name: AnisotropyStrength
       - name: AnisotropyDirection
+  # Flag bits carried in CullEntry::Cmd's high bits. KeepOrder entries always draw, at their
+  # original visible-index slot, so order-dependent (blended) batches stay deterministic.
+  - name: CullFlag
+    type: u32
+    values:
+      - name: KeepOrder
+        value: 0x80000000u
 structs:
   - name: SlotOffset
     fields:
@@ -177,6 +184,15 @@ structs:
       - name: FacePrimitiveOffset
         type: u32
         default: InvalidOffset
+  # One entry per draw-list DrawData element, for the frustum cull pass. Cmd is the entry's indirect
+  # command index, with CullFlag bits in its high bits. Base is the absolute draw-list index of the
+  # command's first entry, where its visible-index remap region begins.
+  - name: CullEntry
+    fields:
+      - name: Cmd
+        type: u32
+      - name: Base
+        type: u32
   - name: IblSamplers
     fields:
       - name: DiffuseEnvSamplerSlot
@@ -289,6 +305,10 @@ structs:
         type: u32
       - name: DrawDataSlot
         type: u32
+      # Maps gl_InstanceIndex to a dense DrawData index. Identity when nothing is culled.
+      - name: VisibleIndexSlot
+        type: u32
+        default: InvalidSlot
       - name: BoneXRay
         type: u32
       - name: NdcOffsetFactor
@@ -745,6 +765,27 @@ structs:
       - name: SelectionNodesIndex
         type: u32
       - name: BoxResultIndex
+        type: u32
+  - name: FrustumCullPushConstants
+    push_constant: true
+    fields:
+      - name: CommandsSlot
+        type: u32
+      - name: CullEntrySlot
+        type: u32
+      - name: DrawDataSlot
+        type: u32
+      - name: VisibleIndexSlot
+        type: u32
+      - name: BoundsSlot
+        type: u32
+      - name: ModelSlot
+        type: u32
+      - name: EntryCount
+        type: u32
+      - name: CommandCount
+        type: u32
+      - name: Phase
         type: u32
   - name: SilhouetteEdgeDepthObjectPushConstants
     push_constant: true

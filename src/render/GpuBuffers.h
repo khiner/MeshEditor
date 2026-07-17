@@ -20,10 +20,17 @@
 
 struct DrawBufferPair {
     mvk::Buffer DrawData;
+    // Also a storage buffer, so the frustum cull pass can edit instance counts in place.
     mvk::Buffer Indirect;
+    // Maps gl_InstanceIndex to a dense DrawData index. Identity when nothing is culled.
+    mvk::Buffer VisibleIndices;
+    // One CullEntry per DrawData element, for the frustum cull pass.
+    mvk::Buffer CullEntries;
     DrawBufferPair(mvk::BufferContext &ctx)
         : DrawData(ctx, 0, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::DrawDataBuffer),
-          Indirect(ctx, 0, mvk::MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eIndirectBuffer) {}
+          Indirect(ctx, 0, vk::BufferUsageFlagBits::eIndirectBuffer | vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer),
+          VisibleIndices(ctx, 0, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer),
+          CullEntries(ctx, 0, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer) {}
 };
 
 // Shared arena for per-instance GPU data (transforms, object IDs, instance states, local-space bounds).
@@ -267,6 +274,12 @@ struct GpuBuffers {
         while (BlurPoses.size() < count) BlurPoses.emplace_back(Ctx);
     }
 
+    // Point the view UBO's draw-data and visible-index slots at `pair`'s buffers. GetDrawData reads both.
+    void SetSceneViewDrawSlots(const DrawBufferPair &pair) {
+        SceneViewUBO.Update(as_bytes(pair.DrawData.Slot), offsetof(::SceneViewUBO, DrawDataSlot));
+        SceneViewUBO.Update(as_bytes(pair.VisibleIndices.Slot), offsetof(::SceneViewUBO, VisibleIndexSlot));
+    }
+
     // Copy the live view UBO into ring instance `instance`.
     void SnapshotSceneViewUbo(uint32_t instance) {
         SceneViewUBO.Update(SceneViewUBO.GetMappedData().subspan(0, sizeof(::SceneViewUBO)), SceneViewUboStride * instance);
@@ -308,7 +321,7 @@ struct GpuBuffers {
     TypedBuffer<uint32_t> ObjectPickKeys, ObjectPickSeenBitset, SelectionBitset, MotionBlurTileIndirection;
     TypedBuffer<ElementPickCandidate> ElementPickCandidates;
 
-    // Shared identity index buffer. Grown on demand, not scene-scoped.
+    // Shared identity sequence backing unindexed draws and seeding visible-index remaps. Grown on demand, not scene-scoped.
     mvk::Buffer IdentityIndexBuffer;
     uint32_t IdentityIndexCount{0};
 };

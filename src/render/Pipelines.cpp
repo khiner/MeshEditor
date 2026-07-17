@@ -1,6 +1,7 @@
 #include "render/Pipelines.h"
 #include "gpu/BoxSelectPushConstants.h"
 #include "gpu/ElementPickPushConstants.h"
+#include "gpu/FrustumCullPushConstants.h"
 #include "gpu/MainDrawPushConstants.h"
 #include "gpu/MotionBlurGatherPushConstants.h"
 #include "gpu/MotionBlurTilesDilatePushConstants.h"
@@ -542,6 +543,7 @@ Pipelines::Pipelines(vk::PhysicalDevice pd, PipelineContext ctx)
       ElementPick{CreateCompute(Ctx, "ElementPick.comp", sizeof(ElementPickPushConstants))},
       BoxSelect{CreateCompute(Ctx, "BoxSelect.comp", sizeof(BoxSelectPushConstants))},
       UpdateSelectionState{CreateCompute(Ctx, "UpdateSelectionState.comp", sizeof(UpdateSelectionStatePushConstants))},
+      FrustumCull{CreateCompute(Ctx, "FrustumCull.comp", sizeof(FrustumCullPushConstants))},
       MotionBlurTilesFlatten{CreateCompute(Ctx, "MotionBlurTilesFlatten.comp", sizeof(MotionBlurTilesFlattenPushConstants))},
       MotionBlurTilesDilate{CreateCompute(Ctx, "MotionBlurTilesDilate.comp", sizeof(MotionBlurTilesDilatePushConstants))},
       IblPrefilter{Ctx.Device} {}
@@ -569,6 +571,7 @@ void Pipelines::CompileShaders() {
     ElementPick.Compile();
     BoxSelect.Compile();
     UpdateSelectionState.Compile();
+    FrustumCull.Compile();
     MotionBlurTilesFlatten.Compile();
     MotionBlurTilesDilate.Compile();
 }

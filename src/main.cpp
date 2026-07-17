@@ -477,7 +477,7 @@ void FrameScene(entt::registry &r, entt::entity viewport, float aspect_ratio) {
     AABB scene;
     for (const auto [e, ri, wt] : r.view<const RenderInstance, const WorldTransform>().each()) {
         if (ri.BufferIndex == UINT32_MAX) continue;
-        // Extras (gizmo/wireframe) instances hold an empty AABB, excluded by the invalid check below.
+        // Extras (gizmo/wireframe) instances hold an empty AABB and fail the validity check.
         const auto &local = buffers.Instances.GetBounds(ri.BufferIndex);
         if (glm::any(glm::greaterThan(local.Min, local.Max))) continue;
 
