@@ -78,18 +78,26 @@ void CheckVk(vk::Result err) {
 }
 
 bool RebuildSwapchain = false;
-void RenderFrame(vk::Device device, vk::Queue queue, ImGui_ImplVulkanH_Window &wd, ImDrawData *draw_data) {
+void RenderFrame(vk::Device device, vk::Queue queue, ImGui_ImplVulkanH_Window &wd, ImDrawData *draw_data, Profile &profile) {
     auto *image_acquired_semaphore = wd.FrameSemaphores[wd.SemaphoreIndex].ImageAcquiredSemaphore;
-    const auto err = device.acquireNextImageKHR(wd.Swapchain, UINT64_MAX, image_acquired_semaphore, nullptr, &wd.FrameIndex);
+    vk::Result err;
+    {
+        const CpuScope scope{profile, "AcquireImage"};
+        err = device.acquireNextImageKHR(wd.Swapchain, UINT64_MAX, image_acquired_semaphore, nullptr, &wd.FrameIndex);
+    }
     if (err == vk::Result::eErrorOutOfDateKHR || err == vk::Result::eSuboptimalKHR) {
         RebuildSwapchain = true;
         return;
     }
     CheckVk(err);
 
+    const CpuScope scope{profile, "ImGuiRenderSubmit"};
     const auto &fd = wd.Frames[wd.FrameIndex];
     const vk::Fence fd_fence{fd.Fence};
-    CheckVk(device.waitForFences(fd_fence, true, UINT64_MAX));
+    {
+        const CpuScope fence_scope{profile, "ImGuiFrameFence"};
+        CheckVk(device.waitForFences(fd_fence, true, UINT64_MAX));
+    }
     device.resetFences(fd_fence);
     device.resetCommandPool(fd.CommandPool);
     const vk::CommandBuffer command_buffer{fd.CommandBuffer};
@@ -104,11 +112,13 @@ void RenderFrame(vk::Device device, vk::Queue queue, ImGui_ImplVulkanH_Window &w
     const vk::PipelineStageFlags wait_stage{vk::PipelineStageFlagBits::eColorAttachmentOutput};
     const vk::CommandBuffer command_buffers[]{command_buffer};
     const vk::Semaphore signal_semaphores[]{wd.FrameSemaphores[wd.SemaphoreIndex].RenderCompleteSemaphore};
+    const CpuScope submit_scope{profile, "ImGuiQueueSubmit"};
     queue.submit(vk::SubmitInfo{wait_semaphores, wait_stage, command_buffers, signal_semaphores}, fd_fence);
 }
-void PresentFrame(vk::Queue queue, ImGui_ImplVulkanH_Window &wd) {
+void PresentFrame(vk::Queue queue, ImGui_ImplVulkanH_Window &wd, Profile &profile) {
     if (RebuildSwapchain) return;
 
+    const CpuScope scope{profile, "Present"};
     const vk::Semaphore wait_semaphores[]{wd.FrameSemaphores[wd.SemaphoreIndex].RenderCompleteSemaphore};
     const vk::SwapchainKHR swapchains[]{wd.Swapchain};
     const uint32_t image_indices[]{wd.FrameIndex};
@@ -528,6 +538,7 @@ struct CaptureRequest {
     fs::path RenderBasename{}; // Output basename, no extension.
     std::optional<uint8_t> MotionBlurSteps{}; // Disengaged = leave the viewport's own setting alone.
     int BenchFrames{0}; // Headless: re-render every tick and exit after this many frames.
+    std::optional<ViewportShadingMode> Shading{}; // Disengaged = leave the viewport's own setting alone.
 };
 
 // Surface and clear any failures action handlers reported this frame. Returns true if there were any.
@@ -705,6 +716,9 @@ CaptureDriver BeginCaptureSession(entt::registry &r, entt::entity viewport, cons
     if (capture.MotionBlurSteps) {
         Perform(r, viewport, action::UpdateOf<&ViewportDisplay::MotionBlur>(viewport, std::optional{MotionBlur{.Steps = *capture.MotionBlurSteps}}));
     }
+    if (capture.Shading) {
+        Perform(r, viewport, action::view::SetViewportShading{*capture.Shading});
+    }
     return driver;
 }
 
@@ -767,8 +781,9 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
 #ifdef IMGUI_UNLIMITED_FRAME_RATE
         const bool unthrottled = true;
 #else
-        // Render mode is GPU-paced: content is fixed-step per tick, so present pacing only affects wall time.
-        const bool unthrottled = render_mode;
+        // Render mode is GPU-paced: content is fixed-step per tick, so present pacing only affects
+        // wall time. Benchmark frames measure throughput, which vsync pacing would hide.
+        const bool unthrottled = render_mode || capture.BenchFrames > 0;
 #endif
         const VkPresentModeKHR unthrottled_modes[]{VK_PRESENT_MODE_MAILBOX_KHR, VK_PRESENT_MODE_IMMEDIATE_KHR, VK_PRESENT_MODE_FIFO_KHR};
         wd.PresentMode = unthrottled ?
@@ -844,7 +859,12 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
     bool viewport_resizing{false}; // True while a resize drag is staged but not yet committed.
     bool done{false};
     WindowsState windows;
+    auto &profile = r.ctx().get<Profile>();
+    int bench_ticks{0};
     while (!done) {
+        // Scene-load work (mesh and texture upload) dwarfs a frame: keep it out of the profile.
+        if (bench_ticks == 1) profile.ClearStats();
+        const CpuScope frame_scope{profile, "Frame"};
         SDL_Event event;
         while (SDL_PollEvent(&event)) {
             if (event.type == SDL_EVENT_MOUSE_WHEEL) {
@@ -1133,6 +1153,11 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
             }
         }
         const bool viewport_settled = new_logical_extent != uvec2{} && new_logical_extent == r.ctx().get<const ViewportExtent>().Value;
+        // Benchmark: orbit the view a fixed step each settled frame, and exit after the requested count.
+        if (capture.BenchFrames > 0 && viewport_settled) {
+            action::Emit(action::view::OrbitViewCamera{{0.01f, 0.f}});
+            if (++bench_ticks >= capture.BenchFrames) done = true;
+        }
         // Remaining emits go after Interact so it wins the single-action buffer.
         driver.EmitFrameActions(r, viewport, viewport_settled, new_logical_extent);
         // Record viewport resizes so replay restores the same render extent.
@@ -1167,8 +1192,8 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
         if (const bool is_minimized = (draw_data->DisplaySize.x <= 0.0f || draw_data->DisplaySize.y <= 0.0f); !is_minimized) {
             WaitForRender(r); // ImGui samples final image
             if (driver.CaptureFrame(r, viewport, viewport_settled)) done = true;
-            RenderFrame(*vc->Device, vc->Queue, wd, draw_data);
-            PresentFrame(vc->Queue, wd);
+            RenderFrame(*vc->Device, vc->Queue, wd, draw_data, profile);
+            PresentFrame(vc->Queue, wd, profile);
         }
     }
 
@@ -1219,6 +1244,8 @@ void RunHeadlessScene(entt::registry &r, entt::entity viewport, const char *init
         }
         {
             const CpuScope scope{r.ctx().get<Profile>(), "Frame"};
+            // Benchmark: orbit the view a fixed step each settled frame.
+            if (bench_frames > 0 && settled) action::Emit(action::view::OrbitViewCamera{{0.01f, 0.f}});
             driver.EmitFrameActions(r, viewport, settled, extent);
             action::ApplyEmitted(r, viewport);
             ReportActionErrors(r);
@@ -1388,7 +1415,13 @@ int main(int argc, char **argv) {
         else if (a == "--fps" && std::next(it) != args.end()) capture.Fps = std::atoi(*++it);
         else if (a == "--motion-blur" && std::next(it) != args.end()) capture.MotionBlurSteps = uint8_t(std::max(1, std::atoi(*++it)));
         else if (a == "--frames" && std::next(it) != args.end()) capture.BenchFrames = std::atoi(*++it);
-        else if (a == "--profile") Profile::Enabled = true;
+        else if (a == "--shading" && std::next(it) != args.end()) {
+            const std::string_view mode{*++it};
+            capture.Shading = mode == "wireframe" ? ViewportShadingMode::Wireframe :
+                mode == "solid"                   ? ViewportShadingMode::Solid :
+                mode == "preview"                 ? ViewportShadingMode::MaterialPreview :
+                                                    ViewportShadingMode::Rendered;
+        } else if (a == "--profile") Profile::Enabled = true;
         else if (!a.starts_with('-') && !initial_file) initial_file = *it;
     }
     if (capture.Fps <= 0) capture.Fps = 60;

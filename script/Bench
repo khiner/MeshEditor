@@ -11,6 +11,7 @@
 #          and re-renders every tick (FRAMES ticks, default 400), which suits static scenes.
 #
 # REPS sets the timed repetition count (default 3). One warm-up run precedes them and is discarded.
+# SHADING sets the static bench's viewport shading (wireframe|solid|preview|rendered, default solid).
 #
 # The share column holds steady even when the clock does not, so it is the one to optimize against.
 # A change smaller than the run-to-run spread needs both variants interleaved.
@@ -48,7 +49,7 @@ run_once() {
     if [ "${Steps}" -ge 1 ]; then
         "./${Exe}" "${ScenePath}" --headless --play --motion-blur "${Steps}" --profile > "$1" 2>&1
     else
-        "./${Exe}" "${ScenePath}" --headless --frames "${Frames}" --profile > "$1" 2>&1
+        "./${Exe}" "${ScenePath}" --headless --frames "${Frames}" --shading "${SHADING:-solid}" --profile > "$1" 2>&1
     fi
 }
 
