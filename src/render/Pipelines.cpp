@@ -48,10 +48,11 @@ void PipelineRenderer::CompileShaders() {
     for (auto &shader_pipeline : std::views::values(ShaderPipelines)) shader_pipeline.Compile(*RenderPass);
 }
 
-const ShaderPipeline &PipelineRenderer::Bind(vk::CommandBuffer cb, SPT spt) const {
+const ShaderPipeline &PipelineRenderer::Bind(vk::CommandBuffer cb, SPT spt, uint32_t scene_ubo_offset) const {
     const auto &pipeline = ShaderPipelines.at(spt);
     cb.bindPipeline(vk::PipelineBindPoint::eGraphics, *pipeline.Pipeline);
-    cb.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *pipeline.PipelineLayout, 0, pipeline.GetDescriptorSet(), {});
+    const std::array sets{pipeline.GetDescriptorSet(), pipeline.GetUboSet()};
+    cb.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *pipeline.PipelineLayout, 0, uint32_t(sets.size()), sets.data(), 1, &scene_ubo_offset);
     return pipeline;
 }
 
@@ -60,9 +61,10 @@ const ShaderPipeline &PipelineRenderer::Bind(vk::CommandBuffer cb, SPT spt) cons
 static constexpr vk::PipelineColorBlendAttachmentState NoWriteBlend{};
 
 PbrCompiler::PbrCompiler(PipelineContext ctx, vk::RenderPass scene, vk::RenderPass scene_velocity)
-    : Device(ctx.Device), Cache(Device.createPipelineCacheUnique({})), SetLayout(ctx.SharedLayout), Set(ctx.SharedSet), RenderPass(scene), VelocityRenderPass(scene_velocity) {
+    : Device(ctx.Device), Cache(Device.createPipelineCacheUnique({})), SetLayout(ctx.SharedLayout), Set(ctx.SharedSet), UboSetLayout(ctx.UboLayout), UboSet(ctx.UboSet), RenderPass(scene), VelocityRenderPass(scene_velocity) {
     CompileModules();
-    Layout = Device.createPipelineLayoutUnique({{}, 1, &SetLayout, 1, &MainDrawPushConstantRange});
+    const std::array set_layouts{SetLayout, UboSetLayout};
+    Layout = Device.createPipelineLayoutUnique({{}, uint32_t(set_layouts.size()), set_layouts.data(), 1, &MainDrawPushConstantRange});
 }
 
 void PbrCompiler::CompileModules() {
@@ -133,14 +135,15 @@ bool PbrCompiler::CompilePipelines(PbrFeatureMask mask) {
     return true;
 }
 
-vk::PipelineLayout PbrCompiler::Bind(vk::CommandBuffer cb, Variant v) const {
+vk::PipelineLayout PbrCompiler::Bind(vk::CommandBuffer cb, Variant v, uint32_t scene_ubo_offset) const {
     const auto &pipeline = v == Variant::Opaque ? OpaqueTargeted :
         v == Variant::Blend                     ? BlendTargeted :
         v == Variant::OpaqueVelocity            ? OpaqueVelocityTargeted :
         v == Variant::BlendVelocity             ? BlendVelocityTargeted :
                                                   OpaquePrepass;
     cb.bindPipeline(vk::PipelineBindPoint::eGraphics, *pipeline);
-    cb.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *Layout, 0, Set, {});
+    const std::array sets{Set, UboSet};
+    cb.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *Layout, 0, uint32_t(sets.size()), sets.data(), 1, &scene_ubo_offset);
     return *Layout;
 }
 
@@ -275,8 +278,8 @@ static vk::UniqueRenderPass CreateSceneVelocityRenderPass(vk::Device d) {
 
 // Fullscreen-quad twins for the scene+velocity render pass, keyed by the same SPTs the plain scene
 // pass binds. PBR geometry goes through PbrCompiler's velocity variants instead.
-static PipelineRenderer CreateSceneVelocityRenderer(vk::Device d, vk::DescriptorSetLayout shared_layout, vk::DescriptorSet shared_set) {
-    const PipelineContext ctx{d, shared_layout, shared_set};
+static PipelineRenderer CreateSceneVelocityRenderer(vk::Device d, vk::DescriptorSetLayout shared_layout, vk::DescriptorSet shared_set, vk::DescriptorSetLayout ubo_layout, vk::DescriptorSet ubo_set) {
+    const PipelineContext ctx{d, shared_layout, shared_set, ubo_layout, ubo_set};
     std::unordered_map<SPT, ShaderPipeline> pipelines;
     // Screen motion for every pixel geometry leaves uncovered. Drawn first, so geometry overwrites
     // it wherever it lands, and the scene color stays untouched through the write mask.
@@ -324,9 +327,9 @@ static vk::UniqueRenderPass CreateColorOnlyRenderPass(vk::Device d, vk::Format f
 
 static PipelineRenderer CreateSceneRenderer(
     vk::Device d,
-    vk::DescriptorSetLayout shared_layout, vk::DescriptorSet shared_set
+    vk::DescriptorSetLayout shared_layout, vk::DescriptorSet shared_set, vk::DescriptorSetLayout ubo_layout, vk::DescriptorSet ubo_set
 ) {
-    const PipelineContext ctx{d, shared_layout, shared_set};
+    const PipelineContext ctx{d, shared_layout, shared_set, ubo_layout, ubo_set};
 
     // Can't construct this map in-place with pairs because `ShaderPipeline` doesn't have a copy constructor.
     std::unordered_map<SPT, ShaderPipeline> pipelines;
@@ -399,9 +402,9 @@ static PipelineRenderer CreateSceneRenderer(
 
 static PipelineRenderer CreateOverlayRenderer(
     vk::Device d,
-    vk::DescriptorSetLayout shared_layout, vk::DescriptorSet shared_set
+    vk::DescriptorSetLayout shared_layout, vk::DescriptorSet shared_set, vk::DescriptorSetLayout ubo_layout, vk::DescriptorSet ubo_set
 ) {
-    const PipelineContext ctx{d, shared_layout, shared_set};
+    const PipelineContext ctx{d, shared_layout, shared_set, ubo_layout, ubo_set};
 
     std::unordered_map<SPT, ShaderPipeline> pipelines;
     pipelines.emplace(
@@ -512,20 +515,20 @@ static PipelineRenderer CreateOverlayRenderer(
 
 MainPipeline::MainPipeline(
     vk::Device d,
-    vk::DescriptorSetLayout shared_layout, vk::DescriptorSet shared_set
-) : SceneRenderer{CreateSceneRenderer(d, shared_layout, shared_set)},
-    OverlayRenderer{CreateOverlayRenderer(d, shared_layout, shared_set)},
+    vk::DescriptorSetLayout shared_layout, vk::DescriptorSet shared_set, vk::DescriptorSetLayout ubo_layout, vk::DescriptorSet ubo_set
+) : SceneRenderer{CreateSceneRenderer(d, shared_layout, shared_set, ubo_layout, ubo_set)},
+    OverlayRenderer{CreateOverlayRenderer(d, shared_layout, shared_set, ubo_layout, ubo_set)},
     SceneDepthLoadRenderPass{CreateSceneRenderPass(d, /*load_depth=*/true)},
-    SceneVelocityRenderer{CreateSceneVelocityRenderer(d, shared_layout, shared_set)},
-    PrepassBackground{CreateBackgroundPipeline({d, shared_layout, shared_set}, true)},
+    SceneVelocityRenderer{CreateSceneVelocityRenderer(d, shared_layout, shared_set, ubo_layout, ubo_set)},
+    PrepassBackground{CreateBackgroundPipeline({d, shared_layout, shared_set, ubo_layout, ubo_set}, true)},
     CompositeRenderPass{CreateColorOnlyRenderPass(d, Format::Color, vk::AttachmentLoadOp::eDontCare, vk::ImageLayout::eUndefined, vk::ImageLayout::eShaderReadOnlyOptimal)},
-    ViewportComposite{CreateQuadPipeline({d, shared_layout, shared_set}, "ViewportComposite.frag", CreateColorBlendAttachment(false), sizeof(uint32_t) * 5 + sizeof(vec4))},
+    ViewportComposite{CreateQuadPipeline({d, shared_layout, shared_set, ubo_layout, ubo_set}, "ViewportComposite.frag", CreateColorBlendAttachment(false), sizeof(uint32_t) * 5 + sizeof(vec4))},
     MotionBlurAccumClearRenderPass{CreateColorOnlyRenderPass(d, Format::HdrColor, vk::AttachmentLoadOp::eClear, vk::ImageLayout::eUndefined, vk::ImageLayout::eColorAttachmentOptimal)},
     MotionBlurAccumRenderPass{CreateColorOnlyRenderPass(d, Format::HdrColor, vk::AttachmentLoadOp::eLoad, vk::ImageLayout::eColorAttachmentOptimal, vk::ImageLayout::eColorAttachmentOptimal)},
-    MotionBlurAccumulate{CreateQuadPipeline({d, shared_layout, shared_set}, "MotionBlurAccumulate.frag", AdditiveBlend, sizeof(uint32_t))},
+    MotionBlurAccumulate{CreateQuadPipeline({d, shared_layout, shared_set, ubo_layout, ubo_set}, "MotionBlurAccumulate.frag", AdditiveBlend, sizeof(uint32_t))},
     MotionBlurGatherRenderPass{CreateColorOnlyRenderPass(d, Format::HdrColor, vk::AttachmentLoadOp::eDontCare, vk::ImageLayout::eUndefined, vk::ImageLayout::eShaderReadOnlyOptimal)},
-    MotionBlurGather{CreateQuadPipeline({d, shared_layout, shared_set}, "MotionBlurGather.frag", CreateColorBlendAttachment(false), sizeof(MotionBlurGatherPushConstants))},
-    Compiler{{d, shared_layout, shared_set}, *SceneRenderer.RenderPass, *SceneVelocityRenderer.RenderPass} {}
+    MotionBlurGather{CreateQuadPipeline({d, shared_layout, shared_set, ubo_layout, ubo_set}, "MotionBlurGather.frag", CreateColorBlendAttachment(false), sizeof(MotionBlurGatherPushConstants))},
+    Compiler{{d, shared_layout, shared_set, ubo_layout, ubo_set}, *SceneRenderer.RenderPass, *SceneVelocityRenderer.RenderPass} {}
 
 static uint32_t MipCount(vk::Extent2D extent) {
     uint32_t levels = 1;
@@ -673,7 +676,7 @@ bool MainPipeline::EnsureTransmissionResources(vk::Extent2D extent, vk::Device d
     return true;
 }
 
-static PipelineRenderer CreateSilhouetteRenderer(vk::Device d, vk::DescriptorSetLayout shared_layout, vk::DescriptorSet shared_set) {
+static PipelineRenderer CreateSilhouetteRenderer(vk::Device d, vk::DescriptorSetLayout shared_layout, vk::DescriptorSet shared_set, vk::DescriptorSetLayout ubo_layout, vk::DescriptorSet ubo_set) {
     const std::vector<vk::AttachmentDescription> attachments{
         // Store depth for reuse by element selection (mutual occlusion between selected meshes).
         {{}, Format::Depth, vk::SampleCountFlagBits::e1, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eStore, vk::AttachmentLoadOp::eDontCare, vk::AttachmentStoreOp::eDontCare, vk::ImageLayout::eUndefined, vk::ImageLayout::eDepthStencilAttachmentOptimal},
@@ -684,7 +687,7 @@ static PipelineRenderer CreateSilhouetteRenderer(vk::Device d, vk::DescriptorSet
     const vk::AttachmentReference color_attachment_ref{1, vk::ImageLayout::eColorAttachmentOptimal};
     const vk::SubpassDescription subpass{{}, vk::PipelineBindPoint::eGraphics, 0, nullptr, 1, &color_attachment_ref, nullptr, &depth_attachment_ref};
 
-    const PipelineContext ctx{d, shared_layout, shared_set};
+    const PipelineContext ctx{d, shared_layout, shared_set, ubo_layout, ubo_set};
     std::unordered_map<SPT, ShaderPipeline> pipelines;
     pipelines.emplace(
         SPT::SilhouetteDepthObject,
@@ -698,8 +701,8 @@ static PipelineRenderer CreateSilhouetteRenderer(vk::Device d, vk::DescriptorSet
     return {d.createRenderPassUnique({{}, attachments, subpass}), std::move(pipelines)};
 }
 
-SilhouettePipeline::SilhouettePipeline(vk::Device d, vk::DescriptorSetLayout shared_layout, vk::DescriptorSet shared_set)
-    : Renderer{CreateSilhouetteRenderer(d, shared_layout, shared_set)} {}
+SilhouettePipeline::SilhouettePipeline(vk::Device d, vk::DescriptorSetLayout shared_layout, vk::DescriptorSet shared_set, vk::DescriptorSetLayout ubo_layout, vk::DescriptorSet ubo_set)
+    : Renderer{CreateSilhouetteRenderer(d, shared_layout, shared_set, ubo_layout, ubo_set)} {}
 
 SilhouettePipeline::ResourcesT::ResourcesT(vk::Extent2D extent, vk::Device d, vk::PhysicalDevice pd, vk::RenderPass render_pass)
     : DepthImage{mvk::CreateImage(
@@ -749,7 +752,7 @@ void SilhouettePipeline::SetExtent(vk::Extent2D extent, vk::Device d, vk::Physic
     Resources = std::make_unique<ResourcesT>(extent, d, pd, *Renderer.RenderPass);
 }
 
-static PipelineRenderer CreateSilhouetteEdgeRenderer(vk::Device d, vk::DescriptorSetLayout shared_layout, vk::DescriptorSet shared_set) {
+static PipelineRenderer CreateSilhouetteEdgeRenderer(vk::Device d, vk::DescriptorSetLayout shared_layout, vk::DescriptorSet shared_set, vk::DescriptorSetLayout ubo_layout, vk::DescriptorSet ubo_set) {
     const std::vector<vk::AttachmentDescription> attachments{
         {{}, Format::Depth, vk::SampleCountFlagBits::e1, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eStore, {}, {}, vk::ImageLayout::eUndefined, vk::ImageLayout::eDepthStencilReadOnlyOptimal},
         {{}, Format::Float, vk::SampleCountFlagBits::e1, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eStore, {}, {}, vk::ImageLayout::eUndefined, vk::ImageLayout::eShaderReadOnlyOptimal},
@@ -758,7 +761,7 @@ static PipelineRenderer CreateSilhouetteEdgeRenderer(vk::Device d, vk::Descripto
     const vk::AttachmentReference color_attachment_ref{1, vk::ImageLayout::eColorAttachmentOptimal};
     const vk::SubpassDescription subpass{{}, vk::PipelineBindPoint::eGraphics, 0, nullptr, 1, &color_attachment_ref, nullptr, &depth_attachment_ref};
 
-    const PipelineContext ctx{d, shared_layout, shared_set};
+    const PipelineContext ctx{d, shared_layout, shared_set, ubo_layout, ubo_set};
     std::unordered_map<SPT, ShaderPipeline> pipelines;
     pipelines.emplace(
         SPT::SilhouetteEdgeDepthObject,
@@ -773,8 +776,8 @@ static PipelineRenderer CreateSilhouetteEdgeRenderer(vk::Device d, vk::Descripto
     return {d.createRenderPassUnique({{}, attachments, subpass}), std::move(pipelines)};
 }
 
-SilhouetteEdgePipeline::SilhouetteEdgePipeline(vk::Device d, vk::DescriptorSetLayout shared_layout, vk::DescriptorSet shared_set)
-    : Renderer{CreateSilhouetteEdgeRenderer(d, shared_layout, shared_set)} {}
+SilhouetteEdgePipeline::SilhouetteEdgePipeline(vk::Device d, vk::DescriptorSetLayout shared_layout, vk::DescriptorSet shared_set, vk::DescriptorSetLayout ubo_layout, vk::DescriptorSet ubo_set)
+    : Renderer{CreateSilhouetteEdgeRenderer(d, shared_layout, shared_set, ubo_layout, ubo_set)} {}
 
 SilhouetteEdgePipeline::ResourcesT::ResourcesT(vk::Extent2D extent, vk::Device d, vk::PhysicalDevice pd, vk::RenderPass render_pass)
     : DepthImage{mvk::CreateImage(
@@ -815,14 +818,14 @@ void SilhouetteEdgePipeline::SetExtent(vk::Extent2D extent, vk::Device d, vk::Ph
     Resources = std::make_unique<ResourcesT>(extent, d, pd, *Renderer.RenderPass);
 }
 
-static PipelineRenderer CreateSelectionFragmentRenderer(vk::Device d, vk::DescriptorSetLayout shared_layout, vk::DescriptorSet shared_set) {
+static PipelineRenderer CreateSelectionFragmentRenderer(vk::Device d, vk::DescriptorSetLayout shared_layout, vk::DescriptorSet shared_set, vk::DescriptorSetLayout ubo_layout, vk::DescriptorSet ubo_set) {
     const std::vector<vk::AttachmentDescription> attachments{
         {{}, Format::Depth, vk::SampleCountFlagBits::e1, vk::AttachmentLoadOp::eLoad, vk::AttachmentStoreOp::eDontCare, vk::AttachmentLoadOp::eDontCare, vk::AttachmentStoreOp::eDontCare, vk::ImageLayout::eDepthStencilAttachmentOptimal, vk::ImageLayout::eDepthStencilAttachmentOptimal},
     };
     const vk::AttachmentReference depth_attachment_ref{0, vk::ImageLayout::eDepthStencilAttachmentOptimal};
     const vk::SubpassDescription subpass{{}, vk::PipelineBindPoint::eGraphics, 0, nullptr, 0, nullptr, nullptr, &depth_attachment_ref};
 
-    const PipelineContext ctx{d, shared_layout, shared_set};
+    const PipelineContext ctx{d, shared_layout, shared_set, ubo_layout, ubo_set};
     const vk::PushConstantRange draw_pc{vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, sizeof(SelectionDrawPushConstants)};
     const vk::PushConstantRange element_pc{vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, sizeof(SelectionElementPushConstants)};
     std::unordered_map<SPT, ShaderPipeline> pipelines;
@@ -905,8 +908,8 @@ static PipelineRenderer CreateSelectionFragmentRenderer(vk::Device d, vk::Descri
     return {d.createRenderPassUnique({{}, attachments, subpass}), std::move(pipelines)};
 }
 
-SelectionFragmentPipeline::SelectionFragmentPipeline(vk::Device d, vk::DescriptorSetLayout shared_layout, vk::DescriptorSet shared_set)
-    : Renderer{CreateSelectionFragmentRenderer(d, shared_layout, shared_set)} {}
+SelectionFragmentPipeline::SelectionFragmentPipeline(vk::Device d, vk::DescriptorSetLayout shared_layout, vk::DescriptorSet shared_set, vk::DescriptorSetLayout ubo_layout, vk::DescriptorSet ubo_set)
+    : Renderer{CreateSelectionFragmentRenderer(d, shared_layout, shared_set, ubo_layout, ubo_set)} {}
 
 SelectionFragmentPipeline::ResourcesT::ResourcesT(
     vk::Extent2D extent, vk::Device d, vk::PhysicalDevice pd, vk::RenderPass render_pass, vk::ImageView silhouette_depth_view
@@ -919,48 +922,60 @@ void SelectionFragmentPipeline::SetExtent(vk::Extent2D extent, vk::Device d, vk:
 
 Pipelines::Pipelines(
     vk::Device d, vk::PhysicalDevice pd,
-    vk::DescriptorSetLayout selection_layout, vk::DescriptorSet selection_set
+    vk::DescriptorSetLayout selection_layout, vk::DescriptorSet selection_set, vk::DescriptorSetLayout ubo_layout, vk::DescriptorSet ubo_set
 ) : Device(d),
     PhysicalDevice(pd),
-    Main{d, selection_layout, selection_set},
-    Silhouette{d, selection_layout, selection_set},
-    SilhouetteEdge{d, selection_layout, selection_set},
-    SelectionFragment{d, selection_layout, selection_set},
+    Main{d, selection_layout, selection_set, ubo_layout, ubo_set},
+    Silhouette{d, selection_layout, selection_set, ubo_layout, ubo_set},
+    SilhouetteEdge{d, selection_layout, selection_set, ubo_layout, ubo_set},
+    SelectionFragment{d, selection_layout, selection_set, ubo_layout, ubo_set},
     ObjectPick{
         d, Shaders{{{ShaderType::eCompute, "ObjectPick.comp"}}},
         vk::PushConstantRange{vk::ShaderStageFlagBits::eCompute, 0, sizeof(ObjectPickPushConstants)},
         selection_layout,
-        selection_set
+        selection_set,
+        ubo_layout,
+        ubo_set
     },
     ElementPick{
         d, Shaders{{{ShaderType::eCompute, "ElementPick.comp"}}},
         vk::PushConstantRange{vk::ShaderStageFlagBits::eCompute, 0, sizeof(ElementPickPushConstants)},
         selection_layout,
-        selection_set
+        selection_set,
+        ubo_layout,
+        ubo_set
     },
     BoxSelect{
         d, Shaders{{{ShaderType::eCompute, "BoxSelect.comp"}}},
         vk::PushConstantRange{vk::ShaderStageFlagBits::eCompute, 0, sizeof(BoxSelectPushConstants)},
         selection_layout,
-        selection_set
+        selection_set,
+        ubo_layout,
+        ubo_set
     },
     UpdateSelectionState{
         d, Shaders{{{ShaderType::eCompute, "UpdateSelectionState.comp"}}},
         vk::PushConstantRange{vk::ShaderStageFlagBits::eCompute, 0, sizeof(UpdateSelectionStatePushConstants)},
         selection_layout,
-        selection_set
+        selection_set,
+        ubo_layout,
+        ubo_set
     },
     MotionBlurTilesFlatten{
         d, Shaders{{{ShaderType::eCompute, "MotionBlurTilesFlatten.comp"}}},
         vk::PushConstantRange{vk::ShaderStageFlagBits::eCompute, 0, sizeof(MotionBlurTilesFlattenPushConstants)},
         selection_layout,
-        selection_set
+        selection_set,
+        ubo_layout,
+        ubo_set
     },
     MotionBlurTilesDilate{
         d, Shaders{{{ShaderType::eCompute, "MotionBlurTilesDilate.comp"}}},
         vk::PushConstantRange{vk::ShaderStageFlagBits::eCompute, 0, sizeof(MotionBlurTilesDilatePushConstants)},
         selection_layout,
-        selection_set
+        selection_set,
+        ubo_layout,
+        ubo_set
     },
     IblPrefilter{d} {}
 

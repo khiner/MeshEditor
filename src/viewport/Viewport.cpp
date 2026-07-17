@@ -79,7 +79,7 @@ void RecordViewportFrame(entt::registry &r, entt::entity viewport, RenderRequest
         RecordRenderCommandBuffer(r, viewport, *resources.RenderCommandBuffer);
         resources.RecordedPhase = RenderPhase::Full;
     } else if (render_request == RenderRequest::ReRecordSilhouette && r.ctx().get<const DrawState>().MainDrawCount > 0) {
-        RecordRenderCommandBuffer(r, viewport, *resources.RenderCommandBuffer, /*silhouette_only=*/true);
+        RecordRenderCommandBuffer(r, viewport, *resources.RenderCommandBuffer, DrawListUse::SilhouetteOnly);
         resources.RecordedPhase = RenderPhase::Full;
     }
 }
@@ -198,7 +198,7 @@ void RenderMotionBlurredFrame(entt::registry &r, entt::entity viewport) {
         // Poses and view state reach the GPU through buffers the recorded commands already read,
         // so the recording goes stale only when the draw list or the phase changes.
         if (TakeRenderRequest(r) >= RenderRequest::ReRecordSilhouette || resources.RecordedPhase != phase) {
-            RecordRenderCommandBuffer(r, viewport, main_cb, /*silhouette_only=*/false, phase);
+            RecordRenderCommandBuffer(r, viewport, main_cb, DrawListUse::Rebuild, phase);
             resources.RecordedPhase = phase;
         }
         // Land any descriptor updates a pose-capture buffer growth deferred.
@@ -222,17 +222,54 @@ void RenderMotionBlurredFrame(entt::registry &r, entt::entity viewport) {
     } else {
         // Each step owns a slice of the shutter and blurs across it, rendering its centre once.
         // The first step clears the target it sums into, so the accumulation starts from it alone.
-        const float step_span = (hi - lo) / float(steps);
-        for (uint32_t i = 0; i < steps; ++i) {
-            const float open = lo + step_span * float(i);
-            evaluate_at(open);
-            buffers.CaptureVelocityPose(buffers.ShutterOpen);
-            evaluate_at(open + step_span);
-            buffers.CaptureVelocityPose(buffers.ShutterClose);
-            render_at(open + step_span * 0.5f, i == 0 ? RenderPhase::BlurAccumulateFirst : RenderPhase::BlurAccumulate);
+        // Every step's poses are captured up front, so all steps and the resolve record and submit
+        // as one command buffer, each step reading its own view UBO instance and captured pose buffers.
+        const auto step_count = std::min(uint32_t(steps), GpuBuffers::MaxBlurSteps);
+        const float step_span = (hi - lo) / float(step_count);
+        buffers.EnsureBlurPoses(2 * size_t(step_count) + 1);
+        // Shutter boundaries at [2i]: step i opens at [2i] and closes at [2i+2], sharing each
+        // interior boundary with its neighbor.
+        for (uint32_t i = 0; i <= step_count; ++i) {
+            evaluate_at(lo + step_span * float(i));
+            buffers.CaptureVelocityPose(buffers.BlurPoses[2 * i]);
         }
-        // Average the accumulation, lay down the settled frame's depth, and draw overlays sharp over the blur.
-        render_at(float(current_frame), RenderPhase::BlurResolve);
+        // Step centres at [2i+1], each snapshotting the step's evaluated view UBO into its instance.
+        std::vector<float> step_frames(step_count);
+        for (uint32_t i = 0; i < step_count; ++i) {
+            const float centre = lo + step_span * float(i) + step_span * 0.5f;
+            step_frames[i] = centre;
+            evaluate_at(centre);
+            auto &centre_pose = buffers.BlurPoses[2 * i + 1];
+            buffers.CaptureVelocityPose(centre_pose);
+            const uint32_t instance = i + 1;
+            buffers.SnapshotSceneViewUbo(instance);
+            const auto &open = buffers.BlurPoses[2 * i];
+            const auto &close = buffers.BlurPoses[2 * i + 2];
+            const auto stamp = [&](const auto &value, size_t field_offset) {
+                buffers.UpdateSceneViewUboField(instance, field_offset, as_bytes(value));
+            };
+            stamp(open.ViewProj, offsetof(SceneViewUBO, PrevViewProj));
+            stamp(close.ViewProj, offsetof(SceneViewUBO, NextViewProj));
+            stamp(open.Transforms.Slot, offsetof(SceneViewUBO, PrevModelSlot));
+            stamp(close.Transforms.Slot, offsetof(SceneViewUBO, NextModelSlot));
+            stamp(open.ArmatureDeform.Slot, offsetof(SceneViewUBO, PrevArmatureDeformSlot));
+            stamp(close.ArmatureDeform.Slot, offsetof(SceneViewUBO, NextArmatureDeformSlot));
+            stamp(open.MorphWeights.Slot, offsetof(SceneViewUBO, PrevMorphWeightsSlot));
+            stamp(close.MorphWeights.Slot, offsetof(SceneViewUBO, NextMorphWeightsSlot));
+            // The step's own pose reads through the captured buffers, keeping draw data step-agnostic.
+            stamp(centre_pose.Transforms.Slot, offsetof(SceneViewUBO, ModelSlotOverride));
+            stamp(centre_pose.ArmatureDeform.Slot, offsetof(SceneViewUBO, ArmatureDeformSlot));
+            stamp(centre_pose.MorphWeights.Slot, offsetof(SceneViewUBO, MorphWeightsSlot));
+        }
+        // The resolve and the overlays read the live, settled state.
+        evaluate_at(float(current_frame));
+        std::ignore = TakeRenderRequest(r); // The recording below is always a full rebuild.
+        RecordBlurStepsCommandBuffer(r, viewport, main_cb, step_frames);
+        // Not a single-phase recording: any later single-phase render must re-record.
+        resources.RecordedPhase = RenderPhase::BlurAccumulate;
+        buffers.Ctx.FlushDeferredDescriptorUpdates(vk.Device);
+        SubmitRecordedFrame(r);
+        WaitForRender(r);
     }
 
     r.get<PlaybackFrame>(viewport).Value = settled_pf;
@@ -304,7 +341,7 @@ void SetStudioEnvironment(entt::registry &r, std::string_view name) {
 entt::entity InitEngine(entt::registry &r, VulkanResources vc) {
     InitStoreCtx(r, vc);
     auto &slots = r.ctx().get<DescriptorSlots>();
-    auto &pipelines = r.ctx().emplace<Pipelines>(vc.Device, vc.PhysicalDevice, slots.GetSetLayout(), slots.GetSet());
+    auto &pipelines = r.ctx().emplace<Pipelines>(vc.Device, vc.PhysicalDevice, slots.GetSetLayout(), slots.GetSet(), slots.GetUboSetLayout(), slots.GetUboSet());
     r.ctx().emplace<Profile>(vc.Device, vc.PhysicalDevice);
     physics::Init(r);
     RegisterSceneComponentHandlers(r);

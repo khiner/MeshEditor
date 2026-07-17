@@ -116,7 +116,10 @@ struct Buffer {
     void Write(std::span<const std::byte>, vk::DeviceSize offset = 0) const;
     void Move(vk::DeviceSize from, vk::DeviceSize to, vk::DeviceSize size) const;
     std::span<std::byte> GetMutableRange(vk::DeviceSize offset, vk::DeviceSize size) const;
-    vk::DescriptorBufferInfo GetDescriptor() const { return {operator*(), 0, vk::WholeSize}; }
+    vk::DescriptorBufferInfo GetDescriptor() const { return {operator*(), 0, DescriptorRange}; }
+
+    // Dynamic-offset bindings describe one instance, which the bound offset selects within the buffer.
+    vk::DeviceSize DescriptorRange{vk::WholeSize};
 
     BufferContext &Ctx;
     uint32_t Slot{InvalidSlot};
@@ -128,9 +131,10 @@ struct Buffer {
     std::unique_ptr<VmaBuffer> HostBuffer;
 #endif
 
+    void UpdateDescriptor();
+
 private:
     void Retire();
-    void UpdateDescriptor();
 
     SlotType Type;
 };

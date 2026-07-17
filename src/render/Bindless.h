@@ -23,11 +23,14 @@ struct DescriptorSlots {
 
     vk::DescriptorSetLayout GetSetLayout() const { return *SetLayout; }
     vk::DescriptorSet GetSet() const { return *DescriptorSet; }
+    // Set 1: the dynamic view UBO alone. Every bind supplies one dynamic offset for it.
+    vk::DescriptorSetLayout GetUboSetLayout() const { return *UboSetLayout; }
+    vk::DescriptorSet GetUboSet() const { return *UboDescriptorSet; }
 
 private:
     vk::Device Device;
-    vk::UniqueDescriptorSetLayout SetLayout;
+    vk::UniqueDescriptorSetLayout SetLayout, UboSetLayout;
     vk::UniqueDescriptorPool DescriptorPool;
-    vk::UniqueDescriptorSet DescriptorSet;
+    vk::UniqueDescriptorSet DescriptorSet, UboDescriptorSet;
     std::array<RangeAllocator, SlotTypeCount> Allocators; // one per slot type
 };

@@ -313,6 +313,7 @@ std::optional<std::string_view> GlslTypeFor(std::string_view type, const std::ve
 
 std::optional<std::string_view> BindKindEnum(std::string_view kind) {
     if (kind == "Uniform") return "Uniform";
+    if (kind == "UniformDynamic") return "UniformDynamic";
     if (kind == "Image") return "Image";
     if (kind == "Sampler") return "Sampler";
     if (kind == "Buffer") return "Buffer";
@@ -418,6 +419,7 @@ int main(int argc, char **argv) {
                     << "#include <string_view>\n\n"
                     << "enum class BindKind : uint8_t {\n"
                     << "    Uniform,\n"
+                    << "    UniformDynamic,\n"
                     << "    Image,\n"
                     << "    Sampler,\n"
                     << "    Buffer,\n"
@@ -473,8 +475,11 @@ int main(int argc, char **argv) {
             // scalar layout matches C++ tight packing so nested structs don't pick up std140 16-byte alignment.
             glsl_out << "layout(push_constant, scalar) uniform " << def.Name;
         } else if (is_uniform) {
-            if (!BindingExists(bindings, def.Binding)) Fail("Unknown binding: " + def.Binding);
-            glsl_out << "layout(set = 0, binding = BINDING_" << def.Binding << ", scalar) uniform " << def.Name << "Block";
+            const auto binding_it = find_if(bindings, [&](const auto &b) { return b.Name == def.Binding; });
+            if (binding_it == bindings.end()) Fail("Unknown binding: " + def.Binding);
+            // Dynamic uniforms live alone in set 1 at binding 0.
+            if (binding_it->Kind == "UniformDynamic") glsl_out << "layout(set = 1, binding = 0, scalar) uniform " << def.Name << "Block";
+            else glsl_out << "layout(set = 0, binding = BINDING_" << def.Binding << ", scalar) uniform " << def.Name << "Block";
         } else {
             glsl_out << "struct " << def.Name;
         }

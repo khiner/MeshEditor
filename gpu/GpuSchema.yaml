@@ -1,6 +1,7 @@
 bindings:
+  # Dynamic: motion blur binds a per-step instance of the view UBO by dynamic offset.
   - name: SceneViewUBO
-    kind: Uniform
+    kind: UniformDynamic
   - name: ViewportThemeUBO
     kind: Uniform
   - name: WorkspaceLightsUBO
@@ -254,6 +255,11 @@ structs:
         type: u32
       - name: MorphWeightsSlot
         type: u32
+      # Motion blur steps read their captured model transforms through this instead of the
+      # per-draw ModelSlot, so the draw data stays step-agnostic.
+      - name: ModelSlotOverride
+        type: u32
+        default: InvalidSlot
       # Poses at the shutter's open and close, for the velocity pass. The current-frame
       # per-draw offsets index these, so only the buffer slots differ. The view moves too
       # when looking through an animated camera, so each pose carries its own projection.

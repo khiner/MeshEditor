@@ -102,6 +102,15 @@ private:
 
 struct GpuBuffers {
     static constexpr uint32_t MaxSelectableObjects{100'000};
+    // Motion blur records every step into one submission, each step reading its own view UBO
+    // instance by dynamic offset. Instance 0 is the live UBO.
+    static constexpr uint32_t MaxBlurSteps{64};
+
+    // The view UBO instance stride, aligned for dynamic uniform offsets.
+    static vk::DeviceSize ViewUboStride(vk::PhysicalDevice pd) {
+        const auto align = pd.getProperties().limits.minUniformBufferOffsetAlignment;
+        return (sizeof(::SceneViewUBO) + align - 1) / align * align;
+    }
     static constexpr uint32_t MaxSelectableElements{10'000'000};
     static constexpr uint32_t ObjectPickBitsetWords{(MaxSelectableObjects + 31) / 32};
     static constexpr uint32_t SelectionBitsetWords{(MaxSelectableElements + 31) / 32};
@@ -119,9 +128,10 @@ struct GpuBuffers {
           Instances{Ctx},
           Lights{Ctx, sizeof(PunctualLight), vk::BufferUsageFlagBits::eStorageBuffer, SlotType::LightBuffer},
           Materials{Ctx, sizeof(PBRMaterial), vk::BufferUsageFlagBits::eStorageBuffer, SlotType::MaterialBuffer},
-          SceneViewUBO{Ctx, sizeof(SceneViewUBO), vk::BufferUsageFlagBits::eUniformBuffer, SlotType::SceneViewUBO},
+          SceneViewUBO{Ctx, ViewUboStride(pd) * (MaxBlurSteps + 1), vk::BufferUsageFlagBits::eUniformBuffer, SlotType::SceneViewUBO},
           ViewportThemeUBO{Ctx, sizeof(ViewportTheme), vk::BufferUsageFlagBits::eUniformBuffer, SlotType::ViewportThemeUBO},
           WorkspaceLightsUBO{Ctx, sizeof(WorkspaceLights), vk::BufferUsageFlagBits::eUniformBuffer, SlotType::WorkspaceLightsUBO},
+          SceneViewUboStride{ViewUboStride(pd)},
           RenderDraw{Ctx}, SelectionDraw{Ctx},
           SelectionNodeBuffer{Ctx, sizeof(SelectionNode), vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer},
           SelectionCounter{Ctx, sizeof(SelectionCounters), mvk::MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eStorageBuffer},
@@ -130,7 +140,11 @@ struct GpuBuffers {
           SelectionBitset{Ctx, SelectionBitsetWords * sizeof(uint32_t), mvk::MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eStorageBuffer},
           MotionBlurTileIndirection{Ctx, 0, mvk::MemoryUsage::GpuOnly, vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eTransferDst},
           ElementPickCandidates{Ctx, ElementPickGroupCount * sizeof(ElementPickCandidate), mvk::MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eStorageBuffer},
-          IdentityIndexBuffer{Ctx, 0, mvk::MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eIndexBuffer} {}
+          IdentityIndexBuffer{Ctx, 0, mvk::MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eIndexBuffer} {
+        // The dynamic-offset binding describes one instance. Offsets select among the ring's instances.
+        SceneViewUBO.DescriptorRange = sizeof(::SceneViewUBO);
+        SceneViewUBO.UpdateDescriptor();
+    }
 
     void ReserveAdditionalIndices(uint32_t face, uint32_t edge, uint32_t vertex) {
         FaceIndexBuffer.ReserveAdditional(face);
@@ -240,6 +254,23 @@ struct GpuBuffers {
     };
     VelocityPose ShutterOpen{Ctx}, ShutterClose{Ctx};
 
+    // Multi-step blur's pose captures: step i's shutter boundaries at [2i] and [2i+2], its centre
+    // at [2i+1]. Grown on demand and kept for reuse.
+    std::vector<VelocityPose> BlurPoses;
+    void EnsureBlurPoses(size_t count) {
+        BlurPoses.reserve(count);
+        while (BlurPoses.size() < count) BlurPoses.emplace_back(Ctx);
+    }
+
+    // Copy the live view UBO into ring instance `instance`.
+    void SnapshotSceneViewUbo(uint32_t instance) {
+        SceneViewUBO.Update(SceneViewUBO.GetMappedData().subspan(0, sizeof(::SceneViewUBO)), SceneViewUboStride * instance);
+    }
+    void UpdateSceneViewUboField(uint32_t instance, vk::DeviceSize field_offset, std::span<const std::byte> bytes) {
+        SceneViewUBO.Update(bytes, SceneViewUboStride * instance + field_offset);
+    }
+    uint32_t SceneViewUboOffset(uint32_t instance) const { return uint32_t(SceneViewUboStride * instance); }
+
     // Snapshot the live pose into `dst`. Call once the scene is evaluated at the wanted time.
     void CaptureVelocityPose(VelocityPose &dst) {
         static constexpr auto copy_whole = [](const mvk::Buffer &src, mvk::Buffer &dst) {
@@ -257,8 +288,10 @@ struct GpuBuffers {
     TypedBuffer<PunctualLight> Lights;
     TypedBuffer<PBRMaterial> Materials;
 
-    // Per-frame uniforms
+    // Per-frame uniforms. SceneViewUBO holds MaxBlurSteps+1 instances at SceneViewUboStride,
+    // with the live state at instance 0.
     mvk::Buffer SceneViewUBO, ViewportThemeUBO, WorkspaceLightsUBO;
+    vk::DeviceSize SceneViewUboStride;
 
     // Draw-command buffers
     DrawBufferPair RenderDraw, SelectionDraw;

@@ -17,7 +17,7 @@ struct PipelineRenderer {
     std::unordered_map<SPT, ShaderPipeline> ShaderPipelines;
 
     void CompileShaders();
-    const ShaderPipeline &Bind(vk::CommandBuffer, SPT) const;
+    const ShaderPipeline &Bind(vk::CommandBuffer, SPT, uint32_t scene_ubo_offset = 0) const;
 };
 
 namespace Format {
@@ -47,7 +47,7 @@ struct PbrCompiler {
     };
 
     bool CompilePipelines(PbrFeatureMask);
-    vk::PipelineLayout Bind(vk::CommandBuffer, Variant) const;
+    vk::PipelineLayout Bind(vk::CommandBuffer, Variant, uint32_t scene_ubo_offset = 0) const;
     bool HasFeature(PbrFeature f) const { return ::HasFeature(Mask, f); }
     void RecompileModules(); // hot reload: recompile SPIRV and pipelines from disk
 
@@ -61,6 +61,8 @@ private:
     vk::UniquePipelineLayout Layout;
     vk::DescriptorSetLayout SetLayout;
     vk::DescriptorSet Set;
+    vk::DescriptorSetLayout UboSetLayout;
+    vk::DescriptorSet UboSet;
     vk::RenderPass RenderPass, VelocityRenderPass;
 
     PbrFeatureMask Mask{0};
@@ -68,7 +70,7 @@ private:
 };
 
 struct MainPipeline {
-    MainPipeline(vk::Device, vk::DescriptorSetLayout shared_layout = {}, vk::DescriptorSet shared_set = {});
+    MainPipeline(vk::Device, vk::DescriptorSetLayout shared_layout = {}, vk::DescriptorSet shared_set = {}, vk::DescriptorSetLayout ubo_layout = {}, vk::DescriptorSet ubo_set = {});
 
     struct ResourcesT {
         ResourcesT(vk::Extent2D, vk::Device, vk::PhysicalDevice, vk::RenderPass scene_render_pass, vk::RenderPass overlay_render_pass, vk::RenderPass composite_render_pass);
@@ -154,7 +156,7 @@ struct MainPipeline {
 };
 
 struct SilhouettePipeline {
-    SilhouettePipeline(vk::Device, vk::DescriptorSetLayout shared_layout = {}, vk::DescriptorSet shared_set = {});
+    SilhouettePipeline(vk::Device, vk::DescriptorSetLayout shared_layout = {}, vk::DescriptorSet shared_set = {}, vk::DescriptorSetLayout ubo_layout = {}, vk::DescriptorSet ubo_set = {});
 
     struct ResourcesT {
         ResourcesT(vk::Extent2D, vk::Device, vk::PhysicalDevice, vk::RenderPass);
@@ -171,7 +173,7 @@ struct SilhouettePipeline {
 };
 
 struct SilhouetteEdgePipeline {
-    SilhouetteEdgePipeline(vk::Device, vk::DescriptorSetLayout shared_layout = {}, vk::DescriptorSet shared_set = {});
+    SilhouetteEdgePipeline(vk::Device, vk::DescriptorSetLayout shared_layout = {}, vk::DescriptorSet shared_set = {}, vk::DescriptorSetLayout ubo_layout = {}, vk::DescriptorSet ubo_set = {});
 
     struct ResourcesT {
         ResourcesT(vk::Extent2D, vk::Device, vk::PhysicalDevice, vk::RenderPass);
@@ -189,7 +191,7 @@ struct SilhouetteEdgePipeline {
 
 struct SelectionFragmentPipeline {
     // Render pass that loads depth from silhouette pass for element occlusion.
-    SelectionFragmentPipeline(vk::Device, vk::DescriptorSetLayout shared_layout = {}, vk::DescriptorSet shared_set = {});
+    SelectionFragmentPipeline(vk::Device, vk::DescriptorSetLayout shared_layout = {}, vk::DescriptorSet shared_set = {}, vk::DescriptorSetLayout ubo_layout = {}, vk::DescriptorSet ubo_set = {});
 
     struct ResourcesT {
         ResourcesT(vk::Extent2D, vk::Device, vk::PhysicalDevice, vk::RenderPass, vk::ImageView silhouette_depth_view);
@@ -205,7 +207,7 @@ struct SelectionFragmentPipeline {
 };
 
 struct Pipelines {
-    Pipelines(vk::Device, vk::PhysicalDevice, vk::DescriptorSetLayout selection_layout = {}, vk::DescriptorSet selection_set = {});
+    Pipelines(vk::Device, vk::PhysicalDevice, vk::DescriptorSetLayout selection_layout = {}, vk::DescriptorSet selection_set = {}, vk::DescriptorSetLayout ubo_layout = {}, vk::DescriptorSet ubo_set = {});
 
     vk::Device Device;
     vk::PhysicalDevice PhysicalDevice;

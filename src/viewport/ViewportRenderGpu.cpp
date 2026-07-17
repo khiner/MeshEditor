@@ -128,7 +128,7 @@ void AppendExtrasDraw(entt::registry &r, const InstanceArena &instances, DrawLis
 // Reduce this step's screen motion to tiles, spread each tile's motion over the tiles it crosses,
 // then gather the scene along it. Leaves the blurred scene in GatherImage. The scene pass already
 // wrote the motion into the velocity attachment.
-void RecordMotionBlurPostFx(entt::registry &r, vk::CommandBuffer cb, entt::entity viewport, vk::Rect2D rect) {
+void RecordMotionBlurPostFx(entt::registry &r, vk::CommandBuffer cb, entt::entity viewport, vk::Rect2D rect, uint32_t ubo_offset, float playback_frame) {
     const auto &pipelines = r.ctx().get<const Pipelines>();
     const auto &main = pipelines.Main;
     const auto &sel_slots = r.ctx().get<const SelectionSlots>();
@@ -139,7 +139,7 @@ void RecordMotionBlurPostFx(entt::registry &r, vk::CommandBuffer cb, entt::entit
     constexpr vec2 MotionScale{1.f, -1.f};
     // Offset the gather's dither per step, so averaging several steps smooths the tile jitter
     // instead of reinforcing one pattern. Step centres never share a sub-frame time.
-    const float noise_offset = glm::fract(r.get<const PlaybackFrame>(viewport).Value);
+    const float noise_offset = glm::fract(playback_frame);
 
     // Depth stops being an attachment here so the gather can classify samples against it.
     cb.pipelineBarrier(
@@ -163,7 +163,8 @@ void RecordMotionBlurPostFx(entt::registry &r, vk::CommandBuffer cb, entt::entit
 
     const auto dispatch = [&](const ComputePipeline &compute, auto &&pc, uvec3 groups) {
         cb.bindPipeline(vk::PipelineBindPoint::eCompute, *compute.Pipeline);
-        cb.bindDescriptorSets(vk::PipelineBindPoint::eCompute, *compute.PipelineLayout, 0, compute.GetDescriptorSet(), {});
+        const std::array compute_sets{compute.GetDescriptorSet(), compute.GetUboSet()};
+        cb.bindDescriptorSets(vk::PipelineBindPoint::eCompute, *compute.PipelineLayout, 0, uint32_t(compute_sets.size()), compute_sets.data(), 1, &ubo_offset);
         cb.pushConstants(*compute.PipelineLayout, vk::ShaderStageFlagBits::eCompute, 0, sizeof(pc), &pc);
         cb.dispatch(groups.x, groups.y, groups.z);
     };
@@ -203,7 +204,7 @@ void RecordMotionBlurPostFx(entt::registry &r, vk::CommandBuffer cb, entt::entit
             MotionScale, mb.BleedingBias, noise_offset
         };
         cb.pushConstants(*gather.PipelineLayout, vk::ShaderStageFlagBits::eFragment, 0, sizeof(gather_pc), &gather_pc);
-        gather.RenderQuad(cb);
+        gather.RenderQuad(cb, ubo_offset);
         cb.endRenderPass();
     }
     // The accumulate pass or the composite samples the gather output next. The render pass leaves
@@ -218,11 +219,14 @@ void RecordMotionBlurPostFx(entt::registry &r, vk::CommandBuffer cb, entt::entit
 
 } // namespace
 
-void RecordRenderCommandBuffer(entt::registry &r, entt::entity viewport, vk::CommandBuffer cb, bool silhouette_only, RenderPhase phase) {
+namespace {
+// Record one phase's passes into `cb`, which is already begun with viewport and scissor set.
+// `ubo_offset` selects the view UBO instance every bind in the phase reads.
+void RecordPhase(entt::registry &r, entt::entity viewport, vk::CommandBuffer cb, DrawListUse use, RenderPhase phase, uint32_t ubo_offset, float playback_frame) {
     auto &profile = r.ctx().get<Profile>();
     // A scope name holds no spaces, so the report table stays machine-readable.
-    const CpuScope scope{profile, silhouette_only ? "RecordRenderCommandBufferSilhouette" : "RecordRenderCommandBuffer"};
-    if (!silhouette_only) r.ctx().get<DrawState>().SelectionStale = true;
+    const CpuScope scope{profile, use == DrawListUse::SilhouetteOnly ? "RecordRenderCommandBufferSilhouette" : "RecordRenderCommandBuffer"};
+    if (use == DrawListUse::Rebuild) r.ctx().get<DrawState>().SelectionStale = true;
     // The multi-step blur splits the scene and its overlays across two phases so the overlays stay
     // sharp over the averaged steps. Full and BlurredFull draw both in one.
     const bool draw_scene = phase != RenderPhase::BlurResolve;
@@ -295,7 +299,7 @@ void RecordRenderCommandBuffer(entt::registry &r, entt::entity viewport, vk::Com
         }
     };
 
-    if (!silhouette_only) {
+    if (use == DrawListUse::Rebuild) {
         draw_list.Draws.clear();
         draw_list.IndirectCommands.clear();
         draw_list.MaxIndexCount = 0;
@@ -673,13 +677,13 @@ void RecordRenderCommandBuffer(entt::registry &r, entt::entity viewport, vk::Com
         // Cache the main draw list state (everything before silhouette).
         draw.MainDrawCount = draw_list.Draws.size();
         draw.MainIndirectCount = draw_list.IndirectCommands.size();
-    } else {
-        // Silhouette-only: truncate to cached main portion, batch infos retained from last full build.
+    } else if (use == DrawListUse::SilhouetteOnly) {
+        // Truncate to the cached main portion, batch infos retained from last full build.
         draw_list.Draws.resize(draw.MainDrawCount);
         draw_list.IndirectCommands.resize(draw.MainIndirectCount);
     }
 
-    // Silhouette batch (appended after main batches in both paths).
+    // Silhouette batch (appended after main batches in both rebuild paths).
     std::unordered_set<entt::entity> silhouette_instances;
     if (is_edit_mode) {
         for (const auto [e, instance, ri] : r.view<const Instance, const Selected, const RenderInstance>().each()) {
@@ -695,8 +699,8 @@ void RecordRenderCommandBuffer(entt::registry &r, entt::entity viewport, vk::Com
     const bool render_silhouette = (show_overlays && settings.ShowOutlineSelected) && !is_excite_mode &&
         (is_edit_mode ? !silhouette_instances.empty() : has_object_silhouette_selection);
 
-    draw.Silhouette = {};
-    if (render_silhouette) {
+    if (use != DrawListUse::Reuse) draw.Silhouette = {};
+    if (render_silhouette && use != DrawListUse::Reuse) {
         draw.Silhouette = draw_list.BeginBatch();
         auto append_silhouette = [&](entt::entity e) {
             if (!is_silhouette_eligible(e)) return;
@@ -718,25 +722,19 @@ void RecordRenderCommandBuffer(entt::registry &r, entt::entity viewport, vk::Com
         }
     }
 
-    FlushDrawList(r, vk.Device, draw_list, buffers.RenderDraw);
-    const auto render_extent_px = RenderExtentPx(r);
-    const vk::Extent2D render_extent{render_extent_px.x, render_extent_px.y};
+    if (use != DrawListUse::Reuse) FlushDrawList(r, vk.Device, draw_list, buffers.RenderDraw);
 
-    cb.begin({vk::CommandBufferUsageFlagBits::eSimultaneousUse});
-    profile.BeginRecording(cb);
-    cb.setViewport(0, vk::Viewport{0.f, 0.f, float(render_extent.width), float(render_extent.height), 0.f, 1.f});
-    cb.setScissor(0, vk::Rect2D{{0, 0}, render_extent});
     const uint32_t transform_vertex_state_slot = is_edit_mode ? meshes.GetVertexStateSlot() : InvalidSlot;
     auto record_draw_batch = [&](const PipelineRenderer &renderer, SPT spt, const DrawBatchInfo &batch) {
         if (batch.DrawCount == 0) return;
-        const auto &pipeline = renderer.Bind(cb, spt);
+        const auto &pipeline = renderer.Bind(cb, spt, ubo_offset);
         const MainDrawPushConstants pc{{batch.DrawDataSlotOffset, transform_vertex_state_slot}};
         cb.pushConstants(*pipeline.PipelineLayout, vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, sizeof(pc), &pc);
         cb.drawIndexedIndirect(*buffers.RenderDraw.Indirect, batch.IndirectOffset, batch.DrawCount, sizeof(vk::DrawIndexedIndirectCommand));
     };
     auto record_pbr_batch = [&](const DrawBatchInfo &batch, PbrCompiler::Variant variant) {
         if (batch.DrawCount == 0) return;
-        const auto layout = pipelines.Main.Compiler.Bind(cb, variant);
+        const auto layout = pipelines.Main.Compiler.Bind(cb, variant, ubo_offset);
         const MainDrawPushConstants pc{{batch.DrawDataSlotOffset, transform_vertex_state_slot}};
         cb.pushConstants(layout, vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, sizeof(pc), &pc);
         cb.drawIndexedIndirect(*buffers.RenderDraw.Indirect, batch.IndirectOffset, batch.DrawCount, sizeof(vk::DrawIndexedIndirectCommand));
@@ -777,7 +775,7 @@ void RecordRenderCommandBuffer(entt::registry &r, entt::entity viewport, vk::Com
         const auto &silhouette_edo = silhouette_edge.Renderer.ShaderPipelines.at(SPT::SilhouetteEdgeDepthObject);
         const SilhouetteEdgeDepthObjectPushConstants edge_pc{sel_slots.SilhouetteSampler};
         cb.pushConstants(*silhouette_edo.PipelineLayout, vk::ShaderStageFlagBits::eFragment, 0, sizeof(edge_pc), &edge_pc);
-        silhouette_edo.RenderQuad(cb);
+        silhouette_edo.RenderQuad(cb, ubo_offset);
         cb.endRenderPass();
 
         // Edge pass depth/color writes -> main pass silhouette sampling.
@@ -821,7 +819,7 @@ void RecordRenderCommandBuffer(entt::registry &r, entt::entity viewport, vk::Com
             vk::ClearValue{Transparent},
         };
         cb.beginRenderPass({*main.SceneRenderer.RenderPass, *main.Transmission->Framebuffer, main_rect, prepass_clear_values}, vk::SubpassContents::eInline);
-        main.PrepassBackground.RenderQuad(cb);
+        main.PrepassBackground.RenderQuad(cb, ubo_offset);
         if (buffers.IdentityIndexCount > 0 && show_fill) {
             cb.bindIndexBuffer(*buffers.IdentityIndexBuffer, 0, vk::IndexType::eUint32);
             // The prepass batch holds every material with non-transmissive texels.
@@ -910,11 +908,11 @@ void RecordRenderCommandBuffer(entt::registry &r, entt::entity viewport, vk::Com
 
         // Screen motion for every pixel geometry leaves uncovered. The background sits at infinity,
         // so only view rotation moves it. Geometry overwrites it wherever it lands.
-        if (blur) scene_renderer.ShaderPipelines.at(SPT::BackgroundVelocity).RenderQuad(cb);
+        if (blur) scene_renderer.ShaderPipelines.at(SPT::BackgroundVelocity).RenderQuad(cb, ubo_offset);
         // The prepass covers the background and plain-opaque geometry, so the composite replaces both.
-        if (composite_transmission) scene_renderer.ShaderPipelines.at(SPT::TransmissionComposite).RenderQuad(cb);
+        if (composite_transmission) scene_renderer.ShaderPipelines.at(SPT::TransmissionComposite).RenderQuad(cb, ubo_offset);
         // Background environment (PBR modes only). The shader discards when WorldOpacity == 0 or there is no env slot.
-        else if (show_rendered && draw_scene) scene_renderer.ShaderPipelines.at(SPT::Background).RenderQuad(cb);
+        else if (show_rendered && draw_scene) scene_renderer.ShaderPipelines.at(SPT::Background).RenderQuad(cb, ubo_offset);
         // Fill the scene target with the averaged steps, for the depth and overlays below to draw over.
         if (phase == RenderPhase::BlurResolve) {
             const auto &resolve = main.SceneRenderer.ShaderPipelines.at(SPT::MotionBlurResolve);
@@ -923,7 +921,7 @@ void RecordRenderCommandBuffer(entt::registry &r, entt::entity viewport, vk::Com
                 float InvSteps;
             } resolve_pc{sel_slots.MotionBlurAccumSampler, 1.f / float(MotionBlurSteps(settings))};
             cb.pushConstants(*resolve.PipelineLayout, vk::ShaderStageFlagBits::eFragment, 0, sizeof(resolve_pc), &resolve_pc);
-            resolve.RenderQuad(cb);
+            resolve.RenderQuad(cb, ubo_offset);
         }
 
         // Silhouette edge depth (not color! we render it before mesh depth to avoid overwriting closer depths with further ones)
@@ -931,7 +929,7 @@ void RecordRenderCommandBuffer(entt::registry &r, entt::entity viewport, vk::Com
             const auto &silhouette_depth = scene_renderer.ShaderPipelines.at(SPT::SilhouetteEdgeDepth);
             const uint32_t depth_sampler_index = sel_slots.DepthSampler;
             cb.pushConstants(*silhouette_depth.PipelineLayout, vk::ShaderStageFlagBits::eFragment, 0, sizeof(depth_sampler_index), &depth_sampler_index);
-            silhouette_depth.RenderQuad(cb);
+            silhouette_depth.RenderQuad(cb, ubo_offset);
         }
 
         // Solid faces. BlurResolve writes depth only, for overlays to occlude against (blend faces never wrote depth).
@@ -970,7 +968,7 @@ void RecordRenderCommandBuffer(entt::registry &r, entt::entity viewport, vk::Com
         sync_fragment_shader_reads(vk::PipelineStageFlagBits::eColorAttachmentOutput, scene_out_barriers);
     }
 
-    if (blur) RecordMotionBlurPostFx(r, cb, viewport, main_rect);
+    if (blur) RecordMotionBlurPostFx(r, cb, viewport, main_rect, ubo_offset, playback_frame);
 
     if (!draw_overlays) { // BlurAccumulate sums this step's blurred scene in. It draws no overlays to composite.
         {
@@ -981,11 +979,9 @@ void RecordRenderCommandBuffer(entt::registry &r, entt::entity viewport, vk::Com
             cb.beginRenderPass({accum_pass, *main.MotionBlur->Framebuffer, main_rect, accum_clear}, vk::SubpassContents::eInline);
             const uint32_t accum_pc = sel_slots.MotionBlurGatherSampler;
             cb.pushConstants(*main.MotionBlurAccumulate.PipelineLayout, vk::ShaderStageFlagBits::eFragment, 0, sizeof(accum_pc), &accum_pc);
-            main.MotionBlurAccumulate.RenderQuad(cb);
+            main.MotionBlurAccumulate.RenderQuad(cb, ubo_offset);
             cb.endRenderPass();
         }
-        profile.EndRecording(cb);
-        cb.end();
         return;
     }
 
@@ -1054,7 +1050,7 @@ void RecordRenderCommandBuffer(entt::registry &r, entt::entity viewport, vk::Com
                 TransformGizmo::IsUsing(r, viewport) && interaction_mode == InteractionMode::Object, sel_slots.ObjectIdSampler, active_object_id
             };
             cb.pushConstants(*silhouette_edc.PipelineLayout, vk::ShaderStageFlagBits::eFragment, 0, sizeof(pc), &pc);
-            silhouette_edc.RenderQuad(cb);
+            silhouette_edc.RenderQuad(cb, ubo_offset);
         }
 
         if (buffers.IdentityIndexCount > 0) { // Selection overlays
@@ -1066,7 +1062,7 @@ void RecordRenderCommandBuffer(entt::registry &r, entt::entity viewport, vk::Com
         // Grid plane (drawn before bone depth clear so grid remains depth-tested against scene meshes)
         if (show_overlays && settings.ShowGrid) {
             overlay_layer_drawn = true;
-            main.OverlayRenderer.ShaderPipelines.at(SPT::Grid).Draw(cb, 9);
+            main.OverlayRenderer.ShaderPipelines.at(SPT::Grid).Draw(cb, 9, ubo_offset);
         }
 
         { // Bone X-ray: clear depth so bones are never occluded by scene meshes (only mutually occlude each other)
@@ -1119,10 +1115,58 @@ void RecordRenderCommandBuffer(entt::registry &r, entt::entity viewport, vk::Com
             vec4 Backdrop;
         } composite_pc{scene_sampler, sel_slots.OverlayColorSampler, sel_slots.LineDataSampler, view_transform, overlay_layer_drawn, settings.ClearColor};
         cb.pushConstants(*main.ViewportComposite.PipelineLayout, vk::ShaderStageFlagBits::eFragment, 0, sizeof(composite_pc), &composite_pc);
-        main.ViewportComposite.RenderQuad(cb);
+        main.ViewportComposite.RenderQuad(cb, ubo_offset);
         cb.endRenderPass();
     }
-    profile.EndRecording(cb);
+}
 
+// Begin `cb` with viewport and scissor covering the render extent.
+void BeginRecording(entt::registry &r, vk::CommandBuffer cb) {
+    const auto render_extent_px = RenderExtentPx(r);
+    const vk::Extent2D render_extent{render_extent_px.x, render_extent_px.y};
+    cb.begin({vk::CommandBufferUsageFlagBits::eSimultaneousUse});
+    r.ctx().get<Profile>().BeginRecording(cb);
+    cb.setViewport(0, vk::Viewport{0.f, 0.f, float(render_extent.width), float(render_extent.height), 0.f, 1.f});
+    cb.setScissor(0, vk::Rect2D{{0, 0}, render_extent});
+}
+
+void EndRecording(entt::registry &r, vk::CommandBuffer cb) {
+    r.ctx().get<Profile>().EndRecording(cb);
     cb.end();
+}
+} // namespace
+
+void RecordRenderCommandBuffer(entt::registry &r, entt::entity viewport, vk::CommandBuffer cb, DrawListUse use, RenderPhase phase) {
+    BeginRecording(r, cb);
+    RecordPhase(r, viewport, cb, use, phase, 0, r.get<const PlaybackFrame>(viewport).Value);
+    EndRecording(r, cb);
+}
+
+void RecordBlurStepsCommandBuffer(entt::registry &r, entt::entity viewport, vk::CommandBuffer cb, std::span<const float> step_frames) {
+    const auto &buffers = r.ctx().get<const GpuBuffers>();
+    BeginRecording(r, cb);
+    for (uint32_t i = 0; i < step_frames.size(); ++i) {
+        if (i > 0) {
+            // The prior step's blur sampled the depth, color, and velocity this step renders anew.
+            // The scene pass reloads them as undefined, so ordering the accesses is enough.
+            cb.pipelineBarrier(
+                vk::PipelineStageFlagBits::eFragmentShader | vk::PipelineStageFlagBits::eComputeShader,
+                vk::PipelineStageFlagBits::eEarlyFragmentTests | vk::PipelineStageFlagBits::eColorAttachmentOutput,
+                {},
+                vk::MemoryBarrier{vk::AccessFlagBits::eShaderRead, vk::AccessFlagBits::eDepthStencilAttachmentWrite | vk::AccessFlagBits::eColorAttachmentWrite},
+                {}, {}
+            );
+        }
+        RecordPhase(r, viewport, cb, i == 0 ? DrawListUse::Rebuild : DrawListUse::Reuse, i == 0 ? RenderPhase::BlurAccumulateFirst : RenderPhase::BlurAccumulate, buffers.SceneViewUboOffset(i + 1), step_frames[i]);
+    }
+    // The resolve's scene pass renders the depth the last step's gather sampled.
+    cb.pipelineBarrier(
+        vk::PipelineStageFlagBits::eFragmentShader | vk::PipelineStageFlagBits::eComputeShader,
+        vk::PipelineStageFlagBits::eEarlyFragmentTests | vk::PipelineStageFlagBits::eColorAttachmentOutput,
+        {},
+        vk::MemoryBarrier{vk::AccessFlagBits::eShaderRead, vk::AccessFlagBits::eDepthStencilAttachmentWrite | vk::AccessFlagBits::eColorAttachmentWrite},
+        {}, {}
+    );
+    RecordPhase(r, viewport, cb, DrawListUse::Reuse, RenderPhase::BlurResolve, 0, r.get<const PlaybackFrame>(viewport).Value);
+    EndRecording(r, cb);
 }

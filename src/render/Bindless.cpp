@@ -14,6 +14,7 @@ constexpr std::pair<uint32_t, uint32_t> MaxUpdateAfterBindPair(const vk::Physica
         case BindKind::Image:
             return {props.maxDescriptorSetUpdateAfterBindStorageImages, props.maxPerStageDescriptorUpdateAfterBindStorageImages};
         case BindKind::Uniform:
+        case BindKind::UniformDynamic:
             return {props.maxDescriptorSetUpdateAfterBindUniformBuffers, props.maxPerStageDescriptorUpdateAfterBindUniformBuffers};
         case BindKind::Sampler:
             return {props.maxDescriptorSetUpdateAfterBindSampledImages, props.maxPerStageDescriptorUpdateAfterBindSamplers};
@@ -31,6 +32,8 @@ constexpr uint32_t LimitCapFor(BindKind kind) {
         case BindKind::Buffer: return 32768u;
         case BindKind::Image: return 1024u;
         case BindKind::Uniform: return 64u;
+        // One descriptor, so every bind supplies exactly one dynamic offset.
+        case BindKind::UniformDynamic: return 1u;
         case BindKind::Sampler: return 256u;
     }
     return 0u;
@@ -43,6 +46,7 @@ constexpr uint32_t GetMaxDescriptors(const vk::PhysicalDeviceDescriptorIndexingP
 constexpr vk::DescriptorType DescriptorTypeFor(BindKind kind) {
     switch (kind) {
         case BindKind::Uniform: return vk::DescriptorType::eUniformBuffer;
+        case BindKind::UniformDynamic: return vk::DescriptorType::eUniformBufferDynamic;
         case BindKind::Image: return vk::DescriptorType::eStorageImage;
         case BindKind::Sampler: return vk::DescriptorType::eCombinedImageSampler;
         case BindKind::Buffer: return vk::DescriptorType::eStorageBuffer;
@@ -54,6 +58,7 @@ constexpr vk::DescriptorBindingFlags FlagsFor(BindKind kind) {
     using enum vk::DescriptorBindingFlagBits;
     switch (kind) {
         case BindKind::Uniform: return ePartiallyBound;
+        case BindKind::UniformDynamic: return {}; // Dynamic descriptors allow neither partially-bound nor update-after-bind.
         case BindKind::Image: return ePartiallyBound | eUpdateAfterBind;
         case BindKind::Sampler: return ePartiallyBound | eUpdateAfterBind;
         case BindKind::Buffer: return ePartiallyBound | eUpdateAfterBind;
@@ -72,7 +77,11 @@ constexpr SlotBinding BindingFor(SlotType type) { return {uint32_t(type), Descri
 
 DescriptorSlots::DescriptorSlots(vk::Device device, const vk::PhysicalDeviceDescriptorIndexingProperties &props)
     : Device(device) {
-    const auto indices = iota(uint32_t{0}, uint32_t(BindingDefs.size()));
+    // Set 0 holds everything except dynamic uniforms: a set with update-after-bind bindings cannot
+    // hold dynamic descriptors, so those go alone into set 1 at binding 0.
+    const auto indices = iota(uint32_t{0}, uint32_t(BindingDefs.size())) |
+        std::views::filter([](uint32_t i) { return BindingDefs[i].Kind != BindKind::UniformDynamic; }) |
+        to<std::vector>();
     const auto bindings = indices | transform([&](uint32_t i) {
                               const auto &kind = BindingDefs[i].Kind;
                               return vk::DescriptorSetLayoutBinding{i, DescriptorTypeFor(kind), GetMaxDescriptors(props, kind), vk::ShaderStageFlagBits::eAll};
@@ -84,6 +93,9 @@ DescriptorSlots::DescriptorSlots(vk::Device device, const vk::PhysicalDeviceDesc
     layout_ci.pNext = &binding_flags_ci;
     SetLayout = Device.createDescriptorSetLayoutUnique(layout_ci);
 
+    const vk::DescriptorSetLayoutBinding ubo_binding{0, vk::DescriptorType::eUniformBufferDynamic, 1, vk::ShaderStageFlagBits::eAll};
+    UboSetLayout = Device.createDescriptorSetLayoutUnique({{}, 1, &ubo_binding});
+
     const auto pool_size_for = [&](BindKind kind) {
         return vk::DescriptorPoolSize{
             DescriptorTypeFor(kind),
@@ -92,12 +104,14 @@ DescriptorSlots::DescriptorSlots(vk::Device device, const vk::PhysicalDeviceDesc
     };
     const std::array pool_sizes{
         pool_size_for(BindKind::Uniform),
+        pool_size_for(BindKind::UniformDynamic),
         pool_size_for(BindKind::Image),
         pool_size_for(BindKind::Sampler),
         pool_size_for(BindKind::Buffer),
     };
-    DescriptorPool = Device.createDescriptorPoolUnique({vk::DescriptorPoolCreateFlagBits::eUpdateAfterBind | vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet, 1, uint32_t(pool_sizes.size()), pool_sizes.data()});
+    DescriptorPool = Device.createDescriptorPoolUnique({vk::DescriptorPoolCreateFlagBits::eUpdateAfterBind | vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet, 2, uint32_t(pool_sizes.size()), pool_sizes.data()});
     DescriptorSet = std::move(Device.allocateDescriptorSetsUnique({*DescriptorPool, 1, &*SetLayout}).front());
+    UboDescriptorSet = std::move(Device.allocateDescriptorSetsUnique({*DescriptorPool, 1, &*UboSetLayout}).front());
 }
 
 // A slot is a count-1 range. RangeAllocator hands out the lowest available offset deterministically (a function
@@ -108,6 +122,9 @@ bool DescriptorSlots::Reserve(SlotType type, uint32_t slot) { return Allocators[
 void DescriptorSlots::Release(TypedSlot slot) { Allocators[size_t(slot.Type)].Free({slot.Slot, 1}); }
 
 vk::WriteDescriptorSet DescriptorSlots::MakeBufferWrite(TypedSlot slot, const vk::DescriptorBufferInfo &info) const {
+    if (BindingDefs[size_t(slot.Type)].Kind == BindKind::UniformDynamic) {
+        return {*UboDescriptorSet, 0, slot.Slot, 1, vk::DescriptorType::eUniformBufferDynamic, nullptr, &info};
+    }
     const auto [binding, descriptor] = BindingFor(slot.Type);
     return {*DescriptorSet, binding, slot.Slot, 1, descriptor, nullptr, &info};
 }

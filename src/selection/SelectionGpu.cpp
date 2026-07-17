@@ -46,7 +46,9 @@ void RunSelectionCompute(
     cb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
 
     cb.bindPipeline(vk::PipelineBindPoint::eCompute, *compute.Pipeline);
-    cb.bindDescriptorSets(vk::PipelineBindPoint::eCompute, *compute.PipelineLayout, 0, compute.GetDescriptorSet(), {});
+    constexpr uint32_t no_ubo_offset = 0;
+    const std::array compute_sets{compute.GetDescriptorSet(), compute.GetUboSet()};
+    cb.bindDescriptorSets(vk::PipelineBindPoint::eCompute, *compute.PipelineLayout, 0, uint32_t(compute_sets.size()), compute_sets.data(), 1, &no_ubo_offset);
     cb.pushConstants(*compute.PipelineLayout, vk::ShaderStageFlagBits::eCompute, 0, sizeof(pc), &pc);
     dispatch(cb);
 
@@ -618,7 +620,9 @@ void DispatchUpdateSelectionStates(
 
     const auto &compute = pipelines.UpdateSelectionState;
     cb.bindPipeline(vk::PipelineBindPoint::eCompute, *compute.Pipeline);
-    cb.bindDescriptorSets(vk::PipelineBindPoint::eCompute, *compute.PipelineLayout, 0, compute.GetDescriptorSet(), {});
+    constexpr uint32_t no_ubo_offset = 0;
+    const std::array compute_sets{compute.GetDescriptorSet(), compute.GetUboSet()};
+    cb.bindDescriptorSets(vk::PipelineBindPoint::eCompute, *compute.PipelineLayout, 0, uint32_t(compute_sets.size()), compute_sets.data(), 1, &no_ubo_offset);
 
     for (const auto &range : ranges) {
         const auto &mesh = GetMesh(r, range.MeshEntity);

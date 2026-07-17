@@ -94,7 +94,9 @@ struct ShaderPipeline {
         std::optional<vk::PushConstantRange> push_constant_range = std::nullopt,
         float depth_bias = 0.f,
         vk::DescriptorSetLayout set_layout = {},
-        vk::DescriptorSet set = {}
+        vk::DescriptorSet set = {},
+        vk::DescriptorSetLayout ubo_set_layout = {},
+        vk::DescriptorSet ubo_set = {}
     );
 
     vk::Device Device;
@@ -109,23 +111,29 @@ struct ShaderPipeline {
 
     vk::DescriptorSetLayout DescriptorSetLayout{};
     vk::DescriptorSet DescriptorSet{};
+    // Set 1: the dynamic view UBO, bound with a per-draw dynamic offset.
+    vk::DescriptorSetLayout UboSetLayout{};
+    vk::DescriptorSet UboSet{};
     vk::UniquePipelineLayout PipelineLayout;
     vk::UniquePipeline Pipeline;
 
     vk::DescriptorSetLayout GetDescriptorSetLayout() const { return DescriptorSetLayout; }
     vk::DescriptorSet GetDescriptorSet() const { return DescriptorSet; }
+    vk::DescriptorSet GetUboSet() const { return UboSet; }
 
     void Compile(vk::RenderPass); // Recompile all shaders and update `Pipeline`.
 
     // Bind and draw `vertex_count` un-indexed vertices (the shader supplies positions).
-    void Draw(vk::CommandBuffer, uint32_t vertex_count) const;
-    void RenderQuad(vk::CommandBuffer cb) const { Draw(cb, 4); } // Full-screen quad triangle strip.
+    // `scene_ubo_offset` selects the view UBO instance (motion blur steps bind their own).
+    void Draw(vk::CommandBuffer, uint32_t vertex_count, uint32_t scene_ubo_offset = 0) const;
+    void RenderQuad(vk::CommandBuffer cb, uint32_t scene_ubo_offset = 0) const { Draw(cb, 4, scene_ubo_offset); } // Full-screen quad triangle strip.
 };
 
 struct ComputePipeline {
     ComputePipeline(
         vk::Device, Shaders &&, std::optional<vk::PushConstantRange> = std::nullopt,
-        vk::DescriptorSetLayout set_layout = {}, vk::DescriptorSet set = {}
+        vk::DescriptorSetLayout set_layout = {}, vk::DescriptorSet set = {},
+        vk::DescriptorSetLayout ubo_set_layout = {}, vk::DescriptorSet ubo_set = {}
     );
 
     vk::Device Device;
@@ -133,11 +141,14 @@ struct ComputePipeline {
 
     vk::DescriptorSetLayout DescriptorSetLayout{};
     vk::DescriptorSet DescriptorSet{};
+    vk::DescriptorSetLayout UboSetLayout{};
+    vk::DescriptorSet UboSet{};
     vk::UniquePipelineLayout PipelineLayout;
     vk::UniquePipeline Pipeline;
 
     vk::DescriptorSetLayout GetDescriptorSetLayout() const { return DescriptorSetLayout; }
     vk::DescriptorSet GetDescriptorSet() const { return DescriptorSet; }
+    vk::DescriptorSet GetUboSet() const { return UboSet; }
 
     void Compile();
 };
@@ -146,6 +157,8 @@ struct PipelineContext {
     vk::Device Device;
     vk::DescriptorSetLayout SharedLayout;
     vk::DescriptorSet SharedSet;
+    vk::DescriptorSetLayout UboLayout;
+    vk::DescriptorSet UboSet;
 
     ShaderPipeline CreateGraphics(
         Shaders &&,

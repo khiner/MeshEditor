@@ -183,7 +183,9 @@ ShaderPipeline::ShaderPipeline(
     std::optional<vk::PushConstantRange> push_constant_range,
     float depth_bias,
     vk::DescriptorSetLayout set_layout,
-    vk::DescriptorSet set
+    vk::DescriptorSet set,
+    vk::DescriptorSetLayout ubo_set_layout,
+    vk::DescriptorSet ubo_set
 ) : Device(device), Shaders(std::move(shaders)),
     VertexInputState(std::move(vertex_input_state)),
     ColorBlendAttachments(std::move(color_blend_attachments)),
@@ -191,9 +193,12 @@ ShaderPipeline::ShaderPipeline(
     RasterizationState({{}, false, false, polygon_mode, {}, vk::FrontFace::eClockwise, depth_bias != 0.f, depth_bias, {}, depth_bias, 1.f}),
     InputAssemblyState({{}, topology}),
     DescriptorSetLayout(set_layout),
-    DescriptorSet(set) {
-    assert(DescriptorSetLayout && DescriptorSet && "Bindless descriptor set/layout required.");
-    PipelineLayout = Device.createPipelineLayoutUnique({{}, 1, &DescriptorSetLayout, push_constant_range ? 1u : 0u, push_constant_range ? &*push_constant_range : nullptr});
+    DescriptorSet(set),
+    UboSetLayout(ubo_set_layout),
+    UboSet(ubo_set) {
+    assert(DescriptorSetLayout && DescriptorSet && UboSetLayout && UboSet && "Bindless descriptor sets/layouts required.");
+    const std::array set_layouts{DescriptorSetLayout, UboSetLayout};
+    PipelineLayout = Device.createPipelineLayoutUnique({{}, uint32_t(set_layouts.size()), set_layouts.data(), push_constant_range ? 1u : 0u, push_constant_range ? &*push_constant_range : nullptr});
 }
 
 void ShaderPipeline::Compile(vk::RenderPass render_pass) {
@@ -229,16 +234,18 @@ void ShaderPipeline::Compile(vk::RenderPass render_pass) {
     Pipeline = std::move(pipeline_result.value);
 }
 
-void ShaderPipeline::Draw(vk::CommandBuffer cb, uint32_t vertex_count) const {
+void ShaderPipeline::Draw(vk::CommandBuffer cb, uint32_t vertex_count, uint32_t scene_ubo_offset) const {
     cb.bindPipeline(vk::PipelineBindPoint::eGraphics, *Pipeline);
-    cb.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *PipelineLayout, 0, 1, &DescriptorSet, 0, nullptr);
+    const std::array sets{DescriptorSet, UboSet};
+    cb.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *PipelineLayout, 0, uint32_t(sets.size()), sets.data(), 1, &scene_ubo_offset);
     cb.draw(vertex_count, 1, 0, 0);
 }
 
-ComputePipeline::ComputePipeline(vk::Device d, Shaders &&shaders, std::optional<vk::PushConstantRange> push_constant_range, vk::DescriptorSetLayout set_layout, vk::DescriptorSet set)
-    : Device(d), ShaderModules(std::move(shaders)), DescriptorSetLayout(set_layout), DescriptorSet(set) {
-    assert(DescriptorSetLayout && DescriptorSet && "Bindless descriptor set/layout required.");
-    PipelineLayout = d.createPipelineLayoutUnique({{}, 1, &DescriptorSetLayout, push_constant_range ? 1u : 0u, push_constant_range ? &*push_constant_range : nullptr});
+ComputePipeline::ComputePipeline(vk::Device d, Shaders &&shaders, std::optional<vk::PushConstantRange> push_constant_range, vk::DescriptorSetLayout set_layout, vk::DescriptorSet set, vk::DescriptorSetLayout ubo_set_layout, vk::DescriptorSet ubo_set)
+    : Device(d), ShaderModules(std::move(shaders)), DescriptorSetLayout(set_layout), DescriptorSet(set), UboSetLayout(ubo_set_layout), UboSet(ubo_set) {
+    assert(DescriptorSetLayout && DescriptorSet && UboSetLayout && UboSet && "Bindless descriptor sets/layouts required.");
+    const std::array set_layouts{DescriptorSetLayout, UboSetLayout};
+    PipelineLayout = d.createPipelineLayoutUnique({{}, uint32_t(set_layouts.size()), set_layouts.data(), push_constant_range ? 1u : 0u, push_constant_range ? &*push_constant_range : nullptr});
     Compile();
 }
 
@@ -262,7 +269,7 @@ ShaderPipeline PipelineContext::CreateGraphics(
     return {
         Device, std::move(shaders), vertex_input,
         polygon_mode, topology, std::move(color_blend_attachments), depth_stencil,
-        push_constants, depth_bias, SharedLayout, SharedSet
+        push_constants, depth_bias, SharedLayout, SharedSet, UboLayout, UboSet
     };
 }
 
@@ -270,5 +277,5 @@ ComputePipeline PipelineContext::CreateCompute(
     Shaders &&shaders,
     std::optional<vk::PushConstantRange> push_constants
 ) const {
-    return {Device, std::move(shaders), push_constants, SharedLayout, SharedSet};
+    return {Device, std::move(shaders), push_constants, SharedLayout, SharedSet, UboLayout, UboSet};
 }

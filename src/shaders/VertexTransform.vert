@@ -63,7 +63,9 @@ void main() {
     const DrawData draw = GetDrawData();
     const uint idx = IndexBuffers[draw.IndexSlotOffset.Slot].Indices[draw.IndexSlotOffset.Offset + uint(gl_VertexIndex)];
     const Vertex vert = VertexBuffers[draw.VertexSlot].Vertices[idx + draw.VertexOffset];
-    const Transform world = ModelBuffers[draw.ModelSlot].Models[draw.FirstInstance];
+    // Motion blur steps read their captured transforms through the override, keeping DrawData step-agnostic.
+    const uint model_slot = SceneViewUBO.ModelSlotOverride != INVALID_SLOT ? SceneViewUBO.ModelSlotOverride : draw.ModelSlot;
+    const Transform world = ModelBuffers[model_slot].Models[draw.FirstInstance];
 
     uint element_state = 0u;
     uint face_id = 0u;

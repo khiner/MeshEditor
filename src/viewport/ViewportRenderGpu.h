@@ -21,8 +21,19 @@ enum class RenderPhase {
 
 constexpr bool IsBlurAccumulate(RenderPhase p) { return p == RenderPhase::BlurAccumulateFirst || p == RenderPhase::BlurAccumulate; }
 
+// How a recording treats the DrawState draw list.
+enum class DrawListUse {
+    Rebuild, // Build the whole draw list anew.
+    SilhouetteOnly, // Keep the main portion, rebuild only the silhouette batch.
+    Reuse, // Record from the list as it stands.
+};
+
 // Build the main draw list (or just the silhouette portion) into the DrawState component and record the render pass.
-void RecordRenderCommandBuffer(entt::registry &, entt::entity viewport, vk::CommandBuffer, bool silhouette_only = false, RenderPhase = RenderPhase::Full);
+void RecordRenderCommandBuffer(entt::registry &, entt::entity viewport, vk::CommandBuffer, DrawListUse = DrawListUse::Rebuild, RenderPhase = RenderPhase::Full);
+
+// Record every motion blur step and the resolve into one command buffer, each step reading its own
+// view UBO instance (i + 1) by dynamic offset. `step_frames` holds each step's centre playback frame.
+void RecordBlurStepsCommandBuffer(entt::registry &, entt::entity viewport, vk::CommandBuffer, std::span<const float> step_frames);
 
 #ifdef MVK_FORCE_STAGED_TRANSFERS
 void RecordTransferCommandBuffer(entt::registry &, entt::entity viewport, vk::CommandBuffer);
