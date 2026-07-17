@@ -44,6 +44,10 @@ struct DrawState {
     uint32_t MainIndirectCount{0}; // IndirectCommands.size() after main batches
     DrawBatchInfo Silhouette;
     DrawBatchInfo FillOpaque, FillBlend;
+    // Opaque split by material transmission, for real-transmission frames: the prepass draws every
+    // material with non-transmissive texels, and the scene pass composites the result and re-draws
+    // only the transmissive batch. Textured-transmission materials appear in both.
+    DrawBatchInfo FillOpaquePrepass, FillOpaqueTransmissive;
     DrawBatchInfo EdgeQuad, WireLine, Point, ExtrasLine;
     DrawBatchInfo BoneFill, BoneWire, BoneSphereFill, BoneSphereWire;
     DrawBatchInfo OverlayFaceNormals, OverlayVertexNormals;

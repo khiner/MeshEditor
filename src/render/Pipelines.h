@@ -128,6 +128,9 @@ struct MainPipeline {
     // Scene: depth + scene-linear HDR color. Overlays: the scene's depth loaded for occlusion,
     // plus a display-referred overlay color target and the line data driving its AA.
     PipelineRenderer SceneRenderer, OverlayRenderer;
+    // Scene pass variant that loads the transmission prepass's depth instead of clearing, for the
+    // composite path. Compatible with SceneRenderer's pipelines and framebuffer.
+    vk::UniqueRenderPass SceneDepthLoadRenderPass;
     // Scene pass variant for motion blur steps, with a velocity attachment the geometry writes its
     // screen motion into. Holds the fullscreen-quad twins the blurred scene pass binds.
     PipelineRenderer SceneVelocityRenderer;

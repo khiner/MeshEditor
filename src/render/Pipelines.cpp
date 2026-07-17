@@ -192,16 +192,32 @@ static ShaderPipeline CreateQuadPipeline(const PipelineContext &ctx, std::filesy
 
 // Depth + a single scene-linear color attachment. Depth is stored for the overlay pass to load and
 // occlude against. Also backs the transmission pre-pass, which renders into its own framebuffer.
-static vk::UniqueRenderPass CreateSceneRenderPass(vk::Device d) {
+// `load_depth` keeps the depth the transmission pre-pass wrote, for the composite path.
+// Attachment compatibility ignores load ops, so the plain pass's pipelines and framebuffer serve both variants.
+static vk::UniqueRenderPass CreateSceneRenderPass(vk::Device d, bool load_depth = false) {
     const std::vector<vk::AttachmentDescription> attachments{
-        {{}, Format::Depth, vk::SampleCountFlagBits::e1, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eStore, vk::AttachmentLoadOp::eDontCare, vk::AttachmentStoreOp::eDontCare, vk::ImageLayout::eUndefined, vk::ImageLayout::eDepthStencilAttachmentOptimal},
+        {{}, Format::Depth, vk::SampleCountFlagBits::e1, load_depth ? vk::AttachmentLoadOp::eLoad : vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eStore, vk::AttachmentLoadOp::eDontCare, vk::AttachmentStoreOp::eDontCare, load_depth ? vk::ImageLayout::eDepthStencilAttachmentOptimal : vk::ImageLayout::eUndefined, vk::ImageLayout::eDepthStencilAttachmentOptimal},
         // Color: cleared transparent, stored for sampling in the viewport composite.
         {{}, Format::HdrColor, vk::SampleCountFlagBits::e1, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eStore, {}, {}, vk::ImageLayout::eUndefined, vk::ImageLayout::eShaderReadOnlyOptimal},
     };
     const vk::AttachmentReference depth_attachment_ref{0, vk::ImageLayout::eDepthStencilAttachmentOptimal};
     const vk::AttachmentReference color_attachment_ref{1, vk::ImageLayout::eColorAttachmentOptimal};
     const vk::SubpassDescription subpass{{}, vk::PipelineBindPoint::eGraphics, 0, nullptr, 1, &color_attachment_ref, nullptr, &depth_attachment_ref};
-    const std::array dependencies{ExternalFragReadDependency()};
+    // The depth dependency orders the load variant's tests after the pre-pass's depth writes.
+    // Both variants carry it so they stay render-pass compatible (compatibility requires equal
+    // dependency counts), and it is pure ordering for the clear variant.
+    const std::array dependencies{
+        vk::SubpassDependency{
+            vk::SubpassExternal,
+            0,
+            vk::PipelineStageFlagBits::eLateFragmentTests,
+            vk::PipelineStageFlagBits::eEarlyFragmentTests,
+            vk::AccessFlagBits::eDepthStencilAttachmentWrite,
+            vk::AccessFlagBits::eDepthStencilAttachmentRead | vk::AccessFlagBits::eDepthStencilAttachmentWrite,
+            {},
+        },
+        ExternalFragReadDependency(),
+    };
     return d.createRenderPassUnique({{}, attachments, subpass, dependencies});
 }
 
@@ -290,7 +306,7 @@ static PipelineRenderer CreateSceneVelocityRenderer(vk::Device d, vk::Descriptor
             {{{ShaderType::eVertex, "TexQuad.vert"}, {ShaderType::eFragment, "SampleDepth.frag"}}},
             {},
             vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleStrip,
-            {NoWriteBlend, NoWriteBlend}, CreateDepthStencil(true, true, vk::CompareOp::eAlways),
+            {NoWriteBlend, NoWriteBlend}, CreateDepthStencil(true, true),
             vk::PushConstantRange{vk::ShaderStageFlagBits::eFragment, 0, sizeof(uint32_t)}
         )
     );
@@ -333,6 +349,27 @@ static PipelineRenderer CreateSceneRenderer(
         )
     );
     pipelines.emplace(SPT::Background, CreateBackgroundPipeline(ctx, false));
+    // Exposes the transmission prepass into the scene target as the background and plain-opaque
+    // pixels. Premultiplied: the prepass blended straight alpha over a transparent clear.
+    static constexpr vk::PipelineColorBlendAttachmentState PremultipliedBlend{
+        true,
+        vk::BlendFactor::eOne,
+        vk::BlendFactor::eOneMinusSrcAlpha,
+        vk::BlendOp::eAdd,
+        vk::BlendFactor::eOne,
+        vk::BlendFactor::eOneMinusSrcAlpha,
+        vk::BlendOp::eAdd,
+        vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG | vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA,
+    };
+    pipelines.emplace(
+        SPT::TransmissionComposite,
+        ctx.CreateGraphics(
+            {{{ShaderType::eVertex, "TexQuad.vert"}, {ShaderType::eFragment, "TransmissionComposite.frag"}}},
+            {},
+            vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleStrip,
+            {PremultipliedBlend}, CreateDepthStencil(false, false)
+        )
+    );
     // Fills the scene target with the averaged motion blur accumulation.
     pipelines.emplace(
         SPT::MotionBlurResolve,
@@ -344,16 +381,16 @@ static PipelineRenderer CreateSceneRenderer(
             vk::PushConstantRange{vk::ShaderStageFlagBits::eFragment, 0, sizeof(uint32_t) * 2}
         )
     );
-    // Render the silhouette edge depth regardless of the tested depth value.
-    // We should be able to just disable depth tests and enable depth writes, but it seems that some GPUs or drivers
-    // optimize out depth writes when depth testing is disabled, so instead we configure a depth test that always passes.
+    // Write the silhouette edge depths where they are nearest, so overlays occlude against the
+    // outline. Non-edge texels hold the far plane and fail the test, which keeps the depth the
+    // transmission composite path loads from its prepass.
     pipelines.emplace(
         SPT::SilhouetteEdgeDepth,
         ctx.CreateGraphics(
             {{{ShaderType::eVertex, "TexQuad.vert"}, {ShaderType::eFragment, "SampleDepth.frag"}}},
             {},
             vk::PolygonMode::eFill, vk::PrimitiveTopology::eTriangleStrip,
-            {NoWriteBlend}, CreateDepthStencil(true, true, vk::CompareOp::eAlways),
+            {NoWriteBlend}, CreateDepthStencil(true, true),
             vk::PushConstantRange{vk::ShaderStageFlagBits::eFragment, 0, sizeof(uint32_t)}
         )
     );
@@ -478,6 +515,7 @@ MainPipeline::MainPipeline(
     vk::DescriptorSetLayout shared_layout, vk::DescriptorSet shared_set
 ) : SceneRenderer{CreateSceneRenderer(d, shared_layout, shared_set)},
     OverlayRenderer{CreateOverlayRenderer(d, shared_layout, shared_set)},
+    SceneDepthLoadRenderPass{CreateSceneRenderPass(d, /*load_depth=*/true)},
     SceneVelocityRenderer{CreateSceneVelocityRenderer(d, shared_layout, shared_set)},
     PrepassBackground{CreateBackgroundPipeline({d, shared_layout, shared_set}, true)},
     CompositeRenderPass{CreateColorOnlyRenderPass(d, Format::Color, vk::AttachmentLoadOp::eDontCare, vk::ImageLayout::eUndefined, vk::ImageLayout::eShaderReadOnlyOptimal)},

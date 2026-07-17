@@ -37,6 +37,12 @@ const std::vector<vk::ClearValue> SilhouetteClearValues{{vk::ClearDepthStencilVa
 DrawData MakeDrawData(const RenderBuffers &rb, uint32_t vertex_slot, const InstanceArena &instances) {
     return MakeDrawData(vertex_slot, rb.Vertices, rb.Indices, instances.TransformBuffer.Slot);
 }
+// Opaque fill sub-batches for real-transmission frames.
+enum class FillSubset {
+    All,
+    Prepass, // Materials with non-transmissive texels (plain, and textured transmission)
+    Transmissive, // Materials with a positive transmission factor
+};
 } // namespace
 
 void FlushDrawList(entt::registry &r, vk::Device device, const DrawListBuilder &draw_list, DrawBufferPair &pair) {
@@ -372,7 +378,7 @@ void RecordRenderCommandBuffer(entt::registry &r, entt::entity viewport, vk::Com
         }
 
         if (show_fill) {
-            const auto append_fill_mesh = [&](DrawBatchInfo &batch, const MeshEntityData &e, std::optional<bool> blend_target) {
+            const auto append_fill_mesh = [&](DrawBatchInfo &batch, const MeshEntityData &e, std::optional<bool> blend_target, FillSubset subset = FillSubset::All) {
                 if (!e.MeshComp || e.MeshComp->FaceCount() == 0) return;
                 const auto &mesh_buffers = e.Buf;
                 const auto &models = e.Mod;
@@ -415,9 +421,9 @@ void RecordRenderCommandBuffer(entt::registry &r, entt::entity viewport, vk::Com
                     const auto primitive_ranges = meshes.GetPrimitiveTriangleRanges(mesh.GetStoreId());
                     if (!primitive_materials.empty() && !primitive_ranges.empty()) {
                         const auto material_count = buffers.Materials.Count();
-                        // Merge adjacent primitives with the same blend mode into single draw calls.
+                        // Merge adjacent primitives with the same blend mode and transmission class into single draw calls.
                         struct BlendDrawRange {
-                            bool Blend;
+                            bool Blend, Prepass, Transmissive;
                             uint32_t FirstTriangle, TriangleCount;
                         };
                         std::vector<BlendDrawRange> blend_ranges;
@@ -426,12 +432,22 @@ void RecordRenderCommandBuffer(entt::registry &r, entt::entity viewport, vk::Com
                             if (pr.TriangleCount == 0u) continue;
                             auto pi = pr.PrimitiveIndex;
                             if (pi >= primitive_materials.size()) pi = primitive_materials.size() - 1u;
-                            const bool is_blend = primitive_materials[pi] < material_count && buffers.Materials.Get(primitive_materials[pi]).AlphaMode == MaterialAlphaMode::Blend;
-                            if (!blend_ranges.empty() && blend_ranges.back().Blend == is_blend) blend_ranges.back().TriangleCount += pr.TriangleCount;
-                            else blend_ranges.emplace_back(is_blend, pr.FirstTriangle, pr.TriangleCount);
+                            const bool has_material = primitive_materials[pi] < material_count;
+                            const bool is_blend = has_material && buffers.Materials.Get(primitive_materials[pi]).AlphaMode == MaterialAlphaMode::Blend;
+                            const bool is_transmissive = has_material && buffers.Materials.Get(primitive_materials[pi]).Transmission.Factor > 0.f;
+                            // A transmission texture can zero the factor per texel, and those texels
+                            // belong in the prepass, where the shader's per-fragment discard sorts them.
+                            const bool in_prepass = !is_transmissive || buffers.Materials.Get(primitive_materials[pi]).Transmission.Texture.Slot != InvalidSlot;
+                            if (!blend_ranges.empty() && blend_ranges.back().Blend == is_blend && blend_ranges.back().Prepass == in_prepass && blend_ranges.back().Transmissive == is_transmissive) {
+                                blend_ranges.back().TriangleCount += pr.TriangleCount;
+                            } else {
+                                blend_ranges.emplace_back(is_blend, in_prepass, is_transmissive, pr.FirstTriangle, pr.TriangleCount);
+                            }
                         }
                         for (const auto &range : blend_ranges) {
                             if (blend_target && range.Blend != *blend_target) continue;
+                            if (subset == FillSubset::Prepass && !range.Prepass) continue;
+                            if (subset == FillSubset::Transmissive && !range.Transmissive) continue;
                             auto range_draw = dd;
                             range_draw.IndexSlotOffset.Offset += range.FirstTriangle * 3u;
                             range_draw.FaceIdOffset += range.FirstTriangle;
@@ -441,13 +457,27 @@ void RecordRenderCommandBuffer(entt::registry &r, entt::entity viewport, vk::Com
                     }
                 }
 
-                if (!blend_target || !*blend_target) append_fill_for_instances(dd, mesh_buffers.FaceIndices.Count);
+                if (blend_target && *blend_target) return;
+                if (subset == FillSubset::Transmissive) return; // No per-primitive materials means plain opaque.
+                append_fill_for_instances(dd, mesh_buffers.FaceIndices.Count);
             };
 
+            draw.FillOpaquePrepass = {};
+            draw.FillOpaqueTransmissive = {};
             if (show_rendered) {
                 draw.FillOpaque = draw_list.BeginBatch();
                 for (const auto &e : mesh_entities) {
                     if (!e.IsBone) append_fill_mesh(draw.FillOpaque, e, false);
+                }
+                if (real_transmission) {
+                    draw.FillOpaquePrepass = draw_list.BeginBatch();
+                    for (const auto &e : mesh_entities) {
+                        if (!e.IsBone) append_fill_mesh(draw.FillOpaquePrepass, e, false, FillSubset::Prepass);
+                    }
+                    draw.FillOpaqueTransmissive = draw_list.BeginBatch();
+                    for (const auto &e : mesh_entities) {
+                        if (!e.IsBone) append_fill_mesh(draw.FillOpaqueTransmissive, e, false, FillSubset::Transmissive);
+                    }
                 }
                 draw.FillBlend = draw_list.BeginBatch();
                 for (const auto mesh_entity : blend_mesh_order) {
@@ -794,7 +824,8 @@ void RecordRenderCommandBuffer(entt::registry &r, entt::entity viewport, vk::Com
         main.PrepassBackground.RenderQuad(cb);
         if (buffers.IdentityIndexCount > 0 && show_fill) {
             cb.bindIndexBuffer(*buffers.IdentityIndexBuffer, 0, vk::IndexType::eUint32);
-            record_pbr_batch(draw.FillOpaque, PbrCompiler::Variant::OpaquePrepass);
+            // The prepass batch holds every material with non-transmissive texels.
+            record_pbr_batch(draw.FillOpaquePrepass, PbrCompiler::Variant::OpaquePrepass);
         }
         cb.endRenderPass();
 
@@ -864,19 +895,26 @@ void RecordRenderCommandBuffer(entt::registry &r, entt::entity viewport, vk::Com
     // Blurred steps render the scene through the velocity render pass variant, so opaque geometry
     // writes its screen motion alongside its color.
     const bool blur = phase == RenderPhase::BlurredFull || IsBlurAccumulate(phase);
+    // The transmission composite path lays the prepass down as the scene's background and
+    // plain-opaque pixels, loading the prepass's depth. Edit mode re-rasterizes for face tints,
+    // blur steps for velocity, and debug channels carry values the composite's exposure would corrupt.
+    const bool composite_transmission = real_transmission && main.Transmission && phase == RenderPhase::Full && !is_edit_mode && settings.DebugChannel == DebugChannel::None;
 
     { // Scene pass: shaded scene into its own color target, and the depth the overlay pass occludes against.
         const GpuScope scope{profile, cb, draw_scene ? "ScenePass" : "SceneDepthPass"};
         const auto &scene_renderer = blur ? main.SceneVelocityRenderer : main.SceneRenderer;
+        const auto scene_render_pass = composite_transmission ? *main.SceneDepthLoadRenderPass : *scene_renderer.RenderPass;
         const auto scene_framebuffer = blur ? *main.MotionBlur->SceneVelocityFramebuffer : *main.Resources->SceneFramebuffer;
         const auto &pass_clear_values = blur ? scene_velocity_clear_values : scene_clear_values;
-        cb.beginRenderPass({*scene_renderer.RenderPass, scene_framebuffer, main_rect, pass_clear_values}, vk::SubpassContents::eInline);
+        cb.beginRenderPass({scene_render_pass, scene_framebuffer, main_rect, pass_clear_values}, vk::SubpassContents::eInline);
 
         // Screen motion for every pixel geometry leaves uncovered. The background sits at infinity,
         // so only view rotation moves it. Geometry overwrites it wherever it lands.
         if (blur) scene_renderer.ShaderPipelines.at(SPT::BackgroundVelocity).RenderQuad(cb);
+        // The prepass covers the background and plain-opaque geometry, so the composite replaces both.
+        if (composite_transmission) scene_renderer.ShaderPipelines.at(SPT::TransmissionComposite).RenderQuad(cb);
         // Background environment (PBR modes only). The shader discards when WorldOpacity == 0 or there is no env slot.
-        if (show_rendered && draw_scene) scene_renderer.ShaderPipelines.at(SPT::Background).RenderQuad(cb);
+        else if (show_rendered && draw_scene) scene_renderer.ShaderPipelines.at(SPT::Background).RenderQuad(cb);
         // Fill the scene target with the averaged steps, for the depth and overlays below to draw over.
         if (phase == RenderPhase::BlurResolve) {
             const auto &resolve = main.SceneRenderer.ShaderPipelines.at(SPT::MotionBlurResolve);
@@ -902,7 +940,7 @@ void RecordRenderCommandBuffer(entt::registry &r, entt::entity viewport, vk::Com
             if (!draw_scene) {
                 record_draw_batch(main.SceneRenderer, SPT::FillDepth, draw.FillOpaque);
             } else if (show_rendered) {
-                record_pbr_batch(draw.FillOpaque, blur ? PbrCompiler::Variant::OpaqueVelocity : PbrCompiler::Variant::Opaque);
+                record_pbr_batch(composite_transmission ? draw.FillOpaqueTransmissive : draw.FillOpaque, blur ? PbrCompiler::Variant::OpaqueVelocity : PbrCompiler::Variant::Opaque);
                 record_pbr_batch(draw.FillBlend, blur ? PbrCompiler::Variant::BlendVelocity : PbrCompiler::Variant::Blend);
             } else {
                 record_draw_batch(main.SceneRenderer, SPT::Fill, draw.FillOpaque);

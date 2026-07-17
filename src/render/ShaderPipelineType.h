@@ -11,6 +11,7 @@ enum class ShaderPipelineType {
     Grid,
     Background,
     BackgroundVelocity,
+    TransmissionComposite,
     MotionBlurResolve,
     SilhouetteDepthObject,
     SilhouetteEdgeDepthObject,
