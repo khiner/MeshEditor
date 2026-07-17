@@ -224,10 +224,7 @@ void RecordMotionBlurPostFx(entt::registry &r, vk::CommandBuffer cb, entt::entit
 
 } // namespace
 
-namespace {
-// Zero the render draw list's indirect instance counts, then refill them and the visible-index
-// remap from per-instance bounds tested against the view frustum.
-void RecordFrustumCull(vk::CommandBuffer cb, const Pipelines &pipelines, const GpuBuffers &buffers, const DrawListBuilder &draw_list, uint32_t ubo_offset) {
+void RecordFrustumCull(vk::CommandBuffer cb, const Pipelines &pipelines, const GpuBuffers &buffers, const DrawBufferPair &pair, const DrawListBuilder &draw_list, uint32_t ubo_offset) {
     const profile::GpuScope cull_scope{"FrustumCull"};
     const auto &cull = pipelines.FrustumCull;
     // The previous submit's indirect and vertex reads complete before this one's cull writes.
@@ -240,10 +237,10 @@ void RecordFrustumCull(vk::CommandBuffer cb, const Pipelines &pipelines, const G
     const std::array cull_sets{cull.GetDescriptorSet(), cull.GetUboSet()};
     cb.bindDescriptorSets(vk::PipelineBindPoint::eCompute, *cull.PipelineLayout, 0, uint32_t(cull_sets.size()), cull_sets.data(), 1, &ubo_offset);
     FrustumCullPushConstants cull_pc{
-        .CommandsSlot = buffers.RenderDraw.Indirect.Slot,
-        .CullEntrySlot = buffers.RenderDraw.CullEntries.Slot,
-        .DrawDataSlot = buffers.RenderDraw.DrawData.Slot,
-        .VisibleIndexSlot = buffers.RenderDraw.VisibleIndices.Slot,
+        .CommandsSlot = pair.Indirect.Slot,
+        .CullEntrySlot = pair.CullEntries.Slot,
+        .DrawDataSlot = pair.DrawData.Slot,
+        .VisibleIndexSlot = pair.VisibleIndices.Slot,
         .BoundsSlot = buffers.Instances.BoundsBuffer.Slot,
         .ModelSlot = buffers.Instances.TransformBuffer.Slot,
         .EntryCount = uint32_t(draw_list.Draws.size()),
@@ -268,6 +265,7 @@ void RecordFrustumCull(vk::CommandBuffer cb, const Pipelines &pipelines, const G
     );
 }
 
+namespace {
 // Record one phase's passes into `cb`, which is already begun with viewport and scissor set.
 // `ubo_offset` selects the view UBO instance every bind in the phase reads.
 void RecordPhase(entt::registry &r, entt::entity viewport, vk::CommandBuffer cb, DrawListUse use, RenderPhase phase, uint32_t ubo_offset, float playback_frame) {
@@ -669,7 +667,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, vk::CommandBuffer cb,
             sel_list = {};
 
             const auto run_sel_pass = [&](auto &&indices_of, auto &&skip) {
-                auto batch = sel_list.BeginBatch();
+                auto batch = sel_list.BeginBatch(true);
                 for (const auto &e : mesh_entities) {
                     if (e.IsExtras || e.IsBoneJoint || skip(e)) continue;
                     const auto &indices = indices_of(e);
@@ -697,7 +695,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, vk::CommandBuffer cb,
 
             DrawBatchInfo sel_bone_sphere;
             if (show_overlays && settings.ShowBones) {
-                sel_bone_sphere = sel_list.BeginBatch();
+                sel_bone_sphere = sel_list.BeginBatch(true);
                 for (const auto [entity, mesh_buffers, models] : r.view<const BoneJoint, const MeshBuffers, const ModelsBuffer>().each()) {
                     if (mesh_buffers.FaceIndices.Count == 0) continue;
                     auto dd = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.FaceIndices, buffers.Instances);
@@ -775,7 +773,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, vk::CommandBuffer cb,
     // Once per command buffer (later blur phases reuse the culled buffers). Re-executes on every
     // submit with the current view.
     if (phase != RenderPhase::BlurAccumulate && phase != RenderPhase::BlurResolve && !draw_list.Draws.empty()) {
-        RecordFrustumCull(cb, pipelines, buffers, draw_list, ubo_offset);
+        RecordFrustumCull(cb, pipelines, buffers, buffers.RenderDraw, draw_list, ubo_offset);
     }
 
     const uint32_t transform_vertex_state_slot = is_edit_mode ? meshes.GetVertexStateSlot() : InvalidSlot;

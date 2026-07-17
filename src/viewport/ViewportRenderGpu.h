@@ -5,10 +5,15 @@
 
 struct DrawListBuilder;
 struct DrawBufferPair;
+struct GpuBuffers;
+struct Pipelines;
 
 // Upload the draw list to the per-pass buffers, grow the identity index buffer if needed,
 // and flush any deferred descriptor updates accumulated during buffer growth.
 void FlushDrawList(entt::registry &, vk::Device, const DrawListBuilder &, DrawBufferPair &);
+
+// Zero `pair`'s indirect instance counts, then refill them and the visible-index remap from per-instance bounds tested against the view frustum.
+void RecordFrustumCull(vk::CommandBuffer, const Pipelines &, const GpuBuffers &, const DrawBufferPair &, const DrawListBuilder &, uint32_t ubo_offset = 0);
 
 // Which parts of a frame one recording covers.
 enum class RenderPhase {

@@ -190,10 +190,10 @@ void RenderElementSelectionPass(
     DrawBatchInfo silhouette_batch{};
     const bool render_depth = !xray_selection;
     if (render_depth) {
-        silhouette_batch = draw_list.BeginBatch();
+        silhouette_batch = draw_list.BeginBatch(true);
         if (element != Element::Face) AppendSelectedSilhouetteDraws(r, draw_list, silhouette_batch);
     }
-    auto element_batch = draw_list.BeginBatch();
+    auto element_batch = draw_list.BeginBatch(true);
     for (const auto &range : ranges) {
         const auto &mesh_buffers = r.get<MeshBuffers>(range.MeshEntity);
         const auto &models = r.get<ModelsBuffer>(range.MeshEntity);
@@ -226,6 +226,7 @@ void RenderElementSelectionPass(
     cb.reset({});
     cb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
 
+    if (!draw_list.Draws.empty()) RecordFrustumCull(cb, pipelines, buffers, buffers.SelectionDraw, draw_list);
     // Bitset writes append to prior linked-list state, so only the fresh-list path resets it.
     if (!write_bitset) ResetSelectionFragmentState(cb, buffers, pipelines);
 
@@ -320,7 +321,7 @@ void RenderSelectionPassWith(entt::registry &r, [[maybe_unused]] entt::entity vi
     DrawListBuilder draw_list;
     DrawBatchInfo silhouette_batch{};
     if (render_depth) {
-        silhouette_batch = draw_list.BeginBatch();
+        silhouette_batch = draw_list.BeginBatch(true);
         if (render_silhouette) AppendSelectedSilhouetteDraws(r, draw_list, silhouette_batch);
     }
     const auto selection_draws = build_fn(draw_list);
@@ -332,6 +333,7 @@ void RenderSelectionPassWith(entt::registry &r, [[maybe_unused]] entt::entity vi
     cb.reset({});
     cb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
 
+    if (!draw_list.Draws.empty()) RecordFrustumCull(cb, pipelines, buffers, buffers.SelectionDraw, draw_list);
     ResetSelectionFragmentState(cb, buffers, pipelines);
     SetFullViewportScissor(r, cb);
 
@@ -434,7 +436,7 @@ std::optional<uint32_t> RunSoundVerticesVertexPick(entt::registry &r, entt::enti
     const auto &models = r.get<ModelsBuffer>(mesh_entity);
     const auto model_index = r.get<RenderInstance>(instance_entity).BufferIndex;
     RenderSelectionPassWith(r, viewport, true, [&](DrawListBuilder &draw_list) {
-        auto batch = draw_list.BeginBatch();
+        auto batch = draw_list.BeginBatch(true);
         auto draw = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.VertexIndices, buffers.Instances);
         draw.VertexCountOrHeadImageSlot = 0;
         draw.ElementStateSlotOffset = {meshes.GetVertexStateSlot(), mesh_buffers.Vertices.Offset};
