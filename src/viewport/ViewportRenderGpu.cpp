@@ -29,6 +29,8 @@
 
 #include <entt/entity/registry.hpp>
 
+#include <numbers>
+
 using std::ranges::any_of, std::ranges::to;
 
 namespace {
@@ -141,9 +143,8 @@ void RecordMotionBlurPostFx(entt::registry &r, vk::CommandBuffer cb, entt::entit
     const auto mb = EffectiveMotionBlur(settings);
     // The second half of each motion vector is stored pointing backward, which the negative y undoes.
     constexpr vec2 MotionScale{1.f, -1.f};
-    // Offset the gather's dither per step, so averaging several steps smooths the tile jitter
-    // instead of reinforcing one pattern. Step centres never share a sub-frame time.
-    const float noise_offset = glm::fract(playback_frame);
+    // Golden-ratio stepping decorrelates the gather's dither across steps and frames.
+    const float noise_offset = glm::fract(playback_frame * std::numbers::phi_v<float>);
 
     // Depth stops being an attachment here so the gather can classify samples against it.
     cb.pipelineBarrier(
