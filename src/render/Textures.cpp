@@ -14,7 +14,6 @@
 #include <basisu_transcoder.h>
 #include <entt/entity/registry.hpp>
 
-#include <bit>
 #include <iostream>
 #include <unordered_map>
 
@@ -30,7 +29,7 @@ static void SubmitWait(vk::Queue queue, vk::CommandBuffer command_buffer, vk::Fe
 
 namespace {
 vk::SamplerCreateInfo LinearSamplerCreateInfo(vk::SamplerAddressMode address_mode, float max_lod) {
-    return {{}, vk::Filter::eLinear, vk::Filter::eLinear, vk::SamplerMipmapMode::eLinear, address_mode, address_mode, address_mode, 0.f, VK_FALSE, 1.f, VK_FALSE, vk::CompareOp::eNever, 0.f, max_lod, vk::BorderColor::eIntOpaqueBlack, VK_FALSE};
+    return mvk::SamplerInfo(vk::Filter::eLinear, vk::SamplerMipmapMode::eLinear, address_mode, max_lod);
 }
 
 vk::SamplerCreateInfo MakeSamplerCreateInfo(const SamplerConfig &cfg, vk::SamplerAddressMode wrap_s, vk::SamplerAddressMode wrap_t, float max_lod, float max_anisotropy) {
@@ -142,22 +141,7 @@ std::expected<CubemapEntry, std::string> CreateCubemapEntryFromMipFacesF32(
     }
 
     constexpr auto format = vk::Format::eR32G32B32A32Sfloat;
-    auto image = mvk::CreateImage(
-        vk.Device, vk.PhysicalDevice,
-        {
-            vk::ImageCreateFlagBits::eCubeCompatible,
-            vk::ImageType::e2D,
-            format,
-            vk::Extent3D{base_size, base_size, 1},
-            uint32_t(mip_faces.size()),
-            6,
-            vk::SampleCountFlagBits::e1,
-            vk::ImageTiling::eOptimal,
-            vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferDst,
-            vk::SharingMode::eExclusive,
-        },
-        {{}, {}, vk::ImageViewType::eCube, format, {}, vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eColor, 0, uint32_t(mip_faces.size()), 0, 6}}
-    );
+    auto image = mvk::CreateImageCube(vk.Device, vk.PhysicalDevice, format, base_size, vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferDst, uint32_t(mip_faces.size()));
 
     auto [staging_buf, staging_base] = AllocStaging(batch, as_bytes(std::span<const float>{pixels}));
     for (auto &copy : copies) copy.bufferOffset += staging_base;
@@ -197,11 +181,7 @@ TextureEntry CreateCompressedTextureEntry(
     std::string name,
     vk::SamplerAddressMode wrap_s, vk::SamplerAddressMode wrap_t, const SamplerConfig &sampler_cfg
 ) {
-    auto image = mvk::CreateImage(
-        vk.Device, vk.PhysicalDevice,
-        {{}, vk::ImageType::e2D, format, {width, height, 1}, mip_levels, 1, vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferDst, vk::SharingMode::eExclusive},
-        {{}, {}, vk::ImageViewType::e2D, format, {}, vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eColor, 0, mip_levels, 0, 1}}
-    );
+    auto image = mvk::CreateImage2D(vk.Device, vk.PhysicalDevice, format, {width, height}, vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferDst, mip_levels);
 
     const vk::ImageSubresourceRange full_range{vk::ImageAspectFlagBits::eColor, 0, mip_levels, 0, 1};
     auto [staging_buf, staging_base] = AllocStaging(batch, all_mip_data);
@@ -250,13 +230,6 @@ StagingAlloc AllocStaging(TextureUploadBatch &batch, std::span<const std::byte> 
     batch.ChunkUsed += aligned_size;
     return alloc;
 }
-
-namespace {
-uint32_t ComputeMipLevelCount(uint32_t width, uint32_t height) {
-    const auto max_dim = std::max(width, height);
-    return max_dim > 0 ? std::bit_width(max_dim) : 1u;
-}
-} // namespace
 
 std::vector<uint32_t> CollectSamplerSlots(std::span<const TextureEntry> textures) {
     std::vector<uint32_t> sampler_slots;
@@ -315,11 +288,7 @@ mvk::ImageResource RenderBitmapToImage(
     vk::Format format,
     vk::ImageSubresourceRange subresource_range
 ) {
-    auto image = mvk::CreateImage(
-        vk.Device, vk.PhysicalDevice,
-        {{}, vk::ImageType::e2D, format, {width, height, 1}, 1, 1, vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferDst, vk::SharingMode::eExclusive},
-        {{}, {}, vk::ImageViewType::e2D, format, {}, subresource_range}
-    );
+    auto image = mvk::CreateImage2D(vk.Device, vk.PhysicalDevice, format, {width, height}, vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferDst);
     auto [staging_buf, staging_offset] = AllocStaging(batch, as_bytes(data));
     mvk::RecordBufferToSampledImageUpload(*batch.Cb, staging_buf, *image.Image, width, height, subresource_range, staging_offset);
     return image;
@@ -341,32 +310,15 @@ TextureEntry CreateTextureEntryAtSlot(
     const vk::Format texture_format = ToTextureFormat(color_space);
     const auto format_features = vk.PhysicalDevice.getFormatProperties(texture_format).optimalTilingFeatures;
     const bool supports_linear_blit = bool(format_features & vk::FormatFeatureFlagBits::eSampledImageFilterLinear);
-    uint32_t mip_levels = sampler_cfg.UsesMipmaps && supports_linear_blit ? ComputeMipLevelCount(width, height) : 1u;
-    if (mip_levels == 0) mip_levels = 1u;
+    const uint32_t mip_levels = sampler_cfg.UsesMipmaps && supports_linear_blit ? mvk::MipLevelCount(width, height) : 1u;
 
-    auto image = mvk::CreateImage(
-        vk.Device, vk.PhysicalDevice,
-        {
-            {},
-            vk::ImageType::e2D,
-            texture_format,
-            vk::Extent3D{width, height, 1},
-            mip_levels,
-            1,
-            vk::SampleCountFlagBits::e1,
-            vk::ImageTiling::eOptimal,
-            vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferDst | vk::ImageUsageFlagBits::eTransferSrc,
-            vk::SharingMode::eExclusive,
-        },
-        {{}, {}, vk::ImageViewType::e2D, texture_format, {}, vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eColor, 0, mip_levels, 0, 1}}
-    );
+    auto image = mvk::CreateImage2D(vk.Device, vk.PhysicalDevice, texture_format, {width, height}, vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferDst | vk::ImageUsageFlagBits::eTransferSrc, mip_levels);
 
     auto [staging_buf, staging_offset] = AllocStaging(batch, pixels_rgba8);
-    const vk::ImageSubresourceRange full_range{vk::ImageAspectFlagBits::eColor, 0, mip_levels, 0, 1};
     auto &cb = *batch.Cb;
     mvk::TransitionImage(
         cb, vk::PipelineStageFlagBits::eTopOfPipe, vk::PipelineStageFlagBits::eTransfer, {}, vk::AccessFlagBits::eTransferWrite,
-        vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal, *image.Image, full_range
+        vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal, *image.Image, vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eColor, 0, mip_levels, 0, 1}
     );
     cb.copyBufferToImage(
         staging_buf,
@@ -374,39 +326,7 @@ TextureEntry CreateTextureEntryAtSlot(
         vk::ImageLayout::eTransferDstOptimal,
         vk::BufferImageCopy{staging_offset, 0, 0, vk::ImageSubresourceLayers{vk::ImageAspectFlagBits::eColor, 0, 0, 1}, {0, 0, 0}, {width, height, 1}}
     );
-
-    int32_t mip_width = width, mip_height = height;
-    for (uint32_t mip = 1; mip < mip_levels; ++mip) {
-        mvk::TransitionImage(
-            cb, vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eTransfer, vk::AccessFlagBits::eTransferWrite, vk::AccessFlagBits::eTransferRead,
-            vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eTransferSrcOptimal, *image.Image, vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eColor, mip - 1, 1, 0, 1}
-        );
-        cb.blitImage(
-            *image.Image,
-            vk::ImageLayout::eTransferSrcOptimal,
-            *image.Image,
-            vk::ImageLayout::eTransferDstOptimal,
-            vk::ImageBlit{
-                vk::ImageSubresourceLayers{vk::ImageAspectFlagBits::eColor, mip - 1, 0, 1},
-                {vk::Offset3D{0, 0, 0}, vk::Offset3D{mip_width, mip_height, 1}},
-                vk::ImageSubresourceLayers{vk::ImageAspectFlagBits::eColor, mip, 0, 1},
-                {vk::Offset3D{0, 0, 0}, vk::Offset3D{std::max(1, mip_width / 2), std::max(1, mip_height / 2), 1}},
-            },
-            vk::Filter::eLinear
-        );
-        mvk::TransitionImage(
-            cb, vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eFragmentShader, vk::AccessFlagBits::eTransferRead, vk::AccessFlagBits::eShaderRead,
-            vk::ImageLayout::eTransferSrcOptimal, vk::ImageLayout::eShaderReadOnlyOptimal, *image.Image, vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eColor, mip - 1, 1, 0, 1}
-        );
-
-        mip_width = std::max(1, mip_width / 2);
-        mip_height = std::max(1, mip_height / 2);
-    }
-
-    mvk::TransitionImage(
-        cb, vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eFragmentShader, vk::AccessFlagBits::eTransferWrite, vk::AccessFlagBits::eShaderRead,
-        vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eShaderReadOnlyOptimal, *image.Image, vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eColor, mip_levels - 1, 1, 0, 1}
-    );
+    mvk::GenerateMipChain(cb, *image.Image, width, height, mip_levels);
 
     auto sampler = vk.Device.createSamplerUnique(MakeSamplerCreateInfo(sampler_cfg, wrap_s, wrap_t, sampler_cfg.UsesMipmaps ? float(mip_levels) : 0.f, vk.MaxSamplerAnisotropy));
 
@@ -554,27 +474,13 @@ EnvironmentPrefiltered CreateIblFromHdri(
     constexpr auto rgba32f = vk::Format::eR32G32B32A32Sfloat;
     const vk::ImageSubresourceRange one_2d{vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1};
 
-    auto equirect = mvk::CreateImage(
-        vk.Device, vk.PhysicalDevice,
-        {{}, vk::ImageType::e2D, rgba32f, vk::Extent3D{eq_w, eq_h, 1}, 1, 1, vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferDst, vk::SharingMode::eExclusive},
-        {{}, {}, vk::ImageViewType::e2D, rgba32f, {}, one_2d}
-    );
+    auto equirect = mvk::CreateImage2D(vk.Device, vk.PhysicalDevice, rgba32f, {eq_w, eq_h}, vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferDst);
     const vk::BufferImageCopy eq_copy{eq_staging_offset, 0, 0, vk::ImageSubresourceLayers{vk::ImageAspectFlagBits::eColor, 0, 0, 1}, {0, 0, 0}, {eq_w, eq_h, 1}};
     mvk::RecordBufferToImageUpload(*batch.Cb, eq_staging_buf, *equirect.Image, {&eq_copy, 1}, one_2d, vk::PipelineStageFlagBits::eComputeShader);
 
     // 3. Create raw cubemap (512×512, full mip chain, storage+sampled+transfer).
-    const uint32_t raw_size = 512, raw_mips = ComputeMipLevelCount(raw_size, raw_size);
-    constexpr auto cube_flags = vk::ImageCreateFlagBits::eCubeCompatible;
-    const vk::ImageSubresourceRange raw_full{vk::ImageAspectFlagBits::eColor, 0, raw_mips, 0, 6};
-
-    auto raw_cube = mvk::CreateImage(
-        vk.Device, vk.PhysicalDevice,
-        {cube_flags, vk::ImageType::e2D, rgba32f, vk::Extent3D{raw_size, raw_size, 1}, raw_mips, 6,
-         vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal,
-         vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eStorage | vk::ImageUsageFlagBits::eTransferDst | vk::ImageUsageFlagBits::eTransferSrc,
-         vk::SharingMode::eExclusive},
-        {{}, {}, vk::ImageViewType::eCube, rgba32f, {}, raw_full}
-    );
+    const uint32_t raw_size = 512, raw_mips = mvk::MipLevelCount(raw_size, raw_size);
+    auto raw_cube = mvk::CreateImageCube(vk.Device, vk.PhysicalDevice, rgba32f, raw_size, vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eStorage | vk::ImageUsageFlagBits::eTransferDst | vk::ImageUsageFlagBits::eTransferSrc, raw_mips);
     // e2DArray view covering mip 0 of the raw cube — used as storage image write target.
     auto raw_cube_storage_view = vk.Device.createImageViewUnique(
         {{}, *raw_cube.Image, vk::ImageViewType::e2DArray, rgba32f, {}, vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eColor, 0, 1, 0, 6}}
@@ -583,29 +489,15 @@ EnvironmentPrefiltered CreateIblFromHdri(
     // 4. Create diffuse irradiance cubemap (32×32, 1 mip).
     const uint32_t diff_size = 32;
     const vk::ImageSubresourceRange diff_range{vk::ImageAspectFlagBits::eColor, 0, 1, 0, 6};
-    auto diff_cube = mvk::CreateImage(
-        vk.Device, vk.PhysicalDevice,
-        {cube_flags, vk::ImageType::e2D, rgba32f, vk::Extent3D{diff_size, diff_size, 1}, 1, 6,
-         vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal,
-         vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eStorage | vk::ImageUsageFlagBits::eTransferDst,
-         vk::SharingMode::eExclusive},
-        {{}, {}, vk::ImageViewType::eCube, rgba32f, {}, diff_range}
-    );
+    auto diff_cube = mvk::CreateImageCube(vk.Device, vk.PhysicalDevice, rgba32f, diff_size, vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eStorage | vk::ImageUsageFlagBits::eTransferDst);
     auto diff_storage_view = vk.Device.createImageViewUnique(
         {{}, *diff_cube.Image, vk::ImageViewType::e2DArray, rgba32f, {}, diff_range}
     );
 
     // 5. Create specular prefiltered cubemap (256×256, full mip chain).
-    const uint32_t spec_size = 256, spec_mips = ComputeMipLevelCount(spec_size, spec_size);
+    const uint32_t spec_size = 256, spec_mips = mvk::MipLevelCount(spec_size, spec_size);
     const vk::ImageSubresourceRange spec_full{vk::ImageAspectFlagBits::eColor, 0, spec_mips, 0, 6};
-    auto spec_cube = mvk::CreateImage(
-        vk.Device, vk.PhysicalDevice,
-        {cube_flags, vk::ImageType::e2D, rgba32f, vk::Extent3D{spec_size, spec_size, 1}, spec_mips, 6,
-         vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal,
-         vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eStorage | vk::ImageUsageFlagBits::eTransferDst,
-         vk::SharingMode::eExclusive},
-        {{}, {}, vk::ImageViewType::eCube, rgba32f, {}, spec_full}
-    );
+    auto spec_cube = mvk::CreateImageCube(vk.Device, vk.PhysicalDevice, rgba32f, spec_size, vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eStorage | vk::ImageUsageFlagBits::eTransferDst, spec_mips);
     // One e2DArray storage view per specular mip level.
     std::vector<vk::UniqueImageView> spec_storage_views;
     spec_storage_views.reserve(spec_mips);
@@ -688,48 +580,12 @@ EnvironmentPrefiltered CreateIblFromHdri(
         cb.pushConstants(*prefilter.PipelineLayout, vk::ShaderStageFlagBits::eCompute, 0, sizeof(uint32_t), &raw_size);
         cb.dispatch((raw_size + 7) / 8, (raw_size + 7) / 8, 6);
 
-        // raw cube mip 0: General → TransferSrcOptimal (source for mipmap blit chain)
+        // raw cube mip 0: General → TransferDstOptimal, matching the blit chain's starting layout.
         mvk::TransitionImage(
-            cb, vk::PipelineStageFlagBits::eComputeShader, vk::PipelineStageFlagBits::eTransfer, vk::AccessFlagBits::eShaderWrite, vk::AccessFlagBits::eTransferRead,
-            vk::ImageLayout::eGeneral, vk::ImageLayout::eTransferSrcOptimal, *raw_cube.Image, vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eColor, 0, 1, 0, 6}
+            cb, vk::PipelineStageFlagBits::eComputeShader, vk::PipelineStageFlagBits::eTransfer, vk::AccessFlagBits::eShaderWrite, vk::AccessFlagBits::eTransferWrite,
+            vk::ImageLayout::eGeneral, vk::ImageLayout::eTransferDstOptimal, *raw_cube.Image, vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eColor, 0, 1, 0, 6}
         );
-
-        // --- Generate mip chain for raw cubemap ---
-        int32_t mip_size = raw_size;
-        for (uint32_t mip = 1; mip < raw_mips; ++mip) {
-            const int32_t next_size = std::max(1, mip_size / 2);
-            // Blit all 6 faces: mip N-1 (TransferSrcOptimal) → mip N (TransferDstOptimal)
-            cb.blitImage(
-                *raw_cube.Image, vk::ImageLayout::eTransferSrcOptimal,
-                *raw_cube.Image, vk::ImageLayout::eTransferDstOptimal,
-                vk::ImageBlit{
-                    vk::ImageSubresourceLayers{vk::ImageAspectFlagBits::eColor, mip - 1, 0, 6},
-                    {vk::Offset3D{0, 0, 0}, vk::Offset3D{mip_size, mip_size, 1}},
-                    vk::ImageSubresourceLayers{vk::ImageAspectFlagBits::eColor, mip, 0, 6},
-                    {vk::Offset3D{0, 0, 0}, vk::Offset3D{next_size, next_size, 1}},
-                },
-                vk::Filter::eLinear
-            );
-            // mip N-1: TransferSrcOptimal → ShaderReadOnlyOptimal (done as blit source)
-            mvk::TransitionImage(
-                cb, vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eComputeShader, vk::AccessFlagBits::eTransferRead, vk::AccessFlagBits::eShaderRead,
-                vk::ImageLayout::eTransferSrcOptimal, vk::ImageLayout::eShaderReadOnlyOptimal, *raw_cube.Image, vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eColor, mip - 1, 1, 0, 6}
-            );
-            if (mip < raw_mips - 1) {
-                // mip N: TransferDstOptimal → TransferSrcOptimal (source for next blit)
-                mvk::TransitionImage(
-                    cb, vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eTransfer, vk::AccessFlagBits::eTransferWrite, vk::AccessFlagBits::eTransferRead,
-                    vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eTransferSrcOptimal, *raw_cube.Image, vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eColor, mip, 1, 0, 6}
-                );
-            } else {
-                // Last mip: TransferDstOptimal → ShaderReadOnlyOptimal
-                mvk::TransitionImage(
-                    cb, vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eComputeShader, vk::AccessFlagBits::eTransferWrite, vk::AccessFlagBits::eShaderRead,
-                    vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eShaderReadOnlyOptimal, *raw_cube.Image, vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eColor, mip, 1, 0, 6}
-                );
-            }
-            mip_size = next_size;
-        }
+        mvk::GenerateMipChain(cb, *raw_cube.Image, raw_size, raw_size, raw_mips, 6, vk::PipelineStageFlagBits::eComputeShader);
 
         // --- DiffuseIrradiance pass ---
         cb.bindPipeline(vk::PipelineBindPoint::eCompute, *prefilter.DiffuseIrradiance);

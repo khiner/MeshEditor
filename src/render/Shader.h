@@ -86,8 +86,6 @@ constexpr vk::PipelineColorBlendAttachmentState CreateColorBlendAttachment(bool 
 struct ShaderPipeline {
     ShaderPipeline(
         vk::Device, Shaders &&,
-        vk::PipelineVertexInputStateCreateInfo,
-        vk::PolygonMode polygon_mode = vk::PolygonMode::eFill,
         vk::PrimitiveTopology topology = vk::PrimitiveTopology::eTriangleList,
         std::vector<vk::PipelineColorBlendAttachmentState> color_blend_attachments = {},
         std::optional<vk::PipelineDepthStencilStateCreateInfo> depth_stencil_state = {},
@@ -103,7 +101,6 @@ struct ShaderPipeline {
 
     Shaders Shaders;
 
-    vk::PipelineVertexInputStateCreateInfo VertexInputState;
     std::vector<vk::PipelineColorBlendAttachmentState> ColorBlendAttachments;
     std::optional<vk::PipelineDepthStencilStateCreateInfo> DepthStencilState;
     vk::PipelineRasterizationStateCreateInfo RasterizationState;
@@ -162,8 +159,6 @@ struct PipelineContext {
 
     ShaderPipeline CreateGraphics(
         Shaders &&,
-        vk::PipelineVertexInputStateCreateInfo vertex_input,
-        vk::PolygonMode polygon_mode,
         vk::PrimitiveTopology topology,
         std::vector<vk::PipelineColorBlendAttachmentState> color_blend_attachments,
         std::optional<vk::PipelineDepthStencilStateCreateInfo> depth_stencil,

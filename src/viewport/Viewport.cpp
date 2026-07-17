@@ -99,6 +99,21 @@ bool AdvanceAndRecord(entt::registry &r, entt::entity viewport, bool force_full)
     return true;
 }
 
+// Point view-UBO instance `instance` at the captured shutter poses, so the velocity pass reads them.
+void StampShutterPoses(GpuBuffers &buffers, uint32_t instance, const GpuBuffers::VelocityPose &open, const GpuBuffers::VelocityPose &close) {
+    const auto stamp = [&](const auto &value, size_t field_offset) {
+        buffers.UpdateSceneViewUboField(instance, field_offset, as_bytes(value));
+    };
+    stamp(open.ViewProj, offsetof(SceneViewUBO, PrevViewProj));
+    stamp(close.ViewProj, offsetof(SceneViewUBO, NextViewProj));
+    stamp(open.Transforms.Slot, offsetof(SceneViewUBO, PrevModelSlot));
+    stamp(close.Transforms.Slot, offsetof(SceneViewUBO, NextModelSlot));
+    stamp(open.ArmatureDeform.Slot, offsetof(SceneViewUBO, PrevArmatureDeformSlot));
+    stamp(close.ArmatureDeform.Slot, offsetof(SceneViewUBO, NextArmatureDeformSlot));
+    stamp(open.MorphWeights.Slot, offsetof(SceneViewUBO, PrevMorphWeightsSlot));
+    stamp(close.MorphWeights.Slot, offsetof(SceneViewUBO, NextMorphWeightsSlot));
+}
+
 // Motion blur applies in MaterialPreview/Rendered while playing, scrubbing, or capturing.
 bool MotionBlurActive(const entt::registry &r, entt::entity viewport) {
     const auto &display = r.get<const ViewportDisplay>(viewport);
@@ -176,25 +191,11 @@ void RenderMotionBlurredFrame(entt::registry &r, entt::entity viewport) {
         frame_state.MotionBlurSubFrame = false;
     };
 
-    // Point the velocity pass at the captured shutter poses. ProcessComponentEvents rewrites the
-    // whole UBO, so these have to land after it and before recording.
-    const auto stamp_velocity_poses = [&] {
-        const auto &open = buffers.ShutterOpen;
-        const auto &close = buffers.ShutterClose;
-        auto &ubo = buffers.SceneViewUBO;
-        ubo.Update(as_bytes(open.ViewProj), offsetof(SceneViewUBO, PrevViewProj));
-        ubo.Update(as_bytes(close.ViewProj), offsetof(SceneViewUBO, NextViewProj));
-        ubo.Update(as_bytes(open.Transforms.Slot), offsetof(SceneViewUBO, PrevModelSlot));
-        ubo.Update(as_bytes(close.Transforms.Slot), offsetof(SceneViewUBO, NextModelSlot));
-        ubo.Update(as_bytes(open.ArmatureDeform.Slot), offsetof(SceneViewUBO, PrevArmatureDeformSlot));
-        ubo.Update(as_bytes(close.ArmatureDeform.Slot), offsetof(SceneViewUBO, NextArmatureDeformSlot));
-        ubo.Update(as_bytes(open.MorphWeights.Slot), offsetof(SceneViewUBO, PrevMorphWeightsSlot));
-        ubo.Update(as_bytes(close.MorphWeights.Slot), offsetof(SceneViewUBO, NextMorphWeightsSlot));
-    };
-
     const auto render_at = [&](float pf, RenderPhase phase) {
         evaluate_at(pf);
-        stamp_velocity_poses();
+        // Point the velocity pass at the captured shutter poses. ProcessComponentEvents rewrites the
+        // whole UBO, so these have to land after it and before recording.
+        StampShutterPoses(buffers, 0, buffers.ShutterOpen, buffers.ShutterClose);
         // Poses and view state reach the GPU through buffers the recorded commands already read,
         // so the recording goes stale only when the draw list or the phase changes.
         if (TakeRenderRequest(r) >= RenderRequest::ReRecordSilhouette || resources.RecordedPhase != phase) {
@@ -243,20 +244,11 @@ void RenderMotionBlurredFrame(entt::registry &r, entt::entity viewport) {
             buffers.CaptureVelocityPose(centre_pose);
             const uint32_t instance = i + 1;
             buffers.SnapshotSceneViewUbo(instance);
-            const auto &open = buffers.BlurPoses[2 * i];
-            const auto &close = buffers.BlurPoses[2 * i + 2];
+            StampShutterPoses(buffers, instance, buffers.BlurPoses[2 * i], buffers.BlurPoses[2 * i + 2]);
+            // The step's own pose reads through the captured buffers, keeping draw data step-agnostic.
             const auto stamp = [&](const auto &value, size_t field_offset) {
                 buffers.UpdateSceneViewUboField(instance, field_offset, as_bytes(value));
             };
-            stamp(open.ViewProj, offsetof(SceneViewUBO, PrevViewProj));
-            stamp(close.ViewProj, offsetof(SceneViewUBO, NextViewProj));
-            stamp(open.Transforms.Slot, offsetof(SceneViewUBO, PrevModelSlot));
-            stamp(close.Transforms.Slot, offsetof(SceneViewUBO, NextModelSlot));
-            stamp(open.ArmatureDeform.Slot, offsetof(SceneViewUBO, PrevArmatureDeformSlot));
-            stamp(close.ArmatureDeform.Slot, offsetof(SceneViewUBO, NextArmatureDeformSlot));
-            stamp(open.MorphWeights.Slot, offsetof(SceneViewUBO, PrevMorphWeightsSlot));
-            stamp(close.MorphWeights.Slot, offsetof(SceneViewUBO, NextMorphWeightsSlot));
-            // The step's own pose reads through the captured buffers, keeping draw data step-agnostic.
             stamp(centre_pose.Transforms.Slot, offsetof(SceneViewUBO, ModelSlotOverride));
             stamp(centre_pose.ArmatureDeform.Slot, offsetof(SceneViewUBO, ArmatureDeformSlot));
             stamp(centre_pose.MorphWeights.Slot, offsetof(SceneViewUBO, MorphWeightsSlot));
@@ -341,7 +333,7 @@ void SetStudioEnvironment(entt::registry &r, std::string_view name) {
 entt::entity InitEngine(entt::registry &r, VulkanResources vc) {
     InitStoreCtx(r, vc);
     auto &slots = r.ctx().get<DescriptorSlots>();
-    auto &pipelines = r.ctx().emplace<Pipelines>(vc.Device, vc.PhysicalDevice, slots.GetSetLayout(), slots.GetSet(), slots.GetUboSetLayout(), slots.GetUboSet());
+    auto &pipelines = r.ctx().emplace<Pipelines>(vc.PhysicalDevice, PipelineContext{vc.Device, slots.GetSetLayout(), slots.GetSet(), slots.GetUboSetLayout(), slots.GetUboSet()});
     profile::Init(vc.Device, vc.PhysicalDevice);
     physics::Init(r);
     RegisterSceneComponentHandlers(r);

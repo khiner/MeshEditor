@@ -176,8 +176,7 @@ std::vector<vk::PipelineShaderStageCreateInfo> Shaders::CompileAll(vk::Device de
 
 ShaderPipeline::ShaderPipeline(
     vk::Device device, ::Shaders &&shaders,
-    vk::PipelineVertexInputStateCreateInfo vertex_input_state,
-    vk::PolygonMode polygon_mode, vk::PrimitiveTopology topology,
+    vk::PrimitiveTopology topology,
     std::vector<vk::PipelineColorBlendAttachmentState> color_blend_attachments,
     std::optional<vk::PipelineDepthStencilStateCreateInfo> depth_stencil_state,
     std::optional<vk::PushConstantRange> push_constant_range,
@@ -187,10 +186,9 @@ ShaderPipeline::ShaderPipeline(
     vk::DescriptorSetLayout ubo_set_layout,
     vk::DescriptorSet ubo_set
 ) : Device(device), Shaders(std::move(shaders)),
-    VertexInputState(std::move(vertex_input_state)),
     ColorBlendAttachments(std::move(color_blend_attachments)),
     DepthStencilState(std::move(depth_stencil_state)),
-    RasterizationState({{}, false, false, polygon_mode, {}, vk::FrontFace::eClockwise, depth_bias != 0.f, depth_bias, {}, depth_bias, 1.f}),
+    RasterizationState({{}, false, false, vk::PolygonMode::eFill, {}, vk::FrontFace::eClockwise, depth_bias != 0.f, depth_bias, {}, depth_bias, 1.f}),
     InputAssemblyState({{}, topology}),
     DescriptorSetLayout(set_layout),
     DescriptorSet(set),
@@ -208,6 +206,7 @@ void ShaderPipeline::Compile(vk::RenderPass render_pass) {
     static constexpr std::array dynamic_states{vk::DynamicState::eViewport, vk::DynamicState::eScissor};
     static const vk::PipelineDynamicStateCreateInfo dynamic_state{{}, dynamic_states};
     static constexpr vk::PipelineMultisampleStateCreateInfo multisample_state{{}, vk::SampleCountFlagBits::e1};
+    static constexpr vk::PipelineVertexInputStateCreateInfo vertex_input{};
 
     const vk::PipelineColorBlendStateCreateInfo color_blending{{}, false, vk::LogicOp::eCopy, uint32_t(ColorBlendAttachments.size()), ColorBlendAttachments.data()};
     auto pipeline_result = Device.createGraphicsPipelineUnique(
@@ -215,7 +214,7 @@ void ShaderPipeline::Compile(vk::RenderPass render_pass) {
         {
             {},
             shader_stages,
-            &VertexInputState,
+            &vertex_input,
             &InputAssemblyState,
             nullptr,
             &viewport_state,
@@ -258,19 +257,13 @@ void ComputePipeline::Compile() {
 
 ShaderPipeline PipelineContext::CreateGraphics(
     Shaders &&shaders,
-    vk::PipelineVertexInputStateCreateInfo vertex_input,
-    vk::PolygonMode polygon_mode,
     vk::PrimitiveTopology topology,
     std::vector<vk::PipelineColorBlendAttachmentState> color_blend_attachments,
     std::optional<vk::PipelineDepthStencilStateCreateInfo> depth_stencil,
     std::optional<vk::PushConstantRange> push_constants,
     float depth_bias
 ) const {
-    return {
-        Device, std::move(shaders), vertex_input,
-        polygon_mode, topology, std::move(color_blend_attachments), depth_stencil,
-        push_constants, depth_bias, SharedLayout, SharedSet, UboLayout, UboSet
-    };
+    return {Device, std::move(shaders), topology, std::move(color_blend_attachments), depth_stencil, push_constants, depth_bias, SharedLayout, SharedSet, UboLayout, UboSet};
 }
 
 ComputePipeline PipelineContext::CreateCompute(

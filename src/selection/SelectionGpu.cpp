@@ -37,6 +37,46 @@ void ResetObjectPickKeys(GpuBuffers &buffers) {
     std::fill_n(buffers.ObjectPickKeys.Data(), GpuBuffers::MaxSelectableObjects, std::numeric_limits<uint32_t>::max());
 }
 
+void SubmitAndWait(vk::Queue queue, vk::CommandBuffer cb, vk::Fence fence, vk::Device device, vk::Semaphore signal_semaphore = {}) {
+    vk::SubmitInfo submit;
+    submit.setCommandBuffers(cb);
+    if (signal_semaphore) submit.setSignalSemaphores(signal_semaphore);
+    queue.submit(submit, fence);
+    WaitFor(fence, device);
+}
+
+// Zero the linked-list counters and clear the head image to InvalidSlot, ready for fragment writes.
+void ResetSelectionFragmentState(vk::CommandBuffer cb, GpuBuffers &buffers, const Pipelines &pipelines) {
+    buffers.SelectionCounter.Buffer.Write(as_bytes(SelectionCounters{}));
+    const auto &head_image = pipelines.SelectionFragment.Resources->HeadImage;
+    mvk::TransitionImage(cb, vk::PipelineStageFlagBits::eTopOfPipe, vk::PipelineStageFlagBits::eTransfer, {}, vk::AccessFlagBits::eTransferWrite, vk::ImageLayout::eUndefined, vk::ImageLayout::eGeneral, *head_image.Image, ColorSubresourceRange);
+    cb.clearColorImage(*head_image.Image, vk::ImageLayout::eGeneral, vk::ClearColorValue{std::array<uint32_t, 4>{InvalidSlot, 0, 0, 0}}, ColorSubresourceRange);
+    mvk::TransitionImage(cb, vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eFragmentShader, vk::AccessFlagBits::eTransferWrite, vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite, vk::ImageLayout::eGeneral, vk::ImageLayout::eGeneral, *head_image.Image, ColorSubresourceRange);
+}
+
+void SetFullViewportScissor(const entt::registry &r, vk::CommandBuffer cb) {
+    const auto render_extent_px = RenderExtentPx(r);
+    const vk::Extent2D render_extent{render_extent_px.x, render_extent_px.y};
+    cb.setViewport(0, vk::Viewport{0.f, 0.f, float(render_extent.width), float(render_extent.height), 0.f, 1.f});
+    cb.setScissor(0, vk::Rect2D{{0, 0}, render_extent});
+}
+
+// Draw the silhouette batch into the silhouette depth/object framebuffer, for element occlusion.
+// The pass opens even with no draws: its depth LoadOp::eClear seeds the selection-fragment pass's LoadOp::eLoad.
+void RecordSilhouetteDepthPass(vk::CommandBuffer cb, const Pipelines &pipelines, const GpuBuffers &buffers, const DrawBatchInfo &batch) {
+    const auto &silhouette = pipelines.Silhouette;
+    const vk::Rect2D rect{{0, 0}, ToExtent2D(silhouette.Resources->OffscreenImage.Extent)};
+    cb.beginRenderPass({*silhouette.Renderer.RenderPass, *silhouette.Resources->Framebuffer, rect, SilhouetteClearValues}, vk::SubpassContents::eInline);
+    if (batch.DrawCount > 0) {
+        cb.bindIndexBuffer(*buffers.IdentityIndexBuffer, 0, vk::IndexType::eUint32);
+        const auto &pipeline = silhouette.Renderer.Bind(cb, SPT::SilhouetteDepthObject);
+        const MainDrawPushConstants pc{{batch.DrawDataSlotOffset, InvalidSlot}};
+        cb.pushConstants(*pipeline.PipelineLayout, vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, sizeof(pc), &pc);
+        cb.drawIndexedIndirect(*buffers.SelectionDraw.Indirect, batch.IndirectOffset, batch.DrawCount, sizeof(vk::DrawIndexedIndirectCommand));
+    }
+    cb.endRenderPass();
+}
+
 void RunSelectionCompute(
     vk::CommandBuffer cb, vk::Queue queue, vk::Fence fence, vk::Device device,
     const auto &compute, const auto &pc, auto &&dispatch, vk::Semaphore wait_semaphore = {}
@@ -186,34 +226,12 @@ void RenderElementSelectionPass(
     cb.reset({});
     cb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
 
-    if (!write_bitset) {
-        // Reset linked-list state before writing selection fragments.
-        buffers.SelectionCounter.Buffer.Write(as_bytes(SelectionCounters{}));
+    // Bitset writes append to prior linked-list state, so only the fresh-list path resets it.
+    if (!write_bitset) ResetSelectionFragmentState(cb, buffers, pipelines);
 
-        const auto &head_image = pipelines.SelectionFragment.Resources->HeadImage;
-        mvk::TransitionImage(cb, vk::PipelineStageFlagBits::eTopOfPipe, vk::PipelineStageFlagBits::eTransfer, {}, vk::AccessFlagBits::eTransferWrite, vk::ImageLayout::eUndefined, vk::ImageLayout::eGeneral, *head_image.Image, ColorSubresourceRange);
-        cb.clearColorImage(*head_image.Image, vk::ImageLayout::eGeneral, vk::ClearColorValue{std::array<uint32_t, 4>{InvalidSlot, 0, 0, 0}}, ColorSubresourceRange);
-        mvk::TransitionImage(cb, vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eFragmentShader, vk::AccessFlagBits::eTransferWrite, vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite, vk::ImageLayout::eGeneral, vk::ImageLayout::eGeneral, *head_image.Image, ColorSubresourceRange);
-    }
+    SetFullViewportScissor(r, cb);
 
-    const auto render_extent_px = RenderExtentPx(r);
-    const vk::Extent2D render_extent{render_extent_px.x, render_extent_px.y};
-    cb.setViewport(0, vk::Viewport{0.f, 0.f, float(render_extent.width), float(render_extent.height), 0.f, 1.f});
-    cb.setScissor(0, vk::Rect2D{{0, 0}, render_extent});
-
-    if (render_depth) {
-        const auto &silhouette = pipelines.Silhouette;
-        const vk::Rect2D sil_rect{{0, 0}, ToExtent2D(silhouette.Resources->OffscreenImage.Extent)};
-        cb.beginRenderPass({*silhouette.Renderer.RenderPass, *silhouette.Resources->Framebuffer, sil_rect, SilhouetteClearValues}, vk::SubpassContents::eInline);
-        cb.bindIndexBuffer(*buffers.IdentityIndexBuffer, 0, vk::IndexType::eUint32);
-        if (silhouette_batch.DrawCount > 0) {
-            const auto &pipeline = silhouette.Renderer.Bind(cb, SPT::SilhouetteDepthObject);
-            const MainDrawPushConstants sil_pc{{silhouette_batch.DrawDataSlotOffset, InvalidSlot}};
-            cb.pushConstants(*pipeline.PipelineLayout, vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, sizeof(sil_pc), &sil_pc);
-            cb.drawIndexedIndirect(*buffers.SelectionDraw.Indirect, silhouette_batch.IndirectOffset, silhouette_batch.DrawCount, sizeof(vk::DrawIndexedIndirectCommand));
-        }
-        cb.endRenderPass();
-    }
+    if (render_depth) RecordSilhouetteDepthPass(cb, pipelines, buffers, silhouette_batch);
 
     const auto &selection = pipelines.SelectionFragment;
     const vk::Rect2D sel_rect{{0, 0}, ToExtent2D(pipelines.Silhouette.Resources->DepthImage.Extent)};
@@ -254,11 +272,7 @@ void RenderElementSelectionPass(
     }
 
     cb.end();
-    vk::SubmitInfo submit;
-    submit.setCommandBuffers(cb);
-    if (signal_semaphore) submit.setSignalSemaphores(signal_semaphore);
-    vk_res.Queue.submit(submit, *one_shot.Fence);
-    WaitFor(*one_shot.Fence, vk_res.Device);
+    SubmitAndWait(vk_res.Queue, cb, *one_shot.Fence, vk_res.Device, signal_semaphore);
 
     // Element selection pass overwrites the shared head image used for object selection.
     r.ctx().get<DrawState>().SelectionStale = true;
@@ -318,34 +332,10 @@ void RenderSelectionPassWith(entt::registry &r, [[maybe_unused]] entt::entity vi
     cb.reset({});
     cb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
 
-    buffers.SelectionCounter.Buffer.Write(as_bytes(SelectionCounters{}));
+    ResetSelectionFragmentState(cb, buffers, pipelines);
+    SetFullViewportScissor(r, cb);
 
-    // Transition head image to general layout and clear.
-    const auto &head_image = pipelines.SelectionFragment.Resources->HeadImage;
-    mvk::TransitionImage(cb, vk::PipelineStageFlagBits::eTopOfPipe, vk::PipelineStageFlagBits::eTransfer, {}, vk::AccessFlagBits::eTransferWrite, vk::ImageLayout::eUndefined, vk::ImageLayout::eGeneral, *head_image.Image, ColorSubresourceRange);
-    cb.clearColorImage(*head_image.Image, vk::ImageLayout::eGeneral, vk::ClearColorValue{std::array<uint32_t, 4>{InvalidSlot, 0, 0, 0}}, ColorSubresourceRange);
-    mvk::TransitionImage(cb, vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eFragmentShader, vk::AccessFlagBits::eTransferWrite, vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite, vk::ImageLayout::eGeneral, vk::ImageLayout::eGeneral, *head_image.Image, ColorSubresourceRange);
-
-    const auto render_extent_px = RenderExtentPx(r);
-    const vk::Extent2D render_extent{render_extent_px.x, render_extent_px.y};
-    cb.setViewport(0, vk::Viewport{0.f, 0.f, float(render_extent.width), float(render_extent.height), 0.f, 1.f});
-    cb.setScissor(0, vk::Rect2D{{0, 0}, render_extent});
-
-    if (render_depth) {
-        // Render selected meshes to silhouette depth buffer for element occlusion.
-        // Open the pass even with no draws — its depth LoadOp::eClear seeds the selection-fragment pass's LoadOp::eLoad.
-        const auto &silhouette = pipelines.Silhouette;
-        const vk::Rect2D rect{{0, 0}, ToExtent2D(silhouette.Resources->OffscreenImage.Extent)};
-        cb.beginRenderPass({*silhouette.Renderer.RenderPass, *silhouette.Resources->Framebuffer, rect, SilhouetteClearValues}, vk::SubpassContents::eInline);
-        if (silhouette_batch.DrawCount > 0) {
-            cb.bindIndexBuffer(*buffers.IdentityIndexBuffer, 0, vk::IndexType::eUint32);
-            const auto &pipeline = silhouette.Renderer.Bind(cb, SPT::SilhouetteDepthObject);
-            const MainDrawPushConstants sil_pc{{silhouette_batch.DrawDataSlotOffset, InvalidSlot}};
-            cb.pushConstants(*pipeline.PipelineLayout, vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, sizeof(sil_pc), &sil_pc);
-            cb.drawIndexedIndirect(*buffers.SelectionDraw.Indirect, silhouette_batch.IndirectOffset, silhouette_batch.DrawCount, sizeof(vk::DrawIndexedIndirectCommand));
-        }
-        cb.endRenderPass();
-    }
+    if (render_depth) RecordSilhouetteDepthPass(cb, pipelines, buffers, silhouette_batch);
 
     const auto &selection = pipelines.SelectionFragment;
     const vk::Rect2D rect{{0, 0}, ToExtent2D(pipelines.Silhouette.Resources->DepthImage.Extent)};
@@ -366,11 +356,7 @@ void RenderSelectionPassWith(entt::registry &r, [[maybe_unused]] entt::entity vi
     cb.endRenderPass();
 
     cb.end();
-    vk::SubmitInfo submit;
-    submit.setCommandBuffers(cb);
-    if (signal_semaphore) submit.setSignalSemaphores(signal_semaphore);
-    vk.Queue.submit(submit, *one_shot.Fence);
-    WaitFor(*one_shot.Fence, vk.Device);
+    SubmitAndWait(vk.Queue, cb, *one_shot.Fence, vk.Device, signal_semaphore);
 }
 
 void RenderSelectionPass(entt::registry &r, entt::entity viewport, vk::Semaphore signal_semaphore) {
@@ -660,10 +646,7 @@ void DispatchUpdateSelectionStates(
     cb.pipelineBarrier(vk::PipelineStageFlagBits::eComputeShader, vk::PipelineStageFlagBits::eHost, {}, output_barrier, {}, {});
     cb.end();
 
-    vk::SubmitInfo submit;
-    submit.setCommandBuffers(cb);
-    vk_res.Queue.submit(submit, *one_shot.Fence);
-    WaitFor(*one_shot.Fence, vk_res.Device);
+    SubmitAndWait(vk_res.Queue, cb, *one_shot.Fence, vk_res.Device);
 }
 
 void ApplySelectionStateUpdate(
