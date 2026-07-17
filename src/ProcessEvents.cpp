@@ -4,7 +4,6 @@
 #include "Changes.h"
 #include "File.h"
 #include "Reactive.h"
-#include "Timer.h"
 #include "TransformMath.h"
 #include "Variant.h"
 #include "action/Selection.h"
@@ -770,7 +769,7 @@ bool SyncViewportRenderResources(entt::registry &r, entt::entity viewport) {
     }
     buffers.ResizeSelectionNodeBuffer(render_extent);
     {
-        const Timer timer{"SyncViewportRenderResources->UpdateSelectionDescriptorSets"};
+        const profile::CpuScope scope{"UpdateSelectionDescriptorSets"};
         const auto head_image_info = vk::DescriptorImageInfo{
             nullptr,
             *pipelines.SelectionFragment.Resources->HeadImage.View,
@@ -830,12 +829,7 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
     auto &textures = r.ctx().get<TextureStore>();
     auto &environments = r.ctx().get<EnvironmentStore>();
     auto &pipelines = r.ctx().get<Pipelines>();
-    const bool profile = r.all_of<ProfileNextProcessComponentEvents>(viewport);
-    if (profile) r.remove<ProfileNextProcessComponentEvents>(viewport);
-    std::optional<Timer> timer;
-    if (profile) timer.emplace("ProcessComponentEvents");
-    std::optional<CpuScope> profile_scope;
-    if (auto *p = r.ctx().find<Profile>()) profile_scope.emplace(*p, "ProcessEvents");
+    const profile::CpuScope profile_scope{"ProcessEvents"};
 
     auto &pending_render = r.ctx().get<PendingRenderRequest>().Value;
     auto request = [&pending_render](RenderRequest req) { pending_render = std::max(pending_render, req); };

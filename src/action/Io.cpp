@@ -1,7 +1,6 @@
 #include "action/Io.h"
 #include "CameraTypes.h"
 #include "File.h"
-#include "Timer.h"
 #include "Variant.h"
 #include "action/Errors.h"
 #include "animation/AnimationTimeline.h"
@@ -14,11 +13,11 @@
 #include "mesh/Primitives.h"
 #include "object/ObjectOps.h"
 #include "render/GpuBufferOps.h"
+#include "render/Profile.h"
 #include "scene/Defaults.h"
 #include "snapshot/SaveState.h"
 #include "viewport/ViewCameraOps.h"
 #include "viewport/Viewport.h"
-#include "viewport/ViewportEvents.h"
 
 #include <entt/entity/registry.hpp>
 
@@ -30,7 +29,7 @@ namespace action::io {
 namespace {
 // Load a glTF/glb and apply its camera/animation side effects.
 void LoadGltfFile(entt::registry &r, entt::entity viewport, const std::filesystem::path &path) {
-    const Timer timer{"LoadGltf"};
+    const profile::CpuScope scope{"LoadGltfFile"};
     auto &c = r.ctx();
     auto result = gltf::LoadGltf(path, {r, viewport, c.get<DescriptorSlots>(), c.get<GpuBuffers>(), c.get<MeshStore>(), c.get<TextureStore>(), c.get<EnvironmentStore>()});
     if (!result) {
@@ -43,7 +42,6 @@ void LoadGltfFile(entt::registry &r, entt::entity viewport, const std::filesyste
         JumpToStartFrame(r, viewport);
         r.get<LastEvaluatedFrame>(viewport).Value = -1;
     }
-    r.emplace_or_replace<ProfileNextProcessComponentEvents>(viewport);
 }
 } // namespace
 

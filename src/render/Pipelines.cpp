@@ -1,5 +1,4 @@
 #include "render/Pipelines.h"
-#include "Timer.h"
 #include "gpu/BoxSelectPushConstants.h"
 #include "gpu/ElementPickPushConstants.h"
 #include "gpu/MainDrawPushConstants.h"
@@ -10,6 +9,7 @@
 #include "gpu/SelectionDrawPushConstants.h"
 #include "gpu/SelectionElementPushConstants.h"
 #include "gpu/UpdateSelectionStatePushConstants.h"
+#include "render/Profile.h"
 
 #include <ranges>
 
@@ -109,6 +109,7 @@ vk::UniquePipeline PbrCompiler::CreateTargetedPipeline(const vk::SpecializationI
 
 bool PbrCompiler::CompilePipelines(PbrFeatureMask mask) {
     if (mask == Mask && OpaqueTargeted && BlendTargeted) return false;
+    const profile::CpuScope scope{"CompilePbrPipelines"};
 
     constexpr uint32_t N = PbrSpecFeatures.size();
     constexpr uint32_t TotalConstants = N + 1; // + TRANSMISSION_PREPASS
@@ -118,7 +119,6 @@ bool PbrCompiler::CompilePipelines(PbrFeatureMask mask) {
     for (uint32_t i = 0; i < N; ++i) data[i] = ::HasFeature(mask, PbrSpecFeatures[i]) ? 1u : 0u;
     data[N] = 0u; // main pipelines: exposed radiance, sampling the transmission framebuffer
     const vk::SpecializationInfo spec_main{TotalConstants, entries.data(), TotalConstants * sizeof(uint32_t), data.data()};
-    const Timer timer{"PBR pipeline compile"};
     OpaqueTargeted = CreateTargetedPipeline(spec_main, true, Variant::Opaque);
     BlendTargeted = CreateTargetedPipeline(spec_main, false, Variant::Blend);
     OpaqueVelocityTargeted = CreateTargetedPipeline(spec_main, true, Variant::OpaqueVelocity);

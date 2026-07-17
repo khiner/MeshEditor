@@ -1,5 +1,4 @@
 #include "action/Object.h"
-#include "Timer.h"
 #include "action/Dispatch.h"
 #include "action/ScopeResolve.h"
 #include "armature/Armature.h"
@@ -12,6 +11,7 @@
 #include "render/Instance.h"
 #include "render/LightComponents.h"
 #include "render/MeshBuffers.h"
+#include "render/Profile.h"
 #include "scene/SceneGraphOps.h"
 #include "scene/WorldTransform.h"
 #include "selection/Selection.h"
@@ -169,7 +169,7 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
             },
             [&](Duplicate) {
                 if (!CanDuplicate(r, viewport)) return;
-                const Timer timer{"Duplicate"};
+                const profile::CpuScope scope{"Duplicate"};
                 const auto entities = r.view<Selected>() | to<std::vector>();
 
                 // Pre-reserve arenas to avoid per-CloneMesh buffer growth.
@@ -183,12 +183,11 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
 
                 bool any_mesh_duplicate = false;
                 for (const auto e : entities) reselect_duplicate(e, DuplicateOne(r, e, any_mesh_duplicate));
-                if (any_mesh_duplicate) r.emplace_or_replace<ProfileNextProcessComponentEvents>(viewport);
                 begin_translate();
             },
             [&](DuplicateLinked) {
                 if (!CanDuplicateLinked(r, viewport)) return;
-                const Timer timer{"DuplicateLinked"};
+                const profile::CpuScope scope{"DuplicateLinked"};
                 for (const auto e : r.view<Selected>() | to<std::vector>()) reselect_duplicate(e, DuplicateLinkedOne(r, e));
                 begin_translate();
             },

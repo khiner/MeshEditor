@@ -10,8 +10,6 @@
 struct MeshGeometryDirty {}; // Request overlay + element-state buffer refresh after mesh geometry changes
 struct LightWireframeDirty {};
 
-struct ProfileNextProcessComponentEvents {};
-
 struct PendingSetEditMode {
     Element Mode;
 };

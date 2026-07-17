@@ -78,11 +78,11 @@ void CheckVk(vk::Result err) {
 }
 
 bool RebuildSwapchain = false;
-void RenderFrame(vk::Device device, vk::Queue queue, ImGui_ImplVulkanH_Window &wd, ImDrawData *draw_data, Profile &profile) {
+void RenderFrame(vk::Device device, vk::Queue queue, ImGui_ImplVulkanH_Window &wd, ImDrawData *draw_data) {
     auto *image_acquired_semaphore = wd.FrameSemaphores[wd.SemaphoreIndex].ImageAcquiredSemaphore;
     vk::Result err;
     {
-        const CpuScope scope{profile, "AcquireImage"};
+        const profile::CpuScope scope{"AcquireImage"};
         err = device.acquireNextImageKHR(wd.Swapchain, UINT64_MAX, image_acquired_semaphore, nullptr, &wd.FrameIndex);
     }
     if (err == vk::Result::eErrorOutOfDateKHR || err == vk::Result::eSuboptimalKHR) {
@@ -91,11 +91,11 @@ void RenderFrame(vk::Device device, vk::Queue queue, ImGui_ImplVulkanH_Window &w
     }
     CheckVk(err);
 
-    const CpuScope scope{profile, "ImGuiRenderSubmit"};
+    const profile::CpuScope scope{"ImGuiRenderSubmit"};
     const auto &fd = wd.Frames[wd.FrameIndex];
     const vk::Fence fd_fence{fd.Fence};
     {
-        const CpuScope fence_scope{profile, "ImGuiFrameFence"};
+        const profile::CpuScope fence_scope{"ImGuiFrameFence"};
         CheckVk(device.waitForFences(fd_fence, true, UINT64_MAX));
     }
     device.resetFences(fd_fence);
@@ -112,13 +112,13 @@ void RenderFrame(vk::Device device, vk::Queue queue, ImGui_ImplVulkanH_Window &w
     const vk::PipelineStageFlags wait_stage{vk::PipelineStageFlagBits::eColorAttachmentOutput};
     const vk::CommandBuffer command_buffers[]{command_buffer};
     const vk::Semaphore signal_semaphores[]{wd.FrameSemaphores[wd.SemaphoreIndex].RenderCompleteSemaphore};
-    const CpuScope submit_scope{profile, "ImGuiQueueSubmit"};
+    const profile::CpuScope submit_scope{"ImGuiQueueSubmit"};
     queue.submit(vk::SubmitInfo{wait_semaphores, wait_stage, command_buffers, signal_semaphores}, fd_fence);
 }
-void PresentFrame(vk::Queue queue, ImGui_ImplVulkanH_Window &wd, Profile &profile) {
+void PresentFrame(vk::Queue queue, ImGui_ImplVulkanH_Window &wd) {
     if (RebuildSwapchain) return;
 
-    const CpuScope scope{profile, "Present"};
+    const profile::CpuScope scope{"Present"};
     const vk::Semaphore wait_semaphores[]{wd.FrameSemaphores[wd.SemaphoreIndex].RenderCompleteSemaphore};
     const vk::SwapchainKHR swapchains[]{wd.Swapchain};
     const uint32_t image_indices[]{wd.FrameIndex};
@@ -859,12 +859,11 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
     bool viewport_resizing{false}; // True while a resize drag is staged but not yet committed.
     bool done{false};
     WindowsState windows;
-    auto &profile = r.ctx().get<Profile>();
     int bench_ticks{0};
     while (!done) {
         // Scene-load work (mesh and texture upload) dwarfs a frame: keep it out of the profile.
-        if (bench_ticks == 1) profile.ClearStats();
-        const CpuScope frame_scope{profile, "Frame"};
+        if (bench_ticks == 1) profile::ClearStats();
+        const profile::CpuScope frame_scope{"Frame"};
         SDL_Event event;
         while (SDL_PollEvent(&event)) {
             if (event.type == SDL_EVENT_MOUSE_WHEEL) {
@@ -1192,8 +1191,8 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
         if (const bool is_minimized = (draw_data->DisplaySize.x <= 0.0f || draw_data->DisplaySize.y <= 0.0f); !is_minimized) {
             WaitForRender(r); // ImGui samples final image
             if (driver.CaptureFrame(r, viewport, viewport_settled)) done = true;
-            RenderFrame(*vc->Device, vc->Queue, wd, draw_data, profile);
-            PresentFrame(vc->Queue, wd, profile);
+            RenderFrame(*vc->Device, vc->Queue, wd, draw_data);
+            PresentFrame(vc->Queue, wd);
         }
     }
 
@@ -1239,11 +1238,11 @@ void RunHeadlessScene(entt::registry &r, entt::entity viewport, const char *init
         const bool settled = ViewportImageReady(r);
         // Scene-load work (mesh and texture upload) dwarfs a frame: keep it out of the profile.
         if (settled && !profile_cleared) {
-            r.ctx().get<Profile>().ClearStats();
+            profile::ClearStats();
             profile_cleared = true;
         }
         {
-            const CpuScope scope{r.ctx().get<Profile>(), "Frame"};
+            const profile::CpuScope scope{"Frame"};
             // Benchmark: orbit the view a fixed step each settled frame.
             if (bench_frames > 0 && settled) action::Emit(action::view::OrbitViewCamera{{0.01f, 0.f}});
             driver.EmitFrameActions(r, viewport, settled, extent);
@@ -1421,7 +1420,7 @@ int main(int argc, char **argv) {
                 mode == "solid"                   ? ViewportShadingMode::Solid :
                 mode == "preview"                 ? ViewportShadingMode::MaterialPreview :
                                                     ViewportShadingMode::Rendered;
-        } else if (a == "--profile") Profile::Enabled = true;
+        } else if (a == "--profile") profile::Enabled = true;
         else if (!a.starts_with('-') && !initial_file) initial_file = *it;
     }
     if (capture.Fps <= 0) capture.Fps = 60;

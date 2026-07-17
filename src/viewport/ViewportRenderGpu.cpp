@@ -59,7 +59,7 @@ void FlushDrawList(entt::registry &r, vk::Device device, const DrawListBuilder &
 #ifdef MVK_FORCE_STAGED_TRANSFERS
 void RecordTransferCommandBuffer(entt::registry &r, entt::entity viewport, vk::CommandBuffer cb) {
     auto &buffers = r.ctx().get<GpuBuffers>();
-    const CpuScope scope{r.ctx().get<Profile>(), "RecordTransferCommandBuffer"};
+    const profile::CpuScope scope{"RecordTransferCommandBuffer"};
     cb.reset({});
     cb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
     buffers.Ctx.RecordDeferredCopies(cb);
@@ -132,7 +132,6 @@ void RecordMotionBlurPostFx(entt::registry &r, vk::CommandBuffer cb, entt::entit
     const auto &pipelines = r.ctx().get<const Pipelines>();
     const auto &main = pipelines.Main;
     const auto &sel_slots = r.ctx().get<const SelectionSlots>();
-    auto &profile = r.ctx().get<Profile>();
     const auto &settings = r.get<const ViewportDisplay>(viewport);
     const auto mb = EffectiveMotionBlur(settings);
     // The second half of each motion vector is stored pointing backward, which the negative y undoes.
@@ -173,7 +172,7 @@ void RecordMotionBlurPostFx(entt::registry &r, vk::CommandBuffer cb, entt::entit
     const auto tile_extent = main.MotionBlur->TileExtent;
     { // One workgroup per tile, which the flatten shader reduces to that tile's largest motion.
         // It also zeroes its tile's indirection entries.
-        const GpuScope scope{profile, cb, "BlurTilesFlatten"};
+        const profile::GpuScope scope{"BlurTilesFlatten"};
         dispatch(
             pipelines.MotionBlurTilesFlatten,
             MotionBlurTilesFlattenPushConstants{sel_slots.VelocitySampler, sel_slots.MotionBlurTileImage, sel_slots.MotionBlurTileIndirection, MotionScale},
@@ -182,7 +181,7 @@ void RecordMotionBlurPostFx(entt::registry &r, vk::CommandBuffer cb, entt::entit
     }
     compute_to_compute();
     { // One thread per tile.
-        const GpuScope scope{profile, cb, "BlurTilesDilate"};
+        const profile::GpuScope scope{"BlurTilesDilate"};
         dispatch(
             pipelines.MotionBlurTilesDilate,
             MotionBlurTilesDilatePushConstants{sel_slots.MotionBlurTileImage, sel_slots.MotionBlurTileIndirection},
@@ -195,7 +194,7 @@ void RecordMotionBlurPostFx(entt::registry &r, vk::CommandBuffer cb, entt::entit
         {{vk::AccessFlagBits::eShaderWrite, vk::AccessFlagBits::eShaderRead}}, {}, {}
     );
     { // One fullscreen pass, blurring the scene along its motion into the gather attachment.
-        const GpuScope scope{profile, cb, "BlurGather"};
+        const profile::GpuScope scope{"BlurGather"};
         cb.beginRenderPass({*main.MotionBlurGatherRenderPass, *main.MotionBlur->GatherFramebuffer, rect, {}}, vk::SubpassContents::eInline);
         const auto &gather = main.MotionBlurGather;
         const MotionBlurGatherPushConstants gather_pc{
@@ -223,9 +222,8 @@ namespace {
 // Record one phase's passes into `cb`, which is already begun with viewport and scissor set.
 // `ubo_offset` selects the view UBO instance every bind in the phase reads.
 void RecordPhase(entt::registry &r, entt::entity viewport, vk::CommandBuffer cb, DrawListUse use, RenderPhase phase, uint32_t ubo_offset, float playback_frame) {
-    auto &profile = r.ctx().get<Profile>();
     // A scope name holds no spaces, so the report table stays machine-readable.
-    const CpuScope scope{profile, use == DrawListUse::SilhouetteOnly ? "RecordRenderCommandBufferSilhouette" : "RecordRenderCommandBuffer"};
+    const profile::CpuScope scope{use == DrawListUse::SilhouetteOnly ? "RecordRenderCommandBufferSilhouette" : "RecordRenderCommandBuffer"};
     if (use == DrawListUse::Rebuild) r.ctx().get<DrawState>().SelectionStale = true;
     // The multi-step blur splits the scene and its overlays across two phases so the overlays stay
     // sharp over the averaged steps. Full and BlurredFull draw both in one.
@@ -751,10 +749,10 @@ void RecordPhase(entt::registry &r, entt::entity viewport, vk::CommandBuffer cb,
 
     const bool has_silhouette = render_silhouette && draw.Silhouette.DrawCount > 0 && draw_overlays; // Selection outline is an overlay.
     if (has_silhouette) { // Silhouette depth/object pass
-        const GpuScope scope{profile, cb, "Silhouette"};
+        const profile::GpuScope scope{"Silhouette"};
         const auto &silhouette = pipelines.Silhouette;
         {
-            const GpuScope geom_scope{profile, cb, "SilhouetteGeom"};
+            const profile::GpuScope geom_scope{"SilhouetteGeom"};
             const vk::Rect2D rect{{0, 0}, ToExtent2D(silhouette.Resources->OffscreenImage.Extent)};
             cb.beginRenderPass({*silhouette.Renderer.RenderPass, *silhouette.Resources->Framebuffer, rect, SilhouetteClearValues}, vk::SubpassContents::eInline);
             cb.bindIndexBuffer(*buffers.IdentityIndexBuffer, 0, vk::IndexType::eUint32);
@@ -768,7 +766,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, vk::CommandBuffer cb,
         };
         sync_fragment_shader_reads(vk::PipelineStageFlagBits::eColorAttachmentOutput, silhouette_to_edge_barriers);
 
-        const GpuScope edge_scope{profile, cb, "SilhouetteEdge"};
+        const profile::GpuScope edge_scope{"SilhouetteEdge"};
         const auto &silhouette_edge = pipelines.SilhouetteEdge;
         const vk::Rect2D edge_rect{{0, 0}, ToExtent2D(silhouette_edge.Resources->OffscreenImage.Extent)};
         cb.beginRenderPass({*silhouette_edge.Renderer.RenderPass, *silhouette_edge.Resources->Framebuffer, edge_rect, SilhouetteClearValues}, vk::SubpassContents::eInline);
@@ -811,7 +809,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, vk::CommandBuffer cb,
     // sampled by the scene pass at the refracted exit point. TRANSMISSION_PREPASS variants skip
     // exposure and drop transmission materials (no self-sampling).
     if (real_transmission && main.Transmission && draw_scene) {
-        const GpuScope scope{profile, cb, "TransmissionPrepass"};
+        const profile::GpuScope scope{"TransmissionPrepass"};
         // Refraction sees the world, and nothing where there is no world. The viewport backdrop is
         // display-referred UI drawn with the overlays, so it never reaches this buffer.
         const std::array prepass_clear_values{
@@ -899,7 +897,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, vk::CommandBuffer cb,
     const bool composite_transmission = real_transmission && main.Transmission && phase == RenderPhase::Full && !is_edit_mode && settings.DebugChannel == DebugChannel::None;
 
     { // Scene pass: shaded scene into its own color target, and the depth the overlay pass occludes against.
-        const GpuScope scope{profile, cb, draw_scene ? "ScenePass" : "SceneDepthPass"};
+        const profile::GpuScope scope{draw_scene ? "ScenePass" : "SceneDepthPass"};
         const auto &scene_renderer = blur ? main.SceneVelocityRenderer : main.SceneRenderer;
         const auto scene_render_pass = composite_transmission ? *main.SceneDepthLoadRenderPass : *scene_renderer.RenderPass;
         const auto scene_framebuffer = blur ? *main.MotionBlur->SceneVelocityFramebuffer : *main.Resources->SceneFramebuffer;
@@ -972,7 +970,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, vk::CommandBuffer cb,
 
     if (!draw_overlays) { // BlurAccumulate sums this step's blurred scene in. It draws no overlays to composite.
         {
-            const GpuScope scope{profile, cb, "BlurAccumulate"};
+            const profile::GpuScope scope{"BlurAccumulate"};
             // The first step clears the target as it draws, so the sum starts from this step alone.
             const auto accum_pass = phase == RenderPhase::BlurAccumulateFirst ? *main.MotionBlurAccumClearRenderPass : *main.MotionBlurAccumRenderPass;
             const std::array accum_clear{vk::ClearValue{Transparent}};
@@ -1006,7 +1004,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, vk::CommandBuffer cb,
         draw.OverlayFaceNormals.DrawCount > 0 || draw.OverlayVertexNormals.DrawCount > 0 ||
         draw.BoneFill.DrawCount > 0 || draw.BoneWire.DrawCount > 0 || draw.BoneSphereFill.DrawCount > 0 || draw.BoneSphereWire.DrawCount > 0;
     if (overlay_pass_needed) { // Overlay pass: display-referred overlays over transparent, depth-tested against the scene above.
-        const GpuScope scope{profile, cb, "OverlayPass"};
+        const profile::GpuScope scope{"OverlayPass"};
         cb.beginRenderPass({*main.OverlayRenderer.RenderPass, *main.Resources->OverlayFramebuffer, main_rect, overlay_clear_values}, vk::SubpassContents::eInline);
 
         const auto record_overlay_batch = [&](SPT spt, const DrawBatchInfo &batch) {
@@ -1101,7 +1099,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, vk::CommandBuffer cb,
     }
 
     { // Composite: anti-alias the overlay layer using LineDataImage, view-transform the scene, merge into FinalColorImage
-        const GpuScope scope{profile, cb, "Composite"};
+        const profile::GpuScope scope{"Composite"};
         const vk::ClearValue clear_value{vk::ClearColorValue{std::array<float, 4>{0, 0, 0, 1}}};
         const vk::Rect2D rect{{0, 0}, ToExtent2D(main.Resources->FinalColorImage.Extent)};
         cb.beginRenderPass({*main.CompositeRenderPass, *main.Resources->CompositeFramebuffer, rect, clear_value}, vk::SubpassContents::eInline);
@@ -1125,13 +1123,13 @@ void BeginRecording(entt::registry &r, vk::CommandBuffer cb) {
     const auto render_extent_px = RenderExtentPx(r);
     const vk::Extent2D render_extent{render_extent_px.x, render_extent_px.y};
     cb.begin({vk::CommandBufferUsageFlagBits::eSimultaneousUse});
-    r.ctx().get<Profile>().BeginRecording(cb);
+    profile::BeginRecording(cb);
     cb.setViewport(0, vk::Viewport{0.f, 0.f, float(render_extent.width), float(render_extent.height), 0.f, 1.f});
     cb.setScissor(0, vk::Rect2D{{0, 0}, render_extent});
 }
 
-void EndRecording(entt::registry &r, vk::CommandBuffer cb) {
-    r.ctx().get<Profile>().EndRecording(cb);
+void EndRecording(vk::CommandBuffer cb) {
+    profile::EndRecording();
     cb.end();
 }
 } // namespace
@@ -1139,7 +1137,7 @@ void EndRecording(entt::registry &r, vk::CommandBuffer cb) {
 void RecordRenderCommandBuffer(entt::registry &r, entt::entity viewport, vk::CommandBuffer cb, DrawListUse use, RenderPhase phase) {
     BeginRecording(r, cb);
     RecordPhase(r, viewport, cb, use, phase, 0, r.get<const PlaybackFrame>(viewport).Value);
-    EndRecording(r, cb);
+    EndRecording(cb);
 }
 
 void RecordBlurStepsCommandBuffer(entt::registry &r, entt::entity viewport, vk::CommandBuffer cb, std::span<const float> step_frames) {
@@ -1168,5 +1166,5 @@ void RecordBlurStepsCommandBuffer(entt::registry &r, entt::entity viewport, vk::
         {}, {}
     );
     RecordPhase(r, viewport, cb, DrawListUse::Reuse, RenderPhase::BlurResolve, 0, r.get<const PlaybackFrame>(viewport).Value);
-    EndRecording(r, cb);
+    EndRecording(cb);
 }

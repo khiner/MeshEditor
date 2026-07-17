@@ -2,7 +2,6 @@
 
 #include "File.h"
 #include "Path.h"
-#include "Timer.h"
 #include "TransformMath.h"
 #include "Variant.h"
 #include "animation/AnimationData.h"
@@ -27,6 +26,7 @@
 #include "render/LightComponents.h"
 #include "render/MaterialComponents.h"
 #include "render/PbrFeature.h"
+#include "render/Profile.h"
 #include "render/Textures.h"
 #include "scene/SceneGraph.h"
 #include "scene/SceneGraphOps.h"
@@ -1405,7 +1405,7 @@ void ApplyActiveSceneSelection(entt::registry &r) {
 } // namespace
 
 std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &source_path, LoadContext ctx) {
-    const Timer timer{"LoadGltf"};
+    const profile::CpuScope scope{"LoadGltf"};
 
     ExtrasMap extras;
     auto parsed_asset = ParseAsset(source_path, &extras);
@@ -3034,8 +3034,7 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
 }
 
 std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, const SaveContext &sc) {
-    const Timer timer{"SaveGltf"};
-
+    const profile::CpuScope scope{"SaveGltf"};
     const auto &r = sc.R;
     const auto &meshes = sc.Meshes;
 

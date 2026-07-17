@@ -66,7 +66,7 @@ void SubmitRecordedFrame(entt::registry &r) {
     submit.setCommandBuffers(*resources.RenderCommandBuffer);
 #endif
     {
-        const CpuScope scope{r.ctx().get<Profile>(), "QueueSubmit"};
+        const profile::CpuScope scope{"QueueSubmit"};
         vk.Queue.submit(submit, *resources.RenderFence);
     }
     r.ctx().get<FrameState>().RenderPending = true;
@@ -167,7 +167,7 @@ void RenderMotionBlurredFrame(entt::registry &r, entt::entity viewport) {
     // through an animated camera). Each evaluation rewrites the mapped pose buffers in place.
     const auto evaluate_at = [&](float pf) {
         {
-            const CpuScope scope{r.ctx().get<Profile>(), "SamplePoses"};
+            const profile::CpuScope scope{"SamplePoses"};
             physics::SamplePosesAtFrame(r, pf);
         }
         r.get<PlaybackFrame>(viewport).Value = pf;
@@ -283,7 +283,7 @@ bool ViewportImageReady(const entt::registry &r) {
 }
 
 void SubmitViewport(entt::registry &r, entt::entity viewport, vk::Fence viewport_consumer_fence) {
-    const CpuScope scope{r.ctx().get<Profile>(), "SubmitViewport"};
+    const profile::CpuScope scope{"SubmitViewport"};
     // Stash the consumer fence for the resize path to wait on before recreating resources. Cleared after so replay sees none.
     r.ctx().get<ViewportConsumerFence>().Value = viewport_consumer_fence;
     ProcessComponentEvents(r, viewport);
@@ -342,7 +342,7 @@ entt::entity InitEngine(entt::registry &r, VulkanResources vc) {
     InitStoreCtx(r, vc);
     auto &slots = r.ctx().get<DescriptorSlots>();
     auto &pipelines = r.ctx().emplace<Pipelines>(vc.Device, vc.PhysicalDevice, slots.GetSetLayout(), slots.GetSet(), slots.GetUboSetLayout(), slots.GetUboSet());
-    r.ctx().emplace<Profile>(vc.Device, vc.PhysicalDevice);
+    profile::Init(vc.Device, vc.PhysicalDevice);
     physics::Init(r);
     RegisterSceneComponentHandlers(r);
 
@@ -496,8 +496,8 @@ void DeinitViewport(entt::registry &r, entt::entity viewport) {
     r.ctx().erase<std::vector<ComponentEventHandler>>();
     r.ctx().erase<EntityDestroyTracker>();
     physics::Deinit(r);
-    r.ctx().get<const Profile>().Report();
-    r.ctx().erase<Profile>();
+    profile::Report();
+    profile::Deinit();
     r.ctx().erase<Pipelines>();
     if (r.valid(viewport)) r.destroy(viewport);
     TearDownStoreCtx(r);
@@ -519,10 +519,10 @@ void WaitForRender(entt::registry &r) {
 
     const auto &vk = r.ctx().get<const VulkanResources>();
     {
-        const CpuScope scope{r.ctx().get<Profile>(), "WaitGpu"};
+        const profile::CpuScope scope{"WaitGpu"};
         WaitFor(*r.ctx().get<const ViewportRenderResources>().RenderFence, vk.Device);
     }
-    r.ctx().get<Profile>().Resolve(vk.Device);
+    profile::Resolve(vk.Device);
     r.ctx().get<GpuBuffers>().Ctx.ReclaimRetiredBuffers();
     frame.RenderPending = false;
 }

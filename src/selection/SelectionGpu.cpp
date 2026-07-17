@@ -1,6 +1,5 @@
 #include "selection/SelectionGpu.h"
 
-#include "Timer.h"
 #include "armature/ArmatureComponents.h"
 #include "audio/SoundVertices.h"
 #include "gpu/BoxSelectPushConstants.h"
@@ -16,6 +15,7 @@
 #include "render/Instance.h"
 #include "render/OneShotGpu.h"
 #include "render/Pipelines.h"
+#include "render/Profile.h"
 #include "render/VkFenceWait.h"
 #include "scene/Entity.h"
 #include "selection/Selection.h"
@@ -41,7 +41,7 @@ void RunSelectionCompute(
     vk::CommandBuffer cb, vk::Queue queue, vk::Fence fence, vk::Device device,
     const auto &compute, const auto &pc, auto &&dispatch, vk::Semaphore wait_semaphore = {}
 ) {
-    const Timer timer{"RunSelectionCompute"};
+    const profile::CpuScope scope{"RunSelectionCompute"};
     cb.reset({});
     cb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
 
@@ -274,7 +274,7 @@ std::optional<std::pair<entt::entity, uint32_t>> RunElementPickFromRanges(
     const auto element_count = MaxElementBound(ranges);
     if (element_count == 0) return {};
 
-    const Timer timer{"RunElementPick"};
+    const profile::CpuScope scope{"RunElementPick"};
     const auto &vk_res = r.ctx().get<const VulkanResources>();
     const auto &pipelines = r.ctx().get<const Pipelines>();
     const auto &one_shot = r.ctx().get<const OneShotGpu>();
@@ -297,7 +297,7 @@ std::optional<std::pair<entt::entity, uint32_t>> RunElementPickFromRanges(
 }
 
 void RenderSelectionPassWith(entt::registry &r, [[maybe_unused]] entt::entity viewport, bool render_depth, const SelectionBuildFn &build_fn, vk::Semaphore signal_semaphore, bool render_silhouette) {
-    const Timer timer{"RenderSelectionPassWith"};
+    const profile::CpuScope scope{"RenderSelectionPassWith"};
     const auto &vk = r.ctx().get<const VulkanResources>();
     const auto &one_shot = r.ctx().get<const OneShotGpu>();
     const auto &sel_slots = r.ctx().get<const SelectionSlots>();
@@ -374,7 +374,7 @@ void RenderSelectionPassWith(entt::registry &r, [[maybe_unused]] entt::entity vi
 }
 
 void RenderSelectionPass(entt::registry &r, entt::entity viewport, vk::Semaphore signal_semaphore) {
-    const Timer timer{"RenderSelectionPass"};
+    const profile::CpuScope scope{"RenderSelectionPass"};
 
     // Render depth so the selection-fragment pass has a valid depth attachment to load, even right after a resize recreated it.
     // Object-pick ignores depth, so its contents and the silhouette draws don't matter.
@@ -398,7 +398,7 @@ void RunBoxSelectElements(entt::registry &r, entt::entity viewport, std::span<co
     if (box_min.x > box_max.x || box_min.y > box_max.y) return;
 
     auto &buffers = r.ctx().get<GpuBuffers>();
-    const Timer timer{"RunBoxSelectElements"};
+    const profile::CpuScope scope{"RunBoxSelectElements"};
     const auto element_count = MaxElementBound(ranges);
     if (element_count == 0) return;
 
@@ -438,7 +438,7 @@ std::optional<uint32_t> RunSoundVerticesVertexPick(entt::registry &r, entt::enti
     auto &meshes = r.ctx().get<MeshStore>();
     const auto &pipelines = r.ctx().get<const Pipelines>();
 
-    const Timer timer{"RunSoundVerticesVertexPick"};
+    const profile::CpuScope scope{"RunSoundVerticesVertexPick"};
     const auto mesh_entity = instance->Entity;
     const auto &mesh = GetMesh(r, mesh_entity);
     const uint32_t vertex_count = mesh.VertexCount();
@@ -479,7 +479,7 @@ std::vector<entt::entity> RunObjectPick(entt::registry &r, entt::entity viewport
     const bool selection_rendered = r.ctx().get<const DrawState>().SelectionStale;
     if (selection_rendered) RenderSelectionPass(r, viewport, *one_shot.SelectionReady);
 
-    const Timer timer{"RunObjectPick"};
+    const profile::CpuScope scope{"RunObjectPick"};
     // ObjectPickKeyBuffer is persistent across clicks: high 8 bits of each packed key store
     // a per-click epoch tag. We therefore avoid clearing all keys every click and only do a
     // full reset when the 8-bit epoch wraps; stale keys are filtered out by epoch on readback.
@@ -578,7 +578,7 @@ std::vector<entt::entity> RunBoxSelect(entt::registry &r, entt::entity viewport,
 
     const uint32_t max_object_id = std::min(next_object_id - 1, GpuBuffers::MaxSelectableObjects);
 
-    const Timer timer{"RunBoxSelect"};
+    const profile::CpuScope scope{"RunBoxSelect"};
     const bool selection_rendered = r.ctx().get<const DrawState>().SelectionStale;
     if (selection_rendered) RenderSelectionPass(r, viewport, *one_shot.SelectionReady);
     DispatchBoxSelect(r, box_min, box_max, max_object_id, selection_rendered ? *one_shot.SelectionReady : vk::Semaphore{});

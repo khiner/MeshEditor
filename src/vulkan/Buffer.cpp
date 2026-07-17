@@ -1,6 +1,7 @@
 #include "Buffer.h"
-#include "Timer.h"
+#include "LogEnabled.h"
 #include "render/Bindless.h"
+#include "render/Profile.h"
 
 #define VMA_IMPLEMENTATION
 #include "vk_mem_alloc.h"
@@ -173,7 +174,7 @@ std::vector<vk::WriteDescriptorSet> BufferContext::GetDeferredDescriptorUpdates(
 void BufferContext::FlushDeferredDescriptorUpdates(vk::Device device) {
     auto updates = GetDeferredDescriptorUpdates();
     if (updates.empty()) return;
-    const Timer timer{"UpdateBufferDescriptorSets"};
+    const profile::CpuScope scope{"UpdateBufferDescriptorSets"};
     device.updateDescriptorSets(std::move(updates), {});
     ClearDeferredDescriptorUpdates();
 }
