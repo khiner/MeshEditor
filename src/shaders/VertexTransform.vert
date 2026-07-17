@@ -23,9 +23,10 @@ layout(location = 11) flat out float WorldScale;
 layout(location = 12) flat out vec2 EdgeStart;
 layout(location = 13) out vec2 EdgePos;
 #ifdef VELOCITY_OUTPUT
-// Screen motion across the shutter, as (prev->current, current->next) in UV space.
-// Both halves point the same way, so the gather can walk either direction with one vector.
-layout(location = 14) out vec4 Motion;
+// World-space motion across the shutter, as offsets from the current position. World deltas
+// interpolate exactly across a triangle, so the fragment shader projects them per pixel.
+layout(location = 14) out vec3 MotionPrev;
+layout(location = 15) out vec3 MotionNext;
 #endif
 
 layout(constant_id = 0) const uint OverlayKind = 0u;
@@ -49,13 +50,6 @@ vec3 PoseWorldPos(DrawData draw, Vertex vert, uint idx, uint model_slot, uint ar
     const vec3 local_pos = ApplyArmatureDeform(draw, pos, idx, normal, armature_slot);
     const Transform world = ModelBuffers[nonuniformEXT(model_slot)].Models[draw.FirstInstance];
     return apply_pending_transform(draw, world, local_pos, idx);
-}
-
-// Each pose projects through its own view: looking through an animated camera moves the view
-// across the shutter too, and a pure camera move is motion like any other.
-vec2 ProjectToUv(mat4 view_proj, vec3 world_pos) {
-    const vec4 clip = view_proj * vec4(world_pos, 1.0);
-    return clip.xy / clip.w;
 }
 #endif
 
@@ -167,12 +161,8 @@ void main() {
     {
         const vec3 prev = PoseWorldPos(draw, vert, idx, SceneViewUBO.PrevModelSlot, SceneViewUBO.PrevArmatureDeformSlot, SceneViewUBO.PrevMorphWeightsSlot);
         const vec3 next = PoseWorldPos(draw, vert, idx, SceneViewUBO.NextModelSlot, SceneViewUBO.NextArmatureDeformSlot, SceneViewUBO.NextMorphWeightsSlot);
-        const vec2 curr_uv = ProjectToUv(SceneViewUBO.ViewProj, world_pos);
-        const vec2 prev_uv = ProjectToUv(SceneViewUBO.PrevViewProj, prev);
-        const vec2 next_uv = ProjectToUv(SceneViewUBO.NextViewProj, next);
-        // NDC spans 2 units across the viewport, so halving converts these to UV. The second half is
-        // stored pointing backward like the first, which the gather's motion scale undoes.
-        Motion = vec4(prev_uv - curr_uv, curr_uv - next_uv) * 0.5;
+        MotionPrev = prev - world_pos;
+        MotionNext = next - world_pos;
     }
 #endif
     if (IsLineDraw != 0u) {

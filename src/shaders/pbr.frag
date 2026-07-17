@@ -20,6 +20,9 @@
 #include "TRSUtils.glsl"
 #include "brdf.glsl"
 #include "tonemapping.glsl"
+#ifdef VELOCITY_OUTPUT
+#include "Velocity.glsl"
+#endif
 
 layout(set = 0, binding = BINDING_LightBuffer, scalar) readonly buffer LightBufferBlock {
     PunctualLight Lights[];
@@ -65,12 +68,18 @@ layout(location = 9) in vec4 VertexColor;
 layout(location = 10) in vec4 WorldTangent;
 layout(location = 11) flat in float WorldScale;
 #ifdef VELOCITY_OUTPUT
-layout(location = 14) in vec4 Motion;
+layout(location = 14) in vec3 MotionPrev;
+layout(location = 15) in vec3 MotionNext;
 #endif
 
 layout(location = 0) out vec4 OutColor;
 #ifdef VELOCITY_OUTPUT
 layout(location = 1) out vec4 OutMotion;
+
+vec2 ProjectToUv(mat4 view_proj, vec3 world_pos) {
+    const vec4 clip = view_proj * vec4(world_pos, 1.0);
+    return clip.xy / clip.w;
+}
 #endif
 
 const uint INVALID_SLOT = 0xffffffffu;
@@ -201,7 +210,19 @@ void main() {
 #ifdef VELOCITY_OUTPUT
     // Written up front so every return path carries it. Discarded fragments write nothing,
     // leaving the motion of whatever surface (or the background) shows through.
-    OutMotion = Motion;
+    // Each pose projects through its own view: looking through an animated camera moves the view
+    // across the shutter too, and a pure camera move is motion like any other. A pose that lands
+    // on its camera plane projects to NaN and falls back to no motion.
+    {
+        const vec2 curr_uv = ProjectToUv(SceneViewUBO.ViewProj, WorldPosition);
+        vec2 prev_uv = ProjectToUv(SceneViewUBO.PrevViewProj, WorldPosition + MotionPrev);
+        vec2 next_uv = ProjectToUv(SceneViewUBO.NextViewProj, WorldPosition + MotionNext);
+        if (any(isnan(prev_uv))) prev_uv = curr_uv;
+        if (any(isnan(next_uv))) next_uv = curr_uv;
+        // NDC spans 2 units across the viewport, so halving converts these to UV. The second half is
+        // stored pointing backward like the first, which the gather's motion scale undoes.
+        OutMotion = PackVelocity(vec4(prev_uv - curr_uv, curr_uv - next_uv) * 0.5);
+    }
 #endif
     const PBRMaterial material = MaterialBuffers[nonuniformEXT(SceneViewUBO.MaterialSlot)].Materials[MaterialIndex];
     if (material.DoubleSided == 0u && !IsFrontFacing(WorldNormal, WorldPosition)) discard;

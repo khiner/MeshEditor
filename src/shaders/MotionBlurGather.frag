@@ -5,6 +5,7 @@
 #include "SceneUBO.glsl"
 #include "MotionBlurGatherPushConstants.glsl"
 #include "MotionBlurShared.glsl"
+#include "Velocity.glsl"
 
 layout(location = 0) out vec4 OutColor;
 
@@ -31,7 +32,7 @@ float LinearDepth(float ndc_depth) {
 }
 
 vec4 SampleVelocity(vec2 uv) {
-    const vec4 velocity = texture(Samplers[pc.VelocitySamplerSlot], uv);
+    const vec4 velocity = UnpackVelocity(texture(Samplers[pc.VelocitySamplerSlot], uv));
     return velocity * vec2(textureSize(Samplers[pc.VelocitySamplerSlot], 0)).xyxy * pc.MotionScale.xxyy;
 }
 

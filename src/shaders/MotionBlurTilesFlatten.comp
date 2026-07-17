@@ -8,6 +8,7 @@ layout(local_size_x = 8, local_size_y = 8) in;
 
 #include "MotionBlurTilesFlattenPushConstants.glsl"
 #include "MotionBlurShared.glsl"
+#include "Velocity.glsl"
 
 const int FlattenThreads = 8;
 const int FlattenBlocks = MotionBlurTileSize / FlattenThreads;
@@ -57,7 +58,7 @@ void main() {
         const uvec2 tile_coord = uvec2(block) + gl_LocalInvocationID.xy;
         const ivec2 texel = min(tile_origin + ivec2(tile_coord), render_size - 1);
         const vec2 uv = (vec2(texel) + 0.5) / vec2(render_size);
-        vec4 motion = texelFetch(Samplers[pc.VelocitySamplerSlot], texel, 0);
+        vec4 motion = UnpackVelocity(texelFetch(Samplers[pc.VelocitySamplerSlot], texel, 0));
 
         // Clip to the viewport in NDC so a streak stops at the frame edge. The next-motion is stored
         // pointing backward, so negating it aims the ray the way the motion actually goes.

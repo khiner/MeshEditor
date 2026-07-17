@@ -1,6 +1,7 @@
 #version 450
 
 #include "SceneUBO.glsl"
+#include "Velocity.glsl"
 
 layout(location = 0) in vec2 InNDC;
 // Location 1: the scene pass's velocity attachment (the scene color at 0 is masked off).
@@ -21,5 +22,5 @@ void main() {
     const vec2 curr_uv = ProjectDirToUv(SceneViewUBO.ViewProj, world_dir);
     const vec2 prev_uv = ProjectDirToUv(SceneViewUBO.PrevViewProj, world_dir);
     const vec2 next_uv = ProjectDirToUv(SceneViewUBO.NextViewProj, world_dir);
-    OutMotion = vec4(prev_uv - curr_uv, curr_uv - next_uv) * 0.5;
+    OutMotion = PackVelocity(vec4(prev_uv - curr_uv, curr_uv - next_uv) * 0.5);
 }
