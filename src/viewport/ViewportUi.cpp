@@ -275,6 +275,7 @@ void Interact(entt::registry &r, entt::entity viewport, FrameState &frame) {
             else if (Shortcut(ImGuiKey_3, VKey)) action::Emit(action::view::SetEditMode{.Mode = Element::Face});
         }
         if (Shortcut(ImGuiKey_A, VKey)) action::Emit(action::selection::SelectAll{});
+        if (Shortcut(ImGuiMod_Alt | ImGuiKey_A, VKey)) action::Emit(action::selection::DeselectAll{});
         const bool bone_edit = interaction_mode == InteractionMode::Edit && FindArmatureObject(r, active_entity) != entt::null;
         if (bone_edit) {
             if (Shortcut(ImGuiMod_Shift | ImGuiKey_A, VKey)) {

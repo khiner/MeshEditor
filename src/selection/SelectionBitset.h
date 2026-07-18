@@ -17,6 +17,8 @@ namespace selection {
 
 // Set all bits in [offset, offset+count), clearing any gap bits in the last word.
 void SelectAll(uint32_t *bits, uint32_t offset, uint32_t count);
+// Clear all bits in [offset, offset+count).
+void DeselectAll(uint32_t *bits, uint32_t offset, uint32_t count);
 // Count selected bits in [offset, offset+count).
 uint32_t CountSelected(const uint32_t *bits, uint32_t offset, uint32_t count);
 // A mesh's element handles map to consecutive global bits starting at its range `offset`,

@@ -52,15 +52,24 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
             [&](DeselectAll) {
                 end_box_select_interaction();
                 const auto interaction_mode = r.get<const Interaction>(viewport).Mode;
-                const bool bone_mode = interaction_mode == InteractionMode::Pose || IsBoneEditMode(r, viewport);
-                if (bone_mode) r.clear<BoneSelection>();
-                else r.clear<Selected>();
+                if (interaction_mode == InteractionMode::Pose || IsBoneEditMode(r, viewport)) {
+                    r.clear<BoneSelection>();
+                } else if (interaction_mode == InteractionMode::Edit) {
+                    const auto ranges = GetBitsetRangesForSelected(r);
+                    auto *bits = r.ctx().get<SelectionBitsetRef>().Value.data();
+                    for (const auto &range : ranges) {
+                        ::selection::DeselectAll(bits, range.Offset, range.Count);
+                        r.remove<MeshActiveElement>(range.MeshEntity);
+                    }
+                    if (!ranges.empty()) r.emplace_or_replace<SelectionBitsDirty>(viewport);
+                } else {
+                    r.clear<Selected>();
+                }
             },
             [&](SnapshotBoxSelectBaseline) {
                 const auto interaction_mode = r.get<const Interaction>(viewport).Mode;
                 const auto active_entity = FindActiveEntity(r);
                 const bool active_is_armature = FindArmatureObject(r, active_entity) != entt::null;
-                const bool bone_mode = interaction_mode == InteractionMode::Pose || (interaction_mode == InteractionMode::Edit && active_is_armature);
                 AdditiveBoxSelectBaseline baseline;
                 if (interaction_mode == InteractionMode::Edit && !active_is_armature) {
                     if (const auto ranges = GetBitsetRangesForSelected(r); !ranges.empty()) {
@@ -69,7 +78,7 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
                         const auto bits = r.ctx().get<const SelectionBitsetRef>().Value;
                         baseline.ElementBitset.assign(bits.begin(), bits.begin() + bitset_words);
                     }
-                } else if (bone_mode) {
+                } else if (interaction_mode == InteractionMode::Pose || (interaction_mode == InteractionMode::Edit && active_is_armature)) {
                     for (const auto e : r.view<BoneSelection>()) baseline.BoneSelections.emplace_back(e, r.get<BoneSelection>(e));
                 } else if (interaction_mode == InteractionMode::Object) {
                     for (const auto e : r.view<Selected>()) baseline.SelectedEntities.emplace_back(e);
