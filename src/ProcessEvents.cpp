@@ -406,10 +406,9 @@ SyncResult SyncModelsBuffers(entt::registry &r) {
         // the WorldTransform reactive pass writes them before submit.
         buffers.Instances.ObjectIdBuffer.Update(as_bytes(object_ids), vk::DeviceSize(base_index) * sizeof(uint32_t));
         buffers.Instances.StateBuffer.Update(as_bytes(states), vk::DeviceSize(base_index) * sizeof(uint8_t));
-        // Undeformed instances share the mesh's local AABB. The deformed-bounds pass overwrites
-        // deformed objects' slots later this call.
-        const auto mesh = TryGetMesh(r, buffer_entity);
-        std::ranges::fill(buffers.Instances.GetMutableBounds({base_index, n}), mesh ? mesh->CalcAABB() : AABB{});
+        // New slots start with empty bounds. The render's bounds reduce pass fills mesh instances'
+        // slots, and extras slots stay empty (always drawn).
+        std::ranges::fill(buffers.Instances.GetMutableBounds({base_index, n}), AABB{});
         std::ranges::fill(buffers.Instances.GetMutableVisibility({base_index, n}), uint8_t{1});
         mb.InstanceCount = new_total;
         newly_inserted.append_range(entities);
@@ -421,11 +420,9 @@ void EnsureWireframes(entt::registry &r, entt::entity viewport) {
     auto &meshes = r.ctx().get<MeshStore>();
     auto &shape_buffers = r.ctx().get<ColliderShapeBuffers>();
     const auto &settings = r.get<const ViewportDisplay>(viewport);
-    const bool show_aabb = settings.ShowBoundingBoxes;
     const bool show_tets = settings.ShowTetWireframe;
     if (r.view<const ColliderShape>().empty() && r.view<ColliderWireframe>().empty() &&
-        r.view<AABBWireframe>().empty() && r.view<TetWireframe>().empty() &&
-        !show_aabb && !show_tets) return;
+        r.view<TetWireframe>().empty() && !show_tets) return;
 
     using enum ColliderShapeBuffer;
     auto buf = [&](ColliderShapeBuffer kind) -> entt::entity & { return shape_buffers.Entities[uint8_t(kind)]; };
@@ -529,25 +526,6 @@ void EnsureWireframes(entt::registry &r, entt::entity viewport) {
     }
     drop_wireframes(orphans);
 
-    std::vector<entt::entity> aabb_stale;
-    for (auto [entity, bw] : r.view<AABBWireframe>().each()) {
-        if (!show_aabb || !r.all_of<Selected>(entity)) aabb_stale.emplace_back(entity);
-    }
-    for (auto e : aabb_stale) {
-        if (auto &bw = r.get<AABBWireframe>(e); r.valid(bw.Instance)) Destroy(r, viewport, bw.Instance);
-        r.remove<AABBWireframe>(e);
-    }
-
-    if (show_aabb) {
-        ensure_buffer(Box, physics_debug::UnitBox); // Removing a deselected aabb above may have freed the shared Box buffer.
-        for (auto entity : r.view<Selected>()) {
-            if (!r.all_of<AABBWireframe>(entity)) {
-                const auto *instance = r.try_get<const Instance>(entity);
-                if (instance && HasMesh(r, instance->Entity)) r.emplace<AABBWireframe>(entity, make_instance(buf(Box), entity));
-            }
-        }
-    }
-
     // Drop tet wireframes whose backing geometry no longer matches (toggle off, deselected,
     // TetMeshData removed, or point count differs after regeneration).
     std::vector<entt::entity> tet_stale;
@@ -619,51 +597,11 @@ void RebuildGizmoGeometry(entt::registry &r, MeshStore &meshes, GpuBuffers &buff
     }
 }
 
-// Mesh-local bounds after morph and skin deformation, matching the vertex shader. Nullopt if undeformed.
-std::optional<AABB> ComputeDeformedLocalAABB(const entt::registry &r, MeshStore &meshes, GpuBuffers &buffers, entt::entity object, const Mesh &mesh) {
-    const uint32_t store_id = mesh.GetStoreId();
-
-    std::span<const BoneDeformVertex> bone;
-    std::span<const mat4> deform;
-    if (const auto *mod = r.try_get<const ArmatureModifier>(object)) {
-        if (const auto *pose = r.try_get<const ArmaturePoseState>(mod->ArmatureEntity);
-            pose && mod->SkinSlot < pose->GpuDeformRanges.size() && pose->GpuDeformRanges[mod->SkinSlot].Count > 0) {
-            bone = meshes.GetBoneDeform(store_id);
-            deform = buffers.ArmatureDeformBuffer.Get(pose->GpuDeformRanges[mod->SkinSlot]);
-        }
-    }
-    std::span<const MorphTargetVertex> morph;
-    std::span<const float> weights;
-    if (const auto *ms = r.try_get<const MorphWeightState>(object); ms && !ms->Weights.empty()) {
-        morph = meshes.GetMorphTargets(store_id);
-        weights = ms->Weights;
-    }
-    if (bone.empty() && weights.empty()) return std::nullopt;
-
-    const auto verts = mesh.GetVerticesSpan();
-    const auto vtx_count = uint32_t(verts.size());
-    AABB aabb;
-    for (uint32_t i = 0; i < vtx_count; ++i) {
-        vec3 p = verts[i].Position;
-        for (uint32_t t = 0; t < weights.size(); ++t) p += weights[t] * morph[t * vtx_count + i].PositionDelta;
-        if (!bone.empty()) {
-            const auto &bd = bone[i];
-            const mat4 m = bd.Weights.x * deform[bd.Joints.x] + bd.Weights.y * deform[bd.Joints.y] +
-                bd.Weights.z * deform[bd.Joints.z] + bd.Weights.w * deform[bd.Joints.w];
-            p = vec3{m * vec4{p, 1.f}};
-        }
-        aabb.Min = glm::min(aabb.Min, p);
-        aabb.Max = glm::max(aabb.Max, p);
-    }
-    return aabb;
-}
-
-void UpdateWireframeTransforms(entt::registry &r, const std::unordered_set<entt::entity> &deformed_bounds_changed) {
-    if (r.view<ColliderWireframe>().empty() && r.view<AABBWireframe>().empty() && r.view<TetWireframe>().empty()) return;
+void UpdateWireframeTransforms(entt::registry &r) {
+    if (r.view<ColliderWireframe>().empty() && r.view<TetWireframe>().empty()) return;
 
     const auto &wt_changed = reactive<changes::WorldTransform>(r);
     const auto &shape_changed = reactive<changes::PhysicsShape>(r);
-    const auto &mesh_geom_changed = reactive<changes::MeshGeometry>(r);
     for (auto [entity, cs, cw] : r.view<const ColliderShape, const ColliderWireframe>().each()) {
         const auto *wt = r.try_get<const WorldTransform>(entity);
         if (!wt) continue;
@@ -726,29 +664,6 @@ void UpdateWireframeTransforms(entt::registry &r, const std::unordered_set<entt:
             },
             cs.Shape
         );
-    }
-
-    // Reposition the AABB wireframe when the mesh geometry or bounds changed, the parent moved, or the wireframe instance was just created this frame.
-    const auto &buffers = r.ctx().get<const GpuBuffers>();
-    for (auto [entity, bw] : r.view<const AABBWireframe>().each()) {
-        if (!r.valid(bw.Instance)) continue;
-
-        const auto *wt = r.try_get<const WorldTransform>(entity);
-        const auto *instance = r.try_get<const Instance>(entity);
-        if (!wt || !instance) continue;
-
-        const auto *ri = r.try_get<const RenderInstance>(entity);
-        if (!ri || ri->BufferIndex == UINT32_MAX) continue;
-
-        const bool parent_moved = wt_changed.contains(entity);
-        const bool mesh_changed = mesh_geom_changed.contains(instance->Entity);
-        const bool newly_created = wt_changed.contains(bw.Instance);
-        const bool bounds_changed = deformed_bounds_changed.contains(entity);
-        if (!parent_moved && !mesh_changed && !newly_created && !bounds_changed) continue;
-
-        const auto &aabb = buffers.Instances.GetBounds(ri->BufferIndex);
-        const auto size = aabb.Max - aabb.Min, center = (aabb.Min + aabb.Max) * 0.5f;
-        r.replace<WorldTransform>(bw.Instance, ToTransform(ToMatrix(*wt) * glm::translate(mat4{1}, center) * glm::scale(mat4{1}, size)));
     }
 
     for (auto [entity, tw] : r.view<const TetWireframe>().each()) {
@@ -1926,41 +1841,7 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
             };
             for (const auto e : recompute) compute(e);
         }
-        // Write deformed bounds into the object's instance slot: once per inserted instance, then
-        // per-frame only while an AABB wireframe shows it.
-        std::unordered_set<entt::entity> deformed_bounds_changed;
-        {
-            const auto &geom_changed = reactive<changes::MeshGeometry>(r);
-            // Refresh the shared local AABB in every instance slot of each changed mesh.
-            // Runs after every MeshGeometryDirty producer in this call.
-            for (const auto mesh_entity : geom_changed) {
-                const auto *models = r.try_get<const ModelsBuffer>(mesh_entity);
-                if (!models || models->InstanceCount == 0) continue;
-                if (const auto mesh = TryGetMesh(r, mesh_entity)) {
-                    std::ranges::fill(buffers.Instances.GetMutableBounds({models->InstanceRange.Offset, models->InstanceCount}), mesh->CalcAABB());
-                }
-            }
-            for (const auto object : r.view<const Instance, const RenderInstance>()) {
-                if (!r.any_of<ArmatureModifier, MorphWeightState>(object)) continue;
-                const auto &instance = r.get<const Instance>(object);
-                const bool deformed_stored = r.all_of<DeformedBounds>(object);
-                if (!r.all_of<AABBWireframe>(object) && deformed_stored && !geom_changed.contains(instance.Entity) && !is_newly_inserted(object)) continue;
-                const auto mesh = TryGetMesh(r, instance.Entity);
-                if (!mesh) continue;
-                const auto buffer_index = r.get<const RenderInstance>(object).BufferIndex;
-                if (buffer_index == UINT32_MAX) continue;
-                if (const auto aabb = ComputeDeformedLocalAABB(r, meshes, buffers, object, *mesh)) {
-                    buffers.Instances.UpdateBounds(buffer_index, *aabb);
-                    if (!deformed_stored) r.emplace<DeformedBounds>(object);
-                    deformed_bounds_changed.insert(object);
-                } else if (deformed_stored) {
-                    buffers.Instances.UpdateBounds(buffer_index, mesh->CalcAABB());
-                    r.remove<DeformedBounds>(object);
-                    deformed_bounds_changed.insert(object);
-                }
-            }
-        }
-        UpdateWireframeTransforms(r, deformed_bounds_changed); // Needs updated WorldTransforms
+        UpdateWireframeTransforms(r); // Needs updated WorldTransforms
         {
             // Batch WorldTransform writes: collect all (BufferIndex, WorldTransform) pairs,
             // sort by BufferIndex for cache-friendly access, then write via single GetMutableRange.

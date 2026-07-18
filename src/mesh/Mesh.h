@@ -1,6 +1,6 @@
 #pragma once
 
-#include "AABB.h"
+#include "gpu/AABB.h"
 #include "gpu/Element.h"
 #include "gpu/Vertex.h"
 

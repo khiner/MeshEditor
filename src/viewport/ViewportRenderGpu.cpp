@@ -4,6 +4,8 @@
 #include "armature/ArmatureComponents.h"
 #include "audio/SoundVertices.h"
 #include "gizmo/TransformGizmoTypes.h"
+#include "gpu/BoundsBoxPushConstants.h"
+#include "gpu/BoundsReducePushConstants.h"
 #include "gpu/DepthPyramidReducePushConstants.h"
 #include "gpu/FrustumCullPushConstants.h"
 #include "gpu/MainDrawPushConstants.h"
@@ -126,12 +128,10 @@ std::unordered_map<entt::entity, DeformSlots> BuildDeformSlots(const entt::regis
     return result;
 }
 
-// Rewrite per-instance deform fields on the draws appended since `draws_before`,
-// keyed by each draw's instance buffer index.
-void PatchInstanceDeform(DrawListBuilder &dl, size_t draws_before, const DeformSlots &deform) {
+// Rewrite per-instance deform fields on `draws`, keyed by each draw's instance buffer index.
+void PatchInstanceDeform(std::span<DrawData> draws, const DeformSlots &deform) {
     if (deform.MorphWeightsByBufferIndex.empty() && deform.ArmatureDeformByBufferIndex.empty()) return;
-    for (size_t i = draws_before; i < dl.Draws.size(); ++i) {
-        auto &draw = dl.Draws[i];
+    for (auto &draw : draws) {
         if (auto it = deform.MorphWeightsByBufferIndex.find(draw.FirstInstance); it != deform.MorphWeightsByBufferIndex.end()) {
             draw.MorphWeightsOffset = it->second;
         }
@@ -140,6 +140,8 @@ void PatchInstanceDeform(DrawListBuilder &dl, size_t draws_before, const DeformS
         }
     }
 }
+// The draws a DrawListBuilder appended since `draws_before`.
+std::span<DrawData> DrawsSince(DrawListBuilder &dl, size_t draws_before) { return std::span{dl.Draws}.subspan(draws_before); }
 // AppendExtrasDraw is templated on the customize_draw callable.
 void AppendExtrasDraw(entt::registry &r, const InstanceArena &instances, DrawListBuilder &dl, DrawBatchInfo &batch, auto &&customize_draw) {
     batch = dl.BeginBatch();
@@ -280,11 +282,11 @@ void ReleaseCullToDraw(vk::CommandBuffer cb) {
 void RecordFrustumCull(vk::CommandBuffer cb, const Pipelines &pipelines, const GpuBuffers &buffers, const DrawBufferPair &pair, const DrawListBuilder &draw_list, uint32_t ubo_offset, uint32_t visibility_slot) {
     const profile::GpuScope cull_scope{"FrustumCull"};
     const auto &cull = pipelines.FrustumCull;
-    // The previous submit's indirect and vertex reads complete before this one's cull writes.
+    // The previous submit's indirect and vertex reads, and any preceding bounds-pass writes, complete before the cull's writes and reads.
     cb.pipelineBarrier(
-        vk::PipelineStageFlagBits::eDrawIndirect | vk::PipelineStageFlagBits::eVertexShader,
+        vk::PipelineStageFlagBits::eDrawIndirect | vk::PipelineStageFlagBits::eVertexShader | vk::PipelineStageFlagBits::eComputeShader,
         vk::PipelineStageFlagBits::eComputeShader, {},
-        vk::MemoryBarrier{vk::AccessFlagBits::eIndirectCommandRead | vk::AccessFlagBits::eShaderRead, vk::AccessFlagBits::eShaderWrite | vk::AccessFlagBits::eShaderRead}, {}, {}
+        vk::MemoryBarrier{vk::AccessFlagBits::eIndirectCommandRead | vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite, vk::AccessFlagBits::eShaderWrite | vk::AccessFlagBits::eShaderRead}, {}, {}
     );
     BindCompute(cb, cull, ubo_offset);
     auto cull_pc = MakeCullPushConstants(buffers, pair, draw_list);
@@ -361,6 +363,27 @@ void RecordDepthPyramid(vk::CommandBuffer cb, const Pipelines &pipelines, const 
         static constexpr uint32_t TileSize{32};
         cb.dispatch((mips[base].Extent.width + TileSize - 1) / TileSize, (mips[base].Extent.height + TileSize - 1) / TileSize, 1);
     }
+}
+
+// Rewrite each entry's instance bounds from its post-deform vertex positions, ahead of the cull.
+void RecordBoundsReduce(vk::CommandBuffer cb, const Pipelines &pipelines, const GpuBuffers &buffers, uint32_t entry_count, uint32_t vertex_state_slot, uint32_t ubo_offset) {
+    const profile::GpuScope scope{"BoundsReduce"};
+    const auto &reduce = pipelines.BoundsReduce;
+    // The previous submit's bounds reads (cull and bounds-box draw) complete before the rewrite.
+    cb.pipelineBarrier(
+        vk::PipelineStageFlagBits::eComputeShader | vk::PipelineStageFlagBits::eVertexShader,
+        vk::PipelineStageFlagBits::eComputeShader, {},
+        vk::MemoryBarrier{vk::AccessFlagBits::eShaderRead, vk::AccessFlagBits::eShaderWrite}, {}, {}
+    );
+    BindCompute(cb, reduce, ubo_offset);
+    const BoundsReducePushConstants pc{
+        .VertexTransform = {0, vertex_state_slot},
+        .DrawDataSlot = buffers.BoundsReduceEntries.Slot,
+        .BoundsSlot = buffers.Instances.BoundsBuffer.Slot,
+    };
+    cb.pushConstants(*reduce.PipelineLayout, vk::ShaderStageFlagBits::eCompute, 0, sizeof(pc), &pc);
+    cb.dispatch(entry_count, 1, 1);
+    // No trailing barrier: the cull recorded next orders every later read of the bounds after these writes.
 }
 
 // Record one phase's passes into `cb`, which is already begun with viewport and scissor set.
@@ -517,6 +540,57 @@ void RecordPhase(entt::registry &r, entt::entity viewport, vk::CommandBuffer cb,
             mesh_entities.emplace_back(entity, mesh_buffers, models, TryGetMesh(r, entity), get_deform_slots(entity), primary_bi, excitable_mesh_entities.contains(entity), r.all_of<ArmatureObject>(entity) || is_bone_joint, is_bone_joint, r.all_of<ObjectExtrasTag>(entity), r.all_of<SmoothShading>(entity));
         }
 
+        { // Bounds reduce entries. Instances sharing one deform state share one entry, whose
+            // ElementIdOffset spans their consecutive slots.
+            struct BoundsEntrySpec {
+                uint32_t Count;
+                bool PerInstanceDeform;
+            };
+            const auto bounds_entry_spec = [](const MeshEntityData &e) -> BoundsEntrySpec {
+                if (!e.MeshComp || e.Mod.InstanceCount == 0) return {0, false};
+                const bool per_instance = !e.Deform.ArmatureDeformByBufferIndex.empty() || !e.Deform.MorphWeightsByBufferIndex.empty();
+                return {per_instance ? e.Mod.InstanceCount : 1u, per_instance};
+            };
+            uint32_t entry_count = 0;
+            for (const auto &e : mesh_entities) entry_count += bounds_entry_spec(e).Count;
+            const auto entries = buffers.BoundsReduceEntries.SetCount<DrawData>(entry_count);
+            uint32_t write = 0;
+            for (const auto &e : mesh_entities) {
+                const auto [count, per_instance_deform] = bounds_entry_spec(e);
+                if (count == 0) continue;
+                DrawData entry{
+                    .VertexSlot = e.Buf.Vertices.Slot,
+                    .ModelSlot = buffers.Instances.TransformBuffer.Slot,
+                    .FirstInstance = e.Mod.InstanceRange.Offset,
+                    .VertexCountOrHeadImageSlot = e.Buf.Vertices.Count,
+                    .ElementIdOffset = per_instance_deform ? 1u : e.Mod.InstanceCount,
+                    .VertexOffset = e.Buf.Vertices.Offset,
+                    .BoneDeformOffset = e.Deform.BoneDeformOffset,
+                    .ArmatureDeformOffset = e.Deform.ArmatureDeformOffset,
+                    .MorphDeformOffset = e.Deform.MorphDeformOffset,
+                    .MorphTargetCount = e.Deform.MorphTargetCount,
+                };
+                if (has_pending_transform) {
+                    const auto it = edit_transform_context.TransformInstances.find(e.Entity);
+                    const auto *primary_ri = it != edit_transform_context.TransformInstances.end() ? r.try_get<const RenderInstance>(it->second) : nullptr;
+                    if (primary_ri) {
+                        entry.HasPendingVertexTransform = 1u;
+                        entry.PrimaryEditInstanceIndex = primary_ri->BufferIndex;
+                    }
+                }
+                if (!per_instance_deform) {
+                    entries[write++] = entry;
+                    continue;
+                }
+                const auto first = write;
+                for (uint32_t i = 0; i < count; ++i) {
+                    entry.FirstInstance = e.Mod.InstanceRange.Offset + i;
+                    entries[write++] = entry;
+                }
+                PatchInstanceDeform(entries.subspan(first, count), e.Deform);
+            }
+        }
+
         // Entity -> mesh_entities index map for blend_mesh_order lookup
         std::unordered_map<entt::entity, size_t> blend_entity_idx;
         if (show_rendered) {
@@ -544,7 +618,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, vk::CommandBuffer cb,
                 const auto append_fill_draw = [&](const DrawData &dd, uint32_t index_count, std::optional<uint32_t> model_index) {
                     const auto db = draw_list.Draws.size();
                     AppendDraw(draw_list, batch, index_count, models, dd, model_index);
-                    PatchInstanceDeform(draw_list, db, deform);
+                    PatchInstanceDeform(DrawsSince(draw_list, db), deform);
                     patch_edit_pending_local_transform(db, e.Entity);
                 };
                 const auto append_fill_for_instances = [&](const DrawData &dd, uint32_t index_count) {
@@ -704,7 +778,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, vk::CommandBuffer cb,
                 const auto db = draw_list.Draws.size();
                 if (e.PrimaryEditBufferIndex) AppendDraw(draw_list, draw.EdgeQuad, e.Buf.EdgeIndices.Count * 3, e.Mod, dd, e.PrimaryEditBufferIndex);
                 else if (e.IsSoundVertices) AppendDraw(draw_list, draw.EdgeQuad, e.Buf.EdgeIndices.Count * 3, e.Mod, dd);
-                PatchInstanceDeform(draw_list, db, e.Deform);
+                PatchInstanceDeform(DrawsSince(draw_list, db), e.Deform);
                 patch_edit_pending_local_transform(db, e.Entity);
             }
         }
@@ -717,7 +791,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, vk::CommandBuffer cb,
             dd.ElementStateSlotOffset = meshes.GetEdgeStateRange(e.MeshComp->GetStoreId());
             const auto db = draw_list.Draws.size();
             AppendDraw(draw_list, draw.WireLine, e.Buf.EdgeIndices, e.Mod, dd);
-            PatchInstanceDeform(draw_list, db, e.Deform);
+            PatchInstanceDeform(DrawsSince(draw_list, db), e.Deform);
             patch_edit_pending_local_transform(db, e.Entity);
         }
 
@@ -737,7 +811,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, vk::CommandBuffer cb,
             if (is_point_mesh) AppendDraw(draw_list, draw.Point, e.Buf.VertexIndices, e.Mod, dd);
             else if (e.PrimaryEditBufferIndex) AppendDraw(draw_list, draw.Point, e.Buf.VertexIndices, e.Mod, dd, e.PrimaryEditBufferIndex);
             else if (e.IsSoundVertices) AppendDraw(draw_list, draw.Point, e.Buf.VertexIndices, e.Mod, dd);
-            PatchInstanceDeform(draw_list, db, e.Deform);
+            PatchInstanceDeform(DrawsSince(draw_list, db), e.Deform);
             patch_edit_pending_local_transform(db, e.Entity);
         }
 
@@ -773,7 +847,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, vk::CommandBuffer cb,
                     const auto db = sel_list.Draws.size();
                     if (e.PrimaryEditBufferIndex) AppendDraw(sel_list, batch, indices, e.Mod, dd, e.PrimaryEditBufferIndex);
                     else AppendDraw(sel_list, batch, indices, e.Mod, dd);
-                    PatchInstanceDeform(sel_list, db, e.Deform);
+                    PatchInstanceDeform(DrawsSince(sel_list, db), e.Deform);
                 }
                 return batch;
             };
@@ -855,7 +929,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, vk::CommandBuffer cb,
             dd.ObjectIdSlot = buffers.Instances.ObjectIdBuffer.Slot;
             const auto draws_before = draw_list.Draws.size();
             AppendDraw(draw_list, draw.Silhouette, mesh_buffers.FaceIndices, models, dd, r.get<RenderInstance>(e).BufferIndex);
-            PatchInstanceDeform(draw_list, draws_before, deform);
+            PatchInstanceDeform(DrawsSince(draw_list, draws_before), deform);
             patch_edit_pending_local_transform(draws_before, mesh_entity);
         };
         if (is_edit_mode) {
@@ -865,7 +939,22 @@ void RecordPhase(entt::registry &r, entt::entity viewport, vk::CommandBuffer cb,
         }
     }
 
-    if (use != DrawListUse::Reuse) FlushDrawList(r, vk.Device, draw_list, buffers.RenderDraw);
+    if (use != DrawListUse::Reuse) {
+        { // Bounding boxes draw straight from the instance arena: one box per selected mesh instance slot.
+            auto &slots_buffer = buffers.BoundsBoxSlots;
+            uint32_t box_count = 0;
+            if (show_overlays && settings.ShowExtras && settings.ShowBoundingBoxes) {
+                const auto boxes = r.view<const Selected, const Instance, const RenderInstance>();
+                const auto slots = slots_buffer.SetCount<uint32_t>(uint32_t(boxes.size_hint()));
+                for (const auto [e, instance, ri] : boxes.each()) {
+                    if (ri.BufferIndex != UINT32_MAX && HasMesh(r, instance.Entity)) slots[box_count++] = ri.BufferIndex;
+                }
+            }
+            slots_buffer.UsedSize = vk::DeviceSize(box_count) * sizeof(uint32_t);
+        }
+
+        FlushDrawList(r, vk.Device, draw_list, buffers.RenderDraw);
+    }
 
     const bool transmission_active = real_transmission && pipelines.Main.Transmission;
     // The transmission composite path lays the prepass down as the scene's background and
@@ -876,13 +965,16 @@ void RecordPhase(entt::registry &r, entt::entity viewport, vk::CommandBuffer cb,
     // transmission prepass to feed).
     const bool two_phase = phase == RenderPhase::Full && show_fill && !transmission_active && !draw_list.Draws.empty();
 
+    const uint32_t transform_vertex_state_slot = is_edit_mode ? meshes.GetVertexStateSlot() : InvalidSlot;
+
     // Once per command buffer (later blur phases reuse the culled buffers). Re-executes on every
     // submit with the current view.
     if (phase != RenderPhase::BlurAccumulate && phase != RenderPhase::BlurResolve && !draw_list.Draws.empty()) {
+        const auto bounds_entry_count = buffers.BoundsReduceEntries.Count<DrawData>();
+        if (bounds_entry_count > 0) RecordBoundsReduce(cb, pipelines, buffers, bounds_entry_count, transform_vertex_state_slot, ubo_offset);
         RecordFrustumCull(cb, pipelines, buffers, buffers.RenderDraw, draw_list, ubo_offset, two_phase ? buffers.Instances.VisibilityBuffer.Slot : InvalidSlot);
     }
 
-    const uint32_t transform_vertex_state_slot = is_edit_mode ? meshes.GetVertexStateSlot() : InvalidSlot;
     auto record_batch = [&](vk::PipelineLayout layout, const DrawBatchInfo &batch, bool region_b) {
         const MainDrawPushConstants pc{{batch.DrawDataSlotOffset, transform_vertex_state_slot}};
         cb.pushConstants(layout, vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, sizeof(pc), &pc);
@@ -1158,7 +1250,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, vk::CommandBuffer cb,
     // Everything the pass could draw. With nothing to draw, the composite reads neither overlay layer.
     const bool overlay_pass_needed = has_silhouette ||
         (show_overlays && settings.ShowGrid) ||
-        draw.EdgeQuad.DrawCount > 0 || draw.WireLine.DrawCount > 0 || draw.Point.DrawCount > 0 || draw.ExtrasLine.DrawCount > 0 ||
+        draw.EdgeQuad.DrawCount > 0 || draw.WireLine.DrawCount > 0 || draw.Point.DrawCount > 0 || draw.ExtrasLine.DrawCount > 0 || buffers.BoundsBoxSlots.UsedSize > 0 ||
         draw.OverlayFaceNormals.DrawCount > 0 || draw.OverlayVertexNormals.DrawCount > 0 ||
         draw.BoneFill.DrawCount > 0 || draw.BoneWire.DrawCount > 0 || draw.BoneSphereFill.DrawCount > 0 || draw.BoneSphereWire.DrawCount > 0;
     if (overlay_pass_needed) { // Overlay pass: display-referred overlays over transparent, depth-tested against the scene above.
@@ -1181,6 +1273,20 @@ void RecordPhase(entt::registry &r, entt::entity viewport, vk::CommandBuffer cb,
             record_overlay_batch(SPT::Point, draw.Point);
             // Object extras (cameras, lights, empties)
             record_overlay_batch(SPT::ObjectExtrasLine, draw.ExtrasLine);
+        }
+
+        // Bounding boxes, generated in the vertex shader from the instance arena's bounds and transforms.
+        if (const auto box_count = buffers.BoundsBoxSlots.Count<uint32_t>(); box_count > 0) {
+            overlay_layer_drawn = true;
+            const auto &bounds_box = main.OverlayRenderer.Bind(cb, SPT::BoundsBox, ubo_offset);
+            const BoundsBoxPushConstants bounds_pc{
+                .SlotsSlot = buffers.BoundsBoxSlots.Slot,
+                .BoundsSlot = buffers.Instances.BoundsBuffer.Slot,
+                .ModelSlot = buffers.Instances.TransformBuffer.Slot,
+                .StateSlot = buffers.Instances.StateBuffer.Slot,
+            };
+            cb.pushConstants(*bounds_box.PipelineLayout, vk::ShaderStageFlagBits::eVertex, 0, sizeof(bounds_pc), &bounds_pc);
+            cb.draw(24, box_count, 0, 0);
         }
 
         // Silhouette edge color (rendered ontop of meshes)

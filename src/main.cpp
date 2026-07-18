@@ -1214,11 +1214,14 @@ void RunHeadlessScene(entt::registry &r, entt::entity viewport, const char *init
     frame_state.DeltaTime = driver.RenderDt;
     int bench_frames = capture.BenchFrames;
     bool profile_cleared{false};
+    bool submitted{false};
     bool done{false};
     while (!done) {
         if (driver.DurationElapsed(r, viewport)) break;
         const auto extent = r.ctx().get<const ViewportExtent>().Value;
-        const bool settled = ViewportImageReady(r);
+        // Queue workers keep render resources across scenes, so an image can be ready before this scene has rendered.
+        // Settling also requires this scene's first submit, which fills the instance bounds FrameScene reads.
+        const bool settled = submitted && ViewportImageReady(r);
         // Scene-load work (mesh and texture upload) dwarfs a frame: keep it out of the profile.
         if (settled && !profile_cleared) {
             profile::ClearStats();
@@ -1233,6 +1236,7 @@ void RunHeadlessScene(entt::registry &r, entt::entity viewport, const char *init
             ReportActionErrors(r);
             SubmitViewport(r, viewport);
             WaitForRender(r);
+            submitted = true;
         }
         if (bench_frames > 0) {
             // Benchmark: force a render every settled tick (direct request write) and exit after the requested count.

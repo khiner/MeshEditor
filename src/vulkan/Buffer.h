@@ -116,6 +116,15 @@ struct Buffer {
     void Write(std::span<const std::byte>, vk::DeviceSize offset = 0) const;
     void Move(vk::DeviceSize from, vk::DeviceSize to, vk::DeviceSize size) const;
     std::span<std::byte> GetMutableRange(vk::DeviceSize offset, vk::DeviceSize size) const;
+    // Size the buffer to `count` elements and return a mutable span over them.
+    template<typename T> std::span<T> SetCount(uint32_t count) {
+        const auto size = vk::DeviceSize(count) * sizeof(T);
+        Reserve(size);
+        UsedSize = size;
+        if (count == 0) return {};
+        return {reinterpret_cast<T *>(GetMutableRange(0, size).data()), count};
+    }
+    template<typename T> uint32_t Count() const { return uint32_t(UsedSize / sizeof(T)); }
     vk::DescriptorBufferInfo GetDescriptor() const { return {operator*(), 0, DescriptorRange}; }
 
     // Dynamic-offset bindings describe one instance, which the bound offset selects within the buffer.

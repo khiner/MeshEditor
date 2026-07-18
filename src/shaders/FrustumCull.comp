@@ -11,6 +11,7 @@
 // survivors to region B, and updates per-instance visibility.
 layout(local_size_x = 64) in;
 
+#include "AABB.glsl"
 #include "FrustumCullPushConstants.glsl"
 #include "SceneUBO.glsl"
 #include "DrawData.glsl"
@@ -26,12 +27,6 @@ struct IndirectCommand {
     int VertexOffset;
     uint FirstInstance;
 };
-// Local-space bounds, one per instance-arena slot. Matches src/AABB.h under scalar layout.
-struct AABB {
-    vec3 Min;
-    vec3 Max;
-};
-
 layout(set = 0, binding = BINDING_Sampler) uniform sampler2D Samplers[];
 layout(set = 0, binding = BINDING_Buffer, scalar) buffer CommandBuffer {
     IndirectCommand Commands[];

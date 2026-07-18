@@ -1,6 +1,6 @@
 #pragma once
 
-#include "AABB.h"
+#include "gpu/AABB.h"
 #include "gpu/ElementPickCandidate.h"
 #include "gpu/PBRMaterial.h"
 #include "gpu/PunctualLight.h"
@@ -74,7 +74,6 @@ struct InstanceArena {
     void ReserveAdditional(uint32_t count) { EnsureCapacity(vk::DeviceSize(Allocator.HighWaterMark()) + count); }
 
     void UpdateState(uint32_t index, uint8_t state) { StateBuffer.Update(as_bytes(state), vk::DeviceSize(index) * sizeof(uint8_t)); }
-    void UpdateBounds(uint32_t index, const AABB &bounds) { BoundsBuffer.Update(as_bytes(bounds), vk::DeviceSize(index) * sizeof(AABB)); }
     const AABB &GetBounds(uint32_t index) const { return reinterpret_cast<const AABB *>(BoundsBuffer.GetMappedData().data())[index]; }
     std::span<uint8_t> GetMutableVisibility(Range range) const { return MappedSpan<uint8_t>(VisibilityBuffer, range); }
     std::span<AABB> GetMutableBounds(Range range) const { return MappedSpan<AABB>(BoundsBuffer, range); }
@@ -320,6 +319,12 @@ struct GpuBuffers {
 
     // Draw-command buffers
     DrawBufferPair RenderDraw, SelectionDraw;
+
+    // One entry per run of mesh instance slots sharing a deform state. The bounds reduce pass runs
+    // the vertex deform path over each entry and writes the local AABB into Instances.BoundsBuffer.
+    mvk::Buffer BoundsReduceEntries{Ctx, 0, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::DrawDataBuffer};
+    // Instance-arena slots whose bounds draw as box wireframes, one box per listed slot.
+    mvk::Buffer BoundsBoxSlots{Ctx, 0, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer};
 
     // Selection / picking — GPU buffers + host-visible readback
     uint32_t SelectionNodeCapacity{1};

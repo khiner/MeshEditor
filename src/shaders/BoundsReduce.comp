@@ -1,0 +1,59 @@
+#version 450
+
+// Rewrites each entry's instance bounds from its vertex positions after morph, armature, and
+// pending edit-mode vertex deformation, matching the vertex shader's deform path. One workgroup per entry.
+#define BINDLESS_CUSTOM_DRAW_PASS_PC 1
+#define BINDLESS_NO_DRAW_LOOKUP 1
+#include "BoundsReducePushConstants.glsl"
+#include "Bindless.glsl"
+#include "AABB.glsl"
+#include "MorphDeform.glsl"
+#include "ArmatureDeform.glsl"
+#include "TransformUtils.glsl"
+
+layout(local_size_x = 256) in;
+
+layout(set = 0, binding = BINDING_Buffer, scalar) buffer BoundsBuffer {
+    AABB Bounds[];
+} BoundsBuffers[];
+
+shared vec3 SharedMin[256];
+shared vec3 SharedMax[256];
+
+void main() {
+    const DrawData draw = DrawDataBuffers[pc.DrawDataSlot].Draws[gl_WorkGroupID.x];
+    // The pending gesture moves selected vertices in world space through the mesh's primary edit
+    // instance. Bounds stay mesh-local, so those vertices round-trip through this transform.
+    Transform primary;
+    if (draw.HasPendingVertexTransform != 0u) primary = ModelBuffers[draw.ModelSlot].Models[draw.PrimaryEditInstanceIndex];
+    vec3 lo = vec3(3.402823466e38);
+    vec3 hi = vec3(-3.402823466e38);
+    for (uint i = gl_LocalInvocationID.x; i < draw.VertexCountOrHeadImageSlot; i += 256u) {
+        vec3 pos = VertexBuffers[draw.VertexSlot].Vertices[draw.VertexOffset + i].Position;
+        vec3 normal = vec3(0);
+        ApplyMorphDeform(draw, pos, i, normal);
+        pos = ApplyArmatureDeform(draw, pos, i, normal);
+        if (should_apply_pending_transform(draw, i)) {
+            pos = trs_inverse_transform_point(primary, apply_pending_transform_world(trs_transform_point(primary, pos)));
+        }
+        lo = min(lo, pos);
+        hi = max(hi, pos);
+    }
+    const uint tid = gl_LocalInvocationID.x;
+    SharedMin[tid] = lo;
+    SharedMax[tid] = hi;
+    barrier();
+    for (uint stride = 128u; stride > 0u; stride >>= 1u) {
+        if (tid < stride) {
+            SharedMin[tid] = min(SharedMin[tid], SharedMin[tid + stride]);
+            SharedMax[tid] = max(SharedMax[tid], SharedMax[tid + stride]);
+        }
+        barrier();
+    }
+    // An entry with no vertices leaves Min > Max, the same empty state a fresh slot holds.
+    // ElementIdOffset is the run of consecutive instance slots sharing this entry's deform state.
+    const AABB bounds = AABB(SharedMin[0], SharedMax[0]);
+    for (uint k = tid; k < draw.ElementIdOffset; k += 256u) {
+        BoundsBuffers[pc.BoundsSlot].Bounds[draw.FirstInstance + k] = bounds;
+    }
+}

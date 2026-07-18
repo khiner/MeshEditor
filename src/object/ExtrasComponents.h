@@ -18,11 +18,6 @@ struct ColliderShapeBuffers {
     };
 };
 
-struct AABBWireframe {
-    entt::entity Instance{null_entity};
-};
-// Present when the object's bounds slot in the instance arena holds morph/skin-deformed bounds.
-struct DeformedBounds {};
 struct TetWireframe {
     entt::entity Instance{null_entity};
 };

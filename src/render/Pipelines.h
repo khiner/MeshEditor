@@ -234,6 +234,9 @@ struct Pipelines {
     SilhouetteEdgePipeline SilhouetteEdge;
     SelectionFragmentPipeline SelectionFragment;
     ComputePipeline ObjectPick, ElementPick, BoxSelect, UpdateSelectionState;
+    // One workgroup per bounds entry: reduces post-deform vertex positions into the instance
+    // arena's local bounds, which the cull and the bounds-box draw read.
+    ComputePipeline BoundsReduce;
     // Zeroes indirect instance counts, then refills them and the visible-index remap from
     // per-instance bounds tested against the view frustum.
     ComputePipeline FrustumCull;

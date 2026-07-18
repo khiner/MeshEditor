@@ -458,6 +458,15 @@ structs:
       - name: S
         type: vec3
         default: "1, 1, 1"
+  # Local-space bounds. Defaults to empty (Min > Max), which readers treat as always-visible.
+  - name: AABB
+    fields:
+      - name: Min
+        type: vec3
+        default: FloatMax
+      - name: Max
+        type: vec3
+        default: -FloatMax
   - name: PunctualLight
     fields:
       - name: TransformSlotOffset
@@ -812,6 +821,28 @@ structs:
       - name: PyramidSamplerSlot
         type: u32
         default: InvalidSlot
+  # One workgroup per entry: rewrite the entry's instance bounds from its post-deform vertex positions.
+  - name: BoundsReducePushConstants
+    push_constant: true
+    fields:
+      - name: VertexTransform
+        type: VertexTransform
+      - name: DrawDataSlot
+        type: u32
+      - name: BoundsSlot
+        type: u32
+  # Bounding-box wireframes: one instanced line draw over the listed instance-arena slots.
+  - name: BoundsBoxPushConstants
+    push_constant: true
+    fields:
+      - name: SlotsSlot
+        type: u32
+      - name: BoundsSlot
+        type: u32
+      - name: ModelSlot
+        type: u32
+      - name: StateSlot
+        type: u32
   - name: SilhouetteEdgeDepthObjectPushConstants
     push_constant: true
     fields:

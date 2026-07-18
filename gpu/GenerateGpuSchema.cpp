@@ -338,6 +338,15 @@ std::string ToMacroName(std::string_view name, std::string_view suffix) {
     return out;
 }
 
+// FloatMax in a schema default expands to the float maximum in C++ output. GLSL structs carry no defaults.
+std::string CppDefaultValue(std::string value) {
+    constexpr std::string_view FloatMax{"FloatMax"};
+    for (size_t pos; (pos = value.find(FloatMax)) != std::string::npos;) {
+        value.replace(pos, FloatMax.size(), "std::numeric_limits<float>::max()");
+    }
+    return value;
+}
+
 std::string ToIdentifier(std::string_view name) {
     std::string out;
     out.reserve(name.size());
@@ -501,7 +510,7 @@ int main(int argc, char **argv) {
 
         bool needs_array{false}, needs_cstdint{false},
             needs_uvec2{false}, needs_uvec4{false}, needs_vec2{false}, needs_vec3{false}, needs_vec4{false},
-            needs_mat3{false}, needs_mat4{false}, needs_quat{false}, needs_slots{false}, needs_range{false};
+            needs_mat3{false}, needs_mat4{false}, needs_quat{false}, needs_slots{false}, needs_range{false}, needs_limits{false};
         std::vector<std::string_view> cpp_includes;
         for (const auto &field : def.Fields) {
             const auto spec = ParseType(field.Type);
@@ -517,6 +526,7 @@ int main(int argc, char **argv) {
             if (spec.Base == "quat") needs_quat = true;
             if (field.DefaultValue.find("InvalidSlot") != std::string_view::npos) needs_slots = true;
             if (field.DefaultValue.find("InvalidOffset") != std::string_view::npos) needs_range = true;
+            if (field.DefaultValue.find("FloatMax") != std::string_view::npos) needs_limits = true;
             if (IsStructType(spec.Base, structs) && spec.Base != def.Name) {
                 if (find(cpp_includes, spec.Base) == cpp_includes.end()) cpp_includes.emplace_back(spec.Base);
             }
@@ -529,6 +539,7 @@ int main(int argc, char **argv) {
                 << GeneratedComment(schema_relative_path);
         if (needs_array) cpp_out << "#include <array>\n";
         if (needs_cstdint) cpp_out << "#include <cstdint>\n";
+        if (needs_limits) cpp_out << "#include <limits>\n";
         if (needs_uvec2) cpp_out << "#include \"numeric/vec2.h\"\n";
         if (needs_uvec4) cpp_out << "#include \"numeric/vec4.h\"\n";
         if (needs_vec2) cpp_out << "#include \"numeric/vec2.h\"\n";
@@ -540,23 +551,22 @@ int main(int argc, char **argv) {
         if (needs_slots) cpp_out << "#include \"vulkan/Slots.h\"\n";
         if (needs_range) cpp_out << "#include \"Range.h\"\n";
         for (const auto &include : cpp_includes) cpp_out << "#include \"gpu/" << include << ".h\"\n";
-        if (needs_cstdint || needs_vec2 || needs_mat3 || needs_mat4 || needs_vec3 || needs_vec4 || needs_quat || needs_slots || needs_range || !cpp_includes.empty()) cpp_out << "\n";
+        if (needs_cstdint || needs_limits || needs_vec2 || needs_mat3 || needs_mat4 || needs_vec3 || needs_vec4 || needs_quat || needs_slots || needs_range || !cpp_includes.empty()) cpp_out << "\n";
 
         cpp_out << "struct " << def.Name << " {\n";
         for (const auto &field : def.Fields) {
             const auto spec = ParseType(field.Type);
             if (const auto cpp_type = CppTypeFor(spec.Base, structs, enums)) {
                 cpp_out << "    ";
+                const auto default_value = CppDefaultValue(field.DefaultValue);
                 if (spec.ArraySize) {
                     cpp_out << "std::array<" << *cpp_type << ", " << *spec.ArraySize << "> " << field.Name << '{';
-                    if (!field.DefaultValue.empty()) {
-                        for (size_t i = 0; i < *spec.ArraySize; ++i) cpp_out << (i == 0 ? "" : ", ") << field.DefaultValue;
+                    if (!default_value.empty()) {
+                        for (size_t i = 0; i < *spec.ArraySize; ++i) cpp_out << (i == 0 ? "" : ", ") << default_value;
                     }
                     cpp_out << "};\n";
                 } else {
-                    cpp_out << *cpp_type << " " << field.Name << '{'
-                            << (field.DefaultValue.empty() ? std::string_view{} : std::string_view{field.DefaultValue})
-                            << "};\n";
+                    cpp_out << *cpp_type << " " << field.Name << '{' << default_value << "};\n";
                 }
             } else Fail("Unknown type: " + field.Type);
         }

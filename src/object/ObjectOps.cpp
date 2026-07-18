@@ -258,10 +258,6 @@ void Destroy(entt::registry &r, entt::entity viewport, entt::entity e) {
             }
         }
     }
-    if (const auto *bw = r.try_get<AABBWireframe>(e); bw && r.valid(bw->Instance)) {
-        Hide(r, bw->Instance);
-        r.destroy(bw->Instance);
-    }
     if (const auto *tw = r.try_get<TetWireframe>(e); tw && r.valid(tw->Instance)) {
         Hide(r, tw->Instance);
         r.destroy(tw->Instance);

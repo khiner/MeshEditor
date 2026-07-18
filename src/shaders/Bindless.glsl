@@ -92,7 +92,9 @@ const uint STATE_SELECTED = 1u << 0;
 const uint STATE_ACTIVE = 1u << 1;
 const uint STATE_EXCITED = 1u << 2;
 
+#ifndef BINDLESS_NO_DRAW_LOOKUP
 DrawData GetDrawData() {
     const uint dense = VisibleIndexBuffers[nonuniformEXT(SceneViewUBO.VisibleIndexSlot)].Indices[pc.VertexTransform.DrawDataOffset + gl_InstanceIndex];
     return DrawDataBuffers[nonuniformEXT(SceneViewUBO.DrawDataSlot)].Draws[dense];
 }
+#endif

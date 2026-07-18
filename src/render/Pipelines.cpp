@@ -1,4 +1,6 @@
 #include "render/Pipelines.h"
+#include "gpu/BoundsBoxPushConstants.h"
+#include "gpu/BoundsReducePushConstants.h"
 #include "gpu/BoxSelectPushConstants.h"
 #include "gpu/DepthPyramidReducePushConstants.h"
 #include "gpu/ElementPickPushConstants.h"
@@ -292,6 +294,7 @@ static PipelineRenderer CreateOverlayRenderer(const PipelineContext &ctx) {
     pipelines.emplace(SPT::EdgeQuad, ctx.CreateGraphics({{{Vert, "EdgeQuad.vert"}, {Frag, "EdgeQuad.frag"}}}, eTriangleList, {Blend, NoWrite}, CreateDepthStencil(true, false, vk::CompareOp::eLessOrEqual), MainDrawPushConstantRange));
     pipelines.emplace(SPT::Line, ctx.CreateGraphics({{{Vert, "VertexTransform.vert", {{1, 1u}}}, {Frag, "VertexColor.frag"}}}, eLineList, {Blend, NoBlend}, CreateDepthStencil(true, true, vk::CompareOp::eLessOrEqual), MainDrawPushConstantRange));
     pipelines.emplace(SPT::ObjectExtrasLine, ctx.CreateGraphics({{{Vert, "ObjectExtras.vert"}, {Frag, "VertexColor.frag"}}}, eLineList, {Blend, NoBlend}, CreateDepthStencil(true, true, vk::CompareOp::eLessOrEqual), MainDrawPushConstantRange));
+    pipelines.emplace(SPT::BoundsBox, ctx.CreateGraphics({{{Vert, "BoundsBox.vert"}, {Frag, "VertexColor.frag"}}}, eLineList, {Blend, NoBlend}, CreateDepthStencil(true, true, vk::CompareOp::eLessOrEqual), vk::PushConstantRange{Vert, 0, sizeof(BoundsBoxPushConstants)}));
     const auto make_overlay_pipeline = [&](OverlayKind overlay_kind) {
         return ctx.CreateGraphics({{{Vert, "VertexTransform.vert", {{0, uint32_t(overlay_kind)}, {1, 1u}}}, {Frag, "VertexColor.frag"}}}, eLineList, {Blend, NoBlend}, CreateDepthStencil(true, true, vk::CompareOp::eLessOrEqual), MainDrawPushConstantRange);
     };
@@ -573,6 +576,7 @@ Pipelines::Pipelines(vk::PhysicalDevice pd, PipelineContext ctx)
       ElementPick{CreateCompute(Ctx, "ElementPick.comp", sizeof(ElementPickPushConstants))},
       BoxSelect{CreateCompute(Ctx, "BoxSelect.comp", sizeof(BoxSelectPushConstants))},
       UpdateSelectionState{CreateCompute(Ctx, "UpdateSelectionState.comp", sizeof(UpdateSelectionStatePushConstants))},
+      BoundsReduce{CreateCompute(Ctx, "BoundsReduce.comp", sizeof(BoundsReducePushConstants))},
       FrustumCull{CreateCompute(Ctx, "FrustumCull.comp", sizeof(FrustumCullPushConstants))},
       DepthPyramidReduce{CreateCompute(Ctx, "DepthPyramidReduce.comp", sizeof(DepthPyramidReducePushConstants))},
       MotionBlurTilesFlatten{CreateCompute(Ctx, "MotionBlurTilesFlatten.comp", sizeof(MotionBlurTilesFlattenPushConstants))},
@@ -602,6 +606,7 @@ void Pipelines::CompileShaders() {
     ElementPick.Compile();
     BoxSelect.Compile();
     UpdateSelectionState.Compile();
+    BoundsReduce.Compile();
     FrustumCull.Compile();
     DepthPyramidReduce.Compile();
     MotionBlurTilesFlatten.Compile();
