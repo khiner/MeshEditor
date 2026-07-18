@@ -88,25 +88,28 @@ namespace {
 struct DeformSlots {
     uint32_t BoneDeformOffset{InvalidOffset}, ArmatureDeformOffset{InvalidOffset}, MorphDeformOffset{InvalidOffset};
     uint32_t MorphTargetCount{0};
+    // Per-instance armature palette: buffer_index -> offset (instances of one mesh can bind different armatures)
+    std::unordered_map<uint32_t, uint32_t> ArmatureDeformByBufferIndex;
     // Per-instance morph weights: buffer_index -> offset (weights are per-node in glTF)
     std::unordered_map<uint32_t, uint32_t> MorphWeightsByBufferIndex;
 };
 
 std::unordered_map<entt::entity, DeformSlots> BuildDeformSlots(const entt::registry &r, const MeshStore &meshes) {
     std::unordered_map<entt::entity, DeformSlots> result;
-    for (const auto [_, instance, modifier] : r.view<const Instance, const ArmatureModifier>().each()) {
-        if (result.contains(instance.Entity)) continue;
+    for (const auto [instance_entity, instance, modifier] : r.view<const Instance, const ArmatureModifier>().each()) {
         const auto &mesh = GetMesh(r, instance.Entity);
         const auto bone_deform = meshes.GetBoneDeformRange(mesh.GetStoreId());
         if (bone_deform.Count == 0) continue;
-        if (const auto *pose_state = r.try_get<const ArmaturePoseState>(modifier.ArmatureEntity)) {
-            result[instance.Entity] = {
-                .BoneDeformOffset = bone_deform.Offset,
-                .ArmatureDeformOffset = pose_state->GpuDeformRange.Offset,
-                .MorphDeformOffset = InvalidOffset,
-                .MorphTargetCount = 0,
-                .MorphWeightsByBufferIndex = {},
-            };
+        const auto *pose_state = r.try_get<const ArmaturePoseState>(modifier.ArmatureEntity);
+        if (!pose_state || modifier.SkinSlot >= pose_state->GpuDeformRanges.size()) continue;
+        const auto deform_offset = pose_state->GpuDeformRanges[modifier.SkinSlot].Offset;
+        auto &slots = result[instance.Entity];
+        if (slots.BoneDeformOffset == InvalidOffset) {
+            slots.BoneDeformOffset = bone_deform.Offset;
+            slots.ArmatureDeformOffset = deform_offset;
+        }
+        if (const auto *ri = r.try_get<const RenderInstance>(instance_entity)) {
+            slots.ArmatureDeformByBufferIndex[ri->BufferIndex] = deform_offset;
         }
     }
     // Add morph target slots for mesh instances with morph data (per-instance weights)
@@ -123,11 +126,17 @@ std::unordered_map<entt::entity, DeformSlots> BuildDeformSlots(const entt::regis
     return result;
 }
 
-void PatchMorphWeights(DrawListBuilder &dl, size_t draws_before, const DeformSlots &deform) {
-    if (deform.MorphWeightsByBufferIndex.empty()) return;
+// Rewrite per-instance deform fields on the draws appended since `draws_before`,
+// keyed by each draw's instance buffer index.
+void PatchInstanceDeform(DrawListBuilder &dl, size_t draws_before, const DeformSlots &deform) {
+    if (deform.MorphWeightsByBufferIndex.empty() && deform.ArmatureDeformByBufferIndex.empty()) return;
     for (size_t i = draws_before; i < dl.Draws.size(); ++i) {
-        if (auto it = deform.MorphWeightsByBufferIndex.find(dl.Draws[i].FirstInstance); it != deform.MorphWeightsByBufferIndex.end()) {
-            dl.Draws[i].MorphWeightsOffset = it->second;
+        auto &draw = dl.Draws[i];
+        if (auto it = deform.MorphWeightsByBufferIndex.find(draw.FirstInstance); it != deform.MorphWeightsByBufferIndex.end()) {
+            draw.MorphWeightsOffset = it->second;
+        }
+        if (auto it = deform.ArmatureDeformByBufferIndex.find(draw.FirstInstance); it != deform.ArmatureDeformByBufferIndex.end()) {
+            draw.ArmatureDeformOffset = it->second;
         }
     }
 }
@@ -535,7 +544,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, vk::CommandBuffer cb,
                 const auto append_fill_draw = [&](const DrawData &dd, uint32_t index_count, std::optional<uint32_t> model_index) {
                     const auto db = draw_list.Draws.size();
                     AppendDraw(draw_list, batch, index_count, models, dd, model_index);
-                    PatchMorphWeights(draw_list, db, deform);
+                    PatchInstanceDeform(draw_list, db, deform);
                     patch_edit_pending_local_transform(db, e.Entity);
                 };
                 const auto append_fill_for_instances = [&](const DrawData &dd, uint32_t index_count) {
@@ -695,7 +704,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, vk::CommandBuffer cb,
                 const auto db = draw_list.Draws.size();
                 if (e.PrimaryEditBufferIndex) AppendDraw(draw_list, draw.EdgeQuad, e.Buf.EdgeIndices.Count * 3, e.Mod, dd, e.PrimaryEditBufferIndex);
                 else if (e.IsSoundVertices) AppendDraw(draw_list, draw.EdgeQuad, e.Buf.EdgeIndices.Count * 3, e.Mod, dd);
-                PatchMorphWeights(draw_list, db, e.Deform);
+                PatchInstanceDeform(draw_list, db, e.Deform);
                 patch_edit_pending_local_transform(db, e.Entity);
             }
         }
@@ -708,7 +717,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, vk::CommandBuffer cb,
             dd.ElementStateSlotOffset = meshes.GetEdgeStateRange(e.MeshComp->GetStoreId());
             const auto db = draw_list.Draws.size();
             AppendDraw(draw_list, draw.WireLine, e.Buf.EdgeIndices, e.Mod, dd);
-            PatchMorphWeights(draw_list, db, e.Deform);
+            PatchInstanceDeform(draw_list, db, e.Deform);
             patch_edit_pending_local_transform(db, e.Entity);
         }
 
@@ -728,7 +737,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, vk::CommandBuffer cb,
             if (is_point_mesh) AppendDraw(draw_list, draw.Point, e.Buf.VertexIndices, e.Mod, dd);
             else if (e.PrimaryEditBufferIndex) AppendDraw(draw_list, draw.Point, e.Buf.VertexIndices, e.Mod, dd, e.PrimaryEditBufferIndex);
             else if (e.IsSoundVertices) AppendDraw(draw_list, draw.Point, e.Buf.VertexIndices, e.Mod, dd);
-            PatchMorphWeights(draw_list, db, e.Deform);
+            PatchInstanceDeform(draw_list, db, e.Deform);
             patch_edit_pending_local_transform(db, e.Entity);
         }
 
@@ -764,7 +773,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, vk::CommandBuffer cb,
                     const auto db = sel_list.Draws.size();
                     if (e.PrimaryEditBufferIndex) AppendDraw(sel_list, batch, indices, e.Mod, dd, e.PrimaryEditBufferIndex);
                     else AppendDraw(sel_list, batch, indices, e.Mod, dd);
-                    PatchMorphWeights(sel_list, db, e.Deform);
+                    PatchInstanceDeform(sel_list, db, e.Deform);
                 }
                 return batch;
             };
@@ -846,7 +855,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, vk::CommandBuffer cb,
             dd.ObjectIdSlot = buffers.Instances.ObjectIdBuffer.Slot;
             const auto draws_before = draw_list.Draws.size();
             AppendDraw(draw_list, draw.Silhouette, mesh_buffers.FaceIndices, models, dd, r.get<RenderInstance>(e).BufferIndex);
-            PatchMorphWeights(draw_list, draws_before, deform);
+            PatchInstanceDeform(draw_list, draws_before, deform);
             patch_edit_pending_local_transform(draws_before, mesh_entity);
         };
         if (is_edit_mode) {

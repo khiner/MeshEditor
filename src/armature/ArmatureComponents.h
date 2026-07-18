@@ -41,6 +41,7 @@ struct BoneInstanceStateDirty {};
 // Modifiers are optional, non-destructive object-level links that affect evaluated mesh output.
 struct ArmatureModifier {
     entt::entity ArmatureEntity, ArmatureObjectEntity;
+    uint32_t SkinSlot{0}; // Index into Armature::Skins selecting the binding this mesh deforms with.
 };
 
 struct BoneIndex {
@@ -70,7 +71,7 @@ struct ArmaturePose {
 struct ArmaturePoseState {
     std::vector<Transform> BoneUserOffset; // Additive user offset per bone during an active drag
     std::vector<mat4> BonePoseWorld; // Per-bone pose world in armature-local space, post-constraint. Scratch, reused across frames.
-    Range GpuDeformRange; // Allocation in shared ArmatureDeformBuffer arena. Count == 0 means not yet allocated.
+    std::vector<Range> GpuDeformRanges; // Per-skin allocations in shared ArmatureDeformBuffer arena, parallel to Armature::Skins. Empty means not yet allocated.
 };
 struct ArmatureAnimation {
     std::vector<AnimationClip> Clips;

@@ -95,9 +95,6 @@ struct CameraName {
 struct LightName {
     std::string Value;
 };
-struct SkinName {
-    std::string Value;
-};
 struct SourceObjectName {
     std::string Value;
 };

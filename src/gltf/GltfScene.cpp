@@ -965,7 +965,7 @@ std::optional<uint32_t> ComputeCommonAncestor(const std::vector<uint32_t> &nodes
 }
 
 std::expected<Transform, std::string> ComputeJointRestLocal(
-    uint32_t skin_index,
+    uint32_t armature_index,
     uint32_t joint_node_index,
     std::optional<uint32_t> parent_joint_node_index,
     std::optional<uint32_t> anchor_node_index,
@@ -974,21 +974,20 @@ std::expected<Transform, std::string> ComputeJointRestLocal(
 ) {
     const auto rebased_parent_node_index = parent_joint_node_index ? parent_joint_node_index : anchor_node_index;
     if (!rebased_parent_node_index) return local_transforms[joint_node_index];
-    if (*rebased_parent_node_index == joint_node_index) return Transform{};
 
     mat4 rebased_local{I4};
     auto current = joint_node_index;
     while (current != *rebased_parent_node_index) {
         rebased_local = ToMatrix(local_transforms[current]) * rebased_local;
         if (!parents[current]) {
-            return std::unexpected{std::format("glTF skin {} joint node {} cannot be rebased to ancestor node {}.", skin_index, joint_node_index, *rebased_parent_node_index)};
+            return std::unexpected{std::format("glTF armature {} bone node {} cannot be rebased to ancestor node {}.", armature_index, joint_node_index, *rebased_parent_node_index)};
         }
         current = *parents[current];
     }
     return ToTransform(rebased_local);
 }
 
-std::expected<std::vector<uint32_t>, std::string> BuildParentBeforeChildJointOrder(const std::vector<uint32_t> &source_joint_nodes, const std::unordered_map<uint32_t, std::optional<uint32_t>> &joint_parent_map, uint32_t skin_index) {
+std::expected<std::vector<uint32_t>, std::string> BuildParentBeforeChildJointOrder(const std::vector<uint32_t> &source_joint_nodes, const std::unordered_map<uint32_t, std::optional<uint32_t>> &joint_parent_map, uint32_t armature_index) {
     std::vector<uint32_t> ordered;
     ordered.reserve(source_joint_nodes.size());
 
@@ -998,7 +997,7 @@ std::expected<std::vector<uint32_t>, std::string> BuildParentBeforeChildJointOrd
     const auto emit_joint = [&](uint32_t joint_node_index, const auto &self) -> std::expected<void, std::string> {
         const auto current_state = state[joint_node_index];
         if (current_state == 2) return {};
-        if (current_state == 1) return std::unexpected{std::format("glTF skin {} has a cycle in joint ancestry at node {}.", skin_index, joint_node_index)};
+        if (current_state == 1) return std::unexpected{std::format("glTF armature {} has a cycle in bone ancestry at node {}.", armature_index, joint_node_index)};
 
         state[joint_node_index] = 1;
         if (const auto it = joint_parent_map.find(joint_node_index);
@@ -1652,12 +1651,53 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
         return physics::TriangleMesh{};
     };
 
-    std::vector<bool> is_joint(asset.nodes.size(), false);
-    for (uint32_t skin_index = 0; skin_index < asset.skins.size(); ++skin_index) {
-        if (!used_skin[skin_index]) continue;
-        const auto &skin = asset.skins[skin_index];
-        for (const auto joint_idx : skin.joints) {
-            if (const auto joint = ToIndex(joint_idx, asset.nodes.size())) is_joint[*joint] = true;
+    // A bone node is any node on a path from a skin joint up to the skin's armature root.
+    // The armature root is the deepest common ancestor of the skin's joints and skeleton, walked up past bone nodes so hierarchy-connected skins share one root.
+    // Marking paths can turn a root into a bone, so iterate to a fixed point.
+    // Non-joint path nodes carrying object payloads stay objects, and bone rest locals rebase across them.
+    std::vector<bool> is_bone(asset.nodes.size(), false);
+    std::vector<std::optional<uint32_t>> skin_arma_node(asset.skins.size()); // Armature-root node per skin. Nullopt = scene root.
+    std::vector<std::vector<uint32_t>> skin_joint_nodes(asset.skins.size()); // Valid joint nodes per used skin, deduped, source order.
+    {
+        std::vector<bool> node_carries_payload(asset.nodes.size(), false);
+        for (uint32_t node_index = 0; node_index < asset.nodes.size(); ++node_index) {
+            const auto &node = asset.nodes[node_index];
+            node_carries_payload[node_index] = ToIndex(node.meshIndex, asset.meshes.size()).has_value() ||
+                ToIndex(node.cameraIndex, asset.cameras.size()).has_value() ||
+                ToIndex(node.lightIndex, asset.lights.size()).has_value() ||
+                bool(node.physicsRigidBody) || !node.instancingAttributes.empty();
+        }
+        std::vector<std::optional<uint32_t>> skin_lca(asset.skins.size());
+        for (uint32_t skin_index = 0; skin_index < asset.skins.size(); ++skin_index) {
+            if (!used_skin[skin_index]) continue;
+            const auto &skin = asset.skins[skin_index];
+            auto &joint_nodes = skin_joint_nodes[skin_index];
+            std::unordered_set<uint32_t> seen;
+            for (const auto joint_idx : skin.joints) {
+                if (const auto joint = ToIndex(joint_idx, asset.nodes.size()); joint && seen.emplace(*joint).second) joint_nodes.emplace_back(*joint);
+            }
+            if (joint_nodes.empty()) continue;
+            auto lca_candidates = joint_nodes;
+            if (const auto skel = ToIndex(skin.skeleton, asset.nodes.size())) lca_candidates.emplace_back(*skel);
+            skin_lca[skin_index] = ComputeCommonAncestor(lca_candidates, parents);
+            for (const auto joint : joint_nodes) is_bone[joint] = true;
+        }
+        for (bool changed = true; changed;) {
+            changed = false;
+            for (uint32_t skin_index = 0; skin_index < asset.skins.size(); ++skin_index) {
+                if (skin_joint_nodes[skin_index].empty()) continue;
+                auto arma = skin_lca[skin_index];
+                while (arma && is_bone[*arma]) arma = parents[*arma];
+                skin_arma_node[skin_index] = arma;
+                for (const auto joint : skin_joint_nodes[skin_index]) {
+                    for (std::optional<uint32_t> cur = joint; cur && cur != arma; cur = parents[*cur]) {
+                        if (!is_bone[*cur] && !node_carries_payload[*cur]) {
+                            is_bone[*cur] = true;
+                            changed = true;
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -1736,9 +1776,9 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
     std::vector<bool> is_object_emitted(asset.nodes.size(), false);
     for (uint32_t node_index = 0; node_index < asset.nodes.size(); ++node_index) {
         if (traversal.InScene[node_index]) {
-            // Joint nodes are bone-only unless they also carry renderable mesh data.
+            // Bone nodes are bone-only unless they also carry renderable mesh data.
             const bool has_mesh = ToIndex(asset.nodes[node_index].meshIndex, asset.meshes.size()).has_value();
-            is_object_emitted[node_index] = has_mesh || !is_joint[node_index];
+            is_object_emitted[node_index] = has_mesh || !is_bone[node_index];
         }
     }
 
@@ -2124,8 +2164,7 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
     object_entities_by_node.reserve(source_objects.size());
     std::unordered_map<uint32_t, std::vector<entt::entity>> skinned_mesh_instances_by_skin;
     skinned_mesh_instances_by_skin.reserve(asset.skins.size());
-    std::unordered_map<uint32_t, entt::entity> armature_data_entities_by_skin;
-    armature_data_entities_by_skin.reserve(asset.skins.size());
+    std::vector<entt::entity> armature_data_entities;
 
     entt::entity first_object_entity = entt::null,
                  first_mesh_object_entity = entt::null,
@@ -2462,108 +2501,111 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
         }
     }
 
-    // Build and consume each skin in one pass
+    // Build one armature per distinct armature root, consuming every skin anchored there.
+    // This way a bone's pose world composes the same node transforms as the spec's global joint transform.
     std::unordered_set<uint32_t> joint_node_indices;
+    struct ArmatureGroup {
+        std::optional<uint32_t> ArmaNode;
+        std::vector<uint32_t> SkinIndices;
+    };
+    std::vector<ArmatureGroup> armature_groups;
     for (uint32_t skin_index = 0; skin_index < asset.skins.size(); ++skin_index) {
-        if (!used_skin[skin_index]) continue;
-        const auto &skin = asset.skins[skin_index];
+        if (!used_skin[skin_index] || skin_joint_nodes[skin_index].empty()) continue;
+        auto it = std::ranges::find(armature_groups, skin_arma_node[skin_index], &ArmatureGroup::ArmaNode);
+        if (it == armature_groups.end()) it = armature_groups.emplace(armature_groups.end(), ArmatureGroup{skin_arma_node[skin_index], {}});
+        it->SkinIndices.emplace_back(skin_index);
+    }
+    for (uint32_t group_index = 0; group_index < armature_groups.size(); ++group_index) {
+        const auto &group = armature_groups[group_index];
+        const auto arma_node = group.ArmaNode;
+        if (arma_node && !traversal.InScene[*arma_node]) {
+            return std::unexpected{std::format("glTF import failed for '{}': skin {} armature root node {} is not in the imported scene.", source_path.string(), group.SkinIndices.front(), *arma_node)};
+        }
 
-        std::vector<uint32_t> source_joint_nodes;
-        source_joint_nodes.reserve(skin.joints.size());
-        std::unordered_set<uint32_t> seen_joints;
-        for (const auto joint_idx : skin.joints) {
-            if (const auto joint = ToIndex(joint_idx, asset.nodes.size())) {
-                if (const auto [it, inserted] = seen_joints.emplace(*joint); inserted) {
-                    source_joint_nodes.emplace_back(*it);
+        // Bone nodes: every bone node on a path from a joint up to the root (exclusive), first-seen order.
+        std::vector<uint32_t> source_bone_nodes;
+        std::vector<bool> in_group(asset.nodes.size(), false);
+        for (const auto skin_index : group.SkinIndices) {
+            for (const auto joint : skin_joint_nodes[skin_index]) {
+                for (std::optional<uint32_t> cur = joint; cur && cur != arma_node; cur = parents[*cur]) {
+                    if (!is_bone[*cur]) continue;
+                    if (in_group[*cur]) break;
+                    in_group[*cur] = true;
+                    source_bone_nodes.emplace_back(*cur);
                 }
             }
         }
-        if (source_joint_nodes.empty()) continue;
 
-        std::vector<bool> is_joint_in_skin(asset.nodes.size(), false);
-        for (const auto joint_node_index : source_joint_nodes) is_joint_in_skin[joint_node_index] = true;
-
-        std::unordered_map<uint32_t, std::optional<uint32_t>> joint_parent_map;
-        joint_parent_map.reserve(source_joint_nodes.size());
-        for (const auto joint_node_index : source_joint_nodes) {
-            joint_parent_map.emplace(joint_node_index, FindNearestMarkedAncestor(joint_node_index, parents, is_joint_in_skin));
+        std::unordered_map<uint32_t, std::optional<uint32_t>> bone_parent_map;
+        bone_parent_map.reserve(source_bone_nodes.size());
+        for (const auto node : source_bone_nodes) {
+            bone_parent_map.emplace(node, FindNearestMarkedAncestor(node, parents, in_group));
         }
 
-        auto ordered_joint_nodes = BuildParentBeforeChildJointOrder(source_joint_nodes, joint_parent_map, skin_index);
-        if (!ordered_joint_nodes) return std::unexpected{ordered_joint_nodes.error()};
-        // AddBone/FinalizeStructure consume joints in this parent-before-child order.
-
-        const auto skeleton_node_index = ToIndex(skin.skeleton, asset.nodes.size());
-        // Anchor must be deterministic and must not synthesize new roots.
-        const auto anchor_node_index = skeleton_node_index ? skeleton_node_index : ComputeCommonAncestor(*ordered_joint_nodes, parents);
-        const auto parent_object_node_index = (anchor_node_index && traversal.InScene[*anchor_node_index]) ? nearest_object_ancestor[*anchor_node_index] : std::optional<uint32_t>{};
-        auto inverse_bind_matrices = LoadInverseBindMatrices(asset, skin, ordered_joint_nodes->size());
+        auto ordered_bone_nodes = BuildParentBeforeChildJointOrder(source_bone_nodes, bone_parent_map, group_index);
+        if (!ordered_bone_nodes) return std::unexpected{ordered_bone_nodes.error()};
 
         const auto armature_data_entity = r.create();
         auto &armature = r.emplace<Armature>(armature_data_entity);
-        armature_data_entities_by_skin[skin_index] = armature_data_entity;
+        armature_data_entities.emplace_back(armature_data_entity);
 
-        ArmatureImportedSkin imported_skin{
-            .SkinIndex = skin_index,
-            .SkeletonNodeIndex = skeleton_node_index,
-            .AnchorNodeIndex = anchor_node_index,
-            .OrderedJointNodeIndices = {},
-            .InverseBindMatrices = std::move(inverse_bind_matrices),
-        };
-        imported_skin.OrderedJointNodeIndices.reserve(ordered_joint_nodes->size());
-
-        std::unordered_map<uint32_t, BoneId> joint_node_to_bone_id;
-        joint_node_to_bone_id.reserve(ordered_joint_nodes->size());
-        for (const auto joint_node_index : *ordered_joint_nodes) {
-            joint_node_indices.emplace(joint_node_index);
-            const auto parent_joint_node_index = joint_parent_map.at(joint_node_index);
-            auto rest_local = ComputeJointRestLocal(skin_index, joint_node_index, parent_joint_node_index, anchor_node_index, parents, local_transforms);
+        std::unordered_map<uint32_t, BoneId> bone_id_by_node;
+        bone_id_by_node.reserve(ordered_bone_nodes->size());
+        for (const auto node : *ordered_bone_nodes) {
+            joint_node_indices.emplace(node);
+            const auto parent_node = bone_parent_map.at(node);
+            auto rest_local = ComputeJointRestLocal(group_index, node, parent_node, arma_node, parents, local_transforms);
             if (!rest_local) return std::unexpected{rest_local.error()};
 
-            std::optional<BoneId> parent_bone_id;
-            if (parent_joint_node_index) {
-                if (const auto parent_it = joint_node_to_bone_id.find(*parent_joint_node_index);
-                    parent_it != joint_node_to_bone_id.end()) {
-                    parent_bone_id = parent_it->second;
-                }
-            }
-
-            const auto source_name = MakeNodeName(asset, joint_node_index);
-            const auto joint_name = source_name.empty() ? std::format("Joint{}", joint_node_index) : source_name;
-            const auto bone_id = armature.AddBone(joint_name, parent_bone_id, *rest_local, joint_node_index);
-            joint_node_to_bone_id.emplace(joint_node_index, bone_id);
-            if (const auto object_it = object_entities_by_node.find(joint_node_index);
+            // Parents precede children in the ordered walk, so the parent's bone ID is always mapped.
+            const auto parent_bone_id = parent_node ? std::optional{bone_id_by_node.at(*parent_node)} : std::nullopt;
+            const auto source_name = MakeNodeName(asset, node);
+            const auto bone_name = source_name.empty() ? std::format("Joint{}", node) : source_name;
+            const auto bone_id = armature.AddBone(bone_name, parent_bone_id, *rest_local, node);
+            bone_id_by_node.emplace(node, bone_id);
+            if (const auto object_it = object_entities_by_node.find(node);
                 object_it != object_entities_by_node.end() &&
                 r.all_of<Instance>(object_it->second) &&
                 !r.all_of<PhysicsMotion>(object_it->second) &&
                 !r.all_of<BoneAttachment>(object_it->second)) {
                 r.emplace<BoneAttachment>(object_it->second, armature_data_entity, bone_id);
             }
-            imported_skin.OrderedJointNodeIndices.emplace_back(joint_node_index);
         }
-        imported_skin.InverseBindMatrices.resize(imported_skin.OrderedJointNodeIndices.size(), I4);
-        armature.ImportedSkin = std::move(imported_skin);
+
+        // Joints stay in source order, so palette slot j pairs with skin.joints[j] and inverseBindMatrices[j], the pairing vertex JOINTS_n attributes index.
+        for (const auto skin_index : group.SkinIndices) {
+            const auto &skin = asset.skins[skin_index];
+            ArmatureImportedSkin imported_skin{
+                .SkinIndex = skin_index,
+                .SkeletonNodeIndex = ToIndex(skin.skeleton, asset.nodes.size()),
+                .AnchorNodeIndex = arma_node,
+                .Name = std::string(skin.name),
+                .OrderedJointNodeIndices = {},
+                .InverseBindMatrices = LoadInverseBindMatrices(asset, skin, skin.joints.size()),
+            };
+            imported_skin.OrderedJointNodeIndices.reserve(skin.joints.size());
+            for (const auto joint_idx : skin.joints) imported_skin.OrderedJointNodeIndices.emplace_back(uint32_t(joint_idx));
+            armature.Skins.emplace_back(std::move(imported_skin));
+        }
         armature.FinalizeStructure();
-        if (!anchor_node_index) {
-            return std::unexpected{std::format("glTF import failed for '{}': skin {} has no deterministic anchor node.", source_path.string(), skin_index)};
-        }
 
-        if (*anchor_node_index >= asset.nodes.size() || !traversal.InScene[*anchor_node_index]) {
-            return std::unexpected{std::format("glTF import failed for '{}': skin {} anchor node {} is not in the imported scene.", source_path.string(), skin_index, *anchor_node_index)};
-        }
-
-        const std::string skin_name(skin.name);
         const auto armature_entity = r.create();
         r.emplace<ObjectKind>(armature_entity, ObjectType::Armature);
         r.emplace<ArmatureObject>(armature_entity, armature_data_entity);
-        const auto t = ToTransform(traversal.WorldTransforms[*anchor_node_index]);
-        r.emplace<Transform>(armature_entity, t);
-        r.emplace<Name>(armature_entity, ::CreateName(r, skin_name.empty() ? std::format("{}_Armature{}", name_prefix, skin_index) : skin_name));
+        r.emplace<Transform>(armature_entity, arma_node ? ToTransform(traversal.WorldTransforms[*arma_node]) : Transform{});
+        const auto skin_name = [&]() -> std::string {
+            for (const auto skin_index : group.SkinIndices) {
+                if (const auto &name = asset.skins[skin_index].name; !name.empty()) return std::string(name);
+            }
+            return {};
+        }();
+        r.emplace<Name>(armature_entity, ::CreateName(r, skin_name.empty() ? std::format("{}_Armature{}", name_prefix, group_index) : skin_name));
         if (skin_name.empty()) r.emplace<SourceEmptyName>(armature_entity);
-        else r.emplace<SkinName>(armature_entity, skin_name);
 
-        if (parent_object_node_index) {
-            if (const auto parent_it = object_entities_by_node.find(*parent_object_node_index);
+        // Follow the root node's entity when it is an object (it may be animated), else the nearest object above it.
+        if (arma_node) {
+            const auto parent_node = object_entities_by_node.contains(*arma_node) ? arma_node : nearest_object_ancestor[*arma_node];
+            if (const auto parent_it = parent_node ? object_entities_by_node.find(*parent_node) : object_entities_by_node.end();
                 parent_it != object_entities_by_node.end()) {
                 SetParentKeepWorld(r, armature_entity, parent_it->second);
             }
@@ -2573,18 +2615,20 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
         if (first_armature_entity == entt::null) first_armature_entity = armature_entity;
         if (first_object_entity == entt::null) first_object_entity = armature_entity;
 
-        if (const auto skinned_it = skinned_mesh_instances_by_skin.find(skin_index);
-            skinned_it != skinned_mesh_instances_by_skin.end()) {
+        for (uint32_t skin_slot = 0; skin_slot < group.SkinIndices.size(); ++skin_slot) {
+            const auto skin_index = group.SkinIndices[skin_slot];
+            const auto skinned_it = skinned_mesh_instances_by_skin.find(skin_index);
+            if (skinned_it == skinned_mesh_instances_by_skin.end()) {
+                return std::unexpected{std::format("glTF import failed '{}': skin {} is used but no mesh instances were emitted for skin binding.", source_path.string(), skin_index)};
+            }
             for (const auto mesh_instance_entity : skinned_it->second) {
                 if (!r.valid(mesh_instance_entity) || !r.all_of<Instance>(mesh_instance_entity)) continue;
-                r.emplace_or_replace<ArmatureModifier>(mesh_instance_entity, armature_data_entity, armature_entity);
+                r.emplace_or_replace<ArmatureModifier>(mesh_instance_entity, armature_data_entity, armature_entity, skin_slot);
                 // The spec ignores a skinned mesh node's own transform.
-                // Identity-parent it to the armature so its world transform is the armature's (the joint deform's space).
+                // Identity-parent it to the armature so its world transform is the deform's space.
                 r.emplace_or_replace<Transform>(mesh_instance_entity, Transform{});
                 SetParent(r, mesh_instance_entity, armature_entity);
             }
-        } else {
-            return std::unexpected{std::format("glTF import failed '{}': skin {} is used but no mesh instances were emitted for skin binding.", source_path.string(), skin_index)};
         }
 
         // Bone instances only, their pose state is built later from the bone Transforms and rest pose.
@@ -2667,8 +2711,7 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
     }
 
     std::unordered_map<uint32_t, std::vector<std::pair<entt::entity, BoneId>>> armature_targets_by_joint_node;
-    for (const auto &entry : armature_data_entities_by_skin) {
-        const auto armature_data_entity = entry.second;
+    for (const auto armature_data_entity : armature_data_entities) {
         const auto &armature = r.get<const Armature>(armature_data_entity);
         for (const auto &bone : armature.Bones) {
             if (bone.JointNodeIndex) {
@@ -2989,17 +3032,6 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             light_entities_ordered.emplace_back(entity);
         }
     }
-
-    // Armature data entities → SkinIndex (source-fidelity from ImportedSkin if present).
-    std::unordered_map<entt::entity, uint32_t> armature_data_to_skin_index;
-    for (const auto e : r.view<const Armature>()) {
-        const auto &arm = r.get<const Armature>(e);
-        armature_data_to_skin_index[e] = arm.ImportedSkin ? arm.ImportedSkin->SkinIndex : armature_data_to_skin_index.size();
-    }
-
-    // Map data entity → ArmatureObject entity (for parent-of-armature lookup + name).
-    std::unordered_map<entt::entity, entt::entity> armature_data_to_object;
-    for (const auto [e, ao] : r.view<const ArmatureObject>().each()) armature_data_to_object[ao.Entity] = e;
 
     // Scene tree: source-derived entities use `SourceNodeIndex` (hierarchy comes from
     // `SourceParentNodeIndex`, not `SceneNode` which gets mutated by skinning/armature
@@ -3913,44 +3945,33 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         asset.meshes.emplace_back(fastgltf::Mesh{.primitives = std::move(primitives), .weights = std::move(default_weights), .name = ToFgStr(group.Name)});
     }
 
-    // Source→dense skin index remap for node refs below. Per Armature, emit one fastgltf::Skin
-    // directly into asset.skins (only joint indices, IBMs, skeleton, and name are needed at the
-    // glTF level; runtime-only fields like rest-local transforms and bone names live in the
-    // engine's `Armature` and round-trip through node entries instead). Load creates Armature
-    // entities in source-skin-index order, so reverse-iterating the view (entt iterates in
-    // reverse-creation order) yields source-ascending order without an extra sort.
+    // Emit one fastgltf::Skin per imported skin, in ascending source-skin-index order so the skins array is stable regardless of armature grouping.
+    // Rest locals and bone names live in the engine's Armature and round-trip through node entries instead.
     std::unordered_map<uint32_t, uint32_t> skin_remap;
-    const auto armature_view = r.view<const Armature>();
-    for (auto it = armature_view.rbegin(); it != armature_view.rend(); ++it) {
-        const auto data_entity = *it;
-        const auto &arm = r.get<const Armature>(data_entity);
-        if (!arm.ImportedSkin) continue;
-        const auto source_skin_index = arm.ImportedSkin->SkinIndex;
-
-        fastgltf::pmr::MaybeSmallVector<size_t> joints;
-        joints.reserve(arm.ImportedSkin->OrderedJointNodeIndices.size());
-        for (const auto j : arm.ImportedSkin->OrderedJointNodeIndices) joints.emplace_back(j);
-
-        const auto ibm = [&]() -> fastgltf::Optional<size_t> {
-            if (arm.ImportedSkin->InverseBindMatrices.empty()) return {};
-            return AddDataAccessor(std::span<const mat4>(arm.ImportedSkin->InverseBindMatrices), fastgltf::AccessorType::Mat4, fastgltf::ComponentType::Float);
-        }();
-
-        std::string skin_name;
-        if (const auto ait = armature_data_to_object.find(data_entity); ait != armature_data_to_object.end()) {
-            if (const auto *sn = r.try_get<const SkinName>(ait->second)) skin_name = sn->Value;
-            else if (!r.all_of<SourceEmptyName>(ait->second)) {
-                if (const auto *name = r.try_get<const Name>(ait->second)) skin_name = name->Value;
-            }
+    {
+        std::vector<const ArmatureImportedSkin *> all_skins;
+        for (const auto [_, arm] : r.view<const Armature>().each()) {
+            for (const auto &skin : arm.Skins) all_skins.emplace_back(&skin);
         }
+        std::ranges::sort(all_skins, {}, [](const auto *skin) { return skin->SkinIndex; });
+        for (const auto *skin : all_skins) {
+            fastgltf::pmr::MaybeSmallVector<size_t> joints;
+            joints.reserve(skin->OrderedJointNodeIndices.size());
+            for (const auto j : skin->OrderedJointNodeIndices) joints.emplace_back(j);
 
-        skin_remap[source_skin_index] = asset.skins.size();
-        asset.skins.emplace_back(fastgltf::Skin{
-            .inverseBindMatrices = ibm,
-            .skeleton = ToFgOpt<size_t>(arm.ImportedSkin->SkeletonNodeIndex),
-            .joints = std::move(joints),
-            .name = ToFgStr(skin_name),
-        });
+            const auto ibm = [&]() -> fastgltf::Optional<size_t> {
+                if (skin->InverseBindMatrices.empty()) return {};
+                return AddDataAccessor(std::span<const mat4>(skin->InverseBindMatrices), fastgltf::AccessorType::Mat4, fastgltf::ComponentType::Float);
+            }();
+
+            skin_remap[skin->SkinIndex] = asset.skins.size();
+            asset.skins.emplace_back(fastgltf::Skin{
+                .inverseBindMatrices = ibm,
+                .skeleton = ToFgOpt<size_t>(skin->SkeletonNodeIndex),
+                .joints = std::move(joints),
+                .name = ToFgStr(skin->Name),
+            });
+        }
     }
 
     // Cameras / lights: emit in the order gathered above.
@@ -4124,8 +4145,8 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         if (const auto cit = camera_entity_to_index.find(entity); cit != camera_entity_to_index.end()) camera_index = cit->second;
         if (const auto lit = light_entity_to_index.find(entity); lit != light_entity_to_index.end()) light_index = lit->second;
         if (const auto *am = r.try_get<const ArmatureModifier>(entity)) {
-            if (const auto it = armature_data_to_skin_index.find(am->ArmatureEntity); it != armature_data_to_skin_index.end()) {
-                if (const auto sit = skin_remap.find(it->second); sit != skin_remap.end()) skin_index = sit->second;
+            if (const auto *arm = r.try_get<const Armature>(am->ArmatureEntity); arm && am->SkinSlot < arm->Skins.size()) {
+                if (const auto sit = skin_remap.find(arm->Skins[am->SkinSlot].SkinIndex); sit != skin_remap.end()) skin_index = sit->second;
             }
         }
 

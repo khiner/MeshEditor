@@ -136,7 +136,7 @@ using Persistent = type_list<
     NodeTransformAnimation, MorphWeightAnimation, MorphWeightState,
     SourceNodeIndex, SourceParentNodeIndex, SourceSiblingIndex, SourceMeshIndex, SourceCameraIndex,
     SourceLightIndex, SourcePhysicsMaterialIndex, SourceCollisionFilterIndex, SourcePhysicsJointDefIndex,
-    SourceSceneIndex, SourceMeshKind, GltfObject, CameraName, LightName, SkinName, SourceObjectName, MeshName,
+    SourceSceneIndex, SourceMeshKind, GltfObject, CameraName, LightName, SourceObjectName, MeshName,
     SourceMatrixTransform, SourceEmptyName, MeshSourceLayout, gltf::SourceAssets>;
 
 // Reconstructed from the Persistent set by ProcessComponentEvents, on_construct, and reactive handlers.

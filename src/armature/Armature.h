@@ -26,6 +26,7 @@ struct ArmatureBone {
 struct ArmatureImportedSkin {
     uint32_t SkinIndex;
     std::optional<uint32_t> SkeletonNodeIndex, AnchorNodeIndex;
+    std::string Name;
     std::vector<uint32_t> OrderedJointNodeIndices;
     std::vector<mat4> InverseBindMatrices;
 };
@@ -37,8 +38,8 @@ struct Armature {
 
     std::vector<ArmatureBone> Bones;
     std::unordered_map<BoneId, uint32_t> BoneIdToIndex;
-    std::vector<uint32_t> JointOrderToBoneIndex; // Precomputed: skin joint order -> bone array index (InvalidBoneIndex if unmapped).
-    std::optional<ArmatureImportedSkin> ImportedSkin;
+    std::vector<std::vector<uint32_t>> JointOrderToBoneIndex; // Precomputed per skin: joint order -> bone array index (InvalidBoneIndex if unmapped).
+    std::vector<ArmatureImportedSkin> Skins;
 
     BoneId AllocateBoneId();
     std::optional<uint32_t> FindBoneIndex(BoneId) const;
@@ -64,8 +65,8 @@ Transform AbsoluteToDelta(const Transform &rest, const Transform &absolute);
 // For each keyed channel, interpolate the absolute glTF keyframe value and convert to rest-relative delta.
 void EvaluateAnimationDeltas(const AnimationClip &, float time, std::span<const ArmatureBone>, std::span<Transform> deltas);
 
-// For each skin joint j: out[j] = bone_pose_world[bone_for_j] * inverse_bind[j], or I4 if the joint maps to no bone.
-void ComputeDeformMatrices(const Armature &, std::span<const mat4> bone_pose_world, std::span<const mat4> inverse_bind, std::span<mat4> out);
+// For each joint j of skin `skin_slot`: out[j] = bone_pose_world[bone_for_j] * inverse_bind[j], or I4 if the joint maps to no bone.
+void ComputeDeformMatrices(const Armature &, uint32_t skin_slot, std::span<const mat4> bone_pose_world, std::span<mat4> out);
 
 // Blend `pre_local` toward the transform implied by `target_world` at `c.Influence`.
 // Math is armature-local; `armature_world_inv` converts target from world. Scale is preserved from `pre_local`.

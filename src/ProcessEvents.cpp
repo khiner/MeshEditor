@@ -626,9 +626,10 @@ std::optional<AABB> ComputeDeformedLocalAABB(const entt::registry &r, MeshStore 
     std::span<const BoneDeformVertex> bone;
     std::span<const mat4> deform;
     if (const auto *mod = r.try_get<const ArmatureModifier>(object)) {
-        if (const auto *pose = r.try_get<const ArmaturePoseState>(mod->ArmatureEntity); pose && pose->GpuDeformRange.Count > 0) {
+        if (const auto *pose = r.try_get<const ArmaturePoseState>(mod->ArmatureEntity);
+            pose && mod->SkinSlot < pose->GpuDeformRanges.size() && pose->GpuDeformRanges[mod->SkinSlot].Count > 0) {
             bone = meshes.GetBoneDeform(store_id);
-            deform = buffers.ArmatureDeformBuffer.Get(pose->GpuDeformRange);
+            deform = buffers.ArmatureDeformBuffer.Get(pose->GpuDeformRanges[mod->SkinSlot]);
         }
     }
     std::span<const MorphTargetVertex> morph;
@@ -1146,7 +1147,7 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
         if (!r.all_of<ArmaturePose>(data_entity)) r.emplace<ArmaturePose>(data_entity, std::vector<Transform>(n));
         r.emplace<ArmaturePoseState>(
             data_entity,
-            ArmaturePoseState{.BoneUserOffset = std::vector<Transform>(n), .BonePoseWorld = std::vector<mat4>(n, I4), .GpuDeformRange = {}}
+            ArmaturePoseState{.BoneUserOffset = std::vector<Transform>(n), .BonePoseWorld = std::vector<mat4>(n, I4), .GpuDeformRanges = {}}
         );
         // Bone Transform is derived (unserialized), so reconstruct it from rest + delta. Scale stays at rest.
         const auto &deltas = r.get<const ArmaturePose>(data_entity).BoneDeltas;
@@ -1159,16 +1160,16 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
     }
 
     {
-        // Allocate ArmatureDeform for newly created ArmaturePoseState (GpuDeformRange.Count == 0).
-        // Count total joints, single Reserve, then per-armature Allocate.
+        // Allocate ArmatureDeform for newly created ArmaturePoseState (no per-skin ranges yet).
+        // Count total joints, single Reserve, then per-skin Allocate.
         uint32_t total_joints = 0;
         std::vector<entt::entity> pending_armatures; // armature data entities
         for (const auto [arm_obj_entity, arm_obj_comp] : r.view<const ArmatureObject>().each()) {
             auto *pose_state = r.try_get<ArmaturePoseState>(arm_obj_comp.Entity);
-            if (!pose_state || pose_state->GpuDeformRange.Count > 0) continue;
+            if (!pose_state || !pose_state->GpuDeformRanges.empty()) continue;
             const auto *armature = r.try_get<const Armature>(arm_obj_comp.Entity);
-            if (armature && armature->ImportedSkin) {
-                total_joints += armature->ImportedSkin->OrderedJointNodeIndices.size();
+            if (armature && !armature->Skins.empty()) {
+                for (const auto &skin : armature->Skins) total_joints += skin.OrderedJointNodeIndices.size();
                 pending_armatures.emplace_back(arm_obj_comp.Entity);
             }
         }
@@ -1176,7 +1177,10 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
         for (const auto arm_data_entity : pending_armatures) {
             auto &pose_state = r.get<ArmaturePoseState>(arm_data_entity);
             const auto &armature = r.get<const Armature>(arm_data_entity);
-            pose_state.GpuDeformRange = buffers.ArmatureDeformBuffer.Allocate(armature.ImportedSkin->OrderedJointNodeIndices.size());
+            pose_state.GpuDeformRanges.reserve(armature.Skins.size());
+            for (const auto &skin : armature.Skins) {
+                pose_state.GpuDeformRanges.emplace_back(buffers.ArmatureDeformBuffer.Allocate(skin.OrderedJointNodeIndices.size()));
+            }
         }
         if (!pending_armatures.empty()) request(RenderRequest::ReRecord);
     }
@@ -1662,7 +1666,7 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
                 auto *pose = r.try_get<ArmaturePose>(arm_obj_comp.Entity);
                 if (!pose) continue;
                 const auto &armature = r.get<const Armature>(arm_obj_comp.Entity);
-                if (!armature.ImportedSkin) continue;
+                if (armature.Skins.empty()) continue;
                 if (const auto *anim = r.try_get<const ArmatureAnimation>(arm_obj_comp.Entity);
                     anim && !anim->Clips.empty() && anim->ActiveClipIndex < anim->Clips.size()) {
                     const auto &clip = anim->Clips[anim->ActiveClipIndex];
@@ -1768,7 +1772,7 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
                 if (!pose_state) continue;
                 auto &deltas = r.get<ArmaturePose>(arm_obj_comp.Entity).BoneDeltas;
                 auto &armature = r.get<Armature>(arm_obj_comp.Entity);
-                if (!armature.ImportedSkin) continue;
+                if (armature.Skins.empty()) continue;
 
                 // Constraints can depend on external targets (e.g. physics bodies), so we can't early-out on bone-dirty alone.
                 const bool has_any_constraint = std::any_of(
@@ -1887,10 +1891,9 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
                 }
                 if (need_sync) {
                     if (!is_edit_mode) {
-                        ComputeDeformMatrices(
-                            armature, pose_state->BonePoseWorld, armature.ImportedSkin->InverseBindMatrices,
-                            buffers.ArmatureDeformBuffer.GetMutable(pose_state->GpuDeformRange)
-                        );
+                        for (uint32_t s = 0; s < pose_state->GpuDeformRanges.size(); ++s) {
+                            ComputeDeformMatrices(armature, s, pose_state->BonePoseWorld, buffers.ArmatureDeformBuffer.GetMutable(pose_state->GpuDeformRanges[s]));
+                        }
                     }
                     request(anim_render_request);
                 }

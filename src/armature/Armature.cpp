@@ -105,14 +105,15 @@ void Armature::RebuildCaches() {
         Bones[parent].FirstChild = i;
     }
 
-    // Precompute skin joint order -> bone array index (avoids hash lookups in ComputeDeformMatrices).
-    JointOrderToBoneIndex.clear();
-    if (ImportedSkin) {
-        const auto &joints = ImportedSkin->OrderedJointNodeIndices;
-        JointOrderToBoneIndex.resize(joints.size(), InvalidBoneIndex);
+    // Precompute per-skin joint order -> bone array index (avoids hash lookups in ComputeDeformMatrices).
+    JointOrderToBoneIndex.assign(Skins.size(), {});
+    for (uint32_t s = 0; s < Skins.size(); ++s) {
+        const auto &joints = Skins[s].OrderedJointNodeIndices;
+        auto &joint_map = JointOrderToBoneIndex[s];
+        joint_map.resize(joints.size(), InvalidBoneIndex);
         for (uint32_t j = 0; j < joints.size(); ++j) {
             if (auto it = joint_to_bone.find(joints[j]); it != joint_to_bone.end()) {
-                JointOrderToBoneIndex[j] = it->second;
+                joint_map[j] = it->second;
             }
         }
     }
@@ -153,12 +154,14 @@ void Armature::RecomputeRestWorld() {
 }
 
 void Armature::RecomputeInverseBindMatrices() {
-    if (!ImportedSkin) return;
-    auto &ibms = ImportedSkin->InverseBindMatrices;
-    for (uint32_t j = 0; j < JointOrderToBoneIndex.size() && j < ibms.size(); ++j) {
-        const auto bone_index = JointOrderToBoneIndex[j];
-        if (bone_index != InvalidBoneIndex && bone_index < Bones.size()) {
-            ibms[j] = Bones[bone_index].InvRestWorld;
+    for (uint32_t s = 0; s < Skins.size() && s < JointOrderToBoneIndex.size(); ++s) {
+        auto &ibms = Skins[s].InverseBindMatrices;
+        const auto &joint_map = JointOrderToBoneIndex[s];
+        for (uint32_t j = 0; j < joint_map.size() && j < ibms.size(); ++j) {
+            const auto bone_index = joint_map[j];
+            if (bone_index != InvalidBoneIndex && bone_index < Bones.size()) {
+                ibms[j] = Bones[bone_index].InvRestWorld;
+            }
         }
     }
 }
@@ -328,16 +331,17 @@ void BoneMat3ToVecRoll(const mat3 &m, vec3 &direction, float &roll) {
     roll = 2.f * std::atan2(glm::dot(vec3{twist.x, twist.y, twist.z}, nor), twist.w);
 }
 
-// One deform buffer per armature is shared across mesh instances, so we skip Blender's per-instance mesh-to-armature transform.
-// A skinned mesh moved off its armature shifts rigidly instead of stretching.
+// One deform buffer per skin is shared across mesh instances, so a skinned mesh moved off its armature shifts rigidly instead of stretching.
 void ComputeDeformMatrices(
-    const Armature &data,
-    std::span<const mat4> bone_pose_world, std::span<const mat4> inverse_bind_matrices, std::span<mat4> out_deform_matrices
+    const Armature &data, uint32_t skin_slot,
+    std::span<const mat4> bone_pose_world, std::span<mat4> out_deform_matrices
 ) {
-    if (!data.ImportedSkin || data.Bones.empty()) return;
+    if (skin_slot >= data.Skins.size() || skin_slot >= data.JointOrderToBoneIndex.size() || data.Bones.empty()) return;
 
-    for (uint32_t j = 0; j < data.JointOrderToBoneIndex.size() && j < out_deform_matrices.size(); ++j) {
-        const auto bone_index = data.JointOrderToBoneIndex[j];
+    const auto &inverse_bind_matrices = data.Skins[skin_slot].InverseBindMatrices;
+    const auto &joint_map = data.JointOrderToBoneIndex[skin_slot];
+    for (uint32_t j = 0; j < joint_map.size() && j < out_deform_matrices.size(); ++j) {
+        const auto bone_index = joint_map[j];
         if (bone_index == InvalidBoneIndex || bone_index >= bone_pose_world.size()) {
             out_deform_matrices[j] = I4;
             continue;
