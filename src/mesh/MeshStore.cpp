@@ -365,8 +365,11 @@ struct MeshStore::Buffers {
           OverlayVerticesBuffer{ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::VertexBuffer},
           VertexStateBuffer{ctx, 0, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer},
           FaceStateBuffer{ctx, 0, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer},
+          FaceSharpnessBuffer{ctx, 0, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer},
           EdgeStateBuffer{ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer},
-          TriangleFaceIdBuffer{ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::ObjectIdBuffer} {}
+          TriangleFaceIdBuffer{ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::ObjectIdBuffer},
+          CornerNormalBuffer{ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::CornerNormalBuffer},
+          EdgeSharpnessBuffer{ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer} {}
 
     BufferArena<uint32_t> FaceFirstTriangleBuffer; // Per-face index of first triangle in the index buffer
     BufferArena<uint32_t> FacePrimitiveBuffer; // Per-face source primitive index
@@ -378,8 +381,11 @@ struct MeshStore::Buffers {
     BufferArena<Vertex> OverlayVerticesBuffer;
     mvk::Buffer VertexStateBuffer; // Mirrors VerticesBuffer
     mvk::Buffer FaceStateBuffer; // Mirrors FaceFirstTriangleBuffer
+    mvk::Buffer FaceSharpnessBuffer; // Mirrors FaceFirstTriangleBuffer. 1 = flat-shaded face (canonical sharpness store)
     BufferArena<uint8_t> EdgeStateBuffer;
     BufferArena<uint32_t> TriangleFaceIdBuffer; // 1-indexed map from face triangles (in mesh face order) to source face ID
+    BufferArena<vec3> CornerNormalBuffer; // Per-corner shading normals, in triangulated face-fan order
+    BufferArena<uint8_t> EdgeSharpnessBuffer; // One byte per edge, 1 = sharp (canonical sharpness store)
 
     // Visit every BufferArena in a fixed order, so Serialize/Deserialize stay in lockstep.
     void ForEachArena(auto &&f) {
@@ -391,8 +397,10 @@ struct MeshStore::Buffers {
         f(MorphTargetBuffer);
         f(EdgeStateBuffer);
         f(TriangleFaceIdBuffer);
+        f(CornerNormalBuffer);
+        f(EdgeSharpnessBuffer);
     }
-    static constexpr size_t ArenaCount = 8;
+    static constexpr size_t ArenaCount = 10;
 };
 
 namespace {
@@ -415,30 +423,32 @@ std::vector<std::byte> MeshStore::Serialize() const {
     B->ForEachArena([&](const auto &a) { arenas.push_back(a.Save()); });
     const auto vertex_state = SaveBuffer(B->VertexStateBuffer);
     const auto face_state = SaveBuffer(B->FaceStateBuffer);
+    const auto face_sharpness = SaveBuffer(B->FaceSharpnessBuffer);
 
     // Serialize from non-const copies: zpp mis-encodes a const aggregate this large, and these match the types Deserialize reads back into.
     auto entries = Entries;
     auto free_ids = FreeIds;
     std::vector<std::byte> out;
     zpp::bits::out archive{out};
-    if (zpp::bits::failure(archive(arenas, vertex_state, face_state, entries, free_ids))) return {};
+    if (zpp::bits::failure(archive(arenas, vertex_state, face_state, face_sharpness, entries, free_ids))) return {};
     out.resize(archive.position());
     return out;
 }
 
 void MeshStore::Deserialize(std::span<const std::byte> bytes) {
     std::vector<ArenaState> arenas;
-    std::vector<std::byte> vertex_state, face_state;
+    std::vector<std::byte> vertex_state, face_state, face_sharpness;
     std::vector<Entry> entries;
     std::vector<uint32_t> free_ids;
     zpp::bits::in archive{bytes};
-    if (zpp::bits::failure(archive(arenas, vertex_state, face_state, entries, free_ids))) return;
+    if (zpp::bits::failure(archive(arenas, vertex_state, face_state, face_sharpness, entries, free_ids))) return;
     if (arenas.size() != Buffers::ArenaCount) return;
 
     size_t i = 0;
     B->ForEachArena([&](auto &a) { a.Restore(std::move(arenas[i++])); });
     RestoreBuffer(B->VertexStateBuffer, vertex_state);
     RestoreBuffer(B->FaceStateBuffer, face_state);
+    RestoreBuffer(B->FaceSharpnessBuffer, face_sharpness);
     Entries = std::move(entries);
     FreeIds = std::move(free_ids);
 }
@@ -458,7 +468,7 @@ std::span<const BoneDeformVertex> MeshStore::GetBoneDeform(uint32_t id) const { 
 std::span<const MorphTargetVertex> MeshStore::GetMorphTargets(uint32_t id) const { return B->MorphTargetBuffer.Get(Entries.at(id).MorphTargets); }
 
 uint32_t MeshStore::GetVertexStateSlot() const { return B->VertexStateBuffer.Slot; }
-uint32_t MeshStore::GetFaceFirstTriangleSlot() const { return B->FaceFirstTriangleBuffer.Buffer.Slot; }
+uint32_t MeshStore::GetCornerNormalSlot() const { return B->CornerNormalBuffer.Buffer.Slot; }
 uint32_t MeshStore::GetFacePrimitiveSlot() const { return B->FacePrimitiveBuffer.Buffer.Slot; }
 uint32_t MeshStore::GetPrimitiveMaterialSlot() const { return B->PrimitiveMaterialBuffer.Buffer.Slot; }
 uint32_t MeshStore::GetBoneDeformSlot() const { return B->BoneDeformBuffer.Buffer.Slot; }
@@ -466,45 +476,187 @@ uint32_t MeshStore::GetMorphTargetSlot() const { return B->MorphTargetBuffer.Buf
 
 SlottedRange MeshStore::GetFaceStateRange(uint32_t id) const { return {Entries.at(id).FaceData, B->FaceStateBuffer.Slot}; }
 SlottedRange MeshStore::GetEdgeStateRange(uint32_t id) const { return B->EdgeStateBuffer.Slotted(Entries.at(id).EdgeStates); }
-SlottedRange MeshStore::GetFaceFirstTriRange(uint32_t id) const { return B->FaceFirstTriangleBuffer.Slotted(Entries.at(id).FaceData); }
+Range MeshStore::GetCornerNormalRange(uint32_t id) const { return Entries.at(id).CornerNormals; }
 SlottedRange MeshStore::GetFaceIdRange(uint32_t id) const { return B->TriangleFaceIdBuffer.Slotted(Entries.at(id).TriangleFaceIds); }
 SlottedRange MeshStore::GetFacePrimitiveRange(uint32_t id) const { return B->FacePrimitiveBuffer.Slotted(Entries.at(id).FacePrimitives); }
 SlottedRange MeshStore::GetPrimitiveMaterialRange(uint32_t id) const { return B->PrimitiveMaterialBuffer.Slotted(Entries.at(id).PrimitiveMaterials); }
 
 std::span<const uint32_t> MeshStore::GetTriangleFaceIds(uint32_t id) const { return B->TriangleFaceIdBuffer.Get(Entries.at(id).TriangleFaceIds); }
+std::span<const uint32_t> MeshStore::GetFaceFirstTriangles(uint32_t id) const { return B->FaceFirstTriangleBuffer.Get(Entries.at(id).FaceData); }
 std::span<const uint32_t> MeshStore::GetFacePrimitiveIndices(uint32_t id) const { return B->FacePrimitiveBuffer.Get(Entries.at(id).FacePrimitives); }
 std::span<uint32_t> MeshStore::GetFacePrimitiveIndices(uint32_t id) { return B->FacePrimitiveBuffer.GetMutable(Entries.at(id).FacePrimitives); }
 std::span<const uint32_t> MeshStore::GetPrimitiveMaterialIndices(uint32_t id) const { return B->PrimitiveMaterialBuffer.Get(Entries.at(id).PrimitiveMaterials); }
 std::span<uint32_t> MeshStore::GetPrimitiveMaterialIndices(uint32_t id) { return B->PrimitiveMaterialBuffer.GetMutable(Entries.at(id).PrimitiveMaterials); }
 
-void MeshStore::UpdateNormals(const Mesh &mesh, bool skip_nonzero) {
-    const auto face_cross = [&](Mesh::FH fh) {
+namespace {
+// Area-weighted smooth vertex normals. `position` maps a vertex index to its position and
+// `normal_at` to its output normal.
+void AccumulateSmoothVertexNormals(const Mesh &mesh, auto &&position, auto &&normal_at) {
+    for (const auto vh : mesh.vertices()) normal_at(*vh) = vec3{0};
+    for (const auto fh : mesh.faces()) {
         auto it = mesh.cfv_iter(fh);
-        const auto p0 = mesh.GetPosition(*it), p1 = mesh.GetPosition(*++it), p2 = mesh.GetPosition(*++it);
-        return glm::cross(p1 - p0, p2 - p0);
-    };
+        const auto p0 = position(**it);
+        const auto p1 = position(**++it);
+        const auto p2 = position(**++it);
+        const auto cross = glm::cross(p1 - p0, p2 - p0);
+        for (const auto vh : mesh.fv_range(fh)) normal_at(*vh) += cross;
+    }
+    for (const auto vh : mesh.vertices()) normal_at(*vh) = glm::normalize(normal_at(*vh));
+}
+} // namespace
 
+void MeshStore::UpdateVertexNormals(const Mesh &mesh) {
     auto vertices = GetVertices(mesh.GetStoreId());
-    if (skip_nonzero) {
-        std::vector<bool> needs_normal(vertices.size());
-        for (uint32_t i = 0; i < vertices.size(); ++i) needs_normal[i] = vertices[i].Normal == vec3{0};
+    AccumulateSmoothVertexNormals(
+        mesh,
+        [&](uint32_t vi) { return vertices[vi].Position; },
+        [&](uint32_t vi) -> vec3 & { return vertices[vi].Normal; }
+    );
+}
+
+namespace {
+// Sector-cut corner derivation. `position` and `smooth_normal` map a vertex index to its
+// position and full-fan smooth normal. Corners of sharp faces take the face normal, smooth
+// corners at vertices touching a sharp edge or sharp face average their fan sector (cut at
+// the discontinuities), and all other smooth corners take `smooth_normal`.
+void DeriveCornerNormals(
+    const Mesh &mesh,
+    std::span<const uint8_t> sharp_faces, std::span<const uint8_t> sharp_edges,
+    auto &&position, auto &&smooth_normal, std::span<vec3> corners
+) {
+    const auto &c = mesh.GetConnectivity();
+    const auto face_sharp = [&](Mesh::FH fh) { return *fh < sharp_faces.size() && sharp_faces[*fh] != 0; };
+    const auto edge_sharp = [&](Mesh::HH hh) { const auto eh = mesh.GetEdge(hh); return *eh < sharp_edges.size() && sharp_edges[*eh] != 0; };
+
+    // Vertices touching a discontinuity need sector fans; all others take the vertex normal.
+    // Face crosses are only consumed at discontinuities, and each is shared by every fan it appears in.
+    static thread_local std::vector<uint8_t> touched;
+    static thread_local std::vector<vec3> face_crosses;
+    touched.clear();
+    const auto is_set = [](uint8_t s) { return s != 0; };
+    if (std::ranges::any_of(sharp_edges, is_set) || std::ranges::any_of(sharp_faces, is_set)) {
+        touched.assign(mesh.VertexCount(), 0);
+        for (uint32_t ei = 0; ei < sharp_edges.size(); ++ei) {
+            if (!sharp_edges[ei]) continue;
+            const auto hh = mesh.GetHalfedge(Mesh::EH{ei}, 0);
+            if (const auto to = mesh.GetToVertex(hh)) touched[*to] = 1;
+            if (const auto from = mesh.GetFromVertex(hh)) touched[*from] = 1;
+        }
+        for (uint32_t fi = 0; fi < sharp_faces.size(); ++fi) {
+            if (!sharp_faces[fi]) continue;
+            for (const auto vh : mesh.fv_range(Mesh::FH{fi})) touched[*vh] = 1;
+        }
+        face_crosses.resize(mesh.FaceCount());
         for (const auto fh : mesh.faces()) {
-            const auto cross = face_cross(fh);
-            for (const auto vh : mesh.fv_range(fh)) {
-                if (needs_normal[*vh]) vertices[*vh].Normal += cross;
+            auto it = mesh.cfv_iter(fh);
+            const auto p0 = position(**it);
+            const auto p1 = position(**++it);
+            const auto p2 = position(**++it);
+            face_crosses[*fh] = glm::cross(p1 - p0, p2 - p0);
+        }
+    }
+    const auto face_cross = [&](Mesh::FH fh) { return face_crosses[*fh]; };
+
+    // Average the smooth-face sector around `h_in`'s corner vertex, walking both ways from
+    // `fh` until a sharp edge, sharp face, or boundary cuts the fan.
+    const auto sector_normal = [&](Mesh::FH fh, Mesh::HH h_in) {
+        constexpr uint32_t MaxFan{64};
+        auto acc = face_cross(fh);
+        bool full_loop = false;
+        auto h = h_in;
+        for (uint32_t i = 0; i < MaxFan; ++i) {
+            const auto out = c.Halfedges[*h].Next; // Leaves the corner vertex within the current face.
+            if (edge_sharp(out)) break;
+            const auto opp = c.Halfedges[*out].Opposite;
+            if (!opp) break;
+            const auto nf = c.Halfedges[*opp].Face;
+            if (!nf) break;
+            if (nf == fh) {
+                full_loop = true;
+                break;
+            }
+            if (face_sharp(nf)) break;
+            acc += face_cross(nf);
+            h = opp;
+        }
+        if (!full_loop) {
+            h = h_in;
+            for (uint32_t i = 0; i < MaxFan; ++i) {
+                if (edge_sharp(h)) break;
+                const auto opp = c.Halfedges[*h].Opposite;
+                if (!opp) break;
+                const auto nf = c.Halfedges[*opp].Face;
+                if (!nf || nf == fh || face_sharp(nf)) break;
+                acc += face_cross(nf);
+                // Continue from the halfedge entering the corner vertex within `nf`.
+                auto prev = opp;
+                for (auto walk = c.Halfedges[*opp].Next; walk != opp; walk = c.Halfedges[*walk].Next) prev = walk;
+                h = prev;
             }
         }
-        for (uint32_t i = 0; i < vertices.size(); ++i) {
-            if (needs_normal[i]) vertices[i].Normal = glm::normalize(vertices[i].Normal);
+        return glm::normalize(acc);
+    };
+
+    uint32_t ci = 0;
+    std::vector<vec3> face_corners; // Per-face corner normals in vertex order, emitted in fan order.
+    for (const auto fh : mesh.faces()) {
+        if (face_sharp(fh)) {
+            const auto n = glm::normalize(face_cross(fh));
+            const auto tri_count = mesh.GetValence(fh) - 2;
+            for (uint32_t t = 0; t < tri_count * 3; ++t) corners[ci++] = n;
+            continue;
         }
-    } else {
-        for (auto &v : vertices) v.Normal = vec3{0};
-        for (const auto fh : mesh.faces()) {
-            const auto cross = face_cross(fh);
-            for (const auto vh : mesh.fv_range(fh)) vertices[*vh].Normal += cross;
+        face_corners.clear();
+        for (const auto hh : mesh.fh_range(fh)) {
+            const auto vh = mesh.GetToVertex(hh);
+            face_corners.emplace_back(!touched.empty() && touched[*vh] ? sector_normal(fh, hh) : smooth_normal(*vh));
         }
-        for (auto &v : vertices) v.Normal = glm::normalize(v.Normal);
+        for (uint32_t i = 1; i + 1 < face_corners.size(); ++i) {
+            corners[ci++] = face_corners[0];
+            corners[ci++] = face_corners[i];
+            corners[ci++] = face_corners[i + 1];
+        }
     }
+}
+} // namespace
+
+void MeshStore::UpdateCornerNormals(const Mesh &mesh) {
+    const auto id = mesh.GetStoreId();
+    const auto corners = B->CornerNormalBuffer.GetMutable(Entries.at(id).CornerNormals);
+    if (corners.empty()) return;
+    const auto vertices = GetVertices(id);
+    DeriveCornerNormals(
+        mesh, GetFaceSharpness(id), GetEdgeSharpness(id),
+        [&](uint32_t vi) { return vertices[vi].Position; },
+        [&](uint32_t vi) { return vertices[vi].Normal; },
+        corners
+    );
+}
+
+void MeshStore::UpdateCornerNormals(const Mesh &mesh, std::span<const vec3> positions) {
+    const auto id = mesh.GetStoreId();
+    const auto corners = B->CornerNormalBuffer.GetMutable(Entries.at(id).CornerNormals);
+    if (corners.empty()) return;
+    // Smooth vertex normals recomputed from the drag-transformed positions, matching a commit.
+    static thread_local std::vector<vec3> vertex_normals;
+    vertex_normals.resize(positions.size());
+    AccumulateSmoothVertexNormals(
+        mesh,
+        [&](uint32_t vi) { return positions[vi]; },
+        [&](uint32_t vi) -> vec3 & { return vertex_normals[vi]; }
+    );
+    DeriveCornerNormals(
+        mesh, GetFaceSharpness(id), GetEdgeSharpness(id),
+        [&](uint32_t vi) { return positions[vi]; },
+        [&](uint32_t vi) { return vertex_normals[vi]; },
+        corners
+    );
+}
+
+SharpnessSummary MeshStore::GetFaceSharpnessSummary(uint32_t id) const {
+    const auto s = GetFaceSharpness(id);
+    const auto sharp = [](uint8_t b) { return b != 0; };
+    return {std::ranges::any_of(s, sharp), !s.empty() && std::ranges::all_of(s, sharp)};
 }
 
 namespace {
@@ -562,6 +714,7 @@ void MeshStore::PlanCreate(const MeshData &data, const MeshPrimitives &primitive
     Pending.Vertices += vertices;
     Pending.Faces += faces;
     Pending.Triangles += triangles;
+    Pending.Edges += (triangles + 2 * faces + 1) / 2; // manifold estimate: edges ≈ halfedges / 2
     Pending.EdgeStates += triangles + 2 * faces; // manifold estimate: halfedges ≈ triangles + 2*faces
     Pending.Primitives += primitives.MaterialIndices.size();
     if (has_deform) Pending.BoneDeformVertices += vertices;
@@ -573,6 +726,7 @@ void MeshStore::PlanClone(const Mesh &mesh) {
     Pending.Vertices += e.Vertices.Count;
     Pending.Faces += e.FaceData.Count;
     Pending.Triangles += e.TriangleFaceIds.Count;
+    Pending.Edges += e.EdgeSharpness.Count;
     Pending.EdgeStates += e.EdgeStates.Count;
     Pending.Primitives += e.PrimitiveMaterials.Count;
     Pending.BoneDeformVertices += e.BoneDeform.Count;
@@ -584,17 +738,22 @@ void MeshStore::CommitReserves() {
     B->FaceFirstTriangleBuffer.ReserveAdditional(Pending.Faces);
     B->FacePrimitiveBuffer.ReserveAdditional(Pending.Faces);
     B->TriangleFaceIdBuffer.ReserveAdditional(Pending.Triangles);
+    B->CornerNormalBuffer.ReserveAdditional(Pending.Triangles * 3);
     B->EdgeStateBuffer.ReserveAdditional(Pending.EdgeStates);
+    B->EdgeSharpnessBuffer.ReserveAdditional(Pending.Edges);
     B->PrimitiveMaterialBuffer.ReserveAdditional(Pending.Primitives);
     B->BoneDeformBuffer.ReserveAdditional(Pending.BoneDeformVertices);
     B->MorphTargetBuffer.ReserveAdditional(Pending.MorphTargetEntries);
     // Mirror buffers (uint8_t state per element, no arena — shared ranges with data arenas).
     if (Pending.Vertices > 0) B->VertexStateBuffer.Reserve(B->VertexStateBuffer.UsedSize + Pending.Vertices);
-    if (Pending.Faces > 0) B->FaceStateBuffer.Reserve(B->FaceStateBuffer.UsedSize + Pending.Faces);
+    if (Pending.Faces > 0) {
+        B->FaceStateBuffer.Reserve(B->FaceStateBuffer.UsedSize + Pending.Faces);
+        B->FaceSharpnessBuffer.Reserve(B->FaceSharpnessBuffer.UsedSize + Pending.Faces);
+    }
     Pending = {};
 }
 
-CreatedMesh MeshStore::CreateMesh(MeshData &&data, MeshVertexAttributes &&attrs, MeshPrimitives &&primitives, std::optional<ArmatureDeformData> deform, std::optional<MorphTargetData> morph) {
+CreatedMesh MeshStore::CreateMesh(MeshData &&data, MeshVertexAttributes &&attrs, MeshPrimitives &&primitives, bool flat_shaded, std::optional<ArmatureDeformData> deform, std::optional<MorphTargetData> morph) {
     const uint32_t vertex_count = data.Positions.size();
     auto [id, vertices] = AllocateVertexBuffer(data.Positions, attrs);
     auto &entry = Entries[id];
@@ -662,6 +821,7 @@ CreatedMesh MeshStore::CreateMesh(MeshData &&data, MeshVertexAttributes &&attrs,
         }
 
         entry.TriangleCount = tri_offset;
+        entry.CornerNormals = B->CornerNormalBuffer.Allocate(tri_offset * 3);
 
         // Write triangle-to-face IDs directly into GPU buffer.
         entry.TriangleFaceIds = B->TriangleFaceIdBuffer.Allocate(tri_offset);
@@ -721,12 +881,13 @@ CreatedMesh MeshStore::CreateMesh(MeshData &&data, MeshVertexAttributes &&attrs,
     }();
     const Mesh mesh{*this, id, conn};
 
-    if (!data.Faces.empty() && !attrs.Normals) {
-        UpdateNormals(mesh);
-    }
-
     entry.EdgeStates = B->EdgeStateBuffer.Allocate(mesh.EdgeCount() * 2);
+    entry.EdgeSharpness = B->EdgeSharpnessBuffer.Allocate(mesh.EdgeCount());
     ClearElementStates(vertices, entry.FaceData, entry.EdgeStates);
+    if (entry.FaceData.Count > 0) std::ranges::fill(GetFaceSharpness(id), uint8_t(flat_shaded ? 1 : 0));
+    if (entry.EdgeSharpness.Count > 0) std::ranges::fill(GetEdgeSharpness(id), uint8_t{0});
+    if (!data.Faces.empty() && !attrs.Normals) UpdateVertexNormals(mesh);
+    UpdateCornerNormals(mesh);
     return {id, std::move(conn)};
 }
 
@@ -744,6 +905,8 @@ CreatedMesh MeshStore::CloneMesh(const Mesh &mesh) {
     const auto id = AcquireId({
         .Vertices = vertices,
         .FaceData = faces,
+        .CornerNormals = B->CornerNormalBuffer.Clone(src_entry.CornerNormals),
+        .EdgeSharpness = B->EdgeSharpnessBuffer.Clone(src_entry.EdgeSharpness),
         .EdgeStates = edge_states,
         .TriangleFaceIds = B->TriangleFaceIdBuffer.Clone(src_entry.TriangleFaceIds),
         .FacePrimitives = B->FacePrimitiveBuffer.Clone(src_entry.FacePrimitives),
@@ -759,6 +922,7 @@ CreatedMesh MeshStore::CloneMesh(const Mesh &mesh) {
 
     MeshConnectivity conn = mesh.GetConnectivity();
     ClearElementStates(vertices, faces, edge_states);
+    if (faces.Count > 0) std::ranges::copy(GetFaceSharpness(src_id), GetFaceSharpness(id).begin());
     return {id, std::move(conn)};
 }
 
@@ -783,7 +947,7 @@ std::expected<MeshWithMaterials, std::string> MeshStore::LoadMesh(const std::fil
 void MeshStore::SetPositions(const Mesh &mesh, std::span<const vec3> positions) {
     auto vertex_span = B->VerticesBuffer.GetMutable(Entries.at(mesh.GetStoreId()).Vertices);
     for (size_t i = 0; i < positions.size(); ++i) vertex_span[i].Position = positions[i];
-    UpdateNormals(mesh);
+    UpdateVertexNormals(mesh);
 }
 void MeshStore::SetPosition(const Mesh &mesh, uint32_t index, vec3 position) {
     B->VerticesBuffer.GetMutable(Entries.at(mesh.GetStoreId()).Vertices)[index].Position = position;
@@ -794,6 +958,8 @@ void MeshStore::Release(uint32_t id) {
     if (id >= Entries.size() || !Entries[id].Alive) return;
     auto &entry = Entries[id];
     B->VerticesBuffer.Release(entry.Vertices);
+    B->CornerNormalBuffer.Release(entry.CornerNormals);
+    B->EdgeSharpnessBuffer.Release(entry.EdgeSharpness);
     B->TriangleFaceIdBuffer.Release(entry.TriangleFaceIds);
     B->FaceFirstTriangleBuffer.Release(entry.FaceData);
     B->FacePrimitiveBuffer.Release(entry.FacePrimitives);
@@ -810,6 +976,7 @@ void MeshStore::Clear() {
     B->OverlayVerticesBuffer.Reset();
     B->VertexStateBuffer.UsedSize = 0;
     B->FaceStateBuffer.UsedSize = 0;
+    B->FaceSharpnessBuffer.UsedSize = 0;
     Entries.clear();
     FreeIds.clear();
     OverlayEntries.clear();
@@ -836,8 +1003,18 @@ Range MeshStore::AllocateVertices(uint32_t count) {
 Range MeshStore::AllocateFaces(uint32_t count) {
     const auto range = B->FaceFirstTriangleBuffer.Allocate(count);
     SyncMirror(B->FaceStateBuffer, range);
+    SyncMirror(B->FaceSharpnessBuffer, range);
     return range;
 }
+
+std::span<const uint8_t> MeshStore::GetFaceSharpness(uint32_t id) const {
+    const auto range = Entries.at(id).FaceData;
+    return {reinterpret_cast<const uint8_t *>(B->FaceSharpnessBuffer.GetMappedData().subspan(range.Offset, range.Count).data()), range.Count};
+}
+std::span<uint8_t> MeshStore::GetFaceSharpness(uint32_t id) { return GetStates(B->FaceSharpnessBuffer, Entries.at(id).FaceData); }
+std::span<const uint8_t> MeshStore::GetEdgeSharpness(uint32_t id) const { return B->EdgeSharpnessBuffer.Get(Entries.at(id).EdgeSharpness); }
+std::span<uint8_t> MeshStore::GetEdgeSharpness(uint32_t id) { return B->EdgeSharpnessBuffer.GetMutable(Entries.at(id).EdgeSharpness); }
+std::span<const vec3> MeshStore::GetCornerNormals(uint32_t id) const { return B->CornerNormalBuffer.Get(Entries.at(id).CornerNormals); }
 
 std::span<uint8_t> MeshStore::GetFaceStates(Range range) { return GetStates(B->FaceStateBuffer, range); }
 std::span<uint8_t> MeshStore::GetVertexStates(Range range) { return GetStates(B->VertexStateBuffer, range); }
@@ -858,71 +1035,28 @@ void MeshStore::ClearElementStates(Range vertices, Range faces, Range edges) {
 
 using namespace he;
 
-void MeshStore::UpdateElementStates(
-    const Mesh &mesh,
-    Element element,
-    const std::unordered_set<VH> &selected_vertices,
-    const std::unordered_set<EH> &selected_edges,
-    const std::unordered_set<EH> &active_edges,
-    const std::unordered_set<FH> &selected_faces,
-    std::optional<uint32_t> active_handle,
-    std::optional<uint32_t> excited_handle
-) {
+void MeshStore::UpdateSoundVertexStates(const Mesh &mesh, std::span<const uint32_t> vertices, std::optional<uint32_t> active_vertex, std::optional<uint32_t> excited_vertex) {
     const auto &entry = Entries.at(mesh.GetStoreId());
-    auto face_states = GetFaceStates(entry.FaceData);
-    auto edge_states = B->EdgeStateBuffer.GetMutable(entry.EdgeStates);
+    ClearElementStates(entry.Vertices, entry.FaceData, entry.EdgeStates);
     auto vertex_states = GetVertexStates(entry.Vertices);
-
-    std::ranges::fill(face_states, 0);
-    std::ranges::fill(edge_states, 0);
-    std::ranges::fill(vertex_states, 0);
-
-    if (element == Element::Face) {
-        for (const auto fh : selected_faces) {
-            face_states[*fh] |= ElementStateSelected;
-            if (active_handle == *fh) {
-                face_states[*active_handle] |= ElementStateActive;
-            }
-        }
+    for (const auto v : vertices) {
+        if (v >= vertex_states.size()) continue;
+        vertex_states[v] |= ElementStateSelected;
+        if (active_vertex == v) vertex_states[v] |= ElementStateActive;
     }
-
-    if (element == Element::Edge || element == Element::Face) {
-        for (uint32_t ei = 0; ei < mesh.EdgeCount(); ++ei) {
-            uint8_t state = 0;
-            if (selected_edges.contains(EH{ei})) {
-                state |= ElementStateSelected;
-                if ((element == Element::Edge && active_handle == ei) || active_edges.contains(EH{ei})) {
-                    state |= ElementStateActive;
-                }
-            }
-            edge_states[2 * ei] = edge_states[2 * ei + 1] = state;
-        }
-    } else if (element == Element::Vertex) {
-        for (uint32_t ei = 0; ei < mesh.EdgeCount(); ++ei) {
-            const auto heh = mesh.GetHalfedge(EH{ei}, 0);
-            edge_states[2 * ei] = selected_vertices.contains(mesh.GetFromVertex(heh)) ? ElementStateSelected : 0;
-            edge_states[2 * ei + 1] = selected_vertices.contains(mesh.GetToVertex(heh)) ? ElementStateSelected : 0;
-        }
-    }
-
-    if (!selected_vertices.empty()) {
-        for (const auto vh : selected_vertices) {
-            vertex_states[*vh] |= ElementStateSelected;
-            if (element == Element::Vertex && active_handle == *vh) {
-                vertex_states[*active_handle] |= ElementStateActive;
-            }
-        }
-    }
-    if (excited_handle && *excited_handle < vertex_states.size()) vertex_states[*excited_handle] |= ElementStateExcited;
+    if (excited_vertex && *excited_vertex < vertex_states.size()) vertex_states[*excited_vertex] |= ElementStateExcited;
+    UpdateEdgeStatesFromVertices(mesh);
 }
 
-void MeshStore::UpdateEdgeStatesFromFaces(const Mesh &mesh, std::span<const uint32_t> selected_faces, std::optional<uint32_t> active_face) {
+void MeshStore::UpdateEdgeStatesFromFaces(const Mesh &mesh, std::optional<uint32_t> active_face) {
     const auto &entry = Entries.at(mesh.GetStoreId());
     auto edge_states = B->EdgeStateBuffer.GetMutable(entry.EdgeStates);
     std::ranges::fill(edge_states, uint8_t{0});
 
-    for (const auto fi : selected_faces) {
-        if (fi >= mesh.FaceCount()) continue;
+    const auto face_states = GetFaceStates(entry.FaceData);
+    const uint32_t face_count = std::min(uint32_t(face_states.size()), mesh.FaceCount());
+    for (uint32_t fi = 0; fi < face_count; ++fi) {
+        if (!(face_states[fi] & ElementStateSelected)) continue;
         for (const auto heh : mesh.fh_range(FH{fi})) {
             const auto ei = *mesh.GetEdge(heh);
             edge_states[2 * ei] |= ElementStateSelected;
@@ -984,29 +1118,39 @@ void MeshStore::UpdateFaceStatesFromEdges(const Mesh &mesh) {
     }
 }
 
-void MeshStore::UpdateVertexStatesFromElements(const Mesh &mesh, std::span<const uint32_t> handles, Element element, std::optional<uint32_t> active_handle) {
+void MeshStore::UpdateVertexStatesFromFaces(const Mesh &mesh, std::optional<uint32_t> active_face) {
     const auto &entry = Entries.at(mesh.GetStoreId());
     auto vertex_states = GetVertexStates(entry.Vertices);
     std::ranges::fill(vertex_states, uint8_t{0});
 
-    if (element == Element::Face) {
-        for (const auto fi : handles) {
-            for (const auto vh : mesh.fv_range(FH{fi})) vertex_states[*vh] |= ElementStateSelected;
-        }
-        if (active_handle && *active_handle < mesh.FaceCount()) {
-            for (const auto vh : mesh.fv_range(FH{*active_handle})) vertex_states[*vh] |= ElementStateActive;
-        }
-    } else if (element == Element::Edge) {
-        for (const auto ei : handles) {
-            const auto hh = mesh.GetHalfedge(EH{ei}, 0);
-            vertex_states[*mesh.GetFromVertex(hh)] |= ElementStateSelected;
-            vertex_states[*mesh.GetToVertex(hh)] |= ElementStateSelected;
-        }
-        if (active_handle && *active_handle < mesh.EdgeCount()) {
-            const auto hh = mesh.GetHalfedge(EH{*active_handle}, 0);
-            vertex_states[*mesh.GetFromVertex(hh)] |= ElementStateActive;
-            vertex_states[*mesh.GetToVertex(hh)] |= ElementStateActive;
-        }
+    const auto face_states = GetFaceStates(entry.FaceData);
+    const uint32_t face_count = std::min(uint32_t(face_states.size()), mesh.FaceCount());
+    for (uint32_t fi = 0; fi < face_count; ++fi) {
+        if (!(face_states[fi] & ElementStateSelected)) continue;
+        for (const auto vh : mesh.fv_range(FH{fi})) vertex_states[*vh] |= ElementStateSelected;
+    }
+    if (active_face && *active_face < mesh.FaceCount()) {
+        for (const auto vh : mesh.fv_range(FH{*active_face})) vertex_states[*vh] |= ElementStateActive;
+    }
+}
+
+void MeshStore::UpdateVertexStatesFromEdges(const Mesh &mesh, std::optional<uint32_t> active_edge) {
+    const auto &entry = Entries.at(mesh.GetStoreId());
+    auto vertex_states = GetVertexStates(entry.Vertices);
+    std::ranges::fill(vertex_states, uint8_t{0});
+
+    const auto edge_states = B->EdgeStateBuffer.Get(entry.EdgeStates);
+    const uint32_t edge_count = std::min(uint32_t(edge_states.size() / 2), mesh.EdgeCount());
+    for (uint32_t ei = 0; ei < edge_count; ++ei) {
+        if (!(edge_states[2 * ei] & ElementStateSelected)) continue;
+        const auto hh = mesh.GetHalfedge(EH{ei}, 0);
+        vertex_states[*mesh.GetFromVertex(hh)] |= ElementStateSelected;
+        vertex_states[*mesh.GetToVertex(hh)] |= ElementStateSelected;
+    }
+    if (active_edge && *active_edge < mesh.EdgeCount()) {
+        const auto hh = mesh.GetHalfedge(EH{*active_edge}, 0);
+        vertex_states[*mesh.GetFromVertex(hh)] |= ElementStateActive;
+        vertex_states[*mesh.GetToVertex(hh)] |= ElementStateActive;
     }
 }
 

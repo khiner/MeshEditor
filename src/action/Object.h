@@ -22,6 +22,17 @@ struct SetSelectedVisible {
 struct SetSelectedSmoothShading {
     bool Smooth;
 };
+// Edit-mode element sharpness. Each resolves the element selection of every edit-mode mesh at apply time.
+struct SetSelectedFacesSmooth {
+    bool Smooth;
+};
+struct SetSelectedEdgesSharp {
+    bool Sharp;
+};
+// Applies to every edge touching a selected vertex.
+struct SetSelectedVertexEdgesSharp {
+    bool Sharp;
+};
 struct ParentToActive {};
 struct ClearParent {};
 
@@ -62,6 +73,7 @@ struct UpdatePrimitiveField {
 
 using Actions = std::variant<
     Delete, Duplicate, DuplicateLinked, ToggleHidden, SetSelectedVisible, SetSelectedSmoothShading,
+    SetSelectedFacesSmooth, SetSelectedEdgesSharp, SetSelectedVertexEdgesSharp,
     ParentToActive, ClearParent,
     AddEmpty, AddArmature, AddCamera, AddLight, AddMeshPrimitive, ImportMesh, SetPbrMeshFeaturesMask,
     UpdatePrimitiveField<float>, UpdatePrimitiveField<vec2>, UpdatePrimitiveField<vec3>, UpdatePrimitiveField<uint32_t>>;

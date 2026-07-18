@@ -10,7 +10,6 @@
 
 #include <expected>
 #include <filesystem>
-#include <unordered_set>
 
 namespace mvk {
 struct BufferContext;
@@ -50,6 +49,10 @@ struct ArmatureDeformData {
 
 struct MeshVertexAttributes;
 
+struct SharpnessSummary {
+    bool Any, All;
+};
+
 // Per-source-primitive metadata; all vectors indexed by primitive.
 struct MeshPrimitives {
     std::vector<uint32_t> FacePrimitiveIndices{}; // per-face source primitive index
@@ -75,7 +78,7 @@ struct MeshStore {
     // Reserve all arenas for accumulated plans, then reset.
     void CommitReserves();
 
-    CreatedMesh CreateMesh(MeshData &&, MeshVertexAttributes &&, MeshPrimitives &&, std::optional<ArmatureDeformData> = {}, std::optional<MorphTargetData> = {});
+    CreatedMesh CreateMesh(MeshData &&, MeshVertexAttributes &&, MeshPrimitives &&, bool flat_shaded = false, std::optional<ArmatureDeformData> = {}, std::optional<MorphTargetData> = {});
     CreatedMesh CloneMesh(const Mesh &);
 
     // `deduplicate` merges coincident-position vertices, discarding per-corner split normals/UVs.
@@ -108,22 +111,32 @@ struct MeshStore {
 
     // Base descriptor slots of the per-mesh GPU buffers (for shader push constants).
     uint32_t GetVertexStateSlot() const;
-    uint32_t GetFaceFirstTriangleSlot() const;
+    uint32_t GetCornerNormalSlot() const;
     uint32_t GetFacePrimitiveSlot() const;
     uint32_t GetPrimitiveMaterialSlot() const;
     uint32_t GetBoneDeformSlot() const;
     uint32_t GetMorphTargetSlot() const;
 
     std::span<const uint8_t> GetVertexStates(uint32_t id) const;
+    // Canonical per-face and per-edge sharpness: 1 = shading discontinuity (flat face / sharp edge).
+    // Callers writing these rederive corner normals afterward.
+    std::span<const uint8_t> GetFaceSharpness(uint32_t id) const;
+    std::span<uint8_t> GetFaceSharpness(uint32_t id);
+    std::span<const uint8_t> GetEdgeSharpness(uint32_t id) const;
+    std::span<uint8_t> GetEdgeSharpness(uint32_t id);
+    // Any/all summary of the face sharpness bytes.
+    SharpnessSummary GetFaceSharpnessSummary(uint32_t id) const;
+    std::span<const vec3> GetCornerNormals(uint32_t id) const;
     SlottedRange GetFaceStateRange(uint32_t id) const;
     SlottedRange GetEdgeStateRange(uint32_t id) const;
-    SlottedRange GetFaceFirstTriRange(uint32_t id) const;
+    Range GetCornerNormalRange(uint32_t id) const;
 
     SlottedRange GetFaceIdRange(uint32_t id) const;
     SlottedRange GetFacePrimitiveRange(uint32_t id) const;
     SlottedRange GetPrimitiveMaterialRange(uint32_t id) const;
 
     std::span<const uint32_t> GetTriangleFaceIds(uint32_t id) const;
+    std::span<const uint32_t> GetFaceFirstTriangles(uint32_t id) const;
     std::span<const uint32_t> GetFacePrimitiveIndices(uint32_t id) const;
     std::span<uint32_t> GetFacePrimitiveIndices(uint32_t id);
     std::span<const uint32_t> GetPrimitiveMaterialIndices(uint32_t id) const;
@@ -131,22 +144,22 @@ struct MeshStore {
 
     std::span<const PrimitiveTriangleRange> GetPrimitiveTriangleRanges(uint32_t id) const { return Entries.at(id).PrimitiveTriangleRanges; }
 
-    void UpdateElementStates(
-        const Mesh &, Element,
-        const std::unordered_set<he::VH> &selected_vertices,
-        const std::unordered_set<he::EH> &selected_edges,
-        const std::unordered_set<he::EH> &active_edges,
-        const std::unordered_set<he::FH> &selected_faces,
-        std::optional<uint32_t> active_handle,
-        std::optional<uint32_t> excited_handle = {}
-    );
-    void UpdateEdgeStatesFromFaces(const Mesh &, std::span<const uint32_t> selected_faces, std::optional<uint32_t> active_face);
+    // Rewrite element states for sound-vertex excitation: the listed vertices are selected,
+    // with optional active and excited vertices.
+    void UpdateSoundVertexStates(const Mesh &, std::span<const uint32_t> vertices, std::optional<uint32_t> active_vertex = {}, std::optional<uint32_t> excited_vertex = {});
+    // Derive the other element domains' states from the current edit element's states.
+    void UpdateEdgeStatesFromFaces(const Mesh &, std::optional<uint32_t> active_face);
     void UpdateEdgeStatesFromVertices(const Mesh &);
     void UpdateFaceStatesFromVertices(const Mesh &);
     void UpdateFaceStatesFromEdges(const Mesh &);
-    // Writes vertex state buffer from non-vertex element handles (Face/Edge), for the GPU transform preview shader.
-    void UpdateVertexStatesFromElements(const Mesh &, std::span<const uint32_t> handles, Element, std::optional<uint32_t> active_handle = {});
-    void UpdateNormals(const Mesh &, bool skip_nonzero = false);
+    void UpdateVertexStatesFromFaces(const Mesh &, std::optional<uint32_t> active_face = {});
+    void UpdateVertexStatesFromEdges(const Mesh &, std::optional<uint32_t> active_edge = {});
+    void UpdateVertexNormals(const Mesh &);
+    // Derive per-corner shading normals from positions, vertex normals, and sharpness,
+    // in triangulated face-fan index order.
+    void UpdateCornerNormals(const Mesh &);
+    // Derive from `positions` instead of the stored positions, matching what committing them produces.
+    void UpdateCornerNormals(const Mesh &, std::span<const vec3> positions);
 
     void Release(uint32_t id);
 
@@ -167,6 +180,8 @@ private:
     struct Entry {
         Range Vertices;
         Range FaceData; // Per-face range shared by FaceFirstTriangleBuffer and FaceStateBuffer
+        Range CornerNormals{}; // One normal per triangulated face corner
+        Range EdgeSharpness{}; // One byte per edge, 1 = sharp
         Range EdgeStates{}, TriangleFaceIds{}, FacePrimitives{}, PrimitiveMaterials{};
         Range BoneDeform{}, MorphTargets{};
         uint32_t MorphTargetCount{0};
@@ -184,7 +199,7 @@ private:
     std::vector<uint32_t> OverlayFreeIds{};
 
     struct PendingReserves {
-        uint32_t Vertices{}, Faces{}, Triangles{}, EdgeStates{};
+        uint32_t Vertices{}, Faces{}, Triangles{}, Edges{}, EdgeStates{};
         uint32_t Primitives{};
         uint32_t BoneDeformVertices{}, MorphTargetEntries{};
     } Pending{};

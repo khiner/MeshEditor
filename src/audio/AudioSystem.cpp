@@ -1142,9 +1142,8 @@ std::vector<uint32_t> GetSampleOpVertices(const entt::registry &r, entt::entity 
     const auto *br = r.try_get<const MeshSelectionBitsetRange>(mesh_entity);
     if (!br || br->Count == 0) return {};
     const auto edit_elem = r.get<const EditMode>(viewport).Value;
-    auto handles = selection::ScanBitsetRange(selection_bits, br->Offset, br->Count);
-    if (edit_elem == Element::Vertex) return handles;
-    return selection::ConvertSelectionElement(handles, *mesh, edit_elem, Element::Vertex);
+    if (edit_elem == Element::Vertex) return selection::ScanBitsetRange(selection_bits, br->Offset, br->Count);
+    return selection::ConvertSelectionElement(selection_bits, br->Offset, br->Count, *mesh, edit_elem, Element::Vertex);
 }
 
 // Circular pad returning a position in the unit disk (center = zero). Drag to set, right-click recenters.

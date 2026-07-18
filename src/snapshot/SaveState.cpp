@@ -3,6 +3,7 @@
 #include "mesh/MeshStore.h"
 #include "render/GpuBuffers.h"
 #include "render/MaterialComponents.h"
+#include "selection/SelectionBitset.h"
 #include "snapshot/SceneSnapshot.h"
 
 #include <entt/entity/registry.hpp>
@@ -41,6 +42,23 @@ void DeserializeMaterials(entt::registry &r, std::span<const std::byte> bytes) {
     r.ctx().get<MaterialStore>().Names = std::move(names);
 }
 
+// Element-selection bits, up to the end of the last mesh's bitset range. The ranges themselves are
+// Persistent components, so restoring both brings back the full edit-mode element selection.
+std::vector<std::byte> SerializeSelectionBits(const entt::registry &r) {
+    uint32_t max_end = 0;
+    for (const auto [_, br] : r.view<const MeshSelectionBitsetRange>().each()) max_end = std::max(max_end, br.Offset + br.Count);
+    const auto mapped = r.ctx().get<const GpuBuffers>().SelectionBitset.Buffer.GetMappedData();
+    const auto used = std::min(size_t((max_end + 31) / 32) * sizeof(uint32_t), mapped.size());
+    return {mapped.begin(), mapped.begin() + used};
+}
+
+void DeserializeSelectionBits(entt::registry &r, std::span<const std::byte> bytes) {
+    auto &buffer = r.ctx().get<GpuBuffers>().SelectionBitset.Buffer;
+    const auto mapped = buffer.GetMutableRange(0, buffer.GetMappedData().size());
+    std::memset(mapped.data(), 0, mapped.size());
+    if (!bytes.empty()) buffer.Update(bytes, 0);
+}
+
 void AppendLengthPrefixed(std::vector<std::byte> &out, std::span<const std::byte> section) {
     const uint64_t len = section.size();
     const auto *len_bytes = reinterpret_cast<const std::byte *>(&len);
@@ -64,12 +82,14 @@ std::span<const std::byte> TakeLengthPrefixed(std::span<const std::byte> &bytes)
 std::vector<std::byte> SaveState(const entt::registry &r) {
     const auto scene = SnapshotSceneState(r);
     const auto materials = SerializeMaterials(r);
+    const auto selection_bits = SerializeSelectionBits(r);
     const auto mesh = r.ctx().get<const MeshStore>().Serialize();
 
     std::vector<std::byte> out;
-    out.reserve(2 * sizeof(uint64_t) + scene.size() + materials.size() + mesh.size());
+    out.reserve(3 * sizeof(uint64_t) + scene.size() + materials.size() + selection_bits.size() + mesh.size());
     AppendLengthPrefixed(out, scene);
     AppendLengthPrefixed(out, materials);
+    AppendLengthPrefixed(out, selection_bits);
     out.append_range(mesh); // trailing section, no length prefix
     return out;
 }
@@ -77,10 +97,12 @@ std::vector<std::byte> SaveState(const entt::registry &r) {
 void LoadState(entt::registry &r, std::span<const std::byte> bytes) {
     const auto scene = TakeLengthPrefixed(bytes);
     const auto materials = TakeLengthPrefixed(bytes);
+    const auto selection_bits = TakeLengthPrefixed(bytes);
 
     // MeshStore first: restoring its arenas and entries keeps every Range/StoreId offset valid before the components that reference them are restored.
     r.ctx().get<MeshStore>().Deserialize(bytes);
     DeserializeMaterials(r, materials);
+    DeserializeSelectionBits(r, selection_bits);
     RestoreSceneState(r, scene);
 }
 } // namespace snapshot

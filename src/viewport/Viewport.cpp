@@ -412,7 +412,7 @@ void AddDefaultSceneContent(entt::registry &r) {
     // Default scene: a cube, a light, and a camera (startup.blend layout).
     auto &meshes = r.ctx().get<MeshStore>();
     constexpr PrimitiveShape default_shape{primitive::Cuboid{}};
-    const auto [mesh_entity, _] = ::AddMesh(r, meshes, meshes.CreateMesh(primitive::CreateMesh(default_shape), {}, {}), MeshInstanceCreateInfo{.Name = ToString(default_shape)});
+    const auto [mesh_entity, _] = ::AddMesh(r, meshes, meshes.CreateMesh(primitive::CreateMesh(default_shape), {}, {}, true), MeshInstanceCreateInfo{.Name = ToString(default_shape)});
     r.emplace<PrimitiveShape>(mesh_entity, default_shape);
 
     // startup.blend data, in Blender's frame (Z-up, -Y forward)

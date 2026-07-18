@@ -44,6 +44,8 @@ bindings:
     kind: Buffer
   - name: FacePrimitiveBuffer
     kind: Buffer
+  - name: CornerNormalBuffer
+    kind: Buffer
 
 enums:
   - name: MaterialAlphaMode
@@ -140,7 +142,7 @@ structs:
       - name: ObjectIdSlot
         type: u32
         default: InvalidSlot
-      - name: FaceFirstTriOffset
+      - name: CornerNormalOffset
         type: u32
         default: InvalidOffset
       - name: FaceIdOffset
@@ -261,7 +263,7 @@ structs:
         type: float
       - name: ViewportSize
         type: vec2
-      - name: FaceFirstTriSlot
+      - name: CornerNormalSlot
         type: u32
       - name: BoneDeformSlot
         type: u32

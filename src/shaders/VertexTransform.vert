@@ -32,14 +32,6 @@ layout(location = 15) out vec3 MotionNext;
 layout(constant_id = 0) const uint OverlayKind = 0u;
 layout(constant_id = 1) const uint IsLineDraw = 0u;
 
-vec3 ComputeWorldPos(DrawData draw, Transform world, uint vertex_index) {
-    vec3 pos = VertexBuffers[draw.VertexSlot].Vertices[vertex_index + draw.VertexOffset].Position;
-    vec3 n = vec3(0);
-    ApplyMorphDeform(draw, pos, vertex_index, n);
-    pos = ApplyArmatureDeform(draw, pos, vertex_index, n);
-    return apply_pending_transform(draw, world, pos, vertex_index);
-}
-
 #ifdef VELOCITY_OUTPUT
 // World position of `vert` under one pose. The per-draw offsets are shared across poses,
 // so a pose is selected purely by its buffer slots.
@@ -64,29 +56,15 @@ void main() {
     uint element_state = 0u;
     uint face_id = 0u;
     MaterialIndex = 0u;
-    vec3 normal = vert.Normal;
+    // Face draws read the derived per-corner normal (split at shading discontinuities). Other draws use the vertex normal.
+    vec3 normal = draw.CornerNormalOffset != INVALID_OFFSET ?
+        CornerNormalBuffers[nonuniformEXT(SceneViewUBO.CornerNormalSlot)].Normals[draw.CornerNormalOffset + uint(gl_VertexIndex)] :
+        vert.Normal;
     vec3 morphed_pos = vert.Position;
     ApplyMorphDeform(draw, morphed_pos, idx, normal);
     const vec3 local_pos = ApplyArmatureDeform(draw, morphed_pos, idx, normal);
-    bool computed_face_normal = false;
     if (draw.ObjectIdSlot != INVALID_SLOT) {
         face_id = ObjectIdBuffers[draw.ObjectIdSlot].Ids[draw.FaceIdOffset + uint(gl_VertexIndex) / 3u];
-        if (draw.FaceFirstTriOffset != INVALID_OFFSET && face_id != 0u) {
-            // Compute full world position (morph, armature, pending transform) for all 3 verts of the first triangle of this face,
-            // to compute flat face normals from the first triangle's vertices.
-            // This duplicates per-vertex transform work (~3x for flat-shaded faces).
-            // These shenanigans won't be needed with mesh shaders, which have per-primitive outputs.
-            const uint first_tri = ObjectIdBuffers[SceneViewUBO.FaceFirstTriSlot].Ids[draw.FaceFirstTriOffset + face_id - 1u];
-            const uint base = draw.IndexSlotOffset.Offset + first_tri * 3u;
-            const uint i0 = IndexBuffers[draw.IndexSlotOffset.Slot].Indices[base];
-            const uint i1 = IndexBuffers[draw.IndexSlotOffset.Slot].Indices[base + 1u];
-            const uint i2 = IndexBuffers[draw.IndexSlotOffset.Slot].Indices[base + 2u];
-            const vec3 p0 = ComputeWorldPos(draw, world, i0);
-            const vec3 p1 = ComputeWorldPos(draw, world, i1);
-            const vec3 p2 = ComputeWorldPos(draw, world, i2);
-            WorldNormal = normalize(cross(p1 - p0, p2 - p0));
-            computed_face_normal = true;
-        }
         if (draw.ElementStateSlotOffset.Slot != INVALID_SLOT && face_id != 0u) {
             element_state = uint(ElementStateBuffers[draw.ElementStateSlotOffset.Slot].States[draw.ElementStateSlotOffset.Offset + face_id - 1u]);
         }
@@ -95,9 +73,7 @@ void main() {
     }
     vec3 world_pos = apply_pending_transform(draw, world, local_pos, idx);
 
-    if (!computed_face_normal) {
-        WorldNormal = trs_transform_normal(world, normal);
-    }
+    WorldNormal = trs_transform_normal(world, normal);
     WorldPosition = world_pos;
     VertexColor = vert.Color;
 

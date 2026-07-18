@@ -867,6 +867,42 @@ void RenderControls(entt::registry &r, entt::entity viewport) {
                             Text("Editing %s: %u selected", label(edit_mode).data(), selected_count);
                         }
                     }
+                    // Per-element shading over the current selection. Face mode shades selected faces,
+                    // edge mode marks selected edges sharp, and vertex mode marks every edge touching
+                    // a selected vertex (hidden when the selection touches no edges).
+                    if (const auto *bits_ref = r.ctx().find<const SelectionBitsetRef>(); bits_ref && edit_mode != Element::None) {
+                        const auto &mesh_store = r.ctx().get<const MeshStore>();
+                        const auto *bits = bits_ref->Value.data();
+                        bool any_sharp = false, any_smooth = false;
+                        for (const auto [me, br] : r.view<const MeshSelectionBitsetRange>().each()) {
+                            if (any_sharp && any_smooth) break;
+                            if (!HasMesh(r, me)) continue;
+                            const auto mesh = GetMesh(r, me);
+                            const auto id = mesh.GetStoreId();
+                            const auto classify = [&](std::span<const uint8_t> sharp) {
+                                return [&any_sharp, &any_smooth, sharp](uint32_t handle) {
+                                    if (handle < sharp.size()) (sharp[handle] ? any_sharp : any_smooth) = true;
+                                };
+                            };
+                            if (edit_mode == Element::Face || edit_mode == Element::Edge) {
+                                const auto sharp = edit_mode == Element::Face ? mesh_store.GetFaceSharpness(id) : mesh_store.GetEdgeSharpness(id);
+                                selection::ForEachSelected(bits, br.Offset, br.Count, classify(sharp));
+                            } else if (selection::CountSelected(bits, br.Offset, br.Count) > 0) {
+                                selection::ForEachVertexTouchedEdge(bits, br.Offset, br.Count, mesh, classify(mesh_store.GetEdgeSharpness(id)));
+                            }
+                        }
+                        if (any_sharp || any_smooth) {
+                            const bool mixed = any_sharp && any_smooth;
+                            if (mixed) PushItemFlag(ImGuiItemFlags_MixedValue, true);
+                            if (edit_mode == Element::Face) {
+                                if (bool set_smooth = !any_sharp; Checkbox("Smooth faces", &set_smooth)) action::Emit(action::object::SetSelectedFacesSmooth{set_smooth});
+                            } else if (bool set_sharp = any_sharp && !any_smooth; Checkbox(edit_mode == Element::Edge ? "Sharp edges" : "Sharp vertices", &set_sharp)) {
+                                if (edit_mode == Element::Edge) action::Emit(action::object::SetSelectedEdgesSharp{set_sharp});
+                                else action::Emit(action::object::SetSelectedVertexEdgesSharp{set_sharp});
+                            }
+                            if (mixed) PopItemFlag();
+                        }
+                    }
                 }
                 PopID();
             }
@@ -955,12 +991,21 @@ void RenderControls(entt::registry &r, entt::entity viewport) {
                         std::views::filter([&](entt::entity me) { return GetMesh(r, me).FaceCount() > 0; }) |
                         to<std::vector>();
                     if (!face_mesh_entities.empty()) {
-                        const bool any_smooth = any_of(face_mesh_entities, [&](entt::entity me) { return r.all_of<SmoothShading>(me); });
-                        const bool any_flat = any_of(face_mesh_entities, [&](entt::entity me) { return !r.all_of<SmoothShading>(me); });
-                        const bool mixed_smooth = any_smooth && any_flat;
+                        // Fully smooth = no sharp face. Any sharp face (even partial) reads as not-smooth,
+                        // and a partially sharp mesh renders the checkbox mixed.
+                        const auto &meshes = r.ctx().get<const MeshStore>();
+                        bool any_smooth = false, any_sharp = false, any_partial = false;
+                        for (const auto me : face_mesh_entities) {
+                            if ((any_smooth && any_sharp) || any_partial) break;
+                            const auto summary = meshes.GetFaceSharpnessSummary(GetMesh(r, me).GetStoreId());
+                            any_smooth |= !summary.Any;
+                            any_sharp |= summary.Any;
+                            any_partial |= summary.Any && !summary.All;
+                        }
+                        const bool mixed_smooth = (any_smooth && any_sharp) || any_partial;
                         SameLine();
                         if (mixed_smooth) PushItemFlag(ImGuiItemFlags_MixedValue, true);
-                        if (bool set_smooth = any_smooth && !any_flat; Checkbox("Smooth shading", &set_smooth)) action::Emit(action::object::SetSelectedSmoothShading{set_smooth});
+                        if (bool set_smooth = any_smooth && !any_sharp; Checkbox("Smooth shading", &set_smooth)) action::Emit(action::object::SetSelectedSmoothShading{set_smooth});
                         if (mixed_smooth) PopItemFlag();
                     }
                 }

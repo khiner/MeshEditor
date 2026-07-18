@@ -257,7 +257,7 @@ void SetEditMode(entt::registry &r, entt::entity viewport, Element mode) {
     struct PendingConvert {
         entt::entity MeshEntity;
         uint32_t NewCount;
-        std::vector<uint32_t> FromHandles;
+        std::vector<uint32_t> ToHandles; // Selection converted to the new mode, staged across the bitset repack
     };
     std::vector<PendingConvert> pending;
     std::vector<ElementRange> old_ranges;
@@ -265,11 +265,11 @@ void SetEditMode(entt::registry &r, entt::entity viewport, Element mode) {
     for (auto [mesh_entity, br, _] : r.view<MeshSelectionBitsetRange, const MeshHandle>().each()) {
         const auto mesh = GetMesh(r, mesh_entity);
         const uint32_t old_count = br.Count, new_count = selection::GetElementCount(mesh, mode);
-        auto from_handles = selection::ScanBitsetRange(bits, br.Offset, old_count);
+        auto to_handles = selection::ConvertSelectionElement(bits, br.Offset, old_count, mesh, current_mode, mode);
         if (old_count > 0) old_ranges.emplace_back(mesh_entity, br.Offset, old_count);
         old_max_end = std::max(old_max_end, br.Offset + old_count);
         r.remove<MeshActiveElement>(mesh_entity);
-        pending.emplace_back(PendingConvert{mesh_entity, new_count, std::move(from_handles)});
+        pending.emplace_back(PendingConvert{mesh_entity, new_count, std::move(to_handles)});
     }
 
     // Clear the superset of old and new packed bit ranges once, to avoid stale/overlap bits.
@@ -282,7 +282,7 @@ void SetEditMode(entt::registry &r, entt::entity viewport, Element mode) {
         DispatchUpdateSelectionStates(r, old_ranges, current_mode);
         // Face mode also derives edge states via CPU; clear them when exiting face-select.
         if (current_mode == Element::Face) {
-            for (const auto &p : pending) meshes.UpdateEdgeStatesFromFaces(GetMesh(r, p.MeshEntity), {}, {});
+            for (const auto &p : pending) meshes.UpdateEdgeStatesFromFaces(GetMesh(r, p.MeshEntity), {});
         }
     }
 
@@ -292,12 +292,8 @@ void SetEditMode(entt::registry &r, entt::entity viewport, Element mode) {
         auto &br = r.get<MeshSelectionBitsetRange>(p.MeshEntity);
         br.Offset = next_offset;
         br.Count = p.NewCount;
-        const auto &mesh = GetMesh(r, p.MeshEntity);
-        for (const uint32_t h : selection::ConvertSelectionElement(p.FromHandles, mesh, current_mode, mode)) {
-            if (h < p.NewCount) {
-                const uint32_t gbit = next_offset + h;
-                bits[gbit >> 5] |= 1u << (gbit & 31u);
-            }
+        for (const uint32_t h : p.ToHandles) {
+            if (h < p.NewCount) selection::Select(bits, next_offset, h);
         }
         if (p.NewCount > 0) new_ranges.emplace_back(p.MeshEntity, next_offset, p.NewCount);
         next_offset = (next_offset + p.NewCount + 31) / 32 * 32;
@@ -1389,6 +1385,12 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
         buffers.WorkspaceLightsUBO.Update(as_bytes(r.get<const WorkspaceLights>(viewport)));
         request(RenderRequest::Submit);
     }
+    if (auto &tracker = reactive<changes::MeshShading>(r); !tracker.empty()) {
+        for (auto mesh_entity : tracker) {
+            if (const auto mesh = TryGetMesh(r, mesh_entity)) meshes.UpdateCornerNormals(*mesh);
+        }
+        request(RenderRequest::Submit);
+    }
     if (auto &tracker = reactive<changes::MeshGeometry>(r); !tracker.empty()) {
         const auto edit_mode = r.get<const EditMode>(viewport).Value;
         std::vector<ElementRange> geometry_ranges;
@@ -1472,6 +1474,33 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
         // Mark all armatures dirty for bone state + pose sync on mode change.
         for (const auto arm : r.view<ArmatureObject>()) r.emplace_or_replace<BoneInstanceStateDirty>(arm);
     }
+    // Maps an Edit-mode vertex's local position through the pending drag transform.
+    const auto make_edit_drag_transform = [](const WorldTransform &wt, const PendingTransform &pending) {
+        return [&wt, &pending, inv_rot = glm::conjugate(wt.R), inv_scale = 1.f / wt.S, pivot_rel = pending.Pivot - wt.P](vec3 local_pos) {
+            const auto world_rel = glm::rotate(wt.R, wt.S * local_pos);
+            const auto offset = glm::rotate(pending.Delta.R, pending.Delta.S * (world_rel - pivot_rel));
+            return inv_scale * glm::rotate(inv_rot, pivot_rel + offset + pending.Delta.P);
+        };
+    };
+    // Live corner-normal preview during Edit-mode vertex drags: derive from the same transformed
+    // positions the GPU applies, so shading tracks the drag and matches the eventual commit.
+    if (is_edit_mode && !reactive<changes::TransformPending>(r).empty() && FindArmatureObject(r, FindActiveEntity(r)) == entt::null) {
+        if (const auto *pending = r.try_get<const PendingTransform>(viewport); pending && pending->Delta != Transform{}) {
+            for (const auto &[mesh_entity, instance_entity] : edit_transform_context.TransformInstances) {
+                if (selection::HasScaleLockedInstance(r, mesh_entity)) continue;
+                const auto &mesh = GetMesh(r, mesh_entity);
+                const auto vertex_states = meshes.GetVertexStates(mesh.GetStoreId());
+                const auto vertices = mesh.GetVerticesSpan();
+                const auto drag_local = make_edit_drag_transform(r.get<const WorldTransform>(instance_entity), *pending);
+                static std::vector<vec3> positions;
+                positions.resize(vertices.size());
+                for (uint32_t vi = 0; vi < vertices.size(); ++vi) {
+                    positions[vi] = (vertex_states[vi] & ElementStateSelected) != 0u ? drag_local(vertices[vi].Position) : vertices[vi].Position;
+                }
+                meshes.UpdateCornerNormals(mesh, positions);
+            }
+        }
+    }
     // Handle mesh Edit mode transform commit when StartTransform is cleared.
     // Bone Edit mode commits are handled in the bone pose transform section below.
     if (!reactive<changes::TransformEnd>(r).empty()) {
@@ -1484,30 +1513,29 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
                     const auto &mesh = GetMesh(r, mesh_entity);
                     const auto vertex_states = meshes.GetVertexStates(mesh.GetStoreId());
                     const auto vertices = mesh.GetVerticesSpan();
-                    const auto &wt = r.get<const WorldTransform>(instance_entity);
-                    const auto inv_rot = glm::conjugate(wt.R);
-                    const auto inv_scale = 1.f / wt.S;
-                    const auto pivot_rel = pending.Pivot - wt.P;
+                    const auto drag_local = make_edit_drag_transform(r.get<const WorldTransform>(instance_entity), pending);
                     bool any_moved{false};
                     for (uint32_t vi = 0; vi < vertex_states.size(); ++vi) {
                         if ((vertex_states[vi] & ElementStateSelected) == 0u) continue;
                         const auto local_pos = vertices[vi].Position;
-                        const auto world_rel = glm::rotate(wt.R, wt.S * local_pos);
-                        const auto offset = glm::rotate(pending.Delta.R, pending.Delta.S * (world_rel - pivot_rel));
-                        const auto new_rel = pivot_rel + offset + pending.Delta.P;
-                        const auto new_local = inv_scale * glm::rotate(inv_rot, new_rel);
+                        const auto new_local = drag_local(local_pos);
                         if (glm::length2(new_local - local_pos) > 1e-12f) {
                             meshes.SetPosition(mesh, vi, new_local);
                             any_moved = true;
                         }
                     }
                     if (any_moved) {
-                        meshes.UpdateNormals(mesh);
+                        meshes.UpdateVertexNormals(mesh);
                         dirty_overlay_meshes.insert(mesh_entity);
                         r.remove<PrimitiveShape>(mesh_entity);
                         r.emplace_or_replace<MeshGeometryDirty>(mesh_entity);
                     }
                 }
+            }
+            // Rederive corner normals for every dragged mesh: commits pick up the new positions,
+            // and cancelled drags drop the live preview.
+            for (const auto &[mesh_entity, instance_entity] : edit_transform_context.TransformInstances) {
+                if (const auto mesh = TryGetMesh(r, mesh_entity)) meshes.UpdateCornerNormals(*mesh);
             }
             r.remove<PendingTransform>(viewport);
         }
@@ -1994,7 +2022,7 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
             .PendingScale = pending ? pending->Delta.S : vec3{1},
             .ScreenPixelScale = screen_pixel_scale,
             .ViewportSize = render_extent,
-            .FaceFirstTriSlot = meshes.GetFaceFirstTriangleSlot(),
+            .CornerNormalSlot = meshes.GetCornerNormalSlot(),
             .BoneDeformSlot = meshes.GetBoneDeformSlot(),
             .ArmatureDeformSlot = buffers.ArmatureDeformBuffer.Buffer.Slot,
             .MorphDeformSlot = meshes.GetMorphTargetSlot(),
@@ -2043,16 +2071,16 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
     for (const auto mesh_entity : dirty_element_state_meshes) {
         if (interaction_mode != InteractionMode::Excite) continue;
         const auto &mesh = GetMesh(r, mesh_entity);
-        std::unordered_set<VH> selected_vertices;
+        std::span<const uint32_t> sound_vertices;
         std::optional<uint32_t> active_handle, excited_handle;
         for (auto [entity, instance, excitable] : r.view<const Instance, const SoundVertices>().each()) {
             if (instance.Entity != mesh_entity) continue;
-            selected_vertices.insert(excitable.Vertices.begin(), excitable.Vertices.end());
+            sound_vertices = excitable.Vertices;
             if (const auto *force = r.try_get<const VertexForce>(entity)) excited_handle = force->Vertex;
             break;
         }
         if (const auto *active = r.try_get<const MeshActiveElement>(mesh_entity)) active_handle = active->Handle;
-        meshes.UpdateElementStates(mesh, Element::Vertex, selected_vertices, {}, {}, {}, active_handle, excited_handle);
+        meshes.UpdateSoundVertexStates(mesh, sound_vertices, active_handle, excited_handle);
         r.ctx().get<DrawState>().SelectionStale = true;
     }
     if (!dirty_element_state_meshes.empty()) request(RenderRequest::Submit);
@@ -2064,7 +2092,7 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
         if (storage.info() == entt::type_id<entt::reactive>()) storage.clear();
     }
     destroy_tracker.Storage.clear();
-    r.clear<MeshGeometryDirty, MeshMaterialAssignment, MaterialDirty, LightWireframeDirty>();
+    r.clear<MeshGeometryDirty, MeshShadingDirty, MeshMaterialAssignment, MaterialDirty, LightWireframeDirty>();
 
     buffers.Ctx.FlushDeferredDescriptorUpdates(vk.Device);
 }
@@ -2079,8 +2107,8 @@ void RegisterSceneComponentHandlers(entt::registry &r) {
         .on<RenderInstance>(On::Create | On::Destroy)
         .on<Active>(On::Create | On::Destroy)
         .on<StartTransform>(On::Create | On::Destroy)
-        .on<EditMode>(On::Create | On::Update)
-        .on<SmoothShading>(On::Create | On::Destroy);
+        .on<EditMode>(On::Create | On::Update);
+    track<changes::MeshShading>(r).on<MeshShadingDirty>(On::Create).on<MeshGeometryDirty>(On::Create);
     track<changes::MeshActiveElement>(r).on<MeshActiveElement>(On::Create | On::Update);
     track<changes::MeshGeometry>(r).on<MeshGeometryDirty>(On::Create);
     track<changes::MeshMaterial>(r).on<MeshMaterialAssignment>(On::Create | On::Update);

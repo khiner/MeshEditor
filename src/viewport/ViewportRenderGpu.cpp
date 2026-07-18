@@ -519,7 +519,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, vk::CommandBuffer cb,
             std::optional<Mesh> MeshComp;
             const DeformSlots &Deform;
             std::optional<uint32_t> PrimaryEditBufferIndex;
-            bool IsSoundVertices, IsBone, IsBoneJoint, IsExtras, Smooth;
+            bool IsSoundVertices, IsBone, IsBoneJoint, IsExtras;
         };
 
         // Draw order resolves coincident surfaces, and pool iteration order varies with scene-load
@@ -537,7 +537,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, vk::CommandBuffer cb,
                 primary_bi = r.get<RenderInstance>(it->second).BufferIndex;
             }
             const bool is_bone_joint = r.all_of<BoneJoint>(entity);
-            mesh_entities.emplace_back(entity, mesh_buffers, models, TryGetMesh(r, entity), get_deform_slots(entity), primary_bi, excitable_mesh_entities.contains(entity), r.all_of<ArmatureObject>(entity) || is_bone_joint, is_bone_joint, r.all_of<ObjectExtrasTag>(entity), r.all_of<SmoothShading>(entity));
+            mesh_entities.emplace_back(entity, mesh_buffers, models, TryGetMesh(r, entity), get_deform_slots(entity), primary_bi, excitable_mesh_entities.contains(entity), r.all_of<ArmatureObject>(entity) || is_bone_joint, is_bone_joint, r.all_of<ObjectExtrasTag>(entity));
         }
 
         { // Bounds reduce entries. Instances sharing one deform state share one entry, whose
@@ -612,7 +612,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, vk::CommandBuffer cb,
                 const auto primitive_material_buffer = meshes.GetPrimitiveMaterialRange(mesh.GetStoreId());
                 dd.ObjectIdSlot = face_id_buffer.Slot;
                 dd.FaceIdOffset = face_id_buffer.Offset;
-                dd.FaceFirstTriOffset = e.Smooth ? InvalidOffset : meshes.GetFaceFirstTriRange(mesh.GetStoreId()).Offset;
+                dd.CornerNormalOffset = meshes.GetCornerNormalRange(mesh.GetStoreId()).Offset;
                 dd.FacePrimitiveOffset = face_primitive_buffer.Count > 0 ? face_primitive_buffer.Offset : InvalidOffset;
                 dd.PrimitiveMaterialOffset = primitive_material_buffer.Count > 0 ? primitive_material_buffer.Offset : InvalidOffset;
                 const auto append_fill_draw = [&](const DrawData &dd, uint32_t index_count, std::optional<uint32_t> model_index) {
@@ -672,6 +672,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, vk::CommandBuffer cb,
                             auto range_draw = dd;
                             range_draw.IndexSlotOffset.Offset += range.FirstTriangle * 3u;
                             range_draw.FaceIdOffset += range.FirstTriangle;
+                            range_draw.CornerNormalOffset += range.FirstTriangle * 3u;
                             append_fill_for_instances(range_draw, range.TriangleCount * 3u);
                         }
                         return;

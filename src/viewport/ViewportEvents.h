@@ -8,6 +8,7 @@
 // Reactive tags and deferred requests, consumed and cleared once per frame.
 
 struct MeshGeometryDirty {}; // Request overlay + element-state buffer refresh after mesh geometry changes
+struct MeshShadingDirty {}; // Request corner-normal rederivation after a sharpness store write
 struct LightWireframeDirty {};
 
 struct PendingSetEditMode {

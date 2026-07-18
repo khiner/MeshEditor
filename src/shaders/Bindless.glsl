@@ -86,6 +86,10 @@ layout(set = 0, binding = BINDING_FacePrimitiveBuffer, scalar) readonly buffer F
     uint PrimitiveIndices[];
 } FacePrimitiveBuffers[];
 
+layout(set = 0, binding = BINDING_CornerNormalBuffer, scalar) readonly buffer CornerNormalBufferBlock {
+    vec3 Normals[];
+} CornerNormalBuffers[];
+
 const uint INVALID_SLOT = 0xffffffffu;
 const uint INVALID_OFFSET = 0xffffffffu;
 const uint STATE_SELECTED = 1u << 0;

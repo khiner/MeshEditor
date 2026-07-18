@@ -656,7 +656,6 @@ void ApplySelectionStateUpdate(
     std::span<const ElementRange> ranges, Element element
 ) {
     auto &meshes = r.ctx().get<MeshStore>();
-    auto &buffers = r.ctx().get<GpuBuffers>();
     DispatchUpdateSelectionStates(r, ranges, element);
     if (element == Element::Vertex) {
         for (const auto &range : ranges) {
@@ -665,17 +664,19 @@ void ApplySelectionStateUpdate(
             meshes.UpdateFaceStatesFromVertices(mesh);
         }
     } else if (element == Element::Face || element == Element::Edge) {
-        const auto *bits = buffers.SelectionBitset.Data();
         for (const auto &range : ranges) {
             const auto &mesh = GetMesh(r, range.MeshEntity);
-            const auto selected_handles = selection::ScanBitsetRange(bits, range.Offset, range.Count);
             std::optional<uint32_t> active_handle;
             if (const auto *active = r.try_get<const MeshActiveElement>(range.MeshEntity); active && active->Handle < range.Count) {
                 active_handle = active->Handle;
             }
-            if (element == Element::Face) meshes.UpdateEdgeStatesFromFaces(mesh, selected_handles, active_handle);
-            if (element == Element::Edge) meshes.UpdateFaceStatesFromEdges(mesh);
-            meshes.UpdateVertexStatesFromElements(mesh, selected_handles, element, active_handle);
+            if (element == Element::Face) {
+                meshes.UpdateEdgeStatesFromFaces(mesh, active_handle);
+                meshes.UpdateVertexStatesFromFaces(mesh, active_handle);
+            } else {
+                meshes.UpdateFaceStatesFromEdges(mesh);
+                meshes.UpdateVertexStatesFromEdges(mesh, active_handle);
+            }
         }
     }
     r.emplace_or_replace<ElementStatesDirty>(viewport);

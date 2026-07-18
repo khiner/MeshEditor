@@ -6,7 +6,7 @@
 #include "audio/SoundVertices.h"
 #include "gizmo/GizmoInteraction.h"
 #include "gpu/ViewportTheme.h"
-#include "mesh/MeshStore.h"
+#include "mesh/Mesh.h"
 #include "scene/Entity.h"
 #include "selection/Selection.h"
 #include "selection/SelectionBitset.h"
@@ -29,15 +29,8 @@ bool SetInteractionMode(entt::registry &r, entt::entity viewport, InteractionMod
     if (mode == InteractionMode::Pose && !active_is_armature) return false;
 
     r.clear<VertexForce>();
+    if (r.get<const Interaction>(viewport).Mode == InteractionMode::Edit) r.emplace_or_replace<ElementStatesDirty>(viewport);
 
-    auto &meshes = r.ctx().get<MeshStore>();
-    if (r.get<const Interaction>(viewport).Mode == InteractionMode::Edit) {
-        // Keep bitset ranges + bits so element selections survive toggling Edit mode off and back on.
-        for (const auto [mesh_entity, br, mesh] : r.view<const MeshSelectionBitsetRange, const Mesh>().each()) {
-            if (br.Count > 0) meshes.UpdateElementStates(mesh, Element::None, {}, {}, {}, {}, std::nullopt);
-        }
-        r.emplace_or_replace<ElementStatesDirty>(viewport);
-    }
     if (mode == InteractionMode::Edit && !active_is_armature) {
         // Only assign ranges for selected meshes missing one; existing ranges preserve remembered selection.
         if (const auto edit_element = r.get<const EditMode>(viewport).Value; edit_element != Element::None) {

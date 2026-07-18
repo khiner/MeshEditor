@@ -32,6 +32,7 @@
 #include "scene/SceneGraphOps.h"
 #include "scene/WorldTransform.h"
 #include "viewport/ViewportDisplay.h"
+#include "viewport/ViewportEvents.h"
 
 #include "meshoptimizer.h"
 
@@ -2123,17 +2124,30 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
             if (scene_mesh.MorphData) {
                 morph_summary = {scene_mesh.MorphData->TargetCount, scene_mesh.MorphData->DefaultWeights};
             }
+            // Primitives without NORMAL are flat-shaded per the glTF spec.
+            const auto has_normal_flag = [](uint32_t flags) { return (flags & MeshAttributeBit_Normal) != 0; };
+            const bool any_normals = std::ranges::any_of(layout.AttributeFlags, has_normal_flag);
+            const bool all_normals = std::ranges::all_of(layout.AttributeFlags, has_normal_flag);
             auto mesh = ctx.Meshes.CreateMesh(
                 std::move(*scene_mesh.Triangles), std::move(scene_mesh.TriangleAttrs), std::move(scene_mesh.TrianglePrimitives),
-                std::move(scene_mesh.DeformData), std::move(scene_mesh.MorphData)
+                !any_normals, std::move(scene_mesh.DeformData), std::move(scene_mesh.MorphData)
             );
             const auto [me, _] = ::AddMesh(r, ctx.Meshes, std::move(mesh), std::nullopt);
             mesh_entity = me;
             r.emplace<Path>(mesh_entity, source_path);
             r.emplace<SourceMeshIndex>(mesh_entity, mi);
             r.emplace<SourceMeshKind>(mesh_entity, MeshKind::Triangles);
-            r.emplace<MeshSourceLayout>(mesh_entity, std::move(layout));
-            r.emplace<SmoothShading>(mesh_entity);
+            const auto &attr_flags = r.emplace<MeshSourceLayout>(mesh_entity, std::move(layout)).AttributeFlags;
+            if (any_normals && !all_normals) {
+                // Mixed: mark the normal-less primitives' faces sharp.
+                const auto store_id = GetMesh(r, mesh_entity).GetStoreId();
+                const auto face_prims = ctx.Meshes.GetFacePrimitiveIndices(store_id);
+                auto sharpness = ctx.Meshes.GetFaceSharpness(store_id);
+                for (uint32_t fi = 0; fi < face_prims.size(); ++fi) {
+                    if (face_prims[fi] < attr_flags.size() && !has_normal_flag(attr_flags[face_prims[fi]])) sharpness[fi] = 1;
+                }
+                r.emplace<MeshShadingDirty>(mesh_entity);
+            }
             if (!scene_mesh.Name.empty()) r.emplace<MeshName>(mesh_entity, scene_mesh.Name);
             if (mesh_pbr_mask != 0) r.emplace<PbrMeshFeatures>(mesh_entity, mesh_pbr_mask);
             mesh_morphs.emplace_back(std::move(morph_summary));
@@ -3734,7 +3748,14 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             for (uint32_t p = 0; p < prim_count; ++p) vertex_offsets[p + 1] = vertex_offsets[p] + layout.VertexCounts[p];
 
             // Build per-primitive (rebased, fan-triangulated) index buffers in one faces walk.
+            // Meshes with sharp faces also track each primitive's mesh-level triangle indices
+            // (for corner-normal lookups) and which primitives contain a sharp face.
+            const bool mesh_any_sharp = meshes.GetFaceSharpnessSummary(store_id).Any;
+            const auto sharpness = meshes.GetFaceSharpness(store_id);
+            const auto face_first_tris = meshes.GetFaceFirstTriangles(store_id);
             std::vector<std::vector<uint32_t>> indices_per_prim(prim_count);
+            std::vector<std::vector<uint32_t>> mesh_tris_per_prim(prim_count);
+            std::vector<uint8_t> prim_has_sharp(prim_count, 0);
             uint32_t fi = 0;
             for (const auto fh : mesh.faces()) {
                 const uint32_t p = fi < face_primitives.size() ? face_primitives[fi] : 0u;
@@ -3752,6 +3773,10 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
                             out.emplace_back(fv[0] - offset);
                             out.emplace_back(fv[k] - offset);
                             out.emplace_back(fv[k + 1] - offset);
+                        }
+                        if (mesh_any_sharp) {
+                            if (fi < sharpness.size() && sharpness[fi]) prim_has_sharp[p] = 1;
+                            for (uint32_t k = 1; k + 1 < fv_count; ++k) mesh_tris_per_prim[p].emplace_back(face_first_tris[fi] + (k - 1));
                         }
                     }
                 }
@@ -3780,28 +3805,28 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
                 auto flags = have_flags ? layout.AttributeFlags[prim_idx] : ~0u;
                 std::span<const Vertex> vslice = vertices.subspan(offset, pcount);
 
-                // Flat-shaded export: When SmoothShading tag is absent, split per-face vertices
-                // and assign face-aligned normals so the mesh renders flat in glTF viewers.
-                // Skipped for skinned/morphed meshes where face-splitting would also need to rebuild
-                // those parallel arrays (primitives, the typical authoring case, hit neither).
-                std::vector<Vertex> flat_verts;
-                if (!r.all_of<const SmoothShading>(group.Triangles) && !has_skin && target_count == 0) {
+                // Sharp-face export: a primitive that emits NORMAL and contains sharp faces splits
+                // per-corner vertices carrying the derived corner normals, so the mesh shades
+                // identically in glTF viewers. Primitives without a NORMAL channel emit none and
+                // are flat per the glTF spec, keeping normal-less sources byte-stable through
+                // load/save. Skipped for skinned/morphed meshes where splitting would also need
+                // to rebuild those parallel arrays (primitives, the typical authoring case, hit neither).
+                std::vector<Vertex> split_verts;
+                if (prim_has_sharp[prim_idx] && (any_flags & MeshAttributeBit_Normal) && (flags & MeshAttributeBit_Normal) && !has_skin && target_count == 0) {
+                    const auto corner_normals = meshes.GetCornerNormals(store_id);
                     auto &tri_indices = indices_per_prim[prim_idx];
-                    flat_verts.reserve(tri_indices.size());
+                    const auto &mesh_tris = mesh_tris_per_prim[prim_idx];
+                    split_verts.reserve(tri_indices.size());
                     for (size_t t = 0; t + 2 < tri_indices.size(); t += 3) {
-                        const auto &v0 = vslice[tri_indices[t]], &v1 = vslice[tri_indices[t + 1]], &v2 = vslice[tri_indices[t + 2]];
-                        const auto n = glm::normalize(glm::cross(v1.Position - v0.Position, v2.Position - v0.Position));
-                        flat_verts.emplace_back(v0);
-                        flat_verts.back().Normal = n;
-                        flat_verts.emplace_back(v1);
-                        flat_verts.back().Normal = n;
-                        flat_verts.emplace_back(v2);
-                        flat_verts.back().Normal = n;
+                        const auto corner_base = mesh_tris[t / 3] * 3;
+                        for (uint32_t k = 0; k < 3; ++k) {
+                            split_verts.emplace_back(vslice[tri_indices[t + k]]);
+                            if (corner_base + k < corner_normals.size()) split_verts.back().Normal = corner_normals[corner_base + k];
+                        }
                     }
                     for (uint32_t i = 0; i < tri_indices.size(); ++i) tri_indices[i] = i;
-                    vslice = flat_verts;
-                    pcount = flat_verts.size();
-                    flags |= MeshAttributeBit_Normal;
+                    vslice = split_verts;
+                    pcount = split_verts.size();
                 }
 
                 fastgltf::pmr::SmallVector<fastgltf::Attribute, 4> prim_attrs;

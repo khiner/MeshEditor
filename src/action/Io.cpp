@@ -111,7 +111,7 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
                 }
 
                 const auto listener_points = RealImpact::LoadListenerPoints(directory);
-                const auto [listener_mesh_entity, _] = ::AddMesh(r, meshes, meshes.CreateMesh(primitive::CreateMesh({primitive::Cylinder{0.5f * RealImpact::MicWidthMm / 1000.f, RealImpact::MicLengthMm / 1000.f}}), {}, {}));
+                const auto [listener_mesh_entity, _] = ::AddMesh(r, meshes, meshes.CreateMesh(primitive::CreateMesh({primitive::Cylinder{0.5f * RealImpact::MicWidthMm / 1000.f, RealImpact::MicLengthMm / 1000.f}}), {}, {}, true));
                 for (const auto &listener_point : listener_points) {
                     static const auto rot_z = glm::angleAxis(float(M_PI_2), vec3{0, 0, 1}); // Cylinder's center is along the Y axis.
                     const auto listener_instance_entity = ::AddMeshInstance(

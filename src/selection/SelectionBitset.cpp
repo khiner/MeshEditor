@@ -2,7 +2,6 @@
 #include "mesh/Mesh.h"
 
 #include <cstring>
-#include <unordered_set>
 
 namespace selection {
 
@@ -33,46 +32,41 @@ uint32_t CountSelected(const uint32_t *bits, uint32_t offset, uint32_t count) {
 
 std::vector<uint32_t> ScanBitsetRange(const uint32_t *bits, uint32_t offset, uint32_t count) {
     std::vector<uint32_t> result;
-    const uint32_t first_word = offset / 32, last_word = (offset + count + 31) / 32;
-    for (uint32_t w = first_word; w < last_word; ++w) {
-        uint32_t word = bits[w];
-        while (word) {
-            const uint32_t global_idx = w * 32 + __builtin_ctz(word);
-            if (global_idx >= offset && global_idx < offset + count) result.emplace_back(global_idx - offset);
-            word &= word - 1;
-        }
-    }
+    ForEachSelected(bits, offset, count, [&](uint32_t handle) { result.emplace_back(handle); });
     return result;
 }
 
-std::vector<uint32_t> ConvertSelectionElement(std::span<const uint32_t> handles, const Mesh &mesh, Element from_element, Element to_element) {
-    if (from_element == Element::None || handles.empty()) return {};
-    if (from_element == to_element) return {handles.begin(), handles.end()};
+std::vector<uint32_t> ConvertSelectionElement(const uint32_t *bits, uint32_t offset, uint32_t count, const Mesh &mesh, Element from_element, Element to_element) {
+    if (from_element == Element::None || count == 0) return {};
 
     std::vector<uint32_t> result;
+    if (from_element == to_element) {
+        ForEachSelected(bits, offset, count, [&](uint32_t h) { result.emplace_back(h); });
+        return result;
+    }
+    const auto selected = [&](uint32_t handle) { return handle < count && IsSelected(bits, offset, handle); };
     if (from_element == Element::Face) {
         if (to_element == Element::Edge) {
-            for (auto f : handles) {
+            ForEachSelected(bits, offset, count, [&](uint32_t f) {
                 for (const auto heh : mesh.fh_range(he::FH{f})) result.emplace_back(*mesh.GetEdge(heh));
-            }
+            });
         } else if (to_element == Element::Vertex) {
-            for (auto f : handles) {
+            ForEachSelected(bits, offset, count, [&](uint32_t f) {
                 for (const auto vh : mesh.fv_range(he::FH{f})) result.emplace_back(*vh);
-            }
+            });
         }
     } else if (from_element == Element::Edge) {
         if (to_element == Element::Vertex) {
-            for (auto eh_raw : handles) {
-                const auto heh = mesh.GetHalfedge(he::EH{eh_raw}, 0);
+            ForEachSelected(bits, offset, count, [&](uint32_t e) {
+                const auto heh = mesh.GetHalfedge(he::EH{e}, 0);
                 result.emplace_back(*mesh.GetFromVertex(heh));
                 result.emplace_back(*mesh.GetToVertex(heh));
-            }
+            });
         } else if (to_element == Element::Face) {
-            const std::unordered_set<uint32_t> handle_set{handles.begin(), handles.end()};
             for (const auto fh : mesh.faces()) {
                 bool all_selected = true;
                 for (const auto heh : mesh.fh_range(fh)) {
-                    if (!handle_set.contains(*mesh.GetEdge(heh))) {
+                    if (!selected(*mesh.GetEdge(heh))) {
                         all_selected = false;
                         break;
                     }
@@ -81,10 +75,9 @@ std::vector<uint32_t> ConvertSelectionElement(std::span<const uint32_t> handles,
             }
         }
     } else if (from_element == Element::Vertex) {
-        const std::unordered_set<uint32_t> handle_set{handles.begin(), handles.end()};
         if (to_element == Element::Edge) {
             for (const auto eh : mesh.edges()) {
-                if (const auto heh = mesh.GetHalfedge(eh, 0); handle_set.contains(*mesh.GetFromVertex(heh)) && handle_set.contains(*mesh.GetToVertex(heh))) {
+                if (const auto heh = mesh.GetHalfedge(eh, 0); selected(*mesh.GetFromVertex(heh)) && selected(*mesh.GetToVertex(heh))) {
                     result.emplace_back(*eh);
                 }
             }
@@ -92,7 +85,7 @@ std::vector<uint32_t> ConvertSelectionElement(std::span<const uint32_t> handles,
             for (const auto fh : mesh.faces()) {
                 bool all_selected = true;
                 for (const auto vh : mesh.fv_range(fh)) {
-                    if (!handle_set.contains(*vh)) {
+                    if (!selected(*vh)) {
                         all_selected = false;
                         break;
                     }

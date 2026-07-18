@@ -337,7 +337,6 @@ std::pair<entt::entity, entt::entity> ImportMesh(entt::registry &r, const std::f
 
     const auto entities = ::AddMesh(r, meshes, std::move(result->Mesh), std::move(info));
     r.emplace<Path>(entities.first, path);
-    r.emplace<SmoothShading>(entities.first);
     return entities;
 }
 

@@ -38,6 +38,7 @@
 #include "scene/SceneGraph.h"
 #include "scene/WorldTransform.h"
 #include "selection/BoneSelection.h"
+#include "selection/SelectionBitset.h"
 #include "selection/SelectionComponents.h"
 #include "snapshot/SnapshotRoles.h"
 #include "viewport/InteractionComponents.h"
@@ -123,8 +124,7 @@ using Persistent = type_list<
     Transform, ViewportTheme, WorkspaceLights, PunctualLight,
     Name, Selected, Active, ObjectKind, MeshActiveElement, Scene, ActiveScene, SceneMembership, SubElementOf,
     ScaleLocked, Instance, Hidden, SceneNode, ParentInverse, MeshHandle, VertexStoreId, ObjectExtrasTag,
-    SmoothShading, MeshConnectivity,
-    MeshMaterialAssignment, MeshMaterialSlotSelection, MaterialVariants, MaterializedTextures, PbrMeshFeatures,
+    MeshConnectivity, MeshSelectionBitsetRange, MeshMaterialAssignment, MeshMaterialSlotSelection, MaterialVariants, MaterializedTextures, PbrMeshFeatures,
     PrimitiveShape, Path, Camera, ViewCamera, LookingThrough, Interaction, EditMode, OrbitToActive, AudioOutputConfig, AudioOutputMix, Striker, ModalSoundControls,
     AcousticMaterial, SoundVerticesModel, ModalModes, ModalGain, ModalTuning, ModalSolveSettings, MassProperties, TetMeshData, ModalEigenSummary,
     SelectionXRay, ViewportDisplay, MaterialPreviewLighting, RenderedLighting, StudioEnvironment, TransformGizmoState, ActionIndex,

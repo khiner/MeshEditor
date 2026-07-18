@@ -15,6 +15,8 @@
 #include "scene/SceneGraphOps.h"
 #include "scene/WorldTransform.h"
 #include "selection/Selection.h"
+#include "selection/SelectionBitset.h"
+#include "viewport/InteractionComponents.h"
 #include "viewport/ViewportEvents.h"
 #include "viewport/ViewportInteractionState.h"
 
@@ -83,7 +85,6 @@ entt::entity DuplicateOne(entt::registry &r, entt::entity e, bool &was_mesh_dupl
         MeshInstanceCreateInfo{.Name = create_info.Name, .Transform = create_info.Transform, .Select = create_info.Select, .Visible = r.all_of<RenderInstance>(e)}
     );
     if (auto *prim_shape = r.try_get<PrimitiveShape>(mesh_entity)) r.emplace<PrimitiveShape>(e_new.first, *prim_shape);
-    if (r.all_of<SmoothShading>(mesh_entity)) r.emplace<SmoothShading>(e_new.first);
     if (const auto *armature_modifier = r.try_get<ArmatureModifier>(e)) r.emplace<ArmatureModifier>(e_new.second, *armature_modifier);
     if (const auto *bone_attachment = r.try_get<BoneAttachment>(e)) r.emplace<BoneAttachment>(e_new.second, *bone_attachment);
     was_mesh_duplicate = true;
@@ -139,10 +140,11 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
     };
     // Rebuild a primitive mesh entity's geometry from its current PrimitiveShape.
     auto regen_primitive = [&](entt::entity e) {
+        const bool was_flat = meshes.GetFaceSharpnessSummary(r.get<const MeshHandle>(e).StoreId).All;
         if (auto *mb = r.try_get<MeshBuffers>(e)) ReleaseMeshBuffers(r, *mb);
         // Erasing MeshHandle fires on_destroy, releasing the old store entry.
         r.erase<MeshBuffers, MeshHandle, MeshConnectivity>(e);
-        auto new_mesh = meshes.CreateMesh(primitive::CreateMesh(r.get<const PrimitiveShape>(e)), {}, {});
+        auto new_mesh = meshes.CreateMesh(primitive::CreateMesh(r.get<const PrimitiveShape>(e)), {}, {}, was_flat);
         r.emplace<MeshConnectivity>(e, std::move(new_mesh.Connectivity));
         r.emplace<MeshHandle>(e, MeshHandle{new_mesh.StoreId});
         r.emplace_or_replace<MeshGeometryDirty>(e);
@@ -158,6 +160,17 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
             case Scope::SelectedDelta:
                 for (const auto e : ::selection::GetSelectedMeshEntities(r)) fn(e);
                 break;
+        }
+    };
+    // `fn(mesh_entity, mesh, bits, range)` for each edit-mode mesh with a non-empty element selection, when `element` is the current edit mode.
+    auto for_each_edit_selection = [&](Element element, auto &&fn) {
+        if (r.get<const EditMode>(viewport).Value != element) return;
+        const auto *bits_ref = r.ctx().find<const SelectionBitsetRef>();
+        if (!bits_ref) return;
+        for (const auto [me, br] : r.view<const MeshSelectionBitsetRange>().each()) {
+            if (!HasMesh(r, me)) continue;
+            if (::selection::CountSelected(bits_ref->Value.data(), br.Offset, br.Count) == 0) continue;
+            fn(me, GetMesh(r, me), bits_ref->Value.data(), br);
         }
     };
     std::visit(
@@ -205,10 +218,40 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
             },
             [&](const SetSelectedSmoothShading &a) {
                 for (const auto me : ::selection::GetSelectedMeshEntities(r)) {
-                    if (GetMesh(r, me).FaceCount() == 0) continue;
-                    if (a.Smooth) r.emplace_or_replace<SmoothShading>(me);
-                    else r.remove<SmoothShading>(me);
+                    const auto mesh = GetMesh(r, me);
+                    if (mesh.FaceCount() == 0) continue;
+                    std::ranges::fill(meshes.GetFaceSharpness(mesh.GetStoreId()), uint8_t(a.Smooth ? 0 : 1));
+                    // Shade Smooth clears edge sharpness.
+                    if (a.Smooth) std::ranges::fill(meshes.GetEdgeSharpness(mesh.GetStoreId()), uint8_t{0});
+                    r.emplace_or_replace<MeshShadingDirty>(me);
                 }
+            },
+            [&](const SetSelectedFacesSmooth &a) {
+                for_each_edit_selection(Element::Face, [&](entt::entity me, const Mesh &mesh, const uint32_t *bits, MeshSelectionBitsetRange br) {
+                    auto sharp = meshes.GetFaceSharpness(mesh.GetStoreId());
+                    ::selection::ForEachSelected(bits, br.Offset, br.Count, [&](uint32_t f) {
+                        if (f < sharp.size()) sharp[f] = a.Smooth ? 0 : 1;
+                    });
+                    r.emplace_or_replace<MeshShadingDirty>(me);
+                });
+            },
+            [&](const SetSelectedEdgesSharp &a) {
+                for_each_edit_selection(Element::Edge, [&](entt::entity me, const Mesh &mesh, const uint32_t *bits, MeshSelectionBitsetRange br) {
+                    auto sharp = meshes.GetEdgeSharpness(mesh.GetStoreId());
+                    ::selection::ForEachSelected(bits, br.Offset, br.Count, [&](uint32_t e) {
+                        if (e < sharp.size()) sharp[e] = a.Sharp ? 1 : 0;
+                    });
+                    r.emplace_or_replace<MeshShadingDirty>(me);
+                });
+            },
+            [&](const SetSelectedVertexEdgesSharp &a) {
+                for_each_edit_selection(Element::Vertex, [&](entt::entity me, const Mesh &mesh, const uint32_t *bits, MeshSelectionBitsetRange br) {
+                    auto sharp = meshes.GetEdgeSharpness(mesh.GetStoreId());
+                    ::selection::ForEachVertexTouchedEdge(bits, br.Offset, br.Count, mesh, [&](uint32_t e) {
+                        if (e < sharp.size()) sharp[e] = a.Sharp ? 1 : 0;
+                    });
+                    r.emplace_or_replace<MeshShadingDirty>(me);
+                });
             },
             [&](ParentToActive) {
                 const auto active = FindActiveEntity(r);
@@ -228,7 +271,7 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
             [&](const AddCamera &a) { ::AddCamera(r, meshes, *a.Info, a.Props); begin_translate(); },
             [&](const AddLight &a) { ::AddLight(r, meshes, *a.Info); begin_translate(); },
             [&](const AddMeshPrimitive &a) {
-                const auto [mesh_entity, _] = ::AddMesh(r, meshes, meshes.CreateMesh(primitive::CreateMesh(a.Shape), {}, {}), *a.Info);
+                const auto [mesh_entity, _] = ::AddMesh(r, meshes, meshes.CreateMesh(primitive::CreateMesh(a.Shape), {}, {}, true), *a.Info);
                 r.emplace<PrimitiveShape>(mesh_entity, a.Shape);
                 begin_translate();
             },
