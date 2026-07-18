@@ -19,15 +19,19 @@ namespace selection {
 void SelectAll(uint32_t *bits, uint32_t offset, uint32_t count);
 // Count selected bits in [offset, offset+count).
 uint32_t CountSelected(const uint32_t *bits, uint32_t offset, uint32_t count);
-// Test the bit of local (0-based) handle `local` in the range starting at `offset`.
+// A mesh's element handles map to consecutive global bits starting at its range `offset`,
+// packed 32 per word: element `local`'s bit is bit (offset + local) % 32 of word (offset + local) / 32.
 inline bool IsSelected(const uint32_t *bits, uint32_t offset, uint32_t local) {
     const uint32_t i = offset + local;
     return (bits[i >> 5] >> (i & 31u)) & 1u;
 }
-// Set the bit of local (0-based) handle `local` in the range starting at `offset`.
 inline void Select(uint32_t *bits, uint32_t offset, uint32_t local) {
     const uint32_t i = offset + local;
     bits[i >> 5] |= 1u << (i & 31u);
+}
+inline void Deselect(uint32_t *bits, uint32_t offset, uint32_t local) {
+    const uint32_t i = offset + local;
+    bits[i >> 5] &= ~(1u << (i & 31u));
 }
 // Visit the local (0-based) handle of every set bit in [offset, offset+count).
 void ForEachSelected(const uint32_t *bits, uint32_t offset, uint32_t count, auto &&fn) {

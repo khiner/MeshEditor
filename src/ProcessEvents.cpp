@@ -931,16 +931,20 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
         const auto hit = RunElementPickFromRanges(r, viewport, ranges, edit_mode, mouse_px);
         if (hit) {
             const auto [mesh_entity, element_index] = *hit;
-            const auto *current_active = r.try_get<MeshActiveElement>(mesh_entity);
-            const bool is_active = current_active && current_active->Handle == element_index;
             if (const auto *br = r.try_get<const MeshSelectionBitsetRange>(mesh_entity)) {
-                const uint32_t global_bit = br->Offset + element_index;
-                const bool was_selected = (bits[global_bit >> 5] >> (global_bit & 31)) & 1;
-                if (toggle && was_selected) bits[global_bit >> 5] &= ~(1u << (global_bit & 31));
-                else bits[global_bit >> 5] |= 1u << (global_bit & 31);
+                const auto *current_active = r.try_get<MeshActiveElement>(mesh_entity);
+                const bool is_active = current_active && current_active->Handle == element_index;
+                const bool was_selected = selection::IsSelected(bits, br->Offset, element_index);
+                // Toggle-clicking the active element deselects and deactivates it. Any other click
+                // selects and activates, keeping the active element within the selection.
+                if (toggle && was_selected && is_active) {
+                    selection::Deselect(bits, br->Offset, element_index);
+                    r.remove<MeshActiveElement>(mesh_entity);
+                } else {
+                    selection::Select(bits, br->Offset, element_index);
+                    r.emplace_or_replace<MeshActiveElement>(mesh_entity, element_index);
+                }
             }
-            if (toggle && is_active) r.remove<MeshActiveElement>(mesh_entity);
-            else r.emplace_or_replace<MeshActiveElement>(mesh_entity, element_index);
         } else if (!toggle) {
             for (const auto &range : ranges) r.remove<MeshActiveElement>(range.MeshEntity);
         }
@@ -954,8 +958,11 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
 
         const auto &interaction = r.get<const Interaction>(viewport);
         if (interaction.Mode == InteractionMode::Edit && FindArmatureObject(r, FindActiveEntity(r)) == entt::null) {
-            // Edit-mode element box-select resolves straight into the GPU selection buffers.
-            RunBoxSelectElements(r, viewport, GetBitsetRangesForSelected(r), r.get<const EditMode>(viewport).Value, box_px, additive);
+            const auto ranges = GetBitsetRangesForSelected(r);
+            if (!additive) {
+                for (const auto &range : ranges) r.remove<MeshActiveElement>(range.MeshEntity);
+            }
+            RunBoxSelectElements(r, viewport, ranges, r.get<const EditMode>(viewport).Value, box_px, additive);
         } else {
             const bool bone_mode = interaction.Mode == InteractionMode::Pose || IsBoneEditMode(r, viewport);
             const auto hits = ResolveHits(r, RunBoxSelect(r, viewport, box_px), bone_mode, true);
