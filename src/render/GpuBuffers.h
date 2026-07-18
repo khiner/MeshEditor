@@ -40,7 +40,8 @@ struct InstanceArena {
         : TransformBuffer(ctx, 0, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::ModelBuffer),
           ObjectIdBuffer(ctx, 0, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::ObjectIdBuffer),
           StateBuffer(ctx, 0, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::InstanceStateBuffer),
-          BoundsBuffer(ctx, 0, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer) {}
+          BoundsBuffer(ctx, 0, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer),
+          VisibilityBuffer(ctx, 0, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer) {}
 
     Range Allocate(uint32_t count) {
         const auto range = Allocator.Allocate(count);
@@ -75,10 +76,8 @@ struct InstanceArena {
     void UpdateState(uint32_t index, uint8_t state) { StateBuffer.Update(as_bytes(state), vk::DeviceSize(index) * sizeof(uint8_t)); }
     void UpdateBounds(uint32_t index, const AABB &bounds) { BoundsBuffer.Update(as_bytes(bounds), vk::DeviceSize(index) * sizeof(AABB)); }
     const AABB &GetBounds(uint32_t index) const { return reinterpret_cast<const AABB *>(BoundsBuffer.GetMappedData().data())[index]; }
-    std::span<AABB> GetMutableBounds(Range range) const {
-        auto mapped = BoundsBuffer.GetMutableRange(vk::DeviceSize(range.Offset) * sizeof(AABB), vk::DeviceSize(range.Count) * sizeof(AABB));
-        return {reinterpret_cast<AABB *>(mapped.data()), range.Count};
-    }
+    std::span<uint8_t> GetMutableVisibility(Range range) const { return MappedSpan<uint8_t>(VisibilityBuffer, range); }
+    std::span<AABB> GetMutableBounds(Range range) const { return MappedSpan<AABB>(BoundsBuffer, range); }
     std::span<uint8_t> GetMutableStates() const { return {reinterpret_cast<uint8_t *>(StateBuffer.GetMutableRange(0, StateBuffer.UsedSize).data()), StateBuffer.UsedSize}; }
     std::span<Transform> GetMutableTransforms() const {
         auto mapped = TransformBuffer.GetMutableRange(0, TransformBuffer.UsedSize);
@@ -91,14 +90,22 @@ struct InstanceArena {
         ForEachBuffer([](mvk::Buffer &buf, size_t) { buf.UsedSize = 0; });
     }
 
-    mvk::Buffer TransformBuffer, ObjectIdBuffer, StateBuffer, BoundsBuffer;
+    // One visibility byte per slot, written by the cull compute: nonzero while the instance last
+    // passed the occlusion cull. New instances start visible.
+    mvk::Buffer TransformBuffer, ObjectIdBuffer, StateBuffer, BoundsBuffer, VisibilityBuffer;
 
 private:
+    template<typename T> static std::span<T> MappedSpan(const mvk::Buffer &buffer, Range range) {
+        auto mapped = buffer.GetMutableRange(vk::DeviceSize(range.Offset) * sizeof(T), vk::DeviceSize(range.Count) * sizeof(T));
+        return {reinterpret_cast<T *>(mapped.data()), range.Count};
+    }
+
     void ForEachBuffer(auto &&fn) {
         fn(TransformBuffer, sizeof(Transform));
         fn(ObjectIdBuffer, sizeof(uint32_t));
         fn(StateBuffer, sizeof(uint8_t));
         fn(BoundsBuffer, sizeof(AABB));
+        fn(VisibilityBuffer, sizeof(uint8_t));
     }
 
     void EnsureCapacity(vk::DeviceSize end) {

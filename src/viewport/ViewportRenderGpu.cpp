@@ -51,13 +51,22 @@ enum class FillSubset {
 
 void FlushDrawList(entt::registry &r, vk::Device device, const DrawListBuilder &draw_list, DrawBufferPair &pair) {
     auto &buffers = r.ctx().get<GpuBuffers>();
-    buffers.EnsureIdentityIndexBuffer(std::max(draw_list.MaxIndexCount, uint32_t(draw_list.Draws.size())));
+    buffers.EnsureIdentityIndexBuffer(std::max(draw_list.MaxIndexCount, 2 * uint32_t(draw_list.Draws.size())));
     if (!draw_list.Draws.empty()) {
         pair.DrawData.Update(as_bytes(draw_list.Draws));
         pair.CullEntries.Update(as_bytes(draw_list.CullEntries));
-        pair.VisibleIndices.Update(buffers.IdentityIndexBuffer.GetMappedData().subspan(0, draw_list.Draws.size() * sizeof(uint32_t)));
+        pair.VisibleIndices.Update(buffers.IdentityIndexBuffer.GetMappedData().subspan(0, 2 * draw_list.Draws.size() * sizeof(uint32_t)));
     }
-    if (!draw_list.IndirectCommands.empty()) pair.Indirect.Update(as_bytes(draw_list.IndirectCommands));
+    if (!draw_list.IndirectCommands.empty()) {
+        // Region A holds the commands as built. Region B is a copy indexing the second half of the
+        // visible-index remap, for the occlusion pass's newly visible draws.
+        auto commands = draw_list.IndirectCommands;
+        commands.append_range(draw_list.IndirectCommands | std::views::transform([&](auto cmd) {
+                                  cmd.firstInstance += uint32_t(draw_list.Draws.size());
+                                  return cmd;
+                              }));
+        pair.Indirect.Update(as_bytes(commands));
+    }
     if (auto descriptor_updates = buffers.Ctx.GetDeferredDescriptorUpdates(); !descriptor_updates.empty()) {
         device.updateDescriptorSets(std::move(descriptor_updates), {});
         buffers.Ctx.ClearDeferredDescriptorUpdates();
@@ -223,21 +232,8 @@ void RecordMotionBlurPostFx(entt::registry &r, vk::CommandBuffer cb, entt::entit
     );
 }
 
-} // namespace
-
-void RecordFrustumCull(vk::CommandBuffer cb, const Pipelines &pipelines, const GpuBuffers &buffers, const DrawBufferPair &pair, const DrawListBuilder &draw_list, uint32_t ubo_offset) {
-    const profile::GpuScope cull_scope{"FrustumCull"};
-    const auto &cull = pipelines.FrustumCull;
-    // The previous submit's indirect and vertex reads complete before this one's cull writes.
-    cb.pipelineBarrier(
-        vk::PipelineStageFlagBits::eDrawIndirect | vk::PipelineStageFlagBits::eVertexShader,
-        vk::PipelineStageFlagBits::eComputeShader, {},
-        vk::MemoryBarrier{vk::AccessFlagBits::eIndirectCommandRead | vk::AccessFlagBits::eShaderRead, vk::AccessFlagBits::eShaderWrite | vk::AccessFlagBits::eShaderRead}, {}, {}
-    );
-    cb.bindPipeline(vk::PipelineBindPoint::eCompute, *cull.Pipeline);
-    const std::array cull_sets{cull.GetDescriptorSet(), cull.GetUboSet()};
-    cb.bindDescriptorSets(vk::PipelineBindPoint::eCompute, *cull.PipelineLayout, 0, uint32_t(cull_sets.size()), cull_sets.data(), 1, &ubo_offset);
-    FrustumCullPushConstants cull_pc{
+FrustumCullPushConstants MakeCullPushConstants(const GpuBuffers &buffers, const DrawBufferPair &pair, const DrawListBuilder &draw_list) {
+    return {
         .CommandsSlot = pair.Indirect.Slot,
         .CullEntrySlot = pair.CullEntries.Slot,
         .DrawDataSlot = pair.DrawData.Slot,
@@ -247,18 +243,22 @@ void RecordFrustumCull(vk::CommandBuffer cb, const Pipelines &pipelines, const G
         .EntryCount = uint32_t(draw_list.Draws.size()),
         .CommandCount = uint32_t(draw_list.IndirectCommands.size()),
     };
-    const auto dispatch = [&](uint32_t phase, uint32_t count) {
-        static constexpr uint32_t GroupSize{64};
-        cull_pc.Phase = phase;
-        cb.pushConstants(*cull.PipelineLayout, vk::ShaderStageFlagBits::eCompute, 0, sizeof(cull_pc), &cull_pc);
-        cb.dispatch((count + GroupSize - 1) / GroupSize, 1, 1);
-    };
-    dispatch(0, cull_pc.CommandCount);
-    cb.pipelineBarrier(
-        vk::PipelineStageFlagBits::eComputeShader, vk::PipelineStageFlagBits::eComputeShader, {},
-        vk::MemoryBarrier{vk::AccessFlagBits::eShaderWrite, vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite}, {}, {}
-    );
-    dispatch(1, cull_pc.EntryCount);
+}
+
+void BindCull(vk::CommandBuffer cb, const ComputePipeline &cull, uint32_t ubo_offset) {
+    cb.bindPipeline(vk::PipelineBindPoint::eCompute, *cull.Pipeline);
+    const std::array cull_sets{cull.GetDescriptorSet(), cull.GetUboSet()};
+    cb.bindDescriptorSets(vk::PipelineBindPoint::eCompute, *cull.PipelineLayout, 0, uint32_t(cull_sets.size()), cull_sets.data(), 1, &ubo_offset);
+}
+
+void DispatchCull(vk::CommandBuffer cb, const ComputePipeline &cull, const FrustumCullPushConstants &cull_pc, uint32_t count) {
+    static constexpr uint32_t GroupSize{64};
+    cb.pushConstants(*cull.PipelineLayout, vk::ShaderStageFlagBits::eCompute, 0, sizeof(cull_pc), &cull_pc);
+    cb.dispatch((count + GroupSize - 1) / GroupSize, 1, 1);
+}
+
+// The cull's count and remap writes complete before indirect draw and vertex reads.
+void ReleaseCullToDraw(vk::CommandBuffer cb) {
     cb.pipelineBarrier(
         vk::PipelineStageFlagBits::eComputeShader,
         vk::PipelineStageFlagBits::eDrawIndirect | vk::PipelineStageFlagBits::eVertexShader, {},
@@ -266,7 +266,51 @@ void RecordFrustumCull(vk::CommandBuffer cb, const Pipelines &pipelines, const G
     );
 }
 
+} // namespace
+
+void RecordFrustumCull(vk::CommandBuffer cb, const Pipelines &pipelines, const GpuBuffers &buffers, const DrawBufferPair &pair, const DrawListBuilder &draw_list, uint32_t ubo_offset, uint32_t visibility_slot) {
+    const profile::GpuScope cull_scope{"FrustumCull"};
+    const auto &cull = pipelines.FrustumCull;
+    // The previous submit's indirect and vertex reads complete before this one's cull writes.
+    cb.pipelineBarrier(
+        vk::PipelineStageFlagBits::eDrawIndirect | vk::PipelineStageFlagBits::eVertexShader,
+        vk::PipelineStageFlagBits::eComputeShader, {},
+        vk::MemoryBarrier{vk::AccessFlagBits::eIndirectCommandRead | vk::AccessFlagBits::eShaderRead, vk::AccessFlagBits::eShaderWrite | vk::AccessFlagBits::eShaderRead}, {}, {}
+    );
+    BindCull(cb, cull, ubo_offset);
+    auto cull_pc = MakeCullPushConstants(buffers, pair, draw_list);
+    cull_pc.VisibilitySlot = visibility_slot;
+    DispatchCull(cb, cull, cull_pc, 2 * cull_pc.CommandCount);
+    cb.pipelineBarrier(
+        vk::PipelineStageFlagBits::eComputeShader, vk::PipelineStageFlagBits::eComputeShader, {},
+        vk::MemoryBarrier{vk::AccessFlagBits::eShaderWrite, vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite}, {}, {}
+    );
+    cull_pc.Phase = 1;
+    DispatchCull(cb, cull, cull_pc, cull_pc.EntryCount);
+    ReleaseCullToDraw(cb);
+}
+
 namespace {
+// Test the entries the visibility gate deferred against the depth pyramid, filling `pair`'s
+// region B with the newly visible and updating per-instance visibility.
+void RecordOcclusionCull(vk::CommandBuffer cb, const Pipelines &pipelines, const GpuBuffers &buffers, const DrawBufferPair &pair, const DrawListBuilder &draw_list, uint32_t pyramid_sampler_slot, uint32_t ubo_offset) {
+    const profile::GpuScope cull_scope{"OcclusionCull"};
+    const auto &cull = pipelines.FrustumCull;
+    // The pyramid's attachment writes and the frustum pass's count writes land before this reads them.
+    cb.pipelineBarrier(
+        vk::PipelineStageFlagBits::eColorAttachmentOutput | vk::PipelineStageFlagBits::eComputeShader,
+        vk::PipelineStageFlagBits::eComputeShader, {},
+        vk::MemoryBarrier{vk::AccessFlagBits::eColorAttachmentWrite | vk::AccessFlagBits::eShaderWrite, vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite}, {}, {}
+    );
+    BindCull(cb, cull, ubo_offset);
+    auto cull_pc = MakeCullPushConstants(buffers, pair, draw_list);
+    cull_pc.Phase = 2;
+    cull_pc.VisibilitySlot = buffers.Instances.VisibilityBuffer.Slot;
+    cull_pc.PyramidSamplerSlot = pyramid_sampler_slot;
+    DispatchCull(cb, cull, cull_pc, cull_pc.EntryCount);
+    ReleaseCullToDraw(cb);
+}
+
 // Reduce the scene depth into the max-depth mip pyramid the occlusion cull samples. The depth
 // image is in DepthStencilReadOnlyOptimal throughout. Restores the full viewport and scissor.
 void RecordDepthPyramid(vk::CommandBuffer cb, const MainPipeline &main, const SelectionSlots &sel_slots, vk::Rect2D full_rect, uint32_t ubo_offset) {
@@ -798,26 +842,35 @@ void RecordPhase(entt::registry &r, entt::entity viewport, vk::CommandBuffer cb,
 
     if (use != DrawListUse::Reuse) FlushDrawList(r, vk.Device, draw_list, buffers.RenderDraw);
 
+    const bool transmission_active = real_transmission && pipelines.Main.Transmission;
+    // The transmission composite path lays the prepass down as the scene's background and
+    // plain-opaque pixels, loading the prepass's depth. Edit mode re-rasterizes for face tints,
+    // blur steps for velocity, and debug channels carry values the composite's exposure would corrupt.
+    const bool composite_transmission = transmission_active && phase == RenderPhase::Full && !is_edit_mode && settings.DebugChannel == DebugChannel::None;
+    // Two-phase occlusion culling runs in the plain interactive phase (no blur, and no
+    // transmission prepass to feed).
+    const bool two_phase = phase == RenderPhase::Full && show_fill && !transmission_active && !draw_list.Draws.empty();
+
     // Once per command buffer (later blur phases reuse the culled buffers). Re-executes on every
     // submit with the current view.
     if (phase != RenderPhase::BlurAccumulate && phase != RenderPhase::BlurResolve && !draw_list.Draws.empty()) {
-        RecordFrustumCull(cb, pipelines, buffers, buffers.RenderDraw, draw_list, ubo_offset);
+        RecordFrustumCull(cb, pipelines, buffers, buffers.RenderDraw, draw_list, ubo_offset, two_phase ? buffers.Instances.VisibilityBuffer.Slot : InvalidSlot);
     }
 
     const uint32_t transform_vertex_state_slot = is_edit_mode ? meshes.GetVertexStateSlot() : InvalidSlot;
-    auto record_draw_batch = [&](const PipelineRenderer &renderer, SPT spt, const DrawBatchInfo &batch) {
-        if (batch.DrawCount == 0) return;
-        const auto &pipeline = renderer.Bind(cb, spt, ubo_offset);
-        const MainDrawPushConstants pc{{batch.DrawDataSlotOffset, transform_vertex_state_slot}};
-        cb.pushConstants(*pipeline.PipelineLayout, vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, sizeof(pc), &pc);
-        cb.drawIndexedIndirect(*buffers.RenderDraw.Indirect, batch.IndirectOffset, batch.DrawCount, sizeof(vk::DrawIndexedIndirectCommand));
-    };
-    auto record_pbr_batch = [&](const DrawBatchInfo &batch, PbrCompiler::Variant variant) {
-        if (batch.DrawCount == 0) return;
-        const auto layout = pipelines.Main.Compiler.Bind(cb, variant, ubo_offset);
+    auto record_batch = [&](vk::PipelineLayout layout, const DrawBatchInfo &batch, bool region_b) {
         const MainDrawPushConstants pc{{batch.DrawDataSlotOffset, transform_vertex_state_slot}};
         cb.pushConstants(layout, vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, sizeof(pc), &pc);
-        cb.drawIndexedIndirect(*buffers.RenderDraw.Indirect, batch.IndirectOffset, batch.DrawCount, sizeof(vk::DrawIndexedIndirectCommand));
+        const auto indirect_offset = region_b ? draw_list.IndirectCommands.size() * sizeof(vk::DrawIndexedIndirectCommand) : size_t{0};
+        cb.drawIndexedIndirect(*buffers.RenderDraw.Indirect, batch.IndirectOffset + indirect_offset, batch.DrawCount, sizeof(vk::DrawIndexedIndirectCommand));
+    };
+    auto record_draw_batch = [&](const PipelineRenderer &renderer, SPT spt, const DrawBatchInfo &batch, bool region_b = false) {
+        if (batch.DrawCount == 0) return;
+        record_batch(*renderer.Bind(cb, spt, ubo_offset).PipelineLayout, batch, region_b);
+    };
+    auto record_pbr_batch = [&](const DrawBatchInfo &batch, PbrCompiler::Variant variant, bool region_b = false) {
+        if (batch.DrawCount == 0) return;
+        record_batch(pipelines.Main.Compiler.Bind(cb, variant, ubo_offset), batch, region_b);
     };
     const auto make_shader_read_barrier = [](vk::AccessFlags src_access, vk::ImageLayout layout, vk::Image image, const vk::ImageSubresourceRange &range) {
         return vk::ImageMemoryBarrier{src_access, vk::AccessFlagBits::eShaderRead, layout, layout, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, image, range};
@@ -890,7 +943,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, vk::CommandBuffer cb,
     // Real-transmission pre-pass: render Background + FillOpaque into TransmissionImage mip 0,
     // sampled by the scene pass at the refracted exit point. TRANSMISSION_PREPASS variants skip
     // exposure and drop transmission materials (no self-sampling).
-    if (real_transmission && main.Transmission && draw_scene) {
+    if (transmission_active && draw_scene) {
         const profile::GpuScope scope{"TransmissionPrepass"};
         // Refraction sees the world, and nothing where there is no world. The viewport backdrop is
         // display-referred UI drawn with the overlays, so it never reaches this buffer.
@@ -938,10 +991,6 @@ void RecordPhase(entt::registry &r, entt::entity viewport, vk::CommandBuffer cb,
     // Blurred steps render the scene through the velocity render pass variant, so opaque geometry
     // writes its screen motion alongside its color.
     const bool blur = phase == RenderPhase::BlurredFull || IsBlurAccumulate(phase);
-    // The transmission composite path lays the prepass down as the scene's background and
-    // plain-opaque pixels, loading the prepass's depth. Edit mode re-rasterizes for face tints,
-    // blur steps for velocity, and debug channels carry values the composite's exposure would corrupt.
-    const bool composite_transmission = real_transmission && main.Transmission && phase == RenderPhase::Full && !is_edit_mode && settings.DebugChannel == DebugChannel::None;
 
     { // Scene pass: shaded scene into its own color target, and the depth the overlay pass occludes against.
         const profile::GpuScope scope{draw_scene ? "ScenePass" : "SceneDepthPass"};
@@ -978,15 +1027,52 @@ void RecordPhase(entt::registry &r, entt::entity viewport, vk::CommandBuffer cb,
         }
 
         // Solid faces. BlurResolve writes depth only, for overlays to occlude against (blend faces never wrote depth).
+        // Two-phase draws the previously-visible opaque set here and defers blend to the resume pass.
         if (buffers.IdentityIndexCount > 0 && show_fill) {
             cb.bindIndexBuffer(*buffers.IdentityIndexBuffer, 0, vk::IndexType::eUint32);
             if (!draw_scene) {
                 record_draw_batch(main.SceneRenderer, SPT::FillDepth, draw.FillOpaque);
             } else if (show_rendered) {
                 record_pbr_batch(composite_transmission ? draw.FillOpaqueTransmissive : draw.FillOpaque, blur ? PbrCompiler::Variant::OpaqueVelocity : PbrCompiler::Variant::Opaque);
-                record_pbr_batch(draw.FillBlend, blur ? PbrCompiler::Variant::BlendVelocity : PbrCompiler::Variant::Blend);
+                if (!two_phase) record_pbr_batch(draw.FillBlend, blur ? PbrCompiler::Variant::BlendVelocity : PbrCompiler::Variant::Blend);
             } else {
                 record_draw_batch(main.SceneRenderer, SPT::Fill, draw.FillOpaque);
+            }
+        }
+        cb.endRenderPass();
+    }
+
+    // The occlusion interlude: reduce region A's depth into the pyramid, test the deferred
+    // instances against it, then resume the scene pass with the newly visible and the blend draws.
+    if (two_phase) {
+        cb.pipelineBarrier(
+            vk::PipelineStageFlagBits::eLateFragmentTests, vk::PipelineStageFlagBits::eFragmentShader, {}, {}, {},
+            {{vk::AccessFlagBits::eDepthStencilAttachmentWrite, vk::AccessFlagBits::eShaderRead,
+              vk::ImageLayout::eDepthStencilAttachmentOptimal, vk::ImageLayout::eDepthStencilReadOnlyOptimal,
+              VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, *main.Resources->DepthImage.Image, DepthSubresourceRange}}
+        );
+        RecordDepthPyramid(cb, main, sel_slots, main_rect, ubo_offset);
+        RecordOcclusionCull(cb, pipelines, buffers, buffers.RenderDraw, draw_list, sel_slots.DepthPyramidSampler, ubo_offset);
+        // Depth returns to attachment writes after the cull's reads, and region A's color writes
+        // land before the resume pass loads the attachment.
+        const std::array resume_barriers{
+            vk::ImageMemoryBarrier{vk::AccessFlagBits::eShaderRead, vk::AccessFlagBits::eDepthStencilAttachmentWrite, vk::ImageLayout::eDepthStencilReadOnlyOptimal, vk::ImageLayout::eDepthStencilAttachmentOptimal, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, *main.Resources->DepthImage.Image, DepthSubresourceRange},
+            vk::ImageMemoryBarrier{vk::AccessFlagBits::eColorAttachmentWrite, vk::AccessFlagBits::eColorAttachmentRead | vk::AccessFlagBits::eColorAttachmentWrite, vk::ImageLayout::eShaderReadOnlyOptimal, vk::ImageLayout::eShaderReadOnlyOptimal, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, *main.Resources->SceneColorImage.Image, ColorSubresourceRange},
+        };
+        cb.pipelineBarrier(
+            vk::PipelineStageFlagBits::eFragmentShader | vk::PipelineStageFlagBits::eColorAttachmentOutput,
+            vk::PipelineStageFlagBits::eEarlyFragmentTests | vk::PipelineStageFlagBits::eColorAttachmentOutput,
+            {}, {}, {}, resume_barriers
+        );
+        const profile::GpuScope scope{"SceneResumePass"};
+        cb.beginRenderPass({*main.SceneResumeRenderPass, *main.Resources->SceneFramebuffer, main_rect, {}}, vk::SubpassContents::eInline);
+        if (buffers.IdentityIndexCount > 0) {
+            cb.bindIndexBuffer(*buffers.IdentityIndexBuffer, 0, vk::IndexType::eUint32);
+            if (show_rendered) {
+                record_pbr_batch(draw.FillOpaque, PbrCompiler::Variant::Opaque, /*region_b=*/true);
+                record_pbr_batch(draw.FillBlend, PbrCompiler::Variant::Blend);
+            } else {
+                record_draw_batch(main.SceneRenderer, SPT::Fill, draw.FillOpaque, /*region_b=*/true);
             }
         }
         cb.endRenderPass();
@@ -1030,25 +1116,15 @@ void RecordPhase(entt::registry &r, entt::entity viewport, vk::CommandBuffer cb,
         return;
     }
 
-    // Reduce the scene depth into the occlusion pyramid while it is intact (the overlay pass discards depth).
-    // The blur gather already moved depth to shader-readable. Otherwise, move it here and back after.
-    if (!blur) {
+    // The gather read depth as a texture. Hand it back as an attachment for the overlay pass to write.
+    if (blur) {
         cb.pipelineBarrier(
-            vk::PipelineStageFlagBits::eLateFragmentTests, vk::PipelineStageFlagBits::eFragmentShader, {}, {}, {},
-            {{vk::AccessFlagBits::eDepthStencilAttachmentWrite, vk::AccessFlagBits::eShaderRead,
-              vk::ImageLayout::eDepthStencilAttachmentOptimal, vk::ImageLayout::eDepthStencilReadOnlyOptimal,
+            vk::PipelineStageFlagBits::eComputeShader, vk::PipelineStageFlagBits::eEarlyFragmentTests, {}, {}, {},
+            {{vk::AccessFlagBits::eShaderRead, vk::AccessFlagBits::eDepthStencilAttachmentWrite,
+              vk::ImageLayout::eDepthStencilReadOnlyOptimal, vk::ImageLayout::eDepthStencilAttachmentOptimal,
               VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, *main.Resources->DepthImage.Image, DepthSubresourceRange}}
         );
     }
-    RecordDepthPyramid(cb, main, sel_slots, main_rect, ubo_offset);
-
-    // Hand depth back as an attachment for the overlay pass to write.
-    cb.pipelineBarrier(
-        vk::PipelineStageFlagBits::eFragmentShader, vk::PipelineStageFlagBits::eEarlyFragmentTests, {}, {}, {},
-        {{vk::AccessFlagBits::eShaderRead, vk::AccessFlagBits::eDepthStencilAttachmentWrite,
-          vk::ImageLayout::eDepthStencilReadOnlyOptimal, vk::ImageLayout::eDepthStencilAttachmentOptimal,
-          VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, *main.Resources->DepthImage.Image, DepthSubresourceRange}}
-    );
 
     // The layer clears transparent, so an untouched one composites to nothing. Track whether anything
     // reaches it, and the composite skips reading it and its line data at all. Every draw in the pass

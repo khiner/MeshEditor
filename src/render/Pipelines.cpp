@@ -196,11 +196,12 @@ static ShaderPipeline CreateQuadPipeline(const PipelineContext &ctx, std::filesy
 // occlude against. Also backs the transmission pre-pass, which renders into its own framebuffer.
 // `load_depth` keeps the depth the transmission pre-pass wrote, for the composite path.
 // Attachment compatibility ignores load ops, so the plain pass's pipelines and framebuffer serve both variants.
-static vk::UniqueRenderPass CreateSceneRenderPass(vk::Device d, bool load_depth = false) {
+static vk::UniqueRenderPass CreateSceneRenderPass(vk::Device d, bool load_depth = false, bool load_color = false) {
     const std::vector<vk::AttachmentDescription> attachments{
         {{}, Format::Depth, vk::SampleCountFlagBits::e1, load_depth ? vk::AttachmentLoadOp::eLoad : vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eStore, vk::AttachmentLoadOp::eDontCare, vk::AttachmentStoreOp::eDontCare, load_depth ? vk::ImageLayout::eDepthStencilAttachmentOptimal : vk::ImageLayout::eUndefined, vk::ImageLayout::eDepthStencilAttachmentOptimal},
-        // Color: cleared transparent, stored for sampling in the viewport composite.
-        {{}, Format::HdrColor, vk::SampleCountFlagBits::e1, vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eStore, {}, {}, vk::ImageLayout::eUndefined, vk::ImageLayout::eShaderReadOnlyOptimal},
+        // Color: cleared transparent, stored for sampling in the viewport composite. The load
+        // variant resumes over the shader-readable color the prior scene pass part stored.
+        {{}, Format::HdrColor, vk::SampleCountFlagBits::e1, load_color ? vk::AttachmentLoadOp::eLoad : vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eStore, {}, {}, load_color ? vk::ImageLayout::eShaderReadOnlyOptimal : vk::ImageLayout::eUndefined, vk::ImageLayout::eShaderReadOnlyOptimal},
     };
     // The depth dependency orders the load variant's tests after the pre-pass's depth writes.
     // Both variants carry it so they stay render-pass compatible (compatibility requires equal
@@ -323,6 +324,7 @@ MainPipeline::MainPipeline(const PipelineContext &ctx)
     : SceneRenderer{CreateSceneRenderer(ctx)},
       OverlayRenderer{CreateOverlayRenderer(ctx)},
       SceneDepthLoadRenderPass{CreateSceneRenderPass(ctx.Device, /*load_depth=*/true)},
+      SceneResumeRenderPass{CreateSceneRenderPass(ctx.Device, /*load_depth=*/true, /*load_color=*/true)},
       SceneVelocityRenderer{CreateSceneVelocityRenderer(ctx)},
       PrepassBackground{CreateBackgroundPipeline(ctx, true)},
       CompositeRenderPass{CreateColorOnlyRenderPass(ctx.Device, Format::Color, vk::AttachmentLoadOp::eDontCare, vk::ImageLayout::eUndefined, vk::ImageLayout::eShaderReadOnlyOptimal)},

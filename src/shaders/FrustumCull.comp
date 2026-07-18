@@ -1,10 +1,14 @@
 #version 450
 #extension GL_EXT_nonuniform_qualifier : require
 #extension GL_EXT_scalar_block_layout : require
+#extension GL_EXT_shader_8bit_storage : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int8 : require
 
-// Frustum-culls the render draw list in place. Phase 0 zeroes each indirect command's instance
-// count, one thread per command. Phase 1 tests each draw entry's instance bounds against the view
-// frustum and appends survivors to the visible-index remap GetDrawData reads, one thread per entry.
+// Culls the draw list in place, one thread per indirect command (phase 0) or draw entry (phases
+// 1 and 2). Phase 0 zeroes both command regions' instance counts. Phase 1 appends frustum-passing
+// entries to region A and the visible-index remap, gated to previously-visible instances when
+// VisibilitySlot is set. Phase 2 tests the deferred remainder against the depth pyramid, appends
+// survivors to region B, and updates per-instance visibility.
 layout(local_size_x = 64) in;
 
 #include "FrustumCullPushConstants.glsl"
@@ -28,6 +32,7 @@ struct AABB {
     vec3 Max;
 };
 
+layout(set = 0, binding = BINDING_Sampler) uniform sampler2D Samplers[];
 layout(set = 0, binding = BINDING_Buffer, scalar) buffer CommandBuffer {
     IndirectCommand Commands[];
 } CommandBuffers[];
@@ -40,6 +45,9 @@ layout(set = 0, binding = BINDING_Buffer, scalar) buffer VisibleIndexBuffer {
 layout(set = 0, binding = BINDING_Buffer, scalar) readonly buffer BoundsBuffer {
     AABB Bounds[];
 } BoundsBuffers[];
+layout(set = 0, binding = BINDING_Buffer, scalar) buffer VisibilityBuffer {
+    uint8_t Visible[];
+} VisibilityBuffers[];
 layout(set = 0, binding = BINDING_DrawDataBuffer, scalar) readonly buffer DrawDataBuffer {
     DrawData Draws[];
 } DrawDataBuffers[];
@@ -47,6 +55,7 @@ layout(set = 0, binding = BINDING_ModelBuffer, scalar) readonly buffer ModelBuff
     Transform Models[];
 } ModelBuffers[];
 
+const uint INVALID_SLOT = 0xffffffffu;
 const uint INVALID_OFFSET = 0xffffffffu;
 
 // Row `i` of the view-projection, for Gribb-Hartmann plane extraction.
@@ -55,10 +64,61 @@ vec4 vp_row(uint i) {
     return vec4(m[0][i], m[1][i], m[2][i], m[3][i]);
 }
 
+bool in_frustum(vec3 center, vec3 ax, vec3 ay, vec3 az) {
+    const vec4 r3 = vp_row(3);
+    const vec4 planes[6] = {
+        r3 + vp_row(0), r3 - vp_row(0), // left, right
+        r3 + vp_row(1), r3 - vp_row(1), // bottom, top
+        vp_row(2), r3 - vp_row(2), // near (Vulkan zero-to-one depth), far
+    };
+    for (uint p = 0; p < 6; ++p) {
+        const vec3 n = planes[p].xyz;
+        const float radius = abs(dot(n, ax)) + abs(dot(n, ay)) + abs(dot(n, az));
+        if (dot(n, center) + planes[p].w < -radius) return false;
+    }
+    return true;
+}
+
+// True when every part of the world-space box is behind the pyramid's farthest depth over its
+// screen footprint. The box's own depth from region A keeps it visible, so this never self-culls.
+bool occluded(vec3 center, vec3 ax, vec3 ay, vec3 az) {
+    vec2 uv_min = vec2(1e30), uv_max = vec2(-1e30);
+    float min_depth = 1e30;
+    for (int c = 0; c < 8; ++c) {
+        const vec3 corner = center + ((c & 1) != 0 ? ax : -ax) + ((c & 2) != 0 ? ay : -ay) + ((c & 4) != 0 ? az : -az);
+        const vec4 clip = SceneViewUBO.ViewProj * vec4(corner, 1.0);
+        if (clip.w <= 0.0) return false; // Crosses the near plane: keep it visible.
+        const vec3 ndc = clip.xyz / clip.w;
+        const vec2 uv = ndc.xy * 0.5 + 0.5;
+        uv_min = min(uv_min, uv);
+        uv_max = max(uv_max, uv);
+        min_depth = min(min_depth, ndc.z);
+    }
+    if (min_depth <= 0.0) return false;
+
+    const vec2 size0 = vec2(textureSize(Samplers[pc.PyramidSamplerSlot], 0));
+    const vec2 min_px = clamp(uv_min, 0.0, 1.0) * size0;
+    const vec2 max_px = clamp(uv_max, 0.0, 1.0) * size0;
+    // The level where the footprint spans at most about two texels per dimension.
+    const float max_dim = max(max_px.x - min_px.x, max_px.y - min_px.y);
+    const int level = clamp(int(ceil(log2(max(max_dim * 0.5, 1.0)))), 0, textureQueryLevels(Samplers[pc.PyramidSamplerSlot]) - 1);
+    const ivec2 level_size = textureSize(Samplers[pc.PyramidSamplerSlot], level);
+    const ivec2 lo = clamp(ivec2(min_px) >> level, ivec2(0), level_size - 1);
+    const ivec2 hi = clamp(ivec2(max_px) >> level, ivec2(0), level_size - 1);
+    if (hi.x - lo.x > 3 || hi.y - lo.y > 3) return false; // Footprint outgrew the top level: keep it visible.
+    float occluder = 0.0;
+    for (int y = lo.y; y <= hi.y; ++y) {
+        for (int x = lo.x; x <= hi.x; ++x) {
+            occluder = max(occluder, texelFetch(Samplers[pc.PyramidSamplerSlot], ivec2(x, y), level).r);
+        }
+    }
+    return min_depth > occluder;
+}
+
 void main() {
     const uint i = gl_GlobalInvocationID.x;
     if (pc.Phase == 0u) {
-        if (i < pc.CommandCount) CommandBuffers[pc.CommandsSlot].Commands[i].InstanceCount = 0u;
+        if (i < 2u * pc.CommandCount) CommandBuffers[pc.CommandsSlot].Commands[i].InstanceCount = 0u;
         return;
     }
     if (i >= pc.EntryCount) return;
@@ -70,37 +130,46 @@ void main() {
     // at its original remap slot for deterministic instance order. These predicates are uniform
     // across a command's entries (one mesh's DrawData and bounds), so fixed slots never collide
     // with compacted ones.
-    bool fixed_slot = (entry.Cmd & CullFlag_KeepOrder) != 0u || draw.ArmatureDeformOffset != INVALID_OFFSET || draw.MorphDeformOffset != INVALID_OFFSET || draw.HasPendingVertexTransform != 0u;
-    bool visible = fixed_slot;
-    if (!visible) {
+    const bool fixed_slot = (entry.Cmd & CullFlag_KeepOrder) != 0u || draw.ArmatureDeformOffset != INVALID_OFFSET || draw.MorphDeformOffset != INVALID_OFFSET || draw.HasPendingVertexTransform != 0u;
+    if (pc.Phase == 2u && fixed_slot) return; // Drew in region A.
+
+    bool empty = fixed_slot;
+    vec3 center, ax, ay, az;
+    if (!fixed_slot) {
         const AABB aabb = BoundsBuffers[pc.BoundsSlot].Bounds[draw.FirstInstance];
-        if (aabb.Min.x > aabb.Max.x) {
-            // Empty bounds (extras and empty meshes): always draw.
-            fixed_slot = true;
-            visible = true;
-        } else {
+        empty = aabb.Min.x > aabb.Max.x; // Extras and empty meshes: always drawn.
+        if (!empty) {
             const Transform t = ModelBuffers[pc.ModelSlot].Models[draw.FirstInstance];
             const vec3 half_local = (aabb.Max - aabb.Min) * 0.5;
-            const vec3 center = trs_transform_point(t, (aabb.Min + aabb.Max) * 0.5);
-            const vec3 ax = quat_rotate(t.R, vec3(t.S.x * half_local.x, 0, 0));
-            const vec3 ay = quat_rotate(t.R, vec3(0, t.S.y * half_local.y, 0));
-            const vec3 az = quat_rotate(t.R, vec3(0, 0, t.S.z * half_local.z));
-            const vec4 r3 = vp_row(3);
-            const vec4 planes[6] = {
-                r3 + vp_row(0), r3 - vp_row(0), // left, right
-                r3 + vp_row(1), r3 - vp_row(1), // bottom, top
-                vp_row(2), r3 - vp_row(2), // near (Vulkan zero-to-one depth), far
-            };
-            visible = true;
-            for (uint p = 0; p < 6 && visible; ++p) {
-                const vec3 n = planes[p].xyz;
-                const float radius = abs(dot(n, ax)) + abs(dot(n, ay)) + abs(dot(n, az));
-                if (dot(n, center) + planes[p].w < -radius) visible = false;
-            }
+            center = trs_transform_point(t, (aabb.Min + aabb.Max) * 0.5);
+            ax = quat_rotate(t.R, vec3(t.S.x * half_local.x, 0, 0));
+            ay = quat_rotate(t.R, vec3(0, t.S.y * half_local.y, 0));
+            az = quat_rotate(t.R, vec3(0, 0, t.S.z * half_local.z));
         }
     }
-    if (visible) {
-        const uint k = atomicAdd(CommandBuffers[pc.CommandsSlot].Commands[cmd].InstanceCount, 1u);
-        VisibleIndexBuffers[pc.VisibleIndexSlot].Indices[fixed_slot ? i : entry.Base + k] = i;
+
+    if (pc.Phase == 1u) {
+        bool visible = fixed_slot || empty || in_frustum(center, ax, ay, az);
+        // Instances hidden last frame defer to the occlusion pass.
+        if (visible && !fixed_slot && !empty && pc.VisibilitySlot != INVALID_SLOT && VisibilityBuffers[pc.VisibilitySlot].Visible[draw.FirstInstance] == uint8_t(0u)) visible = false;
+        if (visible) {
+            const uint k = atomicAdd(CommandBuffers[pc.CommandsSlot].Commands[cmd].InstanceCount, 1u);
+            VisibleIndexBuffers[pc.VisibleIndexSlot].Indices[fixed_slot || empty ? i : entry.Base + k] = i;
+        }
+        return;
+    }
+
+    // Phase 2: settle visibility for every frustum-passing entry, and draw newly visible ones.
+    if (empty) return; // Drew in region A.
+    if (!in_frustum(center, ax, ay, az)) {
+        VisibilityBuffers[pc.VisibilitySlot].Visible[draw.FirstInstance] = uint8_t(0u);
+        return;
+    }
+    const bool was_visible = VisibilityBuffers[pc.VisibilitySlot].Visible[draw.FirstInstance] != uint8_t(0u);
+    const bool now_hidden = occluded(center, ax, ay, az);
+    VisibilityBuffers[pc.VisibilitySlot].Visible[draw.FirstInstance] = now_hidden ? uint8_t(0u) : uint8_t(1u);
+    if (!was_visible && !now_hidden) {
+        const uint k = atomicAdd(CommandBuffers[pc.CommandsSlot].Commands[pc.CommandCount + cmd].InstanceCount, 1u);
+        VisibleIndexBuffers[pc.VisibleIndexSlot].Indices[pc.EntryCount + entry.Base + k] = i;
     }
 }

@@ -410,6 +410,7 @@ SyncResult SyncModelsBuffers(entt::registry &r) {
         // deformed objects' slots later this call.
         const auto mesh = TryGetMesh(r, buffer_entity);
         std::ranges::fill(buffers.Instances.GetMutableBounds({base_index, n}), mesh ? mesh->CalcAABB() : AABB{});
+        std::ranges::fill(buffers.Instances.GetMutableVisibility({base_index, n}), uint8_t{1});
         mb.InstanceCount = new_total;
         newly_inserted.append_range(entities);
     }

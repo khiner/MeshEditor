@@ -793,8 +793,16 @@ structs:
         type: u32
       - name: CommandCount
         type: u32
+      # 0 zeroes both command regions' counts. 1 fills region A (frustum-passing, visibility-gated
+      # when VisibilitySlot is set). 2 fills region B (occlusion-tested remainder) and updates visibility.
       - name: Phase
         type: u32
+      - name: VisibilitySlot
+        type: u32
+        default: InvalidSlot
+      - name: PyramidSamplerSlot
+        type: u32
+        default: InvalidSlot
   - name: SilhouetteEdgeDepthObjectPushConstants
     push_constant: true
     fields:
