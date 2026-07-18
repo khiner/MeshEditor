@@ -548,7 +548,11 @@ int main(int argc, char **argv) {
             if (const auto cpp_type = CppTypeFor(spec.Base, structs, enums)) {
                 cpp_out << "    ";
                 if (spec.ArraySize) {
-                    cpp_out << "std::array<" << *cpp_type << ", " << *spec.ArraySize << "> " << field.Name << "{};\n";
+                    cpp_out << "std::array<" << *cpp_type << ", " << *spec.ArraySize << "> " << field.Name << '{';
+                    if (!field.DefaultValue.empty()) {
+                        for (size_t i = 0; i < *spec.ArraySize; ++i) cpp_out << (i == 0 ? "" : ", ") << field.DefaultValue;
+                    }
+                    cpp_out << "};\n";
                 } else {
                     cpp_out << *cpp_type << " " << field.Name << '{'
                             << (field.DefaultValue.empty() ? std::string_view{} : std::string_view{field.DefaultValue})

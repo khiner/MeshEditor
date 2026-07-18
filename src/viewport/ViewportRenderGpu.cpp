@@ -245,10 +245,10 @@ FrustumCullPushConstants MakeCullPushConstants(const GpuBuffers &buffers, const 
     };
 }
 
-void BindCull(vk::CommandBuffer cb, const ComputePipeline &cull, uint32_t ubo_offset) {
-    cb.bindPipeline(vk::PipelineBindPoint::eCompute, *cull.Pipeline);
-    const std::array cull_sets{cull.GetDescriptorSet(), cull.GetUboSet()};
-    cb.bindDescriptorSets(vk::PipelineBindPoint::eCompute, *cull.PipelineLayout, 0, uint32_t(cull_sets.size()), cull_sets.data(), 1, &ubo_offset);
+void BindCompute(vk::CommandBuffer cb, const ComputePipeline &pipeline, uint32_t ubo_offset) {
+    cb.bindPipeline(vk::PipelineBindPoint::eCompute, *pipeline.Pipeline);
+    const std::array sets{pipeline.GetDescriptorSet(), pipeline.GetUboSet()};
+    cb.bindDescriptorSets(vk::PipelineBindPoint::eCompute, *pipeline.PipelineLayout, 0, uint32_t(sets.size()), sets.data(), 1, &ubo_offset);
 }
 
 void DispatchCull(vk::CommandBuffer cb, const ComputePipeline &cull, const FrustumCullPushConstants &cull_pc, uint32_t count) {
@@ -277,7 +277,7 @@ void RecordFrustumCull(vk::CommandBuffer cb, const Pipelines &pipelines, const G
         vk::PipelineStageFlagBits::eComputeShader, {},
         vk::MemoryBarrier{vk::AccessFlagBits::eIndirectCommandRead | vk::AccessFlagBits::eShaderRead, vk::AccessFlagBits::eShaderWrite | vk::AccessFlagBits::eShaderRead}, {}, {}
     );
-    BindCull(cb, cull, ubo_offset);
+    BindCompute(cb, cull, ubo_offset);
     auto cull_pc = MakeCullPushConstants(buffers, pair, draw_list);
     cull_pc.VisibilitySlot = visibility_slot;
     DispatchCull(cb, cull, cull_pc, 2 * cull_pc.CommandCount);
@@ -296,13 +296,13 @@ namespace {
 void RecordOcclusionCull(vk::CommandBuffer cb, const Pipelines &pipelines, const GpuBuffers &buffers, const DrawBufferPair &pair, const DrawListBuilder &draw_list, uint32_t pyramid_sampler_slot, uint32_t ubo_offset) {
     const profile::GpuScope cull_scope{"OcclusionCull"};
     const auto &cull = pipelines.FrustumCull;
-    // The pyramid's attachment writes and the frustum pass's count writes land before this reads them.
+    // The pyramid's writes and the frustum pass's count writes land before this reads them.
     cb.pipelineBarrier(
-        vk::PipelineStageFlagBits::eColorAttachmentOutput | vk::PipelineStageFlagBits::eComputeShader,
+        vk::PipelineStageFlagBits::eComputeShader,
         vk::PipelineStageFlagBits::eComputeShader, {},
-        vk::MemoryBarrier{vk::AccessFlagBits::eColorAttachmentWrite | vk::AccessFlagBits::eShaderWrite, vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite}, {}, {}
+        vk::MemoryBarrier{vk::AccessFlagBits::eShaderWrite, vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite}, {}, {}
     );
-    BindCull(cb, cull, ubo_offset);
+    BindCompute(cb, cull, ubo_offset);
     auto cull_pc = MakeCullPushConstants(buffers, pair, draw_list);
     cull_pc.Phase = 2;
     cull_pc.VisibilitySlot = buffers.Instances.VisibilityBuffer.Slot;
@@ -311,31 +311,47 @@ void RecordOcclusionCull(vk::CommandBuffer cb, const Pipelines &pipelines, const
     ReleaseCullToDraw(cb);
 }
 
-// Reduce the scene depth into the max-depth mip pyramid the occlusion cull samples. The depth
-// image is in DepthStencilReadOnlyOptimal throughout. Restores the full viewport and scissor.
-void RecordDepthPyramid(vk::CommandBuffer cb, const MainPipeline &main, const SelectionSlots &sel_slots, vk::Rect2D full_rect, uint32_t ubo_offset) {
+// Reduce the scene depth into the max-depth mip pyramid the occlusion cull samples, one dispatch
+// per mip. The scene depth is in DepthStencilReadOnlyOptimal, and the pyramid stays in General.
+void RecordDepthPyramid(vk::CommandBuffer cb, const Pipelines &pipelines, const SelectionSlots &sel_slots, uint32_t ubo_offset) {
     const profile::GpuScope scope{"DepthPyramid"};
+    const auto &main = pipelines.Main;
+    // The dispatches below rewrite every texel the cull reads (their fetches clamp into the data
+    // region), so discard the previous frame's contents along with the layout.
+    cb.pipelineBarrier(
+        vk::PipelineStageFlagBits::eComputeShader, vk::PipelineStageFlagBits::eComputeShader, {}, {}, {},
+        {{{}, vk::AccessFlagBits::eShaderWrite, vk::ImageLayout::eUndefined, vk::ImageLayout::eGeneral, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, *main.Resources->DepthPyramidImage.Image, {vk::ImageAspectFlagBits::eColor, 0, VK_REMAINING_MIP_LEVELS, 0, 1}}}
+    );
+    const auto &reduce = pipelines.DepthPyramidReduce;
+    BindCompute(cb, reduce, ubo_offset);
     const auto &mips = main.Resources->DepthPyramidMips;
-    for (uint32_t mip = 0; mip < uint32_t(mips.size()); ++mip) {
-        const auto &level = mips[mip];
-        cb.setViewport(0, vk::Viewport{0.f, 0.f, float(level.Extent.width), float(level.Extent.height), 0.f, 1.f});
-        cb.setScissor(0, vk::Rect2D{{0, 0}, level.Extent});
-        cb.beginRenderPass({*main.DepthPyramidRenderPass, *level.Framebuffer, {{0, 0}, level.Extent}, {}}, vk::SubpassContents::eInline);
+    const auto scene_extent = ToExtent2D(main.Resources->DepthImage.Extent);
+    // Each dispatch reduces up to six levels through workgroup shared memory, so any viewport up to
+    // 8K needs at most three dispatches and two barriers.
+    for (uint32_t base = 0; base < uint32_t(mips.size()); base += 6) {
+        if (base > 0) {
+            // The previous block's writes complete before this block samples them.
+            cb.pipelineBarrier(
+                vk::PipelineStageFlagBits::eComputeShader, vk::PipelineStageFlagBits::eComputeShader, {},
+                vk::MemoryBarrier{vk::AccessFlagBits::eShaderWrite, vk::AccessFlagBits::eShaderRead}, {}, {}
+            );
+        }
+        const auto src_extent = base == 0 ? scene_extent : mips[base - 1].Extent;
         const DepthPyramidReducePushConstants reduce_pc{
-            mip == 0 ? sel_slots.SceneDepthSampler : sel_slots.DepthPyramidSampler,
-            mip == 0 ? 0 : mip - 1,
+            .SrcSamplerSlot = base == 0 ? sel_slots.SceneDepthSampler : sel_slots.DepthPyramidSampler,
+            .SrcLod = base == 0 ? 0 : base - 1,
+            .SrcWidth = src_extent.width,
+            .SrcHeight = src_extent.height,
+            .DstSlots = [&] {
+                std::array<uint32_t, 6> dst;
+                for (uint32_t k = 0; k < uint32_t(dst.size()); ++k) dst[k] = base + k < mips.size() ? mips[base + k].Slot : InvalidSlot;
+                return dst;
+            }(),
         };
-        cb.pushConstants(*main.DepthPyramidReduce.PipelineLayout, vk::ShaderStageFlagBits::eFragment, 0, sizeof(reduce_pc), &reduce_pc);
-        main.DepthPyramidReduce.RenderQuad(cb, ubo_offset);
-        cb.endRenderPass();
-        // MoltenVK needs the explicit barrier to flush this mip's writes before the next mip samples them.
-        cb.pipelineBarrier(
-            vk::PipelineStageFlagBits::eColorAttachmentOutput, vk::PipelineStageFlagBits::eFragmentShader, {},
-            vk::MemoryBarrier{vk::AccessFlagBits::eColorAttachmentWrite, vk::AccessFlagBits::eShaderRead}, {}, {}
-        );
+        cb.pushConstants(*reduce.PipelineLayout, vk::ShaderStageFlagBits::eCompute, 0, sizeof(reduce_pc), &reduce_pc);
+        static constexpr uint32_t TileSize{32};
+        cb.dispatch((mips[base].Extent.width + TileSize - 1) / TileSize, (mips[base].Extent.height + TileSize - 1) / TileSize, 1);
     }
-    cb.setViewport(0, vk::Viewport{0.f, 0.f, float(full_rect.extent.width), float(full_rect.extent.height), 0.f, 1.f});
-    cb.setScissor(0, full_rect);
 }
 
 // Record one phase's passes into `cb`, which is already begun with viewport and scissor set.
@@ -1046,21 +1062,21 @@ void RecordPhase(entt::registry &r, entt::entity viewport, vk::CommandBuffer cb,
     // instances against it, then resume the scene pass with the newly visible and the blend draws.
     if (two_phase) {
         cb.pipelineBarrier(
-            vk::PipelineStageFlagBits::eLateFragmentTests, vk::PipelineStageFlagBits::eFragmentShader, {}, {}, {},
+            vk::PipelineStageFlagBits::eLateFragmentTests, vk::PipelineStageFlagBits::eComputeShader, {}, {}, {},
             {{vk::AccessFlagBits::eDepthStencilAttachmentWrite, vk::AccessFlagBits::eShaderRead,
               vk::ImageLayout::eDepthStencilAttachmentOptimal, vk::ImageLayout::eDepthStencilReadOnlyOptimal,
               VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, *main.Resources->DepthImage.Image, DepthSubresourceRange}}
         );
-        RecordDepthPyramid(cb, main, sel_slots, main_rect, ubo_offset);
+        RecordDepthPyramid(cb, pipelines, sel_slots, ubo_offset);
         RecordOcclusionCull(cb, pipelines, buffers, buffers.RenderDraw, draw_list, sel_slots.DepthPyramidSampler, ubo_offset);
-        // Depth returns to attachment writes after the cull's reads, and region A's color writes
-        // land before the resume pass loads the attachment.
+        // Depth returns to attachment writes after the pyramid reduce's reads, and region A's color
+        // writes land before the resume pass loads the attachment.
         const std::array resume_barriers{
             vk::ImageMemoryBarrier{vk::AccessFlagBits::eShaderRead, vk::AccessFlagBits::eDepthStencilAttachmentWrite, vk::ImageLayout::eDepthStencilReadOnlyOptimal, vk::ImageLayout::eDepthStencilAttachmentOptimal, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, *main.Resources->DepthImage.Image, DepthSubresourceRange},
             vk::ImageMemoryBarrier{vk::AccessFlagBits::eColorAttachmentWrite, vk::AccessFlagBits::eColorAttachmentRead | vk::AccessFlagBits::eColorAttachmentWrite, vk::ImageLayout::eShaderReadOnlyOptimal, vk::ImageLayout::eShaderReadOnlyOptimal, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, *main.Resources->SceneColorImage.Image, ColorSubresourceRange},
         };
         cb.pipelineBarrier(
-            vk::PipelineStageFlagBits::eFragmentShader | vk::PipelineStageFlagBits::eColorAttachmentOutput,
+            vk::PipelineStageFlagBits::eComputeShader | vk::PipelineStageFlagBits::eColorAttachmentOutput,
             vk::PipelineStageFlagBits::eEarlyFragmentTests | vk::PipelineStageFlagBits::eColorAttachmentOutput,
             {}, {}, {}, resume_barriers
         );

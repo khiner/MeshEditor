@@ -96,15 +96,18 @@ bool occluded(vec3 center, vec3 ax, vec3 ay, vec3 az) {
     }
     if (min_depth <= 0.0) return false;
 
-    const vec2 size0 = vec2(textureSize(Samplers[pc.PyramidSamplerSlot], 0));
-    const vec2 min_px = clamp(uv_min, 0.0, 1.0) * size0;
-    const vec2 max_px = clamp(uv_max, 0.0, 1.0) * size0;
+    // Pyramid level L texel x covers scene texels [x << (L + 1), (x + 1) << (L + 1)), so footprints
+    // map through the scene extent. The pyramid image is padded to power-of-two dimensions, and
+    // clamping to the last data texel keeps every fetch inside the written region.
+    const vec2 half_scene = SceneViewUBO.ViewportSize * 0.5;
+    const vec2 min_px = clamp(uv_min, 0.0, 1.0) * half_scene;
+    const vec2 max_px = clamp(uv_max, 0.0, 1.0) * half_scene;
     // The level where the footprint spans at most about two texels per dimension.
     const float max_dim = max(max_px.x - min_px.x, max_px.y - min_px.y);
     const int level = clamp(int(ceil(log2(max(max_dim * 0.5, 1.0)))), 0, textureQueryLevels(Samplers[pc.PyramidSamplerSlot]) - 1);
-    const ivec2 level_size = textureSize(Samplers[pc.PyramidSamplerSlot], level);
-    const ivec2 lo = clamp(ivec2(min_px) >> level, ivec2(0), level_size - 1);
-    const ivec2 hi = clamp(ivec2(max_px) >> level, ivec2(0), level_size - 1);
+    const ivec2 data_max = (ivec2(SceneViewUBO.ViewportSize) - 1) >> (level + 1);
+    const ivec2 lo = clamp(ivec2(min_px) >> level, ivec2(0), data_max);
+    const ivec2 hi = clamp(ivec2(max_px) >> level, ivec2(0), data_max);
     if (hi.x - lo.x > 3 || hi.y - lo.y > 3) return false; // Footprint outgrew the top level: keep it visible.
     float occluder = 0.0;
     for (int y = lo.y; y <= hi.y; ++y) {

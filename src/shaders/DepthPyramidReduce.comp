@@ -1,0 +1,63 @@
+#version 450
+#extension GL_EXT_nonuniform_qualifier : require
+
+// Reduces up to six pyramid levels in one dispatch. Each workgroup computes a 32x32 tile of the
+// first level as the farthest depth of clamped 2x2 source reads, then halves the tile down through
+// shared memory, storing every level. Source reads clamp to the valid bounds, so each level's last
+// texel absorbs the source edge and every valid source texel is covered by some destination texel.
+layout(local_size_x = 16, local_size_y = 16) in;
+
+#include "DepthPyramidReducePushConstants.glsl"
+
+layout(set = 0, binding = BINDING_Sampler) uniform sampler2D Samplers[];
+layout(set = 0, binding = BINDING_Image, r32f) uniform writeonly image2D FloatImages[];
+
+const uint INVALID_SLOT = 0xffffffffu;
+
+shared float Tile[32][32];
+
+float max4(float a, float b, float c, float d) {
+    return max(max(a, b), max(c, d));
+}
+
+void main() {
+    const ivec2 thread = ivec2(gl_LocalInvocationID.xy);
+    const ivec2 tile_base = ivec2(gl_WorkGroupID.xy) * 32;
+    const ivec2 src_max = ivec2(int(pc.SrcWidth), int(pc.SrcHeight)) - 1;
+    const ivec2 dst_size = imageSize(FloatImages[pc.DstSlots[0]]);
+    const int lod = int(pc.SrcLod);
+    // First level: each thread reduces a 2x2 block of destination texels.
+    for (int j = 0; j < 2; ++j) {
+        for (int i = 0; i < 2; ++i) {
+            const ivec2 local = thread * 2 + ivec2(i, j);
+            const ivec2 dst = tile_base + local;
+            const ivec2 src = dst * 2;
+            const float v = max4(
+                texelFetch(Samplers[pc.SrcSamplerSlot], min(src, src_max), lod).r,
+                texelFetch(Samplers[pc.SrcSamplerSlot], min(src + ivec2(1, 0), src_max), lod).r,
+                texelFetch(Samplers[pc.SrcSamplerSlot], min(src + ivec2(0, 1), src_max), lod).r,
+                texelFetch(Samplers[pc.SrcSamplerSlot], min(src + ivec2(1, 1), src_max), lod).r
+            );
+            if (all(lessThan(dst, dst_size))) imageStore(FloatImages[pc.DstSlots[0]], dst, vec4(v));
+            Tile[local.y][local.x] = v;
+        }
+    }
+    for (int level = 1; level <= 5; ++level) {
+        const uint slot = pc.DstSlots[level];
+        if (slot == INVALID_SLOT) return; // Uniform across the workgroup: the chain ended.
+        barrier();
+        const int dim = 32 >> level;
+        const bool reducing = thread.x < dim && thread.y < dim;
+        float v = 0.0;
+        if (reducing) {
+            const ivec2 s = thread * 2;
+            v = max4(Tile[s.y][s.x], Tile[s.y][s.x + 1], Tile[s.y + 1][s.x], Tile[s.y + 1][s.x + 1]);
+        }
+        barrier();
+        if (reducing) {
+            Tile[thread.y][thread.x] = v;
+            const ivec2 dst = (tile_base >> level) + thread;
+            if (all(lessThan(dst, max(dst_size >> level, ivec2(1))))) imageStore(FloatImages[slot], dst, vec4(v));
+        }
+    }
+}

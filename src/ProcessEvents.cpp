@@ -775,7 +775,7 @@ bool SyncViewportRenderResources(entt::registry &r, entt::entity viewport) {
     if (const auto fence = r.ctx().get<const ViewportConsumerFence>().Value) {
         std::ignore = vk.Device.waitForFences(fence, VK_TRUE, UINT64_MAX);
     }
-    pipelines.SetExtent(render_extent);
+    pipelines.SetExtent(render_extent, slots);
     {
         const auto shading = r.get<const ViewportDisplay>(viewport).ViewportShading;
         const bool is_pbr = shading == ViewportShadingMode::MaterialPreview || shading == ViewportShadingMode::Rendered;
@@ -808,28 +808,34 @@ bool SyncViewportRenderResources(entt::registry &r, entt::entity viewport) {
         const auto scene_depth_sampler = main.SceneDepthSamplerInfo();
         const auto selection_bitset = buffers.SelectionBitset.GetDescriptor(GpuBuffers::SelectionBitsetWords);
         const auto object_pick_seen_bitset = buffers.ObjectPickSeenBitset.GetDescriptor(GpuBuffers::ObjectPickBitsetWords);
-        vk.Device.updateDescriptorSets(
-            {
-                slots.MakeImageWrite(sel_slots.HeadImage, head_image_info),
-                slots.MakeBufferWrite({SlotType::Buffer, sel_slots.SelectionCounter}, selection_counter),
-                slots.MakeBufferWrite({SlotType::Buffer, sel_slots.ObjectPickKey}, object_pick_key),
-                slots.MakeBufferWrite({SlotType::Buffer, sel_slots.ElementPickCandidates}, element_pick_candidates),
-                slots.MakeBufferWrite({SlotType::Buffer, sel_slots.ObjectPickSeenBits}, object_pick_seen_bitset),
-                slots.MakeBufferWrite({SlotType::Buffer, sel_slots.SelectionBitset}, selection_bitset),
-                slots.MakeSamplerWrite(sel_slots.ObjectIdSampler, object_id_sampler),
-                slots.MakeSamplerWrite(sel_slots.DepthSampler, depth_sampler),
-                slots.MakeSamplerWrite(sel_slots.SilhouetteSampler, silhouette_sampler),
-                slots.MakeSamplerWrite(sel_slots.SceneColorSampler, scene_color_sampler),
-                slots.MakeSamplerWrite(sel_slots.OverlayColorSampler, overlay_color_sampler),
-                slots.MakeSamplerWrite(sel_slots.LineDataSampler, line_data_sampler),
-                slots.MakeSamplerWrite(sel_slots.TransmissionSampler, transmission_sampler),
-                slots.MakeSamplerWrite(sel_slots.MotionBlurAccumSampler, motion_blur_accum_sampler),
-                slots.MakeSamplerWrite(sel_slots.VelocitySampler, velocity_sampler),
-                slots.MakeSamplerWrite(sel_slots.SceneDepthSampler, scene_depth_sampler),
-                slots.MakeSamplerWrite(sel_slots.DepthPyramidSampler, main.DepthPyramidSamplerInfo()),
-            },
-            {}
-        );
+        const auto depth_pyramid_sampler = main.DepthPyramidSamplerInfo();
+        const auto &pyramid_mips = main.Resources->DepthPyramidMips;
+        const auto pyramid_mip_infos = pyramid_mips |
+            std::views::transform([](const auto &mip) { return vk::DescriptorImageInfo{nullptr, *mip.View, vk::ImageLayout::eGeneral}; }) |
+            std::ranges::to<std::vector>();
+        std::vector writes{
+            slots.MakeImageWrite(sel_slots.HeadImage, head_image_info),
+            slots.MakeBufferWrite({SlotType::Buffer, sel_slots.SelectionCounter}, selection_counter),
+            slots.MakeBufferWrite({SlotType::Buffer, sel_slots.ObjectPickKey}, object_pick_key),
+            slots.MakeBufferWrite({SlotType::Buffer, sel_slots.ElementPickCandidates}, element_pick_candidates),
+            slots.MakeBufferWrite({SlotType::Buffer, sel_slots.ObjectPickSeenBits}, object_pick_seen_bitset),
+            slots.MakeBufferWrite({SlotType::Buffer, sel_slots.SelectionBitset}, selection_bitset),
+            slots.MakeSamplerWrite(sel_slots.ObjectIdSampler, object_id_sampler),
+            slots.MakeSamplerWrite(sel_slots.DepthSampler, depth_sampler),
+            slots.MakeSamplerWrite(sel_slots.SilhouetteSampler, silhouette_sampler),
+            slots.MakeSamplerWrite(sel_slots.SceneColorSampler, scene_color_sampler),
+            slots.MakeSamplerWrite(sel_slots.OverlayColorSampler, overlay_color_sampler),
+            slots.MakeSamplerWrite(sel_slots.LineDataSampler, line_data_sampler),
+            slots.MakeSamplerWrite(sel_slots.TransmissionSampler, transmission_sampler),
+            slots.MakeSamplerWrite(sel_slots.MotionBlurAccumSampler, motion_blur_accum_sampler),
+            slots.MakeSamplerWrite(sel_slots.VelocitySampler, velocity_sampler),
+            slots.MakeSamplerWrite(sel_slots.SceneDepthSampler, scene_depth_sampler),
+            slots.MakeSamplerWrite(sel_slots.DepthPyramidSampler, depth_pyramid_sampler),
+        };
+        for (const auto &[mip, info] : std::views::zip(pyramid_mips, pyramid_mip_infos)) {
+            writes.emplace_back(slots.MakeImageWrite(mip.Slot, info));
+        }
+        vk.Device.updateDescriptorSets(writes, {});
     }
     buffers.Ctx.FlushDeferredDescriptorUpdates(vk.Device);
     return true;

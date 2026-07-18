@@ -7,6 +7,8 @@
 
 #include <unordered_map>
 
+struct DescriptorSlots;
+
 using SPT = ShaderPipelineType;
 
 inline constexpr vk::ImageSubresourceRange DepthSubresourceRange{vk::ImageAspectFlagBits::eDepth, 0, 1, 0, 1};
@@ -73,22 +75,25 @@ struct MainPipeline {
     MainPipeline(const PipelineContext &);
 
     struct ResourcesT {
-        ResourcesT(vk::Extent2D, vk::Device, vk::PhysicalDevice, vk::RenderPass scene_render_pass, vk::RenderPass overlay_render_pass, vk::RenderPass composite_render_pass, vk::RenderPass depth_pyramid_render_pass);
+        ResourcesT(vk::Extent2D, vk::Device, vk::PhysicalDevice, vk::RenderPass scene_render_pass, vk::RenderPass overlay_render_pass, vk::RenderPass composite_render_pass, DescriptorSlots &);
+        ~ResourcesT();
 
         struct PyramidMip {
             vk::UniqueImageView View;
-            vk::UniqueFramebuffer Framebuffer;
-            vk::Extent2D Extent;
+            uint32_t Slot; // Storage image slot the reduce compute writes.
+            vk::Extent2D Extent; // Valid data bounds. The level's remaining texels are padding.
         };
 
         // SceneColorImage holds the shaded scene. OverlayColorImage holds display-referred overlays
         // over transparent, merged onto the scene in the viewport composite.
         mvk::ImageResource DepthImage, SceneColorImage, OverlayColorImage, LineDataImage, FinalColorImage;
-        // Max-depth mip chain reduced from the scene depth, for the occlusion cull. Mip 0 is half the scene extent.
+        // Max-depth mip chain reduced from the scene depth, for the occlusion cull. Mip 0 covers the
+        // scene at half resolution, padded up to power-of-two dimensions.
         mvk::ImageResource DepthPyramidImage;
         std::vector<PyramidMip> DepthPyramidMips;
         vk::UniqueSampler NearestSampler;
         vk::UniqueFramebuffer SceneFramebuffer, OverlayFramebuffer, CompositeFramebuffer;
+        DescriptorSlots &Slots;
     };
 
     // Mip chain + framebuffer backing real-transmission sampling.
@@ -117,7 +122,7 @@ struct MainPipeline {
         vk::UniqueFramebuffer Framebuffer, SceneVelocityFramebuffer, GatherFramebuffer;
     };
 
-    void SetExtent(vk::Extent2D, vk::Device, vk::PhysicalDevice);
+    void SetExtent(vk::Extent2D, vk::Device, vk::PhysicalDevice, DescriptorSlots &);
     // Idempotent: allocates if `wanted` and not already at the right extent, and releases if not wanted.
     // Returns true when the allocated state changed (caller should re-write the descriptor write).
     bool EnsureTransmissionResources(vk::Extent2D, vk::Device, vk::PhysicalDevice, bool wanted);
@@ -161,9 +166,6 @@ struct MainPipeline {
     // attachment write keeps the output compressed for the accumulate and composite reads.
     vk::UniqueRenderPass MotionBlurGatherRenderPass;
     ShaderPipeline MotionBlurGather;
-    // One fragment pass per pyramid mip, each reducing the previous level (mip 0 reduces the scene depth).
-    vk::UniqueRenderPass DepthPyramidRenderPass;
-    ShaderPipeline DepthPyramidReduce;
     std::unique_ptr<ResourcesT> Resources;
     std::unique_ptr<TransmissionResourcesT> Transmission;
     std::unique_ptr<MotionBlurResourcesT> MotionBlur;
@@ -235,12 +237,14 @@ struct Pipelines {
     // Zeroes indirect instance counts, then refills them and the visible-index remap from
     // per-instance bounds tested against the view frustum.
     ComputePipeline FrustumCull;
+    // One dispatch per pyramid mip, each reducing the previous level (mip 0 reduces the scene depth).
+    ComputePipeline DepthPyramidReduce;
     // Motion blur tile reduction: reduce motion to tiles, then spread each tile's motion over the
     // tiles it crosses. Main.MotionBlurGather blurs the scene along the result.
     ComputePipeline MotionBlurTilesFlatten, MotionBlurTilesDilate;
     IblPrefilterPipelines IblPrefilter;
 
-    void SetExtent(vk::Extent2D);
+    void SetExtent(vk::Extent2D, DescriptorSlots &);
     void CompileShaders();
 
     // Zero before render resources exist.

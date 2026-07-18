@@ -774,6 +774,15 @@ structs:
         default: InvalidSlot
       - name: SrcLod
         type: u32
+      # Valid source texel bounds. Reads clamp here, so padding texels never contribute.
+      - name: SrcWidth
+        type: u32
+      - name: SrcHeight
+        type: u32
+      # Storage slots for up to six pyramid levels this dispatch reduces, InvalidSlot when the chain ends.
+      - name: DstSlots
+        type: u32[6]
+        default: InvalidSlot
   - name: FrustumCullPushConstants
     push_constant: true
     fields:
