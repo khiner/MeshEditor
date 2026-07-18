@@ -1,5 +1,6 @@
 #include "render/Pipelines.h"
 #include "gpu/BoxSelectPushConstants.h"
+#include "gpu/DepthPyramidReducePushConstants.h"
 #include "gpu/ElementPickPushConstants.h"
 #include "gpu/FrustumCullPushConstants.h"
 #include "gpu/MainDrawPushConstants.h"
@@ -331,10 +332,12 @@ MainPipeline::MainPipeline(const PipelineContext &ctx)
       MotionBlurAccumulate{CreateQuadPipeline(ctx, "MotionBlurAccumulate.frag", AdditiveBlend, sizeof(uint32_t))},
       MotionBlurGatherRenderPass{CreateColorOnlyRenderPass(ctx.Device, Format::HdrColor, vk::AttachmentLoadOp::eDontCare, vk::ImageLayout::eUndefined, vk::ImageLayout::eShaderReadOnlyOptimal)},
       MotionBlurGather{CreateQuadPipeline(ctx, "MotionBlurGather.frag", NoBlend, sizeof(MotionBlurGatherPushConstants))},
+      DepthPyramidRenderPass{CreateColorOnlyRenderPass(ctx.Device, Format::Float, vk::AttachmentLoadOp::eDontCare, vk::ImageLayout::eUndefined, vk::ImageLayout::eShaderReadOnlyOptimal)},
+      DepthPyramidReduce{CreateQuadPipeline(ctx, "DepthPyramidReduce.frag", NoBlend, sizeof(DepthPyramidReducePushConstants))},
       Compiler{ctx, *SceneRenderer.RenderPass, *SceneVelocityRenderer.RenderPass} {}
 
 MainPipeline::ResourcesT::ResourcesT(
-    vk::Extent2D extent, vk::Device d, vk::PhysicalDevice pd, vk::RenderPass scene_render_pass, vk::RenderPass overlay_render_pass, vk::RenderPass composite_render_pass
+    vk::Extent2D extent, vk::Device d, vk::PhysicalDevice pd, vk::RenderPass scene_render_pass, vk::RenderPass overlay_render_pass, vk::RenderPass composite_render_pass, vk::RenderPass depth_pyramid_render_pass
     // Depth eSampled: the motion blur gather reads depth to sort samples in front of or behind each pixel.
 ) : DepthImage{mvk::CreateImage2D(d, pd, Format::Depth, extent, eDepthStencilAttachment | eSampled)},
     SceneColorImage{mvk::CreateImage2D(d, pd, Format::HdrColor, extent, eSampled | eColorAttachment)},
@@ -342,13 +345,29 @@ MainPipeline::ResourcesT::ResourcesT(
     LineDataImage{mvk::CreateImage2D(d, pd, Format::LineData, extent, eSampled | eColorAttachment)},
     // eTransferSrc enables video-recording readback via vkCmdCopyImageToBuffer.
     FinalColorImage{mvk::CreateImage2D(d, pd, Format::Color, extent, eSampled | eColorAttachment | eTransferSrc)},
+    DepthPyramidImage{[&] {
+        const vk::Extent2D pyramid_extent{std::max(1u, extent.width / 2), std::max(1u, extent.height / 2)};
+        return mvk::CreateImage2D(d, pd, Format::Float, pyramid_extent, eSampled | eColorAttachment, mvk::MipLevelCount(pyramid_extent.width, pyramid_extent.height));
+    }()},
+    DepthPyramidMips{[&] {
+        const uint32_t mip_count = mvk::MipLevelCount(DepthPyramidImage.Extent.width, DepthPyramidImage.Extent.height);
+        std::vector<PyramidMip> mips;
+        mips.reserve(mip_count);
+        for (uint32_t mip = 0; mip < mip_count; ++mip) {
+            auto view = d.createImageViewUnique({{}, *DepthPyramidImage.Image, vk::ImageViewType::e2D, Format::Float, {}, {vk::ImageAspectFlagBits::eColor, mip, 1, 0, 1}});
+            const vk::Extent2D mip_extent{std::max(1u, DepthPyramidImage.Extent.width >> mip), std::max(1u, DepthPyramidImage.Extent.height >> mip)};
+            auto framebuffer = mvk::CreateFramebuffer(d, depth_pyramid_render_pass, {*view}, mip_extent);
+            mips.push_back({std::move(view), std::move(framebuffer), mip_extent});
+        }
+        return mips;
+    }()},
     NearestSampler{d.createSamplerUnique(mvk::SamplerInfo(vk::Filter::eNearest, vk::SamplerMipmapMode::eNearest, vk::SamplerAddressMode::eClampToEdge))},
     SceneFramebuffer{mvk::CreateFramebuffer(d, scene_render_pass, {*DepthImage.View, *SceneColorImage.View}, extent)},
     OverlayFramebuffer{mvk::CreateFramebuffer(d, overlay_render_pass, {*DepthImage.View, *OverlayColorImage.View, *LineDataImage.View}, extent)},
     CompositeFramebuffer{mvk::CreateFramebuffer(d, composite_render_pass, {*FinalColorImage.View}, extent)} {}
 
 void MainPipeline::SetExtent(vk::Extent2D extent, vk::Device d, vk::PhysicalDevice pd) {
-    Resources = std::make_unique<ResourcesT>(extent, d, pd, *SceneRenderer.RenderPass, *OverlayRenderer.RenderPass, *CompositeRenderPass);
+    Resources = std::make_unique<ResourcesT>(extent, d, pd, *SceneRenderer.RenderPass, *OverlayRenderer.RenderPass, *CompositeRenderPass, *DepthPyramidRenderPass);
     // Resize invalidates any existing transmission framebuffer (it shares this struct's depth view).
     Transmission.reset();
     // The accumulation target is extent-sized. Drop it so it is reallocated at the new extent on the next MB frame.
@@ -393,6 +412,9 @@ vk::DescriptorImageInfo MainPipeline::VelocitySamplerInfo() const {
 }
 vk::DescriptorImageInfo MainPipeline::SceneDepthSamplerInfo() const {
     return {*Resources->NearestSampler, *Resources->DepthImage.View, vk::ImageLayout::eDepthStencilReadOnlyOptimal};
+}
+vk::DescriptorImageInfo MainPipeline::DepthPyramidSamplerInfo() const {
+    return {*Resources->NearestSampler, *Resources->DepthPyramidImage.View, vk::ImageLayout::eShaderReadOnlyOptimal};
 }
 vk::DescriptorImageInfo MainPipeline::MotionBlurTileImageInfo() const {
     return {{}, *MotionBlur->TileImage.View, vk::ImageLayout::eGeneral};
@@ -563,6 +585,7 @@ void Pipelines::CompileShaders() {
     Main.ViewportComposite.Compile(*Main.CompositeRenderPass);
     Main.MotionBlurAccumulate.Compile(*Main.MotionBlurAccumRenderPass);
     Main.MotionBlurGather.Compile(*Main.MotionBlurGatherRenderPass);
+    Main.DepthPyramidReduce.Compile(*Main.DepthPyramidRenderPass);
     Main.Compiler.RecompileModules();
     Silhouette.Renderer.CompileShaders();
     SilhouetteEdge.Renderer.CompileShaders();

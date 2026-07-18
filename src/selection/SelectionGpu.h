@@ -16,7 +16,7 @@ using SelectionBuildFn = std::function<std::vector<SelectionDrawInfo>(DrawListBu
 struct SelectionSlots {
     uint32_t HeadImage{}, SelectionCounter{}, ObjectPickKey{}, ElementPickCandidates{}, ObjectPickSeenBits{}, SelectionBitset{};
     uint32_t MotionBlurTileImage{}, MotionBlurTileIndirection{};
-    uint32_t ObjectIdSampler{}, DepthSampler{}, SilhouetteSampler{}, SceneColorSampler{}, OverlayColorSampler{}, LineDataSampler{}, TransmissionSampler{}, MotionBlurAccumSampler{}, SceneDepthSampler{}, VelocitySampler{}, MotionBlurGatherSampler{};
+    uint32_t ObjectIdSampler{}, DepthSampler{}, SilhouetteSampler{}, SceneColorSampler{}, OverlayColorSampler{}, LineDataSampler{}, TransmissionSampler{}, MotionBlurAccumSampler{}, SceneDepthSampler{}, VelocitySampler{}, MotionBlurGatherSampler{}, DepthPyramidSampler{};
 
     using Entry = std::pair<SlotType, uint32_t SelectionSlots::*>;
     static constexpr std::array Entries{
@@ -39,6 +39,7 @@ struct SelectionSlots {
         Entry{SlotType::Sampler, &SelectionSlots::SceneDepthSampler},
         Entry{SlotType::Sampler, &SelectionSlots::VelocitySampler},
         Entry{SlotType::Sampler, &SelectionSlots::MotionBlurGatherSampler},
+        Entry{SlotType::Sampler, &SelectionSlots::DepthPyramidSampler},
     };
 
     explicit SelectionSlots(DescriptorSlots &slots) : Slots(&slots) {

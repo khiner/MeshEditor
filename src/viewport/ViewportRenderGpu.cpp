@@ -4,6 +4,7 @@
 #include "armature/ArmatureComponents.h"
 #include "audio/SoundVertices.h"
 #include "gizmo/TransformGizmoTypes.h"
+#include "gpu/DepthPyramidReducePushConstants.h"
 #include "gpu/FrustumCullPushConstants.h"
 #include "gpu/MainDrawPushConstants.h"
 #include "gpu/MotionBlurGatherPushConstants.h"
@@ -266,6 +267,33 @@ void RecordFrustumCull(vk::CommandBuffer cb, const Pipelines &pipelines, const G
 }
 
 namespace {
+// Reduce the scene depth into the max-depth mip pyramid the occlusion cull samples. The depth
+// image is in DepthStencilReadOnlyOptimal throughout. Restores the full viewport and scissor.
+void RecordDepthPyramid(vk::CommandBuffer cb, const MainPipeline &main, const SelectionSlots &sel_slots, vk::Rect2D full_rect, uint32_t ubo_offset) {
+    const profile::GpuScope scope{"DepthPyramid"};
+    const auto &mips = main.Resources->DepthPyramidMips;
+    for (uint32_t mip = 0; mip < uint32_t(mips.size()); ++mip) {
+        const auto &level = mips[mip];
+        cb.setViewport(0, vk::Viewport{0.f, 0.f, float(level.Extent.width), float(level.Extent.height), 0.f, 1.f});
+        cb.setScissor(0, vk::Rect2D{{0, 0}, level.Extent});
+        cb.beginRenderPass({*main.DepthPyramidRenderPass, *level.Framebuffer, {{0, 0}, level.Extent}, {}}, vk::SubpassContents::eInline);
+        const DepthPyramidReducePushConstants reduce_pc{
+            mip == 0 ? sel_slots.SceneDepthSampler : sel_slots.DepthPyramidSampler,
+            mip == 0 ? 0 : mip - 1,
+        };
+        cb.pushConstants(*main.DepthPyramidReduce.PipelineLayout, vk::ShaderStageFlagBits::eFragment, 0, sizeof(reduce_pc), &reduce_pc);
+        main.DepthPyramidReduce.RenderQuad(cb, ubo_offset);
+        cb.endRenderPass();
+        // MoltenVK needs the explicit barrier to flush this mip's writes before the next mip samples them.
+        cb.pipelineBarrier(
+            vk::PipelineStageFlagBits::eColorAttachmentOutput, vk::PipelineStageFlagBits::eFragmentShader, {},
+            vk::MemoryBarrier{vk::AccessFlagBits::eColorAttachmentWrite, vk::AccessFlagBits::eShaderRead}, {}, {}
+        );
+    }
+    cb.setViewport(0, vk::Viewport{0.f, 0.f, float(full_rect.extent.width), float(full_rect.extent.height), 0.f, 1.f});
+    cb.setScissor(0, full_rect);
+}
+
 // Record one phase's passes into `cb`, which is already begun with viewport and scissor set.
 // `ubo_offset` selects the view UBO instance every bind in the phase reads.
 void RecordPhase(entt::registry &r, entt::entity viewport, vk::CommandBuffer cb, DrawListUse use, RenderPhase phase, uint32_t ubo_offset, float playback_frame) {
@@ -1002,15 +1030,25 @@ void RecordPhase(entt::registry &r, entt::entity viewport, vk::CommandBuffer cb,
         return;
     }
 
-    // The gather read depth as a texture. Hand it back as an attachment for the overlay pass to write.
-    if (blur) {
+    // Reduce the scene depth into the occlusion pyramid while it is intact (the overlay pass discards depth).
+    // The blur gather already moved depth to shader-readable. Otherwise, move it here and back after.
+    if (!blur) {
         cb.pipelineBarrier(
-            vk::PipelineStageFlagBits::eComputeShader, vk::PipelineStageFlagBits::eEarlyFragmentTests, {}, {}, {},
-            {{vk::AccessFlagBits::eShaderRead, vk::AccessFlagBits::eDepthStencilAttachmentWrite,
-              vk::ImageLayout::eDepthStencilReadOnlyOptimal, vk::ImageLayout::eDepthStencilAttachmentOptimal,
+            vk::PipelineStageFlagBits::eLateFragmentTests, vk::PipelineStageFlagBits::eFragmentShader, {}, {}, {},
+            {{vk::AccessFlagBits::eDepthStencilAttachmentWrite, vk::AccessFlagBits::eShaderRead,
+              vk::ImageLayout::eDepthStencilAttachmentOptimal, vk::ImageLayout::eDepthStencilReadOnlyOptimal,
               VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, *main.Resources->DepthImage.Image, DepthSubresourceRange}}
         );
     }
+    RecordDepthPyramid(cb, main, sel_slots, main_rect, ubo_offset);
+
+    // Hand depth back as an attachment for the overlay pass to write.
+    cb.pipelineBarrier(
+        vk::PipelineStageFlagBits::eFragmentShader, vk::PipelineStageFlagBits::eEarlyFragmentTests, {}, {}, {},
+        {{vk::AccessFlagBits::eShaderRead, vk::AccessFlagBits::eDepthStencilAttachmentWrite,
+          vk::ImageLayout::eDepthStencilReadOnlyOptimal, vk::ImageLayout::eDepthStencilAttachmentOptimal,
+          VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, *main.Resources->DepthImage.Image, DepthSubresourceRange}}
+    );
 
     // The layer clears transparent, so an untouched one composites to nothing. Track whether anything
     // reaches it, and the composite skips reading it and its line data at all. Every draw in the pass

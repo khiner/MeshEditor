@@ -766,6 +766,14 @@ structs:
         type: u32
       - name: BoxResultIndex
         type: u32
+  - name: DepthPyramidReducePushConstants
+    push_constant: true
+    fields:
+      - name: SrcSamplerSlot
+        type: u32
+        default: InvalidSlot
+      - name: SrcLod
+        type: u32
   - name: FrustumCullPushConstants
     push_constant: true
     fields:

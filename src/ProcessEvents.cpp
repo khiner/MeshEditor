@@ -825,6 +825,7 @@ bool SyncViewportRenderResources(entt::registry &r, entt::entity viewport) {
                 slots.MakeSamplerWrite(sel_slots.MotionBlurAccumSampler, motion_blur_accum_sampler),
                 slots.MakeSamplerWrite(sel_slots.VelocitySampler, velocity_sampler),
                 slots.MakeSamplerWrite(sel_slots.SceneDepthSampler, scene_depth_sampler),
+                slots.MakeSamplerWrite(sel_slots.DepthPyramidSampler, main.DepthPyramidSamplerInfo()),
             },
             {}
         );

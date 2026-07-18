@@ -73,11 +73,20 @@ struct MainPipeline {
     MainPipeline(const PipelineContext &);
 
     struct ResourcesT {
-        ResourcesT(vk::Extent2D, vk::Device, vk::PhysicalDevice, vk::RenderPass scene_render_pass, vk::RenderPass overlay_render_pass, vk::RenderPass composite_render_pass);
+        ResourcesT(vk::Extent2D, vk::Device, vk::PhysicalDevice, vk::RenderPass scene_render_pass, vk::RenderPass overlay_render_pass, vk::RenderPass composite_render_pass, vk::RenderPass depth_pyramid_render_pass);
+
+        struct PyramidMip {
+            vk::UniqueImageView View;
+            vk::UniqueFramebuffer Framebuffer;
+            vk::Extent2D Extent;
+        };
 
         // SceneColorImage holds the shaded scene. OverlayColorImage holds display-referred overlays
         // over transparent, merged onto the scene in the viewport composite.
         mvk::ImageResource DepthImage, SceneColorImage, OverlayColorImage, LineDataImage, FinalColorImage;
+        // Max-depth mip chain reduced from the scene depth, for the occlusion cull. Mip 0 is half the scene extent.
+        mvk::ImageResource DepthPyramidImage;
+        std::vector<PyramidMip> DepthPyramidMips;
         vk::UniqueSampler NearestSampler;
         vk::UniqueFramebuffer SceneFramebuffer, OverlayFramebuffer, CompositeFramebuffer;
     };
@@ -123,6 +132,7 @@ struct MainPipeline {
     vk::DescriptorImageInfo MotionBlurAccumSamplerInfo() const;
     vk::DescriptorImageInfo VelocitySamplerInfo() const;
     vk::DescriptorImageInfo SceneDepthSamplerInfo() const;
+    vk::DescriptorImageInfo DepthPyramidSamplerInfo() const;
     // Storage image the motion blur compute passes write. Only valid while MotionBlur is allocated.
     vk::DescriptorImageInfo MotionBlurTileImageInfo() const;
     vk::DescriptorImageInfo MotionBlurGatherSamplerInfo() const;
@@ -148,6 +158,9 @@ struct MainPipeline {
     // attachment write keeps the output compressed for the accumulate and composite reads.
     vk::UniqueRenderPass MotionBlurGatherRenderPass;
     ShaderPipeline MotionBlurGather;
+    // One fragment pass per pyramid mip, each reducing the previous level (mip 0 reduces the scene depth).
+    vk::UniqueRenderPass DepthPyramidRenderPass;
+    ShaderPipeline DepthPyramidReduce;
     std::unique_ptr<ResourcesT> Resources;
     std::unique_ptr<TransmissionResourcesT> Transmission;
     std::unique_ptr<MotionBlurResourcesT> MotionBlur;
