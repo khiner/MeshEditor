@@ -75,7 +75,11 @@ void main() {
 
     WorldNormal = trs_transform_normal(world, normal);
     WorldPosition = world_pos;
-    VertexColor = vert.Color;
+    // Face draws read triangle-mesh colors per corner.
+    // Line/point meshes keep a point-domain color on the vertex.
+    VertexColor = draw.CornerColorOffset != INVALID_OFFSET ?
+        CornerColorBuffers[nonuniformEXT(SceneViewUBO.CornerColorSlot)].Colors[draw.CornerColorOffset + uint(gl_VertexIndex)] :
+        vert.Color;
 
     const bool is_edit_mode = SceneViewUBO.InteractionMode == InteractionMode_Edit;
     const bool is_edit_edge = is_edit_mode && SceneViewUBO.EditElement == Element_Edge;
@@ -115,18 +119,22 @@ void main() {
         else if (is_active) final_color = vec4(ViewportTheme.Colors.ElementActive.rgb, 1.0);
         Color = final_color;
     }
-    TexCoord0 = vert.TexCoord0;
-    TexCoord1 = vert.TexCoord1;
-    TexCoord2 = vert.TexCoord2;
-    TexCoord3 = vert.TexCoord3;
+    const uint corner_uv_slot = SceneViewUBO.CornerUvSlot;
+    TexCoord0 = draw.CornerUvOffsets[0] != INVALID_OFFSET ? CornerUvBuffers[nonuniformEXT(corner_uv_slot)].Uvs[draw.CornerUvOffsets[0] + uint(gl_VertexIndex)] : vec2(0);
+    TexCoord1 = draw.CornerUvOffsets[1] != INVALID_OFFSET ? CornerUvBuffers[nonuniformEXT(corner_uv_slot)].Uvs[draw.CornerUvOffsets[1] + uint(gl_VertexIndex)] : vec2(0);
+    TexCoord2 = draw.CornerUvOffsets[2] != INVALID_OFFSET ? CornerUvBuffers[nonuniformEXT(corner_uv_slot)].Uvs[draw.CornerUvOffsets[2] + uint(gl_VertexIndex)] : vec2(0);
+    TexCoord3 = draw.CornerUvOffsets[3] != INVALID_OFFSET ? CornerUvBuffers[nonuniformEXT(corner_uv_slot)].Uvs[draw.CornerUvOffsets[3] + uint(gl_VertexIndex)] : vec2(0);
     {
-        vec3 tangent = vert.Tangent.xyz;
+        const vec4 vertex_tangent = draw.CornerTangentOffset != INVALID_OFFSET ?
+            CornerTangentBuffers[nonuniformEXT(SceneViewUBO.CornerTangentSlot)].Tangents[draw.CornerTangentOffset + uint(gl_VertexIndex)] :
+            vec4(0, 0, 0, 1);
+        vec3 tangent = vertex_tangent.xyz;
         if (dot(tangent, tangent) > 1e-8) {
             tangent = normalize(tangent);
             vec3 tangent_dummy_pos = vec3(0.0);
             ApplyArmatureDeform(draw, tangent_dummy_pos, idx, tangent);
             tangent = normalize(trs_transform_normal(world, tangent));
-            WorldTangent = vec4(tangent, vert.Tangent.w);
+            WorldTangent = vec4(tangent, vertex_tangent.w);
         } else {
             WorldTangent = vec4(0, 0, 0, 1);
         }

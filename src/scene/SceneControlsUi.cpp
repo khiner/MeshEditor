@@ -801,13 +801,12 @@ static void RenderEntityControls(entt::registry &r, entt::entity viewport, entt:
             for (const auto &[label, json] : sections) {
                 if (json) RenderJsonBlock(label, *json);
             }
-            if (mesh_layout && !mesh_layout->VertexCounts.empty()) {
+            if (mesh_layout && !mesh_layout->AttributeFlags.empty()) {
                 SeparatorText("Mesh source layout");
-                Text("Primitives: %zu", mesh_layout->VertexCounts.size());
-                for (size_t i = 0; i < mesh_layout->VertexCounts.size(); ++i) {
-                    const uint32_t flags = i < mesh_layout->AttributeFlags.size() ? mesh_layout->AttributeFlags[i] : 0u;
+                Text("Primitives: %zu", mesh_layout->AttributeFlags.size());
+                for (size_t i = 0; i < mesh_layout->AttributeFlags.size(); ++i) {
                     const bool indexed = i < mesh_layout->HasSourceIndices.size() && mesh_layout->HasSourceIndices[i];
-                    Text("[%zu] verts:%u%s attrs:%s", i, mesh_layout->VertexCounts[i], indexed ? "" : " (non-indexed)", AttributeFlagsString(flags).c_str());
+                    Text("[%zu]%s attrs:%s", i, indexed ? "" : " (non-indexed)", AttributeFlagsString(mesh_layout->AttributeFlags[i]).c_str());
                 }
                 if (!mesh_layout->MorphTangentDeltas.empty()) {
                     Text("Morph tangent deltas: %zu", mesh_layout->MorphTangentDeltas.size());

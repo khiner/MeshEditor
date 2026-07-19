@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Mesh.h"
+#include "MeshAttributes.h"
 #include "MeshData.h"
 #include "MorphTargetData.h"
 #include "Range.h"
@@ -27,9 +28,11 @@ struct ObjPlyMaterial {
 
 // A freshly created mesh: its store id plus the half-edge connectivity the caller attaches to the entity
 // (as a MeshConnectivity component). MeshStore owns no connectivity, so it hands ownership back here.
+// MorphTangentDeltas returns the target-major tangent deltas the arena doesn't store, compacted to the welded vertex set.
 struct CreatedMesh {
     uint32_t StoreId;
     MeshConnectivity Connectivity;
+    std::vector<vec3> MorphTangentDeltas{};
 };
 
 struct MeshWithMaterials {
@@ -47,8 +50,6 @@ struct ArmatureDeformData {
     std::vector<vec4> Weights;
 };
 
-struct MeshVertexAttributes;
-
 struct SharpnessSummary {
     bool Any, All;
 };
@@ -57,7 +58,6 @@ struct SharpnessSummary {
 struct MeshPrimitives {
     std::vector<uint32_t> FacePrimitiveIndices{}; // per-face source primitive index
     std::vector<uint32_t> MaterialIndices{};
-    std::vector<uint32_t> VertexCounts{};
     std::vector<uint32_t> AttributeFlags{}; // bitmask of MeshAttributeBit_*
     std::vector<uint8_t> HasSourceIndices{}; // 0 = source drew non-indexed
     // Inner size = variant count (empty when primitive has no mappings); nullopt falls back to MaterialIndices.
@@ -73,16 +73,19 @@ struct MeshStore {
 
     // Accumulate arena reservations for upcoming mesh operations.
     // Call PlanCreate/PlanClone per mesh, then CommitReserves() once before the actual operations.
-    void PlanCreate(const MeshData &, const MeshPrimitives & = {}, bool has_deform = false, uint32_t morph_target_count = 0);
+    void PlanCreate(const MeshData &, const MeshPrimitives & = {}, bool has_deform = false, uint32_t morph_target_count = 0, const MeshVertexAttributes & = {});
     void PlanClone(const Mesh &);
     // Reserve all arenas for accumulated plans, then reset.
     void CommitReserves();
 
-    CreatedMesh CreateMesh(MeshData &&, MeshVertexAttributes &&, MeshPrimitives &&, bool flat_shaded = false, std::optional<ArmatureDeformData> = {}, std::optional<MorphTargetData> = {});
+    // `weld` merges vertices identical in every vertex-domain channel: position, joints/weights, and morph deltas.
+    // Welding recovers authored normals as face sharpness on faceted faces and as a custom corner-normal layer where they deviate from derivation.
+    CreatedMesh CreateMesh(MeshData &&, MeshVertexAttributes &&, MeshPrimitives &&, bool flat_shaded = false, std::optional<ArmatureDeformData> = {}, std::optional<MorphTargetData> = {}, bool weld = false);
     CreatedMesh CloneMesh(const Mesh &);
 
-    // `deduplicate` merges coincident-position vertices, discarding per-corner split normals/UVs.
-    std::expected<MeshWithMaterials, std::string> LoadMesh(const std::filesystem::path &, bool deduplicate = false);
+    // `weld` merges vertices identical in every vertex-domain channel.
+    // UVs and recovered normals keep their per-corner values.
+    std::expected<MeshWithMaterials, std::string> LoadMesh(const std::filesystem::path &, bool weld = false);
 
     // Allocate vertex-only store entry (no topology, no face/edge/primitive/material buffers).
     // Returns {storeId, vertexRange}. Release via Release(storeId).
@@ -112,6 +115,9 @@ struct MeshStore {
     // Base descriptor slots of the per-mesh GPU buffers (for shader push constants).
     uint32_t GetVertexStateSlot() const;
     uint32_t GetCornerNormalSlot() const;
+    uint32_t GetCornerTangentSlot() const;
+    uint32_t GetCornerColorSlot() const;
+    uint32_t GetCornerUvSlot() const;
     uint32_t GetFacePrimitiveSlot() const;
     uint32_t GetPrimitiveMaterialSlot() const;
     uint32_t GetBoneDeformSlot() const;
@@ -130,6 +136,14 @@ struct MeshStore {
     SlottedRange GetFaceStateRange(uint32_t id) const;
     SlottedRange GetEdgeStateRange(uint32_t id) const;
     Range GetCornerNormalRange(uint32_t id) const;
+    // Corner-domain attribute layers (one value per triangulated face corner, fan order).
+    // Empty range/span when the mesh lacks the channel.
+    Range GetCornerTangentRange(uint32_t id) const;
+    Range GetCornerColorRange(uint32_t id) const;
+    Range GetCornerUvRange(uint32_t id, uint32_t set) const;
+    std::span<const vec4> GetCornerTangents(uint32_t id) const;
+    std::span<const vec4> GetCornerColors(uint32_t id) const;
+    std::span<const vec2> GetCornerUvs(uint32_t id, uint32_t set) const;
 
     SlottedRange GetFaceIdRange(uint32_t id) const;
     SlottedRange GetFacePrimitiveRange(uint32_t id) const;
@@ -181,6 +195,9 @@ private:
         Range Vertices;
         Range FaceData; // Per-face range shared by FaceFirstTriangleBuffer and FaceStateBuffer
         Range CornerNormals{}; // One normal per triangulated face corner
+        Range CustomCornerNormals{}; // Authored corner normals, vec3(0) = use derived
+        Range CornerTangents{}, CornerColors{}; // Corner-domain attribute layers
+        std::array<Range, 4> CornerUvs{};
         Range EdgeSharpness{}; // One byte per edge, 1 = sharp
         Range EdgeStates{}, TriangleFaceIds{}, FacePrimitives{}, PrimitiveMaterials{};
         Range BoneDeform{}, MorphTargets{};
@@ -202,9 +219,11 @@ private:
         uint32_t Vertices{}, Faces{}, Triangles{}, Edges{}, EdgeStates{};
         uint32_t Primitives{};
         uint32_t BoneDeformVertices{}, MorphTargetEntries{};
+        uint32_t CornerTangents{}, CornerColors{}, CornerUvs{};
     } Pending{};
 
     uint32_t AcquireId(Entry &&);
+    void ComposeCustomCornerNormals(uint32_t id, std::span<vec3> corners) const;
     Range AllocateVertices(uint32_t count);
     Range AllocateFaces(uint32_t count);
     std::span<uint8_t> GetFaceStates(Range);

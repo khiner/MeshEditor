@@ -46,6 +46,12 @@ bindings:
     kind: Buffer
   - name: CornerNormalBuffer
     kind: Buffer
+  - name: CornerTangentBuffer
+    kind: Buffer
+  - name: CornerColorBuffer
+    kind: Buffer
+  - name: CornerUvBuffer
+    kind: Buffer
 
 enums:
   - name: MaterialAlphaMode
@@ -144,6 +150,15 @@ structs:
         default: InvalidSlot
       - name: CornerNormalOffset
         type: u32
+        default: InvalidOffset
+      - name: CornerTangentOffset
+        type: u32
+        default: InvalidOffset
+      - name: CornerColorOffset
+        type: u32
+        default: InvalidOffset
+      - name: CornerUvOffsets
+        type: u32[4]
         default: InvalidOffset
       - name: FaceIdOffset
         type: u32
@@ -264,6 +279,12 @@ structs:
       - name: ViewportSize
         type: vec2
       - name: CornerNormalSlot
+        type: u32
+      - name: CornerTangentSlot
+        type: u32
+      - name: CornerColorSlot
+        type: u32
+      - name: CornerUvSlot
         type: u32
       - name: BoneDeformSlot
         type: u32
@@ -420,24 +441,16 @@ structs:
         type: float
       - name: SilhouetteEdgeWidth
         type: u32
+  # Position, the derived smooth-normal cache, and the point-domain color used by line/point meshes.
+  # Triangle-mesh tangent/color/UV attributes live in per-corner arenas.
   - name: Vertex
     fields:
       - name: Position
         type: vec3
       - name: Normal
         type: vec3
-      - name: Tangent
-        type: vec4
       - name: Color
         type: vec4
-      - name: TexCoord0
-        type: vec2
-      - name: TexCoord1
-        type: vec2
-      - name: TexCoord2
-        type: vec2
-      - name: TexCoord3
-        type: vec2
   - name: BoneDeformVertex
     fields:
       - name: Joints

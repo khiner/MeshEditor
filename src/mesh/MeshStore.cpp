@@ -289,67 +289,80 @@ MeshDataWithMaterials ReadPly(const std::filesystem::path &path) {
     return result;
 }
 
-std::pair<MeshData, MeshVertexAttributes> DeduplicateVertices(MeshData &&mesh, MeshVertexAttributes &&attrs) {
-    // todo we shouldn't deduplicate vertices when textures are present.
-    // position-only merging split causes UV seams / hard normals get collapsed,
-    // which breaks texture mapping and shading.
-    // However, this breaks RealImpact/excitation behavior.
-    // const bool has_vertex_channels =
-    //     attrs.Normals.has_value() || attrs.Tangents.has_value() || attrs.Colors0.has_value() ||
-    //     attrs.TexCoords0.has_value() || attrs.TexCoords1.has_value() || attrs.TexCoords2.has_value() || attrs.TexCoords3.has_value();
-    // if (has_vertex_channels) return {std::move(mesh), std::move(attrs)};
+// Merge vertices identical in every vertex-domain channel, compared bitwise: position, skin joints/weights, and morph deltas.
+// Corner-domain channels (normals/tangents/colors/UVs) split per corner, so they never block a merge.
+// New indices assign in first-seen order, keeping the result deterministic.
+// Rewrites positions/faces/edges/deform/morph in place.
+void WeldVertices(MeshData &data, std::optional<ArmatureDeformData> &deform, std::optional<MorphTargetData> &morph) {
+    const uint32_t count = data.Positions.size();
+    if (count == 0) return;
+    const uint32_t target_count = morph ? morph->TargetCount : 0u;
+    const bool has_deform = deform.has_value();
+    const bool has_norm_deltas = morph && !morph->NormalDeltas.empty();
+    const bool has_tan_deltas = morph && !morph->TangentDeltas.empty();
+    const uint32_t delta_channels = target_count * (1u + (has_norm_deltas ? 1u : 0u) + (has_tan_deltas ? 1u : 0u));
+    const uint32_t stride = sizeof(vec3) + (has_deform ? sizeof(uvec4) + sizeof(vec4) : 0u) + delta_channels * sizeof(vec3);
 
-    struct VertexHash {
-        constexpr size_t operator()(const vec3 &p) const noexcept {
-            return std::hash<float>{}(p.x) ^ std::hash<float>{}(p.y) ^ std::hash<float>{}(p.z);
+    std::vector<std::byte> keys(size_t(count) * stride);
+    for (uint32_t i = 0; i < count; ++i) {
+        auto *dst = keys.data() + size_t(i) * stride;
+        const auto append = [&dst](const auto &v) {
+            std::memcpy(dst, &v, sizeof(v));
+            dst += sizeof(v);
+        };
+        append(data.Positions[i]);
+        if (has_deform) {
+            append(deform->Joints[i]);
+            append(deform->Weights[i]);
         }
-    };
+        for (uint32_t t = 0; t < target_count; ++t) {
+            append(morph->PositionDeltas[size_t(t) * count + i]);
+            if (has_norm_deltas) append(morph->NormalDeltas[size_t(t) * count + i]);
+            if (has_tan_deltas) append(morph->TangentDeltas[size_t(t) * count + i]);
+        }
+    }
 
-    MeshData deduped;
-    MeshVertexAttributes deduped_attrs;
-    deduped.Positions.reserve(mesh.Positions.size());
-    auto init_attr = [&](auto &dst, const auto &src) {
-        if (src && src->size() == mesh.Positions.size()) {
-            dst.emplace();
-            dst->reserve(src->size());
-        }
-    };
-    init_attr(deduped_attrs.Normals, attrs.Normals);
-    init_attr(deduped_attrs.Tangents, attrs.Tangents);
-    init_attr(deduped_attrs.Colors0, attrs.Colors0);
-    init_attr(deduped_attrs.TexCoords0, attrs.TexCoords0);
-    init_attr(deduped_attrs.TexCoords1, attrs.TexCoords1);
-    init_attr(deduped_attrs.TexCoords2, attrs.TexCoords2);
-    init_attr(deduped_attrs.TexCoords3, attrs.TexCoords3);
-    std::unordered_map<vec3, uint, VertexHash> index_by_vertex;
-    std::vector<uint32_t> remap(mesh.Positions.size(), 0u);
-    for (uint32_t i = 0; i < mesh.Positions.size(); ++i) {
-        const auto &p = mesh.Positions[i];
-        const auto [it, inserted] = index_by_vertex.try_emplace(p, deduped.Positions.size());
+    std::vector<uint32_t> remap(count);
+    std::vector<uint32_t> reps; // First source index of each welded vertex
+    reps.reserve(count);
+    std::unordered_map<std::string_view, uint32_t> index_by_key;
+    index_by_key.reserve(count);
+    for (uint32_t i = 0; i < count; ++i) {
+        const std::string_view key{reinterpret_cast<const char *>(keys.data() + size_t(i) * stride), stride};
+        const auto [it, inserted] = index_by_key.try_emplace(key, uint32_t(reps.size()));
+        if (inserted) reps.emplace_back(i);
         remap[i] = it->second;
-        if (inserted) {
-            deduped.Positions.emplace_back(p);
-            if (deduped_attrs.Normals) deduped_attrs.Normals->emplace_back((*attrs.Normals)[i]);
-            if (deduped_attrs.Tangents) deduped_attrs.Tangents->emplace_back((*attrs.Tangents)[i]);
-            if (deduped_attrs.Colors0) deduped_attrs.Colors0->emplace_back((*attrs.Colors0)[i]);
-            if (deduped_attrs.TexCoords0) deduped_attrs.TexCoords0->emplace_back((*attrs.TexCoords0)[i]);
-            if (deduped_attrs.TexCoords1) deduped_attrs.TexCoords1->emplace_back((*attrs.TexCoords1)[i]);
-            if (deduped_attrs.TexCoords2) deduped_attrs.TexCoords2->emplace_back((*attrs.TexCoords2)[i]);
-            if (deduped_attrs.TexCoords3) deduped_attrs.TexCoords3->emplace_back((*attrs.TexCoords3)[i]);
-        }
     }
+    const uint32_t welded = reps.size();
+    if (welded == count) return;
 
-    deduped.Faces.reserve(mesh.Faces.size());
-    for (const auto &face : mesh.Faces) {
-        std::vector<uint> new_face;
-        new_face.reserve(face.size());
-        for (const auto idx : face) new_face.emplace_back(remap[idx]);
-        deduped.Faces.emplace_back(std::move(new_face));
+    const auto compact = [&](auto &channel) {
+        std::remove_reference_t<decltype(channel)> out(welded);
+        for (uint32_t n = 0; n < welded; ++n) out[n] = channel[reps[n]];
+        channel = std::move(out);
+    };
+    compact(data.Positions);
+    if (has_deform) {
+        compact(deform->Joints);
+        compact(deform->Weights);
     }
-    deduped.Edges.reserve(mesh.Edges.size());
-    for (const auto &edge : mesh.Edges) deduped.Edges.emplace_back(std::array{remap[edge[0]], remap[edge[1]]});
-
-    return {std::move(deduped), std::move(deduped_attrs)};
+    if (morph) {
+        const auto compact_deltas = [&](std::vector<vec3> &channel) {
+            if (channel.empty()) return;
+            std::vector<vec3> out(size_t(target_count) * welded);
+            for (uint32_t t = 0; t < target_count; ++t) {
+                for (uint32_t n = 0; n < welded; ++n) out[size_t(t) * welded + n] = channel[size_t(t) * count + reps[n]];
+            }
+            channel = std::move(out);
+        };
+        compact_deltas(morph->PositionDeltas);
+        compact_deltas(morph->NormalDeltas);
+        compact_deltas(morph->TangentDeltas);
+    }
+    for (auto &face : data.Faces) {
+        for (auto &v : face) v = remap[v];
+    }
+    for (auto &edge : data.Edges) edge = {remap[edge[0]], remap[edge[1]]};
 }
 
 } // namespace
@@ -369,7 +382,11 @@ struct MeshStore::Buffers {
           EdgeStateBuffer{ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer},
           TriangleFaceIdBuffer{ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::ObjectIdBuffer},
           CornerNormalBuffer{ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::CornerNormalBuffer},
-          EdgeSharpnessBuffer{ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer} {}
+          EdgeSharpnessBuffer{ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer},
+          CustomCornerNormalBuffer{ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer},
+          CornerTangentBuffer{ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::CornerTangentBuffer},
+          CornerColorBuffer{ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::CornerColorBuffer},
+          CornerUvBuffer{ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::CornerUvBuffer} {}
 
     BufferArena<uint32_t> FaceFirstTriangleBuffer; // Per-face index of first triangle in the index buffer
     BufferArena<uint32_t> FacePrimitiveBuffer; // Per-face source primitive index
@@ -386,6 +403,10 @@ struct MeshStore::Buffers {
     BufferArena<uint32_t> TriangleFaceIdBuffer; // 1-indexed map from face triangles (in mesh face order) to source face ID
     BufferArena<vec3> CornerNormalBuffer; // Per-corner shading normals, in triangulated face-fan order
     BufferArena<uint8_t> EdgeSharpnessBuffer; // One byte per edge, 1 = sharp (canonical sharpness store)
+    BufferArena<vec3> CustomCornerNormalBuffer; // Authored corner normals, vec3(0) = use derived
+    BufferArena<vec4> CornerTangentBuffer; // Corner-domain attribute layers, fan order like CornerNormalBuffer
+    BufferArena<vec4> CornerColorBuffer;
+    BufferArena<vec2> CornerUvBuffer; // Up to four ranges per mesh, one per UV set
 
     // Visit every BufferArena in a fixed order, so Serialize/Deserialize stay in lockstep.
     void ForEachArena(auto &&f) {
@@ -399,8 +420,12 @@ struct MeshStore::Buffers {
         f(TriangleFaceIdBuffer);
         f(CornerNormalBuffer);
         f(EdgeSharpnessBuffer);
+        f(CustomCornerNormalBuffer);
+        f(CornerTangentBuffer);
+        f(CornerColorBuffer);
+        f(CornerUvBuffer);
     }
-    static constexpr size_t ArenaCount = 10;
+    static constexpr size_t ArenaCount = 14;
 };
 
 namespace {
@@ -469,6 +494,9 @@ std::span<const MorphTargetVertex> MeshStore::GetMorphTargets(uint32_t id) const
 
 uint32_t MeshStore::GetVertexStateSlot() const { return B->VertexStateBuffer.Slot; }
 uint32_t MeshStore::GetCornerNormalSlot() const { return B->CornerNormalBuffer.Buffer.Slot; }
+uint32_t MeshStore::GetCornerTangentSlot() const { return B->CornerTangentBuffer.Buffer.Slot; }
+uint32_t MeshStore::GetCornerColorSlot() const { return B->CornerColorBuffer.Buffer.Slot; }
+uint32_t MeshStore::GetCornerUvSlot() const { return B->CornerUvBuffer.Buffer.Slot; }
 uint32_t MeshStore::GetFacePrimitiveSlot() const { return B->FacePrimitiveBuffer.Buffer.Slot; }
 uint32_t MeshStore::GetPrimitiveMaterialSlot() const { return B->PrimitiveMaterialBuffer.Buffer.Slot; }
 uint32_t MeshStore::GetBoneDeformSlot() const { return B->BoneDeformBuffer.Buffer.Slot; }
@@ -477,6 +505,12 @@ uint32_t MeshStore::GetMorphTargetSlot() const { return B->MorphTargetBuffer.Buf
 SlottedRange MeshStore::GetFaceStateRange(uint32_t id) const { return {Entries.at(id).FaceData, B->FaceStateBuffer.Slot}; }
 SlottedRange MeshStore::GetEdgeStateRange(uint32_t id) const { return B->EdgeStateBuffer.Slotted(Entries.at(id).EdgeStates); }
 Range MeshStore::GetCornerNormalRange(uint32_t id) const { return Entries.at(id).CornerNormals; }
+Range MeshStore::GetCornerTangentRange(uint32_t id) const { return Entries.at(id).CornerTangents; }
+Range MeshStore::GetCornerColorRange(uint32_t id) const { return Entries.at(id).CornerColors; }
+Range MeshStore::GetCornerUvRange(uint32_t id, uint32_t set) const { return Entries.at(id).CornerUvs.at(set); }
+std::span<const vec4> MeshStore::GetCornerTangents(uint32_t id) const { return B->CornerTangentBuffer.Get(Entries.at(id).CornerTangents); }
+std::span<const vec4> MeshStore::GetCornerColors(uint32_t id) const { return B->CornerColorBuffer.Get(Entries.at(id).CornerColors); }
+std::span<const vec2> MeshStore::GetCornerUvs(uint32_t id, uint32_t set) const { return B->CornerUvBuffer.Get(Entries.at(id).CornerUvs.at(set)); }
 SlottedRange MeshStore::GetFaceIdRange(uint32_t id) const { return B->TriangleFaceIdBuffer.Slotted(Entries.at(id).TriangleFaceIds); }
 SlottedRange MeshStore::GetFacePrimitiveRange(uint32_t id) const { return B->FacePrimitiveBuffer.Slotted(Entries.at(id).FacePrimitives); }
 SlottedRange MeshStore::GetPrimitiveMaterialRange(uint32_t id) const { return B->PrimitiveMaterialBuffer.Slotted(Entries.at(id).PrimitiveMaterials); }
@@ -631,6 +665,15 @@ void MeshStore::UpdateCornerNormals(const Mesh &mesh) {
         [&](uint32_t vi) { return vertices[vi].Normal; },
         corners
     );
+    ComposeCustomCornerNormals(id, corners);
+}
+
+// Authored corner normals override the derived values wherever they are non-zero.
+void MeshStore::ComposeCustomCornerNormals(uint32_t id, std::span<vec3> corners) const {
+    const auto custom = B->CustomCornerNormalBuffer.Get(Entries.at(id).CustomCornerNormals);
+    for (size_t i = 0; i < corners.size() && i < custom.size(); ++i) {
+        if (custom[i] != vec3{0}) corners[i] = custom[i];
+    }
 }
 
 void MeshStore::UpdateCornerNormals(const Mesh &mesh, std::span<const vec3> positions) {
@@ -651,6 +694,7 @@ void MeshStore::UpdateCornerNormals(const Mesh &mesh, std::span<const vec3> posi
         [&](uint32_t vi) { return vertex_normals[vi]; },
         corners
     );
+    ComposeCustomCornerNormals(id, corners);
 }
 
 SharpnessSummary MeshStore::GetFaceSharpnessSummary(uint32_t id) const {
@@ -664,12 +708,7 @@ void WriteVertices(std::span<Vertex> dst, std::span<const vec3> positions, const
     for (uint32_t i = 0; i < positions.size(); ++i) {
         dst[i] = {
             .Position = positions[i],
-            .Tangent = attrs.Tangents ? (*attrs.Tangents)[i] : vec4{0.f, 0.f, 0.f, 1.f},
             .Color = attrs.Colors0 ? (*attrs.Colors0)[i] : vec4{1.f},
-            .TexCoord0 = attrs.TexCoords0 ? (*attrs.TexCoords0)[i] : vec2{0},
-            .TexCoord1 = attrs.TexCoords1 ? (*attrs.TexCoords1)[i] : vec2{0},
-            .TexCoord2 = attrs.TexCoords2 ? (*attrs.TexCoords2)[i] : vec2{0},
-            .TexCoord3 = attrs.TexCoords3 ? (*attrs.TexCoords3)[i] : vec2{0},
         };
     }
     if (attrs.Normals) {
@@ -706,7 +745,7 @@ void MeshStore::ReleaseOverlay(uint32_t id) {
     OverlayFreeIds.push_back(id);
 }
 
-void MeshStore::PlanCreate(const MeshData &data, const MeshPrimitives &primitives, bool has_deform, uint32_t morph_target_count) {
+void MeshStore::PlanCreate(const MeshData &data, const MeshPrimitives &primitives, bool has_deform, uint32_t morph_target_count, const MeshVertexAttributes &attrs) {
     const uint32_t vertices = data.Positions.size();
     const uint32_t faces = data.Faces.size();
     uint32_t triangles = 0;
@@ -719,6 +758,14 @@ void MeshStore::PlanCreate(const MeshData &data, const MeshPrimitives &primitive
     Pending.Primitives += primitives.MaterialIndices.size();
     if (has_deform) Pending.BoneDeformVertices += vertices;
     if (morph_target_count > 0) Pending.MorphTargetEntries += morph_target_count * vertices;
+    if (triangles > 0) {
+        const uint32_t corners = triangles * 3;
+        if (attrs.Tangents) Pending.CornerTangents += corners;
+        if (attrs.Colors0) Pending.CornerColors += corners;
+        for (const auto *uvs : {&attrs.TexCoords0, &attrs.TexCoords1, &attrs.TexCoords2, &attrs.TexCoords3}) {
+            if (*uvs) Pending.CornerUvs += corners;
+        }
+    }
 }
 
 void MeshStore::PlanClone(const Mesh &mesh) {
@@ -731,6 +778,9 @@ void MeshStore::PlanClone(const Mesh &mesh) {
     Pending.Primitives += e.PrimitiveMaterials.Count;
     Pending.BoneDeformVertices += e.BoneDeform.Count;
     Pending.MorphTargetEntries += e.MorphTargets.Count;
+    Pending.CornerTangents += e.CornerTangents.Count;
+    Pending.CornerColors += e.CornerColors.Count;
+    for (const auto &uvs : e.CornerUvs) Pending.CornerUvs += uvs.Count;
 }
 
 void MeshStore::CommitReserves() {
@@ -744,6 +794,9 @@ void MeshStore::CommitReserves() {
     B->PrimitiveMaterialBuffer.ReserveAdditional(Pending.Primitives);
     B->BoneDeformBuffer.ReserveAdditional(Pending.BoneDeformVertices);
     B->MorphTargetBuffer.ReserveAdditional(Pending.MorphTargetEntries);
+    B->CornerTangentBuffer.ReserveAdditional(Pending.CornerTangents);
+    B->CornerColorBuffer.ReserveAdditional(Pending.CornerColors);
+    B->CornerUvBuffer.ReserveAdditional(Pending.CornerUvs);
     // Mirror buffers (uint8_t state per element, no arena — shared ranges with data arenas).
     if (Pending.Vertices > 0) B->VertexStateBuffer.Reserve(B->VertexStateBuffer.UsedSize + Pending.Vertices);
     if (Pending.Faces > 0) {
@@ -753,7 +806,70 @@ void MeshStore::CommitReserves() {
     Pending = {};
 }
 
-CreatedMesh MeshStore::CreateMesh(MeshData &&data, MeshVertexAttributes &&attrs, MeshPrimitives &&primitives, bool flat_shaded, std::optional<ArmatureDeformData> deform, std::optional<MorphTargetData> morph) {
+CreatedMesh MeshStore::CreateMesh(MeshData &&data, MeshVertexAttributes &&attrs, MeshPrimitives &&primitives, bool flat_shaded, std::optional<ArmatureDeformData> deform, std::optional<MorphTargetData> morph, bool weld) {
+    const uint32_t face_count = data.Faces.size();
+
+    // Sort faces by primitive index so triangles are grouped by primitive in the index buffer.
+    if (!primitives.FacePrimitiveIndices.empty() && primitives.FacePrimitiveIndices.size() == face_count &&
+        !std::ranges::all_of(primitives.FacePrimitiveIndices, [&](uint32_t pi) { return pi == primitives.FacePrimitiveIndices[0]; })) {
+        std::vector<uint32_t> perm(face_count);
+        std::iota(perm.begin(), perm.end(), 0u);
+        std::stable_sort(perm.begin(), perm.end(), [&](uint32_t a, uint32_t b) {
+            return primitives.FacePrimitiveIndices[a] < primitives.FacePrimitiveIndices[b];
+        });
+        bool already_sorted = true;
+        for (uint32_t i = 0; i < face_count; ++i) {
+            if (perm[i] != i) {
+                already_sorted = false;
+                break;
+            }
+        }
+        if (!already_sorted) {
+            std::vector<std::vector<uint32_t>> sorted_faces(face_count);
+            std::vector<uint32_t> sorted_fpi(face_count);
+            for (uint32_t i = 0; i < face_count; ++i) {
+                sorted_faces[i] = std::move(data.Faces[perm[i]]);
+                sorted_fpi[i] = primitives.FacePrimitiveIndices[perm[i]];
+            }
+            data.Faces = std::move(sorted_faces);
+            primitives.FacePrimitiveIndices = std::move(sorted_fpi);
+        }
+    }
+
+    // Triangle-mesh tangent/color/UV channels are corner-domain: gathered into per-corner streams in fan order before welding rewrites the face indices.
+    // The vertex buffer keeps defaults for these channels.
+    std::vector<vec4> corner_tangents, corner_colors;
+    std::array<std::vector<vec2>, 4> corner_uvs;
+    std::vector<vec3> authored_corner_normals;
+    if (face_count > 0) {
+        uint32_t corner_total = 0;
+        for (const auto &face : data.Faces) corner_total += (face.size() - 2) * 3;
+        const auto gather_corners = [&]<typename T>(std::optional<std::vector<T>> &src, std::vector<T> &out) {
+            if (!src) return;
+            out.reserve(corner_total);
+            for (const auto &face : data.Faces) {
+                for (uint32_t k = 1; k + 1 < face.size(); ++k) {
+                    out.emplace_back((*src)[face[0]]);
+                    out.emplace_back((*src)[face[k]]);
+                    out.emplace_back((*src)[face[k + 1]]);
+                }
+            }
+            src.reset();
+        };
+        gather_corners(attrs.Tangents, corner_tangents);
+        gather_corners(attrs.Colors0, corner_colors);
+        gather_corners(attrs.TexCoords0, corner_uvs[0]);
+        gather_corners(attrs.TexCoords1, corner_uvs[1]);
+        gather_corners(attrs.TexCoords2, corner_uvs[2]);
+        gather_corners(attrs.TexCoords3, corner_uvs[3]);
+        if (weld) {
+            // Authored normals recover from this stream after welding: faceted faces fill the face-sharpness store and the remainder lands in the custom corner-normal layer.
+            // The vertex normal becomes purely derived.
+            gather_corners(attrs.Normals, authored_corner_normals);
+            WeldVertices(data, deform, morph);
+        }
+    }
+
     const uint32_t vertex_count = data.Positions.size();
     auto [id, vertices] = AllocateVertexBuffer(data.Positions, attrs);
     auto &entry = Entries[id];
@@ -782,35 +898,6 @@ CreatedMesh MeshStore::CreateMesh(MeshData &&data, MeshVertexAttributes &&attrs,
     }
 
     if (!data.Faces.empty()) {
-        const uint32_t face_count = data.Faces.size();
-
-        // Sort faces by primitive index so triangles are grouped by primitive in the index buffer.
-        if (!primitives.FacePrimitiveIndices.empty() && primitives.FacePrimitiveIndices.size() == face_count &&
-            !std::ranges::all_of(primitives.FacePrimitiveIndices, [&](uint32_t pi) { return pi == primitives.FacePrimitiveIndices[0]; })) {
-            std::vector<uint32_t> perm(face_count);
-            std::iota(perm.begin(), perm.end(), 0u);
-            std::stable_sort(perm.begin(), perm.end(), [&](uint32_t a, uint32_t b) {
-                return primitives.FacePrimitiveIndices[a] < primitives.FacePrimitiveIndices[b];
-            });
-            bool already_sorted = true;
-            for (uint32_t i = 0; i < face_count; ++i) {
-                if (perm[i] != i) {
-                    already_sorted = false;
-                    break;
-                }
-            }
-            if (!already_sorted) {
-                std::vector<std::vector<uint32_t>> sorted_faces(face_count);
-                std::vector<uint32_t> sorted_fpi(face_count);
-                for (uint32_t i = 0; i < face_count; ++i) {
-                    sorted_faces[i] = std::move(data.Faces[perm[i]]);
-                    sorted_fpi[i] = primitives.FacePrimitiveIndices[perm[i]];
-                }
-                data.Faces = std::move(sorted_faces);
-                primitives.FacePrimitiveIndices = std::move(sorted_fpi);
-            }
-        }
-
         // Write face-first-triangle offsets directly into GPU buffer.
         entry.FaceData = AllocateFaces(face_count);
         auto first_tri_span = B->FaceFirstTriangleBuffer.GetMutable(entry.FaceData);
@@ -822,6 +909,12 @@ CreatedMesh MeshStore::CreateMesh(MeshData &&data, MeshVertexAttributes &&attrs,
 
         entry.TriangleCount = tri_offset;
         entry.CornerNormals = B->CornerNormalBuffer.Allocate(tri_offset * 3);
+
+        if (!corner_tangents.empty()) entry.CornerTangents = B->CornerTangentBuffer.Allocate(std::span<const vec4>{corner_tangents});
+        if (!corner_colors.empty()) entry.CornerColors = B->CornerColorBuffer.Allocate(std::span<const vec4>{corner_colors});
+        for (uint32_t set = 0; set < corner_uvs.size(); ++set) {
+            if (!corner_uvs[set].empty()) entry.CornerUvs[set] = B->CornerUvBuffer.Allocate(std::span<const vec2>{corner_uvs[set]});
+        }
 
         // Write triangle-to-face IDs directly into GPU buffer.
         entry.TriangleFaceIds = B->TriangleFaceIdBuffer.Allocate(tri_offset);
@@ -886,9 +979,60 @@ CreatedMesh MeshStore::CreateMesh(MeshData &&data, MeshVertexAttributes &&attrs,
     ClearElementStates(vertices, entry.FaceData, entry.EdgeStates);
     if (entry.FaceData.Count > 0) std::ranges::fill(GetFaceSharpness(id), uint8_t(flat_shaded ? 1 : 0));
     if (entry.EdgeSharpness.Count > 0) std::ranges::fill(GetEdgeSharpness(id), uint8_t{0});
+
+    // An authored corner normal within this dot of the derived one counts as derivable and is dropped.
+    constexpr float AuthoredMatchDot{0.9999999f};
+    // A face whose authored corner normals all match its geometric normal shades flat, recorded as face sharpness.
+    if (!authored_corner_normals.empty() && entry.FaceData.Count > 0) {
+        auto sharp = GetFaceSharpness(id);
+        uint32_t ci = 0;
+        for (uint32_t fi = 0; fi < data.Faces.size(); ++fi) {
+            const auto &face = data.Faces[fi];
+            const uint32_t corner_count = (face.size() - 2) * 3;
+            const auto cross = glm::cross(data.Positions[face[1]] - data.Positions[face[0]], data.Positions[face[2]] - data.Positions[face[0]]);
+            const auto cross_len = glm::length(cross);
+            bool flat = cross_len > 0.f;
+            if (flat) {
+                const auto face_normal = cross / cross_len;
+                for (uint32_t k = 0; k < corner_count; ++k) {
+                    const auto authored = authored_corner_normals[ci + k];
+                    const auto authored_len = glm::length(authored);
+                    if (authored_len < 1e-6f || glm::dot(authored / authored_len, face_normal) < AuthoredMatchDot) {
+                        flat = false;
+                        break;
+                    }
+                }
+            }
+            if (flat) sharp[fi] = 1;
+            ci += corner_count;
+        }
+    }
+
     if (!data.Faces.empty() && !attrs.Normals) UpdateVertexNormals(mesh);
     UpdateCornerNormals(mesh);
-    return {id, std::move(conn)};
+
+    // Authored corner normals the sharpness stores can't reproduce land in the custom layer verbatim.
+    if (!authored_corner_normals.empty() && entry.CornerNormals.Count > 0) {
+        const auto derived = B->CornerNormalBuffer.Get(entry.CornerNormals);
+        std::vector<vec3> custom(derived.size(), vec3{0});
+        bool any_custom = false;
+        for (size_t i = 0; i < derived.size() && i < authored_corner_normals.size(); ++i) {
+            const auto authored = authored_corner_normals[i];
+            const auto authored_len = glm::length(authored);
+            if (authored_len < 1e-6f) continue;
+            // The authored normal stays unless it provably matches the derived one, so degenerate (zero or NaN) derived normals keep it.
+            if (!(glm::dot(authored / authored_len, derived[i]) >= AuthoredMatchDot)) {
+                custom[i] = authored;
+                any_custom = true;
+            }
+        }
+        if (any_custom) {
+            entry.CustomCornerNormals = B->CustomCornerNormalBuffer.Allocate(std::span<const vec3>{custom});
+            ComposeCustomCornerNormals(id, B->CornerNormalBuffer.GetMutable(entry.CornerNormals));
+        }
+    }
+
+    return {id, std::move(conn), morph ? std::move(morph->TangentDeltas) : std::vector<vec3>{}};
 }
 
 CreatedMesh MeshStore::CloneMesh(const Mesh &mesh) {
@@ -906,6 +1050,10 @@ CreatedMesh MeshStore::CloneMesh(const Mesh &mesh) {
         .Vertices = vertices,
         .FaceData = faces,
         .CornerNormals = B->CornerNormalBuffer.Clone(src_entry.CornerNormals),
+        .CustomCornerNormals = B->CustomCornerNormalBuffer.Clone(src_entry.CustomCornerNormals),
+        .CornerTangents = B->CornerTangentBuffer.Clone(src_entry.CornerTangents),
+        .CornerColors = B->CornerColorBuffer.Clone(src_entry.CornerColors),
+        .CornerUvs = {B->CornerUvBuffer.Clone(src_entry.CornerUvs[0]), B->CornerUvBuffer.Clone(src_entry.CornerUvs[1]), B->CornerUvBuffer.Clone(src_entry.CornerUvs[2]), B->CornerUvBuffer.Clone(src_entry.CornerUvs[3])},
         .EdgeSharpness = B->EdgeSharpnessBuffer.Clone(src_entry.EdgeSharpness),
         .EdgeStates = edge_states,
         .TriangleFaceIds = B->TriangleFaceIdBuffer.Clone(src_entry.TriangleFaceIds),
@@ -926,7 +1074,7 @@ CreatedMesh MeshStore::CloneMesh(const Mesh &mesh) {
     return {id, std::move(conn)};
 }
 
-std::expected<MeshWithMaterials, std::string> MeshStore::LoadMesh(const std::filesystem::path &path, bool deduplicate) {
+std::expected<MeshWithMaterials, std::string> MeshStore::LoadMesh(const std::filesystem::path &path, bool weld) {
     auto ext = path.extension().string();
     std::ranges::transform(ext, ext.begin(), [](unsigned char c) { return std::tolower(c); });
     MeshDataWithMaterials source;
@@ -937,9 +1085,8 @@ std::expected<MeshWithMaterials, std::string> MeshStore::LoadMesh(const std::fil
     } catch (const std::exception &e) {
         return std::unexpected{e.what()};
     }
-    auto [mesh, attrs] = deduplicate ? DeduplicateVertices(std::move(source.Mesh), std::move(source.Attrs)) : std::pair{std::move(source.Mesh), std::move(source.Attrs)};
     return MeshWithMaterials{
-        .Mesh = CreateMesh(std::move(mesh), std::move(attrs), std::move(source.Primitives)),
+        .Mesh = CreateMesh(std::move(source.Mesh), std::move(source.Attrs), std::move(source.Primitives), false, {}, {}, weld),
         .Materials = std::move(source.Materials),
     };
 }
@@ -959,6 +1106,10 @@ void MeshStore::Release(uint32_t id) {
     auto &entry = Entries[id];
     B->VerticesBuffer.Release(entry.Vertices);
     B->CornerNormalBuffer.Release(entry.CornerNormals);
+    B->CustomCornerNormalBuffer.Release(entry.CustomCornerNormals);
+    B->CornerTangentBuffer.Release(entry.CornerTangents);
+    B->CornerColorBuffer.Release(entry.CornerColors);
+    for (const auto &uvs : entry.CornerUvs) B->CornerUvBuffer.Release(uvs);
     B->EdgeSharpnessBuffer.Release(entry.EdgeSharpness);
     B->TriangleFaceIdBuffer.Release(entry.TriangleFaceIds);
     B->FaceFirstTriangleBuffer.Release(entry.FaceData);

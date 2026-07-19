@@ -90,6 +90,18 @@ layout(set = 0, binding = BINDING_CornerNormalBuffer, scalar) readonly buffer Co
     vec3 Normals[];
 } CornerNormalBuffers[];
 
+layout(set = 0, binding = BINDING_CornerTangentBuffer, scalar) readonly buffer CornerTangentBufferBlock {
+    vec4 Tangents[];
+} CornerTangentBuffers[];
+
+layout(set = 0, binding = BINDING_CornerColorBuffer, scalar) readonly buffer CornerColorBufferBlock {
+    vec4 Colors[];
+} CornerColorBuffers[];
+
+layout(set = 0, binding = BINDING_CornerUvBuffer, scalar) readonly buffer CornerUvBufferBlock {
+    vec2 Uvs[];
+} CornerUvBuffers[];
+
 const uint INVALID_SLOT = 0xffffffffu;
 const uint INVALID_OFFSET = 0xffffffffu;
 const uint STATE_SELECTED = 1u << 0;

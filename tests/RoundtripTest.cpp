@@ -26,10 +26,15 @@
 
 #include <boost/ut.hpp>
 #include <entt/entity/registry.hpp>
+#include <fastgltf/core.hpp>
+#include <fastgltf/glm_element_traits.hpp>
+#include <fastgltf/tools.hpp>
+#include <glm/geometric.hpp>
 #include <simdjson.h>
 
 #include <cstring>
 #include <map>
+#include <numeric>
 #include <set>
 
 namespace {
@@ -208,11 +213,8 @@ constexpr Exception AlwaysEmittedExactExceptions[]{
 };
 
 // --- BufferView indexing ---
-// Accessor references (meshes[*].primitives[*].attributes, indices, targets, skin IBMs,
-// animation sampler inputs/outputs) compare semantically via the referenced accessor's
-// (type, count, normalized) shape - see IsAccessorRefPath/CompareAccessorShape. That handles
-// the emission-order divergence without masking shape regressions. BufferView refs outside
-// the accessor path (just images[*].bufferView today) stay as exact exceptions.
+// Accessor references compare semantically (see IsMeshGeometryRefPath/IsShapeAccessorRefPath).
+// BufferView refs outside the accessor path (just images[*].bufferView today) stay as exact exceptions.
 constexpr Exception BufferViewIndexExactExceptions[]{
     // bufferView index depends on our emission order; only fires for images embedded as bufferView
     // (source form preserved: URI-form images emit URIs, no bufferView ref).
@@ -345,28 +347,26 @@ std::string JoinKey(std::string_view path, std::string_view key) { return path.e
 std::string JoinIndex(std::string_view path, size_t i) { return std::format("{}[{}]", path, i); }
 
 // --- Semantic accessor-reference resolution ---
-// Several JSON paths hold a numeric accessor index whose index value is emission-order-dependent
-// (we pack accessors differently from any given source writer). Positional JSON compare would see
-// `5 vs 12` and diff, even when both sides reference accessors with identical semantic shape.
-// Comparing the RESOLVED accessor's (type, count, normalized) lets us diff genuine shape regressions
-// (wrong vertex count, swapped attribute role, etc.) without false positives from emission order.
-bool IsAccessorRefPath(std::string_view norm) {
-    if (norm == "meshes[*].primitives[*].indices") return true;
-    if (norm == "skins[*].inverseBindMatrices") return true;
-    if (norm == "animations[*].samplers[*].input") return true;
-    if (norm == "animations[*].samplers[*].output") return true;
-    static constexpr std::string_view AnyChildPrefixes[]{
-        "meshes[*].primitives[*].attributes.",
-        "meshes[*].primitives[*].targets[*].",
-        "nodes[*].extensions.EXT_mesh_gpu_instancing.attributes.",
-    };
-    for (const auto p : AnyChildPrefixes) {
-        if (norm.starts_with(p)) {
-            const auto rest = norm.substr(p.size());
-            if (!rest.empty() && rest.find('.') == std::string_view::npos && rest.find('[') == std::string_view::npos) return true;
-        }
-    }
-    return false;
+// Accessor indices are emission-order-dependent, so their numeric values never compare.
+// Mesh-geometry references compare by dereferenced per-corner content (CompareMeshGeometry).
+// Other references compare by the resolved accessor's (type, count) shape (CompareAccessorShape).
+bool MatchesAnyChildOf(std::string_view norm, std::string_view prefix) {
+    if (!norm.starts_with(prefix)) return false;
+    const auto rest = norm.substr(prefix.size());
+    return !rest.empty() && rest.find('.') == std::string_view::npos && rest.find('[') == std::string_view::npos;
+}
+
+bool IsMeshGeometryRefPath(std::string_view norm) {
+    return norm == "meshes[*].primitives[*].indices" ||
+        MatchesAnyChildOf(norm, "meshes[*].primitives[*].attributes.") ||
+        MatchesAnyChildOf(norm, "meshes[*].primitives[*].targets[*].");
+}
+
+bool IsShapeAccessorRefPath(std::string_view norm) {
+    return norm == "skins[*].inverseBindMatrices" ||
+        norm == "animations[*].samplers[*].input" ||
+        norm == "animations[*].samplers[*].output" ||
+        MatchesAnyChildOf(norm, "nodes[*].extensions.EXT_mesh_gpu_instancing.attributes.");
 }
 
 std::optional<simdjson::dom::element> ResolveAccessor(simdjson::dom::element root, size_t index) {
@@ -395,6 +395,203 @@ void CompareAccessorShape(simdjson::dom::element src, simdjson::dom::element out
     const bool out_has_cnt = out["count"].get_uint64().get(out_cnt) == simdjson::SUCCESS;
     if (src_has_cnt && out_has_cnt && src_cnt != out_cnt) {
         diffs.emplace_back(std::string(ref_path), std::format("accessor count {} vs {}", src_cnt, out_cnt));
+    }
+}
+
+// --- Mesh geometry content compare ---
+// Mesh-geometry accessor references (primitive attributes, indices, morph targets) compare by dereferenced content: both sides expand to per-corner streams in the importer's triangulation order and zip corner-by-corner.
+// This makes the contract independent of vertex count, vertex order, index-buffer layout, and accessor encoding, while verifying the actual geometry values.
+
+template<typename T>
+std::vector<T> DecodeAccessor(const fastgltf::Asset &asset, size_t accessor_index) {
+    const auto &accessor = asset.accessors[accessor_index];
+    std::vector<T> out(accessor.count);
+    fastgltf::copyFromAccessor<T>(asset, accessor, out.data());
+    return out;
+}
+
+bool IsTrianglePrimitive(fastgltf::PrimitiveType t) {
+    return t == fastgltf::PrimitiveType::Triangles || t == fastgltf::PrimitiveType::TriangleStrip || t == fastgltf::PrimitiveType::TriangleFan;
+}
+
+// Corner vertex indices in the importer's triangulation order (strips/fans unfold to lists).
+std::vector<uint32_t> CornerIndices(const fastgltf::Asset &asset, const fastgltf::Primitive &prim, size_t vertex_count) {
+    std::vector<uint32_t> indices;
+    if (prim.indicesAccessor) {
+        indices = DecodeAccessor<uint32_t>(asset, *prim.indicesAccessor);
+    } else {
+        indices.resize(vertex_count);
+        std::iota(indices.begin(), indices.end(), 0u);
+    }
+    std::vector<uint32_t> corners;
+    if (indices.size() < 3) return corners;
+    if (prim.type == fastgltf::PrimitiveType::TriangleStrip) {
+        for (uint32_t i = 0; i + 2 < indices.size(); ++i) {
+            if (i % 2 == 0) corners.insert(corners.end(), {indices[i], indices[i + 1], indices[i + 2]});
+            else corners.insert(corners.end(), {indices[i + 1], indices[i], indices[i + 2]});
+        }
+    } else if (prim.type == fastgltf::PrimitiveType::TriangleFan) {
+        for (uint32_t i = 1; i + 1 < indices.size(); ++i) corners.insert(corners.end(), {indices[0], indices[i], indices[i + 1]});
+    } else {
+        for (uint32_t i = 0; i + 2 < indices.size(); i += 3) corners.insert(corners.end(), {indices[i], indices[i + 1], indices[i + 2]});
+    }
+    return corners;
+}
+
+bool Vec2Eq(vec2 a, vec2 b) { return NumberEq(a.x, b.x) && NumberEq(a.y, b.y); }
+bool Vec4Eq(vec4 a, vec4 b) { return NumberEq(a.x, b.x) && NumberEq(a.y, b.y) && NumberEq(a.z, b.z) && NumberEq(a.w, b.w); }
+
+// Unit-direction compare: normalize both and accept a small angle.
+// Faceted-face normals re-derive from positions on export, so exact equality is too strict for them.
+bool DirectionEq(vec3 a, vec3 b) {
+    const auto la = glm::length(a), lb = glm::length(b);
+    if (la < 1e-6f || lb < 1e-6f) return Vec3Eq(a, b);
+    constexpr float CosTol = 0.999998f; // ~2 milliradians
+    return glm::dot(a / la, b / lb) >= CosTol;
+}
+
+// Joint influences compare as (joint, weight) pair sets: import may merge multiple influence sets and reorder by weight, and zero-weight joint slots carry arbitrary indices.
+bool InfluencesEq(uvec4 ja, vec4 wa, uvec4 jb, vec4 wb) {
+    const auto collect = [](uvec4 j, vec4 w) {
+        std::vector<std::pair<uint32_t, float>> out;
+        for (glm::length_t i = 0; i < 4; ++i) {
+            if (w[i] > 1e-6f) out.emplace_back(j[i], w[i]);
+        }
+        std::ranges::sort(out);
+        return out;
+    };
+    const auto a = collect(ja, wa), b = collect(jb, wb);
+    if (a.size() != b.size()) return false;
+    for (size_t i = 0; i < a.size(); ++i) {
+        if (a[i].first != b[i].first || !NumberEq(a[i].second, b[i].second)) return false;
+    }
+    return true;
+}
+
+// Zip two corner streams over their dereferenced attribute values, reporting the first divergence.
+template<typename T>
+void CompareCornerValues(
+    const std::vector<T> &a, const std::vector<T> &b,
+    std::span<const uint32_t> corners_a, std::span<const uint32_t> corners_b,
+    std::string_view path, auto &&eq, std::vector<Diff> &out
+) {
+    for (size_t k = 0; k < corners_a.size(); ++k) {
+        const auto ia = corners_a[k], ib = corners_b[k];
+        if (ia >= a.size() || ib >= b.size()) {
+            out.emplace_back(std::string{path}, std::format("corner {} references out-of-range vertex", k));
+            return;
+        }
+        if (!eq(a[ia], b[ib])) {
+            out.emplace_back(std::string{path}, std::format("value diverged at corner {}", k));
+            return;
+        }
+    }
+}
+
+// COLOR_n decodes to vec4 with the importer's VEC3 -> w=1 padding.
+std::vector<vec4> DecodeColorAccessor(const fastgltf::Asset &asset, size_t accessor_index) {
+    if (asset.accessors[accessor_index].type == fastgltf::AccessorType::Vec3) {
+        const auto rgb = DecodeAccessor<vec3>(asset, accessor_index);
+        std::vector<vec4> out;
+        out.reserve(rgb.size());
+        for (const auto &c : rgb) out.emplace_back(c, 1.f);
+        return out;
+    }
+    return DecodeAccessor<vec4>(asset, accessor_index);
+}
+
+void CompareGeometryAttr(
+    const fastgltf::Asset &a, const fastgltf::Asset &b,
+    size_t acc_a, size_t acc_b, std::string_view name, bool morph_delta,
+    std::span<const uint32_t> corners_a, std::span<const uint32_t> corners_b,
+    std::string_view path, std::vector<Diff> &out
+) {
+    const auto compare = [&](auto &&decode, auto &&eq) {
+        CompareCornerValues(decode(a, acc_a), decode(b, acc_b), corners_a, corners_b, path, eq, out);
+    };
+    if (morph_delta) {
+        // Target deltas (POSITION/NORMAL/TANGENT) are all VEC3 and pass through import untouched.
+        if (name == "POSITION" || name == "NORMAL" || name == "TANGENT") compare(DecodeAccessor<vec3>, Vec3Eq);
+    } else if (name == "POSITION") {
+        compare(DecodeAccessor<vec3>, Vec3Eq);
+    } else if (name == "NORMAL") {
+        compare(DecodeAccessor<vec3>, DirectionEq);
+    } else if (name == "TANGENT") {
+        compare(DecodeAccessor<vec4>, [](vec4 x, vec4 y) { return DirectionEq(vec3{x}, vec3{y}) && NumberEq(x.w, y.w); });
+    } else if (name.starts_with("COLOR_")) {
+        compare(DecodeColorAccessor, Vec4Eq);
+    } else if (name.starts_with("TEXCOORD_")) {
+        compare(DecodeAccessor<vec2>, Vec2Eq);
+    }
+    // JOINTS_n/WEIGHTS_n compare jointly in ComparePrimitiveGeometry.
+    // Custom attributes stay uncompared since import drops them.
+}
+
+void ComparePrimitiveGeometry(
+    const fastgltf::Asset &a, const fastgltf::Asset &b,
+    const fastgltf::Primitive &pa, const fastgltf::Primitive &pb,
+    std::string_view path, std::vector<Diff> &out
+) {
+    if (!IsTrianglePrimitive(pa.type) || !IsTrianglePrimitive(pb.type)) return;
+    const auto *pos_a = pa.findAttribute("POSITION");
+    const auto *pos_b = pb.findAttribute("POSITION");
+    if (pos_a == pa.attributes.end() || pos_b == pb.attributes.end()) return;
+
+    const auto corners_a = CornerIndices(a, pa, a.accessors[pos_a->accessorIndex].count);
+    const auto corners_b = CornerIndices(b, pb, b.accessors[pos_b->accessorIndex].count);
+    if (corners_a.size() != corners_b.size()) {
+        out.emplace_back(std::string{path}, std::format("corner count {} vs {}", corners_a.size(), corners_b.size()));
+        return;
+    }
+    if (corners_a.empty()) return;
+
+    for (const auto &attr : pa.attributes) {
+        const std::string_view name{attr.name};
+        const auto *battr = pb.findAttribute(name);
+        if (battr == pb.attributes.end()) continue; // presence diffs come from the JSON walk
+        CompareGeometryAttr(a, b, attr.accessorIndex, battr->accessorIndex, name, false, corners_a, corners_b, std::format("{}.attributes.{}", path, name), out);
+    }
+
+    const auto *ja = pa.findAttribute("JOINTS_0");
+    const auto *wa = pa.findAttribute("WEIGHTS_0");
+    const auto *jb = pb.findAttribute("JOINTS_0");
+    const auto *wb = pb.findAttribute("WEIGHTS_0");
+    if (ja != pa.attributes.end() && wa != pa.attributes.end() && jb != pb.attributes.end() && wb != pb.attributes.end()) {
+        const auto influences = [](const fastgltf::Asset &asset, size_t joints_acc, size_t weights_acc) {
+            const auto joints = DecodeAccessor<uvec4>(asset, joints_acc);
+            const auto weights = DecodeAccessor<vec4>(asset, weights_acc);
+            std::vector<std::pair<uvec4, vec4>> out(std::min(joints.size(), weights.size()));
+            for (size_t i = 0; i < out.size(); ++i) out[i] = {joints[i], weights[i]};
+            return out;
+        };
+        CompareCornerValues(
+            influences(a, ja->accessorIndex, wa->accessorIndex), influences(b, jb->accessorIndex, wb->accessorIndex),
+            corners_a, corners_b, std::format("{}.attributes.JOINTS_0", path),
+            [](const auto &x, const auto &y) { return InfluencesEq(x.first, x.second, y.first, y.second); }, out
+        );
+    }
+
+    const auto target_count = std::min(pa.targets.size(), pb.targets.size());
+    for (size_t t = 0; t < target_count; ++t) {
+        for (const auto &attr : pa.targets[t]) {
+            const std::string_view name{attr.name};
+            const auto *battr = pb.findTargetAttribute(t, name);
+            if (battr == pb.targets[t].end()) continue;
+            CompareGeometryAttr(a, b, attr.accessorIndex, battr->accessorIndex, name, true, corners_a, corners_b, std::format("{}.targets[{}].{}", path, t, name), out);
+        }
+    }
+}
+
+void CompareMeshGeometry(const fastgltf::Asset &a, const fastgltf::Asset &b, std::vector<Diff> &out) {
+    const auto mesh_count = std::min(a.meshes.size(), b.meshes.size());
+    for (size_t mi = 0; mi < mesh_count; ++mi) {
+        const auto prim_count = std::min(a.meshes[mi].primitives.size(), b.meshes[mi].primitives.size());
+        for (size_t pi = 0; pi < prim_count; ++pi) {
+            ComparePrimitiveGeometry(
+                a, b, a.meshes[mi].primitives[pi], b.meshes[mi].primitives[pi],
+                std::format("meshes[{}].primitives[{}]", mi, pi), out
+            );
+        }
     }
 }
 
@@ -442,7 +639,9 @@ void CompareJson(simdjson::dom::element a, simdjson::dom::element b, std::string
     const auto ta = a.type(), tb = b.type();
     // Numbers compare with epsilon regardless of int/uint/double subtype.
     if (IsNumber(ta) && IsNumber(tb)) {
-        if (IsAccessorRefPath(NormalizePath(path))) {
+        const auto norm = NormalizePath(path);
+        if (IsMeshGeometryRefPath(norm)) return; // content-compared by CompareMeshGeometry
+        if (IsShapeAccessorRefPath(norm)) {
             const auto src_acc = ResolveAccessor(root_a, size_t(AsNumber(a)));
             const auto out_acc = ResolveAccessor(root_b, size_t(AsNumber(b)));
             if (!src_acc || !out_acc) out.emplace_back(std::string(path), "accessor reference out of range");
@@ -533,6 +732,14 @@ size_t CompareGltfJson(const fs::path &a_path, const fs::path &b_path, std::stri
 
     std::vector<Diff> all_diffs;
     CompareJson(ea, eb, "", all_diffs, ea, eb);
+
+    // Geometry content compare over dereferenced accessor data (the JSON walk skips those refs).
+    {
+        const auto asset_a = gltf::ParseGltfAsset(a_path);
+        const auto asset_b = gltf::ParseGltfAsset(b_path);
+        if (asset_a && asset_b) CompareMeshGeometry(*asset_a, *asset_b, all_diffs);
+        else all_diffs.emplace_back("meshes", std::format("geometry parse failed: {}", !asset_a ? asset_a.error() : asset_b.error()));
+    }
 
     std::vector<Diff> unexpected;
     size_t expected = 0;

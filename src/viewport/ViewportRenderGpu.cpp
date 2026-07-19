@@ -613,6 +613,12 @@ void RecordPhase(entt::registry &r, entt::entity viewport, vk::CommandBuffer cb,
                 dd.ObjectIdSlot = face_id_buffer.Slot;
                 dd.FaceIdOffset = face_id_buffer.Offset;
                 dd.CornerNormalOffset = meshes.GetCornerNormalRange(mesh.GetStoreId()).Offset;
+                const auto corner_offset = [](Range range) { return range.Count > 0 ? range.Offset : InvalidOffset; };
+                dd.CornerTangentOffset = corner_offset(meshes.GetCornerTangentRange(mesh.GetStoreId()));
+                dd.CornerColorOffset = corner_offset(meshes.GetCornerColorRange(mesh.GetStoreId()));
+                for (uint32_t set = 0; set < dd.CornerUvOffsets.size(); ++set) {
+                    dd.CornerUvOffsets[set] = corner_offset(meshes.GetCornerUvRange(mesh.GetStoreId(), set));
+                }
                 dd.FacePrimitiveOffset = face_primitive_buffer.Count > 0 ? face_primitive_buffer.Offset : InvalidOffset;
                 dd.PrimitiveMaterialOffset = primitive_material_buffer.Count > 0 ? primitive_material_buffer.Offset : InvalidOffset;
                 const auto append_fill_draw = [&](const DrawData &dd, uint32_t index_count, std::optional<uint32_t> model_index) {
@@ -673,6 +679,12 @@ void RecordPhase(entt::registry &r, entt::entity viewport, vk::CommandBuffer cb,
                             range_draw.IndexSlotOffset.Offset += range.FirstTriangle * 3u;
                             range_draw.FaceIdOffset += range.FirstTriangle;
                             range_draw.CornerNormalOffset += range.FirstTriangle * 3u;
+                            const auto advance_corner = [&](uint32_t &offset) {
+                                if (offset != InvalidOffset) offset += range.FirstTriangle * 3u;
+                            };
+                            advance_corner(range_draw.CornerTangentOffset);
+                            advance_corner(range_draw.CornerColorOffset);
+                            for (auto &offset : range_draw.CornerUvOffsets) advance_corner(offset);
                             append_fill_for_instances(range_draw, range.TriangleCount * 3u);
                         }
                         return;

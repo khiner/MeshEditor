@@ -97,10 +97,10 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
                     r,
                     directory / "transformed.obj",
                     MeshInstanceCreateInfo{.Name = std::move(*object_name), .Transform = {.R = RealImpact::ObjectRotationToYUp}},
-                    true // Deduplicate vertices by position
+                    true // Weld vertices
                 );
 
-                // Ignore the npy file's vertex indices: deduplication may have invalidated them. Look up by position instead.
+                // The npy file's vertex indices use the source OBJ numbering, so look up by position instead.
                 std::vector<uint32_t> vertex_indices(RealImpact::NumImpactVertices);
                 {
                     const auto impact_positions = RealImpact::LoadPositions(directory);

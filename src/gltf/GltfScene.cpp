@@ -870,7 +870,7 @@ std::expected<uint32_t, std::string> EnsureMeshData(const fastgltf::Asset &asset
         .TriangleAttrs = std::move(mesh_attrs),
         .LineAttrs = std::move(line_attrs),
         .PointAttrs = std::move(point_attrs),
-        .TrianglePrimitives = has_triangles ? ::MeshPrimitives{std::move(face_primitive_indices), std::move(primitive_material_indices), std::move(vertex_counts), std::move(attribute_flags), std::move(has_source_indices), std::move(variant_mappings)} : ::MeshPrimitives{},
+        .TrianglePrimitives = has_triangles ? ::MeshPrimitives{std::move(face_primitive_indices), std::move(primitive_material_indices), std::move(attribute_flags), std::move(has_source_indices), std::move(variant_mappings)} : ::MeshPrimitives{},
         .DeformData = std::move(mesh_deform),
         .MorphData = std::move(mesh_morph),
         .Name = std::string{source_mesh.name},
@@ -1354,6 +1354,8 @@ void ApplyActiveSceneSelection(entt::registry &r) {
     for (const auto &[_, e] : ordered) r.emplace<Selected>(e);
 }
 } // namespace
+
+std::expected<fastgltf::Asset, std::string> ParseGltfAsset(const std::filesystem::path &path) { return ParseAsset(path); }
 
 std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &source_path, LoadContext ctx) {
     const profile::CpuScope scope{"LoadGltf"};
@@ -2056,7 +2058,7 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
         for (const auto &scene_mesh : source_meshes) {
             if (scene_mesh.Triangles) {
                 const uint32_t morph_targets = scene_mesh.MorphData ? scene_mesh.MorphData->TargetCount : 0;
-                ctx.Meshes.PlanCreate(*scene_mesh.Triangles, scene_mesh.TrianglePrimitives, scene_mesh.DeformData.has_value(), morph_targets);
+                ctx.Meshes.PlanCreate(*scene_mesh.Triangles, scene_mesh.TrianglePrimitives, scene_mesh.DeformData.has_value(), morph_targets, scene_mesh.TriangleAttrs);
             }
             plan(scene_mesh.Lines);
             plan(scene_mesh.Points);
@@ -2113,13 +2115,11 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
             // DefaultMaterials copies because CreateMesh also consumes MaterialIndices to populate PrimitiveMaterialBuffer.
             MorphSummary morph_summary;
             MeshSourceLayout layout{
-                .VertexCounts = std::move(scene_mesh.TrianglePrimitives.VertexCounts),
                 .AttributeFlags = std::move(scene_mesh.TrianglePrimitives.AttributeFlags),
                 .HasSourceIndices = std::move(scene_mesh.TrianglePrimitives.HasSourceIndices),
                 .DefaultMaterials = scene_mesh.TrianglePrimitives.MaterialIndices,
                 .VariantMappings = std::move(scene_mesh.TrianglePrimitives.VariantMappings),
                 .Colors0ComponentCount = scene_mesh.TriangleAttrs.Colors0ComponentCount,
-                .MorphTangentDeltas = scene_mesh.MorphData ? std::move(scene_mesh.MorphData->TangentDeltas) : std::vector<vec3>{},
             };
             if (scene_mesh.MorphData) {
                 morph_summary = {scene_mesh.MorphData->TargetCount, scene_mesh.MorphData->DefaultWeights};
@@ -2130,8 +2130,9 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
             const bool all_normals = std::ranges::all_of(layout.AttributeFlags, has_normal_flag);
             auto mesh = ctx.Meshes.CreateMesh(
                 std::move(*scene_mesh.Triangles), std::move(scene_mesh.TriangleAttrs), std::move(scene_mesh.TrianglePrimitives),
-                !any_normals, std::move(scene_mesh.DeformData), std::move(scene_mesh.MorphData)
+                !any_normals, std::move(scene_mesh.DeformData), std::move(scene_mesh.MorphData), /*weld=*/true
             );
+            layout.MorphTangentDeltas = std::move(mesh.MorphTangentDeltas);
             const auto [me, _] = ::AddMesh(r, ctx.Meshes, std::move(mesh), std::nullopt);
             mesh_entity = me;
             r.emplace<Path>(mesh_entity, source_path);
@@ -3342,19 +3343,19 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         );
     };
 
-    // Emit COLOR_0 from the strided Vertex span, preserving source component count.
-    const auto EmitColor0 = [&](fastgltf::pmr::SmallVector<fastgltf::Attribute, 4> &out, std::span<const Vertex> verts, uint8_t component_count) {
+    // Emit COLOR_0 from gathered per-corner values, preserving source component count.
+    const auto EmitColor0Values = [&](fastgltf::pmr::SmallVector<fastgltf::Attribute, 4> &out, std::span<const vec4> colors, uint8_t component_count) {
         if (component_count == 3) {
-            const uint32_t vcount = verts.size();
+            const uint32_t vcount = colors.size();
             const uint32_t off = bin.size();
             bin.resize(off + vcount * sizeof(vec3));
             auto *outp = reinterpret_cast<vec3 *>(bin.data() + off);
-            for (uint32_t i = 0; i < vcount; ++i) outp[i] = {verts[i].Color.x, verts[i].Color.y, verts[i].Color.z};
+            for (uint32_t i = 0; i < vcount; ++i) outp[i] = {colors[i].x, colors[i].y, colors[i].z};
             while (bin.size() % 4 != 0) bin.emplace_back(std::byte{0});
             const uint32_t bv = AddBufferView(off, vcount * sizeof(vec3), {}, fastgltf::BufferTarget::ArrayBuffer);
             out.emplace_back(fastgltf::Attribute{"COLOR_0", AddAccessor(bv, vcount, fastgltf::AccessorType::Vec3, fastgltf::ComponentType::Float)});
         } else {
-            out.emplace_back(fastgltf::Attribute{"COLOR_0", AddFieldAccessor.template operator()<vec4>(verts, &Vertex::Color, fastgltf::AccessorType::Vec4, fastgltf::BufferTarget::ArrayBuffer)});
+            out.emplace_back(fastgltf::Attribute{"COLOR_0", AddDataAccessor(colors, fastgltf::AccessorType::Vec4, fastgltf::ComponentType::Float, fastgltf::BufferTarget::ArrayBuffer)});
         }
     };
 
@@ -3691,7 +3692,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             out.emplace_back(fastgltf::Attribute{"NORMAL", AddFieldAccessor.template operator()<vec3>(verts, &Vertex::Normal, fastgltf::AccessorType::Vec3, fastgltf::BufferTarget::ArrayBuffer)});
         }
         if (std::ranges::any_of(verts, [](const auto &v) { return v.Color != vec4{1}; })) {
-            EmitColor0(out, verts, /*component_count=*/4);
+            out.emplace_back(fastgltf::Attribute{"COLOR_0", AddFieldAccessor.template operator()<vec4>(verts, &Vertex::Color, fastgltf::AccessorType::Vec4, fastgltf::BufferTarget::ArrayBuffer)});
         }
     };
     for (uint32_t mi = 0; mi < mesh_groups.size(); ++mi) {
@@ -3712,9 +3713,8 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         };
 
         // --- Triangle primitives ---
-        // Each source primitive owns a contiguous [offset, offset+count) slice of the merged
-        // per-mesh vertex buffer; re-slice here by primitive range. Vertex/face/skin/morph data
-        // is read straight from MeshStore — no per-mesh contiguous vectors materialized.
+        // Each fan corner pairs its mesh vertex index with its index into the corner-domain arenas.
+        // Every distinct corner tuple over the emitted channels becomes one export vertex, so vertices split exactly where corner attributes diverge.
         if (group.Triangles != entt::null) {
             const auto &mesh = GetMesh(r, group.Triangles);
             const auto store_id = mesh.GetStoreId();
@@ -3722,40 +3722,36 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             const auto total_vcount = vertices.size();
             const auto face_primitives = meshes.GetFacePrimitiveIndices(store_id);
             const auto primitive_materials = meshes.GetPrimitiveMaterialIndices(store_id);
-            // Runtime-created meshes have no MeshSourceLayout; synthesize a single-primitive
-            // layout from actual vertex contents so attribute emission matches what's present.
+            const auto corner_normals = meshes.GetCornerNormals(store_id);
+            const auto corner_tangents = meshes.GetCornerTangents(store_id);
+            const auto corner_colors = meshes.GetCornerColors(store_id);
+            const std::array corner_uv_sets{meshes.GetCornerUvs(store_id, 0), meshes.GetCornerUvs(store_id, 1), meshes.GetCornerUvs(store_id, 2), meshes.GetCornerUvs(store_id, 3)};
+            // Runtime-created meshes have no MeshSourceLayout.
+            // Synthesize a single-primitive layout from the present channels so attribute emission matches what's there.
             const auto *layout_ptr = r.try_get<const MeshSourceLayout>(group.Triangles);
             const MeshSourceLayout synthesized_layout = layout_ptr ? MeshSourceLayout{} : [&] {
                 MeshSourceLayout out;
                 uint32_t flags = 0;
                 if (std::ranges::any_of(vertices, [](const auto &v) { return v.Normal != vec3{0}; })) flags |= MeshAttributeBit_Normal;
-                if (std::ranges::any_of(vertices, [](const auto &v) { return v.Tangent != vec4{0}; })) flags |= MeshAttributeBit_Tangent;
-                if (std::ranges::any_of(vertices, [](const auto &v) { return v.Color != vec4{0}; })) flags |= MeshAttributeBit_Color0;
-                if (std::ranges::any_of(vertices, [](const auto &v) { return v.TexCoord0 != vec2{0}; })) flags |= MeshAttributeBit_TexCoord0;
-                if (std::ranges::any_of(vertices, [](const auto &v) { return v.TexCoord1 != vec2{0}; })) flags |= MeshAttributeBit_TexCoord1;
-                if (std::ranges::any_of(vertices, [](const auto &v) { return v.TexCoord2 != vec2{0}; })) flags |= MeshAttributeBit_TexCoord2;
-                if (std::ranges::any_of(vertices, [](const auto &v) { return v.TexCoord3 != vec2{0}; })) flags |= MeshAttributeBit_TexCoord3;
-                out.VertexCounts = {uint32_t(total_vcount)};
+                if (!corner_tangents.empty()) flags |= MeshAttributeBit_Tangent;
+                if (!corner_colors.empty()) flags |= MeshAttributeBit_Color0;
+                for (uint32_t set = 0; set < corner_uv_sets.size(); ++set) {
+                    if (!corner_uv_sets[set].empty()) flags |= MeshAttributeBit_TexCoord0 << set;
+                }
                 out.AttributeFlags = {flags};
                 out.HasSourceIndices = {1};
                 out.Colors0ComponentCount = 4;
                 return out;
             }();
             const auto &layout = layout_ptr ? *layout_ptr : synthesized_layout;
-            const auto prim_count = layout.VertexCounts.size();
+            const auto prim_count = layout.AttributeFlags.size();
 
-            std::vector<uint32_t> vertex_offsets(prim_count + 1, 0);
-            for (uint32_t p = 0; p < prim_count; ++p) vertex_offsets[p + 1] = vertex_offsets[p] + layout.VertexCounts[p];
-
-            // Build per-primitive (rebased, fan-triangulated) index buffers in one faces walk.
-            // Meshes with sharp faces also track each primitive's mesh-level triangle indices
-            // (for corner-normal lookups) and which primitives contain a sharp face.
-            const bool mesh_any_sharp = meshes.GetFaceSharpnessSummary(store_id).Any;
-            const auto sharpness = meshes.GetFaceSharpness(store_id);
+            // One faces walk gathers each primitive's corners in fan-triangulation order.
+            struct CornerRef {
+                uint32_t Vertex, Corner;
+            };
             const auto face_first_tris = meshes.GetFaceFirstTriangles(store_id);
-            std::vector<std::vector<uint32_t>> indices_per_prim(prim_count);
-            std::vector<std::vector<uint32_t>> mesh_tris_per_prim(prim_count);
-            std::vector<uint8_t> prim_has_sharp(prim_count, 0);
+            std::vector<std::vector<CornerRef>> corners_per_prim(prim_count);
             uint32_t fi = 0;
             for (const auto fh : mesh.faces()) {
                 const uint32_t p = fi < face_primitives.size() ? face_primitives[fi] : 0u;
@@ -3767,16 +3763,12 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
                         ++fv_count;
                     }
                     if (fv_count >= 3) {
-                        const auto offset = vertex_offsets[p];
-                        auto &out = indices_per_prim[p];
+                        auto &out = corners_per_prim[p];
+                        const auto corner_base = face_first_tris[fi] * 3;
                         for (uint32_t k = 1; k + 1 < fv_count; ++k) {
-                            out.emplace_back(fv[0] - offset);
-                            out.emplace_back(fv[k] - offset);
-                            out.emplace_back(fv[k + 1] - offset);
-                        }
-                        if (mesh_any_sharp) {
-                            if (fi < sharpness.size() && sharpness[fi]) prim_has_sharp[p] = 1;
-                            for (uint32_t k = 1; k + 1 < fv_count; ++k) mesh_tris_per_prim[p].emplace_back(face_first_tris[fi] + (k - 1));
+                            out.emplace_back(fv[0], corner_base + (k - 1) * 3);
+                            out.emplace_back(fv[k], corner_base + (k - 1) * 3 + 1);
+                            out.emplace_back(fv[k + 1], corner_base + (k - 1) * 3 + 2);
                         }
                     }
                 }
@@ -3799,91 +3791,131 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             const bool have_flags = layout.AttributeFlags.size() == prim_count;
 
             for (uint32_t prim_idx = 0; prim_idx < prim_count; ++prim_idx) {
-                uint32_t pcount = layout.VertexCounts[prim_idx];
-                if (pcount == 0) continue; // non-triangle primitive
-                const auto offset = vertex_offsets[prim_idx];
-                auto flags = have_flags ? layout.AttributeFlags[prim_idx] : ~0u;
-                std::span<const Vertex> vslice = vertices.subspan(offset, pcount);
+                auto &prim_corners = corners_per_prim[prim_idx];
+                if (prim_corners.empty()) continue; // non-triangle primitive
+                const auto flags = have_flags ? layout.AttributeFlags[prim_idx] : ~0u;
 
-                // Sharp-face export: a primitive that emits NORMAL and contains sharp faces splits
-                // per-corner vertices carrying the derived corner normals, so the mesh shades
-                // identically in glTF viewers. Primitives without a NORMAL channel emit none and
-                // are flat per the glTF spec, keeping normal-less sources byte-stable through
-                // load/save. Skipped for skinned/morphed meshes where splitting would also need
-                // to rebuild those parallel arrays (primitives, the typical authoring case, hit neither).
-                std::vector<Vertex> split_verts;
-                if (prim_has_sharp[prim_idx] && (any_flags & MeshAttributeBit_Normal) && (flags & MeshAttributeBit_Normal) && !has_skin && target_count == 0) {
-                    const auto corner_normals = meshes.GetCornerNormals(store_id);
-                    auto &tri_indices = indices_per_prim[prim_idx];
-                    const auto &mesh_tris = mesh_tris_per_prim[prim_idx];
-                    split_verts.reserve(tri_indices.size());
-                    for (size_t t = 0; t + 2 < tri_indices.size(); t += 3) {
-                        const auto corner_base = mesh_tris[t / 3] * 3;
-                        for (uint32_t k = 0; k < 3; ++k) {
-                            split_verts.emplace_back(vslice[tri_indices[t + k]]);
-                            if (corner_base + k < corner_normals.size()) split_verts.back().Normal = corner_normals[corner_base + k];
-                        }
-                    }
-                    for (uint32_t i = 0; i < tri_indices.size(); ++i) tri_indices[i] = i;
-                    vslice = split_verts;
-                    pcount = split_verts.size();
+                const bool emit_normal = (any_flags & MeshAttributeBit_Normal) && (flags & MeshAttributeBit_Normal) && !corner_normals.empty();
+                const bool emit_tangent = (any_flags & MeshAttributeBit_Tangent) && (flags & MeshAttributeBit_Tangent) && !corner_tangents.empty();
+                const bool emit_color = (any_flags & MeshAttributeBit_Color0) && (flags & MeshAttributeBit_Color0) && !corner_colors.empty();
+                std::array<bool, 4> emit_uv{};
+                for (uint32_t set = 0; set < emit_uv.size(); ++set) {
+                    emit_uv[set] = (any_flags & (MeshAttributeBit_TexCoord0 << set)) && (flags & (MeshAttributeBit_TexCoord0 << set)) && !corner_uv_sets[set].empty();
                 }
 
-                fastgltf::pmr::SmallVector<fastgltf::Attribute, 4> prim_attrs;
-                prim_attrs.emplace_back(fastgltf::Attribute{"POSITION", AddPositionFieldAccessor.template operator()<Vertex>(vslice, &Vertex::Position, fastgltf::BufferTarget::ArrayBuffer)});
+                // Indexed primitives merge identical corner tuples into unique export vertices in first-seen order.
+                // Non-indexed sources emit the corner stream directly.
+                const bool emit_indices = prim_idx < layout.HasSourceIndices.size() ? layout.HasSourceIndices[prim_idx] != 0 : true;
+                std::vector<CornerRef> export_refs;
+                std::vector<uint32_t> indices;
+                if (emit_indices) {
+                    uint32_t stride = sizeof(uint32_t) + (emit_normal ? sizeof(vec3) : 0u) + (emit_tangent ? sizeof(vec4) : 0u) + (emit_color ? sizeof(vec4) : 0u);
+                    for (const auto uv : emit_uv) stride += uv ? sizeof(vec2) : 0u;
+                    std::vector<std::byte> keys(prim_corners.size() * size_t(stride));
+                    for (size_t i = 0; i < prim_corners.size(); ++i) {
+                        auto *dst = keys.data() + i * stride;
+                        const auto append = [&dst](const auto &v) {
+                            std::memcpy(dst, &v, sizeof(v));
+                            dst += sizeof(v);
+                        };
+                        const auto &c = prim_corners[i];
+                        append(c.Vertex);
+                        if (emit_normal) append(corner_normals[c.Corner]);
+                        if (emit_tangent) append(corner_tangents[c.Corner]);
+                        if (emit_color) append(corner_colors[c.Corner]);
+                        for (uint32_t set = 0; set < emit_uv.size(); ++set) {
+                            if (emit_uv[set]) append(corner_uv_sets[set][c.Corner]);
+                        }
+                    }
+                    export_refs.reserve(prim_corners.size());
+                    indices.reserve(prim_corners.size());
+                    std::unordered_map<std::string_view, uint32_t> dot_index;
+                    dot_index.reserve(prim_corners.size());
+                    for (size_t i = 0; i < prim_corners.size(); ++i) {
+                        const std::string_view key{reinterpret_cast<const char *>(keys.data() + i * stride), stride};
+                        const auto [it, inserted] = dot_index.try_emplace(key, uint32_t(export_refs.size()));
+                        if (inserted) export_refs.emplace_back(prim_corners[i]);
+                        indices.emplace_back(it->second);
+                    }
+                } else {
+                    export_refs = std::move(prim_corners);
+                }
+                const uint32_t export_count = export_refs.size();
 
-                const auto emit = [&]<typename T>(const char *name, T Vertex::*field, fastgltf::AccessorType type) {
-                    prim_attrs.emplace_back(fastgltf::Attribute{name, AddFieldAccessor.template operator()<T>(vslice, field, type, fastgltf::BufferTarget::ArrayBuffer)});
+                const auto gather_corner = [&]<typename T>(std::span<const T> src) {
+                    std::vector<T> out(export_count);
+                    for (uint32_t i = 0; i < export_count; ++i) out[i] = src[export_refs[i].Corner];
+                    return out;
                 };
-                if ((any_flags & MeshAttributeBit_Normal) && (flags & MeshAttributeBit_Normal)) emit("NORMAL", &Vertex::Normal, fastgltf::AccessorType::Vec3);
-                if ((any_flags & MeshAttributeBit_Tangent) && (flags & MeshAttributeBit_Tangent)) emit("TANGENT", &Vertex::Tangent, fastgltf::AccessorType::Vec4);
-                if ((any_flags & MeshAttributeBit_Color0) && (flags & MeshAttributeBit_Color0)) EmitColor0(prim_attrs, vslice, layout.Colors0ComponentCount);
-                if ((any_flags & MeshAttributeBit_TexCoord0) && (flags & MeshAttributeBit_TexCoord0)) emit("TEXCOORD_0", &Vertex::TexCoord0, fastgltf::AccessorType::Vec2);
-                if ((any_flags & MeshAttributeBit_TexCoord1) && (flags & MeshAttributeBit_TexCoord1)) emit("TEXCOORD_1", &Vertex::TexCoord1, fastgltf::AccessorType::Vec2);
-                if ((any_flags & MeshAttributeBit_TexCoord2) && (flags & MeshAttributeBit_TexCoord2)) emit("TEXCOORD_2", &Vertex::TexCoord2, fastgltf::AccessorType::Vec2);
-                if ((any_flags & MeshAttributeBit_TexCoord3) && (flags & MeshAttributeBit_TexCoord3)) emit("TEXCOORD_3", &Vertex::TexCoord3, fastgltf::AccessorType::Vec2);
+
+                std::vector<vec3> positions(export_count);
+                for (uint32_t i = 0; i < export_count; ++i) positions[i] = vertices[export_refs[i].Vertex].Position;
+                fastgltf::pmr::SmallVector<fastgltf::Attribute, 4> prim_attrs;
+                prim_attrs.emplace_back(fastgltf::Attribute{"POSITION", AddVec3Accessor(positions, true, fastgltf::BufferTarget::ArrayBuffer)});
+
+                if (emit_normal) {
+                    const auto normals = gather_corner(corner_normals);
+                    prim_attrs.emplace_back(fastgltf::Attribute{"NORMAL", AddVec3Accessor(normals, false, fastgltf::BufferTarget::ArrayBuffer)});
+                }
+                if (emit_tangent) {
+                    const auto tangents = gather_corner(corner_tangents);
+                    prim_attrs.emplace_back(fastgltf::Attribute{"TANGENT", AddDataAccessor(std::span<const vec4>(tangents), fastgltf::AccessorType::Vec4, fastgltf::ComponentType::Float, fastgltf::BufferTarget::ArrayBuffer)});
+                }
+                if (emit_color) {
+                    const auto colors = gather_corner(corner_colors);
+                    EmitColor0Values(prim_attrs, colors, layout.Colors0ComponentCount);
+                }
+                static constexpr std::array UvNames{"TEXCOORD_0", "TEXCOORD_1", "TEXCOORD_2", "TEXCOORD_3"};
+                for (uint32_t set = 0; set < emit_uv.size(); ++set) {
+                    if (!emit_uv[set]) continue;
+                    const auto uvs = gather_corner(corner_uv_sets[set]);
+                    prim_attrs.emplace_back(fastgltf::Attribute{UvNames[set], AddDataAccessor(std::span<const vec2>(uvs), fastgltf::AccessorType::Vec2, fastgltf::ComponentType::Float, fastgltf::BufferTarget::ArrayBuffer)});
+                }
 
                 if (has_skin) {
-                    const auto bd_slice = bd_span.subspan(offset, pcount);
-                    // Convert uvec4 → uint16_t[4] strided directly into bin (no intermediate vector).
+                    // Convert uvec4 joints to uint16_t[4] strided directly into bin.
                     const uint32_t j_off = bin.size();
-                    bin.resize(j_off + pcount * 4 * sizeof(uint16_t));
+                    bin.resize(j_off + export_count * 4 * sizeof(uint16_t));
                     auto *jp = reinterpret_cast<uint16_t *>(bin.data() + j_off);
-                    for (uint32_t i = 0; i < pcount; ++i) {
-                        const auto &j = bd_slice[i].Joints;
+                    for (uint32_t i = 0; i < export_count; ++i) {
+                        const auto &j = bd_span[export_refs[i].Vertex].Joints;
                         jp[i * 4 + 0] = uint16_t(j.x);
                         jp[i * 4 + 1] = uint16_t(j.y);
                         jp[i * 4 + 2] = uint16_t(j.z);
                         jp[i * 4 + 3] = uint16_t(j.w);
                     }
                     while (bin.size() % 4 != 0) bin.emplace_back(std::byte{0});
-                    const uint32_t j_bv = AddBufferView(j_off, pcount * 4 * sizeof(uint16_t), {}, fastgltf::BufferTarget::ArrayBuffer);
-                    prim_attrs.emplace_back(fastgltf::Attribute{"JOINTS_0", AddAccessor(j_bv, pcount, fastgltf::AccessorType::Vec4, fastgltf::ComponentType::UnsignedShort)});
-                    prim_attrs.emplace_back(fastgltf::Attribute{"WEIGHTS_0", AddFieldAccessor.template operator()<vec4>(bd_slice, &BoneDeformVertex::Weights, fastgltf::AccessorType::Vec4, fastgltf::BufferTarget::ArrayBuffer)});
+                    const uint32_t j_bv = AddBufferView(j_off, export_count * 4 * sizeof(uint16_t), {}, fastgltf::BufferTarget::ArrayBuffer);
+                    prim_attrs.emplace_back(fastgltf::Attribute{"JOINTS_0", AddAccessor(j_bv, export_count, fastgltf::AccessorType::Vec4, fastgltf::ComponentType::UnsignedShort)});
+                    std::vector<vec4> weights(export_count);
+                    for (uint32_t i = 0; i < export_count; ++i) weights[i] = bd_span[export_refs[i].Vertex].Weights;
+                    prim_attrs.emplace_back(fastgltf::Attribute{"WEIGHTS_0", AddDataAccessor(std::span<const vec4>(weights), fastgltf::AccessorType::Vec4, fastgltf::ComponentType::Float, fastgltf::BufferTarget::ArrayBuffer)});
                 }
 
                 std::pmr::vector<fastgltf::pmr::SmallVector<fastgltf::Attribute, 4>> prim_targets;
                 if (target_count > 0) {
                     prim_targets.reserve(target_count);
+                    std::vector<vec3> deltas(export_count);
                     for (uint32_t t = 0; t < target_count; ++t) {
                         fastgltf::pmr::SmallVector<fastgltf::Attribute, 4> tattrs;
-                        const auto target_slice = mt_span.subspan(t * total_vcount + offset, pcount);
-                        tattrs.emplace_back(fastgltf::Attribute{"POSITION", AddFieldAccessor.template operator()<vec3>(target_slice, &MorphTargetVertex::PositionDelta, fastgltf::AccessorType::Vec3, fastgltf::BufferTarget::ArrayBuffer)});
-                        if (has_normal_deltas) tattrs.emplace_back(fastgltf::Attribute{"NORMAL", AddFieldAccessor.template operator()<vec3>(target_slice, &MorphTargetVertex::NormalDelta, fastgltf::AccessorType::Vec3, fastgltf::BufferTarget::ArrayBuffer)});
+                        const auto target_base = t * total_vcount;
+                        for (uint32_t i = 0; i < export_count; ++i) deltas[i] = mt_span[target_base + export_refs[i].Vertex].PositionDelta;
+                        tattrs.emplace_back(fastgltf::Attribute{"POSITION", AddVec3Accessor(deltas, false, fastgltf::BufferTarget::ArrayBuffer)});
+                        if (has_normal_deltas) {
+                            for (uint32_t i = 0; i < export_count; ++i) deltas[i] = mt_span[target_base + export_refs[i].Vertex].NormalDelta;
+                            tattrs.emplace_back(fastgltf::Attribute{"NORMAL", AddVec3Accessor(deltas, false, fastgltf::BufferTarget::ArrayBuffer)});
+                        }
                         if (has_tangent_deltas) {
-                            const std::span<const vec3> tan_deltas(layout.MorphTangentDeltas.data() + t * total_vcount + offset, pcount);
-                            tattrs.emplace_back(fastgltf::Attribute{"TANGENT", AddVec3Accessor(tan_deltas, false, fastgltf::BufferTarget::ArrayBuffer)});
+                            for (uint32_t i = 0; i < export_count; ++i) deltas[i] = layout.MorphTangentDeltas[target_base + export_refs[i].Vertex];
+                            tattrs.emplace_back(fastgltf::Attribute{"TANGENT", AddVec3Accessor(deltas, false, fastgltf::BufferTarget::ArrayBuffer)});
                         }
                         prim_targets.emplace_back(std::move(tattrs));
                     }
                 }
 
-                if (indices_per_prim[prim_idx].empty()) continue;
-                // Empty HasSourceIndices falls back to emitting (preserves legacy behavior).
-                const bool emit_indices = prim_idx < layout.HasSourceIndices.size() ? layout.HasSourceIndices[prim_idx] != 0 : true;
                 fastgltf::Optional<size_t> indices_accessor;
                 if (emit_indices) {
-                    indices_accessor = AddDataAccessor(std::span<const uint32_t>(indices_per_prim[prim_idx]), fastgltf::AccessorType::Scalar, fastgltf::ComponentType::UnsignedInt, fastgltf::BufferTarget::ElementArrayBuffer);
+                    indices_accessor = AddDataAccessor(std::span<const uint32_t>(indices), fastgltf::AccessorType::Scalar, fastgltf::ComponentType::UnsignedInt, fastgltf::BufferTarget::ElementArrayBuffer);
                 }
 
                 fastgltf::Optional<size_t> material_index;

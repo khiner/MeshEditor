@@ -31,6 +31,9 @@ struct MeshStore;
 struct GpuBuffers;
 struct TextureStore;
 struct VulkanResources;
+namespace fastgltf {
+class Asset;
+} // namespace fastgltf
 namespace mvk {
 struct BufferContext;
 } // namespace mvk
@@ -116,7 +119,6 @@ struct SourceEmptyName {};
 // Source per-primitive layout retained on the Triangles entity after `CreateMesh` flattens primitives.
 // Drives runtime material-variant resolution, carries morph tangent deltas the arena doesn't store, and preserves the structure for faithful glTF re-export.
 struct MeshSourceLayout {
-    std::vector<uint32_t> VertexCounts;
     std::vector<uint32_t> AttributeFlags;
     std::vector<uint8_t> HasSourceIndices;
     // No KHR_materials_variants variant is active, or the active variant doesn't override this primitive.
@@ -164,6 +166,9 @@ struct SaveContext {
 
 std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &, LoadContext);
 std::expected<void, std::string> SaveGltf(const std::filesystem::path &, const SaveContext &);
+
+// Parse a glTF file as import does: the importer's extension set, external buffers loaded, and meshopt-compressed buffer views decoded to plain data.
+std::expected<fastgltf::Asset, std::string> ParseGltfAsset(const std::filesystem::path &);
 
 // Make `scene` the active scene shown in the viewport. No-op if it's already active or not a scene.
 void SwitchActiveScene(entt::registry &, entt::entity scene);
