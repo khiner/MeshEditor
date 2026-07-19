@@ -55,6 +55,7 @@ static ViewportTheme MakeDefaultViewportTheme() {
             .VertexSelected{1, 0.478f, 0},
             .EdgeSelectedIncidental{1, 0.6f, 0},
             .EdgeSelected{1, 0.847f, 0},
+            .EdgeSharp{0, 1, 1},
             .FaceSelectedIncidental{1, 0.639f, 0, 0.2f},
             .FaceSelected{1, 0.718f, 0, 0.2f},
             .ElementActive{1, 1, 1, 0.2f},

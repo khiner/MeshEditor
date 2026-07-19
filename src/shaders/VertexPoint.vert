@@ -16,10 +16,9 @@ void main() {
     const Vertex vert = VertexBuffers[draw.VertexSlot].Vertices[idx + draw.VertexOffset];
     const Transform world = ModelBuffers[draw.ModelSlot].Models[draw.FirstInstance];
 
-    uint element_state = 0u;
-    if (draw.ElementStateSlotOffset.Slot != INVALID_SLOT) {
-        element_state = uint(ElementStateBuffers[draw.ElementStateSlotOffset.Slot].States[draw.ElementStateSlotOffset.Offset + idx]);
-    }
+    const uint element_state = draw.ElementStateSlotOffset.Slot != INVALID_SLOT ?
+        uint(ElementStateBuffers[draw.ElementStateSlotOffset.Slot].States[draw.ElementStateSlotOffset.Offset + idx]) :
+        0u;
 
     const bool is_selected = (element_state & STATE_SELECTED) != 0u;
     const bool is_active = (element_state & STATE_ACTIVE) != 0u;

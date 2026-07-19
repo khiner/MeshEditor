@@ -8,6 +8,8 @@
 // Signed distance from edge center in pixels (noperspective for correct screen-space interpolation).
 layout(location = 0) noperspective out float EdgeCoord;
 layout(location = 1) out vec4 Color;
+// Edge-mark band color, drawn outside the inner wire core. Zero alpha = no mark.
+layout(location = 2) flat out vec4 OuterColor;
 
 void main() {
     const DrawData draw = GetDrawData();
@@ -81,8 +83,14 @@ void main() {
     edge_dir /= edge_len;
     vec2 perp = vec2(-edge_dir.y, edge_dir.x);
 
+    // Sharp edges draw a wider mark band around the wire core.
+    const bool sharp = draw.EdgeSharpnessOffset != INVALID_OFFSET &&
+        uint(ElementStateBuffers[nonuniformEXT(SceneViewUBO.EdgeSharpnessSlot)].States[draw.EdgeSharpnessOffset + edge_id]) != 0u;
+    OuterColor = sharp ? vec4(ViewportTheme.Colors.EdgeSharp, 1.0) : vec4(0.0);
+
     // Half-width: EdgeWidth is already the half-width (matches Blender's sizes.edge) + 0.5px AA fringe.
-    float half_width = ViewportTheme.EdgeWidth + 0.5;
+    // Marked edges enlarge by another edge width.
+    float half_width = ViewportTheme.EdgeWidth + (OuterColor.a > 0.0 ? max(ViewportTheme.EdgeWidth, 1.0) : 0.0) + 0.5;
 
     // Offset in NDC space (pixels -> NDC).
     vec2 offset_ndc = perp * side * half_width / SceneViewUBO.ViewportSize;
@@ -92,16 +100,16 @@ void main() {
 
     // Expand in clip space (multiply by 2 because NDC range is [-1,1]).
     pos.xy += offset_ndc * 2.0 * pos.w;
+    // Marked edges draw slightly in front.
+    if (OuterColor.a > 0.0) pos.z -= 5e-7 * abs(pos.w);
 
     gl_Position = pos;
     EdgeCoord = side * half_width;
 
     // Edge selection coloring (same logic as VertexTransform.vert for edge draws).
-    uint element_state = 0u;
-    if (draw.ElementStateSlotOffset.Slot != INVALID_SLOT) {
-        element_state = uint(ElementStateBuffers[draw.ElementStateSlotOffset.Slot]
-            .States[draw.ElementStateSlotOffset.Offset + edge_id * 2u + endpoint]);
-    }
+    const uint element_state = draw.ElementStateSlotOffset.Slot != INVALID_SLOT ?
+        uint(ElementStateBuffers[draw.ElementStateSlotOffset.Slot].States[draw.ElementStateSlotOffset.Offset + edge_id * 2u + endpoint]) :
+        0u;
 
     const bool is_edit_mode = SceneViewUBO.InteractionMode == InteractionMode_Edit;
     const bool is_edit_edge = is_edit_mode && SceneViewUBO.EditElement == Element_Edge;

@@ -22,10 +22,9 @@ void main() {
     WorldPosition = world_pos;
     FaceOverlayFlags = 0u;
 
-    uint instance_state = 0u;
-    if (draw.InstanceStateSlot != INVALID_SLOT) {
-        instance_state = uint(InstanceStateBuffers[draw.InstanceStateSlot].States[draw.FirstInstance]);
-    }
+    const uint instance_state = draw.InstanceStateSlot != INVALID_SLOT ?
+        uint(InstanceStateBuffers[draw.InstanceStateSlot].States[draw.FirstInstance]) :
+        0u;
 
     const bool is_edit_mode = SceneViewUBO.InteractionMode == InteractionMode_Edit;
     const vec4 wire_color = is_edit_mode ? vec4(ViewportTheme.Colors.WireEdit, 1.0) : vec4(ViewportTheme.Colors.Wire, 1.0);

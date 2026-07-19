@@ -118,6 +118,7 @@ struct MeshStore {
     uint32_t GetCornerTangentSlot() const;
     uint32_t GetCornerColorSlot() const;
     uint32_t GetCornerUvSlot() const;
+    uint32_t GetEdgeSharpnessSlot() const;
     uint32_t GetFacePrimitiveSlot() const;
     uint32_t GetPrimitiveMaterialSlot() const;
     uint32_t GetBoneDeformSlot() const;
@@ -135,6 +136,7 @@ struct MeshStore {
     std::span<const vec3> GetCornerNormals(uint32_t id) const;
     SlottedRange GetFaceStateRange(uint32_t id) const;
     SlottedRange GetEdgeStateRange(uint32_t id) const;
+    Range GetEdgeSharpnessRange(uint32_t id) const;
     Range GetCornerNormalRange(uint32_t id) const;
     // Corner-domain attribute layers (one value per triangulated face corner, fan order).
     // Empty range/span when the mesh lacks the channel.

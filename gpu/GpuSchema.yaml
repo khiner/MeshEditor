@@ -168,6 +168,9 @@ structs:
         type: u32
       - name: ElementStateSlotOffset
         type: SlotOffset
+      - name: EdgeSharpnessOffset
+        type: u32
+        default: InvalidOffset
       - name: InstanceStateSlot
         type: u32
         default: InvalidSlot
@@ -286,6 +289,8 @@ structs:
         type: u32
       - name: CornerUvSlot
         type: u32
+      - name: EdgeSharpnessSlot
+        type: u32
       - name: BoneDeformSlot
         type: u32
       - name: ArmatureDeformSlot
@@ -401,6 +406,8 @@ structs:
       - name: EdgeSelectedIncidental # Edge Selection
         type: vec3
       - name: EdgeSelected # Edge Mode Selection
+        type: vec3
+      - name: EdgeSharp # Edge Sharp
         type: vec3
       - name: FaceSelectedIncidental # Face Selection
         type: vec4

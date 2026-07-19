@@ -2033,6 +2033,7 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
             .CornerTangentSlot = meshes.GetCornerTangentSlot(),
             .CornerColorSlot = meshes.GetCornerColorSlot(),
             .CornerUvSlot = meshes.GetCornerUvSlot(),
+            .EdgeSharpnessSlot = meshes.GetEdgeSharpnessSlot(),
             .BoneDeformSlot = meshes.GetBoneDeformSlot(),
             .ArmatureDeformSlot = buffers.ArmatureDeformBuffer.Buffer.Slot,
             .MorphDeformSlot = meshes.GetMorphTargetSlot(),

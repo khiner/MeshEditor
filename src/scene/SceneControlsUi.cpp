@@ -1101,6 +1101,7 @@ void RenderControls(entt::registry &r, entt::entity viewport) {
                 c.Color<&VC::VertexSelected>("Vertex selected");
                 c.Color<&VC::EdgeSelectedIncidental>("Edge selected (incidental)");
                 c.Color<&VC::EdgeSelected>("Edge selected");
+                c.Color<&VC::EdgeSharp>("Edge sharp");
                 c.Color<&VC::FaceSelectedIncidental>("Face selected (incidental)");
                 c.Color<&VC::FaceSelected>("Face selected");
                 c.Color<&VC::ElementActive>("Element active");
