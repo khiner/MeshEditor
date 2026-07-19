@@ -32,6 +32,7 @@
 #include "selection/SelectionBitset.h"
 #include "selection/SelectionComponents.h"
 #include "ui/FieldEdit.h"
+#include "ui/HelpMarker.h"
 #include "viewport/InteractionComponents.h"
 #include "viewport/ViewCameraOps.h"
 #include "viewport/ViewportEvents.h"
@@ -48,6 +49,7 @@ using namespace ImGui;
 
 template<> struct FieldLimits<&Transform::S> : Within<0.01f, 10.f> {};
 template<> struct FieldLimits<&TransformGizmoState::Config, &TransformGizmo::Config::SnapValue> : Within<0.01f, 100.f> {};
+template<> struct FieldLimits<&ShadeSmoothAngle::Value> : Within<0., std::numbers::pi> {};
 
 static void RenderObjectTree(entt::registry &, entt::entity viewport);
 static void RenderEntityControls(entt::registry &, entt::entity viewport, entt::entity active_entity);
@@ -161,12 +163,8 @@ bool RenderCameraLensEditor(Camera &camera, float distance, std::optional<float>
     }
 
     if (auto *perspective = std::get_if<Perspective>(&camera)) {
-        float fov_deg = glm::degrees(perspective->FieldOfViewRad);
         const float far_max = std::max(perspective->NearClip + MinNearFarDelta, MaxFarClip);
-        if (SliderFloat("Field of view (deg)", &fov_deg, 1.f, 179.f)) {
-            perspective->FieldOfViewRad = glm::radians(fov_deg);
-            lens_changed = true;
-        }
+        lens_changed |= SliderAngle("Field of view", &perspective->FieldOfViewRad, 1.f, 179.f, "%.1f deg");
         const float near_max = perspective->FarClip ? std::max(*perspective->FarClip - MinNearFarDelta, MinNearClip) : far_max;
         lens_changed |= SliderFloat("Near clip", &perspective->NearClip, MinNearClip, near_max);
         bool infinite_far = !perspective->FarClip.has_value();
@@ -656,7 +654,7 @@ static void RenderEntityControls(entt::registry &r, entt::entity viewport, entt:
 
                 if (feature_toggle("Anisotropy", PbrFeature::Anisotropy)) {
                     material_changed |= SliderFloat("Anisotropy strength", &material.Anisotropy.Strength, 0.f, 1.f);
-                    material_changed |= SliderFloat("Anisotropy rotation", &material.Anisotropy.Rotation, 0.f, 6.2832f, "%.3f rad");
+                    material_changed |= SliderAngle("Anisotropy rotation", &material.Anisotropy.Rotation, 0.f, 360.f, "%.1f deg");
                     material_changed |= edit_texture_info("Anisotropy", material.Anisotropy.Texture);
                 }
 
@@ -719,15 +717,16 @@ static void RenderEntityControls(entt::registry &r, entt::entity viewport, entt:
             changed |= !infinite_range && SliderFloat("Range", &light.Range, 0.01f, 1000.f, "%.2f");
         }
         if (light.Type == PunctualLightType::Spot) {
-            float outer_deg = std::clamp(glm::degrees(AngleFromCos(light.OuterConeCos)), 0.f, 90.f);
-            const float inner_deg = std::clamp(glm::degrees(AngleFromCos(light.InnerConeCos)), 0.f, outer_deg);
-            float blend = outer_deg > 1e-4f ? std::clamp(1.f - inner_deg / outer_deg, 0.f, 1.f) : 0.f;
-            const bool size_changed = SliderFloat("Size", &outer_deg, 0.f, 90.f, "%.1f deg");
+            constexpr float MaxCone = std::numbers::pi_v<float> / 2.f;
+            float outer = std::clamp(AngleFromCos(light.OuterConeCos), 0.f, MaxCone);
+            const float inner = std::clamp(AngleFromCos(light.InnerConeCos), 0.f, outer);
+            float blend = outer > 1e-4f ? std::clamp(1.f - inner / outer, 0.f, 1.f) : 0.f;
+            const bool size_changed = SliderAngle("Size", &outer, 0.f, 90.f, "%.1f deg");
             const bool blend_changed = SliderFloat("Blend", &blend, 0.f, 1.f, "%.2f");
             if (size_changed || blend_changed) {
-                const float outer_rad = glm::radians(std::clamp(outer_deg, 0.f, 90.f));
-                light.OuterConeCos = std::cos(outer_rad);
-                light.InnerConeCos = std::cos(outer_rad * (1.f - std::clamp(blend, 0.f, 1.f)));
+                outer = std::clamp(outer, 0.f, MaxCone);
+                light.OuterConeCos = std::cos(outer);
+                light.InnerConeCos = std::cos(outer * (1.f - std::clamp(blend, 0.f, 1.f)));
                 changed = true;
             }
         }
@@ -1006,6 +1005,12 @@ void RenderControls(entt::registry &r, entt::entity viewport) {
                         if (mixed_smooth) PushItemFlag(ImGuiItemFlags_MixedValue, true);
                         if (bool set_smooth = any_smooth && !any_sharp; Checkbox("Smooth shading", &set_smooth)) action::Emit(action::object::SetSelectedSmoothShading{set_smooth});
                         if (mixed_smooth) PopItemFlag();
+                        if (Button("Smooth by angle")) action::Emit(action::object::ShadeSelectedSmoothByAngle{r.get<const ShadeSmoothAngle>(viewport).Value});
+                        SameLine();
+                        SetNextItemWidth(GetFontSize() * 6);
+                        ui::Edit{r, viewport}.SliderAngle<&ShadeSmoothAngle::Value>("##SmoothByAngle");
+                        SameLine();
+                        MeshEditor::HelpMarker("Maximum angle between face normals that will be considered as smooth");
                     }
                 }
                 if (CanDuplicate(r, viewport) && Button("Duplicate")) Duplicate(r, viewport);

@@ -226,6 +226,15 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
                     r.emplace_or_replace<MeshShadingDirty>(me);
                 }
             },
+            [&](const ShadeSelectedSmoothByAngle &a) {
+                for (const auto me : ::selection::GetSelectedMeshEntities(r)) {
+                    const auto mesh = GetMesh(r, me);
+                    if (mesh.FaceCount() == 0) continue;
+                    std::ranges::fill(meshes.GetFaceSharpness(mesh.GetStoreId()), uint8_t{0});
+                    meshes.SetEdgeSharpnessByAngle(mesh, a.Angle);
+                    r.emplace_or_replace<MeshShadingDirty>(me);
+                }
+            },
             [&](const SetSelectedFacesSmooth &a) {
                 for_each_edit_selection(Element::Face, [&](entt::entity me, const Mesh &mesh, const uint32_t *bits, MeshSelectionBitsetRange br) {
                     auto sharp = meshes.GetFaceSharpness(mesh.GetStoreId());

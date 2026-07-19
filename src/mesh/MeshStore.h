@@ -171,8 +171,9 @@ struct MeshStore {
     void UpdateVertexStatesFromFaces(const Mesh &, std::optional<uint32_t> active_face = {});
     void UpdateVertexStatesFromEdges(const Mesh &, std::optional<uint32_t> active_edge = {});
     void UpdateVertexNormals(const Mesh &);
-    // Derive per-corner shading normals from positions, vertex normals, and sharpness,
-    // in triangulated face-fan index order.
+    // Write edge sharpness from face dihedral angles: sharp where the angle exceeds `angle` (radians). Boundary edges stay smooth.
+    void SetEdgeSharpnessByAngle(const Mesh &, float angle);
+    // Derive per-corner shading normals from positions, vertex normals, and sharpness, in triangulated face-fan index order.
     void UpdateCornerNormals(const Mesh &);
     // Derive from `positions` instead of the stored positions, matching what committing them produces.
     void UpdateCornerNormals(const Mesh &, std::span<const vec3> positions);

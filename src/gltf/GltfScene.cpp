@@ -2120,6 +2120,7 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
                 .DefaultMaterials = scene_mesh.TrianglePrimitives.MaterialIndices,
                 .VariantMappings = std::move(scene_mesh.TrianglePrimitives.VariantMappings),
                 .Colors0ComponentCount = scene_mesh.TriangleAttrs.Colors0ComponentCount,
+                .MorphTangentDeltas = {}, // Filled from CreatedMesh below, after welding compacts them.
             };
             if (scene_mesh.MorphData) {
                 morph_summary = {scene_mesh.MorphData->TargetCount, scene_mesh.MorphData->DefaultWeights};

@@ -699,6 +699,31 @@ void MeshStore::UpdateCornerNormals(const Mesh &mesh, std::span<const vec3> posi
     ComposeCustomCornerNormals(id, corners);
 }
 
+void MeshStore::SetEdgeSharpnessByAngle(const Mesh &mesh, float angle) {
+    const auto id = mesh.GetStoreId();
+    auto sharp = GetEdgeSharpness(id);
+    if (sharp.empty()) return;
+    const auto vertices = GetVertices(id);
+    static thread_local std::vector<vec3> face_normals;
+    face_normals.resize(mesh.FaceCount());
+    for (const auto fh : mesh.faces()) {
+        auto it = mesh.cfv_iter(fh);
+        const auto p0 = vertices[**it].Position;
+        const auto p1 = vertices[**++it].Position;
+        const auto p2 = vertices[**++it].Position;
+        face_normals[*fh] = glm::normalize(glm::cross(p1 - p0, p2 - p0));
+    }
+    const auto &c = mesh.GetConnectivity();
+    const float cos_angle = std::cos(angle);
+    for (uint32_t ei = 0; ei < mesh.EdgeCount(); ++ei) {
+        const auto hh = mesh.GetHalfedge(Mesh::EH{ei}, 0);
+        const auto face = mesh.GetFace(hh);
+        const auto opposite = c.Halfedges[*hh].Opposite;
+        const auto opposite_face = opposite ? c.Halfedges[*opposite].Face : Mesh::FH{};
+        sharp[ei] = face && opposite_face && glm::dot(face_normals[*face], face_normals[*opposite_face]) < cos_angle ? 1 : 0;
+    }
+}
+
 SharpnessSummary MeshStore::GetFaceSharpnessSummary(uint32_t id) const {
     const auto s = GetFaceSharpness(id);
     const auto sharp = [](uint8_t b) { return b != 0; };

@@ -22,6 +22,10 @@ struct SetSelectedVisible {
 struct SetSelectedSmoothShading {
     bool Smooth;
 };
+// Smooth all faces and mark edges sharp where the dihedral angle exceeds Angle (radians).
+struct ShadeSelectedSmoothByAngle {
+    float Angle;
+};
 // Edit-mode element sharpness. Each resolves the element selection of every edit-mode mesh at apply time.
 struct SetSelectedFacesSmooth {
     bool Smooth;
@@ -72,7 +76,7 @@ struct UpdatePrimitiveField {
 };
 
 using Actions = std::variant<
-    Delete, Duplicate, DuplicateLinked, ToggleHidden, SetSelectedVisible, SetSelectedSmoothShading,
+    Delete, Duplicate, DuplicateLinked, ToggleHidden, SetSelectedVisible, SetSelectedSmoothShading, ShadeSelectedSmoothByAngle,
     SetSelectedFacesSmooth, SetSelectedEdgesSharp, SetSelectedVertexEdgesSharp,
     ParentToActive, ClearParent,
     AddEmpty, AddArmature, AddCamera, AddLight, AddMeshPrimitive, ImportMesh, SetPbrMeshFeaturesMask,

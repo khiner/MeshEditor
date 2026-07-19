@@ -20,9 +20,6 @@
 
 #include <imgui_internal.h> // TempInputIsActive
 
-#include <array>
-#include <functional>
-
 namespace ui {
 
 // House drag widgets — use instead of ImGui::DragFloat* so the modifiers are consistent: Alt stays free for
@@ -265,6 +262,16 @@ struct Edit {
                 return ImGui::SliderScalar(label, ImGuiDt<F>(), &v, &lof, &hif, fmt, flags);
             } else static_assert(false, "Edit::Slider: unsupported field type");
         },
+                          /*delta_capable=*/true);
+    }
+
+    // Slider over an angle field stored in radians, displayed in degrees.
+    // Bounds come from the field's FieldLimits (radians), which must declare both Min and Max.
+    template<auto... Ms>
+    bool SliderAngle(const char *label, const char *fmt = "%.0f deg") {
+        static_assert(HasMin<Prefix..., Ms...> && HasMax<Prefix..., Ms...>, "Edit::SliderAngle: field must declare FieldLimits with both Min and Max");
+        using L = FieldLimits<Prefix..., Ms...>;
+        return Run<Ms...>([&](float &v) { return ImGui::SliderAngle(label, &v, glm::degrees(float(L::Min)), glm::degrees(float(L::Max)), fmt); },
                           /*delta_capable=*/true);
     }
 

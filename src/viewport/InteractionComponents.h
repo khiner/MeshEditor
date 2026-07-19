@@ -3,6 +3,7 @@
 #include "gpu/Element.h"
 #include "gpu/InteractionMode.h"
 
+#include <numbers>
 #include <set>
 
 struct Interaction {
@@ -22,4 +23,9 @@ struct EnabledInteractionModes {
 // In Edit/Excite mode, orbit camera to active element on selection change.
 struct OrbitToActive {
     bool Value{false};
+};
+
+// Dihedral-angle threshold for the shade-smooth-by-angle operator, in radians.
+struct ShadeSmoothAngle {
+    float Value{std::numbers::pi_v<float> / 6.f};
 };
