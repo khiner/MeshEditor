@@ -36,4 +36,12 @@ constexpr AcousticMaterial
     Steel{"Steel", {7850, 2.0E11, 0.29, 5, 3E-8}};
 
 constexpr std::array All{Ceramic, Glass, Wood, Plastic, Iron, Polycarbonate, Steel};
+
+// The material with this name, or null.
+inline const AcousticMaterial *Find(std::string_view name) {
+    for (const auto &m : All) {
+        if (m.Name == name) return &m;
+    }
+    return nullptr;
+}
 } // namespace materials::acoustic

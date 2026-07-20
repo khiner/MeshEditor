@@ -24,7 +24,6 @@
 #include "imspinner.h"
 #include "mesh2modes.h"
 #include "miniaudio.h"
-#include "tetgen.h" // Needed for `unique_ptr<tetgenio>` dereference.
 
 #include "ui/HelpMarker.h" // depends on imgui
 
@@ -41,7 +40,7 @@ template<> struct FieldLimits<&AcousticMaterial::Properties, &AcousticMaterialPr
 template<> struct FieldLimits<&AcousticMaterial::Properties, &AcousticMaterialProperties::PoissonRatio> : Within<0., 0.49> {};
 template<> struct FieldLimits<&AcousticMaterial::Properties, &AcousticMaterialProperties::Alpha> : Within<0., 200.> {};
 template<> struct FieldLimits<&AcousticMaterial::Properties, &AcousticMaterialProperties::Beta> : Within<1e-9, 1e-4> {};
-template<> struct FieldLimits<&ModalSolveSettings::SolveResolution> : Within<0.05, 1.> {};
+template<> struct FieldLimits<&ModalSolveSettings::SolveResolution> : Within<0.25, 1.> {};
 template<> struct FieldLimits<&ModalSolveSettings::NumModes> : Within<1., 128.> {};
 template<> struct FieldLimits<&ModalSolveSettings::MinModeFreq> : Within<20., 20000.> {};
 template<> struct FieldLimits<&ModalSolveSettings::MaxModeFreq> : Within<20., 20000.> {};
@@ -580,15 +579,23 @@ void RescaleModalObject(entt::registry &r, entt::entity e, const AcousticMateria
 
 /***** Modal solve inputs *****/
 
+// What the solve's tet mesh is built from, beyond the surface itself.
+struct TetOptions {
+    // Insert interior points until tets meet a circumradius-to-shortest-edge ratio of 2, where the fixed surface allows.
+    bool Quality{false};
+    // Fraction of surface triangles kept for tetrahedralization.
+    // Below 1, the surface is quadric-simplified first.
+    float SimplifyRatio{1};
+};
+
 // Identifies the tet-mesh inputs of a modal solve. Identical inputs produce identical tet
 // topology, so a basis solved over them can warm-start the next solve (e.g. a material edit).
-size_t HashTetInputs(const std::vector<vec3> &positions, const std::vector<uint32_t> &triangle_indices, TetGenOptions opts) {
+size_t HashTetInputs(const std::vector<vec3> &positions, const std::vector<uint32_t> &triangle_indices, TetOptions opts) {
     const auto bytes = [](const auto &v) { return std::string_view{reinterpret_cast<const char *>(v.data()), v.size() * sizeof(v[0])}; };
     const std::hash<std::string_view> hash;
     size_t seed = hash(bytes(positions));
     const auto combine = [&seed](size_t v) { seed ^= v + 0x9e3779b97f4a7c15 + (seed << 6) + (seed >> 2); };
     combine(hash(bytes(triangle_indices)));
-    combine(std::hash<bool>{}(opts.PreserveSurface));
     combine(std::hash<bool>{}(opts.Quality));
     combine(std::hash<float>{}(opts.SimplifyRatio));
     return seed;
@@ -606,7 +613,7 @@ struct SolveInputs {
     std::vector<vec3> Positions; // Mesh positions at the node's world scale (SI meters)
     std::vector<uint32_t> TriangleIndices;
     std::vector<uint32_t> Vertices; // Excitation vertices
-    TetGenOptions TetOptions;
+    TetOptions TetOptions;
     vec3 NodeScale;
     size_t Hash;
 };
@@ -619,7 +626,7 @@ SolveInputs BuildSolveInputs(const entt::registry &r, entt::entity e, entt::enti
     std::vector<vec3> positions(num_vertices);
     for (uint32_t i = 0; i < num_vertices; ++i) positions[i] = mesh.GetPosition(Mesh::VH{i}) * node_scale;
     auto triangle_indices = mesh.CreateTriangleIndices();
-    const TetGenOptions tet_options{.PreserveSurface = true, .Quality = settings.QualityTets, .SimplifyRatio = settings.SolveResolution};
+    const TetOptions tet_options{.Quality = settings.QualityTets, .SimplifyRatio = settings.SolveResolution};
     const auto hash = HashTetInputs(positions, triangle_indices, tet_options);
     return {std::move(positions), std::move(triangle_indices), DesiredSolveVertices(r, e, settings, num_vertices), tet_options, node_scale, hash};
 }
@@ -671,13 +678,14 @@ void LaunchModalSolve(entt::registry &r, entt::entity viewport, entt::entity e) 
     std::shared_ptr<const Eigen::MatrixXf> warm_basis;
     if (const auto &warm = r.ctx().get<const ModalWarmStart>(); warm.Basis && warm.TetInputsHash == inputs.Hash) warm_basis = warm.Basis;
     auto work = [inputs = std::move(inputs), material_props = material->Properties, excite_positions = std::move(excite_positions), solver_config, warm_basis = std::move(warm_basis)](JobMonitor &monitor) mutable -> ModalGenerationResult {
-        auto tets = GenerateTets(std::move(inputs.Positions), std::move(inputs.TriangleIndices), inputs.TetOptions);
+        SimplifySurface(inputs.Positions, inputs.TriangleIndices, inputs.TetOptions.SimplifyRatio);
+        auto tets = GenerateTets(std::move(inputs.Positions), std::move(inputs.TriangleIndices), {.Quality = inputs.TetOptions.Quality});
         if (monitor.Cancelled()) return {};
         if (!tets) {
             std::cerr << "Tetrahedralization failed: " << tets.error() << ".\n";
             return {};
         }
-        auto result = modal::mesh2modes(**tets, material_props, excite_positions, inputs.NodeScale, solver_config, {.SeedBasis = warm_basis.get(), .KeepBasis = true}, &monitor);
+        auto result = modal::mesh2modes(tets->Mesh, material_props, excite_positions, inputs.NodeScale, solver_config, {.SeedBasis = warm_basis.get(), .KeepBasis = true}, &monitor);
         result.Modes.Vertices = std::move(inputs.Vertices);
         result.Modes.BakedScale = inputs.NodeScale;
         result.Summary.TetInputsHash = inputs.Hash;
@@ -685,7 +693,7 @@ void LaunchModalSolve(entt::registry &r, entt::entity viewport, entt::entity e) 
         result.Summary.SolvedMaxModeFreq = solver_config.MaxModeFreq;
         result.Summary.SolvedNumModes = solver_config.NumModes;
         auto basis = result.Basis.size() > 0 ? std::make_shared<Eigen::MatrixXf>(std::move(result.Basis)) : nullptr;
-        auto model_path = result.Modes.Freqs.empty() ? fs::path{} : SaveModalModelFile({std::move(result.Modes), result.MassProps, BuildTetMeshData(**tets, inputs.NodeScale), std::move(result.Summary)});
+        auto model_path = result.Modes.Freqs.empty() ? fs::path{} : SaveModalModelFile({std::move(result.Modes), result.MassProps, BuildTetMeshData(tets->Mesh, inputs.NodeScale), std::move(result.Summary)});
         return {std::move(model_path), std::move(basis), inputs.Hash};
     };
     // Intentional registry-ctx write outside Apply: transient background-job bookkeeping.

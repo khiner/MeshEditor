@@ -202,7 +202,6 @@ Rendering is fixed-step (one tick per timeline frame) and GPU-paced at a fixed e
 - [glm](https://github.com/g-truc/glm): Small numeric vector/matrix types + math
 - [entt](https://github.com/skypjack/entt): Entity Component System (ECS) for an efficient and scalable mixin-style architectural pattern
 - [miniaudio](https://github.com/mackron/miniaudio): Audio stream I/O
-- [tetgen](https://github.com/libigl/tetgen): Fast conversion of triangular 3D surface meshes into tetrahedral volume meshes
 - [Spectra](https://github.com/yixuan/spectra) Estimate eigenvalues/vectors for modal analysis
 - [VulkanMemoryAllocator](https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator): Efficient Vulkan memory allocation
 - [fastgltf](https://github.com/spnda/fastgltf) glTF 2.0 scene loading

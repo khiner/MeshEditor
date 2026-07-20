@@ -23,7 +23,7 @@
 
 #include <fstream>
 
-using std::ranges::find_if, std::ranges::to;
+using std::ranges::to;
 
 namespace action::io {
 namespace {
@@ -130,11 +130,8 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
                     if (listener_point.Index == RealImpact::CenteredListenerIndex) {
                         r.emplace<RealImpactActiveMicrophone>(instance_entity, listener_instance_entity);
 
-                        auto material_name = RealImpact::FindMaterialName(r.get<Name>(instance_entity).Value);
-                        if (const auto *const real_impact_material = material_name ?
-                                find_if(materials::acoustic::All, [name = *material_name](const AcousticMaterial &m) { return m.Name == name; }) :
-                                std::ranges::end(materials::acoustic::All)) {
-                            r.emplace<AcousticMaterial>(mesh_entity, *real_impact_material);
+                        if (const auto material_name = RealImpact::FindMaterialName(r.get<Name>(instance_entity).Value)) {
+                            if (const auto *material = materials::acoustic::Find(*material_name)) r.emplace<AcousticMaterial>(mesh_entity, *material);
                         }
                         r.emplace<ScaleLocked>(instance_entity);
                         r.emplace<RealImpactVertices>(instance_entity, vertex_indices);

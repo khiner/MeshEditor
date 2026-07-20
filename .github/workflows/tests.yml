@@ -70,6 +70,16 @@ jobs:
       - name: Fetch RealImpact meshes
         run: git -C external/RealImpact lfs pull
 
+      # The selection lives in the script, so a hit skips the HuggingFace download.
+      - name: Cache Thingi10K meshes
+        uses: actions/cache@v4
+        with:
+          path: external/TetCorpus/thingi10k
+          key: thingi10k-${{ hashFiles('script/SetupTetCorpus') }}
+
+      - name: Stage the mesh corpora
+        run: python3 script/SetupTetCorpus --thingi10k
+
       - name: Install dependencies
         run: brew install llvm fftw ninja vulkan-headers vulkan-loader molten-vk shaderc eigen
 
@@ -93,6 +103,10 @@ jobs:
 
       - name: Run modal solver test
         run: ./build/tests/MeshEditorModalSolverTest
+
+      # Catches a change that still produces a valid mesh but not the same one.
+      - name: Check the tet corpus snapshot
+        run: ./build/tests/MeshEditorModalSolverBench --dataset realimpact --dataset thingi10k --snapshot check
 
       - name: Run modal corpus
         shell: bash

@@ -1,0 +1,200 @@
+#!/usr/bin/env python3
+
+# Set up the tetrahedralizer's mesh corpora under external/TetCorpus, one directory of .obj files each:
+#
+#   realimpact  the 50 RealImpact scans, symlinked out of the submodule. Every recorded timing uses it.
+#   thingi10k   60 Thingi10K models, downloaded with --thingi10k.
+#
+# Neither is checked in, and re-running leaves a corpus already in place alone.
+# Thingi10K models (https://github.com/Thingi10K/Thingi10K) are picked for well-behaved geometry: closed, solid, manifold, oriented, one component, and free of self-intersections, duplicated faces and degenerate faces.
+# They spread over triangle-count buckets, which the all-16k-24k RealImpact corpus does not, and selection is by ascending file id so every machine builds the same corpus.
+#
+# Usage: script/SetupTetCorpus [--thingi10k] [--force]
+
+import argparse
+import csv
+import io
+import os
+import struct
+import sys
+import urllib.request
+from pathlib import Path
+
+Thingi10kUrl = "https://huggingface.co/datasets/Thingi10K/Thingi10K/resolve/main"
+
+# Hand-picked as the fastest to tetrahedralize, so a whole-corpus run stays cheap to iterate against.
+# They span 536 to 40246 triangles.
+SELECTED = [
+    "32770", "34785", "35269", "36086", "36090", "36373", "37093", "37272",
+    "37276", "37278", "37280", "37282", "37283", "37284", "37285", "37287",
+    "37288", "37289", "37384", "37506", "37744", "37745", "37750", "37841",
+    "37880", "37881", "37883", "37886", "37888", "37928", "37964", "37967",
+    "37968", "37972", "37991", "38261", "38290", "38292", "39108", "39158",
+    "39208", "39295", "39344", "39495", "39498", "39499", "39678", "39950",
+    "40118", "40119", "40356", "40360", "40900", "40984", "40985", "40994",
+    "42025", "43296", "46780", "48031",
+]
+
+# Models whose metadata calls them clean when they are not, measured here with exact predicates:
+# 39159 and 39160 have properly crossing triangles (3 and 6 pairs), 39109 and 39160 carry zero-area
+# triangles, and 37274, 37323, 37743 and 45333 are self-intersecting and rejected.
+EXCLUDED = {"37274", "37323", "37743", "39109", "39159", "39160", "45333"}
+
+RepoDir = Path(__file__).resolve().parent.parent
+CorpusDir = RepoDir / "external" / "TetCorpus"
+
+
+def setup_realimpact(force):
+    dataset = RepoDir / "external" / "RealImpact" / "dataset"
+    if not dataset.is_dir():
+        print("external/RealImpact is empty. `git submodule update --init external/RealImpact`, then run this again.", file=sys.stderr)
+        return 1
+    out = CorpusDir / "realimpact"
+    out.mkdir(parents=True, exist_ok=True)
+    # The name the case is reported under is the link's, so the object's own directory name carries
+    # through and the submodule's internal layout stops here.
+    links = 0
+    for obj_dir in sorted(dataset.iterdir()):
+        source = obj_dir / "preprocessed" / "transformed.obj"
+        if not source.exists():
+            continue
+        link = out / f"{obj_dir.name}.obj"
+        target = os.path.relpath(source, out)
+        if link.is_symlink():
+            if os.readlink(link) == target and not force:
+                continue
+            link.unlink()
+        elif link.exists():
+            continue
+        os.symlink(target, link)
+        links += 1
+    total = len(list(out.glob("*.obj")))
+    print(f"realimpact: {total} meshes ({links} linked now)")
+    return 0
+
+
+def fetch(path):
+    request = urllib.request.Request(f"{Thingi10kUrl}/{path}", headers={"User-Agent": "MeshEditor SetupTetCorpus"})
+    with urllib.request.urlopen(request) as response:
+        return response.read()
+
+
+def read_csv(path):
+    return list(csv.DictReader(io.StringIO(fetch(path).decode("utf-8", "replace"))))
+
+
+def read_stl(data):
+    # A binary file is a 84-byte header and 50 bytes per triangle, which is what tells it from an
+    # ASCII one: both may open with the word "solid".
+    if len(data) >= 84:
+        count = struct.unpack_from("<I", data, 80)[0]
+        if len(data) == 84 + count * 50:
+            # 12 floats (a normal and three corners) and an attribute short per triangle.
+            values = struct.unpack_from("<" + "12fH" * count, data, 84)
+            return [
+                (values[i * 13 + 3 : i * 13 + 6], values[i * 13 + 6 : i * 13 + 9], values[i * 13 + 9 : i * 13 + 12])
+                for i in range(count)
+            ]
+    corners = []
+    for line in data.decode("utf-8", "replace").splitlines():
+        fields = line.split()
+        if fields and fields[0] == "vertex": corners.append(tuple(float(x) for x in fields[1:4]))
+    return [tuple(corners[i : i + 3]) for i in range(0, len(corners) - 2, 3)]
+
+
+def write_obj(path, triangles):
+    # STL repeats a vertex per triangle it touches, so equal corners become one index.
+    index, vertices, faces = {}, [], []
+    for triangle in triangles:
+        face = []
+        for corner in triangle:
+            i = index.get(corner)
+            if i is None:
+                i = len(vertices)
+                index[corner] = i
+                vertices.append(corner)
+            face.append(i + 1)
+        faces.append(face)
+    # %.9g round-trips the dataset's 32-bit coordinates exactly.
+    body = ["v %.9g %.9g %.9g\n" % v for v in vertices]
+    body += ["f %d %d %d\n" % tuple(f) for f in faces]
+    path.write_text("".join(body))
+    return len(vertices), len(faces)
+
+
+def well_behaved(row):
+    def count(name):
+        return int(row[name])
+
+    def flag(name):
+        return row[name].strip().upper() in ("1", "TRUE")
+
+    return (
+        count("num_connected_components") == 1
+        and count("num_boundary_edges") == 0
+        and count("num_self_intersections") == 0
+        and count("num_duplicated_faces") == 0
+        and count("num_geometrical_degenerated_faces") == 0
+        and count("num_combinatorial_degenerated_faces") == 0
+        and flag("vertex_manifold")
+        and flag("edge_manifold")
+        and flag("oriented")
+        and flag("solid")
+    )
+
+
+def setup_thingi10k(force):
+    out = CorpusDir / "thingi10k"
+    manifest_path = out / "manifest.tsv"
+    if not force and manifest_path.exists():
+        ids = [line.split("\t")[0] for line in manifest_path.read_text().splitlines()[1:]]
+        if ids == SELECTED and all((out / f"{i}.obj").exists() for i in ids):
+            print(f"thingi10k: {len(ids)} meshes")
+            return 0
+        print("thingi10k: incomplete, rebuilding")
+
+    print("thingi10k: reading metadata")
+    geometry = read_csv("metadata/geometry_data.csv")
+    # `input_summary` names each file's thing, and `contextual_data` names the thing's author.
+    summary = read_csv("metadata/input_summary.csv")
+    thing_of = {row["ID"]: row["Thing ID"] for row in summary}
+    licence_of = {row["ID"]: row["License"] for row in summary}
+    author_of = {row["Thing ID"]: row["Author"].strip() for row in read_csv("metadata/contextual_data.csv")}
+
+    clean = {row["file_id"] for row in geometry if row["file_id"] not in EXCLUDED and well_behaved(row)}
+    missing = [f for f in SELECTED if f not in clean]
+    if missing: print(f"thingi10k: {len(missing)} selected models no longer pass the metadata filter: {' '.join(missing)}")
+
+    out.mkdir(parents=True, exist_ok=True)
+    rows = []
+    for file_id in SELECTED:
+        triangles = read_stl(fetch(f"raw_meshes/{file_id}.stl"))
+        vertices, faces = write_obj(out / f"{file_id}.obj", triangles)
+        thing = thing_of.get(file_id, "")
+        rows.append((file_id, author_of.get(thing, ""), licence_of.get(file_id, ""), vertices, faces))
+
+    with open(manifest_path, "w") as f:
+        f.write("file_id\tauthor\tlicense\tvertices\ttriangles\n")
+        for row in rows:
+            f.write("\t".join(str(c) for c in row) + "\n")
+    print(f"thingi10k: {len(rows)} meshes")
+    return 0
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--thingi10k", action="store_true", help="also download the Thingi10K corpus")
+    parser.add_argument("--force", action="store_true", help="rebuild corpora already in place")
+    args = parser.parse_args()
+
+    status = setup_realimpact(args.force)
+    if args.thingi10k:
+        status |= setup_thingi10k(args.force)
+    else:
+        print("thingi10k: skipped, pass --thingi10k to download it")
+    print(f"corpora are under {CorpusDir}")
+    return status
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -100,34 +100,37 @@ target_compile_options(MeshEditorActionSerializeTest PRIVATE -Wall -Wextra -Wno-
 
 set(REALIMPACT_DATASET_DIR "${CMAKE_SOURCE_DIR}/external/RealImpact/dataset" CACHE PATH "RealImpact dataset directory")
 
-add_executable(MeshEditorModalSolverTest ModalSolverTest.cpp ${CMAKE_SOURCE_DIR}/src/audio/mesh2modes.cpp ${CMAKE_SOURCE_DIR}/src/audio/CholeskyShiftInvert.cpp ${CMAKE_SOURCE_DIR}/src/mesh/Tets.cpp)
+add_executable(MeshEditorModalSolverTest ModalSolverTest.cpp ${CMAKE_SOURCE_DIR}/src/audio/mesh2modes.cpp ${CMAKE_SOURCE_DIR}/src/audio/CholeskyShiftInvert.cpp ${CMAKE_SOURCE_DIR}/src/mesh/Tets.cpp ${CMAKE_SOURCE_DIR}/src/mesh/Tetrahedralize.cpp ${CMAKE_SOURCE_DIR}/src/numeric/Predicates.cpp)
 target_include_directories(MeshEditorModalSolverTest PRIVATE
     ${CMAKE_SOURCE_DIR}/src
     ${EIGEN3_INCLUDE_DIR}
     SYSTEM ${CMAKE_SOURCE_DIR}/lib/glm
     SYSTEM ${CMAKE_SOURCE_DIR}/lib/spectra/include
-    SYSTEM ${CMAKE_SOURCE_DIR}/lib/tetgen
+    SYSTEM ${CMAKE_SOURCE_DIR}/lib/tinyobjloader
 )
-target_link_libraries(MeshEditorModalSolverTest PRIVATE Boost::ut tetgen meshoptimizer "-framework Accelerate")
-target_compile_definitions(MeshEditorModalSolverTest PRIVATE GLM_ENABLE_EXPERIMENTAL DEBUG_BUILD TETLIBRARY REALIMPACT_DATASET_DIR="${REALIMPACT_DATASET_DIR}")
+target_link_libraries(MeshEditorModalSolverTest PRIVATE Boost::ut meshoptimizer tinyobjloader "-framework Accelerate")
+target_compile_definitions(MeshEditorModalSolverTest PRIVATE GLM_ENABLE_EXPERIMENTAL DEBUG_BUILD REALIMPACT_DATASET_DIR="${REALIMPACT_DATASET_DIR}")
 target_compile_options(MeshEditorModalSolverTest PRIVATE -Wall -Wextra -Wno-missing-field-initializers -Wno-elaborated-enum-base -fno-rtti)
 
-# Times each stage of the modal solve pipeline across RealImpact samples.
+set(TET_CORPUS_DIR "${CMAKE_SOURCE_DIR}/external/TetCorpus" CACHE PATH "Tetrahedralizer mesh corpora directory")
+
 add_executable(MeshEditorModalSolverBench ModalSolverBench.cpp
     ${CMAKE_SOURCE_DIR}/src/audio/mesh2modes.cpp
     ${CMAKE_SOURCE_DIR}/src/audio/CholeskyShiftInvert.cpp
     ${CMAKE_SOURCE_DIR}/src/audio/RealImpact.cpp
     ${CMAKE_SOURCE_DIR}/src/mesh/Tets.cpp
+    ${CMAKE_SOURCE_DIR}/src/mesh/Tetrahedralize.cpp
+    ${CMAKE_SOURCE_DIR}/src/numeric/Predicates.cpp
 )
 target_include_directories(MeshEditorModalSolverBench PRIVATE
     ${CMAKE_SOURCE_DIR}/src
     ${EIGEN3_INCLUDE_DIR}
     SYSTEM ${CMAKE_SOURCE_DIR}/lib/glm
     SYSTEM ${CMAKE_SOURCE_DIR}/lib/spectra/include
-    SYSTEM ${CMAKE_SOURCE_DIR}/lib/tetgen
+    SYSTEM ${CMAKE_SOURCE_DIR}/lib/tinyobjloader
 )
-target_link_libraries(MeshEditorModalSolverBench PRIVATE tetgen meshoptimizer "-framework Accelerate")
-target_compile_definitions(MeshEditorModalSolverBench PRIVATE GLM_ENABLE_EXPERIMENTAL DEBUG_BUILD TETLIBRARY REALIMPACT_DATASET_DIR="${REALIMPACT_DATASET_DIR}")
+target_link_libraries(MeshEditorModalSolverBench PRIVATE meshoptimizer tinyobjloader "-framework Accelerate")
+target_compile_definitions(MeshEditorModalSolverBench PRIVATE GLM_ENABLE_EXPERIMENTAL DEBUG_BUILD TET_CORPUS_DIR="${TET_CORPUS_DIR}" MESHEDITOR_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 target_compile_options(MeshEditorModalSolverBench PRIVATE -Wall -Wextra -Wno-missing-field-initializers -Wno-elaborated-enum-base -fno-rtti)
 
 add_executable(MeshEditorCompressTest CompressTest.cpp ${CMAKE_SOURCE_DIR}/src/Compress.cpp)

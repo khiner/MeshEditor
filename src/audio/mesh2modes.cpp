@@ -8,7 +8,7 @@
 #include "Job.h"
 #include "numeric/vec3.h"
 
-#include "tetgen.h"
+#include "mesh/TetMesh.h"
 #include <Eigen/Eigenvalues>
 #include <Spectra/SymGEigsShiftSolver.h>
 #include <glm/gtc/quaternion.hpp>
@@ -37,11 +37,29 @@ auto Timed(double &seconds, auto &&compute) {
     return result;
 }
 
-int GetVertexIndex(const tetgenio &tets, uint element, uint vertex) { return tets.tetrahedronlist[element * 4 + vertex]; }
-
-const glm::dvec3 &GetVertex(const tetgenio &tets, int element, int vertex) {
-    return reinterpret_cast<const glm::dvec3 &>(tets.pointlist[3 * GetVertexIndex(tets, element, vertex)]);
+// Degenerate elements contribute nothing physically, but their inverse-determinant basis
+// gradients poison the stiffness matrix. Copy the mesh without them.
+TetMesh FilterDegenerate(const TetMesh &tets) {
+    TetMesh clean;
+    clean.Points = tets.Points;
+    clean.Tets.reserve(tets.Tets.size());
+    for (const auto &t : tets.Tets) {
+        const dvec3 &a = tets.Points[t[0]];
+        const dvec3 r0 = tets.Points[t[1]] - a, r1 = tets.Points[t[2]] - a, r2 = tets.Points[t[3]] - a;
+        const double det = std::abs(glm::dot(r0, glm::cross(r1, r2)));
+        double lmax_sq = 0;
+        for (uint i = 0; i < 4; ++i) {
+            for (uint j = i + 1; j < 4; ++j) {
+                const dvec3 d = tets.Points[t[i]] - tets.Points[t[j]];
+                lmax_sq = std::max(lmax_sq, glm::dot(d, d));
+            }
+        }
+        if (det > 1e-12 * lmax_sq * std::sqrt(lmax_sq)) clean.Tets.push_back(t);
+    }
+    return clean;
 }
+
+const dvec3 &GetVertex(const TetMesh &tets, uint element, uint vertex) { return tets.Points[tets.Tets[element][vertex]]; }
 
 double GetTetDeterminant(const dvec3 &a, const dvec3 &b, const dvec3 &c, const dvec3 &d) {
     return glm::dot(d - a, glm::cross(b - a, c - a));
@@ -49,28 +67,24 @@ double GetTetDeterminant(const dvec3 &a, const dvec3 &b, const dvec3 &c, const d
 double GetTetVolume(const dvec3 &a, const dvec3 &b, const dvec3 &c, const dvec3 &d) {
     return (1.f / 6.f) * fabs(GetTetDeterminant(a, b, c, d));
 }
-double GetElementDeterminant(const tetgenio &tets, int el) {
-    return GetTetDeterminant(GetVertex(tets, el, 0), GetVertex(tets, el, 1), GetVertex(tets, el, 2), GetVertex(tets, el, 3));
-}
 
 // Lumped-vertex rigid-body mass properties in SI at the baked size: each tet's volume splits evenly onto its four
 // vertices as point masses. `scale` maps tet coordinates to node-local, `length_to_si` maps node-local lengths to meters.
-MassProperties ComputeMassProperties(const tetgenio &tets, double density, vec3 scale, double length_to_si) {
-    const int nverts = tets.numberofpoints;
+MassProperties ComputeMassProperties(const TetMesh &tets, double density, vec3 scale, double length_to_si) {
+    const size_t nverts = tets.Points.size();
     const dvec3 inv_scale{1.0 / scale.x, 1.0 / scale.y, 1.0 / scale.z};
     std::vector<dvec3> pos(nverts);
-    for (int i = 0; i < nverts; ++i) pos[i] = reinterpret_cast<const dvec3 &>(tets.pointlist[3 * i]) * inv_scale;
+    for (size_t i = 0; i < nverts; ++i) pos[i] = tets.Points[i] * inv_scale;
 
     std::vector<double> vol(nverts, 0.0);
-    for (int el = 0; el < tets.numberoftetrahedra; ++el) {
-        const int *t = &tets.tetrahedronlist[el * 4];
+    for (const auto &t : tets.Tets) {
         const double quarter = GetTetVolume(pos[t[0]], pos[t[1]], pos[t[2]], pos[t[3]]) * 0.25;
         for (int c = 0; c < 4; ++c) vol[t[c]] += quarter;
     }
 
     double total = 0;
     dvec3 com{0};
-    for (int i = 0; i < nverts; ++i) {
+    for (size_t i = 0; i < nverts; ++i) {
         total += vol[i];
         com += vol[i] * pos[i];
     }
@@ -80,7 +94,7 @@ MassProperties ComputeMassProperties(const tetgenio &tets, double density, vec3 
     // Point-mass inertia about the center of mass, sum of vol * (|r|^2 I - r r^T), scaled to SI (inertia integral ~ length^5).
     const double s = length_to_si;
     Eigen::Matrix3d inertia = Eigen::Matrix3d::Zero();
-    for (int i = 0; i < nverts; ++i) {
+    for (size_t i = 0; i < nverts; ++i) {
         const dvec3 r = pos[i] - com;
         const double rr = glm::dot(r, r);
         inertia(0, 0) += vol[i] * (rr - r.x * r.x);
@@ -120,12 +134,12 @@ struct ElementBasis {
     dvec3 Phig[NEV]; // gradient of each corner's basis function
 };
 
-std::vector<ElementBasis> ComputeElementBases(const tetgenio &tets) {
-    std::vector<ElementBasis> elements(tets.numberoftetrahedra);
+std::vector<ElementBasis> ComputeElementBases(const TetMesh &tets) {
+    std::vector<ElementBasis> elements(tets.Tets.size());
     dvec3 columns[2];
     for (uint el = 0; el < elements.size(); ++el) {
         auto &element = elements[el];
-        const double det = GetElementDeterminant(tets, el);
+        const double det = GetTetDeterminant(GetVertex(tets, el, 0), GetVertex(tets, el, 1), GetVertex(tets, el, 2), GetVertex(tets, el, 3));
         element.Volume = fabs(det / 6);
         for (uint i = 0; i < NEV; ++i) {
             for (uint j = 0; j < 3; ++j) {
@@ -229,15 +243,15 @@ struct QuadMesh {
     uint NodeCount;
 };
 
-QuadMesh BuildQuadMesh(const tetgenio &tets) {
+QuadMesh BuildQuadMesh(const TetMesh &tets) {
     QuadMesh quad;
-    quad.ElementNodes.resize(tets.numberoftetrahedra);
-    quad.NodeCount = tets.numberofpoints;
+    quad.ElementNodes.resize(tets.Tets.size());
+    quad.NodeCount = uint(tets.Points.size());
     std::unordered_map<uint64_t, uint> edge_nodes;
-    edge_nodes.reserve(tets.numberoftetrahedra * 2);
-    for (uint el = 0; el < uint(tets.numberoftetrahedra); ++el) {
+    edge_nodes.reserve(tets.Tets.size() * 2);
+    for (uint el = 0; el < uint(tets.Tets.size()); ++el) {
         auto &nodes = quad.ElementNodes[el];
-        for (uint c = 0; c < 4; ++c) nodes[c] = GetVertexIndex(tets, el, c);
+        for (uint c = 0; c < 4; ++c) nodes[c] = tets.Tets[el][c];
         for (uint e = 0; e < 6; ++e) {
             const uint a = nodes[EdgeCorners[e][0]], b = nodes[EdgeCorners[e][1]];
             const uint64_t key = (uint64_t(std::min(a, b)) << 32) | std::max(a, b);
@@ -256,7 +270,7 @@ struct MassStiffness {
 // Isotropic linear-elastic mass and stiffness over 10-node elements. Basis gradients in physical
 // coordinates are dN_a/dx = sum_k (dN_a/dl_k) grad(l_k), with grad(l_k) the linear-tet gradients (Phig).
 // Only the lower triangle is filled (the eigensolver reads matrices as self-adjoint).
-MassStiffness AssembleQuadratic(const tetgenio &tets, const QuadMesh &quad, const AcousticMaterialProperties &material) {
+MassStiffness AssembleQuadratic(const TetMesh &tets, const QuadMesh &quad, const AcousticMaterialProperties &material) {
     const auto &basis = GetQuadBasis();
     const auto coeffs = ComputeElementBases(tets);
     const double lambda = material.Lambda();
@@ -576,7 +590,8 @@ std::optional<ModalModes> modal::RescaleModes(const ModalEigenSummary &summary, 
     return modes;
 }
 
-modal::ModalResult modal::mesh2modes(const tetgenio &tets, const AcousticMaterialProperties &material, const std::vector<vec3> &excite_positions, vec3 baked_scale, SolverConfig config, SolveReuse reuse, JobMonitor *monitor) {
+modal::ModalResult modal::mesh2modes(const TetMesh &input_tets, const AcousticMaterialProperties &material, const std::vector<vec3> &excite_positions, vec3 baked_scale, SolverConfig config, SolveReuse reuse, JobMonitor *monitor) {
+    const TetMesh tets = FilterDegenerate(input_tets);
     SolveProfile profile;
     const double length_to_si = (double(baked_scale.x) + baked_scale.y + baked_scale.z) / 3.0;
     auto mass_props = Timed(profile.MassProps, [&] { return ComputeMassProperties(tets, material.Density, baked_scale, length_to_si); });
@@ -596,14 +611,14 @@ modal::ModalResult modal::mesh2modes(const tetgenio &tets, const AcousticMateria
         for (size_t i = 0; i < excite_positions.size(); ++i) {
             const dvec3 p{excite_positions[i]};
             double best = std::numeric_limits<double>::max();
-            for (int v = 0; v < tets.numberofpoints; ++v) {
-                const auto &q = reinterpret_cast<const dvec3 &>(tets.pointlist[3 * v]);
+            for (uint v = 0; v < uint(tets.Points.size()); ++v) {
+                const auto &q = tets.Points[v];
                 if (const double d = glm::distance2(p, q); d < best) {
                     best = d;
                     points[i] = v;
                 }
             }
-            local[i] = vec3{reinterpret_cast<const dvec3 &>(tets.pointlist[3 * points[i]]) * inv_scale};
+            local[i] = vec3{tets.Points[points[i]] * inv_scale};
         }
         return std::pair{std::move(points), std::move(local)};
     });

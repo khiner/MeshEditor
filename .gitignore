@@ -16,3 +16,9 @@ paper/**/*.blg
 paper/**/*.out
 paper/**/*.synctex.gz
 compile_commands.json
+
+# Tetrahedralizer mesh corpora, set up by script/SetupTetCorpus.
+external/TetCorpus/
+
+# Python bytecode from script/ helpers.
+script/__pycache__/

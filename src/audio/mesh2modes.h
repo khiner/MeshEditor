@@ -9,7 +9,7 @@
 #include <optional>
 #include <span>
 
-class tetgenio;
+struct TetMesh;
 struct JobMonitor;
 
 namespace modal {
@@ -70,7 +70,7 @@ struct SolveReuse {
 // `baked_scale` (the node's world scale) recovers node-local sample positions.
 // `monitor` (optional) receives solve progress and is polled for cooperative cancellation
 // between stages and eigensolver iterations. A cancelled solve returns an empty result.
-ModalResult mesh2modes(const tetgenio &, const AcousticMaterialProperties &, const std::vector<vec3> &excite_positions, vec3 baked_scale, SolverConfig config = {}, SolveReuse reuse = {}, JobMonitor *monitor = nullptr);
+ModalResult mesh2modes(const TetMesh &, const AcousticMaterialProperties &, const std::vector<vec3> &excite_positions, vec3 baked_scale, SolverConfig config = {}, SolveReuse reuse = {}, JobMonitor *monitor = nullptr);
 
 // Mode frequencies, T60s, and shapes from raw eigenpairs: filter to the audible window, apply
 // damping and optional fundamental scaling. `shapes` holds each excitation position's mode-shape

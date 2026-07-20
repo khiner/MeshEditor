@@ -16,9 +16,6 @@
 	path = lib/miniaudio
 	url = git@github.com:mackron/miniaudio.git
 	branch = dev
-[submodule "lib/tetgen"]
-	path = lib/tetgen
-	url = git@github.com:libigl/tetgen.git
 [submodule "lib/imspinner"]
 	path = lib/imspinner
 	url = git@github.com:dalerank/imspinner.git

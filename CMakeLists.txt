@@ -112,7 +112,6 @@ include_directories(
     SYSTEM lib/glm
     SYSTEM lib/entt/src
     SYSTEM lib/miniaudio/extras/miniaudio_split
-    SYSTEM lib/tetgen
     SYSTEM lib/spectra/include
     SYSTEM lib/tinyobjloader
     SYSTEM lib/tinyply/source
@@ -201,7 +200,7 @@ if(MESHEDITOR_APP)
         target_link_libraries(${PROJECT_NAME} PRIVATE "-framework Accelerate")
     endif()
 
-    target_link_libraries(${PROJECT_NAME} PRIVATE SDL3::SDL3 ${Vulkan_LIBRARIES} GPUOpen::VulkanMemoryAllocator ${SHADERC_LIB} tetgen meshoptimizer PkgConfig::FFTW3F lunasvg fastgltf::fastgltf simdjson::simdjson basisu_transcoder Jolt webp)
+    target_link_libraries(${PROJECT_NAME} PRIVATE SDL3::SDL3 ${Vulkan_LIBRARIES} GPUOpen::VulkanMemoryAllocator ${SHADERC_LIB} meshoptimizer PkgConfig::FFTW3F lunasvg fastgltf::fastgltf simdjson::simdjson basisu_transcoder Jolt webp)
 
     if(CMAKE_BUILD_TYPE MATCHES Debug)
         target_compile_definitions(${PROJECT_NAME} PRIVATE DEBUG_BUILD)
