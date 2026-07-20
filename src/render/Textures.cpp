@@ -10,22 +10,13 @@
 #include "render/MaterialImport.h"
 #include "render/OneShotGpu.h"
 #include "render/TextureRefs.h"
+#include "render/VkFenceWait.h"
 
 #include <basisu_transcoder.h>
 #include <entt/entity/registry.hpp>
 
 #include <iostream>
 #include <unordered_map>
-
-static void SubmitWait(vk::Queue queue, vk::CommandBuffer command_buffer, vk::Fence fence, vk::Device device) {
-    vk::SubmitInfo submit{};
-    submit.setCommandBuffers(command_buffer);
-    queue.submit(submit, fence);
-    if (auto wait_result = device.waitForFences(fence, VK_TRUE, UINT64_MAX); wait_result != vk::Result::eSuccess) {
-        throw std::runtime_error(std::format("Failed to wait for fence: {}", vk::to_string(wait_result)));
-    }
-    device.resetFences(fence);
-}
 
 namespace {
 vk::SamplerCreateInfo LinearSamplerCreateInfo(vk::SamplerAddressMode address_mode, float max_lod) {
@@ -208,7 +199,7 @@ TextureUploadBatch BeginTextureUploadBatch(vk::Device device, vk::CommandPool co
 void SubmitTextureUploadBatch(TextureUploadBatch &batch, vk::Queue queue, vk::Fence fence, vk::Device device) {
     batch.Cb->end();
     if (!batch.StagingChunks.empty()) {
-        SubmitWait(queue, *batch.Cb, fence, device);
+        SubmitAndWait(queue, *batch.Cb, fence, device);
     }
     batch.StagingChunks.clear();
     batch.ChunkUsed = 0;
@@ -666,7 +657,7 @@ std::vector<std::byte> ReadbackImageRgba8(
     );
     cb->end();
 
-    SubmitWait(vk.Queue, *cb, fence, vk.Device);
+    SubmitAndWait(vk.Queue, *cb, fence, vk.Device);
 
     const auto mapped = staging.GetMappedData();
     return std::vector<std::byte>{mapped.begin(), mapped.begin() + byte_size};

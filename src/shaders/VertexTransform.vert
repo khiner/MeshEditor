@@ -1,6 +1,8 @@
 #version 450
 
 #include "Bindless.glsl"
+#include "CornerClass.glsl"
+#include "CornerClassEncoding.glsl"
 #include "MorphDeform.glsl"
 #include "ArmatureDeform.glsl"
 #include "TransformUtils.glsl"
@@ -36,14 +38,90 @@ layout(constant_id = 1) const uint IsLineDraw = 0u;
 // World position of `vert` under one pose. The per-draw offsets are shared across poses,
 // so a pose is selected purely by its buffer slots.
 vec3 PoseWorldPos(DrawData draw, Vertex vert, uint idx, uint model_slot, uint armature_slot, uint morph_slot) {
-    vec3 normal = vert.Normal;
+    vec3 normal = vec3(0);
     vec3 pos = vert.Position;
-    ApplyMorphDeform(draw, pos, idx, normal, morph_slot);
+    ApplyMorphDeform(draw, pos, idx, morph_slot);
     const vec3 local_pos = ApplyArmatureDeform(draw, pos, idx, normal, armature_slot);
     const Transform world = ModelBuffers[nonuniformEXT(model_slot)].Models[draw.FirstInstance];
-    return apply_pending_transform(draw, world, local_pos, idx);
+    return trs_transform_point(world, local_pos);
 }
 #endif
+
+// Rotate the derived corner normal by the stored (polar, azimuth) offset.
+// The corner frame mirrors MeshStore::ComputeCornerFrame and must stay in lockstep with it.
+// Its axes: the derived normal, the first non-degenerate outgoing edge projected off it, and their cross.
+// A fixed axis substitutes for a zero normal, and a fixed perpendicular when both edges are degenerate.
+// The frame rebuilds from current local positions, so authored offsets ride every deformation.
+vec3 ApplyNormalOffset(DrawData draw, vec3 normal, vec2 offset) {
+    const vec3 n = dot(normal, normal) > 0.0 ? normal : vec3(0, 0, 1);
+    const uint tri = (uint(gl_VertexIndex) / 3u) * 3u;
+    const uint k = uint(gl_VertexIndex) - tri;
+    const vec3 p0 = GetLocalPosition(draw, IndexBuffers[draw.IndexSlotOffset.Slot].Indices[draw.IndexSlotOffset.Offset + tri + k]);
+    // An edge nearly parallel to the normal rejects to cancellation noise, so its perpendicular part must be a meaningful fraction of its length to anchor the frame.
+    // The two edge candidates stay unrolled: a loop here costs ~5% frame time on vertex-bound scenes.
+    vec3 ref;
+    const vec3 e1 = GetLocalPosition(draw, IndexBuffers[draw.IndexSlotOffset.Slot].Indices[draw.IndexSlotOffset.Offset + tri + (k + 1u) % 3u]) - p0;
+    const vec3 r1 = e1 - n * dot(e1, n);
+    const float l1 = length(r1);
+    if (l1 > 1e-3 * length(e1)) {
+        ref = r1 / l1;
+    } else {
+        const vec3 e2 = GetLocalPosition(draw, IndexBuffers[draw.IndexSlotOffset.Slot].Indices[draw.IndexSlotOffset.Offset + tri + (k + 2u) % 3u]) - p0;
+        const vec3 r2 = e2 - n * dot(e2, n);
+        const float l2 = length(r2);
+        if (l2 > 1e-3 * length(e2)) {
+            ref = r2 / l2;
+        } else {
+            const vec3 axis = abs(n.x) < 0.5 ? vec3(1, 0, 0) : vec3(0, 1, 0);
+            ref = normalize(cross(n, axis));
+        }
+    }
+    const vec3 ortho = cross(n, ref);
+    return cos(offset.x) * n + sin(offset.x) * (cos(offset.y) * ref + sin(offset.y) * ortho);
+}
+
+// Corner shading normal for a face draw, composed from the corner classification.
+// Vertex corners read the smooth vertex normal, Face the face normal, and Seam the sector normal.
+// Each reads the posed store when derived this frame, else the base store.
+// Authored corner-normal offsets apply wherever they are non-identity.
+// Authored morph shading adds the targets' weighted normal deltas at the end.
+// A uniform mesh stores no class buffer, so the offset value itself carries the class.
+vec3 CornerNormal(DrawData draw, uint idx, uint face_id) {
+    const uint value = draw.CornerClassOffset == INVALID_OFFSET ? CornerClass_Vertex << CornerClassEncoding_TagShift :
+        draw.CornerClassOffset == CornerClassEncoding_UniformFaceOffset ? CornerClass_Face << CornerClassEncoding_TagShift :
+                                                                          CornerClassBuffers[nonuniformEXT(SceneViewUBO.CornerClassSlot)].Classes[draw.CornerClassOffset + uint(gl_VertexIndex)];
+    const uint tag = value >> CornerClassEncoding_TagShift;
+    vec3 normal;
+    if (tag == CornerClass_Vertex) {
+        normal = GetVertexNormal(draw, idx);
+    } else if (tag == CornerClass_Face) {
+        normal = draw.PosedFaceNormalOffset != INVALID_OFFSET ?
+            PosedFaceNormalBuffers[nonuniformEXT(SceneViewUBO.PosedFaceNormalSlot)].Normals[draw.PosedFaceNormalOffset + face_id - 1u] :
+            BaseFaceNormalBuffers[nonuniformEXT(SceneViewUBO.BaseFaceNormalSlot)].Normals[draw.BaseFaceNormalOffset + face_id - 1u];
+    } else {
+        const uint seam = value & CornerClassEncoding_IndexMask;
+        normal = draw.PosedSeamNormalOffset != INVALID_OFFSET ?
+            PosedSeamNormalBuffers[nonuniformEXT(SceneViewUBO.PosedSeamNormalSlot)].Normals[draw.PosedSeamNormalOffset + seam] :
+            BaseSeamNormalBuffers[nonuniformEXT(SceneViewUBO.BaseSeamNormalSlot)].Normals[draw.BaseSeamNormalOffset + seam];
+    }
+    if (draw.CustomCornerMaskOffset != INVALID_OFFSET) {
+        const uint corner = draw.CornerBase + uint(gl_VertexIndex);
+        const uvec2 mask = CustomCornerMaskBuffers[nonuniformEXT(SceneViewUBO.CustomCornerMaskSlot)].WordRanks[draw.CustomCornerMaskOffset + corner / 32u];
+        const uint bit = 1u << (corner % 32u);
+        if ((mask.x & bit) != 0u) {
+            const uint packed = mask.y + bitCount(mask.x & (bit - 1u));
+            const vec2 offset = CustomCornerNormalBuffers[nonuniformEXT(SceneViewUBO.CustomCornerNormalSlot)].Offsets[draw.CustomCornerNormalOffset + packed];
+            normal = ApplyNormalOffset(draw, normal, offset);
+        }
+    }
+    // glTF morphed normal: normalize(N0 + sum(w_t * NormalDelta_t)).
+    // The pose pre-pass accumulates the per-vertex delta sum.
+    // Authored-morph draws carry no posed normal offsets, so the branches above composed the rest normals.
+    if (draw.MorphShadingAuthored != 0u) {
+        normal = NormalizeOrZero(normal + PosedMorphNormalDeltaBuffers[nonuniformEXT(SceneViewUBO.PosedMorphNormalDeltaSlot)].Deltas[draw.PosedPositionOffset + idx]);
+    }
+    return normal;
+}
 
 void main() {
     const DrawData draw = GetDrawData();
@@ -56,22 +134,20 @@ void main() {
     uint element_state = 0u;
     uint face_id = 0u;
     MaterialIndex = 0u;
-    // Face draws read the derived per-corner normal (split at shading discontinuities). Other draws use the vertex normal.
-    vec3 normal = draw.CornerNormalOffset != INVALID_OFFSET ?
-        CornerNormalBuffers[nonuniformEXT(SceneViewUBO.CornerNormalSlot)].Normals[draw.CornerNormalOffset + uint(gl_VertexIndex)] :
-        vert.Normal;
-    vec3 morphed_pos = vert.Position;
-    ApplyMorphDeform(draw, morphed_pos, idx, normal);
-    const vec3 local_pos = ApplyArmatureDeform(draw, morphed_pos, idx, normal);
+    const vec3 local_pos = GetLocalPosition(draw, idx);
+    // Face draws compose the corner shading normal.
+    // Line draw fragments ignore WorldNormal, so it stays zero.
+    vec3 normal = vec3(0);
     if (draw.ObjectIdSlot != INVALID_SLOT) {
         face_id = ObjectIdBuffers[draw.ObjectIdSlot].Ids[draw.FaceIdOffset + uint(gl_VertexIndex) / 3u];
+        normal = CornerNormal(draw, idx, face_id);
         if (draw.ElementStateSlotOffset.Slot != INVALID_SLOT && face_id != 0u) {
             element_state = uint(ElementStateBuffers[draw.ElementStateSlotOffset.Slot].States[draw.ElementStateSlotOffset.Offset + face_id - 1u]);
         }
     } else if (draw.ElementStateSlotOffset.Slot != INVALID_SLOT) {
         element_state = uint(ElementStateBuffers[draw.ElementStateSlotOffset.Slot].States[draw.ElementStateSlotOffset.Offset + gl_VertexIndex]);
     }
-    vec3 world_pos = apply_pending_transform(draw, world, local_pos, idx);
+    const vec3 world_pos = apply_object_pending_transform(draw, trs_transform_point(world, local_pos));
 
     WorldNormal = trs_transform_normal(world, normal);
     WorldPosition = world_pos;

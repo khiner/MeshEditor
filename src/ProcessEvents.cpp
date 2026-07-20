@@ -58,6 +58,7 @@
 #include "viewport/ViewportEvents.h"
 #include "viewport/ViewportInteractionState.h"
 #include "viewport/ViewportOps.h"
+#include "viewport/ViewportRenderGpu.h"
 
 #include <glm/gtx/euler_angles.hpp>
 
@@ -99,16 +100,16 @@ std::vector<Vertex> CreateNormalVertices(const Mesh &mesh, Element element) {
             });
             const float avg_edge_length = total_edge_length / mesh.GetValence(vh);
             const auto p = mesh.GetPosition(vh);
-            vertices.emplace_back(p, vn);
-            vertices.emplace_back(p + NormalIndicatorLengthScale * avg_edge_length * vn, vn);
+            vertices.emplace_back(Vertex{.Position = p});
+            vertices.emplace_back(Vertex{.Position = p + NormalIndicatorLengthScale * avg_edge_length * vn});
         }
     } else if (element == Element::Face) {
         vertices.reserve(mesh.FaceCount() * 2);
         for (const auto fh : mesh.faces()) {
             const auto fn = mesh.GetNormal(fh);
             const auto p = mesh.CalcFaceCentroid(fh);
-            vertices.emplace_back(p, fn);
-            vertices.emplace_back(p + NormalIndicatorLengthScale * std::sqrt(mesh.CalcFaceArea(fh)) * fn, fn);
+            vertices.emplace_back(Vertex{.Position = p});
+            vertices.emplace_back(Vertex{.Position = p + NormalIndicatorLengthScale * std::sqrt(mesh.CalcFaceArea(fh)) * fn});
         }
     }
     return vertices;
@@ -1125,7 +1126,10 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
             auto gpu_weights = buffers.MorphWeightBuffer.GetMutable(range);
             std::copy(morph_state.Weights.begin(), morph_state.Weights.end(), gpu_weights.begin());
         }
-        if (!pending_morphs.empty()) request(RenderRequest::ReRecord);
+        if (!pending_morphs.empty()) {
+            buffers.PreludeStale = true;
+            request(RenderRequest::ReRecord);
+        }
     }
 
     // Deferred index buffer creation for new mesh entities.
@@ -1159,6 +1163,9 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
                 }
             });
         }
+        // The index buffers written above complete the derive inputs.
+        // Every new and restored mesh's shading state finalizes here, one batched derive for the whole frame.
+        FinalizeNewMeshShadingNow(r, sync.NewMeshEntities);
         request(RenderRequest::ReRecord);
     }
 
@@ -1393,12 +1400,26 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
         request(RenderRequest::Submit);
     }
     if (auto &tracker = reactive<changes::MeshShading>(r); !tracker.empty()) {
+        // Sharpness writes reclassify corners, then rederive the base normals in place.
+        // Committed geometry changes arrive with their base normals already copied.
+        std::vector<entt::entity> reclassified;
         for (auto mesh_entity : tracker) {
-            if (const auto mesh = TryGetMesh(r, mesh_entity)) meshes.UpdateCornerNormals(*mesh);
+            if (const auto mesh = TryGetMesh(r, mesh_entity); mesh && r.all_of<MeshShadingDirty>(mesh_entity)) {
+                meshes.UpdateCornerClassification(*mesh);
+                reclassified.emplace_back(mesh_entity);
+            }
         }
-        request(RenderRequest::Submit);
+        if (!reclassified.empty()) {
+            DeriveBaseNormalsNow(r, reclassified);
+            // Reclassification can reallocate the corner-class and seam arenas whose offsets the draw data carries, so the draw list rebuilds.
+            request(RenderRequest::ReRecord);
+        } else {
+            request(RenderRequest::Submit);
+        }
     }
     if (auto &tracker = reactive<changes::MeshGeometry>(r); !tracker.empty()) {
+        // Vertex-arena positions feed the pose pre-pass, so geometry edits re-run the prelude.
+        buffers.PreludeStale = true;
         const auto edit_mode = r.get<const EditMode>(viewport).Value;
         std::vector<ElementRange> geometry_ranges;
         for (auto mesh_entity : tracker) {
@@ -1481,68 +1502,22 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
         // Mark all armatures dirty for bone state + pose sync on mode change.
         for (const auto arm : r.view<ArmatureObject>()) r.emplace_or_replace<BoneInstanceStateDirty>(arm);
     }
-    // Maps an Edit-mode vertex's local position through the pending drag transform.
-    const auto make_edit_drag_transform = [](const WorldTransform &wt, const PendingTransform &pending) {
-        return [&wt, &pending, inv_rot = glm::conjugate(wt.R), inv_scale = 1.f / wt.S, pivot_rel = pending.Pivot - wt.P](vec3 local_pos) {
-            const auto world_rel = glm::rotate(wt.R, wt.S * local_pos);
-            const auto offset = glm::rotate(pending.Delta.R, pending.Delta.S * (world_rel - pivot_rel));
-            return inv_scale * glm::rotate(inv_rot, pivot_rel + offset + pending.Delta.P);
-        };
-    };
-    // Live corner-normal preview during Edit-mode vertex drags: derive from the same transformed
-    // positions the GPU applies, so shading tracks the drag and matches the eventual commit.
-    if (is_edit_mode && !reactive<changes::TransformPending>(r).empty() && FindArmatureObject(r, FindActiveEntity(r)) == entt::null) {
-        if (const auto *pending = r.try_get<const PendingTransform>(viewport); pending && pending->Delta != Transform{}) {
-            for (const auto &[mesh_entity, instance_entity] : edit_transform_context.TransformInstances) {
-                if (selection::HasScaleLockedInstance(r, mesh_entity)) continue;
-                const auto &mesh = GetMesh(r, mesh_entity);
-                const auto vertex_states = meshes.GetVertexStates(mesh.GetStoreId());
-                const auto vertices = mesh.GetVerticesSpan();
-                const auto drag_local = make_edit_drag_transform(r.get<const WorldTransform>(instance_entity), *pending);
-                static std::vector<vec3> positions;
-                positions.resize(vertices.size());
-                for (uint32_t vi = 0; vi < vertices.size(); ++vi) {
-                    positions[vi] = (vertex_states[vi] & ElementStateSelected) != 0u ? drag_local(vertices[vi].Position) : vertices[vi].Position;
-                }
-                meshes.UpdateCornerNormals(mesh, positions);
-            }
-        }
-    }
     // Handle mesh Edit mode transform commit when StartTransform is cleared.
     // Bone Edit mode commits are handled in the bone pose transform section below.
     if (!reactive<changes::TransformEnd>(r).empty()) {
         if (is_edit_mode && FindArmatureObject(r, FindActiveEntity(r)) == entt::null) {
             if (const auto &pending = r.get<const PendingTransform>(viewport); pending.Delta != Transform{}) {
-                // Apply edit transform once per selected mesh via a representative selected instance.
-                // This keeps linked instances from receiving duplicate per-instance edits.
+                // The pose pre-pass materialized base ∘ gesture per edited mesh with this final delta, fenced complete with the last frame.
+                // The derive pass materialized the matching normals.
+                // Commit copies those posed ranges into the canonical stores, once per mesh.
                 for (const auto &[mesh_entity, instance_entity] : edit_transform_context.TransformInstances) {
                     if (selection::HasScaleLockedInstance(r, mesh_entity)) continue;
-                    const auto &mesh = GetMesh(r, mesh_entity);
-                    const auto vertex_states = meshes.GetVertexStates(mesh.GetStoreId());
-                    const auto vertices = mesh.GetVerticesSpan();
-                    const auto drag_local = make_edit_drag_transform(r.get<const WorldTransform>(instance_entity), pending);
-                    bool any_moved{false};
-                    for (uint32_t vi = 0; vi < vertex_states.size(); ++vi) {
-                        if ((vertex_states[vi] & ElementStateSelected) == 0u) continue;
-                        const auto local_pos = vertices[vi].Position;
-                        const auto new_local = drag_local(local_pos);
-                        if (glm::length2(new_local - local_pos) > 1e-12f) {
-                            meshes.SetPosition(mesh, vi, new_local);
-                            any_moved = true;
-                        }
-                    }
-                    if (any_moved) {
-                        meshes.UpdateVertexNormals(mesh);
+                    if (CommitPosedGeometry(r, mesh_entity)) {
                         dirty_overlay_meshes.insert(mesh_entity);
                         r.remove<PrimitiveShape>(mesh_entity);
                         r.emplace_or_replace<MeshGeometryDirty>(mesh_entity);
                     }
                 }
-            }
-            // Rederive corner normals for every dragged mesh: commits pick up the new positions,
-            // and cancelled drags drop the live preview.
-            for (const auto &[mesh_entity, instance_entity] : edit_transform_context.TransformInstances) {
-                if (const auto mesh = TryGetMesh(r, mesh_entity)) meshes.UpdateCornerNormals(*mesh);
             }
             r.remove<PendingTransform>(viewport);
         }
@@ -1637,6 +1612,7 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
                 EvaluateMorphWeights(clip, clip_time(clip), morph_state.Weights);
                 auto gpu_weights = buffers.MorphWeightBuffer.GetMutable(gpu_range.Weights);
                 std::copy(morph_state.Weights.begin(), morph_state.Weights.end(), gpu_weights.begin());
+                buffers.PreludeStale = true;
                 request_rerecord = true;
             }
         }
@@ -1844,6 +1820,7 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
                         for (uint32_t s = 0; s < pose_state->GpuDeformRanges.size(); ++s) {
                             ComputeDeformMatrices(armature, s, pose_state->BonePoseWorld, buffers.ArmatureDeformBuffer.GetMutable(pose_state->GpuDeformRanges[s]));
                         }
+                        buffers.PreludeStale = true;
                     }
                     request(anim_render_request);
                 }
@@ -1967,6 +1944,9 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
         }
     }
 
+    // The pending-gesture delta the pose pre-pass composes rides in the view UBO.
+    if (!reactive<changes::TransformPending>(r).empty() || !reactive<changes::TransformEnd>(r).empty()) buffers.PreludeStale = true;
+
     // Rebuild the view UBO (aspect, projection, look-through widening, ViewportSize).
     const auto render_extent = RenderExtentPx(r);
     if (!reactive<changes::SceneView>(r).empty() ||
@@ -2029,15 +2009,25 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
             .PendingScale = pending ? pending->Delta.S : vec3{1},
             .ScreenPixelScale = screen_pixel_scale,
             .ViewportSize = render_extent,
-            .CornerNormalSlot = meshes.GetCornerNormalSlot(),
             .CornerTangentSlot = meshes.GetCornerTangentSlot(),
             .CornerColorSlot = meshes.GetCornerColorSlot(),
             .CornerUvSlot = meshes.GetCornerUvSlot(),
             .EdgeSharpnessSlot = meshes.GetEdgeSharpnessSlot(),
+            .CornerClassSlot = meshes.GetCornerClassSlot(),
+            .CustomCornerMaskSlot = meshes.GetCustomCornerMaskSlot(),
+            .CustomCornerNormalSlot = meshes.GetCustomCornerNormalSlot(),
+            .BaseSeamNormalSlot = meshes.GetBaseSeamNormalSlot(),
+            .BaseVertexNormalSlot = meshes.GetBaseVertexNormalSlot(),
+            .BaseFaceNormalSlot = meshes.GetBaseFaceNormalSlot(),
             .BoneDeformSlot = meshes.GetBoneDeformSlot(),
             .ArmatureDeformSlot = buffers.ArmatureDeformBuffer.Buffer.Slot,
             .MorphDeformSlot = meshes.GetMorphTargetSlot(),
             .MorphWeightsSlot = buffers.MorphWeightBuffer.Buffer.Slot,
+            .PosedPositionSlot = buffers.PosedPositions.Slot,
+            .PosedVertexNormalSlot = buffers.PosedVertexNormals.Slot,
+            .PosedSeamNormalSlot = buffers.PosedSeamNormals.Slot,
+            .PosedFaceNormalSlot = buffers.PosedFaceNormals.Slot,
+            .PosedMorphNormalDeltaSlot = buffers.PosedMorphNormalDeltas.Slot,
             .VertexClassSlot = buffers.VertexClassBuffer.Buffer.Slot,
             .MaterialSlot = buffers.Materials.Slot(),
             .PrimitiveMaterialSlot = meshes.GetPrimitiveMaterialSlot(),

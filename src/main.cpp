@@ -521,6 +521,7 @@ struct CaptureRequest {
     fs::path RenderBasename{}; // Output basename, no extension.
     std::optional<uint8_t> MotionBlurSteps{}; // Disengaged = leave the viewport's own setting alone.
     int BenchFrames{0}; // Headless: re-render every tick and exit after this many frames.
+    bool BenchSubmit{false}; // Bench ticks re-submit the standing recording.
     std::optional<ViewportShadingMode> Shading{}; // Disengaged = leave the viewport's own setting alone.
 };
 
@@ -1247,7 +1248,8 @@ void RunHeadlessScene(entt::registry &r, entt::entity viewport, const char *init
                 }
                 done = true;
             }
-            r.ctx().get<PendingRenderRequest>().Value = RenderRequest::ReRecord;
+            auto &pending = r.ctx().get<PendingRenderRequest>().Value;
+            pending = std::max(pending, capture.BenchSubmit ? RenderRequest::Submit : RenderRequest::ReRecord);
         } else {
             if (driver.CaptureFrame(r, viewport, settled)) done = true;
             // Headless has no window to close: without anything to capture or play, one settled frame is the whole run.
@@ -1401,6 +1403,7 @@ int main(int argc, char **argv) {
         else if (a == "--fps" && std::next(it) != args.end()) capture.Fps = std::atoi(*++it);
         else if (a == "--motion-blur" && std::next(it) != args.end()) capture.MotionBlurSteps = uint8_t(std::max(1, std::atoi(*++it)));
         else if (a == "--frames" && std::next(it) != args.end()) capture.BenchFrames = std::atoi(*++it);
+        else if (a == "--bench-submit") capture.BenchSubmit = true;
         else if (a == "--shading" && std::next(it) != args.end()) {
             const std::string_view mode{*++it};
             capture.Shading = mode == "wireframe" ? ViewportShadingMode::Wireframe :

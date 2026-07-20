@@ -75,8 +75,8 @@ struct InstanceArena {
 
     void UpdateState(uint32_t index, uint8_t state) { StateBuffer.Update(as_bytes(state), vk::DeviceSize(index) * sizeof(uint8_t)); }
     const AABB &GetBounds(uint32_t index) const { return reinterpret_cast<const AABB *>(BoundsBuffer.GetMappedData().data())[index]; }
-    std::span<uint8_t> GetMutableVisibility(Range range) const { return MappedSpan<uint8_t>(VisibilityBuffer, range); }
-    std::span<AABB> GetMutableBounds(Range range) const { return MappedSpan<AABB>(BoundsBuffer, range); }
+    std::span<uint8_t> GetMutableVisibility(Range range) const { return VisibilityBuffer.GetMutableSpan<uint8_t>(range); }
+    std::span<AABB> GetMutableBounds(Range range) const { return BoundsBuffer.GetMutableSpan<AABB>(range); }
     std::span<uint8_t> GetMutableStates() const { return {reinterpret_cast<uint8_t *>(StateBuffer.GetMutableRange(0, StateBuffer.UsedSize).data()), StateBuffer.UsedSize}; }
     std::span<Transform> GetMutableTransforms() const {
         auto mapped = TransformBuffer.GetMutableRange(0, TransformBuffer.UsedSize);
@@ -94,11 +94,6 @@ struct InstanceArena {
     mvk::Buffer TransformBuffer, ObjectIdBuffer, StateBuffer, BoundsBuffer, VisibilityBuffer;
 
 private:
-    template<typename T> static std::span<T> MappedSpan(const mvk::Buffer &buffer, Range range) {
-        auto mapped = buffer.GetMutableRange(vk::DeviceSize(range.Offset) * sizeof(T), vk::DeviceSize(range.Count) * sizeof(T));
-        return {reinterpret_cast<T *>(mapped.data()), range.Count};
-    }
-
     void ForEachBuffer(auto &&fn) {
         fn(TransformBuffer, sizeof(Transform));
         fn(ObjectIdBuffer, sizeof(uint32_t));
@@ -320,11 +315,44 @@ struct GpuBuffers {
     // Draw-command buffers
     DrawBufferPair RenderDraw, SelectionDraw;
 
-    // One entry per run of mesh instance slots sharing a deform state. The bounds reduce pass runs
-    // the vertex deform path over each entry and writes the local AABB into Instances.BoundsBuffer.
+    // One entry per run of mesh instance slots sharing a deform state.
     mvk::Buffer BoundsReduceEntries{Ctx, 0, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::DrawDataBuffer};
+    // (entry index, tile index) per bounds workgroup, posed entries' tiles first.
+    mvk::Buffer BoundsTiles{Ctx, 0, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer};
+    // Per-tile partial AABBs of each entry's positions.
+    mvk::Buffer BoundsPartials{Ctx, 0, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer};
+    // First tile index per bounds entry, locating its partials.
+    mvk::Buffer BoundsEntryFirstTiles{Ctx, 0, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer};
+    // (entry index, tile index) per normal-derive workgroup, the entries' face tiles in a leading prefix.
+    mvk::Buffer DeriveTiles{Ctx, 0, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer};
+    // Current-pose vertex positions in mesh-local space, one range per posed bounds entry.
+    mvk::Buffer PosedPositions{Ctx, 0, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer};
+    // One entry per normal-derive dispatch item.
+    // A frame holds one per posed bounds entry with triangles, and a base one-shot holds one per mesh.
+    mvk::Buffer NormalDeriveEntries{Ctx, 0, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer};
+    // Per-instance derived normals, one range per posed derive entry.
+    // The three buffers hold per-vertex smooth normals, seam-corner sector normals, and per-face fan sums.
+    mvk::Buffer PosedVertexNormals{Ctx, 0, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer};
+    mvk::Buffer PosedSeamNormals{Ctx, 0, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer};
+    mvk::Buffer PosedFaceNormals{Ctx, 0, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer};
+    // Weight-summed authored morph normal deltas, one vec3 per posed vertex slot, present for authored-morph entries.
+    mvk::Buffer PosedMorphNormalDeltas{Ctx, 0, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer};
     // Instance-arena slots whose bounds draw as box wireframes, one box per listed slot.
     mvk::Buffer BoundsBoxSlots{Ctx, 0, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer};
+
+    // Group counts of the posed prelude's passes, in recorded order (their arg slot order in PreludeDispatchArgs).
+    // Set on draw-list rebuild.
+    struct PreludeGroups {
+        static constexpr uint32_t PassCount{5};
+        uint32_t PosePrepass{0}, DeriveFaces{0}, BoundsReduce{0}, DeriveGather{0}, BoundsCombine{0};
+    };
+    PreludeGroups Prelude{};
+    // One vk::DispatchIndirectCommand per prelude pass.
+    // Holds the recorded group counts, or zeros when deform inputs are unchanged since the last submit.
+    mvk::Buffer PreludeDispatchArgs{Ctx, PreludeGroups::PassCount * sizeof(vk::DispatchIndirectCommand), mvk::MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eIndirectBuffer};
+    // A deform input was written since the last submit wrote live prelude counts.
+    // Deform inputs are morph weights, armature poses, transform gestures, geometry edits, and draw-list rebuilds.
+    bool PreludeStale{true};
 
     // Selection / picking — GPU buffers + host-visible readback
     uint32_t SelectionNodeCapacity{1};

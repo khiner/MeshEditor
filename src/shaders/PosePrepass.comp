@@ -1,0 +1,47 @@
+#version 450
+
+// Materializes each entry's current-pose vertex positions in mesh-local space.
+// Composes morph, armature, and the pending edit-mode vertex transform.
+// One workgroup per 256-vertex tile.
+#define BINDLESS_CUSTOM_DRAW_PASS_PC 1
+#define BINDLESS_NO_DRAW_LOOKUP 1
+#include "BoundsReducePushConstants.glsl"
+#include "Bindless.glsl"
+#include "MorphDeform.glsl"
+#include "ArmatureDeform.glsl"
+#include "TransformUtils.glsl"
+
+layout(local_size_x = 256) in;
+
+layout(set = 0, binding = BINDING_Buffer, scalar) buffer PosedPositionWriteBuffer {
+    vec3 Positions[];
+} PosedPositionWriteBuffers[];
+
+layout(set = 0, binding = BINDING_Buffer, scalar) buffer PosedMorphNormalDeltaWriteBuffer {
+    vec3 Deltas[];
+} PosedMorphNormalDeltaWriteBuffers[];
+
+void main() {
+    const uvec2 tile = TileMapBuffers[pc.TileMapSlot].Tiles[gl_WorkGroupID.x];
+    const DrawData draw = DrawDataBuffers[pc.DrawDataSlot].Draws[tile.x];
+    const uint i = tile.y * 256u + gl_LocalInvocationID.x;
+    if (i >= draw.VertexCountOrHeadImageSlot) return;
+    vec3 pos = VertexBuffers[draw.VertexSlot].Vertices[draw.VertexOffset + i].Position;
+    vec3 normal = vec3(0);
+    vec3 morph_normal_delta = vec3(0);
+    ApplyMorphDeform(draw, pos, morph_normal_delta, i);
+    pos = ApplyArmatureDeform(draw, pos, i, normal);
+    if (SceneViewUBO.IsTransforming != 0u && draw.HasPendingVertexTransform != 0u && pc.VertexStateSlot != INVALID_SLOT &&
+        (uint(ElementStateBuffers[pc.VertexStateSlot].States[draw.VertexOffset + i]) & STATE_SELECTED) != 0u) {
+        // The pending gesture moves selected vertices in world space through the primary edit instance.
+        // Posed positions stay mesh-local, so those vertices round-trip through this transform.
+        const Transform primary = ModelBuffers[draw.ModelSlot].Models[draw.PrimaryEditInstanceIndex];
+        pos = trs_inverse_transform_point(primary, apply_pending_transform_world(trs_transform_point(primary, pos)));
+    }
+    PosedPositionWriteBuffers[SceneViewUBO.PosedPositionSlot].Positions[draw.PosedPositionOffset + i] = pos;
+    // Authored morph shading reads normalize(N0 + sum(w_t * NormalDelta_t)) per corner.
+    // The per-vertex delta sum accumulates here, off the vertex-shader hot path.
+    if (draw.MorphShadingAuthored != 0u) {
+        PosedMorphNormalDeltaWriteBuffers[SceneViewUBO.PosedMorphNormalDeltaSlot].Deltas[draw.PosedPositionOffset + i] = morph_normal_delta;
+    }
+}

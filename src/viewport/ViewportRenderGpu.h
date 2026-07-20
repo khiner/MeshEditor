@@ -44,6 +44,24 @@ void RecordRenderCommandBuffer(entt::registry &, entt::entity viewport, vk::Comm
 // view UBO instance (i + 1) by dynamic offset. `step_frames` holds each step's centre playback frame.
 void RecordBlurStepsCommandBuffer(entt::registry &, entt::entity viewport, vk::CommandBuffer, std::span<const float> step_frames);
 
+// Derive the listed mesh entities' base normals in one batched GPU submit-and-wait, writing the base normal stores.
+// Meshes without triangles or adjacency are skipped.
+// Call on the main thread between frames, where the per-frame derive buffers have no live GPU reader.
+void DeriveBaseNormalsNow(entt::registry &, std::span<const entt::entity> mesh_entities);
+
+// Complete the listed new or restored mesh entities' shading state.
+// Derives base normals, encodes stashed authored corner normals, and decides the authored-morph-shading gate.
+// Call after the meshes' index buffers are written, under DeriveBaseNormalsNow's between-frames constraints.
+void FinalizeNewMeshShadingNow(entt::registry &, std::span<const entt::entity> mesh_entities);
+
+// Copy the mesh's posed positions and derived normals from the last submitted frame (fenced complete) into the canonical stores.
+// Returns true when any position changed.
+bool CommitPosedGeometry(entt::registry &, entt::entity mesh_entity);
+
+// Write the posed prelude's indirect dispatch group counts for the next submit.
+// Deform-input changes since the last submit select the recorded counts, and an unchanged pose selects zeros.
+void SyncPreludeDispatchArgs(GpuBuffers &);
+
 #ifdef MVK_FORCE_STAGED_TRANSFERS
 void RecordTransferCommandBuffer(entt::registry &, entt::entity viewport, vk::CommandBuffer);
 #endif

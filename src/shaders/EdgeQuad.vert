@@ -1,8 +1,6 @@
 #version 450
 
 #include "Bindless.glsl"
-#include "MorphDeform.glsl"
-#include "ArmatureDeform.glsl"
 #include "TransformUtils.glsl"
 
 // Signed distance from edge center in pixels (noperspective for correct screen-space interpolation).
@@ -34,18 +32,9 @@ void main() {
     const uint idx0 = IndexBuffers[draw.IndexSlotOffset.Slot].Indices[base_index];
     const uint idx1 = IndexBuffers[draw.IndexSlotOffset.Slot].Indices[base_index + 1u];
 
-    // Transform both endpoints to world space (morph + armature + pending transform).
-    vec3 morphed0 = VertexBuffers[draw.VertexSlot].Vertices[idx0 + draw.VertexOffset].Position;
-    vec3 n0 = vec3(0);
-    ApplyMorphDeform(draw, morphed0, idx0, n0);
-    vec3 local0 = ApplyArmatureDeform(draw, morphed0, idx0, n0);
-    vec3 world0 = apply_pending_transform(draw, world, local0, idx0);
-
-    vec3 morphed1 = VertexBuffers[draw.VertexSlot].Vertices[idx1 + draw.VertexOffset].Position;
-    vec3 n1 = vec3(0);
-    ApplyMorphDeform(draw, morphed1, idx1, n1);
-    vec3 local1 = ApplyArmatureDeform(draw, morphed1, idx1, n1);
-    vec3 world1 = apply_pending_transform(draw, world, local1, idx1);
+    // Transform both endpoints to world space, from posed positions when the draw has them.
+    const vec3 world0 = apply_object_pending_transform(draw, trs_transform_point(world, GetLocalPosition(draw, idx0)));
+    const vec3 world1 = apply_object_pending_transform(draw, trs_transform_point(world, GetLocalPosition(draw, idx1)));
 
     // Clip space.
     // NDC offset: push edges in front of faces (Blender: edge_ndc_offset_ = 1.0).

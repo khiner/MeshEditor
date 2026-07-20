@@ -1,4 +1,5 @@
 #include "viewport/ViewportRenderGpu.h"
+#include "ProcessEvents.h"
 #include "animation/AnimationTimeline.h"
 #include "animation/MorphWeightState.h"
 #include "armature/ArmatureComponents.h"
@@ -6,19 +7,24 @@
 #include "gizmo/TransformGizmoTypes.h"
 #include "gpu/BoundsBoxPushConstants.h"
 #include "gpu/BoundsReducePushConstants.h"
+#include "gpu/CornerClassEncoding.h"
 #include "gpu/DepthPyramidReducePushConstants.h"
 #include "gpu/FrustumCullPushConstants.h"
 #include "gpu/MainDrawPushConstants.h"
 #include "gpu/MotionBlurGatherPushConstants.h"
 #include "gpu/MotionBlurTilesDilatePushConstants.h"
 #include "gpu/MotionBlurTilesFlattenPushConstants.h"
+#include "gpu/NormalDeriveEntry.h"
+#include "gpu/NormalDerivePushConstants.h"
 #include "gpu/SilhouetteEdgeColorPushConstants.h"
 #include "gpu/SilhouetteEdgeDepthObjectPushConstants.h"
 #include "mesh/MeshStore.h"
 #include "render/Drawing.h"
 #include "render/Instance.h"
+#include "render/OneShotGpu.h"
 #include "render/Pipelines.h"
 #include "render/Profile.h"
+#include "render/VkFenceWait.h"
 #include "scene/Entity.h"
 #include "scene/WorldTransform.h"
 #include "selection/Selection.h"
@@ -140,8 +146,17 @@ void PatchInstanceDeform(std::span<DrawData> draws, const DeformSlots &deform) {
         }
     }
 }
-// The draws a DrawListBuilder appended since `draws_before`.
-std::span<DrawData> DrawsSince(DrawListBuilder &dl, size_t draws_before) { return std::span{dl.Draws}.subspan(draws_before); }
+// Set per-draw posed ranges (positions and derived normals), keyed by the draw's instance.
+void PatchPosedRanges(std::span<DrawData> draws, const PosedRanges &posed) {
+    for (auto &d : draws) {
+        const auto i = posed.PerInstance ? d.FirstInstance - posed.FirstInstance : 0u;
+        d.PosedPositionOffset = posed.PositionOffset(i);
+        if (posed.VertexNormalBase == InvalidOffset) continue;
+        d.PosedVertexNormalOffset = posed.VertexNormalOffset(i);
+        d.PosedSeamNormalOffset = posed.SeamNormalOffset(i);
+        d.PosedFaceNormalOffset = posed.FaceNormalOffset(i);
+    }
+}
 // AppendExtrasDraw is templated on the customize_draw callable.
 void AppendExtrasDraw(entt::registry &r, const InstanceArena &instances, DrawListBuilder &dl, DrawBatchInfo &batch, auto &&customize_draw) {
     batch = dl.BeginBatch();
@@ -277,6 +292,51 @@ void ReleaseCullToDraw(vk::CommandBuffer cb) {
     );
 }
 
+// The tiled compute passes' workgroup size (the shaders' local_size_x).
+constexpr uint32_t TileSize{256};
+// Workgroup count tiling `count` elements, min one so an entry with no elements still writes its outputs.
+constexpr uint32_t TileCountFor(uint32_t count) { return std::max((count + TileSize - 1) / TileSize, 1u); }
+
+// Slot of each prelude pass's args in GpuBuffers::PreludeDispatchArgs (PreludeGroups order).
+enum class PreludeSlot : uint32_t { PosePrepass,
+                                    DeriveFaces,
+                                    BoundsReduce,
+                                    DeriveGather,
+                                    BoundsCombine };
+
+constexpr vk::DeviceSize PreludeArgsOffset(PreludeSlot slot) { return vk::DeviceSize(slot) * sizeof(vk::DispatchIndirectCommand); }
+
+void WritePreludeArg(GpuBuffers &buffers, PreludeSlot slot, uint32_t groups) {
+    const vk::DispatchIndirectCommand arg{groups, 1, 1};
+    buffers.PreludeDispatchArgs.Update(as_bytes(arg), PreludeArgsOffset(slot));
+}
+
+// Record one prelude pass's dispatch, reading its group count from the pass's indirect args slot.
+void DispatchPrelude(vk::CommandBuffer cb, const GpuBuffers &buffers, PreludeSlot slot) {
+    cb.dispatchIndirect(*buffers.PreludeDispatchArgs, PreludeArgsOffset(slot));
+}
+
+// The input fields of a mesh's normal-derive entry, with the position source and output offsets left unset.
+// Empty when the mesh has no triangles or adjacency.
+std::optional<NormalDeriveEntry> MakeDeriveEntryInputs(const MeshStore &meshes, uint32_t store_id, SlottedRange face_indices) {
+    if (face_indices.Count == 0) return {};
+    const auto adjacency = meshes.GetVertexFanAdjacencyRange(store_id);
+    if (adjacency.Count == 0) return {};
+    const auto vertices = meshes.GetVerticesRange(store_id);
+    const auto face_data = meshes.GetFaceDataRange(store_id);
+    return NormalDeriveEntry{
+        .Vertices = {vertices.Slot, vertices.Offset},
+        .FaceIndices = face_indices,
+        .VertexCount = vertices.Count,
+        .VertexAdjacencyOffset = adjacency.Offset,
+        .SeamFanOffset = meshes.GetSeamFanRange(store_id).Offset,
+        .SeamCount = meshes.GetSeamCornerCount(store_id),
+        .FaceDataOffset = face_data.Offset,
+        .FaceCount = face_data.Count,
+        .TriangleCount = meshes.GetTriangleCount(store_id),
+    };
+}
+
 } // namespace
 
 void RecordFrustumCull(vk::CommandBuffer cb, const Pipelines &pipelines, const GpuBuffers &buffers, const DrawBufferPair &pair, const DrawListBuilder &draw_list, uint32_t ubo_offset, uint32_t visibility_slot) {
@@ -365,25 +425,69 @@ void RecordDepthPyramid(vk::CommandBuffer cb, const Pipelines &pipelines, const 
     }
 }
 
-// Rewrite each entry's instance bounds from its post-deform vertex positions, ahead of the cull.
-void RecordBoundsReduce(vk::CommandBuffer cb, const Pipelines &pipelines, const GpuBuffers &buffers, uint32_t entry_count, uint32_t vertex_state_slot, uint32_t ubo_offset) {
-    const profile::GpuScope scope{"BoundsReduce"};
-    const auto &reduce = pipelines.BoundsReduce;
-    // The previous submit's bounds reads (cull and bounds-box draw) complete before the rewrite.
+// Materialize each posed entry's current-pose vertex positions.
+void RecordPosePrepass(vk::CommandBuffer cb, const Pipelines &pipelines, const GpuBuffers &buffers, uint32_t vertex_state_slot, uint32_t ubo_offset) {
+    const profile::GpuScope scope{"PosePrepass"};
+    const auto &prepass = pipelines.PosePrepass;
+    // The previous phase's posed-position reads (compute and vertex) and writes complete before the rewrite.
     cb.pipelineBarrier(
         vk::PipelineStageFlagBits::eComputeShader | vk::PipelineStageFlagBits::eVertexShader,
         vk::PipelineStageFlagBits::eComputeShader, {},
-        vk::MemoryBarrier{vk::AccessFlagBits::eShaderRead, vk::AccessFlagBits::eShaderWrite}, {}, {}
+        vk::MemoryBarrier{vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite, vk::AccessFlagBits::eShaderWrite}, {}, {}
     );
-    BindCompute(cb, reduce, ubo_offset);
+    BindCompute(cb, prepass, ubo_offset);
     const BoundsReducePushConstants pc{
-        .VertexTransform = {0, vertex_state_slot},
+        .VertexStateSlot = vertex_state_slot,
+        .DrawDataSlot = buffers.BoundsReduceEntries.Slot,
+        .TileMapSlot = buffers.BoundsTiles.Slot,
+    };
+    cb.pushConstants(*prepass.PipelineLayout, vk::ShaderStageFlagBits::eCompute, 0, sizeof(pc), &pc);
+    DispatchPrelude(cb, buffers, PreludeSlot::PosePrepass);
+    // No trailing barrier: the bounds reduce recorded next orders its posed reads after these writes.
+}
+
+// One derive dispatch over the tiles at `pc.FirstTile`, running the face or gather phase per pc.Phase.
+// The tile count comes from `slot`'s indirect args.
+void RecordNormalDerive(vk::CommandBuffer cb, const Pipelines &pipelines, const GpuBuffers &buffers, const NormalDerivePushConstants &pc, PreludeSlot slot, uint32_t ubo_offset, std::string_view scope_name) {
+    const profile::GpuScope scope{scope_name};
+    const auto &pipeline = pipelines.VertexNormalDerive;
+    BindCompute(cb, pipeline, ubo_offset);
+    cb.pushConstants(*pipeline.PipelineLayout, vk::ShaderStageFlagBits::eCompute, 0, sizeof(pc), &pc);
+    DispatchPrelude(cb, buffers, slot);
+}
+
+// The derive's shared input slots, plus the three output slots selecting the target buffers.
+NormalDerivePushConstants MakeNormalDerivePc(const GpuBuffers &buffers, const MeshStore &meshes, uint32_t vertex_normal_slot, uint32_t seam_normal_slot, uint32_t face_normal_slot) {
+    return {
+        .EntriesSlot = buffers.NormalDeriveEntries.Slot,
+        .AdjacencySlot = meshes.GetAdjacencySlot(),
+        .TileMapSlot = buffers.DeriveTiles.Slot,
+        .FaceFirstTriangleSlot = meshes.GetFaceFirstTriangleSlot(),
+        .PositionSlot = buffers.PosedPositions.Slot,
+        .VertexNormalSlot = vertex_normal_slot,
+        .SeamNormalSlot = seam_normal_slot,
+        .FaceNormalSlot = face_normal_slot,
+    };
+}
+
+BoundsReducePushConstants MakeBoundsReducePc(const GpuBuffers &buffers) {
+    return {
         .DrawDataSlot = buffers.BoundsReduceEntries.Slot,
         .BoundsSlot = buffers.Instances.BoundsBuffer.Slot,
+        .TileMapSlot = buffers.BoundsTiles.Slot,
+        .PartialBoundsSlot = buffers.BoundsPartials.Slot,
+        .EntryFirstTileSlot = buffers.BoundsEntryFirstTiles.Slot,
     };
-    cb.pushConstants(*reduce.PipelineLayout, vk::ShaderStageFlagBits::eCompute, 0, sizeof(pc), &pc);
-    cb.dispatch(entry_count, 1, 1);
-    // No trailing barrier: the cull recorded next orders every later read of the bounds after these writes.
+}
+
+// One bounds dispatch, the reduce or the combine per `pipeline`.
+// No trailing barrier after the combine: the cull recorded next orders every later read.
+void RecordBoundsPass(vk::CommandBuffer cb, const ComputePipeline &pipeline, const GpuBuffers &buffers, PreludeSlot slot, uint32_t ubo_offset, std::string_view scope_name) {
+    const profile::GpuScope scope{scope_name};
+    const auto pc = MakeBoundsReducePc(buffers);
+    BindCompute(cb, pipeline, ubo_offset);
+    cb.pushConstants(*pipeline.PipelineLayout, vk::ShaderStageFlagBits::eCompute, 0, sizeof(pc), &pc);
+    DispatchPrelude(cb, buffers, slot);
 }
 
 // Record one phase's passes into `cb`, which is already begun with viewport and scissor set.
@@ -452,15 +556,12 @@ void RecordPhase(entt::registry &r, entt::entity viewport, vk::CommandBuffer cb,
             }
         }
     }
-    const auto patch_edit_pending_local_transform = [&](size_t draws_before, entt::entity mesh_entity) {
-        if (!has_pending_transform) return;
-        const auto context_it = edit_transform_context.TransformInstances.find(mesh_entity);
-        if (context_it == edit_transform_context.TransformInstances.end()) return;
-        const auto *primary_ri = r.try_get<const RenderInstance>(context_it->second);
-        if (!primary_ri) return;
-        for (size_t i = draws_before; i < draw_list.Draws.size(); ++i) {
-            draw_list.Draws[i].HasPendingVertexTransform = 1u;
-            draw_list.Draws[i].PrimaryEditInstanceIndex = primary_ri->BufferIndex;
+    // Rewrite per-instance deform and posed-buffer fields on the draws appended since `draws_before`.
+    const auto patch_mesh_draws = [&](DrawListBuilder &list, size_t draws_before, entt::entity mesh_entity, const DeformSlots &deform) {
+        const auto draws = std::span{list.Draws}.subspan(draws_before);
+        PatchInstanceDeform(draws, deform);
+        if (const auto it = draw.PosedByEntity.find(mesh_entity); it != draw.PosedByEntity.end()) {
+            PatchPosedRanges(draws, it->second);
         }
     };
 
@@ -469,6 +570,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, vk::CommandBuffer cb,
         draw_list.CullEntries.clear();
         draw_list.IndirectCommands.clear();
         draw_list.MaxIndexCount = 0;
+        draw.PosedByEntity.clear();
 
         std::unordered_set<entt::entity> excitable_mesh_entities;
         if (is_excite_mode) {
@@ -540,54 +642,154 @@ void RecordPhase(entt::registry &r, entt::entity viewport, vk::CommandBuffer cb,
             mesh_entities.emplace_back(entity, mesh_buffers, models, TryGetMesh(r, entity), get_deform_slots(entity), primary_bi, excitable_mesh_entities.contains(entity), r.all_of<ArmatureObject>(entity) || is_bone_joint, is_bone_joint, r.all_of<ObjectExtrasTag>(entity));
         }
 
-        { // Bounds reduce entries. Instances sharing one deform state share one entry, whose
-            // ElementIdOffset spans their consecutive slots.
+        // The mesh shades authored under morphing: rest normals plus weighted authored deltas.
+        // Edit mode builds no deform slots, so edit-mode draws (including drags) derive.
+        const auto morph_shading_authored = [&meshes](const MeshEntityData &e) {
+            return e.Deform.MorphDeformOffset != InvalidOffset && e.MeshComp && meshes.GetMorphShadingAuthored(e.MeshComp->GetStoreId());
+        };
+
+        { // Bounds reduce entries.
+            // Instances sharing one deform state share one entry, whose ElementIdOffset spans their consecutive slots.
+            // Entries with morph, armature, or pending edit-transform deformation come first.
+            // Each has a posed-position range the pose pre-pass materializes ahead of the bounds reduction.
             struct BoundsEntrySpec {
-                uint32_t Count;
-                bool PerInstanceDeform;
+                uint32_t Count{};
+                bool PerInstanceDeform{}, Posed{}, Derive{};
+                const RenderInstance *PendingPrimary{};
+                NormalDeriveEntry Entry{}; // Derive-input fields, filled when Derive.
             };
-            const auto bounds_entry_spec = [](const MeshEntityData &e) -> BoundsEntrySpec {
-                if (!e.MeshComp || e.Mod.InstanceCount == 0) return {0, false};
-                const bool per_instance = !e.Deform.ArmatureDeformByBufferIndex.empty() || !e.Deform.MorphWeightsByBufferIndex.empty();
-                return {per_instance ? e.Mod.InstanceCount : 1u, per_instance};
-            };
-            uint32_t entry_count = 0;
-            for (const auto &e : mesh_entities) entry_count += bounds_entry_spec(e).Count;
+            std::vector<BoundsEntrySpec> specs(mesh_entities.size());
+            // Posed entries and their tiles come first: the pose pre-pass dispatches over that tile prefix.
+            uint32_t entry_count = 0, posed_entry_count = 0, posed_vertex_count = 0;
+            uint32_t derive_entry_count = 0, vertex_normal_count = 0, seam_normal_count = 0, face_normal_count = 0;
+            uint32_t posed_tile_count = 0, bounds_tile_count = 0, derive_face_tile_count = 0, derive_gather_tile_count = 0;
+            bool authored_morph_any = false;
+            for (size_t mi = 0; mi < mesh_entities.size(); ++mi) {
+                const auto &e = mesh_entities[mi];
+                auto &spec = specs[mi];
+                if (!e.MeshComp || e.Mod.InstanceCount == 0) continue;
+                if (has_pending_transform) {
+                    if (const auto it = edit_transform_context.TransformInstances.find(e.Entity); it != edit_transform_context.TransformInstances.end()) {
+                        spec.PendingPrimary = r.try_get<const RenderInstance>(it->second);
+                    }
+                }
+                spec.PerInstanceDeform = !e.Deform.ArmatureDeformByBufferIndex.empty() || !e.Deform.MorphWeightsByBufferIndex.empty();
+                spec.Count = spec.PerInstanceDeform ? e.Mod.InstanceCount : 1u;
+                spec.Posed = e.Deform.BoneDeformOffset != InvalidOffset || e.Deform.MorphDeformOffset != InvalidOffset || spec.PendingPrimary != nullptr;
+                entry_count += spec.Count;
+                bounds_tile_count += spec.Count * TileCountFor(e.Buf.Vertices.Count);
+                if (spec.Posed) {
+                    // Authored morph shading reads base normals.
+                    const bool authored_morph = morph_shading_authored(e);
+                    authored_morph_any |= authored_morph;
+                    if (const auto derive_entry = authored_morph ? std::nullopt : MakeDeriveEntryInputs(meshes, e.MeshComp->GetStoreId(), e.Buf.FaceIndices)) {
+                        spec.Derive = true;
+                        spec.Entry = *derive_entry;
+                        derive_entry_count += spec.Count;
+                        derive_face_tile_count += spec.Count * TileCountFor(spec.Entry.FaceCount);
+                        derive_gather_tile_count += spec.Count * TileCountFor(spec.Entry.VertexCount + spec.Entry.SeamCount);
+                        vertex_normal_count += spec.Count * spec.Entry.VertexCount;
+                        seam_normal_count += spec.Count * spec.Entry.SeamCount;
+                        face_normal_count += spec.Count * spec.Entry.FaceCount;
+                    }
+                    posed_entry_count += spec.Count;
+                    posed_tile_count += spec.Count * TileCountFor(e.Buf.Vertices.Count);
+                    posed_vertex_count += spec.Count * e.Buf.Vertices.Count;
+                }
+            }
             const auto entries = buffers.BoundsReduceEntries.SetCount<DrawData>(entry_count);
-            uint32_t write = 0;
-            for (const auto &e : mesh_entities) {
-                const auto [count, per_instance_deform] = bounds_entry_spec(e);
-                if (count == 0) continue;
+            const auto derive_entries = buffers.NormalDeriveEntries.SetCount<NormalDeriveEntry>(derive_entry_count);
+            const auto bounds_tiles = buffers.BoundsTiles.SetCount<uvec2>(bounds_tile_count);
+            const auto derive_tiles = buffers.DeriveTiles.SetCount<uvec2>(derive_face_tile_count + derive_gather_tile_count);
+            const auto entry_first_tiles = buffers.BoundsEntryFirstTiles.SetCount<uint32_t>(entry_count);
+            buffers.BoundsPartials.SetCount<AABB>(bounds_tile_count);
+            buffers.PosedPositions.SetCount<vec3>(posed_vertex_count);
+            // Authored-morph entries index their deltas by posed-position offset.
+            // The buffer spans the full posed range whenever any authored-morph entry exists.
+            buffers.PosedMorphNormalDeltas.SetCount<vec3>(authored_morph_any ? posed_vertex_count : 0u);
+            buffers.PosedVertexNormals.SetCount<vec3>(vertex_normal_count);
+            buffers.PosedSeamNormals.SetCount<vec3>(seam_normal_count);
+            buffers.PosedFaceNormals.SetCount<vec3>(face_normal_count);
+            buffers.Prelude = {
+                .PosePrepass = posed_tile_count,
+                .DeriveFaces = derive_face_tile_count,
+                .BoundsReduce = bounds_tile_count,
+                .DeriveGather = derive_gather_tile_count,
+                .BoundsCombine = entry_count,
+            };
+            // The rebuild rewrote the buffers the prelude reads and writes, so the next submit re-runs it.
+            buffers.PreludeStale = true;
+            uint32_t posed_write = 0, unposed_write = posed_entry_count, derive_write = 0;
+            uint32_t posed_tile_write = 0, unposed_tile_write = posed_tile_count;
+            uint32_t face_tile_write = 0, gather_tile_write = derive_face_tile_count;
+            uint32_t posed_offset = 0, vertex_normal_offset = 0, seam_normal_offset = 0, face_normal_offset = 0;
+            for (size_t mi = 0; mi < mesh_entities.size(); ++mi) {
+                const auto &e = mesh_entities[mi];
+                const auto &spec = specs[mi];
+                if (spec.Count == 0) continue;
+                auto &write = spec.Posed ? posed_write : unposed_write;
                 DrawData entry{
                     .VertexSlot = e.Buf.Vertices.Slot,
                     .ModelSlot = buffers.Instances.TransformBuffer.Slot,
                     .FirstInstance = e.Mod.InstanceRange.Offset,
                     .VertexCountOrHeadImageSlot = e.Buf.Vertices.Count,
-                    .ElementIdOffset = per_instance_deform ? 1u : e.Mod.InstanceCount,
+                    .ElementIdOffset = spec.PerInstanceDeform ? 1u : e.Mod.InstanceCount,
                     .VertexOffset = e.Buf.Vertices.Offset,
                     .BoneDeformOffset = e.Deform.BoneDeformOffset,
                     .ArmatureDeformOffset = e.Deform.ArmatureDeformOffset,
                     .MorphDeformOffset = e.Deform.MorphDeformOffset,
                     .MorphTargetCount = e.Deform.MorphTargetCount,
+                    .MorphShadingAuthored = morph_shading_authored(e) ? 1u : 0u,
                 };
-                if (has_pending_transform) {
-                    const auto it = edit_transform_context.TransformInstances.find(e.Entity);
-                    const auto *primary_ri = it != edit_transform_context.TransformInstances.end() ? r.try_get<const RenderInstance>(it->second) : nullptr;
-                    if (primary_ri) {
-                        entry.HasPendingVertexTransform = 1u;
-                        entry.PrimaryEditInstanceIndex = primary_ri->BufferIndex;
-                    }
+                if (spec.PendingPrimary) {
+                    entry.HasPendingVertexTransform = 1u;
+                    entry.PrimaryEditInstanceIndex = spec.PendingPrimary->BufferIndex;
                 }
-                if (!per_instance_deform) {
-                    entries[write++] = entry;
-                    continue;
+                // PosedRanges owns the posed-buffer layout: bases here, per-instance offsets via its accessors.
+                PosedRanges pr{};
+                NormalDeriveEntry derive_entry = spec.Entry;
+                if (spec.Posed) {
+                    pr = {
+                        .FirstInstance = e.Mod.InstanceRange.Offset,
+                        .PerInstance = spec.PerInstanceDeform,
+                        .PositionBase = posed_offset,
+                        .VertexNormalBase = spec.Derive ? vertex_normal_offset : InvalidOffset,
+                        .SeamNormalBase = spec.Derive ? seam_normal_offset : InvalidOffset,
+                        .FaceNormalBase = spec.Derive ? face_normal_offset : InvalidOffset,
+                        .VertexCount = e.Buf.Vertices.Count,
+                        .SeamCount = spec.Entry.SeamCount,
+                        .FaceCount = spec.Entry.FaceCount,
+                    };
+                    draw.PosedByEntity.emplace(e.Entity, pr);
+                    posed_offset += spec.Count * pr.VertexCount;
+                }
+                if (spec.Derive) {
+                    vertex_normal_offset += spec.Count * spec.Entry.VertexCount;
+                    seam_normal_offset += spec.Count * spec.Entry.SeamCount;
+                    face_normal_offset += spec.Count * spec.Entry.FaceCount;
                 }
                 const auto first = write;
-                for (uint32_t i = 0; i < count; ++i) {
-                    entry.FirstInstance = e.Mod.InstanceRange.Offset + i;
+                const auto bounds_tiles_per = TileCountFor(e.Buf.Vertices.Count);
+                const auto face_tiles_per = TileCountFor(spec.Entry.FaceCount);
+                const auto gather_tiles_per = TileCountFor(spec.Entry.VertexCount + spec.Entry.SeamCount);
+                auto &tile_write = spec.Posed ? posed_tile_write : unposed_tile_write;
+                for (uint32_t i = 0; i < spec.Count; ++i) {
+                    if (spec.PerInstanceDeform) entry.FirstInstance = e.Mod.InstanceRange.Offset + i;
+                    if (spec.Posed) entry.PosedPositionOffset = pr.PositionOffset(i);
+                    if (spec.Derive) {
+                        derive_entry.PosedPositionOffset = entry.PosedPositionOffset;
+                        derive_entry.VertexNormalOffset = pr.VertexNormalOffset(i);
+                        derive_entry.SeamNormalOffset = pr.SeamNormalOffset(i);
+                        derive_entry.FaceNormalOffset = pr.FaceNormalOffset(i);
+                        for (uint32_t t = 0; t < face_tiles_per; ++t) derive_tiles[face_tile_write++] = {derive_write, t};
+                        for (uint32_t t = 0; t < gather_tiles_per; ++t) derive_tiles[gather_tile_write++] = {derive_write, t};
+                        derive_entries[derive_write++] = derive_entry;
+                    }
+                    entry_first_tiles[write] = tile_write;
+                    for (uint32_t t = 0; t < bounds_tiles_per; ++t) bounds_tiles[tile_write++] = {write, t};
                     entries[write++] = entry;
                 }
-                PatchInstanceDeform(entries.subspan(first, count), e.Deform);
+                if (spec.PerInstanceDeform) PatchInstanceDeform(entries.subspan(first, spec.Count), e.Deform);
             }
         }
 
@@ -605,27 +807,32 @@ void RecordPhase(entt::registry &r, entt::entity viewport, vk::CommandBuffer cb,
                 const auto &models = e.Mod;
                 const auto &mesh = *e.MeshComp;
                 const auto &deform = e.Deform;
+                const auto store_id = mesh.GetStoreId();
                 auto dd = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.FaceIndices, buffers.Instances, deform.BoneDeformOffset, deform.ArmatureDeformOffset, deform.MorphDeformOffset, deform.MorphTargetCount);
-                const auto face_id_buffer = meshes.GetFaceIdRange(mesh.GetStoreId());
-                const auto face_state_buffer = meshes.GetFaceStateRange(mesh.GetStoreId());
-                const auto face_primitive_buffer = meshes.GetFacePrimitiveRange(mesh.GetStoreId());
-                const auto primitive_material_buffer = meshes.GetPrimitiveMaterialRange(mesh.GetStoreId());
+                const auto face_id_buffer = meshes.GetFaceIdRange(store_id);
+                const auto face_state_buffer = meshes.GetFaceStateRange(store_id);
+                const auto face_primitive_buffer = meshes.GetFacePrimitiveRange(store_id);
+                const auto primitive_material_buffer = meshes.GetPrimitiveMaterialRange(store_id);
                 dd.ObjectIdSlot = face_id_buffer.Slot;
                 dd.FaceIdOffset = face_id_buffer.Offset;
-                dd.CornerNormalOffset = meshes.GetCornerNormalRange(mesh.GetStoreId()).Offset;
+                dd.BaseFaceNormalOffset = meshes.GetFaceDataRange(store_id).Offset;
                 const auto corner_offset = [](Range range) { return range.Count > 0 ? range.Offset : InvalidOffset; };
-                dd.CornerTangentOffset = corner_offset(meshes.GetCornerTangentRange(mesh.GetStoreId()));
-                dd.CornerColorOffset = corner_offset(meshes.GetCornerColorRange(mesh.GetStoreId()));
+                dd.CornerClassOffset = meshes.GetCornerClassOffset(store_id);
+                dd.CustomCornerMaskOffset = corner_offset(meshes.GetCustomCornerMaskRange(store_id));
+                dd.CustomCornerNormalOffset = corner_offset(meshes.GetCustomCornerNormalRange(store_id));
+                dd.BaseSeamNormalOffset = corner_offset(meshes.GetBaseSeamNormalRange(store_id));
+                dd.MorphShadingAuthored = morph_shading_authored(e) ? 1u : 0u;
+                dd.CornerTangentOffset = corner_offset(meshes.GetCornerTangentRange(store_id));
+                dd.CornerColorOffset = corner_offset(meshes.GetCornerColorRange(store_id));
                 for (uint32_t set = 0; set < dd.CornerUvOffsets.size(); ++set) {
-                    dd.CornerUvOffsets[set] = corner_offset(meshes.GetCornerUvRange(mesh.GetStoreId(), set));
+                    dd.CornerUvOffsets[set] = corner_offset(meshes.GetCornerUvRange(store_id, set));
                 }
                 dd.FacePrimitiveOffset = face_primitive_buffer.Count > 0 ? face_primitive_buffer.Offset : InvalidOffset;
                 dd.PrimitiveMaterialOffset = primitive_material_buffer.Count > 0 ? primitive_material_buffer.Offset : InvalidOffset;
                 const auto append_fill_draw = [&](const DrawData &dd, uint32_t index_count, std::optional<uint32_t> model_index) {
                     const auto db = draw_list.Draws.size();
                     AppendDraw(draw_list, batch, index_count, models, dd, model_index);
-                    PatchInstanceDeform(DrawsSince(draw_list, db), deform);
-                    patch_edit_pending_local_transform(db, e.Entity);
+                    patch_mesh_draws(draw_list, db, e.Entity, deform);
                 };
                 const auto append_fill_for_instances = [&](const DrawData &dd, uint32_t index_count) {
                     if (e.PrimaryEditBufferIndex) {
@@ -644,8 +851,8 @@ void RecordPhase(entt::registry &r, entt::entity viewport, vk::CommandBuffer cb,
                 };
 
                 if (show_rendered) {
-                    const auto primitive_materials = meshes.GetPrimitiveMaterialIndices(mesh.GetStoreId());
-                    const auto primitive_ranges = meshes.GetPrimitiveTriangleRanges(mesh.GetStoreId());
+                    const auto primitive_materials = meshes.GetPrimitiveMaterialIndices(store_id);
+                    const auto primitive_ranges = meshes.GetPrimitiveTriangleRanges(store_id);
                     if (!primitive_materials.empty() && !primitive_ranges.empty()) {
                         const auto material_count = buffers.Materials.Count();
                         // Merge adjacent primitives with the same blend mode and transmission class into single draw calls.
@@ -678,7 +885,10 @@ void RecordPhase(entt::registry &r, entt::entity viewport, vk::CommandBuffer cb,
                             auto range_draw = dd;
                             range_draw.IndexSlotOffset.Offset += range.FirstTriangle * 3u;
                             range_draw.FaceIdOffset += range.FirstTriangle;
-                            range_draw.CornerNormalOffset += range.FirstTriangle * 3u;
+                            // The mask lookup locates the range within the mesh's corner bitset.
+                            range_draw.CornerBase = range.FirstTriangle * 3u;
+                            // The class offset advances only when it locates a class buffer.
+                            if (range_draw.CornerClassOffset < uint32_t(CornerClassEncoding::UniformFaceOffset)) range_draw.CornerClassOffset += range.FirstTriangle * 3u;
                             const auto advance_corner = [&](uint32_t &offset) {
                                 if (offset != InvalidOffset) offset += range.FirstTriangle * 3u;
                             };
@@ -795,8 +1005,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, vk::CommandBuffer cb,
                 const auto db = draw_list.Draws.size();
                 if (e.PrimaryEditBufferIndex) AppendDraw(draw_list, draw.EdgeQuad, e.Buf.EdgeIndices.Count * 3, e.Mod, dd, e.PrimaryEditBufferIndex);
                 else if (e.IsSoundVertices) AppendDraw(draw_list, draw.EdgeQuad, e.Buf.EdgeIndices.Count * 3, e.Mod, dd);
-                PatchInstanceDeform(DrawsSince(draw_list, db), e.Deform);
-                patch_edit_pending_local_transform(db, e.Entity);
+                patch_mesh_draws(draw_list, db, e.Entity, e.Deform);
             }
         }
         // Wire line batch (wireframe mode + line meshes, matches Blender's wireframe overlay)
@@ -808,8 +1017,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, vk::CommandBuffer cb,
             dd.ElementStateSlotOffset = meshes.GetEdgeStateRange(e.MeshComp->GetStoreId());
             const auto db = draw_list.Draws.size();
             AppendDraw(draw_list, draw.WireLine, e.Buf.EdgeIndices, e.Mod, dd);
-            PatchInstanceDeform(DrawsSince(draw_list, db), e.Deform);
-            patch_edit_pending_local_transform(db, e.Entity);
+            patch_mesh_draws(draw_list, db, e.Entity, e.Deform);
         }
 
         draw.ExtrasLine = {};
@@ -828,8 +1036,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, vk::CommandBuffer cb,
             if (is_point_mesh) AppendDraw(draw_list, draw.Point, e.Buf.VertexIndices, e.Mod, dd);
             else if (e.PrimaryEditBufferIndex) AppendDraw(draw_list, draw.Point, e.Buf.VertexIndices, e.Mod, dd, e.PrimaryEditBufferIndex);
             else if (e.IsSoundVertices) AppendDraw(draw_list, draw.Point, e.Buf.VertexIndices, e.Mod, dd);
-            PatchInstanceDeform(DrawsSince(draw_list, db), e.Deform);
-            patch_edit_pending_local_transform(db, e.Entity);
+            patch_mesh_draws(draw_list, db, e.Entity, e.Deform);
         }
 
         { // Normal overlay + AABB batches
@@ -864,7 +1071,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, vk::CommandBuffer cb,
                     const auto db = sel_list.Draws.size();
                     if (e.PrimaryEditBufferIndex) AppendDraw(sel_list, batch, indices, e.Mod, dd, e.PrimaryEditBufferIndex);
                     else AppendDraw(sel_list, batch, indices, e.Mod, dd);
-                    PatchInstanceDeform(DrawsSince(sel_list, db), e.Deform);
+                    patch_mesh_draws(sel_list, db, e.Entity, e.Deform);
                 }
                 return batch;
             };
@@ -946,8 +1153,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, vk::CommandBuffer cb,
             dd.ObjectIdSlot = buffers.Instances.ObjectIdBuffer.Slot;
             const auto draws_before = draw_list.Draws.size();
             AppendDraw(draw_list, draw.Silhouette, mesh_buffers.FaceIndices, models, dd, r.get<RenderInstance>(e).BufferIndex);
-            PatchInstanceDeform(DrawsSince(draw_list, draws_before), deform);
-            patch_edit_pending_local_transform(draws_before, mesh_entity);
+            patch_mesh_draws(draw_list, draws_before, mesh_entity, deform);
         };
         if (is_edit_mode) {
             for (const auto e : silhouette_instances) append_silhouette(e);
@@ -984,16 +1190,54 @@ void RecordPhase(entt::registry &r, entt::entity viewport, vk::CommandBuffer cb,
 
     const uint32_t transform_vertex_state_slot = is_edit_mode ? meshes.GetVertexStateSlot() : InvalidSlot;
 
-    // Once per command buffer (later blur phases reuse the culled buffers). Re-executes on every
-    // submit with the current view.
-    if (phase != RenderPhase::BlurAccumulate && phase != RenderPhase::BlurResolve && !draw_list.Draws.empty()) {
-        const auto bounds_entry_count = buffers.BoundsReduceEntries.Count<DrawData>();
-        if (bounds_entry_count > 0) RecordBoundsReduce(cb, pipelines, buffers, bounds_entry_count, transform_vertex_state_slot, ubo_offset);
-        RecordFrustumCull(cb, pipelines, buffers, buffers.RenderDraw, draw_list, ubo_offset, two_phase ? buffers.Instances.VisibilityBuffer.Slot : InvalidSlot);
+    // The posed passes run every phase, since blur steps read their step's captured pose through the phase's UBO instance.
+    // Bounds and cull run once per command buffer, and later blur phases reuse the culled buffers.
+    // Derived normals feed only the scene's face-fill draws, so only scene-drawing phases record the derive.
+    // Every prelude pass dispatches indirectly.
+    // A submit with unchanged deform inputs gets zero group counts, keeping the buffers' current results.
+    // The derive phases share their barrier intervals with the bounds reduce and combine, which touch none of the same buffers.
+    if (!draw_list.Draws.empty()) {
+        const auto &prelude = buffers.Prelude;
+        if (prelude.PosePrepass > 0) RecordPosePrepass(cb, pipelines, buffers, transform_vertex_state_slot, ubo_offset);
+        const bool record_bounds = phase != RenderPhase::BlurAccumulate && phase != RenderPhase::BlurResolve;
+        // A derive entry always holds at least one face tile and one gather tile, so one count decides both phases.
+        const bool record_derive = draw_scene && prelude.DeriveFaces > 0;
+        const bool bounds_work = record_bounds && prelude.BoundsCombine > 0;
+        if (record_derive || bounds_work) {
+            // The pose pre-pass's posed writes and the previous submit's posed, derived-normal, and bounds reads complete before this interval's writes.
+            cb.pipelineBarrier(
+                vk::PipelineStageFlagBits::eComputeShader | vk::PipelineStageFlagBits::eVertexShader,
+                vk::PipelineStageFlagBits::eComputeShader, {},
+                vk::MemoryBarrier{vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite, vk::AccessFlagBits::eShaderWrite | vk::AccessFlagBits::eShaderRead}, {}, {}
+            );
+            auto derive_pc = MakeNormalDerivePc(buffers, meshes, buffers.PosedVertexNormals.Slot, buffers.PosedSeamNormals.Slot, buffers.PosedFaceNormals.Slot);
+            if (record_derive) RecordNormalDerive(cb, pipelines, buffers, derive_pc, PreludeSlot::DeriveFaces, ubo_offset, "DeriveFaces");
+            if (bounds_work) RecordBoundsPass(cb, pipelines.BoundsReduce, buffers, PreludeSlot::BoundsReduce, ubo_offset, "BoundsReduce");
+            // The face normals and partial AABBs land before the gathers and the combine read them.
+            cb.pipelineBarrier(
+                vk::PipelineStageFlagBits::eComputeShader, vk::PipelineStageFlagBits::eComputeShader, {},
+                vk::MemoryBarrier{vk::AccessFlagBits::eShaderWrite, vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite}, {}, {}
+            );
+            if (record_derive) {
+                derive_pc.Phase = 1;
+                derive_pc.FirstTile = prelude.DeriveFaces;
+                RecordNormalDerive(cb, pipelines, buffers, derive_pc, PreludeSlot::DeriveGather, ubo_offset, "DeriveGather");
+            }
+            if (bounds_work) RecordBoundsPass(cb, pipelines.BoundsCombine, buffers, PreludeSlot::BoundsCombine, ubo_offset, "BoundsCombine");
+        }
+        if (record_bounds) {
+            RecordFrustumCull(cb, pipelines, buffers, buffers.RenderDraw, draw_list, ubo_offset, two_phase ? buffers.Instances.VisibilityBuffer.Slot : InvalidSlot);
+        } else if (prelude.PosePrepass > 0 || record_derive) {
+            // No cull follows in blur phases, so release the posed writes to the vertex stage here.
+            cb.pipelineBarrier(
+                vk::PipelineStageFlagBits::eComputeShader, vk::PipelineStageFlagBits::eVertexShader, {},
+                vk::MemoryBarrier{vk::AccessFlagBits::eShaderWrite, vk::AccessFlagBits::eShaderRead}, {}, {}
+            );
+        }
     }
 
     auto record_batch = [&](vk::PipelineLayout layout, const DrawBatchInfo &batch, bool region_b) {
-        const MainDrawPushConstants pc{{batch.DrawDataSlotOffset, transform_vertex_state_slot}};
+        const MainDrawPushConstants pc{batch.DrawDataSlotOffset};
         cb.pushConstants(layout, vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, sizeof(pc), &pc);
         const auto indirect_offset = region_b ? draw_list.IndirectCommands.size() * sizeof(vk::DrawIndexedIndirectCommand) : size_t{0};
         cb.drawIndexedIndirect(*buffers.RenderDraw.Indirect, batch.IndirectOffset + indirect_offset, batch.DrawCount, sizeof(vk::DrawIndexedIndirectCommand));
@@ -1448,4 +1692,208 @@ void RecordBlurStepsCommandBuffer(entt::registry &r, entt::entity viewport, vk::
     );
     RecordPhase(r, viewport, cb, DrawListUse::Reuse, RenderPhase::BlurResolve, 0, r.get<const PlaybackFrame>(viewport).Value);
     EndRecording(cb);
+}
+
+namespace {
+// Upload `entries` and their tiles, then record and submit one batched two-phase derive and wait for completion.
+// The output slots select the target buffers.
+void SubmitNormalDeriveNow(entt::registry &r, std::span<const NormalDeriveEntry> entries, uint32_t vertex_normal_slot, uint32_t seam_normal_slot, uint32_t face_normal_slot) {
+    const auto &meshes = r.ctx().get<const MeshStore>();
+    auto &buffers = r.ctx().get<GpuBuffers>();
+    std::vector<uvec2> face_tiles, gather_tiles;
+    for (uint32_t entry_index = 0; entry_index < entries.size(); ++entry_index) {
+        const auto &entry = entries[entry_index];
+        for (uint32_t t = 0, n = TileCountFor(entry.FaceCount); t < n; ++t) face_tiles.emplace_back(entry_index, t);
+        for (uint32_t t = 0, n = TileCountFor(entry.VertexCount + entry.SeamCount); t < n; ++t) gather_tiles.emplace_back(entry_index, t);
+    }
+    std::ranges::copy(entries, buffers.NormalDeriveEntries.SetCount<NormalDeriveEntry>(entries.size()).begin());
+    const auto tiles = buffers.DeriveTiles.SetCount<uvec2>(face_tiles.size() + gather_tiles.size());
+    std::ranges::copy(gather_tiles, std::ranges::copy(face_tiles, tiles.begin()).out);
+    // The one-shot dispatches through the same indirect args slots as the frame prelude.
+    // It runs between frames, and the ReRecord it raises refreshes the slots before the next submit.
+    WritePreludeArg(buffers, PreludeSlot::DeriveFaces, uint32_t(face_tiles.size()));
+    WritePreludeArg(buffers, PreludeSlot::DeriveGather, uint32_t(gather_tiles.size()));
+
+    const auto &vk = r.ctx().get<const VulkanResources>();
+    const auto &pipelines = r.ctx().get<const Pipelines>();
+    const auto &one_shot = r.ctx().get<const OneShotGpu>();
+    buffers.Ctx.FlushDeferredDescriptorUpdates(vk.Device);
+    const auto cb = *one_shot.Cb;
+    cb.reset({});
+    cb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
+#ifdef MVK_FORCE_STAGED_TRANSFERS
+    buffers.Ctx.RecordDeferredCopies(cb);
+#endif
+    auto derive_pc = MakeNormalDerivePc(buffers, meshes, vertex_normal_slot, seam_normal_slot, face_normal_slot);
+    RecordNormalDerive(cb, pipelines, buffers, derive_pc, PreludeSlot::DeriveFaces, 0, "DeriveFaces");
+    // The face normals land before the gathers read them.
+    cb.pipelineBarrier(
+        vk::PipelineStageFlagBits::eComputeShader, vk::PipelineStageFlagBits::eComputeShader, {},
+        vk::MemoryBarrier{vk::AccessFlagBits::eShaderWrite, vk::AccessFlagBits::eShaderRead}, {}, {}
+    );
+    derive_pc.Phase = 1;
+    derive_pc.FirstTile = uint32_t(face_tiles.size());
+    RecordNormalDerive(cb, pipelines, buffers, derive_pc, PreludeSlot::DeriveGather, 0, "DeriveGather");
+    // The derived writes land before the CPU reads them back through the mapped stores.
+    cb.pipelineBarrier(
+        vk::PipelineStageFlagBits::eComputeShader, vk::PipelineStageFlagBits::eHost, {},
+        vk::MemoryBarrier{vk::AccessFlagBits::eShaderWrite, vk::AccessFlagBits::eHostRead}, {}, {}
+    );
+    cb.end();
+    SubmitAndWait(vk.Queue, cb, *one_shot.Fence, vk.Device);
+    // The one-shot rewrote the per-frame derive entry and tile buffers, so the next submit rebuilds the draw list.
+    r.ctx().get<PendingRenderRequest>().Value = RenderRequest::ReRecord;
+}
+} // namespace
+
+void DeriveBaseNormalsNow(entt::registry &r, std::span<const entt::entity> mesh_entities) {
+    const auto &meshes = r.ctx().get<const MeshStore>();
+    std::vector<NormalDeriveEntry> entries;
+    entries.reserve(mesh_entities.size());
+    for (const auto entity : mesh_entities) {
+        const auto *mesh_buffers = r.try_get<const MeshBuffers>(entity);
+        const auto mesh = TryGetMesh(r, entity);
+        if (!mesh_buffers || !mesh) continue;
+        const auto store_id = mesh->GetStoreId();
+        auto entry = MakeDeriveEntryInputs(meshes, store_id, mesh_buffers->FaceIndices);
+        if (!entry) continue;
+        entry->VertexNormalOffset = entry->Vertices.Offset;
+        entry->SeamNormalOffset = meshes.GetBaseSeamNormalRange(store_id).Offset;
+        entry->FaceNormalOffset = entry->FaceDataOffset;
+        entries.emplace_back(*entry);
+    }
+    if (entries.empty()) return;
+    SubmitNormalDeriveNow(r, entries, meshes.GetBaseVertexNormalSlot(), meshes.GetBaseSeamNormalSlot(), meshes.GetBaseFaceNormalSlot());
+}
+
+namespace {
+// Decide whether the listed mesh entities keep their authored shading normals under morphing.
+// Targets authoring normal deltas decide on the CPU alone.
+// Position-only targets derive their full-weight poses in one batched submit-and-wait.
+// The derived pose tests whether derivation moves the normals authored shading would pin.
+// Runs after the base derive, since the pin test compares against the base normal stores.
+void UpdateAuthoredMorphShadingNow(entt::registry &r, std::span<const entt::entity> mesh_entities) {
+    auto &meshes = r.ctx().get<MeshStore>();
+    auto &buffers = r.ctx().get<GpuBuffers>();
+    // Each position-only target gets a derive entry at its full-weight pose, reading and writing the posed scratch.
+    struct PoseJob {
+        entt::entity Entity;
+        uint32_t TargetIndex;
+    };
+    std::vector<NormalDeriveEntry> entries;
+    std::vector<PoseJob> jobs;
+    uint32_t vertex_count_total = 0, seam_count_total = 0, face_count_total = 0;
+    for (const auto entity : mesh_entities) {
+        const auto *mesh_buffers = r.try_get<const MeshBuffers>(entity);
+        const auto mesh = TryGetMesh(r, entity);
+        if (!mesh_buffers || !mesh) continue;
+        const auto store_id = mesh->GetStoreId();
+        const auto target_count = meshes.GetMorphTargetCount(store_id);
+        // A mesh without authored normals shades by derivation alone, under any morph weights.
+        if (target_count == 0 || !meshes.HasAuthoredNormals(store_id)) continue;
+        const auto entry_inputs = MakeDeriveEntryInputs(meshes, store_id, mesh_buffers->FaceIndices);
+        if (!entry_inputs) continue;
+        // Targets authoring normal deltas settle the gate here.
+        meshes.UpdateMorphShadingAuthored(*mesh, {});
+        if (meshes.GetMorphShadingAuthored(store_id)) continue;
+        const auto vertex_count = entry_inputs->VertexCount;
+        const auto targets = meshes.GetMorphTargets(store_id);
+        for (uint32_t t = 0; t < target_count; ++t) {
+            // A target without position deltas leaves the pose at rest, pinning nothing.
+            const auto deltas = targets.subspan(size_t{t} * vertex_count, vertex_count);
+            if (std::ranges::all_of(deltas, [](const auto &d) { return d.PositionDelta == vec3{0}; })) continue;
+            auto entry = *entry_inputs;
+            entry.PosedPositionOffset = vertex_count_total;
+            entry.VertexNormalOffset = vertex_count_total;
+            entry.SeamNormalOffset = seam_count_total;
+            entry.FaceNormalOffset = face_count_total;
+            entries.emplace_back(entry);
+            jobs.emplace_back(entity, t);
+            vertex_count_total += vertex_count;
+            seam_count_total += entry.SeamCount;
+            face_count_total += entry.FaceCount;
+        }
+    }
+    if (entries.empty()) return;
+
+    // Fill each job's scratch positions with the base positions plus its target's full-weight deltas.
+    // Then derive the whole batch in one submit.
+    const auto positions = buffers.PosedPositions.SetCount<vec3>(vertex_count_total);
+    const auto vertex_normals = buffers.PosedVertexNormals.SetCount<vec3>(vertex_count_total);
+    const auto seam_normals = buffers.PosedSeamNormals.SetCount<vec3>(seam_count_total);
+    const auto face_normals = buffers.PosedFaceNormals.SetCount<vec3>(face_count_total);
+    for (size_t i = 0; i < jobs.size(); ++i) {
+        const auto store_id = GetMesh(r, jobs[i].Entity).GetStoreId();
+        const auto base_vertices = meshes.GetVertices(store_id);
+        const auto vertex_count = uint32_t(base_vertices.size());
+        const auto deltas = meshes.GetMorphTargets(store_id).subspan(size_t{jobs[i].TargetIndex} * vertex_count, vertex_count);
+        for (uint32_t v = 0; v < vertex_count; ++v) {
+            positions[entries[i].PosedPositionOffset + v] = base_vertices[v].Position + deltas[v].PositionDelta;
+        }
+    }
+    SubmitNormalDeriveNow(r, entries, buffers.PosedVertexNormals.Slot, buffers.PosedSeamNormals.Slot, buffers.PosedFaceNormals.Slot);
+
+    // Compare per mesh over its contiguous run of jobs.
+    for (size_t i = 0; i < jobs.size();) {
+        const auto entity = jobs[i].Entity;
+        std::vector<CornerNormalSources> poses;
+        for (; i < jobs.size() && jobs[i].Entity == entity; ++i) {
+            const auto &entry = entries[i];
+            poses.emplace_back(
+                vertex_normals.subspan(entry.VertexNormalOffset, entry.VertexCount),
+                seam_normals.subspan(entry.SeamNormalOffset, entry.SeamCount),
+                face_normals.subspan(entry.FaceNormalOffset, entry.FaceCount)
+            );
+        }
+        meshes.UpdateMorphShadingAuthored(GetMesh(r, entity), poses);
+    }
+}
+} // namespace
+
+void FinalizeNewMeshShadingNow(entt::registry &r, std::span<const entt::entity> mesh_entities) {
+    DeriveBaseNormalsNow(r, mesh_entities);
+    auto &meshes = r.ctx().get<MeshStore>();
+    for (const auto entity : mesh_entities) meshes.EncodeAuthoredCornerNormals(GetMesh(r, entity));
+    UpdateAuthoredMorphShadingNow(r, mesh_entities);
+}
+
+// Copy the mesh's posed positions and derived normals from the last submitted frame (fenced complete) into the canonical stores.
+// Returns true when any position changed.
+bool CommitPosedGeometry(entt::registry &r, entt::entity mesh_entity) {
+    const auto &posed_by_entity = r.ctx().get<const DrawState>().PosedByEntity;
+    const auto it = posed_by_entity.find(mesh_entity);
+    if (it == posed_by_entity.end()) return false;
+    const auto &pr = it->second;
+    auto &meshes = r.ctx().get<MeshStore>();
+    const auto &buffers = r.ctx().get<const GpuBuffers>();
+    const auto id = GetMesh(r, mesh_entity).GetStoreId();
+    const auto posed_positions = buffers.PosedPositions.GetSpan<vec3>({pr.PositionOffset(0), pr.VertexCount});
+    auto vertices = meshes.GetVertices(id);
+    bool any_moved = false;
+    for (uint32_t vi = 0; vi < pr.VertexCount; ++vi) {
+        if (vertices[vi].Position != posed_positions[vi]) {
+            vertices[vi].Position = posed_positions[vi];
+            any_moved = true;
+        }
+    }
+    if (any_moved) {
+        std::ranges::copy(buffers.PosedVertexNormals.GetSpan<vec3>({pr.VertexNormalOffset(0), pr.VertexCount}), meshes.GetBaseVertexNormals(id).begin());
+        std::ranges::copy(buffers.PosedSeamNormals.GetSpan<vec3>({pr.SeamNormalOffset(0), pr.SeamCount}), meshes.GetBaseSeamNormals(id).begin());
+        std::ranges::copy(buffers.PosedFaceNormals.GetSpan<vec3>({pr.FaceNormalOffset(0), pr.FaceCount}), meshes.GetBaseFaceNormals(id).begin());
+    }
+    return any_moved;
+}
+
+void SyncPreludeDispatchArgs(GpuBuffers &buffers) {
+    const bool live = std::exchange(buffers.PreludeStale, false);
+    const auto &groups = buffers.Prelude;
+    // Array order is the PreludeSlot order.
+    const std::array<vk::DispatchIndirectCommand, GpuBuffers::PreludeGroups::PassCount> args{{
+        {live ? groups.PosePrepass : 0u, 1u, 1u},
+        {live ? groups.DeriveFaces : 0u, 1u, 1u},
+        {live ? groups.BoundsReduce : 0u, 1u, 1u},
+        {live ? groups.DeriveGather : 0u, 1u, 1u},
+        {live ? groups.BoundsCombine : 0u, 1u, 1u},
+    }};
+    buffers.PreludeDispatchArgs.Update(as_bytes(args));
 }

@@ -1,0 +1,125 @@
+#version 450
+
+// Derives shading normals in two phases, one workgroup per 256-element tile.
+// Phase 0 computes each face's normalized vector-area normal over the tile map's face-tile prefix.
+// Positions come from the entry's posed range when it has one, else the vertex arena.
+// Phase 1 gathers per-vertex smooth normals over the vertex-fan CSR and sector normals over the seam CSR.
+// Each fan item contributes the phase-0 unit face normal weighted by its corner angle (Blender's weighting).
+// Sum orders are fixed by the CSR item and fan order, so results are bit-stable across frames.
+// The push constants select the dispatch's position and output buffers.
+#define BINDLESS_CUSTOM_DRAW_PASS_PC 1
+#define BINDLESS_NO_DRAW_LOOKUP 1
+#include "NormalDerivePushConstants.glsl"
+#include "Bindless.glsl"
+#include "NormalDeriveEntry.glsl"
+#include "FanItemEncoding.glsl"
+
+layout(local_size_x = 256) in;
+
+layout(set = 0, binding = BINDING_Buffer, scalar) readonly buffer NormalDeriveEntryBuffer {
+    NormalDeriveEntry Entries[];
+} NormalDeriveEntryBuffers[];
+
+layout(set = 0, binding = BINDING_Buffer, scalar) readonly buffer AdjacencyBuffer {
+    uint Words[];
+} AdjacencyBuffers[];
+
+layout(set = 0, binding = BINDING_Buffer, scalar) buffer VertexNormalBuffer {
+    vec3 Normals[];
+} VertexNormalBuffers[];
+
+layout(set = 0, binding = BINDING_Buffer, scalar) buffer SeamNormalBuffer {
+    vec3 Normals[];
+} SeamNormalBuffers[];
+
+layout(set = 0, binding = BINDING_Buffer, scalar) buffer FaceNormalWriteBuffer {
+    vec3 Normals[];
+} FaceNormalWriteBuffers[];
+
+// Vertex `i`'s current position: the entry's posed range when it has one, else the vertex arena.
+vec3 Position(NormalDeriveEntry entry, uint i) {
+    return entry.PosedPositionOffset != INVALID_OFFSET ?
+        PosedPositionBuffers[pc.PositionSlot].Positions[entry.PosedPositionOffset + i] :
+        VertexBuffers[entry.Vertices.Slot].Vertices[entry.Vertices.Offset + i].Position;
+}
+
+// Unnormalized cross product of triangle `t`'s positions.
+vec3 TriangleCross(NormalDeriveEntry entry, uint t) {
+    const uint i0 = IndexBuffers[entry.FaceIndices.Slot].Indices[entry.FaceIndices.Offset + t * 3u];
+    const uint i1 = IndexBuffers[entry.FaceIndices.Slot].Indices[entry.FaceIndices.Offset + t * 3u + 1u];
+    const uint i2 = IndexBuffers[entry.FaceIndices.Slot].Indices[entry.FaceIndices.Offset + t * 3u + 2u];
+    return cross(Position(entry, i1) - Position(entry, i0), Position(entry, i2) - Position(entry, i0));
+}
+
+// Vertex index at loop position `j` of the face whose fan triangles span [first, first + valence - 2).
+// Fan triangle `t` holds corners [loop 0, loop t - first + 1, loop t - first + 2].
+uint LoopVertexIndex(NormalDeriveEntry entry, uint first, uint valence, uint j) {
+    const uint base = entry.FaceIndices.Offset;
+    return j == 0u          ? IndexBuffers[entry.FaceIndices.Slot].Indices[base + first * 3u] :
+        j + 1u < valence    ? IndexBuffers[entry.FaceIndices.Slot].Indices[base + (first + j - 1u) * 3u + 1u] :
+                              IndexBuffers[entry.FaceIndices.Slot].Indices[base + (first + valence - 3u) * 3u + 2u];
+}
+
+// Triangle range [first, end) of face `f`, from the face-first-triangle table.
+// The last face runs to the entry's triangle count.
+uvec2 FaceTriangleRange(NormalDeriveEntry entry, uint f) {
+    const uint first = ObjectIdBuffers[pc.FaceFirstTriangleSlot].Ids[entry.FaceDataOffset + f];
+    const uint end = f + 1u < entry.FaceCount ? ObjectIdBuffers[pc.FaceFirstTriangleSlot].Ids[entry.FaceDataOffset + f + 1u] : entry.TriangleCount;
+    return uvec2(first, end);
+}
+
+// One fan item's contribution: the phase-0 face normal weighted by its corner angle at the loop position.
+// Zero for degenerate faces and corners.
+vec3 FanContribution(NormalDeriveEntry entry, uint item) {
+    const uint f = item & FanItemEncoding_FaceMask;
+    const uint k = item >> FanItemEncoding_LoopShift;
+    const vec3 fn = FaceNormalWriteBuffers[pc.FaceNormalSlot].Normals[entry.FaceNormalOffset + f];
+    if (fn == vec3(0)) return vec3(0);
+    const uvec2 range = FaceTriangleRange(entry, f);
+    const uint first = range.x;
+    const uint valence = range.y - range.x + 2u;
+    const vec3 p = Position(entry, LoopVertexIndex(entry, first, valence, k));
+    const vec3 e_prev = Position(entry, LoopVertexIndex(entry, first, valence, (k + valence - 1u) % valence)) - p;
+    const vec3 e_next = Position(entry, LoopVertexIndex(entry, first, valence, (k + 1u) % valence)) - p;
+    const float d = length(e_prev) * length(e_next);
+    if (d == 0.0) return vec3(0);
+    return fn * acos(clamp(dot(e_prev, e_next) / d, -1.0, 1.0));
+}
+
+// Normalized sum of the fan contributions a CSR bucket lists.
+vec3 GatherNormal(NormalDeriveEntry entry, uint offsets_base, uint items_base, uint bucket) {
+    const uint begin = AdjacencyBuffers[pc.AdjacencySlot].Words[offsets_base + bucket];
+    const uint end = AdjacencyBuffers[pc.AdjacencySlot].Words[offsets_base + bucket + 1u];
+    vec3 n = vec3(0);
+    for (uint i = begin; i < end; ++i) {
+        n += FanContribution(entry, AdjacencyBuffers[pc.AdjacencySlot].Words[items_base + i]);
+    }
+    return NormalizeOrZero(n);
+}
+
+// Face `f`'s normalized vector-area normal, the summed crosses of its fan triangles.
+// A non-planar face shades uniformly under it, and the gather phase reads it back.
+vec3 FaceNormal(NormalDeriveEntry entry, uint f) {
+    const uvec2 range = FaceTriangleRange(entry, f);
+    vec3 n = vec3(0);
+    for (uint t = range.x; t < range.y; ++t) n += TriangleCross(entry, t);
+    return NormalizeOrZero(n);
+}
+
+void main() {
+    const uvec2 tile = TileMapBuffers[pc.TileMapSlot].Tiles[pc.FirstTile + gl_WorkGroupID.x];
+    const NormalDeriveEntry entry = NormalDeriveEntryBuffers[pc.EntriesSlot].Entries[tile.x];
+    const uint i = tile.y * 256u + gl_LocalInvocationID.x;
+    if (pc.Phase == 0u) {
+        if (i < entry.FaceCount) {
+            FaceNormalWriteBuffers[pc.FaceNormalSlot].Normals[entry.FaceNormalOffset + i] = FaceNormal(entry, i);
+        }
+    } else if (i < entry.VertexCount) {
+        VertexNormalBuffers[pc.VertexNormalSlot].Normals[entry.VertexNormalOffset + i] =
+            GatherNormal(entry, entry.VertexAdjacencyOffset, entry.VertexAdjacencyOffset + entry.VertexCount + 1u, i);
+    } else if (i < entry.VertexCount + entry.SeamCount) {
+        const uint s = i - entry.VertexCount;
+        SeamNormalBuffers[pc.SeamNormalSlot].Normals[entry.SeamNormalOffset + s] =
+            GatherNormal(entry, entry.SeamFanOffset, entry.SeamFanOffset + entry.SeamCount + 1u, s);
+    }
+}

@@ -86,10 +86,6 @@ layout(set = 0, binding = BINDING_FacePrimitiveBuffer, scalar) readonly buffer F
     uint PrimitiveIndices[];
 } FacePrimitiveBuffers[];
 
-layout(set = 0, binding = BINDING_CornerNormalBuffer, scalar) readonly buffer CornerNormalBufferBlock {
-    vec3 Normals[];
-} CornerNormalBuffers[];
-
 layout(set = 0, binding = BINDING_CornerTangentBuffer, scalar) readonly buffer CornerTangentBufferBlock {
     vec4 Tangents[];
 } CornerTangentBuffers[];
@@ -102,6 +98,64 @@ layout(set = 0, binding = BINDING_CornerUvBuffer, scalar) readonly buffer Corner
     vec2 Uvs[];
 } CornerUvBuffers[];
 
+layout(set = 0, binding = BINDING_Buffer, scalar) readonly buffer CornerClassBufferBlock {
+    uint Classes[];
+} CornerClassBuffers[];
+
+// Authored corner-normal (polar, azimuth) offsets from the derived normal.
+// They pack to the corners the mask marks present.
+layout(set = 0, binding = BINDING_Buffer, scalar) readonly buffer CustomCornerNormalBufferBlock {
+    vec2 Offsets[];
+} CustomCornerNormalBuffers[];
+
+// Custom corner-normal presence: one (bitset word, exclusive rank) pair per 32 mesh corners.
+layout(set = 0, binding = BINDING_Buffer, scalar) readonly buffer CustomCornerMaskBufferBlock {
+    uvec2 WordRanks[];
+} CustomCornerMaskBuffers[];
+
+// Composed sector normal per seam corner, for static face draws.
+layout(set = 0, binding = BINDING_Buffer, scalar) readonly buffer BaseSeamNormalBufferBlock {
+    vec3 Normals[];
+} BaseSeamNormalBuffers[];
+
+// Base per-vertex normals, one vec3 per vertex-arena slot.
+// Derived smooth normals for triangle meshes, authored normals for face-less meshes (bones, point clouds).
+layout(set = 0, binding = BINDING_Buffer, scalar) readonly buffer BaseVertexNormalBufferBlock {
+    vec3 Normals[];
+} BaseVertexNormalBuffers[];
+
+// Derived face normals, one vec3 per face-arena slot, for static face draws.
+layout(set = 0, binding = BINDING_Buffer, scalar) readonly buffer BaseFaceNormalBufferBlock {
+    vec3 Normals[];
+} BaseFaceNormalBuffers[];
+
+// Compute-pass tiling: one element per workgroup, (entry index, tile index) over 256-element tiles.
+layout(set = 0, binding = BINDING_Buffer, scalar) readonly buffer TileMapBufferBlock {
+    uvec2 Tiles[];
+} TileMapBuffers[];
+
+// Current-pose vertex positions in mesh-local space, and the normals derived from them.
+layout(set = 0, binding = BINDING_Buffer, scalar) readonly buffer PosedPositionBufferBlock {
+    vec3 Positions[];
+} PosedPositionBuffers[];
+
+layout(set = 0, binding = BINDING_Buffer, scalar) readonly buffer PosedVertexNormalBufferBlock {
+    vec3 Normals[];
+} PosedVertexNormalBuffers[];
+
+layout(set = 0, binding = BINDING_Buffer, scalar) readonly buffer PosedSeamNormalBufferBlock {
+    vec3 Normals[];
+} PosedSeamNormalBuffers[];
+
+layout(set = 0, binding = BINDING_Buffer, scalar) readonly buffer PosedFaceNormalBufferBlock {
+    vec3 Normals[];
+} PosedFaceNormalBuffers[];
+
+// Weight-summed authored morph normal deltas, indexed like the posed positions.
+layout(set = 0, binding = BINDING_Buffer, scalar) readonly buffer PosedMorphNormalDeltaBufferBlock {
+    vec3 Deltas[];
+} PosedMorphNormalDeltaBuffers[];
+
 const uint INVALID_SLOT = 0xffffffffu;
 const uint INVALID_OFFSET = 0xffffffffu;
 const uint STATE_SELECTED = 1u << 0;
@@ -110,7 +164,27 @@ const uint STATE_EXCITED = 1u << 2;
 
 #ifndef BINDLESS_NO_DRAW_LOOKUP
 DrawData GetDrawData() {
-    const uint dense = VisibleIndexBuffers[nonuniformEXT(SceneViewUBO.VisibleIndexSlot)].Indices[pc.VertexTransform.DrawDataOffset + gl_InstanceIndex];
+    const uint dense = VisibleIndexBuffers[nonuniformEXT(SceneViewUBO.VisibleIndexSlot)].Indices[pc.DrawDataOffset + gl_InstanceIndex];
     return DrawDataBuffers[nonuniformEXT(SceneViewUBO.DrawDataSlot)].Draws[dense];
 }
 #endif
+
+// Mesh-local vertex position: the pose pre-pass's current-pose position when the draw has one.
+vec3 GetLocalPosition(DrawData draw, uint idx) {
+    return draw.PosedPositionOffset != INVALID_OFFSET ?
+        PosedPositionBuffers[nonuniformEXT(SceneViewUBO.PosedPositionSlot)].Positions[draw.PosedPositionOffset + idx] :
+        VertexBuffers[draw.VertexSlot].Vertices[draw.VertexOffset + idx].Position;
+}
+
+// Per-vertex normal: the posed normal when the draw has one, else the base normal at the vertex-arena slot.
+vec3 GetVertexNormal(DrawData draw, uint idx) {
+    return draw.PosedVertexNormalOffset != INVALID_OFFSET ?
+        PosedVertexNormalBuffers[nonuniformEXT(SceneViewUBO.PosedVertexNormalSlot)].Normals[draw.PosedVertexNormalOffset + idx] :
+        BaseVertexNormalBuffers[nonuniformEXT(SceneViewUBO.BaseVertexNormalSlot)].Normals[draw.VertexOffset + idx];
+}
+
+// Normalized direction of `n`, or zero when `n` has no length.
+vec3 NormalizeOrZero(vec3 n) {
+    const float len = length(n);
+    return len > 0.0 ? n / len : vec3(0);
+}

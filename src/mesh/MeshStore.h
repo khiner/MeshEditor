@@ -7,6 +7,7 @@
 #include "Range.h"
 #include "SlottedRange.h"
 #include "gpu/BoneDeformVertex.h"
+#include "gpu/CornerClass.h"
 #include "gpu/MorphTargetVertex.h"
 
 #include <expected>
@@ -54,6 +55,13 @@ struct SharpnessSummary {
     bool Any, All;
 };
 
+// One pose's per-class corner-normal sources, each span entry-relative: the base stores for the rest pose, or the normals derived from a morph target's full-weight pose.
+struct CornerNormalSources {
+    std::span<const vec3> VertexNormals;
+    std::span<const vec3> SeamNormals;
+    std::span<const vec3> FaceNormals;
+};
+
 // Per-source-primitive metadata; all vectors indexed by primitive.
 struct MeshPrimitives {
     std::vector<uint32_t> FacePrimitiveIndices{}; // per-face source primitive index
@@ -96,9 +104,6 @@ struct MeshStore {
     SlottedRange GetOverlayVerticesRange(uint32_t id) const;
     void ReleaseOverlay(uint32_t id);
 
-    void SetPositions(const Mesh &, std::span<const vec3>);
-    void SetPosition(const Mesh &, uint32_t index, vec3 position); // Single vertex, no normal update
-
     std::span<const Vertex> GetVertices(uint32_t id) const;
     std::span<Vertex> GetVertices(uint32_t id);
     SlottedRange GetVerticesRange(uint32_t id) const;
@@ -107,6 +112,7 @@ struct MeshStore {
     uint32_t GetMorphTargetCount(uint32_t id) const { return Entries.at(id).MorphTargetCount; }
     uint32_t GetTriangleCount(uint32_t id) const { return Entries.at(id).TriangleCount; }
     std::span<const float> GetDefaultMorphWeights(uint32_t id) const { return Entries.at(id).DefaultMorphWeights; }
+    bool MorphTargetsAuthorNormalDeltas(uint32_t id) const;
 
     // Source-form readback used by glTF export. Empty span when the mesh lacks the channel.
     std::span<const BoneDeformVertex> GetBoneDeform(uint32_t id) const;
@@ -114,7 +120,6 @@ struct MeshStore {
 
     // Base descriptor slots of the per-mesh GPU buffers (for shader push constants).
     uint32_t GetVertexStateSlot() const;
-    uint32_t GetCornerNormalSlot() const;
     uint32_t GetCornerTangentSlot() const;
     uint32_t GetCornerColorSlot() const;
     uint32_t GetCornerUvSlot() const;
@@ -123,6 +128,14 @@ struct MeshStore {
     uint32_t GetPrimitiveMaterialSlot() const;
     uint32_t GetBoneDeformSlot() const;
     uint32_t GetMorphTargetSlot() const;
+    uint32_t GetAdjacencySlot() const;
+    uint32_t GetCornerClassSlot() const;
+    uint32_t GetCustomCornerMaskSlot() const;
+    uint32_t GetCustomCornerNormalSlot() const;
+    uint32_t GetBaseSeamNormalSlot() const;
+    uint32_t GetBaseVertexNormalSlot() const;
+    uint32_t GetBaseFaceNormalSlot() const;
+    uint32_t GetFaceFirstTriangleSlot() const;
 
     std::span<const uint8_t> GetVertexStates(uint32_t id) const;
     // Canonical per-face and per-edge sharpness: 1 = shading discontinuity (flat face / sharp edge).
@@ -133,11 +146,42 @@ struct MeshStore {
     std::span<uint8_t> GetEdgeSharpness(uint32_t id);
     // Any/all summary of the face sharpness bytes.
     SharpnessSummary GetFaceSharpnessSummary(uint32_t id) const;
-    std::span<const vec3> GetCornerNormals(uint32_t id) const;
+    // Compose per-corner shading normals from the classification and the base normal stores, in triangulated face-fan order, with authored corner offsets applied where non-identity.
+    // Requires current base stores (the derive pass ran since the last position/sharpness write).
+    // Returns scratch storage valid until the next call.
+    std::span<const vec3> GetCornerNormals(const Mesh &) const;
+    // Encode the stashed authored corner normals as offsets from the derived corner normals, filling the custom corner-normal layer.
+    // Consumes the stash, so it runs once, after the base normals derive.
+    void EncodeAuthoredCornerNormals(const Mesh &);
+    // Decide whether the mesh keeps its authored shading normals under morphing.
+    // True when any target authors normal deltas, or when any listed full-weight pose derives corner normals beyond the authored match gate from the rest normals it would pin.
+    // Requires derived base normals.
+    void UpdateMorphShadingAuthored(const Mesh &, std::span<const CornerNormalSources>);
+    // CSR vertex-to-edge incidence, edge items in edge order.
+    VertexAdjacency GetVertexEdgeAdjacency(uint32_t id) const;
+    Range GetVertexFanAdjacencyRange(uint32_t id) const { return Entries.at(id).VertexFanAdjacency; }
+    // The class-buffer offset, or a sentinel when the mesh stores none (InvalidOffset = every corner Vertex, UniformFaceOffset = every corner Face).
+    uint32_t GetCornerClassOffset(uint32_t id) const;
+    Range GetCustomCornerMaskRange(uint32_t id) const { return Entries.at(id).CustomCornerMasks; }
+    Range GetCustomCornerNormalRange(uint32_t id) const { return Entries.at(id).CustomCornerNormals; }
+    Range GetBaseSeamNormalRange(uint32_t id) const { return Entries.at(id).BaseSeamNormals; }
+    bool HasAuthoredNormals(uint32_t id) const { return Entries.at(id).HasAuthoredNormals; }
+    bool GetMorphShadingAuthored(uint32_t id) const { return Entries.at(id).MorphShadingAuthored; }
+    Range GetSeamFanRange(uint32_t id) const { return Entries.at(id).SeamFans; }
+    uint32_t GetSeamCornerCount(uint32_t id) const { return Entries.at(id).SeamCornerCount; }
+    Range GetFaceDataRange(uint32_t id) const { return Entries.at(id).FaceData; }
+    // Base per-vertex normals at the entry's vertex-arena slots: derived for triangle meshes, authored for face-less meshes.
+    std::span<const vec3> GetBaseVertexNormals(uint32_t id) const;
+    std::span<vec3> GetBaseVertexNormals(uint32_t id);
+    std::span<const vec3> GetBaseFaceNormals(uint32_t id) const;
+    std::span<vec3> GetBaseFaceNormals(uint32_t id);
+    std::span<const vec3> GetBaseSeamNormals(uint32_t id) const;
+    std::span<vec3> GetBaseSeamNormals(uint32_t id);
+    // Authored normals of face-less meshes, in vertex order (empty when the mesh has none).
+    std::span<const vec3> GetPointNormals(uint32_t id) const;
     SlottedRange GetFaceStateRange(uint32_t id) const;
     SlottedRange GetEdgeStateRange(uint32_t id) const;
     Range GetEdgeSharpnessRange(uint32_t id) const;
-    Range GetCornerNormalRange(uint32_t id) const;
     // Corner-domain attribute layers (one value per triangulated face corner, fan order).
     // Empty range/span when the mesh lacks the channel.
     Range GetCornerTangentRange(uint32_t id) const;
@@ -170,13 +214,11 @@ struct MeshStore {
     void UpdateFaceStatesFromEdges(const Mesh &);
     void UpdateVertexStatesFromFaces(const Mesh &, std::optional<uint32_t> active_face = {});
     void UpdateVertexStatesFromEdges(const Mesh &, std::optional<uint32_t> active_edge = {});
-    void UpdateVertexNormals(const Mesh &);
     // Write edge sharpness from face dihedral angles: sharp where the angle exceeds `angle` (radians). Boundary edges stay smooth.
     void SetEdgeSharpnessByAngle(const Mesh &, float angle);
-    // Derive per-corner shading normals from positions, vertex normals, and sharpness, in triangulated face-fan index order.
-    void UpdateCornerNormals(const Mesh &);
-    // Derive from `positions` instead of the stored positions, matching what committing them produces.
-    void UpdateCornerNormals(const Mesh &, std::span<const vec3> positions);
+    // Classify each corner from the sharpness stores: vertex-normal, face-normal, or a seam sector of incident triangles.
+    // Call after any sharpness write, then run the base derive pass to refill the base normal stores.
+    void UpdateCornerClassification(const Mesh &);
 
     void Release(uint32_t id);
 
@@ -185,10 +227,14 @@ struct MeshStore {
     // deterministically — the mesh-arena analog of the entity-allocator reset in ClearScene.
     void Clear();
 
-    // Serialize all mesh arenas and the StoreId->Range entry table to a self-contained blob, and restore from one.
+    // Serialize the source mesh arenas and the StoreId->Range entry table to a self-contained blob, and restore from one.
     // Restore writes the bytes back into the existing GPU buffers and re-establishes the entries, keeping every Range/StoreId offset valid.
+    // The derived arenas (adjacency CSRs, corner classes, seam normals) rebuild via RebuildDerived after restore.
     std::vector<std::byte> Serialize() const;
     void Deserialize(std::span<const std::byte>);
+    // Rebuild the meshes' derived adjacency, corner classification, and seam normals after Deserialize.
+    // Runs in store-id order so the arena layout is deterministic (the span is sorted in place).
+    void RebuildDerived(std::span<Mesh>);
 
 private:
     struct Buffers;
@@ -197,17 +243,32 @@ private:
     struct Entry {
         Range Vertices;
         Range FaceData; // Per-face range shared by FaceFirstTriangleBuffer and FaceStateBuffer
-        Range CornerNormals{}; // One normal per triangulated face corner
-        Range CustomCornerNormals{}; // Authored corner normals, vec3(0) = use derived
+        Range CornerClasses{}; // One CornerClass value per corner from the sharpness stores, empty when every corner takes UniformCornerClass
+        Range CustomCornerMasks{}; // Custom corner-normal presence: a (bitset word, exclusive rank) pair per 32 corners
+        Range CustomCornerNormals{}; // Authored corner-normal (polar, azimuth) offsets from the derived normal, packed to the masked corners
         Range CornerTangents{}, CornerColors{}; // Corner-domain attribute layers
         std::array<Range, 4> CornerUvs{};
         Range EdgeSharpness{}; // One byte per edge, 1 = sharp
         Range EdgeStates{}, TriangleFaceIds{}, FacePrimitives{}, PrimitiveMaterials{};
+        // CSR vertex incidence, each range holding (vertex count + 1) offsets followed by the items
+        Range VertexFanAdjacency{}, VertexEdgeAdjacency{};
+        // Seam-corner sector CSR: (SeamCornerCount + 1) offsets, then fan items (FanItemEncoding)
+        Range SeamFans{};
+        Range BaseSeamNormals{}; // Composed sector normal per seam corner
+        Range PointNormals{}; // Authored normals of face-less meshes, in vertex order
         Range BoneDeform{}, MorphTargets{};
+        uint32_t SeamCornerCount{0};
         uint32_t MorphTargetCount{0};
         uint32_t TriangleCount{0};
+        CornerClass UniformCornerClass{CornerClass::Vertex}; // Every corner's class while CornerClasses is empty
+        // Whether the source authored vertex normals, so shading may stay authored under morphing (glTF semantics).
+        bool HasAuthoredNormals{false};
+        // The mesh's morph shading keeps its authored normals, because a target authors normal deltas or pins normals that derivation would move.
+        bool MorphShadingAuthored{false};
         std::vector<float> DefaultMorphWeights{};
         std::vector<PrimitiveTriangleRange> PrimitiveTriangleRanges{};
+        // Authored corner normals held until EncodeAuthoredCornerNormals consumes them once the base normal stores are derived
+        std::vector<vec3> AuthoredCornerNormals{};
         bool Alive{false};
     };
 
@@ -223,10 +284,15 @@ private:
         uint32_t Primitives{};
         uint32_t BoneDeformVertices{}, MorphTargetEntries{};
         uint32_t CornerTangents{}, CornerColors{}, CornerUvs{};
+        uint32_t AdjacencyWords{};
     } Pending{};
 
     uint32_t AcquireId(Entry &&);
-    void ComposeCustomCornerNormals(uint32_t id, std::span<vec3> corners) const;
+    // GetCornerNormals with the mesh's triangulated index stream already at hand.
+    std::span<const vec3> GetCornerNormals(const Mesh &, std::span<const uint32_t> indices) const;
+    // Fill the base vertex-normal mirror over `vertices`: a face-less mesh's point normals, zero otherwise (triangle meshes rederive the region).
+    void FillBaseVertexNormalMirror(Range vertices, Range point_normals);
+    void BuildVertexAdjacency(const Mesh &);
     Range AllocateVertices(uint32_t count);
     Range AllocateFaces(uint32_t count);
     std::span<uint8_t> GetFaceStates(Range);

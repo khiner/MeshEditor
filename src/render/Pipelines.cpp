@@ -9,6 +9,7 @@
 #include "gpu/MotionBlurGatherPushConstants.h"
 #include "gpu/MotionBlurTilesDilatePushConstants.h"
 #include "gpu/MotionBlurTilesFlattenPushConstants.h"
+#include "gpu/NormalDerivePushConstants.h"
 #include "gpu/ObjectPickPushConstants.h"
 #include "gpu/SelectionDrawPushConstants.h"
 #include "gpu/SelectionElementPushConstants.h"
@@ -576,7 +577,10 @@ Pipelines::Pipelines(vk::PhysicalDevice pd, PipelineContext ctx)
       ElementPick{CreateCompute(Ctx, "ElementPick.comp", sizeof(ElementPickPushConstants))},
       BoxSelect{CreateCompute(Ctx, "BoxSelect.comp", sizeof(BoxSelectPushConstants))},
       UpdateSelectionState{CreateCompute(Ctx, "UpdateSelectionState.comp", sizeof(UpdateSelectionStatePushConstants))},
+      PosePrepass{CreateCompute(Ctx, "PosePrepass.comp", sizeof(BoundsReducePushConstants))},
+      VertexNormalDerive{CreateCompute(Ctx, "VertexNormalDerive.comp", sizeof(NormalDerivePushConstants))},
       BoundsReduce{CreateCompute(Ctx, "BoundsReduce.comp", sizeof(BoundsReducePushConstants))},
+      BoundsCombine{CreateCompute(Ctx, "BoundsCombine.comp", sizeof(BoundsReducePushConstants))},
       FrustumCull{CreateCompute(Ctx, "FrustumCull.comp", sizeof(FrustumCullPushConstants))},
       DepthPyramidReduce{CreateCompute(Ctx, "DepthPyramidReduce.comp", sizeof(DepthPyramidReducePushConstants))},
       MotionBlurTilesFlatten{CreateCompute(Ctx, "MotionBlurTilesFlatten.comp", sizeof(MotionBlurTilesFlattenPushConstants))},
@@ -606,7 +610,10 @@ void Pipelines::CompileShaders() {
     ElementPick.Compile();
     BoxSelect.Compile();
     UpdateSelectionState.Compile();
+    PosePrepass.Compile();
+    VertexNormalDerive.Compile();
     BoundsReduce.Compile();
+    BoundsCombine.Compile();
     FrustumCull.Compile();
     DepthPyramidReduce.Compile();
     MotionBlurTilesFlatten.Compile();

@@ -14,7 +14,7 @@ void main() {
 
     const mat4 M = trs_to_mat4(world);
     const vec3 world_pos = (M * vec4(vert.Position, 1.0)).xyz;
-    const vec3 view_normal = SceneViewUBO.ViewRotation * normalize(mat3(M) * vert.Normal);
+    const vec3 view_normal = SceneViewUBO.ViewRotation * normalize(mat3(M) * GetVertexNormal(draw, idx));
 
     // Object mode: neutral shadow, no selection tint
     const bool is_object_mode = SceneViewUBO.InteractionMode == InteractionMode_Object;

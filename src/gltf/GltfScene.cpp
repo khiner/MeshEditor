@@ -2126,9 +2126,7 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
                 morph_summary = {scene_mesh.MorphData->TargetCount, scene_mesh.MorphData->DefaultWeights};
             }
             // Primitives without NORMAL are flat-shaded per the glTF spec.
-            const auto has_normal_flag = [](uint32_t flags) { return (flags & MeshAttributeBit_Normal) != 0; };
-            const bool any_normals = std::ranges::any_of(layout.AttributeFlags, has_normal_flag);
-            const bool all_normals = std::ranges::all_of(layout.AttributeFlags, has_normal_flag);
+            const bool any_normals = std::ranges::any_of(layout.AttributeFlags, [](uint32_t flags) { return (flags & MeshAttributeBit_Normal) != 0; });
             auto mesh = ctx.Meshes.CreateMesh(
                 std::move(*scene_mesh.Triangles), std::move(scene_mesh.TriangleAttrs), std::move(scene_mesh.TrianglePrimitives),
                 !any_normals, std::move(scene_mesh.DeformData), std::move(scene_mesh.MorphData), /*weld=*/true
@@ -2139,17 +2137,7 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
             r.emplace<Path>(mesh_entity, source_path);
             r.emplace<SourceMeshIndex>(mesh_entity, mi);
             r.emplace<SourceMeshKind>(mesh_entity, MeshKind::Triangles);
-            const auto &attr_flags = r.emplace<MeshSourceLayout>(mesh_entity, std::move(layout)).AttributeFlags;
-            if (any_normals && !all_normals) {
-                // Mixed: mark the normal-less primitives' faces sharp.
-                const auto store_id = GetMesh(r, mesh_entity).GetStoreId();
-                const auto face_prims = ctx.Meshes.GetFacePrimitiveIndices(store_id);
-                auto sharpness = ctx.Meshes.GetFaceSharpness(store_id);
-                for (uint32_t fi = 0; fi < face_prims.size(); ++fi) {
-                    if (face_prims[fi] < attr_flags.size() && !has_normal_flag(attr_flags[face_prims[fi]])) sharpness[fi] = 1;
-                }
-                r.emplace<MeshShadingDirty>(mesh_entity);
-            }
+            r.emplace<MeshSourceLayout>(mesh_entity, std::move(layout));
             if (!scene_mesh.Name.empty()) r.emplace<MeshName>(mesh_entity, scene_mesh.Name);
             if (mesh_pbr_mask != 0) r.emplace<PbrMeshFeatures>(mesh_entity, mesh_pbr_mask);
             mesh_morphs.emplace_back(std::move(morph_summary));
@@ -3686,13 +3674,13 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
     }
 
     asset.meshes.reserve(mesh_groups.size());
-    // For non-triangle (Lines/Points) primitives: emit NORMAL/COLOR_0 iff at least one vertex
-    // has a non-default value (sentinel = NORMAL=0, COLOR_0=(1,1,1,1)). CPU stores vec4 colors.
-    const auto emit_non_triangle_attrs = [&](fastgltf::pmr::SmallVector<fastgltf::Attribute, 4> &out, std::span<const Vertex> verts) {
-        if (std::ranges::any_of(verts, [](const auto &v) { return v.Normal != vec3{0}; })) {
-            out.emplace_back(fastgltf::Attribute{"NORMAL", AddFieldAccessor.template operator()<vec3>(verts, &Vertex::Normal, fastgltf::AccessorType::Vec3, fastgltf::BufferTarget::ArrayBuffer)});
+    // For non-triangle (Lines/Points) primitives: emit NORMAL from the authored point normals.
+    // COLOR_0 emits iff at least one vertex has a non-default value (sentinel = (1,1,1,1)).
+    const auto emit_non_triangle_attrs = [&](fastgltf::pmr::SmallVector<fastgltf::Attribute, 4> &out, uint32_t store_id) {
+        if (const auto point_normals = meshes.GetPointNormals(store_id); !point_normals.empty()) {
+            out.emplace_back(fastgltf::Attribute{"NORMAL", AddDataAccessor(point_normals, fastgltf::AccessorType::Vec3, fastgltf::ComponentType::Float, fastgltf::BufferTarget::ArrayBuffer)});
         }
-        if (std::ranges::any_of(verts, [](const auto &v) { return v.Color != vec4{1}; })) {
+        if (const auto verts = meshes.GetVertices(store_id); std::ranges::any_of(verts, [](const auto &v) { return v.Color != vec4{1}; })) {
             out.emplace_back(fastgltf::Attribute{"COLOR_0", AddFieldAccessor.template operator()<vec4>(verts, &Vertex::Color, fastgltf::AccessorType::Vec4, fastgltf::BufferTarget::ArrayBuffer)});
         }
     };
@@ -3723,7 +3711,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             const auto total_vcount = vertices.size();
             const auto face_primitives = meshes.GetFacePrimitiveIndices(store_id);
             const auto primitive_materials = meshes.GetPrimitiveMaterialIndices(store_id);
-            const auto corner_normals = meshes.GetCornerNormals(store_id);
+            const auto corner_normals = meshes.GetCornerNormals(mesh);
             const auto corner_tangents = meshes.GetCornerTangents(store_id);
             const auto corner_colors = meshes.GetCornerColors(store_id);
             const std::array corner_uv_sets{meshes.GetCornerUvs(store_id, 0), meshes.GetCornerUvs(store_id, 1), meshes.GetCornerUvs(store_id, 2), meshes.GetCornerUvs(store_id, 3)};
@@ -3732,8 +3720,8 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             const auto *layout_ptr = r.try_get<const MeshSourceLayout>(group.Triangles);
             const MeshSourceLayout synthesized_layout = layout_ptr ? MeshSourceLayout{} : [&] {
                 MeshSourceLayout out;
-                uint32_t flags = 0;
-                if (std::ranges::any_of(vertices, [](const auto &v) { return v.Normal != vec3{0}; })) flags |= MeshAttributeBit_Normal;
+                // Triangle-mesh normals are always derivable, so runtime meshes always emit them.
+                uint32_t flags = MeshAttributeBit_Normal;
                 if (!corner_tangents.empty()) flags |= MeshAttributeBit_Tangent;
                 if (!corner_colors.empty()) flags |= MeshAttributeBit_Color0;
                 for (uint32_t set = 0; set < corner_uv_sets.size(); ++set) {
@@ -3974,7 +3962,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
                 }
                 fastgltf::pmr::SmallVector<fastgltf::Attribute, 4> attrs;
                 attrs.emplace_back(fastgltf::Attribute{"POSITION", AddPositionFieldAccessor.template operator()<Vertex>(vertices, &Vertex::Position, fastgltf::BufferTarget::ArrayBuffer)});
-                emit_non_triangle_attrs(attrs, vertices);
+                emit_non_triangle_attrs(attrs, mesh.GetStoreId());
                 push_prim(fastgltf::PrimitiveType::Lines, std::move(attrs), AddDataAccessor(std::span<const uint32_t>(idx), fastgltf::AccessorType::Scalar, fastgltf::ComponentType::UnsignedInt, fastgltf::BufferTarget::ElementArrayBuffer));
             }
         }
@@ -3986,7 +3974,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             if (!vertices.empty()) {
                 fastgltf::pmr::SmallVector<fastgltf::Attribute, 4> attrs;
                 attrs.emplace_back(fastgltf::Attribute{"POSITION", AddPositionFieldAccessor.template operator()<Vertex>(vertices, &Vertex::Position, fastgltf::BufferTarget::ArrayBuffer)});
-                emit_non_triangle_attrs(attrs, vertices);
+                emit_non_triangle_attrs(attrs, mesh.GetStoreId());
                 push_prim(fastgltf::PrimitiveType::Points, std::move(attrs));
             }
         }

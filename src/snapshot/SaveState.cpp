@@ -1,5 +1,6 @@
 #include "snapshot/SaveState.h"
 
+#include "mesh/MeshComponents.h"
 #include "mesh/MeshStore.h"
 #include "render/GpuBuffers.h"
 #include "render/MaterialComponents.h"
@@ -100,9 +101,15 @@ void LoadState(entt::registry &r, std::span<const std::byte> bytes) {
     const auto selection_bits = TakeLengthPrefixed(bytes);
 
     // MeshStore first: restoring its arenas and entries keeps every Range/StoreId offset valid before the components that reference them are restored.
-    r.ctx().get<MeshStore>().Deserialize(bytes);
+    auto &meshes = r.ctx().get<MeshStore>();
+    meshes.Deserialize(bytes);
     DeserializeMaterials(r, materials);
     DeserializeSelectionBits(r, selection_bits);
     RestoreSceneState(r, scene);
+
+    // The derived mesh arenas rebuild from the restored connectivity and sharpness stores.
+    std::vector<Mesh> restored;
+    for (const auto e : r.view<const MeshHandle, const MeshConnectivity>()) restored.emplace_back(GetMesh(r, e));
+    meshes.RebuildDerived(restored);
 }
 } // namespace snapshot

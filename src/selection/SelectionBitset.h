@@ -2,6 +2,7 @@
 
 #include "gpu/Element.h"
 
+#include <type_traits>
 #include <vector>
 
 struct Mesh;
@@ -48,12 +49,20 @@ void ForEachSelected(const uint32_t *bits, uint32_t offset, uint32_t count, auto
     }
 }
 // Visit every edge with an endpoint among the selected vertices in [offset, offset+count).
+// An edge with both endpoints selected fires once, from its lower-indexed endpoint.
 void ForEachVertexTouchedEdge(const uint32_t *bits, uint32_t offset, uint32_t count, const auto &mesh, auto &&fn) {
-    for (const auto eh : mesh.edges()) {
-        const auto heh = mesh.GetHalfedge(eh, 0);
-        const auto from = mesh.GetFromVertex(heh), to = mesh.GetToVertex(heh);
-        if ((from && *from < count && IsSelected(bits, offset, *from)) || (to && *to < count && IsSelected(bits, offset, *to))) fn(*eh);
-    }
+    const auto adjacency = mesh.GetVertexEdgeAdjacency();
+    if (adjacency.Offsets.empty()) return;
+    using MeshT = std::remove_cvref_t<decltype(mesh)>;
+    ForEachSelected(bits, offset, count, [&](uint32_t v) {
+        for (const auto e : adjacency.Incident(v)) {
+            const auto hh = mesh.GetHalfedge(typename MeshT::EH{e}, 0);
+            const auto from = mesh.GetFromVertex(hh);
+            const auto other = from && *from == v ? mesh.GetToVertex(hh) : from;
+            if (other && *other < v && *other < count && IsSelected(bits, offset, *other)) continue;
+            fn(e);
+        }
+    });
 }
 // Return local (0-based) handles of all set bits in [offset, offset+count).
 std::vector<uint32_t> ScanBitsetRange(const uint32_t *bits, uint32_t offset, uint32_t count);

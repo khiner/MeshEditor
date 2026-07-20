@@ -58,6 +58,7 @@ void SubmitRecordedFrame(entt::registry &r) {
     auto &resources = r.ctx().get<ViewportRenderResources>();
     // Always ensure the draw slots point to render draw data before submitting (a selection pass may have swapped them).
     buffers.SetSceneViewDrawSlots(buffers.RenderDraw);
+    SyncPreludeDispatchArgs(buffers);
     vk::SubmitInfo submit;
 #ifdef MVK_FORCE_STAGED_TRANSFERS
     const std::array command_buffers{*resources.TransferCommandBuffer, *resources.RenderCommandBuffer};

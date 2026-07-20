@@ -13,30 +13,11 @@ vec3 trs_inverse_transform_point(Transform t, vec3 pos) {
     return quat_rotate(quat_conjugate(t.R), pos - t.P) / t.S;
 }
 
-bool should_apply_pending_transform(DrawData draw, uint idx) {
-    if (SceneViewUBO.IsTransforming == 0u) return false;
-
-    // In edit preview, pending transforms are keyed off mesh vertex state and driven by the mesh's primary edit instance.
-    // In object preview, pending transforms are instance-scoped and keyed off instance selection.
-    if (pc.VertexTransform.VertexStateSlot != INVALID_SLOT) {
-        if (draw.HasPendingVertexTransform == 0u) return false;
-        const uint vertex_state = uint(ElementStateBuffers[pc.VertexTransform.VertexStateSlot].States[draw.VertexOffset + idx]);
-        return (vertex_state & STATE_SELECTED) != 0u;
-    }
-    if (SceneViewUBO.InteractionMode == InteractionMode_Edit || draw.InstanceStateSlot == INVALID_SLOT) return false;
+// Object-mode gizmo preview: selected instances' world positions follow the pending transform.
+// The pose pre-pass bakes edit-mode vertex previews into posed positions.
+vec3 apply_object_pending_transform(DrawData draw, vec3 world_pos) {
+    if (SceneViewUBO.IsTransforming == 0u || SceneViewUBO.InteractionMode == InteractionMode_Edit || draw.InstanceStateSlot == INVALID_SLOT) return world_pos;
     const uint instance_state = uint(InstanceStateBuffers[draw.InstanceStateSlot].States[draw.FirstInstance]);
-    return (instance_state & STATE_SELECTED) != 0u;
-}
-
-vec3 apply_pending_transform(DrawData draw, Transform world, vec3 local_pos, uint idx) {
-    vec3 world_pos = trs_transform_point(world, local_pos);
-    if (!should_apply_pending_transform(draw, idx)) return world_pos;
-    if (pc.VertexTransform.VertexStateSlot != INVALID_SLOT) {
-        const Transform primary = ModelBuffers[draw.ModelSlot].Models[draw.PrimaryEditInstanceIndex];
-        const vec3 primary_world = trs_transform_point(primary, local_pos);
-        const vec3 pending_world = apply_pending_transform_world(primary_world);
-        const vec3 pending_local = trs_inverse_transform_point(primary, pending_world);
-        return trs_transform_point(world, pending_local);
-    }
+    if ((instance_state & STATE_SELECTED) == 0u) return world_pos;
     return apply_pending_transform_world(world_pos);
 }

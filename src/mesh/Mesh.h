@@ -128,6 +128,13 @@ struct MeshConnectivity {
 MeshConnectivity BuildConnectivity(std::span<const std::vector<uint32_t>> faces, uint32_t vertex_count);
 MeshConnectivity BuildConnectivity(std::span<const std::array<uint32_t, 2>> edges, uint32_t vertex_count);
 
+// CSR incidence over a mesh's vertices: Offsets holds one entry per vertex plus a terminator, and Incident(v) spans vertex v's items.
+struct VertexAdjacency {
+    std::span<const uint32_t> Offsets;
+    std::span<const uint32_t> Items;
+    std::span<const uint32_t> Incident(uint32_t v) const { return Items.subspan(Offsets[v], Offsets[v + 1] - Offsets[v]); }
+};
+
 // Lightweight, copyable view over a mesh: its connectivity (owned by MeshStore) plus its vertex data (read via StoreId).
 // Holds no ownership, the MeshStore entry is released when the entity's MeshHandle is destroyed.
 // Obtain one via MeshStore::GetMesh(StoreId).
@@ -154,6 +161,9 @@ struct Mesh {
     uint32_t GetStoreId() const { return StoreId; }
     const MeshConnectivity &GetConnectivity() const { return *C; }
     uint32_t TriangleIndexCount() const; // Cached triangle count * 3
+
+    // CSR vertex-to-edge incidence, empty when the mesh has no edges.
+    VertexAdjacency GetVertexEdgeAdjacency() const; // Items are edge indices
 
     // Halfedge navigation
     HH GetHalfedge(EH eh, uint32_t i) const {

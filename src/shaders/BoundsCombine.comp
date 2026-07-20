@@ -1,0 +1,46 @@
+#version 450
+
+// Folds the bounds reduce's per-tile partial AABBs into each entry's instance bounds.
+// One workgroup per bounds entry.
+#define BINDLESS_CUSTOM_DRAW_PASS_PC 1
+#define BINDLESS_NO_DRAW_LOOKUP 1
+#include "BoundsReducePushConstants.glsl"
+#include "Bindless.glsl"
+#include "AABB.glsl"
+#include "BoundsShared.glsl"
+
+layout(local_size_x = 256) in;
+
+layout(set = 0, binding = BINDING_Buffer, scalar) readonly buffer PartialBoundsBuffer {
+    AABB Bounds[];
+} PartialBoundsBuffers[];
+
+layout(set = 0, binding = BINDING_Buffer, scalar) readonly buffer EntryFirstTileBuffer {
+    uint FirstTiles[];
+} EntryFirstTileBuffers[];
+
+layout(set = 0, binding = BINDING_Buffer, scalar) buffer BoundsBuffer {
+    AABB Bounds[];
+} BoundsBuffers[];
+
+void main() {
+    const DrawData draw = DrawDataBuffers[pc.DrawDataSlot].Draws[gl_WorkGroupID.x];
+    const uint first_tile = EntryFirstTileBuffers[pc.EntryFirstTileSlot].FirstTiles[gl_WorkGroupID.x];
+    // Every entry has at least one tile, so an entry with no vertices still writes empty bounds.
+    const uint tile_count = max((draw.VertexCountOrHeadImageSlot + 255u) / 256u, 1u);
+    const uint tid = gl_LocalInvocationID.x;
+    vec3 lo = AabbEmptyMin;
+    vec3 hi = AabbEmptyMax;
+    for (uint t = tid; t < tile_count; t += 256u) {
+        const AABB partial = PartialBoundsBuffers[pc.PartialBoundsSlot].Bounds[first_tile + t];
+        lo = min(lo, partial.Min);
+        hi = max(hi, partial.Max);
+    }
+    // An entry with no vertices leaves Min > Max, the same empty state a fresh slot holds.
+    // ElementIdOffset is the run of consecutive instance slots sharing this entry's deform state.
+    FoldSharedAabb(tid, lo, hi);
+    const AABB bounds = AABB(SharedMin[0], SharedMax[0]);
+    for (uint k = tid; k < draw.ElementIdOffset; k += 256u) {
+        BoundsBuffers[pc.BoundsSlot].Bounds[draw.FirstInstance + k] = bounds;
+    }
+}

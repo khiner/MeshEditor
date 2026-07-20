@@ -234,16 +234,24 @@ struct Pipelines {
     SilhouetteEdgePipeline SilhouetteEdge;
     SelectionFragmentPipeline SelectionFragment;
     ComputePipeline ObjectPick, ElementPick, BoxSelect, UpdateSelectionState;
-    // One workgroup per bounds entry: reduces post-deform vertex positions into the instance
-    // arena's local bounds, which the cull and the bounds-box draw read.
+    // One workgroup per 256-vertex tile of a posed bounds entry.
+    // Materializes current-pose vertex positions (morph, armature, pending edit transform) in mesh-local space.
+    ComputePipeline PosePrepass;
+    // Two-phase normal derive, one workgroup per 256-element tile.
+    // The face phase fan-sums vector areas from positions in place.
+    // The gather phase sums unit face normals over the vertex and seam CSR tables, weighted by corner angle.
+    ComputePipeline VertexNormalDerive;
+    // One workgroup per 256-vertex tile of a bounds entry.
+    // Reduces vertex positions (posed when the entry has them) into per-tile partial AABBs.
     ComputePipeline BoundsReduce;
-    // Zeroes indirect instance counts, then refills them and the visible-index remap from
-    // per-instance bounds tested against the view frustum.
+    // One workgroup per bounds entry. Folds its partial AABBs into the instance arena's local bounds.
+    ComputePipeline BoundsCombine;
+    // Zeroes indirect instance counts, then refills them and the visible-index remap from per-instance bounds tested against the view frustum.
     ComputePipeline FrustumCull;
     // One dispatch per pyramid mip, each reducing the previous level (mip 0 reduces the scene depth).
     ComputePipeline DepthPyramidReduce;
-    // Motion blur tile reduction: reduce motion to tiles, then spread each tile's motion over the
-    // tiles it crosses. Main.MotionBlurGather blurs the scene along the result.
+    // Motion blur tile reduction: reduce motion to tiles, then spread each tile's motion over the tiles it crosses.
+    // Main.MotionBlurGather blurs the scene along the result.
     ComputePipeline MotionBlurTilesFlatten, MotionBlurTilesDilate;
     IblPrefilterPipelines IblPrefilter;
 

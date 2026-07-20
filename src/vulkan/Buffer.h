@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Range.h"
 #include "Slots.h"
 
 #include <vulkan/vulkan.hpp>
@@ -125,6 +126,15 @@ struct Buffer {
         return {reinterpret_cast<T *>(GetMutableRange(0, size).data()), count};
     }
     template<typename T> uint32_t Count() const { return uint32_t(UsedSize / sizeof(T)); }
+    // The mutable view registers the write for staged transfer, and the const view reads the mapped data in place.
+    template<typename T> std::span<const T> GetSpan(Range range) const {
+        if (range.Count == 0) return {};
+        return {reinterpret_cast<const T *>(GetMappedData().data()) + range.Offset, range.Count};
+    }
+    template<typename T> std::span<T> GetMutableSpan(Range range) const {
+        if (range.Count == 0) return {};
+        return {reinterpret_cast<T *>(GetMutableRange(vk::DeviceSize(range.Offset) * sizeof(T), vk::DeviceSize(range.Count) * sizeof(T)).data()), range.Count};
+    }
     vk::DescriptorBufferInfo GetDescriptor() const { return {operator*(), 0, DescriptorRange}; }
 
     // Dynamic-offset bindings describe one instance, which the bound offset selects within the buffer.

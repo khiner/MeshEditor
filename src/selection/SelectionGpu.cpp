@@ -37,14 +37,6 @@ void ResetObjectPickKeys(GpuBuffers &buffers) {
     std::fill_n(buffers.ObjectPickKeys.Data(), GpuBuffers::MaxSelectableObjects, std::numeric_limits<uint32_t>::max());
 }
 
-void SubmitAndWait(vk::Queue queue, vk::CommandBuffer cb, vk::Fence fence, vk::Device device, vk::Semaphore signal_semaphore = {}) {
-    vk::SubmitInfo submit;
-    submit.setCommandBuffers(cb);
-    if (signal_semaphore) submit.setSignalSemaphores(signal_semaphore);
-    queue.submit(submit, fence);
-    WaitFor(fence, device);
-}
-
 // Zero the linked-list counters and clear the head image to InvalidSlot, ready for fragment writes.
 void ResetSelectionFragmentState(vk::CommandBuffer cb, GpuBuffers &buffers, const Pipelines &pipelines) {
     buffers.SelectionCounter.Buffer.Write(as_bytes(SelectionCounters{}));
@@ -70,7 +62,7 @@ void RecordSilhouetteDepthPass(vk::CommandBuffer cb, const Pipelines &pipelines,
     if (batch.DrawCount > 0) {
         cb.bindIndexBuffer(*buffers.IdentityIndexBuffer, 0, vk::IndexType::eUint32);
         const auto &pipeline = silhouette.Renderer.Bind(cb, SPT::SilhouetteDepthObject);
-        const MainDrawPushConstants pc{{batch.DrawDataSlotOffset, InvalidSlot}};
+        const MainDrawPushConstants pc{batch.DrawDataSlotOffset};
         cb.pushConstants(*pipeline.PipelineLayout, vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, sizeof(pc), &pc);
         cb.drawIndexedIndirect(*buffers.SelectionDraw.Indirect, batch.IndirectOffset, batch.DrawCount, sizeof(vk::DrawIndexedIndirectCommand));
     }
@@ -240,7 +232,7 @@ void RenderElementSelectionPass(
     cb.bindIndexBuffer(*buffers.IdentityIndexBuffer, 0, vk::IndexType::eUint32);
     if (element_batch.DrawCount > 0) {
         const SelectionElementPushConstants element_pc{
-            {element_batch.DrawDataSlotOffset, InvalidSlot},
+            element_batch.DrawDataSlotOffset,
             {sel_slots.HeadImage, buffers.SelectionNodeBuffer.Slot, sel_slots.SelectionCounter, buffers.SelectionNodeCapacity},
             {box_min.x, box_min.y, box_max.x, box_max.y},
             sel_slots.SelectionBitset,
@@ -344,14 +336,14 @@ void RenderSelectionPassWith(entt::registry &r, [[maybe_unused]] entt::entity vi
     cb.beginRenderPass({*selection.Renderer.RenderPass, *selection.Resources->Framebuffer, rect, {}}, vk::SubpassContents::eInline);
     cb.bindIndexBuffer(*buffers.IdentityIndexBuffer, 0, vk::IndexType::eUint32);
     const SelectionDrawPushConstants sel_pc{
-        {0u, InvalidSlot},
+        0u,
         {sel_slots.HeadImage, buffers.SelectionNodeBuffer.Slot, sel_slots.SelectionCounter, buffers.SelectionNodeCapacity},
     };
     for (const auto &selection_draw : selection_draws) {
         if (selection_draw.Batch.DrawCount == 0) continue;
         const auto &pipeline = selection.Renderer.Bind(cb, selection_draw.Pipeline);
         auto pc = sel_pc;
-        pc.VertexTransform.DrawDataOffset = selection_draw.Batch.DrawDataSlotOffset;
+        pc.DrawDataOffset = selection_draw.Batch.DrawDataSlotOffset;
         cb.pushConstants(*pipeline.PipelineLayout, vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, sizeof(pc), &pc);
         cb.drawIndexedIndirect(*buffers.SelectionDraw.Indirect, selection_draw.Batch.IndirectOffset, selection_draw.Batch.DrawCount, sizeof(vk::DrawIndexedIndirectCommand));
     }

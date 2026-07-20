@@ -44,8 +44,6 @@ bindings:
     kind: Buffer
   - name: FacePrimitiveBuffer
     kind: Buffer
-  - name: CornerNormalBuffer
-    kind: Buffer
   - name: CornerTangentBuffer
     kind: Buffer
   - name: CornerColorBuffer
@@ -118,6 +116,39 @@ enums:
       - name: IridescenceThickness
       - name: AnisotropyStrength
       - name: AnisotropyDirection
+  # Corner shading-normal source, carried in a corner-class value's top two bits.
+  # Vertex reads the smooth vertex normal and Face reads the face normal.
+  # Seam reads a sector normal indexed by the value's low 30 bits.
+  - name: CornerClass
+    type: u32
+    values:
+      - name: Vertex
+      - name: Face
+      - name: Seam
+  # Bit layout of a corner-class value: the CornerClass tag above the seam index.
+  # Uniform meshes store no class buffer.
+  # UniformFaceOffset in DrawData.CornerClassOffset means every corner classifies Face.
+  # InvalidOffset there means every corner classifies Vertex.
+  - name: CornerClassEncoding
+    type: u32
+    values:
+      - name: TagShift
+        value: 30
+      - name: IndexMask
+        value: 0x3fffffffu
+      - name: UniformFaceOffset
+        value: 0xfffffffeu
+  # Bit layout of a fan-adjacency item: the loop position above the face index.
+  # Vertex and seam fans gather one item per incident face.
+  # Each item contributes the face's unit normal weighted by its corner angle (Blender's weighting).
+  # Bounds: 4.2M faces per mesh, face valence up to 1024.
+  - name: FanItemEncoding
+    type: u32
+    values:
+      - name: LoopShift
+        value: 22
+      - name: FaceMask
+        value: 0x3fffffu
   # Flag bits carried in CullEntry::Cmd's high bits. KeepOrder entries always draw, at their
   # original visible-index slot, so order-dependent (blended) batches stay deterministic.
   - name: CullFlag
@@ -148,7 +179,23 @@ structs:
       - name: ObjectIdSlot
         type: u32
         default: InvalidSlot
-      - name: CornerNormalOffset
+      - name: CornerClassOffset
+        type: u32
+        default: InvalidOffset
+      # Sparse authored corner-normal layer.
+      # The mask offset holds a (presence word, exclusive rank) pair per 32 mesh corners.
+      # The normal offset holds one packed offset per present corner.
+      # CornerBase is the draw's first corner within its mesh, locating a range draw in the masks.
+      - name: CustomCornerMaskOffset
+        type: u32
+        default: InvalidOffset
+      - name: CustomCornerNormalOffset
+        type: u32
+        default: InvalidOffset
+      - name: CornerBase
+        type: u32
+      # Composed sector normal per seam corner, indexed by a Seam class value's low bits.
+      - name: BaseSeamNormalOffset
         type: u32
         default: InvalidOffset
       - name: CornerTangentOffset
@@ -162,6 +209,10 @@ structs:
         default: InvalidOffset
       - name: FaceIdOffset
         type: u32
+      # Derived face normal per face, indexed by face id. The base copy mirrors the face arena.
+      - name: BaseFaceNormalOffset
+        type: u32
+        default: InvalidOffset
       - name: VertexCountOrHeadImageSlot
         type: u32
       - name: ElementIdOffset
@@ -195,6 +246,23 @@ structs:
         default: InvalidOffset
       - name: MorphTargetCount
         type: u32
+      # Authored morph shading: corner normals compose from base normals plus weighted authored deltas.
+      # Edit mode builds no deform slots, so edit-mode draws (including drags) derive normals.
+      - name: MorphShadingAuthored
+        type: u32
+      # Current-pose vertex positions in mesh-local space, with the derived per-vertex and seam-sector normals alongside.
+      - name: PosedPositionOffset
+        type: u32
+        default: InvalidOffset
+      - name: PosedVertexNormalOffset
+        type: u32
+        default: InvalidOffset
+      - name: PosedSeamNormalOffset
+        type: u32
+        default: InvalidOffset
+      - name: PosedFaceNormalOffset
+        type: u32
+        default: InvalidOffset
       - name: VertexClassOffset
         type: u32
         default: InvalidOffset
@@ -212,6 +280,41 @@ structs:
       - name: Cmd
         type: u32
       - name: Base
+        type: u32
+  # One entry per normal-derive dispatch item.
+  # Entries without a posed range read base positions from the vertex arena.
+  # The output offsets index the dispatch's push-constant output slots.
+  - name: NormalDeriveEntry
+    fields:
+      - name: PosedPositionOffset
+        type: u32
+        default: InvalidOffset
+      - name: Vertices
+        type: SlotOffset
+      - name: FaceIndices
+        type: SlotOffset
+      - name: VertexCount
+        type: u32
+      # Vertex-fan CSR range start: (VertexCount + 1) item-start offsets, then FanItemEncoding items.
+      - name: VertexAdjacencyOffset
+        type: u32
+      # Seam-sector CSR range start: (SeamCount + 1) item-start offsets, then FanItemEncoding items.
+      - name: SeamFanOffset
+        type: u32
+      - name: SeamCount
+        type: u32
+      # Face fan ranges: per-face first-triangle offsets in the face arena, bounded by TriangleCount.
+      - name: FaceDataOffset
+        type: u32
+      - name: FaceCount
+        type: u32
+      - name: TriangleCount
+        type: u32
+      - name: VertexNormalOffset
+        type: u32
+      - name: SeamNormalOffset
+        type: u32
+      - name: FaceNormalOffset
         type: u32
   - name: IblSamplers
     fields:
@@ -281,8 +384,6 @@ structs:
         type: float
       - name: ViewportSize
         type: vec2
-      - name: CornerNormalSlot
-        type: u32
       - name: CornerTangentSlot
         type: u32
       - name: CornerColorSlot
@@ -291,6 +392,19 @@ structs:
         type: u32
       - name: EdgeSharpnessSlot
         type: u32
+      - name: CornerClassSlot
+        type: u32
+      - name: CustomCornerMaskSlot
+        type: u32
+      - name: CustomCornerNormalSlot
+        type: u32
+      - name: BaseSeamNormalSlot
+        type: u32
+      # Derived base normals: a vec3 per vertex-arena slot and per face-arena slot, indexed by the draw's vertex and face offsets.
+      - name: BaseVertexNormalSlot
+        type: u32
+      - name: BaseFaceNormalSlot
+        type: u32
       - name: BoneDeformSlot
         type: u32
       - name: ArmatureDeformSlot
@@ -298,6 +412,17 @@ structs:
       - name: MorphDeformSlot
         type: u32
       - name: MorphWeightsSlot
+        type: u32
+      - name: PosedPositionSlot
+        type: u32
+      - name: PosedVertexNormalSlot
+        type: u32
+      - name: PosedSeamNormalSlot
+        type: u32
+      - name: PosedFaceNormalSlot
+        type: u32
+      # Weight-summed authored morph normal deltas, one vec3 per posed vertex slot, present for authored-morph entries.
+      - name: PosedMorphNormalDeltaSlot
         type: u32
       # Motion blur steps read their captured model transforms through this instead of the
       # per-draw ModelSlot, so the draw data stays step-agnostic.
@@ -448,13 +573,12 @@ structs:
         type: float
       - name: SilhouetteEdgeWidth
         type: u32
-  # Position, the derived smooth-normal cache, and the point-domain color used by line/point meshes.
+  # Position and the point-domain color used by line/point meshes.
+  # Derived normals live in the base-normal mirrors and posed scratch buffers.
   # Triangle-mesh tangent/color/UV attributes live in per-corner arenas.
   - name: Vertex
     fields:
       - name: Position
-        type: vec3
-      - name: Normal
         type: vec3
       - name: Color
         type: vec4
@@ -706,13 +830,6 @@ structs:
         type: float
       - name: DistanceSq
         type: u32
-  - name: VertexTransform
-    fields:
-      - name: DrawDataOffset
-        type: u32
-      - name: VertexStateSlot
-        type: u32
-        default: InvalidSlot
   - name: SelectionContext
     fields:
       - name: HeadImageSlot
@@ -729,20 +846,20 @@ structs:
   - name: MainDrawPushConstants
     push_constant: true
     fields:
-      - name: VertexTransform
-        type: VertexTransform
+      - name: DrawDataOffset
+        type: u32
   - name: SelectionDrawPushConstants
     push_constant: true
     fields:
-      - name: VertexTransform
-        type: VertexTransform
+      - name: DrawDataOffset
+        type: u32
       - name: Selection
         type: SelectionContext
   - name: SelectionElementPushConstants
     push_constant: true
     fields:
-      - name: VertexTransform
-        type: VertexTransform
+      - name: DrawDataOffset
+        type: u32
       - name: Selection
         type: SelectionContext
       - name: Box
@@ -843,15 +960,52 @@ structs:
       - name: PyramidSamplerSlot
         type: u32
         default: InvalidSlot
-  # One workgroup per entry: rewrite the entry's instance bounds from its post-deform vertex positions.
+  # Push constants shared by the pose pre-pass, the bounds reduce, and the bounds combine.
+  # Posed-buffer slots come from SceneViewUBO.
   - name: BoundsReducePushConstants
     push_constant: true
     fields:
-      - name: VertexTransform
-        type: VertexTransform
+      # Vertex-state slot for the pose pre-pass's selected-vertex pending-transform check.
+      - name: VertexStateSlot
+        type: u32
+        default: InvalidSlot
       - name: DrawDataSlot
         type: u32
       - name: BoundsSlot
+        type: u32
+      - name: TileMapSlot
+        type: u32
+      - name: PartialBoundsSlot
+        type: u32
+      - name: EntryFirstTileSlot
+        type: u32
+  # One workgroup per 256-element tile of a derive entry, in two phases.
+  # Phase 0 derives face normals over the tile map's leading face-tile prefix.
+  # Phase 1 gathers vertex and seam normals over the remaining tiles, reading phase 0 through FaceNormalSlot.
+  # FirstTile locates the dispatch's tile range.
+  # The position and output-buffer slots are per dispatch, targeting posed scratch or the base normal stores.
+  - name: NormalDerivePushConstants
+    push_constant: true
+    fields:
+      - name: EntriesSlot
+        type: u32
+      - name: AdjacencySlot
+        type: u32
+      - name: TileMapSlot
+        type: u32
+      - name: FirstTile
+        type: u32
+      - name: Phase
+        type: u32
+      - name: FaceFirstTriangleSlot
+        type: u32
+      - name: PositionSlot
+        type: u32
+      - name: VertexNormalSlot
+        type: u32
+      - name: SeamNormalSlot
+        type: u32
+      - name: FaceNormalSlot
         type: u32
   # Bounding-box wireframes: one instanced line draw over the listed instance-arena slots.
   - name: BoundsBoxPushConstants

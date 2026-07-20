@@ -198,13 +198,11 @@ he::VH Mesh::FindNearestVertex(vec3 p) const {
 }
 
 const vec3 &Mesh::GetPosition(VH vh) const { return GetVerticesSpan()[*vh].Position; }
-const vec3 &Mesh::GetNormal(VH vh) const { return GetVerticesSpan()[*vh].Normal; }
-vec3 Mesh::GetNormal(FH fh) const {
-    auto it = cfv_iter(fh);
-    const auto p0 = GetPosition(*it), p1 = GetPosition(*++it), p2 = GetPosition(*++it);
-    return glm::normalize(glm::cross(p1 - p0, p2 - p0));
-}
+const vec3 &Mesh::GetNormal(VH vh) const { return Store->GetBaseVertexNormals(StoreId)[*vh]; }
+vec3 Mesh::GetNormal(FH fh) const { return Store->GetBaseFaceNormals(StoreId)[*fh]; }
 std::span<const Vertex> Mesh::GetVerticesSpan() const { return Store->GetVertices(StoreId); }
+
+VertexAdjacency Mesh::GetVertexEdgeAdjacency() const { return Store->GetVertexEdgeAdjacency(StoreId); }
 
 uint32_t Mesh::TriangleIndexCount() const { return Store->GetTriangleCount(StoreId) * 3; }
 

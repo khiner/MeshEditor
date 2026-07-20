@@ -1,19 +1,14 @@
 #version 450
 
 #include "Bindless.glsl"
-#include "MorphDeform.glsl"
-#include "ArmatureDeform.glsl"
 #include "TransformUtils.glsl"
 
-layout(location = 0) out vec3 WorldNormal;
-layout(location = 1) out vec3 WorldPosition;
-layout(location = 2) out vec4 Color;
+layout(location = 0) out vec4 Color;
 
 void main() {
     const DrawData draw = GetDrawData();
     const uint vertex_count = max(draw.VertexCountOrHeadImageSlot, 1u);
     const uint idx = min(gl_VertexIndex, vertex_count - 1);
-    const Vertex vert = VertexBuffers[draw.VertexSlot].Vertices[idx + draw.VertexOffset];
     const Transform world = ModelBuffers[draw.ModelSlot].Models[draw.FirstInstance];
 
     const uint element_state = draw.ElementStateSlotOffset.Slot != INVALID_SLOT ?
@@ -23,14 +18,9 @@ void main() {
     const bool is_selected = (element_state & STATE_SELECTED) != 0u;
     const bool is_active = (element_state & STATE_ACTIVE) != 0u;
 
-    vec3 normal = vert.Normal;
-    vec3 morphed_pos = vert.Position;
-    ApplyMorphDeform(draw, morphed_pos, idx, normal);
-    const vec3 local_pos = ApplyArmatureDeform(draw, morphed_pos, idx, normal);
-    vec3 world_pos = apply_pending_transform(draw, world, local_pos, idx);
+    const vec3 local_pos = GetLocalPosition(draw, idx);
+    const vec3 world_pos = apply_object_pending_transform(draw, trs_transform_point(world, local_pos));
 
-    WorldNormal = trs_transform_normal(world, normal);
-    WorldPosition = world_pos;
     const bool is_excited = (element_state & STATE_EXCITED) != 0u;
     Color = is_excited   ? ViewportTheme.Colors.ElementExcited :
         is_active        ? vec4(ViewportTheme.Colors.ElementActive.rgb, 1.0) :

@@ -124,11 +124,10 @@ void main() {
     const CullEntry entry = CullEntryBuffers[pc.CullEntrySlot].Entries[i];
     const uint cmd = entry.Cmd & ~CullFlag_KeepOrder;
     const DrawData draw = DrawDataBuffers[pc.DrawDataSlot].Draws[i];
-    // Deforming and gesture-pending geometry moves outside its stored bounds, so it always draws,
-    // at its original remap slot for deterministic instance order. These predicates are uniform
-    // across a command's entries (one mesh's DrawData and bounds), so fixed slots never collide
-    // with compacted ones.
-    const bool fixed_slot = (entry.Cmd & CullFlag_KeepOrder) != 0u || draw.ArmatureDeformOffset != INVALID_OFFSET || draw.MorphDeformOffset != INVALID_OFFSET || draw.HasPendingVertexTransform != 0u;
+    // Deforming geometry always draws, at its original remap slot for deterministic instance order.
+    // These predicates are uniform across a command's entries (one mesh's DrawData and bounds).
+    // Fixed slots therefore never collide with compacted ones.
+    const bool fixed_slot = (entry.Cmd & CullFlag_KeepOrder) != 0u || draw.ArmatureDeformOffset != INVALID_OFFSET || draw.MorphDeformOffset != INVALID_OFFSET;
     if (pc.Phase == 2u && fixed_slot) return; // Drew in region A.
 
     bool empty = fixed_slot;
