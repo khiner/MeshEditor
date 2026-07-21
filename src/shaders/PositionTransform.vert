@@ -14,5 +14,5 @@ void main() {
     const vec3 world_pos = apply_object_pending_transform(draw, trs_transform_point(world, GetLocalPosition(draw, idx)));
 
     gl_Position = SceneViewUBO.ViewProj * vec4(world_pos, 1.0);
-    gl_PointSize = 8.0;
+    gl_PointSize = PointSize;
 }

@@ -8,6 +8,7 @@
 #include <entt/entity/entity.hpp>
 #include <vulkan/vulkan.hpp>
 
+#include <optional>
 #include <unordered_map>
 
 struct DrawBatchInfo {
@@ -50,16 +51,29 @@ struct SelectionDrawInfo {
 
 // Posed-buffer layout for one mesh entity's instance run: base offsets plus per-instance strides.
 struct PosedRanges {
+    // One instance's derived normals, absent for a mesh with no faces to derive them from.
+    struct NormalRanges {
+        uint32_t VertexOffset{InvalidOffset}, SeamOffset{InvalidOffset}, FaceOffset{InvalidOffset};
+        uint32_t SeamCount{0}, FaceCount{0};
+    };
+
     uint32_t FirstInstance{0};
     bool PerInstance{false};
     uint32_t PositionBase{InvalidOffset};
-    uint32_t VertexNormalBase{InvalidOffset}, SeamNormalBase{InvalidOffset}, FaceNormalBase{InvalidOffset};
-    uint32_t VertexCount{0}, SeamCount{0}, FaceCount{0};
+    uint32_t VertexCount{0};
+    std::optional<NormalRanges> Normals{}; // Instance 0's offsets.
 
     uint32_t PositionOffset(uint32_t i) const { return PositionBase + i * VertexCount; }
-    uint32_t VertexNormalOffset(uint32_t i) const { return VertexNormalBase + i * VertexCount; }
-    uint32_t SeamNormalOffset(uint32_t i) const { return SeamNormalBase + i * SeamCount; }
-    uint32_t FaceNormalOffset(uint32_t i) const { return FaceNormalBase + i * FaceCount; }
+    std::optional<NormalRanges> NormalsAt(uint32_t i) const {
+        if (!Normals) return std::nullopt;
+        return NormalRanges{
+            Normals->VertexOffset + i * VertexCount,
+            Normals->SeamOffset + i * Normals->SeamCount,
+            Normals->FaceOffset + i * Normals->FaceCount,
+            Normals->SeamCount,
+            Normals->FaceCount,
+        };
+    }
 };
 
 // Per-frame draw-list scratch storage
@@ -70,6 +84,7 @@ struct DrawState {
     std::unordered_map<entt::entity, PosedRanges> PosedByEntity;
     DrawBatchInfo Silhouette;
     DrawBatchInfo FillOpaque, FillBlend;
+    DrawBatchInfo FillLine, FillPoint; // Point and line meshes, shaded in the scene pass.
     // Opaque split by material transmission, for real-transmission frames: the prepass draws every
     // material with non-transmissive texels, and the scene pass composites the result and re-draws
     // only the transmissive batch. Textured-transmission materials appear in both.

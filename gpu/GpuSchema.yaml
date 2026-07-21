@@ -42,7 +42,7 @@ bindings:
     kind: Buffer
   - name: PrimitiveMaterialBuffer
     kind: Buffer
-  - name: FacePrimitiveBuffer
+  - name: ElementPrimitiveBuffer
     kind: Buffer
   - name: CornerTangentBuffer
     kind: Buffer
@@ -269,7 +269,7 @@ structs:
       - name: PrimitiveMaterialOffset
         type: u32
         default: InvalidOffset
-      - name: FacePrimitiveOffset
+      - name: ElementPrimitiveOffset
         type: u32
         default: InvalidOffset
   # One entry per draw-list DrawData element, for the frustum cull pass. Cmd is the entry's indirect
@@ -454,7 +454,7 @@ structs:
         type: u32
       - name: PrimitiveMaterialSlot
         type: u32
-      - name: FacePrimitiveSlot
+      - name: ElementPrimitiveSlot
         type: u32
       - name: DrawDataSlot
         type: u32
@@ -463,6 +463,9 @@ structs:
         type: u32
         default: InvalidSlot
       - name: BoneXRay
+        type: u32
+      # Wires and points take selection colors only while overlays show.
+      - name: ShowOverlays
         type: u32
       - name: NdcOffsetFactor
         type: float
@@ -580,8 +583,6 @@ structs:
     fields:
       - name: Position
         type: vec3
-      - name: Color
-        type: vec4
   - name: BoneDeformVertex
     fields:
       - name: Joints

@@ -54,7 +54,7 @@ namespace {
 struct MeshData {
     std::optional<::MeshData> Triangles, Lines, Points;
     ::MeshVertexAttributes TriangleAttrs, LineAttrs, PointAttrs;
-    ::MeshPrimitives TrianglePrimitives;
+    ::MeshPrimitives TrianglePrimitives, LinePrimitives, PointPrimitives;
     std::optional<ArmatureDeformData> DeformData;
     std::optional<MorphTargetData> MorphData;
     std::string Name;
@@ -458,6 +458,10 @@ void AppendNonTrianglePrimitive(const fastgltf::Asset &asset, const fastgltf::Pr
     }
 }
 
+bool IsTriangleType(fastgltf::PrimitiveType type) {
+    return type == fastgltf::PrimitiveType::Triangles || type == fastgltf::PrimitiveType::TriangleStrip || type == fastgltf::PrimitiveType::TriangleFan;
+}
+
 std::expected<void, std::string> AppendPrimitive(
     const fastgltf::Asset &asset,
     const fastgltf::Primitive &primitive,
@@ -468,9 +472,7 @@ std::expected<void, std::string> AppendPrimitive(
     uint32_t &attribute_flags
 ) {
     attribute_flags = 0;
-    if (primitive.type != fastgltf::PrimitiveType::Triangles &&
-        primitive.type != fastgltf::PrimitiveType::TriangleStrip &&
-        primitive.type != fastgltf::PrimitiveType::TriangleFan) return {};
+    if (!IsTriangleType(primitive.type)) return {};
 
     const auto *const position_it = primitive.findAttribute("POSITION");
     if (position_it == primitive.attributes.end()) return {};
@@ -794,6 +796,8 @@ std::expected<uint32_t, std::string> EnsureMeshData(const fastgltf::Asset &asset
     std::vector<uint8_t> has_source_indices(source_mesh.primitives.size(), 0);
     std::vector<std::vector<std::optional<uint32_t>>> variant_mappings(source_mesh.primitives.size());
     std::vector<uint32_t> face_primitive_indices;
+    // Point and line primitives merge into one mesh each, so every vertex records its source primitive.
+    std::vector<uint32_t> point_primitive_indices, line_primitive_indices;
     std::vector<uint32_t> primitive_material_indices(source_mesh.primitives.size(), material_count == 0 ? 0u : material_count - 1u);
     for (uint32_t primitive_index = 0; primitive_index < source_mesh.primitives.size(); ++primitive_index) {
         const auto &primitive = source_mesh.primitives[primitive_index];
@@ -809,12 +813,23 @@ std::expected<uint32_t, std::string> EnsureMeshData(const fastgltf::Asset &asset
                 else out.emplace_back(std::nullopt);
             }
         }
+        // Point and line shading keys off NORMAL and TANGENT, which the triangle append path records for itself.
+        if (!IsTriangleType(primitive.type)) {
+            if (primitive.findAttribute("NORMAL") != primitive.attributes.end()) attribute_flags[primitive_index] |= MeshAttributeBit_Normal;
+            if (primitive.findAttribute("TANGENT") != primitive.attributes.end()) attribute_flags[primitive_index] |= MeshAttributeBit_Tangent;
+        }
+        // Point and line primitives append into their own mesh, recording each appended vertex's source primitive.
+        const auto append_non_triangle = [&](::MeshData &data, ::MeshVertexAttributes &attrs, std::vector<uint32_t> &primitive_indices) {
+            const auto prev_vertex_count = data.Positions.size();
+            AppendNonTrianglePrimitive(asset, primitive, data, attrs);
+            primitive_indices.insert(primitive_indices.end(), data.Positions.size() - prev_vertex_count, primitive_index);
+        };
         if (primitive.type == fastgltf::PrimitiveType::Points) {
-            AppendNonTrianglePrimitive(asset, primitive, points, point_attrs);
+            append_non_triangle(points, point_attrs, point_primitive_indices);
             continue;
         }
         if (primitive.type == fastgltf::PrimitiveType::Lines || primitive.type == fastgltf::PrimitiveType::LineStrip || primitive.type == fastgltf::PrimitiveType::LineLoop) {
-            AppendNonTrianglePrimitive(asset, primitive, lines, line_attrs);
+            append_non_triangle(lines, line_attrs, line_primitive_indices);
             continue;
         }
         const uint32_t prev_vertex_count = mesh.Positions.size(), prev_face_count = mesh.Faces.size();
@@ -863,6 +878,14 @@ std::expected<uint32_t, std::string> EnsureMeshData(const fastgltf::Asset &asset
 
     const auto mesh_index = meshes.size();
     const bool has_triangles = !mesh.Positions.empty() && !mesh.Faces.empty();
+    // Point and line meshes resolve their material per element through the same primitive-index tables the triangle mesh uses.
+    const auto non_triangle_primitives = [&](std::vector<uint32_t> element_primitive_indices) {
+        return element_primitive_indices.empty() ?
+            ::MeshPrimitives{} :
+            ::MeshPrimitives{std::move(element_primitive_indices), primitive_material_indices, attribute_flags, {}, {}};
+    };
+    auto line_primitives = non_triangle_primitives(std::move(line_primitive_indices));
+    auto point_primitives = non_triangle_primitives(std::move(point_primitive_indices));
     meshes.emplace_back(MeshData{
         .Triangles = has_triangles ? std::optional{std::move(mesh)} : std::nullopt,
         .Lines = !lines.Positions.empty() ? std::optional{std::move(lines)} : std::nullopt,
@@ -871,6 +894,8 @@ std::expected<uint32_t, std::string> EnsureMeshData(const fastgltf::Asset &asset
         .LineAttrs = std::move(line_attrs),
         .PointAttrs = std::move(point_attrs),
         .TrianglePrimitives = has_triangles ? ::MeshPrimitives{std::move(face_primitive_indices), std::move(primitive_material_indices), std::move(attribute_flags), std::move(has_source_indices), std::move(variant_mappings)} : ::MeshPrimitives{},
+        .LinePrimitives = std::move(line_primitives),
+        .PointPrimitives = std::move(point_primitives),
         .DeformData = std::move(mesh_deform),
         .MorphData = std::move(mesh_morph),
         .Name = std::string{source_mesh.name},
@@ -2028,6 +2053,8 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
         material_names.emplace_back(material_name);
     }
     const auto fallback_material_index = material_indices_by_gltf_material.empty() ? default_material_index : material_indices_by_gltf_material.back();
+    // Map a source gltf material index to its post-load PrimitiveMaterialBuffer index.
+    const auto remap_material = [&](uint32_t i) { return i < material_indices_by_gltf_material.size() ? material_indices_by_gltf_material[i] : fallback_material_index; };
     if (!material_names.empty()) {
         auto &store = r.ctx().get<MaterialStore>();
         store.Names.insert(store.Names.end(), std::make_move_iterator(material_names.begin()), std::make_move_iterator(material_names.end()));
@@ -2054,14 +2081,14 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
     }
 
     { // Pre-reserve MeshStore arenas to avoid O(N) reallocations during bulk mesh creation.
-        auto plan = [&](const std::optional<::MeshData> &data) { if (data) ctx.Meshes.PlanCreate(*data); };
+        auto plan = [&](const std::optional<::MeshData> &data, const ::MeshPrimitives &primitives, const ::MeshVertexAttributes &attrs) { if (data) ctx.Meshes.PlanCreate(*data, primitives, false, 0, attrs); };
         for (const auto &scene_mesh : source_meshes) {
             if (scene_mesh.Triangles) {
                 const uint32_t morph_targets = scene_mesh.MorphData ? scene_mesh.MorphData->TargetCount : 0;
                 ctx.Meshes.PlanCreate(*scene_mesh.Triangles, scene_mesh.TrianglePrimitives, scene_mesh.DeformData.has_value(), morph_targets, scene_mesh.TriangleAttrs);
             }
-            plan(scene_mesh.Lines);
-            plan(scene_mesh.Points);
+            plan(scene_mesh.Lines, scene_mesh.LinePrimitives, scene_mesh.LineAttrs);
+            plan(scene_mesh.Points, scene_mesh.PointPrimitives, scene_mesh.PointAttrs);
         }
         ctx.Meshes.CommitReserves();
     }
@@ -2070,7 +2097,7 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
         uint32_t TargetCount{};
         std::vector<float> DefaultWeights;
     };
-    struct ExtraPrimitiveEntities {
+    struct NonTriangleEntities {
         entt::entity Lines{entt::null}, Points{entt::null};
     };
 
@@ -2080,7 +2107,7 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
     std::vector<MorphSummary> mesh_morphs;
     mesh_morphs.reserve(source_meshes.size());
 
-    std::vector<ExtraPrimitiveEntities> extra_entities_per_mesh(source_meshes.size());
+    std::vector<NonTriangleEntities> non_triangle_entities_per_mesh(source_meshes.size());
     for (uint32_t mi = 0; mi < source_meshes.size(); ++mi) {
         auto &scene_mesh = source_meshes[mi];
         entt::entity mesh_entity = entt::null;
@@ -2099,16 +2126,12 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
                     if (mat.Iridescence.Factor > 0.f || mat.Iridescence.Texture.Slot != InvalidSlot) mesh_pbr_mask |= PbrFeature::Iridescence;
                 }
             }
-            for (auto &local_material_index : scene_mesh.TrianglePrimitives.MaterialIndices) {
-                local_material_index = local_material_index < material_indices_by_gltf_material.size() ? material_indices_by_gltf_material[local_material_index] : fallback_material_index;
-            }
+            for (auto &local_material_index : scene_mesh.TrianglePrimitives.MaterialIndices) local_material_index = remap_material(local_material_index);
             // KHR_materials_variants mappings carry source gltf material indices.
             // Remap to match post-load PrimitiveMaterialBuffer indices so the runtime can apply a variant by writing entries straight to that buffer.
             for (auto &prim_mappings : scene_mesh.TrianglePrimitives.VariantMappings) {
                 for (auto &m : prim_mappings) {
-                    if (m) {
-                        *m = *m < material_indices_by_gltf_material.size() ? material_indices_by_gltf_material[*m] : fallback_material_index;
-                    }
+                    if (m) *m = remap_material(*m);
                 }
             }
             // Snapshot per-primitive metadata + morph tangent deltas before CreateMesh consumes the source.
@@ -2146,19 +2169,30 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
         }
         mesh_entities.emplace_back(mesh_entity);
 
-        auto create_extra = [&](std::optional<::MeshData> &data, ::MeshVertexAttributes &attrs, MeshKind kind) -> entt::entity {
+        auto create_non_triangle_mesh = [&](std::optional<::MeshData> &data, ::MeshVertexAttributes &attrs, ::MeshPrimitives &primitives, MeshKind kind) -> entt::entity {
             if (!data) return entt::null;
-            auto m = ctx.Meshes.CreateMesh(std::move(*data), std::move(attrs), {});
+            for (auto &local_material_index : primitives.MaterialIndices) local_material_index = remap_material(local_material_index);
+            // Point and line primitives draw straight from their positions, so they record no source index streams.
+            auto layout = MeshSourceLayout{
+                .AttributeFlags = primitives.AttributeFlags,
+                .HasSourceIndices = {},
+                .DefaultMaterials = primitives.MaterialIndices,
+                .VariantMappings = {},
+                .Colors0ComponentCount = attrs.Colors0ComponentCount,
+                .MorphTangentDeltas = {},
+            };
+            auto m = ctx.Meshes.CreateMesh(std::move(*data), std::move(attrs), std::move(primitives));
             const auto [e, _] = ::AddMesh(r, ctx.Meshes, std::move(m), std::nullopt);
             r.emplace<Path>(e, source_path);
             r.emplace<SourceMeshIndex>(e, mi);
             r.emplace<SourceMeshKind>(e, kind);
+            r.emplace<MeshSourceLayout>(e, std::move(layout));
             if (!scene_mesh.Name.empty()) r.emplace<MeshName>(e, scene_mesh.Name);
             return e;
         };
-        auto lines_entity = create_extra(scene_mesh.Lines, scene_mesh.LineAttrs, MeshKind::Lines);
-        auto points_entity = create_extra(scene_mesh.Points, scene_mesh.PointAttrs, MeshKind::Points);
-        extra_entities_per_mesh[mi] = {lines_entity, points_entity};
+        auto lines_entity = create_non_triangle_mesh(scene_mesh.Lines, scene_mesh.LineAttrs, scene_mesh.LinePrimitives, MeshKind::Lines);
+        auto points_entity = create_non_triangle_mesh(scene_mesh.Points, scene_mesh.PointAttrs, scene_mesh.PointPrimitives, MeshKind::Points);
+        non_triangle_entities_per_mesh[mi] = {lines_entity, points_entity};
     }
 
     const auto name_prefix = source_path.stem().string();
@@ -2184,8 +2218,8 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
             if (object.ObjectType != gltf::Object::Type::Mesh || !object.MeshIndex) return entt::null;
             const auto mi = *object.MeshIndex;
             if (mi < mesh_entities.size() && mesh_entities[mi] != entt::null) return mesh_entities[mi];
-            if (mi < extra_entities_per_mesh.size()) {
-                const auto &[lines, points] = extra_entities_per_mesh[mi];
+            if (mi < non_triangle_entities_per_mesh.size()) {
+                const auto &[lines, points] = non_triangle_entities_per_mesh[mi];
                 return lines != entt::null ? lines : points;
             }
             return entt::null;
@@ -2211,9 +2245,9 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
             object_entity = ::AddEmpty(r, ctx.Meshes, {.Name = object_name, .Transform = object.LocalTransform, .Select = MeshInstanceCreateInfo::SelectBehavior::None});
         }
         // Companion instances for non-triangle primitives, parented under primary with identity local.
-        if (object.ObjectType == gltf::Object::Type::Mesh && object.MeshIndex && *object.MeshIndex < extra_entities_per_mesh.size()) {
-            const auto &extras = extra_entities_per_mesh[*object.MeshIndex];
-            for (const auto extra_entity : {extras.Lines, extras.Points}) {
+        if (object.ObjectType == gltf::Object::Type::Mesh && object.MeshIndex && *object.MeshIndex < non_triangle_entities_per_mesh.size()) {
+            const auto &non_triangle = non_triangle_entities_per_mesh[*object.MeshIndex];
+            for (const auto extra_entity : {non_triangle.Lines, non_triangle.Points}) {
                 if (extra_entity != entt::null && extra_entity != primary_mesh_entity) {
                     const auto extra_instance = ::AddMeshInstance(
                         r,
@@ -3675,13 +3709,13 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
 
     asset.meshes.reserve(mesh_groups.size());
     // For non-triangle (Lines/Points) primitives: emit NORMAL from the authored point normals.
-    // COLOR_0 emits iff at least one vertex has a non-default value (sentinel = (1,1,1,1)).
+    // Point and line meshes hold one color per vertex, present only when the source authored COLOR_0.
     const auto emit_non_triangle_attrs = [&](fastgltf::pmr::SmallVector<fastgltf::Attribute, 4> &out, uint32_t store_id) {
         if (const auto point_normals = meshes.GetPointNormals(store_id); !point_normals.empty()) {
             out.emplace_back(fastgltf::Attribute{"NORMAL", AddDataAccessor(point_normals, fastgltf::AccessorType::Vec3, fastgltf::ComponentType::Float, fastgltf::BufferTarget::ArrayBuffer)});
         }
-        if (const auto verts = meshes.GetVertices(store_id); std::ranges::any_of(verts, [](const auto &v) { return v.Color != vec4{1}; })) {
-            out.emplace_back(fastgltf::Attribute{"COLOR_0", AddFieldAccessor.template operator()<vec4>(verts, &Vertex::Color, fastgltf::AccessorType::Vec4, fastgltf::BufferTarget::ArrayBuffer)});
+        if (const auto colors = meshes.GetCornerColors(store_id); !colors.empty()) {
+            out.emplace_back(fastgltf::Attribute{"COLOR_0", AddDataAccessor(colors, fastgltf::AccessorType::Vec4, fastgltf::ComponentType::Float, fastgltf::BufferTarget::ArrayBuffer)});
         }
     };
     for (uint32_t mi = 0; mi < mesh_groups.size(); ++mi) {
@@ -3709,7 +3743,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             const auto store_id = mesh.GetStoreId();
             const auto vertices = meshes.GetVertices(store_id);
             const auto total_vcount = vertices.size();
-            const auto face_primitives = meshes.GetFacePrimitiveIndices(store_id);
+            const auto face_primitives = meshes.GetElementPrimitiveIndices(store_id);
             const auto primitive_materials = meshes.GetPrimitiveMaterialIndices(store_id);
             const auto corner_normals = meshes.GetCornerNormals(mesh);
             const auto corner_tangents = meshes.GetCornerTangents(store_id);

@@ -55,6 +55,10 @@ layout(constant_id = 6) const bool ENABLE_IRIDESCENCE   = true;
 // Rendering into the transmission framebuffer: discards transmission materials (they must not
 // sample their own attachment) and skips exposure, which the main pass applies after sampling.
 layout(constant_id = 7) const bool TRANSMISSION_PREPASS = false;
+// Primitive topology: 0 triangles, 1 lines, 2 points.
+layout(constant_id = 8) const uint TOPOLOGY = 0u;
+const bool NON_TRIANGLE = TOPOLOGY != 0u;
+const bool POINT_TOPOLOGY = TOPOLOGY == 2u;
 
 layout(location = 0) in vec3 WorldNormal;
 layout(location = 1) in vec3 WorldPosition;
@@ -207,6 +211,8 @@ NormalInfo GetNormalInfo(const PBRMaterial material) {
 }
 
 void main() {
+    // Point draws cover a square sprite, which rounds off here.
+    if (POINT_TOPOLOGY && length(gl_PointCoord - vec2(0.5)) > 0.5) discard;
 #ifdef VELOCITY_OUTPUT
     // Written up front so every return path carries it. Discarded fragments write nothing,
     // leaving the motion of whatever surface (or the background) shows through.
@@ -236,15 +242,22 @@ void main() {
         base_color.a = 1.0;
     }
 
+    // A point or line vertex without a NORMAL has no surface orientation, so per the glTF spec it renders unlit.
+    const bool no_normal = NON_TRIANGLE && dot(WorldNormal, WorldNormal) < 1e-12;
     // Unlit fast path. When a debug channel is active, fall through so all per-pixel props are computed and overrideable.
-    if (material.Unlit != 0u && SceneViewUBO.DebugChannel == DebugChannel_None) {
+    if (no_normal || (material.Unlit != 0u && SceneViewUBO.DebugChannel == DebugChannel_None)) {
         if (material.AlphaMode == MaterialAlphaMode_Mask) {
             if (base_color.a < material.AlphaCutoff) discard;
             base_color.a = 1.0;
         }
-        OutColor = TRANSMISSION_PREPASS
-            ? base_color
-            : vec4(base_color.rgb * SceneViewUBO.Exposure, base_color.a);
+        // A no-normal vertex keeps its emissive term, which KHR_materials_unlit drops.
+        vec3 unlit = base_color.rgb;
+        if (no_normal) {
+            vec3 emissive = material.EmissiveFactor;
+            if (material.EmissiveTexture.Slot != INVALID_SLOT) emissive *= texture(Samplers[nonuniformEXT(material.EmissiveTexture.Slot)], GetUv(material.EmissiveTexture)).rgb;
+            unlit += emissive;
+        }
+        OutColor = TRANSMISSION_PREPASS ? vec4(unlit, base_color.a) : vec4(unlit * SceneViewUBO.Exposure, base_color.a);
         return;
     }
 

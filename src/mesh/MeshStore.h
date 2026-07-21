@@ -64,7 +64,7 @@ struct CornerNormalSources {
 
 // Per-source-primitive metadata; all vectors indexed by primitive.
 struct MeshPrimitives {
-    std::vector<uint32_t> FacePrimitiveIndices{}; // per-face source primitive index
+    std::vector<uint32_t> ElementPrimitiveIndices{}; // source primitive index per drawn element (per face, or per vertex for point/line meshes)
     std::vector<uint32_t> MaterialIndices{};
     std::vector<uint32_t> AttributeFlags{}; // bitmask of MeshAttributeBit_*
     std::vector<uint8_t> HasSourceIndices{}; // 0 = source drew non-indexed
@@ -124,7 +124,7 @@ struct MeshStore {
     uint32_t GetCornerColorSlot() const;
     uint32_t GetCornerUvSlot() const;
     uint32_t GetEdgeSharpnessSlot() const;
-    uint32_t GetFacePrimitiveSlot() const;
+    uint32_t GetElementPrimitiveSlot() const;
     uint32_t GetPrimitiveMaterialSlot() const;
     uint32_t GetBoneDeformSlot() const;
     uint32_t GetMorphTargetSlot() const;
@@ -192,13 +192,13 @@ struct MeshStore {
     std::span<const vec2> GetCornerUvs(uint32_t id, uint32_t set) const;
 
     SlottedRange GetFaceIdRange(uint32_t id) const;
-    SlottedRange GetFacePrimitiveRange(uint32_t id) const;
+    SlottedRange GetElementPrimitiveRange(uint32_t id) const;
     SlottedRange GetPrimitiveMaterialRange(uint32_t id) const;
 
     std::span<const uint32_t> GetTriangleFaceIds(uint32_t id) const;
     std::span<const uint32_t> GetFaceFirstTriangles(uint32_t id) const;
-    std::span<const uint32_t> GetFacePrimitiveIndices(uint32_t id) const;
-    std::span<uint32_t> GetFacePrimitiveIndices(uint32_t id);
+    std::span<const uint32_t> GetElementPrimitiveIndices(uint32_t id) const;
+    std::span<uint32_t> GetElementPrimitiveIndices(uint32_t id);
     std::span<const uint32_t> GetPrimitiveMaterialIndices(uint32_t id) const;
     std::span<uint32_t> GetPrimitiveMaterialIndices(uint32_t id);
 
@@ -249,7 +249,7 @@ private:
         Range CornerTangents{}, CornerColors{}; // Corner-domain attribute layers
         std::array<Range, 4> CornerUvs{};
         Range EdgeSharpness{}; // One byte per edge, 1 = sharp
-        Range EdgeStates{}, TriangleFaceIds{}, FacePrimitives{}, PrimitiveMaterials{};
+        Range EdgeStates{}, TriangleFaceIds{}, ElementPrimitives{}, PrimitiveMaterials{};
         // CSR vertex incidence, each range holding (vertex count + 1) offsets followed by the items
         Range VertexFanAdjacency{}, VertexEdgeAdjacency{};
         // Seam-corner sector CSR: (SeamCornerCount + 1) offsets, then fan items (FanItemEncoding)
@@ -282,6 +282,7 @@ private:
     struct PendingReserves {
         uint32_t Vertices{}, Faces{}, Triangles{}, Edges{}, EdgeStates{};
         uint32_t Primitives{};
+        uint32_t ElementPrimitiveIndices{}; // One per face, or per vertex for point and line meshes.
         uint32_t BoneDeformVertices{}, MorphTargetEntries{};
         uint32_t CornerTangents{}, CornerColors{}, CornerUvs{};
         uint32_t AdjacencyWords{};

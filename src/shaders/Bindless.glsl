@@ -82,9 +82,9 @@ layout(set = 0, binding = BINDING_PrimitiveMaterialBuffer, scalar) readonly buff
     uint MaterialIndices[];
 } PrimitiveMaterialBuffers[];
 
-layout(set = 0, binding = BINDING_FacePrimitiveBuffer, scalar) readonly buffer FacePrimitiveBufferBlock {
+layout(set = 0, binding = BINDING_ElementPrimitiveBuffer, scalar) readonly buffer ElementPrimitiveBufferBlock {
     uint PrimitiveIndices[];
-} FacePrimitiveBuffers[];
+} ElementPrimitiveBuffers[];
 
 layout(set = 0, binding = BINDING_CornerTangentBuffer, scalar) readonly buffer CornerTangentBufferBlock {
     vec4 Tangents[];
@@ -187,4 +187,18 @@ vec3 GetVertexNormal(DrawData draw, uint idx) {
 vec3 NormalizeOrZero(vec3 n) {
     const float len = length(n);
     return len > 0.0 ? n / len : vec3(0);
+}
+
+// Selection state of the instance this draw renders.
+uint InstanceState(DrawData draw) {
+    return draw.InstanceStateSlot != INVALID_SLOT ?
+        uint(InstanceStateBuffers[draw.InstanceStateSlot].States[draw.FirstInstance]) :
+        0u;
+}
+
+// An object's selection color, falling back to `unselected` while it is not selected.
+vec4 ObjectSelectionColor(uint instance_state, vec4 unselected) {
+    if ((instance_state & STATE_SELECTED) == 0u) return unselected;
+    const bool is_active = (instance_state & STATE_ACTIVE) != 0u;
+    return vec4(is_active ? ViewportTheme.Colors.ObjectActive : ViewportTheme.Colors.ObjectSelected, 1.0);
 }

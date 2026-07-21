@@ -179,7 +179,7 @@ MeshDataWithMaterials ReadObj(const std::filesystem::path &path) {
     }
 
     if (!face_primitive_indices.empty()) {
-        result.Primitives.FacePrimitiveIndices = std::move(face_primitive_indices);
+        result.Primitives.ElementPrimitiveIndices = std::move(face_primitive_indices);
         result.Primitives.MaterialIndices = std::move(primitive_material_indices);
     }
     return result;
@@ -291,7 +291,7 @@ MeshDataWithMaterials ReadPly(const std::filesystem::path &path) {
         // Bake vertex colors down to one albedo value for now (no per-vertex color channel in the render path yet).
         const auto avg = ComputeAverageVertexColor(*colors);
         result.Materials.emplace_back(ObjPlyMaterial{.BaseColorFactor = {avg.x, avg.y, avg.z, 1.f}, .MetallicFactor = 0.f, .RoughnessFactor = 1.f, .Name = "VertexColor"});
-        result.Primitives.FacePrimitiveIndices = std::vector<uint32_t>(data.Faces.size(), 0u);
+        result.Primitives.ElementPrimitiveIndices = std::vector<uint32_t>(data.Faces.size(), 0u);
         result.Primitives.MaterialIndices = std::vector<uint32_t>{0u};
     }
 
@@ -379,7 +379,7 @@ void WeldVertices(MeshData &data, std::optional<ArmatureDeformData> &deform, std
 struct MeshStore::Buffers {
     explicit Buffers(mvk::BufferContext &ctx)
         : FaceFirstTriangleBuffer{ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::ObjectIdBuffer},
-          FacePrimitiveBuffer{ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::FacePrimitiveBuffer},
+          ElementPrimitiveBuffer{ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::ElementPrimitiveBuffer},
           PrimitiveMaterialBuffer{ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::PrimitiveMaterialBuffer},
           BoneDeformBuffer{ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::BoneDeformBuffer},
           MorphTargetBuffer{ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::MorphTargetBuffer},
@@ -404,7 +404,7 @@ struct MeshStore::Buffers {
           AdjacencyBuffer{ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer} {}
 
     BufferArena<uint32_t> FaceFirstTriangleBuffer; // Per-face index of first triangle in the index buffer
-    BufferArena<uint32_t> FacePrimitiveBuffer; // Per-face source primitive index
+    BufferArena<uint32_t> ElementPrimitiveBuffer; // Source primitive index per drawn element (per face, or per vertex for point/line meshes)
     BufferArena<uint32_t> PrimitiveMaterialBuffer; // Primitive index -> material index
     BufferArena<BoneDeformVertex> BoneDeformBuffer;
     BufferArena<MorphTargetVertex> MorphTargetBuffer;
@@ -435,7 +435,7 @@ struct MeshStore::Buffers {
     void ForEachSerializedArena(auto &&f) {
         f(VerticesBuffer);
         f(FaceFirstTriangleBuffer);
-        f(FacePrimitiveBuffer);
+        f(ElementPrimitiveBuffer);
         f(PrimitiveMaterialBuffer);
         f(BoneDeformBuffer);
         f(MorphTargetBuffer);
@@ -576,7 +576,7 @@ uint32_t MeshStore::GetCornerTangentSlot() const { return B->CornerTangentBuffer
 uint32_t MeshStore::GetCornerColorSlot() const { return B->CornerColorBuffer.Buffer.Slot; }
 uint32_t MeshStore::GetCornerUvSlot() const { return B->CornerUvBuffer.Buffer.Slot; }
 uint32_t MeshStore::GetEdgeSharpnessSlot() const { return B->EdgeSharpnessBuffer.Buffer.Slot; }
-uint32_t MeshStore::GetFacePrimitiveSlot() const { return B->FacePrimitiveBuffer.Buffer.Slot; }
+uint32_t MeshStore::GetElementPrimitiveSlot() const { return B->ElementPrimitiveBuffer.Buffer.Slot; }
 uint32_t MeshStore::GetPrimitiveMaterialSlot() const { return B->PrimitiveMaterialBuffer.Buffer.Slot; }
 uint32_t MeshStore::GetBoneDeformSlot() const { return B->BoneDeformBuffer.Buffer.Slot; }
 uint32_t MeshStore::GetMorphTargetSlot() const { return B->MorphTargetBuffer.Buffer.Slot; }
@@ -607,13 +607,13 @@ std::span<const vec4> MeshStore::GetCornerTangents(uint32_t id) const { return B
 std::span<const vec4> MeshStore::GetCornerColors(uint32_t id) const { return B->CornerColorBuffer.Get(Entries.at(id).CornerColors); }
 std::span<const vec2> MeshStore::GetCornerUvs(uint32_t id, uint32_t set) const { return B->CornerUvBuffer.Get(Entries.at(id).CornerUvs.at(set)); }
 SlottedRange MeshStore::GetFaceIdRange(uint32_t id) const { return B->TriangleFaceIdBuffer.Slotted(Entries.at(id).TriangleFaceIds); }
-SlottedRange MeshStore::GetFacePrimitiveRange(uint32_t id) const { return B->FacePrimitiveBuffer.Slotted(Entries.at(id).FacePrimitives); }
+SlottedRange MeshStore::GetElementPrimitiveRange(uint32_t id) const { return B->ElementPrimitiveBuffer.Slotted(Entries.at(id).ElementPrimitives); }
 SlottedRange MeshStore::GetPrimitiveMaterialRange(uint32_t id) const { return B->PrimitiveMaterialBuffer.Slotted(Entries.at(id).PrimitiveMaterials); }
 
 std::span<const uint32_t> MeshStore::GetTriangleFaceIds(uint32_t id) const { return B->TriangleFaceIdBuffer.Get(Entries.at(id).TriangleFaceIds); }
 std::span<const uint32_t> MeshStore::GetFaceFirstTriangles(uint32_t id) const { return B->FaceFirstTriangleBuffer.Get(Entries.at(id).FaceData); }
-std::span<const uint32_t> MeshStore::GetFacePrimitiveIndices(uint32_t id) const { return B->FacePrimitiveBuffer.Get(Entries.at(id).FacePrimitives); }
-std::span<uint32_t> MeshStore::GetFacePrimitiveIndices(uint32_t id) { return B->FacePrimitiveBuffer.GetMutable(Entries.at(id).FacePrimitives); }
+std::span<const uint32_t> MeshStore::GetElementPrimitiveIndices(uint32_t id) const { return B->ElementPrimitiveBuffer.Get(Entries.at(id).ElementPrimitives); }
+std::span<uint32_t> MeshStore::GetElementPrimitiveIndices(uint32_t id) { return B->ElementPrimitiveBuffer.GetMutable(Entries.at(id).ElementPrimitives); }
 std::span<const uint32_t> MeshStore::GetPrimitiveMaterialIndices(uint32_t id) const { return B->PrimitiveMaterialBuffer.Get(Entries.at(id).PrimitiveMaterials); }
 std::span<uint32_t> MeshStore::GetPrimitiveMaterialIndices(uint32_t id) { return B->PrimitiveMaterialBuffer.GetMutable(Entries.at(id).PrimitiveMaterials); }
 
@@ -945,19 +945,14 @@ SharpnessSummary MeshStore::GetFaceSharpnessSummary(uint32_t id) const {
 }
 
 namespace {
-void WriteVertices(std::span<Vertex> dst, std::span<const vec3> positions, const MeshVertexAttributes &attrs) {
-    for (uint32_t i = 0; i < positions.size(); ++i) {
-        dst[i] = {
-            .Position = positions[i],
-            .Color = attrs.Colors0 ? (*attrs.Colors0)[i] : vec4{1.f},
-        };
-    }
+void WriteVertices(std::span<Vertex> dst, std::span<const vec3> positions) {
+    for (uint32_t i = 0; i < positions.size(); ++i) dst[i] = {.Position = positions[i]};
 }
 } // namespace
 
 std::pair<uint32_t, Range> MeshStore::AllocateVertexBuffer(std::span<const vec3> positions, const MeshVertexAttributes &attrs) {
     const auto vertices = AllocateVertices(positions.size());
-    WriteVertices(B->VerticesBuffer.GetMutable(vertices), positions, attrs);
+    WriteVertices(B->VerticesBuffer.GetMutable(vertices), positions);
     // Face-less meshes keep authored normals as primary point normals, mirrored for shader reads.
     const auto point_normals = attrs.Normals ? B->PointNormalBuffer.Allocate(std::span<const vec3>{*attrs.Normals}) : Range{};
     FillBaseVertexNormalMirror(vertices, point_normals);
@@ -966,7 +961,7 @@ std::pair<uint32_t, Range> MeshStore::AllocateVertexBuffer(std::span<const vec3>
 
 std::pair<uint32_t, Range> MeshStore::AllocateOverlayVertexBuffer(std::span<const vec3> positions) {
     const auto vertices = B->OverlayVerticesBuffer.Allocate(positions.size());
-    WriteVertices(B->OverlayVerticesBuffer.GetMutable(vertices), positions, {});
+    WriteVertices(B->OverlayVerticesBuffer.GetMutable(vertices), positions);
     if (!OverlayFreeIds.empty()) {
         const auto id = OverlayFreeIds.back();
         OverlayFreeIds.pop_back();
@@ -1001,6 +996,8 @@ void MeshStore::PlanCreate(const MeshData &data, const MeshPrimitives &primitive
     Pending.Primitives += primitives.MaterialIndices.size();
     if (has_deform) Pending.BoneDeformVertices += vertices;
     if (morph_target_count > 0) Pending.MorphTargetEntries += morph_target_count * vertices;
+    // Point and line meshes index their primitive per vertex, triangle meshes per face.
+    Pending.ElementPrimitiveIndices += faces > 0 ? faces : uint32_t(primitives.ElementPrimitiveIndices.size());
     if (triangles > 0) {
         const uint32_t corners = triangles * 3;
         if (attrs.Tangents) Pending.CornerTangents += corners;
@@ -1008,6 +1005,8 @@ void MeshStore::PlanCreate(const MeshData &data, const MeshPrimitives &primitive
         for (const auto *uvs : {&attrs.TexCoords0, &attrs.TexCoords1, &attrs.TexCoords2, &attrs.TexCoords3}) {
             if (*uvs) Pending.CornerUvs += corners;
         }
+    } else if (attrs.Colors0) {
+        Pending.CornerColors += vertices; // Point and line meshes hold one color per vertex.
     }
 }
 
@@ -1019,6 +1018,7 @@ void MeshStore::PlanClone(const Mesh &mesh) {
     Pending.Edges += e.EdgeSharpness.Count;
     Pending.EdgeStates += e.EdgeStates.Count;
     Pending.Primitives += e.PrimitiveMaterials.Count;
+    Pending.ElementPrimitiveIndices += e.ElementPrimitives.Count;
     Pending.BoneDeformVertices += e.BoneDeform.Count;
     Pending.MorphTargetEntries += e.MorphTargets.Count;
     Pending.CornerTangents += e.CornerTangents.Count;
@@ -1030,7 +1030,7 @@ void MeshStore::PlanClone(const Mesh &mesh) {
 void MeshStore::CommitReserves() {
     B->VerticesBuffer.ReserveAdditional(Pending.Vertices);
     B->FaceFirstTriangleBuffer.ReserveAdditional(Pending.Faces);
-    B->FacePrimitiveBuffer.ReserveAdditional(Pending.Faces);
+    B->ElementPrimitiveBuffer.ReserveAdditional(Pending.ElementPrimitiveIndices);
     B->TriangleFaceIdBuffer.ReserveAdditional(Pending.Triangles);
     B->CornerClassBuffer.ReserveAdditional(Pending.Triangles * 3);
     B->EdgeStateBuffer.ReserveAdditional(Pending.EdgeStates);
@@ -1096,12 +1096,12 @@ CreatedMesh MeshStore::CreateMesh(MeshData &&data, MeshVertexAttributes &&attrs,
     const uint32_t face_count = data.Faces.size();
 
     // Sort faces by primitive index so triangles are grouped by primitive in the index buffer.
-    if (!primitives.FacePrimitiveIndices.empty() && primitives.FacePrimitiveIndices.size() == face_count &&
-        !std::ranges::all_of(primitives.FacePrimitiveIndices, [&](uint32_t pi) { return pi == primitives.FacePrimitiveIndices[0]; })) {
+    if (!primitives.ElementPrimitiveIndices.empty() && primitives.ElementPrimitiveIndices.size() == face_count &&
+        !std::ranges::all_of(primitives.ElementPrimitiveIndices, [&](uint32_t pi) { return pi == primitives.ElementPrimitiveIndices[0]; })) {
         std::vector<uint32_t> perm(face_count);
         std::iota(perm.begin(), perm.end(), 0u);
         std::stable_sort(perm.begin(), perm.end(), [&](uint32_t a, uint32_t b) {
-            return primitives.FacePrimitiveIndices[a] < primitives.FacePrimitiveIndices[b];
+            return primitives.ElementPrimitiveIndices[a] < primitives.ElementPrimitiveIndices[b];
         });
         bool already_sorted = true;
         for (uint32_t i = 0; i < face_count; ++i) {
@@ -1115,10 +1115,10 @@ CreatedMesh MeshStore::CreateMesh(MeshData &&data, MeshVertexAttributes &&attrs,
             std::vector<uint32_t> sorted_fpi(face_count);
             for (uint32_t i = 0; i < face_count; ++i) {
                 sorted_faces[i] = std::move(data.Faces[perm[i]]);
-                sorted_fpi[i] = primitives.FacePrimitiveIndices[perm[i]];
+                sorted_fpi[i] = primitives.ElementPrimitiveIndices[perm[i]];
             }
             data.Faces = std::move(sorted_faces);
-            primitives.FacePrimitiveIndices = std::move(sorted_fpi);
+            primitives.ElementPrimitiveIndices = std::move(sorted_fpi);
         }
     }
 
@@ -1181,6 +1181,19 @@ CreatedMesh MeshStore::CreateMesh(MeshData &&data, MeshVertexAttributes &&attrs,
         entry.DefaultMorphWeights.resize(entry.MorphTargetCount, 0.f);
     }
 
+    // Fill the per-element primitive-index and primitive-to-material tables from the source primitives.
+    const auto write_primitive_tables = [&](uint32_t element_count, uint32_t primitive_count) {
+        entry.ElementPrimitives = B->ElementPrimitiveBuffer.Allocate(element_count);
+        auto fp_span = B->ElementPrimitiveBuffer.GetMutable(entry.ElementPrimitives);
+        if (!primitives.ElementPrimitiveIndices.empty()) std::ranges::copy(primitives.ElementPrimitiveIndices, fp_span.begin());
+        else std::ranges::fill(fp_span, 0u);
+
+        entry.PrimitiveMaterials = B->PrimitiveMaterialBuffer.Allocate(primitive_count);
+        auto pm_span = B->PrimitiveMaterialBuffer.GetMutable(entry.PrimitiveMaterials);
+        if (!primitives.MaterialIndices.empty()) std::ranges::copy(primitives.MaterialIndices, pm_span.begin());
+        else std::ranges::fill(pm_span, 0u);
+    };
+
     if (!data.Faces.empty()) {
         // Write face-first-triangle offsets directly into GPU buffer.
         entry.FaceData = AllocateFaces(face_count);
@@ -1208,29 +1221,14 @@ CreatedMesh MeshStore::CreateMesh(MeshData &&data, MeshVertexAttributes &&attrs,
             for (size_t t = 0; t < n_tris; ++t) tri_face_span[ti++] = fi + 1;
         }
 
-        // Write face-to-primitive mapping directly into GPU buffer.
-        entry.FacePrimitives = B->FacePrimitiveBuffer.Allocate(face_count);
-        auto fp_span = B->FacePrimitiveBuffer.GetMutable(entry.FacePrimitives);
-        if (!primitives.FacePrimitiveIndices.empty()) {
-            std::ranges::copy(primitives.FacePrimitiveIndices, fp_span.begin());
-        } else {
-            std::ranges::fill(fp_span, 0u);
-        }
-
         const auto primitive_count = !primitives.MaterialIndices.empty() ?
-            (primitives.FacePrimitiveIndices.empty() ? 1u : *std::ranges::max_element(primitives.FacePrimitiveIndices) + 1u) :
+            (primitives.ElementPrimitiveIndices.empty() ? 1u : *std::ranges::max_element(primitives.ElementPrimitiveIndices) + 1u) :
             1u;
-        entry.PrimitiveMaterials = B->PrimitiveMaterialBuffer.Allocate(primitive_count);
-        auto pm_span = B->PrimitiveMaterialBuffer.GetMutable(entry.PrimitiveMaterials);
-        if (!primitives.MaterialIndices.empty()) {
-            std::ranges::copy(primitives.MaterialIndices, pm_span.begin());
-        } else {
-            std::ranges::fill(pm_span, 0u);
-        }
+        write_primitive_tables(face_count, primitive_count);
 
         // Compute per-primitive triangle ranges from the (now sorted) face data.
         {
-            const auto fp = B->FacePrimitiveBuffer.Get(entry.FacePrimitives);
+            const auto fp = B->ElementPrimitiveBuffer.Get(entry.ElementPrimitives);
             const auto fft = B->FaceFirstTriangleBuffer.Get(entry.FaceData);
             auto &ranges = entry.PrimitiveTriangleRanges;
             if (face_count > 0) {
@@ -1246,6 +1244,12 @@ CreatedMesh MeshStore::CreateMesh(MeshData &&data, MeshVertexAttributes &&attrs,
                 ranges.push_back({current_prim, range_first_tri, entry.TriangleCount - range_first_tri});
             }
         }
+    } else if (!primitives.ElementPrimitiveIndices.empty()) {
+        // Point and line meshes carry one color and one primitive index per vertex.
+        if (attrs.Colors0) entry.CornerColors = B->CornerColorBuffer.Allocate(std::span<const vec4>{*attrs.Colors0});
+        // Primitive indices are source-wide, so the material table spans every primitive of the source mesh.
+        const auto primitive_count = primitives.MaterialIndices.empty() ? 1u : uint32_t(primitives.MaterialIndices.size());
+        write_primitive_tables(primitives.ElementPrimitiveIndices.size(), primitive_count);
     }
 
     MeshConnectivity conn = [&] {
@@ -1266,7 +1270,7 @@ CreatedMesh MeshStore::CreateMesh(MeshData &&data, MeshVertexAttributes &&attrs,
         // Faces of primitives that ship no normals shade flat, like a fully normal-less mesh.
         if (!flat_shaded && !primitives.AttributeFlags.empty()) {
             for (uint32_t fi = 0; fi < sharpness.size(); ++fi) {
-                const auto pi = fi < primitives.FacePrimitiveIndices.size() ? primitives.FacePrimitiveIndices[fi] : 0u;
+                const auto pi = fi < primitives.ElementPrimitiveIndices.size() ? primitives.ElementPrimitiveIndices[fi] : 0u;
                 if (pi < primitives.AttributeFlags.size() && !(primitives.AttributeFlags[pi] & MeshAttributeBit_Normal)) sharpness[fi] = 1;
             }
         }
@@ -1374,7 +1378,7 @@ CreatedMesh MeshStore::CloneMesh(const Mesh &mesh) {
         .EdgeSharpness = B->EdgeSharpnessBuffer.Clone(src_entry.EdgeSharpness),
         .EdgeStates = edge_states,
         .TriangleFaceIds = B->TriangleFaceIdBuffer.Clone(src_entry.TriangleFaceIds),
-        .FacePrimitives = B->FacePrimitiveBuffer.Clone(src_entry.FacePrimitives),
+        .ElementPrimitives = B->ElementPrimitiveBuffer.Clone(src_entry.ElementPrimitives),
         .PrimitiveMaterials = B->PrimitiveMaterialBuffer.Clone(src_entry.PrimitiveMaterials),
         .VertexFanAdjacency = B->AdjacencyBuffer.Clone(src_entry.VertexFanAdjacency),
         .VertexEdgeAdjacency = B->AdjacencyBuffer.Clone(src_entry.VertexEdgeAdjacency),
@@ -1433,7 +1437,7 @@ void MeshStore::Release(uint32_t id) {
     B->EdgeSharpnessBuffer.Release(entry.EdgeSharpness);
     B->TriangleFaceIdBuffer.Release(entry.TriangleFaceIds);
     B->FaceFirstTriangleBuffer.Release(entry.FaceData);
-    B->FacePrimitiveBuffer.Release(entry.FacePrimitives);
+    B->ElementPrimitiveBuffer.Release(entry.ElementPrimitives);
     B->PrimitiveMaterialBuffer.Release(entry.PrimitiveMaterials);
     B->EdgeStateBuffer.Release(entry.EdgeStates);
     B->AdjacencyBuffer.Release(entry.VertexFanAdjacency);

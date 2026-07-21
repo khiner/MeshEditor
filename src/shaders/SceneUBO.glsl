@@ -3,6 +3,9 @@
 #include "InteractionMode.glsl"
 #include "Element.glsl"
 
+// Diameter in pixels of a drawn point.
+const float PointSize = 8.0;
+
 bool IsFrontFacing(vec3 normal, vec3 world_pos) {
     return dot(normal, SceneViewUBO.CameraPosition - world_pos) >= 0.0;
 }

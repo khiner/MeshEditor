@@ -47,15 +47,27 @@ struct PbrCompiler {
         BlendVelocity,
         OpaquePrepass
     };
+    static constexpr size_t VariantCount{5};
 
-    bool CompilePipelines(PbrFeatureMask);
-    vk::PipelineLayout Bind(vk::CommandBuffer, Variant, uint32_t scene_ubo_offset = 0) const;
+    // Point and line meshes shade through the same modules, as round sprites and as screen-space quads.
+    enum class Topology {
+        Triangle,
+        Line,
+        Point
+    };
+    static constexpr size_t TopologyCount{3};
+
+    static constexpr size_t VariantIndex(Topology t, Variant v) { return size_t(t) * VariantCount + size_t(v); }
+
+    // `non_triangle` also builds the line and point pipelines.
+    bool CompilePipelines(PbrFeatureMask, bool non_triangle = false);
+    vk::PipelineLayout Bind(vk::CommandBuffer, Variant, Topology = Topology::Triangle, uint32_t scene_ubo_offset = 0) const;
     bool HasFeature(PbrFeature f) const { return ::HasFeature(Mask, f); }
     void RecompileModules(); // hot reload: recompile SPIRV and pipelines from disk
 
 private:
     void CompileModules();
-    vk::UniquePipeline CreateTargetedPipeline(const vk::SpecializationInfo &frag_spec, Variant) const;
+    vk::UniquePipeline CreateTargetedPipeline(const vk::SpecializationInfo &frag_spec, Variant, Topology) const;
 
     vk::Device Device;
     vk::UniquePipelineCache Cache;
@@ -68,7 +80,8 @@ private:
     vk::RenderPass RenderPass, VelocityRenderPass;
 
     PbrFeatureMask Mask{0};
-    std::array<vk::UniquePipeline, 5> Variants; // Indexed by Variant.
+    bool NonTriangle{false}; // Whether the line and point pipelines are built.
+    std::array<vk::UniquePipeline, VariantCount * TopologyCount> Variants; // Indexed by Topology-major, then Variant.
 };
 
 struct MainPipeline {

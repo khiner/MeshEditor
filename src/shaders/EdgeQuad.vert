@@ -1,6 +1,7 @@
 #version 450
 
 #include "Bindless.glsl"
+#include "LineQuad.glsl"
 #include "TransformUtils.glsl"
 
 // Signed distance from edge center in pixels (noperspective for correct screen-space interpolation).
@@ -15,17 +16,9 @@ void main() {
 
     // 6 vertices per edge quad (2 triangles).
     const uint edge_id = uint(gl_VertexIndex) / 6u;
-    const uint corner_id = uint(gl_VertexIndex) % 6u;
-
-    // Map 6 vertices to 4 unique corners: triangle 0 = {0,1,2}, triangle 1 = {1,3,2}.
-    const uint corner_lut[6] = uint[6](0u, 1u, 2u, 1u, 3u, 2u);
-    const uint corner = corner_lut[corner_id];
-
-    // Corner layout:
-    //   0 = endpoint0 +perp    2 = endpoint1 +perp
-    //   1 = endpoint0 -perp    3 = endpoint1 -perp
-    const uint endpoint = corner >> 1u;
-    const float side = (corner & 1u) == 0u ? 1.0 : -1.0;
+    const uint corner = line_quad_corner(uint(gl_VertexIndex));
+    const uint endpoint = line_quad_endpoint(corner);
+    const float side = line_quad_side(corner);
 
     // Read both edge endpoint vertex indices.
     const uint base_index = draw.IndexSlotOffset.Offset + edge_id * 2u;
@@ -43,35 +36,6 @@ void main() {
     clip0.z -= NdcOffsetFactor();
     clip1.z -= NdcOffsetFactor();
 
-    // Near-plane clipping (z/w < -1 means behind near plane in NDC).
-    vec2 pz_ndc = vec2(clip0.z / clip0.w, clip1.z / clip1.w);
-    bvec2 clipped = lessThan(pz_ndc, vec2(-1.0));
-    if (clipped.x && clipped.y) {
-        gl_Position = vec4(uintBitsToFloat(0x7FC00000u)); // NaN discard
-        return;
-    }
-    vec4 clip01 = clip0 - clip1;
-    float ofs = abs((pz_ndc.y + 1.0) / (pz_ndc.x - pz_ndc.y));
-    if (clipped.y) {
-        clip1 += clip01 * ofs;
-    } else if (clipped.x) {
-        clip0 -= clip01 * (1.0 - ofs);
-    }
-
-    // Screen-space positions in NDC [-1,1].
-    vec2 ss0 = clip0.xy / clip0.w;
-    vec2 ss1 = clip1.xy / clip1.w;
-
-    // Edge direction in pixel space, then perpendicular.
-    vec2 edge_dir = (ss0 - ss1) * SceneViewUBO.ViewportSize;
-    float edge_len = length(edge_dir);
-    if (edge_len < 1e-6) {
-        gl_Position = vec4(uintBitsToFloat(0x7FC00000u));
-        return;
-    }
-    edge_dir /= edge_len;
-    vec2 perp = vec2(-edge_dir.y, edge_dir.x);
-
     // Sharp edges draw a wider mark band around the wire core.
     const bool sharp = draw.EdgeSharpnessOffset != INVALID_OFFSET &&
         uint(ElementStateBuffers[nonuniformEXT(SceneViewUBO.EdgeSharpnessSlot)].States[draw.EdgeSharpnessOffset + edge_id]) != 0u;
@@ -81,14 +45,7 @@ void main() {
     // Marked edges enlarge by another edge width.
     float half_width = ViewportTheme.EdgeWidth + (OuterColor.a > 0.0 ? max(ViewportTheme.EdgeWidth, 1.0) : 0.0) + 0.5;
 
-    // Offset in NDC space (pixels -> NDC).
-    vec2 offset_ndc = perp * side * half_width / SceneViewUBO.ViewportSize;
-
-    // Select clip position for this endpoint.
-    vec4 pos = endpoint == 0u ? clip0 : clip1;
-
-    // Expand in clip space (multiply by 2 because NDC range is [-1,1]).
-    pos.xy += offset_ndc * 2.0 * pos.w;
+    vec4 pos = line_quad_position(clip0, clip1, corner, half_width);
     // Marked edges draw slightly in front.
     if (OuterColor.a > 0.0) pos.z -= 5e-7 * abs(pos.w);
 

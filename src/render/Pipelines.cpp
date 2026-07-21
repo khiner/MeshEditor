@@ -113,13 +113,17 @@ void PbrCompiler::CompileModules() {
     VelocityFragModule = CompileShaderModule(Device, Frag, "pbr.frag", {"VELOCITY_OUTPUT"});
 }
 
-vk::UniquePipeline PbrCompiler::CreateTargetedPipeline(const vk::SpecializationInfo &frag_spec, Variant variant) const {
+vk::UniquePipeline PbrCompiler::CreateTargetedPipeline(const vk::SpecializationInfo &frag_spec, Variant variant, Topology topology) const {
     static constexpr vk::PipelineViewportStateCreateInfo viewport_state{{}, 1, nullptr, 1, nullptr};
     static constexpr std::array dynamic_states{vk::DynamicState::eViewport, vk::DynamicState::eScissor};
     static const vk::PipelineDynamicStateCreateInfo dynamic_state{{}, dynamic_states};
     static constexpr vk::PipelineMultisampleStateCreateInfo multisample_state{{}, vk::SampleCountFlagBits::e1};
     static constexpr vk::PipelineVertexInputStateCreateInfo vertex_input{};
-    static constexpr vk::PipelineInputAssemblyStateCreateInfo input_assembly{{}, eTriangleList};
+    // The LineQuad specialization widens each line into a screen-space quad, so lines rasterize as triangles.
+    const vk::PipelineInputAssemblyStateCreateInfo input_assembly{{}, topology == Topology::Point ? ePointList : eTriangleList};
+    static constexpr vk::SpecializationMapEntry line_quad_entry{2, 0, sizeof(uint32_t)};
+    static constexpr uint32_t line_quad_value{1};
+    static constexpr vk::SpecializationInfo line_quad_spec{1, &line_quad_entry, sizeof(line_quad_value), &line_quad_value};
     static const vk::PipelineRasterizationStateCreateInfo raster{{}, false, false, vk::PolygonMode::eFill, {}, vk::FrontFace::eClockwise, false, 0.f, {}, 0.f, 1.f};
 
     // Opaque geometry writes its screen motion into the velocity attachment. Blend geometry
@@ -128,7 +132,7 @@ vk::UniquePipeline PbrCompiler::CreateTargetedPipeline(const vk::SpecializationI
     const bool velocity_modules = variant == Variant::OpaqueVelocity;
     const bool depth_write = variant != Variant::Blend && variant != Variant::BlendVelocity;
     const std::array stages{
-        vk::PipelineShaderStageCreateInfo{{}, Vert, velocity_modules ? *VelocityVertModule : *VertModule, "main"},
+        vk::PipelineShaderStageCreateInfo{{}, Vert, velocity_modules ? *VelocityVertModule : *VertModule, "main", topology == Topology::Line ? &line_quad_spec : nullptr},
         vk::PipelineShaderStageCreateInfo{{}, Frag, velocity_modules ? *VelocityFragModule : *FragModule, "main", &frag_spec},
     };
     const auto depth_stencil = CreateDepthStencil(true, depth_write);
@@ -147,33 +151,45 @@ vk::UniquePipeline PbrCompiler::CreateTargetedPipeline(const vk::SpecializationI
     return std::move(result.value);
 }
 
-bool PbrCompiler::CompilePipelines(PbrFeatureMask mask) {
-    if (mask == Mask && Variants[size_t(Variant::Opaque)] && Variants[size_t(Variant::Blend)]) return false;
+bool PbrCompiler::CompilePipelines(PbrFeatureMask mask, bool non_triangle) {
+    if (mask == Mask && non_triangle == NonTriangle && Variants[VariantIndex(Topology::Triangle, Variant::Opaque)] && Variants[VariantIndex(Topology::Triangle, Variant::Blend)]) return false;
     const profile::CpuScope scope{"CompilePbrPipelines"};
 
     constexpr uint32_t N = PbrSpecFeatures.size();
-    constexpr uint32_t TotalConstants = N + 1; // + TRANSMISSION_PREPASS
-    std::array<uint32_t, TotalConstants> data{};
+    constexpr uint32_t TotalConstants = N + 2; // + TRANSMISSION_PREPASS + TOPOLOGY
     std::array<vk::SpecializationMapEntry, TotalConstants> entries{};
     for (uint32_t i = 0; i < TotalConstants; ++i) entries[i] = vk::SpecializationMapEntry{i, i * uint32_t(sizeof(uint32_t)), uint32_t(sizeof(uint32_t))};
-    for (uint32_t i = 0; i < N; ++i) data[i] = ::HasFeature(mask, PbrSpecFeatures[i]) ? 1u : 0u;
-    data[N] = 0u; // main pipelines: exposed radiance, sampling the transmission framebuffer
-    const vk::SpecializationInfo spec_main{TotalConstants, entries.data(), TotalConstants * sizeof(uint32_t), data.data()};
-    for (const auto v : {Variant::Opaque, Variant::Blend, Variant::OpaqueVelocity, Variant::BlendVelocity}) Variants[size_t(v)] = CreateTargetedPipeline(spec_main, v);
-    if (::HasFeature(mask, PbrFeature::Transmission)) {
-        data[N] = 1u; // pre-pass pipeline: un-exposed radiance, no framebuffer self-sampling
-        const vk::SpecializationInfo spec_prepass{TotalConstants, entries.data(), TotalConstants * sizeof(uint32_t), data.data()};
-        Variants[size_t(Variant::OpaquePrepass)] = CreateTargetedPipeline(spec_prepass, Variant::OpaquePrepass);
-    } else {
-        Variants[size_t(Variant::OpaquePrepass)].reset();
+    // Each SpecializationInfo aliases its data array, so every topology and pass keeps its own array alive through pipeline creation.
+    // The pre-pass takes un-exposed radiance and skips framebuffer self-sampling.
+    std::array<std::array<uint32_t, TotalConstants>, TopologyCount * 2> data{};
+    std::array<vk::SpecializationInfo, TopologyCount * 2> specs{};
+    for (uint32_t i = 0; i < data.size(); ++i) {
+        for (uint32_t f = 0; f < N; ++f) data[i][f] = ::HasFeature(mask, PbrSpecFeatures[f]) ? 1u : 0u;
+        data[i][N] = i & 1u;
+        data[i][N + 1] = i / 2u;
+        specs[i] = {TotalConstants, entries.data(), TotalConstants * sizeof(uint32_t), data[i].data()};
+    }
+    const auto spec = [&specs](bool prepass, Topology t) -> const vk::SpecializationInfo & { return specs[size_t(t) * 2 + (prepass ? 1 : 0)]; };
+    const bool transmission = ::HasFeature(mask, PbrFeature::Transmission);
+    for (size_t t = 0; t < TopologyCount; ++t) {
+        const auto topology = Topology(t);
+        for (size_t v = 0; v < VariantCount; ++v) Variants[VariantIndex(topology, Variant(v))].reset();
+        const bool triangle = topology == Topology::Triangle;
+        // Line and point topologies build only when the scene holds such meshes, and only in the variants their draws bind.
+        if (!triangle && !non_triangle) continue;
+        for (const auto v : {Variant::Opaque, Variant::OpaqueVelocity}) Variants[VariantIndex(topology, v)] = CreateTargetedPipeline(spec(false, topology), v, topology);
+        if (!triangle) continue;
+        for (const auto v : {Variant::Blend, Variant::BlendVelocity}) Variants[VariantIndex(topology, v)] = CreateTargetedPipeline(spec(false, topology), v, topology);
+        if (transmission) Variants[VariantIndex(topology, Variant::OpaquePrepass)] = CreateTargetedPipeline(spec(true, topology), Variant::OpaquePrepass, topology);
     }
     Mask = mask;
+    NonTriangle = non_triangle;
 
     return true;
 }
 
-vk::PipelineLayout PbrCompiler::Bind(vk::CommandBuffer cb, Variant v, uint32_t scene_ubo_offset) const {
-    cb.bindPipeline(vk::PipelineBindPoint::eGraphics, *Variants[size_t(v)]);
+vk::PipelineLayout PbrCompiler::Bind(vk::CommandBuffer cb, Variant v, Topology t, uint32_t scene_ubo_offset) const {
+    cb.bindPipeline(vk::PipelineBindPoint::eGraphics, *Variants[VariantIndex(t, v)]);
     const std::array sets{Set, UboSet};
     cb.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *Layout, 0, uint32_t(sets.size()), sets.data(), 1, &scene_ubo_offset);
     return *Layout;
@@ -183,7 +199,7 @@ void PbrCompiler::RecompileModules() {
     if (!Device) return;
     CompileModules();
     for (auto &pipeline : Variants) pipeline.reset();
-    CompilePipelines(Mask);
+    CompilePipelines(Mask, NonTriangle);
 }
 
 // `transmission_prepass` selects the variant that skips exposure, which the main pass applies after sampling.

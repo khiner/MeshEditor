@@ -1934,7 +1934,8 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
                 const auto &active_lighting = GetActivePbrLighting(r, viewport, shading);
                 if (active_lighting.UseSceneLights) pbr_mask |= PbrFeature::Punctual;
                 for (const auto [_, feat] : r.view<const PbrMeshFeatures>().each()) pbr_mask |= feat.Mask;
-                if (pipelines.Main.Compiler.CompilePipelines(pbr_mask)) request(RenderRequest::ReRecord);
+                const bool non_triangle = std::ranges::any_of(r.view<const SourceMeshKind>().each(), [](const auto &e) { return std::get<1>(e).Value != MeshKind::Triangles; });
+                if (pipelines.Main.Compiler.CompilePipelines(pbr_mask, non_triangle)) request(RenderRequest::ReRecord);
                 const bool want_transmission = active_lighting.RealTransmission && HasFeature(pbr_mask, PbrFeature::Transmission);
                 const auto te_px = RenderExtentPx(r);
                 if (pipelines.Main.EnsureTransmissionResources({te_px.x, te_px.y}, vk.Device, vk.PhysicalDevice, want_transmission)) refresh_transmission_descriptor();
@@ -2031,10 +2032,11 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
             .VertexClassSlot = buffers.VertexClassBuffer.Buffer.Slot,
             .MaterialSlot = buffers.Materials.Slot(),
             .PrimitiveMaterialSlot = meshes.GetPrimitiveMaterialSlot(),
-            .FacePrimitiveSlot = meshes.GetFacePrimitiveSlot(),
+            .ElementPrimitiveSlot = meshes.GetElementPrimitiveSlot(),
             .DrawDataSlot = buffers.RenderDraw.DrawData.Slot,
             .VisibleIndexSlot = buffers.RenderDraw.VisibleIndices.Slot,
             .BoneXRay = settings.ViewportShading == ViewportShadingMode::Wireframe ? 1u : 0u,
+            .ShowOverlays = settings.ShowOverlays ? 1u : 0u,
             // Polygon offset factor matching Blender's GPU_polygon_offset_calc (viewdist = max ortho extent)
             .NdcOffsetFactor = std::holds_alternative<Perspective>(camera.Data) ? proj[3][2] * -0.00125f : 0.000005f * std::max(std::abs(1.f / proj[0][0]), std::abs(1.f / proj[1][1])),
             .TransmissionFramebufferSamplerSlot = r.ctx().get<const SelectionSlots>().TransmissionSampler,
@@ -2131,6 +2133,7 @@ void RegisterSceneComponentHandlers(entt::registry &r) {
     track<changes::ActiveMaterialVariant>(r).on<MaterialVariants>(On::Create | On::Update);
     track<changes::PbrSpecialization>(r)
         .on<PbrMeshFeatures>(On::Create | On::Update | On::Destroy)
+        .on<SourceMeshKind>(On::Create | On::Destroy) // Point and line meshes add their own PBR topologies.
         .on<MaterialPreviewLighting>(On::Create | On::Update)
         .on<RenderedLighting>(On::Create | On::Update);
     track<changes::SceneView>(r)

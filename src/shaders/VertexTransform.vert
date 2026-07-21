@@ -3,6 +3,7 @@
 #include "Bindless.glsl"
 #include "CornerClass.glsl"
 #include "CornerClassEncoding.glsl"
+#include "LineQuad.glsl"
 #include "MorphDeform.glsl"
 #include "ArmatureDeform.glsl"
 #include "TransformUtils.glsl"
@@ -33,6 +34,8 @@ layout(location = 15) out vec3 MotionNext;
 
 layout(constant_id = 0) const uint OverlayKind = 0u;
 layout(constant_id = 1) const uint IsLineDraw = 0u;
+// Widen each line into a screen-space quad, six vertices per line.
+layout(constant_id = 2) const bool LineQuad = false;
 
 #ifdef VELOCITY_OUTPUT
 // World position of `vert` under one pose. The per-draw offsets are shared across poses,
@@ -125,7 +128,10 @@ vec3 CornerNormal(DrawData draw, uint idx, uint face_id) {
 
 void main() {
     const DrawData draw = GetDrawData();
-    const uint idx = IndexBuffers[draw.IndexSlotOffset.Slot].Indices[draw.IndexSlotOffset.Offset + uint(gl_VertexIndex)];
+    // A line-quad draw takes its endpoint from the index pair its six vertices share.
+    const uint corner = LineQuad ? line_quad_corner(uint(gl_VertexIndex)) : 0u;
+    const uint vertex_index = LineQuad ? (uint(gl_VertexIndex) / 6u) * 2u + line_quad_endpoint(corner) : uint(gl_VertexIndex);
+    const uint idx = IndexBuffers[draw.IndexSlotOffset.Slot].Indices[draw.IndexSlotOffset.Offset + vertex_index];
     const Vertex vert = VertexBuffers[draw.VertexSlot].Vertices[idx + draw.VertexOffset];
     // Motion blur steps read their captured transforms through the override, keeping DrawData step-agnostic.
     const uint model_slot = SceneViewUBO.ModelSlotOverride != INVALID_SLOT ? SceneViewUBO.ModelSlotOverride : draw.ModelSlot;
@@ -136,26 +142,27 @@ void main() {
     MaterialIndex = 0u;
     const vec3 local_pos = GetLocalPosition(draw, idx);
     // Face draws compose the corner shading normal.
-    // Line draw fragments ignore WorldNormal, so it stays zero.
-    vec3 normal = vec3(0);
-    if (draw.ObjectIdSlot != INVALID_SLOT) {
-        face_id = ObjectIdBuffers[draw.ObjectIdSlot].Ids[draw.FaceIdOffset + uint(gl_VertexIndex) / 3u];
+    // Point and line draws shade from the vertex normal.
+    const bool is_face_draw = draw.ObjectIdSlot != INVALID_SLOT;
+    vec3 normal = is_face_draw ? vec3(0) : GetVertexNormal(draw, idx);
+    if (is_face_draw) {
+        face_id = ObjectIdBuffers[draw.ObjectIdSlot].Ids[draw.FaceIdOffset + vertex_index / 3u];
         normal = CornerNormal(draw, idx, face_id);
         if (draw.ElementStateSlotOffset.Slot != INVALID_SLOT && face_id != 0u) {
             element_state = uint(ElementStateBuffers[draw.ElementStateSlotOffset.Slot].States[draw.ElementStateSlotOffset.Offset + face_id - 1u]);
         }
     } else if (draw.ElementStateSlotOffset.Slot != INVALID_SLOT) {
-        element_state = uint(ElementStateBuffers[draw.ElementStateSlotOffset.Slot].States[draw.ElementStateSlotOffset.Offset + gl_VertexIndex]);
+        element_state = uint(ElementStateBuffers[draw.ElementStateSlotOffset.Slot].States[draw.ElementStateSlotOffset.Offset + vertex_index]);
     }
     const vec3 world_pos = apply_object_pending_transform(draw, trs_transform_point(world, local_pos));
 
     WorldNormal = trs_transform_normal(world, normal);
     WorldPosition = world_pos;
-    // Face draws read triangle-mesh colors per corner.
-    // Line/point meshes keep a point-domain color on the vertex.
+    // Face draws hold one color per corner, point and line draws one per vertex.
+    const uint color_index = is_face_draw ? vertex_index : idx;
     VertexColor = draw.CornerColorOffset != INVALID_OFFSET ?
-        CornerColorBuffers[nonuniformEXT(SceneViewUBO.CornerColorSlot)].Colors[draw.CornerColorOffset + uint(gl_VertexIndex)] :
-        vert.Color;
+        CornerColorBuffers[nonuniformEXT(SceneViewUBO.CornerColorSlot)].Colors[draw.CornerColorOffset + color_index] :
+        vec4(1.0);
 
     const bool is_edit_mode = SceneViewUBO.InteractionMode == InteractionMode_Edit;
     const bool is_edit_edge = is_edit_mode && SceneViewUBO.EditElement == Element_Edge;
@@ -166,7 +173,6 @@ void main() {
         OverlayKind == 1u ? vec4(ViewportTheme.Colors.FaceNormal, 1.0) :
         OverlayKind == 2u ? vec4(ViewportTheme.Colors.VertexNormal, 1.0) :
                             edge_color;
-    const bool is_face_draw = draw.ObjectIdSlot != INVALID_SLOT;
     const bool is_edge_draw = !is_face_draw && draw.ElementStateSlotOffset.Slot != INVALID_SLOT;
     const bool is_selected = (element_state & STATE_SELECTED) != 0u;
     const bool is_active = (element_state & STATE_ACTIVE) != 0u;
@@ -180,14 +186,19 @@ void main() {
             vec4(ViewportTheme.Colors.EdgeSelectedIncidental, 1.0);
     }
 
+    // Face draws index the primitive table per face, point and line draws per vertex.
+    if (draw.ElementPrimitiveOffset != INVALID_OFFSET && draw.PrimitiveMaterialOffset != INVALID_OFFSET && (!is_face_draw || face_id != 0u)) {
+        const uint element = is_face_draw ? face_id - 1u : idx;
+        const uint primitive_index = ElementPrimitiveBuffers[nonuniformEXT(SceneViewUBO.ElementPrimitiveSlot)].PrimitiveIndices[draw.ElementPrimitiveOffset + element];
+        MaterialIndex = PrimitiveMaterialBuffers[nonuniformEXT(SceneViewUBO.PrimitiveMaterialSlot)].MaterialIndices[draw.PrimitiveMaterialOffset + primitive_index];
+    }
     if (is_face_draw) {
-        if (draw.FacePrimitiveOffset != INVALID_OFFSET && draw.PrimitiveMaterialOffset != INVALID_OFFSET && face_id != 0u) {
-            const uint primitive_index = FacePrimitiveBuffers[nonuniformEXT(SceneViewUBO.FacePrimitiveSlot)].PrimitiveIndices[draw.FacePrimitiveOffset + face_id - 1u];
-            MaterialIndex = PrimitiveMaterialBuffers[nonuniformEXT(SceneViewUBO.PrimitiveMaterialSlot)].MaterialIndices[draw.PrimitiveMaterialOffset + primitive_index];
-        }
         if (is_selected) FaceOverlayFlags |= 1u;
         if (is_active) FaceOverlayFlags |= 2u;
         Color = base_color;
+    } else if (is_edge_draw && SceneViewUBO.InteractionMode == InteractionMode_Object && SceneViewUBO.ShowOverlays != 0u) {
+        // A mesh's wire takes its object's selection color.
+        Color = ObjectSelectionColor(InstanceState(draw), base_color);
     } else {
         vec4 final_color = is_selected ? selected_color : base_color;
         const bool is_excited = (element_state & STATE_EXCITED) != 0u;
@@ -196,13 +207,13 @@ void main() {
         Color = final_color;
     }
     const uint corner_uv_slot = SceneViewUBO.CornerUvSlot;
-    TexCoord0 = draw.CornerUvOffsets[0] != INVALID_OFFSET ? CornerUvBuffers[nonuniformEXT(corner_uv_slot)].Uvs[draw.CornerUvOffsets[0] + uint(gl_VertexIndex)] : vec2(0);
-    TexCoord1 = draw.CornerUvOffsets[1] != INVALID_OFFSET ? CornerUvBuffers[nonuniformEXT(corner_uv_slot)].Uvs[draw.CornerUvOffsets[1] + uint(gl_VertexIndex)] : vec2(0);
-    TexCoord2 = draw.CornerUvOffsets[2] != INVALID_OFFSET ? CornerUvBuffers[nonuniformEXT(corner_uv_slot)].Uvs[draw.CornerUvOffsets[2] + uint(gl_VertexIndex)] : vec2(0);
-    TexCoord3 = draw.CornerUvOffsets[3] != INVALID_OFFSET ? CornerUvBuffers[nonuniformEXT(corner_uv_slot)].Uvs[draw.CornerUvOffsets[3] + uint(gl_VertexIndex)] : vec2(0);
+    TexCoord0 = draw.CornerUvOffsets[0] != INVALID_OFFSET ? CornerUvBuffers[nonuniformEXT(corner_uv_slot)].Uvs[draw.CornerUvOffsets[0] + vertex_index] : vec2(0);
+    TexCoord1 = draw.CornerUvOffsets[1] != INVALID_OFFSET ? CornerUvBuffers[nonuniformEXT(corner_uv_slot)].Uvs[draw.CornerUvOffsets[1] + vertex_index] : vec2(0);
+    TexCoord2 = draw.CornerUvOffsets[2] != INVALID_OFFSET ? CornerUvBuffers[nonuniformEXT(corner_uv_slot)].Uvs[draw.CornerUvOffsets[2] + vertex_index] : vec2(0);
+    TexCoord3 = draw.CornerUvOffsets[3] != INVALID_OFFSET ? CornerUvBuffers[nonuniformEXT(corner_uv_slot)].Uvs[draw.CornerUvOffsets[3] + vertex_index] : vec2(0);
     {
         const vec4 vertex_tangent = draw.CornerTangentOffset != INVALID_OFFSET ?
-            CornerTangentBuffers[nonuniformEXT(SceneViewUBO.CornerTangentSlot)].Tangents[draw.CornerTangentOffset + uint(gl_VertexIndex)] :
+            CornerTangentBuffers[nonuniformEXT(SceneViewUBO.CornerTangentSlot)].Tangents[draw.CornerTangentOffset + vertex_index] :
             vec4(0, 0, 0, 1);
         vec3 tangent = vertex_tangent.xyz;
         if (dot(tangent, tangent) > 1e-8) {
@@ -217,6 +228,17 @@ void main() {
     }
     WorldScale = (world.S.x + world.S.y + world.S.z) / 3.0;
     gl_Position = SceneViewUBO.ViewProj * vec4(world_pos, 1.0);
+    gl_PointSize = PointSize; // Point draws render as round sprites.
+    if (LineQuad) {
+        // The line's other endpoint, transformed through the same deformations.
+        const uint other_index = (uint(gl_VertexIndex) / 6u) * 2u + 1u - line_quad_endpoint(corner);
+        const uint other_idx = IndexBuffers[draw.IndexSlotOffset.Slot].Indices[draw.IndexSlotOffset.Offset + other_index];
+        const vec3 other_pos = apply_object_pending_transform(draw, trs_transform_point(world, GetLocalPosition(draw, other_idx)));
+        const vec4 other_clip = SceneViewUBO.ViewProj * vec4(other_pos, 1.0);
+        // Half-width matches the wire overlay: its core plus the anti-aliased fringe.
+        const bool first = line_quad_endpoint(corner) == 0u;
+        gl_Position = line_quad_position(first ? gl_Position : other_clip, first ? other_clip : gl_Position, corner, ViewportTheme.EdgeWidth + 0.5);
+    }
 #ifdef VELOCITY_OUTPUT
     {
         const vec3 prev = PoseWorldPos(draw, vert, idx, SceneViewUBO.PrevModelSlot, SceneViewUBO.PrevArmatureDeformSlot, SceneViewUBO.PrevMorphWeightsSlot);

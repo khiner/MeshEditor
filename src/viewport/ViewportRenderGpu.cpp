@@ -55,6 +55,14 @@ enum class FillSubset {
     Prepass, // Materials with non-transmissive texels (plain, and textured transmission)
     Transmissive, // Materials with a positive transmission factor
 };
+// The element a mesh draws from: triangulated faces, or the edges or vertices of a face-less mesh.
+enum class ElementDomain {
+    Face,
+    Edge,
+    Vertex
+};
+// A range's offset, or InvalidOffset when the mesh holds no such data.
+uint32_t OffsetOrInvalid(Range range) { return range.Count > 0 ? range.Offset : InvalidOffset; }
 } // namespace
 
 void FlushDrawList(entt::registry &r, vk::Device device, const DrawListBuilder &draw_list, DrawBufferPair &pair) {
@@ -151,10 +159,11 @@ void PatchPosedRanges(std::span<DrawData> draws, const PosedRanges &posed) {
     for (auto &d : draws) {
         const auto i = posed.PerInstance ? d.FirstInstance - posed.FirstInstance : 0u;
         d.PosedPositionOffset = posed.PositionOffset(i);
-        if (posed.VertexNormalBase == InvalidOffset) continue;
-        d.PosedVertexNormalOffset = posed.VertexNormalOffset(i);
-        d.PosedSeamNormalOffset = posed.SeamNormalOffset(i);
-        d.PosedFaceNormalOffset = posed.FaceNormalOffset(i);
+        if (const auto normals = posed.NormalsAt(i)) {
+            d.PosedVertexNormalOffset = normals->VertexOffset;
+            d.PosedSeamNormalOffset = normals->SeamOffset;
+            d.PosedFaceNormalOffset = normals->FaceOffset;
+        }
     }
 }
 // AppendExtrasDraw is templated on the customize_draw callable.
@@ -621,7 +630,12 @@ void RecordPhase(entt::registry &r, entt::entity viewport, vk::CommandBuffer cb,
             std::optional<Mesh> MeshComp;
             const DeformSlots &Deform;
             std::optional<uint32_t> PrimaryEditBufferIndex;
+            ElementDomain Domain; // The element the mesh draws from.
             bool IsSoundVertices, IsBone, IsBoneJoint, IsExtras;
+        };
+        const auto element_domain = [](const MeshBuffers &b) {
+            return b.FaceIndices.Count > 0 ? ElementDomain::Face : b.EdgeIndices.Count > 0 ? ElementDomain::Edge :
+                                                                                             ElementDomain::Vertex;
         };
 
         // Draw order resolves coincident surfaces, and pool iteration order varies with scene-load
@@ -639,13 +653,37 @@ void RecordPhase(entt::registry &r, entt::entity viewport, vk::CommandBuffer cb,
                 primary_bi = r.get<RenderInstance>(it->second).BufferIndex;
             }
             const bool is_bone_joint = r.all_of<BoneJoint>(entity);
-            mesh_entities.emplace_back(entity, mesh_buffers, models, TryGetMesh(r, entity), get_deform_slots(entity), primary_bi, excitable_mesh_entities.contains(entity), r.all_of<ArmatureObject>(entity) || is_bone_joint, is_bone_joint, r.all_of<ObjectExtrasTag>(entity));
+            mesh_entities.emplace_back(entity, mesh_buffers, models, TryGetMesh(r, entity), get_deform_slots(entity), primary_bi, element_domain(mesh_buffers), excitable_mesh_entities.contains(entity), r.all_of<ArmatureObject>(entity) || is_bone_joint, is_bone_joint, r.all_of<ObjectExtrasTag>(entity));
         }
 
         // The mesh shades authored under morphing: rest normals plus weighted authored deltas.
         // Edit mode builds no deform slots, so edit-mode draws (including drags) derive.
         const auto morph_shading_authored = [&meshes](const MeshEntityData &e) {
             return e.Deform.MorphDeformOffset != InvalidOffset && e.MeshComp && meshes.GetMorphShadingAuthored(e.MeshComp->GetStoreId());
+        };
+
+        // A face-less mesh with a material table is a point or line mesh, which material and rendered modes shade in the scene pass.
+        // Solid and wireframe draw it through the wire and point overlays, as do face-less overlays (bones, sound vertices), which carry no material table.
+        const auto shaded_in_scene_pass = [&meshes, show_rendered](const MeshEntityData &e) {
+            return show_rendered && e.MeshComp && e.MeshComp->FaceCount() == 0 && meshes.GetPrimitiveMaterialRange(e.MeshComp->GetStoreId()).Count > 0;
+        };
+        // Shaded meshes take their selection feedback from the overlays, drawn for their selected instances alone.
+        // Edit mode shows element state through its own overlays.
+        std::unordered_map<entt::entity, std::vector<uint32_t>> selected_instances_by_mesh;
+        if (show_rendered && show_overlays && !is_edit_mode) {
+            for (const auto [e, instance, ri] : r.view<const Instance, const Selected, const RenderInstance>().each()) {
+                if (ri.BufferIndex != UINT32_MAX) selected_instances_by_mesh[instance.Entity].emplace_back(ri.BufferIndex);
+            }
+        }
+        // Draws a mesh's wire or point overlay for every instance, or for its selected ones alone where the scene pass shades it.
+        const auto append_overlay = [&](DrawBatchInfo &batch, const MeshEntityData &e, const SlottedRange &indices, const DrawData &dd) {
+            const auto draws_before = draw_list.Draws.size();
+            if (!shaded_in_scene_pass(e)) {
+                AppendDraw(draw_list, batch, indices, e.Mod, dd);
+            } else if (const auto it = selected_instances_by_mesh.find(e.Entity); it != selected_instances_by_mesh.end()) {
+                for (const auto buffer_index : it->second) AppendDraw(draw_list, batch, indices, e.Mod, dd, buffer_index);
+            }
+            patch_mesh_draws(draw_list, draws_before, e.Entity, e.Deform);
         };
 
         { // Bounds reduce entries.
@@ -753,12 +791,10 @@ void RecordPhase(entt::registry &r, entt::entity viewport, vk::CommandBuffer cb,
                         .FirstInstance = e.Mod.InstanceRange.Offset,
                         .PerInstance = spec.PerInstanceDeform,
                         .PositionBase = posed_offset,
-                        .VertexNormalBase = spec.Derive ? vertex_normal_offset : InvalidOffset,
-                        .SeamNormalBase = spec.Derive ? seam_normal_offset : InvalidOffset,
-                        .FaceNormalBase = spec.Derive ? face_normal_offset : InvalidOffset,
                         .VertexCount = e.Buf.Vertices.Count,
-                        .SeamCount = spec.Entry.SeamCount,
-                        .FaceCount = spec.Entry.FaceCount,
+                        .Normals = spec.Derive ?
+                            std::optional{PosedRanges::NormalRanges{vertex_normal_offset, seam_normal_offset, face_normal_offset, spec.Entry.SeamCount, spec.Entry.FaceCount}} :
+                            std::nullopt,
                     };
                     draw.PosedByEntity.emplace(e.Entity, pr);
                     posed_offset += spec.Count * pr.VertexCount;
@@ -776,11 +812,11 @@ void RecordPhase(entt::registry &r, entt::entity viewport, vk::CommandBuffer cb,
                 for (uint32_t i = 0; i < spec.Count; ++i) {
                     if (spec.PerInstanceDeform) entry.FirstInstance = e.Mod.InstanceRange.Offset + i;
                     if (spec.Posed) entry.PosedPositionOffset = pr.PositionOffset(i);
-                    if (spec.Derive) {
+                    if (const auto normals = pr.NormalsAt(i)) {
                         derive_entry.PosedPositionOffset = entry.PosedPositionOffset;
-                        derive_entry.VertexNormalOffset = pr.VertexNormalOffset(i);
-                        derive_entry.SeamNormalOffset = pr.SeamNormalOffset(i);
-                        derive_entry.FaceNormalOffset = pr.FaceNormalOffset(i);
+                        derive_entry.VertexNormalOffset = normals->VertexOffset;
+                        derive_entry.SeamNormalOffset = normals->SeamOffset;
+                        derive_entry.FaceNormalOffset = normals->FaceOffset;
                         for (uint32_t t = 0; t < face_tiles_per; ++t) derive_tiles[face_tile_write++] = {derive_write, t};
                         for (uint32_t t = 0; t < gather_tiles_per; ++t) derive_tiles[gather_tile_write++] = {derive_write, t};
                         derive_entries[derive_write++] = derive_entry;
@@ -811,24 +847,23 @@ void RecordPhase(entt::registry &r, entt::entity viewport, vk::CommandBuffer cb,
                 auto dd = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.FaceIndices, buffers.Instances, deform.BoneDeformOffset, deform.ArmatureDeformOffset, deform.MorphDeformOffset, deform.MorphTargetCount);
                 const auto face_id_buffer = meshes.GetFaceIdRange(store_id);
                 const auto face_state_buffer = meshes.GetFaceStateRange(store_id);
-                const auto face_primitive_buffer = meshes.GetFacePrimitiveRange(store_id);
+                const auto face_primitive_buffer = meshes.GetElementPrimitiveRange(store_id);
                 const auto primitive_material_buffer = meshes.GetPrimitiveMaterialRange(store_id);
                 dd.ObjectIdSlot = face_id_buffer.Slot;
                 dd.FaceIdOffset = face_id_buffer.Offset;
                 dd.BaseFaceNormalOffset = meshes.GetFaceDataRange(store_id).Offset;
-                const auto corner_offset = [](Range range) { return range.Count > 0 ? range.Offset : InvalidOffset; };
                 dd.CornerClassOffset = meshes.GetCornerClassOffset(store_id);
-                dd.CustomCornerMaskOffset = corner_offset(meshes.GetCustomCornerMaskRange(store_id));
-                dd.CustomCornerNormalOffset = corner_offset(meshes.GetCustomCornerNormalRange(store_id));
-                dd.BaseSeamNormalOffset = corner_offset(meshes.GetBaseSeamNormalRange(store_id));
+                dd.CustomCornerMaskOffset = OffsetOrInvalid(meshes.GetCustomCornerMaskRange(store_id));
+                dd.CustomCornerNormalOffset = OffsetOrInvalid(meshes.GetCustomCornerNormalRange(store_id));
+                dd.BaseSeamNormalOffset = OffsetOrInvalid(meshes.GetBaseSeamNormalRange(store_id));
                 dd.MorphShadingAuthored = morph_shading_authored(e) ? 1u : 0u;
-                dd.CornerTangentOffset = corner_offset(meshes.GetCornerTangentRange(store_id));
-                dd.CornerColorOffset = corner_offset(meshes.GetCornerColorRange(store_id));
+                dd.CornerTangentOffset = OffsetOrInvalid(meshes.GetCornerTangentRange(store_id));
+                dd.CornerColorOffset = OffsetOrInvalid(meshes.GetCornerColorRange(store_id));
                 for (uint32_t set = 0; set < dd.CornerUvOffsets.size(); ++set) {
-                    dd.CornerUvOffsets[set] = corner_offset(meshes.GetCornerUvRange(store_id, set));
+                    dd.CornerUvOffsets[set] = OffsetOrInvalid(meshes.GetCornerUvRange(store_id, set));
                 }
-                dd.FacePrimitiveOffset = face_primitive_buffer.Count > 0 ? face_primitive_buffer.Offset : InvalidOffset;
-                dd.PrimitiveMaterialOffset = primitive_material_buffer.Count > 0 ? primitive_material_buffer.Offset : InvalidOffset;
+                dd.ElementPrimitiveOffset = OffsetOrInvalid(face_primitive_buffer);
+                dd.PrimitiveMaterialOffset = OffsetOrInvalid(primitive_material_buffer);
                 const auto append_fill_draw = [&](const DrawData &dd, uint32_t index_count, std::optional<uint32_t> model_index) {
                     const auto db = draw_list.Draws.size();
                     AppendDraw(draw_list, batch, index_count, models, dd, model_index);
@@ -935,6 +970,28 @@ void RecordPhase(entt::registry &r, entt::entity viewport, vk::CommandBuffer cb,
                     if (!e.IsBone) append_fill_mesh(draw.FillOpaque, e, std::nullopt);
                 }
             }
+
+            // Shade point and line meshes from their material: points as round sprites, lines as screen-space quads.
+            const auto append_non_triangle_fill = [&](DrawBatchInfo &batch, const MeshEntityData &e, ElementDomain domain) {
+                if (e.IsBone || e.Domain != domain || !shaded_in_scene_pass(e)) return;
+                const bool points = domain == ElementDomain::Vertex;
+                const auto index_range = points ? e.Buf.VertexIndices : e.Buf.EdgeIndices;
+                if (index_range.Count == 0) return;
+                const auto store_id = e.MeshComp->GetStoreId();
+                auto dd = MakeDrawData(e.Buf.Vertices, index_range, buffers.Instances, e.Deform.BoneDeformOffset, e.Deform.ArmatureDeformOffset, e.Deform.MorphDeformOffset, e.Deform.MorphTargetCount);
+                dd.ElementPrimitiveOffset = OffsetOrInvalid(meshes.GetElementPrimitiveRange(store_id));
+                dd.PrimitiveMaterialOffset = OffsetOrInvalid(meshes.GetPrimitiveMaterialRange(store_id));
+                dd.CornerColorOffset = OffsetOrInvalid(meshes.GetCornerColorRange(store_id));
+                const auto db = draw_list.Draws.size();
+                // Each line expands into a quad of two triangles, six vertices per line.
+                AppendDraw(draw_list, batch, points ? index_range.Count : index_range.Count * 3, e.Mod, dd, std::nullopt);
+                patch_mesh_draws(draw_list, db, e.Entity, e.Deform);
+            };
+            // Point and line meshes draw once in the main pass, outside the two-phase occlusion split (like the wire and point overlays).
+            draw.FillLine = draw_list.BeginBatch();
+            for (const auto &e : mesh_entities) append_non_triangle_fill(draw.FillLine, e, ElementDomain::Edge);
+            draw.FillPoint = draw_list.BeginBatch();
+            for (const auto &e : mesh_entities) append_non_triangle_fill(draw.FillPoint, e, ElementDomain::Vertex);
         }
 
         // Build bone batches for X-ray rendering (drawn after a mid-pass depth clear so bones are never occluded by scene meshes)
@@ -994,8 +1051,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, vk::CommandBuffer cb,
         draw.EdgeQuad = draw_list.BeginBatch();
         if (is_edit_mode || is_excite_mode) {
             for (const auto &e : mesh_entities) {
-                // Line meshes use draw.WireLine
-                if (e.IsBone || e.IsExtras || !e.MeshComp || e.Buf.EdgeIndices.Count == 0 || e.Buf.FaceIndices.Count == 0) continue;
+                if (e.IsBone || e.IsExtras || !e.MeshComp || e.Buf.EdgeIndices.Count == 0) continue;
                 auto dd = MakeDrawData(e.Buf.Vertices, e.Buf.EdgeIndices, buffers.Instances, e.Deform.BoneDeformOffset, e.Deform.ArmatureDeformOffset, e.Deform.MorphDeformOffset, e.Deform.MorphTargetCount);
                 dd.ElementStateSlotOffset = meshes.GetEdgeStateRange(e.MeshComp->GetStoreId());
                 if (is_edit_mode) {
@@ -1015,9 +1071,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, vk::CommandBuffer cb,
             if (e.Buf.FaceIndices.Count > 0 && !is_wireframe_mode) continue;
             auto dd = MakeDrawData(e.Buf.Vertices, e.Buf.EdgeIndices, buffers.Instances, e.Deform.BoneDeformOffset, e.Deform.ArmatureDeformOffset, e.Deform.MorphDeformOffset, e.Deform.MorphTargetCount);
             dd.ElementStateSlotOffset = meshes.GetEdgeStateRange(e.MeshComp->GetStoreId());
-            const auto db = draw_list.Draws.size();
-            AppendDraw(draw_list, draw.WireLine, e.Buf.EdgeIndices, e.Mod, dd);
-            patch_mesh_draws(draw_list, db, e.Entity, e.Deform);
+            append_overlay(draw.WireLine, e, e.Buf.EdgeIndices, dd);
         }
 
         draw.ExtrasLine = {};
@@ -1028,15 +1082,20 @@ void RecordPhase(entt::registry &r, entt::entity viewport, vk::CommandBuffer cb,
         draw.Point = draw_list.BeginBatch();
         for (const auto &e : mesh_entities) {
             if (e.IsBone) continue;
-            const bool is_point_mesh = e.Buf.FaceIndices.Count == 0 && e.Buf.EdgeIndices.Count == 0;
-            if (!is_point_mesh && !((is_edit_mode && edit_mode == Element::Vertex) || is_excite_mode)) continue;
+            // Edit mode shows a mesh's vertices under vertex select, and excite mode its excitable ones.
+            const bool draw_elements = (is_edit_mode && edit_mode == Element::Vertex && e.PrimaryEditBufferIndex) || (is_excite_mode && e.IsSoundVertices);
+            // A vertex-only mesh otherwise draws its points as the object itself, until it is the one being edited.
+            const bool draw_object = e.Domain == ElementDomain::Vertex && !(is_edit_mode && e.PrimaryEditBufferIndex);
+            if (!draw_elements && !draw_object) continue;
             auto dd = MakeDrawData(e.Buf.Vertices, e.Buf.VertexIndices, buffers.Instances, e.Deform.BoneDeformOffset, e.Deform.ArmatureDeformOffset, e.Deform.MorphDeformOffset, e.Deform.MorphTargetCount);
             dd.ElementStateSlotOffset = {meshes.GetVertexStateSlot(), e.Buf.Vertices.Offset};
-            const auto db = draw_list.Draws.size();
-            if (is_point_mesh) AppendDraw(draw_list, draw.Point, e.Buf.VertexIndices, e.Mod, dd);
-            else if (e.PrimaryEditBufferIndex) AppendDraw(draw_list, draw.Point, e.Buf.VertexIndices, e.Mod, dd, e.PrimaryEditBufferIndex);
-            else if (e.IsSoundVertices) AppendDraw(draw_list, draw.Point, e.Buf.VertexIndices, e.Mod, dd);
-            patch_mesh_draws(draw_list, db, e.Entity, e.Deform);
+            if (draw_elements) {
+                const auto draws_before = draw_list.Draws.size();
+                AppendDraw(draw_list, draw.Point, e.Buf.VertexIndices, e.Mod, dd, e.PrimaryEditBufferIndex);
+                patch_mesh_draws(draw_list, draws_before, e.Entity, e.Deform);
+            } else {
+                append_overlay(draw.Point, e, e.Buf.VertexIndices, dd);
+            }
         }
 
         { // Normal overlay + AABB batches
@@ -1246,9 +1305,9 @@ void RecordPhase(entt::registry &r, entt::entity viewport, vk::CommandBuffer cb,
         if (batch.DrawCount == 0) return;
         record_batch(*renderer.Bind(cb, spt, ubo_offset).PipelineLayout, batch, region_b);
     };
-    auto record_pbr_batch = [&](const DrawBatchInfo &batch, PbrCompiler::Variant variant, bool region_b = false) {
+    auto record_pbr_batch = [&](const DrawBatchInfo &batch, PbrCompiler::Variant variant, bool region_b = false, PbrCompiler::Topology topology = PbrCompiler::Topology::Triangle) {
         if (batch.DrawCount == 0) return;
-        record_batch(pipelines.Main.Compiler.Bind(cb, variant, ubo_offset), batch, region_b);
+        record_batch(pipelines.Main.Compiler.Bind(cb, variant, topology, ubo_offset), batch, region_b);
     };
     const auto make_shader_read_barrier = [](vk::AccessFlags src_access, vk::ImageLayout layout, vk::Image image, const vk::ImageSubresourceRange &range) {
         return vk::ImageMemoryBarrier{src_access, vk::AccessFlagBits::eShaderRead, layout, layout, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, image, range};
@@ -1415,6 +1474,12 @@ void RecordPhase(entt::registry &r, entt::entity viewport, vk::CommandBuffer cb,
                 if (!two_phase) record_pbr_batch(draw.FillBlend, blur ? PbrCompiler::Variant::BlendVelocity : PbrCompiler::Variant::Blend);
             } else {
                 record_draw_batch(main.SceneRenderer, SPT::Fill, draw.FillOpaque);
+            }
+            // Point and line meshes shade from their materials here.
+            if (draw_scene && show_rendered) {
+                const auto variant = blur ? PbrCompiler::Variant::OpaqueVelocity : PbrCompiler::Variant::Opaque;
+                record_pbr_batch(draw.FillLine, variant, false, PbrCompiler::Topology::Line);
+                record_pbr_batch(draw.FillPoint, variant, false, PbrCompiler::Topology::Point);
             }
         }
         cb.endRenderPass();
@@ -1877,9 +1942,11 @@ bool CommitPosedGeometry(entt::registry &r, entt::entity mesh_entity) {
         }
     }
     if (any_moved) {
-        std::ranges::copy(buffers.PosedVertexNormals.GetSpan<vec3>({pr.VertexNormalOffset(0), pr.VertexCount}), meshes.GetBaseVertexNormals(id).begin());
-        std::ranges::copy(buffers.PosedSeamNormals.GetSpan<vec3>({pr.SeamNormalOffset(0), pr.SeamCount}), meshes.GetBaseSeamNormals(id).begin());
-        std::ranges::copy(buffers.PosedFaceNormals.GetSpan<vec3>({pr.FaceNormalOffset(0), pr.FaceCount}), meshes.GetBaseFaceNormals(id).begin());
+        if (const auto normals = pr.NormalsAt(0)) {
+            std::ranges::copy(buffers.PosedVertexNormals.GetSpan<vec3>({normals->VertexOffset, pr.VertexCount}), meshes.GetBaseVertexNormals(id).begin());
+            std::ranges::copy(buffers.PosedSeamNormals.GetSpan<vec3>({normals->SeamOffset, normals->SeamCount}), meshes.GetBaseSeamNormals(id).begin());
+            std::ranges::copy(buffers.PosedFaceNormals.GetSpan<vec3>({normals->FaceOffset, normals->FaceCount}), meshes.GetBaseFaceNormals(id).begin());
+        }
     }
     return any_moved;
 }

@@ -4,12 +4,7 @@
 // Shared utilities for bone overlay shaders.
 // Requires: Bindless.glsl (for DrawData, InstanceStateBuffers, SceneViewUBO, ViewportTheme)
 
-uint load_bone_instance_state(DrawData draw) {
-    if (draw.InstanceStateSlot != INVALID_SLOT) {
-        return uint(InstanceStateBuffers[draw.InstanceStateSlot].States[draw.FirstInstance]);
-    }
-    return 0u;
-}
+uint load_bone_instance_state(DrawData draw) { return InstanceState(draw); }
 
 vec3 bone_wire_color(uint instance_state) {
     bool is_selected = (instance_state & STATE_SELECTED) != 0u;
