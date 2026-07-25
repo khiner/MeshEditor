@@ -1,12 +1,12 @@
 {
     "asset": { "version": "2.0" },
-    "extensionsUsed": ["KHR_audio_modal"],
+    "extensionsUsed": ["KHR_audio_rigid_bodies"],
     "scene": 0,
     "scenes": [ { "nodes": [0] } ],
     "nodes": [
         {
             "name": "Bell",
-            "extensions": { "KHR_audio_modal": { "model": 0, "gain": 0.75 } }
+            "extensions": { "KHR_audio_rigid_bodies": { "modalModel": 0, "gain": 0.75 } }
         }
     ],
     "buffers": [
@@ -28,11 +28,11 @@
         { "bufferView": 3, "componentType": 5126, "count": 1, "type": "VEC3" }
     ],
     "extensions": {
-        "KHR_audio_modal": {
-            "materials": [
+        "KHR_audio_rigid_bodies": {
+            "acousticMaterials": [
                 { "name": "TestMat", "density": 1000, "youngsModulus": 5e9, "poissonRatio": 0.3, "alpha": 5, "beta": 1e-6 }
             ],
-            "models": [
+            "modalModels": [
                 { "name": "Bell", "frequencies": 0, "decayRates": 1, "positions": 2, "shapes": 3, "material": 0 }
             ]
         }

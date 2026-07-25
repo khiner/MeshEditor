@@ -234,7 +234,7 @@ constexpr Exception OtherExactExceptions[]{
     {"nodes[*].extensions.KHR_lights_punctual.light", "renumbered to match the un-deduped lights table"},
 };
 
-// Check that a KHR_audio_modal model's accessor reference has the given type and count.
+// Check that a KHR_audio_rigid_bodies model's accessor reference has the given type and count.
 // At namespace scope so `==` is the builtin comparison, not a boost::ut expression.
 bool AccessorShapeIs(simdjson::dom::element root, simdjson::dom::element model, std::string_view key, std::string_view type, uint64_t count) {
     uint64_t idx;
@@ -1159,7 +1159,7 @@ int main(int argc, const char **argv) {
         };
     }
 
-    // KHR_audio_modal: attach a modal model to a loaded mesh node, export, and re-import. The modes,
+    // KHR_audio_rigid_bodies: attach a modal model to a loaded mesh node, export, and re-import. The modes,
     // shapes, positions, gain, and acoustic material must survive, and the emitted JSON must match the schema.
     if (const fs::path box = SamplePath("external/glTF-Sample-Assets/Models/Box/glTF/Box.gltf"); fs::exists(box)) {
         test("audio_modal_round_trip") = [&] {
@@ -1204,16 +1204,16 @@ int main(int argc, const char **argv) {
 
                 bool lists_extension = false;
                 for (auto e : doc["extensionsUsed"]) {
-                    if (std::string_view{e} == "KHR_audio_modal") lists_extension = true;
+                    if (std::string_view{e} == "KHR_audio_rigid_bodies") lists_extension = true;
                 }
-                expect(lists_extension) << "KHR_audio_modal missing from extensionsUsed";
+                expect(lists_extension) << "KHR_audio_rigid_bodies missing from extensionsUsed";
 
-                auto ext = doc["extensions"]["KHR_audio_modal"];
+                auto ext = doc["extensions"]["KHR_audio_rigid_bodies"];
                 simdjson::dom::array models_json;
-                expect(ext["models"].get_array().get(models_json) == simdjson::SUCCESS) << "models array missing";
+                expect(ext["modalModels"].get_array().get(models_json) == simdjson::SUCCESS) << "modalModels array missing";
                 expect(models_json.size() == 1u) << "expected one model";
                 simdjson::dom::array materials_json;
-                expect(ext["materials"].get_array().get(materials_json) == simdjson::SUCCESS) << "materials array missing";
+                expect(ext["acousticMaterials"].get_array().get(materials_json) == simdjson::SUCCESS) << "acousticMaterials array missing";
                 expect(materials_json.size() == 1u) << "expected one material";
 
                 simdjson::dom::element model0;
@@ -1227,7 +1227,7 @@ int main(int argc, const char **argv) {
                 bool found_node = false;
                 for (auto n : doc["nodes"]) {
                     uint64_t m;
-                    if (n["extensions"]["KHR_audio_modal"]["model"].get_uint64().get(m) != simdjson::SUCCESS) continue;
+                    if (n["extensions"]["KHR_audio_rigid_bodies"]["modalModel"].get_uint64().get(m) != simdjson::SUCCESS) continue;
                     found_node = true;
                     expect(m == 0u) << "node model index";
                 }
@@ -1284,9 +1284,9 @@ int main(int argc, const char **argv) {
         };
     }
 
-    // Decode-only lock: a hand-authored KHR_audio_modal file (mesh-less node, spec-allowed) must import
+    // Decode-only lock: a hand-authored KHR_audio_rigid_bodies file (mesh-less node, spec-allowed) must import
     // to the exact modal values, independent of our own encoder.
-    if (const fs::path fixture = SamplePath("tests/fixtures/KHR_audio_modal.gltf"); fs::exists(fixture)) {
+    if (const fs::path fixture = SamplePath("tests/fixtures/KHR_audio_rigid_bodies.gltf"); fs::exists(fixture)) {
         test("audio_modal_decode_fixture") = [&] {
             SceneFixture fx{vk_resources};
             if (!load_or_skip(fx, fixture, "fixture load failed")) return;

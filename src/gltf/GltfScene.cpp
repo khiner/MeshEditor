@@ -737,7 +737,7 @@ std::expected<fastgltf::Asset, std::string> ParseAsset(const std::filesystem::pa
     auto gltf_file = fastgltf::MappedGltfFile::FromPath(path);
     if (gltf_file.error() != fastgltf::Error::None) return std::unexpected{std::format("Failed to open glTF file '{}': {}", path.string(), fastgltf::getErrorMessage(gltf_file.error()))};
 
-    static constexpr auto EnabledExtensions = fastgltf::Extensions::KHR_mesh_quantization | fastgltf::Extensions::EXT_meshopt_compression | fastgltf::Extensions::EXT_mesh_gpu_instancing | fastgltf::Extensions::KHR_lights_punctual | fastgltf::Extensions::EXT_lights_image_based | fastgltf::Extensions::KHR_texture_transform | fastgltf::Extensions::KHR_materials_emissive_strength | fastgltf::Extensions::KHR_materials_unlit | fastgltf::Extensions::KHR_texture_basisu | fastgltf::Extensions::EXT_texture_webp | fastgltf::Extensions::KHR_materials_specular | fastgltf::Extensions::KHR_materials_sheen | fastgltf::Extensions::KHR_materials_ior | fastgltf::Extensions::KHR_materials_dispersion | fastgltf::Extensions::KHR_materials_transmission | fastgltf::Extensions::KHR_materials_diffuse_transmission | fastgltf::Extensions::KHR_materials_volume | fastgltf::Extensions::KHR_materials_clearcoat | fastgltf::Extensions::KHR_materials_anisotropy | fastgltf::Extensions::KHR_materials_iridescence | fastgltf::Extensions::KHR_materials_variants | fastgltf::Extensions::KHR_node_visibility | fastgltf::Extensions::KHR_implicit_shapes | fastgltf::Extensions::KHR_physics_rigid_bodies | fastgltf::Extensions::KHR_audio_modal;
+    static constexpr auto EnabledExtensions = fastgltf::Extensions::KHR_mesh_quantization | fastgltf::Extensions::EXT_meshopt_compression | fastgltf::Extensions::EXT_mesh_gpu_instancing | fastgltf::Extensions::KHR_lights_punctual | fastgltf::Extensions::EXT_lights_image_based | fastgltf::Extensions::KHR_texture_transform | fastgltf::Extensions::KHR_materials_emissive_strength | fastgltf::Extensions::KHR_materials_unlit | fastgltf::Extensions::KHR_texture_basisu | fastgltf::Extensions::EXT_texture_webp | fastgltf::Extensions::KHR_materials_specular | fastgltf::Extensions::KHR_materials_sheen | fastgltf::Extensions::KHR_materials_ior | fastgltf::Extensions::KHR_materials_dispersion | fastgltf::Extensions::KHR_materials_transmission | fastgltf::Extensions::KHR_materials_diffuse_transmission | fastgltf::Extensions::KHR_materials_volume | fastgltf::Extensions::KHR_materials_clearcoat | fastgltf::Extensions::KHR_materials_anisotropy | fastgltf::Extensions::KHR_materials_iridescence | fastgltf::Extensions::KHR_materials_variants | fastgltf::Extensions::KHR_node_visibility | fastgltf::Extensions::KHR_implicit_shapes | fastgltf::Extensions::KHR_physics_rigid_bodies | fastgltf::Extensions::KHR_audio_rigid_bodies;
     fastgltf::Parser parser{EnabledExtensions};
     if (extras_out) {
         parser.setUserPointer(extras_out);
@@ -2418,11 +2418,11 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
         }
     }
 
-    // KHR_audio_modal: rebuild modal models & acoustic materials and attach them to each instancing node and its mesh entity.
-    if (!asset.audioModalModels.empty()) {
+    // KHR_audio_rigid_bodies: rebuild modal models & acoustic materials and attach them to each instancing node and its mesh entity.
+    if (!asset.modalModels.empty()) {
         std::vector<AcousticMaterial> acoustic_materials;
-        acoustic_materials.reserve(asset.audioModalMaterials.size());
-        for (const auto &m : asset.audioModalMaterials) {
+        acoustic_materials.reserve(asset.acousticMaterials.size());
+        for (const auto &m : asset.acousticMaterials) {
             acoustic_materials.emplace_back(AcousticMaterial{
                 .Name = std::string{m.name},
                 .Properties = {
@@ -2445,8 +2445,8 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
         const auto read_vec3s = [&](size_t i) { return read_accessor.template operator()<vec3>(i); };
 
         std::vector<ModalModes> models;
-        models.reserve(asset.audioModalModels.size());
-        for (const auto &m : asset.audioModalModels) {
+        models.reserve(asset.modalModels.size());
+        for (const auto &m : asset.modalModels) {
             ModalModes modes;
             modes.Freqs = read_scalars(m.frequencies);
             const auto decay_rates = read_scalars(m.decayRates);
@@ -2466,15 +2466,16 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
 
         for (uint32_t node_index = 0; node_index < asset.nodes.size(); ++node_index) {
             const auto &source_node = asset.nodes[node_index];
-            if (!source_node.audioModal.has_value()) continue;
-            const auto &instance = *source_node.audioModal;
-            if (instance.model >= models.size()) continue;
+            if (!source_node.audioRigidBody.has_value()) continue;
+            const auto &instance = *source_node.audioRigidBody;
+            if (!instance.modalModel.has_value() || *instance.modalModel >= models.size()) continue;
+            const auto model_index = *instance.modalModel;
             const auto it = object_entities_by_node.find(node_index);
             if (it == object_entities_by_node.end()) continue;
             const auto entity = it->second;
 
             const auto *inst = r.try_get<const Instance>(entity);
-            auto model = models[instance.model];
+            auto model = models[model_index];
             model.BakedScale = ToTransform(traversal.WorldTransforms[node_index]).S;
             // Map each sample point to its nearest render-mesh vertex so the model stays excitable.
             if (inst && r.all_of<MeshHandle>(inst->Entity) && !model.Positions.empty()) {
@@ -2496,7 +2497,7 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
             // A model without sample-to-vertex mapping (e.g. a mesh-less node) stays passive data.
             const bool excitable = !model.Vertices.empty();
             r.emplace<ModalModes>(entity, std::move(model));
-            if (const auto &mp = asset.audioModalModels[instance.model].massProperties; mp.has_value()) {
+            if (const auto &mp = asset.modalModels[model_index].massProperties; mp.has_value()) {
                 const auto &q = mp->inertiaOrientation;
                 r.emplace<MassProperties>(
                     entity,
@@ -2514,7 +2515,7 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
                     if (std::abs(body_mass - float(mp->mass)) > 1e-3f * std::max(body_mass, float(mp->mass))) {
                         const auto name = source_node.name.empty() ? std::format("node {}", node_index) : std::string{source_node.name};
                         std::cerr << std::format(
-                            "Warning: '{}': KHR_audio_modal mass ({:.4g} kg) disagrees with its KHR_physics_rigid_bodies rigid body ({:.4g} kg); using the rigid body for contact dynamics.\n",
+                            "Warning: '{}': KHR_audio_rigid_bodies mass ({:.4g} kg) disagrees with its KHR_physics_rigid_bodies rigid body ({:.4g} kg); using the rigid body for contact dynamics.\n",
                             name, mp->mass, body_mass
                         );
                     }
@@ -2533,7 +2534,7 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
             }
             if (excitable) r.emplace<SoundVerticesModel>(entity, SoundVerticesModel::Modal);
             if (instance.gain != fastgltf::num(1)) r.emplace<ModalGain>(entity, ModalGain{instance.gain});
-            if (const auto &mat_idx = asset.audioModalModels[instance.model].material; inst && mat_idx.has_value() && *mat_idx < acoustic_materials.size()) {
+            if (const auto &mat_idx = asset.modalModels[model_index].material; inst && mat_idx.has_value() && *mat_idx < acoustic_materials.size()) {
                 r.emplace_or_replace<AcousticMaterial>(inst->Entity, acoustic_materials[*mat_idx]);
             }
         }
@@ -4184,8 +4185,8 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
     asset.nodes.reserve(total_node_count);
     bool uses_gpu_instancing = false;
     bool uses_physics_rigid_bodies = false;
-    // KHR_audio_modal acoustic materials, deduped by value across model instances.
-    std::vector<AcousticMaterial> audio_modal_materials;
+    // KHR_audio_rigid_bodies acoustic materials, deduped by value across model instances.
+    std::vector<AcousticMaterial> audio_rigid_body_materials;
     for (uint32_t ni = 0; ni < total_node_count; ++ni) {
         const auto entity = node_to_entity[ni];
 
@@ -4367,8 +4368,8 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             };
         }();
 
-        // KHR_audio_modal: emit the node's modal model and instance.
-        fastgltf::Optional<fastgltf::AudioModal> audio_modal;
+        // KHR_audio_rigid_bodies: emit the node's modal model and instance.
+        fastgltf::Optional<fastgltf::AudioRigidBody> audio_rigid_body;
         if (const auto *modes = r.try_get<const ModalModes>(entity); modes && !modes->Freqs.empty()) {
             const uint32_t n_modes = modes->Freqs.size(), n_points = modes->Positions.size();
 
@@ -4382,7 +4383,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
                 for (uint32_t i = 0; i < n_points; ++i) shapes[m * n_points + i] = modes->Shapes[i][m];
             }
 
-            fastgltf::AudioModalModel model{
+            fastgltf::ModalModel model{
                 .frequencies = AddDataAccessor(std::span<const float>(modes->Freqs), fastgltf::AccessorType::Scalar, fastgltf::ComponentType::Float),
                 .decayRates = AddDataAccessor(std::span<const float>(decay_rates), fastgltf::AccessorType::Scalar, fastgltf::ComponentType::Float),
                 .positions = AddDataAccessor(std::span<const vec3>(modes->Positions), fastgltf::AccessorType::Vec3, fastgltf::ComponentType::Float),
@@ -4398,7 +4399,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
                 const double rho_ratio = ModalDensityRatio(r, entity);
                 const auto &q = mp->InertiaOrientation;
                 const vec3 inertia = mp->InertiaDiagonal * float(rho_ratio);
-                model.massProperties = fastgltf::AudioModalMassProperties{
+                model.massProperties = fastgltf::ModalMassProperties{
                     .mass = fastgltf::num(mp->Mass * rho_ratio),
                     .centerOfMass = {mp->CenterOfMass.x, mp->CenterOfMass.y, mp->CenterOfMass.z},
                     .inertiaDiagonal = {inertia.x, inertia.y, inertia.z},
@@ -4409,11 +4410,11 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             // The derivation material lives on the mesh entity. Reuse an identical material already emitted.
             if (const auto *inst = r.try_get<const Instance>(entity)) {
                 if (const auto *mat = r.try_get<const AcousticMaterial>(inst->Entity)) {
-                    auto mit = std::ranges::find_if(audio_modal_materials, [&](const AcousticMaterial &m) { return m.Name == mat->Name && m.Properties == mat->Properties; });
-                    if (mit == audio_modal_materials.end()) {
-                        model.material = asset.audioModalMaterials.size();
+                    auto mit = std::ranges::find_if(audio_rigid_body_materials, [&](const AcousticMaterial &m) { return m.Name == mat->Name && m.Properties == mat->Properties; });
+                    if (mit == audio_rigid_body_materials.end()) {
+                        model.material = asset.acousticMaterials.size();
                         const auto &p = mat->Properties;
-                        asset.audioModalMaterials.emplace_back(fastgltf::AudioModalMaterial{
+                        asset.acousticMaterials.emplace_back(fastgltf::AcousticMaterial{
                             .density = p.Density,
                             .youngsModulus = p.YoungModulus,
                             .poissonRatio = p.PoissonRatio,
@@ -4421,16 +4422,16 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
                             .beta = p.Beta,
                             .name = ToFgStr(mat->Name),
                         });
-                        audio_modal_materials.emplace_back(*mat);
+                        audio_rigid_body_materials.emplace_back(*mat);
                     } else {
-                        model.material = std::distance(audio_modal_materials.begin(), mit);
+                        model.material = std::distance(audio_rigid_body_materials.begin(), mit);
                     }
                 }
             }
 
             const auto *gain = r.try_get<const ModalGain>(entity);
-            audio_modal = fastgltf::AudioModal{.model = asset.audioModalModels.size(), .gain = fastgltf::num(gain ? gain->Value : 1.f)};
-            asset.audioModalModels.emplace_back(std::move(model));
+            audio_rigid_body = fastgltf::AudioRigidBody{.modalModel = asset.modalModels.size(), .gain = fastgltf::num(gain ? gain->Value : 1.f)};
+            asset.modalModels.emplace_back(std::move(model));
         }
 
         asset.nodes.emplace_back(fastgltf::Node{
@@ -4444,7 +4445,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             .instancingAttributes = std::move(instancing),
             .name = ToFgStr(node_name),
             .physicsRigidBody = std::move(physics_rigid_body),
-            .audioModal = audio_modal,
+            .audioRigidBody = audio_rigid_body,
             .visible = [&] {
                 if (!fully_hidden[ni]) return true;
                 const auto *spi = r.try_get<const SourceParentNodeIndex>(entity);
@@ -4520,7 +4521,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         asset.extensionsUsed.emplace_back("KHR_physics_rigid_bodies");
     }
     if (!asset.shapes.empty()) asset.extensionsUsed.emplace_back("KHR_implicit_shapes");
-    if (!asset.audioModalModels.empty()) asset.extensionsUsed.emplace_back("KHR_audio_modal");
+    if (!asset.modalModels.empty()) asset.extensionsUsed.emplace_back("KHR_audio_rigid_bodies");
     if (!asset.imageBasedLights.empty()) asset.extensionsUsed.emplace_back("EXT_lights_image_based");
     const auto any_material = [&](auto pred) { return std::ranges::any_of(asset.materials, pred); };
     if (any_material([](const auto &m) { return m.unlit; })) asset.extensionsUsed.emplace_back("KHR_materials_unlit");
