@@ -1,0 +1,30 @@
+{
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "$id": "glTF.KHR_audio_rigid_bodies.schema.json",
+    "title": "KHR_audio_rigid_bodies glTF Document Extension",
+    "type": "object",
+    "description": "Modal sound models, acoustic materials, and acoustic surfaces defined by this document.",
+    "allOf": [ { "$ref": "glTFProperty.schema.json" } ],
+    "properties": {
+        "modalModels": {
+            "type": "array",
+            "description": "An array of modal sound models, instanced by nodes.",
+            "items": { "$ref": "glTF.KHR_audio_rigid_bodies.model.schema.json" },
+            "minItems": 1
+        },
+        "acousticMaterials": {
+            "type": "array",
+            "description": "An array of acoustic materials, referenced by modal models and acoustic surfaces.",
+            "items": { "$ref": "glTF.KHR_audio_rigid_bodies.material.schema.json" },
+            "minItems": 1
+        },
+        "acousticSurfaces": {
+            "type": "array",
+            "description": "An array of acoustic surfaces, instanced by nodes.",
+            "items": { "$ref": "glTF.KHR_audio_rigid_bodies.surface.schema.json" },
+            "minItems": 1
+        },
+        "extensions": { },
+        "extras": { }
+    }
+}

@@ -1,7 +1,7 @@
 {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
-    "$id": "glTF.KHR_audio_modal.model.schema.json",
-    "title": "KHR_audio_modal Modal Model",
+    "$id": "glTF.KHR_audio_rigid_bodies.model.schema.json",
+    "title": "KHR_audio_rigid_bodies Modal Model",
     "type": "object",
     "description": "A precomputed modal sound model: per-mode frequencies, decay rates, and mode shapes sampled at surface points.",
     "allOf": [ { "$ref": "glTFChildOfRootProperty.schema.json" } ],
@@ -28,7 +28,7 @@
         },
         "material": {
             "allOf": [ { "$ref": "glTFid.schema.json" } ],
-            "description": "The index of the acoustic material this model was derived from."
+            "description": "The index of the acoustic material in the top level `acousticMaterials` array this model was derived from."
         },
         "massProperties": {
             "type": "object",

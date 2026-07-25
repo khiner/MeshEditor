@@ -1,9 +1,9 @@
 {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
-    "$id": "glTF.KHR_audio_modal.material.schema.json",
-    "title": "KHR_audio_modal Acoustic Material",
+    "$id": "glTF.KHR_audio_rigid_bodies.material.schema.json",
+    "title": "KHR_audio_rigid_bodies Acoustic Material",
     "type": "object",
-    "description": "The physical parameters a modal model was derived from.",
+    "description": "The bulk physical parameters of a solid: the parameters a modal model was derived from, and the elastic constants that set contact stiffness.",
     "allOf": [ { "$ref": "glTFChildOfRootProperty.schema.json" } ],
     "properties": {
         "density": {

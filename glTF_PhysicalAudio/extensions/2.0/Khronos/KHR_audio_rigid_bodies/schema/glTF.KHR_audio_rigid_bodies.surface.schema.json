@@ -1,0 +1,54 @@
+{
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "$id": "glTF.KHR_audio_rigid_bodies.surface.schema.json",
+    "title": "KHR_audio_rigid_bodies Acoustic Surface",
+    "type": "object",
+    "description": "The microscopic finish of a surface, which determines the sound of sustained contact against it.",
+    "allOf": [ { "$ref": "glTFChildOfRootProperty.schema.json" } ],
+    "properties": {
+        "roughness": {
+            "type": "number",
+            "description": "Root-mean-square asperity height, in meters.",
+            "exclusiveMinimum": 0.0,
+            "default": 2e-6
+        },
+        "correlationLength": {
+            "type": "number",
+            "description": "Lateral asperity spacing, in meters.",
+            "exclusiveMinimum": 0.0,
+            "default": 5e-5
+        },
+        "spectralSlope": {
+            "type": "number",
+            "description": "Exponent of the roughness power spectrum as a function of spatial frequency. The fractal dimension is spectralSlope / 2 + 2.",
+            "maximum": 0.0,
+            "default": -1.4
+        },
+        "profile": {
+            "allOf": [ { "$ref": "glTFid.schema.json" } ],
+            "description": "The index of the accessor of measured surface heights along a track, in meters, relative to the mean plane. The accessor type MUST be \"SCALAR\", the component type MUST be FLOAT, and the count MUST be at least 2.",
+            "gltf_detailedDescription": "A stored profile makes the rendered result reproducible across implementations. When absent, an implementation synthesizes a profile from `roughness`, `correlationLength`, and `spectralSlope`, which specifies the surface statistically rather than exactly."
+        },
+        "sampleSpacing": {
+            "type": "number",
+            "description": "Distance along the surface between consecutive `profile` samples, in meters.",
+            "exclusiveMinimum": 0.0
+        },
+        "normalTexture": {
+            "allOf": [ { "$ref": "material.normalTextureInfo.schema.json" } ],
+            "description": "A tangent-space normal map describing the surface's mesoscale structure, the visible bumpiness between the collision geometry and the statistical roughness.",
+            "gltf_detailedDescription": "Sampled along the contact path using the referenced texture coordinate set of the node's mesh. Interpreted exactly as the glTF 2.0 core material `normalTexture`, including `scale`. Authors SHOULD reference the same texture as the mesh's material so the sound correlates with the visible surface."
+        },
+        "material": {
+            "allOf": [ { "$ref": "glTFid.schema.json" } ],
+            "description": "The index of the acoustic material in the top level `acousticMaterials` array giving the bulk elastic properties of this surface.",
+            "gltf_detailedDescription": "Supplies the contact stiffness. When absent, the material of the node's modal model applies, which leaves the contact stiffness undetermined for a node that instances no modal model."
+        },
+        "name": { },
+        "extensions": { },
+        "extras": { }
+    },
+    "dependentRequired": {
+        "profile": [ "sampleSpacing" ]
+    }
+}

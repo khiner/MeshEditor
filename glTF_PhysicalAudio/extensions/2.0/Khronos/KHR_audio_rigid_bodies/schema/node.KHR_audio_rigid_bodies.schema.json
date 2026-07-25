@@ -1,0 +1,27 @@
+{
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "$id": "node.KHR_audio_rigid_bodies.schema.json",
+    "title": "KHR_audio_rigid_bodies glTF Node Extension",
+    "type": "object",
+    "description": "Makes this node's rigid body participate in physically based contact sound, as a sounding body, a contact surface, or both.",
+    "allOf": [ { "$ref": "glTFProperty.schema.json" } ],
+    "properties": {
+        "modalModel": {
+            "allOf": [ { "$ref": "glTFid.schema.json" } ],
+            "description": "The index of the modal model in the top level `modalModels` array instanced by this node."
+        },
+        "acousticSurface": {
+            "allOf": [ { "$ref": "glTFid.schema.json" } ],
+            "description": "The index of the acoustic surface in the top level `acousticSurfaces` array describing the finish of this node's surface.",
+            "gltf_detailedDescription": "A node MAY supply an acoustic surface without a modal model, which lets a silent body such as a floor contribute its finish to the sound of a contact against it."
+        },
+        "gain": {
+            "type": "number",
+            "description": "Linear amplitude scale applied to this instance's output.",
+            "minimum": 0.0,
+            "default": 1.0
+        },
+        "extensions": { },
+        "extras": { }
+    }
+}
