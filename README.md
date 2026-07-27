@@ -229,6 +229,18 @@ $ cmake -B build -DMVK_FORCE_STAGED_TRANSFERS=ON .
 $ git submodule update --init external/glTF-Sample-Assets external/glTF_Physics
 ```
 
+**RealImpact dataset**: The [external/RealImpact](https://samuelpclarke.com/realimpact/) submodule has each object's scanned mesh, texture, and measurement metadata. Use `File > Import > RealImpact` and load `external/RealImpact/dataset/<id>_<name>/preprocessed`.
+```shell
+$ git submodule update --init external/RealImpact
+```
+The complete recorded RealImpact samples can be triggered interactively in the app by tapping on vertices (and compared with the generated modal audio model).
+The audio samples are 2.8 GB per object, so they're not stored in git and need to be downloaded:
+```shell
+$ external/RealImpact/dataset/download.sh # every object, 128 GB
+$ external/RealImpact/dataset/download.sh 9_BowlCeramic 22_Cup # download just these two
+```
+An object without a recordings still loads - the mesh, microphone positions, and impact vertices all appear, but no sample-based audio model is generated.
+
 **Quiet mode**: Disable timer output at compile time (equivalent to always passing `--quiet`):
 ```shell
 $ cmake -B build -DQUIET=ON .
@@ -236,18 +248,43 @@ $ cmake -B build -DQUIET=ON .
 
 ### Tests
 
-Unit tests, including glTF roundtrip tests.
-The roundtrip tests require the `external/glTF-Sample-Assets` and `external/glTF_Physics` submodules (see above).
+`./script/Build --test` builds the glTF roundtrip suite, which needs the `external/glTF-Sample-Assets` and `external/glTF_Physics` submodules (see above).
 
 ```shell
 $ ./script/Build --test
 $ ./build/tests/MeshEditorTests
 ```
 
+`cmake --build build` builds the rest of the tests:
+
+| Target | Covers |
+|-|-|
+| `MeshEditorTests` | glTF roundtrip |
+| `MeshEditorActionSerializeTest` | Every action alternative through the action log |
+| `MeshEditorContactModelTest` | Hertz contact time, effective mass, inertia decomposition |
+| `MeshEditorCompressTest` | `.project` archive round trip |
+| `MeshEditorSurfaceTrackPoolTest` | Surface track sharing and slot reuse under a full pool |
+| `MeshEditorModalSolverTest` | Check some closed forms against computed modes. Synthetic shapes and every RealImpact object tetrahedralized and structurally validated at simplification ratios. |
+
+* `MeshEditorModalSolverTest` reads `external/RealImpact`, and skips its dataset cases when that submodule isn't initialized.
+* `MeshEditorModalSolverBench` runs the corpora under `external/TetCorpus`, built by `script/SetupTetCorpus`: `realimpact` links the 50 scans out of the submodule, `thingi10k` downloads 60 models with `--thingi10k`.
+
+```sh
+$ script/SetupTetCorpus --thingi10k
+$ ./build/tests/MeshEditorModalSolverBench --dataset realimpact --dataset thingi10k --snapshot check
+```
+
+* `--dataset realimpact|thingi10k` selects a corpus, and repeats to run several. Defaults to `realimpact`.
+  - thingi10k object modes are solved as ceramic objects 0.30 m across.
+* `--snapshot check` compares each case against `tests/fixtures/TetCorpusSnapshot.txt`, catching a change that still tetrahedralizes validly but differently. `--snapshot write` regenerates that file. Both run each corpus through the base and quality arms, and skip the solve unless `--modes` asks for it.
+* `--no-modes` stops after tetrahedralizing, and `--no-tets` reports the surfaces alone.
+* `--corpus` prints a block per model instead of a timing row.
+* `--edit-loop` compares cold against warm-started re-solves.
+
 ### Update submodules
 
-Submodules live in `lib` (libraries) and `external` (glTF sample assets).
-Here is my process for updating to the tip of all the submodule branches:
+Submodules live in `lib` (libraries) and `external`.
+Here is my process for updating to the tip of all the lib submodule branches:
 
 ```sh
 $ git submodule update --remote {path}/{submodule}
