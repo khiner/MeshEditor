@@ -89,6 +89,14 @@ struct Texture {
     std::string Name;
 };
 
+// The first image a texture resolves to.
+inline std::optional<uint32_t> ResolveImageIndex(const Texture &t) {
+    if (t.ImageIndex) return t.ImageIndex;
+    if (t.WebpImageIndex) return t.WebpImageIndex;
+    if (t.BasisuImageIndex) return t.BasisuImageIndex;
+    return t.DdsImageIndex;
+}
+
 struct Sampler {
     std::optional<Filter> MagFilter, MinFilter;
     Wrap WrapS, WrapT;

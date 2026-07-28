@@ -4,6 +4,7 @@
 #include "action/Core.h"
 #include "audio/AudioTypes.h"
 #include "audio/ContactModel.h"
+#include "audio/ContactSurface.h"
 #include "audio/RealImpactComponents.h"
 
 #include <filesystem>
@@ -59,7 +60,7 @@ using Actions = std::variant<
     AssignVertexSamples, RemoveVertexSamples, ActivateRealImpactMicrophone,
     ApplyExciteImpact, ClearExciteImpacts>;
 
-using Action = MergedVariantT<Actions, Replace<RealImpactActiveMicrophone>, Replace<AudioOutputConfig>, Replace<AudioOutputMix>, Replace<Striker>, Replace<AcousticMaterial>>;
+using Action = MergedVariantT<Actions, Replace<RealImpactActiveMicrophone>, Replace<AudioOutputConfig>, Replace<AudioOutputMix>, Replace<Striker>, Replace<AcousticMaterial>, Replace<ContactSurface>>;
 
 void Apply(entt::registry &, entt::entity viewport, const Action &);
 } // namespace action::audio

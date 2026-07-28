@@ -12,3 +12,14 @@ Transform ToTransform(const mat4 &);
 inline Transform ComposeLocalTransforms(const Transform &parent, const Transform &child) {
     return {parent.R * (parent.S * child.P) + parent.P, parent.R * child.R, parent.S * child.S};
 }
+
+// Reduce a possibly non-uniform or mirrored scale to one positive number.
+inline float MeanScale(vec3 s) {
+    const auto a = glm::abs(s);
+    return (a.x + a.y + a.z) / 3;
+}
+
+// A world-space point in the transform's local frame.
+inline vec3 InverseTransformPoint(const Transform &t, vec3 p) { return (glm::conjugate(t.R) * (p - t.P)) / t.S; }
+// A world-space direction in the transform's local frame. Rotation only, so the magnitude is preserved.
+inline vec3 InverseTransformDir(const Transform &t, vec3 d) { return glm::conjugate(t.R) * d; }

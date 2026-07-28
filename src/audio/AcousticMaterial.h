@@ -8,6 +8,8 @@
 struct AcousticMaterial {
     std::string Name;
     AcousticMaterialProperties Properties;
+
+    bool operator==(const AcousticMaterial &) const = default;
 };
 
 /*

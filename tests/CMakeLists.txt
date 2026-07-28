@@ -1,6 +1,7 @@
 add_executable(MeshEditorTests
     RoundtripTest.cpp
     ${CMAKE_SOURCE_DIR}/src/gltf/GltfScene.cpp
+    ${CMAKE_SOURCE_DIR}/src/gltf/SourceTexture.cpp
     ${CMAKE_SOURCE_DIR}/src/armature/Armature.cpp
     ${CMAKE_SOURCE_DIR}/src/render/Bindless.cpp
     ${CMAKE_SOURCE_DIR}/src/render/GpuBufferOps.cpp
@@ -21,6 +22,8 @@ add_executable(MeshEditorTests
     ${CMAKE_SOURCE_DIR}/src/mesh/MeshStore.cpp
     ${CMAKE_SOURCE_DIR}/src/audio/ContactModel.cpp
     ${CMAKE_SOURCE_DIR}/src/audio/ContactDynamics.cpp
+    ${CMAKE_SOURCE_DIR}/src/audio/SurfaceNoise.cpp
+    ${CMAKE_SOURCE_DIR}/src/audio/SurfaceRelief.cpp
     ${CMAKE_SOURCE_DIR}/src/audio/ModalAudio.cpp
     ${CMAKE_SOURCE_DIR}/src/audio/ModalModelFile.cpp
     ${CMAKE_SOURCE_DIR}/src/snapshot/SceneSnapshot.cpp
@@ -65,11 +68,13 @@ target_include_directories(MeshEditorTests PRIVATE
     SYSTEM ${CMAKE_SOURCE_DIR}/lib/VulkanMemoryAllocator/include
     SYSTEM ${CMAKE_SOURCE_DIR}/lib/basis_universal/transcoder
     SYSTEM ${CMAKE_SOURCE_DIR}/lib/JoltPhysics
+    SYSTEM PkgConfig::FFTW3F
     ${Vulkan_INCLUDE_DIRS} # Last: may shadow vendored headers
 )
 
 target_link_libraries(MeshEditorTests PRIVATE
     fastgltf::fastgltf
+    PkgConfig::FFTW3F
     simdjson::simdjson
     Boost::ut
     ${Vulkan_LIBRARIES}
@@ -140,6 +145,25 @@ target_include_directories(MeshEditorCompressTest PRIVATE
 )
 target_link_libraries(MeshEditorCompressTest PRIVATE Boost::ut basisu_transcoder)
 target_compile_options(MeshEditorCompressTest PRIVATE -Wall -Wextra -Wno-missing-field-initializers -Wno-elaborated-enum-base -fno-rtti)
+
+add_executable(MeshEditorSurfaceTrackPoolTest SurfaceTrackPoolTest.cpp ${CMAKE_SOURCE_DIR}/src/audio/ModalAudio.cpp)
+target_include_directories(MeshEditorSurfaceTrackPoolTest PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    SYSTEM ${CMAKE_SOURCE_DIR}/lib/glm
+    SYSTEM ${CMAKE_SOURCE_DIR}/lib/entt/src
+)
+target_link_libraries(MeshEditorSurfaceTrackPoolTest PRIVATE Boost::ut)
+target_compile_definitions(MeshEditorSurfaceTrackPoolTest PRIVATE GLM_ENABLE_EXPERIMENTAL DEBUG_BUILD)
+target_compile_options(MeshEditorSurfaceTrackPoolTest PRIVATE -Wall -Wextra -Wno-missing-field-initializers -Wno-elaborated-enum-base -fno-rtti)
+
+add_executable(MeshEditorModalRenderBench ModalRenderBench.cpp ${CMAKE_SOURCE_DIR}/src/audio/ModalAudio.cpp)
+target_include_directories(MeshEditorModalRenderBench PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    SYSTEM ${CMAKE_SOURCE_DIR}/lib/glm
+    SYSTEM ${CMAKE_SOURCE_DIR}/lib/entt/src
+)
+target_compile_definitions(MeshEditorModalRenderBench PRIVATE GLM_ENABLE_EXPERIMENTAL DEBUG_BUILD)
+target_compile_options(MeshEditorModalRenderBench PRIVATE -Wall -Wextra -Wno-missing-field-initializers -Wno-elaborated-enum-base -fno-rtti)
 
 add_executable(MeshEditorContactModelTest ContactModelTest.cpp ${CMAKE_SOURCE_DIR}/src/audio/ContactModel.cpp)
 target_include_directories(MeshEditorContactModelTest PRIVATE

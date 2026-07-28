@@ -3,6 +3,7 @@
 #include "ContactModel.h"
 #include "ModalEigenSummary.h"
 #include "ModalModes.h"
+#include "TransformMath.h"
 #include "mesh/Mesh.h"
 #include "physics/PhysicsTypes.h"
 #include "render/Instance.h"
@@ -48,8 +49,7 @@ void UpdateContactDynamics(entt::registry &r, entt::entity e) {
         r.remove<ContactDynamics>(e);
         return;
     }
-    const auto size = [](vec3 v) { const auto a = glm::abs(v); return (a.x + a.y + a.z) / 3.f; };
-    const float baked_scale = std::max(size(modes->BakedScale), 1e-6f);
+    const float baked_scale = std::max(MeanScale(modes->BakedScale), 1e-6f);
 
     // A dynamic KHR_physics_rigid_bodies body (no density scaling) is authoritative for contact response.
     // Otherwise the modal mass properties apply, scaled by rho_ratio.

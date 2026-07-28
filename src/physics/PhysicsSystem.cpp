@@ -257,6 +257,7 @@ class KHRContactListener : public ContactListener {
 public:
     const entt::registry *R{nullptr};
     const KHRCollisionFilter *Filter{nullptr};
+    const std::unordered_map<uint32_t, entt::entity> *EntityByBodyIndex{nullptr}; // Owned by PhysicsState, read from the collision jobs.
 
     // One qualifying new contact. Bodies are stored by index; the drain resolves them to entities and
     // splits the impulse into a per-body impact. Filled from multiple threads during PhysicsSystem::Update.
@@ -266,8 +267,18 @@ public:
         float Impulse, Speed;
         float InvMass1, InvMass2; // inverse masses, kg⁻¹; 0 for static/kinematic bodies
     };
+    // One persisting contact, per sub-shape pair, merged by the drain into one contact per body pair so a compound body resting on several shapes is one voice.
+    struct RawSustained {
+        uint32_t Body1Index, Body2Index;
+        Vec3 Point; // world space
+        Vec3 Normal; // world space unit normal on body 2
+        Vec3 Slip; // world-space relative tangential velocity of body 1's material point
+        Vec3 Local1, Local2; // contact point in each body's own frame, for differencing into a sweep speed
+        float NormalImpulse, Restitution;
+    };
     std::mutex ContactMutex;
     std::vector<RawContact> RawContacts;
+    std::vector<RawSustained> RawSustainedContacts;
 
     ValidateResult OnContactValidate(const Body &b1, const Body &b2, RVec3Arg, const CollideShapeResult &result) override {
         if (!Filter) return ValidateResult::AcceptAllContactsForThisBodyPair;
@@ -284,14 +295,57 @@ public:
         CombineMaterials(b1, b2, s);
         CollectImpact(b1, b2, manifold, s);
     }
-    void OnContactPersisted(const Body &b1, const Body &b2, const ContactManifold &, ContactSettings &s) override {
+    void OnContactPersisted(const Body &b1, const Body &b2, const ContactManifold &manifold, ContactSettings &s) override {
         CombineMaterials(b1, b2, s);
+        CollectSustained(b1, b2, manifold, s);
     }
 
 private:
+    bool Reports(const Body &b) const {
+        if (!EntityByBodyIndex) return false;
+        const auto it = EntityByBodyIndex->find(b.GetID().GetIndex());
+        return it != EntityByBodyIndex->end() && R->all_of<ReportContacts>(it->second);
+    }
+    // A pair is worth solving for detail when at least one of its bodies reports contacts.
+    bool PairReports(const Body &b1, const Body &b2) const { return Reports(b1) || Reports(b2); }
+
+    static RVec3 ManifoldCentroid(const ContactManifold &manifold) {
+        Vec3 point = Vec3::sZero();
+        for (uint i = 0; i < manifold.mRelativeContactPointsOn1.size(); ++i) point += manifold.mRelativeContactPointsOn1[i];
+        return manifold.mBaseOffset + point / float(manifold.mRelativeContactPointsOn1.size());
+    }
+
+    // Reports where a persisting contact sits on each body, how hard it presses, and how fast the surfaces slide, with the sweep speeds following from the per-body points on the next step.
+    // Fires once per collision step, so the drain sums the impulses and divides by the frame's simulated time to recover the mean normal force.
+    void CollectSustained(const Body &b1, const Body &b2, const ContactManifold &manifold, const ContactSettings &s) {
+        if (!PairReports(b1, b2) || b1.IsSensor() || b2.IsSensor() || manifold.mRelativeContactPointsOn1.empty()) return;
+
+        // The normal (Hertz) impulse the solver applies over this collision step.
+        // Collision detection runs after gravity is applied, so these velocities already carry this step's gravity and the estimate covers the weight a resting body puts on its support.
+        CollisionEstimationResult est;
+        EstimateCollisionResponse(b1, b2, manifold, est, s.mCombinedFriction, s.mCombinedRestitution, 1.0f, 4);
+        float normal_impulse = 0;
+        for (const auto &i : est.mImpulses) normal_impulse += i.mContactImpulse;
+        if (normal_impulse <= 0) return;
+
+        const RVec3 world_point = ManifoldCentroid(manifold);
+
+        const Vec3 relative_velocity = b1.GetPointVelocity(world_point) - b2.GetPointVelocity(world_point);
+        const Vec3 normal = manifold.mWorldSpaceNormal;
+        const Vec3 slip = relative_velocity - normal * relative_velocity.Dot(normal);
+
+        const Vec3 local1 = b1.GetInverseCenterOfMassTransform() * world_point, local2 = b2.GetInverseCenterOfMassTransform() * world_point;
+
+        const std::scoped_lock lock{ContactMutex};
+        RawSustainedContacts.emplace_back(
+            b1.GetID().GetIndex(), b2.GetID().GetIndex(), Vec3{world_point}, normal, slip,
+            local1, local2, normal_impulse, s.mCombinedRestitution
+        );
+    }
+
     // Reports a new solid contact's impulse and approach speed. The audio system decides audibility.
     void CollectImpact(const Body &b1, const Body &b2, const ContactManifold &manifold, const ContactSettings &s) {
-        if (b1.IsSensor() || b2.IsSensor() || manifold.mRelativeContactPointsOn1.empty()) return;
+        if (!PairReports(b1, b2) || b1.IsSensor() || b2.IsSensor() || manifold.mRelativeContactPointsOn1.empty()) return;
 
         // Full contact impulse on body 2: the normal (Hertz) part plus the tangential friction part.
         CollisionEstimationResult est;
@@ -301,10 +355,8 @@ private:
         const float impulse = j.Length();
         if (impulse < 1e-6f) return; // separating or speculative contact; no impulse to strike with
 
-        // Contact centroid and the normal approach speed, which drives the Hertz contact time.
-        Vec3 point = Vec3::sZero();
-        for (uint i = 0; i < manifold.mRelativeContactPointsOn1.size(); ++i) point += manifold.mRelativeContactPointsOn1[i];
-        const RVec3 world_point = manifold.mBaseOffset + point / float(manifold.mRelativeContactPointsOn1.size());
+        // The normal approach speed at the contact drives the Hertz contact time.
+        const RVec3 world_point = ManifoldCentroid(manifold);
         const float speed = std::abs((b1.GetPointVelocity(world_point) - b2.GetPointVelocity(world_point)).Dot(manifold.mWorldSpaceNormal));
 
         const float inv_mass1 = b1.IsDynamic() ? b1.GetMotionProperties()->GetInverseMass() : 0.f;
@@ -342,6 +394,12 @@ private:
     }
 };
 
+// Every sub-shape entry of one body pair's persisting contact, accumulated with impulse weights.
+struct SustainedMerge {
+    Vec3 Point{Vec3::sZero()}, Normal{Vec3::sZero()}, Slip{Vec3::sZero()}, Local1{Vec3::sZero()}, Local2{Vec3::sZero()};
+    float Impulse{0}, Restitution{0};
+};
+
 // All Jolt-side physics state. Lives in the registry context (see physics::Init); the physics:: free
 // functions resolve it from the registry. Plain data holder — behavior lives in the functions below.
 struct PhysicsState {
@@ -363,6 +421,18 @@ struct PhysicsState {
     std::unordered_map<entt::entity, uint32_t> BodySubGroups; // entity -> KHRCollisionFilter SubGroupID.
     std::unordered_map<uint32_t, entt::entity> EntityByBodyIndex; // BodyID index -> owning entity, for contact-impact routing.
     std::vector<KHRContactListener::RawContact> ContactDrainScratch; // reused each step so the swap doesn't free the accumulator
+    std::vector<KHRContactListener::RawSustained> SustainedDrainScratch;
+    // This step's contacts gathered per body pair, and the (packed body-index key, raw index) pairs the gather sorts by.
+    // Both are kept sorted by key, so the ended-pair sweep binary-searches rather than hashing, and neither reallocates once warm.
+    std::vector<std::pair<uint64_t, SustainedMerge>> SustainedMergeScratch;
+    std::vector<std::pair<uint64_t, uint32_t>> SustainedOrderScratch;
+    // Live contact pairs, keyed by the packed body-index pair, each holding the previous step's contact point in each body's own frame to difference into a sweep speed.
+    struct SustainedPair {
+        uint64_t Id{0};
+        vec3 Local1{0}, Local2{0};
+    };
+    std::unordered_map<uint64_t, SustainedPair> SustainedPairs;
+    uint64_t NextSustainedId{1};
 
     std::vector<BodyID> PendingBodyRemovals; // queued for batched removal
 
@@ -1286,7 +1356,11 @@ void ClearSimulation(PhysicsState &s, entt::registry &r) {
     s.BodySubGroups.clear();
     s.EntityByBodyIndex.clear();
     s.ContactListener.RawContacts.clear();
+    s.ContactListener.RawSustainedContacts.clear();
     r.ctx().get<PhysicsContactImpacts>().Events.clear();
+    // Every live contact is gone with its bodies. Consumers see them drop out of the active set and end whatever they opened.
+    r.ctx().get<PhysicsSustainedContacts>().Active.clear();
+    s.SustainedPairs.clear();
 }
 
 void Rebuild(entt::registry &r) {
@@ -1312,6 +1386,12 @@ void ClearCache(entt::registry &r) { r.ctx().get<PhysicsState>().Baked = {}; }
 // Stale slots past the new frontier get overwritten on the next bake.
 bool HasBodies(const entt::registry &r) { return r.ctx().get<PhysicsState>().System->GetNumBodies() > 0; }
 
+// The entity whose body carries this index, or null once the body is gone.
+entt::entity EntityForBody(const PhysicsState &s, uint32_t body_index) {
+    const auto it = s.EntityByBodyIndex.find(body_index);
+    return it != s.EntityByBodyIndex.end() ? it->second : null_entity;
+}
+
 // Resolve this step's raw contacts into per-body impacts for the audio system to drain.
 // Both bodies of a pair radiate: body 2 takes the impulse direction, body 1 its negation.
 void CollectContactImpacts(PhysicsState &s, entt::registry &r) {
@@ -1321,21 +1401,99 @@ void CollectContactImpacts(PhysicsState &s, entt::registry &r) {
         raw.swap(s.ContactListener.RawContacts);
     }
     auto &out = r.ctx().get<PhysicsContactImpacts>().Events;
-    const auto resolve = [&](uint32_t body_index) {
-        const auto it = s.EntityByBodyIndex.find(body_index);
-        return it != s.EntityByBodyIndex.end() ? it->second : null_entity;
-    };
     for (const auto &c : raw) {
         const vec3 dir = FromJolt(c.Direction), point = FromJolt(c.Point);
-        const auto e1 = resolve(c.Body1Index), e2 = resolve(c.Body2Index);
+        const auto e1 = EntityForBody(s, c.Body1Index), e2 = EntityForBody(s, c.Body2Index);
         // Each struck body radiates, driven by the other body as its acoustic impactor.
         const auto emit = [&](entt::entity self, entt::entity other, vec3 d, float other_inv_mass) {
-            if (self != null_entity) out.emplace_back(ContactImpact{.Entity = self, .Other = other, .Point = point, .Direction = d, .Impulse = c.Impulse, .Speed = c.Speed, .OtherInvMass = other_inv_mass});
+            out.emplace_back(ContactImpact{.Entity = self, .Other = other, .Point = point, .Direction = d, .Impulse = c.Impulse, .Speed = c.Speed, .OtherInvMass = other_inv_mass});
         };
         emit(e1, e2, -dir, c.InvMass2);
         emit(e2, e1, dir, c.InvMass1);
     }
     raw.clear();
+}
+
+// Resolve this step's persisting contacts into per-body contact states, one pair per touching body pair.
+// The live set is diffed against the previous one, so a contact that stops touching is reported by id while its bodies are still accessible.
+void CollectSustainedContacts(PhysicsState &s, entt::registry &r, float sim_dt) {
+    auto &raw = s.SustainedDrainScratch;
+    {
+        const std::scoped_lock lock{s.ContactListener.ContactMutex};
+        raw.swap(s.ContactListener.RawSustainedContacts);
+    }
+    auto &sustained = r.ctx().get<PhysicsSustainedContacts>();
+    sustained.Active.clear();
+
+    // Merge every sub-shape entry of a body pair into one contact, weighting the geometry by impulse.
+    // The collision jobs run in parallel and take the lock per entry, so one pair's entries are interleaved with other pairs' and have to be gathered by key.
+    auto &order = s.SustainedOrderScratch;
+    order.clear();
+    order.reserve(raw.size());
+    for (uint32_t i = 0; i < raw.size(); ++i) {
+        order.emplace_back((uint64_t(raw[i].Body1Index) << 32) | raw[i].Body2Index, i);
+    }
+    std::sort(order.begin(), order.end());
+
+    auto &merged = s.SustainedMergeScratch;
+    merged.clear();
+    for (size_t i = 0; i < order.size();) {
+        const uint64_t key = order[i].first;
+        SustainedMerge m;
+        for (; i < order.size() && order[i].first == key; ++i) {
+            const auto &c = raw[order[i].second];
+            m.Point += c.Point * c.NormalImpulse;
+            m.Normal += c.Normal * c.NormalImpulse;
+            m.Slip += c.Slip * c.NormalImpulse;
+            m.Local1 += c.Local1 * c.NormalImpulse;
+            m.Local2 += c.Local2 * c.NormalImpulse;
+            m.Restitution = c.Restitution;
+            m.Impulse += c.NormalImpulse;
+        }
+        merged.emplace_back(key, m);
+    }
+    raw.clear();
+
+    const float inv_dt = sim_dt > 0 ? 1.f / sim_dt : 0.f;
+
+    for (const auto &[key, m] : merged) {
+        if (m.Impulse <= 0) continue;
+        const vec3 point = FromJolt(m.Point / m.Impulse);
+        const vec3 local1 = FromJolt(m.Local1 / m.Impulse), local2 = FromJolt(m.Local2 / m.Impulse);
+
+        auto [it, is_new] = s.SustainedPairs.try_emplace(key, PhysicsState::SustainedPair{s.NextSustainedId, local1, local2});
+        if (is_new) ++s.NextSustainedId;
+        // Each surface traverses the contact at its own rate, from the contact point differenced in that body's own frame.
+        // A box sliding on a fixed floor has zero sweep on the box and full sweep on the floor.
+        const float sweep1 = is_new ? 0.f : glm::length(local1 - it->second.Local1) * inv_dt;
+        const float sweep2 = is_new ? 0.f : glm::length(local2 - it->second.Local2) * inv_dt;
+        it->second.Local1 = local1;
+        it->second.Local2 = local2;
+
+        // A compound body pinched between opposed faces sums its sub-shape normals to nothing, leaving no direction to excite along.
+        // The pair stays live, keeping the sweep reference set above.
+        const vec3 normal_sum = FromJolt(m.Normal / m.Impulse);
+        if (glm::length(normal_sum) < 1e-6f) continue;
+
+        // Body 2 is the second side, which is the one the normal and the slip are oriented toward.
+        sustained.Active.emplace_back(SustainedContact{
+            .Id = it->second.Id,
+            .Sides = {
+                SustainedContactSide{.Entity = EntityForBody(s, uint32_t(key >> 32)), .SweepSpeed = sweep1},
+                SustainedContactSide{.Entity = EntityForBody(s, uint32_t(key)), .SweepSpeed = sweep2},
+            },
+            .Point = point,
+            .Normal = glm::normalize(normal_sum),
+            .Slip = FromJolt(m.Slip / m.Impulse),
+            .NormalForce = m.Impulse * inv_dt,
+            .Restitution = m.Restitution,
+        });
+    }
+
+    // A pair the step didn't report has stopped touching. `merged` is sorted by key, so this is a search rather than a hash.
+    std::erase_if(s.SustainedPairs, [&](const auto &pair) {
+        return !std::ranges::binary_search(merged, pair.first, {}, &std::pair<uint64_t, SustainedMerge>::first);
+    });
 }
 
 // Write a body's world pose to ECS and propagate it to the body's children.
@@ -1353,8 +1511,10 @@ void BakeFrame(entt::registry &r, entt::entity viewport, PhysicsState &s, uint32
     // Each collision step integrates (dt * TimeScale) / SubstepsPerFrame seconds of sim time.
     const auto &settings = r.get<const PhysicsSimulationSettings>(viewport);
     const float dt = fps > 0 ? 1.f / fps : 1.f / 60.f;
-    s.System->Update(dt * settings.TimeScale, settings.SubstepsPerFrame, &s.TempAllocator, &s.JobSystem);
+    const float sim_dt = dt * settings.TimeScale;
+    s.System->Update(sim_dt, settings.SubstepsPerFrame, &s.TempAllocator, &s.JobSystem);
     CollectContactImpacts(s, r);
+    CollectSustainedContacts(s, r, sim_dt);
     // Sync Jolt -> ECS WorldTransform only. PhysicsVelocity is authored-only; live velocity stays in Jolt.
     // WT is owned by the simulator during sim; local Transform is the authored pose, restored on Rebuild.
     const auto &bi = s.System->GetBodyInterface();
@@ -1483,7 +1643,9 @@ void SamplePosesAtFrame(entt::registry &r, float frame) {
 void Init(entt::registry &r) {
     auto &state = r.ctx().emplace<PhysicsState>();
     state.ContactListener.R = &r;
+    state.ContactListener.EntityByBodyIndex = &state.EntityByBodyIndex;
     r.ctx().emplace<PhysicsContactImpacts>();
+    r.ctx().emplace<PhysicsSustainedContacts>();
     r.on_destroy<PhysicsBodyHandle>().connect<&OnDestroyPhysicsBody>();
 
     track<changes::PhysicsMotion>(r).on<PhysicsMotion>(On::Create | On::Update | On::Destroy);

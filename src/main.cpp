@@ -1081,6 +1081,10 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
                         Text("sizeof(Action): %zu bytes", action::ActionSize());
                         EndTabItem();
                     }
+                    if (BeginTabItem("Audio")) {
+                        DrawAudioDebug(r);
+                        EndTabItem();
+                    }
                     EndTabBar();
                 }
             }

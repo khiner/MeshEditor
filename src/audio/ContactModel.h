@@ -61,9 +61,30 @@ glm::mat3 InverseInertiaTensor(const MassProperties &);
 // impulse, combined with the impactor. Drives the Hertz contact time and the impulse magnitude.
 double ReducedContactMass(const ContactDynamics &, uint32_t excitable_index, vec3 impact_direction, const Impactor &);
 
+/***** Hertz contact constants (Johnson 1985) *****/
+
+// Effective compliance 1/E* = (1 - v1^2)/E1 + (1 - v2^2)/E2, in Pa^-1.
+double InvEffectiveModulus(const AcousticMaterialProperties &, const AcousticMaterialProperties &);
+
+// Combined curvature 1/R* = k1 + k2, in 1/m, held positive so a flat or concave surface reads as flat at R* = 1e6 m.
+double CombinedCurvature(double curvature_a, double curvature_b);
+
+// Contact stiffness k = (4/3) E* sqrt(R*), in N/m^(3/2). Relates load to penetration by N = k*delta^(3/2).
+double ContactStiffness(double inv_effective_modulus, double combined_curvature);
+
+// Hertz contact patch radius a = (3 N R* / (4 E*))^(1/3), in meters. Sets the contact filter's scale.
+double ContactPatchRadius(double normal_force, double inv_effective_modulus, double combined_curvature);
+
+// Equilibrium penetration under load N: delta0 = (N/k)^(2/3), in meters.
+double StaticPenetration(double normal_force, double stiffness);
+
 // Hertz contact time in seconds for a strike at `excitable_index`, from the object and impactor at `contact_speed`,
 // scaled by `scale_ratio` for the object's current size.
 double EstimateContactTime(const ContactDynamics &, uint32_t excitable_index, vec3 impact_direction, double contact_speed, const AcousticMaterialProperties &object_material, const Impactor &, double scale_ratio);
 
 // Bounds on the derived contact time (seconds), guarding degenerate curvature, speed, and scale.
 inline constexpr double MinContactTime = 2e-5, MaxContactTime = 5e-2;
+
+// Approach speed a physics material's restitution is taken to be quoted at, m/s.
+// Restitution varies with approach speed while the Hunt-Crossley dissipation constant stays fixed, so recovering that constant through e ~ 1 - alpha*v needs a reference speed.
+inline constexpr float RestitutionReferenceSpeed = 1.f;

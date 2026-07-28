@@ -13,6 +13,7 @@
 #include "audio/AudioSystem.h"
 #include "audio/AudioTypes.h"
 #include "audio/ContactModel.h"
+#include "audio/ContactSurface.h"
 #include "audio/ModalModes.h"
 #include "image/ImageEncode.h"
 #include "mesh/MeshAttributes.h"
@@ -1920,13 +1921,6 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
     };
     ImportRollbackGuard import_rollback_guard{rollback_import_side_effects};
 
-    const auto resolve_image_index = [&](const gltf::Texture &texture) -> std::optional<uint32_t> {
-        if (texture.ImageIndex) return texture.ImageIndex;
-        if (texture.WebpImageIndex) return texture.WebpImageIndex;
-        if (texture.BasisuImageIndex) return texture.BasisuImageIndex;
-        return texture.DdsImageIndex;
-    };
-
     // Fill in the remaining SourceAssets fields (extensions, IBL, MaterialMetas), then emplace and bind a const ref.
     // Downstream lookups read through that ref, so it must outlive the rest of the load.
     auto source_ibl = ConvertIBL(asset, scene_index);
@@ -1956,7 +1950,7 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
         if (texture_index >= sa.Textures.size()) return InvalidSlot;
 
         const auto &src_texture = sa.Textures[texture_index];
-        const auto image_index = resolve_image_index(src_texture);
+        const auto image_index = gltf::ResolveImageIndex(src_texture);
         if (!image_index || *image_index >= sa.Images.size()) return InvalidSlot;
 
         const auto sampler_index = src_texture.SamplerIndex.value_or(InvalidSlot);
@@ -2418,19 +2412,21 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
         }
     }
 
-    // KHR_audio_rigid_bodies: rebuild modal models & acoustic materials and attach them to each instancing node and its mesh entity.
-    if (!asset.modalModels.empty()) {
+    // KHR_audio_rigid_bodies: rebuild modal models, acoustic materials, and acoustic surfaces, attaching them to each instancing node and its mesh entity.
+    if (!asset.modalModels.empty() || !asset.acousticSurfaces.empty()) {
         std::vector<AcousticMaterial> acoustic_materials;
         acoustic_materials.reserve(asset.acousticMaterials.size());
+        // Every field is optional, and a zero modulus or density would divide through the contact model, so an absent one falls back to the engine's default material.
+        static constexpr auto MaterialDefaults = materials::acoustic::All.front().Properties;
         for (const auto &m : asset.acousticMaterials) {
             acoustic_materials.emplace_back(AcousticMaterial{
                 .Name = std::string{m.name},
                 .Properties = {
-                    .Density = m.density.value_or(0.0),
-                    .YoungModulus = m.youngsModulus.value_or(0.0),
-                    .PoissonRatio = m.poissonRatio.value_or(0.0),
-                    .Alpha = m.alpha.value_or(0.0),
-                    .Beta = m.beta.value_or(0.0),
+                    .Density = m.density.value_or(MaterialDefaults.Density),
+                    .YoungModulus = m.youngsModulus.value_or(MaterialDefaults.YoungModulus),
+                    .PoissonRatio = m.poissonRatio.value_or(MaterialDefaults.PoissonRatio),
+                    .Alpha = m.alpha.value_or(MaterialDefaults.Alpha),
+                    .Beta = m.beta.value_or(MaterialDefaults.Beta),
                 },
             });
         }
@@ -2444,38 +2440,102 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
         const auto read_scalars = [&](size_t i) { return read_accessor.template operator()<float>(i); };
         const auto read_vec3s = [&](size_t i) { return read_accessor.template operator()<vec3>(i); };
 
-        std::vector<ModalModes> models;
-        models.reserve(asset.modalModels.size());
-        for (const auto &m : asset.modalModels) {
+        // Every accessor value has to be finite, since a resonator's state never recovers from a non-finite frequency, decay, or shape.
+        const auto all_finite = [](const auto &values) {
+            return std::ranges::all_of(values, [](const auto &v) {
+                if constexpr (std::is_same_v<std::decay_t<decltype(v)>, vec3>) return std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z);
+                else return std::isfinite(v);
+            });
+        };
+        // A model needs its four accessors, one decay rate per mode, and a mode-major M*P shape block, and reads back empty otherwise.
+        const auto read_model = [&](const fastgltf::ModalModel &m) -> ModalModes {
+            const auto accessors = asset.accessors.size();
+            const auto freqs = ToIndex(m.frequencies, accessors), decays = ToIndex(m.decayRates, accessors);
+            const auto positions = ToIndex(m.positions, accessors), shapes = ToIndex(m.shapes, accessors);
+            if (!freqs || !decays || !positions || !shapes) return {};
+
             ModalModes modes;
-            modes.Freqs = read_scalars(m.frequencies);
-            const auto decay_rates = read_scalars(m.decayRates);
-            modes.T60s.resize(decay_rates.size());
-            for (size_t i = 0; i < decay_rates.size(); ++i) modes.T60s[i] = decay_rates[i] > 0 ? float(Ln1000 / decay_rates[i]) : 0.f;
-            modes.Positions = read_vec3s(m.positions);
-            // Shapes arrive mode-major (element m*P + i) and are stored position-major as Shapes[point][mode].
-            const auto shapes_flat = read_vec3s(m.shapes);
+            modes.Freqs = read_scalars(*freqs);
+            modes.Positions = read_vec3s(*positions);
+            const auto decay_rates = read_scalars(*decays);
+            const auto shapes_flat = read_vec3s(*shapes);
             const uint32_t n_modes = modes.Freqs.size(), n_points = modes.Positions.size();
+            if (n_modes == 0 || n_points == 0 || decay_rates.size() != n_modes || shapes_flat.size() < size_t(n_modes) * n_points) return {};
+            if (!all_finite(modes.Freqs) || !all_finite(decay_rates) || !all_finite(modes.Positions) || !all_finite(shapes_flat)) return {};
+
+            modes.T60s.resize(n_modes);
+            for (uint32_t k = 0; k < n_modes; ++k) modes.T60s[k] = decay_rates[k] > 0 ? float(Ln1000 / decay_rates[k]) : 0.f;
+            // Shapes arrive mode-major (element m*P + i) and are stored position-major as Shapes[point][mode].
             modes.Shapes.assign(n_points, std::vector<vec3>(n_modes));
             for (uint32_t mode = 0; mode < n_modes; ++mode) {
                 for (uint32_t i = 0; i < n_points; ++i) modes.Shapes[i][mode] = shapes_flat[mode * n_points + i];
             }
-            modes.OriginalFundamentalFreq = modes.Freqs.empty() ? 0.f : modes.Freqs.front();
-            models.emplace_back(std::move(modes));
+            modes.OriginalFundamentalFreq = modes.Freqs.front();
+            return modes;
+        };
+        // An empty entry keeps the array's indices aligned with the document's while attaching nothing.
+        std::vector<ModalModes> models;
+        models.reserve(asset.modalModels.size());
+        for (const auto &m : asset.modalModels) {
+            models.emplace_back(read_model(m));
+            if (models.back().Freqs.empty()) {
+                std::cerr << std::format("Warning: KHR_audio_rigid_bodies modal model '{}' does not match its accessors; ignoring it.\n", std::string{m.name});
+            }
+        }
+
+        std::vector<ContactSurface> surfaces;
+        surfaces.reserve(asset.acousticSurfaces.size());
+        for (const auto &s : asset.acousticSurfaces) {
+            static constexpr ContactSurface Defaults{};
+            ContactSurface surface{
+                .Name = std::string{s.name},
+                .Roughness = float(s.roughness.value_or(Defaults.Roughness)),
+                .CorrelationLength = float(s.correlationLength.value_or(Defaults.CorrelationLength)),
+                .SpectralSlope = float(s.spectralSlope.value_or(Defaults.SpectralSlope)),
+                .Profile = {},
+                .SampleSpacing = float(s.sampleSpacing.value_or(0.0)),
+                .NormalTexture = {},
+            };
+            if (const auto profile = ToIndex(s.profile, asset.accessors.size())) surface.Profile = read_scalars(*profile);
+            if (const auto texture = s.normalTexture.has_value() ? ToIndex(s.normalTexture->textureIndex, asset.textures.size()) : std::nullopt) {
+                surface.NormalTexture = SurfaceNormalTexture{
+                    .Texture = *texture,
+                    .TexCoord = uint32_t(s.normalTexture->texCoordIndex),
+                    .Scale = float(s.normalTexture->scale),
+                };
+            }
+            surfaces.emplace_back(std::move(surface));
         }
 
         for (uint32_t node_index = 0; node_index < asset.nodes.size(); ++node_index) {
             const auto &source_node = asset.nodes[node_index];
             if (!source_node.audioRigidBody.has_value()) continue;
             const auto &instance = *source_node.audioRigidBody;
-            if (!instance.modalModel.has_value() || *instance.modalModel >= models.size()) continue;
-            const auto model_index = *instance.modalModel;
             const auto it = object_entities_by_node.find(node_index);
             if (it == object_entities_by_node.end()) continue;
             const auto entity = it->second;
 
             const auto *inst = r.try_get<const Instance>(entity);
-            auto model = models[model_index];
+            const auto surface_index = ToIndex(instance.acousticSurface, surfaces.size());
+            // The finish is a property of the rendered surface, so it lands on the mesh entity beside the acoustic material, and a node may supply one without sounding itself.
+            if (surface_index && inst) r.emplace_or_replace<ContactSurface>(inst->Entity, surfaces[*surface_index]);
+
+            const auto model_index = [&]() -> std::optional<uint32_t> {
+                const auto i = ToIndex(instance.modalModel, models.size());
+                return i && !models[*i].Freqs.empty() ? i : std::nullopt;
+            }();
+            // One acoustic material per mesh entity, a model's reference winning over its surface's.
+            const auto material_index = [&]() -> std::optional<uint32_t> {
+                if (model_index) {
+                    if (const auto i = ToIndex(asset.modalModels[*model_index].material, acoustic_materials.size())) return i;
+                }
+                if (surface_index) return ToIndex(asset.acousticSurfaces[*surface_index].material, acoustic_materials.size());
+                return std::nullopt;
+            }();
+            if (material_index && inst) r.emplace_or_replace<AcousticMaterial>(inst->Entity, acoustic_materials[*material_index]);
+
+            if (!model_index) continue;
+            auto model = models[*model_index];
             model.BakedScale = ToTransform(traversal.WorldTransforms[node_index]).S;
             // Map each sample point to its nearest render-mesh vertex so the model stays excitable.
             if (inst && r.all_of<MeshHandle>(inst->Entity) && !model.Positions.empty()) {
@@ -2497,7 +2557,7 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
             // A model without sample-to-vertex mapping (e.g. a mesh-less node) stays passive data.
             const bool excitable = !model.Vertices.empty();
             r.emplace<ModalModes>(entity, std::move(model));
-            if (const auto &mp = asset.modalModels[model_index].massProperties; mp.has_value()) {
+            if (const auto &mp = asset.modalModels[*model_index].massProperties; mp.has_value()) {
                 const auto &q = mp->inertiaOrientation;
                 r.emplace<MassProperties>(
                     entity,
@@ -2534,9 +2594,6 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
             }
             if (excitable) r.emplace<SoundVerticesModel>(entity, SoundVerticesModel::Modal);
             if (instance.gain != fastgltf::num(1)) r.emplace<ModalGain>(entity, ModalGain{instance.gain});
-            if (const auto &mat_idx = asset.modalModels[model_index].material; inst && mat_idx.has_value() && *mat_idx < acoustic_materials.size()) {
-                r.emplace_or_replace<AcousticMaterial>(inst->Entity, acoustic_materials[*mat_idx]);
-            }
         }
     }
 
@@ -4185,8 +4242,19 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
     asset.nodes.reserve(total_node_count);
     bool uses_gpu_instancing = false;
     bool uses_physics_rigid_bodies = false;
-    // KHR_audio_rigid_bodies acoustic materials, deduped by value across model instances.
+    // KHR_audio_rigid_bodies acoustic materials and surfaces, deduped by value across node instances.
     std::vector<AcousticMaterial> audio_rigid_body_materials;
+    std::vector<ContactSurface> audio_rigid_body_surfaces;
+    // Index of an emitted resource, reusing an identical one already emitted, with `mirror` holding the engine-side values in the emitted order.
+    // A null `value` is nothing to emit, so the node names no resource.
+    const auto dedupe = [](auto &mirror, const auto *value, auto &&emit) -> fastgltf::Optional<size_t> {
+        if (!value) return {};
+        const auto it = std::ranges::find(mirror, *value);
+        if (it != mirror.end()) return size_t(std::distance(mirror.begin(), it));
+        const auto index = emit();
+        mirror.emplace_back(*value);
+        return index;
+    };
     for (uint32_t ni = 0; ni < total_node_count; ++ni) {
         const auto entity = node_to_entity[ni];
 
@@ -4368,9 +4436,51 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             };
         }();
 
-        // KHR_audio_rigid_bodies: emit the node's modal model and instance.
+        // KHR_audio_rigid_bodies: emit the node's modal model, acoustic surface, and instance.
         fastgltf::Optional<fastgltf::AudioRigidBody> audio_rigid_body;
-        if (const auto *modes = r.try_get<const ModalModes>(entity); modes && !modes->Freqs.empty()) {
+        const auto *audio_inst = r.try_get<const Instance>(entity);
+        const auto *contact_surface = audio_inst ? r.try_get<const ContactSurface>(audio_inst->Entity) : nullptr;
+        const auto *modes = r.try_get<const ModalModes>(entity);
+        const bool has_modal_model = modes && !modes->Freqs.empty();
+        // The derivation material lives on the mesh entity, and both the model and the surface reference it.
+        const auto *acoustic_material = (has_modal_model || contact_surface) && audio_inst ? r.try_get<const AcousticMaterial>(audio_inst->Entity) : nullptr;
+        const auto acoustic_material_index = dedupe(audio_rigid_body_materials, acoustic_material, [&] {
+            const auto &p = acoustic_material->Properties;
+            asset.acousticMaterials.emplace_back(fastgltf::AcousticMaterial{
+                .density = p.Density,
+                .youngsModulus = p.YoungModulus,
+                .poissonRatio = p.PoissonRatio,
+                .alpha = p.Alpha,
+                .beta = p.Beta,
+                .name = ToFgStr(acoustic_material->Name),
+            });
+            return asset.acousticMaterials.size() - 1;
+        });
+
+        const auto acoustic_surface_index = dedupe(audio_rigid_body_surfaces, contact_surface, [&] {
+            fastgltf::AcousticSurface out{
+                .roughness = contact_surface->Roughness,
+                .correlationLength = contact_surface->CorrelationLength,
+                .spectralSlope = contact_surface->SpectralSlope,
+                .profile = {},
+                .sampleSpacing = {},
+                .normalTexture = {},
+                .material = acoustic_material_index,
+                .name = ToFgStr(contact_surface->Name),
+            };
+            if (contact_surface->HasMeasuredProfile()) {
+                out.profile = AddDataAccessor(std::span<const float>(contact_surface->Profile), fastgltf::AccessorType::Scalar, fastgltf::ComponentType::Float);
+                out.sampleSpacing = contact_surface->SampleSpacing;
+            }
+            // The texture the surface points at may have gone with an edited scene.
+            if (const auto &nt = contact_surface->NormalTexture; nt && nt->Texture < asset.textures.size()) {
+                out.normalTexture = ToFgNormalTexInfo({.Slot = nt->Texture, .TexCoord = nt->TexCoord}, nt->Scale);
+            }
+            asset.acousticSurfaces.emplace_back(std::move(out));
+            return asset.acousticSurfaces.size() - 1;
+        });
+
+        if (has_modal_model) {
             const uint32_t n_modes = modes->Freqs.size(), n_points = modes->Positions.size();
 
             // decayRates d = ln(1000)/T60 (T60 == 0 is the undamped sentinel, d = 0).
@@ -4389,7 +4499,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
                 .positions = AddDataAccessor(std::span<const vec3>(modes->Positions), fastgltf::AccessorType::Vec3, fastgltf::ComponentType::Float),
                 .shapes = AddDataAccessor(std::span<const vec3>(shapes), fastgltf::AccessorType::Vec3, fastgltf::ComponentType::Float),
                 .indices = {},
-                .material = {},
+                .material = acoustic_material_index,
                 .massProperties = {},
                 .name = ToFgStr(node_name),
             };
@@ -4407,31 +4517,16 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
                 };
             }
 
-            // The derivation material lives on the mesh entity. Reuse an identical material already emitted.
-            if (const auto *inst = r.try_get<const Instance>(entity)) {
-                if (const auto *mat = r.try_get<const AcousticMaterial>(inst->Entity)) {
-                    auto mit = std::ranges::find_if(audio_rigid_body_materials, [&](const AcousticMaterial &m) { return m.Name == mat->Name && m.Properties == mat->Properties; });
-                    if (mit == audio_rigid_body_materials.end()) {
-                        model.material = asset.acousticMaterials.size();
-                        const auto &p = mat->Properties;
-                        asset.acousticMaterials.emplace_back(fastgltf::AcousticMaterial{
-                            .density = p.Density,
-                            .youngsModulus = p.YoungModulus,
-                            .poissonRatio = p.PoissonRatio,
-                            .alpha = p.Alpha,
-                            .beta = p.Beta,
-                            .name = ToFgStr(mat->Name),
-                        });
-                        audio_rigid_body_materials.emplace_back(*mat);
-                    } else {
-                        model.material = std::distance(audio_rigid_body_materials.begin(), mit);
-                    }
-                }
-            }
-
             const auto *gain = r.try_get<const ModalGain>(entity);
-            audio_rigid_body = fastgltf::AudioRigidBody{.modalModel = asset.modalModels.size(), .gain = fastgltf::num(gain ? gain->Value : 1.f)};
+            audio_rigid_body = fastgltf::AudioRigidBody{
+                .modalModel = asset.modalModels.size(),
+                .acousticSurface = acoustic_surface_index,
+                .gain = fastgltf::num(gain ? gain->Value : 1.f),
+            };
             asset.modalModels.emplace_back(std::move(model));
+        } else if (acoustic_surface_index.has_value()) {
+            // A body that only supplies its finish to contacts against it, such as a floor.
+            audio_rigid_body = fastgltf::AudioRigidBody{.modalModel = {}, .acousticSurface = acoustic_surface_index};
         }
 
         asset.nodes.emplace_back(fastgltf::Node{
@@ -4521,7 +4616,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         asset.extensionsUsed.emplace_back("KHR_physics_rigid_bodies");
     }
     if (!asset.shapes.empty()) asset.extensionsUsed.emplace_back("KHR_implicit_shapes");
-    if (!asset.modalModels.empty()) asset.extensionsUsed.emplace_back("KHR_audio_rigid_bodies");
+    if (!asset.modalModels.empty() || !asset.acousticSurfaces.empty()) asset.extensionsUsed.emplace_back("KHR_audio_rigid_bodies");
     if (!asset.imageBasedLights.empty()) asset.extensionsUsed.emplace_back("EXT_lights_image_based");
     const auto any_material = [&](auto pred) { return std::ranges::any_of(asset.materials, pred); };
     if (any_material([](const auto &m) { return m.unlit; })) asset.extensionsUsed.emplace_back("KHR_materials_unlit");

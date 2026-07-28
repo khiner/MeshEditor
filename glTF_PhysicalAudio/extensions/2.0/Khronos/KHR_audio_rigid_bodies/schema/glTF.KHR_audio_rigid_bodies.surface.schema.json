@@ -37,7 +37,7 @@
         "normalTexture": {
             "allOf": [ { "$ref": "material.normalTextureInfo.schema.json" } ],
             "description": "A tangent-space normal map describing the surface's mesoscale structure, the visible bumpiness between the collision geometry and the statistical roughness.",
-            "gltf_detailedDescription": "Sampled along the contact path using the referenced texture coordinate set of the node's mesh. Interpreted exactly as the glTF 2.0 core material `normalTexture`, including `scale`. Authors SHOULD reference the same texture as the mesh's material so the sound correlates with the visible surface."
+            "gltf_detailedDescription": "Sampled along the contact path using the referenced texture coordinate set of the contacted mesh primitive. Interpreted exactly as the glTF 2.0 core material `normalTexture`, including `scale`. When absent, the contacted primitive's material `normalTexture` applies, taking its `index`, `texCoord`, and `scale` together, so the sound correlates with the visible surface without the author restating the reference. Set this only to override that correspondence."
         },
         "material": {
             "allOf": [ { "$ref": "glTFid.schema.json" } ],

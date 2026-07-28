@@ -184,6 +184,7 @@ struct MeshStore {
     Range GetEdgeSharpnessRange(uint32_t id) const;
     // Corner-domain attribute layers (one value per triangulated face corner, fan order).
     // Empty range/span when the mesh lacks the channel.
+    static constexpr uint32_t MaxUvSets{4}; // Texture coordinate sets an entry stores, so a higher glTF TEXCOORD_n has nowhere to land.
     Range GetCornerTangentRange(uint32_t id) const;
     Range GetCornerColorRange(uint32_t id) const;
     Range GetCornerUvRange(uint32_t id, uint32_t set) const;
@@ -247,7 +248,7 @@ private:
         Range CustomCornerMasks{}; // Custom corner-normal presence: a (bitset word, exclusive rank) pair per 32 corners
         Range CustomCornerNormals{}; // Authored corner-normal (polar, azimuth) offsets from the derived normal, packed to the masked corners
         Range CornerTangents{}, CornerColors{}; // Corner-domain attribute layers
-        std::array<Range, 4> CornerUvs{};
+        std::array<Range, MaxUvSets> CornerUvs{};
         Range EdgeSharpness{}; // One byte per edge, 1 = sharp
         Range EdgeStates{}, TriangleFaceIds{}, ElementPrimitives{}, PrimitiveMaterials{};
         // CSR vertex incidence, each range holding (vertex count + 1) offsets followed by the items

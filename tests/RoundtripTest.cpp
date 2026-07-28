@@ -4,9 +4,12 @@
 #include "audio/AcousticMaterial.h"
 #include "audio/AudioTypes.h"
 #include "audio/ContactModel.h"
+#include "audio/ContactSurface.h"
 #include "audio/ModalModelFile.h"
 #include "audio/ModalModes.h"
+#include "audio/SurfaceRelief.h"
 #include "gltf/GltfScene.h"
+#include "gltf/SourceTexture.h"
 #include "gpu/PunctualLight.h"
 #include "image/ImageDecode.h"
 #include "mesh/MeshComponents.h"
@@ -67,6 +70,16 @@ std::vector<fs::path> CollectGltfSamples(const fs::path &root) {
     }
     std::sort(out.begin(), out.end());
     return out;
+}
+
+// Copy a sample and every file beside it into `dir`, so a test can move or rewrite the asset's external files.
+// Returns the staged glTF.
+fs::path StageSample(const fs::path &sample_gltf, const fs::path &dir) {
+    fs::create_directories(dir);
+    for (const auto &entry : fs::directory_iterator{sample_gltf.parent_path()}) {
+        fs::copy_file(entry.path(), dir / entry.path().filename(), fs::copy_options::overwrite_existing);
+    }
+    return dir / sample_gltf.filename();
 }
 
 fs::path MakeRoundtripDir() {
@@ -1011,6 +1024,13 @@ int main(int argc, const char **argv) {
         for (auto e : r.view<const ModalModes>()) return e;
         return entt::null;
     };
+    // The first mesh-instance node, with the mesh entity it instances.
+    const auto first_mesh_node = [](entt::registry &r) -> std::pair<entt::entity, entt::entity> {
+        for (auto e : r.view<const Instance, const SourceNodeIndex>()) {
+            if (const auto mesh = r.get<const Instance>(e).Entity; r.all_of<MeshHandle>(mesh)) return {e, mesh};
+        }
+        return {entt::null, entt::null};
+    };
 
     // The test never renders, so WaitForRender (the only caller of ReclaimRetiredBuffers) never runs and retired arena
     // buffers would pile up until the GPU OOMs. Reclaim at each clear - safe since no frame is ever in flight here.
@@ -1129,11 +1149,7 @@ int main(int argc, const char **argv) {
     if (fs::exists(box_external)) {
         test("missing_external_source_falls_back_to_embedded_png") = [&] {
             const auto stage_dir = edit_root / "BoxTextured-external";
-            fs::create_directories(stage_dir);
-            for (const auto &entry : fs::directory_iterator{box_external.parent_path()}) {
-                fs::copy_file(entry.path(), stage_dir / entry.path().filename(), fs::copy_options::overwrite_existing);
-            }
-            const auto staged_gltf = stage_dir / box_external.filename();
+            const auto staged_gltf = StageSample(box_external, stage_dir);
             const auto staged_png = stage_dir / "CesiumLogoFlat.png";
             expect(fs::exists(staged_png)) << "fixture missing PNG";
 
@@ -1166,16 +1182,7 @@ int main(int argc, const char **argv) {
             SceneFixture fx{vk_resources};
             if (!load_or_skip(fx, box, "Box load failed")) return;
 
-            // Find the mesh-instance node and its mesh entity.
-            entt::entity node = entt::null, mesh_entity = entt::null;
-            for (auto e : fx.R.view<const Instance, const SourceNodeIndex>()) {
-                const auto inst_entity = fx.R.get<const Instance>(e).Entity;
-                if (fx.R.all_of<MeshHandle>(inst_entity)) {
-                    node = e;
-                    mesh_entity = inst_entity;
-                    break;
-                }
-            }
+            const auto [node, mesh_entity] = first_mesh_node(fx.R);
             expect(node != entt::null) << "no mesh instance node in Box";
             if (node == entt::null) return;
 
@@ -1304,6 +1311,174 @@ int main(int argc, const char **argv) {
 
             const auto *gain = fx.R.try_get<const ModalGain>(node);
             expect(gain != nullptr && NumberEq(gain->Value, 0.75)) << "gain";
+
+            // A second node supplies only its finish, which lands on its mesh entity.
+            entt::entity floor_mesh = entt::null;
+            for (auto e : fx.R.view<const ContactSurface>()) floor_mesh = e;
+            expect(floor_mesh != entt::null) << "fixture produced no contact surface";
+            if (floor_mesh == entt::null) return;
+            const auto &cs = fx.R.get<const ContactSurface>(floor_mesh);
+            expect(cs.Name == "TestFinish") << "surface name";
+            expect(NumberEq(cs.Roughness, 3e-6) && NumberEq(cs.CorrelationLength, 7e-5) && NumberEq(cs.SpectralSlope, -1.25)) << "surface parameters";
+            expect(cs.NormalTexture.has_value()) << "surface normal texture";
+            if (cs.NormalTexture) {
+                expect(cs.NormalTexture->Texture == 0u && cs.NormalTexture->TexCoord == 0u && NumberEq(cs.NormalTexture->Scale, 0.8)) << "normal texture info";
+            }
+            // The surface's acoustic material lands on the same mesh entity.
+            const auto *floor_material = fx.R.try_get<const AcousticMaterial>(floor_mesh);
+            expect(floor_material != nullptr && floor_material->Name == "TestMat") << "surface material";
+        };
+    }
+
+    // KHR_audio_rigid_bodies acoustic surfaces round-trip on their own, with a real texture reference.
+    // A body may supply only its finish, which is the floor-and-table case sustained contact needs.
+    if (const fs::path box_textured = SamplePath("external/glTF-Sample-Assets/Models/BoxTextured/glTF/BoxTextured.gltf"); fs::exists(box_textured)) {
+        test("audio_surface_round_trip") = [&] {
+            // Stage the asset so its external PNG sits beside the file this test writes back out.
+            const auto stage_dir = edit_root / "audio-surface";
+            const auto staged_gltf = StageSample(box_textured, stage_dir);
+
+            SceneFixture fx{vk_resources};
+            if (!load_or_skip(fx, staged_gltf, "BoxTextured load failed")) return;
+
+            const auto mesh_entity = first_mesh_node(fx.R).second;
+            expect(mesh_entity != entt::null) << "no mesh instance node in BoxTextured";
+            if (mesh_entity == entt::null) return;
+
+            const ContactSurface surface{
+                .Name = "Tiled floor",
+                .Roughness = 8e-6f,
+                .CorrelationLength = 8e-5f,
+                .SpectralSlope = -1.15f,
+                .Profile = {0.f, 1e-6f, -1e-6f, 0.5e-6f},
+                .SampleSpacing = 5e-6f,
+                // BoxTextured's material carries no normal map, so naming one is the override case, and its base color map stands in as the pixel source.
+                .NormalTexture = SurfaceNormalTexture{.Texture = 0, .TexCoord = 0, .Scale = 0.8f},
+            };
+            fx.R.emplace_or_replace<ContactSurface>(mesh_entity, surface);
+
+            // A texel spans a real distance along the surface, set by the mesh's own UV parameterization.
+            UpdateSurfaceRelief(fx.R, mesh_entity, true);
+            const auto *relief = fx.R.try_get<const SurfaceRelief>(mesh_entity);
+            expect(relief != nullptr) << "no mesoscale relief derived from the normal map";
+            if (relief) {
+                // The unit box carries one UV unit per face, so a texel of its 256-wide image spans about 4 mm of mesh-local surface.
+                // Texel size follows from the parameterization and the image width alone, so the stand-in map serves here.
+                expect(relief->Track->Spacing > 1e-3f && relief->Track->Spacing < 1e-2f) << "texel size";
+            }
+            // The track is mesh-local, so one derivation serves every node instancing the mesh and resizing a node leaves it alone.
+            // A contact scales it by the world scale of the node it is on, which is what lets two instances at different sizes share the track.
+            if (relief) {
+                const auto spacing = relief->Track->Spacing, rms = relief->Track->Rms;
+                for (auto e : fx.R.view<const Instance>()) {
+                    if (fx.R.get<const Instance>(e).Entity == mesh_entity) fx.R.patch<Transform>(e, [](Transform &t) { t.S = vec3{3.f}; });
+                }
+                ProcessComponentEvents(fx.R, fx.Viewport);
+                UpdateSurfaceRelief(fx.R, mesh_entity, true);
+                const auto *rescaled = fx.R.try_get<const SurfaceRelief>(mesh_entity);
+                expect(rescaled != nullptr) << "relief lost when the node was resized";
+                if (rescaled) {
+                    expect(NumberEq(rescaled->Track->Spacing, spacing)) << "node scale leaked into the track spacing";
+                    expect(NumberEq(rescaled->Track->Rms, rms)) << "node scale leaked into the track height";
+                }
+            }
+
+            const auto out_path = stage_dir / "audio_surface.gltf";
+            if (!save_or_skip(fx, out_path)) return;
+
+            {
+                simdjson::dom::parser p;
+                simdjson::dom::element doc;
+                expect(p.load(out_path.string()).get(doc) == simdjson::SUCCESS) << "emitted json failed to parse";
+
+                auto ext = doc["extensions"]["KHR_audio_rigid_bodies"];
+                simdjson::dom::array surfaces_json;
+                expect(ext["acousticSurfaces"].get_array().get(surfaces_json) == simdjson::SUCCESS) << "acousticSurfaces array missing";
+                expect(surfaces_json.size() == 1u) << "expected one surface";
+                simdjson::dom::element surface0;
+                expect(surfaces_json.at(0).get(surface0) == simdjson::SUCCESS) << "surface[0] missing";
+                expect(AccessorShapeIs(doc, surface0, "profile", "SCALAR", 4)) << "profile accessor shape";
+                uint64_t texture_index = ~0ull;
+                expect(surface0["normalTexture"]["index"].get_uint64().get(texture_index) == simdjson::SUCCESS && texture_index == 0u) << "normal texture index";
+                // A body with no modal model still carries the extension, referencing only its surface.
+                bool found_node = false;
+                for (auto n : doc["nodes"]) {
+                    uint64_t s;
+                    if (n["extensions"]["KHR_audio_rigid_bodies"]["acousticSurface"].get_uint64().get(s) != simdjson::SUCCESS) continue;
+                    found_node = true;
+                    expect(s == 0u) << "node surface index";
+                }
+                expect(found_node) << "no node instances the acoustic surface";
+            }
+
+            SceneFixture fx2{vk_resources};
+            if (!load_or_skip(fx2, out_path, "reload failed")) return;
+
+            entt::entity reloaded = entt::null;
+            for (auto e : fx2.R.view<const ContactSurface>()) reloaded = e;
+            expect(reloaded != entt::null) << "no contact surface after reload";
+            if (reloaded == entt::null) return;
+            const auto &rs = fx2.R.get<const ContactSurface>(reloaded);
+            expect(rs.Name == surface.Name) << "surface name diverged";
+            expect(NumberEq(rs.Roughness, surface.Roughness) && NumberEq(rs.CorrelationLength, surface.CorrelationLength) && NumberEq(rs.SpectralSlope, surface.SpectralSlope)) << "surface parameters diverged";
+            expect(rs.Profile.size() == surface.Profile.size()) << "profile length diverged";
+            for (size_t i = 0; i < rs.Profile.size() && i < surface.Profile.size(); ++i) {
+                expect(NumberEq(rs.Profile[i], surface.Profile[i])) << "profile sample diverged";
+            }
+            expect(NumberEq(rs.SampleSpacing, surface.SampleSpacing)) << "sample spacing diverged";
+            expect(rs.NormalTexture.has_value()) << "normal texture lost";
+            if (rs.NormalTexture) {
+                expect(rs.NormalTexture->Texture == 0u && rs.NormalTexture->TexCoord == 0u && NumberEq(rs.NormalTexture->Scale, 0.8)) << "normal texture info diverged";
+            }
+        };
+    }
+
+    // A surface with no normal map of its own inherits the one its material already carries, so an asset
+    // that renders with mesoscale structure sounds like it without the author restating the reference.
+    if (const fs::path normal_tangent = SamplePath("external/glTF-Sample-Assets/Models/NormalTangentTest/glTF/NormalTangentTest.gltf"); fs::exists(normal_tangent)) {
+        test("audio_surface_inherits_material_normal_map") = [&] {
+            const auto stage_dir = edit_root / "audio-surface-inherit";
+            const auto staged_gltf = StageSample(normal_tangent, stage_dir);
+
+            SceneFixture fx{vk_resources};
+            if (!load_or_skip(fx, staged_gltf, "NormalTangentTest load failed")) return;
+
+            const auto mesh_entity = first_mesh_node(fx.R).second;
+            expect(mesh_entity != entt::null) << "no mesh instance node in NormalTangentTest";
+            if (mesh_entity == entt::null) return;
+
+            // The material's normal map is texture 2, which resolves to its own source image.
+            const auto inherited = gltf::MeshMaterialNormalMap(fx.R, mesh_entity);
+            expect(inherited.has_value()) << "material normal map not resolved";
+            const auto expected_image = gltf::TextureImageIndex(fx.R, 2);
+            expect(expected_image.has_value()) << "material normal texture has no source image";
+            if (inherited && expected_image) expect(inherited->Image == *expected_image) << "wrong material normal map";
+
+            // The surface names no map of its own, so the relief comes from the material's.
+            fx.R.emplace_or_replace<ContactSurface>(mesh_entity, ContactSurface{.Name = "Inherited"});
+            UpdateSurfaceRelief(fx.R, mesh_entity, true);
+            const auto *relief = fx.R.try_get<const SurfaceRelief>(mesh_entity);
+            expect(relief != nullptr) << "no relief derived from the material's normal map";
+            // These are the relief's own properties, so they are asserted here, against a real tangent-space normal map.
+            if (relief) {
+                expect(relief->Track->Spacing > 0.f) << "texel size";
+                expect(relief->Track->Rms > 0.f) << "relief has no height";
+                expect(relief->Track->Heights.size() == relief->Track->Sum.size() - 1) << "relief track integral";
+            }
+
+            // Inheriting authors nothing: the emitted surface carries no normalTexture of its own.
+            const auto out_path = stage_dir / "audio_surface_inherit.gltf";
+            if (!save_or_skip(fx, out_path)) return;
+
+            simdjson::dom::parser p;
+            simdjson::dom::element doc;
+            expect(p.load(out_path.string()).get(doc) == simdjson::SUCCESS) << "emitted json failed to parse";
+            simdjson::dom::array surfaces_json;
+            expect(doc["extensions"]["KHR_audio_rigid_bodies"]["acousticSurfaces"].get_array().get(surfaces_json) == simdjson::SUCCESS) << "acousticSurfaces array missing";
+            expect(surfaces_json.size() == 1u) << "expected one surface";
+            simdjson::dom::element surface0;
+            expect(surfaces_json.at(0).get(surface0) == simdjson::SUCCESS) << "surface[0] missing";
+            expect(surface0["normalTexture"].error() != simdjson::SUCCESS) << "an inherited normal texture was written back out";
         };
     }
 }

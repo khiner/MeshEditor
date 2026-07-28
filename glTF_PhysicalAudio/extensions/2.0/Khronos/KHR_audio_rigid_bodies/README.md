@@ -220,7 +220,7 @@ The collision geometry supplies the third and coarsest level. Between them the t
 | **spectralSlope** | `number` | Exponent *p* of the roughness power spectrum, which varies as *q*^*p* with *q* the spatial frequency. The fractal dimension is *D* = *p*/2 + 2. | No, default: `-1.4` |
 | **profile** | `integer` | Accessor of measured surface heights along a track, in meters. | No |
 | **sampleSpacing** | `number` | Distance along the surface between consecutive `profile` samples, in meters. Required when `profile` is present. | No |
-| **normalTexture** | `object` | Tangent-space normal map giving the surface's mesoscale structure. | No |
+| **normalTexture** | `object` | Tangent-space normal map giving the surface's mesoscale structure. Defaults to the contacted primitive's material `normalTexture`. | No |
 | **material** | `integer` | The index of the acoustic material giving this surface's bulk elastic properties. | No |
 
 σ and *ℓ* together fix the surface's characteristic slope, which scales as σ/*ℓ* and is what a contact actually feels. *p* sets the balance of fine against coarse texture: more negative is smoother-sounding. Representative values for common finishes appear in [Authoring Notes](#authoring-notes).
@@ -231,11 +231,13 @@ The collision geometry supplies the third and coarsest level. Between them the t
 
 `normalTexture` is a [glTF 2.0 `normalTextureInfo`](https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html#reference-material-normaltextureinfo), carrying `index`, `texCoord`, and `scale`, and is interpreted exactly as the core material property of the same name: a tangent-space normal map whose X and Y components are scaled by `scale`.
 
-It is sampled along the contact path using the referenced texture coordinate set of the node's mesh, so it applies only to a node having a mesh with those coordinates. Texel size in meters follows from the mesh's texture coordinate parameterization, which converts the sampled normal into a slope per meter travelled.
+It is sampled along the contact path using the referenced texture coordinate set of the contacted mesh primitive, so it applies only to a node having a mesh with those coordinates. Texel size in meters follows from that primitive's texture coordinate parameterization, which converts the sampled normal into a slope per meter travelled. Because the map is bound to texture coordinates rather than to an absolute size, its features scale with the node, unlike the microscale parameters above.
 
-Authors SHOULD reference the same texture as the mesh's [material `normalTexture`](https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html#_material_normaltexture), so the structure that produces the sound is the structure that is visible. That correspondence is the point of describing this level at all.
+When `normalTexture` is absent, the [material `normalTexture`](https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html#_material_normaltexture) of the contacted primitive applies, with its `index`, `texCoord`, and `scale` taken together, so the structure that produces the sound is the structure that is visible. A surface SHOULD set `normalTexture` explicitly only to override that correspondence: to suppress a map whose relief is decorative rather than felt, such as printed graphics, or to supply structure the renderer does not show.
 
-The two scales add: a contact rides over the mesoscale relief with the microscale finish superimposed. A surface with no `normalTexture` is smooth at this level and reduces to its statistical finish, correct for a plain machined or cast surface.
+A mesh's materials and texture coordinate sets are both declared per primitive, so both resolve against the primitive containing the contact. Implementations that cannot locate a contact on the mesh MAY use any primitive of that mesh, which is exact for the single-material case.
+
+The two scales add: a contact rides over the mesoscale relief with the microscale finish superimposed. A surface with no `normalTexture` and no material one is smooth at this level and reduces to its statistical finish, correct for a plain machined or cast surface.
 
 ### Surface Profiles
 
@@ -392,7 +394,7 @@ A modal renderer already driving each mode with a sampled force pulse ([Excitati
 
 **F** MUST be applied as a vector, its normal part along **n̂** and its frictional part along the slip direction. Collapsing it to a scalar along **n̂** would make a tangential scrape and a normal press excite the modes identically, the direction blindness that [mode shapes](#sample-points) are vectors to avoid, and sliding surfaces are observed to develop contact forces in both directions, each driving its own response (Akay 2002). The frictional part vanishes with slip, so pure rolling needs no slip direction.
 
-The contact position is a function of time, and evaluating **φ**ₙ at the current position rather than holding it fixed for the duration of the contact is what makes timbre vary as a body is dragged across its surface. Implementations SHOULD evaluate it continuously, using the barycentric interpolation of [Sample Points](#sample-points) when the model supplies `indices` and blending between the nearest sample points otherwise. Nearest-point evaluation alone leaves the field piecewise constant over the sample points' Voronoi cells, which is acceptable for an impact but steps audibly each time a sustained contact crosses a cell boundary.
+The contact position is a function of time, and evaluating **φ**ₙ at the current position rather than holding it fixed for the duration of the contact varies the timbre as a body is dragged across its surface. Implementations SHOULD evaluate it continuously, using the barycentric interpolation of [Sample Points](#sample-points) when the model supplies `indices` and blending between the nearest sample points otherwise. Nearest-point evaluation alone leaves the field piecewise constant over the sample points' Voronoi cells, which is acceptable for an impact but steps audibly each time a sustained contact crosses a cell boundary.
 
 Because only the shape gains vary with position and the frequencies and decay rates are shared, this interpolation is exact in the sense that it never detunes a mode.
 
@@ -416,7 +418,9 @@ Vibration frequencies are not invariant under scaling. If the node's global scal
 
 Behavior is undefined whenever the node's global transform contains non-uniform scale: non-uniform scaling changes the object's mode shapes and frequencies in ways that cannot be recovered from precomputed data (and leaves the transform's rotation ill-defined). Authors requiring a non-uniformly scaled object bake the scale into the geometry and analyze the result.
 
-Acoustic surfaces are exempt. Their quantities are absolute physical lengths and MUST NOT be scaled by the node transform, because a finish does not change when an object is resized: a scaled-up polished sphere is still polished. Contact position and sweep speed are geometric and do transform.
+A surface's microscale quantities are exempt. `roughness`, `correlationLength`, `profile`, and `sampleSpacing` are absolute physical lengths and MUST NOT be scaled by the node transform, because a finish does not change when an object is resized: a scaled-up polished sphere is still polished. Contact position and sweep speed are geometric and do transform.
+
+`normalTexture` is the one surface quantity that does scale. It carries no absolute size, only a size in texture coordinates, so its features measure whatever the primitive's parameterization and the node's global scale make them: a scaled-up tiled floor has larger tiles, audibly as well as visibly. Implementations MUST derive its texel size in meters from the node's global scale in force at the contact, not from the scale the mesh was authored at, so that two nodes instancing one mesh at different sizes do not share one relief.
 
 ## Interaction with Other Extensions
 
@@ -432,7 +436,7 @@ An acoustic material is distinct from a physics material (friction, restitution)
 
 An acoustic surface's `roughness` is distinct from a render material's `roughness`, despite the shared word. That parameter describes optical microfacet statistics, is dimensionless, and is tuned by eye. This one is a physical length, is measured with a profilometer, and describes structure orders of magnitude coarser. Neither can be derived from the other.
 
-An acoustic surface's `normalTexture` is the opposite case: it is the same kind of data as the core material property, uses the same [`normalTextureInfo`](https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html#reference-material-normaltextureinfo) definition, and is meant to reference the same image. Sharing it is what makes a contact sound like the surface it is visibly crossing.
+An acoustic surface's `normalTexture` is the opposite case: it is the same kind of data as the core material property, uses the same [`normalTextureInfo`](https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html#reference-material-normaltextureinfo) definition, and defaults to the very same reference, so a contact sounds like the surface it is visibly crossing. The surface property overrides that default rather than establishing it.
 
 ## Scope and Exclusions
 

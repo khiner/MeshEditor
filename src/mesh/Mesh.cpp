@@ -136,6 +136,25 @@ std::optional<Mesh> TryGetMesh(const entt::registry &r, entt::entity e) {
 }
 bool HasMesh(const entt::registry &r, entt::entity e) { return r.all_of<MeshHandle>(e); }
 
+float LocalLengthPerUv(const entt::registry &r, entt::entity mesh_entity, uint32_t uv_set) {
+    const auto mesh = TryGetMesh(r, mesh_entity);
+    if (!mesh || uv_set >= MeshStore::MaxUvSets) return 0;
+    const auto uvs = r.ctx().get<const MeshStore>().GetCornerUvs(mesh->GetStoreId(), uv_set);
+    const auto corners = mesh->CreateTriangleIndices();
+    if (uvs.size() != corners.size() || corners.empty()) return 0;
+
+    double world_area = 0, uv_area = 0;
+    for (size_t t = 0; t + 2 < corners.size(); t += 3) {
+        const vec3 p0 = mesh->GetPosition(Mesh::VH{corners[t]});
+        const vec3 p1 = mesh->GetPosition(Mesh::VH{corners[t + 1]});
+        const vec3 p2 = mesh->GetPosition(Mesh::VH{corners[t + 2]});
+        world_area += 0.5 * double(glm::length(glm::cross(p1 - p0, p2 - p0)));
+        const vec2 a = uvs[t], b = uvs[t + 1], c = uvs[t + 2];
+        uv_area += 0.5 * std::abs(double((b.x - a.x) * (c.y - a.y) - (c.x - a.x) * (b.y - a.y)));
+    }
+    return uv_area > 0 ? float(std::sqrt(world_area / uv_area)) : 0.f;
+}
+
 he::VH Mesh::GetFromVertex(HH hh) const {
     assert(*hh < C->Halfedges.size());
     if (const auto opp = C->Halfedges[*hh].Opposite) return C->Halfedges[*opp].Vertex;

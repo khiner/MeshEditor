@@ -25,6 +25,14 @@ struct ModalSoundControls {
     // A physics collision sounds only when its impulse (kg·m/s) and approach speed (m/s) clear these floors.
     // They keep settling and micro-jitter contacts from buzzing.
     float MinContactImpulse{0.2f}, MinContactSpeed{0.1f};
+
+    // Sustained contact: two surfaces riding over one another drive the same modes for as long as they touch.
+    float SustainLevel{1.f}; // Level of the sustained-contact excitation.
+    float Coupling{1.f}; // How much of an object's own vibration modulates the contact separation.
+    float ContactDamping{1.f}; // Scale on the Hunt-Crossley dissipation the physics restitution implies.
+    uint32_t MaxVoices{16}; // Cap on simultaneous sustained-contact voices.
+    // A persisting contact sounds only once its slip or either sweep speed (m/s) clears its floor.
+    float MinSlipSpeed{0.005f}, MinSweepSpeed{0.005f};
 };
 
 enum class SoundVerticesModel {

@@ -336,3 +336,7 @@ private:
 Mesh GetMesh(const entt::registry &, entt::entity);
 std::optional<Mesh> TryGetMesh(const entt::registry &, entt::entity);
 bool HasMesh(const entt::registry &, entt::entity);
+
+// Surface length per texture coordinate unit, mesh-local, from its summed triangle area against the same triangles' area in texture coordinates.
+// A node instancing the mesh multiplies by its world scale to get meters. Zero when the mesh carries no coordinates for that set.
+float LocalLengthPerUv(const entt::registry &, entt::entity mesh_entity, uint32_t uv_set);

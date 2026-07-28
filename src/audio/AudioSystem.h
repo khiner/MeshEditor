@@ -26,6 +26,9 @@ void RemoveAudioComponents(entt::registry &, entt::entity sound_entity);
 // Draw the viewport-global audio synthesis controls.
 void DrawGlobalSynthControls(entt::registry &, entt::entity viewport);
 
+// Draw a live view of the audio model: what the bank holds, and where the fixed-size pools stand against demand.
+void DrawAudioDebug(const entt::registry &);
+
 // Rebuild the entity's ContactDynamics from its MassProperties, ModalModes, and mesh (surface curvature).
 // Removes ContactDynamics when the inputs are missing.
 void UpdateContactDynamics(entt::registry &, entt::entity sound_entity);

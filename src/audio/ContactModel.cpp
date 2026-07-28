@@ -32,17 +32,31 @@ double ReducedContactMass(const ContactDynamics &d, uint32_t i, vec3 impact_dire
     return 1.0 / inv_effective_mass;
 }
 
+double InvEffectiveModulus(const AcousticMaterialProperties &a, const AcousticMaterialProperties &b) {
+    return (1 - a.PoissonRatio * a.PoissonRatio) / a.YoungModulus + (1 - b.PoissonRatio * b.PoissonRatio) / b.YoungModulus;
+}
+
+double CombinedCurvature(double curvature_a, double curvature_b) { return std::max(curvature_a + curvature_b, 1e-6); }
+
+double ContactStiffness(double inv_effective_modulus, double combined_curvature) {
+    return 4.0 / 3.0 / inv_effective_modulus / std::sqrt(combined_curvature);
+}
+
+double ContactPatchRadius(double normal_force, double inv_effective_modulus, double combined_curvature) {
+    return std::cbrt(0.75 * std::max(normal_force, 0.0) * inv_effective_modulus / combined_curvature);
+}
+
+double StaticPenetration(double normal_force, double stiffness) {
+    return stiffness > 0 ? std::pow(std::max(normal_force, 0.0) / stiffness, 2.0 / 3.0) : 0.0;
+}
+
 double EstimateContactTime(const ContactDynamics &d, uint32_t i, vec3 impact_direction, double contact_speed, const AcousticMaterialProperties &m, const Impactor &impactor, double scale_ratio) {
     if (i >= d.Curvature.size() || d.Mass <= 0) return MinContactTime;
 
-    const auto &sm = impactor.Material;
     const double effective_mass = ReducedContactMass(d, i, impact_direction, impactor);
 
-    // Effective compliance and curvature: each combines the object's and the impactor's.
-    // Clamp curvature positive, since the object's can be flat or concave.
-    const double inv_effective_modulus =
-        (1 - m.PoissonRatio * m.PoissonRatio) / m.YoungModulus + (1 - sm.PoissonRatio * sm.PoissonRatio) / sm.YoungModulus;
-    const double curvature = std::max(double(d.Curvature[i]) + impactor.Curvature, 1e-6);
+    const double inv_effective_modulus = InvEffectiveModulus(m, impactor.Material);
+    const double curvature = CombinedCurvature(d.Curvature[i], impactor.Curvature);
     const double speed = std::max(std::abs(contact_speed), 1e-6);
 
     const double tau_baked = 2.87 * std::pow(std::pow(effective_mass * inv_effective_modulus, 2) * (curvature / speed), 0.2);
