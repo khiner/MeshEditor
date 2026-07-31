@@ -34,7 +34,7 @@ static constexpr float MicBarLengthMm = 1890 - 70; // Height of the microphone a
 static constexpr float MicLengthMm = 190.5, MicWidthMm = 22.352;
 // Listener point closest to the front-center of the object's hemisphere of microphone positions.
 static constexpr uint32_t CenteredListenerIndex = 263;
-// RealImpact meshes are Z-up; rotate to MeshEditor's Y-up frame and flip 180° so the object faces forward.
+// RealImpact meshes are Z-up. Rotates to MeshEditor's Y-up frame and flips 180° so the object faces forward.
 extern const quat ObjectRotationToYUp;
 
 struct ListenerPoint {

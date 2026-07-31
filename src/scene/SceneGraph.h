@@ -45,6 +45,15 @@ struct Children {
 mat4 GetParentDelta(const entt::registry &, entt::entity);
 entt::entity GetParentEntity(const entt::registry &, entt::entity);
 
+// The node's parent, or null at a root.
+entt::entity ParentOrNull(const entt::registry &, entt::entity);
+
+// The nearest of `e` and its ancestors that `pred` matches, or null_entity when none does.
+entt::entity FindAncestorIf(const entt::registry &r, entt::entity e, auto &&pred) {
+    for (; e != null_entity && !pred(e); e = ParentOrNull(r, e)) {}
+    return e;
+}
+
 // Build WorldTransform for `e`, and any ancestor still missing one, from local Transforms.
 void EnsureWorldTransform(entt::registry &, entt::entity);
 

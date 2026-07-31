@@ -17,6 +17,7 @@
 #include "audio/SoundVertices.h"
 #include "gizmo/GizmoInteraction.h"
 #include "gltf/GltfScene.h"
+#include "mesh/MeshBvh.h"
 #include "mesh/MeshStore.h"
 #include "mesh/Primitives.h"
 #include "mesh/TetMeshData.h"
@@ -29,6 +30,7 @@
 #include "physics/PhysicsSystem.h"
 #include "physics/PhysicsTypes.h"
 #include "render/DrawState.h"
+#include "render/GpuBufferOps.h"
 #include "render/GpuBuffers.h"
 #include "render/Instance.h"
 #include "render/LightComponents.h"
@@ -69,6 +71,22 @@ using std::views::iota;
 
 namespace {
 using namespace he;
+
+// Rebuild a mesh's derived geometry: closest-point hierarchy, per-vertex curvature, enclosed volume.
+// All three follow the mesh as it is edited.
+void UpdateMeshBvh(entt::registry &r, entt::entity mesh_entity) {
+    const auto indices = GetFaceIndices(r, r.get<const MeshBuffers>(mesh_entity));
+    // A mesh of points or lines has no surface.
+    if (indices.empty()) {
+        r.remove<MeshBvh>(mesh_entity);
+        return;
+    }
+    const auto mesh = GetMesh(r, mesh_entity);
+    auto bvh = BuildMeshBvh(mesh.GetVerticesSpan(), indices);
+    bvh.MeanCurvature = mesh.CalcMeanCurvatures();
+    bvh.EnclosedVolume = mesh.CalcEnclosedVolume();
+    r.emplace_or_replace<MeshBvh>(mesh_entity, std::move(bvh));
+}
 
 // Sort collected {BufferIndex, value} writes by index and flush them through the mutable span.
 // Returns whether anything was written.
@@ -1417,12 +1435,35 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
             request(RenderRequest::Submit);
         }
     }
+    // A body reports contacts anywhere on itself, so every mesh instanced under one answers closest-point queries.
+    // A mesh no body reaches any more loses its hierarchy.
+    if (!reactive<changes::PhysicsBodyMesh>(r).empty()) {
+        std::vector<entt::entity> demanded;
+        const auto is_body = [&r](entt::entity a) { return r.all_of<PhysicsBodyHandle>(a); };
+        for (const auto [node, inst] : r.view<const Instance>().each()) {
+            if (FindAncestorIf(r, node, is_body) != null_entity) demanded.push_back(inst.Entity);
+        }
+        std::ranges::sort(demanded);
+        const auto repeats = std::ranges::unique(demanded);
+        demanded.erase(repeats.begin(), repeats.end());
+        // The geometry pass below restates a hierarchy an edit invalidated, so one that already exists is left alone.
+        for (const auto mesh_entity : demanded) {
+            if (!r.all_of<MeshBvh>(mesh_entity)) UpdateMeshBvh(r, mesh_entity);
+        }
+        std::vector<entt::entity> unreached;
+        for (const auto mesh_entity : r.view<const MeshBvh>()) {
+            if (!std::ranges::binary_search(demanded, mesh_entity)) unreached.push_back(mesh_entity);
+        }
+        for (const auto mesh_entity : unreached) r.remove<MeshBvh>(mesh_entity);
+    }
     if (auto &tracker = reactive<changes::MeshGeometry>(r); !tracker.empty()) {
         // Vertex-arena positions feed the pose pre-pass, so geometry edits re-run the prelude.
         buffers.PreludeStale = true;
         const auto edit_mode = r.get<const EditMode>(viewport).Value;
         std::vector<ElementRange> geometry_ranges;
         for (auto mesh_entity : tracker) {
+            // Edited geometry restates the hierarchy of every mesh that has one.
+            if (r.all_of<MeshBvh>(mesh_entity)) UpdateMeshBvh(r, mesh_entity);
             if (r.get_or_emplace<SelectedInstanceCount>(mesh_entity).Value > 0) dirty_overlay_meshes.insert(mesh_entity);
             if (auto *br = r.try_get<MeshSelectionBitsetRange>(mesh_entity); br && edit_mode != Element::None) {
                 // Topology changed: zero stale selection bits and update count.
@@ -2114,6 +2155,8 @@ void RegisterSceneComponentHandlers(entt::registry &r) {
     track<changes::MeshShading>(r).on<MeshShadingDirty>(On::Create).on<MeshGeometryDirty>(On::Create);
     track<changes::MeshActiveElement>(r).on<MeshActiveElement>(On::Create | On::Update);
     track<changes::MeshGeometry>(r).on<MeshGeometryDirty>(On::Create);
+    // A collider appearing or going away changes which meshes a body reaches, as does the body itself.
+    track<changes::PhysicsBodyMesh>(r).on<PhysicsBodyHandle>(On::Create | On::Destroy).on<ColliderShape>(On::Create | On::Update | On::Destroy);
     track<changes::MeshMaterial>(r).on<MeshMaterialAssignment>(On::Create | On::Update);
     track<changes::SoundVertices>(r).on<SoundVertices>(On::Create | On::Destroy);
     track<changes::SoundVerticesUpdated>(r).on<SoundVertices>(On::Update);

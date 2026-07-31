@@ -28,23 +28,22 @@ struct ContactDynamics {
     double Mass{0}; // kg
     glm::mat3 InverseInertia{1}; // kg⁻¹·m⁻², about the center of mass
     std::vector<vec3> ContactArm; // per excitable vertex: contact point minus center of mass, meters
-    std::vector<float> Curvature; // per excitable vertex: mean surface curvature, 1/m
 };
 
 // The virtual mallet a strike models: a capsule (rounded-tip cylinder) of some material, striking on its cap.
 // Its mass is the material density times the capsule volume. A harder material or a lighter (shorter) capsule
-// brightens the strike; the tip radius sets the contact curvature.
+// brightens the strike, and the tip radius sets the contact curvature.
 struct Striker {
     AcousticMaterial Material{materials::acoustic::Steel};
-    float TipRadius{0.01f}; // m; cap radius, also the cylinder cross-section
-    float Length{0.19f}; // m; cylinder length (~0.5 kg of steel at the default radius)
+    float TipRadius{0.01f}; // Cap radius, also the cylinder cross-section, m
+    float Length{0.19f}; // Cylinder length, m (~0.5 kg of steel at the default radius)
 };
 
 // The impactor side of a Hertz contact: elastic compliance, tip curvature, and inverse mass. A strike's virtual
 // mallet and a colliding rigid body both reduce to this. InvMass 0 models an immovable impactor.
 struct Impactor {
     AcousticMaterialProperties Material{};
-    double Curvature{0}; // mean surface curvature at the contact, 1/m
+    double Curvature{0}; // Its contribution to the combined contact curvature 1/R*, 1/m
     double InvMass{0}; // kg⁻¹
 };
 
@@ -78,13 +77,15 @@ double ContactPatchRadius(double normal_force, double inv_effective_modulus, dou
 // Equilibrium penetration under load N: delta0 = (N/k)^(2/3), in meters.
 double StaticPenetration(double normal_force, double stiffness);
 
-// Hertz contact time in seconds for a strike at `excitable_index`, from the object and impactor at `contact_speed`,
-// scaled by `scale_ratio` for the object's current size.
-double EstimateContactTime(const ContactDynamics &, uint32_t excitable_index, vec3 impact_direction, double contact_speed, const AcousticMaterialProperties &object_material, const Impactor &, double scale_ratio);
+// Hertz contact time in seconds for a strike at `excitable_index`, from the object and impactor at `contact_speed`.
+// `object_curvature` is the object's contribution to the combined contact curvature 1/R* (1/m) where the strike lands,
+// and `scale_ratio` the object's current size.
+double EstimateContactTime(const ContactDynamics &, uint32_t excitable_index, vec3 impact_direction, double contact_speed, const AcousticMaterialProperties &object_material, double object_curvature, const Impactor &, double scale_ratio);
 
 // Bounds on the derived contact time (seconds), guarding degenerate curvature, speed, and scale.
 inline constexpr double MinContactTime = 2e-5, MaxContactTime = 5e-2;
 
 // Approach speed a physics material's restitution is taken to be quoted at, m/s.
-// Restitution varies with approach speed while the Hunt-Crossley dissipation constant stays fixed, so recovering that constant through e ~ 1 - alpha*v needs a reference speed.
+// Restitution varies with approach speed while the Hunt-Crossley dissipation constant stays fixed,
+// so recovering that constant through e ~ 1 - alpha*v needs a reference speed.
 inline constexpr float RestitutionReferenceSpeed = 1.f;

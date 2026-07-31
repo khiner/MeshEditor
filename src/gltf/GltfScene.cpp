@@ -2418,15 +2418,27 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
         acoustic_materials.reserve(asset.acousticMaterials.size());
         // Every field is optional, and a zero modulus or density would divide through the contact model, so an absent one falls back to the engine's default material.
         static constexpr auto MaterialDefaults = materials::acoustic::All.front().Properties;
+        // An out-of-range value is taken the same way an absent one is. Poisson's ratio at 0.5 divides by zero in
+        // Lame's lambda, a zero density or modulus divides through the contact model, and a negative damping
+        // coefficient turns a decay into growth.
+        const auto validated = [](const auto &value, double fallback, auto &&ok, std::string_view field, std::string_view name) {
+            const double v = value.value_or(fallback);
+            if (std::isfinite(v) && ok(v)) return v;
+            std::cerr << std::format("Warning: KHR_audio_rigid_bodies acoustic material '{}' has an invalid {} ({}); using {}.\n", name, field, v, fallback);
+            return fallback;
+        };
+        static constexpr auto positive = [](double v) { return v > 0; };
+        static constexpr auto non_negative = [](double v) { return v >= 0; };
         for (const auto &m : asset.acousticMaterials) {
+            const std::string name{m.name};
             acoustic_materials.emplace_back(AcousticMaterial{
-                .Name = std::string{m.name},
+                .Name = name,
                 .Properties = {
-                    .Density = m.density.value_or(MaterialDefaults.Density),
-                    .YoungModulus = m.youngsModulus.value_or(MaterialDefaults.YoungModulus),
-                    .PoissonRatio = m.poissonRatio.value_or(MaterialDefaults.PoissonRatio),
-                    .Alpha = m.alpha.value_or(MaterialDefaults.Alpha),
-                    .Beta = m.beta.value_or(MaterialDefaults.Beta),
+                    .Density = validated(m.density, MaterialDefaults.Density, positive, "density", name),
+                    .YoungModulus = validated(m.youngsModulus, MaterialDefaults.YoungModulus, positive, "youngsModulus", name),
+                    .PoissonRatio = validated(m.poissonRatio, MaterialDefaults.PoissonRatio, [](double v) { return v > -1 && v < 0.5; }, "poissonRatio", name),
+                    .Alpha = validated(m.alpha, MaterialDefaults.Alpha, non_negative, "alpha", name),
+                    .Beta = validated(m.beta, MaterialDefaults.Beta, non_negative, "beta", name),
                 },
             });
         }
@@ -2439,6 +2451,7 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
         };
         const auto read_scalars = [&](size_t i) { return read_accessor.template operator()<float>(i); };
         const auto read_vec3s = [&](size_t i) { return read_accessor.template operator()<vec3>(i); };
+        const auto read_indices = [&](size_t i) { return read_accessor.template operator()<uint32_t>(i); };
 
         // Every accessor value has to be finite, since a resonator's state never recovers from a non-finite frequency, decay, or shape.
         const auto all_finite = [](const auto &values) {
@@ -2460,8 +2473,12 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
             const auto decay_rates = read_scalars(*decays);
             const auto shapes_flat = read_vec3s(*shapes);
             const uint32_t n_modes = modes.Freqs.size(), n_points = modes.Positions.size();
-            if (n_modes == 0 || n_points == 0 || decay_rates.size() != n_modes || shapes_flat.size() < size_t(n_modes) * n_points) return {};
+            if (n_modes == 0 || n_points == 0 || decay_rates.size() != n_modes || shapes_flat.size() != size_t(n_modes) * n_points) return {};
             if (!all_finite(modes.Freqs) || !all_finite(decay_rates) || !all_finite(modes.Positions) || !all_finite(shapes_flat)) return {};
+            // The spec forbids a frequency at or below zero, and a negative decay rate grows without bound.
+            // The shape block is indexed by mode, so one malformed mode invalidates the whole model.
+            if (std::ranges::any_of(modes.Freqs, [](float f) { return f <= 0; })) return {};
+            if (std::ranges::any_of(decay_rates, [](float d) { return d < 0; })) return {};
 
             modes.T60s.resize(n_modes);
             for (uint32_t k = 0; k < n_modes; ++k) modes.T60s[k] = decay_rates[k] > 0 ? float(Ln1000 / decay_rates[k]) : 0.f;
@@ -2469,6 +2486,12 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
             modes.Shapes.assign(n_points, std::vector<vec3>(n_modes));
             for (uint32_t mode = 0; mode < n_modes; ++mode) {
                 for (uint32_t i = 0; i < n_points; ++i) modes.Shapes[i][mode] = shapes_flat[mode * n_points + i];
+            }
+            // The sample surface is optional, and is dropped unless it describes whole triangles over the model's own sample points.
+            if (const auto indices = ToIndex(m.indices, accessors)) {
+                auto tris = read_indices(*indices);
+                if (tris.size() % 3 == 0 && std::ranges::all_of(tris, [n_points](uint32_t i) { return i < n_points; })) modes.Indices = std::move(tris);
+                else std::cerr << std::format("Warning: KHR_audio_rigid_bodies modal model '{}' has sample surface indices outside its sample points; ignoring them.\n", std::string{m.name});
             }
             modes.OriginalFundamentalFreq = modes.Freqs.front();
             return modes;
@@ -2479,7 +2502,7 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
         for (const auto &m : asset.modalModels) {
             models.emplace_back(read_model(m));
             if (models.back().Freqs.empty()) {
-                std::cerr << std::format("Warning: KHR_audio_rigid_bodies modal model '{}' does not match its accessors; ignoring it.\n", std::string{m.name});
+                std::cerr << std::format("Warning: KHR_audio_rigid_bodies modal model '{}' has accessors that do not match, or a frequency at or below zero, or a negative decay rate; ignoring it.\n", std::string{m.name});
             }
         }
 
@@ -4498,7 +4521,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
                 .decayRates = AddDataAccessor(std::span<const float>(decay_rates), fastgltf::AccessorType::Scalar, fastgltf::ComponentType::Float),
                 .positions = AddDataAccessor(std::span<const vec3>(modes->Positions), fastgltf::AccessorType::Vec3, fastgltf::ComponentType::Float),
                 .shapes = AddDataAccessor(std::span<const vec3>(shapes), fastgltf::AccessorType::Vec3, fastgltf::ComponentType::Float),
-                .indices = {},
+                .indices = modes->Indices.empty() ? fastgltf::Optional<size_t>{} : fastgltf::Optional<size_t>{AddDataAccessor(std::span<const uint32_t>(modes->Indices), fastgltf::AccessorType::Scalar, fastgltf::ComponentType::UnsignedInt)},
                 .material = acoustic_material_index,
                 .massProperties = {},
                 .name = ToFgStr(node_name),

@@ -502,7 +502,10 @@ ModalModes ComputeModes(
             for (uint vi = 0; vi < vertex_dim; ++vi) shapes[ex_pos][mode][vi] = eigenvectors(ev_i + vi, mode);
         }
     }
-    summary_out = {{eigenvalues.begin(), eigenvalues.end()}, shapes, opts.Material, 0};
+    // The caller fills in the rest, which records what the solve was asked for.
+    summary_out.Eigenvalues = {eigenvalues.begin(), eigenvalues.end()};
+    summary_out.Shapes = shapes;
+    summary_out.SolvedMaterial = opts.Material;
     if (basis_out) *basis_out = eigenvectors.cast<float>();
 
     return modal::PostprocessModes(summary_out.Eigenvalues, shapes, 1.f, opts.Material, config, std::move(opts.Positions));
@@ -573,7 +576,15 @@ ModalModes modal::PostprocessModes(std::span<const double> eigenvalues, const st
         for (uint mode = 0; mode < n_modes; ++mode) out_shapes[ex_pos][mode] = shapes[ex_pos][mode + lowest_mode_i] * shape_scale;
     }
 
-    return {std::move(mode_freqs), std::move(mode_t60s), std::move(out_shapes), {}, std::move(positions), lowest_mode_freq_orig};
+    return {
+        .Freqs = std::move(mode_freqs),
+        .T60s = std::move(mode_t60s),
+        .Shapes = std::move(out_shapes),
+        .Vertices = {},
+        .Positions = std::move(positions),
+        .Indices = {},
+        .OriginalFundamentalFreq = lowest_mode_freq_orig,
+    };
 }
 
 std::optional<ModalModes> modal::RescaleModes(const ModalEigenSummary &summary, const ModalModes &current, const AcousticMaterialProperties &material, SolverConfig config) {
@@ -586,6 +597,7 @@ std::optional<ModalModes> modal::RescaleModes(const ModalEigenSummary &summary, 
 
     auto modes = PostprocessModes(eigenvalues, summary.Shapes, float(1 / std::sqrt(rho_ratio)), material, config, current.Positions);
     modes.Vertices = current.Vertices;
+    modes.Indices = current.Indices;
     modes.BakedScale = current.BakedScale;
     return modes;
 }
@@ -604,23 +616,32 @@ modal::ModalResult modal::mesh2modes(const TetMesh &input_tets, const AcousticMa
     if (monitor && monitor->Cancelled()) return {};
 
     // Sample each excitation position at its nearest tet point, recovering node-local coordinates.
-    auto [excite_points, positions] = Timed(profile.SampleExcite, [&] {
+    // A point reached by more than one position carries one shape vector, so those positions become one sample point.
+    auto [excite_points, positions, sample_point_of] = Timed(profile.SampleExcite, [&] {
         const dvec3 inv_scale{1.0 / baked_scale.x, 1.0 / baked_scale.y, 1.0 / baked_scale.z};
-        std::vector<uint> points(excite_positions.size());
-        std::vector<vec3> local(excite_positions.size());
+        std::vector<uint> points;
+        std::vector<vec3> local;
+        std::vector<uint32_t> remap(excite_positions.size());
+        std::unordered_map<uint, uint32_t> sample_point_at; // Tet point to the sample point that first reached it.
         for (size_t i = 0; i < excite_positions.size(); ++i) {
             const dvec3 p{excite_positions[i]};
             double best = std::numeric_limits<double>::max();
+            uint nearest = 0;
             for (uint v = 0; v < uint(tets.Points.size()); ++v) {
                 const auto &q = tets.Points[v];
                 if (const double d = glm::distance2(p, q); d < best) {
                     best = d;
-                    points[i] = v;
+                    nearest = v;
                 }
             }
-            local[i] = vec3{tets.Points[points[i]] * inv_scale};
+            const auto [entry, first] = sample_point_at.emplace(nearest, uint32_t(points.size()));
+            if (first) {
+                points.push_back(nearest);
+                local.push_back(vec3{tets.Points[nearest] * inv_scale});
+            }
+            remap[i] = entry->second;
         }
-        return std::pair{std::move(points), std::move(local)};
+        return std::tuple{std::move(points), std::move(local), std::move(remap)};
     });
     ModalEigenSummary summary;
     Eigen::MatrixXf basis;
@@ -633,5 +654,5 @@ modal::ModalResult modal::mesh2modes(const TetMesh &input_tets, const AcousticMa
                                                            .Monitor = monitor,
                                                        },
                               profile, summary, reuse.KeepBasis ? &basis : nullptr);
-    return {std::move(modes), std::move(mass_props), profile, std::move(summary), std::move(basis)};
+    return {std::move(modes), std::move(mass_props), profile, std::move(summary), std::move(basis), std::move(sample_point_of)};
 }

@@ -34,6 +34,11 @@ entt::entity GetParentEntity(const entt::registry &r, entt::entity e) {
     return e;
 }
 
+entt::entity ParentOrNull(const entt::registry &r, entt::entity e) {
+    const auto p = GetParentEntity(r, e);
+    return p == e ? entt::null : p;
+}
+
 void ClearParent(entt::registry &r, entt::entity child) {
     if (child == entt::null || !r.all_of<SceneNode>(child)) return;
 

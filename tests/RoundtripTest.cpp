@@ -858,17 +858,19 @@ const ModalModelData SampleModal{
     .Modes = {
         .Freqs = {110.f, 275.5f},
         .T60s = {1.5f, 0.8f},
-        .Shapes = {{{0.1f, 0.2f, -0.3f}, {0.02f, -0.11f, 0.4f}}, {{-0.2f, 0.15f, 0.25f}, {0.3f, 0.1f, -0.2f}}},
-        .Vertices = {0, 1},
-        .Positions = {{0.f, 0.f, 0.f}, {0.4f, -0.2f, 0.1f}},
+        .Shapes = {{{0.1f, 0.2f, -0.3f}, {0.02f, -0.11f, 0.4f}}, {{-0.2f, 0.15f, 0.25f}, {0.3f, 0.1f, -0.2f}}, {{0.05f, -0.3f, 0.12f}, {-0.4f, 0.22f, 0.07f}}},
+        .Vertices = {0, 1, 2},
+        .Positions = {{0.f, 0.f, 0.f}, {0.4f, -0.2f, 0.1f}, {-0.1f, 0.5f, 0.3f}},
+        .Indices = {0, 1, 2},
     },
     .Mass = {2.5, {0.1f, 0.2f, 0.3f}, {0.4f, 0.5f, 0.6f}, {1.f, 0.f, 0.f, 0.f}},
     .Tets = {{{0.f, 0.f, 0.f}, {1.f, 0.f, 0.f}}, {0, 1}},
     .Summary = {
         .Eigenvalues = {4.7e5, 3.0e6},
-        .Shapes = {{{0.1f, 0.2f, -0.3f}, {0.02f, -0.11f, 0.4f}}, {{-0.2f, 0.15f, 0.25f}, {0.3f, 0.1f, -0.2f}}},
+        .Shapes = {{{0.1f, 0.2f, -0.3f}, {0.02f, -0.11f, 0.4f}}, {{-0.2f, 0.15f, 0.25f}, {0.3f, 0.1f, -0.2f}}, {{0.05f, -0.3f, 0.12f}, {-0.4f, 0.22f, 0.07f}}},
         .SolvedMaterial = materials::acoustic::Ceramic.Properties,
         .TetInputsHash = 0x1234abcd,
+        .SolvedVertices = {0, 1, 2},
     },
 };
 } // namespace
@@ -1190,11 +1192,13 @@ int main(int argc, const char **argv) {
             ModalModes modes;
             modes.Freqs = {110.f, 275.5f, 431.2f};
             modes.T60s = {1.5f, 0.8f, 0.32f};
-            modes.Positions = {{0.f, 0.f, 0.f}, {0.4f, -0.2f, 0.1f}};
+            modes.Positions = {{0.f, 0.f, 0.f}, {0.4f, -0.2f, 0.1f}, {-0.1f, 0.5f, 0.3f}};
             modes.Shapes = {
                 {{0.1f, 0.2f, -0.3f}, {0.02f, -0.11f, 0.4f}, {-0.05f, 0.06f, 0.07f}},
                 {{-0.2f, 0.15f, 0.25f}, {0.3f, 0.1f, -0.2f}, {0.01f, -0.02f, 0.03f}},
+                {{0.05f, -0.3f, 0.12f}, {-0.4f, 0.22f, 0.07f}, {0.08f, 0.09f, -0.01f}},
             };
+            modes.Indices = {0, 1, 2};
             modes.OriginalFundamentalFreq = modes.Freqs.front();
             fx.R.emplace<ModalModes>(node, modes);
             fx.R.emplace<ModalGain>(node, ModalGain{0.6f});
@@ -1227,8 +1231,9 @@ int main(int argc, const char **argv) {
                 expect(models_json.at(0).get(model0) == simdjson::SUCCESS) << "model[0] missing";
                 expect(AccessorShapeIs(doc, model0, "frequencies", "SCALAR", 3)) << "frequencies accessor shape";
                 expect(AccessorShapeIs(doc, model0, "decayRates", "SCALAR", 3)) << "decayRates accessor shape";
-                expect(AccessorShapeIs(doc, model0, "positions", "VEC3", 2)) << "positions accessor shape";
-                expect(AccessorShapeIs(doc, model0, "shapes", "VEC3", 6)) << "shapes accessor shape (mode-major M*P)";
+                expect(AccessorShapeIs(doc, model0, "positions", "VEC3", 3)) << "positions accessor shape";
+                expect(AccessorShapeIs(doc, model0, "shapes", "VEC3", 9)) << "shapes accessor shape (mode-major M*P)";
+                expect(AccessorShapeIs(doc, model0, "indices", "SCALAR", 3)) << "indices accessor shape";
 
                 // A node carries the extension referencing the model.
                 bool found_node = false;
@@ -1263,6 +1268,7 @@ int main(int argc, const char **argv) {
             for (size_t i = 0; i < rm.Positions.size() && i < modes.Positions.size(); ++i) {
                 expect(Vec3Eq(rm.Positions[i], modes.Positions[i])) << "position diverged";
             }
+            expect(rm.Indices == modes.Indices) << "sample surface indices diverged";
             expect(rm.Shapes.size() == modes.Shapes.size()) << "shape point count diverged";
             for (size_t p = 0; p < rm.Shapes.size() && p < modes.Shapes.size(); ++p) {
                 expect(rm.Shapes[p].size() == modes.Shapes[p].size()) << "shape mode count diverged";

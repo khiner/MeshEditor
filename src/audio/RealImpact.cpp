@@ -159,7 +159,7 @@ std::array<LoadedSample, NumImpactVertices> LoadSamples(const fs::path &director
         const size_t advance_frames = (i == 0 ? listener_point_index : (NumListenerPoints - 1)) * frames_per_impact;
         auto frames = npy::read_npy<float>(stream, header, advance_frames, frames_per_impact).data;
         max_sample = std::max(max_sample, std::abs(*max_element(frames, [](auto a, auto b) { return std::abs(a) < std::abs(b); })));
-        // Synthetic key — never opened as a real file; unique per (directory, listener, impact).
+        // Synthetic key, never opened as a real file, unique per (directory, listener, impact).
         auto key = fs::path{std::format("realimpact://{}/li{}_impact{}", directory.string(), listener_point_index, i)};
         all_samples[i] = {std::move(key), std::move(frames)};
     }

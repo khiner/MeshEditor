@@ -18,6 +18,9 @@ struct AudioDeviceResource {
     entt::entity Viewport;
 
     uint32_t SampleRate{0}; // Negotiated output rate.
+    // The scheduling group the device's IO thread belongs to, for threads rendering alongside it.
+    // Null when the host publishes none.
+    void *RenderWorkgroup{nullptr};
     std::vector<std::string> OutDeviceNames;
     std::vector<uint32_t> NativeSampleRates;
     bool Initialized{false};

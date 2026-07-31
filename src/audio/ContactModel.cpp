@@ -50,13 +50,13 @@ double StaticPenetration(double normal_force, double stiffness) {
     return stiffness > 0 ? std::pow(std::max(normal_force, 0.0) / stiffness, 2.0 / 3.0) : 0.0;
 }
 
-double EstimateContactTime(const ContactDynamics &d, uint32_t i, vec3 impact_direction, double contact_speed, const AcousticMaterialProperties &m, const Impactor &impactor, double scale_ratio) {
-    if (i >= d.Curvature.size() || d.Mass <= 0) return MinContactTime;
+double EstimateContactTime(const ContactDynamics &d, uint32_t i, vec3 impact_direction, double contact_speed, const AcousticMaterialProperties &m, double object_curvature, const Impactor &impactor, double scale_ratio) {
+    if (i >= d.ContactArm.size() || d.Mass <= 0) return MinContactTime;
 
     const double effective_mass = ReducedContactMass(d, i, impact_direction, impactor);
 
     const double inv_effective_modulus = InvEffectiveModulus(m, impactor.Material);
-    const double curvature = CombinedCurvature(d.Curvature[i], impactor.Curvature);
+    const double curvature = CombinedCurvature(object_curvature, impactor.Curvature);
     const double speed = std::max(std::abs(contact_speed), 1e-6);
 
     const double tau_baked = 2.87 * std::pow(std::pow(effective_mass * inv_effective_modulus, 2) * (curvature / speed), 0.2);

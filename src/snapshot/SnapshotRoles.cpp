@@ -25,6 +25,7 @@
 #include "gizmo/GizmoInteraction.h"
 #include "gltf/GltfScene.h"
 #include "mesh/Mesh.h"
+#include "mesh/MeshBvh.h"
 #include "mesh/MeshComponents.h"
 #include "mesh/PrimitiveType.h"
 #include "mesh/TetMeshData.h"
@@ -151,7 +152,7 @@ using Derived = type_list<
     MorphWeightGpuRange, AdditiveBoxSelectBaseline, SelectionBitsDirty, ElementStatesDirty, PendingEditElementClick, OverlayExtra, OverlayVertexStoreId,
     PendingBoxSelect, PendingPick, PendingTextureUploads, SelectionBitsetRef, BoxSelectState, SelectedInstanceCount, PlaybackFrame,
     PhysicsCacheInvalid, RotationUiVariant, RotationUiDriving, GizmoInteraction, PendingTransform, StartScreenTransform,
-    SoundVertices, ContactDynamics, SurfaceRelief, SurfaceFinishKey, ReportContacts>;
+    SoundVertices, ContactDynamics, SurfaceRelief, SurfaceFinishKey, ReportContacts, MeshBvh>;
 
 // Trivially copyable, but the raw object bytes are nondeterministic: a std::variant's inactive alternative or a
 // std::optional's disengaged storage holds uninitialized memory, and struct padding is never written. memcpy would

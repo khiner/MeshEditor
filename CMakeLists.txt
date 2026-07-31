@@ -197,7 +197,7 @@ if(MESHEDITOR_APP)
 
     target_include_directories(${PROJECT_NAME} PRIVATE ${EIGEN3_INCLUDE_DIR})
     if(APPLE)
-        target_link_libraries(${PROJECT_NAME} PRIVATE "-framework Accelerate")
+        target_link_libraries(${PROJECT_NAME} PRIVATE "-framework Accelerate" "-framework CoreAudio")
     endif()
 
     target_link_libraries(${PROJECT_NAME} PRIVATE SDL3::SDL3 ${Vulkan_LIBRARIES} GPUOpen::VulkanMemoryAllocator ${SHADERC_LIB} meshoptimizer PkgConfig::FFTW3F lunasvg fastgltf::fastgltf simdjson::simdjson basisu_transcoder Jolt webp)

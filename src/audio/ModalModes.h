@@ -10,6 +10,9 @@ struct ModalModes {
     std::vector<std::vector<vec3>> Shapes; // Mass-normalized mode shape vectors by [excitation position][mode]
     std::vector<uint32_t> Vertices; // Mesh vertex indices corresponding to each excitation position in Shapes
     std::vector<vec3> Positions; // Node-local sample point positions, one per excitation position in Shapes
+    // Triangles over the sample points, three indices per triangle, forming the surface mode shapes interpolate over.
+    // Empty when there is none.
+    std::vector<uint32_t> Indices;
     float OriginalFundamentalFreq{Freqs.empty() ? 0 : Freqs.front()}; // Unscaled fundamental frequency, directly from FEM
     vec3 BakedScale{1.f}; // Node world-scale the modes were baked at. Later uniform scale changes retune relative to this.
 

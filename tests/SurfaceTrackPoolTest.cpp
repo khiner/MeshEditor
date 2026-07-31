@@ -28,11 +28,19 @@ void FillPool(ModalAudio &m) {
     expect(FilledSlots(m) == size_t(ModalAudio::MaxSurfaceTracks));
 }
 
-// A contact event naming one pool slot, so a test can queue work the audio thread has not consumed.
-ModalEvent ContactOn(int32_t slot) {
-    ModalEvent e{.Kind = ModalEventKind::Contact};
-    e.Contact.Tracks[0].Index = slot;
-    return e;
+// Publish one contact naming one pool slot, so a test can hold a slot the audio thread has not adopted yet.
+void PublishContactOn(ModalAudio &m, int32_t slot) {
+    auto &set = NextVoiceSet(m);
+    set.Voices.emplace_back(1, 0).State.Tracks[0].Index = slot;
+    PublishVoiceSet(m);
+}
+
+// Publish nothing until every set the audio thread could hold has rotated out.
+void PublishNothing(ModalAudio &m) {
+    for (size_t i = 0; i < m.VoiceSets.size(); ++i) {
+        NextVoiceSet(m);
+        PublishVoiceSet(m);
+    }
 }
 
 // Fill the pool, pin one slot the way `pin` says, and check a full frame of fresh adoptions leaves that slot alone.
@@ -106,21 +114,21 @@ int main() {
         ExpectPinnedSlotSurvives([](ModalAudio &m, uint32_t slot) { m.VoiceTrackMask.store(1ull << slot); });
     };
 
-    "a slot a queued event names is never taken"_test = [] {
-        // The event is enqueued and the audio thread has not consumed it, so no voice names the slot yet.
-        ExpectPinnedSlotSurvives([](ModalAudio &m, uint32_t slot) { EnqueueModalEvent(m, ContactOn(int32_t(slot))); });
+    "a slot a published contact names is never taken"_test = [] {
+        // The set is published and the audio thread has not adopted it, so no voice names the slot yet.
+        ExpectPinnedSlotSurvives([](ModalAudio &m, uint32_t slot) { PublishContactOn(m, int32_t(slot)); });
     };
 
-    "a consumed event stops pinning its slot"_test = [] {
+    "a contact that stops being published stops pinning its slot"_test = [] {
         ModalAudio m;
         BeginSurfaceTrackFrame(m);
         FillPool(m);
         const auto pinned = m.SurfaceTrackSlotByKey.at(1);
 
-        EnqueueModalEvent(m, ContactOn(int32_t(pinned)));
-        // The audio thread consumes it and reports that its voice ended.
-        m.EventRead.store(m.EventWrite.load());
+        PublishContactOn(m, int32_t(pinned));
+        // The audio thread adopts it and reports that its voice ended, and the set itself rotates out.
         m.VoiceTrackMask.store(0);
+        PublishNothing(m);
         BeginSurfaceTrackFrame(m);
         expect(AdoptSurfaceTrack(m, 999, [] { return TrackWith(9.f); }) >= 0);
         expect(!m.SurfaceTrackSlotByKey.contains(1));

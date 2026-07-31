@@ -41,7 +41,7 @@ double ModalDensityRatio(const entt::registry &, entt::entity sound_entity);
 void ApplyModalModel(entt::registry &, entt::entity sound_entity, const std::filesystem::path &relative_path);
 
 // Draw the Audio controls for a sound object entity (has SoundVerticesModel).
-// `selection_bits` is the raw SelectionBitset pointer (used in Edit mode for SampleOpVertices); may be null.
+// `selection_bits` is the raw SelectionBitset pointer, read in Edit mode only, and may be null.
 void DrawObjectAudioControls(
     entt::registry &, entt::entity viewport, entt::entity sound_entity, entt::entity mesh_entity,
     const uint32_t *selection_bits
@@ -51,9 +51,9 @@ void DrawObjectAudioControls(
 // lower-left corner. Call inside the viewport window.
 void DrawModalJobsOverlay(entt::registry &);
 
-// {path, frames} pair — path is an fs::path used as a dedup key in the scene-level sample store.
-// For on-disk audio this is the absolute file path; for synthetic sources (e.g. RealImpact) it is a
-// URI-style virtual key (see RealImpact::LoadSamples) that cannot be mistaken for a real file.
+// {path, frames} pair, where path is the dedup key in the scene-level sample store.
+// On-disk audio uses its absolute file path. A synthetic source (e.g. RealImpact) uses a URI-style
+// virtual key that cannot be mistaken for a real file.
 using LoadedSample = std::pair<std::filesystem::path, std::vector<float>>;
 
 // Assign sample[i] to mesh_vertices[i]. Used by RealImpact initial load and mic swap.
@@ -65,7 +65,7 @@ void SetVertexSamples(
 
 // Assign one sample (path + frames) to every mesh vertex in `mesh_vertices`.
 // Creates SoundVertices / VertexSamples / SoundVerticesModel::Samples if missing.
-// The sample store deduplicates by path; existing entries are reused and refcounted.
+// The sample store deduplicates by path, reusing and refcounting existing entries.
 void AssignVertexSample(
     entt::registry &, entt::entity viewport, entt::entity sound_entity,
     std::span<const uint32_t> mesh_vertices, std::filesystem::path, std::vector<float> &&frames

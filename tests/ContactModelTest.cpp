@@ -1,15 +1,13 @@
 #include "audio/ContactModel.h"
 #include "audio/AcousticMaterialProperties.h"
 
-#include <boost/ut.hpp>
+#include "Near.h"
 
-#include <cmath>
+#include <boost/ut.hpp>
 
 using namespace boost::ut;
 
 namespace {
-bool Near(double a, double b, double rel = 1e-6) { return std::abs(a - b) <= rel * std::max(1.0, std::abs(b)); }
-
 // A striker whose mass, stiffness, and tip curvature all vanish from the harmonic sums, recovering the pure
 // object-side Hertz contact (an infinitely heavy, hard, flat striker). Lets the formula tests stay object-only.
 constexpr Striker NullStriker{
@@ -38,10 +36,10 @@ int main() {
         d.Mass = 1.0;
         d.InverseInertia = glm::mat3{1.0f};
         d.ContactArm = {vec3{0}}; // strike through the center of mass: effective mass is the total mass
-        d.Curvature = {100.f}; // 1/m
+        constexpr double curvature = 100; // 1/m
         const AcousticMaterialProperties mat{.Density = 1000, .YoungModulus = 1e9, .PoissonRatio = 0.3, .Alpha = 0, .Beta = 0};
 
-        const double tau = EstimateContactTime(d, 0, vec3{0, 0, 1}, 1.0, mat, StrikerImpactor(NullStriker), 1.0);
+        const double tau = EstimateContactTime(d, 0, vec3{0, 0, 1}, 1.0, mat, curvature, StrikerImpactor(NullStriker), 1.0);
         // Hand-computed: 2.87 * ((1*(1-0.09)/1e9)^2 * 100)^0.2 ~= 1.744e-3 s.
         expect(Near(tau, 1.744e-3, 2e-2));
     };
@@ -50,7 +48,7 @@ int main() {
         ContactDynamics base;
         base.Mass = 1.0;
         base.InverseInertia = glm::mat3{1.0f};
-        base.Curvature = {100.f};
+        constexpr double curvature = 100; // 1/m
         const AcousticMaterialProperties mat{.Density = 1000, .YoungModulus = 1e9, .PoissonRatio = 0.3, .Alpha = 0, .Beta = 0};
 
         auto centered = base;
@@ -58,8 +56,8 @@ int main() {
         auto offset = base;
         offset.ContactArm = {vec3{0.2f, 0, 0}}; // lever arm perpendicular to a z-strike
 
-        const double tau_center = EstimateContactTime(centered, 0, vec3{0, 0, 1}, 1.0, mat, StrikerImpactor(NullStriker), 1.0);
-        const double tau_offset = EstimateContactTime(offset, 0, vec3{0, 0, 1}, 1.0, mat, StrikerImpactor(NullStriker), 1.0);
+        const double tau_center = EstimateContactTime(centered, 0, vec3{0, 0, 1}, 1.0, mat, curvature, StrikerImpactor(NullStriker), 1.0);
+        const double tau_offset = EstimateContactTime(offset, 0, vec3{0, 0, 1}, 1.0, mat, curvature, StrikerImpactor(NullStriker), 1.0);
         // Lower effective mass shortens the contact.
         expect(tau_offset < tau_center);
     };
@@ -69,16 +67,16 @@ int main() {
         d.Mass = 1.0;
         d.InverseInertia = glm::mat3{1.0f};
         d.ContactArm = {vec3{0}};
-        d.Curvature = {100.f};
+        constexpr double curvature = 100; // 1/m
         const AcousticMaterialProperties mat{.Density = 1000, .YoungModulus = 1e9, .PoissonRatio = 0.3, .Alpha = 0, .Beta = 0};
 
-        const double tau1 = EstimateContactTime(d, 0, vec3{0, 0, 1}, 1.0, mat, StrikerImpactor(NullStriker), 1.0);
-        const double tau2 = EstimateContactTime(d, 0, vec3{0, 0, 1}, 1.0, mat, StrikerImpactor(NullStriker), 2.0);
+        const double tau1 = EstimateContactTime(d, 0, vec3{0, 0, 1}, 1.0, mat, curvature, StrikerImpactor(NullStriker), 1.0);
+        const double tau2 = EstimateContactTime(d, 0, vec3{0, 0, 1}, 1.0, mat, curvature, StrikerImpactor(NullStriker), 2.0);
         expect(Near(tau2, 2 * tau1, 1e-6)); // tau scales linearly with size, in range
 
         // Large scale saturates at the max, tiny scale at the min.
-        expect(Near(EstimateContactTime(d, 0, vec3{0, 0, 1}, 1.0, mat, StrikerImpactor(NullStriker), 100.0), MaxContactTime));
-        expect(Near(EstimateContactTime(d, 0, vec3{0, 0, 1}, 1.0, mat, StrikerImpactor(NullStriker), 1e-6), MinContactTime));
+        expect(Near(EstimateContactTime(d, 0, vec3{0, 0, 1}, 1.0, mat, curvature, StrikerImpactor(NullStriker), 100.0), MaxContactTime));
+        expect(Near(EstimateContactTime(d, 0, vec3{0, 0, 1}, 1.0, mat, curvature, StrikerImpactor(NullStriker), 1e-6), MinContactTime));
     };
 
     "a lighter striker shortens the contact against a heavy object"_test = [] {
@@ -86,7 +84,7 @@ int main() {
         d.Mass = 1000.0; // heavy object, so the striker's mass dominates the reduced mass
         d.InverseInertia = glm::mat3{0.f};
         d.ContactArm = {vec3{0}};
-        d.Curvature = {5.f};
+        constexpr double curvature = 5; // 1/m
         const AcousticMaterialProperties mat{.Density = 2700, .YoungModulus = 7.2e10, .PoissonRatio = 0.19, .Alpha = 0, .Beta = 0};
 
         Striker light; // same material and tip, a longer capsule is only heavier
@@ -94,8 +92,8 @@ int main() {
         Striker heavy = light;
         heavy.Length = 5.f;
 
-        const double tau_light = EstimateContactTime(d, 0, vec3{0, 0, 1}, 1.0, mat, StrikerImpactor(light), 1.0);
-        const double tau_heavy = EstimateContactTime(d, 0, vec3{0, 0, 1}, 1.0, mat, StrikerImpactor(heavy), 1.0);
+        const double tau_light = EstimateContactTime(d, 0, vec3{0, 0, 1}, 1.0, mat, curvature, StrikerImpactor(light), 1.0);
+        const double tau_heavy = EstimateContactTime(d, 0, vec3{0, 0, 1}, 1.0, mat, curvature, StrikerImpactor(heavy), 1.0);
         expect(tau_light < tau_heavy);
     };
 }

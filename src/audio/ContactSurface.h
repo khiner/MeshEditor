@@ -26,7 +26,7 @@ struct ContactSurface {
     float SampleSpacing{0}; // Distance along the surface between consecutive Profile samples, m.
     std::optional<SurfaceNormalTexture> NormalTexture;
 
-    // Whether the authored profile is usable, which is what decides the finish track's content and how the surface is emitted.
+    // Whether the authored profile can supply the surface's height track in place of the parameters above.
     bool HasMeasuredProfile() const { return Profile.size() >= 2 && SampleSpacing > 0; }
 
     bool operator==(const ContactSurface &) const = default;

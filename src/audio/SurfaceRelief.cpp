@@ -3,9 +3,11 @@
 #include "ContactSurface.h"
 #include "gltf/SourceTexture.h"
 #include "mesh/Mesh.h"
+#include "numeric/vec2.h"
 
 #include <entt/entity/registry.hpp>
 #include <glm/common.hpp>
+#include <glm/geometric.hpp>
 
 #include <cmath>
 #include <numbers>
@@ -66,14 +68,20 @@ void UpdateSurfaceRelief(entt::registry &r, entt::entity mesh_entity, bool geome
 
     // Walk a straight path across the map, one texel of surface per sample.
     // The direction is irrational in texel space, so the path covers the map rather than repeating a row.
-    // Along a fixed line, directional relief sounds the same crossed either way, and a feature is heard at the rate the speed implies rather than when the object crosses it.
-    // TODO: sample the map along the contact's own path, from its UV on the closest triangle and its direction of travel in that triangle's UV gradient.
-    // That moves the integration to the audio thread and turns the contact filter into a mip level over a 2-D slope field, so the pool holds whole maps.
-    // One 2048-square map as a two-channel slope pyramid costs about 22 MB against a track's 256 KB, and every pool entry stays resident, which turns MaxSurfaceTracks into a memory budget.
-    const float texel = length_per_uv / float(image->Width);
+    // A fixed line cannot tell which way the contact crosses a feature, or when it reaches one.
+    // TODO: sample along the contact's own path, from its UV on the closest triangle and its direction in that triangle's UV gradient.
+    // That moves the integration to the audio thread, and the contact filter becomes a mip level over a 2-D slope field.
+    // The pool would then hold whole maps, at about 22 MB per 2048-square map against 256 KB per track.
+    // Every entry stays resident, so MaxSurfaceTracks becomes a memory budget.
     constexpr float Slope = std::numbers::phi_v<float> - 1; // 1/phi, the least well approximated by a ratio of texel counts
     const float dir_x = 1.f / std::sqrt(1 + Slope * Slope), dir_y = Slope * dir_x;
-    const float leak = std::exp(-texel / ReliefLeakLength);
+    // A texel step covers different distances across a map whose sides differ, so the path's own length comes from
+    // where it lands in texture coordinates. Its direction there is what the sampled gradient projects onto.
+    const vec2 step_uv{dir_x / float(image->Width), dir_y / float(image->Height)};
+    const float step_uv_length = glm::length(step_uv);
+    const float step_length = length_per_uv * step_uv_length;
+    const vec2 travel = step_uv / step_uv_length;
+    const float leak = std::exp(-step_length / ReliefLeakLength);
 
     std::vector<float> heights(TrackSamples);
     float x = 0, y = 0, height = 0;
@@ -81,12 +89,12 @@ void UpdateSurfaceRelief(entt::registry &r, entt::entity mesh_entity, bool geome
         // A tangent-space normal is the surface gradient, n proportional to (-dh/du, -dh/dv, 1), with X and Y scaled as the core material property scales them.
         const vec3 n = SampleNormal(*image, x, y);
         const float nz = std::max(n.z, 1e-3f);
-        const float slope = -normal_map->Scale * (n.x * dir_x + n.y * dir_y) / nz;
-        height = height * leak + slope * texel;
+        const float slope = -normal_map->Scale * (n.x * travel.x + n.y * travel.y) / nz;
+        height = height * leak + slope * step_length;
         heights[i] = height;
         x += dir_x;
         y += dir_y;
     }
 
-    r.emplace_or_replace<SurfaceRelief>(mesh_entity, SurfaceRelief{std::make_shared<const RoughnessTrack>(MakeProfileTrack(heights, texel)), key, source_key});
+    r.emplace_or_replace<SurfaceRelief>(mesh_entity, SurfaceRelief{std::make_shared<const RoughnessTrack>(MakeProfileTrack(heights, step_length)), key, source_key});
 }

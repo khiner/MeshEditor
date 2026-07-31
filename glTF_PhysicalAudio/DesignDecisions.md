@@ -134,6 +134,8 @@ The only render-time use of the Rayleigh form is re-deriving damping after a uni
 
 **Why.** It is not a modal-core limitation but a cheap peer mechanism on the same impulse, and the primary sound for small stiff bodies whose modes are ultrasonic (which the old exclusion left silent). Its analytic form (Δv = j/M, Δω = I⁻¹(r×j), half-sine force pulse, dipole far field ∝ ρ₀V·ȧ) needs no precomputed radiation data. The radiated shape is the *derivative* of the acceleration, not the acceleration: a compact body recoiling without changing volume has no monopole, so its leading radiation is a dipole whose far-field pressure carries one extra time-derivative (Curle 1955, Morse & Ingard). That is what a wave solve radiates from the same motion, it drops the unphysical DC of the raw acceleration bump, and it is free (the derivative of a half-sine is a cosine lobe). Mass properties stay self-contained because an extension owns its data: a sibling as the primary source would drop the audio when physics is absent, and the model wins conflicts because acoustic mass and gameplay physics mass legitimately differ. Omnidirectional render matches the approximation the modal core already makes, directivity deferred like FFAT.
 
+**Impulsive excitation only.** A draft carried the same mechanism over to sustained contact, with **F**(*t*) in place of the impulse pulse. That is derivable, since the dipole result assumes only a compact body under a net force and the net force on a loaded body is the fluctuation the excitation already is, but it is not how the field models sliding noise and it was withdrawn. Le Bot 2017 projects the vibration onto a modal basis driven by modal contact forces, with no rigid-body term, and his own simulation slides a steel cube on an elastic plate and radiates from the plate. A body in sustained contact is also coupled to the counterface through the contact stiffness rather than free, so its mass and that stiffness form a resonator, and radiating from a recoil the contact model does not see would be the wrong side of it. Whether the mechanism is negligible for sliding or merely unstudied is open; the spec does not assert it either way.
+
 ## Nyquist culling is a MUST
 
 **Decision.** Implementations MUST NOT produce aliased output from modes at or above the output Nyquist frequency; equivalently, such modes contribute no output.
@@ -172,6 +174,30 @@ The only render-time use of the Rayleigh form is re-deriving damping after a uni
 
 **Parametric surfaces are statistical, stored profiles are reproducible.** A surface given only by roughness, correlation length, and spectral slope specifies an ensemble, so two renderers agree on character but not sample-for-sample. The optional `profile` accessor is the escape hatch, and it also matches the format's philosophy of shipping baked results rather than standardizing a generator (the MPEG-4 Structured Audio anti-pattern noted below). Measured tracks are small: a few thousand samples at a few microns covers enough surface to loop inaudibly.
 
+## Contact curvature comes from the object's own geometry
+
+**Decision.** κ is the mean surface curvature at the contact point, read from the mesh of the collider the contact landed on, or from that of its nearest ancestor with a mesh. The extension carries no curvature data, so an implementation derives it.
+
+**Why not the collision geometry.** A collider is a proxy chosen for the solver's convenience, and the usual choices erase exactly the quantity being asked for. A convex hull replaces curvature with facets, a primitive replaces it with an analytic shape that was never fitted to the surface, and both read a curved body as flat. Flat understates κ without bound, and since *R*\* = 1/(κ₁ + κ₂), *k* ∝ √*R*\* and *a* ∝ *R*\*^(1/3), the error propagates into the contact stiffness, the patch radius, and the contact time together. A ceramic bowl colliding as a hull would ring with the contact time of a flat plate.
+
+**Where the two coincide.** A body whose collision shape is its authored shape has one geometry, and its analytic curvature is exact. The distinction bites only when a collider stands in for something finer.
+
+**Why geometry resolves on its own walk.** Curvature is a fact about the shape under the contact, while an acoustic surface is authored finish. Resolving κ through the surface walk would make it depend on where an author chose to attach a finish, so a compound whose foot carries a mesh but no surface would read the curvature of the body's mesh instead of the foot's. The two walks look alike and answer different questions, so they are stated separately.
+
+**Cost accepted.** Deriving κ at the contact means locating the contact on the body's surface geometry, which a renderer holding only collision proxies cannot do. That is the same capability the mesoscale relief needs to sample `normalTexture` at **p**, so the two stand or fall together.
+
+**Mean curvature is the axisymmetric form.** Johnson's general solution writes the gap between two surfaces as *Ax*² + *By*², where *A* + *B* is half the sum of all four principal curvatures and equals κ₁ + κ₂ for mean curvatures. Where the contact is axisymmetric the patch is a circle and that sum is the whole solution. Where the principal curvatures differ the patch is an ellipse whose shape also depends on *B* − *A*, which mean curvature does not carry. The sum term is kept because it is exact for the cases the model is most often applied to and needs one number per body rather than a curvature tensor and a relative orientation.
+
+## One modal model per rigid body, but a surface per collider
+
+**Decision.** A contact resolves both the modal model and the acoustic surface from the collider node it touched, or its nearest ancestor carrying one. At most one node of a rigid body's hierarchy may carry a model. Any number may carry a surface.
+
+**Why the walk starts at the collider.** A machine on rubber feet with a steel shell is one body, and a contact on a foot must find rubber where one on the shell finds steel. Finish, elastic constants, and curvature all belong to the geometry touched.
+
+**Why only one model.** Modes are the eigen-decomposition of one connected structure and span every sub-shape of a compound. A hammer's head and handle are rigidly joined, so striking the head drives modes reaching through the handle. A collider hierarchy decomposes collision geometry, not the vibrating object. Models per collider would give one body several uncoupled resonators and make its spectrum depend on which part was struck.
+
+**Why scoped to rigid bodies.** Nesting alone says nothing about elasticity: a shelf with cups parented under it wants a model per cup. Only a rigid body asserts that its parts move as one.
+
 ## Surfaces are absolute, and separate from materials
 
 **Decision.** Acoustic surfaces are their own array, not fields on the acoustic material, and their lengths are absolute physical quantities exempt from node scaling.
@@ -202,7 +228,7 @@ The only render-time use of the Rayleigh form is re-deriving damping after a uni
 
 **Decision.** Sustained contact is specified as *roughness excitation*, one mechanism, with scraping and rolling as names for regions of a continuous parameter space. Impact excitation and friction-induced vibration are the other two mechanisms, one defined elsewhere in the spec and one excluded.
 
-**Why.** The computer-graphics-audio literature frames this phenomenologically, as scraping and rolling, and taking those categories structurally causes real failures. Ren et al. classify contacts by whether tangential velocity is nonzero, which routes pure rolling away from their surface model entirely. The same habit produced a defect in an earlier draft of this spec, where collapsing per-body sweep into a single speed silenced a box sliding on a floor.
+**Why.** The computer-graphics-audio literature frames this phenomenologically, as scraping and rolling, and taking those categories structurally causes real failures. Ren et al. classify contacts by whether tangential velocity is nonzero, which routes pure rolling away from their surface model entirely. The same habit collapses per-body sweep into one speed, which silences a box sliding on a floor: the box's own sweep is zero because the same material region stays in contact, and only the floor's is nonzero.
 
 Two engineering fields converge on a mechanism framing, independently of each other and of the graphics literature. Rolling-noise prediction for railways and tyres has treated surface roughness as the excitation since Remington 1987. Friction acoustics calls the same phenomenon *roughness noise*, arising from asperity impacts in light contact, and separates it from the instability-driven noise of strongly loaded contact (Akay 2002). That second split is our scope boundary, arrived at by a field that had no interest in our problem.
 
@@ -223,6 +249,40 @@ Agarwal et al. 2021 supply the force algebra and a rolling term from the offset 
 **Deliberately not duplicated.** Restitution and friction stay in `KHR_physics_rigid_bodies`. Unlike mass, where acoustic and gameplay values legitimately differ, restitution has no acoustic reading distinct from its mechanical one, so a second copy would only create conflicts.
 
 **Naming hazard documented.** A render material's `roughness` is dimensionless optical microfacet statistics tuned by eye. This one is a physical length measured with a profilometer, orders of magnitude coarser. Neither derives from the other, and the spec says so where an author will look.
+
+## Traversal is indexed by distance along the path
+
+**Decision.** A surface's track is read at the distance the contact has travelled along that surface. A contact that retraces its path reads fresh surface rather than the heights it came from.
+
+**Why not signed displacement.** Signed displacement is right about the physics and unreachable in the data model. A track is a height field, so retracing should re-read it, and the excursion of a rocking body should sound like a rattle rather than a hiss. But indexing by a *signed* quantity needs a direction to be signed against, and a one-dimensional track has none. Every candidate fails on a path a rigid-body scene can produce: the instantaneous sweep direction is never negative relative to itself, a fixed axis is silent for motion across it, a smoothed reference introduces a time constant that has to sit between the reversal and curvature timescales, and a separable pair of readers makes the excitation 3 dB louder diagonally than axially. A requirement written in terms of "traversal direction" names something a one-dimensional track cannot define.
+
+**What distance gets right, which is more than it looks.** It is the only candidate with no direction dependence at all, in amplitude or in correlation, and it needs no parameter. The rate of asperity encounters scales with speed irrespective of sign, so it recovers the right bandwidth and the right level. It gets the fine structure wrong on a retracing contact and nothing else wrong anywhere. A track models a path, not a surface, and distance is the faithful reading of that model.
+
+**What removing the limitation takes, and it differs by scale.** The two layers are not in the same position.
+
+The **microscale finish** has no two-dimensional data to read. A stored field works over an extent matched to the contact's excursion, which is what Agarwal et al. 2021 do with a confocal depth map for a hand-held scraper, and that paper is two-dimensional where this spec's `profile` is not. Covering unbounded sliding instead costs (*T* *f*<sub>Nyquist</sub>)² samples for *T* seconds of non-repeating output, around 6 × 10⁸ for one second at 48 kHz, independent of speed because extent and resolution both scale with it and cancel. That cancellation is also why the one-dimensional track needs only *T* *f*<sub>Nyquist</sub> samples, the figure this spec already quotes. Procedural evaluation stores nothing and synthesizes only the octaves the current speed and load resolve, making synthesis and the patch filter one operation, at a per-sample cost against a prefix-sum lookup that is a measurement rather than an argument.
+
+The **mesoscale relief** is already a field: `normalTexture` is a two-dimensional texture and the contact state already carries **p** to sample it at. Its costs are bounded and known rather than open. Measured over the Khronos sample assets, a single-channel height field with a full mip pyramid is 11 MB for a 2048² map and under 1 MB for more than half of them. A screened Poisson solve at derivation time gives the height from the normal map path-independently, which is the two-dimensional form of the leak this spec already prescribes and removes the drift that motivates it, leaving the tangential term to read the map's slope directly with no integration at all. Reading it at **p** rather than along a path is the better model, and the reason this spec does not yet require it is that obtaining a texture coordinate at the contact needs the contacting geometry to be the textured mesh, which a simplified collider is not.
+
+## Tangential force split by mechanism
+
+**Decision.** The tangential excitation is two terms, not one. A geometric term, the contact load projected onto the locally tilted surface, acting along each surface's own sweep direction. A frictional term, Coulomb traction riding on the force fluctuation, acting along the slip direction. Neither carries a free parameter.
+
+**Why.** Riding over a tilted asperity converts normal load into tangential force whether or not anything slides, and it acts along the direction of travel over that surface. Coulomb traction acts along the slip and is bounded by *μN*. They have different directions, so one term cannot carry both.
+
+**Their v is the contact's velocity across the surface, not the slip.** Agarwal et al. 2021 write *f*<sub>h</sub> = β₁|**v** · ∇*S*|^β₂. Reading that **v** as the slip makes the term vanish for pure rolling, which their own rolling equation contradicts by keeping it. That one substitution is the difference between rolling sounding and rolling falling silent.
+
+**And their term is not a separate mechanism, it is this one's velocity-dependent half.** Because *f*<sub>n</sub> carries the Hunt and Crossley damping factor, *f*<sub>n</sub> ∂*h* expands to *k*δ^(3/2) ∂*h* + *k*δ^(3/2) *c*<sub>d</sub> δ̇ ∂*h*, whose second part is proportional to the rate the height under the contact changes, which is what their term measures. Matching them identifies β₁ with *f*<sub>n</sub> *c*<sub>d</sub> ∂*h*. That product carries exactly the N·s·m⁻¹ their constant must have for the result to be a force, which the source leaves unstated, and it names what a fitted value absorbs: the load, the material's dissipation constant, and the surface slope. So projecting the whole contact force is not a rival model, it is the parameter-free form of theirs, and it is why the constant needed refitting per surface. The same move closed van den Doel's rolling cutoff and Agarwal's slip balance.
+
+**Consequence for the contact state.** The force model acts along directions rather than magnitudes, so the state carries slip and sweep as velocities, and the speeds the requirements are written in terms of are their magnitudes.
+
+**The geometric term reverses per surface, which reads as a sign convention and is a physical result.** Take the one arrangement where the interface is unambiguous: a smooth box sliding on a bumpy floor. The box has no sweep of its own, since the same material region stays in contact, so only the floor's surface is traversed, and the contact normal is simply the floor's. The box climbing a rising asperity is retarded and the floor is driven forward. Swapping which body carries the asperity, a bumpy ball rolling on a smooth floor, is the same mechanics with the roles exchanged and so demands the opposite sign for the same slope. A body is therefore driven along **û**ᵢ by its own surface's slope and against it by the other body's, and the two bodies receive equal and opposite excitations as Newton's third law requires. Summing the two surfaces with one sign, which is the form that first suggests itself from *h* = *h*₁ + *h*₂, satisfies neither arrangement.
+
+**Not the average of the two boundaries.** Treating the interface as the mean of the two surfaces gives a slope of (∂*h*₁ − ∂*h*₂)/2, which has the right antisymmetry and the wrong magnitude: a smooth body rides exactly on a rough one's profile, with no halving. Superposing the two single-rough-surface cases is the right construction, and is the same linearization the rest of the roughness treatment rests on.
+
+**The audible reach is narrow, and the correctness is not.** Within one body the two surfaces' slopes are independent, so a difference and a sum have the same root-mean-square and an uncorrelated pair sounds the same either way. It is when both bodies of a contact sound that a common sign adds two excitations that should cancel.
+
+**Which forces the frames to be settled.** Speeds are frame-independent, so a wholly node-local state can write the slip as a difference of the two sweeps and stay consistent. As vectors that subtraction spans two different nodes' frames and means nothing, so the kinematic relations are stated in a common frame and each body's state is transformed into its own. The transform is the impulsive path's: position by the full inverse, directions and velocities by the inverse rotation alone. Velocities keep their magnitude for a physical reason rather than a tidy one, since `sampleSpacing` is absolute and a scaled node would otherwise read its finish at the wrong rate.
 
 ## Vibrational coupling is MAY
 

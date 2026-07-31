@@ -185,6 +185,12 @@ struct Mesh {
     vec3 CalcFaceCentroid(FH) const;
     float CalcEdgeLength(HH) const;
     float CalcFaceArea(FH) const;
+    // Discrete mean curvature (1/length) averaged over the one-ring normal curvatures.
+    // 1/R on a sphere of radius R, zero on a flat or boundary vertex.
+    float CalcMeanCurvature(VH) const;
+    std::vector<float> CalcMeanCurvatures() const; // The above for every vertex, in vertex order.
+    // Volume the surface encloses, in the mesh's own units. Empty unless it is closed and manifold.
+    std::optional<double> CalcEnclosedVolume() const;
     VH FindNearestVertex(vec3) const;
 
     std::vector<uint32_t> CreateTriangleIndices() const; // Allocates + returns triangulated face indices

@@ -16,6 +16,8 @@ struct ModalEigenSummary {
     float SolvedMinModeFreq{20}, SolvedMaxModeFreq{16'000}; // The synthesized band the eigenpairs were solved for
     uint32_t SolvedNumModes{30}; // The mode count the eigenpairs were solved for
     size_t TetInputsHash{}; // The tet inputs the eigenpairs were solved over
+    // The excitation vertices the solve was asked for. Several can land on one sample point.
+    std::vector<uint32_t> SolvedVertices;
 
     bool operator==(const ModalEigenSummary &) const = default;
 };

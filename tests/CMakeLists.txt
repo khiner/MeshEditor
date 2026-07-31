@@ -1,3 +1,9 @@
+# The warnings and defines every test target builds with. Anything a single target needs goes on its own line beside the call.
+function(mesheditor_test_defaults target)
+    target_compile_definitions(${target} PRIVATE GLM_ENABLE_EXPERIMENTAL DEBUG_BUILD)
+    target_compile_options(${target} PRIVATE -Wall -Wextra -Wno-missing-field-initializers -Wno-elaborated-enum-base -fno-rtti)
+endfunction()
+
 add_executable(MeshEditorTests
     RoundtripTest.cpp
     ${CMAKE_SOURCE_DIR}/src/gltf/GltfScene.cpp
@@ -19,6 +25,7 @@ add_executable(MeshEditorTests
     ${CMAKE_SOURCE_DIR}/src/scene/SceneGraph.cpp
     ${CMAKE_SOURCE_DIR}/src/TransformMath.cpp
     ${CMAKE_SOURCE_DIR}/src/mesh/Mesh.cpp
+    ${CMAKE_SOURCE_DIR}/src/mesh/MeshBvh.cpp
     ${CMAKE_SOURCE_DIR}/src/mesh/MeshStore.cpp
     ${CMAKE_SOURCE_DIR}/src/audio/ContactModel.cpp
     ${CMAKE_SOURCE_DIR}/src/audio/ContactDynamics.cpp
@@ -86,8 +93,8 @@ target_link_libraries(MeshEditorTests PRIVATE
     webp
 )
 
-target_compile_definitions(MeshEditorTests PRIVATE GLM_ENABLE_EXPERIMENTAL DEBUG_BUILD MESHEDITOR_BUILD_DIR="${CMAKE_BINARY_DIR}" MESHEDITOR_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
-target_compile_options(MeshEditorTests PRIVATE -Wall -Wextra -Wno-missing-field-initializers -Wno-elaborated-enum-base -fno-rtti)
+mesheditor_test_defaults(MeshEditorTests)
+target_compile_definitions(MeshEditorTests PRIVATE MESHEDITOR_BUILD_DIR="${CMAKE_BINARY_DIR}" MESHEDITOR_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 
 # Serializes every Action alternative through zpp::bits.
 add_executable(MeshEditorActionSerializeTest ActionSerializeTest.cpp)
@@ -100,8 +107,7 @@ target_include_directories(MeshEditorActionSerializeTest PRIVATE
     ${Vulkan_INCLUDE_DIRS}
 )
 target_link_libraries(MeshEditorActionSerializeTest PRIVATE Boost::ut)
-target_compile_definitions(MeshEditorActionSerializeTest PRIVATE GLM_ENABLE_EXPERIMENTAL DEBUG_BUILD)
-target_compile_options(MeshEditorActionSerializeTest PRIVATE -Wall -Wextra -Wno-missing-field-initializers -Wno-elaborated-enum-base -fno-rtti)
+mesheditor_test_defaults(MeshEditorActionSerializeTest)
 
 set(REALIMPACT_DATASET_DIR "${CMAKE_SOURCE_DIR}/external/RealImpact/dataset" CACHE PATH "RealImpact dataset directory")
 
@@ -114,8 +120,8 @@ target_include_directories(MeshEditorModalSolverTest PRIVATE
     SYSTEM ${CMAKE_SOURCE_DIR}/lib/tinyobjloader
 )
 target_link_libraries(MeshEditorModalSolverTest PRIVATE Boost::ut meshoptimizer tinyobjloader "-framework Accelerate")
-target_compile_definitions(MeshEditorModalSolverTest PRIVATE GLM_ENABLE_EXPERIMENTAL DEBUG_BUILD REALIMPACT_DATASET_DIR="${REALIMPACT_DATASET_DIR}")
-target_compile_options(MeshEditorModalSolverTest PRIVATE -Wall -Wextra -Wno-missing-field-initializers -Wno-elaborated-enum-base -fno-rtti)
+mesheditor_test_defaults(MeshEditorModalSolverTest)
+target_compile_definitions(MeshEditorModalSolverTest PRIVATE REALIMPACT_DATASET_DIR="${REALIMPACT_DATASET_DIR}")
 
 set(TET_CORPUS_DIR "${CMAKE_SOURCE_DIR}/external/TetCorpus" CACHE PATH "Tetrahedralizer mesh corpora directory")
 
@@ -135,8 +141,8 @@ target_include_directories(MeshEditorModalSolverBench PRIVATE
     SYSTEM ${CMAKE_SOURCE_DIR}/lib/tinyobjloader
 )
 target_link_libraries(MeshEditorModalSolverBench PRIVATE meshoptimizer tinyobjloader "-framework Accelerate")
-target_compile_definitions(MeshEditorModalSolverBench PRIVATE GLM_ENABLE_EXPERIMENTAL DEBUG_BUILD TET_CORPUS_DIR="${TET_CORPUS_DIR}" MESHEDITOR_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
-target_compile_options(MeshEditorModalSolverBench PRIVATE -Wall -Wextra -Wno-missing-field-initializers -Wno-elaborated-enum-base -fno-rtti)
+mesheditor_test_defaults(MeshEditorModalSolverBench)
+target_compile_definitions(MeshEditorModalSolverBench PRIVATE TET_CORPUS_DIR="${TET_CORPUS_DIR}" MESHEDITOR_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 
 add_executable(MeshEditorCompressTest CompressTest.cpp ${CMAKE_SOURCE_DIR}/src/Compress.cpp)
 target_include_directories(MeshEditorCompressTest PRIVATE
@@ -144,7 +150,7 @@ target_include_directories(MeshEditorCompressTest PRIVATE
     SYSTEM ${CMAKE_SOURCE_DIR}/lib/basis_universal/zstd
 )
 target_link_libraries(MeshEditorCompressTest PRIVATE Boost::ut basisu_transcoder)
-target_compile_options(MeshEditorCompressTest PRIVATE -Wall -Wextra -Wno-missing-field-initializers -Wno-elaborated-enum-base -fno-rtti)
+mesheditor_test_defaults(MeshEditorCompressTest)
 
 add_executable(MeshEditorSurfaceTrackPoolTest SurfaceTrackPoolTest.cpp ${CMAKE_SOURCE_DIR}/src/audio/ModalAudio.cpp)
 target_include_directories(MeshEditorSurfaceTrackPoolTest PRIVATE
@@ -153,8 +159,56 @@ target_include_directories(MeshEditorSurfaceTrackPoolTest PRIVATE
     SYSTEM ${CMAKE_SOURCE_DIR}/lib/entt/src
 )
 target_link_libraries(MeshEditorSurfaceTrackPoolTest PRIVATE Boost::ut)
-target_compile_definitions(MeshEditorSurfaceTrackPoolTest PRIVATE GLM_ENABLE_EXPERIMENTAL DEBUG_BUILD)
-target_compile_options(MeshEditorSurfaceTrackPoolTest PRIVATE -Wall -Wextra -Wno-missing-field-initializers -Wno-elaborated-enum-base -fno-rtti)
+mesheditor_test_defaults(MeshEditorSurfaceTrackPoolTest)
+
+add_executable(MeshEditorContactCollectBench ContactCollectBench.cpp)
+target_include_directories(MeshEditorContactCollectBench PRIVATE SYSTEM ${CMAKE_SOURCE_DIR}/lib/JoltPhysics SYSTEM ${CMAKE_SOURCE_DIR}/lib/entt/src)
+target_link_libraries(MeshEditorContactCollectBench PRIVATE Jolt)
+mesheditor_test_defaults(MeshEditorContactCollectBench)
+
+# Physics reaches the mesh layer for mesh-backed colliders, and that layer reads geometry from the
+# GPU-backed mesh store, so the store and its Vulkan buffers link in even though these scenes use primitives.
+add_executable(MeshEditorContactCollectTest ContactCollectTest.cpp
+    ${CMAKE_SOURCE_DIR}/src/physics/PhysicsSystem.cpp
+    ${CMAKE_SOURCE_DIR}/src/scene/SceneGraph.cpp
+    ${CMAKE_SOURCE_DIR}/src/TransformMath.cpp
+    ${CMAKE_SOURCE_DIR}/src/mesh/Mesh.cpp
+    ${CMAKE_SOURCE_DIR}/src/mesh/MeshBvh.cpp
+    ${CMAKE_SOURCE_DIR}/src/mesh/MeshStore.cpp
+    ${CMAKE_SOURCE_DIR}/src/vulkan/Buffer.cpp
+    ${CMAKE_SOURCE_DIR}/src/vulkan/Image.cpp
+    ${CMAKE_SOURCE_DIR}/src/vulkan/VulkanContext.cpp
+    ${CMAKE_SOURCE_DIR}/src/vulkan/FindMemoryType.cpp
+    ${CMAKE_SOURCE_DIR}/src/render/Bindless.cpp
+    ${CMAKE_SOURCE_DIR}/src/render/Profile.cpp
+)
+add_dependencies(MeshEditorContactCollectTest generate_gpu_schema)
+target_include_directories(MeshEditorContactCollectTest PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_BINARY_DIR}
+    SYSTEM ${CMAKE_SOURCE_DIR}/lib/glm
+    SYSTEM ${CMAKE_SOURCE_DIR}/lib/entt/src
+    SYSTEM ${CMAKE_SOURCE_DIR}/lib/VulkanMemoryAllocator/include
+    SYSTEM ${CMAKE_SOURCE_DIR}/lib/JoltPhysics
+    ${Vulkan_INCLUDE_DIRS} # Last: may shadow vendored headers
+)
+target_link_libraries(MeshEditorContactCollectTest PRIVATE Boost::ut Jolt meshoptimizer ${Vulkan_LIBRARIES} GPUOpen::VulkanMemoryAllocator)
+mesheditor_test_defaults(MeshEditorContactCollectTest)
+
+add_executable(MeshEditorContactManifoldTest ContactManifoldTest.cpp)
+target_include_directories(MeshEditorContactManifoldTest PRIVATE SYSTEM ${CMAKE_SOURCE_DIR}/lib/JoltPhysics)
+target_link_libraries(MeshEditorContactManifoldTest PRIVATE Boost::ut Jolt)
+mesheditor_test_defaults(MeshEditorContactManifoldTest)
+
+# Properties of the audio-thread render that hold whatever the contact force model says.
+add_executable(MeshEditorModalRenderTest ModalRenderTest.cpp ${CMAKE_SOURCE_DIR}/src/audio/ModalAudio.cpp)
+target_include_directories(MeshEditorModalRenderTest PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    SYSTEM ${CMAKE_SOURCE_DIR}/lib/glm
+    SYSTEM ${CMAKE_SOURCE_DIR}/lib/entt/src
+)
+target_link_libraries(MeshEditorModalRenderTest PRIVATE Boost::ut)
+mesheditor_test_defaults(MeshEditorModalRenderTest)
 
 add_executable(MeshEditorModalRenderBench ModalRenderBench.cpp ${CMAKE_SOURCE_DIR}/src/audio/ModalAudio.cpp)
 target_include_directories(MeshEditorModalRenderBench PRIVATE
@@ -162,8 +216,17 @@ target_include_directories(MeshEditorModalRenderBench PRIVATE
     SYSTEM ${CMAKE_SOURCE_DIR}/lib/glm
     SYSTEM ${CMAKE_SOURCE_DIR}/lib/entt/src
 )
-target_compile_definitions(MeshEditorModalRenderBench PRIVATE GLM_ENABLE_EXPERIMENTAL DEBUG_BUILD)
-target_compile_options(MeshEditorModalRenderBench PRIVATE -Wall -Wextra -Wno-missing-field-initializers -Wno-elaborated-enum-base -fno-rtti)
+mesheditor_test_defaults(MeshEditorModalRenderBench)
+
+add_executable(MeshEditorMeshBvhTest MeshBvhTest.cpp ${CMAKE_SOURCE_DIR}/src/mesh/MeshBvh.cpp)
+add_dependencies(MeshEditorMeshBvhTest generate_gpu_schema)
+target_include_directories(MeshEditorMeshBvhTest PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_BINARY_DIR}
+    SYSTEM ${CMAKE_SOURCE_DIR}/lib/glm
+)
+target_link_libraries(MeshEditorMeshBvhTest PRIVATE Boost::ut)
+mesheditor_test_defaults(MeshEditorMeshBvhTest)
 
 add_executable(MeshEditorContactModelTest ContactModelTest.cpp ${CMAKE_SOURCE_DIR}/src/audio/ContactModel.cpp)
 target_include_directories(MeshEditorContactModelTest PRIVATE
@@ -171,5 +234,4 @@ target_include_directories(MeshEditorContactModelTest PRIVATE
     SYSTEM ${CMAKE_SOURCE_DIR}/lib/glm
 )
 target_link_libraries(MeshEditorContactModelTest PRIVATE Boost::ut)
-target_compile_definitions(MeshEditorContactModelTest PRIVATE GLM_ENABLE_EXPERIMENTAL DEBUG_BUILD)
-target_compile_options(MeshEditorContactModelTest PRIVATE -Wall -Wextra -Wno-missing-field-initializers -Wno-elaborated-enum-base -fno-rtti)
+mesheditor_test_defaults(MeshEditorContactModelTest)

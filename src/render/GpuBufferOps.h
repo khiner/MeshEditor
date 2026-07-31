@@ -17,6 +17,8 @@ struct MeshBuffers;
 // Vulkan-free views and ops over GpuBuffers' GPU storage, so read/UI/action consumers
 // need not include the full (vulkan-heavy) GpuBuffers header.
 std::span<PBRMaterial> GetMaterials(entt::registry &);
+// A mesh's triangulated face indices, viewing the index arena's own storage.
+std::span<const uint32_t> GetFaceIndices(const entt::registry &, const MeshBuffers &);
 std::span<const PunctualLight> GetLights(entt::registry &);
 PunctualLight GetLight(entt::registry &, uint32_t index);
 mvk::BufferContext &GetBufferContext(entt::registry &);

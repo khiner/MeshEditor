@@ -55,6 +55,9 @@ struct ModalResult {
     SolveProfile Profile;
     ModalEigenSummary Summary; // Raw eigenpairs at the excitation positions (TetInputsHash left 0)
     Eigen::MatrixXf Basis; // Full eigenvector basis, filled when SolveReuse::KeepBasis
+    // The index into Modes.Positions of each requested excitation position, in request order.
+    // Requests reaching the same tet point share one entry there.
+    std::vector<uint32_t> SamplePointOfExcitation;
 };
 
 // A prior solve's eigenvector basis over the same tet inputs seeds the eigensolver, which
@@ -64,9 +67,10 @@ struct SolveReuse {
     bool KeepBasis{}; // Fill ModalResult::Basis
 };
 
-// FEM modal analysis over quadratic (10-node) tetrahedral elements. Tet geometry is in SI meters,
-// so frequencies are in Hz and eigenvectors are mass-normalized. Each excitation position (SI) is
-// sampled at its nearest tet point. ModalModes::Vertices is left empty.
+// FEM modal analysis over quadratic (10-node) tetrahedral elements.
+// Tet geometry is in SI meters, so frequencies are in Hz and eigenvectors are mass-normalized.
+// Each excitation position (SI) is sampled at its nearest tet point, and positions reaching the same point become one.
+// The result therefore holds one position and one shape row per distinct point, and leaves ModalModes::Vertices empty.
 // `baked_scale` (the node's world scale) recovers node-local sample positions.
 // `monitor` (optional) receives solve progress and is polled for cooperative cancellation
 // between stages and eigensolver iterations. A cancelled solve returns an empty result.

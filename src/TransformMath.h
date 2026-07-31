@@ -19,6 +19,8 @@ inline float MeanScale(vec3 s) {
     return (a.x + a.y + a.z) / 3;
 }
 
+// A local point in world space.
+inline vec3 TransformPoint(const Transform &t, vec3 p) { return t.R * (p * t.S) + t.P; }
 // A world-space point in the transform's local frame.
 inline vec3 InverseTransformPoint(const Transform &t, vec3 p) { return (glm::conjugate(t.R) * (p - t.P)) / t.S; }
 // A world-space direction in the transform's local frame. Rotation only, so the magnitude is preserved.

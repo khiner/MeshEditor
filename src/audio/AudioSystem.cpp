@@ -10,10 +10,15 @@
 #include "action/Audio.h"
 #include "audio/SoundVertices.h"
 #include "mesh/Mesh.h"
+#include "mesh/MeshBvh.h"
 #include "mesh/Tets.h"
 #include "physics/PhysicsContact.h"
+#include "physics/PhysicsTypes.h"
+#include "render/GpuBufferOps.h"
 #include "render/Instance.h"
 #include "render/MaterialComponents.h"
+#include "render/MeshBuffers.h"
+#include "scene/SceneGraph.h"
 #include "scene/WorldTransform.h"
 #include "selection/SelectionBitset.h"
 #include "ui/FieldEdit.h"
@@ -61,13 +66,14 @@ template<> struct FieldLimits<&ModalTuning::T60Scale> : Within<0.1, 10.> {};
 template<> struct FieldLimits<&ModalSoundControls::ModalLevel> : Within<0., 1.> {};
 template<> struct FieldLimits<&ModalSoundControls::ClickGain> : Within<0., 10.> {};
 template<> struct FieldLimits<&ModalSoundControls::SampleGain> : Within<0., 4.> {};
+template<> struct FieldLimits<&ModalSoundControls::RenderThreads> : Within<1., 16.> {};
 template<> struct FieldLimits<&ModalSoundControls::MaxImpacts> : Within<1., 4096.> {};
 template<> struct FieldLimits<&ModalSoundControls::MinContactImpulse> : Within<0., 5.> {};
 template<> struct FieldLimits<&ModalSoundControls::MinContactSpeed> : Within<0., 5.> {};
+template<> struct FieldLimits<&ModalSoundControls::MaxVoices> : Within<1., 64.> {};
 template<> struct FieldLimits<&ModalSoundControls::SustainLevel> : Within<0., 4.> {};
 template<> struct FieldLimits<&ModalSoundControls::Coupling> : Within<0., 4.> {};
 template<> struct FieldLimits<&ModalSoundControls::ContactDamping> : Within<0., 10.> {};
-template<> struct FieldLimits<&ModalSoundControls::MaxVoices> : Within<1., 64.> {};
 template<> struct FieldLimits<&ModalSoundControls::MinSlipSpeed> : Within<0., 1.> {};
 template<> struct FieldLimits<&ModalSoundControls::MinSweepSpeed> : Within<0., 1.> {};
 
@@ -132,7 +138,7 @@ void AcquireSample(entt::registry &r, entt::entity viewport, const fs::path &pat
     ++it->second.RefCount;
 }
 
-// Decrements refcount; erases the entry (and the component if empty) when it hits 0.
+// Decrements refcount, erasing the entry (and the component if empty) when it hits 0.
 void ReleaseSample(entt::registry &r, entt::entity viewport, const fs::path &path) {
     if (path.empty()) return;
     auto *store = r.try_get<AudioSamples>(viewport);
@@ -173,8 +179,8 @@ void AssignVertexSample(
     auto &vs = r.get_or_emplace<VertexSamples>(e);
     vs.Stop();
 
-    // `frames` is consumed on the first new-path insertion; subsequent AcquireSample calls
-    // see the path already in the store and only bump refcount, so the moved-from vector is ignored.
+    // `frames` is consumed on the first new-path insertion. Later AcquireSample calls find the path
+    // already in the store and only bump its refcount, so the moved-from vector is ignored.
     bool vs_changed = false;
     for (const uint32_t mv : mesh_vertices) {
         auto [it, inserted] = vs.PathByVertex.try_emplace(mv, path);
@@ -250,7 +256,7 @@ constexpr float SurfaceSamplesPerCorrelation{8};
 // Sample spacing of the track synthesized from a surface's roughness parameters, m.
 float SynthesizedFinishSpacing(const ContactSurface &s) { return std::clamp(s.CorrelationLength / SurfaceSamplesPerCorrelation, 1e-8f, 1e-4f); }
 
-// Content key of a surface's microscale finish track, hashing a measured profile whole so two profiles of one length cannot collide.
+// Content key of a surface's microscale finish track. A measured profile is hashed whole.
 uint64_t FinishTrackKey(const ContactSurface &s) {
     if (s.HasMeasuredProfile()) {
         auto key = HashParams(0x9e3779b97f4a7c15ull, s.SampleSpacing, s.Profile.size());
@@ -266,7 +272,7 @@ const ModalSoundControls &ModalControls(const entt::registry &r) {
     return view.empty() ? Defaults : r.get<const ModalSoundControls>(view.front());
 }
 
-// A body that sounds by modal synthesis, which is what a strike or a sustained contact excites.
+// A body that sounds by modal synthesis.
 bool IsModalSounding(const entt::registry &r, entt::entity e) {
     return r.valid(e) && r.all_of<ModalModes, SoundVertices, SoundVerticesModel>(e) && r.get<SoundVerticesModel>(e) == SoundVerticesModel::Modal;
 }
@@ -274,10 +280,83 @@ bool IsModalSounding(const entt::registry &r, entt::entity e) {
 // Each body of a contact holds its own voice, so the pair's id numbers the two.
 uint64_t ContactVoiceId(const SustainedContact &c, uint32_t side) { return c.Id * 2 + side; }
 
-const AcousticMaterialProperties &MaterialOf(const entt::registry &r, entt::entity node) {
+// A node's acoustic properties are authored on the mesh it instances, so every lookup goes through its Instance.
+template<typename T> const T *AssetOf(const entt::registry &r, entt::entity node) {
     const auto *inst = r.try_get<const Instance>(node);
-    const auto *mat = inst ? r.try_get<const AcousticMaterial>(inst->Entity) : nullptr;
+    return inst ? r.try_get<const T>(inst->Entity) : nullptr;
+}
+
+// Mean surface curvature (1/m) where a contact touches a node, read from that node's own mesh at `world_point`.
+// Empty when the node has no mesh.
+std::optional<double> SurfaceCurvature(const entt::registry &r, entt::entity node, vec3 world_point) {
+    if (!r.valid(node)) return std::nullopt;
+    const auto *inst = r.try_get<const Instance>(node);
+    const auto *bvh = inst ? r.try_get<const MeshBvh>(inst->Entity) : nullptr;
+    if (!bvh) return std::nullopt;
+    const auto &wt = r.get<const WorldTransform>(node);
+    const auto mesh = GetMesh(r, inst->Entity);
+    const auto indices = GetFaceIndices(r, r.get<const MeshBuffers>(inst->Entity));
+    const auto hit = bvh->ClosestPoint(mesh.GetVerticesSpan(), indices, InverseTransformPoint(wt, world_point));
+    // Interpolate the triangle's per-vertex curvature at the contact's barycentric weights.
+    double local = 0;
+    for (uint32_t i = 0; i < 3; ++i) local += double(hit.Weights[i]) * bvh->MeanCurvature[hit.Vertices[i]];
+    // Curvature is an inverse length, so the node's world scale converts the mesh's own units to meters.
+    const float scale = MeanScale(wt.S);
+    return scale > 0 ? local / scale : 0.0;
+}
+
+// The node a contact takes something from: the collider node it touched, or the nearest ancestor of it that has one.
+// Falls back to the body when no collider along the way carries one.
+entt::entity NearestNodeWith(const entt::registry &r, entt::entity collider, entt::entity body, auto &&has) {
+    for (auto e = collider; e != null_entity && r.valid(e) && e != body; e = ParentOrNull(r, e)) {
+        if (has(e)) return e;
+    }
+    return body;
+}
+
+// The node whose acoustic surface a contact rides over.
+// A compound body's rubber foot and steel shell are separate collider nodes, so a contact on one rides that one's surface.
+entt::entity SurfaceNode(const entt::registry &r, entt::entity collider, entt::entity body) {
+    return NearestNodeWith(r, collider, body, [&r](entt::entity e) { return AssetOf<ContactSurface>(r, e) != nullptr; });
+}
+
+// The node whose modal model a contact excites, and whose local space its position and directions are expressed in.
+// A body carries one model however many colliders it has.
+entt::entity ModalNode(const entt::registry &r, entt::entity collider, entt::entity body) {
+    return NearestNodeWith(r, collider, body, [&r](entt::entity e) { return r.all_of<ModalModes>(e); });
+}
+
+// The node whose mesh a contact reads its shape from, independent of which node carries the acoustic surface.
+entt::entity GeometryNode(const entt::registry &r, entt::entity collider, entt::entity body) {
+    return NearestNodeWith(r, collider, body, [&r](entt::entity e) { return AssetOf<MeshBvh>(r, e) != nullptr; });
+}
+
+// The nodes one side of a contact reads from.
+struct ContactNodes {
+    entt::entity Model, Surface, Geometry;
+};
+ContactNodes ResolveContactNodes(const entt::registry &r, entt::entity collider, entt::entity body) {
+    return {ModalNode(r, collider, body), SurfaceNode(r, collider, body), GeometryNode(r, collider, body)};
+}
+
+// A contact's elastic constants come from the material of the surface it touches, and from the one the node's
+// modal model was derived from when that surface has none.
+const AcousticMaterialProperties &MaterialOf(const entt::registry &r, entt::entity surface_node, entt::entity model_node) {
+    const auto *mat = AssetOf<AcousticMaterial>(r, surface_node);
+    if (!mat) mat = AssetOf<AcousticMaterial>(r, model_node);
     return mat ? mat->Properties : materials::acoustic::Steel.Properties;
+}
+
+// Unit direction of `v`, or zero when `v` has no length.
+vec3 UnitOrZero(vec3 v) {
+    const float len = glm::length(v);
+    return len > 0 ? v / len : vec3{0};
+}
+
+// The sample point nearest `local_point`.
+uint32_t NearestSamplePoint(const std::vector<vec3> &positions, vec3 local_point) {
+    const auto dist2 = [local_point](vec3 p) { const auto d = p - local_point; return glm::dot(d, d); };
+    return uint32_t(std::ranges::distance(positions.begin(), std::ranges::min_element(positions, {}, dist2)));
 }
 
 SamplePointBlend NearestSamplePoints(const std::vector<vec3> &positions, vec3 local_point) {
@@ -298,32 +377,53 @@ SamplePointBlend NearestSamplePoints(const std::vector<vec3> &positions, vec3 lo
         }
     }
     const float d1 = std::sqrt(d_first), d2 = std::sqrt(d_second);
-    return {first, second, d1 + d2 > 0 ? d2 / (d1 + d2) : 1.f};
+    const float w = d1 + d2 > 0 ? d2 / (d1 + d2) : 1.f;
+    return {{first, second, first}, {w, 1 - w, 0}};
 }
 
-// The two tracks one body contributes to a contact. Every field below depends only on this body's surface and on the
-// pair, never on which of the two voices reads them, so a contact resolves these once and both voices order them their own way.
+// Where an excitation at `local_point` reads an object's mode shapes: the nearest point of the sample surface,
+// in barycentric weights over the triangle holding it, so the field is continuous as the contact travels.
+// A model with no sample surface blends its two nearest sample points.
+SamplePointBlend ShapeBlendAt(const ModalModes &modes, vec3 local_point) {
+    if (modes.Indices.size() < 3) return NearestSamplePoints(modes.Positions, local_point);
+
+    SamplePointBlend best;
+    float best_distance2 = std::numeric_limits<float>::max();
+    for (size_t i = 0; i + 2 < modes.Indices.size(); i += 3) {
+        const std::array tri{modes.Indices[i], modes.Indices[i + 1], modes.Indices[i + 2]};
+        const auto hit = ClosestPointOnTriangle(local_point, modes.Positions[tri[0]], modes.Positions[tri[1]], modes.Positions[tri[2]]);
+        const vec3 offset = hit.Position - local_point;
+        if (const float distance2 = glm::dot(offset, offset); distance2 < best_distance2) {
+            best_distance2 = distance2;
+            best = {tri, hit.Weights};
+        }
+    }
+    return best;
+}
+
+// The two tracks one body contributes to a contact. Neither depends on which voice reads them.
 struct SideTracks {
     ContactTrack Finish, Relief;
 };
 
 // A body with no acoustic surface contributes the default finish, so a contact is always fully specified.
-// `node_scale` sizes the mesh-local relief track, so the node this contact is on sets its physical size.
-SideTracks ResolveSideTracks(const entt::registry &r, ModalAudio &m, const SustainedContactSide &side, float node_scale, float patch_window, float sample_rate) {
+SideTracks ResolveSideTracks(const entt::registry &r, ModalAudio &m, const SustainedContactSide &side, entt::entity node, float patch_window, float sample_rate) {
     static constexpr ContactSurface DefaultSurface{};
     static const uint64_t default_key = FinishTrackKey(DefaultSurface);
-    const auto *inst = r.try_get<const Instance>(side.Entity);
-    const auto *surface = inst ? r.try_get<const ContactSurface>(inst->Entity) : nullptr;
-    const auto *relief = inst ? r.try_get<const SurfaceRelief>(inst->Entity) : nullptr;
-    // A surface always has a key, whether it is the default one or an edit whose derived key has yet to land.
-    const auto *memo = inst ? r.try_get<const SurfaceFinishKey>(inst->Entity) : nullptr;
+    const auto *surface = AssetOf<ContactSurface>(r, node);
+    const auto *relief = AssetOf<SurfaceRelief>(r, node);
+    // An edit whose derived key has yet to land is hashed here instead.
+    const auto *memo = AssetOf<SurfaceFinishKey>(r, node);
     const uint64_t finish_key = surface ? (memo ? memo->Value : FinishTrackKey(*surface)) : default_key;
+    // The relief's lengths come from a texture bound to the surface node's own mesh coordinates, so that node's world scale sizes it.
+    const auto *node_transform = r.try_get<const WorldTransform>(node);
+    const float node_scale = node_transform ? MeanScale(node_transform->S) : 0.f;
     // Both tracks are read at the sweep speed, so a sample advances the same surface distance whatever their spacings are.
-    const float step = side.SweepSpeed / sample_rate;
+    const float step = glm::length(side.SweepVelocity) / sample_rate;
 
     SideTracks out;
-    // `size` converts the track's stored lengths to meters: 1 for the microscale finish, whose lengths are already absolute and stay
-    // fixed when a node is resized, and the node's world scale for the relief, whose lengths come from a texture bound to the mesh's coordinates.
+    // `size` converts the track's stored lengths to meters: 1 for the finish, whose lengths are already absolute,
+    // and the node's world scale for the relief, whose lengths are in the mesh's own coordinates.
     const auto make_track = [&](int32_t index, float sigma, float size) {
         const auto &track = *m.SurfaceTracks[uint32_t(index)].Owned;
         const float spacing = track.Spacing * size;
@@ -333,8 +433,9 @@ SideTracks ResolveSideTracks(const entt::registry &r, ModalAudio &m, const Susta
             .Rate = rate,
             .Sigma = sigma,
             // The contact filter is spatial: a patch of radius a resolves down to about 2a, whatever the speed.
-            // The window covers at least a sample's travel, so a fast traversal stays within the output rate, and at most the whole track.
-            .Window = std::min(std::max(patch_window / spacing, rate), float(track.Heights.size())),
+            // A box this wide first nulls at one over its width, so covering two samples' travel puts that null on
+            // Nyquist and keeps the track from folding back on itself. At most it covers the whole track.
+            .Window = std::min(std::max(patch_window / spacing, 2 * rate), float(track.Heights.size())),
             .Step = step,
         };
     };
@@ -343,8 +444,7 @@ SideTracks ResolveSideTracks(const entt::registry &r, ModalAudio &m, const Susta
     if (const bool measured = s.HasMeasuredProfile(); measured || s.Roughness > 0) {
         const auto index = AdoptSurfaceTrack(m, finish_key, [&] {
             return std::make_shared<const RoughnessTrack>(
-                measured ? MakeProfileTrack(s.Profile, s.SampleSpacing)
-                         : SynthesizeRoughness(s.CorrelationLength, s.SpectralSlope, SynthesizedFinishSpacing(s), TrackSamples)
+                measured ? MakeProfileTrack(s.Profile, s.SampleSpacing) : SynthesizeRoughness(s.CorrelationLength, s.SpectralSlope, SynthesizedFinishSpacing(s), TrackSamples)
             );
         });
         // A measured profile carries its own height scale, and a synthesized track is unit height, scaled here by the surface's own roughness.
@@ -360,15 +460,19 @@ SideTracks ResolveSideTracks(const entt::registry &r, ModalAudio &m, const Susta
     return out;
 }
 
-// One Hertz contact, so its elastic constants belong to the pair rather than to either body.
-// Resolved once per contact, which is also what keeps both voices agreeing on the force between them.
+// One Hertz contact, whose elastic constants belong to the pair rather than to either body.
+// Resolved once, so both voices agree on the force between them.
 struct ResolvedContact {
-    // The contact in this body's own frame, which is the one its mode shapes are defined in.
+    // The contact in this body's own frame, the frame its mode shapes are defined in.
     struct Side {
-        const ModalModes *Modes{nullptr};
+        // The node carrying the model this side excites, whose frame everything below is in.
+        // Null when the side has nothing to excite.
+        entt::entity ModelEntity{entt::null};
         SamplePointBlend Blend{};
         vec3 Normal{0}; // Unit contact normal, directed into this body.
-        vec3 Slip{0}; // Relative tangential velocity of the two material points, m/s.
+        vec3 SlipDir{0}; // Unit slip direction, which the frictional force acts along.
+        // Direction each surface's geometric force drives this body, one per contact side, signed so the two bodies oppose.
+        std::array<vec3, 2> SweepDir{};
     };
     std::array<Side, 2> Sides;
     std::array<SideTracks, 2> Tracks; // Each body's finish and relief, adopted once for the pair.
@@ -377,31 +481,42 @@ struct ResolvedContact {
     float DampingCoeff{0}; // Hunt-Crossley c_d, s/m.
 };
 
-ResolvedContact ResolveContact(const entt::registry &r, ModalAudio &m, const SustainedContact &c, const ModalSoundControls &controls) {
+ResolvedContact ResolveContact(const entt::registry &r, ModalAudio &m, const SustainedContact &c, const std::array<ContactNodes, 2> &nodes, const ModalSoundControls &controls) {
     ResolvedContact out;
     std::array<double, 2> curvature{};
-    std::array<float, 2> node_scale{};
     for (uint32_t i = 0; i < c.Sides.size(); ++i) {
-        const auto &s = c.Sides[i];
         auto &side = out.Sides[i];
-        // Physics reports the contact in world space oriented toward the second body, and a body's mode shapes are defined in its node's own frame.
-        const auto &wt = r.get<const WorldTransform>(s.Entity);
+        // Each body's curvature is read on the surface it touches, at the point it touches, as Hertz theory asks for.
+        // It belongs to the pair's stiffness, so a side with nothing to excite still contributes it.
+        // A body with no mesh reads as flat.
+        curvature[i] = SurfaceCurvature(r, nodes[i].Geometry, c.Point).value_or(0.0);
+        // The blend indexes sample points, so a model whose shapes and positions disagree, or a body already gone,
+        // leaves this side unresolved.
+        const auto *modes = r.valid(nodes[i].Model) ? r.try_get<const ModalModes>(nodes[i].Model) : nullptr;
+        const auto *transform = modes ? r.try_get<const WorldTransform>(nodes[i].Model) : nullptr;
+        if (!transform || modes->Positions.empty() || modes->Shapes.size() != modes->Positions.size()) continue;
+
+        // Physics reports the contact in world space oriented toward the second body.
+        // Mode shapes are defined in the frame of the node carrying the model, which everything below moves into.
+        side.ModelEntity = nodes[i].Model;
+        const auto &wt = *transform;
         const vec3 local_point = InverseTransformPoint(wt, c.Point);
-        node_scale[i] = MeanScale(wt.S);
-        // The first body is pressed the other way and its friction acts the other way, which is the one fact that separates the two sides.
+        // The first body is pressed and dragged the other way.
         const float toward = i == 0 ? -1.f : 1.f;
         side.Normal = InverseTransformDir(wt, toward * c.Normal);
-        side.Slip = InverseTransformDir(wt, toward * c.Slip);
-        side.Modes = r.try_get<const ModalModes>(s.Entity);
-        if (!side.Modes || side.Modes->Positions.empty()) continue;
-        side.Blend = NearestSamplePoints(side.Modes->Positions, local_point);
-        // Each body's curvature is read where the contact touches it, which Hertz theory asks for and which makes the sum below symmetric.
-        if (const auto *cd = r.try_get<const ContactDynamics>(s.Entity); cd && side.Blend.First < cd->Curvature.size()) {
-            curvature[i] = cd->Curvature[side.Blend.First];
+        side.SlipDir = InverseTransformDir(wt, toward * UnitOrZero(c.Slip));
+        // Both surfaces' sweep directions land in this body's frame, since its mode shapes are what they project onto.
+        // A body is driven along the direction it travels over its own surface and against the one it travels over
+        // the other's: climbing the other body's asperity retards it while pushing on the body carrying it.
+        // One tangential force therefore drives the two bodies of a contact apart rather than the same way.
+        for (uint32_t j = 0; j < c.Sides.size(); ++j) {
+            const float own = j == i ? 1.f : -1.f;
+            side.SweepDir[j] = InverseTransformDir(wt, own * UnitOrZero(c.Sides[j].SweepVelocity));
         }
+        side.Blend = ShapeBlendAt(*modes, local_point);
     }
-    // 1/E* and kappa1 + kappa2 are both sums over the two bodies, so the stiffness and patch they give are the contact's, not a side's.
-    const double inv_modulus = InvEffectiveModulus(MaterialOf(r, c.Sides.front().Entity), MaterialOf(r, c.Sides.back().Entity));
+    // 1/E* and kappa1 + kappa2 are both sums over the two bodies, so the stiffness and patch belong to the contact.
+    const double inv_modulus = InvEffectiveModulus(MaterialOf(r, nodes[0].Surface, nodes[0].Model), MaterialOf(r, nodes[1].Surface, nodes[1].Model));
     const double combined = CombinedCurvature(curvature.front(), curvature.back());
     out.Stiffness = ContactStiffness(inv_modulus, combined);
     out.StaticPenetration = float(StaticPenetration(c.NormalForce, out.Stiffness));
@@ -411,40 +526,37 @@ ResolvedContact ResolveContact(const entt::registry &r, ModalAudio &m, const Sus
     // The width of the contact filter along the surface is the pair's, so the tracks are the same whichever voice reads them.
     const float patch_window = 2.f * float(ContactPatchRadius(c.NormalForce, inv_modulus, combined));
     const float sample_rate = LiveBank(m).SampleRate;
-    for (uint32_t i = 0; i < c.Sides.size(); ++i) out.Tracks[i] = ResolveSideTracks(r, m, c.Sides[i], node_scale[i], patch_window, sample_rate);
+    for (uint32_t i = 0; i < c.Sides.size(); ++i) out.Tracks[i] = ResolveSideTracks(r, m, c.Sides[i], nodes[i].Surface, patch_window, sample_rate);
     return out;
 }
 
-// Build the event a voice renders from one side of a resolved contact, empty when the body has no bank slot or sample points to excite.
-std::optional<ModalEvent> BuildContactEvent(ModalAudio &m, const SustainedContact &c, const ResolvedContact &resolved, uint32_t side) {
-    const auto &own = c.Sides[side];
+// The voice one side of a resolved contact renders, empty when the body has no bank slot or no sample points to excite.
+std::optional<VoiceSet::Voice> BuildContactVoice(ModalAudio &m, const SustainedContact &c, const ResolvedContact &resolved, uint32_t side) {
     const auto &own_resolved = resolved.Sides[side];
-    const auto &bank = LiveBank(m);
-    const auto slot = FindModalObject(bank, own.Entity);
+    if (own_resolved.ModelEntity == null_entity) return {};
+    const auto slot = FindModalObject(LiveBank(m), own_resolved.ModelEntity);
     if (!slot) return {};
-    const auto *modes = own_resolved.Modes;
-    // The blend indexes sample points, which the bank lays its shapes out by, so a model whose two disagree would read past its own shapes on the audio thread.
-    if (!modes || modes->Positions.empty() || modes->Shapes.size() != modes->Positions.size()) return {};
 
-    return ModalEvent{
-        .Kind = ModalEventKind::Contact,
+    return VoiceSet::Voice{
+        .Id = ContactVoiceId(c, side),
         .Object = *slot,
-        .ContactId = ContactVoiceId(c, side),
-        .Contact = {
+        .State = {
             .Blend = own_resolved.Blend,
             .N = own_resolved.Normal,
-            .Slip = own_resolved.Slip,
+            .SlipDir = own_resolved.SlipDir,
+            .SweepDir = own_resolved.SweepDir,
             .NormalForce = c.NormalForce,
+            .Friction = c.Friction,
             .Stiffness = float(resolved.Stiffness),
             .StaticPenetration = resolved.StaticPenetration,
             .DampingCoeff = resolved.DampingCoeff,
-            // Slots 0 and 1 carry each surface's microscale finish, slots 2 and 3 its mesoscale relief, this body's first.
-            // The tracks are independent realizations, so they add in quadrature, which is what the combined roughness of two surfaces in contact is.
+            // Slots 0 and 1 carry each side's microscale finish, slots 2 and 3 its mesoscale relief.
+            // Both voices list them in the same order, so the two read one surface at one position.
             .Tracks = {
-                resolved.Tracks[side].Finish,
-                resolved.Tracks[1 - side].Finish,
-                resolved.Tracks[side].Relief,
-                resolved.Tracks[1 - side].Relief,
+                resolved.Tracks[0].Finish,
+                resolved.Tracks[1].Finish,
+                resolved.Tracks[0].Relief,
+                resolved.Tracks[1].Relief,
             },
         },
     };
@@ -510,8 +622,8 @@ void RetuneModalObject(const entt::registry &r, ModalBank &b, uint32_t slot, ent
     std::atomic_ref{b.OutGain[slot]}.store(ModalOutGain(r, e, scale, mode_count), std::memory_order_relaxed);
 }
 
-// Rebuild the bank from every modal sound object. The replacement is built off-lock, so the audio
-// thread keeps rendering the old bank until InstallModalBank swaps it in under a brief lock.
+// Rebuild the bank from every modal sound object. The replacement is built separately, so the audio
+// thread keeps rendering the old bank until InstallModalBank swaps it in.
 void RebuildModalBank(entt::registry &r) {
     auto &m = r.ctx().get<ModalAudio>();
     const auto *res = r.ctx().find<AudioDeviceResource>();
@@ -583,6 +695,9 @@ double SphereEquivalentCurvature(double density, double inv_mass) { return std::
 // A strike from a physics collision. Its presence marks `force` as the true contact impulse, not a nominal level.
 struct PhysicsStrike {
     vec3 Direction; // node-local contact direction
+    vec3 Point; // world-space contact point, which the struck body's curvature is read at
+    entt::entity GeometryEntity; // node whose mesh the collision landed on
+    entt::entity SurfaceEntity; // node whose acoustic surface the collision landed on
     Impactor Impactor; // striking body's impactor
 };
 
@@ -590,7 +705,7 @@ struct PhysicsStrike {
 // The half-sine contact-force pulse of duration tau has unit sample sum, so its spectrum is flat
 // at DC and rolls off above ~1/tau: shorter contact is brighter.
 // Impulse magnitude rides in the mode excitation gains, not the pulse.
-// `physics`, when set, is a real collision; when unset the strike is a manual mallet hit.
+// `physics` set means a real collision, and unset a manual mallet hit.
 void TriggerModalStrike(entt::registry &r, entt::entity e, uint32_t excitable_index, float force, float contact_speed, std::optional<PhysicsStrike> physics = std::nullopt) {
     auto &m = r.ctx().get<ModalAudio>();
     const auto &bank = LiveBank(m);
@@ -598,11 +713,12 @@ void TriggerModalStrike(entt::registry &r, entt::entity e, uint32_t excitable_in
     if (!slot) return;
 
     const auto &modes = r.get<const ModalModes>(e);
-    if (excitable_index >= modes.Vertices.size()) return;
+    if (excitable_index >= std::min(modes.Vertices.size(), modes.Positions.size())) return;
     const vec3 dir = physics ? glm::normalize(physics->Direction) : ExciteDirection(r, e, modes.Vertices[excitable_index]);
 
     const auto *cd = r.try_get<const ContactDynamics>(e);
-    const auto *mat = r.try_get<const AcousticMaterial>(r.get<const Instance>(e).Entity);
+    const auto mesh_entity = r.get<const Instance>(e).Entity;
+    const auto *mat = r.try_get<const AcousticMaterial>(mesh_entity);
     // A short default contact with no click applies when the material or contact dynamics are missing.
     double tau = 1e-4; // seconds
     double accel_amp = 0;
@@ -616,10 +732,23 @@ void TriggerModalStrike(entt::registry &r, entt::entity e, uint32_t excitable_in
             imp = StrikerImpactor(striker_ptr ? *striker_ptr : Striker{});
         }
         // Contact time scales linearly with the object's current size.
-        tau = EstimateContactTime(*cd, excitable_index, dir, contact_speed, mat->Properties, imp, UniformScaleRatio(r, e, modes));
-        // Acceleration-noise amplitude: contact impulse over density. A physics `force` is the true impulse.
-        // A manual one is nominal, so estimate it from the reduced mass and approach speed.
-        accel_amp = physics ? double(force) / mat->Properties.Density : ReducedContactMass(*cd, excitable_index, dir, imp) * std::abs(double(contact_speed)) / mat->Properties.Density;
+        // A collision reads curvature on the collider it landed on, and a mallet hit reads it where its sample point sits.
+        const vec3 strike_point = physics ? physics->Point : TransformPoint(r.get<const WorldTransform>(e), modes.Positions[excitable_index]);
+        const double curvature = SurfaceCurvature(r, physics ? physics->GeometryEntity : e, strike_point).value_or(0.0);
+        // The elastic constants belong to the surface that was struck, as they do for a contact that persists.
+        // A mallet lands on the node's own surface, since it comes from outside the scene rather than off a collider.
+        const auto &elastic = MaterialOf(r, physics ? physics->SurfaceEntity : e, e);
+        tau = EstimateContactTime(*cd, excitable_index, dir, contact_speed, elastic, curvature, imp, UniformScaleRatio(r, e, modes));
+        // Acceleration noise radiates as a dipole whose strength is the displaced volume, so the impulse scales by
+        // volume over mass. That equals 1/density for a solid homogeneous body and is larger for a hollow one.
+        // Mesh units are node-local, so the baked scale cubed converts to m^3. Density stands in without a volume.
+        const auto *bvh = r.try_get<const MeshBvh>(mesh_entity);
+        const auto enclosed = bvh ? bvh->EnclosedVolume : std::nullopt;
+        const double baked = double(MeanScale(modes.BakedScale));
+        const double volume = enclosed ? *enclosed * baked * baked * baked : 0;
+        const double per_impulse = volume > 0 && cd->Mass > 0 ? volume / cd->Mass : 1 / mat->Properties.Density;
+        // A physics `force` is the true contact impulse. A manual one is nominal, so it comes from the reduced mass and approach speed.
+        accel_amp = per_impulse * (physics ? double(force) : ReducedContactMass(*cd, excitable_index, dir, imp) * std::abs(double(contact_speed)));
     }
     const auto step = float(1.0 / (tau * bank.SampleRate));
     EnqueueModalEvent(
@@ -656,6 +785,7 @@ struct ModalTuning {};
 struct ModalSoundControls {};
 struct RecordingStart {};
 struct SoundVerticesDerivation {};
+struct ContactReportingDerivation {};
 struct ContactDynamicsDerivation {};
 struct AcousticMaterialEdit {};
 struct ContactSurfaceEdit {};
@@ -826,6 +956,104 @@ std::vector<uint32_t> DesiredSolveVertices(const entt::registry &r, entt::entity
     return iota_view{0u, ex_count} | transform([&](uint32_t i) { return i * num_vertices / ex_count; }) | to<std::vector<uint32_t>>();
 }
 
+// One triangle per distinct triple of sample points, dropping any triple that repeats a point.
+// Each keeps the winding it was first seen with, so the surface stays consistently oriented.
+std::vector<uint32_t> UniqueSampleTriangles(std::span<const std::array<uint32_t, 3>> triangles) {
+    struct Candidate {
+        std::array<uint32_t, 3> Key, Winding;
+    };
+    std::vector<Candidate> candidates;
+    candidates.reserve(triangles.size());
+    for (const auto &winding : triangles) {
+        if (winding[0] == winding[1] || winding[1] == winding[2] || winding[2] == winding[0]) continue;
+        auto key = winding;
+        std::ranges::sort(key);
+        candidates.emplace_back(key, winding);
+    }
+    std::ranges::sort(candidates, {}, &Candidate::Key);
+    const auto duplicates = std::ranges::unique(candidates, {}, &Candidate::Key);
+    candidates.erase(duplicates.begin(), duplicates.end());
+
+    std::vector<uint32_t> out;
+    out.reserve(candidates.size() * 3);
+    for (const auto &c : candidates) out.insert(out.end(), c.Winding.begin(), c.Winding.end());
+    return out;
+}
+
+// Triangles over the excitation vertices, from the mesh's own triangulation collapsed onto them.
+// Every mesh vertex takes the excitation vertex it reaches in the fewest edges, and a mesh triangle whose three corners
+// take three different ones contributes a triangle.
+// Empty when the excitation vertices are too few or too clustered to span the surface.
+std::vector<uint32_t> SampleSurfaceTriangles(std::span<const uint32_t> triangle_indices, uint32_t vertex_count, std::span<const uint32_t> excitation_vertices) {
+    if (excitation_vertices.size() < 3 || triangle_indices.size() < 3) return {};
+
+    // Vertex adjacency over the triangles' edges, in compressed rows. Each corner of a triangle neighbours the other two.
+    std::vector<uint32_t> row_start(vertex_count + 1, 0);
+    for (const auto v : triangle_indices) row_start[v + 1] += 2;
+    for (uint32_t v = 0; v < vertex_count; ++v) row_start[v + 1] += row_start[v];
+    std::vector<uint32_t> neighbors(row_start.back());
+    auto fill = row_start;
+    for (size_t i = 0; i + 2 < triangle_indices.size(); i += 3) {
+        const std::array tri{triangle_indices[i], triangle_indices[i + 1], triangle_indices[i + 2]};
+        for (uint32_t k = 0; k < 3; ++k) {
+            neighbors[fill[tri[k]]++] = tri[(k + 1) % 3];
+            neighbors[fill[tri[k]]++] = tri[(k + 2) % 3];
+        }
+    }
+
+    // Breadth-first from every excitation vertex at once, so each vertex ends up labelled with its nearest one in edge hops.
+    static constexpr uint32_t Unlabelled{~0u};
+    std::vector<uint32_t> label(vertex_count, Unlabelled), queue;
+    queue.reserve(vertex_count);
+    for (uint32_t s = 0; s < excitation_vertices.size(); ++s) {
+        if (const auto v = excitation_vertices[s]; v < vertex_count && label[v] == Unlabelled) {
+            label[v] = s;
+            queue.push_back(v);
+        }
+    }
+    for (size_t head = 0; head < queue.size(); ++head) {
+        const auto v = queue[head];
+        for (auto i = row_start[v]; i < row_start[v + 1]; ++i) {
+            if (const auto n = neighbors[i]; label[n] == Unlabelled) {
+                label[n] = label[v];
+                queue.push_back(n);
+            }
+        }
+    }
+
+    std::vector<std::array<uint32_t, 3>> collapsed;
+    for (size_t i = 0; i + 2 < triangle_indices.size(); i += 3) {
+        const std::array winding{label[triangle_indices[i]], label[triangle_indices[i + 1]], label[triangle_indices[i + 2]]};
+        // A corner in a shell that holds no excitation vertex has nothing to collapse onto.
+        if (std::ranges::contains(winding, Unlabelled)) continue;
+        collapsed.push_back(winding);
+    }
+    return UniqueSampleTriangles(collapsed);
+}
+
+// The excitation vertices a solve's sample points came from, one per sample point, in sample point order.
+// Vertices whose positions reached the same tet point share a sample point, and the first of them supplies it.
+std::vector<uint32_t> CompactExcitationVertices(std::span<const uint32_t> vertices, std::span<const uint32_t> sample_point_of) {
+    std::vector<uint32_t> out;
+    out.reserve(sample_point_of.empty() ? 0 : sample_point_of.back() + 1);
+    for (uint32_t i = 0; i < vertices.size() && i < sample_point_of.size(); ++i) {
+        if (sample_point_of[i] == out.size()) out.push_back(vertices[i]);
+    }
+    return out;
+}
+
+// The sample surface after a solve merged positions, every corner following its position to the point it landed on.
+// A triangle whose corners merged collapses, and two triangles can end up over the same points.
+std::vector<uint32_t> RelabelSampleTriangles(std::span<const uint32_t> triangles, std::span<const uint32_t> sample_point_of) {
+    if (sample_point_of.empty()) return {};
+    std::vector<std::array<uint32_t, 3>> relabelled;
+    relabelled.reserve(triangles.size() / 3);
+    for (size_t i = 0; i + 2 < triangles.size(); i += 3) {
+        relabelled.push_back({sample_point_of[triangles[i]], sample_point_of[triangles[i + 1]], sample_point_of[triangles[i + 2]]});
+    }
+    return UniqueSampleTriangles(relabelled);
+}
+
 struct SolveInputs {
     std::vector<vec3> Positions; // Mesh positions at the node's world scale (SI meters)
     std::vector<uint32_t> TriangleIndices;
@@ -853,7 +1081,8 @@ bool ModalModelStale(const entt::registry &r, entt::entity e, entt::entity mesh_
     const auto *summary = r.try_get<const ModalEigenSummary>(e);
     if (!summary) return true;
     if (summary->TetInputsHash != inputs.Hash) return true;
-    if (inputs.Vertices != r.get<const ModalModes>(e).Vertices) return true;
+    // Judged against what the last solve was asked for, since vertices reaching one tet point come back as one sample point.
+    if (inputs.Vertices != summary->SolvedVertices) return true;
     const auto &settings = r.get<const ModalSolveSettings>(e);
     if (settings.NumModes != summary->SolvedNumModes || settings.MinModeFreq != summary->SolvedMinModeFreq || settings.MaxModeFreq != summary->SolvedMaxModeFreq) return true;
     const auto *mat = r.try_get<const AcousticMaterial>(mesh_entity);
@@ -895,6 +1124,8 @@ void LaunchModalSolve(entt::registry &r, entt::entity viewport, entt::entity e) 
     std::shared_ptr<const Eigen::MatrixXf> warm_basis;
     if (const auto &warm = r.ctx().get<const ModalWarmStart>(); warm.Basis && warm.TetInputsHash == inputs.Hash) warm_basis = warm.Basis;
     auto work = [inputs = std::move(inputs), material_props = material->Properties, excite_positions = std::move(excite_positions), solver_config, warm_basis = std::move(warm_basis)](JobMonitor &monitor) mutable -> ModalGenerationResult {
+        // The sample surface follows the full mesh's triangulation, which simplification is about to rewrite.
+        auto sample_triangles = SampleSurfaceTriangles(inputs.TriangleIndices, uint32_t(inputs.Positions.size()), inputs.Vertices);
         SimplifySurface(inputs.Positions, inputs.TriangleIndices, inputs.TetOptions.SimplifyRatio);
         auto tets = GenerateTets(std::move(inputs.Positions), std::move(inputs.TriangleIndices), {.Quality = inputs.TetOptions.Quality});
         if (monitor.Cancelled()) return {};
@@ -903,8 +1134,11 @@ void LaunchModalSolve(entt::registry &r, entt::entity viewport, entt::entity e) 
             return {};
         }
         auto result = modal::mesh2modes(tets->Mesh, material_props, excite_positions, inputs.NodeScale, solver_config, {.SeedBasis = warm_basis.get(), .KeepBasis = true}, &monitor);
-        result.Modes.Vertices = std::move(inputs.Vertices);
+        // Positions that reached one tet point became one sample point, which the vertices and the surface follow.
+        result.Modes.Vertices = CompactExcitationVertices(inputs.Vertices, result.SamplePointOfExcitation);
+        result.Modes.Indices = RelabelSampleTriangles(sample_triangles, result.SamplePointOfExcitation);
         result.Modes.BakedScale = inputs.NodeScale;
+        result.Summary.SolvedVertices = std::move(inputs.Vertices);
         result.Summary.TetInputsHash = inputs.Hash;
         result.Summary.SolvedMinModeFreq = solver_config.MinModeFreq;
         result.Summary.SolvedMaxModeFreq = solver_config.MaxModeFreq;
@@ -925,8 +1159,6 @@ void RegisterAudioComponentHandlers(entt::registry &r) {
         auto &m = r.ctx().get<ModalAudio>();
         ModalBank empty;
         InstallModalBank(m, empty);
-        // The bank swap takes every voice with it, so nothing is left to close.
-        m.OpenContactVoices.clear();
         // The warm-start basis seeds re-solves of a mesh from the cleared scene, so drop it too.
         r.ctx().get<ModalWarmStart>() = {};
         // In-flight solves target entities from the cleared scene. Their results are discarded on arrival.
@@ -949,6 +1181,9 @@ void RegisterAudioComponentHandlers(entt::registry &r) {
         .on<VertexSamples>(On::Create | On::Update | On::Destroy)
         .on<::ModalModes>(On::Create | On::Update | On::Destroy)
         .on<SoundVerticesModel>(On::Create | On::Update | On::Destroy);
+    // Which body a sounding node reports through depends on the bodies above it, so a body appearing or going
+    // away restates the tag just as a sound model landing does.
+    track<audio_changes::ContactReportingDerivation>(r).on<PhysicsBodyHandle>(On::Create | On::Destroy);
     track<audio_changes::ContactDynamicsDerivation>(r)
         .on<MassProperties>(On::Create | On::Update | On::Destroy)
         .on<::ModalModes>(On::Create | On::Update | On::Destroy);
@@ -990,6 +1225,7 @@ void RegisterAudioComponentHandlers(entt::registry &r) {
         }
         // Rebuild SoundVertices from VertexSamples/ModalModes, selected by SoundVerticesModel.
         // Runs before any handler that reads SoundVertices.
+        bool reporting_stale = !reactive<audio_changes::ContactReportingDerivation>(r).empty();
         for (auto e : reactive<audio_changes::SoundVerticesDerivation>(r)) {
             const auto *model = r.try_get<const SoundVerticesModel>(e);
             std::vector<uint32_t> new_vertices;
@@ -1002,10 +1238,7 @@ void RegisterAudioComponentHandlers(entt::registry &r) {
                     new_vertices = modes->Vertices;
                 }
             }
-            // Physics reports contacts in detail only for bodies that can sound, so everything else costs nothing to leave resting.
-            // Intentional registry write outside Apply: derived from the object's sound model.
-            if (model && *model == SoundVerticesModel::Modal && !new_vertices.empty()) r.emplace_or_replace<ReportContacts>(e);
-            else r.remove<ReportContacts>(e);
+            reporting_stale = true;
             if (new_vertices.empty()) {
                 r.remove<SoundVertices>(e);
                 continue;
@@ -1020,6 +1253,22 @@ void RegisterAudioComponentHandlers(entt::registry &r) {
             const auto &sv = r.get<const SoundVertices>(e);
             if (const auto *active = r.try_get<const MeshActiveElement>(mesh_entity)) {
                 if (!sv.FindVertexIndex(active->Handle)) r.emplace_or_replace<MeshActiveElement>(mesh_entity, sv.Vertices.front());
+            }
+        }
+        // A body reports contacts when anything under it can sound.
+        // The walk stops at a node carrying its own body, so each node is reached by exactly one body.
+        // Intentional registry write outside Apply: derived from the sound models under each body.
+        if (reporting_stale) {
+            const auto sounds = [&r](this auto &self, entt::entity node) -> bool {
+                if (IsModalSounding(r, node)) return true;
+                for (auto child : Children{&r, node}) {
+                    if (!r.all_of<PhysicsBodyHandle>(child) && self(child)) return true;
+                }
+                return false;
+            };
+            for (const auto body : r.view<const PhysicsBodyHandle>()) {
+                if (sounds(body)) r.emplace_or_replace<ReportContacts>(body);
+                else r.remove<ReportContacts>(body);
             }
         }
         // Refresh contact dynamics before the strike loop below reads them.
@@ -1059,65 +1308,76 @@ void RegisterAudioComponentHandlers(entt::registry &r) {
             if (!r.all_of<ModalModes, SoundVertices, Recording>(e)) continue;
             if (r.get<const Recording>(e).Frame == 0) TriggerModalStrike(r, e, GetActiveVertexIndex(r, e), 1.f, 1.f);
         }
-        // Last step's collisions strike the objects they hit.
-        // Keep the strongest impact per object so a multi-point landing reads as one strike.
+        // Last step's collisions strike the objects they hit, once per contact point.
         if (auto *contacts = r.ctx().find<PhysicsContactImpacts>(); contacts && !contacts->Events.empty()) {
             const auto &controls = ModalControls(r);
-            std::vector<const ContactImpact *> strongest; // one entry per distinct struck modal object
             for (const auto &c : contacts->Events) {
                 if (c.Impulse < controls.MinContactImpulse || c.Speed < controls.MinContactSpeed) continue;
-                if (!IsModalSounding(r, c.Entity)) continue;
-                const auto it = std::ranges::find_if(strongest, [&](const ContactImpact *s) { return s->Entity == c.Entity; });
-                if (it == strongest.end()) strongest.push_back(&c);
-                else if (c.Impulse > (*it)->Impulse) *it = &c;
-            }
-            for (const auto *c : strongest) {
-                const auto &modes = r.get<const ModalModes>(c->Entity);
+                const auto own = ResolveContactNodes(r, c.ColliderEntity, c.Entity);
+                if (!IsModalSounding(r, own.Model)) continue;
+                const auto &modes = r.get<const ModalModes>(own.Model);
                 if (modes.Positions.empty()) continue;
-                // Bring the world-space contact into the object's node-local frame the modes are defined in.
-                const auto &wt = r.get<const WorldTransform>(c->Entity);
-                const vec3 local_point = InverseTransformPoint(wt, c->Point);
-                const vec3 local_dir = InverseTransformDir(wt, c->Direction);
-                // The other body is the impactor: its stiffness, mass, and (sphere-equivalent) curvature shape the contact time.
-                const auto &other_props = MaterialOf(r, c->Other);
-                const Impactor impactor{.Material = other_props, .Curvature = SphereEquivalentCurvature(other_props.Density, c->OtherInvMass), .InvMass = c->OtherInvMass};
-                TriggerModalStrike(r, c->Entity, NearestSamplePoints(modes.Positions, local_point).First, c->Impulse, c->Speed, PhysicsStrike{local_dir, impactor});
+                const auto other = ResolveContactNodes(r, c.OtherColliderEntity, c.Other);
+                // Bring the world-space contact into the node-local frame the modes are defined in.
+                const auto &wt = r.get<const WorldTransform>(own.Model);
+                const vec3 local_point = InverseTransformPoint(wt, c.Point);
+                const vec3 local_dir = InverseTransformDir(wt, c.Direction);
+                // The other body is the impactor: its stiffness, mass, and curvature shape the contact time.
+                // Its material follows the surface it struck with, and its curvature the geometry of that surface.
+                const auto &other_props = MaterialOf(r, other.Surface, other.Model);
+                // A body with no mesh is treated as a solid sphere of its mass.
+                const auto other_curvature = SurfaceCurvature(r, other.Geometry, c.Point);
+                const Impactor impactor{
+                    .Material = other_props,
+                    .Curvature = other_curvature.value_or(SphereEquivalentCurvature(other_props.Density, c.OtherInvMass)),
+                    .InvMass = c.OtherInvMass,
+                };
+                TriggerModalStrike(r, own.Model, NearestSamplePoint(modes.Positions, local_point), c.Impulse, c.Speed, PhysicsStrike{local_dir, c.Point, own.Geometry, own.Surface, impactor});
             }
             contacts->Events.clear();
         }
-        // Contacts that persist drive sustained voices, reported every frame the contact lasts.
-        // The audio thread opens a voice on the first report and refreshes it on the rest, so one it drops reopens on the next report.
-        const auto *sustained = r.ctx().find<const PhysicsSustainedContacts>();
-        const std::span<const SustainedContact> active = sustained ? std::span{sustained->Active} : std::span<const SustainedContact>{};
-        if (auto &m = r.ctx().get<ModalAudio>(); !active.empty() || !m.OpenContactVoices.empty()) {
-            // Settle what the audio thread still names before adopting anything, and before this frame's events go out.
+        // Contacts that persist drive sustained voices, republished as a whole set so a contact ends by its absence.
+        // A step the simulation did not take publishes nothing, and the audio thread ages out the set it holds,
+        // so a scene whose playhead has stopped falls silent even with bodies resting on one another.
+        auto &m = r.ctx().get<ModalAudio>();
+        if (const auto *sustained = r.ctx().find<const PhysicsSustainedContacts>(); sustained && sustained->Step != m.ContactStep) {
+            const std::span<const SustainedContact> active{sustained->Active};
+            m.ContactStep = sustained->Step;
             BeginSurfaceTrackFrame(m);
             const auto &controls = ModalControls(r);
-            auto &refreshed = m.RefreshedContactVoices;
-            refreshed.clear();
+            const auto max_voices = controls.MaxVoices;
+            auto &set = NextVoiceSet(m);
             for (const auto &c : active) {
                 // A contact whose surfaces are not moving over one another is silent however heavily it is loaded.
                 const bool moving = glm::length(c.Slip) >= controls.MinSlipSpeed ||
-                    std::max(c.Sides.front().SweepSpeed, c.Sides.back().SweepSpeed) >= controls.MinSweepSpeed;
+                    std::max(glm::length(c.Sides.front().SweepVelocity), glm::length(c.Sides.back().SweepVelocity)) >= controls.MinSweepSpeed;
                 if (!moving) continue;
-                // Resolving a contact walks both bodies' sample points and adopts both surfaces' tracks, so a pair with nothing to excite stops here.
-                const std::array<bool, 2> sounding{IsModalSounding(r, c.Sides.front().Entity), IsModalSounding(r, c.Sides.back().Entity)};
+                const std::array nodes{
+                    ResolveContactNodes(r, c.Sides.front().ColliderEntity, c.Sides.front().Entity),
+                    ResolveContactNodes(r, c.Sides.back().ColliderEntity, c.Sides.back().Entity),
+                };
+                // Resolving walks both bodies' sample points and adopts both surfaces' tracks, so a silent pair stops here.
+                const std::array<bool, 2> sounding{IsModalSounding(r, nodes[0].Model), IsModalSounding(r, nodes[1].Model)};
                 if (!sounding.front() && !sounding.back()) continue;
+                // A full set can take neither side, so a contact past the cap is refused before it is resolved.
+                if (set.Voices.size() >= max_voices) {
+                    m.VoicesRefused += sounding.front() + sounding.back();
+                    continue;
+                }
                 // Both voices render one contact, so its elastic constants and both bodies' surfaces resolve once here.
-                const auto resolved = ResolveContact(r, m, c, controls);
+                const auto resolved = ResolveContact(r, m, c, nodes, controls);
                 for (uint32_t side = 0; side < c.Sides.size(); ++side) {
                     if (!sounding[side]) continue;
-                    if (const auto event = BuildContactEvent(m, c, resolved, side)) {
-                        EnqueueModalEvent(m, *event);
-                        refreshed.push_back(ContactVoiceId(c, side));
+                    auto voice = BuildContactVoice(m, c, resolved, side);
+                    if (!voice) continue;
+                    if (set.Voices.size() >= max_voices) {
+                        ++m.VoicesRefused;
+                        continue;
                     }
+                    set.Voices.push_back(std::move(*voice));
                 }
             }
-            // A voice this frame's report stopped naming is over. Only ids that opened one are closed, so a resting scene enqueues nothing.
-            for (const auto id : m.OpenContactVoices) {
-                if (!std::ranges::contains(refreshed, id)) EnqueueModalEvent(m, {.Kind = ModalEventKind::ContactEnd, .ContactId = id});
-            }
-            m.OpenContactVoices.swap(refreshed);
+            PublishVoiceSet(m);
         }
         // Reconcile the live output device: a config change re-inits (and may change the negotiated rate),
         // a mix change just applies level/on-off.
@@ -1129,6 +1389,8 @@ void RegisterAudioComponentHandlers(entt::registry &r) {
                     if (r.all_of<AudioOutputConfig, AudioOutputMix>(e)) ReconcileAudioDevice(*res, r.get<const AudioOutputConfig>(e), r.get<const AudioOutputMix>(e));
                 }
                 device_rate_changed = res->SampleRate != prev_rate;
+                // A reopened device publishes a new scheduling group, which the render threads have to be re-placed into.
+                r.ctx().get<ModalAudio>().RenderPool.SetWorkgroup(res->RenderWorkgroup);
             }
             for (auto e : reactive<audio_changes::AudioMix>(r)) {
                 if (r.all_of<AudioOutputMix>(e)) ApplyAudioMix(*res, r.get<const AudioOutputMix>(e));
@@ -1188,7 +1450,10 @@ void RegisterAudioComponentHandlers(entt::registry &r) {
                 m.MaxImpacts.store(controls.MaxImpacts, std::memory_order_relaxed);
                 m.SustainLevel.store(controls.SustainLevel, std::memory_order_relaxed);
                 m.Coupling.store(controls.Coupling, std::memory_order_relaxed);
-                m.MaxVoices.store(controls.MaxVoices, std::memory_order_relaxed);
+                // Sized from the main thread, since a render call cannot spawn threads.
+                const auto *device = r.ctx().find<const AudioDeviceResource>();
+                m.RenderPool.SetSize(controls.RenderThreads);
+                m.RenderPool.SetWorkgroup(device ? device->RenderWorkgroup : nullptr);
                 for (uint32_t slot = 0; slot < uint32_t(bank.Entities.size()); ++slot) SetModalOutGain(r, bank, slot, bank.Entities[slot]);
             }
             // Retune objects whose node was rescaled.
@@ -1374,7 +1639,9 @@ void DrawModalModelSection(entt::registry &r, entt::entity viewport, entt::entit
         // Derived contact constants, for a contact against a like body at the object's own weight.
         const auto &props = material->Properties;
         const auto *cd = r.try_get<const ContactDynamics>(e);
-        const double curvature = CombinedCurvature(cd && !cd->Curvature.empty() ? cd->Curvature.front() : 0.0, 0.0);
+        const auto *modes = r.try_get<const ModalModes>(e);
+        const auto sample_curvature = modes && !modes->Positions.empty() ? SurfaceCurvature(r, e, TransformPoint(r.get<const WorldTransform>(e), modes->Positions.front())) : std::nullopt;
+        const double curvature = CombinedCurvature(sample_curvature.value_or(0.0), 0.0);
         const double inv_modulus = InvEffectiveModulus(props, props);
         const double load = (cd ? cd->Mass : 0.0) * 9.81;
         const double patch_radius = ContactPatchRadius(load, inv_modulus, curvature);
@@ -1665,7 +1932,6 @@ void DrawObjectAudioControls(
         SameLine();
         if (Button("Save wav files")) {
             const auto name = GetName(r, e);
-            // Save wav files for both the modal and real-world impact sounds.
             static const auto WavOutDir = fs::path{".."} / "audio_samples";
             const auto sr = DeviceSampleRate(r);
             WriteWav(recording->Frames, WavOutDir / std::format("{}-modal", name), sr);
@@ -1708,24 +1974,27 @@ void ApplyModalModel(entt::registry &r, entt::entity e, const fs::path &relative
 void DrawGlobalSynthControls(entt::registry &r, entt::entity viewport) {
     ui::Edit f{r, viewport};
     if (!r.view<const ModalModes>().empty() && CollapsingHeader("Modal synthesis", ImGuiTreeNodeFlags_DefaultOpen)) {
+        f.Slider<&ModalSoundControls::RenderThreads>("Render threads");
+        MeshEditor::HelpMarker("Objects render independently, so a scene of many ringing ones scales on this.");
+        f.Slider<&ModalSoundControls::MaxImpacts>("Max impacts");
+        MeshEditor::HelpMarker("Cap on simultaneous in-flight contact pulses.");
         f.Slider<&ModalSoundControls::ModalLevel>("Modal gain");
         MeshEditor::HelpMarker("Gain on every modal object's resonator output.");
         f.Slider<&ModalSoundControls::ClickGain>("Click");
         MeshEditor::HelpMarker("Level of the rigid-body acceleration-noise click.");
-        f.Slider<&ModalSoundControls::MaxImpacts>("Max impacts");
-        MeshEditor::HelpMarker("Cap on simultaneous in-flight contact pulses.");
         f.Slider<&ModalSoundControls::MinContactImpulse>("Min contact impulse", "%.3f");
         f.Slider<&ModalSoundControls::MinContactSpeed>("Min contact speed", "%.3f");
         MeshEditor::HelpMarker("A physics collision sounds only above both floors.");
 
         SeparatorText("Sustained contact");
+        f.Slider<&ModalSoundControls::MaxVoices>("Max voices");
+        MeshEditor::HelpMarker("Cap on simultaneous sustained-contact voices.");
         f.Slider<&ModalSoundControls::SustainLevel>("Level##sustain");
         MeshEditor::HelpMarker("Level of the force a persisting contact drives the modes with as the two surfaces ride over one another.");
         f.Slider<&ModalSoundControls::Coupling>("Coupling");
         MeshEditor::HelpMarker("How much of the object's own vibration modulates the contact separation. Coupling produces micro-collisions and chatter that an open-loop force cannot.");
         f.Slider<&ModalSoundControls::ContactDamping>("Contact damping");
         MeshEditor::HelpMarker("Scale on the Hunt-Crossley dissipation the pair's restitution implies.");
-        f.Slider<&ModalSoundControls::MaxVoices>("Max voices");
         f.Slider<&ModalSoundControls::MinSlipSpeed>("Min slip speed", "%.3f");
         f.Slider<&ModalSoundControls::MinSweepSpeed>("Min sweep speed", "%.3f");
         MeshEditor::HelpMarker("A persisting contact sounds only once its slip or either sweep speed clears its floor. Slip is how fast the surfaces slide, and sweep is how fast the contact travels over each surface, so a rolling body has sweep without slip.");
@@ -1733,7 +2002,7 @@ void DrawGlobalSynthControls(entt::registry &r, entt::entity viewport) {
 
         SeparatorText("Striker");
         const auto &striker = r.get<const Striker>(viewport);
-        // A material change replaces the whole striker (it holds a string); the sliders below edit their fields in place.
+        // A material change replaces the whole striker, since it holds a string.
         PresetCombo("Material", striker.Material.Name, materials::acoustic::All, [&](const auto &choice) {
             action::Emit(action::Replace<Striker>{.Entity = viewport, .Value = {choice, striker.TipRadius, striker.Length}});
         });
@@ -1761,7 +2030,9 @@ void DrawAudioDebug(const entt::registry &r) {
 
     SeparatorText("Modal bank");
     Text("Objects: %zu, modes: %zu", bank.Entities.size(), bank.CoeffRe.size());
-    Text("Voices: %u / %u", m.ActiveVoices.load(std::memory_order_relaxed), m.MaxVoices.load(std::memory_order_relaxed));
+    Text("Voices: %u / %u", m.ActiveVoices.load(std::memory_order_relaxed), ModalControls(r).MaxVoices);
+    Text("Refused: %llu", m.VoicesRefused);
+    MeshEditor::HelpMarker("Contacts the voice cap had no room for, each one a body pressing on another that stays silent.");
     Text("Impacts: %u / %u", m.ActiveImpacts.load(std::memory_order_relaxed), m.MaxImpacts.load(std::memory_order_relaxed));
 
     SeparatorText("Event queue");

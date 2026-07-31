@@ -12,12 +12,38 @@
 
 #include <format>
 
+#ifdef __APPLE__
+#include <CoreAudio/CoreAudio.h>
+#include <os/workgroup.h>
+#endif
+
 template<> struct FieldLimits<&AudioOutputMix::Volume> : Within<0., 1.> {};
 
 namespace {
 ma_context Context;
 ma_device Device;
 bool ContextInitialized = false;
+
+// The scheduling group the device's IO thread belongs to, which threads rendering alongside it join.
+// Null when the device publishes none.
+void *DeviceWorkgroup([[maybe_unused]] uint32_t device_object_id) {
+#ifdef __APPLE__
+    os_workgroup_t workgroup{nullptr};
+    UInt32 size = sizeof(workgroup);
+    const AudioObjectPropertyAddress address{kAudioDevicePropertyIOThreadOSWorkgroup, kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain};
+    if (AudioObjectGetPropertyData(device_object_id, &address, 0, nullptr, &size, &workgroup) != noErr) return nullptr;
+    return static_cast<void *>(workgroup);
+#else
+    return nullptr;
+#endif
+}
+
+// Give back the reference DeviceWorkgroup handed out. Other holders keep their own.
+void ReleaseWorkgroup([[maybe_unused]] void *workgroup) {
+#ifdef __APPLE__
+    if (workgroup) os_release(static_cast<os_workgroup_t>(workgroup));
+#endif
+}
 
 void DataCallback(ma_device *device, void *output, const void *, ma_uint32 frame_count) {
     auto &res = *reinterpret_cast<AudioDeviceResource *>(device->pUserData);
@@ -34,6 +60,8 @@ std::string SampleRateName(const AudioDeviceResource &res, uint32_t sample_rate)
 AudioDeviceResource::AudioDeviceResource(entt::registry &r, entt::entity viewport) : R(&r), Viewport(viewport) {}
 AudioDeviceResource::~AudioDeviceResource() {
     if (Initialized) ma_device_uninit(&Device);
+    ReleaseWorkgroup(RenderWorkgroup);
+    RenderWorkgroup = nullptr;
     if (ContextInitialized) {
         ma_context_uninit(&Context);
         ContextInitialized = false;
@@ -50,6 +78,9 @@ void ReconcileAudioDevice(AudioDeviceResource &res, const AudioOutputConfig &con
         if (res.Initialized) {
             ma_device_uninit(&Device);
             res.Initialized = false;
+            // The group belongs to the device's IO thread, so it goes with the device.
+            ReleaseWorkgroup(res.RenderWorkgroup);
+            res.RenderWorkgroup = nullptr;
         }
 
         ma_device_info *playback_infos, *capture_infos;
@@ -77,6 +108,7 @@ void ReconcileAudioDevice(AudioDeviceResource &res, const AudioOutputConfig &con
 
         // `ma_context_get_devices` omits native rates, so query the picked device for its format list.
         res.NativeSampleRates.clear();
+        res.RenderWorkgroup = DeviceWorkgroup(Device.coreaudio.deviceObjectIDPlayback);
         if (ma_device_info info; ma_context_get_device_info(&Context, ma_device_type_playback, device_id, &info) == MA_SUCCESS) {
             for (ma_uint32 i = 0; i < info.nativeDataFormatCount; ++i) res.NativeSampleRates.emplace_back(info.nativeDataFormats[i].sampleRate);
         }

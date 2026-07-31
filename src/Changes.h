@@ -3,7 +3,7 @@
 // clang-format off
 namespace changes {
 struct Selected {}; struct ActiveInstance {}; struct BoneSelection {}; struct Rerecord {};
-struct MeshActiveElement {}; struct MeshGeometry {}; struct MeshMaterial {}; struct MeshShading {};
+struct MeshActiveElement {}; struct MeshGeometry {}; struct MeshMaterial {}; struct MeshShading {}; struct PhysicsBodyMesh {};
 struct SoundVertices {}; struct SoundVerticesUpdated {}; struct VertexForce {};
 struct NewBufferEntity {}; struct RenderInstanceCreated {}; struct ObjectCreated {};
 struct ViewportDisplay {}; struct InteractionMode {}; struct WorkspaceLights {}; struct Rotation {};

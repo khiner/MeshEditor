@@ -203,6 +203,49 @@ float Mesh::CalcFaceArea(FH fh) const {
     return area;
 }
 
+float Mesh::CalcMeanCurvature(VH vh) const {
+    const vec3 xi = GetPosition(vh);
+    const vec3 ni = glm::normalize(GetNormal(vh));
+    double sum = 0;
+    int count = 0;
+    for (const auto he : voh_range(vh)) {
+        const vec3 d = GetPosition(GetToVertex(he)) - xi;
+        const double d2 = glm::dot(d, d);
+        if (d2 < 1e-20) continue;
+        sum += -2.0 * double(glm::dot(d, ni)) / d2;
+        ++count;
+    }
+    return count ? float(sum / count) : 0.f;
+}
+
+std::vector<float> Mesh::CalcMeanCurvatures() const {
+    std::vector<float> out(VertexCount());
+    for (const auto vh : vertices()) out[*vh] = CalcMeanCurvature(vh);
+    return out;
+}
+
+std::optional<double> Mesh::CalcEnclosedVolume() const {
+    // A closed manifold surface has exactly two faces per edge. Open and non-manifold surfaces both fail this.
+    uint32_t corners = 0;
+    for (const auto fh : faces()) corners += GetValence(fh);
+    if (corners == 0 || corners != 2 * EdgeCount()) return std::nullopt;
+
+    // Sum the signed volume of the tetrahedron each triangle spans with the origin. The sign follows the winding.
+    double volume = 0;
+    for (const auto fh : faces()) {
+        auto fv_it = cfv_iter(fh);
+        const auto v0 = *fv_it++;
+        VH v1 = *fv_it++, v2;
+        for (; fv_it; ++fv_it) {
+            v2 = *fv_it;
+            const glm::dvec3 a{GetPosition(v0)}, b{GetPosition(v1)}, c{GetPosition(v2)};
+            volume += glm::dot(a, glm::cross(b, c)) / 6.0;
+            v1 = v2;
+        }
+    }
+    return std::abs(volume);
+}
+
 he::VH Mesh::FindNearestVertex(vec3 p) const {
     VH closest_vertex;
     float min_dist_sq = std::numeric_limits<float>::max();

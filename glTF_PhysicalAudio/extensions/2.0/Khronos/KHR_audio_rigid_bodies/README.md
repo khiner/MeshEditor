@@ -85,7 +85,8 @@ This extension uses glTF core units (meters, radians, right-handed coordinates) 
 | `surface.spectralSlope` | Dimensionless |
 | Excitation impulse | Newton second (N·s) |
 | Contact force | Newton (N) |
-| Slip and sweep speed | Meter per second (m·s⁻¹) |
+| Slip and sweep velocity | Meter per second (m·s⁻¹) |
+| Friction coefficient | Dimensionless |
 
 ## Defining Modal Models
 
@@ -335,19 +336,22 @@ Implementations SHOULD render sustained contact. A body supplying no acoustic su
 
 #### Contact State
 
-At each instant, a sustained contact on a body is described by five quantities, all in that body's node-local space:
+At each instant, a sustained contact on a body is described by six quantities:
 
 | | Description |
 |-|-|
 | **p** | Contact position on the body's surface. |
 | **n̂** | Unit contact normal, directed into the body. |
 | *N* | Normal force at the contact, in newtons. Non-negative. |
-| *v*<sub>slip</sub> | Slip speed: the magnitude of the relative tangential velocity of the two bodies' material points at the contact. Shared by both bodies. |
-| *v*<sub>sweep</sub> | Sweep speed: the rate at which the contact position travels over this body's own surface. **Each body has its own**, and they are generally unequal. |
+| **u** | Sweep velocity: the velocity of the contact position over this body's own surface. **Each body has its own**, and they are generally unequal. |
+| **u**<sub>slip</sub> | Slip velocity: the velocity of the other body's material point at the contact relative to this body's. The frictional force on this body acts along it. |
+| *μ* | Friction coefficient of the pair, combined as [KHR_physics_rigid_bodies](#interaction-with-other-extensions) defines. |
+
+Both velocities are vectors, because the [contact force](#contact-force) has a direction in the contact plane and not only a magnitude there. Their magnitudes *v*<sub>sweep</sub> = |**u**| and *v*<sub>slip</sub> = |**u**<sub>slip</sub>| are the speeds the requirements below are written in terms of.
 
 How a host obtains these is out of scope, as contact reporting is for [Excitation](#excitation).
 
-Writing **u**₁ and **u**₂ for the velocity of the contact position over each body's own surface, the sweep speeds are |**u**₁| and |**u**₂| and the slip speed is |**u**₁ − **u**₂|. Together these distinguish every regime:
+The two bodies' kinematics relate only in a frame they share, and which frame that is does not matter. Writing **u**₁ and **u**₂ for the two sweep velocities in any one common frame, body 1's slip velocity is **u**₁ − **u**₂ and body 2's is its negation, so the slip speed |**u**₁ − **u**₂| is shared between them while its direction is not. Together these distinguish every regime:
 
 - **Pure rolling**: both sweeps nonzero and equal, so slip vanishes. Nothing slides, yet the contact sweeps both surfaces.
 - **A box sliding on a fixed floor**: zero sweep on the box, since the same material region stays in contact, and sweep on the floor equal to the slip.
@@ -355,7 +359,7 @@ Writing **u**₁ and **u**₂ for the velocity of the contact position over each
 
 Implementations SHOULD NOT select between separate rolling and sliding models, which introduces an audible transition where the physics has none. Because the sweeps differ, each body's surface is traversed at its own rate and the contributions summed ([Composite Surface](#composite-surface)); a body whose own sweep is zero still sounds, because the other surface streams past its stationary patch.
 
-A contact is rendered independently for each body that instances a modal model, each driven by its own contact state with opposed normals.
+A contact is rendered independently for each body that instances a modal model, each driven by its own contact state with opposed normals. Each body's state MUST be expressed in that body's node-local space, by the same rule the impulsive [Excitation](#excitation) uses: **p** by the inverse of the node's global transform, and **n̂**, **u**, and **u**<sub>slip</sub> by the inverse of its rotation only, preserving their physical magnitudes. A velocity keeps its magnitude because an absolute surface finish is traversed at a rate the world sets: `sampleSpacing` does not scale with the node ([Node Transforms and Scale](#node-transforms-and-scale)), so scaling the velocity instead would read the finish at the wrong rate.
 
 #### Composite Surface
 
@@ -365,24 +369,25 @@ A contact rides over both surfaces at once. Writing subscripts 1 and 2 for the t
 
 The first is the standard composite roughness of two surfaces in contact. When exactly one body supplies a `profile`, implementations SHOULD traverse that profile. When both do, they SHOULD sum them. When neither does, they SHOULD synthesize a track with root-mean-square height σ\*, correlation length *ℓ*\*, and spectral slope *p*\*.
 
-Each contribution advances at **that surface's own sweep speed**, and the two are summed to give the gap between the bodies, so two profiles are read at two independent positions rather than as one track at one rate. A single synthesized track standing in for both advances at the larger sweep speed: an approximation, since one track cannot carry two rates, but it keeps the dominant one and is exact whenever one surface is at rest relative to the contact, which covers both a fixed floor and pure rolling.
+Each contribution advances at **that surface's own sweep speed**, and the two are summed to give the gap between the bodies, so two profiles are read at two independent positions rather than as one track at one rate. A single synthesized track standing in for both follows whichever sweep is faster: an approximation, since one track cannot carry two rates, but it keeps the dominant one and is exact whenever one surface is at rest relative to the contact, which covers both a fixed floor and pure rolling.
 
 Mesoscale structure combines the same way. Each body's `normalTexture` is sampled along its own contact path at its own sweep speed and the relief contributions add; a body without one contributes nothing at that scale.
 
 #### Contact Force
 
-Two quantities need distinguishing. The *contact force* is the physical normal force the bodies exert on one another along **n̂**, which carries the static load and is never negative. The *excitation* **F**(*t*) is what drives the modes: a vector whose normal component is the fluctuation of the contact force about its equilibrium value, taking either sign and averaging to zero, and whose tangential component is the frictional force along the direction of slip.
+Two quantities need distinguishing. The *contact force* is the physical force the bodies exert on one another, with a part along **n̂** that carries the static load and is never negative, and a part in the contact plane. The *excitation* **F**(*t*) is what drives the modes: the fluctuation of that force about its equilibrium value, a vector taking either sign in every component and averaging to zero.
+
+The tangential part arises by two mechanisms, which act along different directions. The *geometric* part is the contact load projected onto the locally tilted surface, so it acts along the direction the contact travels over that surface and is present whenever a surface sweeps, rolling included. The *frictional* part is Coulomb traction, so it acts along the direction of slip and vanishes when nothing slides.
 
 This specification constrains their behavior rather than their formula, so that assets sound consistent across implementations without dictating a contact model. [Appendix B](#appendix-b-reference-contact-force-model) gives one model consistent with the requirements below.
 
 - The contact force MUST be non-negative: a contact that separates applies no force. This nonlinearity is what produces micro-collisions and chatter.
+- The two bodies MUST receive equal and opposite excitations. **n̂** and **u**<sub>slip</sub> are defined per body and reverse between them, so the normal and frictional parts reverse with the [contact state](#contact-state). The sweep directions are shared between the bodies, so the geometric part reverses by surface instead: a body's own surface acts along **û**ᵢ and the other body's acts against it.
 - A contact at rest MUST produce no output. With the slip speed and both sweep speeds zero and *N* constant, the excitation is zero, so a settled body is silent however heavily it is loaded.
-- Each surface's track SHOULD be traversed at a rate proportional to **its own** sweep speed, indexed by distance travelled rather than by time. A single rate for both surfaces silences a body sliding on a fixed floor, whose own sweep is zero.
-- Loudness SHOULD increase with normal force and with the rate surface passes through the contact. The two channels scale differently: the frictional component follows slip, with Coulomb friction giving amplitude proportional to √*v*<sub>slip</sub> · *N* as the reference trend, while the normal component follows sweep. A rolling body has no slip and must still grow louder with speed.
+- Each surface's track SHOULD be indexed by the **distance the contact has travelled along that surface**, not by time. Indexing by each surface's *own* distance is what keeps a body sliding on a fixed floor audible, since its own sweep is zero while the floor's equals the slip. A track is one dimensional and a contact path is not, so a contact retracing its path reads fresh surface rather than the surface it came from ([Scope and Exclusions](#scope-and-exclusions)).
+- Loudness SHOULD increase with normal force and with the rate surface passes through the contact. Every component scales with the load: the normal one through the contact stiffness, the geometric tangential one because it is the load projected onto a tilted surface, and the frictional one because Coulomb traction is bounded by *μN*. None of them carries an explicit speed factor. Speed enters by scaling the spectrum of the traversal, which is what makes a rolling body grow louder with speed although it has no slip.
 - Roughness with wavelengths shorter than the contact patch SHOULD be attenuated. This is the **contact filter**, standard in rolling-noise prediction since Remington 1987, and it acts on spatial wavelength rather than on time: a patch of radius *a* cannot resolve wavelengths below roughly 2*a* at any speed. Applied to the track rather than to the output, its audible cutoff tracks speed for free, landing near *v*<sub>sweep</sub>/(2*a*). Treat that as a scale, not a corner frequency, since measured filters roll off gradually from a factor of a few below it. Because *a* grows with load, the filter also softens under heavier contact.
 - The roughness-driven part of the force SHOULD be limited by the applied load, which a contact cannot exceed. Without the limit the result is audibly rougher than the surface it models.
-
-The excitation also drives [acceleration noise](#acceleration-noise), with **F**(*t*) in place of the impulse pulse. Its time derivative contributes the broadband component of scraping, present even when a body's modes lie above the audible range.
 
 #### Exciting the Modes
 
@@ -392,7 +397,7 @@ The contact drives the modes as a force rather than an impulse. The excitation a
 
 A modal renderer already driving each mode with a sampled force pulse ([Excitation](#excitation)) renders this by substituting **F**(*t*) for the impulse, with no other change.
 
-**F** MUST be applied as a vector, its normal part along **n̂** and its frictional part along the slip direction. Collapsing it to a scalar along **n̂** would make a tangential scrape and a normal press excite the modes identically, the direction blindness that [mode shapes](#sample-points) are vectors to avoid, and sliding surfaces are observed to develop contact forces in both directions, each driving its own response (Akay 2002). The frictional part vanishes with slip, so pure rolling needs no slip direction.
+**F** MUST be applied as a vector, its normal part along **n̂**, its geometric tangential part along each surface's own sweep direction, and its frictional part along the slip direction. Collapsing it to a scalar along **n̂** would make a tangential scrape and a normal press excite the modes identically, the direction blindness that [mode shapes](#sample-points) are vectors to avoid, and sliding surfaces are observed to develop contact forces in both directions, each driving its own response (Akay 2002). Only the frictional part vanishes with slip, so pure rolling still develops a tangential force and still needs a direction to apply it along.
 
 The contact position is a function of time, and evaluating **φ**ₙ at the current position rather than holding it fixed for the duration of the contact varies the timbre as a body is dragged across its surface. Implementations SHOULD evaluate it continuously, using the barycentric interpolation of [Sample Points](#sample-points) when the model supplies `indices` and blending between the nearest sample points otherwise. Nearest-point evaluation alone leaves the field piecewise constant over the sample points' Voronoi cells, which is acceptable for an impact but steps audibly each time a sustained contact crosses a cell boundary.
 
@@ -418,15 +423,15 @@ Vibration frequencies are not invariant under scaling. If the node's global scal
 
 Behavior is undefined whenever the node's global transform contains non-uniform scale: non-uniform scaling changes the object's mode shapes and frequencies in ways that cannot be recovered from precomputed data (and leaves the transform's rotation ill-defined). Authors requiring a non-uniformly scaled object bake the scale into the geometry and analyze the result.
 
-A surface's microscale quantities are exempt. `roughness`, `correlationLength`, `profile`, and `sampleSpacing` are absolute physical lengths and MUST NOT be scaled by the node transform, because a finish does not change when an object is resized: a scaled-up polished sphere is still polished. Contact position and sweep speed are geometric and do transform.
+A surface's microscale quantities are exempt. `roughness`, `correlationLength`, `profile`, and `sampleSpacing` are absolute physical lengths and MUST NOT be scaled by the node transform, because a finish does not change when an object is resized: a scaled-up polished sphere is still polished. Contact position and sweep velocity are geometric and do transform.
 
 `normalTexture` is the one surface quantity that does scale. It carries no absolute size, only a size in texture coordinates, so its features measure whatever the primitive's parameterization and the node's global scale make them: a scaled-up tiled floor has larger tiles, audibly as well as visibly. Implementations MUST derive its texel size in meters from the node's global scale in force at the contact, not from the scale the mesh was authored at, so that two nodes instancing one mesh at different sizes do not share one relief.
 
 ## Interaction with Other Extensions
 
-**KHR_physics_rigid_bodies**: This extension is that one's acoustic counterpart, over the same bodies. Although excitations may come from any host source, the typical source is a rigid-body simulation, where a collision yields the two quantities an impulsive excitation requires: a contact impulse and a world-space contact position, as in that extension's `rigid_body/applyPointImpulse` interactivity node. A persisting contact supplies the [contact state](#contact-state) instead, every quantity of which a rigid-body solver computes in the course of resolving the contact. Contacts on a collider SHOULD excite the modal model, and use the acoustic surface, of the collider node or its nearest ancestor that has one. The mechanism by which a simulation reports contact events is beyond the scope of this specification.
+**KHR_physics_rigid_bodies**: This extension is that one's acoustic counterpart, over the same bodies. Although excitations may come from any host source, the typical source is a rigid-body simulation, where a collision yields the two quantities an impulsive excitation requires: a contact impulse and a world-space contact position, as in that extension's `rigid_body/applyPointImpulse` interactivity node. A persisting contact supplies the [contact state](#contact-state) instead, every quantity of which a rigid-body solver computes in the course of resolving the contact. Contacts on a collider SHOULD excite the modal model, and use the acoustic surface, of the collider node or its nearest ancestor that has one. A rigid body sounds as one elastic object, so at most one node of a body's hierarchy (the body node and its collider nodes) MUST carry a modal model. Each collider MAY carry its own acoustic surface. Any local surface geometry a contact model reads, such as curvature, SHOULD come from the mesh of the collider node it landed on, or from that of its nearest ancestor with a mesh. A collider's geometry and its acoustic surface resolve independently, so a collider carrying a mesh supplies that geometry whether or not it also carries a surface. The mechanism by which a simulation reports contact events is beyond the scope of this specification.
 
-The dissipative part of the [contact force](#contact-force) SHOULD be derived from the physics material's `restitution` when one is present, bearing in mind that restitution varies with approach speed while the contact model's dissipation constant does not ([Appendix B](#appendix-b-reference-contact-force-model)). This extension deliberately does not duplicate restitution or friction, which have a standardized home there and no acoustic reading distinct from their mechanical one.
+The dissipative part of the [contact force](#contact-force) SHOULD be derived from the physics material's `restitution` when one is present, bearing in mind that restitution varies with approach speed while the contact model's dissipation constant does not ([Appendix B](#appendix-b-reference-contact-force-model)). This extension deliberately does not duplicate restitution or friction, which have a standardized home there and no acoustic reading distinct from their mechanical one. The [contact state](#contact-state)'s friction coefficient is likewise that extension's, combined by its own combine modes rather than restated here.
 
 **EXT_mesh_gpu_instancing**: A node using GPU instancing instantiates its modal model once per render instance, each with independent oscillator state and the node's `gain`. An excitation targets a single render instance. Attribution is host logic, like contact reporting. Excitation mapping ([Excitation](#excitation)) uses the composed instance transform (the transform applied to the instance's vertices for rendering, as defined by `EXT_mesh_gpu_instancing`) in place of the node's global transform, and each instance's output is a monophonic source at that instance's origin. The model describes the object under identity instance transform. An instance's uniform scale relative to that reference (its `SCALE` attribute, composed with any node scale change) is a uniform scale change under [Node Transforms and Scale](#node-transforms-and-scale), and behavior is undefined when the composed transform contains non-uniform scale.
 
@@ -447,7 +452,7 @@ The following are deliberately out of scope. Each composes *with* the modal core
 - **Contact-event plumbing**: how a physics engine reports impulses and contact state to the audio system is application logic.
 - **Friction-induced vibration**: squeal, bowing, and brake noise. Of the three mechanisms that excite a body in contact, this extension defines two, impact excitation and roughness excitation, and leaves out the third. Friction-induced vibration is self-excited, arising when velocity-weakening friction drives a limit cycle under strongly loaded contact, rather than imposed by surface irregularity, and it needs its own contact state to express. It composes as an additional force term on the same contact.
 - **Anisotropic and spatially varying microscale finish**: `roughness`, `correlationLength`, and `spectralSlope` are isotropic and uniform over the body, so a finish that is directional below the visible scale sounds the same scraped along the grain as across it. Variation and directionality at the mesoscale are carried by `normalTexture`, which a contact samples along its own path.
-- **Surface evolution**: wear, polishing, and contamination over the course of a simulation.
+- **Position-indexed traversal of the microscale finish**: `profile` is a one-dimensional track and σ, *ℓ*, *p* describe a one-dimensional realization, so the finish is traversed by distance along the contact path and a contact retracing its path reads fresh finish rather than what it came from. A rocking body hisses where it should rattle. Making the finish a field over the surface is feasible with stored data over an extent matched to the contact's excursion, as Agarwal et al. 2021 do with a measured two-dimensional depth map for a hand-held scraper. Covering unbounded sliding instead needs, for *T* seconds of non-repeating output at the output Nyquist frequency, on the order of *T* *f*<sub>Nyquist</sub> samples in one dimension and the square of that in two, independent of speed, since a slower contact needs proportionally finer detail over a proportionally smaller extent. Procedural evaluation carries no such cost and synthesizes only the octaves the current speed and load resolve, which is the route a future extension would take. Every one-dimensional projection that recovers retracing instead makes the excitation depend on sliding direction, which the surface does not. **The mesoscale layer is not subject to this**, since `normalTexture` is already a field over the surface and the [contact state](#contact-state) already carries the contact position **p** to sample it at.
 - **Nonlinear vibration**: mode coupling in thin shells (cymbals, sheet metal) and fracture. Contact-dependent damping is reachable through [vibrational coupling](#vibrational-coupling) but is not otherwise modeled.
 - **Recorded-sample hybrids**: mixing recorded impact audio with the synthesized modes for detail beyond linear modal synthesis.
 - **Modal analysis itself**: meshing, FEM, and eigensolves happen at authoring time ([Appendix A](#appendix-a-deriving-modal-data)).
@@ -501,6 +506,8 @@ Modal model, acoustic material, and acoustic surface data are static and not add
 
 ## References
 
+- J. A. Greenwood, J. B. P. Williamson. *Contact of Nominally Flat Surfaces.* Proc. R. Soc. Lond. A 295, 1966.
+- G. Maidanik. *Energy Dissipation Associated with Gas-Pumping in Structural Joints.* J. Acoust. Soc. Am. 40, 1966.
 - K. H. Hunt, F. R. E. Crossley. *Coefficient of Restitution Interpreted as Damping in Vibroimpact.* Journal of Applied Mechanics 42(2), 1975.
 - K. L. Johnson. *Contact Mechanics.* Cambridge University Press, 1985.
 - P. J. Remington. *Wheel/Rail Rolling Noise, I: Theoretical Analysis.* J. Acoust. Soc. Am. 81(6), 1987.
@@ -511,11 +518,18 @@ Modal model, acoustic material, and acoustic surface data are static and not add
 - J. F. O'Brien, C. Shen, C. M. Gatchalian. *Synthesizing Sounds from Rigid-Body Simulations.* SCA 2002.
 - D. L. James, J. Barbič, D. K. Pai. *Precomputed Acoustic Transfer: Output-sensitive, Accurate Sound Generation for Geometrically Complex Vibration Sources.* SIGGRAPH 2006.
 - C. Zheng, D. L. James. *Rigid-Body Fracture Sound with Precomputed Soundbanks.* SIGGRAPH 2010.
+- B. N. J. Persson. *Relation between Interfacial Separation and Load: A General Theory of Contact Mechanics.* Phys. Rev. Lett. 99, 2007.
 - Z. Ren, H. Yeh, M. C. Lin. *Synthesizing Contact Sounds Between Textured Models.* IEEE VR 2010.
+- H. Ben Abdelounis, A. Le Bot, J. Perret-Liaudet, H. Zahouani. *An Experimental Study on Roughness Noise of Dry Rough Flat Surfaces.* Wear 268, 2010.
+- A. Le Bot, E. Bou Chakra. *Measurement of Friction Noise versus Contact Area of Rough Surfaces Weakly Loaded.* Tribology Letters 37, 2010.
+- A. Le Bot, E. Bou-Chakra, G. Michon. *Dissipation of Vibration in Rough Contact.* Tribology Letters 41, 2011.
+- V. H. Hung, J. Perret-Liaudet, J. Scheibert, A. Le Bot. *Direct Numerical Simulation of the Dynamics of Sliding Rough Surfaces.* Computational Mechanics 52, 2013.
 - C. Zheng, D. L. James. *Toward High-Quality Modal Contact Sound.* SIGGRAPH 2011.
 - J. N. Chadwick, C. Zheng, D. L. James. *Precomputed Acceleration Noise for Improved Rigid-Body Sound.* SIGGRAPH 2012.
 - T. R. Langlois, S. S. An, K. K. Jin, D. L. James. *Eigenmode Compression for Modal Sound Models.* SIGGRAPH 2014.
 - A. Sterling, M. C. Lin. *Interactive Modal Sound Synthesis Using Generalized Proportional Damping.* I3D 2016.
+- A. Le Bot. *Noise of Sliding Rough Contact.* J. Phys.: Conf. Ser. 797, 2017.
+- A. Papangelo, N. Hoffmann, M. Ciavarella. *Load-Separation Curves for the Contact of Self-Affine Rough Surfaces.* Scientific Reports 7(1), 2017.
 - J.-H. Wang, D. L. James. *KleinPAT: Optimal Mode Conflation for Time-Domain Precomputation of Acoustic Transfer.* SIGGRAPH 2019.
 - V. Agarwal, M. Cusimano, J. Traer, J. H. McDermott. *Object-Based Synthesis of Scraping and Rolling Sounds Based on Non-Linear Physical Constraints.* DAFx 2021.
 - S. Clarke et al. *RealImpact: A Dataset of Impact Sound Fields for Real Objects.* CVPR 2023.
@@ -567,20 +581,20 @@ The contact's elastic constants come from the two bodies' acoustic materials and
 
 1/*E*\* = (1 − ν₁²)/*E*₁ + (1 − ν₂²)/*E*₂,  *R*\* = 1/(κ₁ + κ₂),  *k* = (4/3) *E*\* √*R*\*
 
-with κ the mean surface curvature of each body at the contact point, taken from its collision geometry rather than from this extension's data. The contact patch radius follows as *a* = (3*N* *R*\*/(4*E*\*))^(1/3), which sets the patch-filter cutoff, and the equilibrium penetration under the current load is δ₀ = (*N*/*k*)^(2/3).
+with κ the mean surface curvature of each body at the contact point, taken from the geometry of the collider the contact landed on. This form is exact where the contact is axisymmetric, as it is for a sphere against a sphere or a plane. Where the two principal curvatures differ the contact patch is elliptical, and κ₁ + κ₂ is the sum term of that solution rather than its whole. The contact patch radius follows as *a* = (3*N* *R*\*/(4*E*\*))^(1/3), which sets the patch-filter cutoff, and the equilibrium penetration under the current load is δ₀ = (*N*/*k*)^(2/3).
 
 Then, each sample:
 
-- Hold one read position per surface, each advancing at that surface's own sweep speed, so traversal is indexed by distance rather than time. In samples it advances by sweep speed divided by the track's sample spacing: `sampleSpacing` for a stored profile, a synthesis parameter otherwise.
-- Form each surface's relief *h*ᵢ = *h*<sub>meso,ᵢ</sub> + σᵢ *h*<sub>micro,ᵢ</sub>, then the gap relief *h* = *h*₁ + *h*₂. The microscale term is the track sample at that read position. The mesoscale term integrates the slope implied by that surface's `normalTexture` along its path, and is zero without one; since a sampled normal map is not exactly a gradient field, use a leaky integrator to keep the accumulated drift out. The tangential term below wants that slope directly and needs no integration. A surface with zero sweep contributes a constant, removed by the equilibrium subtraction.
+- Hold one read position per surface, each advancing by the distance that surface has travelled through the contact, so traversal is indexed by distance rather than time. In samples it advances by that surface's sweep speed divided by the track's sample spacing: `sampleSpacing` for a stored profile, a synthesis parameter otherwise.
+- Form each surface's relief *h*ᵢ = *h*<sub>meso,ᵢ</sub> + σᵢ *h*<sub>micro,ᵢ</sub>, then the gap relief *h* = *h*₁ + *h*₂. The microscale term is the track sample at that read position. The mesoscale term integrates the slope implied by that surface's `normalTexture` along its path, and is zero without one; since a sampled normal map is not exactly a gradient field, use a leaky integrator to keep the accumulated drift out. The tangential term below wants each surface's slope directly and needs no integration. A surface with zero sweep contributes a constant, removed by the equilibrium subtraction.
 - Apply the contact filter by smoothing each track over a window of about 2*a* **in distance along the surface**, not in time; speed dependence then follows from the traversal, landing near *v*<sub>sweep,ᵢ</sub>/(2*a*) in the output. The window widens with load as *a* grows, which is why rolling-noise work moves this filter into the time domain once deflections stop being small (Thompson et al. 2003). Here the two scales separate: millimetre relief passes intact while a micron finish sits at or below the patch and is strongly attenuated, so rolling hears the tiles and not the polish with no rolling-specific branch.
 - Form the rigid approach δ<sub>rigid</sub> = δ₀ + *h*, and the true separation δ = max(δ<sub>rigid</sub> − *u*, 0) with *u* the modal displacement of [Vibrational Coupling](#vibrational-coupling), or zero without coupling. The clamp at zero is the separation nonlinearity.
 - Normal force by the Hunt and Crossley model, *f*<sub>n</sub> = *k* δ^(3/2) (1 + *c*<sub>d</sub> δ̇), with *c*<sub>d</sub> = (3/2)α. Here α is a material constant relating restitution to approach speed by *e* ≈ 1 − α*v*ᵢ at low speed, reported between 0.08 and 0.32 s·m⁻¹ for steel, bronze, and ivory. Being a material property rather than a property of one impact, it needs no reference speed; recovering it from a physics material's `restitution` does need the speed that value was quoted at.
-- Tangential force from micro-collisions with asperity slopes, *f*<sub>t</sub> = *c*₁ |*v*<sub>slip</sub> ∂*h*|^*c*₂, with ∂*h* the slope of the gap relief. Agarwal et al. 2021 treat the corresponding constants as free parameters, set to 0.05 and 1.
-- Excite with **F** = **n̂**(*f*<sub>n</sub> − *N*) + **t̂** *f*<sub>t</sub>, **t̂** the unit slip direction. Subtracting the load is exact where a high-pass would only approximate it and would color the low modes. Agarwal et al. 2021 sum the components as scalars, which suffices for one measured impulse response but discards direction against vector mode shapes.
+- Tangential force in two parts, neither of which carries a free parameter. The geometric part is the normal force projected onto the locally tilted surface, *f*<sub>t,geo,ᵢ</sub> = *f*<sub>n</sub> ∂*h*ᵢ per surface, with ∂*h*ᵢ the slope of that surface's own relief along its own path. The frictional part is Coulomb traction riding on the force fluctuation, *f*<sub>t,fric</sub> = *μ*(*f*<sub>n</sub> − *N*). Both are fluctuations about equilibrium, the frictional part by construction and the geometric part by removing its local mean the same way the relief does, so a surface at rest sits on a constant slope and excites nothing. Agarwal et al. 2021 write one term instead, *f*<sub>h</sub> = β₁|**v** · ∇*S*|^β₂ with β₁ = 0.05 and β₂ = 1, where **v** is the contact's velocity across the surface rather than the slip, so their term survives pure rolling exactly as the geometric part here does. That term is the same projection's velocity-dependent half: because *f*<sub>n</sub> carries the Hunt and Crossley damping factor, *f*<sub>n</sub> ∂*h* expands to *k*δ^(3/2) ∂*h* + *k*δ^(3/2) *c*<sub>d</sub> δ̇ ∂*h*, and the second part is proportional to the rate the height under the contact changes. Matching the two identifies β₁ with *f*<sub>n</sub> *c*<sub>d</sub> ∂*h*, which carries exactly the N·s·m⁻¹ their constant needs and shows what a fitted value absorbs: the load, the material's dissipation constant, and the surface's slope. Projecting the whole contact force recovers both halves with nothing left to fit.
+- Excite with **F** = **n̂**(*f*<sub>n</sub> − *N*) + Σᵢ *s*ᵢ **û**ᵢ *f*<sub>t,geo,ᵢ</sub> + **t̂** *f*<sub>t,fric</sub>, with **û**ᵢ the unit sweep direction of surface *i*, **t̂** the unit slip direction, and *s*ᵢ the reversal [Contact Force](#contact-force) requires: +1 for the body's own surface and −1 for the other body's. Subtracting the load is exact where a high-pass would only approximate it and would color the low modes. Agarwal et al. 2021 sum the components as scalars, which suffices for one measured impulse response but discards direction against vector mode shapes.
 - Soft-limit the roughness-driven part of *f*<sub>n</sub> with a knee that scales with *N*, which bounds the force to what the load sustains. Agarwal et al. apply the equivalent limit to the trajectory curvature instead, using a tanh nonlinearity whose parameters vary with normal force.
 
-Rolling needs no separate term: *v*<sub>slip</sub> vanishes while both sweeps do not, so *f*<sub>t</sub> drops out and traversal continues through the normal channel. Agarwal et al. 2021 add a rolling term from the offset between a ball's center of mass and its geometric center, omitted here because it presumes a sphere and the patch-filtered relief already gives rolling its coarser character on arbitrary geometry.
+Rolling needs no separate term: *v*<sub>slip</sub> vanishes so the frictional part drops out, while both sweeps do not, so the geometric part and the normal channel keep traversing both surfaces. Agarwal et al. 2021 add a rolling term from the offset between a ball's center of mass and its geometric center, omitted here because it presumes a sphere and the patch-filtered relief already gives rolling its coarser character on arbitrary geometry.
 
 ## Appendix: Full Khronos Copyright Statement
 
