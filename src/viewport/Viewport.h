@@ -42,7 +42,8 @@ bool ViewportImageReady(const entt::registry &);
 // When a look-through camera is active, captures only the framed sub-region matching
 // what the user sees inside the dimmed overlay. Locks to the initial capture extent;
 // any resize or look-through change stops recording.
-void StartRecording(entt::registry &, entt::entity viewport, const std::filesystem::path &, int fps);
+// `with_audio` also captures the master output and muxes it in when the recording stops.
+void StartRecording(entt::registry &, entt::entity viewport, const std::filesystem::path &, int fps, bool with_audio = false);
 // Copy the current FinalColorImage to the recorder. No-op if not recording.
 // Call after WaitForRender() so the source image is coherent.
 void CaptureRecordFrame(entt::registry &, entt::entity viewport);

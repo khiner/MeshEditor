@@ -32,6 +32,11 @@ struct ViewportTextureState {
 struct VideoRecording {
     std::unique_ptr<VideoRecorder> Recorder;
     std::pair<vk::Offset3D, vk::Extent2D> Region; // Locked at StartRecording.
+    std::vector<float> Drained{}; // Scratch the captured audio is drained through each frame.
+    // Set when no device produces audio, so each captured frame renders its own share on this thread.
+    uint32_t OfflineRate{0};
+    double OfflineCarry{0}; // Fractional frames owed, so a non-integral rate over fps stays in step.
+    int Fps{0};
 };
 
 std::pair<vk::Offset3D, vk::Extent2D> GetCaptureRegion(const entt::registry &r) {
@@ -52,8 +57,7 @@ std::pair<vk::Offset3D, vk::Extent2D> GetCaptureRegion(const entt::registry &r) 
 
 void InitViewportMedia(entt::registry &r) {
     LoadViewportIcons(r);
-    r.ctx().emplace<ModalAudio>();
-    RegisterAudioComponentHandlers(r);
+    InitAudioSystem(r);
     r.ctx().emplace<ViewportTextureState>();
 }
 
@@ -86,8 +90,9 @@ void DisplayViewport(entt::registry &r, entt::entity viewport) {
 }
 
 // Intentionally mutates VideoRecording outside Apply (not replayed).
-void StartRecording(entt::registry &r, entt::entity viewport, const std::filesystem::path &path, int fps) {
+void StartRecording(entt::registry &r, entt::entity viewport, const std::filesystem::path &path, int fps, bool with_audio) {
     r.remove<VideoRecording>(viewport);
+    EndAudioCapture(r);
     const auto &pipelines = r.ctx().get<const Pipelines>();
     if (!pipelines.Main.Resources) {
         std::println(stderr, "StartRecording: render resources not ready");
@@ -96,7 +101,13 @@ void StartRecording(entt::registry &r, entt::entity viewport, const std::filesys
     const auto region = GetCaptureRegion(r);
     const auto &vk = r.ctx().get<const VulkanResources>();
     auto &buffers = r.ctx().get<GpuBuffers>();
-    r.emplace<VideoRecording>(viewport, VideoRecording{.Recorder = std::make_unique<VideoRecorder>(vk, buffers.Ctx, path, region.first, region.second, fps), .Region = region});
+    // Zero means video only, which leaves the encode byte-identical to a recording made without audio.
+    // With no device to capture, the audio is rendered here instead, one frame's worth per captured frame.
+    const auto device_rate = with_audio ? BeginAudioCapture(r) : 0u;
+    // The offline render follows the same rate the modal bank was built at, so a headless capture and the bank agree at any AUDIO_SAMPLE_RATE.
+    const auto offline_rate = with_audio && device_rate == 0 ? DeviceSampleRate(r) : 0u;
+    const auto audio_rate = device_rate ? device_rate : offline_rate;
+    r.emplace<VideoRecording>(viewport, VideoRecording{.Recorder = std::make_unique<VideoRecorder>(vk, buffers.Ctx, path, region.first, region.second, fps, audio_rate), .Region = region, .OfflineRate = offline_rate, .Fps = fps});
 }
 
 bool IsRecording(const entt::registry &r, entt::entity viewport) {
@@ -118,6 +129,18 @@ void CaptureRecordFrame(entt::registry &r, entt::entity viewport) {
         r.remove<VideoRecording>(viewport); // Intentional direct registry mutation outside Apply
         return;
     }
+    // Hand over whatever the device produced since the last captured frame, so the muxed track runs at wall-clock length rather than at one buffer per video frame.
+    // A no-op when recording without audio.
+    rec->Drained.clear();
+    if (rec->OfflineRate > 0) {
+        const double owed = double(rec->OfflineRate) / double(rec->Fps) + rec->OfflineCarry;
+        const auto whole = uint32_t(owed);
+        rec->OfflineCarry = owed - double(whole);
+        RenderAudioOffline(r, viewport, rec->Drained, whole);
+    } else {
+        DrainAudioCapture(r, rec->Drained);
+    }
+    rec->Recorder->CaptureAudio(rec->Drained);
     rec->Recorder->CaptureFrame(*pipelines.Main.Resources->FinalColorImage.Image);
 }
 

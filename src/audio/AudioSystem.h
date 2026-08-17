@@ -20,7 +20,23 @@ struct Recording {
 // Called from audio device callback.
 void ProcessAudio(entt::registry &, entt::entity viewport, float *output, uint32_t frame_count);
 
+// Capture of the master output, for muxing into a video recording.
+// The device thread writes and the main thread drains, so one of each and no locking.
+// Returns the device sample rate, or 0 when there is no device to capture.
+uint32_t BeginAudioCapture(entt::registry &);
+void EndAudioCapture(entt::registry &);
+// Append everything the device has produced since the last call.
+void DrainAudioCapture(entt::registry &, std::vector<float> &);
+
+// Render exactly `frame_count` frames of the master output on the calling thread, for capture with no device, where the result is deterministic and aligned to whatever advanced the simulation.
+void RenderAudioOffline(entt::registry &, entt::entity viewport, std::vector<float> &, uint32_t frame_count);
+
 void RegisterAudioComponentHandlers(entt::registry &);
+
+// Create the modal audio context and register its component handlers.
+// Must run before a scene loads, so that loading one populates the bank.
+// The output device is separate, and capture works without it.
+void InitAudioSystem(entt::registry &);
 void RemoveAudioComponents(entt::registry &, entt::entity sound_entity);
 
 // Draw the viewport-global audio synthesis controls.

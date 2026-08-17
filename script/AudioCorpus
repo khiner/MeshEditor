@@ -1,0 +1,76 @@
+#!/usr/bin/env python3
+
+# Render every glTF_PhysicalAudio sample scene headless to a lossless wav and report each render's
+# health: exit code, finiteness, silence, rms, and peak. Covers the full-experience scenes at the
+# samples root and the isolation corpus under test/. Run from anywhere.
+#
+# Usage: script/AudioCorpus [outdir]
+#   outdir defaults to build/audio-corpus. Each scene writes <outdir>/<scene path>.wav and its .log
+#   beside it (the render's stderr, where CONTACT_REPORT and STICK lines land when set).
+#
+# Scenes render in a pool of JOBS parallel processes (default 8). The audio path is deterministic,
+# so parallel and serial sweeps produce bit-identical wavs. Environment flags (CONTACT_REPORT,
+# CONTACT_SPRINGS, AUDIO_SAMPLE_RATE, ...) pass through to every render.
+#
+# Exits nonzero if any scene fails to render, produces a non-finite sample, or renders silence.
+
+import os
+import struct
+import subprocess
+import sys
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+
+Root = Path(__file__).resolve().parent.parent
+Exe = Root / "build" / "MeshEditor"
+Samples = Root / "glTF_PhysicalAudio" / "samples"
+Scenes = sorted(Samples.rglob("*.gltf"))
+Out = Path(sys.argv[1]) if len(sys.argv) > 1 else Root / "build" / "audio-corpus"
+Jobs = int(os.environ.get("JOBS", "8"))
+PlaySeconds = 10
+
+
+def render(scene):
+    name = str(scene.relative_to(Samples).with_suffix(""))
+    wav = Out / f"{name}.wav"
+    wav.parent.mkdir(parents=True, exist_ok=True)
+    with open(Out / f"{name}.log", "w") as log:
+        # Each render sizes its synthesis threads from the cores its own realization workers leave, so a scene whose ribbon runs on one worker uses the cores the rest of the pool leaves free.
+        # The thread count leaves every byte of the surface the same, so the wavs stay bit-identical to a serial sweep's.
+        code = subprocess.run(
+            [str(Exe), str(scene), "--headless", "--play", str(PlaySeconds), "--timeline-end", str(PlaySeconds + 1), "--record", str(wav)],
+            stdout=subprocess.DEVNULL, stderr=log, cwd=Root,
+        ).returncode
+    return name, code, wav
+
+
+def wav_stats(path):
+    raw = path.read_bytes()
+    i = raw.find(b"data")
+    n = int.from_bytes(raw[i + 4:i + 8], "little")
+    samples = struct.unpack(f"<{n // 4}f", raw[i + 8:i + 8 + n])
+    finite = all(s == s and abs(s) != float("inf") for s in samples)
+    peak = max(abs(s) for s in samples)
+    rms = (sum(s * s for s in samples) / len(samples)) ** 0.5
+    return finite, rms, peak
+
+
+def main():
+    Out.mkdir(parents=True, exist_ok=True)
+    with ThreadPoolExecutor(max_workers=Jobs) as pool:
+        results = list(pool.map(render, Scenes))
+    ok = True
+    print(f"{'scene':32s} {'exit':>4s} {'finite':>6s} {'rms':>10s} {'peak':>10s}")
+    for name, code, wav in results:
+        if code != 0 or not wav.exists():
+            print(f"{name:32s} {code:4d}  FAILED")
+            ok = False
+            continue
+        finite, rms, peak = wav_stats(wav)
+        print(f"{name:32s} {code:4d} {str(finite):>6s} {rms:10.3e} {peak:10.3e}")
+        ok &= finite and peak > 0
+    return 0 if ok else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

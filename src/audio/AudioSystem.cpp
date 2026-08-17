@@ -9,6 +9,7 @@
 #include "action/ActionApply.h"
 #include "action/Audio.h"
 #include "audio/SoundVertices.h"
+#include "audio/WavWriter.h"
 #include "mesh/Mesh.h"
 #include "mesh/MeshBvh.h"
 #include "mesh/Tets.h"
@@ -150,6 +151,34 @@ void ReleaseSample(entt::registry &r, entt::entity viewport, const fs::path &pat
     if (store->ByPath.empty()) r.remove<AudioSamples>(viewport);
 }
 } // namespace
+
+struct WavWriter::Impl {
+    ma_encoder Encoder;
+    uint64_t FramesWritten{0};
+    bool Open{false};
+};
+
+WavWriter::WavWriter(const std::filesystem::path &path, uint32_t sample_rate) : State{std::make_unique<Impl>()} {
+    const auto config = ma_encoder_config_init(ma_encoding_format_wav, ma_format_f32, 1, sample_rate);
+    State->Open = ma_encoder_init_file(path.c_str(), &config, &State->Encoder) == MA_SUCCESS;
+}
+
+WavWriter::~WavWriter() {
+    if (State->Open) ma_encoder_uninit(&State->Encoder);
+}
+
+bool WavWriter::IsOpen() const { return State->Open; }
+
+bool WavWriter::Write(std::span<const float> frames) {
+    if (!State->Open) return false;
+    if (frames.empty()) return true;
+    ma_uint64 written = 0;
+    if (ma_encoder_write_pcm_frames(&State->Encoder, frames.data(), frames.size(), &written) != MA_SUCCESS || written != frames.size()) return false;
+    State->FramesWritten += written;
+    return true;
+}
+
+uint64_t WavWriter::FramesWritten() const { return State->FramesWritten; }
 
 std::vector<float> LoadAudioFrames(const std::string &file_path, uint32_t sample_rate) {
     const ma_decoder_config config = ma_decoder_config_init(ma_format_f32, 1, sample_rate);
@@ -1467,6 +1496,53 @@ void RegisterAudioComponentHandlers(entt::registry &r) {
     });
 }
 
+namespace {
+// A ring the device thread fills and the main thread empties, sized for a couple of seconds so a stalled drain drops old audio rather than blocking the callback.
+struct MasterCapture {
+    std::vector<float> Ring;
+    std::atomic<uint64_t> Written{0}, Read{0};
+};
+} // namespace
+
+uint32_t BeginAudioCapture(entt::registry &r) {
+    const auto *res = r.ctx().find<AudioDeviceResource>();
+    const auto rate = res && res->SampleRate ? res->SampleRate : 0u;
+    if (rate == 0) return 0;
+    auto &capture = r.ctx().emplace<MasterCapture>();
+    capture.Ring.assign(size_t(rate) * 2, 0.f);
+    capture.Written.store(0, std::memory_order_relaxed);
+    capture.Read.store(0, std::memory_order_relaxed);
+    return rate;
+}
+
+void EndAudioCapture(entt::registry &r) { r.ctx().erase<MasterCapture>(); }
+
+void InitAudioSystem(entt::registry &r) {
+    if (!r.ctx().contains<ModalAudio>()) r.ctx().emplace<ModalAudio>();
+    RegisterAudioComponentHandlers(r);
+}
+
+void RenderAudioOffline(entt::registry &r, entt::entity viewport, std::vector<float> &out, uint32_t frame_count) {
+    const auto first = out.size();
+    out.resize(first + frame_count);
+    ProcessAudio(r, viewport, out.data() + first, frame_count);
+}
+
+void DrainAudioCapture(entt::registry &r, std::vector<float> &out) {
+    auto *capture = r.ctx().find<MasterCapture>();
+    if (!capture || capture->Ring.empty()) return;
+    const auto written = capture->Written.load(std::memory_order_acquire);
+    auto read = capture->Read.load(std::memory_order_relaxed);
+    // Whatever the device overwrote before this drain is gone, so resume from the oldest frame it still holds.
+    const auto capacity = uint64_t(capture->Ring.size());
+    if (written - read > capacity) read = written - capacity;
+    for (auto pos = size_t(read % capacity); read < written; ++read) {
+        out.push_back(capture->Ring[pos]);
+        if (++pos == capacity) pos = 0;
+    }
+    capture->Read.store(read, std::memory_order_relaxed);
+}
+
 void ProcessAudio(entt::registry &r, entt::entity viewport, float *output, uint32_t frame_count) {
     std::fill_n(output, frame_count, 0.f);
     RenderModal(r.ctx().get<ModalAudio>(), output, frame_count);
@@ -1489,6 +1565,17 @@ void ProcessAudio(entt::registry &r, entt::entity viewport, float *output, uint3
             }
         }
     }
+
+    if (auto *capture = r.ctx().find<MasterCapture>(); capture && !capture->Ring.empty()) {
+        const auto capacity = uint64_t(capture->Ring.size());
+        auto written = capture->Written.load(std::memory_order_relaxed);
+        auto pos = size_t(written % capacity);
+        for (uint32_t i = 0; i < frame_count; ++i, ++written) {
+            capture->Ring[pos] = output[i];
+            if (++pos == capacity) pos = 0;
+        }
+        capture->Written.store(written, std::memory_order_release);
+    }
 }
 
 using namespace ImGui;
@@ -1500,15 +1587,11 @@ constexpr ImVec2 ChartSize{-1, 160};
 
 // If `normalize_max` is set, normalize the data to this maximum value.
 void WriteWav(const std::vector<float> &frames, const fs::path &file_path, uint32_t sample_rate, std::optional<float> normalize_max = {}) {
-    const ma_encoder_config config = ma_encoder_config_init(ma_encoding_format_wav, ma_format_f32, 1, sample_rate);
-    ma_encoder encoder;
-    if (auto status = ma_encoder_init_file(file_path.c_str(), &config, &encoder); status != MA_SUCCESS) {
-        throw std::runtime_error(std::format("Failed to initialize wav file {}. Status: {}", file_path.string(), uint(status)));
-    }
+    WavWriter writer{file_path, sample_rate};
+    if (!writer.IsOpen()) throw std::runtime_error(std::format("Failed to open wav file {}", file_path.string()));
     const float mult = normalize_max ? *normalize_max / *max_element(frames) : 1.0f;
     const auto frames_normed = frames | transform([mult](float f) { return f * mult; }) | to<std::vector>();
-    ma_encoder_write_pcm_frames(&encoder, frames_normed.data(), frames_normed.size(), nullptr);
-    ma_encoder_uninit(&encoder);
+    writer.Write(frames_normed);
 }
 
 void PlotFrames(const std::vector<float> &frames, std::string_view label = "Waveform", std::optional<uint> highlight_frame = {}) {

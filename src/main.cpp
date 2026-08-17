@@ -521,9 +521,11 @@ struct CaptureRequest {
     bool Play{false};
     float PlayDuration{0}; // 0 = run until playback completes one loop.
     int Fps{60};
+    bool RecordAudio{false}; // Mux the master output into the recording. Off so the render corpus stays video only.
     fs::path RecordPath{}, ScreenshotPath{};
     fs::path RenderBasename{}; // Output basename, no extension.
     std::optional<uint8_t> MotionBlurSteps{}; // Disengaged = leave the viewport's own setting alone.
+    float TimelineEnd{0}; // Seconds. Positive: set the timeline's end frame, so a long play runs without looping.
     int BenchFrames{0}; // Headless: re-render every tick and exit after this many frames.
     bool BenchSubmit{false}; // Bench ticks re-submit the standing recording.
     std::optional<ViewportShadingMode> Shading{}; // Disengaged = leave the viewport's own setting alone.
@@ -587,11 +589,14 @@ struct CaptureDriver {
         const float timeline_fps = r.get<const TimelineRange>(viewport).Fps;
         RenderDt = 1.f / timeline_fps;
         RecordFps = FixedStep ? int(std::lround(timeline_fps)) : capture.Fps;
+        RecordAudio = capture.RecordAudio;
     }
 
     bool RenderMode() const { return !RenderBasename.empty(); }
     bool RecordingMode() const { return !RecordPath.empty(); }
     bool ScreenshotMode() const { return !ScreenshotPath.empty(); }
+    // A wav recording consumes no images, so its run can skip GPU frames once recording is underway.
+    bool AudioOnly() const { return RecordPath.extension() == ".wav" && !ScreenshotMode(); }
     bool Presenting() const { return Play || ScreenshotMode() || RecordingMode(); }
 
     bool DurationElapsed(const entt::registry &r, entt::entity viewport) const {
@@ -637,10 +642,15 @@ struct CaptureDriver {
                 if (!RecordingMode() && PlayDuration <= 0) done = true;
             }
         }
-        if (RecordingMode() && !IsRecording(r, viewport) && settled) {
-            StartRecording(r, viewport, RecordPath, RecordFps);
-            if (IsRecording(r, viewport)) NextCaptureNs = SDL_GetTicksNS();
-            else done = true;
+        // The recording starts once.
+        // An encoder that fails under it takes the recording with it, and starting another would fail the same way, so the run ends instead.
+        if (RecordingMode() && settled) {
+            if (!RecordingStarted) {
+                RecordingStarted = true;
+                StartRecording(r, viewport, RecordPath, RecordFps, RecordAudio);
+                if (IsRecording(r, viewport)) NextCaptureNs = SDL_GetTicksNS();
+            }
+            if (!IsRecording(r, viewport)) done = true;
         }
         const bool loop_end = r.get<const TimelinePlayback>(viewport).CurrentFrame == r.get<const TimelineRange>(viewport).EndFrame;
         if (IsRecording(r, viewport)) {
@@ -686,24 +696,30 @@ struct CaptureDriver {
     fs::path RecordPath, ScreenshotPath, RenderBasename;
     float RenderDt; // Fixed-step seconds per tick (one timeline frame).
     int RecordFps;
+    bool RecordAudio;
     uint64_t NextCaptureNs{0}; // Wall-clock recording: next capture time, initialized when recording starts.
     float ElapsedPlayTime{0}; // Caller-accumulated sim seconds, for the play-duration cap.
     uint32_t NextRenderClip{1}; // Next clip to capture once the current loop finishes.
     uint32_t NextRenderVariant{0}; // Next material variant to capture once the default image saves.
-    bool PlaybackStarted{false}, ScreenshotSaved{false}, ViewFramed{false};
+    bool PlaybackStarted{false}, ScreenshotSaved{false}, ViewFramed{false}, RecordingStarted{false};
 };
 
 // Seed the scene and its session log, then enter presentation mode so the first rendered frame matches the capture.
 CaptureDriver BeginCaptureSession(entt::registry &r, entt::entity viewport, const CaptureRequest &capture, const char *initial_file, bool empty, bool fixed_step) {
     const bool seeded = SeedScene(r, viewport, capture, initial_file, empty);
     const bool play = seeded && capture.Play;
+    // After the load, whose end frame comes from the scene's own animation durations.
+    if (capture.TimelineEnd > 0) {
+        const float fps = r.get<const TimelineRange>(viewport).Fps;
+        Perform(r, viewport, action::timeline::SetEndFrame{int(std::ceil(capture.TimelineEnd * fps))});
+    }
     CaptureDriver driver{r, viewport, capture, play, fixed_step};
     driver.SeedFailed = !seeded;
     // A benchmark run keeps the editor view, so frames and screenshots cover what the editor draws.
     if (driver.Presenting() && capture.BenchFrames == 0) Perform(r, viewport, action::timeline::EnterPresentation{});
     r.ctx().get<FrameState>().FixedFrameStep = driver.FixedStep;
-    // Force motion blur on for the whole recording run (not still-screenshot renders).
-    r.ctx().get<FrameState>().Capturing = driver.RecordingMode();
+    // Force motion blur on for the whole recording run, leaving still-screenshot renders and audio-only recordings, whose frames nothing reads, alone.
+    r.ctx().get<FrameState>().Capturing = driver.RecordingMode() && !driver.AudioOnly();
     if (capture.MotionBlurSteps) {
         Perform(r, viewport, action::UpdateOf<&ViewportDisplay::MotionBlur>(viewport, std::optional{MotionBlur{.Steps = *capture.MotionBlurSteps}}));
     }
@@ -1218,6 +1234,8 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
 
 // Seed the scene, run the fixed-step capture loop, and finish the session log.
 bool RunHeadlessScene(entt::registry &r, entt::entity viewport, const char *initial_file, bool empty, const CaptureRequest &capture) {
+    // Headless has no output device, so the audio system is created only when a recording will capture it, keeping the corpus render free of the modal render pool's threads.
+    if (capture.RecordAudio) InitAudioSystem(r);
     auto driver = BeginCaptureSession(r, viewport, capture, initial_file, empty, /*fixed_step=*/true);
     // A scene that failed to load has nothing to render, so the run ends here with the failure already on stderr rather than recording silence and reporting a clean exit.
     if (driver.SeedFailed) {
@@ -1252,6 +1270,9 @@ bool RunHeadlessScene(entt::registry &r, entt::entity viewport, const char *init
             driver.EmitFrameActions(r, viewport, settled, extent);
             action::ApplyEmitted(r, viewport);
             ReportActionErrors(r);
+            // An audio-only recording consumes no images, so once it is underway the tick drops its render request and the sim still steps through SubmitViewport's event processing while the offline audio renders in CaptureRecordFrame with no GPU frame behind it.
+            // The first frames still render, since settling and the scene framing read the built image.
+            if (driver.AudioOnly() && driver.RecordingStarted) r.ctx().get<PendingRenderRequest>().Value = RenderRequest::None;
             SubmitViewport(r, viewport);
             WaitForRender(r);
             submitted = true;
@@ -1416,12 +1437,14 @@ int main(int argc, char **argv) {
             capture.Play = true;
             if (std::next(it) != args.end() && looks_numeric(*std::next(it))) capture.PlayDuration = std::atof(*++it);
         } else if (a == "--record" && std::next(it) != args.end()) capture.RecordPath = *++it;
+        else if (a == "--record-audio") capture.RecordAudio = true;
         else if (a == "--screenshot" && std::next(it) != args.end()) capture.ScreenshotPath = *++it;
         else if (a == "--render" && std::next(it) != args.end()) capture.RenderBasename = *++it;
         else if (a == "--render-queue" && std::next(it) != args.end()) render_queue = *++it;
         else if (a == "--empty") empty = true;
         else if (a == "--headless") headless = true;
         else if (a == "--fps" && std::next(it) != args.end()) capture.Fps = std::atoi(*++it);
+        else if (a == "--timeline-end" && std::next(it) != args.end()) capture.TimelineEnd = std::atof(*++it);
         else if (a == "--motion-blur" && std::next(it) != args.end()) capture.MotionBlurSteps = uint8_t(std::max(1, std::atoi(*++it)));
         else if (a == "--frames" && std::next(it) != args.end()) capture.BenchFrames = std::atoi(*++it);
         else if (a == "--bench-submit") capture.BenchSubmit = true;
@@ -1435,6 +1458,8 @@ int main(int argc, char **argv) {
         else if (!a.starts_with('-') && !initial_file) initial_file = *it;
     }
     if (capture.Fps <= 0) capture.Fps = 60;
+    // A wav target records audio only, so the audio flag is implied.
+    if (capture.RecordPath.extension() == ".wav") capture.RecordAudio = true;
     // Render mode derives its own output paths from the basename.
     if (!capture.RenderBasename.empty() && (!capture.RecordPath.empty() || !capture.ScreenshotPath.empty())) {
         std::println(stderr, "--render cannot be combined with --record or --screenshot");

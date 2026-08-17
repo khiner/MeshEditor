@@ -1,4 +1,5 @@
 #include "VideoRecorder.h"
+#include "audio/WavWriter.h"
 #include "vulkan/Image.h"
 
 #include <sys/wait.h>
@@ -36,9 +37,25 @@ std::string BuildFfmpegCommand(const std::filesystem::path &out, vk::Extent2D ex
 
 VideoRecorder::VideoRecorder(
     const VulkanResources &vk_res, mvk::BufferContext &buf_ctx,
-    const std::filesystem::path &output_path, vk::Offset3D offset, vk::Extent2D extent, int fps
+    const std::filesystem::path &output_path, vk::Offset3D offset, vk::Extent2D extent, int fps,
+    uint32_t audio_sample_rate
 ) : Device{vk_res.Device}, Queue{vk_res.Queue}, Offset{offset}, Ex{extent},
     FrameBytes{extent.width * extent.height * 4}, FinalPath{output_path} {
+    // Audio only: the samples stream straight into a float wav, and no GPU or ffmpeg resource is touched.
+    if (output_path.extension() == ".wav") {
+        if (audio_sample_rate == 0) {
+            std::println(stderr, "VideoRecorder: {} needs audio; not recording.", output_path.string());
+            return;
+        }
+        Wav = std::make_unique<WavWriter>(output_path, audio_sample_rate);
+        if (!Wav->IsOpen()) {
+            Wav.reset();
+            std::println(stderr, "VideoRecorder: could not open {}; not recording.", output_path.string());
+            return;
+        }
+        std::println("VideoRecorder: audio only @ {} Hz -> {}", audio_sample_rate, output_path.string());
+        return;
+    }
     if (extent.width == 0 || extent.height == 0) {
         std::println(stderr, "VideoRecorder: viewport extent is zero; not recording.");
         return;
@@ -53,8 +70,22 @@ VideoRecorder::VideoRecorder(
     Fence = Device.createFenceUnique({});
     Staging.emplace(buf_ctx, FrameBytes, mvk::MemoryUsage::CpuOnly, vk::BufferUsageFlagBits::eTransferDst);
 
-    const auto cmd = BuildFfmpegCommand(output_path, extent, fps);
-    std::println("VideoRecorder: {}x{} @ {}fps -> {}", extent.width, extent.height, fps, output_path.string());
+    // Muxing needs the finished video, so with audio the encode goes to a neighbouring file and the final path is written once at Stop.
+    // Without audio the video path is written directly.
+    auto video_path = output_path;
+    if (audio_sample_rate > 0) {
+        VideoPath = std::filesystem::path{output_path}.replace_extension(".video.mp4");
+        AudioPath = std::filesystem::path{output_path}.replace_extension(".audio.wav");
+        video_path = VideoPath;
+        Wav = std::make_unique<WavWriter>(AudioPath, audio_sample_rate);
+        if (!Wav->IsOpen()) {
+            Wav.reset();
+            std::println(stderr, "VideoRecorder: could not open {}; recording without audio", AudioPath.string());
+        }
+    }
+
+    const auto cmd = BuildFfmpegCommand(video_path, extent, fps);
+    std::println("VideoRecorder: {}x{} @ {}fps{} -> {}", extent.width, extent.height, fps, Wav ? " with audio" : "", output_path.string());
     Pipe.reset(::popen(cmd.c_str(), "w"));
     if (!Pipe) std::println(stderr, "VideoRecorder: popen failed");
 }
@@ -64,19 +95,53 @@ VideoRecorder::~VideoRecorder() { Stop(); }
 bool VideoRecorder::AnyFailed() { return RecordingFailed; }
 
 void VideoRecorder::Stop() {
-    if (!Pipe) return;
+    if (!Pipe) {
+        if (Wav) std::println("VideoRecorder: wrote {} audio frames to {}", Wav->FramesWritten(), FinalPath.string());
+        Wav.reset();
+        return;
+    }
 
     std::fflush(Pipe.get());
     const int encode = ExitCode(::pclose(Pipe.release()));
     if (encode != 0) {
         RecordingFailed = true;
-        std::println(stderr, "VideoRecorder: ffmpeg exited {} encoding {}", encode, FinalPath.string());
+        std::println(stderr, "VideoRecorder: ffmpeg exited {} encoding {}", encode, VideoPath.empty() ? FinalPath.string() : VideoPath.string());
     }
     std::println("VideoRecorder: wrote {} frames", FrameCount);
+    if (!Wav) return;
+
+    // The sidecar carries its own header, so the mux reads its format rather than being told it.
+    Wav.reset();
+    const auto mux = std::format(
+        "ffmpeg -y -loglevel warning -i \"{}\" -i \"{}\" "
+        "-c:v copy -c:a aac -b:a 192k -shortest \"{}\"",
+        VideoPath.string(), AudioPath.string(), FinalPath.string()
+    );
+    // A failed mux keeps both inputs, so the capture is still there to recover or to diagnose from.
+    if (const int mux_status = ExitCode(std::system(mux.c_str())); mux_status != 0) {
+        RecordingFailed = true;
+        std::println(stderr, "VideoRecorder: ffmpeg exited {} muxing audio into {}; keeping {} and {}", mux_status, FinalPath.string(), VideoPath.string(), AudioPath.string());
+        return;
+    }
+    std::println("VideoRecorder: muxed audio into {}", FinalPath.string());
+    std::error_code ec;
+    std::filesystem::remove(VideoPath, ec);
+    std::filesystem::remove(AudioPath, ec);
+}
+
+void VideoRecorder::CaptureAudio(std::span<const float> frames) {
+    if (!Wav || Wav->Write(frames)) return;
+    RecordingFailed = true;
+    std::println(stderr, "VideoRecorder: wav write failed for {}; stopping.", (Pipe ? AudioPath : FinalPath).string());
+    Wav.reset();
 }
 
 void VideoRecorder::CaptureFrame(vk::Image image) {
-    if (!Pipe) return;
+    // Audio only: no pixels leave the GPU, and the count keeps the recording's pacing and duration accounting.
+    if (!Pipe) {
+        if (Wav) ++FrameCount;
+        return;
+    }
 
     auto cb = *CommandBuffer;
     cb.reset({});

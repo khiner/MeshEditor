@@ -1,0 +1,161 @@
+#!/usr/bin/env python3
+
+# Perceptual descriptors of a rendered wav, so a sound-character claim is checked by measurement
+# before a listen is asked for. Run from anywhere: script/AudioDescribe a.wav [b.wav ...]
+#
+# One line per descriptor family, chosen so common character words have measurable correlates:
+#   silence/onsets  "sparse clinks" vs "continuous scrape": active fraction, onset rate, spacing
+#   tonality        "boingy/ringing" vs "noisy/gravelly": spectral flatness, tonal peaks with
+#                   their frequencies and salience over the local spectrum
+#   decay           "rings like a jar" vs "thuds dead": median decay time of the envelope after
+#                   each onset, from the post-peak dB slope
+#   texture         "clatter" vs "hiss": sample kurtosis, crest factor, and the envelope's
+#                   modulation-band split (slow swell / roughness band / fast grain)
+#   spectrum        "bright/dull": centroid and 95 percent rolloff
+#
+# Whether the descriptors match the scene's intended class is the caller's judgment, made
+# before a listen is handed off, never after.
+
+import math
+import subprocess
+import sys
+
+import numpy as np
+
+SR = 48000
+
+
+def decode(path):
+    p = subprocess.run(
+        ["ffmpeg", "-v", "error", "-i", str(path), "-map", "0:a", "-f", "f32le", "-ac", "1", "-ar", str(SR), "-"],
+        capture_output=True,
+    )
+    if p.returncode != 0:
+        raise SystemExit(f"decode {path} failed: {p.stderr[-200:]!r}")
+    return np.frombuffer(p.stdout, dtype=np.float32).astype(np.float64)
+
+
+def db(x):
+    return 10 * math.log10(max(x, 1e-30))
+
+
+def frame_rms(x, win, hop):
+    n = 1 + max(0, (len(x) - win) // hop)
+    out = np.empty(n)
+    for i in range(n):
+        seg = x[i * hop : i * hop + win]
+        out[i] = math.sqrt(float(np.mean(seg * seg)))
+    return out
+
+
+def describe(path):
+    x = decode(path)
+    if len(x) < SR:
+        raise SystemExit(f"{path}: shorter than a second")
+    # Levels over the whole take.
+    rms = math.sqrt(float(np.mean(x * x)))
+    peak = float(np.max(np.abs(x)))
+    kurt = float(np.mean(((x - x.mean()) / max(x.std(), 1e-30)) ** 4))
+
+    # Activity: 20 ms frames, active above 35 dB below the loudest frame.
+    env = frame_rms(x, int(0.02 * SR), int(0.01 * SR))
+    env_db = 20 * np.log10(np.maximum(env, 1e-15))
+    active = float(np.mean(env_db > env_db.max() - 35))
+
+    # Onsets: half-wave-rectified spectral flux, peaks above 3x the moving median.
+    win, hop = 1024, 512
+    frames = 1 + (len(x) - win) // hop
+    prev = None
+    flux = np.zeros(frames)
+    window = np.hanning(win)
+    for i in range(frames):
+        mag = np.abs(np.fft.rfft(x[i * hop : i * hop + win] * window))
+        if prev is not None:
+            flux[i] = float(np.sum(np.maximum(mag - prev, 0)))
+        prev = mag
+    med = np.array([np.median(flux[max(0, i - 20) : i + 21]) for i in range(frames)])
+    peaks = [
+        i
+        for i in range(1, frames - 1)
+        if flux[i] > 3 * med[i] + 1e-12 and flux[i] >= flux[i - 1] and flux[i] > flux[i + 1]
+    ]
+    # Collapse peaks closer than 20 ms into one event.
+    events = []
+    for i in peaks:
+        if not events or (i - events[-1]) * hop / SR > 0.02:
+            events.append(i)
+    seconds = len(x) / SR
+    onset_rate = len(events) / seconds
+    gaps = np.diff([e * hop / SR for e in events]) if len(events) > 1 else np.array([])
+
+    # Decay after each onset: the envelope's dB slope over 40-400 ms past the local peak.
+    env_hop = 0.01
+    decays = []
+    for e in events:
+        t0 = int(e * hop / SR / env_hop)
+        seg = env_db[t0 : t0 + 40]
+        if len(seg) < 12:
+            continue
+        pk = int(np.argmax(seg[:6]))
+        tail = seg[pk + 4 : pk + 40]
+        if len(tail) < 8:
+            continue
+        tt = np.arange(len(tail)) * env_hop
+        slope = float(np.polyfit(tt, tail, 1)[0])
+        if slope < -1:
+            decays.append(-60 / slope)
+    decay_t60 = float(np.median(decays)) if decays else float("nan")
+
+    # Averaged spectrum: flatness, centroid, rolloff, and prominent tonal peaks.
+    seg_len = 8192
+    count = (len(x) - seg_len) // (seg_len // 2)
+    acc = np.zeros(seg_len // 2 + 1)
+    window = np.hanning(seg_len)
+    for i in range(count):
+        seg = x[i * seg_len // 2 : i * seg_len // 2 + seg_len]
+        acc += np.abs(np.fft.rfft(seg * window)) ** 2
+    spec = acc / max(count, 1)
+    freqs = np.fft.rfftfreq(seg_len, 1 / SR)
+    band = (freqs >= 50) & (freqs <= 16000)
+    s = np.maximum(spec[band], 1e-30)
+    f = freqs[band]
+    flatness = float(np.exp(np.mean(np.log(s))) / np.mean(s))
+    centroid = float(np.sum(f * s) / np.sum(s))
+    rolloff = float(f[int(np.searchsorted(np.cumsum(s), 0.95 * np.sum(s)))])
+    # Tonal peaks: bins standing over the median-smoothed spectrum, merged within 3 percent.
+    smooth = np.array([np.median(s[max(0, i - 12) : i + 13]) for i in range(len(s))])
+    salience = 10 * np.log10(s / np.maximum(smooth, 1e-30))
+    order = np.argsort(salience)[::-1]
+    tonal = []
+    for i in order:
+        if salience[i] < 12:
+            break
+        if all(abs(f[i] - tf) / tf > 0.03 for tf, _ in tonal):
+            tonal.append((float(f[i]), float(salience[i])))
+        if len(tonal) >= 5:
+            break
+
+    # Envelope modulation split: share of envelope-fluctuation power below 4 Hz (swell),
+    # 4-16 Hz (roughness), and above 16 Hz (grain).
+    ef = env - env.mean()
+    espec = np.abs(np.fft.rfft(ef * np.hanning(len(ef)))) ** 2
+    efreq = np.fft.rfftfreq(len(ef), env_hop)
+    tot = float(np.sum(espec[1:])) or 1e-30
+    mod = [float(np.sum(espec[(efreq >= lo) & (efreq < hi)]) / tot) for lo, hi in ((0.1, 4), (4, 16), (16, 50))]
+
+    name = str(path).rsplit("/", 1)[-1]
+    print(f"{name}")
+    print(f"  level    rms {db(rms * rms):6.1f} dB  peak {20 * math.log10(max(peak, 1e-15)):6.1f} dB  crest {20 * math.log10(max(peak, 1e-15) / max(rms, 1e-30)):5.1f} dB  kurtosis {kurt:8.1f}")
+    print(f"  activity active {100 * active:5.1f}%  onsets {onset_rate:6.1f}/s  gap median {float(np.median(gaps)) * 1e3 if len(gaps) else float('nan'):7.1f} ms")
+    print(f"  decay    post-onset T60 {decay_t60 * 1e3:7.1f} ms  ({len(decays)} fitted)")
+    print(f"  spectrum flatness {flatness:.3f}  centroid {centroid:7.0f} Hz  rolloff95 {rolloff:7.0f} Hz")
+    tp = "  ".join(f"{tf:6.0f} Hz +{ts:.0f} dB" for tf, ts in tonal) if tonal else "none over +12 dB"
+    print(f"  tonal    {tp}")
+    print(f"  envelope swell(<4Hz) {mod[0]:.2f}  rough(4-16) {mod[1]:.2f}  grain(>16) {mod[2]:.2f}")
+
+
+if __name__ == "__main__":
+    if len(sys.argv) < 2:
+        raise SystemExit("usage: AudioDescribe a.wav [b.wav ...]")
+    for path in sys.argv[1:]:
+        describe(path)
