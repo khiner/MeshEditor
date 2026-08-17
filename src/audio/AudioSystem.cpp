@@ -36,6 +36,7 @@
 #include "miniaudio.h"
 
 #include "ui/HelpMarker.h" // depends on imgui
+#include "ui/PresetCombo.h"
 
 #include <iostream>
 #include <numbers>
@@ -1497,20 +1498,6 @@ using namespace ImGui;
 namespace {
 constexpr ImVec2 ChartSize{-1, 160};
 
-const char *PresetName(const AcousticMaterial &m) { return m.Name.c_str(); }
-const char *PresetName(const ContactSurfacePreset &p) { return p.Name; }
-
-// Picker listing `choices` by name, calling `pick` with the one the user chooses when it is not already current.
-void PresetCombo(const char *label, const std::string &current, const auto &choices, auto &&pick) {
-    if (!BeginCombo(label, current.c_str())) return;
-    for (const auto &choice : choices) {
-        const bool is_selected = current == PresetName(choice);
-        if (Selectable(PresetName(choice), is_selected) && !is_selected) pick(choice);
-        if (is_selected) SetItemDefaultFocus();
-    }
-    EndCombo();
-}
-
 // If `normalize_max` is set, normalize the data to this maximum value.
 void WriteWav(const std::vector<float> &frames, const fs::path &file_path, uint32_t sample_rate, std::optional<float> normalize_max = {}) {
     const ma_encoder_config config = ma_encoder_config_init(ma_encoding_format_wav, ma_format_f32, 1, sample_rate);
@@ -1605,7 +1592,7 @@ void DrawModalModelSection(entt::registry &r, entt::entity viewport, entt::entit
     }
 
     SeparatorText("Material properties");
-    PresetCombo("Presets", material->Name, materials::acoustic::All, [&](const auto &choice) {
+    ui::PresetCombo("Presets", material->Name, materials::acoustic::All, [&](const auto &choice) {
         action::Emit(action::Replace<AcousticMaterial>{.Entity = mesh_entity, .Value = choice});
     });
     using Props = AcousticMaterialProperties;
@@ -1625,7 +1612,7 @@ void DrawModalModelSection(entt::registry &r, entt::entity viewport, entt::entit
 
     SeparatorText("Surface finish");
     if (const auto *surface = r.try_get<const ContactSurface>(mesh_entity)) {
-        PresetCombo("Presets##finish", surface->Name, surfaces::acoustic::All, [&](const auto &choice) {
+        ui::PresetCombo("Presets##finish", surface->Name, surfaces::acoustic::All, [&](const auto &choice) {
             action::Emit(action::Replace<ContactSurface>{.Entity = mesh_entity, .Value = WithPreset(*surface, choice)});
         });
         ui::Edit fsurf{r, mesh_entity};
@@ -2003,7 +1990,7 @@ void DrawGlobalSynthControls(entt::registry &r, entt::entity viewport) {
         SeparatorText("Striker");
         const auto &striker = r.get<const Striker>(viewport);
         // A material change replaces the whole striker, since it holds a string.
-        PresetCombo("Material", striker.Material.Name, materials::acoustic::All, [&](const auto &choice) {
+        ui::PresetCombo("Material", striker.Material.Name, materials::acoustic::All, [&](const auto &choice) {
             action::Emit(action::Replace<Striker>{.Entity = viewport, .Value = {choice, striker.TipRadius, striker.Length}});
         });
         f.Slider<&Striker::TipRadius>("Tip radius (m)", "%.4f");
