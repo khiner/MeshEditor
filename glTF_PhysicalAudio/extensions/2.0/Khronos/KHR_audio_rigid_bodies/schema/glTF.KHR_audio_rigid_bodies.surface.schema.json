@@ -20,9 +20,28 @@
         },
         "spectralSlope": {
             "type": "number",
-            "description": "Exponent of the roughness power spectrum as a function of spatial frequency. The fractal dimension is spectralSlope / 2 + 2.",
+            "description": "Exponent of the one-dimensional roughness power spectrum as a function of spatial frequency. The Hurst exponent is -(1 + spectralSlope) / 2 and the profile's fractal dimension is spectralSlope / 2 + 2.5.",
             "maximum": 0.0,
-            "default": -1.4
+            "default": -2.4
+        },
+        "shortWavelength": {
+            "type": "number",
+            "description": "Shortest wavelength the roughness spectrum carries, in meters. Defaults to `correlationLength` / 16.",
+            "exclusiveMinimum": 0.0,
+            "gltf_detailedDescription": "The fine end of the band the surface is described over, as `correlationLength` is its coarse end. A self-affine surface has no shortest wavelength of its own and both spectral moments diverge without one, so the density of asperities and the radius of curvature at one exist only against a stated cutoff. Leaving this coarse describes the surface over a narrower band rather than making it smoother: the roughness below the cutoff is still present, standing inside the contacts that bear the load."
+        },
+        "waviness": {
+            "type": "number",
+            "description": "Root-mean-square height of the surface's departure from flat above the finish, in meters.",
+            "minimum": 0.0,
+            "default": 2e-6,
+            "gltf_detailedDescription": "With `wavinessLength` this gives the ratio deciding how much of a shared area two nominally flat faces bear over. It MUST be the longer and gentler of the two scales: `wavinessLength` greater than `correlationLength`, and `waviness` / `wavinessLength` less than `roughness` / `correlationLength`. Zero leaves the surface flat above its finish, bearing over the whole shared area, which spreads the load over more asperities than can turn over and renders nearly silent."
+        },
+        "wavinessLength": {
+            "type": "number",
+            "description": "Lateral extent of the surface's departure from flat above the finish, in meters.",
+            "exclusiveMinimum": 0.0,
+            "default": 2e-3
         },
         "profile": {
             "allOf": [ { "$ref": "glTFid.schema.json" } ],
@@ -49,6 +68,7 @@
         "extras": { }
     },
     "dependentRequired": {
-        "profile": [ "sampleSpacing" ]
+        "profile": [ "sampleSpacing" ],
+        "waviness": [ "wavinessLength" ]
     }
 }

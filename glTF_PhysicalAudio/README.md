@@ -8,6 +8,8 @@ It is the acoustic counterpart to [glTF_Physics](https://github.com/eoineoineoin
 
 Defines document-level modal sound models, acoustic materials, and acoustic surfaces, instanced by nodes. Specifies how contact impulses and sustained contacts excite a model's modes, and the normative synthesized response.
 
+Impact excitation, synthesis, acceleration noise, and radiation are settled, and an implementation supporting them alone is conformant. Sustained contact is under active development and is gathered in one section of its own.
+
 [Specification](extensions/2.0/Khronos/KHR_audio_rigid_bodies/README.md)
 
 ## Design Decisions
