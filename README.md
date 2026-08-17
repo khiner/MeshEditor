@@ -266,6 +266,14 @@ $ ./build/tests/MeshEditorTests
 | `MeshEditorCompressTest` | `.project` archive round trip |
 | `MeshEditorModalSolverTest` | Check some closed forms against computed modes. Synthetic shapes and every RealImpact object tetrahedralized and structurally validated at simplification ratios. |
 
+`SURFACE_AUDIO=1` builds the surface-contact audio model (`src/audio/surface/`) and its own tests,
+benches and scores under `tests/surface/`. See [src/audio/SurfaceContact.h](src/audio/SurfaceContact.h)
+for the entry points the core modal path reaches it through.
+
+```sh
+$ SURFACE_AUDIO=1 script/Build
+```
+
 * `MeshEditorModalSolverTest` reads `external/RealImpact`, and skips its dataset cases when that submodule isn't initialized.
 * `MeshEditorModalSolverBench` runs the corpora under `external/TetCorpus`, built by `script/SetupTetCorpus`: `realimpact` links the 50 scans out of the submodule, `thingi10k` downloads 60 models with `--thingi10k`.
 

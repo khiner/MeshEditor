@@ -1,2 +1,2 @@
 VideoRecorder: 2560x1600 @ 24fps -> render/external/glTF-Sample-Assets/Models/AnimatedMorphCube/glTF/AnimatedMorphCube.mp4
-VideoRecorder: wrote 101 frames (ffmpeg status=0)
+VideoRecorder: wrote 101 frames

@@ -16,10 +16,16 @@ for arg in "$@"; do
     esac
 done
 
+# SURFACE_AUDIO=1 builds the surface-contact audio model alongside the core modal path.
+surface_audio="${SURFACE_AUDIO:-OFF}"
+[ "$surface_audio" = "1" ] && surface_audio=ON
+
 echo "Building $target in $build_type mode..."
 BuildDir="${ProjectRootDir}/build"
-# Configure only when unconfigured or the build type changed. Ninja reconfigures on CMake file changes.
-if [ ! -f "${BuildDir}/build.ninja" ] || ! grep -qx "CMAKE_BUILD_TYPE:STRING=${build_type}" "${BuildDir}/CMakeCache.txt"; then
-    CC=clang CXX=clang++ cmake -G Ninja -S "${ProjectRootDir}" -B "${BuildDir}" -DCMAKE_BUILD_TYPE="$build_type"
+# Configure only when unconfigured or a cached choice changed. Ninja reconfigures on CMake file changes.
+if [ ! -f "${BuildDir}/build.ninja" ] ||
+    ! grep -qx "CMAKE_BUILD_TYPE:STRING=${build_type}" "${BuildDir}/CMakeCache.txt" ||
+    ! grep -qx "MESHEDITOR_SURFACE_AUDIO:BOOL=${surface_audio}" "${BuildDir}/CMakeCache.txt"; then
+    CC=clang CXX=clang++ cmake -G Ninja -S "${ProjectRootDir}" -B "${BuildDir}" -DCMAKE_BUILD_TYPE="$build_type" -DMESHEDITOR_SURFACE_AUDIO="$surface_audio"
 fi
 cmake --build "${BuildDir}" --config "$build_type" --target "$target"

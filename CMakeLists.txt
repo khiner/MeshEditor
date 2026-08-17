@@ -28,6 +28,9 @@ set_source_files_properties(${LIB_SOURCES} PROPERTIES COMPILE_FLAGS "-w")
 
 find_package(PkgConfig REQUIRED)
 pkg_search_module(FFTW3F REQUIRED fftw3f IMPORTED_TARGET)
+# The surface synthesis plans transforms from several threads at once, which the base library does
+# not guard, and runs one large transform across them.
+find_library(FFTW3F_THREADS fftw3f_threads REQUIRED)
 find_package(Vulkan REQUIRED)
 
 if(APPLE)
@@ -149,6 +152,26 @@ endforeach()
 find_library(SHADERC_LIB shaderc_combined $ENV{VULKAN_SDK}/lib)
 message(STATUS "Found shaderc in: ${SHADERC_LIB}")
 
+# The surface-contact audio model (src/audio/surface/): two bodies resting or sliding on one another
+# sounding from the roughness of the surfaces they slide over. Selected by `SURFACE_AUDIO=1` in the
+# environment at configure time, or by setting the cache variable directly. Without it the build takes
+# the core modal path alone - a collision driving the modes with one force pulse - and links the entry
+# points in src/audio/SurfaceContactAbsent.cpp. See src/audio/SurfaceContact.h.
+option(MESHEDITOR_SURFACE_AUDIO "Build the surface-contact audio model" $ENV{SURFACE_AUDIO})
+
+# The .cpp files whichever way the option went, in three nested sets, so a target links only as far up
+# as it reaches: the model off the registry, what reads the scene, and what draws the controls.
+if(MESHEDITOR_SURFACE_AUDIO)
+    set(SURFACE_MODEL_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/src/audio/surface/SurfaceModel.cpp)
+    set(SURFACE_SCENE_SOURCES ${SURFACE_MODEL_SOURCES} ${CMAKE_CURRENT_SOURCE_DIR}/src/audio/surface/SurfaceAudio.cpp)
+    set(SURFACE_AUDIO_SOURCES ${SURFACE_SCENE_SOURCES} ${CMAKE_CURRENT_SOURCE_DIR}/src/audio/surface/SurfaceUi.cpp)
+    add_compile_definitions(SURFACE_AUDIO)
+else()
+    set(SURFACE_MODEL_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/src/audio/SurfaceContactAbsent.cpp)
+    set(SURFACE_SCENE_SOURCES ${SURFACE_MODEL_SOURCES})
+    set(SURFACE_AUDIO_SOURCES ${SURFACE_MODEL_SOURCES})
+endif()
+
 option(MESHEDITOR_APP "Build the MeshEditor app" ON)
 if(MESHEDITOR_APP)
     # Vendored SDL3 from main for pixel-precise macOS scroll deltas.
@@ -177,7 +200,11 @@ if(MESHEDITOR_APP)
     )
     FetchContent_MakeAvailable(SDL3)
 
+    # The surface model and its stand-in both live under src/, so take whichever the option selected
+    # and leave the other out.
     file(GLOB_RECURSE SOURCES CONFIGURE_DEPENDS src/*.cpp)
+    list(FILTER SOURCES EXCLUDE REGEX "src/audio/(surface/.*|SurfaceContactAbsent)\\.cpp$")
+    list(APPEND SOURCES ${SURFACE_AUDIO_SOURCES})
 
     add_executable(${PROJECT_NAME}
         ${ImguiDir}/imgui_demo.cpp
@@ -200,7 +227,7 @@ if(MESHEDITOR_APP)
         target_link_libraries(${PROJECT_NAME} PRIVATE "-framework Accelerate" "-framework CoreAudio")
     endif()
 
-    target_link_libraries(${PROJECT_NAME} PRIVATE SDL3::SDL3 ${Vulkan_LIBRARIES} GPUOpen::VulkanMemoryAllocator ${SHADERC_LIB} meshoptimizer PkgConfig::FFTW3F lunasvg fastgltf::fastgltf simdjson::simdjson basisu_transcoder Jolt webp)
+    target_link_libraries(${PROJECT_NAME} PRIVATE SDL3::SDL3 ${Vulkan_LIBRARIES} GPUOpen::VulkanMemoryAllocator ${SHADERC_LIB} meshoptimizer PkgConfig::FFTW3F ${FFTW3F_THREADS} lunasvg fastgltf::fastgltf simdjson::simdjson basisu_transcoder Jolt webp)
 
     if(CMAKE_BUILD_TYPE MATCHES Debug)
         target_compile_definitions(${PROJECT_NAME} PRIVATE DEBUG_BUILD)

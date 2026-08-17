@@ -1,0 +1,567 @@
+#!/usr/bin/env python3
+
+# Measure the sustained-contact level's roughness and speed exponents, which are what the contact model is
+# accepted against. Run from anywhere.
+#
+# Usage: script/surface/ContactLadder [grid|sweep|sphere|spectrum|gradient|damping|modes|rate]
+#   grid   (default) Dang 2013's own operating envelope, five roughnesses by five sliding speeds.
+#          Reports the roughness exponent at each speed and the speed exponent at each roughness.
+#   sweep  The roughness exponent at four sliding speeds spanning the corpus's own, for a quick check.
+#   sphere The same ladder on a sphere, whose point contact takes the load-set force law instead.
+#   spectrum Perret-Liaudet 2003 s5.3.3: Hertz against a linear law at the same clamp, band by band.
+#          Measured: identical where the energy is, so the clamp carries the response, not the exponent.
+#   gradient Ben Abdelounis 2011 Eq. (8): hold the surface gradient, step the length scale. He finds the
+#          level depends on the roughness-to-spacing ratio alone, so every rung should read one level.
+#   damping Perret-Liaudet 2003 Fig. 16 and Dang 2013: 10x modal damping is -10 dB, an energy balance.
+#          Measured: -0.81 and -0.78 per decade against -1, so the level follows an energy balance.
+#   modes  Dang 2013 Fig. 13 and Ben Abdelounis 2010: the PSD peaks sit at the resonator's own
+#          eigenfrequencies, so the contact drives the modes rather than detuning them.
+#   rate   The shock rate the renderer produces against sliding speed, which is acceptance invariant 1b.
+#
+# The acceptance test is the invariance, not the value. Dang tabulates the roughness exponent at each of his
+# five speeds and gets 0.63 to 0.67, a spread of 0.04 across a 35x span in speed, and the speed exponent at
+# each of his five roughnesses and gets 0.52 to 0.63. Ben Abdelounis 2010 measured the roughness exponent at
+# 0.8 to 1.16 and the speed exponent at 0.7 to 0.96 experimentally, and states outright that the two are
+# independent. So the level separates as Ra^n V^m, and matching one exponent at one operating point tests
+# nothing. Report both spreads.
+#
+# Traps this harness exists to stop repeating:
+#   - Bit-identical output means the bracket did not land. This grid is deterministic, so two runs of the
+#     same code agree exactly, and a bracket that changes nothing looks exactly like a parameter that does
+#     not matter. Both readings are the same bytes and only one is a result. The first LADDER_SEED step was
+#     a part in a billion, which the loader's float32 rounded away, and four identical grids read as a
+#     surface that does not matter. Before believing a null, confirm the knob reached the engine.
+#   - The roughness ladder does not hold its surface. Dang's Table 8 steps the correlation length 400, 450,
+#     500, 500, 500 um, and the engine hashes the realization from the correlation length and the spacing,
+#     so its five rungs draw three different surfaces. Part of the roughness exponent is the surface
+#     changing underneath it. The speed ladder holds one correlation length and is the cleaner of the two.
+#   - The two source papers name the exponents oppositely. Dang 2013's Eq. (1) is Ra^m V^n and Ben Abdelounis
+#     2011's Eq. (7) is Ra^n V^m, so a bare pair of ranges carries no axis with it. Quote every exponent with
+#     the axis it belongs to.
+#   - The bodies are frictionless so they hold their speed for the whole render. A body that runs off the end
+#     of its lane renders as silence rather than as an error, so the lane is sized once for every rung.
+#   - Sizing the lane per rung varies the geometry with the parameter and invalidates the ladder.
+#   - The corpus's own SlideSpeed of 1.4 m/s is twice Dang's fastest and reads a roughness exponent near
+#     zero. Measuring at the corpus's speed is worthless.
+#   - Each scene is one body, since a scene is a mono mix and two bodies cannot be separated afterwards.
+#   - The numbers depend on the probe. What is measured is the modal bank's output level, so a bank that
+#     rings far longer than shocks arrive reads its own filter as much as the drive. No exponent from here
+#     is a property of the contact model alone. Quote the probe with the exponent.
+#     LADDER_T60, LADDER_HIGH and LADDER_PRESSURE were an older synthetic probe's knobs and are
+#     gone: the rig is a solved bar carrying its own band and decays, and the output is pressure
+#     with a per-mode gain flat across that band.
+#   - The quantity matters as much as the probe. Reading the level as a velocity rather than a
+#     pressure was worth about 0.2 in the roughness exponent, moving it from entirely below Dang's
+#     band to bracketing it while moving the speed exponent the other way. Pressure is the default
+#     because comparing a pressure against a velocity is not a comparison at all.
+#   - The probe's damping law is not a lever. Constant zeta = 0.02, which is what both papers run,
+#     reads roughness spread 0.322 against 0.316 and speed 0.128 against 0.108. See LADDER_ZETA.
+#
+# The instrument's own floor, which is what decides whether a difference is a result:
+#   - The floor is the surface, not the renderer. Three runs of unchanged code give bit-identical
+#     levels, exponents and spreads, so there is no run-to-run scatter at all. Stepping LADDER_SEED
+#     over four realizations moves an exponent by up to 0.049 and a spread by up to 0.055, so about
+#     0.04 on an exponent and 0.05 on a spread is the floor, and it is a property of the surface.
+#     An unpaired difference smaller than that is not a result.
+#   - The contact is sensitive, so a change that alters no physics still moves the numbers.
+#     Measured two ways, swapping a divide for a tabulated reciprocal and reversing the order a
+#     coupling sum accumulates in. Both are the same arithmetic to a part in ten million, and both
+#     move a spread: the clamp is a hard nonlinearity, so a last-bit perturbation decides which
+#     side of it a marginal cell lands on and the shock train diverges from there.
+#   - That is sampling noise rather than a floor, and LADDER_PLAY is the lever. Four times the
+#     render shrinks the summation-order null on the roughness spread by 2.29x, against the 2.00x
+#     pure averaging predicts, and it narrows the seed spread the same way: two realizations read a
+#     gap of 0.090 at 6 s and 0.022 at 24 s. So a good part of what reads as surface-to-surface
+#     variability is short renders.
+#   - Render longer before believing a small difference, rather than declaring a threshold. Anything
+#     marginal at 6 s is re-run at 24 s or beyond. A change worth believing keeps its sign across
+#     realizations and ideally survives a second implementation of itself.
+
+import math
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+Repo = Path(__file__).resolve().parent.parent.parent
+Out = Path(os.environ.get("TMPDIR", "/tmp")) / "contact_ladder"
+sys.path.insert(0, str(Repo / "glTF_PhysicalAudio/samples"))
+import generate as gen
+
+# Seconds rendered per rung. Longer averages more shocks into every level, which is the lever on how finely
+# two code states can be told apart: this contact is sensitive enough that a change altering no physics
+# still moves a level, and only averaging shrinks that. Measured: a null change moves the roughness spread
+# 0.027 at 6 s and 0.012 at 24 s, so the noise falls as the square root of the length. 12 s puts it near
+# 0.017, which resolves anything worth 0.05 at three to one, and that covers every question this ladder has
+# open. Going longer buys 0.012, which settles nothing 12 s does not.
+# LADDER_PLAY=6 to iterate. Longer only for a specific marginal question, and say which.
+Play = float(os.environ.get("LADDER_PLAY", "12.0"))
+Settle = 2.0  # seconds dropped before the level is read, so the landing transient is gone
+LaneHalf = 80.0  # metres, long enough that the fastest rung cannot run off it
+# Modal damping ratio, applied to every mode alike, which is what both papers this ladder is judged against
+# use: Dang 2013 and Ben Abdelounis 2011 each run zeta = 0.02 on all modes. Zero keeps the solved bar's own
+# Rayleigh decays.
+# Measured 2026-08-03 on an earlier probe, and it was not the lever. At zeta = 0.02 the roughness
+# spread read 0.322 against the default 0.316 and the speed spread 0.128 against 0.108. Kept as a bracket.
+ProbeZeta = float(os.environ.get("LADDER_ZETA", "0"))
+# Which surface realization every rung draws. The engine seeds a track's phases from a hash of the
+# correlation length, the spectral slope and the sample spacing, and roughness is not among them, so a rung's
+# realization is fixed unless one of those three moves. Stepping the slope redraws the surface while leaving
+# the spectrum and the Hurst exponent alone to six figures, which is the only handle on the realization from
+# outside the engine.
+# The step is a part in a million because the slope reaches the engine as a float32, whose spacing near 2.4 is
+# about 3e-7. A finer step survives the glTF, which carries full precision, and is then rounded away on load,
+# so it reads as four identical runs and looks like a surface that does not matter.
+# Every exponent here is measured on one surface. This is what says whether a small difference between two
+# code states is the model or is this surface.
+LadderSeed = int(os.environ.get("LADDER_SEED", "0"))
+# The level is read as the renderer's own far-field pressure. Dang and Ben Abdelounis report vibrational
+# velocity (each referred to 1e-9 m/s), and the radiation corner ka = 1 sits near 1.1 kHz at the slider's
+# size, below the solved bar's 1.8 kHz first mode, so over the probe's band each mode's pressure is its
+# velocity times a constant and pressure levels carry the same spreads and exponents.
+
+
+# The rig's own bar, longer and thinner than the corpus's so its solved band covers the shock rates the
+# slow rungs actually drive. Solved f1 is 52.4 Hz (70 Hz at the 0.5 kg slider's scale) where the corpus
+# bar's is 1.8 kHz, and 40 modes reach 7.6 kHz solved, matching Dang's 40-mode resonator over 29 Hz to
+# 10 kHz. Every ladder number recorded before this bar landed (2026-08-05) rode a rig whose lowest mode
+# sat above every shock rate below 0.2 m/s.
+RigBarHalf = (0.45, 0.03, 0.004)
+# Every rung's body. The engine sizes the body on the solved model as a scale change,
+# mass = solved mass * s^3, and retunes its frequencies by 1/s.
+SliderMass = 0.5  # kg
+
+
+def ladder_probe(zeta=None):
+    """The rig's probe: the rig bar solved by the real chain, with its decays replaced by a constant
+    damping ratio when one is asked for. `zeta` overrides LADDER_ZETA, so a sweep can step it per rung."""
+    solved = dict(gen.solved_modes(RigBarHalf, gen.CERAMIC, modes=40))
+    z = ProbeZeta if zeta is None else zeta
+    if z > 0:
+        solved["decayRates"] = [z * 2 * math.pi * f for f in solved["frequencies"]]
+    return solved
+
+# Dang 2013 Table 8: quadratic roughness against correlation length. His correlation length barely moves
+# while Ra spans eleven-fold, so his roughness ladder varies the surface gradient, as this one does.
+Profiles = [(3.57e-6, 400e-6), (6.02e-6, 450e-6), (11.88e-6, 500e-6), (25.80e-6, 500e-6), (38.61e-6, 500e-6)]
+Speeds = [0.02, 0.04, 0.1, 0.2, 0.7]  # m/s, his seven collapsed to five
+# Dang's own speeds are the default. Override to resolve a feature between them, which is how a narrow
+# artifact is told from a broad one: LADDER_SPEEDS=0.1,0.14,0.2,0.28,0.4
+if os.environ.get("LADDER_SPEEDS"):
+    Speeds = [float(s) for s in os.environ["LADDER_SPEEDS"].split(",")]
+DangRoughness = [0.63, 0.64, 0.66, 0.65, 0.67]  # his Fig. 15, one per speed
+DangSpeed = [0.52, 0.63, 0.58, 0.55, 0.54]  # his Fig. 14, one per roughness
+
+
+def build(name, roughness, correlation_length, speed, shape="box", zeta=None):
+    """One frictionless body sliding on one finish, varying a single parameter.
+    A box lands on its face and takes the geometry-set force law, and a sphere on its point takes Hertz."""
+    gen.OUT = Out
+    # Waviness is carried with the finish, as the corpus carries it. Dang's own profiles are synthesized
+    # flat above their finish, but his slider is 20 mm where this body is a 9 cm face, and under the
+    # statistical bed a face that wide with nothing holding it apart bears on more asperities than can
+    # turn over and renders silent. LADDER_WAVINESS scales it: 0 is Dang's own flat-above-finish class,
+    # which the element container renders fine (footprint-window turnover needs no mesoscale), and it
+    # removes the per-rung waviness realization lottery. The lottery is structural on this ladder: the
+    # waviness length rides 40 lc while lc changes across the roughness rungs, so each rung redraws its
+    # ~4-period-per-footprint waviness field, and measured 2026-08-10 (24 s, four seeds, springs on) that
+    # draw is worth a factor of two on the roughness exponent (seed means 0.32 0.31 0.69 0.69).
+    # Dang's idealised geometry is covered by the shock-distribution comparison in ContactModelTest instead.
+    waviness_scale = float(os.environ.get("LADDER_WAVINESS", "1"))
+    surface = {"name": "Ladder", "material": 0, "roughness": roughness,
+               "correlationLength": correlation_length,
+               "spectralSlope": gen.FINISHES["Machined"]["spectralSlope"] * (1 + LadderSeed * 1e-6),
+               "waviness": waviness_scale * roughness, "wavinessLength": 40 * correlation_length}
+    gen.scene(
+        name, "ladder rung",
+        bodies=[gen.body("Slider", SliderMass, 1, 0, shape)],
+        grounds=[gen.ground("Ladder", 0, 1)],
+        surfaces=[surface],
+        physics_materials=[{"staticFriction": 0.0, "dynamicFriction": 0.0, "restitution": 0.0}],
+        probe=ladder_probe(zeta),
+        speed=speed, lane_half=(LaneHalf, 0.04, 0.12), start_x=-0.9 * LaneHalf,
+        bar_half=RigBarHalf,
+    )
+    return Out / f"{name}.gltf"
+
+
+# Rungs rendered at once. Each is an independent process and none has to wait for another.
+# Measured 2026-08-04 on the 6 s grid: 50 s at one job, 20 at four, 17 at eight, 29 at sixteen. Renders are
+# GPU-paced and contend, so eight is the floor and past it they queue on the GPU and lose. The full 12 s
+# grid runs in about 26 s, against five minutes for the serial 24 s one it replaces.
+# Rendering in parallel does not change a single number: one job and eight give bit-identical grids.
+Jobs = int(os.environ.get("LADDER_JOBS", "8"))
+
+
+def render_many(paths):
+    """Every rung's samples, rendered several at a time and returned in the order asked for."""
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=Jobs) as pool:
+        return list(pool.map(render, paths))
+
+
+def decode(recording):
+    """The mono samples of a recorded render."""
+    p = subprocess.run(["ffmpeg", "-v", "error", "-i", str(recording), "-map", "0:a", "-f", "f32le",
+                        "-ac", "1", "-ar", "48000", "-"], capture_output=True)
+    if p.returncode != 0:
+        raise RuntimeError(f"decode {recording.name} exited {p.returncode}")
+    import array
+    a = array.array("f")
+    a.frombytes(p.stdout)
+    return a
+
+
+def render(path):
+    """Render one rung headless and return its mono samples."""
+    wav = path.with_suffix(".wav")
+    wav.unlink(missing_ok=True)
+    r = subprocess.run([str(Repo / "build/MeshEditor"), str(path), "--headless", "--play", str(Play),
+                        "--timeline-end", str(Play + 1), "--record", str(wav)], capture_output=True)
+    if r.returncode != 0:
+        raise RuntimeError(f"render {path.name} exited {r.returncode}: {r.stderr[-400:]!r}")
+    a = decode(wav)
+    return a
+
+
+def level(samples):
+    """Mean power after the settle, which is Dang's own gauge: he reports time-averaged (Leq)
+    vibration levels. The footprint contact is a sparse shot process at slow speeds (bearing
+    elements cross the window edge a few times a second), and a median frame sits in the silence
+    between shots, reading the between-events floor while the shots carry the roughness law.
+    Measured 2026-08-10 on the seed-0 grid: the v=0.02 roughness exponent reads -0.44 on the
+    median and the v=0.1 row +0.33 on the mean from the same wavs. Every exponent recorded
+    before 2026-08-10 is a median-frame level and does not compare against readings from here."""
+    start = int(Settle * 48000)
+    if len(samples) <= start:
+        return 0.0
+    return sum(s * s for s in samples[start:]) / (len(samples) - start)
+
+
+def exponent(xs, levels):
+    """Least-squares slope of log(level) against log(x), halved because a level is a power."""
+    pts = [(math.log(x), math.log(y)) for x, y in zip(xs, levels) if y > 0]
+    if len(pts) < 2:
+        return float("nan")
+    mx = sum(p[0] for p in pts) / len(pts)
+    my = sum(p[1] for p in pts) / len(pts)
+    den = sum((p[0] - mx) ** 2 for p in pts)
+    return sum((p[0] - mx) * (p[1] - my) for p in pts) / den / 2
+
+
+def spread(values):
+    return max(values) - min(values)
+
+
+def grid():
+    # Every rung is built first and then rendered together, so the grid waits once rather than 25 times.
+    rungs = [(si, ri, build(f"g{si}_{ri}", rq, lc, v))
+             for si, v in enumerate(Speeds) for ri, (rq, lc) in enumerate(Profiles)]
+    levels = {(si, ri): level(s) for (si, ri, _), s in zip(rungs, render_many([r[2] for r in rungs]))}
+    for si, v in enumerate(Speeds):
+        print(f"  v={v}: " + " ".join(f"{levels[(si, ri)]:.3e}" for ri in range(len(Profiles))), flush=True)
+
+    rq = [p[0] for p in Profiles]
+    rough = [exponent(rq, [levels[(si, ri)] for ri in range(len(Profiles))]) for si in range(len(Speeds))]
+    speed = [exponent(Speeds, [levels[(si, ri)] for si in range(len(Speeds))]) for ri in range(len(Profiles))]
+    print("\nroughness exponent at each speed")
+    for v, m, d in zip(Speeds, rough, DangRoughness):
+        print(f"  v={v:<5} m/s   {m:+.3f}   (Dang {d})")
+    print("speed exponent at each roughness")
+    for (r, _), n, d in zip(Profiles, speed, DangSpeed):
+        print(f"  Rq={r * 1e6:<5.1f} um  {n:+.3f}   (Dang {d})")
+    print(f"\nSPREAD roughness {spread(rough):.3f} (Dang {spread(DangRoughness):.2f})"
+          f"  speed {spread(speed):.3f} (Dang {spread(DangSpeed):.2f})")
+
+
+def sweep():
+    """The roughness exponent against sliding speed, which is where its non-invariance shows up fastest."""
+    rq = [p[0] for p in Profiles]
+    speeds = (0.02, 0.1, 0.4, 1.4)
+    samples = render_many([build(f"s{v}_{ri}", r, lc, v) for v in speeds for ri, (r, lc) in enumerate(Profiles)])
+    for i, v in enumerate(speeds):
+        levels = [level(s) for s in samples[i * len(Profiles):(i + 1) * len(Profiles)]]
+        print(f"  v={v:<5} m/s   roughness exponent {exponent(rq, levels):+.3f}", flush=True)
+
+
+def gradient():
+    """Hold the surface gradient and step the length scale, on the ShockRate scene's own three surfaces,
+    whose ratio is held at 0.04 by construction.
+
+    Ben Abdelounis 2011's Eq. (8) has the level collapsing onto the roughness-to-spacing ratio alone,
+    independent of sliding speed, which would make every rung here read one level. Treat that as a weak
+    prediction: his surfaces are a one-parameter family with Rsm rising with Ra, 92 to 516 um over Ra 1 to
+    26 um, so Ra and Rz/Rsm are both monotone along his single ladder and his collapse cannot separate them.
+    He never held the ratio and stepped the scale, which is what this does.
+
+    Measured 2026-08-03, and the level is strongly scale dependent: 6.0 dB across the three lanes at
+    0.1 m/s and 15.8 dB at 0.7 m/s, coarse loudest in both. Not the probe's band, though the rates run to
+    14 kHz at 0.7 m/s: widening the probe to 20 kHz reads 6.0 and 15.8, against 6.6 and 15.6 at 7 kHz.
+    So the ShockRate scene's lanes are not level matched, and a listener hears loudness across them as well
+    as the grain-to-hiss character they are authored to carry."""
+    scales = [1e-3, 2e-4, 5e-5]  # correlation length, m
+    speeds = (0.1, 0.7)
+    samples = render_many([build(f"q{v}_{i}", 0.04 * lc, lc, v) for v in speeds for i, lc in enumerate(scales)])
+    for si, v in enumerate(speeds):
+        levels = [level(s) for s in samples[si * len(scales):(si + 1) * len(scales)]]
+        ratio = max(levels) / min(levels) if min(levels) > 0 else float("inf")
+        print(f"  v={v:<5} m/s   levels " + " ".join(f"{x:.3e}" for x in levels)
+              + f"   spread {10 * math.log10(ratio):.1f} dB", flush=True)
+
+
+def spectrum():
+    """Perret-Liaudet and Rigaud 2003 section 5.3.3, run on our model. They replace Hertz with a linear law
+    carrying the same contact-loss clamp and find the response identical around the primary peak, differing
+    only at high frequency, concluding the clamp is the strong nonlinearity and the exponent a correction.
+    The LINEAR_SPOT bracket retired with the previous engine (2026-08-08): the quadratised exchange
+    renders the Hertz spot law only, so this mode now renders one arm and the recorded comparison below
+    stands as the settled measurement. A future linear bracket needs a linear law in the sampled bed.
+
+    Measured 2026-08-03, and our model reproduces theirs. Hertz against linear, in dB per octave band:
+      v=0.7 m/s  125-250 -0.15, 250-500 -0.07, 500-1k +0.69, 1k-2k -0.05, 2k-4k +0.42, 4k-8k -0.59
+      v=0.1 m/s  125-250 -0.87, 250-500 -0.14, 500-1k +0.25, 1k-2k +1.18, 2k-4k +1.66, 4k-8k +2.94
+    Identical where the energy is and diverging only high up, which is their finding exactly.
+    So the clamp carries the response and the spot exponent is a high-frequency correction. Nothing that
+    changes the exponent will move the level much, and the remaining gaps are about how load distributes
+    across the cells, not about the law one spot takes.
+
+    This mode is deterministic too, bit-identical across runs of unchanged code, measured 2026-08-04. The
+    +2.94, -1.55 and -3.64 that 4k-8k at 0.1 m/s has read are three different code states, not one band
+    flapping between runs. Read the bands as a shape all the same, since that band sits about 19 dB below
+    the one carrying the energy and a difference there moves nothing audible."""
+    import numpy as np
+    for v in (0.1, 0.7):
+        samples = np.asarray(render(build(f"sp{v}", 6.02e-6, 4.5e-4, v)), dtype=np.float64)
+        samples = samples[int(Settle * 48000):]
+        n = 1 << 14
+        trimmed = samples[:len(samples) // n * n].reshape(-1, n)
+        psd = (np.abs(np.fft.rfft(trimmed * np.hanning(n), axis=1)) ** 2).mean(axis=0)
+        freq = np.fft.rfftfreq(n, 1 / 48000)
+        print(f"  v={v} m/s", flush=True)
+        for lo in (125, 250, 500, 1000, 2000, 4000, 8000):
+            band = (freq >= lo) & (freq < 2 * lo)
+            print(f"    {lo:>5}-{2 * lo:<5} Hz  {10 * math.log10(psd[band].sum() + 1e-300):8.2f} dB", flush=True)
+
+
+def rate():
+    """The shock rate the renderer produces, against sliding speed, which is acceptance invariant 1b.
+
+    The offline sweep in ContactModelTest cannot answer this. It has no body, so nothing ever leaves the
+    surface and its rate is the sliding speed over the correlation length by construction, which is exactly
+    linear and tests nothing. Ben Abdelounis 2011 Figs. 6 and 7 measure the rate falling with speed, and his
+    falling rate comes with a body that leaves the surface.
+
+    CONTACT_REPORT counts, inside the renderer, a cell taking up load again after letting go as one shock,
+    and the samples where the whole contact carries nothing as time the body spends clear. So the same run
+    gives the rate, the flight fraction that acceptance criterion 5 wants, and the fraction of cells bearing.
+
+    Measured 2026-08-04 at Rq 6.02 um:
+
+        speed   shocks/s   free    bearing   level       intensity
+        0.02    1718       0.121   0.098     1.459e-14   8.493e-18
+        0.04    2124       0.450   0.064     4.508e-14   2.123e-17
+        0.1     1984       0.736   0.036     1.358e-13   6.848e-17
+        0.2     4739       0.635   0.055     1.058e-13   2.233e-17
+        0.7     4887       0.846   0.029     2.037e-13   4.170e-17
+
+    Intensity rises with speed, as speed^+0.364, which is Ben Abdelounis's sign. The offline sweep has it
+    falling 38x over this range and that reading is an artifact of having no body, exactly as its rate was.
+    Decomposition check: rate +0.323 and intensity +0.364 sum to the level's +0.687, so the three are one
+    consistent set rather than three separate fits.
+    Intensity is not monotone though: it dips at 0.2 m/s along with the level, so the fit runs through a
+    feature rather than a clean law.
+
+    The rate is sublinear in speed, going as speed^0.647 across Dang's five. Over a 35x span it rises 2.8x
+    where a bodyless contact would rise 35x, so the body leaving the surface breaks the linearity outright
+    and invariant 1b passes.
+
+    A single exponent hides two regimes, and resolving between Dang's speeds with LADDER_SPEEDS shows them:
+
+        speed   0.1    0.14   0.2    0.28   0.4    0.55   0.7
+        rate    1984   3718   4739   4361   4328   4463   4887
+        free    0.736  0.647  0.635  0.734  0.794  0.833  0.846
+
+        0.10 to 0.20 m/s : rate ~ v^+1.25, superlinear
+        0.20 to 0.70 m/s : rate ~ v^+0.02, flat
+
+    So above about 0.2 m/s the shock rate stops answering to speed at all, while the flight fraction rises
+    monotonically, 0.635 to 0.846. That is Ben Abdelounis's mechanism running: the body rides clear more of
+    the time and the rate stops growing. It saturates rather than reversing, so the model reaches flat where
+    he measures falling, which is a smaller disagreement than the whole-range fit suggests.
+    Quote the regime with the exponent. The 0.647 is an average of a superlinear half and a flat one and
+    describes neither.
+
+    The rate is per cell and this contact carries up to MaxBedSpots of them at 48 kHz, so it is not comparable
+    to the offline sweep's per-contact rate or to Dang's per-node one. Only its scaling is.
+
+    Flight fraction runs 12 to 85 percent and is not monotone in speed, dipping at 0.2 m/s, which is the same
+    speed at which the grid's two smoothest profiles dip in level. Whether those are one effect is unknown.
+    """
+    print(f"  {'speed':>6} {'shocks/s':>12} {'free':>8} {'bearing':>8} {'level':>12} {'intensity':>12}")
+    rows = []
+    for v in Speeds:
+        path = build(f"rt{v}", 6.02e-6, 4.5e-4, v)
+        wav = path.with_suffix(".wav")
+        wav.unlink(missing_ok=True)
+        log = Out / f"rt{v}.err"
+        with open(log, "w") as err:
+            # Straight to a file: the probe writes its report through this channel and a pipe loses it.
+            subprocess.run([str(Repo / "build/MeshEditor"), str(path), "--headless", "--play", str(Play),
+                            "--timeline-end", str(Play + 1), "--record", str(wav)],
+                           stdout=subprocess.DEVNULL, stderr=err, env={**os.environ, "CONTACT_REPORT": "1"})
+        line = next((l for l in reversed(log.read_text().splitlines()) if l.startswith("CONTACT ")), None)
+        if line is None:
+            print(f"  {v:>6} no report")
+            continue
+        f = dict(p.split("=", 1) for p in line.split()[1:] if "=" in p)
+        # The level of the same render, so rate and intensity come from one run rather than two.
+        # Ben Abdelounis 2011 resolves the level into rate times intensity, so intensity is level over rate.
+        lvl = level(decode(wav))
+        rate_v = float(f["rate"])
+        rows.append((v, rate_v, float(f["free"]), float(f["bearing"]), lvl, lvl / rate_v if rate_v > 0 else 0.0))
+        print(f"  {v:>6} {rows[-1][1]:>12.4g} {rows[-1][2]:>8.4f} {rows[-1][3]:>8.4f}"
+              f" {lvl:>12.4g} {rows[-1][5]:>12.4g}", flush=True)
+    if len(rows) > 1:
+        speeds = [r[0] for r in rows]
+        # `exponent` halves its slope for an amplitude. These are powers, so undo that.
+        rate_slope = 2 * exponent(speeds, [r[1] for r in rows])
+        intensity_slope = 2 * exponent(speeds, [r[5] for r in rows])
+        level_slope = 2 * exponent(speeds, [r[4] for r in rows])
+        print(f"\n  rate      goes as speed^{rate_slope:+.3f}   (bodyless sweep gives +1.000 by construction,"
+              f" Ben Abdelounis measures it NEGATIVE)")
+        print(f"  intensity goes as speed^{intensity_slope:+.3f}   (Ben Abdelounis measures it POSITIVE)")
+        # These three are powers, so the level's slope is the sum of the other two and is not the exponent
+        # Dang tabulates. His is an amplitude, being 20log10 of a velocity, so halve this to compare.
+        print(f"  level     goes as speed^{level_slope:+.3f}   = their sum. As an amplitude, which is the"
+              f" convention Dang and Ben Abdelounis tabulate, that is {level_slope / 2:+.3f}.")
+
+
+def modes():
+    """Dang 2013 Fig. 13: the resonator's PSD peaks sit at its own eigenfrequencies, from which he concludes
+    the shocks excite the resonator rather than coupling to it, and that the coupling between the two
+    profiles is weak. Ben Abdelounis et al. 2010 report the same experimentally, that under light load the
+    contact does not modify the natural frequencies of the sliding solids.
+
+    Ours should do the same. A peak that sits off its mode says the contact is detuning the modes, which
+    would mean the bed's stiffness is loading the resonator rather than driving it.
+
+    Differential, and the strongest class this project has: the comparison is our peaks against our own
+    modes, so neither paper's configuration enters and no absolute frequency of theirs is used. It is also
+    the only check here with two independent sources behind it, one numerical and one experimental.
+
+    A peak is located by parabolic interpolation on the log PSD across the bin and its two neighbours, which
+    resolves well inside one bin, and is searched within 2% of the mode so a neighbouring mode cannot be
+    picked up. Offsets are reported in cents, where 17 cents is 1%.
+
+    The references must carry the slider's retune. The slider is sized on the solved model and the engine
+    retunes its frequencies by 1/s, 490 cents at 0.5 kg on the rig bar. Comparing against the solved
+    frequencies raw puts every mode outside its own 2% search window, and the search returns noise bumps
+    pinned at the window edge: median 24 to 27 cents with worsts at +-35 to 37, which is the window's own
+    34-cent half-width and not a detuning. The 2026-08-04 pass below happened to read correctly only
+    because scale retuning was inert that day (fixed in e0311343).
+
+    Measured 2026-08-05 on the band-matched rig with retuned references, and it passes. Median offset
+    2.7, 1.6 and 0.9 cents:
+
+        v=0.1 Rq=6.0 um   median 2.7   worst -35.0   within one bin 13/39
+        v=0.7 Rq=6.0 um   median 1.6   worst -34.5   within one bin 12/39
+        v=0.7 Rq=38.6 um  median 0.9   worst +34.7   within one bin 20/39
+
+    The worsts still sit at the window edge, which is a weakly driven mode handing the search a noise bump,
+    not a mode that moved: half the modes sit inside their own 1.46 Hz bin.
+
+    Measured 2026-08-04 on the corpus bar, medians 2.1, 3.6 and 2.2 cents, the same verdict.
+
+    The control is the roughness axis, and it is what makes this a result rather than a small number.
+    Detuning would grow with the bed's stiffness. Stepping Rq 6.0 to 38.6 um at one speed, a sixfold change
+    in roughness, the median offset falls, 3.6 to 2.2. The offsets also change sign between configurations.
+    Unsystematic in sign and not growing with stiffness is noise, not detuning, which is Dang's finding."""
+    import numpy as np
+    solved = ladder_probe()
+    # The rendered slider is sized on the solved model, so its modes ring at the retuned frequencies.
+    slider_scale = (SliderMass / solved["mass"]) ** (1.0 / 3.0)
+    freqs = [f / slider_scale for f in solved["frequencies"]]
+    for v, rq in ((0.1, 6.02e-6), (0.7, 6.02e-6), (0.7, 38.61e-6)):
+        samples = np.asarray(render(build(f"md{v}_{rq:.0e}", rq, 4.5e-4, v)), dtype=np.float64)
+        samples = samples[int(Settle * 48000):]
+        n = 1 << 15
+        trimmed = samples[:len(samples) // n * n].reshape(-1, n)
+        psd = (np.abs(np.fft.rfft(trimmed * np.hanning(n), axis=1)) ** 2).mean(axis=0)
+        freq = np.fft.rfftfreq(n, 1 / 48000)
+        bin_hz = 48000 / n
+        offsets = []
+        for f0 in freqs:
+            band = np.flatnonzero((freq >= f0 * 0.98) & (freq <= f0 * 1.02))
+            if len(band) < 3:
+                continue
+            i = band[int(np.argmax(psd[band]))]
+            if i == 0 or i + 1 >= len(psd) or psd[i] <= 0:
+                continue
+            # Parabolic vertex through the peak bin and its neighbours, in log magnitude.
+            y0, y1, y2 = (math.log(max(psd[j], 1e-300)) for j in (i - 1, i, i + 1))
+            denom = y0 - 2 * y1 + y2
+            delta = 0.5 * (y0 - y2) / denom if denom != 0 else 0.0
+            f_peak = freq[i] + max(min(delta, 1.0), -1.0) * bin_hz
+            offsets.append(1200 * math.log2(f_peak / f0))
+        # The median, not the rms. A mode's bin is 14 cents wide at the bottom of the probe's band and 0.4 at
+        # the top, so the low modes carry an offset the analysis cannot resolve away, and one weakly driven
+        # mode can hand the search a noise bump instead of itself. Both inflate an rms and neither is
+        # detuning. Report the median, and how many modes sit within their own bin.
+        ranked = sorted(abs(o) for o in offsets)
+        median = ranked[len(ranked) // 2]
+        within = sum(1 for f0, o in zip(freqs, offsets) if abs(o) <= 1200 * math.log2((f0 + bin_hz) / f0))
+        print(f"  v={v:<5} Rq={rq * 1e6:<5.1f} um  median {median:5.1f} cents  worst {max(offsets, key=abs):+7.1f}  "
+              f"within one bin {within}/{len(offsets)}  (bin {bin_hz:.2f} Hz, 17 cents = 1%)", flush=True)
+
+
+def damping():
+    """Step the probe's modal damping ratio at a held operating point and fit the level's slope against it.
+
+    Perret-Liaudet and Rigaud 2003 Fig. 16 and Dang 2013 both report 10x modal damping as -10 dB, which is an
+    energy balance: the drive injects a power the resonator dissipates, so the level goes as Lv ~ zeta^-1/2 and
+    the power this harness reads goes as zeta^-1, a slope of -1 per decade.
+
+    Our model against our model, so neither paper's absolute level enters and their configuration cannot
+    disagree with ours. A slope near -1 says the level is set by an energy balance. A flat one says the drive
+    depends on the resonator, and one steeper than -1 says the contact feeds back on its own damping.
+
+    Measured: -0.81 at 0.1 m/s and -0.78 at 0.7 m/s, agreeing across a 7x span in speed, so the level follows
+    an energy balance about 20% short of a clean one. The shortfall is the modal deflection feeding back
+    through the approach in StepVoice.
+    Read the per-step dB alongside the slope. The steps run -5.9, -3.4, -5.7 at 0.1 m/s against -6.02 for each
+    4x step, the same shape at both speeds. At zeta = 0.005 the probe's lowest mode has a T60 of 1.2 s against
+    this harness's 0.1 s level frame, so that rung reads the bank's own integration.
+    """
+    rq, lc = Profiles[1] # Dang's second profile, mid-ladder
+    zetas = [0.005, 0.02, 0.08, 0.32] # a 64x span, four rungs of nothing else changing
+    speeds = (0.1, 0.7)
+    samples = render_many([build(f"d{v}_{i}", rq, lc, v, zeta=z) for v in speeds for i, z in enumerate(zetas)])
+    for si, v in enumerate(speeds):
+        levels = [level(s) for s in samples[si * len(zetas):(si + 1) * len(zetas)]]
+        # The power's slope against zeta, which the energy balance puts at -1. `exponent` halves it for an
+        # amplitude, so undo that here: what is predicted is a power law, not an amplitude one.
+        slope = 2 * exponent(zetas, levels)
+        rel = " ".join(f"{10 * math.log10(x / levels[0]):+.1f}" for x in levels)
+        print(f"  v={v:<5} m/s   slope {slope:+.3f} /decade (energy balance -1.000)   dB re first: {rel}", flush=True)
+
+
+def sphere():
+    """The same roughness ladder on a point contact, which takes the load-set force law instead.
+    A level that does not answer to roughness here is the sphere's floor."""
+    rq = [p[0] for p in Profiles]
+    speeds = (0.02, 0.1, 0.7)
+    samples = render_many([build(f"p{v}_{ri}", r, lc, v, "sphere")
+                           for v in speeds for ri, (r, lc) in enumerate(Profiles)])
+    for i, v in enumerate(speeds):
+        levels = [level(s) for s in samples[i * len(Profiles):(i + 1) * len(Profiles)]]
+        print(f"  v={v:<5} m/s   roughness exponent {exponent(rq, levels):+.3f}"
+              f"   levels " + " ".join(f"{x:.2e}" for x in levels), flush=True)
+
+
+if __name__ == "__main__":
+    Modes = {"grid": grid, "sweep": sweep, "sphere": sphere, "gradient": gradient, "spectrum": spectrum, "damping": damping, "modes": modes, "rate": rate}
+    mode = sys.argv[1] if len(sys.argv) > 1 else "grid"
+    if mode not in Modes:
+        sys.exit(f"Unknown mode '{mode}'. Modes: {', '.join(Modes)}")
+    Out.mkdir(parents=True, exist_ok=True)
+    Modes[mode]()

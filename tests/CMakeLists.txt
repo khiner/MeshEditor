@@ -30,7 +30,7 @@ add_executable(MeshEditorTests
     ${CMAKE_SOURCE_DIR}/src/audio/ContactModel.cpp
     ${CMAKE_SOURCE_DIR}/src/audio/ContactDynamics.cpp
     ${CMAKE_SOURCE_DIR}/src/audio/ModalAudio.cpp
-    ${CMAKE_SOURCE_DIR}/src/audio/SurfaceContactAbsent.cpp
+    ${SURFACE_SCENE_SOURCES}
     ${CMAKE_SOURCE_DIR}/src/audio/ModalModelFile.cpp
     ${CMAKE_SOURCE_DIR}/src/snapshot/SceneSnapshot.cpp
     ${CMAKE_SOURCE_DIR}/src/snapshot/SaveState.cpp
@@ -81,6 +81,7 @@ target_include_directories(MeshEditorTests PRIVATE
 target_link_libraries(MeshEditorTests PRIVATE
     fastgltf::fastgltf
     PkgConfig::FFTW3F
+    ${FFTW3F_THREADS}
     simdjson::simdjson
     Boost::ut
     ${Vulkan_LIBRARIES}
@@ -201,14 +202,14 @@ mesheditor_test_defaults(MeshEditorMeshBvhTest)
 
 # Everything pressing the audio render directly, off the registry, links the same three sources.
 function(mesheditor_render_target target source)
-    add_executable(${target} ${source} ${CMAKE_SOURCE_DIR}/src/audio/ModalAudio.cpp ${CMAKE_SOURCE_DIR}/src/audio/ContactModel.cpp ${CMAKE_SOURCE_DIR}/src/audio/SurfaceContactAbsent.cpp)
+    add_executable(${target} ${source} ${CMAKE_SOURCE_DIR}/src/audio/ModalAudio.cpp ${CMAKE_SOURCE_DIR}/src/audio/ContactModel.cpp ${SURFACE_MODEL_SOURCES})
     target_include_directories(${target} PRIVATE
         ${CMAKE_SOURCE_DIR}/src
         ${CMAKE_SOURCE_DIR}/tests
         SYSTEM ${CMAKE_SOURCE_DIR}/lib/glm
         SYSTEM ${CMAKE_SOURCE_DIR}/lib/entt/src
     )
-    target_link_libraries(${target} PRIVATE Boost::ut PkgConfig::FFTW3F)
+    target_link_libraries(${target} PRIVATE Boost::ut PkgConfig::FFTW3F ${FFTW3F_THREADS})
     mesheditor_test_defaults(${target})
 endfunction()
 
@@ -223,3 +224,11 @@ target_include_directories(MeshEditorContactModelTest PRIVATE
 )
 target_link_libraries(MeshEditorContactModelTest PRIVATE Boost::ut)
 mesheditor_test_defaults(MeshEditorContactModelTest)
+
+# The surface-contact audio model's own tests, which build only with the model.
+if(MESHEDITOR_SURFACE_AUDIO)
+    mesheditor_render_target(MeshEditorSurfaceModelTest surface/SurfaceModelTest.cpp)
+    mesheditor_render_target(MeshEditorSurfaceRenderTest surface/SurfaceRenderTest.cpp)
+    mesheditor_render_target(MeshEditorSurfaceTrackPoolTest surface/SurfaceTrackPoolTest.cpp)
+    mesheditor_render_target(MeshEditorContactSpringsScore surface/ContactSpringsScore.cpp)
+endif()

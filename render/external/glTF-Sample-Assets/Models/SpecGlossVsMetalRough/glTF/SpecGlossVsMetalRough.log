@@ -1,2 +1,1 @@
-Error loading glTF file 'external/glTF-Sample-Assets/Models/SpecGlossVsMetalRough/glTF/SpecGlossVsMetalRough.gltf': Failed to parse glTF 'external/glTF-Sample-Assets/Models/SpecGlossVsMetalRough/glTF/SpecGlossVsMetalRough.gltf': Missing required extensions: KHR_materials_pbrSpecularGlossiness
-Saved screenshot: render/external/glTF-Sample-Assets/Models/SpecGlossVsMetalRough/glTF/SpecGlossVsMetalRough.webp
+Error loading glTF file 'external/glTF-Sample-Assets/Models/SpecGlossVsMetalRough/glTF/SpecGlossVsMetalRough.gltf': Failed to parse glTF '/Users/khiner/Development/MeshEditor/external/glTF-Sample-Assets/Models/SpecGlossVsMetalRough/glTF/SpecGlossVsMetalRough.gltf': Missing required extensions: KHR_materials_pbrSpecularGlossiness

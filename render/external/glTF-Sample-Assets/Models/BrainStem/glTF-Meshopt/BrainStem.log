@@ -1,2 +1,1 @@
-Error loading glTF file 'external/glTF-Sample-Assets/Models/BrainStem/glTF-Meshopt/BrainStem.gltf': Failed to parse glTF 'external/glTF-Sample-Assets/Models/BrainStem/glTF-Meshopt/BrainStem.gltf': An extension required by the glTF is not supported by fastgltf.
-Saved screenshot: render/external/glTF-Sample-Assets/Models/BrainStem/glTF-Meshopt/BrainStem.webp
+Error loading glTF file 'external/glTF-Sample-Assets/Models/BrainStem/glTF-Meshopt/BrainStem.gltf': Failed to parse glTF '/Users/khiner/Development/MeshEditor/external/glTF-Sample-Assets/Models/BrainStem/glTF-Meshopt/BrainStem.gltf': An extension required by the glTF is not supported by fastgltf.
