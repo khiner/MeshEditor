@@ -1,4 +1,5 @@
 #include "LoadObj.h"
+#include "RunSuites.h"
 #include "ValidateTetMesh.h"
 #include "audio/AcousticMaterialProperties.h"
 #include "audio/mesh2modes.h"
@@ -347,4 +348,6 @@ int main() {
             }
         }
     };
+
+    return RunSuites();
 }

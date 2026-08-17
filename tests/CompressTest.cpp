@@ -1,5 +1,7 @@
 #include "Compress.h"
 
+#include "RunSuites.h"
+
 #include <boost/ut.hpp>
 
 #include <filesystem>
@@ -61,4 +63,6 @@ int main() {
         fs::remove_all(missing);
         expect(!Compress(missing, missing / "out.project"));
     };
+
+    return RunSuites();
 }

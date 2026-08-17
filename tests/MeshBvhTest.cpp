@@ -3,6 +3,8 @@
 
 #include "mesh/MeshBvh.h"
 
+#include "RunSuites.h"
+
 #include <boost/ut.hpp>
 
 #include <glm/geometric.hpp>
@@ -174,4 +176,6 @@ int main() {
         const vec3 query{0, 0, 5};
         expect(std::abs(HitDistance(vertices, bvh.ClosestPoint(vertices, triangles, query), query) - 5.f) < 1e-5f);
     };
+
+    return RunSuites();
 }

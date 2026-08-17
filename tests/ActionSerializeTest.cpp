@@ -1,5 +1,7 @@
 #include "action/LogSerialize.h"
 
+#include "RunSuites.h"
+
 #include <boost/ut.hpp>
 
 #include <sstream>
@@ -98,4 +100,6 @@ int main(int argc, const char **argv) {
         const bool same = read == written;
         expect(same);
     };
+
+    return RunSuites();
 }
