@@ -1049,7 +1049,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, vk::CommandBuffer cb,
 
         // Edge quad batch (edit/excite mode triangle quads with self-AA, matches Blender's overlay_edit_mesh_edge)
         draw.EdgeQuad = draw_list.BeginBatch();
-        if (is_edit_mode || is_excite_mode) {
+        if (show_overlays && (is_edit_mode || is_excite_mode)) {
             for (const auto &e : mesh_entities) {
                 if (e.IsBone || e.IsExtras || !e.MeshComp || e.Buf.EdgeIndices.Count == 0) continue;
                 auto dd = MakeDrawData(e.Buf.Vertices, e.Buf.EdgeIndices, buffers.Instances, e.Deform.BoneDeformOffset, e.Deform.ArmatureDeformOffset, e.Deform.MorphDeformOffset, e.Deform.MorphTargetCount);
@@ -1083,7 +1083,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, vk::CommandBuffer cb,
         for (const auto &e : mesh_entities) {
             if (e.IsBone) continue;
             // Edit mode shows a mesh's vertices under vertex select, and excite mode its excitable ones.
-            const bool draw_elements = (is_edit_mode && edit_mode == Element::Vertex && e.PrimaryEditBufferIndex) || (is_excite_mode && e.IsSoundVertices);
+            const bool draw_elements = show_overlays && ((is_edit_mode && edit_mode == Element::Vertex && e.PrimaryEditBufferIndex) || (is_excite_mode && e.IsSoundVertices));
             // A vertex-only mesh otherwise draws its points as the object itself, until it is the one being edited.
             const bool draw_object = e.Domain == ElementDomain::Vertex && !(is_edit_mode && e.PrimaryEditBufferIndex);
             if (!draw_elements && !draw_object) continue;

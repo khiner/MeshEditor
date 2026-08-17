@@ -55,7 +55,8 @@ prepare_scene() {
     costs+=("${cost}")
     # Clear prior artifacts so failure detection is accurate and stale files never linger.
     # The glob covers per-material-variant images ("<name>.<variant>.webp").
-    rm -f "${out}.webp" "${out}".*.webp "${out}.png" "${out}".*.png "${out}.jpg" "${out}.mp4" "${out}.actions" "${out}.log"
+    # A scene killed mid-render leaves the mux inputs (`.video.mp4` and `.audio.wav`) behind.
+    rm -f "${out}.webp" "${out}".*.webp "${out}.png" "${out}".*.png "${out}.jpg" "${out}.mp4" "${out}.video.mp4" "${out}.audio.wav" "${out}.actions" "${out}.log"
     # Always write the one-command reproducer, even if the render later fails, so the leaf is self-documenting.
     # It loads the source scene directly (no capture, no project-file regeneration — that's this script's job).
     {

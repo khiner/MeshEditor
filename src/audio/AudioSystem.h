@@ -19,8 +19,12 @@ struct Recording {
 
 // Render the master mix, which is far-field pressure in pascals at 1 m.
 // `monitor` converts the result to device units as the final stage, mapping 20 Pa (120 dB SPL) to full scale and soft-limiting what still crests past it.
-// Capture paths leave it unset, so recordings stay in pascals.
+// Capture paths leave it unset and convert the pressure themselves.
 void ProcessAudio(entt::registry &, entt::entity viewport, float *output, uint32_t frame_count, bool monitor = false);
+
+// Convert captured pressure to device units in place, at the monitor level.
+// `limiter` holds the envelope across calls, one per stream monitored.
+void MonitorFrames(entt::registry &, std::span<float>, MonitorLimiter &);
 
 // Capture of the master output, for muxing into a video recording.
 // The device thread writes and the main thread drains, so one of each and no locking.

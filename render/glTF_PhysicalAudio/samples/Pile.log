@@ -1,2 +1,3 @@
-VideoRecorder: 2560x1600 @ 24fps -> render/glTF_PhysicalAudio/samples/Pile.mp4
+VideoRecorder: 2560x1600 @ 24fps with audio -> render/glTF_PhysicalAudio/samples/Pile.mp4
 VideoRecorder: wrote 250 frames
+VideoRecorder: muxed audio into render/glTF_PhysicalAudio/samples/Pile.mp4

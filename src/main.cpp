@@ -22,6 +22,7 @@
 #include "audio/AudioSystem.h"
 #include "audio/AudioTypes.h"
 #include "audio/ModalModelFile.h"
+#include "audio/ModalModes.h"
 #include "gizmo/TransformGizmoTypes.h"
 #include "image/ImageEncode.h"
 #include "mesh/MeshComponents.h"
@@ -586,7 +587,8 @@ struct CaptureDriver {
         const float timeline_fps = r.get<const TimelineRange>(viewport).Fps;
         RenderDt = 1.f / timeline_fps;
         RecordFps = FixedStep ? int(std::lround(timeline_fps)) : capture.Fps;
-        RecordAudio = capture.RecordAudio;
+        // A render records the scene's own audio, so a scene with sound objects gets a track and every other stays video only.
+        RecordAudio = capture.RecordAudio || (RenderMode() && !r.view<const ModalModes>().empty());
     }
 
     bool RenderMode() const { return !RenderBasename.empty(); }
@@ -1231,8 +1233,9 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
 
 // Seed the scene, run the fixed-step capture loop, and finish the session log.
 bool RunHeadlessScene(entt::registry &r, entt::entity viewport, const char *initial_file, bool empty, const CaptureRequest &capture) {
-    // Headless has no output device, so the audio system is created only when a recording will capture it, keeping the corpus render free of the modal render pool's threads.
-    if (capture.RecordAudio) InitAudioSystem(r);
+    // Headless has no output device, so the audio system is created only for runs that may capture audio, keeping other renders free of the modal render pool's threads.
+    // A render decides that from the scene it loads, and the load fills the bank, so it is created first.
+    if (capture.RecordAudio || !capture.RenderBasename.empty()) InitAudioSystem(r);
     auto driver = BeginCaptureSession(r, viewport, capture, initial_file, empty, /*fixed_step=*/true);
     // A scene that failed to load has nothing to render, so the run ends here with the failure already on stderr rather than recording silence and reporting a clean exit.
     if (driver.SeedFailed) {

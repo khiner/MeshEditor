@@ -110,10 +110,11 @@ void VideoRecorder::Stop() {
     std::println("VideoRecorder: wrote {} frames", FrameCount);
     if (!Wav) return;
 
-    // The sidecar carries its own header, so the mux reads its format rather than being told it.
+    // The sidecar holds its own header, so the mux reads its format rather than being told it.
+    // `-ch_layout mono` is the exception: ffmpeg's guess for an unstated mono layout prints a heap address.
     Wav.reset();
     const auto mux = std::format(
-        "ffmpeg -y -loglevel warning -i \"{}\" -i \"{}\" "
+        "ffmpeg -y -loglevel warning -i \"{}\" -ch_layout mono -i \"{}\" "
         "-c:v copy -c:a aac -b:a 192k -shortest \"{}\"",
         VideoPath.string(), AudioPath.string(), FinalPath.string()
     );

@@ -185,6 +185,7 @@ The flags can be combined freely, except `--render` excludes `--record` and `--s
 
 `render/` holds committed demo output for every scene in the corpus, mirroring the source layout: the built-in Empty and Default scenes, the `res/examples/` projects, the full-experience audio scenes at the root of `glTF_PhysicalAudio/samples/` (the isolation corpus under `samples/test/` is measured by `script/AudioCorpus` instead), and the glTF samples under `external/`. (The redundant `glTF-Binary` and `glTF-Embedded` variants are skipped since they render identically.)
 Each leaf has a visual (lossless `.webp` for static scenes, plus one per material variant, `.mp4` for animated ones - one timeline loop per animation clip, back-to-back), the `.actions` replay log, a `.log` of console output, and a `run.sh` that opens that scene in the app.
+A scene holding sound objects renders its audio alongside the video and muxes it into the `.mp4`.
 
 Binary artifacts are stored in [git-lfs](https://git-lfs.com); fetch them after cloning:
 ```shell

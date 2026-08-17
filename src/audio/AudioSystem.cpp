@@ -1179,10 +1179,6 @@ struct MasterCapture {
     std::atomic<uint64_t> Written{0}, Read{0};
 };
 
-// The monitor limiter's running peak envelope, in full-scale units. Device thread only.
-struct MonitorLimiter {
-    float Envelope{0};
-};
 } // namespace
 
 uint32_t BeginAudioCapture(entt::registry &r) {
@@ -1199,8 +1195,10 @@ uint32_t BeginAudioCapture(entt::registry &r) {
 void EndAudioCapture(entt::registry &r) { r.ctx().erase<MasterCapture>(); }
 
 void InitAudioSystem(entt::registry &r) {
-    if (!r.ctx().contains<ModalAudio>()) r.ctx().emplace<ModalAudio>();
-    if (!r.ctx().contains<MonitorLimiter>()) r.ctx().emplace<MonitorLimiter>();
+    // A second call would connect every tracker twice.
+    if (r.ctx().contains<ModalAudio>()) return;
+    r.ctx().emplace<ModalAudio>();
+    r.ctx().emplace<MonitorLimiter>();
     RegisterAudioComponentHandlers(r);
 }
 
@@ -1228,6 +1226,18 @@ void DrainAudioCapture(entt::registry &r, std::vector<float> &out) {
 // The pressure a full-scale device sample represents, Pa: the monitor level, 120 dB SPL, the threshold of pain.
 // Full scale stands for the loudest pressure the monitor renders, and the limiter holds anything above it there.
 constexpr float FullScalePressure{20.f};
+
+// The gain follows the running peak envelope, instant attack with a 100 ms release, so a spike is held at the rail only for its own duration and quieter events keep their relative level.
+void MonitorFrames(entt::registry &r, std::span<float> frames, MonitorLimiter &limiter) {
+    const float release = std::exp(-1.f / (0.1f * float(DeviceSampleRate(r))));
+    auto envelope = limiter.Envelope;
+    for (auto &frame : frames) {
+        const float x = frame / FullScalePressure;
+        envelope = std::max(std::abs(x), envelope * release);
+        frame = envelope > 1.f ? x / envelope : x;
+    }
+    limiter.Envelope = envelope;
+}
 
 void ProcessAudio(entt::registry &r, entt::entity viewport, float *output, uint32_t frame_count, bool monitor) {
     std::fill_n(output, frame_count, 0.f);
@@ -1270,18 +1280,7 @@ void ProcessAudio(entt::registry &r, entt::entity viewport, float *output, uint3
     }
 
     // The monitor stage, after the capture tap: device units at the monitor level.
-    // The limiter's gain follows the running peak envelope, instant attack with a 100 ms release, so a spike is held at the rail only for its own duration and the level gradient between events survives the stage.
-    if (monitor) {
-        const float release = std::exp(-1.f / (0.1f * float(DeviceSampleRate(r))));
-        auto &limiter = r.ctx().get<MonitorLimiter>();
-        auto envelope = limiter.Envelope;
-        for (uint32_t i = 0; i < frame_count; ++i) {
-            const float x = output[i] / FullScalePressure;
-            envelope = std::max(std::abs(x), envelope * release);
-            output[i] = envelope > 1.f ? x / envelope : x;
-        }
-        limiter.Envelope = envelope;
-    }
+    if (monitor) MonitorFrames(r, {output, frame_count}, r.ctx().get<MonitorLimiter>());
 }
 
 using namespace ImGui;

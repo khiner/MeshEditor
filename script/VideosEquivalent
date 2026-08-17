@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 # Exit 0 when two videos decode identically except for GPU render noise: at most MaxDiffFrames
 # frames, each with a tiny summed pixel difference. Anything beyond that exits 1. Prints
-# per-frame difference stats.
+# per-frame difference stats. Audio is compared too, with no tolerance: an offline render produces
+# the same samples every run.
 #
 # The corpus should be byte-identical across runs, and everything we control provably is:
 # with identical inputs and bit-identical Metal command streams, Apple's driver still renders
@@ -20,8 +21,9 @@ FFMPEG = "ffmpeg"
 
 def frame_hashes(path):
     """Return (dimensions, [per-frame md5]) from a single decode pass, as a completion callback."""
+    # `-an`: audio packet hashes would interleave with the frame hashes the differing indices address.
     proc = subprocess.Popen(
-        [FFMPEG, "-nostdin", "-loglevel", "error", "-i", path, "-f", "framemd5", "-"],
+        [FFMPEG, "-nostdin", "-loglevel", "error", "-i", path, "-an", "-f", "framemd5", "-"],
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
     )
 
@@ -38,6 +40,15 @@ def frame_hashes(path):
         return dims, hashes
 
     return wait
+
+
+def audio_hash(path):
+    """Return an md5 of the decoded audio, or None when the file has no audio stream."""
+    r = subprocess.run(
+        [FFMPEG, "-nostdin", "-loglevel", "error", "-i", path, "-vn", "-f", "md5", "-"],
+        capture_output=True, text=True,
+    )
+    return r.stdout.strip() if r.returncode == 0 else None
 
 
 def decode_frames(path, indices, dims):
@@ -77,6 +88,10 @@ def main():
     wait_a, wait_b = frame_hashes(path_a), frame_hashes(path_b)
     dims_a, hashes_a = wait_a()
     dims_b, hashes_b = wait_b()
+    audio_a, audio_b = audio_hash(path_a), audio_hash(path_b)
+    if audio_a != audio_b:
+        print(f"audio differs: {audio_a or 'none'} vs {audio_b or 'none'}")
+        return 1
     if dims_a != dims_b:
         print(f"dimensions differ: {dims_a} vs {dims_b}")
         return 1

@@ -16,6 +16,11 @@ struct AudioOutputMix {
     float Volume{1.f};
 };
 
+// The monitor limiter's running peak envelope, in full-scale units.
+struct MonitorLimiter {
+    float Envelope{0};
+};
+
 // Viewport-level modal synthesis controls.
 struct ModalSoundControls {
     uint32_t RenderThreads{4}; // Threads a block is split between, counting the audio callback's own.

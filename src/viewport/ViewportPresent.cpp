@@ -33,6 +33,9 @@ struct VideoRecording {
     std::unique_ptr<VideoRecorder> Recorder;
     std::pair<vk::Offset3D, vk::Extent2D> Region; // Locked at StartRecording.
     std::vector<float> Drained{}; // Scratch the captured audio is drained through each frame.
+    // Set for a recording to be played back, which takes the master mix at the monitor's level rather than in pascals.
+    bool Monitor{false};
+    MonitorLimiter Limiter{}; // This recording's own envelope, so monitoring never touches the device's.
     // Set when no device produces audio, so each captured frame renders its own share on this thread.
     uint32_t OfflineRate{0};
     double OfflineCarry{0}; // Fractional frames owed, so a non-integral rate over fps stays in step.
@@ -107,7 +110,9 @@ void StartRecording(entt::registry &r, entt::entity viewport, const std::filesys
     // The offline render follows the same rate the modal bank was built at, so a headless capture and the bank agree at any AUDIO_SAMPLE_RATE.
     const auto offline_rate = with_audio && device_rate == 0 ? DeviceSampleRate(r) : 0u;
     const auto audio_rate = device_rate ? device_rate : offline_rate;
-    r.emplace<VideoRecording>(viewport, VideoRecording{.Recorder = std::make_unique<VideoRecorder>(vk, buffers.Ctx, path, region.first, region.second, fps, audio_rate), .Region = region, .OfflineRate = offline_rate, .Fps = fps});
+    // A video is played back, so its track is in device units. A wav is a measurement and stays in pascals.
+    const bool monitor = with_audio && path.extension() != ".wav";
+    r.emplace<VideoRecording>(viewport, VideoRecording{.Recorder = std::make_unique<VideoRecorder>(vk, buffers.Ctx, path, region.first, region.second, fps, audio_rate), .Region = region, .Monitor = monitor, .OfflineRate = offline_rate, .Fps = fps});
 }
 
 bool IsRecording(const entt::registry &r, entt::entity viewport) {
@@ -140,6 +145,7 @@ void CaptureRecordFrame(entt::registry &r, entt::entity viewport) {
     } else {
         DrainAudioCapture(r, rec->Drained);
     }
+    if (rec->Monitor) MonitorFrames(r, rec->Drained, rec->Limiter);
     rec->Recorder->CaptureAudio(rec->Drained);
     rec->Recorder->CaptureFrame(*pipelines.Main.Resources->FinalColorImage.Image);
 }
