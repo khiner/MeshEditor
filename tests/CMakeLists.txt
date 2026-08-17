@@ -110,38 +110,36 @@ target_link_libraries(MeshEditorActionSerializeTest PRIVATE Boost::ut)
 mesheditor_test_defaults(MeshEditorActionSerializeTest)
 
 set(REALIMPACT_DATASET_DIR "${CMAKE_SOURCE_DIR}/external/RealImpact/dataset" CACHE PATH "RealImpact dataset directory")
-
-add_executable(MeshEditorModalSolverTest ModalSolverTest.cpp ${CMAKE_SOURCE_DIR}/src/audio/mesh2modes.cpp ${CMAKE_SOURCE_DIR}/src/audio/CholeskyShiftInvert.cpp ${CMAKE_SOURCE_DIR}/src/mesh/Tets.cpp ${CMAKE_SOURCE_DIR}/src/mesh/Tetrahedralize.cpp ${CMAKE_SOURCE_DIR}/src/numeric/Predicates.cpp)
-target_include_directories(MeshEditorModalSolverTest PRIVATE
-    ${CMAKE_SOURCE_DIR}/src
-    ${EIGEN3_INCLUDE_DIR}
-    SYSTEM ${CMAKE_SOURCE_DIR}/lib/glm
-    SYSTEM ${CMAKE_SOURCE_DIR}/lib/spectra/include
-    SYSTEM ${CMAKE_SOURCE_DIR}/lib/tinyobjloader
-)
-target_link_libraries(MeshEditorModalSolverTest PRIVATE Boost::ut meshoptimizer tinyobjloader "-framework Accelerate")
-mesheditor_test_defaults(MeshEditorModalSolverTest)
-target_compile_definitions(MeshEditorModalSolverTest PRIVATE REALIMPACT_DATASET_DIR="${REALIMPACT_DATASET_DIR}")
-
 set(TET_CORPUS_DIR "${CMAKE_SOURCE_DIR}/external/TetCorpus" CACHE PATH "Tetrahedralizer mesh corpora directory")
 
-add_executable(MeshEditorModalSolverBench ModalSolverBench.cpp
-    ${CMAKE_SOURCE_DIR}/src/audio/mesh2modes.cpp
-    ${CMAKE_SOURCE_DIR}/src/audio/CholeskyShiftInvert.cpp
-    ${CMAKE_SOURCE_DIR}/src/audio/RealImpact.cpp
-    ${CMAKE_SOURCE_DIR}/src/mesh/Tets.cpp
-    ${CMAKE_SOURCE_DIR}/src/mesh/Tetrahedralize.cpp
-    ${CMAKE_SOURCE_DIR}/src/numeric/Predicates.cpp
-)
-target_include_directories(MeshEditorModalSolverBench PRIVATE
-    ${CMAKE_SOURCE_DIR}/src
-    ${EIGEN3_INCLUDE_DIR}
-    SYSTEM ${CMAKE_SOURCE_DIR}/lib/glm
-    SYSTEM ${CMAKE_SOURCE_DIR}/lib/spectra/include
-    SYSTEM ${CMAKE_SOURCE_DIR}/lib/tinyobjloader
-)
-target_link_libraries(MeshEditorModalSolverBench PRIVATE meshoptimizer tinyobjloader "-framework Accelerate")
-mesheditor_test_defaults(MeshEditorModalSolverBench)
+# Everything driving the solve chain (tetrahedralize, assemble, eigensolve) links the same sources.
+# Extra sources for one target follow its own file.
+function(mesheditor_solve_target target)
+    add_executable(${target} ${ARGN}
+        ${CMAKE_SOURCE_DIR}/src/audio/mesh2modes.cpp
+        ${CMAKE_SOURCE_DIR}/src/audio/CholeskyShiftInvert.cpp
+        ${CMAKE_SOURCE_DIR}/src/mesh/Tets.cpp
+        ${CMAKE_SOURCE_DIR}/src/mesh/Tetrahedralize.cpp
+        ${CMAKE_SOURCE_DIR}/src/numeric/Predicates.cpp
+    )
+    target_include_directories(${target} PRIVATE
+        ${CMAKE_SOURCE_DIR}/src
+        ${EIGEN3_INCLUDE_DIR}
+        SYSTEM ${CMAKE_SOURCE_DIR}/lib/glm
+        SYSTEM ${CMAKE_SOURCE_DIR}/lib/spectra/include
+        SYSTEM ${CMAKE_SOURCE_DIR}/lib/tinyobjloader
+    )
+    target_link_libraries(${target} PRIVATE Boost::ut meshoptimizer tinyobjloader "-framework Accelerate")
+    mesheditor_test_defaults(${target})
+endfunction()
+
+mesheditor_solve_target(MeshEditorModalSolverTest ModalSolverTest.cpp)
+target_compile_definitions(MeshEditorModalSolverTest PRIVATE REALIMPACT_DATASET_DIR="${REALIMPACT_DATASET_DIR}")
+
+# The tool the sample generator solves its scenes' modal models with.
+mesheditor_solve_target(MeshEditorModalSolve ModalSolveTool.cpp)
+
+mesheditor_solve_target(MeshEditorModalSolverBench ModalSolverBench.cpp ${CMAKE_SOURCE_DIR}/src/audio/RealImpact.cpp)
 target_compile_definitions(MeshEditorModalSolverBench PRIVATE TET_CORPUS_DIR="${TET_CORPUS_DIR}" MESHEDITOR_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 
 add_executable(MeshEditorCompressTest CompressTest.cpp ${CMAKE_SOURCE_DIR}/src/Compress.cpp)
