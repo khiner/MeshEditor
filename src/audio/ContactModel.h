@@ -65,7 +65,9 @@ double ReducedContactMass(const ContactDynamics &, uint32_t excitable_index, vec
 // Effective compliance 1/E* = (1 - v1^2)/E1 + (1 - v2^2)/E2, in Pa^-1.
 double InvEffectiveModulus(const AcousticMaterialProperties &, const AcousticMaterialProperties &);
 
-// Combined curvature 1/R* = k1 + k2, in 1/m, held positive so a flat or concave surface reads as flat at R* = 1e6 m.
+// Combined curvature 1/R* = k1 + k2, in 1/m.
+// Only a contact whose patch grows with load reads this, so a zero here is an edge or a corner, whose curvature is singular.
+// The floor keeps that case finite at R* = 1e6 m, and no contact law here models it.
 double CombinedCurvature(double curvature_a, double curvature_b);
 
 // Contact stiffness k = (4/3) E* sqrt(R*), in N/m^(3/2). Relates load to penetration by N = k*delta^(3/2).
@@ -77,10 +79,20 @@ double ContactPatchRadius(double normal_force, double inv_effective_modulus, dou
 // Equilibrium penetration under load N: delta0 = (N/k)^(2/3), in meters.
 double StaticPenetration(double normal_force, double stiffness);
 
-// Hertz contact time in seconds for a strike at `excitable_index`, from the object and impactor at `contact_speed`.
-// `object_curvature` is the object's contribution to the combined contact curvature 1/R* (1/m) where the strike lands,
-// and `scale_ratio` the object's current size.
-double EstimateContactTime(const ContactDynamics &, uint32_t excitable_index, vec3 impact_direction, double contact_speed, const AcousticMaterialProperties &object_material, double object_curvature, const Impactor &, double scale_ratio);
+// Penetration at which the growing Hertz patch fills the shared polygon, delta_sat = A0/(pi R*), in meters.
+// Infinite where the contact has no shared polygon, so its patch never stops growing.
+double SaturationPenetration(double combined_curvature, double nominal_area);
+
+// Stiffness of the filled patch pressing as a flat punch, k = 2 a E* with a the radius of equal area, in N/m.
+// This is also Hertz's incremental stiffness evaluated at its patch radius, which is what joins the two.
+double PunchStiffness(double inv_effective_modulus, double nominal_area);
+
+// Contact time in seconds for a strike at `excitable_index`, from the object and impactor at `contact_speed`.
+// `object_curvature` is the object's contribution to the combined contact curvature 1/R* (1/m) where the strike lands, `nominal_area` the area two faces share (m^2, zero for a point or an edge), and `scale_ratio` the object's current size.
+// `combined_roughness` is the pair's rms asperity height in quadrature, m, and 0 is ideally smooth.
+// The patch grows as Hertz until it fills the shared polygon and presses as a flat punch beyond it, and the duration is the collision against that one force law.
+// Hertz's 2.87 (m*^2/(E*^2 R* v))^(1/5) and the punch's pi sqrt(m*/k) are its two limits, so a contact that saturates mid-collision needs no case split.
+double EstimateContactTime(const ContactDynamics &, uint32_t excitable_index, vec3 impact_direction, double contact_speed, const AcousticMaterialProperties &object_material, double object_curvature, double nominal_area, const Impactor &, double scale_ratio, double combined_roughness = 0);
 
 // Bounds on the derived contact time (seconds), guarding degenerate curvature, speed, and scale.
 inline constexpr double MinContactTime = 2e-5, MaxContactTime = 5e-2;

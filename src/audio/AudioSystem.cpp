@@ -739,7 +739,7 @@ void TriggerModalStrike(entt::registry &r, entt::entity e, uint32_t excitable_in
         // The elastic constants belong to the surface that was struck, as they do for a contact that persists.
         // A mallet lands on the node's own surface, since it comes from outside the scene rather than off a collider.
         const auto &elastic = MaterialOf(r, physics ? physics->SurfaceEntity : e, e);
-        tau = EstimateContactTime(*cd, excitable_index, dir, contact_speed, elastic, curvature, imp, UniformScaleRatio(r, e, modes));
+        tau = EstimateContactTime(*cd, excitable_index, dir, contact_speed, elastic, curvature, 0, imp, UniformScaleRatio(r, e, modes));
         // Acceleration noise radiates as a dipole whose strength is the displaced volume, so the impulse scales by
         // volume over mass. That equals 1/density for a solid homogeneous body and is larger for a hollow one.
         // Mesh units are node-local, so the baked scale cubed converts to m^3. Density stands in without a volume.

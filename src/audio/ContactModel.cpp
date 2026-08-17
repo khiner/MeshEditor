@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <numbers>
 
 double StrikerMass(const Striker &s) {
@@ -50,15 +51,64 @@ double StaticPenetration(double normal_force, double stiffness) {
     return stiffness > 0 ? std::pow(std::max(normal_force, 0.0) / stiffness, 2.0 / 3.0) : 0.0;
 }
 
-double EstimateContactTime(const ContactDynamics &d, uint32_t i, vec3 impact_direction, double contact_speed, const AcousticMaterialProperties &m, double object_curvature, const Impactor &impactor, double scale_ratio) {
+double SaturationPenetration(double combined_curvature, double nominal_area) {
+    return nominal_area > 0 ? nominal_area * combined_curvature / std::numbers::pi : std::numeric_limits<double>::infinity();
+}
+
+double PunchStiffness(double inv_effective_modulus, double nominal_area) {
+    if (nominal_area <= 0) return std::numeric_limits<double>::infinity();
+    return 2 * std::sqrt(nominal_area / std::numbers::pi) / inv_effective_modulus;
+}
+
+namespace {
+// Work done against the contact by pressing it to `penetration`, in J.
+// Below saturation this integrates Hertz's k delta^(3/2), and above it the constant stiffness the filled patch leaves, whose force starts from the load Hertz had reached.
+double ContactWork(double penetration, double hertz_stiffness, double sat_penetration, double punch_stiffness) {
+    if (penetration <= 0) return 0;
+    const auto hertz = [hertz_stiffness](double x) { return 0.4 * hertz_stiffness * x * x * std::sqrt(x); };
+    if (penetration <= sat_penetration) return hertz(penetration);
+    const double over = penetration - sat_penetration;
+    const double sat_force = hertz_stiffness * sat_penetration * std::sqrt(sat_penetration);
+    return hertz(sat_penetration) + sat_force * over + 0.5 * punch_stiffness * over * over;
+}
+} // namespace
+
+double EstimateContactTime(const ContactDynamics &d, uint32_t i, vec3 impact_direction, double contact_speed, const AcousticMaterialProperties &m, double object_curvature, double nominal_area, const Impactor &impactor, double scale_ratio, double combined_roughness) {
     if (i >= d.ContactArm.size() || d.Mass <= 0) return MinContactTime;
 
     const double effective_mass = ReducedContactMass(d, i, impact_direction, impactor);
-
     const double inv_effective_modulus = InvEffectiveModulus(m, impactor.Material);
+    if (effective_mass <= 0 || inv_effective_modulus <= 0) return MinContactTime;
+
     const double curvature = CombinedCurvature(object_curvature, impactor.Curvature);
     const double speed = std::max(std::abs(contact_speed), 1e-6);
+    const double hertz_stiffness = ContactStiffness(inv_effective_modulus, curvature);
+    const double sat_penetration = SaturationPenetration(curvature, nominal_area);
+    const double punch_stiffness = PunchStiffness(inv_effective_modulus, nominal_area);
+    const double energy = 0.5 * effective_mass * speed * speed;
 
-    const double tau_baked = 2.87 * std::pow(std::pow(effective_mass * inv_effective_modulus, 2) * (curvature / speed), 0.2);
-    return std::clamp(tau_baked * scale_ratio, MinContactTime, MaxContactTime);
+    // How deep the contact presses, where the approach energy has all gone into it.
+    // A contact that fills its patch before then spends the rest of that energy against the constant stiffness, which solves a quadratic.
+    const double sat_work = std::isfinite(sat_penetration) ? ContactWork(sat_penetration, hertz_stiffness, sat_penetration, punch_stiffness) : std::numeric_limits<double>::infinity();
+    const double max_penetration = [&] {
+        if (energy <= sat_work) return std::pow(energy / (0.4 * hertz_stiffness), 0.4);
+        const double sat_force = hertz_stiffness * sat_penetration * std::sqrt(sat_penetration);
+        return sat_penetration + (std::sqrt(sat_force * sat_force + 2 * punch_stiffness * (energy - sat_work)) - sat_force) / punch_stiffness;
+    }();
+
+    // The bodies part with the speed they met at, so the collision is twice the approach.
+    // At depth x the energy left over the work done gives the speed, and integrating in s with x = max*(1 - s^2) removes the turning point's inverse-square-root singularity, leaving an integrand the midpoint rule resolves.
+    constexpr int Steps = 64;
+    double sum = 0;
+    for (int n = 0; n < Steps; ++n) {
+        const double s = (double(n) + 0.5) / Steps;
+        const double left = 1 - ContactWork(max_penetration * (1 - s * s), hertz_stiffness, sat_penetration, punch_stiffness) / energy;
+        if (left > 0) sum += 2 * s / std::sqrt(left);
+    }
+    const double bulk_time = 2 * max_penetration / speed * sum / Steps * scale_ratio;
+    // The surfaces meet on their asperities before the bulk engages, a rough interface carrying the load on an exponential cushion whose stiffness is F/u0 at u0 = 0.4 * combined rms roughness, with the nominal area cancelling (Pastewka et al. 2013, confirmed against Berthoud and Baumberger's measurements).
+    // The self-consistent arrest on that cushion takes pi*sqrt(2)*u0/v, and stiffnesses in series add contact times in quadrature.
+    const double u0 = 0.4 * combined_roughness;
+    const double bed_time = std::numbers::sqrt2 * std::numbers::pi * u0 / speed;
+    return std::clamp(std::sqrt(bulk_time * bulk_time + bed_time * bed_time), MinContactTime, MaxContactTime);
 }
