@@ -5,6 +5,7 @@
 #include "Paths.h"
 #include "ProcessEvents.h"
 #include "TransformMath.h"
+#include "VideoRecorder.h"
 #include "Window.h"
 #include "action/ActionApply.h"
 #include "action/ActionIndex.h"
@@ -679,6 +680,7 @@ struct CaptureDriver {
     }
 
     bool Play;
+    bool SeedFailed{false}; // The initial scene failed to load, so a headless run has nothing to render.
     float PlayDuration;
     bool FixedStep;
     fs::path RecordPath, ScreenshotPath, RenderBasename;
@@ -693,8 +695,10 @@ struct CaptureDriver {
 
 // Seed the scene and its session log, then enter presentation mode so the first rendered frame matches the capture.
 CaptureDriver BeginCaptureSession(entt::registry &r, entt::entity viewport, const CaptureRequest &capture, const char *initial_file, bool empty, bool fixed_step) {
-    const bool play = SeedScene(r, viewport, capture, initial_file, empty) && capture.Play;
+    const bool seeded = SeedScene(r, viewport, capture, initial_file, empty);
+    const bool play = seeded && capture.Play;
     CaptureDriver driver{r, viewport, capture, play, fixed_step};
+    driver.SeedFailed = !seeded;
     // A benchmark run keeps the editor view, so frames and screenshots cover what the editor draws.
     if (driver.Presenting() && capture.BenchFrames == 0) Perform(r, viewport, action::timeline::EnterPresentation{});
     r.ctx().get<FrameState>().FixedFrameStep = driver.FixedStep;
@@ -1213,8 +1217,13 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
 }
 
 // Seed the scene, run the fixed-step capture loop, and finish the session log.
-void RunHeadlessScene(entt::registry &r, entt::entity viewport, const char *initial_file, bool empty, const CaptureRequest &capture) {
+bool RunHeadlessScene(entt::registry &r, entt::entity viewport, const char *initial_file, bool empty, const CaptureRequest &capture) {
     auto driver = BeginCaptureSession(r, viewport, capture, initial_file, empty, /*fixed_step=*/true);
+    // A scene that failed to load has nothing to render, so the run ends here with the failure already on stderr rather than recording silence and reporting a clean exit.
+    if (driver.SeedFailed) {
+        action::StopLog();
+        return false;
+    }
     // Emitted, not Performed: the resize must happen inside the first tick's SubmitViewport for that
     // frame to render the recreated images correctly.
     action::Emit(action::view::SetExtent{DefaultWindowSize});
@@ -1266,6 +1275,7 @@ void RunHeadlessScene(entt::registry &r, entt::entity viewport, const char *init
         driver.ElapsedPlayTime += frame_state.DeltaTime;
     }
     action::StopLog();
+    return true;
 }
 
 // Run without a window: no SDL video, ImGui, audio, or file dialogs. The viewport renders offscreen
@@ -1292,11 +1302,14 @@ void RunHeadlessEngine(bool quiet, auto &&scenes) {
     SDL_Quit();
 }
 
-// Headless single-scene run. Exits after one rendered frame when there is nothing to capture or play.
-void RunHeadless(const char *initial_file, bool quiet, bool empty, const CaptureRequest &capture) {
+// Headless single-scene run.
+// Exits after one rendered frame when there is nothing to capture or play, and reports failure when the scene itself failed to load.
+bool RunHeadless(const char *initial_file, bool quiet, bool empty, const CaptureRequest &capture) {
+    bool ok = true;
     RunHeadlessEngine(quiet, [&](entt::registry &r, entt::entity viewport) {
-        RunHeadlessScene(r, viewport, initial_file, empty, capture);
+        ok = RunHeadlessScene(r, viewport, initial_file, empty, capture);
     });
+    return ok;
 }
 
 // A corpus render job spooled by `script/Render`: one `.job` file per scene, holding
@@ -1433,8 +1446,10 @@ int main(int argc, char **argv) {
         return 1;
     }
 
+    bool headless_ok = true;
     if (!render_queue.empty()) RunHeadlessQueue(render_queue, quiet);
-    else if (headless) RunHeadless(initial_file, quiet, empty, capture);
+    else if (headless) headless_ok = RunHeadless(initial_file, quiet, empty, capture);
     else run(initial_file, quiet, empty, capture);
-    return 0;
+    // A capture that ffmpeg rejected leaves a truncated or missing file, and a headless scene that failed to load rendered nothing, so a clean status would hide either.
+    return !headless_ok || VideoRecorder::AnyFailed() ? 1 : 0;
 }

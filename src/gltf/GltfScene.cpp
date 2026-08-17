@@ -734,7 +734,16 @@ std::expected<void, std::string> DecodeMeshoptCompression(fastgltf::Asset &asset
     return {};
 }
 
-std::expected<fastgltf::Asset, std::string> ParseAsset(const std::filesystem::path &path, ExtrasMap *extras_out = nullptr) {
+// A bare filename has an empty parent, which the parser rejects as the resource directory, so a relative scene path resolves against the working directory.
+std::filesystem::path AbsoluteScenePath(const std::filesystem::path &p) {
+    return p.is_absolute() ? p : std::filesystem::absolute(p);
+}
+
+std::expected<fastgltf::Asset, std::string> ParseAsset(const std::filesystem::path &given_path, ExtrasMap *extras_out = nullptr) {
+    const auto path = AbsoluteScenePath(given_path);
+    if (std::error_code ec; !std::filesystem::exists(path, ec)) {
+        return std::unexpected{std::format("Failed to open glTF file '{}': no such file", path.string())};
+    }
     auto gltf_file = fastgltf::MappedGltfFile::FromPath(path);
     if (gltf_file.error() != fastgltf::Error::None) return std::unexpected{std::format("Failed to open glTF file '{}': {}", path.string(), fastgltf::getErrorMessage(gltf_file.error()))};
 
@@ -1422,8 +1431,9 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
         });
     }
     source_assets.Images.reserve(asset.images.size());
+    const auto source_dir = AbsoluteScenePath(source_path).parent_path();
     for (uint32_t image_index = 0; image_index < asset.images.size(); ++image_index) {
-        auto image_result = ReadImage(asset, image_index, source_path.parent_path());
+        auto image_result = ReadImage(asset, image_index, source_dir);
         if (!image_result) return std::unexpected{std::move(image_result.error())};
         source_assets.Images.emplace_back(std::move(*image_result));
     }

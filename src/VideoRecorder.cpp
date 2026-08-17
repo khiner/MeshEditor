@@ -1,6 +1,8 @@
 #include "VideoRecorder.h"
 #include "vulkan/Image.h"
 
+#include <sys/wait.h>
+
 #include <print>
 
 void VideoRecorder::PipeCloser::operator()(std::FILE *p) const noexcept {
@@ -8,6 +10,13 @@ void VideoRecorder::PipeCloser::operator()(std::FILE *p) const noexcept {
 }
 
 namespace {
+// Set by any recording that failed, so a run that produced a truncated or missing capture leaves the process with a nonzero status.
+bool RecordingFailed{false};
+
+// The subprocess's exit code, decoded from the wait status popen and system return.
+// A subprocess killed by a signal never exited, and reports as -1.
+int ExitCode(int wait_status) { return WIFEXITED(wait_status) ? WEXITSTATUS(wait_status) : -1; }
+
 std::string BuildFfmpegCommand(const std::filesystem::path &out, vk::Extent2D extent, int fps) {
     // `-y` overwrite, `-loglevel warning` mutes per-frame progress.
     // Input: raw BGRA frames on stdin with declared size/framerate.
@@ -29,7 +38,7 @@ VideoRecorder::VideoRecorder(
     const VulkanResources &vk_res, mvk::BufferContext &buf_ctx,
     const std::filesystem::path &output_path, vk::Offset3D offset, vk::Extent2D extent, int fps
 ) : Device{vk_res.Device}, Queue{vk_res.Queue}, Offset{offset}, Ex{extent},
-    FrameBytes{extent.width * extent.height * 4} {
+    FrameBytes{extent.width * extent.height * 4}, FinalPath{output_path} {
     if (extent.width == 0 || extent.height == 0) {
         std::println(stderr, "VideoRecorder: viewport extent is zero; not recording.");
         return;
@@ -52,12 +61,18 @@ VideoRecorder::VideoRecorder(
 
 VideoRecorder::~VideoRecorder() { Stop(); }
 
+bool VideoRecorder::AnyFailed() { return RecordingFailed; }
+
 void VideoRecorder::Stop() {
-    if (Pipe) {
-        std::fflush(Pipe.get());
-        const int status = ::pclose(Pipe.release());
-        std::println("VideoRecorder: wrote {} frames (ffmpeg status={})", FrameCount, status);
+    if (!Pipe) return;
+
+    std::fflush(Pipe.get());
+    const int encode = ExitCode(::pclose(Pipe.release()));
+    if (encode != 0) {
+        RecordingFailed = true;
+        std::println(stderr, "VideoRecorder: ffmpeg exited {} encoding {}", encode, FinalPath.string());
     }
+    std::println("VideoRecorder: wrote {} frames", FrameCount);
 }
 
 void VideoRecorder::CaptureFrame(vk::Image image) {

@@ -26,6 +26,9 @@ struct VideoRecorder {
     bool IsActive() const { return bool(Pipe); }
     uint64_t CapturedFrameCount() const { return FrameCount; }
 
+    // Whether any recording this process made failed, which the process reports as its exit status.
+    static bool AnyFailed();
+
 private:
     struct PipeCloser {
         void operator()(std::FILE *) const noexcept;
@@ -47,4 +50,7 @@ private:
 
     std::unique_ptr<std::FILE, PipeCloser> Pipe;
     uint64_t FrameCount{0};
+
+    // The file this recording writes.
+    std::filesystem::path FinalPath;
 };
