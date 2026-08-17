@@ -1,7 +1,8 @@
 #!/bin/bash
 
 # (Re-)generate the committed `render/` corpus — see the "Render corpus" section in README.md for what each
-# scene's leaf contains. Covers Empty, Default, res/examples, and all glTF samples under external/. Run from anywhere.
+# scene's leaf contains. Covers Empty, Default, res/examples, the full-experience audio scenes at the root of
+# glTF_PhysicalAudio/samples/, and all glTF samples under external/. Run from anywhere.
 # Scenes render headless (no window) in a pool of persistent worker processes: each worker initializes the
 # engine once and pulls scenes from a shared job spool (`--render-queue`), clearing the scene between jobs.
 # Set JOBS to change the worker count, and COMPARE_VIDEOS=1 to restore videos that differ from HEAD
@@ -71,6 +72,13 @@ prepare_scene() {
 # Built-in scenes (no source file).
 prepare_scene "${RenderDir}/Empty/Empty" --empty
 prepare_scene "${RenderDir}/Default/Default"
+
+# The full-experience audio scenes at the samples root. The isolation corpus under samples/test/
+# is measured by script/AudioCorpus instead, so only the root scenes join the render corpus.
+while IFS= read -r P; do
+    [ -n "${P}" ] || continue
+    prepare_scene "${RenderDir}/${P%.*}" "${P}"
+done < <(find glTF_PhysicalAudio/samples -maxdepth 1 -type f -iname '*.gltf' 2>/dev/null | sort)
 
 # res/examples and every glTF sample, mirrored 1:1 under render/.
 # glTF_Physics/tests/ are conformance unit tests (not demo samples): they render empty/degenerate and some

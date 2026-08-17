@@ -226,10 +226,12 @@ if(MESHEDITOR_APP)
     set(RESTORE_SESSION_RETAIN 5 CACHE STRING "Max number of scratch sessions to keep")
     target_compile_definitions(${PROJECT_NAME} PRIVATE RESTORE_SESSION_RETAIN=${RESTORE_SESSION_RETAIN})
 
-    # glTF sample repos (git submodules under external/) populate File submenus with their models.
+    # glTF sample repos populate File submenus with their models. The first two are git submodules
+    # under external/, and the physical audio scenes are authored in this repo alongside the extension.
     target_compile_definitions(${PROJECT_NAME} PRIVATE
         GLTF_SAMPLE_ASSETS_DIR="${CMAKE_SOURCE_DIR}/external/glTF-Sample-Assets"
-        GLTF_PHYSICS_DIR="${CMAKE_SOURCE_DIR}/external/glTF_Physics")
+        GLTF_PHYSICS_DIR="${CMAKE_SOURCE_DIR}/external/glTF_Physics"
+        GLTF_PHYSICAL_AUDIO_DIR="${CMAKE_SOURCE_DIR}/glTF_PhysicalAudio/samples")
 
     set_target_properties(${PROJECT_NAME} PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
     target_compile_options(${PROJECT_NAME} PRIVATE -Wall -Wextra -Wno-elaborated-enum-base -fno-rtti)

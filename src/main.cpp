@@ -268,7 +268,7 @@ GltfSampleTree BuildGltfSampleTree(const fs::path &root) {
 
 // The File menu's sample-asset trees, scanned once off-thread at startup.
 struct GltfSampleTrees {
-    GltfSampleTree Examples, SampleAssets, Physics;
+    GltfSampleTree Examples, SampleAssets, Physics, PhysicalAudio;
     std::set<std::string> SampleAssetsExtensions;
 };
 
@@ -284,6 +284,9 @@ GltfSampleTrees BuildSampleTrees() {
 #endif
 #ifdef GLTF_PHYSICS_DIR
     t.Physics = BuildGltfSampleTree(GLTF_PHYSICS_DIR);
+#endif
+#ifdef GLTF_PHYSICAL_AUDIO_DIR
+    t.PhysicalAudio = BuildGltfSampleTree(GLTF_PHYSICAL_AUDIO_DIR);
 #endif
     return t;
 }
@@ -1015,6 +1018,7 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
                         }
                     }
                     render_submenu("glTF_Physics Samples", trees->Physics);
+                    render_submenu("glTF_PhysicalAudio Samples", trees->PhysicalAudio);
                 }
                 if (MenuItem("Save glTF", nullptr)) {
                     static constexpr std::array filters{FileDialog::Filter{"glTF scene", "gltf;glb"}};
