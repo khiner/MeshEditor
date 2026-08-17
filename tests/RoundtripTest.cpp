@@ -1,13 +1,16 @@
 #include "Path.h"
 #include "Paths.h"
 #include "ProcessEvents.h"
+#include "RunSuites.h"
 #include "audio/AcousticMaterial.h"
 #include "audio/AudioTypes.h"
 #include "audio/ContactModel.h"
 #include "audio/ContactSurface.h"
 #include "audio/ModalModelFile.h"
 #include "audio/ModalModes.h"
-#include "audio/SurfaceRelief.h"
+#ifdef SURFACE_AUDIO
+#include "audio/surface/SurfaceAudio.h" // SurfaceRelief, UpdateSurfaceRelief
+#endif
 #include "gltf/GltfScene.h"
 #include "gltf/SourceTexture.h"
 #include "gpu/PunctualLight.h"
@@ -241,6 +244,12 @@ constexpr Exception ExactExceptions[]{
     {"nodes[*].extensions.KHR_lights_punctual.light", "renumbered to match the un-deduped lights table"},
 };
 
+// The first entity carrying `C`, or null. These scenes author at most one of each.
+template<typename C> entt::entity NodeWith(entt::registry &r) {
+    for (auto e : r.view<const C>()) return e;
+    return entt::null;
+}
+
 // Check that a KHR_audio_rigid_bodies model's accessor reference has the given type and count.
 // At namespace scope so `==` is the builtin comparison, not a boost::ut expression.
 bool AccessorShapeIs(simdjson::dom::element root, simdjson::dom::element model, std::string_view key, std::string_view type, uint64_t count) {
@@ -251,6 +260,24 @@ bool AccessorShapeIs(simdjson::dom::element root, simdjson::dom::element model, 
     uint64_t c = 0;
     return acc["type"].get_string().get(t) == simdjson::SUCCESS && t == type &&
         acc["count"].get_uint64().get(c) == simdjson::SUCCESS && c == count;
+}
+
+// The one entry of a KHR_audio_rigid_bodies table, or nullopt when the table is missing or does not hold exactly one.
+std::optional<simdjson::dom::element> OnlyAudioEntry(simdjson::dom::element doc, std::string_view key) {
+    simdjson::dom::array table;
+    if (doc["extensions"]["KHR_audio_rigid_bodies"][key].get_array().get(table) != simdjson::SUCCESS || table.size() != 1) return std::nullopt;
+    simdjson::dom::element entry;
+    if (table.at(0).get(entry) != simdjson::SUCCESS) return std::nullopt;
+    return entry;
+}
+
+// The table index a node instances through `key` of the extension, or nullopt when no node does.
+std::optional<uint64_t> NodeAudioIndex(simdjson::dom::element doc, std::string_view key) {
+    for (auto node : doc["nodes"]) {
+        uint64_t index;
+        if (node["extensions"]["KHR_audio_rigid_bodies"][key].get_uint64().get(index) == simdjson::SUCCESS) return index;
+    }
+    return std::nullopt;
 }
 
 std::string NormalizePath(std::string_view path) {
@@ -998,10 +1025,6 @@ int main(int argc, const char **argv) {
         expect(result.has_value()) << "save failed: " << (result ? "" : result.error());
         return result.has_value();
     };
-    const auto first_modal_node = [](entt::registry &r) -> entt::entity {
-        for (auto e : r.view<const ModalModes>()) return e;
-        return entt::null;
-    };
     // The first mesh-instance node, with the mesh entity it instances.
     const auto first_mesh_node = [](entt::registry &r) -> std::pair<entt::entity, entt::entity> {
         for (auto e : r.view<const Instance, const SourceNodeIndex>()) {
@@ -1178,7 +1201,7 @@ int main(int argc, const char **argv) {
             modes.OriginalFundamentalFreq = modes.Freqs.front();
             fx.R.emplace<ModalModes>(node, modes);
             fx.R.emplace<ModalGain>(node, ModalGain{0.6f});
-            fx.R.emplace_or_replace<AcousticMaterial>(mesh_entity, materials::acoustic::Ceramic);
+            fx.R.emplace_or_replace<AcousticMaterial>(node, materials::acoustic::Ceramic);
 
             const auto out_path = edit_root / "audio_modal.gltf";
             if (!save_or_skip(fx, out_path)) return;
@@ -1195,38 +1218,27 @@ int main(int argc, const char **argv) {
                 }
                 expect(lists_extension) << "KHR_audio_rigid_bodies missing from extensionsUsed";
 
-                auto ext = doc["extensions"]["KHR_audio_rigid_bodies"];
-                simdjson::dom::array models_json;
-                expect(ext["modalModels"].get_array().get(models_json) == simdjson::SUCCESS) << "modalModels array missing";
-                expect(models_json.size() == 1u) << "expected one model";
-                simdjson::dom::array materials_json;
-                expect(ext["acousticMaterials"].get_array().get(materials_json) == simdjson::SUCCESS) << "acousticMaterials array missing";
-                expect(materials_json.size() == 1u) << "expected one material";
-
-                simdjson::dom::element model0;
-                expect(models_json.at(0).get(model0) == simdjson::SUCCESS) << "model[0] missing";
-                expect(AccessorShapeIs(doc, model0, "frequencies", "SCALAR", 3)) << "frequencies accessor shape";
-                expect(AccessorShapeIs(doc, model0, "decayRates", "SCALAR", 3)) << "decayRates accessor shape";
-                expect(AccessorShapeIs(doc, model0, "positions", "VEC3", 3)) << "positions accessor shape";
-                expect(AccessorShapeIs(doc, model0, "shapes", "VEC3", 9)) << "shapes accessor shape (mode-major M*P)";
-                expect(AccessorShapeIs(doc, model0, "indices", "SCALAR", 3)) << "indices accessor shape";
+                const auto model0 = OnlyAudioEntry(doc, "modalModels");
+                expect(model0.has_value()) << "expected one modal model";
+                expect(OnlyAudioEntry(doc, "acousticMaterials").has_value()) << "expected one acoustic material";
+                if (!model0) return;
+                expect(AccessorShapeIs(doc, *model0, "frequencies", "SCALAR", 3)) << "frequencies accessor shape";
+                expect(AccessorShapeIs(doc, *model0, "decayRates", "SCALAR", 3)) << "decayRates accessor shape";
+                expect(AccessorShapeIs(doc, *model0, "positions", "VEC3", 3)) << "positions accessor shape";
+                expect(AccessorShapeIs(doc, *model0, "shapes", "VEC3", 9)) << "shapes accessor shape (mode-major M*P)";
+                expect(AccessorShapeIs(doc, *model0, "indices", "SCALAR", 3)) << "indices accessor shape";
 
                 // A node carries the extension referencing the model.
-                bool found_node = false;
-                for (auto n : doc["nodes"]) {
-                    uint64_t m;
-                    if (n["extensions"]["KHR_audio_rigid_bodies"]["modalModel"].get_uint64().get(m) != simdjson::SUCCESS) continue;
-                    found_node = true;
-                    expect(m == 0u) << "node model index";
-                }
-                expect(found_node) << "no node instances the modal model";
+                const auto instanced = NodeAudioIndex(doc, "modalModel");
+                expect(instanced.has_value()) << "no node instances the modal model";
+                if (instanced) expect(*instanced == 0u) << "node model index";
             }
 
             // --- Re-import and compare against the authored model. ---
             SceneFixture fx2{vk_resources};
             if (!load_or_skip(fx2, out_path, "reload failed")) return;
 
-            const auto rnode = first_modal_node(fx2.R);
+            const auto rnode = NodeWith<ModalModes>(fx2.R);
             expect(rnode != entt::null) << "no modal model after reload";
             if (rnode == entt::null) return;
 
@@ -1258,8 +1270,8 @@ int main(int argc, const char **argv) {
 
             const auto *rinst = fx2.R.try_get<const Instance>(rnode);
             expect(rinst != nullptr) << "modal node lost its mesh instance";
-            const auto *rmat = rinst ? fx2.R.try_get<const AcousticMaterial>(rinst->Entity) : nullptr;
-            expect(rmat != nullptr) << "acoustic material not restored on mesh";
+            const auto *rmat = fx2.R.try_get<const AcousticMaterial>(rnode);
+            expect(rmat != nullptr) << "acoustic material not restored on the node";
             if (rmat) {
                 expect(rmat->Name == materials::acoustic::Ceramic.Name) << "material name diverged";
                 const auto &pa = rmat->Properties;
@@ -1280,7 +1292,7 @@ int main(int argc, const char **argv) {
             SceneFixture fx{vk_resources};
             if (!load_or_skip(fx, fixture, "fixture load failed")) return;
 
-            const auto node = first_modal_node(fx.R);
+            const auto node = NodeWith<ModalModes>(fx.R);
             expect(node != entt::null) << "fixture produced no modal model";
             if (node == entt::null) return;
 
@@ -1294,20 +1306,19 @@ int main(int argc, const char **argv) {
             const auto *gain = fx.R.try_get<const ModalGain>(node);
             expect(gain != nullptr && NumberEq(gain->Value, 0.75)) << "gain";
 
-            // A second node supplies only its finish, which lands on its mesh entity.
-            entt::entity floor_mesh = entt::null;
-            for (auto e : fx.R.view<const ContactSurface>()) floor_mesh = e;
-            expect(floor_mesh != entt::null) << "fixture produced no contact surface";
-            if (floor_mesh == entt::null) return;
-            const auto &cs = fx.R.get<const ContactSurface>(floor_mesh);
+            // A second node supplies only its finish, which lands on that node.
+            const auto floor_node = NodeWith<ContactSurface>(fx.R);
+            expect(floor_node != entt::null) << "fixture produced no contact surface";
+            if (floor_node == entt::null) return;
+            const auto &cs = fx.R.get<const ContactSurface>(floor_node);
             expect(cs.Name == "TestFinish") << "surface name";
             expect(NumberEq(cs.Roughness, 3e-6) && NumberEq(cs.CorrelationLength, 7e-5) && NumberEq(cs.SpectralSlope, -1.25)) << "surface parameters";
             expect(cs.NormalTexture.has_value()) << "surface normal texture";
             if (cs.NormalTexture) {
                 expect(cs.NormalTexture->Texture == 0u && cs.NormalTexture->TexCoord == 0u && NumberEq(cs.NormalTexture->Scale, 0.8)) << "normal texture info";
             }
-            // The surface's acoustic material lands on the same mesh entity.
-            const auto *floor_material = fx.R.try_get<const AcousticMaterial>(floor_mesh);
+            // The surface's acoustic material lands on the same node.
+            const auto *floor_material = fx.R.try_get<const AcousticMaterial>(floor_node);
             expect(floor_material != nullptr && floor_material->Name == "TestMat") << "surface material";
         };
     }
@@ -1323,25 +1334,29 @@ int main(int argc, const char **argv) {
             SceneFixture fx{vk_resources};
             if (!load_or_skip(fx, staged_gltf, "BoxTextured load failed")) return;
 
-            const auto mesh_entity = first_mesh_node(fx.R).second;
-            expect(mesh_entity != entt::null) << "no mesh instance node in BoxTextured";
-            if (mesh_entity == entt::null) return;
+            const auto [node, mesh_entity] = first_mesh_node(fx.R);
+            expect(node != entt::null) << "no mesh instance node in BoxTextured";
+            if (node == entt::null) return;
 
             const ContactSurface surface{
                 .Name = "Tiled floor",
                 .Roughness = 8e-6f,
                 .CorrelationLength = 8e-5f,
                 .SpectralSlope = -1.15f,
+                .ShortWavelength = 4e-6f,
+                .Waviness = 3e-5f,
+                .WavinessLength = 6e-3f,
                 .Profile = {0.f, 1e-6f, -1e-6f, 0.5e-6f},
                 .SampleSpacing = 5e-6f,
                 // BoxTextured's material carries no normal map, so naming one is the override case, and its base color map stands in as the pixel source.
                 .NormalTexture = SurfaceNormalTexture{.Texture = 0, .TexCoord = 0, .Scale = 0.8f},
             };
-            fx.R.emplace_or_replace<ContactSurface>(mesh_entity, surface);
+            fx.R.emplace_or_replace<ContactSurface>(node, surface);
 
+#ifdef SURFACE_AUDIO
             // A texel spans a real distance along the surface, set by the mesh's own UV parameterization.
-            UpdateSurfaceRelief(fx.R, mesh_entity, true);
-            const auto *relief = fx.R.try_get<const SurfaceRelief>(mesh_entity);
+            UpdateSurfaceRelief(fx.R, node, mesh_entity, true);
+            const auto *relief = fx.R.try_get<const SurfaceRelief>(node);
             expect(relief != nullptr) << "no mesoscale relief derived from the normal map";
             if (relief) {
                 // The unit box carries one UV unit per face, so a texel of its 256-wide image spans about 4 mm of mesh-local surface.
@@ -1356,14 +1371,15 @@ int main(int argc, const char **argv) {
                     if (fx.R.get<const Instance>(e).Entity == mesh_entity) fx.R.patch<Transform>(e, [](Transform &t) { t.S = vec3{3.f}; });
                 }
                 ProcessComponentEvents(fx.R, fx.Viewport);
-                UpdateSurfaceRelief(fx.R, mesh_entity, true);
-                const auto *rescaled = fx.R.try_get<const SurfaceRelief>(mesh_entity);
+                UpdateSurfaceRelief(fx.R, node, mesh_entity, true);
+                const auto *rescaled = fx.R.try_get<const SurfaceRelief>(node);
                 expect(rescaled != nullptr) << "relief lost when the node was resized";
                 if (rescaled) {
                     expect(NumberEq(rescaled->Track->Spacing, spacing)) << "node scale leaked into the track spacing";
                     expect(NumberEq(rescaled->Track->Rms, rms)) << "node scale leaked into the track height";
                 }
             }
+#endif
 
             const auto out_path = stage_dir / "audio_surface.gltf";
             if (!save_or_skip(fx, out_path)) return;
@@ -1373,36 +1389,29 @@ int main(int argc, const char **argv) {
                 simdjson::dom::element doc;
                 expect(p.load(out_path.string()).get(doc) == simdjson::SUCCESS) << "emitted json failed to parse";
 
-                auto ext = doc["extensions"]["KHR_audio_rigid_bodies"];
-                simdjson::dom::array surfaces_json;
-                expect(ext["acousticSurfaces"].get_array().get(surfaces_json) == simdjson::SUCCESS) << "acousticSurfaces array missing";
-                expect(surfaces_json.size() == 1u) << "expected one surface";
-                simdjson::dom::element surface0;
-                expect(surfaces_json.at(0).get(surface0) == simdjson::SUCCESS) << "surface[0] missing";
-                expect(AccessorShapeIs(doc, surface0, "profile", "SCALAR", 4)) << "profile accessor shape";
+                const auto surface0 = OnlyAudioEntry(doc, "acousticSurfaces");
+                expect(surface0.has_value()) << "expected one acoustic surface";
+                if (!surface0) return;
+                expect(AccessorShapeIs(doc, *surface0, "profile", "SCALAR", 4)) << "profile accessor shape";
                 uint64_t texture_index = ~0ull;
-                expect(surface0["normalTexture"]["index"].get_uint64().get(texture_index) == simdjson::SUCCESS && texture_index == 0u) << "normal texture index";
+                expect((*surface0)["normalTexture"]["index"].get_uint64().get(texture_index) == simdjson::SUCCESS && texture_index == 0u) << "normal texture index";
                 // A body with no modal model still carries the extension, referencing only its surface.
-                bool found_node = false;
-                for (auto n : doc["nodes"]) {
-                    uint64_t s;
-                    if (n["extensions"]["KHR_audio_rigid_bodies"]["acousticSurface"].get_uint64().get(s) != simdjson::SUCCESS) continue;
-                    found_node = true;
-                    expect(s == 0u) << "node surface index";
-                }
-                expect(found_node) << "no node instances the acoustic surface";
+                const auto instanced = NodeAudioIndex(doc, "acousticSurface");
+                expect(instanced.has_value()) << "no node instances the acoustic surface";
+                if (instanced) expect(*instanced == 0u) << "node surface index";
             }
 
             SceneFixture fx2{vk_resources};
             if (!load_or_skip(fx2, out_path, "reload failed")) return;
 
-            entt::entity reloaded = entt::null;
-            for (auto e : fx2.R.view<const ContactSurface>()) reloaded = e;
+            const auto reloaded = NodeWith<ContactSurface>(fx2.R);
             expect(reloaded != entt::null) << "no contact surface after reload";
             if (reloaded == entt::null) return;
             const auto &rs = fx2.R.get<const ContactSurface>(reloaded);
             expect(rs.Name == surface.Name) << "surface name diverged";
             expect(NumberEq(rs.Roughness, surface.Roughness) && NumberEq(rs.CorrelationLength, surface.CorrelationLength) && NumberEq(rs.SpectralSlope, surface.SpectralSlope)) << "surface parameters diverged";
+            expect(NumberEq(rs.ShortWavelength, surface.ShortWavelength)) << "short wavelength diverged";
+            expect(NumberEq(rs.Waviness, surface.Waviness) && NumberEq(rs.WavinessLength, surface.WavinessLength)) << "waviness diverged";
             expect(rs.Profile.size() == surface.Profile.size()) << "profile length diverged";
             for (size_t i = 0; i < rs.Profile.size() && i < surface.Profile.size(); ++i) {
                 expect(NumberEq(rs.Profile[i], surface.Profile[i])) << "profile sample diverged";
@@ -1415,6 +1424,7 @@ int main(int argc, const char **argv) {
         };
     }
 
+#ifdef SURFACE_AUDIO
     // A surface with no normal map of its own inherits the one its material already carries, so an asset
     // that renders with mesoscale structure sounds like it without the author restating the reference.
     if (const fs::path normal_tangent = SamplePath("external/glTF-Sample-Assets/Models/NormalTangentTest/glTF/NormalTangentTest.gltf"); fs::exists(normal_tangent)) {
@@ -1425,9 +1435,9 @@ int main(int argc, const char **argv) {
             SceneFixture fx{vk_resources};
             if (!load_or_skip(fx, staged_gltf, "NormalTangentTest load failed")) return;
 
-            const auto mesh_entity = first_mesh_node(fx.R).second;
-            expect(mesh_entity != entt::null) << "no mesh instance node in NormalTangentTest";
-            if (mesh_entity == entt::null) return;
+            const auto [node, mesh_entity] = first_mesh_node(fx.R);
+            expect(node != entt::null) << "no mesh instance node in NormalTangentTest";
+            if (node == entt::null) return;
 
             // The material's normal map is texture 2, which resolves to its own source image.
             const auto inherited = gltf::MeshMaterialNormalMap(fx.R, mesh_entity);
@@ -1437,9 +1447,9 @@ int main(int argc, const char **argv) {
             if (inherited && expected_image) expect(inherited->Image == *expected_image) << "wrong material normal map";
 
             // The surface names no map of its own, so the relief comes from the material's.
-            fx.R.emplace_or_replace<ContactSurface>(mesh_entity, ContactSurface{.Name = "Inherited"});
-            UpdateSurfaceRelief(fx.R, mesh_entity, true);
-            const auto *relief = fx.R.try_get<const SurfaceRelief>(mesh_entity);
+            fx.R.emplace_or_replace<ContactSurface>(node, ContactSurface{.Name = "Inherited"});
+            UpdateSurfaceRelief(fx.R, node, mesh_entity, true);
+            const auto *relief = fx.R.try_get<const SurfaceRelief>(node);
             expect(relief != nullptr) << "no relief derived from the material's normal map";
             // These are the relief's own properties, so they are asserted here, against a real tangent-space normal map.
             if (relief) {
@@ -1455,12 +1465,12 @@ int main(int argc, const char **argv) {
             simdjson::dom::parser p;
             simdjson::dom::element doc;
             expect(p.load(out_path.string()).get(doc) == simdjson::SUCCESS) << "emitted json failed to parse";
-            simdjson::dom::array surfaces_json;
-            expect(doc["extensions"]["KHR_audio_rigid_bodies"]["acousticSurfaces"].get_array().get(surfaces_json) == simdjson::SUCCESS) << "acousticSurfaces array missing";
-            expect(surfaces_json.size() == 1u) << "expected one surface";
-            simdjson::dom::element surface0;
-            expect(surfaces_json.at(0).get(surface0) == simdjson::SUCCESS) << "surface[0] missing";
-            expect(surface0["normalTexture"].error() != simdjson::SUCCESS) << "an inherited normal texture was written back out";
+            const auto surface0 = OnlyAudioEntry(doc, "acousticSurfaces");
+            expect(surface0.has_value()) << "expected one acoustic surface";
+            if (surface0) expect((*surface0)["normalTexture"].error() != simdjson::SUCCESS) << "an inherited normal texture was written back out";
         };
     }
+#endif
+
+    return RunSuites();
 }

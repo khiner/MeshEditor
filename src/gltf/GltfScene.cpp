@@ -24,7 +24,6 @@
 #include "physics/PhysicsTypes.h"
 #include "render/GpuBuffers.h"
 #include "render/Instance.h"
-#include "render/LightComponents.h"
 #include "render/MaterialComponents.h"
 #include "render/PbrFeature.h"
 #include "render/Profile.h"
@@ -33,7 +32,6 @@
 #include "scene/SceneGraphOps.h"
 #include "scene/WorldTransform.h"
 #include "viewport/ViewportDisplay.h"
-#include "viewport/ViewportEvents.h"
 
 #include "meshoptimizer.h"
 
@@ -2551,16 +2549,16 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
             if (it == object_entities_by_node.end()) continue;
             const auto entity = it->second;
 
-            const auto *inst = r.try_get<const Instance>(entity);
-            const auto surface_index = ToIndex(instance.acousticSurface, surfaces.size());
-            // The finish is a property of the rendered surface, so it lands on the mesh entity beside the acoustic material, and a node may supply one without sounding itself.
-            if (surface_index && inst) r.emplace_or_replace<ContactSurface>(inst->Entity, surfaces[*surface_index]);
+            // A node may name a surface without sounding itself, and without a mesh of its own, which is how a floor supplies both its finish and the material contacts against it read.
+            const auto surface_index = ToIndex(instance.acousticSurface, asset.acousticSurfaces.size());
+            // A finish belongs to a node, so two nodes sharing one mesh each carry their own.
+            if (surface_index) r.emplace_or_replace<ContactSurface>(entity, surfaces[*surface_index]);
 
             const auto model_index = [&]() -> std::optional<uint32_t> {
                 const auto i = ToIndex(instance.modalModel, models.size());
                 return i && !models[*i].Freqs.empty() ? i : std::nullopt;
             }();
-            // One acoustic material per mesh entity, a model's reference winning over its surface's.
+            // One acoustic material per node, a model's reference winning over its surface's.
             const auto material_index = [&]() -> std::optional<uint32_t> {
                 if (model_index) {
                     if (const auto i = ToIndex(asset.modalModels[*model_index].material, acoustic_materials.size())) return i;
@@ -2568,12 +2566,14 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
                 if (surface_index) return ToIndex(asset.acousticSurfaces[*surface_index].material, acoustic_materials.size());
                 return std::nullopt;
             }();
-            if (material_index && inst) r.emplace_or_replace<AcousticMaterial>(inst->Entity, acoustic_materials[*material_index]);
+            if (material_index) r.emplace_or_replace<AcousticMaterial>(entity, acoustic_materials[*material_index]);
 
             if (!model_index) continue;
             auto model = models[*model_index];
-            model.BakedScale = ToTransform(traversal.WorldTransforms[node_index]).S;
+            // A model's data is node-local like every other glTF datum: frequencies and shapes describe the solved geometry at unit scale, and the node's placement scale retunes the instance from there.
+            model.BakedScale = vec3{1.f};
             // Map each sample point to its nearest render-mesh vertex so the model stays excitable.
+            const auto *inst = r.try_get<const Instance>(entity);
             if (inst && r.all_of<MeshHandle>(inst->Entity) && !model.Positions.empty()) {
                 const auto mesh = GetMesh(r, inst->Entity);
                 model.Vertices.resize(model.Positions.size());
@@ -2606,13 +2606,17 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
                 );
                 // A dynamic rigid body is authoritative for contact dynamics (see UpdateContactDynamics), so its
                 // mass, not the model's, drives the sound. Warn when the two disagree; agreement needs no report.
+                // The node's scale sizes the model, so the mass it implies at this size is the solved mass times scale cubed.
                 if (const auto *motion = r.try_get<const PhysicsMotion>(entity); motion && IsAuthoritativeDynamicBody(*motion)) {
+                    const auto *trs = std::get_if<fastgltf::TRS>(&source_node.transform);
+                    const float node_scale = trs ? MeanScale({trs->scale[0], trs->scale[1], trs->scale[2]}) : 1.f;
+                    const float sized_mass = float(mp->mass) * node_scale * node_scale * node_scale;
                     const float body_mass = motion->Mass.value_or(DefaultMass);
-                    if (std::abs(body_mass - float(mp->mass)) > 1e-3f * std::max(body_mass, float(mp->mass))) {
+                    if (std::abs(body_mass - sized_mass) > 1e-3f * std::max(body_mass, sized_mass)) {
                         const auto name = source_node.name.empty() ? std::format("node {}", node_index) : std::string{source_node.name};
                         std::cerr << std::format(
-                            "Warning: '{}': KHR_audio_rigid_bodies mass ({:.4g} kg) disagrees with its KHR_physics_rigid_bodies rigid body ({:.4g} kg); using the rigid body for contact dynamics.\n",
-                            name, mp->mass, body_mass
+                            "Warning: '{}': KHR_audio_rigid_bodies mass ({:.4g} kg at the node's scale) disagrees with its KHR_physics_rigid_bodies rigid body ({:.4g} kg); using the rigid body for contact dynamics.\n",
+                            name, sized_mass, body_mass
                         );
                     }
                 }
@@ -4474,12 +4478,12 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
 
         // KHR_audio_rigid_bodies: emit the node's modal model, acoustic surface, and instance.
         fastgltf::Optional<fastgltf::AudioRigidBody> audio_rigid_body;
-        const auto *audio_inst = r.try_get<const Instance>(entity);
-        const auto *contact_surface = audio_inst ? r.try_get<const ContactSurface>(audio_inst->Entity) : nullptr;
         const auto *modes = r.try_get<const ModalModes>(entity);
         const bool has_modal_model = modes && !modes->Freqs.empty();
-        // The derivation material lives on the mesh entity, and both the model and the surface reference it.
-        const auto *acoustic_material = (has_modal_model || contact_surface) && audio_inst ? r.try_get<const AcousticMaterial>(audio_inst->Entity) : nullptr;
+        const auto *contact_surface = r.try_get<const ContactSurface>(entity);
+        const bool has_acoustic_surface = contact_surface != nullptr;
+        // The derivation material lives on the node, and both the model and the surface reference it.
+        const auto *acoustic_material = has_modal_model || has_acoustic_surface ? r.try_get<const AcousticMaterial>(entity) : nullptr;
         const auto acoustic_material_index = dedupe(audio_rigid_body_materials, acoustic_material, [&] {
             const auto &p = acoustic_material->Properties;
             asset.acousticMaterials.emplace_back(fastgltf::AcousticMaterial{

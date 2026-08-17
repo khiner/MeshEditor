@@ -36,7 +36,8 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
             [&](SetupModalModel) {
                 const auto e = FindActiveEntity(r);
                 if (!r.all_of<ModalSolveSettings>(e)) r.emplace<ModalSolveSettings>(e);
-                if (const auto mesh_e = GetActiveMeshEntity(r); !r.all_of<AcousticMaterial>(mesh_e)) r.emplace<AcousticMaterial>(mesh_e, materials::acoustic::All.front());
+                if (!r.all_of<AcousticMaterial>(e)) r.emplace<AcousticMaterial>(e, materials::acoustic::All.front());
+                if (!r.all_of<ContactSurface>(e)) r.emplace<ContactSurface>(e, WithPreset({}, surfaces::acoustic::Default));
             },
             [&](const ApplyModalModel &a) { ::ApplyModalModel(r, a.SoundEntity, a.Path); },
             [&](const AssignVertexSamples &a) {

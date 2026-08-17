@@ -29,9 +29,8 @@ add_executable(MeshEditorTests
     ${CMAKE_SOURCE_DIR}/src/mesh/MeshStore.cpp
     ${CMAKE_SOURCE_DIR}/src/audio/ContactModel.cpp
     ${CMAKE_SOURCE_DIR}/src/audio/ContactDynamics.cpp
-    ${CMAKE_SOURCE_DIR}/src/audio/SurfaceNoise.cpp
-    ${CMAKE_SOURCE_DIR}/src/audio/SurfaceRelief.cpp
     ${CMAKE_SOURCE_DIR}/src/audio/ModalAudio.cpp
+    ${CMAKE_SOURCE_DIR}/src/audio/SurfaceContactAbsent.cpp
     ${CMAKE_SOURCE_DIR}/src/audio/ModalModelFile.cpp
     ${CMAKE_SOURCE_DIR}/src/snapshot/SceneSnapshot.cpp
     ${CMAKE_SOURCE_DIR}/src/snapshot/SaveState.cpp
@@ -150,15 +149,6 @@ target_include_directories(MeshEditorCompressTest PRIVATE
 target_link_libraries(MeshEditorCompressTest PRIVATE Boost::ut basisu_transcoder)
 mesheditor_test_defaults(MeshEditorCompressTest)
 
-add_executable(MeshEditorSurfaceTrackPoolTest SurfaceTrackPoolTest.cpp ${CMAKE_SOURCE_DIR}/src/audio/ModalAudio.cpp)
-target_include_directories(MeshEditorSurfaceTrackPoolTest PRIVATE
-    ${CMAKE_SOURCE_DIR}/src
-    SYSTEM ${CMAKE_SOURCE_DIR}/lib/glm
-    SYSTEM ${CMAKE_SOURCE_DIR}/lib/entt/src
-)
-target_link_libraries(MeshEditorSurfaceTrackPoolTest PRIVATE Boost::ut)
-mesheditor_test_defaults(MeshEditorSurfaceTrackPoolTest)
-
 add_executable(MeshEditorContactCollectBench ContactCollectBench.cpp)
 target_include_directories(MeshEditorContactCollectBench PRIVATE SYSTEM ${CMAKE_SOURCE_DIR}/lib/JoltPhysics SYSTEM ${CMAKE_SOURCE_DIR}/lib/entt/src)
 target_link_libraries(MeshEditorContactCollectBench PRIVATE Jolt)
@@ -198,24 +188,6 @@ target_include_directories(MeshEditorContactManifoldTest PRIVATE SYSTEM ${CMAKE_
 target_link_libraries(MeshEditorContactManifoldTest PRIVATE Boost::ut Jolt)
 mesheditor_test_defaults(MeshEditorContactManifoldTest)
 
-# Properties of the audio-thread render that hold whatever the contact force model says.
-add_executable(MeshEditorModalRenderTest ModalRenderTest.cpp ${CMAKE_SOURCE_DIR}/src/audio/ModalAudio.cpp)
-target_include_directories(MeshEditorModalRenderTest PRIVATE
-    ${CMAKE_SOURCE_DIR}/src
-    SYSTEM ${CMAKE_SOURCE_DIR}/lib/glm
-    SYSTEM ${CMAKE_SOURCE_DIR}/lib/entt/src
-)
-target_link_libraries(MeshEditorModalRenderTest PRIVATE Boost::ut)
-mesheditor_test_defaults(MeshEditorModalRenderTest)
-
-add_executable(MeshEditorModalRenderBench ModalRenderBench.cpp ${CMAKE_SOURCE_DIR}/src/audio/ModalAudio.cpp)
-target_include_directories(MeshEditorModalRenderBench PRIVATE
-    ${CMAKE_SOURCE_DIR}/src
-    SYSTEM ${CMAKE_SOURCE_DIR}/lib/glm
-    SYSTEM ${CMAKE_SOURCE_DIR}/lib/entt/src
-)
-mesheditor_test_defaults(MeshEditorModalRenderBench)
-
 add_executable(MeshEditorMeshBvhTest MeshBvhTest.cpp ${CMAKE_SOURCE_DIR}/src/mesh/MeshBvh.cpp)
 add_dependencies(MeshEditorMeshBvhTest generate_gpu_schema)
 target_include_directories(MeshEditorMeshBvhTest PRIVATE
@@ -226,6 +198,24 @@ target_include_directories(MeshEditorMeshBvhTest PRIVATE
 target_link_libraries(MeshEditorMeshBvhTest PRIVATE Boost::ut)
 mesheditor_test_defaults(MeshEditorMeshBvhTest)
 
+
+# Everything pressing the audio render directly, off the registry, links the same three sources.
+function(mesheditor_render_target target source)
+    add_executable(${target} ${source} ${CMAKE_SOURCE_DIR}/src/audio/ModalAudio.cpp ${CMAKE_SOURCE_DIR}/src/audio/ContactModel.cpp ${CMAKE_SOURCE_DIR}/src/audio/SurfaceContactAbsent.cpp)
+    target_include_directories(${target} PRIVATE
+        ${CMAKE_SOURCE_DIR}/src
+        ${CMAKE_SOURCE_DIR}/tests
+        SYSTEM ${CMAKE_SOURCE_DIR}/lib/glm
+        SYSTEM ${CMAKE_SOURCE_DIR}/lib/entt/src
+    )
+    target_link_libraries(${target} PRIVATE Boost::ut PkgConfig::FFTW3F)
+    mesheditor_test_defaults(${target})
+endfunction()
+
+# Properties of the audio-thread render that hold whatever a collision's force pulse is shaped like.
+mesheditor_render_target(MeshEditorModalRenderTest ModalRenderTest.cpp)
+
+# The Hertz contact a collision resolves against: its constants, and the duration they imply.
 add_executable(MeshEditorContactModelTest ContactModelTest.cpp ${CMAKE_SOURCE_DIR}/src/audio/ContactModel.cpp)
 target_include_directories(MeshEditorContactModelTest PRIVATE
     ${CMAKE_SOURCE_DIR}/src

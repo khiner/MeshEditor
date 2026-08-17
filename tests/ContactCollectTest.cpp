@@ -2,6 +2,7 @@
 // geometry, and load each carries. ContactManifoldTest pins Jolt's input to that step, this its output.
 
 #include "Reactive.h"
+#include "RunSuites.h"
 #include "physics/PhysicsContact.h"
 #include "physics/PhysicsSystem.h"
 #include "physics/PhysicsTypes.h"
@@ -85,6 +86,7 @@ struct Scene {
 };
 
 PhysicsShape Box(vec3 size) { return physics::Box{size}; }
+PhysicsShape Sphere(float radius) { return physics::Sphere{radius}; }
 
 // A floor wide enough that nothing reaches its edges, with its top face at y = 0.
 entt::entity AddFloor(Scene &s) { return s.AddBody({0, -1, 0}, Box({100, 2, 100}), {}); }
@@ -99,16 +101,27 @@ entt::entity AddRestingBox(Scene &s, PhysicsMotion motion = {}) {
 }
 
 // Give a collider its own physics material, as a compound's feet each carry.
-void SetFriction(Scene &s, entt::entity collider, float friction) {
-    const auto material = s.R.create();
-    s.R.emplace<PhysicsMaterial>(material, PhysicsMaterial{.DynamicFriction = friction});
-    s.R.emplace<ColliderMaterial>(collider, ColliderMaterial{.PhysicsMaterialEntity = material});
+void SetMaterial(Scene &s, entt::entity collider, const PhysicsMaterial &material) {
+    const auto e = s.R.create();
+    s.R.emplace<PhysicsMaterial>(e, material);
+    s.R.emplace<ColliderMaterial>(collider, ColliderMaterial{.PhysicsMaterialEntity = e});
 }
 
 const SustainedContact *ContactWithId(const Scene &s, uint64_t id) {
     const auto &active = s.Contacts();
     const auto it = std::ranges::find(active, id, &SustainedContact::Id);
     return it == active.end() ? nullptr : &*it;
+}
+
+// The scene's one contact, or null once it has reported that the scene does not have exactly one.
+const SustainedContact *OnlyContact(const Scene &s) {
+    expect(s.Contacts().size() == 1_ul);
+    return s.Contacts().size() == 1 ? &s.Contacts().front() : nullptr;
+}
+
+// The impacts belonging to one body. Each contact point produces an impact for both bodies of the pair.
+std::vector<ContactImpact> ImpactsOn(const Scene &s, entt::entity e) {
+    return s.Impacts() | std::views::filter([e](const auto &c) { return c.Entity == e; }) | std::ranges::to<std::vector>();
 }
 
 // The side belonging to `e` first, the other second, since which side a body lands on is up to the pair.
@@ -125,25 +138,38 @@ int main() {
         AddRestingBox(s);
 
         // The four corners share a normal, so they are one manifold and one contact.
-        expect(s.Contacts().size() == 1_ul);
-        if (s.Contacts().size() != 1) return;
-        const auto &c = s.Contacts().front();
-        expect(Near(c.Point.y, 0.f, 0.05f));
-        expect(Near(c.Normal.y, -1.f, 0.01f)); // directed into the second side, which is the floor
+        const auto *c = OnlyContact(s);
+        if (!c) return;
+        expect(Near(c->Point.y, 0.f, 0.05f));
+        expect(Near(c->Normal.y, -1.f, 0.01f)); // directed into the second side, which is the floor
+    };
+
+    // The contact polygon separates a patch two faces fix from one that grows with the load, which the audio contact model branches on.
+    // A unit box shares its whole bottom face, and a sphere touches at a point that spans none of it.
+    "a face contact reports its area and a point contact reports none"_test = [] {
+        Scene box;
+        AddRestingBox(box);
+        if (const auto *c = OnlyContact(box)) expect(Near(c->NominalArea, 1.f, 0.05f));
+
+        Scene point;
+        AddFloor(point);
+        point.AddBody({0, 0.5f, 0}, Sphere(0.5f), PhysicsMotion{});
+        point.Sync();
+        point.Step(60);
+        if (const auto *c = OnlyContact(point)) expect(c->NominalArea == 0.f);
     };
 
     "a resting contact reports the load it carries and no travel"_test = [] {
         Scene s;
         AddRestingBox(s, PhysicsMotion{.Mass = 2.f});
 
-        expect(s.Contacts().size() == 1_ul);
-        if (s.Contacts().size() != 1) return;
-        const auto &c = s.Contacts().front();
-        expect(Near(c.NormalForce, 2.f * 9.81f, 0.1f));
-        expect(c.Friction > 0.f); // The pair's combined coefficient.
+        const auto *c = OnlyContact(s);
+        if (!c) return;
+        expect(Near(c->NormalForce, 2.f * 9.81f, 0.1f));
+        expect(c->Friction > 0.f); // The pair's combined coefficient.
         // Neither surface travels under a body at rest.
-        expect(glm::length(c.Sides.front().SweepVelocity) < 1e-3f);
-        expect(glm::length(c.Sides.back().SweepVelocity) < 1e-3f);
+        expect(glm::length(c->Sides.front().SweepVelocity) < 1e-3f);
+        expect(glm::length(c->Sides.back().SweepVelocity) < 1e-3f);
     };
 
     "a sliding box sweeps the floor and not itself"_test = [] {
@@ -153,14 +179,13 @@ int main() {
         s.Sync();
         s.Step(10);
 
-        expect(s.Contacts().size() == 1_ul);
-        if (s.Contacts().size() != 1) return;
-        const auto &c = s.Contacts().front();
-        const auto [own, floor] = SidesOf(c, box);
+        const auto *c = OnlyContact(s);
+        if (!c) return;
+        const auto [own, floor] = SidesOf(*c, box);
         // The same material region of the box stays in contact while the floor streams past it.
         expect(glm::length(own.SweepVelocity) < 0.05f);
         expect(glm::length(floor.SweepVelocity) > 0.5f);
-        expect(glm::length(c.Slip) > 0.5f);
+        expect(glm::length(c->Slip) > 0.5f);
         // The floor's sweep runs along the direction of travel, which a speed alone could not give.
         const auto floor_dir = glm::normalize(floor.SweepVelocity);
         expect(std::abs(floor_dir.x) > 0.99f);
@@ -197,8 +222,7 @@ int main() {
         s.Sync();
         for (int i = 0; i < 30 && s.Impacts().empty(); ++i) s.Step();
 
-        // Each point produces an impact for both bodies, so count only the box's.
-        const auto own = s.Impacts() | std::views::filter([box](const auto &c) { return c.Entity == box; }) | std::ranges::to<std::vector>();
+        const auto own = ImpactsOn(s, box);
         expect(own.size() > 1_ul); // A flat landing is more than one point, not one centre of pressure.
         expect(own.size() <= 4_ul); // Jolt's manifold reduction caps a face at four points.
         float total = 0;
@@ -212,6 +236,37 @@ int main() {
         expect(total > 0.f && total < 2.f * 9.81f);
     };
 
+    "a body authored at rest lands as silence"_test = [] {
+        Scene s;
+        AddFloor(s);
+        // Authored touching, so the first solved impulse is pure support and the excess convention renders nothing.
+        s.AddBody({0, 0.5f, 0}, Box({1, 1, 1}), PhysicsMotion{.Mass = 50.f});
+        s.Sync();
+        s.Step(60);
+        expect(s.Impacts().empty());
+    };
+
+    "a bouncing body reports the strike its bounce arrested"_test = [] {
+        Scene s;
+        const auto floor = AddFloor(s);
+        constexpr float restitution = 0.9f, mass = 0.5f;
+        const auto ball = s.AddBody({0, 1.f, 0}, Sphere(0.5f), PhysicsMotion{.Mass = mass});
+        for (const auto collider : {floor, ball}) SetMaterial(s, collider, {.Restitution = restitution});
+        s.Sync();
+        for (int i = 0; i < 30 && s.Impacts().empty(); ++i) s.Step();
+
+        const auto own = ImpactsOn(s, ball);
+        expect(own.size() >= 1_ul);
+        // A 0.5 m fall arrives at sqrt(2g*0.5), and the strike reports the impulse that arrested and reversed it.
+        const float speed = std::sqrt(2.f * 9.81f * 0.5f);
+        float total = 0;
+        for (const auto &c : own) {
+            expect(Near(c.Speed, speed, 0.2f));
+            total += c.Impulse;
+        }
+        expect(Near(total, mass * (1.f + restitution) * speed, 0.3f));
+    };
+
     "each side names the collider node that is touching"_test = [] {
         Scene s;
         // A compound standing on two feet, each on its own floor, so the two feet touch as separate pairs.
@@ -223,10 +278,10 @@ int main() {
         s.Parent(foot_a, body);
         s.Parent(foot_b, body);
         // A slippery foot and a grippy one, combined separately by the pair each foot makes.
-        SetFriction(s, floor_a, 0.2f);
-        SetFriction(s, floor_b, 0.2f);
-        SetFriction(s, foot_a, 0.1f);
-        SetFriction(s, foot_b, 1.f);
+        SetMaterial(s, floor_a, {.DynamicFriction = 0.2f});
+        SetMaterial(s, floor_b, {.DynamicFriction = 0.2f});
+        SetMaterial(s, foot_a, {.DynamicFriction = 0.1f});
+        SetMaterial(s, foot_b, {.DynamicFriction = 1.f});
         s.Sync();
         s.Step(10);
 
@@ -248,9 +303,9 @@ int main() {
         Scene s;
         AddRestingBox(s);
 
-        expect(s.Contacts().size() == 1_ul);
-        if (s.Contacts().empty()) return;
-        const auto id = s.Contacts().front().Id;
+        const auto *first = OnlyContact(s);
+        if (!first) return;
+        const auto id = first->Id;
         for (int i = 0; i < 30; ++i) {
             s.Step();
             expect(s.Contacts().size() == 1_ul);
@@ -288,4 +343,6 @@ int main() {
         expect(s.ContactStep() > step);
         expect(s.Contacts().size() == 1_ul);
     };
+
+    return RunSuites();
 }

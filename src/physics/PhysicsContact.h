@@ -12,16 +12,23 @@ struct ReportContacts {};
 
 // A discrete impact on one rigid body from a new solid contact, one event per contact point per body in a qualifying pair,
 // each carrying the load its own point took. All quantities are world space at the impact frame.
+// Impulses are the solver's applied impulses in excess of the settled support, read one substep after the strike, so a body coming to rest on a surface lands as silence.
 struct ContactImpact {
     entt::entity Entity{null_entity}; // Owning entity of the struck body.
     entt::entity ColliderEntity{null_entity}; // The collider node of this body that was struck.
     entt::entity Other{null_entity}; // The body that struck it.
     entt::entity OtherColliderEntity{null_entity}; // The collider node of the other body that did the striking.
     vec3 Point{0}; // Contact point.
+    // The load-weighted centre of the manifold this point belongs to, where one resultant reproduces both the force and the moment.
+    // The whole manifold lands as one collision, so its duration turns on the body's response here, while each point excites the modes where it touches.
+    vec3 ResultantPoint{0};
     vec3 Direction{0}; // Unit impulse direction into this body.
     float Impulse{0}; // Contact impulse magnitude, kg·m/s.
-    float Speed{0}; // Normal approach speed at the contact, m/s.
+    float Speed{0}; // Normal approach speed the manifold's strike arrested, derived from its impulse, m/s.
     float OtherInvMass{0}; // Inverse mass of the other body, kg⁻¹; 0 = immovable.
+    // Area of the manifold's contact polygon, m^2, zero where the touch is a point or an edge, which is every contact whose patch grows with load rather than being fixed by two faces meeting.
+    // Every point of one manifold reports the whole polygon, since they land as one collision.
+    float NominalArea{0};
 };
 
 // Registry-context queue: the physics step appends this frame's impacts, the audio system drains it.
@@ -29,7 +36,7 @@ struct PhysicsContactImpacts {
     std::vector<ContactImpact> Events;
 };
 
-// What one body of a persisting contact answers for on its own (KHR_audio_rigid_bodies contact state).
+// What one body of a persisting contact contributes on its own (KHR_audio_rigid_bodies contact state).
 // The two sweep velocities are independent: a box sliding on a fixed floor has zero sweep on the box and full sweep on the floor.
 struct SustainedContactSide {
     entt::entity Entity{null_entity}; // The body this side describes.
@@ -53,6 +60,13 @@ struct SustainedContact {
     // Friction opposes a body's own motion, so it acts along this for Sides[1] and against it for Sides[0].
     vec3 Slip{0};
     float NormalForce{0}; // N, non-negative.
+    // N, world space, the tangential force the solver applied to body 1: kinetic friction on a slide, and whatever constraint force holds a roll.
+    vec3 FrictionForce{0};
+    // Area of the manifold's contact polygon, m^2. Zero where the touch is a point or an edge, which is every contact whose patch grows with load rather than being fixed by two faces meeting.
+    float NominalArea{0};
+    // Extent of the manifold's contact polygon along the slide, m, its width across the track.
+    // A face meeting a thin or degenerate strip bears load across the strip's whole length while the polygon's area collapses, so the extent still measures the region confining the contact.
+    float NominalExtent{0};
     float Restitution{0}; // Combined restitution of the pair.
     float Friction{0}; // Combined friction coefficient of the pair.
 };

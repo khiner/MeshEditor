@@ -17,8 +17,10 @@ struct Recording {
     }
 };
 
-// Called from audio device callback.
-void ProcessAudio(entt::registry &, entt::entity viewport, float *output, uint32_t frame_count);
+// Render the master mix, which is far-field pressure in pascals at 1 m.
+// `monitor` converts the result to device units as the final stage, mapping 20 Pa (120 dB SPL) to full scale and soft-limiting what still crests past it.
+// Capture paths leave it unset, so recordings stay in pascals.
+void ProcessAudio(entt::registry &, entt::entity viewport, float *output, uint32_t frame_count, bool monitor = false);
 
 // Capture of the master output, for muxing into a video recording.
 // The device thread writes and the main thread drains, so one of each and no locking.

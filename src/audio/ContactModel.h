@@ -96,8 +96,3 @@ double EstimateContactTime(const ContactDynamics &, uint32_t excitable_index, ve
 
 // Bounds on the derived contact time (seconds), guarding degenerate curvature, speed, and scale.
 inline constexpr double MinContactTime = 2e-5, MaxContactTime = 5e-2;
-
-// Approach speed a physics material's restitution is taken to be quoted at, m/s.
-// Restitution varies with approach speed while the Hunt-Crossley dissipation constant stays fixed,
-// so recovering that constant through e ~ 1 - alpha*v needs a reference speed.
-inline constexpr float RestitutionReferenceSpeed = 1.f;

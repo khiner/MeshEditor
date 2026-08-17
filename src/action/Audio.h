@@ -60,7 +60,8 @@ using Actions = std::variant<
     AssignVertexSamples, RemoveVertexSamples, ActivateRealImpactMicrophone,
     ApplyExciteImpact, ClearExciteImpacts>;
 
-using Action = MergedVariantT<Actions, Replace<RealImpactActiveMicrophone>, Replace<AudioOutputConfig>, Replace<AudioOutputMix>, Replace<Striker>, Replace<AcousticMaterial>, Replace<ContactSurface>>;
+using Action = MergedVariantT<
+    Actions, Replace<RealImpactActiveMicrophone>, Replace<AudioOutputConfig>, Replace<AudioOutputMix>, Replace<Striker>, Replace<AcousticMaterial>, Replace<ContactSurface>>;
 
 void Apply(entt::registry &, entt::entity viewport, const Action &);
 } // namespace action::audio

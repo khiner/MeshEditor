@@ -1,36 +1,26 @@
 #include "AudioSystem.h"
 #include "AudioDevice.h"
+#include "ContactScene.h"
 #include "FFTData.h"
 #include "FileDialog.h"
 #include "Job.h"
 #include "ModalAudio.h"
 #include "Reactive.h"
-#include "TransformMath.h"
 #include "action/ActionApply.h"
 #include "action/Audio.h"
-#include "audio/SoundVertices.h"
 #include "audio/WavWriter.h"
-#include "mesh/Mesh.h"
-#include "mesh/MeshBvh.h"
 #include "mesh/Tets.h"
 #include "physics/PhysicsContact.h"
 #include "physics/PhysicsTypes.h"
-#include "render/GpuBufferOps.h"
-#include "render/Instance.h"
-#include "render/MaterialComponents.h"
-#include "render/MeshBuffers.h"
-#include "scene/SceneGraph.h"
-#include "scene/WorldTransform.h"
 #include "selection/SelectionBitset.h"
 #include "ui/FieldEdit.h"
 #include "viewport/InteractionComponents.h"
+#include "viewport/ViewCamera.h"
 #include "viewport/ViewportEvents.h"
+#include <atomic>
 
-#include "ContactModel.h"
-#include "ContactSurface.h"
 #include "ModalModelFile.h"
 #include "ModalWarmStart.h"
-#include "SurfaceRelief.h"
 #include "implot.h"
 #include "imspinner.h"
 #include "mesh2modes.h"
@@ -70,26 +60,22 @@ template<> struct FieldLimits<&ModalSoundControls::ClickGain> : Within<0., 10.> 
 template<> struct FieldLimits<&ModalSoundControls::SampleGain> : Within<0., 4.> {};
 template<> struct FieldLimits<&ModalSoundControls::RenderThreads> : Within<1., 16.> {};
 template<> struct FieldLimits<&ModalSoundControls::MaxImpacts> : Within<1., 4096.> {};
-template<> struct FieldLimits<&ModalSoundControls::MinContactImpulse> : Within<0., 5.> {};
+template<> struct FieldLimits<&ModalSoundControls::MinContactExcitation> : Within<0., 1e-3> {};
 template<> struct FieldLimits<&ModalSoundControls::MinContactSpeed> : Within<0., 5.> {};
-template<> struct FieldLimits<&ModalSoundControls::MaxVoices> : Within<1., 64.> {};
-template<> struct FieldLimits<&ModalSoundControls::SustainLevel> : Within<0., 4.> {};
-template<> struct FieldLimits<&ModalSoundControls::Coupling> : Within<0., 4.> {};
-template<> struct FieldLimits<&ModalSoundControls::ContactDamping> : Within<0., 10.> {};
-template<> struct FieldLimits<&ModalSoundControls::MinSlipSpeed> : Within<0., 1.> {};
-template<> struct FieldLimits<&ModalSoundControls::MinSweepSpeed> : Within<0., 1.> {};
-
-// Surface finish. Ranges cover the finish presets with headroom (see surfaces::acoustic::All).
-template<> struct FieldLimits<&ContactSurface::Roughness> : Within<1e-9, 1e-2> {};
-template<> struct FieldLimits<&ContactSurface::CorrelationLength> : Within<1e-7, 1e-1> {};
-template<> struct FieldLimits<&ContactSurface::SpectralSlope> : Within<-3., 0.> {};
 
 using std::ranges::iota_view, std::ranges::nth_element, std::ranges::max_element, std::ranges::to;
 using std::views::transform;
 
 uint32_t DeviceSampleRate(const entt::registry &r) {
     const auto *res = r.ctx().find<AudioDeviceResource>();
-    return res && res->SampleRate ? res->SampleRate : 48'000;
+    if (res && res->SampleRate) return res->SampleRate;
+    // With no device rate to follow (headless renders), AUDIO_SAMPLE_RATE picks the render rate against the 48 kHz default.
+    static const uint32_t fallback = [] {
+        const char *env = std::getenv("AUDIO_SAMPLE_RATE");
+        const auto rate = env ? std::atoi(env) : 0;
+        return rate > 0 ? uint32_t(rate) : 48'000u;
+    }();
+    return fallback;
 }
 
 namespace {
@@ -278,342 +264,47 @@ std::optional<fs::path> ActiveSamplePath(const entt::registry &r, entt::entity i
     return active ? samples->FindPath(active->Handle) : std::nullopt;
 }
 
-/***** Sustained contact *****/
-
-// Surface distance one track sample spans, as a fraction of the correlation length.
-constexpr float SurfaceSamplesPerCorrelation{8};
-
-// Sample spacing of the track synthesized from a surface's roughness parameters, m.
-float SynthesizedFinishSpacing(const ContactSurface &s) { return std::clamp(s.CorrelationLength / SurfaceSamplesPerCorrelation, 1e-8f, 1e-4f); }
-
-// Content key of a surface's microscale finish track. A measured profile is hashed whole.
-uint64_t FinishTrackKey(const ContactSurface &s) {
-    if (s.HasMeasuredProfile()) {
-        auto key = HashParams(0x9e3779b97f4a7c15ull, s.SampleSpacing, s.Profile.size());
-        for (const float h : s.Profile) key = HashParams(key, h);
-        return key;
-    }
-    return HashParams(0x632be59bd9b4e019ull, s.CorrelationLength, s.SpectralSlope, SynthesizedFinishSpacing(s));
-}
-
-const ModalSoundControls &ModalControls(const entt::registry &r) {
-    static constexpr ModalSoundControls Defaults{};
-    const auto view = r.view<const ModalSoundControls>();
-    return view.empty() ? Defaults : r.get<const ModalSoundControls>(view.front());
-}
-
-// A body that sounds by modal synthesis.
-bool IsModalSounding(const entt::registry &r, entt::entity e) {
-    return r.valid(e) && r.all_of<ModalModes, SoundVertices, SoundVerticesModel>(e) && r.get<SoundVerticesModel>(e) == SoundVerticesModel::Modal;
-}
-
-// Each body of a contact holds its own voice, so the pair's id numbers the two.
-uint64_t ContactVoiceId(const SustainedContact &c, uint32_t side) { return c.Id * 2 + side; }
-
-// A node's acoustic properties are authored on the mesh it instances, so every lookup goes through its Instance.
-template<typename T> const T *AssetOf(const entt::registry &r, entt::entity node) {
-    const auto *inst = r.try_get<const Instance>(node);
-    return inst ? r.try_get<const T>(inst->Entity) : nullptr;
-}
-
-// Mean surface curvature (1/m) where a contact touches a node, read from that node's own mesh at `world_point`.
-// Empty when the node has no mesh.
-std::optional<double> SurfaceCurvature(const entt::registry &r, entt::entity node, vec3 world_point) {
-    if (!r.valid(node)) return std::nullopt;
-    const auto *inst = r.try_get<const Instance>(node);
-    const auto *bvh = inst ? r.try_get<const MeshBvh>(inst->Entity) : nullptr;
-    if (!bvh) return std::nullopt;
-    const auto &wt = r.get<const WorldTransform>(node);
-    const auto mesh = GetMesh(r, inst->Entity);
-    const auto indices = GetFaceIndices(r, r.get<const MeshBuffers>(inst->Entity));
-    const auto hit = bvh->ClosestPoint(mesh.GetVerticesSpan(), indices, InverseTransformPoint(wt, world_point));
-    // Interpolate the triangle's per-vertex curvature at the contact's barycentric weights.
-    double local = 0;
-    for (uint32_t i = 0; i < 3; ++i) local += double(hit.Weights[i]) * bvh->MeanCurvature[hit.Vertices[i]];
-    // Curvature is an inverse length, so the node's world scale converts the mesh's own units to meters.
-    const float scale = MeanScale(wt.S);
-    return scale > 0 ? local / scale : 0.0;
-}
-
-// The node a contact takes something from: the collider node it touched, or the nearest ancestor of it that has one.
-// Falls back to the body when no collider along the way carries one.
-entt::entity NearestNodeWith(const entt::registry &r, entt::entity collider, entt::entity body, auto &&has) {
-    for (auto e = collider; e != null_entity && r.valid(e) && e != body; e = ParentOrNull(r, e)) {
-        if (has(e)) return e;
-    }
-    return body;
-}
-
-// The node whose acoustic surface a contact rides over.
-// A compound body's rubber foot and steel shell are separate collider nodes, so a contact on one rides that one's surface.
-entt::entity SurfaceNode(const entt::registry &r, entt::entity collider, entt::entity body) {
-    return NearestNodeWith(r, collider, body, [&r](entt::entity e) { return AssetOf<ContactSurface>(r, e) != nullptr; });
-}
-
-// The node whose modal model a contact excites, and whose local space its position and directions are expressed in.
-// A body carries one model however many colliders it has.
-entt::entity ModalNode(const entt::registry &r, entt::entity collider, entt::entity body) {
-    return NearestNodeWith(r, collider, body, [&r](entt::entity e) { return r.all_of<ModalModes>(e); });
-}
-
-// The node whose mesh a contact reads its shape from, independent of which node carries the acoustic surface.
-entt::entity GeometryNode(const entt::registry &r, entt::entity collider, entt::entity body) {
-    return NearestNodeWith(r, collider, body, [&r](entt::entity e) { return AssetOf<MeshBvh>(r, e) != nullptr; });
-}
-
-// The nodes one side of a contact reads from.
-struct ContactNodes {
-    entt::entity Model, Surface, Geometry;
-};
-ContactNodes ResolveContactNodes(const entt::registry &r, entt::entity collider, entt::entity body) {
-    return {ModalNode(r, collider, body), SurfaceNode(r, collider, body), GeometryNode(r, collider, body)};
-}
-
-// A contact's elastic constants come from the material of the surface it touches, and from the one the node's
-// modal model was derived from when that surface has none.
-const AcousticMaterialProperties &MaterialOf(const entt::registry &r, entt::entity surface_node, entt::entity model_node) {
-    const auto *mat = AssetOf<AcousticMaterial>(r, surface_node);
-    if (!mat) mat = AssetOf<AcousticMaterial>(r, model_node);
-    return mat ? mat->Properties : materials::acoustic::Steel.Properties;
-}
-
-// Unit direction of `v`, or zero when `v` has no length.
-vec3 UnitOrZero(vec3 v) {
-    const float len = glm::length(v);
-    return len > 0 ? v / len : vec3{0};
-}
-
-// The sample point nearest `local_point`.
-uint32_t NearestSamplePoint(const std::vector<vec3> &positions, vec3 local_point) {
-    const auto dist2 = [local_point](vec3 p) { const auto d = p - local_point; return glm::dot(d, d); };
-    return uint32_t(std::ranges::distance(positions.begin(), std::ranges::min_element(positions, {}, dist2)));
-}
-
-SamplePointBlend NearestSamplePoints(const std::vector<vec3> &positions, vec3 local_point) {
-    if (positions.size() < 2) return {};
-    const auto dist2 = [&](uint32_t i) { const auto d = positions[i] - local_point; return glm::dot(d, d); };
-    uint32_t first = 0, second = 0;
-    float d_first = std::numeric_limits<float>::max(), d_second = d_first;
-    for (uint32_t i = 0; i < positions.size(); ++i) {
-        const float d = dist2(i);
-        if (d < d_first) {
-            second = first;
-            d_second = d_first;
-            first = i;
-            d_first = d;
-        } else if (d < d_second) {
-            second = i;
-            d_second = d;
-        }
-    }
-    const float d1 = std::sqrt(d_first), d2 = std::sqrt(d_second);
-    const float w = d1 + d2 > 0 ? d2 / (d1 + d2) : 1.f;
-    return {{first, second, first}, {w, 1 - w, 0}};
-}
-
-// Where an excitation at `local_point` reads an object's mode shapes: the nearest point of the sample surface,
-// in barycentric weights over the triangle holding it, so the field is continuous as the contact travels.
-// A model with no sample surface blends its two nearest sample points.
-SamplePointBlend ShapeBlendAt(const ModalModes &modes, vec3 local_point) {
-    if (modes.Indices.size() < 3) return NearestSamplePoints(modes.Positions, local_point);
-
-    SamplePointBlend best;
-    float best_distance2 = std::numeric_limits<float>::max();
-    for (size_t i = 0; i + 2 < modes.Indices.size(); i += 3) {
-        const std::array tri{modes.Indices[i], modes.Indices[i + 1], modes.Indices[i + 2]};
-        const auto hit = ClosestPointOnTriangle(local_point, modes.Positions[tri[0]], modes.Positions[tri[1]], modes.Positions[tri[2]]);
-        const vec3 offset = hit.Position - local_point;
-        if (const float distance2 = glm::dot(offset, offset); distance2 < best_distance2) {
-            best_distance2 = distance2;
-            best = {tri, hit.Weights};
-        }
-    }
-    return best;
-}
-
-// The two tracks one body contributes to a contact. Neither depends on which voice reads them.
-struct SideTracks {
-    ContactTrack Finish, Relief;
-};
-
-// A body with no acoustic surface contributes the default finish, so a contact is always fully specified.
-SideTracks ResolveSideTracks(const entt::registry &r, ModalAudio &m, const SustainedContactSide &side, entt::entity node, float patch_window, float sample_rate) {
-    static constexpr ContactSurface DefaultSurface{};
-    static const uint64_t default_key = FinishTrackKey(DefaultSurface);
-    const auto *surface = AssetOf<ContactSurface>(r, node);
-    const auto *relief = AssetOf<SurfaceRelief>(r, node);
-    // An edit whose derived key has yet to land is hashed here instead.
-    const auto *memo = AssetOf<SurfaceFinishKey>(r, node);
-    const uint64_t finish_key = surface ? (memo ? memo->Value : FinishTrackKey(*surface)) : default_key;
-    // The relief's lengths come from a texture bound to the surface node's own mesh coordinates, so that node's world scale sizes it.
-    const auto *node_transform = r.try_get<const WorldTransform>(node);
-    const float node_scale = node_transform ? MeanScale(node_transform->S) : 0.f;
-    // Both tracks are read at the sweep speed, so a sample advances the same surface distance whatever their spacings are.
-    const float step = glm::length(side.SweepVelocity) / sample_rate;
-
-    SideTracks out;
-    // `size` converts the track's stored lengths to meters: 1 for the finish, whose lengths are already absolute,
-    // and the node's world scale for the relief, whose lengths are in the mesh's own coordinates.
-    const auto make_track = [&](int32_t index, float sigma, float size) {
-        const auto &track = *m.SurfaceTracks[uint32_t(index)].Owned;
-        const float spacing = track.Spacing * size;
-        const float rate = step / spacing;
-        return ContactTrack{
-            .Index = index,
-            .Rate = rate,
-            .Sigma = sigma,
-            // The contact filter is spatial: a patch of radius a resolves down to about 2a, whatever the speed.
-            // A box this wide first nulls at one over its width, so covering two samples' travel puts that null on
-            // Nyquist and keeps the track from folding back on itself. At most it covers the whole track.
-            .Window = std::min(std::max(patch_window / spacing, 2 * rate), float(track.Heights.size())),
-            .Step = step,
-        };
-    };
-    // Microscale finish: a surface's measured profile, or a track synthesized from the roughness parameters it carries instead.
-    const auto &s = surface ? *surface : DefaultSurface;
-    if (const bool measured = s.HasMeasuredProfile(); measured || s.Roughness > 0) {
-        const auto index = AdoptSurfaceTrack(m, finish_key, [&] {
-            return std::make_shared<const RoughnessTrack>(
-                measured ? MakeProfileTrack(s.Profile, s.SampleSpacing) : SynthesizeRoughness(s.CorrelationLength, s.SpectralSlope, SynthesizedFinishSpacing(s), TrackSamples)
-            );
-        });
-        // A measured profile carries its own height scale, and a synthesized track is unit height, scaled here by the surface's own roughness.
-        if (index >= 0) out.Finish = make_track(index, measured ? m.SurfaceTracks[uint32_t(index)].Owned->Rms : s.Roughness, 1.f);
-    }
-
-    // Mesoscale relief: this body's normal map sampled along its own contact path, at its own sweep.
-    if (relief && node_scale > 0) {
-        const auto index = AdoptSurfaceTrack(m, relief->Key, [&] { return relief->Track; });
-        // One track serves every node instancing the mesh, each sizing it by its own scale.
-        if (index >= 0) out.Relief = make_track(index, relief->Track->Rms * node_scale, node_scale);
-    }
-    return out;
-}
-
-// One Hertz contact, whose elastic constants belong to the pair rather than to either body.
-// Resolved once, so both voices agree on the force between them.
-struct ResolvedContact {
-    // The contact in this body's own frame, the frame its mode shapes are defined in.
-    struct Side {
-        // The node carrying the model this side excites, whose frame everything below is in.
-        // Null when the side has nothing to excite.
-        entt::entity ModelEntity{entt::null};
-        SamplePointBlend Blend{};
-        vec3 Normal{0}; // Unit contact normal, directed into this body.
-        vec3 SlipDir{0}; // Unit slip direction, which the frictional force acts along.
-        // Direction each surface's geometric force drives this body, one per contact side, signed so the two bodies oppose.
-        std::array<vec3, 2> SweepDir{};
-    };
-    std::array<Side, 2> Sides;
-    std::array<SideTracks, 2> Tracks; // Each body's finish and relief, adopted once for the pair.
-    double Stiffness{0}; // k, N/m^(3/2).
-    float StaticPenetration{0}; // delta0, m.
-    float DampingCoeff{0}; // Hunt-Crossley c_d, s/m.
-};
-
-ResolvedContact ResolveContact(const entt::registry &r, ModalAudio &m, const SustainedContact &c, const std::array<ContactNodes, 2> &nodes, const ModalSoundControls &controls) {
-    ResolvedContact out;
-    std::array<double, 2> curvature{};
-    for (uint32_t i = 0; i < c.Sides.size(); ++i) {
-        auto &side = out.Sides[i];
-        // Each body's curvature is read on the surface it touches, at the point it touches, as Hertz theory asks for.
-        // It belongs to the pair's stiffness, so a side with nothing to excite still contributes it.
-        // A body with no mesh reads as flat.
-        curvature[i] = SurfaceCurvature(r, nodes[i].Geometry, c.Point).value_or(0.0);
-        // The blend indexes sample points, so a model whose shapes and positions disagree, or a body already gone,
-        // leaves this side unresolved.
-        const auto *modes = r.valid(nodes[i].Model) ? r.try_get<const ModalModes>(nodes[i].Model) : nullptr;
-        const auto *transform = modes ? r.try_get<const WorldTransform>(nodes[i].Model) : nullptr;
-        if (!transform || modes->Positions.empty() || modes->Shapes.size() != modes->Positions.size()) continue;
-
-        // Physics reports the contact in world space oriented toward the second body.
-        // Mode shapes are defined in the frame of the node carrying the model, which everything below moves into.
-        side.ModelEntity = nodes[i].Model;
-        const auto &wt = *transform;
-        const vec3 local_point = InverseTransformPoint(wt, c.Point);
-        // The first body is pressed and dragged the other way.
-        const float toward = i == 0 ? -1.f : 1.f;
-        side.Normal = InverseTransformDir(wt, toward * c.Normal);
-        side.SlipDir = InverseTransformDir(wt, toward * UnitOrZero(c.Slip));
-        // Both surfaces' sweep directions land in this body's frame, since its mode shapes are what they project onto.
-        // A body is driven along the direction it travels over its own surface and against the one it travels over
-        // the other's: climbing the other body's asperity retards it while pushing on the body carrying it.
-        // One tangential force therefore drives the two bodies of a contact apart rather than the same way.
-        for (uint32_t j = 0; j < c.Sides.size(); ++j) {
-            const float own = j == i ? 1.f : -1.f;
-            side.SweepDir[j] = InverseTransformDir(wt, own * UnitOrZero(c.Sides[j].SweepVelocity));
-        }
-        side.Blend = ShapeBlendAt(*modes, local_point);
-    }
-    // 1/E* and kappa1 + kappa2 are both sums over the two bodies, so the stiffness and patch belong to the contact.
-    const double inv_modulus = InvEffectiveModulus(MaterialOf(r, nodes[0].Surface, nodes[0].Model), MaterialOf(r, nodes[1].Surface, nodes[1].Model));
-    const double combined = CombinedCurvature(curvature.front(), curvature.back());
-    out.Stiffness = ContactStiffness(inv_modulus, combined);
-    out.StaticPenetration = float(StaticPenetration(c.NormalForce, out.Stiffness));
-    // Hunt and Crossley relate dissipation to restitution by c_d = (3/2)*alpha.
-    const float alpha = std::max(1.f - c.Restitution, 0.f) / RestitutionReferenceSpeed;
-    out.DampingCoeff = 1.5f * alpha * controls.ContactDamping;
-    // The width of the contact filter along the surface is the pair's, so the tracks are the same whichever voice reads them.
-    const float patch_window = 2.f * float(ContactPatchRadius(c.NormalForce, inv_modulus, combined));
-    const float sample_rate = LiveBank(m).SampleRate;
-    for (uint32_t i = 0; i < c.Sides.size(); ++i) out.Tracks[i] = ResolveSideTracks(r, m, c.Sides[i], nodes[i].Surface, patch_window, sample_rate);
-    return out;
-}
-
-// The voice one side of a resolved contact renders, empty when the body has no bank slot or no sample points to excite.
-std::optional<VoiceSet::Voice> BuildContactVoice(ModalAudio &m, const SustainedContact &c, const ResolvedContact &resolved, uint32_t side) {
-    const auto &own_resolved = resolved.Sides[side];
-    if (own_resolved.ModelEntity == null_entity) return {};
-    const auto slot = FindModalObject(LiveBank(m), own_resolved.ModelEntity);
-    if (!slot) return {};
-
-    return VoiceSet::Voice{
-        .Id = ContactVoiceId(c, side),
-        .Object = *slot,
-        .State = {
-            .Blend = own_resolved.Blend,
-            .N = own_resolved.Normal,
-            .SlipDir = own_resolved.SlipDir,
-            .SweepDir = own_resolved.SweepDir,
-            .NormalForce = c.NormalForce,
-            .Friction = c.Friction,
-            .Stiffness = float(resolved.Stiffness),
-            .StaticPenetration = resolved.StaticPenetration,
-            .DampingCoeff = resolved.DampingCoeff,
-            // Slots 0 and 1 carry each side's microscale finish, slots 2 and 3 its mesoscale relief.
-            // Both voices list them in the same order, so the two read one surface at one position.
-            .Tracks = {
-                resolved.Tracks[0].Finish,
-                resolved.Tracks[1].Finish,
-                resolved.Tracks[0].Relief,
-                resolved.Tracks[1].Relief,
-            },
-        },
-    };
-}
-
 /***** Modal synthesis bank *****/
 
-// Reduce a (possibly non-uniform or mirrored) world scale to a positive size ratio relative to the baked size.
-float UniformScaleRatio(const entt::registry &r, entt::entity e, const ModalModes &modes) {
-    const auto *world = r.try_get<const WorldTransform>(e);
-    const float baked = MeanScale(modes.BakedScale);
-    return world && baked > 0 ? std::clamp(MeanScale(world->S) / baked, 0.001f, 1000.f) : 1.f;
-}
-
-// Output level of a modal object: global modal level, the object's gain, and the mass-normalized amplitude law for its size.
-// The scale^(-3/2) is the mass-normalized shape amplitude: mass grows as scale^3 and the shape scales as mass^(-1/2).
-float ModalOutGain(const entt::registry &r, entt::entity e, float scale, size_t mode_count) {
+// Output level of a modal object: global modal level, the object's gain, and the amplitude law for its size.
+// Scale moves the output as scale^(-2), the mass-normalized drive shape going as mass^(-1/2), which is scale^(-3/2), with the radiating area's square root contributing the remaining scale^(-1/2).
+float ModalOutGain(const entt::registry &r, entt::entity e, float scale) {
     const auto *gain = r.try_get<const ModalGain>(e);
-    return ModalControls(r).ModalLevel * (gain ? gain->Value : 1.f) * std::pow(scale, -1.5f) / float(mode_count);
+    return ModalControls(r).ModalLevel * (gain ? gain->Value : 1.f) * std::pow(scale, -2.f);
 }
 
-// Rewrite only slot's output level from the object's current gain and size, leaving the resonator
-// coefficients untouched. For gain/level changes that don't alter the modes.
+// Rewrite one slot's output level from the object's current gain and size, leaving the resonator coefficients untouched.
 void SetModalOutGain(const entt::registry &r, ModalBank &b, uint32_t slot, entt::entity e) {
     const auto &modes = r.get<const ModalModes>(e);
-    std::atomic_ref{b.OutGain[slot]}.store(ModalOutGain(r, e, UniformScaleRatio(r, e, modes), modes.Freqs.size()), std::memory_order_relaxed);
+    std::atomic_ref{b.OutGain[slot]}.store(ModalOutGain(r, e, UniformScaleRatio(r, e, modes)), std::memory_order_relaxed);
 }
+
+// Rewrite every slot's listener attenuation from the viewport camera: far-field pressure falls as 1/r from each object's node, held at the 1 m mix level inside ListenerDistance.
+void UpdateListenerGains(const entt::registry &r, ModalBank &b, entt::entity viewport) {
+    const auto *camera = r.valid(viewport) ? r.try_get<const ViewCamera>(viewport) : nullptr;
+    if (!camera) return;
+    const auto listener_pos = camera->Position();
+    for (uint32_t slot = 0; slot < uint32_t(b.Entities.size()); ++slot) {
+        const auto e = b.Entities[slot];
+        const auto *world = r.valid(e) ? r.try_get<const WorldTransform>(e) : nullptr;
+        const float distance = world ? glm::distance(listener_pos, world->P) : ListenerDistance;
+        std::atomic_ref{b.ListenerGain[slot]}.store(ListenerDistance / std::max(distance, ListenerDistance), std::memory_order_relaxed);
+    }
+}
+
+// The volume the body displaces into the air, m^3, which the recoil filters take their corner from.
+// Mesh units are node-local, so the world scale cubed converts to m^3, and a mesh enclosing nothing takes the solid volume its mass and density imply.
+double DisplacedVolume(const entt::registry &r, entt::entity e, double mass, const AcousticMaterialProperties *props) {
+    const auto *bvh = AssetOf<MeshBvh>(r, e);
+    const auto *world = r.try_get<const WorldTransform>(e);
+    const double world_scale = world ? double(MeanScale(world->S)) : 1.0;
+    const double enclosed = bvh && bvh->EnclosedVolume ? *bvh->EnclosedVolume * world_scale * world_scale * world_scale : 0.0;
+    if (enclosed > 0) return enclosed;
+    return props && props->Density > 0 && mass > 0 ? mass / props->Density : 0.0;
+}
+
+// The radius of the sphere holding `volume`, which is where the recoil filters' corner sits.
+double VolumeEquivalentRadius(double volume) { return std::cbrt(3.0 * volume / (4.0 * std::numbers::pi)); }
 
 // Recompute an object's resonator coefficients and output gain.
 // Frequencies shift proportionally with the fundamental target and inversely with size.
@@ -631,11 +322,27 @@ void RetuneModalObject(const entt::registry &r, ModalBank &b, uint32_t slot, ent
     const float freq_ratio = (fundamental > 0 && modes.Freqs.front() > 0 ? fundamental / modes.Freqs.front() : 1.f) / scale;
     const float t60_scale = tuning ? tuning->T60Scale : 1.f;
     std::optional<double> alpha;
-    if (const auto *inst = r.try_get<const Instance>(e)) {
-        if (const auto *mat = r.try_get<const AcousticMaterial>(inst->Entity)) alpha = mat->Properties.Alpha;
-    }
+    if (const auto *mat = r.try_get<const AcousticMaterial>(e)) alpha = mat->Properties.Alpha;
 
-    static constexpr float Ln1000 = 6.907755279f;
+    // The mass a contact spring bears against, which sets the rate the body oscillates on that spring at.
+    // A dynamic rigid body's mass is authoritative at the size the body already has, where a mass derived from the model's own properties is stated at the baked size, so only the latter is sized by scale.
+    const auto *dynamics = r.try_get<const ContactDynamics>(e);
+    const auto *motion = r.try_get<const PhysicsMotion>(e);
+    const bool sized = motion && IsAuthoritativeDynamicBody(*motion);
+    const double mass = dynamics ? dynamics->Mass * (sized ? 1.0 : double(scale) * double(scale) * double(scale)) : 0.0;
+    b.RigidInvMass[slot] = mass > 0 ? float(1.0 / mass) : 0.f;
+    // The displaced volume behind the body's sustained acceleration noise.
+    // Only a dynamic rigid body recoils into the air, where a body the world holds passes its reaction to the support.
+    const auto *mat = r.try_get<const AcousticMaterial>(e);
+    const double volume = DisplacedVolume(r, e, mass, mat ? &mat->Properties : nullptr);
+    const auto recoil = sized && mass > 0 ? RecoilObjectFilter(VolumeEquivalentRadius(volume), volume, b.SampleRate) : RecoilFilter{};
+    b.RadiatorB0[slot] = recoil.RadB0;
+    b.AirB0[slot] = recoil.AirB0;
+    b.AirB1[slot] = recoil.AirB1;
+    b.AirB2[slot] = recoil.AirB2;
+    b.RecoilA1[slot] = recoil.A1;
+    b.RecoilA2[slot] = recoil.A2;
+
     std::vector<float> freqs(mode_count), t60s(mode_count);
     for (size_t k = 0; k < mode_count; ++k) {
         freqs[k] = modes.Freqs[k] * freq_ratio;
@@ -648,18 +355,17 @@ void RetuneModalObject(const entt::registry &r, ModalBank &b, uint32_t slot, ent
         if (alpha) d = float(*alpha / 2) + (d - float(*alpha / 2)) / (scale * scale);
         t60s[k] = t60_scale * Ln1000 / std::max(d, 1e-9f);
     }
-    TuneModalObject(b, slot, freqs, t60s);
-    std::atomic_ref{b.OutGain[slot]}.store(ModalOutGain(r, e, scale, mode_count), std::memory_order_relaxed);
+    TuneModalObject(b, slot, freqs, t60s, scale);
+    std::atomic_ref{b.OutGain[slot]}.store(ModalOutGain(r, e, scale), std::memory_order_relaxed);
 }
 
 // Rebuild the bank from every modal sound object. The replacement is built separately, so the audio
 // thread keeps rendering the old bank until InstallModalBank swaps it in.
 void RebuildModalBank(entt::registry &r) {
     auto &m = r.ctx().get<ModalAudio>();
-    const auto *res = r.ctx().find<AudioDeviceResource>();
 
     ModalBank next;
-    next.SampleRate = res && res->SampleRate ? float(res->SampleRate) : 48'000.f;
+    next.SampleRate = float(DeviceSampleRate(r));
     for (auto e : r.view<const ModalModes, const SoundVertices>()) {
         const auto &modes = r.get<const ModalModes>(e);
         if (modes.Freqs.empty()) continue;
@@ -729,11 +435,16 @@ struct PhysicsStrike {
     entt::entity GeometryEntity; // node whose mesh the collision landed on
     entt::entity SurfaceEntity; // node whose acoustic surface the collision landed on
     Impactor Impactor; // striking body's impactor
+    float NominalArea; // area the two faces share, m^2, zero where the touch is a point or an edge
+    float CombinedRoughness; // the pair's rms asperity heights in quadrature, m
+    // Sample point nearest the manifold's load-weighted centre.
+    // The whole manifold lands as one collision, so the mass its duration turns on is the body's response at that centre rather than at one of its points.
+    uint32_t ResultantIndex;
 };
 
 // Estimate the strike's contact parameters from the Hertz model and enqueue the impact.
-// The half-sine contact-force pulse of duration tau has unit sample sum, so its spectrum is flat
-// at DC and rolls off above ~1/tau: shorter contact is brighter.
+// The raised-cosine contact-force pulse of duration tau has unit sample sum, so its spectrum is flat at DC and rolls off above ~1/tau, which makes shorter contact brighter.
+// Its rate is zero at both ends, as a Hertz contact's is, so the click the pulse's derivative radiates starts and ends without a step.
 // Impulse magnitude rides in the mode excitation gains, not the pulse.
 // `physics` set means a real collision, and unset a manual mallet hit.
 void TriggerModalStrike(entt::registry &r, entt::entity e, uint32_t excitable_index, float force, float contact_speed, std::optional<PhysicsStrike> physics = std::nullopt) {
@@ -747,11 +458,11 @@ void TriggerModalStrike(entt::registry &r, entt::entity e, uint32_t excitable_in
     const vec3 dir = physics ? glm::normalize(physics->Direction) : ExciteDirection(r, e, modes.Vertices[excitable_index]);
 
     const auto *cd = r.try_get<const ContactDynamics>(e);
-    const auto mesh_entity = r.get<const Instance>(e).Entity;
-    const auto *mat = r.try_get<const AcousticMaterial>(mesh_entity);
+    const auto *mat = r.try_get<const AcousticMaterial>(e);
     // A short default contact with no click applies when the material or contact dynamics are missing.
     double tau = 1e-4; // seconds
-    double accel_amp = 0;
+    float click_amp = 0;
+    ClickFilter click{};
     if (cd && mat) {
         Impactor imp;
         if (physics) {
@@ -768,17 +479,20 @@ void TriggerModalStrike(entt::registry &r, entt::entity e, uint32_t excitable_in
         // The elastic constants belong to the surface that was struck, as they do for a contact that persists.
         // A mallet lands on the node's own surface, since it comes from outside the scene rather than off a collider.
         const auto &elastic = MaterialOf(r, physics ? physics->SurfaceEntity : e, e);
-        tau = EstimateContactTime(*cd, excitable_index, dir, contact_speed, elastic, curvature, 0, imp, UniformScaleRatio(r, e, modes));
-        // Acceleration noise radiates as a dipole whose strength is the displaced volume, so the impulse scales by
-        // volume over mass. That equals 1/density for a solid homogeneous body and is larger for a hollow one.
-        // Mesh units are node-local, so the baked scale cubed converts to m^3. Density stands in without a volume.
-        const auto *bvh = r.try_get<const MeshBvh>(mesh_entity);
-        const auto enclosed = bvh ? bvh->EnclosedVolume : std::nullopt;
-        const double baked = double(MeanScale(modes.BakedScale));
-        const double volume = enclosed ? *enclosed * baked * baked * baked : 0;
-        const double per_impulse = volume > 0 && cd->Mass > 0 ? volume / cd->Mass : 1 / mat->Properties.Density;
-        // A physics `force` is the true contact impulse. A manual one is nominal, so it comes from the reduced mass and approach speed.
-        accel_amp = per_impulse * (physics ? double(force) : ReducedContactMass(*cd, excitable_index, dir, imp) * std::abs(double(contact_speed)));
+        // A mallet strikes with its rounded tip, so it grows its own patch rather than meeting a face, and it lands where it is aimed rather than over a manifold.
+        const float scale_ratio = UniformScaleRatio(r, e, modes);
+        // A mallet's tip is polished, so a manual strike reads the struck surface's finish alone.
+        const double roughness = physics ? physics->CombinedRoughness : SurfaceRoughnessOf(r, e);
+        tau = EstimateContactTime(*cd, physics ? physics->ResultantIndex : excitable_index, dir, contact_speed, elastic, curvature, physics ? physics->NominalArea : 0.f, imp, scale_ratio, roughness);
+        // The click is the recoil radiator driven by this strike's force pulse, with the body's inertia in the loop (see RecoilClickFilter).
+        // Without a volume to displace, the radius of the disc holding the body's sample-surface area sets the corner.
+        const double volume = DisplacedVolume(r, e, cd->Mass, &mat->Properties);
+        const double radius = volume > 0 ? VolumeEquivalentRadius(volume) : double(bank.RadiantRadius[*slot] * scale_ratio);
+        click = RecoilClickFilter(radius, volume, cd->Mass, bank.SampleRate);
+        // The pulse below carries a unit impulse per sample sum, so the filter's input scale is the impulse times the sample rate, the contact force in Newtons.
+        // A physics `force` is the true contact impulse, where a manual one is nominal, from the reduced mass and approach speed.
+        const double impulse = physics ? double(force) : ReducedContactMass(*cd, excitable_index, dir, imp) * std::abs(double(contact_speed));
+        click_amp = float(impulse * bank.SampleRate);
     }
     const auto step = float(1.0 / (tau * bank.SampleRate));
     EnqueueModalEvent(
@@ -791,8 +505,11 @@ void TriggerModalStrike(entt::registry &r, entt::entity e, uint32_t excitable_in
             .Jy = dir.y * force,
             .Jz = dir.z * force,
             .PulseStep = step,
-            .PulseGamma = std::numbers::pi_v<float> / 2 * step,
-            .AccelAmp = float(accel_amp),
+            .PulseGamma = 2 * step,
+            .AccelAmp = click_amp,
+            .ClickB0 = click.B0,
+            .ClickA1 = click.A1,
+            .ClickA2 = click.A2,
         }
     );
 }
@@ -817,9 +534,7 @@ struct RecordingStart {};
 struct SoundVerticesDerivation {};
 struct ContactReportingDerivation {};
 struct ContactDynamicsDerivation {};
-struct AcousticMaterialEdit {};
-struct ContactSurfaceEdit {};
-struct ContactSurfaceGeometry {};
+struct ModelRescaleEdit {};
 struct AudioConfig {};
 struct AudioMix {};
 } // namespace audio_changes
@@ -923,6 +638,24 @@ void CancelModalSolves(entt::registry &r, entt::entity e) {
 
 /***** Modal model derivation *****/
 
+// The material properties a model's modes derive at, folding the spec's one-mass rule into the density.
+// A dynamic rigid body's authored mass is the body's one mass, so the modes derive at the density that makes the solve's mass meet it.
+// The stiffness follows, keeping the named material's specific stiffness E/rho and with it every frequency.
+// Masses compare at the model's baked size, which the solve stamps from the node and ScaleLocked then holds.
+AcousticMaterialProperties EffectiveModalMaterial(AcousticMaterialProperties props, const ModalEigenSummary &summary, double solve_mass, const PhysicsMotion *motion) {
+    if (!motion || !IsAuthoritativeDynamicBody(*motion) || solve_mass <= 0 || summary.SolvedMaterial.Density <= 0 || props.Density <= 0) return props;
+    const double rho_eff = summary.SolvedMaterial.Density * double(motion->Mass.value_or(DefaultMass)) / solve_mass;
+    props.YoungModulus *= rho_eff / props.Density;
+    props.Density = rho_eff;
+    return props;
+}
+
+AcousticMaterialProperties EffectiveModalMaterial(const entt::registry &r, entt::entity e, const ModalEigenSummary &summary) {
+    const auto *mat = r.try_get<const AcousticMaterial>(e);
+    const auto *mp = r.try_get<const MassProperties>(e);
+    return EffectiveModalMaterial(mat ? mat->Properties : summary.SolvedMaterial, summary, mp ? mp->Mass : 0.0, r.try_get<const PhysicsMotion>(e));
+}
+
 // Exact re-derivation of `modes` for `props` (see modal::RescaleModes). A fundamental pinned at
 // solve time (e.g. matched to a recording) stays pinned. Empty when the edit is not exactly
 // scalable (Poisson ratio differs).
@@ -945,12 +678,13 @@ void ReplaceModalModes(entt::registry &r, entt::entity e, ModalModes new_modes) 
     r.emplace_or_replace<ModalModes>(e, std::move(new_modes));
 }
 
-// Re-derive the entity's modal model for the mesh's current material. A Poisson-ratio change is
-// not scalable and leaves the model as-is until a re-solve.
-void RescaleModalObject(entt::registry &r, entt::entity e, const AcousticMaterialProperties &props) {
+// Re-derive the entity's modal model for its effective material, from the current acoustic material and the body's one mass.
+// A Poisson-ratio change is not scalable and leaves the model as-is until a re-solve.
+void RescaleModalObject(entt::registry &r, entt::entity e) {
     const auto &modes = r.get<const ModalModes>(e);
+    const auto &summary = r.get<const ModalEigenSummary>(e);
     const auto *settings = r.try_get<const ModalSolveSettings>(e);
-    auto rescaled = RescaledModes(r.get<const ModalEigenSummary>(e), modes, props, settings ? *settings : ModalSolveSettings{});
+    auto rescaled = RescaledModes(summary, modes, EffectiveModalMaterial(r, e, summary), settings ? *settings : ModalSolveSettings{});
     if (rescaled && *rescaled != modes) ReplaceModalModes(r, e, std::move(*rescaled));
 }
 
@@ -1107,7 +841,7 @@ SolveInputs BuildSolveInputs(const entt::registry &r, entt::entity e, entt::enti
 }
 
 // True when the baked model no longer matches the current solve inputs.
-bool ModalModelStale(const entt::registry &r, entt::entity e, entt::entity mesh_entity, const SolveInputs &inputs) {
+bool ModalModelStale(const entt::registry &r, entt::entity e, const SolveInputs &inputs) {
     const auto *summary = r.try_get<const ModalEigenSummary>(e);
     if (!summary) return true;
     if (summary->TetInputsHash != inputs.Hash) return true;
@@ -1115,7 +849,7 @@ bool ModalModelStale(const entt::registry &r, entt::entity e, entt::entity mesh_
     if (inputs.Vertices != summary->SolvedVertices) return true;
     const auto &settings = r.get<const ModalSolveSettings>(e);
     if (settings.NumModes != summary->SolvedNumModes || settings.MinModeFreq != summary->SolvedMinModeFreq || settings.MaxModeFreq != summary->SolvedMaxModeFreq) return true;
-    const auto *mat = r.try_get<const AcousticMaterial>(mesh_entity);
+    const auto *mat = r.try_get<const AcousticMaterial>(e);
     return mat && mat->Properties.PoissonRatio != summary->SolvedMaterial.PoissonRatio;
 }
 
@@ -1128,10 +862,10 @@ void LaunchModalSolve(entt::registry &r, entt::entity viewport, entt::entity e) 
     if (!r.valid(e) || !r.all_of<ModalSolveSettings>(e) || IsSolving(r, e)) return;
     const auto *inst = r.try_get<const Instance>(e);
     if (!inst || !TryGetMesh(r, inst->Entity)) return;
-    const auto *material = r.try_get<const AcousticMaterial>(inst->Entity);
+    const auto *material = r.try_get<const AcousticMaterial>(e);
     if (!material) return;
     auto inputs = BuildSolveInputs(r, e, inst->Entity);
-    if (r.all_of<ModalModes>(e) && !ModalModelStale(r, e, inst->Entity, inputs)) return;
+    if (r.all_of<ModalModes>(e) && !ModalModelStale(r, e, inputs)) return;
 
     std::optional<float> fundamental;
     if (const auto path = ActiveSamplePath(r, e)) {
@@ -1217,16 +951,13 @@ void RegisterAudioComponentHandlers(entt::registry &r) {
     track<audio_changes::ContactDynamicsDerivation>(r)
         .on<MassProperties>(On::Create | On::Update | On::Destroy)
         .on<::ModalModes>(On::Create | On::Update | On::Destroy);
-    track<audio_changes::AcousticMaterialEdit>(r).on<AcousticMaterial>(On::Create | On::Update);
-    // A surface with no normal map of its own inherits its material's, so a material reassignment changes the relief too.
-    track<audio_changes::ContactSurfaceEdit>(r)
-        .on<ContactSurface>(On::Create | On::Update | On::Destroy)
-        .on<MeshMaterialAssignment>(On::Create | On::Update);
-    // The relief's texel size is measured from the mesh, so an edit to the mesh restates it.
-    // Tracked separately from the surface edits above so the derivation knows which of the two it is answering.
-    track<audio_changes::ContactSurfaceGeometry>(r).on<MeshGeometryDirty>(On::Create);
+    // The body's authored mass enters the model's effective material alongside the material itself, so a motion edit re-derives the model just as a material edit does.
+    track<audio_changes::ModelRescaleEdit>(r)
+        .on<AcousticMaterial>(On::Create | On::Update)
+        .on<PhysicsMotion>(On::Create | On::Update | On::Destroy);
     track<audio_changes::AudioConfig>(r).on<AudioOutputConfig>(On::Create | On::Update);
     track<audio_changes::AudioMix>(r).on<AudioOutputMix>(On::Create | On::Update);
+    RegisterSurfaceContactHandlers(r);
 
     RegisterComponentEventHandler(r, [](entt::registry &r) {
         // Land completed modal solves.
@@ -1246,12 +977,10 @@ void RegisterAudioComponentHandlers(entt::registry &r) {
             }
             it = solve_jobs.erase(it);
         }
-        // A material edit rescales every modal model derived from that mesh.
-        for (auto mesh_e : reactive<audio_changes::AcousticMaterialEdit>(r)) {
-            const auto &props = r.get<const AcousticMaterial>(mesh_e).Properties;
-            for (auto e : r.view<const ModalEigenSummary, const ::ModalModes, const Instance>()) {
-                if (r.get<const Instance>(e).Entity == mesh_e) RescaleModalObject(r, e, props);
-            }
+        // A material edit rescales the modal model of the node carrying it, and so does a rigid-body mass edit, the body's one mass being a derivation input of the model's effective material.
+        for (auto e : reactive<audio_changes::ModelRescaleEdit>(r)) {
+            if (!r.valid(e) || !r.all_of<ModalEigenSummary, ::ModalModes>(e)) continue;
+            RescaleModalObject(r, e);
         }
         // Rebuild SoundVertices from VertexSamples/ModalModes, selected by SoundVerticesModel.
         // Runs before any handler that reads SoundVertices.
@@ -1303,20 +1032,6 @@ void RegisterAudioComponentHandlers(entt::registry &r) {
         }
         // Refresh contact dynamics before the strike loop below reads them.
         for (auto e : reactive<audio_changes::ContactDynamicsDerivation>(r)) UpdateContactDynamics(r, e);
-        // Re-derive the mesoscale relief of any edited surface, so a sustained contact reads it without decoding a texture.
-        auto &surface_edits = reactive<audio_changes::ContactSurfaceEdit>(r);
-        auto &mesh_edits = reactive<audio_changes::ContactSurfaceGeometry>(r);
-        for (auto mesh_e : surface_edits) {
-            if (!r.valid(mesh_e)) continue;
-            UpdateSurfaceRelief(r, mesh_e, mesh_edits.contains(mesh_e));
-            // Intentional registry writes outside Apply: both are memos derived from the surface.
-            if (const auto *s = r.try_get<const ContactSurface>(mesh_e)) r.emplace_or_replace<SurfaceFinishKey>(mesh_e, FinishTrackKey(*s));
-            else r.remove<SurfaceFinishKey>(mesh_e);
-        }
-        // A mesh whose surface did not also change still needs its relief remeasured, and its finish key is unaffected.
-        for (auto mesh_e : mesh_edits) {
-            if (r.valid(mesh_e) && !surface_edits.contains(mesh_e)) UpdateSurfaceRelief(r, mesh_e, true);
-        }
         // A created or replaced VertexForce is a strike. Contact pulses are one-shot.
         for (auto e : reactive<audio_changes::VertexForce>(r)) {
             if (!r.all_of<SoundVerticesModel>(e)) continue;
@@ -1342,16 +1057,19 @@ void RegisterAudioComponentHandlers(entt::registry &r) {
         if (auto *contacts = r.ctx().find<PhysicsContactImpacts>(); contacts && !contacts->Events.empty()) {
             const auto &controls = ModalControls(r);
             for (const auto &c : contacts->Events) {
-                if (c.Impulse < controls.MinContactImpulse || c.Speed < controls.MinContactSpeed) continue;
+                if (c.Speed < controls.MinContactSpeed) continue;
                 const auto own = ResolveContactNodes(r, c.ColliderEntity, c.Entity);
                 if (!IsModalSounding(r, own.Model)) continue;
                 const auto &modes = r.get<const ModalModes>(own.Model);
                 if (modes.Positions.empty()) continue;
-                const auto other = ResolveContactNodes(r, c.OtherColliderEntity, c.Other);
                 // Bring the world-space contact into the node-local frame the modes are defined in.
                 const auto &wt = r.get<const WorldTransform>(own.Model);
                 const vec3 local_point = InverseTransformPoint(wt, c.Point);
                 const vec3 local_dir = InverseTransformDir(wt, c.Direction);
+                const auto sample_point = NearestSamplePoint(modes.Positions, local_point);
+                // Audibility is a property of what the strike excites, so the floor is on that rather than on the momentum behind it, which would silence a light body however hard it is struck.
+                if (PeakModalDrive(modes, sample_point, UnitOrZero(local_dir) * c.Impulse) < controls.MinContactExcitation) continue;
+                const auto other = ResolveContactNodes(r, c.OtherColliderEntity, c.Other);
                 // The other body is the impactor: its stiffness, mass, and curvature shape the contact time.
                 // Its material follows the surface it struck with, and its curvature the geometry of that surface.
                 const auto &other_props = MaterialOf(r, other.Surface, other.Model);
@@ -1362,53 +1080,15 @@ void RegisterAudioComponentHandlers(entt::registry &r) {
                     .Curvature = other_curvature.value_or(SphereEquivalentCurvature(other_props.Density, c.OtherInvMass)),
                     .InvMass = c.OtherInvMass,
                 };
-                TriggerModalStrike(r, own.Model, NearestSamplePoint(modes.Positions, local_point), c.Impulse, c.Speed, PhysicsStrike{local_dir, c.Point, own.Geometry, own.Surface, impactor});
+                const auto resultant_point = NearestSamplePoint(modes.Positions, InverseTransformPoint(wt, c.ResultantPoint));
+                const float own_rq = SurfaceRoughnessOf(r, own.Surface), other_rq = SurfaceRoughnessOf(r, other.Surface);
+                const float pair_roughness = std::sqrt(own_rq * own_rq + other_rq * other_rq);
+                TriggerModalStrike(r, own.Model, sample_point, c.Impulse, c.Speed, PhysicsStrike{local_dir, c.Point, own.Geometry, own.Surface, impactor, c.NominalArea, pair_roughness, resultant_point});
             }
             contacts->Events.clear();
         }
-        // Contacts that persist drive sustained voices, republished as a whole set so a contact ends by its absence.
-        // A step the simulation did not take publishes nothing, and the audio thread ages out the set it holds,
-        // so a scene whose playhead has stopped falls silent even with bodies resting on one another.
-        auto &m = r.ctx().get<ModalAudio>();
-        if (const auto *sustained = r.ctx().find<const PhysicsSustainedContacts>(); sustained && sustained->Step != m.ContactStep) {
-            const std::span<const SustainedContact> active{sustained->Active};
-            m.ContactStep = sustained->Step;
-            BeginSurfaceTrackFrame(m);
-            const auto &controls = ModalControls(r);
-            const auto max_voices = controls.MaxVoices;
-            auto &set = NextVoiceSet(m);
-            for (const auto &c : active) {
-                // A contact whose surfaces are not moving over one another is silent however heavily it is loaded.
-                const bool moving = glm::length(c.Slip) >= controls.MinSlipSpeed ||
-                    std::max(glm::length(c.Sides.front().SweepVelocity), glm::length(c.Sides.back().SweepVelocity)) >= controls.MinSweepSpeed;
-                if (!moving) continue;
-                const std::array nodes{
-                    ResolveContactNodes(r, c.Sides.front().ColliderEntity, c.Sides.front().Entity),
-                    ResolveContactNodes(r, c.Sides.back().ColliderEntity, c.Sides.back().Entity),
-                };
-                // Resolving walks both bodies' sample points and adopts both surfaces' tracks, so a silent pair stops here.
-                const std::array<bool, 2> sounding{IsModalSounding(r, nodes[0].Model), IsModalSounding(r, nodes[1].Model)};
-                if (!sounding.front() && !sounding.back()) continue;
-                // A full set can take neither side, so a contact past the cap is refused before it is resolved.
-                if (set.Voices.size() >= max_voices) {
-                    m.VoicesRefused += sounding.front() + sounding.back();
-                    continue;
-                }
-                // Both voices render one contact, so its elastic constants and both bodies' surfaces resolve once here.
-                const auto resolved = ResolveContact(r, m, c, nodes, controls);
-                for (uint32_t side = 0; side < c.Sides.size(); ++side) {
-                    if (!sounding[side]) continue;
-                    auto voice = BuildContactVoice(m, c, resolved, side);
-                    if (!voice) continue;
-                    if (set.Voices.size() >= max_voices) {
-                        ++m.VoicesRefused;
-                        continue;
-                    }
-                    set.Voices.push_back(std::move(*voice));
-                }
-            }
-            PublishVoiceSet(m);
-        }
+        // Surfaces edited this frame re-derive what a sustained contact reads, and contacts that persist publish as this step's voices.
+        SurfaceUpdateContacts(r);
         // Reconcile the live output device: a config change re-inits (and may change the negotiated rate),
         // a mix change just applies level/on-off.
         bool device_rate_changed = false;
@@ -1429,8 +1109,7 @@ void RegisterAudioComponentHandlers(entt::registry &r) {
 
         auto &modal_tracker = reactive<audio_changes::ModalModes>(r);
         if (!modal_tracker.empty() || device_rate_changed) {
-            // Every modal object carries tuning, gain, and solve-settings components (and its mesh an
-            // acoustic material), so the synth controls and the modal editor always have state to edit.
+            // Every modal object carries tuning, gain, solve-settings and an acoustic material, so the synth controls and the modal editor always have state to edit.
             // Intentional registry writes outside Apply: derived defaults for a new model.
             for (auto e : modal_tracker) {
                 const auto &modes = r.get<const ::ModalModes>(e);
@@ -1439,10 +1118,7 @@ void RegisterAudioComponentHandlers(entt::registry &r) {
                 if (!r.all_of<ModalSolveSettings>(e)) {
                     r.emplace<ModalSolveSettings>(e, modes.Vertices.empty() ? ModalSolveSettings{} : ModalSolveSettings{.NumVertices = uint32_t(modes.Vertices.size())});
                 }
-                if (const auto *inst = r.try_get<const Instance>(e); inst) {
-                    if (!r.all_of<AcousticMaterial>(inst->Entity)) r.emplace<AcousticMaterial>(inst->Entity, materials::acoustic::All.front());
-                    if (!r.all_of<ContactSurface>(inst->Entity)) r.emplace<ContactSurface>(inst->Entity, WithPreset({}, surfaces::acoustic::Default));
-                }
+                if (!r.all_of<AcousticMaterial>(e)) r.emplace<AcousticMaterial>(e, materials::acoustic::All.front());
             }
             // A same-layout model replacement (e.g. a material rescale) retunes and reshapes its bank
             // slot in place, without excluding the audio thread. Anything else is structural.
@@ -1478,8 +1154,6 @@ void RegisterAudioComponentHandlers(entt::registry &r) {
                 const auto &controls = r.get<const ModalSoundControls>(e);
                 m.ClickGain.store(controls.ClickGain, std::memory_order_relaxed);
                 m.MaxImpacts.store(controls.MaxImpacts, std::memory_order_relaxed);
-                m.SustainLevel.store(controls.SustainLevel, std::memory_order_relaxed);
-                m.Coupling.store(controls.Coupling, std::memory_order_relaxed);
                 // Sized from the main thread, since a render call cannot spawn threads.
                 const auto *device = r.ctx().find<const AudioDeviceResource>();
                 m.RenderPool.SetSize(controls.RenderThreads);
@@ -1492,6 +1166,8 @@ void RegisterAudioComponentHandlers(entt::registry &r) {
                 if (auto slot = FindModalObject(bank, e)) RetuneModalObject(r, bank, *slot, e);
             }
             scale_tracker.Storage.clear();
+            // The device renders on the audio thread, which cannot read the registry, so each object's attenuation follows the camera and the bodies from here every frame.
+            if (const auto *res = r.ctx().find<AudioDeviceResource>()) UpdateListenerGains(r, bank, res->Viewport);
         }
     });
 }
@@ -1501,6 +1177,11 @@ namespace {
 struct MasterCapture {
     std::vector<float> Ring;
     std::atomic<uint64_t> Written{0}, Read{0};
+};
+
+// The monitor limiter's running peak envelope, in full-scale units. Device thread only.
+struct MonitorLimiter {
+    float Envelope{0};
 };
 } // namespace
 
@@ -1519,6 +1200,7 @@ void EndAudioCapture(entt::registry &r) { r.ctx().erase<MasterCapture>(); }
 
 void InitAudioSystem(entt::registry &r) {
     if (!r.ctx().contains<ModalAudio>()) r.ctx().emplace<ModalAudio>();
+    if (!r.ctx().contains<MonitorLimiter>()) r.ctx().emplace<MonitorLimiter>();
     RegisterAudioComponentHandlers(r);
 }
 
@@ -1543,12 +1225,22 @@ void DrainAudioCapture(entt::registry &r, std::vector<float> &out) {
     capture->Read.store(read, std::memory_order_relaxed);
 }
 
-void ProcessAudio(entt::registry &r, entt::entity viewport, float *output, uint32_t frame_count) {
+// The pressure a full-scale device sample represents, Pa: the monitor level, 120 dB SPL, the threshold of pain.
+// Full scale stands for the loudest pressure the monitor renders, and the limiter holds anything above it there.
+constexpr float FullScalePressure{20.f};
+
+void ProcessAudio(entt::registry &r, entt::entity viewport, float *output, uint32_t frame_count, bool monitor) {
     std::fill_n(output, frame_count, 0.f);
-    RenderModal(r.ctx().get<ModalAudio>(), output, frame_count);
+    auto &m = r.ctx().get<ModalAudio>();
+    // The mix is pressure at the view camera.
+    // The device path runs this on the audio thread, which cannot read the registry, so its gains are written by the frame handler.
+    // An offline render runs on the main thread and takes its own viewport's camera here.
+    if (!monitor) UpdateListenerGains(r, LiveBank(m), viewport);
+    RenderModal(m, output, frame_count);
 
     const auto *controls = r.try_get<const ModalSoundControls>(viewport);
-    const float sample_gain = controls ? controls->SampleGain : ModalSoundControls{}.SampleGain;
+    // Recorded samples are normalized, so they enter the pressure mix at the monitor calibration and a full-scale sample plays at full scale.
+    const float sample_gain = (controls ? controls->SampleGain : ModalSoundControls{}.SampleGain) * FullScalePressure;
     for (const auto [entity, model] : r.view<SoundVerticesModel>().each()) {
         if (model == SoundVerticesModel::Samples) {
             auto *samples = r.try_get<VertexSamples>(entity);
@@ -1575,6 +1267,20 @@ void ProcessAudio(entt::registry &r, entt::entity viewport, float *output, uint3
             if (++pos == capacity) pos = 0;
         }
         capture->Written.store(written, std::memory_order_release);
+    }
+
+    // The monitor stage, after the capture tap: device units at the monitor level.
+    // The limiter's gain follows the running peak envelope, instant attack with a 100 ms release, so a spike is held at the rail only for its own duration and the level gradient between events survives the stage.
+    if (monitor) {
+        const float release = std::exp(-1.f / (0.1f * float(DeviceSampleRate(r))));
+        auto &limiter = r.ctx().get<MonitorLimiter>();
+        auto envelope = limiter.Envelope;
+        for (uint32_t i = 0; i < frame_count; ++i) {
+            const float x = output[i] / FullScalePressure;
+            envelope = std::max(std::abs(x), envelope * release);
+            output[i] = envelope > 1.f ? x / envelope : x;
+        }
+        limiter.Envelope = envelope;
     }
 }
 
@@ -1668,7 +1374,7 @@ std::optional<size_t> PlotModeData(
 }
 void DrawModalModelSection(entt::registry &r, entt::entity viewport, entt::entity e, entt::entity mesh_entity) {
     const auto *settings = r.try_get<const ModalSolveSettings>(e);
-    const auto *material = r.try_get<const AcousticMaterial>(mesh_entity);
+    const auto *material = r.try_get<const AcousticMaterial>(e);
     if (!settings || !material) {
         if (Button("Create modal model")) action::Emit(action::audio::SetupModalModel{});
         return;
@@ -1676,10 +1382,10 @@ void DrawModalModelSection(entt::registry &r, entt::entity viewport, entt::entit
 
     SeparatorText("Material properties");
     ui::PresetCombo("Presets", material->Name, materials::acoustic::All, [&](const auto &choice) {
-        action::Emit(action::Replace<AcousticMaterial>{.Entity = mesh_entity, .Value = choice});
+        action::Emit(action::Replace<AcousticMaterial>{.Entity = e, .Value = choice});
     });
     using Props = AcousticMaterialProperties;
-    ui::Edit fm{r, mesh_entity};
+    ui::Edit fm{r, e};
     fm.Slider<&AcousticMaterial::Properties, &Props::Density>("Density (kg/m^3)", "%.0f");
     fm.Slider<&AcousticMaterial::Properties, &Props::YoungModulus>("Young's modulus (Pa)", "%.3g", ImGuiSliderFlags_Logarithmic);
     fm.Slider<&AcousticMaterial::Properties, &Props::PoissonRatio>("Poisson's ratio", "%.2f");
@@ -1690,35 +1396,10 @@ void DrawModalModelSection(entt::registry &r, entt::entity viewport, entt::entit
         static constexpr double MinUs{BetaLimits::Min * 1e6}, MaxUs{BetaLimits::Max * 1e6};
         double beta_us = material->Properties.Beta * 1e6;
         const bool changed = SliderScalar("Rayleigh beta (us)", ImGuiDataType_Double, &beta_us, &MinUs, &MaxUs, "%.3f", ImGuiSliderFlags_Logarithmic);
-        ui::Gesture(changed, [&] { return action::UpdateOf<&AcousticMaterial::Properties, &Props::Beta>(mesh_entity, beta_us * 1e-6); });
+        ui::Gesture(changed, [&] { return action::UpdateOf<&AcousticMaterial::Properties, &Props::Beta>(e, beta_us * 1e-6); });
     }
 
-    SeparatorText("Surface finish");
-    if (const auto *surface = r.try_get<const ContactSurface>(mesh_entity)) {
-        ui::PresetCombo("Presets##finish", surface->Name, surfaces::acoustic::All, [&](const auto &choice) {
-            action::Emit(action::Replace<ContactSurface>{.Entity = mesh_entity, .Value = WithPreset(*surface, choice)});
-        });
-        ui::Edit fsurf{r, mesh_entity};
-        fsurf.Slider<&ContactSurface::Roughness>("Roughness (m)", "%.3g", ImGuiSliderFlags_Logarithmic);
-        MeshEditor::HelpMarker("Root-mean-square asperity height. A physical length measured with a profilometer, unrelated to a render material's roughness.");
-        fsurf.Slider<&ContactSurface::CorrelationLength>("Correlation length (m)", "%.3g", ImGuiSliderFlags_Logarithmic);
-        MeshEditor::HelpMarker("Lateral asperity spacing. With roughness it fixes the slope a contact feels.");
-        fsurf.Slider<&ContactSurface::SpectralSlope>("Spectral slope", "%.2f");
-        MeshEditor::HelpMarker("Exponent of the roughness power spectrum. More negative is smoother-sounding.");
-
-        // Derived contact constants, for a contact against a like body at the object's own weight.
-        const auto &props = material->Properties;
-        const auto *cd = r.try_get<const ContactDynamics>(e);
-        const auto *modes = r.try_get<const ModalModes>(e);
-        const auto sample_curvature = modes && !modes->Positions.empty() ? SurfaceCurvature(r, e, TransformPoint(r.get<const WorldTransform>(e), modes->Positions.front())) : std::nullopt;
-        const double curvature = CombinedCurvature(sample_curvature.value_or(0.0), 0.0);
-        const double inv_modulus = InvEffectiveModulus(props, props);
-        const double load = (cd ? cd->Mass : 0.0) * 9.81;
-        const double patch_radius = ContactPatchRadius(load, inv_modulus, curvature);
-        Text("Stiffness %.3g N/m^1.5, patch radius %.3g um", ContactStiffness(inv_modulus, curvature), patch_radius * 1e6);
-        Text("Contact filter %.0f Hz at 0.1 m/s", patch_radius > 0 ? 0.1 / (2 * patch_radius) : 0.0);
-        MeshEditor::HelpMarker("A patch of radius a cannot resolve wavelengths below about 2a, so the cutoff tracks the sweep speed and softens under heavier load.");
-    }
+    DrawContactSurfaceControls(r, e);
 
     SeparatorText("Tet mesh");
     ui::Edit fs{r, e};
@@ -1772,7 +1453,7 @@ void DrawModalUpdateButton(entt::registry &r, entt::entity viewport, entt::entit
         TextDisabled("Solving...");
         return;
     }
-    if (!ModalModelStale(r, e, mesh_entity, BuildSolveInputs(r, e, mesh_entity))) return;
+    if (!ModalModelStale(r, e, BuildSolveInputs(r, e, mesh_entity))) return;
 
     SameLine();
     if (Button("Update modal model")) LaunchModalSolve(r, viewport, e);
@@ -2028,11 +1709,12 @@ void ApplyModalModel(entt::registry &r, entt::entity e, const fs::path &relative
         return;
     }
     const auto mesh_entity = r.get<const Instance>(e).Entity;
-    // The material may have been edited while the solve ran. The rescale is exact, so the fresh
-    // model lands consistent with the mesh's current material.
-    if (const auto *mat = r.try_get<const AcousticMaterial>(mesh_entity); mat && mat->Properties != data->Summary.SolvedMaterial) {
+    // The model lands at its effective material: the node's current acoustic material, which may have been edited while the solve ran, at the density the body's one mass implies.
+    const auto *mat = r.try_get<const AcousticMaterial>(e);
+    if (const auto props = EffectiveModalMaterial(mat ? mat->Properties : data->Summary.SolvedMaterial, data->Summary, data->Mass.Mass, r.try_get<const PhysicsMotion>(e));
+        props != data->Summary.SolvedMaterial) {
         const auto *settings = r.try_get<const ModalSolveSettings>(e);
-        if (auto rescaled = RescaledModes(data->Summary, data->Modes, mat->Properties, settings ? *settings : ModalSolveSettings{})) data->Modes = std::move(*rescaled);
+        if (auto rescaled = RescaledModes(data->Summary, data->Modes, props, settings ? *settings : ModalSolveSettings{})) data->Modes = std::move(*rescaled);
     }
     r.emplace_or_replace<MassProperties>(e, data->Mass);
     ReplaceModalModes(r, e, std::move(data->Modes));
@@ -2052,23 +1734,11 @@ void DrawGlobalSynthControls(entt::registry &r, entt::entity viewport) {
         MeshEditor::HelpMarker("Gain on every modal object's resonator output.");
         f.Slider<&ModalSoundControls::ClickGain>("Click");
         MeshEditor::HelpMarker("Level of the rigid-body acceleration-noise click.");
-        f.Slider<&ModalSoundControls::MinContactImpulse>("Min contact impulse", "%.3f");
+        f.Slider<&ModalSoundControls::MinContactExcitation>("Min contact excitation", "%.3g", ImGuiSliderFlags_Logarithmic);
         f.Slider<&ModalSoundControls::MinContactSpeed>("Min contact speed", "%.3f");
-        MeshEditor::HelpMarker("A physics collision sounds only above both floors.");
+        MeshEditor::HelpMarker("A physics collision sounds only above both floors: the loudest mode its impulse starts ringing, and its approach speed.");
 
-        SeparatorText("Sustained contact");
-        f.Slider<&ModalSoundControls::MaxVoices>("Max voices");
-        MeshEditor::HelpMarker("Cap on simultaneous sustained-contact voices.");
-        f.Slider<&ModalSoundControls::SustainLevel>("Level##sustain");
-        MeshEditor::HelpMarker("Level of the force a persisting contact drives the modes with as the two surfaces ride over one another.");
-        f.Slider<&ModalSoundControls::Coupling>("Coupling");
-        MeshEditor::HelpMarker("How much of the object's own vibration modulates the contact separation. Coupling produces micro-collisions and chatter that an open-loop force cannot.");
-        f.Slider<&ModalSoundControls::ContactDamping>("Contact damping");
-        MeshEditor::HelpMarker("Scale on the Hunt-Crossley dissipation the pair's restitution implies.");
-        f.Slider<&ModalSoundControls::MinSlipSpeed>("Min slip speed", "%.3f");
-        f.Slider<&ModalSoundControls::MinSweepSpeed>("Min sweep speed", "%.3f");
-        MeshEditor::HelpMarker("A persisting contact sounds only once its slip or either sweep speed clears its floor. Slip is how fast the surfaces slide, and sweep is how fast the contact travels over each surface, so a rolling body has sweep without slip.");
-        Text("Active voices: %u", r.ctx().get<const ModalAudio>().ActiveVoices.load(std::memory_order_relaxed));
+        DrawSurfaceSynthControls(r, viewport);
 
         SeparatorText("Striker");
         const auto &striker = r.get<const Striker>(viewport);
@@ -2100,10 +1770,15 @@ void DrawAudioDebug(const entt::registry &r) {
 
     SeparatorText("Modal bank");
     Text("Objects: %zu, modes: %zu", bank.Entities.size(), bank.CoeffRe.size());
-    Text("Voices: %u / %u", m.ActiveVoices.load(std::memory_order_relaxed), ModalControls(r).MaxVoices);
-    Text("Refused: %llu", m.VoicesRefused);
-    MeshEditor::HelpMarker("Contacts the voice cap had no room for, each one a body pressing on another that stays silent.");
     Text("Impacts: %u / %u", m.ActiveImpacts.load(std::memory_order_relaxed), m.MaxImpacts.load(std::memory_order_relaxed));
+    Text("Energy: %.3g J, peak %.3g J", m.ModalEnergy.load(std::memory_order_relaxed), m.PeakModalEnergy.load(std::memory_order_relaxed));
+    MeshEditor::HelpMarker("Mechanical energy standing in the mode banks. A passive scene loses it between strikes, so a peak that climbs while nothing strikes is a channel feeding the modes rather than damping them.");
+
+    SeparatorText("Render");
+    const auto share = m.RenderShare.load(std::memory_order_relaxed);
+    Text("Block: %.2f ms (%.0f%% of budget)", m.RenderSeconds.load(std::memory_order_relaxed) * 1e3f, share * 100);
+    Text("Worst: %.0f%%", m.PeakRenderShare.load(std::memory_order_relaxed) * 100);
+    MeshEditor::HelpMarker("What a block costs against the time it has. Past 100% the device underruns.");
 
     SeparatorText("Event queue");
     const auto queued = m.EventWrite.load(std::memory_order_relaxed) - m.EventRead.load(std::memory_order_acquire);
@@ -2111,19 +1786,7 @@ void DrawAudioDebug(const entt::registry &r) {
     Text("Dropped: %llu", m.EventsDropped);
     MeshEditor::HelpMarker("Events the queue had no room for, each one a strike or contact report the bank never saw.");
 
-    SeparatorText("Surface tracks");
-    size_t filled = 0, bytes = 0;
-    for (const auto &slot : m.SurfaceTracks) {
-        if (!slot.Owned) continue;
-        ++filled;
-        bytes += (slot.Owned->Heights.size() + slot.Owned->Sum.size()) * sizeof(float);
-    }
-    Text("Slots: %zu / %u (%.1f MB)", filled, ModalAudio::MaxSurfaceTracks, double(bytes) / (1024 * 1024));
-    MeshEditor::HelpMarker("Surfaces with the same finish share one slot. A slot keeps its track after its voices end, so the pool fills to what the scene has called for and stays there.");
-    Text("Named by voices: %d", std::popcount(m.VoiceTrackMask.load(std::memory_order_relaxed)));
-    MeshEditor::HelpMarker("Slots the audio thread's voices are reading. The rest are free to take over when a new track needs the space.");
-    Text("Refused: %llu", m.SurfaceTracksRefused);
-    MeshEditor::HelpMarker("Requests the pool had no room for. Each is one surface's finish or relief, and without its track that surface sounds perfectly smooth.");
+    DrawSurfaceContactDebug(r);
 }
 
 void DrawModalJobsOverlay(entt::registry &r) {

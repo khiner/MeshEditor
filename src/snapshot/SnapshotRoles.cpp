@@ -21,7 +21,9 @@
 #include "audio/ModalEigenSummary.h"
 #include "audio/ModalModes.h"
 #include "audio/SoundVertices.h"
-#include "audio/SurfaceRelief.h"
+#ifdef SURFACE_AUDIO
+#include "audio/surface/SurfaceAudio.h"
+#endif
 #include "gizmo/GizmoInteraction.h"
 #include "gltf/GltfScene.h"
 #include "mesh/Mesh.h"
@@ -129,8 +131,8 @@ using Persistent = type_list<
     Name, Selected, Active, ObjectKind, MeshActiveElement, Scene, ActiveScene, SceneMembership, SubElementOf,
     ScaleLocked, Instance, Hidden, SceneNode, ParentInverse, MeshHandle, VertexStoreId, ObjectExtrasTag,
     MeshConnectivity, MeshSelectionBitsetRange, MeshMaterialAssignment, MeshMaterialSlotSelection, MaterialVariants, MaterializedTextures, PbrMeshFeatures,
-    PrimitiveShape, Path, Camera, ViewCamera, LookingThrough, Interaction, EditMode, OrbitToActive, ShadeSmoothAngle, AudioOutputConfig, AudioOutputMix, Striker, ModalSoundControls,
-    AcousticMaterial, ContactSurface, SoundVerticesModel, ModalModes, ModalGain, ModalTuning, ModalSolveSettings, MassProperties, TetMeshData, ModalEigenSummary,
+    PrimitiveShape, Path, Camera, ViewCamera, LookingThrough, Interaction, EditMode, OrbitToActive, ShadeSmoothAngle, AudioOutputConfig, AudioOutputMix, Striker, ModalSoundControls, ContactSurface, SurfaceSoundControls,
+    AcousticMaterial, SoundVerticesModel, ModalModes, ModalGain, ModalTuning, ModalSolveSettings, MassProperties, TetMeshData, ModalEigenSummary,
     SelectionXRay, ViewportDisplay, MaterialPreviewLighting, RenderedLighting, StudioEnvironment, TransformGizmoState, ActionIndex,
     TimelineRange, TimelinePlayback, AnimationTimelineView,
     PhysicsSimulationSettings, PhysicsMaterial, CollisionSystem, CollisionFilter, PhysicsJointDef, PhysicsMotion,
@@ -152,7 +154,10 @@ using Derived = type_list<
     MorphWeightGpuRange, AdditiveBoxSelectBaseline, SelectionBitsDirty, ElementStatesDirty, PendingEditElementClick, OverlayExtra, OverlayVertexStoreId,
     PendingBoxSelect, PendingPick, PendingTextureUploads, SelectionBitsetRef, BoxSelectState, SelectedInstanceCount, PlaybackFrame,
     PhysicsCacheInvalid, RotationUiVariant, RotationUiDriving, GizmoInteraction, PendingTransform, StartScreenTransform,
-    SoundVertices, ContactDynamics, SurfaceRelief, SurfaceFinishKey, ReportContacts, MeshBvh>;
+#ifdef SURFACE_AUDIO
+    SurfaceRelief, SurfaceFinishKey,
+#endif
+    SoundVertices, ContactDynamics, ReportContacts, MeshBvh>;
 
 // Trivially copyable, but the raw object bytes are nondeterministic: a std::variant's inactive alternative or a
 // std::optional's disengaged storage holds uninitialized memory, and struct padding is never written. memcpy would

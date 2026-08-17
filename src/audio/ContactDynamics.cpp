@@ -5,7 +5,6 @@
 #include "ModalModes.h"
 #include "TransformMath.h"
 #include "physics/PhysicsTypes.h"
-#include "render/Instance.h"
 
 #include <entt/entity/registry.hpp>
 
@@ -13,8 +12,7 @@
 
 double ModalDensityRatio(const entt::registry &r, entt::entity e) {
     const auto *summary = r.try_get<const ModalEigenSummary>(e);
-    const auto *inst = r.try_get<const Instance>(e);
-    const auto *mat = inst ? r.try_get<const AcousticMaterial>(inst->Entity) : nullptr;
+    const auto *mat = r.try_get<const AcousticMaterial>(e);
     return summary && mat && summary->SolvedMaterial.Density > 0 ? mat->Properties.Density / summary->SolvedMaterial.Density : 1.0;
 }
 

@@ -262,8 +262,8 @@ $ ./build/tests/MeshEditorTests
 | `MeshEditorTests` | glTF roundtrip |
 | `MeshEditorActionSerializeTest` | Every action alternative through the action log |
 | `MeshEditorContactModelTest` | Hertz contact time, effective mass, inertia decomposition |
+| `MeshEditorModalRenderTest` | Superposition, thread independence, and the click's rate independence |
 | `MeshEditorCompressTest` | `.project` archive round trip |
-| `MeshEditorSurfaceTrackPoolTest` | Surface track sharing and slot reuse under a full pool |
 | `MeshEditorModalSolverTest` | Check some closed forms against computed modes. Synthetic shapes and every RealImpact object tetrahedralized and structurally validated at simplification ratios. |
 
 * `MeshEditorModalSolverTest` reads `external/RealImpact`, and skips its dataset cases when that submodule isn't initialized.

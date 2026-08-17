@@ -47,7 +47,7 @@ void ReleaseWorkgroup([[maybe_unused]] void *workgroup) {
 
 void DataCallback(ma_device *device, void *output, const void *, ma_uint32 frame_count) {
     auto &res = *reinterpret_cast<AudioDeviceResource *>(device->pUserData);
-    ProcessAudio(*res.R, res.Viewport, static_cast<float *>(output), frame_count);
+    ProcessAudio(*res.R, res.Viewport, static_cast<float *>(output), frame_count, true);
 }
 
 std::string SampleRateName(const AudioDeviceResource &res, uint32_t sample_rate) {

@@ -6,6 +6,9 @@
 #include <string>
 #include <vector>
 
+// A body's acoustic surface (KHR_audio_rigid_bodies): scene data describing a surface's finish, authored in glTF and carried on the node.
+// Separate from the surface-contact synthesis model in src/audio/surface/, which reads this, so importing, serializing, and editing a surface stay available however SURFACE_AUDIO was configured.
+
 // Tangent-space normal map giving a surface's mesoscale structure, mirroring glTF's normalTextureInfo.
 struct SurfaceNormalTexture {
     uint32_t Texture{0}; // Index into gltf::SourceAssets::Textures.
@@ -38,6 +41,21 @@ struct ContactSurface {
     bool HasMeasuredProfile() const { return Profile.size() >= 2 && SampleSpacing > 0; }
 
     bool operator==(const ContactSurface &) const = default;
+};
+
+// Viewport-level sustained-contact controls, for two surfaces driving the same modes for as long as they touch.
+// Separate from ModalSoundControls, which the collision path owns.
+struct SurfaceSoundControls {
+    uint32_t MaxVoices{16}; // Cap on simultaneous sustained-contact voices.
+    float SustainLevel{1.f}; // Level of the sustained-contact excitation.
+    float AccelNoiseGain{1.f}; // Level of the acceleration noise a body's rigid recoil radiates. Zero disables it.
+    float Coupling{1.f}; // How much of an object's own vibration modulates the contact separation.
+    float ContactDamping{1.f}; // Scale on the Hunt-Crossley dissipation the physics restitution implies.
+    // A persisting contact sounds only once its slip or either sweep speed (m/s) clears its floor.
+    float MinSlipSpeed{0.005f}, MinSweepSpeed{0.005f};
+    // Silence one modal drive row each, so a feedback loop through the modes can be attributed to a row.
+    // The body feed and every other channel stay live.
+    bool MuteGeometricDrive{false}, MuteFrictionDrive{false};
 };
 
 // Content key of a mesh's ContactSurface microscale finish track, derived on edit so a contact adopts its pool slot without rehashing a measured profile every frame.

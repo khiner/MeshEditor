@@ -131,7 +131,7 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
                         r.emplace<RealImpactActiveMicrophone>(instance_entity, listener_instance_entity);
 
                         if (const auto material_name = RealImpact::FindMaterialName(r.get<Name>(instance_entity).Value)) {
-                            if (const auto *material = materials::acoustic::Find(*material_name)) r.emplace<AcousticMaterial>(mesh_entity, *material);
+                            if (const auto *material = materials::acoustic::Find(*material_name)) r.emplace<AcousticMaterial>(instance_entity, *material);
                         }
                         r.emplace<ScaleLocked>(instance_entity);
                         r.emplace<RealImpactVertices>(instance_entity, vertex_indices);

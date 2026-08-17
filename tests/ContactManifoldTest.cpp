@@ -3,6 +3,8 @@
 // manifolds per body pair, points per manifold, what the per-point impulses sum to, and whether a manifold's
 // sub-shape identity holds while the contact does.
 
+#include "RunSuites.h"
+
 #include "Jolt/Jolt.h"
 
 #include "Jolt/Core/Factory.h"
@@ -58,6 +60,8 @@ public:
     }
 };
 
+Ref<Shape> Box(Vec3 half_extent) { return Ref<Shape>{new BoxShape{half_extent}}; }
+
 // A world with one dynamic body against one static body, stepped single threaded so the reported set is reproducible.
 struct World {
     static constexpr float Dt{1.f / 60.f};
@@ -89,6 +93,11 @@ struct World {
         return System.GetBodyInterface().CreateAndAddBody(settings, EActivation::Activate);
     }
 
+    // A floor wide enough that nothing reaches its edges, with its top face at y = 0.
+    BodyID AddFloor() { return AddStatic(Box({50, 1, 50}), RVec3(0, -1, 0)); }
+    // A unit box standing on that floor.
+    BodyID AddUnitBox() { return AddDynamic(Box({0.5f, 0.5f, 0.5f}), RVec3(0, 0.5f, 0)); }
+
     void Step() {
         Listener.Manifolds.clear();
         System.Update(Dt, CollisionSteps, &TempAllocator, &JobSystem);
@@ -99,8 +108,6 @@ struct World {
         return Listener.Manifolds;
     }
 };
-
-Ref<Shape> Box(Vec3 half_extent) { return Ref<Shape>{new BoxShape{half_extent}}; }
 
 // A compound of identical legs, each a box whose bottom face sits at the compound origin's height.
 Ref<Shape> Legs(const std::vector<Vec3> &centers, Vec3 half_extent) {
@@ -141,7 +148,7 @@ Vec3 MergedNormal(const std::vector<Manifold> &manifolds) {
 std::set<uint64> KeysWhileResting(const Ref<Shape> &floor, RVec3 floor_position) {
     World w;
     w.AddStatic(floor, floor_position);
-    w.AddDynamic(Box({0.5f, 0.5f, 0.5f}), RVec3(0, 0.5f, 0));
+    w.AddUnitBox();
     w.Settle();
 
     std::set<uint64> keys;
@@ -160,8 +167,8 @@ int main() {
 
     "a box resting flat reports one manifold of four spread points"_test = [] {
         World w;
-        w.AddStatic(Box({50, 1, 50}), RVec3(0, -1, 0));
-        w.AddDynamic(Box({0.5f, 0.5f, 0.5f}), RVec3(0, 0.5f, 0));
+        w.AddFloor();
+        w.AddUnitBox();
         const auto &manifolds = w.Settle();
 
         expect(manifolds.size() == 1_ul);
@@ -175,8 +182,8 @@ int main() {
 
     "per-point impulses add up to the load the step carried"_test = [] {
         World w;
-        w.AddStatic(Box({50, 1, 50}), RVec3(0, -1, 0));
-        w.AddDynamic(Box({0.5f, 0.5f, 0.5f}), RVec3(0, 0.5f, 0));
+        w.AddFloor();
+        w.AddUnitBox();
         const auto &manifolds = w.Settle();
 
         expect(manifolds.size() == 1_ul);
@@ -186,7 +193,7 @@ int main() {
 
     "coplanar legs of one compound arrive as a single manifold"_test = [] {
         World w;
-        w.AddStatic(Box({50, 1, 50}), RVec3(0, -1, 0));
+        w.AddFloor();
         w.AddDynamic(Legs({{-0.4f, 0.3f, -0.4f}, {0.4f, 0.3f, -0.4f}, {-0.4f, 0.3f, 0.4f}, {0.4f, 0.3f, 0.4f}}, {0.1f, 0.3f, 0.1f}), RVec3(0, 0, 0));
         const auto &manifolds = w.Settle();
 
@@ -205,7 +212,7 @@ int main() {
 
     "more than four coplanar regions lose the ones that are not reported"_test = [] {
         World w;
-        w.AddStatic(Box({50, 1, 50}), RVec3(0, -1, 0));
+        w.AddFloor();
         const std::vector<Vec3> six{
             {-0.4f, 0.3f, -0.4f}, {0.f, 0.3f, -0.4f}, {0.4f, 0.3f, -0.4f}, {-0.4f, 0.3f, 0.4f}, {0.f, 0.3f, 0.4f}, {0.4f, 0.3f, 0.4f}
         };
@@ -242,4 +249,6 @@ int main() {
         expect(KeysWhileResting(Box({50, 1, 50}), RVec3(0, -1, 0)).size() == 1_ul);
         expect(KeysWhileResting(TriangleFloor(2.f, 0.25f), RVec3(0, 0, 0)).size() == 1_ul);
     };
+
+    return RunSuites();
 }

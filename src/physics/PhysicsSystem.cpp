@@ -17,7 +17,6 @@
 #include "Jolt/Core/JobSystemThreadPool.h"
 #include "Jolt/Physics/Body/BodyCreationSettings.h"
 #include "Jolt/Physics/Collision/CollideShape.h"
-#include "Jolt/Physics/Collision/EstimateCollisionResponse.h"
 #include "Jolt/Physics/Collision/Shape/BoxShape.h"
 #include "Jolt/Physics/Collision/Shape/CapsuleShape.h"
 #include "Jolt/Physics/Collision/Shape/ConvexHullShape.h"
@@ -238,6 +237,19 @@ float ApplyCombineMode(PhysicsCombineMode mode, float a, float b) {
     return (a + b) * 0.5f;
 }
 
+// The tangential impulse the solver applied, resolved along the tangent basis its own cached normal implies.
+// Friction lambdas act along that basis, so reading them needs the normal they were solved against, cached in body 2's frame.
+// A cache entry holding no normal keeps `fallback_normal`.
+struct SolverFriction {
+    Vec3 Normal, Impulse;
+};
+SolverFriction ResolveSolverFriction(const ContactConstraintManager::AppliedContactImpulses &applied, QuatArg body2_rotation, Vec3Arg fallback_normal) {
+    const Vec3 cached = body2_rotation * applied.mNormal;
+    const Vec3 normal = cached.LengthSq() > 0.5f ? cached.Normalized() : Vec3{fallback_normal};
+    const Vec3 tangent1 = normal.GetNormalizedPerpendicular();
+    return {normal, tangent1 * applied.mFrictionImpulse1 + normal.Cross(tangent1) * applied.mFrictionImpulse2};
+}
+
 // Jolt doesn't support MeshShape vs MeshShape collision — reject before dispatch.
 class MeshVsMeshShapeFilter : public SimShapeFilter {
 public:
@@ -267,9 +279,36 @@ public:
         uint32_t Body1Index, Body2Index;
         entt::entity Collider1, Collider2; // The touching collider node of each body.
         Vec3 Point, Direction; // world space; Direction is the unit impulse on body 2 (body 1 gets its negation)
+        Vec3 ResultantPoint; // world space, the manifold's load-weighted centre, shared by all its points
         float Impulse, Speed;
-        float InvMass1, InvMass2; // inverse masses, kg⁻¹; 0 for static/kinematic bodies
+        float InvMass1, InvMass2; // inverse masses, kg⁻¹, 0 for static/kinematic bodies
+        float NominalArea; // area of the manifold's contact polygon, m^2
     };
+    // A new manifold awaiting the solver's receipt.
+    // OnContactAdded records it, and the first step boundary whose applied normal impulse is nonzero turns it into RawContacts, or OnContactRemoved retires it.
+    // OnContactRemoved runs with no body access, so everything geometric is captured here at add time.
+    struct PendingImpact {
+        uint32_t Body1Index, Body2Index;
+        entt::entity Collider1, Collider2; // The touching collider node of each body.
+        RMat44 COMTransform1; // Body 1's centre-of-mass transform, mapping cached contact points to world.
+        Quat Rotation2; // Body 2's rotation, mapping the cached contact normal to world.
+        Vec3 Normal; // world space, unit, into body 2.
+        // The load this manifold carries once settled, N: the weight component each dynamic body presses along the normal.
+        float SupportForce;
+        float InvMass1, InvMass2; // inverse masses, kg⁻¹, 0 for static/kinematic bodies
+        float Restitution; // Combined restitution of the pair.
+        float NominalArea; // area of the manifold's contact polygon, m^2
+    };
+    struct SubShapeIDPairHash {
+        size_t operator()(const SubShapeIDPair &pair) const { return size_t(pair.GetHash()); }
+    };
+    // Guarded by ContactMutex. Persists across steps: a manifold added in one frame's last substep resolves in the next.
+    std::unordered_map<SubShapeIDPair, PendingImpact, SubShapeIDPairHash> PendingImpacts;
+    // Mirrors PendingImpacts.size() so the per-substep persisted callbacks skip the lock while nothing is pending.
+    // A manifold added in the current substep cannot also persist in it, so a stale zero never skips a strike.
+    std::atomic<uint32_t> PendingImpactCount{0};
+    float SubstepDt{1.f / 600}; // Simulated seconds per collision step, the span one applied impulse covers.
+
     // One persisting contact, per sub-shape pair, which the drain merges into one contact per manifold.
     struct RawSustained {
         uint32_t Body1Index, Body2Index;
@@ -279,7 +318,10 @@ public:
         Vec3 Normal; // world space unit normal on body 2
         Vec3 Slip; // world-space relative tangential velocity of body 1's material point
         Vec3 Local1, Local2; // contact point in each body's own frame, for differencing into a sweep velocity
+        Vec3 FrictionImpulse; // world space, the solver's tangential impulse on body 1
         float NormalImpulse, Restitution, Friction;
+        float NominalArea; // area of the manifold's contact polygon, m^2
+        float NominalExtent; // extent of the manifold's contact polygon along the slide, m
     };
     std::mutex ContactMutex;
     std::vector<RawContact> RawContacts;
@@ -295,11 +337,18 @@ public:
 
     void OnContactAdded(const Body &b1, const Body &b2, const ContactManifold &manifold, ContactSettings &s) override {
         CombineMaterials(b1, b2, manifold, s);
-        CollectImpact(b1, b2, manifold, s);
+        RecordPendingImpact(b1, b2, manifold, s);
     }
     void OnContactPersisted(const Body &b1, const Body &b2, const ContactManifold &manifold, ContactSettings &s) override {
         CombineMaterials(b1, b2, manifold, s);
+        // The previous collision step's applied impulses are now cached, so a manifold that appeared then strikes here.
+        ConsumePendingImpact(SubShapeIDPair{b1.GetID(), manifold.mSubShapeID1, b2.GetID(), manifold.mSubShapeID2}, false);
         CollectSustained(b1, b2, manifold, s);
+    }
+    // Fires during cache finalization with no body access, after the removed manifold's last solved step.
+    // A manifold that appeared and was removed between two boundaries reports its whole touch and bounce here.
+    void OnContactRemoved(const SubShapeIDPair &pair) override {
+        ConsumePendingImpact(pair, true);
     }
 
 private:
@@ -315,6 +364,42 @@ private:
 
     // Reports where a persisting contact sits on each body, how hard it presses, and how fast the surfaces slide.
     // Fires once per collision step, so the drain sums the impulses over the frame's simulated time.
+    // Area of the manifold's contact polygon, m^2.
+    // Jolt clips the touching faces into an ordered convex polygon, so fanning it from its first point gives the area two faces share.
+    // A point or an edge spans none, which is what separates a load-set patch from a geometry-set one.
+    static float ManifoldArea(const ContactManifold &manifold) {
+        const auto &points = manifold.mRelativeContactPointsOn1;
+        if (points.size() < 3) return 0;
+        Vec3 twice_area = Vec3::sZero();
+        for (uint i = 1; i + 1 < points.size(); ++i) {
+            twice_area += (points[i] - points[0]).Cross(points[i + 1] - points[0]);
+        }
+        return 0.5f * std::abs(twice_area.Dot(manifold.mWorldSpaceNormal));
+    }
+
+    // Extent of the manifold's contact polygon along the slide, m.
+    // The polygon's points carry the solver's load across their whole spread, so the spread measures the region confining the contact even where the polygon's area collapses to a line.
+    // A contact that is not sliding has no track direction, so it takes the widest spread the points have.
+    static float ManifoldExtent(const ContactManifold &manifold, Vec3Arg slip) {
+        const auto &points = manifold.mRelativeContactPointsOn1;
+        const float slip_len = slip.Length();
+        if (slip_len > 1e-6f) {
+            const Vec3 dir = slip / slip_len;
+            float lo = std::numeric_limits<float>::max(), hi = std::numeric_limits<float>::lowest();
+            for (const auto &p : points) {
+                const float along = p.Dot(dir);
+                lo = std::min(lo, along);
+                hi = std::max(hi, along);
+            }
+            return hi - lo;
+        }
+        float span = 0;
+        for (uint i = 0; i < points.size(); ++i) {
+            for (uint j = i + 1; j < points.size(); ++j) span = std::max(span, (points[i] - points[j]).Length());
+        }
+        return span;
+    }
+
     void CollectSustained(const Body &b1, const Body &b2, const ContactManifold &manifold, const ContactSettings &s) {
         if (!PairReports(b1, b2) || b1.IsSensor() || b2.IsSensor() || manifold.mRelativeContactPointsOn1.empty()) return;
 
@@ -340,47 +425,100 @@ private:
         const Vec3 relative_velocity = b1.GetPointVelocity(world_point) - b2.GetPointVelocity(world_point);
         const Vec3 normal = manifold.mWorldSpaceNormal;
         const Vec3 slip = relative_velocity - normal * relative_velocity.Dot(normal);
+        // The tangential force the solver applied, kinetic on a slide and whatever holds a roll.
+        const Vec3 friction_impulse = ResolveSolverFriction(applied, b2.GetRotation(), normal).Impulse;
 
         const uint64_t sub_shape_key = (uint64_t(manifold.mSubShapeID1.GetValue()) << 32) | manifold.mSubShapeID2.GetValue();
         const std::scoped_lock lock{ContactMutex};
         RawSustainedContacts.emplace_back(
             b1.GetID().GetIndex(), b2.GetID().GetIndex(), sub_shape_key,
             ColliderOf(b1, manifold.mSubShapeID1), ColliderOf(b2, manifold.mSubShapeID2),
-            Vec3{world_point}, normal, slip, local1, local2, normal_impulse, s.mCombinedRestitution, s.mCombinedFriction
+            Vec3{world_point}, normal, slip, local1, local2, friction_impulse, normal_impulse, s.mCombinedRestitution, s.mCombinedFriction,
+            ManifoldArea(manifold), ManifoldExtent(manifold, slip)
         );
     }
 
-    // Reports a new solid contact's impulse and approach speed, one report per manifold point.
-    // A contact reported for the first time has no impulse behind it yet, so this one predicts it.
-    void CollectImpact(const Body &b1, const Body &b2, const ContactManifold &manifold, const ContactSettings &s) {
+    // Records a new manifold whose first solved boundary will report the strike.
+    // Nothing is read mid-step: the impulse comes from the solver's cache one substep later.
+    void RecordPendingImpact(const Body &b1, const Body &b2, const ContactManifold &manifold, const ContactSettings &s) {
         if (!PairReports(b1, b2) || b1.IsSensor() || b2.IsSensor() || manifold.mRelativeContactPointsOn1.empty()) return;
 
-        // Contact impulse on body 2: the normal (Hertz) part per point, plus the pair's tangential friction part.
-        CollisionEstimationResult est;
-        EstimateCollisionResponse(b1, b2, manifold, est, s.mCombinedFriction, s.mCombinedRestitution, 1.0f, 4);
-        float normal_impulse = 0;
-        for (const float impulse : est.mContactImpulse) normal_impulse += impulse;
-        // Friction is bounded by the normal impulse, so a pair pressing with nothing slides with nothing.
-        if (normal_impulse < 1e-6f) return; // separating or speculative contact
-
-        // Friction is solved for the manifold as a whole, so each point takes the share of it that its own load presses out.
-        const Vec3 friction = est.mFrictionImpulse1 * est.mTangent1 + est.mFrictionImpulse2 * est.mTangent2;
+        const Vec3 normal = manifold.mWorldSpaceNormal;
+        const Vec3 gravity = System->GetGravity();
         const float inv_mass1 = b1.IsDynamic() ? b1.GetMotionProperties()->GetInverseMass() : 0.f;
         const float inv_mass2 = b2.IsDynamic() ? b2.GetMotionProperties()->GetInverseMass() : 0.f;
-        const auto collider1 = ColliderOf(b1, manifold.mSubShapeID1), collider2 = ColliderOf(b2, manifold.mSubShapeID2);
+        // The weight component each dynamic body presses along the normal, the load the manifold carries once settled.
+        // A body settling onto several manifolds at once presses its weight into each estimate, which biases toward silence.
+        float support = 0;
+        if (inv_mass2 > 0) support += std::max(0.f, -gravity.Dot(normal)) / inv_mass2;
+        if (inv_mass1 > 0) support += std::max(0.f, gravity.Dot(normal)) / inv_mass1;
 
         const std::scoped_lock lock{ContactMutex};
-        for (uint i = 0; i < manifold.mRelativeContactPointsOn1.size(); ++i) {
-            const float share = est.mContactImpulse[i];
-            const Vec3 j = share * manifold.mWorldSpaceNormal + friction * (share / normal_impulse);
+        PendingImpacts.insert_or_assign(
+            SubShapeIDPair{b1.GetID(), manifold.mSubShapeID1, b2.GetID(), manifold.mSubShapeID2},
+            PendingImpact{
+                b1.GetID().GetIndex(), b2.GetID().GetIndex(),
+                ColliderOf(b1, manifold.mSubShapeID1), ColliderOf(b2, manifold.mSubShapeID2),
+                b1.GetCenterOfMassTransform(), b2.GetRotation(),
+                normal, support, inv_mass1, inv_mass2, s.mCombinedRestitution, ManifoldArea(manifold)
+            }
+        );
+        PendingImpactCount.store(uint32_t(PendingImpacts.size()), std::memory_order_relaxed);
+    }
+
+    // Removes a pending entry, keeping the lock-free count in step. ContactMutex must be held.
+    void ErasePendingImpact(decltype(PendingImpacts)::iterator it) {
+        PendingImpacts.erase(it);
+        PendingImpactCount.store(uint32_t(PendingImpacts.size()), std::memory_order_relaxed);
+    }
+
+    // Reports a pending manifold's strike from the impulses the solver applied, one report per cached contact point.
+    // The settled share of the boundary impulse is support, and the strike is the transient excess over it, so a resting contact's first impulse renders silence.
+    // `final` marks the manifold's removal, until which a pending contact the solver has not loaded stays pending, a speculative manifold being reported one boundary before it presses.
+    void ConsumePendingImpact(const SubShapeIDPair &pair, bool final) {
+        if (PendingImpactCount.load(std::memory_order_relaxed) == 0) return;
+        const std::scoped_lock lock{ContactMutex};
+        const auto it = PendingImpacts.find(pair);
+        if (it == PendingImpacts.end()) return;
+
+        ContactConstraintManager::AppliedContactImpulses applied;
+        float normal_impulse = 0;
+        if (System->GetAppliedContactImpulses(pair, applied)) {
+            for (const auto &p : applied.mPoints) normal_impulse += p.mNormalImpulse;
+        }
+        if (normal_impulse <= 0) {
+            if (final) ErasePendingImpact(it);
+            return;
+        }
+        const PendingImpact pi = it->second;
+        ErasePendingImpact(it);
+
+        const float excess = normal_impulse - pi.SupportForce * SubstepDt;
+        if (excess <= 1e-6f) return; // pure support: the body settled rather than struck
+        const float excess_scale = excess / normal_impulse;
+
+        // The strike substep's normal and tangential impulse, against the add-time normal as fallback.
+        // The strike keeps the excess fraction of the friction, matching its share of the normal impulse.
+        const auto solved = ResolveSolverFriction(applied, pi.Rotation2, pi.Normal);
+        const Vec3 normal = solved.Normal;
+        const Vec3 friction = solved.Impulse * excess_scale;
+        // The approach speed the strike arrested, v = J/(m_eff*(1+e)), exact for a point contact and a rolloff corner for a manifold.
+        // This drives the Hertz contact time.
+        const float speed = excess * (pi.InvMass1 + pi.InvMass2) / (1 + pi.Restitution);
+
+        // The whole manifold lands as one collision, so every point of it carries the polygon the faces share and the load-weighted centre the collision's resultant acts through.
+        Vec3 resultant = Vec3::sZero();
+        for (const auto &p : applied.mPoints) resultant += Vec3{pi.COMTransform1 * p.mPosition1} * p.mNormalImpulse;
+        resultant /= normal_impulse;
+
+        for (const auto &p : applied.mPoints) {
+            const float share = p.mNormalImpulse * excess_scale;
+            const Vec3 j = share * normal + friction * (p.mNormalImpulse / normal_impulse);
             const float impulse = j.Length();
             if (impulse < 1e-6f) continue; // a point of the manifold carrying no load
-            // The normal approach speed at the point drives the Hertz contact time.
-            const RVec3 world_point = manifold.GetWorldSpaceContactPointOn1(i);
-            const float speed = std::abs((b1.GetPointVelocity(world_point) - b2.GetPointVelocity(world_point)).Dot(manifold.mWorldSpaceNormal));
             RawContacts.emplace_back(
-                b1.GetID().GetIndex(), b2.GetID().GetIndex(), collider1, collider2,
-                Vec3{world_point}, j / impulse, impulse, speed, inv_mass1, inv_mass2
+                pi.Body1Index, pi.Body2Index, pi.Collider1, pi.Collider2,
+                Vec3{pi.COMTransform1 * p.mPosition1}, j / impulse, resultant, impulse, speed, pi.InvMass1, pi.InvMass2, pi.NominalArea
             );
         }
     }
@@ -432,6 +570,7 @@ private:
 struct ManifoldMerge {
     Vec3 Point{Vec3::sZero()}, Normal{Vec3::sZero()}, Slip{Vec3::sZero()};
     Vec3 Local1{Vec3::sZero()}, Local2{Vec3::sZero()}; // Contact position in each body's own frame, for differencing into a sweep velocity.
+    Vec3 FrictionImpulse{Vec3::sZero()};
     float Impulse{0};
 };
 
@@ -1420,6 +1559,8 @@ void ClearSimulation(PhysicsState &s, entt::registry &r) {
     s.EntityByBodyIndex.clear();
     s.ContactListener.RawContacts.clear();
     s.ContactListener.RawSustainedContacts.clear();
+    s.ContactListener.PendingImpacts.clear();
+    s.ContactListener.PendingImpactCount.store(0, std::memory_order_relaxed);
 }
 
 void Rebuild(entt::registry &r) {
@@ -1469,10 +1610,10 @@ void CollectContactImpacts(PhysicsState &s, entt::registry &r) {
     }
     auto &out = r.ctx().get<PhysicsContactImpacts>().Events;
     for (const auto &c : raw) {
-        const vec3 dir = FromJolt(c.Direction), point = FromJolt(c.Point);
+        const vec3 dir = FromJolt(c.Direction), point = FromJolt(c.Point), resultant = FromJolt(c.ResultantPoint);
         const auto e1 = EntityForBody(s, c.Body1Index), e2 = EntityForBody(s, c.Body2Index);
         const auto emit = [&](entt::entity self, entt::entity self_collider, entt::entity other, entt::entity other_collider, vec3 d, float other_inv_mass) {
-            out.emplace_back(ContactImpact{.Entity = self, .ColliderEntity = self_collider, .Other = other, .OtherColliderEntity = other_collider, .Point = point, .Direction = d, .Impulse = c.Impulse, .Speed = c.Speed, .OtherInvMass = other_inv_mass});
+            out.emplace_back(ContactImpact{.Entity = self, .ColliderEntity = self_collider, .Other = other, .OtherColliderEntity = other_collider, .Point = point, .ResultantPoint = resultant, .Direction = d, .Impulse = c.Impulse, .Speed = c.Speed, .OtherInvMass = other_inv_mass, .NominalArea = c.NominalArea});
         };
         emit(e1, c.Collider1, e2, c.Collider2, -dir, c.InvMass2);
         emit(e2, c.Collider2, e1, c.Collider1, dir, c.InvMass1);
@@ -1528,6 +1669,7 @@ void CollectSustainedContacts(PhysicsState &s, entt::registry &r, float sim_dt) 
                 m.Slip += c.Slip * c.NormalImpulse;
                 m.Local1 += c.Local1 * c.NormalImpulse;
                 m.Local2 += c.Local2 * c.NormalImpulse;
+                m.FrictionImpulse += c.FrictionImpulse;
                 m.Impulse += c.NormalImpulse;
             }
             if (m.Impulse <= 0) continue;
@@ -1560,6 +1702,9 @@ void CollectSustainedContacts(PhysicsState &s, entt::registry &r, float sim_dt) 
                 .Normal = glm::normalize(normal_sum),
                 .Slip = FromJolt(m.Slip / m.Impulse),
                 .NormalForce = m.Impulse * inv_dt,
+                .FrictionForce = FromJolt(m.FrictionImpulse) * inv_dt,
+                .NominalArea = last.NominalArea,
+                .NominalExtent = last.NominalExtent,
                 .Restitution = last.Restitution,
                 .Friction = last.Friction,
             });
@@ -1584,6 +1729,7 @@ void SyncBodyWorldTransform(entt::registry &r, entt::entity entity, const vec3 &
 
 // Advance the simulation, marking the bodies whose contacts it reports in detail as it goes.
 void StepSimulation(PhysicsState &s, const entt::registry &r, float sim_dt, uint32_t collision_steps) {
+    s.ContactListener.SubstepDt = collision_steps > 0 ? sim_dt / float(collision_steps) : sim_dt;
     auto &reporting = s.ContactListener.Reporting;
     reporting.clear();
     for (const auto [e, handle] : r.view<const ReportContacts, const PhysicsBodyHandle>().each()) {
