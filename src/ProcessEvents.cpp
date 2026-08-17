@@ -83,7 +83,7 @@ void UpdateMeshBvh(entt::registry &r, entt::entity mesh_entity) {
     }
     const auto mesh = GetMesh(r, mesh_entity);
     auto bvh = BuildMeshBvh(mesh.GetVerticesSpan(), indices);
-    bvh.MeanCurvature = mesh.CalcMeanCurvatures();
+    bvh.MeanCurvature = mesh.CalcMeanCurvatures(r.ctx().get<const MeshStore>().GetEdgeSharpness(mesh.GetStoreId()));
     bvh.EnclosedVolume = mesh.CalcEnclosedVolume();
     r.emplace_or_replace<MeshBvh>(mesh_entity, std::move(bvh));
 }

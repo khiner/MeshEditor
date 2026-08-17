@@ -187,8 +187,10 @@ struct Mesh {
     float CalcFaceArea(FH) const;
     // Discrete mean curvature (1/length) averaged over the one-ring normal curvatures.
     // 1/R on a sphere of radius R, zero on a flat or boundary vertex.
-    float CalcMeanCurvature(VH) const;
-    std::vector<float> CalcMeanCurvatures() const; // The above for every vertex, in vertex order.
+    // `edge_sharpness` is the mesh's canonical per-edge sharpness, 1 where shading is discontinuous.
+    // A sharp edge is where the surface turns rather than curves, so it has no curvature.
+    float CalcMeanCurvature(VH, std::span<const uint8_t> edge_sharpness) const;
+    std::vector<float> CalcMeanCurvatures(std::span<const uint8_t> edge_sharpness) const; // The above for every vertex, in vertex order.
     // Volume the surface encloses, in the mesh's own units. Empty unless it is closed and manifold.
     std::optional<double> CalcEnclosedVolume() const;
     VH FindNearestVertex(vec3) const;

@@ -203,12 +203,21 @@ float Mesh::CalcFaceArea(FH fh) const {
     return area;
 }
 
-float Mesh::CalcMeanCurvature(VH vh) const {
+float Mesh::CalcMeanCurvature(VH vh, std::span<const uint8_t> edge_sharpness) const {
+    // A sharp edge is a shading discontinuity, so a vertex on one sits on a crease between faces rather than inside a smooth surface.
+    // Curvature belongs to the smooth surface, and the faces meeting at a crease are each flat where they reach it.
+    for (const auto he : voh_range(vh)) {
+        const auto eh = GetEdge(he);
+        if (*eh < edge_sharpness.size() && edge_sharpness[*eh] != 0) return 0.f;
+    }
+
     const vec3 xi = GetPosition(vh);
     const vec3 ni = glm::normalize(GetNormal(vh));
     double sum = 0;
     int count = 0;
     for (const auto he : voh_range(vh)) {
+        // A halfedge with no opposite bounds the surface rather than running through it.
+        if (!GetOppositeHalfedge(he)) continue;
         const vec3 d = GetPosition(GetToVertex(he)) - xi;
         const double d2 = glm::dot(d, d);
         if (d2 < 1e-20) continue;
@@ -218,9 +227,9 @@ float Mesh::CalcMeanCurvature(VH vh) const {
     return count ? float(sum / count) : 0.f;
 }
 
-std::vector<float> Mesh::CalcMeanCurvatures() const {
+std::vector<float> Mesh::CalcMeanCurvatures(std::span<const uint8_t> edge_sharpness) const {
     std::vector<float> out(VertexCount());
-    for (const auto vh : vertices()) out[*vh] = CalcMeanCurvature(vh);
+    for (const auto vh : vertices()) out[*vh] = CalcMeanCurvature(vh, edge_sharpness);
     return out;
 }
 
