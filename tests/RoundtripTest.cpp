@@ -140,11 +140,12 @@ constexpr Exception SubtreeExceptions[]{
     {"extensions.KHR_lights_punctual.lights", "per-node PunctualLight components aren't deduped on save"},
 };
 
-// --- Default-value omission ---
-// fastgltf's writer omits spec-default field values. Several source writers emit defaults
-// explicitly (notably COLLADA2GLTF, glTF Tools for Unity, hand-written samples with no generator,
-// and the Blender v5.0.21 glTF I/O for physics samples). Each entry below filters one such path.
-constexpr Exception DefaultOmissionExactExceptions[]{
+// --- Exact-path exceptions, in four groups ---
+//
+// Default-value omission: fastgltf's writer omits spec-default field values.
+// Several source writers emit defaults explicitly (notably COLLADA2GLTF, glTF Tools for Unity, hand-written samples with no generator, and the Blender v5.0.21 glTF I/O for physics samples).
+// Each entry below filters one such path.
+constexpr Exception ExactExceptions[]{
     {"scene", "default scene index 0 omitted"},
     {"animations", "empty animations array omitted"},
     {"samplers[*].wrapS", "default 10497 (REPEAT) omitted"},
@@ -209,12 +210,8 @@ constexpr Exception DefaultOmissionExactExceptions[]{
     {"extensions", "empty root-level extensions block omitted by fastgltf's writer (source emits `\"extensions\":{}`)"},
     {"materials[*].extensions", "empty material-level extensions block omitted"},
     {"nodes[*].extensions", "empty per-node extensions block omitted"},
-};
 
-// --- Always-emitted (we don't omit defaults) ---
-// Symmetric to the above: fastgltf's writer always emits these fields (no "only if non-default"
-// gate), so source files that legitimately omit them see a "present in roundtripped only" diff.
-constexpr Exception AlwaysEmittedExactExceptions[]{
+    // Always-emitted, symmetric to the above: fastgltf's writer always emits these fields, so source files that legitimately omit them see a "present in roundtripped only" diff.
     {"materials[*].normalTexture.scale", "fastgltf always emits scale on NormalTextureInfo"},
     {"materials[*].occlusionTexture.strength", "fastgltf always emits strength on OcclusionTextureInfo"},
     {"materials[*].extensions.KHR_materials_clearcoat.clearcoatNormalTexture.scale", "fastgltf always emits scale on NormalTextureInfo"},
@@ -223,12 +220,10 @@ constexpr Exception AlwaysEmittedExactExceptions[]{
     {"extensions.KHR_physics_rigid_bodies.physicsJoints[*].limits[*].damping", "always-emitted even when 0.0"},
     {"extensions.KHR_physics_rigid_bodies.physicsJoints[*].drives[*].maxForce", "always-emitted even when float::max ('no limit')"},
     {"materials[*].pbrMetallicRoughness", "emitted even for extension-only / specular-glossiness materials"},
-};
 
-// --- BufferView indexing ---
-// Accessor references compare semantically (see IsMeshGeometryRefPath/IsShapeAccessorRefPath).
-// BufferView refs outside the accessor path (just images[*].bufferView today) stay as exact exceptions.
-constexpr Exception BufferViewIndexExactExceptions[]{
+    // BufferView indexing.
+    // Accessor references compare semantically (see IsMeshGeometryRefPath / IsShapeAccessorRefPath), so bufferView refs outside the accessor path (just images[*].bufferView today) are the only ones left to except.
+    //
     // bufferView index depends on our emission order; only fires for images embedded as bufferView
     // (source form preserved: URI-form images emit URIs, no bufferView ref).
     {"images[*].bufferView", "bufferView index depends on emission order"},
@@ -237,9 +232,8 @@ constexpr Exception BufferViewIndexExactExceptions[]{
     // unfolded to TriangleList / LineList / Points at save and the indices accessor count
     // (or presence) diverges from source accordingly.
     {"meshes[*].primitives[*].indices", "strip/fan/loop primitive modes are unfolded to list mode on save; source Points with indices lose them"},
-};
 
-constexpr Exception OtherExactExceptions[]{
+    // Everything else.
     {"meshes[*].primitives[*].material", "line/point primitives lose per-primitive material on import (merged across primitives without retaining material refs)"},
     {"meshes[*].extensions", "mesh-level extensions (e.g. KHR_xmp_json_ld) not re-emitted"},
     {"scenes[*].extras", "not tracked on Scene"},
@@ -285,24 +279,10 @@ bool SubtreeMatches(std::string_view normalized_path, std::string_view pattern) 
     return next == '.' || next == '[';
 }
 
-template<size_t N>
-bool MatchesExact(std::string_view norm, const Exception (&list)[N]) {
-    for (const auto &ex : list) {
-        if (norm == ex.Pattern) return true;
-    }
-    return false;
-}
-
 bool IsExpectedDivergence(std::string_view path) {
     const auto norm = NormalizePath(path);
-    if (MatchesExact(norm, DefaultOmissionExactExceptions)) return true;
-    if (MatchesExact(norm, AlwaysEmittedExactExceptions)) return true;
-    if (MatchesExact(norm, BufferViewIndexExactExceptions)) return true;
-    if (MatchesExact(norm, OtherExactExceptions)) return true;
-    for (const auto &ex : SubtreeExceptions) {
-        if (SubtreeMatches(norm, ex.Pattern)) return true;
-    }
-    return false;
+    return std::ranges::any_of(ExactExceptions, [norm](const auto &ex) { return norm == ex.Pattern; }) ||
+        std::ranges::any_of(SubtreeExceptions, [norm](const auto &ex) { return SubtreeMatches(norm, ex.Pattern); });
 }
 
 // --- Generic JSON comparator ---
@@ -324,7 +304,12 @@ bool NumberEq(double a, double b) {
     return diff <= AbsEps || diff <= RelEps * scale;
 }
 
-bool Vec3Eq(const vec3 &a, const vec3 &b) { return NumberEq(a.x, b.x) && NumberEq(a.y, b.y) && NumberEq(a.z, b.z); }
+template<typename V> bool VecEq(const V &a, const V &b) {
+    for (glm::length_t i = 0; i < V::length(); ++i) {
+        if (!NumberEq(a[i], b[i])) return false;
+    }
+    return true;
+}
 
 using ElType = simdjson::dom::element_type;
 
@@ -451,14 +436,11 @@ std::vector<uint32_t> CornerIndices(const fastgltf::Asset &asset, const fastgltf
     return corners;
 }
 
-bool Vec2Eq(vec2 a, vec2 b) { return NumberEq(a.x, b.x) && NumberEq(a.y, b.y); }
-bool Vec4Eq(vec4 a, vec4 b) { return NumberEq(a.x, b.x) && NumberEq(a.y, b.y) && NumberEq(a.z, b.z) && NumberEq(a.w, b.w); }
-
 // Unit-direction compare: normalize both and accept a small angle.
 // Faceted-face normals re-derive from positions on export, so exact equality is too strict for them.
 bool DirectionEq(vec3 a, vec3 b) {
     const auto la = glm::length(a), lb = glm::length(b);
-    if (la < 1e-6f || lb < 1e-6f) return Vec3Eq(a, b);
+    if (la < 1e-6f || lb < 1e-6f) return VecEq(a, b);
     constexpr float CosTol = 0.999998f; // ~2 milliradians
     return glm::dot(a / la, b / lb) >= CosTol;
 }
@@ -524,17 +506,17 @@ void CompareGeometryAttr(
     };
     if (morph_delta) {
         // Target deltas (POSITION/NORMAL/TANGENT) are all VEC3 and pass through import untouched.
-        if (name == "POSITION" || name == "NORMAL" || name == "TANGENT") compare(DecodeAccessor<vec3>, Vec3Eq);
+        if (name == "POSITION" || name == "NORMAL" || name == "TANGENT") compare(DecodeAccessor<vec3>, VecEq<vec3>);
     } else if (name == "POSITION") {
-        compare(DecodeAccessor<vec3>, Vec3Eq);
+        compare(DecodeAccessor<vec3>, VecEq<vec3>);
     } else if (name == "NORMAL") {
         compare(DecodeAccessor<vec3>, DirectionEq);
     } else if (name == "TANGENT") {
         compare(DecodeAccessor<vec4>, [](vec4 x, vec4 y) { return DirectionEq(vec3{x}, vec3{y}) && NumberEq(x.w, y.w); });
     } else if (name.starts_with("COLOR_")) {
-        compare(DecodeColorAccessor, Vec4Eq);
+        compare(DecodeColorAccessor, VecEq<vec4>);
     } else if (name.starts_with("TEXCOORD_")) {
-        compare(DecodeAccessor<vec2>, Vec2Eq);
+        compare(DecodeAccessor<vec2>, VecEq<vec2>);
     }
     // JOINTS_n/WEIGHTS_n compare jointly in ComparePrimitiveGeometry.
     // Custom attributes stay uncompared since import drops them.
@@ -608,23 +590,24 @@ void CompareMeshGeometry(const fastgltf::Asset &a, const fastgltf::Asset &b, std
     }
 }
 
+// The array's values, or nullopt when any element is not a number.
+std::optional<std::vector<double>> NumberArray(simdjson::dom::array arr) {
+    std::vector<double> out;
+    for (auto e : arr) {
+        if (!IsNumber(e.type())) return std::nullopt;
+        out.emplace_back(AsNumber(e));
+    }
+    return out;
+}
+
 // q and -q describe the same rotation; `glm::decompose` doesn't preserve source sign so this
 // surfaces as a per-component diff on `nodes[*].rotation`. Accept either sign within tolerance.
 bool QuaternionsEqual(simdjson::dom::array a, simdjson::dom::array b) {
-    if (a.size() != 4 || b.size() != 4) return false;
-    const auto to_quat = [](simdjson::dom::array arr, std::array<double, 4> &out) {
-        size_t i = 0;
-        for (auto e : arr) {
-            if (!IsNumber(e.type())) return false;
-            out[i++] = AsNumber(e);
-        }
-        return true;
-    };
-    std::array<double, 4> va{}, vb{};
-    if (!to_quat(a, va) || !to_quat(b, vb)) return false;
+    const auto va = NumberArray(a), vb = NumberArray(b);
+    if (!va || !vb || va->size() != 4 || vb->size() != 4) return false;
     const auto eq_signed = [&](double sign) {
         for (size_t i = 0; i < 4; ++i) {
-            if (!NumberEq(va[i], sign * vb[i])) return false;
+            if (!NumberEq((*va)[i], sign * (*vb)[i])) return false;
         }
         return true;
     };
@@ -634,17 +617,10 @@ bool QuaternionsEqual(simdjson::dom::array a, simdjson::dom::array b) {
 // glTF `scene.nodes` is an unordered set (schema: uniqueItems), so compare the root indices as a
 // multiset — we emit them ascending, source order is arbitrary.
 bool SameNumberMultiset(simdjson::dom::array a, simdjson::dom::array b) {
-    const auto collect = [](simdjson::dom::array arr, std::vector<double> &out) {
-        for (auto e : arr) {
-            if (!IsNumber(e.type())) return false;
-            out.emplace_back(AsNumber(e));
-        }
-        return true;
-    };
-    std::vector<double> va, vb;
-    if (!collect(a, va) || !collect(b, vb) || va.size() != vb.size()) return false;
-    std::ranges::sort(va);
-    std::ranges::sort(vb);
+    auto va = NumberArray(a), vb = NumberArray(b);
+    if (!va || !vb || va->size() != vb->size()) return false;
+    std::ranges::sort(*va);
+    std::ranges::sort(*vb);
     return va == vb;
 }
 
@@ -1266,14 +1242,14 @@ int main(int argc, const char **argv) {
             expect(vecs_eq(rm.T60s, modes.T60s)) << "T60s diverged";
             expect(rm.Positions.size() == modes.Positions.size()) << "positions count diverged";
             for (size_t i = 0; i < rm.Positions.size() && i < modes.Positions.size(); ++i) {
-                expect(Vec3Eq(rm.Positions[i], modes.Positions[i])) << "position diverged";
+                expect(VecEq(rm.Positions[i], modes.Positions[i])) << "position diverged";
             }
             expect(rm.Indices == modes.Indices) << "sample surface indices diverged";
             expect(rm.Shapes.size() == modes.Shapes.size()) << "shape point count diverged";
             for (size_t p = 0; p < rm.Shapes.size() && p < modes.Shapes.size(); ++p) {
                 expect(rm.Shapes[p].size() == modes.Shapes[p].size()) << "shape mode count diverged";
                 for (size_t m = 0; m < rm.Shapes[p].size() && m < modes.Shapes[p].size(); ++m) {
-                    expect(Vec3Eq(rm.Shapes[p][m], modes.Shapes[p][m])) << "shape vector diverged";
+                    expect(VecEq(rm.Shapes[p][m], modes.Shapes[p][m])) << "shape vector diverged";
                 }
             }
 
@@ -1312,8 +1288,8 @@ int main(int argc, const char **argv) {
             expect(m.Freqs.size() == 1u && NumberEq(m.Freqs[0], 220.0)) << "frequency";
             constexpr double ExpectedT60 = 6.907755278982137 / 2.0; // ln(1000) / decayRate(2.0)
             expect(m.T60s.size() == 1u && NumberEq(m.T60s[0], ExpectedT60)) << "T60 from decay rate";
-            expect(m.Positions.size() == 1u && Vec3Eq(m.Positions[0], {1.5f, -0.5f, 0.25f})) << "position";
-            expect(m.Shapes.size() == 1u && m.Shapes[0].size() == 1u && Vec3Eq(m.Shapes[0][0], {0.3f, 0.4f, -0.6f})) << "shape";
+            expect(m.Positions.size() == 1u && VecEq(m.Positions[0], vec3{1.5f, -0.5f, 0.25f})) << "position";
+            expect(m.Shapes.size() == 1u && m.Shapes[0].size() == 1u && VecEq(m.Shapes[0][0], vec3{0.3f, 0.4f, -0.6f})) << "shape";
 
             const auto *gain = fx.R.try_get<const ModalGain>(node);
             expect(gain != nullptr && NumberEq(gain->Value, 0.75)) << "gain";
