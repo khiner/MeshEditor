@@ -26,6 +26,7 @@
 #include "viewport/GizmoDrag.h"
 #include "viewport/InteractionComponents.h"
 #include "viewport/RenderExtent.h"
+#include "viewport/ScreenSpace.h"
 #include "viewport/ViewCameraOps.h"
 #include "viewport/ViewportIcons.h"
 #include "viewport/ViewportInteractionState.h"
@@ -59,8 +60,8 @@ std::optional<std::pair<uvec2, uvec2>> ComputeBoxSelectPixels(vec2 start, vec2 e
     const auto local_max = glm::clamp(glm::max(box_min, box_max), vec2{0}, logical_size);
     const auto render_min = local_min * render_scale;
     const auto render_max = local_max * render_scale;
-    const uvec2 box_min_px{glm::floor(render_min.x), glm::floor(float(render_extent.y) - render_max.y)};
-    const uvec2 box_max_px{glm::ceil(render_max.x), glm::ceil(float(render_extent.y) - render_min.y)};
+    const uvec2 box_min_px{glm::floor(render_min.x), glm::floor(render_min.y)};
+    const uvec2 box_max_px{glm::ceil(render_max.x), glm::ceil(render_max.y)};
     return std::pair{box_min_px, box_max_px};
 }
 
@@ -379,8 +380,8 @@ void Interact(entt::registry &r, entt::entity viewport, FrameState &frame) {
     const auto mouse_pos_render = ToGlm(mouse_pos_rel) * render_scale;
     const float max_x = float(std::max(render_extent.x, 1u) - 1u);
     const float max_y = float(std::max(render_extent.y, 1u) - 1u);
-    // Flip y-coordinate: ImGui uses top-left origin, but Vulkan gl_FragCoord uses bottom-left origin
-    const uvec2 mouse_px{glm::clamp(mouse_pos_render.x, 0.0f, max_x), glm::clamp(float(render_extent.y) - mouse_pos_render.y, 0.0f, max_y)};
+    // ImGui's origin and the picking pass's pixel rows both start at the top left.
+    const uvec2 mouse_px{glm::clamp(mouse_pos_render.x, 0.0f, max_x), glm::clamp(mouse_pos_render.y, 0.0f, max_y)};
 
     if (interaction_mode == InteractionMode::Excite) {
         if (IsMouseClicked(ImGuiMouseButton_Left)) {
@@ -882,7 +883,7 @@ void DrawOverlay(entt::registry &r, entt::entity viewport, FrameState &frame) {
             if (p_cs.w <= 0) return; // Behind camera
 
             const auto p_ndc = vec3{p_cs} / p_cs.w;
-            const auto p_uv = vec2{p_ndc.x + 1, 1 - p_ndc.y} * 0.5f;
+            const auto p_uv = NdcToUv(vec2{p_ndc});
             const auto p_px = std::bit_cast<ImVec2>(viewport_rect.pos + p_uv * viewport_rect.size);
             auto &dl = *GetWindowDrawList();
             dl.AddCircleFilled(p_px, 3.5f, colors::RgbToU32(is_active ? theme.Colors.ObjectActive : theme.Colors.ObjectSelected), 10);

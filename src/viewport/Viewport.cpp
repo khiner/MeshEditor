@@ -14,11 +14,9 @@
 #include "physics/PhysicsTypes.h"
 #include "render/DrawState.h"
 #include "render/MaterialImport.h"
-#include "render/OneShotGpu.h"
 #include "render/Pipelines.h"
 #include "render/Profile.h"
 #include "render/Textures.h"
-#include "render/VkFenceWait.h"
 #include "scene/Defaults.h"
 #include "scene/EntityDestroyTracker.h"
 #include "selection/SelectionComponents.h"
@@ -38,54 +36,42 @@
 using std::ranges::find, std::ranges::to;
 
 namespace {
+// Metal command buffers are single-use; RecordedPhase tracks the last build.
 struct ViewportRenderResources {
-    vk::UniqueCommandBuffer RenderCommandBuffer;
-#ifdef MVK_FORCE_STAGED_TRANSFERS
-    vk::UniqueCommandBuffer TransferCommandBuffer;
-#endif
-    vk::UniqueFence RenderFence;
-    RenderPhase RecordedPhase{RenderPhase::Full}; // What RenderCommandBuffer currently holds.
+    MTL::CommandBuffer *InFlight{nullptr}; // The submitted frame, until it completes.
+    RenderPhase RecordedPhase{RenderPhase::Full};
 };
 
 void ResetObjectPickKeys(GpuBuffers &buffers) {
     std::fill_n(buffers.ObjectPickKeys.Data(), GpuBuffers::MaxSelectableObjects, std::numeric_limits<uint32_t>::max());
 }
 
-// Submit the recorded command buffer. RenderFence must be unsignaled (reset by the prior WaitForRender).
-void SubmitRecordedFrame(entt::registry &r) {
-    const auto &vk = r.ctx().get<const VulkanResources>();
+// Dispatch sizes follow draw-list recording because the rebuild determines their counts.
+void SubmitRecordedFrame(entt::registry &r, MTL::CommandBuffer *command_buffer) {
+    const auto &ctx = r.ctx().get<const mtl::Context>();
     auto &buffers = r.ctx().get<GpuBuffers>();
-    auto &resources = r.ctx().get<ViewportRenderResources>();
-    // Always ensure the draw slots point to render draw data before submitting (a selection pass may have swapped them).
+    // A selection pass may have swapped the draw slots, so point them back at the render draw data.
     buffers.SetSceneViewDrawSlots(buffers.RenderDraw);
     SyncPreludeDispatchArgs(buffers);
-    vk::SubmitInfo submit;
-#ifdef MVK_FORCE_STAGED_TRANSFERS
-    const std::array command_buffers{*resources.TransferCommandBuffer, *resources.RenderCommandBuffer};
-    submit.setCommandBuffers(command_buffers);
-#else
-    submit.setCommandBuffers(*resources.RenderCommandBuffer);
-#endif
+    ctx.CommitResidency();
     {
         const profile::CpuScope scope{"QueueSubmit"};
-        vk.Queue.submit(submit, *resources.RenderFence);
+        command_buffer->commit();
     }
+    r.ctx().get<ViewportRenderResources>().InFlight = command_buffer;
     r.ctx().get<FrameState>().RenderPending = true;
 }
 
-// Re-record the command buffer for `render_request`. `force_full` records the full buffer even when the request wouldn't.
-void RecordViewportFrame(entt::registry &r, entt::entity viewport, RenderRequest render_request, bool force_full = false) {
+// Record and submit one single-use command buffer.
+void RecordAndSubmitFrame(entt::registry &r, entt::entity viewport, DrawListUse use) {
+    const auto &ctx = r.ctx().get<const mtl::Context>();
     auto &resources = r.ctx().get<ViewportRenderResources>();
-    if (render_request == RenderRequest::ReRecord || force_full) {
-        RecordRenderCommandBuffer(r, viewport, *resources.RenderCommandBuffer);
-        resources.RecordedPhase = RenderPhase::Full;
-    } else if (render_request == RenderRequest::ReRecordSilhouette && r.ctx().get<const DrawState>().MainDrawCount > 0) {
-        RecordRenderCommandBuffer(r, viewport, *resources.RenderCommandBuffer, DrawListUse::SilhouetteOnly);
-        resources.RecordedPhase = RenderPhase::Full;
-    }
+    auto *command_buffer = ctx.Queue->commandBuffer();
+    RecordRenderCommandBuffer(r, viewport, command_buffer, use);
+    resources.RecordedPhase = RenderPhase::Full;
+    SubmitRecordedFrame(r, command_buffer);
 }
 
-// Take the pending render request, leaving none pending.
 RenderRequest TakeRenderRequest(entt::registry &r) {
     return std::exchange(r.ctx().get<PendingRenderRequest>().Value, RenderRequest::None);
 }
@@ -96,7 +82,14 @@ RenderRequest TakeRenderRequest(entt::registry &r) {
 bool AdvanceAndRecord(entt::registry &r, entt::entity viewport, bool force_full) {
     ProcessComponentEvents(r, viewport);
     if (!ViewportImageReady(r)) return false;
-    RecordViewportFrame(r, viewport, TakeRenderRequest(r), force_full);
+    const auto render_request = TakeRenderRequest(r);
+    // A request for nothing still records and submits, from the draw list already built. Commands
+    // read the buffers as they stand when the GPU runs them, so an update this frame made, such as
+    // the scene framing moving the camera, still reaches the image.
+    const auto use = render_request == RenderRequest::ReRecordSilhouette && !force_full && r.ctx().get<const DrawState>().MainDrawCount > 0 ? DrawListUse::SilhouetteOnly :
+        render_request == RenderRequest::None && !force_full                                                                                ? DrawListUse::Reuse :
+                                                                                                                                              DrawListUse::Rebuild;
+    RecordAndSubmitFrame(r, viewport, use);
     return true;
 }
 
@@ -128,7 +121,7 @@ bool MotionBlurActive(const entt::registry &r, entt::entity viewport) {
 // renders once and blurs along its own screen motion, and several steps average together. Overlays
 // stay sharp over the blur. Restores the settled frame afterward.
 void RenderMotionBlurredFrame(entt::registry &r, entt::entity viewport) {
-    const auto &vk = r.ctx().get<const VulkanResources>();
+    const auto &ctx = r.ctx().get<const mtl::Context>();
     auto &pipelines = r.ctx().get<Pipelines>();
     auto &resources = r.ctx().get<ViewportRenderResources>();
     auto &frame_state = r.ctx().get<FrameState>();
@@ -149,34 +142,25 @@ void RenderMotionBlurredFrame(entt::registry &r, entt::entity viewport) {
     // Cache physics through the shutter's forward half so centered sampling has both endpoints (forward playback only).
     if (playback.Playing) physics::BakeThrough(r, viewport, int(std::ceil(hi)), range.Fps);
 
-    const auto main_cb = *resources.RenderCommandBuffer;
     auto &buffers = r.ctx().get<GpuBuffers>();
     // Every blurred frame moves the scene under any selection data, recorded or not.
     r.ctx().get<DrawState>().SelectionStale = true;
 
-    // Allocate the blur targets on first use, then point every descriptor that reaches them at the
-    // new images. They are lazy, so these slots hold fallbacks until now.
-    if (pipelines.Main.EnsureMotionBlurResources(vk.Device, vk.PhysicalDevice)) {
-        auto &slots = r.ctx().get<DescriptorSlots>();
+    // Allocate the blur targets on first use, replacing the bindless fallback slots.
+    if (pipelines.Main.EnsureMotionBlurResources(ctx)) {
+        auto &slots = r.ctx().get<mtl::BindlessSet>();
         const auto &sel_slots = r.ctx().get<const SelectionSlots>();
         const auto &main = pipelines.Main;
         // The tile grid the targets were built around decides how many entries the table holds.
-        buffers.ResizeMotionBlurTileIndirection(main.MotionBlur->TileExtent);
-        const auto accum = main.MotionBlurAccumSamplerInfo();
-        const auto velocity = main.VelocitySamplerInfo();
-        const auto gather_sampler = main.MotionBlurGatherSamplerInfo();
-        const auto tile_image = main.MotionBlurTileImageInfo();
-        const auto tile_indirection = buffers.MotionBlurTileIndirection.GetDescriptor();
-        vk.Device.updateDescriptorSets(
-            {
-                slots.MakeSamplerWrite(sel_slots.MotionBlurAccumSampler, accum),
-                slots.MakeSamplerWrite(sel_slots.VelocitySampler, velocity),
-                slots.MakeSamplerWrite(sel_slots.MotionBlurGatherSampler, gather_sampler),
-                slots.MakeImageWrite(sel_slots.MotionBlurTileImage, tile_image),
-                slots.MakeBufferWrite({SlotType::Buffer, sel_slots.MotionBlurTileIndirection}, tile_indirection),
-            },
-            {}
-        );
+        buffers.ResizeMotionBlurTileIndirection(main.MotionBlur->TileImage.Extent);
+        const auto accum = main.MotionBlurAccumSampler();
+        const auto velocity = main.VelocitySampler();
+        const auto gather = main.MotionBlurGatherSampler();
+        slots.SetSampler({SlotType::Sampler, sel_slots.MotionBlurAccumSampler}, accum.Texture, accum.Sampler);
+        slots.SetSampler({SlotType::Sampler, sel_slots.VelocitySampler}, velocity.Texture, velocity.Sampler);
+        slots.SetSampler({SlotType::Sampler, sel_slots.MotionBlurGatherSampler}, gather.Texture, gather.Sampler);
+        slots.SetTexture(sel_slots.MotionBlurTileImage, main.MotionBlurTileImage());
+        slots.SetBuffer({SlotType::Buffer, sel_slots.MotionBlurTileIndirection}, *buffers.MotionBlurTileIndirection);
     }
 
     // Evaluate the scene at `pf` (animation + physics, which also moves the view when looking
@@ -199,13 +183,11 @@ void RenderMotionBlurredFrame(entt::registry &r, entt::entity viewport) {
         StampShutterPoses(buffers, 0, buffers.ShutterOpen, buffers.ShutterClose);
         // Poses and view state reach the GPU through buffers the recorded commands already read,
         // so the recording goes stale only when the draw list or the phase changes.
-        if (TakeRenderRequest(r) >= RenderRequest::ReRecordSilhouette || resources.RecordedPhase != phase) {
-            RecordRenderCommandBuffer(r, viewport, main_cb, DrawListUse::Rebuild, phase);
-            resources.RecordedPhase = phase;
-        }
-        // Land any descriptor updates a pose-capture buffer growth deferred.
-        buffers.Ctx.FlushDeferredDescriptorUpdates(vk.Device);
-        SubmitRecordedFrame(r);
+        std::ignore = TakeRenderRequest(r);
+        auto *command_buffer = ctx.Queue->commandBuffer();
+        RecordRenderCommandBuffer(r, viewport, command_buffer, DrawListUse::Rebuild, phase);
+        resources.RecordedPhase = phase;
+        SubmitRecordedFrame(r, command_buffer);
         WaitForRender(r);
     };
 
@@ -257,11 +239,11 @@ void RenderMotionBlurredFrame(entt::registry &r, entt::entity viewport) {
         // The resolve and the overlays read the live, settled state.
         evaluate_at(float(current_frame));
         std::ignore = TakeRenderRequest(r); // The recording below is always a full rebuild.
-        RecordBlurStepsCommandBuffer(r, viewport, main_cb, step_frames);
+        auto *command_buffer = ctx.Queue->commandBuffer();
+        RecordBlurStepsCommandBuffer(r, viewport, command_buffer, step_frames);
         // Not a single-phase recording: any later single-phase render must re-record.
         resources.RecordedPhase = RenderPhase::BlurAccumulate;
-        buffers.Ctx.FlushDeferredDescriptorUpdates(vk.Device);
-        SubmitRecordedFrame(r);
+        SubmitRecordedFrame(r, command_buffer);
         WaitForRender(r);
     }
 
@@ -272,15 +254,15 @@ void RenderMotionBlurredFrame(entt::registry &r, entt::entity viewport) {
 
 bool ViewportImageReady(const entt::registry &r) {
     const auto extent = r.ctx().get<const Pipelines>().BuiltColorExtent();
-    return extent.width != 0 && extent.height != 0;
+    return extent.Width != 0 && extent.Height != 0;
 }
 
-void SubmitViewport(entt::registry &r, entt::entity viewport, vk::Fence viewport_consumer_fence) {
+void SubmitViewport(entt::registry &r, entt::entity viewport, MTL::CommandBuffer *viewport_consumer) {
     const profile::CpuScope scope{"SubmitViewport"};
-    // Stash the consumer fence for the resize path to wait on before recreating resources. Cleared after so replay sees none.
-    r.ctx().get<ViewportConsumerFence>().Value = viewport_consumer_fence;
+    // Resize waits for this consumer before replacing its sampled texture.
+    r.ctx().get<ViewportConsumerFence>().Value = viewport_consumer;
     ProcessComponentEvents(r, viewport);
-    r.ctx().get<ViewportConsumerFence>().Value = vk::Fence{};
+    r.ctx().get<ViewportConsumerFence>().Value = nullptr;
     if (!ViewportImageReady(r)) return;
     auto &frame_state = r.ctx().get<FrameState>();
     if (MotionBlurActive(r, viewport)) {
@@ -301,28 +283,38 @@ void SubmitViewport(entt::registry &r, entt::entity viewport, vk::Fence viewport
     }
     const auto render_request = TakeRenderRequest(r);
     if (render_request == RenderRequest::None) return;
-#ifdef MVK_FORCE_STAGED_TRANSFERS
-    RecordTransferCommandBuffer(r, viewport, *r.ctx().get<ViewportRenderResources>().TransferCommandBuffer);
-#endif
 
-    RecordViewportFrame(r, viewport, render_request);
-    SubmitRecordedFrame(r);
+    RecordAndSubmitFrame(r, viewport, render_request == RenderRequest::ReRecordSilhouette && r.ctx().get<const DrawState>().MainDrawCount > 0 ? DrawListUse::SilhouetteOnly : DrawListUse::Rebuild);
 }
 
 void SetStudioEnvironment(entt::registry &r, uint32_t index) {
-    const auto &vk = r.ctx().get<const VulkanResources>();
+    const auto &ctx = r.ctx().get<const mtl::Context>();
     const auto &pipelines = r.ctx().get<const Pipelines>();
-    const auto &one_shot = r.ctx().get<const OneShotGpu>();
-    auto &slots = r.ctx().get<DescriptorSlots>();
-    auto &buffers = r.ctx().get<GpuBuffers>();
+    auto &slots = r.ctx().get<mtl::BindlessSet>();
     auto &environments = r.ctx().get<EnvironmentStore>();
     auto &hdri = environments.Hdris[index];
     if (!hdri.Prefiltered) {
-        hdri.Prefiltered = CreateIblFromHdri(vk, slots, pipelines.IblPrefilter, hdri.Path, hdri.Name, *one_shot.Pool, *one_shot.Fence, buffers.Ctx);
+        hdri.Prefiltered = CreateIblFromHdri(ctx, slots, pipelines.IblPrefilter, hdri.Path, hdri.Name);
     }
     const auto &pre = *hdri.Prefiltered;
     environments.ActiveHdriIndex = index;
     environments.StudioWorld = {.Ibl = MakeIblSamplers(pre, environments), .Name = hdri.Name};
+}
+
+void RebuildStudioEnvironments(entt::registry &r) {
+    auto &slots = r.ctx().get<mtl::BindlessSet>();
+    auto &environments = r.ctx().get<EnvironmentStore>();
+    if (environments.Hdris.empty()) return; // No studio environment to index into.
+    const auto release = [&slots](uint32_t sampler_slot) {
+        if (sampler_slot != InvalidSlot) slots.Release({SlotType::CubeSampler, sampler_slot});
+    };
+    for (auto &hdri : environments.Hdris) {
+        if (!hdri.Prefiltered) continue;
+        release(hdri.Prefiltered->DiffuseEnv.SamplerSlot);
+        release(hdri.Prefiltered->SpecularEnv.SamplerSlot);
+        hdri.Prefiltered.reset();
+    }
+    SetStudioEnvironment(r, environments.ActiveHdriIndex);
 }
 
 void SetStudioEnvironment(entt::registry &r, std::string_view name) {
@@ -331,11 +323,13 @@ void SetStudioEnvironment(entt::registry &r, std::string_view name) {
     SetStudioEnvironment(r, it != hdris.end() ? uint32_t(std::distance(hdris.begin(), it)) : 0u);
 }
 
-entt::entity InitEngine(entt::registry &r, VulkanResources vc) {
-    InitStoreCtx(r, vc);
-    auto &slots = r.ctx().get<DescriptorSlots>();
-    auto &pipelines = r.ctx().emplace<Pipelines>(vc.PhysicalDevice, PipelineContext{vc.Device, slots.GetSetLayout(), slots.GetSet(), slots.GetUboSetLayout(), slots.GetUboSet()});
-    profile::Init(vc.Device, vc.PhysicalDevice);
+entt::entity InitEngine(entt::registry &r) {
+    const auto &ctx = r.ctx().get<const mtl::Context>();
+    InitStoreCtx(r, ctx);
+    auto &slots = r.ctx().get<mtl::BindlessSet>();
+    auto &libraries = r.ctx().emplace<mtl::LibraryCache>(ctx, Paths::Shaders());
+    r.ctx().emplace<Pipelines>(ctx, libraries);
+    profile::Init(ctx);
     physics::Init(r);
     RegisterSceneComponentHandlers(r);
 
@@ -349,26 +343,19 @@ entt::entity InitEngine(entt::registry &r, VulkanResources vc) {
     r.ctx().emplace<DrawState>();
     r.ctx().emplace<FrameState>();
     r.ctx().emplace<PendingRenderRequest>();
-    const auto &one_shot = r.ctx().emplace<OneShotGpu>(MakeOneShotGpu(vc.Device, vc.QueueFamily));
-    r.ctx().emplace<ViewportRenderResources>(ViewportRenderResources{
-        .RenderCommandBuffer = std::move(vc.Device.allocateCommandBuffersUnique({*one_shot.Pool, vk::CommandBufferLevel::ePrimary, 1}).front()),
-#ifdef MVK_FORCE_STAGED_TRANSFERS
-        .TransferCommandBuffer = std::move(vc.Device.allocateCommandBuffersUnique({*one_shot.Pool, vk::CommandBufferLevel::ePrimary, 1}).front()),
-#endif
-        .RenderFence = vc.Device.createFenceUnique({}),
-    });
+    r.ctx().emplace<ViewportRenderResources>();
 
     ResetObjectPickKeys(buffers);
 
-    auto init_batch = BeginTextureUploadBatch(vc.Device, *one_shot.Pool, buffers.Ctx);
+    auto init_batch = BeginTextureUploadBatch(ctx, libraries);
     auto &environments = r.ctx().get<EnvironmentStore>();
     const auto images_dir = Paths::Res() / "images";
-    environments.BrdfLut = CreateDefaultLutTexture(vc, init_batch, slots, images_dir / "lut_ggx.png", "DefaultGGXBRDFLUT");
-    environments.SheenELut = CreateDefaultLutTexture(vc, init_batch, slots, images_dir / "lut_sheen_E.png", "DefaultSheenELUT");
-    environments.CharlieLut = CreateDefaultLutTexture(vc, init_batch, slots, images_dir / "lut_charlie.png", "DefaultCharlieLUT");
+    environments.BrdfLut = CreateDefaultLutTexture(ctx, init_batch, slots, images_dir / "lut_ggx.png", "DefaultGGXBRDFLUT", r.ctx().get<const ActiveSamplerAnisotropy>().Value);
+    environments.SheenELut = CreateDefaultLutTexture(ctx, init_batch, slots, images_dir / "lut_sheen_E.png", "DefaultSheenELUT", r.ctx().get<const ActiveSamplerAnisotropy>().Value);
+    environments.CharlieLut = CreateDefaultLutTexture(ctx, init_batch, slots, images_dir / "lut_charlie.png", "DefaultCharlieLUT", r.ctx().get<const ActiveSamplerAnisotropy>().Value);
     // Blender's default world background color (linear RGB) - flat ambient-only IBL when no scene world is provided.
-    environments.EmptySceneWorld = BuildFlatColorEnvironment(vc, init_batch, slots, vec3{0.05f}, "EmptySceneWorld");
-    SubmitTextureUploadBatch(init_batch, vc.Queue, *one_shot.Fence, vc.Device);
+    environments.EmptySceneWorld = BuildFlatColorEnvironment(ctx, slots, vec3{0.05f}, "EmptySceneWorld");
+    SubmitTextureUploadBatch(init_batch);
     // Default scene world (no imported EXT-IBL). The reactive SceneWorld pass swaps in an imported world when
     // a glTF with EXT_lights_image_based is loaded or restored, and ClearScene restores this default.
     environments.SceneWorld = {.Ibl = MakeIblSamplers(environments.EmptySceneWorld, environments), .Name = environments.EmptySceneWorld.Name};
@@ -382,8 +369,6 @@ entt::entity InitEngine(entt::registry &r, VulkanResources vc) {
         }
     }
     std::ranges::sort(environments.Hdris, {}, &HdriEntry::Name); // SetupScene selects the active one.
-
-    pipelines.CompileShaders();
 
     return viewport;
 }
@@ -439,7 +424,7 @@ void ClearScene(entt::registry &r, entt::entity viewport) {
     // bare and its reactive SceneWorld pass rebuilds the imported world from the restored SourceAssets.
     auto &environments = r.ctx().get<EnvironmentStore>();
     if (environments.ImportedSceneWorld) {
-        auto &slots = r.ctx().get<DescriptorSlots>();
+        auto &slots = r.ctx().get<mtl::BindlessSet>();
         ReleaseCubeSamplerSlot(slots, environments.ImportedSceneWorld->DiffuseEnv.SamplerSlot);
         ReleaseCubeSamplerSlot(slots, environments.ImportedSceneWorld->SpecularEnv.SamplerSlot);
         environments.ImportedSceneWorld.reset();
@@ -467,7 +452,7 @@ void ClearScene(entt::registry &r, entt::entity viewport) {
     for (const auto &handler : r.ctx().get<SceneClearHandlers>().Handlers) handler(r);
 
     // Reset the entity, mesh-store, and GPU-arena allocators to their fresh-start state, so replaying a scene from this
-    // baseline re-allocates identical ids and GPU handles. Descriptor slots need no reset, since their RangeAllocator is order-independent.
+    // baseline re-allocates identical ids and GPU handles. Bindless slots need no reset because their allocator is order-independent.
     r.storage<entt::entity>().clear();
     r.storage<entt::entity>().start_from(entt::entity{0});
     r.ctx().get<MeshStore>().Clear();
@@ -500,7 +485,6 @@ void PresentViewport(entt::registry &r, entt::entity viewport) {
     // Replay's ticks never render the color image and consumed the scene's reactive changes,
     // so force a full record to render the final state regardless.
     if (!AdvanceAndRecord(r, viewport, /*force_full=*/true)) return;
-    SubmitRecordedFrame(r);
     WaitForRender(r);
 }
 
@@ -508,12 +492,13 @@ void WaitForRender(entt::registry &r) {
     auto &frame = r.ctx().get<FrameState>();
     if (!frame.RenderPending) return;
 
-    const auto &vk = r.ctx().get<const VulkanResources>();
-    {
+    auto &resources = r.ctx().get<ViewportRenderResources>();
+    if (resources.InFlight) {
         const profile::CpuScope scope{"WaitGpu"};
-        WaitFor(*r.ctx().get<const ViewportRenderResources>().RenderFence, vk.Device);
+        resources.InFlight->waitUntilCompleted();
     }
-    profile::Resolve(vk.Device);
+    profile::Resolve(resources.InFlight);
+    resources.InFlight = nullptr;
     r.ctx().get<GpuBuffers>().Ctx.ReclaimRetiredBuffers();
     frame.RenderPending = false;
 }

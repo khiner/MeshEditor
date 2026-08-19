@@ -20,6 +20,8 @@
 #include "viewport/ViewportEvents.h"
 #include "viewport/ViewportInteractionState.h"
 
+#include <format>
+
 using std::ranges::to;
 
 namespace {

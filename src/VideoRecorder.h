@@ -1,10 +1,8 @@
 #pragma once
 
-#include "vulkan/Buffer.h"
-#include "vulkan/VulkanResources.h"
+#include "metal/Image.h"
 
 #include <filesystem>
-#include <optional>
 #include <span>
 
 struct WavWriter;
@@ -17,8 +15,8 @@ struct WavWriter;
 // A `.wav` output path records audio only: no GPU capture, no ffmpeg, the samples stream straight into a 32-bit float wav, and CaptureFrame only counts the frame for the recording's pacing.
 struct VideoRecorder {
     VideoRecorder(
-        const VulkanResources &, mvk::BufferContext &,
-        const std::filesystem::path &output_path, vk::Offset3D offset, vk::Extent2D extent, int fps,
+        const mtl::Context &,
+        const std::filesystem::path &output_path, uint32_t x, uint32_t y, mtl::Extent2D extent, int fps,
         uint32_t audio_sample_rate = 0
     );
     ~VideoRecorder();
@@ -26,9 +24,8 @@ struct VideoRecorder {
     VideoRecorder(const VideoRecorder &) = delete;
     VideoRecorder &operator=(const VideoRecorder &) = delete;
 
-    // Image must be in eShaderReadOnlyOptimal; left in the same layout on return.
-    // Copies the sub-rect locked at construction.
-    void CaptureFrame(vk::Image);
+    // Copy the sub-rect fixed at construction from the render target.
+    void CaptureFrame(const mtl::Texture &);
 
     // Mono frames at the rate given at construction. A no-op when recording without audio.
     void CaptureAudio(std::span<const float>);
@@ -47,17 +44,13 @@ private:
 
     void Stop();
 
-    vk::Device Device;
-    vk::Queue Queue;
-    vk::Offset3D Offset;
-    vk::Extent2D Ex;
-    vk::DeviceSize FrameBytes;
+    const mtl::Context *Ctx{nullptr};
+    uint32_t OffsetX{0}, OffsetY{0};
+    mtl::Extent2D Ex{};
+    size_t FrameBytes{0};
 
-    vk::UniqueCommandPool CommandPool;
-    vk::UniqueCommandBuffer CommandBuffer;
-    vk::UniqueFence Fence;
-
-    std::optional<mvk::Buffer> Staging;
+    // Shared readback for the private render target.
+    mtl::Owned<MTL::Buffer> Staging;
 
     std::unique_ptr<std::FILE, PipeCloser> Pipe;
     uint64_t FrameCount{0};

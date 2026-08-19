@@ -11,42 +11,43 @@
 #include "gpu/Vertex.h"
 #include "gpu/ViewportTheme.h"
 #include "gpu/WorkspaceLights.h"
+#include "metal/BufferArena.h"
+#include "metal/Image.h"
 #include "render/MeshBuffers.h"
 #include "render/PickConstants.h"
-#include "vulkan/BufferArena.h"
 
 #include <algorithm>
 #include <numeric>
 
 struct DrawBufferPair {
-    mvk::Buffer DrawData;
+    mtl::Buffer DrawData;
     // Also a storage buffer, so the frustum cull pass can edit instance counts in place.
-    mvk::Buffer Indirect;
+    mtl::Buffer Indirect;
     // Maps gl_InstanceIndex to a dense DrawData index. Identity when nothing is culled.
-    mvk::Buffer VisibleIndices;
+    mtl::Buffer VisibleIndices;
     // One CullEntry per DrawData element, for the frustum cull pass.
-    mvk::Buffer CullEntries;
-    DrawBufferPair(mvk::BufferContext &ctx)
-        : DrawData(ctx, 0, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::DrawDataBuffer),
-          Indirect(ctx, 0, vk::BufferUsageFlagBits::eIndirectBuffer | vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer),
-          VisibleIndices(ctx, 0, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer),
-          CullEntries(ctx, 0, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer) {}
+    mtl::Buffer CullEntries;
+    DrawBufferPair(mtl::BufferContext &ctx)
+        : DrawData(ctx, 0, SlotType::DrawDataBuffer),
+          Indirect(ctx, 0, SlotType::Buffer),
+          VisibleIndices(ctx, 0, SlotType::Buffer),
+          CullEntries(ctx, 0, SlotType::Buffer) {}
 };
 
 // Shared arena for per-instance GPU data (transforms, object IDs, instance states, local-space bounds).
 // Uses a single RangeAllocator so all buffers share the same instance offsets.
 struct InstanceArena {
-    InstanceArena(mvk::BufferContext &ctx)
-        : TransformBuffer(ctx, 0, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::ModelBuffer),
-          ObjectIdBuffer(ctx, 0, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::ObjectIdBuffer),
-          StateBuffer(ctx, 0, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::InstanceStateBuffer),
-          BoundsBuffer(ctx, 0, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer),
-          VisibilityBuffer(ctx, 0, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer) {}
+    InstanceArena(mtl::BufferContext &ctx)
+        : TransformBuffer(ctx, 0, SlotType::ModelBuffer),
+          ObjectIdBuffer(ctx, 0, SlotType::ObjectIdBuffer),
+          StateBuffer(ctx, 0, SlotType::InstanceStateBuffer),
+          BoundsBuffer(ctx, 0, SlotType::Buffer),
+          VisibilityBuffer(ctx, 0, SlotType::Buffer) {}
 
     Range Allocate(uint32_t count) {
         const auto range = Allocator.Allocate(count);
         if (range.Count == 0) return range;
-        const vk::DeviceSize end = range.Offset + range.Count;
+        const uint64_t end = range.Offset + range.Count;
         EnsureCapacity(end);
         return range;
     }
@@ -57,23 +58,23 @@ struct InstanceArena {
     void CompactErase(uint32_t global_index, uint32_t range_end) {
         const auto count = range_end - global_index - 1;
         if (count == 0) return;
-        ForEachBuffer([&](mvk::Buffer &buf, size_t sz) {
-            buf.Move(vk::DeviceSize(global_index + 1) * sz, vk::DeviceSize(global_index) * sz, count * sz);
+        ForEachBuffer([&](mtl::Buffer &buf, size_t sz) {
+            buf.Move(uint64_t(global_index + 1) * sz, uint64_t(global_index) * sz, count * sz);
         });
     }
 
     // Copy `count` elements from src_offset to dst_offset across all buffers.
     void CopyInstances(uint32_t src_offset, uint32_t dst_offset, uint32_t count) {
         if (count == 0 || src_offset == dst_offset) return;
-        ForEachBuffer([&](mvk::Buffer &buf, size_t sz) {
-            buf.Move(vk::DeviceSize(src_offset) * sz, vk::DeviceSize(dst_offset) * sz, count * sz);
+        ForEachBuffer([&](mtl::Buffer &buf, size_t sz) {
+            buf.Move(uint64_t(src_offset) * sz, uint64_t(dst_offset) * sz, count * sz);
         });
     }
 
     // Pre-reserve capacity for `count` additional instances to avoid per-Allocate growth.
-    void ReserveAdditional(uint32_t count) { EnsureCapacity(vk::DeviceSize(Allocator.HighWaterMark()) + count); }
+    void ReserveAdditional(uint32_t count) { EnsureCapacity(uint64_t(Allocator.HighWaterMark()) + count); }
 
-    void UpdateState(uint32_t index, uint8_t state) { StateBuffer.Update(as_bytes(state), vk::DeviceSize(index) * sizeof(uint8_t)); }
+    void UpdateState(uint32_t index, uint8_t state) { StateBuffer.Update(as_bytes(state), uint64_t(index) * sizeof(uint8_t)); }
     const AABB &GetBounds(uint32_t index) const { return reinterpret_cast<const AABB *>(BoundsBuffer.GetMappedData().data())[index]; }
     std::span<uint8_t> GetMutableVisibility(Range range) const { return VisibilityBuffer.GetMutableSpan<uint8_t>(range); }
     std::span<AABB> GetMutableBounds(Range range) const { return BoundsBuffer.GetMutableSpan<AABB>(range); }
@@ -86,12 +87,12 @@ struct InstanceArena {
     // Reset to empty: used size and allocator go to zero, keeping the GPU allocations for reuse.
     void Reset() {
         Allocator = {};
-        ForEachBuffer([](mvk::Buffer &buf, size_t) { buf.UsedSize = 0; });
+        ForEachBuffer([](mtl::Buffer &buf, size_t) { buf.UsedSize = 0; });
     }
 
     // One visibility byte per slot, written by the cull compute: nonzero while the instance last
     // passed the occlusion cull. New instances start visible.
-    mvk::Buffer TransformBuffer, ObjectIdBuffer, StateBuffer, BoundsBuffer, VisibilityBuffer;
+    mtl::Buffer TransformBuffer, ObjectIdBuffer, StateBuffer, BoundsBuffer, VisibilityBuffer;
 
 private:
     void ForEachBuffer(auto &&fn) {
@@ -102,8 +103,8 @@ private:
         fn(VisibilityBuffer, sizeof(uint8_t));
     }
 
-    void EnsureCapacity(vk::DeviceSize end) {
-        ForEachBuffer([end](mvk::Buffer &buf, size_t sz) {
+    void EnsureCapacity(uint64_t end) {
+        ForEachBuffer([end](mtl::Buffer &buf, size_t sz) {
             const auto required = end * sz;
             buf.Reserve(required);
             buf.UsedSize = std::max(buf.UsedSize, required);
@@ -119,10 +120,10 @@ struct GpuBuffers {
     // instance by dynamic offset. Instance 0 is the live UBO.
     static constexpr uint32_t MaxBlurSteps{64};
 
-    // The view UBO instance stride, aligned for dynamic uniform offsets.
-    static vk::DeviceSize ViewUboStride(vk::PhysicalDevice pd) {
-        const auto align = pd.getProperties().limits.minUniformBufferOffsetAlignment;
-        return (sizeof(::SceneViewUBO) + align - 1) / align * align;
+    // Metal requires aligned dynamic buffer offsets.
+    static constexpr uint64_t ViewUboAlignment{256};
+    static constexpr uint64_t ViewUboStride() {
+        return (sizeof(::SceneViewUBO) + ViewUboAlignment - 1) / ViewUboAlignment * ViewUboAlignment;
     }
     static constexpr uint32_t MaxSelectableElements{10'000'000};
     static constexpr uint32_t ObjectPickBitsetWords{(MaxSelectableObjects + 31) / 32};
@@ -132,31 +133,27 @@ struct GpuBuffers {
     static constexpr uint32_t SelectionNodesPerPixel{10};
     static constexpr uint32_t MaxSelectionNodeBytes{64 * 1024 * 1024};
 
-    GpuBuffers(vk::PhysicalDevice pd, vk::Device d, vk::Instance instance, DescriptorSlots &slots)
-        : Ctx{pd, d, instance, slots},
-          VertexBuffer{Ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::VertexBuffer},
-          FaceIndexBuffer{Ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::IndexBuffer},
-          EdgeIndexBuffer{Ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::IndexBuffer},
-          VertexIndexBuffer{Ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::IndexBuffer},
+    GpuBuffers(const mtl::Context &ctx, mtl::BindlessSet &slots)
+        : Ctx{ctx, slots},
+          VertexBuffer{Ctx, SlotType::VertexBuffer},
+          FaceIndexBuffer{Ctx, SlotType::IndexBuffer},
+          EdgeIndexBuffer{Ctx, SlotType::IndexBuffer},
+          VertexIndexBuffer{Ctx, SlotType::IndexBuffer},
           Instances{Ctx},
-          Lights{Ctx, sizeof(PunctualLight), vk::BufferUsageFlagBits::eStorageBuffer, SlotType::LightBuffer},
-          Materials{Ctx, sizeof(PBRMaterial), vk::BufferUsageFlagBits::eStorageBuffer, SlotType::MaterialBuffer},
-          SceneViewUBO{Ctx, ViewUboStride(pd) * (MaxBlurSteps + 1), vk::BufferUsageFlagBits::eUniformBuffer, SlotType::SceneViewUBO},
-          ViewportThemeUBO{Ctx, sizeof(ViewportTheme), vk::BufferUsageFlagBits::eUniformBuffer, SlotType::ViewportThemeUBO},
-          WorkspaceLightsUBO{Ctx, sizeof(WorkspaceLights), vk::BufferUsageFlagBits::eUniformBuffer, SlotType::WorkspaceLightsUBO},
-          SceneViewUboStride{ViewUboStride(pd)},
+          Lights{Ctx, sizeof(PunctualLight), SlotType::LightBuffer},
+          Materials{Ctx, sizeof(PBRMaterial), SlotType::MaterialBuffer},
+          SceneViewUBO{Ctx, ViewUboStride() * (MaxBlurSteps + 1)},
+          ViewportThemeUBO{Ctx, sizeof(ViewportTheme)},
+          WorkspaceLightsUBO{Ctx, sizeof(WorkspaceLights)},
           RenderDraw{Ctx}, SelectionDraw{Ctx},
-          SelectionNodeBuffer{Ctx, sizeof(SelectionNode), vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer},
-          SelectionCounter{Ctx, sizeof(SelectionCounters), mvk::MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eStorageBuffer},
-          ObjectPickKeys{Ctx, MaxSelectableObjects * sizeof(uint32_t), mvk::MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eStorageBuffer},
-          ObjectPickSeenBitset{Ctx, ObjectPickBitsetWords * sizeof(uint32_t), mvk::MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eStorageBuffer},
-          SelectionBitset{Ctx, SelectionBitsetWords * sizeof(uint32_t), mvk::MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eStorageBuffer},
-          MotionBlurTileIndirection{Ctx, 0, mvk::MemoryUsage::GpuOnly, vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eTransferDst},
-          ElementPickCandidates{Ctx, ElementPickGroupCount * sizeof(ElementPickCandidate), mvk::MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eStorageBuffer},
-          IdentityIndexBuffer{Ctx, 0, mvk::MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eIndexBuffer} {
-        // The dynamic-offset binding describes one instance. Offsets select among the ring's instances.
-        SceneViewUBO.DescriptorRange = sizeof(::SceneViewUBO);
-        SceneViewUBO.UpdateDescriptor();
+          SelectionNodeBuffer{Ctx, sizeof(SelectionNode), SlotType::Buffer},
+          SelectionCounter{Ctx, sizeof(SelectionCounters)},
+          ObjectPickKeys{Ctx, MaxSelectableObjects * sizeof(uint32_t)},
+          ObjectPickSeenBitset{Ctx, ObjectPickBitsetWords * sizeof(uint32_t)},
+          SelectionBitset{Ctx, SelectionBitsetWords * sizeof(uint32_t)},
+          MotionBlurTileIndirection{Ctx, 0},
+          ElementPickCandidates{Ctx, ElementPickGroupCount * sizeof(ElementPickCandidate)},
+          IdentityIndexBuffer{Ctx, 0} {
     }
 
     void ReserveAdditionalIndices(uint32_t face, uint32_t edge, uint32_t vertex) {
@@ -207,18 +204,18 @@ struct GpuBuffers {
 
     // Motion blur's tile indirection table: one entry per tile, per motion direction. Sized alongside
     // the blur's other targets, so it costs nothing until a frame is blurred.
-    void ResizeMotionBlurTileIndirection(vk::Extent2D tile_extent) {
-        MotionBlurTileIndirection.SetCount(2 * tile_extent.width * tile_extent.height);
+    void ResizeMotionBlurTileIndirection(mtl::Extent2D tile_extent) {
+        MotionBlurTileIndirection.SetCount(2 * tile_extent.Width * tile_extent.Height);
     }
 
-    void ResizeSelectionNodeBuffer(vk::Extent2D extent) {
-        const uint64_t pixels = uint64_t(extent.width) * extent.height;
+    void ResizeSelectionNodeBuffer(mtl::Extent2D extent) {
+        const uint64_t pixels = uint64_t(extent.Width) * extent.Height;
         const uint64_t desired_nodes = pixels == 0 ? 1 : pixels * SelectionNodesPerPixel;
         const uint64_t max_nodes = std::max<uint64_t>(1, MaxSelectionNodeBytes / sizeof(SelectionNode));
         const uint32_t final_count = std::min<uint64_t>({desired_nodes, max_nodes, std::numeric_limits<uint32_t>::max()});
         if (final_count != SelectionNodeCapacity) {
             SelectionNodeCapacity = final_count;
-            SelectionNodeBuffer = {Ctx, SelectionNodeCapacity * sizeof(SelectionNode), vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer};
+            SelectionNodeBuffer = {Ctx, SelectionNodeCapacity * sizeof(SelectionNode), SlotType::Buffer};
         }
     }
 
@@ -243,25 +240,25 @@ struct GpuBuffers {
         IdentityIndexCount = count;
     }
 
-    mvk::BufferContext Ctx;
+    mtl::BufferContext Ctx;
 
     // Per-scene arenas
     BufferArena<Vertex> VertexBuffer;
     BufferArena<uint32_t> FaceIndexBuffer, EdgeIndexBuffer, VertexIndexBuffer;
-    BufferArena<mat4> ArmatureDeformBuffer{Ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::ArmatureDeformBuffer};
-    BufferArena<float> MorphWeightBuffer{Ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::MorphWeightBuffer};
-    BufferArena<uint8_t> VertexClassBuffer{Ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::VertexClassBuffer};
+    BufferArena<mat4> ArmatureDeformBuffer{Ctx, SlotType::ArmatureDeformBuffer};
+    BufferArena<float> MorphWeightBuffer{Ctx, SlotType::MorphWeightBuffer};
+    BufferArena<uint8_t> VertexClassBuffer{Ctx, SlotType::VertexClassBuffer};
     InstanceArena Instances;
 
     // Poses at the shutter's open and close, for motion blur's velocity pass. Each is a whole-buffer
     // copy of its live counterpart, so the per-draw offsets index them unchanged.
     struct VelocityPose {
-        VelocityPose(mvk::BufferContext &ctx)
-            : Transforms(ctx, 0, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::ModelBuffer),
-              ArmatureDeform(ctx, 0, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::ArmatureDeformBuffer),
-              MorphWeights(ctx, 0, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::MorphWeightBuffer) {}
+        VelocityPose(mtl::BufferContext &ctx)
+            : Transforms(ctx, 0, SlotType::ModelBuffer),
+              ArmatureDeform(ctx, 0, SlotType::ArmatureDeformBuffer),
+              MorphWeights(ctx, 0, SlotType::MorphWeightBuffer) {}
 
-        mvk::Buffer Transforms, ArmatureDeform, MorphWeights;
+        mtl::Buffer Transforms, ArmatureDeform, MorphWeights;
         // Looking through an animated camera moves the view too, so each pose carries its own.
         mat4 ViewProj{1};
     };
@@ -283,16 +280,16 @@ struct GpuBuffers {
 
     // Copy the live view UBO into ring instance `instance`.
     void SnapshotSceneViewUbo(uint32_t instance) {
-        SceneViewUBO.Update(SceneViewUBO.GetMappedData().subspan(0, sizeof(::SceneViewUBO)), SceneViewUboStride * instance);
+        SceneViewUBO.Update(SceneViewUBO.GetMappedData().subspan(0, sizeof(::SceneViewUBO)), ViewUboStride() * instance);
     }
-    void UpdateSceneViewUboField(uint32_t instance, vk::DeviceSize field_offset, std::span<const std::byte> bytes) {
-        SceneViewUBO.Update(bytes, SceneViewUboStride * instance + field_offset);
+    void UpdateSceneViewUboField(uint32_t instance, uint64_t field_offset, std::span<const std::byte> bytes) {
+        SceneViewUBO.Update(bytes, ViewUboStride() * instance + field_offset);
     }
-    uint32_t SceneViewUboOffset(uint32_t instance) const { return uint32_t(SceneViewUboStride * instance); }
+    uint32_t SceneViewUboOffset(uint32_t instance) const { return uint32_t(ViewUboStride() * instance); }
 
     // Snapshot the live pose into `dst`. Call once the scene is evaluated at the wanted time.
-    void CaptureVelocityPose(VelocityPose &dst) {
-        static constexpr auto copy_whole = [](const mvk::Buffer &src, mvk::Buffer &dst) {
+    void CaptureVelocityPose(VelocityPose &dst) const {
+        static constexpr auto copy_whole = [](const mtl::Buffer &src, mtl::Buffer &dst) {
             dst.Reserve(src.UsedSize);
             dst.Update(src.GetMappedData().subspan(0, src.UsedSize));
             dst.UsedSize = src.UsedSize;
@@ -309,36 +306,35 @@ struct GpuBuffers {
 
     // Per-frame uniforms. SceneViewUBO holds MaxBlurSteps+1 instances at SceneViewUboStride,
     // with the live state at instance 0.
-    mvk::Buffer SceneViewUBO, ViewportThemeUBO, WorkspaceLightsUBO;
-    vk::DeviceSize SceneViewUboStride;
+    mtl::Buffer SceneViewUBO, ViewportThemeUBO, WorkspaceLightsUBO;
 
     // Draw-command buffers
     DrawBufferPair RenderDraw, SelectionDraw;
 
     // One entry per run of mesh instance slots sharing a deform state.
-    mvk::Buffer BoundsReduceEntries{Ctx, 0, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::DrawDataBuffer};
-    // (entry index, tile index) per bounds workgroup, posed entries' tiles first.
-    mvk::Buffer BoundsTiles{Ctx, 0, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer};
+    mtl::Buffer BoundsReduceEntries{Ctx, 0, SlotType::DrawDataBuffer};
+    // (entry index, tile index) per bounds threadgroup, posed entries' tiles first.
+    mtl::Buffer BoundsTiles{Ctx, 0, SlotType::Buffer};
     // Per-tile partial AABBs of each entry's positions.
-    mvk::Buffer BoundsPartials{Ctx, 0, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer};
+    mtl::Buffer BoundsPartials{Ctx, 0, SlotType::Buffer};
     // First tile index per bounds entry, locating its partials.
-    mvk::Buffer BoundsEntryFirstTiles{Ctx, 0, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer};
-    // (entry index, tile index) per normal-derive workgroup, the entries' face tiles in a leading prefix.
-    mvk::Buffer DeriveTiles{Ctx, 0, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer};
+    mtl::Buffer BoundsEntryFirstTiles{Ctx, 0, SlotType::Buffer};
+    // (entry index, tile index) per normal-derive threadgroup, the entries' face tiles in a leading prefix.
+    mtl::Buffer DeriveTiles{Ctx, 0, SlotType::Buffer};
     // Current-pose vertex positions in mesh-local space, one range per posed bounds entry.
-    mvk::Buffer PosedPositions{Ctx, 0, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer};
+    mtl::Buffer PosedPositions{Ctx, 0, SlotType::Buffer};
     // One entry per normal-derive dispatch item.
     // A frame holds one per posed bounds entry with triangles, and a base one-shot holds one per mesh.
-    mvk::Buffer NormalDeriveEntries{Ctx, 0, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer};
+    mtl::Buffer NormalDeriveEntries{Ctx, 0, SlotType::Buffer};
     // Per-instance derived normals, one range per posed derive entry.
     // The three buffers hold per-vertex smooth normals, seam-corner sector normals, and per-face fan sums.
-    mvk::Buffer PosedVertexNormals{Ctx, 0, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer};
-    mvk::Buffer PosedSeamNormals{Ctx, 0, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer};
-    mvk::Buffer PosedFaceNormals{Ctx, 0, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer};
+    mtl::Buffer PosedVertexNormals{Ctx, 0, SlotType::Buffer};
+    mtl::Buffer PosedSeamNormals{Ctx, 0, SlotType::Buffer};
+    mtl::Buffer PosedFaceNormals{Ctx, 0, SlotType::Buffer};
     // Weight-summed authored morph normal deltas, one vec3 per posed vertex slot, present for authored-morph entries.
-    mvk::Buffer PosedMorphNormalDeltas{Ctx, 0, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer};
+    mtl::Buffer PosedMorphNormalDeltas{Ctx, 0, SlotType::Buffer};
     // Instance-arena slots whose bounds draw as box wireframes, one box per listed slot.
-    mvk::Buffer BoundsBoxSlots{Ctx, 0, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer};
+    mtl::Buffer BoundsBoxSlots{Ctx, 0, SlotType::Buffer};
 
     // Group counts of the posed prelude's passes, in recorded order (their arg slot order in PreludeDispatchArgs).
     // Set on draw-list rebuild.
@@ -347,21 +343,20 @@ struct GpuBuffers {
         uint32_t PosePrepass{0}, DeriveFaces{0}, BoundsReduce{0}, DeriveGather{0}, BoundsCombine{0};
     };
     PreludeGroups Prelude{};
-    // One vk::DispatchIndirectCommand per prelude pass.
     // Holds the recorded group counts, or zeros when deform inputs are unchanged since the last submit.
-    mvk::Buffer PreludeDispatchArgs{Ctx, PreludeGroups::PassCount * sizeof(vk::DispatchIndirectCommand), mvk::MemoryUsage::CpuToGpu, vk::BufferUsageFlagBits::eIndirectBuffer};
+    mtl::Buffer PreludeDispatchArgs{Ctx, PreludeGroups::PassCount * sizeof(MTL::DispatchThreadgroupsIndirectArguments)};
     // A deform input was written since the last submit wrote live prelude counts.
     // Deform inputs are morph weights, armature poses, transform gestures, geometry edits, and draw-list rebuilds.
     bool PreludeStale{true};
 
     // Selection / picking — GPU buffers + host-visible readback
     uint32_t SelectionNodeCapacity{1};
-    mvk::Buffer SelectionNodeBuffer;
+    mtl::Buffer SelectionNodeBuffer;
     TypedBuffer<SelectionCounters> SelectionCounter;
     TypedBuffer<uint32_t> ObjectPickKeys, ObjectPickSeenBitset, SelectionBitset, MotionBlurTileIndirection;
     TypedBuffer<ElementPickCandidate> ElementPickCandidates;
 
     // Shared identity sequence backing unindexed draws and seeding visible-index remaps. Grown on demand, not scene-scoped.
-    mvk::Buffer IdentityIndexBuffer;
+    mtl::Buffer IdentityIndexBuffer;
     uint32_t IdentityIndexCount{0};
 };

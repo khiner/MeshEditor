@@ -36,14 +36,14 @@ Audio-specific features:
 * Load [RealImpact](https://samuelpclarke.com/realimpact/) datasets, including the object mesh and instanced cylinders for each microphone position.
 
 Noteworthy dev bits:
-* Terse and direct usage of [Vulkan-Hpp](https://github.com/KhronosGroup/Vulkan-Hpp)
- * Bindless rendering with descriptor-indexed SSBO vertex pulling (not BDA/buffer-reference vertex pulling yet) from contiguous arenas for mesh data (vertices, indices, attributes, selection state, etc.)
-* Multi-Draw Indirect rendering (MDI): Each pipeline issues one `vkCmdDrawIndexedIndirect` per render pass (when used)
-* Uses unified CPU/GPU memory when available. For discrete GPUs, minimizes staging transfers by deferring and merging copy ranges per-frame
+* Native Metal rendering through [metal-cpp](https://developer.apple.com/metal/cpp/). **Note: This used to be a Vulkan project.** For reference, dae664bd0f2bbdfcf309ba7d000ce9890edbcb38 is the last commit SHA using Vulkan.
+* Bindless Tier-2 argument-buffer access and GPU-address vertex pulling from contiguous arenas for mesh data (vertices, indices, attributes, selection state, etc.)
+* Batched indirect indexed draws with GPU-written instance counts and visibility remaps
+* Directly mapped CPU/GPU storage on unified-memory Apple Silicon
 * GPU-accelerated mouse interactions (no CPU acceleration structures like BVH)
 * Half-edge iterators for mesh topology operations
-* Shader hot reloading: Edit shader code and recompile/reload GLSL->SPIRV at runtime in the UI
-* C++/GLSL structs generated from YAML to keep types in sync w/o duplication
+* Shader hot reloading: edit and recompile MSL at runtime from the UI
+* Matching C++/MSL structs and function-constant indices generated from YAML
 
 ### Physical audio modeling
 
@@ -85,7 +85,7 @@ Load/save roundtrips almost all glTF losslessly, with known exceptions listed in
 PBR BRDF/lighting equations are taken directly from the reference [glTF-Sample-Renderer shaders](https://github.com/KhronosGroup/glTF-Sample-Renderer/blob/main/source/Renderer/shaders/).
 
 PBR render features that are not needed by the scene (because the feature isn't enabled on any current object's materials, scene lights are not present or enabled, or IBL environment not present (in Solid render mode)) are not compiled. This is updated dynamically as the scene changes or edits are made.
-(This is implemented with specialization constants, so only the VkPipeline variants (opaque/blend) need to be recreated, and no GLSL->SPIR-V recompilation is needed for the PBR shader. This is fast enough to run synchronously whenever the enabled feature mask changes - usually around 60ms on my machine.)
+Metal function constants specialize the PBR variants. Changing the feature mask rebuilds the affected pipeline states from cached MSL libraries without recompiling the source.
 
 #### glTF supported extensions
 
@@ -122,35 +122,12 @@ PBR render features that are not needed by the scene (because the feature isn't 
 
 ### Install dependencies
 
-- Download and install the latest SDK from https://vulkan.lunarg.com/sdk/home
-- Set the `VULKAN_SDK` environment variable.
-  For example, add the following to your `.zshrc` file:
-  ```shell
-  export VULKAN_SDK="$HOME/VulkanSDK/{version}/macOS"
-  ```
-
-#### Mac
+Requires Apple Silicon and the Xcode command-line tools.
 
 ```shell
 $ git clone --recursive git@github.com:khiner/MeshEditor.git
 $ brew install cmake pkgconfig llvm sdl3 fftw eigen
 $ brew link llvm --force
-```
-
-#### Linux
-
-(Only tested on Ubuntu, and it's been awhile, so I'd honestly be suprised if it works.
-If you want a Linux build, I'd be happy to get this working!)
-
-```shell
-$ sudo apt install llvm sld3 libeigen3-dev
-$ export PATH="$(llvm-config --bindir):$PATH"
-```
-
-Install GTK (for native file dialogs):
-
-```shell
-$ sudo apt install build-essential libgtk-3-dev
 ```
 
 ### Clone, clean, build, and run
@@ -199,12 +176,11 @@ Rendering is fixed-step (one tick per timeline frame) and GPU-paced at a fixed e
 
 ## Stack
 
-- [Vulkan](https://www.vulkan.org/) + [ImGui](https://github.com/ocornut/imgui) + [SDL3](https://github.comlibsdl-org/SDL): Graphics + immediate-mode UI/UX
+- [Metal](https://developer.apple.com/metal/) via [metal-cpp](https://developer.apple.com/metal/cpp/) + [ImGui](https://github.com/ocornut/imgui) + [SDL3](https://github.com/libsdl-org/SDL): Graphics + immediate-mode UI/UX
 - [glm](https://github.com/g-truc/glm): Small numeric vector/matrix types + math
 - [entt](https://github.com/skypjack/entt): Entity Component System (ECS) for an efficient and scalable mixin-style architectural pattern
 - [miniaudio](https://github.com/mackron/miniaudio): Audio stream I/O
 - [Spectra](https://github.com/yixuan/spectra) Estimate eigenvalues/vectors for modal analysis
-- [VulkanMemoryAllocator](https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator): Efficient Vulkan memory allocation
 - [fastgltf](https://github.com/spnda/fastgltf) glTF 2.0 scene loading
 - [JoltPhysics](https://github.com/jrouwe/JoltPhysics): Rigid body physics
 - [basis_universal](https://github.com/BinomialLLC/basis_universal) KTX2 texture transcoding (`KHR_texture_basisu`)
@@ -218,12 +194,6 @@ Rendering is fixed-step (one tick per timeline frame) and GPU-paced at a fixed e
 ## Development
 
 ### Build options
-
-**Staged buffer transfers**: By default, the app assumes unified memory (direct-mapped GPU memory).
-For discrete GPUs, enable staged transfers:
-```shell
-$ cmake -B build -DMVK_FORCE_STAGED_TRANSFERS=ON .
-```
 
 **glTF sample submenus**: [glTF-Sample-Assets](https://github.com/KhronosGroup/glTF-Sample-Assets) and [glTF_Physics](https://github.com/eoineoineoin/glTF_Physics) are git submodules under `external/`, populating `File > glTF Samples` and `File > glTF_Physics Samples`. These submenus are empty if the submodules aren't initialized:
 ```shell

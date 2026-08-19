@@ -2,36 +2,43 @@
 
 #include "gltf/ImageBasedLight.h"
 #include "gpu/IblSamplers.h"
+#include "metal/Buffer.h"
+#include "metal/Image.h"
+#include "metal/Shader.h"
 #include "numeric/mat3.h"
-#include "vulkan/Buffer.h"
-#include "vulkan/Image.h"
-#include "vulkan/VulkanResources.h"
 
 #include <expected>
 #include <filesystem>
 #include <variant>
 
-struct DescriptorSlots;
+namespace mtl {
+struct BindlessSet;
+} // namespace mtl
 struct IblPrefilterPipelines;
 
 namespace gltf {
 struct Image;
 } // namespace gltf
 
+inline constexpr float MaxSamplerAnisotropy{16.f};
+
+struct ActiveSamplerAnisotropy {
+    float Value{1.f};
+};
+
 struct SamplerConfig {
-    vk::Filter MinFilter, MagFilter;
-    vk::SamplerMipmapMode MipmapMode;
+    MTL::SamplerMinMagFilter MinFilter, MagFilter;
+    MTL::SamplerMipFilter MipmapMode;
     bool UsesMipmaps;
 };
 
 struct TextureEntry {
-    mvk::ImageResource Image;
-    vk::UniqueSampler Sampler;
+    mtl::Texture Image;
+    mtl::Owned<MTL::SamplerState> Sampler;
     uint32_t SamplerSlot;
-    uint32_t Width, Height, MipLevels;
     // Sampler build inputs, retained so the sampler can be rebuilt.
     SamplerConfig Config;
-    vk::SamplerAddressMode WrapS, WrapT;
+    MTL::SamplerAddressMode WrapS, WrapT;
     std::string Name;
     // Index into `gltf::SourceAssets::Images` for textures materialized from a `GltfImageRef`;
     // UINT32_MAX for raw-pixel uploads (LUTs, SVG bitmaps). Used by SaveGltf for re-encode lookup.
@@ -50,10 +57,9 @@ struct TextureStore {
 };
 
 struct CubemapEntry {
-    mvk::ImageResource Image;
-    vk::UniqueSampler Sampler;
+    mtl::Texture Image;
+    mtl::Owned<MTL::SamplerState> Sampler;
     uint32_t SamplerSlot;
-    uint32_t Size, MipLevels;
     std::string Name;
 };
 
@@ -110,7 +116,7 @@ struct PendingTextureUpload {
     uint32_t SamplerSlot;
     std::variant<GltfImageRef, RawPixels> Source;
     TextureColorSpace ColorSpace;
-    vk::SamplerAddressMode WrapS, WrapT;
+    MTL::SamplerAddressMode WrapS, WrapT;
     SamplerConfig Sampler;
     std::string Name;
 };
@@ -118,13 +124,13 @@ struct PendingTextureUploads {
     std::vector<PendingTextureUpload> Items;
 };
 
-// An imported texture's upload descriptor, recording the bindless slot baked into its PBRMaterial.
+// An imported texture upload, recording the bindless slot baked into its PBRMaterial.
 // The pixel source lives in gltf::SourceAssets::Images, keyed by SourceImageIndex.
 struct MaterializedTexture {
     uint32_t SamplerSlot;
     uint32_t SourceImageIndex; // index into gltf::SourceAssets::Images
     TextureColorSpace ColorSpace;
-    vk::SamplerAddressMode WrapS, WrapT;
+    MTL::SamplerAddressMode WrapS, WrapT;
     SamplerConfig Sampler;
     std::string Name;
 };
@@ -140,59 +146,51 @@ struct PendingEnvironmentImport {
 // Tag: drain pass releases ImportedSceneWorld and resets SceneWorld back to EmptySceneWorld.
 struct PendingSceneWorldClear {};
 
-struct StagingAlloc {
-    vk::Buffer Buffer;
-    vk::DeviceSize Offset;
-};
-
 struct TextureUploadBatch {
-    vk::UniqueCommandBuffer Cb;
-    mvk::BufferContext *Ctx;
-    std::vector<mvk::Buffer> StagingChunks;
-    vk::DeviceSize ChunkUsed{0};
+    const mtl::Context *Ctx{nullptr};
+    mtl::LibraryCache *Libraries{nullptr};
+    MTL::CommandBuffer *Cb{nullptr};
+    mtl::Owned<MTL::SamplerState> MipSampler{};
+    std::vector<std::pair<MTL::PixelFormat, mtl::RenderPipeline>> MipPipelines{};
 };
 
-TextureUploadBatch BeginTextureUploadBatch(vk::Device, vk::CommandPool, mvk::BufferContext &);
-void SubmitTextureUploadBatch(TextureUploadBatch &, vk::Queue, vk::Fence, vk::Device);
-StagingAlloc AllocStaging(TextureUploadBatch &, std::span<const std::byte>);
+TextureUploadBatch BeginTextureUploadBatch(const mtl::Context &, mtl::LibraryCache &);
+void SubmitTextureUploadBatch(TextureUploadBatch &);
 
 std::vector<uint32_t> CollectSamplerSlots(std::span<const TextureEntry>);
-void ReleaseSamplerSlots(DescriptorSlots &, std::span<const uint32_t>);
+void ReleaseSamplerSlots(mtl::BindlessSet &, std::span<const uint32_t>);
 // Clamp a requested anisotropy to the device limit (1 when unsupported).
-float ClampMaxAnisotropy(const VulkanResources &, float requested);
+float ClampMaxAnisotropy(float requested);
 // Recreate all texture samplers at the given max anisotropy.
-void RebuildTextureSamplers(const VulkanResources &, DescriptorSlots &, TextureStore &, float max_anisotropy);
-void ReleaseCubeSamplerSlot(DescriptorSlots &, uint32_t);
-void ReleaseEnvironmentSamplerSlots(DescriptorSlots &, const EnvironmentStore &);
-mvk::ImageResource RenderBitmapToImage(const VulkanResources &, TextureUploadBatch &, std::span<const std::byte> data, uint32_t width, uint32_t height, vk::Format, vk::ImageSubresourceRange);
+void RebuildTextureSamplers(const mtl::Context &, mtl::BindlessSet &, TextureStore &, float max_anisotropy);
+void ReleaseCubeSamplerSlot(mtl::BindlessSet &, uint32_t);
+void ReleaseEnvironmentSamplerSlots(mtl::BindlessSet &, const EnvironmentStore &);
 
 TextureEntry CreateTextureEntry(
-    const VulkanResources &, TextureUploadBatch &, DescriptorSlots &,
+    const mtl::Context &, TextureUploadBatch &, mtl::BindlessSet &,
     std::span<const std::byte> pixels, uint32_t width, uint32_t height, std::string name,
-    TextureColorSpace, vk::SamplerAddressMode, vk::SamplerAddressMode, const SamplerConfig &
+    TextureColorSpace, MTL::SamplerAddressMode, MTL::SamplerAddressMode, const SamplerConfig &, float max_anisotropy
 );
 std::expected<TextureEntry, std::string> CreateTextureEntryFromEncoded(
-    const VulkanResources &, TextureUploadBatch &, DescriptorSlots &,
+    const mtl::Context &, TextureUploadBatch &, mtl::BindlessSet &,
     std::span<const std::byte>, std::string_view encoded_name, std::string texture_name,
-    TextureColorSpace, vk::SamplerAddressMode, vk::SamplerAddressMode, const SamplerConfig &
+    TextureColorSpace, MTL::SamplerAddressMode, MTL::SamplerAddressMode, const SamplerConfig &, float max_anisotropy
 );
-uint32_t AllocateSamplerSlot(DescriptorSlots &);
-std::pair<uint32_t, uint32_t> AllocateIblCubeSlots(DescriptorSlots &); // {diffuse, specular}
+uint32_t AllocateSamplerSlot(mtl::BindlessSet &);
+std::pair<uint32_t, uint32_t> AllocateIblCubeSlots(mtl::BindlessSet &); // {diffuse, specular}
 
-// Synchronously read an image sub-rect (mip 0, eShaderReadOnlyOptimal) into host memory
-// as raw 4-byte pixels in the image's native channel order (RGBA8 or BGRA8) and row order.
-std::vector<std::byte> ReadbackImageRgba8(const VulkanResources &, mvk::BufferContext &, vk::CommandPool, vk::Fence, vk::Image, vk::Offset3D, vk::Extent2D);
+// Synchronous mip-0 readback in the image's native RGBA8/BGRA8 order.
+std::vector<std::byte> ReadbackImageRgba8(const mtl::Context &, const mtl::Texture &, uint32_t x, uint32_t y, mtl::Extent2D);
 // Synchronously read mip 0 of an RGBA8 texture into host memory.
-std::expected<std::vector<std::byte>, std::string> ReadbackTextureRgba8(const VulkanResources &, mvk::BufferContext &, vk::CommandPool, vk::Fence, const TextureEntry &);
+std::expected<std::vector<std::byte>, std::string> ReadbackTextureRgba8(const mtl::Context &, const TextureEntry &);
 
-std::expected<TextureEntry, std::string> MaterializeTextureEntry(const VulkanResources &, TextureUploadBatch &, DescriptorSlots &, const PendingTextureUpload &, const std::vector<gltf::Image> &);
-std::expected<EnvironmentPrefiltered, std::string> MaterializeEnvironmentImport(const VulkanResources &, TextureUploadBatch &, DescriptorSlots &, const PendingEnvironmentImport &, const std::vector<gltf::Image> &);
+std::expected<TextureEntry, std::string> MaterializeTextureEntry(const mtl::Context &, TextureUploadBatch &, mtl::BindlessSet &, const PendingTextureUpload &, const std::vector<gltf::Image> &, float max_anisotropy);
+std::expected<EnvironmentPrefiltered, std::string> MaterializeEnvironmentImport(const mtl::Context &, mtl::BindlessSet &, const PendingEnvironmentImport &, const std::vector<gltf::Image> &);
 EnvironmentPrefiltered CreateIblFromHdri(
-    const VulkanResources &, DescriptorSlots &,
-    const IblPrefilterPipelines &, const std::filesystem::path &, const std::string &,
-    vk::CommandPool, vk::Fence, mvk::BufferContext &
+    const mtl::Context &, mtl::BindlessSet &,
+    const IblPrefilterPipelines &, const std::filesystem::path &, const std::string &
 );
 // Allocate a 1x1x6 cubemap (1 mip) of the given linear color.
-EnvironmentPrefiltered BuildFlatColorEnvironment(const VulkanResources &, TextureUploadBatch &, DescriptorSlots &, vec3 color, std::string name);
+EnvironmentPrefiltered BuildFlatColorEnvironment(const mtl::Context &, mtl::BindlessSet &, vec3 color, std::string name);
 IblSamplers MakeIblSamplers(const EnvironmentPrefiltered &, const EnvironmentStore &);
-TextureEntry CreateDefaultLutTexture(const VulkanResources &, TextureUploadBatch &, DescriptorSlots &, const std::filesystem::path &lut_path, std::string_view name);
+TextureEntry CreateDefaultLutTexture(const mtl::Context &, TextureUploadBatch &, mtl::BindlessSet &, const std::filesystem::path &lut_path, std::string_view name, float max_anisotropy);

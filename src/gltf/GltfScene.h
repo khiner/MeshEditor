@@ -25,19 +25,18 @@
 #include <expected>
 #include <filesystem>
 
-struct DescriptorSlots;
+namespace mtl {
+struct BindlessSet;
+struct BufferContext;
+struct Context;
+} // namespace mtl
 struct EnvironmentStore;
 struct MeshStore;
 struct GpuBuffers;
 struct TextureStore;
-struct VulkanResources;
 namespace fastgltf {
 class Asset;
 } // namespace fastgltf
-namespace mvk {
-struct BufferContext;
-} // namespace mvk
-
 // Per-entity source-index sidecars for stable round-trip ordering / referencing. Build uses these
 // rather than `SceneNode` (which has been mutated by skinning/armature re-parenting) and rather
 // than entt iteration order (which doesn't track source array order).
@@ -135,7 +134,7 @@ namespace gltf {
 struct LoadContext {
     entt::registry &R;
     entt::entity Viewport;
-    DescriptorSlots &Slots;
+    mtl::BindlessSet &Slots;
     GpuBuffers &Buffers;
     MeshStore &Meshes;
     TextureStore &Textures;
@@ -151,7 +150,7 @@ struct SaveOptions {
     uint8_t LossyImageQuality{75}; // 1–100, ignored for PNG (lossless)
 };
 
-// Vk / BufCtx are only consulted when an image is IsDirty (or external-URI fallback fires).
+// GPU context and buffers are only consulted when an image is dirty or external-URI fallback fires.
 // For plain passthrough saves they may be null.
 struct SaveContext {
     const entt::registry &R;
@@ -159,8 +158,8 @@ struct SaveContext {
     const GpuBuffers &Buffers;
     const MeshStore &Meshes;
     const TextureStore &Textures;
-    const VulkanResources *Vk{nullptr};
-    mvk::BufferContext *BufCtx{nullptr};
+    const mtl::Context *Ctx{nullptr};
+    mtl::BufferContext *BufCtx{nullptr};
     SaveOptions Options{};
 };
 

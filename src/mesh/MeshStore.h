@@ -9,13 +9,10 @@
 #include "gpu/BoneDeformVertex.h"
 #include "gpu/CornerClass.h"
 #include "gpu/MorphTargetVertex.h"
+#include "metal/Buffer.h"
 
 #include <expected>
 #include <filesystem>
-
-namespace mvk {
-struct BufferContext;
-} // namespace mvk
 
 struct ObjPlyMaterial {
     vec4 BaseColorFactor;
@@ -74,7 +71,7 @@ struct MeshPrimitives {
 
 // Owns mesh vertex data (canonical CPU/GPU storage) used by all systems, including rendering.
 struct MeshStore {
-    explicit MeshStore(mvk::BufferContext &);
+    explicit MeshStore(mtl::BufferContext &);
     ~MeshStore();
     MeshStore(MeshStore &&) noexcept;
     MeshStore &operator=(MeshStore &&) noexcept;
@@ -118,7 +115,7 @@ struct MeshStore {
     std::span<const BoneDeformVertex> GetBoneDeform(uint32_t id) const;
     std::span<const MorphTargetVertex> GetMorphTargets(uint32_t id) const;
 
-    // Base descriptor slots of the per-mesh GPU buffers (for shader push constants).
+    // Base bindless slots of the per-mesh GPU buffers (for shader push constants).
     uint32_t GetVertexStateSlot() const;
     uint32_t GetCornerTangentSlot() const;
     uint32_t GetCornerColorSlot() const;

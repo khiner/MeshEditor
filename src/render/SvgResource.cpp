@@ -1,12 +1,9 @@
 #include "render/SvgResource.h"
 
-#include "render/GpuBuffers.h"
-#include "render/OneShotGpu.h"
-#include "render/Pipelines.h" // Format::Color, ColorSubresourceRange
-#include "render/SvgUpload.h"
-#include "render/Textures.h"
+#include "metal/ImGuiTexture.h"
+#include "metal/Image.h"
 
-#include <entt/entity/registry.hpp>
+#include <cmath>
 
 #include "imgui.h"
 #include "lunasvg.h"
@@ -24,53 +21,31 @@ lunasvg::Bitmap RenderDocumentToBitmap(const lunasvg::Document &doc, float scale
 } // namespace
 
 struct SvgResource::Impl {
-    Impl(vk::Device device, const BitmapToImage &render, const std::filesystem::path &path) {
+    Impl(const mtl::Context &ctx, const std::filesystem::path &path) {
         if ((Document = lunasvg::Document::loadFromFile(path))) {
             if (auto bitmap = RenderDocumentToBitmap(*Document, Scale); !bitmap.isNull()) {
                 const uint32_t width = bitmap.width(), height = bitmap.height();
-                const auto size = width * height * 4; // 4 bytes per pixel
-                Image = std::make_unique<mvk::ImageResource>(render({reinterpret_cast<const std::byte *>(bitmap.data()), size}, width, height));
-                Texture = std::make_unique<mvk::ImGuiTexture>(device, *Image->View);
+                Image = mtl::CreateTexture2D(ctx, mtl::Format::Color, {width, height}, MTL::TextureUsageShaderRead);
+                mtl::Upload(Image, 0, {reinterpret_cast<const std::byte *>(bitmap.data()), width * height * 4u}, width * 4u);
             }
         }
     }
 
     std::unique_ptr<lunasvg::Document> Document;
-    std::unique_ptr<mvk::ImageResource> Image;
-    std::unique_ptr<mvk::ImGuiTexture> Texture;
+    mtl::Texture Image;
 
 private:
     static constexpr float Scale{1.5}; // Scale factor for rendering SVG to bitmap
 };
 
-SvgResource::SvgResource(vk::Device device, const BitmapToImage &render, const std::filesystem::path &path)
-    : Imp(std::make_unique<SvgResource::Impl>(device, render, path)) {}
+SvgResource::SvgResource(const mtl::Context &ctx, const std::filesystem::path &path)
+    : Imp(std::make_unique<SvgResource::Impl>(ctx, path)) {}
 SvgResource::~SvgResource() = default;
 
 void SvgResource::DrawIcon(vec2 size) const {
-    if (const auto *t = Imp->Texture.get()) ImGui::Image(ImTextureID(VkDescriptorSet(t->DescriptorSet)), {size.x, size.y}, {t->Uv0.x, t->Uv0.y}, {t->Uv1.x, t->Uv1.y});
+    if (Imp->Image) ImGui::Image(mtl::ImGuiTextureId(*Imp->Image), {size.x, size.y});
 }
 
-struct SvgUploadBatch::Impl {
-    const VulkanResources &Vk;
-    const OneShotGpu &OneShot;
-    TextureUploadBatch Batch;
-
-    explicit Impl(entt::registry &r)
-        : Vk(r.ctx().get<const VulkanResources>()), OneShot(r.ctx().get<const OneShotGpu>()),
-          Batch(BeginTextureUploadBatch(Vk.Device, *OneShot.Pool, r.ctx().get<GpuBuffers>().Ctx)) {}
-};
-
-SvgUploadBatch::SvgUploadBatch(entt::registry &r) : Imp(std::make_unique<Impl>(r)) {}
-SvgUploadBatch::~SvgUploadBatch() = default;
-
-std::unique_ptr<SvgResource> LoadSvg(SvgUploadBatch &batch, const std::filesystem::path &path) {
-    const auto render_bitmap = [&batch](std::span<const std::byte> data, uint32_t width, uint32_t height) {
-        return RenderBitmapToImage(batch.Imp->Vk, batch.Imp->Batch, data, width, height, Format::Color, ColorSubresourceRange);
-    };
-    return std::make_unique<SvgResource>(batch.Imp->Vk.Device, render_bitmap, path);
-}
-
-void SubmitSvgUpload(SvgUploadBatch &batch) {
-    SubmitTextureUploadBatch(batch.Imp->Batch, batch.Imp->Vk.Queue, *batch.Imp->OneShot.Fence, batch.Imp->Vk.Device);
+std::unique_ptr<SvgResource> LoadSvg(const mtl::Context &ctx, const std::filesystem::path &path) {
+    return std::make_unique<SvgResource>(ctx, path);
 }

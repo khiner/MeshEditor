@@ -3,29 +3,32 @@
 #include "gpu/CullEntry.h"
 #include "gpu/CullFlag.h"
 #include "gpu/DrawData.h"
+#include "metal/MetalCpp.h"
 #include "render/ShaderPipelineType.h"
 
 #include <entt/entity/entity.hpp>
-#include <vulkan/vulkan.hpp>
 
 #include <optional>
 #include <unordered_map>
 
+// Metal draws one indirect command per call, so a batch walks its commands at this stride.
+inline constexpr uint64_t IndirectCommandStride{sizeof(MTL::DrawIndexedPrimitivesIndirectArguments)};
+
 struct DrawBatchInfo {
     uint32_t DrawDataSlotOffset{0}, DrawCount{0};
-    vk::DeviceSize IndirectOffset{0};
+    uint64_t IndirectOffset{0};
     bool Cull{false};
 };
 
 struct DrawListBuilder {
     std::vector<DrawData> Draws;
     std::vector<CullEntry> CullEntries; // Parallel to Draws, for the cull pass.
-    std::vector<vk::DrawIndexedIndirectCommand> IndirectCommands;
+    std::vector<MTL::DrawIndexedPrimitivesIndirectArguments> IndirectCommands;
     uint32_t MaxIndexCount{0};
 
     // `cull` marks the batch frustum-cullable. Only order-independent (opaque) batches qualify:
     // culling repacks a command's instances in arrival order.
-    DrawBatchInfo BeginBatch(bool cull = false) const { return {uint32_t(Draws.size()), 0, IndirectCommands.size() * sizeof(vk::DrawIndexedIndirectCommand), cull}; }
+    DrawBatchInfo BeginBatch(bool cull = false) const { return {uint32_t(Draws.size()), 0, IndirectCommands.size() * IndirectCommandStride, cull}; }
 
     void Append(DrawBatchInfo &batch, const DrawData &draw, uint32_t index_count, uint32_t instance_count) {
         if (index_count == 0 || instance_count == 0) return;
@@ -38,7 +41,7 @@ struct DrawListBuilder {
             CullEntries.emplace_back(cmd_index, draw_data_start);
         }
         const uint32_t first_instance = draw_data_start - batch.DrawDataSlotOffset;
-        IndirectCommands.emplace_back(index_count, instance_count, 0, 0, first_instance);
+        IndirectCommands.push_back({index_count, instance_count, 0, 0, first_instance});
         MaxIndexCount = std::max(MaxIndexCount, index_count);
         ++batch.DrawCount;
     }
@@ -46,6 +49,7 @@ struct DrawListBuilder {
 
 struct SelectionDrawInfo {
     ShaderPipelineType Pipeline;
+    MTL::PrimitiveType Primitive;
     DrawBatchInfo Batch;
 };
 

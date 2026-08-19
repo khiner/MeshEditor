@@ -1,4 +1,5 @@
 #include "action/Io.h"
+
 #include "CameraTypes.h"
 #include "File.h"
 #include "Variant.h"
@@ -20,6 +21,7 @@
 #include "viewport/Viewport.h"
 
 #include <entt/entity/registry.hpp>
+#include <format>
 
 #include <fstream>
 
@@ -31,7 +33,7 @@ namespace {
 void LoadGltfFile(entt::registry &r, entt::entity viewport, const std::filesystem::path &path) {
     const profile::CpuScope scope{"LoadGltfFile"};
     auto &c = r.ctx();
-    auto result = gltf::LoadGltf(path, {r, viewport, c.get<DescriptorSlots>(), c.get<GpuBuffers>(), c.get<MeshStore>(), c.get<TextureStore>(), c.get<EnvironmentStore>()});
+    auto result = gltf::LoadGltf(path, {r, viewport, c.get<mtl::BindlessSet>(), c.get<GpuBuffers>(), c.get<MeshStore>(), c.get<TextureStore>(), c.get<EnvironmentStore>()});
     if (!result) {
         c.get<Errors>().Messages.emplace_back(std::format("Error loading glTF file '{}': {}", path.string(), result.error()));
         return;
@@ -62,14 +64,14 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
                         return;
                     }
                     // ClearScene recreates viewport GPU resources the previous frame may still be using.
-                    r.ctx().get<const VulkanResources>().Device.waitIdle();
+                    WaitForRender(r);
                     ClearScene(r, viewport);
                     snapshot::LoadState(r, *bytes);
                 } else fail(std::format("Unsupported file format: '{}'", ext));
             },
             [&](const SaveGltf &a) {
                 auto &c = r.ctx();
-                if (auto save = gltf::SaveGltf(a.Path, {r, viewport, c.get<GpuBuffers>(), c.get<MeshStore>(), c.get<TextureStore>(), &c.get<const VulkanResources>(), &GetBufferContext(r)}); !save) {
+                if (auto save = gltf::SaveGltf(a.Path, {r, viewport, c.get<GpuBuffers>(), c.get<MeshStore>(), c.get<TextureStore>(), &c.get<const mtl::Context>(), &GetBufferContext(r)}); !save) {
                     fail(std::format("Error saving glTF file '{}': {}", a.Path.string(), save.error()));
                 }
             },

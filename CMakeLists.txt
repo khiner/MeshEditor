@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 
-project(MeshEditor LANGUAGES C CXX)
+project(MeshEditor LANGUAGES C CXX OBJCXX)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -31,8 +31,6 @@ pkg_search_module(FFTW3F REQUIRED fftw3f IMPORTED_TARGET)
 # The surface synthesis plans transforms from several threads at once, which the base library does
 # not guard, and runs one large transform across them.
 find_library(FFTW3F_THREADS fftw3f_threads REQUIRED)
-find_package(Vulkan REQUIRED)
-
 if(APPLE)
     set(EIGEN3_INCLUDE_DIR /opt/homebrew/include/eigen3)
 else()
@@ -52,11 +50,10 @@ set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${GPU_SCHEMA_FIL
 set(GPU_SCHEMA_GENERATED_HEADERS
     "${CMAKE_BINARY_DIR}/gpu/BindlessBindings.h"
 )
-set(GPU_SCHEMA_GENERATED_GLSL
-    "${CMAKE_BINARY_DIR}/shaders/BindlessBindings.glsl"
+set(GPU_SCHEMA_GENERATED_MSL
+    "${CMAKE_BINARY_DIR}/shaders/BindlessBindings.metal"
 )
 
-# Mirror generator naming: each top-level struct emits <Name>.h and <Name>.glsl.
 file(STRINGS "${GPU_SCHEMA_FILE}" GPU_SCHEMA_LINES)
 set(GPU_SCHEMA_IN_STRUCTS OFF)
 set(GPU_SCHEMA_IN_ENUMS OFF)
@@ -79,23 +76,23 @@ foreach(line IN LISTS GPU_SCHEMA_LINES)
     if(GPU_SCHEMA_IN_STRUCTS AND line MATCHES "^  - name:[ \t]*([A-Za-z_][A-Za-z0-9_]*)")
         set(GPU_STRUCT_NAME "${CMAKE_MATCH_1}")
         list(APPEND GPU_SCHEMA_GENERATED_HEADERS "${CMAKE_BINARY_DIR}/gpu/${GPU_STRUCT_NAME}.h")
-        list(APPEND GPU_SCHEMA_GENERATED_GLSL "${CMAKE_BINARY_DIR}/shaders/${GPU_STRUCT_NAME}.glsl")
+        list(APPEND GPU_SCHEMA_GENERATED_MSL "${CMAKE_BINARY_DIR}/shaders/${GPU_STRUCT_NAME}.metal")
     endif()
     if(GPU_SCHEMA_IN_ENUMS AND line MATCHES "^  - name:[ \t]*([A-Za-z_][A-Za-z0-9_]*)")
         set(GPU_ENUM_NAME "${CMAKE_MATCH_1}")
         list(APPEND GPU_SCHEMA_GENERATED_HEADERS "${CMAKE_BINARY_DIR}/gpu/${GPU_ENUM_NAME}.h")
-        list(APPEND GPU_SCHEMA_GENERATED_GLSL "${CMAKE_BINARY_DIR}/shaders/${GPU_ENUM_NAME}.glsl")
+        list(APPEND GPU_SCHEMA_GENERATED_MSL "${CMAKE_BINARY_DIR}/shaders/${GPU_ENUM_NAME}.metal")
     endif()
 endforeach()
 list(REMOVE_DUPLICATES GPU_SCHEMA_GENERATED_HEADERS)
-list(REMOVE_DUPLICATES GPU_SCHEMA_GENERATED_GLSL)
+list(REMOVE_DUPLICATES GPU_SCHEMA_GENERATED_MSL)
 
 set(GPU_SCHEMA_STAMP "${CMAKE_BINARY_DIR}/gpu/gpu_schema.stamp")
 add_custom_command(
     OUTPUT ${GPU_SCHEMA_STAMP}
     BYPRODUCTS
         ${GPU_SCHEMA_GENERATED_HEADERS}
-        ${GPU_SCHEMA_GENERATED_GLSL}
+        ${GPU_SCHEMA_GENERATED_MSL}
     COMMAND $<TARGET_FILE:gpu_schema_gen>
         ${CMAKE_BINARY_DIR}
         ${CMAKE_SOURCE_DIR}
@@ -125,10 +122,10 @@ include_directories(
     SYSTEM lib/simdjson/include
     SYSTEM lib/libwebp/src
     SYSTEM lib/basis_universal/zstd
+    SYSTEM lib/metal-cpp
 
     SYSTEM PkgConfig::FFTW3F
     src
-    ${Vulkan_INCLUDE_DIRS} # Last: may shadow vendored headers
 )
 
 # Symlink resources next to the executable.
@@ -137,8 +134,7 @@ if(NOT EXISTS ${RESOURCE_DEST})
     file(CREATE_LINK "${CMAKE_SOURCE_DIR}/res" ${RESOURCE_DEST} SYMBOLIC)
 endif()
 
-# Symlink each source shader into build/shaders. Generated GLSL (from the GPU schema step)
-# is also written here, giving a single runtime shader path. Add new files → reconfigure.
+# Put source and generated shaders under one runtime path.
 file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/shaders")
 file(GLOB SHADER_SOURCE_FILES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/src/shaders/*")
 foreach(src IN LISTS SHADER_SOURCE_FILES)
@@ -148,9 +144,6 @@ foreach(src IN LISTS SHADER_SOURCE_FILES)
         file(CREATE_LINK "${src}" "${dst}" SYMBOLIC)
     endif()
 endforeach()
-
-find_library(SHADERC_LIB shaderc_combined $ENV{VULKAN_SDK}/lib)
-message(STATUS "Found shaderc in: ${SHADERC_LIB}")
 
 # The surface-contact audio model (src/audio/surface/): two bodies resting or sliding on one another
 # sounding from the roughness of the surfaces they slide over. Selected by `SURFACE_AUDIO=1` in the
@@ -190,6 +183,7 @@ if(MESHEDITOR_APP)
     set(SDL_HAPTIC OFF CACHE BOOL "" FORCE)
     set(SDL_POWER OFF CACHE BOOL "" FORCE)
     set(SDL_SENSOR OFF CACHE BOOL "" FORCE)
+    set(SDL_VULKAN OFF CACHE BOOL "" FORCE)
     set(SDL_DIALOG ON CACHE BOOL "" FORCE) # Native file dialogs.
     set(SDL_TRAY OFF CACHE BOOL "" FORCE)
     FetchContent_Declare(
@@ -212,7 +206,7 @@ if(MESHEDITOR_APP)
         ${ImguiDir}/imgui_tables.cpp
         ${ImguiDir}/imgui_widgets.cpp
         ${ImguiDir}/imgui.cpp
-        ${ImguiDir}/backends/imgui_impl_vulkan.cpp
+        ${ImguiDir}/backends/imgui_impl_metal.mm
         ${ImguiDir}/backends/imgui_impl_sdl3.cpp
         ${ImplotDir}/implot.cpp
         ${ImplotDir}/implot_items.cpp
@@ -221,13 +215,16 @@ if(MESHEDITOR_APP)
         ${SOURCES}
     )
     add_dependencies(${PROJECT_NAME} generate_gpu_schema)
+    # The ImGui Metal backend manages its own retains; do not enable ARC.
+    set_source_files_properties(${ImguiDir}/backends/imgui_impl_metal.mm PROPERTIES COMPILE_FLAGS "-w")
+    target_compile_definitions(${PROJECT_NAME} PRIVATE IMGUI_IMPL_METAL_CPP)
 
     target_include_directories(${PROJECT_NAME} PRIVATE ${EIGEN3_INCLUDE_DIR})
     if(APPLE)
-        target_link_libraries(${PROJECT_NAME} PRIVATE "-framework Accelerate" "-framework CoreAudio")
+        target_link_libraries(${PROJECT_NAME} PRIVATE "-framework Accelerate" "-framework CoreAudio" "-framework Metal" "-framework Foundation" "-framework QuartzCore")
     endif()
 
-    target_link_libraries(${PROJECT_NAME} PRIVATE SDL3::SDL3 ${Vulkan_LIBRARIES} GPUOpen::VulkanMemoryAllocator ${SHADERC_LIB} meshoptimizer PkgConfig::FFTW3F ${FFTW3F_THREADS} lunasvg fastgltf::fastgltf simdjson::simdjson basisu_transcoder Jolt webp)
+    target_link_libraries(${PROJECT_NAME} PRIVATE SDL3::SDL3 meshoptimizer PkgConfig::FFTW3F ${FFTW3F_THREADS} lunasvg fastgltf::fastgltf simdjson::simdjson basisu_transcoder Jolt webp)
 
     if(CMAKE_BUILD_TYPE MATCHES Debug)
         target_compile_definitions(${PROJECT_NAME} PRIVATE DEBUG_BUILD)
@@ -235,13 +232,6 @@ if(MESHEDITOR_APP)
         target_compile_definitions(${PROJECT_NAME} PRIVATE REPLAY_FIXTURE_DIR="${CMAKE_SOURCE_DIR}/tests/replay")
     elseif(CMAKE_BUILD_TYPE MATCHES Release)
         target_compile_definitions(${PROJECT_NAME} PRIVATE RELEASE_BUILD)
-    endif()
-
-    # Use staging buffers for CPU->GPU transfers instead of direct-mapped memory.
-    # Enable this for discrete GPUs.
-    option(MVK_FORCE_STAGED_TRANSFERS "Force staging buffer transfers (for discrete GPUs or testing)" OFF)
-    if(MVK_FORCE_STAGED_TRANSFERS)
-        target_compile_definitions(${PROJECT_NAME} PRIVATE MVK_FORCE_STAGED_TRANSFERS)
     endif()
 
     option(QUIET "Disable Timer prints" OFF)

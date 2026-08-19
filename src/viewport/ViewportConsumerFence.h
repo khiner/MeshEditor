@@ -1,9 +1,8 @@
 #pragma once
 
-#include <vulkan/vulkan.hpp>
+#include "metal/MetalCpp.h"
 
-// The live ImGui frame fence sampling the viewport color image; the resize path waits on it before
-// recreating resources. Empty during replay, where the wait is a no-op.
+// Resize waits for the live ImGui command buffer before replacing its sampled image.
 struct ViewportConsumerFence {
-    vk::Fence Value{};
+    MTL::CommandBuffer *Value{nullptr};
 };

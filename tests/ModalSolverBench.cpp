@@ -156,7 +156,7 @@ int CheckSnapshot(const std::vector<CaseSignature> &sigs) {
 struct BenchResult {
     std::string Name, Material;
     size_t SurfaceTris{}, TetCount{};
-    modal::SolveProfile Profile;
+    modal::SolveProfile Profile{};
     double LoadSeconds{}, TetsSeconds{};
     size_t NumModes{};
     double FundamentalHz{};

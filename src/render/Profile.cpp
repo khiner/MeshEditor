@@ -3,36 +3,25 @@
 #include <algorithm>
 #include <cassert>
 #include <chrono>
+#include <memory>
 #include <numeric>
 #include <print>
 #include <vector>
 
 namespace profile {
 namespace {
-// Enough for every pass in one recording, twice over.
-constexpr uint32_t MaxQueries{128};
-
-struct GpuSpan {
-    std::string_view Name;
-    uint32_t First, Last, Depth;
-};
 struct CpuSpan {
     uint32_t Stat; // Index into CpuStats.
     std::chrono::steady_clock::time_point Start;
 };
-// Every sample one scope name collected across the run.
 struct Stat {
     std::string_view Name;
     uint32_t Depth;
     std::vector<float> Ms;
 };
 
-vk::UniqueQueryPool Pool;
-float Period{1}; // Nanoseconds per timestamp tick.
-uint32_t Count{0}; // Queries written into the current recording.
-vk::CommandBuffer RecordingCb{}; // Non-null between BeginRecording and EndRecording.
-std::vector<GpuSpan> GpuSpans;
-std::vector<uint32_t> OpenGpu; // Indices into GpuSpans, innermost last.
+MTL::CommandBuffer *RecordingCb{nullptr}; // Non-null between BeginRecording and EndRecording.
+std::unique_ptr<mtl::PassTimer> Timer; // Null when the device cannot sample counters.
 std::vector<CpuSpan> OpenCpu; // Innermost last.
 // First-seen order, which is the order the work runs in.
 std::vector<Stat> GpuStats, CpuStats;
@@ -76,48 +65,31 @@ void ReportTable(std::string_view title, const std::vector<Stat> &stats) {
     );
 }
 
-void ResetRecording() {
-    Count = 0;
-    GpuSpans.clear();
-    OpenGpu.clear();
-}
 } // namespace
 
-void Init(vk::Device device, vk::PhysicalDevice physical_device) {
-    Pool = device.createQueryPoolUnique({{}, vk::QueryType::eTimestamp, MaxQueries});
-    Period = physical_device.getProperties().limits.timestampPeriod;
-}
-
-void Deinit() { Pool.reset(); }
-
-void BeginRecording(vk::CommandBuffer cb) {
+void Init(const mtl::Context &ctx) {
     if (!Enabled) return;
-    // A recording that never reached a submit leaves its spans behind.
-    ResetRecording();
-    RecordingCb = cb;
-    cb.resetQueryPool(*Pool, 0, MaxQueries);
-    BeginGpu("Submit");
+    Timer = mtl::PassTimer::Create(ctx);
+    if (!Timer) std::println(stderr, "Profile: this device cannot sample GPU counters, so passes go untimed.");
 }
+
+void Deinit() {
+    RecordingCb = nullptr;
+    Timer.reset();
+}
+
+void BeginRecording(MTL::CommandBuffer *command_buffer) {
+    if (!Enabled) return;
+    // A recording that never reached a submit leaves its claims behind.
+    if (Timer) Timer->Reset();
+    RecordingCb = command_buffer;
+}
+
+mtl::PassTimer *RecordingTimer() { return Enabled ? Timer.get() : nullptr; }
 
 void EndRecording() {
-    EndGpu();
+    if (!Enabled) return;
     RecordingCb = nullptr;
-}
-
-void BeginGpu(std::string_view name) {
-    if (!Enabled || !RecordingCb) return;
-    assert(Count + 2 <= MaxQueries && "Profile: raise MaxQueries");
-    GpuSpans.emplace_back(name, Count, 0u, uint32_t(OpenGpu.size()));
-    OpenGpu.emplace_back(uint32_t(GpuSpans.size() - 1));
-    RecordingCb.writeTimestamp(vk::PipelineStageFlagBits::eBottomOfPipe, *Pool, Count++);
-}
-
-void EndGpu() {
-    if (!Enabled || !RecordingCb) return;
-    assert(!OpenGpu.empty() && "Profile: GPU scope closed without opening");
-    GpuSpans[OpenGpu.back()].Last = Count;
-    OpenGpu.pop_back();
-    RecordingCb.writeTimestamp(vk::PipelineStageFlagBits::eBottomOfPipe, *Pool, Count++);
 }
 
 void BeginCpu(std::string_view name) {
@@ -135,20 +107,12 @@ void EndCpu() {
     CpuStats[span.Stat].Ms.emplace_back(elapsed.count());
 }
 
-void Resolve(vk::Device device) {
-    if (!Enabled || Count == 0) return;
-    std::vector<uint64_t> ticks(Count);
-    const auto result = device.getQueryPoolResults(
-        *Pool, 0, Count, ticks.size() * sizeof(uint64_t), ticks.data(), sizeof(uint64_t),
-        vk::QueryResultFlagBits::e64 | vk::QueryResultFlagBits::eWait
-    );
-    if (result == vk::Result::eSuccess) {
-        for (const auto &span : GpuSpans) {
-            const auto ns = double(ticks[span.Last] - ticks[span.First]) * double(Period);
-            GpuStats[StatIndex(GpuStats, span.Name, span.Depth)].Ms.emplace_back(float(ns * 1e-6));
-        }
-    }
-    // Spans stay registered: a resubmitted recording rewrites its queries and resolves here again.
+void Resolve(MTL::CommandBuffer *command_buffer) {
+    if (!Enabled || !command_buffer) return;
+    const auto ms = float((command_buffer->GPUEndTime() - command_buffer->GPUStartTime()) * 1e3);
+    if (ms > 0.f) GpuStats[StatIndex(GpuStats, "Submit", 0)].Ms.emplace_back(ms);
+    if (!Timer) return;
+    for (const auto &pass : Timer->Resolve()) GpuStats[StatIndex(GpuStats, pass.Name, 1)].Ms.emplace_back(pass.Ms);
 }
 
 void ClearStats() {
@@ -158,7 +122,7 @@ void ClearStats() {
 }
 
 void Report() {
-    ReportTable("GPU pass timings", GpuStats);
+    ReportTable("GPU pass timings (hardware timestamps)", GpuStats);
     ReportTable("CPU timings", CpuStats);
 }
 } // namespace profile

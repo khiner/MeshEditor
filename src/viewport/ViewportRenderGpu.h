@@ -1,9 +1,15 @@
 #pragma once
 
-#include "vulkan/Slots.h"
+#include "metal/MetalCpp.h"
+#include "metal/Slots.h"
 
 #include <entt/entity/fwd.hpp>
-#include <vulkan/vulkan.hpp>
+#include <span>
+
+namespace mtl {
+struct BindlessSet;
+struct PassChain;
+} // namespace mtl
 
 struct DrawListBuilder;
 struct DrawBufferPair;
@@ -11,13 +17,13 @@ struct GpuBuffers;
 struct Pipelines;
 
 // Upload the draw list to the per-pass buffers, grow the identity index buffer if needed,
-// and flush any deferred descriptor updates accumulated during buffer growth.
-void FlushDrawList(entt::registry &, vk::Device, const DrawListBuilder &, DrawBufferPair &);
+// and flush any deferred bindless updates accumulated during buffer growth.
+void FlushDrawList(entt::registry &, const DrawListBuilder &, DrawBufferPair &);
 
 // Zero `pair`'s indirect instance counts, then refill region A and the visible-index remap from
 // per-instance bounds tested against the view frustum. With `visibility_slot`, region A holds only
 // previously-visible instances, and the caller must run the occlusion pass and draw region B.
-void RecordFrustumCull(vk::CommandBuffer, const Pipelines &, const GpuBuffers &, const DrawBufferPair &, const DrawListBuilder &, uint32_t ubo_offset = 0, uint32_t visibility_slot = InvalidSlot);
+void RecordFrustumCull(mtl::PassChain &, const mtl::BindlessSet &, const Pipelines &, const GpuBuffers &, const DrawBufferPair &, const DrawListBuilder &);
 
 // Which parts of a frame one recording covers.
 enum class RenderPhase {
@@ -38,11 +44,11 @@ enum class DrawListUse {
 };
 
 // Build the main draw list (or just the silhouette portion) into the DrawState component and record the render pass.
-void RecordRenderCommandBuffer(entt::registry &, entt::entity viewport, vk::CommandBuffer, DrawListUse = DrawListUse::Rebuild, RenderPhase = RenderPhase::Full);
+void RecordRenderCommandBuffer(entt::registry &, entt::entity viewport, MTL::CommandBuffer *, DrawListUse = DrawListUse::Rebuild, RenderPhase = RenderPhase::Full);
 
 // Record every motion blur step and the resolve into one command buffer, each step reading its own
 // view UBO instance (i + 1) by dynamic offset. `step_frames` holds each step's centre playback frame.
-void RecordBlurStepsCommandBuffer(entt::registry &, entt::entity viewport, vk::CommandBuffer, std::span<const float> step_frames);
+void RecordBlurStepsCommandBuffer(entt::registry &, entt::entity viewport, MTL::CommandBuffer *, std::span<const float> step_frames);
 
 // Derive the listed mesh entities' base normals in one batched GPU submit-and-wait, writing the base normal stores.
 // Meshes without triangles or adjacency are skipped.
@@ -61,7 +67,3 @@ bool CommitPosedGeometry(entt::registry &, entt::entity mesh_entity);
 // Write the posed prelude's indirect dispatch group counts for the next submit.
 // Deform-input changes since the last submit select the recorded counts, and an unchanged pose selects zeros.
 void SyncPreludeDispatchArgs(GpuBuffers &);
-
-#ifdef MVK_FORCE_STAGED_TRANSFERS
-void RecordTransferCommandBuffer(entt::registry &, entt::entity viewport, vk::CommandBuffer);
-#endif

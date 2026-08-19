@@ -1,6 +1,10 @@
 #pragma once
 
-#include "vulkan/VulkanResources.h"
+#include "metal/MetalCpp.h"
+
+namespace mtl {
+struct Context;
+} // namespace mtl
 
 #include <entt/entity/fwd.hpp>
 
@@ -8,7 +12,7 @@
 #include <filesystem>
 
 // Build the process-lifetime engine and return the viewport entity.
-entt::entity InitEngine(entt::registry &, VulkanResources);
+entt::entity InitEngine(entt::registry &);
 void DeinitViewport(entt::registry &, entt::entity viewport);
 
 // App-only presentation/media layered on InitEngine.
@@ -18,7 +22,7 @@ void DeinitViewportMedia(entt::registry &);
 // Run ProcessComponentEvents, then record and submit the GPU render (nonblocking).
 // `viewport_consumer_fence`, if set, is waited on before old resources are destroyed on an extent change.
 // Call WaitForRender() before the ImGui frame samples the final image.
-void SubmitViewport(entt::registry &, entt::entity viewport, vk::Fence viewport_consumer_fence = {});
+void SubmitViewport(entt::registry &, entt::entity viewport, MTL::CommandBuffer *viewport_consumer = nullptr);
 
 // Reset all per-document viewport state to defaults, leaving the scene empty.
 void SetupScene(entt::registry &, entt::entity viewport);
@@ -50,12 +54,12 @@ void CaptureRecordFrame(entt::registry &, entt::entity viewport);
 bool IsRecording(const entt::registry &, entt::entity viewport);
 uint64_t CapturedFrameCount(const entt::registry &, entt::entity viewport);
 
-// Upright, tightly-packed RGBA8 pixels read back from the viewport's final color image.
+// Tightly-packed RGBA8 pixels read back from the viewport's final color image.
 struct ViewportImageRgba8 {
     std::vector<std::byte> Pixels;
     uint32_t Width, Height;
 };
-// Read back the current FinalColorImage as upright RGBA8 (the framed sub-region matching recording).
+// Read back the current FinalColorImage as RGBA8 (the framed sub-region matching recording).
 // Call after WaitForRender() so the source image is coherent. Returns an error message on failure.
 std::expected<ViewportImageRgba8, std::string> ReadbackViewportImage(entt::registry &);
 

@@ -4,28 +4,23 @@
 #include "animation/AnimationTimeline.h"
 #include "mesh/MeshComponents.h"
 #include "mesh/MeshStore.h"
+#include "metal/Bindless.h"
 #include "object/ExtrasComponents.h"
 #include "object/ObjectComponents.h"
 #include "object/PendingSync.h"
 #include "physics/PhysicsTypes.h"
-#include "render/Bindless.h"
 #include "render/GpuBuffers.h"
 #include "render/Instance.h"
 #include "render/MaterialComponents.h"
-#include "render/OneShotGpu.h"
 #include "render/Textures.h"
 #include "scene/Entity.h"
 #include "viewport/ViewportDisplay.h"
 
 #include <entt/entity/registry.hpp>
 
-void InitStoreCtx(entt::registry &r, VulkanResources vk) {
-    vk.MaxSamplerAnisotropy = ClampMaxAnisotropy(vk, ToMaxAnisotropy(ViewportDisplay{}.AnisotropicFilter));
-    r.ctx().emplace<VulkanResources>(vk);
-    auto &slots = r.ctx().emplace<DescriptorSlots>(
-        vk.Device,
-        vk.PhysicalDevice.getProperties2<vk::PhysicalDeviceProperties2, vk::PhysicalDeviceDescriptorIndexingProperties>().get<vk::PhysicalDeviceDescriptorIndexingProperties>()
-    );
+void InitStoreCtx(entt::registry &r, const mtl::Context &ctx) {
+    auto &slots = r.ctx().emplace<mtl::BindlessSet>(ctx);
+    r.ctx().emplace<ActiveSamplerAnisotropy>(ClampMaxAnisotropy(ToMaxAnisotropy(ViewportDisplay{}.AnisotropicFilter)));
     auto &textures = r.ctx().emplace<TextureStore>();
     textures.WhiteTextureSlot = AllocateSamplerSlot(slots);
     r.ctx().emplace<EnvironmentStore>();
@@ -85,12 +80,12 @@ entt::entity WireRegistry(entt::registry &r) {
     r.on_construct<VertexStoreId>().connect<&EmplaceMeshBuffers<VertexStoreId, &MeshStore::GetVerticesRange>>();
     r.on_construct<OverlayVertexStoreId>().connect<&EmplaceMeshBuffers<OverlayVertexStoreId, &MeshStore::GetOverlayVerticesRange>>();
 
-    const auto &vk = r.ctx().get<const VulkanResources>();
-    auto &slots = r.ctx().get<DescriptorSlots>();
+    const auto &ctx = r.ctx().get<const mtl::Context>();
+    auto &slots = r.ctx().get<mtl::BindlessSet>();
     auto &textures = r.ctx().get<TextureStore>();
 
     const auto viewport = r.create();
-    auto &buffers = r.ctx().emplace<GpuBuffers>(vk.PhysicalDevice, vk.Device, vk.Instance, slots);
+    auto &buffers = r.ctx().emplace<GpuBuffers>(ctx, slots);
     r.ctx().emplace<MeshStore>(buffers.Ctx);
 
     r.ctx().emplace<NameRegistry>();
@@ -118,8 +113,8 @@ entt::entity WireRegistry(entt::registry &r) {
         .SamplerSlot = textures.WhiteTextureSlot,
         .Source = PendingTextureUpload::RawPixels{.Pixels = std::vector<std::byte>(WhitePixels.begin(), WhitePixels.end()), .Width = 1, .Height = 1},
         .ColorSpace = TextureColorSpace::Srgb,
-        .WrapS = vk::SamplerAddressMode::eRepeat,
-        .WrapT = vk::SamplerAddressMode::eRepeat,
+        .WrapS = MTL::SamplerAddressModeRepeat,
+        .WrapT = MTL::SamplerAddressModeRepeat,
         .Sampler = SamplerConfig{},
         .Name = "DefaultWhite",
     });
@@ -131,23 +126,21 @@ void TearDownStoreCtx(entt::registry &r) {
     // Releasing a MeshHandle calls back into MeshStore, so clear handles while the store is still alive.
     r.clear<MeshHandle>();
 
-    auto &slots = r.ctx().get<DescriptorSlots>();
+    auto &slots = r.ctx().get<mtl::BindlessSet>();
     auto &textures = r.ctx().get<TextureStore>();
     auto &environments = r.ctx().get<EnvironmentStore>();
     ReleaseEnvironmentSamplerSlots(slots, environments);
     ReleaseSamplerSlots(slots, CollectSamplerSlots(textures.Textures));
 
     // Tear down GPU-resource owners before GpuBuffers, since they retire allocations into
-    // GpuBuffers.Ctx.Retired (cleared on ~BufferContext, which destroys the VMA allocator).
+    // GpuBuffers.Ctx.Retired, which ~BufferContext clears.
     r.ctx().erase<EnvironmentStore>();
     r.ctx().erase<TextureStore>();
     r.ctx().erase<MeshStore>();
     r.ctx().erase<ColliderShapeBuffers>();
-    r.ctx().erase<GpuBuffers>(); // drops BufferContext, whose dtor destroys the VMA allocator
-    r.ctx().erase<OneShotGpu>(); // vk pool/fence (Device in VulkanResources still alive)
+    r.ctx().erase<GpuBuffers>(); // Drops BufferContext, releasing every retired buffer.
     r.ctx().erase<MaterialStore>();
     r.ctx().erase<ObjectIdCounter>();
     r.ctx().erase<NameRegistry>();
-    r.ctx().erase<DescriptorSlots>();
-    r.ctx().erase<VulkanResources>();
+    r.ctx().erase<mtl::BindlessSet>();
 }

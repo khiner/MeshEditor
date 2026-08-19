@@ -35,7 +35,6 @@
 #include "render/Instance.h"
 #include "render/LightComponents.h"
 #include "render/MaterialComponents.h"
-#include "render/OneShotGpu.h"
 #include "render/PickConstants.h"
 #include "render/Pipelines.h"
 #include "render/Profile.h"
@@ -419,8 +418,8 @@ SyncResult SyncModelsBuffers(entt::registry &r) {
         }
         // Write ObjectIds, InstanceStates, and Bounds at the new slots. WorldTransform slots are left unwritten —
         // the WorldTransform reactive pass writes them before submit.
-        buffers.Instances.ObjectIdBuffer.Update(as_bytes(object_ids), vk::DeviceSize(base_index) * sizeof(uint32_t));
-        buffers.Instances.StateBuffer.Update(as_bytes(states), vk::DeviceSize(base_index) * sizeof(uint8_t));
+        buffers.Instances.ObjectIdBuffer.Update(as_bytes(object_ids), uint64_t(base_index) * sizeof(uint32_t));
+        buffers.Instances.StateBuffer.Update(as_bytes(states), uint64_t(base_index) * sizeof(uint8_t));
         // New slots start with empty bounds. The render's bounds reduce pass fills mesh instances'
         // slots, and extras slots stay empty (always drawn).
         std::ranges::fill(buffers.Instances.GetMutableBounds({base_index, n}), AABB{});
@@ -690,93 +689,57 @@ void UpdateWireframeTransforms(entt::registry &r) {
 }
 
 // Resize the viewport's GPU render resources to match RenderExtentPx(ViewportExtent), recreating images and
-// rewriting selection descriptors. Returns true when a resize occurred.
+// rewriting bindless selection slots. Returns true when a resize occurred.
 bool SyncViewportRenderResources(entt::registry &r, entt::entity viewport) {
     auto &pipelines = r.ctx().get<Pipelines>();
     const auto render_extent_px = RenderExtentPx(r);
-    const vk::Extent2D render_extent{render_extent_px.x, render_extent_px.y};
-    const auto built = pipelines.BuiltColorExtent();
-    if (built.width == render_extent.width && built.height == render_extent.height) return false;
+    const mtl::Extent2D render_extent{render_extent_px.x, render_extent_px.y};
+    if (pipelines.BuiltColorExtent() == render_extent) return false;
 
-    const auto &vk = r.ctx().get<const VulkanResources>();
+    const auto &ctx = r.ctx().get<const mtl::Context>();
     const auto &sel_slots = r.ctx().get<const SelectionSlots>();
-    auto &slots = r.ctx().get<DescriptorSlots>();
+    auto &slots = r.ctx().get<mtl::BindlessSet>();
     auto &buffers = r.ctx().get<GpuBuffers>();
     // Wait for the live consumer (ImGui) to finish sampling the old resources before recreating them.
-    if (const auto fence = r.ctx().get<const ViewportConsumerFence>().Value) {
-        std::ignore = vk.Device.waitForFences(fence, VK_TRUE, UINT64_MAX);
-    }
-    pipelines.SetExtent(render_extent, slots);
+    if (auto *consumer = r.ctx().get<const ViewportConsumerFence>().Value) consumer->waitUntilCompleted();
+    pipelines.SetExtent(render_extent, buffers.Ctx, slots);
     {
         const auto shading = r.get<const ViewportDisplay>(viewport).ViewportShading;
         const bool is_pbr = shading == ViewportShadingMode::MaterialPreview || shading == ViewportShadingMode::Rendered;
         const bool want_transmission = is_pbr && GetActivePbrLighting(r, viewport, shading).RealTransmission && pipelines.Main.Compiler.HasFeature(PbrFeature::Transmission);
-        pipelines.Main.EnsureTransmissionResources(render_extent, vk.Device, vk.PhysicalDevice, want_transmission);
+        pipelines.Main.EnsureTransmissionResources(ctx, render_extent, want_transmission);
     }
     buffers.ResizeSelectionNodeBuffer(render_extent);
     {
-        const profile::CpuScope scope{"UpdateSelectionDescriptorSets"};
-        const auto head_image_info = vk::DescriptorImageInfo{
-            nullptr,
-            *pipelines.SelectionFragment.Resources->HeadImage.View,
-            vk::ImageLayout::eGeneral
-        };
-        const auto selection_counter = buffers.SelectionCounter.GetDescriptor();
-        const auto object_pick_key = buffers.ObjectPickKeys.GetDescriptor(GpuBuffers::MaxSelectableObjects);
-        const auto element_pick_candidates = buffers.ElementPickCandidates.GetDescriptor(GpuBuffers::ElementPickGroupCount);
+        const profile::CpuScope scope{"UpdateSelectionSlots"};
         const auto &sil = pipelines.Silhouette;
         const auto &sil_edge = pipelines.SilhouetteEdge;
         const auto &main = pipelines.Main;
-        const vk::DescriptorImageInfo silhouette_sampler{*sil.Resources->ImageSampler, *sil.Resources->OffscreenImage.View, vk::ImageLayout::eShaderReadOnlyOptimal};
-        const vk::DescriptorImageInfo object_id_sampler{*sil_edge.Resources->ImageSampler, *sil_edge.Resources->OffscreenImage.View, vk::ImageLayout::eShaderReadOnlyOptimal};
-        const vk::DescriptorImageInfo depth_sampler{*sil_edge.Resources->DepthSampler, *sil_edge.Resources->DepthImage.View, vk::ImageLayout::eDepthStencilReadOnlyOptimal};
-        const auto scene_color_sampler = main.SceneColorSamplerInfo();
-        const auto overlay_color_sampler = main.OverlayColorSamplerInfo();
-        const vk::DescriptorImageInfo line_data_sampler{*main.Resources->NearestSampler, *main.Resources->LineDataImage.View, vk::ImageLayout::eShaderReadOnlyOptimal};
-        const auto transmission_sampler = main.TransmissionSamplerInfo();
-        const auto motion_blur_accum_sampler = main.MotionBlurAccumSamplerInfo();
-        const auto velocity_sampler = main.VelocitySamplerInfo();
-        const auto scene_depth_sampler = main.SceneDepthSamplerInfo();
-        const auto selection_bitset = buffers.SelectionBitset.GetDescriptor(GpuBuffers::SelectionBitsetWords);
-        const auto object_pick_seen_bitset = buffers.ObjectPickSeenBitset.GetDescriptor(GpuBuffers::ObjectPickBitsetWords);
-        const auto depth_pyramid_sampler = main.DepthPyramidSamplerInfo();
-        const auto &pyramid_mips = main.Resources->DepthPyramidMips;
-        const auto pyramid_mip_infos = pyramid_mips |
-            std::views::transform([](const auto &mip) { return vk::DescriptorImageInfo{nullptr, *mip.View, vk::ImageLayout::eGeneral}; }) |
-            std::ranges::to<std::vector>();
-        std::vector writes{
-            slots.MakeImageWrite(sel_slots.HeadImage, head_image_info),
-            slots.MakeBufferWrite({SlotType::Buffer, sel_slots.SelectionCounter}, selection_counter),
-            slots.MakeBufferWrite({SlotType::Buffer, sel_slots.ObjectPickKey}, object_pick_key),
-            slots.MakeBufferWrite({SlotType::Buffer, sel_slots.ElementPickCandidates}, element_pick_candidates),
-            slots.MakeBufferWrite({SlotType::Buffer, sel_slots.ObjectPickSeenBits}, object_pick_seen_bitset),
-            slots.MakeBufferWrite({SlotType::Buffer, sel_slots.SelectionBitset}, selection_bitset),
-            slots.MakeSamplerWrite(sel_slots.ObjectIdSampler, object_id_sampler),
-            slots.MakeSamplerWrite(sel_slots.DepthSampler, depth_sampler),
-            slots.MakeSamplerWrite(sel_slots.SilhouetteSampler, silhouette_sampler),
-            slots.MakeSamplerWrite(sel_slots.SceneColorSampler, scene_color_sampler),
-            slots.MakeSamplerWrite(sel_slots.OverlayColorSampler, overlay_color_sampler),
-            slots.MakeSamplerWrite(sel_slots.LineDataSampler, line_data_sampler),
-            slots.MakeSamplerWrite(sel_slots.TransmissionSampler, transmission_sampler),
-            slots.MakeSamplerWrite(sel_slots.MotionBlurAccumSampler, motion_blur_accum_sampler),
-            slots.MakeSamplerWrite(sel_slots.VelocitySampler, velocity_sampler),
-            slots.MakeSamplerWrite(sel_slots.SceneDepthSampler, scene_depth_sampler),
-            slots.MakeSamplerWrite(sel_slots.DepthPyramidSampler, depth_pyramid_sampler),
-        };
-        for (const auto &[mip, info] : std::views::zip(pyramid_mips, pyramid_mip_infos)) {
-            writes.emplace_back(slots.MakeImageWrite(mip.Slot, info));
-        }
-        vk.Device.updateDescriptorSets(writes, {});
+        slots.SetBuffer({SlotType::Buffer, sel_slots.SelectionCounter}, *buffers.SelectionCounter);
+        slots.SetBuffer({SlotType::Buffer, sel_slots.ObjectPickKey}, *buffers.ObjectPickKeys);
+        slots.SetBuffer({SlotType::Buffer, sel_slots.ElementPickCandidates}, *buffers.ElementPickCandidates);
+        slots.SetBuffer({SlotType::Buffer, sel_slots.ObjectPickSeenBits}, *buffers.ObjectPickSeenBitset);
+        slots.SetBuffer({SlotType::Buffer, sel_slots.SelectionBitset}, *buffers.SelectionBitset);
+        const auto set_sampler = [&](uint32_t slot, SampledTexture sampled) { slots.SetSampler({SlotType::Sampler, slot}, sampled.Texture, sampled.Sampler); };
+        set_sampler(sel_slots.ObjectIdSampler, {*sil_edge.Resources->OffscreenImage, *sil_edge.Resources->ImageSampler});
+        set_sampler(sel_slots.DepthSampler, {*sil_edge.Resources->DepthImage, *sil_edge.Resources->ImageSampler});
+        set_sampler(sel_slots.SilhouetteSampler, {*sil.Resources->OffscreenImage, *sil.Resources->ImageSampler});
+        set_sampler(sel_slots.SceneColorSampler, main.SceneColorSampler());
+        set_sampler(sel_slots.OverlayColorSampler, main.OverlayColorSampler());
+        set_sampler(sel_slots.LineDataSampler, {*main.Resources->LineDataImage, *main.Resources->NearestSampler});
+        set_sampler(sel_slots.TransmissionSampler, main.TransmissionSampler());
+        set_sampler(sel_slots.MotionBlurAccumSampler, main.MotionBlurAccumSampler());
+        set_sampler(sel_slots.VelocitySampler, main.VelocitySampler());
+        set_sampler(sel_slots.SceneDepthSampler, main.SceneDepthSampler());
+        set_sampler(sel_slots.DepthPyramidSampler, main.DepthPyramidSampler());
     }
-    buffers.Ctx.FlushDeferredDescriptorUpdates(vk.Device);
     return true;
 }
 } // namespace
 
 void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
-    const auto &vk = r.ctx().get<const VulkanResources>();
-    const auto &one_shot = r.ctx().get<const OneShotGpu>();
-    auto &slots = r.ctx().get<DescriptorSlots>();
+    const auto &ctx = r.ctx().get<const mtl::Context>();
+    auto &slots = r.ctx().get<mtl::BindlessSet>();
     auto &buffers = r.ctx().get<GpuBuffers>();
     auto &meshes = r.ctx().get<MeshStore>();
     auto &textures = r.ctx().get<TextureStore>();
@@ -796,6 +759,8 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
     if (r.all_of<PendingShaderRecompile>(viewport)) {
         r.remove<PendingShaderRecompile>(viewport);
         pipelines.CompileShaders();
+        // Recompiled prefilter kernels must regenerate their cached cubemaps.
+        RebuildStudioEnvironments(r);
         request(RenderRequest::ReRecord);
     }
 
@@ -831,9 +796,9 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
         const auto *src = r.try_get<const gltf::SourceAssets>(viewport);
         static const std::vector<gltf::Image> empty_images;
         const auto &gltf_images = src ? src->Images : empty_images;
-        auto batch = BeginTextureUploadBatch(vk.Device, *one_shot.Pool, buffers.Ctx);
+        auto batch = BeginTextureUploadBatch(ctx, r.ctx().get<mtl::LibraryCache>());
         for (const auto &item : pending_tex->Items) {
-            auto entry = MaterializeTextureEntry(vk, batch, slots, item, gltf_images);
+            auto entry = MaterializeTextureEntry(ctx, batch, slots, item, gltf_images, r.ctx().get<const ActiveSamplerAnisotropy>().Value);
             if (!entry) {
                 std::cerr << std::format("Warning: Failed to materialize texture '{}': {}\n", item.Name, entry.error());
                 ReleaseSamplerSlots(slots, std::span{&item.SamplerSlot, 1});
@@ -841,7 +806,7 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
             }
             textures.Textures.emplace_back(std::move(*entry));
         }
-        SubmitTextureUploadBatch(batch, vk.Queue, *one_shot.Fence, vk.Device);
+        SubmitTextureUploadBatch(batch);
         r.remove<PendingTextureUploads>(viewport);
     }
     // Rebuild an imported (EXT-IBL) scene world from restored SourceAssets, whose prefiltered cubemap ClearScene released.
@@ -874,9 +839,7 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
     }
     if (auto *pending_env = r.try_get<PendingEnvironmentImport>(viewport)) {
         if (const auto *src = r.try_get<const gltf::SourceAssets>(viewport)) {
-            auto batch = BeginTextureUploadBatch(vk.Device, *one_shot.Pool, buffers.Ctx);
-            auto pre = MaterializeEnvironmentImport(vk, batch, slots, *pending_env, src->Images);
-            SubmitTextureUploadBatch(batch, vk.Queue, *one_shot.Fence, vk.Device);
+            auto pre = MaterializeEnvironmentImport(ctx, slots, *pending_env, src->Images);
             if (pre) {
                 auto &env = environments;
                 if (env.ImportedSceneWorld) {
@@ -1524,11 +1487,11 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
     if (!reactive<changes::ViewportDisplay>(r).empty()) {
         request(RenderRequest::ReRecord);
         dirty_overlay_meshes.merge(selection::GetSelectedMeshEntities(r));
-        auto &vk_mut = r.ctx().get<VulkanResources>();
-        if (const float requested = ClampMaxAnisotropy(vk_mut, ToMaxAnisotropy(r.get<const ViewportDisplay>(viewport).AnisotropicFilter));
-            requested != vk_mut.MaxSamplerAnisotropy) {
-            vk_mut.MaxSamplerAnisotropy = requested;
-            RebuildTextureSamplers(vk_mut, r.ctx().get<DescriptorSlots>(), r.ctx().get<TextureStore>(), requested);
+
+        if (const float requested = ClampMaxAnisotropy(ToMaxAnisotropy(r.get<const ViewportDisplay>(viewport).AnisotropicFilter));
+            requested != r.ctx().get<const ActiveSamplerAnisotropy>().Value) {
+            r.ctx().get<ActiveSamplerAnisotropy>().Value = requested;
+            RebuildTextureSamplers(ctx, r.ctx().get<mtl::BindlessSet>(), r.ctx().get<TextureStore>(), requested);
         }
     }
     if (!reactive<changes::InteractionMode>(r).empty()) {
@@ -1963,11 +1926,10 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
         // Run before the UBO update below so Transmission pipeline is settled when the UBO reads it.
         const auto shading = r.get<const ViewportDisplay>(viewport).ViewportShading;
         if (!reactive<changes::ViewportDisplay>(r).empty() || !reactive<changes::PbrSpecialization>(r).empty()) {
-            // SubmitViewport's full descriptor block runs only on resize, so write the transmission sampler
-            // descriptor inline whenever EnsureTransmissionResources flips state.
-            const auto refresh_transmission_descriptor = [&] {
-                const auto info = pipelines.Main.TransmissionSamplerInfo();
-                vk.Device.updateDescriptorSets({slots.MakeSamplerWrite(r.ctx().get<const SelectionSlots>().TransmissionSampler, info)}, {});
+            // SubmitViewport refreshes all slots only on resize, so update this lazy sampler inline.
+            const auto refresh_transmission_sampler = [&] {
+                const auto info = pipelines.Main.TransmissionSampler();
+                slots.SetSampler({SlotType::Sampler, r.ctx().get<const SelectionSlots>().TransmissionSampler}, info.Texture, info.Sampler);
                 request(RenderRequest::ReRecord);
             };
             if (shading == ViewportShadingMode::MaterialPreview || shading == ViewportShadingMode::Rendered) {
@@ -1976,12 +1938,12 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
                 if (active_lighting.UseSceneLights) pbr_mask |= PbrFeature::Punctual;
                 for (const auto [_, feat] : r.view<const PbrMeshFeatures>().each()) pbr_mask |= feat.Mask;
                 const bool non_triangle = std::ranges::any_of(r.view<const SourceMeshKind>().each(), [](const auto &e) { return std::get<1>(e).Value != MeshKind::Triangles; });
-                if (pipelines.Main.Compiler.CompilePipelines(pbr_mask, non_triangle)) request(RenderRequest::ReRecord);
+                if (pipelines.Main.Compiler.CompilePipelines(r.ctx().get<mtl::LibraryCache>(), pbr_mask, non_triangle)) request(RenderRequest::ReRecord);
                 const bool want_transmission = active_lighting.RealTransmission && HasFeature(pbr_mask, PbrFeature::Transmission);
                 const auto te_px = RenderExtentPx(r);
-                if (pipelines.Main.EnsureTransmissionResources({te_px.x, te_px.y}, vk.Device, vk.PhysicalDevice, want_transmission)) refresh_transmission_descriptor();
-            } else if (pipelines.Main.EnsureTransmissionResources({}, vk.Device, vk.PhysicalDevice, false)) {
-                refresh_transmission_descriptor();
+                if (pipelines.Main.EnsureTransmissionResources(ctx, {te_px.x, te_px.y}, want_transmission)) refresh_transmission_sampler();
+            } else if (pipelines.Main.EnsureTransmissionResources(ctx, {}, false)) {
+                refresh_transmission_sampler();
             }
         }
     }
@@ -2081,7 +2043,7 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
             // Polygon offset factor matching Blender's GPU_polygon_offset_calc (viewdist = max ortho extent)
             .NdcOffsetFactor = std::holds_alternative<Perspective>(camera.Data) ? proj[3][2] * -0.00125f : 0.000005f * std::max(std::abs(1.f / proj[0][0]), std::abs(1.f / proj[1][1])),
             .TransmissionFramebufferSamplerSlot = r.ctx().get<const SelectionSlots>().TransmissionSampler,
-            .TransmissionFramebufferMipCount = pipelines.Main.Transmission ? pipelines.Main.Transmission->MipCount : 1u,
+            .TransmissionFramebufferMipCount = pipelines.Main.Transmission ? pipelines.Main.Transmission->Image.MipLevels : 1u,
             .UseRealTransmission = (is_pbr_mode && active_lighting.RealTransmission && pipelines.Main.Transmission) ? 1u : 0u,
             .DebugChannel = is_pbr_mode ? settings.DebugChannel : DebugChannel::None,
         }));
@@ -2137,8 +2099,6 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
     }
     destroy_tracker.Storage.clear();
     r.clear<MeshGeometryDirty, MeshShadingDirty, MeshMaterialAssignment, MaterialDirty, LightWireframeDirty>();
-
-    buffers.Ctx.FlushDeferredDescriptorUpdates(vk.Device);
 }
 
 void RegisterSceneComponentHandlers(entt::registry &r) {

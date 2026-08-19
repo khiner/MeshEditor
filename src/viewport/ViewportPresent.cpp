@@ -4,8 +4,8 @@
 #include "VideoRecorder.h"
 #include "audio/AudioSystem.h"
 #include "audio/ModalAudio.h"
+#include "metal/ImGuiTexture.h"
 #include "render/GpuBuffers.h"
-#include "render/OneShotGpu.h"
 #include "render/Pipelines.h"
 #include "render/Textures.h"
 #include "viewport/FrameState.h"
@@ -20,18 +20,10 @@
 #include <print>
 
 namespace {
-constexpr vk::Extent2D ToExtent2D(vk::Extent3D extent) { return {extent.width, extent.height}; }
-
-// The ImGui texture handle for the final color image, recreated when a resize swaps the image.
-struct ViewportTextureState {
-    std::unique_ptr<mvk::ImGuiTexture> Texture;
-    vk::ImageView View{}; // The FinalColorImage view Texture was built from; recreate when it changes.
-};
-
 // Present on the viewport entity iff recording is active.
 struct VideoRecording {
     std::unique_ptr<VideoRecorder> Recorder;
-    std::pair<vk::Offset3D, vk::Extent2D> Region; // Locked at StartRecording.
+    std::pair<uvec2, mtl::Extent2D> Region; // Locked at StartRecording.
     std::vector<float> Drained{}; // Scratch the captured audio is drained through each frame.
     // Set for a recording to be played back, which takes the master mix at the monitor's level rather than in pascals.
     bool Monitor{false};
@@ -42,30 +34,28 @@ struct VideoRecording {
     int Fps{0};
 };
 
-std::pair<vk::Offset3D, vk::Extent2D> GetCaptureRegion(const entt::registry &r) {
+std::pair<uvec2, mtl::Extent2D> GetCaptureRegion(const entt::registry &r) {
     const auto &pipelines = r.ctx().get<const Pipelines>();
-    const auto full = ToExtent2D(pipelines.Main.Resources->FinalColorImage.Extent);
+    const auto full = pipelines.Main.Resources->FinalColorImage.Extent;
     const auto camera = LookThroughCameraEntity(r);
     const auto *cd = camera != entt::null ? r.try_get<Camera>(camera) : nullptr;
-    if (!cd) return {{0, 0, 0}, full};
+    if (!cd) return {{0, 0}, full};
 
     const auto cam_aspect = AspectRatio(*cd);
-    const auto ratio = LookThroughFrameRatio(cam_aspect, float(full.width) / float(full.height));
-    // yuv420p requires even width/height.
-    const auto w = uint32_t(float(full.height) * cam_aspect * ratio) & ~1u;
-    const auto h = uint32_t(float(full.height) * ratio) & ~1u;
-    return {{int32_t(full.width - w) / 2, int32_t(full.height - h) / 2, 0}, {w, h}};
+    const auto ratio = LookThroughFrameRatio(cam_aspect, float(full.Width) / float(full.Height));
+    // yuv420p requires even width and height.
+    const auto w = uint32_t(float(full.Height) * cam_aspect * ratio) & ~1u;
+    const auto h = uint32_t(float(full.Height) * ratio) & ~1u;
+    return {{(full.Width - w) / 2, (full.Height - h) / 2}, {w, h}};
 }
 } // namespace
 
 void InitViewportMedia(entt::registry &r) {
     LoadViewportIcons(r);
     InitAudioSystem(r);
-    r.ctx().emplace<ViewportTextureState>();
 }
 
 void DeinitViewportMedia(entt::registry &r) {
-    r.ctx().erase<ViewportTextureState>();
     r.ctx().erase<ViewportIcons>();
     r.ctx().erase<ModalAudio>();
 }
@@ -73,19 +63,10 @@ void DeinitViewportMedia(entt::registry &r) {
 void DisplayViewport(entt::registry &r, entt::entity viewport) {
     auto &dl = *ImGui::GetWindowDrawList();
     dl.ChannelsSetCurrent(0);
-    // Recreate the ImGui texture when the final color image view changed (a resize swaps the image).
-    auto &tex = r.ctx().get<ViewportTextureState>();
     if (const auto &pipelines = r.ctx().get<const Pipelines>(); pipelines.Main.Resources) {
-        if (const vk::ImageView view = *pipelines.Main.Resources->FinalColorImage.View; view != tex.View) {
-            tex.Texture = std::make_unique<mvk::ImGuiTexture>(r.ctx().get<const VulkanResources>().Device, view, vec2{0, 1}, vec2{1, 0});
-            tex.View = view;
-        }
-    }
-    if (const auto &t_ptr = tex.Texture) {
         const auto p = ImGui::GetCursorScreenPos();
         const auto extent = r.ctx().get<ViewportExtent>().Value;
-        const auto &t = *t_ptr;
-        dl.AddImage(ImTextureID(VkDescriptorSet(t.DescriptorSet)), p, p + ImVec2{float(extent.x), float(extent.y)}, std::bit_cast<ImVec2>(t.Uv0), std::bit_cast<ImVec2>(t.Uv1));
+        dl.AddImage(mtl::ImGuiTextureId(*pipelines.Main.Resources->FinalColorImage), p, p + ImVec2{float(extent.x), float(extent.y)});
     }
 
     dl.ChannelsSetCurrent(1);
@@ -102,8 +83,7 @@ void StartRecording(entt::registry &r, entt::entity viewport, const std::filesys
         return;
     }
     const auto region = GetCaptureRegion(r);
-    const auto &vk = r.ctx().get<const VulkanResources>();
-    auto &buffers = r.ctx().get<GpuBuffers>();
+    const auto &ctx = r.ctx().get<const mtl::Context>();
     // Zero means video only, which leaves the encode byte-identical to a recording made without audio.
     // With no device to capture, the audio is rendered here instead, one frame's worth per captured frame.
     const auto device_rate = with_audio ? BeginAudioCapture(r) : 0u;
@@ -112,7 +92,7 @@ void StartRecording(entt::registry &r, entt::entity viewport, const std::filesys
     const auto audio_rate = device_rate ? device_rate : offline_rate;
     // A video is played back, so its track is in device units. A wav is a measurement and stays in pascals.
     const bool monitor = with_audio && path.extension() != ".wav";
-    r.emplace<VideoRecording>(viewport, VideoRecording{.Recorder = std::make_unique<VideoRecorder>(vk, buffers.Ctx, path, region.first, region.second, fps, audio_rate), .Region = region, .Monitor = monitor, .OfflineRate = offline_rate, .Fps = fps});
+    r.emplace<VideoRecording>(viewport, VideoRecording{.Recorder = std::make_unique<VideoRecorder>(ctx, path, region.first.x, region.first.y, region.second, fps, audio_rate), .Region = region, .Monitor = monitor, .OfflineRate = offline_rate, .Fps = fps});
 }
 
 bool IsRecording(const entt::registry &r, entt::entity viewport) {
@@ -147,7 +127,7 @@ void CaptureRecordFrame(entt::registry &r, entt::entity viewport) {
     }
     if (rec->Monitor) MonitorFrames(r, rec->Drained, rec->Limiter);
     rec->Recorder->CaptureAudio(rec->Drained);
-    rec->Recorder->CaptureFrame(*pipelines.Main.Resources->FinalColorImage.Image);
+    rec->Recorder->CaptureFrame(pipelines.Main.Resources->FinalColorImage);
 }
 
 std::expected<ViewportImageRgba8, std::string> ReadbackViewportImage(entt::registry &r) {
@@ -155,27 +135,14 @@ std::expected<ViewportImageRgba8, std::string> ReadbackViewportImage(entt::regis
     if (!pipelines.Main.Resources) return std::unexpected{"render resources not ready"};
 
     const auto [offset, extent] = GetCaptureRegion(r);
-    if (extent.width == 0 || extent.height == 0) return std::unexpected{"viewport extent is zero"};
+    if (extent.Width == 0 || extent.Height == 0) return std::unexpected{"viewport extent is zero"};
 
-    const auto &vk = r.ctx().get<const VulkanResources>();
-    const auto &one_shot = r.ctx().get<const OneShotGpu>();
-    const auto bgra = ReadbackImageRgba8(vk, r.ctx().get<GpuBuffers>().Ctx, *one_shot.Pool, *one_shot.Fence, *pipelines.Main.Resources->FinalColorImage.Image, offset, extent);
+    const auto &ctx = r.ctx().get<const mtl::Context>();
+    auto pixels = ReadbackImageRgba8(ctx, pipelines.Main.Resources->FinalColorImage, offset.x, offset.y, extent);
+    // Format::Color is BGRA, so red and blue trade places.
+    for (size_t i = 0; i < pixels.size(); i += 4) std::swap(pixels[i], pixels[i + 2]);
 
-    // Convert BGRA (Format::Color) to RGBA and flip vertically: the viewport renders with a
-    // negative-height Vulkan viewport, so row 0 in image memory is the bottom of the screen.
-    std::vector<std::byte> rgba8(bgra.size());
-    for (uint32_t y = 0; y < extent.height; ++y) {
-        const std::byte *src = bgra.data() + size_t(y) * extent.width * 4;
-        std::byte *dst = rgba8.data() + size_t(extent.height - 1 - y) * extent.width * 4;
-        for (uint32_t x = 0; x < extent.width; ++x) {
-            dst[x * 4 + 0] = src[x * 4 + 2];
-            dst[x * 4 + 1] = src[x * 4 + 1];
-            dst[x * 4 + 2] = src[x * 4 + 0];
-            dst[x * 4 + 3] = src[x * 4 + 3];
-        }
-    }
-
-    return ViewportImageRgba8{std::move(rgba8), extent.width, extent.height};
+    return ViewportImageRgba8{std::move(pixels), extent.Width, extent.Height};
 }
 
 std::string DebugBufferHeapUsage(const entt::registry &r) {

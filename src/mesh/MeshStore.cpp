@@ -5,7 +5,7 @@
 #include "gpu/CornerClass.h"
 #include "gpu/CornerClassEncoding.h"
 #include "gpu/FanItemEncoding.h"
-#include "vulkan/BufferArena.h"
+#include "metal/BufferArena.h"
 
 #include <glm/geometric.hpp>
 #include <zpp_bits.h>
@@ -377,31 +377,31 @@ void WeldVertices(MeshData &data, std::optional<ArmatureDeformData> &deform, std
 } // namespace
 
 struct MeshStore::Buffers {
-    explicit Buffers(mvk::BufferContext &ctx)
-        : FaceFirstTriangleBuffer{ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::ObjectIdBuffer},
-          ElementPrimitiveBuffer{ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::ElementPrimitiveBuffer},
-          PrimitiveMaterialBuffer{ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::PrimitiveMaterialBuffer},
-          BoneDeformBuffer{ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::BoneDeformBuffer},
-          MorphTargetBuffer{ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::MorphTargetBuffer},
-          VerticesBuffer{ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::VertexBuffer},
-          OverlayVerticesBuffer{ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::VertexBuffer},
-          VertexStateBuffer{ctx, 0, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer},
-          FaceStateBuffer{ctx, 0, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer},
-          FaceSharpnessBuffer{ctx, 0, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer},
-          EdgeStateBuffer{ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer},
-          TriangleFaceIdBuffer{ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::ObjectIdBuffer},
-          CornerClassBuffer{ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer},
-          BaseSeamNormalBuffer{ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer},
-          BaseVertexNormalBuffer{ctx, 0, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer},
-          BaseFaceNormalBuffer{ctx, 0, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer},
-          PointNormalBuffer{ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer},
-          EdgeSharpnessBuffer{ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer},
-          CustomCornerMaskBuffer{ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer},
-          CustomCornerNormalBuffer{ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer},
-          CornerTangentBuffer{ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::CornerTangentBuffer},
-          CornerColorBuffer{ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::CornerColorBuffer},
-          CornerUvBuffer{ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::CornerUvBuffer},
-          AdjacencyBuffer{ctx, vk::BufferUsageFlagBits::eStorageBuffer, SlotType::Buffer} {}
+    explicit Buffers(mtl::BufferContext &ctx)
+        : FaceFirstTriangleBuffer{ctx, SlotType::ObjectIdBuffer},
+          ElementPrimitiveBuffer{ctx, SlotType::ElementPrimitiveBuffer},
+          PrimitiveMaterialBuffer{ctx, SlotType::PrimitiveMaterialBuffer},
+          BoneDeformBuffer{ctx, SlotType::BoneDeformBuffer},
+          MorphTargetBuffer{ctx, SlotType::MorphTargetBuffer},
+          VerticesBuffer{ctx, SlotType::VertexBuffer},
+          OverlayVerticesBuffer{ctx, SlotType::VertexBuffer},
+          VertexStateBuffer{ctx, 0, SlotType::Buffer},
+          FaceStateBuffer{ctx, 0, SlotType::Buffer},
+          FaceSharpnessBuffer{ctx, 0, SlotType::Buffer},
+          EdgeStateBuffer{ctx, SlotType::Buffer},
+          TriangleFaceIdBuffer{ctx, SlotType::ObjectIdBuffer},
+          CornerClassBuffer{ctx, SlotType::Buffer},
+          BaseSeamNormalBuffer{ctx, SlotType::Buffer},
+          BaseVertexNormalBuffer{ctx, 0, SlotType::Buffer},
+          BaseFaceNormalBuffer{ctx, 0, SlotType::Buffer},
+          PointNormalBuffer{ctx, SlotType::Buffer},
+          EdgeSharpnessBuffer{ctx, SlotType::Buffer},
+          CustomCornerMaskBuffer{ctx, SlotType::Buffer},
+          CustomCornerNormalBuffer{ctx, SlotType::Buffer},
+          CornerTangentBuffer{ctx, SlotType::CornerTangentBuffer},
+          CornerColorBuffer{ctx, SlotType::CornerColorBuffer},
+          CornerUvBuffer{ctx, SlotType::CornerUvBuffer},
+          AdjacencyBuffer{ctx, SlotType::Buffer} {}
 
     BufferArena<uint32_t> FaceFirstTriangleBuffer; // Per-face index of first triangle in the index buffer
     BufferArena<uint32_t> ElementPrimitiveBuffer; // Source primitive index per drawn element (per face, or per vertex for point/line meshes)
@@ -411,16 +411,16 @@ struct MeshStore::Buffers {
     BufferArena<Vertex> VerticesBuffer;
     // Overlay geometry, kept out of ForEachSerializedArena so Serialize skips it.
     BufferArena<Vertex> OverlayVerticesBuffer;
-    mvk::Buffer VertexStateBuffer; // Mirrors VerticesBuffer
-    mvk::Buffer FaceStateBuffer; // Mirrors FaceFirstTriangleBuffer
-    mvk::Buffer FaceSharpnessBuffer; // Mirrors FaceFirstTriangleBuffer. 1 = flat-shaded face (canonical sharpness store)
+    mtl::Buffer VertexStateBuffer; // Mirrors VerticesBuffer
+    mtl::Buffer FaceStateBuffer; // Mirrors FaceFirstTriangleBuffer
+    mtl::Buffer FaceSharpnessBuffer; // Mirrors FaceFirstTriangleBuffer. 1 = flat-shaded face (canonical sharpness store)
     BufferArena<uint8_t> EdgeStateBuffer;
     BufferArena<uint32_t> TriangleFaceIdBuffer; // 1-indexed map from face triangles (in mesh face order) to source face ID
     BufferArena<uint32_t> CornerClassBuffer; // Per-corner CornerClass values, from the sharpness stores
     BufferArena<vec3> BaseSeamNormalBuffer; // Composed sector normal per seam corner
     // Mirrors VerticesBuffer, one vec3 per vertex slot: derived smooth normals for triangle meshes, authored normals for face-less meshes
-    mvk::Buffer BaseVertexNormalBuffer;
-    mvk::Buffer BaseFaceNormalBuffer; // Mirrors FaceFirstTriangleBuffer, one derived face normal per face slot
+    mtl::Buffer BaseVertexNormalBuffer;
+    mtl::Buffer BaseFaceNormalBuffer; // Mirrors FaceFirstTriangleBuffer, one derived face normal per face slot
     BufferArena<vec3> PointNormalBuffer; // Authored normals of face-less meshes, in vertex order
     BufferArena<uint8_t> EdgeSharpnessBuffer; // One byte per edge, 1 = sharp (canonical sharpness store)
     BufferArena<uvec2> CustomCornerMaskBuffer; // Custom corner-normal presence: a (bitset word, exclusive rank) pair per 32 corners
@@ -460,20 +460,20 @@ struct MeshStore::Buffers {
 
 namespace {
 // Save/restore a plain mirror buffer (no allocator) by its used byte region.
-std::vector<std::byte> SaveBuffer(const mvk::Buffer &b) {
+std::vector<std::byte> SaveBuffer(const mtl::Buffer &b) {
     const auto mapped = b.GetMappedData();
     const auto used = std::min(size_t(b.UsedSize), mapped.size());
     return {mapped.begin(), mapped.begin() + used};
 }
-void RestoreBuffer(mvk::Buffer &b, std::span<const std::byte> bytes) {
+void RestoreBuffer(mtl::Buffer &b, std::span<const std::byte> bytes) {
     b.Reserve(bytes.size());
     if (!bytes.empty()) b.Update(bytes, 0);
     b.UsedSize = bytes.size();
 }
 
 // Size a mirror buffer to cover the mirrored arena's element range.
-template<typename T> void SyncMirror(mvk::Buffer &mirror, Range range) {
-    const auto end = vk::DeviceSize(range.Offset + range.Count) * sizeof(T);
+template<typename T> void SyncMirror(mtl::Buffer &mirror, Range range) {
+    const auto end = uint64_t(range.Offset + range.Count) * sizeof(T);
     mirror.Reserve(end);
     mirror.UsedSize = std::max(mirror.UsedSize, end);
 }
@@ -557,7 +557,7 @@ uint32_t MeshStore::GetCornerClassOffset(uint32_t id) const {
     return entry.UniformCornerClass == CornerClass::Face ? UniformFaceOffset : InvalidOffset;
 }
 
-MeshStore::MeshStore(mvk::BufferContext &ctx) : B{std::make_unique<Buffers>(ctx)} {}
+MeshStore::MeshStore(mtl::BufferContext &ctx) : B{std::make_unique<Buffers>(ctx)} {}
 MeshStore::~MeshStore() = default;
 MeshStore::MeshStore(MeshStore &&) noexcept = default;
 MeshStore &MeshStore::operator=(MeshStore &&) noexcept = default;

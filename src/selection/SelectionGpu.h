@@ -1,6 +1,6 @@
 #pragma once
 
-#include "render/Bindless.h"
+#include "metal/Bindless.h"
 
 #include <entt/entity/fwd.hpp>
 
@@ -12,15 +12,14 @@ struct SelectionDrawInfo;
 
 using SelectionBuildFn = std::function<std::vector<SelectionDrawInfo>(DrawListBuilder &)>;
 
-// RAII for the descriptor-slot leases used by the selection compute/render pipeline.
+// RAII for the bindless-slot leases used by the selection compute/render pipeline.
 struct SelectionSlots {
-    uint32_t HeadImage{}, SelectionCounter{}, ObjectPickKey{}, ElementPickCandidates{}, ObjectPickSeenBits{}, SelectionBitset{};
+    uint32_t SelectionCounter{}, ObjectPickKey{}, ElementPickCandidates{}, ObjectPickSeenBits{}, SelectionBitset{};
     uint32_t MotionBlurTileImage{}, MotionBlurTileIndirection{};
     uint32_t ObjectIdSampler{}, DepthSampler{}, SilhouetteSampler{}, SceneColorSampler{}, OverlayColorSampler{}, LineDataSampler{}, TransmissionSampler{}, MotionBlurAccumSampler{}, SceneDepthSampler{}, VelocitySampler{}, MotionBlurGatherSampler{}, DepthPyramidSampler{};
 
     using Entry = std::pair<SlotType, uint32_t SelectionSlots::*>;
     static constexpr std::array Entries{
-        Entry{SlotType::Image, &SelectionSlots::HeadImage},
         Entry{SlotType::Buffer, &SelectionSlots::SelectionCounter},
         Entry{SlotType::Buffer, &SelectionSlots::ObjectPickKey},
         Entry{SlotType::Buffer, &SelectionSlots::ElementPickCandidates},
@@ -42,7 +41,7 @@ struct SelectionSlots {
         Entry{SlotType::Sampler, &SelectionSlots::DepthPyramidSampler},
     };
 
-    explicit SelectionSlots(DescriptorSlots &slots) : Slots(&slots) {
+    explicit SelectionSlots(mtl::BindlessSet &slots) : Slots(&slots) {
         for (const auto &[type, field] : Entries) this->*field = slots.Allocate(type);
     }
     SelectionSlots(const SelectionSlots &) = delete;
@@ -63,7 +62,7 @@ struct SelectionSlots {
     ~SelectionSlots() { Release(); }
 
 private:
-    DescriptorSlots *Slots{nullptr};
+    mtl::BindlessSet *Slots{nullptr};
     void Release() {
         if (!Slots) return;
         for (const auto &[type, field] : Entries) Slots->Release({type, this->*field});
@@ -72,7 +71,5 @@ private:
 };
 
 // Render the on-demand selection-fragment pass. `build_fn` populates the draw list given the silhouette-prefilled builder.
-void RenderSelectionPassWith(entt::registry &, entt::entity viewport, bool render_depth, const SelectionBuildFn &, vk::Semaphore signal_semaphore = {}, bool render_silhouette = true);
 
 // Replays the cached selection draw list (built by RecordRenderCommandBuffer). Clears SelectionStale on success.
-void RenderSelectionPass(entt::registry &, entt::entity viewport, vk::Semaphore signal_semaphore = {});

@@ -30,6 +30,15 @@ struct EnumValue {
     std::string Name, Value;
 };
 
+struct ConstantDef {
+    std::string Name, Type;
+};
+
+struct ConstantGroup {
+    std::string Name;
+    std::vector<ConstantDef> Constants;
+};
+
 struct EnumDef {
     std::string Name, Type; // Underlying type (e.g. u32)
     std::vector<EnumValue> Values;
@@ -84,6 +93,7 @@ enum class Section {
     None,
     Bindings,
     Enums,
+    FunctionConstants,
     Structs,
 };
 
@@ -109,16 +119,21 @@ TypeSpec ParseType(std::string_view type) {
     return {.Base = Trim(type.substr(0, open)), .ArraySize = size};
 }
 
-bool ParseSchema(const std::filesystem::path &path, std::vector<Binding> &bindings, std::vector<EnumDef> &enums, std::vector<StructDef> &structs) {
+bool ParseSchema(
+    const std::filesystem::path &path, std::vector<Binding> &bindings, std::vector<EnumDef> &enums,
+    std::vector<ConstantGroup> &constant_groups, std::vector<StructDef> &structs
+) {
     std::ifstream in{path};
     if (!in) return false;
 
     std::optional<Binding> current_binding;
     std::optional<EnumDef> current_enum;
     std::optional<EnumValue> current_enum_value;
+    std::optional<ConstantGroup> current_group;
+    std::optional<ConstantDef> current_constant;
     std::optional<StructDef> current_struct;
     std::optional<Field> current_field;
-    bool in_values{}, in_fields{};
+    bool in_values{}, in_constants{}, in_fields{};
 
     auto commit_binding = [&]() {
         if (!current_binding) return;
@@ -143,6 +158,22 @@ bool ParseSchema(const std::filesystem::path &path, std::vector<Binding> &bindin
         enums.emplace_back(*current_enum);
         current_enum.reset();
     };
+    auto commit_constant = [&]() {
+        if (!current_constant) return;
+        if (!current_group) Fail("Invalid function constant entry in schema.");
+        if (current_constant->Name.empty() || current_constant->Type.empty()) Fail("Invalid function constant entry in schema.");
+
+        current_group->Constants.emplace_back(*current_constant);
+        current_constant.reset();
+    };
+    auto commit_group = [&]() {
+        if (!current_group) return;
+        commit_constant();
+        if (current_group->Name.empty() || current_group->Constants.empty()) Fail("Invalid function constant group in schema.");
+
+        constant_groups.emplace_back(*current_group);
+        current_group.reset();
+    };
     auto commit_field = [&]() {
         if (!current_field) return;
         if (!current_struct) Fail("Invalid field entry in schema.");
@@ -161,7 +192,7 @@ bool ParseSchema(const std::filesystem::path &path, std::vector<Binding> &bindin
     };
 
     Section section = Section::None;
-    size_t values_parent_indent{0}, fields_parent_indent{0};
+    size_t values_parent_indent{0}, constants_parent_indent{0}, fields_parent_indent{0};
     for (std::string line; std::getline(in, line);) {
         const auto stripped = StripComment(line);
         const auto indent = stripped.find_first_not_of(' ');
@@ -173,6 +204,10 @@ bool ParseSchema(const std::filesystem::path &path, std::vector<Binding> &bindin
             commit_enum_value();
             in_values = false;
         }
+        if (section == Section::FunctionConstants && in_constants && indent_count <= constants_parent_indent) {
+            commit_constant();
+            in_constants = false;
+        }
         if (section == Section::Structs && in_fields && indent_count <= fields_parent_indent) {
             commit_field();
             in_fields = false;
@@ -183,6 +218,8 @@ bool ParseSchema(const std::filesystem::path &path, std::vector<Binding> &bindin
             commit_struct();
             commit_enum_value();
             commit_enum();
+            commit_constant();
+            commit_group();
             commit_binding();
             section = Section::Bindings;
             continue;
@@ -191,14 +228,29 @@ bool ParseSchema(const std::filesystem::path &path, std::vector<Binding> &bindin
             commit_field();
             commit_struct();
             commit_binding();
+            commit_constant();
+            commit_group();
             commit_enum_value();
             commit_enum();
             section = Section::Enums;
             continue;
         }
+        if (trimmed.starts_with("function_constants:")) {
+            commit_enum_value();
+            commit_enum();
+            commit_field();
+            commit_struct();
+            commit_binding();
+            commit_constant();
+            commit_group();
+            section = Section::FunctionConstants;
+            continue;
+        }
         if (trimmed.starts_with("structs:")) {
             commit_enum_value();
             commit_enum();
+            commit_constant();
+            commit_group();
             commit_field();
             commit_struct();
             commit_binding();
@@ -212,6 +264,9 @@ bool ParseSchema(const std::filesystem::path &path, std::vector<Binding> &bindin
             } else if (section == Section::Enums) {
                 if (in_values) commit_enum_value();
                 else commit_enum();
+            } else if (section == Section::FunctionConstants) {
+                if (in_constants) commit_constant();
+                else commit_group();
             } else if (section == Section::Structs) {
                 if (in_fields) commit_field();
                 else commit_struct();
@@ -246,6 +301,22 @@ bool ParseSchema(const std::filesystem::path &path, std::vector<Binding> &bindin
                 else if (key == "type") current_enum->Type = value;
                 else Fail("Unknown enum key: " + std::string{key});
             }
+        } else if (section == Section::FunctionConstants) {
+            if (key == "constants" && value.empty()) {
+                in_constants = true;
+                constants_parent_indent = indent_count;
+                continue;
+            }
+            if (in_constants) {
+                if (!current_constant) current_constant.emplace();
+                if (key == "name") current_constant->Name = value;
+                else if (key == "type") current_constant->Type = value;
+                else Fail("Unknown function constant key: " + std::string{key});
+            } else {
+                if (!current_group) current_group.emplace();
+                if (key == "name") current_group->Name = value;
+                else Fail("Unknown function constant group key: " + std::string{key});
+            }
         } else if (section == Section::Structs) {
             if (key == "fields" && value.empty()) {
                 in_fields = true;
@@ -269,8 +340,10 @@ bool ParseSchema(const std::filesystem::path &path, std::vector<Binding> &bindin
     }
 
     if (section == Section::Enums && in_values) commit_enum_value();
+    if (section == Section::FunctionConstants && in_constants) commit_constant();
     if (section == Section::Structs && in_fields) commit_field();
     commit_enum();
+    commit_group();
     commit_struct();
     commit_binding();
     return true;
@@ -283,32 +356,113 @@ bool IsEnumType(std::string_view type, const std::vector<EnumDef> &enums) {
     return any_of(enums, [&](const auto &def) { return def.Name == type; });
 }
 
-enum class TargetLang {
-    Cpp,
-    Glsl,
-};
+// Packed MSL types match the schema's scalar block layout.
+std::optional<std::string_view> MslBuiltinTypeFor(std::string_view type) {
+    if (type == "u8") return "uchar";
+    if (type == "u32") return "uint";
+    if (type == "float") return "float";
+    if (type == "vec2") return "packed_float2";
+    if (type == "vec3") return "packed_float3";
+    if (type == "vec4" || type == "quat") return "packed_float4";
+    if (type == "uvec2") return "packed_uint2";
+    if (type == "uvec4") return "packed_uint4";
+    if (type == "mat3") return "packed_float3x3";
+    if (type == "mat4") return "packed_float4x4";
+    return {};
+}
 
-std::optional<std::string_view> BuiltinTypeFor(std::string_view type, TargetLang target) {
+std::optional<std::string_view> CppBuiltinTypeFor(std::string_view type) {
     if (type == "u8") return "uint8_t";
-    if (type == "u32") return target == TargetLang::Cpp ? "uint32_t" : "uint";
-    if (type == "quat") return target == TargetLang::Cpp ? "quat" : "vec4";
+    if (type == "u32") return "uint32_t";
+    if (type == "quat") return "quat";
     if (type == "float" || type == "vec2" || type == "uvec2" || type == "uvec4" || type == "vec3" || type == "vec4" || type == "mat3" || type == "mat4") return type;
     return {};
 }
 
+struct Layout {
+    size_t Size, Align;
+};
+
+std::optional<Layout> BuiltinLayoutFor(std::string_view type) {
+    if (type == "u8") return Layout{1, 1};
+    if (type == "u32" || type == "float") return Layout{4, 4};
+    if (type == "vec2" || type == "uvec2") return Layout{8, 4};
+    if (type == "vec3") return Layout{12, 4};
+    if (type == "vec4" || type == "uvec4" || type == "quat") return Layout{16, 4};
+    if (type == "mat3") return Layout{36, 4};
+    if (type == "mat4") return Layout{64, 4};
+    return {};
+}
+
+constexpr size_t AlignUp(size_t offset, size_t align) { return (offset + align - 1) / align * align; }
+
 std::optional<std::string_view> CppTypeFor(std::string_view type, const std::vector<StructDef> &structs, const std::vector<EnumDef> &enums) {
-    if (const auto builtin = BuiltinTypeFor(type, TargetLang::Cpp)) return builtin;
+    if (const auto builtin = CppBuiltinTypeFor(type)) return builtin;
     if (IsEnumType(type, enums)) return type;
     if (IsStructType(type, structs)) return type;
     return {};
 }
-std::optional<std::string_view> GlslTypeFor(std::string_view type, const std::vector<StructDef> &structs, const std::vector<EnumDef> &enums) {
-    if (const auto builtin = BuiltinTypeFor(type, TargetLang::Glsl)) return builtin;
+
+std::optional<std::string_view> MslTypeFor(std::string_view type, const std::vector<StructDef> &structs, const std::vector<EnumDef> &enums) {
+    if (const auto builtin = MslBuiltinTypeFor(type)) return builtin;
     if (const auto it = find_if(enums, [&](const auto &def) { return def.Name == type; }); it != enums.end()) {
-        return BuiltinTypeFor(it->Type, TargetLang::Glsl);
+        return MslBuiltinTypeFor(it->Type);
     }
     if (IsStructType(type, structs)) return type;
     return {};
+}
+
+struct FieldLayout {
+    std::string Name;
+    size_t Offset;
+};
+
+struct StructLayout {
+    std::vector<FieldLayout> Fields;
+    size_t Size, Align;
+};
+
+const StructDef *FindStruct(std::string_view name, const std::vector<StructDef> &structs) {
+    const auto it = find_if(structs, [&](const auto &def) { return def.Name == name; });
+    return it == structs.end() ? nullptr : &*it;
+}
+
+StructLayout ComputeLayout(const StructDef &, const std::vector<StructDef> &, const std::vector<EnumDef> &);
+
+Layout LayoutFor(std::string_view type, const std::vector<StructDef> &structs, const std::vector<EnumDef> &enums) {
+    if (const auto builtin = BuiltinLayoutFor(type)) return *builtin;
+    if (const auto it = find_if(enums, [&](const auto &def) { return def.Name == type; }); it != enums.end()) {
+        if (const auto underlying = BuiltinLayoutFor(it->Type)) return *underlying;
+        Fail("Unknown enum underlying type: " + it->Type);
+    }
+    if (const auto *def = FindStruct(type, structs)) {
+        const auto layout = ComputeLayout(*def, structs, enums);
+        return {layout.Size, layout.Align};
+    }
+    Fail("Unknown type in layout: " + std::string{type});
+}
+
+StructLayout ComputeLayout(const StructDef &def, const std::vector<StructDef> &structs, const std::vector<EnumDef> &enums) {
+    StructLayout out{{}, 0, 1};
+    size_t offset = 0;
+    for (const auto &field : def.Fields) {
+        const auto spec = ParseType(field.Type);
+        const auto element = LayoutFor(spec.Base, structs, enums);
+        offset = AlignUp(offset, element.Align);
+        out.Fields.emplace_back(field.Name, offset);
+        offset += element.Size * spec.ArraySize.value_or(1);
+        out.Align = std::max(out.Align, element.Align);
+    }
+    out.Size = AlignUp(offset, out.Align);
+    return out;
+}
+
+bool IsUniform(std::string_view kind) { return kind == "Uniform" || kind == "UniformDynamic"; }
+
+std::string BufferIndexName(std::string_view binding_name) {
+    constexpr std::string_view Suffix{"UBO"};
+    const auto stem = binding_name.ends_with(Suffix) ? binding_name.substr(0, binding_name.size() - Suffix.size()) : binding_name;
+    return "BufferIndex_" + std::string{stem};
 }
 
 std::optional<std::string_view> BindKindEnum(std::string_view kind) {
@@ -338,7 +492,6 @@ std::string ToMacroName(std::string_view name, std::string_view suffix) {
     return out;
 }
 
-// FloatMax in a schema default expands to the float maximum in C++ output. GLSL structs carry no defaults.
 std::string CppDefaultValue(std::string value) {
     constexpr std::string_view FloatMax{"FloatMax"};
     for (size_t pos; (pos = value.find(FloatMax)) != std::string::npos;) {
@@ -357,31 +510,40 @@ std::string ToIdentifier(std::string_view name) {
     return out;
 }
 
+// Assert the same computed layout in both generated languages.
+void EmitLayoutAsserts(std::ostream &out, std::string_view name, const StructLayout &layout, std::string_view offset_of) {
+    for (const auto &field : layout.Fields) {
+        out << "static_assert(" << offset_of << "(" << name << ", " << field.Name << ") == " << field.Offset
+            << ", \"" << name << "::" << field.Name << " offset\");\n";
+    }
+    out << "static_assert(sizeof(" << name << ") == " << layout.Size << ", \"" << name << " size\");\n";
+}
+
 void EmitEnum(
     const EnumDef &def,
-    const std::filesystem::path &glsl_dir,
+    const std::filesystem::path &msl_dir,
     const std::filesystem::path &cpp_dir,
     const std::filesystem::path &schema_relative_path
 ) {
-    const auto glsl_path = glsl_dir / (def.Name + ".glsl");
+    const auto msl_path = msl_dir / (def.Name + ".metal");
     const auto cpp_path = cpp_dir / (def.Name + ".h");
-    std::ofstream glsl_out{glsl_path, std::ios::binary};
+    std::ofstream msl_out{msl_path, std::ios::binary};
     std::ofstream cpp_out{cpp_path, std::ios::binary};
-    if (!glsl_out || !cpp_out) Fail("Failed to open enum output files for: " + def.Name);
+    if (!msl_out || !cpp_out) Fail("Failed to open enum output files for: " + def.Name);
 
-    const auto guard = ToMacroName(def.Name, "GLSL");
+    const auto msl_guard = ToMacroName(def.Name, "MSL");
     const auto enum_token = ToIdentifier(def.Name);
-    const auto cpp_type = BuiltinTypeFor(def.Type, TargetLang::Cpp);
-    const auto glsl_type = BuiltinTypeFor(def.Type, TargetLang::Glsl);
-    if (!cpp_type || !glsl_type) Fail("Unknown enum underlying type: " + def.Type);
+    const auto cpp_type = CppBuiltinTypeFor(def.Type);
+    const auto msl_type = MslBuiltinTypeFor(def.Type);
+    if (!cpp_type || !msl_type) Fail("Unknown enum underlying type: " + def.Type);
 
-    glsl_out << "#ifndef " << guard << "\n"
-             << "#define " << guard << "\n\n"
-             << GeneratedComment(schema_relative_path);
+    msl_out << "#ifndef " << msl_guard << "\n"
+            << "#define " << msl_guard << "\n\n"
+            << GeneratedComment(schema_relative_path);
     for (const auto &value : def.Values) {
-        glsl_out << "const " << *glsl_type << " " << enum_token << "_" << ToIdentifier(value.Name) << " = " << value.Value << ";\n";
+        msl_out << "constant " << *msl_type << " " << enum_token << "_" << ToIdentifier(value.Name) << " = " << value.Value << ";\n";
     }
-    glsl_out << "\n#endif\n";
+    msl_out << "\n#endif\n";
 
     cpp_out << "#pragma once\n\n"
             << GeneratedComment(schema_relative_path)
@@ -391,35 +553,62 @@ void EmitEnum(
     cpp_out << "};\n";
 }
 
+// Generate matching specialization-constant indices for MSL and C++.
+void EmitFunctionConstants(
+    const ConstantGroup &def,
+    const std::filesystem::path &msl_dir,
+    const std::filesystem::path &cpp_dir,
+    const std::filesystem::path &schema_relative_path
+) {
+    const auto msl_path = msl_dir / (def.Name + ".metal");
+    const auto cpp_path = cpp_dir / (def.Name + ".h");
+    std::ofstream msl_out{msl_path, std::ios::binary};
+    std::ofstream cpp_out{cpp_path, std::ios::binary};
+    if (!msl_out || !cpp_out) Fail("Failed to open function constant output files for: " + def.Name);
+
+    msl_out << "#ifndef " << ToMacroName(def.Name, "MSL") << "\n"
+            << "#define " << ToMacroName(def.Name, "MSL") << "\n\n"
+            << GeneratedComment(schema_relative_path)
+            << "#include \"MslPrelude.metal\"\n\n";
+    for (size_t i = 0; i < def.Constants.size(); ++i) {
+        const auto &constant = def.Constants[i];
+        const auto msl_type = constant.Type == "bool" ? std::optional<std::string_view>{"bool"} : MslBuiltinTypeFor(constant.Type);
+        if (!msl_type) Fail("Unknown function constant type: " + constant.Type);
+        msl_out << "constant " << *msl_type << " " << constant.Name << " [[function_constant(" << i << ")]];\n";
+    }
+    msl_out << "\n#endif\n";
+
+    cpp_out << "#pragma once\n\n"
+            << GeneratedComment(schema_relative_path)
+            << "#include <cstdint>\n\n"
+            << "enum class " << def.Name << " : uint32_t {\n";
+    for (size_t i = 0; i < def.Constants.size(); ++i) cpp_out << "    " << def.Constants[i].Name << " = " << i << ",\n";
+    cpp_out << "};\n";
+}
+
 // args: <binary_dir> <source_dir> <schema_relative_path>
 int main(int argc, char **argv) {
     if (argc != 4) return 1;
 
     const std::filesystem::path build_dir{argv[1]}, source_dir{argv[2]}, schema_relative_path{argv[3]}, schema_path{source_dir / schema_relative_path};
-    const auto glsl_dir{build_dir / "shaders"}, cpp_dir{build_dir / "gpu"};
+    const auto msl_dir{build_dir / "shaders"}, cpp_dir{build_dir / "gpu"};
 
     std::error_code fs_error;
-    std::filesystem::create_directories(glsl_dir, fs_error);
+    std::filesystem::create_directories(msl_dir, fs_error);
     if (fs_error) return 1;
     std::filesystem::create_directories(cpp_dir, fs_error);
     if (fs_error) return 1;
 
     std::vector<Binding> bindings;
     std::vector<EnumDef> enums;
+    std::vector<ConstantGroup> constant_groups;
     std::vector<StructDef> structs;
-    if (!ParseSchema(schema_path, bindings, enums, structs)) return 1;
+    if (!ParseSchema(schema_path, bindings, enums, constant_groups, structs)) return 1;
+    for (const auto &group : constant_groups) EmitFunctionConstants(group, msl_dir, cpp_dir, schema_relative_path);
 
-    const auto bindless_glsl_path{glsl_dir / "BindlessBindings.glsl"}, bindless_header_path{cpp_dir / "BindlessBindings.h"};
-    std::ofstream bindless_glsl{bindless_glsl_path, std::ios::binary}, bindless_header{bindless_header_path, std::ios::binary};
-    if (!bindless_glsl || !bindless_header) return 1;
-
-    bindless_glsl << "#ifndef BINDLESS_BINDINGS_GLSL\n\n"
-                  << "#define BINDLESS_BINDINGS_GLSL\n\n"
-                  << GeneratedComment(schema_relative_path);
-    for (size_t i = 0; i < bindings.size(); ++i) {
-        bindless_glsl << "const uint BINDING_" << bindings[i].Name << " = " << i << ";\n";
-    }
-    bindless_glsl << "\n\n#endif\n";
+    const auto bindless_header_path{cpp_dir / "BindlessBindings.h"};
+    std::ofstream bindless_header{bindless_header_path, std::ios::binary};
+    if (!bindless_header) return 1;
 
     bindless_header << "#pragma once\n\n"
                     << GeneratedComment(schema_relative_path)
@@ -451,62 +640,153 @@ int main(int argc, char **argv) {
             Fail("Unknown binding kind: " + binding.Kind);
         }
     }
+    // Shared capacities keep slot indices identical on the CPU and GPU. Corpus peaks are 40 buffers,
+    // 85 samplers, and 14 images; arena-backed resources do not scale these counts with scene size.
+    struct KindCapacity {
+        std::string_view Kind;
+        uint32_t Capacity;
+    };
+    constexpr std::array<KindCapacity, 5> Capacities{{
+        {"Uniform", 1},
+        {"UniformDynamic", 1},
+        {"Image", 1024},
+        {"Sampler", 1024},
+        {"Buffer", 256},
+    }};
+    const auto capacity_for = [&](std::string_view kind) {
+        const auto it = find_if(Capacities, [&](const auto &c) { return c.Kind == kind; });
+        if (it == Capacities.end()) Fail("Unknown binding kind: " + std::string{kind});
+        return it->Capacity;
+    };
+
     bindless_header << "}};\n";
 
-    for (const auto &def : enums) EmitEnum(def, glsl_dir, cpp_dir, schema_relative_path);
+    // Buffers and textures use one 64-bit handle; samplers use a texture/sampler pair.
+    struct EntryLayout {
+        uint32_t Offset, Stride, Capacity;
+    };
+    std::vector<EntryLayout> entry_layouts;
+    uint32_t table_offset = 0;
+    for (const auto &binding : bindings) {
+        const auto capacity = capacity_for(binding.Kind);
+        if (IsUniform(binding.Kind)) {
+            entry_layouts.emplace_back(0u, 0u, capacity);
+            continue;
+        }
+        const uint32_t stride = binding.Kind == "Sampler" ? 16u : 8u;
+        entry_layouts.emplace_back(table_offset, stride, capacity);
+        table_offset += stride * capacity;
+    }
+    bindless_header << "\n// Byte layout of the Tier-2 argument buffer, matching the generated MSL BindlessSetT.\n"
+                    << "struct BindlessEntryLayout {\n"
+                    << "    uint32_t Offset;\n"
+                    << "    uint32_t Stride;\n"
+                    << "    uint32_t Capacity;\n"
+                    << "};\n\n"
+                    << "constexpr std::array<BindlessEntryLayout, SlotTypeCount> BindlessLayout{{\n";
+    for (size_t i = 0; i < entry_layouts.size(); ++i) {
+        const auto &e = entry_layouts[i];
+        bindless_header << "    BindlessEntryLayout{" << e.Offset << ", " << e.Stride << ", " << e.Capacity << "}, // " << bindings[i].Name << "\n";
+    }
+    bindless_header << "}};\n\n"
+                    << "constexpr uint32_t BindlessTableSize{" << table_offset << "};\n";
+
+    bindless_header << "\nconstexpr uint32_t BufferIndex_Bindless{0};\n"
+                    << "constexpr uint32_t BufferIndex_PushConstants{1};\n";
+    uint32_t uniform_index = 2;
+    for (const auto &binding : bindings) {
+        if (!IsUniform(binding.Kind)) continue;
+        bindless_header << "constexpr uint32_t " << BufferIndexName(binding.Name) << "{" << uniform_index++ << "};\n";
+    }
+
+    bindless_header << "\nconstexpr uint32_t SlotCapacityFor(BindKind kind) {\n"
+                    << "    switch (kind) {\n";
+    for (const auto &c : Capacities) bindless_header << "        case BindKind::" << c.Kind << ": return " << c.Capacity << ";\n";
+    bindless_header << "    }\n    return 0;\n}\n";
+
+    // The CPU writes the Tier-2 argument buffer as GPU addresses and resource IDs.
+    std::ofstream bindless_msl{msl_dir / "BindlessBindings.metal", std::ios::binary};
+    if (!bindless_msl) return 1;
+    bindless_msl << "#ifndef BINDLESS_BINDINGS_MSL\n"
+                 << "#define BINDLESS_BINDINGS_MSL\n\n"
+                 << GeneratedComment(schema_relative_path)
+                 << "#include \"MslPrelude.metal\"\n\n";
+    for (size_t i = 0; i < bindings.size(); ++i) {
+        bindless_msl << "constant uint BINDING_" << bindings[i].Name << " = " << i << ";\n";
+    }
+    // Parameterize the storage-image view because its shaders use incompatible access formats.
+    bindless_msl << "\nconstant uint BufferIndex_Bindless = 0;\n"
+                 << "constant uint BufferIndex_PushConstants = 1;\n";
+    uniform_index = 2;
+    for (const auto &binding : bindings) {
+        if (!IsUniform(binding.Kind)) continue;
+        bindless_msl << "constant uint " << BufferIndexName(binding.Name) << " = " << uniform_index++ << ";\n";
+    }
+    bindless_msl << "\ntemplate<typename ImageT>\nstruct BindlessSetT {\n";
+    for (const auto &binding : bindings) {
+        const auto capacity = capacity_for(binding.Kind);
+        if (binding.Kind == "Buffer") {
+            bindless_msl << "    device const uchar *" << binding.Name << "[" << capacity << "];\n";
+        } else if (binding.Kind == "Image") {
+            bindless_msl << "    ImageT " << binding.Name << "[" << capacity << "];\n";
+        } else if (binding.Kind == "Sampler") {
+            bindless_msl << "    BindlessSampler" << (binding.Name == "CubeSampler" ? "Cube" : "2D") << " " << binding.Name << "[" << capacity << "];\n";
+        }
+    }
+    bindless_msl << "};\n\n";
+    bindless_msl << "template<typename ImageT> struct BindlessLayoutCheck {\n";
+    for (size_t i = 0; i < bindings.size(); ++i) {
+        if (IsUniform(bindings[i].Kind)) continue;
+        bindless_msl << "    static_assert(__builtin_offsetof(BindlessSetT<ImageT>, " << bindings[i].Name << ") == " << entry_layouts[i].Offset
+                     << ", \"" << bindings[i].Name << " argument buffer offset\");\n";
+    }
+    bindless_msl << "    static_assert(sizeof(BindlessSetT<ImageT>) == " << table_offset << ", \"argument buffer size\");\n"
+                 << "};\n\n"
+                 << "using BindlessSet = BindlessSetT<texture2d<float, access::read>>;\n"
+                 << "using BindlessSetImageWrite = BindlessSetT<texture2d<float, access::write>>;\n"
+                 << "using BindlessSetImageUint = BindlessSetT<texture2d<uint, access::read_write>>;\n"
+                 << "template struct BindlessLayoutCheck<texture2d<float, access::read>>;\n"
+                 << "template struct BindlessLayoutCheck<texture2d<float, access::write>>;\n"
+                 << "template struct BindlessLayoutCheck<texture2d<uint, access::read_write>>;\n\n"
+                 << "// Writable slots cast away the table's const view.\n"
+                 << "#define BindlessBuffer(T, table, slot) reinterpret_cast<device const T *>((table)[(slot)])\n"
+                 << "#define BindlessBufferMutable(T, table, slot) reinterpret_cast<device T *>(const_cast<device uchar *>((table)[(slot)]))\n"
+                 << "\n#endif\n";
+
+    for (const auto &def : enums) EmitEnum(def, msl_dir, cpp_dir, schema_relative_path);
 
     for (const auto &def : structs) {
-        const auto glsl_path = glsl_dir / (def.Name + ".glsl");
+        const auto msl_path = msl_dir / (def.Name + ".metal");
         const auto cpp_path = cpp_dir / (def.Name + ".h");
-        std::ofstream glsl_out{glsl_path, std::ios::binary}, cpp_out{cpp_path, std::ios::binary};
-        if (!glsl_out || !cpp_out) return 1;
+        std::ofstream msl_out{msl_path, std::ios::binary}, cpp_out{cpp_path, std::ios::binary};
+        if (!msl_out || !cpp_out) return 1;
 
-        const auto guard = ToMacroName(def.Name, "GLSL");
-        glsl_out << "#ifndef " << guard << "\n"
-                 << "#define " << guard << "\n\n"
-                 << GeneratedComment(schema_relative_path);
-        std::vector<std::string_view> glsl_includes;
+        // A drift from this shared layout fails compilation in either language.
+        const auto layout = ComputeLayout(def, structs, enums);
+        const auto msl_guard = ToMacroName(def.Name, "MSL");
+        msl_out << "#ifndef " << msl_guard << "\n"
+                << "#define " << msl_guard << "\n\n"
+                << GeneratedComment(schema_relative_path)
+                << "#include \"MslPrelude.metal\"\n";
+        std::vector<std::string_view> msl_includes;
         for (const auto &field : def.Fields) {
             const auto spec = ParseType(field.Type);
-            if (IsStructType(spec.Base, structs) && spec.Base != def.Name) {
-                if (find(glsl_includes, spec.Base) == glsl_includes.end()) glsl_includes.emplace_back(spec.Base);
-            }
+            const auto is_nested = (IsStructType(spec.Base, structs) || IsEnumType(spec.Base, enums)) && spec.Base != def.Name;
+            if (is_nested && find(msl_includes, spec.Base) == msl_includes.end()) msl_includes.emplace_back(spec.Base);
         }
-        // Determine if we need extensions and BindlessBindings.glsl for layout declarations
-        const bool is_uniform = !def.Binding.empty();
-        if (is_uniform || def.IsPushConstant) glsl_out << "#extension GL_EXT_scalar_block_layout : require\n\n";
-        if (is_uniform || def.IsPushConstant) glsl_out << "#include \"BindlessBindings.glsl\"\n";
-        for (const auto &include : glsl_includes) glsl_out << "#include \"" << include << ".glsl\"\n";
-        if (is_uniform || def.IsPushConstant || !glsl_includes.empty()) glsl_out << "\n";
-
-        // Generate layout block or plain struct
-        if (def.IsPushConstant) {
-            // scalar layout matches C++ tight packing so nested structs don't pick up std140 16-byte alignment.
-            glsl_out << "layout(push_constant, scalar) uniform " << def.Name;
-        } else if (is_uniform) {
-            const auto binding_it = find_if(bindings, [&](const auto &b) { return b.Name == def.Binding; });
-            if (binding_it == bindings.end()) Fail("Unknown binding: " + def.Binding);
-            // Dynamic uniforms live alone in set 1 at binding 0.
-            if (binding_it->Kind == "UniformDynamic") glsl_out << "layout(set = 1, binding = 0, scalar) uniform " << def.Name << "Block";
-            else glsl_out << "layout(set = 0, binding = BINDING_" << def.Binding << ", scalar) uniform " << def.Name << "Block";
-        } else {
-            glsl_out << "struct " << def.Name;
-        }
-        glsl_out << " {\n";
-
+        for (const auto &include : msl_includes) msl_out << "#include \"" << include << ".metal\"\n";
+        msl_out << "\nstruct " << def.Name << " {\n";
         for (const auto &field : def.Fields) {
             const auto spec = ParseType(field.Type);
-            if (const auto glsl_type = GlslTypeFor(spec.Base, structs, enums)) {
-                glsl_out << "    " << *glsl_type << " " << field.Name;
-                if (spec.ArraySize) glsl_out << "[" << *spec.ArraySize << "]";
-                glsl_out << ";\n";
+            if (const auto msl_type = MslTypeFor(spec.Base, structs, enums)) {
+                msl_out << "    " << *msl_type << " " << field.Name;
+                if (spec.ArraySize) msl_out << "[" << *spec.ArraySize << "]";
+                msl_out << ";\n";
             } else Fail("Unknown type: " + field.Type);
         }
-
-        if (def.IsPushConstant) glsl_out << "} pc;";
-        else if (is_uniform) glsl_out << "} " << def.Name << ";";
-        else glsl_out << "};";
-        glsl_out << "\n\n#endif\n";
+        msl_out << "};\n";
+        EmitLayoutAsserts(msl_out, def.Name, layout, "__builtin_offsetof");
+        msl_out << "\n#endif\n";
 
         bool needs_array{false}, needs_cstdint{false},
             needs_uvec2{false}, needs_uvec4{false}, needs_vec2{false}, needs_vec3{false}, needs_vec4{false},
@@ -537,6 +817,7 @@ int main(int argc, char **argv) {
 
         cpp_out << "#pragma once\n\n"
                 << GeneratedComment(schema_relative_path);
+        cpp_out << "#include <cstddef>\n"; // offsetof, for the layout assertions below
         if (needs_array) cpp_out << "#include <array>\n";
         if (needs_cstdint) cpp_out << "#include <cstdint>\n";
         if (needs_limits) cpp_out << "#include <limits>\n";
@@ -548,7 +829,7 @@ int main(int argc, char **argv) {
         if (needs_vec3) cpp_out << "#include \"numeric/vec3.h\"\n";
         if (needs_vec4) cpp_out << "#include \"numeric/vec4.h\"\n";
         if (needs_quat) cpp_out << "#include \"numeric/quat.h\"\n";
-        if (needs_slots) cpp_out << "#include \"vulkan/Slots.h\"\n";
+        if (needs_slots) cpp_out << "#include \"metal/Slots.h\"\n";
         if (needs_range) cpp_out << "#include \"Range.h\"\n";
         for (const auto &include : cpp_includes) cpp_out << "#include \"gpu/" << include << ".h\"\n";
         if (needs_cstdint || needs_limits || needs_vec2 || needs_mat3 || needs_mat4 || needs_vec3 || needs_vec4 || needs_quat || needs_slots || needs_range || !cpp_includes.empty()) cpp_out << "\n";
@@ -572,6 +853,7 @@ int main(int argc, char **argv) {
         }
         cpp_out << "    bool operator==(const " << def.Name << " &) const = default;\n";
         cpp_out << "};\n";
+        EmitLayoutAsserts(cpp_out, def.Name, layout, "offsetof");
     }
 
     return 0;

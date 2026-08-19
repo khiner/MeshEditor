@@ -1,5 +1,7 @@
 #include "viewport/ViewCamera.h"
 
+#include "viewport/ScreenSpace.h"
+
 #include <glm/gtc/matrix_transform.hpp>
 
 namespace {
@@ -25,7 +27,7 @@ float ViewCamera::FarClip() const {
 
 ray ViewCamera::PixelToWorldRay(vec2 mouse_px, rect viewport) const {
     const auto rel = (mouse_px - viewport.pos) / viewport.size;
-    const auto ndc = vec2{rel.x, 1.f - rel.y} * 2.f - 1.f;
+    const auto ndc = UvToNdc(rel);
     if (const auto *perspective = std::get_if<Perspective>(&Data)) {
         const auto aspect = viewport.size.x / viewport.size.y;
         const auto t = std::tan(perspective->FieldOfViewRad * 0.5f);

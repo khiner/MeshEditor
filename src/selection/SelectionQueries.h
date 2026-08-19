@@ -25,9 +25,6 @@ struct SelectionHit {
 // In object mode, bones fall through to SubElementOf like any other sub-element, collapsing to the armature.
 std::vector<SelectionHit> ResolveHits(entt::registry &, const std::vector<entt::entity> &raw, bool bone_mode, bool merge_parts = false);
 
-// Vulkan-free GPU pick/box-select queries, so interaction/UI consumers need not
-// include the (vulkan-heavy) SelectionGpu header.
-
 // Box selection: returns object-id-sorted entities hit by the box.
 std::vector<entt::entity> RunBoxSelect(entt::registry &, entt::entity viewport, std::pair<uvec2, uvec2> box_px);
 

@@ -2,7 +2,7 @@
 
 #include "Image.h"
 #include "ImageBasedLight.h"
-#include "vulkan/Slots.h"
+#include "metal/Slots.h"
 
 #include <map>
 

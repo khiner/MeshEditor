@@ -17,7 +17,7 @@ std::span<const PunctualLight> GetLights(entt::registry &r) {
     return {lights.Data(), lights.Count()};
 }
 PunctualLight GetLight(entt::registry &r, uint32_t index) { return r.ctx().get<GpuBuffers>().Lights.Get(index); }
-mvk::BufferContext &GetBufferContext(entt::registry &r) { return r.ctx().get<GpuBuffers>().Ctx; }
+mtl::BufferContext &GetBufferContext(entt::registry &r) { return r.ctx().get<GpuBuffers>().Ctx; }
 
 void ReleaseMeshBuffers(entt::registry &r, MeshBuffers &mb) { r.ctx().get<GpuBuffers>().Release(mb); }
 

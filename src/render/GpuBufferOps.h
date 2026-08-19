@@ -9,22 +9,20 @@
 
 #include <entt/entity/fwd.hpp>
 
-namespace mvk {
+namespace mtl {
 struct BufferContext;
-}
+} // namespace mtl
 struct MeshBuffers;
 
-// Vulkan-free views and ops over GpuBuffers' GPU storage, so read/UI/action consumers
-// need not include the full (vulkan-heavy) GpuBuffers header.
+// Lightweight GPU-storage views for consumers that do not need the full GpuBuffers definition.
 std::span<PBRMaterial> GetMaterials(entt::registry &);
 // A mesh's triangulated face indices, viewing the index arena's own storage.
 std::span<const uint32_t> GetFaceIndices(const entt::registry &, const MeshBuffers &);
 std::span<const PunctualLight> GetLights(entt::registry &);
 PunctualLight GetLight(entt::registry &, uint32_t index);
-mvk::BufferContext &GetBufferContext(entt::registry &);
+mtl::BufferContext &GetBufferContext(entt::registry &);
 void ReleaseMeshBuffers(entt::registry &, MeshBuffers &);
 
-// Vulkan-free buffer mutations.
 void ReleaseVertexClasses(entt::registry &, uint32_t offset, uint32_t count);
 void FreeInstanceRange(entt::registry &, Range);
 void ReleaseEdgeIndices(entt::registry &, const SlottedRange &);

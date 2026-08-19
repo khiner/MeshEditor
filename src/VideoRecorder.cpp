@@ -1,6 +1,6 @@
 #include "VideoRecorder.h"
 #include "audio/WavWriter.h"
-#include "vulkan/Image.h"
+#include "metal/Buffer.h"
 
 #include <sys/wait.h>
 
@@ -18,29 +18,27 @@ bool RecordingFailed{false};
 // A subprocess killed by a signal never exited, and reports as -1.
 int ExitCode(int wait_status) { return WIFEXITED(wait_status) ? WEXITSTATUS(wait_status) : -1; }
 
-std::string BuildFfmpegCommand(const std::filesystem::path &out, vk::Extent2D extent, int fps) {
+std::string BuildFfmpegCommand(const std::filesystem::path &out, mtl::Extent2D extent, int fps) {
     // `-y` overwrite, `-loglevel warning` mutes per-frame progress.
     // Input: raw BGRA frames on stdin with declared size/framerate.
-    // `-vf vflip`: the viewport uses a negative-height Vulkan viewport so row 0 in image
-    // memory is the bottom of the screen; flip rows to get upright video.
     // Output: H.264 in yuv444p (full chroma) at crf 10 to preserve edge/aliasing detail.
     // An unchanged render produces a byte-identical file.
     return std::format(
         "ffmpeg -y -loglevel warning -f rawvideo -pix_fmt bgra -s {}x{} -r {} -i - "
-        "-vf vflip -c:v libx264 -pix_fmt yuv444p -preset veryfast -crf 10 "
+        "-c:v libx264 -pix_fmt yuv444p -preset veryfast -crf 10 "
         "-x264-params keyint=infinite:threads=8 -bitexact \"{}\"",
-        extent.width, extent.height, fps, out.string()
+        extent.Width, extent.Height, fps, out.string()
     );
 }
 
 } // namespace
 
 VideoRecorder::VideoRecorder(
-    const VulkanResources &vk_res, mvk::BufferContext &buf_ctx,
-    const std::filesystem::path &output_path, vk::Offset3D offset, vk::Extent2D extent, int fps,
+    const mtl::Context &ctx,
+    const std::filesystem::path &output_path, uint32_t x, uint32_t y, mtl::Extent2D extent, int fps,
     uint32_t audio_sample_rate
-) : Device{vk_res.Device}, Queue{vk_res.Queue}, Offset{offset}, Ex{extent},
-    FrameBytes{extent.width * extent.height * 4}, FinalPath{output_path} {
+) : Ctx{&ctx}, OffsetX{x}, OffsetY{y}, Ex{extent},
+    FrameBytes{size_t(extent.Width) * extent.Height * 4}, FinalPath{output_path} {
     // Audio only: the samples stream straight into a float wav, and no GPU or ffmpeg resource is touched.
     if (output_path.extension() == ".wav") {
         if (audio_sample_rate == 0) {
@@ -56,7 +54,7 @@ VideoRecorder::VideoRecorder(
         std::println("VideoRecorder: audio only @ {} Hz -> {}", audio_sample_rate, output_path.string());
         return;
     }
-    if (extent.width == 0 || extent.height == 0) {
+    if (extent.Width == 0 || extent.Height == 0) {
         std::println(stderr, "VideoRecorder: viewport extent is zero; not recording.");
         return;
     }
@@ -65,10 +63,7 @@ VideoRecorder::VideoRecorder(
         return;
     }
 
-    CommandPool = Device.createCommandPoolUnique({vk::CommandPoolCreateFlagBits::eResetCommandBuffer, vk_res.QueueFamily});
-    CommandBuffer = std::move(Device.allocateCommandBuffersUnique({*CommandPool, vk::CommandBufferLevel::ePrimary, 1}).front());
-    Fence = Device.createFenceUnique({});
-    Staging.emplace(buf_ctx, FrameBytes, mvk::MemoryUsage::CpuOnly, vk::BufferUsageFlagBits::eTransferDst);
+    Staging = mtl::NewBuffer(ctx, FrameBytes);
 
     // Muxing needs the finished video, so with audio the encode goes to a neighbouring file and the final path is written once at Stop.
     // Without audio the video path is written directly.
@@ -85,7 +80,7 @@ VideoRecorder::VideoRecorder(
     }
 
     const auto cmd = BuildFfmpegCommand(video_path, extent, fps);
-    std::println("VideoRecorder: {}x{} @ {}fps{} -> {}", extent.width, extent.height, fps, Wav ? " with audio" : "", output_path.string());
+    std::println("VideoRecorder: {}x{} @ {}fps{} -> {}", extent.Width, extent.Height, fps, Wav ? " with audio" : "", output_path.string());
     Pipe.reset(::popen(cmd.c_str(), "w"));
     if (!Pipe) std::println(stderr, "VideoRecorder: popen failed");
 }
@@ -137,28 +132,20 @@ void VideoRecorder::CaptureAudio(std::span<const float> frames) {
     Wav.reset();
 }
 
-void VideoRecorder::CaptureFrame(vk::Image image) {
+void VideoRecorder::CaptureFrame(const mtl::Texture &texture) {
     // Audio only: no pixels leave the GPU, and the count keeps the recording's pacing and duration accounting.
     if (!Pipe) {
         if (Wav) ++FrameCount;
         return;
     }
 
-    auto cb = *CommandBuffer;
-    cb.reset({});
-    cb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
-    mvk::RecordImageToBufferCopy(cb, image, **Staging, Offset, Ex);
-    cb.end();
-
-    Queue.submit(vk::SubmitInfo{{}, {}, cb, {}}, *Fence);
-    if (Device.waitForFences(*Fence, VK_TRUE, UINT64_MAX) != vk::Result::eSuccess) {
-        std::println(stderr, "VideoRecorder: fence wait failed; stopping.");
+    if (!mtl::CopyTextureRegion(*Ctx, texture, OffsetX, OffsetY, Ex, *Staging, Ex.Width * 4)) {
+        std::println(stderr, "VideoRecorder: frame copy failed; stopping.");
         Stop();
         return;
     }
-    Device.resetFences(*Fence);
 
-    if (const auto written = std::fwrite(Staging->GetMappedData().data(), 1, FrameBytes, Pipe.get()); written != FrameBytes) {
+    if (const auto written = std::fwrite(Staging->contents(), 1, FrameBytes, Pipe.get()); written != FrameBytes) {
         std::println(stderr, "VideoRecorder: pipe write short ({}/{}); stopping.", written, FrameBytes);
         Stop();
         return;

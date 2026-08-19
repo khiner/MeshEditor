@@ -19,12 +19,13 @@
 #include "gpu/SilhouetteEdgeColorPushConstants.h"
 #include "gpu/SilhouetteEdgeDepthObjectPushConstants.h"
 #include "mesh/MeshStore.h"
+#include "metal/PassChain.h"
+#include "metal/RenderTarget.h"
 #include "render/Drawing.h"
+#include "render/Encoding.h"
 #include "render/Instance.h"
-#include "render/OneShotGpu.h"
 #include "render/Pipelines.h"
 #include "render/Profile.h"
-#include "render/VkFenceWait.h"
 #include "scene/Entity.h"
 #include "scene/WorldTransform.h"
 #include "selection/Selection.h"
@@ -34,7 +35,6 @@
 #include "viewport/ViewCamera.h"
 #include "viewport/ViewportDisplay.h"
 #include "viewport/ViewportInteractionState.h"
-#include "vulkan/VulkanResources.h"
 
 #include <entt/entity/registry.hpp>
 
@@ -43,9 +43,24 @@
 using std::ranges::any_of, std::ranges::to;
 
 namespace {
-constexpr vk::Extent2D ToExtent2D(vk::Extent3D extent) { return {extent.width, extent.height}; }
-const vk::ClearColorValue Transparent{0, 0, 0, 0};
-const std::vector<vk::ClearValue> SilhouetteClearValues{{vk::ClearDepthStencilValue{1, 0}}, {Transparent}};
+MTL::PrimitiveType PipelinePrimitive(SPT spt) {
+    switch (spt) {
+        case SPT::Line:
+        case SPT::LineOverlayFaceNormals:
+        case SPT::LineOverlayVertexNormals:
+        case SPT::ObjectExtrasLine:
+        case SPT::BoundsBox:
+        case SPT::BoneWire:
+        case SPT::BoneSphereWire:
+        case SPT::SelectionObjectExtrasLines:
+            return MTL::PrimitiveTypeLine;
+        case SPT::Point:
+            return MTL::PrimitiveTypePoint;
+        default:
+            return MTL::PrimitiveTypeTriangle;
+    }
+}
+
 DrawData MakeDrawData(const RenderBuffers &rb, uint32_t vertex_slot, const InstanceArena &instances) {
     return MakeDrawData(vertex_slot, rb.Vertices, rb.Indices, instances.TransformBuffer.Slot);
 }
@@ -65,7 +80,7 @@ enum class ElementDomain {
 uint32_t OffsetOrInvalid(Range range) { return range.Count > 0 ? range.Offset : InvalidOffset; }
 } // namespace
 
-void FlushDrawList(entt::registry &r, vk::Device device, const DrawListBuilder &draw_list, DrawBufferPair &pair) {
+void FlushDrawList(entt::registry &r, const DrawListBuilder &draw_list, DrawBufferPair &pair) {
     auto &buffers = r.ctx().get<GpuBuffers>();
     buffers.EnsureIdentityIndexBuffer(std::max(draw_list.MaxIndexCount, 2 * uint32_t(draw_list.Draws.size())));
     if (!draw_list.Draws.empty()) {
@@ -78,27 +93,12 @@ void FlushDrawList(entt::registry &r, vk::Device device, const DrawListBuilder &
         // visible-index remap, for the occlusion pass's newly visible draws.
         auto commands = draw_list.IndirectCommands;
         commands.append_range(draw_list.IndirectCommands | std::views::transform([&](auto cmd) {
-                                  cmd.firstInstance += uint32_t(draw_list.Draws.size());
+                                  cmd.baseInstance += uint32_t(draw_list.Draws.size());
                                   return cmd;
                               }));
         pair.Indirect.Update(as_bytes(commands));
     }
-    if (auto descriptor_updates = buffers.Ctx.GetDeferredDescriptorUpdates(); !descriptor_updates.empty()) {
-        device.updateDescriptorSets(std::move(descriptor_updates), {});
-        buffers.Ctx.ClearDeferredDescriptorUpdates();
-    }
 }
-
-#ifdef MVK_FORCE_STAGED_TRANSFERS
-void RecordTransferCommandBuffer(entt::registry &r, entt::entity viewport, vk::CommandBuffer cb) {
-    auto &buffers = r.ctx().get<GpuBuffers>();
-    const profile::CpuScope scope{"RecordTransferCommandBuffer"};
-    cb.reset({});
-    cb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
-    buffers.Ctx.RecordDeferredCopies(cb);
-    cb.end();
-}
-#endif
 
 namespace {
 struct DeformSlots {
@@ -180,7 +180,9 @@ void AppendExtrasDraw(entt::registry &r, const InstanceArena &instances, DrawLis
 // Reduce this step's screen motion to tiles, spread each tile's motion over the tiles it crosses,
 // then gather the scene along it. Leaves the blurred scene in GatherImage. The scene pass already
 // wrote the motion into the velocity attachment.
-void RecordMotionBlurPostFx(entt::registry &r, vk::CommandBuffer cb, entt::entity viewport, vk::Rect2D rect, uint32_t ubo_offset, float playback_frame) {
+namespace stage = mtl::Stage;
+
+void RecordMotionBlurPostFx(entt::registry &r, mtl::PassChain &chain, const mtl::BindlessSet &slots, entt::entity viewport, mtl::Extent2D extent, uint32_t ubo_offset, float playback_frame) {
     const auto &pipelines = r.ctx().get<const Pipelines>();
     const auto &main = pipelines.Main;
     const auto &sel_slots = r.ctx().get<const SelectionSlots>();
@@ -191,80 +193,41 @@ void RecordMotionBlurPostFx(entt::registry &r, vk::CommandBuffer cb, entt::entit
     // Golden-ratio stepping decorrelates the gather's dither across steps and frames.
     const float noise_offset = glm::fract(playback_frame * std::numbers::phi_v<float>);
 
-    // Depth stops being an attachment here so the gather can classify samples against it.
-    cb.pipelineBarrier(
-        vk::PipelineStageFlagBits::eLateFragmentTests, vk::PipelineStageFlagBits::eFragmentShader, {}, {}, {},
-        {{vk::AccessFlagBits::eDepthStencilAttachmentWrite, vk::AccessFlagBits::eShaderRead,
-          vk::ImageLayout::eDepthStencilAttachmentOptimal, vk::ImageLayout::eDepthStencilReadOnlyOptimal,
-          VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, *main.Resources->DepthImage.Image, DepthSubresourceRange}}
-    );
-    // The tile image is only ever touched by compute.
-    cb.pipelineBarrier(
-        vk::PipelineStageFlagBits::eTopOfPipe, vk::PipelineStageFlagBits::eComputeShader, {}, {}, {},
-        {{{}, vk::AccessFlagBits::eShaderWrite, vk::ImageLayout::eUndefined, vk::ImageLayout::eGeneral, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, *main.MotionBlur->TileImage.Image, ColorSubresourceRange}}
-    );
-
-    const auto compute_to_compute = [&] {
-        cb.pipelineBarrier(
-            vk::PipelineStageFlagBits::eComputeShader, vk::PipelineStageFlagBits::eComputeShader, {},
-            {{vk::AccessFlagBits::eShaderWrite, vk::AccessFlagBits::eShaderRead}}, {}, {}
-        );
-    };
-
-    const auto dispatch = [&](const ComputePipeline &compute, auto &&pc, uvec3 groups) {
-        cb.bindPipeline(vk::PipelineBindPoint::eCompute, *compute.Pipeline);
-        const std::array compute_sets{compute.GetDescriptorSet(), compute.GetUboSet()};
-        cb.bindDescriptorSets(vk::PipelineBindPoint::eCompute, *compute.PipelineLayout, 0, uint32_t(compute_sets.size()), compute_sets.data(), 1, &ubo_offset);
-        cb.pushConstants(*compute.PipelineLayout, vk::ShaderStageFlagBits::eCompute, 0, sizeof(pc), &pc);
-        cb.dispatch(groups.x, groups.y, groups.z);
+    const auto &buffers = r.ctx().get<const GpuBuffers>();
+    auto *encoder = chain.BeginCompute("BlurTiles", stage::Fragment);
+    const auto dispatch = [&](const mtl::ComputePipeline &compute, auto &&pc, uvec3 groups, MTL::Size threadgroup) {
+        encode::BindCompute(encoder, compute, slots, buffers, ubo_offset);
+        encode::SetPushConstants(encoder, pc);
+        encoder->dispatchThreadgroups(MTL::Size(groups.x, groups.y, groups.z), threadgroup);
     };
     static constexpr auto divide_ceil = [](uint32_t v, uint32_t d) { return (v + d - 1) / d; };
 
-    const auto tile_extent = main.MotionBlur->TileExtent;
-    { // One workgroup per tile, which the flatten shader reduces to that tile's largest motion.
-        // It also zeroes its tile's indirection entries.
-        const profile::GpuScope scope{"BlurTilesFlatten"};
+    const auto tile_extent = main.MotionBlur->TileImage.Extent;
+    { // One threadgroup per tile, which the flatten shader reduces to that tile's largest motion.
+        encoder->setThreadgroupMemoryLength(ThreadgroupMemory::MotionBlurPayload, 0);
+        encoder->setThreadgroupMemoryLength(ThreadgroupMemory::MotionBlurMaxMotion, 1);
         dispatch(
             pipelines.MotionBlurTilesFlatten,
             MotionBlurTilesFlattenPushConstants{sel_slots.VelocitySampler, sel_slots.MotionBlurTileImage, sel_slots.MotionBlurTileIndirection, MotionScale},
-            {tile_extent.width, tile_extent.height, 1}
+            {tile_extent.Width, tile_extent.Height, 1}, ThreadgroupSize::Tile8
         );
     }
-    compute_to_compute();
     { // One thread per tile.
-        const profile::GpuScope scope{"BlurTilesDilate"};
         dispatch(
             pipelines.MotionBlurTilesDilate,
             MotionBlurTilesDilatePushConstants{sel_slots.MotionBlurTileImage, sel_slots.MotionBlurTileIndirection},
-            {divide_ceil(tile_extent.width, 8), divide_ceil(tile_extent.height, 8), 1}
+            {divide_ceil(tile_extent.Width, 8), divide_ceil(tile_extent.Height, 8), 1}, ThreadgroupSize::Tile8
         );
     }
-    // The tile reduction hands off to the gather's fragment reads.
-    cb.pipelineBarrier(
-        vk::PipelineStageFlagBits::eComputeShader, vk::PipelineStageFlagBits::eFragmentShader, {},
-        {{vk::AccessFlagBits::eShaderWrite, vk::AccessFlagBits::eShaderRead}}, {}, {}
-    );
+
     { // One fullscreen pass, blurring the scene along its motion into the gather attachment.
-        const profile::GpuScope scope{"BlurGather"};
-        cb.beginRenderPass({*main.MotionBlurGatherRenderPass, *main.MotionBlur->GatherFramebuffer, rect, {}}, vk::SubpassContents::eInline);
-        const auto &gather = main.MotionBlurGather;
-        const MotionBlurGatherPushConstants gather_pc{
-            sel_slots.SceneDepthSampler, sel_slots.VelocitySampler, sel_slots.SceneColorSampler,
-            sel_slots.MotionBlurTileImage, sel_slots.MotionBlurTileIndirection,
-            MotionScale, mb.BleedingBias, noise_offset
-        };
-        cb.pushConstants(*gather.PipelineLayout, vk::ShaderStageFlagBits::eFragment, 0, sizeof(gather_pc), &gather_pc);
-        gather.RenderQuad(cb, ubo_offset);
-        cb.endRenderPass();
+        const std::array colors{mtl::DiscardColor(*main.MotionBlur->GatherImage)};
+        const auto pass = mtl::MakePassDescriptor(colors);
+        auto *render = encode::BeginScenePass(chain, *pass, "BlurGather", {{stage::Fragment | stage::Dispatch, stage::Fragment}}, extent, slots, buffers, ubo_offset);
+        main.MotionBlurGather.Bind(render);
+        encode::SetPushConstants(render, MotionBlurGatherPushConstants{sel_slots.SceneDepthSampler, sel_slots.VelocitySampler, sel_slots.SceneColorSampler, sel_slots.MotionBlurTileImage, sel_slots.MotionBlurTileIndirection, MotionScale, mb.BleedingBias, noise_offset});
+        render->drawPrimitives(MTL::PrimitiveTypeTriangleStrip, NS::UInteger(0), NS::UInteger(4));
     }
-    // The accumulate pass or the composite samples the gather output next. The render pass leaves
-    // it shader-readable, and MoltenVK needs the explicit barrier to flush the encoder's writes.
-    cb.pipelineBarrier(
-        vk::PipelineStageFlagBits::eColorAttachmentOutput, vk::PipelineStageFlagBits::eFragmentShader, {}, {}, {},
-        {{vk::AccessFlagBits::eColorAttachmentWrite, vk::AccessFlagBits::eShaderRead,
-          vk::ImageLayout::eShaderReadOnlyOptimal, vk::ImageLayout::eShaderReadOnlyOptimal,
-          VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, *main.MotionBlur->GatherImage.Image, ColorSubresourceRange}}
-    );
 }
 
 FrustumCullPushConstants MakeCullPushConstants(const GpuBuffers &buffers, const DrawBufferPair &pair, const DrawListBuilder &draw_list) {
@@ -280,30 +243,15 @@ FrustumCullPushConstants MakeCullPushConstants(const GpuBuffers &buffers, const 
     };
 }
 
-void BindCompute(vk::CommandBuffer cb, const ComputePipeline &pipeline, uint32_t ubo_offset) {
-    cb.bindPipeline(vk::PipelineBindPoint::eCompute, *pipeline.Pipeline);
-    const std::array sets{pipeline.GetDescriptorSet(), pipeline.GetUboSet()};
-    cb.bindDescriptorSets(vk::PipelineBindPoint::eCompute, *pipeline.PipelineLayout, 0, uint32_t(sets.size()), sets.data(), 1, &ubo_offset);
-}
-
-void DispatchCull(vk::CommandBuffer cb, const ComputePipeline &cull, const FrustumCullPushConstants &cull_pc, uint32_t count) {
+void DispatchCull(MTL::ComputeCommandEncoder *encoder, const FrustumCullPushConstants &cull_pc, uint32_t count) {
     static constexpr uint32_t GroupSize{64};
-    cb.pushConstants(*cull.PipelineLayout, vk::ShaderStageFlagBits::eCompute, 0, sizeof(cull_pc), &cull_pc);
-    cb.dispatch((count + GroupSize - 1) / GroupSize, 1, 1);
+    encode::SetPushConstants(encoder, cull_pc);
+    encoder->dispatchThreadgroups(MTL::Size((count + GroupSize - 1) / GroupSize, 1, 1), ThreadgroupSize::Linear64);
 }
 
-// The cull's count and remap writes complete before indirect draw and vertex reads.
-void ReleaseCullToDraw(vk::CommandBuffer cb) {
-    cb.pipelineBarrier(
-        vk::PipelineStageFlagBits::eComputeShader,
-        vk::PipelineStageFlagBits::eDrawIndirect | vk::PipelineStageFlagBits::eVertexShader, {},
-        vk::MemoryBarrier{vk::AccessFlagBits::eShaderWrite, vk::AccessFlagBits::eIndirectCommandRead | vk::AccessFlagBits::eShaderRead}, {}, {}
-    );
-}
-
-// The tiled compute passes' workgroup size (the shaders' local_size_x).
+// The tiled compute passes' threads per threadgroup.
 constexpr uint32_t TileSize{256};
-// Workgroup count tiling `count` elements, min one so an entry with no elements still writes its outputs.
+// Threadgroup count tiling `count` elements, min one so an empty entry still writes its outputs.
 constexpr uint32_t TileCountFor(uint32_t count) { return std::max((count + TileSize - 1) / TileSize, 1u); }
 
 // Slot of each prelude pass's args in GpuBuffers::PreludeDispatchArgs (PreludeGroups order).
@@ -313,16 +261,16 @@ enum class PreludeSlot : uint32_t { PosePrepass,
                                     DeriveGather,
                                     BoundsCombine };
 
-constexpr vk::DeviceSize PreludeArgsOffset(PreludeSlot slot) { return vk::DeviceSize(slot) * sizeof(vk::DispatchIndirectCommand); }
+constexpr uint64_t PreludeArgsOffset(PreludeSlot slot) { return uint64_t(slot) * sizeof(MTL::DispatchThreadgroupsIndirectArguments); }
 
 void WritePreludeArg(GpuBuffers &buffers, PreludeSlot slot, uint32_t groups) {
-    const vk::DispatchIndirectCommand arg{groups, 1, 1};
+    const MTL::DispatchThreadgroupsIndirectArguments arg{groups, 1, 1};
     buffers.PreludeDispatchArgs.Update(as_bytes(arg), PreludeArgsOffset(slot));
 }
 
 // Record one prelude pass's dispatch, reading its group count from the pass's indirect args slot.
-void DispatchPrelude(vk::CommandBuffer cb, const GpuBuffers &buffers, PreludeSlot slot) {
-    cb.dispatchIndirect(*buffers.PreludeDispatchArgs, PreludeArgsOffset(slot));
+void DispatchPrelude(MTL::ComputeCommandEncoder *encoder, const GpuBuffers &buffers, PreludeSlot slot) {
+    encoder->dispatchThreadgroups(*buffers.PreludeDispatchArgs, PreludeArgsOffset(slot), ThreadgroupSize::Linear256);
 }
 
 // The input fields of a mesh's normal-derive entry, with the position source and output offsets left unset.
@@ -346,123 +294,84 @@ std::optional<NormalDeriveEntry> MakeDeriveEntryInputs(const MeshStore &meshes, 
     };
 }
 
-} // namespace
-
-void RecordFrustumCull(vk::CommandBuffer cb, const Pipelines &pipelines, const GpuBuffers &buffers, const DrawBufferPair &pair, const DrawListBuilder &draw_list, uint32_t ubo_offset, uint32_t visibility_slot) {
-    const profile::GpuScope cull_scope{"FrustumCull"};
-    const auto &cull = pipelines.FrustumCull;
-    // The previous submit's indirect and vertex reads, and any preceding bounds-pass writes, complete before the cull's writes and reads.
-    cb.pipelineBarrier(
-        vk::PipelineStageFlagBits::eDrawIndirect | vk::PipelineStageFlagBits::eVertexShader | vk::PipelineStageFlagBits::eComputeShader,
-        vk::PipelineStageFlagBits::eComputeShader, {},
-        vk::MemoryBarrier{vk::AccessFlagBits::eIndirectCommandRead | vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite, vk::AccessFlagBits::eShaderWrite | vk::AccessFlagBits::eShaderRead}, {}, {}
-    );
-    BindCompute(cb, cull, ubo_offset);
+void RecordFrustumCull(MTL::ComputeCommandEncoder *encoder, const mtl::BindlessSet &slots, const Pipelines &pipelines, const GpuBuffers &buffers, const DrawBufferPair &pair, const DrawListBuilder &draw_list, uint32_t ubo_offset, uint32_t visibility_slot) {
+    encode::BindCompute(encoder, pipelines.FrustumCull, slots, buffers, ubo_offset);
     auto cull_pc = MakeCullPushConstants(buffers, pair, draw_list);
     cull_pc.VisibilitySlot = visibility_slot;
-    DispatchCull(cb, cull, cull_pc, 2 * cull_pc.CommandCount);
-    cb.pipelineBarrier(
-        vk::PipelineStageFlagBits::eComputeShader, vk::PipelineStageFlagBits::eComputeShader, {},
-        vk::MemoryBarrier{vk::AccessFlagBits::eShaderWrite, vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite}, {}, {}
-    );
+    DispatchCull(encoder, cull_pc, 2 * cull_pc.CommandCount);
     cull_pc.Phase = 1;
-    DispatchCull(cb, cull, cull_pc, cull_pc.EntryCount);
-    ReleaseCullToDraw(cb);
+    DispatchCull(encoder, cull_pc, cull_pc.EntryCount);
+}
+} // namespace
+
+void RecordFrustumCull(mtl::PassChain &chain, const mtl::BindlessSet &slots, const Pipelines &pipelines, const GpuBuffers &buffers, const DrawBufferPair &pair, const DrawListBuilder &draw_list) {
+    // The cull overwrites the indirect commands and the visible-index remap that the draws read.
+    auto *encoder = chain.BeginCompute("FrustumCull", stage::Vertex);
+    RecordFrustumCull(encoder, slots, pipelines, buffers, pair, draw_list, 0, InvalidSlot);
 }
 
 namespace {
 // Test the entries the visibility gate deferred against the depth pyramid, filling `pair`'s
 // region B with the newly visible and updating per-instance visibility.
-void RecordOcclusionCull(vk::CommandBuffer cb, const Pipelines &pipelines, const GpuBuffers &buffers, const DrawBufferPair &pair, const DrawListBuilder &draw_list, uint32_t pyramid_sampler_slot, uint32_t ubo_offset) {
-    const profile::GpuScope cull_scope{"OcclusionCull"};
-    const auto &cull = pipelines.FrustumCull;
-    // The pyramid's writes and the frustum pass's count writes land before this reads them.
-    cb.pipelineBarrier(
-        vk::PipelineStageFlagBits::eComputeShader,
-        vk::PipelineStageFlagBits::eComputeShader, {},
-        vk::MemoryBarrier{vk::AccessFlagBits::eShaderWrite, vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite}, {}, {}
-    );
-    BindCompute(cb, cull, ubo_offset);
+void RecordOcclusionCull(MTL::ComputeCommandEncoder *encoder, const mtl::BindlessSet &slots, const Pipelines &pipelines, const GpuBuffers &buffers, const DrawBufferPair &pair, const DrawListBuilder &draw_list, uint32_t pyramid_sampler_slot, uint32_t ubo_offset) {
+    encode::BindCompute(encoder, pipelines.FrustumCull, slots, buffers, ubo_offset);
     auto cull_pc = MakeCullPushConstants(buffers, pair, draw_list);
     cull_pc.Phase = 2;
     cull_pc.VisibilitySlot = buffers.Instances.VisibilityBuffer.Slot;
     cull_pc.PyramidSamplerSlot = pyramid_sampler_slot;
-    DispatchCull(cb, cull, cull_pc, cull_pc.EntryCount);
-    ReleaseCullToDraw(cb);
+    DispatchCull(encoder, cull_pc, cull_pc.EntryCount);
 }
 
 // Reduce the scene depth into the max-depth mip pyramid the occlusion cull samples, one dispatch
-// per mip. The scene depth is in DepthStencilReadOnlyOptimal, and the pyramid stays in General.
-void RecordDepthPyramid(vk::CommandBuffer cb, const Pipelines &pipelines, const SelectionSlots &sel_slots, uint32_t ubo_offset) {
-    const profile::GpuScope scope{"DepthPyramid"};
+// per block of levels. Every texel the cull reads is rewritten here, so nothing carries over.
+void RecordDepthPyramid(MTL::ComputeCommandEncoder *encoder, const mtl::BindlessSet &slots, const GpuBuffers &buffers, const Pipelines &pipelines, const SelectionSlots &sel_slots, uint32_t ubo_offset) {
     const auto &main = pipelines.Main;
-    // The dispatches below rewrite every texel the cull reads (their fetches clamp into the data
-    // region), so discard the previous frame's contents along with the layout.
-    cb.pipelineBarrier(
-        vk::PipelineStageFlagBits::eComputeShader, vk::PipelineStageFlagBits::eComputeShader, {}, {}, {},
-        {{{}, vk::AccessFlagBits::eShaderWrite, vk::ImageLayout::eUndefined, vk::ImageLayout::eGeneral, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, *main.Resources->DepthPyramidImage.Image, {vk::ImageAspectFlagBits::eColor, 0, VK_REMAINING_MIP_LEVELS, 0, 1}}}
-    );
-    const auto &reduce = pipelines.DepthPyramidReduce;
-    BindCompute(cb, reduce, ubo_offset);
+    encode::BindCompute(encoder, pipelines.DepthPyramidReduce, slots, buffers, ubo_offset);
     const auto &mips = main.Resources->DepthPyramidMips;
-    const auto scene_extent = ToExtent2D(main.Resources->DepthImage.Extent);
-    // Each dispatch reduces up to six levels through workgroup shared memory, so any viewport up to
-    // 8K needs at most three dispatches and two barriers.
+    const auto scene_extent = main.Resources->DepthImage.Extent;
     for (uint32_t base = 0; base < uint32_t(mips.size()); base += 6) {
-        if (base > 0) {
-            // The previous block's writes complete before this block samples them.
-            cb.pipelineBarrier(
-                vk::PipelineStageFlagBits::eComputeShader, vk::PipelineStageFlagBits::eComputeShader, {},
-                vk::MemoryBarrier{vk::AccessFlagBits::eShaderWrite, vk::AccessFlagBits::eShaderRead}, {}, {}
-            );
-        }
         const auto src_extent = base == 0 ? scene_extent : mips[base - 1].Extent;
         const DepthPyramidReducePushConstants reduce_pc{
             .SrcSamplerSlot = base == 0 ? sel_slots.SceneDepthSampler : sel_slots.DepthPyramidSampler,
             .SrcLod = base == 0 ? 0 : base - 1,
-            .SrcWidth = src_extent.width,
-            .SrcHeight = src_extent.height,
+            .SrcWidth = src_extent.Width,
+            .SrcHeight = src_extent.Height,
             .DstSlots = [&] {
                 std::array<uint32_t, 6> dst;
                 for (uint32_t k = 0; k < uint32_t(dst.size()); ++k) dst[k] = base + k < mips.size() ? mips[base + k].Slot : InvalidSlot;
                 return dst;
             }(),
         };
-        cb.pushConstants(*reduce.PipelineLayout, vk::ShaderStageFlagBits::eCompute, 0, sizeof(reduce_pc), &reduce_pc);
-        static constexpr uint32_t TileSize{32};
-        cb.dispatch((mips[base].Extent.width + TileSize - 1) / TileSize, (mips[base].Extent.height + TileSize - 1) / TileSize, 1);
+        encode::SetPushConstants(encoder, reduce_pc);
+        static constexpr uint32_t PyramidTile{32};
+        encoder->setThreadgroupMemoryLength(ThreadgroupMemory::DepthPyramidTile, 0);
+        encoder->dispatchThreadgroups(
+            MTL::Size((mips[base].Extent.Width + PyramidTile - 1) / PyramidTile, (mips[base].Extent.Height + PyramidTile - 1) / PyramidTile, 1),
+            ThreadgroupSize::Tile16
+        );
     }
 }
 
 // Materialize each posed entry's current-pose vertex positions.
-void RecordPosePrepass(vk::CommandBuffer cb, const Pipelines &pipelines, const GpuBuffers &buffers, uint32_t vertex_state_slot, uint32_t ubo_offset) {
-    const profile::GpuScope scope{"PosePrepass"};
+void RecordPosePrepass(MTL::ComputeCommandEncoder *encoder, const mtl::BindlessSet &slots, const Pipelines &pipelines, const GpuBuffers &buffers, uint32_t vertex_state_slot, uint32_t ubo_offset) {
     const auto &prepass = pipelines.PosePrepass;
-    // The previous phase's posed-position reads (compute and vertex) and writes complete before the rewrite.
-    cb.pipelineBarrier(
-        vk::PipelineStageFlagBits::eComputeShader | vk::PipelineStageFlagBits::eVertexShader,
-        vk::PipelineStageFlagBits::eComputeShader, {},
-        vk::MemoryBarrier{vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite, vk::AccessFlagBits::eShaderWrite}, {}, {}
-    );
-    BindCompute(cb, prepass, ubo_offset);
+    encode::BindCompute(encoder, prepass, slots, buffers, ubo_offset);
     const BoundsReducePushConstants pc{
         .VertexStateSlot = vertex_state_slot,
         .DrawDataSlot = buffers.BoundsReduceEntries.Slot,
         .TileMapSlot = buffers.BoundsTiles.Slot,
     };
-    cb.pushConstants(*prepass.PipelineLayout, vk::ShaderStageFlagBits::eCompute, 0, sizeof(pc), &pc);
-    DispatchPrelude(cb, buffers, PreludeSlot::PosePrepass);
-    // No trailing barrier: the bounds reduce recorded next orders its posed reads after these writes.
+    encode::SetPushConstants(encoder, pc);
+    DispatchPrelude(encoder, buffers, PreludeSlot::PosePrepass);
 }
 
 // One derive dispatch over the tiles at `pc.FirstTile`, running the face or gather phase per pc.Phase.
 // The tile count comes from `slot`'s indirect args.
-void RecordNormalDerive(vk::CommandBuffer cb, const Pipelines &pipelines, const GpuBuffers &buffers, const NormalDerivePushConstants &pc, PreludeSlot slot, uint32_t ubo_offset, std::string_view scope_name) {
-    const profile::GpuScope scope{scope_name};
+void RecordNormalDerive(MTL::ComputeCommandEncoder *encoder, const mtl::BindlessSet &slots, const Pipelines &pipelines, const GpuBuffers &buffers, const NormalDerivePushConstants &pc, PreludeSlot slot, uint32_t ubo_offset) {
     const auto &pipeline = pipelines.VertexNormalDerive;
-    BindCompute(cb, pipeline, ubo_offset);
-    cb.pushConstants(*pipeline.PipelineLayout, vk::ShaderStageFlagBits::eCompute, 0, sizeof(pc), &pc);
-    DispatchPrelude(cb, buffers, slot);
+    encode::BindCompute(encoder, pipeline, slots, buffers, ubo_offset);
+    encode::SetPushConstants(encoder, pc);
+    DispatchPrelude(encoder, buffers, slot);
 }
 
 // The derive's shared input slots, plus the three output slots selecting the target buffers.
@@ -489,19 +398,18 @@ BoundsReducePushConstants MakeBoundsReducePc(const GpuBuffers &buffers) {
     };
 }
 
-// One bounds dispatch, the reduce or the combine per `pipeline`.
-// No trailing barrier after the combine: the cull recorded next orders every later read.
-void RecordBoundsPass(vk::CommandBuffer cb, const ComputePipeline &pipeline, const GpuBuffers &buffers, PreludeSlot slot, uint32_t ubo_offset, std::string_view scope_name) {
-    const profile::GpuScope scope{scope_name};
+void RecordBoundsPass(MTL::ComputeCommandEncoder *encoder, const mtl::BindlessSet &slots, const mtl::ComputePipeline &pipeline, const GpuBuffers &buffers, PreludeSlot slot, uint32_t ubo_offset) {
     const auto pc = MakeBoundsReducePc(buffers);
-    BindCompute(cb, pipeline, ubo_offset);
-    cb.pushConstants(*pipeline.PipelineLayout, vk::ShaderStageFlagBits::eCompute, 0, sizeof(pc), &pc);
-    DispatchPrelude(cb, buffers, slot);
+    encode::BindCompute(encoder, pipeline, slots, buffers, ubo_offset);
+    encode::SetPushConstants(encoder, pc);
+    encoder->setThreadgroupMemoryLength(ThreadgroupMemory::BoundsFoldVector, 0);
+    encoder->setThreadgroupMemoryLength(ThreadgroupMemory::BoundsFoldVector, 1);
+    DispatchPrelude(encoder, buffers, slot);
 }
 
 // Record one phase's passes into `cb`, which is already begun with viewport and scissor set.
 // `ubo_offset` selects the view UBO instance every bind in the phase reads.
-void RecordPhase(entt::registry &r, entt::entity viewport, vk::CommandBuffer cb, DrawListUse use, RenderPhase phase, uint32_t ubo_offset, float playback_frame) {
+void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain, DrawListUse use, RenderPhase phase, uint32_t ubo_offset, float playback_frame) {
     // A scope name holds no spaces, so the report table stays machine-readable.
     const profile::CpuScope scope{use == DrawListUse::SilhouetteOnly ? "RecordRenderCommandBufferSilhouette" : "RecordRenderCommandBuffer"};
     if (use == DrawListUse::Rebuild) r.ctx().get<DrawState>().SelectionStale = true;
@@ -510,7 +418,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, vk::CommandBuffer cb,
     const bool draw_scene = phase != RenderPhase::BlurResolve;
     const bool draw_overlays = !IsBlurAccumulate(phase);
 
-    const auto &vk = r.ctx().get<const VulkanResources>();
+    const auto &slots = r.ctx().get<const mtl::BindlessSet>();
     auto &buffers = r.ctx().get<GpuBuffers>();
     auto &meshes = r.ctx().get<MeshStore>();
     auto &pipelines = r.ctx().get<Pipelines>();
@@ -521,7 +429,8 @@ void RecordPhase(entt::registry &r, entt::entity viewport, vk::CommandBuffer cb,
     const bool is_excite_mode = interaction_mode == InteractionMode::Excite;
     const bool is_wireframe_mode = settings.ViewportShading == ViewportShadingMode::Wireframe;
     const bool show_rendered = settings.ViewportShading == ViewportShadingMode::MaterialPreview || settings.ViewportShading == ViewportShadingMode::Rendered;
-    const bool show_fill = !is_wireframe_mode, show_overlays = settings.ShowOverlays;
+    const bool show_fill = !is_wireframe_mode;
+    const bool show_overlays = settings.ShowOverlays;
     const auto &active_lighting = GetActivePbrLighting(r, viewport, settings.ViewportShading);
     const bool real_transmission = show_rendered &&
         active_lighting.RealTransmission &&
@@ -531,8 +440,10 @@ void RecordPhase(entt::registry &r, entt::entity viewport, vk::CommandBuffer cb,
     auto &draw = r.ctx().get<DrawState>();
     auto &draw_list = draw.List;
 
-    // Build mesh_entity -> deform slots mapping for skinned meshes (edit mode shows rest pose)
-    const auto mesh_deform_slots = is_edit_mode ? std::unordered_map<entt::entity, DeformSlots>{} : BuildDeformSlots(r, meshes);
+    // Edit mode uses the rest pose; reused blur phases use slots built by the rebuild phase.
+    const auto mesh_deform_slots = is_edit_mode || use == DrawListUse::Reuse ?
+        std::unordered_map<entt::entity, DeformSlots>{} :
+        BuildDeformSlots(r, meshes);
     static const DeformSlots no_deform{};
     const auto get_deform_slots = [&](entt::entity mesh_entity) -> const DeformSlots & {
         if (auto it = mesh_deform_slots.find(mesh_entity); it != mesh_deform_slots.end()) return it->second;
@@ -575,6 +486,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, vk::CommandBuffer cb,
     };
 
     if (use == DrawListUse::Rebuild) {
+        const profile::CpuScope build_scope{"BuildDrawList"};
         draw_list.Draws.clear();
         draw_list.CullEntries.clear();
         draw_list.IndirectCommands.clear();
@@ -1166,11 +1078,11 @@ void RecordPhase(entt::registry &r, entt::entity viewport, vk::CommandBuffer cb,
             }
 
             draw.SelectionDraws = {
-                {SPT::SelectionFragmentTriangles, sel_tri},
-                {SPT::SelectionFragmentLines, sel_line},
-                {SPT::SelectionFragmentPoints, sel_point},
-                {SPT::SelectionFragmentBoneSphere, sel_bone_sphere},
-                {SPT::SelectionObjectExtrasLines, sel_extras},
+                {SPT::SelectionFragment, MTL::PrimitiveTypeTriangle, sel_tri},
+                {SPT::SelectionFragment, MTL::PrimitiveTypeLine, sel_line},
+                {SPT::SelectionFragment, MTL::PrimitiveTypePoint, sel_point},
+                {SPT::SelectionFragmentBoneSphere, MTL::PrimitiveTypeTriangle, sel_bone_sphere},
+                {SPT::SelectionObjectExtrasLines, MTL::PrimitiveTypeLine, sel_extras},
             };
         }
 
@@ -1232,10 +1144,10 @@ void RecordPhase(entt::registry &r, entt::entity viewport, vk::CommandBuffer cb,
                     if (ri.BufferIndex != UINT32_MAX && HasMesh(r, instance.Entity)) slots[box_count++] = ri.BufferIndex;
                 }
             }
-            slots_buffer.UsedSize = vk::DeviceSize(box_count) * sizeof(uint32_t);
+            slots_buffer.UsedSize = uint64_t(box_count) * sizeof(uint32_t);
         }
 
-        FlushDrawList(r, vk.Device, draw_list, buffers.RenderDraw);
+        FlushDrawList(r, draw_list, buffers.RenderDraw);
     }
 
     const bool transmission_active = real_transmission && pipelines.Main.Transmission;
@@ -1254,175 +1166,95 @@ void RecordPhase(entt::registry &r, entt::entity viewport, vk::CommandBuffer cb,
     // Derived normals feed only the scene's face-fill draws, so only scene-drawing phases record the derive.
     // Every prelude pass dispatches indirectly.
     // A submit with unchanged deform inputs gets zero group counts, keeping the buffers' current results.
-    // The derive phases share their barrier intervals with the bounds reduce and combine, which touch none of the same buffers.
     if (!draw_list.Draws.empty()) {
         const auto &prelude = buffers.Prelude;
-        if (prelude.PosePrepass > 0) RecordPosePrepass(cb, pipelines, buffers, transform_vertex_state_slot, ubo_offset);
         const bool record_bounds = phase != RenderPhase::BlurAccumulate && phase != RenderPhase::BlurResolve;
         // A derive entry always holds at least one face tile and one gather tile, so one count decides both phases.
         const bool record_derive = draw_scene && prelude.DeriveFaces > 0;
         const bool bounds_work = record_bounds && prelude.BoundsCombine > 0;
+        auto *compute = chain.BeginCompute("Prelude", stage::Vertex | stage::Fragment | stage::Dispatch);
+        if (prelude.PosePrepass > 0) RecordPosePrepass(compute, slots, pipelines, buffers, transform_vertex_state_slot, ubo_offset);
         if (record_derive || bounds_work) {
-            // The pose pre-pass's posed writes and the previous submit's posed, derived-normal, and bounds reads complete before this interval's writes.
-            cb.pipelineBarrier(
-                vk::PipelineStageFlagBits::eComputeShader | vk::PipelineStageFlagBits::eVertexShader,
-                vk::PipelineStageFlagBits::eComputeShader, {},
-                vk::MemoryBarrier{vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite, vk::AccessFlagBits::eShaderWrite | vk::AccessFlagBits::eShaderRead}, {}, {}
-            );
             auto derive_pc = MakeNormalDerivePc(buffers, meshes, buffers.PosedVertexNormals.Slot, buffers.PosedSeamNormals.Slot, buffers.PosedFaceNormals.Slot);
-            if (record_derive) RecordNormalDerive(cb, pipelines, buffers, derive_pc, PreludeSlot::DeriveFaces, ubo_offset, "DeriveFaces");
-            if (bounds_work) RecordBoundsPass(cb, pipelines.BoundsReduce, buffers, PreludeSlot::BoundsReduce, ubo_offset, "BoundsReduce");
-            // The face normals and partial AABBs land before the gathers and the combine read them.
-            cb.pipelineBarrier(
-                vk::PipelineStageFlagBits::eComputeShader, vk::PipelineStageFlagBits::eComputeShader, {},
-                vk::MemoryBarrier{vk::AccessFlagBits::eShaderWrite, vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite}, {}, {}
-            );
+            if (record_derive) RecordNormalDerive(compute, slots, pipelines, buffers, derive_pc, PreludeSlot::DeriveFaces, ubo_offset);
+            if (bounds_work) RecordBoundsPass(compute, slots, pipelines.BoundsReduce, buffers, PreludeSlot::BoundsReduce, ubo_offset);
             if (record_derive) {
                 derive_pc.Phase = 1;
                 derive_pc.FirstTile = prelude.DeriveFaces;
-                RecordNormalDerive(cb, pipelines, buffers, derive_pc, PreludeSlot::DeriveGather, ubo_offset, "DeriveGather");
+                RecordNormalDerive(compute, slots, pipelines, buffers, derive_pc, PreludeSlot::DeriveGather, ubo_offset);
             }
-            if (bounds_work) RecordBoundsPass(cb, pipelines.BoundsCombine, buffers, PreludeSlot::BoundsCombine, ubo_offset, "BoundsCombine");
+            if (bounds_work) RecordBoundsPass(compute, slots, pipelines.BoundsCombine, buffers, PreludeSlot::BoundsCombine, ubo_offset);
         }
         if (record_bounds) {
-            RecordFrustumCull(cb, pipelines, buffers, buffers.RenderDraw, draw_list, ubo_offset, two_phase ? buffers.Instances.VisibilityBuffer.Slot : InvalidSlot);
-        } else if (prelude.PosePrepass > 0 || record_derive) {
-            // No cull follows in blur phases, so release the posed writes to the vertex stage here.
-            cb.pipelineBarrier(
-                vk::PipelineStageFlagBits::eComputeShader, vk::PipelineStageFlagBits::eVertexShader, {},
-                vk::MemoryBarrier{vk::AccessFlagBits::eShaderWrite, vk::AccessFlagBits::eShaderRead}, {}, {}
-            );
+            RecordFrustumCull(compute, slots, pipelines, buffers, buffers.RenderDraw, draw_list, ubo_offset, two_phase ? buffers.Instances.VisibilityBuffer.Slot : InvalidSlot);
         }
     }
 
-    auto record_batch = [&](vk::PipelineLayout layout, const DrawBatchInfo &batch, bool region_b) {
-        const MainDrawPushConstants pc{batch.DrawDataSlotOffset};
-        cb.pushConstants(layout, vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, sizeof(pc), &pc);
-        const auto indirect_offset = region_b ? draw_list.IndirectCommands.size() * sizeof(vk::DrawIndexedIndirectCommand) : size_t{0};
-        cb.drawIndexedIndirect(*buffers.RenderDraw.Indirect, batch.IndirectOffset + indirect_offset, batch.DrawCount, sizeof(vk::DrawIndexedIndirectCommand));
+    MTL::RenderCommandEncoder *encoder = nullptr;
+    auto record_batch = [&](const DrawBatchInfo &batch, bool region_b, MTL::PrimitiveType primitive) {
+        encode::SetPushConstants(encoder, MainDrawPushConstants{batch.DrawDataSlotOffset});
+        const auto indirect_offset = region_b ? draw_list.IndirectCommands.size() * IndirectCommandStride : uint64_t{0};
+        encode::DrawIndexedIndirect(encoder, primitive, *buffers.IdentityIndexBuffer, *buffers.RenderDraw.Indirect, batch.IndirectOffset + indirect_offset, batch.DrawCount);
     };
     auto record_draw_batch = [&](const PipelineRenderer &renderer, SPT spt, const DrawBatchInfo &batch, bool region_b = false) {
         if (batch.DrawCount == 0) return;
-        record_batch(*renderer.Bind(cb, spt, ubo_offset).PipelineLayout, batch, region_b);
+        renderer.Bind(encoder, spt);
+        record_batch(batch, region_b, PipelinePrimitive(spt));
     };
     auto record_pbr_batch = [&](const DrawBatchInfo &batch, PbrCompiler::Variant variant, bool region_b = false, PbrCompiler::Topology topology = PbrCompiler::Topology::Triangle) {
         if (batch.DrawCount == 0) return;
-        record_batch(pipelines.Main.Compiler.Bind(cb, variant, topology, ubo_offset), batch, region_b);
+        pipelines.Main.Compiler.Bind(encoder, variant, topology);
+        record_batch(batch, region_b, topology == PbrCompiler::Topology::Point ? MTL::PrimitiveTypePoint : MTL::PrimitiveTypeTriangle);
     };
-    const auto make_shader_read_barrier = [](vk::AccessFlags src_access, vk::ImageLayout layout, vk::Image image, const vk::ImageSubresourceRange &range) {
-        return vk::ImageMemoryBarrier{src_access, vk::AccessFlagBits::eShaderRead, layout, layout, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, image, range};
-    };
-    const auto color_read_barrier = [&](vk::Image image) {
-        return make_shader_read_barrier(vk::AccessFlagBits::eColorAttachmentWrite, vk::ImageLayout::eShaderReadOnlyOptimal, image, ColorSubresourceRange);
-    };
-    const auto sync_fragment_shader_reads = [&](vk::PipelineStageFlags src_stages, auto &&barriers) {
-        cb.pipelineBarrier(src_stages, vk::PipelineStageFlagBits::eFragmentShader, {}, {}, {}, barriers);
-    };
+    auto draw_quad = [&] { encoder->drawPrimitives(MTL::PrimitiveTypeTriangleStrip, NS::UInteger(0), NS::UInteger(4)); };
 
     const bool has_silhouette = render_silhouette && draw.Silhouette.DrawCount > 0 && draw_overlays; // Selection outline is an overlay.
     if (has_silhouette) { // Silhouette depth/object pass
-        const profile::GpuScope scope{"Silhouette"};
         const auto &silhouette = pipelines.Silhouette;
         {
-            const profile::GpuScope geom_scope{"SilhouetteGeom"};
-            const vk::Rect2D rect{{0, 0}, ToExtent2D(silhouette.Resources->OffscreenImage.Extent)};
-            cb.beginRenderPass({*silhouette.Renderer.RenderPass, *silhouette.Resources->Framebuffer, rect, SilhouetteClearValues}, vk::SubpassContents::eInline);
-            cb.bindIndexBuffer(*buffers.IdentityIndexBuffer, 0, vk::IndexType::eUint32);
+            const auto extent = silhouette.Resources->OffscreenImage.Extent;
+            const std::array colors{mtl::ClearColor(*silhouette.Resources->OffscreenImage)};
+            const auto pass = mtl::MakePassDescriptor(colors, mtl::ClearDepth(*silhouette.Resources->DepthImage));
+            encoder = encode::BeginScenePass(chain, *pass, "SilhouetteGeom", {{stage::Dispatch, stage::Vertex}, {stage::Fragment, stage::Fragment}}, extent, slots, buffers, ubo_offset);
             record_draw_batch(silhouette.Renderer, SPT::SilhouetteDepthObject, draw.Silhouette);
-            cb.endRenderPass();
         }
 
-        // Silhouette pass offscreen color writes -> edge pass fragment sampling.
-        const std::array silhouette_to_edge_barriers{
-            color_read_barrier(*silhouette.Resources->OffscreenImage.Image),
-        };
-        sync_fragment_shader_reads(vk::PipelineStageFlagBits::eColorAttachmentOutput, silhouette_to_edge_barriers);
-
-        const profile::GpuScope edge_scope{"SilhouetteEdge"};
         const auto &silhouette_edge = pipelines.SilhouetteEdge;
-        const vk::Rect2D edge_rect{{0, 0}, ToExtent2D(silhouette_edge.Resources->OffscreenImage.Extent)};
-        cb.beginRenderPass({*silhouette_edge.Renderer.RenderPass, *silhouette_edge.Resources->Framebuffer, edge_rect, SilhouetteClearValues}, vk::SubpassContents::eInline);
-        const auto &silhouette_edo = silhouette_edge.Renderer.ShaderPipelines.at(SPT::SilhouetteEdgeDepthObject);
-        const SilhouetteEdgeDepthObjectPushConstants edge_pc{sel_slots.SilhouetteSampler};
-        cb.pushConstants(*silhouette_edo.PipelineLayout, vk::ShaderStageFlagBits::eFragment, 0, sizeof(edge_pc), &edge_pc);
-        silhouette_edo.RenderQuad(cb, ubo_offset);
-        cb.endRenderPass();
-
-        // Edge pass depth/color writes -> main pass silhouette sampling.
-        const std::array edge_to_main_barriers{
-            make_shader_read_barrier(vk::AccessFlagBits::eDepthStencilAttachmentWrite, vk::ImageLayout::eDepthStencilReadOnlyOptimal, *silhouette_edge.Resources->DepthImage.Image, DepthSubresourceRange),
-            color_read_barrier(*silhouette_edge.Resources->OffscreenImage.Image),
-        };
-        sync_fragment_shader_reads(vk::PipelineStageFlagBits::eLateFragmentTests | vk::PipelineStageFlagBits::eColorAttachmentOutput, edge_to_main_barriers);
+        {
+            const auto extent = silhouette_edge.Resources->OffscreenImage.Extent;
+            const std::array colors{mtl::ClearColor(*silhouette_edge.Resources->OffscreenImage)};
+            const auto pass = mtl::MakePassDescriptor(colors, mtl::ClearDepth(*silhouette_edge.Resources->DepthImage));
+            encoder = encode::BeginScenePass(chain, *pass, "SilhouetteEdge", {{stage::Fragment, stage::Fragment}}, extent, slots, buffers, ubo_offset);
+            silhouette_edge.Renderer.Bind(encoder, SPT::SilhouetteEdgeDepthObject);
+            encode::SetPushConstants(encoder, SilhouetteEdgeDepthObjectPushConstants{sel_slots.SilhouetteSampler});
+            draw_quad();
+        }
     }
 
     const auto &main = pipelines.Main;
-    const vk::Rect2D main_rect{{0, 0}, ToExtent2D(main.Resources->SceneColorImage.Extent)};
-    // Transparent: alpha marks where the scene drew, and the composite fills the rest with the backdrop.
-    const std::vector<vk::ClearValue> scene_clear_values{
-        {vk::ClearDepthStencilValue{1, 0}},
-        {Transparent},
-    };
-    // The velocity attachment clears to zero motion.
-    const std::vector<vk::ClearValue> scene_velocity_clear_values{
-        {vk::ClearDepthStencilValue{1, 0}},
-        {Transparent},
-        {Transparent},
-    };
-    // Depth loads from the scene pass, so its clear value is unused. Both color targets clear to
-    // transparent: the composite merges the overlay layer over the scene by its alpha.
-    const std::vector<vk::ClearValue> overlay_clear_values{
-        {vk::ClearDepthStencilValue{1, 0}},
-        {Transparent},
-        {Transparent},
-    };
+    const auto main_extent = main.Resources->SceneColorImage.Extent;
 
     // Real-transmission pre-pass: render Background + FillOpaque into TransmissionImage mip 0,
     // sampled by the scene pass at the refracted exit point. TRANSMISSION_PREPASS variants skip
     // exposure and drop transmission materials (no self-sampling).
     if (transmission_active && draw_scene) {
-        const profile::GpuScope scope{"TransmissionPrepass"};
         // Refraction sees the world, and nothing where there is no world. The viewport backdrop is
         // display-referred UI drawn with the overlays, so it never reaches this buffer.
-        const std::array prepass_clear_values{
-            vk::ClearValue{vk::ClearDepthStencilValue{1, 0}},
-            vk::ClearValue{Transparent},
-        };
-        cb.beginRenderPass({*main.SceneRenderer.RenderPass, *main.Transmission->Framebuffer, main_rect, prepass_clear_values}, vk::SubpassContents::eInline);
-        main.PrepassBackground.RenderQuad(cb, ubo_offset);
+        const std::array colors{mtl::ClearColor(*main.Transmission->Mip0View)};
+        const auto pass = mtl::MakePassDescriptor(colors, mtl::ClearDepth(*main.Resources->DepthImage));
+        encoder = encode::BeginScenePass(chain, *pass, "TransmissionPrepass", {{stage::Dispatch, stage::Vertex}, {stage::Fragment, stage::Fragment}}, main_extent, slots, buffers, ubo_offset);
+        main.PrepassBackground.Bind(encoder);
+        draw_quad();
         if (buffers.IdentityIndexCount > 0 && show_fill) {
-            cb.bindIndexBuffer(*buffers.IdentityIndexBuffer, 0, vk::IndexType::eUint32);
             // The prepass batch holds every material with non-transmissive texels.
             record_pbr_batch(draw.FillOpaquePrepass, PbrCompiler::Variant::OpaquePrepass);
         }
-        cb.endRenderPass();
 
-        // Generate the mip chain. After the render pass, mip 0 is in eShaderReadOnlyOptimal per
-        // attachment finalLayout. Move every mip to eTransferDstOptimal, then blit down the chain,
-        // leaving all mips in eShaderReadOnlyOptimal for sampling in the main pass.
-        const auto mip_count = main.Transmission->MipCount;
-        const auto image = *main.Transmission->Image.Image;
-        mvk::TransitionImage(
-            cb, vk::PipelineStageFlagBits::eFragmentShader, vk::PipelineStageFlagBits::eTransfer,
-            vk::AccessFlagBits::eShaderRead, vk::AccessFlagBits::eTransferWrite,
-            vk::ImageLayout::eShaderReadOnlyOptimal, vk::ImageLayout::eTransferDstOptimal, image, {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}
-        );
-        if (mip_count > 1) {
-            mvk::TransitionImage(
-                cb, vk::PipelineStageFlagBits::eTopOfPipe, vk::PipelineStageFlagBits::eTransfer,
-                {}, vk::AccessFlagBits::eTransferWrite,
-                vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal, image, {vk::ImageAspectFlagBits::eColor, 1, mip_count - 1, 0, 1}
-            );
+        // Generate the transmission mip chain sampled across roughness.
+        if (main.Transmission->Image.MipLevels > 1) {
+            auto *blit = chain.BeginBlit("TransmissionMips", stage::Fragment);
+            blit->generateMipmaps(*main.Transmission->Image);
         }
-        mvk::GenerateMipChain(cb, image, main_rect.extent.width, main_rect.extent.height, mip_count);
-    }
-
-    // Each step summed itself into the blur target as a color attachment. Transition it for sampling below.
-    if (phase == RenderPhase::BlurResolve) {
-        const std::array accum_barriers{
-            vk::ImageMemoryBarrier{vk::AccessFlagBits::eColorAttachmentWrite, vk::AccessFlagBits::eShaderRead, vk::ImageLayout::eColorAttachmentOptimal, vk::ImageLayout::eShaderReadOnlyOptimal, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, *main.MotionBlur->AccumImage.Image, ColorSubresourceRange},
-        };
-        sync_fragment_shader_reads(vk::PipelineStageFlagBits::eColorAttachmentOutput, accum_barriers);
     }
 
     // Blurred steps render the scene through the velocity render pass variant, so opaque geometry
@@ -1430,43 +1262,61 @@ void RecordPhase(entt::registry &r, entt::entity viewport, vk::CommandBuffer cb,
     const bool blur = phase == RenderPhase::BlurredFull || IsBlurAccumulate(phase);
 
     { // Scene pass: shaded scene into its own color target, and the depth the overlay pass occludes against.
-        const profile::GpuScope scope{draw_scene ? "ScenePass" : "SceneDepthPass"};
         const auto &scene_renderer = blur ? main.SceneVelocityRenderer : main.SceneRenderer;
-        const auto scene_render_pass = composite_transmission ? *main.SceneDepthLoadRenderPass : *scene_renderer.RenderPass;
-        const auto scene_framebuffer = blur ? *main.MotionBlur->SceneVelocityFramebuffer : *main.Resources->SceneFramebuffer;
-        const auto &pass_clear_values = blur ? scene_velocity_clear_values : scene_clear_values;
-        cb.beginRenderPass({scene_render_pass, scene_framebuffer, main_rect, pass_clear_values}, vk::SubpassContents::eInline);
+        // The composite path resumes over the transmission prepass's depth rather than clearing it.
+        // Blurred steps add the velocity attachment the opaque geometry writes its screen motion into.
+        const std::array colors{
+            mtl::ClearColor(*main.Resources->SceneColorImage),
+            blur ? mtl::ClearColor(*main.MotionBlur->VelocityImage) : mtl::ColorAttachment{},
+        };
+        const auto attachments = std::span{colors}.first(blur ? 2 : 1);
+        const auto depth = composite_transmission ? mtl::LoadDepth(*main.Resources->DepthImage) : mtl::ClearDepth(*main.Resources->DepthImage);
+        const auto pass = mtl::MakePassDescriptor(attachments, depth);
+        encoder = encode::BeginScenePass(
+            chain, *pass, draw_scene ? "ScenePass" : "SceneDepthPass",
+            {{stage::Dispatch, stage::Vertex | stage::Fragment}, {stage::Fragment | stage::Blit, stage::Fragment}},
+            main_extent, slots, buffers, ubo_offset
+        );
 
         // Screen motion for every pixel geometry leaves uncovered. The background sits at infinity,
         // so only view rotation moves it. Geometry overwrites it wherever it lands.
-        if (blur) scene_renderer.ShaderPipelines.at(SPT::BackgroundVelocity).RenderQuad(cb, ubo_offset);
+        if (blur) {
+            scene_renderer.Bind(encoder, SPT::BackgroundVelocity);
+            draw_quad();
+        }
         // The prepass covers the background and plain-opaque geometry, so the composite replaces both.
-        if (composite_transmission) scene_renderer.ShaderPipelines.at(SPT::TransmissionComposite).RenderQuad(cb, ubo_offset);
-        // Background environment (PBR modes only). The shader discards when WorldOpacity == 0 or there is no env slot.
-        else if (show_rendered && draw_scene) scene_renderer.ShaderPipelines.at(SPT::Background).RenderQuad(cb, ubo_offset);
+        if (composite_transmission) {
+            scene_renderer.Bind(encoder, SPT::TransmissionComposite);
+            draw_quad();
+        } else if (show_rendered && draw_scene) {
+            // Background environment (PBR modes only). The shader discards with no world opacity or env slot.
+            scene_renderer.Bind(encoder, SPT::Background);
+            draw_quad();
+        }
         // Fill the scene target with the averaged steps, for the depth and overlays below to draw over.
         if (phase == RenderPhase::BlurResolve) {
-            const auto &resolve = main.SceneRenderer.ShaderPipelines.at(SPT::MotionBlurResolve);
+            scene_renderer.Bind(encoder, SPT::MotionBlurResolve);
             const struct {
                 uint32_t AccumSamplerSlot;
                 float InvSteps;
             } resolve_pc{sel_slots.MotionBlurAccumSampler, 1.f / float(MotionBlurSteps(settings))};
-            cb.pushConstants(*resolve.PipelineLayout, vk::ShaderStageFlagBits::eFragment, 0, sizeof(resolve_pc), &resolve_pc);
-            resolve.RenderQuad(cb, ubo_offset);
+            encode::SetPushConstants(encoder, resolve_pc);
+            draw_quad();
         }
 
-        // Silhouette edge depth (not color! we render it before mesh depth to avoid overwriting closer depths with further ones)
+        // Seed silhouette depth before nearer mesh depth overwrites it.
         if (has_silhouette) {
-            const auto &silhouette_depth = scene_renderer.ShaderPipelines.at(SPT::SilhouetteEdgeDepth);
-            const uint32_t depth_sampler_index = sel_slots.DepthSampler;
-            cb.pushConstants(*silhouette_depth.PipelineLayout, vk::ShaderStageFlagBits::eFragment, 0, sizeof(depth_sampler_index), &depth_sampler_index);
-            silhouette_depth.RenderQuad(cb, ubo_offset);
+            scene_renderer.Bind(encoder, SPT::SilhouetteEdgeDepth);
+            const struct {
+                uint32_t DepthSamplerIndex;
+            } depth_pc{sel_slots.DepthSampler};
+            encode::SetPushConstants(encoder, depth_pc);
+            draw_quad();
         }
 
         // Solid faces. BlurResolve writes depth only, for overlays to occlude against (blend faces never wrote depth).
         // Two-phase draws the previously-visible opaque set here and defers blend to the resume pass.
         if (buffers.IdentityIndexCount > 0 && show_fill) {
-            cb.bindIndexBuffer(*buffers.IdentityIndexBuffer, 0, vk::IndexType::eUint32);
             if (!draw_scene) {
                 record_draw_batch(main.SceneRenderer, SPT::FillDepth, draw.FillOpaque);
             } else if (show_rendered) {
@@ -1482,35 +1332,20 @@ void RecordPhase(entt::registry &r, entt::entity viewport, vk::CommandBuffer cb,
                 record_pbr_batch(draw.FillPoint, variant, false, PbrCompiler::Topology::Point);
             }
         }
-        cb.endRenderPass();
     }
 
     // The occlusion interlude: reduce region A's depth into the pyramid, test the deferred
     // instances against it, then resume the scene pass with the newly visible and the blend draws.
     if (two_phase) {
-        cb.pipelineBarrier(
-            vk::PipelineStageFlagBits::eLateFragmentTests, vk::PipelineStageFlagBits::eComputeShader, {}, {}, {},
-            {{vk::AccessFlagBits::eDepthStencilAttachmentWrite, vk::AccessFlagBits::eShaderRead,
-              vk::ImageLayout::eDepthStencilAttachmentOptimal, vk::ImageLayout::eDepthStencilReadOnlyOptimal,
-              VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, *main.Resources->DepthImage.Image, DepthSubresourceRange}}
-        );
-        RecordDepthPyramid(cb, pipelines, sel_slots, ubo_offset);
-        RecordOcclusionCull(cb, pipelines, buffers, buffers.RenderDraw, draw_list, sel_slots.DepthPyramidSampler, ubo_offset);
-        // Depth returns to attachment writes after the pyramid reduce's reads, and region A's color
-        // writes land before the resume pass loads the attachment.
-        const std::array resume_barriers{
-            vk::ImageMemoryBarrier{vk::AccessFlagBits::eShaderRead, vk::AccessFlagBits::eDepthStencilAttachmentWrite, vk::ImageLayout::eDepthStencilReadOnlyOptimal, vk::ImageLayout::eDepthStencilAttachmentOptimal, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, *main.Resources->DepthImage.Image, DepthSubresourceRange},
-            vk::ImageMemoryBarrier{vk::AccessFlagBits::eColorAttachmentWrite, vk::AccessFlagBits::eColorAttachmentRead | vk::AccessFlagBits::eColorAttachmentWrite, vk::ImageLayout::eShaderReadOnlyOptimal, vk::ImageLayout::eShaderReadOnlyOptimal, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, *main.Resources->SceneColorImage.Image, ColorSubresourceRange},
-        };
-        cb.pipelineBarrier(
-            vk::PipelineStageFlagBits::eComputeShader | vk::PipelineStageFlagBits::eColorAttachmentOutput,
-            vk::PipelineStageFlagBits::eEarlyFragmentTests | vk::PipelineStageFlagBits::eColorAttachmentOutput,
-            {}, {}, {}, resume_barriers
-        );
-        const profile::GpuScope scope{"SceneResumePass"};
-        cb.beginRenderPass({*main.SceneResumeRenderPass, *main.Resources->SceneFramebuffer, main_rect, {}}, vk::SubpassContents::eInline);
+        {
+            auto *compute = chain.BeginCompute("OcclusionInterlude", stage::Vertex | stage::Fragment);
+            RecordDepthPyramid(compute, slots, buffers, pipelines, sel_slots, ubo_offset);
+            RecordOcclusionCull(compute, slots, pipelines, buffers, buffers.RenderDraw, draw_list, sel_slots.DepthPyramidSampler, ubo_offset);
+        }
+        const std::array colors{mtl::LoadColor(*main.Resources->SceneColorImage)};
+        const auto pass = mtl::MakePassDescriptor(colors, mtl::LoadDepth(*main.Resources->DepthImage));
+        encoder = encode::BeginScenePass(chain, *pass, "SceneResumePass", {{stage::Dispatch, stage::Vertex | stage::Fragment}}, main_extent, slots, buffers, ubo_offset);
         if (buffers.IdentityIndexCount > 0) {
-            cb.bindIndexBuffer(*buffers.IdentityIndexBuffer, 0, vk::IndexType::eUint32);
             if (show_rendered) {
                 record_pbr_batch(draw.FillOpaque, PbrCompiler::Variant::Opaque, /*region_b=*/true);
                 record_pbr_batch(draw.FillBlend, PbrCompiler::Variant::Blend);
@@ -1518,55 +1353,25 @@ void RecordPhase(entt::registry &r, entt::entity viewport, vk::CommandBuffer cb,
                 record_draw_batch(main.SceneRenderer, SPT::Fill, draw.FillOpaque, /*region_b=*/true);
             }
         }
-        cb.endRenderPass();
     }
 
-    // The render pass ExternalFragReadDependency should cover this, but MoltenVK needs an explicit barrier
-    // to flush the Metal render encoder's color writes before the next encoder samples them.
-    if (blur) {
-        // The tile flatten (compute) samples the velocity, and the gather (fragment) samples both.
-        const std::array scene_out_barriers{
-            color_read_barrier(*main.Resources->SceneColorImage.Image),
-            color_read_barrier(*main.MotionBlur->VelocityImage.Image),
-        };
-        cb.pipelineBarrier(
-            vk::PipelineStageFlagBits::eColorAttachmentOutput,
-            vk::PipelineStageFlagBits::eFragmentShader | vk::PipelineStageFlagBits::eComputeShader,
-            {}, {}, {}, scene_out_barriers
-        );
-    } else {
-        // The composite samples the scene next, in a fragment shader.
-        const std::array scene_out_barriers{
-            color_read_barrier(*main.Resources->SceneColorImage.Image),
-        };
-        sync_fragment_shader_reads(vk::PipelineStageFlagBits::eColorAttachmentOutput, scene_out_barriers);
-    }
-
-    if (blur) RecordMotionBlurPostFx(r, cb, viewport, main_rect, ubo_offset, playback_frame);
+    if (blur) RecordMotionBlurPostFx(r, chain, slots, viewport, main_extent, ubo_offset, playback_frame);
 
     if (!draw_overlays) { // BlurAccumulate sums this step's blurred scene in. It draws no overlays to composite.
         {
-            const profile::GpuScope scope{"BlurAccumulate"};
-            // The first step clears the target as it draws, so the sum starts from this step alone.
-            const auto accum_pass = phase == RenderPhase::BlurAccumulateFirst ? *main.MotionBlurAccumClearRenderPass : *main.MotionBlurAccumRenderPass;
-            const std::array accum_clear{vk::ClearValue{Transparent}};
-            cb.beginRenderPass({accum_pass, *main.MotionBlur->Framebuffer, main_rect, accum_clear}, vk::SubpassContents::eInline);
-            const uint32_t accum_pc = sel_slots.MotionBlurGatherSampler;
-            cb.pushConstants(*main.MotionBlurAccumulate.PipelineLayout, vk::ShaderStageFlagBits::eFragment, 0, sizeof(accum_pc), &accum_pc);
-            main.MotionBlurAccumulate.RenderQuad(cb, ubo_offset);
-            cb.endRenderPass();
+            const std::array colors{
+                phase == RenderPhase::BlurAccumulateFirst ? mtl::ClearColor(*main.MotionBlur->AccumImage) : mtl::LoadColor(*main.MotionBlur->AccumImage)
+            };
+            const auto pass = mtl::MakePassDescriptor(colors);
+            encoder = encode::BeginScenePass(chain, *pass, "BlurAccumulate", {{stage::Fragment, stage::Fragment}}, main_extent, slots, buffers, ubo_offset);
+            main.MotionBlurAccumulate.Bind(encoder);
+            const struct {
+                uint32_t GatherSamplerSlot;
+            } accum_pc{sel_slots.MotionBlurGatherSampler};
+            encode::SetPushConstants(encoder, accum_pc);
+            draw_quad();
         }
         return;
-    }
-
-    // The gather read depth as a texture. Hand it back as an attachment for the overlay pass to write.
-    if (blur) {
-        cb.pipelineBarrier(
-            vk::PipelineStageFlagBits::eComputeShader, vk::PipelineStageFlagBits::eEarlyFragmentTests, {}, {}, {},
-            {{vk::AccessFlagBits::eShaderRead, vk::AccessFlagBits::eDepthStencilAttachmentWrite,
-              vk::ImageLayout::eDepthStencilReadOnlyOptimal, vk::ImageLayout::eDepthStencilAttachmentOptimal,
-              VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, *main.Resources->DepthImage.Image, DepthSubresourceRange}}
-        );
     }
 
     // The layer clears transparent, so an untouched one composites to nothing. Track whether anything
@@ -1580,8 +1385,13 @@ void RecordPhase(entt::registry &r, entt::entity viewport, vk::CommandBuffer cb,
         draw.OverlayFaceNormals.DrawCount > 0 || draw.OverlayVertexNormals.DrawCount > 0 ||
         draw.BoneFill.DrawCount > 0 || draw.BoneWire.DrawCount > 0 || draw.BoneSphereFill.DrawCount > 0 || draw.BoneSphereWire.DrawCount > 0;
     if (overlay_pass_needed) { // Overlay pass: display-referred overlays over transparent, depth-tested against the scene above.
-        const profile::GpuScope scope{"OverlayPass"};
-        cb.beginRenderPass({*main.OverlayRenderer.RenderPass, *main.Resources->OverlayFramebuffer, main_rect, overlay_clear_values}, vk::SubpassContents::eInline);
+        // Transparent overlay color is composited over scene color by alpha.
+        const std::array overlay_colors{
+            mtl::ClearColor(*main.Resources->OverlayColorImage),
+            mtl::ClearColor(*main.Resources->LineDataImage),
+        };
+        const auto overlay_pass = mtl::MakePassDescriptor(overlay_colors, mtl::LoadDepth(*main.Resources->DepthImage));
+        encoder = encode::BeginScenePass(chain, *overlay_pass, "OverlayPass", {{stage::Dispatch, stage::Vertex | stage::Fragment}, {stage::Fragment, stage::Fragment}}, main_extent, slots, buffers, ubo_offset);
 
         const auto record_overlay_batch = [&](SPT spt, const DrawBatchInfo &batch) {
             if (batch.DrawCount == 0) return;
@@ -1590,7 +1400,6 @@ void RecordPhase(entt::registry &r, entt::entity viewport, vk::CommandBuffer cb,
         };
 
         if (buffers.IdentityIndexCount > 0) {
-            cb.bindIndexBuffer(*buffers.IdentityIndexBuffer, 0, vk::IndexType::eUint32);
             // Edit mode edges as triangle quads with self-AA
             record_overlay_batch(SPT::EdgeQuad, draw.EdgeQuad);
             // Wireframe/line mesh edges as GPU lines (the composite handles AA)
@@ -1604,21 +1413,20 @@ void RecordPhase(entt::registry &r, entt::entity viewport, vk::CommandBuffer cb,
         // Bounding boxes, generated in the vertex shader from the instance arena's bounds and transforms.
         if (const auto box_count = buffers.BoundsBoxSlots.Count<uint32_t>(); box_count > 0) {
             overlay_layer_drawn = true;
-            const auto &bounds_box = main.OverlayRenderer.Bind(cb, SPT::BoundsBox, ubo_offset);
-            const BoundsBoxPushConstants bounds_pc{
-                .SlotsSlot = buffers.BoundsBoxSlots.Slot,
-                .BoundsSlot = buffers.Instances.BoundsBuffer.Slot,
-                .ModelSlot = buffers.Instances.TransformBuffer.Slot,
-                .StateSlot = buffers.Instances.StateBuffer.Slot,
-            };
-            cb.pushConstants(*bounds_box.PipelineLayout, vk::ShaderStageFlagBits::eVertex, 0, sizeof(bounds_pc), &bounds_pc);
-            cb.draw(24, box_count, 0, 0);
+            main.OverlayRenderer.Bind(encoder, SPT::BoundsBox);
+            encode::SetPushConstants(encoder, BoundsBoxPushConstants{
+                                                  .SlotsSlot = buffers.BoundsBoxSlots.Slot,
+                                                  .BoundsSlot = buffers.Instances.BoundsBuffer.Slot,
+                                                  .ModelSlot = buffers.Instances.TransformBuffer.Slot,
+                                                  .StateSlot = buffers.Instances.StateBuffer.Slot,
+                                              });
+            encoder->drawPrimitives(MTL::PrimitiveTypeLine, NS::UInteger(0), NS::UInteger(24), NS::UInteger(box_count));
         }
 
         // Silhouette edge color (rendered ontop of meshes)
         if (has_silhouette) {
             overlay_layer_drawn = true;
-            const auto &silhouette_edc = main.OverlayRenderer.ShaderPipelines.at(SPT::SilhouetteEdgeColor);
+            main.OverlayRenderer.Bind(encoder, SPT::SilhouetteEdgeColor);
             // In mesh Edit mode, suppress active silhouette (element selection drives active state differently).
             // In armature Edit/Pose mode, the active bone gets the active-color silhouette.
             const auto active_entity = FindActiveEntity(r);
@@ -1634,15 +1442,11 @@ void RecordPhase(entt::registry &r, entt::entity viewport, vk::CommandBuffer cb,
                     active_object_id = r.get<RenderInstance>(active_entity).ObjectId;
                 }
             }
-            const SilhouetteEdgeColorPushConstants pc{
-                TransformGizmo::IsUsing(r, viewport) && interaction_mode == InteractionMode::Object, sel_slots.ObjectIdSampler, active_object_id
-            };
-            cb.pushConstants(*silhouette_edc.PipelineLayout, vk::ShaderStageFlagBits::eFragment, 0, sizeof(pc), &pc);
-            silhouette_edc.RenderQuad(cb, ubo_offset);
+            encode::SetPushConstants(encoder, SilhouetteEdgeColorPushConstants{TransformGizmo::IsUsing(r, viewport) && interaction_mode == InteractionMode::Object, sel_slots.ObjectIdSampler, active_object_id});
+            draw_quad();
         }
 
         if (buffers.IdentityIndexCount > 0) { // Selection overlays
-            cb.bindIndexBuffer(*buffers.IdentityIndexBuffer, 0, vk::IndexType::eUint32);
             record_overlay_batch(SPT::LineOverlayFaceNormals, draw.OverlayFaceNormals);
             record_overlay_batch(SPT::LineOverlayVertexNormals, draw.OverlayVertexNormals);
         }
@@ -1650,14 +1454,20 @@ void RecordPhase(entt::registry &r, entt::entity viewport, vk::CommandBuffer cb,
         // Grid plane (drawn before bone depth clear so grid remains depth-tested against scene meshes)
         if (show_overlays && settings.ShowGrid) {
             overlay_layer_drawn = true;
-            main.OverlayRenderer.ShaderPipelines.at(SPT::Grid).Draw(cb, 9, ubo_offset);
+            main.OverlayRenderer.Bind(encoder, SPT::Grid);
+            encoder->drawPrimitives(MTL::PrimitiveTypeTriangle, NS::UInteger(0), NS::UInteger(9));
         }
 
-        { // Bone X-ray: clear depth so bones are never occluded by scene meshes (only mutually occlude each other)
+        { // Bone X-ray: depth clears so bones are never occluded by scene meshes, only by each other.
+            // Metal clears an attachment at pass start alone, so the bones take a second pass that
+            // loads the overlay colors and clears the depth.
             if (draw.BoneFill.DrawCount > 0 || draw.BoneSphereFill.DrawCount > 0) {
-                cb.bindIndexBuffer(*buffers.IdentityIndexBuffer, 0, vk::IndexType::eUint32);
-                const vk::ClearAttachment depth_clear{vk::ImageAspectFlagBits::eDepth, 0, vk::ClearDepthStencilValue{1.f, 0}};
-                cb.clearAttachments(depth_clear, vk::ClearRect{main_rect, 0, 1});
+                const std::array bone_colors{
+                    mtl::LoadColor(*main.Resources->OverlayColorImage),
+                    mtl::LoadColor(*main.Resources->LineDataImage),
+                };
+                const auto bone_pass = mtl::MakePassDescriptor(bone_colors, mtl::ClearDepth(*main.Resources->DepthImage));
+                encoder = encode::BeginScenePass(chain, *bone_pass, "BoneXRay", {{stage::Dispatch, stage::Vertex | stage::Fragment}, {stage::Fragment, stage::Fragment}}, main_extent, slots, buffers, ubo_offset);
 
                 // In Object+wireframe mode, show only outlines (no fills).
                 // In Edit/Pose+wireframe, fills are semitransparent and write far-plane depth (via shader) so wires are never occluded.
@@ -1676,23 +1486,13 @@ void RecordPhase(entt::registry &r, entt::entity viewport, vk::CommandBuffer cb,
                 }
             }
         }
-
-        cb.endRenderPass();
-    }
-
-    if (overlay_layer_drawn) {
-        const std::array overlay_out_barriers{
-            color_read_barrier(*main.Resources->OverlayColorImage.Image),
-            color_read_barrier(*main.Resources->LineDataImage.Image),
-        };
-        sync_fragment_shader_reads(vk::PipelineStageFlagBits::eColorAttachmentOutput, overlay_out_barriers);
     }
 
     { // Composite: anti-alias the overlay layer using LineDataImage, view-transform the scene, merge into FinalColorImage
-        const profile::GpuScope scope{"Composite"};
-        const vk::ClearValue clear_value{vk::ClearColorValue{std::array<float, 4>{0, 0, 0, 1}}};
-        const vk::Rect2D rect{{0, 0}, ToExtent2D(main.Resources->FinalColorImage.Extent)};
-        cb.beginRenderPass({*main.CompositeRenderPass, *main.Resources->CompositeFramebuffer, rect, clear_value}, vk::SubpassContents::eInline);
+        const std::array colors{mtl::ClearColor(*main.Resources->FinalColorImage, {0, 0, 0, 1})};
+        const auto pass = mtl::MakePassDescriptor(colors);
+        encoder = encode::BeginScenePass(chain, *pass, "Composite", {{stage::Fragment, stage::Fragment}}, main.Resources->FinalColorImage.Extent, slots, buffers, ubo_offset);
+        main.ViewportComposite.Bind(encoder);
         // Debug channels write their own already-viewable values, so they pass through untransformed.
         const uint32_t view_transform = settings.DebugChannel != DebugChannel::None ? 2u : show_rendered ? 1u :
                                                                                                            0u;
@@ -1702,61 +1502,30 @@ void RecordPhase(entt::registry &r, entt::entity viewport, vk::CommandBuffer cb,
             uint32_t SceneColorSamplerSlot, OverlayColorSamplerSlot, LineDataSamplerSlot, ViewTransform, HasOverlay;
             vec4 Backdrop;
         } composite_pc{scene_sampler, sel_slots.OverlayColorSampler, sel_slots.LineDataSampler, view_transform, overlay_layer_drawn, settings.ClearColor};
-        cb.pushConstants(*main.ViewportComposite.PipelineLayout, vk::ShaderStageFlagBits::eFragment, 0, sizeof(composite_pc), &composite_pc);
-        main.ViewportComposite.RenderQuad(cb, ubo_offset);
-        cb.endRenderPass();
+        encode::SetPushConstants(encoder, composite_pc);
+        draw_quad();
     }
 }
 
-// Begin `cb` with viewport and scissor covering the render extent.
-void BeginRecording(entt::registry &r, vk::CommandBuffer cb) {
-    const auto render_extent_px = RenderExtentPx(r);
-    const vk::Extent2D render_extent{render_extent_px.x, render_extent_px.y};
-    cb.begin({vk::CommandBufferUsageFlagBits::eSimultaneousUse});
-    profile::BeginRecording(cb);
-    cb.setViewport(0, vk::Viewport{0.f, 0.f, float(render_extent.width), float(render_extent.height), 0.f, 1.f});
-    cb.setScissor(0, vk::Rect2D{{0, 0}, render_extent});
-}
-
-void EndRecording(vk::CommandBuffer cb) {
-    profile::EndRecording();
-    cb.end();
-}
 } // namespace
 
-void RecordRenderCommandBuffer(entt::registry &r, entt::entity viewport, vk::CommandBuffer cb, DrawListUse use, RenderPhase phase) {
-    BeginRecording(r, cb);
-    RecordPhase(r, viewport, cb, use, phase, 0, r.get<const PlaybackFrame>(viewport).Value);
-    EndRecording(cb);
+void RecordRenderCommandBuffer(entt::registry &r, entt::entity viewport, MTL::CommandBuffer *command_buffer, DrawListUse use, RenderPhase phase) {
+    profile::BeginRecording(command_buffer);
+    mtl::PassChain chain{command_buffer, profile::RecordingTimer()};
+    RecordPhase(r, viewport, chain, use, phase, 0, r.get<const PlaybackFrame>(viewport).Value);
+    profile::EndRecording();
 }
 
-void RecordBlurStepsCommandBuffer(entt::registry &r, entt::entity viewport, vk::CommandBuffer cb, std::span<const float> step_frames) {
+// Record every blur step and the resolve into one command buffer.
+void RecordBlurStepsCommandBuffer(entt::registry &r, entt::entity viewport, MTL::CommandBuffer *command_buffer, std::span<const float> step_frames) {
     const auto &buffers = r.ctx().get<const GpuBuffers>();
-    BeginRecording(r, cb);
+    profile::BeginRecording(command_buffer);
+    mtl::PassChain chain{command_buffer, profile::RecordingTimer()};
     for (uint32_t i = 0; i < step_frames.size(); ++i) {
-        if (i > 0) {
-            // The prior step's blur sampled the depth, color, and velocity this step renders anew.
-            // The scene pass reloads them as undefined, so ordering the accesses is enough.
-            cb.pipelineBarrier(
-                vk::PipelineStageFlagBits::eFragmentShader | vk::PipelineStageFlagBits::eComputeShader,
-                vk::PipelineStageFlagBits::eEarlyFragmentTests | vk::PipelineStageFlagBits::eColorAttachmentOutput,
-                {},
-                vk::MemoryBarrier{vk::AccessFlagBits::eShaderRead, vk::AccessFlagBits::eDepthStencilAttachmentWrite | vk::AccessFlagBits::eColorAttachmentWrite},
-                {}, {}
-            );
-        }
-        RecordPhase(r, viewport, cb, i == 0 ? DrawListUse::Rebuild : DrawListUse::Reuse, i == 0 ? RenderPhase::BlurAccumulateFirst : RenderPhase::BlurAccumulate, buffers.SceneViewUboOffset(i + 1), step_frames[i]);
+        RecordPhase(r, viewport, chain, i == 0 ? DrawListUse::Rebuild : DrawListUse::Reuse, i == 0 ? RenderPhase::BlurAccumulateFirst : RenderPhase::BlurAccumulate, buffers.SceneViewUboOffset(i + 1), step_frames[i]);
     }
-    // The resolve's scene pass renders the depth the last step's gather sampled.
-    cb.pipelineBarrier(
-        vk::PipelineStageFlagBits::eFragmentShader | vk::PipelineStageFlagBits::eComputeShader,
-        vk::PipelineStageFlagBits::eEarlyFragmentTests | vk::PipelineStageFlagBits::eColorAttachmentOutput,
-        {},
-        vk::MemoryBarrier{vk::AccessFlagBits::eShaderRead, vk::AccessFlagBits::eDepthStencilAttachmentWrite | vk::AccessFlagBits::eColorAttachmentWrite},
-        {}, {}
-    );
-    RecordPhase(r, viewport, cb, DrawListUse::Reuse, RenderPhase::BlurResolve, 0, r.get<const PlaybackFrame>(viewport).Value);
-    EndRecording(cb);
+    RecordPhase(r, viewport, chain, DrawListUse::Reuse, RenderPhase::BlurResolve, 0, r.get<const PlaybackFrame>(viewport).Value);
+    profile::EndRecording();
 }
 
 namespace {
@@ -1779,33 +1548,20 @@ void SubmitNormalDeriveNow(entt::registry &r, std::span<const NormalDeriveEntry>
     WritePreludeArg(buffers, PreludeSlot::DeriveFaces, uint32_t(face_tiles.size()));
     WritePreludeArg(buffers, PreludeSlot::DeriveGather, uint32_t(gather_tiles.size()));
 
-    const auto &vk = r.ctx().get<const VulkanResources>();
+    const auto &ctx = r.ctx().get<const mtl::Context>();
+    const auto &slots = r.ctx().get<const mtl::BindlessSet>();
     const auto &pipelines = r.ctx().get<const Pipelines>();
-    const auto &one_shot = r.ctx().get<const OneShotGpu>();
-    buffers.Ctx.FlushDeferredDescriptorUpdates(vk.Device);
-    const auto cb = *one_shot.Cb;
-    cb.reset({});
-    cb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
-#ifdef MVK_FORCE_STAGED_TRANSFERS
-    buffers.Ctx.RecordDeferredCopies(cb);
-#endif
+    ctx.CommitResidency();
+    auto *command_buffer = ctx.Queue->commandBuffer();
+    auto *encoder = command_buffer->computeCommandEncoder();
     auto derive_pc = MakeNormalDerivePc(buffers, meshes, vertex_normal_slot, seam_normal_slot, face_normal_slot);
-    RecordNormalDerive(cb, pipelines, buffers, derive_pc, PreludeSlot::DeriveFaces, 0, "DeriveFaces");
-    // The face normals land before the gathers read them.
-    cb.pipelineBarrier(
-        vk::PipelineStageFlagBits::eComputeShader, vk::PipelineStageFlagBits::eComputeShader, {},
-        vk::MemoryBarrier{vk::AccessFlagBits::eShaderWrite, vk::AccessFlagBits::eShaderRead}, {}, {}
-    );
+    RecordNormalDerive(encoder, slots, pipelines, buffers, derive_pc, PreludeSlot::DeriveFaces, 0);
     derive_pc.Phase = 1;
     derive_pc.FirstTile = uint32_t(face_tiles.size());
-    RecordNormalDerive(cb, pipelines, buffers, derive_pc, PreludeSlot::DeriveGather, 0, "DeriveGather");
-    // The derived writes land before the CPU reads them back through the mapped stores.
-    cb.pipelineBarrier(
-        vk::PipelineStageFlagBits::eComputeShader, vk::PipelineStageFlagBits::eHost, {},
-        vk::MemoryBarrier{vk::AccessFlagBits::eShaderWrite, vk::AccessFlagBits::eHostRead}, {}, {}
-    );
-    cb.end();
-    SubmitAndWait(vk.Queue, cb, *one_shot.Fence, vk.Device);
+    RecordNormalDerive(encoder, slots, pipelines, buffers, derive_pc, PreludeSlot::DeriveGather, 0);
+    encoder->endEncoding();
+    command_buffer->commit();
+    command_buffer->waitUntilCompleted();
     // The one-shot rewrote the per-frame derive entry and tile buffers, so the next submit rebuilds the draw list.
     r.ctx().get<PendingRenderRequest>().Value = RenderRequest::ReRecord;
 }
@@ -1955,7 +1711,7 @@ void SyncPreludeDispatchArgs(GpuBuffers &buffers) {
     const bool live = std::exchange(buffers.PreludeStale, false);
     const auto &groups = buffers.Prelude;
     // Array order is the PreludeSlot order.
-    const std::array<vk::DispatchIndirectCommand, GpuBuffers::PreludeGroups::PassCount> args{{
+    const std::array<MTL::DispatchThreadgroupsIndirectArguments, GpuBuffers::PreludeGroups::PassCount> args{{
         {live ? groups.PosePrepass : 0u, 1u, 1u},
         {live ? groups.DeriveFaces : 0u, 1u, 1u},
         {live ? groups.BoundsReduce : 0u, 1u, 1u},

@@ -1,5 +1,4 @@
 add_subdirectory(ut)
-add_subdirectory(VulkanMemoryAllocator SYSTEM)
 add_subdirectory(lunasvg)
 add_subdirectory(meshoptimizer)
 add_subdirectory(tinyobjloader)

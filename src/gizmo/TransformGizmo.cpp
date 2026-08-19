@@ -1,6 +1,7 @@
 #include "gizmo/TransformGizmo.h"
 #include "gizmo/GizmoInteraction.h"
 #include "numeric/vec4.h"
+#include "viewport/ScreenSpace.h"
 #include "viewport/ViewCamera.h"
 
 #include "imgui.h"
@@ -159,13 +160,11 @@ constexpr float ImLengthSqr(ImVec2 v) { return (v.x * v.x) + (v.y * v.y); }
 
 // Homogeneous clip space to signed NDC in [-1,+1]
 constexpr vec3 CsToNdc(vec4 cs) { return {fabsf(cs.w) > FLT_EPSILON ? vec3{cs} / cs.w : vec3{cs}}; }
-// NDC (signed) to UV [0,1] (top-left origin)
-constexpr vec2 NdcToUv(vec3 ndc) { return {ndc.x * 0.5f + 0.5f, 0.5f - ndc.y * 0.5f}; }
 // UV to pixels in window rect
 constexpr ImVec2 UvToPx(const ViewFrame &f, vec2 uv) { return std::bit_cast<ImVec2>(f.ScreenRect.pos + uv * f.ScreenRect.size); }
 constexpr vec4 WsToCs(vec3 ws, const mat4 &vp) { return vp * vec4{ws, 1}; }
 constexpr vec3 WsToNdc(vec3 ws, const mat4 &vp) { return CsToNdc(WsToCs(ws, vp)); }
-constexpr vec2 WsToUv(vec3 ws, const mat4 &vp) { return NdcToUv(WsToNdc(ws, vp)); }
+constexpr vec2 WsToUv(vec3 ws, const mat4 &vp) { return NdcToUv(vec2{WsToNdc(ws, vp)}); }
 constexpr ImVec2 WsToPx(const ViewFrame &f, vec3 ws) { return UvToPx(f, WsToUv(ws, f.Vp)); }
 // `size` is ratio of gizmo width
 constexpr float SizeToPx(const ViewFrame &f, float size = 1.f) { return f.ScreenRect.size.x * Style.SizeUv * size; }

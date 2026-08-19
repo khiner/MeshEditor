@@ -10,13 +10,14 @@
 #include "gpu/SelectionElementPushConstants.h"
 #include "gpu/UpdateSelectionStatePushConstants.h"
 #include "mesh/MeshStore.h"
+#include "metal/PassChain.h"
+#include "metal/RenderTarget.h"
 #include "object/ObjectComponents.h"
 #include "render/Drawing.h"
+#include "render/Encoding.h"
 #include "render/Instance.h"
-#include "render/OneShotGpu.h"
 #include "render/Pipelines.h"
 #include "render/Profile.h"
-#include "render/VkFenceWait.h"
 #include "scene/Entity.h"
 #include "selection/Selection.h"
 #include "selection/SelectionBitset.h"
@@ -24,104 +25,95 @@
 #include "selection/SelectionQueries.h"
 #include "viewport/RenderExtent.h"
 #include "viewport/ViewportRenderGpu.h"
-#include "vulkan/VulkanResources.h"
 
 #include <entt/entity/registry.hpp>
 
 namespace {
-constexpr vk::Extent2D ToExtent2D(vk::Extent3D extent) { return {extent.width, extent.height}; }
-const vk::ClearColorValue Transparent{0, 0, 0, 0};
-const std::vector<vk::ClearValue> SilhouetteClearValues{{vk::ClearDepthStencilValue{1, 0}}, {Transparent}};
+MTL::PrimitiveType ElementPrimitive(Element element) {
+    if (element == Element::Face) return MTL::PrimitiveTypeTriangle;
+    if (element == Element::Edge) return MTL::PrimitiveTypeLine;
+    return MTL::PrimitiveTypePoint;
+}
 
 void ResetObjectPickKeys(GpuBuffers &buffers) {
     std::fill_n(buffers.ObjectPickKeys.Data(), GpuBuffers::MaxSelectableObjects, std::numeric_limits<uint32_t>::max());
 }
 
-// Zero the linked-list counters and clear the head image to InvalidSlot, ready for fragment writes.
-void ResetSelectionFragmentState(vk::CommandBuffer cb, GpuBuffers &buffers, const Pipelines &pipelines) {
-    buffers.SelectionCounter.Buffer.Write(as_bytes(SelectionCounters{}));
-    const auto &head_image = pipelines.SelectionFragment.Resources->HeadImage;
-    mvk::TransitionImage(cb, vk::PipelineStageFlagBits::eTopOfPipe, vk::PipelineStageFlagBits::eTransfer, {}, vk::AccessFlagBits::eTransferWrite, vk::ImageLayout::eUndefined, vk::ImageLayout::eGeneral, *head_image.Image, ColorSubresourceRange);
-    cb.clearColorImage(*head_image.Image, vk::ImageLayout::eGeneral, vk::ClearColorValue{std::array<uint32_t, 4>{InvalidSlot, 0, 0, 0}}, ColorSubresourceRange);
-    mvk::TransitionImage(cb, vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eFragmentShader, vk::AccessFlagBits::eTransferWrite, vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite, vk::ImageLayout::eGeneral, vk::ImageLayout::eGeneral, *head_image.Image, ColorSubresourceRange);
+// Reset linked-list counters and fill each head with the all-bits-set sentinel.
+void ResetSelectionFragmentState(mtl::PassChain &chain, const GpuBuffers &buffers, const Pipelines &pipelines) {
+    const auto &heads = *pipelines.SelectionFragment.Resources;
+    const auto head_bytes = uint64_t(heads.Extent.Width) * heads.Extent.Height * sizeof(uint32_t);
+    auto *blit = chain.BeginBlit("SelectionReset", mtl::Stage::Fragment);
+    blit->fillBuffer(*buffers.SelectionCounter.Buffer, NS::Range::Make(0, sizeof(SelectionCounters)), 0);
+    blit->fillBuffer(*heads.HeadBuffer, NS::Range::Make(0, head_bytes), 0xFF);
 }
 
-void SetFullViewportScissor(const entt::registry &r, vk::CommandBuffer cb) {
-    const auto render_extent_px = RenderExtentPx(r);
-    const vk::Extent2D render_extent{render_extent_px.x, render_extent_px.y};
-    cb.setViewport(0, vk::Viewport{0.f, 0.f, float(render_extent.width), float(render_extent.height), 0.f, 1.f});
-    cb.setScissor(0, vk::Rect2D{{0, 0}, render_extent});
-}
-
-// Draw the silhouette batch into the silhouette depth/object framebuffer, for element occlusion.
-// The pass opens even with no draws: its depth LoadOp::eClear seeds the selection-fragment pass's LoadOp::eLoad.
-void RecordSilhouetteDepthPass(vk::CommandBuffer cb, const Pipelines &pipelines, const GpuBuffers &buffers, const DrawBatchInfo &batch) {
-    const auto &silhouette = pipelines.Silhouette;
-    const vk::Rect2D rect{{0, 0}, ToExtent2D(silhouette.Resources->OffscreenImage.Extent)};
-    cb.beginRenderPass({*silhouette.Renderer.RenderPass, *silhouette.Resources->Framebuffer, rect, SilhouetteClearValues}, vk::SubpassContents::eInline);
-    if (batch.DrawCount > 0) {
-        cb.bindIndexBuffer(*buffers.IdentityIndexBuffer, 0, vk::IndexType::eUint32);
-        const auto &pipeline = silhouette.Renderer.Bind(cb, SPT::SilhouetteDepthObject);
-        const MainDrawPushConstants pc{batch.DrawDataSlotOffset};
-        cb.pushConstants(*pipeline.PipelineLayout, vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, sizeof(pc), &pc);
-        cb.drawIndexedIndirect(*buffers.SelectionDraw.Indirect, batch.IndirectOffset, batch.DrawCount, sizeof(vk::DrawIndexedIndirectCommand));
-    }
-    cb.endRenderPass();
-}
-
-void RunSelectionCompute(
-    vk::CommandBuffer cb, vk::Queue queue, vk::Fence fence, vk::Device device,
-    const auto &compute, const auto &pc, auto &&dispatch, vk::Semaphore wait_semaphore = {}
+// This opens even with no draws because its cleared depth seeds element occlusion.
+void RecordSilhouetteDepthPass(
+    mtl::PassChain &chain, const mtl::BindlessSet &slots, const Pipelines &pipelines,
+    const GpuBuffers &buffers, const DrawBatchInfo &batch
 ) {
-    const profile::CpuScope scope{"RunSelectionCompute"};
-    cb.reset({});
-    cb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
-
-    cb.bindPipeline(vk::PipelineBindPoint::eCompute, *compute.Pipeline);
-    constexpr uint32_t no_ubo_offset = 0;
-    const std::array compute_sets{compute.GetDescriptorSet(), compute.GetUboSet()};
-    cb.bindDescriptorSets(vk::PipelineBindPoint::eCompute, *compute.PipelineLayout, 0, uint32_t(compute_sets.size()), compute_sets.data(), 1, &no_ubo_offset);
-    cb.pushConstants(*compute.PipelineLayout, vk::ShaderStageFlagBits::eCompute, 0, sizeof(pc), &pc);
-    dispatch(cb);
-
-    const vk::MemoryBarrier barrier{vk::AccessFlagBits::eShaderWrite, vk::AccessFlagBits::eHostRead};
-    cb.pipelineBarrier(vk::PipelineStageFlagBits::eComputeShader, vk::PipelineStageFlagBits::eHost, {}, barrier, {}, {});
-    cb.end();
-
-    vk::SubmitInfo submit;
-    submit.setCommandBuffers(cb);
-    static constexpr vk::PipelineStageFlags wait_stage{vk::PipelineStageFlagBits::eComputeShader};
-    if (wait_semaphore) {
-        submit.setWaitSemaphores(wait_semaphore);
-        submit.setWaitDstStageMask(wait_stage);
+    const auto &silhouette = pipelines.Silhouette;
+    const auto extent = silhouette.Resources->OffscreenImage.Extent;
+    const std::array colors{mtl::ClearColor(*silhouette.Resources->OffscreenImage)};
+    const auto pass = mtl::MakePassDescriptor(colors, mtl::ClearDepth(*silhouette.Resources->DepthImage));
+    auto *encoder = chain.BeginRender(*pass, "SelectionSilhouetteDepth", {{mtl::Stage::Dispatch, mtl::Stage::Vertex}, {mtl::Stage::Fragment, mtl::Stage::Fragment}});
+    encode::SetFullViewport(encoder, extent);
+    if (batch.DrawCount > 0) {
+        encode::BindScene(encoder, slots, buffers);
+        silhouette.Renderer.Bind(encoder, SPT::SilhouetteDepthObject);
+        encode::SetPushConstants(encoder, MainDrawPushConstants{batch.DrawDataSlotOffset});
+        encode::DrawIndexedIndirect(encoder, MTL::PrimitiveTypeTriangle, *buffers.IdentityIndexBuffer, *buffers.SelectionDraw.Indirect, batch.IndirectOffset, batch.DrawCount);
     }
-    queue.submit(submit, fence);
-    WaitFor(fence, device);
 }
 
-std::optional<uint32_t> FindNearestPickedElement(
-    const GpuBuffers &buffers, const ComputePipeline &compute, vk::CommandBuffer cb,
-    vk::Queue queue, vk::Fence fence, vk::Device device,
-    uint32_t head_image_index, uint32_t selection_nodes_slot, uint32_t element_candidate_buffer_slot,
-    uvec2 mouse_px, uint32_t max_element_id, Element element,
-    vk::Semaphore wait_semaphore
+void RecordSelectionCompute(
+    mtl::PassChain &chain, const mtl::BindlessSet &slots, const GpuBuffers &buffers,
+    const mtl::ComputePipeline &compute, const auto &pc, auto &&dispatch
+) {
+    auto *encoder = chain.BeginCompute("SelectionPick", mtl::Stage::Fragment);
+    encode::BindCompute(encoder, compute, slots, buffers);
+    encode::SetPushConstants(encoder, pc);
+    dispatch(encoder);
+}
+
+// Selection queries complete synchronously for immediate readback.
+void SubmitAndWait(MTL::CommandBuffer *command_buffer) {
+    const profile::CpuScope scope{"SelectionSubmit"};
+    command_buffer->commit();
+    command_buffer->waitUntilCompleted();
+}
+
+// One thread group per candidate band, and a face picks from a single group.
+uint32_t ElementPickGroupCount(Element element) { return element == Element::Face ? 1u : GpuBuffers::ElementPickGroupCount; }
+
+void RecordElementPick(
+    mtl::PassChain &chain, const mtl::BindlessSet &slots, const GpuBuffers &buffers,
+    const mtl::ComputePipeline &compute,
+    uint32_t head_slot, uvec2 head_extent, uint32_t selection_nodes_slot, uint32_t element_candidate_buffer_slot,
+    uvec2 mouse_px, Element element
 ) {
     const uint32_t radius = element == Element::Face ? 0u : ElementSelectRadiusPx;
-    const uint32_t group_count = element == Element::Face ? 1u : GpuBuffers::ElementPickGroupCount;
-    RunSelectionCompute(
-        cb, queue, fence, device, compute,
+    const uint32_t group_count = ElementPickGroupCount(element);
+    RecordSelectionCompute(
+        chain, slots, buffers, compute,
         ElementPickPushConstants{
             .TargetPx = mouse_px,
             .Radius = radius,
-            .HeadImageIndex = head_image_index,
+            .HeadSlot = head_slot,
+            .HeadExtent = head_extent,
             .SelectionNodesIndex = selection_nodes_slot,
             .ElementCandidateBufferIndex = element_candidate_buffer_slot,
         },
-        [group_count](vk::CommandBuffer dispatch_cb) { dispatch_cb.dispatch(group_count, 1, 1); },
-        wait_semaphore
+        [group_count](MTL::ComputeCommandEncoder *encoder) {
+            encoder->setThreadgroupMemoryLength(ThreadgroupMemory::ElementPickCandidates, 0);
+            encoder->dispatchThreadgroups(MTL::Size(group_count, 1, 1), ThreadgroupSize::Linear256);
+        }
     );
+}
 
-    const std::span candidates{buffers.ElementPickCandidates.Data(), group_count};
+std::optional<uint32_t> ReadNearestPickedElement(const GpuBuffers &buffers, uint32_t max_element_id, Element element) {
+    const std::span candidates{buffers.ElementPickCandidates.Data(), ElementPickGroupCount(element)};
     auto valid = candidates | std::views::filter([](const auto &c) { return c.Id != 0; });
     const auto it = std::ranges::min_element(valid, [](const auto &a, const auto &b) {
         return std::tie(a.DistanceSq, a.Depth) < std::tie(b.DistanceSq, b.Depth);
@@ -150,15 +142,37 @@ void AppendSelectedSilhouetteDraws(const entt::registry &r, DrawListBuilder &dra
     }
 }
 
+// Cull, optionally reset linked-list state, then draw selection fragments into silhouette depth.
+void RunSelectionPass(
+    entt::registry &r, mtl::PassChain &chain, DrawListBuilder &draw_list, const DrawBatchInfo &silhouette_batch,
+    bool render_depth, bool reset_state, auto &&record_draws
+) {
+    const auto &slots = r.ctx().get<const mtl::BindlessSet>();
+    const auto &pipelines = r.ctx().get<const Pipelines>();
+    auto &buffers = r.ctx().get<GpuBuffers>();
+
+    FlushDrawList(r, draw_list, buffers.SelectionDraw);
+    buffers.SetSceneViewDrawSlots(buffers.SelectionDraw);
+
+    if (!draw_list.Draws.empty()) RecordFrustumCull(chain, slots, pipelines, buffers, buffers.SelectionDraw, draw_list);
+    if (reset_state) ResetSelectionFragmentState(chain, buffers, pipelines);
+    if (render_depth) RecordSilhouetteDepthPass(chain, slots, pipelines, buffers, silhouette_batch);
+
+    const auto extent = pipelines.Silhouette.Resources->DepthImage.Extent;
+    const auto pass = mtl::MakePassDescriptor({}, mtl::LoadDepth(*pipelines.Silhouette.Resources->DepthImage, MTL::StoreActionDontCare));
+    pass->setRenderTargetWidth(extent.Width);
+    pass->setRenderTargetHeight(extent.Height);
+    auto *encoder = encode::BeginScenePass(chain, *pass, "SelectionDraws", {{mtl::Stage::Dispatch, mtl::Stage::Vertex}, {mtl::Stage::Blit, mtl::Stage::Fragment}}, extent, slots, buffers);
+    record_draws(encoder, extent);
+}
+
 void RenderElementSelectionPass(
-    entt::registry &r, entt::entity viewport,
+    entt::registry &r, mtl::PassChain &chain, entt::entity viewport,
     std::span<const ElementRange> ranges, Element element, bool write_bitset,
-    uvec2 box_min, uvec2 box_max, vk::Semaphore signal_semaphore
+    uvec2 box_min, uvec2 box_max
 ) {
     if (ranges.empty() || element == Element::None) return;
-    const auto &vk_res = r.ctx().get<const VulkanResources>();
     const auto &pipelines = r.ctx().get<const Pipelines>();
-    const auto &one_shot = r.ctx().get<const OneShotGpu>();
     const auto &sel_slots = r.ctx().get<const SelectionSlots>();
     auto &meshes = r.ctx().get<MeshStore>();
     auto &buffers = r.ctx().get<GpuBuffers>();
@@ -211,61 +225,29 @@ void RenderElementSelectionPass(
         }
     }
 
-    FlushDrawList(r, vk_res.Device, draw_list, buffers.SelectionDraw);
-    buffers.SetSceneViewDrawSlots(buffers.SelectionDraw);
-
-    auto cb = *one_shot.Cb;
-    cb.reset({});
-    cb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
-
-    if (!draw_list.Draws.empty()) RecordFrustumCull(cb, pipelines, buffers, buffers.SelectionDraw, draw_list);
-    // Bitset writes append to prior linked-list state, so only the fresh-list path resets it.
-    if (!write_bitset) ResetSelectionFragmentState(cb, buffers, pipelines);
-
-    SetFullViewportScissor(r, cb);
-
-    if (render_depth) RecordSilhouetteDepthPass(cb, pipelines, buffers, silhouette_batch);
-
     const auto &selection = pipelines.SelectionFragment;
-    const vk::Rect2D sel_rect{{0, 0}, ToExtent2D(pipelines.Silhouette.Resources->DepthImage.Extent)};
-    cb.beginRenderPass({*selection.Renderer.RenderPass, *selection.Resources->Framebuffer, sel_rect, {}}, vk::SubpassContents::eInline);
-    cb.bindIndexBuffer(*buffers.IdentityIndexBuffer, 0, vk::IndexType::eUint32);
-    if (element_batch.DrawCount > 0) {
+    // Bitset writes append to prior linked-list state, so only the fresh-list path resets it.
+    RunSelectionPass(r, chain, draw_list, silhouette_batch, render_depth, !write_bitset, [&](auto *encoder, mtl::Extent2D extent) {
+        if (element_batch.DrawCount == 0) return;
         const SelectionElementPushConstants element_pc{
             element_batch.DrawDataSlotOffset,
-            {sel_slots.HeadImage, buffers.SelectionNodeBuffer.Slot, sel_slots.SelectionCounter, buffers.SelectionNodeCapacity},
+            {selection.Resources->HeadBuffer.Slot, {extent.Width, extent.Height}, buffers.SelectionNodeBuffer.Slot, sel_slots.SelectionCounter, buffers.SelectionNodeCapacity},
             {box_min.x, box_min.y, box_max.x, box_max.y},
             sel_slots.SelectionBitset,
         };
-        auto draw_with = [&](SPT spt) {
-            const auto &pipeline = selection.Renderer.Bind(cb, spt);
-            cb.pushConstants(*pipeline.PipelineLayout, vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, sizeof(element_pc), &element_pc);
-            cb.drawIndexedIndirect(*buffers.SelectionDraw.Indirect, element_batch.IndirectOffset, element_batch.DrawCount, sizeof(vk::DrawIndexedIndirectCommand));
+        auto draw_with = [&](SPT spt, MTL::PrimitiveType primitive) {
+            selection.Renderer.Bind(encoder, spt);
+            encode::SetPushConstants(encoder, element_pc);
+            encode::DrawIndexedIndirect(encoder, primitive, *buffers.IdentityIndexBuffer, *buffers.SelectionDraw.Indirect, element_batch.IndirectOffset, element_batch.DrawCount);
         };
-        draw_with(element_pipeline(element));
+        draw_with(element_pipeline(element), ElementPrimitive(element));
         if (write_bitset && xray_selection) {
-            // X-Ray face: point pass catches edge-on faces (zero projected triangle area).
-            if (element == Element::Face) draw_with(SPT::SelectionElementFaceXRayVertsBitsetBox);
-            // X-Ray edge: point pass catches near/zero-length projected edges.
-            if (element == Element::Edge) draw_with(SPT::SelectionElementEdgeXRayVertsBitsetBox);
+            // X-Ray face: the point pass catches edge-on faces, whose projected triangle has zero area.
+            if (element == Element::Face) draw_with(SPT::SelectionElementFaceXRayVertsBitsetBox, MTL::PrimitiveTypePoint);
+            // X-Ray edge: the point pass catches near-zero-length projected edges.
+            if (element == Element::Edge) draw_with(SPT::SelectionElementEdgeXRayVertsBitsetBox, MTL::PrimitiveTypePoint);
         }
-    }
-    cb.endRenderPass();
-
-    if (write_bitset) {
-        // Ensure fragment shader writes to the bitset are visible to the host after the fence.
-        // Scope the barrier to the written range.
-        const auto element_count = MaxElementBound(ranges);
-        const vk::DeviceSize bitset_bytes = ((element_count + 31) / 32) * sizeof(uint32_t);
-        cb.pipelineBarrier(
-            vk::PipelineStageFlagBits::eFragmentShader, vk::PipelineStageFlagBits::eHost, {}, {},
-            vk::BufferMemoryBarrier{vk::AccessFlagBits::eShaderWrite, vk::AccessFlagBits::eHostRead, {}, {}, *buffers.SelectionBitset, 0, bitset_bytes},
-            {}
-        );
-    }
-
-    cb.end();
-    SubmitAndWait(vk_res.Queue, cb, *one_shot.Fence, vk_res.Device, signal_semaphore);
+    });
 
     // Element selection pass overwrites the shared head image used for object selection.
     r.ctx().get<DrawState>().SelectionStale = true;
@@ -282,19 +264,24 @@ std::optional<std::pair<entt::entity, uint32_t>> RunElementPickFromRanges(
     if (element_count == 0) return {};
 
     const profile::CpuScope scope{"RunElementPick"};
-    const auto &vk_res = r.ctx().get<const VulkanResources>();
+    const auto &ctx = r.ctx().get<const mtl::Context>();
+    const auto &slots = r.ctx().get<const mtl::BindlessSet>();
     const auto &pipelines = r.ctx().get<const Pipelines>();
-    const auto &one_shot = r.ctx().get<const OneShotGpu>();
     const auto &sel_slots = r.ctx().get<const SelectionSlots>();
     auto &buffers = r.ctx().get<GpuBuffers>();
-    RenderElementSelectionPass(r, viewport, ranges, element, false, {}, {}, *one_shot.SelectionReady);
-    if (const auto index = FindNearestPickedElement(
-            buffers, pipelines.ElementPick, *one_shot.Cb,
-            vk_res.Queue, *one_shot.Fence, vk_res.Device,
-            sel_slots.HeadImage, buffers.SelectionNodeBuffer.Slot, sel_slots.ElementPickCandidates,
-            mouse_px, element_count, element,
-            *one_shot.SelectionReady
-        )) {
+    const auto &heads = *pipelines.SelectionFragment.Resources;
+    auto *command_buffer = ctx.Queue->commandBuffer();
+    { // The chain closes its last pass as it goes out of scope, which the submit below needs.
+        mtl::PassChain chain{command_buffer};
+        RenderElementSelectionPass(r, chain, viewport, ranges, element, false, {}, {});
+        RecordElementPick(
+            chain, slots, buffers, pipelines.ElementPick,
+            heads.HeadBuffer.Slot, {heads.Extent.Width, heads.Extent.Height}, buffers.SelectionNodeBuffer.Slot, sel_slots.ElementPickCandidates,
+            mouse_px, element
+        );
+    }
+    SubmitAndWait(command_buffer);
+    if (const auto index = ReadNearestPickedElement(buffers, element_count, element)) {
         for (const auto &range : ranges) {
             if (*index < range.Offset || *index >= range.Offset + range.Count) continue;
             return std::pair{range.MeshEntity, *index - range.Offset};
@@ -303,10 +290,7 @@ std::optional<std::pair<entt::entity, uint32_t>> RunElementPickFromRanges(
     return {};
 }
 
-void RenderSelectionPassWith(entt::registry &r, [[maybe_unused]] entt::entity viewport, bool render_depth, const SelectionBuildFn &build_fn, vk::Semaphore signal_semaphore, bool render_silhouette) {
-    const profile::CpuScope scope{"RenderSelectionPassWith"};
-    const auto &vk = r.ctx().get<const VulkanResources>();
-    const auto &one_shot = r.ctx().get<const OneShotGpu>();
+void RenderSelectionPassWith(entt::registry &r, mtl::PassChain &chain, [[maybe_unused]] entt::entity viewport, bool render_depth, const SelectionBuildFn &build_fn, bool render_silhouette = true) {
     const auto &sel_slots = r.ctx().get<const SelectionSlots>();
     auto &buffers = r.ctx().get<GpuBuffers>();
     const auto &pipelines = r.ctx().get<const Pipelines>();
@@ -318,57 +302,35 @@ void RenderSelectionPassWith(entt::registry &r, [[maybe_unused]] entt::entity vi
     }
     const auto selection_draws = build_fn(draw_list);
 
-    FlushDrawList(r, vk.Device, draw_list, buffers.SelectionDraw);
-    buffers.SetSceneViewDrawSlots(buffers.SelectionDraw);
-
-    auto cb = *one_shot.Cb;
-    cb.reset({});
-    cb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
-
-    if (!draw_list.Draws.empty()) RecordFrustumCull(cb, pipelines, buffers, buffers.SelectionDraw, draw_list);
-    ResetSelectionFragmentState(cb, buffers, pipelines);
-    SetFullViewportScissor(r, cb);
-
-    if (render_depth) RecordSilhouetteDepthPass(cb, pipelines, buffers, silhouette_batch);
-
     const auto &selection = pipelines.SelectionFragment;
-    const vk::Rect2D rect{{0, 0}, ToExtent2D(pipelines.Silhouette.Resources->DepthImage.Extent)};
-    cb.beginRenderPass({*selection.Renderer.RenderPass, *selection.Resources->Framebuffer, rect, {}}, vk::SubpassContents::eInline);
-    cb.bindIndexBuffer(*buffers.IdentityIndexBuffer, 0, vk::IndexType::eUint32);
-    const SelectionDrawPushConstants sel_pc{
-        0u,
-        {sel_slots.HeadImage, buffers.SelectionNodeBuffer.Slot, sel_slots.SelectionCounter, buffers.SelectionNodeCapacity},
-    };
-    for (const auto &selection_draw : selection_draws) {
-        if (selection_draw.Batch.DrawCount == 0) continue;
-        const auto &pipeline = selection.Renderer.Bind(cb, selection_draw.Pipeline);
-        auto pc = sel_pc;
-        pc.DrawDataOffset = selection_draw.Batch.DrawDataSlotOffset;
-        cb.pushConstants(*pipeline.PipelineLayout, vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, sizeof(pc), &pc);
-        cb.drawIndexedIndirect(*buffers.SelectionDraw.Indirect, selection_draw.Batch.IndirectOffset, selection_draw.Batch.DrawCount, sizeof(vk::DrawIndexedIndirectCommand));
-    }
-    cb.endRenderPass();
-
-    cb.end();
-    SubmitAndWait(vk.Queue, cb, *one_shot.Fence, vk.Device, signal_semaphore);
+    RunSelectionPass(r, chain, draw_list, silhouette_batch, render_depth, true, [&](auto *encoder, mtl::Extent2D extent) {
+        const SelectionDrawPushConstants sel_pc{
+            0u,
+            {selection.Resources->HeadBuffer.Slot, {extent.Width, extent.Height}, buffers.SelectionNodeBuffer.Slot, sel_slots.SelectionCounter, buffers.SelectionNodeCapacity},
+        };
+        for (const auto &selection_draw : selection_draws) {
+            if (selection_draw.Batch.DrawCount == 0) continue;
+            selection.Renderer.Bind(encoder, selection_draw.Pipeline);
+            auto pc = sel_pc;
+            pc.DrawDataOffset = selection_draw.Batch.DrawDataSlotOffset;
+            encode::SetPushConstants(encoder, pc);
+            encode::DrawIndexedIndirect(encoder, selection_draw.Primitive, *buffers.IdentityIndexBuffer, *buffers.SelectionDraw.Indirect, selection_draw.Batch.IndirectOffset, selection_draw.Batch.DrawCount);
+        }
+    });
 }
 
-void RenderSelectionPass(entt::registry &r, entt::entity viewport, vk::Semaphore signal_semaphore) {
-    const profile::CpuScope scope{"RenderSelectionPass"};
-
+void RenderSelectionPass(entt::registry &r, mtl::PassChain &chain, entt::entity viewport) {
     // Render depth so the selection-fragment pass has a valid depth attachment to load, even right after a resize recreated it.
     // Object-pick ignores depth, so its contents and the silhouette draws don't matter.
     RenderSelectionPassWith(
-        r, viewport, /*render_depth=*/true,
+        r, chain, viewport, /*render_depth=*/true,
         [&r](DrawListBuilder &draw_list) -> std::vector<SelectionDrawInfo> {
             const auto &draw = r.ctx().get<const DrawState>();
             draw_list = draw.SelectionList;
             return draw.SelectionDraws;
         },
-        signal_semaphore, /*render_silhouette=*/false
+        /*render_silhouette=*/false
     );
-
-    r.ctx().get<DrawState>().SelectionStale = false;
 }
 
 void RunBoxSelectElements(entt::registry &r, entt::entity viewport, std::span<const ElementRange> ranges, Element element, std::pair<uvec2, uvec2> box_px, bool is_additive) {
@@ -401,9 +363,12 @@ void RunBoxSelectElements(entt::registry &r, entt::entity viewport, std::span<co
     }
 
     // Box-select writes element IDs directly from the selection fragment shader.
-    RenderElementSelectionPass(r, viewport, ranges, element, true, box_min, box_max, {});
-    // After RenderElementSelectionPass (which waits on fence), SelectionBitsetBuffer is populated.
-    // Dispatch UpdateSelectionState compute shader to update element state buffers on GPU.
+    auto *command_buffer = r.ctx().get<const mtl::Context>().Queue->commandBuffer();
+    {
+        mtl::PassChain chain{command_buffer};
+        RenderElementSelectionPass(r, chain, viewport, ranges, element, true, box_min, box_max);
+    }
+    SubmitAndWait(command_buffer);
     ApplySelectionStateUpdate(r, viewport, ranges, element);
 }
 
@@ -411,8 +376,8 @@ std::optional<uint32_t> RunSoundVerticesVertexPick(entt::registry &r, entt::enti
     if (!r.all_of<SoundVertices>(instance_entity)) return {};
     const auto *instance = r.try_get<Instance>(instance_entity);
     if (!instance) return {};
-    const auto &vk = r.ctx().get<const VulkanResources>();
-    const auto &one_shot = r.ctx().get<const OneShotGpu>();
+    const auto &ctx = r.ctx().get<const mtl::Context>();
+    const auto &slots = r.ctx().get<const mtl::BindlessSet>();
     const auto &sel_slots = r.ctx().get<const SelectionSlots>();
     auto &buffers = r.ctx().get<GpuBuffers>();
     auto &meshes = r.ctx().get<MeshStore>();
@@ -427,27 +392,32 @@ std::optional<uint32_t> RunSoundVerticesVertexPick(entt::registry &r, entt::enti
     const auto &mesh_buffers = r.get<MeshBuffers>(mesh_entity);
     const auto &models = r.get<ModelsBuffer>(mesh_entity);
     const auto model_index = r.get<RenderInstance>(instance_entity).BufferIndex;
-    RenderSelectionPassWith(r, viewport, true, [&](DrawListBuilder &draw_list) {
-        auto batch = draw_list.BeginBatch(true);
-        auto draw = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.VertexIndices, buffers.Instances);
-        draw.VertexCountOrHeadImageSlot = 0;
-        draw.ElementStateSlotOffset = {meshes.GetVertexStateSlot(), mesh_buffers.Vertices.Offset};
-        AppendDraw(draw_list, batch, mesh_buffers.VertexIndices, models, draw, model_index);
-        return std::vector{SelectionDrawInfo{SPT::SelectionElementVertex, batch}}; }, *one_shot.SelectionReady);
+    auto *command_buffer = ctx.Queue->commandBuffer();
+    {
+        mtl::PassChain chain{command_buffer};
+        RenderSelectionPassWith(r, chain, viewport, true, [&](DrawListBuilder &draw_list) {
+            auto batch = draw_list.BeginBatch(true);
+            auto draw = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.VertexIndices, buffers.Instances);
+            draw.VertexCountOrHeadImageSlot = 0;
+            draw.ElementStateSlotOffset = {meshes.GetVertexStateSlot(), mesh_buffers.Vertices.Offset};
+            AppendDraw(draw_list, batch, mesh_buffers.VertexIndices, models, draw, model_index);
+            return std::vector{SelectionDrawInfo{SPT::SelectionElementVertex, MTL::PrimitiveTypePoint, batch}};
+        });
+        const auto &heads = *pipelines.SelectionFragment.Resources;
+        RecordElementPick(
+            chain, slots, buffers, pipelines.ElementPick,
+            heads.HeadBuffer.Slot, {heads.Extent.Width, heads.Extent.Height}, buffers.SelectionNodeBuffer.Slot, sel_slots.ElementPickCandidates,
+            mouse_px, Element::Vertex
+        );
+    }
+    SubmitAndWait(command_buffer);
     r.ctx().get<DrawState>().SelectionStale = true;
-
-    return FindNearestPickedElement(
-        buffers, pipelines.ElementPick, *one_shot.Cb,
-        vk.Queue, *one_shot.Fence, vk.Device,
-        sel_slots.HeadImage, buffers.SelectionNodeBuffer.Slot, sel_slots.ElementPickCandidates,
-        mouse_px, vertex_count, Element::Vertex,
-        *one_shot.SelectionReady
-    );
+    return ReadNearestPickedElement(buffers, vertex_count, Element::Vertex);
 }
 
 std::vector<entt::entity> RunObjectPick(entt::registry &r, entt::entity viewport, uint32_t &object_pick_epoch_tag, uvec2 mouse_px, uint32_t radius_px) {
-    const auto &vk = r.ctx().get<const VulkanResources>();
-    const auto &one_shot = r.ctx().get<const OneShotGpu>();
+    const auto &ctx = r.ctx().get<const mtl::Context>();
+    const auto &slots = r.ctx().get<const mtl::BindlessSet>();
     const auto &sel_slots = r.ctx().get<const SelectionSlots>();
     auto &buffers = r.ctx().get<GpuBuffers>();
     const auto &pipelines = r.ctx().get<const Pipelines>();
@@ -456,10 +426,8 @@ std::vector<entt::entity> RunObjectPick(entt::registry &r, entt::entity viewport
     const uint32_t max_object_id = std::min(next_object_id - 1, GpuBuffers::MaxSelectableObjects);
     if (max_object_id == 0) return {};
 
-    const bool selection_rendered = r.ctx().get<const DrawState>().SelectionStale;
-    if (selection_rendered) RenderSelectionPass(r, viewport, *one_shot.SelectionReady);
-
     const profile::CpuScope scope{"RunObjectPick"};
+    const bool selection_stale = r.ctx().get<const DrawState>().SelectionStale;
     // ObjectPickKeyBuffer is persistent across clicks: high 8 bits of each packed key store
     // a per-click epoch tag. We therefore avoid clearing all keys every click and only do a
     // full reset when the 8-bit epoch wraps; stale keys are filtered out by epoch on readback.
@@ -469,22 +437,29 @@ std::vector<entt::entity> RunObjectPick(entt::registry &r, entt::entity viewport
     }
     const uint32_t epoch_inv = object_pick_epoch_tag--;
 
-    auto cb = *one_shot.Cb;
-    RunSelectionCompute(
-        cb, vk.Queue, *one_shot.Fence, vk.Device, pipelines.ObjectPick,
-        ObjectPickPushConstants{
-            .TargetPx = mouse_px,
-            .Radius = radius_px,
-            .MaxId = max_object_id,
-            .EpochInv = epoch_inv,
-            .HeadImageIndex = sel_slots.HeadImage,
-            .SelectionNodesIndex = buffers.SelectionNodeBuffer.Slot,
-            .BestKeyIndex = sel_slots.ObjectPickKey,
-            .SeenBitsIndex = sel_slots.ObjectPickSeenBits,
-        },
-        [](vk::CommandBuffer dispatch_cb) { dispatch_cb.dispatch(1, 1, 1); }, // Single workgroup; threads cooperatively scan the radius.
-        selection_rendered ? *one_shot.SelectionReady : vk::Semaphore{}
-    );
+    const auto &heads = *pipelines.SelectionFragment.Resources;
+    auto *command_buffer = ctx.Queue->commandBuffer();
+    { // The chain closes its last pass as it goes out of scope, which the submit below needs.
+        mtl::PassChain chain{command_buffer};
+        if (selection_stale) RenderSelectionPass(r, chain, viewport);
+        RecordSelectionCompute(
+            chain, slots, buffers, pipelines.ObjectPick,
+            ObjectPickPushConstants{
+                .TargetPx = mouse_px,
+                .Radius = radius_px,
+                .MaxId = max_object_id,
+                .EpochInv = epoch_inv,
+                .HeadSlot = heads.HeadBuffer.Slot,
+                .HeadExtent = {heads.Extent.Width, heads.Extent.Height},
+                .SelectionNodesIndex = buffers.SelectionNodeBuffer.Slot,
+                .BestKeyIndex = sel_slots.ObjectPickKey,
+                .SeenBitsIndex = sel_slots.ObjectPickSeenBits,
+            },
+            [](MTL::ComputeCommandEncoder *encoder) { encoder->dispatchThreadgroups(MTL::Size(1, 1, 1), ThreadgroupSize::Linear256); }
+        );
+    }
+    SubmitAndWait(command_buffer);
+    if (selection_stale) r.ctx().get<DrawState>().SelectionStale = false;
 
     std::unordered_map<uint32_t, entt::entity> object_id_to_entity;
     for (const auto [e, ri] : r.view<RenderInstance>().each()) {
@@ -522,9 +497,8 @@ std::vector<entt::entity> RunObjectPick(entt::registry &r, entt::entity viewport
 }
 
 namespace {
-void DispatchBoxSelect(entt::registry &r, uvec2 box_min, uvec2 box_max, uint32_t max_id, vk::Semaphore wait_semaphore) {
-    const auto &vk = r.ctx().get<const VulkanResources>();
-    const auto &one_shot = r.ctx().get<const OneShotGpu>();
+void DispatchBoxSelect(entt::registry &r, mtl::PassChain &chain, uvec2 box_min, uvec2 box_max, uint32_t max_id) {
+    const auto &slots = r.ctx().get<const mtl::BindlessSet>();
     const auto &sel_slots = r.ctx().get<const SelectionSlots>();
     auto &buffers = r.ctx().get<GpuBuffers>();
     const auto &pipelines = r.ctx().get<const Pipelines>();
@@ -532,18 +506,21 @@ void DispatchBoxSelect(entt::registry &r, uvec2 box_min, uvec2 box_max, uint32_t
     memset(buffers.SelectionBitset.Data(), 0, bitset_words * sizeof(uint32_t));
 
     const auto group_counts = glm::max((box_max - box_min + 15u) / 16u, uvec2{1, 1});
-    RunSelectionCompute(
-        *one_shot.Cb, vk.Queue, *one_shot.Fence, vk.Device, pipelines.BoxSelect,
+    const auto &heads = *pipelines.SelectionFragment.Resources;
+    RecordSelectionCompute(
+        chain, slots, buffers, pipelines.BoxSelect,
         BoxSelectPushConstants{
             .BoxMin = box_min,
             .BoxMax = box_max,
             .MaxId = max_id,
-            .HeadImageIndex = sel_slots.HeadImage,
+            .HeadSlot = heads.HeadBuffer.Slot,
+            .HeadExtent = {heads.Extent.Width, heads.Extent.Height},
             .SelectionNodesIndex = buffers.SelectionNodeBuffer.Slot,
             .BoxResultIndex = sel_slots.SelectionBitset,
         },
-        [group_counts](vk::CommandBuffer dispatch_cb) { dispatch_cb.dispatch(group_counts.x, group_counts.y, 1); },
-        wait_semaphore
+        [group_counts](MTL::ComputeCommandEncoder *encoder) {
+            encoder->dispatchThreadgroups(MTL::Size(group_counts.x, group_counts.y, 1), ThreadgroupSize::Tile16);
+        }
     );
 }
 } // namespace
@@ -551,7 +528,6 @@ void DispatchBoxSelect(entt::registry &r, uvec2 box_min, uvec2 box_max, uint32_t
 std::vector<entt::entity> RunBoxSelect(entt::registry &r, entt::entity viewport, std::pair<uvec2, uvec2> box_px) {
     const auto [box_min, box_max] = box_px;
     if (box_min.x > box_max.x || box_min.y > box_max.y) return {};
-    const auto &one_shot = r.ctx().get<const OneShotGpu>();
     auto &buffers = r.ctx().get<GpuBuffers>();
     const uint32_t next_object_id = r.ctx().get<const ObjectIdCounter>().Next;
     if (next_object_id <= 1) return {}; // No objects have been assigned IDs yet
@@ -559,9 +535,15 @@ std::vector<entt::entity> RunBoxSelect(entt::registry &r, entt::entity viewport,
     const uint32_t max_object_id = std::min(next_object_id - 1, GpuBuffers::MaxSelectableObjects);
 
     const profile::CpuScope scope{"RunBoxSelect"};
-    const bool selection_rendered = r.ctx().get<const DrawState>().SelectionStale;
-    if (selection_rendered) RenderSelectionPass(r, viewport, *one_shot.SelectionReady);
-    DispatchBoxSelect(r, box_min, box_max, max_object_id, selection_rendered ? *one_shot.SelectionReady : vk::Semaphore{});
+    const bool selection_stale = r.ctx().get<const DrawState>().SelectionStale;
+    auto *command_buffer = r.ctx().get<const mtl::Context>().Queue->commandBuffer();
+    { // The chain closes its last pass as it goes out of scope, which the submit below needs.
+        mtl::PassChain chain{command_buffer};
+        if (selection_stale) RenderSelectionPass(r, chain, viewport);
+        DispatchBoxSelect(r, chain, box_min, box_max, max_object_id);
+    }
+    SubmitAndWait(command_buffer);
+    if (selection_stale) r.ctx().get<DrawState>().SelectionStale = false;
 
     std::unordered_map<uint32_t, entt::entity> object_id_to_entity;
     for (const auto [e, ri] : r.view<RenderInstance>().each()) object_id_to_entity[ri.ObjectId] = e;
@@ -585,24 +567,16 @@ void DispatchUpdateSelectionStates(
     std::span<const ElementRange> ranges, Element element
 ) {
     if (ranges.empty() || element == Element::None) return;
-    const auto &vk_res = r.ctx().get<const VulkanResources>();
+    const auto &ctx = r.ctx().get<const mtl::Context>();
+    const auto &slots = r.ctx().get<const mtl::BindlessSet>();
     const auto &pipelines = r.ctx().get<const Pipelines>();
-    const auto &one_shot = r.ctx().get<const OneShotGpu>();
     const auto &sel_slots = r.ctx().get<const SelectionSlots>();
     auto &meshes = r.ctx().get<MeshStore>();
 
-    auto cb = *one_shot.Cb;
-    cb.reset({});
-    cb.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
-
-    const vk::MemoryBarrier input_barrier{vk::AccessFlagBits::eShaderWrite, vk::AccessFlagBits::eShaderRead};
-    cb.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands, vk::PipelineStageFlagBits::eComputeShader, {}, input_barrier, {}, {});
-
-    const auto &compute = pipelines.UpdateSelectionState;
-    cb.bindPipeline(vk::PipelineBindPoint::eCompute, *compute.Pipeline);
-    constexpr uint32_t no_ubo_offset = 0;
-    const std::array compute_sets{compute.GetDescriptorSet(), compute.GetUboSet()};
-    cb.bindDescriptorSets(vk::PipelineBindPoint::eCompute, *compute.PipelineLayout, 0, uint32_t(compute_sets.size()), compute_sets.data(), 1, &no_ubo_offset);
+    const auto &buffers = r.ctx().get<const GpuBuffers>();
+    auto *command_buffer = ctx.Queue->commandBuffer();
+    auto *encoder = command_buffer->computeCommandEncoder();
+    encode::BindCompute(encoder, pipelines.UpdateSelectionState, slots, buffers);
 
     for (const auto &range : ranges) {
         const auto &mesh = GetMesh(r, range.MeshEntity);
@@ -632,15 +606,14 @@ void DispatchUpdateSelectionStates(
             .ActiveHandle = active_element ? active_element->Handle : InvalidOffset,
             .EdgeMode = element == Element::Edge ? 1u : 0u,
         };
-        cb.pushConstants(*compute.PipelineLayout, vk::ShaderStageFlagBits::eCompute, 0, sizeof(pc), &pc);
-        cb.dispatch((range.Count + 255) / 256, 1, 1);
+        encode::SetPushConstants(encoder, pc);
+        encoder->dispatchThreadgroups(MTL::Size((range.Count + 255) / 256, 1, 1), ThreadgroupSize::Linear256);
     }
 
-    const vk::MemoryBarrier output_barrier{vk::AccessFlagBits::eShaderWrite, vk::AccessFlagBits::eHostRead};
-    cb.pipelineBarrier(vk::PipelineStageFlagBits::eComputeShader, vk::PipelineStageFlagBits::eHost, {}, output_barrier, {}, {});
-    cb.end();
-
-    SubmitAndWait(vk_res.Queue, cb, *one_shot.Fence, vk_res.Device);
+    encoder->endEncoding();
+    command_buffer->commit();
+    // The host reads the element states straight after this returns.
+    command_buffer->waitUntilCompleted();
 }
 
 void ApplySelectionStateUpdate(

@@ -1970,36 +1970,36 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
             nullptr;
         static constexpr auto ToSamplerAddressMode = [](gltf::Wrap wrap) {
             switch (wrap) {
-                case gltf::Wrap::ClampToEdge: return vk::SamplerAddressMode::eClampToEdge;
-                case gltf::Wrap::MirroredRepeat: return vk::SamplerAddressMode::eMirroredRepeat;
-                case gltf::Wrap::Repeat: return vk::SamplerAddressMode::eRepeat;
+                case gltf::Wrap::ClampToEdge: return MTL::SamplerAddressModeClampToEdge;
+                case gltf::Wrap::MirroredRepeat: return MTL::SamplerAddressModeMirrorRepeat;
+                case gltf::Wrap::Repeat: return MTL::SamplerAddressModeRepeat;
             }
-            return vk::SamplerAddressMode::eRepeat;
+            return MTL::SamplerAddressModeRepeat;
         };
         static constexpr auto ToSamplerConfig = [](const gltf::Sampler *sampler) -> SamplerConfig {
-            if (!sampler) return {.MinFilter = vk::Filter::eLinear, .MagFilter = vk::Filter::eLinear, .MipmapMode = vk::SamplerMipmapMode::eLinear, .UsesMipmaps = true};
+            if (!sampler) return {.MinFilter = MTL::SamplerMinMagFilterLinear, .MagFilter = MTL::SamplerMinMagFilterLinear, .MipmapMode = MTL::SamplerMipFilterLinear, .UsesMipmaps = true};
 
-            const auto mag_filter = sampler->MagFilter && *sampler->MagFilter == gltf::Filter::Nearest ? vk::Filter::eNearest : vk::Filter::eLinear;
+            const auto mag_filter = sampler->MagFilter && *sampler->MagFilter == gltf::Filter::Nearest ? MTL::SamplerMinMagFilterNearest : MTL::SamplerMinMagFilterLinear;
             switch (sampler->MinFilter.value_or(gltf::Filter::LinearMipMapLinear)) {
                 case gltf::Filter::Nearest:
-                    return {.MinFilter = vk::Filter::eNearest, .MagFilter = mag_filter, .MipmapMode = vk::SamplerMipmapMode::eNearest, .UsesMipmaps = false};
+                    return {.MinFilter = MTL::SamplerMinMagFilterNearest, .MagFilter = mag_filter, .MipmapMode = MTL::SamplerMipFilterNearest, .UsesMipmaps = false};
                 case gltf::Filter::Linear:
-                    return {.MinFilter = vk::Filter::eLinear, .MagFilter = mag_filter, .MipmapMode = vk::SamplerMipmapMode::eNearest, .UsesMipmaps = false};
+                    return {.MinFilter = MTL::SamplerMinMagFilterLinear, .MagFilter = mag_filter, .MipmapMode = MTL::SamplerMipFilterNearest, .UsesMipmaps = false};
                 case gltf::Filter::NearestMipMapNearest:
-                    return {.MinFilter = vk::Filter::eNearest, .MagFilter = mag_filter, .MipmapMode = vk::SamplerMipmapMode::eNearest, .UsesMipmaps = true};
+                    return {.MinFilter = MTL::SamplerMinMagFilterNearest, .MagFilter = mag_filter, .MipmapMode = MTL::SamplerMipFilterNearest, .UsesMipmaps = true};
                 case gltf::Filter::LinearMipMapNearest:
-                    return {.MinFilter = vk::Filter::eLinear, .MagFilter = mag_filter, .MipmapMode = vk::SamplerMipmapMode::eNearest, .UsesMipmaps = true};
+                    return {.MinFilter = MTL::SamplerMinMagFilterLinear, .MagFilter = mag_filter, .MipmapMode = MTL::SamplerMipFilterNearest, .UsesMipmaps = true};
                 case gltf::Filter::NearestMipMapLinear:
-                    return {.MinFilter = vk::Filter::eNearest, .MagFilter = mag_filter, .MipmapMode = vk::SamplerMipmapMode::eLinear, .UsesMipmaps = true};
+                    return {.MinFilter = MTL::SamplerMinMagFilterNearest, .MagFilter = mag_filter, .MipmapMode = MTL::SamplerMipFilterLinear, .UsesMipmaps = true};
                 case gltf::Filter::LinearMipMapLinear:
-                    return {.MinFilter = vk::Filter::eLinear, .MagFilter = mag_filter, .MipmapMode = vk::SamplerMipmapMode::eLinear, .UsesMipmaps = true};
+                    return {.MinFilter = MTL::SamplerMinMagFilterLinear, .MagFilter = mag_filter, .MipmapMode = MTL::SamplerMipFilterLinear, .UsesMipmaps = true};
             }
-            return {.MinFilter = vk::Filter::eLinear, .MagFilter = mag_filter, .MipmapMode = vk::SamplerMipmapMode::eLinear, .UsesMipmaps = true};
+            return {.MinFilter = MTL::SamplerMinMagFilterLinear, .MagFilter = mag_filter, .MipmapMode = MTL::SamplerMipFilterLinear, .UsesMipmaps = true};
         };
 
         const auto sampler_config = ToSamplerConfig(src_sampler);
-        const auto wrap_s = src_sampler ? ToSamplerAddressMode(src_sampler->WrapS) : vk::SamplerAddressMode::eRepeat;
-        const auto wrap_t = src_sampler ? ToSamplerAddressMode(src_sampler->WrapT) : vk::SamplerAddressMode::eRepeat;
+        const auto wrap_s = src_sampler ? ToSamplerAddressMode(src_sampler->WrapS) : MTL::SamplerAddressModeRepeat;
+        const auto wrap_t = src_sampler ? ToSamplerAddressMode(src_sampler->WrapT) : MTL::SamplerAddressModeRepeat;
         auto texture_name = std::format("{} ({})", src_texture.Name.empty() ? std::format("Texture{}", texture_index) : src_texture.Name, color_space == TextureColorSpace::Srgb ? "sRGB" : "Linear");
 
         const auto sampler_slot = AllocateSamplerSlot(ctx.Slots);
@@ -2062,7 +2062,7 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
         store.Names.insert(store.Names.end(), std::make_move_iterator(material_names.begin()), std::make_move_iterator(material_names.end()));
     }
 
-    // Capture resolved texture descriptors (Persistent) before the uploads are moved away, so a snapshot can re-materialize them into the same bindless slots.
+    // Capture resolved texture uploads before moving them so snapshots can reuse their bindless slots.
     // Emplaced only on success, after the rollback guard is disarmed.
     std::vector<MaterializedTexture> materialized_textures;
     materialized_textures.reserve(new_pending_textures.size());
@@ -3587,21 +3587,14 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
     for (const auto &tex : sc.Textures.Textures) {
         if (tex.SourceImageIndex != UINT32_MAX) texture_for_image.emplace(tex.SourceImageIndex, &tex);
     }
-    // Lazy: command pool / fence are created on the first GPU readback only.
-    vk::UniqueCommandPool save_pool;
-    vk::UniqueFence save_fence;
     const auto reencode_from_gpu = [&](uint32_t img_idx, gltf::MimeType target, std::string_view name)
         -> std::expected<std::pair<std::vector<std::byte>, gltf::MimeType>, std::string> {
         const auto it = texture_for_image.find(img_idx);
         if (it == texture_for_image.end()) return std::unexpected{std::format("Image '{}' has no GPU texture; cannot re-encode.", name)};
-        if (!sc.Vk || !sc.BufCtx) return std::unexpected{"GPU readback required but SaveContext.Vk / BufCtx is null"};
-        if (!save_pool) {
-            save_pool = sc.Vk->Device.createCommandPoolUnique({vk::CommandPoolCreateFlagBits::eTransient, sc.Vk->QueueFamily});
-            save_fence = sc.Vk->Device.createFenceUnique({});
-        }
-        auto rgba8 = ReadbackTextureRgba8(*sc.Vk, *sc.BufCtx, *save_pool, *save_fence, *it->second);
+        if (!sc.Ctx) return std::unexpected{"GPU readback required but SaveContext.Ctx is null"};
+        auto rgba8 = ReadbackTextureRgba8(*sc.Ctx, *it->second);
         if (!rgba8) return std::unexpected{std::move(rgba8.error())};
-        const auto w = it->second->Width, h = it->second->Height;
+        const auto w = it->second->Image.Extent.Width, h = it->second->Image.Extent.Height;
         if (auto enc = EncodeImageRgba8ForMime(target, *rgba8, w, h, sc.Options.LossyImageQuality, name)) {
             return std::pair{std::move(*enc), target};
         } else if (target == gltf::MimeType::PNG) {

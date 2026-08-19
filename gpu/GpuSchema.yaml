@@ -156,6 +156,46 @@ enums:
     values:
       - name: KeepOrder
         value: 0x80000000u
+# Shader function constants. The index is the position in the group, so a reorder moves both
+# the shader declaration and the host's named index together.
+function_constants:
+  - name: PbrConstant
+    constants:
+      - name: EnablePunctual
+        type: bool
+      - name: EnableTransmission
+        type: bool
+      - name: EnableDiffuseTrans
+        type: bool
+      - name: EnableClearcoat
+        type: bool
+      - name: EnableSheen
+        type: bool
+      - name: EnableAnisotropy
+        type: bool
+      - name: EnableIridescence
+        type: bool
+      - name: TransmissionPrepass
+        type: bool
+      - name: Topology
+        type: u32
+      - name: VelocityOutput
+        type: bool
+  - name: MeshVertexConstant
+    constants:
+      - name: OverlayKind
+        type: u32
+      - name: IsLineDraw
+        type: u32
+      - name: LineQuad
+        type: bool
+      - name: VelocityOutput
+        type: bool
+  - name: BackgroundConstant
+    constants:
+      - name: TransmissionPrepass
+        type: bool
+
 structs:
   - name: SlotOffset
     fields:
@@ -833,9 +873,12 @@ structs:
         type: u32
   - name: SelectionContext
     fields:
-      - name: HeadImageSlot
+      # Per-pixel linked-list heads, one u32 per pixel, indexed y * HeadExtent.x + x.
+      - name: HeadSlot
         type: u32
         default: InvalidSlot
+      - name: HeadExtent
+        type: uvec2
       - name: NodesSlot
         type: u32
         default: InvalidSlot
@@ -879,8 +922,10 @@ structs:
         type: u32
       - name: EpochInv
         type: u32
-      - name: HeadImageIndex
+      - name: HeadSlot
         type: u32
+      - name: HeadExtent
+        type: uvec2
       - name: SelectionNodesIndex
         type: u32
       - name: BestKeyIndex
@@ -894,8 +939,10 @@ structs:
         type: uvec2
       - name: Radius
         type: u32
-      - name: HeadImageIndex
+      - name: HeadSlot
         type: u32
+      - name: HeadExtent
+        type: uvec2
       - name: SelectionNodesIndex
         type: u32
       - name: ElementCandidateBufferIndex
@@ -909,8 +956,10 @@ structs:
         type: uvec2
       - name: MaxId
         type: u32
-      - name: HeadImageIndex
+      - name: HeadSlot
         type: u32
+      - name: HeadExtent
+        type: uvec2
       - name: SelectionNodesIndex
         type: u32
       - name: BoxResultIndex
@@ -980,7 +1029,7 @@ structs:
         type: u32
       - name: EntryFirstTileSlot
         type: u32
-  # One workgroup per 256-element tile of a derive entry, in two phases.
+  # One threadgroup per 256-element tile of a derive entry, in two phases.
   # Phase 0 derives face normals over the tile map's leading face-tile prefix.
   # Phase 1 gathers vertex and seam normals over the remaining tiles, reading phase 0 through FaceNormalSlot.
   # FirstTile locates the dispatch's tile range.

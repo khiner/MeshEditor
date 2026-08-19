@@ -9,9 +9,9 @@ add_executable(MeshEditorTests
     ${CMAKE_SOURCE_DIR}/src/gltf/GltfScene.cpp
     ${CMAKE_SOURCE_DIR}/src/gltf/SourceTexture.cpp
     ${CMAKE_SOURCE_DIR}/src/armature/Armature.cpp
-    ${CMAKE_SOURCE_DIR}/src/render/Bindless.cpp
     ${CMAKE_SOURCE_DIR}/src/render/GpuBufferOps.cpp
     ${CMAKE_SOURCE_DIR}/src/render/Profile.cpp
+    ${CMAKE_SOURCE_DIR}/src/metal/PassTimer.cpp
     ${CMAKE_SOURCE_DIR}/src/scene/Entity.cpp
     ${CMAKE_SOURCE_DIR}/src/object/ExtrasMesh.cpp
     ${CMAKE_SOURCE_DIR}/src/image/ImageDecode.cpp
@@ -35,10 +35,15 @@ add_executable(MeshEditorTests
     ${CMAKE_SOURCE_DIR}/src/snapshot/SceneSnapshot.cpp
     ${CMAKE_SOURCE_DIR}/src/snapshot/SaveState.cpp
     ${CMAKE_SOURCE_DIR}/src/snapshot/SnapshotRoles.cpp
-    ${CMAKE_SOURCE_DIR}/src/vulkan/Buffer.cpp
-    ${CMAKE_SOURCE_DIR}/src/vulkan/Image.cpp
-    ${CMAKE_SOURCE_DIR}/src/vulkan/VulkanContext.cpp
-    ${CMAKE_SOURCE_DIR}/src/vulkan/FindMemoryType.cpp
+    ${CMAKE_SOURCE_DIR}/src/metal/MetalContext.cpp
+    ${CMAKE_SOURCE_DIR}/src/metal/Bindless.cpp
+    ${CMAKE_SOURCE_DIR}/src/metal/Buffer.cpp
+    ${CMAKE_SOURCE_DIR}/src/metal/Image.cpp
+    ${CMAKE_SOURCE_DIR}/src/metal/Shader.cpp
+    ${CMAKE_SOURCE_DIR}/src/metal/RenderTarget.cpp
+    ${CMAKE_SOURCE_DIR}/src/metal/PassChain.cpp
+    ${CMAKE_SOURCE_DIR}/src/metal/MslSource.cpp
+    ${CMAKE_SOURCE_DIR}/src/metal/MetalCppImpl.cpp
     ${CMAKE_SOURCE_DIR}/src/File.cpp
     ${CMAKE_SOURCE_DIR}/src/Paths.cpp
     ${CMAKE_SOURCE_DIR}/src/ProcessEvents.cpp
@@ -50,7 +55,6 @@ add_executable(MeshEditorTests
     ${CMAKE_SOURCE_DIR}/src/viewport/ViewCameraOps.cpp
     ${CMAKE_SOURCE_DIR}/src/viewport/ViewportDisplay.cpp
     ${CMAKE_SOURCE_DIR}/src/render/Pipelines.cpp
-    ${CMAKE_SOURCE_DIR}/src/render/Shader.cpp
     ${CMAKE_SOURCE_DIR}/src/selection/SelectionGpu.cpp
     ${CMAKE_SOURCE_DIR}/src/selection/SelectionBitset.cpp
     ${CMAKE_SOURCE_DIR}/src/physics/PhysicsSystem.cpp
@@ -71,11 +75,10 @@ target_include_directories(MeshEditorTests PRIVATE
     SYSTEM ${CMAKE_SOURCE_DIR}/lib/entt/src
     SYSTEM ${CMAKE_SOURCE_DIR}/lib/simdjson/include
     SYSTEM ${CMAKE_SOURCE_DIR}/lib/libwebp/src
-    SYSTEM ${CMAKE_SOURCE_DIR}/lib/VulkanMemoryAllocator/include
+    SYSTEM ${CMAKE_SOURCE_DIR}/lib/metal-cpp
     SYSTEM ${CMAKE_SOURCE_DIR}/lib/basis_universal/transcoder
     SYSTEM ${CMAKE_SOURCE_DIR}/lib/JoltPhysics
     SYSTEM PkgConfig::FFTW3F
-    ${Vulkan_INCLUDE_DIRS} # Last: may shadow vendored headers
 )
 
 target_link_libraries(MeshEditorTests PRIVATE
@@ -84,11 +87,11 @@ target_link_libraries(MeshEditorTests PRIVATE
     ${FFTW3F_THREADS}
     simdjson::simdjson
     Boost::ut
-    ${Vulkan_LIBRARIES}
-    GPUOpen::VulkanMemoryAllocator
+    "-framework Metal"
+    "-framework Foundation"
+    "-framework QuartzCore"
     basisu_transcoder
     meshoptimizer
-    ${SHADERC_LIB}
     Jolt
     webp
 )
@@ -104,7 +107,6 @@ target_include_directories(MeshEditorActionSerializeTest PRIVATE
     ${CMAKE_BINARY_DIR}
     SYSTEM ${CMAKE_SOURCE_DIR}/lib/glm
     SYSTEM ${CMAKE_SOURCE_DIR}/lib/entt/src
-    ${Vulkan_INCLUDE_DIRS}
 )
 target_link_libraries(MeshEditorActionSerializeTest PRIVATE Boost::ut)
 mesheditor_test_defaults(MeshEditorActionSerializeTest)
@@ -156,7 +158,7 @@ target_link_libraries(MeshEditorContactCollectBench PRIVATE Jolt)
 mesheditor_test_defaults(MeshEditorContactCollectBench)
 
 # Physics reaches the mesh layer for mesh-backed colliders, and that layer reads geometry from the
-# GPU-backed mesh store, so the store and its Vulkan buffers link in even though these scenes use primitives.
+# GPU-backed mesh store, so the store and its buffers link in even though these scenes use primitives.
 add_executable(MeshEditorContactCollectTest ContactCollectTest.cpp
     ${CMAKE_SOURCE_DIR}/src/physics/PhysicsSystem.cpp
     ${CMAKE_SOURCE_DIR}/src/scene/SceneGraph.cpp
@@ -164,12 +166,16 @@ add_executable(MeshEditorContactCollectTest ContactCollectTest.cpp
     ${CMAKE_SOURCE_DIR}/src/mesh/Mesh.cpp
     ${CMAKE_SOURCE_DIR}/src/mesh/MeshBvh.cpp
     ${CMAKE_SOURCE_DIR}/src/mesh/MeshStore.cpp
-    ${CMAKE_SOURCE_DIR}/src/vulkan/Buffer.cpp
-    ${CMAKE_SOURCE_DIR}/src/vulkan/Image.cpp
-    ${CMAKE_SOURCE_DIR}/src/vulkan/VulkanContext.cpp
-    ${CMAKE_SOURCE_DIR}/src/vulkan/FindMemoryType.cpp
-    ${CMAKE_SOURCE_DIR}/src/render/Bindless.cpp
+    ${CMAKE_SOURCE_DIR}/src/metal/MetalContext.cpp
+    ${CMAKE_SOURCE_DIR}/src/metal/Bindless.cpp
+    ${CMAKE_SOURCE_DIR}/src/metal/Buffer.cpp
+    ${CMAKE_SOURCE_DIR}/src/metal/Image.cpp
+    ${CMAKE_SOURCE_DIR}/src/metal/Shader.cpp
+    ${CMAKE_SOURCE_DIR}/src/metal/RenderTarget.cpp
+    ${CMAKE_SOURCE_DIR}/src/metal/MslSource.cpp
+    ${CMAKE_SOURCE_DIR}/src/metal/MetalCppImpl.cpp
     ${CMAKE_SOURCE_DIR}/src/render/Profile.cpp
+    ${CMAKE_SOURCE_DIR}/src/metal/PassTimer.cpp
 )
 add_dependencies(MeshEditorContactCollectTest generate_gpu_schema)
 target_include_directories(MeshEditorContactCollectTest PRIVATE
@@ -177,11 +183,10 @@ target_include_directories(MeshEditorContactCollectTest PRIVATE
     ${CMAKE_BINARY_DIR}
     SYSTEM ${CMAKE_SOURCE_DIR}/lib/glm
     SYSTEM ${CMAKE_SOURCE_DIR}/lib/entt/src
-    SYSTEM ${CMAKE_SOURCE_DIR}/lib/VulkanMemoryAllocator/include
+    SYSTEM ${CMAKE_SOURCE_DIR}/lib/metal-cpp
     SYSTEM ${CMAKE_SOURCE_DIR}/lib/JoltPhysics
-    ${Vulkan_INCLUDE_DIRS} # Last: may shadow vendored headers
 )
-target_link_libraries(MeshEditorContactCollectTest PRIVATE Boost::ut Jolt meshoptimizer ${Vulkan_LIBRARIES} GPUOpen::VulkanMemoryAllocator)
+target_link_libraries(MeshEditorContactCollectTest PRIVATE Boost::ut Jolt meshoptimizer "-framework Metal" "-framework Foundation" "-framework QuartzCore")
 mesheditor_test_defaults(MeshEditorContactCollectTest)
 
 add_executable(MeshEditorContactManifoldTest ContactManifoldTest.cpp)
@@ -232,3 +237,19 @@ if(MESHEDITOR_SURFACE_AUDIO)
     mesheditor_render_target(MeshEditorSurfaceTrackPoolTest surface/SurfaceTrackPoolTest.cpp)
     mesheditor_render_target(MeshEditorContactSpringsScore surface/ContactSpringsScore.cpp)
 endif()
+
+# Compile every shader source, including generated layout assertions.
+add_executable(MeshEditorMslCompileTest
+    MslCompileTest.cpp
+    ${CMAKE_SOURCE_DIR}/src/metal/MslSource.cpp
+    ${CMAKE_SOURCE_DIR}/src/metal/MetalCppImpl.cpp
+)
+add_dependencies(MeshEditorMslCompileTest generate_gpu_schema)
+target_include_directories(MeshEditorMslCompileTest PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_BINARY_DIR}
+    SYSTEM ${CMAKE_SOURCE_DIR}/lib/metal-cpp
+)
+target_link_libraries(MeshEditorMslCompileTest PRIVATE "-framework Metal" "-framework Foundation" "-framework QuartzCore")
+set_target_properties(MeshEditorMslCompileTest PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+mesheditor_test_defaults(MeshEditorMslCompileTest)

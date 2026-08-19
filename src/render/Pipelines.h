@@ -1,44 +1,41 @@
 #pragma once
 
+#include "metal/Buffer.h"
+#include "metal/Image.h"
+#include "metal/Shader.h"
 #include "render/IblPrefilterPipelines.h"
 #include "render/PbrFeature.h"
 #include "render/ShaderPipelineType.h"
-#include "vulkan/Image.h"
 
+#include <memory>
 #include <unordered_map>
 
-struct DescriptorSlots;
+namespace mtl {
+struct BindlessSet;
+} // namespace mtl
 
 using SPT = ShaderPipelineType;
 
-inline constexpr vk::ImageSubresourceRange DepthSubresourceRange{vk::ImageAspectFlagBits::eDepth, 0, 1, 0, 1};
-inline constexpr vk::ImageSubresourceRange ColorSubresourceRange{vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1};
+namespace Format = mtl::Format;
 
+// Pipelines sharing attachment formats, which Metal bakes into pipeline state.
 struct PipelineRenderer {
-    vk::UniqueRenderPass RenderPass;
-    std::unordered_map<SPT, ShaderPipeline> ShaderPipelines;
+    mtl::PassFormats Formats;
+    std::unordered_map<SPT, mtl::RenderPipeline> Pipelines;
 
-    void CompileShaders();
-    const ShaderPipeline &Bind(vk::CommandBuffer, SPT, uint32_t scene_ubo_offset = 0) const;
+    void CompileShaders(mtl::LibraryCache &);
+    const mtl::RenderPipeline &Bind(MTL::RenderCommandEncoder *, SPT) const;
 };
 
-namespace Format {
-inline constexpr auto Color = vk::Format::eB8G8R8A8Unorm;
-inline constexpr auto HdrColor = vk::Format::eR16G16B16A16Sfloat;
-inline constexpr auto Depth = vk::Format::eD32Sfloat;
-inline constexpr auto Float = vk::Format::eR32Sfloat;
-inline constexpr auto Float2 = vk::Format::eR32G32Sfloat;
-inline constexpr auto LineData = vk::Format::eR8G8B8A8Unorm;
-inline constexpr auto Velocity = vk::Format::eR16G16B16A16Sfloat; // (prev->current, current->next) screen motion
-inline constexpr auto Uint = vk::Format::eR32Uint;
-} // namespace Format
+struct SampledTexture {
+    MTL::Texture *Texture{nullptr};
+    MTL::SamplerState *Sampler{nullptr};
+    explicit operator bool() const { return Texture != nullptr; }
+};
 
-// Compiles a PBR pipeline shaped to the scene's active feature set via Vulkan specialization constants.
-// VkShaderModules are compiled once. Only vkCreateGraphicsPipeline runs on mask changes.
-// The velocity variants render motion blur steps: they target the scene+velocity render pass, with
-// opaque geometry writing its screen motion from VELOCITY_OUTPUT shader modules.
+// Specializes PBR pipelines to the scene's active features and output attachments.
 struct PbrCompiler {
-    PbrCompiler(PipelineContext, vk::RenderPass scene, vk::RenderPass scene_velocity);
+    PbrCompiler(mtl::PassFormats scene, mtl::PassFormats scene_velocity);
 
     enum class Variant {
         Opaque,
@@ -49,7 +46,6 @@ struct PbrCompiler {
     };
     static constexpr size_t VariantCount{5};
 
-    // Point and line meshes shade through the same modules, as round sprites and as screen-space quads.
     enum class Topology {
         Triangle,
         Line,
@@ -59,126 +55,84 @@ struct PbrCompiler {
 
     static constexpr size_t VariantIndex(Topology t, Variant v) { return size_t(t) * VariantCount + size_t(v); }
 
-    // `non_triangle` also builds the line and point pipelines.
-    bool CompilePipelines(PbrFeatureMask, bool non_triangle = false);
-    vk::PipelineLayout Bind(vk::CommandBuffer, Variant, Topology = Topology::Triangle, uint32_t scene_ubo_offset = 0) const;
+    bool CompilePipelines(mtl::LibraryCache &, PbrFeatureMask, bool non_triangle = false);
+    void Bind(MTL::RenderCommandEncoder *, Variant, Topology = Topology::Triangle) const;
     bool HasFeature(PbrFeature f) const { return ::HasFeature(Mask, f); }
-    void RecompileModules(); // hot reload: recompile SPIRV and pipelines from disk
+    void RecompileModules(mtl::LibraryCache &);
 
 private:
-    void CompileModules();
-    vk::UniquePipeline CreateTargetedPipeline(const vk::SpecializationInfo &frag_spec, Variant, Topology) const;
+    std::unique_ptr<mtl::RenderPipeline> CreateTargetedPipeline(mtl::LibraryCache &, PbrFeatureMask, bool prepass, Variant, Topology) const;
 
-    vk::Device Device;
-    vk::UniquePipelineCache Cache;
-    vk::UniqueShaderModule VertModule, FragModule, VelocityVertModule, VelocityFragModule;
-    vk::UniquePipelineLayout Layout;
-    vk::DescriptorSetLayout SetLayout;
-    vk::DescriptorSet Set;
-    vk::DescriptorSetLayout UboSetLayout;
-    vk::DescriptorSet UboSet;
-    vk::RenderPass RenderPass, VelocityRenderPass;
-
+    mtl::PassFormats SceneFormats, VelocityFormats;
     PbrFeatureMask Mask{0};
-    bool NonTriangle{false}; // Whether the line and point pipelines are built.
-    std::array<vk::UniquePipeline, VariantCount * TopologyCount> Variants; // Indexed by Topology-major, then Variant.
+    bool NonTriangle{false};
+    std::array<std::unique_ptr<mtl::RenderPipeline>, VariantCount * TopologyCount> Variants;
 };
 
 struct MainPipeline {
-    MainPipeline(const PipelineContext &);
+    MainPipeline(mtl::LibraryCache &);
 
     struct ResourcesT {
-        ResourcesT(vk::Extent2D, vk::Device, vk::PhysicalDevice, vk::RenderPass scene_render_pass, vk::RenderPass overlay_render_pass, vk::RenderPass composite_render_pass, DescriptorSlots &);
+        ResourcesT(const mtl::Context &, mtl::Extent2D, mtl::BindlessSet &);
         ~ResourcesT();
 
         struct PyramidMip {
-            vk::UniqueImageView View;
-            uint32_t Slot; // Storage image slot the reduce compute writes.
-            vk::Extent2D Extent; // Valid data bounds. The level's remaining texels are padding.
+            mtl::Owned<MTL::Texture> View;
+            uint32_t Slot;
+            mtl::Extent2D Extent; // Valid data bounds. The level's remaining texels are padding.
         };
 
-        // SceneColorImage holds the shaded scene. OverlayColorImage holds display-referred overlays
-        // over transparent, merged onto the scene in the viewport composite.
-        mvk::ImageResource DepthImage, SceneColorImage, OverlayColorImage, LineDataImage, FinalColorImage;
-        // Max-depth mip chain reduced from the scene depth, for the occlusion cull. Mip 0 covers the
-        // scene at half resolution, padded up to power-of-two dimensions.
-        mvk::ImageResource DepthPyramidImage;
+        // Scene-linear color and display-referred overlays stay separate until compositing.
+        mtl::Texture DepthImage, SceneColorImage, OverlayColorImage, LineDataImage, FinalColorImage;
+        // Power-of-two max-depth pyramid for occlusion culling.
+        mtl::Texture DepthPyramidImage;
         std::vector<PyramidMip> DepthPyramidMips;
-        vk::UniqueSampler NearestSampler;
-        vk::UniqueFramebuffer SceneFramebuffer, OverlayFramebuffer, CompositeFramebuffer;
-        DescriptorSlots &Slots;
+        mtl::Owned<MTL::SamplerState> NearestSampler;
+        mtl::BindlessSet &Slots;
     };
 
-    // Mip chain + framebuffer backing real-transmission sampling.
-    // Holds un-exposed radiance, which the main pass exposes after sampling.
-    // Allocated on demand only when a scene material uses KHR_materials_transmission and the user toggle is on.
+    // Lazily allocated, unexposed radiance sampled by real transmission.
     struct TransmissionResourcesT {
-        TransmissionResourcesT(vk::Extent2D, vk::Device, vk::PhysicalDevice, vk::RenderPass, vk::ImageView depth_view);
+        TransmissionResourcesT(const mtl::Context &, mtl::Extent2D);
 
-        mvk::ImageResource Image;
-        vk::UniqueImageView Mip0View;
-        uint32_t MipCount{1};
-        vk::Extent2D Extent{};
-        vk::UniqueSampler Sampler;
-        vk::UniqueFramebuffer Framebuffer;
+        mtl::Texture Image;
+        mtl::Owned<MTL::Texture> Mip0View;
+        mtl::Owned<MTL::SamplerState> Sampler;
     };
 
-    // Motion blur's own targets: the screen motion the gather walks, and the radiance summed across
-    // steps. Allocated on demand only while motion blur is active, and sampled through
-    // ResourcesT::NearestSampler. SceneVelocityFramebuffer borrows ResourcesT's depth and scene color views.
+    // Lazily allocated motion vectors, tile reduction, gather, and accumulation targets.
     struct MotionBlurResourcesT {
-        MotionBlurResourcesT(vk::Extent2D, vk::Device, vk::PhysicalDevice, vk::RenderPass accum_render_pass, vk::RenderPass scene_velocity_render_pass, vk::RenderPass gather_render_pass, vk::ImageView depth_view, vk::ImageView scene_color_view);
+        MotionBlurResourcesT(const mtl::Context &, mtl::Extent2D);
 
-        // TileImage holds each 32x32 tile's largest motion, GatherImage the blurred scene.
-        mvk::ImageResource AccumImage, VelocityImage, TileImage, GatherImage;
-        vk::Extent2D TileExtent{};
-        vk::UniqueFramebuffer Framebuffer, SceneVelocityFramebuffer, GatherFramebuffer;
+        mtl::Texture AccumImage, VelocityImage, TileImage, GatherImage;
     };
 
-    void SetExtent(vk::Extent2D, vk::Device, vk::PhysicalDevice, DescriptorSlots &);
-    // Idempotent: allocates if `wanted` and not already at the right extent, and releases if not wanted.
-    // Returns true when the allocated state changed (caller should re-write the descriptor write).
-    bool EnsureTransmissionResources(vk::Extent2D, vk::Device, vk::PhysicalDevice, bool wanted);
-    // Allocate the motion blur targets at the current color extent if absent. Returns true when they were allocated.
-    bool EnsureMotionBlurResources(vk::Device, vk::PhysicalDevice);
+    void SetExtent(const mtl::Context &, mtl::Extent2D, mtl::BindlessSet &);
+    // Returns whether the allocation changed.
+    bool EnsureTransmissionResources(const mtl::Context &, mtl::Extent2D, bool wanted);
+    bool EnsureMotionBlurResources(const mtl::Context &);
 
-    vk::DescriptorImageInfo SceneColorSamplerInfo() const;
-    vk::DescriptorImageInfo OverlayColorSamplerInfo() const;
-    // Transmission and motion blur targets are lazy. Both fall back to the scene color when
-    // unallocated so the binding stays valid. Nothing samples them in that state.
-    vk::DescriptorImageInfo TransmissionSamplerInfo() const;
-    vk::DescriptorImageInfo MotionBlurAccumSamplerInfo() const;
-    vk::DescriptorImageInfo VelocitySamplerInfo() const;
-    vk::DescriptorImageInfo SceneDepthSamplerInfo() const;
-    vk::DescriptorImageInfo DepthPyramidSamplerInfo() const;
-    // Storage image the motion blur compute passes write. Only valid while MotionBlur is allocated.
-    vk::DescriptorImageInfo MotionBlurTileImageInfo() const;
-    vk::DescriptorImageInfo MotionBlurGatherSamplerInfo() const;
+    // Null lazy targets fall back to scene color to keep bindings valid.
+    SampledTexture Nearest(const mtl::Texture *) const;
+    SampledTexture SceneColorSampler() const;
+    SampledTexture OverlayColorSampler() const;
+    SampledTexture TransmissionSampler() const;
+    SampledTexture MotionBlurAccumSampler() const;
+    SampledTexture VelocitySampler() const;
+    SampledTexture SceneDepthSampler() const;
+    SampledTexture DepthPyramidSampler() const;
+    MTL::Texture *MotionBlurTileImage() const;
+    SampledTexture MotionBlurGatherSampler() const;
 
-    // Scene: depth + scene-linear HDR color. Overlays: the scene's depth loaded for occlusion,
-    // plus a display-referred overlay color target and the line data driving its AA.
     PipelineRenderer SceneRenderer, OverlayRenderer;
-    // Scene pass variant that loads the transmission prepass's depth instead of clearing, for the
-    // composite path. Compatible with SceneRenderer's pipelines and framebuffer.
-    vk::UniqueRenderPass SceneDepthLoadRenderPass;
-    // Scene pass variant that loads both depth and color: resumes the scene with the occlusion
-    // pass's newly visible geometry.
-    vk::UniqueRenderPass SceneResumeRenderPass;
-    // Scene pass variant for motion blur steps, with a velocity attachment the geometry writes its
-    // screen motion into. Holds the fullscreen-quad twins the blurred scene pass binds.
     PipelineRenderer SceneVelocityRenderer;
-    // Background variant that skips exposure, for the transmission pre-pass.
-    ShaderPipeline PrepassBackground;
-    vk::UniqueRenderPass CompositeRenderPass;
-    ShaderPipeline ViewportComposite;
-    // Single HDR attachment, additive blend. The first step clears the target, so it starts from
-    // its own value alone. Later steps load what the earlier ones summed.
-    vk::UniqueRenderPass MotionBlurAccumClearRenderPass, MotionBlurAccumRenderPass;
-    ShaderPipeline MotionBlurAccumulate;
-    // Fullscreen pass that blurs the scene along its screen motion into GatherImage, whose
-    // attachment write keeps the output compressed for the accumulate and composite reads.
-    vk::UniqueRenderPass MotionBlurGatherRenderPass;
-    ShaderPipeline MotionBlurGather;
+    mtl::RenderPipeline PrepassBackground;
+    mtl::PassFormats CompositeFormats;
+    mtl::RenderPipeline ViewportComposite;
+    mtl::PassFormats MotionBlurAccumFormats;
+    mtl::RenderPipeline MotionBlurAccumulate;
+    mtl::PassFormats MotionBlurGatherFormats;
+    mtl::RenderPipeline MotionBlurGather;
     std::unique_ptr<ResourcesT> Resources;
     std::unique_ptr<TransmissionResourcesT> Transmission;
     std::unique_ptr<MotionBlurResourcesT> MotionBlur;
@@ -187,90 +141,100 @@ struct MainPipeline {
 };
 
 struct SilhouettePipeline {
-    SilhouettePipeline(const PipelineContext &);
+    SilhouettePipeline(mtl::LibraryCache &);
 
     struct ResourcesT {
-        ResourcesT(vk::Extent2D, vk::Device, vk::PhysicalDevice, vk::RenderPass);
+        ResourcesT(const mtl::Context &, mtl::Extent2D);
 
-        mvk::ImageResource DepthImage, OffscreenImage;
-        vk::UniqueSampler ImageSampler;
-        vk::UniqueFramebuffer Framebuffer;
+        mtl::Texture DepthImage, OffscreenImage;
+        mtl::Owned<MTL::SamplerState> ImageSampler;
     };
 
-    void SetExtent(vk::Extent2D, vk::Device, vk::PhysicalDevice);
+    void SetExtent(const mtl::Context &, mtl::Extent2D);
 
     PipelineRenderer Renderer;
     std::unique_ptr<ResourcesT> Resources;
 };
 
 struct SilhouetteEdgePipeline {
-    SilhouetteEdgePipeline(const PipelineContext &);
+    SilhouetteEdgePipeline(mtl::LibraryCache &);
 
     struct ResourcesT {
-        ResourcesT(vk::Extent2D, vk::Device, vk::PhysicalDevice, vk::RenderPass);
+        ResourcesT(const mtl::Context &, mtl::Extent2D);
 
-        mvk::ImageResource DepthImage, OffscreenImage;
-        vk::UniqueSampler ImageSampler, DepthSampler;
-        vk::UniqueFramebuffer Framebuffer;
+        mtl::Texture DepthImage, OffscreenImage;
+        mtl::Owned<MTL::SamplerState> ImageSampler;
     };
 
-    void SetExtent(vk::Extent2D, vk::Device, vk::PhysicalDevice);
+    void SetExtent(const mtl::Context &, mtl::Extent2D);
 
     PipelineRenderer Renderer;
     std::unique_ptr<ResourcesT> Resources;
 };
 
 struct SelectionFragmentPipeline {
-    // Render pass that loads depth from silhouette pass for element occlusion.
-    SelectionFragmentPipeline(const PipelineContext &);
+    SelectionFragmentPipeline(mtl::LibraryCache &);
 
     struct ResourcesT {
-        ResourcesT(vk::Extent2D, vk::Device, vk::PhysicalDevice, vk::RenderPass, vk::ImageView silhouette_depth_view);
+        ResourcesT(mtl::BufferContext &, mtl::Extent2D);
 
-        mvk::ImageResource HeadImage;
-        vk::UniqueFramebuffer Framebuffer;
+        // Metal has no texture atomics, so linked-list heads live in a buffer.
+        mtl::Buffer HeadBuffer;
+        mtl::Extent2D Extent{};
     };
 
-    void SetExtent(vk::Extent2D, vk::Device, vk::PhysicalDevice, vk::ImageView silhouette_depth_view);
+    void SetExtent(mtl::BufferContext &, mtl::Extent2D);
 
     PipelineRenderer Renderer;
     std::unique_ptr<ResourcesT> Resources;
 };
 
-struct Pipelines {
-    Pipelines(vk::PhysicalDevice, PipelineContext);
+namespace ThreadgroupSize {
+inline const MTL::Size Linear256{256, 1, 1};
+inline const MTL::Size Linear64{64, 1, 1};
+inline const MTL::Size Tile16{16, 16, 1};
+inline const MTL::Size Tile8{8, 8, 1};
+} // namespace ThreadgroupSize
 
-    vk::PhysicalDevice PhysicalDevice;
-    PipelineContext Ctx;
+namespace ThreadgroupMemory {
+// One uint4 per candidate lane.
+inline constexpr uint32_t ElementPickCandidates{256 * 16};
+// One min and max float4 per bounds lane.
+inline constexpr uint32_t BoundsFoldVector{256 * sizeof(float) * 4};
+// One 32x32 float tile.
+inline constexpr uint32_t DepthPyramidTile{32 * 32 * sizeof(float)};
+// Flatten broadcasts a payload and two motion vectors.
+inline constexpr uint32_t MotionBlurPayload{2 * sizeof(uint32_t)};
+inline constexpr uint32_t MotionBlurMaxMotion{2 * 2 * sizeof(float)};
+} // namespace ThreadgroupMemory
+
+struct Pipelines {
+    Pipelines(const mtl::Context &, mtl::LibraryCache &);
+
+    const mtl::Context &Ctx;
+    mtl::LibraryCache &Libraries;
     MainPipeline Main;
     SilhouettePipeline Silhouette;
     SilhouetteEdgePipeline SilhouetteEdge;
     SelectionFragmentPipeline SelectionFragment;
-    ComputePipeline ObjectPick, ElementPick, BoxSelect, UpdateSelectionState;
-    // One workgroup per 256-vertex tile of a posed bounds entry.
-    // Materializes current-pose vertex positions (morph, armature, pending edit transform) in mesh-local space.
-    ComputePipeline PosePrepass;
-    // Two-phase normal derive, one workgroup per 256-element tile.
-    // The face phase fan-sums vector areas from positions in place.
-    // The gather phase sums unit face normals over the vertex and seam CSR tables, weighted by corner angle.
-    ComputePipeline VertexNormalDerive;
-    // One workgroup per 256-vertex tile of a bounds entry.
-    // Reduces vertex positions (posed when the entry has them) into per-tile partial AABBs.
-    ComputePipeline BoundsReduce;
-    // One workgroup per bounds entry. Folds its partial AABBs into the instance arena's local bounds.
-    ComputePipeline BoundsCombine;
-    // Zeroes indirect instance counts, then refills them and the visible-index remap from per-instance bounds tested against the view frustum.
-    ComputePipeline FrustumCull;
-    // One dispatch per pyramid mip, each reducing the previous level (mip 0 reduces the scene depth).
-    ComputePipeline DepthPyramidReduce;
-    // Motion blur tile reduction: reduce motion to tiles, then spread each tile's motion over the tiles it crosses.
-    // Main.MotionBlurGather blurs the scene along the result.
-    ComputePipeline MotionBlurTilesFlatten, MotionBlurTilesDilate;
+    mtl::ComputePipeline ObjectPick, ElementPick, BoxSelect, UpdateSelectionState;
+    // Materializes current-pose positions before bounds and normal derivation.
+    mtl::ComputePipeline PosePrepass;
+    // Fan-sums face areas, then gathers corner-angle-weighted vertex and seam normals.
+    mtl::ComputePipeline VertexNormalDerive;
+    // Reduce 256-vertex tiles, then fold each entry's partial AABBs.
+    mtl::ComputePipeline BoundsReduce;
+    mtl::ComputePipeline BoundsCombine;
+    // Rewrites indirect instance counts and the visible-index remap.
+    mtl::ComputePipeline FrustumCull;
+    // Reduces up to six max-depth pyramid levels per dispatch.
+    mtl::ComputePipeline DepthPyramidReduce;
+    // Finds each tile's largest motion, then marks every tile its streak crosses.
+    mtl::ComputePipeline MotionBlurTilesFlatten, MotionBlurTilesDilate;
     IblPrefilterPipelines IblPrefilter;
 
-    void SetExtent(vk::Extent2D, DescriptorSlots &);
+    void SetExtent(mtl::Extent2D, mtl::BufferContext &, mtl::BindlessSet &);
     void CompileShaders();
 
-    // Zero before render resources exist.
-    vk::Extent3D BuiltColorExtent() const { return Main.Resources ? Main.Resources->SceneColorImage.Extent : vk::Extent3D{}; }
+    mtl::Extent2D BuiltColorExtent() const { return Main.Resources ? Main.Resources->SceneColorImage.Extent : mtl::Extent2D{}; }
 };

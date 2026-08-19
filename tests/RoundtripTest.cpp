@@ -28,7 +28,6 @@
 #include "snapshot/SceneSnapshot.h"
 #include "snapshot/SnapshotRoles.h"
 #include "viewport/Viewport.h"
-#include "vulkan/VulkanContext.h"
 
 #include <boost/ut.hpp>
 #include <entt/entity/registry.hpp>
@@ -891,15 +890,15 @@ int main(int argc, const char **argv) {
     Paths::SetProject(tmp_root); // Modal-file round-trip writes under ModalModelsDir() = Project()/modal.
     const auto samples = SampleRoots | transform([](auto root) { return CollectGltfSamples(SamplePath(root)); }) | join | to<std::vector>();
 
-    // Headless Vulkan fixture shared across all ECS-roundtrip samples (device init is expensive).
-    const VulkanContext vk_ctx{{}, /*with_swapchain=*/false};
-    const VulkanResources vk_resources = vk_ctx.Resources();
-
     struct SceneFixture {
         entt::registry R;
-        entt::entity Viewport;
+        entt::entity Viewport{null_entity};
 
-        explicit SceneFixture(VulkanResources vk) : Viewport(InitEngine(R, vk)) { SetupScene(R, Viewport); }
+        SceneFixture() {
+            R.ctx().emplace<mtl::Context>();
+            Viewport = InitEngine(R);
+            SetupScene(R, Viewport);
+        }
         ~SceneFixture() { DeinitViewport(R, Viewport); }
     };
 
@@ -908,7 +907,7 @@ int main(int argc, const char **argv) {
     "snapshot save/restore round trip"_test = [&] {
         std::vector<std::byte> before;
         {
-            SceneFixture f{vk_resources};
+            SceneFixture f;
             auto &meshes = f.R.ctx().get<MeshStore>();
             auto created = meshes.CreateMesh(primitive::CreateMesh(primitive::Cuboid{}), {}, {});
             const auto e = f.R.create();
@@ -942,7 +941,7 @@ int main(int argc, const char **argv) {
         }
 
         // Restore into a fresh registry - the re-saved image must match byte-for-byte.
-        SceneFixture f{vk_resources};
+        SceneFixture f;
         snapshot::LoadState(f.R, before);
         ProcessComponentEvents(f.R, f.Viewport);
         const auto after = snapshot::SaveState(f.R);
@@ -966,7 +965,7 @@ int main(int argc, const char **argv) {
     // SaveState must skip tombstones (a sparse_set yields them but value() asserts on them) — regression for the crash
     // when saving after a New->Empty clear removed the default cube.
     "snapshot save skips in_place_delete tombstones"_test = [&] {
-        SceneFixture f{vk_resources};
+        SceneFixture f;
         auto &meshes = f.R.ctx().get<MeshStore>();
         const auto keep = f.R.create();
         auto kept = meshes.CreateMesh(primitive::CreateMesh(primitive::Cuboid{}), {}, {});
@@ -981,7 +980,7 @@ int main(int argc, const char **argv) {
 
         ProcessComponentEvents(f.R, f.Viewport);
         const auto before = snapshot::SaveState(f.R); // must not assert on the tombstone
-        SceneFixture g{vk_resources};
+        SceneFixture g;
         snapshot::LoadState(g.R, before);
         ProcessComponentEvents(g.R, g.Viewport);
         const auto after = snapshot::SaveState(g.R);
@@ -993,7 +992,7 @@ int main(int argc, const char **argv) {
         return gltf::LoadContext{
             .R = r,
             .Viewport = e,
-            .Slots = r.ctx().get<DescriptorSlots>(),
+            .Slots = r.ctx().get<mtl::BindlessSet>(),
             .Buffers = r.ctx().get<GpuBuffers>(),
             .Meshes = r.ctx().get<MeshStore>(),
             .Textures = r.ctx().get<TextureStore>(),
@@ -1008,7 +1007,7 @@ int main(int argc, const char **argv) {
             .Buffers = buffers,
             .Meshes = r.ctx().get<MeshStore>(),
             .Textures = r.ctx().get<TextureStore>(),
-            .Vk = &vk_resources,
+            .Ctx = &r.ctx().get<const mtl::Context>(),
             .BufCtx = &buffers.Ctx,
         };
     };
@@ -1044,8 +1043,8 @@ int main(int argc, const char **argv) {
     // - gltf JSON round-trip: SaveGltf -> CompareGltfJson against source.
     // - snapshot round-trip: SaveState -> restore -> SaveState again, byte-compared, plus
     //   CompareRegistries for derived components the byte image omits.
-    SceneFixture fx{vk_resources};
-    SceneFixture restore_fx{vk_resources};
+    SceneFixture fx;
+    SceneFixture restore_fx;
     for (const auto &src : samples) {
         const auto sample_name = src.stem().string();
 
@@ -1080,21 +1079,18 @@ int main(int argc, const char **argv) {
     // Drains PendingTextureUploads onto the GPU — ProcessComponentEvents minus the env /
     // sync passes — so the edit tests below can read texture pixels back.
     const auto materialize_textures = [&](entt::registry &r, entt::entity scene) {
-        const auto pool = vk_resources.Device.createCommandPoolUnique({{}, vk_resources.QueueFamily});
-        const auto fence = vk_resources.Device.createFenceUnique({});
         const auto *pending = r.try_get<const PendingTextureUploads>(scene);
         const auto *src = r.try_get<const gltf::SourceAssets>(scene);
         if (!pending || pending->Items.empty() || !src) return;
-        auto &buffers = r.ctx().get<GpuBuffers>();
-        auto &slots = r.ctx().get<DescriptorSlots>();
+        auto &slots = r.ctx().get<mtl::BindlessSet>();
         auto &textures = r.ctx().get<TextureStore>();
-        auto batch = BeginTextureUploadBatch(vk_resources.Device, *pool, buffers.Ctx);
+        auto batch = BeginTextureUploadBatch(r.ctx().get<const mtl::Context>(), r.ctx().get<mtl::LibraryCache>());
         for (const auto &item : pending->Items) {
-            if (auto entry = MaterializeTextureEntry(vk_resources, batch, slots, item, src->Images)) {
+            if (auto entry = MaterializeTextureEntry(r.ctx().get<const mtl::Context>(), batch, slots, item, src->Images, r.ctx().get<const ActiveSamplerAnisotropy>().Value)) {
                 textures.Textures.emplace_back(std::move(*entry));
             }
         }
-        SubmitTextureUploadBatch(batch, vk_resources.Queue, *fence, vk_resources.Device);
+        SubmitTextureUploadBatch(batch);
         r.remove<PendingTextureUploads>(scene);
     };
 
@@ -1104,7 +1100,7 @@ int main(int argc, const char **argv) {
     // Mark the embedded variant's image dirty; saved bytes must pixel-equal the GPU readback.
     if (const fs::path box_embedded = SamplePath("external/glTF-Sample-Assets/Models/BoxTextured/glTF-Embedded/BoxTextured.gltf"); fs::exists(box_embedded)) {
         test("dirty_image_re_encodes_pixel_equal") = [&] {
-            SceneFixture fx{vk_resources};
+            SceneFixture fx;
             if (!load_or_skip(fx, box_embedded, "load failed")) return;
             materialize_textures(fx.R, fx.Viewport);
 
@@ -1119,9 +1115,7 @@ int main(int argc, const char **argv) {
             }
             expect(tex != nullptr) << "BoxTextured image was not materialized";
             if (!tex) return;
-            const auto pool = vk_resources.Device.createCommandPoolUnique({{}, vk_resources.QueueFamily});
-            const auto fence = vk_resources.Device.createFenceUnique({});
-            const auto original_pixels = ReadbackTextureRgba8(vk_resources, fx.R.ctx().get<GpuBuffers>().Ctx, *pool, *fence, *tex);
+            const auto original_pixels = ReadbackTextureRgba8(fx.R.ctx().get<const mtl::Context>(), *tex);
             expect(original_pixels.has_value()) << "readback failed";
             if (!original_pixels) return;
 
@@ -1130,7 +1124,7 @@ int main(int argc, const char **argv) {
             const auto out_path = edit_root / "BoxTextured-dirty.gltf";
             if (!save_or_skip(fx, out_path)) return;
 
-            SceneFixture fx2{vk_resources};
+            SceneFixture fx2;
             if (!load_or_skip(fx2, out_path, "reload failed")) return;
             const auto &reloaded = fx2.R.get<const gltf::SourceAssets>(fx2.Viewport).Images;
             expect(reloaded.size() == 1u);
@@ -1138,8 +1132,8 @@ int main(int argc, const char **argv) {
             const auto decoded = DecodeImageRgba8(reloaded.front().Bytes, reloaded.front().Name);
             expect(decoded.has_value()) << "reloaded image failed to decode";
             if (!decoded) return;
-            expect(decoded->Width == tex->Width);
-            expect(decoded->Height == tex->Height);
+            expect(decoded->Width == tex->Image.Extent.Width);
+            expect(decoded->Height == tex->Image.Extent.Height);
             const bool pixels_match = decoded->Pixels == *original_pixels;
             expect(pixels_match) << "re-encoded pixels diverge from GPU readback";
         };
@@ -1154,7 +1148,7 @@ int main(int argc, const char **argv) {
             const auto staged_png = stage_dir / "CesiumLogoFlat.png";
             expect(fs::exists(staged_png)) << "fixture missing PNG";
 
-            SceneFixture fx{vk_resources};
+            SceneFixture fx;
             if (!load_or_skip(fx, staged_gltf, "load failed")) return;
 
             materialize_textures(fx.R, fx.Viewport);
@@ -1164,7 +1158,7 @@ int main(int argc, const char **argv) {
             const auto out_path = edit_root / "BoxTextured-fallback.gltf";
             if (!save_or_skip(fx, out_path)) return;
 
-            SceneFixture fx2{vk_resources};
+            SceneFixture fx2;
             if (!load_or_skip(fx2, out_path, "reload failed")) return;
 
             const auto &reloaded = fx2.R.get<const gltf::SourceAssets>(fx2.Viewport).Images;
@@ -1180,7 +1174,7 @@ int main(int argc, const char **argv) {
     // shapes, positions, gain, and acoustic material must survive, and the emitted JSON must match the schema.
     if (const fs::path box = SamplePath("external/glTF-Sample-Assets/Models/Box/glTF/Box.gltf"); fs::exists(box)) {
         test("audio_modal_round_trip") = [&] {
-            SceneFixture fx{vk_resources};
+            SceneFixture fx;
             if (!load_or_skip(fx, box, "Box load failed")) return;
 
             const auto [node, mesh_entity] = first_mesh_node(fx.R);
@@ -1235,7 +1229,7 @@ int main(int argc, const char **argv) {
             }
 
             // --- Re-import and compare against the authored model. ---
-            SceneFixture fx2{vk_resources};
+            SceneFixture fx2;
             if (!load_or_skip(fx2, out_path, "reload failed")) return;
 
             const auto rnode = NodeWith<ModalModes>(fx2.R);
@@ -1289,7 +1283,7 @@ int main(int argc, const char **argv) {
     // to the exact modal values, independent of our own encoder.
     if (const fs::path fixture = SamplePath("tests/fixtures/KHR_audio_rigid_bodies.gltf"); fs::exists(fixture)) {
         test("audio_modal_decode_fixture") = [&] {
-            SceneFixture fx{vk_resources};
+            SceneFixture fx;
             if (!load_or_skip(fx, fixture, "fixture load failed")) return;
 
             const auto node = NodeWith<ModalModes>(fx.R);
@@ -1331,7 +1325,7 @@ int main(int argc, const char **argv) {
             const auto stage_dir = edit_root / "audio-surface";
             const auto staged_gltf = StageSample(box_textured, stage_dir);
 
-            SceneFixture fx{vk_resources};
+            SceneFixture fx;
             if (!load_or_skip(fx, staged_gltf, "BoxTextured load failed")) return;
 
             const auto [node, mesh_entity] = first_mesh_node(fx.R);
@@ -1401,7 +1395,7 @@ int main(int argc, const char **argv) {
                 if (instanced) expect(*instanced == 0u) << "node surface index";
             }
 
-            SceneFixture fx2{vk_resources};
+            SceneFixture fx2;
             if (!load_or_skip(fx2, out_path, "reload failed")) return;
 
             const auto reloaded = NodeWith<ContactSurface>(fx2.R);
@@ -1432,7 +1426,7 @@ int main(int argc, const char **argv) {
             const auto stage_dir = edit_root / "audio-surface-inherit";
             const auto staged_gltf = StageSample(normal_tangent, stage_dir);
 
-            SceneFixture fx{vk_resources};
+            SceneFixture fx;
             if (!load_or_skip(fx, staged_gltf, "NormalTangentTest load failed")) return;
 
             const auto [node, mesh_entity] = first_mesh_node(fx.R);

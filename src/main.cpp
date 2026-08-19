@@ -14,6 +14,7 @@
 #include "action/Errors.h"
 #include "action/Io.h"
 #include "action/Log.h"
+#include "action/Selection.h"
 #include "action/View.h"
 #include "animation/AnimationData.h"
 #include "animation/TimelineUi.h"
@@ -26,6 +27,9 @@
 #include "gizmo/TransformGizmoTypes.h"
 #include "image/ImageEncode.h"
 #include "mesh/MeshComponents.h"
+#include "metal/MetalContext.h"
+#include "metal/RenderTarget.h"
+#include "metal/Shader.h"
 #include "physics/PhysicsTypes.h"
 #include "render/GpuBuffers.h"
 #include "render/MaterialComponents.h"
@@ -41,15 +45,14 @@
 #include "viewport/ViewportDisplay.h"
 #include "viewport/ViewportIcons.h"
 #include "viewport/ViewportUi.h"
-#include "vulkan/VulkanContext.h"
 
+#include "imgui_impl_metal.h"
 #include "imgui_impl_sdl3.h"
-#include "imgui_impl_vulkan.h"
 #include "imgui_internal.h"
 #include "implot.h"
 #include "imspinner_demo.h"
 #include <SDL3/SDL.h>
-#include <SDL3/SDL_vulkan.h>
+#include <SDL3/SDL_metal.h>
 #include <entt/entity/registry.hpp>
 
 #include <csignal>
@@ -73,63 +76,32 @@ namespace fs = std::filesystem;
 // #define IMGUI_UNLIMITED_FRAME_RATE
 
 namespace {
-void CheckVk(vk::Result err) {
-    if (err != vk::Result::eSuccess) throw std::runtime_error(std::format("Vulkan error: {}", vk::to_string(err)));
-}
+// Resize waits on LastFrame before replacing resources sampled by the UI.
+struct WindowSurface {
+    SDL_MetalView View{nullptr};
+    CA::MetalLayer *Layer{nullptr};
+    MTL::CommandBuffer *LastFrame{nullptr};
+};
 
-bool RebuildSwapchain = false;
-void RenderFrame(vk::Device device, vk::Queue queue, ImGui_ImplVulkanH_Window &wd, ImDrawData *draw_data) {
-    auto *image_acquired_semaphore = wd.FrameSemaphores[wd.SemaphoreIndex].ImageAcquiredSemaphore;
-    vk::Result err;
-    {
-        const profile::CpuScope scope{"AcquireImage"};
-        err = device.acquireNextImageKHR(wd.Swapchain, UINT64_MAX, image_acquired_semaphore, nullptr, &wd.FrameIndex);
-    }
-    if (err == vk::Result::eErrorOutOfDateKHR || err == vk::Result::eSuboptimalKHR) {
-        RebuildSwapchain = true;
-        return;
-    }
-    CheckVk(err);
-
+// Skip rather than block when every drawable is in flight.
+void RenderAndPresentFrame(const mtl::Context &ctx, WindowSurface &surface, ImDrawData *draw_data) {
     const profile::CpuScope scope{"ImGuiRenderSubmit"};
-    const auto &fd = wd.Frames[wd.FrameIndex];
-    const vk::Fence fd_fence{fd.Fence};
+    auto *drawable = surface.Layer->nextDrawable();
+    if (!drawable) return;
+
+    const std::array colors{mtl::ClearColor(drawable->texture(), {0.45, 0.55, 0.60, 1.0})};
+    const auto pass = mtl::MakePassDescriptor(colors);
+    auto *command_buffer = ctx.Queue->commandBuffer();
+    ImGui_ImplMetal_NewFrame(*pass);
+    auto *encoder = command_buffer->renderCommandEncoder(*pass);
+    ImGui_ImplMetal_RenderDrawData(draw_data, command_buffer, encoder);
+    encoder->endEncoding();
     {
-        const profile::CpuScope fence_scope{"ImGuiFrameFence"};
-        CheckVk(device.waitForFences(fd_fence, true, UINT64_MAX));
+        const profile::CpuScope present_scope{"Present"};
+        command_buffer->presentDrawable(drawable);
     }
-    device.resetFences(fd_fence);
-    device.resetCommandPool(fd.CommandPool);
-    const vk::CommandBuffer command_buffer{fd.CommandBuffer};
-    command_buffer.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
-    constexpr static vk::ClearValue clear_color{{0.45f, 0.55f, 0.60f, 1.f}};
-    command_buffer.beginRenderPass({wd.RenderPass, fd.Framebuffer, {{0, 0}, {uint32_t(wd.Width), uint32_t(wd.Height)}}, 1, &clear_color}, vk::SubpassContents::eInline);
-    ImGui_ImplVulkan_RenderDrawData(draw_data, fd.CommandBuffer);
-    command_buffer.endRenderPass();
-    command_buffer.end();
-
-    const vk::Semaphore wait_semaphores[]{image_acquired_semaphore};
-    const vk::PipelineStageFlags wait_stage{vk::PipelineStageFlagBits::eColorAttachmentOutput};
-    const vk::CommandBuffer command_buffers[]{command_buffer};
-    const vk::Semaphore signal_semaphores[]{wd.FrameSemaphores[wd.SemaphoreIndex].RenderCompleteSemaphore};
-    const profile::CpuScope submit_scope{"ImGuiQueueSubmit"};
-    queue.submit(vk::SubmitInfo{wait_semaphores, wait_stage, command_buffers, signal_semaphores}, fd_fence);
-}
-void PresentFrame(vk::Queue queue, ImGui_ImplVulkanH_Window &wd) {
-    if (RebuildSwapchain) return;
-
-    const profile::CpuScope scope{"Present"};
-    const vk::Semaphore wait_semaphores[]{wd.FrameSemaphores[wd.SemaphoreIndex].RenderCompleteSemaphore};
-    const vk::SwapchainKHR swapchains[]{wd.Swapchain};
-    const uint32_t image_indices[]{wd.FrameIndex};
-    auto result = queue.presentKHR({wait_semaphores, swapchains, image_indices});
-    if (result == vk::Result::eErrorOutOfDateKHR || result == vk::Result::eSuboptimalKHR) {
-        RebuildSwapchain = true;
-        return;
-    }
-    CheckVk(result);
-
-    wd.SemaphoreIndex = (wd.SemaphoreIndex + 1) % wd.SemaphoreCount; // Now we can use the next set of semaphores.
+    command_buffer->commit();
+    surface.LastFrame = command_buffer;
 }
 
 using namespace ImGui;
@@ -300,7 +272,7 @@ template<typename ActionType> void Perform(entt::registry &r, entt::entity viewp
 
 // Finish in-flight GPU work and stop playback, so scene structure can be safely torn down.
 void QuiesceScene(entt::registry &r, entt::entity viewport) {
-    r.ctx().get<const VulkanResources>().Device.waitIdle();
+    WaitForRender(r);
     const auto &playback = r.get<const TimelinePlayback>(viewport);
     if (playback.Playing) action::ApplyNow(r, viewport, action::timeline::TogglePlay{playback.CurrentFrame});
 }
@@ -343,7 +315,7 @@ void ReplayLogIntoNewSession(entt::registry &r, entt::entity viewport, const fs:
 // Load a snapshot file and return its action-log position.
 uint64_t LoadStateBase(entt::registry &r, entt::entity viewport, const fs::path &path) {
     const auto bytes = File::Read(path).value_or(std::vector<std::byte>{});
-    r.ctx().get<const VulkanResources>().Device.waitIdle();
+    WaitForRender(r);
     ClearScene(r, viewport);
     snapshot::LoadState(r, bytes);
     ProcessComponentEvents(r, viewport);
@@ -463,11 +435,12 @@ std::expected<fs::path, std::string> SaveScreenshot(entt::registry &r, const fs:
     return out_path;
 }
 
-// Slide the view camera along its current view axis until the scene's longest visual side spans the middle half of the view. No-op if empty.
-void FrameScene(entt::registry &r, entt::entity viewport, float aspect_ratio) {
+// Fit the scene into the middle half of the view without changing camera orientation.
+// Returns false while instance bounds are still pending from the GPU.
+bool FrameScene(entt::registry &r, entt::entity viewport, float aspect_ratio) {
     const auto &cam = r.get<const ViewCamera>(viewport);
     const auto *persp = std::get_if<Perspective>(&cam.Data); // The launch view camera is always perspective.
-    if (!persp) return;
+    if (!persp) return true;
 
     // Keep the current orientation; measure each vertex against this camera's basis.
     const vec3 right = cam.Orientation * vec3{1, 0, 0}, up = cam.Orientation * vec3{0, 1, 0}, away = cam.Forward();
@@ -477,8 +450,10 @@ void FrameScene(entt::registry &r, entt::entity viewport, float aspect_ratio) {
     float top = lowest, bottom = lowest, rgt = lowest, lft = lowest;
     const auto &buffers = r.ctx().get<const GpuBuffers>();
     AABB scene;
+    bool any_bounded_instance = false;
     for (const auto [e, ri, wt] : r.view<const RenderInstance, const WorldTransform>().each()) {
         if (ri.BufferIndex == UINT32_MAX) continue;
+        any_bounded_instance = true;
         // Extras (gizmo/wireframe) instances hold an empty AABB and fail the validity check.
         const auto &local = buffers.Instances.GetBounds(ri.BufferIndex);
         if (glm::any(glm::greaterThan(local.Min, local.Max))) continue;
@@ -495,12 +470,12 @@ void FrameScene(entt::registry &r, entt::entity viewport, float aspect_ratio) {
             lft = std::max(lft, -a / tx + f);
         }
     }
-    if (glm::any(glm::greaterThan(scene.Min, scene.Max))) return;
+    if (glm::any(glm::greaterThan(scene.Min, scene.Max))) return !any_bounded_instance;
 
     const auto center = (scene.Min + scene.Max) * 0.5f;
     const float ca = glm::dot(center, right), cb = glm::dot(center, up), cf = glm::dot(center, away);
     const float distance = std::max({top - cb / ty, bottom + cb / ty, rgt - ca / tx, lft + ca / tx}) - cf;
-    if (distance <= 0.f) return;
+    if (distance <= 0.f) return true; // Framing cannot help a scene the camera already sits inside.
 
     // Clip planes bracket the scene depth so nothing is z-clipped.
     const float plane_reach = 6 * glm::length(scene.Max - scene.Min);
@@ -509,6 +484,7 @@ void FrameScene(entt::registry &r, entt::entity viewport, float aspect_ratio) {
     fit.NearClip = std::max(distance - plane_reach, *fit.FarClip / 10000.f);
 
     r.replace<ViewCamera>(viewport, ViewCamera{center + distance * away, center, Camera{fit}});
+    return true;
 }
 
 // The default window size, doubling as the headless viewport extent.
@@ -527,6 +503,8 @@ struct CaptureRequest {
     int BenchFrames{0}; // Headless: re-render every tick and exit after this many frames.
     bool BenchSubmit{false}; // Bench ticks re-submit the standing recording.
     std::optional<ViewportShadingMode> Shading{}; // Disengaged = leave the viewport's own setting alone.
+    bool Overlays{false}; // Keep overlays on through a capture, which presentation otherwise turns off.
+    bool Edit{false}; // Select everything and edit vertices, putting the element and wire passes in front of a capture.
 };
 
 // Surface and clear any failures action handlers reported this frame. Returns true if there were any.
@@ -597,6 +575,7 @@ struct CaptureDriver {
     // A wav recording consumes no images, so its run can skip GPU frames once recording is underway.
     bool AudioOnly() const { return RecordPath.extension() == ".wav" && !ScreenshotMode(); }
     bool Presenting() const { return Play || ScreenshotMode() || RecordingMode(); }
+    bool Framed(bool settled) const { return settled && (ViewFramed || !Presenting()); }
 
     bool DurationElapsed(const entt::registry &r, entt::entity viewport) const {
         if (PlayDuration <= 0) return false;
@@ -607,14 +586,15 @@ struct CaptureDriver {
     // Emit this frame's capture-driven actions. Call before ApplyEmitted, with `settled` true once
     // the viewport is at its final extent with the image built.
     void EmitFrameActions(entt::registry &r, entt::entity viewport, bool settled, uvec2 extent) {
-        if (!ViewFramed && Presenting() && r.view<const Camera>().empty() && extent != uvec2{}) {
-            FrameScene(r, viewport, float(extent.x) / float(extent.y));
-            ViewFramed = settled;
+        if (!ViewFramed && Presenting() && extent != uvec2{}) {
+            // The launch camera waits for GPU-produced bounds; a scene camera frames itself.
+            const bool framed = !r.view<const Camera>().empty() ||
+                FrameScene(r, viewport, float(extent.x) / float(extent.y));
+            ViewFramed = settled && framed;
         }
-        // Start playback once settled, for play or video (the screenshot stays on the held frame).
         // Fixed-step recording waits one more tick, until recording has begun, so the start frame is captured.
         const bool ready = RenderMode() || (FixedStep && RecordingMode()) ? IsRecording(r, viewport) : (Play || RecordingMode());
-        if (!PlaybackStarted && settled && ready) {
+        if (!PlaybackStarted && Framed(settled) && ready) {
             action::Emit(action::timeline::StartPresentation{});
             PlaybackStarted = true;
         }
@@ -716,6 +696,8 @@ CaptureDriver BeginCaptureSession(entt::registry &r, entt::entity viewport, cons
     driver.SeedFailed = !seeded;
     // A benchmark run keeps the editor view, so frames and screenshots cover what the editor draws.
     if (driver.Presenting() && capture.BenchFrames == 0) Perform(r, viewport, action::timeline::EnterPresentation{});
+    // Presentation disables overlays unless --overlays restores them.
+    if (capture.Overlays) Perform(r, viewport, action::UpdateOf<&ViewportDisplay::ShowOverlays>(viewport, true));
     r.ctx().get<FrameState>().FixedFrameStep = driver.FixedStep;
     // Force motion blur on for the whole recording run, leaving still-screenshot renders and audio-only recordings, whose frames nothing reads, alone.
     r.ctx().get<FrameState>().Capturing = driver.RecordingMode() && !driver.AudioOnly();
@@ -749,53 +731,23 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
 
     auto *window = SDL_CreateWindow(
         "MeshEditor", int(DefaultWindowSize.x), int(DefaultWindowSize.y),
-        SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_MAXIMIZED | SDL_WINDOW_HIGH_PIXEL_DENSITY
+        SDL_WINDOW_METAL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_MAXIMIZED | SDL_WINDOW_HIGH_PIXEL_DENSITY
     );
 
-    uint32_t extensions_count = 0;
-    const char *const *instance_extensions_raw = SDL_Vulkan_GetInstanceExtensions(&extensions_count);
-    auto vc = std::make_unique<VulkanContext>(std::vector<const char *>{instance_extensions_raw, instance_extensions_raw + extensions_count});
+    entt::registry r;
+    const auto &ctx = r.ctx().emplace<mtl::Context>();
 
-    const std::array imgui_pool_sizes{
-        vk::DescriptorPoolSize{vk::DescriptorType::eCombinedImageSampler, 16},
-        vk::DescriptorPoolSize{vk::DescriptorType::eSampledImage, 8},
-        vk::DescriptorPoolSize{vk::DescriptorType::eSampler, 2}, // IMGUI_IMPL_VULKAN_MINIMUM_SAMPLER_POOL_SIZE
-        vk::DescriptorPoolSize{vk::DescriptorType::eUniformBuffer, 8},
-        vk::DescriptorPoolSize{vk::DescriptorType::eStorageBuffer, 8},
-        vk::DescriptorPoolSize{vk::DescriptorType::eStorageImage, 4},
-    };
-    auto imgui_descriptor_pool = vc->Device->createDescriptorPoolUnique({vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet, 64, imgui_pool_sizes});
-
-    constexpr static uint32_t MinImageCount = 2;
-    ImGui_ImplVulkanH_Window wd;
-    { // Set up Vulkan window.
-        VkSurfaceKHR surface;
-        if (!SDL_Vulkan_CreateSurface(window, *vc->Instance, nullptr, &surface)) throw std::runtime_error("Failed to create Vulkan surface.\n");
-        wd.Surface = surface;
-
-        int w, h;
-        SDL_GetWindowSize(window, &w, &h);
-
-        if (auto res = vc->PhysicalDevice.getSurfaceSupportKHR(vc->QueueFamily, wd.Surface); res != VK_TRUE) {
-            throw std::runtime_error("Error no WSI support on physical device 0\n");
-        }
-
-        const VkFormat requestSurfaceImageFormat[]{VK_FORMAT_B8G8R8A8_UNORM, VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_B8G8R8_UNORM, VK_FORMAT_R8G8B8_UNORM};
-        const VkColorSpaceKHR requestSurfaceColorSpace = VK_COLORSPACE_SRGB_NONLINEAR_KHR;
-        wd.SurfaceFormat = ImGui_ImplVulkanH_SelectSurfaceFormat(vc->PhysicalDevice, wd.Surface, requestSurfaceImageFormat, (size_t)IM_COUNTOF(requestSurfaceImageFormat), requestSurfaceColorSpace);
-
-#ifdef IMGUI_UNLIMITED_FRAME_RATE
-        const bool unthrottled = true;
-#else
+    WindowSurface surface;
+    {
+        surface.View = SDL_Metal_CreateView(window);
+        if (!surface.View) throw std::runtime_error(std::format("Failed to create a Metal view: {}", SDL_GetError()));
+        surface.Layer = static_cast<CA::MetalLayer *>(SDL_Metal_GetLayer(surface.View));
+        surface.Layer->setDevice(*ctx.Device);
+        surface.Layer->setPixelFormat(mtl::Format::Color);
         // Render mode is GPU-paced: content is fixed-step per tick, so present pacing only affects
         // wall time. Benchmark frames measure throughput, which vsync pacing would hide.
         const bool unthrottled = render_mode || capture.BenchFrames > 0;
-#endif
-        const VkPresentModeKHR unthrottled_modes[]{VK_PRESENT_MODE_MAILBOX_KHR, VK_PRESENT_MODE_IMMEDIATE_KHR, VK_PRESENT_MODE_FIFO_KHR};
-        wd.PresentMode = unthrottled ?
-            ImGui_ImplVulkanH_SelectPresentMode(vc->PhysicalDevice, wd.Surface, &unthrottled_modes[0], IM_COUNTOF(unthrottled_modes)) :
-            VK_PRESENT_MODE_FIFO_KHR; // Always supported.
-        ImGui_ImplVulkanH_CreateOrResizeWindow(*vc->Instance, vc->PhysicalDevice, *vc->Device, &wd, vc->QueueFamily, nullptr, w, h, MinImageCount, 0);
+        surface.Layer->setDisplaySyncEnabled(!unthrottled);
     }
 
     IMGUI_CHECKVERSION();
@@ -811,43 +763,12 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
 
     StyleColorsDark();
 
-    ImGui_ImplSDL3_InitForVulkan(window);
-    ImGui_ImplVulkan_InitInfo init_info{
-        .ApiVersion = VkApiVersion,
-        .Instance = *vc->Instance,
-        .PhysicalDevice = vc->PhysicalDevice,
-        .Device = *vc->Device,
-        .QueueFamily = vc->QueueFamily,
-        .Queue = vc->Queue,
-        .DescriptorPool = *imgui_descriptor_pool,
-        .DescriptorPoolSize = 0,
-        .MinImageCount = MinImageCount,
-        .ImageCount = wd.ImageCount,
-        .PipelineCache = VK_NULL_HANDLE,
-        .PipelineInfoMain = {
-            .RenderPass = wd.RenderPass,
-            .Subpass = 0,
-            .MSAASamples = VK_SAMPLE_COUNT_1_BIT,
-            .ExtraDynamicStates = {},
-            .PipelineRenderingCreateInfo = {},
-            .SwapChainImageUsage = {},
-        },
-        .PipelineInfoForViewports = {},
-        .UseDynamicRendering = false,
-        .Allocator = nullptr,
-        .CheckVkResultFn = [](VkResult res) {
-            if (res != 0) throw std::runtime_error(std::format("Vulkan error: {}", int(res)));
-        },
-        .MinAllocationSize = {},
-        .CustomShaderVertCreateInfo = {},
-        .CustomShaderFragCreateInfo = {},
-    };
-    ImGui_ImplVulkan_Init(&init_info);
+    ImGui_ImplSDL3_InitForMetal(window);
+    ImGui_ImplMetal_Init(*ctx.Device);
 
     InitFonts();
 
-    entt::registry r;
-    const auto viewport = InitEngine(r, vc->Resources());
+    const auto viewport = InitEngine(r);
     InitViewportMedia(r);
     SetupScene(r, viewport); // Before the first frame reads viewport state.
     // Capture the DPI scale (only set during NewFrame) before priming DPI-scaled GPU state like edge-line width.
@@ -890,18 +811,12 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
         if (driver.DurationElapsed(r, viewport)) done = true;
         FileDialog::Pump(); // Runs callbacks for file dialogs the user completed since last frame.
 
-        if (RebuildSwapchain) {
+        { // The layer follows the window, in pixels rather than points.
             int w, h;
-            SDL_GetWindowSize(window, &w, &h);
-            if (w > 0 && h > 0) {
-                ImGui_ImplVulkan_SetMinImageCount(MinImageCount);
-                ImGui_ImplVulkanH_CreateOrResizeWindow(*vc->Instance, vc->PhysicalDevice, *vc->Device, &wd, vc->QueueFamily, nullptr, w, h, MinImageCount, 0);
-                wd.FrameIndex = 0;
-                RebuildSwapchain = false;
-            }
+            SDL_GetWindowSizeInPixels(window, &w, &h);
+            if (w > 0 && h > 0) surface.Layer->setDrawableSize({double(w), double(h)});
         }
 
-        ImGui_ImplVulkan_NewFrame();
         ImGui_ImplSDL3_NewFrame();
         driver.ElapsedPlayTime += io.DeltaTime;
         // Scene-affecting code reads FrameState::DeltaTime. `io.DeltaTime` is wall-clock, UI-only.
@@ -1074,27 +989,18 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
                         Text("See [Windows->%s] for more details.", windows.ImGuiDemo.Name);
                         EndTabItem();
                     }
-                    if (BeginTabItem("Vulkan")) {
-                        SeparatorText("General");
-                        const auto &props = vc->PhysicalDevice.getProperties();
-                        Text("API version: %d.%d.%d", VK_VERSION_MAJOR(props.apiVersion), VK_VERSION_MINOR(props.apiVersion), VK_VERSION_PATCH(props.apiVersion));
-                        Text("Driver version: %d.%d.%d", VK_VERSION_MAJOR(props.driverVersion), VK_VERSION_MINOR(props.driverVersion), VK_VERSION_PATCH(props.driverVersion));
-                        Text("Vendor ID: 0x%04X", props.vendorID);
+                    if (BeginTabItem("Metal")) {
                         SeparatorText("Device");
-                        Text("ID: 0x%04X", props.deviceID);
-                        Text("Type: %s", vk::to_string(props.deviceType).c_str());
-                        Text("Name: %s", props.deviceName.data());
+                        Text("Name: %s", ctx.Device->name()->utf8String());
+                        Text("Unified memory: %s", ctx.Device->hasUnifiedMemory() ? "yes" : "no");
+                        Text("Argument buffer tier: %ld", long(ctx.Device->argumentBuffersSupport()) + 1);
+                        Text("BC texture compression: %s", ctx.Device->supportsBCTextureCompression() ? "yes" : "no");
+                        Text("Max buffer length: %llu MB", (unsigned long long)(ctx.Device->maxBufferLength() / (1024 * 1024)));
 
-                        SeparatorText("ImGui_ImplVulkanH_Window");
-                        Text("Dimensions: %dx%d", wd.Width, wd.Height);
-                        Text(
-                            "Surface\n\tFormat: %s\n\tColor space: %s",
-                            vk::to_string(vk::Format(wd.SurfaceFormat.format)).c_str(),
-                            vk::to_string(vk::ColorSpaceKHR(wd.SurfaceFormat.colorSpace)).c_str()
-                        );
-                        Text("Present mode: %s", vk::to_string(vk::PresentModeKHR(wd.PresentMode)).c_str());
-                        Text("Image count: %d", wd.ImageCount);
-                        Text("Semaphore count: %d", wd.SemaphoreCount);
+                        SeparatorText("Window surface");
+                        const auto drawable_size = surface.Layer->drawableSize();
+                        Text("Drawable: %.0fx%.0f", drawable_size.width, drawable_size.height);
+                        Text("Display sync: %s", surface.Layer->displaySyncEnabled() ? "on" : "off");
                         EndTabItem();
                     }
                     if (BeginTabItem("Engine")) {
@@ -1185,7 +1091,7 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
         ReportActionErrors(r);
 
         // Derive this frame's applied actions and submit the GPU render (nonblocking). WaitForRender() runs later, before RenderFrame() samples the image.
-        SubmitViewport(r, viewport, GetFrameCount() > 1 ? vk::Fence{wd.Frames[wd.FrameIndex].Fence} : vk::Fence{});
+        SubmitViewport(r, viewport, GetFrameCount() > 1 ? surface.LastFrame : nullptr);
 
         if (viewport_open) {
             // Draw the rendered image and overlays into the open viewport window.
@@ -1201,32 +1107,26 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
         auto *draw_data = GetDrawData();
         if (const bool is_minimized = (draw_data->DisplaySize.x <= 0.0f || draw_data->DisplaySize.y <= 0.0f); !is_minimized) {
             WaitForRender(r); // ImGui samples final image
-            if (driver.CaptureFrame(r, viewport, viewport_settled)) done = true;
-            RenderFrame(*vc->Device, vc->Queue, wd, draw_data);
-            PresentFrame(vc->Queue, wd);
+            if (driver.CaptureFrame(r, viewport, driver.Framed(viewport_settled))) done = true;
+            RenderAndPresentFrame(ctx, surface, draw_data);
         }
     }
 
     action::StopLog();
-    vc->Device->waitIdle();
+    if (surface.LastFrame) surface.LastFrame->waitUntilCompleted();
 
     r.ctx().erase<AudioDeviceResource>(); // Stops and uninitializes the output device.
 
-    // Tear down the viewport and its ctx-resident GPU stores in order before clearing the registry,
-    // so GpuBuffers (and its VMA allocator) outlives the MeshStore allocations that retire into it.
+    // GpuBuffers must outlive MeshStore allocations retired during teardown.
     DeinitViewportMedia(r); // App-only media (icons/modal audio/ImGui texture), while the device + GpuBuffers are alive.
     DeinitViewport(r, viewport);
 
-    ImGui_ImplVulkan_Shutdown();
+    ImGui_ImplMetal_Shutdown();
     ImGui_ImplSDL3_Shutdown();
     ImPlot::DestroyContext();
     ImGui::DestroyContext();
-    ImGui_ImplVulkanH_DestroyWindow(*vc->Instance, *vc->Device, &wd, nullptr);
-    vkDestroySurfaceKHR(*vc->Instance, wd.Surface, nullptr);
-    wd.Surface = {};
-    imgui_descriptor_pool.reset();
-    vc.reset();
 
+    SDL_Metal_DestroyView(surface.View);
     SDL_DestroyWindow(window);
     SDL_Quit();
 }
@@ -1245,6 +1145,12 @@ bool RunHeadlessScene(entt::registry &r, entt::entity viewport, const char *init
     // Emitted, not Performed: the resize must happen inside the first tick's SubmitViewport for that
     // frame to render the recreated images correctly.
     action::Emit(action::view::SetExtent{DefaultWindowSize});
+    // --edit selects every object, but enters edit mode only when all are meshes.
+    if (capture.Edit) {
+        Perform(r, viewport, action::selection::SelectAll{});
+        Perform(r, viewport, action::view::SetInteractionMode{InteractionMode::Edit});
+        Perform(r, viewport, action::view::SetEditMode{Element::Vertex});
+    }
 
     auto &frame_state = r.ctx().get<FrameState>();
     frame_state.DeltaTime = driver.RenderDt;
@@ -1289,7 +1195,7 @@ bool RunHeadlessScene(entt::registry &r, entt::entity viewport, const char *init
             auto &pending = r.ctx().get<PendingRenderRequest>().Value;
             pending = std::max(pending, capture.BenchSubmit ? RenderRequest::Submit : RenderRequest::ReRecord);
         } else {
-            if (driver.CaptureFrame(r, viewport, settled)) done = true;
+            if (driver.CaptureFrame(r, viewport, driver.Framed(settled))) done = true;
             // Headless has no window to close: without anything to capture or play, one settled frame is the whole run.
             if (!driver.Presenting() && settled) done = true;
         }
@@ -1308,18 +1214,17 @@ void RunHeadlessEngine(bool quiet, auto &&scenes) {
     if (!SDL_Init(0)) throw std::runtime_error(std::format("SDL_Init error: {}", SDL_GetError())); // Base path only, no subsystems.
     InitPaths();
 
-    auto vc = std::make_unique<VulkanContext>(std::vector<const char *>{}, /*with_swapchain=*/false);
     entt::registry r;
-    const auto viewport = InitEngine(r, vc->Resources());
+    r.ctx().emplace<mtl::Context>();
+    const auto viewport = InitEngine(r);
     SetupScene(r, viewport);
     r.ctx().get<FrameState>().DisplayFramebufferScale = {2, 2}; // Match the app's retina rendering (pixel density and DPI-scaled GPU state like edge-line width).
     ProcessComponentEvents(r, viewport); // Prime derived state before the first frame reads it.
 
     scenes(r, viewport);
 
-    vc->Device->waitIdle();
+    WaitForRender(r);
     DeinitViewport(r, viewport);
-    vc.reset();
     SDL_Quit();
 }
 
@@ -1367,7 +1272,7 @@ std::optional<RenderJob> ClaimRenderJob(const fs::path &spool) {
 
 // Render every job in the spool with one engine, clearing the scene between jobs.
 // Each scene's console output goes to its `.log`, and stdout gets one line per finished scene.
-void RunHeadlessQueue(const fs::path &spool, bool quiet) {
+void RunHeadlessQueue(const fs::path &spool, bool quiet, const CaptureRequest &harness) {
     RunHeadlessEngine(quiet, [&](entt::registry &r, entt::entity viewport) {
         const int launcher_out = ::dup(STDOUT_FILENO), launcher_err = ::dup(STDERR_FILENO);
         while (const auto job = ClaimRenderJob(spool)) {
@@ -1381,7 +1286,7 @@ void RunHeadlessQueue(const fs::path &spool, bool quiet) {
             }
             const bool empty = job->SceneArg == "--empty";
             const char *initial_file = !empty && !job->SceneArg.empty() ? job->SceneArg.c_str() : nullptr;
-            RunHeadlessScene(r, viewport, initial_file, empty, CaptureRequest{.RenderBasename = job->OutBasename});
+            RunHeadlessScene(r, viewport, initial_file, empty, CaptureRequest{.RenderBasename = job->OutBasename, .Overlays = harness.Overlays, .Edit = harness.Edit});
             // Reset for the next job, finalizing any in-progress recording.
             QuiesceScene(r, viewport);
             ClearScene(r, viewport);
@@ -1443,6 +1348,8 @@ int main(int argc, char **argv) {
         else if (a == "--render-queue" && std::next(it) != args.end()) render_queue = *++it;
         else if (a == "--empty") empty = true;
         else if (a == "--headless") headless = true;
+        else if (a == "--overlays") capture.Overlays = true;
+        else if (a == "--edit") capture.Edit = true;
         else if (a == "--fps" && std::next(it) != args.end()) capture.Fps = std::atoi(*++it);
         else if (a == "--timeline-end" && std::next(it) != args.end()) capture.TimelineEnd = std::atof(*++it);
         else if (a == "--motion-blur" && std::next(it) != args.end()) capture.MotionBlurSteps = uint8_t(std::max(1, std::atoi(*++it)));
@@ -1472,7 +1379,7 @@ int main(int argc, char **argv) {
     }
 
     bool headless_ok = true;
-    if (!render_queue.empty()) RunHeadlessQueue(render_queue, quiet);
+    if (!render_queue.empty()) RunHeadlessQueue(render_queue, quiet, capture);
     else if (headless) headless_ok = RunHeadless(initial_file, quiet, empty, capture);
     else run(initial_file, quiet, empty, capture);
     // A capture that ffmpeg rejected leaves a truncated or missing file, and a headless scene that failed to load rendered nothing, so a clean status would hide either.
