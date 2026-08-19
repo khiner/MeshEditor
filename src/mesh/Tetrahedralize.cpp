@@ -13,6 +13,7 @@
 #include <cmath>
 #include <cstdint>
 #include <map>
+#include <numbers>
 #include <random>
 #include <unordered_map>
 #include <vector>
@@ -311,7 +312,7 @@ struct BadFace {
 //=== Geometric predicates and constructions ===
 // These take coordinates rather than point handles, because the coplanar triangle-edge test invents a lift point that belongs to no mesh.
 
-constexpr double PI = 3.14159265358979323846264338327950288419716939937510582;
+constexpr double PI = std::numbers::pi;
 
 // The determinant is expanded about the z terms.
 // The approximate value is returned whenever it clears the first error bound, and the rest goes to the refinement stages.
@@ -2233,7 +2234,7 @@ struct Mesh {
     }
 
     // Refuse a 2-3 flip that would make a face whose three vertices sit on one segment or on two nearly collinear ones.
-    bool valid_constrained_f23(Triface &checktet, int pd, int pe) {
+    bool valid_constrained_f23(Triface &checktet, int pd, int pe) const {
         Triface spintet;
         Facet checkseg1, checkseg2;
         for (int k = 0; k < 3; ++k) {
@@ -2263,7 +2264,7 @@ struct Mesh {
     }
 
     // The same rule for the one face a 3-2 flip creates.
-    bool valid_constrained_f32(Triface *abtets, int pa, int pb) {
+    bool valid_constrained_f32(Triface *abtets, int pa, int pb) const {
         (void)pa;
         (void)pb;
         Triface spintet;
@@ -2297,7 +2298,7 @@ struct Mesh {
     }
 
     // The call back boundary recovery and mesh improvement install, deciding whether one elementary flip may be taken.
-    int checkflipeligibility(int fliptype, int pa, int pb, int pc, int pd, int pe, int level, int edgepivot, FlipConstraints *fc) {
+    int checkflipeligibility(int fliptype, int pa, int pb, int pc, int pd, int pe, int level, int edgepivot, FlipConstraints *fc) const {
         int tmppts[3];
         int types[2], poss[4];
         int rejflag = 0;
@@ -3067,7 +3068,7 @@ struct Mesh {
 
     // The two segments meeting at a Steiner point that sits on a segment, turned so the point is the
     // destination of the left one and the origin of the right one.
-    void segments_at(int steinerpt, Facet &leftseg, Facet &rightseg) {
+    void segments_at(int steinerpt, Facet &leftseg, Facet &rightseg) const {
         SDecode(point2sh(steinerpt), leftseg);
         leftseg.shver = 0;
         if (sdest(leftseg) == steinerpt) {
@@ -3151,7 +3152,7 @@ struct Mesh {
 
         for (auto &t : *tetlist) uninfect(t);
         if (vertlist != nullptr) {
-            for (int pt : *vertlist) puninfect(pt);
+            for (const int pt : *vertlist) puninfect(pt);
         }
         if (shlist != nullptr) {
             for (auto &s : *shlist) suninfect(s);
@@ -3687,7 +3688,7 @@ struct Mesh {
         }
 
         for (size_t i = 0; i < CaveBdryList.size(); ++i) {
-            Triface cavetet = CaveBdryList[i];
+            const Triface cavetet = CaveBdryList[i];
             fsym(cavetet, neightet);
             if (infected(neightet)) {
                 if (apex(cavetet) != DummyPoint) {
@@ -3745,7 +3746,7 @@ struct Mesh {
             if (ivf->splitbdflag) {
                 int cutshcount = 0;
                 for (size_t i = 0; i < CaveShList.size(); ++i) {
-                    Facet parysh = CaveShList[i];
+                    const Facet parysh = CaveShList[i];
                     if (!smarktested(parysh)) continue;
                     enqflag = false;
                     stpivot(parysh, neightet);
@@ -3795,7 +3796,7 @@ struct Mesh {
         Triface neightet, spintet, neineitet;
         if (CheckSubsegFlag) {
             for (size_t i = 0; i < CaveTetSegList.size(); ++i) {
-                Facet paryseg = CaveTetSegList[i];
+                const Facet paryseg = CaveTetSegList[i];
                 if (!smarktested(paryseg)) {
                     int j = 0, k = 0;
                     sstpivot1(paryseg, neightet);
@@ -4322,8 +4323,8 @@ struct Mesh {
     }
 
     // The insphere test with symbolic perturbation of a cospherical tie, resolved on point index.
-    double insphere_s(int pa, int pb, int pc, int pd, int pe) {
-        double sign = insphere(P(pa), P(pb), P(pc), P(pd), P(pe));
+    double insphere_s(int pa, int pb, int pc, int pd, int pe) const {
+        const double sign = insphere(P(pa), P(pb), P(pc), P(pd), P(pe));
         if (sign != 0.0) return sign;
         int pt[5]{pa, pb, pc, pd, pe};
         int swaps = 0, n = 5, count;
@@ -4338,7 +4339,7 @@ struct Mesh {
             }
             swaps += count;
         } while (count > 0);
-        double oriA = orient3d(P(pt[1]), P(pt[2]), P(pt[3]), P(pt[4]));
+        const double oriA = orient3d(P(pt[1]), P(pt[2]), P(pt[3]), P(pt[4]));
         if (oriA != 0.0) return (swaps % 2) != 0 ? -oriA : oriA;
         const double oriB = -orient3d(P(pt[0]), P(pt[2]), P(pt[3]), P(pt[4]));
         if (oriB == 0.0) bail(2);
@@ -4392,7 +4393,7 @@ struct Mesh {
 
     // Turn searchtet to the one face searchpt lies below, which is where a walk toward it starts.
     // Every face turned away means the mesh holds an inverted tet.
-    void face_toward(int searchpt, Triface *searchtet) {
+    void face_toward(int searchpt, Triface *searchtet) const {
         for (searchtet->ver = 0; searchtet->ver < 4; ++searchtet->ver) {
             if (orient3d(P(org(*searchtet)), P(dest(*searchtet)), P(apex(*searchtet)), P(searchpt)) < 0.0) break;
         }
@@ -4662,8 +4663,8 @@ struct Mesh {
         RecentTet = CaveBdryList[Rng() % f_out];
         setpoint2tet(insertpt, Encode2(RecentTet.tet, 0));
 
-        for (int t : CaveOldTetOnly) {
-            Triface o{t, 0};
+        for (const int t : CaveOldTetOnly) {
+            const Triface o{t, 0};
             if (ishulltet(o)) --HullSize;
             tetrahedrondealloc(t);
         }
@@ -4709,7 +4710,7 @@ struct Mesh {
         enextesym(tetopa, worktet1);
         bond(worktet, worktet1);
 
-        for (int p : {pa, pb, pc, pd}) {
+        for (const int p : {pa, pb, pc, pd}) {
             if (pointtype(p) == UnusedVertex) setpointtype(p, VolVertex);
             setpoint2tet(p, Encode(firsttet));
         }
@@ -5689,7 +5690,7 @@ struct Mesh {
         for (; c < conlist.size(); ++c) {
             const int c0 = conlist[c][0], c1 = conlist[c][1];
             searchsh = RecentSh;
-            int iloc = slocate(c0, &searchsh, 1, 1, 0);
+            const int iloc = slocate(c0, &searchsh, 1, 1, 0);
             if (iloc != OnVertex) {
                 // Rounding lost it: sweep every subface of this facet for the vertex.
                 bool bflag = false;
@@ -5756,7 +5757,7 @@ struct Mesh {
 
         for (const int segsh : segs) {
             if (Shells[segsh].V[0] == None) continue; // already dropped as a duplicate
-            Facet subsegloop{segsh, 0};
+            const Facet subsegloop{segsh, 0};
             const int torg = sorg(subsegloop), tdest = sdest(subsegloop);
             facelink.clear();
 
@@ -5804,7 +5805,7 @@ struct Mesh {
                     if (cosang > 1.0) cosang = 1.0;
                     else if (cosang < -1.0) cosang = -1.0;
                     const double ang = std::acos(cosang);
-                    if (ang < MinFacetDihed) MinFacetDihed = ang;
+                    MinFacetDihed = std::min(MinFacetDihed, ang);
                     sbond1(f1, f2);
                 }
             }
@@ -5897,7 +5898,7 @@ struct Mesh {
                 end1 = end2;
                 tstart = tend;
             }
-            for (int p : ptlist) puninfect(p);
+            for (const int p : ptlist) puninfect(p);
             triangulate(-1, ptlist, conlist, noholes);
         }
 
@@ -6198,7 +6199,7 @@ struct Mesh {
         opm.maxiter = 100;
         opm.initval = 0.0;
 
-        int success = smoothpoint(smtpt, CaveTetList, 1, &opm);
+        const int success = smoothpoint(smtpt, CaveTetList, 1, &opm);
         if (success) {
             while (opm.smthiter == 100) {
                 opm.searchstep *= 10.0;
@@ -6397,7 +6398,7 @@ struct Mesh {
                     double collinear_ang = 0.;
                     for (int k = 0; k < 3; ++k) {
                         const double ang = interiorangle(P(org(searchtet)), P(startpt), P(endpt), nullptr);
-                        if (ang > collinear_ang) collinear_ang = ang;
+                        collinear_ang = std::max(collinear_ang, ang);
                         enextself(searchtet);
                     }
                     collinear_ang = collinear_ang / PI * 180.0;
@@ -7309,7 +7310,7 @@ struct Mesh {
 
     // The check made before the closing 4-1 flip at a facet vertex.
     // One of the three tets must carry all three subfaces, or all three must carry one each.
-    bool valid_41_flip_at_facet_vertex(Triface *fliptets) {
+    bool valid_41_flip_at_facet_vertex(Triface *fliptets) const {
         Triface checktet, chkface;
         int i = 0;
         for (; i < 3; ++i) {
@@ -7340,7 +7341,7 @@ struct Mesh {
         double minval = 0.0;
 
         int numdirs = int(linkfacelist.size());
-        if (numdirs > opm->numofsearchdirs) numdirs = opm->numofsearchdirs;
+        numdirs = std::min(numdirs, opm->numofsearchdirs);
         opm->imprval = opm->initval;
         int iter = 0;
 
@@ -7348,7 +7349,7 @@ struct Mesh {
             const double oldval = opm->imprval;
             for (int i = 0; i < numdirs; ++i) {
                 const int k = int(randomnation(unsigned(linkfacelist.size() - size_t(i))));
-                Triface t = linkfacelist[k];
+                const Triface t = linkfacelist[k];
                 const dvec3 fcent = (P(org(t)) + P(dest(t)) + P(apex(t))) / 3.0;
                 // Per component, which is the form the candidate positions are compared in.
                 dvec3 nextpt;
@@ -7451,7 +7452,7 @@ struct Mesh {
 
         size_t i = 0;
         for (; i < CaveSegShList.size(); ++i) {
-            Facet parysh = CaveSegShList[i];
+            const Facet parysh = CaveSegShList[i];
             stpivot(parysh, searchtet);
             if (ishulltet(searchtet)) continue;
             setpoint2tet(steinerpt, Encode(searchtet));
@@ -7544,7 +7545,7 @@ struct Mesh {
 
         size_t k = 0;
         for (; k < size_t(n); ++k) {
-            Facet parysh = segshlist[k];
+            const Facet parysh = segshlist[k];
             stpivot(parysh, searchtet);
             if (ishulltet(searchtet)) continue;
             setpoint2tet(steinerpt, Encode(searchtet));
@@ -7601,7 +7602,8 @@ struct Mesh {
         forallsubsegs([&](int sh) { segs.push_back(sh); });
         int segindex = 0;
         for (const int sh : segs) {
-            Facet segloop{sh, 0}, prevseg, nextseg;
+            const Facet segloop{sh, 0};
+            Facet prevseg, nextseg;
             senext2(segloop, prevseg);
             spivotself(prevseg);
             if (prevseg.sh != None) continue;
@@ -7956,7 +7958,7 @@ struct Mesh {
         }
 
         for (size_t i = 0; i < tetarray.size(); ++i) {
-            Triface parytet = tetarray[i];
+            const Triface parytet = tetarray[i];
             const int j = parytet.ver & 3;
             for (int k = 1; k < 4; ++k) {
                 Decode(Tets[parytet.tet].N[(j + k) % 4], neightet);
@@ -7993,7 +7995,7 @@ struct Mesh {
                 std::vector<int> segs;
                 forallsubsegs([&](int sh) { segs.push_back(sh); });
                 for (const int sh : segs) {
-                    Facet segloop{sh, 0};
+                    const Facet segloop{sh, 0};
                     sstpivot1(segloop, neightet);
                     if (neightet.tet != None && infected(neightet)) SubSegStack.push_back(SEncode(segloop));
                 }
@@ -8617,7 +8619,7 @@ struct Mesh {
     double getpointmeshsize(int, Triface *, int) const { return 0.0; }
 
     // The aspect ratio, the extreme dihedral angles and the edge lengths of one tet, all read off the four inward face normals.
-    bool get_tetqual_at(const dvec3 &pa, const dvec3 &pb, const dvec3 &pc, const dvec3 &pd, BadFace *bf) {
+    bool get_tetqual_at(const dvec3 &pa, const dvec3 &pb, const dvec3 &pc, const dvec3 &pd, BadFace *bf) const {
         double A[4][4]{}, D;
         int indx[4]{};
 
@@ -8673,8 +8675,7 @@ struct Mesh {
         for (int i = 0; i < 6; ++i) {
             const auto [f1, f2] = DihedralFaces[i];
             double cosd = -dot(N[f1], N[f2]);
-            if (cosd < -1.0) cosd = -1.0;
-            if (cosd > 1.0) cosd = 1.0;
+            cosd = std::clamp(cosd, -1.0, 1.0);
             if (cosd < cosmaxd) {
                 cosmaxd = cosd;
                 idx = i;
@@ -8688,7 +8689,7 @@ struct Mesh {
         bf->cent[5] = 0.0;
         return true;
     }
-    bool get_tetqual(int pa, int pb, int pc, int pd, BadFace *bf) {
+    bool get_tetqual(int pa, int pb, int pc, int pd, BadFace *bf) const {
         *bf = BadFace{};
         bf->forg = pa;
         bf->fdest = pb;
@@ -8698,7 +8699,7 @@ struct Mesh {
     }
     // True when the tet's worst dihedral is an improvement on cosdihed_in, the angle a flip starts from.
     // A relative change under Epsilon leaves the angle where it was, and a tet with no measurable quality improves nothing.
-    bool improves_dihedral(int pa, int pb, int pc, int pd, double cosdihed_in, BadFace *bf) {
+    bool improves_dihedral(int pa, int pb, int pc, int pd, double cosdihed_in, BadFace *bf) const {
         if (!get_tetqual(pa, pb, pc, pd, bf)) return false;
         const double diff = bf->cent[0] - cosdihed_in;
         return diff > 0 && std::abs(diff / cosdihed_in) >= Epsilon;
@@ -8921,7 +8922,7 @@ struct Mesh {
     bool BadTetsEnabled{false};
 
     // The midpoint of the two segment neighbours of a Steiner point sitting on a segment.
-    bool get_seg_laplacian_center(int mesh_vert, dvec3 &target) {
+    bool get_seg_laplacian_center(int mesh_vert, dvec3 &target) const {
         if (pointtype(mesh_vert) == UnusedVertex) return false;
 
         Facet leftseg, rightseg;
@@ -9136,7 +9137,7 @@ struct Mesh {
         int queuenumber = 0;
         if (qual < 1.0) {
             queuenumber = int(64.0 * (1.0 - qual));
-            if (queuenumber > 63) queuenumber = 63;
+            queuenumber = std::min(queuenumber, 63);
         }
 
         if (BtQueueFront[queuenumber] == None) {

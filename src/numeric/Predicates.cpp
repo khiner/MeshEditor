@@ -161,7 +161,7 @@ double Orient3DExact(const dvec3 &a, const dvec3 &b, const dvec3 &c, const dvec3
     const auto cross_term = [&scratch](Two s, Two u, Two v, Two w, Two x, double *out) {
         double m1[8], m2[8], diff[16];
         const int n1 = MulTwoTwo(u, v, m1);
-        int n2 = MulTwoTwo(w, x, m2);
+        const int n2 = MulTwoTwo(w, x, m2);
         ExpNegate(n2, m2);
         const int nd = ExpSum(n1, m1, n2, m2, diff);
         return MulExpTwo(nd, diff, s, out, scratch);
@@ -235,7 +235,7 @@ double InSphereExact(const dvec3 &a, const dvec3 &b, const dvec3 &c, const dvec3
                 double pjk[4], pik[4], pij[4], t1[8], t2[8], t12[16];
                 const int njk = pair(j, k, pjk), nik = pair(i, k, pik), nij = pair(i, j, pij);
                 const int n1 = ExpScale(njk, pjk, p[i].z, t1);
-                int n2 = ExpScale(nik, pik, p[j].z, t2);
+                const int n2 = ExpScale(nik, pik, p[j].z, t2);
                 ExpNegate(n2, t2);
                 const int n12 = ExpSum(n1, t1, n2, t2, t12);
                 const int n3 = ExpScale(nij, pij, p[k].z, t1);
@@ -520,7 +520,7 @@ double Orient4DCofactor(
     // Each quadruple is one pair of triples less another, scaled by a height.
     const auto quad = [&](const double *p, int plen, const double *q, int qlen, const double *r, int rlen, const double *t, int tlen, double *sum, double height, double *out) {
         const int alen = ExpSum(plen, p, qlen, q, temp48a);
-        int blen = ExpSum(rlen, r, tlen, t, temp48b);
+        const int blen = ExpSum(rlen, r, tlen, t, temp48b);
         ExpNegate(blen, temp48b);
         const int slen = ExpSum(alen, temp48a, blen, temp48b, sum);
         return ExpScale(slen, sum, height, out);

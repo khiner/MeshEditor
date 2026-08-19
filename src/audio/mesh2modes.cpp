@@ -637,7 +637,7 @@ modal::ModalResult modal::mesh2modes(const TetMesh &input_tets, const AcousticMa
             const auto [entry, first] = sample_point_at.emplace(nearest, uint32_t(points.size()));
             if (first) {
                 points.push_back(nearest);
-                local.push_back(vec3{tets.Points[nearest] * inv_scale});
+                local.emplace_back(tets.Points[nearest] * inv_scale);
             }
             remap[i] = entry->second;
         }

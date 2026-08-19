@@ -31,7 +31,7 @@ void *DeviceWorkgroup([[maybe_unused]] uint32_t device_object_id) {
     os_workgroup_t workgroup{nullptr};
     UInt32 size = sizeof(workgroup);
     const AudioObjectPropertyAddress address{kAudioDevicePropertyIOThreadOSWorkgroup, kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain};
-    if (AudioObjectGetPropertyData(device_object_id, &address, 0, nullptr, &size, &workgroup) != noErr) return nullptr;
+    if (AudioObjectGetPropertyData(device_object_id, &address, 0, nullptr, &size, static_cast<void *>(&workgroup)) != noErr) return nullptr;
     return static_cast<void *>(workgroup);
 #else
     return nullptr;

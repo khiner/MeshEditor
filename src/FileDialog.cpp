@@ -28,7 +28,7 @@ void SDLCALL DialogCallback(void *userdata, const char *const *filelist, int) {
         return;
     }
     if (!filelist[0]) return; // A null first entry means the user canceled.
-    std::lock_guard lock{QueueMutex};
+    const std::lock_guard lock{QueueMutex};
     Queue.emplace_back([cb = std::move(req->Callback), path = std::filesystem::path{filelist[0]}] { cb(path); });
 }
 
@@ -65,7 +65,7 @@ void ShowPickFolder(OnPick callback) {
 void Pump() {
     std::vector<std::function<void()>> ready;
     {
-        std::lock_guard lock{QueueMutex};
+        const std::lock_guard lock{QueueMutex};
         ready.swap(Queue);
     }
     for (auto &deliver : ready) deliver();

@@ -271,7 +271,7 @@ TetMeshData BuildTetMeshData(const TetMesh &tets, vec3 scale) {
     const dvec3 inv_scale{1.0 / scale.x, 1.0 / scale.y, 1.0 / scale.z};
     TetMeshData out;
     out.Positions.reserve(tets.Points.size());
-    for (const auto &p : tets.Points) out.Positions.push_back(vec3{p * inv_scale});
+    for (const auto &p : tets.Points) out.Positions.emplace_back(p * inv_scale);
     std::vector<uint64_t> edges;
     edges.reserve(tets.Tets.size() * 6);
     for (const auto &t : tets.Tets) {

@@ -572,7 +572,7 @@ void RenderModal(ModalAudio &m, float *out, uint32_t frame_count) {
         }
     }
     m.ModalEnergy.store(energy, std::memory_order_relaxed);
-    if (double seen = m.PeakModalEnergy.load(std::memory_order_relaxed); energy > seen) {
+    if (const double seen = m.PeakModalEnergy.load(std::memory_order_relaxed); energy > seen) {
         m.PeakModalEnergy.store(energy, std::memory_order_relaxed);
     }
     m.ActiveVoices.store(SurfaceActiveVoices(m), std::memory_order_relaxed);
