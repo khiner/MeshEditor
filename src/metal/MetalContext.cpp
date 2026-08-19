@@ -1,6 +1,5 @@
 #include "metal/MetalContext.h"
 
-#include <format>
 #include <stdexcept>
 #include <utility>
 
@@ -21,13 +20,11 @@ Context::Context() {
     if (!Queue) throw std::runtime_error("Failed to create a Metal command queue.");
 
     const auto descriptor = NS::TransferPtr(MTL::ResidencySetDescriptor::alloc()->init());
-    NS::Error *error = nullptr;
-    Residency = NS::TransferPtr(Device->newResidencySet(descriptor.get(), &error));
-    if (!Residency) {
-        throw std::runtime_error(std::format("Failed to create a residency set: {}", error ? error->localizedDescription()->utf8String() : "unknown"));
+    Residency = NS::TransferPtr(Device->newResidencySet(descriptor.get(), nullptr));
+    if (Residency) {
+        Residency->commit();
+        Queue->addResidencySet(Residency.get());
     }
-    Residency->commit();
-    Queue->addResidencySet(Residency.get());
 }
 
 Context::Context(Context &&) noexcept = default;
@@ -37,19 +34,19 @@ Context::~Context() {
 }
 
 void Context::AddResident(MTL::Allocation *resource) const {
-    if (!resource) return;
+    if (!Residency || !resource) return;
     Residency->addAllocation(resource);
     ResidencyDirty = true;
 }
 
 void Context::RemoveResident(MTL::Allocation *resource) const {
-    if (!resource) return;
+    if (!Residency || !resource) return;
     Residency->removeAllocation(resource);
     ResidencyDirty = true;
 }
 
 void Context::CommitResidency() const {
-    if (!std::exchange(ResidencyDirty, false)) return;
+    if (!Residency || !std::exchange(ResidencyDirty, false)) return;
     Residency->commit();
 }
 } // namespace mtl

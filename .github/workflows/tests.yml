@@ -8,7 +8,7 @@ on:
 
 jobs:
   test:
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
@@ -46,7 +46,7 @@ jobs:
   # Solves the full RealImpact mesh corpus and publishes the per-sample modes and profile
   # as a text artifact, tracking how commits change mode values and solve timing.
   modal-corpus:
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 300
     steps:
       - uses: actions/checkout@v4

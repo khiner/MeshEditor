@@ -9,6 +9,7 @@
 // Shared draw/dispatch bindings; render stages receive the same buffers.
 namespace encode {
 inline void BindScene(MTL::RenderCommandEncoder *encoder, const mtl::BindlessSet &slots, const GpuBuffers &buffers, uint32_t view_offset = 0) {
+    slots.UseResources(encoder);
     auto *table = slots.Table();
     auto *view = *buffers.SceneViewUBO;
     auto *theme = *buffers.ViewportThemeUBO;
@@ -24,6 +25,7 @@ inline void BindScene(MTL::RenderCommandEncoder *encoder, const mtl::BindlessSet
 }
 
 inline void BindScene(MTL::ComputeCommandEncoder *encoder, const mtl::BindlessSet &slots, const GpuBuffers &buffers, uint32_t view_offset = 0) {
+    slots.UseResources(encoder);
     encoder->setBuffer(slots.Table(), 0, BufferIndex_Bindless);
     encoder->setBuffer(*buffers.SceneViewUBO, view_offset, BufferIndex_SceneView);
     encoder->setBuffer(*buffers.ViewportThemeUBO, 0, BufferIndex_ViewportTheme);

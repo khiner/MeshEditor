@@ -5,6 +5,7 @@
 #include "metal/Slots.h"
 
 #include <array>
+#include <vector>
 
 namespace mtl {
 // Tier-2 argument buffer mirroring the shader BindlessSet.
@@ -20,15 +21,19 @@ struct BindlessSet {
     void SetTexture(uint32_t slot, MTL::Texture *);
     void SetSampler(TypedSlot, MTL::Texture *, MTL::SamplerState *);
     void Clear(TypedSlot);
+    void UseResources(MTL::RenderCommandEncoder *) const;
+    void UseResources(MTL::ComputeCommandEncoder *) const;
 
     MTL::Buffer *Table() const { return ArgumentBuffer.get(); }
 
 private:
     size_t EntryOffset(SlotType, uint32_t slot) const;
     uint64_t *EntryAt(SlotType, uint32_t slot) const;
+    void Track(TypedSlot, MTL::Resource *);
 
     const Context &Ctx;
     NS::SharedPtr<MTL::Buffer> ArgumentBuffer;
     std::array<RangeAllocator, SlotTypeCount> Allocators;
+    std::array<std::vector<MTL::Resource *>, SlotTypeCount> Resources;
 };
 } // namespace mtl

@@ -7,8 +7,7 @@
 namespace mtl {
 NS::String *Str(std::string_view);
 
-// Metal requires anything reached through an argument buffer to be resident, so allocations register
-// here once rather than per encoder.
+// Prefer queue-wide residency sets; BindlessSet declares its resources per encoder when unavailable.
 struct Context {
     Context();
     ~Context();
