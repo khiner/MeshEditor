@@ -1585,8 +1585,7 @@ void DrawObjectAudioControls(
             if (n == 0) BeginDisabled();
             if (const auto assign_label = n > 1 ? std::format("Assign sample to {} vertices…", n) : std::string{with_sample ? "Replace sample…" : "Assign sample…"};
                 Button(assign_label.c_str())) {
-                static constexpr std::array filters{FileDialog::Filter{"Audio", "wav;mp3;flac;ogg;opus"}};
-                FileDialog::ShowOpen(filters, [verts = op_vertices](const fs::path &path) mutable {
+                FileDialog::ShowOpen("wav;mp3;flac;ogg;opus", [verts = op_vertices](const fs::path &path) mutable {
                     action::Emit(action::audio::AssignVertexSamples{std::move(verts), path});
                 });
             }

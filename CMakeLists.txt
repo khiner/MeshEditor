@@ -2,6 +2,10 @@ cmake_minimum_required(VERSION 3.20)
 
 project(MeshEditor LANGUAGES C CXX OBJCXX)
 
+if(NOT APPLE)
+    message(FATAL_ERROR "MeshEditor targets macOS on Apple Silicon.")
+endif()
+
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON) # Emit build/compile_commands.json for clangd.
@@ -31,11 +35,7 @@ pkg_search_module(FFTW3F REQUIRED fftw3f IMPORTED_TARGET)
 # The surface synthesis plans transforms from several threads at once, which the base library does
 # not guard, and runs one large transform across them.
 find_library(FFTW3F_THREADS fftw3f_threads REQUIRED)
-if(APPLE)
-    set(EIGEN3_INCLUDE_DIR /opt/homebrew/include/eigen3)
-else()
-    set(EIGEN3_INCLUDE_DIR /usr/include/eigen3)
-endif()
+set(EIGEN3_INCLUDE_DIR /opt/homebrew/include/eigen3)
 
 set(ImguiDir lib/imgui)
 set(ImplotDir lib/implot)
@@ -167,36 +167,9 @@ endif()
 
 option(MESHEDITOR_APP "Build the MeshEditor app" ON)
 if(MESHEDITOR_APP)
-    # Vendored SDL3 from main for pixel-precise macOS scroll deltas.
-    # Drop and restore `find_package(SDL3 REQUIRED)` once a release ships past this commit.
-    include(FetchContent)
-    set(SDL_TEST_LIBRARY OFF CACHE BOOL "" FORCE)
-    set(SDL_TESTS OFF CACHE BOOL "" FORCE)
-    set(SDL_EXAMPLES OFF CACHE BOOL "" FORCE)
-    set(SDL_INSTALL OFF CACHE BOOL "" FORCE)
-    set(SDL_DISABLE_INSTALL_DOCS ON CACHE BOOL "" FORCE)
-    # SDL provides windowing, events, and gamepad input.
-    set(SDL_AUDIO OFF CACHE BOOL "" FORCE)
-    set(SDL_GPU OFF CACHE BOOL "" FORCE)
-    set(SDL_RENDER OFF CACHE BOOL "" FORCE)
-    set(SDL_CAMERA OFF CACHE BOOL "" FORCE)
-    set(SDL_HAPTIC OFF CACHE BOOL "" FORCE)
-    set(SDL_POWER OFF CACHE BOOL "" FORCE)
-    set(SDL_SENSOR OFF CACHE BOOL "" FORCE)
-    set(SDL_VULKAN OFF CACHE BOOL "" FORCE)
-    set(SDL_DIALOG ON CACHE BOOL "" FORCE) # Native file dialogs.
-    set(SDL_TRAY OFF CACHE BOOL "" FORCE)
-    FetchContent_Declare(
-        SDL3
-        URL https://github.com/libsdl-org/SDL/archive/85b36937a985c12dee7edc4dd6e1efcfaa508c99.tar.gz
-        URL_HASH SHA256=e7663dad48549c7fa2571f65f30c478d49879e14c23569cfc10ddd8644dc6982
-        DOWNLOAD_EXTRACT_TIMESTAMP TRUE
-    )
-    FetchContent_MakeAvailable(SDL3)
-
     # The surface model and its stand-in both live under src/, so take whichever the option selected
     # and leave the other out.
-    file(GLOB_RECURSE SOURCES CONFIGURE_DEPENDS src/*.cpp)
+    file(GLOB_RECURSE SOURCES CONFIGURE_DEPENDS src/*.cpp src/*.mm)
     list(FILTER SOURCES EXCLUDE REGEX "src/audio/(surface/.*|SurfaceContactAbsent)\\.cpp$")
     list(APPEND SOURCES ${SURFACE_AUDIO_SOURCES})
 
@@ -207,7 +180,7 @@ if(MESHEDITOR_APP)
         ${ImguiDir}/imgui_widgets.cpp
         ${ImguiDir}/imgui.cpp
         ${ImguiDir}/backends/imgui_impl_metal.mm
-        ${ImguiDir}/backends/imgui_impl_sdl3.cpp
+        ${ImguiDir}/backends/imgui_impl_osx.mm
         ${ImplotDir}/implot.cpp
         ${ImplotDir}/implot_items.cpp
         ${ImplotDir}/implot_demo.cpp
@@ -215,16 +188,15 @@ if(MESHEDITOR_APP)
         ${SOURCES}
     )
     add_dependencies(${PROJECT_NAME} generate_gpu_schema)
-    # The ImGui Metal backend manages its own retains; do not enable ARC.
-    set_source_files_properties(${ImguiDir}/backends/imgui_impl_metal.mm PROPERTIES COMPILE_FLAGS "-w")
+    # The ImGui backends manage their own retains; do not enable ARC.
+    set_source_files_properties(${ImguiDir}/backends/imgui_impl_metal.mm ${ImguiDir}/backends/imgui_impl_osx.mm PROPERTIES COMPILE_FLAGS "-w")
+    set_source_files_properties(src/FileDialog.mm src/MacPlatform.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
     target_compile_definitions(${PROJECT_NAME} PRIVATE IMGUI_IMPL_METAL_CPP)
 
     target_include_directories(${PROJECT_NAME} PRIVATE ${EIGEN3_INCLUDE_DIR})
-    if(APPLE)
-        target_link_libraries(${PROJECT_NAME} PRIVATE "-framework Accelerate" "-framework CoreAudio" "-framework Metal" "-framework Foundation" "-framework QuartzCore")
-    endif()
+    target_link_libraries(${PROJECT_NAME} PRIVATE "-framework Accelerate" "-framework AppKit" "-framework CoreAudio" "-framework GameController" "-framework Metal" "-framework Foundation" "-framework QuartzCore" "-framework UniformTypeIdentifiers")
 
-    target_link_libraries(${PROJECT_NAME} PRIVATE SDL3::SDL3 meshoptimizer PkgConfig::FFTW3F ${FFTW3F_THREADS} lunasvg fastgltf::fastgltf simdjson::simdjson basisu_transcoder Jolt webp)
+    target_link_libraries(${PROJECT_NAME} PRIVATE meshoptimizer PkgConfig::FFTW3F ${FFTW3F_THREADS} lunasvg fastgltf::fastgltf simdjson::simdjson basisu_transcoder Jolt webp)
 
     if(CMAKE_BUILD_TYPE MATCHES Debug)
         target_compile_definitions(${PROJECT_NAME} PRIVATE DEBUG_BUILD)

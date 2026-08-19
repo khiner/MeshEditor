@@ -2,6 +2,7 @@
 #include "File.h"
 #include "FileDialog.h"
 #include "LogEnabled.h"
+#include "MacPlatform.h"
 #include "Paths.h"
 #include "ProcessEvents.h"
 #include "TransformMath.h"
@@ -47,14 +48,13 @@
 #include "viewport/ViewportUi.h"
 
 #include "imgui_impl_metal.h"
-#include "imgui_impl_sdl3.h"
 #include "imgui_internal.h"
 #include "implot.h"
 #include "imspinner_demo.h"
-#include <SDL3/SDL.h>
-#include <SDL3/SDL_metal.h>
+#include <Foundation/NSAutoreleasePool.hpp>
 #include <entt/entity/registry.hpp>
 
+#include <chrono>
 #include <csignal>
 #include <exception>
 #include <fstream>
@@ -72,25 +72,19 @@ static_assert(null_entity == entt::null, "null_entity does not match entt::null"
 using std::ranges::any_of, std::ranges::all_of;
 
 namespace fs = std::filesystem;
+using SteadyClock = std::chrono::steady_clock;
 
 // #define IMGUI_UNLIMITED_FRAME_RATE
 
 namespace {
-// Resize waits on LastFrame before replacing resources sampled by the UI.
-struct WindowSurface {
-    SDL_MetalView View{nullptr};
-    CA::MetalLayer *Layer{nullptr};
-    MTL::CommandBuffer *LastFrame{nullptr};
-};
-
 // Skip rather than block when every drawable is in flight.
-void RenderAndPresentFrame(const mtl::Context &ctx, WindowSurface &surface, ImDrawData *draw_data) {
+MTL::CommandBuffer *RenderAndPresentFrame(const mtl::Context &ctx, CA::MetalLayer *layer, ImDrawData *draw_data) {
     const profile::CpuScope scope{"ImGuiRenderSubmit"};
-    auto *drawable = surface.Layer->nextDrawable();
-    if (!drawable) return;
+    auto *drawable = layer->nextDrawable();
+    if (!drawable) return nullptr;
 
     const std::array colors{mtl::ClearColor(drawable->texture(), {0.45, 0.55, 0.60, 1.0})};
-    const auto pass = mtl::MakePassDescriptor(colors);
+    auto *const pass = mtl::MakePassDescriptor(colors);
     auto *command_buffer = ctx.Queue->commandBuffer();
     ImGui_ImplMetal_NewFrame(pass);
     auto *encoder = command_buffer->renderCommandEncoder(pass);
@@ -101,7 +95,7 @@ void RenderAndPresentFrame(const mtl::Context &ctx, WindowSurface &surface, ImDr
         command_buffer->presentDrawable(drawable);
     }
     command_buffer->commit();
-    surface.LastFrame = command_buffer;
+    return command_buffer;
 }
 
 using namespace ImGui;
@@ -627,7 +621,7 @@ struct CaptureDriver {
             if (!RecordingStarted) {
                 RecordingStarted = true;
                 StartRecording(r, viewport, RecordPath, RecordFps, RecordAudio);
-                if (IsRecording(r, viewport)) NextCaptureNs = SDL_GetTicksNS();
+                if (IsRecording(r, viewport)) NextCapture = SteadyClock::now();
             }
             if (!IsRecording(r, viewport)) done = true;
         }
@@ -657,9 +651,9 @@ struct CaptureDriver {
                         done = true;
                     }
                 }
-            } else if (SDL_GetTicksNS() >= NextCaptureNs) {
+            } else if (SteadyClock::now() >= NextCapture) {
                 CaptureRecordFrame(r, viewport);
-                NextCaptureNs += 1'000'000'000ULL / uint64_t(RecordFps);
+                NextCapture += std::chrono::nanoseconds{1'000'000'000 / RecordFps};
             }
         } else if (FixedStep && !RecordingMode() && PlaybackStarted && PlayDuration <= 0 && loop_end) {
             // A duration-less fixed-step play run (headless --play) ends after one timeline loop.
@@ -676,7 +670,7 @@ struct CaptureDriver {
     float RenderDt; // Fixed-step seconds per tick (one timeline frame).
     int RecordFps;
     bool RecordAudio;
-    uint64_t NextCaptureNs{0}; // Wall-clock recording: next capture time, initialized when recording starts.
+    SteadyClock::time_point NextCapture; // Wall-clock recording: next capture time, initialized when recording starts.
     float ElapsedPlayTime{0}; // Caller-accumulated sim seconds, for the play-duration cap.
     uint32_t NextRenderClip{1}; // Next clip to capture once the current loop finishes.
     uint32_t NextRenderVariant{0}; // Next material variant to capture once the default image saves.
@@ -710,52 +704,29 @@ CaptureDriver BeginCaptureSession(entt::registry &r, entt::entity viewport, cons
     return driver;
 }
 
-// Resolve the executable base dir (read-only resources) and the writable per-user data dir.
-void InitPaths() {
-    const char *base = SDL_GetBasePath();
-    char *user_data = SDL_GetPrefPath("", "MeshEditor");
-    if (!base || !user_data) throw std::runtime_error(std::format("SDL path error: {}", SDL_GetError()));
-    Paths::Init(base, user_data);
-    SDL_free(user_data);
-}
-
 void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest &capture) {
     LogEnabled = !quiet;
 
-    const bool render_mode = !capture.RenderBasename.empty();
+    MacPlatform::InitPaths();
 
-    SDL_SetHint(SDL_HINT_MAC_SCROLL_MOMENTUM, "1");
-    if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) throw std::runtime_error(std::format("SDL_Init error: {}", SDL_GetError()));
-
-    InitPaths();
-
-    auto *window = SDL_CreateWindow(
-        "MeshEditor", int(DefaultWindowSize.x), int(DefaultWindowSize.y),
-        SDL_WINDOW_METAL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_MAXIMIZED | SDL_WINDOW_HIGH_PIXEL_DENSITY
-    );
+    MacPlatform::Window window;
 
     entt::registry r;
     const auto &ctx = r.ctx().emplace<mtl::Context>();
 
-    WindowSurface surface;
-    {
-        surface.View = SDL_Metal_CreateView(window);
-        if (!surface.View) throw std::runtime_error(std::format("Failed to create a Metal view: {}", SDL_GetError()));
-        surface.Layer = static_cast<CA::MetalLayer *>(SDL_Metal_GetLayer(surface.View));
-        surface.Layer->setDevice(ctx.Device.get());
-        surface.Layer->setPixelFormat(mtl::Format::Color);
-        // Render mode is GPU-paced: content is fixed-step per tick, so present pacing only affects
-        // wall time. Benchmark frames measure throughput, which vsync pacing would hide.
-        const bool unthrottled = render_mode || capture.BenchFrames > 0;
-        surface.Layer->setDisplaySyncEnabled(!unthrottled);
-    }
+    auto *const layer = window.Layer();
+    layer->setDevice(ctx.Device.get());
+    layer->setPixelFormat(mtl::Format::Color);
+    // Render mode is GPU-paced: content is fixed-step per tick, so present pacing only affects
+    // wall time. Benchmark frames measure throughput, which vsync pacing would hide.
+    layer->setDisplaySyncEnabled(capture.RenderBasename.empty() && capture.BenchFrames == 0);
 
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     ImPlot::CreateContext();
 
     auto &io = GetIO();
-    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard | ImGuiConfigFlags_NavEnableGamepad | ImGuiConfigFlags_DockingEnable;
+    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard | ImGuiConfigFlags_DockingEnable;
     // io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable; // Enable Multi-Viewport / Platform Windows
     io.IniFilename = nullptr; // Disable ImGui's .ini file saving
     io.ConfigDebugIgnoreFocusLoss = true; // Keep input state across Cmd+Tab so in-flight gizmo drags survive focus loss.
@@ -763,7 +734,7 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
 
     StyleColorsDark();
 
-    ImGui_ImplSDL3_InitForMetal(window);
+    window.InitImGui();
     ImGui_ImplMetal_Init(ctx.Device.get());
 
     InitFonts();
@@ -772,7 +743,7 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
     InitViewportMedia(r);
     SetupScene(r, viewport); // Before the first frame reads viewport state.
     // Capture the DPI scale (only set during NewFrame) before priming DPI-scaled GPU state like edge-line width.
-    ImGui_ImplSDL3_NewFrame();
+    window.NewImGuiFrame();
     r.ctx().get<FrameState>().DisplayFramebufferScale = {io.DisplayFramebufferScale.x, io.DisplayFramebufferScale.y};
     ProcessComponentEvents(r, viewport); // Prime derived state before the first frame reads it.
 
@@ -785,39 +756,20 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
 
     bool viewport_resizing{false}; // True while a resize drag is staged but not yet committed.
     bool done{false};
+    MTL::CommandBuffer *last_frame{nullptr}; // Resize waits for resources sampled by the last submitted UI frame.
     WindowsState windows;
     int bench_ticks{0};
     while (!done) {
         // Scene-load work (mesh and texture upload) dwarfs a frame: keep it out of the profile.
         if (bench_ticks == 1) profile::ClearStats();
         const profile::CpuScope frame_scope{"Frame"};
-        SDL_Event event;
-        while (SDL_PollEvent(&event)) {
-            if (event.type == SDL_EVENT_MOUSE_WHEEL) {
-                r.ctx().get<FrameState>().PreciseWheelDelta += vec2{-event.wheel.x, event.wheel.y};
-                // SDL's pixel-derived deltas overscroll ImGui panels.
-                constexpr float ImGuiWheelScale{0.3};
-                event.wheel.x *= ImGuiWheelScale;
-                event.wheel.y *= ImGuiWheelScale;
-            }
-            if (event.type == SDL_EVENT_DROP_FILE) OpenFile(r, viewport, event.drop.data);
-            // SDL3 backend invalidates MousePos to -FLT_MAX on leave when no mouse button is held,
-            // which flings a keyboard-initiated (G/R/S) transform offscreen when switching focus.
-            if (event.type != SDL_EVENT_WINDOW_MOUSE_LEAVE || !TransformGizmo::IsUsing(r, viewport)) {
-                ImGui_ImplSDL3_ProcessEvent(&event);
-                done = event.type == SDL_EVENT_QUIT || (event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED && event.window.windowID == SDL_GetWindowID(window));
-            }
-        }
+        auto events = window.PollEvents();
+        r.ctx().get<FrameState>().PreciseWheelDelta += vec2{events.ScrollX, events.ScrollY};
+        for (const auto &path : events.DroppedFiles) OpenFile(r, viewport, path);
+        done = events.Quit;
         if (driver.DurationElapsed(r, viewport)) done = true;
-        FileDialog::Pump(); // Runs callbacks for file dialogs the user completed since last frame.
 
-        { // The layer follows the window, in pixels rather than points.
-            int w, h;
-            SDL_GetWindowSizeInPixels(window, &w, &h);
-            if (w > 0 && h > 0) surface.Layer->setDrawableSize({double(w), double(h)});
-        }
-
-        ImGui_ImplSDL3_NewFrame();
+        window.NewImGuiFrame();
         driver.ElapsedPlayTime += io.DeltaTime;
         // Scene-affecting code reads FrameState::DeltaTime. `io.DeltaTime` is wall-clock, UI-only.
         r.ctx().get<FrameState>().DeltaTime = driver.FixedStep ? driver.RenderDt : io.DeltaTime;
@@ -845,12 +797,10 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
                     EndMenu();
                 }
                 if (MenuItem("Open")) {
-                    static constexpr std::array filters{FileDialog::Filter{"MeshEditor project", "project"}, FileDialog::Filter{"Scene state", "state"}, FileDialog::Filter{"Action log", "actions"}};
-                    FileDialog::ShowOpen(filters, [&](const fs::path &path) { OpenFile(r, viewport, path); });
+                    FileDialog::ShowOpen("project;state;actions", [&](const fs::path &path) { OpenFile(r, viewport, path); });
                 }
                 const auto save_project_as = [&] {
-                    static constexpr std::array filters{FileDialog::Filter{"MeshEditor project", "project"}};
-                    FileDialog::ShowSave(filters, "scene.project", [&](const fs::path &picked) {
+                    FileDialog::ShowSave("project", "scene.project", [&](const fs::path &picked) {
                         auto path = picked;
                         if (path.extension() != ProjectExt) path += ProjectExt; // The dialog doesn't force the filter's extension.
                         SaveProjectFile(r, viewport, path);
@@ -873,21 +823,18 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
                     }
                     EndMenu();
                 }
-                const auto import_dialog = [](std::span<const FileDialog::Filter> filters) {
-                    FileDialog::ShowOpen(filters, [](const fs::path &path) { action::Emit(action::io::Load{.Path = path}); });
+                const auto import_dialog = [](const char *extensions) {
+                    FileDialog::ShowOpen(extensions, [](const fs::path &path) { action::Emit(action::io::Load{.Path = path}); });
                 };
                 if (BeginMenu("Import")) {
                     if (MenuItem("glTF 2.0 (.glb/.gltf)")) {
-                        static constexpr std::array filters{FileDialog::Filter{"glTF scene", "gltf;glb"}};
-                        import_dialog(filters);
+                        import_dialog("gltf;glb");
                     }
                     if (MenuItem("Wavefront (.obj)")) {
-                        static constexpr std::array filters{FileDialog::Filter{"Wavefront OBJ", "obj"}};
-                        import_dialog(filters);
+                        import_dialog("obj");
                     }
                     if (MenuItem("Stanford PLY (.ply)")) {
-                        static constexpr std::array filters{FileDialog::Filter{"Stanford PLY", "ply"}};
-                        import_dialog(filters);
+                        import_dialog("ply");
                     }
                     if (MenuItem("RealImpact")) {
                         FileDialog::ShowPickFolder([](const fs::path &path) { action::Emit(action::io::LoadRealImpact{.Directory = path}); });
@@ -955,8 +902,7 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
                     render_submenu("glTF_PhysicalAudio Samples", trees->PhysicalAudio);
                 }
                 if (MenuItem("Save glTF", nullptr)) {
-                    static constexpr std::array filters{FileDialog::Filter{"glTF scene", "gltf;glb"}};
-                    FileDialog::ShowSave(filters, "scene.gltf", [](const fs::path &path) { action::Emit(action::io::SaveGltf{.Path = path}); });
+                    FileDialog::ShowSave("gltf;glb", "scene.gltf", [](const fs::path &path) { action::Emit(action::io::SaveGltf{.Path = path}); });
                 }
 #ifdef DEBUG_BUILD
                 if (MenuItem("[Debug] Roundtrip")) ValidateRoundTrip(r, viewport);
@@ -998,9 +944,9 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
                         Text("Max buffer length: %llu MB", (unsigned long long)(ctx.Device->maxBufferLength() / (1024 * 1024)));
 
                         SeparatorText("Window surface");
-                        const auto drawable_size = surface.Layer->drawableSize();
+                        const auto drawable_size = layer->drawableSize();
                         Text("Drawable: %.0fx%.0f", drawable_size.width, drawable_size.height);
-                        Text("Display sync: %s", surface.Layer->displaySyncEnabled() ? "on" : "off");
+                        Text("Display sync: %s", layer->displaySyncEnabled() ? "on" : "off");
                         EndTabItem();
                     }
                     if (BeginTabItem("Engine")) {
@@ -1091,7 +1037,7 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
         ReportActionErrors(r);
 
         // Derive this frame's applied actions and submit the GPU render (nonblocking). WaitForRender() runs later, before RenderFrame() samples the image.
-        SubmitViewport(r, viewport, GetFrameCount() > 1 ? surface.LastFrame : nullptr);
+        SubmitViewport(r, viewport, GetFrameCount() > 1 ? last_frame : nullptr);
 
         if (viewport_open) {
             // Draw the rendered image and overlays into the open viewport window.
@@ -1108,12 +1054,12 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
         if (const bool is_minimized = (draw_data->DisplaySize.x <= 0.0f || draw_data->DisplaySize.y <= 0.0f); !is_minimized) {
             WaitForRender(r); // ImGui samples final image
             if (driver.CaptureFrame(r, viewport, driver.Framed(viewport_settled))) done = true;
-            RenderAndPresentFrame(ctx, surface, draw_data);
+            if (auto *frame = RenderAndPresentFrame(ctx, layer, draw_data)) last_frame = frame;
         }
     }
 
     action::StopLog();
-    if (surface.LastFrame) surface.LastFrame->waitUntilCompleted();
+    if (last_frame) last_frame->waitUntilCompleted();
 
     r.ctx().erase<AudioDeviceResource>(); // Stops and uninitializes the output device.
 
@@ -1122,13 +1068,9 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
     DeinitViewport(r, viewport);
 
     ImGui_ImplMetal_Shutdown();
-    ImGui_ImplSDL3_Shutdown();
+    window.ShutdownImGui();
     ImPlot::DestroyContext();
     ImGui::DestroyContext();
-
-    SDL_Metal_DestroyView(surface.View);
-    SDL_DestroyWindow(window);
-    SDL_Quit();
 }
 
 // Seed the scene, run the fixed-step capture loop, and finish the session log.
@@ -1205,14 +1147,13 @@ bool RunHeadlessScene(entt::registry &r, entt::entity viewport, const char *init
     return true;
 }
 
-// Run without a window: no SDL video, ImGui, audio, or file dialogs. The viewport renders offscreen
+// Run without a window, ImGui, audio, or file dialogs. The viewport renders offscreen
 // on a fixed-step, GPU-paced clock, and capture reads it back. Initializes the engine, runs `scenes`,
 // and tears down.
 void RunHeadlessEngine(bool quiet, auto &&scenes) {
     LogEnabled = !quiet;
 
-    if (!SDL_Init(0)) throw std::runtime_error(std::format("SDL_Init error: {}", SDL_GetError())); // Base path only, no subsystems.
-    InitPaths();
+    MacPlatform::InitPaths();
 
     entt::registry r;
     r.ctx().emplace<mtl::Context>();
@@ -1225,7 +1166,6 @@ void RunHeadlessEngine(bool quiet, auto &&scenes) {
 
     WaitForRender(r);
     DeinitViewport(r, viewport);
-    SDL_Quit();
 }
 
 // Headless single-scene run.
@@ -1306,6 +1246,8 @@ void RunHeadlessQueue(const fs::path &spool, bool quiet, const CaptureRequest &h
 } // namespace
 
 int main(int argc, char **argv) {
+    const auto autorelease_pool = NS::TransferPtr(NS::AutoreleasePool::alloc()->init());
+
     // VideoRecorder pipes frames to ffmpeg via popen; ignore SIGPIPE so writes return EPIPE instead of killing us.
     std::signal(SIGPIPE, SIG_IGN);
 

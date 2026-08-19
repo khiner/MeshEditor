@@ -126,7 +126,7 @@ Requires Apple Silicon and the Xcode command-line tools.
 
 ```shell
 $ git clone --recursive git@github.com:khiner/MeshEditor.git
-$ brew install cmake pkgconfig llvm sdl3 fftw eigen
+$ brew install cmake pkgconfig llvm fftw eigen
 $ brew link llvm --force
 ```
 
@@ -176,7 +176,7 @@ Rendering is fixed-step (one tick per timeline frame) and GPU-paced at a fixed e
 
 ## Stack
 
-- [Metal](https://developer.apple.com/metal/) via [metal-cpp](https://developer.apple.com/metal/cpp/) + [ImGui](https://github.com/ocornut/imgui) + [SDL3](https://github.com/libsdl-org/SDL): Graphics + immediate-mode UI/UX
+- [Metal](https://developer.apple.com/metal/) via [metal-cpp](https://developer.apple.com/metal/cpp/) + [AppKit](https://developer.apple.com/documentation/appkit) + [ImGui](https://github.com/ocornut/imgui): Graphics + immediate-mode UI/UX
 - [glm](https://github.com/g-truc/glm): Small numeric vector/matrix types + math
 - [entt](https://github.com/skypjack/entt): Entity Component System (ECS) for an efficient and scalable mixin-style architectural pattern
 - [miniaudio](https://github.com/mackron/miniaudio): Audio stream I/O
