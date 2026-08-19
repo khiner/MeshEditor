@@ -77,7 +77,7 @@ struct MainPipeline {
         ~ResourcesT();
 
         struct PyramidMip {
-            mtl::Owned<MTL::Texture> View;
+            NS::SharedPtr<MTL::Texture> View;
             uint32_t Slot;
             mtl::Extent2D Extent; // Valid data bounds. The level's remaining texels are padding.
         };
@@ -87,7 +87,7 @@ struct MainPipeline {
         // Power-of-two max-depth pyramid for occlusion culling.
         mtl::Texture DepthPyramidImage;
         std::vector<PyramidMip> DepthPyramidMips;
-        mtl::Owned<MTL::SamplerState> NearestSampler;
+        NS::SharedPtr<MTL::SamplerState> NearestSampler;
         mtl::BindlessSet &Slots;
     };
 
@@ -96,8 +96,8 @@ struct MainPipeline {
         TransmissionResourcesT(const mtl::Context &, mtl::Extent2D);
 
         mtl::Texture Image;
-        mtl::Owned<MTL::Texture> Mip0View;
-        mtl::Owned<MTL::SamplerState> Sampler;
+        NS::SharedPtr<MTL::Texture> Mip0View;
+        NS::SharedPtr<MTL::SamplerState> Sampler;
     };
 
     // Lazily allocated motion vectors, tile reduction, gather, and accumulation targets.
@@ -147,7 +147,7 @@ struct SilhouettePipeline {
         ResourcesT(const mtl::Context &, mtl::Extent2D);
 
         mtl::Texture DepthImage, OffscreenImage;
-        mtl::Owned<MTL::SamplerState> ImageSampler;
+        NS::SharedPtr<MTL::SamplerState> ImageSampler;
     };
 
     void SetExtent(const mtl::Context &, mtl::Extent2D);
@@ -163,7 +163,7 @@ struct SilhouetteEdgePipeline {
         ResourcesT(const mtl::Context &, mtl::Extent2D);
 
         mtl::Texture DepthImage, OffscreenImage;
-        mtl::Owned<MTL::SamplerState> ImageSampler;
+        NS::SharedPtr<MTL::SamplerState> ImageSampler;
     };
 
     void SetExtent(const mtl::Context &, mtl::Extent2D);

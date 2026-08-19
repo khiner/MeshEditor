@@ -233,7 +233,7 @@ MainPipeline::ResourcesT::ResourcesT(const mtl::Context &ctx, mtl::Extent2D exte
       }()},
       NearestSampler{mtl::CreateSampler(ctx, MTL::SamplerMinMagFilterNearest, MTL::SamplerMipFilterNearest, MTL::SamplerAddressModeClampToEdge)},
       Slots{slots} {
-    for (const auto &mip : DepthPyramidMips) slots.SetTexture(mip.Slot, *mip.View);
+    for (const auto &mip : DepthPyramidMips) slots.SetTexture(mip.Slot, mip.View.get());
 }
 
 MainPipeline::ResourcesT::~ResourcesT() {
@@ -278,7 +278,7 @@ bool MainPipeline::EnsureMotionBlurResources(const mtl::Context &ctx) {
 
 SampledTexture MainPipeline::Nearest(const mtl::Texture *image) const {
     if (!Resources) return {};
-    return {image ? **image : *Resources->SceneColorImage, *Resources->NearestSampler};
+    return {image ? **image : *Resources->SceneColorImage, Resources->NearestSampler.get()};
 }
 SampledTexture MainPipeline::SceneColorSampler() const { return Nearest(nullptr); }
 SampledTexture MainPipeline::OverlayColorSampler() const { return Nearest(Resources ? &Resources->OverlayColorImage : nullptr); }
@@ -291,7 +291,7 @@ MTL::Texture *MainPipeline::MotionBlurTileImage() const { return MotionBlur ? *M
 SampledTexture MainPipeline::TransmissionSampler() const {
     if (!Resources) return {};
     if (!Transmission) return SceneColorSampler();
-    return {*Transmission->Image, *Transmission->Sampler};
+    return {*Transmission->Image, Transmission->Sampler.get()};
 }
 
 static PipelineRenderer CreateSilhouetteRenderer(mtl::LibraryCache &libraries) {

@@ -50,7 +50,7 @@ private:
     size_t FrameBytes{0};
 
     // Shared readback for the private render target.
-    mtl::Owned<MTL::Buffer> Staging;
+    NS::SharedPtr<MTL::Buffer> Staging;
 
     std::unique_ptr<std::FILE, PipeCloser> Pipe;
     uint64_t FrameCount{0};

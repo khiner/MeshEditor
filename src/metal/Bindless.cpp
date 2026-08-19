@@ -6,11 +6,10 @@
 
 namespace mtl {
 BindlessSet::BindlessSet(const Context &ctx) : Ctx(ctx) {
-    ArgumentBuffer = Owned<MTL::Buffer>{ctx.Device->newBuffer(BindlessTableSize, MTL::ResourceStorageModeShared)};
+    ArgumentBuffer = NS::TransferPtr(ctx.Device->newBuffer(BindlessTableSize, MTL::ResourceStorageModeShared));
     if (!ArgumentBuffer) throw std::runtime_error("Failed to allocate the bindless argument buffer.");
     std::memset(ArgumentBuffer->contents(), 0, BindlessTableSize);
-    for (size_t i = 0; i < SlotTypeCount; ++i) BindingOffsets[i] = BindlessLayout[i].Offset;
-    ctx.AddResident(*ArgumentBuffer);
+    ctx.AddResident(ArgumentBuffer.get());
 }
 
 // Lowest-free allocation keeps scene replay byte-identical regardless of release order.
@@ -26,7 +25,7 @@ void BindlessSet::Release(TypedSlot slot) { Allocators[size_t(slot.Type)].Free({
 
 size_t BindlessSet::EntryOffset(SlotType type, uint32_t slot) const {
     const auto &layout = BindlessLayout[size_t(type)];
-    return BindingOffsets[size_t(type)] + size_t(slot) * layout.Stride;
+    return layout.Offset + size_t(slot) * layout.Stride;
 }
 
 uint64_t *BindlessSet::EntryAt(SlotType type, uint32_t slot) const {

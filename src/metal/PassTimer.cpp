@@ -17,12 +17,12 @@ std::unique_ptr<PassTimer> PassTimer::Create(const Context &ctx, uint32_t max_pa
     auto *counter_set = TimestampCounterSet(ctx);
     if (!counter_set) return nullptr;
 
-    Owned<MTL::CounterSampleBufferDescriptor> descriptor{MTL::CounterSampleBufferDescriptor::alloc()->init()};
+    const auto descriptor = NS::TransferPtr(MTL::CounterSampleBufferDescriptor::alloc()->init());
     descriptor->setCounterSet(counter_set);
     descriptor->setSampleCount(max_passes * 2); // Start and end per pass.
     descriptor->setStorageMode(MTL::StorageModeShared);
     NS::Error *error = nullptr;
-    Owned<MTL::CounterSampleBuffer> buffer{ctx.Device->newCounterSampleBuffer(*descriptor, &error)};
+    auto buffer = NS::TransferPtr(ctx.Device->newCounterSampleBuffer(descriptor.get(), &error));
     if (!buffer) return nullptr;
     return std::unique_ptr<PassTimer>{new PassTimer{std::move(buffer), max_passes}};
 }

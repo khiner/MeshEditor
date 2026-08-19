@@ -34,7 +34,7 @@ struct SamplerConfig {
 
 struct TextureEntry {
     mtl::Texture Image;
-    mtl::Owned<MTL::SamplerState> Sampler;
+    NS::SharedPtr<MTL::SamplerState> Sampler;
     uint32_t SamplerSlot;
     // Sampler build inputs, retained so the sampler can be rebuilt.
     SamplerConfig Config;
@@ -58,7 +58,7 @@ struct TextureStore {
 
 struct CubemapEntry {
     mtl::Texture Image;
-    mtl::Owned<MTL::SamplerState> Sampler;
+    NS::SharedPtr<MTL::SamplerState> Sampler;
     uint32_t SamplerSlot;
     std::string Name;
 };
@@ -150,7 +150,7 @@ struct TextureUploadBatch {
     const mtl::Context *Ctx{nullptr};
     mtl::LibraryCache *Libraries{nullptr};
     MTL::CommandBuffer *Cb{nullptr};
-    mtl::Owned<MTL::SamplerState> MipSampler{};
+    NS::SharedPtr<MTL::SamplerState> MipSampler{};
     std::vector<std::pair<MTL::PixelFormat, mtl::RenderPipeline>> MipPipelines{};
 };
 
@@ -188,7 +188,7 @@ std::expected<TextureEntry, std::string> MaterializeTextureEntry(const mtl::Cont
 std::expected<EnvironmentPrefiltered, std::string> MaterializeEnvironmentImport(const mtl::Context &, mtl::BindlessSet &, const PendingEnvironmentImport &, const std::vector<gltf::Image> &);
 EnvironmentPrefiltered CreateIblFromHdri(
     const mtl::Context &, mtl::BindlessSet &,
-    const IblPrefilterPipelines &, const std::filesystem::path &, const std::string &
+    const IblPrefilterPipelines &, const std::filesystem::path &, std::string
 );
 // Allocate a 1x1x6 cubemap (1 mip) of the given linear color.
 EnvironmentPrefiltered BuildFlatColorEnvironment(const mtl::Context &, mtl::BindlessSet &, vec3 color, std::string name);

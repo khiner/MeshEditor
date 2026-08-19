@@ -461,7 +461,7 @@ struct MeshStore::Buffers {
 namespace {
 // Save/restore a plain mirror buffer (no allocator) by its used byte region.
 std::vector<std::byte> SaveBuffer(const mtl::Buffer &b) {
-    const auto mapped = b.GetMappedData();
+    const auto mapped = b.Contents();
     const auto used = std::min(size_t(b.UsedSize), mapped.size());
     return {mapped.begin(), mapped.begin() + used};
 }

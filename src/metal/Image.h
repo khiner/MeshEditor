@@ -25,11 +25,11 @@ struct Extent2D {
 };
 
 struct Texture {
-    Owned<MTL::Texture> Handle;
+    NS::SharedPtr<MTL::Texture> Handle;
     Extent2D Extent{};
     uint32_t MipLevels{1};
 
-    MTL::Texture *operator*() const { return *Handle; }
+    MTL::Texture *operator*() const { return Handle.get(); }
     explicit operator bool() const { return bool(Handle); }
 };
 
@@ -37,9 +37,9 @@ struct Texture {
 Texture CreateTexture2D(const Context &, MTL::PixelFormat, Extent2D, MTL::TextureUsage, uint32_t mip_levels = 1, std::optional<MTL::StorageMode> storage = {});
 Texture CreateTextureCube(const Context &, MTL::PixelFormat, uint32_t size, MTL::TextureUsage, uint32_t mip_levels = 1);
 Texture CreateTexture2DArray(const Context &, MTL::PixelFormat, Extent2D, uint32_t layers, MTL::TextureUsage, uint32_t mip_levels = 1);
-Owned<MTL::Texture> CreateMipView(const Texture &, uint32_t mip);
+NS::SharedPtr<MTL::Texture> CreateMipView(const Texture &, uint32_t mip);
 // Cube faces are writable through a six-layer array view of one mip.
-Owned<MTL::Texture> CreateCubeMipView(const Texture &, uint32_t mip);
+NS::SharedPtr<MTL::Texture> CreateCubeMipView(const Texture &, uint32_t mip);
 
 constexpr uint32_t MipLevelCount(uint32_t width, uint32_t height) {
     const auto max_dim = std::max(width, height);
@@ -53,8 +53,8 @@ struct SamplerDesc {
     float MaxAnisotropy{1.f};
 };
 
-Owned<MTL::SamplerState> CreateSampler(const Context &, const SamplerDesc &);
-Owned<MTL::SamplerState> CreateSampler(const Context &, MTL::SamplerMinMagFilter, MTL::SamplerMipFilter, MTL::SamplerAddressMode, float max_anisotropy = 1.f);
+NS::SharedPtr<MTL::SamplerState> CreateSampler(const Context &, const SamplerDesc &);
+NS::SharedPtr<MTL::SamplerState> CreateSampler(const Context &, MTL::SamplerMinMagFilter, MTL::SamplerMipFilter, MTL::SamplerAddressMode, float max_anisotropy = 1.f);
 
 // Synchronous blits from a private texture. Return false on copy failure.
 bool CopyTextureRegion(const Context &, const Texture &source, uint32_t x, uint32_t y, Extent2D, const Texture &destination);

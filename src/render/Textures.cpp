@@ -20,11 +20,11 @@
 #include <unordered_map>
 
 namespace {
-mtl::Owned<MTL::SamplerState> MakeLinearSampler(const mtl::Context &ctx, MTL::SamplerAddressMode address_mode) {
+NS::SharedPtr<MTL::SamplerState> MakeLinearSampler(const mtl::Context &ctx, MTL::SamplerAddressMode address_mode) {
     return mtl::CreateSampler(ctx, MTL::SamplerMinMagFilterLinear, MTL::SamplerMipFilterLinear, address_mode);
 }
 
-mtl::Owned<MTL::SamplerState> MakeSampler(
+NS::SharedPtr<MTL::SamplerState> MakeSampler(
     const mtl::Context &ctx, const SamplerConfig &cfg, MTL::SamplerAddressMode wrap_s, MTL::SamplerAddressMode wrap_t, float max_anisotropy
 ) {
     // Anisotropic filtering only applies with a mip chain.
@@ -55,13 +55,13 @@ void GenerateMipChain(TextureUploadBatch &batch, const mtl::Texture &image, MTL:
     }
     const auto &state = std::ranges::find_if(batch.MipPipelines, targets_format)->second;
     for (uint32_t mip = 1; mip < image.MipLevels; ++mip) {
-        const std::array colors{mtl::ColorAttachment{*image.Handle, MTL::LoadActionDontCare, MTL::StoreActionStore, {}, mip}};
+        const std::array colors{mtl::ColorAttachment{image.Handle.get(), MTL::LoadActionDontCare, MTL::StoreActionStore, {}, mip}};
         const auto pass = mtl::MakePassDescriptor(colors);
-        auto *encoder = batch.Cb->renderCommandEncoder(*pass);
+        auto *encoder = batch.Cb->renderCommandEncoder(pass);
         state.Bind(encoder);
         const auto source = mtl::CreateMipView(image, mip - 1);
-        encoder->setFragmentTexture(*source, 0);
-        encoder->setFragmentSamplerState(*batch.MipSampler, 0);
+        encoder->setFragmentTexture(source.get(), 0);
+        encoder->setFragmentSamplerState(batch.MipSampler.get(), 0);
         encoder->drawPrimitives(MTL::PrimitiveTypeTriangleStrip, NS::UInteger(0), NS::UInteger(4));
         encoder->endEncoding();
     }
@@ -159,7 +159,7 @@ std::expected<CubemapEntry, std::string> CreateCubemapEntryFromMipFacesF32(
     }
 
     auto sampler = MakeLinearSampler(ctx, MTL::SamplerAddressModeClampToEdge);
-    slots.SetSampler({SlotType::CubeSampler, pre_allocated_slot}, *image, *sampler);
+    slots.SetSampler({SlotType::CubeSampler, pre_allocated_slot}, *image, sampler.get());
     return CubemapEntry{.Image = std::move(image), .Sampler = std::move(sampler), .SamplerSlot = pre_allocated_slot, .Name = std::move(name)};
 }
 struct MipUpload {
@@ -196,7 +196,7 @@ TextureEntry CreateCompressedTextureEntry(
     }
 
     auto sampler = MakeSampler(ctx, sampler_cfg, wrap_s, wrap_t, max_anisotropy);
-    slots.SetSampler({SlotType::Sampler, pre_allocated_slot}, *image, *sampler);
+    slots.SetSampler({SlotType::Sampler, pre_allocated_slot}, *image, sampler.get());
     return {.Image = std::move(image), .Sampler = std::move(sampler), .SamplerSlot = pre_allocated_slot, .Config = sampler_cfg, .WrapS = wrap_s, .WrapT = wrap_t, .Name = std::move(name)};
 }
 } // namespace
@@ -231,7 +231,7 @@ float ClampMaxAnisotropy(float requested) { return std::clamp(requested, 1.f, Ma
 void RebuildTextureSamplers(const mtl::Context &ctx, mtl::BindlessSet &slots, TextureStore &textures, float max_anisotropy) {
     for (auto &entry : textures.Textures) {
         entry.Sampler = MakeSampler(ctx, entry.Config, entry.WrapS, entry.WrapT, max_anisotropy);
-        slots.SetSampler({SlotType::Sampler, entry.SamplerSlot}, *entry.Image, *entry.Sampler);
+        slots.SetSampler({SlotType::Sampler, entry.SamplerSlot}, *entry.Image, entry.Sampler.get());
     }
 }
 
@@ -281,7 +281,7 @@ TextureEntry CreateTextureEntryAtSlot(
     GenerateMipChain(batch, image, texture_format);
 
     auto sampler = MakeSampler(ctx, sampler_cfg, wrap_s, wrap_t, max_anisotropy);
-    slots.SetSampler({SlotType::Sampler, pre_allocated_slot}, *image, *sampler);
+    slots.SetSampler({SlotType::Sampler, pre_allocated_slot}, *image, sampler.get());
 
     return {.Image = std::move(image), .Sampler = std::move(sampler), .SamplerSlot = pre_allocated_slot, .Config = sampler_cfg, .WrapS = wrap_s, .WrapT = wrap_t, .Name = std::move(name)};
 }
@@ -404,7 +404,7 @@ EnvironmentPrefiltered BuildFlatColorEnvironment(
 EnvironmentPrefiltered CreateIblFromHdri(
     const mtl::Context &ctx, mtl::BindlessSet &slots,
     const IblPrefilterPipelines &prefilter,
-    const std::filesystem::path &path, const std::string &name
+    const std::filesystem::path &path, std::string name
 ) {
     const auto path_str = path.string();
     auto decoded = DecodeImageFileRgba32f(path, path_str);
@@ -426,7 +426,7 @@ EnvironmentPrefiltered CreateIblFromHdri(
 
     const uint32_t spec_size = 256, spec_mips = mtl::MipLevelCount(spec_size, spec_size);
     auto spec_cube = mtl::CreateTextureCube(ctx, rgba32f, spec_size, MTL::TextureUsageShaderRead | MTL::TextureUsageShaderWrite, spec_mips);
-    std::vector<mtl::Owned<MTL::Texture>> spec_writes;
+    std::vector<NS::SharedPtr<MTL::Texture>> spec_writes;
     spec_writes.reserve(spec_mips);
     for (uint32_t mip = 0; mip < spec_mips; ++mip) {
         spec_writes.emplace_back(mtl::CreateCubeMipView(spec_cube, mip));
@@ -450,7 +450,7 @@ EnvironmentPrefiltered CreateIblFromHdri(
     auto *command_buffer = ctx.Queue->commandBuffer();
     {
         auto *compute = command_buffer->computeCommandEncoder();
-        prefilter_faces(compute, prefilter.EquirectToCubemap, *equirect, *equirect_sampler, *raw_cube_write, raw_size, raw_size);
+        prefilter_faces(compute, prefilter.EquirectToCubemap, *equirect, equirect_sampler.get(), raw_cube_write.get(), raw_size, raw_size);
         compute->endEncoding();
     }
     {
@@ -460,7 +460,7 @@ EnvironmentPrefiltered CreateIblFromHdri(
     }
     {
         auto *compute = command_buffer->computeCommandEncoder();
-        prefilter_faces(compute, prefilter.DiffuseIrradiance, *raw_cube, *raw_cube_sampler, *diff_write, diff_size, diff_size);
+        prefilter_faces(compute, prefilter.DiffuseIrradiance, *raw_cube, raw_cube_sampler.get(), diff_write.get(), diff_size, diff_size);
 
         for (uint32_t mip = 0; mip < spec_mips; ++mip) {
             const uint32_t mip_face_size = std::max(1u, spec_size >> mip);
@@ -469,7 +469,7 @@ EnvironmentPrefiltered CreateIblFromHdri(
                 float Roughness;
             };
             const SpecPC pc{.FaceSize = mip_face_size, .SourceSize = raw_size, .Roughness = float(mip) / float(spec_mips - 1)};
-            prefilter_faces(compute, prefilter.SpecularPrefilter, *raw_cube, *raw_cube_sampler, *spec_writes[mip], pc, mip_face_size);
+            prefilter_faces(compute, prefilter.SpecularPrefilter, *raw_cube, raw_cube_sampler.get(), spec_writes[mip].get(), pc, mip_face_size);
         }
         compute->endEncoding();
     }
@@ -481,12 +481,12 @@ EnvironmentPrefiltered CreateIblFromHdri(
     auto spec_sampler = MakeLinearSampler(ctx, MTL::SamplerAddressModeClampToEdge);
     const auto diff_slot = slots.Allocate(SlotType::CubeSampler);
     const auto spec_slot = slots.Allocate(SlotType::CubeSampler);
-    slots.SetSampler({SlotType::CubeSampler, diff_slot}, *diff_cube, *diff_sampler);
-    slots.SetSampler({SlotType::CubeSampler, spec_slot}, *spec_cube, *spec_sampler);
+    slots.SetSampler({SlotType::CubeSampler, diff_slot}, *diff_cube, diff_sampler.get());
+    slots.SetSampler({SlotType::CubeSampler, spec_slot}, *spec_cube, spec_sampler.get());
     return {
         .DiffuseEnv = {.Image = std::move(diff_cube), .Sampler = std::move(diff_sampler), .SamplerSlot = diff_slot, .Name = name + "_diffuse"},
         .SpecularEnv = {.Image = std::move(spec_cube), .Sampler = std::move(spec_sampler), .SamplerSlot = spec_slot, .Name = name + "_specular"},
-        .Name = name,
+        .Name = std::move(name),
     };
 }
 
@@ -683,7 +683,7 @@ void ImportObjPlyMaterials(entt::registry &r, std::span<const ObjPlyMaterial> ma
     std::vector<uint32_t> scene_material_indices(materials.size(), 0u);
     std::vector<std::string> names;
     names.reserve(materials.size());
-    buffers.Materials.Reserve(buffers.Materials.Count() + materials.size());
+    buffers.Materials.ReserveElements(buffers.Materials.Count() + materials.size());
     for (uint32_t material_index = 0; material_index < materials.size(); ++material_index) {
         const auto &source = materials[material_index];
         const auto material_name = source.Name.empty() ? std::format("Material{}", material_index) : source.Name;

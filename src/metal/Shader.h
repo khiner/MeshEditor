@@ -30,7 +30,7 @@ struct LibraryCache {
 
 private:
     struct Entry {
-        Owned<MTL::Library> Library;
+        NS::SharedPtr<MTL::Library> Library;
         std::vector<std::pair<std::filesystem::path, std::filesystem::file_time_type>> Deps;
     };
     std::filesystem::path ShadersDir;
@@ -82,13 +82,12 @@ struct RenderPipeline {
 
     void Compile(LibraryCache &);
 
-    MTL::RenderPipelineState *State() const { return *PipelineState; }
-    MTL::DepthStencilState *DepthStencil() const { return *DepthStencilState; }
+    MTL::RenderPipelineState *State() const { return PipelineState.get(); }
     float DepthBias() const { return Bias; }
 
     void Bind(MTL::RenderCommandEncoder *encoder) const {
-        encoder->setRenderPipelineState(*PipelineState);
-        encoder->setDepthStencilState(*DepthStencilState);
+        encoder->setRenderPipelineState(PipelineState.get());
+        encoder->setDepthStencilState(DepthStencilState.get());
     }
 
 private:
@@ -98,8 +97,8 @@ private:
     std::vector<BlendState> Blends;
     std::optional<DepthState> Depth;
     float Bias;
-    Owned<MTL::RenderPipelineState> PipelineState;
-    Owned<MTL::DepthStencilState> DepthStencilState;
+    NS::SharedPtr<MTL::RenderPipelineState> PipelineState;
+    NS::SharedPtr<MTL::DepthStencilState> DepthStencilState;
 };
 
 struct ComputePipeline {
@@ -107,14 +106,14 @@ struct ComputePipeline {
 
     void Compile(LibraryCache &);
 
-    MTL::ComputePipelineState *State() const { return *PipelineState; }
+    MTL::ComputePipelineState *State() const { return PipelineState.get(); }
     uint32_t MaxThreadsPerThreadgroup() const { return PipelineState ? uint32_t(PipelineState->maxTotalThreadsPerThreadgroup()) : 0; }
 
 private:
     FunctionRef Fn;
-    Owned<MTL::ComputePipelineState> PipelineState;
+    NS::SharedPtr<MTL::ComputePipelineState> PipelineState;
 };
 
 // Throws with the compiler diagnostic on failure.
-Owned<MTL::Function> MakeFunction(LibraryCache &, const FunctionRef &);
+NS::SharedPtr<MTL::Function> MakeFunction(LibraryCache &, const FunctionRef &);
 } // namespace mtl

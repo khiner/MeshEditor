@@ -721,12 +721,12 @@ bool SyncViewportRenderResources(entt::registry &r, entt::entity viewport) {
         slots.SetBuffer({SlotType::Buffer, sel_slots.ObjectPickSeenBits}, *buffers.ObjectPickSeenBitset);
         slots.SetBuffer({SlotType::Buffer, sel_slots.SelectionBitset}, *buffers.SelectionBitset);
         const auto set_sampler = [&](uint32_t slot, SampledTexture sampled) { slots.SetSampler({SlotType::Sampler, slot}, sampled.Texture, sampled.Sampler); };
-        set_sampler(sel_slots.ObjectIdSampler, {*sil_edge.Resources->OffscreenImage, *sil_edge.Resources->ImageSampler});
-        set_sampler(sel_slots.DepthSampler, {*sil_edge.Resources->DepthImage, *sil_edge.Resources->ImageSampler});
-        set_sampler(sel_slots.SilhouetteSampler, {*sil.Resources->OffscreenImage, *sil.Resources->ImageSampler});
+        set_sampler(sel_slots.ObjectIdSampler, {*sil_edge.Resources->OffscreenImage, sil_edge.Resources->ImageSampler.get()});
+        set_sampler(sel_slots.DepthSampler, {*sil_edge.Resources->DepthImage, sil_edge.Resources->ImageSampler.get()});
+        set_sampler(sel_slots.SilhouetteSampler, {*sil.Resources->OffscreenImage, sil.Resources->ImageSampler.get()});
         set_sampler(sel_slots.SceneColorSampler, main.SceneColorSampler());
         set_sampler(sel_slots.OverlayColorSampler, main.OverlayColorSampler());
-        set_sampler(sel_slots.LineDataSampler, {*main.Resources->LineDataImage, *main.Resources->NearestSampler});
+        set_sampler(sel_slots.LineDataSampler, {*main.Resources->LineDataImage, main.Resources->NearestSampler.get()});
         set_sampler(sel_slots.TransmissionSampler, main.TransmissionSampler());
         set_sampler(sel_slots.MotionBlurAccumSampler, main.MotionBlurAccumSampler());
         set_sampler(sel_slots.VelocitySampler, main.VelocitySampler());

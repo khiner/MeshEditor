@@ -18,7 +18,7 @@ struct PassTimer {
     // Returns the start/end sample-pair index, or nothing when full.
     std::optional<uint32_t> Claim(std::string_view name);
 
-    MTL::CounterSampleBuffer *Buffer() const { return *SampleBuffer; }
+    MTL::CounterSampleBuffer *Buffer() const { return SampleBuffer.get(); }
 
     // Call after completion; unwritten samples are omitted.
     std::vector<Pass> Resolve();
@@ -26,10 +26,10 @@ struct PassTimer {
     void Reset() { Names.clear(); }
 
 private:
-    PassTimer(Owned<MTL::CounterSampleBuffer> buffer, uint32_t max_passes)
+    PassTimer(NS::SharedPtr<MTL::CounterSampleBuffer> buffer, uint32_t max_passes)
         : SampleBuffer(std::move(buffer)), MaxPasses(max_passes) {}
 
-    Owned<MTL::CounterSampleBuffer> SampleBuffer;
+    NS::SharedPtr<MTL::CounterSampleBuffer> SampleBuffer;
     uint32_t MaxPasses;
     std::vector<std::string_view> Names;
 };

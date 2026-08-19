@@ -5,13 +5,6 @@
 #include <initializer_list>
 
 namespace mtl {
-namespace Stage {
-inline constexpr auto Vertex = MTL::StageVertex;
-inline constexpr auto Fragment = MTL::StageFragment;
-inline constexpr auto Dispatch = MTL::StageDispatch;
-inline constexpr auto Blit = MTL::StageBlit;
-} // namespace Stage
-
 // `Before` waits for matching `After` stages already encoded on the queue.
 struct Barrier {
     MTL::Stages After, Before;

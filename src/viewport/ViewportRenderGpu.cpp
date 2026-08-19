@@ -86,7 +86,7 @@ void FlushDrawList(entt::registry &r, const DrawListBuilder &draw_list, DrawBuff
     if (!draw_list.Draws.empty()) {
         pair.DrawData.Update(as_bytes(draw_list.Draws));
         pair.CullEntries.Update(as_bytes(draw_list.CullEntries));
-        pair.VisibleIndices.Update(buffers.IdentityIndexBuffer.GetMappedData().subspan(0, 2 * draw_list.Draws.size() * sizeof(uint32_t)));
+        pair.VisibleIndices.Update(buffers.IdentityIndexBuffer.Contents().subspan(0, 2 * draw_list.Draws.size() * sizeof(uint32_t)));
     }
     if (!draw_list.IndirectCommands.empty()) {
         // Region A holds the commands as built. Region B is a copy indexing the second half of the
@@ -180,8 +180,6 @@ void AppendExtrasDraw(entt::registry &r, const InstanceArena &instances, DrawLis
 // Reduce this step's screen motion to tiles, spread each tile's motion over the tiles it crosses,
 // then gather the scene along it. Leaves the blurred scene in GatherImage. The scene pass already
 // wrote the motion into the velocity attachment.
-namespace stage = mtl::Stage;
-
 void RecordMotionBlurPostFx(entt::registry &r, mtl::PassChain &chain, const mtl::BindlessSet &slots, entt::entity viewport, mtl::Extent2D extent, uint32_t ubo_offset, float playback_frame) {
     const auto &pipelines = r.ctx().get<const Pipelines>();
     const auto &main = pipelines.Main;
@@ -194,7 +192,7 @@ void RecordMotionBlurPostFx(entt::registry &r, mtl::PassChain &chain, const mtl:
     const float noise_offset = glm::fract(playback_frame * std::numbers::phi_v<float>);
 
     const auto &buffers = r.ctx().get<const GpuBuffers>();
-    auto *encoder = chain.BeginCompute("BlurTiles", stage::Fragment);
+    auto *encoder = chain.BeginCompute("BlurTiles", MTL::StageFragment);
     const auto dispatch = [&](const mtl::ComputePipeline &compute, auto &&pc, uvec3 groups, MTL::Size threadgroup) {
         encode::BindCompute(encoder, compute, slots, buffers, ubo_offset);
         encode::SetPushConstants(encoder, pc);
@@ -223,7 +221,7 @@ void RecordMotionBlurPostFx(entt::registry &r, mtl::PassChain &chain, const mtl:
     { // One fullscreen pass, blurring the scene along its motion into the gather attachment.
         const std::array colors{mtl::DiscardColor(*main.MotionBlur->GatherImage)};
         const auto pass = mtl::MakePassDescriptor(colors);
-        auto *render = encode::BeginScenePass(chain, *pass, "BlurGather", {{stage::Fragment | stage::Dispatch, stage::Fragment}}, extent, slots, buffers, ubo_offset);
+        auto *render = encode::BeginScenePass(chain, pass, "BlurGather", {{MTL::StageFragment | MTL::StageDispatch, MTL::StageFragment}}, extent, slots, buffers, ubo_offset);
         main.MotionBlurGather.Bind(render);
         encode::SetPushConstants(render, MotionBlurGatherPushConstants{sel_slots.SceneDepthSampler, sel_slots.VelocitySampler, sel_slots.SceneColorSampler, sel_slots.MotionBlurTileImage, sel_slots.MotionBlurTileIndirection, MotionScale, mb.BleedingBias, noise_offset});
         render->drawPrimitives(MTL::PrimitiveTypeTriangleStrip, NS::UInteger(0), NS::UInteger(4));
@@ -306,7 +304,7 @@ void RecordFrustumCull(MTL::ComputeCommandEncoder *encoder, const mtl::BindlessS
 
 void RecordFrustumCull(mtl::PassChain &chain, const mtl::BindlessSet &slots, const Pipelines &pipelines, const GpuBuffers &buffers, const DrawBufferPair &pair, const DrawListBuilder &draw_list) {
     // The cull overwrites the indirect commands and the visible-index remap that the draws read.
-    auto *encoder = chain.BeginCompute("FrustumCull", stage::Vertex);
+    auto *encoder = chain.BeginCompute("FrustumCull", MTL::StageVertex);
     RecordFrustumCull(encoder, slots, pipelines, buffers, pair, draw_list, 0, InvalidSlot);
 }
 
@@ -1172,7 +1170,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
         // A derive entry always holds at least one face tile and one gather tile, so one count decides both phases.
         const bool record_derive = draw_scene && prelude.DeriveFaces > 0;
         const bool bounds_work = record_bounds && prelude.BoundsCombine > 0;
-        auto *compute = chain.BeginCompute("Prelude", stage::Vertex | stage::Fragment | stage::Dispatch);
+        auto *compute = chain.BeginCompute("Prelude", MTL::StageVertex | MTL::StageFragment | MTL::StageDispatch);
         if (prelude.PosePrepass > 0) RecordPosePrepass(compute, slots, pipelines, buffers, transform_vertex_state_slot, ubo_offset);
         if (record_derive || bounds_work) {
             auto derive_pc = MakeNormalDerivePc(buffers, meshes, buffers.PosedVertexNormals.Slot, buffers.PosedSeamNormals.Slot, buffers.PosedFaceNormals.Slot);
@@ -1215,7 +1213,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
             const auto extent = silhouette.Resources->OffscreenImage.Extent;
             const std::array colors{mtl::ClearColor(*silhouette.Resources->OffscreenImage)};
             const auto pass = mtl::MakePassDescriptor(colors, mtl::ClearDepth(*silhouette.Resources->DepthImage));
-            encoder = encode::BeginScenePass(chain, *pass, "SilhouetteGeom", {{stage::Dispatch, stage::Vertex}, {stage::Fragment, stage::Fragment}}, extent, slots, buffers, ubo_offset);
+            encoder = encode::BeginScenePass(chain, pass, "SilhouetteGeom", {{MTL::StageDispatch, MTL::StageVertex}, {MTL::StageFragment, MTL::StageFragment}}, extent, slots, buffers, ubo_offset);
             record_draw_batch(silhouette.Renderer, SPT::SilhouetteDepthObject, draw.Silhouette);
         }
 
@@ -1224,7 +1222,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
             const auto extent = silhouette_edge.Resources->OffscreenImage.Extent;
             const std::array colors{mtl::ClearColor(*silhouette_edge.Resources->OffscreenImage)};
             const auto pass = mtl::MakePassDescriptor(colors, mtl::ClearDepth(*silhouette_edge.Resources->DepthImage));
-            encoder = encode::BeginScenePass(chain, *pass, "SilhouetteEdge", {{stage::Fragment, stage::Fragment}}, extent, slots, buffers, ubo_offset);
+            encoder = encode::BeginScenePass(chain, pass, "SilhouetteEdge", {{MTL::StageFragment, MTL::StageFragment}}, extent, slots, buffers, ubo_offset);
             silhouette_edge.Renderer.Bind(encoder, SPT::SilhouetteEdgeDepthObject);
             encode::SetPushConstants(encoder, SilhouetteEdgeDepthObjectPushConstants{sel_slots.SilhouetteSampler});
             draw_quad();
@@ -1240,9 +1238,9 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
     if (transmission_active && draw_scene) {
         // Refraction sees the world, and nothing where there is no world. The viewport backdrop is
         // display-referred UI drawn with the overlays, so it never reaches this buffer.
-        const std::array colors{mtl::ClearColor(*main.Transmission->Mip0View)};
+        const std::array colors{mtl::ClearColor(main.Transmission->Mip0View.get())};
         const auto pass = mtl::MakePassDescriptor(colors, mtl::ClearDepth(*main.Resources->DepthImage));
-        encoder = encode::BeginScenePass(chain, *pass, "TransmissionPrepass", {{stage::Dispatch, stage::Vertex}, {stage::Fragment, stage::Fragment}}, main_extent, slots, buffers, ubo_offset);
+        encoder = encode::BeginScenePass(chain, pass, "TransmissionPrepass", {{MTL::StageDispatch, MTL::StageVertex}, {MTL::StageFragment, MTL::StageFragment}}, main_extent, slots, buffers, ubo_offset);
         main.PrepassBackground.Bind(encoder);
         draw_quad();
         if (buffers.IdentityIndexCount > 0 && show_fill) {
@@ -1252,7 +1250,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
 
         // Generate the transmission mip chain sampled across roughness.
         if (main.Transmission->Image.MipLevels > 1) {
-            auto *blit = chain.BeginBlit("TransmissionMips", stage::Fragment);
+            auto *blit = chain.BeginBlit("TransmissionMips", MTL::StageFragment);
             blit->generateMipmaps(*main.Transmission->Image);
         }
     }
@@ -1273,8 +1271,8 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
         const auto depth = composite_transmission ? mtl::LoadDepth(*main.Resources->DepthImage) : mtl::ClearDepth(*main.Resources->DepthImage);
         const auto pass = mtl::MakePassDescriptor(attachments, depth);
         encoder = encode::BeginScenePass(
-            chain, *pass, draw_scene ? "ScenePass" : "SceneDepthPass",
-            {{stage::Dispatch, stage::Vertex | stage::Fragment}, {stage::Fragment | stage::Blit, stage::Fragment}},
+            chain, pass, draw_scene ? "ScenePass" : "SceneDepthPass",
+            {{MTL::StageDispatch, MTL::StageVertex | MTL::StageFragment}, {MTL::StageFragment | MTL::StageBlit, MTL::StageFragment}},
             main_extent, slots, buffers, ubo_offset
         );
 
@@ -1338,13 +1336,13 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
     // instances against it, then resume the scene pass with the newly visible and the blend draws.
     if (two_phase) {
         {
-            auto *compute = chain.BeginCompute("OcclusionInterlude", stage::Vertex | stage::Fragment);
+            auto *compute = chain.BeginCompute("OcclusionInterlude", MTL::StageVertex | MTL::StageFragment);
             RecordDepthPyramid(compute, slots, buffers, pipelines, sel_slots, ubo_offset);
             RecordOcclusionCull(compute, slots, pipelines, buffers, buffers.RenderDraw, draw_list, sel_slots.DepthPyramidSampler, ubo_offset);
         }
         const std::array colors{mtl::LoadColor(*main.Resources->SceneColorImage)};
         const auto pass = mtl::MakePassDescriptor(colors, mtl::LoadDepth(*main.Resources->DepthImage));
-        encoder = encode::BeginScenePass(chain, *pass, "SceneResumePass", {{stage::Dispatch, stage::Vertex | stage::Fragment}}, main_extent, slots, buffers, ubo_offset);
+        encoder = encode::BeginScenePass(chain, pass, "SceneResumePass", {{MTL::StageDispatch, MTL::StageVertex | MTL::StageFragment}}, main_extent, slots, buffers, ubo_offset);
         if (buffers.IdentityIndexCount > 0) {
             if (show_rendered) {
                 record_pbr_batch(draw.FillOpaque, PbrCompiler::Variant::Opaque, /*region_b=*/true);
@@ -1363,7 +1361,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
                 phase == RenderPhase::BlurAccumulateFirst ? mtl::ClearColor(*main.MotionBlur->AccumImage) : mtl::LoadColor(*main.MotionBlur->AccumImage)
             };
             const auto pass = mtl::MakePassDescriptor(colors);
-            encoder = encode::BeginScenePass(chain, *pass, "BlurAccumulate", {{stage::Fragment, stage::Fragment}}, main_extent, slots, buffers, ubo_offset);
+            encoder = encode::BeginScenePass(chain, pass, "BlurAccumulate", {{MTL::StageFragment, MTL::StageFragment}}, main_extent, slots, buffers, ubo_offset);
             main.MotionBlurAccumulate.Bind(encoder);
             const struct {
                 uint32_t GatherSamplerSlot;
@@ -1391,7 +1389,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
             mtl::ClearColor(*main.Resources->LineDataImage),
         };
         const auto overlay_pass = mtl::MakePassDescriptor(overlay_colors, mtl::LoadDepth(*main.Resources->DepthImage));
-        encoder = encode::BeginScenePass(chain, *overlay_pass, "OverlayPass", {{stage::Dispatch, stage::Vertex | stage::Fragment}, {stage::Fragment, stage::Fragment}}, main_extent, slots, buffers, ubo_offset);
+        encoder = encode::BeginScenePass(chain, overlay_pass, "OverlayPass", {{MTL::StageDispatch, MTL::StageVertex | MTL::StageFragment}, {MTL::StageFragment, MTL::StageFragment}}, main_extent, slots, buffers, ubo_offset);
 
         const auto record_overlay_batch = [&](SPT spt, const DrawBatchInfo &batch) {
             if (batch.DrawCount == 0) return;
@@ -1467,7 +1465,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
                     mtl::LoadColor(*main.Resources->LineDataImage),
                 };
                 const auto bone_pass = mtl::MakePassDescriptor(bone_colors, mtl::ClearDepth(*main.Resources->DepthImage));
-                encoder = encode::BeginScenePass(chain, *bone_pass, "BoneXRay", {{stage::Dispatch, stage::Vertex | stage::Fragment}, {stage::Fragment, stage::Fragment}}, main_extent, slots, buffers, ubo_offset);
+                encoder = encode::BeginScenePass(chain, bone_pass, "BoneXRay", {{MTL::StageDispatch, MTL::StageVertex | MTL::StageFragment}, {MTL::StageFragment, MTL::StageFragment}}, main_extent, slots, buffers, ubo_offset);
 
                 // In Object+wireframe mode, show only outlines (no fills).
                 // In Edit/Pose+wireframe, fills are semitransparent and write far-plane depth (via shader) so wires are never occluded.
@@ -1491,7 +1489,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
     { // Composite: anti-alias the overlay layer using LineDataImage, view-transform the scene, merge into FinalColorImage
         const std::array colors{mtl::ClearColor(*main.Resources->FinalColorImage, {0, 0, 0, 1})};
         const auto pass = mtl::MakePassDescriptor(colors);
-        encoder = encode::BeginScenePass(chain, *pass, "Composite", {{stage::Fragment, stage::Fragment}}, main.Resources->FinalColorImage.Extent, slots, buffers, ubo_offset);
+        encoder = encode::BeginScenePass(chain, pass, "Composite", {{MTL::StageFragment, MTL::StageFragment}}, main.Resources->FinalColorImage.Extent, slots, buffers, ubo_offset);
         main.ViewportComposite.Bind(encoder);
         // Debug channels write their own already-viewable values, so they pass through untransformed.
         const uint32_t view_transform = settings.DebugChannel != DebugChannel::None ? 2u : show_rendered ? 1u :

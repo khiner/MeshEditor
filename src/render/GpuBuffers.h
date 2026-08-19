@@ -75,7 +75,7 @@ struct InstanceArena {
     void ReserveAdditional(uint32_t count) { EnsureCapacity(uint64_t(Allocator.HighWaterMark()) + count); }
 
     void UpdateState(uint32_t index, uint8_t state) { StateBuffer.Update(as_bytes(state), uint64_t(index) * sizeof(uint8_t)); }
-    const AABB &GetBounds(uint32_t index) const { return reinterpret_cast<const AABB *>(BoundsBuffer.GetMappedData().data())[index]; }
+    const AABB &GetBounds(uint32_t index) const { return reinterpret_cast<const AABB *>(BoundsBuffer.Contents().data())[index]; }
     std::span<uint8_t> GetMutableVisibility(Range range) const { return VisibilityBuffer.GetMutableSpan<uint8_t>(range); }
     std::span<AABB> GetMutableBounds(Range range) const { return BoundsBuffer.GetMutableSpan<AABB>(range); }
     std::span<uint8_t> GetMutableStates() const { return {reinterpret_cast<uint8_t *>(StateBuffer.GetMutableRange(0, StateBuffer.UsedSize).data()), StateBuffer.UsedSize}; }
@@ -280,7 +280,7 @@ struct GpuBuffers {
 
     // Copy the live view UBO into ring instance `instance`.
     void SnapshotSceneViewUbo(uint32_t instance) {
-        SceneViewUBO.Update(SceneViewUBO.GetMappedData().subspan(0, sizeof(::SceneViewUBO)), ViewUboStride() * instance);
+        SceneViewUBO.Update(SceneViewUBO.Contents().subspan(0, sizeof(::SceneViewUBO)), ViewUboStride() * instance);
     }
     void UpdateSceneViewUboField(uint32_t instance, uint64_t field_offset, std::span<const std::byte> bytes) {
         SceneViewUBO.Update(bytes, ViewUboStride() * instance + field_offset);
@@ -291,13 +291,13 @@ struct GpuBuffers {
     void CaptureVelocityPose(VelocityPose &dst) const {
         static constexpr auto copy_whole = [](const mtl::Buffer &src, mtl::Buffer &dst) {
             dst.Reserve(src.UsedSize);
-            dst.Update(src.GetMappedData().subspan(0, src.UsedSize));
+            dst.Update(src.Contents().subspan(0, src.UsedSize));
             dst.UsedSize = src.UsedSize;
         };
         copy_whole(Instances.TransformBuffer, dst.Transforms);
         copy_whole(ArmatureDeformBuffer.Buffer, dst.ArmatureDeform);
         copy_whole(MorphWeightBuffer.Buffer, dst.MorphWeights);
-        dst.ViewProj = reinterpret_cast<const ::SceneViewUBO *>(SceneViewUBO.GetMappedData().data())->ViewProj;
+        dst.ViewProj = reinterpret_cast<const ::SceneViewUBO *>(SceneViewUBO.Contents().data())->ViewProj;
     }
 
     // Per-scene resource tables — reset via their own paths (Lights.SetCount(0) / ResetImportedTexturesAndMaterials)

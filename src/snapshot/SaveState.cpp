@@ -18,8 +18,8 @@ namespace {
 // valid on restore. MaterialStore::Names rides along (the parallel CPU name list).
 std::vector<std::byte> SerializeMaterials(const entt::registry &r) {
     const auto &materials = r.ctx().get<const GpuBuffers>().Materials;
-    const auto mapped = materials.Buffer.GetMappedData();
-    const auto used = std::min(size_t(materials.Buffer.UsedSize), mapped.size());
+    const auto mapped = materials.Contents();
+    const auto used = std::min(size_t(materials.UsedSize), mapped.size());
     std::vector<std::byte> material_bytes{mapped.begin(), mapped.begin() + used};
     auto names = r.ctx().get<const MaterialStore>().Names;
 
@@ -36,7 +36,7 @@ void DeserializeMaterials(entt::registry &r, std::span<const std::byte> bytes) {
     zpp::bits::in archive{bytes};
     if (zpp::bits::failure(archive(material_bytes, names))) return;
 
-    auto &buffer = r.ctx().get<GpuBuffers>().Materials.Buffer;
+    auto &buffer = r.ctx().get<GpuBuffers>().Materials;
     buffer.Reserve(material_bytes.size());
     if (!material_bytes.empty()) buffer.Update(material_bytes, 0);
     buffer.UsedSize = material_bytes.size();
@@ -48,14 +48,14 @@ void DeserializeMaterials(entt::registry &r, std::span<const std::byte> bytes) {
 std::vector<std::byte> SerializeSelectionBits(const entt::registry &r) {
     uint32_t max_end = 0;
     for (const auto [_, br] : r.view<const MeshSelectionBitsetRange>().each()) max_end = std::max(max_end, br.Offset + br.Count);
-    const auto mapped = r.ctx().get<const GpuBuffers>().SelectionBitset.Buffer.GetMappedData();
+    const auto mapped = r.ctx().get<const GpuBuffers>().SelectionBitset.Contents();
     const auto used = std::min(size_t((max_end + 31) / 32) * sizeof(uint32_t), mapped.size());
     return {mapped.begin(), mapped.begin() + used};
 }
 
 void DeserializeSelectionBits(entt::registry &r, std::span<const std::byte> bytes) {
-    auto &buffer = r.ctx().get<GpuBuffers>().SelectionBitset.Buffer;
-    const auto mapped = buffer.GetMutableRange(0, buffer.GetMappedData().size());
+    auto &buffer = r.ctx().get<GpuBuffers>().SelectionBitset;
+    const auto mapped = buffer.GetMutableRange(0, buffer.Contents().size());
     std::memset(mapped.data(), 0, mapped.size());
     if (!bytes.empty()) buffer.Update(bytes, 0);
 }

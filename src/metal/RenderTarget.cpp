@@ -1,8 +1,8 @@
 #include "metal/RenderTarget.h"
 
 namespace mtl {
-Owned<MTL::RenderPassDescriptor> MakePassDescriptor(std::span<const ColorAttachment> colors, DepthAttachment depth) {
-    Owned<MTL::RenderPassDescriptor> descriptor{MTL::RenderPassDescriptor::alloc()->init()};
+MTL::RenderPassDescriptor *MakePassDescriptor(std::span<const ColorAttachment> colors, DepthAttachment depth) {
+    auto *descriptor = MTL::RenderPassDescriptor::renderPassDescriptor();
     for (size_t i = 0; i < colors.size(); ++i) {
         const auto &color = colors[i];
         if (!color.Texture) continue;

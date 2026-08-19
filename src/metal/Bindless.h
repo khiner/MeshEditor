@@ -21,15 +21,14 @@ struct BindlessSet {
     void SetSampler(TypedSlot, MTL::Texture *, MTL::SamplerState *);
     void Clear(TypedSlot);
 
-    MTL::Buffer *Table() const { return *ArgumentBuffer; }
+    MTL::Buffer *Table() const { return ArgumentBuffer.get(); }
 
 private:
     size_t EntryOffset(SlotType, uint32_t slot) const;
     uint64_t *EntryAt(SlotType, uint32_t slot) const;
 
     const Context &Ctx;
-    Owned<MTL::Buffer> ArgumentBuffer;
-    std::array<size_t, SlotTypeCount> BindingOffsets{};
+    NS::SharedPtr<MTL::Buffer> ArgumentBuffer;
     std::array<RangeAllocator, SlotTypeCount> Allocators;
 };
 } // namespace mtl

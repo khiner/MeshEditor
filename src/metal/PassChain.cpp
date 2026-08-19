@@ -53,7 +53,7 @@ MTL::ComputeCommandEncoder *PassChain::BeginCompute(std::string_view name, MTL::
     SampleInto(descriptor->sampleBufferAttachments()->object(0), name);
     ClosePass();
     auto *encoder = CommandBuffer->computeCommandEncoder(descriptor);
-    OpenPass(encoder, {{after, Stage::Dispatch}});
+    OpenPass(encoder, {{after, MTL::StageDispatch}});
     return encoder;
 }
 
@@ -62,7 +62,7 @@ MTL::BlitCommandEncoder *PassChain::BeginBlit(std::string_view name, MTL::Stages
     SampleInto(descriptor->sampleBufferAttachments()->object(0), name);
     ClosePass();
     auto *encoder = CommandBuffer->blitCommandEncoder(descriptor);
-    OpenPass(encoder, {{after, Stage::Blit}});
+    OpenPass(encoder, {{after, MTL::StageBlit}});
     return encoder;
 }
 } // namespace mtl

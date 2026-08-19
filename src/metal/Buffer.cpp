@@ -21,9 +21,9 @@ uint64_t NextPowerOfTwo(uint64_t x) {
 }
 } // namespace
 
-Owned<MTL::Buffer> NewBuffer(const Context &ctx, uint64_t size) {
+NS::SharedPtr<MTL::Buffer> NewBuffer(const Context &ctx, uint64_t size) {
     if (size == 0) return {};
-    Owned<MTL::Buffer> buffer{ctx.Device->newBuffer(size, MTL::ResourceStorageModeShared)};
+    auto buffer = NS::TransferPtr(ctx.Device->newBuffer(size, MTL::ResourceStorageModeShared));
     if (!buffer) throw std::runtime_error("Failed to allocate a Metal buffer.");
     return buffer;
 }
@@ -80,30 +80,18 @@ Buffer::~Buffer() {
 
 void Buffer::Retire() {
     if (!DeviceBuffer) return; // Already moved-from or never allocated.
-    Ctx.Ctx.RemoveResident(*DeviceBuffer);
+    Ctx.Ctx.RemoveResident(DeviceBuffer.get());
     Ctx.Retired.emplace_back(std::move(DeviceBuffer));
 }
 
 void Buffer::UpdateSlot() {
     if (Slot == InvalidSlot) return;
-    Ctx.Slots.SetBuffer({Type, Slot}, *DeviceBuffer);
+    Ctx.Slots.SetBuffer({Type, Slot}, DeviceBuffer.get());
 }
 
-std::span<const std::byte> Buffer::GetData() const {
-    if (!DeviceBuffer) return {};
-    return {static_cast<const std::byte *>(DeviceBuffer->contents()), DeviceBuffer->length()};
-}
-
-std::span<std::byte> Buffer::GetMappedData() const {
+std::span<std::byte> Buffer::Contents() const {
     if (!DeviceBuffer) return {};
     return {static_cast<std::byte *>(DeviceBuffer->contents()), DeviceBuffer->length()};
-}
-
-uint64_t Buffer::GetAllocatedSize() const { return DeviceBuffer ? DeviceBuffer->length() : 0; }
-
-void Buffer::Write(std::span<const std::byte> data, uint64_t offset) const {
-    if (data.empty() || !DeviceBuffer || offset >= DeviceBuffer->length()) return;
-    std::memcpy(static_cast<std::byte *>(DeviceBuffer->contents()) + offset, data.data(), data.size());
 }
 
 void Buffer::Move(uint64_t from, uint64_t to, uint64_t size) const {
@@ -120,12 +108,12 @@ std::span<std::byte> Buffer::GetMutableRange(uint64_t offset, uint64_t size) con
 }
 
 void Buffer::Reserve(uint64_t required_size) {
-    if (required_size <= GetAllocatedSize()) return;
+    if (DeviceBuffer && required_size <= DeviceBuffer->length()) return;
     const auto new_size = NextPowerOfTwo(required_size);
     auto new_device = NewBuffer(Ctx.Ctx, new_size);
     if (UsedSize > 0 && DeviceBuffer) std::memcpy(new_device->contents(), DeviceBuffer->contents(), UsedSize);
     if (DeviceBuffer) {
-        Ctx.Ctx.RemoveResident(*DeviceBuffer);
+        Ctx.Ctx.RemoveResident(DeviceBuffer.get());
         Ctx.Retired.emplace_back(std::move(DeviceBuffer));
     }
     DeviceBuffer = std::move(new_device);
@@ -135,10 +123,8 @@ void Buffer::Reserve(uint64_t required_size) {
 void Buffer::Update(std::span<const std::byte> data, uint64_t offset) {
     if (data.empty()) return;
     const auto required_size = offset + data.size();
-    const auto old_size = GetAllocatedSize();
     Reserve(required_size);
     UsedSize = std::max(UsedSize, required_size);
-    Write(data, offset);
-    if (GetAllocatedSize() != old_size) UpdateSlot();
+    std::memcpy(static_cast<std::byte *>(DeviceBuffer->contents()) + offset, data.data(), data.size());
 }
 } // namespace mtl

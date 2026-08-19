@@ -2021,7 +2021,7 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
     const auto default_material_index = material_count > 0 ? material_count - 1u : 0u;
     std::vector<std::string> material_names;
     material_names.reserve(source_materials.size());
-    ctx.Buffers.Materials.Reserve(material_count + source_materials.size());
+    ctx.Buffers.Materials.ReserveElements(material_count + source_materials.size());
     for (uint32_t material_index = 0; material_index < source_materials.size(); ++material_index) {
         const auto &src_material = source_materials[material_index];
         const auto src_name = material_index < asset.materials.size() ? std::string_view(asset.materials[material_index].name) : std::string_view{"DefaultMaterial"};

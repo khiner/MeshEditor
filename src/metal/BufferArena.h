@@ -68,7 +68,7 @@ struct BufferArena {
     // Capture/restore the whole arena (see ArenaState).
     ArenaState Save() const {
         const auto used = size_t(Buffer.UsedSize);
-        const auto mapped = Buffer.GetMappedData();
+        const auto mapped = Buffer.Contents();
         const auto count = std::min(used, mapped.size());
         return {{mapped.begin(), mapped.begin() + count}, Allocator.Save()};
     }
@@ -92,7 +92,7 @@ private:
 
     template<typename U>
     std::span<const U> SpanFromBytes(Range range) const {
-        if (const auto bytes = RangeBytes(Buffer.GetMappedData(), range); !bytes.empty()) {
+        if (const auto bytes = RangeBytes(Buffer.Contents(), range); !bytes.empty()) {
             return {reinterpret_cast<const U *>(bytes.data()), range.Count};
         }
         return {};

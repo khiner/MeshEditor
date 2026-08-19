@@ -14,7 +14,7 @@ Texture Create(
     const Context &ctx, MTL::TextureType type, MTL::PixelFormat format, Extent2D extent,
     MTL::TextureUsage usage, uint32_t mip_levels, MTL::StorageMode storage, uint32_t layers = 1
 ) {
-    Owned<MTL::TextureDescriptor> descriptor{MTL::TextureDescriptor::alloc()->init()};
+    const auto descriptor = NS::TransferPtr(MTL::TextureDescriptor::alloc()->init());
     descriptor->setTextureType(type);
     descriptor->setPixelFormat(format);
     descriptor->setWidth(extent.Width);
@@ -23,9 +23,9 @@ Texture Create(
     descriptor->setMipmapLevelCount(mip_levels);
     descriptor->setUsage(usage);
     descriptor->setStorageMode(storage);
-    Owned<MTL::Texture> handle{ctx.Device->newTexture(*descriptor)};
+    auto handle = NS::TransferPtr(ctx.Device->newTexture(descriptor.get()));
     if (!handle) throw std::runtime_error("Failed to allocate a Metal texture.");
-    ctx.AddResident(*handle);
+    ctx.AddResident(handle.get());
     return {std::move(handle), extent, mip_levels};
 }
 
@@ -52,21 +52,21 @@ Texture CreateTexture2DArray(const Context &ctx, MTL::PixelFormat format, Extent
     return Create(ctx, MTL::TextureType2DArray, format, extent, usage, mip_levels, StorageFor(usage), layers);
 }
 
-Owned<MTL::Texture> CreateMipView(const Texture &texture, uint32_t mip) {
-    return Owned<MTL::Texture>{texture.Handle->newTextureView(
+NS::SharedPtr<MTL::Texture> CreateMipView(const Texture &texture, uint32_t mip) {
+    return NS::TransferPtr(texture.Handle->newTextureView(
         texture.Handle->pixelFormat(), texture.Handle->textureType(),
         NS::Range::Make(mip, 1), NS::Range::Make(0, texture.Handle->arrayLength())
-    )};
+    ));
 }
 
-Owned<MTL::Texture> CreateCubeMipView(const Texture &texture, uint32_t mip) {
-    return Owned<MTL::Texture>{texture.Handle->newTextureView(
+NS::SharedPtr<MTL::Texture> CreateCubeMipView(const Texture &texture, uint32_t mip) {
+    return NS::TransferPtr(texture.Handle->newTextureView(
         texture.Handle->pixelFormat(), MTL::TextureType2DArray, NS::Range::Make(mip, 1), NS::Range::Make(0, 6)
-    )};
+    ));
 }
 
-Owned<MTL::SamplerState> CreateSampler(const Context &ctx, const SamplerDesc &desc) {
-    Owned<MTL::SamplerDescriptor> descriptor{MTL::SamplerDescriptor::alloc()->init()};
+NS::SharedPtr<MTL::SamplerState> CreateSampler(const Context &ctx, const SamplerDesc &desc) {
+    const auto descriptor = NS::TransferPtr(MTL::SamplerDescriptor::alloc()->init());
     descriptor->setMinFilter(desc.MinFilter);
     descriptor->setMagFilter(desc.MagFilter);
     descriptor->setMipFilter(desc.MipFilter);
@@ -76,12 +76,12 @@ Owned<MTL::SamplerState> CreateSampler(const Context &ctx, const SamplerDesc &de
     descriptor->setMaxAnisotropy(NS::UInteger(desc.MaxAnisotropy));
     // The samplers live in the argument buffer, which needs their resource IDs.
     descriptor->setSupportArgumentBuffers(true);
-    Owned<MTL::SamplerState> sampler{ctx.Device->newSamplerState(*descriptor)};
+    auto sampler = NS::TransferPtr(ctx.Device->newSamplerState(descriptor.get()));
     if (!sampler) throw std::runtime_error("Failed to create a Metal sampler.");
     return sampler;
 }
 
-Owned<MTL::SamplerState> CreateSampler(
+NS::SharedPtr<MTL::SamplerState> CreateSampler(
     const Context &ctx, MTL::SamplerMinMagFilter filter, MTL::SamplerMipFilter mip_filter,
     MTL::SamplerAddressMode address_mode, float max_anisotropy
 ) {

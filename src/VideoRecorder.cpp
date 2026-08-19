@@ -139,7 +139,7 @@ void VideoRecorder::CaptureFrame(const mtl::Texture &texture) {
         return;
     }
 
-    if (!mtl::CopyTextureRegion(*Ctx, texture, OffsetX, OffsetY, Ex, *Staging, Ex.Width * 4)) {
+    if (!mtl::CopyTextureRegion(*Ctx, texture, OffsetX, OffsetY, Ex, Staging.get(), Ex.Width * 4)) {
         std::println(stderr, "VideoRecorder: frame copy failed; stopping.");
         Stop();
         return;

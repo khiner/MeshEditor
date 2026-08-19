@@ -92,8 +92,8 @@ void RenderAndPresentFrame(const mtl::Context &ctx, WindowSurface &surface, ImDr
     const std::array colors{mtl::ClearColor(drawable->texture(), {0.45, 0.55, 0.60, 1.0})};
     const auto pass = mtl::MakePassDescriptor(colors);
     auto *command_buffer = ctx.Queue->commandBuffer();
-    ImGui_ImplMetal_NewFrame(*pass);
-    auto *encoder = command_buffer->renderCommandEncoder(*pass);
+    ImGui_ImplMetal_NewFrame(pass);
+    auto *encoder = command_buffer->renderCommandEncoder(pass);
     ImGui_ImplMetal_RenderDrawData(draw_data, command_buffer, encoder);
     encoder->endEncoding();
     {
@@ -742,7 +742,7 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
         surface.View = SDL_Metal_CreateView(window);
         if (!surface.View) throw std::runtime_error(std::format("Failed to create a Metal view: {}", SDL_GetError()));
         surface.Layer = static_cast<CA::MetalLayer *>(SDL_Metal_GetLayer(surface.View));
-        surface.Layer->setDevice(*ctx.Device);
+        surface.Layer->setDevice(ctx.Device.get());
         surface.Layer->setPixelFormat(mtl::Format::Color);
         // Render mode is GPU-paced: content is fixed-step per tick, so present pacing only affects
         // wall time. Benchmark frames measure throughput, which vsync pacing would hide.
@@ -764,7 +764,7 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
     StyleColorsDark();
 
     ImGui_ImplSDL3_InitForMetal(window);
-    ImGui_ImplMetal_Init(*ctx.Device);
+    ImGui_ImplMetal_Init(ctx.Device.get());
 
     InitFonts();
 

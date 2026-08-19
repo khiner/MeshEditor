@@ -43,8 +43,8 @@ void ResetObjectPickKeys(GpuBuffers &buffers) {
 void ResetSelectionFragmentState(mtl::PassChain &chain, const GpuBuffers &buffers, const Pipelines &pipelines) {
     const auto &heads = *pipelines.SelectionFragment.Resources;
     const auto head_bytes = uint64_t(heads.Extent.Width) * heads.Extent.Height * sizeof(uint32_t);
-    auto *blit = chain.BeginBlit("SelectionReset", mtl::Stage::Fragment);
-    blit->fillBuffer(*buffers.SelectionCounter.Buffer, NS::Range::Make(0, sizeof(SelectionCounters)), 0);
+    auto *blit = chain.BeginBlit("SelectionReset", MTL::StageFragment);
+    blit->fillBuffer(*buffers.SelectionCounter, NS::Range::Make(0, sizeof(SelectionCounters)), 0);
     blit->fillBuffer(*heads.HeadBuffer, NS::Range::Make(0, head_bytes), 0xFF);
 }
 
@@ -57,7 +57,7 @@ void RecordSilhouetteDepthPass(
     const auto extent = silhouette.Resources->OffscreenImage.Extent;
     const std::array colors{mtl::ClearColor(*silhouette.Resources->OffscreenImage)};
     const auto pass = mtl::MakePassDescriptor(colors, mtl::ClearDepth(*silhouette.Resources->DepthImage));
-    auto *encoder = chain.BeginRender(*pass, "SelectionSilhouetteDepth", {{mtl::Stage::Dispatch, mtl::Stage::Vertex}, {mtl::Stage::Fragment, mtl::Stage::Fragment}});
+    auto *encoder = chain.BeginRender(pass, "SelectionSilhouetteDepth", {{MTL::StageDispatch, MTL::StageVertex}, {MTL::StageFragment, MTL::StageFragment}});
     encode::SetFullViewport(encoder, extent);
     if (batch.DrawCount > 0) {
         encode::BindScene(encoder, slots, buffers);
@@ -71,7 +71,7 @@ void RecordSelectionCompute(
     mtl::PassChain &chain, const mtl::BindlessSet &slots, const GpuBuffers &buffers,
     const mtl::ComputePipeline &compute, const auto &pc, auto &&dispatch
 ) {
-    auto *encoder = chain.BeginCompute("SelectionPick", mtl::Stage::Fragment);
+    auto *encoder = chain.BeginCompute("SelectionPick", MTL::StageFragment);
     encode::BindCompute(encoder, compute, slots, buffers);
     encode::SetPushConstants(encoder, pc);
     dispatch(encoder);
@@ -162,7 +162,7 @@ void RunSelectionPass(
     const auto pass = mtl::MakePassDescriptor({}, mtl::LoadDepth(*pipelines.Silhouette.Resources->DepthImage, MTL::StoreActionDontCare));
     pass->setRenderTargetWidth(extent.Width);
     pass->setRenderTargetHeight(extent.Height);
-    auto *encoder = encode::BeginScenePass(chain, *pass, "SelectionDraws", {{mtl::Stage::Dispatch, mtl::Stage::Vertex}, {mtl::Stage::Blit, mtl::Stage::Fragment}}, extent, slots, buffers);
+    auto *encoder = encode::BeginScenePass(chain, pass, "SelectionDraws", {{MTL::StageDispatch, MTL::StageVertex}, {MTL::StageBlit, MTL::StageFragment}}, extent, slots, buffers);
     record_draws(encoder, extent);
 }
 
