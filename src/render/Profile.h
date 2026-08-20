@@ -2,11 +2,13 @@
 
 #include "metal/PassTimer.h"
 
+#include <filesystem>
 #include <string_view>
 
 // Where a frame's time goes, gathered over a run and reported as a summary.
 namespace profile {
 inline bool Enabled{false};
+inline std::filesystem::path JsonPath{};
 
 void Init(const mtl::Context &);
 void Deinit();
@@ -18,6 +20,7 @@ void EndRecording();
 
 void BeginCpu(std::string_view name);
 void EndCpu();
+void RecordCounter(std::string_view name, double value);
 
 // Call after the command buffer completes.
 void Resolve(MTL::CommandBuffer *);

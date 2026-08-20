@@ -82,6 +82,21 @@ uint32_t OffsetOrInvalid(Range range) { return range.Count > 0 ? range.Offset : 
 
 void FlushDrawList(entt::registry &r, const DrawListBuilder &draw_list, DrawBufferPair &pair) {
     auto &buffers = r.ctx().get<GpuBuffers>();
+    const bool selection = &pair == &buffers.SelectionDraw;
+    profile::RecordCounter(selection ? "Selection DrawData" : "Render DrawData", draw_list.Draws.size());
+    profile::RecordCounter(selection ? "Selection CullEntries" : "Render CullEntries", draw_list.CullEntries.size());
+    profile::RecordCounter(selection ? "Selection IndirectCommands" : "Render IndirectCommands", draw_list.IndirectCommands.size());
+    profile::RecordCounter(selection ? "Selection MaxIndexCount" : "Render MaxIndexCount", draw_list.MaxIndexCount);
+    profile::RecordCounter(selection ? "Selection DrawDataBytes" : "Render DrawDataBytes", draw_list.Draws.size() * sizeof(DrawData));
+    profile::RecordCounter(selection ? "Selection CullEntryBytes" : "Render CullEntryBytes", draw_list.CullEntries.size() * sizeof(CullEntry));
+    profile::RecordCounter(
+        selection ? "Selection IndirectCommandBytes" : "Render IndirectCommandBytes",
+        2 * draw_list.IndirectCommands.size() * sizeof(MTL::DrawIndexedPrimitivesIndirectArguments)
+    );
+    if (!selection) {
+        profile::RecordCounter("InstanceSlots", buffers.Instances.TransformBuffer.UsedSize / sizeof(Transform));
+        profile::RecordCounter("DeviceAllocatedBytes", buffers.Ctx.Ctx.Device->currentAllocatedSize());
+    }
     buffers.EnsureIdentityIndexBuffer(std::max(draw_list.MaxIndexCount, 2 * uint32_t(draw_list.Draws.size())));
     if (!draw_list.Draws.empty()) {
         pair.DrawData.Update(as_bytes(draw_list.Draws));

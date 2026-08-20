@@ -20,5 +20,8 @@ compile_commands.json
 # Tetrahedralizer mesh corpora, set up by script/SetupTetCorpus.
 external/TetCorpus/
 
+res/benchmarks/
+benchmark_results/
+
 # Python bytecode.
 __pycache__/

@@ -26,15 +26,19 @@
 #include "audio/ModalModelFile.h"
 #include "audio/ModalModes.h"
 #include "gizmo/TransformGizmoTypes.h"
+#include "gltf/GltfScene.h"
 #include "image/ImageEncode.h"
 #include "mesh/MeshComponents.h"
 #include "metal/MetalContext.h"
 #include "metal/RenderTarget.h"
 #include "metal/Shader.h"
+#include "object/ObjectOps.h"
 #include "physics/PhysicsTypes.h"
 #include "render/GpuBuffers.h"
+#include "render/Instance.h"
 #include "render/MaterialComponents.h"
 #include "render/Profile.h"
+#include "scene/Entity.h"
 #include "scene/SceneControlsUi.h"
 #include "scene/WorldTransform.h"
 #include "snapshot/ReplayTestFixture.h"
@@ -233,13 +237,14 @@ GltfSampleTree BuildGltfSampleTree(const fs::path &root) {
 
 // The File menu's sample-asset trees, scanned once off-thread at startup.
 struct GltfSampleTrees {
-    GltfSampleTree Examples, SampleAssets, Physics, PhysicalAudio;
+    GltfSampleTree Examples, Benchmarks, SampleAssets, Physics, PhysicalAudio;
     std::set<std::string> SampleAssetsExtensions;
 };
 
 GltfSampleTrees BuildSampleTrees() {
     GltfSampleTrees t;
     t.Examples = BuildGltfSampleTree(Paths::Res() / "examples");
+    t.Benchmarks = BuildGltfSampleTree(Paths::Res() / "benchmarks");
 #ifdef GLTF_SAMPLE_ASSETS_DIR
     t.SampleAssets = BuildGltfSampleTree(fs::path{GLTF_SAMPLE_ASSETS_DIR} / "Models");
     [&](this auto &&self, const GltfSampleTree &n) -> void {
@@ -486,6 +491,8 @@ constexpr uvec2 DefaultWindowSize{1280, 800};
 
 // Capture options from the CLI. `--render` is a preset for the full scene corpus; `--screenshot`/`--record` target one output.
 struct CaptureRequest {
+    enum class BenchmarkAction { Steady, Orbit, Transform, Visibility };
+
     bool Play{false};
     float PlayDuration{0}; // 0 = run until playback completes one loop.
     int Fps{60};
@@ -495,11 +502,69 @@ struct CaptureRequest {
     std::optional<uint8_t> MotionBlurSteps{}; // Disengaged = leave the viewport's own setting alone.
     float TimelineEnd{0}; // Seconds. Positive: set the timeline's end frame, so a long play runs without looping.
     int BenchFrames{0}; // Headless: re-render every tick and exit after this many frames.
-    bool BenchSubmit{false}; // Bench ticks re-submit the standing recording.
+    BenchmarkAction BenchAction{BenchmarkAction::Steady};
+    uint32_t BenchActionCount{64};
+    std::string CameraName{};
     std::optional<ViewportShadingMode> Shading{}; // Disengaged = leave the viewport's own setting alone.
     bool Overlays{false}; // Keep overlays on through a capture, which presentation otherwise turns off.
-    bool Edit{false}; // Select everything and edit vertices, putting the element and wire passes in front of a capture.
+    bool Edit{false}; // Select mesh objects and enter vertex edit mode.
 };
+
+struct BenchmarkDriver {
+    CaptureRequest::BenchmarkAction Action;
+    std::vector<std::pair<entt::entity, Transform>> Transforms;
+    uint32_t Frame{};
+
+    BenchmarkDriver(entt::registry &r, const CaptureRequest &capture) : Action(capture.BenchAction) {
+        if (Action != CaptureRequest::BenchmarkAction::Transform && Action != CaptureRequest::BenchmarkAction::Visibility) return;
+        std::vector<entt::entity> entities;
+        for (const auto [entity, kind] : r.view<const ObjectKind>(entt::exclude<SubElementOf>).each()) {
+            if (kind.Value == ObjectType::Mesh && r.all_of<Instance, Transform, RenderInstance>(entity)) entities.emplace_back(entity);
+        }
+        std::ranges::sort(entities);
+        entities.resize(std::min<size_t>(entities.size(), capture.BenchActionCount));
+        Transforms.reserve(entities.size());
+        for (const auto entity : entities) Transforms.emplace_back(entity, r.get<const Transform>(entity));
+    }
+
+    void Apply(entt::registry &r) {
+        switch (Action) {
+            case CaptureRequest::BenchmarkAction::Steady: break;
+            case CaptureRequest::BenchmarkAction::Orbit:
+                action::Emit(action::view::OrbitViewCamera{{0.01f, 0.f}});
+                break;
+            case CaptureRequest::BenchmarkAction::Transform: {
+                const float offset = Frame % 2 == 0 ? 0.05f : 0.f;
+                for (const auto &[entity, base] : Transforms) {
+                    r.patch<Transform>(entity, [&](auto &transform) {
+                        transform = base;
+                        transform.P.y += offset;
+                    });
+                }
+                break;
+            }
+            case CaptureRequest::BenchmarkAction::Visibility:
+                for (const auto &[entity, _] : Transforms) {
+                    if (Frame % 2 == 0) Hide(r, entity);
+                    else Show(r, entity);
+                }
+                break;
+        }
+        ++Frame;
+    }
+};
+
+bool SelectSceneCamera(entt::registry &r, entt::entity viewport, std::string_view name) {
+    if (name.empty()) return true;
+    for (const auto [entity, _, camera_name] : r.view<const Camera, const CameraName>().each()) {
+        if (camera_name.Value != name) continue;
+        SetLookThrough(r, viewport, entity);
+        ProcessComponentEvents(r, viewport);
+        return true;
+    }
+    std::println(stderr, "No scene camera named '{}'.", name);
+    return false;
+}
 
 // Surface and clear any failures action handlers reported this frame. Returns true if there were any.
 bool ReportActionErrors(entt::registry &r) {
@@ -512,28 +577,24 @@ bool ReportActionErrors(entt::registry &r) {
 
 // Seed this run's initial scene and session log. Returns false if the initial file failed to load.
 bool SeedScene(entt::registry &r, entt::entity viewport, const CaptureRequest &capture, const char *initial_file, bool empty) {
-    if (initial_file) {
-        if (const fs::path path = initial_file; path.extension() == ProjectExt) {
-            OpenProjectFile(r, viewport, path);
-            return true;
-        } else if (path.extension() == ActionsExt) {
-            ReplayLogIntoNewSession(r, viewport, path);
-            return true;
+    const fs::path path = initial_file ? initial_file : "";
+    bool loaded{true};
+    if (path.extension() == ProjectExt) OpenProjectFile(r, viewport, path);
+    else if (path.extension() == ActionsExt) ReplayLogIntoNewSession(r, viewport, path);
+    else {
+        if (capture.RenderBasename.empty()) {
+            Paths::SetProject(action::ReserveRestoreSession());
+            action::StartLog(Paths::Project() / SessionLogName);
+        } else {
+            Paths::SetProject(capture.RenderBasename.parent_path());
+            action::StartLog(fs::path{capture.RenderBasename.string() + ".actions"});
         }
+        if (initial_file) {
+            Perform(r, viewport, action::io::Load{.Path = initial_file});
+            loaded = !ReportActionErrors(r);
+        } else if (!empty) Perform(r, viewport, action::io::LoadDefaultScene{});
     }
-    if (capture.RenderBasename.empty()) {
-        Paths::SetProject(action::ReserveRestoreSession());
-        action::StartLog(Paths::Project() / SessionLogName);
-    } else {
-        Paths::SetProject(capture.RenderBasename.parent_path());
-        action::StartLog(fs::path{capture.RenderBasename.string() + ".actions"});
-    }
-    if (initial_file) {
-        Perform(r, viewport, action::io::Load{.Path = initial_file});
-        return !ReportActionErrors(r);
-    }
-    if (!empty) Perform(r, viewport, action::io::LoadDefaultScene{});
-    return true;
+    return loaded && SelectSceneCamera(r, viewport, capture.CameraName);
 }
 
 // Per-frame capture orchestration shared by the windowed and headless run loops: scene framing,
@@ -879,6 +940,7 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
                 if (!trees && SampleTreesFuture.valid() && SampleTreesFuture.wait_for(std::chrono::seconds{0}) == std::future_status::ready) trees = SampleTreesFuture.get();
                 if (trees) {
                     render_submenu("Examples", trees->Examples);
+                    render_submenu("Benchmarks", trees->Benchmarks);
                     static std::set<std::string> sample_assets_filter;
                     if (!trees->SampleAssets.Files.empty() || !trees->SampleAssets.Children.empty()) {
                         if (BeginMenu("glTF Samples")) {
@@ -1015,9 +1077,8 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
             }
         }
         const bool viewport_settled = new_logical_extent != uvec2{} && new_logical_extent == r.ctx().get<const ViewportExtent>().Value;
-        // Benchmark: orbit the view a fixed step each settled frame, and exit after the requested count.
         if (capture.BenchFrames > 0 && viewport_settled) {
-            action::Emit(action::view::OrbitViewCamera{{0.01f, 0.f}});
+            if (capture.BenchAction == CaptureRequest::BenchmarkAction::Orbit) action::Emit(action::view::OrbitViewCamera{{0.01f, 0.f}});
             if (++bench_ticks >= capture.BenchFrames) done = true;
         }
         // Remaining emits go after Interact so it wins the single-action buffer.
@@ -1087,16 +1148,27 @@ bool RunHeadlessScene(entt::registry &r, entt::entity viewport, const char *init
     // Emitted, not Performed: the resize must happen inside the first tick's SubmitViewport for that
     // frame to render the recreated images correctly.
     action::Emit(action::view::SetExtent{DefaultWindowSize});
-    // --edit selects every object, but enters edit mode only when all are meshes.
     if (capture.Edit) {
-        Perform(r, viewport, action::selection::SelectAll{});
-        Perform(r, viewport, action::view::SetInteractionMode{InteractionMode::Edit});
-        Perform(r, viewport, action::view::SetEditMode{Element::Vertex});
+        std::vector<entt::entity> meshes;
+        for (const auto [entity, kind, _] : r.view<const ObjectKind, const Instance>().each()) {
+            if (kind.Value == ObjectType::Mesh) meshes.emplace_back(entity);
+        }
+        if (!meshes.empty()) {
+            Perform(r, viewport, action::selection::ApplyTreeSelection{
+                                     .ToSelect = meshes,
+                                     .ToDeselect = {},
+                                     .NavToActive = meshes.front(),
+                                     .Clear = action::selection::ApplyTreeSelection::ClearKind::All,
+                                 });
+            Perform(r, viewport, action::view::SetInteractionMode{InteractionMode::Edit});
+            Perform(r, viewport, action::view::SetEditMode{Element::Vertex});
+        }
     }
 
     auto &frame_state = r.ctx().get<FrameState>();
     frame_state.DeltaTime = driver.RenderDt;
     int bench_frames = capture.BenchFrames;
+    BenchmarkDriver benchmark{r, capture};
     bool profile_cleared{false};
     bool submitted{false};
     bool done{false};
@@ -1113,8 +1185,7 @@ bool RunHeadlessScene(entt::registry &r, entt::entity viewport, const char *init
         }
         {
             const profile::CpuScope scope{"Frame"};
-            // Benchmark: orbit the view a fixed step each settled frame.
-            if (bench_frames > 0 && settled) action::Emit(action::view::OrbitViewCamera{{0.01f, 0.f}});
+            if (bench_frames > 0 && settled) benchmark.Apply(r);
             driver.EmitFrameActions(r, viewport, settled, extent);
             action::ApplyEmitted(r, viewport);
             ReportActionErrors(r);
@@ -1135,7 +1206,7 @@ bool RunHeadlessScene(entt::registry &r, entt::entity viewport, const char *init
                 done = true;
             }
             auto &pending = r.ctx().get<PendingRenderRequest>().Value;
-            pending = std::max(pending, capture.BenchSubmit ? RenderRequest::Submit : RenderRequest::ReRecord);
+            pending = std::max(pending, RenderRequest::Submit);
         } else {
             if (driver.CaptureFrame(r, viewport, driver.Framed(settled))) done = true;
             // Headless has no window to close: without anything to capture or play, one settled frame is the whole run.
@@ -1296,7 +1367,20 @@ int main(int argc, char **argv) {
         else if (a == "--timeline-end" && std::next(it) != args.end()) capture.TimelineEnd = std::atof(*++it);
         else if (a == "--motion-blur" && std::next(it) != args.end()) capture.MotionBlurSteps = uint8_t(std::max(1, std::atoi(*++it)));
         else if (a == "--frames" && std::next(it) != args.end()) capture.BenchFrames = std::atoi(*++it);
-        else if (a == "--bench-submit") capture.BenchSubmit = true;
+        else if (a == "--bench-action" && std::next(it) != args.end()) {
+            const std::string_view action{*++it};
+            if (action == "steady") capture.BenchAction = CaptureRequest::BenchmarkAction::Steady;
+            else if (action == "orbit") capture.BenchAction = CaptureRequest::BenchmarkAction::Orbit;
+            else if (action == "transform") capture.BenchAction = CaptureRequest::BenchmarkAction::Transform;
+            else if (action == "visibility") capture.BenchAction = CaptureRequest::BenchmarkAction::Visibility;
+            else {
+                std::println(stderr, "Unknown benchmark action '{}'.", action);
+                return 1;
+            }
+        } else if (a == "--bench-action-count" && std::next(it) != args.end()) {
+            capture.BenchActionCount = uint32_t(std::max(1, std::atoi(*++it)));
+        }
+        else if (a == "--camera" && std::next(it) != args.end()) capture.CameraName = *++it;
         else if (a == "--shading" && std::next(it) != args.end()) {
             const std::string_view mode{*++it};
             capture.Shading = mode == "wireframe" ? ViewportShadingMode::Wireframe :
@@ -1304,7 +1388,10 @@ int main(int argc, char **argv) {
                 mode == "preview"                 ? ViewportShadingMode::MaterialPreview :
                                                     ViewportShadingMode::Rendered;
         } else if (a == "--profile") profile::Enabled = true;
-        else if (!a.starts_with('-') && !initial_file) initial_file = *it;
+        else if (a == "--profile-json" && std::next(it) != args.end()) {
+            profile::Enabled = true;
+            profile::JsonPath = *++it;
+        } else if (!a.starts_with('-') && !initial_file) initial_file = *it;
     }
     if (capture.Fps <= 0) capture.Fps = 60;
     // A wav target records audio only, so the audio flag is implied.

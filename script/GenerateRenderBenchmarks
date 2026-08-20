@@ -1,0 +1,582 @@
+#!/usr/bin/env python3
+
+"""Generate deterministic glTF benchmark scenes."""
+
+from __future__ import annotations
+
+import argparse
+from array import array
+import filecmp
+import json
+import math
+import shutil
+import struct
+from dataclasses import dataclass
+from pathlib import Path
+import tempfile
+
+
+ROOT = Path(__file__).resolve().parent.parent
+MARKER = ".generated-by-GenerateRenderBenchmarks"
+
+
+@dataclass(frozen=True)
+class Profile:
+    instance_dims: tuple[int, int, int]
+    draw_items: int
+    terrain_size: tuple[int, int]
+    large_meshes: int
+    large_mesh_size: tuple[int, int]
+    occlusion_instances: int
+    editor_edit_meshes: int
+    editor_wireframe_meshes: int
+    editor_grid: int
+    transparent_items: int
+    deformation_meshes: int
+    deformation_size: tuple[int, int]
+
+
+PROFILES = {
+    "smoke": Profile((8, 2, 8), 64, (64, 32), 4, (32, 16), 128, 1, 1, 24, 16, 1, (32, 16)),
+    "standard": Profile((32, 8, 32), 131072, (12288, 1792), 192, (512, 256), 32768, 32, 96, 512, 576, 64, (512, 256)),
+}
+
+CASES = [
+    {"id": "instances-frustum", "scene": "Instances", "camera": "Frustum", "action": "steady"},
+    {"id": "instances-overview", "scene": "Instances", "camera": "Overview", "action": "orbit"},
+    {"id": "instances-transform", "scene": "Instances", "camera": "Overview", "action": "transform", "actionCount": 64},
+    {"id": "draw-items", "scene": "DrawItems", "camera": "Default", "action": "steady"},
+    {"id": "draw-items-visibility", "scene": "DrawItems", "camera": "Default", "action": "visibility", "actionCount": 64},
+    {"id": "meshlets-close", "scene": "Meshlets", "camera": "Close", "action": "orbit"},
+    {"id": "meshlets-overview", "scene": "Meshlets", "camera": "Overview", "action": "steady"},
+    {"id": "large-meshes", "scene": "LargeMeshes", "camera": "Default", "action": "steady"},
+    {"id": "occlusion-hidden", "scene": "Occlusion", "camera": "Occluded", "action": "steady"},
+    {"id": "occlusion-visible", "scene": "Occlusion", "camera": "Visible", "action": "steady"},
+    {"id": "editor-edit", "scene": "EditorEdit", "camera": "Default", "action": "steady", "overlays": True, "edit": True},
+    {"id": "editor-wireframe", "scene": "EditorWireframe", "camera": "Default", "action": "steady", "shading": "wireframe", "overlays": True},
+    {"id": "transparency", "scene": "Transparency", "camera": "Default", "action": "steady", "shading": "rendered"},
+    {"id": "deformation", "scene": "Deformation", "camera": "Default", "action": "playback"},
+    {"id": "deformation-motion-blur", "scene": "Deformation", "camera": "Default", "action": "playback", "motionBlur": 1},
+]
+
+
+class Buffer:
+    def __init__(self) -> None:
+        self.data = bytearray()
+        self.views: list[dict] = []
+        self.accessors: list[dict] = []
+
+    def view(self, payload: bytes, target: int | None = None) -> int:
+        while len(self.data) % 4:
+            self.data.append(0)
+        offset = len(self.data)
+        self.data.extend(payload)
+        view = {"buffer": 0, "byteOffset": offset, "byteLength": len(payload)}
+        if target is not None:
+            view["target"] = target
+        result = len(self.views)
+        self.views.append(view)
+        return result
+
+    def add_accessor(self, accessor: dict) -> int:
+        result = len(self.accessors)
+        self.accessors.append(accessor)
+        return result
+
+    def accessor(
+        self,
+        values: list[tuple] | list[int],
+        kind: str,
+        component_type: int = 5126,
+        target: int | None = None,
+        bounds: bool = False,
+    ) -> int:
+        components = {"SCALAR": 1, "VEC2": 2, "VEC3": 3, "VEC4": 4}[kind]
+        fmt_char = {5126: "f", 5125: "I", 5123: "H"}[component_type]
+        flat: list[float | int] = []
+        if components == 1:
+            flat.extend(values)  # type: ignore[arg-type]
+        else:
+            for value in values:
+                flat.extend(value)  # type: ignore[arg-type]
+        payload = struct.pack(f"<{len(flat)}{fmt_char}", *flat)
+        view_index = self.view(payload, target)
+        accessor: dict = {
+            "bufferView": view_index,
+            "componentType": component_type,
+            "count": len(values),
+            "type": kind,
+        }
+        if bounds and values:
+            if components == 1:
+                accessor["min"] = [min(values)]
+                accessor["max"] = [max(values)]
+            else:
+                accessor["min"] = [min(v[i] for v in values) for i in range(components)]  # type: ignore[index]
+                accessor["max"] = [max(v[i] for v in values) for i in range(components)]  # type: ignore[index]
+        return self.add_accessor(accessor)
+
+    def raw_accessor(
+        self,
+        payload: bytes,
+        count: int,
+        kind: str,
+        component_type: int,
+        target: int,
+        minimum: list[float] | None = None,
+        maximum: list[float] | None = None,
+    ) -> int:
+        view_index = self.view(payload, target)
+        accessor = {"bufferView": view_index, "componentType": component_type, "count": count, "type": kind}
+        if minimum is not None:
+            accessor["min"] = minimum
+        if maximum is not None:
+            accessor["max"] = maximum
+        return self.add_accessor(accessor)
+
+    def sparse_position_accessor(self, base: int, index: int, value: tuple[float, float, float]) -> int:
+        accessor = dict(self.accessors[base])
+        accessor["sparse"] = {
+            "count": 1,
+            "indices": {"bufferView": self.view(struct.pack("<I", index)), "componentType": 5125},
+            "values": {"bufferView": self.view(struct.pack("<3f", *value))},
+        }
+        return self.add_accessor(accessor)
+
+
+def normalize(v: tuple[float, float, float]) -> tuple[float, float, float]:
+    length = math.sqrt(sum(x * x for x in v))
+    return v[0] / length, v[1] / length, v[2] / length
+
+
+def cross(a: tuple[float, float, float], b: tuple[float, float, float]) -> tuple[float, float, float]:
+    return (
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    )
+
+
+def camera_rotation(position: tuple[float, float, float], target: tuple[float, float, float]) -> list[float]:
+    # glTF cameras look down local -Z with local +Y up.
+    z = normalize(tuple(position[i] - target[i] for i in range(3)))
+    x = normalize(cross((0.0, 1.0, 0.0), z))
+    y = cross(z, x)
+    m00, m01, m02 = x[0], y[0], z[0]
+    m10, m11, m12 = x[1], y[1], z[1]
+    m20, m21, m22 = x[2], y[2], z[2]
+    trace = m00 + m11 + m22
+    if trace > 0:
+        s = math.sqrt(trace + 1.0) * 2.0
+        q = ((m21 - m12) / s, (m02 - m20) / s, (m10 - m01) / s, 0.25 * s)
+    elif m00 > m11 and m00 > m22:
+        s = math.sqrt(1.0 + m00 - m11 - m22) * 2.0
+        q = (0.25 * s, (m01 + m10) / s, (m02 + m20) / s, (m21 - m12) / s)
+    elif m11 > m22:
+        s = math.sqrt(1.0 + m11 - m00 - m22) * 2.0
+        q = ((m01 + m10) / s, 0.25 * s, (m12 + m21) / s, (m02 - m20) / s)
+    else:
+        s = math.sqrt(1.0 + m22 - m00 - m11) * 2.0
+        q = ((m02 + m20) / s, (m12 + m21) / s, 0.25 * s, (m10 - m01) / s)
+    return [round(v, 9) for v in q]
+
+
+def add_camera(asset: dict, name: str, position: tuple[float, float, float], target: tuple[float, float, float], far: float) -> None:
+    camera_index = len(asset["cameras"])
+    asset["cameras"].append({
+        "name": name,
+        "type": "perspective",
+        "perspective": {"yfov": math.radians(55.0), "znear": 0.1, "zfar": far},
+    })
+    asset["nodes"].append({
+        "name": f"{name} Camera",
+        "camera": camera_index,
+        "translation": list(position),
+        "rotation": camera_rotation(position, target),
+    })
+
+
+def base_asset(name: str) -> tuple[dict, Buffer]:
+    return ({
+        "asset": {"version": "2.0", "generator": "MeshEditor GenerateRenderBenchmarks"},
+        "scene": 0,
+        "scenes": [{"name": name, "nodes": []}],
+        "nodes": [],
+        "meshes": [],
+        "materials": [
+            {"name": "Opaque", "pbrMetallicRoughness": {"baseColorFactor": [0.55, 0.58, 0.62, 1.0], "metallicFactor": 0.0, "roughnessFactor": 0.75}},
+            {"name": "Opaque Dark", "pbrMetallicRoughness": {"baseColorFactor": [0.12, 0.15, 0.20, 1.0], "metallicFactor": 0.1, "roughnessFactor": 0.65}},
+        ],
+        "cameras": [],
+    }, Buffer())
+
+
+def add_geometry(buffer: Buffer, positions: list[tuple], normals: list[tuple], tangents: list[tuple], uvs: list[tuple], indices: list[int]) -> dict:
+    colors = [(0.65 + 0.35 * uv[0], 0.65 + 0.35 * uv[1], 0.85, 1.0) for uv in uvs]
+    uv1 = [(uv[0] * 0.5, uv[1] * 0.5) for uv in uvs]
+    return {
+        "attributes": {
+            "POSITION": buffer.accessor(positions, "VEC3", target=34962, bounds=True),
+            "NORMAL": buffer.accessor(normals, "VEC3", target=34962),
+            "TANGENT": buffer.accessor(tangents, "VEC4", target=34962),
+            "TEXCOORD_0": buffer.accessor(uvs, "VEC2", target=34962),
+            "TEXCOORD_1": buffer.accessor(uv1, "VEC2", target=34962),
+            "COLOR_0": buffer.accessor(colors, "VEC4", target=34962),
+        },
+        "indices": buffer.accessor(indices, "SCALAR", 5125, 34963),
+        "mode": 4,
+        "material": 0,
+    }
+
+
+def box_geometry(buffer: Buffer) -> dict:
+    positions: list[tuple] = []
+    normals: list[tuple] = []
+    tangents: list[tuple] = []
+    uvs: list[tuple] = []
+    indices: list[int] = []
+    faces = [
+        ((1, 0, 0), [(1, -1, -1), (1, -1, 1), (1, 1, 1), (1, 1, -1)]),
+        ((-1, 0, 0), [(-1, -1, 1), (-1, -1, -1), (-1, 1, -1), (-1, 1, 1)]),
+        ((0, 1, 0), [(-1, 1, -1), (1, 1, -1), (1, 1, 1), (-1, 1, 1)]),
+        ((0, -1, 0), [(-1, -1, 1), (1, -1, 1), (1, -1, -1), (-1, -1, -1)]),
+        ((0, 0, 1), [(1, -1, 1), (-1, -1, 1), (-1, 1, 1), (1, 1, 1)]),
+        ((0, 0, -1), [(-1, -1, -1), (1, -1, -1), (1, 1, -1), (-1, 1, -1)]),
+    ]
+    for normal, corners in faces:
+        base = len(positions)
+        positions.extend(corners)
+        normals.extend([normal] * 4)
+        tangents.extend([(1.0, 0.0, 0.0, 1.0)] * 4)
+        uvs.extend([(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)])
+        indices.extend([base, base + 1, base + 2, base, base + 2, base + 3])
+    return add_geometry(buffer, positions, normals, tangents, uvs, indices)
+
+
+def sphere_geometry(buffer: Buffer, segments: int, rings: int) -> dict:
+    positions: list[tuple] = []
+    normals: list[tuple] = []
+    tangents: list[tuple] = []
+    uvs: list[tuple] = []
+    indices: list[int] = []
+    for y in range(rings + 1):
+        v = y / rings
+        phi = math.pi * v
+        for x in range(segments + 1):
+            u = x / segments
+            theta = 2.0 * math.pi * u
+            p = (math.sin(phi) * math.cos(theta), math.cos(phi), math.sin(phi) * math.sin(theta))
+            positions.append(p)
+            normals.append(p)
+            tangents.append((-math.sin(theta), 0.0, math.cos(theta), 1.0))
+            uvs.append((u, v))
+    stride = segments + 1
+    for y in range(rings):
+        for x in range(segments):
+            a = y * stride + x
+            b = a + stride
+            indices.extend((a, b, a + 1, a + 1, b, b + 1))
+    return add_geometry(buffer, positions, normals, tangents, uvs, indices)
+
+
+def dense_terrain_geometry(buffer: Buffer, cols: int, rows: int) -> dict:
+    positions = array("f")
+    for z in range(rows + 1):
+        fz = z / rows
+        wz = (fz - 0.5) * 180.0
+        for x in range(cols + 1):
+            fx = x / cols
+            wx = (fx - 0.5) * 600.0
+            y = 5.0 * math.sin(wx * 0.055) * math.cos(wz * 0.11) + 1.5 * math.sin((wx + wz) * 0.21)
+            positions.extend((wx, y, wz))
+    indices = array("I")
+    stride = cols + 1
+    for z in range(rows):
+        for x in range(cols):
+            a = z * stride + x
+            b = a + stride
+            indices.extend((a, b, a + 1, a + 1, b, b + 1))
+    return {
+        "attributes": {
+            "POSITION": buffer.raw_accessor(
+                positions.tobytes(), len(positions) // 3, "VEC3", 5126, 34962,
+                [-300.0, -6.5, -90.0], [300.0, 6.5, 90.0],
+            )
+        },
+        "indices": buffer.raw_accessor(indices.tobytes(), len(indices), "SCALAR", 5125, 34963),
+        "mode": 4,
+        "material": 0,
+    }
+
+
+def instanced_node(asset: dict, buffer: Buffer, mesh: int, name: str, translations: list[tuple], scales: list[tuple] | None = None) -> None:
+    attributes = {"TRANSLATION": buffer.accessor(translations, "VEC3", bounds=True)}
+    if scales is not None:
+        attributes["SCALE"] = buffer.accessor(scales, "VEC3")
+    node = {"name": name, "mesh": mesh, "extensions": {"EXT_mesh_gpu_instancing": {"attributes": attributes}}}
+    asset["nodes"].append(node)
+    asset.setdefault("extensionsUsed", []).append("EXT_mesh_gpu_instancing")
+
+
+def add_grid_node(asset: dict, name: str, mesh: int, index: int, side: int, spacing: tuple[float, float], scale: float) -> None:
+    x, z = index % side, index // side
+    asset["nodes"].append({
+        "name": name,
+        "mesh": mesh,
+        "translation": [(x - (side - 1) / 2) * spacing[0], 0.0, (z - (side - 1) / 2) * spacing[1]],
+        "scale": [scale] * 3,
+    })
+
+
+def finish(asset: dict, buffer: Buffer, name: str, output: Path, metadata: dict) -> dict:
+    asset["scenes"][0]["nodes"] = list(range(len(asset["nodes"])))
+    asset["bufferViews"] = buffer.views
+    asset["accessors"] = buffer.accessors
+    asset["buffers"] = [{"uri": f"{name}.bin", "byteLength": len(buffer.data)}]
+    if "extensionsUsed" in asset:
+        asset["extensionsUsed"] = sorted(set(asset["extensionsUsed"]))
+    directory = output / name
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / f"{name}.gltf").write_text(json.dumps(asset, separators=(",", ":")) + "\n")
+    (directory / f"{name}.bin").write_bytes(buffer.data)
+    return {"name": name, "path": f"{name}/{name}.gltf", **metadata, "bytes": len(buffer.data)}
+
+
+def generate_instances(profile: Profile, output: Path) -> dict:
+    asset, buffer = base_asset("Instances")
+    primitive = sphere_geometry(buffer, 128, 64)
+    asset["meshes"].append({"name": "Shared Mesh", "primitives": [primitive]})
+    nx, ny, nz = profile.instance_dims
+    translations = [((x - (nx - 1) / 2) * 3.2, y * 3.2, (z - (nz - 1) / 2) * 3.2) for y in range(ny) for z in range(nz) for x in range(nx)]
+    scales = [(0.65 + 0.25 * ((i * 17) % 7) / 6.0,) * 3 for i in range(len(translations))]
+    instanced_node(asset, buffer, 0, "Instances", translations, scales)
+    center = (0.0, ny * 1.4, 0.0)
+    add_camera(asset, "Frustum", (0.0, center[1], 0.0), (100.0, center[1], 0.0), 2000.0)
+    add_camera(asset, "Overview", (0.0, max(nx, nz) * 4.5, 0.01), center, 2000.0)
+    triangles = 128 * 64 * 2
+    return finish(asset, buffer, "Instances", output, {"instances": len(translations), "trianglesPerInstance": triangles, "logicalTriangles": len(translations) * triangles})
+
+
+def generate_draw_items(profile: Profile, output: Path) -> dict:
+    asset, buffer = base_asset("DrawItems")
+    primitive = box_geometry(buffer)
+    side = math.ceil(math.sqrt(profile.draw_items))
+    for i in range(profile.draw_items):
+        p = dict(primitive)
+        p["material"] = i % len(asset["materials"])
+        asset["meshes"].append({"name": f"Mesh {i}", "primitives": [p]})
+        x, z = i % side, i // side
+        asset["nodes"].append({"name": f"Item {i}", "mesh": i, "translation": [(x - side / 2) * 2.8, 0.0, (z - side / 2) * 2.8]})
+    add_camera(asset, "Default", (side * 1.5, side * 1.1, side * 1.5), (0.0, 0.0, 0.0), side * 10.0)
+    return finish(asset, buffer, "DrawItems", output, {"drawItems": profile.draw_items, "logicalTriangles": profile.draw_items * 12})
+
+
+def generate_meshlets(profile: Profile, output: Path) -> dict:
+    asset, buffer = base_asset("Meshlets")
+    cols, rows = profile.terrain_size
+    asset["meshes"].append({"name": "Large Mesh", "primitives": [dense_terrain_geometry(buffer, cols, rows)]})
+    asset["nodes"].append({"name": "Large Mesh", "mesh": 0})
+    add_camera(asset, "Close", (100.0, 12.0, 0.0), (300.0, 0.0, 0.0), 2000.0)
+    add_camera(asset, "Overview", (0.0, 320.0, 320.0), (0.0, 0.0, 0.0), 2000.0)
+    return finish(asset, buffer, "Meshlets", output, {"meshes": 1, "logicalTriangles": cols * rows * 2})
+
+
+def generate_large_meshes(profile: Profile, output: Path) -> dict:
+    asset, buffer = base_asset("LargeMeshes")
+    cols, rows = profile.large_mesh_size
+    primitive = dense_terrain_geometry(buffer, cols, rows)
+    side = math.ceil(math.sqrt(profile.large_meshes))
+    for i in range(profile.large_meshes):
+        p = {**primitive, "attributes": dict(primitive["attributes"])}
+        p["attributes"]["POSITION"] = buffer.sparse_position_accessor(
+            primitive["attributes"]["POSITION"], 0, (-300.0, -6.49 + i * 0.001, -90.0),
+        )
+        asset["meshes"].append({"name": f"Large Mesh {i}", "primitives": [p]})
+        add_grid_node(asset, f"Large Mesh {i}", i, i, side, (75.0, 28.0), 0.12)
+    add_camera(asset, "Default", (side * 55.0, side * 38.0, side * 55.0), (0.0, 0.0, 0.0), side * 300.0)
+    triangles = cols * rows * 2
+    return finish(asset, buffer, "LargeMeshes", output, {
+        "meshes": profile.large_meshes,
+        "trianglesPerMesh": triangles,
+        "logicalTriangles": profile.large_meshes * triangles,
+    })
+
+
+def generate_occlusion(profile: Profile, output: Path) -> dict:
+    asset, buffer = base_asset("Occlusion")
+    asset["meshes"].append({"name": "Occluder", "primitives": [box_geometry(buffer)]})
+    asset["meshes"].append({"name": "Occluded Mesh", "primitives": [sphere_geometry(buffer, 64, 32)]})
+    wall_count = 24
+    walls = [(0.0, 8.0, -float(i) * 14.0) for i in range(wall_count)]
+    wall_scales = [(32.0, 8.0, 0.75) for _ in walls]
+    instanced_node(asset, buffer, 0, "Occluders", walls, wall_scales)
+    columns = 32
+    objects = [
+        ((i % columns - columns / 2) * 1.8, 1.0 + 2.1 * ((i // columns) % 6), -8.0 - (i // columns) * 2.4)
+        for i in range(profile.occlusion_instances)
+    ]
+    instanced_node(asset, buffer, 1, "Occluded Instances", objects)
+    add_camera(asset, "Occluded", (0.0, 4.0, 12.0), (0.0, 4.0, -180.0), 2000.0)
+    add_camera(asset, "Visible", (55.0, 55.0, 35.0), (0.0, 3.0, -160.0), 2000.0)
+    return finish(asset, buffer, "Occlusion", output, {"instances": len(objects), "occluders": wall_count, "logicalTriangles": len(objects) * 64 * 32 * 2})
+
+
+def generate_editor_geometry(profile: Profile, output: Path, name: str, mesh_count: int) -> dict:
+    asset, buffer = base_asset(name)
+    n = profile.editor_grid
+    primitive = dense_terrain_geometry(buffer, n, n // 2)
+    side = math.ceil(math.sqrt(mesh_count))
+    for i in range(mesh_count):
+        asset["meshes"].append({"name": f"Editable Mesh {i}", "primitives": [primitive]})
+        add_grid_node(asset, f"Editable Mesh {i}", i, i, side, (55.0, 18.0), 0.08)
+
+    line_positions = [(float(x - 32), 0.0, float(z - 32)) for z in range(65) for x in range(65)]
+    line_indices: list[int] = []
+    for z in range(65):
+        for x in range(64):
+            a = z * 65 + x
+            line_indices.extend((a, a + 1))
+    for z in range(64):
+        for x in range(65):
+            a = z * 65 + x
+            line_indices.extend((a, a + 65))
+    line_primitive = {
+        "attributes": {"POSITION": buffer.accessor(line_positions, "VEC3", target=34962, bounds=True)},
+        "indices": buffer.accessor(line_indices, "SCALAR", 5125, 34963),
+        "mode": 1,
+        "material": 1,
+    }
+    point_primitive = {
+        "attributes": {"POSITION": buffer.accessor(line_positions, "VEC3", target=34962, bounds=True)},
+        "mode": 0,
+        "material": 0,
+    }
+    asset["meshes"].append({"name": "Lines", "primitives": [line_primitive]})
+    asset["meshes"].append({"name": "Points", "primitives": [point_primitive]})
+    asset["nodes"].append({"name": "Lines", "mesh": mesh_count, "translation": [0.0, 8.0, 0.0]})
+    asset["nodes"].append({"name": "Points", "mesh": mesh_count + 1, "translation": [0.0, 12.0, 0.0]})
+    add_camera(asset, "Default", (side * 55.0, side * 38.0, side * 55.0), (0.0, 3.0, 0.0), side * 300.0)
+    triangles = n * (n // 2) * 2
+    return finish(asset, buffer, name, output, {
+        "editableMeshes": mesh_count,
+        "trianglesPerMesh": triangles,
+        "logicalTriangles": mesh_count * triangles,
+        "lineSegments": len(line_indices) // 2,
+        "points": len(line_positions),
+    })
+
+
+def generate_transparency(profile: Profile, output: Path) -> dict:
+    asset, buffer = base_asset("Transparency")
+    asset["materials"].extend([
+        {"name": "Blend", "alphaMode": "BLEND", "doubleSided": True, "pbrMetallicRoughness": {"baseColorFactor": [0.2, 0.55, 0.9, 0.18], "metallicFactor": 0.0, "roughnessFactor": 0.2}},
+        {"name": "Transmission", "doubleSided": True, "pbrMetallicRoughness": {"baseColorFactor": [0.9, 0.95, 1.0, 1.0], "metallicFactor": 0.0, "roughnessFactor": 0.08}, "extensions": {"KHR_materials_transmission": {"transmissionFactor": 0.85}}},
+    ])
+    asset.setdefault("extensionsUsed", []).append("KHR_materials_transmission")
+    primitive = box_geometry(buffer)
+    for i in range(profile.transparent_items):
+        p = dict(primitive)
+        p["material"] = 2 + (i % 2)
+        asset["meshes"].append({"name": f"Layer {i}", "primitives": [p]})
+        asset["nodes"].append({
+            "name": f"Layer {i}",
+            "mesh": i,
+            "translation": [((i * 17) % 11 - 5) * 0.08, ((i * 29) % 13 - 6) * 0.06, -float(i) * 0.04],
+            "scale": [16.0, 10.0, 0.02],
+        })
+    add_camera(asset, "Default", (0.0, 0.0, 38.0), (0.0, 0.0, -5.0), 1000.0)
+    return finish(asset, buffer, "Transparency", output, {"transparentItems": profile.transparent_items, "logicalTriangles": profile.transparent_items * 12})
+
+
+def generate_deformation(profile: Profile, output: Path) -> dict:
+    asset, buffer = base_asset("Deformation")
+    cols, rows = profile.deformation_size
+    primitive = dense_terrain_geometry(buffer, cols, rows)
+    vertex_count = (cols + 1) * (rows + 1)
+    deltas = []
+    for z in range(rows + 1):
+        for x in range(cols + 1):
+            u, v = x / cols, z / rows
+            deltas.append((0.0, 12.0 * math.sin(u * math.pi) * math.sin(v * math.pi), 0.0))
+    primitive["targets"] = [{"POSITION": buffer.accessor(deltas, "VEC3", target=34962)}]
+    side = math.ceil(math.sqrt(profile.deformation_meshes))
+    for i in range(profile.deformation_meshes):
+        asset["meshes"].append({"name": f"Deforming Mesh {i}", "primitives": [primitive], "weights": [0.0]})
+        add_grid_node(asset, f"Deforming Mesh {i}", i, i, side, (55.0, 18.0), 0.08)
+    times = buffer.accessor([0.0, 1.0, 2.0], "SCALAR")
+    weights = buffer.accessor([0.0, 1.0, 0.0], "SCALAR")
+    asset["animations"] = [{
+        "name": "Deform",
+        "samplers": [{"input": times, "output": weights, "interpolation": "LINEAR"}],
+        "channels": [{"sampler": 0, "target": {"node": i, "path": "weights"}} for i in range(profile.deformation_meshes)],
+    }]
+    add_camera(asset, "Default", (side * 55.0, side * 38.0, side * 55.0), (0.0, 0.0, 0.0), side * 300.0)
+    triangles = cols * rows * 2
+    return finish(asset, buffer, "Deformation", output, {
+        "meshes": profile.deformation_meshes,
+        "verticesPerMesh": vertex_count,
+        "logicalTriangles": profile.deformation_meshes * triangles,
+        "morphTargetsPerMesh": 1,
+    })
+
+
+def generate(profile_name: str, output: Path) -> None:
+    profile = PROFILES[profile_name]
+    manifest_path = output / "benchmark.json"
+    if output.exists() and any(output.iterdir()):
+        generated = (output / MARKER).is_file()
+        if not generated:
+            try:
+                generated = json.loads(manifest_path.read_text()).get("generator") == "script/GenerateRenderBenchmarks"
+            except (OSError, json.JSONDecodeError):
+                pass
+        if not generated:
+            raise SystemExit(f"Refusing to replace non-benchmark directory: {output}")
+        shutil.rmtree(output)
+    output.mkdir(parents=True, exist_ok=True)
+    (output / MARKER).touch()
+    scenes = [
+        generate_instances(profile, output),
+        generate_draw_items(profile, output),
+        generate_meshlets(profile, output),
+        generate_large_meshes(profile, output),
+        generate_occlusion(profile, output),
+        generate_editor_geometry(profile, output, "EditorEdit", profile.editor_edit_meshes),
+        generate_editor_geometry(profile, output, "EditorWireframe", profile.editor_wireframe_meshes),
+        generate_transparency(profile, output),
+        generate_deformation(profile, output),
+    ]
+    manifest = {"schemaVersion": 2, "profile": profile_name, "generator": "script/GenerateRenderBenchmarks", "scenes": scenes, "cases": CASES}
+    (output / "benchmark.json").write_text(json.dumps(manifest, indent=2) + "\n")
+    for scene in scenes:
+        print(f"{scene['name']}: {scene['bytes'] / (1024 * 1024):.1f} MiB, {scene.get('logicalTriangles', 0):,} logical triangles")
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--profile", choices=PROFILES, default="standard")
+    parser.add_argument("--output", type=Path, default=ROOT / "res" / "benchmarks")
+    parser.add_argument("--check", action="store_true", help="verify the generated dataset is current")
+    args = parser.parse_args()
+    if args.check:
+        if not args.output.is_dir():
+            raise SystemExit(f"No generated benchmark dataset at {args.output}")
+        with tempfile.TemporaryDirectory(prefix="MeshEditorRenderBenchmarkCheck.") as temporary:
+            generated = Path(temporary)
+            generate(args.profile, generated)
+            expected = {path.relative_to(generated) for path in generated.rglob("*") if path.is_file()}
+            actual = {path.relative_to(args.output) for path in args.output.rglob("*") if path.is_file()}
+            changed = [
+                relative for relative in sorted(expected | actual)
+                if relative not in expected or relative not in actual
+                or not filecmp.cmp(generated / relative, args.output / relative, shallow=False)
+            ]
+            if changed:
+                raise SystemExit("benchmark dataset differs: " + ", ".join(map(str, changed)))
+        print("benchmark assets are current")
+        return
+    generate(args.profile, args.output)
+
+
+if __name__ == "__main__":
+    main()

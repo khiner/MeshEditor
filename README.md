@@ -217,6 +217,21 @@ An object without a recordings still loads - the mesh, microphone positions, and
 $ cmake -B build -DQUIET=ON .
 ```
 
+### Renderer benchmarks
+
+Generate the local benchmark scenes, then run the suite:
+
+```sh
+$ script/GenerateRenderBenchmarks
+$ script/Bench run
+```
+
+The generated `res/benchmarks/` dataset is ignored by git. It also populates
+`File > Benchmarks`; the menu is absent until the dataset exists. Use
+`script/GenerateRenderBenchmarks --profile smoke` for a quick tooling check,
+`script/Bench list` to list cases, and `script/Bench compare before.json after.json`
+to compare runs.
+
 ### Tests
 
 `./script/Build --test` builds the glTF roundtrip suite, which needs the `external/glTF-Sample-Assets` and `external/glTF_Physics` submodules (see above).
