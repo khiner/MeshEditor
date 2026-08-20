@@ -76,20 +76,18 @@ RenderRequest TakeRenderRequest(entt::registry &r) {
     return std::exchange(r.ctx().get<PendingRenderRequest>().Value, RenderRequest::None);
 }
 
-// Drain component events, resize as needed, and record the frame.
-// Returns false (skipping the record) when the viewport has no non-zero extent yet.
-// `force_full` records the full buffer regardless of the requested region.
+DrawListUse RequestedDrawListUse(const entt::registry &r, RenderRequest request, bool force_rebuild = false) {
+    if (force_rebuild || request == RenderRequest::Rebuild) return DrawListUse::Rebuild;
+    if (request == RenderRequest::Silhouette && r.ctx().get<const DrawState>().MainDrawCount > 0) return DrawListUse::SilhouetteOnly;
+    return DrawListUse::Reuse;
+}
+
+// Drain changes and render; returns false while the viewport has no non-zero extent.
 bool AdvanceAndRecord(entt::registry &r, entt::entity viewport, bool force_full) {
     ProcessComponentEvents(r, viewport);
     if (!ViewportImageReady(r)) return false;
     const auto render_request = TakeRenderRequest(r);
-    // A request for nothing still records and submits, from the draw list already built. Commands
-    // read the buffers as they stand when the GPU runs them, so an update this frame made, such as
-    // the scene framing moving the camera, still reaches the image.
-    const auto use = render_request == RenderRequest::ReRecordSilhouette && !force_full && r.ctx().get<const DrawState>().MainDrawCount > 0 ? DrawListUse::SilhouetteOnly :
-        render_request == RenderRequest::None && !force_full                                                                                ? DrawListUse::Reuse :
-                                                                                                                                              DrawListUse::Rebuild;
-    RecordAndSubmitFrame(r, viewport, use);
+    RecordAndSubmitFrame(r, viewport, RequestedDrawListUse(r, render_request, force_full));
     return true;
 }
 
@@ -279,12 +277,12 @@ void SubmitViewport(entt::registry &r, entt::entity viewport, MTL::CommandBuffer
     // Blur just ended (playback stopped, or the playhead was released): replace the blurred frame with a sharp one.
     if (frame_state.MotionBlurred) {
         frame_state.MotionBlurred = false;
-        r.ctx().get<PendingRenderRequest>().Value = RenderRequest::ReRecord;
+        r.ctx().get<PendingRenderRequest>().Value = RenderRequest::Rebuild;
     }
     const auto render_request = TakeRenderRequest(r);
     if (render_request == RenderRequest::None) return;
 
-    RecordAndSubmitFrame(r, viewport, render_request == RenderRequest::ReRecordSilhouette && r.ctx().get<const DrawState>().MainDrawCount > 0 ? DrawListUse::SilhouetteOnly : DrawListUse::Rebuild);
+    RecordAndSubmitFrame(r, viewport, RequestedDrawListUse(r, render_request));
 }
 
 void SetStudioEnvironment(entt::registry &r, uint32_t index) {

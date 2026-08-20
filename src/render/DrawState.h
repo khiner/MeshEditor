@@ -80,7 +80,7 @@ struct PosedRanges {
     }
 };
 
-// Per-frame draw-list scratch storage
+// Persistent draw data, rebuilt when scene structure or batch routing changes.
 struct DrawState {
     DrawListBuilder List;
     uint32_t MainDrawCount{0}; // Draws.size() after main batches, before silhouette

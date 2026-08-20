@@ -78,25 +78,27 @@ enum class ElementDomain {
 };
 // A range's offset, or InvalidOffset when the mesh holds no such data.
 uint32_t OffsetOrInvalid(Range range) { return range.Count > 0 ? range.Offset : InvalidOffset; }
+
+void RecordDrawCounters(const GpuBuffers &buffers, const DrawListBuilder &draw_list, bool selection) {
+    const auto record = [&](const char *selection_name, const char *render_name, size_t value) { profile::RecordCounter(selection ? selection_name : render_name, value); };
+    record("Selection DrawData", "Render DrawData", draw_list.Draws.size());
+    record("Selection CullEntries", "Render CullEntries", draw_list.CullEntries.size());
+    record("Selection IndirectCommands", "Render IndirectCommands", draw_list.IndirectCommands.size());
+    record("Selection MaxIndexCount", "Render MaxIndexCount", draw_list.MaxIndexCount);
+    record("Selection DrawDataBytes", "Render DrawDataBytes", draw_list.Draws.size() * sizeof(DrawData));
+    record("Selection CullEntryBytes", "Render CullEntryBytes", draw_list.CullEntries.size() * sizeof(CullEntry));
+    record("Selection IndirectCommandBytes", "Render IndirectCommandBytes", 2 * draw_list.IndirectCommands.size() * sizeof(MTL::DrawIndexedPrimitivesIndirectArguments));
+    if (!selection) {
+        profile::RecordCounter("InstanceSlots", buffers.Instances.TransformBuffer.UsedSize / sizeof(Transform));
+        profile::RecordCounter("DeviceAllocatedBytes", buffers.Ctx.Ctx.Device->currentAllocatedSize());
+    }
+}
 } // namespace
 
 void FlushDrawList(entt::registry &r, const DrawListBuilder &draw_list, DrawBufferPair &pair) {
     auto &buffers = r.ctx().get<GpuBuffers>();
     const bool selection = &pair == &buffers.SelectionDraw;
-    profile::RecordCounter(selection ? "Selection DrawData" : "Render DrawData", draw_list.Draws.size());
-    profile::RecordCounter(selection ? "Selection CullEntries" : "Render CullEntries", draw_list.CullEntries.size());
-    profile::RecordCounter(selection ? "Selection IndirectCommands" : "Render IndirectCommands", draw_list.IndirectCommands.size());
-    profile::RecordCounter(selection ? "Selection MaxIndexCount" : "Render MaxIndexCount", draw_list.MaxIndexCount);
-    profile::RecordCounter(selection ? "Selection DrawDataBytes" : "Render DrawDataBytes", draw_list.Draws.size() * sizeof(DrawData));
-    profile::RecordCounter(selection ? "Selection CullEntryBytes" : "Render CullEntryBytes", draw_list.CullEntries.size() * sizeof(CullEntry));
-    profile::RecordCounter(
-        selection ? "Selection IndirectCommandBytes" : "Render IndirectCommandBytes",
-        2 * draw_list.IndirectCommands.size() * sizeof(MTL::DrawIndexedPrimitivesIndirectArguments)
-    );
-    if (!selection) {
-        profile::RecordCounter("InstanceSlots", buffers.Instances.TransformBuffer.UsedSize / sizeof(Transform));
-        profile::RecordCounter("DeviceAllocatedBytes", buffers.Ctx.Ctx.Device->currentAllocatedSize());
-    }
+    if (selection) RecordDrawCounters(buffers, draw_list, true);
     buffers.EnsureIdentityIndexBuffer(std::max(draw_list.MaxIndexCount, 2 * uint32_t(draw_list.Draws.size())));
     if (!draw_list.Draws.empty()) {
         pair.DrawData.Update(as_bytes(draw_list.Draws));
@@ -1162,6 +1164,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
 
         FlushDrawList(r, draw_list, buffers.RenderDraw);
     }
+    if (use != DrawListUse::Reuse || phase == RenderPhase::Full) RecordDrawCounters(buffers, draw_list, false);
 
     const bool transmission_active = real_transmission && pipelines.Main.Transmission;
     // The transmission composite path lays the prepass down as the scene's background and
@@ -1556,8 +1559,7 @@ void SubmitNormalDeriveNow(entt::registry &r, std::span<const NormalDeriveEntry>
     std::ranges::copy(entries, buffers.NormalDeriveEntries.SetCount<NormalDeriveEntry>(entries.size()).begin());
     const auto tiles = buffers.DeriveTiles.SetCount<uvec2>(face_tiles.size() + gather_tiles.size());
     std::ranges::copy(gather_tiles, std::ranges::copy(face_tiles, tiles.begin()).out);
-    // The one-shot dispatches through the same indirect args slots as the frame prelude.
-    // It runs between frames, and the ReRecord it raises refreshes the slots before the next submit.
+    // The one-shot shares the frame prelude's indirect slots, then requests their rebuild.
     WritePreludeArg(buffers, PreludeSlot::DeriveFaces, uint32_t(face_tiles.size()));
     WritePreludeArg(buffers, PreludeSlot::DeriveGather, uint32_t(gather_tiles.size()));
 
@@ -1576,7 +1578,7 @@ void SubmitNormalDeriveNow(entt::registry &r, std::span<const NormalDeriveEntry>
     command_buffer->commit();
     command_buffer->waitUntilCompleted();
     // The one-shot rewrote the per-frame derive entry and tile buffers, so the next submit rebuilds the draw list.
-    r.ctx().get<PendingRenderRequest>().Value = RenderRequest::ReRecord;
+    r.ctx().get<PendingRenderRequest>().Value = RenderRequest::Rebuild;
 }
 } // namespace
 

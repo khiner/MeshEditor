@@ -1206,7 +1206,7 @@ bool RunHeadlessScene(entt::registry &r, entt::entity viewport, const char *init
                 done = true;
             }
             auto &pending = r.ctx().get<PendingRenderRequest>().Value;
-            pending = std::max(pending, RenderRequest::Submit);
+            pending = std::max(pending, RenderRequest::Reuse);
         } else {
             if (driver.CaptureFrame(r, viewport, driver.Framed(settled))) done = true;
             // Headless has no window to close: without anything to capture or play, one settled frame is the whole run.

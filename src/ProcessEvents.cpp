@@ -326,7 +326,7 @@ struct SyncResult {
     std::vector<entt::entity> NewlyInserted; // Entities inserted into GPU buffers — callers must write their WorldTransform before submit.
     std::vector<entt::entity> NewMeshEntities; // Mesh entities needing deferred index buffer creation.
     std::vector<entt::entity> NewExtrasEntities; // Non-mesh buffer entities (extras/bone/joint) needing deferred index creation.
-    bool Compacted{false}; // Instances were compact-erased (hides) — caller must request Submit.
+    bool Compacted{false};
 };
 
 SyncResult SyncModelsBuffers(entt::registry &r) {
@@ -754,14 +754,14 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
 
     // Resize render resources before the pick handlers below resolve against the rendered scene.
     const bool resized = SyncViewportRenderResources(r, viewport);
-    if (resized) request(RenderRequest::ReRecord);
+    if (resized) request(RenderRequest::Reuse);
 
     if (r.all_of<PendingShaderRecompile>(viewport)) {
         r.remove<PendingShaderRecompile>(viewport);
         pipelines.CompileShaders();
         // Recompiled prefilter kernels must regenerate their cached cubemaps.
         RebuildStudioEnvironments(r);
-        request(RenderRequest::ReRecord);
+        request(RenderRequest::Reuse);
     }
 
     // Re-upload restored textures into their exact recorded slots.
@@ -1018,7 +1018,7 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
         const auto rebuild = [&](entt::entity object, ObjectType type) {
             if (const auto *inst = r.try_get<const Instance>(object); inst && r.valid(inst->Entity)) {
                 RebuildGizmoGeometry(r, meshes, buffers, object, inst->Entity, type);
-                request(RenderRequest::Submit);
+                request(RenderRequest::Reuse);
             }
         };
         for (auto object : reactive<changes::ObjectCreated>(r)) {
@@ -1032,7 +1032,7 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
     }
 
     auto sync = SyncModelsBuffers(r); // Runs first so BufferIndex is valid for all downstream code.
-    if (!sync.NewlyInserted.empty() || sync.Compacted) request(RenderRequest::Submit);
+    if (!sync.NewlyInserted.empty() || sync.Compacted) request(RenderRequest::Reuse);
     const std::unordered_set<entt::entity> newly_inserted_set(sync.NewlyInserted.begin(), sync.NewlyInserted.end());
     const auto is_newly_inserted = [&](entt::entity e) { return newly_inserted_set.contains(e); };
 
@@ -1082,7 +1082,7 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
                 pose_state.GpuDeformRanges.emplace_back(buffers.ArmatureDeformBuffer.Allocate(skin.OrderedJointNodeIndices.size()));
             }
         }
-        if (!pending_armatures.empty()) request(RenderRequest::ReRecord);
+        if (!pending_armatures.empty()) request(RenderRequest::Rebuild);
     }
 
     {
@@ -1109,7 +1109,7 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
         }
         if (!pending_morphs.empty()) {
             buffers.PreludeStale = true;
-            request(RenderRequest::ReRecord);
+            request(RenderRequest::Rebuild);
         }
     }
 
@@ -1147,7 +1147,7 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
         // The index buffers written above complete the derive inputs.
         // Every new and restored mesh's shading state finalizes here, one batched derive for the whole frame.
         FinalizeNewMeshShadingNow(r, sync.NewMeshEntities);
-        request(RenderRequest::ReRecord);
+        request(RenderRequest::Rebuild);
     }
 
     // Deferred index buffer creation for new bone/joint buffer entities.
@@ -1204,7 +1204,7 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
                 r.remove<PendingEdgeIndices>(entity);
             }
         }
-        request(RenderRequest::ReRecord);
+        request(RenderRequest::Rebuild);
     }
 
     { // Register changed lights into the GPU Lights buffer, the single path for both new and restored lights.
@@ -1221,7 +1221,7 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
             buffers.Lights.Set(index, gpu_light);
             synced = true;
         }
-        if (synced) request(RenderRequest::Submit);
+        if (synced) request(RenderRequest::Reuse);
     }
 
     // Batch-compact light buffer for destroyed lights (indices collected in Destroy()).
@@ -1244,7 +1244,7 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
         }
         buffers.Lights.SetCount(buffer_count);
         r.remove<PendingLightRemovals>(viewport);
-        request(RenderRequest::ReRecord);
+        request(RenderRequest::Rebuild);
     }
 
     if (const auto *handlers = r.ctx().find<std::vector<ComponentEventHandler>>()) {
@@ -1259,7 +1259,7 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
             enabled_modes.erase(InteractionMode::Excite);
         } else if (!reactive<changes::SoundVertices>(r).empty()) {
             enabled_modes.insert(InteractionMode::Excite);
-            if (interaction_mode == InteractionMode::Excite) request(RenderRequest::ReRecord);
+            if (interaction_mode == InteractionMode::Excite) request(RenderRequest::Rebuild);
             else SetInteractionMode(r, viewport, InteractionMode::Excite);
         }
     }
@@ -1272,7 +1272,7 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
             // In Edit mode, selection changes primary_edit_instances which affects fill/edge/point batches.
             // In Object/Pose mode, only the silhouette batch is affected.
             const auto mode = r.get<const Interaction>(viewport).Mode;
-            request(mode == InteractionMode::Edit ? RenderRequest::ReRecord : RenderRequest::ReRecordSilhouette);
+            request(mode == InteractionMode::Edit ? RenderRequest::Rebuild : RenderRequest::Silhouette);
         }
 
         // Collect instance state writes, then batch via GetMutableRange.
@@ -1314,19 +1314,19 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
         }
 
         // Batch-write all collected instance state changes.
-        if (FlushIndexedWrites(state_writes, [&] { return buffers.Instances.GetMutableStates(); })) request(RenderRequest::Submit);
+        if (FlushIndexedWrites(state_writes, [&] { return buffers.Instances.GetMutableStates(); })) request(RenderRequest::Reuse);
     }
     { // Bone selection changes — tag armature objects for GPU state sync.
         auto &bone_sel_tracker = reactive<changes::BoneSelection>(r);
         if (!bone_sel_tracker.empty()) {
-            request(RenderRequest::ReRecordSilhouette);
+            request(RenderRequest::Silhouette);
             for (auto bone_entity : bone_sel_tracker) {
                 if (const auto arm = FindArmatureObject(r, bone_entity); arm != entt::null) r.emplace_or_replace<BoneInstanceStateDirty>(arm);
             }
         }
     }
     auto &destroy_tracker = r.ctx().get<EntityDestroyTracker>();
-    if (!reactive<changes::Rerecord>(r).empty() || !destroy_tracker.Storage.empty()) request(RenderRequest::ReRecord);
+    if (!reactive<changes::Rerecord>(r).empty() || !destroy_tracker.Storage.empty()) request(RenderRequest::Rebuild);
 
     const auto interaction_mode = r.get<const Interaction>(viewport).Mode;
     const bool is_edit_mode = interaction_mode == InteractionMode::Edit;
@@ -1375,10 +1375,10 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
         buffers.Lights.SetCount(required_count);
         light_count_changed = true;
     }
-    if (light_count_changed) request(RenderRequest::Submit);
+    if (light_count_changed) request(RenderRequest::Reuse);
     if (!reactive<changes::WorkspaceLights>(r).empty()) {
         buffers.WorkspaceLightsUBO.Update(as_bytes(r.get<const WorkspaceLights>(viewport)));
-        request(RenderRequest::Submit);
+        request(RenderRequest::Reuse);
     }
     if (auto &tracker = reactive<changes::MeshShading>(r); !tracker.empty()) {
         // Sharpness writes reclassify corners, then rederive the base normals in place.
@@ -1393,9 +1393,9 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
         if (!reclassified.empty()) {
             DeriveBaseNormalsNow(r, reclassified);
             // Reclassification can reallocate the corner-class and seam arenas whose offsets the draw data carries, so the draw list rebuilds.
-            request(RenderRequest::ReRecord);
+            request(RenderRequest::Rebuild);
         } else {
-            request(RenderRequest::Submit);
+            request(RenderRequest::Reuse);
         }
     }
     // A body reports contacts anywhere on itself, so every mesh instanced under one answers closest-point queries.
@@ -1439,7 +1439,7 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
             }
         }
         if (!geometry_ranges.empty()) ApplySelectionStateUpdate(r, viewport, geometry_ranges, edit_mode);
-        request(RenderRequest::Submit);
+        request(RenderRequest::Reuse);
     }
     if (auto &tracker = reactive<changes::MeshMaterial>(r); !tracker.empty()) {
         for (auto mesh_entity : tracker) {
@@ -1453,21 +1453,21 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
                 primitive_materials[assignment->PrimitiveIndex] = std::min(assignment->MaterialIndex, material_count - 1u);
             }
         }
-        request(RenderRequest::Submit);
+        request(RenderRequest::Rebuild);
     }
     if (!reactive<changes::ViewportTheme>(r).empty()) {
         UpdateDerivedColors(r.get<ViewportTheme>(viewport));
         auto theme = r.get<const ViewportTheme>(viewport);
         theme.EdgeWidth *= r.ctx().get<FrameState>().DisplayFramebufferScale.x;
         buffers.ViewportThemeUBO.Update(as_bytes(theme));
-        request(RenderRequest::Submit);
+        request(RenderRequest::Reuse);
     }
     if (!reactive<changes::Materials>(r).empty()) {
         if (const auto *dirty = r.try_get<const MaterialDirty>(viewport);
             dirty && dirty->Index < buffers.Materials.Count()) {
             buffers.Materials.Set(dirty->Index, buffers.Materials.Get(dirty->Index));
         }
-        request(RenderRequest::Submit);
+        request(RenderRequest::Rebuild);
     }
     if (!reactive<changes::ActiveMaterialVariant>(r).empty()) {
         const auto *mv = r.try_get<const MaterialVariants>(viewport);
@@ -1482,10 +1482,10 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
                     layout.DefaultMaterials[i];
             }
         }
-        request(RenderRequest::Submit);
+        request(RenderRequest::Rebuild);
     }
     if (!reactive<changes::ViewportDisplay>(r).empty()) {
-        request(RenderRequest::ReRecord);
+        request(RenderRequest::Rebuild);
         dirty_overlay_meshes.merge(selection::GetSelectedMeshEntities(r));
 
         if (const float requested = ClampMaxAnisotropy(ToMaxAnisotropy(r.get<const ViewportDisplay>(viewport).AnisotropicFilter));
@@ -1495,7 +1495,7 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
         }
     }
     if (!reactive<changes::InteractionMode>(r).empty()) {
-        request(RenderRequest::ReRecord);
+        request(RenderRequest::Rebuild);
         // Dispatch UpdateSelectionState for all meshes entering Edit mode (MeshSelectionBitsetRange assigned in SetInteractionMode).
         if (r.get<const Interaction>(viewport).Mode == InteractionMode::Edit) {
             if (const auto edit_mode = r.get<const EditMode>(viewport).Value; edit_mode != Element::None) ApplySelectionStateUpdate(r, viewport, GetBitsetRangesForSelected(r), edit_mode);
@@ -1541,15 +1541,14 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
 
     const bool mode_changed = !reactive<changes::InteractionMode>(r).empty();
     bool anim_advanced;
-    // A moving pose or weight changes the recorded draw list only through the transparent sort (rendered shading with a blend-mode material).
-    // Otherwise its values reach the GPU via already-bound buffers.
-    const auto anim_render_request = [&] {
+    // Transform and camera changes rebuild only the transparent sort; other values use bound buffers.
+    const auto transform_render_request = [&] {
         const auto shading = r.get<const ViewportDisplay>(viewport).ViewportShading;
-        if (shading != ViewportShadingMode::MaterialPreview && shading != ViewportShadingMode::Rendered) return RenderRequest::Submit;
+        if (shading != ViewportShadingMode::MaterialPreview && shading != ViewportShadingMode::Rendered) return RenderRequest::Reuse;
         for (uint32_t i = 0, n = buffers.Materials.Count(); i < n; ++i) {
-            if (buffers.Materials.Get(i).AlphaMode == MaterialAlphaMode::Blend) return RenderRequest::ReRecord;
+            if (buffers.Materials.Get(i).AlphaMode == MaterialAlphaMode::Blend) return RenderRequest::Rebuild;
         }
-        return RenderRequest::Submit;
+        return RenderRequest::Reuse;
     }();
     { // Animation timeline tick
         const auto &range = r.get<const TimelineRange>(viewport);
@@ -1576,7 +1575,7 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
         const int from = r.get<LastEvaluatedFrame>(viewport).Value;
         // A motion-blur sub-frame pins the frame (from == to), so this no-ops; bodies come from interpolation instead.
         if (physics::AdvancePlayback(r, viewport, from, playback.CurrentFrame, range.StartFrame, range.EndFrame, range.Fps, range_changed, cache_invalid)) {
-            request(RenderRequest::Submit);
+            request(RenderRequest::Reuse);
         }
 
         if (anim_advanced) r.get<LastEvaluatedFrame>(viewport).Value = playback.CurrentFrame;
@@ -1632,7 +1631,7 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
             r.emplace_or_replace<PosedLocal>(entity, local_pose.front());
             request_rerecord = true;
         }
-        if (request_rerecord) request(anim_render_request);
+        if (request_rerecord) request(transform_render_request);
     }
     { // Bones
         // GPU instance state
@@ -1686,7 +1685,7 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
                     }
                 }
             }
-            request(RenderRequest::Submit);
+            request(RenderRequest::Reuse);
         }
         r.clear<BoneInstanceStateDirty>();
 
@@ -1826,7 +1825,7 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
                         }
                         buffers.PreludeStale = true;
                     }
-                    request(anim_render_request);
+                    request(transform_render_request);
                 }
             }
         }
@@ -1900,7 +1899,7 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
             for (auto e : sync.NewlyInserted) {
                 if (!wt_reactive.contains(e)) collect_wt(e);
             }
-            if (FlushIndexedWrites(wt_writes, [&] { return buffers.Instances.GetMutableTransforms(); })) request(RenderRequest::Submit);
+            if (FlushIndexedWrites(wt_writes, [&] { return buffers.Instances.GetMutableTransforms(); })) request(transform_render_request);
         }
     }
     { // Sync RotationUiVariant from Transform. Must run after bone block.
@@ -1930,7 +1929,7 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
             const auto refresh_transmission_sampler = [&] {
                 const auto info = pipelines.Main.TransmissionSampler();
                 slots.SetSampler({SlotType::Sampler, r.ctx().get<const SelectionSlots>().TransmissionSampler}, info.Texture, info.Sampler);
-                request(RenderRequest::ReRecord);
+                request(RenderRequest::Rebuild);
             };
             if (shading == ViewportShadingMode::MaterialPreview || shading == ViewportShadingMode::Rendered) {
                 PbrFeatureMask pbr_mask{0};
@@ -1938,7 +1937,7 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
                 if (active_lighting.UseSceneLights) pbr_mask |= PbrFeature::Punctual;
                 for (const auto [_, feat] : r.view<const PbrMeshFeatures>().each()) pbr_mask |= feat.Mask;
                 const bool non_triangle = std::ranges::any_of(r.view<const SourceMeshKind>().each(), [](const auto &e) { return std::get<1>(e).Value != MeshKind::Triangles; });
-                if (pipelines.Main.Compiler.CompilePipelines(r.ctx().get<mtl::LibraryCache>(), pbr_mask, non_triangle)) request(RenderRequest::ReRecord);
+                if (pipelines.Main.Compiler.CompilePipelines(r.ctx().get<mtl::LibraryCache>(), pbr_mask, non_triangle)) request(RenderRequest::Rebuild);
                 const bool want_transmission = active_lighting.RealTransmission && HasFeature(pbr_mask, PbrFeature::Transmission);
                 const auto te_px = RenderExtentPx(r);
                 if (pipelines.Main.EnsureTransmissionResources(ctx, {te_px.x, te_px.y}, want_transmission)) refresh_transmission_sampler();
@@ -2048,7 +2047,7 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
             .DebugChannel = is_pbr_mode ? settings.DebugChannel : DebugChannel::None,
         }));
         r.ctx().get<DrawState>().SelectionStale = true;
-        request(RenderRequest::Submit);
+        request(transform_render_request);
     }
 
     const auto &settings = r.get<const ViewportDisplay>(viewport);
@@ -2089,10 +2088,10 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
         meshes.UpdateSoundVertexStates(mesh, sound_vertices, active_handle, excited_handle);
         r.ctx().get<DrawState>().SelectionStale = true;
     }
-    if (!dirty_element_state_meshes.empty()) request(RenderRequest::Submit);
+    if (!dirty_element_state_meshes.empty()) request(RenderRequest::Reuse);
     if (r.all_of<ElementStatesDirty>(viewport)) {
         r.remove<ElementStatesDirty>(viewport);
-        request(RenderRequest::Submit);
+        request(RenderRequest::Reuse);
     }
     for (auto &&[id, storage] : r.storage()) {
         if (storage.info() == entt::type_id<entt::reactive>()) storage.clear();

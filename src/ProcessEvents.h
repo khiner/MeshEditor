@@ -4,9 +4,9 @@
 
 enum class RenderRequest : uint8_t {
     None,
-    Submit,
-    ReRecordSilhouette, // Only silhouette batch + command buffer
-    ReRecord, // Full draw list rebuild
+    Reuse,
+    Silhouette,
+    Rebuild,
 };
 
 // The strongest render request not yet handled by a record/submit.
