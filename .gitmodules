@@ -9,10 +9,6 @@
 	path = lib/entt
 	url = git@github.com:skypjack/entt.git
 	branch = main
-[submodule "lib/miniaudio"]
-	path = lib/miniaudio
-	url = git@github.com:mackron/miniaudio.git
-	branch = dev
 [submodule "lib/imspinner"]
 	path = lib/imspinner
 	url = git@github.com:dalerank/imspinner.git

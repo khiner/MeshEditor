@@ -179,7 +179,7 @@ Rendering is fixed-step (one tick per timeline frame) and GPU-paced at a fixed e
 - [Metal](https://developer.apple.com/metal/) via [metal-cpp](https://developer.apple.com/metal/cpp/) + [AppKit](https://developer.apple.com/documentation/appkit) + [ImGui](https://github.com/ocornut/imgui): Graphics + immediate-mode UI/UX
 - [glm](https://github.com/g-truc/glm): Small numeric vector/matrix types + math
 - [entt](https://github.com/skypjack/entt): Entity Component System (ECS) for an efficient and scalable mixin-style architectural pattern
-- [miniaudio](https://github.com/mackron/miniaudio): Audio stream I/O
+- macOS Core Audio: HAL output and native audio-file I/O
 - [Spectra](https://github.com/yixuan/spectra) Estimate eigenvalues/vectors for modal analysis
 - [fastgltf](https://github.com/spnda/fastgltf) glTF 2.0 scene loading
 - [JoltPhysics](https://github.com/jrouwe/JoltPhysics): Rigid body physics

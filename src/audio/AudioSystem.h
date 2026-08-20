@@ -102,7 +102,7 @@ void RemoveVertexSamples(
 
 uint32_t DeviceSampleRate(const entt::registry &);
 
-// Decode any miniaudio-supported audio file to mono float frames at `sample_rate`. Returns empty on failure.
+// Decode any CoreAudio-supported audio file to mono float frames at `sample_rate`. Returns empty on failure.
 std::vector<float> LoadAudioFrames(const std::string &file_path, uint32_t sample_rate);
 
 void Stop(entt::registry &, entt::entity sound_entity);

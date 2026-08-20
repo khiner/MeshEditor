@@ -24,7 +24,6 @@
 #include "implot.h"
 #include "imspinner.h"
 #include "mesh2modes.h"
-#include "miniaudio.h"
 
 #include "ui/HelpMarker.h" // depends on imgui
 #include "ui/PresetCombo.h"
@@ -137,55 +136,6 @@ void ReleaseSample(entt::registry &r, entt::entity viewport, const fs::path &pat
     if (store->ByPath.empty()) r.remove<AudioSamples>(viewport);
 }
 } // namespace
-
-struct WavWriter::Impl {
-    ma_encoder Encoder;
-    uint64_t FramesWritten{0};
-    bool Open{false};
-};
-
-WavWriter::WavWriter(const std::filesystem::path &path, uint32_t sample_rate) : State{std::make_unique<Impl>()} {
-    const auto config = ma_encoder_config_init(ma_encoding_format_wav, ma_format_f32, 1, sample_rate);
-    State->Open = ma_encoder_init_file(path.c_str(), &config, &State->Encoder) == MA_SUCCESS;
-}
-
-WavWriter::~WavWriter() {
-    if (State->Open) ma_encoder_uninit(&State->Encoder);
-}
-
-bool WavWriter::IsOpen() const { return State->Open; }
-
-bool WavWriter::Write(std::span<const float> frames) {
-    if (!State->Open) return false;
-    if (frames.empty()) return true;
-    ma_uint64 written = 0;
-    if (ma_encoder_write_pcm_frames(&State->Encoder, frames.data(), frames.size(), &written) != MA_SUCCESS || written != frames.size()) return false;
-    State->FramesWritten += written;
-    return true;
-}
-
-uint64_t WavWriter::FramesWritten() const { return State->FramesWritten; }
-
-std::vector<float> LoadAudioFrames(const std::string &file_path, uint32_t sample_rate) {
-    const ma_decoder_config config = ma_decoder_config_init(ma_format_f32, 1, sample_rate);
-    ma_decoder decoder;
-    if (ma_decoder_init_file(file_path.c_str(), &config, &decoder) != MA_SUCCESS) {
-        std::cerr << std::format("Failed to open audio file: {}\n", file_path);
-        return {};
-    }
-    ma_uint64 total_frames = 0;
-    if (ma_decoder_get_length_in_pcm_frames(&decoder, &total_frames) != MA_SUCCESS || total_frames == 0) {
-        ma_decoder_uninit(&decoder);
-        std::cerr << std::format("Failed to read length of audio file: {}\n", file_path);
-        return {};
-    }
-    std::vector<float> frames(total_frames);
-    ma_uint64 frames_read = 0;
-    ma_decoder_read_pcm_frames(&decoder, frames.data(), total_frames, &frames_read);
-    frames.resize(frames_read);
-    ma_decoder_uninit(&decoder);
-    return frames;
-}
 
 void AssignVertexSample(
     entt::registry &r, entt::entity viewport, entt::entity e,

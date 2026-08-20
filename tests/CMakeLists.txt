@@ -152,6 +152,15 @@ target_include_directories(MeshEditorCompressTest PRIVATE
 target_link_libraries(MeshEditorCompressTest PRIVATE Boost::ut basisu_transcoder)
 mesheditor_test_defaults(MeshEditorCompressTest)
 
+add_executable(MeshEditorAudioFileTest AudioFileTest.cpp ${CMAKE_SOURCE_DIR}/src/audio/AudioFile.cpp)
+target_include_directories(MeshEditorAudioFileTest PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/tests
+    SYSTEM ${CMAKE_SOURCE_DIR}/lib/entt/src
+)
+target_link_libraries(MeshEditorAudioFileTest PRIVATE Boost::ut "-framework AudioToolbox" "-framework CoreFoundation")
+mesheditor_test_defaults(MeshEditorAudioFileTest)
+
 add_executable(MeshEditorContactCollectBench ContactCollectBench.cpp)
 target_include_directories(MeshEditorContactCollectBench PRIVATE SYSTEM ${CMAKE_SOURCE_DIR}/lib/JoltPhysics SYSTEM ${CMAKE_SOURCE_DIR}/lib/entt/src)
 target_link_libraries(MeshEditorContactCollectBench PRIVATE Jolt)

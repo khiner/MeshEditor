@@ -111,7 +111,6 @@ include_directories(
     SYSTEM lib/imspinner
     SYSTEM lib/glm
     SYSTEM lib/entt/src
-    SYSTEM lib/miniaudio/extras/miniaudio_split
     SYSTEM lib/spectra/include
     SYSTEM lib/tinyobjloader
     SYSTEM lib/tinyply/source
@@ -184,7 +183,6 @@ if(MESHEDITOR_APP)
         ${ImplotDir}/implot.cpp
         ${ImplotDir}/implot_items.cpp
         ${ImplotDir}/implot_demo.cpp
-        lib/miniaudio/extras/miniaudio_split/miniaudio.c
         ${SOURCES}
     )
     add_dependencies(${PROJECT_NAME} generate_gpu_schema)
@@ -194,7 +192,7 @@ if(MESHEDITOR_APP)
     target_compile_definitions(${PROJECT_NAME} PRIVATE IMGUI_IMPL_METAL_CPP)
 
     target_include_directories(${PROJECT_NAME} PRIVATE ${EIGEN3_INCLUDE_DIR})
-    target_link_libraries(${PROJECT_NAME} PRIVATE "-framework Accelerate" "-framework AppKit" "-framework CoreAudio" "-framework GameController" "-framework Metal" "-framework Foundation" "-framework QuartzCore" "-framework UniformTypeIdentifiers")
+    target_link_libraries(${PROJECT_NAME} PRIVATE "-framework Accelerate" "-framework AppKit" "-framework AudioToolbox" "-framework AudioUnit" "-framework CoreAudio" "-framework CoreFoundation" "-framework GameController" "-framework Metal" "-framework Foundation" "-framework QuartzCore" "-framework UniformTypeIdentifiers")
 
     target_link_libraries(${PROJECT_NAME} PRIVATE meshoptimizer PkgConfig::FFTW3F ${FFTW3F_THREADS} lunasvg fastgltf::fastgltf simdjson::simdjson basisu_transcoder Jolt webp)
 
