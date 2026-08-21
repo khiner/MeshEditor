@@ -479,8 +479,8 @@ void DeinitViewport(entt::registry &r, entt::entity viewport) {
 }
 
 void PresentViewport(entt::registry &r, entt::entity viewport) {
-    // Replay's ticks never render the color image and consumed the scene's reactive changes,
-    // so force a full record to render the final state regardless.
+    // Replay may reach this before the viewport has an extent; once it does, record the complete
+    // state even if earlier zero-extent ticks consumed its reactive changes.
     if (!AdvanceAndRecord(r, viewport, /*force_full=*/true)) return;
     WaitForRender(r);
 }

@@ -283,8 +283,8 @@ fs::path CurrentProjectPath;
 void ReplayPreservingView(entt::registry &r, entt::entity viewport, const fs::path &log_path, uint64_t skip = 0) {
     const auto live_extent = r.ctx().get<ViewportExtent>().Value;
     auto live_view_cameras = GetViewCameraState(r, viewport);
-    if (action::ReplayLog(r, viewport, log_path, [](entt::registry &r, entt::entity viewport) { ProcessComponentEvents(r, viewport); }, skip)) {
-        r.ctx().get<ViewportExtent>().Value = live_extent;
+    if (action::ReplayLog(r, viewport, log_path, &PresentViewport, skip)) {
+        if (live_extent != uvec2{}) r.ctx().get<ViewportExtent>().Value = live_extent;
         SetViewCameraState(r, viewport, std::move(live_view_cameras));
         PresentViewport(r, viewport);
     }

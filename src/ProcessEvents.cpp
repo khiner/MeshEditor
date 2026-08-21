@@ -746,6 +746,7 @@ bool SyncViewportRenderResources(entt::registry &r, entt::entity viewport) {
     auto &pipelines = r.ctx().get<Pipelines>();
     const auto render_extent_px = RenderExtentPx(r);
     const mtl::Extent2D render_extent{render_extent_px.x, render_extent_px.y};
+    if (render_extent.Width == 0 || render_extent.Height == 0) return false;
     if (pipelines.BuiltColorExtent() == render_extent) return false;
 
     const auto &ctx = r.ctx().get<const mtl::Context>();
