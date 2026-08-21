@@ -8,6 +8,9 @@
 #include "gpu/MeshletCullBlockState.h"
 #include "gpu/MeshletRecord.h"
 #include "gpu/MeshletRouteState.h"
+#include "gpu/MeshletWorkBlockState.h"
+#include "gpu/MeshletWorkRange.h"
+#include "gpu/MeshletWorkState.h"
 #include "gpu/PBRMaterial.h"
 #include "gpu/PrimitiveRecord.h"
 #include "gpu/PunctualLight.h"
@@ -151,11 +154,14 @@ struct GpuBuffers {
           MeshletTriangleIds{Ctx, SlotType::Buffer},
           Primitives{Ctx, SlotType::Buffer},
           GpuInstanceSlots{Ctx, SlotType::Buffer},
-          MeshletCandidates{Ctx, SlotType::Buffer},
           Instances{Ctx},
+          MeshletWorkRanges{Ctx, 0, SlotType::Buffer},
+          MeshletWorkBlocks{Ctx, 0, SlotType::Buffer},
+          MeshletWorkBlockStates{Ctx, 0, SlotType::Buffer},
+          MeshletWorkState{Ctx, sizeof(::MeshletWorkState), SlotType::Buffer},
+          MeshletWorkDispatchArgs{Ctx, sizeof(MeshDispatchArgs), SlotType::Buffer},
           VisibleMeshlets{Ctx, 0, SlotType::Buffer},
-          MeshletRouteKeys{Ctx, 0, SlotType::Buffer},
-          MeshletTransmissionRanks{Ctx, 0, SlotType::Buffer},
+          MeshletClassifications{Ctx, 0, SlotType::Buffer},
           MeshletCullBlocks{Ctx, 0, SlotType::Buffer},
           MeshletBlendBlocks{Ctx, 0, SlotType::Buffer},
           MeshletRoutes{Ctx, sizeof(MeshletRouteState), SlotType::Buffer},
@@ -256,7 +262,7 @@ struct GpuBuffers {
         MeshletTriangleIds.Reset();
         Primitives.Reset();
         GpuInstanceSlots.Reset();
-        MeshletCandidates.Reset();
+        MeshletRangeCount = 0;
         MeshletInstanceCount = 0;
         ArmatureDeformBuffer.Reset();
         MorphWeightBuffer.Reset();
@@ -281,13 +287,14 @@ struct GpuBuffers {
     BufferArena<uint32_t> MeshletTriangleIds;
     BufferArena<PrimitiveRecord> Primitives;
     BufferArena<uint32_t> GpuInstanceSlots;
-    BufferArena<VisibleMeshlet> MeshletCandidates;
     BufferArena<mat4> ArmatureDeformBuffer{Ctx, SlotType::ArmatureDeformBuffer};
     BufferArena<float> MorphWeightBuffer{Ctx, SlotType::MorphWeightBuffer};
     BufferArena<uint8_t> VertexClassBuffer{Ctx, SlotType::VertexClassBuffer};
     InstanceArena Instances;
 
-    mtl::Buffer VisibleMeshlets, MeshletRouteKeys, MeshletTransmissionRanks, MeshletCullBlocks, MeshletBlendBlocks, MeshletRoutes, MeshletDispatchArgs;
+    mtl::Buffer MeshletWorkRanges, MeshletWorkBlocks, MeshletWorkBlockStates, MeshletWorkState, MeshletWorkDispatchArgs;
+    mtl::Buffer VisibleMeshlets, MeshletClassifications, MeshletCullBlocks, MeshletBlendBlocks, MeshletRoutes, MeshletDispatchArgs;
+    uint64_t MeshletRangeCount{0};
     uint64_t MeshletInstanceCount{0};
     uint32_t MeshletDispatchChunkCount{0};
 
@@ -295,34 +302,24 @@ struct GpuBuffers {
     static constexpr uint32_t MeshletCullBlockSize{1024};
     static constexpr uint32_t MeshletRouteCount{4};
 
-    void ReleaseMeshletCandidates(Range range) {
-        std::ranges::fill(MeshletCandidates.GetMutable(range), VisibleMeshlet{InvalidOffset, InvalidOffset});
-        MeshletCandidates.Release(range);
-    }
-
-    void EnsureMeshletVisibilityCapacity(uint32_t route_copies, bool sort_blend, bool transmission) {
-        const auto bytes = MeshletInstanceCount * sizeof(VisibleMeshlet) * route_copies;
+    void EnsureMeshletVisibilityCapacity(
+        uint64_t visible_count, uint64_t work_range_count, uint64_t work_meshlet_count,
+        uint64_t dispatch_meshlet_count, bool sort_blend
+    ) {
+        const auto bytes = visible_count * sizeof(VisibleMeshlet);
         VisibleMeshlets.Reserve(bytes);
         VisibleMeshlets.UsedSize = bytes;
-        const auto candidate_count = MeshletCandidates.Buffer.Count<VisibleMeshlet>();
-        const auto block_count = (candidate_count + MeshletCullBlockSize - 1u) / MeshletCullBlockSize;
-        MeshletRouteKeys.Reserve(uint64_t(candidate_count) * sizeof(uint32_t));
-        MeshletRouteKeys.UsedSize = uint64_t(candidate_count) * sizeof(uint32_t);
-        if (transmission) {
-            MeshletTransmissionRanks.Reserve(uint64_t(candidate_count) * sizeof(uint16_t));
-            MeshletTransmissionRanks.UsedSize = uint64_t(candidate_count) * sizeof(uint16_t);
-        }
-        MeshletCullBlocks.Reserve(uint64_t(block_count) * sizeof(MeshletCullBlockState));
-        MeshletCullBlocks.UsedSize = uint64_t(block_count) * sizeof(MeshletCullBlockState);
-        if (sort_blend) {
-            const auto blend_bytes = uint64_t(block_count) * sizeof(MeshletBlendBlockState);
-            MeshletBlendBlocks.Reserve(blend_bytes);
-            MeshletBlendBlocks.UsedSize = blend_bytes;
-        }
-        MeshletDispatchChunkCount = static_cast<uint32_t>((MeshletInstanceCount + MeshletDispatchChunkSize - 1) / MeshletDispatchChunkSize);
-        const auto dispatch_bytes = uint64_t(MeshletRouteCount) * MeshletDispatchChunkCount * sizeof(MeshDispatchArgs);
-        MeshletDispatchArgs.Reserve(dispatch_bytes);
-        MeshletDispatchArgs.UsedSize = dispatch_bytes;
+        const auto instance_count = GpuInstanceSlots.Buffer.Count<uint32_t>();
+        const auto work_block_count = (instance_count + MeshletCullBlockSize - 1u) / MeshletCullBlockSize;
+        const auto block_count = (work_meshlet_count + MeshletCullBlockSize - 1u) / MeshletCullBlockSize;
+        MeshletWorkRanges.SetCount<MeshletWorkRange>(work_range_count);
+        MeshletWorkBlocks.SetCount<uint32_t>(block_count);
+        MeshletWorkBlockStates.SetCount<MeshletWorkBlockState>(work_block_count);
+        MeshletClassifications.SetCount<uint16_t>(work_meshlet_count);
+        MeshletCullBlocks.SetCount<MeshletCullBlockState>(block_count);
+        if (sort_blend) MeshletBlendBlocks.SetCount<MeshletBlendBlockState>(block_count);
+        MeshletDispatchChunkCount = static_cast<uint32_t>((dispatch_meshlet_count + MeshletDispatchChunkSize - 1) / MeshletDispatchChunkSize);
+        MeshletDispatchArgs.SetCount<MeshDispatchArgs>(MeshletRouteCount * MeshletDispatchChunkCount);
     }
 
     void RebuildMeshlets(MeshBuffers &, const Mesh &, const MeshStore &);

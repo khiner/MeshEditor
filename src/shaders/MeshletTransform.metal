@@ -27,6 +27,10 @@ using MeshletOutput = metal::mesh<MeshletVaryings, void, 144, 48, metal::topolog
     device const MeshletRecord *meshlets = BindlessBuffer(MeshletRecord, bindless.Buffer, pc.MeshletSlot);
     const uint instance_slot = BindlessBuffer(uint, bindless.Buffer, pc.InstanceMapSlot)[work.Instance];
     const InstanceRecord instance = instances[instance_slot];
+    if ((instance.Flags & pc.RequiredInstanceFlags) != pc.RequiredInstanceFlags) {
+        output.set_primitive_count(0u);
+        return;
+    }
     const MeshletRecord meshlet = meshlets[work.Meshlet];
     const PrimitiveRecord primitive = primitives[meshlet.Primitive];
 

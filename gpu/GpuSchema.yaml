@@ -398,6 +398,32 @@ structs:
         type: u32
       - name: Meshlet
         type: u32
+  # A producer-neutral meshlet range in the compact per-frame work stream.
+  # WorkOffset preserves the deterministic flattened order across ranges.
+  - name: MeshletWorkRange
+    fields:
+      - name: Instance
+        type: u32
+      - name: MeshletOffset
+        type: u32
+      - name: MeshletCount
+        type: u32
+      - name: WorkOffset
+        type: u32
+  - name: MeshletWorkBlockState
+    fields:
+      - name: RangeCount
+        type: u32
+      - name: MeshletCount
+        type: u32
+  - name: MeshletWorkState
+    fields:
+      - name: RangeCount
+        type: u32
+      - name: MeshletCount
+        type: u32
+      - name: CullBlockCount
+        type: u32
   - name: MeshletCullBlockState
     fields:
       - name: Routes
@@ -1132,22 +1158,29 @@ structs:
         type: u32
       - name: VisibleOffset
         type: u32
+      - name: RequiredInstanceFlags
+        type: u32
   - name: MeshletCullPushConstants
     push_constant: true
     fields:
-      - name: CandidateCount
+      - name: InstanceCount
         type: u32
-      - name: BlockCount
+      - name: WorkBlockCount
         type: u32
-      - name: CandidateSlot
+      - name: WorkRangeSlot
+        type: u32
+      - name: WorkBlockSlot
+        type: u32
+      - name: WorkBlockStateSlot
+        type: u32
+      - name: WorkStateSlot
+        type: u32
+      - name: WorkDispatchArgsSlot
         type: u32
       - name: BlockStateSlot
         type: u32
-      - name: RouteKeySlot
+      - name: ClassificationSlot
         type: u32
-      - name: TransmissionRankSlot
-        type: u32
-        default: InvalidSlot
       - name: BlendBlockSlot
         type: u32
         default: InvalidSlot

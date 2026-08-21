@@ -381,16 +381,44 @@ void RecordMeshletCullImpl(
     MTL::ComputeCommandEncoder *encoder, const mtl::BindlessSet &slots, const Pipelines &pipelines,
     GpuBuffers &buffers, MeshletCullConfig config
 ) {
-    const auto route_mode = uint32_t(config.Mode);
     const bool transmission = config.Mode == MeshletRouteMode::Transmission;
-    buffers.EnsureMeshletVisibilityCapacity(1u + transmission + (config.ExtraRouteFlags != 0u), config.SortBlend, transmission);
+    struct WorkCapacity {
+        uint64_t Ranges, Meshlets;
+    };
+    const auto work_with_flags = [&](uint32_t flags) -> WorkCapacity {
+        if (flags == 0u) return {buffers.MeshletRangeCount, buffers.MeshletInstanceCount};
+        const auto slots = buffers.GpuInstanceSlots.Buffer.GetSpan<uint32_t>({0, buffers.GpuInstanceSlots.Buffer.Count<uint32_t>()});
+        const auto records = buffers.Instances.RecordBuffer.GetSpan<InstanceRecord>({0, buffers.Instances.RecordBuffer.Count<InstanceRecord>()});
+        const auto primitives = buffers.Primitives.Buffer.GetSpan<PrimitiveRecord>({0, buffers.Primitives.Buffer.Count<PrimitiveRecord>()});
+        WorkCapacity capacity{};
+        for (const uint32_t slot : slots) {
+            if (slot == InvalidOffset || slot >= records.size() || (records[slot].Flags & flags) != flags) continue;
+            capacity.Ranges += records[slot].PrimitiveCount;
+            for (uint32_t p = 0; p < records[slot].PrimitiveCount; ++p) {
+                capacity.Meshlets += primitives[records[slot].PrimitiveOffset + p].MeshletCount;
+            }
+        }
+        return capacity;
+    };
+    const WorkCapacity primary = work_with_flags(config.RequiredInstanceFlags);
+    const WorkCapacity extra = config.ExtraRouteFlags != 0u ? work_with_flags(config.ExtraRouteFlags) : WorkCapacity{};
+    buffers.EnsureMeshletVisibilityCapacity(
+        primary.Meshlets * (1u + transmission) + extra.Meshlets,
+        primary.Ranges,
+        primary.Meshlets,
+        std::max(primary.Meshlets, extra.Meshlets),
+        config.SortBlend
+    );
     const MeshletCullPushConstants pc{
-        .CandidateCount = buffers.MeshletCandidates.Buffer.Count<VisibleMeshlet>(),
-        .BlockCount = buffers.MeshletCullBlocks.Count<MeshletCullBlockState>(),
-        .CandidateSlot = buffers.MeshletCandidates.Buffer.Slot,
+        .InstanceCount = buffers.GpuInstanceSlots.Buffer.Count<uint32_t>(),
+        .WorkBlockCount = buffers.MeshletWorkBlockStates.Count<MeshletWorkBlockState>(),
+        .WorkRangeSlot = buffers.MeshletWorkRanges.Slot,
+        .WorkBlockSlot = buffers.MeshletWorkBlocks.Slot,
+        .WorkBlockStateSlot = buffers.MeshletWorkBlockStates.Slot,
+        .WorkStateSlot = buffers.MeshletWorkState.Slot,
+        .WorkDispatchArgsSlot = buffers.MeshletWorkDispatchArgs.Slot,
         .BlockStateSlot = buffers.MeshletCullBlocks.Slot,
-        .RouteKeySlot = buffers.MeshletRouteKeys.Slot,
-        .TransmissionRankSlot = transmission ? buffers.MeshletTransmissionRanks.Slot : InvalidSlot,
+        .ClassificationSlot = buffers.MeshletClassifications.Slot,
         .BlendBlockSlot = config.SortBlend ? buffers.MeshletBlendBlocks.Slot : InvalidSlot,
         .VisibleSlot = buffers.VisibleMeshlets.Slot,
         .InstanceMapSlot = buffers.GpuInstanceSlots.Buffer.Slot,
@@ -403,30 +431,42 @@ void RecordMeshletCullImpl(
         .DispatchArgsSlot = buffers.MeshletDispatchArgs.Slot,
         .DispatchChunkCount = buffers.MeshletDispatchChunkCount,
         .DispatchChunkSize = GpuBuffers::MeshletDispatchChunkSize,
-        .RouteMode = route_mode,
+        .RouteMode = uint32_t(config.Mode),
         .RequiredInstanceFlags = config.RequiredInstanceFlags,
         .ExtraInstanceFlags = config.ExtraRouteFlags,
         .PyramidSamplerSlot = config.PyramidSamplerSlot,
     };
     encode::BindScene(encoder, slots, buffers, config.UboOffset);
     encode::SetPushConstants(encoder, pc);
-    if (pc.BlockCount > 0) {
-        encoder->setComputePipelineState(pipelines.MeshletCullBlockCount.State());
-        constexpr uint32_t simd_groups = GpuBuffers::MeshletCullBlockSize / 32u;
-        const uint32_t prefix_bytes = GpuBuffers::MeshletRouteCount * (simd_groups + 1u) * sizeof(uint32_t);
+    constexpr uint32_t simd_groups = GpuBuffers::MeshletCullBlockSize / 32u;
+    constexpr uint32_t prefix_stride = simd_groups + 1u;
+    const auto dispatch_work = [&](const mtl::ComputePipeline &pipeline) {
+        if (pc.WorkBlockCount == 0) return;
+        encoder->setComputePipelineState(pipeline.State());
+        encoder->setThreadgroupMemoryLength(2u * prefix_stride * sizeof(uint32_t), 0);
+        encoder->dispatchThreadgroups(MTL::Size(pc.WorkBlockCount, 1, 1), MTL::Size(GpuBuffers::MeshletCullBlockSize, 1, 1));
+    };
+    const auto dispatch_meshlets = [&](const mtl::ComputePipeline &pipeline) {
+        encoder->setComputePipelineState(pipeline.State());
+        const uint32_t prefix_bytes = GpuBuffers::MeshletRouteCount * prefix_stride * sizeof(uint32_t);
         const uint32_t blend_bytes = config.SortBlend ? simd_groups * 256u * sizeof(uint16_t) : 0u;
         encoder->setThreadgroupMemoryLength(prefix_bytes + blend_bytes, 0);
-        encoder->dispatchThreadgroups(MTL::Size(pc.BlockCount, 1, 1), MTL::Size(GpuBuffers::MeshletCullBlockSize, 1, 1));
-    }
+        encoder->dispatchThreadgroups(*buffers.MeshletWorkDispatchArgs, 0, MTL::Size(GpuBuffers::MeshletCullBlockSize, 1, 1));
+    };
+    dispatch_work(pipelines.MeshletWorkBlockCount);
+    encoder->memoryBarrier(MTL::BarrierScopeBuffers);
+    encoder->setComputePipelineState(pipelines.MeshletWorkPrefix.State());
+    encoder->dispatchThreadgroups(MTL::Size(1, 1, 1), ThreadgroupSize::Linear256);
+    encoder->memoryBarrier(MTL::BarrierScopeBuffers);
+    dispatch_work(pipelines.MeshletWorkEmit);
+    encoder->memoryBarrier(MTL::BarrierScopeBuffers);
+    dispatch_meshlets(pipelines.MeshletCullBlockCount);
     encoder->memoryBarrier(MTL::BarrierScopeBuffers);
     encoder->setComputePipelineState(pipelines.MeshletCullPrefix.State());
     encoder->setThreadgroupMemoryLength(4u * sizeof(uint32_t), 0);
     encoder->dispatchThreadgroups(MTL::Size(1, 1, 1), ThreadgroupSize::Linear256);
     encoder->memoryBarrier(MTL::BarrierScopeBuffers);
-    if (pc.BlockCount > 0) {
-        encoder->setComputePipelineState(pipelines.MeshletCullEmit.State());
-        encoder->dispatchThreadgroups(MTL::Size(pc.BlockCount, 1, 1), MTL::Size(GpuBuffers::MeshletCullBlockSize, 1, 1));
-    }
+    dispatch_meshlets(pipelines.MeshletCullEmit);
 }
 
 void RecordDepthPyramid(
@@ -1116,13 +1156,16 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
                 .Mode = show_rendered ? (real_transmission ? MeshletRouteMode::Transmission : MeshletRouteMode::Material) : MeshletRouteMode::Single,
                 .UboOffset = ubo_offset,
                 .PyramidSamplerSlot = pyramid,
-                .ExtraRouteFlags = has_silhouette ? uint32_t(MeshletInstanceFlag::Silhouette) : 0u,
+                .ExtraRouteFlags = has_silhouette && show_rendered ? uint32_t(MeshletInstanceFlag::Silhouette) : 0u,
                 .SortBlend = sort_blend,
             }
         );
     }
     if (has_silhouette) { // Silhouette depth/object pass
-        RecordSilhouetteDepthPass(chain, slots, pipelines, buffers, true, ubo_offset, cull_scene_meshlets);
+        RecordSilhouetteDepthPass(
+            chain, slots, pipelines, buffers, true, ubo_offset,
+            cull_scene_meshlets ? (show_rendered ? 3u : 0u) : InvalidMeshletRoute
+        );
 
         const auto &silhouette_edge = pipelines.SilhouetteEdge;
         {
@@ -1409,10 +1452,10 @@ void RecordMeshletCull(
 
 void RecordSilhouetteDepthPass(
     mtl::PassChain &chain, const mtl::BindlessSet &slots, const Pipelines &pipelines,
-    GpuBuffers &buffers, bool draw_meshlets, uint32_t ubo_offset, bool reuse_cull
+    GpuBuffers &buffers, bool draw_meshlets, uint32_t ubo_offset, uint32_t reuse_route
 ) {
     const bool draw = draw_meshlets && buffers.MeshletInstanceCount > 0;
-    if (draw && !reuse_cull) {
+    if (draw && reuse_route == InvalidMeshletRoute) {
         RecordMeshletCull(chain, slots, pipelines, buffers, {
                                                                 .RequiredInstanceFlags = uint32_t(MeshletInstanceFlag::Silhouette),
                                                                 .UboOffset = ubo_offset,
@@ -1429,10 +1472,13 @@ void RecordSilhouetteDepthPass(
     );
     if (!draw) return;
     silhouette.Meshlet.Bind(encoder);
-    DrawMeshlets(encoder, buffers, reuse_cull ? 3u : 0u);
+    DrawMeshlets(
+        encoder, buffers, reuse_route != InvalidMeshletRoute ? reuse_route : 0u,
+        reuse_route == 0u ? uint32_t(MeshletInstanceFlag::Silhouette) : 0u
+    );
 }
 
-void DrawMeshlets(MTL::RenderCommandEncoder *encoder, const GpuBuffers &buffers, uint32_t route) {
+void DrawMeshlets(MTL::RenderCommandEncoder *encoder, const GpuBuffers &buffers, uint32_t route, uint32_t required_instance_flags) {
     MeshletDrawPushConstants pc{
         .PrimitiveSlot = buffers.Primitives.Buffer.Slot,
         .InstanceSlot = buffers.Instances.RecordBuffer.Slot,
@@ -1442,6 +1488,7 @@ void DrawMeshlets(MTL::RenderCommandEncoder *encoder, const GpuBuffers &buffers,
         .VisibleMeshletSlot = buffers.VisibleMeshlets.Slot,
         .RouteStateSlot = buffers.MeshletRoutes.Slot,
         .Route = route,
+        .RequiredInstanceFlags = required_instance_flags,
     };
     for (uint32_t chunk = 0; chunk < buffers.MeshletDispatchChunkCount; ++chunk) {
         pc.VisibleOffset = chunk * GpuBuffers::MeshletDispatchChunkSize;

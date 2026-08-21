@@ -63,11 +63,8 @@ entt::entity WireRegistry(entt::registry &r) {
     r.on_destroy<RenderInstance>().connect<[](entt::registry &r, entt::entity e) {
         const auto &ri = r.get<const RenderInstance>(e);
         if (auto *buffers = r.ctx().find<GpuBuffers>()) {
+            buffers->MeshletRangeCount -= ri.MeshletRangeCount;
             buffers->MeshletInstanceCount -= ri.MeshletCount;
-            if (ri.MeshletCandidateOffset != InvalidOffset) {
-                const Range range{ri.MeshletCandidateOffset, ri.MeshletCount};
-                buffers->ReleaseMeshletCandidates(range);
-            }
             if (ri.GpuId != InvalidOffset) {
                 buffers->GpuInstanceSlots.GetMutable({ri.GpuId, 1})[0] = InvalidOffset;
                 buffers->GpuInstanceSlots.Release({ri.GpuId, 1});

@@ -232,6 +232,7 @@ struct Pipelines {
     mtl::ComputePipeline BoundsCombine;
     // Rewrites indirect instance counts and the visible-index remap.
     mtl::ComputePipeline FrustumCull;
+    mtl::ComputePipeline MeshletWorkBlockCount, MeshletWorkPrefix, MeshletWorkEmit;
     mtl::ComputePipeline MeshletCullBlockCount, MeshletCullPrefix, MeshletCullEmit;
     mtl::ComputePipeline DepthPyramidReduce;
     // Finds each tile's largest motion, then marks every tile its streak crosses.

@@ -451,6 +451,9 @@ Pipelines::Pipelines(const mtl::Context &ctx, mtl::LibraryCache &libraries)
       BoundsReduce{libraries, {"BoundsReduce.metal", "BoundsReduceKernel"}},
       BoundsCombine{libraries, {"BoundsCombine.metal", "BoundsCombineKernel"}},
       FrustumCull{libraries, {"FrustumCull.metal", "FrustumCullKernel"}},
+      MeshletWorkBlockCount{libraries, {"MeshletCull.metal", "MeshletWorkBlockCount"}},
+      MeshletWorkPrefix{libraries, {"MeshletCull.metal", "MeshletWorkPrefix"}},
+      MeshletWorkEmit{libraries, {"MeshletCull.metal", "MeshletWorkEmit"}},
       MeshletCullBlockCount{libraries, {"MeshletCull.metal", "MeshletCullBlockCount"}},
       MeshletCullPrefix{libraries, {"MeshletCull.metal", "MeshletCullPrefix"}},
       MeshletCullEmit{libraries, {"MeshletCull.metal", "MeshletCullEmit"}},
@@ -487,7 +490,7 @@ void Pipelines::CompileShaders() {
     SelectionFragment.MeshletFaceXRay.Compile(Libraries);
     SelectionFragment.MeshletFaceBitsetBox.Compile(Libraries);
     SelectionFragment.MeshletFaceXRayBitsetBox.Compile(Libraries);
-    for (auto *compute : {&ObjectPick, &ElementPick, &BoxSelect, &UpdateSelectionState, &PosePrepass, &VertexNormalDerive, &BoundsReduce, &BoundsCombine, &FrustumCull, &MeshletCullBlockCount, &MeshletCullPrefix, &MeshletCullEmit, &DepthPyramidReduce, &MotionBlurTilesFlatten, &MotionBlurTilesDilate, &IblPrefilter.EquirectToCubemap, &IblPrefilter.DiffuseIrradiance, &IblPrefilter.SpecularPrefilter}) {
+    for (auto *compute : {&ObjectPick, &ElementPick, &BoxSelect, &UpdateSelectionState, &PosePrepass, &VertexNormalDerive, &BoundsReduce, &BoundsCombine, &FrustumCull, &MeshletWorkBlockCount, &MeshletWorkPrefix, &MeshletWorkEmit, &MeshletCullBlockCount, &MeshletCullPrefix, &MeshletCullEmit, &DepthPyramidReduce, &MotionBlurTilesFlatten, &MotionBlurTilesDilate, &IblPrefilter.EquirectToCubemap, &IblPrefilter.DiffuseIrradiance, &IblPrefilter.SpecularPrefilter}) {
         compute->Compile(Libraries);
     }
 }

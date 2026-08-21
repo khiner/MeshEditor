@@ -332,25 +332,25 @@ struct SyncResult {
 void UpdateMeshletInstance(entt::registry &r, entt::entity instance_entity) {
     auto &buffers = r.ctx().get<GpuBuffers>();
     auto &instance = r.get<RenderInstance>(instance_entity);
+    buffers.MeshletRangeCount -= instance.MeshletRangeCount;
     buffers.MeshletInstanceCount -= instance.MeshletCount;
-    const auto *mesh_buffers = instance.GpuId != InvalidOffset && r.valid(instance.Entity) ? r.try_get<const MeshBuffers>(instance.Entity) : nullptr;
-    const uint32_t count = mesh_buffers ? mesh_buffers->Meshlets.Count : 0;
-    if (count != instance.MeshletCount || (count > 0 && instance.MeshletCandidateOffset == InvalidOffset)) {
-        if (instance.MeshletCandidateOffset != InvalidOffset) {
-            const Range old_range{instance.MeshletCandidateOffset, instance.MeshletCount};
-            buffers.ReleaseMeshletCandidates(old_range);
+    const auto *mesh_buffers = r.valid(instance.Entity) ? r.try_get<const MeshBuffers>(instance.Entity) : nullptr;
+    const uint32_t meshlet_range_count = mesh_buffers ? mesh_buffers->Primitives.Count : 0;
+    const uint32_t meshlet_count = mesh_buffers ? mesh_buffers->Meshlets.Count : 0;
+    if (meshlet_count != instance.MeshletCount || (meshlet_count > 0 && instance.GpuId == InvalidOffset)) {
+        // Slot allocation follows topology finalization order, which work compaction preserves for deterministic routing.
+        if (instance.GpuId != InvalidOffset) {
+            buffers.GpuInstanceSlots.GetMutable({instance.GpuId, 1})[0] = InvalidOffset;
+            buffers.GpuInstanceSlots.Release({instance.GpuId, 1});
+            instance.GpuId = InvalidOffset;
         }
-        const auto range = buffers.MeshletCandidates.Allocate(count);
-        instance.MeshletCandidateOffset = count > 0 ? range.Offset : InvalidOffset;
-        instance.MeshletCount = count;
+        if (meshlet_count > 0) instance.GpuId = buffers.GpuInstanceSlots.Allocate(1).Offset;
     }
+    instance.MeshletRangeCount = meshlet_range_count;
+    instance.MeshletCount = meshlet_count;
+    buffers.MeshletRangeCount += instance.MeshletRangeCount;
     buffers.MeshletInstanceCount += instance.MeshletCount;
-    if (instance.MeshletCandidateOffset != InvalidOffset) {
-        auto candidates = buffers.MeshletCandidates.GetMutable({instance.MeshletCandidateOffset, instance.MeshletCount});
-        for (uint32_t i = 0; i < candidates.size(); ++i) {
-            candidates[i] = {instance.GpuId, mesh_buffers->Meshlets.Offset + i};
-        }
-    }
+    if (instance.GpuId != InvalidOffset) buffers.GpuInstanceSlots.GetMutable({instance.GpuId, 1})[0] = instance.BufferIndex;
 }
 
 void RebuildMeshletSceneMesh(entt::registry &r, entt::entity mesh_entity) {
@@ -456,8 +456,6 @@ SyncResult SyncModelsBuffers(entt::registry &r) {
             const auto instance_entity = entities[j];
             auto &render_instance = r.get<RenderInstance>(instance_entity);
             render_instance.BufferIndex = base_index + j;
-            if (render_instance.GpuId == InvalidOffset) render_instance.GpuId = buffers.GpuInstanceSlots.Allocate(1).Offset;
-            buffers.GpuInstanceSlots.GetMutable({render_instance.GpuId, 1})[0] = render_instance.BufferIndex;
             object_ids[j] = render_instance.ObjectId;
             states[j] = InstanceStateBits(r, instance_entity);
             auto &record = instance_records[j];
