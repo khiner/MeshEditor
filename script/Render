@@ -14,6 +14,27 @@ ScriptDir="$(cd "$(dirname "${0}")" && pwd)"
 ProjectRootDir="$(dirname "${ScriptDir}")"
 cd "${ProjectRootDir}"
 
+case "${1-}" in
+    -h|--help)
+        cat <<'EOF'
+Usage: script/Render
+
+Rebuild MeshEditor and regenerate the render corpus.
+
+Environment:
+  JOBS=N              Number of headless render workers (default: 8)
+  COMPARE_VIDEOS=1    Restore videos that differ from HEAD only by render noise
+EOF
+        exit 0
+        ;;
+    "") ;;
+    *)
+        echo "Unknown argument: $1" >&2
+        echo "Usage: script/Render" >&2
+        exit 2
+        ;;
+esac
+
 Exe="build/MeshEditor"
 RenderDir="render"
 Jobs="${JOBS:-8}"
