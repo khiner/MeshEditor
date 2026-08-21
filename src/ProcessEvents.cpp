@@ -329,6 +329,43 @@ struct SyncResult {
     bool Compacted{false};
 };
 
+void UpdateMeshletInstance(entt::registry &r, entt::entity instance_entity) {
+    auto &buffers = r.ctx().get<GpuBuffers>();
+    auto &instance = r.get<RenderInstance>(instance_entity);
+    buffers.MeshletInstanceCount -= instance.MeshletCount;
+    const auto *mesh_buffers = instance.GpuId != InvalidOffset && r.valid(instance.Entity) ? r.try_get<const MeshBuffers>(instance.Entity) : nullptr;
+    const uint32_t count = mesh_buffers ? mesh_buffers->Meshlets.Count : 0;
+    if (count != instance.MeshletCount || (count > 0 && instance.MeshletCandidateOffset == InvalidOffset)) {
+        if (instance.MeshletCandidateOffset != InvalidOffset) {
+            const Range old_range{instance.MeshletCandidateOffset, instance.MeshletCount};
+            buffers.ReleaseMeshletCandidates(old_range);
+        }
+        const auto range = buffers.MeshletCandidates.Allocate(count);
+        instance.MeshletCandidateOffset = count > 0 ? range.Offset : InvalidOffset;
+        instance.MeshletCount = count;
+    }
+    buffers.MeshletInstanceCount += instance.MeshletCount;
+    if (instance.MeshletCandidateOffset != InvalidOffset) {
+        auto candidates = buffers.MeshletCandidates.GetMutable({instance.MeshletCandidateOffset, instance.MeshletCount});
+        for (uint32_t i = 0; i < candidates.size(); ++i) {
+            candidates[i] = {instance.GpuId, mesh_buffers->Meshlets.Offset + i};
+        }
+    }
+}
+
+void RebuildMeshletSceneMesh(entt::registry &r, entt::entity mesh_entity) {
+    auto &buffers = r.ctx().get<GpuBuffers>();
+    auto &mesh_buffers = r.get<MeshBuffers>(mesh_entity);
+    buffers.RebuildMeshlets(mesh_buffers, GetMesh(r, mesh_entity), r.ctx().get<const MeshStore>());
+    for (const auto [instance_entity, ri] : r.view<const RenderInstance>().each()) {
+        if (ri.Entity != mesh_entity || ri.BufferIndex == UINT32_MAX) continue;
+        auto &record = buffers.Instances.RecordBuffer.GetMutableSpan<InstanceRecord>({ri.BufferIndex, 1}).front();
+        record.PrimitiveOffset = OffsetOrInvalid(mesh_buffers.Primitives);
+        record.PrimitiveCount = mesh_buffers.Primitives.Count;
+        UpdateMeshletInstance(r, instance_entity);
+    }
+}
+
 SyncResult SyncModelsBuffers(entt::registry &r) {
     auto &buffers = r.ctx().get<GpuBuffers>();
     // Consume the new-buffer-entity tracker. Categorize by type for deferred index buffer creation.
@@ -360,6 +397,7 @@ SyncResult SyncModelsBuffers(entt::registry &r) {
                 if (erased_idx < ri.BufferIndex) ++shift;
             }
             if (shift > 0) ri.BufferIndex -= shift;
+            if (shift > 0 && ri.GpuId != InvalidOffset) buffers.GpuInstanceSlots.GetMutable({ri.GpuId, 1})[0] = ri.BufferIndex;
         }
         r.remove<PendingHide>(buffer_entity);
     }
@@ -384,6 +422,7 @@ SyncResult SyncModelsBuffers(entt::registry &r) {
     // Shared write buffers — reused across groups to avoid per-group heap allocations.
     std::vector<uint32_t> object_ids;
     std::vector<uint8_t> states;
+    std::vector<InstanceRecord> instance_records;
     for (auto &[buffer_entity, entities] : shows_by_buffer) {
         const uint32_t n = entities.size();
         // Create ModelsBuffer on first show (deferred from MeshBuffers creation so we know the initial capacity).
@@ -402,6 +441,7 @@ SyncResult SyncModelsBuffers(entt::registry &r) {
             for (auto [other_entity, ri] : r.view<RenderInstance>().each()) {
                 if (ri.Entity == buffer_entity && ri.BufferIndex != UINT32_MAX) {
                     ri.BufferIndex = mb.InstanceRange.Offset + (ri.BufferIndex - old_range.Offset);
+                    if (ri.GpuId != InvalidOffset) buffers.GpuInstanceSlots.GetMutable({ri.GpuId, 1})[0] = ri.BufferIndex;
                 }
             }
             buffers.Instances.Free(old_range);
@@ -409,22 +449,34 @@ SyncResult SyncModelsBuffers(entt::registry &r) {
         // Build contiguous arrays for ObjectIds and InstanceStates (reusing shared vectors).
         object_ids.resize(n);
         states.resize(n);
+        instance_records.assign(n, {});
         const auto base_index = mb.InstanceRange.Offset + mb.InstanceCount;
+        const auto *mesh_buffers = r.try_get<const MeshBuffers>(buffer_entity);
         for (uint32_t j = 0; j < n; ++j) {
             const auto instance_entity = entities[j];
-            r.get<RenderInstance>(instance_entity).BufferIndex = base_index + j;
-            object_ids[j] = r.get<const RenderInstance>(instance_entity).ObjectId;
+            auto &render_instance = r.get<RenderInstance>(instance_entity);
+            render_instance.BufferIndex = base_index + j;
+            if (render_instance.GpuId == InvalidOffset) render_instance.GpuId = buffers.GpuInstanceSlots.Allocate(1).Offset;
+            buffers.GpuInstanceSlots.GetMutable({render_instance.GpuId, 1})[0] = render_instance.BufferIndex;
+            object_ids[j] = render_instance.ObjectId;
             states[j] = InstanceStateBits(r, instance_entity);
+            auto &record = instance_records[j];
+            record.ObjectId = render_instance.ObjectId;
+            if (mesh_buffers) {
+                record.PrimitiveOffset = OffsetOrInvalid(mesh_buffers->Primitives);
+                record.PrimitiveCount = mesh_buffers->Primitives.Count;
+            }
         }
         // Write ObjectIds, InstanceStates, and Bounds at the new slots. WorldTransform slots are left unwritten —
         // the WorldTransform reactive pass writes them before submit.
         buffers.Instances.ObjectIdBuffer.Update(as_bytes(object_ids), uint64_t(base_index) * sizeof(uint32_t));
         buffers.Instances.StateBuffer.Update(as_bytes(states), uint64_t(base_index) * sizeof(uint8_t));
+        buffers.Instances.RecordBuffer.Update(as_bytes(instance_records), uint64_t(base_index) * sizeof(InstanceRecord));
         // New slots start with empty bounds. The render's bounds reduce pass fills mesh instances'
         // slots, and extras slots stay empty (always drawn).
         std::ranges::fill(buffers.Instances.GetMutableBounds({base_index, n}), AABB{});
-        std::ranges::fill(buffers.Instances.GetMutableVisibility({base_index, n}), uint8_t{1});
         mb.InstanceCount = new_total;
+        for (const auto instance_entity : entities) UpdateMeshletInstance(r, instance_entity);
         newly_inserted.append_range(entities);
     }
     return {std::move(newly_inserted), std::move(new_mesh_entities), std::move(new_extras_entities), compacted};
@@ -748,7 +800,10 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
     const profile::CpuScope profile_scope{"ProcessEvents"};
 
     auto &pending_render = r.ctx().get<PendingRenderRequest>().Value;
-    auto request = [&pending_render](RenderRequest req) { pending_render = std::max(pending_render, req); };
+    auto request = [&pending_render, &pipelines](RenderRequest req) {
+        pending_render = std::max(pending_render, req);
+        if (req != RenderRequest::None && pipelines.Main.Resources) pipelines.Main.Resources->DepthPyramidValid = false;
+    };
 
     BuildMissingWorldTransforms(r);
 
@@ -1147,6 +1202,7 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
         // The index buffers written above complete the derive inputs.
         // Every new and restored mesh's shading state finalizes here, one batched derive for the whole frame.
         FinalizeNewMeshShadingNow(r, sync.NewMeshEntities);
+        for (const auto entity : sync.NewMeshEntities) RebuildMeshletSceneMesh(r, entity);
         request(RenderRequest::Rebuild);
     }
 
@@ -1425,6 +1481,7 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
         const auto edit_mode = r.get<const EditMode>(viewport).Value;
         std::vector<ElementRange> geometry_ranges;
         for (auto mesh_entity : tracker) {
+            RebuildMeshletSceneMesh(r, mesh_entity);
             // Edited geometry restates the hierarchy of every mesh that has one.
             if (r.all_of<MeshBvh>(mesh_entity)) UpdateMeshBvh(r, mesh_entity);
             if (r.get_or_emplace<SelectedInstanceCount>(mesh_entity).Value > 0) dirty_overlay_meshes.insert(mesh_entity);

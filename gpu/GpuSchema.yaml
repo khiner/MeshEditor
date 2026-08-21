@@ -156,6 +156,13 @@ enums:
     values:
       - name: KeepOrder
         value: 0x80000000u
+  - name: MeshletInstanceFlag
+    type: u32
+    values:
+      - name: Silhouette
+        value: 1u
+      - name: ElementSelection
+        value: 2u
 # Shader function constants. The index is the position in the group, so a reorder moves both
 # the shader declaration and the host's named index together.
 function_constants:
@@ -312,6 +319,109 @@ structs:
       - name: ElementPrimitiveOffset
         type: u32
         default: InvalidOffset
+  # Immutable triangle topology shared by every instance of a mesh.
+  - name: MeshletRecord
+    fields:
+      - name: TriangleOffset
+        type: u32
+      - name: TriangleCount
+        type: u32
+      - name: Primitive
+        type: u32
+      - name: Center
+        type: vec3
+      - name: Radius
+        type: float
+  # One mesh-owned record replaces the topology and shading fields formerly copied into
+  # DrawData for each instance. The instance record supplies the mutable fields.
+  - name: PrimitiveRecord
+    fields:
+      - name: Draw
+        type: DrawData
+      - name: PrimitiveIndex
+        type: u32
+      - name: FirstTriangle
+        type: u32
+      - name: MeshletOffset
+        type: u32
+      - name: MeshletCount
+        type: u32
+  - name: InstanceRecord
+    fields:
+      - name: PrimitiveOffset
+        type: u32
+        default: InvalidOffset
+      - name: PrimitiveCount
+        type: u32
+      - name: BoneDeformOffset
+        type: u32
+        default: InvalidOffset
+      - name: ArmatureDeformOffset
+        type: u32
+        default: InvalidOffset
+      - name: MorphDeformOffset
+        type: u32
+        default: InvalidOffset
+      - name: MorphWeightsOffset
+        type: u32
+        default: InvalidOffset
+      - name: MorphTargetCount
+        type: u32
+      - name: PosedPositionOffset
+        type: u32
+        default: InvalidOffset
+      - name: PosedVertexNormalOffset
+        type: u32
+        default: InvalidOffset
+      - name: PosedSeamNormalOffset
+        type: u32
+        default: InvalidOffset
+      - name: PosedFaceNormalOffset
+        type: u32
+        default: InvalidOffset
+      - name: ElementStateSlotOffset
+        type: SlotOffset
+      - name: HasPendingVertexTransform
+        type: u32
+      - name: PrimaryEditInstanceIndex
+        type: u32
+        default: InvalidOffset
+      - name: ObjectId
+        type: u32
+      - name: Flags
+        type: u32
+      - name: ElementIdOffset
+        type: u32
+  - name: VisibleMeshlet
+    fields:
+      - name: Instance
+        type: u32
+      - name: Meshlet
+        type: u32
+  - name: MeshletCullBlockState
+    fields:
+      - name: Routes
+        type: u32[4]
+  - name: MeshletBlendBlockState
+    fields:
+      - name: Buckets
+        type: u32[256]
+  - name: MeshDispatchArgs
+    fields:
+      - name: ThreadgroupsX
+        type: u32
+      - name: ThreadgroupsY
+        type: u32
+      - name: ThreadgroupsZ
+        type: u32
+  - name: MeshletRouteState
+    fields:
+      - name: Counts
+        type: u32[4]
+      - name: Offsets
+        type: u32[4]
+      - name: BlendOffsets
+        type: u32[256]
   # One entry per draw-list DrawData element, for the frustum cull pass. Cmd is the entry's indirect
   # command index, with CullFlag bits in its high bits. Base is the absolute draw-list index of the
   # command's first entry, where its visible-index remap region begins.
@@ -972,12 +1082,10 @@ structs:
         default: InvalidSlot
       - name: SrcLod
         type: u32
-      # Valid source texel bounds. Reads clamp here, so padding texels never contribute.
       - name: SrcWidth
         type: u32
       - name: SrcHeight
         type: u32
-      # Storage slots for up to six pyramid levels this dispatch reduces, InvalidSlot when the chain ends.
       - name: DstSlots
         type: u32[6]
         default: InvalidSlot
@@ -1000,13 +1108,77 @@ structs:
         type: u32
       - name: CommandCount
         type: u32
-      # 0 zeroes both command regions' counts. 1 fills region A (frustum-passing, visibility-gated
-      # when VisibilitySlot is set). 2 fills region B (occlusion-tested remainder) and updates visibility.
+      # 0 clears command counts; 1 compacts visible instances into each command's remap range.
       - name: Phase
         type: u32
-      - name: VisibilitySlot
+  - name: MeshletDrawPushConstants
+    push_constant: true
+    fields:
+      - name: PrimitiveSlot
+        type: u32
+      - name: InstanceSlot
+        type: u32
+      - name: InstanceMapSlot
+        type: u32
+      - name: MeshletSlot
+        type: u32
+      - name: MeshletTriangleSlot
+        type: u32
+      - name: VisibleMeshletSlot
+        type: u32
+      - name: RouteStateSlot
+        type: u32
+      - name: Route
+        type: u32
+      - name: VisibleOffset
+        type: u32
+  - name: MeshletCullPushConstants
+    push_constant: true
+    fields:
+      - name: CandidateCount
+        type: u32
+      - name: BlockCount
+        type: u32
+      - name: CandidateSlot
+        type: u32
+      - name: BlockStateSlot
+        type: u32
+      - name: RouteKeySlot
+        type: u32
+      - name: TransmissionRankSlot
         type: u32
         default: InvalidSlot
+      - name: BlendBlockSlot
+        type: u32
+        default: InvalidSlot
+      - name: VisibleSlot
+        type: u32
+      - name: InstanceMapSlot
+        type: u32
+      - name: InstanceSlot
+        type: u32
+      - name: PrimitiveSlot
+        type: u32
+      - name: MeshletSlot
+        type: u32
+      - name: BoundsSlot
+        type: u32
+      - name: ModelSlot
+        type: u32
+      - name: RouteStateSlot
+        type: u32
+      - name: DispatchArgsSlot
+        type: u32
+      - name: DispatchChunkCount
+        type: u32
+      - name: DispatchChunkSize
+        type: u32
+      - name: RouteMode
+        type: u32
+      - name: RequiredInstanceFlags
+        type: u32
+      - name: ExtraInstanceFlags
+        type: u32
       - name: PyramidSamplerSlot
         type: u32
         default: InvalidSlot

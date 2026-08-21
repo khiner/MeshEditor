@@ -8,7 +8,7 @@
 // Box selection: every element covering a pixel inside the box sets its bit. It writes no color.
 [[early_fragment_tests]]
 fragment void SelectionElementBitsetBoxFragment(
-    ElementIdVaryings in [[stage_in]],
+    ElementIdFragmentVaryings in [[stage_in]],
     device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
     constant SelectionElementPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
 ) {

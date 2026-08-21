@@ -62,6 +62,17 @@ entt::entity WireRegistry(entt::registry &r) {
     }>();
     r.on_destroy<RenderInstance>().connect<[](entt::registry &r, entt::entity e) {
         const auto &ri = r.get<const RenderInstance>(e);
+        if (auto *buffers = r.ctx().find<GpuBuffers>()) {
+            buffers->MeshletInstanceCount -= ri.MeshletCount;
+            if (ri.MeshletCandidateOffset != InvalidOffset) {
+                const Range range{ri.MeshletCandidateOffset, ri.MeshletCount};
+                buffers->ReleaseMeshletCandidates(range);
+            }
+            if (ri.GpuId != InvalidOffset) {
+                buffers->GpuInstanceSlots.GetMutable({ri.GpuId, 1})[0] = InvalidOffset;
+                buffers->GpuInstanceSlots.Release({ri.GpuId, 1});
+            }
+        }
         if (ri.BufferIndex == UINT32_MAX) return; // Same-frame show+hide — never synced to GPU.
         r.get_or_emplace<PendingHide>(ri.Entity).BufferIndices.push_back(ri.BufferIndex);
     }>();

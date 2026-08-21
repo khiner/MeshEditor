@@ -30,6 +30,37 @@ struct MeshVaryings {
     float3 MotionNext [[user(MotionNext)]];
 };
 
+struct MeshletVaryings {
+    float4 Position [[position]];
+    float PointSize [[user(PointSize)]];
+    float3 WorldNormal [[user(WorldNormal)]];
+    float3 WorldPosition [[user(WorldPosition)]];
+    float4 Color [[user(Color)]];
+    uint FaceOverlayFlags [[user(FaceOverlayFlags)]] [[flat]];
+    float2 TexCoord0 [[user(TexCoord0)]];
+    float2 TexCoord1 [[user(TexCoord1)]];
+    float2 TexCoord2 [[user(TexCoord2)]];
+    float2 TexCoord3 [[user(TexCoord3)]];
+    uint MaterialIndex [[user(MaterialIndex)]] [[flat]];
+    float4 VertexColor [[user(VertexColor)]];
+    float4 WorldTangent [[user(WorldTangent)]];
+    float WorldScale [[user(WorldScale)]] [[flat]];
+    float2 EdgeStart [[user(EdgeStart)]] [[flat]];
+    float2 EdgePos [[user(EdgePos)]];
+    float3 MotionPrev [[user(MotionPrev)]];
+    float3 MotionNext [[user(MotionNext)]];
+    uint ObjectId [[user(ObjectId)]] [[flat]];
+    uint ElementId [[user(ElementId)]] [[flat]];
+};
+
+inline MeshletVaryings ToMeshletVaryings(MeshVaryings v) {
+    return {
+        v.Position, v.PointSize, v.WorldNormal, v.WorldPosition, v.Color, v.FaceOverlayFlags,
+        v.TexCoord0, v.TexCoord1, v.TexCoord2, v.TexCoord3, v.MaterialIndex, v.VertexColor,
+        v.WorldTangent, v.WorldScale, v.EdgeStart, v.EdgePos, v.MotionPrev, v.MotionNext, 0u, 0u,
+    };
+}
+
 // What the VertexColor fragment reads, whichever vertex shader produced it.
 struct LineVaryings {
     float4 Position [[position]];
@@ -60,6 +91,11 @@ struct GridVaryings {
 struct ObjectIdVaryings {
     float4 Position [[position]];
     float PointSize [[point_size]];
+    uint ObjectId [[user(ObjectId)]] [[flat]];
+};
+
+struct ObjectIdFragmentVaryings {
+    float4 Position [[position]];
     uint ObjectId [[user(ObjectId)]] [[flat]];
 };
 
@@ -100,6 +136,11 @@ struct BoneSphereVaryings {
 struct ElementIdVaryings {
     float4 Position [[position]];
     float PointSize [[point_size]];
+    uint ElementId [[user(ElementId)]] [[flat]];
+};
+
+struct ElementIdFragmentVaryings {
+    float4 Position [[position]];
     uint ElementId [[user(ElementId)]] [[flat]];
 };
 

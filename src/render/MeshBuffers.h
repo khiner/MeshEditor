@@ -28,6 +28,7 @@ struct MeshBuffers {
     MeshBuffers &operator=(const MeshBuffers &) = delete;
     SlottedRange Vertices;
     SlottedRange FaceIndices, EdgeIndices, VertexIndices;
+    Range Primitives, Meshlets, MeshletTriangles;
     std::unordered_map<Element, RenderBuffers> NormalIndicators;
 };
 

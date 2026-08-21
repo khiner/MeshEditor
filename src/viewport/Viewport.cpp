@@ -76,9 +76,8 @@ RenderRequest TakeRenderRequest(entt::registry &r) {
     return std::exchange(r.ctx().get<PendingRenderRequest>().Value, RenderRequest::None);
 }
 
-DrawListUse RequestedDrawListUse(const entt::registry &r, RenderRequest request, bool force_rebuild = false) {
+DrawListUse RequestedDrawListUse(RenderRequest request, bool force_rebuild = false) {
     if (force_rebuild || request == RenderRequest::Rebuild) return DrawListUse::Rebuild;
-    if (request == RenderRequest::Silhouette && r.ctx().get<const DrawState>().MainDrawCount > 0) return DrawListUse::SilhouetteOnly;
     return DrawListUse::Reuse;
 }
 
@@ -87,7 +86,7 @@ bool AdvanceAndRecord(entt::registry &r, entt::entity viewport, bool force_full)
     ProcessComponentEvents(r, viewport);
     if (!ViewportImageReady(r)) return false;
     const auto render_request = TakeRenderRequest(r);
-    RecordAndSubmitFrame(r, viewport, RequestedDrawListUse(r, render_request, force_full));
+    RecordAndSubmitFrame(r, viewport, RequestedDrawListUse(render_request, force_full));
     return true;
 }
 
@@ -282,7 +281,7 @@ void SubmitViewport(entt::registry &r, entt::entity viewport, MTL::CommandBuffer
     const auto render_request = TakeRenderRequest(r);
     if (render_request == RenderRequest::None) return;
 
-    RecordAndSubmitFrame(r, viewport, RequestedDrawListUse(r, render_request));
+    RecordAndSubmitFrame(r, viewport, RequestedDrawListUse(render_request));
 }
 
 void SetStudioEnvironment(entt::registry &r, uint32_t index) {

@@ -83,16 +83,8 @@ struct PosedRanges {
 // Persistent draw data, rebuilt when scene structure or batch routing changes.
 struct DrawState {
     DrawListBuilder List;
-    uint32_t MainDrawCount{0}; // Draws.size() after main batches, before silhouette
-    uint32_t MainIndirectCount{0}; // IndirectCommands.size() after main batches
     std::unordered_map<entt::entity, PosedRanges> PosedByEntity;
-    DrawBatchInfo Silhouette;
-    DrawBatchInfo FillOpaque, FillBlend;
     DrawBatchInfo FillLine, FillPoint; // Point and line meshes, shaded in the scene pass.
-    // Opaque split by material transmission, for real-transmission frames: the prepass draws every
-    // material with non-transmissive texels, and the scene pass composites the result and re-draws
-    // only the transmissive batch. Textured-transmission materials appear in both.
-    DrawBatchInfo FillOpaquePrepass, FillOpaqueTransmissive;
     DrawBatchInfo EdgeQuad, WireLine, Point, ExtrasLine;
     DrawBatchInfo BoneFill, BoneWire, BoneSphereFill, BoneSphereWire;
     DrawBatchInfo OverlayFaceNormals, OverlayVertexNormals;

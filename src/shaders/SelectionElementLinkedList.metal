@@ -8,7 +8,7 @@
 // The element selection pass appends every covered fragment to its pixel's list. It writes no color.
 [[early_fragment_tests]]
 fragment void SelectionElementLinkedListFragment(
-    ElementIdVaryings in [[stage_in]],
+    ElementIdFragmentVaryings in [[stage_in]],
     device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
     constant SceneViewUBO &view [[buffer(BufferIndex_SceneView)]],
     constant ViewportTheme &theme [[buffer(BufferIndex_ViewportTheme)]],

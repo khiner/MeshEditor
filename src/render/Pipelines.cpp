@@ -12,7 +12,7 @@
 #include <stdexcept>
 
 using mtl::AdditiveBlend, mtl::Blend, mtl::NoBlend, mtl::NoWrite, mtl::PremultipliedBlend;
-using mtl::DepthState, mtl::FunctionRef, mtl::PassFormats, mtl::RenderPipeline;
+using mtl::BlendState, mtl::DepthState, mtl::FunctionConstant, mtl::FunctionRef, mtl::PassFormats, mtl::RenderPipeline;
 
 namespace {
 enum class OverlayKind : uint32_t {
@@ -53,6 +53,38 @@ std::vector<mtl::FunctionConstant> MeshVertexConstants(uint32_t overlay_kind, bo
 
 FunctionRef MeshVertex(uint32_t overlay_kind = 0, bool line_draw = false, bool line_quad = false, bool velocity = false) {
     return {"VertexTransform.metal", "VertexTransformVertex", MeshVertexConstants(overlay_kind, line_draw, line_quad, velocity)};
+}
+
+FunctionRef MeshletVertex(bool velocity = false) {
+    return {"MeshletTransform.metal", "MeshletTransformMesh", MeshVertexConstants(0, false, false, velocity)};
+}
+
+mtl::MeshRenderPipeline CreateMeshPipeline(
+    mtl::LibraryCache &libraries, std::optional<FunctionRef> fragment, PassFormats formats,
+    std::vector<BlendState> blends = {}, std::optional<DepthState> depth = {}
+) {
+    return {libraries, MeshletVertex(), std::move(fragment), std::move(formats), std::move(blends), depth};
+}
+
+struct PbrPipelineSpec {
+    bool VelocityPass, VelocityOutput;
+    FunctionRef Fragment;
+    std::vector<BlendState> Blends;
+    DepthState Depth;
+};
+
+PbrPipelineSpec MakePbrPipelineSpec(PbrFeatureMask mask, bool prepass, PbrCompiler::Variant variant, PbrCompiler::Topology topology) {
+    const bool velocity_pass = variant == PbrCompiler::Variant::OpaqueVelocity || variant == PbrCompiler::Variant::BlendVelocity;
+    const bool velocity_output = variant == PbrCompiler::Variant::OpaqueVelocity;
+    std::vector<FunctionConstant> constants;
+    constants.reserve(PbrSpecFeatures.size() + 3);
+    for (const auto &[constant, feature] : PbrSpecFeatures) constants.push_back(BoolConstant(constant, HasFeature(mask, feature)));
+    constants.push_back(BoolConstant(PbrConstant::TransmissionPrepass, prepass));
+    constants.push_back(UintConstant(PbrConstant::Topology, uint32_t(topology)));
+    constants.push_back(BoolConstant(PbrConstant::VelocityOutput, velocity_output));
+    std::vector<BlendState> blends{Blend};
+    if (velocity_pass) blends.push_back(velocity_output ? NoBlend : NoWrite);
+    return {velocity_pass, velocity_output, {"pbr.metal", "PbrFragment", std::move(constants)}, std::move(blends), {.Write = variant != PbrCompiler::Variant::Blend && variant != PbrCompiler::Variant::BlendVelocity}};
 }
 
 PassFormats SceneFormats() { return {{Format::HdrColor}, Format::Depth}; }
@@ -141,25 +173,20 @@ std::unique_ptr<RenderPipeline> PbrCompiler::CreateTargetedPipeline(
 ) const {
     // Opaque geometry writes its screen motion into the velocity attachment. Blend geometry
     // writes neither depth nor velocity, so its velocity twin masks the attachment off.
-    const bool velocity_pass = variant == Variant::OpaqueVelocity || variant == Variant::BlendVelocity;
-    const bool velocity_output = variant == Variant::OpaqueVelocity;
-    const bool depth_write = variant != Variant::Blend && variant != Variant::BlendVelocity;
-
-    std::vector<mtl::FunctionConstant> fragment_constants;
-    fragment_constants.reserve(PbrSpecFeatures.size() + 3);
-    for (const auto &[constant, feature] : PbrSpecFeatures) fragment_constants.push_back(BoolConstant(constant, ::HasFeature(mask, feature)));
-    fragment_constants.push_back(BoolConstant(PbrConstant::TransmissionPrepass, prepass));
-    fragment_constants.push_back(UintConstant(PbrConstant::Topology, uint32_t(topology)));
-    fragment_constants.push_back(BoolConstant(PbrConstant::VelocityOutput, velocity_output));
-
-    const auto vertex = MeshVertex(0, false, topology == Topology::Line, velocity_output);
-    std::vector<mtl::BlendState> blends{Blend};
-    if (velocity_pass) blends.push_back(velocity_output ? NoBlend : NoWrite);
-
+    auto spec = MakePbrPipelineSpec(mask, prepass, variant, topology);
     return std::make_unique<RenderPipeline>(
-        libraries, vertex, FunctionRef{"pbr.metal", "PbrFragment", std::move(fragment_constants)},
-        velocity_pass ? VelocityFormats : SceneFormats, std::move(blends),
-        DepthState{.Write = depth_write}
+        libraries, MeshVertex(0, false, topology == Topology::Line, spec.VelocityOutput), std::move(spec.Fragment),
+        spec.VelocityPass ? VelocityFormats : SceneFormats, std::move(spec.Blends), spec.Depth
+    );
+}
+
+std::unique_ptr<mtl::MeshRenderPipeline> PbrCompiler::CreateMeshletPipeline(
+    mtl::LibraryCache &libraries, PbrFeatureMask mask, bool prepass, Variant variant
+) const {
+    auto spec = MakePbrPipelineSpec(mask, prepass, variant, Topology::Triangle);
+    return std::make_unique<mtl::MeshRenderPipeline>(
+        libraries, MeshletVertex(spec.VelocityOutput), std::move(spec.Fragment),
+        spec.VelocityPass ? VelocityFormats : SceneFormats, std::move(spec.Blends), spec.Depth
     );
 }
 
@@ -179,6 +206,14 @@ bool PbrCompiler::CompilePipelines(mtl::LibraryCache &libraries, PbrFeatureMask 
         for (const auto v : {Variant::Blend, Variant::BlendVelocity}) Variants[VariantIndex(topology, v)] = CreateTargetedPipeline(libraries, mask, false, v, topology);
         if (transmission) Variants[VariantIndex(topology, Variant::OpaquePrepass)] = CreateTargetedPipeline(libraries, mask, true, Variant::OpaquePrepass, topology);
     }
+    for (size_t v = 0; v < VariantCount; ++v) {
+        const auto variant = Variant(v);
+        if (variant == Variant::OpaquePrepass && !transmission) {
+            MeshletVariants[v].reset();
+        } else {
+            MeshletVariants[v] = CreateMeshletPipeline(libraries, mask, variant == Variant::OpaquePrepass, variant);
+        }
+    }
     Mask = mask;
     NonTriangle = non_triangle;
     return true;
@@ -190,8 +225,17 @@ void PbrCompiler::Bind(MTL::RenderCommandEncoder *encoder, Variant v, Topology t
     pipeline->Bind(encoder);
 }
 
+void PbrCompiler::BindMeshlets(MTL::RenderCommandEncoder *encoder, Variant variant) const {
+    const auto &pipeline = MeshletVariants[size_t(variant)];
+    if (!pipeline) throw std::runtime_error("PbrCompiler: binding a meshlet variant that was never compiled.");
+    pipeline->Bind(encoder);
+}
+
 void PbrCompiler::RecompileModules(mtl::LibraryCache &libraries) {
     for (auto &variant : Variants) {
+        if (variant) variant->Compile(libraries);
+    }
+    for (auto &variant : MeshletVariants) {
         if (variant) variant->Compile(libraries);
     }
 }
@@ -207,6 +251,8 @@ MainPipeline::MainPipeline(mtl::LibraryCache &libraries)
       MotionBlurAccumulate{CreateQuadPipeline(libraries, MotionBlurAccumFormats, "MotionBlurAccumulate.metal", "MotionBlurAccumulateFragment", AdditiveBlend)},
       MotionBlurGatherFormats{{Format::HdrColor}, MTL::PixelFormatInvalid},
       MotionBlurGather{CreateQuadPipeline(libraries, MotionBlurGatherFormats, "MotionBlurGather.metal", "MotionBlurGatherFragment", NoBlend)},
+      MeshletFill{CreateMeshPipeline(libraries, FunctionRef{"WorkspaceLighting.metal", "WorkspaceLightingFragment"}, SceneFormats(), {Blend}, DepthTestWrite)},
+      MeshletDepth{CreateMeshPipeline(libraries, FunctionRef{"DepthOnly.metal", "DepthOnlyFragment"}, SceneFormats(), {NoWrite}, DepthTestWrite)},
       Compiler{SceneFormats(), SceneVelocityFormats()} {}
 
 MainPipeline::ResourcesT::ResourcesT(const mtl::Context &ctx, mtl::Extent2D extent, mtl::BindlessSet &slots)
@@ -216,7 +262,6 @@ MainPipeline::ResourcesT::ResourcesT(const mtl::Context &ctx, mtl::Extent2D exte
       OverlayColorImage{mtl::CreateTexture2D(ctx, Format::Color, extent, MTL::TextureUsageRenderTarget | MTL::TextureUsageShaderRead)},
       LineDataImage{mtl::CreateTexture2D(ctx, Format::LineData, extent, MTL::TextureUsageRenderTarget | MTL::TextureUsageShaderRead)},
       FinalColorImage{mtl::CreateTexture2D(ctx, Format::Color, extent, MTL::TextureUsageRenderTarget | MTL::TextureUsageShaderRead)},
-      // Power-of-two padding lets every pyramid level halve exactly.
       DepthPyramidImage{[&] {
           const mtl::Extent2D padded{std::bit_ceil((extent.Width + 1) / 2), std::bit_ceil((extent.Height + 1) / 2)};
           return mtl::CreateTexture2D(ctx, Format::Float, padded, MTL::TextureUsageShaderRead | MTL::TextureUsageShaderWrite, mtl::MipLevelCount(padded.Width, padded.Height));
@@ -225,7 +270,6 @@ MainPipeline::ResourcesT::ResourcesT(const mtl::Context &ctx, mtl::Extent2D exte
           std::vector<PyramidMip> mips;
           mips.reserve(DepthPyramidImage.MipLevels);
           for (uint32_t mip = 0; mip < DepthPyramidImage.MipLevels; ++mip) {
-              // Valid data bounds: scene texel s lands at level index s >> (mip + 1).
               const mtl::Extent2D data_extent{((extent.Width - 1) >> (mip + 1)) + 1, ((extent.Height - 1) >> (mip + 1)) + 1};
               mips.push_back({mtl::CreateMipView(DepthPyramidImage, mip), slots.Allocate(SlotType::Image), data_extent});
           }
@@ -302,7 +346,9 @@ static PipelineRenderer CreateSilhouetteRenderer(mtl::LibraryCache &libraries) {
     return {formats, std::move(pipelines)};
 }
 
-SilhouettePipeline::SilhouettePipeline(mtl::LibraryCache &libraries) : Renderer{CreateSilhouetteRenderer(libraries)} {}
+SilhouettePipeline::SilhouettePipeline(mtl::LibraryCache &libraries)
+    : Renderer{CreateSilhouetteRenderer(libraries)},
+      Meshlet{CreateMeshPipeline(libraries, FunctionRef{"DepthObject.metal", "DepthObjectFragment"}, Renderer.Formats, {NoBlend}, DepthTestWrite)} {}
 
 SilhouettePipeline::ResourcesT::ResourcesT(const mtl::Context &ctx, mtl::Extent2D extent)
     : DepthImage{mtl::CreateTexture2D(ctx, Format::Depth, extent, MTL::TextureUsageRenderTarget | MTL::TextureUsageShaderRead)},
@@ -374,7 +420,13 @@ static PipelineRenderer CreateSelectionFragmentRenderer(mtl::LibraryCache &libra
     return {formats, std::move(pipelines)};
 }
 
-SelectionFragmentPipeline::SelectionFragmentPipeline(mtl::LibraryCache &libraries) : Renderer{CreateSelectionFragmentRenderer(libraries)} {}
+SelectionFragmentPipeline::SelectionFragmentPipeline(mtl::LibraryCache &libraries)
+    : Renderer{CreateSelectionFragmentRenderer(libraries)},
+      MeshletObject{CreateMeshPipeline(libraries, FunctionRef{"SelectionFragment.metal", "SelectionFragment"}, Renderer.Formats, {}, DepthOff)},
+      MeshletFace{CreateMeshPipeline(libraries, FunctionRef{"SelectionElementLinkedList.metal", "SelectionElementLinkedListFragment"}, Renderer.Formats, {}, DepthState{.Compare = MTL::CompareFunctionLess})},
+      MeshletFaceXRay{CreateMeshPipeline(libraries, FunctionRef{"SelectionElementLinkedList.metal", "SelectionElementLinkedListFragment"}, Renderer.Formats, {}, DepthOff)},
+      MeshletFaceBitsetBox{CreateMeshPipeline(libraries, FunctionRef{"SelectionElementBitsetBox.metal", "SelectionElementBitsetBoxFragment"}, Renderer.Formats, {}, DepthState{.Compare = MTL::CompareFunctionLess})},
+      MeshletFaceXRayBitsetBox{CreateMeshPipeline(libraries, FunctionRef{"SelectionElementBitsetBox.metal", "SelectionElementBitsetBoxFragment"}, Renderer.Formats, {}, DepthOff)} {}
 
 SelectionFragmentPipeline::ResourcesT::ResourcesT(mtl::BufferContext &buffers, mtl::Extent2D extent)
     : HeadBuffer{buffers, uint64_t(extent.Width) * extent.Height * sizeof(uint32_t), SlotType::Buffer}, Extent{extent} {}
@@ -399,6 +451,9 @@ Pipelines::Pipelines(const mtl::Context &ctx, mtl::LibraryCache &libraries)
       BoundsReduce{libraries, {"BoundsReduce.metal", "BoundsReduceKernel"}},
       BoundsCombine{libraries, {"BoundsCombine.metal", "BoundsCombineKernel"}},
       FrustumCull{libraries, {"FrustumCull.metal", "FrustumCullKernel"}},
+      MeshletCullBlockCount{libraries, {"MeshletCull.metal", "MeshletCullBlockCount"}},
+      MeshletCullPrefix{libraries, {"MeshletCull.metal", "MeshletCullPrefix"}},
+      MeshletCullEmit{libraries, {"MeshletCull.metal", "MeshletCullEmit"}},
       DepthPyramidReduce{libraries, {"DepthPyramidReduce.metal", "DepthPyramidReduceKernel"}},
       MotionBlurTilesFlatten{libraries, {"MotionBlurTilesFlatten.metal", "MotionBlurTilesFlattenKernel"}},
       MotionBlurTilesDilate{libraries, {"MotionBlurTilesDilate.metal", "MotionBlurTilesDilateKernel"}},
@@ -420,11 +475,19 @@ void Pipelines::CompileShaders() {
     Main.ViewportComposite.Compile(Libraries);
     Main.MotionBlurAccumulate.Compile(Libraries);
     Main.MotionBlurGather.Compile(Libraries);
+    Main.MeshletFill.Compile(Libraries);
+    Main.MeshletDepth.Compile(Libraries);
     Main.Compiler.RecompileModules(Libraries);
     Silhouette.Renderer.CompileShaders(Libraries);
+    Silhouette.Meshlet.Compile(Libraries);
     SilhouetteEdge.Renderer.CompileShaders(Libraries);
     SelectionFragment.Renderer.CompileShaders(Libraries);
-    for (auto *compute : {&ObjectPick, &ElementPick, &BoxSelect, &UpdateSelectionState, &PosePrepass, &VertexNormalDerive, &BoundsReduce, &BoundsCombine, &FrustumCull, &DepthPyramidReduce, &MotionBlurTilesFlatten, &MotionBlurTilesDilate, &IblPrefilter.EquirectToCubemap, &IblPrefilter.DiffuseIrradiance, &IblPrefilter.SpecularPrefilter}) {
+    SelectionFragment.MeshletObject.Compile(Libraries);
+    SelectionFragment.MeshletFace.Compile(Libraries);
+    SelectionFragment.MeshletFaceXRay.Compile(Libraries);
+    SelectionFragment.MeshletFaceBitsetBox.Compile(Libraries);
+    SelectionFragment.MeshletFaceXRayBitsetBox.Compile(Libraries);
+    for (auto *compute : {&ObjectPick, &ElementPick, &BoxSelect, &UpdateSelectionState, &PosePrepass, &VertexNormalDerive, &BoundsReduce, &BoundsCombine, &FrustumCull, &MeshletCullBlockCount, &MeshletCullPrefix, &MeshletCullEmit, &DepthPyramidReduce, &MotionBlurTilesFlatten, &MotionBlurTilesDilate, &IblPrefilter.EquirectToCubemap, &IblPrefilter.DiffuseIrradiance, &IblPrefilter.SpecularPrefilter}) {
         compute->Compile(Libraries);
     }
 }

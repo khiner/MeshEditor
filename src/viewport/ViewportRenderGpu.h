@@ -16,14 +16,27 @@ struct DrawBufferPair;
 struct GpuBuffers;
 struct Pipelines;
 
+enum class MeshletRouteMode : uint32_t { Single,
+                                         Material,
+                                         Transmission };
+
+struct MeshletCullConfig {
+    MeshletRouteMode Mode{MeshletRouteMode::Single};
+    uint32_t RequiredInstanceFlags{0};
+    uint32_t UboOffset{0};
+    uint32_t PyramidSamplerSlot{InvalidSlot};
+    uint32_t ExtraRouteFlags{0};
+    bool SortBlend{false};
+};
+
 // Upload the draw list to the per-pass buffers, grow the identity index buffer if needed,
 // and flush any deferred bindless updates accumulated during buffer growth.
 void FlushDrawList(entt::registry &, const DrawListBuilder &, DrawBufferPair &);
 
-// Zero `pair`'s indirect instance counts, then refill region A and the visible-index remap from
-// per-instance bounds tested against the view frustum. With `visibility_slot`, region A holds only
-// previously-visible instances, and the caller must run the occlusion pass and draw region B.
 void RecordFrustumCull(mtl::PassChain &, const mtl::BindlessSet &, const Pipelines &, const GpuBuffers &, const DrawBufferPair &, const DrawListBuilder &);
+void RecordMeshletCull(mtl::PassChain &, const mtl::BindlessSet &, const Pipelines &, GpuBuffers &, MeshletCullConfig = {});
+void RecordSilhouetteDepthPass(mtl::PassChain &, const mtl::BindlessSet &, const Pipelines &, GpuBuffers &, bool draw_meshlets, uint32_t ubo_offset = 0, bool reuse_cull = false);
+void DrawMeshlets(MTL::RenderCommandEncoder *, const GpuBuffers &, uint32_t route = 0);
 
 // Which parts of a frame one recording covers.
 enum class RenderPhase {
@@ -38,12 +51,11 @@ constexpr bool IsBlurAccumulate(RenderPhase p) { return p == RenderPhase::BlurAc
 
 // How a recording treats the DrawState draw list.
 enum class DrawListUse {
-    Rebuild, // Build the whole draw list anew.
-    SilhouetteOnly, // Keep the main portion, rebuild only the silhouette batch.
-    Reuse, // Record from the list as it stands.
+    Rebuild,
+    Reuse,
 };
 
-// Build the main draw list (or just the silhouette portion) into the DrawState component and record the render pass.
+// Build the draw list when requested and record the render pass.
 void RecordRenderCommandBuffer(entt::registry &, entt::entity viewport, MTL::CommandBuffer *, DrawListUse = DrawListUse::Rebuild, RenderPhase = RenderPhase::Full);
 
 // Record every motion blur step and the resolve into one command buffer, each step reading its own

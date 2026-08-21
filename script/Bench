@@ -124,7 +124,7 @@ def build_info() -> dict:
             values.update(
                 {
                     "compiler": arguments[0],
-                    "optimization": next((arg for arg in arguments if arg.startswith("-O")), None),
+                    "optimization": next((arg for arg in reversed(arguments) if arg.startswith("-O")), None),
                     "debugInfo": "-g" in arguments,
                     "architecture": next(
                         (arguments[i + 1] for i, arg in enumerate(arguments[:-1]) if arg == "-arch"),
@@ -255,7 +255,7 @@ def run(args: argparse.Namespace) -> None:
         raise SystemExit("--motion-blur must be positive")
     exe = args.exe.resolve()
     if not args.no_build:
-        subprocess.run((str(ROOT / "script" / "Build"),), cwd=ROOT, check=True)
+        subprocess.run((str(ROOT / "script" / "Build"), "--release"), cwd=ROOT, check=True)
     if not exe.is_file():
         raise SystemExit(f"No executable at {exe}")
 

@@ -2,7 +2,14 @@
 
 #include "gpu/AABB.h"
 #include "gpu/ElementPickCandidate.h"
+#include "gpu/InstanceRecord.h"
+#include "gpu/MeshDispatchArgs.h"
+#include "gpu/MeshletBlendBlockState.h"
+#include "gpu/MeshletCullBlockState.h"
+#include "gpu/MeshletRecord.h"
+#include "gpu/MeshletRouteState.h"
 #include "gpu/PBRMaterial.h"
+#include "gpu/PrimitiveRecord.h"
 #include "gpu/PunctualLight.h"
 #include "gpu/SceneViewUBO.h"
 #include "gpu/SelectionCounters.h"
@@ -10,6 +17,7 @@
 #include "gpu/Transform.h"
 #include "gpu/Vertex.h"
 #include "gpu/ViewportTheme.h"
+#include "gpu/VisibleMeshlet.h"
 #include "gpu/WorkspaceLights.h"
 #include "metal/BufferArena.h"
 #include "metal/Image.h"
@@ -18,6 +26,9 @@
 
 #include <algorithm>
 #include <numeric>
+
+struct Mesh;
+struct MeshStore;
 
 struct DrawBufferPair {
     mtl::Buffer DrawData;
@@ -42,7 +53,7 @@ struct InstanceArena {
           ObjectIdBuffer(ctx, 0, SlotType::ObjectIdBuffer),
           StateBuffer(ctx, 0, SlotType::InstanceStateBuffer),
           BoundsBuffer(ctx, 0, SlotType::Buffer),
-          VisibilityBuffer(ctx, 0, SlotType::Buffer) {}
+          RecordBuffer(ctx, 0, SlotType::Buffer) {}
 
     Range Allocate(uint32_t count) {
         const auto range = Allocator.Allocate(count);
@@ -76,7 +87,6 @@ struct InstanceArena {
 
     void UpdateState(uint32_t index, uint8_t state) { StateBuffer.Update(as_bytes(state), uint64_t(index) * sizeof(uint8_t)); }
     const AABB &GetBounds(uint32_t index) const { return reinterpret_cast<const AABB *>(BoundsBuffer.Contents().data())[index]; }
-    std::span<uint8_t> GetMutableVisibility(Range range) const { return VisibilityBuffer.GetMutableSpan<uint8_t>(range); }
     std::span<AABB> GetMutableBounds(Range range) const { return BoundsBuffer.GetMutableSpan<AABB>(range); }
     std::span<uint8_t> GetMutableStates() const { return {reinterpret_cast<uint8_t *>(StateBuffer.GetMutableRange(0, StateBuffer.UsedSize).data()), StateBuffer.UsedSize}; }
     std::span<Transform> GetMutableTransforms() const {
@@ -90,9 +100,7 @@ struct InstanceArena {
         ForEachBuffer([](mtl::Buffer &buf, size_t) { buf.UsedSize = 0; });
     }
 
-    // One visibility byte per slot, written by the cull compute: nonzero while the instance last
-    // passed the occlusion cull. New instances start visible.
-    mtl::Buffer TransformBuffer, ObjectIdBuffer, StateBuffer, BoundsBuffer, VisibilityBuffer;
+    mtl::Buffer TransformBuffer, ObjectIdBuffer, StateBuffer, BoundsBuffer, RecordBuffer;
 
 private:
     void ForEachBuffer(auto &&fn) {
@@ -100,7 +108,7 @@ private:
         fn(ObjectIdBuffer, sizeof(uint32_t));
         fn(StateBuffer, sizeof(uint8_t));
         fn(BoundsBuffer, sizeof(AABB));
-        fn(VisibilityBuffer, sizeof(uint8_t));
+        fn(RecordBuffer, sizeof(InstanceRecord));
     }
 
     void EnsureCapacity(uint64_t end) {
@@ -139,7 +147,19 @@ struct GpuBuffers {
           FaceIndexBuffer{Ctx, SlotType::IndexBuffer},
           EdgeIndexBuffer{Ctx, SlotType::IndexBuffer},
           VertexIndexBuffer{Ctx, SlotType::IndexBuffer},
+          Meshlets{Ctx, SlotType::Buffer},
+          MeshletTriangleIds{Ctx, SlotType::Buffer},
+          Primitives{Ctx, SlotType::Buffer},
+          GpuInstanceSlots{Ctx, SlotType::Buffer},
+          MeshletCandidates{Ctx, SlotType::Buffer},
           Instances{Ctx},
+          VisibleMeshlets{Ctx, 0, SlotType::Buffer},
+          MeshletRouteKeys{Ctx, 0, SlotType::Buffer},
+          MeshletTransmissionRanks{Ctx, 0, SlotType::Buffer},
+          MeshletCullBlocks{Ctx, 0, SlotType::Buffer},
+          MeshletBlendBlocks{Ctx, 0, SlotType::Buffer},
+          MeshletRoutes{Ctx, sizeof(MeshletRouteState), SlotType::Buffer},
+          MeshletDispatchArgs{Ctx, 0, SlotType::Buffer},
           Lights{Ctx, sizeof(PunctualLight), SlotType::LightBuffer},
           Materials{Ctx, sizeof(PBRMaterial), SlotType::MaterialBuffer},
           SceneViewUBO{Ctx, ViewUboStride() * (MaxBlurSteps + 1)},
@@ -190,6 +210,12 @@ struct GpuBuffers {
         buffers.EdgeIndices = {};
         VertexIndexBuffer.Release(buffers.VertexIndices);
         buffers.VertexIndices = {};
+        Meshlets.Release(buffers.Meshlets);
+        buffers.Meshlets = {};
+        MeshletTriangleIds.Release(buffers.MeshletTriangles);
+        buffers.MeshletTriangles = {};
+        Primitives.Release(buffers.Primitives);
+        buffers.Primitives = {};
         for (auto &[_, rb] : buffers.NormalIndicators) Release(rb);
         buffers.NormalIndicators.clear();
     }
@@ -226,6 +252,12 @@ struct GpuBuffers {
         FaceIndexBuffer.Reset();
         EdgeIndexBuffer.Reset();
         VertexIndexBuffer.Reset();
+        Meshlets.Reset();
+        MeshletTriangleIds.Reset();
+        Primitives.Reset();
+        GpuInstanceSlots.Reset();
+        MeshletCandidates.Reset();
+        MeshletInstanceCount = 0;
         ArmatureDeformBuffer.Reset();
         MorphWeightBuffer.Reset();
         VertexClassBuffer.Reset();
@@ -245,10 +277,55 @@ struct GpuBuffers {
     // Per-scene arenas
     BufferArena<Vertex> VertexBuffer;
     BufferArena<uint32_t> FaceIndexBuffer, EdgeIndexBuffer, VertexIndexBuffer;
+    BufferArena<MeshletRecord> Meshlets;
+    BufferArena<uint32_t> MeshletTriangleIds;
+    BufferArena<PrimitiveRecord> Primitives;
+    BufferArena<uint32_t> GpuInstanceSlots;
+    BufferArena<VisibleMeshlet> MeshletCandidates;
     BufferArena<mat4> ArmatureDeformBuffer{Ctx, SlotType::ArmatureDeformBuffer};
     BufferArena<float> MorphWeightBuffer{Ctx, SlotType::MorphWeightBuffer};
     BufferArena<uint8_t> VertexClassBuffer{Ctx, SlotType::VertexClassBuffer};
     InstanceArena Instances;
+
+    mtl::Buffer VisibleMeshlets, MeshletRouteKeys, MeshletTransmissionRanks, MeshletCullBlocks, MeshletBlendBlocks, MeshletRoutes, MeshletDispatchArgs;
+    uint64_t MeshletInstanceCount{0};
+    uint32_t MeshletDispatchChunkCount{0};
+
+    static constexpr uint32_t MeshletDispatchChunkSize{65'535};
+    static constexpr uint32_t MeshletCullBlockSize{1024};
+    static constexpr uint32_t MeshletRouteCount{4};
+
+    void ReleaseMeshletCandidates(Range range) {
+        std::ranges::fill(MeshletCandidates.GetMutable(range), VisibleMeshlet{InvalidOffset, InvalidOffset});
+        MeshletCandidates.Release(range);
+    }
+
+    void EnsureMeshletVisibilityCapacity(uint32_t route_copies, bool sort_blend, bool transmission) {
+        const auto bytes = MeshletInstanceCount * sizeof(VisibleMeshlet) * route_copies;
+        VisibleMeshlets.Reserve(bytes);
+        VisibleMeshlets.UsedSize = bytes;
+        const auto candidate_count = MeshletCandidates.Buffer.Count<VisibleMeshlet>();
+        const auto block_count = (candidate_count + MeshletCullBlockSize - 1u) / MeshletCullBlockSize;
+        MeshletRouteKeys.Reserve(uint64_t(candidate_count) * sizeof(uint32_t));
+        MeshletRouteKeys.UsedSize = uint64_t(candidate_count) * sizeof(uint32_t);
+        if (transmission) {
+            MeshletTransmissionRanks.Reserve(uint64_t(candidate_count) * sizeof(uint16_t));
+            MeshletTransmissionRanks.UsedSize = uint64_t(candidate_count) * sizeof(uint16_t);
+        }
+        MeshletCullBlocks.Reserve(uint64_t(block_count) * sizeof(MeshletCullBlockState));
+        MeshletCullBlocks.UsedSize = uint64_t(block_count) * sizeof(MeshletCullBlockState);
+        if (sort_blend) {
+            const auto blend_bytes = uint64_t(block_count) * sizeof(MeshletBlendBlockState);
+            MeshletBlendBlocks.Reserve(blend_bytes);
+            MeshletBlendBlocks.UsedSize = blend_bytes;
+        }
+        MeshletDispatchChunkCount = static_cast<uint32_t>((MeshletInstanceCount + MeshletDispatchChunkSize - 1) / MeshletDispatchChunkSize);
+        const auto dispatch_bytes = uint64_t(MeshletRouteCount) * MeshletDispatchChunkCount * sizeof(MeshDispatchArgs);
+        MeshletDispatchArgs.Reserve(dispatch_bytes);
+        MeshletDispatchArgs.UsedSize = dispatch_bytes;
+    }
+
+    void RebuildMeshlets(MeshBuffers &, const Mesh &, const MeshStore &);
 
     // Poses at the shutter's open and close, for motion blur's velocity pass. Each is a whole-buffer
     // copy of its live counterpart, so the per-draw offsets index them unchanged.

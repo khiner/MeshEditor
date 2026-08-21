@@ -92,7 +92,7 @@ void BindlessSet::Clear(TypedSlot slot) {
 
 void BindlessSet::UseResources(MTL::RenderCommandEncoder *encoder) const {
     if (Ctx.Residency) return;
-    constexpr auto stages = MTL::RenderStageVertex | MTL::RenderStageFragment;
+    constexpr auto stages = MTL::RenderStageVertex | MTL::RenderStageMesh | MTL::RenderStageFragment;
     ForEachResource(Resources, [&](auto *resource, auto usage) { encoder->useResource(resource, usage, stages); });
 }
 

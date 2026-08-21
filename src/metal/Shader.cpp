@@ -13,6 +13,32 @@ bool DepsUnchanged(const std::vector<std::pair<std::filesystem::path, std::files
     }
     return true;
 }
+
+template<typename Descriptor>
+void ConfigureAttachments(Descriptor *descriptor, const PassFormats &formats, const std::vector<BlendState> &blends) {
+    for (size_t i = 0; i < formats.Color.size(); ++i) {
+        auto *attachment = descriptor->colorAttachments()->object(i);
+        attachment->setPixelFormat(formats.Color[i]);
+        const auto blend = i < blends.size() ? blends[i] : NoBlend;
+        attachment->setWriteMask(blend.WriteMask ? MTL::ColorWriteMaskAll : MTL::ColorWriteMaskNone);
+        attachment->setBlendingEnabled(blend.Enabled);
+        if (!blend.Enabled) continue;
+        attachment->setSourceRGBBlendFactor(blend.SourceRgb);
+        attachment->setDestinationRGBBlendFactor(blend.DestRgb);
+        attachment->setRgbBlendOperation(MTL::BlendOperationAdd);
+        attachment->setSourceAlphaBlendFactor(blend.SourceAlpha);
+        attachment->setDestinationAlphaBlendFactor(blend.DestAlpha);
+        attachment->setAlphaBlendOperation(MTL::BlendOperationAdd);
+    }
+    if (formats.Depth != MTL::PixelFormatInvalid) descriptor->setDepthAttachmentPixelFormat(formats.Depth);
+}
+
+NS::SharedPtr<MTL::DepthStencilState> MakeDepthState(LibraryCache &cache, const std::optional<DepthState> &depth) {
+    const auto descriptor = NS::TransferPtr(MTL::DepthStencilDescriptor::alloc()->init());
+    descriptor->setDepthCompareFunction(depth && depth->Test ? depth->Compare : MTL::CompareFunctionAlways);
+    descriptor->setDepthWriteEnabled(depth && depth->Write);
+    return NS::TransferPtr(cache.Ctx.Device->newDepthStencilState(descriptor.get()));
+}
 } // namespace
 
 MTL::Library *LibraryCache::Get(const std::filesystem::path &relative_path, const std::vector<std::string> &defines) {
@@ -77,22 +103,7 @@ void RenderPipeline::Compile(LibraryCache &cache) {
         descriptor->setFragmentFunction(fragment_function.get());
     }
 
-    for (size_t i = 0; i < Formats.Color.size(); ++i) {
-        auto *attachment = descriptor->colorAttachments()->object(i);
-        attachment->setPixelFormat(Formats.Color[i]);
-        const auto blend = i < Blends.size() ? Blends[i] : NoBlend;
-        attachment->setWriteMask(blend.WriteMask ? MTL::ColorWriteMaskAll : MTL::ColorWriteMaskNone);
-        attachment->setBlendingEnabled(blend.Enabled);
-        if (blend.Enabled) {
-            attachment->setSourceRGBBlendFactor(blend.SourceRgb);
-            attachment->setDestinationRGBBlendFactor(blend.DestRgb);
-            attachment->setRgbBlendOperation(MTL::BlendOperationAdd);
-            attachment->setSourceAlphaBlendFactor(blend.SourceAlpha);
-            attachment->setDestinationAlphaBlendFactor(blend.DestAlpha);
-            attachment->setAlphaBlendOperation(MTL::BlendOperationAdd);
-        }
-    }
-    if (Formats.Depth != MTL::PixelFormatInvalid) descriptor->setDepthAttachmentPixelFormat(Formats.Depth);
+    ConfigureAttachments(descriptor.get(), Formats, Blends);
 
     NS::Error *error = nullptr;
     PipelineState = NS::TransferPtr(cache.Ctx.Device->newRenderPipelineState(descriptor.get(), &error));
@@ -100,11 +111,37 @@ void RenderPipeline::Compile(LibraryCache &cache) {
         throw std::runtime_error(std::format("Failed to create the render pipeline for '{}':\n{}", VertexFn.Name, error ? error->localizedDescription()->utf8String() : "unknown"));
     }
 
-    const auto depth_descriptor = NS::TransferPtr(MTL::DepthStencilDescriptor::alloc()->init());
-    // No depth state at all means always pass and never write, which is what a depth-less pass wants.
-    depth_descriptor->setDepthCompareFunction(Depth && Depth->Test ? Depth->Compare : MTL::CompareFunctionAlways);
-    depth_descriptor->setDepthWriteEnabled(Depth && Depth->Write);
-    DepthStencilState = NS::TransferPtr(cache.Ctx.Device->newDepthStencilState(depth_descriptor.get()));
+    DepthStencilState = MakeDepthState(cache, Depth);
+}
+
+MeshRenderPipeline::MeshRenderPipeline(
+    LibraryCache &cache, FunctionRef mesh, std::optional<FunctionRef> fragment, PassFormats formats,
+    std::vector<BlendState> blends, std::optional<DepthState> depth
+) : MeshFn(std::move(mesh)), FragmentFn(std::move(fragment)), Formats(std::move(formats)),
+    Blends(std::move(blends)), Depth(depth) {
+    Compile(cache);
+}
+
+void MeshRenderPipeline::Compile(LibraryCache &cache) {
+    const auto descriptor = NS::TransferPtr(MTL::MeshRenderPipelineDescriptor::alloc()->init());
+    const auto mesh_function = MakeFunction(cache, MeshFn);
+    descriptor->setMeshFunction(mesh_function.get());
+    descriptor->setMaxTotalThreadsPerMeshThreadgroup(160);
+    descriptor->setMeshThreadgroupSizeIsMultipleOfThreadExecutionWidth(true);
+    descriptor->setMaxTotalThreadgroupsPerMeshGrid(1'048'575);
+    NS::SharedPtr<MTL::Function> fragment_function;
+    if (FragmentFn) {
+        fragment_function = MakeFunction(cache, *FragmentFn);
+        descriptor->setFragmentFunction(fragment_function.get());
+    }
+    ConfigureAttachments(descriptor.get(), Formats, Blends);
+
+    NS::Error *error = nullptr;
+    PipelineState = NS::TransferPtr(cache.Ctx.Device->newRenderPipelineState(descriptor.get(), MTL::PipelineOptionNone, nullptr, &error));
+    if (!PipelineState) {
+        throw std::runtime_error(std::format("Failed to create the mesh render pipeline for '{}':\n{}", MeshFn.Name, error ? error->localizedDescription()->utf8String() : "unknown"));
+    }
+    DepthStencilState = MakeDepthState(cache, Depth);
 }
 
 ComputePipeline::ComputePipeline(LibraryCache &cache, FunctionRef fn) : Fn(std::move(fn)) { Compile(cache); }

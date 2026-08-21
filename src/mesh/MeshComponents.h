@@ -9,6 +9,9 @@ struct RenderInstance {
     entt::entity Entity; // The entity this is an instance of (has MeshBuffers + ModelsBuffer).
     uint32_t BufferIndex{0}; // Global index in shared InstanceArena buffers.
     uint32_t ObjectId{0};
+    uint32_t GpuId{InvalidOffset};
+    uint32_t MeshletCandidateOffset{InvalidOffset};
+    uint32_t MeshletCount{0};
 };
 
 // Stored on buffer entities. Lightweight handle into the shared InstanceArena.

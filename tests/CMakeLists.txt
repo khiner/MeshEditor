@@ -10,6 +10,7 @@ add_executable(MeshEditorTests
     ${CMAKE_SOURCE_DIR}/src/gltf/SourceTexture.cpp
     ${CMAKE_SOURCE_DIR}/src/armature/Armature.cpp
     ${CMAKE_SOURCE_DIR}/src/render/GpuBufferOps.cpp
+    ${CMAKE_SOURCE_DIR}/src/render/GpuScene.cpp
     ${CMAKE_SOURCE_DIR}/src/render/Profile.cpp
     ${CMAKE_SOURCE_DIR}/src/metal/PassTimer.cpp
     ${CMAKE_SOURCE_DIR}/src/scene/Entity.cpp

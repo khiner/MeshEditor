@@ -104,26 +104,13 @@ inline float3 CornerNormal(const thread Scene &scene, DrawData draw, uint vertex
     return normal;
 }
 
-vertex MeshVaryings VertexTransformVertex(
-    uint vertex_id [[vertex_id]],
-    uint instance_id [[instance_id]],
-    device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
-    constant SceneViewUBO &view [[buffer(BufferIndex_SceneView)]],
-    constant ViewportTheme &theme [[buffer(BufferIndex_ViewportTheme)]],
-    constant WorkspaceLights &workspace [[buffer(BufferIndex_WorkspaceLights)]],
-    constant MainDrawPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
-) {
-    const Scene scene{bindless, view, theme, workspace};
+inline MeshVaryings TransformVertex(const thread Scene &scene, DrawData draw, uint vertex_id, uint vertex_index, uint idx) {
     MeshVaryings out;
-    const DrawData draw = GetDrawData(scene, pc.DrawDataOffset, instance_id);
-    // A line-quad draw takes its endpoint from the index pair its six vertices share.
     const uint corner = LineQuad ? line_quad_corner(vertex_id) : 0u;
-    const uint vertex_index = LineQuad ? (vertex_id / 6u) * 2u + line_quad_endpoint(corner) : vertex_id;
     device const uint *indices = scene.Indices(draw.IndexSlotOffset.Slot);
-    const uint idx = indices[draw.IndexSlotOffset.Offset + vertex_index];
     const Vertex vert = scene.Vertices(draw.VertexSlot)[idx + draw.VertexOffset];
     // Motion blur steps read their captured transforms through the override, keeping DrawData step-agnostic.
-    const uint model_slot = view.ModelSlotOverride != INVALID_SLOT ? view.ModelSlotOverride : draw.ModelSlot;
+    const uint model_slot = scene.View.ModelSlotOverride != INVALID_SLOT ? scene.View.ModelSlotOverride : draw.ModelSlot;
     const Transform world = scene.Models(model_slot)[draw.FirstInstance];
 
     uint element_state = 0u;
@@ -154,8 +141,8 @@ vertex MeshVaryings VertexTransformVertex(
         float4(1.0f);
 
     constant ViewportThemeColors &colors = scene.Theme.Colors;
-    const bool is_edit_mode = view.InteractionMode == InteractionMode_Edit;
-    const bool is_edit_edge = is_edit_mode && view.EditElement == Element_Edge;
+    const bool is_edit_mode = scene.View.InteractionMode == InteractionMode_Edit;
+    const bool is_edit_edge = is_edit_mode && scene.View.EditElement == Element_Edge;
     const float4 edge_color = is_edit_mode ? float4(float3(colors.WireEdit), 1.0f) : float4(float3(colors.Wire), 1.0f);
     const float4 object_base_color = float4(0.8f, 0.8f, 0.8f, 1.0f); // Blender's View3DShading.single_color default
     const float4 base_color = draw.ObjectIdSlot != INVALID_SLOT ? object_base_color :
@@ -186,7 +173,7 @@ vertex MeshVaryings VertexTransformVertex(
         if (is_selected) out.FaceOverlayFlags |= 1u;
         if (is_active) out.FaceOverlayFlags |= 2u;
         out.Color = base_color;
-    } else if (is_edge_draw && view.InteractionMode == InteractionMode_Object && view.ShowOverlays != 0u) {
+    } else if (is_edge_draw && scene.View.InteractionMode == InteractionMode_Object && scene.View.ShowOverlays != 0u) {
         out.Color = scene.ObjectSelectionColor(scene.InstanceState(draw), base_color);
     } else {
         float4 final_color = is_selected ? selected_color : base_color;
@@ -195,7 +182,7 @@ vertex MeshVaryings VertexTransformVertex(
         else if (is_active) final_color = float4(float4(colors.ElementActive).rgb, 1.0f);
         out.Color = final_color;
     }
-    const uint corner_uv_slot = view.CornerUvSlot;
+    const uint corner_uv_slot = scene.View.CornerUvSlot;
     device const packed_float2 *uvs = scene.CornerUvs(corner_uv_slot);
     out.TexCoord0 = draw.CornerUvOffsets[0] != INVALID_OFFSET ? float2(uvs[draw.CornerUvOffsets[0] + vertex_index]) : float2(0);
     out.TexCoord1 = draw.CornerUvOffsets[1] != INVALID_OFFSET ? float2(uvs[draw.CornerUvOffsets[1] + vertex_index]) : float2(0);
@@ -233,8 +220,8 @@ vertex MeshVaryings VertexTransformVertex(
     out.MotionPrev = float3(0);
     out.MotionNext = float3(0);
     if (VelocityOutput) {
-        const float3 prev = PoseWorldPos(scene, draw, vert, idx, view.PrevModelSlot, view.PrevArmatureDeformSlot, view.PrevMorphWeightsSlot);
-        const float3 next = PoseWorldPos(scene, draw, vert, idx, view.NextModelSlot, view.NextArmatureDeformSlot, view.NextMorphWeightsSlot);
+        const float3 prev = PoseWorldPos(scene, draw, vert, idx, scene.View.PrevModelSlot, scene.View.PrevArmatureDeformSlot, scene.View.PrevMorphWeightsSlot);
+        const float3 next = PoseWorldPos(scene, draw, vert, idx, scene.View.NextModelSlot, scene.View.NextArmatureDeformSlot, scene.View.NextMorphWeightsSlot);
         out.MotionPrev = prev - world_pos;
         out.MotionNext = next - world_pos;
     }
@@ -242,11 +229,28 @@ vertex MeshVaryings VertexTransformVertex(
     out.EdgePos = float2(0);
     if (IsLineDraw != 0u) {
         out.Position.z -= NdcOffsetFactor(scene) * 1.0f; // Push lines in front of faces.
-        const float2 screen_pos = clip_to_frag_co(out.Position, float2(view.ViewportSize));
+        const float2 screen_pos = clip_to_frag_co(out.Position, float2(scene.View.ViewportSize));
         out.EdgeStart = screen_pos; // flat: takes the first vertex's value for the whole line primitive
         out.EdgePos = screen_pos;   // smooth: interpolated along the line
     }
     return out;
+}
+
+vertex MeshVaryings VertexTransformVertex(
+    uint vertex_id [[vertex_id]],
+    uint instance_id [[instance_id]],
+    device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
+    constant SceneViewUBO &view [[buffer(BufferIndex_SceneView)]],
+    constant ViewportTheme &theme [[buffer(BufferIndex_ViewportTheme)]],
+    constant WorkspaceLights &workspace [[buffer(BufferIndex_WorkspaceLights)]],
+    constant MainDrawPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
+) {
+    const Scene scene{bindless, view, theme, workspace};
+    const DrawData draw = GetDrawData(scene, pc.DrawDataOffset, instance_id);
+    const uint corner = LineQuad ? line_quad_corner(vertex_id) : 0u;
+    const uint vertex_index = LineQuad ? (vertex_id / 6u) * 2u + line_quad_endpoint(corner) : vertex_id;
+    device const uint *indices = scene.Indices(draw.IndexSlotOffset.Slot);
+    return TransformVertex(scene, draw, vertex_id, vertex_index, indices[draw.IndexSlotOffset.Offset + vertex_index]);
 }
 
 #endif

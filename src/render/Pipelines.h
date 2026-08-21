@@ -57,16 +57,19 @@ struct PbrCompiler {
 
     bool CompilePipelines(mtl::LibraryCache &, PbrFeatureMask, bool non_triangle = false);
     void Bind(MTL::RenderCommandEncoder *, Variant, Topology = Topology::Triangle) const;
+    void BindMeshlets(MTL::RenderCommandEncoder *, Variant) const;
     bool HasFeature(PbrFeature f) const { return ::HasFeature(Mask, f); }
     void RecompileModules(mtl::LibraryCache &);
 
 private:
     std::unique_ptr<mtl::RenderPipeline> CreateTargetedPipeline(mtl::LibraryCache &, PbrFeatureMask, bool prepass, Variant, Topology) const;
+    std::unique_ptr<mtl::MeshRenderPipeline> CreateMeshletPipeline(mtl::LibraryCache &, PbrFeatureMask, bool prepass, Variant) const;
 
     mtl::PassFormats SceneFormats, VelocityFormats;
     PbrFeatureMask Mask{0};
     bool NonTriangle{false};
     std::array<std::unique_ptr<mtl::RenderPipeline>, VariantCount * TopologyCount> Variants;
+    std::array<std::unique_ptr<mtl::MeshRenderPipeline>, VariantCount> MeshletVariants;
 };
 
 struct MainPipeline {
@@ -79,16 +82,16 @@ struct MainPipeline {
         struct PyramidMip {
             NS::SharedPtr<MTL::Texture> View;
             uint32_t Slot;
-            mtl::Extent2D Extent; // Valid data bounds. The level's remaining texels are padding.
+            mtl::Extent2D Extent;
         };
 
         // Scene-linear color and display-referred overlays stay separate until compositing.
         mtl::Texture DepthImage, SceneColorImage, OverlayColorImage, LineDataImage, FinalColorImage;
-        // Power-of-two max-depth pyramid for occlusion culling.
         mtl::Texture DepthPyramidImage;
         std::vector<PyramidMip> DepthPyramidMips;
         NS::SharedPtr<MTL::SamplerState> NearestSampler;
         mtl::BindlessSet &Slots;
+        bool DepthPyramidValid{false};
     };
 
     // Lazily allocated, unexposed radiance sampled by real transmission.
@@ -133,6 +136,7 @@ struct MainPipeline {
     mtl::RenderPipeline MotionBlurAccumulate;
     mtl::PassFormats MotionBlurGatherFormats;
     mtl::RenderPipeline MotionBlurGather;
+    mtl::MeshRenderPipeline MeshletFill, MeshletDepth;
     std::unique_ptr<ResourcesT> Resources;
     std::unique_ptr<TransmissionResourcesT> Transmission;
     std::unique_ptr<MotionBlurResourcesT> MotionBlur;
@@ -153,6 +157,7 @@ struct SilhouettePipeline {
     void SetExtent(const mtl::Context &, mtl::Extent2D);
 
     PipelineRenderer Renderer;
+    mtl::MeshRenderPipeline Meshlet;
     std::unique_ptr<ResourcesT> Resources;
 };
 
@@ -186,6 +191,7 @@ struct SelectionFragmentPipeline {
     void SetExtent(mtl::BufferContext &, mtl::Extent2D);
 
     PipelineRenderer Renderer;
+    mtl::MeshRenderPipeline MeshletObject, MeshletFace, MeshletFaceXRay, MeshletFaceBitsetBox, MeshletFaceXRayBitsetBox;
     std::unique_ptr<ResourcesT> Resources;
 };
 
@@ -201,7 +207,6 @@ namespace ThreadgroupMemory {
 inline constexpr uint32_t ElementPickCandidates{256 * 16};
 // One min and max float4 per bounds lane.
 inline constexpr uint32_t BoundsFoldVector{256 * sizeof(float) * 4};
-// One 32x32 float tile.
 inline constexpr uint32_t DepthPyramidTile{32 * 32 * sizeof(float)};
 // Flatten broadcasts a payload and two motion vectors.
 inline constexpr uint32_t MotionBlurPayload{2 * sizeof(uint32_t)};
@@ -227,7 +232,7 @@ struct Pipelines {
     mtl::ComputePipeline BoundsCombine;
     // Rewrites indirect instance counts and the visible-index remap.
     mtl::ComputePipeline FrustumCull;
-    // Reduces up to six max-depth pyramid levels per dispatch.
+    mtl::ComputePipeline MeshletCullBlockCount, MeshletCullPrefix, MeshletCullEmit;
     mtl::ComputePipeline DepthPyramidReduce;
     // Finds each tile's largest motion, then marks every tile its streak crosses.
     mtl::ComputePipeline MotionBlurTilesFlatten, MotionBlurTilesDilate;

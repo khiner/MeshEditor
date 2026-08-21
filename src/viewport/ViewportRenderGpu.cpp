@@ -11,6 +11,9 @@
 #include "gpu/DepthPyramidReducePushConstants.h"
 #include "gpu/FrustumCullPushConstants.h"
 #include "gpu/MainDrawPushConstants.h"
+#include "gpu/MeshletCullPushConstants.h"
+#include "gpu/MeshletDrawPushConstants.h"
+#include "gpu/MeshletInstanceFlag.h"
 #include "gpu/MotionBlurGatherPushConstants.h"
 #include "gpu/MotionBlurTilesDilatePushConstants.h"
 #include "gpu/MotionBlurTilesFlattenPushConstants.h"
@@ -64,21 +67,12 @@ MTL::PrimitiveType PipelinePrimitive(SPT spt) {
 DrawData MakeDrawData(const RenderBuffers &rb, uint32_t vertex_slot, const InstanceArena &instances) {
     return MakeDrawData(vertex_slot, rb.Vertices, rb.Indices, instances.TransformBuffer.Slot);
 }
-// Opaque fill sub-batches for real-transmission frames.
-enum class FillSubset {
-    All,
-    Prepass, // Materials with non-transmissive texels (plain, and textured transmission)
-    Transmissive, // Materials with a positive transmission factor
-};
 // The element a mesh draws from: triangulated faces, or the edges or vertices of a face-less mesh.
 enum class ElementDomain {
     Face,
     Edge,
     Vertex
 };
-// A range's offset, or InvalidOffset when the mesh holds no such data.
-uint32_t OffsetOrInvalid(Range range) { return range.Count > 0 ? range.Offset : InvalidOffset; }
-
 void RecordDrawCounters(const GpuBuffers &buffers, const DrawListBuilder &draw_list, bool selection) {
     const auto record = [&](const char *selection_name, const char *render_name, size_t value) { profile::RecordCounter(selection ? selection_name : render_name, value); };
     record("Selection DrawData", "Render DrawData", draw_list.Draws.size());
@@ -87,9 +81,21 @@ void RecordDrawCounters(const GpuBuffers &buffers, const DrawListBuilder &draw_l
     record("Selection MaxIndexCount", "Render MaxIndexCount", draw_list.MaxIndexCount);
     record("Selection DrawDataBytes", "Render DrawDataBytes", draw_list.Draws.size() * sizeof(DrawData));
     record("Selection CullEntryBytes", "Render CullEntryBytes", draw_list.CullEntries.size() * sizeof(CullEntry));
-    record("Selection IndirectCommandBytes", "Render IndirectCommandBytes", 2 * draw_list.IndirectCommands.size() * sizeof(MTL::DrawIndexedPrimitivesIndirectArguments));
+    record("Selection IndirectCommandBytes", "Render IndirectCommandBytes", draw_list.IndirectCommands.size() * sizeof(MTL::DrawIndexedPrimitivesIndirectArguments));
     if (!selection) {
         profile::RecordCounter("InstanceSlots", buffers.Instances.TransformBuffer.UsedSize / sizeof(Transform));
+        profile::RecordCounter("MeshletRecords", buffers.Meshlets.Buffer.Count<MeshletRecord>());
+        profile::RecordCounter("MeshletInstances", buffers.MeshletInstanceCount);
+        profile::RecordCounter("MeshletRecordBytes", buffers.Meshlets.Buffer.UsedSize);
+        profile::RecordCounter("MeshletTriangleIdBytes", buffers.MeshletTriangleIds.Buffer.UsedSize);
+        profile::RecordCounter("PrimitiveRecordBytes", buffers.Primitives.Buffer.UsedSize);
+        profile::RecordCounter("InstanceRecordBytes", buffers.Instances.RecordBuffer.UsedSize);
+        if (buffers.MeshletRoutes.Contents().size() >= sizeof(MeshletRouteState)) {
+            const auto &routes = *reinterpret_cast<const MeshletRouteState *>(buffers.MeshletRoutes.Contents().data());
+            profile::RecordCounter("VisibleOpaqueMeshlets", routes.Counts[0]);
+            profile::RecordCounter("VisibleBlendMeshlets", routes.Counts[1]);
+            profile::RecordCounter("VisibleTransmissionMeshlets", routes.Counts[2]);
+        }
         profile::RecordCounter("DeviceAllocatedBytes", buffers.Ctx.Ctx.Device->currentAllocatedSize());
     }
 }
@@ -99,22 +105,13 @@ void FlushDrawList(entt::registry &r, const DrawListBuilder &draw_list, DrawBuff
     auto &buffers = r.ctx().get<GpuBuffers>();
     const bool selection = &pair == &buffers.SelectionDraw;
     if (selection) RecordDrawCounters(buffers, draw_list, true);
-    buffers.EnsureIdentityIndexBuffer(std::max(draw_list.MaxIndexCount, 2 * uint32_t(draw_list.Draws.size())));
-    if (!draw_list.Draws.empty()) {
+    buffers.EnsureIdentityIndexBuffer(std::max(draw_list.MaxIndexCount, uint32_t(draw_list.Draws.size())));
+    if (!draw_list.Draws.empty() || buffers.Prelude.PosePrepass > 0 || buffers.Prelude.DeriveFaces > 0 || buffers.Prelude.BoundsReduce > 0) {
         pair.DrawData.Update(as_bytes(draw_list.Draws));
         pair.CullEntries.Update(as_bytes(draw_list.CullEntries));
-        pair.VisibleIndices.Update(buffers.IdentityIndexBuffer.Contents().subspan(0, 2 * draw_list.Draws.size() * sizeof(uint32_t)));
+        pair.VisibleIndices.Update(buffers.IdentityIndexBuffer.Contents().subspan(0, draw_list.Draws.size() * sizeof(uint32_t)));
     }
-    if (!draw_list.IndirectCommands.empty()) {
-        // Region A holds the commands as built. Region B is a copy indexing the second half of the
-        // visible-index remap, for the occlusion pass's newly visible draws.
-        auto commands = draw_list.IndirectCommands;
-        commands.append_range(draw_list.IndirectCommands | std::views::transform([&](auto cmd) {
-                                  cmd.baseInstance += uint32_t(draw_list.Draws.size());
-                                  return cmd;
-                              }));
-        pair.Indirect.Update(as_bytes(commands));
-    }
+    if (!draw_list.IndirectCommands.empty()) pair.Indirect.Update(as_bytes(draw_list.IndirectCommands));
 }
 
 namespace {
@@ -309,11 +306,10 @@ std::optional<NormalDeriveEntry> MakeDeriveEntryInputs(const MeshStore &meshes, 
     };
 }
 
-void RecordFrustumCull(MTL::ComputeCommandEncoder *encoder, const mtl::BindlessSet &slots, const Pipelines &pipelines, const GpuBuffers &buffers, const DrawBufferPair &pair, const DrawListBuilder &draw_list, uint32_t ubo_offset, uint32_t visibility_slot) {
+void RecordFrustumCull(MTL::ComputeCommandEncoder *encoder, const mtl::BindlessSet &slots, const Pipelines &pipelines, const GpuBuffers &buffers, const DrawBufferPair &pair, const DrawListBuilder &draw_list, uint32_t ubo_offset) {
     encode::BindCompute(encoder, pipelines.FrustumCull, slots, buffers, ubo_offset);
     auto cull_pc = MakeCullPushConstants(buffers, pair, draw_list);
-    cull_pc.VisibilitySlot = visibility_slot;
-    DispatchCull(encoder, cull_pc, 2 * cull_pc.CommandCount);
+    DispatchCull(encoder, cull_pc, cull_pc.CommandCount);
     cull_pc.Phase = 1;
     DispatchCull(encoder, cull_pc, cull_pc.EntryCount);
 }
@@ -322,51 +318,10 @@ void RecordFrustumCull(MTL::ComputeCommandEncoder *encoder, const mtl::BindlessS
 void RecordFrustumCull(mtl::PassChain &chain, const mtl::BindlessSet &slots, const Pipelines &pipelines, const GpuBuffers &buffers, const DrawBufferPair &pair, const DrawListBuilder &draw_list) {
     // The cull overwrites the indirect commands and the visible-index remap that the draws read.
     auto *encoder = chain.BeginCompute("FrustumCull", MTL::StageVertex);
-    RecordFrustumCull(encoder, slots, pipelines, buffers, pair, draw_list, 0, InvalidSlot);
+    RecordFrustumCull(encoder, slots, pipelines, buffers, pair, draw_list, 0);
 }
 
 namespace {
-// Test the entries the visibility gate deferred against the depth pyramid, filling `pair`'s
-// region B with the newly visible and updating per-instance visibility.
-void RecordOcclusionCull(MTL::ComputeCommandEncoder *encoder, const mtl::BindlessSet &slots, const Pipelines &pipelines, const GpuBuffers &buffers, const DrawBufferPair &pair, const DrawListBuilder &draw_list, uint32_t pyramid_sampler_slot, uint32_t ubo_offset) {
-    encode::BindCompute(encoder, pipelines.FrustumCull, slots, buffers, ubo_offset);
-    auto cull_pc = MakeCullPushConstants(buffers, pair, draw_list);
-    cull_pc.Phase = 2;
-    cull_pc.VisibilitySlot = buffers.Instances.VisibilityBuffer.Slot;
-    cull_pc.PyramidSamplerSlot = pyramid_sampler_slot;
-    DispatchCull(encoder, cull_pc, cull_pc.EntryCount);
-}
-
-// Reduce the scene depth into the max-depth mip pyramid the occlusion cull samples, one dispatch
-// per block of levels. Every texel the cull reads is rewritten here, so nothing carries over.
-void RecordDepthPyramid(MTL::ComputeCommandEncoder *encoder, const mtl::BindlessSet &slots, const GpuBuffers &buffers, const Pipelines &pipelines, const SelectionSlots &sel_slots, uint32_t ubo_offset) {
-    const auto &main = pipelines.Main;
-    encode::BindCompute(encoder, pipelines.DepthPyramidReduce, slots, buffers, ubo_offset);
-    const auto &mips = main.Resources->DepthPyramidMips;
-    const auto scene_extent = main.Resources->DepthImage.Extent;
-    for (uint32_t base = 0; base < uint32_t(mips.size()); base += 6) {
-        const auto src_extent = base == 0 ? scene_extent : mips[base - 1].Extent;
-        const DepthPyramidReducePushConstants reduce_pc{
-            .SrcSamplerSlot = base == 0 ? sel_slots.SceneDepthSampler : sel_slots.DepthPyramidSampler,
-            .SrcLod = base == 0 ? 0 : base - 1,
-            .SrcWidth = src_extent.Width,
-            .SrcHeight = src_extent.Height,
-            .DstSlots = [&] {
-                std::array<uint32_t, 6> dst;
-                for (uint32_t k = 0; k < uint32_t(dst.size()); ++k) dst[k] = base + k < mips.size() ? mips[base + k].Slot : InvalidSlot;
-                return dst;
-            }(),
-        };
-        encode::SetPushConstants(encoder, reduce_pc);
-        static constexpr uint32_t PyramidTile{32};
-        encoder->setThreadgroupMemoryLength(ThreadgroupMemory::DepthPyramidTile, 0);
-        encoder->dispatchThreadgroups(
-            MTL::Size((mips[base].Extent.Width + PyramidTile - 1) / PyramidTile, (mips[base].Extent.Height + PyramidTile - 1) / PyramidTile, 1),
-            ThreadgroupSize::Tile16
-        );
-    }
-}
-
 // Materialize each posed entry's current-pose vertex positions.
 void RecordPosePrepass(MTL::ComputeCommandEncoder *encoder, const mtl::BindlessSet &slots, const Pipelines &pipelines, const GpuBuffers &buffers, uint32_t vertex_state_slot, uint32_t ubo_offset) {
     const auto &prepass = pipelines.PosePrepass;
@@ -422,11 +377,92 @@ void RecordBoundsPass(MTL::ComputeCommandEncoder *encoder, const mtl::BindlessSe
     DispatchPrelude(encoder, buffers, slot);
 }
 
+void RecordMeshletCullImpl(
+    MTL::ComputeCommandEncoder *encoder, const mtl::BindlessSet &slots, const Pipelines &pipelines,
+    GpuBuffers &buffers, MeshletCullConfig config
+) {
+    const auto route_mode = uint32_t(config.Mode);
+    const bool transmission = config.Mode == MeshletRouteMode::Transmission;
+    buffers.EnsureMeshletVisibilityCapacity(1u + transmission + (config.ExtraRouteFlags != 0u), config.SortBlend, transmission);
+    const MeshletCullPushConstants pc{
+        .CandidateCount = buffers.MeshletCandidates.Buffer.Count<VisibleMeshlet>(),
+        .BlockCount = buffers.MeshletCullBlocks.Count<MeshletCullBlockState>(),
+        .CandidateSlot = buffers.MeshletCandidates.Buffer.Slot,
+        .BlockStateSlot = buffers.MeshletCullBlocks.Slot,
+        .RouteKeySlot = buffers.MeshletRouteKeys.Slot,
+        .TransmissionRankSlot = transmission ? buffers.MeshletTransmissionRanks.Slot : InvalidSlot,
+        .BlendBlockSlot = config.SortBlend ? buffers.MeshletBlendBlocks.Slot : InvalidSlot,
+        .VisibleSlot = buffers.VisibleMeshlets.Slot,
+        .InstanceMapSlot = buffers.GpuInstanceSlots.Buffer.Slot,
+        .InstanceSlot = buffers.Instances.RecordBuffer.Slot,
+        .PrimitiveSlot = buffers.Primitives.Buffer.Slot,
+        .MeshletSlot = buffers.Meshlets.Buffer.Slot,
+        .BoundsSlot = buffers.Instances.BoundsBuffer.Slot,
+        .ModelSlot = buffers.Instances.TransformBuffer.Slot,
+        .RouteStateSlot = buffers.MeshletRoutes.Slot,
+        .DispatchArgsSlot = buffers.MeshletDispatchArgs.Slot,
+        .DispatchChunkCount = buffers.MeshletDispatchChunkCount,
+        .DispatchChunkSize = GpuBuffers::MeshletDispatchChunkSize,
+        .RouteMode = route_mode,
+        .RequiredInstanceFlags = config.RequiredInstanceFlags,
+        .ExtraInstanceFlags = config.ExtraRouteFlags,
+        .PyramidSamplerSlot = config.PyramidSamplerSlot,
+    };
+    encode::BindScene(encoder, slots, buffers, config.UboOffset);
+    encode::SetPushConstants(encoder, pc);
+    if (pc.BlockCount > 0) {
+        encoder->setComputePipelineState(pipelines.MeshletCullBlockCount.State());
+        constexpr uint32_t simd_groups = GpuBuffers::MeshletCullBlockSize / 32u;
+        const uint32_t prefix_bytes = GpuBuffers::MeshletRouteCount * (simd_groups + 1u) * sizeof(uint32_t);
+        const uint32_t blend_bytes = config.SortBlend ? simd_groups * 256u * sizeof(uint16_t) : 0u;
+        encoder->setThreadgroupMemoryLength(prefix_bytes + blend_bytes, 0);
+        encoder->dispatchThreadgroups(MTL::Size(pc.BlockCount, 1, 1), MTL::Size(GpuBuffers::MeshletCullBlockSize, 1, 1));
+    }
+    encoder->memoryBarrier(MTL::BarrierScopeBuffers);
+    encoder->setComputePipelineState(pipelines.MeshletCullPrefix.State());
+    encoder->setThreadgroupMemoryLength(4u * sizeof(uint32_t), 0);
+    encoder->dispatchThreadgroups(MTL::Size(1, 1, 1), ThreadgroupSize::Linear256);
+    encoder->memoryBarrier(MTL::BarrierScopeBuffers);
+    if (pc.BlockCount > 0) {
+        encoder->setComputePipelineState(pipelines.MeshletCullEmit.State());
+        encoder->dispatchThreadgroups(MTL::Size(pc.BlockCount, 1, 1), MTL::Size(GpuBuffers::MeshletCullBlockSize, 1, 1));
+    }
+}
+
+void RecordDepthPyramid(
+    MTL::ComputeCommandEncoder *encoder, const mtl::BindlessSet &slots, const GpuBuffers &buffers,
+    const Pipelines &pipelines, const SelectionSlots &sel_slots, uint32_t ubo_offset
+) {
+    const auto &main = pipelines.Main;
+    encode::BindCompute(encoder, pipelines.DepthPyramidReduce, slots, buffers, ubo_offset);
+    const auto &mips = main.Resources->DepthPyramidMips;
+    const auto scene_extent = main.Resources->DepthImage.Extent;
+    for (uint32_t base = 0; base < uint32_t(mips.size()); base += 6) {
+        const auto src_extent = base == 0 ? scene_extent : mips[base - 1].Extent;
+        const DepthPyramidReducePushConstants pc{
+            .SrcSamplerSlot = base == 0 ? sel_slots.SceneDepthSampler : sel_slots.DepthPyramidSampler,
+            .SrcLod = base == 0 ? 0 : base - 1,
+            .SrcWidth = src_extent.Width,
+            .SrcHeight = src_extent.Height,
+            .DstSlots = [&] {
+                std::array<uint32_t, 6> dst;
+                for (uint32_t k = 0; k < dst.size(); ++k) dst[k] = base + k < mips.size() ? mips[base + k].Slot : InvalidSlot;
+                return dst;
+            }(),
+        };
+        encode::SetPushConstants(encoder, pc);
+        encoder->setThreadgroupMemoryLength(ThreadgroupMemory::DepthPyramidTile, 0);
+        encoder->dispatchThreadgroups(
+            MTL::Size((mips[base].Extent.Width + 31) / 32, (mips[base].Extent.Height + 31) / 32, 1),
+            ThreadgroupSize::Tile16
+        );
+    }
+}
+
 // Record one phase's passes into `cb`, which is already begun with viewport and scissor set.
 // `ubo_offset` selects the view UBO instance every bind in the phase reads.
 void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain, DrawListUse use, RenderPhase phase, uint32_t ubo_offset, float playback_frame) {
-    // A scope name holds no spaces, so the report table stays machine-readable.
-    const profile::CpuScope scope{use == DrawListUse::SilhouetteOnly ? "RecordRenderCommandBufferSilhouette" : "RecordRenderCommandBuffer"};
+    const profile::CpuScope scope{"RecordRenderCommandBuffer"};
     if (use == DrawListUse::Rebuild) r.ctx().get<DrawState>().SelectionStale = true;
     // The multi-step blur splits the scene and its overlays across two phases so the overlays stay
     // sharp over the averaged steps. Full and BlurredFull draw both in one.
@@ -491,6 +527,15 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
             }
         }
     }
+    std::unordered_set<entt::entity> silhouette_instances;
+    if (is_edit_mode) {
+        for (const auto [e, instance, ri] : r.view<const Instance, const Selected, const RenderInstance>().each()) {
+            if (!is_silhouette_eligible(e)) continue;
+            if (auto it = primary_edit_instances.find(instance.Entity); it == primary_edit_instances.end() || it->second != e) {
+                silhouette_instances.insert(e);
+            }
+        }
+    }
     // Rewrite per-instance deform and posed-buffer fields on the draws appended since `draws_before`.
     const auto patch_mesh_draws = [&](DrawListBuilder &list, size_t draws_before, entt::entity mesh_entity, const DeformSlots &deform) {
         const auto draws = std::span{list.Draws}.subspan(draws_before);
@@ -513,40 +558,6 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
             for (const auto [e, instance, excitable] : r.view<const Instance, const SoundVertices>().each()) {
                 excitable_mesh_entities.emplace(instance.Entity);
             }
-        }
-
-        std::vector<entt::entity> blend_mesh_order;
-        if (show_rendered) {
-            // Transparent pass ordering: sort mesh draws back-to-front by camera distance.
-            // This is a mesh-level approximation. Interpenetrating transparent geometry may still require
-            // per-primitive sorting or OIT for fully correct compositing.
-            const auto camera_position = r.get<const ViewCamera>(viewport).Position();
-            std::unordered_map<entt::entity, float> farthest_distance2_by_mesh;
-            farthest_distance2_by_mesh.reserve(r.storage<RenderInstance>().size());
-            for (const auto [entity, _, wt] : r.view<const RenderInstance, const WorldTransform>().each()) {
-                entt::entity mesh_entity = entity;
-                if (const auto *instance = r.try_get<const Instance>(entity)) mesh_entity = instance->Entity;
-                if (!r.valid(mesh_entity) || !HasMesh(r, mesh_entity)) continue;
-                const auto delta = wt.P - camera_position;
-                const auto distance2 = dot(delta, delta);
-                if (const auto it = farthest_distance2_by_mesh.find(mesh_entity); it != farthest_distance2_by_mesh.end()) {
-                    it->second = std::max(it->second, distance2);
-                } else {
-                    farthest_distance2_by_mesh.emplace(mesh_entity, distance2);
-                }
-            }
-            blend_mesh_order.reserve(farthest_distance2_by_mesh.size());
-            for (const auto &[mesh_entity, _] : farthest_distance2_by_mesh) blend_mesh_order.emplace_back(mesh_entity);
-            std::ranges::sort(
-                blend_mesh_order,
-                [&](const auto a, const auto b) {
-                    // Break equal-distance ties (common for instances sharing a transform) by entity
-                    // id, so the blend order — and thus the composited image — is deterministic.
-                    const auto da = farthest_distance2_by_mesh.at(a), db = farthest_distance2_by_mesh.at(b);
-                    if (da != db) return da > db;
-                    return a < b;
-                }
-            );
         }
 
         // Single-pass entity data collection: avoids redundant ECS view iterations across fill, edge, wire, point, and normal batches.
@@ -756,148 +767,48 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
             }
         }
 
-        // Entity -> mesh_entities index map for blend_mesh_order lookup
-        std::unordered_map<entt::entity, size_t> blend_entity_idx;
-        if (show_rendered) {
-            blend_entity_idx.reserve(mesh_entities.size());
-            for (size_t i = 0; i < mesh_entities.size(); ++i) blend_entity_idx[mesh_entities[i].Entity] = i;
+        for (const auto [instance_entity, instance, ri] : r.view<const Instance, const RenderInstance>().each()) {
+            if (ri.BufferIndex == UINT32_MAX) continue;
+            const auto *mesh_buffers = r.try_get<const MeshBuffers>(instance.Entity);
+            if (!mesh_buffers || mesh_buffers->Primitives.Count == 0) continue;
+            InstanceRecord record{
+                .PrimitiveOffset = mesh_buffers->Primitives.Offset,
+                .PrimitiveCount = mesh_buffers->Primitives.Count,
+                .ObjectId = ri.ObjectId,
+            };
+            const auto &deform = get_deform_slots(instance.Entity);
+            record.BoneDeformOffset = deform.BoneDeformOffset;
+            record.ArmatureDeformOffset = deform.ArmatureDeformOffset;
+            record.MorphDeformOffset = deform.MorphDeformOffset;
+            record.MorphTargetCount = deform.MorphTargetCount;
+            if (const auto it = deform.ArmatureDeformByBufferIndex.find(ri.BufferIndex); it != deform.ArmatureDeformByBufferIndex.end()) {
+                record.ArmatureDeformOffset = it->second;
+            }
+            if (const auto it = deform.MorphWeightsByBufferIndex.find(ri.BufferIndex); it != deform.MorphWeightsByBufferIndex.end()) {
+                record.MorphWeightsOffset = it->second;
+            }
+            if (const auto it = draw.PosedByEntity.find(instance.Entity); it != draw.PosedByEntity.end()) {
+                const auto &posed = it->second;
+                const auto i = posed.PerInstance ? ri.BufferIndex - posed.FirstInstance : 0u;
+                record.PosedPositionOffset = posed.PositionOffset(i);
+                if (const auto normals = posed.NormalsAt(i)) {
+                    record.PosedVertexNormalOffset = normals->VertexOffset;
+                    record.PosedSeamNormalOffset = normals->SeamOffset;
+                    record.PosedFaceNormalOffset = normals->FaceOffset;
+                }
+            }
+            const auto primary = primary_edit_instances.find(instance.Entity);
+            if (has_pending_transform && primary != primary_edit_instances.end()) {
+                record.HasPendingVertexTransform = 1u;
+                record.PrimaryEditInstanceIndex = r.get<const RenderInstance>(primary->second).BufferIndex;
+            }
+            if (!is_edit_mode || (primary != primary_edit_instances.end() && primary->second == instance_entity)) {
+                record.ElementStateSlotOffset = meshes.GetFaceStateRange(GetMesh(r, instance.Entity).GetStoreId());
+            }
+            buffers.Instances.RecordBuffer.GetMutableSpan<InstanceRecord>({ri.BufferIndex, 1}).front() = record;
         }
 
         if (show_fill) {
-            const auto append_fill_mesh = [&](DrawBatchInfo &batch, const MeshEntityData &e, std::optional<bool> blend_target, FillSubset subset = FillSubset::All) {
-                if (!e.MeshComp || e.MeshComp->FaceCount() == 0) return;
-                const auto &mesh_buffers = e.Buf;
-                const auto &models = e.Mod;
-                const auto &mesh = *e.MeshComp;
-                const auto &deform = e.Deform;
-                const auto store_id = mesh.GetStoreId();
-                auto dd = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.FaceIndices, buffers.Instances, deform.BoneDeformOffset, deform.ArmatureDeformOffset, deform.MorphDeformOffset, deform.MorphTargetCount);
-                const auto face_id_buffer = meshes.GetFaceIdRange(store_id);
-                const auto face_state_buffer = meshes.GetFaceStateRange(store_id);
-                const auto face_primitive_buffer = meshes.GetElementPrimitiveRange(store_id);
-                const auto primitive_material_buffer = meshes.GetPrimitiveMaterialRange(store_id);
-                dd.ObjectIdSlot = face_id_buffer.Slot;
-                dd.FaceIdOffset = face_id_buffer.Offset;
-                dd.BaseFaceNormalOffset = meshes.GetFaceDataRange(store_id).Offset;
-                dd.CornerClassOffset = meshes.GetCornerClassOffset(store_id);
-                dd.CustomCornerMaskOffset = OffsetOrInvalid(meshes.GetCustomCornerMaskRange(store_id));
-                dd.CustomCornerNormalOffset = OffsetOrInvalid(meshes.GetCustomCornerNormalRange(store_id));
-                dd.BaseSeamNormalOffset = OffsetOrInvalid(meshes.GetBaseSeamNormalRange(store_id));
-                dd.MorphShadingAuthored = morph_shading_authored(e) ? 1u : 0u;
-                dd.CornerTangentOffset = OffsetOrInvalid(meshes.GetCornerTangentRange(store_id));
-                dd.CornerColorOffset = OffsetOrInvalid(meshes.GetCornerColorRange(store_id));
-                for (uint32_t set = 0; set < dd.CornerUvOffsets.size(); ++set) {
-                    dd.CornerUvOffsets[set] = OffsetOrInvalid(meshes.GetCornerUvRange(store_id, set));
-                }
-                dd.ElementPrimitiveOffset = OffsetOrInvalid(face_primitive_buffer);
-                dd.PrimitiveMaterialOffset = OffsetOrInvalid(primitive_material_buffer);
-                const auto append_fill_draw = [&](const DrawData &dd, uint32_t index_count, std::optional<uint32_t> model_index) {
-                    const auto db = draw_list.Draws.size();
-                    AppendDraw(draw_list, batch, index_count, models, dd, model_index);
-                    patch_mesh_draws(draw_list, db, e.Entity, deform);
-                };
-                const auto append_fill_for_instances = [&](const DrawData &dd, uint32_t index_count) {
-                    if (e.PrimaryEditBufferIndex) {
-                        // Draw primary with element state first, then all without (depth LESS won't overwrite)
-                        auto primary_draw = dd;
-                        primary_draw.ElementStateSlotOffset = face_state_buffer;
-                        append_fill_draw(primary_draw, index_count, e.PrimaryEditBufferIndex);
-                        auto other_draw = dd;
-                        other_draw.ElementStateSlotOffset = {};
-                        append_fill_draw(other_draw, index_count, std::nullopt);
-                    } else {
-                        auto all_draw = dd;
-                        all_draw.ElementStateSlotOffset = face_state_buffer;
-                        append_fill_draw(all_draw, index_count, std::nullopt);
-                    }
-                };
-
-                if (show_rendered) {
-                    const auto primitive_materials = meshes.GetPrimitiveMaterialIndices(store_id);
-                    const auto primitive_ranges = meshes.GetPrimitiveTriangleRanges(store_id);
-                    if (!primitive_materials.empty() && !primitive_ranges.empty()) {
-                        const auto material_count = buffers.Materials.Count();
-                        // Merge adjacent primitives with the same blend mode and transmission class into single draw calls.
-                        struct BlendDrawRange {
-                            bool Blend, Prepass, Transmissive;
-                            uint32_t FirstTriangle, TriangleCount;
-                        };
-                        std::vector<BlendDrawRange> blend_ranges;
-                        blend_ranges.reserve(primitive_ranges.size());
-                        for (const auto &pr : primitive_ranges) {
-                            if (pr.TriangleCount == 0u) continue;
-                            auto pi = pr.PrimitiveIndex;
-                            if (pi >= primitive_materials.size()) pi = primitive_materials.size() - 1u;
-                            const bool has_material = primitive_materials[pi] < material_count;
-                            const bool is_blend = has_material && buffers.Materials.Get(primitive_materials[pi]).AlphaMode == MaterialAlphaMode::Blend;
-                            const bool is_transmissive = has_material && buffers.Materials.Get(primitive_materials[pi]).Transmission.Factor > 0.f;
-                            // A transmission texture can zero the factor per texel, and those texels
-                            // belong in the prepass, where the shader's per-fragment discard sorts them.
-                            const bool in_prepass = !is_transmissive || buffers.Materials.Get(primitive_materials[pi]).Transmission.Texture.Slot != InvalidSlot;
-                            if (!blend_ranges.empty() && blend_ranges.back().Blend == is_blend && blend_ranges.back().Prepass == in_prepass && blend_ranges.back().Transmissive == is_transmissive) {
-                                blend_ranges.back().TriangleCount += pr.TriangleCount;
-                            } else {
-                                blend_ranges.emplace_back(is_blend, in_prepass, is_transmissive, pr.FirstTriangle, pr.TriangleCount);
-                            }
-                        }
-                        for (const auto &range : blend_ranges) {
-                            if (blend_target && range.Blend != *blend_target) continue;
-                            if (subset == FillSubset::Prepass && !range.Prepass) continue;
-                            if (subset == FillSubset::Transmissive && !range.Transmissive) continue;
-                            auto range_draw = dd;
-                            range_draw.IndexSlotOffset.Offset += range.FirstTriangle * 3u;
-                            range_draw.FaceIdOffset += range.FirstTriangle;
-                            // The mask lookup locates the range within the mesh's corner bitset.
-                            range_draw.CornerBase = range.FirstTriangle * 3u;
-                            // The class offset advances only when it locates a class buffer.
-                            if (range_draw.CornerClassOffset < uint32_t(CornerClassEncoding::UniformFaceOffset)) range_draw.CornerClassOffset += range.FirstTriangle * 3u;
-                            const auto advance_corner = [&](uint32_t &offset) {
-                                if (offset != InvalidOffset) offset += range.FirstTriangle * 3u;
-                            };
-                            advance_corner(range_draw.CornerTangentOffset);
-                            advance_corner(range_draw.CornerColorOffset);
-                            for (auto &offset : range_draw.CornerUvOffsets) advance_corner(offset);
-                            append_fill_for_instances(range_draw, range.TriangleCount * 3u);
-                        }
-                        return;
-                    }
-                }
-
-                if (blend_target && *blend_target) return;
-                if (subset == FillSubset::Transmissive) return; // No per-primitive materials means plain opaque.
-                append_fill_for_instances(dd, mesh_buffers.FaceIndices.Count);
-            };
-
-            draw.FillOpaquePrepass = {};
-            draw.FillOpaqueTransmissive = {};
-            if (show_rendered) {
-                draw.FillOpaque = draw_list.BeginBatch(true);
-                for (const auto &e : mesh_entities) {
-                    if (!e.IsBone) append_fill_mesh(draw.FillOpaque, e, false);
-                }
-                if (real_transmission) {
-                    draw.FillOpaquePrepass = draw_list.BeginBatch(true);
-                    for (const auto &e : mesh_entities) {
-                        if (!e.IsBone) append_fill_mesh(draw.FillOpaquePrepass, e, false, FillSubset::Prepass);
-                    }
-                    draw.FillOpaqueTransmissive = draw_list.BeginBatch();
-                    for (const auto &e : mesh_entities) {
-                        if (!e.IsBone) append_fill_mesh(draw.FillOpaqueTransmissive, e, false, FillSubset::Transmissive);
-                    }
-                }
-                draw.FillBlend = draw_list.BeginBatch();
-                for (const auto mesh_entity : blend_mesh_order) {
-                    if (auto it = blend_entity_idx.find(mesh_entity); it != blend_entity_idx.end()) {
-                        append_fill_mesh(draw.FillBlend, mesh_entities[it->second], true);
-                    }
-                }
-            } else {
-                draw.FillOpaque = draw_list.BeginBatch(true);
-                for (const auto &e : mesh_entities) {
-                    if (!e.IsBone) append_fill_mesh(draw.FillOpaque, e, std::nullopt);
-                }
-            }
-
             // Shade point and line meshes from their material: points as round sprites, lines as screen-space quads.
             const auto append_non_triangle_fill = [&](DrawBatchInfo &batch, const MeshEntityData &e, ElementDomain domain) {
                 if (e.IsBone || e.Domain != domain || !shaded_in_scene_pass(e)) return;
@@ -1061,10 +972,6 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
                 }
                 return batch;
             };
-            const auto sel_tri = run_sel_pass(
-                [](const auto &e) -> const auto & { return e.Buf.FaceIndices; },
-                [](const auto &e) { return e.Buf.FaceIndices.Count == 0; }
-            );
             const auto sel_line = run_sel_pass(
                 [](const auto &e) -> const auto & { return e.Buf.EdgeIndices; },
                 [](const auto &e) { return e.Buf.FaceIndices.Count > 0 || e.Buf.EdgeIndices.Count == 0; }
@@ -1093,60 +1000,28 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
             }
 
             draw.SelectionDraws = {
-                {SPT::SelectionFragment, MTL::PrimitiveTypeTriangle, sel_tri},
                 {SPT::SelectionFragment, MTL::PrimitiveTypeLine, sel_line},
                 {SPT::SelectionFragment, MTL::PrimitiveTypePoint, sel_point},
                 {SPT::SelectionFragmentBoneSphere, MTL::PrimitiveTypeTriangle, sel_bone_sphere},
                 {SPT::SelectionObjectExtrasLines, MTL::PrimitiveTypeLine, sel_extras},
             };
         }
-
-        // Cache the main draw list state (everything before silhouette).
-        draw.MainDrawCount = draw_list.Draws.size();
-        draw.MainIndirectCount = draw_list.IndirectCommands.size();
-    } else if (use == DrawListUse::SilhouetteOnly) {
-        // Truncate to the cached main portion, batch infos retained from last full build.
-        draw_list.Draws.resize(draw.MainDrawCount);
-        draw_list.IndirectCommands.resize(draw.MainIndirectCount);
     }
-
-    // Silhouette batch (appended after main batches in both rebuild paths).
-    std::unordered_set<entt::entity> silhouette_instances;
-    if (is_edit_mode) {
-        for (const auto [e, instance, ri] : r.view<const Instance, const Selected, const RenderInstance>().each()) {
-            if (!is_silhouette_eligible(e)) continue;
-            if (auto it = primary_edit_instances.find(instance.Entity); it == primary_edit_instances.end() || it->second != e) {
-                silhouette_instances.insert(e);
-            }
-        }
+    const auto instance_records = buffers.Instances.RecordBuffer.GetMutableSpan<InstanceRecord>(
+        {0, buffers.Instances.RecordBuffer.Count<InstanceRecord>()}
+    );
+    for (const auto [instance_entity, ri] : r.view<const RenderInstance>().each()) {
+        if (ri.BufferIndex == UINT32_MAX || ri.BufferIndex >= instance_records.size()) continue;
+        auto &record = instance_records[ri.BufferIndex];
+        record.ObjectId = ri.ObjectId;
+        const bool selected = r.all_of<Selected>(instance_entity) && is_silhouette_eligible(instance_entity);
+        const bool silhouette = selected && (!is_edit_mode || silhouette_instances.contains(instance_entity));
+        record.Flags = silhouette ? uint32_t(MeshletInstanceFlag::Silhouette) : 0u;
     }
-
     const bool has_object_silhouette_selection =
         any_of(r.view<const Selected, const Instance, const RenderInstance>().each(), [&](const auto &entry) { return is_silhouette_eligible(std::get<0>(entry)); });
     const bool render_silhouette = (show_overlays && settings.ShowOutlineSelected) && !is_excite_mode &&
         (is_edit_mode ? !silhouette_instances.empty() : has_object_silhouette_selection);
-
-    if (use != DrawListUse::Reuse) draw.Silhouette = {};
-    if (render_silhouette && use != DrawListUse::Reuse) {
-        draw.Silhouette = draw_list.BeginBatch();
-        auto append_silhouette = [&](entt::entity e) {
-            if (!is_silhouette_eligible(e)) return;
-            const auto mesh_entity = r.get<Instance>(e).Entity;
-            const auto &mesh_buffers = r.get<MeshBuffers>(mesh_entity);
-            const auto &models = r.get<ModelsBuffer>(mesh_entity);
-            const auto &deform = get_deform_slots(mesh_entity);
-            auto dd = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.FaceIndices, buffers.Instances, deform.BoneDeformOffset, deform.ArmatureDeformOffset, deform.MorphDeformOffset, deform.MorphTargetCount);
-            dd.ObjectIdSlot = buffers.Instances.ObjectIdBuffer.Slot;
-            const auto draws_before = draw_list.Draws.size();
-            AppendDraw(draw_list, draw.Silhouette, mesh_buffers.FaceIndices, models, dd, r.get<RenderInstance>(e).BufferIndex);
-            patch_mesh_draws(draw_list, draws_before, mesh_entity, deform);
-        };
-        if (is_edit_mode) {
-            for (const auto e : silhouette_instances) append_silhouette(e);
-        } else {
-            for (const auto e : r.view<Selected, RenderInstance>()) append_silhouette(e);
-        }
-    }
 
     if (use != DrawListUse::Reuse) {
         { // Bounding boxes draw straight from the instance arena: one box per selected mesh instance slot.
@@ -1171,9 +1046,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
     // plain-opaque pixels, loading the prepass's depth. Edit mode re-rasterizes for face tints,
     // blur steps for velocity, and debug channels carry values the composite's exposure would corrupt.
     const bool composite_transmission = transmission_active && phase == RenderPhase::Full && !is_edit_mode && settings.DebugChannel == DebugChannel::None;
-    // Two-phase occlusion culling runs in the plain interactive phase (no blur, and no
-    // transmission prepass to feed).
-    const bool two_phase = phase == RenderPhase::Full && show_fill && !transmission_active && !draw_list.Draws.empty();
+    const bool meshlet_fill = buffers.MeshletInstanceCount > 0;
 
     const uint32_t transform_vertex_state_slot = is_edit_mode ? meshes.GetVertexStateSlot() : InvalidSlot;
 
@@ -1182,7 +1055,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
     // Derived normals feed only the scene's face-fill draws, so only scene-drawing phases record the derive.
     // Every prelude pass dispatches indirectly.
     // A submit with unchanged deform inputs gets zero group counts, keeping the buffers' current results.
-    if (!draw_list.Draws.empty()) {
+    if (!draw_list.Draws.empty() || buffers.Prelude.PosePrepass > 0 || buffers.Prelude.DeriveFaces > 0 || buffers.Prelude.BoundsReduce > 0) {
         const auto &prelude = buffers.Prelude;
         const bool record_bounds = phase != RenderPhase::BlurAccumulate && phase != RenderPhase::BlurResolve;
         // A derive entry always holds at least one face tile and one gather tile, so one count decides both phases.
@@ -1201,39 +1074,55 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
             }
             if (bounds_work) RecordBoundsPass(compute, slots, pipelines.BoundsCombine, buffers, PreludeSlot::BoundsCombine, ubo_offset);
         }
-        if (record_bounds) {
-            RecordFrustumCull(compute, slots, pipelines, buffers, buffers.RenderDraw, draw_list, ubo_offset, two_phase ? buffers.Instances.VisibilityBuffer.Slot : InvalidSlot);
+        if (record_bounds && !draw_list.Draws.empty()) {
+            RecordFrustumCull(compute, slots, pipelines, buffers, buffers.RenderDraw, draw_list, ubo_offset);
         }
     }
-
     MTL::RenderCommandEncoder *encoder = nullptr;
-    auto record_batch = [&](const DrawBatchInfo &batch, bool region_b, MTL::PrimitiveType primitive) {
+    auto record_batch = [&](const DrawBatchInfo &batch, MTL::PrimitiveType primitive) {
         encode::SetPushConstants(encoder, MainDrawPushConstants{batch.DrawDataSlotOffset});
-        const auto indirect_offset = region_b ? draw_list.IndirectCommands.size() * IndirectCommandStride : uint64_t{0};
-        encode::DrawIndexedIndirect(encoder, primitive, *buffers.IdentityIndexBuffer, *buffers.RenderDraw.Indirect, batch.IndirectOffset + indirect_offset, batch.DrawCount);
+        encode::DrawIndexedIndirect(encoder, primitive, *buffers.IdentityIndexBuffer, *buffers.RenderDraw.Indirect, batch.IndirectOffset, batch.DrawCount);
     };
-    auto record_draw_batch = [&](const PipelineRenderer &renderer, SPT spt, const DrawBatchInfo &batch, bool region_b = false) {
+    auto record_draw_batch = [&](const PipelineRenderer &renderer, SPT spt, const DrawBatchInfo &batch) {
         if (batch.DrawCount == 0) return;
         renderer.Bind(encoder, spt);
-        record_batch(batch, region_b, PipelinePrimitive(spt));
+        record_batch(batch, PipelinePrimitive(spt));
     };
-    auto record_pbr_batch = [&](const DrawBatchInfo &batch, PbrCompiler::Variant variant, bool region_b = false, PbrCompiler::Topology topology = PbrCompiler::Topology::Triangle) {
+    auto record_pbr_batch = [&](const DrawBatchInfo &batch, PbrCompiler::Variant variant, PbrCompiler::Topology topology) {
         if (batch.DrawCount == 0) return;
         pipelines.Main.Compiler.Bind(encoder, variant, topology);
-        record_batch(batch, region_b, topology == PbrCompiler::Topology::Point ? MTL::PrimitiveTypePoint : MTL::PrimitiveTypeTriangle);
+        record_batch(batch, topology == PbrCompiler::Topology::Point ? MTL::PrimitiveTypePoint : MTL::PrimitiveTypeTriangle);
+    };
+    const auto record_meshlets = [&](uint32_t route, auto &&bind_pipeline) {
+        bind_pipeline();
+        DrawMeshlets(encoder, buffers, route);
     };
     auto draw_quad = [&] { encoder->drawPrimitives(MTL::PrimitiveTypeTriangleStrip, NS::UInteger(0), NS::UInteger(4)); };
 
-    const bool has_silhouette = render_silhouette && draw.Silhouette.DrawCount > 0 && draw_overlays; // Selection outline is an overlay.
-    if (has_silhouette) { // Silhouette depth/object pass
-        const auto &silhouette = pipelines.Silhouette;
-        {
-            const auto extent = silhouette.Resources->OffscreenImage.Extent;
-            const std::array colors{mtl::ClearColor(*silhouette.Resources->OffscreenImage)};
-            const auto pass = mtl::MakePassDescriptor(colors, mtl::ClearDepth(*silhouette.Resources->DepthImage));
-            encoder = encode::BeginScenePass(chain, pass, "SilhouetteGeom", {{MTL::StageDispatch, MTL::StageVertex}, {MTL::StageFragment, MTL::StageFragment}}, extent, slots, buffers, ubo_offset);
-            record_draw_batch(silhouette.Renderer, SPT::SilhouetteDepthObject, draw.Silhouette);
+    const auto &main = pipelines.Main;
+    const bool has_silhouette = render_silhouette && meshlet_fill;
+    const bool cull_scene_meshlets = show_fill && draw_scene && meshlet_fill;
+    bool sort_blend = false;
+    if (cull_scene_meshlets && show_rendered) {
+        for (uint32_t i = 0; i < buffers.Materials.Count() && !sort_blend; ++i) {
+            sort_blend = buffers.Materials.Get(i).AlphaMode == MaterialAlphaMode::Blend;
         }
+    }
+    if (cull_scene_meshlets) {
+        const uint32_t pyramid = phase == RenderPhase::Full && main.Resources->DepthPyramidValid ? sel_slots.DepthPyramidSampler : InvalidSlot;
+        RecordMeshletCull(
+            chain, slots, pipelines, buffers,
+            {
+                .Mode = show_rendered ? (real_transmission ? MeshletRouteMode::Transmission : MeshletRouteMode::Material) : MeshletRouteMode::Single,
+                .UboOffset = ubo_offset,
+                .PyramidSamplerSlot = pyramid,
+                .ExtraRouteFlags = has_silhouette ? uint32_t(MeshletInstanceFlag::Silhouette) : 0u,
+                .SortBlend = sort_blend,
+            }
+        );
+    }
+    if (has_silhouette) { // Silhouette depth/object pass
+        RecordSilhouetteDepthPass(chain, slots, pipelines, buffers, true, ubo_offset, cull_scene_meshlets);
 
         const auto &silhouette_edge = pipelines.SilhouetteEdge;
         {
@@ -1247,10 +1136,9 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
         }
     }
 
-    const auto &main = pipelines.Main;
     const auto main_extent = main.Resources->SceneColorImage.Extent;
 
-    // Real-transmission pre-pass: render Background + FillOpaque into TransmissionImage mip 0,
+    // Real-transmission pre-pass: render the background and opaque faces into TransmissionImage mip 0,
     // sampled by the scene pass at the refracted exit point. TRANSMISSION_PREPASS variants skip
     // exposure and drop transmission materials (no self-sampling).
     if (transmission_active && draw_scene) {
@@ -1258,12 +1146,12 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
         // display-referred UI drawn with the overlays, so it never reaches this buffer.
         const std::array colors{mtl::ClearColor(main.Transmission->Mip0View.get())};
         const auto pass = mtl::MakePassDescriptor(colors, mtl::ClearDepth(*main.Resources->DepthImage));
-        encoder = encode::BeginScenePass(chain, pass, "TransmissionPrepass", {{MTL::StageDispatch, MTL::StageVertex}, {MTL::StageFragment, MTL::StageFragment}}, main_extent, slots, buffers, ubo_offset);
+        encoder = encode::BeginScenePass(chain, pass, "TransmissionPrepass", {{MTL::StageDispatch, MTL::StageVertex | MTL::StageMesh}, {MTL::StageFragment, MTL::StageFragment}}, main_extent, slots, buffers, ubo_offset);
         main.PrepassBackground.Bind(encoder);
         draw_quad();
-        if (buffers.IdentityIndexCount > 0 && show_fill) {
+        if (meshlet_fill && show_fill) {
             // The prepass batch holds every material with non-transmissive texels.
-            record_pbr_batch(draw.FillOpaquePrepass, PbrCompiler::Variant::OpaquePrepass);
+            record_meshlets(0, [&] { pipelines.Main.Compiler.BindMeshlets(encoder, PbrCompiler::Variant::OpaquePrepass); });
         }
 
         // Generate the transmission mip chain sampled across roughness.
@@ -1290,7 +1178,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
         const auto pass = mtl::MakePassDescriptor(attachments, depth);
         encoder = encode::BeginScenePass(
             chain, pass, draw_scene ? "ScenePass" : "SceneDepthPass",
-            {{MTL::StageDispatch, MTL::StageVertex | MTL::StageFragment}, {MTL::StageFragment | MTL::StageBlit, MTL::StageFragment}},
+            {{MTL::StageDispatch, MTL::StageVertex | MTL::StageMesh | MTL::StageFragment}, {MTL::StageFragment | MTL::StageBlit, MTL::StageFragment}},
             main_extent, slots, buffers, ubo_offset
         );
 
@@ -1331,44 +1219,30 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
         }
 
         // Solid faces. BlurResolve writes depth only, for overlays to occlude against (blend faces never wrote depth).
-        // Two-phase draws the previously-visible opaque set here and defers blend to the resume pass.
-        if (buffers.IdentityIndexCount > 0 && show_fill) {
-            if (!draw_scene) {
-                record_draw_batch(main.SceneRenderer, SPT::FillDepth, draw.FillOpaque);
-            } else if (show_rendered) {
-                record_pbr_batch(composite_transmission ? draw.FillOpaqueTransmissive : draw.FillOpaque, blur ? PbrCompiler::Variant::OpaqueVelocity : PbrCompiler::Variant::Opaque);
-                if (!two_phase) record_pbr_batch(draw.FillBlend, blur ? PbrCompiler::Variant::BlendVelocity : PbrCompiler::Variant::Blend);
-            } else {
-                record_draw_batch(main.SceneRenderer, SPT::Fill, draw.FillOpaque);
+        if (show_fill) {
+            if (meshlet_fill && !draw_scene) {
+                record_meshlets(0, [&] { main.MeshletDepth.Bind(encoder); });
+            } else if (meshlet_fill && show_rendered) {
+                const auto opaque_variant = blur ? PbrCompiler::Variant::OpaqueVelocity : PbrCompiler::Variant::Opaque;
+                const auto blend_variant = blur ? PbrCompiler::Variant::BlendVelocity : PbrCompiler::Variant::Blend;
+                record_meshlets(composite_transmission ? 2u : 0u, [&] { main.Compiler.BindMeshlets(encoder, opaque_variant); });
+                record_meshlets(1, [&] { main.Compiler.BindMeshlets(encoder, blend_variant); });
+            } else if (meshlet_fill) {
+                record_meshlets(0, [&] { main.MeshletFill.Bind(encoder); });
             }
             // Point and line meshes shade from their materials here.
             if (draw_scene && show_rendered) {
                 const auto variant = blur ? PbrCompiler::Variant::OpaqueVelocity : PbrCompiler::Variant::Opaque;
-                record_pbr_batch(draw.FillLine, variant, false, PbrCompiler::Topology::Line);
-                record_pbr_batch(draw.FillPoint, variant, false, PbrCompiler::Topology::Point);
+                record_pbr_batch(draw.FillLine, variant, PbrCompiler::Topology::Line);
+                record_pbr_batch(draw.FillPoint, variant, PbrCompiler::Topology::Point);
             }
         }
     }
 
-    // The occlusion interlude: reduce region A's depth into the pyramid, test the deferred
-    // instances against it, then resume the scene pass with the newly visible and the blend draws.
-    if (two_phase) {
-        {
-            auto *compute = chain.BeginCompute("OcclusionInterlude", MTL::StageVertex | MTL::StageFragment);
-            RecordDepthPyramid(compute, slots, buffers, pipelines, sel_slots, ubo_offset);
-            RecordOcclusionCull(compute, slots, pipelines, buffers, buffers.RenderDraw, draw_list, sel_slots.DepthPyramidSampler, ubo_offset);
-        }
-        const std::array colors{mtl::LoadColor(*main.Resources->SceneColorImage)};
-        const auto pass = mtl::MakePassDescriptor(colors, mtl::LoadDepth(*main.Resources->DepthImage));
-        encoder = encode::BeginScenePass(chain, pass, "SceneResumePass", {{MTL::StageDispatch, MTL::StageVertex | MTL::StageFragment}}, main_extent, slots, buffers, ubo_offset);
-        if (buffers.IdentityIndexCount > 0) {
-            if (show_rendered) {
-                record_pbr_batch(draw.FillOpaque, PbrCompiler::Variant::Opaque, /*region_b=*/true);
-                record_pbr_batch(draw.FillBlend, PbrCompiler::Variant::Blend);
-            } else {
-                record_draw_batch(main.SceneRenderer, SPT::Fill, draw.FillOpaque, /*region_b=*/true);
-            }
-        }
+    if (phase == RenderPhase::Full && meshlet_fill) {
+        auto *compute = chain.BeginCompute("DepthPyramid", MTL::StageFragment);
+        RecordDepthPyramid(compute, slots, buffers, pipelines, sel_slots, ubo_offset);
+        main.Resources->DepthPyramidValid = true;
     }
 
     if (blur) RecordMotionBlurPostFx(r, chain, slots, viewport, main_extent, ubo_offset, playback_frame);
@@ -1524,6 +1398,58 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
 }
 
 } // namespace
+
+void RecordMeshletCull(
+    mtl::PassChain &chain, const mtl::BindlessSet &slots, const Pipelines &pipelines,
+    GpuBuffers &buffers, MeshletCullConfig config
+) {
+    auto *encoder = chain.BeginCompute("MeshletCull", MTL::StageMesh | MTL::StageFragment);
+    RecordMeshletCullImpl(encoder, slots, pipelines, buffers, config);
+}
+
+void RecordSilhouetteDepthPass(
+    mtl::PassChain &chain, const mtl::BindlessSet &slots, const Pipelines &pipelines,
+    GpuBuffers &buffers, bool draw_meshlets, uint32_t ubo_offset, bool reuse_cull
+) {
+    const bool draw = draw_meshlets && buffers.MeshletInstanceCount > 0;
+    if (draw && !reuse_cull) {
+        RecordMeshletCull(chain, slots, pipelines, buffers, {
+                                                                .RequiredInstanceFlags = uint32_t(MeshletInstanceFlag::Silhouette),
+                                                                .UboOffset = ubo_offset,
+                                                            });
+    }
+    const auto &silhouette = pipelines.Silhouette;
+    const auto extent = silhouette.Resources->OffscreenImage.Extent;
+    const std::array colors{mtl::ClearColor(*silhouette.Resources->OffscreenImage)};
+    const auto pass = mtl::MakePassDescriptor(colors, mtl::ClearDepth(*silhouette.Resources->DepthImage));
+    // Element selection loads this cleared depth target even when there is no silhouette to draw.
+    auto *encoder = encode::BeginScenePass(
+        chain, pass, "SilhouetteDepth", {{MTL::StageDispatch, MTL::StageMesh}, {MTL::StageFragment, MTL::StageFragment}},
+        extent, slots, buffers, ubo_offset
+    );
+    if (!draw) return;
+    silhouette.Meshlet.Bind(encoder);
+    DrawMeshlets(encoder, buffers, reuse_cull ? 3u : 0u);
+}
+
+void DrawMeshlets(MTL::RenderCommandEncoder *encoder, const GpuBuffers &buffers, uint32_t route) {
+    MeshletDrawPushConstants pc{
+        .PrimitiveSlot = buffers.Primitives.Buffer.Slot,
+        .InstanceSlot = buffers.Instances.RecordBuffer.Slot,
+        .InstanceMapSlot = buffers.GpuInstanceSlots.Buffer.Slot,
+        .MeshletSlot = buffers.Meshlets.Buffer.Slot,
+        .MeshletTriangleSlot = buffers.MeshletTriangleIds.Buffer.Slot,
+        .VisibleMeshletSlot = buffers.VisibleMeshlets.Slot,
+        .RouteStateSlot = buffers.MeshletRoutes.Slot,
+        .Route = route,
+    };
+    for (uint32_t chunk = 0; chunk < buffers.MeshletDispatchChunkCount; ++chunk) {
+        pc.VisibleOffset = chunk * GpuBuffers::MeshletDispatchChunkSize;
+        encode::SetMeshPushConstants(encoder, pc);
+        const auto args_offset = (route * buffers.MeshletDispatchChunkCount + chunk) * sizeof(MeshDispatchArgs);
+        encoder->drawMeshThreadgroups(*buffers.MeshletDispatchArgs, args_offset, MTL::Size(1, 1, 1), MTL::Size(160, 1, 1));
+    }
+}
 
 void RecordRenderCommandBuffer(entt::registry &r, entt::entity viewport, MTL::CommandBuffer *command_buffer, DrawListUse use, RenderPhase phase) {
     profile::BeginRecording(command_buffer);

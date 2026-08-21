@@ -4,7 +4,7 @@
 #include "audio/SoundVertices.h"
 #include "gpu/BoxSelectPushConstants.h"
 #include "gpu/ElementPickPushConstants.h"
-#include "gpu/MainDrawPushConstants.h"
+#include "gpu/MeshletInstanceFlag.h"
 #include "gpu/ObjectPickPushConstants.h"
 #include "gpu/SelectionDrawPushConstants.h"
 #include "gpu/SelectionElementPushConstants.h"
@@ -46,25 +46,6 @@ void ResetSelectionFragmentState(mtl::PassChain &chain, const GpuBuffers &buffer
     auto *blit = chain.BeginBlit("SelectionReset", MTL::StageFragment);
     blit->fillBuffer(*buffers.SelectionCounter, NS::Range::Make(0, sizeof(SelectionCounters)), 0);
     blit->fillBuffer(*heads.HeadBuffer, NS::Range::Make(0, head_bytes), 0xFF);
-}
-
-// This opens even with no draws because its cleared depth seeds element occlusion.
-void RecordSilhouetteDepthPass(
-    mtl::PassChain &chain, const mtl::BindlessSet &slots, const Pipelines &pipelines,
-    const GpuBuffers &buffers, const DrawBatchInfo &batch
-) {
-    const auto &silhouette = pipelines.Silhouette;
-    const auto extent = silhouette.Resources->OffscreenImage.Extent;
-    const std::array colors{mtl::ClearColor(*silhouette.Resources->OffscreenImage)};
-    const auto pass = mtl::MakePassDescriptor(colors, mtl::ClearDepth(*silhouette.Resources->DepthImage));
-    auto *encoder = chain.BeginRender(pass, "SelectionSilhouetteDepth", {{MTL::StageDispatch, MTL::StageVertex}, {MTL::StageFragment, MTL::StageFragment}});
-    encode::SetFullViewport(encoder, extent);
-    if (batch.DrawCount > 0) {
-        encode::BindScene(encoder, slots, buffers);
-        silhouette.Renderer.Bind(encoder, SPT::SilhouetteDepthObject);
-        encode::SetPushConstants(encoder, MainDrawPushConstants{batch.DrawDataSlotOffset});
-        encode::DrawIndexedIndirect(encoder, MTL::PrimitiveTypeTriangle, *buffers.IdentityIndexBuffer, *buffers.SelectionDraw.Indirect, batch.IndirectOffset, batch.DrawCount);
-    }
 }
 
 void RecordSelectionCompute(
@@ -126,26 +107,10 @@ uint32_t MaxElementBound(auto &&ranges) {
     return std::ranges::fold_left(ranges, uint32_t{0}, [](uint32_t total, const auto &r) { return std::max(total, r.Offset + r.Count); });
 }
 
-void AppendSelectedSilhouetteDraws(const entt::registry &r, DrawListBuilder &draw_list, DrawBatchInfo &silhouette_batch) {
-    const auto &buffers = r.ctx().get<const GpuBuffers>();
-    for (const auto e : r.view<Selected>()) {
-        const auto *inst = r.try_get<Instance>(e);
-        if (!inst) continue;
-        const auto buffer_entity = inst->Entity;
-        const auto &mesh_buffers = r.get<MeshBuffers>(buffer_entity);
-        const auto &models = r.get<ModelsBuffer>(buffer_entity);
-        if (const auto *ri = r.try_get<RenderInstance>(e)) {
-            auto draw = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.FaceIndices, buffers.Instances);
-            draw.ObjectIdSlot = buffers.Instances.ObjectIdBuffer.Slot;
-            AppendDraw(draw_list, silhouette_batch, mesh_buffers.FaceIndices, models, draw, ri->BufferIndex);
-        }
-    }
-}
-
 // Cull, optionally reset linked-list state, then draw selection fragments into silhouette depth.
 void RunSelectionPass(
-    entt::registry &r, mtl::PassChain &chain, DrawListBuilder &draw_list, const DrawBatchInfo &silhouette_batch,
-    bool render_depth, bool reset_state, auto &&record_draws
+    entt::registry &r, mtl::PassChain &chain, DrawListBuilder &draw_list,
+    bool render_depth, bool render_silhouette, bool draw_meshlets, uint32_t meshlet_flags, bool reset_state, auto &&record_draws
 ) {
     const auto &slots = r.ctx().get<const mtl::BindlessSet>();
     const auto &pipelines = r.ctx().get<const Pipelines>();
@@ -156,13 +121,16 @@ void RunSelectionPass(
 
     if (!draw_list.Draws.empty()) RecordFrustumCull(chain, slots, pipelines, buffers, buffers.SelectionDraw, draw_list);
     if (reset_state) ResetSelectionFragmentState(chain, buffers, pipelines);
-    if (render_depth) RecordSilhouetteDepthPass(chain, slots, pipelines, buffers, silhouette_batch);
+    if (render_depth) RecordSilhouetteDepthPass(chain, slots, pipelines, buffers, render_silhouette);
+    if (draw_meshlets && buffers.MeshletInstanceCount > 0) {
+        RecordMeshletCull(chain, slots, pipelines, buffers, {.RequiredInstanceFlags = meshlet_flags});
+    }
 
     const auto extent = pipelines.Silhouette.Resources->DepthImage.Extent;
     const auto pass = mtl::MakePassDescriptor({}, mtl::LoadDepth(*pipelines.Silhouette.Resources->DepthImage, MTL::StoreActionDontCare));
     pass->setRenderTargetWidth(extent.Width);
     pass->setRenderTargetHeight(extent.Height);
-    auto *encoder = encode::BeginScenePass(chain, pass, "SelectionDraws", {{MTL::StageDispatch, MTL::StageVertex}, {MTL::StageBlit, MTL::StageFragment}}, extent, slots, buffers);
+    auto *encoder = encode::BeginScenePass(chain, pass, "SelectionDraws", {{MTL::StageDispatch, MTL::StageVertex | MTL::StageMesh}, {MTL::StageBlit, MTL::StageFragment}}, extent, slots, buffers);
     record_draws(encoder, extent);
 }
 
@@ -193,16 +161,27 @@ void RenderElementSelectionPass(
     };
 
     DrawListBuilder draw_list;
-    DrawBatchInfo silhouette_batch{};
     const bool render_depth = !xray_selection;
-    if (render_depth) {
-        silhouette_batch = draw_list.BeginBatch(true);
-        if (element != Element::Face) AppendSelectedSilhouetteDraws(r, draw_list, silhouette_batch);
-    }
     auto element_batch = draw_list.BeginBatch(true);
+    auto records = buffers.Instances.RecordBuffer.GetMutableSpan<InstanceRecord>({0, buffers.Instances.RecordBuffer.Count<InstanceRecord>()});
+    for (auto &record : records) record.Flags &= ~uint32_t(MeshletInstanceFlag::ElementSelection);
+    const bool face_point_fallback = element == Element::Face && write_bitset && xray_selection;
     for (const auto &range : ranges) {
         const auto &mesh_buffers = r.get<MeshBuffers>(range.MeshEntity);
         const auto &models = r.get<ModelsBuffer>(range.MeshEntity);
+        const auto primary = primary_edit_instances.find(range.MeshEntity);
+        const auto mark_instance = [&](uint32_t slot) {
+            if (slot >= records.size()) return;
+            records[slot].Flags |= uint32_t(MeshletInstanceFlag::ElementSelection);
+            records[slot].ElementIdOffset = range.Offset;
+        };
+        if (primary != primary_edit_instances.end()) {
+            mark_instance(r.get<RenderInstance>(primary->second).BufferIndex);
+        } else {
+            for (uint32_t i = 0; i < models.InstanceCount; ++i) mark_instance(models.InstanceRange.Offset + i);
+        }
+        if (element == Element::Face && !face_point_fallback) continue;
+
         const auto &mesh = GetMesh(r, range.MeshEntity);
         const auto &indices = element == Element::Vertex ? mesh_buffers.VertexIndices :
             element == Element::Edge                     ? mesh_buffers.EdgeIndices :
@@ -218,8 +197,8 @@ void RenderElementSelectionPass(
         }
         draw.VertexCountOrHeadImageSlot = 0;
         draw.ElementIdOffset = range.Offset;
-        if (auto it = primary_edit_instances.find(range.MeshEntity); it != primary_edit_instances.end()) {
-            AppendDraw(draw_list, element_batch, indices, models, draw, r.get<RenderInstance>(it->second).BufferIndex);
+        if (primary != primary_edit_instances.end()) {
+            AppendDraw(draw_list, element_batch, indices, models, draw, r.get<RenderInstance>(primary->second).BufferIndex);
         } else {
             AppendDraw(draw_list, element_batch, indices, models, draw);
         }
@@ -227,27 +206,39 @@ void RenderElementSelectionPass(
 
     const auto &selection = pipelines.SelectionFragment;
     // Bitset writes append to prior linked-list state, so only the fresh-list path resets it.
-    RunSelectionPass(r, chain, draw_list, silhouette_batch, render_depth, !write_bitset, [&](auto *encoder, mtl::Extent2D extent) {
-        if (element_batch.DrawCount == 0) return;
-        const SelectionElementPushConstants element_pc{
-            element_batch.DrawDataSlotOffset,
-            {selection.Resources->HeadBuffer.Slot, {extent.Width, extent.Height}, buffers.SelectionNodeBuffer.Slot, sel_slots.SelectionCounter, buffers.SelectionNodeCapacity},
-            {box_min.x, box_min.y, box_max.x, box_max.y},
-            sel_slots.SelectionBitset,
-        };
-        auto draw_with = [&](SPT spt, MTL::PrimitiveType primitive) {
-            selection.Renderer.Bind(encoder, spt);
-            encode::SetPushConstants(encoder, element_pc);
-            encode::DrawIndexedIndirect(encoder, primitive, *buffers.IdentityIndexBuffer, *buffers.SelectionDraw.Indirect, element_batch.IndirectOffset, element_batch.DrawCount);
-        };
-        draw_with(element_pipeline(element), ElementPrimitive(element));
-        if (write_bitset && xray_selection) {
-            // X-Ray face: the point pass catches edge-on faces, whose projected triangle has zero area.
-            if (element == Element::Face) draw_with(SPT::SelectionElementFaceXRayVertsBitsetBox, MTL::PrimitiveTypePoint);
-            // X-Ray edge: the point pass catches near-zero-length projected edges.
-            if (element == Element::Edge) draw_with(SPT::SelectionElementEdgeXRayVertsBitsetBox, MTL::PrimitiveTypePoint);
+    RunSelectionPass(
+        r, chain, draw_list, render_depth, element != Element::Face, element == Element::Face,
+        uint32_t(MeshletInstanceFlag::ElementSelection), !write_bitset,
+        [&](auto *encoder, mtl::Extent2D extent) {
+            const SelectionElementPushConstants element_pc{
+                element_batch.DrawDataSlotOffset,
+                {selection.Resources->HeadBuffer.Slot, {extent.Width, extent.Height}, buffers.SelectionNodeBuffer.Slot, sel_slots.SelectionCounter, buffers.SelectionNodeCapacity},
+                {box_min.x, box_min.y, box_max.x, box_max.y},
+                sel_slots.SelectionBitset,
+            };
+            auto draw_with = [&](SPT spt, MTL::PrimitiveType primitive) {
+                selection.Renderer.Bind(encoder, spt);
+                encode::SetPushConstants(encoder, element_pc);
+                encode::DrawIndexedIndirect(encoder, primitive, *buffers.IdentityIndexBuffer, *buffers.SelectionDraw.Indirect, element_batch.IndirectOffset, element_batch.DrawCount);
+            };
+            if (element == Element::Face) {
+                const auto &pipeline = xray_selection ?
+                    (write_bitset ? selection.MeshletFaceXRayBitsetBox : selection.MeshletFaceXRay) :
+                    (write_bitset ? selection.MeshletFaceBitsetBox : selection.MeshletFace);
+                pipeline.Bind(encoder);
+                encode::SetPushConstants(encoder, element_pc);
+                DrawMeshlets(encoder, buffers);
+            } else if (element_batch.DrawCount > 0) {
+                draw_with(element_pipeline(element), ElementPrimitive(element));
+            }
+            if (write_bitset && xray_selection) {
+                // X-Ray face: the point pass catches edge-on faces, whose projected triangle has zero area.
+                if (element == Element::Face) draw_with(SPT::SelectionElementFaceXRayVertsBitsetBox, MTL::PrimitiveTypePoint);
+                // X-Ray edge: the point pass catches near-zero-length projected edges.
+                if (element == Element::Edge) draw_with(SPT::SelectionElementEdgeXRayVertsBitsetBox, MTL::PrimitiveTypePoint);
+            }
         }
-    });
+    );
 
     // Element selection pass overwrites the shared head image used for object selection.
     r.ctx().get<DrawState>().SelectionStale = true;
@@ -290,20 +281,18 @@ std::optional<std::pair<entt::entity, uint32_t>> RunElementPickFromRanges(
     return {};
 }
 
-void RenderSelectionPassWith(entt::registry &r, mtl::PassChain &chain, [[maybe_unused]] entt::entity viewport, bool render_depth, const SelectionBuildFn &build_fn, bool render_silhouette = true) {
+void RenderSelectionPassWith(
+    entt::registry &r, mtl::PassChain &chain, [[maybe_unused]] entt::entity viewport, bool render_depth,
+    const SelectionBuildFn &build_fn, bool render_silhouette = true, bool meshlet_objects = false
+) {
     const auto &sel_slots = r.ctx().get<const SelectionSlots>();
     auto &buffers = r.ctx().get<GpuBuffers>();
     const auto &pipelines = r.ctx().get<const Pipelines>();
     DrawListBuilder draw_list;
-    DrawBatchInfo silhouette_batch{};
-    if (render_depth) {
-        silhouette_batch = draw_list.BeginBatch(true);
-        if (render_silhouette) AppendSelectedSilhouetteDraws(r, draw_list, silhouette_batch);
-    }
     const auto selection_draws = build_fn(draw_list);
 
     const auto &selection = pipelines.SelectionFragment;
-    RunSelectionPass(r, chain, draw_list, silhouette_batch, render_depth, true, [&](auto *encoder, mtl::Extent2D extent) {
+    RunSelectionPass(r, chain, draw_list, render_depth, render_silhouette, meshlet_objects, 0, true, [&](auto *encoder, mtl::Extent2D extent) {
         const SelectionDrawPushConstants sel_pc{
             0u,
             {selection.Resources->HeadBuffer.Slot, {extent.Width, extent.Height}, buffers.SelectionNodeBuffer.Slot, sel_slots.SelectionCounter, buffers.SelectionNodeCapacity},
@@ -315,6 +304,11 @@ void RenderSelectionPassWith(entt::registry &r, mtl::PassChain &chain, [[maybe_u
             pc.DrawDataOffset = selection_draw.Batch.DrawDataSlotOffset;
             encode::SetPushConstants(encoder, pc);
             encode::DrawIndexedIndirect(encoder, selection_draw.Primitive, *buffers.IdentityIndexBuffer, *buffers.SelectionDraw.Indirect, selection_draw.Batch.IndirectOffset, selection_draw.Batch.DrawCount);
+        }
+        if (meshlet_objects && buffers.MeshletInstanceCount > 0) {
+            selection.MeshletObject.Bind(encoder);
+            encode::SetPushConstants(encoder, sel_pc);
+            DrawMeshlets(encoder, buffers);
         }
     });
 }
@@ -329,7 +323,8 @@ void RenderSelectionPass(entt::registry &r, mtl::PassChain &chain, entt::entity 
             draw_list = draw.SelectionList;
             return draw.SelectionDraws;
         },
-        /*render_silhouette=*/false
+        /*render_silhouette=*/false,
+        /*meshlet_objects=*/true
     );
 }
 

@@ -18,6 +18,10 @@ inline void BindScene(MTL::RenderCommandEncoder *encoder, const mtl::BindlessSet
     encoder->setVertexBuffer(view, view_offset, BufferIndex_SceneView);
     encoder->setVertexBuffer(theme, 0, BufferIndex_ViewportTheme);
     encoder->setVertexBuffer(workspace, 0, BufferIndex_WorkspaceLights);
+    encoder->setMeshBuffer(table, 0, BufferIndex_Bindless);
+    encoder->setMeshBuffer(view, view_offset, BufferIndex_SceneView);
+    encoder->setMeshBuffer(theme, 0, BufferIndex_ViewportTheme);
+    encoder->setMeshBuffer(workspace, 0, BufferIndex_WorkspaceLights);
     encoder->setFragmentBuffer(table, 0, BufferIndex_Bindless);
     encoder->setFragmentBuffer(view, view_offset, BufferIndex_SceneView);
     encoder->setFragmentBuffer(theme, 0, BufferIndex_ViewportTheme);
@@ -35,7 +39,13 @@ inline void BindScene(MTL::ComputeCommandEncoder *encoder, const mtl::BindlessSe
 template<typename T>
 void SetPushConstants(MTL::RenderCommandEncoder *encoder, const T &pc) {
     encoder->setVertexBytes(&pc, sizeof(T), BufferIndex_PushConstants);
+    encoder->setMeshBytes(&pc, sizeof(T), BufferIndex_PushConstants);
     encoder->setFragmentBytes(&pc, sizeof(T), BufferIndex_PushConstants);
+}
+
+template<typename T>
+void SetMeshPushConstants(MTL::RenderCommandEncoder *encoder, const T &pc) {
+    encoder->setMeshBytes(&pc, sizeof(T), BufferIndex_PushConstants);
 }
 
 template<typename T>

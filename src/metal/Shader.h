@@ -101,6 +101,28 @@ private:
     NS::SharedPtr<MTL::DepthStencilState> DepthStencilState;
 };
 
+struct MeshRenderPipeline {
+    MeshRenderPipeline(
+        LibraryCache &, FunctionRef mesh, std::optional<FunctionRef> fragment, PassFormats,
+        std::vector<BlendState> blends = {}, std::optional<DepthState> depth = {}
+    );
+
+    void Compile(LibraryCache &);
+    void Bind(MTL::RenderCommandEncoder *encoder) const {
+        encoder->setRenderPipelineState(PipelineState.get());
+        encoder->setDepthStencilState(DepthStencilState.get());
+    }
+
+private:
+    FunctionRef MeshFn;
+    std::optional<FunctionRef> FragmentFn;
+    PassFormats Formats;
+    std::vector<BlendState> Blends;
+    std::optional<DepthState> Depth;
+    NS::SharedPtr<MTL::RenderPipelineState> PipelineState;
+    NS::SharedPtr<MTL::DepthStencilState> DepthStencilState;
+};
+
 struct ComputePipeline {
     ComputePipeline(LibraryCache &, FunctionRef);
 

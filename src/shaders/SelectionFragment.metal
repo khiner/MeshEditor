@@ -7,7 +7,7 @@
 
 // The object selection pass appends every covered fragment to its pixel's list. It writes no color.
 fragment void SelectionFragment(
-    ObjectIdVaryings in [[stage_in]],
+    ObjectIdFragmentVaryings in [[stage_in]],
     device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
     constant SceneViewUBO &view [[buffer(BufferIndex_SceneView)]],
     constant ViewportTheme &theme [[buffer(BufferIndex_ViewportTheme)]],
