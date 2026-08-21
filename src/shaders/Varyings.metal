@@ -11,6 +11,7 @@ struct MeshVaryings {
     float4 Position [[position]];
     float PointSize [[point_size]]; // Point draws render as round sprites.
     float3 WorldNormal [[user(WorldNormal)]];
+    float3 FlatWorldNormal [[user(FlatWorldNormal)]] [[flat]];
     float3 WorldPosition [[user(WorldPosition)]];
     float4 Color [[user(Color)]];
     uint FaceOverlayFlags [[user(FaceOverlayFlags)]] [[flat]];
@@ -30,34 +31,54 @@ struct MeshVaryings {
     float3 MotionNext [[user(MotionNext)]];
 };
 
-struct MeshletVaryings {
+struct MeshletVertexVaryings {
     float4 Position [[position]];
-    float PointSize [[user(PointSize)]];
     float3 WorldNormal [[user(WorldNormal)]];
     float3 WorldPosition [[user(WorldPosition)]];
     float4 Color [[user(Color)]];
-    uint FaceOverlayFlags [[user(FaceOverlayFlags)]] [[flat]];
     float2 TexCoord0 [[user(TexCoord0)]];
     float2 TexCoord1 [[user(TexCoord1)]];
     float2 TexCoord2 [[user(TexCoord2)]];
     float2 TexCoord3 [[user(TexCoord3)]];
-    uint MaterialIndex [[user(MaterialIndex)]] [[flat]];
     float4 VertexColor [[user(VertexColor)]];
     float4 WorldTangent [[user(WorldTangent)]];
-    float WorldScale [[user(WorldScale)]] [[flat]];
-    float2 EdgeStart [[user(EdgeStart)]] [[flat]];
-    float2 EdgePos [[user(EdgePos)]];
     float3 MotionPrev [[user(MotionPrev)]];
     float3 MotionNext [[user(MotionNext)]];
+    // Per-face values ride each unshared corner vertex. Sharing output vertices across primitives
+    // (indexed mesh output) makes attribute interpolation nondeterministic on this driver, so the
+    // attribute-carrying entries emit one vertex per corner with flat values in the vertex stream.
+    float3 FlatWorldNormal [[user(FlatWorldNormal)]] [[flat]];
+    uint FaceOverlayFlags [[user(FaceOverlayFlags)]] [[flat]];
+    uint MaterialIndex [[user(MaterialIndex)]] [[flat]];
+    float WorldScale [[user(WorldScale)]] [[flat]];
     uint ObjectId [[user(ObjectId)]] [[flat]];
     uint ElementId [[user(ElementId)]] [[flat]];
 };
 
-inline MeshletVaryings ToMeshletVaryings(MeshVaryings v) {
+inline float3 ShadingWorldNormal(const thread MeshVaryings &v) {
+    return (v.FaceOverlayFlags & 4u) != 0u ? v.FlatWorldNormal : v.WorldNormal;
+}
+
+struct MeshletDepthVaryings {
+    float4 Position [[position]];
+};
+
+struct MeshletEmptyPrimitiveVaryings {};
+
+struct MeshletIdVaryings {
+    float4 Position [[position]];
+};
+
+struct MeshletIdPrimitiveVaryings {
+    uint ObjectId [[user(ObjectId)]] [[flat]];
+    uint ElementId [[user(ElementId)]] [[flat]];
+};
+
+inline MeshletVertexVaryings ToMeshletVertexVaryings(MeshVaryings v) {
     return {
-        v.Position, v.PointSize, v.WorldNormal, v.WorldPosition, v.Color, v.FaceOverlayFlags,
-        v.TexCoord0, v.TexCoord1, v.TexCoord2, v.TexCoord3, v.MaterialIndex, v.VertexColor,
-        v.WorldTangent, v.WorldScale, v.EdgeStart, v.EdgePos, v.MotionPrev, v.MotionNext, 0u, 0u,
+        v.Position, v.WorldNormal, v.WorldPosition, v.Color,
+        v.TexCoord0, v.TexCoord1, v.TexCoord2, v.TexCoord3, v.VertexColor,
+        v.WorldTangent, v.MotionPrev, v.MotionNext,
     };
 }
 

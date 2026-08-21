@@ -12,17 +12,18 @@ constant float3 AabbEmptyMin = float3(3.402823466e38f);
 constant float3 AabbEmptyMax = float3(-3.402823466e38f);
 
 constant uint BoundsFoldLanes = 256;
+constant uint MeshletBoundsFoldLanes = 64;
 
 // Threadgroup memory cannot live at namespace scope in MSL, so the kernel owns the arrays and
-// passes them in.
+// passes them in. `lanes` is the caller's threadgroup width.
 inline void FoldSharedAabb(
     threadgroup float3 *shared_min, threadgroup float3 *shared_max,
-    uint tid, float3 lo, float3 hi
+    uint lanes, uint tid, float3 lo, float3 hi
 ) {
     shared_min[tid] = lo;
     shared_max[tid] = hi;
     threadgroup_barrier(mem_flags::mem_threadgroup);
-    for (uint stride = BoundsFoldLanes / 2; stride > 0u; stride >>= 1u) {
+    for (uint stride = lanes / 2; stride > 0u; stride >>= 1u) {
         if (tid < stride) {
             shared_min[tid] = min(shared_min[tid], shared_min[tid + stride]);
             shared_max[tid] = max(shared_max[tid], shared_max[tid + stride]);

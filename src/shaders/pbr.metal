@@ -110,7 +110,7 @@ struct PbrContext {
 
     NormalInfo GetNormalInfo(device const PBRMaterial &material) const {
         const float2 uv = GetUv(material.NormalTexture);
-        float3 ng = normalize(In.WorldNormal);
+        float3 ng = normalize(ShadingWorldNormal(In));
         float3 t;
         float3 b;
         if (length(In.WorldTangent.xyz) > 1e-8f) {
@@ -189,7 +189,8 @@ fragment PbrTargets PbrFragment(
     }
 
     device const PBRMaterial &material = scene.Materials(view.MaterialSlot)[in.MaterialIndex];
-    if (material.DoubleSided == 0u && !IsFrontFacing(scene, in.WorldNormal, in.WorldPosition)) discard_fragment();
+    const float3 world_normal = ShadingWorldNormal(in);
+    if (material.DoubleSided == 0u && !IsFrontFacing(scene, world_normal, in.WorldPosition)) discard_fragment();
 
     float4 base_color = float4(material.BaseColorFactor);
     if (material.BaseColorTexture.Slot != INVALID_MATERIAL_SLOT) base_color *= ctx.SampleTexture(material.BaseColorTexture);
@@ -197,7 +198,7 @@ fragment PbrTargets PbrFragment(
     if (material.AlphaMode == MaterialAlphaMode_Opaque) base_color.a = 1.0f;
 
     // A point or line vertex without a NORMAL has no surface orientation, so per the glTF spec it renders unlit.
-    const bool no_normal = NON_TRIANGLE && dot(in.WorldNormal, in.WorldNormal) < 1e-12f;
+    const bool no_normal = NON_TRIANGLE && dot(world_normal, world_normal) < 1e-12f;
     // Unlit fast path. An active debug channel falls through so every per-pixel property is computed.
     if (no_normal || (material.Unlit != 0u && view.DebugChannel == DebugChannel_None)) {
         if (material.AlphaMode == MaterialAlphaMode_Mask) {
@@ -531,11 +532,12 @@ fragment PbrTargets PbrFragment(
 
     if (!TransmissionPrepass) color *= view.Exposure;
 
-    if (in.FaceOverlayFlags != 0u) {
+    const uint overlay_flags = in.FaceOverlayFlags & 3u;
+    if (overlay_flags != 0u) {
         constant ViewportThemeColors &colors = scene.Theme.Colors;
         const bool is_edit_face = view.InteractionMode == InteractionMode_Edit && view.EditElement == Element_Face;
         const float4 selected = is_edit_face ? float4(colors.FaceSelected) : float4(colors.FaceSelectedIncidental);
-        const float3 overlay = (in.FaceOverlayFlags & 2u) != 0u ? mix(selected.rgb, float4(colors.ElementActive).rgb, 0.5f) : selected.rgb;
+        const float3 overlay = (overlay_flags & 2u) != 0u ? mix(selected.rgb, float4(colors.ElementActive).rgb, 0.5f) : selected.rgb;
         color = mix(color, overlay, selected.a);
     }
 

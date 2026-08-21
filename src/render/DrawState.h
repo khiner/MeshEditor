@@ -65,9 +65,12 @@ struct PosedRanges {
     bool PerInstance{false};
     uint32_t PositionBase{InvalidOffset};
     uint32_t VertexCount{0};
+    uint32_t MeshletBoundsBase{InvalidOffset};
+    uint32_t MeshletCount{0};
     std::optional<NormalRanges> Normals{}; // Instance 0's offsets.
 
     uint32_t PositionOffset(uint32_t i) const { return PositionBase + i * VertexCount; }
+    uint32_t MeshletBoundsOffset(uint32_t i) const { return MeshletBoundsBase + i * MeshletCount; }
     std::optional<NormalRanges> NormalsAt(uint32_t i) const {
         if (!Normals) return std::nullopt;
         return NormalRanges{

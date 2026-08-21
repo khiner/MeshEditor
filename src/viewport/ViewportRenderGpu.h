@@ -28,6 +28,7 @@ struct MeshletCullConfig {
     uint32_t PyramidSamplerSlot{InvalidSlot};
     uint32_t ExtraRouteFlags{0};
     bool SortBlend{false};
+    bool TwoPhase{false};
 };
 
 // Upload the draw list to the per-pass buffers, grow the identity index buffer if needed,

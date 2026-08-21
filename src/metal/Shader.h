@@ -17,14 +17,28 @@ struct FunctionConstant {
 };
 
 // Recompiles a cached library when its source or an include changes.
+// Pipelines build through an MTL4 compiler whose task options look up `pipeline_archive`, so a warm
+// archive returns the identical binary every run instead of rolling the Metal compiler's
+// scheduling dice. The attached serializer captures every pipeline the compiler touches (archive
+// hits included), and the destructor flushes that full set back to the archive file.
+// On devices without Metal 4, PipelineCompiler() is null and pipelines build through the classic
+// device APIs with no archive caching.
 struct LibraryCache {
-    LibraryCache(const Context &ctx, std::filesystem::path shaders_dir) : Ctx(ctx), ShadersDir(std::move(shaders_dir)) {}
+    LibraryCache(const Context &ctx, std::filesystem::path shaders_dir, std::filesystem::path pipeline_archive = {});
+    ~LibraryCache();
     LibraryCache(const LibraryCache &) = delete;
     LibraryCache &operator=(const LibraryCache &) = delete;
     LibraryCache(LibraryCache &&) = default;
 
     MTL::Library *Get(const std::filesystem::path &relative_path, const std::vector<std::string> &defines = {});
     void Clear() { Entries.clear(); }
+
+    // The archived pipeline for `descriptor`, or null when the archive is absent or misses.
+    MTL::RenderPipelineState *ArchivedRenderPipeline(const MTL4::PipelineDescriptor *) const;
+    MTL::ComputePipelineState *ArchivedComputePipeline(const MTL4::ComputePipelineDescriptor *) const;
+
+    MTL4::Compiler *PipelineCompiler() const { return Compiler.get(); }
+    void NotePipelineCreated() { PipelineCreated = true; }
 
     const Context &Ctx;
 
@@ -35,6 +49,11 @@ private:
     };
     std::filesystem::path ShadersDir;
     std::unordered_map<std::string, Entry> Entries;
+    std::filesystem::path ArchivePath;
+    NS::SharedPtr<MTL4::PipelineDataSetSerializer> Serializer;
+    NS::SharedPtr<MTL4::Compiler> Compiler;
+    NS::SharedPtr<MTL4::Archive> LoadedArchive;
+    bool PipelineCreated{false};
 };
 
 struct FunctionRef {
@@ -136,6 +155,4 @@ private:
     NS::SharedPtr<MTL::ComputePipelineState> PipelineState;
 };
 
-// Throws with the compiler diagnostic on failure.
-NS::SharedPtr<MTL::Function> MakeFunction(LibraryCache &, const FunctionRef &);
 } // namespace mtl

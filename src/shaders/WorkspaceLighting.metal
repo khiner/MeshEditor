@@ -94,7 +94,7 @@ fragment float4 WorkspaceLightingFragment(
     const Scene scene{bindless, view, theme, workspace};
     const float3x3 view_rotation = view.ViewRotation.Unpack();
     // View-space normal and view direction, matching Blender's camera-relative lighting default.
-    float3 N = normalize(view_rotation * in.WorldNormal);
+    float3 N = normalize(view_rotation * ShadingWorldNormal(in));
     const float3 view_dir = float3(view.CameraPosition) - in.WorldPosition;
     N = faceforward(N, -(view_rotation * view_dir), N);
     const float3 I = normalize(view_rotation * view_dir);
@@ -102,12 +102,13 @@ fragment float4 WorkspaceLightingFragment(
     // Blender's workbench defaults: metallic 0, roughness 0.4.
     // pack_data() applies the Disney roughness remap (sqrt) before the shader sees it.
     float3 color = get_world_lighting(scene, in.Color.rgb, sqrt(0.4f), 0.0f, N, I);
-    if (in.FaceOverlayFlags != 0u) {
+    const uint overlay_flags = in.FaceOverlayFlags & 3u;
+    if (overlay_flags != 0u) {
         // Theme colors are sRGB, so they convert to linear for blending.
         constant ViewportThemeColors &colors = scene.Theme.Colors;
         const bool is_edit_face = view.InteractionMode == InteractionMode_Edit && view.EditElement == Element_Face;
         const float4 selected = is_edit_face ? float4(colors.FaceSelected) : float4(colors.FaceSelectedIncidental);
-        const float3 overlay = (in.FaceOverlayFlags & 2u) != 0u ?
+        const float3 overlay = (overlay_flags & 2u) != 0u ?
             mix(sRGBToLinear(selected.rgb), sRGBToLinear(float4(colors.ElementActive).rgb), 0.5f) :
             sRGBToLinear(selected.rgb);
         color = mix(color, overlay, selected.a);

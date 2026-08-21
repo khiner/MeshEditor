@@ -104,7 +104,10 @@ inline float3 CornerNormal(const thread Scene &scene, DrawData draw, uint vertex
     return normal;
 }
 
-inline MeshVaryings TransformVertex(const thread Scene &scene, DrawData draw, uint vertex_id, uint vertex_index, uint idx) {
+inline MeshVaryings TransformVertex(
+    const thread Scene &scene, DrawData draw, uint vertex_id, uint vertex_index, uint idx,
+    bool face_attributes = true, bool shading_normal = true
+) {
     MeshVaryings out;
     const uint corner = LineQuad ? line_quad_corner(vertex_id) : 0u;
     device const uint *indices = scene.Indices(draw.IndexSlotOffset.Slot);
@@ -121,10 +124,10 @@ inline MeshVaryings TransformVertex(const thread Scene &scene, DrawData draw, ui
     // Point and line draws shade from the vertex normal.
     const bool is_face_draw = draw.ObjectIdSlot != INVALID_SLOT;
     float3 normal = is_face_draw ? float3(0) : scene.GetVertexNormal(draw, idx);
-    if (is_face_draw) {
+    if (is_face_draw && (face_attributes || shading_normal)) {
         face_id = scene.ObjectIds(draw.ObjectIdSlot)[draw.FaceIdOffset + vertex_index / 3u];
-        normal = CornerNormal(scene, draw, vertex_id, idx, face_id);
-        if (draw.ElementStateSlotOffset.Slot != INVALID_SLOT && face_id != 0u) {
+        if (shading_normal) normal = CornerNormal(scene, draw, vertex_id, idx, face_id);
+        if (face_attributes && draw.ElementStateSlotOffset.Slot != INVALID_SLOT && face_id != 0u) {
             element_state = uint(scene.ElementStates(draw.ElementStateSlotOffset.Slot)[draw.ElementStateSlotOffset.Offset + face_id - 1u]);
         }
     } else if (draw.ElementStateSlotOffset.Slot != INVALID_SLOT) {
@@ -132,7 +135,8 @@ inline MeshVaryings TransformVertex(const thread Scene &scene, DrawData draw, ui
     }
     const float3 world_pos = apply_object_pending_transform(scene, draw, trs_transform_point(world, local_pos));
 
-    out.WorldNormal = trs_transform_normal(world, normal);
+    out.WorldNormal = shading_normal ? trs_transform_normal(world, normal) : float3(0.0f);
+    out.FlatWorldNormal = float3(0.0f);
     out.WorldPosition = world_pos;
     // Face draws hold one color per corner, point and line draws one per vertex.
     const uint color_index = is_face_draw ? vertex_index : idx;
@@ -164,14 +168,14 @@ inline MeshVaryings TransformVertex(const thread Scene &scene, DrawData draw, ui
     }
 
     // Face draws index the primitive table per face, point and line draws per vertex.
-    if (draw.ElementPrimitiveOffset != INVALID_OFFSET && draw.PrimitiveMaterialOffset != INVALID_OFFSET && (!is_face_draw || face_id != 0u)) {
+    if (face_attributes && draw.ElementPrimitiveOffset != INVALID_OFFSET && draw.PrimitiveMaterialOffset != INVALID_OFFSET && (!is_face_draw || face_id != 0u)) {
         const uint element = is_face_draw ? face_id - 1u : idx;
         const uint primitive_index = scene.ElementPrimitives(scene.View.ElementPrimitiveSlot)[draw.ElementPrimitiveOffset + element];
         out.MaterialIndex = scene.PrimitiveMaterials(scene.View.PrimitiveMaterialSlot)[draw.PrimitiveMaterialOffset + primitive_index];
     }
     if (is_face_draw) {
-        if (is_selected) out.FaceOverlayFlags |= 1u;
-        if (is_active) out.FaceOverlayFlags |= 2u;
+        if (face_attributes && is_selected) out.FaceOverlayFlags |= 1u;
+        if (face_attributes && is_active) out.FaceOverlayFlags |= 2u;
         out.Color = base_color;
     } else if (is_edge_draw && scene.View.InteractionMode == InteractionMode_Object && scene.View.ShowOverlays != 0u) {
         out.Color = scene.ObjectSelectionColor(scene.InstanceState(draw), base_color);
@@ -204,7 +208,7 @@ inline MeshVaryings TransformVertex(const thread Scene &scene, DrawData draw, ui
         }
     }
     const float3 world_scale = float3(world.S);
-    out.WorldScale = (world_scale.x + world_scale.y + world_scale.z) / 3.0f;
+    out.WorldScale = face_attributes ? (world_scale.x + world_scale.y + world_scale.z) / 3.0f : 0.0f;
     out.Position = scene.ViewProj() * float4(world_pos, 1.0f);
     out.PointSize = PointSize;
     if (LineQuad) {

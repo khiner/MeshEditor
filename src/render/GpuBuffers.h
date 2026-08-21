@@ -152,6 +152,8 @@ struct GpuBuffers {
           VertexIndexBuffer{Ctx, SlotType::IndexBuffer},
           Meshlets{Ctx, SlotType::Buffer},
           MeshletTriangleIds{Ctx, SlotType::Buffer},
+          MeshletVertexCorners{Ctx, SlotType::Buffer},
+          MeshletLocalTriangles{Ctx, SlotType::Buffer},
           Primitives{Ctx, SlotType::Buffer},
           GpuInstanceSlots{Ctx, SlotType::Buffer},
           Instances{Ctx},
@@ -166,6 +168,13 @@ struct GpuBuffers {
           MeshletBlendBlocks{Ctx, 0, SlotType::Buffer},
           MeshletRoutes{Ctx, sizeof(MeshletRouteState), SlotType::Buffer},
           MeshletDispatchArgs{Ctx, 0, SlotType::Buffer},
+          MeshletPhase2Visible{Ctx, 0, SlotType::Buffer},
+          MeshletPhase2Routes{Ctx, sizeof(MeshletRouteState), SlotType::Buffer},
+          MeshletPhase2DispatchArgs{Ctx, 0, SlotType::Buffer},
+          MeshletPhase2CullArgs{Ctx, sizeof(MeshDispatchArgs), SlotType::Buffer},
+          MeshletPhase2RangeCandidates{Ctx, 0, SlotType::Buffer},
+          MeshletPhase2RangeCullArgs{Ctx, sizeof(MeshDispatchArgs), SlotType::Buffer},
+          MeshletPhase2CullBlockCounts{Ctx, 0, SlotType::Buffer},
           Lights{Ctx, sizeof(PunctualLight), SlotType::LightBuffer},
           Materials{Ctx, sizeof(PBRMaterial), SlotType::MaterialBuffer},
           SceneViewUBO{Ctx, ViewUboStride() * (MaxBlurSteps + 1)},
@@ -220,6 +229,10 @@ struct GpuBuffers {
         buffers.Meshlets = {};
         MeshletTriangleIds.Release(buffers.MeshletTriangles);
         buffers.MeshletTriangles = {};
+        MeshletVertexCorners.Release(buffers.MeshletVertices);
+        buffers.MeshletVertices = {};
+        MeshletLocalTriangles.Release(buffers.MeshletLocalTriangles);
+        buffers.MeshletLocalTriangles = {};
         Primitives.Release(buffers.Primitives);
         buffers.Primitives = {};
         for (auto &[_, rb] : buffers.NormalIndicators) Release(rb);
@@ -260,10 +273,15 @@ struct GpuBuffers {
         VertexIndexBuffer.Reset();
         Meshlets.Reset();
         MeshletTriangleIds.Reset();
+        MeshletVertexCorners.Reset();
+        MeshletLocalTriangles.Reset();
         Primitives.Reset();
         GpuInstanceSlots.Reset();
         MeshletRangeCount = 0;
         MeshletInstanceCount = 0;
+        // Occlusion feedback state, so the next scene's phase-1/phase-2 split replays identically
+        // regardless of what rendered before the clear.
+        PreviousFullCullViewProj = mat4{1};
         ArmatureDeformBuffer.Reset();
         MorphWeightBuffer.Reset();
         VertexClassBuffer.Reset();
@@ -285,6 +303,8 @@ struct GpuBuffers {
     BufferArena<uint32_t> FaceIndexBuffer, EdgeIndexBuffer, VertexIndexBuffer;
     BufferArena<MeshletRecord> Meshlets;
     BufferArena<uint32_t> MeshletTriangleIds;
+    BufferArena<uint32_t> MeshletVertexCorners;
+    BufferArena<uint8_t> MeshletLocalTriangles;
     BufferArena<PrimitiveRecord> Primitives;
     BufferArena<uint32_t> GpuInstanceSlots;
     BufferArena<mat4> ArmatureDeformBuffer{Ctx, SlotType::ArmatureDeformBuffer};
@@ -294,17 +314,21 @@ struct GpuBuffers {
 
     mtl::Buffer MeshletWorkRanges, MeshletWorkBlocks, MeshletWorkBlockStates, MeshletWorkState, MeshletWorkDispatchArgs;
     mtl::Buffer VisibleMeshlets, MeshletClassifications, MeshletCullBlocks, MeshletBlendBlocks, MeshletRoutes, MeshletDispatchArgs;
+    mtl::Buffer MeshletPhase2Visible, MeshletPhase2Routes, MeshletPhase2DispatchArgs, MeshletPhase2CullArgs;
+    mtl::Buffer MeshletPhase2RangeCandidates, MeshletPhase2RangeCullArgs, MeshletPhase2CullBlockCounts;
     uint64_t MeshletRangeCount{0};
     uint64_t MeshletInstanceCount{0};
     uint32_t MeshletDispatchChunkCount{0};
 
     static constexpr uint32_t MeshletDispatchChunkSize{65'535};
     static constexpr uint32_t MeshletCullBlockSize{1024};
-    static constexpr uint32_t MeshletRouteCount{4};
+    static constexpr uint32_t MeshletRouteCount{5};
+    // One 32-lane simdgroup per phase-2 cull threadgroup, matching the shader's Phase2GroupSize.
+    static constexpr uint32_t MeshletPhase2GroupSize{32};
 
     void EnsureMeshletVisibilityCapacity(
         uint64_t visible_count, uint64_t work_range_count, uint64_t work_meshlet_count,
-        uint64_t dispatch_meshlet_count, bool sort_blend
+        uint64_t dispatch_meshlet_count, bool sort_blend, bool two_phase
     ) {
         const auto bytes = visible_count * sizeof(VisibleMeshlet);
         VisibleMeshlets.Reserve(bytes);
@@ -320,7 +344,16 @@ struct GpuBuffers {
         if (sort_blend) MeshletBlendBlocks.SetCount<MeshletBlendBlockState>(block_count);
         MeshletDispatchChunkCount = static_cast<uint32_t>((dispatch_meshlet_count + MeshletDispatchChunkSize - 1) / MeshletDispatchChunkSize);
         MeshletDispatchArgs.SetCount<MeshDispatchArgs>(MeshletRouteCount * MeshletDispatchChunkCount);
+        if (two_phase) {
+            MeshletPhase2Visible.SetCount<VisibleMeshlet>(work_meshlet_count);
+            // Phase 2 draws route 0 alone, so its args buffer holds that route's chunks only.
+            MeshletPhase2DispatchArgs.SetCount<MeshDispatchArgs>(MeshletDispatchChunkCount);
+            MeshletPhase2RangeCandidates.SetCount<MeshletWorkRange>(work_range_count);
+            MeshletPhase2CullBlockCounts.SetCount<uint32_t>((work_meshlet_count + MeshletPhase2GroupSize - 1) / MeshletPhase2GroupSize);
+        }
     }
+
+    mat4 PreviousFullCullViewProj{1};
 
     void RebuildMeshlets(MeshBuffers &, const Mesh &, const MeshStore &);
 
@@ -397,6 +430,9 @@ struct GpuBuffers {
     mtl::Buffer DeriveTiles{Ctx, 0, SlotType::Buffer};
     // Current-pose vertex positions in mesh-local space, one range per posed bounds entry.
     mtl::Buffer PosedPositions{Ctx, 0, SlotType::Buffer};
+    // (posed entry, global meshlet) per posed-meshlet bounds threadgroup, plus its local-space AABB output.
+    mtl::Buffer PosedMeshletBoundsTiles{Ctx, 0, SlotType::Buffer};
+    mtl::Buffer PosedMeshletBounds{Ctx, 0, SlotType::Buffer};
     // One entry per normal-derive dispatch item.
     // A frame holds one per posed bounds entry with triangles, and a base one-shot holds one per mesh.
     mtl::Buffer NormalDeriveEntries{Ctx, 0, SlotType::Buffer};
@@ -413,8 +449,8 @@ struct GpuBuffers {
     // Group counts of the posed prelude's passes, in recorded order (their arg slot order in PreludeDispatchArgs).
     // Set on draw-list rebuild.
     struct PreludeGroups {
-        static constexpr uint32_t PassCount{5};
-        uint32_t PosePrepass{0}, DeriveFaces{0}, BoundsReduce{0}, DeriveGather{0}, BoundsCombine{0};
+        static constexpr uint32_t PassCount{6};
+        uint32_t PosePrepass{0}, PosedMeshletBounds{0}, DeriveFaces{0}, BoundsReduce{0}, DeriveGather{0}, BoundsCombine{0};
     };
     PreludeGroups Prelude{};
     // Holds the recorded group counts, or zeros when deform inputs are unchanged since the last submit.
@@ -422,6 +458,9 @@ struct GpuBuffers {
     // A deform input was written since the last submit wrote live prelude counts.
     // Deform inputs are morph weights, armature poses, transform gestures, geometry edits, and draw-list rebuilds.
     bool PreludeStale{true};
+    // Scene state changed since the previous submitted Full frame. This includes visibility and
+    // material changes that do not need the posed prelude but can still reveal geometry.
+    bool MeshletOcclusionStale{true};
 
     // Selection / picking — GPU buffers + host-visible readback
     uint32_t SelectionNodeCapacity{1};

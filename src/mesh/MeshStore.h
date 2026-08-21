@@ -159,7 +159,9 @@ struct MeshStore {
     Range GetVertexFanAdjacencyRange(uint32_t id) const { return Entries.at(id).VertexFanAdjacency; }
     // The class-buffer offset, or a sentinel when the mesh stores none (InvalidOffset = every corner Vertex, UniformFaceOffset = every corner Face).
     uint32_t GetCornerClassOffset(uint32_t id) const;
+    std::span<const uint32_t> GetCornerClasses(uint32_t id) const;
     Range GetCustomCornerMaskRange(uint32_t id) const { return Entries.at(id).CustomCornerMasks; }
+    std::span<const uvec2> GetCustomCornerMasks(uint32_t id) const;
     Range GetCustomCornerNormalRange(uint32_t id) const { return Entries.at(id).CustomCornerNormals; }
     Range GetBaseSeamNormalRange(uint32_t id) const { return Entries.at(id).BaseSeamNormals; }
     bool HasAuthoredNormals(uint32_t id) const { return Entries.at(id).HasAuthoredNormals; }

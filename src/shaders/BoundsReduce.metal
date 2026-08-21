@@ -33,7 +33,7 @@ kernel void BoundsReduceKernel(
         hi = pos;
     }
     // A tile with no vertices leaves Min > Max, the empty state the combine's min and max ignore.
-    FoldSharedAabb(shared_min, shared_max, tid, lo, hi);
+    FoldSharedAabb(shared_min, shared_max, BoundsFoldLanes, tid, lo, hi);
     if (tid == 0u) {
         device AABB *partials = BindlessBufferMutable(AABB, bindless.Buffer, pc.PartialBoundsSlot);
         partials[group_id] = AABB{packed_float3(shared_min[0]), packed_float3(shared_max[0])};

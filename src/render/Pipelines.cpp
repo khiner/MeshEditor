@@ -59,11 +59,19 @@ FunctionRef MeshletVertex(bool velocity = false) {
     return {"MeshletTransform.metal", "MeshletTransformMesh", MeshVertexConstants(0, false, false, velocity)};
 }
 
+FunctionRef MeshletDepthVertex() {
+    return {"MeshletTransform.metal", "MeshletDepthMesh", MeshVertexConstants(0, false, false, false)};
+}
+
+FunctionRef MeshletIdVertex() {
+    return {"MeshletTransform.metal", "MeshletIdMesh", MeshVertexConstants(0, false, false, false)};
+}
+
 mtl::MeshRenderPipeline CreateMeshPipeline(
     mtl::LibraryCache &libraries, std::optional<FunctionRef> fragment, PassFormats formats,
-    std::vector<BlendState> blends = {}, std::optional<DepthState> depth = {}
+    std::vector<BlendState> blends = {}, std::optional<DepthState> depth = {}, FunctionRef mesh = MeshletVertex()
 ) {
-    return {libraries, MeshletVertex(), std::move(fragment), std::move(formats), std::move(blends), depth};
+    return {libraries, std::move(mesh), std::move(fragment), std::move(formats), std::move(blends), depth};
 }
 
 struct PbrPipelineSpec {
@@ -252,7 +260,7 @@ MainPipeline::MainPipeline(mtl::LibraryCache &libraries)
       MotionBlurGatherFormats{{Format::HdrColor}, MTL::PixelFormatInvalid},
       MotionBlurGather{CreateQuadPipeline(libraries, MotionBlurGatherFormats, "MotionBlurGather.metal", "MotionBlurGatherFragment", NoBlend)},
       MeshletFill{CreateMeshPipeline(libraries, FunctionRef{"WorkspaceLighting.metal", "WorkspaceLightingFragment"}, SceneFormats(), {Blend}, DepthTestWrite)},
-      MeshletDepth{CreateMeshPipeline(libraries, FunctionRef{"DepthOnly.metal", "DepthOnlyFragment"}, SceneFormats(), {NoWrite}, DepthTestWrite)},
+      MeshletDepth{CreateMeshPipeline(libraries, FunctionRef{"DepthOnly.metal", "DepthOnlyFragment"}, SceneFormats(), {NoWrite}, DepthTestWrite, MeshletDepthVertex())},
       Compiler{SceneFormats(), SceneVelocityFormats()} {}
 
 MainPipeline::ResourcesT::ResourcesT(const mtl::Context &ctx, mtl::Extent2D extent, mtl::BindlessSet &slots)
@@ -348,7 +356,7 @@ static PipelineRenderer CreateSilhouetteRenderer(mtl::LibraryCache &libraries) {
 
 SilhouettePipeline::SilhouettePipeline(mtl::LibraryCache &libraries)
     : Renderer{CreateSilhouetteRenderer(libraries)},
-      Meshlet{CreateMeshPipeline(libraries, FunctionRef{"DepthObject.metal", "DepthObjectFragment"}, Renderer.Formats, {NoBlend}, DepthTestWrite)} {}
+      Meshlet{CreateMeshPipeline(libraries, FunctionRef{"DepthObject.metal", "DepthObjectFragment"}, Renderer.Formats, {NoBlend}, DepthTestWrite, MeshletIdVertex())} {}
 
 SilhouettePipeline::ResourcesT::ResourcesT(const mtl::Context &ctx, mtl::Extent2D extent)
     : DepthImage{mtl::CreateTexture2D(ctx, Format::Depth, extent, MTL::TextureUsageRenderTarget | MTL::TextureUsageShaderRead)},
@@ -422,11 +430,11 @@ static PipelineRenderer CreateSelectionFragmentRenderer(mtl::LibraryCache &libra
 
 SelectionFragmentPipeline::SelectionFragmentPipeline(mtl::LibraryCache &libraries)
     : Renderer{CreateSelectionFragmentRenderer(libraries)},
-      MeshletObject{CreateMeshPipeline(libraries, FunctionRef{"SelectionFragment.metal", "SelectionFragment"}, Renderer.Formats, {}, DepthOff)},
-      MeshletFace{CreateMeshPipeline(libraries, FunctionRef{"SelectionElementLinkedList.metal", "SelectionElementLinkedListFragment"}, Renderer.Formats, {}, DepthState{.Compare = MTL::CompareFunctionLess})},
-      MeshletFaceXRay{CreateMeshPipeline(libraries, FunctionRef{"SelectionElementLinkedList.metal", "SelectionElementLinkedListFragment"}, Renderer.Formats, {}, DepthOff)},
-      MeshletFaceBitsetBox{CreateMeshPipeline(libraries, FunctionRef{"SelectionElementBitsetBox.metal", "SelectionElementBitsetBoxFragment"}, Renderer.Formats, {}, DepthState{.Compare = MTL::CompareFunctionLess})},
-      MeshletFaceXRayBitsetBox{CreateMeshPipeline(libraries, FunctionRef{"SelectionElementBitsetBox.metal", "SelectionElementBitsetBoxFragment"}, Renderer.Formats, {}, DepthOff)} {}
+      MeshletObject{CreateMeshPipeline(libraries, FunctionRef{"SelectionFragment.metal", "SelectionFragment"}, Renderer.Formats, {}, DepthOff, MeshletIdVertex())},
+      MeshletFace{CreateMeshPipeline(libraries, FunctionRef{"SelectionElementLinkedList.metal", "SelectionElementLinkedListFragment"}, Renderer.Formats, {}, DepthState{.Compare = MTL::CompareFunctionLess}, MeshletIdVertex())},
+      MeshletFaceXRay{CreateMeshPipeline(libraries, FunctionRef{"SelectionElementLinkedList.metal", "SelectionElementLinkedListFragment"}, Renderer.Formats, {}, DepthOff, MeshletIdVertex())},
+      MeshletFaceBitsetBox{CreateMeshPipeline(libraries, FunctionRef{"SelectionElementBitsetBox.metal", "SelectionElementBitsetBoxFragment"}, Renderer.Formats, {}, DepthState{.Compare = MTL::CompareFunctionLess}, MeshletIdVertex())},
+      MeshletFaceXRayBitsetBox{CreateMeshPipeline(libraries, FunctionRef{"SelectionElementBitsetBox.metal", "SelectionElementBitsetBoxFragment"}, Renderer.Formats, {}, DepthOff, MeshletIdVertex())} {}
 
 SelectionFragmentPipeline::ResourcesT::ResourcesT(mtl::BufferContext &buffers, mtl::Extent2D extent)
     : HeadBuffer{buffers, uint64_t(extent.Width) * extent.Height * sizeof(uint32_t), SlotType::Buffer}, Extent{extent} {}
@@ -447,6 +455,7 @@ Pipelines::Pipelines(const mtl::Context &ctx, mtl::LibraryCache &libraries)
       BoxSelect{libraries, {"BoxSelect.metal", "BoxSelectKernel"}},
       UpdateSelectionState{libraries, {"UpdateSelectionState.metal", "UpdateSelectionStateKernel"}},
       PosePrepass{libraries, {"PosePrepass.metal", "PosePrepassKernel"}},
+      PosedMeshletBounds{libraries, {"PosedMeshletBounds.metal", "PosedMeshletBoundsKernel"}},
       VertexNormalDerive{libraries, {"VertexNormalDerive.metal", "VertexNormalDeriveKernel"}},
       BoundsReduce{libraries, {"BoundsReduce.metal", "BoundsReduceKernel"}},
       BoundsCombine{libraries, {"BoundsCombine.metal", "BoundsCombineKernel"}},
@@ -457,6 +466,9 @@ Pipelines::Pipelines(const mtl::Context &ctx, mtl::LibraryCache &libraries)
       MeshletCullBlockCount{libraries, {"MeshletCull.metal", "MeshletCullBlockCount"}},
       MeshletCullPrefix{libraries, {"MeshletCull.metal", "MeshletCullPrefix"}},
       MeshletCullEmit{libraries, {"MeshletCull.metal", "MeshletCullEmit"}},
+      MeshletPhase2Cull{libraries, {"MeshletCull.metal", "MeshletPhase2Cull"}},
+      MeshletPhase2RangeCull{libraries, {"MeshletCull.metal", "MeshletPhase2RangeCull"}},
+      MeshletPhase2Prefix{libraries, {"MeshletCull.metal", "MeshletPhase2Prefix"}},
       DepthPyramidReduce{libraries, {"DepthPyramidReduce.metal", "DepthPyramidReduceKernel"}},
       MotionBlurTilesFlatten{libraries, {"MotionBlurTilesFlatten.metal", "MotionBlurTilesFlattenKernel"}},
       MotionBlurTilesDilate{libraries, {"MotionBlurTilesDilate.metal", "MotionBlurTilesDilateKernel"}},
@@ -490,7 +502,7 @@ void Pipelines::CompileShaders() {
     SelectionFragment.MeshletFaceXRay.Compile(Libraries);
     SelectionFragment.MeshletFaceBitsetBox.Compile(Libraries);
     SelectionFragment.MeshletFaceXRayBitsetBox.Compile(Libraries);
-    for (auto *compute : {&ObjectPick, &ElementPick, &BoxSelect, &UpdateSelectionState, &PosePrepass, &VertexNormalDerive, &BoundsReduce, &BoundsCombine, &FrustumCull, &MeshletWorkBlockCount, &MeshletWorkPrefix, &MeshletWorkEmit, &MeshletCullBlockCount, &MeshletCullPrefix, &MeshletCullEmit, &DepthPyramidReduce, &MotionBlurTilesFlatten, &MotionBlurTilesDilate, &IblPrefilter.EquirectToCubemap, &IblPrefilter.DiffuseIrradiance, &IblPrefilter.SpecularPrefilter}) {
+    for (auto *compute : {&ObjectPick, &ElementPick, &BoxSelect, &UpdateSelectionState, &PosePrepass, &PosedMeshletBounds, &VertexNormalDerive, &BoundsReduce, &BoundsCombine, &FrustumCull, &MeshletWorkBlockCount, &MeshletWorkPrefix, &MeshletWorkEmit, &MeshletCullBlockCount, &MeshletCullPrefix, &MeshletCullEmit, &MeshletPhase2Cull, &MeshletPhase2RangeCull, &MeshletPhase2Prefix, &DepthPyramidReduce, &MotionBlurTilesFlatten, &MotionBlurTilesDilate, &IblPrefilter.EquirectToCubemap, &IblPrefilter.DiffuseIrradiance, &IblPrefilter.SpecularPrefilter}) {
         compute->Compile(Libraries);
     }
 }

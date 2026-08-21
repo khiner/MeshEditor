@@ -207,9 +207,10 @@ namespace ThreadgroupMemory {
 inline constexpr uint32_t ElementPickCandidates{256 * 16};
 // One min and max float4 per bounds lane.
 inline constexpr uint32_t BoundsFoldVector{256 * sizeof(float) * 4};
+inline constexpr uint32_t MeshletBoundsFoldVector{64 * sizeof(float) * 4};
 inline constexpr uint32_t DepthPyramidTile{32 * 32 * sizeof(float)};
 // Flatten broadcasts a payload and two motion vectors.
-inline constexpr uint32_t MotionBlurPayload{2 * sizeof(uint32_t)};
+inline constexpr uint32_t MotionBlurPayload{16}; // Two uints, padded to Metal's 16-byte threadgroup length granule.
 inline constexpr uint32_t MotionBlurMaxMotion{2 * 2 * sizeof(float)};
 } // namespace ThreadgroupMemory
 
@@ -225,6 +226,7 @@ struct Pipelines {
     mtl::ComputePipeline ObjectPick, ElementPick, BoxSelect, UpdateSelectionState;
     // Materializes current-pose positions before bounds and normal derivation.
     mtl::ComputePipeline PosePrepass;
+    mtl::ComputePipeline PosedMeshletBounds;
     // Fan-sums face areas, then gathers corner-angle-weighted vertex and seam normals.
     mtl::ComputePipeline VertexNormalDerive;
     // Reduce 256-vertex tiles, then fold each entry's partial AABBs.
@@ -234,6 +236,7 @@ struct Pipelines {
     mtl::ComputePipeline FrustumCull;
     mtl::ComputePipeline MeshletWorkBlockCount, MeshletWorkPrefix, MeshletWorkEmit;
     mtl::ComputePipeline MeshletCullBlockCount, MeshletCullPrefix, MeshletCullEmit;
+    mtl::ComputePipeline MeshletPhase2Cull, MeshletPhase2RangeCull, MeshletPhase2Prefix;
     mtl::ComputePipeline DepthPyramidReduce;
     // Finds each tile's largest motion, then marks every tile its streak crosses.
     mtl::ComputePipeline MotionBlurTilesFlatten, MotionBlurTilesDilate;

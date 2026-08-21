@@ -12,6 +12,7 @@
 #include "gpu/FrustumCullPushConstants.h"
 #include "gpu/MainDrawPushConstants.h"
 #include "gpu/MeshletCullPushConstants.h"
+#include "gpu/PosedMeshletBoundsPushConstants.h"
 #include "gpu/MeshletDrawPushConstants.h"
 #include "gpu/MeshletInstanceFlag.h"
 #include "gpu/MotionBlurGatherPushConstants.h"
@@ -41,6 +42,7 @@
 
 #include <entt/entity/registry.hpp>
 
+#include <cstring>
 #include <numbers>
 
 using std::ranges::any_of, std::ranges::to;
@@ -106,7 +108,7 @@ void FlushDrawList(entt::registry &r, const DrawListBuilder &draw_list, DrawBuff
     const bool selection = &pair == &buffers.SelectionDraw;
     if (selection) RecordDrawCounters(buffers, draw_list, true);
     buffers.EnsureIdentityIndexBuffer(std::max(draw_list.MaxIndexCount, uint32_t(draw_list.Draws.size())));
-    if (!draw_list.Draws.empty() || buffers.Prelude.PosePrepass > 0 || buffers.Prelude.DeriveFaces > 0 || buffers.Prelude.BoundsReduce > 0) {
+    if (!draw_list.Draws.empty() || buffers.Prelude.PosePrepass > 0 || buffers.Prelude.PosedMeshletBounds > 0 || buffers.Prelude.DeriveFaces > 0 || buffers.Prelude.BoundsReduce > 0) {
         pair.DrawData.Update(as_bytes(draw_list.Draws));
         pair.CullEntries.Update(as_bytes(draw_list.CullEntries));
         pair.VisibleIndices.Update(buffers.IdentityIndexBuffer.Contents().subspan(0, draw_list.Draws.size() * sizeof(uint32_t)));
@@ -261,6 +263,9 @@ void DispatchCull(MTL::ComputeCommandEncoder *encoder, const FrustumCullPushCons
     encoder->dispatchThreadgroups(MTL::Size((count + GroupSize - 1) / GroupSize, 1, 1), ThreadgroupSize::Linear64);
 }
 
+// Threadgroup memory lengths must be 16-byte multiples.
+constexpr uint32_t AlignedThreadgroupBytes(uint32_t bytes) { return (bytes + 15u) & ~15u; }
+
 // The tiled compute passes' threads per threadgroup.
 constexpr uint32_t TileSize{256};
 // Threadgroup count tiling `count` elements, min one so an empty entry still writes its outputs.
@@ -268,6 +273,7 @@ constexpr uint32_t TileCountFor(uint32_t count) { return std::max((count + TileS
 
 // Slot of each prelude pass's args in GpuBuffers::PreludeDispatchArgs (PreludeGroups order).
 enum class PreludeSlot : uint32_t { PosePrepass,
+                                    PosedMeshletBounds,
                                     DeriveFaces,
                                     BoundsReduce,
                                     DeriveGather,
@@ -310,6 +316,8 @@ void RecordFrustumCull(MTL::ComputeCommandEncoder *encoder, const mtl::BindlessS
     encode::BindCompute(encoder, pipelines.FrustumCull, slots, buffers, ubo_offset);
     auto cull_pc = MakeCullPushConstants(buffers, pair, draw_list);
     DispatchCull(encoder, cull_pc, cull_pc.CommandCount);
+    // Phase 1 accumulates into the counts phase 0 zeroed, through bindless buffers.
+    encoder->memoryBarrier(MTL::BarrierScopeBuffers);
     cull_pc.Phase = 1;
     DispatchCull(encoder, cull_pc, cull_pc.EntryCount);
 }
@@ -377,6 +385,60 @@ void RecordBoundsPass(MTL::ComputeCommandEncoder *encoder, const mtl::BindlessSe
     DispatchPrelude(encoder, buffers, slot);
 }
 
+void RecordPosedMeshletBounds(
+    MTL::ComputeCommandEncoder *encoder, const mtl::BindlessSet &slots,
+    const Pipelines &pipelines, const GpuBuffers &buffers, uint32_t ubo_offset
+) {
+    const PosedMeshletBoundsPushConstants pc{
+        .DrawDataSlot = buffers.BoundsReduceEntries.Slot,
+        .TileMapSlot = buffers.PosedMeshletBoundsTiles.Slot,
+        .MeshletSlot = buffers.Meshlets.Buffer.Slot,
+        .PrimitiveSlot = buffers.Primitives.Buffer.Slot,
+        .MeshletVertexSlot = buffers.MeshletVertexCorners.Buffer.Slot,
+        .PosedMeshletBoundsSlot = buffers.PosedMeshletBounds.Slot,
+    };
+    encode::BindCompute(encoder, pipelines.PosedMeshletBounds, slots, buffers, ubo_offset);
+    encode::SetPushConstants(encoder, pc);
+    encoder->setThreadgroupMemoryLength(ThreadgroupMemory::MeshletBoundsFoldVector, 0);
+    encoder->setThreadgroupMemoryLength(ThreadgroupMemory::MeshletBoundsFoldVector, 1);
+    encoder->dispatchThreadgroups(
+        *buffers.PreludeDispatchArgs, PreludeArgsOffset(PreludeSlot::PosedMeshletBounds), ThreadgroupSize::Linear64
+    );
+}
+
+// The cull push constants' buffer-derived fields, shared by the phase-1 and phase-2 records.
+MeshletCullPushConstants MakeMeshletCullSlotsPc(const GpuBuffers &buffers) {
+    return {
+        .WorkRangeSlot = buffers.MeshletWorkRanges.Slot,
+        .WorkBlockSlot = buffers.MeshletWorkBlocks.Slot,
+        .WorkBlockStateSlot = buffers.MeshletWorkBlockStates.Slot,
+        .WorkStateSlot = buffers.MeshletWorkState.Slot,
+        .WorkDispatchArgsSlot = buffers.MeshletWorkDispatchArgs.Slot,
+        .BlockStateSlot = buffers.MeshletCullBlocks.Slot,
+        .ClassificationSlot = buffers.MeshletClassifications.Slot,
+        .VisibleSlot = buffers.VisibleMeshlets.Slot,
+        .InstanceMapSlot = buffers.GpuInstanceSlots.Buffer.Slot,
+        .InstanceSlot = buffers.Instances.RecordBuffer.Slot,
+        .PrimitiveSlot = buffers.Primitives.Buffer.Slot,
+        .MeshletSlot = buffers.Meshlets.Buffer.Slot,
+        .BoundsSlot = buffers.Instances.BoundsBuffer.Slot,
+        .ModelSlot = buffers.Instances.TransformBuffer.Slot,
+        .PosedMeshletBoundsSlot = buffers.PosedMeshletBounds.Slot,
+        .RouteStateSlot = buffers.MeshletRoutes.Slot,
+        .DispatchArgsSlot = buffers.MeshletDispatchArgs.Slot,
+        .DispatchChunkCount = buffers.MeshletDispatchChunkCount,
+        .DispatchChunkSize = GpuBuffers::MeshletDispatchChunkSize,
+        .OcclusionViewProj = buffers.PreviousFullCullViewProj,
+        .Phase2VisibleSlot = buffers.MeshletPhase2Visible.Slot,
+        .Phase2RouteStateSlot = buffers.MeshletPhase2Routes.Slot,
+        .Phase2DispatchArgsSlot = buffers.MeshletPhase2DispatchArgs.Slot,
+        .Phase2CullArgsSlot = buffers.MeshletPhase2CullArgs.Slot,
+        .Phase2RangeCandidateSlot = buffers.MeshletPhase2RangeCandidates.Slot,
+        .Phase2RangeCullArgsSlot = buffers.MeshletPhase2RangeCullArgs.Slot,
+        .Phase2BlockCountSlot = buffers.MeshletPhase2CullBlockCounts.Slot,
+    };
+}
+
 void RecordMeshletCullImpl(
     MTL::ComputeCommandEncoder *encoder, const mtl::BindlessSet &slots, const Pipelines &pipelines,
     GpuBuffers &buffers, MeshletCullConfig config
@@ -403,39 +465,25 @@ void RecordMeshletCullImpl(
     const WorkCapacity primary = work_with_flags(config.RequiredInstanceFlags);
     const WorkCapacity extra = config.ExtraRouteFlags != 0u ? work_with_flags(config.ExtraRouteFlags) : WorkCapacity{};
     buffers.EnsureMeshletVisibilityCapacity(
-        primary.Meshlets * (1u + transmission) + extra.Meshlets,
+        primary.Meshlets * (1u + transmission + config.TwoPhase) + extra.Meshlets,
         primary.Ranges,
         primary.Meshlets,
         std::max(primary.Meshlets, extra.Meshlets),
-        config.SortBlend
+        config.SortBlend,
+        config.TwoPhase
     );
-    const MeshletCullPushConstants pc{
-        .InstanceCount = buffers.GpuInstanceSlots.Buffer.Count<uint32_t>(),
-        .WorkBlockCount = buffers.MeshletWorkBlockStates.Count<MeshletWorkBlockState>(),
-        .WorkRangeSlot = buffers.MeshletWorkRanges.Slot,
-        .WorkBlockSlot = buffers.MeshletWorkBlocks.Slot,
-        .WorkBlockStateSlot = buffers.MeshletWorkBlockStates.Slot,
-        .WorkStateSlot = buffers.MeshletWorkState.Slot,
-        .WorkDispatchArgsSlot = buffers.MeshletWorkDispatchArgs.Slot,
-        .BlockStateSlot = buffers.MeshletCullBlocks.Slot,
-        .ClassificationSlot = buffers.MeshletClassifications.Slot,
-        .BlendBlockSlot = config.SortBlend ? buffers.MeshletBlendBlocks.Slot : InvalidSlot,
-        .VisibleSlot = buffers.VisibleMeshlets.Slot,
-        .InstanceMapSlot = buffers.GpuInstanceSlots.Buffer.Slot,
-        .InstanceSlot = buffers.Instances.RecordBuffer.Slot,
-        .PrimitiveSlot = buffers.Primitives.Buffer.Slot,
-        .MeshletSlot = buffers.Meshlets.Buffer.Slot,
-        .BoundsSlot = buffers.Instances.BoundsBuffer.Slot,
-        .ModelSlot = buffers.Instances.TransformBuffer.Slot,
-        .RouteStateSlot = buffers.MeshletRoutes.Slot,
-        .DispatchArgsSlot = buffers.MeshletDispatchArgs.Slot,
-        .DispatchChunkCount = buffers.MeshletDispatchChunkCount,
-        .DispatchChunkSize = GpuBuffers::MeshletDispatchChunkSize,
-        .RouteMode = uint32_t(config.Mode),
-        .RequiredInstanceFlags = config.RequiredInstanceFlags,
-        .ExtraInstanceFlags = config.ExtraRouteFlags,
-        .PyramidSamplerSlot = config.PyramidSamplerSlot,
-    };
+    const auto pc = [&] {
+        auto pc = MakeMeshletCullSlotsPc(buffers);
+        pc.InstanceCount = buffers.GpuInstanceSlots.Buffer.Count<uint32_t>();
+        pc.WorkBlockCount = buffers.MeshletWorkBlockStates.Count<MeshletWorkBlockState>();
+        pc.BlendBlockSlot = config.SortBlend ? buffers.MeshletBlendBlocks.Slot : InvalidSlot;
+        pc.RouteMode = uint32_t(config.Mode);
+        pc.RequiredInstanceFlags = config.RequiredInstanceFlags;
+        pc.ExtraInstanceFlags = config.ExtraRouteFlags;
+        pc.PyramidSamplerSlot = config.PyramidSamplerSlot;
+        pc.TwoPhase = config.TwoPhase;
+        return pc;
+    }();
     encode::BindScene(encoder, slots, buffers, config.UboOffset);
     encode::SetPushConstants(encoder, pc);
     constexpr uint32_t simd_groups = GpuBuffers::MeshletCullBlockSize / 32u;
@@ -443,14 +491,14 @@ void RecordMeshletCullImpl(
     const auto dispatch_work = [&](const mtl::ComputePipeline &pipeline) {
         if (pc.WorkBlockCount == 0) return;
         encoder->setComputePipelineState(pipeline.State());
-        encoder->setThreadgroupMemoryLength(2u * prefix_stride * sizeof(uint32_t), 0);
+        encoder->setThreadgroupMemoryLength(AlignedThreadgroupBytes(3u * prefix_stride * sizeof(uint32_t)), 0);
         encoder->dispatchThreadgroups(MTL::Size(pc.WorkBlockCount, 1, 1), MTL::Size(GpuBuffers::MeshletCullBlockSize, 1, 1));
     };
     const auto dispatch_meshlets = [&](const mtl::ComputePipeline &pipeline) {
         encoder->setComputePipelineState(pipeline.State());
         const uint32_t prefix_bytes = GpuBuffers::MeshletRouteCount * prefix_stride * sizeof(uint32_t);
         const uint32_t blend_bytes = config.SortBlend ? simd_groups * 256u * sizeof(uint16_t) : 0u;
-        encoder->setThreadgroupMemoryLength(prefix_bytes + blend_bytes, 0);
+        encoder->setThreadgroupMemoryLength(AlignedThreadgroupBytes(prefix_bytes + blend_bytes), 0);
         encoder->dispatchThreadgroups(*buffers.MeshletWorkDispatchArgs, 0, MTL::Size(GpuBuffers::MeshletCullBlockSize, 1, 1));
     };
     dispatch_work(pipelines.MeshletWorkBlockCount);
@@ -463,10 +511,67 @@ void RecordMeshletCullImpl(
     dispatch_meshlets(pipelines.MeshletCullBlockCount);
     encoder->memoryBarrier(MTL::BarrierScopeBuffers);
     encoder->setComputePipelineState(pipelines.MeshletCullPrefix.State());
-    encoder->setThreadgroupMemoryLength(4u * sizeof(uint32_t), 0);
+    encoder->setThreadgroupMemoryLength(AlignedThreadgroupBytes(GpuBuffers::MeshletRouteCount * sizeof(uint32_t)), 0);
     encoder->dispatchThreadgroups(MTL::Size(1, 1, 1), ThreadgroupSize::Linear256);
     encoder->memoryBarrier(MTL::BarrierScopeBuffers);
     dispatch_meshlets(pipelines.MeshletCullEmit);
+}
+
+void DrawMeshletList(
+    MTL::RenderCommandEncoder *encoder, const GpuBuffers &buffers, const mtl::Buffer &visible,
+    const mtl::Buffer &routes, const mtl::Buffer &dispatch_args, uint32_t route, uint32_t required_instance_flags
+) {
+    MeshletDrawPushConstants pc{
+        .PrimitiveSlot = buffers.Primitives.Buffer.Slot,
+        .InstanceSlot = buffers.Instances.RecordBuffer.Slot,
+        .InstanceMapSlot = buffers.GpuInstanceSlots.Buffer.Slot,
+        .MeshletSlot = buffers.Meshlets.Buffer.Slot,
+        .MeshletTriangleSlot = buffers.MeshletTriangleIds.Buffer.Slot,
+        .MeshletVertexSlot = buffers.MeshletVertexCorners.Buffer.Slot,
+        .MeshletLocalTriangleSlot = buffers.MeshletLocalTriangles.Buffer.Slot,
+        .VisibleMeshletSlot = visible.Slot,
+        .RouteStateSlot = routes.Slot,
+        .Route = route,
+        .RequiredInstanceFlags = required_instance_flags,
+    };
+    for (uint32_t chunk = 0; chunk < buffers.MeshletDispatchChunkCount; ++chunk) {
+        pc.VisibleOffset = chunk * GpuBuffers::MeshletDispatchChunkSize;
+        encode::SetMeshPushConstants(encoder, pc);
+        const auto args_offset = (route * buffers.MeshletDispatchChunkCount + chunk) * sizeof(MeshDispatchArgs);
+        encoder->drawMeshThreadgroups(*dispatch_args, args_offset, MTL::Size(1, 1, 1), MTL::Size(160, 1, 1));
+    }
+}
+
+void DrawPhase2Meshlets(MTL::RenderCommandEncoder *encoder, const GpuBuffers &buffers) {
+    DrawMeshletList(encoder, buffers, buffers.MeshletPhase2Visible, buffers.MeshletPhase2Routes, buffers.MeshletPhase2DispatchArgs, 0u, 0u);
+}
+
+void RecordMeshletPhase2Cull(
+    mtl::PassChain &chain, const mtl::BindlessSet &slots, const Pipelines &pipelines,
+    GpuBuffers &buffers, uint32_t pyramid_sampler, uint32_t ubo_offset, MeshletRouteMode mode
+) {
+    auto pc = MakeMeshletCullSlotsPc(buffers);
+    pc.RouteMode = uint32_t(mode);
+    pc.PyramidSamplerSlot = pyramid_sampler;
+    pc.TwoPhase = 1u;
+    auto *encoder = chain.BeginCompute("MeshletPhase2Cull", MTL::StageDispatch | MTL::StageFragment);
+    encode::BindScene(encoder, slots, buffers, ubo_offset);
+    const auto group = MTL::Size(GpuBuffers::MeshletPhase2GroupSize, 1, 1);
+    // Count pass, prefix into deterministic offsets, then the emit pass with the same tests.
+    const auto dispatch_culls = [&] {
+        encode::SetPushConstants(encoder, pc);
+        encoder->setComputePipelineState(pipelines.MeshletPhase2Cull.State());
+        encoder->dispatchThreadgroups(*buffers.MeshletPhase2CullArgs, 0, group);
+        encoder->setComputePipelineState(pipelines.MeshletPhase2RangeCull.State());
+        encoder->dispatchThreadgroups(*buffers.MeshletPhase2RangeCullArgs, 0, group);
+    };
+    dispatch_culls();
+    encoder->memoryBarrier(MTL::BarrierScopeBuffers);
+    encoder->setComputePipelineState(pipelines.MeshletPhase2Prefix.State());
+    encoder->dispatchThreadgroups(MTL::Size(1, 1, 1), ThreadgroupSize::Linear256);
+    encoder->memoryBarrier(MTL::BarrierScopeBuffers);
+    pc.Phase2Emit = 1u;
+    dispatch_culls();
 }
 
 void RecordDepthPyramid(
@@ -478,6 +583,9 @@ void RecordDepthPyramid(
     const auto &mips = main.Resources->DepthPyramidMips;
     const auto scene_extent = main.Resources->DepthImage.Extent;
     for (uint32_t base = 0; base < uint32_t(mips.size()); base += 6) {
+        // Each group reads the mip the previous group wrote, through bindless images the encoder
+        // cannot see, so the groups need an explicit edge.
+        if (base > 0) encoder->memoryBarrier(MTL::BarrierScopeTextures);
         const auto src_extent = base == 0 ? scene_extent : mips[base - 1].Extent;
         const DepthPyramidReducePushConstants pc{
             .SrcSamplerSlot = base == 0 ? sel_slots.SceneDepthSampler : sel_slots.DepthPyramidSampler,
@@ -679,6 +787,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
             uint32_t entry_count = 0, posed_entry_count = 0, posed_vertex_count = 0;
             uint32_t derive_entry_count = 0, vertex_normal_count = 0, seam_normal_count = 0, face_normal_count = 0;
             uint32_t posed_tile_count = 0, bounds_tile_count = 0, derive_face_tile_count = 0, derive_gather_tile_count = 0;
+            uint32_t posed_meshlet_bounds_count = 0;
             bool authored_morph_any = false;
             for (size_t mi = 0; mi < mesh_entities.size(); ++mi) {
                 const auto &e = mesh_entities[mi];
@@ -711,6 +820,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
                     posed_entry_count += spec.Count;
                     posed_tile_count += spec.Count * TileCountFor(e.Buf.Vertices.Count);
                     posed_vertex_count += spec.Count * e.Buf.Vertices.Count;
+                    posed_meshlet_bounds_count += spec.Count * e.Buf.Meshlets.Count;
                 }
             }
             const auto entries = buffers.BoundsReduceEntries.SetCount<DrawData>(entry_count);
@@ -720,6 +830,8 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
             const auto entry_first_tiles = buffers.BoundsEntryFirstTiles.SetCount<uint32_t>(entry_count);
             buffers.BoundsPartials.SetCount<AABB>(bounds_tile_count);
             buffers.PosedPositions.SetCount<vec3>(posed_vertex_count);
+            const auto posed_meshlet_tiles = buffers.PosedMeshletBoundsTiles.SetCount<uvec2>(posed_meshlet_bounds_count);
+            buffers.PosedMeshletBounds.SetCount<AABB>(posed_meshlet_bounds_count);
             // Authored-morph entries index their deltas by posed-position offset.
             // The buffer spans the full posed range whenever any authored-morph entry exists.
             buffers.PosedMorphNormalDeltas.SetCount<vec3>(authored_morph_any ? posed_vertex_count : 0u);
@@ -728,6 +840,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
             buffers.PosedFaceNormals.SetCount<vec3>(face_normal_count);
             buffers.Prelude = {
                 .PosePrepass = posed_tile_count,
+                .PosedMeshletBounds = posed_meshlet_bounds_count,
                 .DeriveFaces = derive_face_tile_count,
                 .BoundsReduce = bounds_tile_count,
                 .DeriveGather = derive_gather_tile_count,
@@ -739,6 +852,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
             uint32_t posed_tile_write = 0, unposed_tile_write = posed_tile_count;
             uint32_t face_tile_write = 0, gather_tile_write = derive_face_tile_count;
             uint32_t posed_offset = 0, vertex_normal_offset = 0, seam_normal_offset = 0, face_normal_offset = 0;
+            uint32_t meshlet_bounds_offset = 0, meshlet_tile_write = 0;
             for (size_t mi = 0; mi < mesh_entities.size(); ++mi) {
                 const auto &e = mesh_entities[mi];
                 const auto &spec = specs[mi];
@@ -770,12 +884,15 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
                         .PerInstance = spec.PerInstanceDeform,
                         .PositionBase = posed_offset,
                         .VertexCount = e.Buf.Vertices.Count,
+                        .MeshletBoundsBase = meshlet_bounds_offset,
+                        .MeshletCount = e.Buf.Meshlets.Count,
                         .Normals = spec.Derive ?
                             std::optional{PosedRanges::NormalRanges{vertex_normal_offset, seam_normal_offset, face_normal_offset, spec.Entry.SeamCount, spec.Entry.FaceCount}} :
                             std::nullopt,
                     };
                     draw.PosedByEntity.emplace(e.Entity, pr);
                     posed_offset += spec.Count * pr.VertexCount;
+                    meshlet_bounds_offset += spec.Count * pr.MeshletCount;
                 }
                 if (spec.Derive) {
                     vertex_normal_offset += spec.Count * spec.Entry.VertexCount;
@@ -802,6 +919,14 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
                     entry_first_tiles[write] = tile_write;
                     for (uint32_t t = 0; t < bounds_tiles_per; ++t) bounds_tiles[tile_write++] = {write, t};
                     entries[write++] = entry;
+                }
+                // Shared-pose instances share one entry and one set of meshlet bounds, like positions.
+                if (spec.Posed) {
+                    for (uint32_t i = 0; i < spec.Count; ++i) {
+                        for (uint32_t m = 0; m < e.Buf.Meshlets.Count; ++m) {
+                            posed_meshlet_tiles[meshlet_tile_write++] = {first + i, e.Buf.Meshlets.Offset + m};
+                        }
+                    }
                 }
                 if (spec.PerInstanceDeform) PatchInstanceDeform(entries.subspan(first, spec.Count), e.Deform);
             }
@@ -831,6 +956,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
                 const auto &posed = it->second;
                 const auto i = posed.PerInstance ? ri.BufferIndex - posed.FirstInstance : 0u;
                 record.PosedPositionOffset = posed.PositionOffset(i);
+                record.PosedMeshletBoundsOffset = posed.MeshletBoundsOffset(i);
                 if (const auto normals = posed.NormalsAt(i)) {
                     record.PosedVertexNormalOffset = normals->VertexOffset;
                     record.PosedSeamNormalOffset = normals->SeamOffset;
@@ -1095,18 +1221,27 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
     // Derived normals feed only the scene's face-fill draws, so only scene-drawing phases record the derive.
     // Every prelude pass dispatches indirectly.
     // A submit with unchanged deform inputs gets zero group counts, keeping the buffers' current results.
-    if (!draw_list.Draws.empty() || buffers.Prelude.PosePrepass > 0 || buffers.Prelude.DeriveFaces > 0 || buffers.Prelude.BoundsReduce > 0) {
+    if (!draw_list.Draws.empty() || buffers.Prelude.PosePrepass > 0 || buffers.Prelude.PosedMeshletBounds > 0 || buffers.Prelude.DeriveFaces > 0 || buffers.Prelude.BoundsReduce > 0) {
         const auto &prelude = buffers.Prelude;
         const bool record_bounds = phase != RenderPhase::BlurAccumulate && phase != RenderPhase::BlurResolve;
         // A derive entry always holds at least one face tile and one gather tile, so one count decides both phases.
         const bool record_derive = draw_scene && prelude.DeriveFaces > 0;
         const bool bounds_work = record_bounds && prelude.BoundsCombine > 0;
         auto *compute = chain.BeginCompute("Prelude", MTL::StageVertex | MTL::StageFragment | MTL::StageDispatch);
-        if (prelude.PosePrepass > 0) RecordPosePrepass(compute, slots, pipelines, buffers, transform_vertex_state_slot, ubo_offset);
+        // The prelude's outputs flow through bindless buffers the encoder cannot see, so every
+        // producing dispatch needs an explicit edge before its consumer: the pose pre-pass feeds
+        // posed bounds, the derives, and the bounds reduce, the face derive feeds the gather, and
+        // the bounds reduce feeds the combine.
+        if (prelude.PosePrepass > 0) {
+            RecordPosePrepass(compute, slots, pipelines, buffers, transform_vertex_state_slot, ubo_offset);
+            compute->memoryBarrier(MTL::BarrierScopeBuffers);
+        }
+        if (prelude.PosedMeshletBounds > 0) RecordPosedMeshletBounds(compute, slots, pipelines, buffers, ubo_offset);
         if (record_derive || bounds_work) {
             auto derive_pc = MakeNormalDerivePc(buffers, meshes, buffers.PosedVertexNormals.Slot, buffers.PosedSeamNormals.Slot, buffers.PosedFaceNormals.Slot);
             if (record_derive) RecordNormalDerive(compute, slots, pipelines, buffers, derive_pc, PreludeSlot::DeriveFaces, ubo_offset);
             if (bounds_work) RecordBoundsPass(compute, slots, pipelines.BoundsReduce, buffers, PreludeSlot::BoundsReduce, ubo_offset);
+            compute->memoryBarrier(MTL::BarrierScopeBuffers);
             if (record_derive) {
                 derive_pc.Phase = 1;
                 derive_pc.FirstTile = prelude.DeriveFaces;
@@ -1148,8 +1283,16 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
             sort_blend = buffers.Materials.Get(i).AlphaMode == MaterialAlphaMode::Blend;
         }
     }
+    const auto view_bytes = buffers.SceneViewUBO.Contents().subspan(ubo_offset, sizeof(SceneViewUBO));
+    const auto &current_view_proj = reinterpret_cast<const SceneViewUBO *>(view_bytes.data())->ViewProj;
+    const bool disocclusion_possible = use != DrawListUse::Reuse || buffers.PreludeStale || buffers.MeshletOcclusionStale ||
+        std::memcmp(&current_view_proj, &buffers.PreviousFullCullViewProj, sizeof(mat4)) != 0;
+    const bool two_phase_meshlets = cull_scene_meshlets && phase == RenderPhase::Full && !real_transmission &&
+        main.Resources->DepthPyramidValid && disocclusion_possible;
     if (cull_scene_meshlets) {
-        const uint32_t pyramid = phase == RenderPhase::Full && main.Resources->DepthPyramidValid ? sel_slots.DepthPyramidSampler : InvalidSlot;
+        const bool stale_single_phase_transmission = real_transmission && disocclusion_possible;
+        const uint32_t pyramid = phase == RenderPhase::Full && main.Resources->DepthPyramidValid && !stale_single_phase_transmission ?
+            sel_slots.DepthPyramidSampler : InvalidSlot;
         RecordMeshletCull(
             chain, slots, pipelines, buffers,
             {
@@ -1158,6 +1301,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
                 .PyramidSamplerSlot = pyramid,
                 .ExtraRouteFlags = has_silhouette && show_rendered ? uint32_t(MeshletInstanceFlag::Silhouette) : 0u,
                 .SortBlend = sort_blend,
+                .TwoPhase = two_phase_meshlets,
             }
         );
     }
@@ -1286,6 +1430,34 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
         auto *compute = chain.BeginCompute("DepthPyramid", MTL::StageFragment);
         RecordDepthPyramid(compute, slots, buffers, pipelines, sel_slots, ubo_offset);
         main.Resources->DepthPyramidValid = true;
+        if (two_phase_meshlets) {
+            RecordMeshletPhase2Cull(
+                chain, slots, pipelines, buffers, sel_slots.DepthPyramidSampler, ubo_offset,
+                show_rendered ? MeshletRouteMode::Material : MeshletRouteMode::Single
+            );
+            const std::array colors{
+                mtl::LoadColor(*main.Resources->SceneColorImage),
+                blur ? mtl::LoadColor(*main.MotionBlur->VelocityImage) : mtl::ColorAttachment{},
+            };
+            const auto attachments = std::span{colors}.first(blur ? 2 : 1);
+            const auto pass = mtl::MakePassDescriptor(attachments, mtl::LoadDepth(*main.Resources->DepthImage));
+            encoder = encode::BeginScenePass(
+                chain, pass, "MeshletPhase2", {{MTL::StageDispatch, MTL::StageMesh}, {MTL::StageFragment, MTL::StageFragment}},
+                main_extent, slots, buffers, ubo_offset
+            );
+            if (show_rendered) {
+                main.Compiler.BindMeshlets(encoder, blur ? PbrCompiler::Variant::OpaqueVelocity : PbrCompiler::Variant::Opaque);
+            } else if (draw_scene) {
+                main.MeshletFill.Bind(encoder);
+            } else {
+                main.MeshletDepth.Bind(encoder);
+            }
+            DrawPhase2Meshlets(encoder, buffers);
+
+            compute = chain.BeginCompute("DepthPyramidPhase2", MTL::StageFragment);
+            RecordDepthPyramid(compute, slots, buffers, pipelines, sel_slots, ubo_offset);
+        }
+        buffers.PreviousFullCullViewProj = current_view_proj;
     }
 
     if (blur) RecordMotionBlurPostFx(r, chain, slots, viewport, main_extent, ubo_offset, playback_frame);
@@ -1479,23 +1651,7 @@ void RecordSilhouetteDepthPass(
 }
 
 void DrawMeshlets(MTL::RenderCommandEncoder *encoder, const GpuBuffers &buffers, uint32_t route, uint32_t required_instance_flags) {
-    MeshletDrawPushConstants pc{
-        .PrimitiveSlot = buffers.Primitives.Buffer.Slot,
-        .InstanceSlot = buffers.Instances.RecordBuffer.Slot,
-        .InstanceMapSlot = buffers.GpuInstanceSlots.Buffer.Slot,
-        .MeshletSlot = buffers.Meshlets.Buffer.Slot,
-        .MeshletTriangleSlot = buffers.MeshletTriangleIds.Buffer.Slot,
-        .VisibleMeshletSlot = buffers.VisibleMeshlets.Slot,
-        .RouteStateSlot = buffers.MeshletRoutes.Slot,
-        .Route = route,
-        .RequiredInstanceFlags = required_instance_flags,
-    };
-    for (uint32_t chunk = 0; chunk < buffers.MeshletDispatchChunkCount; ++chunk) {
-        pc.VisibleOffset = chunk * GpuBuffers::MeshletDispatchChunkSize;
-        encode::SetMeshPushConstants(encoder, pc);
-        const auto args_offset = (route * buffers.MeshletDispatchChunkCount + chunk) * sizeof(MeshDispatchArgs);
-        encoder->drawMeshThreadgroups(*buffers.MeshletDispatchArgs, args_offset, MTL::Size(1, 1, 1), MTL::Size(160, 1, 1));
-    }
+    DrawMeshletList(encoder, buffers, buffers.VisibleMeshlets, buffers.MeshletRoutes, buffers.MeshletDispatchArgs, route, required_instance_flags);
 }
 
 void RecordRenderCommandBuffer(entt::registry &r, entt::entity viewport, MTL::CommandBuffer *command_buffer, DrawListUse use, RenderPhase phase) {
@@ -1544,6 +1700,8 @@ void SubmitNormalDeriveNow(entt::registry &r, std::span<const NormalDeriveEntry>
     auto *encoder = command_buffer->computeCommandEncoder();
     auto derive_pc = MakeNormalDerivePc(buffers, meshes, vertex_normal_slot, seam_normal_slot, face_normal_slot);
     RecordNormalDerive(encoder, slots, pipelines, buffers, derive_pc, PreludeSlot::DeriveFaces, 0);
+    // The gather reads the face normals through bindless buffers the encoder cannot see.
+    encoder->memoryBarrier(MTL::BarrierScopeBuffers);
     derive_pc.Phase = 1;
     derive_pc.FirstTile = uint32_t(face_tiles.size());
     RecordNormalDerive(encoder, slots, pipelines, buffers, derive_pc, PreludeSlot::DeriveGather, 0);
@@ -1697,10 +1855,12 @@ bool CommitPosedGeometry(entt::registry &r, entt::entity mesh_entity) {
 
 void SyncPreludeDispatchArgs(GpuBuffers &buffers) {
     const bool live = std::exchange(buffers.PreludeStale, false);
+    buffers.MeshletOcclusionStale = false;
     const auto &groups = buffers.Prelude;
     // Array order is the PreludeSlot order.
     const std::array<MTL::DispatchThreadgroupsIndirectArguments, GpuBuffers::PreludeGroups::PassCount> args{{
         {live ? groups.PosePrepass : 0u, 1u, 1u},
+        {live ? groups.PosedMeshletBounds : 0u, 1u, 1u},
         {live ? groups.DeriveFaces : 0u, 1u, 1u},
         {live ? groups.BoundsReduce : 0u, 1u, 1u},
         {live ? groups.DeriveGather : 0u, 1u, 1u},

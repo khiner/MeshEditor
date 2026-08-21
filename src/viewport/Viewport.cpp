@@ -324,7 +324,7 @@ entt::entity InitEngine(entt::registry &r) {
     const auto &ctx = r.ctx().get<const mtl::Context>();
     InitStoreCtx(r, ctx);
     auto &slots = r.ctx().get<mtl::BindlessSet>();
-    auto &libraries = r.ctx().emplace<mtl::LibraryCache>(ctx, Paths::Shaders());
+    auto &libraries = r.ctx().emplace<mtl::LibraryCache>(ctx, Paths::Shaders(), Paths::UserData() / "cache" / "Pipelines.mtl4a");
     r.ctx().emplace<Pipelines>(ctx, libraries);
     profile::Init(ctx);
     physics::Init(r);
@@ -454,6 +454,8 @@ void ClearScene(entt::registry &r, entt::entity viewport) {
     r.storage<entt::entity>().start_from(entt::entity{0});
     r.ctx().get<MeshStore>().Clear();
     r.ctx().get<GpuBuffers>().ResetSceneArenas();
+    // The depth pyramid still holds the cleared scene, so the next scene's first cull must not test against it.
+    if (auto &resources = r.ctx().get<Pipelines>().Main.Resources) resources->DepthPyramidValid = false;
 
     [[maybe_unused]] const auto recreated = r.create();
     assert(recreated == viewport);

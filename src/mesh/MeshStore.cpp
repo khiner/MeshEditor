@@ -557,6 +557,14 @@ uint32_t MeshStore::GetCornerClassOffset(uint32_t id) const {
     return entry.UniformCornerClass == CornerClass::Face ? UniformFaceOffset : InvalidOffset;
 }
 
+std::span<const uint32_t> MeshStore::GetCornerClasses(uint32_t id) const {
+    return B->CornerClassBuffer.Get(Entries.at(id).CornerClasses);
+}
+
+std::span<const uvec2> MeshStore::GetCustomCornerMasks(uint32_t id) const {
+    return B->CustomCornerMaskBuffer.Get(Entries.at(id).CustomCornerMasks);
+}
+
 MeshStore::MeshStore(mtl::BufferContext &ctx) : B{std::make_unique<Buffers>(ctx)} {}
 MeshStore::~MeshStore() = default;
 MeshStore::MeshStore(MeshStore &&) noexcept = default;

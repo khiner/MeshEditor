@@ -34,7 +34,7 @@ kernel void BoundsCombineKernel(
     }
     // An entry with no vertices leaves Min > Max, the same empty state a fresh slot holds.
     // ElementIdOffset is the run of consecutive instance slots sharing this entry's deform state.
-    FoldSharedAabb(shared_min, shared_max, tid, lo, hi);
+    FoldSharedAabb(shared_min, shared_max, BoundsFoldLanes, tid, lo, hi);
     const AABB bounds{packed_float3(shared_min[0]), packed_float3(shared_max[0])};
     device AABB *out_bounds = BindlessBufferMutable(AABB, bindless.Buffer, pc.BoundsSlot);
     for (uint k = tid; k < draw.ElementIdOffset; k += 256u) {

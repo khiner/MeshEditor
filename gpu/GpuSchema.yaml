@@ -163,6 +163,20 @@ enums:
         value: 1u
       - name: ElementSelection
         value: 2u
+  # Bit layout of the meshlet-local geometry streams.
+  # A meshlet vertex packs its flat-only bit over the representative corner index.
+  # A local triangle byte packs its all-flat bit over the first local vertex index.
+  - name: MeshletGeometryEncoding
+    type: u32
+    values:
+      - name: FlatVertexBit
+        value: 0x80000000u
+      - name: CornerMask
+        value: 0x7fffffffu
+      - name: FlatTriangleBit
+        value: 0x80u
+      - name: LocalIndexMask
+        value: 0x3fu
 # Shader function constants. The index is the position in the group, so a reorder moves both
 # the shader declaration and the host's named index together.
 function_constants:
@@ -326,7 +340,18 @@ structs:
         type: u32
       - name: TriangleCount
         type: u32
+      - name: VertexOffset
+        type: u32
+      - name: VertexCount
+        type: u32
+      - name: LocalTriangleOffset
+        type: u32
       - name: Primitive
+        type: u32
+      # The meshopt cone follows geometric winding. It is exact for the material shader only when
+      # every triangle uses its derived flat face normal, so mixed meshlets store cutoff 127,
+      # which never culls.
+      - name: ConeAxisCutoff
         type: u32
       - name: Center
         type: vec3
@@ -379,6 +404,9 @@ structs:
       - name: PosedFaceNormalOffset
         type: u32
         default: InvalidOffset
+      - name: PosedMeshletBoundsOffset
+        type: u32
+        default: InvalidOffset
       - name: ElementStateSlotOffset
         type: SlotOffset
       - name: HasPendingVertexTransform
@@ -416,6 +444,8 @@ structs:
         type: u32
       - name: MeshletCount
         type: u32
+      - name: Phase2RangeCount
+        type: u32
   - name: MeshletWorkState
     fields:
       - name: RangeCount
@@ -424,10 +454,12 @@ structs:
         type: u32
       - name: CullBlockCount
         type: u32
+      - name: Phase2RangeCount
+        type: u32
   - name: MeshletCullBlockState
     fields:
       - name: Routes
-        type: u32[4]
+        type: u32[5]
   - name: MeshletBlendBlockState
     fields:
       - name: Buckets
@@ -443,9 +475,9 @@ structs:
   - name: MeshletRouteState
     fields:
       - name: Counts
-        type: u32[4]
+        type: u32[5]
       - name: Offsets
-        type: u32[4]
+        type: u32[5]
       - name: BlendOffsets
         type: u32[256]
   # One entry per draw-list DrawData element, for the frustum cull pass. Cmd is the entry's indirect
@@ -1150,6 +1182,10 @@ structs:
         type: u32
       - name: MeshletTriangleSlot
         type: u32
+      - name: MeshletVertexSlot
+        type: u32
+      - name: MeshletLocalTriangleSlot
+        type: u32
       - name: VisibleMeshletSlot
         type: u32
       - name: RouteStateSlot
@@ -1198,6 +1234,8 @@ structs:
         type: u32
       - name: ModelSlot
         type: u32
+      - name: PosedMeshletBoundsSlot
+        type: u32
       - name: RouteStateSlot
         type: u32
       - name: DispatchArgsSlot
@@ -1215,6 +1253,35 @@ structs:
       - name: PyramidSamplerSlot
         type: u32
         default: InvalidSlot
+      - name: OcclusionViewProj
+        type: mat4
+      - name: TwoPhase
+        type: u32
+      - name: Phase2VisibleSlot
+        type: u32
+        default: InvalidSlot
+      - name: Phase2RouteStateSlot
+        type: u32
+        default: InvalidSlot
+      - name: Phase2DispatchArgsSlot
+        type: u32
+        default: InvalidSlot
+      - name: Phase2CullArgsSlot
+        type: u32
+        default: InvalidSlot
+      - name: Phase2RangeCandidateSlot
+        type: u32
+        default: InvalidSlot
+      - name: Phase2RangeCullArgsSlot
+        type: u32
+        default: InvalidSlot
+      # Per-32-candidate survivor counts, prefixed into deterministic emission offsets.
+      - name: Phase2BlockCountSlot
+        type: u32
+        default: InvalidSlot
+      # The phase-2 cull kernels run twice: a count pass, then an emit pass at prefixed offsets.
+      - name: Phase2Emit
+        type: u32
   # Push constants shared by the pose pre-pass, the bounds reduce, and the bounds combine.
   # Posed-buffer slots come from SceneViewUBO.
   - name: BoundsReducePushConstants
@@ -1233,6 +1300,22 @@ structs:
       - name: PartialBoundsSlot
         type: u32
       - name: EntryFirstTileSlot
+        type: u32
+  # One threadgroup per (posed entry, meshlet) tile, reducing posed positions to a local AABB.
+  - name: PosedMeshletBoundsPushConstants
+    push_constant: true
+    fields:
+      - name: DrawDataSlot
+        type: u32
+      - name: TileMapSlot
+        type: u32
+      - name: MeshletSlot
+        type: u32
+      - name: PrimitiveSlot
+        type: u32
+      - name: MeshletVertexSlot
+        type: u32
+      - name: PosedMeshletBoundsSlot
         type: u32
   # One threadgroup per 256-element tile of a derive entry, in two phases.
   # Phase 0 derives face normals over the tile map's leading face-tile prefix.

@@ -799,9 +799,9 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
     const profile::CpuScope profile_scope{"ProcessEvents"};
 
     auto &pending_render = r.ctx().get<PendingRenderRequest>().Value;
-    auto request = [&pending_render, &pipelines](RenderRequest req) {
+    auto request = [&pending_render, &buffers](RenderRequest req) {
         pending_render = std::max(pending_render, req);
-        if (req != RenderRequest::None && pipelines.Main.Resources) pipelines.Main.Resources->DepthPyramidValid = false;
+        if (req != RenderRequest::None) buffers.MeshletOcclusionStale = true;
     };
 
     BuildMissingWorldTransforms(r);
