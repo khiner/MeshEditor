@@ -852,22 +852,13 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
         const auto shaded_in_scene_pass = [&meshes, show_rendered](const MeshEntityData &e) {
             return show_rendered && e.MeshComp && e.MeshComp->FaceCount() == 0 && meshes.GetPrimitiveMaterialRange(e.MeshComp->GetStoreId()).Count > 0;
         };
-        // Shaded meshes take their selection feedback from the overlays, drawn for their selected instances alone.
+        // Shaded meshes take their selection feedback from the scene pass, which recolors selected line and point fills.
         // Edit mode shows element state through its own overlays.
-        std::unordered_map<entt::entity, std::vector<uint32_t>> selected_instances_by_mesh;
-        if (show_rendered && show_overlays && !is_edit_mode) {
-            for (const auto [e, instance, ri] : r.view<const Instance, const Selected, const RenderInstance>().each()) {
-                if (ri.BufferIndex != UINT32_MAX) selected_instances_by_mesh[instance.Entity].emplace_back(ri.BufferIndex);
-            }
-        }
-        // Draws a mesh's wire or point overlay for every instance, or for its selected ones alone where the scene pass shades it.
+        // Draws a mesh's wire or point overlay for every instance, unless the scene pass shades it.
         const auto append_overlay = [&](DrawBatchInfo &batch, const MeshEntityData &e, const SlottedRange &indices, const DrawData &dd) {
+            if (shaded_in_scene_pass(e)) return;
             const auto draws_before = draw_list.Draws.size();
-            if (!shaded_in_scene_pass(e)) {
-                AppendDraw(draw_list, batch, indices, e.Mod, dd);
-            } else if (const auto it = selected_instances_by_mesh.find(e.Entity); it != selected_instances_by_mesh.end()) {
-                for (const auto buffer_index : it->second) AppendDraw(draw_list, batch, indices, e.Mod, dd, buffer_index);
-            }
+            AppendDraw(draw_list, batch, indices, e.Mod, dd);
             patch_mesh_draws(draw_list, draws_before, e.Entity, e.Deform);
         };
 

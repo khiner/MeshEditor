@@ -1325,7 +1325,8 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
         auto &active_tracker = reactive<changes::ActiveInstance>(r);
         if (!selected_tracker.empty()) {
             // In Edit mode, selection changes primary_edit_instances which affects fill/edge/point batches.
-            // In Object/Pose mode, only the silhouette batch is affected.
+            // In Object/Pose mode, batches are selection-independent: selection reaches the GPU through
+            // instance states and silhouette flags, which any re-record refreshes.
             const auto mode = r.get<const Interaction>(viewport).Mode;
             request(mode == InteractionMode::Edit ? RenderRequest::Rebuild : RenderRequest::Silhouette);
         }

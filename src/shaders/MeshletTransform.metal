@@ -90,6 +90,9 @@ inline uchar EmitTriangleIndices(Output output, device const uchar *triangles, M
         out.ElementId = work.Instance.ElementIdOffset + element + 1u;
         out.Topology = topology;
         out.PointCoord = PointQuadCorners[corner] * 0.5f + 0.5f;
+        // A selected object's fill recolors in the shading, so alpha zero marks an unselected instance.
+        out.Color = scene.View.InteractionMode == InteractionMode_Object && scene.View.ShowOverlays != 0u ?
+            scene.ObjectSelectionColor(scene.InstanceState(work.Draw), float4(0.0f)) : float4(0.0f);
         output.set_vertex(thread_index, out);
         output.set_index(thread_index, thread_index);
     }

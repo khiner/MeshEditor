@@ -412,10 +412,9 @@ inline DecodedVisibility DecodeVisibilityId(
         result.V.Position = float4(pixel, 0.0f, 1.0f);
         result.V.WorldNormal = PerspectiveValue(weights.Value, corners[0].WorldNormal, corners[1].WorldNormal, corners[2].WorldNormal);
         result.V.WorldPosition = PerspectiveValue(weights.Value, corners[0].WorldPosition, corners[1].WorldPosition, corners[2].WorldPosition);
-        constant ViewportThemeColors &colors = scene.Theme.Colors;
-        const float4 base_color = float4(float3(colors.Wire), 1.0f);
+        // A selected object's fill recolors in the shading, so alpha zero marks an unselected instance.
         result.V.Color = view.InteractionMode == InteractionMode_Object && view.ShowOverlays != 0u ?
-            scene.ObjectSelectionColor(scene.InstanceState(draw), base_color) : base_color;
+            scene.ObjectSelectionColor(scene.InstanceState(draw), float4(0.0f)) : float4(0.0f);
         result.V.VertexColor = draw.CornerColorOffset != INVALID_OFFSET ?
             PerspectiveValue(weights.Value, corners[0].VertexColor, corners[1].VertexColor, corners[2].VertexColor) : float4(1.0f);
         result.V.WorldTangent = float4(0, 0, 0, 1);

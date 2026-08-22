@@ -194,6 +194,13 @@ inline PbrTargets ShadePbr(
         out.Motion = PackScreenMotion(prev_ndc, curr_ndc, next_ndc);
     }
 
+    // A selected line or point object shows its selection color in place of its shading, at the
+    // fill's own width and antialiasing.
+    if (topology != uint(MeshPrimitiveTopology_Triangle) && in.Color.a > 0.0f && view.DebugChannel == DebugChannel_None) {
+        out.Color = float4(in.Color.rgb, 1.0f);
+        return out;
+    }
+
     device const PBRMaterial &material = scene.Materials(view.MaterialSlot)[in.MaterialIndex];
     const float3 world_normal = ShadingWorldNormal(in);
     if (material.DoubleSided == 0u && !IsFrontFacing(scene, world_normal, in.WorldPosition)) discard_fragment();
