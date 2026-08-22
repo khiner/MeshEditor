@@ -8,6 +8,8 @@
 #include "MeshletCullBlockState.metal"
 #include "MeshletCullPushConstants.metal"
 #include "MeshletRecord.metal"
+#include "MeshletGeometryEncoding.metal"
+#include "MeshPrimitiveTopology.metal"
 #include "MeshletRoute.metal"
 #include "MeshletRouteState.metal"
 #include "MeshletWorkBlockState.metal"
@@ -32,6 +34,10 @@ struct RoutedMeshlet {
 
 inline uint RouteBit(uint route) { return 1u << route; }
 
+inline uint PrimitiveTopology(MeshletRecord meshlet) {
+    return meshlet.LocalTriangleOffset >> MeshletGeometryEncoding_TopologyShift;
+}
+
 inline uint OpaqueVisibilityRoute(PBRMaterial material, Transform world) {
     if (material.DoubleSided != 0u) return MeshletRoute_OpaqueDoubleSided;
     const float3 scale = float3(world.S);
@@ -51,7 +57,9 @@ inline bool InstanceDeformed(InstanceRecord instance) {
 
 inline uint PrimitiveMaterialIndex(const thread Scene &scene, PrimitiveRecord primitive) {
     if (primitive.Draw.PrimitiveMaterialOffset == INVALID_OFFSET) return 0u;
-    return scene.PrimitiveMaterials(scene.View.PrimitiveMaterialSlot)[primitive.Draw.PrimitiveMaterialOffset + primitive.PrimitiveIndex];
+    return scene.PrimitiveMaterials(scene.View.PrimitiveMaterialSlot)[
+        primitive.Draw.PrimitiveMaterialOffset + primitive.PrimitiveIndex
+    ];
 }
 
 inline bool MeshletConeVisible(
@@ -213,6 +221,8 @@ inline RoutedMeshlet ClassifyMeshlet(
     const float3 world_center = bounds.Valid ? bounds.Center : float3(world.P);
 
     const PrimitiveRecord primitive = BindlessBuffer(PrimitiveRecord, scene.B.Buffer, pc.PrimitiveSlot)[meshlet.Primitive];
+    const bool triangle_topology = PrimitiveTopology(meshlet) == MeshPrimitiveTopology_Triangle;
+    if (pc.RouteMode == 3u && !triangle_topology) return result;
     // A one-meshlet instance already passed the conservative instance query. Repeating the
     // eight-corner pyramid query for its tighter sphere is optional extra rejection, not correctness.
     const bool can_occlude = bounds.Valid && !(instance.PrimitiveCount == 1u && primitive.MeshletCount == 1u);
@@ -227,7 +237,7 @@ inline RoutedMeshlet ClassifyMeshlet(
         result.Routes = RouteBit(MeshletRoute_OpaqueCullBack);
     } else {
         const bool alpha_mask = material.AlphaMode == MaterialAlphaMode_Mask;
-        const uint opaque_route = OpaqueVisibilityRoute(material, world);
+        const uint opaque_route = triangle_topology ? OpaqueVisibilityRoute(material, world) : MeshletRoute_Coverage;
         if (pc.RouteMode == 3u) {
             result.Routes = RouteBit(alpha_mask ? MeshletRoute_Coverage : opaque_route);
         } else if (material.AlphaMode == MaterialAlphaMode_Blend) {
@@ -654,6 +664,8 @@ inline bool Phase2ExpandedMeshletVisible(
     const Transform world = scene.Models(pc.ModelSlot)[instance_slot];
     if (pc.RouteMode != 0u) {
         const PrimitiveRecord primitive = BindlessBuffer(PrimitiveRecord, scene.B.Buffer, pc.PrimitiveSlot)[meshlet.Primitive];
+        const bool triangle_topology = PrimitiveTopology(meshlet) == MeshPrimitiveTopology_Triangle;
+        if (pc.RouteMode == 3u && !triangle_topology) return false;
         const PBRMaterial material = scene.Materials(scene.View.MaterialSlot)[PrimitiveMaterialIndex(scene, primitive)];
         // Rendered blend stays in phase 1. Solid visibility treats it as opaque, matching the
         // primary Visibility route. The conservative phase-2 raster itself remains two-sided.

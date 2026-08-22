@@ -280,6 +280,7 @@ struct GpuBuffers {
         GpuInstanceSlots.Reset();
         MeshletRangeCount = 0;
         MeshletInstanceCount = 0;
+        MeshletTopologyMask = 0;
         // Occlusion feedback state, so the next scene's phase-1/phase-2 split replays identically
         // regardless of what rendered before the clear.
         PreviousFullCullViewProj = mat4{1};
@@ -319,6 +320,7 @@ struct GpuBuffers {
     mtl::Buffer MeshletPhase2RangeCandidates, MeshletPhase2RangeCullArgs, MeshletPhase2CullBlockCounts;
     uint64_t MeshletRangeCount{0};
     uint64_t MeshletInstanceCount{0};
+    uint32_t MeshletTopologyMask{0};
     uint32_t MeshletDispatchChunkCount{0};
 
     static constexpr uint32_t MeshletDispatchChunkSize{65'535};

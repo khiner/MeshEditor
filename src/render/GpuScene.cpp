@@ -1,6 +1,7 @@
 #include "render/GpuBuffers.h"
 
 #include "gpu/CornerClassEncoding.h"
+#include "gpu/MeshPrimitiveTopology.h"
 #include "gpu/MeshletGeometryEncoding.h"
 #include "mesh/Mesh.h"
 #include "mesh/MeshStore.h"
@@ -8,6 +9,7 @@
 #include "meshoptimizer.h"
 
 #include <bit>
+#include <limits>
 #include <unordered_map>
 
 namespace {
@@ -46,6 +48,11 @@ struct RenderVertexHash {
 
 uint32_t FloatBits(float value) { return std::bit_cast<uint32_t>(value); }
 
+uint32_t PackLocalTriangleOffset(uint32_t offset, MeshPrimitiveTopology topology) {
+    assert((offset & ~uint32_t(MeshletGeometryEncoding::LocalTriangleOffsetMask)) == 0u);
+    return offset | (uint32_t(topology) << uint32_t(MeshletGeometryEncoding::TopologyShift));
+}
+
 // A mixed-normal meshlet stores the never-culls cutoff, so the cone test needs no separate flag.
 uint32_t PackCone(const meshopt_Bounds &bounds, bool cone_cull_safe) {
     return uint32_t(uint8_t(bounds.cone_axis_s8[0])) |
@@ -64,7 +71,6 @@ void GpuBuffers::RebuildMeshlets(MeshBuffers &buffers, const Mesh &mesh, const M
     buffers.Primitives = buffers.Meshlets = buffers.MeshletTriangles = buffers.MeshletVertices = buffers.MeshletLocalTriangles = {};
 
     const auto indices = mesh.CreateTriangleIndices();
-    if (indices.empty()) return;
 
     const auto vertices = mesh.GetVerticesSpan();
     std::vector<MeshletRecord> meshlet_records;
@@ -76,7 +82,7 @@ void GpuBuffers::RebuildMeshlets(MeshBuffers &buffers, const Mesh &mesh, const M
     const auto corner_classes = meshes.GetCornerClasses(store_id);
     const uint32_t uniform_corner_class = meshes.GetCornerClassOffset(store_id);
     const auto face_ids = meshes.GetTriangleFaceIds(store_id);
-    [[maybe_unused]] const auto element_primitives = meshes.GetElementPrimitiveIndices(store_id);
+    const auto element_primitives = meshes.GetElementPrimitiveIndices(store_id);
     const bool morph_shading_authored = meshes.GetMorphShadingAuthored(store_id);
     const auto custom_corner_masks = meshes.GetCustomCornerMasks(store_id);
     const auto corner_tangents = meshes.GetCornerTangents(store_id);
@@ -243,7 +249,7 @@ void GpuBuffers::RebuildMeshlets(MeshBuffers &buffers, const Mesh &mesh, const M
                 .TriangleCount = meshlet.triangle_count,
                 .VertexOffset = first_vertex,
                 .VertexCount = meshlet.vertex_count,
-                .LocalTriangleOffset = first_local_triangle,
+                .LocalTriangleOffset = PackLocalTriangleOffset(first_local_triangle, MeshPrimitiveTopology::Triangle),
                 .Primitive = uint32_t(primitive_records.size()),
                 .ConeAxisCutoff = PackCone(bounds, cone_cull_safe),
                 .Center = {bounds.center[0], bounds.center[1], bounds.center[2]},
@@ -292,13 +298,100 @@ void GpuBuffers::RebuildMeshlets(MeshBuffers &buffers, const Mesh &mesh, const M
         });
     }
 
+    if (mesh.FaceCount() == 0u) {
+        const bool line_topology = mesh.EdgeCount() != 0u;
+        const uint32_t element_count = line_topology ? mesh.EdgeCount() : mesh.VertexCount();
+        std::vector<uint32_t> edge_indices(line_topology ? element_count * 2u : 0u);
+        if (line_topology) mesh.WriteEdgeIndices(edge_indices);
+
+        const auto primitive_materials = meshes.GetPrimitiveMaterialRange(store_id);
+        const uint32_t primitive_count = std::max(primitive_materials.Count, 1u);
+        std::vector<std::vector<uint32_t>> primitive_elements(primitive_count);
+        for (uint32_t element = 0u; element < element_count; ++element) {
+            const uint32_t first_vertex = line_topology ? edge_indices[element * 2u] : element;
+            const uint32_t primitive = element_primitives.empty() ? 0u : element_primitives[first_vertex];
+            assert(primitive < primitive_count);
+            if (line_topology && !element_primitives.empty()) {
+                assert(element_primitives[edge_indices[element * 2u + 1u]] == primitive);
+            }
+            primitive_elements[primitive].push_back(element);
+        }
+
+        // Forward shading keeps six deterministic unshared corners per element. Visibility is
+        // position-only, so it safely shares four quad vertices and fits sixteen elements in the
+        // triangle entry's 64-vertex output contract.
+        constexpr uint32_t ElementsPerMeshlet{16u};
+        for (uint32_t primitive_index = 0u; primitive_index < primitive_count; ++primitive_index) {
+            const auto &elements = primitive_elements[primitive_index];
+            if (elements.empty()) continue;
+            const uint32_t first_meshlet = uint32_t(meshlet_records.size());
+            for (uint32_t base = 0u; base < elements.size(); base += ElementsPerMeshlet) {
+                const uint32_t count = std::min(ElementsPerMeshlet, uint32_t(elements.size()) - base);
+                const uint32_t first_element_id = uint32_t(triangle_ids.size());
+                const uint32_t first_vertex = uint32_t(meshlet_vertices.size());
+                vec3 lo(std::numeric_limits<float>::max());
+                vec3 hi(std::numeric_limits<float>::lowest());
+                for (uint32_t i = 0u; i < count; ++i) {
+                    const uint32_t element = elements[base + i];
+                    triangle_ids.push_back(element);
+                    const uint32_t vertex_count = line_topology ? 2u : 1u;
+                    for (uint32_t endpoint = 0u; endpoint < vertex_count; ++endpoint) {
+                        const uint32_t vertex = line_topology ? edge_indices[element * 2u + endpoint] : element;
+                        meshlet_vertices.push_back(vertex);
+                        const vec3 position = vertices[vertex].Position;
+                        lo = glm::min(lo, position);
+                        hi = glm::max(hi, position);
+                    }
+                }
+                const vec3 center = (lo + hi) * 0.5f;
+                float radius = 0.0f;
+                for (uint32_t i = first_vertex; i < meshlet_vertices.size(); ++i) {
+                    radius = std::max(radius, glm::distance(center, vec3(vertices[meshlet_vertices[i]].Position)));
+                }
+                meshlet_records.emplace_back(MeshletRecord{
+                    .TriangleOffset = first_element_id,
+                    .TriangleCount = count,
+                    .VertexOffset = first_vertex,
+                    .VertexCount = count * (line_topology ? 2u : 1u),
+                    .LocalTriangleOffset = PackLocalTriangleOffset(uint32_t(meshlet_triangles.size()), line_topology ? MeshPrimitiveTopology::Line : MeshPrimitiveTopology::Point),
+                    .Primitive = uint32_t(primitive_records.size()),
+                    .ConeAxisCutoff = uint32_t(uint8_t(127)) << 24u,
+                    .Center = center,
+                    .Radius = radius,
+                });
+            }
+
+            DrawData draw{
+                .VertexSlot = buffers.Vertices.Slot,
+                .IndexSlotOffset = line_topology ? buffers.EdgeIndices : buffers.VertexIndices,
+                .ModelSlot = Instances.TransformBuffer.Slot,
+                .ObjectIdSlot = InvalidSlot,
+                .CornerColorOffset = OffsetOrInvalid(meshes.GetCornerColorRange(store_id)),
+                .VertexCountOrHeadImageSlot = buffers.Vertices.Count,
+                .InstanceStateSlot = Instances.StateBuffer.Slot,
+                .VertexOffset = buffers.Vertices.Offset,
+                .PrimitiveMaterialOffset = OffsetOrInvalid(primitive_materials),
+                .ElementPrimitiveOffset = OffsetOrInvalid(meshes.GetElementPrimitiveRange(store_id)),
+            };
+            primitive_records.emplace_back(PrimitiveRecord{
+                .Draw = draw,
+                .PrimitiveIndex = primitive_index,
+                .FirstTriangle = 0u,
+                .MeshletOffset = first_meshlet,
+                .MeshletCount = uint32_t(meshlet_records.size()) - first_meshlet,
+            });
+        }
+    }
+
     buffers.MeshletTriangles = MeshletTriangleIds.Allocate(triangle_ids);
     buffers.MeshletVertices = MeshletVertexCorners.Allocate(meshlet_vertices);
     buffers.MeshletLocalTriangles = MeshletLocalTriangles.Allocate(meshlet_triangles);
     for (auto &record : meshlet_records) {
         record.TriangleOffset += buffers.MeshletTriangles.Offset;
         record.VertexOffset += buffers.MeshletVertices.Offset;
-        record.LocalTriangleOffset += buffers.MeshletLocalTriangles.Offset;
+        const uint32_t topology = record.LocalTriangleOffset & ~uint32_t(MeshletGeometryEncoding::LocalTriangleOffsetMask);
+        const uint32_t local_offset = record.LocalTriangleOffset & uint32_t(MeshletGeometryEncoding::LocalTriangleOffsetMask);
+        record.LocalTriangleOffset = topology + PackLocalTriangleOffset(local_offset + buffers.MeshletLocalTriangles.Offset, MeshPrimitiveTopology::Triangle);
     }
     buffers.Meshlets = Meshlets.Allocate(meshlet_records);
     for (auto &record : primitive_records) record.MeshletOffset += buffers.Meshlets.Offset;

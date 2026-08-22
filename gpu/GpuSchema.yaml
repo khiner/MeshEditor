@@ -163,6 +163,15 @@ enums:
         value: 1u
       - name: ElementSelection
         value: 2u
+  - name: MeshPrimitiveTopology
+    type: u32
+    values:
+      - name: Triangle
+        value: 0
+      - name: Line
+        value: 1
+      - name: Point
+        value: 2
   # Deterministic compaction routes. Material visibility separates fixed-function winding and
   # discard-capable coverage while preserving the existing forward and silhouette route numbers.
   - name: MeshletRoute
@@ -200,6 +209,12 @@ enums:
         value: 0x80u
       - name: LocalIndexMask
         value: 0x3fu
+      # Local triangle offsets occupy the low 30 bits. Non-triangle meshlets use no local-triangle
+      # stream, so the high two bits carry MeshPrimitiveTopology without enlarging a hot record.
+      - name: LocalTriangleOffsetMask
+        value: 0x3fffffffu
+      - name: TopologyShift
+        value: 30u
 # Shader function constants. The index is the position in the group, so a reorder moves both
 # the shader declaration and the host's named index together.
 function_constants:
@@ -221,9 +236,9 @@ function_constants:
         type: bool
       - name: TransmissionPrepass
         type: bool
-      - name: Topology
-        type: u32
       - name: VelocityOutput
+        type: bool
+      - name: NonTriangleTopology
         type: bool
   - name: MeshVertexConstant
     constants:
@@ -231,9 +246,9 @@ function_constants:
         type: u32
       - name: IsLineDraw
         type: u32
-      - name: LineQuad
-        type: bool
       - name: VelocityOutput
+        type: bool
+      - name: NonTriangleTopology
         type: bool
   - name: BackgroundConstant
     constants:
@@ -356,7 +371,8 @@ structs:
       - name: ElementPrimitiveOffset
         type: u32
         default: InvalidOffset
-  # Immutable triangle topology shared by every instance of a mesh.
+  # Immutable topology shared by every instance of a mesh. For non-triangle meshlets the triangle
+  # offset/count fields identify logical line or point elements; local triangles remain triangle-only.
   - name: MeshletRecord
     fields:
       - name: TriangleOffset
@@ -1237,6 +1253,8 @@ structs:
       - name: MeshletTriangleSlot
         type: u32
       - name: MeshletLocalTriangleSlot
+        type: u32
+      - name: MeshletVertexSlot
         type: u32
       - name: VisibleMeshletSlot
         type: u32

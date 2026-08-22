@@ -8,6 +8,7 @@
 #include "CornerClass.metal"
 #include "CornerClassEncoding.metal"
 #include "MorphDeform.metal"
+#include "MeshletNonTriangle.metal"
 
 constant uint VisibilityBackground = 0xffffffffu;
 constant uint VisibilityPhaseBit = 0x80000000u;
@@ -21,6 +22,8 @@ struct DecodedVisibility {
     uint ObjectId;
     uint ElementId;
     uint InstanceFlags;
+    uint Topology;
+    float2 PointCoord;
     bool Valid;
 };
 
@@ -228,6 +231,9 @@ inline void DecodeUv(
 struct VisibilityCoverageValues {
     PerspectiveWeights Weights;
     float4 VertexColor;
+    float2 PointCoord;
+    float3 WorldNormal;
+    float3 WorldPosition;
 };
 
 struct VisibilityTextureCoordinates {
@@ -238,25 +244,48 @@ struct VisibilityTextureCoordinates {
 
 inline VisibilityCoverageValues DecodeVisibilityCoverage(
     const thread Scene &scene, const thread ResolvedVisibility &resolved, float2 pixel,
-    constant SceneViewUBO &view
+    constant SceneViewUBO &view, uint meshlet_vertex_slot
 ) {
     float4 clip[3];
     float4 vertex_color[3];
+    float2 point_coord[3]{};
+    float3 world_normal[3]{};
+    float3 world_position[3];
+    const uint topology = MeshletPrimitiveTopology(resolved.Meshlet);
+    const bool triangle_topology = topology == MeshPrimitiveTopology_Triangle;
+    const uint logical_element = resolved.LocalTriangle / 2u;
     const Transform world = MeshletWorld(scene, resolved.Draw);
     for (uint corner = 0u; corner < 3u; ++corner) {
-        const uint vertex_index = (resolved.Triangle - resolved.Primitive.FirstTriangle) * 3u + corner;
-        const uint vertex_id = scene.Indices(resolved.Draw.IndexSlotOffset.Slot)[resolved.Draw.IndexSlotOffset.Offset + vertex_index];
+        const uint quad_corner = line_quad_corner((resolved.LocalTriangle & 1u) * 3u + corner);
+        const uint vertex_index = triangle_topology ?
+            (resolved.Triangle - resolved.Primitive.FirstTriangle) * 3u + corner :
+            NonTriangleVertexId(
+                scene.B, meshlet_vertex_slot, resolved.Meshlet, topology, logical_element, quad_corner
+            );
+        const uint vertex_id = triangle_topology ?
+            scene.Indices(resolved.Draw.IndexSlotOffset.Slot)[resolved.Draw.IndexSlotOffset.Offset + vertex_index] : vertex_index;
         const float3 world_pos = apply_object_pending_transform(
             scene, resolved.Draw, trs_transform_point(world, scene.GetLocalPosition(resolved.Draw, vertex_id))
         );
-        clip[corner] = scene.ViewProj() * float4(world_pos, 1.0f);
+        world_position[corner] = world_pos;
+        if (!triangle_topology) {
+            world_normal[corner] = trs_transform_normal(world, scene.GetVertexNormal(resolved.Draw, vertex_id));
+        }
+        clip[corner] = triangle_topology ? scene.ViewProj() * float4(world_pos, 1.0f) : NonTrianglePosition(
+            scene, scene.B, meshlet_vertex_slot, resolved.Draw, resolved.Meshlet,
+            topology, logical_element, quad_corner
+        );
         vertex_color[corner] = resolved.Draw.CornerColorOffset != INVALID_OFFSET ?
             float4(scene.CornerColors(scene.View.CornerColorSlot)[resolved.Draw.CornerColorOffset + vertex_index]) : float4(1.0f);
+        if (!triangle_topology) point_coord[corner] = PointQuadCorners[quad_corner] * 0.5f + 0.5f;
     }
     const PerspectiveWeights weights = TriangleWeights(pixel, clip[0], clip[1], clip[2], float2(view.ViewportSize));
     return {
         weights,
         PerspectiveValue(weights.Value, vertex_color[0], vertex_color[1], vertex_color[2]),
+        PerspectiveValue(weights.Value, point_coord[0], point_coord[1], point_coord[2]),
+        PerspectiveValue(weights.Value, world_normal[0], world_normal[1], world_normal[2]),
+        PerspectiveValue(weights.Value, world_position[0], world_position[1], world_position[2]),
     };
 }
 
@@ -264,6 +293,7 @@ inline VisibilityTextureCoordinates DecodeVisibilityTextureCoordinates(
     const thread Scene &scene, const thread ResolvedVisibility &resolved,
     const thread VisibilityCoverageValues &coverage, uint uv_set
 ) {
+    if (MeshletPrimitiveTopology(resolved.Meshlet) != MeshPrimitiveTopology_Triangle) return {};
     const uint set = min(uv_set, 3u);
     const uint offset = resolved.Draw.CornerUvOffsets[set];
     float2 uv[3]{};
@@ -310,12 +340,15 @@ inline ResolvedVisibility ResolveVisibilityId(
     ResolvedVisibility result = ResolveVisibilityPrimitive(id, bindless, pc);
     if (!result.Valid) return result;
     const Scene scene{bindless, view, theme, workspace};
+    const uint topology = MeshletPrimitiveTopology(result.Meshlet);
+    const uint logical_element = topology == MeshPrimitiveTopology_Triangle ?
+        result.LocalTriangle : result.LocalTriangle / 2u;
     result.Triangle = BindlessBuffer(uint, bindless.Buffer, pc.MeshletTriangleSlot)[
-        result.Meshlet.TriangleOffset + result.LocalTriangle
+        result.Meshlet.TriangleOffset + logical_element
     ];
-    result.FaceId = scene.ObjectIds(result.Draw.ObjectIdSlot)[
-        result.Draw.FaceIdOffset + result.Triangle - result.Primitive.FirstTriangle
-    ];
+    result.FaceId = topology == MeshPrimitiveTopology_Triangle ?
+        scene.ObjectIds(result.Draw.ObjectIdSlot)[result.Draw.FaceIdOffset + result.Triangle - result.Primitive.FirstTriangle] :
+        result.Triangle + 1u;
     return result;
 }
 
@@ -357,7 +390,51 @@ inline DecodedVisibility DecodeVisibilityId(
     const DrawData draw = resolved.Draw;
     const uint triangle = resolved.Triangle;
     const uint face_id = resolved.FaceId;
-    const uchar packed_first = BindlessBuffer(uchar, bindless.Buffer, pc.MeshletLocalTriangleSlot)[meshlet.LocalTriangleOffset + resolved.LocalTriangle * 3u];
+    const uint topology = MeshletPrimitiveTopology(meshlet);
+    if (topology != MeshPrimitiveTopology_Triangle) {
+        const uint logical_element = resolved.LocalTriangle / 2u;
+        MeshVaryings corners[3];
+        float2 point_coords[3];
+        for (uint corner = 0u; corner < 3u; ++corner) {
+            const uint quad_corner = line_quad_corner((resolved.LocalTriangle & 1u) * 3u + corner);
+            const uint vertex_id = NonTriangleVertexId(
+                bindless, pc.MeshletVertexSlot, meshlet, topology, logical_element, quad_corner
+            );
+            corners[corner] = VisibilityCorner(scene, draw, vertex_id, vertex_id, 0u, true, velocity_output);
+            corners[corner].Position = NonTrianglePosition(
+                scene, bindless, pc.MeshletVertexSlot, draw, meshlet, topology, logical_element, quad_corner
+            );
+            point_coords[corner] = PointQuadCorners[quad_corner] * 0.5f + 0.5f;
+        }
+        const PerspectiveWeights weights = TriangleWeights(
+            pixel, corners[0].Position, corners[1].Position, corners[2].Position, float2(view.ViewportSize)
+        );
+        result.V.Position = float4(pixel, 0.0f, 1.0f);
+        result.V.WorldNormal = PerspectiveValue(weights.Value, corners[0].WorldNormal, corners[1].WorldNormal, corners[2].WorldNormal);
+        result.V.WorldPosition = PerspectiveValue(weights.Value, corners[0].WorldPosition, corners[1].WorldPosition, corners[2].WorldPosition);
+        constant ViewportThemeColors &colors = scene.Theme.Colors;
+        const float4 base_color = float4(float3(colors.Wire), 1.0f);
+        result.V.Color = view.InteractionMode == InteractionMode_Object && view.ShowOverlays != 0u ?
+            scene.ObjectSelectionColor(scene.InstanceState(draw), base_color) : base_color;
+        result.V.VertexColor = draw.CornerColorOffset != INVALID_OFFSET ?
+            PerspectiveValue(weights.Value, corners[0].VertexColor, corners[1].VertexColor, corners[2].VertexColor) : float4(1.0f);
+        result.V.WorldTangent = float4(0, 0, 0, 1);
+        result.V.MotionPrev = PerspectiveValue(weights.Value, corners[0].MotionPrev, corners[1].MotionPrev, corners[2].MotionPrev);
+        result.V.MotionNext = PerspectiveValue(weights.Value, corners[0].MotionNext, corners[1].MotionNext, corners[2].MotionNext);
+        result.V.FlatWorldNormal = float3(0.0f);
+        result.V.FaceOverlayFlags = 0u;
+        result.V.MaterialIndex = MeshletPrimitiveMaterialIndex(scene, primitive);
+        const float3 scale = float3(MeshletWorld(scene, draw).S);
+        result.V.WorldScale = (scale.x + scale.y + scale.z) / 3.0f;
+        result.ObjectId = instance.ObjectId;
+        result.ElementId = instance.ElementIdOffset + face_id;
+        result.InstanceFlags = instance.Flags;
+        result.Topology = topology;
+        result.PointCoord = PerspectiveValue(weights.Value, point_coords[0], point_coords[1], point_coords[2]);
+        result.Valid = true;
+        return result;
+    }
+    const uchar packed_first = BindlessBuffer(uchar, bindless.Buffer, pc.MeshletLocalTriangleSlot)[MeshletLocalTriangleOffset(meshlet) + resolved.LocalTriangle * 3u];
     const bool flat_face = (packed_first & MeshletGeometryEncoding_FlatTriangleBit) != 0u;
 
     MeshVaryings corners[3];
@@ -401,6 +478,8 @@ inline DecodedVisibility DecodeVisibilityId(
     result.ObjectId = face.ObjectId;
     result.ElementId = face.ElementId;
     result.InstanceFlags = instance.Flags;
+    result.Topology = uint(MeshPrimitiveTopology_Triangle);
+    result.PointCoord = float2(0.0f);
     result.Valid = true;
     return result;
 }
@@ -419,7 +498,7 @@ inline DecodedVisibility DecodeWorkspaceVisibilityId(
 
     const Scene scene{bindless, view, theme, workspace};
     const uchar packed_first = BindlessBuffer(uchar, bindless.Buffer, pc.MeshletLocalTriangleSlot)[
-        resolved.Meshlet.LocalTriangleOffset + resolved.LocalTriangle * 3u
+        MeshletLocalTriangleOffset(resolved.Meshlet) + resolved.LocalTriangle * 3u
     ];
     const bool flat_face = (packed_first & MeshletGeometryEncoding_FlatTriangleBit) != 0u;
     MeshVaryings corners[3];

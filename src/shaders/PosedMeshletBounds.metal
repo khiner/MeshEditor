@@ -29,7 +29,8 @@ kernel void PosedMeshletBoundsKernel(
     float3 hi = AabbEmptyMax;
     if (tid < meshlet.VertexCount) {
         const uint packed_vertex = MeshletPackedVertex(bindless, pc.MeshletVertexSlot, meshlet, tid);
-        const uint vertex_id = MeshletVertexId(scene, primitive.Draw, packed_vertex);
+        const uint topology = meshlet.LocalTriangleOffset >> MeshletGeometryEncoding_TopologyShift;
+        const uint vertex_id = MeshletVertexId(scene, primitive.Draw, topology, packed_vertex);
         const float3 position = float3(scene.PosedPositions(scene.View.PosedPositionSlot)[entry.PosedPositionOffset + vertex_id]);
         lo = position;
         hi = position;

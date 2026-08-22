@@ -42,25 +42,30 @@ constexpr mtl::FunctionConstant UintConstant(auto index, uint32_t value) {
     return {uint32_t(index), MTL::DataTypeUInt, value};
 }
 
-std::vector<mtl::FunctionConstant> MeshVertexConstants(uint32_t overlay_kind, bool line_draw, bool line_quad, bool velocity) {
+std::vector<mtl::FunctionConstant> MeshVertexConstants(
+    uint32_t overlay_kind, bool line_draw, bool velocity, bool non_triangle_topology = false
+) {
     return {
         UintConstant(MeshVertexConstant::OverlayKind, overlay_kind),
         UintConstant(MeshVertexConstant::IsLineDraw, line_draw ? 1u : 0u),
-        BoolConstant(MeshVertexConstant::LineQuad, line_quad),
         BoolConstant(MeshVertexConstant::VelocityOutput, velocity),
+        BoolConstant(MeshVertexConstant::NonTriangleTopology, non_triangle_topology),
     };
 }
 
-FunctionRef MeshVertex(uint32_t overlay_kind = 0, bool line_draw = false, bool line_quad = false, bool velocity = false) {
-    return {"VertexTransform.metal", "VertexTransformVertex", MeshVertexConstants(overlay_kind, line_draw, line_quad, velocity)};
+FunctionRef MeshVertex(uint32_t overlay_kind = 0, bool line_draw = false, bool velocity = false) {
+    return {"VertexTransform.metal", "VertexTransformVertex", MeshVertexConstants(overlay_kind, line_draw, velocity)};
 }
 
-FunctionRef MeshletVertex(bool velocity = false) {
-    return {"MeshletTransform.metal", "MeshletForwardMesh", MeshVertexConstants(0, false, false, velocity)};
+FunctionRef MeshletVertex(bool velocity = false, bool non_triangle_topology = false) {
+    return {
+        "MeshletTransform.metal", "MeshletForwardMesh",
+        MeshVertexConstants(0, false, velocity, non_triangle_topology)
+    };
 }
 
 FunctionRef MeshletVisibilityVertex() {
-    return {"MeshletTransform.metal", "MeshletVisibilityMesh", MeshVertexConstants(0, false, false, false)};
+    return {"MeshletTransform.metal", "MeshletVisibilityMesh", MeshVertexConstants(0, false, false)};
 }
 
 mtl::MeshRenderPipeline CreateMeshPipeline(
@@ -78,17 +83,17 @@ struct PbrPipelineSpec {
 };
 
 PbrPipelineSpec MakePbrPipelineSpec(
-    PbrFeatureMask mask, bool prepass, PbrCompiler::Variant variant, PbrCompiler::Topology topology,
-    const char *fragment = "PbrFragment"
+    PbrFeatureMask mask, bool prepass, PbrCompiler::Variant variant, const char *fragment,
+    bool non_triangle_topology
 ) {
     const bool velocity_pass = variant == PbrCompiler::Variant::OpaqueVelocity || variant == PbrCompiler::Variant::BlendVelocity;
     const bool velocity_output = variant == PbrCompiler::Variant::OpaqueVelocity;
     std::vector<FunctionConstant> constants;
-    constants.reserve(PbrSpecFeatures.size() + 3);
+    constants.reserve(PbrSpecFeatures.size() + 2);
     for (const auto &[constant, feature] : PbrSpecFeatures) constants.push_back(BoolConstant(constant, HasFeature(mask, feature)));
     constants.push_back(BoolConstant(PbrConstant::TransmissionPrepass, prepass));
-    constants.push_back(UintConstant(PbrConstant::Topology, uint32_t(topology)));
     constants.push_back(BoolConstant(PbrConstant::VelocityOutput, velocity_output));
+    constants.push_back(BoolConstant(PbrConstant::NonTriangleTopology, non_triangle_topology));
     std::vector<BlendState> blends{Blend};
     if (velocity_pass) blends.push_back(velocity_output ? NoBlend : NoWrite);
     return {velocity_pass, velocity_output, {"pbr.metal", fragment, std::move(constants)}, std::move(blends), {.Write = variant != PbrCompiler::Variant::Blend && variant != PbrCompiler::Variant::BlendVelocity}};
@@ -128,8 +133,6 @@ static RenderPipeline CreateQuadPipeline(mtl::LibraryCache &libraries, PassForma
 static PipelineRenderer CreateSceneRenderer(mtl::LibraryCache &libraries) {
     const auto formats = SceneFormats();
     std::unordered_map<SPT, RenderPipeline> pipelines;
-    pipelines.emplace(SPT::Fill, RenderPipeline{libraries, MeshVertex(), FunctionRef{"WorkspaceLighting.metal", "WorkspaceLightingFragment"}, formats, {Blend}, DepthTestWrite});
-    pipelines.emplace(SPT::FillDepth, RenderPipeline{libraries, MeshVertex(), std::nullopt, formats, {NoWrite}, DepthTestWrite});
     pipelines.emplace(SPT::Background, CreateBackgroundPipeline(libraries, formats, {Blend}, false));
     pipelines.emplace(SPT::TransmissionComposite, CreateQuadPipeline(libraries, formats, "TransmissionComposite.metal", "TransmissionCompositeFragment", PremultipliedBlend));
     pipelines.emplace(SPT::MotionBlurResolve, CreateQuadPipeline(libraries, formats, "MotionBlurResolve.metal", "MotionBlurResolveFragment", NoBlend));
@@ -175,76 +178,58 @@ static PipelineRenderer CreateOverlayRenderer(mtl::LibraryCache &libraries) {
 PbrCompiler::PbrCompiler(PassFormats scene, PassFormats scene_velocity)
     : SceneFormats(std::move(scene)), VelocityFormats(std::move(scene_velocity)) {}
 
-std::unique_ptr<RenderPipeline> PbrCompiler::CreateTargetedPipeline(
-    mtl::LibraryCache &libraries, PbrFeatureMask mask, bool prepass, Variant variant, Topology topology
-) const {
-    // Opaque geometry writes its screen motion into the velocity attachment. Blend geometry
-    // writes neither depth nor velocity, so its velocity twin masks the attachment off.
-    auto spec = MakePbrPipelineSpec(mask, prepass, variant, topology);
-    return std::make_unique<RenderPipeline>(
-        libraries, MeshVertex(0, false, topology == Topology::Line, spec.VelocityOutput), std::move(spec.Fragment),
-        spec.VelocityPass ? VelocityFormats : SceneFormats, std::move(spec.Blends), spec.Depth
-    );
-}
-
 std::unique_ptr<mtl::MeshRenderPipeline> PbrCompiler::CreateMeshletPipeline(
-    mtl::LibraryCache &libraries, PbrFeatureMask mask, bool prepass, Variant variant
+    mtl::LibraryCache &libraries, PbrFeatureMask mask, bool prepass, Variant variant,
+    bool non_triangle_topology
 ) const {
-    auto spec = MakePbrPipelineSpec(mask, prepass, variant, Topology::Triangle, "PbrMeshletFragment");
+    auto spec = MakePbrPipelineSpec(mask, prepass, variant, "PbrMeshletFragment", non_triangle_topology);
     return std::make_unique<mtl::MeshRenderPipeline>(
-        libraries, MeshletVertex(spec.VelocityOutput), std::move(spec.Fragment),
+        libraries, MeshletVertex(spec.VelocityOutput, non_triangle_topology), std::move(spec.Fragment),
         spec.VelocityPass ? VelocityFormats : SceneFormats, std::move(spec.Blends), spec.Depth
     );
 }
 
 std::unique_ptr<mtl::RenderPipeline> PbrCompiler::CreateVisibilityPipeline(
-    mtl::LibraryCache &libraries, PbrFeatureMask mask, bool prepass, Variant variant
+    mtl::LibraryCache &libraries, PbrFeatureMask mask, bool prepass, Variant variant,
+    bool non_triangle_topology
 ) const {
-    auto spec = MakePbrPipelineSpec(mask, prepass, variant, Topology::Triangle, "PbrVisibilityFragment");
+    auto spec = MakePbrPipelineSpec(mask, prepass, variant, "PbrVisibilityFragment", non_triangle_topology);
     return std::make_unique<mtl::RenderPipeline>(
         libraries, FunctionRef{"TexQuad.metal", "TexQuadVertex"}, std::move(spec.Fragment),
         spec.VelocityPass ? VelocityFormats : SceneFormats, std::move(spec.Blends), DepthOff
     );
 }
 
-bool PbrCompiler::CompilePipelines(mtl::LibraryCache &libraries, PbrFeatureMask mask, bool non_triangle) {
-    if (mask == Mask && non_triangle == NonTriangle && Variants[VariantIndex(Topology::Triangle, Variant::Opaque)] && Variants[VariantIndex(Topology::Triangle, Variant::Blend)]) return false;
+bool PbrCompiler::CompilePipelines(
+    mtl::LibraryCache &libraries, PbrFeatureMask mask, bool non_triangle_topology
+) {
+    if (mask == Mask && non_triangle_topology == NonTriangleTopology &&
+        MeshletVariants[size_t(Variant::Opaque)] && MeshletVariants[size_t(Variant::Blend)]) return false;
     const profile::CpuScope scope{"CompilePbrPipelines"};
 
     const bool transmission = ::HasFeature(mask, PbrFeature::Transmission);
-    for (size_t t = 0; t < TopologyCount; ++t) {
-        const auto topology = Topology(t);
-        for (size_t v = 0; v < VariantCount; ++v) Variants[VariantIndex(topology, Variant(v))].reset();
-        const bool triangle = topology == Topology::Triangle;
-        // Line and point topologies build only when the scene holds such meshes, and only in the variants their draws bind.
-        if (!triangle && !non_triangle) continue;
-        for (const auto v : {Variant::Opaque, Variant::OpaqueVelocity}) Variants[VariantIndex(topology, v)] = CreateTargetedPipeline(libraries, mask, false, v, topology);
-        if (!triangle) continue;
-        for (const auto v : {Variant::Blend, Variant::BlendVelocity}) Variants[VariantIndex(topology, v)] = CreateTargetedPipeline(libraries, mask, false, v, topology);
-        if (transmission) Variants[VariantIndex(topology, Variant::OpaquePrepass)] = CreateTargetedPipeline(libraries, mask, true, Variant::OpaquePrepass, topology);
-    }
     for (size_t v = 0; v < VariantCount; ++v) {
         const auto variant = Variant(v);
         if (variant == Variant::OpaquePrepass && !transmission) {
             MeshletVariants[v].reset();
         } else {
-            MeshletVariants[v] = CreateMeshletPipeline(libraries, mask, variant == Variant::OpaquePrepass, variant);
+            MeshletVariants[v] = CreateMeshletPipeline(
+                libraries, mask, variant == Variant::OpaquePrepass, variant, non_triangle_topology
+            );
         }
     }
     for (auto &pipeline : VisibilityVariants) pipeline.reset();
     for (const auto variant : {Variant::Opaque, Variant::OpaqueVelocity}) {
-        VisibilityVariants[size_t(variant)] = CreateVisibilityPipeline(libraries, mask, false, variant);
+        VisibilityVariants[size_t(variant)] = CreateVisibilityPipeline(
+            libraries, mask, false, variant, non_triangle_topology
+        );
     }
-    if (transmission) VisibilityVariants[size_t(Variant::OpaquePrepass)] = CreateVisibilityPipeline(libraries, mask, true, Variant::OpaquePrepass);
+    if (transmission) VisibilityVariants[size_t(Variant::OpaquePrepass)] = CreateVisibilityPipeline(
+                          libraries, mask, true, Variant::OpaquePrepass, non_triangle_topology
+                      );
     Mask = mask;
-    NonTriangle = non_triangle;
+    NonTriangleTopology = non_triangle_topology;
     return true;
-}
-
-void PbrCompiler::Bind(MTL::RenderCommandEncoder *encoder, Variant v, Topology t) const {
-    const auto &pipeline = Variants[VariantIndex(t, v)];
-    if (!pipeline) throw std::runtime_error("PbrCompiler: binding a variant that was never compiled.");
-    pipeline->Bind(encoder);
 }
 
 void PbrCompiler::BindMeshlets(MTL::RenderCommandEncoder *encoder, Variant variant) const {
@@ -260,9 +245,6 @@ void PbrCompiler::BindVisibility(MTL::RenderCommandEncoder *encoder, Variant var
 }
 
 void PbrCompiler::RecompileModules(mtl::LibraryCache &libraries) {
-    for (auto &variant : Variants) {
-        if (variant) variant->Compile(libraries);
-    }
     for (auto &variant : MeshletVariants) {
         if (variant) variant->Compile(libraries);
     }
@@ -371,17 +353,10 @@ SampledTexture MainPipeline::TransmissionSampler() const {
     return {*Transmission->Image, Transmission->Sampler.get()};
 }
 
-static PipelineRenderer CreateSilhouetteRenderer(mtl::LibraryCache &libraries) {
-    // Depth is stored for reuse by element selection (mutual occlusion between selected meshes).
-    const PassFormats formats{{Format::Float2}, Format::Depth};
-    std::unordered_map<SPT, RenderPipeline> pipelines;
-    pipelines.emplace(SPT::SilhouetteDepthObject, RenderPipeline{libraries, {"PositionTransform.metal", "PositionTransformVertex"}, FunctionRef{"DepthObject.metal", "DepthObjectFragment"}, formats, {NoBlend}, DepthTestWrite});
-    return {formats, std::move(pipelines)};
-}
-
 SilhouettePipeline::SilhouettePipeline(mtl::LibraryCache &libraries)
-    : Renderer{CreateSilhouetteRenderer(libraries)},
-      Visibility{libraries, {"TexQuad.metal", "TexQuadVertex"}, FunctionRef{"VisibilitySelection.metal", "VisibilitySilhouetteFragment"}, Renderer.Formats, {NoBlend}, DepthTestWrite} {}
+    : Visibility{
+          libraries, {"TexQuad.metal", "TexQuadVertex"}, FunctionRef{"VisibilitySelection.metal", "VisibilitySilhouetteFragment"}, PassFormats{{Format::Float2}, Format::Depth}, {NoBlend}, DepthTestWrite
+      } {}
 
 SilhouettePipeline::ResourcesT::ResourcesT(const mtl::Context &ctx, mtl::Extent2D extent)
     : DepthImage{mtl::CreateTexture2D(ctx, Format::Depth, extent, MTL::TextureUsageRenderTarget | MTL::TextureUsageShaderRead)},
@@ -519,7 +494,6 @@ void Pipelines::CompileShaders() {
     Main.MeshletVisibilityOpaque.Compile(Libraries);
     Main.MeshletVisibilityCoverage.Compile(Libraries);
     Main.Compiler.RecompileModules(Libraries);
-    Silhouette.Renderer.CompileShaders(Libraries);
     Silhouette.Visibility.Compile(Libraries);
     SilhouetteEdge.Renderer.CompileShaders(Libraries);
     SelectionFragment.Renderer.CompileShaders(Libraries);

@@ -47,31 +47,44 @@ fragment uint MeshletVisibilityPrimitiveFragment(
     // Raster-time coverage decodes the ID against the list this mesh draw is emitting. Alias both
     // phase slots so the encoded phase bit deliberately has no effect in this fragment.
     const VisibilityShadingPushConstants pc{
-        draw_pc.PrimitiveSlot,
-        draw_pc.InstanceSlot,
-        draw_pc.InstanceMapSlot,
-        draw_pc.MeshletSlot,
-        draw_pc.MeshletTriangleSlot,
-        draw_pc.MeshletLocalTriangleSlot,
-        draw_pc.VisibleMeshletSlot,
-        draw_pc.VisibleMeshletSlot,
+        .PrimitiveSlot = draw_pc.PrimitiveSlot,
+        .InstanceSlot = draw_pc.InstanceSlot,
+        .InstanceMapSlot = draw_pc.InstanceMapSlot,
+        .MeshletSlot = draw_pc.MeshletSlot,
+        .MeshletTriangleSlot = draw_pc.MeshletTriangleSlot,
+        .MeshletLocalTriangleSlot = draw_pc.MeshletLocalTriangleSlot,
+        .MeshletVertexSlot = draw_pc.MeshletVertexSlot,
+        .VisibleMeshletSlot = draw_pc.VisibleMeshletSlot,
+        .Phase2VisibleMeshletSlot = draw_pc.VisibleMeshletSlot,
     };
     const Scene scene{bindless, view, theme, workspace};
     ResolvedVisibility resolved = ResolveVisibilityPrimitive(primitive_id, bindless, pc);
+    const uint topology = MeshletPrimitiveTopology(resolved.Meshlet);
     const uint material_index = MeshletPrimitiveMaterialIndex(scene, resolved.Primitive);
     device const PBRMaterial &material = scene.Materials(view.MaterialSlot)[material_index];
-    const float3 scale = float3(MeshletWorld(scene, resolved.Draw).S);
-    const bool authored_front_facing = scale.x * scale.y * scale.z < 0.0f ? !front_facing : front_facing;
-    if (material.DoubleSided == 0u && !authored_front_facing) discard_fragment();
+    if (topology == MeshPrimitiveTopology_Triangle) {
+        const float3 scale = float3(MeshletWorld(scene, resolved.Draw).S);
+        const bool authored_front_facing = scale.x * scale.y * scale.z < 0.0f ? !front_facing : front_facing;
+        if (material.DoubleSided == 0u && !authored_front_facing) discard_fragment();
+    }
     const bool alpha_mask = material.AlphaMode == MaterialAlphaMode_Mask;
     const bool transmission_mask = draw_pc.VisibilityTransmission != 0u && material.Unlit == 0u &&
         material.Transmission.Factor > 0.0f;
-    if (!alpha_mask && !transmission_mask) return primitive_id;
+    const bool point_coverage = topology == MeshPrimitiveTopology_Point;
+    if (!alpha_mask && !transmission_mask && !point_coverage) return primitive_id;
 
+    const uint logical_element = topology == MeshPrimitiveTopology_Triangle ?
+        resolved.LocalTriangle : resolved.LocalTriangle / 2u;
     resolved.Triangle = BindlessBuffer(uint, bindless.Buffer, pc.MeshletTriangleSlot)[
-        resolved.Meshlet.TriangleOffset + resolved.LocalTriangle
+        resolved.Meshlet.TriangleOffset + logical_element
     ];
-    const VisibilityCoverageValues coverage = DecodeVisibilityCoverage(scene, resolved, position.xy, view);
+    const VisibilityCoverageValues coverage = DecodeVisibilityCoverage(
+        scene, resolved, position.xy, view, pc.MeshletVertexSlot
+    );
+    if (topology != MeshPrimitiveTopology_Triangle && material.DoubleSided == 0u &&
+        !IsFrontFacing(scene, coverage.WorldNormal, coverage.WorldPosition)) discard_fragment();
+    if (topology == MeshPrimitiveTopology_Point &&
+        length(coverage.PointCoord - float2(0.5f)) > 0.5f) discard_fragment();
     if (alpha_mask) {
         float4 base_color = float4(material.BaseColorFactor) * coverage.VertexColor;
         if (material.BaseColorTexture.Slot != INVALID_SLOT) {

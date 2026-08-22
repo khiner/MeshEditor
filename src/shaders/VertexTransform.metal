@@ -6,12 +6,10 @@
 #include "Varyings.metal"
 #include "CornerClass.metal"
 #include "CornerClassEncoding.metal"
-#include "LineQuad.metal"
 #include "MorphDeform.metal"
 #include "ArmatureDeform.metal"
 #include "TransformUtils.metal"
 #include "MainDrawPushConstants.metal"
-// LineQuad widens each line into a screen-space quad, six vertices per line.
 // VelocityOutput writes the shutter-open and shutter-close motion the velocity pass reads.
 #include "MeshVertexConstant.metal"
 
@@ -109,7 +107,6 @@ inline MeshVaryings TransformVertex(
     bool face_attributes = true, bool shading_normal = true
 ) {
     MeshVaryings out;
-    const uint corner = LineQuad ? line_quad_corner(vertex_id) : 0u;
     device const uint *indices = scene.Indices(draw.IndexSlotOffset.Slot);
     const Vertex vert = scene.Vertices(draw.VertexSlot)[idx + draw.VertexOffset];
     // Motion blur steps read their captured transforms through the override, keeping DrawData step-agnostic.
@@ -211,16 +208,6 @@ inline MeshVaryings TransformVertex(
     out.WorldScale = face_attributes ? (world_scale.x + world_scale.y + world_scale.z) / 3.0f : 0.0f;
     out.Position = scene.ViewProj() * float4(world_pos, 1.0f);
     out.PointSize = PointSize;
-    if (LineQuad) {
-        // The line's other endpoint, transformed through the same deformations.
-        const uint other_index = (vertex_id / 6u) * 2u + 1u - line_quad_endpoint(corner);
-        const uint other_idx = indices[draw.IndexSlotOffset.Offset + other_index];
-        const float3 other_pos = apply_object_pending_transform(scene, draw, trs_transform_point(world, scene.GetLocalPosition(draw, other_idx)));
-        const float4 other_clip = scene.ViewProj() * float4(other_pos, 1.0f);
-        // Half-width matches the wire overlay: its core plus the anti-aliased fringe.
-        const bool first = line_quad_endpoint(corner) == 0u;
-        out.Position = line_quad_position(scene, first ? out.Position : other_clip, first ? other_clip : out.Position, corner, scene.Theme.EdgeWidth + 0.5f);
-    }
     out.MotionPrev = float3(0);
     out.MotionNext = float3(0);
     if (VelocityOutput) {
@@ -251,10 +238,8 @@ vertex MeshVaryings VertexTransformVertex(
 ) {
     const Scene scene{bindless, view, theme, workspace};
     const DrawData draw = GetDrawData(scene, pc.DrawDataOffset, instance_id);
-    const uint corner = LineQuad ? line_quad_corner(vertex_id) : 0u;
-    const uint vertex_index = LineQuad ? (vertex_id / 6u) * 2u + line_quad_endpoint(corner) : vertex_id;
     device const uint *indices = scene.Indices(draw.IndexSlotOffset.Slot);
-    return TransformVertex(scene, draw, vertex_id, vertex_index, indices[draw.IndexSlotOffset.Offset + vertex_index]);
+    return TransformVertex(scene, draw, vertex_id, vertex_id, indices[draw.IndexSlotOffset.Offset + vertex_id]);
 }
 
 #endif

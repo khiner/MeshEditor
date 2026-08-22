@@ -116,6 +116,7 @@ VisibilityShadingPushConstants SelectionVisibilityPc(const GpuBuffers &buffers) 
         .MeshletSlot = buffers.Meshlets.Buffer.Slot,
         .MeshletTriangleSlot = buffers.MeshletTriangleIds.Buffer.Slot,
         .MeshletLocalTriangleSlot = buffers.MeshletLocalTriangles.Buffer.Slot,
+        .MeshletVertexSlot = buffers.MeshletVertexCorners.Buffer.Slot,
         .VisibleMeshletSlot = buffers.VisibleMeshlets.Slot,
         .Phase2VisibleMeshletSlot = buffers.MeshletPhase2Visible.Slot,
     };
@@ -250,9 +251,7 @@ void RenderElementSelectionPass(
                     const auto &pipeline = write_bitset ? selection.VisibilityFaceBitsetBox : selection.VisibilityFace;
                     pipeline.Bind(encoder);
                     BindVisibilitySelectionTextures(encoder, pipelines);
-                    encode::SetPushConstants(encoder, VisibilitySelectionPushConstants{
-                        SelectionVisibilityPc(buffers), element_pc.Selection, element_pc.Box, element_pc.BoxResultSlot
-                    });
+                    encode::SetPushConstants(encoder, VisibilitySelectionPushConstants{SelectionVisibilityPc(buffers), element_pc.Selection, element_pc.Box, element_pc.BoxResultSlot});
                     encoder->drawPrimitives(MTL::PrimitiveTypeTriangleStrip, NS::UInteger(0), NS::UInteger(4));
                 }
             } else if (element_batch.DrawCount > 0) {
@@ -335,9 +334,7 @@ void RenderSelectionPassWith(
         if (meshlet_objects && buffers.MeshletInstanceCount > 0) {
             selection.VisibilityObject.Bind(encoder);
             BindVisibilitySelectionTextures(encoder, pipelines);
-            encode::SetPushConstants(encoder, VisibilitySelectionPushConstants{
-                SelectionVisibilityPc(buffers), sel_pc.Selection, {}, InvalidSlot
-            });
+            encode::SetPushConstants(encoder, VisibilitySelectionPushConstants{SelectionVisibilityPc(buffers), sel_pc.Selection, {}, InvalidSlot});
             encoder->drawPrimitives(MTL::PrimitiveTypeTriangleStrip, NS::UInteger(0), NS::UInteger(4));
         }
     });

@@ -87,7 +87,6 @@ struct PosedRanges {
 struct DrawState {
     DrawListBuilder List;
     std::unordered_map<entt::entity, PosedRanges> PosedByEntity;
-    DrawBatchInfo FillLine, FillPoint; // Point and line meshes, shaded in the scene pass.
     DrawBatchInfo EdgeQuad, WireLine, Point, ExtrasLine;
     DrawBatchInfo BoneFill, BoneWire, BoneSphereFill, BoneSphereWire;
     DrawBatchInfo OverlayFaceNormals, OverlayVertexNormals;

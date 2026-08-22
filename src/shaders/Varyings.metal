@@ -53,6 +53,8 @@ struct MeshletVertexVaryings {
     float WorldScale [[user(WorldScale)]] [[flat]];
     uint ObjectId [[user(ObjectId)]] [[flat]];
     uint ElementId [[user(ElementId)]] [[flat]];
+    uint Topology [[user(Topology)]] [[flat]];
+    float2 PointCoord [[user(PointCoord)]];
 };
 
 inline float3 ShadingWorldNormal(const thread MeshVaryings &v) {

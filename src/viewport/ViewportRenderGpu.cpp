@@ -11,15 +11,17 @@
 #include "gpu/DepthPyramidReducePushConstants.h"
 #include "gpu/FrustumCullPushConstants.h"
 #include "gpu/MainDrawPushConstants.h"
+#include "gpu/MeshPrimitiveTopology.h"
 #include "gpu/MeshletCullPushConstants.h"
-#include "gpu/PosedMeshletBoundsPushConstants.h"
 #include "gpu/MeshletDrawPushConstants.h"
+#include "gpu/MeshletGeometryEncoding.h"
 #include "gpu/MeshletInstanceFlag.h"
 #include "gpu/MotionBlurGatherPushConstants.h"
 #include "gpu/MotionBlurTilesDilatePushConstants.h"
 #include "gpu/MotionBlurTilesFlattenPushConstants.h"
 #include "gpu/NormalDeriveEntry.h"
 #include "gpu/NormalDerivePushConstants.h"
+#include "gpu/PosedMeshletBoundsPushConstants.h"
 #include "gpu/SilhouetteEdgeColorPushConstants.h"
 #include "gpu/SilhouetteEdgeDepthObjectPushConstants.h"
 #include "gpu/VisibilityShadingPushConstants.h"
@@ -44,6 +46,7 @@
 #include <entt/entity/registry.hpp>
 
 #include <cassert>
+#include <cstdlib>
 #include <cstring>
 #include <numbers>
 
@@ -97,12 +100,21 @@ void RecordDrawCounters(const GpuBuffers &buffers, const DrawListBuilder &draw_l
         if (buffers.MeshletRoutes.Contents().size() >= sizeof(MeshletRouteState)) {
             const auto &routes = *reinterpret_cast<const MeshletRouteState *>(buffers.MeshletRoutes.Contents().data());
             const auto count = [&](MeshletRoute route) { return routes.Counts[uint32_t(route)]; };
-            profile::RecordCounter("VisibleOpaqueMeshlets",
-                count(MeshletRoute::OpaqueCullBack) + count(MeshletRoute::OpaqueCullFront) +
-                count(MeshletRoute::OpaqueDoubleSided) + count(MeshletRoute::Coverage));
+            profile::RecordCounter("VisibleOpaqueMeshlets", count(MeshletRoute::OpaqueCullBack) + count(MeshletRoute::OpaqueCullFront) + count(MeshletRoute::OpaqueDoubleSided) + count(MeshletRoute::Coverage));
             profile::RecordCounter("VisibleCoverageMeshlets", count(MeshletRoute::Coverage));
             profile::RecordCounter("VisibleBlendMeshlets", count(MeshletRoute::Blend));
             profile::RecordCounter("VisibleTransmissionMeshlets", count(MeshletRoute::Transmission));
+            static const bool record_routes = std::getenv("MESHEDITOR_MESHLET_ROUTE_COUNTERS") != nullptr;
+            if (record_routes) {
+                profile::RecordCounter("MeshletRoute OpaqueCullBack", count(MeshletRoute::OpaqueCullBack));
+                profile::RecordCounter("MeshletRoute Blend", count(MeshletRoute::Blend));
+                profile::RecordCounter("MeshletRoute Transmission", count(MeshletRoute::Transmission));
+                profile::RecordCounter("MeshletRoute Silhouette", count(MeshletRoute::Silhouette));
+                profile::RecordCounter("MeshletRoute Phase2Candidate", count(MeshletRoute::Phase2Candidate));
+                profile::RecordCounter("MeshletRoute OpaqueCullFront", count(MeshletRoute::OpaqueCullFront));
+                profile::RecordCounter("MeshletRoute OpaqueDoubleSided", count(MeshletRoute::OpaqueDoubleSided));
+                profile::RecordCounter("MeshletRoute Coverage", count(MeshletRoute::Coverage));
+            }
         }
         profile::RecordCounter("DeviceAllocatedBytes", buffers.Ctx.Ctx.Device->currentAllocatedSize());
     }
@@ -560,9 +572,12 @@ bool DrawVisibilityRoute(uint32_t route_mask, MeshletRoute route) {
 
 uint32_t VisibilityRouteMask(const GpuBuffers &buffers, bool transmission) {
     uint32_t result = 1u << uint32_t(MeshletRoute::OpaqueCullBack);
-    const auto transforms = buffers.Instances.TransformBuffer.GetSpan<Transform>({
-        0u, buffers.Instances.TransformBuffer.Count<Transform>()
-    });
+    const uint32_t non_triangle_mask = (1u << uint32_t(MeshPrimitiveTopology::Line)) |
+        (1u << uint32_t(MeshPrimitiveTopology::Point));
+    if ((buffers.MeshletTopologyMask & non_triangle_mask) != 0u) {
+        result |= 1u << uint32_t(MeshletRoute::Coverage);
+    }
+    const auto transforms = buffers.Instances.TransformBuffer.GetSpan<Transform>({0u, buffers.Instances.TransformBuffer.Count<Transform>()});
     if (std::ranges::any_of(transforms, [](const Transform &world) {
             return world.S.x * world.S.y * world.S.z < 0.0f;
         })) {
@@ -573,7 +588,7 @@ uint32_t VisibilityRouteMask(const GpuBuffers &buffers, bool transmission) {
         if (material.DoubleSided != 0u) result |= 1u << uint32_t(MeshletRoute::OpaqueDoubleSided);
         if (material.AlphaMode == MaterialAlphaMode::Mask ||
             (transmission && material.Unlit == 0u && material.Transmission.Factor > 0.0f &&
-                material.Transmission.Texture.Slot != InvalidSlot)) {
+             material.Transmission.Texture.Slot != InvalidSlot)) {
             result |= 1u << uint32_t(MeshletRoute::Coverage);
         }
     }
@@ -624,6 +639,7 @@ VisibilityShadingPushConstants MakeVisibilityShadingPc(const GpuBuffers &buffers
         .MeshletSlot = buffers.Meshlets.Buffer.Slot,
         .MeshletTriangleSlot = buffers.MeshletTriangleIds.Buffer.Slot,
         .MeshletLocalTriangleSlot = buffers.MeshletLocalTriangles.Buffer.Slot,
+        .MeshletVertexSlot = buffers.MeshletVertexCorners.Buffer.Slot,
         .VisibleMeshletSlot = buffers.VisibleMeshlets.Slot,
         .Phase2VisibleMeshletSlot = buffers.MeshletPhase2Visible.Slot,
     };
@@ -1015,10 +1031,19 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
             }
         }
 
+        buffers.MeshletTopologyMask = 0u;
         for (const auto [instance_entity, instance, ri] : r.view<const Instance, const RenderInstance>().each()) {
             if (ri.BufferIndex == UINT32_MAX) continue;
             const auto *mesh_buffers = r.try_get<const MeshBuffers>(instance.Entity);
             if (!mesh_buffers || mesh_buffers->Primitives.Count == 0) continue;
+            if (mesh_buffers->Meshlets.Count != 0u) {
+                const MeshletRecord &first_meshlet = buffers.Meshlets.Buffer.GetSpan<MeshletRecord>(
+                                                                                {mesh_buffers->Meshlets.Offset, mesh_buffers->Meshlets.Count}
+                )
+                                                         .front();
+                const uint32_t topology = first_meshlet.LocalTriangleOffset >> uint32_t(MeshletGeometryEncoding::TopologyShift);
+                buffers.MeshletTopologyMask |= 1u << topology;
+            }
             InstanceRecord record{
                 .PrimitiveOffset = mesh_buffers->Primitives.Offset,
                 .PrimitiveCount = mesh_buffers->Primitives.Count,
@@ -1055,30 +1080,6 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
                 record.ElementStateSlotOffset = meshes.GetFaceStateRange(GetMesh(r, instance.Entity).GetStoreId());
             }
             buffers.Instances.RecordBuffer.GetMutableSpan<InstanceRecord>({ri.BufferIndex, 1}).front() = record;
-        }
-
-        if (show_fill) {
-            // Shade point and line meshes from their material: points as round sprites, lines as screen-space quads.
-            const auto append_non_triangle_fill = [&](DrawBatchInfo &batch, const MeshEntityData &e, ElementDomain domain) {
-                if (e.IsBone || e.Domain != domain || !shaded_in_scene_pass(e)) return;
-                const bool points = domain == ElementDomain::Vertex;
-                const auto index_range = points ? e.Buf.VertexIndices : e.Buf.EdgeIndices;
-                if (index_range.Count == 0) return;
-                const auto store_id = e.MeshComp->GetStoreId();
-                auto dd = MakeDrawData(e.Buf.Vertices, index_range, buffers.Instances, e.Deform.BoneDeformOffset, e.Deform.ArmatureDeformOffset, e.Deform.MorphDeformOffset, e.Deform.MorphTargetCount);
-                dd.ElementPrimitiveOffset = OffsetOrInvalid(meshes.GetElementPrimitiveRange(store_id));
-                dd.PrimitiveMaterialOffset = OffsetOrInvalid(meshes.GetPrimitiveMaterialRange(store_id));
-                dd.CornerColorOffset = OffsetOrInvalid(meshes.GetCornerColorRange(store_id));
-                const auto db = draw_list.Draws.size();
-                // Each line expands into a quad of two triangles, six vertices per line.
-                AppendDraw(draw_list, batch, points ? index_range.Count : index_range.Count * 3, e.Mod, dd, std::nullopt);
-                patch_mesh_draws(draw_list, db, e.Entity, e.Deform);
-            };
-            // Point and line meshes draw once in the main pass, outside the two-phase occlusion split (like the wire and point overlays).
-            draw.FillLine = draw_list.BeginBatch();
-            for (const auto &e : mesh_entities) append_non_triangle_fill(draw.FillLine, e, ElementDomain::Edge);
-            draw.FillPoint = draw_list.BeginBatch();
-            for (const auto &e : mesh_entities) append_non_triangle_fill(draw.FillPoint, e, ElementDomain::Vertex);
         }
 
         // Build bone batches for X-ray rendering (drawn after a mid-pass depth clear so bones are never occluded by scene meshes)
@@ -1223,11 +1224,11 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
             };
             const auto sel_line = run_sel_pass(
                 [](const auto &e) -> const auto & { return e.Buf.EdgeIndices; },
-                [](const auto &e) { return e.Buf.FaceIndices.Count > 0 || e.Buf.EdgeIndices.Count == 0; }
+                [&](const auto &e) { return e.Buf.FaceIndices.Count > 0 || e.Buf.EdgeIndices.Count == 0 || shaded_in_scene_pass(e); }
             );
             const auto sel_point = run_sel_pass(
                 [](const auto &e) -> const auto & { return e.Buf.VertexIndices; },
-                [](const auto &e) { return e.Buf.FaceIndices.Count > 0 || e.Buf.EdgeIndices.Count > 0; }
+                [&](const auto &e) { return e.Buf.FaceIndices.Count > 0 || e.Buf.EdgeIndices.Count > 0 || shaded_in_scene_pass(e); }
             );
 
             DrawBatchInfo sel_bone_sphere;
@@ -1288,6 +1289,13 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
 
         FlushDrawList(r, draw_list, buffers.RenderDraw);
     }
+    // A newly rebuilt draw list is the authoritative active-topology set. Specialize forward PBR
+    // here so scene loading needs no second registry scan and the first mixed-topology frame is correct.
+    if (show_rendered && use != DrawListUse::Reuse) {
+        pipelines.Main.Compiler.CompileTopologyPipelines(
+            pipelines.Libraries, (buffers.MeshletTopologyMask & ~1u) != 0u
+        );
+    }
     if (use != DrawListUse::Reuse || phase == RenderPhase::Full) RecordDrawCounters(buffers, draw_list, false);
 
     const bool transmission_active = real_transmission && pipelines.Main.Transmission;
@@ -1346,11 +1354,6 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
         renderer.Bind(encoder, spt);
         record_batch(batch, PipelinePrimitive(spt));
     };
-    auto record_pbr_batch = [&](const DrawBatchInfo &batch, PbrCompiler::Variant variant, PbrCompiler::Topology topology) {
-        if (batch.DrawCount == 0) return;
-        pipelines.Main.Compiler.Bind(encoder, variant, topology);
-        record_batch(batch, topology == PbrCompiler::Topology::Point ? MTL::PrimitiveTypePoint : MTL::PrimitiveTypeTriangle);
-    };
     const auto record_meshlets = [&](uint32_t route, auto &&bind_pipeline) {
         bind_pipeline();
         DrawMeshlets(encoder, buffers, route);
@@ -1382,7 +1385,8 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
     if (cull_scene_meshlets) {
         const bool stale_single_phase_transmission = real_transmission && disocclusion_possible;
         const uint32_t pyramid = show_fill && phase == RenderPhase::Full && main.Resources->DepthPyramidValid && !stale_single_phase_transmission ?
-            sel_slots.DepthPyramidSampler : InvalidSlot;
+            sel_slots.DepthPyramidSampler :
+            InvalidSlot;
         RecordMeshletCull(
             chain, slots, pipelines, buffers,
             {
@@ -1538,12 +1542,6 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
                 encoder->setFragmentTexture(*main.Resources->VisibilityImage, 0u);
                 encode::SetPushConstants(encoder, MakeVisibilityShadingPc(buffers));
                 draw_quad();
-            }
-            // Point and line meshes shade from their materials here.
-            if (draw_scene && show_rendered) {
-                const auto variant = blur ? PbrCompiler::Variant::OpaqueVelocity : PbrCompiler::Variant::Opaque;
-                record_pbr_batch(draw.FillLine, variant, PbrCompiler::Topology::Line);
-                record_pbr_batch(draw.FillPoint, variant, PbrCompiler::Topology::Point);
             }
         }
     }

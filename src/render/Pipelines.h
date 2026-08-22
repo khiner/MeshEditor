@@ -46,31 +46,22 @@ struct PbrCompiler {
     };
     static constexpr size_t VariantCount{5};
 
-    enum class Topology {
-        Triangle,
-        Line,
-        Point
-    };
-    static constexpr size_t TopologyCount{3};
-
-    static constexpr size_t VariantIndex(Topology t, Variant v) { return size_t(t) * VariantCount + size_t(v); }
-
-    bool CompilePipelines(mtl::LibraryCache &, PbrFeatureMask, bool non_triangle = false);
-    void Bind(MTL::RenderCommandEncoder *, Variant, Topology = Topology::Triangle) const;
+    bool CompilePipelines(mtl::LibraryCache &, PbrFeatureMask, bool non_triangle_topology);
+    bool CompileTopologyPipelines(mtl::LibraryCache &libraries, bool non_triangle_topology) {
+        return CompilePipelines(libraries, Mask, non_triangle_topology);
+    }
     void BindMeshlets(MTL::RenderCommandEncoder *, Variant) const;
     void BindVisibility(MTL::RenderCommandEncoder *, Variant) const;
     bool HasFeature(PbrFeature f) const { return ::HasFeature(Mask, f); }
     void RecompileModules(mtl::LibraryCache &);
 
 private:
-    std::unique_ptr<mtl::RenderPipeline> CreateTargetedPipeline(mtl::LibraryCache &, PbrFeatureMask, bool prepass, Variant, Topology) const;
-    std::unique_ptr<mtl::MeshRenderPipeline> CreateMeshletPipeline(mtl::LibraryCache &, PbrFeatureMask, bool prepass, Variant) const;
-    std::unique_ptr<mtl::RenderPipeline> CreateVisibilityPipeline(mtl::LibraryCache &, PbrFeatureMask, bool prepass, Variant) const;
+    std::unique_ptr<mtl::MeshRenderPipeline> CreateMeshletPipeline(mtl::LibraryCache &, PbrFeatureMask, bool prepass, Variant, bool) const;
+    std::unique_ptr<mtl::RenderPipeline> CreateVisibilityPipeline(mtl::LibraryCache &, PbrFeatureMask, bool prepass, Variant, bool) const;
 
     mtl::PassFormats SceneFormats, VelocityFormats;
     PbrFeatureMask Mask{0};
-    bool NonTriangle{false};
-    std::array<std::unique_ptr<mtl::RenderPipeline>, VariantCount * TopologyCount> Variants;
+    bool NonTriangleTopology{false};
     std::array<std::unique_ptr<mtl::MeshRenderPipeline>, VariantCount> MeshletVariants;
     std::array<std::unique_ptr<mtl::RenderPipeline>, VariantCount> VisibilityVariants;
 };
@@ -160,7 +151,6 @@ struct SilhouettePipeline {
 
     void SetExtent(const mtl::Context &, mtl::Extent2D);
 
-    PipelineRenderer Renderer;
     mtl::RenderPipeline Visibility;
     std::unique_ptr<ResourcesT> Resources;
 };

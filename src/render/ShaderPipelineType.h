@@ -1,8 +1,6 @@
 #pragma once
 
 enum class ShaderPipelineType {
-    Fill,
-    FillDepth,
     EdgeQuad,
     Line,
     LineOverlayFaceNormals,
@@ -13,7 +11,6 @@ enum class ShaderPipelineType {
     BackgroundVelocity,
     TransmissionComposite,
     MotionBlurResolve,
-    SilhouetteDepthObject,
     SilhouetteEdgeDepthObject,
     SilhouetteEdgeDepth,
     SilhouetteEdgeColor,

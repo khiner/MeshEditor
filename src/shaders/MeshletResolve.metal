@@ -70,6 +70,10 @@ inline uint MeshletPrimitiveMaterialIndex(
     ];
 }
 
+inline uint MeshletPrimitiveTopology(MeshletRecord meshlet) {
+    return meshlet.LocalTriangleOffset >> MeshletGeometryEncoding_TopologyShift;
+}
+
 inline uint MeshletFaceMaterialIndex(
     const thread Scene &scene, DrawData draw, uint face_id
 ) {

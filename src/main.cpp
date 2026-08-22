@@ -37,7 +37,9 @@
 #include "render/GpuBuffers.h"
 #include "render/Instance.h"
 #include "render/MaterialComponents.h"
+#include "render/Pipelines.h"
 #include "render/Profile.h"
+#include "render/Textures.h"
 #include "scene/Entity.h"
 #include "scene/SceneControlsUi.h"
 #include "scene/WorldTransform.h"
@@ -60,6 +62,7 @@
 
 #include <chrono>
 #include <csignal>
+#include <cstdlib>
 #include <exception>
 #include <fstream>
 #include <future>
@@ -432,6 +435,66 @@ std::expected<fs::path, std::string> SaveScreenshot(entt::registry &r, const fs:
     out.write(reinterpret_cast<const char *>(encoded->data()), std::streamsize(encoded->size()));
     if (!out) return std::unexpected{std::format("failed to write '{}'", out_path.string())};
     return out_path;
+}
+
+struct DepthPyramidDumpRequest {
+    fs::path Prefix;
+    uint32_t Frame;
+};
+
+std::optional<DepthPyramidDumpRequest> DepthPyramidDumpFromEnvironment() {
+    const char *prefix = std::getenv("MESHEDITOR_DEPTH_PYRAMID_DUMP");
+    if (!prefix || !*prefix) return std::nullopt;
+    const char *frame_text = std::getenv("MESHEDITOR_DEPTH_PYRAMID_FRAME");
+    char *end = nullptr;
+    const auto frame = frame_text ? std::strtoul(frame_text, &end, 10) : 1ul;
+    if (frame == 0 || (frame_text && (!end || *end != '\0')) || frame > UINT32_MAX) {
+        std::println(stderr, "MESHEDITOR_DEPTH_PYRAMID_FRAME must be a positive 32-bit integer.");
+        return std::nullopt;
+    }
+    return DepthPyramidDumpRequest{prefix, uint32_t(frame)};
+}
+
+bool DumpDepthPyramid(entt::registry &r, const fs::path &prefix) {
+    const auto &pipelines = r.ctx().get<const Pipelines>();
+    if (!pipelines.Main.Resources || !pipelines.Main.Resources->DepthPyramidValid) {
+        std::println(stderr, "Depth pyramid dump skipped because the pyramid is not valid.");
+        return false;
+    }
+    const auto &ctx = r.ctx().get<const mtl::Context>();
+    const auto &mips = pipelines.Main.Resources->DepthPyramidMips;
+    for (uint32_t mip_index = 0; mip_index < mips.size(); ++mip_index) {
+        const auto &mip = mips[mip_index];
+        const mtl::Texture view{mip.View, mip.Extent, 1};
+        const auto bytes = ReadbackImageRgba8(ctx, view, 0, 0, mip.Extent);
+        const auto expected_bytes = size_t(mip.Extent.Width) * mip.Extent.Height * sizeof(float);
+        if (bytes.size() != expected_bytes) {
+            std::println(stderr, "Depth pyramid mip {} readback returned {} bytes instead of {}.", mip_index, bytes.size(), expected_bytes);
+            return false;
+        }
+        auto output = prefix;
+        output += std::format("-mip{:02}-{}x{}.pfm", mip_index, mip.Extent.Width, mip.Extent.Height);
+        if (const auto parent = output.parent_path(); !parent.empty()) {
+            std::error_code ec;
+            fs::create_directories(parent, ec);
+            if (ec) {
+                std::println(stderr, "Depth pyramid dump could not create '{}': {}", parent.string(), ec.message());
+                return false;
+            }
+        }
+        std::ofstream out{output, std::ios::binary};
+        out << std::format("Pf\n{} {}\n-1.0\n", mip.Extent.Width, mip.Extent.Height);
+        const auto row_bytes = size_t(mip.Extent.Width) * sizeof(float);
+        for (uint32_t y = mip.Extent.Height; y-- > 0;) {
+            out.write(reinterpret_cast<const char *>(bytes.data() + size_t(y) * row_bytes), std::streamsize(row_bytes));
+        }
+        if (!out) {
+            std::println(stderr, "Depth pyramid dump could not write '{}'.", output.string());
+            return false;
+        }
+    }
+    std::println("Saved {} depth-pyramid mips with prefix '{}'.", mips.size(), prefix.string());
+    return true;
 }
 
 // Fit the scene into the middle half of the view without changing camera orientation.
@@ -1172,6 +1235,9 @@ bool RunHeadlessScene(entt::registry &r, entt::entity viewport, const char *init
     bool profile_cleared{false};
     bool submitted{false};
     bool done{false};
+    uint32_t submitted_frames{0};
+    const auto depth_pyramid_dump = DepthPyramidDumpFromEnvironment();
+    bool depth_pyramid_dumped{false};
     while (!done) {
         if (driver.DurationElapsed(r, viewport)) break;
         const auto extent = r.ctx().get<const ViewportExtent>().Value;
@@ -1195,6 +1261,10 @@ bool RunHeadlessScene(entt::registry &r, entt::entity viewport, const char *init
             SubmitViewport(r, viewport);
             WaitForRender(r);
             submitted = true;
+            ++submitted_frames;
+            if (depth_pyramid_dump && !depth_pyramid_dumped && submitted_frames == depth_pyramid_dump->Frame) {
+                depth_pyramid_dumped = DumpDepthPyramid(r, depth_pyramid_dump->Prefix);
+            }
         }
         if (bench_frames > 0) {
             // Benchmark: force a render every settled tick (direct request write) and exit after the requested count.
@@ -1379,8 +1449,7 @@ int main(int argc, char **argv) {
             }
         } else if (a == "--bench-action-count" && std::next(it) != args.end()) {
             capture.BenchActionCount = uint32_t(std::max(1, std::atoi(*++it)));
-        }
-        else if (a == "--camera" && std::next(it) != args.end()) capture.CameraName = *++it;
+        } else if (a == "--camera" && std::next(it) != args.end()) capture.CameraName = *++it;
         else if (a == "--shading" && std::next(it) != args.end()) {
             const std::string_view mode{*++it};
             capture.Shading = mode == "wireframe" ? ViewportShadingMode::Wireframe :

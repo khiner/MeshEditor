@@ -25,10 +25,7 @@
 // Defaults are all true so the unspecialized pipeline is the full-featured superset.
 // TransmissionPrepass renders into the transmission framebuffer: it discards transmission materials
 // (they must not sample their own attachment) and skips exposure, which the main pass applies after
-// sampling. Topology is 0 triangles, 1 lines, 2 points. VelocityOutput writes the screen motion the
-// velocity pass reads.
-constant bool NON_TRIANGLE = Topology != 0u;
-constant bool POINT_TOPOLOGY = Topology == 2u;
+// sampling. VelocityOutput writes the screen motion the velocity pass reads.
 
 constant uint INVALID_MATERIAL_SLOT = 0xffffffffu;
 
@@ -173,7 +170,7 @@ struct PbrContext {
 };
 
 inline PbrTargets ShadePbr(
-    MeshVaryings in, float2 point_coord, const thread Scene &scene,
+    MeshVaryings in, uint topology, float2 point_coord, const thread Scene &scene,
     constant SceneViewUBO &view, const thread PbrContext &ctx
 ) {
     PbrTargets out;
@@ -182,7 +179,7 @@ inline PbrTargets ShadePbr(
     // A discarded fragment keeps running to the end of the shader: its texture coordinates still feed
     // the gradients its quad neighbours sample with, and leaving early would blur every masked edge.
     // Point draws cover a square sprite, which rounds off here.
-    if (POINT_TOPOLOGY && length(point_coord - float2(0.5f)) > 0.5f) discard_fragment();
+    if (topology == uint(MeshPrimitiveTopology_Point) && length(point_coord - float2(0.5f)) > 0.5f) discard_fragment();
     if (VelocityOutput) {
         // Discarded fragments write nothing, leaving the motion of whatever surface (or the
         // background) shows through.
@@ -207,7 +204,7 @@ inline PbrTargets ShadePbr(
     if (material.AlphaMode == MaterialAlphaMode_Opaque) base_color.a = 1.0f;
 
     // A point or line vertex without a NORMAL has no surface orientation, so per the glTF spec it renders unlit.
-    const bool no_normal = NON_TRIANGLE && dot(world_normal, world_normal) < 1e-12f;
+    const bool no_normal = topology != uint(MeshPrimitiveTopology_Triangle) && dot(world_normal, world_normal) < 1e-12f;
     // Unlit fast path. An active debug channel falls through so every per-pixel property is computed.
     if (no_normal || (material.Unlit != 0u && view.DebugChannel == DebugChannel_None)) {
         if (material.AlphaMode == MaterialAlphaMode_Mask) {
@@ -554,19 +551,6 @@ inline PbrTargets ShadePbr(
     return out;
 }
 
-fragment PbrTargets PbrFragment(
-    MeshVaryings in [[stage_in]],
-    float2 point_coord [[point_coord]],
-    device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
-    constant SceneViewUBO &view [[buffer(BufferIndex_SceneView)]],
-    constant ViewportTheme &theme [[buffer(BufferIndex_ViewportTheme)]],
-    constant WorkspaceLights &workspace [[buffer(BufferIndex_WorkspaceLights)]]
-) {
-    const Scene scene{bindless, view, theme, workspace};
-    const PbrContext ctx{scene, in};
-    return ShadePbr(in, point_coord, scene, view, ctx);
-}
-
 fragment PbrTargets PbrMeshletFragment(
     MeshletVertexVaryings meshlet_in [[stage_in]],
     device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
@@ -577,7 +561,10 @@ fragment PbrTargets PbrMeshletFragment(
     const MeshVaryings in = FromMeshletVertexVaryings(meshlet_in);
     const Scene scene{bindless, view, theme, workspace};
     const PbrContext ctx{scene, in};
-    return ShadePbr(in, float2(0.0f), scene, view, ctx);
+    return ShadePbr(
+        in, NonTriangleTopology ? meshlet_in.Topology : uint(MeshPrimitiveTopology_Triangle),
+        meshlet_in.PointCoord, scene, view, ctx
+    );
 }
 
 fragment PbrTargets PbrVisibilityFragment(
@@ -598,7 +585,10 @@ fragment PbrTargets PbrVisibilityFragment(
         ctx.UvDx[set] = decoded.UvDx[set];
         ctx.UvDy[set] = decoded.UvDy[set];
     }
-    return ShadePbr(decoded.V, float2(0.0f), scene, view, ctx);
+    return ShadePbr(
+        decoded.V, NonTriangleTopology ? decoded.Topology : uint(MeshPrimitiveTopology_Triangle),
+        decoded.PointCoord, scene, view, ctx
+    );
 }
 
 #endif

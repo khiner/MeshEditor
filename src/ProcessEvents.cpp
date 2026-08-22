@@ -1992,8 +1992,10 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
                 const auto &active_lighting = GetActivePbrLighting(r, viewport, shading);
                 if (active_lighting.UseSceneLights) pbr_mask |= PbrFeature::Punctual;
                 for (const auto [_, feat] : r.view<const PbrMeshFeatures>().each()) pbr_mask |= feat.Mask;
-                const bool non_triangle = std::ranges::any_of(r.view<const SourceMeshKind>().each(), [](const auto &e) { return std::get<1>(e).Value != MeshKind::Triangles; });
-                if (pipelines.Main.Compiler.CompilePipelines(r.ctx().get<mtl::LibraryCache>(), pbr_mask, non_triangle)) request(RenderRequest::Rebuild);
+                const bool non_triangle_topology = (buffers.MeshletTopologyMask & ~1u) != 0u;
+                if (pipelines.Main.Compiler.CompilePipelines(
+                        r.ctx().get<mtl::LibraryCache>(), pbr_mask, non_triangle_topology
+                    )) request(RenderRequest::Rebuild);
                 const bool want_transmission = active_lighting.RealTransmission && HasFeature(pbr_mask, PbrFeature::Transmission);
                 const auto te_px = RenderExtentPx(r);
                 if (pipelines.Main.EnsureTransmissionResources(ctx, {te_px.x, te_px.y}, want_transmission)) refresh_transmission_sampler();
@@ -2191,7 +2193,6 @@ void RegisterSceneComponentHandlers(entt::registry &r) {
     track<changes::ActiveMaterialVariant>(r).on<MaterialVariants>(On::Create | On::Update);
     track<changes::PbrSpecialization>(r)
         .on<PbrMeshFeatures>(On::Create | On::Update | On::Destroy)
-        .on<SourceMeshKind>(On::Create | On::Destroy) // Point and line meshes add their own PBR topologies.
         .on<MaterialPreviewLighting>(On::Create | On::Update)
         .on<RenderedLighting>(On::Create | On::Update);
     track<changes::SceneView>(r)
