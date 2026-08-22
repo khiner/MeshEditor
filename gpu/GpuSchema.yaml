@@ -163,6 +163,29 @@ enums:
         value: 1u
       - name: ElementSelection
         value: 2u
+  # Deterministic compaction routes. Material visibility separates fixed-function winding and
+  # discard-capable coverage while preserving the existing forward and silhouette route numbers.
+  - name: MeshletRoute
+    type: u32
+    values:
+      - name: OpaqueCullBack
+        value: 0
+      - name: Blend
+        value: 1
+      - name: Transmission
+        value: 2
+      - name: Silhouette
+        value: 3
+      - name: Phase2Candidate
+        value: 4
+      - name: OpaqueCullFront
+        value: 5
+      - name: OpaqueDoubleSided
+        value: 6
+      - name: Coverage
+        value: 7
+      - name: Count
+        value: 8
   # Bit layout of the meshlet-local geometry streams.
   # A meshlet vertex packs its flat-only bit over the representative corner index.
   # A local triangle byte packs its all-flat bit over the first local vertex index.
@@ -459,7 +482,7 @@ structs:
   - name: MeshletCullBlockState
     fields:
       - name: Routes
-        type: u32[5]
+        type: u32[8]
   - name: MeshletBlendBlockState
     fields:
       - name: Buckets
@@ -475,9 +498,9 @@ structs:
   - name: MeshletRouteState
     fields:
       - name: Counts
-        type: u32[5]
+        type: u32[8]
       - name: Offsets
-        type: u32[5]
+        type: u32[8]
       - name: BlendOffsets
         type: u32[256]
   # One entry per draw-list DrawData element, for the frustum cull pass. Cmd is the entry's indirect
@@ -1195,6 +1218,40 @@ structs:
       - name: VisibleOffset
         type: u32
       - name: RequiredInstanceFlags
+        type: u32
+      - name: VisibilityPhase
+        type: u32
+      - name: VisibilityTransmission
+        type: u32
+  - name: VisibilityShadingPushConstants
+    push_constant: true
+    fields:
+      - name: PrimitiveSlot
+        type: u32
+      - name: InstanceSlot
+        type: u32
+      - name: InstanceMapSlot
+        type: u32
+      - name: MeshletSlot
+        type: u32
+      - name: MeshletTriangleSlot
+        type: u32
+      - name: MeshletLocalTriangleSlot
+        type: u32
+      - name: VisibleMeshletSlot
+        type: u32
+      - name: Phase2VisibleMeshletSlot
+        type: u32
+  - name: VisibilitySelectionPushConstants
+    push_constant: true
+    fields:
+      - name: Visibility
+        type: VisibilityShadingPushConstants
+      - name: Selection
+        type: SelectionContext
+      - name: Box
+        type: uvec4
+      - name: BoxResultSlot
         type: u32
   - name: MeshletCullPushConstants
     push_constant: true

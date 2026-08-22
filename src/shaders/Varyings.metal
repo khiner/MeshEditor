@@ -59,19 +59,12 @@ inline float3 ShadingWorldNormal(const thread MeshVaryings &v) {
     return (v.FaceOverlayFlags & 4u) != 0u ? v.FlatWorldNormal : v.WorldNormal;
 }
 
-struct MeshletDepthVaryings {
+struct MeshletPositionVaryings {
     float4 Position [[position]];
 };
 
-struct MeshletEmptyPrimitiveVaryings {};
-
-struct MeshletIdVaryings {
-    float4 Position [[position]];
-};
-
-struct MeshletIdPrimitiveVaryings {
-    uint ObjectId [[user(ObjectId)]] [[flat]];
-    uint ElementId [[user(ElementId)]] [[flat]];
+struct MeshletVisibilityPrimitiveVaryings {
+    uint Id [[primitive_id]];
 };
 
 inline MeshletVertexVaryings ToMeshletVertexVaryings(MeshVaryings v) {
@@ -80,6 +73,27 @@ inline MeshletVertexVaryings ToMeshletVertexVaryings(MeshVaryings v) {
         v.TexCoord0, v.TexCoord1, v.TexCoord2, v.TexCoord3, v.VertexColor,
         v.WorldTangent, v.MotionPrev, v.MotionNext,
     };
+}
+
+inline MeshVaryings FromMeshletVertexVaryings(MeshletVertexVaryings v) {
+    MeshVaryings out{};
+    out.Position = v.Position;
+    out.WorldNormal = v.WorldNormal;
+    out.FlatWorldNormal = v.FlatWorldNormal;
+    out.WorldPosition = v.WorldPosition;
+    out.Color = v.Color;
+    out.FaceOverlayFlags = v.FaceOverlayFlags;
+    out.TexCoord0 = v.TexCoord0;
+    out.TexCoord1 = v.TexCoord1;
+    out.TexCoord2 = v.TexCoord2;
+    out.TexCoord3 = v.TexCoord3;
+    out.MaterialIndex = v.MaterialIndex;
+    out.VertexColor = v.VertexColor;
+    out.WorldTangent = v.WorldTangent;
+    out.WorldScale = v.WorldScale;
+    out.MotionPrev = v.MotionPrev;
+    out.MotionNext = v.MotionNext;
+    return out;
 }
 
 // What the VertexColor fragment reads, whichever vertex shader produced it.

@@ -19,6 +19,7 @@
 #include "IridescenceBRDF.metal"
 #include "PbrConstant.metal"
 #include "Velocity.metal"
+#include "VisibilityDecode.metal"
 
 // Each Enable* constant disables its feature entirely when false, and the compiler removes it.
 // Defaults are all true so the unspecialized pipeline is the full-featured superset.
@@ -96,6 +97,9 @@ inline float3x3 GetNormalMapTBN(float3 t, float3 b, float3 n, float uv_rotation)
 struct PbrContext {
     Scene S;
     const thread MeshVaryings &In;
+    float2 UvDx[4];
+    float2 UvDy[4];
+    bool ExplicitGradients;
 
     float2 GetUv(uint uv_set) const {
         if (uv_set == 1u) return In.TexCoord1;
@@ -106,7 +110,18 @@ struct PbrContext {
     float2 GetUv(TextureInfo tex) const {
         return ApplyUvTransform(GetUv(tex.TexCoord), float2(tex.UvOffset), float2(tex.UvScale), tex.UvRotation);
     }
-    float4 SampleTexture(TextureInfo tex) const { return S.SampleTex(tex.Slot, GetUv(tex)); }
+    float2 TransformUvGradient(float2 gradient, TextureInfo tex) const {
+        const float s = sin(tex.UvRotation);
+        const float c = cos(tex.UvRotation);
+        const float2 scaled = gradient * float2(tex.UvScale);
+        return float2(c * scaled.x - s * scaled.y, s * scaled.x + c * scaled.y);
+    }
+    float4 SampleTexture(TextureInfo tex) const {
+        const float2 uv = GetUv(tex);
+        if (!ExplicitGradients) return S.SampleTex(tex.Slot, uv);
+        const uint set = min(tex.TexCoord, 3u);
+        return S.SampleTexGrad(tex.Slot, uv, TransformUvGradient(UvDx[set], tex), TransformUvGradient(UvDy[set], tex));
+    }
 
     NormalInfo GetNormalInfo(device const PBRMaterial &material) const {
         const float2 uv = GetUv(material.NormalTexture);
@@ -145,7 +160,7 @@ struct PbrContext {
         info.t = t;
         info.b = b;
         if (material.NormalTexture.Slot != INVALID_MATERIAL_SLOT) {
-            info.ntex = S.SampleTex(material.NormalTexture.Slot, uv).rgb * 2.0f - float3(1.0f);
+            info.ntex = SampleTexture(material.NormalTexture).rgb * 2.0f - float3(1.0f);
             info.ntex *= float3(material.NormalScale, material.NormalScale, 1.0f);
             info.ntex = normalize(info.ntex);
             info.n = normalize(GetNormalMapTBN(t, b, ng, material.NormalTexture.UvRotation) * info.ntex);
@@ -157,16 +172,10 @@ struct PbrContext {
     }
 };
 
-fragment PbrTargets PbrFragment(
-    MeshVaryings in [[stage_in]],
-    float2 point_coord [[point_coord]],
-    device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
-    constant SceneViewUBO &view [[buffer(BufferIndex_SceneView)]],
-    constant ViewportTheme &theme [[buffer(BufferIndex_ViewportTheme)]],
-    constant WorkspaceLights &workspace [[buffer(BufferIndex_WorkspaceLights)]]
+inline PbrTargets ShadePbr(
+    MeshVaryings in, float2 point_coord, const thread Scene &scene,
+    constant SceneViewUBO &view, const thread PbrContext &ctx
 ) {
-    const Scene scene{bindless, view, theme, workspace};
-    const PbrContext ctx{scene, in};
     PbrTargets out;
     out.Color = float4(0.0f);
 
@@ -543,6 +552,53 @@ fragment PbrTargets PbrFragment(
 
     out.Color = float4(color, base_color.a);
     return out;
+}
+
+fragment PbrTargets PbrFragment(
+    MeshVaryings in [[stage_in]],
+    float2 point_coord [[point_coord]],
+    device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
+    constant SceneViewUBO &view [[buffer(BufferIndex_SceneView)]],
+    constant ViewportTheme &theme [[buffer(BufferIndex_ViewportTheme)]],
+    constant WorkspaceLights &workspace [[buffer(BufferIndex_WorkspaceLights)]]
+) {
+    const Scene scene{bindless, view, theme, workspace};
+    const PbrContext ctx{scene, in};
+    return ShadePbr(in, point_coord, scene, view, ctx);
+}
+
+fragment PbrTargets PbrMeshletFragment(
+    MeshletVertexVaryings meshlet_in [[stage_in]],
+    device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
+    constant SceneViewUBO &view [[buffer(BufferIndex_SceneView)]],
+    constant ViewportTheme &theme [[buffer(BufferIndex_ViewportTheme)]],
+    constant WorkspaceLights &workspace [[buffer(BufferIndex_WorkspaceLights)]]
+) {
+    const MeshVaryings in = FromMeshletVertexVaryings(meshlet_in);
+    const Scene scene{bindless, view, theme, workspace};
+    const PbrContext ctx{scene, in};
+    return ShadePbr(in, float2(0.0f), scene, view, ctx);
+}
+
+fragment PbrTargets PbrVisibilityFragment(
+    QuadVaryings quad [[stage_in]],
+    texture2d<uint, access::read> visibility [[texture(0)]],
+    device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
+    constant SceneViewUBO &view [[buffer(BufferIndex_SceneView)]],
+    constant ViewportTheme &theme [[buffer(BufferIndex_ViewportTheme)]],
+    constant WorkspaceLights &workspace [[buffer(BufferIndex_WorkspaceLights)]],
+    constant VisibilityShadingPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
+) {
+    DecodedVisibility decoded = DecodeVisibility(quad.Position.xy, visibility, bindless, view, theme, workspace, pc, VelocityOutput);
+    if (!decoded.Valid) discard_fragment();
+    const Scene scene{bindless, view, theme, workspace};
+    PbrContext ctx{scene, decoded.V};
+    ctx.ExplicitGradients = true;
+    for (uint set = 0u; set < 4u; ++set) {
+        ctx.UvDx[set] = decoded.UvDx[set];
+        ctx.UvDy[set] = decoded.UvDy[set];
+    }
+    return ShadePbr(decoded.V, float2(0.0f), scene, view, ctx);
 }
 
 #endif

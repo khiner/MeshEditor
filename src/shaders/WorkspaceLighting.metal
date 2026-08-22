@@ -5,6 +5,7 @@
 #include "Bindless.metal"
 #include "Varyings.metal"
 #include "tonemapping.metal"
+#include "VisibilityDecode.metal"
 
 // Approximate Fresnel effect with roughness attenuation.
 inline float3 brdf_approx(float3 spec_color, float roughness, float NV) {
@@ -84,14 +85,7 @@ inline float3 get_world_lighting(const thread Scene &scene, float3 base_color, f
     return diffuse_light + specular_light;
 }
 
-fragment float4 WorkspaceLightingFragment(
-    MeshVaryings in [[stage_in]],
-    device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
-    constant SceneViewUBO &view [[buffer(BufferIndex_SceneView)]],
-    constant ViewportTheme &theme [[buffer(BufferIndex_ViewportTheme)]],
-    constant WorkspaceLights &workspace [[buffer(BufferIndex_WorkspaceLights)]]
-) {
-    const Scene scene{bindless, view, theme, workspace};
+inline float4 ShadeWorkspace(MeshVaryings in, const thread Scene &scene, constant SceneViewUBO &view) {
     const float3x3 view_rotation = view.ViewRotation.Unpack();
     // View-space normal and view direction, matching Blender's camera-relative lighting default.
     float3 N = normalize(view_rotation * ShadingWorldNormal(in));
@@ -114,6 +108,35 @@ fragment float4 WorkspaceLightingFragment(
         color = mix(color, overlay, selected.a);
     }
     return float4(color, in.Color.a);
+}
+
+fragment float4 WorkspaceLightingFragment(
+    MeshVaryings in [[stage_in]],
+    device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
+    constant SceneViewUBO &view [[buffer(BufferIndex_SceneView)]],
+    constant ViewportTheme &theme [[buffer(BufferIndex_ViewportTheme)]],
+    constant WorkspaceLights &workspace [[buffer(BufferIndex_WorkspaceLights)]]
+) {
+    const Scene scene{bindless, view, theme, workspace};
+    return ShadeWorkspace(in, scene, view);
+}
+
+fragment float4 WorkspaceVisibilityFragment(
+    QuadVaryings quad [[stage_in]],
+    texture2d<uint, access::read> visibility [[texture(0)]],
+    device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
+    constant SceneViewUBO &view [[buffer(BufferIndex_SceneView)]],
+    constant ViewportTheme &theme [[buffer(BufferIndex_ViewportTheme)]],
+    constant WorkspaceLights &workspace [[buffer(BufferIndex_WorkspaceLights)]],
+    constant VisibilityShadingPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
+) {
+    const DecodedVisibility decoded = DecodeWorkspaceVisibilityId(
+        visibility.read(uint2(quad.Position.xy)).r, quad.Position.xy,
+        bindless, view, theme, workspace, pc
+    );
+    if (!decoded.Valid) discard_fragment();
+    const Scene scene{bindless, view, theme, workspace};
+    return ShadeWorkspace(decoded.V, scene, view);
 }
 
 #endif

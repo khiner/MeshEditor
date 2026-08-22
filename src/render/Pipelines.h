@@ -58,18 +58,21 @@ struct PbrCompiler {
     bool CompilePipelines(mtl::LibraryCache &, PbrFeatureMask, bool non_triangle = false);
     void Bind(MTL::RenderCommandEncoder *, Variant, Topology = Topology::Triangle) const;
     void BindMeshlets(MTL::RenderCommandEncoder *, Variant) const;
+    void BindVisibility(MTL::RenderCommandEncoder *, Variant) const;
     bool HasFeature(PbrFeature f) const { return ::HasFeature(Mask, f); }
     void RecompileModules(mtl::LibraryCache &);
 
 private:
     std::unique_ptr<mtl::RenderPipeline> CreateTargetedPipeline(mtl::LibraryCache &, PbrFeatureMask, bool prepass, Variant, Topology) const;
     std::unique_ptr<mtl::MeshRenderPipeline> CreateMeshletPipeline(mtl::LibraryCache &, PbrFeatureMask, bool prepass, Variant) const;
+    std::unique_ptr<mtl::RenderPipeline> CreateVisibilityPipeline(mtl::LibraryCache &, PbrFeatureMask, bool prepass, Variant) const;
 
     mtl::PassFormats SceneFormats, VelocityFormats;
     PbrFeatureMask Mask{0};
     bool NonTriangle{false};
     std::array<std::unique_ptr<mtl::RenderPipeline>, VariantCount * TopologyCount> Variants;
     std::array<std::unique_ptr<mtl::MeshRenderPipeline>, VariantCount> MeshletVariants;
+    std::array<std::unique_ptr<mtl::RenderPipeline>, VariantCount> VisibilityVariants;
 };
 
 struct MainPipeline {
@@ -86,7 +89,7 @@ struct MainPipeline {
         };
 
         // Scene-linear color and display-referred overlays stay separate until compositing.
-        mtl::Texture DepthImage, SceneColorImage, OverlayColorImage, LineDataImage, FinalColorImage;
+        mtl::Texture DepthImage, VisibilityImage, SceneColorImage, OverlayColorImage, LineDataImage, FinalColorImage;
         mtl::Texture DepthPyramidImage;
         std::vector<PyramidMip> DepthPyramidMips;
         NS::SharedPtr<MTL::SamplerState> NearestSampler;
@@ -136,7 +139,8 @@ struct MainPipeline {
     mtl::RenderPipeline MotionBlurAccumulate;
     mtl::PassFormats MotionBlurGatherFormats;
     mtl::RenderPipeline MotionBlurGather;
-    mtl::MeshRenderPipeline MeshletFill, MeshletDepth;
+    mtl::RenderPipeline WorkspaceVisibility;
+    mtl::MeshRenderPipeline MeshletVisibilityOpaque, MeshletVisibilityCoverage;
     std::unique_ptr<ResourcesT> Resources;
     std::unique_ptr<TransmissionResourcesT> Transmission;
     std::unique_ptr<MotionBlurResourcesT> MotionBlur;
@@ -157,7 +161,7 @@ struct SilhouettePipeline {
     void SetExtent(const mtl::Context &, mtl::Extent2D);
 
     PipelineRenderer Renderer;
-    mtl::MeshRenderPipeline Meshlet;
+    mtl::RenderPipeline Visibility;
     std::unique_ptr<ResourcesT> Resources;
 };
 
@@ -191,7 +195,8 @@ struct SelectionFragmentPipeline {
     void SetExtent(mtl::BufferContext &, mtl::Extent2D);
 
     PipelineRenderer Renderer;
-    mtl::MeshRenderPipeline MeshletObject, MeshletFace, MeshletFaceXRay, MeshletFaceBitsetBox, MeshletFaceXRayBitsetBox;
+    mtl::RenderPipeline VisibilityObject, VisibilityFace, VisibilityFaceBitsetBox;
+    mtl::MeshRenderPipeline MeshletFaceXRay, MeshletFaceXRayBitsetBox;
     std::unique_ptr<ResourcesT> Resources;
 };
 

@@ -9,6 +9,7 @@
 #include "gpu/SelectionDrawPushConstants.h"
 #include "gpu/SelectionElementPushConstants.h"
 #include "gpu/UpdateSelectionStatePushConstants.h"
+#include "gpu/VisibilitySelectionPushConstants.h"
 #include "mesh/MeshStore.h"
 #include "metal/PassChain.h"
 #include "metal/RenderTarget.h"
@@ -105,6 +106,24 @@ std::optional<uint32_t> ReadNearestPickedElement(const GpuBuffers &buffers, uint
 
 uint32_t MaxElementBound(auto &&ranges) {
     return std::ranges::fold_left(ranges, uint32_t{0}, [](uint32_t total, const auto &r) { return std::max(total, r.Offset + r.Count); });
+}
+
+VisibilityShadingPushConstants SelectionVisibilityPc(const GpuBuffers &buffers) {
+    return {
+        .PrimitiveSlot = buffers.Primitives.Buffer.Slot,
+        .InstanceSlot = buffers.Instances.RecordBuffer.Slot,
+        .InstanceMapSlot = buffers.GpuInstanceSlots.Buffer.Slot,
+        .MeshletSlot = buffers.Meshlets.Buffer.Slot,
+        .MeshletTriangleSlot = buffers.MeshletTriangleIds.Buffer.Slot,
+        .MeshletLocalTriangleSlot = buffers.MeshletLocalTriangles.Buffer.Slot,
+        .VisibleMeshletSlot = buffers.VisibleMeshlets.Slot,
+        .Phase2VisibleMeshletSlot = buffers.MeshletPhase2Visible.Slot,
+    };
+}
+
+void BindVisibilitySelectionTextures(MTL::RenderCommandEncoder *encoder, const Pipelines &pipelines) {
+    encoder->setFragmentTexture(*pipelines.Main.Resources->VisibilityImage, 0u);
+    encoder->setFragmentTexture(*pipelines.Main.Resources->DepthImage, 1u);
 }
 
 // Cull, optionally reset linked-list state, then draw selection fragments into silhouette depth.
@@ -207,7 +226,7 @@ void RenderElementSelectionPass(
     const auto &selection = pipelines.SelectionFragment;
     // Bitset writes append to prior linked-list state, so only the fresh-list path resets it.
     RunSelectionPass(
-        r, chain, draw_list, render_depth, element != Element::Face, element == Element::Face,
+        r, chain, draw_list, render_depth, element != Element::Face, element == Element::Face && xray_selection,
         uint32_t(MeshletInstanceFlag::ElementSelection), !write_bitset,
         [&](auto *encoder, mtl::Extent2D extent) {
             const SelectionElementPushConstants element_pc{
@@ -222,12 +241,20 @@ void RenderElementSelectionPass(
                 encode::DrawIndexedIndirect(encoder, primitive, *buffers.IdentityIndexBuffer, *buffers.SelectionDraw.Indirect, element_batch.IndirectOffset, element_batch.DrawCount);
             };
             if (element == Element::Face) {
-                const auto &pipeline = xray_selection ?
-                    (write_bitset ? selection.MeshletFaceXRayBitsetBox : selection.MeshletFaceXRay) :
-                    (write_bitset ? selection.MeshletFaceBitsetBox : selection.MeshletFace);
-                pipeline.Bind(encoder);
-                encode::SetPushConstants(encoder, element_pc);
-                DrawMeshlets(encoder, buffers);
+                if (xray_selection) {
+                    const auto &pipeline = write_bitset ? selection.MeshletFaceXRayBitsetBox : selection.MeshletFaceXRay;
+                    pipeline.Bind(encoder);
+                    encode::SetPushConstants(encoder, element_pc);
+                    DrawMeshlets(encoder, buffers, 0u, uint32_t(MeshletInstanceFlag::ElementSelection));
+                } else {
+                    const auto &pipeline = write_bitset ? selection.VisibilityFaceBitsetBox : selection.VisibilityFace;
+                    pipeline.Bind(encoder);
+                    BindVisibilitySelectionTextures(encoder, pipelines);
+                    encode::SetPushConstants(encoder, VisibilitySelectionPushConstants{
+                        SelectionVisibilityPc(buffers), element_pc.Selection, element_pc.Box, element_pc.BoxResultSlot
+                    });
+                    encoder->drawPrimitives(MTL::PrimitiveTypeTriangleStrip, NS::UInteger(0), NS::UInteger(4));
+                }
             } else if (element_batch.DrawCount > 0) {
                 draw_with(element_pipeline(element), ElementPrimitive(element));
             }
@@ -306,9 +333,12 @@ void RenderSelectionPassWith(
             encode::DrawIndexedIndirect(encoder, selection_draw.Primitive, *buffers.IdentityIndexBuffer, *buffers.SelectionDraw.Indirect, selection_draw.Batch.IndirectOffset, selection_draw.Batch.DrawCount);
         }
         if (meshlet_objects && buffers.MeshletInstanceCount > 0) {
-            selection.MeshletObject.Bind(encoder);
-            encode::SetPushConstants(encoder, sel_pc);
-            DrawMeshlets(encoder, buffers);
+            selection.VisibilityObject.Bind(encoder);
+            BindVisibilitySelectionTextures(encoder, pipelines);
+            encode::SetPushConstants(encoder, VisibilitySelectionPushConstants{
+                SelectionVisibilityPc(buffers), sel_pc.Selection, {}, InvalidSlot
+            });
+            encoder->drawPrimitives(MTL::PrimitiveTypeTriangleStrip, NS::UInteger(0), NS::UInteger(4));
         }
     });
 }

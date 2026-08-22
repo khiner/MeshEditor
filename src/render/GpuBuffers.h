@@ -7,6 +7,7 @@
 #include "gpu/MeshletBlendBlockState.h"
 #include "gpu/MeshletCullBlockState.h"
 #include "gpu/MeshletRecord.h"
+#include "gpu/MeshletRoute.h"
 #include "gpu/MeshletRouteState.h"
 #include "gpu/MeshletWorkBlockState.h"
 #include "gpu/MeshletWorkRange.h"
@@ -322,7 +323,7 @@ struct GpuBuffers {
 
     static constexpr uint32_t MeshletDispatchChunkSize{65'535};
     static constexpr uint32_t MeshletCullBlockSize{1024};
-    static constexpr uint32_t MeshletRouteCount{5};
+    static constexpr uint32_t MeshletRouteCount{uint32_t(MeshletRoute::Count)};
     // One 32-lane simdgroup per phase-2 cull threadgroup, matching the shader's Phase2GroupSize.
     static constexpr uint32_t MeshletPhase2GroupSize{32};
 
@@ -346,10 +347,12 @@ struct GpuBuffers {
         MeshletDispatchArgs.SetCount<MeshDispatchArgs>(MeshletRouteCount * MeshletDispatchChunkCount);
         if (two_phase) {
             MeshletPhase2Visible.SetCount<VisibleMeshlet>(work_meshlet_count);
-            // Phase 2 draws route 0 alone, so its args buffer holds that route's chunks only.
+            // Phase 2 conservatively uses one coverage-capable, two-sided visibility route.
             MeshletPhase2DispatchArgs.SetCount<MeshDispatchArgs>(MeshletDispatchChunkCount);
             MeshletPhase2RangeCandidates.SetCount<MeshletWorkRange>(work_range_count);
-            MeshletPhase2CullBlockCounts.SetCount<uint32_t>((work_meshlet_count + MeshletPhase2GroupSize - 1) / MeshletPhase2GroupSize);
+            MeshletPhase2CullBlockCounts.SetCount<uint32_t>(
+                (work_meshlet_count + MeshletPhase2GroupSize - 1) / MeshletPhase2GroupSize
+            );
         }
     }
 

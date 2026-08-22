@@ -76,6 +76,7 @@ void GpuBuffers::RebuildMeshlets(MeshBuffers &buffers, const Mesh &mesh, const M
     const auto corner_classes = meshes.GetCornerClasses(store_id);
     const uint32_t uniform_corner_class = meshes.GetCornerClassOffset(store_id);
     const auto face_ids = meshes.GetTriangleFaceIds(store_id);
+    [[maybe_unused]] const auto element_primitives = meshes.GetElementPrimitiveIndices(store_id);
     const bool morph_shading_authored = meshes.GetMorphShadingAuthored(store_id);
     const auto custom_corner_masks = meshes.GetCustomCornerMasks(store_id);
     const auto corner_tangents = meshes.GetCornerTangents(store_id);
@@ -110,6 +111,13 @@ void GpuBuffers::RebuildMeshlets(MeshBuffers &buffers, const Mesh &mesh, const M
         const auto first_index = size_t(primitive.FirstTriangle) * 3;
         const auto index_count = size_t(primitive.TriangleCount) * 3;
         const auto primitive_indices = std::span{indices}.subspan(first_index, index_count);
+
+        // Meshlets are built inside one source-primitive range. Coverage classification therefore
+        // remains uniform across every resulting meshlet and can be done once in the meshlet cull.
+        for (uint32_t triangle = primitive.FirstTriangle; triangle < primitive.FirstTriangle + primitive.TriangleCount; ++triangle) {
+            assert(face_ids[triangle] > 0u && face_ids[triangle] <= element_primitives.size());
+            assert(element_primitives[face_ids[triangle] - 1u] == primitive.PrimitiveIndex);
+        }
 
         welded_indices.assign(index_count, 0u);
         representative_corners.clear();
