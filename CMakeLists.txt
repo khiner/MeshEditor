@@ -137,6 +137,13 @@ endif()
 
 # Put source and generated shaders under one runtime path.
 file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/shaders")
+# Prune links whose source shader was deleted.
+file(GLOB SHADER_LINKS "${CMAKE_BINARY_DIR}/shaders/*")
+foreach(dst IN LISTS SHADER_LINKS)
+    if(IS_SYMLINK "${dst}" AND NOT EXISTS "${dst}")
+        file(REMOVE "${dst}")
+    endif()
+endforeach()
 file(GLOB SHADER_SOURCE_FILES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/src/shaders/*")
 foreach(src IN LISTS SHADER_SOURCE_FILES)
     get_filename_component(name "${src}" NAME)
