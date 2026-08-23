@@ -1,4 +1,5 @@
 #include "AABB.metal"
+#include "TransformUtils.metal"
 #include "Bindless.metal"
 #include "Frustum.metal"
 #include "InstanceRecord.metal"
@@ -44,12 +45,6 @@ inline uint OpaqueVisibilityRoute(PBRMaterial material, Transform world) {
     return scale.x * scale.y * scale.z < 0.0f ? MeshletRoute_OpaqueCullFront : MeshletRoute_OpaqueCullBack;
 }
 
-struct OrientedBounds {
-    float3 Center;
-    float3 Ax, Ay, Az;
-    bool Valid;
-};
-
 inline bool InstanceDeformed(InstanceRecord instance) {
     return instance.ArmatureDeformOffset != INVALID_OFFSET || instance.MorphDeformOffset != INVALID_OFFSET ||
         instance.PosedPositionOffset != INVALID_OFFSET || instance.HasPendingVertexTransform != 0u;
@@ -83,21 +78,6 @@ inline bool MeshletConeVisible(
     const float3 center = trs_transform_point(world, float3(meshlet.Center));
     const float3 camera_to_center = center - float3(scene.View.CameraPosition);
     return dot(camera_to_center, axis) < cutoff * length(camera_to_center) + meshlet.Radius * max_scale;
-}
-
-inline OrientedBounds TransformBounds(AABB bounds, Transform world) {
-    const float3 lo = float3(bounds.Min), hi = float3(bounds.Max);
-    if (lo.x > hi.x) return {};
-    const float3 half_local = (hi - lo) * 0.5f;
-    const float3 scale = float3(world.S);
-    const float4 rotation = float4(world.R);
-    return {
-        trs_transform_point(world, (lo + hi) * 0.5f),
-        quat_rotate(rotation, float3(scale.x * half_local.x, 0, 0)),
-        quat_rotate(rotation, float3(0, scale.y * half_local.y, 0)),
-        quat_rotate(rotation, float3(0, 0, scale.z * half_local.z)),
-        true,
-    };
 }
 
 inline OrientedBounds InstanceBounds(const thread Scene &scene, MeshletCullPushConstants pc, uint instance_slot) {

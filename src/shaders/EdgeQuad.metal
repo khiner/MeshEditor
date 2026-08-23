@@ -89,6 +89,11 @@ inline EdgeQuadVaryings EdgeQuadCorner(const thread Scene &scene, DrawData draw,
     constant OverlayMeshPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
 ) {
     const Scene scene{bindless, view, theme, workspace};
+    const DrawData draw = GetDrawDataAt(scene, pc.DrawDataIndex + threadgroup_position.y);
+    if (!InstanceInFrustum(scene, draw)) {
+        output.set_primitive_count(0u);
+        return;
+    }
     const uint first_edge = threadgroup_position.x * EdgeQuadMeshEdges;
     const uint edge_count = min(EdgeQuadMeshEdges, pc.ElementCount - first_edge);
     output.set_primitive_count(edge_count * 2u);
@@ -96,7 +101,6 @@ inline EdgeQuadVaryings EdgeQuadCorner(const thread Scene &scene, DrawData draw,
 
     const uint local_edge = thread_index / 4u;
     const uint corner = thread_index & 3u;
-    const DrawData draw = GetDrawDataAt(scene, pc.DrawDataIndex + threadgroup_position.y);
     output.set_vertex(thread_index, EdgeQuadCorner(scene, draw, first_edge + local_edge, corner));
 
     if (corner == 0u) {

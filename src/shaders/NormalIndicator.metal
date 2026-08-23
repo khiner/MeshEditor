@@ -86,12 +86,16 @@ inline void NormalIndicatorSegment(const thread Scene &scene, DrawData draw, uin
     constant OverlayMeshPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
 ) {
     const Scene scene{bindless, view, theme, workspace};
+    const DrawData draw = GetDrawDataAt(scene, pc.DrawDataIndex + threadgroup_position.y);
+    if (!InstanceInFrustum(scene, draw)) {
+        output.set_primitive_count(0u);
+        return;
+    }
     const uint first_element = threadgroup_position.x * NormalIndicatorCount;
     const uint element_count = min(NormalIndicatorCount, pc.ElementCount - first_element);
     output.set_primitive_count(element_count);
     if (thread_index >= element_count) return;
 
-    const DrawData draw = GetDrawDataAt(scene, pc.DrawDataIndex + threadgroup_position.y);
     const Transform world = scene.Models(draw.ModelSlot)[draw.FirstInstance];
     float3 start, end;
     NormalIndicatorSegment(scene, draw, first_element + thread_index, start, end);

@@ -36,12 +36,16 @@ inline uint SelectionObjectId(const thread Scene &scene, DrawData draw) {
     constant OverlayMeshPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
 ) {
     const Scene scene{bindless, view, theme, workspace};
+    const DrawData draw = GetDrawDataAt(scene, pc.DrawDataIndex + threadgroup_position.y);
+    if (!InstanceInFrustum(scene, draw)) {
+        output.set_primitive_count(0u);
+        return;
+    }
     const uint first_edge = threadgroup_position.x * SelectionLineEdges;
     const uint edge_count = min(SelectionLineEdges, pc.ElementCount - first_edge);
     output.set_primitive_count(edge_count);
     if (thread_index >= edge_count * 2u) return;
 
-    const DrawData draw = GetDrawDataAt(scene, pc.DrawDataIndex + threadgroup_position.y);
     ObjectIdFragmentVaryings out;
     out.ObjectId = SelectionObjectId(scene, draw);
     out.Position = SelectionIdClip(scene, draw, first_edge * 2u + thread_index);
@@ -60,12 +64,16 @@ inline uint SelectionObjectId(const thread Scene &scene, DrawData draw) {
     constant OverlayMeshPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
 ) {
     const Scene scene{bindless, view, theme, workspace};
+    const DrawData draw = GetDrawDataAt(scene, pc.DrawDataIndex + threadgroup_position.y);
+    if (!InstanceInFrustum(scene, draw)) {
+        output.set_primitive_count(0u);
+        return;
+    }
     const uint first_point = threadgroup_position.x * SelectionPoints;
     const uint point_count = min(SelectionPoints, pc.ElementCount - first_point);
     output.set_primitive_count(point_count);
     if (thread_index >= point_count) return;
 
-    const DrawData draw = GetDrawDataAt(scene, pc.DrawDataIndex + threadgroup_position.y);
     ObjectIdVaryings out;
     out.ObjectId = SelectionObjectId(scene, draw);
     out.Position = SelectionIdClip(scene, draw, first_point + thread_index);

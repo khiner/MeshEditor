@@ -40,12 +40,16 @@ inline float4 WireColor(const thread Scene &scene, DrawData draw, uint vertex_in
     constant OverlayMeshPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
 ) {
     const Scene scene{bindless, view, theme, workspace};
+    const DrawData draw = GetDrawDataAt(scene, pc.DrawDataIndex + threadgroup_position.y);
+    if (!InstanceInFrustum(scene, draw)) {
+        output.set_primitive_count(0u);
+        return;
+    }
     const uint first_edge = threadgroup_position.x * OverlayDispatch_LineGroupLines;
     const uint edge_count = min(OverlayDispatch_LineGroupLines, pc.ElementCount - first_edge);
     output.set_primitive_count(edge_count);
     if (thread_index >= edge_count * 2u) return;
 
-    const DrawData draw = GetDrawDataAt(scene, pc.DrawDataIndex + threadgroup_position.y);
     const uint edge = first_edge + thread_index / 2u;
     // Position of this halfedge in the draw's line list, which is also its element-state index.
     const uint vertex_index = edge * 2u + (thread_index & 1u);

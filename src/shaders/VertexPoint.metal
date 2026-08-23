@@ -125,12 +125,16 @@ using SoundPointIdOutput = metal::mesh<ElementIdVaryings, void, PointMeshPoints,
     constant OverlayMeshPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
 ) {
     const Scene scene{bindless, view, theme, workspace};
+    const DrawData draw = GetDrawDataAt(scene, pc.DrawDataIndex + threadgroup_position.y);
+    if (!InstanceInFrustum(scene, draw)) {
+        output.set_primitive_count(0u);
+        return;
+    }
     const uint first_point = threadgroup_position.x * PointMeshPoints;
     const uint point_count = min(PointMeshPoints, pc.ElementCount - first_point);
     output.set_primitive_count(point_count);
     if (thread_index >= point_count) return;
 
-    const DrawData draw = GetDrawDataAt(scene, pc.DrawDataIndex + threadgroup_position.y);
     output.set_vertex(thread_index, VertexPointSprite(scene, draw, first_point + thread_index));
     output.set_index(thread_index, thread_index);
 }

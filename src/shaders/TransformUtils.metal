@@ -1,8 +1,10 @@
 #ifndef TRANSFORMUTILS_MSL
 #define TRANSFORMUTILS_MSL
 
-// Shared pending-transform helpers.
+// Shared pending-transform and instance-bounds helpers.
+#include "AABB.metal"
 #include "Bindless.metal"
+#include "Frustum.metal"
 
 inline float4 quat_conjugate(float4 q) { return float4(-q.xyz, q.w); }
 
@@ -34,6 +36,40 @@ template<typename SetT>
 inline float4 MeshletPosition(const thread SceneT<SetT> &scene, DrawData draw, Transform world, uint vertex_id) {
     const float3 world_pos = apply_object_pending_transform(scene, draw, trs_transform_point(world, scene.GetLocalPosition(draw, vertex_id)));
     return scene.ViewProj() * float4(world_pos, 1.0f);
+}
+
+// An instance's local AABB carried into world space as an oriented box.
+struct OrientedBounds {
+    float3 Center;
+    float3 Ax, Ay, Az;
+    bool Valid;
+};
+
+inline OrientedBounds TransformBounds(AABB bounds, Transform world) {
+    const float3 lo = float3(bounds.Min), hi = float3(bounds.Max);
+    if (lo.x > hi.x) return {};
+    const float3 half_local = (hi - lo) * 0.5f;
+    const float3 scale = float3(world.S);
+    const float4 rotation = float4(world.R);
+    return {
+        trs_transform_point(world, (lo + hi) * 0.5f),
+        quat_rotate(rotation, float3(scale.x * half_local.x, 0, 0)),
+        quat_rotate(rotation, float3(0, scale.y * half_local.y, 0)),
+        quat_rotate(rotation, float3(0, 0, scale.z * half_local.z)),
+        true,
+    };
+}
+
+// True unless the draw's instance bounds lie wholly outside the view frustum.
+// A pending transform previews instances beyond their recorded bounds, so it suspends the test.
+template<typename SetT>
+inline bool InstanceInFrustum(const thread SceneT<SetT> &scene, DrawData draw) {
+    if (scene.View.InstanceBoundsSlot == INVALID_SLOT || scene.View.IsTransforming != 0u) return true;
+    const auto bounds = TransformBounds(
+        BindlessBuffer(AABB, scene.B.Buffer, scene.View.InstanceBoundsSlot)[draw.FirstInstance],
+        scene.Models(draw.ModelSlot)[draw.FirstInstance]
+    );
+    return !bounds.Valid || in_frustum(scene.ViewProj(), bounds.Center, bounds.Ax, bounds.Ay, bounds.Az);
 }
 
 #endif

@@ -1750,6 +1750,7 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
             .PosedSeamNormalSlot = buffers.PosedSeamNormals.Slot,
             .PosedFaceNormalSlot = buffers.PosedFaceNormals.Slot,
             .PosedMorphNormalDeltaSlot = buffers.PosedMorphNormalDeltas.Slot,
+            .InstanceBoundsSlot = buffers.Instances.BoundsBuffer.Slot,
             .MaterialSlot = buffers.Materials.Slot(),
             .PrimitiveMaterialSlot = meshes.GetPrimitiveMaterialSlot(),
             .ElementPrimitiveSlot = meshes.GetElementPrimitiveSlot(),

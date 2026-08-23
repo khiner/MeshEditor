@@ -721,6 +721,10 @@ structs:
       # Weight-summed authored morph normal deltas, one vec3 per posed vertex slot, present for authored-morph entries.
       - name: PosedMorphNormalDeltaSlot
         type: u32
+      # Local-space instance bounds from the GPU bounds reduction, for emission-side frustum culling.
+      - name: InstanceBoundsSlot
+        type: u32
+        default: InvalidSlot
       # Motion blur steps read their captured model transforms through this instead of the
       # per-draw ModelSlot, so the draw data stays step-agnostic.
       - name: ModelSlotOverride
