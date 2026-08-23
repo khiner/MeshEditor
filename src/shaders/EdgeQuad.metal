@@ -6,25 +6,18 @@
 #include "LineQuad.metal"
 #include "TransformUtils.metal"
 #include "Varyings.metal"
-#include "MainDrawPushConstants.metal"
+#include "OverlayDispatch.metal"
+#include "OverlayMeshPushConstants.metal"
 
-vertex EdgeQuadVaryings EdgeQuadVertex(
-    uint vertex_id [[vertex_id]],
-    uint instance_id [[instance_id]],
-    device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
-    constant SceneViewUBO &view [[buffer(BufferIndex_SceneView)]],
-    constant ViewportTheme &theme [[buffer(BufferIndex_ViewportTheme)]],
-    constant WorkspaceLights &workspace [[buffer(BufferIndex_WorkspaceLights)]],
-    constant MainDrawPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
-) {
-    const Scene scene{bindless, view, theme, workspace};
+// Edit/excite mode edges as screen-space quads with self-antialiasing.
+// Each threadgroup widens up to 40 edges into 4 corners and 2 triangles apiece, one thread per corner.
+constant uint EdgeQuadMeshEdges = OverlayDispatch_EdgeQuadGroupEdges;
+using EdgeQuadMeshOutput = metal::mesh<EdgeQuadVaryings, void, EdgeQuadMeshEdges * 4u, EdgeQuadMeshEdges * 2u, metal::topology::triangle>;
+
+// One corner of the quad around `edge_id`, with the edge's mark band and element-state coloring.
+inline EdgeQuadVaryings EdgeQuadCorner(const thread Scene &scene, DrawData draw, uint edge_id, uint corner) {
     constant ViewportThemeColors &colors = scene.Theme.Colors;
-    const DrawData draw = GetDrawData(scene, pc.DrawDataOffset, instance_id);
     const Transform world = scene.Models(draw.ModelSlot)[draw.FirstInstance];
-
-    // Six vertices per edge quad (two triangles).
-    const uint edge_id = vertex_id / 6u;
-    const uint corner = line_quad_corner(vertex_id);
     const uint endpoint = line_quad_endpoint(corner);
     const float side = line_quad_side(corner);
 
@@ -47,7 +40,7 @@ vertex EdgeQuadVaryings EdgeQuadVertex(
     EdgeQuadVaryings out;
     // Sharp edges draw a wider mark band around the wire core.
     const bool sharp = draw.EdgeSharpnessOffset != INVALID_OFFSET &&
-        uint(scene.ElementStates(view.EdgeSharpnessSlot)[draw.EdgeSharpnessOffset + edge_id]) != 0u;
+        uint(scene.ElementStates(scene.View.EdgeSharpnessSlot)[draw.EdgeSharpnessOffset + edge_id]) != 0u;
     out.OuterColor = sharp ? float4(float3(colors.EdgeSharp), 1.0f) : float4(0.0f);
 
     // EdgeWidth is already the half-width, plus a 0.5px antialiased fringe.
@@ -67,9 +60,8 @@ vertex EdgeQuadVaryings EdgeQuadVertex(
         uint(scene.ElementStates(draw.ElementStateSlotOffset.Slot)[draw.ElementStateSlotOffset.Offset + edge_id * 2u + endpoint]) :
         0u;
 
-    const bool is_edit_mode = view.InteractionMode == InteractionMode_Edit;
-    const bool is_edit_edge = is_edit_mode && view.EditElement == Element_Edge;
-    const float4 edge_color = is_edit_mode ? float4(float3(colors.WireEdit), 1.0f) : float4(float3(colors.Wire), 1.0f);
+    const bool is_edit_edge = scene.View.InteractionMode == InteractionMode_Edit && scene.View.EditElement == Element_Edge;
+    const float4 edge_color = WireBaseColor(scene);
     const bool is_selected = (element_state & STATE_SELECTED) != 0u;
     const bool is_active = (element_state & STATE_ACTIVE) != 0u;
 
@@ -81,11 +73,35 @@ vertex EdgeQuadVaryings EdgeQuadVertex(
     }
 
     float4 final_color = is_selected ? selected_color : edge_color;
-    const bool is_excited = (element_state & STATE_EXCITED) != 0u;
-    if (is_excited) final_color = float4(colors.ElementExcited);
-    else if (is_active) final_color = float4(float4(colors.ElementActive).rgb, 1.0f);
+    if (is_active) final_color = float4(float4(colors.ElementActive).rgb, 1.0f);
     out.Color = final_color;
     return out;
+}
+
+[[mesh]] void EdgeQuadMesh(
+    EdgeQuadMeshOutput output,
+    uint thread_index [[thread_index_in_threadgroup]],
+    uint3 threadgroup_position [[threadgroup_position_in_grid]],
+    device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
+    constant SceneViewUBO &view [[buffer(BufferIndex_SceneView)]],
+    constant ViewportTheme &theme [[buffer(BufferIndex_ViewportTheme)]],
+    constant WorkspaceLights &workspace [[buffer(BufferIndex_WorkspaceLights)]],
+    constant OverlayMeshPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
+) {
+    const Scene scene{bindless, view, theme, workspace};
+    const uint first_edge = threadgroup_position.x * EdgeQuadMeshEdges;
+    const uint edge_count = min(EdgeQuadMeshEdges, pc.ElementCount - first_edge);
+    output.set_primitive_count(edge_count * 2u);
+    if (thread_index >= edge_count * 4u) return;
+
+    const uint local_edge = thread_index / 4u;
+    const uint corner = thread_index & 3u;
+    const DrawData draw = GetDrawDataAt(scene, pc.DrawDataIndex + threadgroup_position.y);
+    output.set_vertex(thread_index, EdgeQuadCorner(scene, draw, first_edge + local_edge, corner));
+
+    if (corner == 0u) {
+        for (uint i = 0; i < 6u; ++i) output.set_index(local_edge * 6u + i, local_edge * 4u + LineQuadCornerLut[i]);
+    }
 }
 
 fragment OverlayTargets EdgeQuadFragment(

@@ -25,7 +25,6 @@ std::pair<entt::entity, entt::entity> AddMesh(entt::registry &, MeshStore &, Cre
 entt::entity AddMeshInstance(entt::registry &, entt::entity mesh_entity, const MeshInstanceCreateInfo &);
 
 // Creates a vertex-only buffer entity for derived overlay geometry (collider/AABB/tet wireframes).
-entt::entity CreateExtrasBufferEntity(entt::registry &, MeshStore &, std::span<const vec3> positions, std::span<const uint32_t> edge_indices = {});
 entt::entity CreateExtrasObject(entt::registry &, ObjectType, const ObjectCreateInfo &, std::string_view default_name);
 
 entt::entity AddEmpty(entt::registry &, MeshStore &, const ObjectCreateInfo & = {});

@@ -20,7 +20,7 @@
 #include <ranges>
 
 namespace {
-constexpr uint8_t ElementStateSelected{1u << 0}, ElementStateActive{1u << 1}, ElementStateExcited{1u << 2};
+constexpr uint8_t ElementStateSelected{1u << 0}, ElementStateActive{1u << 1};
 constexpr uint32_t ClassTagShift{uint32_t(CornerClassEncoding::TagShift)}, ClassIndexMask{uint32_t(CornerClassEncoding::IndexMask)};
 constexpr uint32_t UniformFaceOffset{uint32_t(CornerClassEncoding::UniformFaceOffset)};
 constexpr uint32_t FanLoopShift{uint32_t(FanItemEncoding::LoopShift)};
@@ -384,7 +384,6 @@ struct MeshStore::Buffers {
           BoneDeformBuffer{ctx, SlotType::BoneDeformBuffer},
           MorphTargetBuffer{ctx, SlotType::MorphTargetBuffer},
           VerticesBuffer{ctx, SlotType::VertexBuffer},
-          OverlayVerticesBuffer{ctx, SlotType::VertexBuffer},
           VertexStateBuffer{ctx, 0, SlotType::Buffer},
           FaceStateBuffer{ctx, 0, SlotType::Buffer},
           FaceSharpnessBuffer{ctx, 0, SlotType::Buffer},
@@ -396,6 +395,9 @@ struct MeshStore::Buffers {
           BaseFaceNormalBuffer{ctx, 0, SlotType::Buffer},
           PointNormalBuffer{ctx, SlotType::Buffer},
           EdgeSharpnessBuffer{ctx, SlotType::Buffer},
+          TetPositionBuffer{ctx, SlotType::Buffer},
+          TetEdgeIndexBuffer{ctx, SlotType::Buffer},
+          SoundVertexBuffer{ctx, SlotType::Buffer},
           CustomCornerMaskBuffer{ctx, SlotType::Buffer},
           CustomCornerNormalBuffer{ctx, SlotType::Buffer},
           CornerTangentBuffer{ctx, SlotType::CornerTangentBuffer},
@@ -409,8 +411,6 @@ struct MeshStore::Buffers {
     BufferArena<BoneDeformVertex> BoneDeformBuffer;
     BufferArena<MorphTargetVertex> MorphTargetBuffer;
     BufferArena<Vertex> VerticesBuffer;
-    // Overlay geometry, kept out of ForEachSerializedArena so Serialize skips it.
-    BufferArena<Vertex> OverlayVerticesBuffer;
     mtl::Buffer VertexStateBuffer; // Mirrors VerticesBuffer
     mtl::Buffer FaceStateBuffer; // Mirrors FaceFirstTriangleBuffer
     mtl::Buffer FaceSharpnessBuffer; // Mirrors FaceFirstTriangleBuffer. 1 = flat-shaded face (canonical sharpness store)
@@ -423,6 +423,11 @@ struct MeshStore::Buffers {
     mtl::Buffer BaseFaceNormalBuffer; // Mirrors FaceFirstTriangleBuffer, one derived face normal per face slot
     BufferArena<vec3> PointNormalBuffer; // Authored normals of face-less meshes, in vertex order
     BufferArena<uint8_t> EdgeSharpnessBuffer; // One byte per edge, 1 = sharp (canonical sharpness store)
+    // Canonical tetrahedral wireframe geometry, one range per mesh that carries a modal solve.
+    BufferArena<vec3> TetPositionBuffer;
+    BufferArena<uint32_t> TetEdgeIndexBuffer; // Two indices per tet edge
+    // Excitable vertex handles per sounding mesh. Derived from the sound model, so Serialize skips it.
+    BufferArena<uint32_t> SoundVertexBuffer;
     BufferArena<uvec2> CustomCornerMaskBuffer; // Custom corner-normal presence: a (bitset word, exclusive rank) pair per 32 corners
     BufferArena<vec2> CustomCornerNormalBuffer; // Authored corner-normal (polar, azimuth) offsets from the derived normal, packed to the masked corners
     BufferArena<vec4> CornerTangentBuffer; // Corner-domain attribute layers, one value per corner in fan order
@@ -448,8 +453,10 @@ struct MeshStore::Buffers {
         f(CornerColorBuffer);
         f(CornerUvBuffer);
         f(PointNormalBuffer);
+        f(TetPositionBuffer);
+        f(TetEdgeIndexBuffer);
     }
-    static constexpr size_t SerializedArenaCount = 15;
+    static constexpr size_t SerializedArenaCount = 17;
 
     void ForEachDerivedArena(auto &&f) {
         f(AdjacencyBuffer);
@@ -584,6 +591,30 @@ uint32_t MeshStore::GetCornerTangentSlot() const { return B->CornerTangentBuffer
 uint32_t MeshStore::GetCornerColorSlot() const { return B->CornerColorBuffer.Buffer.Slot; }
 uint32_t MeshStore::GetCornerUvSlot() const { return B->CornerUvBuffer.Buffer.Slot; }
 uint32_t MeshStore::GetEdgeSharpnessSlot() const { return B->EdgeSharpnessBuffer.Buffer.Slot; }
+uint32_t MeshStore::GetTetPositionSlot() const { return B->TetPositionBuffer.Buffer.Slot; }
+uint32_t MeshStore::GetTetEdgeIndexSlot() const { return B->TetEdgeIndexBuffer.Buffer.Slot; }
+
+TetBuffers MeshStore::AllocateTets(std::span<const vec3> positions, std::span<const uint32_t> edge_indices) {
+    const TetBuffers tets{B->TetPositionBuffer.Allocate(uint32_t(positions.size())), B->TetEdgeIndexBuffer.Allocate(uint32_t(edge_indices.size()))};
+    std::ranges::copy(positions, B->TetPositionBuffer.GetMutable(tets.Positions).begin());
+    std::ranges::copy(edge_indices, B->TetEdgeIndexBuffer.GetMutable(tets.EdgeIndices).begin());
+    return tets;
+}
+
+Range MeshStore::AllocateSoundVertices(std::span<const uint32_t> vertices) {
+    const auto range = B->SoundVertexBuffer.Allocate(uint32_t(vertices.size()));
+    std::ranges::copy(vertices, B->SoundVertexBuffer.GetMutable(range).begin());
+    return range;
+}
+
+void MeshStore::ReleaseSoundVertices(Range range) { B->SoundVertexBuffer.Release(range); }
+std::span<const uint32_t> MeshStore::GetSoundVertices(Range range) const { return B->SoundVertexBuffer.Get(range); }
+uint32_t MeshStore::GetSoundVertexSlot() const { return B->SoundVertexBuffer.Buffer.Slot; }
+
+void MeshStore::ReleaseTets(TetBuffers tets) {
+    B->TetPositionBuffer.Release(tets.Positions);
+    B->TetEdgeIndexBuffer.Release(tets.EdgeIndices);
+}
 uint32_t MeshStore::GetElementPrimitiveSlot() const { return B->ElementPrimitiveBuffer.Buffer.Slot; }
 uint32_t MeshStore::GetPrimitiveMaterialSlot() const { return B->PrimitiveMaterialBuffer.Buffer.Slot; }
 uint32_t MeshStore::GetBoneDeformSlot() const { return B->BoneDeformBuffer.Buffer.Slot; }
@@ -965,28 +996,6 @@ std::pair<uint32_t, Range> MeshStore::AllocateVertexBuffer(std::span<const vec3>
     const auto point_normals = attrs.Normals ? B->PointNormalBuffer.Allocate(std::span<const vec3>{*attrs.Normals}) : Range{};
     FillBaseVertexNormalMirror(vertices, point_normals);
     return {AcquireId({.Vertices = vertices, .FaceData = {}, .PointNormals = point_normals, .Alive = true}), vertices};
-}
-
-std::pair<uint32_t, Range> MeshStore::AllocateOverlayVertexBuffer(std::span<const vec3> positions) {
-    const auto vertices = B->OverlayVerticesBuffer.Allocate(positions.size());
-    WriteVertices(B->OverlayVerticesBuffer.GetMutable(vertices), positions);
-    if (!OverlayFreeIds.empty()) {
-        const auto id = OverlayFreeIds.back();
-        OverlayFreeIds.pop_back();
-        OverlayEntries[id] = vertices;
-        return {id, vertices};
-    }
-    OverlayEntries.push_back(vertices);
-    return {uint32_t(OverlayEntries.size() - 1), vertices};
-}
-
-SlottedRange MeshStore::GetOverlayVerticesRange(uint32_t id) const { return B->OverlayVerticesBuffer.Slotted(OverlayEntries.at(id)); }
-
-void MeshStore::ReleaseOverlay(uint32_t id) {
-    if (id >= OverlayEntries.size()) return;
-    B->OverlayVerticesBuffer.Release(OverlayEntries[id]);
-    OverlayEntries[id] = {};
-    OverlayFreeIds.push_back(id);
 }
 
 void MeshStore::PlanCreate(const MeshData &data, const MeshPrimitives &primitives, bool has_deform, uint32_t morph_target_count, const MeshVertexAttributes &attrs) {
@@ -1461,7 +1470,6 @@ void MeshStore::Release(uint32_t id) {
 void MeshStore::Clear() {
     B->ForEachSerializedArena([](auto &a) { a.Reset(); });
     B->ForEachDerivedArena([](auto &a) { a.Reset(); });
-    B->OverlayVerticesBuffer.Reset();
     B->VertexStateBuffer.UsedSize = 0;
     B->FaceStateBuffer.UsedSize = 0;
     B->FaceSharpnessBuffer.UsedSize = 0;
@@ -1469,8 +1477,6 @@ void MeshStore::Clear() {
     B->BaseFaceNormalBuffer.UsedSize = 0;
     Entries.clear();
     FreeIds.clear();
-    OverlayEntries.clear();
-    OverlayFreeIds.clear();
     Pending = {};
 }
 
@@ -1512,18 +1518,6 @@ void MeshStore::ClearElementStates(Range vertices, Range faces, Range edges) {
 
 using namespace he;
 
-void MeshStore::UpdateSoundVertexStates(const Mesh &mesh, std::span<const uint32_t> vertices, std::optional<uint32_t> active_vertex, std::optional<uint32_t> excited_vertex) {
-    const auto &entry = Entries.at(mesh.GetStoreId());
-    ClearElementStates(entry.Vertices, entry.FaceData, entry.EdgeStates);
-    auto vertex_states = GetVertexStates(entry.Vertices);
-    for (const auto v : vertices) {
-        if (v >= vertex_states.size()) continue;
-        vertex_states[v] |= ElementStateSelected;
-        if (active_vertex == v) vertex_states[v] |= ElementStateActive;
-    }
-    if (excited_vertex && *excited_vertex < vertex_states.size()) vertex_states[*excited_vertex] |= ElementStateExcited;
-    UpdateEdgeStatesFromVertices(mesh);
-}
 
 void MeshStore::UpdateEdgeStatesFromFaces(const Mesh &mesh, std::optional<uint32_t> active_face) {
     const auto &entry = Entries.at(mesh.GetStoreId());
@@ -1548,6 +1542,16 @@ void MeshStore::UpdateEdgeStatesFromFaces(const Mesh &mesh, std::optional<uint32
             edge_states[2 * ei + 1] |= ElementStateActive;
         }
     }
+}
+
+void MeshStore::UpdateSoundVertexStates(const Mesh &mesh, std::span<const uint32_t> vertices) {
+    const auto &entry = Entries.at(mesh.GetStoreId());
+    ClearElementStates(entry.Vertices, entry.FaceData, entry.EdgeStates);
+    auto vertex_states = GetVertexStates(entry.Vertices);
+    for (const auto v : vertices) {
+        if (v < vertex_states.size()) vertex_states[v] = ElementStateSelected;
+    }
+    UpdateEdgeStatesFromVertices(mesh);
 }
 
 void MeshStore::UpdateEdgeStatesFromVertices(const Mesh &mesh) {

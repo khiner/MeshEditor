@@ -7,8 +7,6 @@
 #include "mesh/MeshComponents.h"
 #include "mesh/MeshStore.h"
 #include "mesh/Primitives.h"
-#include "object/ExtrasComponents.h"
-#include "object/ExtrasMesh.h"
 #include "object/ObjectComponents.h"
 #include "object/PendingSync.h"
 #include "physics/PhysicsTypes.h"
@@ -94,16 +92,6 @@ std::pair<entt::entity, entt::entity> AddMesh(entt::registry &r, MeshStore &, Cr
     r.emplace<MeshConnectivity>(mesh_entity, std::move(mesh.Connectivity));
     r.emplace<MeshHandle>(mesh_entity, MeshHandle{mesh.StoreId});
     return {mesh_entity, info ? AddMeshInstance(r, mesh_entity, *info) : entt::null};
-}
-
-entt::entity CreateExtrasBufferEntity(entt::registry &r, MeshStore &meshes, std::span<const vec3> positions, std::span<const uint32_t> edge_indices) {
-    const auto buffer_entity = r.create();
-    r.emplace<ObjectExtrasTag>(buffer_entity);
-    r.emplace<OverlayVertexStoreId>(buffer_entity, meshes.AllocateOverlayVertexBuffer(positions).first);
-    if (!edge_indices.empty()) {
-        r.emplace<PendingEdgeIndices>(buffer_entity, std::vector<uint32_t>(edge_indices.begin(), edge_indices.end()));
-    }
-    return buffer_entity;
 }
 
 entt::entity CreateExtrasObject(entt::registry &r, ObjectType type, const ObjectCreateInfo &info, std::string_view default_name) {
@@ -228,14 +216,6 @@ void Destroy(entt::registry &r, entt::entity viewport, entt::entity e) {
         for (const auto child : children) ClearParent(r, child);
     }
 
-    // Decrement SelectedInstanceCount before entity destruction (while all components are intact).
-    // Cannot rely on on_destroy<Selected> — EnTT's pool removal order during r.destroy() is non-deterministic,
-    // so Instance may already be gone when on_destroy<Selected> fires.
-    if (r.all_of<Selected, Instance>(e)) {
-        if (auto *count = r.try_get<SelectedInstanceCount>(r.get<Instance>(e).Entity))
-            if (count->Value > 0) --count->Value;
-    }
-
     entt::entity buffer_entity = entt::null;
     if (const auto *instance = r.try_get<Instance>(e)) {
         if (HasMesh(r, instance->Entity) || r.all_of<ObjectExtrasTag>(instance->Entity)) buffer_entity = instance->Entity;
@@ -250,18 +230,6 @@ void Destroy(entt::registry &r, entt::entity viewport, entt::entity e) {
     if (const auto *armature = r.try_get<ArmatureObject>(e)) try_add_armature_data(armature->Entity);
     if (const auto *armature_modifier = r.try_get<ArmatureModifier>(e)) try_add_armature_data(armature_modifier->ArmatureEntity);
     if (const auto *bone_attachment = r.try_get<BoneAttachment>(e)) try_add_armature_data(bone_attachment->ArmatureEntity);
-    if (const auto *cw = r.try_get<ColliderWireframe>(e)) {
-        for (uint8_t i = 0; i < cw->Count; ++i) {
-            if (r.valid(cw->Instances[i])) {
-                Hide(r, cw->Instances[i]);
-                r.destroy(cw->Instances[i]);
-            }
-        }
-    }
-    if (const auto *tw = r.try_get<TetWireframe>(e); tw && r.valid(tw->Instance)) {
-        Hide(r, tw->Instance);
-        r.destroy(tw->Instance);
-    }
 
     if (const auto *light_index = r.try_get<LightIndex>(e)) {
         r.get_or_emplace<PendingLightRemovals>(viewport).Indices.emplace_back(light_index->Value);
@@ -295,14 +263,8 @@ void Destroy(entt::registry &r, entt::entity viewport, entt::entity e) {
     // If this was the last instance, destroy the buffer entity
     if (r.valid(buffer_entity)) {
         if (!AnyComponentRefersTo(r, &Instance::Entity, buffer_entity)) {
-            if (auto *mesh_buffers = r.try_get<MeshBuffers>(buffer_entity)) {
-                if (const auto *vcr = r.try_get<VertexClass>(buffer_entity)) {
-                    ReleaseVertexClasses(r, vcr->Offset, mesh_buffers->Vertices.Count);
-                }
-                ReleaseMeshBuffers(r, *mesh_buffers);
-            }
+            if (auto *mesh_buffers = r.try_get<MeshBuffers>(buffer_entity)) ReleaseMeshBuffers(r, *mesh_buffers);
             if (const auto *vs = r.try_get<VertexStoreId>(buffer_entity)) meshes.Release(vs->StoreId);
-            if (const auto *ov = r.try_get<OverlayVertexStoreId>(buffer_entity)) meshes.ReleaseOverlay(ov->StoreId);
             if (const auto *models = r.try_get<ModelsBuffer>(buffer_entity)) FreeInstanceRange(r, models->InstanceRange);
             r.destroy(buffer_entity);
         }

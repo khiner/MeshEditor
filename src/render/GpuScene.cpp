@@ -271,6 +271,8 @@ void GpuBuffers::RebuildMeshlets(MeshBuffers &buffers, const Mesh &mesh, const M
             .CornerColorOffset = OffsetOrInvalid(meshes.GetCornerColorRange(mesh.GetStoreId())),
             .FaceIdOffset = meshes.GetFaceIdRange(mesh.GetStoreId()).Offset + primitive.FirstTriangle,
             .BaseFaceNormalOffset = meshes.GetFaceDataRange(mesh.GetStoreId()).Offset,
+            .FaceFirstTriangleOffset = meshes.GetFaceDataRange(mesh.GetStoreId()).Offset,
+            .VertexEdgeAdjacencyOffset = OffsetOrInvalid(meshes.GetVertexEdgeAdjacencyRange(mesh.GetStoreId())),
             .VertexCountOrHeadImageSlot = buffers.Vertices.Count,
             .ElementStateSlotOffset = meshes.GetFaceStateRange(mesh.GetStoreId()),
             .InstanceStateSlot = Instances.StateBuffer.Slot,

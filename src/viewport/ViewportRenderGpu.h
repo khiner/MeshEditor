@@ -1,10 +1,12 @@
 #pragma once
 
+#include "gpu/ExtrasLinePushConstants.h"
 #include "metal/MetalCpp.h"
 #include "metal/Slots.h"
 
 #include <entt/entity/fwd.hpp>
 #include <span>
+#include <vector>
 
 namespace mtl {
 struct BindlessSet;
@@ -14,6 +16,7 @@ struct PassChain;
 struct DrawListBuilder;
 struct DrawBufferPair;
 struct GpuBuffers;
+struct InstanceArena;
 struct Pipelines;
 
 enum class MeshletRouteMode : uint32_t { Single,
@@ -37,6 +40,9 @@ struct MeshletCullConfig {
 void FlushDrawList(entt::registry &, const DrawListBuilder &, DrawBufferPair &);
 
 void RecordFrustumCull(mtl::PassChain &, const mtl::BindlessSet &, const Pipelines &, const GpuBuffers &, const DrawBufferPair &, const DrawListBuilder &);
+
+// Every extras line source this frame (gizmos and collision shape wireframes), with the dispatch each one needs.
+std::vector<ExtrasLinePushConstants> CollectExtrasLines(const entt::registry &, const InstanceArena &);
 void RecordMeshletCull(mtl::PassChain &, const mtl::BindlessSet &, const Pipelines &, GpuBuffers &, MeshletCullConfig = {});
 void RecordSilhouetteDepthPass(mtl::PassChain &, const mtl::BindlessSet &, const Pipelines &, GpuBuffers &, bool draw_meshlets, uint32_t ubo_offset = 0);
 void DrawMeshlets(MTL::RenderCommandEncoder *, const GpuBuffers &, uint32_t route = 0, uint32_t required_instance_flags = 0);

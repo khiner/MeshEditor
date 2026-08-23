@@ -72,6 +72,45 @@ enums:
       - name: Excite
       - name: Pose
         value: 3
+  - name: ExtrasLineKind
+    type: u32
+    values:
+      - name: Empty
+      - name: Camera
+      - name: LightPoint
+      - name: LightDirectional
+      - name: LightSpot
+      - name: ColliderBox
+      - name: ColliderSphere
+      - name: ColliderCylinder
+      - name: ColliderCapsule
+  - name: OverlayDispatch
+    type: u32
+    values:
+      - name: LineGroupLines
+        value: 48
+      - name: EdgeQuadGroupEdges
+        value: 40
+      - name: PointGroupPoints
+        value: 160
+      - name: NormalIndicatorLines
+        value: 48
+      - name: ColliderCircleSegments
+        value: 24
+      - name: LightRangeSegments
+        value: 32
+      - name: SpotConeSegments
+        value: 32
+      - name: ExtrasHaloLines
+        value: 27
+      - name: BoneSolidVertices
+        value: 24
+      - name: BoneWireVertices
+        value: 24
+      - name: BoneSphereVertices
+        value: 96
+      - name: BoneSphereWireVertices
+        value: 64
   - name: Element
     type: u32
     values:
@@ -242,13 +281,17 @@ function_constants:
         type: bool
   - name: MeshVertexConstant
     constants:
-      - name: OverlayKind
-        type: u32
-      - name: IsLineDraw
-        type: u32
       - name: VelocityOutput
         type: bool
       - name: NonTriangleTopology
+        type: bool
+  - name: WireMeshConstant
+    constants:
+      - name: ElementStateColor
+        type: bool
+  - name: NormalIndicatorConstant
+    constants:
+      - name: NormalIndicatorFaces
         type: bool
   - name: BackgroundConstant
     constants:
@@ -312,6 +355,12 @@ structs:
       - name: BaseFaceNormalOffset
         type: u32
         default: InvalidOffset
+      - name: FaceFirstTriangleOffset
+        type: u32
+        default: InvalidOffset
+      - name: VertexEdgeAdjacencyOffset
+        type: u32
+        default: InvalidOffset
       - name: VertexCountOrHeadImageSlot
         type: u32
       - name: ElementIdOffset
@@ -360,9 +409,6 @@ structs:
         type: u32
         default: InvalidOffset
       - name: PosedFaceNormalOffset
-        type: u32
-        default: InvalidOffset
-      - name: VertexClassOffset
         type: u32
         default: InvalidOffset
       - name: PrimitiveMaterialOffset
@@ -652,6 +698,10 @@ structs:
         type: u32
       - name: BaseFaceNormalSlot
         type: u32
+      - name: FaceFirstTriangleSlot
+        type: u32
+      - name: AdjacencySlot
+        type: u32
       - name: BoneDeformSlot
         type: u32
       - name: ArmatureDeformSlot
@@ -694,8 +744,6 @@ structs:
       - name: PrevMorphWeightsSlot
         type: u32
       - name: NextMorphWeightsSlot
-        type: u32
-      - name: VertexClassSlot
         type: u32
       - name: MaterialSlot
         type: u32
@@ -1099,6 +1147,13 @@ structs:
     fields:
       - name: DrawDataOffset
         type: u32
+  - name: OverlayMeshPushConstants
+    push_constant: true
+    fields:
+      - name: DrawDataIndex
+        type: u32
+      - name: ElementCount
+        type: u32
   - name: SelectionDrawPushConstants
     push_constant: true
     fields:
@@ -1421,6 +1476,60 @@ structs:
       - name: FaceNormalSlot
         type: u32
   # Bounding-box wireframes: one instanced line draw over the listed instance-arena slots.
+  - name: ExtrasLinePushConstants
+    push_constant: true
+    fields:
+      - name: Kind
+        type: u32
+      - name: LineCount
+        type: u32
+      - name: ModelSlot
+        type: u32
+      - name: InstanceIndex
+        type: u32
+      - name: StateSlot
+        type: u32
+      - name: ObjectIdSlot
+        type: u32
+        default: InvalidSlot
+      - name: LocalOffset
+        type: vec3
+      - name: Params
+        type: vec4
+  - name: SoundPointPushConstants
+    push_constant: true
+    fields:
+      - name: DrawDataIndex
+        type: u32
+      - name: VertexSlot
+        type: u32
+      - name: VertexOffset
+        type: u32
+      - name: VertexCount
+        type: u32
+      - name: ActiveVertex
+        type: u32
+        default: InvalidOffset
+      - name: ExcitedVertex
+        type: u32
+        default: InvalidOffset
+  - name: TetWirePushConstants
+    push_constant: true
+    fields:
+      - name: PositionSlot
+        type: u32
+      - name: PositionOffset
+        type: u32
+      - name: EdgeIndexSlot
+        type: u32
+      - name: EdgeIndexOffset
+        type: u32
+      - name: ModelSlot
+        type: u32
+      - name: InstanceIndex
+        type: u32
+      - name: EdgeCount
+        type: u32
   - name: BoundsBoxPushConstants
     push_constant: true
     fields:
@@ -1431,6 +1540,8 @@ structs:
       - name: ModelSlot
         type: u32
       - name: StateSlot
+        type: u32
+      - name: BoxCount
         type: u32
   - name: SilhouetteEdgeDepthObjectPushConstants
     push_constant: true

@@ -336,7 +336,13 @@ entt::entity InitEngine(entt::registry &r) {
     r.ctx().emplace<ViewportExtent>();
     r.ctx().emplace<ViewportConsumerFence>();
     r.ctx().emplace<SelectionBitsetRef>(std::span<uint32_t>{buffers.SelectionBitset.Data(), GpuBuffers::SelectionBitsetWords});
-    r.ctx().emplace<SelectionSlots>(slots);
+    const auto &sel_slots = r.ctx().emplace<SelectionSlots>(slots);
+    // These selection buffers are engine-lifetime and never resized, so their bindless entries are bound once here.
+    slots.SetBuffer({SlotType::Buffer, sel_slots.SelectionCounter}, *buffers.SelectionCounter);
+    slots.SetBuffer({SlotType::Buffer, sel_slots.ObjectPickKey}, *buffers.ObjectPickKeys);
+    slots.SetBuffer({SlotType::Buffer, sel_slots.ElementPickCandidates}, *buffers.ElementPickCandidates);
+    slots.SetBuffer({SlotType::Buffer, sel_slots.ObjectPickSeenBits}, *buffers.ObjectPickSeenBitset);
+    slots.SetBuffer({SlotType::Buffer, sel_slots.SelectionBitset}, *buffers.SelectionBitset);
     r.ctx().emplace<DrawState>();
     r.ctx().emplace<FrameState>();
     r.ctx().emplace<PendingRenderRequest>();
@@ -446,7 +452,9 @@ void ClearScene(entt::registry &r, entt::entity viewport) {
     r.ctx().get<ObjectIdCounter>() = {};
 
     // Reset domain caches keyed by the destroyed entities' ids, before the allocator reset lets the next scene reuse them.
-    for (const auto &handler : r.ctx().get<SceneClearHandlers>().Handlers) handler(r);
+    if (const auto *clear_handlers = r.ctx().find<SceneClearHandlers>()) {
+        for (const auto &handler : clear_handlers->Handlers) handler(r);
+    }
 
     // Reset the entity, mesh-store, and GPU-arena allocators to their fresh-start state, so replaying a scene from this
     // baseline re-allocates identical ids and GPU handles. Bindless slots need no reset because their allocator is order-independent.

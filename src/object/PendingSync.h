@@ -13,9 +13,3 @@ struct PendingHide {
 struct PendingLightRemovals {
     std::vector<uint32_t> Indices;
 };
-
-// Transient edge indices for a collider/tet wireframe, consumed when the edge index buffer is built then removed.
-// Camera/light/empty extras instead derive their edges from the object's params.
-struct PendingEdgeIndices {
-    std::vector<uint32_t> Indices;
-};

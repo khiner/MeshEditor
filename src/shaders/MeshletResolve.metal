@@ -91,12 +91,7 @@ inline MeshletFaceValues MeshletFace(
         uint(scene.ElementStates(draw.ElementStateSlotOffset.Slot)[draw.ElementStateSlotOffset.Offset + face_id - 1u]) : 0u;
     const uint material_index = MeshletFaceMaterialIndex(scene, draw, face_id);
     float3 flat_world_normal = float3(0.0f);
-    if (flat_face) {
-        const float3 normal = draw.PosedFaceNormalOffset != INVALID_OFFSET ?
-            float3(scene.PosedFaceNormals(scene.View.PosedFaceNormalSlot)[draw.PosedFaceNormalOffset + face_id - 1u]) :
-            float3(scene.BaseFaceNormals(scene.View.BaseFaceNormalSlot)[draw.BaseFaceNormalOffset + face_id - 1u]);
-        flat_world_normal = trs_transform_normal(world, normal);
-    }
+    if (flat_face) flat_world_normal = trs_transform_normal(world, scene.GetFaceNormal(draw, face_id - 1u));
     const float3 scale = float3(world.S);
     return {
         flat_world_normal,
@@ -107,11 +102,6 @@ inline MeshletFaceValues MeshletFace(
         instance.ObjectId,
         instance.ElementIdOffset + face_id,
     };
-}
-
-inline float4 MeshletPosition(const thread Scene &scene, DrawData draw, Transform world, uint vertex_id) {
-    const float3 world_pos = apply_object_pending_transform(scene, draw, trs_transform_point(world, scene.GetLocalPosition(draw, vertex_id)));
-    return scene.ViewProj() * float4(world_pos, 1.0f);
 }
 
 #endif

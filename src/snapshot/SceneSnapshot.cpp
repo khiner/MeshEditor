@@ -36,7 +36,7 @@ std::vector<std::byte> SnapshotSceneState(const entt::registry &r) {
         // reflect deletion history, not state. Sort by integral id so byte order doesn't depend on insertion order.
         std::vector<entt::entity> ents;
         for (const auto e : *set) {
-            if (e != entt::tombstone && !SnapshotSkipsEntity(r, e) && !(entry.SkipEntity && entry.SkipEntity(r, e))) ents.emplace_back(e);
+            if (e != entt::tombstone && !(entry.SkipEntity && entry.SkipEntity(r, e))) ents.emplace_back(e);
         }
         if (ents.empty()) continue;
 

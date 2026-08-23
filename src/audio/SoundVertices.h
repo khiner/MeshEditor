@@ -1,21 +1,28 @@
 #pragma once
 
+#include "Range.h"
+
+#include <cstdint>
+#include <optional>
 #include <ranges>
+#include <span>
 
 // Derived state, do not mutate directly.
 // In Samples mode, mirrors keys of VertexSamples::PathByVertex.
 // In Modal mode, mirrors ModalModes::Vertices.
 // Rebuilt by a reactive handler in AudioSystem when any of those primary sources changes.
+// The handles live in the mesh store's sound-vertex arena, which is the only copy.
 struct SoundVertices {
-    std::optional<uint32_t> FindVertexIndex(uint32_t vertex) const {
-        if (auto it = std::ranges::find(Vertices, vertex); it != Vertices.end()) {
-            return std::ranges::distance(Vertices.begin(), it);
-        }
-        return {};
-    }
-
-    std::vector<uint32_t> Vertices;
+    Range Vertices{};
 };
+
+// Position of `vertex` within `vertices`, absent when it holds no such handle.
+inline std::optional<uint32_t> FindSoundVertexIndex(std::span<const uint32_t> vertices, uint32_t vertex) {
+    if (auto it = std::ranges::find(vertices, vertex); it != vertices.end()) {
+        return uint32_t(std::ranges::distance(vertices.begin(), it));
+    }
+    return {};
+}
 
 // Force `Force` is being applied to this entity's mesh at `Vertex`.
 struct VertexForce {

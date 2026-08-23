@@ -172,7 +172,9 @@ def app_command(
         "--quiet",
     ]
     command.extend(("--shading", case.get("shading", "solid")))
-    command.extend(flag for key, flag in (("overlays", "--overlays"), ("edit", "--edit")) if case.get(key))
+    command.extend(flag for key, flag in (("overlays", "--overlays"), ("selectAll", "--select-all")) if case.get(key))
+    if edit := case.get("edit"):
+        command.extend(("--edit", edit))
     action = case.get("action", "steady")
     if action == "playback":
         command.append("--play")
@@ -239,6 +241,7 @@ def run(args: argparse.Namespace) -> None:
                 "actionCount": args.action_count,
                 "overlays": args.overlays,
                 "edit": args.edit,
+                "selectAll": args.select_all,
                 "motionBlur": args.motion_blur,
             }
         ]
@@ -429,7 +432,8 @@ def parser() -> argparse.ArgumentParser:
     )
     run_parser.add_argument("--action-count", type=int, default=64)
     run_parser.add_argument("--overlays", action="store_true")
-    run_parser.add_argument("--edit", action="store_true")
+    run_parser.add_argument("--edit", choices=("vertex", "edge", "face"))
+    run_parser.add_argument("--select-all", action="store_true")
     run_parser.add_argument("--motion-blur", type=int)
     run_parser.add_argument("--frames", type=int, default=400)
     run_parser.add_argument("--warmup-frames", type=int, default=30)

@@ -7,6 +7,7 @@
 #include "gizmo/GizmoInteraction.h"
 #include "gpu/ViewportTheme.h"
 #include "mesh/Mesh.h"
+#include "render/GpuBuffers.h"
 #include "scene/Entity.h"
 #include "selection/Selection.h"
 #include "selection/SelectionBitset.h"
@@ -43,7 +44,8 @@ bool SetInteractionMode(entt::registry &r, entt::entity viewport, InteractionMod
                 if (r.all_of<MeshSelectionBitsetRange>(mesh_entity)) continue;
                 const auto &mesh = GetMesh(r, mesh_entity);
                 const uint32_t count = selection::GetElementCount(mesh, edit_element);
-                if (count == 0) continue;
+                // A mesh whose elements do not fit the remaining bitset stays unranged, so its elements are not selectable.
+                if (count == 0 || next_offset + count > GpuBuffers::MaxSelectableElements) continue;
 
                 selection::SelectAll(bits, next_offset, count);
                 r.emplace<MeshSelectionBitsetRange>(mesh_entity, next_offset, count);

@@ -9,6 +9,7 @@
 #include "action/ActionApply.h"
 #include "action/Audio.h"
 #include "audio/WavWriter.h"
+#include "mesh/MeshStore.h"
 #include "mesh/Tets.h"
 #include "physics/PhysicsContact.h"
 #include "physics/PhysicsTypes.h"
@@ -200,7 +201,7 @@ uint32_t GetActiveVertexIndex(const entt::registry &r, entt::entity instance_ent
     const auto &excitable = r.get<const SoundVertices>(instance_entity);
     const auto mesh_entity = r.get<const Instance>(instance_entity).Entity;
     if (const auto *active = r.try_get<const MeshActiveElement>(mesh_entity)) {
-        if (auto vi = excitable.FindVertexIndex(active->Handle)) return *vi;
+        if (auto vi = FindSoundVertexIndex(r.ctx().get<const MeshStore>().GetSoundVertices(excitable.Vertices), active->Handle)) return *vi;
     }
     return 0;
 }
@@ -665,7 +666,10 @@ size_t HashTetInputs(const std::vector<vec3> &positions, const std::vector<uint3
 // The excitation vertices a solve would use: the existing excitable vertices when copying,
 // else evenly spaced over the mesh (capped at the vertex count so no vertex is sampled twice).
 std::vector<uint32_t> DesiredSolveVertices(const entt::registry &r, entt::entity e, const ModalSolveSettings &settings, uint32_t num_vertices) {
-    if (settings.CopySoundVertices && r.all_of<SoundVertices>(e)) return r.get<const SoundVertices>(e).Vertices;
+    if (settings.CopySoundVertices && r.all_of<SoundVertices>(e)) {
+        const auto vertices = r.ctx().get<const MeshStore>().GetSoundVertices(r.get<const SoundVertices>(e).Vertices);
+        return {vertices.begin(), vertices.end()};
+    }
     const uint32_t ex_count = std::clamp(settings.NumVertices, 1u, num_vertices);
     return iota_view{0u, ex_count} | transform([&](uint32_t i) { return i * num_vertices / ex_count; }) | to<std::vector<uint32_t>>();
 }
@@ -952,16 +956,21 @@ void RegisterAudioComponentHandlers(entt::registry &r) {
                 r.remove<SoundVertices>(e);
                 continue;
             }
+            auto &meshes = r.ctx().get<MeshStore>();
             if (auto *sv = r.try_get<SoundVertices>(e)) {
-                if (sv->Vertices != new_vertices) r.patch<SoundVertices>(e, [&](auto &sv) { sv.Vertices = std::move(new_vertices); });
+                if (!std::ranges::equal(meshes.GetSoundVertices(sv->Vertices), new_vertices)) {
+                    meshes.ReleaseSoundVertices(sv->Vertices);
+                    r.replace<SoundVertices>(e, SoundVertices{meshes.AllocateSoundVertices(new_vertices)});
+                }
             } else {
-                r.emplace<SoundVertices>(e, std::move(new_vertices));
+                r.emplace<SoundVertices>(e, SoundVertices{meshes.AllocateSoundVertices(new_vertices)});
             }
             // Ensure MeshActiveElement is valid for the new vertex set.
             const auto mesh_entity = r.get<const Instance>(e).Entity;
             const auto &sv = r.get<const SoundVertices>(e);
             if (const auto *active = r.try_get<const MeshActiveElement>(mesh_entity)) {
-                if (!sv.FindVertexIndex(active->Handle)) r.emplace_or_replace<MeshActiveElement>(mesh_entity, sv.Vertices.front());
+                const auto vertices = meshes.GetSoundVertices(sv.Vertices);
+                if (!FindSoundVertexIndex(vertices, active->Handle)) r.emplace_or_replace<MeshActiveElement>(mesh_entity, vertices.front());
             }
         }
         // A body reports contacts when anything under it can sound.
@@ -988,7 +997,7 @@ void RegisterAudioComponentHandlers(entt::registry &r) {
             const auto *vf = r.try_get<::VertexForce>(e);
             if (!vf || vf->Force <= 0) continue;
             const auto &excitable = r.get<const SoundVertices>(e);
-            if (auto vi = excitable.FindVertexIndex(vf->Vertex)) {
+            if (auto vi = FindSoundVertexIndex(r.ctx().get<const MeshStore>().GetSoundVertices(excitable.Vertices), vf->Vertex)) {
                 r.emplace_or_replace<MeshActiveElement>(r.get<const Instance>(e).Entity, vf->Vertex);
                 const auto model = r.get<SoundVerticesModel>(e);
                 if (model == SoundVerticesModel::Modal && r.all_of<ModalModes>(e)) {
@@ -1384,7 +1393,7 @@ void DrawModalModelSection(entt::registry &r, entt::entity viewport, entt::entit
     if (reuse) BeginDisabled();
     const uint32_t min_vertices = 1, max_vertices = num_vertices;
     // Reuse shows the actual count of existing excitation vertices, else the editable target count.
-    if (uint32_t v = reuse ? uint32_t(r.get<const SoundVertices>(e).Vertices.size()) : std::clamp(settings->NumVertices, 1u, num_vertices);
+    if (uint32_t v = reuse ? r.get<const SoundVertices>(e).Vertices.Count : std::clamp(settings->NumVertices, 1u, num_vertices);
         SliderScalar("Count", ImGuiDataType_U32, &v, &min_vertices, &max_vertices))
         fs.Set<&ModalSolveSettings::NumVertices>(v);
     if (reuse) EndDisabled();
@@ -1496,10 +1505,11 @@ void DrawObjectAudioControls(
 
     // Cross-model excite section
     if (has_model && excitable) {
-        const auto active_vertex = excitable->Vertices[active_vi];
+        const auto excitable_vertices = r.ctx().get<const MeshStore>().GetSoundVertices(excitable->Vertices);
+        const auto active_vertex = excitable_vertices[active_vi];
         if (BeginCombo("Vertex", std::to_string(active_vertex).c_str())) {
-            for (uint32_t vi = 0; vi < excitable->Vertices.size(); ++vi) {
-                if (const auto vertex = excitable->Vertices[vi]; Selectable(std::to_string(vertex).c_str(), vi == active_vi))
+            for (uint32_t vi = 0; vi < excitable_vertices.size(); ++vi) {
+                if (const auto vertex = excitable_vertices[vi]; Selectable(std::to_string(vertex).c_str(), vi == active_vi))
                     action::Emit(action::audio::SetExciteVertex{vi, vertex});
             }
             EndCombo();
@@ -1589,7 +1599,7 @@ void DrawObjectAudioControls(
         if (auto hovered = PlotModeData(modes.T60s, "Mode T60s", "", "T60 decay time (s)", hovered_mode_index)) new_hovered_index = hovered;
         const auto active_gains = [&]() -> std::vector<float> {
             if (active_vi >= modes.Shapes.size()) return {};
-            const auto j = TiltAlongNormal(VertexNormal(GetMesh(r, mesh_entity), excitable->Vertices[active_vi]), ImpulseAngle);
+            const auto j = TiltAlongNormal(VertexNormal(GetMesh(r, mesh_entity), r.ctx().get<const MeshStore>().GetSoundVertices(excitable->Vertices)[active_vi]), ImpulseAngle);
             return modes.Shapes[active_vi] | transform([&](const vec3 &s) { return std::abs(glm::dot(s, j)); }) | to<std::vector<float>>();
         }();
         if (!active_gains.empty()) {
@@ -1667,7 +1677,9 @@ void ApplyModalModel(entt::registry &r, entt::entity e, const fs::path &relative
     r.emplace_or_replace<MassProperties>(e, data->Mass);
     ReplaceModalModes(r, e, std::move(data->Modes));
     r.emplace_or_replace<ModalEigenSummary>(e, std::move(data->Summary));
-    r.emplace_or_replace<TetMeshData>(mesh_entity, std::move(data->Tets));
+    auto &meshes = r.ctx().get<MeshStore>();
+    if (const auto *existing = r.try_get<const TetBuffers>(mesh_entity)) meshes.ReleaseTets(*existing);
+    r.emplace_or_replace<TetBuffers>(mesh_entity, meshes.AllocateTets(data->Tets.Positions, data->Tets.EdgeIndices));
     SetModel(r, e, SoundVerticesModel::Modal);
 }
 

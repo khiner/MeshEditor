@@ -14,7 +14,6 @@ add_executable(MeshEditorTests
     ${CMAKE_SOURCE_DIR}/src/render/Profile.cpp
     ${CMAKE_SOURCE_DIR}/src/metal/PassTimer.cpp
     ${CMAKE_SOURCE_DIR}/src/scene/Entity.cpp
-    ${CMAKE_SOURCE_DIR}/src/object/ExtrasMesh.cpp
     ${CMAKE_SOURCE_DIR}/src/image/ImageDecode.cpp
     ${CMAKE_SOURCE_DIR}/src/image/ImageEncode.cpp
     ${CMAKE_SOURCE_DIR}/src/scene/Defaults.cpp
@@ -59,7 +58,6 @@ add_executable(MeshEditorTests
     ${CMAKE_SOURCE_DIR}/src/selection/SelectionGpu.cpp
     ${CMAKE_SOURCE_DIR}/src/selection/SelectionBitset.cpp
     ${CMAKE_SOURCE_DIR}/src/physics/PhysicsSystem.cpp
-    ${CMAKE_SOURCE_DIR}/src/physics/PhysicsDebugDraw.cpp
     ${CMAKE_SOURCE_DIR}/src/action/Core.cpp
     ${CMAKE_SOURCE_DIR}/src/scene/RotationUi.cpp
     ${CMAKE_SOURCE_DIR}/src/action/Action.cpp

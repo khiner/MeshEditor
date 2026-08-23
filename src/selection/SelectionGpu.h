@@ -8,9 +8,8 @@
 #include <functional>
 
 struct DrawListBuilder;
-struct SelectionDrawInfo;
 
-using SelectionBuildFn = std::function<std::vector<SelectionDrawInfo>(DrawListBuilder &)>;
+using SelectionBuildFn = std::function<void(DrawListBuilder &)>;
 
 // RAII for the bindless-slot leases used by the selection compute/render pipeline.
 struct SelectionSlots {

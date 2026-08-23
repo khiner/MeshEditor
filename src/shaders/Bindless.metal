@@ -18,7 +18,6 @@ constant uint INVALID_SLOT = 0xffffffffu;
 constant uint INVALID_OFFSET = 0xffffffffu;
 constant uint STATE_SELECTED = 1u << 0;
 constant uint STATE_ACTIVE = 1u << 1;
-constant uint STATE_EXCITED = 1u << 2;
 
 // What a shader reaches beyond its own parameters. MSL has no global resource bindings, so a shader
 // builds one of these at its entry point and passes it down.
@@ -42,6 +41,8 @@ struct SceneT {
     device const uint *Indices(uint slot) const { return BindlessBuffer(uint, B.IndexBuffer, slot); }
     device const uchar *ElementStates(uint slot) const { return BindlessBuffer(uchar, B.Buffer, slot); }
     device const uint *ObjectIds(uint slot) const { return BindlessBuffer(uint, B.ObjectIdBuffer, slot); }
+    device const uint *FaceFirstTriangles(uint slot) const { return BindlessBuffer(uint, B.ObjectIdBuffer, slot); }
+    device const uint *Adjacency(uint slot) const { return BindlessBuffer(uint, B.Buffer, slot); }
     device const DrawData *Draws(uint slot) const { return BindlessBuffer(DrawData, B.DrawDataBuffer, slot); }
     device const uint *VisibleIndices(uint slot) const { return BindlessBuffer(uint, B.Buffer, slot); }
     device const uchar *InstanceStates(uint slot) const { return BindlessBuffer(uchar, B.InstanceStateBuffer, slot); }
@@ -49,7 +50,6 @@ struct SceneT {
     device const packed_float4x4 *ArmatureDeforms(uint slot) const { return BindlessBuffer(packed_float4x4, B.ArmatureDeformBuffer, slot); }
     device const MorphTargetVertex *MorphTargets(uint slot) const { return BindlessBuffer(MorphTargetVertex, B.MorphTargetBuffer, slot); }
     device const float *MorphWeights(uint slot) const { return BindlessBuffer(float, B.MorphWeightBuffer, slot); }
-    device const uchar *VertexClasses(uint slot) const { return BindlessBuffer(uchar, B.VertexClassBuffer, slot); }
     device const PunctualLight *Lights(uint slot) const { return BindlessBuffer(PunctualLight, B.LightBuffer, slot); }
     device const PBRMaterial *Materials(uint slot) const { return BindlessBuffer(PBRMaterial, B.MaterialBuffer, slot); }
     device const uint *PrimitiveMaterials(uint slot) const { return BindlessBuffer(uint, B.PrimitiveMaterialBuffer, slot); }
@@ -102,6 +102,13 @@ struct SceneT {
             float3(BaseVertexNormals(View.BaseVertexNormalSlot)[draw.VertexOffset + idx]);
     }
 
+    // Per-face normal: the posed normal when the draw has one, else the base normal.
+    float3 GetFaceNormal(DrawData draw, uint face) const {
+        return draw.PosedFaceNormalOffset != INVALID_OFFSET ?
+            float3(PosedFaceNormals(View.PosedFaceNormalSlot)[draw.PosedFaceNormalOffset + face]) :
+            float3(BaseFaceNormals(View.BaseFaceNormalSlot)[draw.BaseFaceNormalOffset + face]);
+    }
+
     // Selection state of the instance this draw renders.
     uint InstanceState(DrawData draw) const {
         return draw.InstanceStateSlot != INVALID_SLOT ?
@@ -128,6 +135,12 @@ template<typename SetT>
 inline DrawData GetDrawData(const thread SceneT<SetT> &scene, uint draw_data_offset, uint instance_index) {
     const uint dense = scene.VisibleIndices(scene.View.VisibleIndexSlot)[draw_data_offset + instance_index];
     return scene.Draws(scene.View.DrawDataSlot)[dense];
+}
+
+// Draw data at its own index, for emissions that hold one rather than a culled draw's slot.
+template<typename SetT>
+inline DrawData GetDrawDataAt(const thread SceneT<SetT> &scene, uint draw_data_index) {
+    return scene.Draws(scene.View.DrawDataSlot)[draw_data_index];
 }
 
 // Normalized direction of `n`, or zero when `n` has no length.

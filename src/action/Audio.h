@@ -49,7 +49,7 @@ struct RemoveVertexSamples {
 // Apply an impulse at a mesh vertex (RealImpact excitation).
 struct ApplyExciteImpact {
     entt::entity InstanceEntity;
-    uint32_t VertexIndex;
+    uint32_t VertexIndex; // Mesh vertex handle, as the excitable vertex pick returns
 };
 struct ClearExciteImpacts {};
 

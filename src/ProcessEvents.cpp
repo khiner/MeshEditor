@@ -19,14 +19,11 @@
 #include "gltf/GltfScene.h"
 #include "mesh/MeshBvh.h"
 #include "mesh/MeshStore.h"
+#include "mesh/TetBuffers.h"
 #include "mesh/Primitives.h"
-#include "mesh/TetMeshData.h"
-#include "object/ExtrasComponents.h"
-#include "object/ExtrasMesh.h"
 #include "object/ObjectOps.h"
 #include "object/PendingSync.h"
 #include "physics/PhysicsChanges.h"
-#include "physics/PhysicsDebugDraw.h"
 #include "physics/PhysicsSystem.h"
 #include "physics/PhysicsTypes.h"
 #include "render/DrawState.h"
@@ -97,40 +94,6 @@ bool FlushIndexedWrites(auto &writes, auto &&span_getter) {
     return true;
 }
 
-const std::vector<Element> NormalElements{Element::Vertex, Element::Face};
-
-std::vector<uint> CreateNormalIndices(const Mesh &mesh, Element element) {
-    if (element == Element::None || element == Element::Edge) return {};
-    const auto n = element == Element::Face ? mesh.FaceCount() : mesh.VertexCount();
-    return iota(0u, n * 2) | to<std::vector<uint>>();
-}
-std::vector<Vertex> CreateNormalVertices(const Mesh &mesh, Element element) {
-    constexpr float NormalIndicatorLengthScale{0.25};
-    std::vector<Vertex> vertices;
-    if (element == Element::Vertex) {
-        vertices.reserve(mesh.VertexCount() * 2);
-        for (const auto vh : mesh.vertices()) {
-            const auto vn = mesh.GetNormal(vh);
-            const auto &voh_range = mesh.voh_range(vh);
-            const float total_edge_length = std::reduce(voh_range.begin(), voh_range.end(), 0.f, [&](float total, const auto &heh) {
-                return total + mesh.CalcEdgeLength(heh);
-            });
-            const float avg_edge_length = total_edge_length / mesh.GetValence(vh);
-            const auto p = mesh.GetPosition(vh);
-            vertices.emplace_back(Vertex{.Position = p});
-            vertices.emplace_back(Vertex{.Position = p + NormalIndicatorLengthScale * avg_edge_length * vn});
-        }
-    } else if (element == Element::Face) {
-        vertices.reserve(mesh.FaceCount() * 2);
-        for (const auto fh : mesh.faces()) {
-            const auto fn = mesh.GetNormal(fh);
-            const auto p = mesh.CalcFaceCentroid(fh);
-            vertices.emplace_back(Vertex{.Position = p});
-            vertices.emplace_back(Vertex{.Position = p + NormalIndicatorLengthScale * std::sqrt(mesh.CalcFaceArea(fh)) * fn});
-        }
-    }
-    return vertices;
-}
 
 uint8_t InstanceStateBits(const entt::registry &r, entt::entity e) {
     return (r.all_of<Selected>(e) ? ElementStateSelected : 0) | (r.all_of<Active>(e) ? ElementStateActive : 0);
@@ -293,7 +256,7 @@ void SetEditMode(entt::registry &r, entt::entity viewport, Element mode) {
     // Clear the superset of old and new packed bit ranges once, to avoid stale/overlap bits.
     uint32_t new_max_end = 0;
     for (const auto &p : pending) new_max_end += (p.NewCount + 31) / 32 * 32;
-    const uint32_t clear_words = (std::max(old_max_end, new_max_end) + 31) / 32;
+    const uint32_t clear_words = std::min((std::max(old_max_end, new_max_end) + 31) / 32, GpuBuffers::SelectionBitsetWords);
     if (clear_words > 0) memset(bits, 0, clear_words * sizeof(uint32_t));
 
     if (!old_ranges.empty()) {
@@ -307,14 +270,16 @@ void SetEditMode(entt::registry &r, entt::entity viewport, Element mode) {
     std::vector<ElementRange> new_ranges;
     uint32_t next_offset = 0;
     for (const auto &p : pending) {
+        // A mesh whose new-mode elements do not fit the remaining bitset gets an empty range, so its elements are not selectable.
+        const uint32_t count = next_offset + p.NewCount <= GpuBuffers::MaxSelectableElements ? p.NewCount : 0;
         auto &br = r.get<MeshSelectionBitsetRange>(p.MeshEntity);
         br.Offset = next_offset;
-        br.Count = p.NewCount;
+        br.Count = count;
         for (const uint32_t h : p.ToHandles) {
-            if (h < p.NewCount) selection::Select(bits, next_offset, h);
+            if (h < count) selection::Select(bits, next_offset, h);
         }
-        if (p.NewCount > 0) new_ranges.emplace_back(p.MeshEntity, next_offset, p.NewCount);
-        next_offset = (next_offset + p.NewCount + 31) / 32 * 32;
+        if (count > 0) new_ranges.emplace_back(p.MeshEntity, next_offset, count);
+        next_offset = (next_offset + count + 31) / 32 * 32;
     }
 
     r.patch<EditMode>(viewport, [mode](auto &edit_mode) { edit_mode.Value = mode; });
@@ -480,263 +445,6 @@ SyncResult SyncModelsBuffers(entt::registry &r) {
     return {std::move(newly_inserted), std::move(new_mesh_entities), std::move(new_extras_entities), compacted};
 }
 
-void EnsureWireframes(entt::registry &r, entt::entity viewport) {
-    auto &meshes = r.ctx().get<MeshStore>();
-    auto &shape_buffers = r.ctx().get<ColliderShapeBuffers>();
-    const auto &settings = r.get<const ViewportDisplay>(viewport);
-    const bool show_tets = settings.ShowTetWireframe;
-    if (r.view<const ColliderShape>().empty() && r.view<ColliderWireframe>().empty() &&
-        r.view<TetWireframe>().empty() && !show_tets) return;
-
-    using enum ColliderShapeBuffer;
-    auto buf = [&](ColliderShapeBuffer kind) -> entt::entity & { return shape_buffers.Entities[uint8_t(kind)]; };
-
-    // Lazily create canonical buffer entities (recreated if destroyed by last-instance cleanup).
-    auto ensure_buffer = [&](ColliderShapeBuffer kind, auto generator) {
-        if (r.valid(buf(kind))) return;
-        auto mesh = generator();
-        if (!mesh.Positions.empty()) {
-            buf(kind) = ::CreateExtrasBufferEntity(r, meshes, mesh.Positions, mesh.EdgeIndices);
-            r.emplace<OverlayExtra>(buf(kind));
-        }
-    };
-    ensure_buffer(Box, physics_debug::UnitBox);
-    ensure_buffer(Sphere, physics_debug::UnitSphere);
-    ensure_buffer(CapsuleCap, physics_debug::UnitCapsuleCap);
-    ensure_buffer(Circle, physics_debug::UnitCircle);
-    ensure_buffer(Line, physics_debug::UnitLine);
-
-    // Buffer entity that Instances[0] should reference for a given shape kind. null = no wireframe.
-    // Cylinder uses a Circle for its top ring; Capsule uses a CapsuleCap for its top hemisphere.
-    auto primary_buffer = [&](const PhysicsShape &shape) -> entt::entity {
-        return std::visit(
-            overloaded{
-                [&](const physics::Box &) { return buf(Box); },
-                [&](const physics::Sphere &) { return buf(Sphere); },
-                [&](const physics::Cylinder &) { return buf(Circle); },
-                [&](const physics::Capsule &) { return buf(CapsuleCap); },
-                [](const auto &) { return entt::entity{entt::null}; },
-            },
-            shape
-        );
-    };
-
-    // Drop wireframe: destroy instances and remove the component (batched so views stay valid).
-    auto drop_wireframes = [&](std::span<const entt::entity> entities) {
-        for (auto e : entities) {
-            const auto &cw = r.get<const ColliderWireframe>(e);
-            for (uint8_t i = 0; i < cw.Count; ++i) {
-                if (r.valid(cw.Instances[i])) Destroy(r, viewport, cw.Instances[i]);
-            }
-            r.remove<ColliderWireframe>(e);
-        }
-    };
-
-    auto make_instance = [&](entt::entity buffer_entity, entt::entity parent) -> entt::entity {
-        if (buffer_entity == entt::null) return entt::null;
-        const auto inst = r.create();
-        r.emplace<Instance>(inst, buffer_entity);
-        r.emplace<Transform>(inst);
-        r.emplace<WorldTransform>(inst);
-        r.emplace<SubElementOf>(inst, parent);
-        r.emplace<OverlayExtra>(inst);
-        Show(r, inst);
-        return inst;
-    };
-
-    // Drop wireframes whose backing buffer no longer matches the shape kind (e.g. Box → ConvexHull).
-    // The creation loop below recreates them (or leaves none for non-wireframe kinds).
-    std::vector<entt::entity> stale;
-    for (auto [entity, cs, cw] : r.view<const ColliderShape, const ColliderWireframe>().each()) {
-        if (cw.Count > 0 && r.valid(cw.Instances[0]) && r.get<const Instance>(cw.Instances[0]).Entity != primary_buffer(cs.Shape)) {
-            stale.emplace_back(entity);
-        }
-    }
-    drop_wireframes(stale);
-
-    for (auto [entity, cs] : r.view<const ColliderShape>().each()) {
-        if (r.all_of<ColliderWireframe>(entity)) continue;
-
-        const auto &shape = cs.Shape;
-        ColliderWireframe cw{};
-
-        if (std::holds_alternative<physics::Cylinder>(shape) || std::holds_alternative<physics::Capsule>(shape)) {
-            const auto cap_buf = buf(std::holds_alternative<physics::Capsule>(shape) ? CapsuleCap : Circle);
-            cw.Instances[0] = make_instance(cap_buf, entity); // top
-            cw.Instances[1] = make_instance(cap_buf, entity); // bottom
-            for (uint8_t i = 0; i < 4; ++i) cw.Instances[2 + i] = make_instance(buf(Line), entity);
-            cw.Count = 6;
-        } else {
-            const auto shape_buf = std::visit(
-                overloaded{
-                    [&](const physics::Box &) { return buf(Box); },
-                    [&](const physics::Sphere &) { return buf(Sphere); },
-                    [](const auto &) { return entt::entity{entt::null}; },
-                },
-                shape
-            );
-            if (shape_buf != entt::null) {
-                cw.Instances[0] = make_instance(shape_buf, entity);
-                cw.Count = 1;
-            }
-        }
-        if (cw.Count > 0) r.emplace<ColliderWireframe>(entity, cw);
-    }
-
-    // Remove wireframe instances for colliders that no longer exist.
-    std::vector<entt::entity> orphans;
-    for (auto [entity, cw] : r.view<ColliderWireframe>().each()) {
-        if (!r.all_of<ColliderShape>(entity)) orphans.emplace_back(entity);
-    }
-    drop_wireframes(orphans);
-
-    // Drop tet wireframes whose backing geometry no longer matches (toggle off, deselected,
-    // TetMeshData removed, or point count differs after regeneration).
-    std::vector<entt::entity> tet_stale;
-    for (auto [entity, tw] : r.view<TetWireframe>().each()) {
-        const auto *inst = r.try_get<const Instance>(entity);
-        const auto *tm = inst ? r.try_get<const TetMeshData>(inst->Entity) : nullptr;
-        if (!show_tets || !r.all_of<Selected>(entity) || !tm || tm->Positions.empty()) {
-            tet_stale.emplace_back(entity);
-            continue;
-        }
-        const auto *wi = r.try_get<const Instance>(tw.Instance);
-        const auto *mb = wi ? r.try_get<const MeshBuffers>(wi->Entity) : nullptr;
-        if (!mb || mb->Vertices.Count != tm->Positions.size()) tet_stale.emplace_back(entity);
-    }
-    for (auto e : tet_stale) {
-        if (auto &tw = r.get<TetWireframe>(e); r.valid(tw.Instance)) Destroy(r, viewport, tw.Instance);
-        r.remove<TetWireframe>(e);
-    }
-
-    if (show_tets) {
-        for (auto entity : r.view<Selected>()) {
-            if (r.all_of<TetWireframe>(entity)) continue;
-            const auto *instance = r.try_get<const Instance>(entity);
-            if (!instance) continue;
-
-            const auto *tm = r.try_get<const TetMeshData>(instance->Entity);
-            if (!tm || tm->Positions.empty()) continue;
-
-            const auto tet_buf = ::CreateExtrasBufferEntity(r, meshes, tm->Positions, tm->EdgeIndices);
-            r.emplace<OverlayExtra>(tet_buf);
-            r.emplace<TetWireframe>(entity, make_instance(tet_buf, entity));
-        }
-    }
-}
-
-// Build a camera/light/empty gizmo's wireframe from the object's params, replacing any existing one.
-void RebuildGizmoGeometry(entt::registry &r, MeshStore &meshes, GpuBuffers &buffers, entt::entity object, entt::entity buffer, ObjectType type) {
-    MeshData data;
-    std::vector<uint8_t> vertex_classes;
-    if (type == ObjectType::Light) {
-        auto wf = BuildLightMesh(r.get<const PunctualLight>(object));
-        data = std::move(wf.Data);
-        vertex_classes = std::move(wf.VertexClasses);
-    } else if (type == ObjectType::Camera) {
-        data = BuildCameraFrustumMesh(r.get<const Camera>(object), r.all_of<LookingThrough>(object));
-    } else {
-        data = BuildEmptyMesh();
-    }
-
-    // Release the existing wireframe before rebuilding.
-    if (r.all_of<OverlayVertexStoreId>(buffer)) {
-        if (const auto *vcr = r.try_get<const VertexClass>(buffer)) {
-            buffers.VertexClassBuffer.Release({vcr->Offset, r.get<const MeshBuffers>(buffer).Vertices.Count});
-            r.remove<VertexClass>(buffer);
-        }
-        meshes.ReleaseOverlay(r.get<const OverlayVertexStoreId>(buffer).StoreId);
-        if (auto *mb = r.try_get<MeshBuffers>(buffer)) buffers.Release(*mb);
-        r.erase<MeshBuffers>(buffer);
-        r.remove<OverlayVertexStoreId>(buffer);
-    }
-
-    // Emplacing the handle builds MeshBuffers (vertices) via on-construct; add the edges after.
-    r.emplace<OverlayVertexStoreId>(buffer, meshes.AllocateOverlayVertexBuffer(data.Positions).first);
-    if (const auto edges = data.CreateEdgeIndices(); !edges.empty()) {
-        r.patch<MeshBuffers>(buffer, [&](auto &mb) { mb.EdgeIndices = buffers.CreateIndices(edges, IndexKind::Edge); });
-    }
-    if (!vertex_classes.empty()) {
-        r.emplace<VertexClass>(buffer, buffers.VertexClassBuffer.Allocate(std::span<const uint8_t>(vertex_classes)).Offset);
-    }
-}
-
-void UpdateWireframeTransforms(entt::registry &r) {
-    if (r.view<ColliderWireframe>().empty() && r.view<TetWireframe>().empty()) return;
-
-    const auto &wt_changed = reactive<changes::WorldTransform>(r);
-    const auto &shape_changed = reactive<changes::PhysicsShape>(r);
-    for (auto [entity, cs, cw] : r.view<const ColliderShape, const ColliderWireframe>().each()) {
-        const auto *wt = r.try_get<const WorldTransform>(entity);
-        if (!wt) continue;
-
-        const bool parent_moved = wt_changed.contains(entity);
-        const bool shape_resized = shape_changed.contains(entity);
-        const bool newly_created = [&] {
-            for (uint8_t i = 0; i < cw.Count; ++i) {
-                if (r.valid(cw.Instances[i]) && wt_changed.contains(cw.Instances[i])) return true;
-            }
-            return false;
-        }();
-        if (!parent_moved && !shape_resized && !newly_created) continue;
-
-        auto set_wt = [&](entt::entity inst, mat4 m) {
-            if (!r.valid(inst)) return;
-            r.replace<WorldTransform>(inst, ToTransform(m));
-        };
-
-        // Maps the unit Y-line (from (0,+0.5,0) to (0,-0.5,0)) onto the segment p1→p2.
-        // Line is rotationally symmetric about its axis - any perpendicular X/Z basis works.
-        auto line_xform = [](vec3 p1, vec3 p2) -> mat4 {
-            const auto mid = (p1 + p2) * 0.5f;
-            const auto y_axis = p1 - p2;
-            const auto len = glm::length(y_axis);
-            // Coincident endpoints: collapse to a point at mid to avoid divide-by-zero.
-            if (len < 1e-6f) return glm::scale(glm::translate(mat4{1}, mid), vec3{0});
-
-            const auto y_dir = y_axis / len;
-            const auto x_dir = glm::normalize(glm::cross(std::abs(y_dir.y) > 0.9f ? vec3{1, 0, 0} : vec3{0, 1, 0}, y_dir));
-            return {{x_dir, 0}, {y_dir * len, 0}, {glm::cross(x_dir, y_dir), 0}, {mid, 1}};
-        };
-
-        const auto base = ToMatrix(*wt) * glm::translate(mat4{1}, cs.LocalOffset);
-        auto set_side_lines = [&](float rt, float rb, float h) {
-            for (uint8_t i = 0; i < 4; ++i) {
-                const auto a = Pi * 0.5f * float(i);
-                const auto c = std::cos(a), s = std::sin(a);
-                set_wt(cw.Instances[2 + i], base * line_xform({rt * c, h * 0.5f, rt * s}, {rb * c, -h * 0.5f, rb * s}));
-            }
-        };
-
-        std::visit(
-            overloaded{
-                [&](const physics::Box &s) { set_wt(cw.Instances[0], base * glm::scale(mat4{1}, s.Size)); },
-                [&](const physics::Sphere &s) { set_wt(cw.Instances[0], base * glm::scale(mat4{1}, vec3{s.Radius * 2})); },
-                [&](const physics::Capsule &s) {
-                    const float dt = s.RadiusTop * 2.0f, db = s.RadiusBottom * 2.0f;
-                    set_wt(cw.Instances[0], base * glm::translate(mat4{1}, {0, s.Height * 0.5f, 0}) * glm::scale(mat4{1}, {dt, dt, dt}));
-                    set_wt(cw.Instances[1], base * glm::translate(mat4{1}, {0, -s.Height * 0.5f, 0}) * glm::scale(mat4{1}, {db, -db, db}));
-                    set_side_lines(s.RadiusTop, s.RadiusBottom, s.Height);
-                },
-                [&](const physics::Cylinder &s) {
-                    const float dt = s.RadiusTop * 2.0f, db = s.RadiusBottom * 2.0f;
-                    set_wt(cw.Instances[0], base * glm::translate(mat4{1}, {0, s.Height * 0.5f, 0}) * glm::scale(mat4{1}, {dt, 1, dt}));
-                    set_wt(cw.Instances[1], base * glm::translate(mat4{1}, {0, -s.Height * 0.5f, 0}) * glm::scale(mat4{1}, {db, 1, db}));
-                    set_side_lines(s.RadiusTop, s.RadiusBottom, s.Height);
-                },
-                [](const auto &) {},
-            },
-            cs.Shape
-        );
-    }
-
-    for (auto [entity, tw] : r.view<const TetWireframe>().each()) {
-        if (r.valid(tw.Instance)) {
-            const auto *wt = r.try_get<const WorldTransform>(entity);
-            if (wt && (wt_changed.contains(entity) || wt_changed.contains(tw.Instance))) r.replace<WorldTransform>(tw.Instance, *wt);
-        }
-    }
-}
 
 // Resize the viewport's GPU render resources to match RenderExtentPx(ViewportExtent), recreating images and
 // rewriting bindless selection slots. Returns true when a resize occurred.
@@ -766,11 +474,6 @@ bool SyncViewportRenderResources(entt::registry &r, entt::entity viewport) {
         const auto &sil = pipelines.Silhouette;
         const auto &sil_edge = pipelines.SilhouetteEdge;
         const auto &main = pipelines.Main;
-        slots.SetBuffer({SlotType::Buffer, sel_slots.SelectionCounter}, *buffers.SelectionCounter);
-        slots.SetBuffer({SlotType::Buffer, sel_slots.ObjectPickKey}, *buffers.ObjectPickKeys);
-        slots.SetBuffer({SlotType::Buffer, sel_slots.ElementPickCandidates}, *buffers.ElementPickCandidates);
-        slots.SetBuffer({SlotType::Buffer, sel_slots.ObjectPickSeenBits}, *buffers.ObjectPickSeenBitset);
-        slots.SetBuffer({SlotType::Buffer, sel_slots.SelectionBitset}, *buffers.SelectionBitset);
         const auto set_sampler = [&](uint32_t slot, SampledTexture sampled) { slots.SetSampler({SlotType::Sampler, slot}, sampled.Texture, sampled.Sampler); };
         set_sampler(sel_slots.ObjectIdSampler, {*sil_edge.Resources->OffscreenImage, sil_edge.Resources->ImageSampler.get()});
         set_sampler(sel_slots.DepthSampler, {*sil_edge.Resources->DepthImage, sil_edge.Resources->ImageSampler.get()});
@@ -1062,28 +765,8 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
         }
     }
 
-    // Create/destroy wireframe overlay instances and their buffer entities before SyncModelsBuffers
-    // consumes the RenderInstance/NewBufferEntity reactive events they fire.
-    EnsureWireframes(r, viewport);
-
-    // Keep camera/light/empty gizmo wireframes in sync with their objects: rebuild on object creation and on a
-    // shape-affecting param change (a light's color/intensity edit changes no geometry, so it isn't triggered).
-    {
-        const auto rebuild = [&](entt::entity object, ObjectType type) {
-            if (const auto *inst = r.try_get<const Instance>(object); inst && r.valid(inst->Entity)) {
-                RebuildGizmoGeometry(r, meshes, buffers, object, inst->Entity, type);
-                request(RenderRequest::Reuse);
-            }
-        };
-        for (auto object : reactive<changes::ObjectCreated>(r)) {
-            // Cameras rebuild via their lens reactive below; here, lights and empties.
-            if (const auto type = r.get<const ObjectKind>(object).Value; type == ObjectType::Light || type == ObjectType::Empty) rebuild(object, type);
-        }
-        for (auto object : reactive<changes::CameraLens>(r)) {
-            if (r.all_of<Camera>(object)) rebuild(object, ObjectType::Camera);
-        }
-        for (auto object : r.view<LightWireframeDirty>()) rebuild(object, ObjectType::Light);
-    }
+    // A gizmo is generated from its object's parameters each frame, so a param change only needs a re-render.
+    if (!reactive<changes::CameraLens>(r).empty() || !r.view<LightWireframeDirty>().empty()) request(RenderRequest::Reuse);
 
     auto sync = SyncModelsBuffers(r); // Runs first so BufferIndex is valid for all downstream code.
     if (!sync.NewlyInserted.empty() || sync.Compacted) request(RenderRequest::Reuse);
@@ -1233,8 +916,6 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
                 total_face += sphere_faces.size();
                 total_edge += sphere.OutlineIndices.size();
                 total_vertex += sphere_verts.size();
-            } else if (const auto *pending = r.try_get<const PendingEdgeIndices>(entity)) {
-                total_edge += pending->Indices.size();
             }
         }
         buffers.ReserveAdditionalIndices(total_face, total_edge, total_vertex);
@@ -1252,11 +933,6 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
                     mb.EdgeIndices = buffers.CreateIndices(sphere.OutlineIndices, IndexKind::Edge);
                     mb.VertexIndices = buffers.CreateIndices(sphere_verts, IndexKind::Vertex);
                 });
-            } else if (auto *pending = r.try_get<PendingEdgeIndices>(entity)) {
-                r.patch<MeshBuffers>(entity, [&](auto &mb) {
-                    mb.EdgeIndices = buffers.CreateIndices(pending->Indices, IndexKind::Edge);
-                });
-                r.remove<PendingEdgeIndices>(entity);
             }
         }
         request(RenderRequest::Rebuild);
@@ -1318,7 +994,7 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
             else SetInteractionMode(r, viewport, InteractionMode::Excite);
         }
     }
-    std::unordered_set<entt::entity> dirty_overlay_meshes, dirty_element_state_meshes;
+    std::unordered_set<entt::entity> dirty_element_state_meshes;
 
     { // Selected/Active instance changes - batch instance state buffer writes per buffer entity.
         auto &selected_tracker = reactive<changes::Selected>(r);
@@ -1341,28 +1017,9 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
                 state_writes.emplace_back(ri->BufferIndex, InstanceStateBits(r, instance_entity));
             }
         };
-        // Update SelectedInstanceCount on mesh entities before per-entity processing.
-        for (auto instance_entity : selected_tracker) {
-            if (const auto *instance = r.try_get<Instance>(instance_entity); instance && HasMesh(r, instance->Entity)) {
-                auto &sc = r.get_or_emplace<SelectedInstanceCount>(instance->Entity);
-                sc.Value += r.all_of<Selected>(instance_entity) ? 1 : -1;
-            }
-        }
         for (auto instance_entity : selected_tracker) {
             collect_instance_state(instance_entity);
             if (const auto arm = FindArmatureObject(r, instance_entity); arm != entt::null) r.emplace_or_replace<BoneInstanceStateDirty>(arm);
-            if (const auto *instance = r.try_get<Instance>(instance_entity); instance && HasMesh(r, instance->Entity)) {
-                const auto mesh_entity = instance->Entity;
-                if (r.all_of<Selected>(instance_entity)) {
-                    dirty_overlay_meshes.insert(mesh_entity);
-                } else if (!r.get_or_emplace<SelectedInstanceCount>(mesh_entity).Value) {
-                    // Clean up overlays for this mesh
-                    if (auto *mesh_buffers = r.try_get<MeshBuffers>(mesh_entity)) {
-                        for (auto &[_, rb] : mesh_buffers->NormalIndicators) buffers.Release(rb);
-                        mesh_buffers->NormalIndicators.clear();
-                    }
-                }
-            }
         }
         for (auto instance_entity : active_tracker) {
             collect_instance_state(instance_entity);
@@ -1454,13 +1111,19 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
             request(RenderRequest::Reuse);
         }
     }
+    // Tet wireframes generate from the tet arenas at record time, so a tet mesh change re-renders.
+    if (!reactive<changes::TetMesh>(r).empty()) request(RenderRequest::Reuse);
     // A body reports contacts anywhere on itself, so every mesh instanced under one answers closest-point queries.
     // A mesh no body reaches any more loses its hierarchy.
     if (!reactive<changes::PhysicsBodyMesh>(r).empty()) {
+        // Collision shape wireframes generate from ColliderShape at record time, so a shape change re-renders.
+        request(RenderRequest::Reuse);
+
         std::vector<entt::entity> demanded;
         const auto is_body = [&r](entt::entity a) { return r.all_of<PhysicsBodyHandle>(a); };
         for (const auto [node, inst] : r.view<const Instance>().each()) {
-            if (FindAncestorIf(r, node, is_body) != null_entity) demanded.push_back(inst.Entity);
+            // Only a mesh has geometry to build a hierarchy over: a camera, light, or empty under the body has none.
+            if (FindAncestorIf(r, node, is_body) != null_entity && HasMesh(r, inst.Entity)) demanded.push_back(inst.Entity);
         }
         std::ranges::sort(demanded);
         const auto repeats = std::ranges::unique(demanded);
@@ -1484,7 +1147,6 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
             RebuildMeshletSceneMesh(r, mesh_entity);
             // Edited geometry restates the hierarchy of every mesh that has one.
             if (r.all_of<MeshBvh>(mesh_entity)) UpdateMeshBvh(r, mesh_entity);
-            if (r.get_or_emplace<SelectedInstanceCount>(mesh_entity).Value > 0) dirty_overlay_meshes.insert(mesh_entity);
             if (auto *br = r.try_get<MeshSelectionBitsetRange>(mesh_entity); br && edit_mode != Element::None) {
                 // Topology changed: zero stale selection bits and update count.
                 const auto &mesh = GetMesh(r, mesh_entity);
@@ -1543,8 +1205,6 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
     }
     if (!reactive<changes::ViewportDisplay>(r).empty()) {
         request(RenderRequest::Rebuild);
-        dirty_overlay_meshes.merge(selection::GetSelectedMeshEntities(r));
-
         if (const float requested = ClampMaxAnisotropy(ToMaxAnisotropy(r.get<const ViewportDisplay>(viewport).AnisotropicFilter));
             requested != r.ctx().get<const ActiveSamplerAnisotropy>().Value) {
             r.ctx().get<ActiveSamplerAnisotropy>().Value = requested;
@@ -1574,7 +1234,6 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
                 for (const auto &[mesh_entity, instance_entity] : edit_transform_context.TransformInstances) {
                     if (selection::HasScaleLockedInstance(r, mesh_entity)) continue;
                     if (CommitPosedGeometry(r, mesh_entity)) {
-                        dirty_overlay_meshes.insert(mesh_entity);
                         r.remove<PrimitiveShape>(mesh_entity);
                         r.emplace_or_replace<MeshGeometryDirty>(mesh_entity);
                     }
@@ -1913,7 +1572,6 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
             };
             for (const auto e : recompute) compute(e);
         }
-        UpdateWireframeTransforms(r); // Needs updated WorldTransforms
         {
             // Batch WorldTransform writes: collect all (BufferIndex, WorldTransform) pairs,
             // sort by BufferIndex for cache-friendly access, then write via single GetMutableRange.
@@ -2081,6 +1739,8 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
             .BaseSeamNormalSlot = meshes.GetBaseSeamNormalSlot(),
             .BaseVertexNormalSlot = meshes.GetBaseVertexNormalSlot(),
             .BaseFaceNormalSlot = meshes.GetBaseFaceNormalSlot(),
+            .FaceFirstTriangleSlot = meshes.GetFaceFirstTriangleSlot(),
+            .AdjacencySlot = meshes.GetAdjacencySlot(),
             .BoneDeformSlot = meshes.GetBoneDeformSlot(),
             .ArmatureDeformSlot = buffers.ArmatureDeformBuffer.Buffer.Slot,
             .MorphDeformSlot = meshes.GetMorphTargetSlot(),
@@ -2090,7 +1750,6 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
             .PosedSeamNormalSlot = buffers.PosedSeamNormals.Slot,
             .PosedFaceNormalSlot = buffers.PosedFaceNormals.Slot,
             .PosedMorphNormalDeltaSlot = buffers.PosedMorphNormalDeltas.Slot,
-            .VertexClassSlot = buffers.VertexClassBuffer.Buffer.Slot,
             .MaterialSlot = buffers.Materials.Slot(),
             .PrimitiveMaterialSlot = meshes.GetPrimitiveMaterialSlot(),
             .ElementPrimitiveSlot = meshes.GetElementPrimitiveSlot(),
@@ -2109,45 +1768,21 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
         request(transform_render_request);
     }
 
-    const auto &settings = r.get<const ViewportDisplay>(viewport);
-    for (const auto mesh_entity : dirty_overlay_meshes) {
-        const auto &mesh = GetMesh(r, mesh_entity);
-        r.patch<MeshBuffers>(mesh_entity, [&](auto &mesh_buffers) {
-            for (const auto element : NormalElements) {
-                if (ElementMaskContains(settings.NormalOverlays, element)) {
-                    if (!mesh_buffers.NormalIndicators.contains(element)) {
-                        const auto index_kind = element == Element::Face ? IndexKind::Face : IndexKind::Vertex;
-                        mesh_buffers.NormalIndicators.emplace(
-                            element,
-                            buffers.CreateRenderBuffers(CreateNormalVertices(mesh, element), CreateNormalIndices(mesh, element), index_kind)
-                        );
-                    } else {
-                        buffers.VertexBuffer.Update(mesh_buffers.NormalIndicators.at(element).Vertices, CreateNormalVertices(mesh, element));
-                    }
-                } else if (mesh_buffers.NormalIndicators.contains(element)) {
-                    buffers.Release(mesh_buffers.NormalIndicators.at(element));
-                    mesh_buffers.NormalIndicators.erase(element);
-                }
-            }
-        });
-    }
-    // Update mesh element state buffers (Excite mode only; Edit mode handled by GPU compute)
+    // Excite mode highlights every excitable vertex, so its edges pick up the same selected state.
     for (const auto mesh_entity : dirty_element_state_meshes) {
         if (interaction_mode != InteractionMode::Excite) continue;
-        const auto &mesh = GetMesh(r, mesh_entity);
         std::span<const uint32_t> sound_vertices;
-        std::optional<uint32_t> active_handle, excited_handle;
-        for (auto [entity, instance, excitable] : r.view<const Instance, const SoundVertices>().each()) {
+        for (const auto [entity, instance, excitable] : r.view<const Instance, const SoundVertices>().each()) {
             if (instance.Entity != mesh_entity) continue;
-            sound_vertices = excitable.Vertices;
-            if (const auto *force = r.try_get<const VertexForce>(entity)) excited_handle = force->Vertex;
+            sound_vertices = meshes.GetSoundVertices(excitable.Vertices);
             break;
         }
-        if (const auto *active = r.try_get<const MeshActiveElement>(mesh_entity)) active_handle = active->Handle;
-        meshes.UpdateSoundVertexStates(mesh, sound_vertices, active_handle, excited_handle);
-        r.ctx().get<DrawState>().SelectionStale = true;
+        meshes.UpdateSoundVertexStates(GetMesh(r, mesh_entity), sound_vertices);
     }
-    if (!dirty_element_state_meshes.empty()) request(RenderRequest::Reuse);
+    if (!dirty_element_state_meshes.empty()) {
+        r.ctx().get<DrawState>().SelectionStale = true;
+        request(RenderRequest::Reuse);
+    }
     if (r.all_of<ElementStatesDirty>(viewport)) {
         r.remove<ElementStatesDirty>(viewport);
         request(RenderRequest::Reuse);
@@ -2179,6 +1814,7 @@ void RegisterSceneComponentHandlers(entt::registry &r) {
     track<changes::SoundVertices>(r).on<SoundVertices>(On::Create | On::Destroy);
     track<changes::SoundVerticesUpdated>(r).on<SoundVertices>(On::Update);
     track<changes::VertexForce>(r).on<VertexForce>(On::Create | On::Destroy);
+    track<changes::TetMesh>(r).on<TetBuffers>(On::Create | On::Update | On::Destroy);
     track<changes::NewBufferEntity>(r).on<MeshBuffers>(On::Create);
     track<changes::ObjectCreated>(r).on<ObjectKind>(On::Create);
     track<changes::RenderInstanceCreated>(r).on<RenderInstance>(On::Create);
@@ -2237,10 +1873,5 @@ void RegisterSceneComponentHandlers(entt::registry &r) {
         r.emplace_or_replace<ShadeSmoothAngle>(viewport);
         r.emplace_or_replace<BoxSelectState>(viewport);
         r.emplace_or_replace<GizmoInteraction>(viewport);
-    });
-    RegisterSceneClearHandler(r, [](entt::registry &r) {
-        // Drop ColliderShapeBuffers' cached handles to the destroyed wireframe buffer entities, so
-        // EnsureWireframes rebuilds them instead of mistaking a reused entity id for a live buffer.
-        r.ctx().get<ColliderShapeBuffers>().Entities.fill(entt::entity{entt::null});
     });
 }

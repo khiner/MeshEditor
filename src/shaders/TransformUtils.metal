@@ -28,4 +28,12 @@ inline float3 apply_object_pending_transform(const thread SceneT<SetT> &scene, D
     return apply_pending_transform_world(scene, world_pos);
 }
 
+// Clip position of the draw's vertex: local position through the world transform, any pending
+// object transform, and the view projection.
+template<typename SetT>
+inline float4 MeshletPosition(const thread SceneT<SetT> &scene, DrawData draw, Transform world, uint vertex_id) {
+    const float3 world_pos = apply_object_pending_transform(scene, draw, trs_transform_point(world, scene.GetLocalPosition(draw, vertex_id)));
+    return scene.ViewProj() * float4(world_pos, 1.0f);
+}
+
 #endif

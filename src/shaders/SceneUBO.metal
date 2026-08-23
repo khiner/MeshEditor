@@ -16,4 +16,11 @@ inline bool IsFrontFacing(const thread SceneT<SetT> &scene, float3 normal, float
 template<typename SetT>
 inline float NdcOffsetFactor(const thread SceneT<SetT> &scene) { return scene.View.NdcOffsetFactor; }
 
+// The overlay wire color for the current interaction mode.
+template<typename SetT>
+inline float4 WireBaseColor(const thread SceneT<SetT> &scene) {
+    constant ViewportThemeColors &colors = scene.Theme.Colors;
+    return float4(float3(scene.View.InteractionMode == InteractionMode_Edit ? colors.WireEdit : colors.Wire), 1.0f);
+}
+
 #endif

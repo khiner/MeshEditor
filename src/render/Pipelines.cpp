@@ -1,6 +1,8 @@
 #include "render/Pipelines.h"
 #include "gpu/BackgroundConstant.h"
 #include "gpu/MeshVertexConstant.h"
+#include "gpu/NormalIndicatorConstant.h"
+#include "gpu/WireMeshConstant.h"
 #include "gpu/PbrConstant.h"
 #include "metal/Bindless.h"
 #include "metal/Buffer.h"
@@ -15,10 +17,6 @@ using mtl::AdditiveBlend, mtl::Blend, mtl::NoBlend, mtl::NoWrite, mtl::Premultip
 using mtl::BlendState, mtl::DepthState, mtl::FunctionConstant, mtl::FunctionRef, mtl::PassFormats, mtl::RenderPipeline;
 
 namespace {
-enum class OverlayKind : uint32_t {
-    FaceNormal = 1,
-    VertexNormal = 2,
-};
 // Map host feature bits to generated shader function constants.
 constexpr std::array PbrSpecFeatures{
     std::pair{PbrConstant::EnablePunctual, PbrFeature::Punctual},
@@ -42,30 +40,30 @@ constexpr mtl::FunctionConstant UintConstant(auto index, uint32_t value) {
     return {uint32_t(index), MTL::DataTypeUInt, value};
 }
 
-std::vector<mtl::FunctionConstant> MeshVertexConstants(
-    uint32_t overlay_kind, bool line_draw, bool velocity, bool non_triangle_topology = false
-) {
+std::vector<mtl::FunctionConstant> MeshVertexConstants(bool velocity, bool non_triangle_topology = false) {
     return {
-        UintConstant(MeshVertexConstant::OverlayKind, overlay_kind),
-        UintConstant(MeshVertexConstant::IsLineDraw, line_draw ? 1u : 0u),
         BoolConstant(MeshVertexConstant::VelocityOutput, velocity),
         BoolConstant(MeshVertexConstant::NonTriangleTopology, non_triangle_topology),
     };
 }
 
-FunctionRef MeshVertex(uint32_t overlay_kind = 0, bool line_draw = false, bool velocity = false) {
-    return {"VertexTransform.metal", "VertexTransformVertex", MeshVertexConstants(overlay_kind, line_draw, velocity)};
+FunctionRef WireMesh(bool element_state_color) {
+    return {"MeshletWire.metal", "MeshletWireMesh", {BoolConstant(WireMeshConstant::ElementStateColor, element_state_color)}};
+}
+
+FunctionRef NormalIndicatorMesh(bool faces) {
+    return {"NormalIndicator.metal", "NormalIndicatorMesh", {BoolConstant(NormalIndicatorConstant::NormalIndicatorFaces, faces)}};
 }
 
 FunctionRef MeshletVertex(bool velocity = false, bool non_triangle_topology = false) {
     return {
         "MeshletTransform.metal", "MeshletForwardMesh",
-        MeshVertexConstants(0, false, velocity, non_triangle_topology)
+        MeshVertexConstants(velocity, non_triangle_topology)
     };
 }
 
 FunctionRef MeshletVisibilityVertex() {
-    return {"MeshletTransform.metal", "MeshletVisibilityMesh", MeshVertexConstants(0, false, false)};
+    return {"MeshletTransform.metal", "MeshletVisibilityMesh", MeshVertexConstants(false)};
 }
 
 mtl::MeshRenderPipeline CreateMeshPipeline(
@@ -156,22 +154,8 @@ static PipelineRenderer CreateOverlayRenderer(mtl::LibraryCache &libraries) {
     const auto formats = OverlayFormats();
     const FunctionRef vertex_color{"VertexColor.metal", "VertexColorFragment"};
     std::unordered_map<SPT, RenderPipeline> pipelines;
-    pipelines.emplace(SPT::EdgeQuad, RenderPipeline{libraries, {"EdgeQuad.metal", "EdgeQuadVertex"}, FunctionRef{"EdgeQuad.metal", "EdgeQuadFragment"}, formats, {Blend, NoWrite}, DepthTestNoWriteLessEqual});
-    pipelines.emplace(SPT::Line, RenderPipeline{libraries, MeshVertex(0, true), vertex_color, formats, {Blend, NoBlend}, DepthTestLessEqual});
-    pipelines.emplace(SPT::ObjectExtrasLine, RenderPipeline{libraries, {"ObjectExtras.metal", "ObjectExtrasVertex"}, vertex_color, formats, {Blend, NoBlend}, DepthTestLessEqual});
-    pipelines.emplace(SPT::BoundsBox, RenderPipeline{libraries, {"BoundsBox.metal", "BoundsBoxVertex"}, vertex_color, formats, {Blend, NoBlend}, DepthTestLessEqual});
-    const auto make_overlay_pipeline = [&](OverlayKind overlay_kind) {
-        return RenderPipeline{libraries, MeshVertex(uint32_t(overlay_kind), true), vertex_color, formats, {Blend, NoBlend}, DepthTestLessEqual};
-    };
-    pipelines.emplace(SPT::LineOverlayFaceNormals, make_overlay_pipeline(OverlayKind::FaceNormal));
-    pipelines.emplace(SPT::LineOverlayVertexNormals, make_overlay_pipeline(OverlayKind::VertexNormal));
-    pipelines.emplace(SPT::Point, RenderPipeline{libraries, {"VertexPoint.metal", "VertexPointVertex"}, FunctionRef{"VertexPoint.metal", "VertexPointFragment"}, formats, {Blend, NoWrite}, DepthTestLessEqual});
     pipelines.emplace(SPT::Grid, RenderPipeline{libraries, {"GridLines.metal", "GridLinesVertex"}, FunctionRef{"GridLines.metal", "GridLinesFragment"}, formats, {Blend, NoWrite}, DepthState{.Write = false}});
     pipelines.emplace(SPT::SilhouetteEdgeColor, RenderPipeline{libraries, {"TexQuad.metal", "TexQuadVertex"}, FunctionRef{"SilhouetteEdgeColor.metal", "SilhouetteEdgeColorFragment"}, formats, {Blend, NoWrite}, DepthOff});
-    pipelines.emplace(SPT::BoneFill, RenderPipeline{libraries, {"BoneSolid.metal", "BoneSolidVertex"}, FunctionRef{"BoneSolid.metal", "BoneSolidFragment"}, formats, {Blend, NoWrite}, DepthTestWrite, 2.f});
-    pipelines.emplace(SPT::BoneWire, RenderPipeline{libraries, {"BoneWire.metal", "BoneWireVertex"}, vertex_color, formats, {Blend, NoBlend}, DepthTestNoWriteLessEqual});
-    pipelines.emplace(SPT::BoneSphereFill, RenderPipeline{libraries, {"BoneSphere.metal", "BoneSphereVertex"}, FunctionRef{"BoneSphere.metal", "BoneSphereFragment"}, formats, {Blend, NoWrite}, DepthTestLessEqual});
-    pipelines.emplace(SPT::BoneSphereWire, RenderPipeline{libraries, {"BoneSphereWire.metal", "BoneSphereWireVertex"}, vertex_color, formats, {Blend, NoBlend}, DepthTestNoWriteLessEqual});
     return {formats, std::move(pipelines)};
 }
 
@@ -267,6 +251,20 @@ MainPipeline::MainPipeline(mtl::LibraryCache &libraries)
       WorkspaceVisibility{libraries, {"TexQuad.metal", "TexQuadVertex"}, FunctionRef{"WorkspaceLighting.metal", "WorkspaceVisibilityFragment"}, SceneFormats(), {Blend}, DepthOff},
       MeshletVisibilityOpaque{CreateMeshPipeline(libraries, FunctionRef{"MeshletVisibility.metal", "MeshletVisibilityOpaqueFragment"}, {{Format::Uint}, Format::Depth}, {NoBlend}, DepthTestWrite, MeshletVisibilityVertex())},
       MeshletVisibilityCoverage{CreateMeshPipeline(libraries, FunctionRef{"MeshletVisibility.metal", "MeshletVisibilityPrimitiveFragment"}, {{Format::Uint}, Format::Depth}, {NoBlend}, DepthTestWrite, MeshletVisibilityVertex())},
+      MeshletWire{CreateMeshPipeline(libraries, FunctionRef{"VertexColor.metal", "VertexColorFragment"}, OverlayFormats(), {Blend, NoBlend}, DepthTestLessEqual, WireMesh(false))},
+      MeshletWireElements{CreateMeshPipeline(libraries, FunctionRef{"VertexColor.metal", "VertexColorFragment"}, OverlayFormats(), {Blend, NoBlend}, DepthTestLessEqual, WireMesh(true))},
+      EdgeQuadMesh{CreateMeshPipeline(libraries, FunctionRef{"EdgeQuad.metal", "EdgeQuadFragment"}, OverlayFormats(), {Blend, NoWrite}, DepthTestNoWriteLessEqual, {"EdgeQuad.metal", "EdgeQuadMesh"})},
+      PointMesh{CreateMeshPipeline(libraries, FunctionRef{"VertexPoint.metal", "VertexPointFragment"}, OverlayFormats(), {Blend, NoWrite}, DepthTestLessEqual, {"VertexPoint.metal", "VertexPointMesh"})},
+      FaceNormalMesh{CreateMeshPipeline(libraries, FunctionRef{"VertexColor.metal", "VertexColorFragment"}, OverlayFormats(), {Blend, NoBlend}, DepthTestLessEqual, NormalIndicatorMesh(true))},
+      VertexNormalMesh{CreateMeshPipeline(libraries, FunctionRef{"VertexColor.metal", "VertexColorFragment"}, OverlayFormats(), {Blend, NoBlend}, DepthTestLessEqual, NormalIndicatorMesh(false))},
+      BoundsBoxMesh{CreateMeshPipeline(libraries, FunctionRef{"VertexColor.metal", "VertexColorFragment"}, OverlayFormats(), {Blend, NoBlend}, DepthTestLessEqual, {"BoundsBox.metal", "BoundsBoxMesh"})},
+      TetWireMesh{CreateMeshPipeline(libraries, FunctionRef{"VertexColor.metal", "VertexColorFragment"}, OverlayFormats(), {Blend, NoBlend}, DepthTestLessEqual, {"TetWire.metal", "TetWireMesh"})},
+      SoundPointMesh{CreateMeshPipeline(libraries, FunctionRef{"VertexPoint.metal", "VertexPointFragment"}, OverlayFormats(), {Blend, NoWrite}, DepthTestLessEqual, {"VertexPoint.metal", "SoundPointMesh"})},
+      ExtrasLineMesh{CreateMeshPipeline(libraries, FunctionRef{"VertexColor.metal", "VertexColorFragment"}, OverlayFormats(), {Blend, NoBlend}, DepthTestLessEqual, {"ExtrasLine.metal", "ExtrasLineMesh"})},
+      BoneFillMesh{CreateMeshPipeline(libraries, FunctionRef{"BoneSolid.metal", "BoneSolidFragment"}, OverlayFormats(), {Blend, NoWrite}, DepthTestWrite, {"BoneSolid.metal", "BoneSolidMesh"})},
+      BoneWireMesh{CreateMeshPipeline(libraries, FunctionRef{"VertexColor.metal", "VertexColorFragment"}, OverlayFormats(), {Blend, NoBlend}, DepthTestNoWriteLessEqual, {"BoneWire.metal", "BoneWireMesh"})},
+      BoneSphereFillMesh{CreateMeshPipeline(libraries, FunctionRef{"BoneSphere.metal", "BoneSphereFragment"}, OverlayFormats(), {Blend, NoWrite}, DepthTestLessEqual, {"BoneSphere.metal", "BoneSphereMesh"})},
+      BoneSphereWireMesh{CreateMeshPipeline(libraries, FunctionRef{"VertexColor.metal", "VertexColorFragment"}, OverlayFormats(), {Blend, NoBlend}, DepthTestNoWriteLessEqual, {"BoneSphereWire.metal", "BoneSphereWireMesh"})},
       Compiler{SceneFormats(), SceneVelocityFormats()} {}
 
 MainPipeline::ResourcesT::ResourcesT(const mtl::Context &ctx, mtl::Extent2D extent, mtl::BindlessSet &slots)
@@ -422,9 +420,6 @@ static PipelineRenderer CreateSelectionFragmentRenderer(mtl::LibraryCache &libra
         pipelines.emplace(desc.Type, RenderPipeline{libraries, {"SelectionElement.metal", desc.VertexName}, FunctionRef{desc.FragmentFile, desc.FragmentName}, formats, {}, desc.Depth});
     }
     const FunctionRef selection_fragment{"SelectionFragment.metal", "SelectionFragment"};
-    pipelines.emplace(SPT::SelectionFragment, RenderPipeline{libraries, {"PositionTransform.metal", "PositionTransformVertex"}, selection_fragment, formats, {}, DepthOff});
-    pipelines.emplace(SPT::SelectionFragmentBoneSphere, RenderPipeline{libraries, {"BoneSphere.metal", "BoneSphereVertex"}, selection_fragment, formats, {}, DepthOff});
-    pipelines.emplace(SPT::SelectionObjectExtrasLines, RenderPipeline{libraries, {"ObjectExtras.metal", "ObjectExtrasSelectionVertex"}, selection_fragment, formats, {}, DepthOff});
     return {formats, std::move(pipelines)};
 }
 
@@ -434,7 +429,12 @@ SelectionFragmentPipeline::SelectionFragmentPipeline(mtl::LibraryCache &librarie
       VisibilityFace{libraries, {"TexQuad.metal", "TexQuadVertex"}, FunctionRef{"VisibilitySelection.metal", "VisibilityFaceSelectionFragment"}, Renderer.Formats, {}, DepthOff},
       VisibilityFaceBitsetBox{libraries, {"TexQuad.metal", "TexQuadVertex"}, FunctionRef{"VisibilitySelection.metal", "VisibilityFaceBitsetBoxFragment"}, Renderer.Formats, {}, DepthOff},
       MeshletFaceXRay{CreateMeshPipeline(libraries, FunctionRef{"SelectionElementLinkedList.metal", "SelectionElementLinkedListFragment"}, Renderer.Formats, {}, DepthOff)},
-      MeshletFaceXRayBitsetBox{CreateMeshPipeline(libraries, FunctionRef{"SelectionElementBitsetBox.metal", "SelectionElementBitsetBoxFragment"}, Renderer.Formats, {}, DepthOff)} {}
+      MeshletFaceXRayBitsetBox{CreateMeshPipeline(libraries, FunctionRef{"SelectionElementBitsetBox.metal", "SelectionElementBitsetBoxFragment"}, Renderer.Formats, {}, DepthOff)},
+      ExtrasLine{CreateMeshPipeline(libraries, FunctionRef{"SelectionFragment.metal", "SelectionFragment"}, Renderer.Formats, {}, DepthOff, {"ExtrasLine.metal", "ExtrasLineIdMesh"})},
+      BoneSphere{CreateMeshPipeline(libraries, FunctionRef{"SelectionFragment.metal", "SelectionFragment"}, Renderer.Formats, {}, DepthOff, {"BoneSphere.metal", "BoneSphereMesh"})},
+      Line{CreateMeshPipeline(libraries, FunctionRef{"SelectionFragment.metal", "SelectionFragment"}, Renderer.Formats, {}, DepthOff, {"PositionTransform.metal", "SelectionLineIdMesh"})},
+      Point{CreateMeshPipeline(libraries, FunctionRef{"SelectionFragment.metal", "SelectionFragment"}, Renderer.Formats, {}, DepthOff, {"PositionTransform.metal", "SelectionPointIdMesh"})},
+      SoundPoint{CreateMeshPipeline(libraries, FunctionRef{"SelectionElementLinkedList.metal", "SelectionElementLinkedListFragment"}, Renderer.Formats, {}, DepthTestNoWriteLessEqual, {"VertexPoint.metal", "SoundPointIdMesh"})} {}
 
 SelectionFragmentPipeline::ResourcesT::ResourcesT(mtl::BufferContext &buffers, mtl::Extent2D extent)
     : HeadBuffer{buffers, uint64_t(extent.Width) * extent.Height * sizeof(uint32_t), SlotType::Buffer}, Extent{extent} {}
@@ -493,6 +493,17 @@ void Pipelines::CompileShaders() {
     Main.WorkspaceVisibility.Compile(Libraries);
     Main.MeshletVisibilityOpaque.Compile(Libraries);
     Main.MeshletVisibilityCoverage.Compile(Libraries);
+    Main.MeshletWire.Compile(Libraries);
+    Main.MeshletWireElements.Compile(Libraries);
+    Main.EdgeQuadMesh.Compile(Libraries);
+    Main.PointMesh.Compile(Libraries);
+    Main.FaceNormalMesh.Compile(Libraries);
+    Main.VertexNormalMesh.Compile(Libraries);
+    Main.BoundsBoxMesh.Compile(Libraries);
+    Main.TetWireMesh.Compile(Libraries);
+    Main.SoundPointMesh.Compile(Libraries);
+    Main.ExtrasLineMesh.Compile(Libraries);
+    for (auto *bone : {&Main.BoneFillMesh, &Main.BoneWireMesh, &Main.BoneSphereFillMesh, &Main.BoneSphereWireMesh}) bone->Compile(Libraries);
     Main.Compiler.RecompileModules(Libraries);
     Silhouette.Visibility.Compile(Libraries);
     SilhouetteEdge.Renderer.CompileShaders(Libraries);
@@ -500,6 +511,8 @@ void Pipelines::CompileShaders() {
     SelectionFragment.VisibilityObject.Compile(Libraries);
     SelectionFragment.VisibilityFace.Compile(Libraries);
     SelectionFragment.VisibilityFaceBitsetBox.Compile(Libraries);
+    SelectionFragment.ExtrasLine.Compile(Libraries);
+    for (auto *p : {&SelectionFragment.BoneSphere, &SelectionFragment.Line, &SelectionFragment.Point, &SelectionFragment.SoundPoint}) p->Compile(Libraries);
     SelectionFragment.MeshletFaceXRay.Compile(Libraries);
     SelectionFragment.MeshletFaceXRayBitsetBox.Compile(Libraries);
     for (auto *compute : {&ObjectPick, &ElementPick, &BoxSelect, &UpdateSelectionState, &PosePrepass, &PosedMeshletBounds, &VertexNormalDerive, &BoundsReduce, &BoundsCombine, &FrustumCull, &MeshletWorkBlockCount, &MeshletWorkPrefix, &MeshletWorkEmit, &MeshletCullBlockCount, &MeshletCullPrefix, &MeshletCullEmit, &MeshletPhase2Cull, &MeshletPhase2RangeCull, &MeshletPhase2Prefix, &DepthPyramidReduce, &MotionBlurTilesFlatten, &MotionBlurTilesDilate, &IblPrefilter.EquirectToCubemap, &IblPrefilter.DiffuseIrradiance, &IblPrefilter.SpecularPrefilter}) {

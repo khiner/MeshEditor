@@ -132,6 +132,9 @@ struct MainPipeline {
     mtl::RenderPipeline MotionBlurGather;
     mtl::RenderPipeline WorkspaceVisibility;
     mtl::MeshRenderPipeline MeshletVisibilityOpaque, MeshletVisibilityCoverage;
+    mtl::MeshRenderPipeline MeshletWire, MeshletWireElements, EdgeQuadMesh, PointMesh;
+    mtl::MeshRenderPipeline FaceNormalMesh, VertexNormalMesh, BoundsBoxMesh, TetWireMesh, SoundPointMesh, ExtrasLineMesh;
+    mtl::MeshRenderPipeline BoneFillMesh, BoneWireMesh, BoneSphereFillMesh, BoneSphereWireMesh;
     std::unique_ptr<ResourcesT> Resources;
     std::unique_ptr<TransmissionResourcesT> Transmission;
     std::unique_ptr<MotionBlurResourcesT> MotionBlur;
@@ -186,7 +189,7 @@ struct SelectionFragmentPipeline {
 
     PipelineRenderer Renderer;
     mtl::RenderPipeline VisibilityObject, VisibilityFace, VisibilityFaceBitsetBox;
-    mtl::MeshRenderPipeline MeshletFaceXRay, MeshletFaceXRayBitsetBox;
+    mtl::MeshRenderPipeline MeshletFaceXRay, MeshletFaceXRayBitsetBox, ExtrasLine, BoneSphere, Line, Point, SoundPoint;
     std::unique_ptr<ResourcesT> Resources;
 };
 

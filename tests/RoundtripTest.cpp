@@ -19,7 +19,6 @@
 #include "mesh/MeshStore.h"
 #include "mesh/PrimitiveType.h"
 #include "mesh/Primitives.h"
-#include "mesh/TetMeshData.h"
 #include "render/GpuBuffers.h"
 #include "render/Instance.h"
 #include "render/Textures.h"
@@ -933,7 +932,7 @@ int main(int argc, const char **argv) {
             f.R.emplace<ModalGain>(sound, ModalGain{0.6f}); // Bytes
             f.R.emplace<ModalTuning>(sound, ModalTuning{440.f, 1.2f}); // Bytes
             f.R.emplace<AcousticMaterial>(e, materials::acoustic::Ceramic); // Serialized (string)
-            f.R.emplace<TetMeshData>(e, SampleModal.Tets); // Serialized (vectors)
+            f.R.emplace<TetBuffers>(e, meshes.AllocateTets(SampleModal.Tets.Positions, SampleModal.Tets.EdgeIndices)); // Bytes (tet arena ranges)
 
             ProcessComponentEvents(f.R, f.Viewport);
             before = snapshot::SaveState(f.R);

@@ -29,7 +29,6 @@ struct MeshBuffers {
     SlottedRange Vertices;
     SlottedRange FaceIndices, EdgeIndices, VertexIndices;
     Range Primitives, Meshlets, MeshletTriangles, MeshletVertices, MeshletLocalTriangles;
-    std::unordered_map<Element, RenderBuffers> NormalIndicators;
 };
 
 // Adjacency indices for bone silhouette edge detection (stored on armature object entities).

@@ -70,7 +70,3 @@ enum class SelectionGesture : uint8_t {
 struct BoxSelectState {
     SelectionGesture Gesture{SelectionGesture::Box};
 };
-
-struct SelectedInstanceCount {
-    uint32_t Value{0};
-};

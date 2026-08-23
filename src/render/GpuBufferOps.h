@@ -23,6 +23,5 @@ PunctualLight GetLight(entt::registry &, uint32_t index);
 mtl::BufferContext &GetBufferContext(entt::registry &);
 void ReleaseMeshBuffers(entt::registry &, MeshBuffers &);
 
-void ReleaseVertexClasses(entt::registry &, uint32_t offset, uint32_t count);
 void FreeInstanceRange(entt::registry &, Range);
 void ReleaseEdgeIndices(entt::registry &, const SlottedRange &);

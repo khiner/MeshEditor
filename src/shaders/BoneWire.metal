@@ -9,31 +9,22 @@
 #include "Bindless.metal"
 #include "BoneUtils.metal"
 #include "Varyings.metal"
-#include "MainDrawPushConstants.metal"
+#include "OverlayMeshPushConstants.metal"
 
 // A degenerate position behind the near plane, for edges the silhouette test rejects.
 inline LineVaryings DiscardedEdge() {
     return LineVaryings{float4(0, 0, -2, 1), float4(0), float2(0), float2(0)};
 }
 
-vertex LineVaryings BoneWireVertex(
-    uint vertex_id [[vertex_id]],
-    uint instance_id [[instance_id]],
-    device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
-    constant SceneViewUBO &view [[buffer(BufferIndex_SceneView)]],
-    constant ViewportTheme &theme [[buffer(BufferIndex_ViewportTheme)]],
-    constant WorkspaceLights &workspace [[buffer(BufferIndex_WorkspaceLights)]],
-    constant MainDrawPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
-) {
-    const Scene scene{bindless, view, theme, workspace};
-    const DrawData draw = GetDrawData(scene, pc.DrawDataOffset, instance_id);
+// One emitted vertex of a bone's BoneWireMesh.
+inline LineVaryings BoneWireMeshVertexAt(const thread Scene &scene, DrawData draw, uint vertex_id) {
     const Transform world = scene.Models(draw.ModelSlot)[draw.FirstInstance];
     const float4x4 M = trs_to_mat4(world);
 
-    const float3x3 VR = view.ViewRotation.Unpack();
+    const float3x3 VR = scene.View.ViewRotation.Unpack();
     const float4x4 MV = float4x4(
         float4(VR[0], 0), float4(VR[1], 0), float4(VR[2], 0),
-        float4(-(VR * float3(view.CameraPosition)), 1)
+        float4(-(VR * float3(scene.View.CameraPosition)), 1)
     ) * M;
 
     const uint edge_index = vertex_id / 2u;
@@ -101,10 +92,33 @@ vertex LineVaryings BoneWireVertex(
     clip_pos.z -= 1e-4f;
 
     out.Position = clip_pos;
-    const float2 screen_pos = clip_to_frag_co(clip_pos, float2(view.ViewportSize));
+    const float2 screen_pos = clip_to_frag_co(clip_pos, float2(scene.View.ViewportSize));
     out.EdgeStart = screen_pos;
     out.EdgePos = screen_pos;
     return out;
 }
+
+// One threadgroup per bone, emitting that bone's BoneWireMesh from the shared unit primitive.
+using BoneWireMeshOutput = metal::mesh<LineVaryings, void, 24u, 12u, metal::topology::line>;
+
+[[mesh]] void BoneWireMesh(
+    BoneWireMeshOutput output,
+    uint thread_index [[thread_index_in_threadgroup]],
+    uint3 threadgroup_position [[threadgroup_position_in_grid]],
+    device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
+    constant SceneViewUBO &view [[buffer(BufferIndex_SceneView)]],
+    constant ViewportTheme &theme [[buffer(BufferIndex_ViewportTheme)]],
+    constant WorkspaceLights &workspace [[buffer(BufferIndex_WorkspaceLights)]],
+    constant OverlayMeshPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
+) {
+    const Scene scene{bindless, view, theme, workspace};
+    output.set_primitive_count(12u);
+    if (thread_index >= pc.ElementCount) return;
+
+    const DrawData draw = GetDrawDataAt(scene, pc.DrawDataIndex + threadgroup_position.x);
+    output.set_vertex(thread_index, BoneWireMeshVertexAt(scene, draw, thread_index));
+    output.set_index(thread_index, thread_index);
+}
+
 
 #endif

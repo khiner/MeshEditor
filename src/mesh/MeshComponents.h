@@ -20,19 +20,12 @@ struct ModelsBuffer {
     uint32_t InstanceCount{0}; // Active instances (≤ InstanceRange.Count).
 };
 
-struct VertexClass {
-    uint32_t Offset{InvalidOffset};
-};
-
 // MeshStore vertex buffer ID
 struct VertexStoreId {
     uint32_t StoreId;
 };
 
 // MeshStore vertex buffer ID into the overlay store. Present on a buffer entity whose geometry is derived, not authored.
-struct OverlayVertexStoreId {
-    uint32_t StoreId;
-};
 
 // The canonical handle to a mesh's vertex data in MeshStore.
 struct MeshHandle {

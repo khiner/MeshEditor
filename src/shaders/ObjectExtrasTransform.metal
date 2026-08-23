@@ -12,18 +12,8 @@ constant uint VCLASS_SCREENSPACE = 3u;
 constant uint VCLASS_GROUNDPOINT = 4u;
 
 template<typename SetT>
-inline uint GetVertexClass(const thread SceneT<SetT> &scene, DrawData draw, uint idx) {
-    if (draw.VertexClassOffset != INVALID_OFFSET) {
-        return uint(scene.VertexClasses(scene.View.VertexClassSlot)[draw.VertexClassOffset + idx]);
-    }
-    return VCLASS_NONE;
-}
-
-template<typename SetT>
-inline float3 ObjectExtrasWorldPos(const thread SceneT<SetT> &scene, DrawData draw, Vertex vert, Transform world, uint idx) {
-    const uint vertex_class = GetVertexClass(scene, draw, idx);
+inline float3 ObjectExtrasWorldPos(const thread SceneT<SetT> &scene, Transform world, float3 vert_pos, uint vertex_class) {
     const float3 object_origin = float3(world.P);
-    const float3 vert_pos = float3(vert.Position);
     const float3 camera_position = float3(scene.View.CameraPosition);
     if (vertex_class == VCLASS_BILLBOARD || vertex_class == VCLASS_SCREENSPACE) {
         // Billboard: rotate local XY-plane vertices to face the camera.

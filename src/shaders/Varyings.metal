@@ -199,6 +199,12 @@ inline float2 clip_to_frag_co(float4 clip, float2 viewport_size) {
     return ndc_to_uv(clip.xy / clip.w) * viewport_size;
 }
 
+// A line vertex whose flat edge start and interpolated edge position both begin at its own screen position.
+inline LineVaryings MakeLineVertex(float4 clip, float4 color, float2 viewport_size) {
+    const float2 screen_pos = clip_to_frag_co(clip, viewport_size);
+    return {clip, color, screen_pos, screen_pos};
+}
+
 // Pack line edge data for the AA composite pass: the perpendicular direction and the signed
 // distance to the line, encoded into [0,1].
 inline float4 pack_line_data(float2 frag_co, float2 edge_start, float2 edge_pos) {

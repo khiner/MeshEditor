@@ -4,7 +4,6 @@
 #include "gpu/CullFlag.h"
 #include "gpu/DrawData.h"
 #include "metal/MetalCpp.h"
-#include "render/ShaderPipelineType.h"
 
 #include <entt/entity/entity.hpp>
 
@@ -47,12 +46,6 @@ struct DrawListBuilder {
     }
 };
 
-struct SelectionDrawInfo {
-    ShaderPipelineType Pipeline;
-    MTL::PrimitiveType Primitive;
-    DrawBatchInfo Batch;
-};
-
 // Posed-buffer layout for one mesh entity's instance run: base offsets plus per-instance strides.
 struct PosedRanges {
     // One instance's derived normals, absent for a mesh with no faces to derive them from.
@@ -83,16 +76,25 @@ struct PosedRanges {
     }
 };
 
+// The excitable vertex handles one sound-point dispatch draws.
+// The strike and active handles change between draw list rebuilds, so recording reads them fresh.
+struct SoundPointInfo {
+    entt::entity InstanceEntity{entt::null};
+    uint32_t VertexOffset{}, VertexCount{};
+};
+
 // Persistent draw data, rebuilt when scene structure or batch routing changes.
 struct DrawState {
     DrawListBuilder List;
     std::unordered_map<entt::entity, PosedRanges> PosedByEntity;
-    DrawBatchInfo EdgeQuad, WireLine, Point, ExtrasLine;
+    DrawBatchInfo EdgeQuad, WireLine, WireMeshlet, Point, SoundPoint;
     DrawBatchInfo BoneFill, BoneWire, BoneSphereFill, BoneSphereWire;
     DrawBatchInfo OverlayFaceNormals, OverlayVertexNormals;
+    std::vector<SoundPointInfo> SoundPoints; // Parallel to the SoundPoint batch commands.
+    DrawBatchInfo SelectionBoneSpheres; // Bone joint picks, emitted per bone instance.
+    DrawBatchInfo SelectionLines, SelectionPoints; // Line and point mesh picks.
 
     // Cached selection pass draw list — reused when only the camera changed.
     DrawListBuilder SelectionList;
-    std::vector<SelectionDrawInfo> SelectionDraws;
     bool SelectionStale{true}; // Selection fragment data no longer matches the scene. Cleared after RenderSelectionPass.
 };

@@ -18,7 +18,6 @@
 #include "mesh/MeshComponents.h"
 #include "mesh/MeshStore.h"
 #include "mesh/Primitives.h"
-#include "mesh/TetMeshData.h"
 #include "physics/PhysicsUi.h"
 #include "render/GpuBufferOps.h"
 #include "render/Instance.h"
@@ -1087,7 +1086,7 @@ void RenderControls(entt::registry &r, entt::entity viewport) {
                     }
                 }
                 f.Check<&ViewportDisplay::ShowBoundingBoxes>("Bounding boxes");
-                if (!r.view<const TetMeshData>().empty()) f.Check<&ViewportDisplay::ShowTetWireframe>("Tet wireframe");
+                if (!r.view<const TetBuffers>().empty()) f.Check<&ViewportDisplay::ShowTetWireframe>("Tet wireframe");
             }
             {
                 using VC = ViewportThemeColors;

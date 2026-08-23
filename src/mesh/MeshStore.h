@@ -4,6 +4,7 @@
 #include "MeshAttributes.h"
 #include "MeshData.h"
 #include "MorphTargetData.h"
+#include "TetBuffers.h"
 #include "Range.h"
 #include "SlottedRange.h"
 #include "gpu/BoneDeformVertex.h"
@@ -96,11 +97,6 @@ struct MeshStore {
     // Returns {storeId, vertexRange}. Release via Release(storeId).
     std::pair<uint32_t, Range> AllocateVertexBuffer(std::span<const vec3> positions, const MeshVertexAttributes &attrs);
 
-    // Like AllocateVertexBuffer, but in the separate overlay store (its own arena and id space).
-    std::pair<uint32_t, Range> AllocateOverlayVertexBuffer(std::span<const vec3> positions);
-    SlottedRange GetOverlayVerticesRange(uint32_t id) const;
-    void ReleaseOverlay(uint32_t id);
-
     std::span<const Vertex> GetVertices(uint32_t id) const;
     std::span<Vertex> GetVertices(uint32_t id);
     SlottedRange GetVerticesRange(uint32_t id) const;
@@ -133,6 +129,15 @@ struct MeshStore {
     uint32_t GetBaseVertexNormalSlot() const;
     uint32_t GetBaseFaceNormalSlot() const;
     uint32_t GetFaceFirstTriangleSlot() const;
+    uint32_t GetTetPositionSlot() const;
+    uint32_t GetTetEdgeIndexSlot() const;
+    // Copies tet wireframe geometry into the canonical arenas. Nothing on the host reads it back.
+    TetBuffers AllocateTets(std::span<const vec3> positions, std::span<const uint32_t> edge_indices);
+    void ReleaseTets(TetBuffers);
+    uint32_t GetSoundVertexSlot() const;
+    Range AllocateSoundVertices(std::span<const uint32_t>);
+    void ReleaseSoundVertices(Range);
+    std::span<const uint32_t> GetSoundVertices(Range) const;
 
     std::span<const uint8_t> GetVertexStates(uint32_t id) const;
     // Canonical per-face and per-edge sharpness: 1 = shading discontinuity (flat face / sharp edge).
@@ -157,6 +162,7 @@ struct MeshStore {
     // CSR vertex-to-edge incidence, edge items in edge order.
     VertexAdjacency GetVertexEdgeAdjacency(uint32_t id) const;
     Range GetVertexFanAdjacencyRange(uint32_t id) const { return Entries.at(id).VertexFanAdjacency; }
+    Range GetVertexEdgeAdjacencyRange(uint32_t id) const { return Entries.at(id).VertexEdgeAdjacency; }
     // The class-buffer offset, or a sentinel when the mesh stores none (InvalidOffset = every corner Vertex, UniformFaceOffset = every corner Face).
     uint32_t GetCornerClassOffset(uint32_t id) const;
     std::span<const uint32_t> GetCornerClasses(uint32_t id) const;
@@ -206,9 +212,10 @@ struct MeshStore {
 
     // Rewrite element states for sound-vertex excitation: the listed vertices are selected,
     // with optional active and excited vertices.
-    void UpdateSoundVertexStates(const Mesh &, std::span<const uint32_t> vertices, std::optional<uint32_t> active_vertex = {}, std::optional<uint32_t> excited_vertex = {});
     // Derive the other element domains' states from the current edit element's states.
     void UpdateEdgeStatesFromFaces(const Mesh &, std::optional<uint32_t> active_face);
+    // Marks `vertices` selected and clears the rest, then derives the edge states their highlight implies.
+    void UpdateSoundVertexStates(const Mesh &, std::span<const uint32_t> vertices);
     void UpdateEdgeStatesFromVertices(const Mesh &);
     void UpdateFaceStatesFromVertices(const Mesh &);
     void UpdateFaceStatesFromEdges(const Mesh &);
@@ -274,10 +281,6 @@ private:
 
     std::vector<Entry> Entries{};
     std::vector<uint32_t> FreeIds{};
-
-    // Overlay store: vertex range per id.
-    std::vector<Range> OverlayEntries{};
-    std::vector<uint32_t> OverlayFreeIds{};
 
     struct PendingReserves {
         uint32_t Vertices{}, Faces{}, Triangles{}, Edges{}, EdgeStates{};

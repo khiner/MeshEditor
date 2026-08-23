@@ -5,19 +5,10 @@
 #include "Bindless.metal"
 #include "BoneUtils.metal"
 #include "Varyings.metal"
-#include "MainDrawPushConstants.metal"
+#include "OverlayMeshPushConstants.metal"
 
-vertex LineVaryings BoneSphereWireVertex(
-    uint vertex_id [[vertex_id]],
-    uint instance_id [[instance_id]],
-    device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
-    constant SceneViewUBO &view [[buffer(BufferIndex_SceneView)]],
-    constant ViewportTheme &theme [[buffer(BufferIndex_ViewportTheme)]],
-    constant WorkspaceLights &workspace [[buffer(BufferIndex_WorkspaceLights)]],
-    constant MainDrawPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
-) {
-    const Scene scene{bindless, view, theme, workspace};
-    const DrawData draw = GetDrawData(scene, pc.DrawDataOffset, instance_id);
+// One emitted vertex of a bone's BoneSphereWireMesh.
+inline LineVaryings BoneSphereWireMeshVertexAt(const thread Scene &scene, DrawData draw, uint vertex_id) {
     const uint idx = scene.Indices(draw.IndexSlotOffset.Slot)[draw.IndexSlotOffset.Offset + vertex_id];
     const Vertex vert = scene.Vertices(draw.VertexSlot)[idx + draw.VertexOffset];
     const Transform world = scene.Models(draw.ModelSlot)[draw.FirstInstance];
@@ -31,7 +22,7 @@ vertex LineVaryings BoneSphereWireVertex(
 
     // Offset away from the center to avoid overlap with the solid shape (matches Blender).
     const float4 center_clip = view_proj * float4(bb.center, 1.0f);
-    const float2 viewport_size = float2(view.ViewportSize);
+    const float2 viewport_size = float2(scene.View.ViewportSize);
     const float2 ofs_dir = normalize(clip_pos.xy / clip_pos.w - center_clip.xy / center_clip.w);
     clip_pos.xy += ofs_dir * (1.0f / viewport_size) * clip_pos.w;
 
@@ -41,5 +32,28 @@ vertex LineVaryings BoneSphereWireVertex(
     out.EdgePos = screen_pos;
     return out;
 }
+
+// One threadgroup per bone, emitting that bone's BoneSphereWireMesh from the shared unit primitive.
+using BoneSphereWireMeshOutput = metal::mesh<LineVaryings, void, 64u, 32u, metal::topology::line>;
+
+[[mesh]] void BoneSphereWireMesh(
+    BoneSphereWireMeshOutput output,
+    uint thread_index [[thread_index_in_threadgroup]],
+    uint3 threadgroup_position [[threadgroup_position_in_grid]],
+    device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
+    constant SceneViewUBO &view [[buffer(BufferIndex_SceneView)]],
+    constant ViewportTheme &theme [[buffer(BufferIndex_ViewportTheme)]],
+    constant WorkspaceLights &workspace [[buffer(BufferIndex_WorkspaceLights)]],
+    constant OverlayMeshPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
+) {
+    const Scene scene{bindless, view, theme, workspace};
+    output.set_primitive_count(32u);
+    if (thread_index >= pc.ElementCount) return;
+
+    const DrawData draw = GetDrawDataAt(scene, pc.DrawDataIndex + threadgroup_position.x);
+    output.set_vertex(thread_index, BoneSphereWireMeshVertexAt(scene, draw, thread_index));
+    output.set_index(thread_index, thread_index);
+}
+
 
 #endif

@@ -146,11 +146,7 @@ inline MeshVaryings TransformVertex(
     const bool is_edit_edge = is_edit_mode && scene.View.EditElement == Element_Edge;
     const float4 edge_color = is_edit_mode ? float4(float3(colors.WireEdit), 1.0f) : float4(float3(colors.Wire), 1.0f);
     const float4 object_base_color = float4(0.8f, 0.8f, 0.8f, 1.0f); // Blender's View3DShading.single_color default
-    const float4 base_color = draw.ObjectIdSlot != INVALID_SLOT ? object_base_color :
-        draw.ElementStateSlotOffset.Slot != INVALID_SLOT ? edge_color :
-        OverlayKind == 1u ? float4(float3(colors.FaceNormal), 1.0f) :
-        OverlayKind == 2u ? float4(float3(colors.VertexNormal), 1.0f) :
-                            edge_color;
+    const float4 base_color = draw.ObjectIdSlot != INVALID_SLOT ? object_base_color : edge_color;
     const bool is_edge_draw = !is_face_draw && draw.ElementStateSlotOffset.Slot != INVALID_SLOT;
     const bool is_selected = (element_state & STATE_SELECTED) != 0u;
     const bool is_active = (element_state & STATE_ACTIVE) != 0u;
@@ -178,9 +174,7 @@ inline MeshVaryings TransformVertex(
         out.Color = scene.ObjectSelectionColor(scene.InstanceState(draw), base_color);
     } else {
         float4 final_color = is_selected ? selected_color : base_color;
-        const bool is_excited = (element_state & STATE_EXCITED) != 0u;
-        if (is_excited) final_color = float4(colors.ElementExcited);
-        else if (is_active) final_color = float4(float4(colors.ElementActive).rgb, 1.0f);
+        if (is_active) final_color = float4(float4(colors.ElementActive).rgb, 1.0f);
         out.Color = final_color;
     }
     const uint corner_uv_slot = scene.View.CornerUvSlot;
@@ -218,28 +212,7 @@ inline MeshVaryings TransformVertex(
     }
     out.EdgeStart = float2(0);
     out.EdgePos = float2(0);
-    if (IsLineDraw != 0u) {
-        out.Position.z -= NdcOffsetFactor(scene) * 1.0f; // Push lines in front of faces.
-        const float2 screen_pos = clip_to_frag_co(out.Position, float2(scene.View.ViewportSize));
-        out.EdgeStart = screen_pos; // flat: takes the first vertex's value for the whole line primitive
-        out.EdgePos = screen_pos;   // smooth: interpolated along the line
-    }
     return out;
-}
-
-vertex MeshVaryings VertexTransformVertex(
-    uint vertex_id [[vertex_id]],
-    uint instance_id [[instance_id]],
-    device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
-    constant SceneViewUBO &view [[buffer(BufferIndex_SceneView)]],
-    constant ViewportTheme &theme [[buffer(BufferIndex_ViewportTheme)]],
-    constant WorkspaceLights &workspace [[buffer(BufferIndex_WorkspaceLights)]],
-    constant MainDrawPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
-) {
-    const Scene scene{bindless, view, theme, workspace};
-    const DrawData draw = GetDrawData(scene, pc.DrawDataOffset, instance_id);
-    device const uint *indices = scene.Indices(draw.IndexSlotOffset.Slot);
-    return TransformVertex(scene, draw, vertex_id, vertex_id, indices[draw.IndexSlotOffset.Offset + vertex_id]);
 }
 
 #endif

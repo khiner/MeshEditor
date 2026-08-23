@@ -1,11 +1,12 @@
 #include "Stores.h"
 
+#include "audio/SoundVertices.h"
+
 #include "action/Errors.h"
 #include "animation/AnimationTimeline.h"
 #include "mesh/MeshComponents.h"
 #include "mesh/MeshStore.h"
 #include "metal/Bindless.h"
-#include "object/ExtrasComponents.h"
 #include "object/ObjectComponents.h"
 #include "object/PendingSync.h"
 #include "physics/PhysicsTypes.h"
@@ -45,6 +46,9 @@ entt::entity WireRegistry(entt::registry &r) {
     r.on_destroy<MeshHandle>().connect<[](entt::registry &r, entt::entity e) {
         r.ctx().get<MeshStore>().Release(r.get<MeshHandle>(e).StoreId);
     }>();
+    r.on_destroy<SoundVertices>().connect<[](entt::registry &r, entt::entity e) {
+        r.ctx().get<MeshStore>().ReleaseSoundVertices(r.get<SoundVertices>(e).Vertices);
+    }>();
     r.on_construct<PhysicsMotion>().connect<&EmplaceIfAbsent<PhysicsVelocity>>();
     r.on_destroy<PhysicsMotion>().connect<&entt::registry::remove<PhysicsVelocity>>();
     r.on_construct<ColliderShape>().connect<&EmplaceIfAbsent<ColliderMaterial>>();
@@ -82,11 +86,9 @@ entt::entity WireRegistry(entt::registry &r) {
     r.on_construct<Hidden>().connect<[](entt::registry &r, entt::entity e) {
         if (r.all_of<RenderInstance>(e)) r.remove<RenderInstance>(e);
     }>();
-    // Build MeshBuffers when a vertex handle is constructed (MeshHandle = full meshes,
-    // VertexStoreId = vertex-only extras, OverlayVertexStoreId = overlays).
+    // Build MeshBuffers when a vertex handle is constructed (MeshHandle = full meshes, VertexStoreId = vertex-only extras).
     r.on_construct<MeshHandle>().connect<&EmplaceMeshBuffers<MeshHandle, &MeshStore::GetVerticesRange>>();
     r.on_construct<VertexStoreId>().connect<&EmplaceMeshBuffers<VertexStoreId, &MeshStore::GetVerticesRange>>();
-    r.on_construct<OverlayVertexStoreId>().connect<&EmplaceMeshBuffers<OverlayVertexStoreId, &MeshStore::GetOverlayVerticesRange>>();
 
     const auto &ctx = r.ctx().get<const mtl::Context>();
     auto &slots = r.ctx().get<mtl::BindlessSet>();
@@ -98,7 +100,6 @@ entt::entity WireRegistry(entt::registry &r) {
 
     r.ctx().emplace<NameRegistry>();
     r.ctx().emplace<ObjectIdCounter>();
-    r.ctx().emplace<ColliderShapeBuffers>();
     r.ctx().emplace<action::Errors>();
     auto &materials = r.ctx().emplace<MaterialStore>();
     r.emplace<TimelineRange>(viewport);
@@ -145,7 +146,6 @@ void TearDownStoreCtx(entt::registry &r) {
     r.ctx().erase<EnvironmentStore>();
     r.ctx().erase<TextureStore>();
     r.ctx().erase<MeshStore>();
-    r.ctx().erase<ColliderShapeBuffers>();
     r.ctx().erase<GpuBuffers>(); // Drops BufferContext, releasing every retired buffer.
     r.ctx().erase<MaterialStore>();
     r.ctx().erase<ObjectIdCounter>();

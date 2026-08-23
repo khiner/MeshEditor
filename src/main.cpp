@@ -570,7 +570,10 @@ struct CaptureRequest {
     std::string CameraName{};
     std::optional<ViewportShadingMode> Shading{}; // Disengaged = leave the viewport's own setting alone.
     bool Overlays{false}; // Keep overlays on through a capture, which presentation otherwise turns off.
-    bool Edit{false}; // Select mesh objects and enter vertex edit mode.
+    std::optional<Element> EditMode{}; // Engaged: select mesh objects and enter this element edit mode.
+    bool SelectAll{false}; // Select everything the current interaction mode selects.
+    uint8_t NormalOverlays{0}; // Bitmask of Element, for the normal indicator overlays.
+    bool BoundingBoxes{false}, TetWireframe{false};
 };
 
 struct BenchmarkDriver {
@@ -1211,7 +1214,7 @@ bool RunHeadlessScene(entt::registry &r, entt::entity viewport, const char *init
     // Emitted, not Performed: the resize must happen inside the first tick's SubmitViewport for that
     // frame to render the recreated images correctly.
     action::Emit(action::view::SetExtent{DefaultWindowSize});
-    if (capture.Edit) {
+    if (capture.EditMode) {
         std::vector<entt::entity> meshes;
         for (const auto [entity, kind, _] : r.view<const ObjectKind, const Instance>().each()) {
             if (kind.Value == ObjectType::Mesh) meshes.emplace_back(entity);
@@ -1224,9 +1227,13 @@ bool RunHeadlessScene(entt::registry &r, entt::entity viewport, const char *init
                                      .Clear = action::selection::ApplyTreeSelection::ClearKind::All,
                                  });
             Perform(r, viewport, action::view::SetInteractionMode{InteractionMode::Edit});
-            Perform(r, viewport, action::view::SetEditMode{Element::Vertex});
+            Perform(r, viewport, action::view::SetEditMode{*capture.EditMode});
         }
     }
+    if (capture.SelectAll) Perform(r, viewport, action::selection::SelectAll{});
+    if (capture.NormalOverlays != 0) Perform(r, viewport, action::UpdateOf<&ViewportDisplay::NormalOverlays>(viewport, capture.NormalOverlays));
+    if (capture.BoundingBoxes) Perform(r, viewport, action::UpdateOf<&ViewportDisplay::ShowBoundingBoxes>(viewport, true));
+    if (capture.TetWireframe) Perform(r, viewport, action::UpdateOf<&ViewportDisplay::ShowTetWireframe>(viewport, true));
 
     auto &frame_state = r.ctx().get<FrameState>();
     frame_state.DeltaTime = driver.RenderDt;
@@ -1367,7 +1374,7 @@ void RunHeadlessQueue(const fs::path &spool, bool quiet, const CaptureRequest &h
             }
             const bool empty = job->SceneArg == "--empty";
             const char *initial_file = !empty && !job->SceneArg.empty() ? job->SceneArg.c_str() : nullptr;
-            RunHeadlessScene(r, viewport, initial_file, empty, CaptureRequest{.RenderBasename = job->OutBasename, .Overlays = harness.Overlays, .Edit = harness.Edit});
+            RunHeadlessScene(r, viewport, initial_file, empty, CaptureRequest{.RenderBasename = job->OutBasename, .Overlays = harness.Overlays, .EditMode = harness.EditMode, .SelectAll = harness.SelectAll});
             // Reset for the next job, finalizing any in-progress recording.
             QuiesceScene(r, viewport);
             ClearScene(r, viewport);
@@ -1432,7 +1439,32 @@ int main(int argc, char **argv) {
         else if (a == "--empty") empty = true;
         else if (a == "--headless") headless = true;
         else if (a == "--overlays") capture.Overlays = true;
-        else if (a == "--edit") capture.Edit = true;
+        else if (a == "--edit" && std::next(it) != args.end()) {
+            const std::string_view mode{*++it};
+            if (mode == "vertex") capture.EditMode = Element::Vertex;
+            else if (mode == "edge") capture.EditMode = Element::Edge;
+            else if (mode == "face") capture.EditMode = Element::Face;
+            else {
+                std::println(stderr, "Unknown edit element '{}'.", mode);
+                return 1;
+            }
+        } else if (a == "--select-all") capture.SelectAll = true;
+        else if (a == "--display" && std::next(it) != args.end()) {
+            const std::string_view names{*++it};
+            for (size_t start = 0; start <= names.size();) {
+                const auto end = std::min(names.find(',', start), names.size());
+                const auto item = names.substr(start, end - start);
+                start = end + 1;
+                if (item == "vertex-normals") capture.NormalOverlays |= uint8_t(Element::Vertex);
+                else if (item == "face-normals") capture.NormalOverlays |= uint8_t(Element::Face);
+                else if (item == "bounds") capture.BoundingBoxes = true;
+                else if (item == "tet-wireframe") capture.TetWireframe = true;
+                else {
+                    std::println(stderr, "Unknown display overlay '{}'.", item);
+                    return 1;
+                }
+            }
+        }
         else if (a == "--fps" && std::next(it) != args.end()) capture.Fps = std::atoi(*++it);
         else if (a == "--timeline-end" && std::next(it) != args.end()) capture.TimelineEnd = std::atof(*++it);
         else if (a == "--motion-blur" && std::next(it) != args.end()) capture.MotionBlurSteps = uint8_t(std::max(1, std::atoi(*++it)));

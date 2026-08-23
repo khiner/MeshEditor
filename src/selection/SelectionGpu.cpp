@@ -1,5 +1,8 @@
 #include "selection/SelectionGpu.h"
 
+#include "gpu/OverlayMeshPushConstants.h"
+#include "gpu/SoundPointPushConstants.h"
+
 #include "armature/ArmatureComponents.h"
 #include "audio/SoundVertices.h"
 #include "gpu/BoxSelectPushConstants.h"
@@ -22,6 +25,7 @@
 #include "scene/Entity.h"
 #include "selection/Selection.h"
 #include "selection/SelectionBitset.h"
+#include "viewport/ViewportDisplay.h"
 #include "selection/SelectionComponents.h"
 #include "selection/SelectionQueries.h"
 #include "viewport/RenderExtent.h"
@@ -307,15 +311,24 @@ std::optional<std::pair<entt::entity, uint32_t>> RunElementPickFromRanges(
     return {};
 }
 
+// The mesh-shader pick emissions one selection pass draws, mirroring the overlay draws.
+struct PickEmissions {
+    std::vector<ExtrasLinePushConstants> ExtrasLines{};
+    DrawBatchInfo BoneSpheres{};
+    DrawBatchInfo Lines{}, Points{};
+    std::optional<SoundPointPushConstants> SoundPoints{};
+};
+
 void RenderSelectionPassWith(
     entt::registry &r, mtl::PassChain &chain, [[maybe_unused]] entt::entity viewport, bool render_depth,
-    const SelectionBuildFn &build_fn, bool render_silhouette = true, bool meshlet_objects = false
+    const SelectionBuildFn &build_fn, bool render_silhouette = true, bool meshlet_objects = false,
+    const PickEmissions &picks = {}
 ) {
     const auto &sel_slots = r.ctx().get<const SelectionSlots>();
     auto &buffers = r.ctx().get<GpuBuffers>();
     const auto &pipelines = r.ctx().get<const Pipelines>();
     DrawListBuilder draw_list;
-    const auto selection_draws = build_fn(draw_list);
+    build_fn(draw_list);
 
     const auto &selection = pipelines.SelectionFragment;
     RunSelectionPass(r, chain, draw_list, render_depth, render_silhouette, meshlet_objects, 0, true, [&](auto *encoder, mtl::Extent2D extent) {
@@ -323,13 +336,36 @@ void RenderSelectionPassWith(
             0u,
             {selection.Resources->HeadBuffer.Slot, {extent.Width, extent.Height}, buffers.SelectionNodeBuffer.Slot, sel_slots.SelectionCounter, buffers.SelectionNodeCapacity},
         };
-        for (const auto &selection_draw : selection_draws) {
-            if (selection_draw.Batch.DrawCount == 0) continue;
-            selection.Renderer.Bind(encoder, selection_draw.Pipeline);
-            auto pc = sel_pc;
-            pc.DrawDataOffset = selection_draw.Batch.DrawDataSlotOffset;
-            encode::SetPushConstants(encoder, pc);
-            encode::DrawIndexedIndirect(encoder, selection_draw.Primitive, *buffers.IdentityIndexBuffer, *buffers.SelectionDraw.Indirect, selection_draw.Batch.IndirectOffset, selection_draw.Batch.DrawCount);
+        // Excite mode picks over the excitable vertices themselves, so only those can be struck.
+        if (const auto &sound_points = picks.SoundPoints) {
+            pipelines.SelectionFragment.SoundPoint.Bind(encoder);
+            encoder->setFragmentBytes(&sel_pc, sizeof(sel_pc), BufferIndex_PushConstants);
+            encode::SetMeshPushConstants(encoder, *sound_points);
+            encoder->drawMeshThreadgroups(MTL::Size((sound_points->VertexCount + 159) / 160, 1, 1), MTL::Size(1, 1, 1), MTL::Size(160, 1, 1));
+        }
+        // Line and point meshes pick from the same emissions the overlay draws.
+        const auto pick_batch = [&](const mtl::MeshRenderPipeline &pipeline, const DrawBatchInfo &batch, uint32_t indices_per_element, uint32_t elements_per_group, uint32_t threads_per_group) {
+            if (batch.DrawCount == 0) return;
+            pipeline.Bind(encoder);
+            encoder->setFragmentBytes(&sel_pc, sizeof(sel_pc), BufferIndex_PushConstants);
+            encode::DispatchMeshBatch(encoder, draw_list, batch, indices_per_element, elements_per_group, threads_per_group);
+        };
+        constexpr auto group_lines = uint32_t(OverlayDispatch::LineGroupLines);
+        constexpr auto group_points = uint32_t(OverlayDispatch::PointGroupPoints);
+        pick_batch(pipelines.SelectionFragment.Line, picks.Lines, 2, group_lines, group_lines * 2);
+        pick_batch(pipelines.SelectionFragment.Point, picks.Points, 1, group_points, group_points);
+
+        // Bone joints pick from the same emission the overlay draws, one threadgroup per joint.
+        if (picks.BoneSpheres.DrawCount > 0) {
+            pipelines.SelectionFragment.BoneSphere.Bind(encoder);
+            encoder->setFragmentBytes(&sel_pc, sizeof(sel_pc), BufferIndex_PushConstants);
+            encode::DispatchInstancedMeshBatch(encoder, draw_list, picks.BoneSpheres, uint32_t(OverlayDispatch::BoneSphereVertices));
+        }
+        // Extras lines (gizmos and collision shape wireframes) pick from the same emission the overlay draws.
+        if (!picks.ExtrasLines.empty()) {
+            pipelines.SelectionFragment.ExtrasLine.Bind(encoder);
+            encoder->setFragmentBytes(&sel_pc, sizeof(sel_pc), BufferIndex_PushConstants);
+            encode::DispatchExtrasLines(encoder, picks.ExtrasLines);
         }
         if (meshlet_objects && buffers.MeshletInstanceCount > 0) {
             selection.VisibilityObject.Bind(encoder);
@@ -343,15 +379,21 @@ void RenderSelectionPassWith(
 void RenderSelectionPass(entt::registry &r, mtl::PassChain &chain, entt::entity viewport) {
     // Render depth so the selection-fragment pass has a valid depth attachment to load, even right after a resize recreated it.
     // Object-pick ignores depth, so its contents and the silhouette draws don't matter.
+    const auto &draw = r.ctx().get<const DrawState>();
+    const auto &settings = r.get<const ViewportDisplay>(viewport);
     RenderSelectionPassWith(
         r, chain, viewport, /*render_depth=*/true,
-        [&r](DrawListBuilder &draw_list) -> std::vector<SelectionDrawInfo> {
-            const auto &draw = r.ctx().get<const DrawState>();
-            draw_list = draw.SelectionList;
-            return draw.SelectionDraws;
-        },
+        [&draw](DrawListBuilder &draw_list) { draw_list = draw.SelectionList; },
         /*render_silhouette=*/false,
-        /*meshlet_objects=*/true
+        /*meshlet_objects=*/true,
+        PickEmissions{
+            .ExtrasLines = settings.ShowOverlays && settings.ShowExtras ?
+                CollectExtrasLines(r, r.ctx().get<const GpuBuffers>().Instances) :
+                std::vector<ExtrasLinePushConstants>{},
+            .BoneSpheres = draw.SelectionBoneSpheres,
+            .Lines = draw.SelectionLines,
+            .Points = draw.SelectionPoints,
+        }
     );
 }
 
@@ -417,14 +459,25 @@ std::optional<uint32_t> RunSoundVerticesVertexPick(entt::registry &r, entt::enti
     auto *command_buffer = ctx.Queue->commandBuffer();
     {
         mtl::PassChain chain{command_buffer};
-        RenderSelectionPassWith(r, chain, viewport, true, [&](DrawListBuilder &draw_list) {
-            auto batch = draw_list.BeginBatch(true);
-            auto draw = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.VertexIndices, buffers.Instances);
-            draw.VertexCountOrHeadImageSlot = 0;
-            draw.ElementStateSlotOffset = {meshes.GetVertexStateSlot(), mesh_buffers.Vertices.Offset};
-            AppendDraw(draw_list, batch, mesh_buffers.VertexIndices, models, draw, model_index);
-            return std::vector{SelectionDrawInfo{SPT::SelectionElementVertex, MTL::PrimitiveTypePoint, batch}};
-        });
+        const auto sound_vertices = r.get<const SoundVertices>(instance_entity).Vertices;
+        RenderSelectionPassWith(
+            r, chain, viewport, true,
+            [&](DrawListBuilder &draw_list) {
+                // The pick emission reads this one draw at index zero for the instance's transform and positions.
+                auto batch = draw_list.BeginBatch();
+                auto draw = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.VertexIndices, buffers.Instances);
+                AppendDraw(draw_list, batch, mesh_buffers.VertexIndices, models, draw, model_index);
+            },
+            /*render_silhouette=*/true, /*meshlet_objects=*/false,
+            PickEmissions{
+                .SoundPoints = SoundPointPushConstants{
+                    .DrawDataIndex = 0,
+                    .VertexSlot = meshes.GetSoundVertexSlot(),
+                    .VertexOffset = sound_vertices.Offset,
+                    .VertexCount = sound_vertices.Count,
+                },
+            }
+        );
         const auto &heads = *pipelines.SelectionFragment.Resources;
         RecordElementPick(
             chain, slots, buffers, pipelines.ElementPick,
@@ -596,6 +649,8 @@ void DispatchUpdateSelectionStates(
     auto &meshes = r.ctx().get<MeshStore>();
 
     const auto &buffers = r.ctx().get<const GpuBuffers>();
+    // The state and bitset buffers reach the kernel through the argument buffer, so they must be resident before this one-shot runs.
+    ctx.CommitResidency();
     auto *command_buffer = ctx.Queue->commandBuffer();
     auto *encoder = command_buffer->computeCommandEncoder();
     encode::BindCompute(encoder, pipelines.UpdateSelectionState, slots, buffers);

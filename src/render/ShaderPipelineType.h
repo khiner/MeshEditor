@@ -1,11 +1,6 @@
 #pragma once
 
 enum class ShaderPipelineType {
-    EdgeQuad,
-    Line,
-    LineOverlayFaceNormals,
-    LineOverlayVertexNormals,
-    Point,
     Grid,
     Background,
     BackgroundVelocity,
@@ -28,13 +23,4 @@ enum class ShaderPipelineType {
     SelectionElementVertexXRayBitsetBox,
     SelectionElementEdgeXRayVertsBitsetBox, // Bitset-box variant of the XRay edge point fallback
     SelectionElementFaceXRayVertsBitsetBox, // Bitset-box variant of the XRay face point fallback
-    SelectionFragment,
-    SelectionFragmentBoneSphere,
-    BoneFill,
-    BoneWire,
-    BoneSphereFill,
-    BoneSphereWire,
-    ObjectExtrasLine,
-    BoundsBox,
-    SelectionObjectExtrasLines,
 };

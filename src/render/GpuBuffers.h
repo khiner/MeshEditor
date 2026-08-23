@@ -137,7 +137,7 @@ struct GpuBuffers {
     static constexpr uint64_t ViewUboStride() {
         return (sizeof(::SceneViewUBO) + ViewUboAlignment - 1) / ViewUboAlignment * ViewUboAlignment;
     }
-    static constexpr uint32_t MaxSelectableElements{10'000'000};
+    static constexpr uint32_t MaxSelectableElements{16'000'000};
     static constexpr uint32_t ObjectPickBitsetWords{(MaxSelectableObjects + 31) / 32};
     static constexpr uint32_t SelectionBitsetWords{(MaxSelectableElements + 31) / 32};
     static constexpr uint32_t ElementPickGroupSize{256};
@@ -236,8 +236,6 @@ struct GpuBuffers {
         buffers.MeshletLocalTriangles = {};
         Primitives.Release(buffers.Primitives);
         buffers.Primitives = {};
-        for (auto &[_, rb] : buffers.NormalIndicators) Release(rb);
-        buffers.NormalIndicators.clear();
     }
 
     BufferArena<uint32_t> &GetIndexBuffer(IndexKind kind) {
@@ -286,7 +284,6 @@ struct GpuBuffers {
         PreviousFullCullViewProj = mat4{1};
         ArmatureDeformBuffer.Reset();
         MorphWeightBuffer.Reset();
-        VertexClassBuffer.Reset();
         Instances.Reset();
     }
 
@@ -311,7 +308,6 @@ struct GpuBuffers {
     BufferArena<uint32_t> GpuInstanceSlots;
     BufferArena<mat4> ArmatureDeformBuffer{Ctx, SlotType::ArmatureDeformBuffer};
     BufferArena<float> MorphWeightBuffer{Ctx, SlotType::MorphWeightBuffer};
-    BufferArena<uint8_t> VertexClassBuffer{Ctx, SlotType::VertexClassBuffer};
     InstanceArena Instances;
 
     mtl::Buffer MeshletWorkRanges, MeshletWorkBlocks, MeshletWorkBlockStates, MeshletWorkState, MeshletWorkDispatchArgs;

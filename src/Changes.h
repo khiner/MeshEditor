@@ -4,7 +4,7 @@
 namespace changes {
 struct Selected {}; struct ActiveInstance {}; struct BoneSelection {}; struct Rerecord {};
 struct MeshActiveElement {}; struct MeshGeometry {}; struct MeshMaterial {}; struct MeshShading {}; struct PhysicsBodyMesh {};
-struct SoundVertices {}; struct SoundVerticesUpdated {}; struct VertexForce {};
+struct SoundVertices {}; struct SoundVerticesUpdated {}; struct VertexForce {}; struct TetMesh {};
 struct NewBufferEntity {}; struct RenderInstanceCreated {}; struct ObjectCreated {};
 struct ViewportDisplay {}; struct InteractionMode {}; struct WorkspaceLights {}; struct Rotation {};
 struct ViewportTheme {}; struct Materials {}; struct PbrSpecialization {}; struct ActiveMaterialVariant {};

@@ -6,19 +6,11 @@
 #include "Bindless.metal"
 #include "BoneUtils.metal"
 #include "Varyings.metal"
-#include "MainDrawPushConstants.metal"
+#include "OverlayDispatch.metal"
+#include "OverlayMeshPushConstants.metal"
 
-vertex BoneSphereVaryings BoneSphereVertex(
-    uint vertex_id [[vertex_id]],
-    uint instance_id [[instance_id]],
-    device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
-    constant SceneViewUBO &view [[buffer(BufferIndex_SceneView)]],
-    constant ViewportTheme &theme [[buffer(BufferIndex_ViewportTheme)]],
-    constant WorkspaceLights &workspace [[buffer(BufferIndex_WorkspaceLights)]],
-    constant MainDrawPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
-) {
-    const Scene scene{bindless, view, theme, workspace};
-    const DrawData draw = GetDrawData(scene, pc.DrawDataOffset, instance_id);
+// One emitted vertex of a bone's BoneSphereMesh.
+inline BoneSphereVaryings BoneSphereMeshVertexAt(const thread Scene &scene, DrawData draw, uint vertex_id) {
     const uint idx = scene.Indices(draw.IndexSlotOffset.Slot)[draw.IndexSlotOffset.Offset + vertex_id];
     const Vertex vert = scene.Vertices(draw.VertexSlot)[idx + draw.VertexOffset];
     const Transform world = scene.Models(draw.ModelSlot)[draw.FirstInstance];
@@ -27,15 +19,15 @@ vertex BoneSphereVaryings BoneSphereVertex(
     out.ObjectId = draw.ObjectIdSlot != INVALID_SLOT ? scene.ObjectIds(draw.ObjectIdSlot)[draw.FirstInstance] : 0u;
 
     // Object mode: neutral shadow, no selection tint.
-    const bool is_object_mode = view.InteractionMode == InteractionMode_Object;
+    const bool is_object_mode = scene.View.InteractionMode == InteractionMode_Object;
     const float3 bone_solid = float3(scene.Theme.Colors.BoneSolid);
     const float3 hint_color = is_object_mode ? bone_solid : bone_joint_wire_color(scene, load_bone_instance_state(scene, draw));
     out.BoneColor = float4(bone_solid, 1.0f);
     out.StateColor = float4(hint_color * hint_color * 0.1f, 1.0f);
 
     // View-space data for the fragment's ray trace.
-    const float3 cam_pos = float3(view.CameraPosition);
-    const float3x3 VR = view.ViewRotation.Unpack();
+    const float3 cam_pos = float3(scene.View.CameraPosition);
+    const float3x3 VR = scene.View.ViewRotation.Unpack();
     const float4x4 view_matrix = float4x4(
         float4(VR[0], 0), float4(VR[1], 0), float4(VR[2], 0), float4(-(VR * cam_pos), 1)
     );
@@ -47,6 +39,30 @@ vertex BoneSphereVaryings BoneSphereVertex(
     out.Position = scene.ViewProj() * float4(bb.world_pos, 1.0f);
     return out;
 }
+
+// One threadgroup per bone, emitting that bone's BoneSphereMesh from the shared unit primitive.
+// The color and selection-id pipelines both draw this emission, differing only in fragment.
+using BoneSphereMeshOutput = metal::mesh<BoneSphereVaryings, void, OverlayDispatch_BoneSphereVertices, 32u, metal::topology::triangle>;
+
+[[mesh]] void BoneSphereMesh(
+    BoneSphereMeshOutput output,
+    uint thread_index [[thread_index_in_threadgroup]],
+    uint3 threadgroup_position [[threadgroup_position_in_grid]],
+    device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
+    constant SceneViewUBO &view [[buffer(BufferIndex_SceneView)]],
+    constant ViewportTheme &theme [[buffer(BufferIndex_ViewportTheme)]],
+    constant WorkspaceLights &workspace [[buffer(BufferIndex_WorkspaceLights)]],
+    constant OverlayMeshPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
+) {
+    const Scene scene{bindless, view, theme, workspace};
+    output.set_primitive_count(32u);
+    if (thread_index >= pc.ElementCount) return;
+
+    const DrawData draw = GetDrawDataAt(scene, pc.DrawDataIndex + threadgroup_position.x);
+    output.set_vertex(thread_index, BoneSphereMeshVertexAt(scene, draw, thread_index));
+    output.set_index(thread_index, thread_index);
+}
+
 
 fragment OverlayTargetsDepth BoneSphereFragment(
     BoneSphereVaryings in [[stage_in]],

@@ -30,8 +30,7 @@
 #include "mesh/MeshBvh.h"
 #include "mesh/MeshComponents.h"
 #include "mesh/PrimitiveType.h"
-#include "mesh/TetMeshData.h"
-#include "object/ExtrasComponents.h"
+#include "mesh/TetBuffers.h"
 #include "physics/PhysicsContact.h"
 #include "physics/PhysicsTypes.h"
 #include "render/Instance.h"
@@ -132,7 +131,7 @@ using Persistent = type_list<
     ScaleLocked, Instance, Hidden, SceneNode, ParentInverse, MeshHandle, VertexStoreId, ObjectExtrasTag,
     MeshConnectivity, MeshSelectionBitsetRange, MeshMaterialAssignment, MeshMaterialSlotSelection, MaterialVariants, MaterializedTextures, PbrMeshFeatures,
     PrimitiveShape, Path, Camera, ViewCamera, LookingThrough, Interaction, EditMode, OrbitToActive, ShadeSmoothAngle, AudioOutputConfig, AudioOutputMix, Striker, ModalSoundControls, ContactSurface, SurfaceSoundControls,
-    AcousticMaterial, SoundVerticesModel, ModalModes, ModalGain, ModalTuning, ModalSolveSettings, MassProperties, TetMeshData, ModalEigenSummary,
+    AcousticMaterial, SoundVerticesModel, ModalModes, ModalGain, ModalTuning, ModalSolveSettings, MassProperties, TetBuffers, ModalEigenSummary,
     SelectionXRay, ViewportDisplay, MaterialPreviewLighting, RenderedLighting, StudioEnvironment, TransformGizmoState, ActionIndex,
     TimelineRange, TimelinePlayback, AnimationTimelineView,
     PhysicsSimulationSettings, PhysicsMaterial, CollisionSystem, CollisionFilter, PhysicsJointDef, PhysicsMotion,
@@ -148,11 +147,11 @@ using Persistent = type_list<
 // Reconstructed from the Persistent set by ProcessComponentEvents, on_construct, and reactive handlers.
 // Never serialized, listed only so VerifyCoverage treats them as intentionally excluded.
 using Derived = type_list<
-    RenderInstance, WorldTransform, PosedLocal, MeshBuffers, BoneAdjacencyIndices, ModelsBuffer, VertexClass,
-    TetWireframe, MaterialDirty, LightIndex, EnabledInteractionModes, LastEvaluatedFrame,
-    PhysicsBodyHandle, PhysicsConstraintHandle, BodyPoseCache, ColliderWireframe, BoneInstanceStateDirty, ArmaturePoseState,
-    MorphWeightGpuRange, AdditiveBoxSelectBaseline, SelectionBitsDirty, ElementStatesDirty, PendingEditElementClick, OverlayExtra, OverlayVertexStoreId,
-    PendingBoxSelect, PendingPick, PendingTextureUploads, SelectionBitsetRef, BoxSelectState, SelectedInstanceCount, PlaybackFrame,
+    RenderInstance, WorldTransform, PosedLocal, MeshBuffers, BoneAdjacencyIndices, ModelsBuffer,
+    MaterialDirty, LightIndex, EnabledInteractionModes, LastEvaluatedFrame,
+    PhysicsBodyHandle, PhysicsConstraintHandle, BodyPoseCache, BoneInstanceStateDirty, ArmaturePoseState,
+    MorphWeightGpuRange, AdditiveBoxSelectBaseline, SelectionBitsDirty, ElementStatesDirty, PendingEditElementClick,
+    PendingBoxSelect, PendingPick, PendingTextureUploads, SelectionBitsetRef, BoxSelectState, PlaybackFrame,
     PhysicsCacheInvalid, RotationUiVariant, RotationUiDriving, GizmoInteraction, PendingTransform, StartScreenTransform,
 #ifdef SURFACE_AUDIO
     SurfaceRelief, SurfaceFinishKey,
@@ -264,7 +263,6 @@ void VerifyCoverage(const entt::registry &r) {
     throw std::runtime_error(msg);
 }
 
-bool SnapshotSkipsEntity(const entt::registry &r, entt::entity e) { return r.all_of<OverlayExtra>(e); }
 
 std::optional<bool> ComponentValuesEqual(entt::id_type type_hash, const void *a, const void *b) {
     using Comparator = bool (*)(const void *, const void *);
