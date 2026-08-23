@@ -23,7 +23,7 @@ inline MeshData CreateMesh(const Circle &p) {
     const auto [radius, n] = p;
     auto vertices =
         iota_view{0u, n} |
-        transform([radius, n](uint32_t i) { return vec3{radius * __cospi(2.f * i / n), radius * __sinpi(2.f * i / n), 0}; }) |
+        transform([radius, n](uint32_t i) { return vec3{radius * __cospi(2.f * i / n), 0, -radius * __sinpi(2.f * i / n)}; }) |
         to<std::vector>();
     vertices.emplace_back(0, 0, 0); // Center vertex
 

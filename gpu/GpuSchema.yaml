@@ -96,7 +96,7 @@ enums:
       - name: NormalIndicatorLines
         value: 48
       - name: ColliderCircleSegments
-        value: 24
+        value: 48
       - name: LightRangeSegments
         value: 32
       - name: SpotConeSegments
