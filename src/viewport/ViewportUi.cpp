@@ -769,7 +769,6 @@ void InteractOverlay(entt::registry &r, entt::entity viewport, FrameState &frame
         }
         return false;
     }();
-    bool screen_start_consumed = !has_transform_target;
     if (has_transform_target) { // Transform gizmo
         // Transform all root selected entities (whose parent is not also selected) around their average
         // position, using the active entity's rotation/scale.
@@ -838,17 +837,11 @@ void InteractOverlay(entt::registry &r, entt::entity viewport, FrameState &frame
         auto &gizmo = r.get<GizmoInteraction>(viewport);
         const auto gizmo_transform = GizmoTransform{{.P = pivot, .R = active_transform.R, .S = active_transform.S}, gizmo_state.Mode};
         const auto *start_screen = r.try_get<const StartScreenTransform>(viewport);
-        const auto mouse_px = ToGlm(GetMousePos()) + frame.AccumulatedWrapMouseDelta;
-        // A screen transform latched with the mouse outside the viewport (the add-object buttons live
-        // in the controls panel) waits for the mouse to enter, so the drag baseline is a viewport ray.
-        const bool mouse_in_viewport = glm::all(glm::greaterThanEqual(mouse_px, viewport_rect.pos)) &&
-            glm::all(glm::lessThan(mouse_px, viewport_rect.max()));
-        screen_start_consumed = start_screen && mouse_in_viewport;
         auto interact_result = TransformGizmo::Interact(
             gizmo,
             gizmo_transform,
-            gizmo_state.Config, camera, viewport_rect, mouse_px,
-            screen_start_consumed ? std::optional{start_screen->Value} : std::nullopt
+            gizmo_state.Config, camera, viewport_rect, ToGlm(GetMousePos()) + frame.AccumulatedWrapMouseDelta,
+            start_screen ? std::optional{start_screen->Value} : std::nullopt
         );
         if (interact_result) {
             const auto &[ts, td] = *interact_result;
@@ -869,7 +862,7 @@ void InteractOverlay(entt::registry &r, entt::entity viewport, FrameState &frame
         if (interact_result) gizmo.RenderTransform->P = interact_result->Start.P + interact_result->Delta.P;
     }
 
-    if (screen_start_consumed && r.all_of<StartScreenTransform>(viewport)) action::Emit(action::view::ClearScreenTransformLatch{});
+    if (r.all_of<StartScreenTransform>(viewport)) action::Emit(action::view::ClearScreenTransformLatch{});
 }
 
 void DrawOverlay(entt::registry &r, entt::entity viewport, FrameState &frame) {

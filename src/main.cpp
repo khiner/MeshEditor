@@ -1177,6 +1177,7 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
         }
 
         ImGui::Render();
+        window.HonorMouseWarp();
         auto *draw_data = GetDrawData();
         if (const bool is_minimized = (draw_data->DisplaySize.x <= 0.0f || draw_data->DisplaySize.y <= 0.0f); !is_minimized) {
             WaitForRender(r); // ImGui samples final image

@@ -147,6 +147,21 @@ Events Window::PollEvents() {
 
 void Window::InitImGui() {
     if (!(Data->ImGuiInitialized = ImGui_ImplOSX_Init(Data->View))) throw std::runtime_error("Could not initialize ImGui's macOS backend.");
+    ImGui::GetIO().BackendFlags |= ImGuiBackendFlags_HasSetMousePos;
+}
+
+void Window::HonorMouseWarp() {
+    auto &io = ImGui::GetIO();
+    if (!io.WantSetMousePos) return;
+    io.WantSetMousePos = false;
+    // io.MousePos is in the content view's coordinates with a top-left origin.
+    const NSPoint window_point{io.MousePos.x, Data->View.bounds.size.height - io.MousePos.y};
+    const NSRect screen_rect = [Data->NativeWindow convertRectToScreen:NSMakeRect(window_point.x, window_point.y, 0, 0)];
+    // Cocoa screen origin is the primary screen's bottom left, global display origin its top left.
+    const CGFloat primary_height = NSScreen.screens.firstObject.frame.size.height;
+    CGWarpMouseCursorPosition(CGPointMake(screen_rect.origin.x, primary_height - screen_rect.origin.y));
+    // Keep events flowing after the warp instead of waiting out the suppression interval.
+    CGAssociateMouseAndMouseCursorPosition(true);
 }
 
 void Window::NewImGuiFrame() {
