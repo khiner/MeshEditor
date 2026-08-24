@@ -252,8 +252,8 @@ def run(args: argparse.Namespace) -> None:
         unknown = wanted - {case["id"] for case in cases}
         if unknown:
             raise SystemExit("Unknown benchmark cases: " + ", ".join(sorted(unknown)))
-    if args.frames <= 0 or args.warmup_frames <= 0 or args.reps <= 0 or args.action_count <= 0:
-        raise SystemExit("--frames, --warmup-frames, --reps, and --action-count must be positive")
+    if args.frames <= 0 or args.action_count <= 0:
+        raise SystemExit("--frames and --action-count must be positive")
     if args.motion_blur is not None and args.motion_blur <= 0:
         raise SystemExit("--motion-blur must be positive")
     exe = args.exe.resolve()
@@ -268,41 +268,30 @@ def run(args: argparse.Namespace) -> None:
     artifact_dir = output.with_suffix("")
     if not args.no_images:
         artifact_dir.mkdir(parents=True, exist_ok=True)
-    repetitions = {case["id"]: [] for case in cases}
+    profiles: dict[str, dict] = {}
     images: dict[str, dict] = {}
 
     with tempfile.TemporaryDirectory(prefix="MeshEditorBench.") as temporary:
         temp = Path(temporary)
-        for index, case in enumerate(cases):
-            print(f"warm-up {case['id']}", flush=True)
+        for case in cases:
+            profile = temp / f"{case['id']}.json"
+            image = artifact_dir / f"{case['id']}.webp" if not args.no_images else None
+            print(f"run {case['id']}", flush=True)
             run_process(
-                app_command(case, paths, exe, args.warmup_frames, None, None),
-                temp / f"warmup-{index}.log",
+                app_command(case, paths, exe, args.frames, profile, image),
+                temp / f"{case['id']}.log",
             )
-        for rep in range(args.reps):
-            shift = rep % len(cases)
-            order = cases[shift:] + cases[:shift]
-            if rep % 2:
-                order.reverse()
-            for case in order:
-                profile = temp / f"{case['id']}-{rep}.json"
-                image = artifact_dir / f"{case['id']}.webp" if rep == 0 and not args.no_images else None
-                print(f"run {rep + 1}/{args.reps} {case['id']}", flush=True)
-                run_process(
-                    app_command(case, paths, exe, args.frames, profile, image),
-                    temp / f"{case['id']}-{rep}.log",
-                )
-                repetitions[case["id"]].append(json.loads(profile.read_text()))
-                if image and not image.is_file():
-                    raise SystemExit(f"Benchmark produced no validation image: {image}")
-                if image:
-                    images[case["id"]] = {
-                        "path": str(image.relative_to(output.parent)),
-                        "sha256": sha256(image),
-                    }
+            profiles[case["id"]] = json.loads(profile.read_text())
+            if image and not image.is_file():
+                raise SystemExit(f"Benchmark produced no validation image: {image}")
+            if image:
+                images[case["id"]] = {
+                    "path": str(image.relative_to(output.parent)),
+                    "sha256": sha256(image),
+                }
 
     result_cases = [
-        {**case, "repetitions": repetitions[case["id"]], **({"image": images[case["id"]]} if case["id"] in images else {})}
+        {**case, "repetitions": [profiles[case["id"]]], **({"image": images[case["id"]]} if case["id"] in images else {})}
         for case in cases
     ]
     result = {
@@ -313,8 +302,6 @@ def run(args: argparse.Namespace) -> None:
         "build": build_info(),
         "host": host_info(),
         "frames": args.frames,
-        "warmupFrames": args.warmup_frames,
-        "repetitions": args.reps,
         "sceneRoot": str(scene_root),
         "manifestHash": json_hash(manifest),
         "datasetHash": content_hash,
@@ -352,7 +339,7 @@ def case_settings(case: dict) -> dict:
 def compare(args: argparse.Namespace) -> None:
     before = json.loads(args.before.read_text())
     after = json.loads(args.after.read_text())
-    for field in ("schemaVersion", "frames", "warmupFrames", "manifestHash", "datasetHash"):
+    for field in ("schemaVersion", "frames", "manifestHash", "datasetHash"):
         if before.get(field) != after.get(field):
             raise SystemExit(f"Cannot compare: {field} differs")
     for field in ("system", "release", "machine", "model", "chip"):
@@ -436,8 +423,6 @@ def parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--select-all", action="store_true")
     run_parser.add_argument("--motion-blur", type=int)
     run_parser.add_argument("--frames", type=int, default=400)
-    run_parser.add_argument("--warmup-frames", type=int, default=30)
-    run_parser.add_argument("--reps", type=int, default=1)
     run_parser.add_argument("--scene-root", type=Path, default=DEFAULT_SCENES)
     run_parser.add_argument("--exe", type=Path, default=DEFAULT_EXE)
     run_parser.add_argument("--output", type=Path)

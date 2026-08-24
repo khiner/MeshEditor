@@ -251,7 +251,7 @@ def box_geometry(buffer: Buffer) -> dict:
         normals.extend([normal] * 4)
         tangents.extend([(1.0, 0.0, 0.0, 1.0)] * 4)
         uvs.extend([(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)])
-        indices.extend([base, base + 1, base + 2, base, base + 2, base + 3])
+        indices.extend([base, base + 2, base + 1, base, base + 3, base + 2])
     return add_geometry(buffer, positions, normals, tangents, uvs, indices)
 
 
@@ -277,7 +277,7 @@ def sphere_geometry(buffer: Buffer, segments: int, rings: int) -> dict:
         for x in range(segments):
             a = y * stride + x
             b = a + stride
-            indices.extend((a, b, a + 1, a + 1, b, b + 1))
+            indices.extend((a, a + 1, b, a + 1, b + 1, b))
     return add_geometry(buffer, positions, normals, tangents, uvs, indices)
 
 

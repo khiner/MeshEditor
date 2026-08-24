@@ -25,13 +25,11 @@
 #include "audio/AudioTypes.h"
 #include "audio/ModalModelFile.h"
 #include "audio/ModalModes.h"
-#include "gizmo/TransformGizmoTypes.h"
 #include "gltf/GltfScene.h"
 #include "image/ImageEncode.h"
 #include "mesh/MeshComponents.h"
 #include "metal/MetalContext.h"
 #include "metal/RenderTarget.h"
-#include "metal/Shader.h"
 #include "object/ObjectOps.h"
 #include "physics/PhysicsTypes.h"
 #include "render/GpuBuffers.h"
@@ -585,6 +583,44 @@ bool FrameScene(entt::registry &r, entt::entity viewport, float aspect_ratio) {
 
 // The default window size, doubling as the headless viewport extent.
 constexpr uvec2 DefaultWindowSize{1280, 800};
+
+constexpr std::string_view Usage{
+    R"(Usage: MeshEditor [scene] [options]
+
+Loads `scene` (a .gltf/.glb/project file) into the editor, or the default scene when none is given.
+
+Scene:
+  --empty                     Start with an empty scene
+  --camera NAME               Frame the named camera
+  --shading MODE              wireframe | solid | preview | rendered
+  --edit ELEMENT              Enter edit mode on vertex | edge | face
+  --select-all                Select every element of the edited mesh
+  --overlays                  Draw the editor overlays
+  --display LIST              Comma-separated: vertex-normals, face-normals, bounds, tet-wireframe
+
+Capture:
+  --screenshot PATH           Write one image and exit
+  --record PATH               Record a video, or audio alone for a .wav path
+  --record-audio              Record audio alongside the video
+  --render BASENAME           Write one scene's corpus artifacts under BASENAME
+  --render-queue DIR          Claim jobs from a render spool until it empties (headless)
+  --fps N                     Capture frame rate (default 60)
+  --timeline-end SECONDS      Stop the captured timeline at SECONDS
+  --motion-blur STEPS         Accumulate STEPS sub-frames per captured frame
+  --play [SECONDS]            Play the timeline, optionally for SECONDS
+
+Benchmarking:
+  --headless                  Run without a window
+  --frames N                  Render N frames and exit
+  --bench-action ACTION       steady | orbit | transform | visibility
+  --bench-action-count N      Actions per benchmark run
+  --profile                   Print the profile report on exit
+  --profile-json PATH         Write the profile report to PATH
+
+Other:
+  --quiet, -q                 Suppress progress output
+  --help, -h                  Show this message)"
+};
 
 // Capture options from the CLI. `--render` is a preset for the full scene corpus; `--screenshot`/`--record` target one output.
 struct CaptureRequest {
@@ -1462,6 +1498,10 @@ int main(int argc, char **argv) {
 #endif
     for (auto it = args.begin(); it != args.end(); ++it) {
         const std::string_view a{*it};
+        if (a == "--help" || a == "-h") {
+            std::println("{}", Usage);
+            return 0;
+        }
         if (a == "--quiet" || a == "-q") quiet = true;
         else if (a == "--play") {
             capture.Play = true;
@@ -1527,7 +1567,10 @@ int main(int argc, char **argv) {
         else if (a == "--profile-json" && std::next(it) != args.end()) {
             profile::Enabled = true;
             profile::JsonPath = *++it;
-        } else if (!a.starts_with('-') && !initial_file) initial_file = *it;
+        } else if (a.starts_with('-')) {
+            std::println(stderr, "Unknown option '{}'. Run with --help for the option list.", a);
+            return 1;
+        } else if (!initial_file) initial_file = *it;
     }
     if (capture.Fps <= 0) capture.Fps = 60;
     // A wav target records audio only, so the audio flag is implied.
