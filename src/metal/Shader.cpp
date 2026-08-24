@@ -249,7 +249,7 @@ void MeshRenderPipeline::Compile(LibraryCache &cache) {
         descriptor->setMeshFunction(mesh_function.get());
         descriptor->setMaxTotalThreadsPerMeshThreadgroup(160);
         descriptor->setMeshThreadgroupSizeIsMultipleOfThreadExecutionWidth(true);
-        descriptor->setMaxTotalThreadgroupsPerMeshGrid(1'048'575);
+        descriptor->setMaxTotalThreadgroupsPerMeshGrid(MaxMeshThreadgroupsPerGrid);
         NS::SharedPtr<MTL::Function> fragment_function;
         if (FragmentFn) {
             fragment_function = MakeFunction(cache, *FragmentFn);
@@ -269,7 +269,7 @@ void MeshRenderPipeline::Compile(LibraryCache &cache) {
     descriptor->setMeshFunctionDescriptor(mesh_function.get());
     descriptor->setMaxTotalThreadsPerMeshThreadgroup(160);
     descriptor->setMeshThreadgroupSizeIsMultipleOfThreadExecutionWidth(true);
-    descriptor->setMaxTotalThreadgroupsPerMeshGrid(1'048'575);
+    descriptor->setMaxTotalThreadgroupsPerMeshGrid(MaxMeshThreadgroupsPerGrid);
     NS::SharedPtr<MTL4::FunctionDescriptor> fragment_function;
     if (FragmentFn) {
         fragment_function = MakeFunctionDescriptor(cache, *FragmentFn);

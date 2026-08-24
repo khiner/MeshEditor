@@ -467,6 +467,7 @@ bool SyncViewportRenderResources(entt::registry &r, entt::entity viewport) {
         const bool want_transmission = is_pbr && GetActivePbrLighting(r, viewport, shading).RealTransmission && pipelines.Main.Compiler.HasFeature(PbrFeature::Transmission);
         pipelines.Main.EnsureTransmissionResources(ctx, render_extent, want_transmission);
     }
+    r.ctx().get<GpuBuffers>().ResizeWireCoverage(render_extent);
     {
         const profile::CpuScope scope{"UpdateSelectionSlots"};
         const auto &sil = pipelines.Silhouette;

@@ -48,8 +48,9 @@ MTL::RenderCommandEncoder *PassChain::BeginRender(MTL::RenderPassDescriptor *pas
     return encoder;
 }
 
-MTL::ComputeCommandEncoder *PassChain::BeginCompute(std::string_view name, MTL::Stages after) {
+MTL::ComputeCommandEncoder *PassChain::BeginCompute(std::string_view name, MTL::Stages after, MTL::DispatchType dispatch) {
     auto *descriptor = MTL::ComputePassDescriptor::computePassDescriptor();
+    descriptor->setDispatchType(dispatch);
     SampleInto(descriptor->sampleBufferAttachments()->object(0), name);
     ClosePass();
     auto *encoder = CommandBuffer->computeCommandEncoder(descriptor);

@@ -19,6 +19,8 @@
 #include "gpu/Vertex.h"
 #include "gpu/ViewportTheme.h"
 #include "gpu/VisibleMeshlet.h"
+#include "gpu/WireCoverage.h"
+#include "gpu/WireDrawRecord.h"
 #include "gpu/WorkspaceLights.h"
 #include "metal/BufferArena.h"
 #include "metal/Image.h"
@@ -165,7 +167,9 @@ struct GpuBuffers {
           SelectionBitset{Ctx, SelectionBitsetWords * sizeof(uint32_t)},
           MotionBlurTileIndirection{Ctx, 0},
           ElementPickKey{Ctx, sizeof(uint32_t)},
-          ElementPickId{Ctx, sizeof(uint32_t)} {
+          ElementPickId{Ctx, sizeof(uint32_t)},
+          WireCoverageBuffer{Ctx, 0, SlotType::Buffer},
+          WireDrawRecords{Ctx, 0, SlotType::Buffer} {
     }
 
     void ReserveAdditionalIndices(uint32_t face, uint32_t edge, uint32_t vertex) {
@@ -228,6 +232,11 @@ struct GpuBuffers {
         MotionBlurTileIndirection.SetCount(2 * tile_extent.Width * tile_extent.Height);
     }
 
+    // One counter per wire color class plus the nearest wire's depth, for every pixel.
+    void ResizeWireCoverage(mtl::Extent2D extent) {
+        const uint64_t words = uint64_t(extent.Width) * extent.Height * uint32_t(WireCoverage::WordsPerPixel);
+        if (words != WireCoverageBuffer.Count<uint32_t>()) WireCoverageBuffer.SetCount<uint32_t>(uint32_t(words));
+    }
 
     // Empty the scene arenas on clear so the next load's derived handles (BufferIndex, InstanceRange, morph/bone
     // ranges) rebuild from a clean baseline rather than on a prior scene's leftover residue.
@@ -429,4 +438,6 @@ struct GpuBuffers {
     // Selection / picking — GPU buffers + host-visible readback
     TypedBuffer<uint32_t> ObjectPickKeys, ObjectPickSeenBitset, SelectionBitset, MotionBlurTileIndirection;
     TypedBuffer<uint32_t> ElementPickKey, ElementPickId;
+    mtl::Buffer WireCoverageBuffer;
+    TypedBuffer<WireDrawRecord> WireDrawRecords;
 };

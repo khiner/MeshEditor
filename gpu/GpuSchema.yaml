@@ -197,6 +197,22 @@ enums:
         value: 6
       - name: IndexBits
         value: 25
+  # Layout of the wire coverage buffer: one counter per color class, then the nearest line's depth.
+  - name: WireCoverage
+    type: u32
+    values:
+      - name: Base
+        value: 0
+      - name: Selected
+        value: 1
+      - name: Active
+        value: 2
+      - name: Incidental
+        value: 3
+      - name: DepthWord
+        value: 4
+      - name: WordsPerPixel
+        value: 5
   - name: MeshletInstanceFlag
     type: u32
     values:
@@ -286,10 +302,6 @@ function_constants:
       - name: VelocityOutput
         type: bool
       - name: NonTriangleTopology
-        type: bool
-  - name: WireMeshConstant
-    constants:
-      - name: ElementStateColor
         type: bool
   - name: NormalIndicatorConstant
     constants:
@@ -1118,13 +1130,6 @@ structs:
       - name: BoxResultSlot
         type: u32
         default: InvalidSlot
-  - name: OverlayMeshPushConstants
-    push_constant: true
-    fields:
-      - name: DrawDataIndex
-        type: u32
-      - name: ElementCount
-        type: u32
   - name: SelectionDrawPushConstants
     push_constant: true
     fields:
@@ -1377,6 +1382,46 @@ structs:
         type: u32
       - name: FaceNormalSlot
         type: u32
+  # One dispatch per overlay emission, over the draw's own element list.
+  - name: OverlayMeshPushConstants
+    push_constant: true
+    fields:
+      - name: DrawDataIndex
+        type: u32
+      - name: ElementCount
+        type: u32
+  # One wire draw's place in the flattened edge list the raster dispatches over. A global edge index
+  # lands in the record whose FirstEdge it follows, and the remainder splits into instance and edge.
+  - name: WireDrawRecord
+    fields:
+      - name: FirstEdge
+        type: u32
+      - name: EdgeCount
+        type: u32
+      - name: DrawDataIndex
+        type: u32
+      # Nonzero colors each halfedge from its own element state.
+      - name: ElementStateColor
+        type: u32
+  - name: WireRasterPushConstants
+    push_constant: true
+    fields:
+      - name: RecordSlot
+        type: u32
+        default: InvalidSlot
+      - name: RecordCount
+        type: u32
+      - name: EdgeTotal
+        type: u32
+      - name: CoverageSlot
+        type: u32
+        default: InvalidSlot
+  - name: WireResolvePushConstants
+    push_constant: true
+    fields:
+      - name: CoverageSlot
+        type: u32
+        default: InvalidSlot
   # Bounding-box wireframes: one instanced line draw over the listed instance-arena slots.
   - name: ExtrasLinePushConstants
     push_constant: true

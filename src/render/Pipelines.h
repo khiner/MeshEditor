@@ -131,9 +131,11 @@ struct MainPipeline {
     mtl::RenderPipeline MotionBlurGather;
     mtl::RenderPipeline WorkspaceVisibility;
     mtl::MeshRenderPipeline MeshletVisibilityOpaque, MeshletVisibilityCoverage;
-    mtl::MeshRenderPipeline MeshletWire, MeshletWireElements, EdgeQuadMesh, PointMesh;
+    mtl::MeshRenderPipeline EdgeQuadMesh, PointMesh;
     mtl::MeshRenderPipeline FaceNormalMesh, VertexNormalMesh, BoundsBoxMesh, TetWireMesh, SoundPointMesh, ExtrasLineMesh;
     mtl::MeshRenderPipeline BoneFillMesh, BoneWireMesh, BoneSphereFillMesh, BoneSphereWireMesh;
+    // Wireframe lines rasterize in compute, and this resolves their coverage into the overlay layer.
+    mtl::RenderPipeline WireResolve;
     std::unique_ptr<ResourcesT> Resources;
     std::unique_ptr<TransmissionResourcesT> Transmission;
     std::unique_ptr<MotionBlurResourcesT> MotionBlur;
@@ -220,6 +222,8 @@ struct Pipelines {
     // Reduce 256-vertex tiles, then fold each entry's partial AABBs.
     mtl::ComputePipeline BoundsReduce;
     mtl::ComputePipeline BoundsCombine;
+    // Walks each wire draw's edge list, accumulating per-class coverage into the screen buffer.
+    mtl::ComputePipeline WireRaster;
     mtl::ComputePipeline MeshletWorkBlockCount, MeshletWorkPrefix, MeshletWorkEmit;
     mtl::ComputePipeline MeshletCullBlockCount, MeshletCullPrefix, MeshletCullEmit;
     mtl::ComputePipeline MeshletPhase2Cull, MeshletPhase2RangeCull, MeshletPhase2Prefix;

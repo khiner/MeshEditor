@@ -10,6 +10,9 @@
 #include <vector>
 
 namespace mtl {
+// The most threadgroups a mesh grid may hold in total, declared to every mesh pipeline.
+inline constexpr uint32_t MaxMeshThreadgroupsPerGrid{1'048'575};
+
 struct FunctionConstant {
     uint32_t Index;
     MTL::DataType Type;

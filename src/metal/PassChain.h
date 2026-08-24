@@ -21,7 +21,9 @@ struct PassChain {
     PassChain &operator=(const PassChain &) = delete;
 
     MTL::RenderCommandEncoder *BeginRender(MTL::RenderPassDescriptor *, std::string_view name, std::initializer_list<Barrier> = {});
-    MTL::ComputeCommandEncoder *BeginCompute(std::string_view name, MTL::Stages after = {});
+    // Concurrent dispatch drops the barrier Metal puts between a pass's dispatches, and suits a pass
+    // whose dispatches write results that do not depend on each other.
+    MTL::ComputeCommandEncoder *BeginCompute(std::string_view name, MTL::Stages after = {}, MTL::DispatchType dispatch = MTL::DispatchTypeSerial);
     MTL::BlitCommandEncoder *BeginBlit(std::string_view name, MTL::Stages after = {});
 
 private:

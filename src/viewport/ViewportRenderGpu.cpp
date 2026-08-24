@@ -16,6 +16,9 @@
 #include "gpu/ExtrasLinePushConstants.h"
 #include "gpu/SoundPointPushConstants.h"
 #include "gpu/TetWirePushConstants.h"
+#include "gpu/WireDrawRecord.h"
+#include "gpu/WireRasterPushConstants.h"
+#include "gpu/WireResolvePushConstants.h"
 #include "gpu/MeshPrimitiveTopology.h"
 #include "gpu/MeshletCullPushConstants.h"
 #include "gpu/MeshletDrawPushConstants.h"
@@ -880,8 +883,8 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
         };
         // Shaded meshes take their selection feedback from the scene pass, which recolors selected line and point fills.
         // Edit mode shows element state through its own overlays.
-        // Draws a mesh's wire or point overlay for every instance, unless the scene pass shades it.
-        const auto append_overlay = [&](DrawBatchInfo &batch, const MeshEntityData &e, const SlottedRange &indices, const DrawData &dd) {
+        // Draws a mesh's wire overlay for every instance, unless the scene pass shades it.
+        const auto append_wire = [&](DrawBatchInfo &batch, const MeshEntityData &e, const SlottedRange &indices, const DrawData &dd) {
             if (shaded_in_scene_pass(e)) return;
             const auto draws_before = draw_list.Draws.size();
             AppendDraw(draw_list, batch, indices, e.Mod, dd);
@@ -1184,11 +1187,11 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
         };
         draw.WireMeshlet = draw_list.BeginBatch();
         for (const auto &e : mesh_entities) {
-            if (wire_eligible(e) && meshlet_wire(e)) append_overlay(draw.WireMeshlet, e, e.Buf.EdgeIndices, wire_draw_data(e));
+            if (wire_eligible(e) && meshlet_wire(e)) append_wire(draw.WireMeshlet, e, e.Buf.EdgeIndices, wire_draw_data(e));
         }
         draw.WireLine = draw_list.BeginBatch();
         for (const auto &e : mesh_entities) {
-            if (wire_eligible(e) && !meshlet_wire(e)) append_overlay(draw.WireLine, e, e.Buf.EdgeIndices, wire_draw_data(e));
+            if (wire_eligible(e) && !meshlet_wire(e)) append_wire(draw.WireLine, e, e.Buf.EdgeIndices, wire_draw_data(e));
         }
 
 
@@ -1612,6 +1615,49 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
         return;
     }
 
+    // Wireframe lines rasterize in compute before the overlay pass that resolves them.
+    const bool wire_batches_drawn = draw.WireMeshlet.DrawCount > 0 || draw.WireLine.DrawCount > 0;
+    // One flattened edge list over both batches, so a scene of many small wire draws costs one dispatch.
+    uint32_t wire_record_count = 0, wire_edge_total = 0;
+    if (wire_batches_drawn) {
+        buffers.WireDrawRecords.SetCount(draw.WireMeshlet.DrawCount + draw.WireLine.DrawCount);
+        auto *records = buffers.WireDrawRecords.Data();
+        const auto flatten_batch = [&](const DrawBatchInfo &batch, bool element_state_color) {
+            for (uint32_t d = 0; d < batch.DrawCount; ++d) {
+                const auto &draw_record = draw.List.Records[batch.FirstRecord + d];
+                const auto edges = draw_record.IndexCount / 2u;
+                if (edges == 0 || draw_record.InstanceCount == 0) continue;
+                records[wire_record_count++] = WireDrawRecord{
+                    .FirstEdge = wire_edge_total,
+                    .EdgeCount = edges,
+                    .DrawDataIndex = batch.DrawDataSlotOffset + draw_record.FirstDraw,
+                    .ElementStateColor = element_state_color ? 1u : 0u,
+                };
+                wire_edge_total += edges * draw_record.InstanceCount;
+            }
+        };
+        flatten_batch(draw.WireMeshlet, false);
+        flatten_batch(draw.WireLine, true);
+    }
+    // The resolve reads what this dispatch writes, so it runs only when the dispatch does.
+    const bool wire_raster_drawn = wire_edge_total > 0;
+    if (wire_raster_drawn) {
+        {   // Coverage sums and the complemented depth both start from zero.
+            auto *blit = chain.BeginBlit("WireClear", MTL::StageDispatch);
+            blit->fillBuffer(*buffers.WireCoverageBuffer, NS::Range::Make(0, buffers.WireCoverageBuffer.UsedSize), 0);
+        }
+        // Every edge accumulates with atomics, so the dispatch needs no ordering within itself.
+        auto *wire = chain.BeginCompute("WireRaster", MTL::StageBlit | MTL::StageFragment, MTL::DispatchTypeConcurrent);
+        encode::BindCompute(wire, pipelines.WireRaster, slots, buffers, ubo_offset);
+        encode::SetPushConstants(wire, WireRasterPushConstants{
+            .RecordSlot = buffers.WireDrawRecords.Slot(),
+            .RecordCount = wire_record_count,
+            .EdgeTotal = wire_edge_total,
+            .CoverageSlot = buffers.WireCoverageBuffer.Slot,
+        });
+        wire->dispatchThreadgroups(MTL::Size((wire_edge_total + 255) / 256, 1, 1), ThreadgroupSize::Linear256);
+    }
+
     // The layer clears transparent, so an untouched one composites to nothing. Track whether anything
     // reaches it, and the composite skips reading it and its line data at all. Every draw in the pass
     // below goes through here or sets the flag itself.
@@ -1619,7 +1665,8 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
     // Everything the pass could draw. With nothing to draw, the composite reads neither overlay layer.
     const bool overlay_pass_needed = has_silhouette ||
         (show_overlays && settings.ShowGrid) ||
-        draw.EdgeQuad.DrawCount > 0 || draw.WireLine.DrawCount > 0 || draw.Point.DrawCount > 0 || buffers.BoundsBoxSlots.UsedSize > 0 ||
+        draw.EdgeQuad.DrawCount > 0 || wire_batches_drawn ||
+        draw.Point.DrawCount > 0 || buffers.BoundsBoxSlots.UsedSize > 0 ||
         (show_overlays && settings.ShowExtras) ||
         draw.OverlayFaceNormals.DrawCount > 0 || draw.OverlayVertexNormals.DrawCount > 0 ||
         draw.BoneFill.DrawCount > 0 || draw.BoneWire.DrawCount > 0 || draw.BoneSphereFill.DrawCount > 0 || draw.BoneSphereWire.DrawCount > 0;
@@ -1650,17 +1697,18 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
             pipeline.Bind(encoder);
             encode::DispatchMeshBatch(encoder, draw.List, batch, indices_per_element, elements_per_group, threads_per_group);
         };
-        constexpr auto group_lines = uint32_t(OverlayDispatch::LineGroupLines);
         constexpr auto group_quad_edges = uint32_t(OverlayDispatch::EdgeQuadGroupEdges);
         constexpr auto group_points = uint32_t(OverlayDispatch::PointGroupPoints);
         constexpr auto group_indicators = uint32_t(OverlayDispatch::NormalIndicatorLines);
         {
             // Edit mode edges as triangle quads with self-AA, four corners to an edge
             record_mesh_batch(main.EdgeQuadMesh, draw.EdgeQuad, 2, group_quad_edges, group_quad_edges * 4);
-            // Wireframe/line mesh edges as GPU lines with per-halfedge element color (the composite handles AA)
-            record_mesh_batch(main.MeshletWireElements, draw.WireLine, 2, group_lines, group_lines * 2);
-            // Face mesh edges as mesh-shader line groups, one dispatch per instance
-            record_mesh_batch(main.MeshletWire, draw.WireMeshlet, 2, group_lines, group_lines * 2);
+            if (wire_raster_drawn) {
+                overlay_layer_drawn = true;
+                main.WireResolve.Bind(encoder);
+                encode::SetPushConstants(encoder, WireResolvePushConstants{buffers.WireCoverageBuffer.Slot});
+                encoder->drawPrimitives(MTL::PrimitiveTypeTriangleStrip, NS::UInteger(0), NS::UInteger(4));
+            }
             // Vertex points (always recorded — batch is empty when nothing qualifies)
             record_mesh_batch(main.PointMesh, draw.Point, 1, group_points, group_points);
             // Excite mode points, one dispatch per sounding instance over its excitable handles
