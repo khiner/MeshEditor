@@ -1,6 +1,5 @@
 #pragma once
 
-#include "metal/Buffer.h"
 #include "metal/Image.h"
 #include "metal/Shader.h"
 #include "render/IblPrefilterPipelines.h"
@@ -177,20 +176,13 @@ struct SilhouetteEdgePipeline {
 struct SelectionFragmentPipeline {
     SelectionFragmentPipeline(mtl::LibraryCache &);
 
-    struct ResourcesT {
-        ResourcesT(mtl::BufferContext &, mtl::Extent2D);
-
-        // Metal has no texture atomics, so linked-list heads live in a buffer.
-        mtl::Buffer HeadBuffer;
-        mtl::Extent2D Extent{};
-    };
-
-    void SetExtent(mtl::BufferContext &, mtl::Extent2D);
-
-    PipelineRenderer Renderer;
     mtl::RenderPipeline VisibilityObject, VisibilityFace, VisibilityFaceBitsetBox;
     mtl::MeshRenderPipeline MeshletFaceXRay, MeshletFaceXRayBitsetBox, ExtrasLine, BoneSphere, Line, Point, SoundPoint;
-    std::unique_ptr<ResourcesT> Resources;
+    // Element id rasters, one per element kind and depth mode, folding ids into the pick key or the box bitset.
+    mtl::MeshRenderPipeline ElementVertex, ElementVertexBitsetBox, ElementVertexXRay, ElementVertexXRayBitsetBox;
+    mtl::MeshRenderPipeline ElementEdge, ElementEdgeBitsetBox, ElementEdgeXRay, ElementEdgeXRayBitsetBox;
+    // Point fallbacks for X-Ray box select, catching elements whose projected primitive has no area.
+    mtl::MeshRenderPipeline ElementEdgeXRayPointsBitsetBox, ElementFaceXRayPointsBitsetBox;
 };
 
 namespace ThreadgroupSize {
@@ -201,8 +193,6 @@ inline const MTL::Size Tile8{8, 8, 1};
 } // namespace ThreadgroupSize
 
 namespace ThreadgroupMemory {
-// One uint4 per candidate lane.
-inline constexpr uint32_t ElementPickCandidates{256 * 16};
 // One min and max float4 per bounds lane.
 inline constexpr uint32_t BoundsFoldVector{256 * sizeof(float) * 4};
 inline constexpr uint32_t MeshletBoundsFoldVector{64 * sizeof(float) * 4};
@@ -221,7 +211,7 @@ struct Pipelines {
     SilhouettePipeline Silhouette;
     SilhouetteEdgePipeline SilhouetteEdge;
     SelectionFragmentPipeline SelectionFragment;
-    mtl::ComputePipeline ObjectPick, ElementPick, BoxSelect, UpdateSelectionState;
+    mtl::ComputePipeline UpdateSelectionState;
     // Materializes current-pose positions before bounds and normal derivation.
     mtl::ComputePipeline PosePrepass;
     mtl::ComputePipeline PosedMeshletBounds;
@@ -230,8 +220,6 @@ struct Pipelines {
     // Reduce 256-vertex tiles, then fold each entry's partial AABBs.
     mtl::ComputePipeline BoundsReduce;
     mtl::ComputePipeline BoundsCombine;
-    // Rewrites indirect instance counts and the visible-index remap.
-    mtl::ComputePipeline FrustumCull;
     mtl::ComputePipeline MeshletWorkBlockCount, MeshletWorkPrefix, MeshletWorkEmit;
     mtl::ComputePipeline MeshletCullBlockCount, MeshletCullPrefix, MeshletCullEmit;
     mtl::ComputePipeline MeshletPhase2Cull, MeshletPhase2RangeCull, MeshletPhase2Prefix;
@@ -240,7 +228,7 @@ struct Pipelines {
     mtl::ComputePipeline MotionBlurTilesFlatten, MotionBlurTilesDilate;
     IblPrefilterPipelines IblPrefilter;
 
-    void SetExtent(mtl::Extent2D, mtl::BufferContext &, mtl::BindlessSet &);
+    void SetExtent(mtl::Extent2D, mtl::BindlessSet &);
     void CompileShaders();
 
     mtl::Extent2D BuiltColorExtent() const { return Main.Resources ? Main.Resources->SceneColorImage.Extent : mtl::Extent2D{}; }

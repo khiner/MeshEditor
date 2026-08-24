@@ -54,14 +54,17 @@ std::optional<std::pair<uvec2, uvec2>> ComputeBoxSelectPixels(vec2 start, vec2 e
         logical_extent.x > 0u ? float(render_extent.x) / float(logical_extent.x) : 1.f,
         logical_extent.y > 0u ? float(render_extent.y) / float(logical_extent.y) : 1.f
     };
-    const auto box_min = glm::min(start, end) - window_pos;
-    const auto box_max = glm::max(start, end) - window_pos;
-    const auto local_min = glm::clamp(glm::min(box_min, box_max), vec2{0}, logical_size);
-    const auto local_max = glm::clamp(glm::max(box_min, box_max), vec2{0}, logical_size);
+    // Intersect the drag with the viewport. A drag that ends up wholly outside it selects nothing.
+    const auto local_min = glm::max(glm::min(start, end) - window_pos, vec2{0});
+    const auto local_max = glm::min(glm::max(start, end) - window_pos, logical_size);
+    if (local_min.x > local_max.x || local_min.y > local_max.y) return {};
+
+    // The box names pixels, so its maximum is the last one, not one past it.
+    const auto last_px = glm::max(render_extent, uvec2{1}) - 1u;
     const auto render_min = local_min * render_scale;
     const auto render_max = local_max * render_scale;
-    const uvec2 box_min_px{glm::floor(render_min.x), glm::floor(render_min.y)};
-    const uvec2 box_max_px{glm::ceil(render_max.x), glm::ceil(render_max.y)};
+    const auto box_min_px = glm::min(uvec2{glm::floor(render_min.x), glm::floor(render_min.y)}, last_px);
+    const auto box_max_px = glm::min(uvec2{glm::ceil(render_max.x), glm::ceil(render_max.y)}, last_px);
     return std::pair{box_min_px, box_max_px};
 }
 

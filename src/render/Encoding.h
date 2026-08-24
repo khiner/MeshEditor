@@ -3,16 +3,47 @@
 #include "gpu/ExtrasLinePushConstants.h"
 #include "gpu/OverlayDispatch.h"
 #include "gpu/OverlayMeshPushConstants.h"
+#include "gpu/VisibilityShadingPushConstants.h"
 #include "metal/Bindless.h"
 #include "metal/PassChain.h"
 #include "metal/Shader.h"
 #include "render/DrawState.h"
 #include "render/GpuBuffers.h"
 
+#include <cassert>
+#include <print>
 #include <span>
 
 // Shared draw/dispatch bindings; render stages receive the same buffers.
 namespace encode {
+// Everything a pass needs to resolve a visibility id back to its meshlet, instance and primitive.
+// A cull that rewrote the visible list after the raster wrote these ids resolves every id to
+// whatever meshlet now sits at its index, so the generations must match.
+inline VisibilityShadingPushConstants VisibilityDecodePc(const GpuBuffers &buffers) {
+    if (buffers.VisibilityIdGeneration != buffers.MeshletVisibleGeneration) {
+        static bool reported = false;
+        if (!reported) {
+            reported = true;
+            std::println(
+                stderr, "Visibility ids were rasterized against generation {} and decode {}, so a cull ran between them",
+                buffers.VisibilityIdGeneration, buffers.MeshletVisibleGeneration
+            );
+        }
+        assert(false);
+    }
+    return {
+        .PrimitiveSlot = buffers.Primitives.Buffer.Slot,
+        .InstanceSlot = buffers.Instances.RecordBuffer.Slot,
+        .InstanceMapSlot = buffers.GpuInstanceSlots.Buffer.Slot,
+        .MeshletSlot = buffers.Meshlets.Buffer.Slot,
+        .MeshletTriangleSlot = buffers.MeshletTriangleIds.Buffer.Slot,
+        .MeshletLocalTriangleSlot = buffers.MeshletLocalTriangles.Buffer.Slot,
+        .MeshletVertexSlot = buffers.MeshletVertexCorners.Buffer.Slot,
+        .VisibleMeshletSlot = buffers.VisibleMeshlets.Slot,
+        .Phase2VisibleMeshletSlot = buffers.MeshletPhase2Visible.Slot,
+    };
+}
+
 inline void BindScene(MTL::RenderCommandEncoder *encoder, const mtl::BindlessSet &slots, const GpuBuffers &buffers, uint32_t view_offset = 0) {
     slots.UseResources(encoder);
     auto *table = slots.Table();
@@ -58,22 +89,21 @@ void SetPushConstants(MTL::ComputeCommandEncoder *encoder, const T &pc) {
     encoder->setBytes(&pc, sizeof(T), BufferIndex_PushConstants);
 }
 
-// One dispatch per command over a batch's element list, instances in the grid's second dimension.
-// A batch's command holds `indices_per_element` indices for each element it draws.
+// One dispatch per draw over a batch's element list, instances in the grid's second dimension.
+// A batch's draw holds `indices_per_element` indices for each element it emits.
 inline void DispatchMeshBatch(
     MTL::RenderCommandEncoder *encoder, const DrawListBuilder &list, const DrawBatchInfo &batch,
     uint32_t indices_per_element, uint32_t elements_per_group, uint32_t threads_per_group
 ) {
-    const auto first_command = batch.IndirectOffset / IndirectCommandStride;
     for (uint32_t d = 0; d < batch.DrawCount; ++d) {
-        const auto &cmd = list.IndirectCommands[first_command + d];
-        const auto element_count = cmd.indexCount / indices_per_element;
+        const auto &record = list.Records[batch.FirstRecord + d];
+        const auto element_count = record.IndexCount / indices_per_element;
         SetMeshPushConstants(encoder, OverlayMeshPushConstants{
-            .DrawDataIndex = batch.DrawDataSlotOffset + cmd.baseInstance,
+            .DrawDataIndex = batch.DrawDataSlotOffset + record.FirstDraw,
             .ElementCount = element_count,
         });
         encoder->drawMeshThreadgroups(
-            MTL::Size((element_count + elements_per_group - 1) / elements_per_group, cmd.instanceCount, 1),
+            MTL::Size((element_count + elements_per_group - 1) / elements_per_group, record.InstanceCount, 1),
             MTL::Size(1, 1, 1), MTL::Size(threads_per_group, 1, 1)
         );
     }
@@ -84,14 +114,13 @@ inline void DispatchInstancedMeshBatch(
     MTL::RenderCommandEncoder *encoder, const DrawListBuilder &list, const DrawBatchInfo &batch,
     uint32_t vertices_per_instance
 ) {
-    const auto first_command = batch.IndirectOffset / IndirectCommandStride;
     for (uint32_t d = 0; d < batch.DrawCount; ++d) {
-        const auto &cmd = list.IndirectCommands[first_command + d];
+        const auto &record = list.Records[batch.FirstRecord + d];
         SetMeshPushConstants(encoder, OverlayMeshPushConstants{
-            .DrawDataIndex = batch.DrawDataSlotOffset + cmd.baseInstance,
+            .DrawDataIndex = batch.DrawDataSlotOffset + record.FirstDraw,
             .ElementCount = vertices_per_instance,
         });
-        encoder->drawMeshThreadgroups(MTL::Size(cmd.instanceCount, 1, 1), MTL::Size(1, 1, 1), MTL::Size(vertices_per_instance, 1, 1));
+        encoder->drawMeshThreadgroups(MTL::Size(record.InstanceCount, 1, 1), MTL::Size(1, 1, 1), MTL::Size(vertices_per_instance, 1, 1));
     }
 }
 
@@ -127,16 +156,4 @@ inline void BindCompute(
     BindScene(encoder, slots, buffers, view_offset);
 }
 
-// Metal has no indexed-indirect multi-draw, so walk the command buffer.
-inline void DrawIndexedIndirect(
-    MTL::RenderCommandEncoder *encoder, MTL::PrimitiveType primitive, MTL::Buffer *index_buffer,
-    MTL::Buffer *indirect, uint64_t indirect_offset, uint32_t draw_count
-) {
-    for (uint32_t i = 0; i < draw_count; ++i) {
-        encoder->drawIndexedPrimitives(
-            primitive, MTL::IndexTypeUInt32, index_buffer, 0,
-            indirect, indirect_offset + uint64_t(i) * IndirectCommandStride
-        );
-    }
-}
 } // namespace encode

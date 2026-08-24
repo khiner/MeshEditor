@@ -47,6 +47,7 @@
 #include "snapshot/SaveState.h"
 #include "snapshot/SceneSnapshot.h"
 #include "viewport/FrameState.h"
+#include "viewport/ViewCamera.h"
 #include "viewport/ViewCameraOps.h"
 #include "viewport/Viewport.h"
 #include "viewport/ViewportDisplay.h"
@@ -60,6 +61,7 @@
 #include <Foundation/NSAutoreleasePool.hpp>
 #include <entt/entity/registry.hpp>
 
+#include <array>
 #include <chrono>
 #include <csignal>
 #include <cstdlib>
@@ -455,6 +457,46 @@ std::optional<DepthPyramidDumpRequest> DepthPyramidDumpFromEnvironment() {
     return DepthPyramidDumpRequest{prefix, uint32_t(frame)};
 }
 
+// Create the file's parent directory, reporting under `label` when it cannot.
+bool EnsureParentDirectory(const fs::path &path, std::string_view label) {
+    const auto parent = path.parent_path();
+    if (parent.empty()) return true;
+    std::error_code ec;
+    fs::create_directories(parent, ec);
+    if (ec) {
+        std::println(stderr, "{} could not create '{}': {}", label, parent.string(), ec.message());
+        return false;
+    }
+    return true;
+}
+
+// Write one single-channel float image as a bottom-up PFM.
+bool WriteFloatPfm(const fs::path &output, std::span<const std::byte> bytes, mtl::Extent2D extent) {
+    if (!EnsureParentDirectory(output, "Depth dump")) return false;
+    std::ofstream out{output, std::ios::binary};
+    out << std::format("Pf\n{} {}\n-1.0\n", extent.Width, extent.Height);
+    const auto row_bytes = size_t(extent.Width) * sizeof(float);
+    for (uint32_t y = extent.Height; y-- > 0;) {
+        out.write(reinterpret_cast<const char *>(bytes.data() + size_t(y) * row_bytes), std::streamsize(row_bytes));
+    }
+    if (!out) {
+        std::println(stderr, "Depth dump could not write '{}'.", output.string());
+        return false;
+    }
+    return true;
+}
+
+// Read back one float image and write it as a PFM.
+bool DumpFloatImage(const mtl::Context &ctx, const mtl::Texture &texture, const fs::path &output, std::string_view label) {
+    const auto bytes = ReadbackImageRgba8(ctx, texture, 0, 0, texture.Extent);
+    const auto expected_bytes = size_t(texture.Extent.Width) * texture.Extent.Height * sizeof(float);
+    if (bytes.size() != expected_bytes) {
+        std::println(stderr, "{} readback returned {} bytes instead of {}.", label, bytes.size(), expected_bytes);
+        return false;
+    }
+    return WriteFloatPfm(output, bytes, texture.Extent);
+}
+
 bool DumpDepthPyramid(entt::registry &r, const fs::path &prefix) {
     const auto &pipelines = r.ctx().get<const Pipelines>();
     if (!pipelines.Main.Resources || !pipelines.Main.Resources->DepthPyramidValid) {
@@ -462,38 +504,30 @@ bool DumpDepthPyramid(entt::registry &r, const fs::path &prefix) {
         return false;
     }
     const auto &ctx = r.ctx().get<const mtl::Context>();
-    const auto &mips = pipelines.Main.Resources->DepthPyramidMips;
-    for (uint32_t mip_index = 0; mip_index < mips.size(); ++mip_index) {
-        const auto &mip = mips[mip_index];
-        const mtl::Texture view{mip.View, mip.Extent, 1};
-        const auto bytes = ReadbackImageRgba8(ctx, view, 0, 0, mip.Extent);
-        const auto expected_bytes = size_t(mip.Extent.Width) * mip.Extent.Height * sizeof(float);
-        if (bytes.size() != expected_bytes) {
-            std::println(stderr, "Depth pyramid mip {} readback returned {} bytes instead of {}.", mip_index, bytes.size(), expected_bytes);
-            return false;
-        }
-        auto output = prefix;
-        output += std::format("-mip{:02}-{}x{}.pfm", mip_index, mip.Extent.Width, mip.Extent.Height);
-        if (const auto parent = output.parent_path(); !parent.empty()) {
-            std::error_code ec;
-            fs::create_directories(parent, ec);
-            if (ec) {
-                std::println(stderr, "Depth pyramid dump could not create '{}': {}", parent.string(), ec.message());
-                return false;
-            }
-        }
-        std::ofstream out{output, std::ios::binary};
-        out << std::format("Pf\n{} {}\n-1.0\n", mip.Extent.Width, mip.Extent.Height);
-        const auto row_bytes = size_t(mip.Extent.Width) * sizeof(float);
-        for (uint32_t y = mip.Extent.Height; y-- > 0;) {
-            out.write(reinterpret_cast<const char *>(bytes.data() + size_t(y) * row_bytes), std::streamsize(row_bytes));
-        }
+    const auto &depth = pipelines.Main.Resources->DepthImage;
+    auto depth_output = prefix;
+    depth_output += std::format("-depth-{}x{}.pfm", depth.Extent.Width, depth.Extent.Height);
+    if (!DumpFloatImage(ctx, depth, depth_output, "Scene depth")) return false;
+    const auto &visibility = pipelines.Main.Resources->VisibilityImage;
+    auto visibility_output = prefix;
+    visibility_output += std::format("-visibility-{}x{}.bin", visibility.Extent.Width, visibility.Extent.Height);
+    {
+        const auto bytes = ReadbackImageRgba8(ctx, visibility, 0, 0, visibility.Extent);
+        std::ofstream out{visibility_output, std::ios::binary};
+        out.write(reinterpret_cast<const char *>(bytes.data()), std::streamsize(bytes.size()));
         if (!out) {
-            std::println(stderr, "Depth pyramid dump could not write '{}'.", output.string());
+            std::println(stderr, "Visibility dump could not write '{}'.", visibility_output.string());
             return false;
         }
     }
-    std::println("Saved {} depth-pyramid mips with prefix '{}'.", mips.size(), prefix.string());
+    const auto &mips = pipelines.Main.Resources->DepthPyramidMips;
+    for (uint32_t mip_index = 0; mip_index < mips.size(); ++mip_index) {
+        const auto &mip = mips[mip_index];
+        auto output = prefix;
+        output += std::format("-mip{:02}-{}x{}.pfm", mip_index, mip.Extent.Width, mip.Extent.Height);
+        if (!DumpFloatImage(ctx, mtl::Texture{mip.View, mip.Extent, 1}, output, std::format("Depth pyramid mip {}", mip_index))) return false;
+    }
+    std::println("Saved the scene depth and {} depth-pyramid mips with prefix '{}'.", mips.size(), prefix.string());
     return true;
 }
 

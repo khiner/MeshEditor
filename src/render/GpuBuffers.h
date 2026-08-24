@@ -1,7 +1,6 @@
 #pragma once
 
 #include "gpu/AABB.h"
-#include "gpu/ElementPickCandidate.h"
 #include "gpu/InstanceRecord.h"
 #include "gpu/MeshDispatchArgs.h"
 #include "gpu/MeshletBlendBlockState.h"
@@ -16,8 +15,6 @@
 #include "gpu/PrimitiveRecord.h"
 #include "gpu/PunctualLight.h"
 #include "gpu/SceneViewUBO.h"
-#include "gpu/SelectionCounters.h"
-#include "gpu/SelectionNode.h"
 #include "gpu/Transform.h"
 #include "gpu/Vertex.h"
 #include "gpu/ViewportTheme.h"
@@ -26,7 +23,6 @@
 #include "metal/BufferArena.h"
 #include "metal/Image.h"
 #include "render/MeshBuffers.h"
-#include "render/PickConstants.h"
 
 #include <algorithm>
 #include <numeric>
@@ -34,20 +30,6 @@
 struct Mesh;
 struct MeshStore;
 
-struct DrawBufferPair {
-    mtl::Buffer DrawData;
-    // Also a storage buffer, so the frustum cull pass can edit instance counts in place.
-    mtl::Buffer Indirect;
-    // Maps gl_InstanceIndex to a dense DrawData index. Identity when nothing is culled.
-    mtl::Buffer VisibleIndices;
-    // One CullEntry per DrawData element, for the frustum cull pass.
-    mtl::Buffer CullEntries;
-    DrawBufferPair(mtl::BufferContext &ctx)
-        : DrawData(ctx, 0, SlotType::DrawDataBuffer),
-          Indirect(ctx, 0, SlotType::Buffer),
-          VisibleIndices(ctx, 0, SlotType::Buffer),
-          CullEntries(ctx, 0, SlotType::Buffer) {}
-};
 
 // Shared arena for per-instance GPU data (transforms, object IDs, instance states, local-space bounds).
 // Uses a single RangeAllocator so all buffers share the same instance offsets.
@@ -140,10 +122,6 @@ struct GpuBuffers {
     static constexpr uint32_t MaxSelectableElements{16'000'000};
     static constexpr uint32_t ObjectPickBitsetWords{(MaxSelectableObjects + 31) / 32};
     static constexpr uint32_t SelectionBitsetWords{(MaxSelectableElements + 31) / 32};
-    static constexpr uint32_t ElementPickGroupSize{256};
-    static constexpr uint32_t ElementPickGroupCount{(ElementPickPixelCount + ElementPickGroupSize - 1) / ElementPickGroupSize};
-    static constexpr uint32_t SelectionNodesPerPixel{10};
-    static constexpr uint32_t MaxSelectionNodeBytes{64 * 1024 * 1024};
 
     GpuBuffers(const mtl::Context &ctx, mtl::BindlessSet &slots)
         : Ctx{ctx, slots},
@@ -181,15 +159,13 @@ struct GpuBuffers {
           SceneViewUBO{Ctx, ViewUboStride() * (MaxBlurSteps + 1)},
           ViewportThemeUBO{Ctx, sizeof(ViewportTheme)},
           WorkspaceLightsUBO{Ctx, sizeof(WorkspaceLights)},
-          RenderDraw{Ctx}, SelectionDraw{Ctx},
-          SelectionNodeBuffer{Ctx, sizeof(SelectionNode), SlotType::Buffer},
-          SelectionCounter{Ctx, sizeof(SelectionCounters)},
+          RenderDraw{Ctx, 0, SlotType::DrawDataBuffer}, SelectionDraw{Ctx, 0, SlotType::DrawDataBuffer},
           ObjectPickKeys{Ctx, MaxSelectableObjects * sizeof(uint32_t)},
           ObjectPickSeenBitset{Ctx, ObjectPickBitsetWords * sizeof(uint32_t)},
           SelectionBitset{Ctx, SelectionBitsetWords * sizeof(uint32_t)},
           MotionBlurTileIndirection{Ctx, 0},
-          ElementPickCandidates{Ctx, ElementPickGroupCount * sizeof(ElementPickCandidate)},
-          IdentityIndexBuffer{Ctx, 0} {
+          ElementPickKey{Ctx, sizeof(uint32_t)},
+          ElementPickId{Ctx, sizeof(uint32_t)} {
     }
 
     void ReserveAdditionalIndices(uint32_t face, uint32_t edge, uint32_t vertex) {
@@ -252,16 +228,6 @@ struct GpuBuffers {
         MotionBlurTileIndirection.SetCount(2 * tile_extent.Width * tile_extent.Height);
     }
 
-    void ResizeSelectionNodeBuffer(mtl::Extent2D extent) {
-        const uint64_t pixels = uint64_t(extent.Width) * extent.Height;
-        const uint64_t desired_nodes = pixels == 0 ? 1 : pixels * SelectionNodesPerPixel;
-        const uint64_t max_nodes = std::max<uint64_t>(1, MaxSelectionNodeBytes / sizeof(SelectionNode));
-        const uint32_t final_count = std::min<uint64_t>({desired_nodes, max_nodes, std::numeric_limits<uint32_t>::max()});
-        if (final_count != SelectionNodeCapacity) {
-            SelectionNodeCapacity = final_count;
-            SelectionNodeBuffer = {Ctx, SelectionNodeCapacity * sizeof(SelectionNode), SlotType::Buffer};
-        }
-    }
 
     // Empty the scene arenas on clear so the next load's derived handles (BufferIndex, InstanceRange, morph/bone
     // ranges) rebuild from a clean baseline rather than on a prior scene's leftover residue.
@@ -285,14 +251,6 @@ struct GpuBuffers {
         ArmatureDeformBuffer.Reset();
         MorphWeightBuffer.Reset();
         Instances.Reset();
-    }
-
-    void EnsureIdentityIndexBuffer(uint32_t count) {
-        if (count <= IdentityIndexCount) return;
-        std::vector<uint32_t> indices(count);
-        std::iota(indices.begin(), indices.end(), 0u);
-        IdentityIndexBuffer.Update(as_bytes(indices));
-        IdentityIndexCount = count;
     }
 
     mtl::BufferContext Ctx;
@@ -380,10 +338,9 @@ struct GpuBuffers {
         while (BlurPoses.size() < count) BlurPoses.emplace_back(Ctx);
     }
 
-    // Point the view UBO's draw-data and visible-index slots at `pair`'s buffers. GetDrawData reads both.
-    void SetSceneViewDrawSlots(const DrawBufferPair &pair) {
-        SceneViewUBO.Update(as_bytes(pair.DrawData.Slot), offsetof(::SceneViewUBO, DrawDataSlot));
-        SceneViewUBO.Update(as_bytes(pair.VisibleIndices.Slot), offsetof(::SceneViewUBO, VisibleIndexSlot));
+    // Point the view UBO's draw-data slot at `draw_data`, which GetDrawDataAt reads.
+    void SetSceneViewDrawSlots(const mtl::Buffer &draw_data) {
+        SceneViewUBO.Update(as_bytes(draw_data.Slot), offsetof(::SceneViewUBO, DrawDataSlot));
     }
 
     // Copy the live view UBO into ring instance `instance`.
@@ -416,8 +373,8 @@ struct GpuBuffers {
     // with the live state at instance 0.
     mtl::Buffer SceneViewUBO, ViewportThemeUBO, WorkspaceLightsUBO;
 
-    // Draw-command buffers
-    DrawBufferPair RenderDraw, SelectionDraw;
+    // One pass's draw data. Emissions read a draw at its own index.
+    mtl::Buffer RenderDraw, SelectionDraw;
 
     // One entry per run of mesh instance slots sharing a deform state.
     mtl::Buffer BoundsReduceEntries{Ctx, 0, SlotType::DrawDataBuffer};
@@ -463,14 +420,13 @@ struct GpuBuffers {
     // material changes that do not need the posed prelude but can still reveal geometry.
     bool MeshletOcclusionStale{true};
 
-    // Selection / picking — GPU buffers + host-visible readback
-    uint32_t SelectionNodeCapacity{1};
-    mtl::Buffer SelectionNodeBuffer;
-    TypedBuffer<SelectionCounters> SelectionCounter;
-    TypedBuffer<uint32_t> ObjectPickKeys, ObjectPickSeenBitset, SelectionBitset, MotionBlurTileIndirection;
-    TypedBuffer<ElementPickCandidate> ElementPickCandidates;
+    // A visibility id carries a meshlet's position in the visible list, not a stable meshlet id, so it
+    // resolves correctly only against the list the raster that wrote it saw. Every cull bumps the
+    // generation, the visibility raster stamps the ids it wrote with it, and decoding compares the two.
+    uint32_t MeshletVisibleGeneration{0};
+    uint32_t VisibilityIdGeneration{0};
 
-    // Shared identity sequence backing unindexed draws and seeding visible-index remaps. Grown on demand, not scene-scoped.
-    mtl::Buffer IdentityIndexBuffer;
-    uint32_t IdentityIndexCount{0};
+    // Selection / picking — GPU buffers + host-visible readback
+    TypedBuffer<uint32_t> ObjectPickKeys, ObjectPickSeenBitset, SelectionBitset, MotionBlurTileIndirection;
+    TypedBuffer<uint32_t> ElementPickKey, ElementPickId;
 };

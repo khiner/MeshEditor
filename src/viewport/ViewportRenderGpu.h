@@ -10,11 +10,11 @@
 
 namespace mtl {
 struct BindlessSet;
+struct Buffer;
 struct PassChain;
 } // namespace mtl
 
 struct DrawListBuilder;
-struct DrawBufferPair;
 struct GpuBuffers;
 struct InstanceArena;
 struct Pipelines;
@@ -35,11 +35,9 @@ struct MeshletCullConfig {
     bool TwoPhase{false};
 };
 
-// Upload the draw list to the per-pass buffers, grow the identity index buffer if needed,
-// and flush any deferred bindless updates accumulated during buffer growth.
-void FlushDrawList(entt::registry &, const DrawListBuilder &, DrawBufferPair &);
-
-void RecordFrustumCull(mtl::PassChain &, const mtl::BindlessSet &, const Pipelines &, const GpuBuffers &, const DrawBufferPair &, const DrawListBuilder &);
+// Upload the draw list to the pass's draw-data buffer, flushing any deferred bindless updates
+// accumulated during buffer growth.
+void FlushDrawList(entt::registry &, const DrawListBuilder &, mtl::Buffer &draw_data);
 
 // Every extras line source this frame (gizmos and collision shape wireframes), with the dispatch each one needs.
 std::vector<ExtrasLinePushConstants> CollectExtrasLines(const entt::registry &, const InstanceArena &);

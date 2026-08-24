@@ -44,7 +44,6 @@ struct SceneT {
     device const uint *FaceFirstTriangles(uint slot) const { return BindlessBuffer(uint, B.ObjectIdBuffer, slot); }
     device const uint *Adjacency(uint slot) const { return BindlessBuffer(uint, B.Buffer, slot); }
     device const DrawData *Draws(uint slot) const { return BindlessBuffer(DrawData, B.DrawDataBuffer, slot); }
-    device const uint *VisibleIndices(uint slot) const { return BindlessBuffer(uint, B.Buffer, slot); }
     device const uchar *InstanceStates(uint slot) const { return BindlessBuffer(uchar, B.InstanceStateBuffer, slot); }
     device const BoneDeformVertex *BoneDeforms(uint slot) const { return BindlessBuffer(BoneDeformVertex, B.BoneDeformBuffer, slot); }
     device const packed_float4x4 *ArmatureDeforms(uint slot) const { return BindlessBuffer(packed_float4x4, B.ArmatureDeformBuffer, slot); }
@@ -128,16 +127,7 @@ using Scene = SceneT<BindlessSet>;
 using SceneImageWrite = SceneT<BindlessSetImageWrite>;
 using SceneImageUint = SceneT<BindlessSetImageUint>;
 
-// The draw this instance renders, looked up through the visible-index list the cull pass produced.
-// `instance_index` counts from the first instance of the batch, which is what instance_id already
-// holds: Metal folds an indirect command's base instance into it.
-template<typename SetT>
-inline DrawData GetDrawData(const thread SceneT<SetT> &scene, uint draw_data_offset, uint instance_index) {
-    const uint dense = scene.VisibleIndices(scene.View.VisibleIndexSlot)[draw_data_offset + instance_index];
-    return scene.Draws(scene.View.DrawDataSlot)[dense];
-}
-
-// Draw data at its own index, for emissions that hold one rather than a culled draw's slot.
+// The draw an emission renders, at its own index in the pass's draw-data buffer.
 template<typename SetT>
 inline DrawData GetDrawDataAt(const thread SceneT<SetT> &scene, uint draw_data_index) {
     return scene.Draws(scene.View.DrawDataSlot)[draw_data_index];

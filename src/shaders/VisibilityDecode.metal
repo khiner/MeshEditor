@@ -9,11 +9,12 @@
 #include "CornerClassEncoding.metal"
 #include "MorphDeform.metal"
 #include "MeshletNonTriangle.metal"
+#include "VisibilityId.metal"
 
 constant uint VisibilityBackground = 0xffffffffu;
 constant uint VisibilityPhaseBit = 0x80000000u;
-constant uint VisibilityTriangleMask = 0x3fu;
-constant uint VisibilityIndexMask = 0x01ffffffu;
+constant uint VisibilityTriangleMask = (1u << VisibilityId_TriangleBits) - 1u;
+constant uint VisibilityIndexMask = (1u << VisibilityId_IndexBits) - 1u;
 
 struct DecodedVisibility {
     MeshVaryings V;
@@ -316,7 +317,7 @@ inline ResolvedVisibility ResolveVisibilityPrimitive(
 ) {
     ResolvedVisibility result{};
     if (id == VisibilityBackground) return result;
-    const uint visible_index = (id >> 6u) & VisibilityIndexMask;
+    const uint visible_index = (id >> VisibilityId_TriangleBits) & VisibilityIndexMask;
     const uint visible_slot = (id & VisibilityPhaseBit) != 0u ? pc.Phase2VisibleMeshletSlot : pc.VisibleMeshletSlot;
     const VisibleMeshlet visible = BindlessBuffer(VisibleMeshlet, bindless.Buffer, visible_slot)[visible_index];
     const uint instance_slot = BindlessBuffer(uint, bindless.Buffer, pc.InstanceMapSlot)[visible.Instance];

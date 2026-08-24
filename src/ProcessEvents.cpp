@@ -458,17 +458,15 @@ bool SyncViewportRenderResources(entt::registry &r, entt::entity viewport) {
     const auto &ctx = r.ctx().get<const mtl::Context>();
     const auto &sel_slots = r.ctx().get<const SelectionSlots>();
     auto &slots = r.ctx().get<mtl::BindlessSet>();
-    auto &buffers = r.ctx().get<GpuBuffers>();
     // Wait for the live consumer (ImGui) to finish sampling the old resources before recreating them.
     if (auto *consumer = r.ctx().get<const ViewportConsumerFence>().Value) consumer->waitUntilCompleted();
-    pipelines.SetExtent(render_extent, buffers.Ctx, slots);
+    pipelines.SetExtent(render_extent, slots);
     {
         const auto shading = r.get<const ViewportDisplay>(viewport).ViewportShading;
         const bool is_pbr = shading == ViewportShadingMode::MaterialPreview || shading == ViewportShadingMode::Rendered;
         const bool want_transmission = is_pbr && GetActivePbrLighting(r, viewport, shading).RealTransmission && pipelines.Main.Compiler.HasFeature(PbrFeature::Transmission);
         pipelines.Main.EnsureTransmissionResources(ctx, render_extent, want_transmission);
     }
-    buffers.ResizeSelectionNodeBuffer(render_extent);
     {
         const profile::CpuScope scope{"UpdateSelectionSlots"};
         const auto &sil = pipelines.Silhouette;
@@ -1754,8 +1752,7 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
             .MaterialSlot = buffers.Materials.Slot(),
             .PrimitiveMaterialSlot = meshes.GetPrimitiveMaterialSlot(),
             .ElementPrimitiveSlot = meshes.GetElementPrimitiveSlot(),
-            .DrawDataSlot = buffers.RenderDraw.DrawData.Slot,
-            .VisibleIndexSlot = buffers.RenderDraw.VisibleIndices.Slot,
+            .DrawDataSlot = buffers.RenderDraw.Slot,
             .BoneXRay = settings.ViewportShading == ViewportShadingMode::Wireframe ? 1u : 0u,
             .ShowOverlays = settings.ShowOverlays ? 1u : 0u,
             // Polygon offset factor matching Blender's GPU_polygon_offset_calc (viewdist = max ortho extent)

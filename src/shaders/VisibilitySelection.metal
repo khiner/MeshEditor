@@ -1,5 +1,6 @@
 #include "MeshletInstanceFlag.metal"
-#include "SelectionShared.metal"
+#include "SelectionObjectQuery.metal"
+#include "SelectionPickKey.metal"
 #include "VisibilityDecode.metal"
 #include "VisibilitySelectionPushConstants.metal"
 
@@ -41,8 +42,7 @@ fragment void VisibilityObjectSelectionFragment(
     );
     if (!decoded.Valid || decoded.ObjectId == 0u) return;
     const uint2 pixel = uint2(quad.Position.xy);
-    const Scene scene{bindless, view, theme, workspace};
-    SelectionAppend(scene, pc.Selection, pixel, depth.read(pixel).r, decoded.ObjectId);
+    WriteObjectSelect(bindless, pc.Object, pixel, depth.read(pixel).r, decoded.ObjectId);
 }
 
 fragment void VisibilityFaceSelectionFragment(
@@ -61,8 +61,7 @@ fragment void VisibilityFaceSelectionFragment(
     if (!decoded.Valid || decoded.ElementId == 0u ||
         (decoded.InstanceFlags & MeshletInstanceFlag_ElementSelection) == 0u) return;
     const uint2 pixel = uint2(quad.Position.xy);
-    const Scene scene{bindless, view, theme, workspace};
-    SelectionAppend(scene, pc.Selection, pixel, depth.read(pixel).r, decoded.ElementId);
+    WriteElementPick(bindless, pc.Element, pixel, depth.read(pixel).r, decoded.ElementId);
 }
 
 fragment void VisibilityFaceBitsetBoxFragment(
@@ -75,13 +74,13 @@ fragment void VisibilityFaceBitsetBoxFragment(
     constant VisibilitySelectionPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
 ) {
     const uint2 pixel = uint2(quad.Position.xy);
-    if (pixel.x < pc.Box.x || pixel.x > pc.Box.z || pixel.y < pc.Box.y || pixel.y > pc.Box.w) return;
+    if (pixel.x < pc.Element.Box.x || pixel.x > pc.Element.Box.z || pixel.y < pc.Element.Box.y || pixel.y > pc.Element.Box.w) return;
     const VisibilityMetadata decoded = DecodeVisibilityMetadata(
         visibility.read(uint2(quad.Position.xy)).r, bindless, view, theme, workspace, pc.Visibility
     );
     if (!decoded.Valid || decoded.ElementId == 0u ||
         (decoded.InstanceFlags & MeshletInstanceFlag_ElementSelection) == 0u) return;
     const uint bit = decoded.ElementId - 1u;
-    device atomic_uint *bits = BindlessBufferMutable(atomic_uint, bindless.Buffer, pc.BoxResultSlot);
+    device atomic_uint *bits = BindlessBufferMutable(atomic_uint, bindless.Buffer, pc.Element.BoxResultSlot);
     atomic_fetch_or_explicit(&bits[bit >> 5u], 1u << (bit & 31u), memory_order_relaxed);
 }

@@ -338,9 +338,9 @@ entt::entity InitEngine(entt::registry &r) {
     r.ctx().emplace<SelectionBitsetRef>(std::span<uint32_t>{buffers.SelectionBitset.Data(), GpuBuffers::SelectionBitsetWords});
     const auto &sel_slots = r.ctx().emplace<SelectionSlots>(slots);
     // These selection buffers are engine-lifetime and never resized, so their bindless entries are bound once here.
-    slots.SetBuffer({SlotType::Buffer, sel_slots.SelectionCounter}, *buffers.SelectionCounter);
     slots.SetBuffer({SlotType::Buffer, sel_slots.ObjectPickKey}, *buffers.ObjectPickKeys);
-    slots.SetBuffer({SlotType::Buffer, sel_slots.ElementPickCandidates}, *buffers.ElementPickCandidates);
+    slots.SetBuffer({SlotType::Buffer, sel_slots.ElementPickKey}, *buffers.ElementPickKey);
+    slots.SetBuffer({SlotType::Buffer, sel_slots.ElementPickId}, *buffers.ElementPickId);
     slots.SetBuffer({SlotType::Buffer, sel_slots.ObjectPickSeenBits}, *buffers.ObjectPickSeenBitset);
     slots.SetBuffer({SlotType::Buffer, sel_slots.SelectionBitset}, *buffers.SelectionBitset);
     r.ctx().emplace<DrawState>();

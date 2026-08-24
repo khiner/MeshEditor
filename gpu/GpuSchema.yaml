@@ -188,13 +188,15 @@ enums:
         value: 22
       - name: FaceMask
         value: 0x3fffffu
-  # Flag bits carried in CullEntry::Cmd's high bits. KeepOrder entries always draw, at their
-  # original visible-index slot, so order-dependent (blended) batches stay deterministic.
-  - name: CullFlag
+  # How a visibility id divides: the triangle within its meshlet in the low bits, the meshlet's place
+  # in the visible list above that, and the phase whose list to read in the top bit.
+  - name: VisibilityId
     type: u32
     values:
-      - name: KeepOrder
-        value: 0x80000000u
+      - name: TriangleBits
+        value: 6
+      - name: IndexBits
+        value: 25
   - name: MeshletInstanceFlag
     type: u32
     values:
@@ -565,15 +567,6 @@ structs:
         type: u32[8]
       - name: BlendOffsets
         type: u32[256]
-  # One entry per draw-list DrawData element, for the frustum cull pass. Cmd is the entry's indirect
-  # command index, with CullFlag bits in its high bits. Base is the absolute draw-list index of the
-  # command's first entry, where its visible-index remap region begins.
-  - name: CullEntry
-    fields:
-      - name: Cmd
-        type: u32
-      - name: Base
-        type: u32
   # One entry per normal-derive dispatch item.
   # Entries without a posed range read base positions from the vertex arena.
   # The output offsets index the dispatch's push-constant output slots.
@@ -757,10 +750,6 @@ structs:
         type: u32
       - name: DrawDataSlot
         type: u32
-      # Maps gl_InstanceIndex to a dense DrawData index. Identity when nothing is culled.
-      - name: VisibleIndexSlot
-        type: u32
-        default: InvalidSlot
       - name: BoneXRay
         type: u32
       # Wires and points take selection colors only while overlays show.
@@ -1108,49 +1097,27 @@ structs:
         type: Anisotropy
       - name: Iridescence
         type: Iridescence
-  - name: SelectionNode
+  - name: ObjectSelectQuery
     fields:
-      - name: Depth
-        type: float
-      - name: Id
+      - name: MaxId
         type: u32
-      - name: Next
-        type: u32
-  - name: SelectionCounters
-    fields:
-      - name: Count
-        type: u32
-      - name: Overflow
-        type: u32
-  - name: ElementPickCandidate
-    fields:
-      - name: Id
-        type: u32
-      - name: Depth
-        type: float
-      - name: DistanceSq
-        type: u32
-  - name: SelectionContext
-    fields:
-      # Per-pixel linked-list heads, one u32 per pixel, indexed y * HeadExtent.x + x.
-      - name: HeadSlot
-        type: u32
-        default: InvalidSlot
-      - name: HeadExtent
+      - name: TargetPx
         type: uvec2
-      - name: NodesSlot
+      - name: RadiusSq
+        type: u32
+      - name: EpochInv
+        type: u32
+      - name: BestKeySlot
         type: u32
         default: InvalidSlot
-      - name: CounterSlot
+      - name: SeenBitsSlot
         type: u32
         default: InvalidSlot
-      - name: NodesCapacity
+      - name: Box
+        type: uvec4
+      - name: BoxResultSlot
         type: u32
-  - name: MainDrawPushConstants
-    push_constant: true
-    fields:
-      - name: DrawDataOffset
-        type: u32
+        default: InvalidSlot
   - name: OverlayMeshPushConstants
     push_constant: true
     fields:
@@ -1161,75 +1128,30 @@ structs:
   - name: SelectionDrawPushConstants
     push_constant: true
     fields:
-      - name: DrawDataOffset
-        type: u32
-      - name: Selection
-        type: SelectionContext
-  - name: SelectionElementPushConstants
-    push_constant: true
+      - name: Query
+        type: ObjectSelectQuery
+  - name: ElementSelectQuery
     fields:
-      - name: DrawDataOffset
-        type: u32
-      - name: Selection
-        type: SelectionContext
       - name: Box
         type: uvec4
       - name: BoxResultSlot
         type: u32
         default: InvalidSlot
-  - name: ObjectPickPushConstants
-    push_constant: true
-    fields:
       - name: TargetPx
         type: uvec2
-      - name: Radius
+      - name: RadiusSq
         type: u32
-      - name: MaxId
+      - name: KeySlot
         type: u32
-      - name: EpochInv
+        default: InvalidSlot
+      - name: IdSlot
         type: u32
-      - name: HeadSlot
-        type: u32
-      - name: HeadExtent
-        type: uvec2
-      - name: SelectionNodesIndex
-        type: u32
-      - name: BestKeyIndex
-        type: u32
-      - name: SeenBitsIndex
-        type: u32
-  - name: ElementPickPushConstants
+        default: InvalidSlot
+  - name: SelectionElementPushConstants
     push_constant: true
     fields:
-      - name: TargetPx
-        type: uvec2
-      - name: Radius
-        type: u32
-      - name: HeadSlot
-        type: u32
-      - name: HeadExtent
-        type: uvec2
-      - name: SelectionNodesIndex
-        type: u32
-      - name: ElementCandidateBufferIndex
-        type: u32
-  - name: BoxSelectPushConstants
-    push_constant: true
-    fields:
-      - name: BoxMin
-        type: uvec2
-      - name: BoxMax
-        type: uvec2
-      - name: MaxId
-        type: u32
-      - name: HeadSlot
-        type: u32
-      - name: HeadExtent
-        type: uvec2
-      - name: SelectionNodesIndex
-        type: u32
-      - name: BoxResultIndex
-        type: u32
+      - name: Query
+        type: ElementSelectQuery
   - name: DepthPyramidReducePushConstants
     push_constant: true
     fields:
@@ -1245,28 +1167,6 @@ structs:
       - name: DstSlots
         type: u32[6]
         default: InvalidSlot
-  - name: FrustumCullPushConstants
-    push_constant: true
-    fields:
-      - name: CommandsSlot
-        type: u32
-      - name: CullEntrySlot
-        type: u32
-      - name: DrawDataSlot
-        type: u32
-      - name: VisibleIndexSlot
-        type: u32
-      - name: BoundsSlot
-        type: u32
-      - name: ModelSlot
-        type: u32
-      - name: EntryCount
-        type: u32
-      - name: CommandCount
-        type: u32
-      # 0 clears command counts; 1 compacts visible instances into each command's remap range.
-      - name: Phase
-        type: u32
   - name: MeshletDrawPushConstants
     push_constant: true
     fields:
@@ -1324,12 +1224,10 @@ structs:
     fields:
       - name: Visibility
         type: VisibilityShadingPushConstants
-      - name: Selection
-        type: SelectionContext
-      - name: Box
-        type: uvec4
-      - name: BoxResultSlot
-        type: u32
+      - name: Object
+        type: ObjectSelectQuery
+      - name: Element
+        type: ElementSelectQuery
   - name: MeshletCullPushConstants
     push_constant: true
     fields:

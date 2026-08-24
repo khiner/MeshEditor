@@ -1,47 +1,38 @@
 #pragma once
 
-#include "gpu/CullEntry.h"
-#include "gpu/CullFlag.h"
 #include "gpu/DrawData.h"
-#include "metal/MetalCpp.h"
 
 #include <entt/entity/entity.hpp>
 
 #include <optional>
 #include <unordered_map>
+#include <vector>
 
-// Metal draws one indirect command per call, so a batch walks its commands at this stride.
-inline constexpr uint64_t IndirectCommandStride{sizeof(MTL::DrawIndexedPrimitivesIndirectArguments)};
+// One draw within a batch: where its first instance's draw data sits relative to the batch, how many
+// instances follow it, and how many indices each instance walks.
+struct DrawRecord {
+    uint32_t FirstDraw{0}, InstanceCount{0}, IndexCount{0};
+};
 
 struct DrawBatchInfo {
-    uint32_t DrawDataSlotOffset{0}, DrawCount{0};
-    uint64_t IndirectOffset{0};
-    bool Cull{false};
+    uint32_t DrawDataSlotOffset{0}, DrawCount{0}, FirstRecord{0};
 };
 
 struct DrawListBuilder {
     std::vector<DrawData> Draws;
-    std::vector<CullEntry> CullEntries; // Parallel to Draws, for the cull pass.
-    std::vector<MTL::DrawIndexedPrimitivesIndirectArguments> IndirectCommands;
-    uint32_t MaxIndexCount{0};
+    std::vector<DrawRecord> Records;
 
-    // `cull` marks the batch frustum-cullable. Only order-independent (opaque) batches qualify:
-    // culling repacks a command's instances in arrival order.
-    DrawBatchInfo BeginBatch(bool cull = false) const { return {uint32_t(Draws.size()), 0, IndirectCommands.size() * IndirectCommandStride, cull}; }
+    DrawBatchInfo BeginBatch() const { return {uint32_t(Draws.size()), 0, uint32_t(Records.size())}; }
 
     void Append(DrawBatchInfo &batch, const DrawData &draw, uint32_t index_count, uint32_t instance_count) {
         if (index_count == 0 || instance_count == 0) return;
         const uint32_t draw_data_start = Draws.size();
-        const uint32_t cmd_index = uint32_t(IndirectCommands.size()) | (batch.Cull ? 0u : uint32_t(CullFlag::KeepOrder));
         for (uint32_t i = 0; i < instance_count; ++i) {
             DrawData per_instance = draw;
             per_instance.FirstInstance = draw.FirstInstance + i;
             Draws.emplace_back(per_instance);
-            CullEntries.emplace_back(cmd_index, draw_data_start);
         }
-        const uint32_t first_instance = draw_data_start - batch.DrawDataSlotOffset;
-        IndirectCommands.push_back({index_count, instance_count, 0, 0, first_instance});
-        MaxIndexCount = std::max(MaxIndexCount, index_count);
+        Records.push_back({draw_data_start - batch.DrawDataSlotOffset, instance_count, index_count});
         ++batch.DrawCount;
     }
 };
@@ -90,7 +81,7 @@ struct DrawState {
     DrawBatchInfo EdgeQuad, WireLine, WireMeshlet, Point, SoundPoint;
     DrawBatchInfo BoneFill, BoneWire, BoneSphereFill, BoneSphereWire;
     DrawBatchInfo OverlayFaceNormals, OverlayVertexNormals;
-    std::vector<SoundPointInfo> SoundPoints; // Parallel to the SoundPoint batch commands.
+    std::vector<SoundPointInfo> SoundPoints; // Parallel to the SoundPoint batch's draw records.
     DrawBatchInfo SelectionBoneSpheres; // Bone joint picks, emitted per bone instance.
     DrawBatchInfo SelectionLines, SelectionPoints; // Line and point mesh picks.
 

@@ -9,7 +9,6 @@
 #include "MorphDeform.metal"
 #include "ArmatureDeform.metal"
 #include "TransformUtils.metal"
-#include "MainDrawPushConstants.metal"
 // VelocityOutput writes the shutter-open and shutter-close motion the velocity pass reads.
 #include "MeshVertexConstant.metal"
 

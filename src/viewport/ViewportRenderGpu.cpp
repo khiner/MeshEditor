@@ -9,7 +9,6 @@
 #include "gpu/BoundsReducePushConstants.h"
 #include "gpu/CornerClassEncoding.h"
 #include "gpu/DepthPyramidReducePushConstants.h"
-#include "gpu/FrustumCullPushConstants.h"
 #include "Variant.h"
 #include "physics/PhysicsTypes.h"
 #include "Camera.h"
@@ -30,7 +29,7 @@
 #include "gpu/PosedMeshletBoundsPushConstants.h"
 #include "gpu/SilhouetteEdgeColorPushConstants.h"
 #include "gpu/SilhouetteEdgeDepthObjectPushConstants.h"
-#include "gpu/VisibilityShadingPushConstants.h"
+#include "gpu/VisibilityId.h"
 #include "mesh/MeshStore.h"
 #include "metal/PassChain.h"
 #include "metal/RenderTarget.h"
@@ -160,7 +159,6 @@ std::vector<ExtrasLinePushConstants> CollectExtrasLines(const entt::registry &r,
 
 namespace {
 
-
 // The element a mesh draws from: triangulated faces, or the edges or vertices of a face-less mesh.
 enum class ElementDomain {
     Face,
@@ -170,12 +168,9 @@ enum class ElementDomain {
 void RecordDrawCounters(const GpuBuffers &buffers, const DrawListBuilder &draw_list, bool selection) {
     const auto record = [&](const char *selection_name, const char *render_name, size_t value) { profile::RecordCounter(selection ? selection_name : render_name, value); };
     record("Selection DrawData", "Render DrawData", draw_list.Draws.size());
-    record("Selection CullEntries", "Render CullEntries", draw_list.CullEntries.size());
-    record("Selection IndirectCommands", "Render IndirectCommands", draw_list.IndirectCommands.size());
-    record("Selection MaxIndexCount", "Render MaxIndexCount", draw_list.MaxIndexCount);
+    record("Selection DrawRecords", "Render DrawRecords", draw_list.Records.size());
     record("Selection DrawDataBytes", "Render DrawDataBytes", draw_list.Draws.size() * sizeof(DrawData));
-    record("Selection CullEntryBytes", "Render CullEntryBytes", draw_list.CullEntries.size() * sizeof(CullEntry));
-    record("Selection IndirectCommandBytes", "Render IndirectCommandBytes", draw_list.IndirectCommands.size() * sizeof(MTL::DrawIndexedPrimitivesIndirectArguments));
+    record("Selection DrawRecordBytes", "Render DrawRecordBytes", draw_list.Records.size() * sizeof(DrawRecord));
     if (!selection) {
         profile::RecordCounter("InstanceSlots", buffers.Instances.TransformBuffer.UsedSize / sizeof(Transform));
         profile::RecordCounter("MeshletRecords", buffers.Meshlets.Buffer.Count<MeshletRecord>());
@@ -208,21 +203,12 @@ void RecordDrawCounters(const GpuBuffers &buffers, const DrawListBuilder &draw_l
 }
 } // namespace
 
-void FlushDrawList(entt::registry &r, const DrawListBuilder &draw_list, DrawBufferPair &pair) {
+void FlushDrawList(entt::registry &r, const DrawListBuilder &draw_list, mtl::Buffer &draw_data) {
     auto &buffers = r.ctx().get<GpuBuffers>();
-    const bool selection = &pair == &buffers.SelectionDraw;
-    if (selection) RecordDrawCounters(buffers, draw_list, true);
-    buffers.EnsureIdentityIndexBuffer(std::max(draw_list.MaxIndexCount, uint32_t(draw_list.Draws.size())));
+    if (&draw_data == &buffers.SelectionDraw) RecordDrawCounters(buffers, draw_list, true);
     if (!draw_list.Draws.empty() || buffers.Prelude.PosePrepass > 0 || buffers.Prelude.PosedMeshletBounds > 0 || buffers.Prelude.DeriveFaces > 0 || buffers.Prelude.BoundsReduce > 0) {
-        pair.DrawData.Update(as_bytes(draw_list.Draws));
-        // Only the selection list runs the frustum cull and its GPU indirect draws.
-        // Render-list emissions read draw data at its own index, so the cull and command buffers go unread.
-        if (selection) {
-            pair.CullEntries.Update(as_bytes(draw_list.CullEntries));
-            pair.VisibleIndices.Update(buffers.IdentityIndexBuffer.Contents().subspan(0, draw_list.Draws.size() * sizeof(uint32_t)));
-        }
+        draw_data.Update(as_bytes(draw_list.Draws));
     }
-    if (selection && !draw_list.IndirectCommands.empty()) pair.Indirect.Update(as_bytes(draw_list.IndirectCommands));
 }
 
 namespace {
@@ -342,25 +328,6 @@ void RecordMotionBlurPostFx(entt::registry &r, mtl::PassChain &chain, const mtl:
     }
 }
 
-FrustumCullPushConstants MakeCullPushConstants(const GpuBuffers &buffers, const DrawBufferPair &pair, const DrawListBuilder &draw_list) {
-    return {
-        .CommandsSlot = pair.Indirect.Slot,
-        .CullEntrySlot = pair.CullEntries.Slot,
-        .DrawDataSlot = pair.DrawData.Slot,
-        .VisibleIndexSlot = pair.VisibleIndices.Slot,
-        .BoundsSlot = buffers.Instances.BoundsBuffer.Slot,
-        .ModelSlot = buffers.Instances.TransformBuffer.Slot,
-        .EntryCount = uint32_t(draw_list.Draws.size()),
-        .CommandCount = uint32_t(draw_list.IndirectCommands.size()),
-    };
-}
-
-void DispatchCull(MTL::ComputeCommandEncoder *encoder, const FrustumCullPushConstants &cull_pc, uint32_t count) {
-    static constexpr uint32_t GroupSize{64};
-    encode::SetPushConstants(encoder, cull_pc);
-    encoder->dispatchThreadgroups(MTL::Size((count + GroupSize - 1) / GroupSize, 1, 1), ThreadgroupSize::Linear64);
-}
-
 // Threadgroup memory lengths must be 16-byte multiples.
 constexpr uint32_t AlignedThreadgroupBytes(uint32_t bytes) { return (bytes + 15u) & ~15u; }
 
@@ -411,18 +378,6 @@ std::optional<NormalDeriveEntry> MakeDeriveEntryInputs(const MeshStore &meshes, 
 }
 
 } // namespace
-
-void RecordFrustumCull(mtl::PassChain &chain, const mtl::BindlessSet &slots, const Pipelines &pipelines, const GpuBuffers &buffers, const DrawBufferPair &pair, const DrawListBuilder &draw_list) {
-    // The cull overwrites the indirect commands and the visible-index remap that the draws read.
-    auto *encoder = chain.BeginCompute("FrustumCull", MTL::StageVertex);
-    encode::BindCompute(encoder, pipelines.FrustumCull, slots, buffers, 0);
-    auto cull_pc = MakeCullPushConstants(buffers, pair, draw_list);
-    DispatchCull(encoder, cull_pc, cull_pc.CommandCount);
-    // Phase 1 accumulates into the counts phase 0 zeroed, through bindless buffers.
-    encoder->memoryBarrier(MTL::BarrierScopeBuffers);
-    cull_pc.Phase = 1;
-    DispatchCull(encoder, cull_pc, cull_pc.EntryCount);
-}
 
 namespace {
 // Materialize each posed entry's current-pose vertex positions.
@@ -617,8 +572,12 @@ void DrawMeshletList(
     const mtl::Buffer &routes, const mtl::Buffer &dispatch_args, uint32_t route, uint32_t required_instance_flags,
     uint32_t visibility_phase = 0u, bool visibility_transmission = false, bool fragment_pc = false
 ) {
-    // Visibility IDs reserve 25 bits for the visible-list index; overflowing would alias the phase bit.
-    if (fragment_pc) assert(visible.UsedSize / sizeof(VisibleMeshlet) <= (uint64_t{1} << 25u));
+    // Visibility ids reserve 25 bits for the visible-list index, and overflowing aliases the phase bit.
+    if (fragment_pc) {
+        const auto visible_count = visible.UsedSize / sizeof(VisibleMeshlet);
+        constexpr uint64_t index_limit = uint64_t{1} << uint32_t(VisibilityId::IndexBits);
+        profile::RecordCounter("VisibleMeshletIndexOverflow", visible_count > index_limit ? double(visible_count - index_limit) : 0.0);
+    }
     MeshletDrawPushConstants pc{
         .PrimitiveSlot = buffers.Primitives.Buffer.Slot,
         .InstanceSlot = buffers.Instances.RecordBuffer.Slot,
@@ -708,24 +667,11 @@ void DrawVisibilityMeshlets(
     draw(MeshletRoute::Coverage);
 }
 
-VisibilityShadingPushConstants MakeVisibilityShadingPc(const GpuBuffers &buffers) {
-    return {
-        .PrimitiveSlot = buffers.Primitives.Buffer.Slot,
-        .InstanceSlot = buffers.Instances.RecordBuffer.Slot,
-        .InstanceMapSlot = buffers.GpuInstanceSlots.Buffer.Slot,
-        .MeshletSlot = buffers.Meshlets.Buffer.Slot,
-        .MeshletTriangleSlot = buffers.MeshletTriangleIds.Buffer.Slot,
-        .MeshletLocalTriangleSlot = buffers.MeshletLocalTriangles.Buffer.Slot,
-        .MeshletVertexSlot = buffers.MeshletVertexCorners.Buffer.Slot,
-        .VisibleMeshletSlot = buffers.VisibleMeshlets.Slot,
-        .Phase2VisibleMeshletSlot = buffers.MeshletPhase2Visible.Slot,
-    };
-}
-
 void RecordMeshletPhase2Cull(
     mtl::PassChain &chain, const mtl::BindlessSet &slots, const Pipelines &pipelines,
     GpuBuffers &buffers, uint32_t pyramid_sampler, uint32_t ubo_offset, MeshletRouteMode mode
 ) {
+    ++buffers.MeshletVisibleGeneration;
     auto pc = MakeMeshletCullSlotsPc(buffers);
     pc.RouteMode = uint32_t(mode);
     pc.PyramidSamplerSlot = pyramid_sampler;
@@ -872,9 +818,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
     if (use == DrawListUse::Rebuild) {
         const profile::CpuScope build_scope{"BuildDrawList"};
         draw_list.Draws.clear();
-        draw_list.CullEntries.clear();
-        draw_list.IndirectCommands.clear();
-        draw_list.MaxIndexCount = 0;
+        draw_list.Records.clear();
         draw.PosedByEntity.clear();
 
         // The excitable handles and current strike of each sounding mesh, keyed by mesh entity.
@@ -1259,13 +1203,10 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
             if (!draw_elements && !draw_object) continue;
             auto dd = MakeDrawData(e.Buf.Vertices, e.Buf.VertexIndices, buffers.Instances, e.Deform.BoneDeformOffset, e.Deform.ArmatureDeformOffset, e.Deform.MorphDeformOffset, e.Deform.MorphTargetCount);
             dd.ElementStateSlotOffset = {meshes.GetVertexStateSlot(), e.Buf.Vertices.Offset};
-            if (draw_elements) {
-                const auto draws_before = draw_list.Draws.size();
-                AppendDraw(draw_list, draw.Point, e.Buf.VertexIndices, e.Mod, dd, e.PrimaryEditBufferIndex);
-                patch_mesh_draws(draw_list, draws_before, e.Entity, e.Deform);
-            } else {
-                append_overlay(draw.Point, e, e.Buf.VertexIndices, dd);
-            }
+            if (!draw_elements && shaded_in_scene_pass(e)) continue;
+            const auto draws_before = draw_list.Draws.size();
+            AppendDraw(draw_list, draw.Point, e.Buf.VertexIndices, e.Mod, dd, draw_elements ? e.PrimaryEditBufferIndex : std::optional<uint32_t>{});
+            patch_mesh_draws(draw_list, draws_before, e.Entity, e.Deform);
         }
 
         draw.SoundPoint = draw_list.BeginBatch();
@@ -1504,6 +1445,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
             slots, buffers, ubo_offset
         );
         DrawVisibilityMeshlets(encoder, buffers, main, real_transmission, visibility_route_mask);
+        buffers.VisibilityIdGeneration = buffers.MeshletVisibleGeneration;
     }
     if (show_fill && phase == RenderPhase::Full && cull_scene_meshlets) {
         if (two_phase_meshlets) {
@@ -1520,6 +1462,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
                 slots, buffers, ubo_offset
             );
             DrawPhase2Meshlets(encoder, buffers, main);
+            buffers.VisibilityIdGeneration = buffers.MeshletVisibleGeneration;
         }
         buffers.PreviousFullCullViewProj = current_view_proj;
     }
@@ -1552,7 +1495,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
         if (meshlet_fill && show_fill) {
             main.Compiler.BindVisibility(encoder, PbrCompiler::Variant::OpaquePrepass);
             encoder->setFragmentTexture(*main.Resources->VisibilityImage, 0u);
-            encode::SetPushConstants(encoder, MakeVisibilityShadingPc(buffers));
+            encode::SetPushConstants(encoder, encode::VisibilityDecodePc(buffers));
             draw_quad();
         }
 
@@ -1628,7 +1571,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
                 if (!composite_transmission) {
                     main.Compiler.BindVisibility(encoder, opaque_variant);
                     encoder->setFragmentTexture(*main.Resources->VisibilityImage, 0u);
-                    encode::SetPushConstants(encoder, MakeVisibilityShadingPc(buffers));
+                    encode::SetPushConstants(encoder, encode::VisibilityDecodePc(buffers));
                     draw_quad();
                 }
                 if (real_transmission) record_meshlets(uint32_t(MeshletRoute::Transmission), [&] { main.Compiler.BindMeshlets(encoder, opaque_variant); });
@@ -1636,7 +1579,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
             } else if (meshlet_fill && draw_scene) {
                 main.WorkspaceVisibility.Bind(encoder);
                 encoder->setFragmentTexture(*main.Resources->VisibilityImage, 0u);
-                encode::SetPushConstants(encoder, MakeVisibilityShadingPc(buffers));
+                encode::SetPushConstants(encoder, encode::VisibilityDecodePc(buffers));
                 draw_quad();
             }
         }
@@ -1724,18 +1667,17 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
             if (draw.SoundPoint.DrawCount > 0) {
                 overlay_layer_drawn = true;
                 main.SoundPointMesh.Bind(encoder);
-                const auto first_command = draw.SoundPoint.IndirectOffset / IndirectCommandStride;
                 for (uint32_t d = 0; d < draw.SoundPoint.DrawCount; ++d) {
-                    const auto &cmd = draw.List.IndirectCommands[first_command + d];
+                    const auto &record = draw.List.Records[draw.SoundPoint.FirstRecord + d];
                     const auto &info = draw.SoundPoints[d];
                     // A strike lands between draw list rebuilds, so the handles come from the registry here.
                     const auto *force = r.try_get<const VertexForce>(info.InstanceEntity);
                     const auto *active_element = r.valid(info.InstanceEntity) && r.all_of<Instance>(info.InstanceEntity) ?
                         r.try_get<const MeshActiveElement>(r.get<const Instance>(info.InstanceEntity).Entity) :
                         nullptr;
-                    for (uint32_t i = 0; i < cmd.instanceCount; ++i) {
+                    for (uint32_t i = 0; i < record.InstanceCount; ++i) {
                         encode::SetMeshPushConstants(encoder, SoundPointPushConstants{
-                                                                  .DrawDataIndex = draw.SoundPoint.DrawDataSlotOffset + cmd.baseInstance + i,
+                                                                  .DrawDataIndex = draw.SoundPoint.DrawDataSlotOffset + record.FirstDraw + i,
                                                                   .VertexSlot = meshes.GetSoundVertexSlot(),
                                                                   .VertexOffset = info.VertexOffset,
                                                                   .VertexCount = info.VertexCount,
@@ -1883,6 +1825,7 @@ void RecordMeshletCull(
     mtl::PassChain &chain, const mtl::BindlessSet &slots, const Pipelines &pipelines,
     GpuBuffers &buffers, MeshletCullConfig config
 ) {
+    ++buffers.MeshletVisibleGeneration;
     auto *encoder = chain.BeginCompute("MeshletCull", MTL::StageMesh | MTL::StageFragment);
     RecordMeshletCullImpl(encoder, slots, pipelines, buffers, config);
 }
@@ -1905,7 +1848,7 @@ void RecordSilhouetteDepthPass(
     silhouette.Visibility.Bind(encoder);
     encoder->setFragmentTexture(*pipelines.Main.Resources->VisibilityImage, 0u);
     encoder->setFragmentTexture(*pipelines.Main.Resources->DepthImage, 1u);
-    encode::SetPushConstants(encoder, MakeVisibilityShadingPc(buffers));
+    encode::SetPushConstants(encoder, encode::VisibilityDecodePc(buffers));
     encoder->drawPrimitives(MTL::PrimitiveTypeTriangleStrip, NS::UInteger(0), NS::UInteger(4));
 }
 

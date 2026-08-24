@@ -13,15 +13,15 @@ using SelectionBuildFn = std::function<void(DrawListBuilder &)>;
 
 // RAII for the bindless-slot leases used by the selection compute/render pipeline.
 struct SelectionSlots {
-    uint32_t SelectionCounter{}, ObjectPickKey{}, ElementPickCandidates{}, ObjectPickSeenBits{}, SelectionBitset{};
+    uint32_t ObjectPickKey{}, ElementPickKey{}, ElementPickId{}, ObjectPickSeenBits{}, SelectionBitset{};
     uint32_t MotionBlurTileImage{}, MotionBlurTileIndirection{};
     uint32_t ObjectIdSampler{}, DepthSampler{}, SilhouetteSampler{}, SceneColorSampler{}, OverlayColorSampler{}, LineDataSampler{}, TransmissionSampler{}, MotionBlurAccumSampler{}, SceneDepthSampler{}, VelocitySampler{}, MotionBlurGatherSampler{}, DepthPyramidSampler{};
 
     using Entry = std::pair<SlotType, uint32_t SelectionSlots::*>;
     static constexpr std::array Entries{
-        Entry{SlotType::Buffer, &SelectionSlots::SelectionCounter},
         Entry{SlotType::Buffer, &SelectionSlots::ObjectPickKey},
-        Entry{SlotType::Buffer, &SelectionSlots::ElementPickCandidates},
+        Entry{SlotType::Buffer, &SelectionSlots::ElementPickKey},
+        Entry{SlotType::Buffer, &SelectionSlots::ElementPickId},
         Entry{SlotType::Buffer, &SelectionSlots::ObjectPickSeenBits},
         Entry{SlotType::Buffer, &SelectionSlots::SelectionBitset},
         Entry{SlotType::Image, &SelectionSlots::MotionBlurTileImage},
