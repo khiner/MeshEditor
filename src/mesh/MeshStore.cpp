@@ -1,5 +1,6 @@
 #include "MeshStore.h"
 
+#include "FlatKeyMap.h"
 #include "MeshAttributes.h"
 #include "action/SerializeGlm.h" // glm hooks for the entry's authored-normal stash
 #include "gpu/CornerClass.h"
@@ -17,7 +18,6 @@
 
 #include <bit>
 #include <numeric>
-#include <ranges>
 
 namespace {
 constexpr uint8_t ElementStateSelected{1u << 0}, ElementStateActive{1u << 1};
@@ -162,16 +162,16 @@ MeshDataWithMaterials ReadObj(const std::filesystem::path &path) {
         return index;
     };
 
+    std::vector<uint32_t> face_verts;
     for (const auto &shape : shapes) {
         size_t vi = 0;
         for (size_t f = 0; f < shape.mesh.num_face_vertices.size(); ++f) {
             const auto fv = shape.mesh.num_face_vertices[f];
-            std::vector<uint> face_verts;
-            face_verts.reserve(fv);
+            face_verts.clear();
             for (size_t vi_f = 0; vi_f < fv; ++vi_f) {
                 face_verts.emplace_back(FindOrAddVertex(shape.mesh.indices[vi + vi_f]));
             }
-            data.Faces.emplace_back(std::move(face_verts));
+            data.AddFace(face_verts);
             const int material_id = f < shape.mesh.material_ids.size() ? shape.mesh.material_ids[f] : -1;
             face_primitive_indices.emplace_back(primitive_index(material_id));
             vi += fv;
@@ -273,25 +273,25 @@ MeshDataWithMaterials ReadPly(const std::filesystem::path &path) {
     }
 
     size_t offset = 0;
-    data.Faces.reserve(faces->count);
+    data.ReserveFaces(uint32_t(faces->count), 3u);
+    std::vector<uint32_t> face_verts;
     for (size_t f = 0; f < faces->count; ++f) {
         const auto face_size = face_buf[offset++];
-        std::vector<uint> face_verts;
-        face_verts.reserve(face_size);
+        face_verts.clear();
         for (uint8_t v = 0; v < face_size; ++v) {
             uint32_t vi = 0;
             std::memcpy(&vi, &face_buf[offset], idx_size);
             offset += idx_size;
             face_verts.emplace_back(vi);
         }
-        data.Faces.emplace_back(std::move(face_verts));
+        data.AddFace(face_verts);
     }
 
-    if (colors && colors->count == vertices->count && !data.Faces.empty()) {
+    if (colors && colors->count == vertices->count && data.FaceCount() > 0) {
         // Bake vertex colors down to one albedo value for now (no per-vertex color channel in the render path yet).
         const auto avg = ComputeAverageVertexColor(*colors);
         result.Materials.emplace_back(ObjPlyMaterial{.BaseColorFactor = {avg.x, avg.y, avg.z, 1.f}, .MetallicFactor = 0.f, .RoughnessFactor = 1.f, .Name = "VertexColor"});
-        result.Primitives.ElementPrimitiveIndices = std::vector<uint32_t>(data.Faces.size(), 0u);
+        result.Primitives.ElementPrimitiveIndices = std::vector<uint32_t>(data.FaceCount(), 0u);
         result.Primitives.MaterialIndices = std::vector<uint32_t>{0u};
     }
 
@@ -312,9 +312,15 @@ void WeldVertices(MeshData &data, std::optional<ArmatureDeformData> &deform, std
     const uint32_t delta_channels = target_count * (1u + (has_norm_deltas ? 1u : 0u) + (has_tan_deltas ? 1u : 0u));
     const uint32_t stride = sizeof(vec3) + (has_deform ? sizeof(uvec4) + sizeof(vec4) : 0u) + delta_channels * sizeof(vec3);
 
-    std::vector<std::byte> keys(size_t(count) * stride);
+    // Every channel is a multiple of four bytes wide, so one vertex's key is a run of words.
+    std::vector<uint32_t> key(stride / sizeof(uint32_t));
+    std::vector<uint32_t> remap(count);
+    std::vector<uint32_t> reps; // First source index of each welded vertex
+    reps.reserve(count);
+    FlatKeyMap index_by_key;
+    index_by_key.Reset(uint32_t(key.size()), count);
     for (uint32_t i = 0; i < count; ++i) {
-        auto *dst = keys.data() + size_t(i) * stride;
+        auto *dst = reinterpret_cast<std::byte *>(key.data());
         const auto append = [&dst](const auto &v) {
             std::memcpy(dst, &v, sizeof(v));
             dst += sizeof(v);
@@ -329,18 +335,13 @@ void WeldVertices(MeshData &data, std::optional<ArmatureDeformData> &deform, std
             if (has_norm_deltas) append(morph->NormalDeltas[size_t(t) * count + i]);
             if (has_tan_deltas) append(morph->TangentDeltas[size_t(t) * count + i]);
         }
-    }
-
-    std::vector<uint32_t> remap(count);
-    std::vector<uint32_t> reps; // First source index of each welded vertex
-    reps.reserve(count);
-    std::unordered_map<std::string_view, uint32_t> index_by_key;
-    index_by_key.reserve(count);
-    for (uint32_t i = 0; i < count; ++i) {
-        const std::string_view key{reinterpret_cast<const char *>(keys.data() + size_t(i) * stride), stride};
-        const auto [it, inserted] = index_by_key.try_emplace(key, uint32_t(reps.size()));
-        if (inserted) reps.emplace_back(i);
-        remap[i] = it->second;
+        if (const auto *found = index_by_key.Find(key.data())) {
+            remap[i] = *found;
+            continue;
+        }
+        remap[i] = uint32_t(reps.size());
+        index_by_key.Insert(key.data(), remap[i]);
+        reps.emplace_back(i);
     }
     const uint32_t welded = reps.size();
     if (welded == count) return;
@@ -368,9 +369,7 @@ void WeldVertices(MeshData &data, std::optional<ArmatureDeformData> &deform, std
         compact_deltas(morph->NormalDeltas);
         compact_deltas(morph->TangentDeltas);
     }
-    for (auto &face : data.Faces) {
-        for (auto &v : face) v = remap[v];
-    }
+    for (auto &corner : data.FaceCorners) corner = remap[corner];
     for (auto &edge : data.Edges) edge = {remap[edge[0]], remap[edge[1]]};
 }
 
@@ -388,6 +387,7 @@ struct MeshStore::Buffers {
           FaceStateBuffer{ctx, 0, SlotType::Buffer},
           FaceSharpnessBuffer{ctx, 0, SlotType::Buffer},
           EdgeStateBuffer{ctx, SlotType::Buffer},
+          FaceCornerBuffer{ctx, SlotType::IndexBuffer},
           TriangleFaceIdBuffer{ctx, SlotType::ObjectIdBuffer},
           CornerClassBuffer{ctx, SlotType::Buffer},
           BaseSeamNormalBuffer{ctx, SlotType::Buffer},
@@ -415,6 +415,7 @@ struct MeshStore::Buffers {
     mtl::Buffer FaceStateBuffer; // Mirrors FaceFirstTriangleBuffer
     mtl::Buffer FaceSharpnessBuffer; // Mirrors FaceFirstTriangleBuffer. 1 = flat-shaded face (canonical sharpness store)
     BufferArena<uint8_t> EdgeStateBuffer;
+    BufferArena<uint32_t> FaceCornerBuffer;
     BufferArena<uint32_t> TriangleFaceIdBuffer; // 1-indexed map from face triangles (in mesh face order) to source face ID
     BufferArena<uint32_t> CornerClassBuffer; // Per-corner CornerClass values, from the sharpness stores
     BufferArena<vec3> BaseSeamNormalBuffer; // Composed sector normal per seam corner
@@ -446,6 +447,7 @@ struct MeshStore::Buffers {
         f(MorphTargetBuffer);
         f(EdgeStateBuffer);
         f(TriangleFaceIdBuffer);
+        f(FaceCornerBuffer);
         f(EdgeSharpnessBuffer);
         f(CustomCornerMaskBuffer);
         f(CustomCornerNormalBuffer);
@@ -456,7 +458,7 @@ struct MeshStore::Buffers {
         f(TetPositionBuffer);
         f(TetEdgeIndexBuffer);
     }
-    static constexpr size_t SerializedArenaCount = 17;
+    static constexpr size_t SerializedArenaCount = 18;
 
     void ForEachDerivedArena(auto &&f) {
         f(AdjacencyBuffer);
@@ -650,6 +652,15 @@ SlottedRange MeshStore::GetElementPrimitiveRange(uint32_t id) const { return B->
 SlottedRange MeshStore::GetPrimitiveMaterialRange(uint32_t id) const { return B->PrimitiveMaterialBuffer.Slotted(Entries.at(id).PrimitiveMaterials); }
 
 std::span<const uint32_t> MeshStore::GetTriangleFaceIds(uint32_t id) const { return B->TriangleFaceIdBuffer.Get(Entries.at(id).TriangleFaceIds); }
+void MeshStore::EnsureEdgeStates(const Mesh &mesh) {
+    auto &entry = Entries.at(mesh.GetStoreId());
+    if (entry.EdgeStates.Count > 0 || mesh.EdgeCount() == 0) return;
+    entry.EdgeStates = B->EdgeStateBuffer.Allocate(mesh.EdgeCount() * 2);
+    std::ranges::fill(B->EdgeStateBuffer.GetMutable(entry.EdgeStates), 0);
+}
+
+std::span<const uint32_t> MeshStore::GetFaceCorners(uint32_t id) const { return B->FaceCornerBuffer.Get(Entries.at(id).FaceCorners); }
+SlottedRange MeshStore::GetFaceCornerRange(uint32_t id) const { return B->FaceCornerBuffer.Slotted(Entries.at(id).FaceCorners); }
 std::span<const uint32_t> MeshStore::GetFaceFirstTriangles(uint32_t id) const { return B->FaceFirstTriangleBuffer.Get(Entries.at(id).FaceData); }
 std::span<const uint32_t> MeshStore::GetElementPrimitiveIndices(uint32_t id) const { return B->ElementPrimitiveBuffer.Get(Entries.at(id).ElementPrimitives); }
 std::span<uint32_t> MeshStore::GetElementPrimitiveIndices(uint32_t id) { return B->ElementPrimitiveBuffer.GetMutable(Entries.at(id).ElementPrimitives); }
@@ -767,7 +778,7 @@ void MeshStore::UpdateCornerClassification(const Mesh &mesh) {
     const auto add_incident = [&](Mesh::FH fh, uint32_t k) { seam_items.push_back(*fh | (k << FanLoopShift)); };
     const auto loop_position = [&](Mesh::FH fh, Mesh::HH h_v) {
         uint32_t k = 0;
-        for (auto h = c.Faces[*fh].Halfedge; h != h_v; h = c.Halfedges[*h].Next) ++k;
+        for (auto h = c.FaceHalfedge(*fh); h != h_v; h = c.Next(h)) ++k;
         return k;
     };
     seam_offsets.clear();
@@ -781,11 +792,11 @@ void MeshStore::UpdateCornerClassification(const Mesh &mesh) {
         bool full_loop = false;
         auto h = h_in;
         for (uint32_t i = 0; i < MaxFan; ++i) {
-            const auto out = c.Halfedges[*h].Next; // Leaves the corner vertex within the current face.
+            const auto out = c.Next(h); // Leaves the corner vertex within the current face.
             if (edge_sharp(out)) break;
-            const auto opp = c.Halfedges[*out].Opposite;
+            const auto opp = c.Opposites[*out];
             if (!opp) break;
-            const auto nf = c.Halfedges[*opp].Face;
+            const auto nf = c.FaceOf(opp);
             if (!nf) break;
             if (nf == fh) {
                 full_loop = true;
@@ -799,13 +810,13 @@ void MeshStore::UpdateCornerClassification(const Mesh &mesh) {
             h = h_in;
             for (uint32_t i = 0; i < MaxFan; ++i) {
                 if (edge_sharp(h)) break;
-                const auto opp = c.Halfedges[*h].Opposite;
+                const auto opp = c.Opposites[*h];
                 if (!opp) break;
-                const auto nf = c.Halfedges[*opp].Face;
+                const auto nf = c.FaceOf(opp);
                 if (!nf || nf == fh || face_sharp(nf)) break;
                 // Continue from the halfedge entering the corner vertex within `nf`.
                 auto prev = opp;
-                for (auto walk = c.Halfedges[*opp].Next; walk != opp; walk = c.Halfedges[*walk].Next) prev = walk;
+                for (auto walk = c.Next(opp); walk != opp; walk = c.Next(walk)) prev = walk;
                 add_incident(nf, loop_position(nf, prev));
                 h = prev;
             }
@@ -971,8 +982,8 @@ void MeshStore::SetEdgeSharpnessByAngle(const Mesh &mesh, float angle) {
     for (uint32_t ei = 0; ei < mesh.EdgeCount(); ++ei) {
         const auto hh = mesh.GetHalfedge(Mesh::EH{ei}, 0);
         const auto face = mesh.GetFace(hh);
-        const auto opposite = c.Halfedges[*hh].Opposite;
-        const auto opposite_face = opposite ? c.Halfedges[*opposite].Face : Mesh::FH{};
+        const auto opposite = c.Opposites[*hh];
+        const auto opposite_face = opposite ? c.FaceOf(opposite) : Mesh::FH{};
         sharp[ei] = face && opposite_face && glm::dot(face_normals[*face], face_normals[*opposite_face]) < cos_angle ? 1 : 0;
     }
 }
@@ -1000,15 +1011,14 @@ std::pair<uint32_t, Range> MeshStore::AllocateVertexBuffer(std::span<const vec3>
 
 void MeshStore::PlanCreate(const MeshData &data, const MeshPrimitives &primitives, bool has_deform, uint32_t morph_target_count, const MeshVertexAttributes &attrs) {
     const uint32_t vertices = data.Positions.size();
-    const uint32_t faces = data.Faces.size();
-    uint32_t triangles = 0;
-    for (const auto &face : data.Faces) triangles += face.size() - 2;
+    const uint32_t faces = data.FaceCount();
+    const uint32_t triangles = uint32_t(data.FaceCorners.size()) - 2u * faces;
     const uint32_t edges = (triangles + 2 * faces + 1) / 2; // manifold estimate: edges ≈ halfedges / 2
     Pending.Vertices += vertices;
     Pending.Faces += faces;
     Pending.Triangles += triangles;
+    Pending.FaceCorners += uint32_t(data.FaceCorners.size()) + uint32_t(data.Edges.size()) * 2u;
     Pending.Edges += edges;
-    Pending.EdgeStates += triangles + 2 * faces; // manifold estimate: halfedges ≈ triangles + 2*faces
     Pending.AdjacencyWords += 2 * (vertices + 1) + triangles * 3 + edges * 2;
     Pending.Primitives += primitives.MaterialIndices.size();
     if (has_deform) Pending.BoneDeformVertices += vertices;
@@ -1051,6 +1061,7 @@ void MeshStore::CommitReserves() {
     B->TriangleFaceIdBuffer.ReserveAdditional(Pending.Triangles);
     B->CornerClassBuffer.ReserveAdditional(Pending.Triangles * 3);
     B->EdgeStateBuffer.ReserveAdditional(Pending.EdgeStates);
+    B->FaceCornerBuffer.ReserveAdditional(Pending.FaceCorners);
     B->EdgeSharpnessBuffer.ReserveAdditional(Pending.Edges);
     B->PrimitiveMaterialBuffer.ReserveAdditional(Pending.Primitives);
     B->BoneDeformBuffer.ReserveAdditional(Pending.BoneDeformVertices);
@@ -1086,31 +1097,39 @@ void MeshStore::BuildVertexAdjacency(const Mesh &mesh) {
     const auto id = mesh.GetStoreId();
     auto &entry = Entries.at(id);
     const uint32_t vertex_count = mesh.VertexCount();
+    const auto &c = mesh.GetConnectivity();
+    const auto corners = mesh.CornerVertices();
+    const auto halfedge_count = uint32_t(c.Opposites.size());
+    // A face's halfedges are the contiguous run starting at its first, so a halfedge's index gives
+    // its loop position too.
     if (entry.TriangleCount > 0) {
-        uint32_t loop_count = 0;
-        for (const auto fh : mesh.faces()) loop_count += mesh.GetValence(fh);
-        entry.VertexFanAdjacency = B->AdjacencyBuffer.Allocate(vertex_count + 1 + loop_count);
+        // Every halfedge of a face-topology mesh belongs to a face, so the face loops cover all of them.
+        entry.VertexFanAdjacency = B->AdjacencyBuffer.Allocate(vertex_count + 1 + halfedge_count);
         WriteCsr(B->AdjacencyBuffer.GetMutable(entry.VertexFanAdjacency), vertex_count, [&](auto &&add) {
-            for (const auto fh : mesh.faces()) {
-                uint32_t k = 0;
-                for (const auto vh : mesh.fv_range(fh)) add(*vh, *fh | (k++ << FanLoopShift));
+            for (uint32_t face = 0; face < c.FaceCount; ++face) {
+                const auto first = *c.FaceHalfedge(face), last = c.FaceEnd(face);
+                for (auto h = first; h < last; ++h) add(corners[h], face | ((h - first) << FanLoopShift));
             }
         });
     }
     if (mesh.EdgeCount() > 0) {
+        const auto from_vertex = [&](uint32_t h) {
+            const auto opposite = c.Opposites[h];
+            return corners[*(opposite ? opposite : c.Previous(he::HH(h)))];
+        };
         entry.VertexEdgeAdjacency = B->AdjacencyBuffer.Allocate(vertex_count + 1 + mesh.EdgeCount() * 2);
         WriteCsr(B->AdjacencyBuffer.GetMutable(entry.VertexEdgeAdjacency), vertex_count, [&](auto &&add) {
-            for (const auto eh : mesh.edges()) {
-                const auto hh = mesh.GetHalfedge(eh, 0);
-                add(*mesh.GetFromVertex(hh), *eh);
-                add(*mesh.GetToVertex(hh), *eh);
+            for (uint32_t edge = 0; edge < c.EdgeCount; ++edge) {
+                const auto h = *c.EdgeHalfedge(edge);
+                add(from_vertex(h), edge);
+                add(corners[h], edge);
             }
         });
     }
 }
 
-CreatedMesh MeshStore::CreateMesh(MeshData &&data, MeshVertexAttributes &&attrs, MeshPrimitives &&primitives, bool flat_shaded, std::optional<ArmatureDeformData> deform, std::optional<MorphTargetData> morph, bool weld) {
-    const uint32_t face_count = data.Faces.size();
+PreparedMesh PrepareMesh(MeshData &data, MeshVertexAttributes &attrs, MeshPrimitives &primitives, std::optional<ArmatureDeformData> deform, std::optional<MorphTargetData> morph, bool weld) {
+    const uint32_t face_count = data.FaceCount();
 
     // Sort faces by primitive index so triangles are grouped by primitive in the index buffer.
     if (!primitives.ElementPrimitiveIndices.empty() && primitives.ElementPrimitiveIndices.size() == face_count &&
@@ -1128,13 +1147,18 @@ CreatedMesh MeshStore::CreateMesh(MeshData &&data, MeshVertexAttributes &&attrs,
             }
         }
         if (!already_sorted) {
-            std::vector<std::vector<uint32_t>> sorted_faces(face_count);
-            std::vector<uint32_t> sorted_fpi(face_count);
+            std::vector<uint32_t> sorted_offsets, sorted_corners, sorted_fpi(face_count);
+            sorted_offsets.reserve(face_count + 1);
+            sorted_offsets.emplace_back(0u);
+            sorted_corners.reserve(data.FaceCorners.size());
             for (uint32_t i = 0; i < face_count; ++i) {
-                sorted_faces[i] = std::move(data.Faces[perm[i]]);
+                const auto face = data.Face(perm[i]);
+                sorted_corners.insert(sorted_corners.end(), face.begin(), face.end());
+                sorted_offsets.emplace_back(uint32_t(sorted_corners.size()));
                 sorted_fpi[i] = primitives.ElementPrimitiveIndices[perm[i]];
             }
-            data.Faces = std::move(sorted_faces);
+            data.FaceOffsets = std::move(sorted_offsets);
+            data.FaceCorners = std::move(sorted_corners);
             primitives.ElementPrimitiveIndices = std::move(sorted_fpi);
         }
     }
@@ -1145,12 +1169,12 @@ CreatedMesh MeshStore::CreateMesh(MeshData &&data, MeshVertexAttributes &&attrs,
     std::array<std::vector<vec2>, 4> corner_uvs;
     std::vector<vec3> authored_corner_normals;
     if (face_count > 0) {
-        uint32_t corner_total = 0;
-        for (const auto &face : data.Faces) corner_total += (face.size() - 2) * 3;
+        const uint32_t corner_total = (uint32_t(data.FaceCorners.size()) - 2u * face_count) * 3u;
         const auto gather_corners = [&]<typename T>(std::optional<std::vector<T>> &src, std::vector<T> &out) {
             if (!src) return;
             out.reserve(corner_total);
-            for (const auto &face : data.Faces) {
+            for (uint32_t fi = 0; fi < face_count; ++fi) {
+                const auto face = data.Face(fi);
                 for (uint32_t k = 1; k + 1 < face.size(); ++k) {
                     out.emplace_back((*src)[face[0]]);
                     out.emplace_back((*src)[face[k]]);
@@ -1170,6 +1194,33 @@ CreatedMesh MeshStore::CreateMesh(MeshData &&data, MeshVertexAttributes &&attrs,
         gather_corners(attrs.Normals, authored_corner_normals);
         if (weld) WeldVertices(data, deform, morph);
     }
+
+    const uint32_t vertex_count = data.Positions.size();
+    return {
+        .CornerTangents = std::move(corner_tangents),
+        .CornerColors = std::move(corner_colors),
+        .CornerUvs = std::move(corner_uvs),
+        .AuthoredCornerNormals = std::move(authored_corner_normals),
+        .Connectivity = [&] {
+            if (face_count > 0) return BuildConnectivity(data.FaceOffsets, data.FaceCorners, vertex_count);
+            if (!data.Edges.empty()) return BuildConnectivity(data.Edges, vertex_count);
+            MeshConnectivity c;
+            c.VertexCount = vertex_count;
+            return c;
+        }(),
+        .Deform = std::move(deform),
+        .Morph = std::move(morph),
+    };
+}
+
+CreatedMesh MeshStore::CreateMesh(MeshData &&data, MeshVertexAttributes &&attrs, MeshPrimitives &&primitives, PreparedMesh &&prepared, bool flat_shaded) {
+    const uint32_t face_count = data.FaceCount();
+    auto &corner_tangents = prepared.CornerTangents;
+    auto &corner_colors = prepared.CornerColors;
+    auto &corner_uvs = prepared.CornerUvs;
+    auto &authored_corner_normals = prepared.AuthoredCornerNormals;
+    auto &deform = prepared.Deform;
+    auto &morph = prepared.Morph;
 
     const uint32_t vertex_count = data.Positions.size();
     auto [id, vertices] = AllocateVertexBuffer(data.Positions, attrs);
@@ -1211,14 +1262,14 @@ CreatedMesh MeshStore::CreateMesh(MeshData &&data, MeshVertexAttributes &&attrs,
         else std::ranges::fill(pm_span, 0u);
     };
 
-    if (!data.Faces.empty()) {
+    if (face_count > 0) {
         // Write face-first-triangle offsets directly into GPU buffer.
         entry.FaceData = AllocateFaces(face_count);
         auto first_tri_span = B->FaceFirstTriangleBuffer.GetMutable(entry.FaceData);
         uint32_t tri_offset = 0;
         for (uint32_t fi = 0; fi < face_count; ++fi) {
             first_tri_span[fi] = tri_offset;
-            tri_offset += data.Faces[fi].size() - 2;
+            tri_offset += data.FaceSize(fi) - 2u;
         }
 
         entry.TriangleCount = tri_offset;
@@ -1234,7 +1285,7 @@ CreatedMesh MeshStore::CreateMesh(MeshData &&data, MeshVertexAttributes &&attrs,
         auto tri_face_span = B->TriangleFaceIdBuffer.GetMutable(entry.TriangleFaceIds);
         uint32_t ti = 0;
         for (uint32_t fi = 0; fi < face_count; ++fi) {
-            const auto n_tris = data.Faces[fi].size() - 2;
+            const auto n_tris = data.FaceSize(fi) - 2u;
             for (size_t t = 0; t < n_tris; ++t) tri_face_span[ti++] = fi + 1;
         }
 
@@ -1269,16 +1320,25 @@ CreatedMesh MeshStore::CreateMesh(MeshData &&data, MeshVertexAttributes &&attrs,
         write_primitive_tables(primitives.ElementPrimitiveIndices.size(), primitive_count);
     }
 
-    MeshConnectivity conn = [&] {
-        if (!data.Faces.empty()) return BuildConnectivity(data.Faces, vertex_count);
-        if (!data.Edges.empty()) return BuildConnectivity(data.Edges, vertex_count);
-        MeshConnectivity c;
-        c.VertexCount = vertex_count;
-        return c;
-    }();
+    // One corner vertex index per halfedge, canonical for the connectivity and for a triangle mesh's
+    // draws. A face mesh's corners are its face loops, and an edge mesh's are each edge's endpoints.
+    if (face_count > 0) {
+        entry.FaceCorners = B->FaceCornerBuffer.Allocate(std::span<const uint32_t>{data.FaceCorners});
+    } else if (!data.Edges.empty()) {
+        entry.FaceCorners = B->FaceCornerBuffer.Allocate(uint32_t(data.Edges.size()) * 2u);
+        auto corners = B->FaceCornerBuffer.GetMutable(entry.FaceCorners);
+        for (uint32_t e = 0; e < data.Edges.size(); ++e) {
+            corners[e * 2u] = data.Edges[e][1];
+            corners[e * 2u + 1u] = data.Edges[e][0];
+        }
+    }
+
+    MeshConnectivity conn = std::move(prepared.Connectivity);
     const Mesh mesh{*this, id, conn};
 
-    entry.EdgeStates = B->EdgeStateBuffer.Allocate(mesh.EdgeCount() * 2);
+    // A mesh with no faces always draws its edges, so it takes its edge states now. A face mesh
+    // waits for a wireframe or edit overlay to ask.
+    if (face_count == 0) entry.EdgeStates = B->EdgeStateBuffer.Allocate(mesh.EdgeCount() * 2);
     entry.EdgeSharpness = B->EdgeSharpnessBuffer.Allocate(mesh.EdgeCount());
     ClearElementStates(vertices, entry.FaceData, entry.EdgeStates);
     if (entry.FaceData.Count > 0) {
@@ -1299,8 +1359,8 @@ CreatedMesh MeshStore::CreateMesh(MeshData &&data, MeshVertexAttributes &&attrs,
     if (!authored_corner_normals.empty() && entry.FaceData.Count > 0) {
         auto sharp = GetFaceSharpness(id);
         uint32_t ci = 0;
-        for (uint32_t fi = 0; fi < data.Faces.size(); ++fi) {
-            const auto &face = data.Faces[fi];
+        for (uint32_t fi = 0; fi < face_count; ++fi) {
+            const auto face = data.Face(fi);
             const uint32_t corner_count = (face.size() - 2) * 3;
             const auto cross = glm::cross(data.Positions[face[1]] - data.Positions[face[0]], data.Positions[face[2]] - data.Positions[face[0]]);
             const auto cross_len = glm::length(cross);
@@ -1351,8 +1411,8 @@ CreatedMesh MeshStore::CreateMesh(MeshData &&data, MeshVertexAttributes &&attrs,
         for (uint32_t ei = 0; ei < mesh.EdgeCount(); ++ei) {
             const auto hh = mesh.GetHalfedge(Mesh::EH{ei}, 0);
             const auto face = mesh.GetFace(hh);
-            const auto opposite = c.Halfedges[*hh].Opposite;
-            const auto opposite_face = opposite ? c.Halfedges[*opposite].Face : Mesh::FH{};
+            const auto opposite = c.Opposites[*hh];
+            const auto opposite_face = opposite ? c.FaceOf(opposite) : Mesh::FH{};
             if (!face || !opposite_face) continue;
             if (discontinuous(face, opposite_face, mesh.GetFromVertex(hh)) || discontinuous(face, opposite_face, mesh.GetToVertex(hh))) {
                 sharp_edges[ei] = 1;
@@ -1370,6 +1430,13 @@ CreatedMesh MeshStore::CreateMesh(MeshData &&data, MeshVertexAttributes &&attrs,
     }
 
     return {id, std::move(conn), morph ? std::move(morph->TangentDeltas) : std::vector<vec3>{}};
+}
+
+CreatedMesh MeshStore::CreateMesh(MeshData &&data, bool flat_shaded) {
+    MeshVertexAttributes attrs;
+    MeshPrimitives primitives;
+    auto prepared = PrepareMesh(data, attrs, primitives);
+    return CreateMesh(std::move(data), std::move(attrs), std::move(primitives), std::move(prepared), flat_shaded);
 }
 
 CreatedMesh MeshStore::CloneMesh(const Mesh &mesh) {
@@ -1434,8 +1501,9 @@ std::expected<MeshWithMaterials, std::string> MeshStore::LoadMesh(const std::fil
     } catch (const std::exception &e) {
         return std::unexpected{e.what()};
     }
+    auto prepared = PrepareMesh(source.Mesh, source.Attrs, source.Primitives, {}, {}, weld);
     return MeshWithMaterials{
-        .Mesh = CreateMesh(std::move(source.Mesh), std::move(source.Attrs), std::move(source.Primitives), false, {}, {}, weld),
+        .Mesh = CreateMesh(std::move(source.Mesh), std::move(source.Attrs), std::move(source.Primitives), std::move(prepared)),
         .Materials = std::move(source.Materials),
     };
 }
@@ -1457,6 +1525,7 @@ void MeshStore::Release(uint32_t id) {
     B->ElementPrimitiveBuffer.Release(entry.ElementPrimitives);
     B->PrimitiveMaterialBuffer.Release(entry.PrimitiveMaterials);
     B->EdgeStateBuffer.Release(entry.EdgeStates);
+    B->FaceCornerBuffer.Release(entry.FaceCorners);
     B->AdjacencyBuffer.Release(entry.VertexFanAdjacency);
     B->AdjacencyBuffer.Release(entry.VertexEdgeAdjacency);
     B->AdjacencyBuffer.Release(entry.SeamFans);
@@ -1557,6 +1626,7 @@ void MeshStore::UpdateSoundVertexStates(const Mesh &mesh, std::span<const uint32
 void MeshStore::UpdateEdgeStatesFromVertices(const Mesh &mesh) {
     const auto &entry = Entries.at(mesh.GetStoreId());
     auto edge_states = B->EdgeStateBuffer.GetMutable(entry.EdgeStates);
+    if (edge_states.empty()) return;
     const auto vertex_states = GetVertexStates(entry.Vertices);
     for (uint32_t ei = 0; ei < mesh.EdgeCount(); ++ei) {
         const auto heh = mesh.GetHalfedge(EH{ei}, 0);
@@ -1587,6 +1657,7 @@ void MeshStore::UpdateFaceStatesFromEdges(const Mesh &mesh) {
     auto face_states = GetFaceStates(entry.FaceData);
     if (face_states.empty()) return;
     const auto edge_states = B->EdgeStateBuffer.GetMutable(entry.EdgeStates);
+    if (edge_states.empty()) return;
     for (uint32_t fi = 0; fi < mesh.FaceCount(); ++fi) {
         uint8_t state = ElementStateSelected;
         for (const auto heh : mesh.fh_range(FH{fi})) {

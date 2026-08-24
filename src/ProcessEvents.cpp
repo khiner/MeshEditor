@@ -3,6 +3,7 @@
 #include "Camera.h"
 #include "Changes.h"
 #include "File.h"
+#include "Parallel.h"
 #include "Reactive.h"
 #include "TransformMath.h"
 #include "Variant.h"
@@ -61,6 +62,7 @@
 #include <glm/gtx/euler_angles.hpp>
 
 #include <iostream>
+#include <numeric>
 
 using std::ranges::to;
 using std::views::iota;
@@ -71,13 +73,13 @@ using namespace he;
 // Rebuild a mesh's derived geometry: closest-point hierarchy, per-vertex curvature, enclosed volume.
 // All three follow the mesh as it is edited.
 void UpdateMeshBvh(entt::registry &r, entt::entity mesh_entity) {
-    const auto indices = GetFaceIndices(r, r.get<const MeshBuffers>(mesh_entity));
+    const auto mesh = GetMesh(r, mesh_entity);
+    const auto indices = GetFaceIndices(r, mesh, r.get<const MeshBuffers>(mesh_entity));
     // A mesh of points or lines has no surface.
     if (indices.empty()) {
         r.remove<MeshBvh>(mesh_entity);
         return;
     }
-    const auto mesh = GetMesh(r, mesh_entity);
     auto bvh = BuildMeshBvh(mesh.GetVerticesSpan(), indices);
     bvh.MeanCurvature = mesh.CalcMeanCurvatures(r.ctx().get<const MeshStore>().GetEdgeSharpness(mesh.GetStoreId()));
     bvh.EnclosedVolume = mesh.CalcEnclosedVolume();
@@ -318,16 +320,90 @@ void UpdateMeshletInstance(entt::registry &r, entt::entity instance_entity) {
     if (instance.GpuId != InvalidOffset) buffers.GpuInstanceSlots.GetMutable({instance.GpuId, 1})[0] = instance.BufferIndex;
 }
 
-void RebuildMeshletSceneMesh(entt::registry &r, entt::entity mesh_entity) {
+// Points every instance at its mesh's placed primitives. The grouping keeps each mesh's instances in
+// the order the view yields them, so slot allocation follows the order the meshes were given.
+void RepointMeshInstances(entt::registry &r, std::span<const entt::entity> mesh_entities) {
+    if (mesh_entities.empty()) return;
     auto &buffers = r.ctx().get<GpuBuffers>();
-    auto &mesh_buffers = r.get<MeshBuffers>(mesh_entity);
-    buffers.RebuildMeshlets(mesh_buffers, GetMesh(r, mesh_entity), r.ctx().get<const MeshStore>());
+    std::vector<std::pair<entt::entity, uint32_t>> batch;
+    batch.reserve(mesh_entities.size());
+    for (uint32_t i = 0; i < mesh_entities.size(); ++i) batch.emplace_back(mesh_entities[i], i);
+    std::ranges::sort(batch);
+
+    std::vector<std::pair<uint32_t, entt::entity>> grouped;
     for (const auto [instance_entity, ri] : r.view<const RenderInstance>().each()) {
-        if (ri.Entity != mesh_entity || ri.BufferIndex == UINT32_MAX) continue;
+        if (ri.BufferIndex == UINT32_MAX) continue;
+        const auto it = std::ranges::lower_bound(batch, ri.Entity, {}, &std::pair<entt::entity, uint32_t>::first);
+        if (it == batch.end() || it->first != ri.Entity) continue;
+        grouped.emplace_back(it->second, instance_entity);
+    }
+    std::ranges::stable_sort(grouped, {}, &std::pair<uint32_t, entt::entity>::first);
+
+    for (const auto [mesh_index, instance_entity] : grouped) {
+        const auto &mesh_buffers = r.get<const MeshBuffers>(mesh_entities[mesh_index]);
+        const auto &ri = r.get<const RenderInstance>(instance_entity);
         auto &record = buffers.Instances.RecordBuffer.GetMutableSpan<InstanceRecord>({ri.BufferIndex, 1}).front();
         record.PrimitiveOffset = OffsetOrInvalid(mesh_buffers.Primitives);
         record.PrimitiveCount = mesh_buffers.Primitives.Count;
         UpdateMeshletInstance(r, instance_entity);
+    }
+}
+
+// The arena reservations and placements keep call order, and the builds between them run at once,
+// since each one touches only the ranges its own mesh reserved.
+void RebuildMeshletSceneMeshes(entt::registry &r, std::span<const entt::entity> mesh_entities) {
+    auto &buffers = r.ctx().get<GpuBuffers>();
+    const auto &meshes = r.ctx().get<const MeshStore>();
+    // The registry is read only here, so the builds below see plain values and never touch it.
+    std::vector<Mesh> built_meshes;
+    built_meshes.reserve(mesh_entities.size());
+    for (const auto entity : mesh_entities) built_meshes.push_back(GetMesh(r, entity));
+    std::vector<MeshBuffers *> mesh_buffers;
+    mesh_buffers.reserve(mesh_entities.size());
+    for (uint32_t i = 0; i < mesh_entities.size(); ++i) {
+        auto &mb = r.get<MeshBuffers>(mesh_entities[i]);
+        buffers.ReserveMeshlets(mb, built_meshes[i]);
+        mesh_buffers.push_back(&mb);
+    }
+
+    std::vector<MeshletBuild> builds(mesh_entities.size());
+    ParallelFor(uint32_t(mesh_entities.size()), [&](uint32_t i) {
+        builds[i] = buffers.BuildMeshlets(*mesh_buffers[i], built_meshes[i], meshes);
+    });
+    for (uint32_t i = 0; i < mesh_entities.size(); ++i) buffers.CommitMeshlets(*mesh_buffers[i], builds[i]);
+    RepointMeshInstances(r, mesh_entities);
+}
+
+// Edge and vertex index buffers feed the wireframe, the edit and excite mode overlays, and line and
+// point meshes. A face mesh draws none of those in solid shading outside those modes, so it goes
+// without until something asks.
+bool DrawsElementIndices(const entt::registry &r, entt::entity viewport) {
+    const auto mode = r.get<const Interaction>(viewport).Mode;
+    return r.get<const ViewportDisplay>(viewport).ViewportShading == ViewportShadingMode::Wireframe ||
+        mode == InteractionMode::Edit || mode == InteractionMode::Excite;
+}
+
+// Every face of a triangle mesh is one triangle, so its draws index the store's corner array straight
+// and need no triangulated copy. A mesh with an n-gon fans into more indices than it has corners.
+bool DrawsStoredCorners(const Mesh &mesh) {
+    return mesh.TriangleIndexCount() > 0 && mesh.TriangleIndexCount() == mesh.CornerVertices().size();
+}
+
+// A mesh with no faces draws from its edges or vertices, so those indices are its geometry.
+bool NeedsElementIndices(const Mesh &mesh, bool overlay_indices) {
+    return overlay_indices || mesh.FaceCount() == 0;
+}
+
+void WriteElementIndices(GpuBuffers &buffers, const Mesh &mesh, MeshBuffers &mb) {
+    if (mesh.EdgeCount() > 0 && mb.EdgeIndices.Count == 0) {
+        auto [sr, dest] = buffers.AllocateIndices(mesh.EdgeCount() * 2, IndexKind::Edge);
+        mesh.WriteEdgeIndices(dest);
+        mb.EdgeIndices = sr;
+    }
+    if (mesh.VertexCount() > 0 && mb.VertexIndices.Count == 0) {
+        auto [sr, dest] = buffers.AllocateIndices(mesh.VertexCount(), IndexKind::Vertex);
+        std::iota(dest.begin(), dest.end(), 0u);
+        mb.VertexIndices = sr;
     }
 }
 
@@ -849,60 +925,78 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
         }
     }
 
+    std::unordered_set<entt::entity> dirty_element_state_meshes;
+    if (const bool draws_element_indices = DrawsElementIndices(r, viewport); draws_element_indices != buffers.DrewElementIndices) {
+        buffers.DrewElementIndices = draws_element_indices;
+        if (draws_element_indices) {
+            uint32_t total_edge = 0, total_vertex = 0;
+            const auto mesh_view = r.view<const MeshBuffers, const MeshHandle>();
+            for (const auto entity : mesh_view) {
+                const auto &mb = mesh_view.get<const MeshBuffers>(entity);
+                const auto &mesh = GetMesh(r, entity);
+                if (mb.EdgeIndices.Count == 0) total_edge += mesh.EdgeCount() * 2;
+                if (mb.VertexIndices.Count == 0) total_vertex += mesh.VertexCount();
+            }
+            if (total_edge > 0 || total_vertex > 0) {
+                buffers.ReserveAdditionalIndices(0, total_edge, total_vertex);
+                auto &meshes = r.ctx().get<MeshStore>();
+                for (const auto entity : r.view<const MeshBuffers, const MeshHandle>() | to<std::vector>()) {
+                    const auto &mesh = GetMesh(r, entity);
+                    meshes.EnsureEdgeStates(mesh);
+                    r.patch<MeshBuffers>(entity, [&](auto &mb) { WriteElementIndices(buffers, mesh, mb); });
+                }
+                // The edge states start zeroed, so sound vertex states rederive into them this frame.
+                for (const auto [_, instance, __] : r.view<const Instance, const SoundVertices>().each()) {
+                    dirty_element_state_meshes.insert(instance.Entity);
+                }
+                request(RenderRequest::Rebuild);
+            }
+        }
+    }
+
     // Deferred index buffer creation for new mesh entities.
     // Count total indices, then write directly into GPU-mapped memory.
     if (!sync.NewMeshEntities.empty()) {
+        auto &meshes = r.ctx().get<MeshStore>();
+        const bool overlay_indices = buffers.DrewElementIndices;
         uint32_t total_face = 0, total_edge = 0, total_vertex = 0;
         for (auto entity : sync.NewMeshEntities) {
             const auto &mesh = GetMesh(r, entity);
-            total_face += mesh.TriangleIndexCount();
+            if (!DrawsStoredCorners(mesh)) total_face += mesh.TriangleIndexCount();
+            if (!NeedsElementIndices(mesh, overlay_indices)) continue;
             total_edge += mesh.EdgeCount() * 2;
             total_vertex += mesh.VertexCount();
         }
         buffers.ReserveAdditionalIndices(total_face, total_edge, total_vertex);
         for (auto entity : sync.NewMeshEntities) {
             const auto &mesh = GetMesh(r, entity);
+            if (overlay_indices) meshes.EnsureEdgeStates(mesh);
             r.patch<MeshBuffers>(entity, [&](auto &mb) {
-                if (const auto tri_idx_count = mesh.TriangleIndexCount(); tri_idx_count > 0) {
+                if (DrawsStoredCorners(mesh)) {
+                    mb.FaceIndices = meshes.GetFaceCornerRange(mesh.GetStoreId());
+                } else if (const auto tri_idx_count = mesh.TriangleIndexCount(); tri_idx_count > 0) {
                     auto [sr, dest] = buffers.AllocateIndices(tri_idx_count, IndexKind::Face);
                     mesh.WriteTriangleIndices(dest);
                     mb.FaceIndices = sr;
                 }
-                if (mesh.EdgeCount() > 0) {
-                    auto [sr, dest] = buffers.AllocateIndices(mesh.EdgeCount() * 2, IndexKind::Edge);
-                    mesh.WriteEdgeIndices(dest);
-                    mb.EdgeIndices = sr;
-                }
-                if (mesh.VertexCount() > 0) {
-                    auto [sr, dest] = buffers.AllocateIndices(mesh.VertexCount(), IndexKind::Vertex);
-                    std::iota(dest.begin(), dest.end(), 0u);
-                    mb.VertexIndices = sr;
-                }
+                if (NeedsElementIndices(mesh, overlay_indices)) WriteElementIndices(buffers, mesh, mb);
             });
         }
         // The index buffers written above complete the derive inputs.
         // Every new and restored mesh's shading state finalizes here, one batched derive for the whole frame.
         FinalizeNewMeshShadingNow(r, sync.NewMeshEntities);
-        for (const auto entity : sync.NewMeshEntities) RebuildMeshletSceneMesh(r, entity);
+        RebuildMeshletSceneMeshes(r, sync.NewMeshEntities);
         request(RenderRequest::Rebuild);
     }
 
     // Deferred index buffer creation for new bone/joint buffer entities.
     if (!sync.NewExtrasEntities.empty()) {
-        auto flatten_tri_indices = [](const std::vector<std::vector<uint32_t>> &faces) {
-            std::vector<uint32_t> indices;
-            indices.reserve(faces.size() * 3);
-            for (const auto &face : faces)
-                for (const auto idx : face) indices.emplace_back(idx);
-            return indices;
-        };
-
         // Shared primitive data — all bones/joints use identical geometry. Generated once.
         static const auto bone = primitive::BoneOctahedron(1.f);
-        static const auto bone_faces = flatten_tri_indices(bone.Mesh.Faces);
+        static const auto &bone_faces = bone.Mesh.FaceCorners;
         static const auto bone_verts = iota(0u, uint32_t(bone.Mesh.Positions.size())) | to<std::vector>();
         static const auto sphere = primitive::BoneSphereDisc();
-        static const auto sphere_faces = flatten_tri_indices(sphere.Mesh.Faces);
+        static const auto &sphere_faces = sphere.Mesh.FaceCorners;
         static const auto sphere_verts = iota(0u, uint32_t(sphere.Mesh.Positions.size())) | to<std::vector>();
 
         uint32_t total_face = 0, total_edge = 0, total_vertex = 0;
@@ -993,7 +1087,6 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
             else SetInteractionMode(r, viewport, InteractionMode::Excite);
         }
     }
-    std::unordered_set<entt::entity> dirty_element_state_meshes;
 
     { // Selected/Active instance changes - batch instance state buffer writes per buffer entity.
         auto &selected_tracker = reactive<changes::Selected>(r);
@@ -1143,7 +1236,7 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
         const auto edit_mode = r.get<const EditMode>(viewport).Value;
         std::vector<ElementRange> geometry_ranges;
         for (auto mesh_entity : tracker) {
-            RebuildMeshletSceneMesh(r, mesh_entity);
+            RebuildMeshletSceneMeshes(r, {&mesh_entity, 1});
             // Edited geometry restates the hierarchy of every mesh that has one.
             if (r.all_of<MeshBvh>(mesh_entity)) UpdateMeshBvh(r, mesh_entity);
             if (auto *br = r.try_get<MeshSelectionBitsetRange>(mesh_entity); br && edit_mode != Element::None) {

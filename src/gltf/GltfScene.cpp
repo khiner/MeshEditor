@@ -1,6 +1,7 @@
 #include "GltfScene.h"
 
 #include "File.h"
+#include "Parallel.h"
 #include "Path.h"
 #include "TransformMath.h"
 #include "Variant.h"
@@ -43,6 +44,7 @@
 
 #include <map>
 #include <numbers>
+#include <numeric>
 
 // Load-only intermediate carrier. Holds parsed-but-not-yet-uploaded geometry.
 // Load builds it from fastgltf accessors, runs `MeshStore::PlanCreate` for the whole batch
@@ -655,21 +657,24 @@ std::expected<void, std::string> AppendPrimitive(
     const auto indices = ReadIndices(asset, primitive, position_accessor.count);
     if (indices.size() < 3) return {};
 
+    const auto add_triangle = [&mesh](uint32_t a, uint32_t b, uint32_t c) {
+        mesh.AddFace(std::array{a, b, c});
+    };
     if (primitive.type == fastgltf::PrimitiveType::TriangleStrip) {
+        mesh.ReserveFaces(uint32_t(indices.size()) - 2u, 3u);
         for (uint32_t i = 0; i + 2 < indices.size(); ++i) {
-            if (i % 2 == 0) {
-                mesh.Faces.emplace_back(std::initializer_list<uint32_t>{base_vertex + indices[i], base_vertex + indices[i + 1], base_vertex + indices[i + 2]});
-            } else {
-                mesh.Faces.emplace_back(std::initializer_list<uint32_t>{base_vertex + indices[i + 1], base_vertex + indices[i], base_vertex + indices[i + 2]});
-            }
+            if (i % 2 == 0) add_triangle(base_vertex + indices[i], base_vertex + indices[i + 1], base_vertex + indices[i + 2]);
+            else add_triangle(base_vertex + indices[i + 1], base_vertex + indices[i], base_vertex + indices[i + 2]);
         }
     } else if (primitive.type == fastgltf::PrimitiveType::TriangleFan) {
+        mesh.ReserveFaces(uint32_t(indices.size()) - 2u, 3u);
         for (uint32_t i = 1; i + 1 < indices.size(); ++i) {
-            mesh.Faces.emplace_back(std::initializer_list<uint32_t>{base_vertex + indices[0], base_vertex + indices[i], base_vertex + indices[i + 1]});
+            add_triangle(base_vertex + indices[0], base_vertex + indices[i], base_vertex + indices[i + 1]);
         }
     } else {
+        mesh.ReserveFaces(uint32_t(indices.size()) / 3u, 3u);
         for (uint32_t i = 0; i + 2 < indices.size(); i += 3) {
-            mesh.Faces.emplace_back(std::initializer_list<uint32_t>{base_vertex + indices[i], base_vertex + indices[i + 1], base_vertex + indices[i + 2]});
+            add_triangle(base_vertex + indices[i], base_vertex + indices[i + 1], base_vertex + indices[i + 2]);
         }
     }
     return {};
@@ -840,12 +845,12 @@ std::expected<uint32_t, std::string> EnsureMeshData(const fastgltf::Asset &asset
             append_non_triangle(lines, line_attrs, line_primitive_indices);
             continue;
         }
-        const uint32_t prev_vertex_count = mesh.Positions.size(), prev_face_count = mesh.Faces.size();
+        const uint32_t prev_vertex_count = mesh.Positions.size(), prev_face_count = mesh.FaceCount();
         if (auto append_result = AppendPrimitive(asset, primitive, mesh, mesh_attrs, mesh_deform, mesh_morph, attribute_flags[primitive_index]); !append_result) {
             return std::unexpected{std::move(append_result.error())};
         }
         vertex_counts[primitive_index] = mesh.Positions.size() - prev_vertex_count;
-        const auto appended_face_count = mesh.Faces.size() - prev_face_count;
+        const auto appended_face_count = mesh.FaceCount() - prev_face_count;
         face_primitive_indices.insert(face_primitive_indices.end(), appended_face_count, primitive_index);
     }
 
@@ -885,7 +890,7 @@ std::expected<uint32_t, std::string> EnsureMeshData(const fastgltf::Asset &asset
     }
 
     const auto mesh_index = meshes.size();
-    const bool has_triangles = !mesh.Positions.empty() && !mesh.Faces.empty();
+    const bool has_triangles = !mesh.Positions.empty() && mesh.FaceCount() > 0;
     // Point and line meshes resolve their material per element through the same primitive-index tables the triangle mesh uses.
     const auto non_triangle_primitives = [&](std::vector<uint32_t> element_primitive_indices) {
         return element_primitive_indices.empty() ?
@@ -2095,6 +2100,25 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
         ctx.Meshes.CommitReserves();
     }
 
+    // Deriving a mesh reads only its own source, so the batch derives at once and the arena work below
+    // stays in source order.
+    struct PreparedSourceMesh {
+        PreparedMesh Triangles, Lines, Points;
+    };
+    std::vector<PreparedSourceMesh> prepared_meshes(source_meshes.size());
+    ParallelFor(uint32_t(source_meshes.size()), [&](uint32_t mi) {
+        auto &scene_mesh = source_meshes[mi];
+        auto &prepared = prepared_meshes[mi];
+        if (scene_mesh.Triangles) {
+            prepared.Triangles = PrepareMesh(
+                *scene_mesh.Triangles, scene_mesh.TriangleAttrs, scene_mesh.TrianglePrimitives,
+                std::move(scene_mesh.DeformData), std::move(scene_mesh.MorphData), /*weld=*/true
+            );
+        }
+        if (scene_mesh.Lines) prepared.Lines = PrepareMesh(*scene_mesh.Lines, scene_mesh.LineAttrs, scene_mesh.LinePrimitives);
+        if (scene_mesh.Points) prepared.Points = PrepareMesh(*scene_mesh.Points, scene_mesh.PointAttrs, scene_mesh.PointPrimitives);
+    });
+
     struct MorphSummary {
         uint32_t TargetCount{};
         std::vector<float> DefaultWeights;
@@ -2112,6 +2136,7 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
     std::vector<NonTriangleEntities> non_triangle_entities_per_mesh(source_meshes.size());
     for (uint32_t mi = 0; mi < source_meshes.size(); ++mi) {
         auto &scene_mesh = source_meshes[mi];
+        auto &prepared = prepared_meshes[mi];
         entt::entity mesh_entity = entt::null;
         if (scene_mesh.Triangles) {
             // Must run before the remap loop below overwrites MaterialIndices, since this indexes source_materials by gltf index.
@@ -2147,14 +2172,14 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
                 .Colors0ComponentCount = scene_mesh.TriangleAttrs.Colors0ComponentCount,
                 .MorphTangentDeltas = {}, // Filled from CreatedMesh below, after welding compacts them.
             };
-            if (scene_mesh.MorphData) {
-                morph_summary = {scene_mesh.MorphData->TargetCount, scene_mesh.MorphData->DefaultWeights};
+            if (prepared.Triangles.Morph) {
+                morph_summary = {prepared.Triangles.Morph->TargetCount, prepared.Triangles.Morph->DefaultWeights};
             }
             // Primitives without NORMAL are flat-shaded per the glTF spec.
             const bool any_normals = std::ranges::any_of(layout.AttributeFlags, [](uint32_t flags) { return (flags & MeshAttributeBit_Normal) != 0; });
             auto mesh = ctx.Meshes.CreateMesh(
                 std::move(*scene_mesh.Triangles), std::move(scene_mesh.TriangleAttrs), std::move(scene_mesh.TrianglePrimitives),
-                !any_normals, std::move(scene_mesh.DeformData), std::move(scene_mesh.MorphData), /*weld=*/true
+                std::move(prepared.Triangles), !any_normals
             );
             layout.MorphTangentDeltas = std::move(mesh.MorphTangentDeltas);
             const auto [me, _] = ::AddMesh(r, ctx.Meshes, std::move(mesh), std::nullopt);
@@ -2171,7 +2196,7 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
         }
         mesh_entities.emplace_back(mesh_entity);
 
-        auto create_non_triangle_mesh = [&](std::optional<::MeshData> &data, ::MeshVertexAttributes &attrs, ::MeshPrimitives &primitives, MeshKind kind) -> entt::entity {
+        auto create_non_triangle_mesh = [&](std::optional<::MeshData> &data, ::MeshVertexAttributes &attrs, ::MeshPrimitives &primitives, PreparedMesh &prepared_non_triangle, MeshKind kind) -> entt::entity {
             if (!data) return entt::null;
             for (auto &local_material_index : primitives.MaterialIndices) local_material_index = remap_material(local_material_index);
             // Point and line primitives draw straight from their positions, so they record no source index streams.
@@ -2183,7 +2208,7 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
                 .Colors0ComponentCount = attrs.Colors0ComponentCount,
                 .MorphTangentDeltas = {},
             };
-            auto m = ctx.Meshes.CreateMesh(std::move(*data), std::move(attrs), std::move(primitives));
+            auto m = ctx.Meshes.CreateMesh(std::move(*data), std::move(attrs), std::move(primitives), std::move(prepared_non_triangle));
             const auto [e, _] = ::AddMesh(r, ctx.Meshes, std::move(m), std::nullopt);
             r.emplace<Path>(e, source_path);
             r.emplace<SourceMeshIndex>(e, mi);
@@ -2192,8 +2217,8 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
             if (!scene_mesh.Name.empty()) r.emplace<MeshName>(e, scene_mesh.Name);
             return e;
         };
-        auto lines_entity = create_non_triangle_mesh(scene_mesh.Lines, scene_mesh.LineAttrs, scene_mesh.LinePrimitives, MeshKind::Lines);
-        auto points_entity = create_non_triangle_mesh(scene_mesh.Points, scene_mesh.PointAttrs, scene_mesh.PointPrimitives, MeshKind::Points);
+        auto lines_entity = create_non_triangle_mesh(scene_mesh.Lines, scene_mesh.LineAttrs, scene_mesh.LinePrimitives, prepared.Lines, MeshKind::Lines);
+        auto points_entity = create_non_triangle_mesh(scene_mesh.Points, scene_mesh.PointAttrs, scene_mesh.PointPrimitives, prepared.Points, MeshKind::Points);
         non_triangle_entities_per_mesh[mi] = {lines_entity, points_entity};
     }
 

@@ -1,5 +1,8 @@
 #pragma once
 
+#include <algorithm>
+#include <bit>
+
 #include "gpu/AABB.h"
 #include "gpu/Element.h"
 #include "gpu/Vertex.h"
@@ -106,26 +109,79 @@ struct MeshStore;
 struct MeshConnectivity {
     static constexpr bool in_place_delete = true;
 
-    struct Halfedge {
-        he::VH Vertex;
-        he::HH Next;
-        he::HH Opposite;
-        he::FH Face; // Left face (invalid for boundary halfedges)
-    };
     struct Face {
         he::HH Halfedge; // One of the boundary halfedges
     };
 
     uint32_t VertexCount{0};
     std::vector<he::HH> OutgoingHalfedges;
-    std::vector<Halfedge> Halfedges;
+    std::vector<he::HH> Opposites; // Each halfedge's opposite, one per corner
+    // One bit per halfedge, set when it is the first halfedge of its edge, with a running count of the
+    // bits before each word. Edges number by ascending first halfedge, so an edge index is a bit rank.
+    std::vector<uint32_t> EdgeFirstBits, EdgeFirstRanks;
+    // Fills in instead when a halfedge's first is neither itself nor its opposite, which only a
+    // non-manifold edge produces.
     std::vector<he::EH> HalfedgeToEdge;
-    std::vector<he::HH> Edges; // Maps edge index to its halfedge at index 0
+    uint32_t EdgeCount{0};
+    // Each edge's first halfedge. Empty when the bits answer, where a sample every 32 edges bounds
+    // the scan that finds the n-th set bit.
+    std::vector<he::HH> Edges;
+    std::vector<uint32_t> EdgeSamples; // Word index holding every 32nd edge's first halfedge
+    uint32_t FaceCount{0};
+    // Each face's first halfedge. Empty for a triangle mesh, whose face f starts at halfedge 3f.
     std::vector<Face> Faces;
+
+    he::HH FaceHalfedge(uint32_t face) const { return Faces.empty() ? he::HH(face * 3u) : Faces[face].Halfedge; }
+    uint32_t FaceEnd(uint32_t face) const { return face + 1 < FaceCount ? *FaceHalfedge(face + 1) : uint32_t(Opposites.size()); }
+
+    // The first halfedge of an edge, which is the edge index's set bit read back out.
+    he::HH EdgeHalfedge(uint32_t edge) const {
+        if (!Edges.empty()) return Edges[edge];
+        auto word = EdgeSamples[edge / 32u];
+        while (word + 1u < EdgeFirstRanks.size() && EdgeFirstRanks[word + 1u] <= edge) ++word;
+        auto bits = EdgeFirstBits[word];
+        for (auto remaining = edge - EdgeFirstRanks[word]; remaining > 0u; --remaining) bits &= bits - 1u;
+        return he::HH(word * 32u + uint32_t(std::countr_zero(bits)));
+    }
+
+    he::EH Edge(he::HH hh) const {
+        if (!HalfedgeToEdge.empty()) return HalfedgeToEdge[*hh];
+        const auto opposite = Opposites[*hh];
+        const uint32_t first = opposite && *opposite < *hh ? *opposite : *hh;
+        const auto word = first / 32u;
+        return he::EH(EdgeFirstRanks[word] + uint32_t(std::popcount(EdgeFirstBits[word] & ((1u << (first % 32u)) - 1u))));
+    }
+
+    // A face's halfedges are the contiguous run its first halfedge starts, in face order, so a
+    // halfedge's face is the run containing it. An edge-only mesh has no faces, so its halfedges
+    // belong to none.
+    he::FH FaceOf(he::HH hh) const {
+        if (FaceCount == 0) return {};
+        if (Faces.empty()) return he::FH(*hh / 3u);
+        const auto after = std::upper_bound(Faces.begin(), Faces.end(), *hh, [](uint32_t h, const Face &f) { return h < *f.Halfedge; });
+        return he::FH(uint32_t(after - Faces.begin()) - 1u);
+    }
+
+    // A halfedge with no face continues to nothing.
+    he::HH Next(he::HH hh) const {
+        const auto face = FaceOf(hh);
+        if (!face) return {};
+        const auto first = *FaceHalfedge(*face);
+        const auto last = FaceEnd(*face);
+        return he::HH(*hh + 1 < last ? *hh + 1 : first);
+    }
+
+    he::HH Previous(he::HH hh) const {
+        const auto face = FaceOf(hh);
+        if (!face) return {};
+        const auto first = *FaceHalfedge(*face);
+        return he::HH(*hh == first ? FaceEnd(*face) - 1u : *hh - 1u);
+    }
 };
 
-// Build connectivity from polygon faces (vertex-index lists), edge pairs, or a vertex count only (no topology).
-MeshConnectivity BuildConnectivity(std::span<const std::vector<uint32_t>> faces, uint32_t vertex_count);
+// Build connectivity from polygon faces (concatenated vertex-index loops, face `f` spanning
+// [offsets[f], offsets[f + 1]) of corners), edge pairs, or a vertex count only (no topology).
+MeshConnectivity BuildConnectivity(std::span<const uint32_t> face_offsets, std::span<const uint32_t> face_corners, uint32_t vertex_count);
 MeshConnectivity BuildConnectivity(std::span<const std::array<uint32_t, 2>> edges, uint32_t vertex_count);
 
 // CSR incidence over a mesh's vertices: Offsets holds one entry per vertex plus a terminator, and Incident(v) spans vertex v's items.
@@ -145,12 +201,14 @@ struct Mesh {
     using FH = he::FH;
 
     Mesh() = default;
-    Mesh(const MeshStore &store, uint32_t store_id, const MeshConnectivity &c) : Store(&store), StoreId(store_id), C(&c) {}
+    Mesh(const MeshStore &store, uint32_t store_id, const MeshConnectivity &c);
+    // The mesh's corner vertex indices, one per halfedge, from the store's canonical arena.
+    std::span<const uint32_t> CornerVertices() const { return Corners; }
 
     uint32_t VertexCount() const { return C->VertexCount; }
-    uint32_t EdgeCount() const { return C->Edges.size(); }
-    uint32_t FaceCount() const { return C->Faces.size(); }
-    uint32_t HalfEdgeCount() const { return C->Halfedges.size(); }
+    uint32_t EdgeCount() const { return C->EdgeCount; }
+    uint32_t FaceCount() const { return C->FaceCount; }
+    uint32_t HalfEdgeCount() const { return C->Opposites.size(); }
 
     const vec3 &GetPosition(VH) const;
     const vec3 &GetNormal(VH) const;
@@ -167,14 +225,14 @@ struct Mesh {
 
     // Halfedge navigation
     HH GetHalfedge(EH eh, uint32_t i) const {
-        const auto h0 = C->Edges[*eh];
-        return i == 0 ? h0 : (i == 1 && h0 ? C->Halfedges[*h0].Opposite : HH{});
+        const auto h0 = C->EdgeHalfedge(*eh);
+        return i == 0 ? h0 : (i == 1 && h0 ? C->Opposites[*h0] : HH{});
     }
-    HH GetOppositeHalfedge(HH hh) const { return C->Halfedges[*hh].Opposite; }
-    EH GetEdge(HH hh) const { return C->HalfedgeToEdge[*hh]; }
-    FH GetFace(HH hh) const { return C->Halfedges[*hh].Face; }
+    HH GetOppositeHalfedge(HH hh) const { return C->Opposites[*hh]; }
+    EH GetEdge(HH hh) const { return C->Edge(hh); }
+    FH GetFace(HH hh) const { return C->FaceOf(hh); }
     VH GetFromVertex(HH) const;
-    VH GetToVertex(HH hh) const { return C->Halfedges[*hh].Vertex; }
+    VH GetToVertex(HH hh) const { return VH(Corners[*hh]); }
 
     // Valence
     bool Empty() const { return VertexCount() == 0; }
@@ -277,7 +335,7 @@ struct Mesh {
         using CirculatorBase::CirculatorBase;
 
         VH operator*() const { return M->GetToVertex(CurrentHalfedge); }
-        HH advance() const { return M->C->Halfedges[*CurrentHalfedge].Next; }
+        HH advance() const { return M->C->Next(CurrentHalfedge); }
         operator bool() const { return bool(CurrentHalfedge); }
     };
     struct FaceVertexRange {
@@ -289,11 +347,11 @@ struct Mesh {
     // Iterate the vertices of a face.
     // Use for range-based for loops:
     //   for (auto vh : fv_range(fh)) { ... }
-    FaceVertexRange fv_range(FH fh) const { return {this, C->Faces[*fh].Halfedge}; }
+    FaceVertexRange fv_range(FH fh) const { return {this, C->FaceHalfedge(*fh)}; }
     // Iterator positioned at the first vertex of a face.
     // Use for manual iterator control with pre-increment:
     //   auto it = cfv_iter(fh); auto v0 = **it; auto v1 = **(++it);
-    FaceVertexIterator cfv_iter(FH fh) const { return {this, C->Faces[*fh].Halfedge, C->Faces[*fh].Halfedge}; }
+    FaceVertexIterator cfv_iter(FH fh) const { return {this, C->FaceHalfedge(*fh), C->FaceHalfedge(*fh)}; }
 
     struct VertexOutgoingHalfedgeIterator : CirculatorBase {
         using difference_type = std::ptrdiff_t;
@@ -302,8 +360,8 @@ struct Mesh {
 
         HH operator*() const { return CurrentHalfedge; }
         HH advance() const {
-            const auto opp = M->C->Halfedges[*CurrentHalfedge].Opposite;
-            return opp ? M->C->Halfedges[*opp].Next : HH{};
+            const auto opp = M->C->Opposites[*CurrentHalfedge];
+            return opp ? M->C->Next(opp) : HH{};
         }
     };
     struct VertexOutgoingHalfedgeRange {
@@ -323,7 +381,7 @@ struct Mesh {
         using CirculatorBase::CirculatorBase;
 
         HH operator*() const { return CurrentHalfedge; }
-        HH advance() const { return M->C->Halfedges[*CurrentHalfedge].Next; }
+        HH advance() const { return M->C->Next(CurrentHalfedge); }
     };
     struct FaceHalfedgeRange {
         const Mesh *Mesh; // Always valid, never null
@@ -331,12 +389,13 @@ struct Mesh {
         FaceHalfedgeIterator begin() const { return {Mesh, StartHalfedge, StartHalfedge}; }
         FaceHalfedgeIterator end() const { return {Mesh, HH{}, StartHalfedge}; } // Invalid HH as sentinel
     };
-    FaceHalfedgeRange fh_range(FH fh) const { return {this, C->Faces[*fh].Halfedge}; }
+    FaceHalfedgeRange fh_range(FH fh) const { return {this, C->FaceHalfedge(*fh)}; }
 
 private:
     const MeshStore *Store{};
     uint32_t StoreId{InvalidStoreId};
     const MeshConnectivity *C{};
+    std::span<const uint32_t> Corners{};
 };
 
 // Resolve an entity's MeshHandle to a Mesh view via the registry's MeshStore.

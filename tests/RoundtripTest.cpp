@@ -908,7 +908,7 @@ int main(int argc, const char **argv) {
         {
             SceneFixture f;
             auto &meshes = f.R.ctx().get<MeshStore>();
-            auto created = meshes.CreateMesh(primitive::CreateMesh(primitive::Cuboid{}), {}, {});
+            auto created = meshes.CreateMesh(primitive::CreateMesh(primitive::Cuboid{}));
             const auto e = f.R.create();
             f.R.emplace<MeshConnectivity>(e, std::move(created.Connectivity)); // Serialized (heap)
             f.R.emplace<MeshHandle>(e, MeshHandle{created.StoreId}); // Bytes
@@ -967,12 +967,12 @@ int main(int argc, const char **argv) {
         SceneFixture f;
         auto &meshes = f.R.ctx().get<MeshStore>();
         const auto keep = f.R.create();
-        auto kept = meshes.CreateMesh(primitive::CreateMesh(primitive::Cuboid{}), {}, {});
+        auto kept = meshes.CreateMesh(primitive::CreateMesh(primitive::Cuboid{}));
         f.R.emplace<MeshConnectivity>(keep, std::move(kept.Connectivity));
         f.R.emplace<MeshHandle>(keep, MeshHandle{kept.StoreId});
 
         const auto gone = f.R.create();
-        auto removed = meshes.CreateMesh(primitive::CreateMesh(primitive::Cuboid{}), {}, {});
+        auto removed = meshes.CreateMesh(primitive::CreateMesh(primitive::Cuboid{}));
         f.R.emplace<MeshConnectivity>(gone, std::move(removed.Connectivity));
         f.R.emplace<MeshHandle>(gone, MeshHandle{removed.StoreId});
         f.R.destroy(gone); // leaves a MeshConnectivity tombstone in the pool

@@ -146,7 +146,7 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
         if (auto *mb = r.try_get<MeshBuffers>(e)) ReleaseMeshBuffers(r, *mb);
         // Erasing MeshHandle fires on_destroy, releasing the old store entry.
         r.erase<MeshBuffers, MeshHandle, MeshConnectivity>(e);
-        auto new_mesh = meshes.CreateMesh(primitive::CreateMesh(r.get<const PrimitiveShape>(e)), {}, {}, was_flat);
+        auto new_mesh = meshes.CreateMesh(primitive::CreateMesh(r.get<const PrimitiveShape>(e)), was_flat);
         r.emplace<MeshConnectivity>(e, std::move(new_mesh.Connectivity));
         r.emplace<MeshHandle>(e, MeshHandle{new_mesh.StoreId});
         r.emplace_or_replace<MeshGeometryDirty>(e);
@@ -282,7 +282,7 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
             [&](const AddCamera &a) { ::AddCamera(r, meshes, *a.Info, a.Props); begin_translate(); },
             [&](const AddLight &a) { ::AddLight(r, meshes, *a.Info); begin_translate(); },
             [&](const AddMeshPrimitive &a) {
-                const auto [mesh_entity, _] = ::AddMesh(r, meshes, meshes.CreateMesh(primitive::CreateMesh(a.Shape), {}, {}, true), *a.Info);
+                const auto [mesh_entity, _] = ::AddMesh(r, meshes, meshes.CreateMesh(primitive::CreateMesh(a.Shape), true), *a.Info);
                 r.emplace<PrimitiveShape>(mesh_entity, a.Shape);
                 begin_translate();
             },

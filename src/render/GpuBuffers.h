@@ -27,11 +27,17 @@
 #include "render/MeshBuffers.h"
 
 #include <algorithm>
-#include <numeric>
 
 struct Mesh;
 struct MeshStore;
 
+// What BuildMeshlets produces that only the commit can place: meshopt reveals these counts as it runs.
+struct MeshletBuild {
+    std::vector<MeshletRecord> Records;
+    std::vector<uint32_t> Vertices;
+    std::vector<PrimitiveRecord> Primitives;
+    uint32_t TriangleIdCount{}, LocalTriangleCount{};
+};
 
 // Shared arena for per-instance GPU data (transforms, object IDs, instance states, local-space bounds).
 // Uses a single RangeAllocator so all buffers share the same instance offsets.
@@ -200,7 +206,8 @@ struct GpuBuffers {
     }
 
     void Release(MeshBuffers &buffers) {
-        FaceIndexBuffer.Release(buffers.FaceIndices);
+        // A triangle mesh draws straight from the store's corner arena, which the store releases.
+        if (buffers.FaceIndices.Slot == FaceIndexBuffer.Buffer.Slot) FaceIndexBuffer.Release(buffers.FaceIndices);
         buffers.FaceIndices = {};
         EdgeIndexBuffer.Release(buffers.EdgeIndices);
         buffers.EdgeIndices = {};
@@ -254,6 +261,7 @@ struct GpuBuffers {
         MeshletRangeCount = 0;
         MeshletInstanceCount = 0;
         MeshletTopologyMask = 0;
+        DrewElementIndices = false;
         // Occlusion feedback state, so the next scene's phase-1/phase-2 split replays identically
         // regardless of what rendered before the clear.
         PreviousFullCullViewProj = mat4{1};
@@ -323,7 +331,11 @@ struct GpuBuffers {
 
     mat4 PreviousFullCullViewProj{1};
 
-    void RebuildMeshlets(MeshBuffers &, const Mesh &, const MeshStore &);
+    // Reserving and committing take arena ranges and stay in call order, while building touches only
+    // its own mesh, so a batch of meshes can run the middle step at once.
+    void ReserveMeshlets(MeshBuffers &, const Mesh &);
+    MeshletBuild BuildMeshlets(const MeshBuffers &, const Mesh &, const MeshStore &);
+    void CommitMeshlets(MeshBuffers &, MeshletBuild &);
 
     // Poses at the shutter's open and close, for motion blur's velocity pass. Each is a whole-buffer
     // copy of its live counterpart, so the per-draw offsets index them unchanged.
@@ -428,6 +440,9 @@ struct GpuBuffers {
     // Scene state changed since the previous submitted Full frame. This includes visibility and
     // material changes that do not need the posed prelude but can still reveal geometry.
     bool MeshletOcclusionStale{true};
+    // Whether the last frame drew from edge or vertex indices. Meshes that skipped building them
+    // build them when a wireframe or edit overlay first asks.
+    bool DrewElementIndices{false};
 
     // A visibility id carries a meshlet's position in the visible list, not a stable meshlet id, so it
     // resolves correctly only against the list the raster that wrote it saw. Every cull bumps the

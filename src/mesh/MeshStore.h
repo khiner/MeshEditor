@@ -70,6 +70,23 @@ struct MeshPrimitives {
     std::vector<std::vector<std::optional<uint32_t>>> VariantMappings{};
 };
 
+// What creating a mesh derives from the source alone. Deriving it touches no arena and no store
+// state, so a batch derives every mesh at once and the arena work stays in source order.
+struct PreparedMesh {
+    std::vector<vec4> CornerTangents, CornerColors;
+    std::array<std::vector<vec2>, 4> CornerUvs;
+    std::vector<vec3> AuthoredCornerNormals;
+    MeshConnectivity Connectivity;
+    std::optional<ArmatureDeformData> Deform;
+    std::optional<MorphTargetData> Morph;
+};
+
+// Order the faces by primitive, gather the corner-domain channels out of `attrs`, weld, and build
+// connectivity. `data`, `attrs` and `primitives` are left in the state CreateMesh expects.
+// `weld` merges vertices identical in every vertex-domain channel: position, joints/weights, and morph deltas.
+// Welding recovers authored normals as face sharpness on faceted faces and as a custom corner-normal layer where they deviate from derivation.
+PreparedMesh PrepareMesh(MeshData &, MeshVertexAttributes &, MeshPrimitives &, std::optional<ArmatureDeformData> = {}, std::optional<MorphTargetData> = {}, bool weld = false);
+
 // Owns mesh vertex data (canonical CPU/GPU storage) used by all systems, including rendering.
 struct MeshStore {
     explicit MeshStore(mtl::BufferContext &);
@@ -84,9 +101,10 @@ struct MeshStore {
     // Reserve all arenas for accumulated plans, then reset.
     void CommitReserves();
 
-    // `weld` merges vertices identical in every vertex-domain channel: position, joints/weights, and morph deltas.
-    // Welding recovers authored normals as face sharpness on faceted faces and as a custom corner-normal layer where they deviate from derivation.
-    CreatedMesh CreateMesh(MeshData &&, MeshVertexAttributes &&, MeshPrimitives &&, bool flat_shaded = false, std::optional<ArmatureDeformData> = {}, std::optional<MorphTargetData> = {}, bool weld = false);
+    // Takes what PrepareMesh derived, and everything it left in place, into the arenas.
+    CreatedMesh CreateMesh(MeshData &&, MeshVertexAttributes &&, MeshPrimitives &&, PreparedMesh &&, bool flat_shaded = false);
+    // Prepares and creates in one step, for a mesh with no batch to derive alongside.
+    CreatedMesh CreateMesh(MeshData &&, bool flat_shaded = false);
     CreatedMesh CloneMesh(const Mesh &);
 
     // `weld` merges vertices identical in every vertex-domain channel.
@@ -202,6 +220,12 @@ struct MeshStore {
     SlottedRange GetPrimitiveMaterialRange(uint32_t id) const;
 
     std::span<const uint32_t> GetTriangleFaceIds(uint32_t id) const;
+    // The mesh's corner vertex indices, one per halfedge. Canonical: the connectivity and the face
+    // index buffer both read this, and a triangle mesh's draws index it directly.
+    std::span<const uint32_t> GetFaceCorners(uint32_t id) const;
+    SlottedRange GetFaceCornerRange(uint32_t id) const;
+    // Allocate and clear a mesh's edge selection states, which only the wireframe and edit overlays read.
+    void EnsureEdgeStates(const Mesh &);
     std::span<const uint32_t> GetFaceFirstTriangles(uint32_t id) const;
     std::span<const uint32_t> GetElementPrimitiveIndices(uint32_t id) const;
     std::span<uint32_t> GetElementPrimitiveIndices(uint32_t id);
@@ -256,7 +280,7 @@ private:
         Range CornerTangents{}, CornerColors{}; // Corner-domain attribute layers
         std::array<Range, MaxUvSets> CornerUvs{};
         Range EdgeSharpness{}; // One byte per edge, 1 = sharp
-        Range EdgeStates{}, TriangleFaceIds{}, ElementPrimitives{}, PrimitiveMaterials{};
+        Range EdgeStates{}, TriangleFaceIds{}, ElementPrimitives{}, PrimitiveMaterials{}, FaceCorners{};
         // CSR vertex incidence, each range holding (vertex count + 1) offsets followed by the items
         Range VertexFanAdjacency{}, VertexEdgeAdjacency{};
         // Seam-corner sector CSR: (SeamCornerCount + 1) offsets, then fan items (FanItemEncoding)
@@ -283,7 +307,7 @@ private:
     std::vector<uint32_t> FreeIds{};
 
     struct PendingReserves {
-        uint32_t Vertices{}, Faces{}, Triangles{}, Edges{}, EdgeStates{};
+        uint32_t Vertices{}, Faces{}, Triangles{}, Edges{}, EdgeStates{}, FaceCorners{};
         uint32_t Primitives{};
         uint32_t ElementPrimitiveIndices{}; // One per face, or per vertex for point and line meshes.
         uint32_t BoneDeformVertices{}, MorphTargetEntries{};

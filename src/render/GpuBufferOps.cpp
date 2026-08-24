@@ -1,5 +1,6 @@
 #include "render/GpuBufferOps.h"
 
+#include "mesh/Mesh.h"
 #include "render/GpuBuffers.h"
 #include "render/MeshBuffers.h"
 
@@ -9,7 +10,9 @@ std::span<PBRMaterial> GetMaterials(entt::registry &r) {
     auto &materials = r.ctx().get<GpuBuffers>().Materials;
     return {materials.Data(), materials.Count()};
 }
-std::span<const uint32_t> GetFaceIndices(const entt::registry &r, const MeshBuffers &buffers) {
+std::span<const uint32_t> GetFaceIndices(const entt::registry &r, const Mesh &mesh, const MeshBuffers &buffers) {
+    const auto corners = mesh.CornerVertices();
+    if (corners.size() == mesh.TriangleIndexCount()) return corners;
     return r.ctx().get<const GpuBuffers>().FaceIndexBuffer.Get(buffers.FaceIndices);
 }
 std::span<const PunctualLight> GetLights(entt::registry &r) {

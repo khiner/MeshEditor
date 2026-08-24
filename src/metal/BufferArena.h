@@ -48,6 +48,18 @@ struct BufferArena {
 
     void Release(Range range) { Allocator.Free(range); }
 
+    // Give back a range's unused tail, keeping the head allocated.
+    void Shrink(Range &range, uint32_t used) {
+        if (used >= range.Count) return;
+        const Range tail{range.Offset + used, range.Count - used};
+        Allocator.Free(tail);
+        // Reporting and binding read UsedSize, so a tail at the high-water gives its bytes back too.
+        if (const uint64_t tail_end = uint64_t(tail.Offset + tail.Count) * sizeof(T); Buffer.UsedSize == tail_end) {
+            Buffer.UsedSize = uint64_t(range.Offset + used) * sizeof(T);
+        }
+        range.Count = used;
+    }
+
     std::span<const T> Get(Range range) const { return SpanFromBytes<const T>(range); }
     std::span<T> GetMutable(Range range) {
         auto bytes = Buffer.GetMutableRange(range.Offset * sizeof(T), range.Count * sizeof(T));
