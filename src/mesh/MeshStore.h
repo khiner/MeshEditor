@@ -226,6 +226,8 @@ struct MeshStore {
     SlottedRange GetFaceCornerRange(uint32_t id) const;
     // Allocate and clear a mesh's edge selection states, which only the wireframe and edit overlays read.
     void EnsureEdgeStates(const Mesh &);
+    // Zero a mesh's vertex, face, and edge states.
+    void ClearElementStates(const Mesh &);
     std::span<const uint32_t> GetFaceFirstTriangles(uint32_t id) const;
     std::span<const uint32_t> GetElementPrimitiveIndices(uint32_t id) const;
     std::span<uint32_t> GetElementPrimitiveIndices(uint32_t id);

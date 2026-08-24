@@ -7,6 +7,7 @@
 #include "gizmo/GizmoInteraction.h"
 #include "gpu/ViewportTheme.h"
 #include "mesh/Mesh.h"
+#include "mesh/MeshStore.h"
 #include "render/GpuBuffers.h"
 #include "scene/Entity.h"
 #include "selection/Selection.h"
@@ -30,7 +31,14 @@ bool SetInteractionMode(entt::registry &r, entt::entity viewport, InteractionMod
     if (mode == InteractionMode::Pose && !active_is_armature) return false;
 
     r.clear<VertexForce>();
-    if (r.get<const Interaction>(viewport).Mode == InteractionMode::Edit) r.emplace_or_replace<ElementStatesDirty>(viewport);
+    if (r.get<const Interaction>(viewport).Mode == InteractionMode::Edit) {
+        // Element states are display-only. The bitset keeps the selection, and entering Edit mode rederives them.
+        auto &meshes = r.ctx().get<MeshStore>();
+        for (const auto [mesh_entity, _] : r.view<const MeshSelectionBitsetRange>().each()) {
+            if (HasMesh(r, mesh_entity)) meshes.ClearElementStates(GetMesh(r, mesh_entity));
+        }
+        r.emplace_or_replace<ElementStatesDirty>(viewport);
+    }
 
     if (mode == InteractionMode::Edit && !active_is_armature) {
         // Only assign ranges for selected meshes missing one; existing ranges preserve remembered selection.

@@ -1585,6 +1585,11 @@ void MeshStore::ClearElementStates(Range vertices, Range faces, Range edges) {
     if (edges.Count > 0) std::ranges::fill(B->EdgeStateBuffer.GetMutable(edges), 0);
 }
 
+void MeshStore::ClearElementStates(const Mesh &mesh) {
+    const auto &entry = Entries.at(mesh.GetStoreId());
+    ClearElementStates(entry.Vertices, entry.FaceData, entry.EdgeStates);
+}
+
 using namespace he;
 
 
