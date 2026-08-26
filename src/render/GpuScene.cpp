@@ -476,7 +476,9 @@ ClusterLodBuild BuildMeshletClusterLod(const MeshletBuildInputs &in, const Meshl
     for (uint32_t i = 0; i < clusters.size(); ++i) {
         const auto &record = build.Records[i];
         clusters[i] = {
-            .FirstTriangle = record.TriangleOffset,
+            .FirstVertex = record.VertexOffset,
+            .VertexCount = record.VertexCount,
+            .FirstLocalTriangle = record.LocalTriangleOffset & uint32_t(MeshletGeometryEncoding::LocalTriangleOffsetMask),
             .TriangleCount = record.TriangleCount,
             .Center = record.Center,
             .Radius = record.Radius,
@@ -493,7 +495,8 @@ ClusterLodBuild BuildMeshletClusterLod(const MeshletBuildInputs &in, const Meshl
         .Weld = in.Weld,
         .Primitives = primitives,
         .Clusters = clusters,
-        .ClusterTriangles = std::span{build.TriangleIds}.first(build.TriangleIdCount),
+        .SourceVertexCorners = build.Vertices,
+        .SourceLocalTriangles = std::span{build.LocalTriangles}.first(build.LocalTriangleCount),
     };
     return BuildClusterLod(mesh);
 }

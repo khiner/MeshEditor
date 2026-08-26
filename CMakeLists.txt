@@ -19,6 +19,7 @@ set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -stdlib=libc++")
 add_compile_options(-Wno-missing-field-initializers)
 
 add_subdirectory(lib)
+target_compile_options(meshoptimizer PRIVATE -O3)
 
 # Full zstd (compress + decompress).
 add_library(basisu_transcoder STATIC

@@ -4,7 +4,6 @@
 
 #include "render/ClusterLod.h"
 
-#include "FlatKeyMap.h"
 #include "RunSuites.h"
 
 #include "meshoptimizer.h"
@@ -35,7 +34,8 @@ struct Fixture {
     std::vector<uint32_t> CornerVertices;
     std::vector<ClusterLodPrimitive> Primitives;
     std::vector<ClusterLodSourceCluster> Clusters;
-    std::vector<uint32_t> ClusterTriangles;
+    std::vector<uint32_t> ClusterVertices;
+    std::vector<uint8_t> ClusterLocalTriangles;
 
     uint32_t TriangleCount() const { return uint32_t(CornerVertices.size() / 3u); }
 };
@@ -97,13 +97,6 @@ void AppendSeamGrid(Fixture &fixture, uint32_t cells) {
     }
 }
 
-std::array<uint32_t, 3> CanonicalTriangle(std::array<uint32_t, 3> triangle) {
-    const std::array rotations{triangle, std::array{triangle[1], triangle[2], triangle[0]}, std::array{triangle[2], triangle[0], triangle[1]}};
-    return *std::ranges::min_element(rotations);
-}
-
-// Stands in for the engine's level-0 meshlets: the same clusterizer over the same limits, with each
-// cluster naming the source triangles it took.
 void AppendLevel0Clusters(Fixture &fixture, uint32_t first_triangle, uint32_t triangle_count) {
     const auto indices = std::span{fixture.CornerVertices}.subspan(size_t(first_triangle) * 3u, size_t(triangle_count) * 3u);
     const auto bound = meshopt_buildMeshletsBound(indices.size(), ClusterLodMaxVertices, ClusterLodMaxTriangles);
@@ -115,32 +108,32 @@ void AppendLevel0Clusters(Fixture &fixture, uint32_t first_triangle, uint32_t tr
         &fixture.Positions.front().x, fixture.Positions.size(), sizeof(vec3),
         ClusterLodMaxVertices, ClusterLodMaxTriangles, 0.5f
     ));
-
-    FlatKeyMap source_triangles;
-    source_triangles.Reset(3u, triangle_count);
-    for (uint32_t t = 0; t < triangle_count; ++t) {
-        const auto key = CanonicalTriangle({indices[t * 3u], indices[t * 3u + 1u], indices[t * 3u + 2u]});
-        source_triangles.Insert(key.data(), first_triangle + t);
+    std::vector<uint32_t> representative(fixture.Positions.size(), ClusterLodInvalid);
+    for (uint32_t corner = 0; corner < indices.size(); ++corner) {
+        auto &first = representative[indices[corner]];
+        if (first == ClusterLodInvalid) first = corner;
     }
+
     for (const auto &meshlet : built) {
-        const uint32_t first = uint32_t(fixture.ClusterTriangles.size());
-        for (uint32_t t = 0; t < meshlet.triangle_count; ++t) {
-            std::array<uint32_t, 3> triangle;
-            for (uint32_t c = 0; c < 3u; ++c) {
-                triangle[c] = local_vertices[meshlet.vertex_offset + local_triangles[meshlet.triangle_offset + t * 3u + c]];
-            }
-            const auto key = CanonicalTriangle(triangle);
-            auto *source = source_triangles.Find(key.data());
-            expect(source != nullptr);
-            fixture.ClusterTriangles.push_back(*source);
-            *source = FlatKeyMap::Taken;
+        const uint32_t first_vertex = uint32_t(fixture.ClusterVertices.size());
+        for (uint32_t v = 0; v < meshlet.vertex_count; ++v) {
+            const uint32_t vertex = local_vertices[meshlet.vertex_offset + v];
+            fixture.ClusterVertices.push_back(representative[vertex]);
         }
+        const uint32_t first_local_triangle = uint32_t(fixture.ClusterLocalTriangles.size());
+        fixture.ClusterLocalTriangles.insert(
+            fixture.ClusterLocalTriangles.end(),
+            local_triangles.begin() + meshlet.triangle_offset,
+            local_triangles.begin() + meshlet.triangle_offset + size_t(meshlet.triangle_count) * 3u
+        );
         const auto bounds = meshopt_computeMeshletBounds(
             &local_vertices[meshlet.vertex_offset], &local_triangles[meshlet.triangle_offset], meshlet.triangle_count,
             &fixture.Positions.front().x, fixture.Positions.size(), sizeof(vec3)
         );
         fixture.Clusters.push_back(ClusterLodSourceCluster{
-            .FirstTriangle = first,
+            .FirstVertex = first_vertex,
+            .VertexCount = meshlet.vertex_count,
+            .FirstLocalTriangle = first_local_triangle,
             .TriangleCount = meshlet.triangle_count,
             .Center = {bounds.center[0], bounds.center[1], bounds.center[2]},
             .Radius = bounds.radius,
@@ -175,6 +168,21 @@ Fixture SeamGridFixture(uint32_t cells) {
     return fixture;
 }
 
+Fixture TriangleSoupFixture(uint32_t triangle_count) {
+    Fixture fixture;
+    fixture.Positions.reserve(size_t(triangle_count) * 3u);
+    fixture.CornerVertices.reserve(size_t(triangle_count) * 3u);
+    for (uint32_t triangle = 0; triangle < triangle_count; ++triangle) {
+        const float x = float(triangle % 300u);
+        const float y = float(triangle / 300u);
+        const uint32_t first = uint32_t(fixture.Positions.size());
+        fixture.Positions.insert(fixture.Positions.end(), {{x, y, 0.f}, {x + 0.4f, y, 0.f}, {x, y + 0.4f, 0.f}});
+        fixture.CornerVertices.insert(fixture.CornerVertices.end(), {first, first + 1u, first + 2u});
+    }
+    CloseTrianglePrimitive(fixture, 0u);
+    return fixture;
+}
+
 Fixture TwoPrimitiveFixture(uint32_t rings, uint32_t segments) {
     Fixture fixture;
     AppendSphere(fixture, rings, segments, vec3{0}, 1.f);
@@ -194,7 +202,8 @@ ClusterLodMesh MeshOf(const Fixture &fixture) {
     mesh.Weld.CornerUvs[0] = fixture.CornerUvs;
     mesh.Primitives = fixture.Primitives;
     mesh.Clusters = fixture.Clusters;
-    mesh.ClusterTriangles = fixture.ClusterTriangles;
+    mesh.SourceVertexCorners = fixture.ClusterVertices;
+    mesh.SourceLocalTriangles = fixture.ClusterLocalTriangles;
     return mesh;
 }
 
@@ -310,6 +319,51 @@ int main() {
         const auto parallel = BuildClusterLod(MeshOf(medium_sphere));
         const auto serial = BuildClusterLod(MeshOf(medium_sphere), /*serial=*/true);
         expect(SameBuild(parallel, serial));
+    };
+
+    "the parallel position remap matches the reference bytes eight times"_test = [] {
+        const auto remap_mesh = TriangleSoupFixture(90'000u);
+        const auto reference = BuildClusterLod(MeshOf(remap_mesh), /*serial=*/true);
+        for (uint32_t run = 0; run < 8u; ++run) expect(SameBuild(BuildClusterLod(MeshOf(remap_mesh)), reference));
+    };
+
+    "the source-vertex weld matches the general key path"_test = [] {
+        auto fixture = SphereFixture(32u, 64u);
+        fixture.CornerUvs.clear();
+        const auto direct = BuildClusterLod(MeshOf(fixture));
+
+        auto generic_mesh = MeshOf(fixture);
+        std::vector<uint32_t> corner_classes(
+            fixture.CornerVertices.size(),
+            uint32_t(CornerClass::Vertex) << uint32_t(CornerClassEncoding::TagShift)
+        );
+        generic_mesh.Weld.CornerClasses = corner_classes;
+        const auto generic = BuildClusterLod(generic_mesh);
+        expect(SameBuild(direct, generic));
+    };
+
+    "level-zero records carry their reconstructed bounds"_test = [&] {
+        for (const auto &entry : builds) {
+            const auto *fixture = entry.second;
+            for (const auto &primitive : fixture->Primitives) {
+                for (uint32_t i = 0; i < primitive.ClusterCount; ++i) {
+                    const auto &cluster = fixture->Clusters[primitive.FirstCluster + i];
+                    const auto local_triangles = std::span{fixture->ClusterLocalTriangles}.subspan(
+                        cluster.FirstLocalTriangle, size_t(cluster.TriangleCount) * 3u
+                    );
+                    std::vector<uint32_t> indices;
+                    indices.reserve(local_triangles.size());
+                    for (const uint8_t local : local_triangles) {
+                        const uint32_t corner = fixture->ClusterVertices[cluster.FirstVertex + local];
+                        indices.push_back(fixture->CornerVertices[primitive.FirstTriangle * 3u + corner]);
+                    }
+                    const auto bounds = meshopt_computeClusterBounds(
+                        indices.data(), indices.size(), &fixture->Positions.front().x, fixture->Positions.size(), sizeof(vec3)
+                    );
+                    expect(cluster.Center.x == bounds.center[0] && cluster.Center.y == bounds.center[1] && cluster.Center.z == bounds.center[2] && cluster.Radius == bounds.radius);
+                }
+            }
+        }
     };
 
     "every level-0 cluster lands in exactly one group"_test = [&] {

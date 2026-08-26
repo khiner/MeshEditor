@@ -372,18 +372,37 @@ void BuildMeshletsNow(entt::registry &r, std::span<const entt::entity> mesh_enti
     RepointMeshInstances(r, mesh_entities);
     if (profile::Enabled) {
         uint32_t lod_meshes = 0, lod_levels = 0, lod_clusters = 0, lod_groups = 0;
-        double lod_ms = 0;
+        ClusterLodStats stats;
+        ClusterLodLevelStats level_stats;
         for (const auto &lod : lods) {
             if (lod.Groups.empty()) continue;
             ++lod_meshes;
             lod_levels = std::max(lod_levels, lod.LevelCount);
             lod_clusters += uint32_t(lod.Clusters.size());
             lod_groups += uint32_t(lod.Groups.size());
-            lod_ms += lod.Stats.TotalMs;
+            stats.TotalMs += lod.Stats.TotalMs;
+            stats.WeldMs += lod.Stats.WeldMs;
+            stats.Level0Ms += lod.Stats.Level0Ms;
+            stats.HierarchyMs += lod.Stats.HierarchyMs;
+            for (const auto &level : lod.Stats.Levels) {
+                level_stats.PartitionMs += level.PartitionMs;
+                level_stats.LockMs += level.LockMs;
+                level_stats.MergeMs += level.MergeMs;
+                level_stats.SimplifyMs += level.SimplifyMs;
+                level_stats.ClusterizeMs += level.ClusterizeMs;
+                level_stats.EmitMs += level.EmitMs;
+            }
         }
+        const double levels_ms = stats.TotalMs - stats.WeldMs - stats.Level0Ms - stats.HierarchyMs;
         std::println(
-            "Cluster LOD: {} meshes, {} levels, {} coarse clusters, {} groups, {:.1f} ms of build",
-            lod_meshes, lod_levels, lod_clusters, lod_groups, lod_ms
+            "Cluster LOD: {} meshes, {} levels, {} coarse clusters, {} groups, {:.1f} ms of build ({:.1f} weld, {:.1f} source, {:.1f} levels, {:.1f} span trees)",
+            lod_meshes, lod_levels, lod_clusters, lod_groups, stats.TotalMs,
+            stats.WeldMs, stats.Level0Ms, levels_ms, stats.HierarchyMs
+        );
+        std::println(
+            "Cluster LOD levels: {:.1f} ms partition, {:.1f} lock, {:.1f} merge; group CPU {:.1f} simplify, {:.1f} clusterize, {:.1f} emit",
+            level_stats.PartitionMs, level_stats.LockMs, level_stats.MergeMs,
+            level_stats.SimplifyMs, level_stats.ClusterizeMs, level_stats.EmitMs
         );
     }
 }

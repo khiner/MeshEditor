@@ -29,7 +29,8 @@ struct ClusterLodPrimitive {
 // One level-0 cluster. Its render record carries this bounding sphere, which the span tree's leaves
 // contain.
 struct ClusterLodSourceCluster {
-    uint32_t FirstTriangle{}, TriangleCount{}; // range in ClusterLodMesh::ClusterTriangles
+    uint32_t FirstVertex{}, VertexCount{}; // range in ClusterLodMesh::SourceVertexCorners
+    uint32_t FirstLocalTriangle{}, TriangleCount{}; // three bytes per triangle in SourceLocalTriangles
     vec3 Center{};
     float Radius{};
     bool ConeCullSafe{};
@@ -49,7 +50,10 @@ struct ClusterLodMesh {
 
     std::span<const ClusterLodPrimitive> Primitives;
     std::span<const ClusterLodSourceCluster> Clusters;
-    std::span<const uint32_t> ClusterTriangles; // mesh triangle ids, grouped by cluster
+    // The level-zero meshlets' native geometry. Vertex corners and local triangle bytes may carry the
+    // render encoding's high flag bits; the DAG reads only their corner and local-index fields.
+    std::span<const uint32_t> SourceVertexCorners;
+    std::span<const uint8_t> SourceLocalTriangles;
 };
 
 // A coarse cluster in engine record form. Offsets are local to the build, and integration rebases
@@ -120,5 +124,6 @@ struct ClusterLodBuild {
 };
 
 // Builds a mesh's cluster LOD DAG from its level-0 clusters.
-// `serial` runs the groups of a level one at a time, which produces the same bytes as the parallel run.
+// `serial` uses the reference position remap and runs each level's groups one at a time, producing the
+// same bytes as the parallel run.
 ClusterLodBuild BuildClusterLod(const ClusterLodMesh &, bool serial = false);
