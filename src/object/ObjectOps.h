@@ -9,19 +9,18 @@
 #include <span>
 
 struct Armature;
-struct CreatedMesh;
 struct MeshStore;
 
 std::string CreateName(entt::registry &, std::string_view prefix);
 
-// Idempotent visibility helpers; emplace/remove RenderInstance, the reactive handlers do the rest.
+// Idempotent visibility helpers that emplace or remove RenderInstance and leave the rest to the reactive handlers.
 void Show(entt::registry &, entt::entity);
 void Hide(entt::registry &, entt::entity);
 
 void ApplySelectBehavior(entt::registry &, entt::entity, MeshInstanceCreateInfo::SelectBehavior);
 
-// Entity creation. None apply SelectBehavior — callers do that after.
-std::pair<entt::entity, entt::entity> AddMesh(entt::registry &, MeshStore &, CreatedMesh &&, std::optional<MeshInstanceCreateInfo> = {});
+// Entity creation. None apply SelectBehavior, so callers do that after.
+std::pair<entt::entity, entt::entity> AddMesh(entt::registry &, uint32_t store_id, std::optional<MeshInstanceCreateInfo> = {});
 entt::entity AddMeshInstance(entt::registry &, entt::entity mesh_entity, const MeshInstanceCreateInfo &);
 
 // Creates a vertex-only buffer entity for derived overlay geometry (collider/AABB/tet wireframes).
@@ -37,7 +36,6 @@ std::pair<entt::entity, entt::entity> ImportMesh(entt::registry &, const std::fi
 // Schedules a deferred mesh import.
 void RequestImportMesh(entt::registry &, entt::entity viewport, std::filesystem::path, MeshInstanceCreateInfo);
 
-// Object teardown (counterpart to the Add* creators above).
 void Destroy(entt::registry &, entt::entity viewport, entt::entity);
 void ClearMeshes(entt::registry &, entt::entity viewport);
 void DestroyArmatureData(entt::registry &, entt::entity arm_obj_entity);

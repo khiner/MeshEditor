@@ -9,6 +9,7 @@
 #include "metal/Shader.h"
 #include "render/DrawState.h"
 #include "render/GpuBuffers.h"
+#include "render/Pipelines.h"
 
 #include <cassert>
 #include <print>
@@ -154,6 +155,22 @@ inline void BindCompute(
 ) {
     encoder->setComputePipelineState(pipeline.State());
     BindScene(encoder, slots, buffers, view_offset);
+}
+
+// One pass of a tiled job batch, covering `groups` threadgroups from `first_tile` of the pass's tile map.
+// Each pass reads what the pass before it wrote through the bindless table, which the encoder cannot
+// see, so every pass barriers behind the last.
+inline void DispatchTiledPass(
+    MTL::ComputeCommandEncoder *encoder, const mtl::ComputePipeline &pipeline, const mtl::BindlessSet &slots,
+    const GpuBuffers &buffers, auto pc, size_t groups, uint32_t first_tile
+) {
+    if (groups == 0) return;
+    BindCompute(encoder, pipeline, slots, buffers);
+    pc.FirstTile = first_tile;
+    SetPushConstants(encoder, pc);
+    encoder->setThreadgroupMemoryLength(ThreadgroupMemory::BlockScan, 0);
+    encoder->dispatchThreadgroups(MTL::Size(groups, 1, 1), ThreadgroupSize::Linear256);
+    encoder->memoryBarrier(MTL::BarrierScopeBuffers);
 }
 
 } // namespace encode

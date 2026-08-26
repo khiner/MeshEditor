@@ -109,7 +109,7 @@ void LoadState(entt::registry &r, std::span<const std::byte> bytes) {
 
     // The derived mesh arenas rebuild from the restored connectivity and sharpness stores.
     std::vector<Mesh> restored;
-    for (const auto e : r.view<const MeshHandle, const MeshConnectivity>()) restored.emplace_back(GetMesh(r, e));
+    for (const auto e : r.view<const MeshHandle>()) restored.emplace_back(GetMesh(r, e));
     meshes.RebuildDerived(restored);
 }
 } // namespace snapshot

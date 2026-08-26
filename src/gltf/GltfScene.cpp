@@ -1,7 +1,6 @@
 #include "GltfScene.h"
 
 #include "File.h"
-#include "Parallel.h"
 #include "Path.h"
 #include "Profile.h"
 #include "TransformMath.h"
@@ -27,6 +26,7 @@
 #include "render/GpuBuffers.h"
 #include "render/Instance.h"
 #include "render/MaterialComponents.h"
+#include "render/MeshBatch.h"
 #include "render/PbrFeature.h"
 #include "render/Textures.h"
 #include "scene/SceneGraph.h"
@@ -47,9 +47,8 @@
 #include <numeric>
 
 // Load-only intermediate carrier. Holds parsed-but-not-yet-uploaded geometry.
-// Load builds it from fastgltf accessors, runs `MeshStore::PlanCreate` for the whole batch
-// (so arena reserves happen before any CreateMesh), and then drains into ECS.
-// Batch-commit is what blocks a single-pass collapse since the vertex/face data outlives the parse.
+// Load builds it from fastgltf accessors, hands the whole batch to `CreateMeshes`, which reserves the
+// arenas once for all of it, and then drains into ECS.
 namespace gltf {
 namespace {
 struct MeshData {
@@ -651,6 +650,25 @@ std::expected<void, std::string> AppendPrimitive(
         }
         if (!morph->TangentDeltas.empty()) {
             morph->TangentDeltas.resize(morph->TangentDeltas.size() + morph->TargetCount * prim_vertex_count, vec3{0.f});
+        }
+    }
+
+    // A triangle list's corner stream is its index stream shifted by the primitive's first vertex, so
+    // it reads as one block rather than a face at a time. A count that is not whole triangles takes
+    // the loop below, which drops the remainder.
+    if (primitive.type == fastgltf::PrimitiveType::Triangles) {
+        const auto index_count = primitive.indicesAccessor ? asset.accessors[*primitive.indicesAccessor].count : position_accessor.count;
+        if (index_count >= 3 && index_count % 3 == 0) {
+            const auto corners = mesh.AddTriangleCorners(uint32_t(index_count));
+            if (primitive.indicesAccessor) {
+                fastgltf::copyFromAccessor<uint32_t>(asset, asset.accessors[*primitive.indicesAccessor], corners.data());
+                if (base_vertex != 0) {
+                    for (auto &corner : corners) corner += base_vertex;
+                }
+            } else {
+                std::iota(corners.begin(), corners.end(), base_vertex);
+            }
+            return {};
         }
     }
 
@@ -2087,38 +2105,6 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
         pending.Items.insert(pending.Items.end(), std::make_move_iterator(new_pending_textures.begin()), std::make_move_iterator(new_pending_textures.end()));
     }
 
-    { // Pre-reserve MeshStore arenas to avoid O(N) reallocations during bulk mesh creation.
-        auto plan = [&](const std::optional<::MeshData> &data, const ::MeshPrimitives &primitives, const ::MeshVertexAttributes &attrs) { if (data) ctx.Meshes.PlanCreate(*data, primitives, false, 0, attrs); };
-        for (const auto &scene_mesh : source_meshes) {
-            if (scene_mesh.Triangles) {
-                const uint32_t morph_targets = scene_mesh.MorphData ? scene_mesh.MorphData->TargetCount : 0;
-                ctx.Meshes.PlanCreate(*scene_mesh.Triangles, scene_mesh.TrianglePrimitives, scene_mesh.DeformData.has_value(), morph_targets, scene_mesh.TriangleAttrs);
-            }
-            plan(scene_mesh.Lines, scene_mesh.LinePrimitives, scene_mesh.LineAttrs);
-            plan(scene_mesh.Points, scene_mesh.PointPrimitives, scene_mesh.PointAttrs);
-        }
-        ctx.Meshes.CommitReserves();
-    }
-
-    // Deriving a mesh reads only its own source, so the batch derives at once and the arena work below
-    // stays in source order.
-    struct PreparedSourceMesh {
-        PreparedMesh Triangles, Lines, Points;
-    };
-    std::vector<PreparedSourceMesh> prepared_meshes(source_meshes.size());
-    ParallelFor(uint32_t(source_meshes.size()), [&](uint32_t mi) {
-        auto &scene_mesh = source_meshes[mi];
-        auto &prepared = prepared_meshes[mi];
-        if (scene_mesh.Triangles) {
-            prepared.Triangles = PrepareMesh(
-                *scene_mesh.Triangles, scene_mesh.TriangleAttrs, scene_mesh.TrianglePrimitives,
-                std::move(scene_mesh.DeformData), std::move(scene_mesh.MorphData), /*weld=*/true
-            );
-        }
-        if (scene_mesh.Lines) prepared.Lines = PrepareMesh(*scene_mesh.Lines, scene_mesh.LineAttrs, scene_mesh.LinePrimitives);
-        if (scene_mesh.Points) prepared.Points = PrepareMesh(*scene_mesh.Points, scene_mesh.PointAttrs, scene_mesh.PointPrimitives);
-    });
-
     struct MorphSummary {
         uint32_t TargetCount{};
         std::vector<float> DefaultWeights;
@@ -2126,18 +2112,19 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
     struct NonTriangleEntities {
         entt::entity Lines{entt::null}, Points{entt::null};
     };
+    // Where a source mesh's parts landed in the batch, since one mesh contributes up to three meshes.
+    static constexpr uint32_t NoPart{UINT32_MAX};
+    struct SourceParts {
+        uint32_t Triangles{NoPart}, Lines{NoPart}, Points{NoPart};
+    };
 
-    std::vector<entt::entity> mesh_entities;
-    mesh_entities.reserve(source_meshes.size());
-
-    std::vector<MorphSummary> mesh_morphs;
-    mesh_morphs.reserve(source_meshes.size());
-
-    std::vector<NonTriangleEntities> non_triangle_entities_per_mesh(source_meshes.size());
+    std::vector<MeshSource> sources;
+    std::vector<MeshSourceLayout> layouts;
+    std::vector<SourceParts> parts(source_meshes.size());
+    std::vector<PbrFeatureMask> pbr_masks(source_meshes.size(), PbrFeatureMask{0});
+    std::vector<MorphSummary> mesh_morphs(source_meshes.size());
     for (uint32_t mi = 0; mi < source_meshes.size(); ++mi) {
         auto &scene_mesh = source_meshes[mi];
-        auto &prepared = prepared_meshes[mi];
-        entt::entity mesh_entity = entt::null;
         if (scene_mesh.Triangles) {
             // Must run before the remap loop below overwrites MaterialIndices, since this indexes source_materials by gltf index.
             // The texture tests only check for InvalidSlot, which survives slot remapping, so reading pre-remap slots is fine.
@@ -2153,6 +2140,7 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
                     if (mat.Iridescence.Factor > 0.f || mat.Iridescence.Texture.Slot != InvalidSlot) mesh_pbr_mask |= PbrFeature::Iridescence;
                 }
             }
+            pbr_masks[mi] = mesh_pbr_mask;
             for (auto &local_material_index : scene_mesh.TrianglePrimitives.MaterialIndices) local_material_index = remap_material(local_material_index);
             // KHR_materials_variants mappings carry source gltf material indices.
             // Remap to match post-load PrimitiveMaterialBuffer indices so the runtime can apply a variant by writing entries straight to that buffer.
@@ -2161,55 +2149,64 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
                     if (m) *m = remap_material(*m);
                 }
             }
-            // Snapshot per-primitive metadata + morph tangent deltas before CreateMesh consumes the source.
-            // DefaultMaterials copies because CreateMesh also consumes MaterialIndices to populate PrimitiveMaterialBuffer.
-            MorphSummary morph_summary;
+            // Snapshot per-primitive metadata before the batch consumes the source.
+            // DefaultMaterials copies because the create also consumes MaterialIndices to populate PrimitiveMaterialBuffer.
             MeshSourceLayout layout{
                 .AttributeFlags = std::move(scene_mesh.TrianglePrimitives.AttributeFlags),
                 .HasSourceIndices = std::move(scene_mesh.TrianglePrimitives.HasSourceIndices),
                 .DefaultMaterials = scene_mesh.TrianglePrimitives.MaterialIndices,
                 .VariantMappings = std::move(scene_mesh.TrianglePrimitives.VariantMappings),
                 .Colors0ComponentCount = scene_mesh.TriangleAttrs.Colors0ComponentCount,
-                .MorphTangentDeltas = {}, // Filled from CreatedMesh below, after welding compacts them.
+                .MorphTangentDeltas = {}, // Filled from the created mesh below, after welding compacts them.
             };
-            if (prepared.Triangles.Morph) {
-                morph_summary = {prepared.Triangles.Morph->TargetCount, prepared.Triangles.Morph->DefaultWeights};
-            }
+            if (scene_mesh.MorphData) mesh_morphs[mi] = {scene_mesh.MorphData->TargetCount, scene_mesh.MorphData->DefaultWeights};
             // Primitives without NORMAL are flat-shaded per the glTF spec.
             const bool any_normals = std::ranges::any_of(layout.AttributeFlags, [](uint32_t flags) { return (flags & MeshAttributeBit_Normal) != 0; });
-            auto mesh = ctx.Meshes.CreateMesh(
-                std::move(*scene_mesh.Triangles), std::move(scene_mesh.TriangleAttrs), std::move(scene_mesh.TrianglePrimitives),
-                std::move(prepared.Triangles), !any_normals
-            );
-            layout.MorphTangentDeltas = std::move(mesh.MorphTangentDeltas);
-            const auto [me, _] = ::AddMesh(r, ctx.Meshes, std::move(mesh), std::nullopt);
-            mesh_entity = me;
-            r.emplace<Path>(mesh_entity, source_path);
-            r.emplace<SourceMeshIndex>(mesh_entity, mi);
-            r.emplace<SourceMeshKind>(mesh_entity, MeshKind::Triangles);
-            r.emplace<MeshSourceLayout>(mesh_entity, std::move(layout));
-            if (!scene_mesh.Name.empty()) r.emplace<MeshName>(mesh_entity, scene_mesh.Name);
-            if (mesh_pbr_mask != 0) r.emplace<PbrMeshFeatures>(mesh_entity, mesh_pbr_mask);
-            mesh_morphs.emplace_back(std::move(morph_summary));
-        } else {
-            mesh_morphs.emplace_back();
+            parts[mi].Triangles = uint32_t(sources.size());
+            sources.emplace_back(MeshSource{
+                .Data = std::move(*scene_mesh.Triangles),
+                .Attrs = std::move(scene_mesh.TriangleAttrs),
+                .Primitives = std::move(scene_mesh.TrianglePrimitives),
+                .Deform = std::move(scene_mesh.DeformData),
+                .Morph = std::move(scene_mesh.MorphData),
+                .Weld = true,
+                .FlatShaded = !any_normals,
+            });
+            layouts.emplace_back(std::move(layout));
         }
-        mesh_entities.emplace_back(mesh_entity);
-
-        auto create_non_triangle_mesh = [&](std::optional<::MeshData> &data, ::MeshVertexAttributes &attrs, ::MeshPrimitives &primitives, PreparedMesh &prepared_non_triangle, MeshKind kind) -> entt::entity {
-            if (!data) return entt::null;
+        // Point and line primitives draw straight from their positions, so they record no source index streams.
+        const auto add_non_triangle = [&](std::optional<::MeshData> &data, ::MeshVertexAttributes &attrs, ::MeshPrimitives &primitives) {
+            if (!data) return NoPart;
             for (auto &local_material_index : primitives.MaterialIndices) local_material_index = remap_material(local_material_index);
-            // Point and line primitives draw straight from their positions, so they record no source index streams.
-            auto layout = MeshSourceLayout{
+            layouts.emplace_back(MeshSourceLayout{
                 .AttributeFlags = primitives.AttributeFlags,
                 .HasSourceIndices = {},
                 .DefaultMaterials = primitives.MaterialIndices,
                 .VariantMappings = {},
                 .Colors0ComponentCount = attrs.Colors0ComponentCount,
                 .MorphTangentDeltas = {},
-            };
-            auto m = ctx.Meshes.CreateMesh(std::move(*data), std::move(attrs), std::move(primitives), std::move(prepared_non_triangle));
-            const auto [e, _] = ::AddMesh(r, ctx.Meshes, std::move(m), std::nullopt);
+            });
+            const auto part = uint32_t(sources.size());
+            sources.emplace_back(MeshSource{.Data = std::move(*data), .Attrs = std::move(attrs), .Primitives = std::move(primitives)});
+            return part;
+        };
+        parts[mi].Lines = add_non_triangle(scene_mesh.Lines, scene_mesh.LineAttrs, scene_mesh.LinePrimitives);
+        parts[mi].Points = add_non_triangle(scene_mesh.Points, scene_mesh.PointAttrs, scene_mesh.PointPrimitives);
+    }
+
+    // Deriving a mesh reads only its own source, so the batch derives every mesh at once and the arena
+    // work stays in source order.
+    auto created = CreateMeshes(r, sources);
+
+    std::vector<entt::entity> mesh_entities;
+    mesh_entities.reserve(source_meshes.size());
+    std::vector<NonTriangleEntities> non_triangle_entities_per_mesh(source_meshes.size());
+    for (uint32_t mi = 0; mi < source_meshes.size(); ++mi) {
+        const auto &scene_mesh = source_meshes[mi];
+        const auto add_part = [&](uint32_t part, MeshKind kind) {
+            auto &layout = layouts[part];
+            layout.MorphTangentDeltas = std::move(created[part].MorphTangentDeltas);
+            const auto [e, _] = ::AddMesh(r, created[part].StoreId, std::nullopt);
             r.emplace<Path>(e, source_path);
             r.emplace<SourceMeshIndex>(e, mi);
             r.emplace<SourceMeshKind>(e, kind);
@@ -2217,9 +2214,16 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
             if (!scene_mesh.Name.empty()) r.emplace<MeshName>(e, scene_mesh.Name);
             return e;
         };
-        auto lines_entity = create_non_triangle_mesh(scene_mesh.Lines, scene_mesh.LineAttrs, scene_mesh.LinePrimitives, prepared.Lines, MeshKind::Lines);
-        auto points_entity = create_non_triangle_mesh(scene_mesh.Points, scene_mesh.PointAttrs, scene_mesh.PointPrimitives, prepared.Points, MeshKind::Points);
-        non_triangle_entities_per_mesh[mi] = {lines_entity, points_entity};
+        entt::entity mesh_entity = entt::null;
+        if (parts[mi].Triangles != NoPart) {
+            mesh_entity = add_part(parts[mi].Triangles, MeshKind::Triangles);
+            if (pbr_masks[mi] != 0) r.emplace<PbrMeshFeatures>(mesh_entity, pbr_masks[mi]);
+        }
+        mesh_entities.emplace_back(mesh_entity);
+        non_triangle_entities_per_mesh[mi] = {
+            parts[mi].Lines == NoPart ? entt::null : add_part(parts[mi].Lines, MeshKind::Lines),
+            parts[mi].Points == NoPart ? entt::null : add_part(parts[mi].Points, MeshKind::Points),
+        };
     }
 
     const auto name_prefix = source_path.stem().string();

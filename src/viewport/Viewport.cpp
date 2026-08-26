@@ -15,6 +15,7 @@
 #include "physics/PhysicsTypes.h"
 #include "render/DrawState.h"
 #include "render/MaterialImport.h"
+#include "render/MeshBatch.h"
 #include "render/Pipelines.h"
 #include "render/Textures.h"
 #include "scene/Defaults.h"
@@ -36,7 +37,7 @@
 using std::ranges::find, std::ranges::to;
 
 namespace {
-// Metal command buffers are single-use; RecordedPhase tracks the last build.
+// Metal command buffers are single-use, and RecordedPhase tracks the last build.
 struct ViewportRenderResources {
     MTL::CommandBuffer *InFlight{nullptr}; // The submitted frame, until it completes.
     RenderPhase RecordedPhase{RenderPhase::Full};
@@ -62,7 +63,6 @@ void SubmitRecordedFrame(entt::registry &r, MTL::CommandBuffer *command_buffer) 
     r.ctx().get<FrameState>().RenderPending = true;
 }
 
-// Record and submit one single-use command buffer.
 void RecordAndSubmitFrame(entt::registry &r, entt::entity viewport, DrawListUse use) {
     const auto &ctx = r.ctx().get<const mtl::Context>();
     auto &resources = r.ctx().get<ViewportRenderResources>();
@@ -81,7 +81,7 @@ DrawListUse RequestedDrawListUse(RenderRequest request, bool force_rebuild = fal
     return DrawListUse::Reuse;
 }
 
-// Drain changes and render; returns false while the viewport has no non-zero extent.
+// Drain changes and render. Returns false while the viewport has no non-zero extent.
 bool AdvanceAndRecord(entt::registry &r, entt::entity viewport, bool force_full) {
     ProcessComponentEvents(r, viewport);
     if (!ViewportImageReady(r)) return false;
@@ -114,9 +114,8 @@ bool MotionBlurActive(const entt::registry &r, entt::entity viewport) {
     return r.get<const TimelinePlayback>(viewport).Playing || frame_state.Scrubbing || frame_state.Capturing;
 }
 
-// Render the frame with motion blur across the shutter (centered on the current frame): each step
-// renders once and blurs along its own screen motion, and several steps average together. Overlays
-// stay sharp over the blur. Restores the settled frame afterward.
+// Render the frame with motion blur across the shutter, centered on the current frame.
+// Overlays stay sharp over the blur, and the settled frame is restored afterward.
 void RenderMotionBlurredFrame(entt::registry &r, entt::entity viewport) {
     const auto &ctx = r.ctx().get<const mtl::Context>();
     auto &pipelines = r.ctx().get<Pipelines>();
@@ -264,7 +263,6 @@ void SubmitViewport(entt::registry &r, entt::entity viewport, MTL::CommandBuffer
     auto &frame_state = r.ctx().get<FrameState>();
     if (MotionBlurActive(r, viewport)) {
         // A blurred frame costs several scene evaluations, so only run one when something changed.
-        // (Otherwise the frame already on screen is what it would produce.)
         if (const auto request = TakeRenderRequest(r); request != RenderRequest::None) {
             // Leave the request pending so the per-step render sees any re-record demand, like a resize recreating framebuffers.
             r.ctx().get<PendingRenderRequest>().Value = request;
@@ -356,7 +354,7 @@ entt::entity InitEngine(entt::registry &r) {
     environments.BrdfLut = CreateDefaultLutTexture(ctx, init_batch, slots, images_dir / "lut_ggx.png", "DefaultGGXBRDFLUT", r.ctx().get<const ActiveSamplerAnisotropy>().Value);
     environments.SheenELut = CreateDefaultLutTexture(ctx, init_batch, slots, images_dir / "lut_sheen_E.png", "DefaultSheenELUT", r.ctx().get<const ActiveSamplerAnisotropy>().Value);
     environments.CharlieLut = CreateDefaultLutTexture(ctx, init_batch, slots, images_dir / "lut_charlie.png", "DefaultCharlieLUT", r.ctx().get<const ActiveSamplerAnisotropy>().Value);
-    // Blender's default world background color (linear RGB) - flat ambient-only IBL when no scene world is provided.
+    // Blender's default world background color (linear RGB), a flat ambient-only IBL when no scene world is provided.
     environments.EmptySceneWorld = BuildFlatColorEnvironment(ctx, slots, vec3{0.05f}, "EmptySceneWorld");
     SubmitTextureUploadBatch(init_batch);
     // Default scene world (no imported EXT-IBL). The reactive SceneWorld pass swaps in an imported world when
@@ -390,10 +388,8 @@ void SetupScene(entt::registry &r, entt::entity viewport) {
     r.emplace_or_replace<TransformGizmoState>(viewport);
     physics::ApplySimulationSettings(r, r.emplace_or_replace<PhysicsSimulationSettings>(viewport));
 
-    // Default studio-environment selection.
     r.emplace_or_replace<StudioEnvironment>(viewport, std::string{"forest"});
 
-    // Domain-registered per-scene defaults.
     for (const auto &handler : r.ctx().get<SceneSetupHandlers>().Handlers) handler(r, viewport);
 }
 
@@ -401,7 +397,8 @@ void AddDefaultSceneContent(entt::registry &r) {
     // Default scene: a cube, a light, and a camera (startup.blend layout).
     auto &meshes = r.ctx().get<MeshStore>();
     constexpr PrimitiveShape default_shape{primitive::Cuboid{}};
-    const auto [mesh_entity, _] = ::AddMesh(r, meshes, meshes.CreateMesh(primitive::CreateMesh(default_shape), true), MeshInstanceCreateInfo{.Name = ToString(default_shape)});
+    const auto created = CreateMesh(r, {.Data = primitive::CreateMesh(default_shape), .FlatShaded = true});
+    const auto [mesh_entity, _] = ::AddMesh(r, created.StoreId, MeshInstanceCreateInfo{.Name = ToString(default_shape)});
     r.emplace<PrimitiveShape>(mesh_entity, default_shape);
 
     // startup.blend data, in Blender's frame (Z-up, -Y forward)
@@ -489,8 +486,8 @@ void DeinitViewport(entt::registry &r, entt::entity viewport) {
 }
 
 void PresentViewport(entt::registry &r, entt::entity viewport) {
-    // Replay may reach this before the viewport has an extent; once it does, record the complete
-    // state even if earlier zero-extent ticks consumed its reactive changes.
+    // Replay may reach this before the viewport has an extent.
+    // Once it has one, record the complete state even if earlier zero-extent ticks consumed its reactive changes.
     if (!AdvanceAndRecord(r, viewport, /*force_full=*/true)) return;
     WaitForRender(r);
 }

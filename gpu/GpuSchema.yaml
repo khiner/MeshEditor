@@ -188,6 +188,12 @@ enums:
         value: 22
       - name: FaceMask
         value: 0x3fffffu
+  # Which CSR table a vertex-adjacency job builds.
+  - name: VertexAdjacencyKind
+    type: u32
+    values:
+      - name: Fan
+      - name: Edge
   # How a visibility id divides: the triangle within its meshlet in the low bits, the meshlet's place
   # in the visible list above that, and the phase whose list to read in the top bit.
   - name: VisibilityId
@@ -579,6 +585,124 @@ structs:
         type: u32[8]
       - name: BlendOffsets
         type: u32[256]
+  # One CSR table a vertex-adjacency dispatch builds, over one mesh.
+  # The counts scratch holds VertexCount + 1 words, first the per-vertex counts, then the scatter cursors.
+  # An edge job also reads the mesh's edge-first bit words, whose set bits rank an edge index.
+  - name: VertexAdjacencyJob
+    fields:
+      - name: Corners
+        type: SlotOffset
+      - name: VertexCount
+        type: u32
+      - name: HalfedgeCount
+        type: u32
+      - name: Kind
+        type: VertexAdjacencyKind
+      # CSR range start in the adjacency arena: (VertexCount + 1) item-start offsets, then the items.
+      - name: CsrOffset
+        type: u32
+      - name: CountsOffset
+        type: u32
+      # Scan-block sums for this job's counts, one per AdjacencyBlockElements.
+      - name: BlockOffset
+        type: u32
+      - name: BlockCount
+        type: u32
+      - name: EdgeFirstBitsOffset
+        type: u32
+        default: InvalidOffset
+      - name: EdgeFirstRanksOffset
+        type: u32
+        default: InvalidOffset
+  # One mesh's vertex weld: the arenas it rewrites and the scratch layout its passes read and write.
+  # The flags run holds one mark per vertex plus a terminator, and the scan turns it into each vertex's welded index.
+  - name: VertexWeldJob
+    fields:
+      # The arena range holding the mesh's positions, the first channel of the key the weld compares,
+      # and which the compaction rewrites to the welded vertices.
+      - name: Positions
+        type: SlotOffset
+      # The corner array the remap rewrites through the welded numbering.
+      - name: Corners
+        type: SlotOffset
+      # The skin joints and weights, at the mesh's source vertex count. Slot is InvalidSlot when the
+      # mesh carries no skin.
+      - name: Deform
+        type: SlotOffset
+      # The morph position and normal deltas, target-major over the source vertex count.
+      # Slot is InvalidSlot when the mesh carries no morph targets.
+      - name: Morph
+        type: SlotOffset
+      - name: TargetCount
+        type: u32
+      # The morph tangent deltas, which no arena holds, staged target-major in the scratch as three
+      # words each. InvalidOffset when no target authors them.
+      - name: TangentOffset
+        type: u32
+        default: InvalidOffset
+      - name: Count
+        type: u32
+      - name: CornerCount
+        type: u32
+      - name: TableOffset
+        type: u32
+      - name: TableMask
+        type: u32
+      - name: SlotOffset
+        type: u32
+      - name: FlagsOffset
+        type: u32
+      - name: BlockOffset
+        type: u32
+      - name: BlockCount
+        type: u32
+      - name: RemapOffset
+        type: u32
+      - name: RepsOffset
+        type: u32
+      # Each welded vertex's channels land here first, since a thread compacting in place could
+      # overwrite a value another thread has yet to read.
+      - name: CompactOffset
+        type: u32
+      # Words one welded vertex takes in that staging: its position, its joints and weights, and each
+      # target's position, normal and tangent deltas.
+      - name: RecordWords
+        type: u32
+  # One mesh's half-edge connectivity build: the arena run it fills and the scratch its passes use.
+  # The run holds the outgoing halfedges, the opposites, then the edge-first bits, ranks and samples.
+  - name: MeshConnectivityJob
+    fields:
+      - name: Corners
+        type: SlotOffset
+      - name: Connectivity
+        type: SlotOffset
+      - name: VertexCount
+        type: u32
+      - name: HalfedgeCount
+        type: u32
+      - name: WordCount
+        type: u32
+      # Halfedges bucketed by their lower endpoint: the per-bucket counts, the scan's cursors, and the items.
+      - name: CountsOffset
+        type: u32
+      - name: CursorsOffset
+        type: u32
+      - name: ItemsOffset
+        type: u32
+      - name: BlockOffset
+        type: u32
+      - name: BlockCount
+        type: u32
+      # One popcount per bit word, scanned into the ranks.
+      - name: PopcountOffset
+        type: u32
+      - name: WordBlockOffset
+        type: u32
+      - name: WordBlockCount
+        type: u32
+      # Two words: the edge count the ranks total, and a mark set when an edge carries three halfedges.
+      - name: StateOffset
+        type: u32
   # One entry per normal-derive dispatch item.
   # Entries without a posed range read base positions from the vertex arena.
   # The output offsets index the dispatch's push-constant output slots.
@@ -1381,6 +1505,54 @@ structs:
       - name: SeamNormalSlot
         type: u32
       - name: FaceNormalSlot
+        type: u32
+  # The vertex-adjacency passes' shared slots. Each pass reads its own tiles at FirstTile.
+  - name: VertexAdjacencyPushConstants
+    push_constant: true
+    fields:
+      - name: JobsSlot
+        type: u32
+        default: InvalidSlot
+      - name: TileMapSlot
+        type: u32
+        default: InvalidSlot
+      - name: ScratchSlot
+        type: u32
+        default: InvalidSlot
+      - name: AdjacencySlot
+        type: u32
+        default: InvalidSlot
+      - name: FirstTile
+        type: u32
+  # The vertex-weld passes' shared slots. Each pass reads its own tiles at FirstTile.
+  - name: VertexWeldPushConstants
+    push_constant: true
+    fields:
+      - name: JobsSlot
+        type: u32
+        default: InvalidSlot
+      - name: TileMapSlot
+        type: u32
+        default: InvalidSlot
+      - name: ScratchSlot
+        type: u32
+        default: InvalidSlot
+      - name: FirstTile
+        type: u32
+  # The connectivity passes' shared slots. Each pass reads its own tiles at FirstTile.
+  - name: MeshConnectivityPushConstants
+    push_constant: true
+    fields:
+      - name: JobsSlot
+        type: u32
+        default: InvalidSlot
+      - name: TileMapSlot
+        type: u32
+        default: InvalidSlot
+      - name: ScratchSlot
+        type: u32
+        default: InvalidSlot
+      - name: FirstTile
         type: u32
   # One dispatch per overlay emission, over the draw's own element list.
   - name: OverlayMeshPushConstants

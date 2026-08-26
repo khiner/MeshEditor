@@ -11,6 +11,10 @@ add_executable(MeshEditorTests
     ${CMAKE_SOURCE_DIR}/src/armature/Armature.cpp
     ${CMAKE_SOURCE_DIR}/src/render/GpuBufferOps.cpp
     ${CMAKE_SOURCE_DIR}/src/render/GpuScene.cpp
+    ${CMAKE_SOURCE_DIR}/src/render/VertexAdjacencyGpu.cpp
+    ${CMAKE_SOURCE_DIR}/src/render/MeshBatch.cpp
+    ${CMAKE_SOURCE_DIR}/src/render/MeshConnectivityGpu.cpp
+    ${CMAKE_SOURCE_DIR}/src/render/VertexWeldGpu.cpp
     ${CMAKE_SOURCE_DIR}/src/Profile.cpp
     ${CMAKE_SOURCE_DIR}/src/metal/PassTimer.cpp
     ${CMAKE_SOURCE_DIR}/src/scene/Entity.cpp

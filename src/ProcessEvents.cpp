@@ -35,6 +35,7 @@
 #include "render/LightComponents.h"
 #include "render/MaterialComponents.h"
 #include "render/PickConstants.h"
+#include "render/VertexAdjacencyGpu.h"
 #include "render/Pipelines.h"
 #include "render/Textures.h"
 #include "scene/Defaults.h"
@@ -983,6 +984,8 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
             });
         }
         // The index buffers written above complete the derive inputs.
+        // The normal derive reads the vertex-fan CSR, so the tables the store left to the GPU fill first.
+        BuildVertexAdjacencyNow(r, sync.NewMeshEntities);
         // Every new and restored mesh's shading state finalizes here, one batched derive for the whole frame.
         FinalizeNewMeshShadingNow(r, sync.NewMeshEntities);
         RebuildMeshletSceneMeshes(r, sync.NewMeshEntities);

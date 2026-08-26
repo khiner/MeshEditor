@@ -15,6 +15,7 @@
 #include "mesh/Primitives.h"
 #include "object/ObjectOps.h"
 #include "render/GpuBufferOps.h"
+#include "render/MeshBatch.h"
 #include "scene/Defaults.h"
 #include "snapshot/SaveState.h"
 #include "viewport/ViewCameraOps.h"
@@ -93,7 +94,6 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
                     return;
                 }
 
-                auto &meshes = r.ctx().get<MeshStore>();
                 ClearMeshes(r, viewport);
                 const auto [mesh_entity, instance_entity] = ImportMesh(
                     r,
@@ -113,7 +113,8 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
                 }
 
                 const auto listener_points = RealImpact::LoadListenerPoints(directory);
-                const auto [listener_mesh_entity, _] = ::AddMesh(r, meshes, meshes.CreateMesh(primitive::CreateMesh({primitive::Cylinder{0.5f * RealImpact::MicWidthMm / 1000.f, RealImpact::MicLengthMm / 1000.f}}), true));
+                const auto created = CreateMesh(r, {.Data = primitive::CreateMesh({primitive::Cylinder{0.5f * RealImpact::MicWidthMm / 1000.f, RealImpact::MicLengthMm / 1000.f}}), .FlatShaded = true});
+                const auto [listener_mesh_entity, _] = ::AddMesh(r, created.StoreId);
                 for (const auto &listener_point : listener_points) {
                     static const auto rot_z = glm::angleAxis(float(M_PI_2), vec3{0, 0, 1}); // Cylinder's center is along the Y axis.
                     const auto listener_instance_entity = ::AddMeshInstance(

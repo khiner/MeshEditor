@@ -3,8 +3,11 @@
 #include "metal/Image.h"
 #include "metal/Shader.h"
 #include "render/IblPrefilterPipelines.h"
+#include "render/MeshConnectivityPipelines.h"
 #include "render/PbrFeature.h"
 #include "render/ShaderPipelineType.h"
+#include "render/VertexAdjacencyPipelines.h"
+#include "render/VertexWeldPipelines.h"
 
 #include <memory>
 #include <unordered_map>
@@ -202,6 +205,8 @@ inline constexpr uint32_t DepthPyramidTile{32 * 32 * sizeof(float)};
 // Flatten broadcasts a payload and two motion vectors.
 inline constexpr uint32_t MotionBlurPayload{16}; // Two uints, padded to Metal's 16-byte threadgroup length granule.
 inline constexpr uint32_t MotionBlurMaxMotion{2 * 2 * sizeof(float)};
+// One sum per simd group in a 256-thread scan, plus the threadgroup total, padded to Metal's 16-byte granule.
+inline constexpr uint32_t BlockScan{48};
 } // namespace ThreadgroupMemory
 
 struct Pipelines {
@@ -231,6 +236,10 @@ struct Pipelines {
     // Finds each tile's largest motion, then marks every tile its streak crosses.
     mtl::ComputePipeline MotionBlurTilesFlatten, MotionBlurTilesDilate;
     IblPrefilterPipelines IblPrefilter;
+    // Mesh creation runs these three.
+    VertexAdjacencyPipelines VertexAdjacency;
+    VertexWeldPipelines VertexWeld;
+    MeshConnectivityPipelines MeshConnectivity;
 
     void SetExtent(mtl::Extent2D, mtl::BindlessSet &);
     void CompileShaders();

@@ -21,6 +21,7 @@
 #include "mesh/Primitives.h"
 #include "render/GpuBuffers.h"
 #include "render/Instance.h"
+#include "render/MeshBatch.h"
 #include "render/Textures.h"
 #include "scene/Entity.h"
 #include "snapshot/SaveState.h"
@@ -908,9 +909,8 @@ int main(int argc, const char **argv) {
         {
             SceneFixture f;
             auto &meshes = f.R.ctx().get<MeshStore>();
-            auto created = meshes.CreateMesh(primitive::CreateMesh(primitive::Cuboid{}));
+            const auto created = CreateMesh(f.R, {.Data = primitive::CreateMesh(primitive::Cuboid{})});
             const auto e = f.R.create();
-            f.R.emplace<MeshConnectivity>(e, std::move(created.Connectivity)); // Serialized (heap)
             f.R.emplace<MeshHandle>(e, MeshHandle{created.StoreId}); // Bytes
             f.R.emplace<Name>(e, "Cube"); // Serialized (string)
             f.R.emplace<ObjectKind>(e, ObjectType::Mesh); // Bytes
@@ -960,31 +960,28 @@ int main(int argc, const char **argv) {
         expect(SaveModalModelFile(SampleModal) == relative);
     };
 
-    // MeshConnectivity uses in_place_delete, so erasing a mesh leaves a tombstone slot in its pool.
-    // SaveState must skip tombstones (a sparse_set yields them but value() asserts on them) — regression for the crash
-    // when saving after a New->Empty clear removed the default cube.
-    "snapshot save skips in_place_delete tombstones"_test = [&] {
+    // A destroyed entity leaves deletion history in the pools it belonged to, and SaveState excludes it so the byte
+    // image reflects state alone.
+    // An in-place-delete pool yields a tombstone during iteration and value() asserts on one, so SaveState skips them.
+    "snapshot save omits destroyed mesh entities"_test = [&] {
         SceneFixture f;
-        auto &meshes = f.R.ctx().get<MeshStore>();
         const auto keep = f.R.create();
-        auto kept = meshes.CreateMesh(primitive::CreateMesh(primitive::Cuboid{}));
-        f.R.emplace<MeshConnectivity>(keep, std::move(kept.Connectivity));
+        const auto kept = CreateMesh(f.R, {.Data = primitive::CreateMesh(primitive::Cuboid{})});
         f.R.emplace<MeshHandle>(keep, MeshHandle{kept.StoreId});
 
         const auto gone = f.R.create();
-        auto removed = meshes.CreateMesh(primitive::CreateMesh(primitive::Cuboid{}));
-        f.R.emplace<MeshConnectivity>(gone, std::move(removed.Connectivity));
+        const auto removed = CreateMesh(f.R, {.Data = primitive::CreateMesh(primitive::Cuboid{})});
         f.R.emplace<MeshHandle>(gone, MeshHandle{removed.StoreId});
-        f.R.destroy(gone); // leaves a MeshConnectivity tombstone in the pool
+        f.R.destroy(gone);
 
         ProcessComponentEvents(f.R, f.Viewport);
-        const auto before = snapshot::SaveState(f.R); // must not assert on the tombstone
+        const auto before = snapshot::SaveState(f.R);
         SceneFixture g;
         snapshot::LoadState(g.R, before);
         ProcessComponentEvents(g.R, g.Viewport);
         const auto after = snapshot::SaveState(g.R);
         const auto diff = snapshot::Compare(before, after);
-        expect(diff.Equal) << "tombstone round-trip diverged at byte" << diff.FirstDifferingByte;
+        expect(diff.Equal) << "destroyed-entity round-trip diverged at byte" << diff.FirstDifferingByte;
     };
 
     const auto load_ctx = [](entt::registry &r, entt::entity e) {

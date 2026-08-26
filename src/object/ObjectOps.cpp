@@ -14,6 +14,7 @@
 #include "render/Instance.h"
 #include "render/LightComponents.h"
 #include "render/MaterialImport.h"
+#include "render/MeshBatch.h"
 #include "render/MeshBuffers.h"
 #include "render/Textures.h"
 #include "scene/Defaults.h"
@@ -87,15 +88,14 @@ entt::entity AddMeshInstance(entt::registry &r, entt::entity mesh_entity, const 
     return e;
 }
 
-std::pair<entt::entity, entt::entity> AddMesh(entt::registry &r, MeshStore &, CreatedMesh &&mesh, std::optional<MeshInstanceCreateInfo> info) {
+std::pair<entt::entity, entt::entity> AddMesh(entt::registry &r, uint32_t store_id, std::optional<MeshInstanceCreateInfo> info) {
     const auto mesh_entity = r.create();
-    r.emplace<MeshConnectivity>(mesh_entity, std::move(mesh.Connectivity));
-    r.emplace<MeshHandle>(mesh_entity, MeshHandle{mesh.StoreId});
+    r.emplace<MeshHandle>(mesh_entity, MeshHandle{store_id});
     return {mesh_entity, info ? AddMeshInstance(r, mesh_entity, *info) : entt::null};
 }
 
 entt::entity CreateExtrasObject(entt::registry &r, ObjectType type, const ObjectCreateInfo &info, std::string_view default_name) {
-    // The buffer starts empty; its wireframe is built later from the object's params.
+    // The buffer starts empty and its wireframe is built later from the object's params.
     const auto buffer_entity = r.create();
     r.emplace<ObjectExtrasTag>(buffer_entity);
     const auto e = r.create();
@@ -151,7 +151,7 @@ void CreateBoneInstances(entt::registry &r, MeshStore &meshes, entt::entity arm_
     if (n == 0) return;
 
     const auto bone_data = primitive::BoneOctahedron(1.f);
-    const auto bone_store_id = meshes.AllocateVertexBuffer(bone_data.Mesh.Positions, bone_data.Attrs).first;
+    const auto bone_store_id = meshes.AllocateVertexBuffer(bone_data.Mesh.Positions, bone_data.Attrs);
     r.emplace<VertexStoreId>(arm_obj_entity, bone_store_id);
 
     std::vector<entt::entity> bone_entities(n);
@@ -164,7 +164,7 @@ void CreateBoneInstances(entt::registry &r, MeshStore &meshes, entt::entity arm_
     arm_obj.BoneEntities = std::move(bone_entities);
 
     auto sphere_data = primitive::BoneSphereDisc();
-    const auto sphere_store_id = meshes.AllocateVertexBuffer(sphere_data.Mesh.Positions, {}).first;
+    const auto sphere_store_id = meshes.AllocateVertexBuffer(sphere_data.Mesh.Positions, {});
     const auto joint_entity = r.create();
     r.emplace<BoneJoint>(joint_entity);
     r.emplace<VertexStoreId>(joint_entity, sphere_store_id);
@@ -260,7 +260,6 @@ void Destroy(entt::registry &r, entt::entity viewport, entt::entity e) {
 
     r.destroy(e);
 
-    // If this was the last instance, destroy the buffer entity
     if (r.valid(buffer_entity)) {
         if (!AnyComponentRefersTo(r, &Instance::Entity, buffer_entity)) {
             if (auto *mesh_buffers = r.try_get<MeshBuffers>(buffer_entity)) ReleaseMeshBuffers(r, *mesh_buffers);
@@ -291,13 +290,16 @@ void ClearMeshes(entt::registry &r, entt::entity viewport) {
 }
 
 std::pair<entt::entity, entt::entity> ImportMesh(entt::registry &r, const std::filesystem::path &path, MeshInstanceCreateInfo info, bool deduplicate) {
-    auto &meshes = r.ctx().get<MeshStore>();
-    auto result = meshes.LoadMesh(path, deduplicate);
+    auto result = ReadMeshFile(path);
     if (!result) throw std::runtime_error(result.error());
 
-    if (!result->Materials.empty()) ImportObjPlyMaterials(r, result->Materials, path, result->Mesh.StoreId);
+    // `deduplicate` merges vertices identical in every vertex-domain channel, keeping per-corner UVs and normals.
+    const auto created = CreateMesh(r, {
+        .Data = std::move(result->Mesh), .Attrs = std::move(result->Attrs), .Primitives = std::move(result->Primitives), .Weld = deduplicate
+    });
+    if (!result->Materials.empty()) ImportObjPlyMaterials(r, result->Materials, path, created.StoreId);
 
-    const auto entities = ::AddMesh(r, meshes, std::move(result->Mesh), std::move(info));
+    const auto entities = ::AddMesh(r, created.StoreId, std::move(info));
     r.emplace<Path>(entities.first, path);
     return entities;
 }

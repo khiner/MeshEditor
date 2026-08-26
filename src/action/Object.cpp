@@ -11,6 +11,7 @@
 #include "render/GpuBufferOps.h"
 #include "render/Instance.h"
 #include "render/LightComponents.h"
+#include "render/MeshBatch.h"
 #include "render/MeshBuffers.h"
 #include "scene/SceneGraphOps.h"
 #include "scene/WorldTransform.h"
@@ -82,8 +83,7 @@ entt::entity DuplicateOne(entt::registry &r, entt::entity e, bool &was_mesh_dupl
 
     const auto mesh_entity = r.get<Instance>(e).Entity;
     const auto e_new = ::AddMesh(
-        r, meshes,
-        meshes.CloneMesh(GetMesh(r, mesh_entity)),
+        r, meshes.CloneMesh(GetMesh(r, mesh_entity)).StoreId,
         MeshInstanceCreateInfo{.Name = create_info.Name, .Transform = create_info.Transform, .Select = create_info.Select, .Visible = r.all_of<RenderInstance>(e)}
     );
     if (auto *prim_shape = r.try_get<PrimitiveShape>(mesh_entity)) r.emplace<PrimitiveShape>(e_new.first, *prim_shape);
@@ -145,10 +145,9 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
         const bool was_flat = meshes.GetFaceSharpnessSummary(r.get<const MeshHandle>(e).StoreId).All;
         if (auto *mb = r.try_get<MeshBuffers>(e)) ReleaseMeshBuffers(r, *mb);
         // Erasing MeshHandle fires on_destroy, releasing the old store entry.
-        r.erase<MeshBuffers, MeshHandle, MeshConnectivity>(e);
-        auto new_mesh = meshes.CreateMesh(primitive::CreateMesh(r.get<const PrimitiveShape>(e)), was_flat);
-        r.emplace<MeshConnectivity>(e, std::move(new_mesh.Connectivity));
-        r.emplace<MeshHandle>(e, MeshHandle{new_mesh.StoreId});
+        r.erase<MeshBuffers, MeshHandle>(e);
+        const auto created = CreateMesh(r, {.Data = primitive::CreateMesh(r.get<const PrimitiveShape>(e)), .FlatShaded = was_flat});
+        r.emplace<MeshHandle>(e, MeshHandle{created.StoreId});
         r.emplace_or_replace<MeshGeometryDirty>(e);
     };
     // `fn` for each mesh entity a scope targets (the carried entity, the active mesh, or each selected mesh).
@@ -282,7 +281,8 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
             [&](const AddCamera &a) { ::AddCamera(r, meshes, *a.Info, a.Props); begin_translate(); },
             [&](const AddLight &a) { ::AddLight(r, meshes, *a.Info); begin_translate(); },
             [&](const AddMeshPrimitive &a) {
-                const auto [mesh_entity, _] = ::AddMesh(r, meshes, meshes.CreateMesh(primitive::CreateMesh(a.Shape), true), *a.Info);
+                const auto created = CreateMesh(r, {.Data = primitive::CreateMesh(a.Shape), .FlatShaded = true});
+                const auto [mesh_entity, _] = ::AddMesh(r, created.StoreId, *a.Info);
                 r.emplace<PrimitiveShape>(mesh_entity, a.Shape);
                 begin_translate();
             },
