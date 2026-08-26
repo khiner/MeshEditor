@@ -342,7 +342,6 @@ static void RenderEntityControls(entt::registry &r, entt::entity viewport, entt:
                 }
             }
         } else {
-            // Standard PRS transform editor (objects, pose mode bones).
             // In Pose mode, edit the active bone rather than the armature.
             const bool is_pose_bone = r.get<const Interaction>(viewport).Mode == InteractionMode::Pose && active_bone_entity != entt::null;
             const auto transform_entity = is_pose_bone ? active_bone_entity : active_entity;
@@ -350,7 +349,7 @@ static void RenderEntityControls(entt::registry &r, entt::entity viewport, entt:
             // out to the selection. Pose mode is entity-bound (the active form would resolve the object).
             if (is_pose_bone) ui::Edit{r, transform_entity}.Drag<&Transform::P>("Position", 0.01f);
             else ui::Edit{r}.Drag<&Transform::P>("Position", 0.01f);
-            // Rotation editor (RotationUiVariant is reactively created; may not exist yet on the first frame)
+            // RotationUiVariant is reactively created and may not exist yet on the first frame.
             if (const auto *rotation_ui_ptr = r.try_get<const RotationUiVariant>(transform_entity)) {
                 int mode_i = rotation_ui_ptr->index();
                 const char *const modes[]{"Quat (WXYZ)", "XYZ Euler", "Axis Angle"};
@@ -607,7 +606,7 @@ static void RenderEntityControls(entt::registry &r, entt::entity viewport, entt:
                     material_changed = true;
                 }
 
-                // IOR — always visible; affects Fresnel reflectance even for non-transmissive dielectrics.
+                // IOR affects Fresnel reflectance even for non-transmissive dielectrics, so it stays visible.
                 material_changed |= SliderFloat("IOR", &material.Ior, 1.0f, 3.0f, "%.3f");
 
                 auto pbr_features_mask = r.all_of<PbrMeshFeatures>(active_mesh_entity) ? r.get<const PbrMeshFeatures>(active_mesh_entity).Mask : 0u;
@@ -731,11 +730,10 @@ static void RenderEntityControls(entt::registry &r, entt::entity viewport, entt:
         }
         ui::Gesture(changed, [&, scope = ui::ScopeFromAlt()] { return action::Replace<PunctualLight>{.Scope = scope, .Value = light}; });
     }
-    // Audio controls (mesh instance = sound object or eligible to become one; microphone)
     if (const auto *instance = r.try_get<Instance>(active_entity); instance && HasMesh(r, instance->Entity)) {
         const bool has_sound = r.all_of<SoundVerticesModel>(active_entity);
         if (CollapsingHeader("Audio", has_sound ? ImGuiTreeNodeFlags_DefaultOpen : 0)) {
-            DrawObjectAudioControls(r, viewport, active_entity, GetMeshEntity(r, active_entity), r.ctx().get<const SelectionBitsetRef>().Value.data());
+            DrawObjectAudioControls(r, viewport, active_entity, GetMeshEntity(r, active_entity));
             if (const auto *active_mic = r.try_get<RealImpactActiveMicrophone>(active_entity)) {
                 SeparatorText("Microphone");
                 Text("Active: %s", GetName(r, active_mic->Entity).c_str());
@@ -855,11 +853,12 @@ void RenderControls(entt::registry &r, entt::entity viewport) {
                         SameLine();
                         if (RadioButton(name.c_str(), &type_interaction_mode, int(element))) action::Emit(action::view::SetEditMode{.Mode = element});
                     }
+                    const auto &mesh_store = r.ctx().get<const MeshStore>();
                     if (const auto active_entity = FindActiveEntity(r); active_entity != entt::null) {
                         if (const auto *instance = r.try_get<Instance>(active_entity); instance && HasMesh(r, instance->Entity)) {
-                            const auto *br = r.try_get<const MeshSelectionBitsetRange>(instance->Entity);
-                            const uint32_t selected_count = br ?
-                                selection::CountSelected(r.ctx().get<const SelectionBitsetRef>().Value.data(), br->Offset, br->Count) :
+                            const auto mesh = GetMesh(r, instance->Entity);
+                            const uint32_t selected_count = r.all_of<MeshElementSelection>(instance->Entity) ?
+                                selection::CountSelected(mesh_store.GetSelectionBits(mesh.GetStoreId()), selection::GetElementCount(mesh, edit_mode)) :
                                 0;
                             Text("Editing %s: %u selected", label(edit_mode).data(), selected_count);
                         }
@@ -867,15 +866,15 @@ void RenderControls(entt::registry &r, entt::entity viewport) {
                     // Per-element shading over the current selection. Face mode shades selected faces,
                     // edge mode marks selected edges sharp, and vertex mode marks every edge touching
                     // a selected vertex (hidden when the selection touches no edges).
-                    if (const auto *bits_ref = r.ctx().find<const SelectionBitsetRef>(); bits_ref && edit_mode != Element::None) {
-                        const auto &mesh_store = r.ctx().get<const MeshStore>();
-                        const auto *bits = bits_ref->Value.data();
+                    if (edit_mode != Element::None) {
                         bool any_sharp = false, any_smooth = false;
-                        for (const auto [me, br] : r.view<const MeshSelectionBitsetRange>().each()) {
+                        for (const auto me : r.view<const MeshElementSelection>()) {
                             if (any_sharp && any_smooth) break;
                             if (!HasMesh(r, me)) continue;
                             const auto mesh = GetMesh(r, me);
                             const auto id = mesh.GetStoreId();
+                            const auto bits = mesh_store.GetSelectionBits(id);
+                            const auto count = selection::GetElementCount(mesh, edit_mode);
                             const auto classify = [&](std::span<const uint8_t> sharp) {
                                 return [&any_sharp, &any_smooth, sharp](uint32_t handle) {
                                     if (handle < sharp.size()) (sharp[handle] ? any_sharp : any_smooth) = true;
@@ -883,9 +882,9 @@ void RenderControls(entt::registry &r, entt::entity viewport) {
                             };
                             if (edit_mode == Element::Face || edit_mode == Element::Edge) {
                                 const auto sharp = edit_mode == Element::Face ? mesh_store.GetFaceSharpness(id) : mesh_store.GetEdgeSharpness(id);
-                                selection::ForEachSelected(bits, br.Offset, br.Count, classify(sharp));
-                            } else if (selection::CountSelected(bits, br.Offset, br.Count) > 0) {
-                                selection::ForEachVertexTouchedEdge(bits, br.Offset, br.Count, mesh, classify(mesh_store.GetEdgeSharpness(id)));
+                                selection::ForEachSelected(bits, count, classify(sharp));
+                            } else {
+                                selection::ForEachVertexTouchedEdge(bits, count, mesh, classify(mesh_store.GetEdgeSharpness(id)));
                             }
                         }
                         if (any_sharp || any_smooth) {
@@ -994,7 +993,7 @@ void RenderControls(entt::registry &r, entt::entity viewport) {
                         bool any_smooth = false, any_sharp = false, any_partial = false;
                         for (const auto me : face_mesh_entities) {
                             if ((any_smooth && any_sharp) || any_partial) break;
-                            const auto summary = meshes.GetFaceSharpnessSummary(GetMesh(r, me).GetStoreId());
+                            const auto summary = meshes.GetFaceSharpnessSummary(r.get<const MeshHandle>(me).StoreId);
                             any_smooth |= !summary.Any;
                             any_sharp |= summary.Any;
                             any_partial |= summary.Any && !summary.All;
@@ -1121,7 +1120,7 @@ void RenderControls(entt::registry &r, entt::entity viewport) {
                 a.Color<&AC::X>("Axis X");
                 a.Color<&AC::Y>("Axis Y");
                 a.Color<&AC::Z>("Axis Z");
-                // UI edits "full" width; storage is half-width.
+                // UI edits full width and storage is half-width.
                 if (float full_width = theme.EdgeWidth * 2.f; SliderFloat("Edge width", &full_width, 0.5f, 4.f))
                     f.Set<&ViewportTheme::EdgeWidth>(full_width / 2.f);
                 if (uint32_t v = theme.SilhouetteEdgeWidth; SliderUInt("Silhouette edge width", &v, 1, 4))
@@ -1354,7 +1353,7 @@ static void RenderObjectTree(entt::registry &r, entt::entity viewport) {
         const auto *n = r.try_get<SceneNode>(selected_entity);
         auto parent = n ? n->Parent : entt::null;
         while (parent != entt::null) {
-            if (!ancestor_of_selected.insert(parent).second) break; // already inserted — parents already covered
+            if (!ancestor_of_selected.insert(parent).second) break; // already inserted, so parents are already covered
             const auto *pn = r.try_get<SceneNode>(parent);
             parent = pn ? pn->Parent : entt::null;
         }

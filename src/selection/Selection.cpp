@@ -2,6 +2,7 @@
 #include "armature/ArmatureComponents.h"
 #include "mesh/Mesh.h"
 #include "mesh/MeshComponents.h"
+#include "mesh/MeshStore.h"
 #include "render/Instance.h"
 #include "scene/Entity.h"
 #include "scene/SceneGraph.h"
@@ -102,11 +103,15 @@ bool AllSelectedAreMeshes(const entt::registry &r) {
     return true;
 }
 
-std::vector<ElementRange> GetBitsetRangesForSelected(const entt::registry &r) {
+std::vector<ElementRange> GetElementRangesForSelected(const entt::registry &r, entt::entity viewport) {
+    const auto element = r.get<const EditMode>(viewport).Value;
+    const auto &meshes = r.ctx().get<const MeshStore>();
     std::vector<ElementRange> ranges;
     for (const auto mesh_entity : selection::GetSelectedMeshEntities(r)) {
-        if (const auto *br = r.try_get<const MeshSelectionBitsetRange>(mesh_entity); br && br->Count > 0) {
-            ranges.emplace_back(mesh_entity, br->Offset, br->Count);
+        if (!r.all_of<MeshElementSelection>(mesh_entity)) continue;
+        const auto mesh = GetMesh(r, mesh_entity);
+        if (const auto count = selection::GetElementCount(mesh, element); count > 0) {
+            ranges.emplace_back(mesh_entity, meshes.GetSelectionBitOffset(mesh.GetStoreId()), count);
         }
     }
     return ranges;

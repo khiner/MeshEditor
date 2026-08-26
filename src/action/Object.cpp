@@ -163,15 +163,16 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
                 break;
         }
     };
-    // `fn(mesh_entity, mesh, bits, range)` for each edit-mode mesh with a non-empty element selection, when `element` is the current edit mode.
+    // `fn(mesh_entity, mesh, bits, count)` for each edit-mode mesh with a non-empty element selection, when `element` is the current edit mode.
     auto for_each_edit_selection = [&](Element element, auto &&fn) {
         if (r.get<const EditMode>(viewport).Value != element) return;
-        const auto *bits_ref = r.ctx().find<const SelectionBitsetRef>();
-        if (!bits_ref) return;
-        for (const auto [me, br] : r.view<const MeshSelectionBitsetRange>().each()) {
+        for (const auto me : r.view<const MeshElementSelection>()) {
             if (!HasMesh(r, me)) continue;
-            if (::selection::CountSelected(bits_ref->Value.data(), br.Offset, br.Count) == 0) continue;
-            fn(me, GetMesh(r, me), bits_ref->Value.data(), br);
+            const auto mesh = GetMesh(r, me);
+            const auto bits = meshes.GetSelectionBits(mesh.GetStoreId());
+            const auto count = ::selection::GetElementCount(mesh, element);
+            if (::selection::CountSelected(bits, count) == 0) continue;
+            fn(me, mesh, bits, count);
         }
     };
     std::visit(
@@ -237,27 +238,27 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
                 }
             },
             [&](const SetSelectedFacesSmooth &a) {
-                for_each_edit_selection(Element::Face, [&](entt::entity me, const Mesh &mesh, const uint32_t *bits, MeshSelectionBitsetRange br) {
+                for_each_edit_selection(Element::Face, [&](entt::entity me, const Mesh &mesh, std::span<const uint32_t> bits, uint32_t count) {
                     auto sharp = meshes.GetFaceSharpness(mesh.GetStoreId());
-                    ::selection::ForEachSelected(bits, br.Offset, br.Count, [&](uint32_t f) {
+                    ::selection::ForEachSelected(bits, count, [&](uint32_t f) {
                         if (f < sharp.size()) sharp[f] = a.Smooth ? 0 : 1;
                     });
                     r.emplace_or_replace<MeshShadingDirty>(me);
                 });
             },
             [&](const SetSelectedEdgesSharp &a) {
-                for_each_edit_selection(Element::Edge, [&](entt::entity me, const Mesh &mesh, const uint32_t *bits, MeshSelectionBitsetRange br) {
+                for_each_edit_selection(Element::Edge, [&](entt::entity me, const Mesh &mesh, std::span<const uint32_t> bits, uint32_t count) {
                     auto sharp = meshes.GetEdgeSharpness(mesh.GetStoreId());
-                    ::selection::ForEachSelected(bits, br.Offset, br.Count, [&](uint32_t e) {
+                    ::selection::ForEachSelected(bits, count, [&](uint32_t e) {
                         if (e < sharp.size()) sharp[e] = a.Sharp ? 1 : 0;
                     });
                     r.emplace_or_replace<MeshShadingDirty>(me);
                 });
             },
             [&](const SetSelectedVertexEdgesSharp &a) {
-                for_each_edit_selection(Element::Vertex, [&](entt::entity me, const Mesh &mesh, const uint32_t *bits, MeshSelectionBitsetRange br) {
+                for_each_edit_selection(Element::Vertex, [&](entt::entity me, const Mesh &mesh, std::span<const uint32_t> bits, uint32_t count) {
                     auto sharp = meshes.GetEdgeSharpness(mesh.GetStoreId());
-                    ::selection::ForEachVertexTouchedEdge(bits, br.Offset, br.Count, mesh, [&](uint32_t e) {
+                    ::selection::ForEachVertexTouchedEdge(bits, count, mesh, [&](uint32_t e) {
                         if (e < sharp.size()) sharp[e] = a.Sharp ? 1 : 0;
                     });
                     r.emplace_or_replace<MeshShadingDirty>(me);

@@ -33,16 +33,16 @@ inline float4 ElementClip(const thread Scene &scene, DrawData draw, uint index_p
 
 template<typename OutputT>
 inline bool ElementChunkThread(
-    thread OutputT &output, const thread Scene &scene, DrawData draw, uint element_count,
-    uint elements_per_group, uint indices_per_element, uint group_index, uint thread_index,
-    thread uint &index_position
+    thread OutputT &output, const thread Scene &scene, DrawData draw,
+    constant OverlayMeshPushConstants &pc, uint elements_per_group, uint indices_per_element,
+    uint group_index, uint thread_index, thread uint &index_position
 ) {
     if (!InstanceInFrustum(scene, draw)) {
         output.set_primitive_count(0u);
         return false;
     }
-    const uint first_element = group_index * elements_per_group;
-    const uint count = min(elements_per_group, element_count - first_element);
+    const uint first_element = pc.FirstElement + group_index * elements_per_group;
+    const uint count = min(elements_per_group, pc.ElementCount - first_element);
     output.set_primitive_count(count);
     if (thread_index >= count * indices_per_element) return false;
     index_position = first_element * indices_per_element + thread_index;
@@ -71,7 +71,7 @@ inline void EmitElementPoint(thread ElementIdPointOutput &output, uint thread_in
     const Scene scene{bindless, view, theme, workspace};
     const DrawData draw = GetDrawDataAt(scene, pc.DrawDataIndex + threadgroup_position.y);
     uint index_position = 0u;
-    if (!ElementChunkThread(output, scene, draw, pc.ElementCount, ElementGroupPoints, 1u, threadgroup_position.x, thread_index, index_position)) return;
+    if (!ElementChunkThread(output, scene, draw, pc, ElementGroupPoints, 1u, threadgroup_position.x, thread_index, index_position)) return;
 
     const uint idx = ElementIndex(scene, draw, index_position);
     EmitElementPoint(output, thread_index, draw.ElementIdOffset + idx + 1u, ElementVertexClip(scene, draw, idx), PointSize);
@@ -90,7 +90,7 @@ inline void EmitElementPoint(thread ElementIdPointOutput &output, uint thread_in
     const Scene scene{bindless, view, theme, workspace};
     const DrawData draw = GetDrawDataAt(scene, pc.DrawDataIndex + threadgroup_position.y);
     uint index_position = 0u;
-    if (!ElementChunkThread(output, scene, draw, pc.ElementCount, ElementGroupEdges, 2u, threadgroup_position.x, thread_index, index_position)) return;
+    if (!ElementChunkThread(output, scene, draw, pc, ElementGroupEdges, 2u, threadgroup_position.x, thread_index, index_position)) return;
 
     ElementIdFragmentVaryings out;
     out.ElementId = draw.ElementIdOffset + index_position / 2u + 1u;
@@ -113,7 +113,7 @@ inline void EmitElementPoint(thread ElementIdPointOutput &output, uint thread_in
     const Scene scene{bindless, view, theme, workspace};
     const DrawData draw = GetDrawDataAt(scene, pc.DrawDataIndex + threadgroup_position.y);
     uint index_position = 0u;
-    if (!ElementChunkThread(output, scene, draw, pc.ElementCount, ElementGroupPoints, 1u, threadgroup_position.x, thread_index, index_position)) return;
+    if (!ElementChunkThread(output, scene, draw, pc, ElementGroupPoints, 1u, threadgroup_position.x, thread_index, index_position)) return;
 
     EmitElementPoint(output, thread_index, draw.ElementIdOffset + index_position / 2u + 1u, ElementClip(scene, draw, index_position), 2.0f);
 }
@@ -132,7 +132,7 @@ inline void EmitElementPoint(thread ElementIdPointOutput &output, uint thread_in
     const Scene scene{bindless, view, theme, workspace};
     const DrawData draw = GetDrawDataAt(scene, pc.DrawDataIndex + threadgroup_position.y);
     uint index_position = 0u;
-    if (!ElementChunkThread(output, scene, draw, pc.ElementCount, ElementGroupPoints, 1u, threadgroup_position.x, thread_index, index_position)) return;
+    if (!ElementChunkThread(output, scene, draw, pc, ElementGroupPoints, 1u, threadgroup_position.x, thread_index, index_position)) return;
 
     const uint face_id = scene.ObjectIds(draw.ObjectIdSlot)[draw.FaceIdOffset + index_position / 3u];
     EmitElementPoint(output, thread_index, draw.ElementIdOffset + face_id, ElementClip(scene, draw, index_position), 1.0f);

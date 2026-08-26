@@ -41,7 +41,7 @@ inline uint SelectionObjectId(const thread Scene &scene, DrawData draw) {
         output.set_primitive_count(0u);
         return;
     }
-    const uint first_edge = threadgroup_position.x * SelectionLineEdges;
+    const uint first_edge = pc.FirstElement + threadgroup_position.x * SelectionLineEdges;
     const uint edge_count = min(SelectionLineEdges, pc.ElementCount - first_edge);
     output.set_primitive_count(edge_count);
     if (thread_index >= edge_count * 2u) return;
@@ -69,7 +69,7 @@ inline uint SelectionObjectId(const thread Scene &scene, DrawData draw) {
         output.set_primitive_count(0u);
         return;
     }
-    const uint first_point = threadgroup_position.x * SelectionPoints;
+    const uint first_point = pc.FirstElement + threadgroup_position.x * SelectionPoints;
     const uint point_count = min(SelectionPoints, pc.ElementCount - first_point);
     output.set_primitive_count(point_count);
     if (thread_index >= point_count) return;

@@ -252,6 +252,15 @@ struct MeshStore {
     SlottedRange GetFaceCornerRange(uint32_t id) const;
     // Allocate and clear a mesh's edge selection states, which only the wireframe and edit overlays read.
     void EnsureEdgeStates(const Mesh &);
+    // Take the mesh's element selection bits, one bit per element, sized to its largest element domain
+    // so every edit mode indexes the same range. Keeps the bits a mesh already has.
+    void EnsureSelectionBits(const Mesh &);
+    std::span<const uint32_t> GetSelectionBits(uint32_t id) const;
+    std::span<uint32_t> GetSelectionBits(uint32_t id);
+    // The selection bits' bindless slot, and a mesh's first bit within it, which the element rasters
+    // and the state kernel index by.
+    uint32_t GetSelectionBitsSlot() const;
+    uint32_t GetSelectionBitOffset(uint32_t id) const;
     // Zero a mesh's vertex, face, and edge states.
     void ClearElementStates(const Mesh &);
     std::span<const uint32_t> GetFaceFirstTriangles(uint32_t id) const;
@@ -306,6 +315,7 @@ private:
         std::array<Range, MaxUvSets> CornerUvs{};
         Range EdgeSharpness{}; // One byte per edge, 1 = sharp
         Range EdgeStates{}, TriangleFaceIds{}, ElementPrimitives{}, PrimitiveMaterials{}, FaceCorners{};
+        Range SelectionBits{}; // Element selection bits, one word per 32 elements of the largest element domain
         // CSR vertex incidence, each range holding (vertex count + 1) offsets followed by the items
         Range VertexFanAdjacency{}, VertexEdgeAdjacency{};
         // The mesh's half-edge connectivity, laid out in the order SliceConnectivity reads it.

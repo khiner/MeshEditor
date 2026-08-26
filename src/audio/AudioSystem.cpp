@@ -474,7 +474,6 @@ struct ModalScaleTracker {
     }
 };
 
-// Reactive change types for audio system
 namespace audio_changes {
 struct VertexForce {};
 struct ModalModes {};
@@ -506,7 +505,6 @@ constexpr void ApplyCosineWindow(float *w, uint32_t n, const float *coeff, uint3
     }
 }
 
-// Create Blackman-Harris window
 constexpr std::vector<float> CreateBlackmanHarris(uint32_t n) {
     std::vector<float> window(n);
     static constexpr float coeff[4] = {0.35875, -0.48829, 0.14128, -0.01168};
@@ -538,7 +536,6 @@ std::optional<float> EstimateFundamentalFrequency(const FFTData &fft, uint32_t s
     constexpr size_t W{15}; // Prominence window
     const size_t min_bin = 50 * fft.NumReal / sample_rate;
     for (size_t i = std::max(min_bin, W); i < n_bins - W; ++i) {
-        // Local maximum?
         if (mag_db[i] <= mag_db[i - 1] || mag_db[i] <= mag_db[i + 1] || mag_db[i] < threshold) continue;
 
         constexpr float ProminenceThresholdDb{10.f};
@@ -1321,7 +1318,6 @@ std::optional<size_t> PlotModeData(
             ImPlot::PlotBars("", data.data(), data.size(), BarSize);
         } else {
             for (size_t i = 0; i < data.size(); ++i) {
-                // Use the first colormap color for the highlighted mode.
                 ImPlot::PlotBars(i == *highlight_index ? "##0" : "", &data[i], 1, BarSize, i);
             }
         }
@@ -1418,8 +1414,8 @@ void DrawModalUpdateButton(entt::registry &r, entt::entity viewport, entt::entit
 }
 
 // Mesh vertices targeted by a sample op (Add/Replace/Remove): the active vertex in Excite mode, or the
-// selected vertices (edges/faces converted to vertices) in Edit mode. `selection_bits` is ignored outside Edit.
-std::vector<uint32_t> GetSampleOpVertices(const entt::registry &r, entt::entity viewport, entt::entity sound_entity, const uint32_t *selection_bits) {
+// selected vertices (edges/faces converted to vertices) in Edit mode.
+std::vector<uint32_t> GetSampleOpVertices(const entt::registry &r, entt::entity viewport, entt::entity sound_entity) {
     if (!r.valid(sound_entity)) return {};
     const auto *inst = r.try_get<const Instance>(sound_entity);
     if (!inst) return {};
@@ -1432,13 +1428,13 @@ std::vector<uint32_t> GetSampleOpVertices(const entt::registry &r, entt::entity 
         if (const auto *active = r.try_get<const MeshActiveElement>(mesh_entity)) return {active->Handle};
         return {};
     }
-    if (mode != InteractionMode::Edit || selection_bits == nullptr) return {};
+    if (mode != InteractionMode::Edit || !r.all_of<MeshElementSelection>(mesh_entity)) return {};
 
-    const auto *br = r.try_get<const MeshSelectionBitsetRange>(mesh_entity);
-    if (!br || br->Count == 0) return {};
     const auto edit_elem = r.get<const EditMode>(viewport).Value;
-    if (edit_elem == Element::Vertex) return selection::ScanBitsetRange(selection_bits, br->Offset, br->Count);
-    return selection::ConvertSelectionElement(selection_bits, br->Offset, br->Count, *mesh, edit_elem, Element::Vertex);
+    const auto count = selection::GetElementCount(*mesh, edit_elem);
+    if (count == 0) return {};
+    const auto bits = r.ctx().get<const MeshStore>().GetSelectionBits(mesh->GetStoreId());
+    return selection::ConvertSelectionElement(bits, count, *mesh, edit_elem, Element::Vertex);
 }
 
 // Circular pad returning a position in the unit disk (center = zero). Drag to set, right-click recenters.
@@ -1465,16 +1461,13 @@ bool ImpulseJoystick(vec2 &pos) {
 }
 } // namespace
 
-void DrawObjectAudioControls(
-    entt::registry &r, entt::entity viewport, entt::entity e, entt::entity mesh_entity,
-    const uint32_t *selection_bits
-) {
+void DrawObjectAudioControls(entt::registry &r, entt::entity viewport, entt::entity e, entt::entity mesh_entity) {
     if (e == entt::null || mesh_entity == entt::null) return;
 
     // Sample ops (Add/Replace/Remove) are only available in Edit / Excite mode.
     const auto mode = r.get<const Interaction>(viewport).Mode;
     const bool sample_ops_available = mode == InteractionMode::Edit || mode == InteractionMode::Excite;
-    const auto op_vertices = sample_ops_available ? GetSampleOpVertices(r, viewport, e, selection_bits) : std::vector<uint32_t>{};
+    const auto op_vertices = sample_ops_available ? GetSampleOpVertices(r, viewport, e) : std::vector<uint32_t>{};
 
     const bool has_model = r.all_of<SoundVerticesModel>(e);
     if (!has_model) {
@@ -1503,7 +1496,6 @@ void DrawObjectAudioControls(
         }
     }
 
-    // Cross-model excite section
     if (has_model && excitable) {
         const auto excitable_vertices = r.ctx().get<const MeshStore>().GetSoundVertices(excitable->Vertices);
         const auto active_vertex = excitable_vertices[active_vi];

@@ -19,7 +19,6 @@ constant float NormalIndicatorLengthScale = 0.25f;
 constant uint NormalIndicatorMaxFaceCorners = 256u;
 using NormalIndicatorOutput = metal::mesh<LineVaryings, void, NormalIndicatorCount * 2u, NormalIndicatorCount, metal::topology::line>;
 
-// Mean length of the edges meeting `vertex_id`, from the CSR vertex-edge adjacency.
 inline float MeanIncidentEdgeLength(const thread Scene &scene, DrawData draw, uint vertex_id, float3 position) {
     if (draw.VertexEdgeAdjacencyOffset == INVALID_OFFSET) return 0.0f;
     device const uint *adjacency = scene.Adjacency(scene.View.AdjacencySlot);
@@ -91,7 +90,7 @@ inline void NormalIndicatorSegment(const thread Scene &scene, DrawData draw, uin
         output.set_primitive_count(0u);
         return;
     }
-    const uint first_element = threadgroup_position.x * NormalIndicatorCount;
+    const uint first_element = pc.FirstElement + threadgroup_position.x * NormalIndicatorCount;
     const uint element_count = min(NormalIndicatorCount, pc.ElementCount - first_element);
     output.set_primitive_count(element_count);
     if (thread_index >= element_count) return;

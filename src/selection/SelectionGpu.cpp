@@ -1,8 +1,8 @@
 #include "selection/SelectionGpu.h"
 
-#include "Profile.h"
 #include "gpu/SoundPointPushConstants.h"
 
+#include "Profile.h"
 #include "armature/ArmatureComponents.h"
 #include "audio/SoundVertices.h"
 #include "gpu/MeshletInstanceFlag.h"
@@ -91,7 +91,6 @@ void BindVisibilitySelectionTextures(MTL::RenderCommandEncoder *encoder, const P
     encoder->setFragmentTexture(*pipelines.Main.Resources->DepthImage, 1u);
 }
 
-// Draw selection fragments into silhouette depth.
 void RunSelectionPass(
     entt::registry &r, mtl::PassChain &chain, const DrawListBuilder &draw_list,
     bool render_depth, bool render_silhouette, bool draw_meshlets, uint32_t meshlet_flags, auto &&record_draws
@@ -189,7 +188,7 @@ void RenderElementSelectionPass(
         r, chain, draw_list, render_depth, element != Element::Face, element == Element::Face && xray_selection,
         uint32_t(MeshletInstanceFlag::ElementSelection),
         [&](auto *encoder, mtl::Extent2D) {
-            const SelectionElementPushConstants element_pc{MakeElementQuery(sel_slots, {box_min.x, box_min.y, box_max.x, box_max.y}, sel_slots.SelectionBitset, pick)};
+            const SelectionElementPushConstants element_pc{MakeElementQuery(sel_slots, {box_min.x, box_min.y, box_max.x, box_max.y}, meshes.GetSelectionBitsSlot(), pick)};
             const auto raster = [&](const mtl::MeshRenderPipeline &pipeline, uint32_t indices_per_element, uint32_t elements_per_group) {
                 pipeline.Bind(encoder);
                 encoder->setFragmentBytes(&element_pc, sizeof(element_pc), BufferIndex_PushConstants);
@@ -314,7 +313,6 @@ void RenderSelectionPassWith(
             encoder->setFragmentBytes(&sel_pc, sizeof(sel_pc), BufferIndex_PushConstants);
             encode::DispatchInstancedMeshBatch(encoder, draw_list, picks.BoneSpheres, uint32_t(OverlayDispatch::BoneSphereVertices));
         }
-        // Extras lines (gizmos and collision shape wireframes) pick from the same emission the overlay draws.
         if (!picks.ExtrasLines.empty()) {
             selection.ExtrasLine.Bind(encoder);
             encoder->setFragmentBytes(&sel_pc, sizeof(sel_pc), BufferIndex_PushConstants);
@@ -357,27 +355,21 @@ void RunBoxSelectElements(entt::registry &r, entt::entity viewport, std::span<co
     const auto [box_min, box_max] = box_px;
     if (box_min.x > box_max.x || box_min.y > box_max.y) return;
 
-    auto &buffers = r.ctx().get<GpuBuffers>();
     const profile::CpuScope scope{"RunBoxSelectElements"};
-    const auto element_count = MaxElementBound(ranges);
-    if (element_count == 0) return;
 
-    const uint32_t bitset_words = (element_count + 31) / 32;
-    if (bitset_words > GpuBuffers::SelectionBitsetWords) return;
-
-    // Restore baseline bitset for additive mode, or clear for non-additive.
-    auto *bits = buffers.SelectionBitset.Data();
-    if (is_additive) {
-        const auto *baseline = r.try_get<const AdditiveBoxSelectBaseline>(viewport);
-        if (baseline && !baseline->ElementBitset.empty()) {
-            const auto copy_words = std::min(bitset_words, uint32_t(baseline->ElementBitset.size()));
-            memcpy(bits, baseline->ElementBitset.data(), copy_words * sizeof(uint32_t));
-            if (copy_words < bitset_words) { // Zero any remaining words beyond the baseline
-                memset(&bits[copy_words], 0, (bitset_words - copy_words) * sizeof(uint32_t));
-            }
+    // Restore each mesh's baseline bits for additive mode, or clear them for non-additive.
+    auto &meshes = r.ctx().get<MeshStore>();
+    const auto *baseline = is_additive ? r.try_get<const AdditiveBoxSelectBaseline>(viewport) : nullptr;
+    for (const auto &range : ranges) {
+        auto bits = meshes.GetSelectionBits(r.get<const MeshHandle>(range.MeshEntity).StoreId);
+        if (!is_additive) {
+            std::ranges::fill(bits, 0u);
+        } else if (baseline) {
+            const auto saved = std::ranges::find(baseline->ElementBits, range.MeshEntity, [](const auto &entry) { return entry.first; });
+            const auto restored = saved == baseline->ElementBits.end() ? size_t{0} : std::min(bits.size(), saved->second.size());
+            if (restored > 0) std::ranges::copy_n(saved->second.begin(), restored, bits.begin());
+            std::ranges::fill(bits.subspan(restored), 0u);
         }
-    } else {
-        memset(bits, 0, bitset_words * sizeof(uint32_t));
     }
 
     // Box-select writes element IDs directly from the selection fragment shader.
@@ -449,9 +441,8 @@ std::vector<entt::entity> RunObjectPick(entt::registry &r, entt::entity viewport
     if (max_object_id == 0) return {};
 
     const profile::CpuScope scope{"RunObjectPick"};
-    // ObjectPickKeyBuffer is persistent across clicks: high 8 bits of each packed key store
-    // a per-click epoch tag. We therefore avoid clearing all keys every click and only do a
-    // full reset when the 8-bit epoch wraps; stale keys are filtered out by epoch on readback.
+    // ObjectPickKeys persists across clicks, with the high 8 bits of each packed key holding a per-click epoch tag.
+    // A full reset runs only when the 8-bit epoch wraps, and readback filters stale keys by epoch.
     if (object_pick_epoch_tag == 0) {
         ResetObjectPickKeys(buffers);
         object_pick_epoch_tag = 255;
@@ -524,7 +515,7 @@ std::vector<entt::entity> RunBoxSelect(entt::registry &r, entt::entity viewport,
 
     const profile::CpuScope scope{"RunBoxSelect"};
     const auto &sel_slots = r.ctx().get<const SelectionSlots>();
-    memset(buffers.SelectionBitset.Data(), 0, ((max_object_id + 31) / 32) * sizeof(uint32_t));
+    memset(buffers.ObjectBoxBitset.Data(), 0, ((max_object_id + 31) / 32) * sizeof(uint32_t));
     auto *command_buffer = r.ctx().get<const mtl::Context>().Queue->commandBuffer();
     { // The chain closes its last pass as it goes out of scope, which the submit below needs.
         mtl::PassChain chain{command_buffer};
@@ -534,7 +525,7 @@ std::vector<entt::entity> RunBoxSelect(entt::registry &r, entt::entity viewport,
                 .MaxId = max_object_id,
                 .BestKeySlot = InvalidSlot,
                 .Box = {box_min.x, box_min.y, box_max.x, box_max.y},
-                .BoxResultSlot = sel_slots.SelectionBitset,
+                .BoxResultSlot = sel_slots.ObjectBoxBitset,
             }
         );
     }
@@ -544,7 +535,7 @@ std::vector<entt::entity> RunBoxSelect(entt::registry &r, entt::entity viewport,
     std::unordered_map<uint32_t, entt::entity> object_id_to_entity;
     for (const auto [e, ri] : r.view<RenderInstance>().each()) object_id_to_entity[ri.ObjectId] = e;
 
-    const auto *bits = buffers.SelectionBitset.Data();
+    const auto *bits = buffers.ObjectBoxBitset.Data();
     std::vector<entt::entity> entities;
     for (uint32_t object_id = 1; object_id <= max_object_id; ++object_id) {
         const uint32_t bit_index = object_id - 1;
@@ -566,11 +557,10 @@ void DispatchUpdateSelectionStates(
     const auto &ctx = r.ctx().get<const mtl::Context>();
     const auto &slots = r.ctx().get<const mtl::BindlessSet>();
     const auto &pipelines = r.ctx().get<const Pipelines>();
-    const auto &sel_slots = r.ctx().get<const SelectionSlots>();
     auto &meshes = r.ctx().get<MeshStore>();
 
     const auto &buffers = r.ctx().get<const GpuBuffers>();
-    // The state and bitset buffers reach the kernel through the argument buffer, so they must be resident before this one-shot runs.
+    // The state and selection-bit buffers reach the kernel through the argument buffer, so they must be resident before this one-shot runs.
     ctx.CommitResidency();
     auto *command_buffer = ctx.Queue->commandBuffer();
     auto *encoder = command_buffer->computeCommandEncoder();
@@ -596,7 +586,7 @@ void DispatchUpdateSelectionStates(
         }
 
         const UpdateSelectionStatePushConstants pc{
-            .BitsetSlot = sel_slots.SelectionBitset,
+            .BitsetSlot = meshes.GetSelectionBitsSlot(),
             .BitsetOffset = range.Offset,
             .StateSlot = state_slot,
             .StateOffset = state_offset,

@@ -333,14 +333,13 @@ entt::entity InitEngine(entt::registry &r) {
     // Engine-owned context singletons (process-lifetime). Document state lives in SetupScene.
     r.ctx().emplace<ViewportExtent>();
     r.ctx().emplace<ViewportConsumerFence>();
-    r.ctx().emplace<SelectionBitsetRef>(std::span<uint32_t>{buffers.SelectionBitset.Data(), GpuBuffers::SelectionBitsetWords});
     const auto &sel_slots = r.ctx().emplace<SelectionSlots>(slots);
     // These selection buffers are engine-lifetime and never resized, so their bindless entries are bound once here.
     slots.SetBuffer({SlotType::Buffer, sel_slots.ObjectPickKey}, *buffers.ObjectPickKeys);
     slots.SetBuffer({SlotType::Buffer, sel_slots.ElementPickKey}, *buffers.ElementPickKey);
     slots.SetBuffer({SlotType::Buffer, sel_slots.ElementPickId}, *buffers.ElementPickId);
     slots.SetBuffer({SlotType::Buffer, sel_slots.ObjectPickSeenBits}, *buffers.ObjectPickSeenBitset);
-    slots.SetBuffer({SlotType::Buffer, sel_slots.SelectionBitset}, *buffers.SelectionBitset);
+    slots.SetBuffer({SlotType::Buffer, sel_slots.ObjectBoxBitset}, *buffers.ObjectBoxBitset);
     r.ctx().emplace<DrawState>();
     r.ctx().emplace<FrameState>();
     r.ctx().emplace<PendingRenderRequest>();
@@ -470,7 +469,6 @@ void ClearScene(entt::registry &r, entt::entity viewport) {
 void DeinitViewport(entt::registry &r, entt::entity viewport) {
     r.ctx().erase<ViewportRenderResources>();
     r.ctx().erase<SelectionSlots>();
-    r.ctx().erase<SelectionBitsetRef>();
     r.ctx().erase<FrameState>();
     r.ctx().erase<PendingRenderRequest>();
     r.ctx().erase<DrawState>();

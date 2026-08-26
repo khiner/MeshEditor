@@ -6,13 +6,17 @@
 
 #include <entt/entity/fwd.hpp>
 
-#include <span>
 #include <vector>
 
 // Per-element state bits in the element state buffers.
 constexpr uint32_t ElementStateSelected{1u << 0}, ElementStateActive{1u << 1};
 
-// A contiguous span of a mesh's elements (vertices/edges/faces) in the SelectionBitset.
+// Marks a mesh whose elements are individually selectable: the store holds its selection bits,
+// and it keeps them across edit-mode switches.
+struct MeshElementSelection {};
+
+// A mesh's elements (vertices/edges/faces) in the store's selection bits: its first bit, and the
+// element count of the current edit mode.
 struct ElementRange {
     entt::entity MeshEntity;
     uint32_t Offset, Count;
@@ -23,11 +27,10 @@ struct ElementRange {
 struct AdditiveBoxSelectBaseline {
     std::vector<entt::entity> SelectedEntities;
     std::vector<std::pair<entt::entity, BoneSelection>> BoneSelections;
-    std::vector<uint32_t> ElementBitset;
+    std::vector<std::pair<entt::entity, std::vector<uint32_t>>> ElementBits; // Each edit-selected mesh's selection bits
 };
 
-// Transient dirty flags on the viewport.
-struct SelectionBitsDirty {}; // The bitset changed, the compute update is pending.
+struct SelectionBitsDirty {}; // The selection bits changed, the compute update is pending.
 struct ElementStatesDirty {}; // The element state buffers changed, a submit is pending.
 
 // ViewProj is the record-time view-projection, stamped into SceneViewUBO so replay resolves pixels against it.
@@ -50,11 +53,6 @@ struct PendingPick {
     bool Shift;
     bool Cycle;
     mat4 ViewProj;
-};
-
-// Non-owning span over the GPU-mapped SelectionBitset words.
-struct SelectionBitsetRef {
-    std::span<uint32_t> Value;
 };
 
 // Selection ignores occlusion when true.

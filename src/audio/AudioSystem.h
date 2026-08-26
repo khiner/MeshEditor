@@ -63,11 +63,7 @@ double ModalDensityRatio(const entt::registry &, entt::entity sound_entity);
 void ApplyModalModel(entt::registry &, entt::entity sound_entity, const std::filesystem::path &relative_path);
 
 // Draw the Audio controls for a sound object entity (has SoundVerticesModel).
-// `selection_bits` is the raw SelectionBitset pointer, read in Edit mode only, and may be null.
-void DrawObjectAudioControls(
-    entt::registry &, entt::entity viewport, entt::entity sound_entity, entt::entity mesh_entity,
-    const uint32_t *selection_bits
-);
+void DrawObjectAudioControls(entt::registry &, entt::entity viewport, entt::entity sound_entity, entt::entity mesh_entity);
 
 // Draw the in-flight modal solve jobs as a progress overlay anchored to the current window's
 // lower-left corner. Call inside the viewport window.

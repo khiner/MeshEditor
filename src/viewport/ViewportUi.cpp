@@ -219,7 +219,6 @@ void Interact(entt::registry &r, entt::entity viewport, FrameState &frame) {
         return;
     }
 
-    // Track the previous click position for pick-cycle gating.
     static ImVec2 PrevClickPos{-FLT_MAX, -FLT_MAX}, CurrentClickPos{-FLT_MAX, -FLT_MAX};
     if (GetIO().MouseClicked[0]) {
         PrevClickPos = CurrentClickPos;
@@ -321,10 +320,9 @@ void Interact(entt::registry &r, entt::entity viewport, FrameState &frame) {
         }
     }
 
-    // Handle mouse input.
     const bool active_transform = TransformGizmo::IsUsing(r, viewport);
     if (active_transform) {
-        // TransformGizmo overrides this mouse cursor during some actions - this is a default.
+        // TransformGizmo overrides this mouse cursor during some actions, so this is a default.
         SetMouseCursor(ImGuiMouseCursor_ResizeAll);
         WrapMousePos(GetCurrentWindowRead()->InnerClipRect, frame.AccumulatedWrapMouseDelta);
     } else {
@@ -764,11 +762,12 @@ void InteractOverlay(entt::registry &r, entt::entity viewport, FrameState &frame
         if (bone_mode) return !bone_selected_view.empty();
         if (selected_view.empty()) return false;
         if (!mesh_edit_mode) return true;
-        const auto *bits = r.ctx().get<const SelectionBitsetRef>().Value.data();
+        const auto edit_element = r.get<const EditMode>(viewport).Value;
         for (const auto [e, instance] : r.view<const Instance, const Selected>(entt::exclude<ScaleLocked>).each()) {
-            if (const auto *br = r.try_get<const MeshSelectionBitsetRange>(instance.Entity)) {
-                if (selection::CountSelected(bits, br->Offset, br->Count) > 0) return true;
-            }
+            if (!r.all_of<MeshElementSelection>(instance.Entity)) continue;
+            const auto mesh = GetMesh(r, instance.Entity);
+            const auto bits = meshes.GetSelectionBits(mesh.GetStoreId());
+            if (selection::CountSelected(bits, selection::GetElementCount(mesh, edit_element)) > 0) return true;
         }
         return false;
     }();
@@ -813,7 +812,7 @@ void InteractOverlay(entt::registry &r, entt::entity viewport, FrameState &frame
         } else {
             if (bone_edit_mode) {
                 // Bone pivot: contribute head position for selected Root, tail for selected Tip.
-                // A fully-selected bone (Root+Tip+Body) contributes both → midpoint.
+                // A fully-selected bone (Root+Tip+Body) contributes both, giving the midpoint.
                 vec3 pivot_sum{};
                 uint32_t pivot_count = 0;
                 for (const auto e : root_selected) {
@@ -860,7 +859,6 @@ void InteractOverlay(entt::registry &r, entt::entity viewport, FrameState &frame
             action::Emit(action::view::EndGizmoDrag{});
         }
 
-        // Store gizmo render transform for DrawOverlay.
         gizmo.RenderTransform = gizmo_transform;
         if (interact_result) gizmo.RenderTransform->P = interact_result->Start.P + interact_result->Delta.P;
     }
@@ -877,7 +875,6 @@ void DrawOverlay(entt::registry &r, entt::entity viewport, FrameState &frame) {
     TransformGizmo::Render(r.get<GizmoInteraction>(viewport), r.get<const TransformGizmoState>(viewport).Config.Type, camera, viewport_rect, axes);
 
     const auto &settings = r.get<const ViewportDisplay>(viewport);
-    // Draw origin dots for active/selected entities
     if (settings.ShowOverlays && settings.ShowOrigins && (!r.storage<Selected>().empty() || !r.storage<Active>().empty())) {
         const auto &theme = r.get<const ViewportTheme>(viewport);
         const auto vp = camera.Projection(viewport_rect.size.x / viewport_rect.size.y) * camera.View();

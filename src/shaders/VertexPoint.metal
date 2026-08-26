@@ -25,7 +25,6 @@ inline float4 point_color(const thread Scene &scene, DrawData draw, uint element
 constant uint PointMeshPoints = OverlayDispatch_PointGroupPoints;
 using PointMeshOutput = metal::mesh<PointVaryings, void, PointMeshPoints, PointMeshPoints, metal::topology::point>;
 
-// One point sprite for the draw's vertex at `element`, sized to zero where excite mode hides it.
 inline PointVaryings VertexPointSprite(const thread Scene &scene, DrawData draw, uint element) {
     const uint vertex_count = max(draw.VertexCountOrHeadImageSlot, 1u);
     const uint idx = min(element, vertex_count - 1u);
@@ -48,7 +47,6 @@ inline PointVaryings VertexPointSprite(const thread Scene &scene, DrawData draw,
 }
 
 // Excite mode points: one sprite per excitable vertex, read from the canonical sound-vertex handles.
-// The clip position of the excitable vertex at `point_index` of the dispatch's handle range.
 inline float4 SoundPointClip(const thread Scene &scene, device const BindlessSet &bindless, constant SoundPointPushConstants &pc, uint sound_vertex) {
     const DrawData draw = GetDrawDataAt(scene, pc.DrawDataIndex);
     return MeshletPosition(scene, draw, scene.Models(draw.ModelSlot)[draw.FirstInstance], sound_vertex);
@@ -130,7 +128,7 @@ using SoundPointIdOutput = metal::mesh<ElementIdVaryings, void, PointMeshPoints,
         output.set_primitive_count(0u);
         return;
     }
-    const uint first_point = threadgroup_position.x * PointMeshPoints;
+    const uint first_point = pc.FirstElement + threadgroup_position.x * PointMeshPoints;
     const uint point_count = min(PointMeshPoints, pc.ElementCount - first_point);
     output.set_primitive_count(point_count);
     if (thread_index >= point_count) return;

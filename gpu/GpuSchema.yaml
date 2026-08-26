@@ -1562,6 +1562,10 @@ structs:
         type: u32
       - name: ElementCount
         type: u32
+      # Where this dispatch's elements start, since a mesh grid caps at 65,535 threadgroups and a
+      # draw of more elements than that splits into chunks.
+      - name: FirstElement
+        type: u32
   # One wire draw's place in the flattened edge list the raster dispatches over. A global edge index
   # lands in the record whose FirstEdge it follows, and the remainder splits into instance and edge.
   - name: WireDrawRecord

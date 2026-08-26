@@ -2,72 +2,54 @@
 
 #include "gpu/Element.h"
 
+#include <span>
 #include <type_traits>
 #include <vector>
 
 struct Mesh;
 
-// Per-mesh offset/count into SelectionBitsetBuffer for the current edit element type.
-// Assigned on Edit mode entry; updated on element type switch and mesh topology change.
-struct MeshSelectionBitsetRange {
-    uint32_t Offset; // Start bit index in SelectionBitsetBuffer
-    uint32_t Count; // Element count for current edit mode
-};
-
 namespace selection {
 
-// Set all bits in [offset, offset+count), clearing any gap bits in the last word.
-void SelectAll(uint32_t *bits, uint32_t offset, uint32_t count);
-// Clear all bits in [offset, offset+count).
-void DeselectAll(uint32_t *bits, uint32_t offset, uint32_t count);
-// Count selected bits in [offset, offset+count).
-uint32_t CountSelected(const uint32_t *bits, uint32_t offset, uint32_t count);
-// A mesh's element handles map to consecutive global bits starting at its range `offset`,
-// packed 32 per word: element `local`'s bit is bit (offset + local) % 32 of word (offset + local) / 32.
-inline bool IsSelected(const uint32_t *bits, uint32_t offset, uint32_t local) {
-    const uint32_t i = offset + local;
-    return (bits[i >> 5] >> (i & 31u)) & 1u;
-}
-inline void Select(uint32_t *bits, uint32_t offset, uint32_t local) {
-    const uint32_t i = offset + local;
-    bits[i >> 5] |= 1u << (i & 31u);
-}
-inline void Deselect(uint32_t *bits, uint32_t offset, uint32_t local) {
-    const uint32_t i = offset + local;
-    bits[i >> 5] &= ~(1u << (i & 31u));
-}
-// Visit the local (0-based) handle of every set bit in [offset, offset+count).
-void ForEachSelected(const uint32_t *bits, uint32_t offset, uint32_t count, auto &&fn) {
-    const uint32_t first_word = offset / 32, last_word = (offset + count + 31) / 32;
-    for (uint32_t w = first_word; w < last_word; ++w) {
+// Every function here takes one mesh's own selection-bit words, where element `handle` is bit
+// `handle % 32` of word `handle / 32`, and `count`, the element count of the current edit mode.
+// The store sizes a mesh's bits to its largest element domain, so `count` never exceeds them.
+
+// Set the first `count` bits, clearing any gap bits in the last word.
+void SelectAll(std::span<uint32_t> bits, uint32_t count);
+uint32_t CountSelected(std::span<const uint32_t> bits, uint32_t count);
+inline bool IsSelected(std::span<const uint32_t> bits, uint32_t handle) { return (bits[handle >> 5] >> (handle & 31u)) & 1u; }
+inline void Select(std::span<uint32_t> bits, uint32_t handle) { bits[handle >> 5] |= 1u << (handle & 31u); }
+inline void Deselect(std::span<uint32_t> bits, uint32_t handle) { bits[handle >> 5] &= ~(1u << (handle & 31u)); }
+void ForEachSelected(std::span<const uint32_t> bits, uint32_t count, auto &&fn) {
+    const uint32_t last_word = (count + 31) / 32;
+    for (uint32_t w = 0; w < last_word; ++w) {
         uint32_t word = bits[w];
         while (word) {
-            const uint32_t global_idx = w * 32 + __builtin_ctz(word);
-            if (global_idx >= offset && global_idx < offset + count) fn(global_idx - offset);
+            const uint32_t handle = w * 32 + __builtin_ctz(word);
+            if (handle < count) fn(handle);
             word &= word - 1;
         }
     }
 }
-// Visit every edge with an endpoint among the selected vertices in [offset, offset+count).
+// Visit every edge with an endpoint among the selected vertices.
 // An edge with both endpoints selected fires once, from its lower-indexed endpoint.
-void ForEachVertexTouchedEdge(const uint32_t *bits, uint32_t offset, uint32_t count, const auto &mesh, auto &&fn) {
+void ForEachVertexTouchedEdge(std::span<const uint32_t> bits, uint32_t count, const auto &mesh, auto &&fn) {
     const auto adjacency = mesh.GetVertexEdgeAdjacency();
     if (adjacency.Offsets.empty()) return;
     using MeshT = std::remove_cvref_t<decltype(mesh)>;
-    ForEachSelected(bits, offset, count, [&](uint32_t v) {
+    ForEachSelected(bits, count, [&](uint32_t v) {
         for (const auto e : adjacency.Incident(v)) {
             const auto hh = mesh.GetHalfedge(typename MeshT::EH{e}, 0);
             const auto from = mesh.GetFromVertex(hh);
             const auto other = from && *from == v ? mesh.GetToVertex(hh) : from;
-            if (other && *other < v && *other < count && IsSelected(bits, offset, *other)) continue;
+            if (other && *other < v && *other < count && IsSelected(bits, *other)) continue;
             fn(e);
         }
     });
 }
-// Return local (0-based) handles of all set bits in [offset, offset+count).
-std::vector<uint32_t> ScanBitsetRange(const uint32_t *bits, uint32_t offset, uint32_t count);
-// Convert the selected `from_element` handles in [offset, offset+count) to `to_element` handles.
-std::vector<uint32_t> ConvertSelectionElement(const uint32_t *bits, uint32_t offset, uint32_t count, const Mesh &, Element from_element, Element to_element);
+// Convert the selected `from_element` handles to `to_element` handles.
+// Matching elements return the selected handles as they are.
+std::vector<uint32_t> ConvertSelectionElement(std::span<const uint32_t> bits, uint32_t count, const Mesh &, Element from_element, Element to_element);
 uint32_t GetElementCount(const Mesh &, Element);
 
 } // namespace selection

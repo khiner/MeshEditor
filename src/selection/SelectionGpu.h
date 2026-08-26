@@ -13,7 +13,7 @@ using SelectionBuildFn = std::function<void(DrawListBuilder &)>;
 
 // RAII for the bindless-slot leases used by the selection compute/render pipeline.
 struct SelectionSlots {
-    uint32_t ObjectPickKey{}, ElementPickKey{}, ElementPickId{}, ObjectPickSeenBits{}, SelectionBitset{};
+    uint32_t ObjectPickKey{}, ElementPickKey{}, ElementPickId{}, ObjectPickSeenBits{}, ObjectBoxBitset{};
     uint32_t MotionBlurTileImage{}, MotionBlurTileIndirection{};
     uint32_t ObjectIdSampler{}, DepthSampler{}, SilhouetteSampler{}, SceneColorSampler{}, OverlayColorSampler{}, LineDataSampler{}, TransmissionSampler{}, MotionBlurAccumSampler{}, SceneDepthSampler{}, VelocitySampler{}, MotionBlurGatherSampler{}, DepthPyramidSampler{};
 
@@ -23,7 +23,7 @@ struct SelectionSlots {
         Entry{SlotType::Buffer, &SelectionSlots::ElementPickKey},
         Entry{SlotType::Buffer, &SelectionSlots::ElementPickId},
         Entry{SlotType::Buffer, &SelectionSlots::ObjectPickSeenBits},
-        Entry{SlotType::Buffer, &SelectionSlots::SelectionBitset},
+        Entry{SlotType::Buffer, &SelectionSlots::ObjectBoxBitset},
         Entry{SlotType::Image, &SelectionSlots::MotionBlurTileImage},
         Entry{SlotType::Buffer, &SelectionSlots::MotionBlurTileIndirection},
         Entry{SlotType::Sampler, &SelectionSlots::ObjectIdSampler},
@@ -68,7 +68,3 @@ private:
         Slots = nullptr;
     }
 };
-
-// Render the on-demand selection-fragment pass. `build_fn` populates the draw list given the silhouette-prefilled builder.
-
-// Replays the cached selection draw list (built by RecordRenderCommandBuffer). Clears SelectionStale on success.

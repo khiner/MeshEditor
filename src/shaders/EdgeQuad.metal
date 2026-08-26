@@ -14,7 +14,6 @@
 constant uint EdgeQuadMeshEdges = OverlayDispatch_EdgeQuadGroupEdges;
 using EdgeQuadMeshOutput = metal::mesh<EdgeQuadVaryings, void, EdgeQuadMeshEdges * 4u, EdgeQuadMeshEdges * 2u, metal::topology::triangle>;
 
-// One corner of the quad around `edge_id`, with the edge's mark band and element-state coloring.
 inline EdgeQuadVaryings EdgeQuadCorner(const thread Scene &scene, DrawData draw, uint edge_id, uint corner) {
     constant ViewportThemeColors &colors = scene.Theme.Colors;
     const Transform world = scene.Models(draw.ModelSlot)[draw.FirstInstance];
@@ -26,11 +25,10 @@ inline EdgeQuadVaryings EdgeQuadCorner(const thread Scene &scene, DrawData draw,
     const uint idx0 = indices[base_index];
     const uint idx1 = indices[base_index + 1u];
 
-    // Both endpoints in world space, from posed positions when the draw has them.
     const float3 world0 = apply_object_pending_transform(scene, draw, trs_transform_point(world, scene.GetLocalPosition(draw, idx0)));
     const float3 world1 = apply_object_pending_transform(scene, draw, trs_transform_point(world, scene.GetLocalPosition(draw, idx1)));
 
-    // Clip space, with the NDC offset pushing edges in front of faces.
+    // The NDC offset pushes edges in front of faces.
     const float4x4 view_proj = scene.ViewProj();
     float4 clip0 = view_proj * float4(world0, 1.0f);
     float4 clip1 = view_proj * float4(world1, 1.0f);
@@ -55,7 +53,6 @@ inline EdgeQuadVaryings EdgeQuadCorner(const thread Scene &scene, DrawData draw,
     out.Position = pos;
     out.EdgeCoord = side * half_width;
 
-    // Edge selection coloring, matching the mesh transform's edge draws.
     const uint element_state = draw.ElementStateSlotOffset.Slot != INVALID_SLOT ?
         uint(scene.ElementStates(draw.ElementStateSlotOffset.Slot)[draw.ElementStateSlotOffset.Offset + edge_id * 2u + endpoint]) :
         0u;
@@ -94,7 +91,7 @@ inline EdgeQuadVaryings EdgeQuadCorner(const thread Scene &scene, DrawData draw,
         output.set_primitive_count(0u);
         return;
     }
-    const uint first_edge = threadgroup_position.x * EdgeQuadMeshEdges;
+    const uint first_edge = pc.FirstElement + threadgroup_position.x * EdgeQuadMeshEdges;
     const uint edge_count = min(EdgeQuadMeshEdges, pc.ElementCount - first_edge);
     output.set_primitive_count(edge_count * 2u);
     if (thread_index >= edge_count * 4u) return;

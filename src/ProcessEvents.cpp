@@ -235,54 +235,43 @@ void SetEditMode(entt::registry &r, entt::entity viewport, Element mode) {
     if (current_mode == mode) return;
 
     auto &meshes = r.ctx().get<MeshStore>();
-    auto &buffers = r.ctx().get<GpuBuffers>();
-    auto *bits = buffers.SelectionBitset.Data();
 
     struct PendingConvert {
         entt::entity MeshEntity;
+        uint32_t StoreId;
         uint32_t NewCount;
-        std::vector<uint32_t> ToHandles; // Selection converted to the new mode, staged across the bitset repack
+        std::vector<uint32_t> ToHandles; // Selection converted to the new mode, staged across the bit clear
     };
     std::vector<PendingConvert> pending;
     std::vector<ElementRange> old_ranges;
-    uint32_t old_max_end = 0;
-    for (auto [mesh_entity, br, _] : r.view<MeshSelectionBitsetRange, const MeshHandle>().each()) {
+    for (const auto mesh_entity : r.view<const MeshElementSelection, const MeshHandle>()) {
         const auto mesh = GetMesh(r, mesh_entity);
-        const uint32_t old_count = br.Count, new_count = selection::GetElementCount(mesh, mode);
-        auto to_handles = selection::ConvertSelectionElement(bits, br.Offset, old_count, mesh, current_mode, mode);
-        if (old_count > 0) old_ranges.emplace_back(mesh_entity, br.Offset, old_count);
-        old_max_end = std::max(old_max_end, br.Offset + old_count);
+        const auto id = mesh.GetStoreId();
+        const uint32_t old_count = selection::GetElementCount(mesh, current_mode);
+        auto bits = meshes.GetSelectionBits(id);
+        auto to_handles = selection::ConvertSelectionElement(bits, old_count, mesh, current_mode, mode);
+        if (old_count > 0) old_ranges.emplace_back(mesh_entity, meshes.GetSelectionBitOffset(id), old_count);
         r.remove<MeshActiveElement>(mesh_entity);
-        pending.emplace_back(PendingConvert{mesh_entity, new_count, std::move(to_handles)});
+        // Every mode indexes the same bits, so the old mode's bits clear before the converted ones land.
+        std::ranges::fill(bits, 0u);
+        pending.emplace_back(PendingConvert{mesh_entity, id, selection::GetElementCount(mesh, mode), std::move(to_handles)});
     }
-
-    // Clear the superset of old and new packed bit ranges once, to avoid stale/overlap bits.
-    uint32_t new_max_end = 0;
-    for (const auto &p : pending) new_max_end += (p.NewCount + 31) / 32 * 32;
-    const uint32_t clear_words = std::min((std::max(old_max_end, new_max_end) + 31) / 32, GpuBuffers::SelectionBitsetWords);
-    if (clear_words > 0) memset(bits, 0, clear_words * sizeof(uint32_t));
 
     if (!old_ranges.empty()) {
         DispatchUpdateSelectionStates(r, old_ranges, current_mode);
-        // Face mode also derives edge states via CPU; clear them when exiting face-select.
+        // Face mode also derives edge states on the CPU, so clear them when exiting face-select.
         if (current_mode == Element::Face) {
             for (const auto &p : pending) meshes.UpdateEdgeStatesFromFaces(GetMesh(r, p.MeshEntity), {});
         }
     }
 
     std::vector<ElementRange> new_ranges;
-    uint32_t next_offset = 0;
     for (const auto &p : pending) {
-        // A mesh whose new-mode elements do not fit the remaining bitset gets an empty range, so its elements are not selectable.
-        const uint32_t count = next_offset + p.NewCount <= GpuBuffers::MaxSelectableElements ? p.NewCount : 0;
-        auto &br = r.get<MeshSelectionBitsetRange>(p.MeshEntity);
-        br.Offset = next_offset;
-        br.Count = count;
+        auto bits = meshes.GetSelectionBits(p.StoreId);
         for (const uint32_t h : p.ToHandles) {
-            if (h < count) selection::Select(bits, next_offset, h);
+            if (h < p.NewCount) selection::Select(bits, h);
         }
-        if (count > 0) new_ranges.emplace_back(p.MeshEntity, next_offset, count);
-        next_offset = (next_offset + count + 31) / 32 * 32;
+        if (p.NewCount > 0) new_ranges.emplace_back(p.MeshEntity, meshes.GetSelectionBitOffset(p.StoreId), p.NewCount);
     }
 
     r.patch<EditMode>(viewport, [mode](auto &edit_mode) { edit_mode.Value = mode; });
@@ -733,32 +722,28 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
         r.remove<PendingEditElementClick>(viewport);
 
         const auto edit_mode = r.get<const EditMode>(viewport).Value;
-        const auto ranges = GetBitsetRangesForSelected(r);
-        auto *bits = buffers.SelectionBitset.Data();
+        const auto ranges = GetElementRangesForSelected(r, viewport);
         if (!toggle) {
             for (const auto &range : ranges) {
-                const uint32_t first_word = range.Offset / 32;
-                const uint32_t last_word = (range.Offset + range.Count + 31) / 32;
-                memset(&bits[first_word], 0, (last_word - first_word) * sizeof(uint32_t));
+                std::ranges::fill(meshes.GetSelectionBits(r.get<const MeshHandle>(range.MeshEntity).StoreId), 0u);
                 r.remove<MeshActiveElement>(range.MeshEntity);
             }
         }
         const auto hit = RunElementPickFromRanges(r, viewport, ranges, edit_mode, mouse_px);
         if (hit) {
             const auto [mesh_entity, element_index] = *hit;
-            if (const auto *br = r.try_get<const MeshSelectionBitsetRange>(mesh_entity)) {
-                const auto *current_active = r.try_get<MeshActiveElement>(mesh_entity);
-                const bool is_active = current_active && current_active->Handle == element_index;
-                const bool was_selected = selection::IsSelected(bits, br->Offset, element_index);
-                // Toggle-clicking the active element deselects and deactivates it. Any other click
-                // selects and activates, keeping the active element within the selection.
-                if (toggle && was_selected && is_active) {
-                    selection::Deselect(bits, br->Offset, element_index);
-                    r.remove<MeshActiveElement>(mesh_entity);
-                } else {
-                    selection::Select(bits, br->Offset, element_index);
-                    r.emplace_or_replace<MeshActiveElement>(mesh_entity, element_index);
-                }
+            auto bits = meshes.GetSelectionBits(r.get<const MeshHandle>(mesh_entity).StoreId);
+            const auto *current_active = r.try_get<MeshActiveElement>(mesh_entity);
+            const bool is_active = current_active && current_active->Handle == element_index;
+            const bool was_selected = selection::IsSelected(bits, element_index);
+            // Toggle-clicking the active element deselects and deactivates it. Any other click
+            // selects and activates, keeping the active element within the selection.
+            if (toggle && was_selected && is_active) {
+                selection::Deselect(bits, element_index);
+                r.remove<MeshActiveElement>(mesh_entity);
+            } else {
+                selection::Select(bits, element_index);
+                r.emplace_or_replace<MeshActiveElement>(mesh_entity, element_index);
             }
         } else if (!toggle) {
             for (const auto &range : ranges) r.remove<MeshActiveElement>(range.MeshEntity);
@@ -773,7 +758,7 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
 
         const auto &interaction = r.get<const Interaction>(viewport);
         if (interaction.Mode == InteractionMode::Edit && FindArmatureObject(r, FindActiveEntity(r)) == entt::null) {
-            const auto ranges = GetBitsetRangesForSelected(r);
+            const auto ranges = GetElementRangesForSelected(r, viewport);
             if (!additive) {
                 for (const auto &range : ranges) r.remove<MeshActiveElement>(range.MeshEntity);
             }
@@ -1152,7 +1137,7 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
 
     if (r.all_of<SelectionBitsDirty>(viewport)) {
         r.remove<SelectionBitsDirty>(viewport);
-        if (is_edit_mode) ApplySelectionStateUpdate(r, viewport, GetBitsetRangesForSelected(r), r.get<const EditMode>(viewport).Value);
+        if (is_edit_mode) ApplySelectionStateUpdate(r, viewport, GetElementRangesForSelected(r, viewport), r.get<const EditMode>(viewport).Value);
     }
     if (const auto &tracker = reactive<changes::MeshActiveElement>(r); !tracker.empty()) {
         const auto edit_mode = r.get<const EditMode>(viewport).Value;
@@ -1242,14 +1227,15 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
             RebuildMeshletSceneMeshes(r, {&mesh_entity, 1});
             // Edited geometry restates the hierarchy of every mesh that has one.
             if (r.all_of<MeshBvh>(mesh_entity)) UpdateMeshBvh(r, mesh_entity);
-            if (auto *br = r.try_get<MeshSelectionBitsetRange>(mesh_entity); br && edit_mode != Element::None) {
-                // Topology changed: zero stale selection bits and update count.
-                const auto &mesh = GetMesh(r, mesh_entity);
-                const uint32_t new_count = selection::GetElementCount(mesh, edit_mode);
-                const uint32_t max_words = (std::max(br->Count, new_count) + 31) / 32;
-                memset(&buffers.SelectionBitset.Data()[br->Offset / 32], 0, max_words * sizeof(uint32_t));
-                br->Count = new_count;
-                if (new_count > 0) geometry_ranges.emplace_back(mesh_entity, br->Offset, br->Count);
+            if (r.all_of<MeshElementSelection>(mesh_entity)) {
+                // Topology changed: resize the bits to cover the new element counts and drop the stale selection.
+                const auto mesh = GetMesh(r, mesh_entity);
+                meshes.EnsureSelectionBits(mesh);
+                const auto id = mesh.GetStoreId();
+                std::ranges::fill(meshes.GetSelectionBits(id), 0u);
+                if (const uint32_t count = selection::GetElementCount(mesh, edit_mode); count > 0) {
+                    geometry_ranges.emplace_back(mesh_entity, meshes.GetSelectionBitOffset(id), count);
+                }
             }
         }
         if (!geometry_ranges.empty()) ApplySelectionStateUpdate(r, viewport, geometry_ranges, edit_mode);
@@ -1310,7 +1296,7 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
         request(RenderRequest::Rebuild);
         // Dispatch UpdateSelectionState for all meshes entering Edit mode (MeshSelectionBitsetRange assigned in SetInteractionMode).
         if (r.get<const Interaction>(viewport).Mode == InteractionMode::Edit) {
-            if (const auto edit_mode = r.get<const EditMode>(viewport).Value; edit_mode != Element::None) ApplySelectionStateUpdate(r, viewport, GetBitsetRangesForSelected(r), edit_mode);
+            if (const auto edit_mode = r.get<const EditMode>(viewport).Value; edit_mode != Element::None) ApplySelectionStateUpdate(r, viewport, GetElementRangesForSelected(r, viewport), edit_mode);
         }
         for (const auto [_, instance, __] : r.view<const Instance, const SoundVertices>().each()) {
             dirty_element_state_meshes.insert(instance.Entity);

@@ -39,8 +39,7 @@ struct MeshletBuild {
     uint32_t TriangleIdCount{}, LocalTriangleCount{};
 };
 
-// Shared arena for per-instance GPU data (transforms, object IDs, instance states, local-space bounds).
-// Uses a single RangeAllocator so all buffers share the same instance offsets.
+// Per-instance GPU data behind one RangeAllocator, so every buffer shares the same instance offsets.
 struct InstanceArena {
     InstanceArena(mtl::BufferContext &ctx)
         : TransformBuffer(ctx, 0, SlotType::ModelBuffer),
@@ -59,7 +58,6 @@ struct InstanceArena {
 
     void Free(Range range) { Allocator.Free(range); }
 
-    // Compact-erase: shift [global_index+1, range_end) down by 1 in all buffers.
     void CompactErase(uint32_t global_index, uint32_t range_end) {
         const auto count = range_end - global_index - 1;
         if (count == 0) return;
@@ -68,7 +66,6 @@ struct InstanceArena {
         });
     }
 
-    // Copy `count` elements from src_offset to dst_offset across all buffers.
     void CopyInstances(uint32_t src_offset, uint32_t dst_offset, uint32_t count) {
         if (count == 0 || src_offset == dst_offset) return;
         ForEachBuffer([&](mtl::Buffer &buf, size_t sz) {
@@ -76,7 +73,6 @@ struct InstanceArena {
         });
     }
 
-    // Pre-reserve capacity for `count` additional instances to avoid per-Allocate growth.
     void ReserveAdditional(uint32_t count) { EnsureCapacity(uint64_t(Allocator.HighWaterMark()) + count); }
 
     void UpdateState(uint32_t index, uint8_t state) { StateBuffer.Update(as_bytes(state), uint64_t(index) * sizeof(uint8_t)); }
@@ -88,7 +84,7 @@ struct InstanceArena {
         return {reinterpret_cast<Transform *>(mapped.data()), mapped.size() / sizeof(Transform)};
     }
 
-    // Reset to empty: used size and allocator go to zero, keeping the GPU allocations for reuse.
+    // Zero the used sizes and the allocator, keeping the GPU allocations for reuse.
     void Reset() {
         Allocator = {};
         ForEachBuffer([](mtl::Buffer &buf, size_t) { buf.UsedSize = 0; });
@@ -127,9 +123,7 @@ struct GpuBuffers {
     static constexpr uint64_t ViewUboStride() {
         return (sizeof(::SceneViewUBO) + ViewUboAlignment - 1) / ViewUboAlignment * ViewUboAlignment;
     }
-    static constexpr uint32_t MaxSelectableElements{16'000'000};
     static constexpr uint32_t ObjectPickBitsetWords{(MaxSelectableObjects + 31) / 32};
-    static constexpr uint32_t SelectionBitsetWords{(MaxSelectableElements + 31) / 32};
 
     GpuBuffers(const mtl::Context &ctx, mtl::BindlessSet &slots)
         : Ctx{ctx, slots},
@@ -170,7 +164,7 @@ struct GpuBuffers {
           RenderDraw{Ctx, 0, SlotType::DrawDataBuffer}, SelectionDraw{Ctx, 0, SlotType::DrawDataBuffer},
           ObjectPickKeys{Ctx, MaxSelectableObjects * sizeof(uint32_t)},
           ObjectPickSeenBitset{Ctx, ObjectPickBitsetWords * sizeof(uint32_t)},
-          SelectionBitset{Ctx, SelectionBitsetWords * sizeof(uint32_t)},
+          ObjectBoxBitset{Ctx, ObjectPickBitsetWords * sizeof(uint32_t)},
           MotionBlurTileIndirection{Ctx, 0},
           ElementPickKey{Ctx, sizeof(uint32_t)},
           ElementPickId{Ctx, sizeof(uint32_t)},
@@ -188,7 +182,6 @@ struct GpuBuffers {
         auto &buf = GetIndexBuffer(index_kind);
         return buf.Slotted(buf.Allocate(indices));
     }
-    // Allocate an index range without writing data. Returns the range and a mutable span for direct writes.
     std::pair<SlottedRange, std::span<uint32_t>> AllocateIndices(uint32_t count, IndexKind index_kind) {
         auto &buf = GetIndexBuffer(index_kind);
         auto range = buf.Allocate(count);
@@ -245,8 +238,7 @@ struct GpuBuffers {
         if (words != WireCoverageBuffer.Count<uint32_t>()) WireCoverageBuffer.SetCount<uint32_t>(uint32_t(words));
     }
 
-    // Empty the scene arenas on clear so the next load's derived handles (BufferIndex, InstanceRange, morph/bone
-    // ranges) rebuild from a clean baseline rather than on a prior scene's leftover residue.
+    // The next load's derived handles rebuild from a clean baseline rather than a prior scene's residue.
     void ResetSceneArenas() {
         VertexBuffer.Reset();
         FaceIndexBuffer.Reset();
@@ -359,12 +351,10 @@ struct GpuBuffers {
         while (BlurPoses.size() < count) BlurPoses.emplace_back(Ctx);
     }
 
-    // Point the view UBO's draw-data slot at `draw_data`, which GetDrawDataAt reads.
     void SetSceneViewDrawSlots(const mtl::Buffer &draw_data) {
         SceneViewUBO.Update(as_bytes(draw_data.Slot), offsetof(::SceneViewUBO, DrawDataSlot));
     }
 
-    // Copy the live view UBO into ring instance `instance`.
     void SnapshotSceneViewUbo(uint32_t instance) {
         SceneViewUBO.Update(SceneViewUBO.Contents().subspan(0, sizeof(::SceneViewUBO)), ViewUboStride() * instance);
     }
@@ -373,7 +363,7 @@ struct GpuBuffers {
     }
     uint32_t SceneViewUboOffset(uint32_t instance) const { return uint32_t(ViewUboStride() * instance); }
 
-    // Snapshot the live pose into `dst`. Call once the scene is evaluated at the wanted time.
+    // Call once the scene is evaluated at the wanted time.
     void CaptureVelocityPose(VelocityPose &dst) const {
         static constexpr auto copy_whole = [](const mtl::Buffer &src, mtl::Buffer &dst) {
             dst.Reserve(src.UsedSize);
@@ -386,11 +376,11 @@ struct GpuBuffers {
         dst.ViewProj = reinterpret_cast<const ::SceneViewUBO *>(SceneViewUBO.Contents().data())->ViewProj;
     }
 
-    // Per-scene resource tables — reset via their own paths (Lights.SetCount(0) / ResetImportedTexturesAndMaterials)
+    // Per-scene resource tables, reset through their own paths rather than ResetSceneArenas.
     TypedBuffer<PunctualLight> Lights;
     TypedBuffer<PBRMaterial> Materials;
 
-    // Per-frame uniforms. SceneViewUBO holds MaxBlurSteps+1 instances at SceneViewUboStride,
+    // Per-frame uniforms. SceneViewUBO holds MaxBlurSteps+1 instances at ViewUboStride(),
     // with the live state at instance 0.
     mtl::Buffer SceneViewUBO, ViewportThemeUBO, WorkspaceLightsUBO;
 
@@ -450,8 +440,7 @@ struct GpuBuffers {
     uint32_t MeshletVisibleGeneration{0};
     uint32_t VisibilityIdGeneration{0};
 
-    // Selection / picking — GPU buffers + host-visible readback
-    TypedBuffer<uint32_t> ObjectPickKeys, ObjectPickSeenBitset, SelectionBitset, MotionBlurTileIndirection;
+    TypedBuffer<uint32_t> ObjectPickKeys, ObjectPickSeenBitset, ObjectBoxBitset, MotionBlurTileIndirection;
     TypedBuffer<uint32_t> ElementPickKey, ElementPickId;
     mtl::Buffer WireCoverageBuffer;
     TypedBuffer<WireDrawRecord> WireDrawRecords;

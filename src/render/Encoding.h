@@ -15,7 +15,6 @@
 #include <print>
 #include <span>
 
-// Shared draw/dispatch bindings; render stages receive the same buffers.
 namespace encode {
 // Everything a pass needs to resolve a visibility id back to its meshlet, instance and primitive.
 // A cull that rewrote the visible list after the raster wrote these ids resolves every id to
@@ -90,23 +89,29 @@ void SetPushConstants(MTL::ComputeCommandEncoder *encoder, const T &pc) {
     encoder->setBytes(&pc, sizeof(T), BufferIndex_PushConstants);
 }
 
+// A mesh grid dimension the hardware accepts, past which a draw renders nothing.
+constexpr uint32_t MaxMeshThreadgroups{65'535};
+
 // One dispatch per draw over a batch's element list, instances in the grid's second dimension.
 // A batch's draw holds `indices_per_element` indices for each element it emits.
+// A mesh with more elements than one grid holds goes out a chunk at a time.
 inline void DispatchMeshBatch(
     MTL::RenderCommandEncoder *encoder, const DrawListBuilder &list, const DrawBatchInfo &batch,
     uint32_t indices_per_element, uint32_t elements_per_group, uint32_t threads_per_group
 ) {
+    const auto chunk_elements = MaxMeshThreadgroups * elements_per_group;
     for (uint32_t d = 0; d < batch.DrawCount; ++d) {
         const auto &record = list.Records[batch.FirstRecord + d];
         const auto element_count = record.IndexCount / indices_per_element;
-        SetMeshPushConstants(encoder, OverlayMeshPushConstants{
-            .DrawDataIndex = batch.DrawDataSlotOffset + record.FirstDraw,
-            .ElementCount = element_count,
-        });
-        encoder->drawMeshThreadgroups(
-            MTL::Size((element_count + elements_per_group - 1) / elements_per_group, record.InstanceCount, 1),
-            MTL::Size(1, 1, 1), MTL::Size(threads_per_group, 1, 1)
-        );
+        for (uint32_t first = 0; first < element_count; first += chunk_elements) {
+            const auto groups = (std::min(chunk_elements, element_count - first) + elements_per_group - 1) / elements_per_group;
+            SetMeshPushConstants(encoder, OverlayMeshPushConstants{
+                .DrawDataIndex = batch.DrawDataSlotOffset + record.FirstDraw,
+                .ElementCount = element_count,
+                .FirstElement = first,
+            });
+            encoder->drawMeshThreadgroups(MTL::Size(groups, record.InstanceCount, 1), MTL::Size(1, 1, 1), MTL::Size(threads_per_group, 1, 1));
+        }
     }
 }
 

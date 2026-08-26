@@ -308,6 +308,7 @@ struct MeshStore::Buffers {
           FaceStateBuffer{ctx, 0, SlotType::Buffer},
           FaceSharpnessBuffer{ctx, 0, SlotType::Buffer},
           EdgeStateBuffer{ctx, SlotType::Buffer},
+          SelectionBitsBuffer{ctx, SlotType::Buffer},
           FaceCornerBuffer{ctx, SlotType::IndexBuffer},
           ConnectivityBuffer{ctx, SlotType::Buffer},
           TriangleFaceIdBuffer{ctx, SlotType::ObjectIdBuffer},
@@ -337,6 +338,8 @@ struct MeshStore::Buffers {
     mtl::Buffer FaceStateBuffer; // Mirrors FaceFirstTriangleBuffer
     mtl::Buffer FaceSharpnessBuffer; // Mirrors FaceFirstTriangleBuffer. 1 = flat-shaded face (canonical sharpness store)
     BufferArena<uint8_t> EdgeStateBuffer;
+    // Element selection bits per mesh, sized to its largest element domain so every edit mode indexes the same range
+    BufferArena<uint32_t> SelectionBitsBuffer;
     BufferArena<uint32_t> FaceCornerBuffer;
     // Each mesh's half-edge connectivity, laid out as the entry's sub-ranges describe.
     BufferArena<uint32_t> ConnectivityBuffer;
@@ -370,6 +373,7 @@ struct MeshStore::Buffers {
         f(BoneDeformBuffer);
         f(MorphTargetBuffer);
         f(EdgeStateBuffer);
+        f(SelectionBitsBuffer);
         f(TriangleFaceIdBuffer);
         f(FaceCornerBuffer);
         f(ConnectivityBuffer);
@@ -583,6 +587,21 @@ void MeshStore::EnsureEdgeStates(const Mesh &mesh) {
     entry.EdgeStates = B->EdgeStateBuffer.Allocate(mesh.EdgeCount() * 2);
     std::ranges::fill(B->EdgeStateBuffer.GetMutable(entry.EdgeStates), 0);
 }
+
+void MeshStore::EnsureSelectionBits(const Mesh &mesh) {
+    auto &entry = Entries.at(mesh.GetStoreId());
+    const auto words = BitWords(std::max({mesh.VertexCount(), mesh.EdgeCount(), mesh.FaceCount()}));
+    if (entry.SelectionBits.Count >= words) return;
+    // A mesh that grew past its bits takes a fresh range, cleared like a first allocation.
+    B->SelectionBitsBuffer.Release(entry.SelectionBits);
+    entry.SelectionBits = B->SelectionBitsBuffer.Allocate(words);
+    std::ranges::fill(B->SelectionBitsBuffer.GetMutable(entry.SelectionBits), 0u);
+}
+
+std::span<const uint32_t> MeshStore::GetSelectionBits(uint32_t id) const { return B->SelectionBitsBuffer.Get(Entries.at(id).SelectionBits); }
+std::span<uint32_t> MeshStore::GetSelectionBits(uint32_t id) { return B->SelectionBitsBuffer.GetMutable(Entries.at(id).SelectionBits); }
+uint32_t MeshStore::GetSelectionBitsSlot() const { return B->SelectionBitsBuffer.Buffer.Slot; }
+uint32_t MeshStore::GetSelectionBitOffset(uint32_t id) const { return Entries.at(id).SelectionBits.Offset * 32; }
 
 std::span<const uint32_t> MeshStore::GetFaceCorners(uint32_t id) const { return B->FaceCornerBuffer.Get(Entries.at(id).FaceCorners); }
 SlottedRange MeshStore::GetFaceCornerRange(uint32_t id) const { return B->FaceCornerBuffer.Slotted(Entries.at(id).FaceCorners); }
@@ -1584,6 +1603,7 @@ void MeshStore::Release(uint32_t id) {
     B->ElementPrimitiveBuffer.Release(entry.ElementPrimitives);
     B->PrimitiveMaterialBuffer.Release(entry.PrimitiveMaterials);
     B->EdgeStateBuffer.Release(entry.EdgeStates);
+    B->SelectionBitsBuffer.Release(entry.SelectionBits);
     B->FaceCornerBuffer.Release(entry.FaceCorners);
     B->ConnectivityBuffer.Release(entry.Connectivity);
     B->ConnectivityBuffer.Release(entry.ConnectivityEdges);

@@ -1,6 +1,9 @@
 #include "action/Selection.h"
 #include "Variant.h"
 #include "armature/ArmatureComponents.h"
+#include "mesh/Mesh.h"
+#include "mesh/MeshComponents.h"
+#include "mesh/MeshStore.h"
 #include "scene/Entity.h"
 #include "selection/Selection.h"
 #include "selection/SelectionBitset.h"
@@ -17,8 +20,8 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
         const auto *cur = r.try_get<BoneSelection>(e);
         r.emplace_or_replace<BoneSelection>(e, additive && cur ? *cur | sel : sel);
     };
-    // AdditiveBoxSelectBaseline is meaningful only during an active box-select drag;
-    // a click-selection always ends one, so its handler owns the cleanup.
+    // AdditiveBoxSelectBaseline is meaningful only during an active box-select drag.
+    // A click-selection always ends one, so its handler owns the cleanup.
     auto end_box_select_interaction = [&] { r.remove<AdditiveBoxSelectBaseline>(viewport); };
 
     std::visit(
@@ -55,10 +58,10 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
                 if (interaction_mode == InteractionMode::Pose || IsBoneEditMode(r, viewport)) {
                     r.clear<BoneSelection>();
                 } else if (interaction_mode == InteractionMode::Edit) {
-                    const auto ranges = GetBitsetRangesForSelected(r);
-                    auto *bits = r.ctx().get<SelectionBitsetRef>().Value.data();
+                    auto &meshes = r.ctx().get<MeshStore>();
+                    const auto ranges = GetElementRangesForSelected(r, viewport);
                     for (const auto &range : ranges) {
-                        ::selection::DeselectAll(bits, range.Offset, range.Count);
+                        std::ranges::fill(meshes.GetSelectionBits(r.get<const MeshHandle>(range.MeshEntity).StoreId), 0u);
                         r.remove<MeshActiveElement>(range.MeshEntity);
                     }
                     if (!ranges.empty()) r.emplace_or_replace<SelectionBitsDirty>(viewport);
@@ -72,11 +75,10 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
                 const bool active_is_armature = FindArmatureObject(r, active_entity) != entt::null;
                 AdditiveBoxSelectBaseline baseline;
                 if (interaction_mode == InteractionMode::Edit && !active_is_armature) {
-                    if (const auto ranges = GetBitsetRangesForSelected(r); !ranges.empty()) {
-                        const auto element_count = std::ranges::fold_left(ranges, uint32_t{0}, [](uint32_t total, const auto &range) { return std::max(total, range.Offset + range.Count); });
-                        const uint32_t bitset_words = (element_count + 31) / 32;
-                        const auto bits = r.ctx().get<const SelectionBitsetRef>().Value;
-                        baseline.ElementBitset.assign(bits.begin(), bits.begin() + bitset_words);
+                    const auto &meshes = r.ctx().get<const MeshStore>();
+                    for (const auto &range : GetElementRangesForSelected(r, viewport)) {
+                        const auto bits = meshes.GetSelectionBits(r.get<const MeshHandle>(range.MeshEntity).StoreId);
+                        baseline.ElementBits.emplace_back(range.MeshEntity, std::vector<uint32_t>{bits.begin(), bits.end()});
                     }
                 } else if (interaction_mode == InteractionMode::Pose || (interaction_mode == InteractionMode::Edit && active_is_armature)) {
                     for (const auto e : r.view<BoneSelection>()) baseline.BoneSelections.emplace_back(e, r.get<BoneSelection>(e));
@@ -133,9 +135,9 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
                     for (const auto bone_entity : arm_obj.BoneEntities) r.emplace<BoneSelection>(bone_entity);
                     if (!arm_obj.BoneEntities.empty()) r.emplace<BoneActive>(arm_obj.BoneEntities.back());
                 } else if (interaction_mode == InteractionMode::Edit) {
-                    const auto ranges = GetBitsetRangesForSelected(r);
-                    auto *bits = r.ctx().get<SelectionBitsetRef>().Value.data();
-                    for (const auto &range : ranges) ::selection::SelectAll(bits, range.Offset, range.Count);
+                    auto &meshes = r.ctx().get<MeshStore>();
+                    const auto ranges = GetElementRangesForSelected(r, viewport);
+                    for (const auto &range : ranges) ::selection::SelectAll(meshes.GetSelectionBits(r.get<const MeshHandle>(range.MeshEntity).StoreId), range.Count);
                     if (!ranges.empty()) r.emplace_or_replace<SelectionBitsDirty>(viewport);
                 } else if (interaction_mode == InteractionMode::Object) {
                     r.clear<Active, Selected>();

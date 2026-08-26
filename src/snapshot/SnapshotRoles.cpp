@@ -43,7 +43,6 @@
 #include "scene/SceneGraph.h"
 #include "scene/WorldTransform.h"
 #include "selection/BoneSelection.h"
-#include "selection/SelectionBitset.h"
 #include "selection/SelectionComponents.h"
 #include "snapshot/SnapshotRoles.h"
 #include "viewport/InteractionComponents.h"
@@ -129,7 +128,7 @@ using Persistent = type_list<
     Transform, ViewportTheme, WorkspaceLights, PunctualLight,
     Name, Selected, Active, ObjectKind, MeshActiveElement, Scene, ActiveScene, SceneMembership, SubElementOf,
     ScaleLocked, Instance, Hidden, SceneNode, ParentInverse, MeshHandle, VertexStoreId, ObjectExtrasTag,
-    MeshSelectionBitsetRange, MeshMaterialAssignment, MeshMaterialSlotSelection, MaterialVariants, MaterializedTextures, PbrMeshFeatures,
+    MeshElementSelection, MeshMaterialAssignment, MeshMaterialSlotSelection, MaterialVariants, MaterializedTextures, PbrMeshFeatures,
     PrimitiveShape, Path, Camera, ViewCamera, LookingThrough, Interaction, EditMode, OrbitToActive, ShadeSmoothAngle, AudioOutputConfig, AudioOutputMix, Striker, ModalSoundControls, ContactSurface, SurfaceSoundControls,
     AcousticMaterial, SoundVerticesModel, ModalModes, ModalGain, ModalTuning, ModalSolveSettings, MassProperties, TetBuffers, ModalEigenSummary,
     SelectionXRay, ViewportDisplay, MaterialPreviewLighting, RenderedLighting, StudioEnvironment, TransformGizmoState, ActionIndex,
@@ -151,7 +150,7 @@ using Derived = type_list<
     MaterialDirty, LightIndex, EnabledInteractionModes, LastEvaluatedFrame,
     PhysicsBodyHandle, PhysicsConstraintHandle, BodyPoseCache, BoneInstanceStateDirty, ArmaturePoseState,
     MorphWeightGpuRange, AdditiveBoxSelectBaseline, SelectionBitsDirty, ElementStatesDirty, PendingEditElementClick,
-    PendingBoxSelect, PendingPick, PendingTextureUploads, SelectionBitsetRef, BoxSelectState, PlaybackFrame,
+    PendingBoxSelect, PendingPick, PendingTextureUploads, BoxSelectState, PlaybackFrame,
     PhysicsCacheInvalid, RotationUiVariant, RotationUiDriving, GizmoInteraction, PendingTransform, StartScreenTransform,
 #ifdef SURFACE_AUDIO
     SurfaceRelief, SurfaceFinishKey,
@@ -187,7 +186,7 @@ template<typename T> inline constexpr bool IsVariantOrOptional<std::optional<T>>
 template<typename C>
 consteval bool HoldsVariantOrOptional() {
     if constexpr (IsVariantOrOptional<C>) return true;
-    else if constexpr (std::is_trivially_copyable_v<C> && std::is_aggregate_v<C>) // non-aggregates (e.g. ViewCamera) aren't reflectable; they use CustomEmplace
+    else if constexpr (std::is_trivially_copyable_v<C> && std::is_aggregate_v<C>) // non-aggregates (e.g. ViewCamera) aren't reflectable and use CustomEmplace
         return zpp::bits::visit_members_types<C>([]<typename... Ms>() { return (IsVariantOrOptional<std::remove_cvref_t<Ms>> || ...); });
     else return false;
 }
@@ -216,8 +215,9 @@ constexpr bool (*MakeComparator())(const void *, const void *) {
     else return nullptr;
 }
 
-// Encoding deduced from the type: empty -> Tag; CustomEmplace or ForceSerialize -> Serialized (zpp);
-// trivially copyable -> Bytes (memcpy); else Serialized. CustomEmplace handles non-default-constructible types.
+// Encoding deduced from the type: empty -> Tag, CustomEmplace or ForceSerialize -> Serialized (zpp),
+// trivially copyable -> Bytes (memcpy), and everything else -> Serialized.
+// CustomEmplace handles non-default-constructible types.
 template<typename C>
 snapshot::SnapshotEntry MakeEntry() {
     using snapshot::Encoding;

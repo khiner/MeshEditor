@@ -8,7 +8,6 @@
 #include "gpu/ViewportTheme.h"
 #include "mesh/Mesh.h"
 #include "mesh/MeshStore.h"
-#include "render/GpuBuffers.h"
 #include "scene/Entity.h"
 #include "selection/Selection.h"
 #include "selection/SelectionBitset.h"
@@ -31,33 +30,28 @@ bool SetInteractionMode(entt::registry &r, entt::entity viewport, InteractionMod
     if (mode == InteractionMode::Pose && !active_is_armature) return false;
 
     r.clear<VertexForce>();
+    auto &meshes = r.ctx().get<MeshStore>();
     if (r.get<const Interaction>(viewport).Mode == InteractionMode::Edit) {
-        // Element states are display-only. The bitset keeps the selection, and entering Edit mode rederives them.
-        auto &meshes = r.ctx().get<MeshStore>();
-        for (const auto [mesh_entity, _] : r.view<const MeshSelectionBitsetRange>().each()) {
+        // Element states are display-only. The selection bits keep the selection, and entering Edit mode rederives them.
+        for (const auto mesh_entity : r.view<const MeshElementSelection>()) {
             if (HasMesh(r, mesh_entity)) meshes.ClearElementStates(GetMesh(r, mesh_entity));
         }
         r.emplace_or_replace<ElementStatesDirty>(viewport);
     }
 
     if (mode == InteractionMode::Edit && !active_is_armature) {
-        // Only assign ranges for selected meshes missing one; existing ranges preserve remembered selection.
+        // Take bits only for selected meshes without them.
+        // A mesh that has them keeps its remembered selection.
         if (const auto edit_element = r.get<const EditMode>(viewport).Value; edit_element != Element::None) {
-            uint32_t next_offset = 0;
-            for (const auto [_, br] : r.view<const MeshSelectionBitsetRange>().each()) {
-                next_offset = std::max(next_offset, (br.Offset + br.Count + 31) / 32 * 32);
-            }
-            auto *bits = r.ctx().get<SelectionBitsetRef>().Value.data();
             for (const auto mesh_entity : selection::GetSelectedMeshEntities(r)) {
-                if (r.all_of<MeshSelectionBitsetRange>(mesh_entity)) continue;
-                const auto &mesh = GetMesh(r, mesh_entity);
+                if (r.all_of<MeshElementSelection>(mesh_entity)) continue;
+                const auto mesh = GetMesh(r, mesh_entity);
                 const uint32_t count = selection::GetElementCount(mesh, edit_element);
-                // A mesh whose elements do not fit the remaining bitset stays unranged, so its elements are not selectable.
-                if (count == 0 || next_offset + count > GpuBuffers::MaxSelectableElements) continue;
+                if (count == 0) continue;
 
-                selection::SelectAll(bits, next_offset, count);
-                r.emplace<MeshSelectionBitsetRange>(mesh_entity, next_offset, count);
-                next_offset = (next_offset + count + 31) / 32 * 32;
+                meshes.EnsureSelectionBits(mesh);
+                selection::SelectAll(meshes.GetSelectionBits(mesh.GetStoreId()), count);
+                r.emplace<MeshElementSelection>(mesh_entity);
             }
         }
     }
