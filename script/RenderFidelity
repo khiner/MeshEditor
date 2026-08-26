@@ -1,0 +1,88 @@
+#!/bin/bash
+
+# Render the whole corpus into a side directory with extra app flags, then judge it against the
+# committed corpus with script/CompareRenders. The committed render/ tree is never touched, so this
+# answers "what does this flag do to every rendered pixel" without disturbing the byte gate.
+# Exits 0 when every scene stays inside its budget (script/render_budgets.json), 1 otherwise.
+
+set -uo pipefail
+
+ScriptDir="$(cd "$(dirname "${0}")" && pwd)"
+ProjectRootDir="$(dirname "${ScriptDir}")"
+cd "${ProjectRootDir}"
+
+Name="candidate"
+AppArgs=""
+Budgets="script/render_budgets.json"
+Render=1
+CompareArgs=()
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -h|--help)
+            cat <<'EOF'
+Usage: script/RenderFidelity [--name NAME] [--app-args "FLAGS"] [--budgets PATH] [--compare-only] [-- COMPARE ARGS]
+
+Render the corpus into render_candidates/NAME with FLAGS handed to every render worker, then report
+per-scene pixel metrics against the committed corpus and gate them on the budgets file.
+
+Options:
+  --name NAME         Candidate tree name under render_candidates/ (default: candidate)
+  --app-args "FLAGS"  Extra MeshEditor flags for every render worker
+  --budgets PATH      Budgets file (default: script/render_budgets.json)
+  --compare-only      Skip rendering and report on the existing candidate tree
+  --                  Pass the remaining arguments to script/CompareRenders
+
+Environment:
+  JOBS=N              Number of headless render workers (default: 8)
+EOF
+            exit 0
+            ;;
+        --name)
+            [ $# -ge 2 ] || { echo "--name needs a value" >&2; exit 2; }
+            Name="$2"
+            shift 2
+            ;;
+        --app-args)
+            [ $# -ge 2 ] || { echo "--app-args needs a flag string" >&2; exit 2; }
+            AppArgs="$2"
+            shift 2
+            ;;
+        --budgets)
+            [ $# -ge 2 ] || { echo "--budgets needs a path" >&2; exit 2; }
+            Budgets="$2"
+            shift 2
+            ;;
+        --compare-only)
+            Render=0
+            shift
+            ;;
+        --)
+            shift
+            CompareArgs=("$@")
+            break
+            ;;
+        *)
+            echo "Unknown argument: $1" >&2
+            exit 2
+            ;;
+    esac
+done
+
+case "${Name}" in
+    ""|*/*|*..*) echo "--name must be a plain directory name" >&2; exit 2 ;;
+esac
+
+OutDir="render_candidates/${Name}"
+Report="render_candidates/${Name}.json"
+
+if [ "${Render}" -eq 1 ]; then
+    # A stale leaf would otherwise show up as an extra file the committed corpus has no counterpart for.
+    rm -rf "${OutDir}"
+    "${ScriptDir}/Render" --out "${OutDir}" --app-args "${AppArgs}" || exit $?
+fi
+
+[ -d "${OutDir}" ] || { echo "No candidate tree at ${OutDir}" >&2; exit 2; }
+
+echo
+"${ScriptDir}/CompareRenders" "${OutDir}" --budgets "${Budgets}" --json "${Report}" ${CompareArgs[@]+"${CompareArgs[@]}"}

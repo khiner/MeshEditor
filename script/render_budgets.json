@@ -1,0 +1,10 @@
+{
+  "note": "Per-scene fidelity budgets for script/CompareRenders. A scene is one render/ leaf directory, keyed by its path relative to the corpus root, and its budget applies to every visual in that leaf (each material variant included). The default is exact: today the corpus reproduces byte for byte, so anything that moves a pixel is a regression until a track relaxes the scene deliberately, with the measured number and the reason. Keys: changedPixelPercent (share of pixels where any channel moved), maxDelta and p99Delta (per-channel absolute difference, 0-255), meanDelta (mean per-channel absolute difference).",
+  "default": {
+    "changedPixelPercent": 0,
+    "maxDelta": 0,
+    "p99Delta": 0,
+    "meanDelta": 0
+  },
+  "scenes": {}
+}

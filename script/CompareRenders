@@ -1,0 +1,411 @@
+#!/usr/bin/env python3
+
+"""Compare two render trees pixel by pixel and gate the result against per-scene budgets.
+
+The committed `render/` corpus is byte-identical run to run, so `git status` alone gates a change that
+must not move a pixel. A screen-error-bounded change (cluster LOD) deliberately moves pixels by a
+bounded amount, which no byte gate can judge. This decodes both trees and reports, per scene, how many
+pixels moved and by how much, then exits nonzero when a scene exceeds its budget.
+
+Usage:
+  script/CompareRenders <candidate-tree> [reference-tree]
+
+With no reference tree the reference is the committed corpus at HEAD, read through git (so a dirty
+working tree cannot silently become the reference). Budgets live in script/render_budgets.json.
+"""
+
+from __future__ import annotations
+
+import argparse
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
+from io import BytesIO
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+
+import numpy as np
+from PIL import Image
+
+ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_BUDGETS = ROOT / "script" / "render_budgets.json"
+CORPUS_DIR = "render"
+IMAGE_SUFFIXES = (".webp", ".png", ".jpg")
+VIDEO_SUFFIXES = (".mp4",)
+FFMPEG = "ffmpeg"
+
+# Budget keys, in report column order. Each is an upper bound: a scene passes when every one of its
+# files stays at or below every bound.
+BUDGET_KEYS = ("changedPixelPercent", "maxDelta", "p99Delta", "meanDelta")
+
+
+def comparable(name: str) -> bool:
+    """True for the visual artifacts. Logs, action replays and run.sh reproducers are not pixels."""
+    return name.endswith(IMAGE_SUFFIXES + VIDEO_SUFFIXES)
+
+
+class Tree:
+    """A set of render artifacts addressed by path relative to the tree root."""
+
+    def __init__(self, root: Path | None, label: str, names: list[str]):
+        self.root, self.label, self.names = root, label, sorted(names)
+
+    def read(self, name: str) -> bytes:
+        raise NotImplementedError
+
+
+class DirTree(Tree):
+    def __init__(self, root: Path):
+        names = [
+            str(Path(base, file).relative_to(root))
+            for base, _, files in os.walk(root)
+            for file in files
+            if comparable(file)
+        ]
+        super().__init__(root, str(root), names)
+
+    def read(self, name: str) -> bytes:
+        return (self.root / name).read_bytes()
+
+
+class GitTree(Tree):
+    """The corpus as committed, read through the git-lfs smudge filter."""
+
+    def __init__(self, ref: str, prefix: str):
+        self.ref, self.prefix = ref, prefix
+        listing = subprocess.run(
+            ("git", "ls-tree", "-r", "-z", "--name-only", ref, "--", prefix),
+            cwd=ROOT, capture_output=True, text=True, check=True,
+        ).stdout
+        names = [name[len(prefix) + 1:] for name in listing.split("\0") if name and comparable(name)]
+        if not names:
+            raise SystemExit(f"No render artifacts at {ref}:{prefix}")
+        super().__init__(None, f"{ref}:{prefix}", names)
+
+    def read(self, name: str) -> bytes:
+        result = subprocess.run(
+            ("git", "cat-file", "--filters", f"{self.ref}:{self.prefix}/{name}"),
+            cwd=ROOT, capture_output=True,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"git cat-file failed for {name}: {result.stderr.decode(errors='replace').strip()}")
+        if result.stdout.startswith(b"version https://git-lfs"):
+            raise RuntimeError(f"{name} is an unfetched git-lfs pointer (run: git lfs pull)")
+        return result.stdout
+
+
+class Delta:
+    """Absolute per-channel differences, accumulated as a 256-bin histogram so a long video never
+    holds more than one frame pair in memory and every percentile stays exact."""
+
+    def __init__(self):
+        self.histogram = np.zeros(256, dtype=np.int64)
+        self.changed_pixels = 0
+        self.pixels = 0
+
+    def add(self, a: np.ndarray, b: np.ndarray) -> None:
+        difference = np.abs(a.astype(np.int16) - b.astype(np.int16)).astype(np.uint8)
+        self.histogram += np.bincount(difference.reshape(-1), minlength=256)
+        self.changed_pixels += int(np.count_nonzero(difference.any(axis=-1)))
+        self.pixels += difference.shape[0] * difference.shape[1]
+
+    def quantile(self, fraction: float, histogram: np.ndarray) -> int:
+        total = int(histogram.sum())
+        if total == 0:
+            return 0
+        return int(np.searchsorted(np.cumsum(histogram), fraction * total))
+
+    def metrics(self) -> dict:
+        samples = int(self.histogram.sum())
+        values = np.arange(256, dtype=np.int64)
+        changed = self.histogram.copy()
+        changed[0] = 0
+        return {
+            "pixels": self.pixels,
+            "changedPixels": self.changed_pixels,
+            "changedPixelPercent": 100 * self.changed_pixels / self.pixels if self.pixels else 0.0,
+            "maxDelta": int(np.max(np.nonzero(self.histogram)[0])) if samples else 0,
+            "p99Delta": self.quantile(0.99, self.histogram),
+            # Over the differing channels alone: how large a typical moved sample is, which p99Delta
+            # cannot show while the moved samples are a small fraction of the frame.
+            "p99ChangedDelta": self.quantile(0.99, changed) if changed.sum() else None,
+            "meanDelta": float((self.histogram * values).sum() / samples) if samples else 0.0,
+        }
+
+
+def image_array(data: bytes, name: str) -> np.ndarray:
+    with Image.open(BytesIO(data)) as image:
+        if image.mode not in ("RGB", "RGBA", "L"):
+            raise RuntimeError(f"{name}: unsupported image mode {image.mode}")
+        return np.asarray(image.convert("RGBA" if image.mode == "RGBA" else "RGB"))
+
+
+def compare_images(reference: bytes, candidate: bytes, name: str) -> dict:
+    a, b = image_array(reference, name), image_array(candidate, name)
+    if a.shape != b.shape:
+        raise RuntimeError(f"{name}: dimensions differ ({a.shape[1]}x{a.shape[0]} vs {b.shape[1]}x{b.shape[0]})")
+    delta = Delta()
+    delta.add(a, b)
+    return {"kind": "image", "width": a.shape[1], "height": a.shape[0], **delta.metrics()}
+
+
+def video_info(path: Path) -> tuple[int, int, int]:
+    """Return (width, height, frame count). The container's declared count is authoritative for these
+    recordings, and counting decoded frames covers a container that declines to declare one."""
+    def probe(count_field: str, *extra: str) -> list[str]:
+        result = subprocess.run(
+            ("ffprobe", "-v", "error", "-select_streams", "v:0", *extra,
+             "-show_entries", f"stream=width,height,{count_field}", "-of", "csv=p=0", str(path)),
+            capture_output=True, text=True,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"ffprobe failed for {path}: {result.stderr.strip()}")
+        return result.stdout.strip().split(",")
+
+    fields = probe("nb_frames")
+    if len(fields) < 3 or not fields[2].isdigit() or int(fields[2]) == 0:
+        fields = probe("nb_read_frames", "-count_frames")
+    width, height, frames = int(fields[0]), int(fields[1]), int(fields[2])
+    return width, height, frames
+
+
+def audio_hash(path: Path) -> str | None:
+    """md5 of the decoded audio, or None when the file carries no audio stream."""
+    result = subprocess.run(
+        (FFMPEG, "-nostdin", "-loglevel", "error", "-i", str(path), "-vn", "-f", "md5", "-"),
+        capture_output=True, text=True,
+    )
+    return result.stdout.strip() if result.returncode == 0 and result.stdout.strip() else None
+
+
+def frame_reader(path: Path, indices: list[int]) -> subprocess.Popen:
+    select = "+".join(f"eq(n\\,{index})" for index in indices)
+    return subprocess.Popen(
+        (FFMPEG, "-nostdin", "-loglevel", "error", "-i", str(path),
+         "-vf", f"select={select}", "-fps_mode", "passthrough", "-vframes", str(len(indices)),
+         "-f", "rawvideo", "-pix_fmt", "rgb24", "-"),
+        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+    )
+
+
+def compare_videos(reference: Path, candidate: Path, name: str, sample: int) -> dict:
+    """Compare decoded frames rather than container bytes: the encoder is deterministic but the
+    driver renders an occasional pixel one LSB off, which flips a file hash and no pixel budget."""
+    a, b = video_info(reference), video_info(candidate)
+    if a != b:
+        raise RuntimeError(f"{name}: video geometry differs ({a[0]}x{a[1]}, {a[2]} frames vs {b[0]}x{b[1]}, {b[2]} frames)")
+    width, height, frames = a
+    indices = list(range(frames)) if sample <= 0 or sample >= frames else sorted(
+        {round(index * (frames - 1) / (sample - 1)) for index in range(sample)}
+    )
+    frame_bytes = width * height * 3
+    delta = Delta()
+    reader_a, reader_b = frame_reader(reference, indices), frame_reader(candidate, indices)
+    try:
+        for _ in indices:
+            raw_a, raw_b = reader_a.stdout.read(frame_bytes), reader_b.stdout.read(frame_bytes)
+            if len(raw_a) != frame_bytes or len(raw_b) != frame_bytes:
+                raise RuntimeError(f"{name}: frame decode returned short data")
+            shape = (height, width, 3)
+            delta.add(np.frombuffer(raw_a, dtype=np.uint8).reshape(shape), np.frombuffer(raw_b, dtype=np.uint8).reshape(shape))
+    finally:
+        for reader in (reader_a, reader_b):
+            reader.stdout.close()
+            reader.wait()
+    audio_a, audio_b = audio_hash(reference), audio_hash(candidate)
+    if audio_a != audio_b:
+        raise RuntimeError(f"{name}: audio differs ({audio_a or 'none'} vs {audio_b or 'none'})")
+    return {
+        "kind": "video", "width": width, "height": height,
+        "frames": frames, "sampledFrames": len(indices),
+        **delta.metrics(),
+    }
+
+
+def compare_item(name: str, reference: Tree, candidate: Tree, sample: int, scratch: Path) -> dict:
+    try:
+        if name.endswith(VIDEO_SUFFIXES):
+            paths = []
+            for tree, tag in ((reference, "reference"), (candidate, "candidate")):
+                if tree.root is not None:
+                    paths.append(tree.root / name)
+                else:
+                    # A git-held video has to land on disk for ffmpeg to seek it.
+                    temporary = scratch / f"{tag}-{name.replace('/', '_')}"
+                    temporary.write_bytes(tree.read(name))
+                    paths.append(temporary)
+            try:
+                return {"path": name, **compare_videos(paths[0], paths[1], name, sample)}
+            finally:
+                for path, tree in zip(paths, (reference, candidate)):
+                    if tree.root is None:
+                        path.unlink(missing_ok=True)
+        return {"path": name, **compare_images(reference.read(name), candidate.read(name), name)}
+    except Exception as error:
+        return {"path": name, "kind": "failed", "error": str(error)}
+
+
+def load_budgets(path: Path) -> dict:
+    if not path.is_file():
+        raise SystemExit(f"No budgets file at {path}")
+    budgets = json.loads(path.read_text())
+    default = budgets.get("default")
+    if not isinstance(default, dict) or any(key not in default for key in BUDGET_KEYS):
+        raise SystemExit(f"{path}: 'default' must set every budget key: {', '.join(BUDGET_KEYS)}")
+    unknown = {key for entry in [default, *budgets.get("scenes", {}).values()] for key in entry} - set(BUDGET_KEYS) - {"note"}
+    if unknown:
+        raise SystemExit(f"{path}: unknown budget keys: {', '.join(sorted(unknown))}")
+    return budgets
+
+
+def scene_budget(budgets: dict, scene: str) -> dict:
+    return {**budgets["default"], **budgets.get("scenes", {}).get(scene, {})}
+
+
+def scene_of(name: str) -> str:
+    """A scene is one corpus leaf directory: it holds one visual per material variant plus its
+    reproducer, so a budget belongs to the directory and not to each variant image."""
+    parent = str(Path(name).parent)
+    return "" if parent == "." else parent
+
+
+def worst_of(items: list[dict]) -> dict:
+    return {key: max((item[key] for item in items if key in item), default=0) for key in BUDGET_KEYS}
+
+
+def build_report(args: argparse.Namespace, reference: Tree, candidate: Tree, budgets: dict, results: list[dict]) -> dict:
+    missing = sorted(set(reference.names) - set(candidate.names))
+    extra = sorted(set(candidate.names) - set(reference.names))
+    by_scene: dict[str, list[dict]] = {}
+    for result in results:
+        by_scene.setdefault(scene_of(result["path"]), []).append(result)
+    for name in missing:
+        by_scene.setdefault(scene_of(name), []).append({"path": name, "kind": "missing", "error": "missing from candidate"})
+    for name in extra:
+        by_scene.setdefault(scene_of(name), []).append({"path": name, "kind": "extra", "error": "not in reference"})
+
+    scenes = []
+    for scene in sorted(by_scene):
+        items = sorted(by_scene[scene], key=lambda item: item["path"])
+        budget = scene_budget(budgets, scene)
+        worst = worst_of(items)
+        errors = [item for item in items if "error" in item]
+        exceeded = sorted(key for key in BUDGET_KEYS if worst[key] > budget[key])
+        status = "failed" if errors else "violation" if exceeded else "ok"
+        scenes.append({
+            "scene": scene, "status": status, "budget": budget, "worst": worst,
+            "exceeded": exceeded, "items": items,
+        })
+
+    return {
+        "schemaVersion": 1,
+        "createdUtc": datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ"),
+        "reference": reference.label,
+        "candidate": candidate.label,
+        "budgetsPath": str(args.budgets),
+        "videoFrameSample": args.video_frames,
+        "summary": {
+            "scenes": len(scenes),
+            "items": len(results) + len(missing) + len(extra),
+            "missing": len(missing),
+            "extra": len(extra),
+            "changedScenes": sum(1 for scene in scenes if scene["worst"]["changedPixelPercent"] > 0),
+            "violatingScenes": sum(1 for scene in scenes if scene["status"] == "violation"),
+            "failedScenes": sum(1 for scene in scenes if scene["status"] == "failed"),
+        },
+        "scenes": scenes,
+    }
+
+
+def print_report(report: dict, limit: int) -> None:
+    summary = report["summary"]
+    print(f"reference {report['reference']}")
+    print(f"candidate {report['candidate']}")
+    order = {"failed": 0, "violation": 1, "ok": 2}
+    ranked = sorted(
+        report["scenes"],
+        key=lambda scene: (order[scene["status"]], -scene["worst"]["changedPixelPercent"], -scene["worst"]["maxDelta"]),
+    )
+    interesting = [scene for scene in ranked if scene["status"] != "ok" or scene["worst"]["changedPixelPercent"] > 0]
+    shown = interesting[:limit] if limit > 0 else interesting
+    if shown:
+        print(f"\n{'scene':70} {'changed%':>9} {'max':>5} {'p99':>5} {'mean':>7}  status")
+        for scene in shown:
+            worst = scene["worst"]
+            print(
+                f"{scene['scene'][-70:]:70} {worst['changedPixelPercent']:9.4f} {worst['maxDelta']:5d} "
+                f"{worst['p99Delta']:5d} {worst['meanDelta']:7.4f}  {scene['status']}"
+            )
+        if len(interesting) > len(shown):
+            print(f"  ... {len(interesting) - len(shown)} more (see the JSON report)")
+    else:
+        print("\nEvery scene is pixel identical.")
+    print(
+        f"\n{summary['scenes']} scenes, {summary['items']} files: {summary['changedScenes']} changed, "
+        f"{summary['violatingScenes']} over budget, {summary['failedScenes']} failed "
+        f"({summary['missing']} missing, {summary['extra']} extra)."
+    )
+    lines = []
+    for scene in ranked:
+        for item in scene["items"]:
+            if "error" in item:
+                lines.append(f"  FAIL {item['path']}: {item['error']}")
+        if scene["status"] == "violation":
+            budget, worst = scene["budget"], scene["worst"]
+            over = ", ".join(f"{key} {worst[key]:g} > {budget[key]:g}" for key in scene["exceeded"])
+            lines.append(f"  OVER {scene['scene']}: {over}")
+    shown_lines = lines[:limit] if limit > 0 else lines
+    for line in shown_lines:
+        print(line)
+    if len(lines) > len(shown_lines):
+        print(f"  ... {len(lines) - len(shown_lines)} more (see the JSON report)")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("candidate", type=Path, help="render tree to judge")
+    parser.add_argument("reference", type=Path, nargs="?", help="render tree to judge against (default: the committed corpus)")
+    parser.add_argument("--ref", default="HEAD", help="git ref holding the default reference corpus")
+    parser.add_argument("--budgets", type=Path, default=DEFAULT_BUDGETS)
+    parser.add_argument("--json", type=Path, help="write the full report here")
+    parser.add_argument("--video-frames", type=int, default=16, help="frames sampled per video, 0 for every frame")
+    parser.add_argument("--jobs", type=int, default=min(8, os.cpu_count() or 4))
+    parser.add_argument("--limit", type=int, default=40, help="table rows printed, 0 for all")
+    args = parser.parse_args()
+
+    budgets = load_budgets(args.budgets)
+    if not args.candidate.is_dir():
+        raise SystemExit(f"No such candidate tree: {args.candidate}")
+    candidate = DirTree(args.candidate.resolve())
+    if args.reference is None:
+        reference = GitTree(args.ref, CORPUS_DIR)
+    elif args.reference.is_dir():
+        reference = DirTree(args.reference.resolve())
+    else:
+        raise SystemExit(f"No such reference tree: {args.reference}")
+
+    shared = sorted(set(reference.names) & set(candidate.names))
+    scratch = Path(os.environ.get("TMPDIR", "/tmp")) / f"MeshEditorCompareRenders.{os.getpid()}"
+    scratch.mkdir(parents=True, exist_ok=True)
+    try:
+        with ThreadPoolExecutor(max_workers=max(1, args.jobs)) as pool:
+            results = list(pool.map(lambda name: compare_item(name, reference, candidate, args.video_frames, scratch), shared))
+    finally:
+        for leftover in scratch.iterdir():
+            leftover.unlink()
+        scratch.rmdir()
+
+    report = build_report(args, reference, candidate, budgets, results)
+    if args.json:
+        args.json.parent.mkdir(parents=True, exist_ok=True)
+        args.json.write_text(json.dumps(report, indent=2) + "\n")
+    print_report(report, args.limit)
+    if args.json:
+        print(f"\n{args.json}")
+    return 1 if report["summary"]["violatingScenes"] or report["summary"]["failedScenes"] else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

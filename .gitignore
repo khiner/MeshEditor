@@ -25,3 +25,6 @@ benchmark_results/
 
 # Python bytecode.
 __pycache__/
+
+# Render corpus candidates rendered by script/RenderFidelity.
+render_candidates/

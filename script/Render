@@ -5,6 +5,8 @@
 # glTF_PhysicalAudio/samples/, and all glTF samples under external/. Run from anywhere.
 # Scenes render headless (no window) in a pool of persistent worker processes: each worker initializes the
 # engine once and pulls scenes from a shared job spool (`--render-queue`), clearing the scene between jobs.
+# `--out` renders the same corpus into a side directory and `--app-args` hands every worker extra app flags,
+# which together produce a candidate tree for script/CompareRenders to judge against the committed one.
 # Set JOBS to change the worker count, and COMPARE_VIDEOS=1 to restore videos that differ from HEAD
 # only by GPU render noise.
 
@@ -14,29 +16,47 @@ ScriptDir="$(cd "$(dirname "${0}")" && pwd)"
 ProjectRootDir="$(dirname "${ScriptDir}")"
 cd "${ProjectRootDir}"
 
-case "${1-}" in
-    -h|--help)
-        cat <<'EOF'
-Usage: script/Render
+CorpusDir="render"
+RenderDir="${CorpusDir}"
+ExtraArgs=()
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -h|--help)
+            cat <<'EOF'
+Usage: script/Render [--out DIR] [--app-args "FLAGS"]
 
 Rebuild MeshEditor and regenerate the render corpus.
+
+Options:
+  --out DIR           Render into DIR instead of render/, leaving the committed corpus alone
+  --app-args "FLAGS"  Extra MeshEditor flags for every render worker (word split on spaces)
 
 Environment:
   JOBS=N              Number of headless render workers (default: 8)
   COMPARE_VIDEOS=1    Restore videos that differ from HEAD only by render noise
 EOF
-        exit 0
-        ;;
-    "") ;;
-    *)
-        echo "Unknown argument: $1" >&2
-        echo "Usage: script/Render" >&2
-        exit 2
-        ;;
-esac
+            exit 0
+            ;;
+        --out)
+            [ $# -ge 2 ] || { echo "--out needs a directory" >&2; exit 2; }
+            RenderDir="${2%/}"
+            shift 2
+            ;;
+        --app-args)
+            [ $# -ge 2 ] || { echo "--app-args needs a flag string" >&2; exit 2; }
+            read -r -a ExtraArgs <<< "$2"
+            shift 2
+            ;;
+        *)
+            echo "Unknown argument: $1" >&2
+            echo "Usage: script/Render [--out DIR] [--app-args \"FLAGS\"]" >&2
+            exit 2
+            ;;
+    esac
+done
 
 Exe="build/MeshEditor"
-RenderDir="render"
 Jobs="${JOBS:-8}"
 CompareVideos="${COMPARE_VIDEOS:-}"
 
@@ -68,9 +88,9 @@ costs=()
 prepare_scene() {
     local out="$1" arg="${2-}"
     mkdir -p "$(dirname "${out}")"
-    # The prior artifact's size estimates render cost, for scheduling expensive scenes first.
-    local cost=0 f
-    for f in "${out}.mp4" "${out}.webp" "${out}.png"; do
+    # The committed artifact's size estimates render cost, for scheduling expensive scenes first.
+    local committed="${CorpusDir}/${out#"${RenderDir}"/}" cost=0 f
+    for f in "${committed}.mp4" "${committed}.webp" "${committed}.png"; do
         [ -f "${f}" ] && cost=$(($(stat -f%z "${f}") + cost))
     done
     costs+=("${cost}")
@@ -85,6 +105,7 @@ prepare_scene() {
         echo '# Load this scene in the app. Run from the repository root.'
         printf 'exec ./%s' "${Exe}"
         [ -n "${arg}" ] && printf ' %q' "${arg}"
+        [ "${#ExtraArgs[@]}" -gt 0 ] && printf ' %q' "${ExtraArgs[@]}"
         printf '\n'
     } > "$(dirname "${out}")/run.sh"
     chmod +x "$(dirname "${out}")/run.sh"
@@ -155,7 +176,7 @@ run_worker() {
     while :; do
         remaining="$(count_jobs)"
         [ "${remaining}" -gt 0 ] || break
-        "./${Exe}" --render-queue "${Spool}" -q >"${fifo}" &
+        "./${Exe}" --render-queue "${Spool}" -q ${ExtraArgs[@]+"${ExtraArgs[@]}"} >"${fifo}" &
         pid=$!
         exec 3<"${fifo}"
         while :; do
@@ -192,7 +213,8 @@ if [ "${#retries[@]}" -gt 0 ]; then
 fi
 
 # Restore committed videos that differ only by GPU render noise (see script/VideosEquivalent).
-if [ -n "${CompareVideos}" ]; then
+# A side directory holds a candidate to judge, not the corpus, so nothing there is restored from HEAD.
+if [ -n "${CompareVideos}" ] && [ "${RenderDir}" = "${CorpusDir}" ]; then
     while IFS= read -r f; do
         committed="${Spool}/committed.mp4"
         git cat-file --filters "HEAD:${f}" > "${committed}" 2>/dev/null || continue

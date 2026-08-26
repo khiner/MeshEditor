@@ -174,6 +174,17 @@ Regenerate the corpus with `./script/Render`.
 Scenes render headless (no window or display needed) and in parallel (`JOBS` sets the worker count, default 8). It needs the glTF submodules, plus `ffmpeg` on `PATH` for videos.
 Rendering is fixed-step (one tick per timeline frame) and GPU-paced at a fixed extent, so artifacts are deterministic: after regenerating, `git status` shows only scenes whose rendering actually changed.
 
+#### Fidelity gate
+
+`git status` gates a change that must not move a pixel. A change that moves pixels by a bounded amount (screen-error-bounded cluster LOD) needs a measurement instead:
+
+```shell
+$ ./script/RenderFidelity --app-args "FLAGS"
+```
+renders the whole corpus into `render_candidates/` with `FLAGS` handed to every render worker, leaving the committed `render/` tree alone, then reports per scene the share of pixels that moved, the largest and 99th-percentile per-channel difference, and the mean. It exits nonzero when a scene exceeds its budget in [`script/render_budgets.json`](script/render_budgets.json), where the default budget is exact and a track relaxes a scene deliberately with the measured number and the reason.
+
+`./script/CompareRenders <candidate-tree> [reference-tree]` runs the same comparison over any two render trees, writing the full report as JSON with `--json`. Omit the reference tree to judge against the corpus as committed at `HEAD`, read through git so a dirty working tree cannot become the reference. Videos are compared on decoded frames (16 sampled evenly per video by default, `--video-frames 0` for all of them) plus decoded audio, so the driver's occasional one-LSB pixel no longer flips a whole file's hash.
+
 ## Stack
 
 - [Metal](https://developer.apple.com/metal/) via [metal-cpp](https://developer.apple.com/metal/cpp/) + [AppKit](https://developer.apple.com/documentation/appkit) + [ImGui](https://github.com/ocornut/imgui): Graphics + immediate-mode UI/UX
