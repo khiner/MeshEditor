@@ -11,7 +11,7 @@ add_executable(MeshEditorTests
     ${CMAKE_SOURCE_DIR}/src/armature/Armature.cpp
     ${CMAKE_SOURCE_DIR}/src/render/GpuBufferOps.cpp
     ${CMAKE_SOURCE_DIR}/src/render/GpuScene.cpp
-    ${CMAKE_SOURCE_DIR}/src/render/Profile.cpp
+    ${CMAKE_SOURCE_DIR}/src/Profile.cpp
     ${CMAKE_SOURCE_DIR}/src/metal/PassTimer.cpp
     ${CMAKE_SOURCE_DIR}/src/scene/Entity.cpp
     ${CMAKE_SOURCE_DIR}/src/image/ImageDecode.cpp
@@ -182,7 +182,7 @@ add_executable(MeshEditorContactCollectTest ContactCollectTest.cpp
     ${CMAKE_SOURCE_DIR}/src/metal/RenderTarget.cpp
     ${CMAKE_SOURCE_DIR}/src/metal/MslSource.cpp
     ${CMAKE_SOURCE_DIR}/src/metal/MetalCppImpl.cpp
-    ${CMAKE_SOURCE_DIR}/src/render/Profile.cpp
+    ${CMAKE_SOURCE_DIR}/src/Profile.cpp
     ${CMAKE_SOURCE_DIR}/src/metal/PassTimer.cpp
 )
 add_dependencies(MeshEditorContactCollectTest generate_gpu_schema)

@@ -1,10 +1,10 @@
 #include "render/Pipelines.h"
+#include "Profile.h"
 #include "gpu/BackgroundConstant.h"
 #include "gpu/MeshVertexConstant.h"
 #include "gpu/NormalIndicatorConstant.h"
 #include "gpu/PbrConstant.h"
 #include "metal/Bindless.h"
-#include "render/Profile.h"
 
 #include <array>
 #include <bit>

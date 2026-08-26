@@ -2,6 +2,7 @@
 
 #include "CameraTypes.h"
 #include "File.h"
+#include "Profile.h"
 #include "Variant.h"
 #include "action/Errors.h"
 #include "animation/AnimationTimeline.h"
@@ -14,7 +15,6 @@
 #include "mesh/Primitives.h"
 #include "object/ObjectOps.h"
 #include "render/GpuBufferOps.h"
-#include "render/Profile.h"
 #include "scene/Defaults.h"
 #include "snapshot/SaveState.h"
 #include "viewport/ViewCameraOps.h"

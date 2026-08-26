@@ -5,6 +5,7 @@
 #include "MacPlatform.h"
 #include "Paths.h"
 #include "ProcessEvents.h"
+#include "Profile.h"
 #include "TransformMath.h"
 #include "VideoRecorder.h"
 #include "Window.h"
@@ -35,9 +36,6 @@
 #include "render/GpuBuffers.h"
 #include "render/Instance.h"
 #include "render/MaterialComponents.h"
-#include "render/Pipelines.h"
-#include "render/Profile.h"
-#include "render/Textures.h"
 #include "scene/Entity.h"
 #include "scene/SceneControlsUi.h"
 #include "scene/WorldTransform.h"
@@ -435,98 +433,6 @@ std::expected<fs::path, std::string> SaveScreenshot(entt::registry &r, const fs:
     out.write(reinterpret_cast<const char *>(encoded->data()), std::streamsize(encoded->size()));
     if (!out) return std::unexpected{std::format("failed to write '{}'", out_path.string())};
     return out_path;
-}
-
-struct DepthPyramidDumpRequest {
-    fs::path Prefix;
-    uint32_t Frame;
-};
-
-std::optional<DepthPyramidDumpRequest> DepthPyramidDumpFromEnvironment() {
-    const char *prefix = std::getenv("MESHEDITOR_DEPTH_PYRAMID_DUMP");
-    if (!prefix || !*prefix) return std::nullopt;
-    const char *frame_text = std::getenv("MESHEDITOR_DEPTH_PYRAMID_FRAME");
-    char *end = nullptr;
-    const auto frame = frame_text ? std::strtoul(frame_text, &end, 10) : 1ul;
-    if (frame == 0 || (frame_text && (!end || *end != '\0')) || frame > UINT32_MAX) {
-        std::println(stderr, "MESHEDITOR_DEPTH_PYRAMID_FRAME must be a positive 32-bit integer.");
-        return std::nullopt;
-    }
-    return DepthPyramidDumpRequest{prefix, uint32_t(frame)};
-}
-
-// Create the file's parent directory, reporting under `label` when it cannot.
-bool EnsureParentDirectory(const fs::path &path, std::string_view label) {
-    const auto parent = path.parent_path();
-    if (parent.empty()) return true;
-    std::error_code ec;
-    fs::create_directories(parent, ec);
-    if (ec) {
-        std::println(stderr, "{} could not create '{}': {}", label, parent.string(), ec.message());
-        return false;
-    }
-    return true;
-}
-
-// Write one single-channel float image as a bottom-up PFM.
-bool WriteFloatPfm(const fs::path &output, std::span<const std::byte> bytes, mtl::Extent2D extent) {
-    if (!EnsureParentDirectory(output, "Depth dump")) return false;
-    std::ofstream out{output, std::ios::binary};
-    out << std::format("Pf\n{} {}\n-1.0\n", extent.Width, extent.Height);
-    const auto row_bytes = size_t(extent.Width) * sizeof(float);
-    for (uint32_t y = extent.Height; y-- > 0;) {
-        out.write(reinterpret_cast<const char *>(bytes.data() + size_t(y) * row_bytes), std::streamsize(row_bytes));
-    }
-    if (!out) {
-        std::println(stderr, "Depth dump could not write '{}'.", output.string());
-        return false;
-    }
-    return true;
-}
-
-// Read back one float image and write it as a PFM.
-bool DumpFloatImage(const mtl::Context &ctx, const mtl::Texture &texture, const fs::path &output, std::string_view label) {
-    const auto bytes = ReadbackImageRgba8(ctx, texture, 0, 0, texture.Extent);
-    const auto expected_bytes = size_t(texture.Extent.Width) * texture.Extent.Height * sizeof(float);
-    if (bytes.size() != expected_bytes) {
-        std::println(stderr, "{} readback returned {} bytes instead of {}.", label, bytes.size(), expected_bytes);
-        return false;
-    }
-    return WriteFloatPfm(output, bytes, texture.Extent);
-}
-
-bool DumpDepthPyramid(entt::registry &r, const fs::path &prefix) {
-    const auto &pipelines = r.ctx().get<const Pipelines>();
-    if (!pipelines.Main.Resources || !pipelines.Main.Resources->DepthPyramidValid) {
-        std::println(stderr, "Depth pyramid dump skipped because the pyramid is not valid.");
-        return false;
-    }
-    const auto &ctx = r.ctx().get<const mtl::Context>();
-    const auto &depth = pipelines.Main.Resources->DepthImage;
-    auto depth_output = prefix;
-    depth_output += std::format("-depth-{}x{}.pfm", depth.Extent.Width, depth.Extent.Height);
-    if (!DumpFloatImage(ctx, depth, depth_output, "Scene depth")) return false;
-    const auto &visibility = pipelines.Main.Resources->VisibilityImage;
-    auto visibility_output = prefix;
-    visibility_output += std::format("-visibility-{}x{}.bin", visibility.Extent.Width, visibility.Extent.Height);
-    {
-        const auto bytes = ReadbackImageRgba8(ctx, visibility, 0, 0, visibility.Extent);
-        std::ofstream out{visibility_output, std::ios::binary};
-        out.write(reinterpret_cast<const char *>(bytes.data()), std::streamsize(bytes.size()));
-        if (!out) {
-            std::println(stderr, "Visibility dump could not write '{}'.", visibility_output.string());
-            return false;
-        }
-    }
-    const auto &mips = pipelines.Main.Resources->DepthPyramidMips;
-    for (uint32_t mip_index = 0; mip_index < mips.size(); ++mip_index) {
-        const auto &mip = mips[mip_index];
-        auto output = prefix;
-        output += std::format("-mip{:02}-{}x{}.pfm", mip_index, mip.Extent.Width, mip.Extent.Height);
-        if (!DumpFloatImage(ctx, mtl::Texture{mip.View, mip.Extent, 1}, output, std::format("Depth pyramid mip {}", mip_index))) return false;
-    }
-    std::println("Saved the scene depth and {} depth-pyramid mips with prefix '{}'.", mips.size(), prefix.string());
-    return true;
 }
 
 // Fit the scene into the middle half of the view without changing camera orientation.
@@ -957,8 +863,11 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
     WindowsState windows;
     int bench_ticks{0};
     while (!done) {
-        // Scene-load work (mesh and texture upload) dwarfs a frame: keep it out of the profile.
-        if (bench_ticks == 1) profile::ClearStats();
+        // Scene-load work (mesh and texture upload) dwarfs a frame: report it on its own, then keep it out of the frame profile.
+        if (bench_ticks == 1) {
+            profile::ReportCpuPhase("Scene load CPU timings");
+            profile::ClearStats();
+        }
         const profile::CpuScope frame_scope{"Frame"};
         auto events = window.PollEvents();
         r.ctx().get<FrameState>().PreciseWheelDelta += vec2{events.ScrollX, events.ScrollY};
@@ -1276,6 +1185,7 @@ bool RunHeadlessScene(entt::registry &r, entt::entity viewport, const char *init
     // Headless has no output device, so the audio system is created only for runs that may capture audio, keeping other renders free of the modal render pool's threads.
     // A render decides that from the scene it loads, and the load fills the bank, so it is created first.
     if (capture.RecordAudio || !capture.RenderBasename.empty()) InitAudioSystem(r);
+    const auto scene_start = std::chrono::steady_clock::now();
     auto driver = BeginCaptureSession(r, viewport, capture, initial_file, empty, /*fixed_step=*/true);
     // A scene that failed to load has nothing to render, so the run ends here with the failure already on stderr rather than recording silence and reporting a clean exit.
     if (driver.SeedFailed) {
@@ -1313,17 +1223,24 @@ bool RunHeadlessScene(entt::registry &r, entt::entity viewport, const char *init
     bool profile_cleared{false};
     bool submitted{false};
     bool done{false};
-    uint32_t submitted_frames{0};
-    const auto depth_pyramid_dump = DepthPyramidDumpFromEnvironment();
-    bool depth_pyramid_dumped{false};
+    // When the scene first drew anything. A capture run waits for its meshlets, so this lands with the settle.
+    std::chrono::steady_clock::time_point first_frame_at{};
     while (!done) {
         if (driver.DurationElapsed(r, viewport)) break;
         const auto extent = r.ctx().get<const ViewportExtent>().Value;
         // Queue workers keep render resources across scenes, so an image can be ready before this scene has rendered.
         // Settling also requires this scene's first submit, which fills the instance bounds FrameScene reads.
         const bool settled = submitted && ViewportImageReady(r);
-        // Scene-load work (mesh and texture upload) dwarfs a frame: keep it out of the profile.
+        // Scene-load work (mesh and texture upload) dwarfs a frame: report it on its own, then keep it out of the frame profile.
         if (settled && !profile_cleared) {
+            if (profile::Enabled) {
+                const auto ms_since_start = [scene_start](auto point) { return std::chrono::duration<float, std::milli>(point - scene_start).count(); };
+                std::println(
+                    "Scene ready: first frame {:.1f} ms, settled {:.1f} ms",
+                    ms_since_start(first_frame_at), ms_since_start(std::chrono::steady_clock::now())
+                );
+            }
+            profile::ReportCpuPhase("Scene load CPU timings");
             profile::ClearStats();
             profile_cleared = true;
         }
@@ -1338,11 +1255,8 @@ bool RunHeadlessScene(entt::registry &r, entt::entity viewport, const char *init
             if (driver.AudioOnly() && driver.RecordingStarted) r.ctx().get<PendingRenderRequest>().Value = RenderRequest::None;
             SubmitViewport(r, viewport);
             WaitForRender(r);
+            if (!submitted) first_frame_at = std::chrono::steady_clock::now();
             submitted = true;
-            ++submitted_frames;
-            if (depth_pyramid_dump && !depth_pyramid_dumped && submitted_frames == depth_pyramid_dump->Frame) {
-                depth_pyramid_dumped = DumpDepthPyramid(r, depth_pyramid_dump->Prefix);
-            }
         }
         if (bench_frames > 0) {
             // Benchmark: force a render every settled tick (direct request write) and exit after the requested count.

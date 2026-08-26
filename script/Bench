@@ -18,12 +18,18 @@ import tempfile
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_SCENES = ROOT / "res" / "benchmarks"
 DEFAULT_EXE = ROOT / "build" / "MeshEditor"
+# Headline metrics, keyed by the profile path a scope reports under: names repeat across the tree,
+# paths do not. Every other path is swept in `compare`.
 METRICS = (
-    ("cpuMs", "ProcessEvents", "CPU update", 1.0),
-    ("cpuMs", "RecordRenderCommandBuffer", "CPU record", 1.0),
+    ("cpuMs", "Frame/SubmitViewport/ProcessEvents", "CPU update", 1.0),
+    ("cpuMs", "Frame/SubmitViewport/RecordRenderCommandBuffer", "CPU record", 1.0),
     ("gpuMs", "Submit", "GPU", 1.0),
     ("counters", "DeviceAllocatedBytes", "memory MiB", 1 / (1024 * 1024)),
 )
+# A time metric moving by less than this cannot matter against a frame budget, whatever its percentage.
+MATERIAL_MS = 0.05
+# The narrowest bar a change has to clear, for a scope whose samples barely spread at all.
+MIN_THRESHOLD_PERCENT = 1.0
 
 
 def sha256(path: Path) -> str:
@@ -198,14 +204,22 @@ def run_process(command: list[str], log: Path) -> None:
     raise SystemExit(f"Benchmark command failed ({result.returncode}):\n{' '.join(command)}\n{tail}")
 
 
-def stat_value(profile: dict, section: str, name: str, field: str = "median") -> float | None:
-    entry = next((entry for entry in profile.get(section, []) if entry["name"] == name), None)
+def stat_entry(profile: dict, section: str, path: str) -> dict | None:
+    return next((entry for entry in profile.get(section, []) if entry["path"] == path), None)
+
+
+def stat_value(profile: dict, section: str, path: str, field: str = "median") -> float | None:
+    entry = stat_entry(profile, section, path)
     return float(entry[field]) if entry else None
 
 
-def repetition_median(case: dict, section: str, name: str) -> float | None:
-    values = [value for repetition in case["repetitions"] if (value := stat_value(repetition, section, name)) is not None]
+def repetition_median(case: dict, section: str, path: str) -> float | None:
+    values = [value for repetition in case["repetitions"] if (value := stat_value(repetition, section, path)) is not None]
     return statistics.median(values) if values else None
+
+
+def section_paths(cases: tuple[dict, ...], section: str) -> set[str]:
+    return {entry["path"] for case in cases for repetition in case["repetitions"] for entry in repetition.get(section, [])}
 
 
 def number(value: float | None) -> str:
@@ -215,7 +229,7 @@ def number(value: float | None) -> str:
 def print_run_summary(result: dict) -> None:
     print(f"\n{'case':30} {'CPU update':>10} {'CPU record':>10} {'GPU ms':>10} {'memory MiB':>11}")
     for case in result["cases"]:
-        values = [repetition_median(case, section, name) for section, name, _, _ in METRICS]
+        values = [repetition_median(case, section, path) for section, path, _, _ in METRICS]
         scaled = [value * metric[3] if value is not None else None for value, metric in zip(values, METRICS)]
         print(f"{case['id']:30} {number(scaled[0]):>10} {number(scaled[1]):>10} {number(scaled[2]):>10} {number(scaled[3]):>11}")
 
@@ -295,7 +309,7 @@ def run(args: argparse.Namespace) -> None:
         for case in cases
     ]
     result = {
-        "schemaVersion": 2,
+        "schemaVersion": 3,
         "createdUtc": timestamp,
         "source": source_state(),
         "binarySha256": sha256(exe),
@@ -313,22 +327,30 @@ def run(args: argparse.Namespace) -> None:
     print(f"\n{output}")
 
 
-def metric_samples(case: dict, section: str, name: str) -> list[float]:
-    return [value for repetition in case["repetitions"] if (value := stat_value(repetition, section, name)) is not None]
+def metric_entries(case: dict, section: str, path: str) -> list[dict]:
+    return [entry for repetition in case["repetitions"] if (entry := stat_entry(repetition, section, path)) is not None]
 
 
-def metric_change(before: dict, after: dict, section: str, name: str) -> tuple[float, float, float, str] | None:
-    a, b = metric_samples(before, section, name), metric_samples(after, section, name)
+# How far a scope's own samples spread above its median, in percent, taken at p95 so one hitch does
+# not stand for the whole distribution. A scope cannot be reproduced tighter than it varies.
+def sample_spread(entries: list[dict]) -> float:
+    return max((100 * (entry["p95"] - entry["median"]) / entry["median"] if entry["median"] else 0.0) for entry in entries)
+
+
+def metric_change(before: dict, after: dict, section: str, path: str) -> tuple[float, float, float, str] | None:
+    a, b = metric_entries(before, section, path), metric_entries(after, section, path)
     if not a or not b:
         return None
-    am, bm = statistics.median(a), statistics.median(b)
+    am, bm = statistics.median([entry["median"] for entry in a]), statistics.median([entry["median"] for entry in b])
     change = 100 * (bm - am) / am if am else 0.0
 
-    def noise(values: list[float], median: float) -> float:
-        return 100 * 1.4826 * statistics.median(abs(value - median) for value in values) / median if median else 0.0
-
-    threshold = max(1.0, 2 * max(noise(a, am), noise(b, bm)))
-    status = "inconclusive" if abs(change) <= threshold else "better" if change < 0 else "worse"
+    # The bar a change clears is the noisier side's own spread, floored so a scope that never moves
+    # within a run still needs a real difference. A scope sampled once reports no spread and takes the
+    # floor. Repeated runs would add a between-run term this does not measure.
+    threshold = max(MIN_THRESHOLD_PERCENT, 2 * max(sample_spread(a), sample_spread(b)))
+    # A time metric also has to move by something that matters, which a percentage of a tiny scope does not.
+    material = abs(bm - am) >= MATERIAL_MS or not section.endswith("Ms")
+    status = "inconclusive" if not material or abs(change) <= threshold else "better" if change < 0 else "worse"
     return am, bm, change, status
 
 
@@ -356,8 +378,8 @@ def compare(args: argparse.Namespace) -> None:
 
     print(f"{'case':30} {'metric':12} {'before':>10} {'after':>10} {'change':>9}  result")
     for case_id in before_cases:
-        for section, name, label, scale in METRICS:
-            change = metric_change(before_cases[case_id], after_cases[case_id], section, name)
+        for section, path, label, scale in METRICS:
+            change = metric_change(before_cases[case_id], after_cases[case_id], section, path)
             if not change:
                 continue
             old, new, percent, status = change
@@ -367,16 +389,37 @@ def compare(args: argparse.Namespace) -> None:
     if changed_images:
         print("\nChanged validation images: " + ", ".join(changed_images))
 
+    # Every timed scope, not just the headline four: a regression in a scope nobody listed still shows.
+    headline = {(section, path) for section, path, _, _ in METRICS}
+    changed_timings = []
+    for case_id in before_cases:
+        cases = (before_cases[case_id], after_cases[case_id])
+        for section in ("cpuMs", "gpuMs"):
+            for path in sorted(section_paths(cases, section)):
+                if (section, path) in headline:
+                    continue
+                change = metric_change(before_cases[case_id], after_cases[case_id], section, path)
+                if not change:
+                    continue
+                old, new, percent, status = change
+                if status == "inconclusive":
+                    continue
+                changed_timings.append((abs(new - old), f"{case_id}/{section}/{path}: {old:.3f} -> {new:.3f} ms ({percent:+.1f}%, {status})"))
+    if changed_timings:
+        print("\nChanged scope timings:")
+        for _, line in sorted(changed_timings, reverse=True):
+            print(f"  {line}")
+
     changed_counters = []
     for case_id in before_cases:
-        names = {entry["name"] for repetition in before_cases[case_id]["repetitions"] for entry in repetition.get("counters", [])}
-        for name in sorted(names):
-            if name == "DeviceAllocatedBytes":
+        cases = (before_cases[case_id], after_cases[case_id])
+        for path in sorted(section_paths(cases, "counters")):
+            if path == "DeviceAllocatedBytes":
                 continue
-            old = repetition_median(before_cases[case_id], "counters", name)
-            new = repetition_median(after_cases[case_id], "counters", name)
+            old = repetition_median(before_cases[case_id], "counters", path)
+            new = repetition_median(after_cases[case_id], "counters", path)
             if old is not None and new is not None and abs(new - old) > max(0.5, abs(old) * 0.001):
-                changed_counters.append(f"{case_id}/{name}: {old:g} -> {new:g}")
+                changed_counters.append(f"{case_id}/{path}: {old:g} -> {new:g}")
     if changed_counters:
         print("\nChanged workload counters:")
         for change in changed_counters:

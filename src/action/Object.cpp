@@ -1,4 +1,5 @@
 #include "action/Object.h"
+#include "Profile.h"
 #include "action/Dispatch.h"
 #include "action/ScopeResolve.h"
 #include "armature/Armature.h"
@@ -11,7 +12,6 @@
 #include "render/Instance.h"
 #include "render/LightComponents.h"
 #include "render/MeshBuffers.h"
-#include "render/Profile.h"
 #include "scene/SceneGraphOps.h"
 #include "scene/WorldTransform.h"
 #include "selection/Selection.h"

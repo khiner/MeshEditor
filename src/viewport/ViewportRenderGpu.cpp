@@ -1,5 +1,6 @@
 #include "viewport/ViewportRenderGpu.h"
 #include "ProcessEvents.h"
+#include "Profile.h"
 #include "animation/AnimationTimeline.h"
 #include "animation/MorphWeightState.h"
 #include "armature/ArmatureComponents.h"
@@ -39,7 +40,6 @@
 #include "render/Encoding.h"
 #include "render/Instance.h"
 #include "render/Pipelines.h"
-#include "render/Profile.h"
 #include "scene/Entity.h"
 #include "selection/Selection.h"
 #include "selection/SelectionGpu.h"
@@ -1902,7 +1902,7 @@ void DrawMeshlets(MTL::RenderCommandEncoder *encoder, const GpuBuffers &buffers,
 }
 
 void RecordRenderCommandBuffer(entt::registry &r, entt::entity viewport, MTL::CommandBuffer *command_buffer, DrawListUse use, RenderPhase phase) {
-    profile::BeginRecording(command_buffer);
+    profile::BeginRecording();
     mtl::PassChain chain{command_buffer, profile::RecordingTimer()};
     RecordPhase(r, viewport, chain, use, phase, 0, r.get<const PlaybackFrame>(viewport).Value);
     profile::EndRecording();
@@ -1911,7 +1911,7 @@ void RecordRenderCommandBuffer(entt::registry &r, entt::entity viewport, MTL::Co
 // Record every blur step and the resolve into one command buffer.
 void RecordBlurStepsCommandBuffer(entt::registry &r, entt::entity viewport, MTL::CommandBuffer *command_buffer, std::span<const float> step_frames) {
     const auto &buffers = r.ctx().get<const GpuBuffers>();
-    profile::BeginRecording(command_buffer);
+    profile::BeginRecording();
     mtl::PassChain chain{command_buffer, profile::RecordingTimer()};
     for (uint32_t i = 0; i < step_frames.size(); ++i) {
         RecordPhase(r, viewport, chain, i == 0 ? DrawListUse::Rebuild : DrawListUse::Reuse, i == 0 ? RenderPhase::BlurAccumulateFirst : RenderPhase::BlurAccumulate, buffers.SceneViewUboOffset(i + 1), step_frames[i]);

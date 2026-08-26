@@ -1,5 +1,6 @@
 #include "selection/SelectionGpu.h"
 
+#include "Profile.h"
 #include "gpu/SoundPointPushConstants.h"
 
 #include "armature/ArmatureComponents.h"
@@ -18,7 +19,6 @@
 #include "render/Instance.h"
 #include "render/PickConstants.h"
 #include "render/Pipelines.h"
-#include "render/Profile.h"
 #include "scene/Entity.h"
 #include "selection/Selection.h"
 #include "selection/SelectionBitset.h"
