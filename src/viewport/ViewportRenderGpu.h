@@ -23,14 +23,12 @@ enum class MeshletRouteMode : uint32_t { Single,
                                          Material,
                                          Transmission,
                                          Visibility };
-constexpr uint32_t InvalidMeshletRoute{~0u};
 
 struct MeshletCullConfig {
     MeshletRouteMode Mode{MeshletRouteMode::Single};
     uint32_t RequiredInstanceFlags{0};
     uint32_t UboOffset{0};
     uint32_t PyramidSamplerSlot{InvalidSlot};
-    uint32_t ExtraRouteFlags{0};
     bool SortBlend{false};
     bool TwoPhase{false};
 };
@@ -41,9 +39,9 @@ void FlushDrawList(entt::registry &, const DrawListBuilder &, mtl::Buffer &draw_
 
 // Every extras line source this frame (gizmos and collision shape wireframes), with the dispatch each one needs.
 std::vector<ExtrasLinePushConstants> CollectExtrasLines(const entt::registry &, const InstanceArena &);
-void RecordMeshletCull(mtl::PassChain &, const mtl::BindlessSet &, const Pipelines &, GpuBuffers &, MeshletCullConfig = {});
+void RecordMeshletCull(mtl::PassChain &, const mtl::BindlessSet &, const Pipelines &, GpuBuffers &, MeshletCullConfig);
 void RecordSilhouetteDepthPass(mtl::PassChain &, const mtl::BindlessSet &, const Pipelines &, GpuBuffers &, bool draw_meshlets, uint32_t ubo_offset = 0);
-void DrawMeshlets(MTL::RenderCommandEncoder *, const GpuBuffers &, uint32_t route = 0, uint32_t required_instance_flags = 0);
+void DrawMeshlets(MTL::RenderCommandEncoder *, const GpuBuffers &, uint32_t route, uint32_t required_instance_flags = 0);
 
 // Which parts of a frame one recording covers.
 enum class RenderPhase {
@@ -62,7 +60,6 @@ enum class DrawListUse {
     Reuse,
 };
 
-// Build the draw list when requested and record the render pass.
 void RecordRenderCommandBuffer(entt::registry &, entt::entity viewport, MTL::CommandBuffer *, DrawListUse = DrawListUse::Rebuild, RenderPhase = RenderPhase::Full);
 
 // Record every motion blur step and the resolve into one command buffer, each step reading its own

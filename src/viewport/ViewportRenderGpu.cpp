@@ -19,7 +19,6 @@
 #include "gpu/WireDrawRecord.h"
 #include "gpu/WireRasterPushConstants.h"
 #include "gpu/WireResolvePushConstants.h"
-#include "gpu/MeshPrimitiveTopology.h"
 #include "gpu/MeshletCullPushConstants.h"
 #include "gpu/MeshletDrawPushConstants.h"
 #include "gpu/MeshletGeometryEncoding.h"
@@ -206,12 +205,23 @@ void RecordDrawCounters(const GpuBuffers &buffers, const DrawListBuilder &draw_l
 void FlushDrawList(entt::registry &r, const DrawListBuilder &draw_list, mtl::Buffer &draw_data) {
     auto &buffers = r.ctx().get<GpuBuffers>();
     if (&draw_data == &buffers.SelectionDraw) RecordDrawCounters(buffers, draw_list, true);
-    if (!draw_list.Draws.empty() || buffers.Prelude.PosePrepass > 0 || buffers.Prelude.PosedMeshletBounds > 0 || buffers.Prelude.DeriveFaces > 0 || buffers.Prelude.BoundsReduce > 0) {
+    if (!draw_list.Draws.empty() || buffers.Prelude.HasWork()) {
         draw_data.Update(as_bytes(draw_list.Draws));
     }
 }
 
 namespace {
+// Running signature of the values an instance record is built from. A frame whose signature matches
+// the last rebuild's reads records the arena already holds, so the per-instance rebuild is skipped.
+struct RecordInputs {
+    uint64_t Value{0xcbf29ce484222325ull};
+    void Mix(uint64_t v) { Value = (Value ^ v) * 0x100000001b3ull; }
+    void Mix(SlottedRange range) {
+        Mix(range.Slot);
+        Mix(range.Offset);
+    }
+};
+
 struct DeformSlots {
     uint32_t BoneDeformOffset{InvalidOffset}, ArmatureDeformOffset{InvalidOffset}, MorphDeformOffset{InvalidOffset};
     uint32_t MorphTargetCount{0};
@@ -221,7 +231,8 @@ struct DeformSlots {
     std::unordered_map<uint32_t, uint32_t> MorphWeightsByBufferIndex;
 };
 
-std::unordered_map<entt::entity, DeformSlots> BuildDeformSlots(const entt::registry &r, const MeshStore &meshes) {
+// `inputs` takes the per-instance deform offsets, which the records read and no per-mesh field carries.
+std::unordered_map<entt::entity, DeformSlots> BuildDeformSlots(const entt::registry &r, const MeshStore &meshes, RecordInputs &inputs) {
     std::unordered_map<entt::entity, DeformSlots> result;
     for (const auto [instance_entity, instance, modifier] : r.view<const Instance, const ArmatureModifier>().each()) {
         const auto &mesh = GetMesh(r, instance.Entity);
@@ -237,9 +248,10 @@ std::unordered_map<entt::entity, DeformSlots> BuildDeformSlots(const entt::regis
         }
         if (const auto *ri = r.try_get<const RenderInstance>(instance_entity)) {
             slots.ArmatureDeformByBufferIndex[ri->BufferIndex] = deform_offset;
+            inputs.Mix(ri->BufferIndex);
+            inputs.Mix(deform_offset);
         }
     }
-    // Add morph target slots for mesh instances with morph data (per-instance weights)
     for (const auto [instance_entity, instance, gpu_range, ri] : r.view<const Instance, const MorphWeightGpuRange, const RenderInstance>().each()) {
         const auto mesh_entity = instance.Entity;
         const auto &mesh = GetMesh(r, mesh_entity);
@@ -249,6 +261,8 @@ std::unordered_map<entt::entity, DeformSlots> BuildDeformSlots(const entt::regis
         slots.MorphDeformOffset = morph_range.Offset;
         slots.MorphTargetCount = meshes.GetMorphTargetCount(mesh.GetStoreId());
         slots.MorphWeightsByBufferIndex[ri.BufferIndex] = gpu_range.Weights.Offset;
+        inputs.Mix(ri.BufferIndex);
+        inputs.Mix(gpu_range.Weights.Offset);
     }
     return result;
 }
@@ -416,18 +430,14 @@ NormalDerivePushConstants MakeNormalDerivePc(const GpuBuffers &buffers, const Me
     };
 }
 
-BoundsReducePushConstants MakeBoundsReducePc(const GpuBuffers &buffers) {
-    return {
+void RecordBoundsPass(MTL::ComputeCommandEncoder *encoder, const mtl::BindlessSet &slots, const mtl::ComputePipeline &pipeline, const GpuBuffers &buffers, PreludeSlot slot, uint32_t ubo_offset) {
+    const BoundsReducePushConstants pc{
         .DrawDataSlot = buffers.BoundsReduceEntries.Slot,
         .BoundsSlot = buffers.Instances.BoundsBuffer.Slot,
         .TileMapSlot = buffers.BoundsTiles.Slot,
         .PartialBoundsSlot = buffers.BoundsPartials.Slot,
         .EntryFirstTileSlot = buffers.BoundsEntryFirstTiles.Slot,
     };
-}
-
-void RecordBoundsPass(MTL::ComputeCommandEncoder *encoder, const mtl::BindlessSet &slots, const mtl::ComputePipeline &pipeline, const GpuBuffers &buffers, PreludeSlot slot, uint32_t ubo_offset) {
-    const auto pc = MakeBoundsReducePc(buffers);
     encode::BindCompute(encoder, pipeline, slots, buffers, ubo_offset);
     encode::SetPushConstants(encoder, pc);
     encoder->setThreadgroupMemoryLength(ThreadgroupMemory::BoundsFoldVector, 0);
@@ -489,84 +499,6 @@ MeshletCullPushConstants MakeMeshletCullSlotsPc(const GpuBuffers &buffers) {
     };
 }
 
-void RecordMeshletCullImpl(
-    MTL::ComputeCommandEncoder *encoder, const mtl::BindlessSet &slots, const Pipelines &pipelines,
-    GpuBuffers &buffers, MeshletCullConfig config
-) {
-    const bool transmission = config.Mode == MeshletRouteMode::Transmission;
-    struct WorkCapacity {
-        uint64_t Ranges, Meshlets;
-    };
-    const auto work_with_flags = [&](uint32_t flags) -> WorkCapacity {
-        if (flags == 0u) return {buffers.MeshletRangeCount, buffers.MeshletInstanceCount};
-        const auto slots = buffers.GpuInstanceSlots.Buffer.GetSpan<uint32_t>({0, buffers.GpuInstanceSlots.Buffer.Count<uint32_t>()});
-        const auto records = buffers.Instances.RecordBuffer.GetSpan<InstanceRecord>({0, buffers.Instances.RecordBuffer.Count<InstanceRecord>()});
-        const auto primitives = buffers.Primitives.Buffer.GetSpan<PrimitiveRecord>({0, buffers.Primitives.Buffer.Count<PrimitiveRecord>()});
-        WorkCapacity capacity{};
-        for (const uint32_t slot : slots) {
-            if (slot == InvalidOffset || slot >= records.size() || (records[slot].Flags & flags) != flags) continue;
-            capacity.Ranges += records[slot].PrimitiveCount;
-            for (uint32_t p = 0; p < records[slot].PrimitiveCount; ++p) {
-                capacity.Meshlets += primitives[records[slot].PrimitiveOffset + p].MeshletCount;
-            }
-        }
-        return capacity;
-    };
-    const WorkCapacity primary = work_with_flags(config.RequiredInstanceFlags);
-    const WorkCapacity extra = config.ExtraRouteFlags != 0u ? work_with_flags(config.ExtraRouteFlags) : WorkCapacity{};
-    buffers.EnsureMeshletVisibilityCapacity(
-        primary.Meshlets * (1u + transmission) + extra.Meshlets,
-        primary.Ranges,
-        primary.Meshlets,
-        std::max(primary.Meshlets, extra.Meshlets),
-        config.SortBlend,
-        config.TwoPhase
-    );
-    const auto pc = [&] {
-        auto pc = MakeMeshletCullSlotsPc(buffers);
-        pc.InstanceCount = buffers.GpuInstanceSlots.Buffer.Count<uint32_t>();
-        pc.WorkBlockCount = buffers.MeshletWorkBlockStates.Count<MeshletWorkBlockState>();
-        pc.BlendBlockSlot = config.SortBlend ? buffers.MeshletBlendBlocks.Slot : InvalidSlot;
-        pc.RouteMode = uint32_t(config.Mode);
-        pc.RequiredInstanceFlags = config.RequiredInstanceFlags;
-        pc.ExtraInstanceFlags = config.ExtraRouteFlags;
-        pc.PyramidSamplerSlot = config.PyramidSamplerSlot;
-        pc.TwoPhase = config.TwoPhase;
-        return pc;
-    }();
-    encode::BindScene(encoder, slots, buffers, config.UboOffset);
-    encode::SetPushConstants(encoder, pc);
-    constexpr uint32_t simd_groups = GpuBuffers::MeshletCullBlockSize / 32u;
-    constexpr uint32_t prefix_stride = simd_groups + 1u;
-    const auto dispatch_work = [&](const mtl::ComputePipeline &pipeline) {
-        if (pc.WorkBlockCount == 0) return;
-        encoder->setComputePipelineState(pipeline.State());
-        encoder->setThreadgroupMemoryLength(AlignedThreadgroupBytes(3u * prefix_stride * sizeof(uint32_t)), 0);
-        encoder->dispatchThreadgroups(MTL::Size(pc.WorkBlockCount, 1, 1), MTL::Size(GpuBuffers::MeshletCullBlockSize, 1, 1));
-    };
-    const auto dispatch_meshlets = [&](const mtl::ComputePipeline &pipeline) {
-        encoder->setComputePipelineState(pipeline.State());
-        const uint32_t prefix_bytes = GpuBuffers::MeshletRouteCount * prefix_stride * sizeof(uint32_t);
-        const uint32_t blend_bytes = config.SortBlend ? simd_groups * 256u * sizeof(uint16_t) : 0u;
-        encoder->setThreadgroupMemoryLength(AlignedThreadgroupBytes(prefix_bytes + blend_bytes), 0);
-        encoder->dispatchThreadgroups(*buffers.MeshletWorkDispatchArgs, 0, MTL::Size(GpuBuffers::MeshletCullBlockSize, 1, 1));
-    };
-    dispatch_work(pipelines.MeshletWorkBlockCount);
-    encoder->memoryBarrier(MTL::BarrierScopeBuffers);
-    encoder->setComputePipelineState(pipelines.MeshletWorkPrefix.State());
-    encoder->dispatchThreadgroups(MTL::Size(1, 1, 1), ThreadgroupSize::Linear256);
-    encoder->memoryBarrier(MTL::BarrierScopeBuffers);
-    dispatch_work(pipelines.MeshletWorkEmit);
-    encoder->memoryBarrier(MTL::BarrierScopeBuffers);
-    dispatch_meshlets(pipelines.MeshletCullBlockCount);
-    encoder->memoryBarrier(MTL::BarrierScopeBuffers);
-    encoder->setComputePipelineState(pipelines.MeshletCullPrefix.State());
-    encoder->setThreadgroupMemoryLength(AlignedThreadgroupBytes(GpuBuffers::MeshletRouteCount * sizeof(uint32_t)), 0);
-    encoder->dispatchThreadgroups(MTL::Size(1, 1, 1), ThreadgroupSize::Linear256);
-    encoder->memoryBarrier(MTL::BarrierScopeBuffers);
-    dispatch_meshlets(pipelines.MeshletCullEmit);
-}
-
 void DrawMeshletList(
     MTL::RenderCommandEncoder *encoder, const GpuBuffers &buffers, const mtl::Buffer &visible,
     const mtl::Buffer &routes, const mtl::Buffer &dispatch_args, uint32_t route, uint32_t required_instance_flags,
@@ -602,41 +534,12 @@ void DrawMeshletList(
     }
 }
 
-bool DrawVisibilityRoute(uint32_t route_mask, MeshletRoute route) {
-    return (route_mask & (1u << uint32_t(route))) != 0u;
-}
-
-uint32_t VisibilityRouteMask(const GpuBuffers &buffers, bool transmission) {
-    uint32_t result = 1u << uint32_t(MeshletRoute::OpaqueCullBack);
-    const uint32_t non_triangle_mask = (1u << uint32_t(MeshPrimitiveTopology::Line)) |
-        (1u << uint32_t(MeshPrimitiveTopology::Point));
-    if ((buffers.MeshletTopologyMask & non_triangle_mask) != 0u) {
-        result |= 1u << uint32_t(MeshletRoute::Coverage);
-    }
-    const auto transforms = buffers.Instances.TransformBuffer.GetSpan<Transform>({0u, buffers.Instances.TransformBuffer.Count<Transform>()});
-    if (std::ranges::any_of(transforms, [](const Transform &world) {
-            return world.S.x * world.S.y * world.S.z < 0.0f;
-        })) {
-        result |= 1u << uint32_t(MeshletRoute::OpaqueCullFront);
-    }
-    for (uint32_t i = 0u; i < buffers.Materials.Count(); ++i) {
-        const auto &material = buffers.Materials.Get(i);
-        if (material.DoubleSided != 0u) result |= 1u << uint32_t(MeshletRoute::OpaqueDoubleSided);
-        if (material.AlphaMode == MaterialAlphaMode::Mask ||
-            (transmission && material.Unlit == 0u && material.Transmission.Factor > 0.0f &&
-             material.Transmission.Texture.Slot != InvalidSlot)) {
-            result |= 1u << uint32_t(MeshletRoute::Coverage);
-        }
-    }
-    return result;
-}
-
 void DrawPhase2Meshlets(
     MTL::RenderCommandEncoder *encoder, const GpuBuffers &buffers, const MainPipeline &main
 ) {
-    // Coarse whole-instance candidates have not yet seen material classification. Keep phase 2 on
-    // one conservative two-sided, coverage-capable route; splitting its inner cull by route makes
-    // the serial prefix proportional to route count and regresses disocclusion-heavy scenes.
+    // Coarse whole-instance candidates have not yet seen material classification, so phase 2 stays on
+    // one conservative two-sided, coverage-capable route.
+    // Splitting its inner cull by route makes the serial prefix proportional to route count and regresses disocclusion-heavy scenes.
     encoder->setCullMode(MTL::CullModeNone);
     main.MeshletVisibilityCoverage.Bind(encoder);
     DrawMeshletList(
@@ -645,12 +548,13 @@ void DrawPhase2Meshlets(
     );
 }
 
+// Every route encodes every frame. The cull's prefix writes each route's dispatch args, zero-sized
+// for a route it sent no meshlet to, so an unused route's draw launches no threadgroups.
 void DrawVisibilityMeshlets(
     MTL::RenderCommandEncoder *encoder, const GpuBuffers &buffers, const MainPipeline &main,
-    bool transmission, uint32_t route_mask
+    bool transmission
 ) {
     const auto draw = [&](MeshletRoute route) {
-        if (!DrawVisibilityRoute(route_mask, route)) return;
         DrawMeshletList(
             encoder, buffers, buffers.VisibleMeshlets, buffers.MeshletRoutes, buffers.MeshletDispatchArgs,
             uint32_t(route), 0u, 0u, transmission, true
@@ -761,10 +665,13 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
     auto &draw = r.ctx().get<DrawState>();
     auto &draw_list = draw.List;
 
-    // Edit mode uses the rest pose; reused blur phases use slots built by the rebuild phase.
+    RecordInputs record_inputs;
+    record_inputs.Mix(is_edit_mode);
+    record_inputs.Mix(buffers.Instances.RecordBuffer.Count<InstanceRecord>());
+    // Edit mode uses the rest pose, and reused blur phases use slots built by the rebuild phase.
     const auto mesh_deform_slots = is_edit_mode || use == DrawListUse::Reuse ?
         std::unordered_map<entt::entity, DeformSlots>{} :
-        BuildDeformSlots(r, meshes);
+        BuildDeformSlots(r, meshes, record_inputs);
     static const DeformSlots no_deform{};
     const auto get_deform_slots = [&](entt::entity mesh_entity) -> const DeformSlots & {
         if (auto it = mesh_deform_slots.find(mesh_entity); it != mesh_deform_slots.end()) return it->second;
@@ -781,11 +688,10 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
         return mesh_buffers && mesh_buffers->FaceIndices.Count > 0;
     };
 
-    // In Edit mode, compute primary edit instances (for draw routing and silhouette filtering)
-    // and edit transform context (for pending vertex transforms) in one pass.
     std::unordered_map<entt::entity, entt::entity> primary_edit_instances;
     EditTransformContext edit_transform_context;
     const bool has_pending_transform = is_edit_mode && r.all_of<PendingTransform>(viewport);
+    record_inputs.Mix(has_pending_transform);
     if (is_edit_mode) {
         const auto active = FindActiveEntity(r);
         for (const auto [e, instance, ok, ri] : r.view<const Instance, const Selected, const ObjectKind, const RenderInstance>().each()) {
@@ -831,7 +737,6 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
             excitable_mesh_entities.emplace(instance.Entity, SoundVertexState{excitable.Vertices, e});
         }
 
-        // Single-pass entity data collection: avoids redundant ECS view iterations across fill, edge, wire, point, and normal batches.
         struct MeshEntityData {
             entt::entity Entity;
             const MeshBuffers &Buf;
@@ -908,6 +813,26 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
             for (size_t mi = 0; mi < mesh_entities.size(); ++mi) {
                 const auto &e = mesh_entities[mi];
                 auto &spec = specs[mi];
+                // Every mesh-keyed value an instance record reads, in the order the meshes come.
+                record_inputs.Mix(entt::to_integral(e.Entity));
+                record_inputs.Mix(e.Buf.Primitives.Offset);
+                record_inputs.Mix(e.Buf.Primitives.Count);
+                record_inputs.Mix(e.Buf.Meshlets.Offset);
+                record_inputs.Mix(e.Buf.Meshlets.Count);
+                record_inputs.Mix(e.Buf.Vertices.Count);
+                // A mesh with faces is what makes its instances silhouette-eligible.
+                record_inputs.Mix(e.Buf.FaceIndices.Count);
+                record_inputs.Mix(e.Mod.InstanceRange.Offset);
+                record_inputs.Mix(e.Mod.InstanceCount);
+                record_inputs.Mix(e.Deform.BoneDeformOffset);
+                record_inputs.Mix(e.Deform.ArmatureDeformOffset);
+                record_inputs.Mix(e.Deform.MorphDeformOffset);
+                record_inputs.Mix(e.Deform.MorphTargetCount);
+                record_inputs.Mix(e.PrimaryEditBufferIndex.value_or(InvalidOffset));
+                if (e.MeshComp) record_inputs.Mix(meshes.GetFaceStateRange(e.MeshComp->GetStoreId()));
+                if (e.Buf.Meshlets.Count != 0u) {
+                    record_inputs.Mix(buffers.Meshlets.Buffer.GetSpan<MeshletRecord>({e.Buf.Meshlets.Offset, 1}).front().LocalTriangleOffset);
+                }
                 if (!e.MeshComp || e.Mod.InstanceCount == 0) continue;
                 if (has_pending_transform) {
                     if (const auto it = edit_transform_context.TransformInstances.find(e.Entity); it != edit_transform_context.TransformInstances.end()) {
@@ -938,6 +863,13 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
                     posed_vertex_count += spec.Count * e.Buf.Vertices.Count;
                     posed_meshlet_bounds_count += spec.Count * e.Buf.Meshlets.Count;
                 }
+                // The posed-buffer offsets a record reads follow from these, given the mesh order above.
+                record_inputs.Mix(spec.Count);
+                record_inputs.Mix(uint32_t(spec.Posed) | uint32_t(spec.Derive) << 1u | uint32_t(spec.PerInstanceDeform) << 2u);
+                record_inputs.Mix(spec.PendingPrimary ? spec.PendingPrimary->BufferIndex : InvalidOffset);
+                record_inputs.Mix(spec.Entry.SeamCount);
+                record_inputs.Mix(spec.Entry.FaceCount);
+                record_inputs.Mix(spec.Entry.VertexCount);
             }
             const auto entries = buffers.BoundsReduceEntries.SetCount<DrawData>(entry_count);
             const auto derive_entries = buffers.NormalDeriveEntries.SetCount<NormalDeriveEntry>(derive_entry_count);
@@ -1048,55 +980,66 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
             }
         }
 
-        buffers.MeshletTopologyMask = 0u;
-        for (const auto [instance_entity, instance, ri] : r.view<const Instance, const RenderInstance>().each()) {
-            if (ri.BufferIndex == UINT32_MAX) continue;
-            const auto *mesh_buffers = r.try_get<const MeshBuffers>(instance.Entity);
-            if (!mesh_buffers || mesh_buffers->Primitives.Count == 0) continue;
-            if (mesh_buffers->Meshlets.Count != 0u) {
-                const MeshletRecord &first_meshlet = buffers.Meshlets.Buffer.GetSpan<MeshletRecord>(
-                                                                                {mesh_buffers->Meshlets.Offset, mesh_buffers->Meshlets.Count}
-                )
-                                                         .front();
-                const uint32_t topology = first_meshlet.LocalTriangleOffset >> uint32_t(MeshletGeometryEncoding::TopologyShift);
-                buffers.MeshletTopologyMask |= 1u << topology;
-            }
-            InstanceRecord record{
-                .PrimitiveOffset = mesh_buffers->Primitives.Offset,
-                .PrimitiveCount = mesh_buffers->Primitives.Count,
-                .ObjectId = ri.ObjectId,
-            };
-            const auto &deform = get_deform_slots(instance.Entity);
-            record.BoneDeformOffset = deform.BoneDeformOffset;
-            record.ArmatureDeformOffset = deform.ArmatureDeformOffset;
-            record.MorphDeformOffset = deform.MorphDeformOffset;
-            record.MorphTargetCount = deform.MorphTargetCount;
-            if (const auto it = deform.ArmatureDeformByBufferIndex.find(ri.BufferIndex); it != deform.ArmatureDeformByBufferIndex.end()) {
-                record.ArmatureDeformOffset = it->second;
-            }
-            if (const auto it = deform.MorphWeightsByBufferIndex.find(ri.BufferIndex); it != deform.MorphWeightsByBufferIndex.end()) {
-                record.MorphWeightsOffset = it->second;
-            }
-            if (const auto it = draw.PosedByEntity.find(instance.Entity); it != draw.PosedByEntity.end()) {
-                const auto &posed = it->second;
-                const auto i = posed.PerInstance ? ri.BufferIndex - posed.FirstInstance : 0u;
-                record.PosedPositionOffset = posed.PositionOffset(i);
-                record.PosedMeshletBoundsOffset = posed.MeshletBoundsOffset(i);
-                if (const auto normals = posed.NormalsAt(i)) {
-                    record.PosedVertexNormalOffset = normals->VertexOffset;
-                    record.PosedSeamNormalOffset = normals->SeamOffset;
-                    record.PosedFaceNormalOffset = normals->FaceOffset;
+        // A frame that read the same inputs as the last rebuild leaves the records the arena holds,
+        // topology mask included, so the per-instance rebuild costs nothing on a settled scene.
+        if (record_inputs.Value != draw.InstanceRecordInputs) {
+            draw.InstanceRecordInputs = record_inputs.Value;
+            MarkInstanceRecordsStale(draw);
+        }
+        if (draw.InstanceRecordsStale) {
+            buffers.MeshletTopologyMask = 0u;
+            for (const auto [instance_entity, instance, ri] : r.view<const Instance, const RenderInstance>().each()) {
+                if (ri.BufferIndex == UINT32_MAX) continue;
+                const auto *mesh_buffers = r.try_get<const MeshBuffers>(instance.Entity);
+                if (!mesh_buffers || mesh_buffers->Primitives.Count == 0) continue;
+                if (mesh_buffers->Meshlets.Count != 0u) {
+                    const MeshletRecord &first_meshlet = buffers.Meshlets.Buffer.GetSpan<MeshletRecord>(
+                                                                                    {mesh_buffers->Meshlets.Offset, mesh_buffers->Meshlets.Count}
+                    )
+                                                             .front();
+                    const uint32_t topology = first_meshlet.LocalTriangleOffset >> uint32_t(MeshletGeometryEncoding::TopologyShift);
+                    buffers.MeshletTopologyMask |= 1u << topology;
                 }
+                InstanceRecord record{
+                    .PrimitiveOffset = mesh_buffers->Primitives.Offset,
+                    .PrimitiveCount = mesh_buffers->Primitives.Count,
+                    .ObjectId = ri.ObjectId,
+                };
+                const auto &deform = get_deform_slots(instance.Entity);
+                record.BoneDeformOffset = deform.BoneDeformOffset;
+                record.ArmatureDeformOffset = deform.ArmatureDeformOffset;
+                record.MorphDeformOffset = deform.MorphDeformOffset;
+                record.MorphTargetCount = deform.MorphTargetCount;
+                if (const auto it = deform.ArmatureDeformByBufferIndex.find(ri.BufferIndex); it != deform.ArmatureDeformByBufferIndex.end()) {
+                    record.ArmatureDeformOffset = it->second;
+                }
+                if (const auto it = deform.MorphWeightsByBufferIndex.find(ri.BufferIndex); it != deform.MorphWeightsByBufferIndex.end()) {
+                    record.MorphWeightsOffset = it->second;
+                }
+                if (const auto it = draw.PosedByEntity.find(instance.Entity); it != draw.PosedByEntity.end()) {
+                    const auto &posed = it->second;
+                    const auto i = posed.PerInstance ? ri.BufferIndex - posed.FirstInstance : 0u;
+                    record.PosedPositionOffset = posed.PositionOffset(i);
+                    record.PosedMeshletBoundsOffset = posed.MeshletBoundsOffset(i);
+                    if (const auto normals = posed.NormalsAt(i)) {
+                        record.PosedVertexNormalOffset = normals->VertexOffset;
+                        record.PosedSeamNormalOffset = normals->SeamOffset;
+                        record.PosedFaceNormalOffset = normals->FaceOffset;
+                    }
+                }
+                const auto primary = primary_edit_instances.find(instance.Entity);
+                if (has_pending_transform && primary != primary_edit_instances.end()) {
+                    record.HasPendingVertexTransform = 1u;
+                    record.PrimaryEditInstanceIndex = r.get<const RenderInstance>(primary->second).BufferIndex;
+                }
+                if (!is_edit_mode || (primary != primary_edit_instances.end() && primary->second == instance_entity)) {
+                    record.ElementStateSlotOffset = meshes.GetFaceStateRange(r.get<const MeshHandle>(instance.Entity).StoreId);
+                }
+                buffers.Instances.RecordBuffer.GetMutableSpan<InstanceRecord>({ri.BufferIndex, 1}).front() = record;
             }
-            const auto primary = primary_edit_instances.find(instance.Entity);
-            if (has_pending_transform && primary != primary_edit_instances.end()) {
-                record.HasPendingVertexTransform = 1u;
-                record.PrimaryEditInstanceIndex = r.get<const RenderInstance>(primary->second).BufferIndex;
-            }
-            if (!is_edit_mode || (primary != primary_edit_instances.end() && primary->second == instance_entity)) {
-                record.ElementStateSlotOffset = meshes.GetFaceStateRange(GetMesh(r, instance.Entity).GetStoreId());
-            }
-            buffers.Instances.RecordBuffer.GetMutableSpan<InstanceRecord>({ri.BufferIndex, 1}).front() = record;
+            draw.InstanceRecordsStale = false;
+            // A fresh record carries no flags, so the object id and silhouette pass below must run.
+            draw.InstanceFlagsStale = true;
         }
 
         // Build bone batches for X-ray rendering (drawn after a mid-pass depth clear so bones are never occluded by scene meshes)
@@ -1134,7 +1077,6 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
                 }
             }
 
-            // Joint sphere batches
             draw.BoneSphereFill = draw_list.BeginBatch();
             for (const auto [entity, mesh_buffers, models] : r.view<const BoneJoint, const MeshBuffers, const ModelsBuffer>().each()) {
                 if (mesh_buffers.FaceIndices.Count == 0) continue;
@@ -1306,16 +1248,20 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
             draw.SelectionPoints = sel_point;
         }
     }
-    const auto instance_records = buffers.Instances.RecordBuffer.GetMutableSpan<InstanceRecord>(
-        {0, buffers.Instances.RecordBuffer.Count<InstanceRecord>()}
-    );
-    for (const auto [instance_entity, ri] : r.view<const RenderInstance>().each()) {
-        if (ri.BufferIndex == UINT32_MAX || ri.BufferIndex >= instance_records.size()) continue;
-        auto &record = instance_records[ri.BufferIndex];
-        record.ObjectId = ri.ObjectId;
-        const bool selected = r.all_of<Selected>(instance_entity) && is_silhouette_eligible(instance_entity);
-        const bool silhouette = selected && (!is_edit_mode || silhouette_instances.contains(instance_entity));
-        record.Flags = silhouette ? uint32_t(MeshletInstanceFlag::Silhouette) : 0u;
+    // Object ids and silhouette flags.
+    if (draw.InstanceFlagsStale) {
+        const auto instance_records = buffers.Instances.RecordBuffer.GetMutableSpan<InstanceRecord>(
+            {0, buffers.Instances.RecordBuffer.Count<InstanceRecord>()}
+        );
+        for (const auto [instance_entity, ri] : r.view<const RenderInstance>().each()) {
+            if (ri.BufferIndex == UINT32_MAX || ri.BufferIndex >= instance_records.size()) continue;
+            auto &record = instance_records[ri.BufferIndex];
+            record.ObjectId = ri.ObjectId;
+            const bool selected = r.all_of<Selected>(instance_entity) && is_silhouette_eligible(instance_entity);
+            const bool silhouette = selected && (!is_edit_mode || silhouette_instances.contains(instance_entity));
+            record.Flags = silhouette ? uint32_t(MeshletInstanceFlag::Silhouette) : 0u;
+        }
+        draw.InstanceFlagsStale = false;
     }
     const bool has_object_silhouette_selection =
         any_of(r.view<const Selected, const Instance, const RenderInstance>().each(), [&](const auto &entry) { return is_silhouette_eligible(std::get<0>(entry)); });
@@ -1361,7 +1307,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
     // Derived normals feed only the scene's face-fill draws, so only scene-drawing phases record the derive.
     // Every prelude pass dispatches indirectly.
     // A submit with unchanged deform inputs gets zero group counts, keeping the buffers' current results.
-    if (!draw_list.Draws.empty() || buffers.Prelude.PosePrepass > 0 || buffers.Prelude.PosedMeshletBounds > 0 || buffers.Prelude.DeriveFaces > 0 || buffers.Prelude.BoundsReduce > 0) {
+    if (!draw_list.Draws.empty() || buffers.Prelude.HasWork()) {
         const auto &prelude = buffers.Prelude;
         const bool record_bounds = phase != RenderPhase::BlurAccumulate && phase != RenderPhase::BlurResolve;
         // A derive entry always holds at least one face tile and one gather tile, so one count decides both phases.
@@ -1404,7 +1350,6 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
     // when face fill is hidden, then leave its depth out of the wireframe scene pass below.
     const bool need_visibility = meshlet_fill && (show_fill || has_silhouette);
     const bool cull_scene_meshlets = draw_scene && need_visibility;
-    const uint32_t visibility_route_mask = VisibilityRouteMask(buffers, real_transmission);
     bool sort_blend = false;
     if (cull_scene_meshlets && show_rendered) {
         for (uint32_t i = 0; i < buffers.Materials.Count() && !sort_blend; ++i) {
@@ -1431,7 +1376,6 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
                 .RequiredInstanceFlags = show_fill ? 0u : uint32_t(MeshletInstanceFlag::Silhouette),
                 .UboOffset = ubo_offset,
                 .PyramidSamplerSlot = pyramid,
-                .ExtraRouteFlags = 0u,
                 .SortBlend = sort_blend,
                 .TwoPhase = two_phase_meshlets,
             }
@@ -1444,7 +1388,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
             chain, pass, "MeshletVisibility", {{MTL::StageDispatch, MTL::StageMesh}}, main_extent,
             slots, buffers, ubo_offset
         );
-        DrawVisibilityMeshlets(encoder, buffers, main, real_transmission, visibility_route_mask);
+        DrawVisibilityMeshlets(encoder, buffers, main, real_transmission);
         buffers.VisibilityIdGeneration = buffers.MeshletVisibleGeneration;
     }
     if (show_fill && phase == RenderPhase::Full && cull_scene_meshlets) {
@@ -1706,7 +1650,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
                 encode::SetPushConstants(encoder, WireResolvePushConstants{buffers.WireCoverageBuffer.Slot});
                 encoder->drawPrimitives(MTL::PrimitiveTypeTriangleStrip, NS::UInteger(0), NS::UInteger(4));
             }
-            // Vertex points (always recorded — batch is empty when nothing qualifies)
+            // Vertex points always record, and the batch is empty when nothing qualifies.
             record_mesh_batch(main.PointMesh, draw.Point, 1, group_points, group_points);
             // Excite mode points, one dispatch per sounding instance over its excitable handles
             if (draw.SoundPoint.DrawCount > 0) {
@@ -1780,7 +1724,6 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
             }
         }
 
-        // Silhouette edge color (rendered ontop of meshes)
         if (has_silhouette) {
             overlay_layer_drawn = true;
             main.OverlayRenderer.Bind(encoder, SPT::SilhouetteEdgeColor);
@@ -1872,7 +1815,72 @@ void RecordMeshletCull(
 ) {
     ++buffers.MeshletVisibleGeneration;
     auto *encoder = chain.BeginCompute("MeshletCull", MTL::StageMesh | MTL::StageFragment);
-    RecordMeshletCullImpl(encoder, slots, pipelines, buffers, config);
+    const bool transmission = config.Mode == MeshletRouteMode::Transmission;
+    struct WorkCapacity {
+        uint64_t Ranges, Meshlets;
+    };
+    const auto work_with_flags = [&](uint32_t flags) -> WorkCapacity {
+        if (flags == 0u) return {buffers.MeshletRangeCount, buffers.MeshletInstanceCount};
+        const auto slots = buffers.GpuInstanceSlots.Buffer.GetSpan<uint32_t>({0, buffers.GpuInstanceSlots.Buffer.Count<uint32_t>()});
+        const auto records = buffers.Instances.RecordBuffer.GetSpan<InstanceRecord>({0, buffers.Instances.RecordBuffer.Count<InstanceRecord>()});
+        const auto primitives = buffers.Primitives.Buffer.GetSpan<PrimitiveRecord>({0, buffers.Primitives.Buffer.Count<PrimitiveRecord>()});
+        WorkCapacity capacity{};
+        for (const uint32_t slot : slots) {
+            if (slot == InvalidOffset || slot >= records.size() || (records[slot].Flags & flags) != flags) continue;
+            capacity.Ranges += records[slot].PrimitiveCount;
+            for (uint32_t p = 0; p < records[slot].PrimitiveCount; ++p) {
+                capacity.Meshlets += primitives[records[slot].PrimitiveOffset + p].MeshletCount;
+            }
+        }
+        return capacity;
+    };
+    const WorkCapacity primary = work_with_flags(config.RequiredInstanceFlags);
+    buffers.EnsureMeshletVisibilityCapacity(
+        primary.Meshlets * (1u + transmission), primary.Ranges, primary.Meshlets, primary.Meshlets,
+        config.SortBlend, config.TwoPhase
+    );
+    const auto pc = [&] {
+        auto pc = MakeMeshletCullSlotsPc(buffers);
+        pc.InstanceCount = buffers.GpuInstanceSlots.Buffer.Count<uint32_t>();
+        pc.WorkBlockCount = buffers.MeshletWorkBlockStates.Count<MeshletWorkBlockState>();
+        pc.BlendBlockSlot = config.SortBlend ? buffers.MeshletBlendBlocks.Slot : InvalidSlot;
+        pc.RouteMode = uint32_t(config.Mode);
+        pc.RequiredInstanceFlags = config.RequiredInstanceFlags;
+        pc.PyramidSamplerSlot = config.PyramidSamplerSlot;
+        pc.TwoPhase = config.TwoPhase;
+        return pc;
+    }();
+    encode::BindScene(encoder, slots, buffers, config.UboOffset);
+    encode::SetPushConstants(encoder, pc);
+    constexpr uint32_t simd_groups = GpuBuffers::MeshletCullBlockSize / 32u;
+    constexpr uint32_t prefix_stride = simd_groups + 1u;
+    const auto dispatch_work = [&](const mtl::ComputePipeline &pipeline) {
+        if (pc.WorkBlockCount == 0) return;
+        encoder->setComputePipelineState(pipeline.State());
+        encoder->setThreadgroupMemoryLength(AlignedThreadgroupBytes(3u * prefix_stride * sizeof(uint32_t)), 0);
+        encoder->dispatchThreadgroups(MTL::Size(pc.WorkBlockCount, 1, 1), MTL::Size(GpuBuffers::MeshletCullBlockSize, 1, 1));
+    };
+    const auto dispatch_meshlets = [&](const mtl::ComputePipeline &pipeline) {
+        encoder->setComputePipelineState(pipeline.State());
+        const uint32_t prefix_bytes = GpuBuffers::MeshletRouteCount * prefix_stride * sizeof(uint32_t);
+        const uint32_t blend_bytes = config.SortBlend ? simd_groups * 256u * sizeof(uint16_t) : 0u;
+        encoder->setThreadgroupMemoryLength(AlignedThreadgroupBytes(prefix_bytes + blend_bytes), 0);
+        encoder->dispatchThreadgroups(*buffers.MeshletWorkDispatchArgs, 0, MTL::Size(GpuBuffers::MeshletCullBlockSize, 1, 1));
+    };
+    dispatch_work(pipelines.MeshletWorkBlockCount);
+    encoder->memoryBarrier(MTL::BarrierScopeBuffers);
+    encoder->setComputePipelineState(pipelines.MeshletWorkPrefix.State());
+    encoder->dispatchThreadgroups(MTL::Size(1, 1, 1), ThreadgroupSize::Linear256);
+    encoder->memoryBarrier(MTL::BarrierScopeBuffers);
+    dispatch_work(pipelines.MeshletWorkEmit);
+    encoder->memoryBarrier(MTL::BarrierScopeBuffers);
+    dispatch_meshlets(pipelines.MeshletCullBlockCount);
+    encoder->memoryBarrier(MTL::BarrierScopeBuffers);
+    encoder->setComputePipelineState(pipelines.MeshletCullPrefix.State());
+    encoder->setThreadgroupMemoryLength(AlignedThreadgroupBytes(GpuBuffers::MeshletRouteCount * sizeof(uint32_t)), 0);
+    encoder->dispatchThreadgroups(MTL::Size(1, 1, 1), ThreadgroupSize::Linear256);
+    encoder->memoryBarrier(MTL::BarrierScopeBuffers);
+    dispatch_meshlets(pipelines.MeshletCullEmit);
 }
 
 void RecordSilhouetteDepthPass(
@@ -1908,7 +1916,6 @@ void RecordRenderCommandBuffer(entt::registry &r, entt::entity viewport, MTL::Co
     profile::EndRecording();
 }
 
-// Record every blur step and the resolve into one command buffer.
 void RecordBlurStepsCommandBuffer(entt::registry &r, entt::entity viewport, MTL::CommandBuffer *command_buffer, std::span<const float> step_frames) {
     const auto &buffers = r.ctx().get<const GpuBuffers>();
     profile::BeginRecording();
@@ -2037,7 +2044,7 @@ void UpdateAuthoredMorphShadingNow(entt::registry &r, std::span<const entt::enti
     const auto seam_normals = buffers.PosedSeamNormals.SetCount<vec3>(seam_count_total);
     const auto face_normals = buffers.PosedFaceNormals.SetCount<vec3>(face_count_total);
     for (size_t i = 0; i < jobs.size(); ++i) {
-        const auto store_id = GetMesh(r, jobs[i].Entity).GetStoreId();
+        const auto store_id = r.get<const MeshHandle>(jobs[i].Entity).StoreId;
         const auto base_vertices = meshes.GetVertices(store_id);
         const auto vertex_count = uint32_t(base_vertices.size());
         const auto deltas = meshes.GetMorphTargets(store_id).subspan(size_t{jobs[i].TargetIndex} * vertex_count, vertex_count);
@@ -2080,7 +2087,7 @@ bool CommitPosedGeometry(entt::registry &r, entt::entity mesh_entity) {
     const auto &pr = it->second;
     auto &meshes = r.ctx().get<MeshStore>();
     const auto &buffers = r.ctx().get<const GpuBuffers>();
-    const auto id = GetMesh(r, mesh_entity).GetStoreId();
+    const auto id = r.get<const MeshHandle>(mesh_entity).StoreId;
     const auto posed_positions = buffers.PosedPositions.GetSpan<vec3>({pr.PositionOffset(0), pr.VertexCount});
     auto vertices = meshes.GetVertices(id);
     bool any_moved = false;

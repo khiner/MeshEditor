@@ -85,7 +85,17 @@ struct DrawState {
     DrawBatchInfo SelectionBoneSpheres; // Bone joint picks, emitted per bone instance.
     DrawBatchInfo SelectionLines, SelectionPoints; // Line and point mesh picks.
 
-    // Cached selection pass draw list — reused when only the camera changed.
+    // Cached selection pass draw list, reused when only the camera changed.
     DrawListBuilder SelectionList;
     bool SelectionStale{true}; // Selection fragment data no longer matches the scene. Cleared after RenderSelectionPass.
+
+    bool InstanceRecordsStale{true}; // A record field other than the object id or flags needs a rewrite.
+    bool InstanceFlagsStale{true}; // Object ids and silhouette flags need a rewrite.
+    uint64_t InstanceRecordInputs{0}; // Signature of the mesh-keyed inputs the records read.
 };
+
+// Mark every instance record for a rewrite, for a change the record-input signature does not see.
+inline void MarkInstanceRecordsStale(DrawState &draw) {
+    draw.InstanceRecordsStale = true;
+    draw.InstanceFlagsStale = true;
+}

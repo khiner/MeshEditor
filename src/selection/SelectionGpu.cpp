@@ -222,7 +222,9 @@ void RenderElementSelectionPass(
         }
     );
 
-    r.ctx().get<DrawState>().SelectionStale = true;
+    auto &draw = r.ctx().get<DrawState>();
+    draw.SelectionStale = true;
+    MarkInstanceRecordsStale(draw);
 }
 
 } // namespace

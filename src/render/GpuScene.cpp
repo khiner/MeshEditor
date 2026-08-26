@@ -1,4 +1,5 @@
 #include "render/GpuBuffers.h"
+#include "render/MeshletBuild.h"
 
 #include "FlatKeyMap.h"
 #include "Parallel.h"
@@ -43,26 +44,6 @@ uint32_t PackCone(const meshopt_Bounds &bounds, bool cone_cull_safe) {
         uint32_t(uint8_t(bounds.cone_axis_s8[2])) << 16u |
         uint32_t(uint8_t(cone_cull_safe ? bounds.cone_cutoff_s8 : int8_t{127})) << 24u;
 }
-// One meshlet triangle carries one source triangle id and three local indices, so both arenas are
-// sized exactly from the source ranges and written in place. Meshlet and vertex counts emerge only
-// as meshopt runs, so those two arenas take their final size after the build.
-struct MeshletSink {
-    std::span<uint32_t> TriangleIds;
-    std::span<uint8_t> LocalTriangles;
-    std::vector<MeshletRecord> Records{};
-    std::vector<uint32_t> Vertices{};
-    std::vector<PrimitiveRecord> Primitives{};
-    uint32_t TriangleIdCount{}, LocalTriangleCount{};
-
-    void PushTriangleId(uint32_t id) {
-        assert(TriangleIdCount < TriangleIds.size());
-        TriangleIds[TriangleIdCount++] = id;
-    }
-    uint32_t RecordCount() const { return uint32_t(Records.size()); }
-    uint32_t VertexCount() const { return uint32_t(Vertices.size()); }
-    uint32_t PrimitiveCount() const { return uint32_t(Primitives.size()); }
-};
-
 // One spatial chunk of a primitive's triangles, holding the meshlets its own clusterization made.
 // Vertex offsets stay relative to the chunk's vertex list until the merge places them.
 struct MeshletChunk {
@@ -96,53 +77,122 @@ void SplitTriangleChunks(std::span<uint32_t> triangles, std::span<const std::arr
     SplitTriangleChunks(triangles.first(middle), centroids, first, chunks);
     SplitTriangleChunks(triangles.subspan(middle), centroids, first + uint32_t(middle), chunks);
 }
+
+// Draw data for one of a mesh's source triangle primitives, whose corner offsets start at its first triangle.
+DrawData PrimitiveDrawData(const GpuBuffers &buffers, const MeshBuffers &mb, const MeshStore &meshes, uint32_t store_id, const PrimitiveTriangleRange &primitive) {
+    const auto first_index = size_t(primitive.FirstTriangle) * 3;
+    DrawData draw{
+        .VertexSlot = mb.Vertices.Slot,
+        .IndexSlotOffset = {mb.FaceIndices.Slot, mb.FaceIndices.Offset + uint32_t(first_index)},
+        .ModelSlot = buffers.Instances.TransformBuffer.Slot,
+        .ObjectIdSlot = meshes.GetFaceIdRange(store_id).Slot,
+        .CornerClassOffset = meshes.GetCornerClassOffset(store_id),
+        .CustomCornerMaskOffset = OffsetOrInvalid(meshes.GetCustomCornerMaskRange(store_id)),
+        .CustomCornerNormalOffset = OffsetOrInvalid(meshes.GetCustomCornerNormalRange(store_id)),
+        .CornerBase = uint32_t(first_index),
+        .BaseSeamNormalOffset = OffsetOrInvalid(meshes.GetBaseSeamNormalRange(store_id)),
+        .CornerTangentOffset = OffsetOrInvalid(meshes.GetCornerTangentRange(store_id)),
+        .CornerColorOffset = OffsetOrInvalid(meshes.GetCornerColorRange(store_id)),
+        .FaceIdOffset = meshes.GetFaceIdRange(store_id).Offset + primitive.FirstTriangle,
+        .BaseFaceNormalOffset = meshes.GetFaceDataRange(store_id).Offset,
+        .FaceFirstTriangleOffset = meshes.GetFaceDataRange(store_id).Offset,
+        .VertexEdgeAdjacencyOffset = OffsetOrInvalid(meshes.GetVertexEdgeAdjacencyRange(store_id)),
+        .VertexCountOrHeadImageSlot = mb.Vertices.Count,
+        .ElementStateSlotOffset = meshes.GetFaceStateRange(store_id),
+        .InstanceStateSlot = buffers.Instances.StateBuffer.Slot,
+        .VertexOffset = mb.Vertices.Offset,
+        .MorphShadingAuthored = meshes.GetMorphShadingAuthored(store_id) ? 1u : 0u,
+        .PrimitiveMaterialOffset = OffsetOrInvalid(meshes.GetPrimitiveMaterialRange(store_id)),
+        .ElementPrimitiveOffset = OffsetOrInvalid(meshes.GetElementPrimitiveRange(store_id)),
+    };
+    if (draw.CornerClassOffset < uint32_t(CornerClassEncoding::UniformFaceOffset)) draw.CornerClassOffset += uint32_t(first_index);
+    const auto advance_corner = [first_index](uint32_t &offset) {
+        if (offset != InvalidOffset) offset += uint32_t(first_index);
+    };
+    advance_corner(draw.CornerTangentOffset);
+    advance_corner(draw.CornerColorOffset);
+    for (uint32_t set = 0; set < draw.CornerUvOffsets.size(); ++set) {
+        draw.CornerUvOffsets[set] = OffsetOrInvalid(meshes.GetCornerUvRange(store_id, set));
+        advance_corner(draw.CornerUvOffsets[set]);
+    }
+    return draw;
+}
 } // namespace
 
-// Release a mesh's meshlet ranges and take the two whose size the mesh already fixes: one triangle id
-// per meshlet triangle and three local indices with it. Serial, because arena offsets follow call order.
-void GpuBuffers::ReserveMeshlets(MeshBuffers &buffers, const Mesh &mesh) {
-    Meshlets.Release(buffers.Meshlets);
-    MeshletTriangleIds.Release(buffers.MeshletTriangles);
-    MeshletVertexCorners.Release(buffers.MeshletVertices);
-    MeshletLocalTriangles.Release(buffers.MeshletLocalTriangles);
-    Primitives.Release(buffers.Primitives);
-    buffers.Primitives = buffers.Meshlets = buffers.MeshletTriangles = buffers.MeshletVertices = buffers.MeshletLocalTriangles = {};
-
-    const bool face_topology = mesh.FaceCount() > 0u;
-    const uint32_t element_count = face_topology ? 0u : (mesh.EdgeCount() != 0u ? mesh.EdgeCount() : mesh.VertexCount());
-    buffers.MeshletTriangles = MeshletTriangleIds.Allocate(face_topology ? mesh.TriangleIndexCount() / 3u : element_count);
-    buffers.MeshletLocalTriangles = MeshletLocalTriangles.Allocate(face_topology ? mesh.TriangleIndexCount() : 0u);
-}
-
-// Touches only what belongs to its own mesh: the reserved spans are its own, and the counts that
-// emerge as meshopt runs come back for the caller to commit.
-MeshletBuild GpuBuffers::BuildMeshlets(const MeshBuffers &buffers, const Mesh &mesh, const MeshStore &meshes) {
+MeshletBuildInputs CaptureMeshletInputs(const GpuBuffers &buffers, const MeshBuffers &mb, const Mesh &mesh, const MeshStore &meshes) {
+    const uint32_t store_id = mesh.GetStoreId();
     // A triangle mesh's draws index the store's corner array, so the clusterizer reads it there. An
     // n-gon mesh fans into a triangulated buffer of its own, written before this build.
     const auto corners = mesh.CornerVertices();
-    const auto indices = corners.size() == mesh.TriangleIndexCount() ? corners : FaceIndexBuffer.Get(buffers.FaceIndices);
+    const auto indices = corners.size() == mesh.TriangleIndexCount() ? corners : buffers.FaceIndexBuffer.Get(mb.FaceIndices);
     assert(indices.size() == mesh.TriangleIndexCount());
 
-    const auto vertices = mesh.GetVerticesSpan();
-
-    const uint32_t store_id = mesh.GetStoreId();
-    const auto corner_classes = meshes.GetCornerClasses(store_id);
-    const uint32_t uniform_corner_class = meshes.GetCornerClassOffset(store_id);
-    const auto face_ids = meshes.GetTriangleFaceIds(store_id);
-    const auto element_primitives = meshes.GetElementPrimitiveIndices(store_id);
-    const bool morph_shading_authored = meshes.GetMorphShadingAuthored(store_id);
-    const auto custom_corner_masks = meshes.GetCustomCornerMasks(store_id);
-    const auto corner_tangents = meshes.GetCornerTangents(store_id);
-    const auto corner_colors = meshes.GetCornerColors(store_id);
-    const std::array corner_uvs{
-        meshes.GetCornerUvs(store_id, 0),
-        meshes.GetCornerUvs(store_id, 1),
-        meshes.GetCornerUvs(store_id, 2),
-        meshes.GetCornerUvs(store_id, 3),
+    const bool face_topology = mesh.FaceCount() > 0u;
+    const bool line_topology = !face_topology && mesh.EdgeCount() != 0u;
+    const auto primitive_ranges = meshes.GetPrimitiveTriangleRanges(store_id);
+    MeshletBuildInputs inputs{
+        .Indices = indices,
+        .Vertices = mesh.GetVerticesSpan(),
+        .CornerClasses = meshes.GetCornerClasses(store_id),
+        .FaceIds = meshes.GetTriangleFaceIds(store_id),
+        .ElementPrimitives = meshes.GetElementPrimitiveIndices(store_id),
+        .CustomCornerMasks = meshes.GetCustomCornerMasks(store_id),
+        .CornerTangents = meshes.GetCornerTangents(store_id),
+        .CornerColors = meshes.GetCornerColors(store_id),
+        .CornerUvs = {
+            meshes.GetCornerUvs(store_id, 0),
+            meshes.GetCornerUvs(store_id, 1),
+            meshes.GetCornerUvs(store_id, 2),
+            meshes.GetCornerUvs(store_id, 3),
+        },
+        .PrimitiveTriangleRanges = {primitive_ranges.begin(), primitive_ranges.end()},
+        .CornerClassOffset = meshes.GetCornerClassOffset(store_id),
+        .TriangleCount = mesh.TriangleIndexCount() / 3u,
+        .ElementCount = face_topology ? 0u : (line_topology ? mesh.EdgeCount() : mesh.VertexCount()),
+        .SourcePrimitiveCount = meshes.GetPrimitiveMaterialRange(store_id).Count,
+        .FaceTopology = face_topology,
+        .LineTopology = line_topology,
+        .MorphShadingAuthored = meshes.GetMorphShadingAuthored(store_id),
     };
+    inputs.PrimitiveDraws.reserve(primitive_ranges.size());
+    for (const auto &primitive : primitive_ranges) {
+        inputs.PrimitiveDraws.push_back(PrimitiveDrawData(buffers, mb, meshes, store_id, primitive));
+    }
+    if (!face_topology) {
+        if (line_topology) {
+            inputs.EdgeIndices.resize(size_t(inputs.ElementCount) * 2u);
+            mesh.WriteEdgeIndices(inputs.EdgeIndices);
+        }
+        inputs.ElementDraw = {
+            .VertexSlot = mb.Vertices.Slot,
+            .IndexSlotOffset = line_topology ? mb.EdgeIndices : mb.VertexIndices,
+            .ModelSlot = buffers.Instances.TransformBuffer.Slot,
+            .ObjectIdSlot = InvalidSlot,
+            .CornerColorOffset = OffsetOrInvalid(meshes.GetCornerColorRange(store_id)),
+            .VertexCountOrHeadImageSlot = mb.Vertices.Count,
+            .InstanceStateSlot = buffers.Instances.StateBuffer.Slot,
+            .VertexOffset = mb.Vertices.Offset,
+            .PrimitiveMaterialOffset = OffsetOrInvalid(meshes.GetPrimitiveMaterialRange(store_id)),
+            .ElementPrimitiveOffset = OffsetOrInvalid(meshes.GetElementPrimitiveRange(store_id)),
+        };
+    }
+    return inputs;
+}
+
+// Touches only its own captured inputs and its own vectors, so this runs on any thread.
+MeshletBuild BuildMeshlets(const MeshletBuildInputs &in) {
+    const auto vertices = in.Vertices;
+    const auto corner_classes = in.CornerClasses;
+    const auto face_ids = in.FaceIds;
+    const auto element_primitives = in.ElementPrimitives;
+    const bool morph_shading_authored = in.MorphShadingAuthored;
+    const auto custom_corner_masks = in.CustomCornerMasks;
+    const auto corner_tangents = in.CornerTangents;
+    const auto corner_colors = in.CornerColors;
+    const auto &corner_uvs = in.CornerUvs;
 
     const uint32_t uniform_class_word =
-        uint32_t(uniform_corner_class == uint32_t(CornerClassEncoding::UniformFaceOffset) ? CornerClass::Face : CornerClass::Vertex)
+        uint32_t(in.CornerClassOffset == uint32_t(CornerClassEncoding::UniformFaceOffset) ? CornerClass::Face : CornerClass::Vertex)
         << uint32_t(CornerClassEncoding::TagShift);
     const auto corner_class_value = [&](uint32_t global_corner) {
         return corner_classes.empty() ? uniform_class_word : corner_classes[global_corner];
@@ -152,21 +202,17 @@ MeshletBuild GpuBuffers::BuildMeshlets(const MeshBuffers &buffers, const Mesh &m
             (custom_corner_masks[global_corner / 32u].x & (1u << (global_corner % 32u))) != 0u;
     };
 
-    // Meshlets translate straight into their arenas, so bound every one of them from the source
-    // ranges first. The face-less element grouping is part of that bound.
-    const bool face_topology = mesh.FaceCount() > 0u;
-    const bool line_topology = !face_topology && mesh.EdgeCount() != 0u;
+    const bool face_topology = in.FaceTopology;
+    const bool line_topology = in.LineTopology;
     // Forward shading keeps six deterministic unshared corners per element. Visibility is
     // position-only, so it safely shares four quad vertices and fits sixteen elements in the
     // triangle entry's 64-vertex output contract.
     constexpr uint32_t ElementsPerMeshlet{16u};
-    const uint32_t element_count = face_topology ? 0u : (line_topology ? mesh.EdgeCount() : mesh.VertexCount());
-    std::vector<uint32_t> edge_indices(line_topology ? element_count * 2u : 0u);
+    const uint32_t element_count = in.ElementCount;
+    const auto &edge_indices = in.EdgeIndices;
     std::vector<std::vector<uint32_t>> primitive_elements;
-    const auto primitive_materials = meshes.GetPrimitiveMaterialRange(store_id);
     if (!face_topology) {
-        if (line_topology) mesh.WriteEdgeIndices(edge_indices);
-        primitive_elements.resize(std::max(primitive_materials.Count, 1u));
+        primitive_elements.resize(std::max(in.SourcePrimitiveCount, 1u));
         for (uint32_t element = 0u; element < element_count; ++element) {
             const uint32_t first_vertex = line_topology ? edge_indices[element * 2u] : element;
             const uint32_t primitive = element_primitives.empty() ? 0u : element_primitives[first_vertex];
@@ -178,9 +224,11 @@ MeshletBuild GpuBuffers::BuildMeshlets(const MeshBuffers &buffers, const Mesh &m
         }
     }
 
-    MeshletSink sink{
-        .TriangleIds = MeshletTriangleIds.GetMutable(buffers.MeshletTriangles),
-        .LocalTriangles = MeshletLocalTriangles.GetMutable(buffers.MeshletLocalTriangles),
+    // One meshlet triangle carries one source triangle id and three local indices, so both lists are
+    // sized exactly from the source ranges and written in place.
+    MeshletBuild sink{
+        .TriangleIds = std::vector<uint32_t>(face_topology ? in.TriangleCount : element_count),
+        .LocalTriangles = std::vector<uint8_t>(face_topology ? size_t(in.TriangleCount) * 3 : 0),
     };
 
     const uint32_t live_uv_sets = uint32_t(std::ranges::count_if(corner_uvs, [](auto uvs) { return !uvs.empty(); }));
@@ -189,7 +237,7 @@ MeshletBuild GpuBuffers::BuildMeshlets(const MeshBuffers &buffers, const Mesh &m
     std::vector<uint8_t> flat_face_triangles;
     std::vector<uint32_t> chunk_triangles;
     std::vector<MeshletChunk> chunks;
-    // One chunk's clusterization. It welds only its own corners and fills only the arena range its
+    // One chunk's clusterization. It welds only its own corners and fills only the list range its
     // triangle count already fixed, so every chunk of a primitive runs at once.
     const auto build_chunk = [&](const PrimitiveTriangleRange &primitive, std::span<const uint32_t> primitive_indices, uint32_t primitive_record, MeshletChunk &chunk) {
         if (chunk.TriangleCount == 0u) return;
@@ -300,8 +348,8 @@ MeshletBuild GpuBuffers::BuildMeshlets(const MeshBuffers &buffers, const Mesh &m
             source_triangles.Insert(source_key.data(), primitive.FirstTriangle + chunk_triangle_ids[i]);
         }
 
-        const auto triangle_ids = sink.TriangleIds.subspan(chunk.TriangleIdBase, chunk.TriangleCount);
-        const auto local_triangles = sink.LocalTriangles.subspan(size_t(chunk.TriangleIdBase) * 3, size_t(chunk.TriangleCount) * 3);
+        const auto triangle_ids = std::span{sink.TriangleIds}.subspan(chunk.TriangleIdBase, chunk.TriangleCount);
+        const auto local_triangles = std::span{sink.LocalTriangles}.subspan(size_t(chunk.TriangleIdBase) * 3, size_t(chunk.TriangleCount) * 3);
         uint32_t triangle_id_count = 0, local_triangle_count = 0;
         for (const auto &meshlet : built) {
             const uint32_t first_triangle_id = triangle_id_count;
@@ -336,11 +384,11 @@ MeshletBuild GpuBuffers::BuildMeshlets(const MeshBuffers &buffers, const Mesh &m
                 meshlet.triangle_count, welded_positions.front().data(), welded_positions.size(), sizeof(welded_positions.front())
             );
             chunk.Records.emplace_back(MeshletRecord{
-                .TriangleOffset = buffers.MeshletTriangles.Offset + chunk.TriangleIdBase + first_triangle_id,
+                .TriangleOffset = chunk.TriangleIdBase + first_triangle_id,
                 .TriangleCount = meshlet.triangle_count,
                 .VertexOffset = first_vertex,
                 .VertexCount = meshlet.vertex_count,
-                .LocalTriangleOffset = PackLocalTriangleOffset(buffers.MeshletLocalTriangles.Offset + chunk.TriangleIdBase * 3u + first_local_triangle, MeshPrimitiveTopology::Triangle),
+                .LocalTriangleOffset = PackLocalTriangleOffset(chunk.TriangleIdBase * 3u + first_local_triangle, MeshPrimitiveTopology::Triangle),
                 .Primitive = primitive_record,
                 .ConeAxisCutoff = PackCone(bounds, cone_cull_safe),
                 .Center = {bounds.center[0], bounds.center[1], bounds.center[2]},
@@ -351,10 +399,11 @@ MeshletBuild GpuBuffers::BuildMeshlets(const MeshBuffers &buffers, const Mesh &m
         assert(triangle_id_count == chunk.TriangleCount);
     };
 
-    for (const auto &primitive : meshes.GetPrimitiveTriangleRanges(mesh.GetStoreId())) {
+    for (uint32_t primitive_record_index = 0u; primitive_record_index < in.PrimitiveTriangleRanges.size(); ++primitive_record_index) {
+        const auto &primitive = in.PrimitiveTriangleRanges[primitive_record_index];
         const auto first_index = size_t(primitive.FirstTriangle) * 3;
         const auto index_count = size_t(primitive.TriangleCount) * 3;
-        const auto primitive_indices = std::span{indices}.subspan(first_index, index_count);
+        const auto primitive_indices = in.Indices.subspan(first_index, index_count);
 
         flat_face_triangles.assign(primitive.TriangleCount, morph_shading_authored ? 0u : 1u);
         chunk_triangles.resize(primitive.TriangleCount);
@@ -384,12 +433,12 @@ MeshletBuild GpuBuffers::BuildMeshlets(const MeshBuffers &buffers, const Mesh &m
             chunk.TriangleIdBase = triangle_id_base;
             triangle_id_base += chunk.TriangleCount;
         }
-        const uint32_t primitive_record = sink.PrimitiveCount();
+        const uint32_t primitive_record = uint32_t(sink.Primitives.size());
         ParallelFor(uint32_t(chunks.size()), [&](uint32_t i) { build_chunk(primitive, primitive_indices, primitive_record, chunks[i]); });
 
         // Chunks merge in split order, so the meshlets a mesh produces never depend on which chunk
         // finished first.
-        const uint32_t first_meshlet = sink.RecordCount();
+        const uint32_t first_meshlet = uint32_t(sink.Records.size());
         size_t record_total = 0, vertex_total = 0;
         for (const auto &chunk : chunks) {
             record_total += chunk.Records.size();
@@ -398,7 +447,7 @@ MeshletBuild GpuBuffers::BuildMeshlets(const MeshBuffers &buffers, const Mesh &m
         sink.Records.reserve(sink.Records.size() + record_total);
         sink.Vertices.reserve(sink.Vertices.size() + vertex_total);
         for (auto &chunk : chunks) {
-            const uint32_t vertex_base = sink.VertexCount();
+            const uint32_t vertex_base = uint32_t(sink.Vertices.size());
             for (auto &record : chunk.Records) record.VertexOffset += vertex_base;
             sink.Records.insert(sink.Records.end(), chunk.Records.begin(), chunk.Records.end());
             sink.Vertices.insert(sink.Vertices.end(), chunk.Vertices.begin(), chunk.Vertices.end());
@@ -408,46 +457,12 @@ MeshletBuild GpuBuffers::BuildMeshlets(const MeshBuffers &buffers, const Mesh &m
             chunk.Vertices = {};
         }
 
-        DrawData draw{
-            .VertexSlot = buffers.Vertices.Slot,
-            .IndexSlotOffset = {buffers.FaceIndices.Slot, buffers.FaceIndices.Offset + uint32_t(first_index)},
-            .ModelSlot = Instances.TransformBuffer.Slot,
-            .ObjectIdSlot = meshes.GetFaceIdRange(mesh.GetStoreId()).Slot,
-            .CornerClassOffset = meshes.GetCornerClassOffset(mesh.GetStoreId()),
-            .CustomCornerMaskOffset = OffsetOrInvalid(meshes.GetCustomCornerMaskRange(mesh.GetStoreId())),
-            .CustomCornerNormalOffset = OffsetOrInvalid(meshes.GetCustomCornerNormalRange(mesh.GetStoreId())),
-            .CornerBase = uint32_t(first_index),
-            .BaseSeamNormalOffset = OffsetOrInvalid(meshes.GetBaseSeamNormalRange(mesh.GetStoreId())),
-            .CornerTangentOffset = OffsetOrInvalid(meshes.GetCornerTangentRange(mesh.GetStoreId())),
-            .CornerColorOffset = OffsetOrInvalid(meshes.GetCornerColorRange(mesh.GetStoreId())),
-            .FaceIdOffset = meshes.GetFaceIdRange(mesh.GetStoreId()).Offset + primitive.FirstTriangle,
-            .BaseFaceNormalOffset = meshes.GetFaceDataRange(mesh.GetStoreId()).Offset,
-            .FaceFirstTriangleOffset = meshes.GetFaceDataRange(mesh.GetStoreId()).Offset,
-            .VertexEdgeAdjacencyOffset = OffsetOrInvalid(meshes.GetVertexEdgeAdjacencyRange(mesh.GetStoreId())),
-            .VertexCountOrHeadImageSlot = buffers.Vertices.Count,
-            .ElementStateSlotOffset = meshes.GetFaceStateRange(mesh.GetStoreId()),
-            .InstanceStateSlot = Instances.StateBuffer.Slot,
-            .VertexOffset = buffers.Vertices.Offset,
-            .MorphShadingAuthored = meshes.GetMorphShadingAuthored(mesh.GetStoreId()) ? 1u : 0u,
-            .PrimitiveMaterialOffset = OffsetOrInvalid(meshes.GetPrimitiveMaterialRange(mesh.GetStoreId())),
-            .ElementPrimitiveOffset = OffsetOrInvalid(meshes.GetElementPrimitiveRange(mesh.GetStoreId())),
-        };
-        if (draw.CornerClassOffset < uint32_t(CornerClassEncoding::UniformFaceOffset)) draw.CornerClassOffset += uint32_t(first_index);
-        const auto advance_corner = [first_index](uint32_t &offset) {
-            if (offset != InvalidOffset) offset += uint32_t(first_index);
-        };
-        advance_corner(draw.CornerTangentOffset);
-        advance_corner(draw.CornerColorOffset);
-        for (uint32_t set = 0; set < draw.CornerUvOffsets.size(); ++set) {
-            draw.CornerUvOffsets[set] = OffsetOrInvalid(meshes.GetCornerUvRange(mesh.GetStoreId(), set));
-            advance_corner(draw.CornerUvOffsets[set]);
-        }
         sink.Primitives.emplace_back(PrimitiveRecord{
-            .Draw = draw,
+            .Draw = in.PrimitiveDraws[primitive_record_index],
             .PrimitiveIndex = primitive.PrimitiveIndex,
             .FirstTriangle = primitive.FirstTriangle,
             .MeshletOffset = first_meshlet,
-            .MeshletCount = sink.RecordCount() - first_meshlet,
+            .MeshletCount = uint32_t(sink.Records.size()) - first_meshlet,
         });
     }
 
@@ -455,16 +470,17 @@ MeshletBuild GpuBuffers::BuildMeshlets(const MeshBuffers &buffers, const Mesh &m
         for (uint32_t primitive_index = 0u; primitive_index < primitive_elements.size(); ++primitive_index) {
             const auto &elements = primitive_elements[primitive_index];
             if (elements.empty()) continue;
-            const uint32_t first_meshlet = sink.RecordCount();
+            const uint32_t first_meshlet = uint32_t(sink.Records.size());
             for (uint32_t base = 0u; base < elements.size(); base += ElementsPerMeshlet) {
                 const uint32_t count = std::min(ElementsPerMeshlet, uint32_t(elements.size()) - base);
                 const uint32_t first_element_id = sink.TriangleIdCount;
-                const uint32_t first_vertex = sink.VertexCount();
+                const uint32_t first_vertex = uint32_t(sink.Vertices.size());
                 vec3 lo(std::numeric_limits<float>::max());
                 vec3 hi(std::numeric_limits<float>::lowest());
                 for (uint32_t i = 0u; i < count; ++i) {
                     const uint32_t element = elements[base + i];
-                    sink.PushTriangleId(element);
+                    assert(sink.TriangleIdCount < sink.TriangleIds.size());
+                    sink.TriangleIds[sink.TriangleIdCount++] = element;
                     const uint32_t vertex_count = line_topology ? 2u : 1u;
                     for (uint32_t endpoint = 0u; endpoint < vertex_count; ++endpoint) {
                         const uint32_t vertex = line_topology ? edge_indices[element * 2u + endpoint] : element;
@@ -476,63 +492,51 @@ MeshletBuild GpuBuffers::BuildMeshlets(const MeshBuffers &buffers, const Mesh &m
                 }
                 const vec3 center = (lo + hi) * 0.5f;
                 float radius = 0.0f;
-                for (uint32_t i = first_vertex; i < sink.VertexCount(); ++i) {
+                for (uint32_t i = first_vertex; i < uint32_t(sink.Vertices.size()); ++i) {
                     radius = std::max(radius, glm::distance(center, vec3(vertices[sink.Vertices[i]].Position)));
                 }
                 sink.Records.emplace_back(MeshletRecord{
-                    .TriangleOffset = buffers.MeshletTriangles.Offset + first_element_id,
+                    .TriangleOffset = first_element_id,
                     .TriangleCount = count,
                     .VertexOffset = first_vertex,
                     .VertexCount = count * (line_topology ? 2u : 1u),
-                    .LocalTriangleOffset = PackLocalTriangleOffset(buffers.MeshletLocalTriangles.Offset + sink.LocalTriangleCount, line_topology ? MeshPrimitiveTopology::Line : MeshPrimitiveTopology::Point),
-                    .Primitive = sink.PrimitiveCount(),
+                    .LocalTriangleOffset = PackLocalTriangleOffset(sink.LocalTriangleCount, line_topology ? MeshPrimitiveTopology::Line : MeshPrimitiveTopology::Point),
+                    .Primitive = uint32_t(sink.Primitives.size()),
                     .ConeAxisCutoff = uint32_t(uint8_t(127)) << 24u,
                     .Center = center,
                     .Radius = radius,
                 });
             }
 
-            DrawData draw{
-                .VertexSlot = buffers.Vertices.Slot,
-                .IndexSlotOffset = line_topology ? buffers.EdgeIndices : buffers.VertexIndices,
-                .ModelSlot = Instances.TransformBuffer.Slot,
-                .ObjectIdSlot = InvalidSlot,
-                .CornerColorOffset = OffsetOrInvalid(meshes.GetCornerColorRange(store_id)),
-                .VertexCountOrHeadImageSlot = buffers.Vertices.Count,
-                .InstanceStateSlot = Instances.StateBuffer.Slot,
-                .VertexOffset = buffers.Vertices.Offset,
-                .PrimitiveMaterialOffset = OffsetOrInvalid(primitive_materials),
-                .ElementPrimitiveOffset = OffsetOrInvalid(meshes.GetElementPrimitiveRange(store_id)),
-            };
             sink.Primitives.emplace_back(PrimitiveRecord{
-                .Draw = draw,
+                .Draw = in.ElementDraw,
                 .PrimitiveIndex = primitive_index,
                 .FirstTriangle = 0u,
                 .MeshletOffset = first_meshlet,
-                .MeshletCount = sink.RecordCount() - first_meshlet,
+                .MeshletCount = uint32_t(sink.Records.size()) - first_meshlet,
             });
         }
     }
 
-    return {
-        .Records = std::move(sink.Records),
-        .Vertices = std::move(sink.Vertices),
-        .Primitives = std::move(sink.Primitives),
-        .TriangleIdCount = sink.TriangleIdCount,
-        .LocalTriangleCount = sink.LocalTriangleCount,
-    };
+    return sink;
 }
 
-// Take the arenas whose size only the finished build knows, and trim the two it filled in place.
+// Take every arena the finished build needs, and rebase the offsets it left relative to its own ranges.
 // Serial, because arena offsets follow call order.
-void GpuBuffers::CommitMeshlets(MeshBuffers &buffers, MeshletBuild &build) {
-    MeshletTriangleIds.Shrink(buffers.MeshletTriangles, build.TriangleIdCount);
-    MeshletLocalTriangles.Shrink(buffers.MeshletLocalTriangles, build.LocalTriangleCount);
+void CommitMeshlets(GpuBuffers &buffers, MeshBuffers &mb, MeshletBuild &build) {
+    buffers.ReleaseMeshlets(mb);
 
-    buffers.MeshletVertices = MeshletVertexCorners.Allocate(build.Vertices);
-    for (auto &record : build.Records) record.VertexOffset += buffers.MeshletVertices.Offset;
-    buffers.Meshlets = Meshlets.Allocate(build.Records);
-    for (auto &record : build.Primitives) record.MeshletOffset += buffers.Meshlets.Offset;
-    buffers.Primitives = Primitives.Allocate(build.Primitives);
-    for (auto &record : Meshlets.GetMutable(buffers.Meshlets)) record.Primitive += buffers.Primitives.Offset;
+    mb.MeshletTriangles = buffers.MeshletTriangleIds.Allocate(std::span{build.TriangleIds}.first(build.TriangleIdCount));
+    mb.MeshletLocalTriangles = buffers.MeshletLocalTriangles.Allocate(std::span{build.LocalTriangles}.first(build.LocalTriangleCount));
+    mb.MeshletVertices = buffers.MeshletVertexCorners.Allocate(build.Vertices);
+    for (auto &record : build.Records) {
+        record.TriangleOffset += mb.MeshletTriangles.Offset;
+        assert(((record.LocalTriangleOffset & uint32_t(MeshletGeometryEncoding::LocalTriangleOffsetMask)) + mb.MeshletLocalTriangles.Offset) <= uint32_t(MeshletGeometryEncoding::LocalTriangleOffsetMask));
+        record.LocalTriangleOffset += mb.MeshletLocalTriangles.Offset;
+        record.VertexOffset += mb.MeshletVertices.Offset;
+    }
+    mb.Meshlets = buffers.Meshlets.Allocate(build.Records);
+    for (auto &record : build.Primitives) record.MeshletOffset += mb.Meshlets.Offset;
+    mb.Primitives = buffers.Primitives.Allocate(build.Primitives);
+    for (auto &record : buffers.Meshlets.GetMutable(mb.Meshlets)) record.Primitive += mb.Primitives.Offset;
 }

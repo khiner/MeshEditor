@@ -28,17 +28,6 @@
 
 #include <algorithm>
 
-struct Mesh;
-struct MeshStore;
-
-// What BuildMeshlets produces that only the commit can place: meshopt reveals these counts as it runs.
-struct MeshletBuild {
-    std::vector<MeshletRecord> Records;
-    std::vector<uint32_t> Vertices;
-    std::vector<PrimitiveRecord> Primitives;
-    uint32_t TriangleIdCount{}, LocalTriangleCount{};
-};
-
 // Per-instance GPU data behind one RangeAllocator, so every buffer shares the same instance offsets.
 struct InstanceArena {
     InstanceArena(mtl::BufferContext &ctx)
@@ -206,6 +195,10 @@ struct GpuBuffers {
         buffers.EdgeIndices = {};
         VertexIndexBuffer.Release(buffers.VertexIndices);
         buffers.VertexIndices = {};
+        ReleaseMeshlets(buffers);
+    }
+
+    void ReleaseMeshlets(MeshBuffers &buffers) {
         Meshlets.Release(buffers.Meshlets);
         buffers.Meshlets = {};
         MeshletTriangleIds.Release(buffers.MeshletTriangles);
@@ -323,12 +316,6 @@ struct GpuBuffers {
 
     mat4 PreviousFullCullViewProj{1};
 
-    // Reserving and committing take arena ranges and stay in call order, while building touches only
-    // its own mesh, so a batch of meshes can run the middle step at once.
-    void ReserveMeshlets(MeshBuffers &, const Mesh &);
-    MeshletBuild BuildMeshlets(const MeshBuffers &, const Mesh &, const MeshStore &);
-    void CommitMeshlets(MeshBuffers &, MeshletBuild &);
-
     // Poses at the shutter's open and close, for motion blur's velocity pass. Each is a whole-buffer
     // copy of its live counterpart, so the per-draw offsets index them unchanged.
     struct VelocityPose {
@@ -420,6 +407,9 @@ struct GpuBuffers {
     struct PreludeGroups {
         static constexpr uint32_t PassCount{6};
         uint32_t PosePrepass{0}, PosedMeshletBounds{0}, DeriveFaces{0}, BoundsReduce{0}, DeriveGather{0}, BoundsCombine{0};
+
+        // The gather and combine passes follow the pass they gather, so they add no work of their own.
+        bool HasWork() const { return PosePrepass > 0 || PosedMeshletBounds > 0 || DeriveFaces > 0 || BoundsReduce > 0; }
     };
     PreludeGroups Prelude{};
     // Holds the recorded group counts, or zeros when deform inputs are unchanged since the last submit.
