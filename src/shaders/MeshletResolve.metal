@@ -74,6 +74,76 @@ inline uint MeshletPrimitiveTopology(MeshletRecord meshlet) {
     return meshlet.LocalTriangleOffset >> MeshletGeometryEncoding_TopologyShift;
 }
 
+// A cluster simplified from finer geometry. Its triangles are its own, so it names no source triangle
+// and no source face.
+inline bool MeshletCoarse(MeshletRecord meshlet) { return meshlet.RefinedGroup != INVALID_OFFSET; }
+
+// The three primitive-local corners a rendered triangle reads its attributes from. A coarse cluster
+// names them through its own vertex list, and original geometry through its source triangle.
+inline uint3 MeshletCornerIds(
+    device const BindlessSet &bindless, uint vertex_slot, uint local_triangle_slot,
+    MeshletRecord meshlet, PrimitiveRecord primitive, uint triangle, uint local_triangle
+) {
+    if (!MeshletCoarse(meshlet)) {
+        const uint base = (triangle - primitive.FirstTriangle) * 3u;
+        return uint3(base, base + 1u, base + 2u);
+    }
+    device const uchar *triangles = BindlessBuffer(uchar, bindless.Buffer, local_triangle_slot);
+    device const uint *vertices = BindlessBuffer(uint, bindless.Buffer, vertex_slot);
+    const uint offset = MeshletLocalTriangleOffset(meshlet) + local_triangle * 3u;
+    uint3 corners;
+    for (uint c = 0u; c < 3u; ++c) {
+        const uint local = uint(triangles[offset + c] & MeshletGeometryEncoding_LocalIndexMask);
+        corners[c] = vertices[meshlet.VertexOffset + local] & MeshletGeometryEncoding_CornerMask;
+    }
+    return corners;
+}
+
+// The face normal a coarse triangle's Face-class corners shade from, in mesh-local space and wound
+// like the source geometry it replaces.
+inline float3 MeshletCoarseNormal(const thread Scene &scene, DrawData draw, uint3 vertex_ids) {
+    const float3 p0 = scene.GetLocalPosition(draw, vertex_ids.x);
+    return NormalizeOrZero(cross(
+        scene.GetLocalPosition(draw, vertex_ids.y) - p0, scene.GetLocalPosition(draw, vertex_ids.z) - p0
+    ));
+}
+
+struct MeshletTriangleCorners {
+    uint3 CornerIds;
+    uint3 VertexIds;
+    float3 CoarseNormal;
+};
+
+inline MeshletTriangleCorners ResolveMeshletCorners(
+    const thread Scene &scene, DrawData draw, uint vertex_slot, uint local_triangle_slot,
+    MeshletRecord meshlet, PrimitiveRecord primitive, uint triangle, uint local_triangle
+) {
+    MeshletTriangleCorners result;
+    result.CornerIds = MeshletCornerIds(
+        scene.B, vertex_slot, local_triangle_slot, meshlet, primitive, triangle, local_triangle
+    );
+    device const uint *indices = scene.Indices(draw.IndexSlotOffset.Slot);
+    for (uint c = 0u; c < 3u; ++c) result.VertexIds[c] = indices[draw.IndexSlotOffset.Offset + result.CornerIds[c]];
+    result.CoarseNormal = MeshletCoarse(meshlet) ? MeshletCoarseNormal(scene, draw, result.VertexIds) : float3(0.0f);
+    return result;
+}
+
+// A coarse cluster's face values: no source face, so no element state and no face normal, and the
+// material its primitive carries.
+inline MeshletFaceValues MeshletCoarseFace(
+    const thread Scene &scene, PrimitiveRecord primitive, InstanceRecord instance, Transform world
+) {
+    const float3 scale = float3(world.S);
+    return {
+        float3(0.0f),
+        0u,
+        MeshletPrimitiveMaterialIndex(scene, primitive),
+        (scale.x + scale.y + scale.z) / 3.0f,
+        instance.ObjectId,
+        instance.ElementIdOffset,
+    };
+}
+
 inline uint MeshletFaceMaterialIndex(
     const thread Scene &scene, DrawData draw, uint face_id
 ) {

@@ -229,7 +229,8 @@ struct Pipelines {
     mtl::ComputePipeline BoundsCombine;
     // Walks each wire draw's edge list, accumulating per-class coverage into the screen buffer.
     mtl::ComputePipeline WireRaster;
-    mtl::ComputePipeline MeshletWorkBlockCount, MeshletWorkPrefix, MeshletWorkEmit;
+    // Descends every span tree in lockstep, one count/prefix/emit level at a time.
+    mtl::ComputePipeline LodFrontierCount, LodFrontierPrefix, LodFrontierEmit;
     mtl::ComputePipeline MeshletCullBlockCount, MeshletCullPrefix, MeshletCullEmit;
     mtl::ComputePipeline MeshletPhase2Cull, MeshletPhase2RangeCull, MeshletPhase2Prefix;
     mtl::ComputePipeline DepthPyramidReduce;

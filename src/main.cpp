@@ -502,6 +502,7 @@ Scene:
   --edit ELEMENT              Enter edit mode on vertex | edge | face
   --select-all                Select every element of the edited mesh
   --overlays                  Draw the editor overlays
+  --lod-error PIXELS          Screen-space error budget for the cluster LOD cut
   --display LIST              Comma-separated: vertex-normals, face-normals, bounds, tet-wireframe
 
 Capture:
@@ -548,6 +549,7 @@ struct CaptureRequest {
     bool Overlays{false}; // Keep overlays on through a capture, which presentation otherwise turns off.
     std::optional<Element> EditMode{}; // Engaged: select mesh objects and enter this element edit mode.
     bool SelectAll{false}; // Select everything the current interaction mode selects.
+    float LodErrorPixels{-1.f}; // Screen-space error budget override for the cluster LOD cut. Negative leaves the viewport setting untouched.
     uint8_t NormalOverlays{0}; // Bitmask of Element, for the normal indicator overlays.
     bool BoundingBoxes{false}, TetWireframe{false};
 };
@@ -795,6 +797,9 @@ CaptureDriver BeginCaptureSession(entt::registry &r, entt::entity viewport, cons
     if (driver.Presenting() && capture.BenchFrames == 0) Perform(r, viewport, action::timeline::EnterPresentation{});
     // Presentation disables overlays unless --overlays restores them.
     if (capture.Overlays) Perform(r, viewport, action::UpdateOf<&ViewportDisplay::ShowOverlays>(viewport, true));
+    if (capture.LodErrorPixels >= 0.f) {
+        Perform(r, viewport, action::UpdateOf<&ViewportDisplay::LodErrorPixels>(viewport, capture.LodErrorPixels));
+    }
     r.ctx().get<FrameState>().FixedFrameStep = driver.FixedStep;
     // Force motion blur on for the whole recording run, leaving still-screenshot renders and audio-only recordings, whose frames nothing reads, alone.
     r.ctx().get<FrameState>().Capturing = driver.RecordingMode() && !driver.AudioOnly();
@@ -1359,7 +1364,7 @@ void RunHeadlessQueue(const fs::path &spool, bool quiet, const CaptureRequest &h
             }
             const bool empty = job->SceneArg == "--empty";
             const char *initial_file = !empty && !job->SceneArg.empty() ? job->SceneArg.c_str() : nullptr;
-            RunHeadlessScene(r, viewport, initial_file, empty, CaptureRequest{.RenderBasename = job->OutBasename, .Overlays = harness.Overlays, .EditMode = harness.EditMode, .SelectAll = harness.SelectAll});
+            RunHeadlessScene(r, viewport, initial_file, empty, CaptureRequest{.RenderBasename = job->OutBasename, .Overlays = harness.Overlays, .EditMode = harness.EditMode, .SelectAll = harness.SelectAll, .LodErrorPixels = harness.LodErrorPixels});
             // Reset for the next job, finalizing any in-progress recording.
             QuiesceScene(r, viewport);
             ClearScene(r, viewport);
@@ -1437,6 +1442,8 @@ int main(int argc, char **argv) {
                 std::println(stderr, "Unknown edit element '{}'.", mode);
                 return 1;
             }
+        } else if (a == "--lod-error" && std::next(it) != args.end()) {
+            capture.LodErrorPixels = std::stof(std::string{*++it});
         } else if (a == "--select-all") capture.SelectAll = true;
         else if (a == "--display" && std::next(it) != args.end()) {
             const std::string_view names{*++it};

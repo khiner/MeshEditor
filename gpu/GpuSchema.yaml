@@ -226,6 +226,9 @@ enums:
         value: 1u
       - name: ElementSelection
         value: 2u
+      # The instance renders only clusters with no refining group, so edits and deforms see exact source elements.
+      - name: LodPinFinest
+        value: 4u
   - name: MeshPrimitiveTopology
     type: u32
     values:
@@ -236,7 +239,7 @@ enums:
       - name: Point
         value: 2
   # Deterministic compaction routes. Material visibility separates fixed-function winding and
-  # discard-capable coverage while preserving the existing forward and silhouette route numbers.
+  # discard-capable coverage.
   - name: MeshletRoute
     type: u32
     values:
@@ -246,18 +249,16 @@ enums:
         value: 1
       - name: Transmission
         value: 2
-      - name: Silhouette
-        value: 3
       - name: Phase2Candidate
-        value: 4
+        value: 3
       - name: OpaqueCullFront
-        value: 5
+        value: 4
       - name: OpaqueDoubleSided
-        value: 6
+        value: 5
       - name: Coverage
-        value: 7
+        value: 6
       - name: Count
-        value: 8
+        value: 7
   # Bit layout of the meshlet-local geometry streams.
   # A meshlet vertex packs its flat-only bit over the representative corner index.
   # A local triangle byte packs its all-flat bit over the first local vertex index.
@@ -453,6 +454,15 @@ structs:
         type: u32
       - name: Primitive
         type: u32
+      # LOD identity: the group this cluster was emitted in, and the finer group it was simplified
+      # from. A cluster renders when its own group's error is over threshold and its refining
+      # group's error is at or under it. RefinedGroup is InvalidOffset for original geometry.
+      - name: GroupIndex
+        type: u32
+        default: InvalidOffset
+      - name: RefinedGroup
+        type: u32
+        default: InvalidOffset
       # The meshopt cone follows geometric winding. It is exact for the material shader only when
       # every triangle uses its derived flat face normal, so mixed meshlets store cutoff 127,
       # which never culls.
@@ -475,6 +485,49 @@ structs:
       - name: MeshletOffset
         type: u32
       - name: MeshletCount
+        type: u32
+      # The primitive's meshlet run places original-geometry clusters first, so a pinned instance
+      # draws exactly the first Level0Count records.
+      - name: Level0Count
+        type: u32
+      # Where the cull's traversal starts: the span tree over the whole run, and the leaf covering
+      # the original-geometry prefix a pinned instance draws.
+      - name: LodRootNode
+        type: u32
+        default: InvalidOffset
+      - name: LodFinestNode
+        type: u32
+        default: InvalidOffset
+  # One cluster group's conservative bounds and accumulated simplification error in mesh space.
+  # Group spheres contain their member cluster spheres, and error never decreases coarser-ward,
+  # which is what makes the projected-error cut crack-free.
+  - name: ClusterGroup
+    fields:
+      - name: Center
+        type: vec3
+      - name: Radius
+        type: float
+      - name: Error
+        type: float
+  # One node of a primitive's cluster span tree, covering a contiguous run of its meshlet records.
+  # Bounds contain the run's cluster and group spheres, and Error is the run's worst group error,
+  # so a node whose projected error clears the budget covers no cluster the cut selects.
+  # A leaf carries the run it emits and an internal node carries its child run.
+  - name: LodNode
+    fields:
+      - name: Center
+        type: vec3
+      - name: Radius
+        type: float
+      - name: Error
+        type: float
+      - name: FirstMeshlet
+        type: u32
+      - name: MeshletCount
+        type: u32
+      - name: ChildOffset
+        type: u32
+      - name: ChildCount
         type: u32
   - name: InstanceRecord
     fields:
@@ -543,14 +596,6 @@ structs:
         type: u32
       - name: WorkOffset
         type: u32
-  - name: MeshletWorkBlockState
-    fields:
-      - name: RangeCount
-        type: u32
-      - name: MeshletCount
-        type: u32
-      - name: Phase2RangeCount
-        type: u32
   - name: MeshletWorkState
     fields:
       - name: RangeCount
@@ -561,10 +606,34 @@ structs:
         type: u32
       - name: Phase2RangeCount
         type: u32
+  # One entry of the traversal frontier: a work instance and the span node it is visiting.
+  - name: LodFrontierEntry
+    fields:
+      - name: Instance
+        type: u32
+      - name: Node
+        type: u32
+  # A traversal level's frontier size and the block count its dispatch covers.
+  - name: LodFrontierState
+    fields:
+      - name: NodeCount
+        type: u32
+      - name: BlockCount
+        type: u32
+  # One traversal block's surviving child nodes, the meshlet records their leaves cover, and the
+  # whole-instance ranges the seed level deferred to phase 2.
+  - name: LodFrontierBlockState
+    fields:
+      - name: NodeCount
+        type: u32
+      - name: MeshletCount
+        type: u32
+      - name: Phase2RangeCount
+        type: u32
   - name: MeshletCullBlockState
     fields:
       - name: Routes
-        type: u32[8]
+        type: u32[7]
   - name: MeshletBlendBlockState
     fields:
       - name: Buckets
@@ -580,9 +649,9 @@ structs:
   - name: MeshletRouteState
     fields:
       - name: Counts
-        type: u32[8]
+        type: u32[7]
       - name: Offsets
-        type: u32[8]
+        type: u32[7]
       - name: BlendOffsets
         type: u32[256]
   # One CSR table a vertex-adjacency dispatch builds, over one mesh.
@@ -806,6 +875,9 @@ structs:
         type: float
       - name: ViewportSize
         type: vec2
+      # Screen-space error budget for the cluster LOD cut, in pixels. Zero renders original geometry alone.
+      - name: LodErrorPixels
+        type: float
       - name: CornerTangentSlot
         type: u32
       - name: CornerColorSlot
@@ -1368,7 +1440,27 @@ structs:
         type: u32
       - name: WorkBlockSlot
         type: u32
-      - name: WorkBlockStateSlot
+      # The traversal's node arena, ping-pong frontiers, per-level sizes and per-block prefixes.
+      - name: LodNodeSlot
+        type: u32
+      - name: LodFrontierSlot
+        type: u32
+      - name: LodFrontierAltSlot
+        type: u32
+      - name: LodFrontierStateSlot
+        type: u32
+      - name: LodFrontierBlockStateSlot
+        type: u32
+      - name: LodExpandArgsSlot
+        type: u32
+      # Which of the two frontier buffers and states the level reads.
+      - name: LodFrontierIndex
+        type: u32
+      # The seed level derives its frontier from the instance ids instead of reading one.
+      - name: LodSeedLevel
+        type: u32
+      # The last level emits meshlet work ranges instead of child nodes.
+      - name: LodFinalLevel
         type: u32
       - name: WorkStateSlot
         type: u32
@@ -1391,6 +1483,9 @@ structs:
         type: u32
       - name: MeshletSlot
         type: u32
+      - name: ClusterGroupSlot
+        type: u32
+        default: InvalidSlot
       - name: BoundsSlot
         type: u32
       - name: ModelSlot
@@ -1408,8 +1503,6 @@ structs:
       - name: RouteMode
         type: u32
       - name: RequiredInstanceFlags
-        type: u32
-      - name: ExtraInstanceFlags
         type: u32
       - name: PyramidSamplerSlot
         type: u32
@@ -1434,6 +1527,10 @@ structs:
         type: u32
         default: InvalidSlot
       - name: Phase2RangeCullArgsSlot
+        type: u32
+        default: InvalidSlot
+      # Coarse clusters the cut selected this pass, accumulated across the classification's blocks.
+      - name: CoarseCountSlot
         type: u32
         default: InvalidSlot
       # Per-32-candidate survivor counts, prefixed into deterministic emission offsets.

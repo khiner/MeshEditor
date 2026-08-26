@@ -1,14 +1,18 @@
 #pragma once
 
 #include "gpu/AABB.h"
+#include "gpu/ClusterGroup.h"
 #include "gpu/InstanceRecord.h"
+#include "gpu/LodFrontierBlockState.h"
+#include "gpu/LodFrontierEntry.h"
+#include "gpu/LodFrontierState.h"
+#include "gpu/LodNode.h"
 #include "gpu/MeshDispatchArgs.h"
 #include "gpu/MeshletBlendBlockState.h"
 #include "gpu/MeshletCullBlockState.h"
 #include "gpu/MeshletRecord.h"
 #include "gpu/MeshletRoute.h"
 #include "gpu/MeshletRouteState.h"
-#include "gpu/MeshletWorkBlockState.h"
 #include "gpu/MeshletWorkRange.h"
 #include "gpu/MeshletWorkState.h"
 #include "gpu/PBRMaterial.h"
@@ -24,9 +28,12 @@
 #include "gpu/WorkspaceLights.h"
 #include "metal/BufferArena.h"
 #include "metal/Image.h"
+#include "render/ClusterLod.h"
 #include "render/MeshBuffers.h"
 
 #include <algorithm>
+#include <array>
+#include <bit>
 
 // Per-instance GPU data behind one RangeAllocator, so every buffer shares the same instance offsets.
 struct InstanceArena {
@@ -124,14 +131,19 @@ struct GpuBuffers {
           MeshletTriangleIds{Ctx, SlotType::Buffer},
           MeshletVertexCorners{Ctx, SlotType::Buffer},
           MeshletLocalTriangles{Ctx, SlotType::Buffer},
+          ClusterGroups{Ctx, SlotType::Buffer},
+          LodNodes{Ctx, SlotType::Buffer},
           Primitives{Ctx, SlotType::Buffer},
           GpuInstanceSlots{Ctx, SlotType::Buffer},
           Instances{Ctx},
           MeshletWorkRanges{Ctx, 0, SlotType::Buffer},
           MeshletWorkBlocks{Ctx, 0, SlotType::Buffer},
-          MeshletWorkBlockStates{Ctx, 0, SlotType::Buffer},
           MeshletWorkState{Ctx, sizeof(::MeshletWorkState), SlotType::Buffer},
           MeshletWorkDispatchArgs{Ctx, sizeof(MeshDispatchArgs), SlotType::Buffer},
+          LodFrontiers{{mtl::Buffer{Ctx, 0, SlotType::Buffer}, mtl::Buffer{Ctx, 0, SlotType::Buffer}}},
+          LodFrontierStates{Ctx, 2 * sizeof(::LodFrontierState), SlotType::Buffer},
+          LodFrontierBlockStates{Ctx, 0, SlotType::Buffer},
+          LodExpandArgs{Ctx, 2 * sizeof(MeshDispatchArgs), SlotType::Buffer},
           VisibleMeshlets{Ctx, 0, SlotType::Buffer},
           MeshletClassifications{Ctx, 0, SlotType::Buffer},
           MeshletCullBlocks{Ctx, 0, SlotType::Buffer},
@@ -145,6 +157,7 @@ struct GpuBuffers {
           MeshletPhase2RangeCandidates{Ctx, 0, SlotType::Buffer},
           MeshletPhase2RangeCullArgs{Ctx, sizeof(MeshDispatchArgs), SlotType::Buffer},
           MeshletPhase2CullBlockCounts{Ctx, 0, SlotType::Buffer},
+          MeshletCoarseCount{Ctx, sizeof(uint32_t), SlotType::Buffer},
           Lights{Ctx, sizeof(PunctualLight), SlotType::LightBuffer},
           Materials{Ctx, sizeof(PBRMaterial), SlotType::MaterialBuffer},
           SceneViewUBO{Ctx, ViewUboStride() * (MaxBlurSteps + 1)},
@@ -199,6 +212,14 @@ struct GpuBuffers {
     }
 
     void ReleaseMeshlets(MeshBuffers &buffers) {
+        ClusterGroups.Release(buffers.ClusterGroups);
+        buffers.ClusterGroups = {};
+        LodNodes.Release(buffers.LodNodes);
+        buffers.LodNodes = {};
+        MeshletVertexCorners.Release(buffers.CoarseVertices);
+        buffers.CoarseVertices = {};
+        MeshletLocalTriangles.Release(buffers.CoarseLocalTriangles);
+        buffers.CoarseLocalTriangles = {};
         Meshlets.Release(buffers.Meshlets);
         buffers.Meshlets = {};
         MeshletTriangleIds.Release(buffers.MeshletTriangles);
@@ -241,10 +262,14 @@ struct GpuBuffers {
         MeshletTriangleIds.Reset();
         MeshletVertexCorners.Reset();
         MeshletLocalTriangles.Reset();
+        ClusterGroups.Reset();
+        LodNodes.Reset();
         Primitives.Reset();
         GpuInstanceSlots.Reset();
         MeshletRangeCount = 0;
         MeshletInstanceCount = 0;
+        MeshletLodDepth = 0;
+        MeshletFlagWorkByBit = {};
         MeshletTopologyMask = 0;
         DrewElementIndices = false;
         // Occlusion feedback state, so the next scene's phase-1/phase-2 split replays identically
@@ -264,20 +289,42 @@ struct GpuBuffers {
     BufferArena<uint32_t> MeshletTriangleIds;
     BufferArena<uint32_t> MeshletVertexCorners;
     BufferArena<uint8_t> MeshletLocalTriangles;
+    // The cluster LOD DAG: one group per simplification step, and the selection forest over them.
+    BufferArena<ClusterGroup> ClusterGroups;
+    BufferArena<LodNode> LodNodes;
     BufferArena<PrimitiveRecord> Primitives;
     BufferArena<uint32_t> GpuInstanceSlots;
     BufferArena<mat4> ArmatureDeformBuffer{Ctx, SlotType::ArmatureDeformBuffer};
     BufferArena<float> MorphWeightBuffer{Ctx, SlotType::MorphWeightBuffer};
     InstanceArena Instances;
 
-    mtl::Buffer MeshletWorkRanges, MeshletWorkBlocks, MeshletWorkBlockStates, MeshletWorkState, MeshletWorkDispatchArgs;
+    mtl::Buffer MeshletWorkRanges, MeshletWorkBlocks, MeshletWorkState, MeshletWorkDispatchArgs;
+    // The span-tree traversal: two frontiers it alternates between, each level's size and per-block
+    // prefixes, and the indirect args covering the level a dispatch reads.
+    std::array<mtl::Buffer, 2> LodFrontiers;
+    mtl::Buffer LodFrontierStates, LodFrontierBlockStates, LodExpandArgs;
     mtl::Buffer VisibleMeshlets, MeshletClassifications, MeshletCullBlocks, MeshletBlendBlocks, MeshletRoutes, MeshletDispatchArgs;
     mtl::Buffer MeshletPhase2Visible, MeshletPhase2Routes, MeshletPhase2DispatchArgs, MeshletPhase2CullArgs;
     mtl::Buffer MeshletPhase2RangeCandidates, MeshletPhase2RangeCullArgs, MeshletPhase2CullBlockCounts;
+    // Coarse clusters the last cull's cut selected, which the classification accumulates.
+    mtl::Buffer MeshletCoarseCount;
     uint64_t MeshletRangeCount{0};
     uint64_t MeshletInstanceCount{0};
+    // The deepest span tree any resident mesh landed, which sets how many levels a traversal runs.
+    uint32_t MeshletLodDepth{0};
     uint32_t MeshletTopologyMask{0};
     uint32_t MeshletDispatchChunkCount{0};
+
+    // What a cull restricted to one instance flag covers, so sizing its buffers costs no scene walk.
+    // The unflagged totals above are the same quantities over every instance.
+    struct MeshletFlagWork {
+        uint64_t Ranges{0}, Meshlets{0};
+    };
+    // One entry per MeshletInstanceFlag bit, indexed by that bit's position.
+    std::array<MeshletFlagWork, 3> MeshletFlagWorkByBit{};
+
+    MeshletFlagWork &FlagWork(uint32_t flag) { return MeshletFlagWorkByBit[std::countr_zero(flag)]; }
+    const MeshletFlagWork &FlagWork(uint32_t flag) const { return MeshletFlagWorkByBit[std::countr_zero(flag)]; }
 
     static constexpr uint32_t MeshletDispatchChunkSize{65'535};
     static constexpr uint32_t MeshletCullBlockSize{1024};
@@ -293,11 +340,17 @@ struct GpuBuffers {
         VisibleMeshlets.Reserve(bytes);
         VisibleMeshlets.UsedSize = bytes;
         const auto instance_count = GpuInstanceSlots.Buffer.Count<uint32_t>();
-        const auto work_block_count = (instance_count + MeshletCullBlockSize - 1u) / MeshletCullBlockSize;
         const auto block_count = (work_meshlet_count + MeshletCullBlockSize - 1u) / MeshletCullBlockSize;
-        MeshletWorkRanges.SetCount<MeshletWorkRange>(work_range_count);
+        // A leaf covers ClusterLodSpanLeafRecords records of one primitive, and a level's frontier holds at most
+        // one entry per node of every instance's trees. Doubling the leaf count covers the levels
+        // above them, and the per-primitive term covers each tree's partial leaf, finest leaf and spine.
+        const auto node_count = 2u * (work_meshlet_count / ClusterLodSpanLeafRecords) + 8u * work_range_count + 64u;
+        const auto frontier_count = std::max<uint64_t>(node_count, instance_count);
+        const auto frontier_block_count = (frontier_count + MeshletCullBlockSize - 1u) / MeshletCullBlockSize;
+        MeshletWorkRanges.SetCount<MeshletWorkRange>(node_count);
         MeshletWorkBlocks.SetCount<uint32_t>(block_count);
-        MeshletWorkBlockStates.SetCount<MeshletWorkBlockState>(work_block_count);
+        for (auto &frontier : LodFrontiers) frontier.SetCount<LodFrontierEntry>(frontier_count);
+        LodFrontierBlockStates.SetCount<LodFrontierBlockState>(frontier_block_count);
         MeshletClassifications.SetCount<uint16_t>(work_meshlet_count);
         MeshletCullBlocks.SetCount<MeshletCullBlockState>(block_count);
         if (sort_blend) MeshletBlendBlocks.SetCount<MeshletBlendBlockState>(block_count);

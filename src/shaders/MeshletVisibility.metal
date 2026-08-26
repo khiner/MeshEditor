@@ -13,10 +13,11 @@ inline float2 VisibilityUvTransform(float2 uv, float2 offset, float2 scale, floa
 
 inline float4 VisibilitySampleTexture(
     const thread Scene &scene, const thread ResolvedVisibility &resolved,
-    const thread VisibilityCoverageValues &coverage, TextureInfo texture
+    const thread VisibilityCoverageValues &coverage, TextureInfo texture,
+    VisibilityShadingPushConstants pc
 ) {
     const VisibilityTextureCoordinates coordinates = DecodeVisibilityTextureCoordinates(
-        scene, resolved, coverage, texture.TexCoord
+        scene, resolved, coverage, texture.TexCoord, pc
     );
     const float2 transformed = VisibilityUvTransform(
         coordinates.Value, float2(texture.UvOffset), float2(texture.UvScale), texture.UvRotation
@@ -73,14 +74,14 @@ fragment uint MeshletVisibilityPrimitiveFragment(
     const bool point_coverage = topology == MeshPrimitiveTopology_Point;
     if (!alpha_mask && !transmission_mask && !point_coverage) return primitive_id;
 
-    const uint logical_element = topology == MeshPrimitiveTopology_Triangle ?
-        resolved.LocalTriangle : resolved.LocalTriangle / 2u;
-    resolved.Triangle = BindlessBuffer(uint, bindless.Buffer, pc.MeshletTriangleSlot)[
-        resolved.Meshlet.TriangleOffset + logical_element
-    ];
-    const VisibilityCoverageValues coverage = DecodeVisibilityCoverage(
-        scene, resolved, position.xy, view, pc.MeshletVertexSlot
-    );
+    if (!MeshletCoarse(resolved.Meshlet)) {
+        const uint logical_element = topology == MeshPrimitiveTopology_Triangle ?
+            resolved.LocalTriangle : resolved.LocalTriangle / 2u;
+        resolved.Triangle = BindlessBuffer(uint, bindless.Buffer, pc.MeshletTriangleSlot)[
+            resolved.Meshlet.TriangleOffset + logical_element
+        ];
+    }
+    const VisibilityCoverageValues coverage = DecodeVisibilityCoverage(scene, resolved, position.xy, view, pc);
     if (topology != MeshPrimitiveTopology_Triangle && material.DoubleSided == 0u &&
         !IsFrontFacing(scene, coverage.WorldNormal, coverage.WorldPosition)) discard_fragment();
     if (topology == MeshPrimitiveTopology_Point &&
@@ -88,14 +89,14 @@ fragment uint MeshletVisibilityPrimitiveFragment(
     if (alpha_mask) {
         float4 base_color = float4(material.BaseColorFactor) * coverage.VertexColor;
         if (material.BaseColorTexture.Slot != INVALID_SLOT) {
-            base_color *= VisibilitySampleTexture(scene, resolved, coverage, material.BaseColorTexture);
+            base_color *= VisibilitySampleTexture(scene, resolved, coverage, material.BaseColorTexture, pc);
         }
         if (base_color.a < material.AlphaCutoff) discard_fragment();
     }
     if (transmission_mask) {
         float transmission = material.Transmission.Factor;
         if (material.Transmission.Texture.Slot != INVALID_SLOT) {
-            transmission *= VisibilitySampleTexture(scene, resolved, coverage, material.Transmission.Texture).r;
+            transmission *= VisibilitySampleTexture(scene, resolved, coverage, material.Transmission.Texture, pc).r;
         }
         if (transmission > 0.0f) discard_fragment();
     }

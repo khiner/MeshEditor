@@ -26,8 +26,7 @@ inline float3 PoseWorldPos(const thread Scene &scene, DrawData draw, Vertex vert
 // Rotate the derived corner normal by the stored (polar, azimuth) offset.
 // The corner frame mirrors MeshStore::ComputeCornerFrame and must stay in lockstep with it.
 // Its axes: the derived normal, the first non-degenerate outgoing edge projected off it, and their cross.
-// A fixed axis substitutes for a zero normal, and a fixed perpendicular when both edges are degenerate.
-// The frame rebuilds from current local positions, so authored offsets ride every deformation.
+// The frame rebuilds from current local positions, so authored offsets follow every deformation.
 inline float3 ApplyNormalOffset(const thread Scene &scene, DrawData draw, uint vertex_id, float3 normal, float2 offset) {
     const float3 n = dot(normal, normal) > 0.0f ? normal : float3(0, 0, 1);
     const uint tri = (vertex_id / 3u) * 3u;
@@ -59,12 +58,13 @@ inline float3 ApplyNormalOffset(const thread Scene &scene, DrawData draw, uint v
 }
 
 // Corner shading normal for a face draw, composed from the corner classification.
-// Vertex corners read the smooth vertex normal, Face the face normal, and Seam the sector normal.
-// Each reads the posed store when derived this frame, else the base store.
-// Authored corner-normal offsets apply wherever they are non-identity.
-// Authored morph shading adds the targets' weighted normal deltas at the end.
+// Each class reads the posed store when derived this frame, else the base store.
 // A uniform mesh stores no class buffer, so the offset value itself carries the class.
-inline float3 CornerNormal(const thread Scene &scene, DrawData draw, uint vertex_id, uint idx, uint face_id) {
+// `coarse_normal` replaces the source face normal on a coarse cluster.
+inline float3 CornerNormal(
+    const thread Scene &scene, DrawData draw, uint vertex_id, uint idx, uint face_id,
+    bool coarse, float3 coarse_normal
+) {
     const uint value = draw.CornerClassOffset == INVALID_OFFSET ? CornerClass_Vertex << CornerClassEncoding_TagShift :
         draw.CornerClassOffset == CornerClassEncoding_UniformFaceOffset ? CornerClass_Face << CornerClassEncoding_TagShift :
                                                                           scene.CornerClasses(scene.View.CornerClassSlot)[draw.CornerClassOffset + vertex_id];
@@ -73,7 +73,8 @@ inline float3 CornerNormal(const thread Scene &scene, DrawData draw, uint vertex
     if (tag == CornerClass_Vertex) {
         normal = scene.GetVertexNormal(draw, idx);
     } else if (tag == CornerClass_Face) {
-        normal = draw.PosedFaceNormalOffset != INVALID_OFFSET ?
+        normal = coarse ? coarse_normal :
+            draw.PosedFaceNormalOffset != INVALID_OFFSET ?
             float3(scene.PosedFaceNormals(scene.View.PosedFaceNormalSlot)[draw.PosedFaceNormalOffset + face_id - 1u]) :
             float3(scene.BaseFaceNormals(scene.View.BaseFaceNormalSlot)[draw.BaseFaceNormalOffset + face_id - 1u]);
     } else {
@@ -94,7 +95,6 @@ inline float3 CornerNormal(const thread Scene &scene, DrawData draw, uint vertex
     }
     // glTF morphed normal: normalize(N0 + sum(w_t * NormalDelta_t)).
     // The pose pre-pass accumulates the per-vertex delta sum.
-    // Authored-morph draws carry no posed normal offsets, so the branches above composed the rest normals.
     if (draw.MorphShadingAuthored != 0u) {
         normal = NormalizeOrZero(normal + float3(scene.PosedMorphNormalDeltas(scene.View.PosedMorphNormalDeltaSlot)[draw.PosedPositionOffset + idx]));
     }
@@ -103,7 +103,8 @@ inline float3 CornerNormal(const thread Scene &scene, DrawData draw, uint vertex
 
 inline MeshVaryings TransformVertex(
     const thread Scene &scene, DrawData draw, uint vertex_id, uint vertex_index, uint idx,
-    bool face_attributes = true, bool shading_normal = true
+    bool face_attributes = true, bool shading_normal = true,
+    bool coarse = false, float3 coarse_normal = float3(0.0f)
 ) {
     MeshVaryings out;
     device const uint *indices = scene.Indices(draw.IndexSlotOffset.Slot);
@@ -116,13 +117,12 @@ inline MeshVaryings TransformVertex(
     uint face_id = 0u;
     out.MaterialIndex = 0u;
     const float3 local_pos = scene.GetLocalPosition(draw, idx);
-    // Face draws compose the corner shading normal.
-    // Point and line draws shade from the vertex normal.
     const bool is_face_draw = draw.ObjectIdSlot != INVALID_SLOT;
     float3 normal = is_face_draw ? float3(0) : scene.GetVertexNormal(draw, idx);
     if (is_face_draw && (face_attributes || shading_normal)) {
-        face_id = scene.ObjectIds(draw.ObjectIdSlot)[draw.FaceIdOffset + vertex_index / 3u];
-        if (shading_normal) normal = CornerNormal(scene, draw, vertex_id, idx, face_id);
+        // A coarse cluster's corners come from all over the primitive, so none of them names its face.
+        if (!coarse) face_id = scene.ObjectIds(draw.ObjectIdSlot)[draw.FaceIdOffset + vertex_index / 3u];
+        if (shading_normal) normal = CornerNormal(scene, draw, vertex_id, idx, face_id, coarse, coarse_normal);
         if (face_attributes && draw.ElementStateSlotOffset.Slot != INVALID_SLOT && face_id != 0u) {
             element_state = uint(scene.ElementStates(draw.ElementStateSlotOffset.Slot)[draw.ElementStateSlotOffset.Offset + face_id - 1u]);
         }

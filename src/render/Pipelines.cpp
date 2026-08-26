@@ -423,9 +423,9 @@ Pipelines::Pipelines(const mtl::Context &ctx, mtl::LibraryCache &libraries)
       BoundsReduce{libraries, {"BoundsReduce.metal", "BoundsReduceKernel"}},
       BoundsCombine{libraries, {"BoundsCombine.metal", "BoundsCombineKernel"}},
       WireRaster{libraries, {"WireRaster.metal", "WireRasterKernel"}},
-      MeshletWorkBlockCount{libraries, {"MeshletCull.metal", "MeshletWorkBlockCount"}},
-      MeshletWorkPrefix{libraries, {"MeshletCull.metal", "MeshletWorkPrefix"}},
-      MeshletWorkEmit{libraries, {"MeshletCull.metal", "MeshletWorkEmit"}},
+      LodFrontierCount{libraries, {"MeshletCull.metal", "LodFrontierCount"}},
+      LodFrontierPrefix{libraries, {"MeshletCull.metal", "LodFrontierPrefix"}},
+      LodFrontierEmit{libraries, {"MeshletCull.metal", "LodFrontierEmit"}},
       MeshletCullBlockCount{libraries, {"MeshletCull.metal", "MeshletCullBlockCount"}},
       MeshletCullPrefix{libraries, {"MeshletCull.metal", "MeshletCullPrefix"}},
       MeshletCullEmit{libraries, {"MeshletCull.metal", "MeshletCullEmit"}},
@@ -481,7 +481,7 @@ void Pipelines::CompileShaders() {
     for (auto *p : {&SelectionFragment.ElementVertex, &SelectionFragment.ElementVertexBitsetBox, &SelectionFragment.ElementVertexXRay, &SelectionFragment.ElementVertexXRayBitsetBox, &SelectionFragment.ElementEdge, &SelectionFragment.ElementEdgeBitsetBox, &SelectionFragment.ElementEdgeXRay, &SelectionFragment.ElementEdgeXRayBitsetBox, &SelectionFragment.ElementEdgeXRayPointsBitsetBox, &SelectionFragment.ElementFaceXRayPointsBitsetBox}) {
         p->Compile(Libraries);
     }
-    for (auto *compute : {&UpdateSelectionState, &PosePrepass, &PosedMeshletBounds, &VertexNormalDerive, &BoundsReduce, &BoundsCombine, &WireRaster, &MeshletWorkBlockCount, &MeshletWorkPrefix, &MeshletWorkEmit, &MeshletCullBlockCount, &MeshletCullPrefix, &MeshletCullEmit, &MeshletPhase2Cull, &MeshletPhase2RangeCull, &MeshletPhase2Prefix, &DepthPyramidReduce, &MotionBlurTilesFlatten, &MotionBlurTilesDilate, &IblPrefilter.EquirectToCubemap, &IblPrefilter.DiffuseIrradiance, &IblPrefilter.SpecularPrefilter, &VertexAdjacency.Zero, &VertexAdjacency.Count, &VertexAdjacency.BlockSum, &VertexAdjacency.BlockPrefix, &VertexAdjacency.Offsets, &VertexAdjacency.Scatter, &VertexAdjacency.Sort, &VertexWeld.TableInit, &VertexWeld.Insert, &VertexWeld.MarkReps, &VertexWeld.BlockSum, &VertexWeld.BlockPrefix, &VertexWeld.Scan, &VertexWeld.Emit, &VertexWeld.Compact, &VertexWeld.WriteBack, &VertexWeld.RemapCorners, &MeshConnectivity.Zero, &MeshConnectivity.Count, &MeshConnectivity.BlockSum, &MeshConnectivity.BlockPrefix, &MeshConnectivity.Offsets, &MeshConnectivity.Scatter, &MeshConnectivity.Pair, &MeshConnectivity.Bits, &MeshConnectivity.WordBlockSum, &MeshConnectivity.WordBlockPrefix, &MeshConnectivity.Ranks, &MeshConnectivity.Samples}) {
+    for (auto *compute : {&UpdateSelectionState, &PosePrepass, &PosedMeshletBounds, &VertexNormalDerive, &BoundsReduce, &BoundsCombine, &WireRaster, &LodFrontierCount, &LodFrontierPrefix, &LodFrontierEmit, &MeshletCullBlockCount, &MeshletCullPrefix, &MeshletCullEmit, &MeshletPhase2Cull, &MeshletPhase2RangeCull, &MeshletPhase2Prefix, &DepthPyramidReduce, &MotionBlurTilesFlatten, &MotionBlurTilesDilate, &IblPrefilter.EquirectToCubemap, &IblPrefilter.DiffuseIrradiance, &IblPrefilter.SpecularPrefilter, &VertexAdjacency.Zero, &VertexAdjacency.Count, &VertexAdjacency.BlockSum, &VertexAdjacency.BlockPrefix, &VertexAdjacency.Offsets, &VertexAdjacency.Scatter, &VertexAdjacency.Sort, &VertexWeld.TableInit, &VertexWeld.Insert, &VertexWeld.MarkReps, &VertexWeld.BlockSum, &VertexWeld.BlockPrefix, &VertexWeld.Scan, &VertexWeld.Emit, &VertexWeld.Compact, &VertexWeld.WriteBack, &VertexWeld.RemapCorners, &MeshConnectivity.Zero, &MeshConnectivity.Count, &MeshConnectivity.BlockSum, &MeshConnectivity.BlockPrefix, &MeshConnectivity.Offsets, &MeshConnectivity.Scatter, &MeshConnectivity.Pair, &MeshConnectivity.Bits, &MeshConnectivity.WordBlockSum, &MeshConnectivity.WordBlockPrefix, &MeshConnectivity.Ranks, &MeshConnectivity.Samples}) {
         compute->Compile(Libraries);
     }
 }

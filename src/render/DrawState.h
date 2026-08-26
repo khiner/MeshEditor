@@ -50,11 +50,11 @@ struct PosedRanges {
     uint32_t PositionBase{InvalidOffset};
     uint32_t VertexCount{0};
     uint32_t MeshletBoundsBase{InvalidOffset};
-    uint32_t MeshletCount{0};
+    uint32_t Level0Count{0}; // Original clusters across the mesh's primitives, which is what posed bounds cover.
     std::optional<NormalRanges> Normals{}; // Instance 0's offsets.
 
     uint32_t PositionOffset(uint32_t i) const { return PositionBase + i * VertexCount; }
-    uint32_t MeshletBoundsOffset(uint32_t i) const { return MeshletBoundsBase + i * MeshletCount; }
+    uint32_t MeshletBoundsOffset(uint32_t i) const { return MeshletBoundsBase + i * Level0Count; }
     std::optional<NormalRanges> NormalsAt(uint32_t i) const {
         if (!Normals) return std::nullopt;
         return NormalRanges{

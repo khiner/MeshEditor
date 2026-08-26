@@ -65,6 +65,7 @@
 
 #include <iostream>
 #include <numeric>
+#include <print>
 
 using std::ranges::to;
 using std::views::iota;
@@ -340,9 +341,9 @@ void RepointMeshInstances(entt::registry &r, std::span<const entt::entity> mesh_
     }
 }
 
-// Capture every mesh's inputs, clusterize them, and place the results, so the load or edit that
-// asked for them returns with every mesh drawable. The meshes commit in the order they were given,
-// which is the order that fixes the scene's arena layout and instance slots.
+// Capture every mesh's inputs, clusterize them, build their cluster LOD DAGs, and place the results,
+// so the load or edit that asked for them returns with every mesh drawable. The meshes commit in the
+// order they were given, which is the order that fixes the scene's arena layout and instance slots.
 void BuildMeshletsNow(entt::registry &r, std::span<const entt::entity> mesh_entities) {
     if (mesh_entities.empty()) return;
     const profile::CpuScope scope{"BuildMeshlets"};
@@ -357,9 +358,34 @@ void BuildMeshletsNow(entt::registry &r, std::span<const entt::entity> mesh_enti
     }
     // Every mesh clusterizes on its own captured inputs, so the whole batch builds at once.
     std::vector<MeshletBuild> builds(count);
-    ParallelFor(count, [&](uint32_t i) { builds[i] = BuildMeshlets(inputs[i]); });
-    for (uint32_t i = 0; i < count; ++i) CommitMeshlets(buffers, r.get<MeshBuffers>(mesh_entities[i]), builds[i]);
+    std::vector<ClusterLodBuild> lods(count);
+    ParallelFor(count, [&](uint32_t i) {
+        builds[i] = BuildMeshlets(inputs[i]);
+        // The DAG reads the level-0 build's own lists alongside the same captured inputs.
+        lods[i] = BuildMeshletClusterLod(inputs[i], builds[i]);
+    });
+    for (uint32_t i = 0; i < count; ++i) {
+        auto &mb = r.get<MeshBuffers>(mesh_entities[i]);
+        CommitMeshlets(buffers, mb, builds[i]);
+        CommitClusterLod(buffers, mb, lods[i]);
+    }
     RepointMeshInstances(r, mesh_entities);
+    if (profile::Enabled) {
+        uint32_t lod_meshes = 0, lod_levels = 0, lod_clusters = 0, lod_groups = 0;
+        double lod_ms = 0;
+        for (const auto &lod : lods) {
+            if (lod.Groups.empty()) continue;
+            ++lod_meshes;
+            lod_levels = std::max(lod_levels, lod.LevelCount);
+            lod_clusters += uint32_t(lod.Clusters.size());
+            lod_groups += uint32_t(lod.Groups.size());
+            lod_ms += lod.Stats.TotalMs;
+        }
+        std::println(
+            "Cluster LOD: {} meshes, {} levels, {} coarse clusters, {} groups, {:.1f} ms of build",
+            lod_meshes, lod_levels, lod_clusters, lod_groups, lod_ms
+        );
+    }
 }
 
 // Edge and vertex index buffers feed the wireframe, the edit and excite mode overlays, and line and
@@ -1798,6 +1824,7 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
             .PendingScale = pending ? pending->Delta.S : vec3{1},
             .ScreenPixelScale = screen_pixel_scale,
             .ViewportSize = render_extent,
+            .LodErrorPixels = settings.LodErrorPixels,
             .CornerTangentSlot = meshes.GetCornerTangentSlot(),
             .CornerColorSlot = meshes.GetCornerColorSlot(),
             .CornerUvSlot = meshes.GetCornerUvSlot(),

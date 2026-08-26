@@ -27,11 +27,10 @@ enum class AnisotropicFilterLevel : uint8_t {
 // Levels are consecutive powers of two: Off->1, X2->2, ... X16->16.
 constexpr float ToMaxAnisotropy(AnisotropicFilterLevel level) { return float(1u << unsigned(level)); }
 
-// Motion blur (Material Preview/Rendered only, while playing or scrubbing). Each step renders the
-// scene once and blurs it along its own screen motion, so a single step already covers the whole
-// shutter. More steps subdivide the shutter and average the results, which pays off when motion
-// curves enough within the shutter for a straight blur to show.
-// Shutter is the time in frames between shutter open and close, centered on the frame (Blender's default).
+// Motion blur, applied in Material Preview and Rendered while playing or scrubbing.
+// Each step renders the scene once and blurs it along its own screen motion, so a single step covers the whole shutter.
+// More steps subdivide the shutter and average the results.
+// Shutter is the time in frames between shutter open and close, centered on the frame.
 struct MotionBlur {
     float Shutter{0.5f};
     uint8_t Steps{1};
@@ -45,8 +44,10 @@ struct ViewportDisplay {
     vec4 ClearColor{0.25f, 0.25f, 0.25f, 1.f};
     bool ShowGrid{true}, ShowBoundingBoxes{false}, ShowTetWireframe{false};
     bool ShowExtras{true}, ShowBones{true}, ShowOrigins{true}, ShowOutlineSelected{true};
-    bool ShowOverlays{true}; // Master toggle for all overlays
+    bool ShowOverlays{true};
     uint8_t NormalOverlays{0}; // Bitmask of Element
+    // Screen-space error budget for the cluster LOD cut, in pixels. Zero renders original geometry alone.
+    float LodErrorPixels{1.f};
     DebugChannel DebugChannel{DebugChannel::None};
     AnisotropicFilterLevel AnisotropicFilter{AnisotropicFilterLevel::X16};
     std::optional<MotionBlur> MotionBlur; // Disengaged = off.
@@ -55,7 +56,6 @@ struct ViewportDisplay {
 constexpr MotionBlur EffectiveMotionBlur(const ViewportDisplay &d) { return d.MotionBlur.value_or(MotionBlur{}); }
 constexpr uint32_t MotionBlurSteps(const ViewportDisplay &d) { return std::max(1u, uint32_t(EffectiveMotionBlur(d).Steps)); }
 
-// Scene lights/world toggles + studio env controls
 struct PBRViewportLighting {
     bool UseSceneLights, UseSceneWorld;
     float EnvIntensity, EnvRotationDegrees;
@@ -75,8 +75,6 @@ struct RenderedLighting : PBRViewportLighting {}; // defaults: both ON (scene wo
 struct StudioEnvironment {
     std::string Name;
 };
-
-// Editor display/lighting settings on the viewport entity.
 
 const PBRViewportLighting &GetActivePbrLighting(const entt::registry &, entt::entity viewport, ViewportShadingMode);
 

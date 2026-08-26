@@ -145,15 +145,25 @@ void RenderElementSelectionPass(
     auto element_batch = draw_list.BeginBatch();
     auto records = buffers.Instances.RecordBuffer.GetMutableSpan<InstanceRecord>({0, buffers.Instances.RecordBuffer.Count<InstanceRecord>()});
     for (auto &record : records) record.Flags &= ~uint32_t(MeshletInstanceFlag::ElementSelection);
+    // These marks are the whole element-selection cull's work, so its totals restart here.
+    auto &element_work = buffers.FlagWork(uint32_t(MeshletInstanceFlag::ElementSelection));
+    element_work = {};
     const bool face_point_fallback = element == Element::Face && write_bitset && xray_selection;
     for (const auto &range : ranges) {
         const auto &mesh_buffers = r.get<MeshBuffers>(range.MeshEntity);
         const auto &models = r.get<ModelsBuffer>(range.MeshEntity);
         const auto primary = primary_edit_instances.find(range.MeshEntity);
+        // Instances of one mesh carry that mesh's primitives and meshlets, and reach a cull only when it has meshlets.
+        const auto instance_work = mesh_buffers.Meshlets.Count > 0 ?
+            GpuBuffers::MeshletFlagWork{mesh_buffers.Primitives.Count, mesh_buffers.Meshlets.Count} :
+            GpuBuffers::MeshletFlagWork{};
         const auto mark_instance = [&](uint32_t slot) {
             if (slot >= records.size()) return;
-            records[slot].Flags |= uint32_t(MeshletInstanceFlag::ElementSelection);
+            // Element ids come from original geometry, so the marked instances draw it.
+            records[slot].Flags |= uint32_t(MeshletInstanceFlag::ElementSelection) | uint32_t(MeshletInstanceFlag::LodPinFinest);
             records[slot].ElementIdOffset = range.Offset;
+            element_work.Ranges += instance_work.Ranges;
+            element_work.Meshlets += instance_work.Meshlets;
         };
         if (primary != primary_edit_instances.end()) {
             mark_instance(r.get<RenderInstance>(primary->second).BufferIndex);

@@ -85,7 +85,11 @@ inline float3 VisibilityApplyNormalOffset(
     return cos(offset.x) * n + sin(offset.x) * (cos(offset.y) * ref + sin(offset.y) * cross(n, ref));
 }
 
-inline float3 VisibilityCornerNormal(const thread Scene &scene, DrawData draw, uint vertex_id, uint idx, uint face_id) {
+// `coarse_normal` replaces the source face normal on a coarse cluster.
+inline float3 VisibilityCornerNormal(
+    const thread Scene &scene, DrawData draw, uint vertex_id, uint idx, uint face_id,
+    bool coarse, float3 coarse_normal
+) {
     const uint value = draw.CornerClassOffset == INVALID_OFFSET ? CornerClass_Vertex << CornerClassEncoding_TagShift :
         draw.CornerClassOffset == CornerClassEncoding_UniformFaceOffset ? CornerClass_Face << CornerClassEncoding_TagShift :
                                                                           scene.CornerClasses(scene.View.CornerClassSlot)[draw.CornerClassOffset + vertex_id];
@@ -94,7 +98,8 @@ inline float3 VisibilityCornerNormal(const thread Scene &scene, DrawData draw, u
     if (tag == CornerClass_Vertex) {
         normal = scene.GetVertexNormal(draw, idx);
     } else if (tag == CornerClass_Face) {
-        normal = draw.PosedFaceNormalOffset != INVALID_OFFSET ?
+        normal = coarse ? coarse_normal :
+            draw.PosedFaceNormalOffset != INVALID_OFFSET ?
             float3(scene.PosedFaceNormals(scene.View.PosedFaceNormalSlot)[draw.PosedFaceNormalOffset + face_id - 1u]) :
             float3(scene.BaseFaceNormals(scene.View.BaseFaceNormalSlot)[draw.BaseFaceNormalOffset + face_id - 1u]);
     } else {
@@ -123,7 +128,7 @@ inline float3 VisibilityCornerNormal(const thread Scene &scene, DrawData draw, u
 
 inline MeshVaryings VisibilityCorner(
     const thread Scene &scene, DrawData draw, uint vertex_index, uint idx, uint face_id, bool shading_normal,
-    bool velocity_output
+    bool velocity_output, bool coarse = false, float3 coarse_normal = float3(0.0f)
 ) {
     MeshVaryings out{};
     const Vertex vert = scene.Vertices(draw.VertexSlot)[idx + draw.VertexOffset];
@@ -131,7 +136,7 @@ inline MeshVaryings VisibilityCorner(
     const Transform world = scene.Models(model_slot)[draw.FirstInstance];
     const float3 local_pos = scene.GetLocalPosition(draw, idx);
     const float3 world_pos = apply_object_pending_transform(scene, draw, trs_transform_point(world, local_pos));
-    out.WorldNormal = shading_normal ? trs_transform_normal(world, VisibilityCornerNormal(scene, draw, vertex_index, idx, face_id)) : float3(0.0f);
+    out.WorldNormal = shading_normal ? trs_transform_normal(world, VisibilityCornerNormal(scene, draw, vertex_index, idx, face_id, coarse, coarse_normal)) : float3(0.0f);
     out.WorldPosition = world_pos;
     out.Color = float4(0.8f, 0.8f, 0.8f, 1.0f);
     out.VertexColor = draw.CornerColorOffset != INVALID_OFFSET ?
@@ -163,13 +168,14 @@ inline MeshVaryings VisibilityCorner(
 }
 
 inline MeshVaryings VisibilityWorkspaceCorner(
-    const thread Scene &scene, DrawData draw, uint vertex_index, uint idx, uint face_id, bool shading_normal
+    const thread Scene &scene, DrawData draw, uint vertex_index, uint idx, uint face_id, bool shading_normal,
+    bool coarse = false, float3 coarse_normal = float3(0.0f)
 ) {
     MeshVaryings out{};
     const uint model_slot = scene.View.ModelSlotOverride != INVALID_SLOT ? scene.View.ModelSlotOverride : draw.ModelSlot;
     const Transform world = scene.Models(model_slot)[draw.FirstInstance];
     const float3 world_pos = apply_object_pending_transform(scene, draw, trs_transform_point(world, scene.GetLocalPosition(draw, idx)));
-    out.WorldNormal = shading_normal ? trs_transform_normal(world, VisibilityCornerNormal(scene, draw, vertex_index, idx, face_id)) : float3(0.0f);
+    out.WorldNormal = shading_normal ? trs_transform_normal(world, VisibilityCornerNormal(scene, draw, vertex_index, idx, face_id, coarse, coarse_normal)) : float3(0.0f);
     out.WorldPosition = world_pos;
     out.Position = scene.ViewProj() * float4(world_pos, 1.0f);
     return out;
@@ -245,7 +251,7 @@ struct VisibilityTextureCoordinates {
 
 inline VisibilityCoverageValues DecodeVisibilityCoverage(
     const thread Scene &scene, const thread ResolvedVisibility &resolved, float2 pixel,
-    constant SceneViewUBO &view, uint meshlet_vertex_slot
+    constant SceneViewUBO &view, VisibilityShadingPushConstants pc
 ) {
     float4 clip[3];
     float4 vertex_color[3];
@@ -256,12 +262,16 @@ inline VisibilityCoverageValues DecodeVisibilityCoverage(
     const bool triangle_topology = topology == MeshPrimitiveTopology_Triangle;
     const uint logical_element = resolved.LocalTriangle / 2u;
     const Transform world = MeshletWorld(scene, resolved.Draw);
+    const uint3 corner_ids = MeshletCornerIds(
+        scene.B, pc.MeshletVertexSlot, pc.MeshletLocalTriangleSlot, resolved.Meshlet, resolved.Primitive,
+        resolved.Triangle, resolved.LocalTriangle
+    );
     for (uint corner = 0u; corner < 3u; ++corner) {
         const uint quad_corner = line_quad_corner((resolved.LocalTriangle & 1u) * 3u + corner);
         const uint vertex_index = triangle_topology ?
-            (resolved.Triangle - resolved.Primitive.FirstTriangle) * 3u + corner :
+            corner_ids[corner] :
             NonTriangleVertexId(
-                scene.B, meshlet_vertex_slot, resolved.Meshlet, topology, logical_element, quad_corner
+                scene.B, pc.MeshletVertexSlot, resolved.Meshlet, topology, logical_element, quad_corner
             );
         const uint vertex_id = triangle_topology ?
             scene.Indices(resolved.Draw.IndexSlotOffset.Slot)[resolved.Draw.IndexSlotOffset.Offset + vertex_index] : vertex_index;
@@ -273,7 +283,7 @@ inline VisibilityCoverageValues DecodeVisibilityCoverage(
             world_normal[corner] = trs_transform_normal(world, scene.GetVertexNormal(resolved.Draw, vertex_id));
         }
         clip[corner] = triangle_topology ? scene.ViewProj() * float4(world_pos, 1.0f) : NonTrianglePosition(
-            scene, scene.B, meshlet_vertex_slot, resolved.Draw, resolved.Meshlet,
+            scene, scene.B, pc.MeshletVertexSlot, resolved.Draw, resolved.Meshlet,
             topology, logical_element, quad_corner
         );
         vertex_color[corner] = resolved.Draw.CornerColorOffset != INVALID_OFFSET ?
@@ -292,7 +302,7 @@ inline VisibilityCoverageValues DecodeVisibilityCoverage(
 
 inline VisibilityTextureCoordinates DecodeVisibilityTextureCoordinates(
     const thread Scene &scene, const thread ResolvedVisibility &resolved,
-    const thread VisibilityCoverageValues &coverage, uint uv_set
+    const thread VisibilityCoverageValues &coverage, uint uv_set, VisibilityShadingPushConstants pc
 ) {
     if (MeshletPrimitiveTopology(resolved.Meshlet) != MeshPrimitiveTopology_Triangle) return {};
     const uint set = min(uv_set, 3u);
@@ -300,10 +310,11 @@ inline VisibilityTextureCoordinates DecodeVisibilityTextureCoordinates(
     float2 uv[3]{};
     if (offset != INVALID_OFFSET) {
         device const packed_float2 *uvs = scene.CornerUvs(scene.View.CornerUvSlot);
-        for (uint corner = 0u; corner < 3u; ++corner) {
-            const uint vertex_index = (resolved.Triangle - resolved.Primitive.FirstTriangle) * 3u + corner;
-            uv[corner] = float2(uvs[offset + vertex_index]);
-        }
+        const uint3 corner_ids = MeshletCornerIds(
+            scene.B, pc.MeshletVertexSlot, pc.MeshletLocalTriangleSlot, resolved.Meshlet, resolved.Primitive,
+            resolved.Triangle, resolved.LocalTriangle
+        );
+        for (uint corner = 0u; corner < 3u; ++corner) uv[corner] = float2(uvs[offset + corner_ids[corner]]);
     }
     VisibilityTextureCoordinates result;
     DecodeUv(result.Value, result.Dx, result.Dy, coverage.Weights, uv[0], uv[1], uv[2]);
@@ -340,6 +351,7 @@ inline ResolvedVisibility ResolveVisibilityId(
 ) {
     ResolvedVisibility result = ResolveVisibilityPrimitive(id, bindless, pc);
     if (!result.Valid) return result;
+    if (MeshletCoarse(result.Meshlet)) return result;
     const Scene scene{bindless, view, theme, workspace};
     const uint topology = MeshletPrimitiveTopology(result.Meshlet);
     const uint logical_element = topology == MeshPrimitiveTopology_Triangle ?
@@ -435,13 +447,18 @@ inline DecodedVisibility DecodeVisibilityId(
         return result;
     }
     const uchar packed_first = BindlessBuffer(uchar, bindless.Buffer, pc.MeshletLocalTriangleSlot)[MeshletLocalTriangleOffset(meshlet) + resolved.LocalTriangle * 3u];
+    const bool coarse = MeshletCoarse(meshlet);
     const bool flat_face = (packed_first & MeshletGeometryEncoding_FlatTriangleBit) != 0u;
 
+    const MeshletTriangleCorners triangle_corners = ResolveMeshletCorners(
+        scene, draw, pc.MeshletVertexSlot, pc.MeshletLocalTriangleSlot, meshlet, primitive, triangle, resolved.LocalTriangle
+    );
     MeshVaryings corners[3];
     for (uint corner = 0u; corner < 3u; ++corner) {
-        const uint vertex_index = (triangle - primitive.FirstTriangle) * 3u + corner;
-        const uint vertex_id = scene.Indices(draw.IndexSlotOffset.Slot)[draw.IndexSlotOffset.Offset + vertex_index];
-        corners[corner] = VisibilityCorner(scene, draw, vertex_index, vertex_id, face_id, !flat_face, velocity_output);
+        corners[corner] = VisibilityCorner(
+            scene, draw, triangle_corners.CornerIds[corner], triangle_corners.VertexIds[corner], face_id,
+            !flat_face, velocity_output, coarse, triangle_corners.CoarseNormal
+        );
     }
     const PerspectiveWeights weights = TriangleWeights(
         pixel, corners[0].Position, corners[1].Position, corners[2].Position, float2(view.ViewportSize)
@@ -470,7 +487,8 @@ inline DecodedVisibility DecodeVisibilityId(
     }
 
     const Transform world = MeshletWorld(scene, draw);
-    const MeshletFaceValues face = MeshletFace(scene, draw, primitive, instance, world, triangle, flat_face);
+    const MeshletFaceValues face = coarse ? MeshletCoarseFace(scene, primitive, instance, world) :
+                                            MeshletFace(scene, draw, primitive, instance, world, triangle, flat_face);
     result.V.FlatWorldNormal = face.FlatWorldNormal;
     result.V.FaceOverlayFlags = face.FaceOverlayFlags;
     result.V.MaterialIndex = face.MaterialIndex;
@@ -500,13 +518,17 @@ inline DecodedVisibility DecodeWorkspaceVisibilityId(
     const uchar packed_first = BindlessBuffer(uchar, bindless.Buffer, pc.MeshletLocalTriangleSlot)[
         MeshletLocalTriangleOffset(resolved.Meshlet) + resolved.LocalTriangle * 3u
     ];
+    const bool coarse = MeshletCoarse(resolved.Meshlet);
     const bool flat_face = (packed_first & MeshletGeometryEncoding_FlatTriangleBit) != 0u;
+    const MeshletTriangleCorners triangle_corners = ResolveMeshletCorners(
+        scene, resolved.Draw, pc.MeshletVertexSlot, pc.MeshletLocalTriangleSlot, resolved.Meshlet,
+        resolved.Primitive, resolved.Triangle, resolved.LocalTriangle
+    );
     MeshVaryings corners[3];
     for (uint corner = 0u; corner < 3u; ++corner) {
-        const uint vertex_index = (resolved.Triangle - resolved.Primitive.FirstTriangle) * 3u + corner;
-        const uint vertex_id = scene.Indices(resolved.Draw.IndexSlotOffset.Slot)[resolved.Draw.IndexSlotOffset.Offset + vertex_index];
         corners[corner] = VisibilityWorkspaceCorner(
-            scene, resolved.Draw, vertex_index, vertex_id, resolved.FaceId, !flat_face
+            scene, resolved.Draw, triangle_corners.CornerIds[corner], triangle_corners.VertexIds[corner],
+            resolved.FaceId, !flat_face, coarse, triangle_corners.CoarseNormal
         );
     }
     const PerspectiveWeights weights = TriangleWeights(
@@ -517,9 +539,9 @@ inline DecodedVisibility DecodeWorkspaceVisibilityId(
     result.V.WorldPosition = PerspectiveValue(weights.Value, corners[0].WorldPosition, corners[1].WorldPosition, corners[2].WorldPosition);
     result.V.Color = float4(0.8f, 0.8f, 0.8f, 1.0f);
     const Transform world = MeshletWorld(scene, resolved.Draw);
-    const MeshletFaceValues face = MeshletFace(
-        scene, resolved.Draw, resolved.Primitive, resolved.Instance, world, resolved.Triangle, flat_face
-    );
+    const MeshletFaceValues face = coarse ?
+        MeshletCoarseFace(scene, resolved.Primitive, resolved.Instance, world) :
+        MeshletFace(scene, resolved.Draw, resolved.Primitive, resolved.Instance, world, resolved.Triangle, flat_face);
     result.V.FlatWorldNormal = face.FlatWorldNormal;
     result.V.FaceOverlayFlags = face.FaceOverlayFlags;
     result.Valid = true;

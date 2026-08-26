@@ -10,6 +10,7 @@ add_executable(MeshEditorTests
     ${CMAKE_SOURCE_DIR}/src/gltf/SourceTexture.cpp
     ${CMAKE_SOURCE_DIR}/src/armature/Armature.cpp
     ${CMAKE_SOURCE_DIR}/src/render/GpuBufferOps.cpp
+    ${CMAKE_SOURCE_DIR}/src/render/ClusterLod.cpp
     ${CMAKE_SOURCE_DIR}/src/render/GpuScene.cpp
     ${CMAKE_SOURCE_DIR}/src/render/VertexAdjacencyGpu.cpp
     ${CMAKE_SOURCE_DIR}/src/render/MeshBatch.cpp
@@ -205,6 +206,17 @@ add_executable(MeshEditorContactManifoldTest ContactManifoldTest.cpp)
 target_include_directories(MeshEditorContactManifoldTest PRIVATE SYSTEM ${CMAKE_SOURCE_DIR}/lib/JoltPhysics)
 target_link_libraries(MeshEditorContactManifoldTest PRIVATE Boost::ut Jolt)
 mesheditor_test_defaults(MeshEditorContactManifoldTest)
+
+# The cluster LOD DAG builder, which runs over one mesh's level-0 clusters with no registry behind it.
+add_executable(MeshEditorClusterLodTest ClusterLodTest.cpp ${CMAKE_SOURCE_DIR}/src/render/ClusterLod.cpp)
+add_dependencies(MeshEditorClusterLodTest generate_gpu_schema)
+target_include_directories(MeshEditorClusterLodTest PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_BINARY_DIR}
+    SYSTEM ${CMAKE_SOURCE_DIR}/lib/glm
+)
+target_link_libraries(MeshEditorClusterLodTest PRIVATE Boost::ut meshoptimizer)
+mesheditor_test_defaults(MeshEditorClusterLodTest)
 
 add_executable(MeshEditorMeshBvhTest MeshBvhTest.cpp ${CMAKE_SOURCE_DIR}/src/mesh/MeshBvh.cpp)
 add_dependencies(MeshEditorMeshBvhTest generate_gpu_schema)

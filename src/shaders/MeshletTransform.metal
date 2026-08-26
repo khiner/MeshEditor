@@ -20,8 +20,6 @@ inline uint MeshletVisibilityId(
 
 inline uint NonTriangleCorner(uint output_vertex) { return line_quad_corner(output_vertex); }
 
-
-// Emit one triangle's three local vertex indices, returning its packed first byte.
 template <typename Output>
 inline uchar EmitTriangleIndices(Output output, device const uchar *triangles, MeshletRecord meshlet, uint t) {
     const uint local_triangle = MeshletLocalTriangleOffset(meshlet) + t * 3u;
@@ -53,13 +51,20 @@ inline uchar EmitTriangleIndices(Output output, device const uchar *triangles, M
     if (topology == MeshPrimitiveTopology_Triangle && thread_index < work.Meshlet.TriangleCount * 3u) {
         device const uint *triangle_ids = BindlessBuffer(uint, bindless.Buffer, pc.MeshletTriangleSlot);
         device const uchar *triangles = BindlessBuffer(uchar, bindless.Buffer, pc.MeshletLocalTriangleSlot);
-        const uint triangle = triangle_ids[work.Meshlet.TriangleOffset + thread_index / 3u];
-        const uint vertex_index = (triangle - work.Primitive.FirstTriangle) * 3u + thread_index % 3u;
-        const uint vertex_id = scene.Indices(work.Draw.IndexSlotOffset.Slot)[work.Draw.IndexSlotOffset.Offset + vertex_index];
-        const bool flat_face = (triangles[MeshletLocalTriangleOffset(work.Meshlet) + (thread_index / 3u) * 3u] & MeshletGeometryEncoding_FlatTriangleBit) != 0u;
-        auto out = ToMeshletVertexVaryings(TransformVertex(scene, work.Draw, vertex_index, vertex_index, vertex_id, false, !flat_face));
+        const bool coarse = MeshletCoarse(work.Meshlet);
+        const uint local_triangle = thread_index / 3u;
+        // A coarse cluster's triangles are its own, so it names no source triangle.
+        const uint triangle = coarse ? 0u : triangle_ids[work.Meshlet.TriangleOffset + local_triangle];
+        const MeshletTriangleCorners corners = ResolveMeshletCorners(
+            scene, work.Draw, pc.MeshletVertexSlot, pc.MeshletLocalTriangleSlot, work.Meshlet, work.Primitive, triangle, local_triangle
+        );
+        const uint vertex_index = corners.CornerIds[thread_index % 3u];
+        const uint vertex_id = corners.VertexIds[thread_index % 3u];
+        const bool flat_face = (triangles[MeshletLocalTriangleOffset(work.Meshlet) + local_triangle * 3u] & MeshletGeometryEncoding_FlatTriangleBit) != 0u;
+        auto out = ToMeshletVertexVaryings(TransformVertex(scene, work.Draw, vertex_index, vertex_index, vertex_id, false, !flat_face, coarse, corners.CoarseNormal));
         const Transform world = MeshletWorld(scene, work.Draw);
-        const auto face = MeshletFace(scene, work.Draw, work.Primitive, work.Instance, world, triangle, flat_face);
+        const auto face = coarse ? MeshletCoarseFace(scene, work.Primitive, work.Instance, world) :
+                                   MeshletFace(scene, work.Draw, work.Primitive, work.Instance, world, triangle, flat_face);
         out.FlatWorldNormal = face.FlatWorldNormal;
         out.FaceOverlayFlags = face.FaceOverlayFlags;
         out.MaterialIndex = face.MaterialIndex;
