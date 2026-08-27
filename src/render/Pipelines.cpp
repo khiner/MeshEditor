@@ -93,6 +93,18 @@ PbrPipelineSpec MakePbrPipelineSpec(
 PassFormats SceneFormats() { return {{Format::HdrColor}, Format::Depth}; }
 PassFormats SceneVelocityFormats() { return {{Format::HdrColor, Format::Velocity}, Format::Depth}; }
 PassFormats OverlayFormats() { return {{Format::Color, Format::LineData}, Format::Depth}; }
+
+std::array<mtl::MeshRenderPipeline, 3> MeshletEditEdgePipelines(
+    mtl::LibraryCache &libraries, const char *fragment
+) {
+    const auto make = [&](const char *mesh) {
+        return CreateMeshPipeline(
+            libraries, FunctionRef{"EdgeQuad.metal", fragment}, OverlayFormats(),
+            {Blend, NoWrite}, DepthTestNoWriteLessEqual, {"MeshletEditOverlay.metal", mesh}
+        );
+    };
+    return {make("MeshletEditEdge0Mesh"), make("MeshletEditEdge1Mesh"), make("MeshletEditEdge2Mesh")};
+}
 } // namespace
 
 void PipelineRenderer::CompileShaders(mtl::LibraryCache &libraries) {
@@ -244,6 +256,9 @@ MainPipeline::MainPipeline(mtl::LibraryCache &libraries)
       WorkspaceVisibility{libraries, {"TexQuad.metal", "TexQuadVertex"}, FunctionRef{"WorkspaceLighting.metal", "WorkspaceVisibilityFragment"}, SceneFormats(), {Blend}, DepthOff},
       MeshletVisibilityOpaque{CreateMeshPipeline(libraries, FunctionRef{"MeshletVisibility.metal", "MeshletVisibilityOpaqueFragment"}, {{Format::Uint}, Format::Depth}, {NoBlend}, DepthTestWrite, MeshletVisibilityVertex())},
       MeshletVisibilityCoverage{CreateMeshPipeline(libraries, FunctionRef{"MeshletVisibility.metal", "MeshletVisibilityPrimitiveFragment"}, {{Format::Uint}, Format::Depth}, {NoBlend}, DepthTestWrite, MeshletVisibilityVertex())},
+      MeshletEditEdges{MeshletEditEdgePipelines(libraries, "EdgeQuadFragment")},
+      MeshletEditSmoothEdges{MeshletEditEdgePipelines(libraries, "EdgeQuadSmoothFragment")},
+      MeshletEditPoint{CreateMeshPipeline(libraries, FunctionRef{"VertexPoint.metal", "VertexPointFragment"}, OverlayFormats(), {Blend, NoWrite}, DepthTestLessEqual, {"MeshletEditOverlay.metal", "MeshletEditPointMesh"})},
       EdgeQuadMesh{CreateMeshPipeline(libraries, FunctionRef{"EdgeQuad.metal", "EdgeQuadFragment"}, OverlayFormats(), {Blend, NoWrite}, DepthTestNoWriteLessEqual, {"EdgeQuad.metal", "EdgeQuadMesh"})},
       PointMesh{CreateMeshPipeline(libraries, FunctionRef{"VertexPoint.metal", "VertexPointFragment"}, OverlayFormats(), {Blend, NoWrite}, DepthTestLessEqual, {"VertexPoint.metal", "VertexPointMesh"})},
       FaceNormalMesh{CreateMeshPipeline(libraries, FunctionRef{"VertexColor.metal", "VertexColorFragment"}, OverlayFormats(), {Blend, NoBlend}, DepthTestLessEqual, NormalIndicatorMesh(true))},
@@ -432,6 +447,7 @@ Pipelines::Pipelines(const mtl::Context &ctx, mtl::LibraryCache &libraries)
       MeshletPhase2Cull{libraries, {"MeshletCull.metal", "MeshletPhase2Cull"}},
       MeshletPhase2RangeCull{libraries, {"MeshletCull.metal", "MeshletPhase2RangeCull"}},
       MeshletPhase2Prefix{libraries, {"MeshletCull.metal", "MeshletPhase2Prefix"}},
+      MeshletEditClaim{libraries, {"MeshletEditOverlay.metal", "MeshletEditClaim"}},
       DepthPyramidReduce{libraries, {"DepthPyramidReduce.metal", "DepthPyramidReduceKernel"}},
       MotionBlurTilesFlatten{libraries, {"MotionBlurTilesFlatten.metal", "MotionBlurTilesFlattenKernel"}},
       MotionBlurTilesDilate{libraries, {"MotionBlurTilesDilate.metal", "MotionBlurTilesDilateKernel"}},
@@ -466,6 +482,9 @@ void Pipelines::CompileShaders() {
     Main.TetWireMesh.Compile(Libraries);
     Main.SoundPointMesh.Compile(Libraries);
     Main.ExtrasLineMesh.Compile(Libraries);
+    for (auto &edge : Main.MeshletEditEdges) edge.Compile(Libraries);
+    for (auto &edge : Main.MeshletEditSmoothEdges) edge.Compile(Libraries);
+    Main.MeshletEditPoint.Compile(Libraries);
     for (auto *bone : {&Main.BoneFillMesh, &Main.BoneWireMesh, &Main.BoneSphereFillMesh, &Main.BoneSphereWireMesh}) bone->Compile(Libraries);
     Main.WireResolve.Compile(Libraries);
     Main.Compiler.RecompileModules(Libraries);
@@ -481,7 +500,7 @@ void Pipelines::CompileShaders() {
     for (auto *p : {&SelectionFragment.ElementVertex, &SelectionFragment.ElementVertexBitsetBox, &SelectionFragment.ElementVertexXRay, &SelectionFragment.ElementVertexXRayBitsetBox, &SelectionFragment.ElementEdge, &SelectionFragment.ElementEdgeBitsetBox, &SelectionFragment.ElementEdgeXRay, &SelectionFragment.ElementEdgeXRayBitsetBox, &SelectionFragment.ElementEdgeXRayPointsBitsetBox, &SelectionFragment.ElementFaceXRayPointsBitsetBox}) {
         p->Compile(Libraries);
     }
-    for (auto *compute : {&UpdateSelectionState, &PosePrepass, &PosedMeshletBounds, &VertexNormalDerive, &BoundsReduce, &BoundsCombine, &WireRaster, &LodFrontierCount, &LodFrontierPrefix, &LodFrontierEmit, &MeshletCullBlockCount, &MeshletCullPrefix, &MeshletCullEmit, &MeshletPhase2Cull, &MeshletPhase2RangeCull, &MeshletPhase2Prefix, &DepthPyramidReduce, &MotionBlurTilesFlatten, &MotionBlurTilesDilate, &IblPrefilter.EquirectToCubemap, &IblPrefilter.DiffuseIrradiance, &IblPrefilter.SpecularPrefilter, &VertexAdjacency.Zero, &VertexAdjacency.Count, &VertexAdjacency.BlockSum, &VertexAdjacency.BlockPrefix, &VertexAdjacency.Offsets, &VertexAdjacency.Scatter, &VertexAdjacency.Sort, &VertexWeld.TableInit, &VertexWeld.Insert, &VertexWeld.MarkReps, &VertexWeld.BlockSum, &VertexWeld.BlockPrefix, &VertexWeld.Scan, &VertexWeld.Emit, &VertexWeld.Compact, &VertexWeld.WriteBack, &VertexWeld.RemapCorners, &MeshConnectivity.Zero, &MeshConnectivity.Count, &MeshConnectivity.BlockSum, &MeshConnectivity.BlockPrefix, &MeshConnectivity.Offsets, &MeshConnectivity.Scatter, &MeshConnectivity.Pair, &MeshConnectivity.Bits, &MeshConnectivity.WordBlockSum, &MeshConnectivity.WordBlockPrefix, &MeshConnectivity.Ranks, &MeshConnectivity.Samples}) {
+    for (auto *compute : {&UpdateSelectionState, &PosePrepass, &PosedMeshletBounds, &VertexNormalDerive, &BoundsReduce, &BoundsCombine, &WireRaster, &LodFrontierCount, &LodFrontierPrefix, &LodFrontierEmit, &MeshletCullBlockCount, &MeshletCullPrefix, &MeshletCullEmit, &MeshletPhase2Cull, &MeshletPhase2RangeCull, &MeshletPhase2Prefix, &MeshletEditClaim, &DepthPyramidReduce, &MotionBlurTilesFlatten, &MotionBlurTilesDilate, &IblPrefilter.EquirectToCubemap, &IblPrefilter.DiffuseIrradiance, &IblPrefilter.SpecularPrefilter, &VertexAdjacency.Zero, &VertexAdjacency.Count, &VertexAdjacency.BlockSum, &VertexAdjacency.BlockPrefix, &VertexAdjacency.Offsets, &VertexAdjacency.Scatter, &VertexAdjacency.Sort, &VertexWeld.TableInit, &VertexWeld.Insert, &VertexWeld.MarkReps, &VertexWeld.BlockSum, &VertexWeld.BlockPrefix, &VertexWeld.Scan, &VertexWeld.Emit, &VertexWeld.Compact, &VertexWeld.WriteBack, &VertexWeld.RemapCorners, &MeshConnectivity.Zero, &MeshConnectivity.Count, &MeshConnectivity.BlockSum, &MeshConnectivity.BlockPrefix, &MeshConnectivity.Offsets, &MeshConnectivity.Scatter, &MeshConnectivity.Pair, &MeshConnectivity.Bits, &MeshConnectivity.WordBlockSum, &MeshConnectivity.WordBlockPrefix, &MeshConnectivity.Ranks, &MeshConnectivity.Samples}) {
         compute->Compile(Libraries);
     }
 }

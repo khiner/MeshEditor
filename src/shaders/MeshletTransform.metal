@@ -1,4 +1,5 @@
 #include "MeshletResolve.metal"
+#include "MeshletLimit.metal"
 #include "MeshletNonTriangle.metal"
 #include "VisibilityId.metal"
 #include "VertexTransform.metal"
@@ -7,8 +8,8 @@
 // Sharing output vertices across primitives (indexed mesh output) delivers nondeterministic
 // attribute values on this driver, while the position stream stays exact. Opaque meshlets use
 // the welded position-only visibility entry below and fetch their attributes during shading.
-using MeshletOutput = metal::mesh<MeshletVertexVaryings, void, 144, 48, metal::topology::triangle>;
-using MeshletVisibilityOutput = metal::mesh<MeshletPositionVaryings, MeshletVisibilityPrimitiveVaryings, 64, 48, metal::topology::triangle>;
+using MeshletOutput = metal::mesh<MeshletVertexVaryings, void, MeshletLimit_MaxTriangles * 3u, MeshletLimit_MaxTriangles, metal::topology::triangle>;
+using MeshletVisibilityOutput = metal::mesh<MeshletPositionVaryings, MeshletVisibilityPrimitiveVaryings, MeshletLimit_MaxVertices, MeshletLimit_MaxTriangles, metal::topology::triangle>;
 
 inline uint MeshletVisibilityId(
     device const BindlessSet &bindless, constant MeshletDrawPushConstants &pc, uint group_index, uint triangle

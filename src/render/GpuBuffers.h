@@ -131,6 +131,7 @@ struct GpuBuffers {
           MeshletTriangleIds{Ctx, SlotType::Buffer},
           MeshletVertexCorners{Ctx, SlotType::Buffer},
           MeshletLocalTriangles{Ctx, SlotType::Buffer},
+          MeshletEditEdgeIds{Ctx, SlotType::Buffer},
           ClusterGroups{Ctx, SlotType::Buffer},
           LodNodes{Ctx, SlotType::Buffer},
           Primitives{Ctx, SlotType::Buffer},
@@ -171,7 +172,9 @@ struct GpuBuffers {
           ElementPickKey{Ctx, sizeof(uint32_t)},
           ElementPickId{Ctx, sizeof(uint32_t)},
           WireCoverageBuffer{Ctx, 0, SlotType::Buffer},
-          WireDrawRecords{Ctx, 0, SlotType::Buffer} {
+          WireDrawRecords{Ctx, 0, SlotType::Buffer},
+          MeshletEditEdgeOwners{Ctx, 0, SlotType::Buffer},
+          MeshletEditVertexOwners{Ctx, 0, SlotType::Buffer} {
     }
 
     void ReserveAdditionalIndices(uint32_t face, uint32_t edge, uint32_t vertex) {
@@ -228,6 +231,8 @@ struct GpuBuffers {
         buffers.MeshletVertices = {};
         MeshletLocalTriangles.Release(buffers.MeshletLocalTriangles);
         buffers.MeshletLocalTriangles = {};
+        MeshletEditEdgeIds.Release(buffers.MeshletEditEdges);
+        buffers.MeshletEditEdges = {};
         Primitives.Release(buffers.Primitives);
         buffers.Primitives = {};
     }
@@ -262,6 +267,7 @@ struct GpuBuffers {
         MeshletTriangleIds.Reset();
         MeshletVertexCorners.Reset();
         MeshletLocalTriangles.Reset();
+        MeshletEditEdgeIds.Reset();
         ClusterGroups.Reset();
         LodNodes.Reset();
         Primitives.Reset();
@@ -289,6 +295,7 @@ struct GpuBuffers {
     BufferArena<uint32_t> MeshletTriangleIds;
     BufferArena<uint32_t> MeshletVertexCorners;
     BufferArena<uint8_t> MeshletLocalTriangles;
+    BufferArena<uint32_t> MeshletEditEdgeIds;
     // The cluster LOD DAG: one group per simplification step, and the selection forest over them.
     BufferArena<ClusterGroup> ClusterGroups;
     BufferArena<LodNode> LodNodes;
@@ -321,7 +328,7 @@ struct GpuBuffers {
         uint64_t Ranges{0}, Meshlets{0};
     };
     // One entry per MeshletInstanceFlag bit, indexed by that bit's position.
-    std::array<MeshletFlagWork, 3> MeshletFlagWorkByBit{};
+    std::array<MeshletFlagWork, 4> MeshletFlagWorkByBit{};
 
     MeshletFlagWork &FlagWork(uint32_t flag) { return MeshletFlagWorkByBit[std::countr_zero(flag)]; }
     const MeshletFlagWork &FlagWork(uint32_t flag) const { return MeshletFlagWorkByBit[std::countr_zero(flag)]; }
@@ -359,7 +366,7 @@ struct GpuBuffers {
         if (two_phase) {
             MeshletPhase2Visible.SetCount<VisibleMeshlet>(work_meshlet_count);
             // Phase 2 conservatively uses one coverage-capable, two-sided visibility route.
-            MeshletPhase2DispatchArgs.SetCount<MeshDispatchArgs>(MeshletDispatchChunkCount);
+            MeshletPhase2DispatchArgs.SetCount<MeshDispatchArgs>(MeshletRouteCount * MeshletDispatchChunkCount);
             MeshletPhase2RangeCandidates.SetCount<MeshletWorkRange>(work_range_count);
             MeshletPhase2CullBlockCounts.SetCount<uint32_t>(
                 (work_meshlet_count + MeshletPhase2GroupSize - 1) / MeshletPhase2GroupSize
@@ -487,4 +494,5 @@ struct GpuBuffers {
     TypedBuffer<uint32_t> ElementPickKey, ElementPickId;
     mtl::Buffer WireCoverageBuffer;
     TypedBuffer<WireDrawRecord> WireDrawRecords;
+    mtl::Buffer MeshletEditEdgeOwners, MeshletEditVertexOwners;
 };

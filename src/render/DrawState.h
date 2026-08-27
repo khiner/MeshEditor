@@ -6,6 +6,7 @@
 
 #include <optional>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 // One draw within a batch: where its first instance's draw data sits relative to the batch, how many
@@ -78,6 +79,8 @@ struct SoundPointInfo {
 struct DrawState {
     DrawListBuilder List;
     std::unordered_map<entt::entity, PosedRanges> PosedByEntity;
+    std::unordered_set<entt::entity> MeshletEditOverlayMeshes;
+    bool MeshletEditHasSharpEdges{};
     DrawBatchInfo EdgeQuad, WireLine, WireMeshlet, Point, SoundPoint;
     DrawBatchInfo BoneFill, BoneWire, BoneSphereFill, BoneSphereWire;
     DrawBatchInfo OverlayFaceNormals, OverlayVertexNormals;

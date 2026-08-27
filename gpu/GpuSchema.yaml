@@ -229,6 +229,9 @@ enums:
       # The instance renders only clusters with no refining group, so edits and deforms see exact source elements.
       - name: LodPinFinest
         value: 4u
+      # The primary edit instance emits its visible source edges and points from fine meshlets.
+      - name: EditOverlay
+        value: 8u
   - name: MeshPrimitiveTopology
     type: u32
     values:
@@ -257,18 +260,31 @@ enums:
         value: 5
       - name: Coverage
         value: 6
-      - name: Count
+      - name: EditOverlay
         value: 7
+      - name: Count
+        value: 8
+  - name: MeshletLimit
+    type: u32
+    values:
+      - name: MaxVertices
+        value: 64u
+      - name: MaxTriangles
+        value: 48u
   # Bit layout of the meshlet-local geometry streams.
-  # A meshlet vertex packs its flat-only bit over the representative corner index.
+  # A meshlet vertex packs its flat-only bit and edit-local-owner bit over the representative corner index.
   # A local triangle byte packs its all-flat bit over the first local vertex index.
   - name: MeshletGeometryEncoding
     type: u32
     values:
       - name: FlatVertexBit
         value: 0x80000000u
+      # First occurrence of the canonical vertex within this meshlet. Visibility-aware ownership
+      # across meshlets is claimed each frame.
+      - name: EditVertexOwnerBit
+        value: 0x40000000u
       - name: CornerMask
-        value: 0x7fffffffu
+        value: 0x3fffffffu
       - name: FlatTriangleBit
         value: 0x80u
       - name: LocalIndexMask
@@ -279,6 +295,16 @@ enums:
         value: 0x3fffffffu
       - name: TopologyShift
         value: 30u
+  # Canonical edit edge behind a source-triangle edge. The high bit records whether the triangle's
+  # winding runs opposite the canonical edge endpoint order; all bits set means an internal diagonal.
+  # Repeated occurrences within one meshlet are removed by the build; visible meshlets claim one owner each frame.
+  - name: MeshletEditEdgeEncoding
+    type: u32
+    values:
+      - name: ReversedBit
+        value: 0x80000000u
+      - name: EdgeMask
+        value: 0x7fffffffu
 # Shader function constants. The index is the position in the group, so a reorder moves both
 # the shader declaration and the host's named index together.
 function_constants:
@@ -389,6 +415,9 @@ structs:
       - name: ElementStateSlotOffset
         type: SlotOffset
       - name: EdgeSharpnessOffset
+        type: u32
+        default: InvalidOffset
+      - name: EditEdgeOffset
         type: u32
         default: InvalidOffset
       - name: InstanceStateSlot
@@ -567,6 +596,11 @@ structs:
         default: InvalidOffset
       - name: ElementStateSlotOffset
         type: SlotOffset
+      - name: EditEdgeStateSlotOffset
+        type: SlotOffset
+      - name: EditEdgeSharpnessOffset
+        type: u32
+        default: InvalidOffset
       - name: HasPendingVertexTransform
         type: u32
       - name: PrimaryEditInstanceIndex
@@ -633,7 +667,7 @@ structs:
   - name: MeshletCullBlockState
     fields:
       - name: Routes
-        type: u32[7]
+        type: u32[8]
   - name: MeshletBlendBlockState
     fields:
       - name: Buckets
@@ -649,9 +683,9 @@ structs:
   - name: MeshletRouteState
     fields:
       - name: Counts
-        type: u32[7]
+        type: u32[8]
       - name: Offsets
-        type: u32[7]
+        type: u32[8]
       - name: BlendOffsets
         type: u32[256]
   # One CSR table a vertex-adjacency dispatch builds, over one mesh.
@@ -1385,6 +1419,8 @@ structs:
         type: u32
       - name: MeshletLocalTriangleSlot
         type: u32
+      - name: MeshletEditEdgeSlot
+        type: u32
       - name: VisibleMeshletSlot
         type: u32
       - name: RouteStateSlot
@@ -1399,6 +1435,18 @@ structs:
         type: u32
       - name: VisibilityTransmission
         type: u32
+      - name: VertexStateSlot
+        type: u32
+        default: InvalidSlot
+      - name: EdgeSharpnessSlot
+        type: u32
+        default: InvalidSlot
+      - name: EditEdgeOwnerSlot
+        type: u32
+        default: InvalidSlot
+      - name: EditVertexOwnerSlot
+        type: u32
+        default: InvalidSlot
   - name: VisibilityShadingPushConstants
     push_constant: true
     fields:

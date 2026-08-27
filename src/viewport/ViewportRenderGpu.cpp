@@ -503,18 +503,12 @@ MeshletCullPushConstants MakeMeshletCullSlotsPc(const GpuBuffers &buffers) {
     };
 }
 
-void DrawMeshletList(
-    MTL::RenderCommandEncoder *encoder, const GpuBuffers &buffers, const mtl::Buffer &visible,
-    const mtl::Buffer &routes, const mtl::Buffer &dispatch_args, uint32_t route, uint32_t required_instance_flags,
-    uint32_t visibility_phase = 0u, bool visibility_transmission = false, bool fragment_pc = false
+MeshletDrawPushConstants MakeMeshletDrawPc(
+    const GpuBuffers &buffers, const mtl::Buffer &visible, const mtl::Buffer &routes,
+    uint32_t route, uint32_t required_instance_flags, uint32_t visibility_phase,
+    bool visibility_transmission, uint32_t vertex_state_slot, uint32_t edge_sharpness_slot
 ) {
-    // Visibility ids reserve 25 bits for the visible-list index, and overflowing aliases the phase bit.
-    if (fragment_pc) {
-        const auto visible_count = visible.UsedSize / sizeof(VisibleMeshlet);
-        constexpr uint64_t index_limit = uint64_t{1} << uint32_t(VisibilityId::IndexBits);
-        profile::RecordCounter("VisibleMeshletIndexOverflow", visible_count > index_limit ? double(visible_count - index_limit) : 0.0);
-    }
-    MeshletDrawPushConstants pc{
+    return {
         .PrimitiveSlot = buffers.Primitives.Buffer.Slot,
         .InstanceSlot = buffers.Instances.RecordBuffer.Slot,
         .InstanceMapSlot = buffers.GpuInstanceSlots.Buffer.Slot,
@@ -522,19 +516,60 @@ void DrawMeshletList(
         .MeshletTriangleSlot = buffers.MeshletTriangleIds.Buffer.Slot,
         .MeshletVertexSlot = buffers.MeshletVertexCorners.Buffer.Slot,
         .MeshletLocalTriangleSlot = buffers.MeshletLocalTriangles.Buffer.Slot,
+        .MeshletEditEdgeSlot = buffers.MeshletEditEdgeIds.Buffer.Slot,
         .VisibleMeshletSlot = visible.Slot,
         .RouteStateSlot = routes.Slot,
         .Route = route,
         .RequiredInstanceFlags = required_instance_flags,
         .VisibilityPhase = visibility_phase,
         .VisibilityTransmission = visibility_transmission,
+        .VertexStateSlot = vertex_state_slot,
+        .EdgeSharpnessSlot = edge_sharpness_slot,
+        .EditEdgeOwnerSlot = buffers.MeshletEditEdgeOwners.Slot,
+        .EditVertexOwnerSlot = buffers.MeshletEditVertexOwners.Slot,
     };
+}
+
+void DrawMeshletList(
+    MTL::RenderCommandEncoder *encoder, const GpuBuffers &buffers, const mtl::Buffer &visible,
+    const mtl::Buffer &routes, const mtl::Buffer &dispatch_args, uint32_t route, uint32_t required_instance_flags,
+    uint32_t visibility_phase = 0u, bool visibility_transmission = false, bool fragment_pc = false,
+    uint32_t vertex_state_slot = InvalidSlot, uint32_t edge_sharpness_slot = InvalidSlot,
+    uint32_t mesh_threads = 160u
+) {
+    // Visibility ids reserve 25 bits for the visible-list index, and overflowing aliases the phase bit.
+    if (fragment_pc) {
+        const auto visible_count = visible.UsedSize / sizeof(VisibleMeshlet);
+        constexpr uint64_t index_limit = uint64_t{1} << uint32_t(VisibilityId::IndexBits);
+        profile::RecordCounter("VisibleMeshletIndexOverflow", visible_count > index_limit ? double(visible_count - index_limit) : 0.0);
+    }
+    auto pc = MakeMeshletDrawPc(
+        buffers, visible, routes, route, required_instance_flags, visibility_phase,
+        visibility_transmission, vertex_state_slot, edge_sharpness_slot
+    );
     for (uint32_t chunk = 0; chunk < buffers.MeshletDispatchChunkCount; ++chunk) {
         pc.VisibleOffset = chunk * GpuBuffers::MeshletDispatchChunkSize;
         if (fragment_pc) encode::SetPushConstants(encoder, pc);
         else encode::SetMeshPushConstants(encoder, pc);
         const auto args_offset = (route * buffers.MeshletDispatchChunkCount + chunk) * sizeof(MeshDispatchArgs);
-        encoder->drawMeshThreadgroups(*dispatch_args, args_offset, MTL::Size(1, 1, 1), MTL::Size(160, 1, 1));
+        encoder->drawMeshThreadgroups(*dispatch_args, args_offset, MTL::Size(1, 1, 1), MTL::Size(mesh_threads, 1, 1));
+    }
+}
+
+void ClaimMeshletEditList(
+    MTL::ComputeCommandEncoder *encoder, const GpuBuffers &buffers, const mtl::Buffer &visible,
+    const mtl::Buffer &routes, const mtl::Buffer &dispatch_args, uint32_t vertex_state_slot,
+    uint32_t edge_sharpness_slot
+) {
+    auto pc = MakeMeshletDrawPc(
+        buffers, visible, routes, uint32_t(MeshletRoute::EditOverlay),
+        uint32_t(MeshletInstanceFlag::EditOverlay), 0u, false, vertex_state_slot, edge_sharpness_slot
+    );
+    for (uint32_t chunk = 0; chunk < buffers.MeshletDispatchChunkCount; ++chunk) {
+        pc.VisibleOffset = chunk * GpuBuffers::MeshletDispatchChunkSize;
+        encode::SetPushConstants(encoder, pc);
+        const auto args_offset = (uint32_t(MeshletRoute::EditOverlay) * buffers.MeshletDispatchChunkCount + chunk) * sizeof(MeshDispatchArgs);
+        encoder->dispatchThreadgroups(*dispatch_args, args_offset, MTL::Size(160, 1, 1));
     }
 }
 
@@ -1050,6 +1085,11 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
                 if (!is_edit_mode || (primary != primary_edit_instances.end() && primary->second == instance_entity)) {
                     record.ElementStateSlotOffset = meshes.GetFaceStateRange(r.get<const MeshHandle>(instance.Entity).StoreId);
                 }
+                if (primary != primary_edit_instances.end() && primary->second == instance_entity) {
+                    const uint32_t store_id = r.get<const MeshHandle>(instance.Entity).StoreId;
+                    record.EditEdgeStateSlotOffset = meshes.GetEdgeStateRange(store_id);
+                    record.EditEdgeSharpnessOffset = meshes.GetEdgeSharpnessRange(store_id).Offset;
+                }
                 buffers.Instances.RecordBuffer.GetMutableSpan<InstanceRecord>({ri.BufferIndex, 1}).front() = record;
             }
             draw.InstanceRecordsStale = false;
@@ -1109,11 +1149,26 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
             }
         }
 
+        draw.MeshletEditOverlayMeshes.clear();
+        draw.MeshletEditHasSharpEdges = false;
+        const bool meshlet_edit_overlay = show_overlays && is_edit_mode && show_fill && draw_overlays;
+        if (meshlet_edit_overlay) {
+            for (const auto &e : mesh_entities) {
+                if (!e.PrimaryEditBufferIndex || !e.MeshComp || e.MeshComp->FaceCount() == 0u ||
+                    e.Buf.Meshlets.Count == 0u) continue;
+                draw.MeshletEditOverlayMeshes.insert(e.Entity);
+                const auto sharpness = meshes.GetEdgeSharpness(e.MeshComp->GetStoreId());
+                draw.MeshletEditHasSharpEdges |= std::memchr(sharpness.data(), 1, sharpness.size()) != nullptr;
+            }
+        }
+        draw.InstanceFlagsStale = true;
+
         // Edge quad batch (edit/excite mode triangle quads with self-AA, matches Blender's overlay_edit_mesh_edge)
         draw.EdgeQuad = draw_list.BeginBatch();
         if (show_overlays && (is_edit_mode || is_excite_mode)) {
             for (const auto &e : mesh_entities) {
-                if (e.IsBone || e.IsExtras || !e.MeshComp || e.Buf.EdgeIndices.Count == 0) continue;
+                if (e.IsBone || e.IsExtras || !e.MeshComp || e.Buf.EdgeIndices.Count == 0 ||
+                    draw.MeshletEditOverlayMeshes.contains(e.Entity)) continue;
                 auto dd = MakeDrawData(e.Buf.Vertices, e.Buf.EdgeIndices, buffers.Instances, e.Deform.BoneDeformOffset, e.Deform.ArmatureDeformOffset, e.Deform.MorphDeformOffset, e.Deform.MorphTargetCount);
                 dd.ElementStateSlotOffset = meshes.GetEdgeStateRange(e.MeshComp->GetStoreId());
                 if (is_edit_mode) {
@@ -1157,7 +1212,8 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
             const bool draw_elements = show_overlays && is_edit_mode && edit_mode == Element::Vertex && e.PrimaryEditBufferIndex;
             // A vertex-only mesh otherwise draws its points as the object itself, until it is the one being edited.
             const bool draw_object = e.Domain == ElementDomain::Vertex && !(is_edit_mode && e.PrimaryEditBufferIndex);
-            if (!draw_elements && !draw_object) continue;
+            if ((!draw_elements && !draw_object) ||
+                (draw_elements && draw.MeshletEditOverlayMeshes.contains(e.Entity))) continue;
             auto dd = MakeDrawData(e.Buf.Vertices, e.Buf.VertexIndices, buffers.Instances, e.Deform.BoneDeformOffset, e.Deform.ArmatureDeformOffset, e.Deform.MorphDeformOffset, e.Deform.MorphTargetCount);
             dd.ElementStateSlotOffset = {meshes.GetVertexStateSlot(), e.Buf.Vertices.Offset};
             if (!draw_elements && shaded_in_scene_pass(e)) continue;
@@ -1268,7 +1324,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
         const auto instance_records = buffers.Instances.RecordBuffer.GetMutableSpan<InstanceRecord>(
             {0, buffers.Instances.RecordBuffer.Count<InstanceRecord>()}
         );
-        GpuBuffers::MeshletFlagWork silhouette_work{};
+        GpuBuffers::MeshletFlagWork silhouette_work{}, edit_overlay_work{};
         for (const auto [instance_entity, ri] : r.view<const RenderInstance>().each()) {
             if (ri.BufferIndex == UINT32_MAX || ri.BufferIndex >= instance_records.size()) continue;
             auto &record = instance_records[ri.BufferIndex];
@@ -1281,6 +1337,15 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
             if (instance && primary_edit_instances.contains(instance->Entity)) {
                 record.Flags |= uint32_t(MeshletInstanceFlag::LodPinFinest);
             }
+            const auto primary = instance ? primary_edit_instances.find(instance->Entity) : primary_edit_instances.end();
+            if (instance && draw.MeshletEditOverlayMeshes.contains(instance->Entity) &&
+                primary != primary_edit_instances.end() && primary->second == instance_entity) {
+                record.Flags |= uint32_t(MeshletInstanceFlag::EditOverlay);
+                if (ri.GpuId != InvalidOffset) {
+                    edit_overlay_work.Ranges += ri.MeshletRangeCount;
+                    edit_overlay_work.Meshlets += ri.MeshletCount;
+                }
+            }
             // An instance reaches a cull only through its meshlet slot, which it holds when it has meshlets.
             if (silhouette && ri.GpuId != InvalidOffset) {
                 silhouette_work.Ranges += ri.MeshletRangeCount;
@@ -1288,6 +1353,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
             }
         }
         buffers.FlagWork(uint32_t(MeshletInstanceFlag::Silhouette)) = silhouette_work;
+        buffers.FlagWork(uint32_t(MeshletInstanceFlag::EditOverlay)) = edit_overlay_work;
         // The rewrite dropped every element-selection mark the selection passes left behind.
         buffers.FlagWork(uint32_t(MeshletInstanceFlag::ElementSelection)) = {};
         draw.InstanceFlagsStale = false;
@@ -1587,6 +1653,29 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
 
     // Wireframe lines rasterize in compute before the overlay pass that resolves them.
     const bool wire_batches_drawn = draw.WireMeshlet.DrawCount > 0 || draw.WireLine.DrawCount > 0;
+    const bool meshlet_edit_overlay_drawn =
+        buffers.FlagWork(uint32_t(MeshletInstanceFlag::EditOverlay)).Meshlets > 0;
+    if (meshlet_edit_overlay_drawn) {
+        buffers.MeshletEditEdgeOwners.SetCount<uint32_t>(meshes.GetEdgeSharpnessCount());
+        buffers.MeshletEditVertexOwners.SetCount<uint32_t>(meshes.GetVertexStateCount());
+        {
+            auto *blit = chain.BeginBlit("MeshletEditClaimClear", MTL::StageMesh | MTL::StageFragment | MTL::StageDispatch);
+            blit->fillBuffer(*buffers.MeshletEditEdgeOwners, NS::Range::Make(0, buffers.MeshletEditEdgeOwners.UsedSize), 0xff);
+            blit->fillBuffer(*buffers.MeshletEditVertexOwners, NS::Range::Make(0, buffers.MeshletEditVertexOwners.UsedSize), 0xff);
+        }
+        auto *claim = chain.BeginCompute("MeshletEditClaim", MTL::StageBlit);
+        encode::BindCompute(claim, pipelines.MeshletEditClaim, slots, buffers, ubo_offset);
+        ClaimMeshletEditList(
+            claim, buffers, buffers.VisibleMeshlets, buffers.MeshletRoutes, buffers.MeshletDispatchArgs,
+            meshes.GetVertexStateSlot(), meshes.GetEdgeSharpnessSlot()
+        );
+        if (two_phase_meshlets) {
+            ClaimMeshletEditList(
+                claim, buffers, buffers.MeshletPhase2Visible, buffers.MeshletPhase2Routes,
+                buffers.MeshletPhase2DispatchArgs, meshes.GetVertexStateSlot(), meshes.GetEdgeSharpnessSlot()
+            );
+        }
+    }
     // One flattened edge list over both batches, so a scene of many small wire draws costs one dispatch.
     uint32_t wire_record_count = 0, wire_edge_total = 0;
     if (wire_batches_drawn) {
@@ -1635,7 +1724,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
     // Everything the pass could draw. With nothing to draw, the composite reads neither overlay layer.
     const bool overlay_pass_needed = has_silhouette ||
         (show_overlays && settings.ShowGrid) ||
-        draw.EdgeQuad.DrawCount > 0 || wire_batches_drawn ||
+        meshlet_edit_overlay_drawn || draw.EdgeQuad.DrawCount > 0 || wire_batches_drawn ||
         draw.Point.DrawCount > 0 || buffers.BoundsBoxSlots.UsedSize > 0 ||
         (show_overlays && settings.ShowExtras) ||
         draw.OverlayFaceNormals.DrawCount > 0 || draw.OverlayVertexNormals.DrawCount > 0 ||
@@ -1671,6 +1760,29 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
         constexpr auto group_points = uint32_t(OverlayDispatch::PointGroupPoints);
         constexpr auto group_indicators = uint32_t(OverlayDispatch::NormalIndicatorLines);
         {
+            if (meshlet_edit_overlay_drawn) {
+                overlay_layer_drawn = true;
+                const auto draw_meshlet_edits = [&](const mtl::MeshRenderPipeline &pipeline, uint32_t mesh_threads = 160u) {
+                    pipeline.Bind(encoder);
+                    DrawMeshletList(
+                        encoder, buffers, buffers.VisibleMeshlets, buffers.MeshletRoutes,
+                        buffers.MeshletDispatchArgs, uint32_t(MeshletRoute::EditOverlay),
+                        uint32_t(MeshletInstanceFlag::EditOverlay), 0u, false, false,
+                        meshes.GetVertexStateSlot(), meshes.GetEdgeSharpnessSlot(), mesh_threads
+                    );
+                    if (two_phase_meshlets) {
+                        DrawMeshletList(
+                            encoder, buffers, buffers.MeshletPhase2Visible, buffers.MeshletPhase2Routes,
+                            buffers.MeshletPhase2DispatchArgs, uint32_t(MeshletRoute::EditOverlay),
+                            uint32_t(MeshletInstanceFlag::EditOverlay), 0u, false, false,
+                            meshes.GetVertexStateSlot(), meshes.GetEdgeSharpnessSlot(), mesh_threads
+                        );
+                    }
+                };
+                const auto &edit_edges = draw.MeshletEditHasSharpEdges ? main.MeshletEditEdges : main.MeshletEditSmoothEdges;
+                for (const auto &edge : edit_edges) draw_meshlet_edits(edge);
+                if (edit_mode == Element::Vertex) draw_meshlet_edits(main.MeshletEditPoint, 64u);
+            }
             // Edit mode edges as triangle quads with self-AA, four corners to an edge
             record_mesh_batch(main.EdgeQuadMesh, draw.EdgeQuad, 2, group_quad_edges, group_quad_edges * 4);
             if (wire_raster_drawn) {
@@ -2121,7 +2233,7 @@ bool CommitPosedGeometry(entt::registry &r, entt::entity mesh_entity) {
     const auto &buffers = r.ctx().get<const GpuBuffers>();
     const auto id = r.get<const MeshHandle>(mesh_entity).StoreId;
     const auto posed_positions = buffers.PosedPositions.GetSpan<vec3>({pr.PositionOffset(0), pr.VertexCount});
-    auto vertices = meshes.GetVertices(id);
+    auto vertices = meshes.GetMutableVertices(id);
     bool any_moved = false;
     for (uint32_t vi = 0; vi < pr.VertexCount; ++vi) {
         if (vertices[vi].Position != posed_positions[vi]) {

@@ -12,7 +12,7 @@
 #include "gizmo/GizmoInteraction.h"
 #include "gizmo/TransformGizmo.h"
 #include "gltf/SourceAssets.h"
-#include "mesh/MeshStore.h"
+#include "Profile.h"
 #include "render/Instance.h"
 #include "render/TextureRefs.h"
 #include "scene/Defaults.h"
@@ -414,7 +414,7 @@ void Interact(entt::registry &r, entt::entity viewport, FrameState &frame) {
 }
 
 void InteractOverlay(entt::registry &r, entt::entity viewport, FrameState &frame) {
-    auto &meshes = r.ctx().get<MeshStore>();
+    const profile::CpuScope scope{"ViewportOverlayUi"};
     const auto &icons = r.ctx().get<const ViewportIcons>();
     const rect viewport_rect{ToGlm(GetWindowPos()), ToGlm(GetContentRegionAvail())};
     const bool active_transform = TransformGizmo::IsUsing(r, viewport);
@@ -764,10 +764,8 @@ void InteractOverlay(entt::registry &r, entt::entity viewport, FrameState &frame
         if (!mesh_edit_mode) return true;
         const auto edit_element = r.get<const EditMode>(viewport).Value;
         for (const auto [e, instance] : r.view<const Instance, const Selected>(entt::exclude<ScaleLocked>).each()) {
-            if (!r.all_of<MeshElementSelection>(instance.Entity)) continue;
-            const auto mesh = GetMesh(r, instance.Entity);
-            const auto bits = meshes.GetSelectionBits(mesh.GetStoreId());
-            if (selection::CountSelected(bits, selection::GetElementCount(mesh, edit_element)) > 0) return true;
+            const auto *stats = r.try_get<const MeshElementSelectionStats>(instance.Entity);
+            if (stats && stats->Mode == edit_element && stats->SelectedCount > 0) return true;
         }
         return false;
     }();
@@ -789,20 +787,14 @@ void InteractOverlay(entt::registry &r, entt::entity viewport, FrameState &frame
 
         vec3 pivot{};
         if (mesh_edit_mode) {
-            // Compute world-space centroid of selected vertices once per selected mesh
-            // (using a representative selected instance for world transform).
             uint32_t vertex_count = 0;
             for (const auto &[mesh_entity, instance_entity] : edit_transform_instances) {
-                const auto &mesh = GetMesh(r, mesh_entity);
-                const auto vertex_states = meshes.GetVertexStates(mesh.GetStoreId());
-                const auto vertices = mesh.GetVerticesSpan();
-                const auto &wt = r.get<const WorldTransform>(instance_entity);
-                for (uint32_t vi = 0; vi < vertex_states.size(); ++vi) {
-                    if ((vertex_states[vi] & ElementStateSelected) != 0u) {
-                        pivot += wt.P + glm::rotate(wt.R, wt.S * vertices[vi].Position);
-                        ++vertex_count;
-                    }
-                }
+                const auto *stats = r.try_get<const MeshElementSelectionStats>(mesh_entity);
+                if (!stats || stats->SelectedVertexCount == 0) continue;
+                const auto &world = r.get<const WorldTransform>(instance_entity);
+                pivot += float(stats->SelectedVertexCount) * world.P +
+                    glm::rotate(world.R, world.S * stats->SelectedVertexPositionSum);
+                vertex_count += stats->SelectedVertexCount;
             }
             if (vertex_count > 0) pivot /= float(vertex_count);
             // Apply pending transform to gizmo position (vertices aren't modified until commit).

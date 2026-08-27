@@ -785,6 +785,23 @@ struct CaptureDriver {
 // Seed the scene and its session log, then enter presentation mode so the first rendered frame matches the capture.
 CaptureDriver BeginCaptureSession(entt::registry &r, entt::entity viewport, const CaptureRequest &capture, const char *initial_file, bool empty, bool fixed_step) {
     const bool seeded = SeedScene(r, viewport, capture, initial_file, empty);
+    if (seeded && capture.EditMode) {
+        std::vector<entt::entity> meshes;
+        for (const auto [entity, kind, _] : r.view<const ObjectKind, const Instance>().each()) {
+            if (kind.Value == ObjectType::Mesh) meshes.emplace_back(entity);
+        }
+        if (!meshes.empty()) {
+            Perform(r, viewport, action::selection::ApplyTreeSelection{
+                                     .ToSelect = meshes,
+                                     .ToDeselect = {},
+                                     .NavToActive = meshes.front(),
+                                     .Clear = action::selection::ApplyTreeSelection::ClearKind::All,
+                                 });
+            Perform(r, viewport, action::view::SetInteractionMode{InteractionMode::Edit});
+            Perform(r, viewport, action::view::SetEditMode{*capture.EditMode});
+        }
+    }
+    if (seeded && capture.SelectAll) Perform(r, viewport, action::selection::SelectAll{});
     const bool play = seeded && capture.Play;
     // After the load, whose end frame comes from the scene's own animation durations.
     if (capture.TimelineEnd > 0) {
@@ -1200,23 +1217,6 @@ bool RunHeadlessScene(entt::registry &r, entt::entity viewport, const char *init
     // Emitted, not Performed: the resize must happen inside the first tick's SubmitViewport for that
     // frame to render the recreated images correctly.
     action::Emit(action::view::SetExtent{DefaultWindowSize});
-    if (capture.EditMode) {
-        std::vector<entt::entity> meshes;
-        for (const auto [entity, kind, _] : r.view<const ObjectKind, const Instance>().each()) {
-            if (kind.Value == ObjectType::Mesh) meshes.emplace_back(entity);
-        }
-        if (!meshes.empty()) {
-            Perform(r, viewport, action::selection::ApplyTreeSelection{
-                                     .ToSelect = meshes,
-                                     .ToDeselect = {},
-                                     .NavToActive = meshes.front(),
-                                     .Clear = action::selection::ApplyTreeSelection::ClearKind::All,
-                                 });
-            Perform(r, viewport, action::view::SetInteractionMode{InteractionMode::Edit});
-            Perform(r, viewport, action::view::SetEditMode{*capture.EditMode});
-        }
-    }
-    if (capture.SelectAll) Perform(r, viewport, action::selection::SelectAll{});
     if (capture.NormalOverlays != 0) Perform(r, viewport, action::UpdateOf<&ViewportDisplay::NormalOverlays>(viewport, capture.NormalOverlays));
     if (capture.BoundingBoxes) Perform(r, viewport, action::UpdateOf<&ViewportDisplay::ShowBoundingBoxes>(viewport, true));
     if (capture.TetWireframe) Perform(r, viewport, action::UpdateOf<&ViewportDisplay::ShowTetWireframe>(viewport, true));

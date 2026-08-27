@@ -40,12 +40,19 @@ void EmplaceMeshBuffers(entt::registry &r, entt::entity e) {
     const auto &meshes = r.ctx().get<const MeshStore>();
     r.emplace<MeshBuffers>(e, (meshes.*GetRange)(r.get<const Handle>(e).StoreId), SlottedRange{}, SlottedRange{}, SlottedRange{});
 }
+
+void EmplaceMeshShadingSummary(entt::registry &r, entt::entity e) {
+    const auto &meshes = r.ctx().get<const MeshStore>();
+    const auto [any, all] = meshes.GetFaceSharpnessSummary(r.get<const MeshHandle>(e).StoreId);
+    r.emplace_or_replace<MeshShadingSummary>(e, any, all);
+}
 } // namespace
 
 entt::entity WireRegistry(entt::registry &r) {
     r.on_destroy<MeshHandle>().connect<[](entt::registry &r, entt::entity e) {
         r.ctx().get<MeshStore>().Release(r.get<MeshHandle>(e).StoreId);
     }>();
+    r.on_destroy<MeshHandle>().connect<&entt::registry::remove<MeshShadingSummary>>();
     r.on_destroy<SoundVertices>().connect<[](entt::registry &r, entt::entity e) {
         r.ctx().get<MeshStore>().ReleaseSoundVertices(r.get<SoundVertices>(e).Vertices);
     }>();
@@ -88,6 +95,7 @@ entt::entity WireRegistry(entt::registry &r) {
     }>();
     // Build MeshBuffers when a vertex handle is constructed (MeshHandle = full meshes, VertexStoreId = vertex-only extras).
     r.on_construct<MeshHandle>().connect<&EmplaceMeshBuffers<MeshHandle, &MeshStore::GetVerticesRange>>();
+    r.on_construct<MeshHandle>().connect<&EmplaceMeshShadingSummary>();
     r.on_construct<VertexStoreId>().connect<&EmplaceMeshBuffers<VertexStoreId, &MeshStore::GetVerticesRange>>();
 
     const auto &ctx = r.ctx().get<const mtl::Context>();

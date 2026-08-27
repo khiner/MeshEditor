@@ -61,7 +61,7 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
                     auto &meshes = r.ctx().get<MeshStore>();
                     const auto ranges = GetElementRangesForSelected(r, viewport);
                     for (const auto &range : ranges) {
-                        std::ranges::fill(meshes.GetSelectionBits(r.get<const MeshHandle>(range.MeshEntity).StoreId), 0u);
+                        std::ranges::fill(meshes.GetMutableSelectionBits(r.get<const MeshHandle>(range.MeshEntity).StoreId), 0u);
                         r.remove<MeshActiveElement>(range.MeshEntity);
                     }
                     if (!ranges.empty()) r.emplace_or_replace<SelectionBitsDirty>(viewport);
@@ -137,7 +137,7 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
                 } else if (interaction_mode == InteractionMode::Edit) {
                     auto &meshes = r.ctx().get<MeshStore>();
                     const auto ranges = GetElementRangesForSelected(r, viewport);
-                    for (const auto &range : ranges) ::selection::SelectAll(meshes.GetSelectionBits(r.get<const MeshHandle>(range.MeshEntity).StoreId), range.Count);
+                    for (const auto &range : ranges) ::selection::SelectAll(meshes.GetMutableSelectionBits(r.get<const MeshHandle>(range.MeshEntity).StoreId), range.Count);
                     if (!ranges.empty()) r.emplace_or_replace<SelectionBitsDirty>(viewport);
                 } else if (interaction_mode == InteractionMode::Object) {
                     r.clear<Active, Selected>();

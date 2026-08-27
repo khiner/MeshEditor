@@ -23,6 +23,7 @@ struct MeshletBuildInputs {
     std::span<const uint32_t> Indices; // One corner index per triangle corner
     std::span<const Vertex> Vertices;
     std::span<const uint32_t> ElementPrimitives;
+    std::vector<uint32_t> TriangleEditEdges; // Three canonical edge ids per source triangle; InvalidOffset for triangulation diagonals
     std::vector<PrimitiveTriangleRange> PrimitiveTriangleRanges;
     // The corner attributes the render-vertex weld keys on, shared with the cluster LOD build.
     CornerWeldSource Weld;
@@ -44,6 +45,7 @@ struct MeshletBuild {
     std::vector<PrimitiveRecord> Primitives{};
     std::vector<uint32_t> TriangleIds{};
     std::vector<uint8_t> LocalTriangles{};
+    std::vector<uint32_t> EditEdges{};
     uint32_t TriangleIdCount{}, LocalTriangleCount{};
 };
 

@@ -373,7 +373,7 @@ void RunBoxSelectElements(entt::registry &r, entt::entity viewport, std::span<co
     auto &meshes = r.ctx().get<MeshStore>();
     const auto *baseline = is_additive ? r.try_get<const AdditiveBoxSelectBaseline>(viewport) : nullptr;
     for (const auto &range : ranges) {
-        auto bits = meshes.GetSelectionBits(r.get<const MeshHandle>(range.MeshEntity).StoreId);
+        auto bits = meshes.GetMutableSelectionBits(r.get<const MeshHandle>(range.MeshEntity).StoreId);
         if (!is_additive) {
             std::ranges::fill(bits, 0u);
         } else if (baseline) {
@@ -616,6 +616,40 @@ void DispatchUpdateSelectionStates(
     command_buffer->waitUntilCompleted();
 }
 
+void RefreshElementSelectionStats(entt::registry &r, entt::entity mesh_entity, Element element) {
+    if (!r.all_of<MeshElementSelection, MeshHandle>(mesh_entity)) return;
+    const auto &meshes = r.ctx().get<const MeshStore>();
+    const auto mesh = GetMesh(r, mesh_entity);
+    const auto id = mesh.GetStoreId();
+    MeshElementSelectionStats stats{
+        .Mode = element,
+        .SelectedCount = selection::CountSelected(meshes.GetSelectionBits(id), selection::GetElementCount(mesh, element)),
+    };
+    const auto vertices = meshes.GetVertices(id);
+    const auto vertex_states = meshes.GetVertexStates(id);
+    const uint32_t vertex_count = std::min(uint32_t(vertices.size()), uint32_t(vertex_states.size()));
+    for (uint32_t i = 0; i < vertex_count; ++i) {
+        if ((vertex_states[i] & ElementStateSelected) == 0u) continue;
+        stats.SelectedVertexPositionSum += vertices[i].Position;
+        ++stats.SelectedVertexCount;
+    }
+    const auto sharpness = meshes.GetSelectedSharpnessSummary(id, element);
+    stats.AnySharp = sharpness.AnySharp;
+    stats.AnySmooth = sharpness.AnySmooth;
+    r.emplace_or_replace<MeshElementSelectionStats>(mesh_entity, stats);
+}
+
+void RefreshElementSelectionSharpness(entt::registry &r, entt::entity mesh_entity, Element element) {
+    auto *stats = r.try_get<MeshElementSelectionStats>(mesh_entity);
+    if (!stats || !r.all_of<MeshHandle>(mesh_entity)) return;
+    const auto summary = r.ctx().get<const MeshStore>().GetSelectedSharpnessSummary(
+        r.get<const MeshHandle>(mesh_entity).StoreId, element
+    );
+    stats->Mode = element;
+    stats->AnySharp = summary.AnySharp;
+    stats->AnySmooth = summary.AnySmooth;
+}
+
 void ApplySelectionStateUpdate(
     entt::registry &r, entt::entity viewport,
     std::span<const ElementRange> ranges, Element element
@@ -644,5 +678,6 @@ void ApplySelectionStateUpdate(
             }
         }
     }
+    for (const auto &range : ranges) RefreshElementSelectionStats(r, range.MeshEntity, element);
     r.emplace_or_replace<ElementStatesDirty>(viewport);
 }

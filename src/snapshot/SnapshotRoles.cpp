@@ -146,10 +146,10 @@ using Persistent = type_list<
 // Reconstructed from the Persistent set by ProcessComponentEvents, on_construct, and reactive handlers.
 // Never serialized, listed only so VerifyCoverage treats them as intentionally excluded.
 using Derived = type_list<
-    RenderInstance, WorldTransform, PosedLocal, MeshBuffers, BoneAdjacencyIndices, ModelsBuffer,
+    RenderInstance, WorldTransform, PosedLocal, MeshBuffers, MeshShadingSummary, BoneAdjacencyIndices, ModelsBuffer,
     MaterialDirty, LightIndex, EnabledInteractionModes, LastEvaluatedFrame,
     PhysicsBodyHandle, PhysicsConstraintHandle, BodyPoseCache, BoneInstanceStateDirty, ArmaturePoseState,
-    MorphWeightGpuRange, AdditiveBoxSelectBaseline, SelectionBitsDirty, ElementStatesDirty, PendingEditElementClick,
+    MorphWeightGpuRange, MeshElementSelectionStats, AdditiveBoxSelectBaseline, SelectionBitsDirty, ElementStatesDirty, PendingEditElementClick,
     PendingBoxSelect, PendingPick, PendingTextureUploads, BoxSelectState, PlaybackFrame,
     PhysicsCacheInvalid, RotationUiVariant, RotationUiDriving, GizmoInteraction, PendingTransform, StartScreenTransform,
 #ifdef SURFACE_AUDIO

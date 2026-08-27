@@ -262,6 +262,7 @@ inline RoutedMeshlet ClassifyMeshlet(
     const bool can_occlude = bounds.Valid && !(instance.PrimitiveCount == 1u && primitive.MeshletCount == 1u);
     PBRMaterial material{};
     if (pc.RouteMode != 0u) material = scene.Materials(scene.View.MaterialSlot)[PrimitiveMaterialIndex(scene, primitive)];
+    const bool edit_overlay = (instance.Flags & MeshletInstanceFlag_EditOverlay) != 0u;
     const bool cone_visible = pc.RouteMode == 0u || material.DoubleSided != 0u ||
         MeshletConeVisible(scene, meshlet, world, InstanceDeformed(instance));
     const bool occluded = can_occlude && pc.PyramidSamplerSlot != INVALID_SLOT &&
@@ -291,13 +292,14 @@ inline RoutedMeshlet ClassifyMeshlet(
         }
     }
     if (!cone_visible) result.Routes = 0u;
+    if (edit_overlay && triangle_topology) result.Routes |= RouteBit(MeshletRoute_EditOverlay);
     if (result.Routes == 0u) return result;
     if (occluded) {
         if (pc.TwoPhase != 0u) {
             // Discard-free opaque routes move to the current-pyramid phase. Coverage and blend
             // remain in phase 1 and draw exactly once.
             const uint fast = RouteBit(MeshletRoute_OpaqueCullBack) | RouteBit(MeshletRoute_OpaqueCullFront) |
-                RouteBit(MeshletRoute_OpaqueDoubleSided);
+                RouteBit(MeshletRoute_OpaqueDoubleSided) | RouteBit(MeshletRoute_EditOverlay);
             const uint keep = RouteBit(MeshletRoute_Blend) | RouteBit(MeshletRoute_Coverage);
             result.Routes = (result.Routes & keep) |
                 ((result.Routes & fast) != 0u ? RouteBit(MeshletRoute_Phase2Candidate) : 0u);
@@ -778,8 +780,10 @@ inline bool Phase2ExpandedMeshletVisible(
         const PBRMaterial material = scene.Materials(scene.View.MaterialSlot)[PrimitiveMaterialIndex(scene, primitive)];
         // Rendered blend stays in phase 1. Solid visibility treats it as opaque, matching the
         // primary Visibility route. The conservative phase-2 raster itself remains two-sided.
-        if (pc.RouteMode == 1u && material.AlphaMode == MaterialAlphaMode_Blend) return false;
-        if (material.DoubleSided == 0u && !MeshletConeVisible(scene, meshlet, world, InstanceDeformed(instance))) return false;
+        const bool edit_overlay = (instance.Flags & MeshletInstanceFlag_EditOverlay) != 0u;
+        if (!edit_overlay && pc.RouteMode == 1u && material.AlphaMode == MaterialAlphaMode_Blend) return false;
+        if (!edit_overlay && material.DoubleSided == 0u &&
+            !MeshletConeVisible(scene, meshlet, world, InstanceDeformed(instance))) return false;
     }
     const MeshletBounds bounds = ResolveMeshletBounds(scene, pc, candidate, instance_slot, instance, meshlet, world);
     if (!bounds.Valid) return true;
@@ -903,10 +907,13 @@ kernel void MeshletPhase2Prefix(
     device MeshletRouteState *phase2 = BindlessBufferMutable(MeshletRouteState, bindless.Buffer, pc.Phase2RouteStateSlot);
     phase2->Counts[MeshletRoute_OpaqueCullBack] = total;
     phase2->Offsets[MeshletRoute_OpaqueCullBack] = 0u;
-    // Phase 2 draws route 0 alone, so its args buffer holds that route's chunks only.
+    phase2->Counts[MeshletRoute_EditOverlay] = total;
+    phase2->Offsets[MeshletRoute_EditOverlay] = 0u;
     device MeshDispatchArgs *args = BindlessBufferMutable(MeshDispatchArgs, bindless.Buffer, pc.Phase2DispatchArgsSlot);
     for (uint chunk = 0u; chunk < pc.DispatchChunkCount; ++chunk) {
         const uint begin = chunk * pc.DispatchChunkSize;
-        args[chunk] = {total > begin ? min(total - begin, pc.DispatchChunkSize) : 0u, 1u, 1u};
+        const MeshDispatchArgs dispatch = {total > begin ? min(total - begin, pc.DispatchChunkSize) : 0u, 1u, 1u};
+        args[chunk] = dispatch;
+        args[MeshletRoute_EditOverlay * pc.DispatchChunkCount + chunk] = dispatch;
     }
 }

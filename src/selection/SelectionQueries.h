@@ -42,5 +42,8 @@ std::optional<std::pair<entt::entity, uint32_t>> RunElementPickFromRanges(entt::
 
 // Dispatches the GPU compute pass that rewrites per-element state buffers from the selection bits. Blocks on the one-shot fence.
 void DispatchUpdateSelectionStates(entt::registry &, std::span<const ElementRange>, Element);
+// Publish the mesh-local selection aggregates consumed by UI and transform tools.
+void RefreshElementSelectionStats(entt::registry &, entt::entity mesh_entity, Element);
+void RefreshElementSelectionSharpness(entt::registry &, entt::entity mesh_entity, Element);
 // Runs DispatchUpdateSelectionStates, then derives the dependent edge/face/vertex state buffers CPU-side.
 void ApplySelectionStateUpdate(entt::registry &, entt::entity viewport, std::span<const ElementRange>, Element);

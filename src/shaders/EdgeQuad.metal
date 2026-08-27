@@ -14,6 +14,12 @@
 constant uint EdgeQuadMeshEdges = OverlayDispatch_EdgeQuadGroupEdges;
 using EdgeQuadMeshOutput = metal::mesh<EdgeQuadVaryings, void, EdgeQuadMeshEdges * 4u, EdgeQuadMeshEdges * 2u, metal::topology::triangle>;
 
+// Matches Blender's overlay_shader_shared.hh constant values.
+constant float EdgeQuadDiscRadius = 0.5641895835477563f * 1.05f;
+inline float EdgeQuadSmoothWeight(float distance) {
+    return smoothstep(0.5f - EdgeQuadDiscRadius, 0.5f + EdgeQuadDiscRadius, distance);
+}
+
 inline EdgeQuadVaryings EdgeQuadCorner(const thread Scene &scene, DrawData draw, uint edge_id, uint corner) {
     constant ViewportThemeColors &colors = scene.Theme.Colors;
     const Transform world = scene.Models(draw.ModelSlot)[draw.FirstInstance];
@@ -105,6 +111,21 @@ inline EdgeQuadVaryings EdgeQuadCorner(const thread Scene &scene, DrawData draw,
     }
 }
 
+inline OverlayTargets ShadeEdgeQuad(EdgeQuadVaryings in, const thread Scene &scene, bool include_outer) {
+    const float edge_width = scene.Theme.EdgeWidth;
+    const float dist = abs(in.EdgeCoord) - max(edge_width - 0.5f, 0.0f);
+    const float mix_w = EdgeQuadSmoothWeight(dist);
+    float4 color = in.Color;
+    if (include_outer && in.OuterColor.a > 0.0f) {
+        color = mix(in.OuterColor, color, 1.0f - mix_w);
+        color.a *= 1.0f - EdgeQuadSmoothWeight(dist - max(edge_width, 1.0f));
+    } else {
+        color.a *= 1.0f - mix_w;
+    }
+    // Opt out of composite AA: edge quads handle their own.
+    return OverlayTargets{color, float4(0.0f)};
+}
+
 fragment OverlayTargets EdgeQuadFragment(
     EdgeQuadVaryings in [[stage_in]],
     device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
@@ -113,21 +134,18 @@ fragment OverlayTargets EdgeQuadFragment(
     constant WorkspaceLights &workspace [[buffer(BufferIndex_WorkspaceLights)]]
 ) {
     const Scene scene{bindless, view, theme, workspace};
-    // Matches Blender's overlay_shader_shared.hh constant values.
-    const float DISC_RADIUS = 0.5641895835477563f * 1.05f; // M_1_SQRTPI * 1.05
-    const float LINE_SMOOTH_START = 0.5f - DISC_RADIUS;
-    const float LINE_SMOOTH_END = 0.5f + DISC_RADIUS;
+    return ShadeEdgeQuad(in, scene, true);
+}
 
-    const float edge_width = scene.Theme.EdgeWidth;
-    const float dist = abs(in.EdgeCoord) - max(edge_width - 0.5f, 0.0f);
-    const float dist_outer = dist - max(edge_width, 1.0f);
-    const float mix_w = smoothstep(LINE_SMOOTH_START, LINE_SMOOTH_END, dist);
-    const float mix_w_outer = smoothstep(LINE_SMOOTH_START, LINE_SMOOTH_END, dist_outer);
-
-    float4 color = mix(in.OuterColor, in.Color, 1.0f - mix_w * in.OuterColor.a);
-    color.a *= 1.0f - (in.OuterColor.a > 0.0f ? mix_w_outer : mix_w);
-    // Opt out of composite AA: edge quads handle their own.
-    return OverlayTargets{color, float4(0.0f)};
+fragment OverlayTargets EdgeQuadSmoothFragment(
+    EdgeQuadVaryings in [[stage_in]],
+    device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
+    constant SceneViewUBO &view [[buffer(BufferIndex_SceneView)]],
+    constant ViewportTheme &theme [[buffer(BufferIndex_ViewportTheme)]],
+    constant WorkspaceLights &workspace [[buffer(BufferIndex_WorkspaceLights)]]
+) {
+    const Scene scene{bindless, view, theme, workspace};
+    return ShadeEdgeQuad(in, scene, false);
 }
 
 #endif

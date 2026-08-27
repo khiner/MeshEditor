@@ -1,6 +1,7 @@
 #pragma once
 
 #include "gpu/LodNode.h"
+#include "gpu/MeshletLimit.h"
 #include "numeric/vec3.h"
 #include "render/CornerWeldKey.h"
 
@@ -10,8 +11,8 @@
 
 // A cluster's vertex and triangle limits, fixed by the visibility id's six triangle bits and the
 // mesh shader's output contract.
-inline constexpr uint32_t ClusterLodMaxVertices{64};
-inline constexpr uint32_t ClusterLodMaxTriangles{48};
+inline constexpr uint32_t ClusterLodMaxVertices{uint32_t(MeshletLimit::MaxVertices)};
+inline constexpr uint32_t ClusterLodMaxTriangles{uint32_t(MeshletLimit::MaxTriangles)};
 // A cluster below this triangle count merges into a neighbour instead of standing on its own.
 inline constexpr uint32_t ClusterLodMinTriangles{16};
 // Clusters per DAG group. A mesh with no more clusters than this has no coarser level to reach.

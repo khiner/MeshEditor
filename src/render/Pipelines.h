@@ -134,7 +134,8 @@ struct MainPipeline {
     mtl::RenderPipeline MotionBlurGather;
     mtl::RenderPipeline WorkspaceVisibility;
     mtl::MeshRenderPipeline MeshletVisibilityOpaque, MeshletVisibilityCoverage;
-    mtl::MeshRenderPipeline EdgeQuadMesh, PointMesh;
+    std::array<mtl::MeshRenderPipeline, 3> MeshletEditEdges, MeshletEditSmoothEdges;
+    mtl::MeshRenderPipeline MeshletEditPoint, EdgeQuadMesh, PointMesh;
     mtl::MeshRenderPipeline FaceNormalMesh, VertexNormalMesh, BoundsBoxMesh, TetWireMesh, SoundPointMesh, ExtrasLineMesh;
     mtl::MeshRenderPipeline BoneFillMesh, BoneWireMesh, BoneSphereFillMesh, BoneSphereWireMesh;
     // Wireframe lines rasterize in compute, and this resolves their coverage into the overlay layer.
@@ -233,6 +234,7 @@ struct Pipelines {
     mtl::ComputePipeline LodFrontierCount, LodFrontierPrefix, LodFrontierEmit;
     mtl::ComputePipeline MeshletCullBlockCount, MeshletCullPrefix, MeshletCullEmit;
     mtl::ComputePipeline MeshletPhase2Cull, MeshletPhase2RangeCull, MeshletPhase2Prefix;
+    mtl::ComputePipeline MeshletEditClaim;
     mtl::ComputePipeline DepthPyramidReduce;
     // Finds each tile's largest motion, then marks every tile its streak crosses.
     mtl::ComputePipeline MotionBlurTilesFlatten, MotionBlurTilesDilate;

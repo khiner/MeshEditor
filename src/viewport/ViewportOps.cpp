@@ -50,7 +50,7 @@ bool SetInteractionMode(entt::registry &r, entt::entity viewport, InteractionMod
                 if (count == 0) continue;
 
                 meshes.EnsureSelectionBits(mesh);
-                selection::SelectAll(meshes.GetSelectionBits(mesh.GetStoreId()), count);
+                selection::SelectAll(meshes.GetMutableSelectionBits(mesh.GetStoreId()), count);
                 r.emplace<MeshElementSelection>(mesh_entity);
             }
         }

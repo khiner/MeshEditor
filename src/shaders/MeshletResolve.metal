@@ -32,7 +32,7 @@ struct MeshletWork {
     MeshletRecord Meshlet;
     PrimitiveRecord Primitive;
     DrawData Draw;
-    uint VisibleIndex;
+    uint VisibleIndex, MeshletIndex;
     bool Valid;
 };
 
@@ -45,6 +45,7 @@ inline MeshletWork ResolveMeshletWork(
     const uint instance_slot = BindlessBuffer(uint, bindless.Buffer, pc.InstanceMapSlot)[work.Instance];
     MeshletWork result{};
     result.VisibleIndex = visible_index;
+    result.MeshletIndex = work.Meshlet;
     result.Instance = BindlessBuffer(InstanceRecord, bindless.Buffer, pc.InstanceSlot)[instance_slot];
     if ((result.Instance.Flags & pc.RequiredInstanceFlags) != pc.RequiredInstanceFlags) return result;
     result.Meshlet = BindlessBuffer(MeshletRecord, bindless.Buffer, pc.MeshletSlot)[work.Meshlet];

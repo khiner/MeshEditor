@@ -509,7 +509,7 @@ MeshStore::MeshStore(MeshStore &&) noexcept = default;
 MeshStore &MeshStore::operator=(MeshStore &&) noexcept = default;
 
 std::span<const Vertex> MeshStore::GetVertices(uint32_t id) const { return B->VerticesBuffer.Get(Entries.at(id).Vertices); }
-std::span<Vertex> MeshStore::GetVertices(uint32_t id) { return B->VerticesBuffer.GetMutable(Entries.at(id).Vertices); }
+std::span<Vertex> MeshStore::GetMutableVertices(uint32_t id) { return B->VerticesBuffer.GetMutable(Entries.at(id).Vertices); }
 SlottedRange MeshStore::GetVerticesRange(uint32_t id) const { return B->VerticesBuffer.Slotted(Entries.at(id).Vertices); }
 SlottedRange MeshStore::GetBoneDeformRange(uint32_t id) const { return B->BoneDeformBuffer.Slotted(Entries.at(id).BoneDeform); }
 SlottedRange MeshStore::GetMorphTargetRange(uint32_t id) const { return B->MorphTargetBuffer.Slotted(Entries.at(id).MorphTargets); }
@@ -518,10 +518,12 @@ std::span<const BoneDeformVertex> MeshStore::GetBoneDeform(uint32_t id) const { 
 std::span<const MorphTargetVertex> MeshStore::GetMorphTargets(uint32_t id) const { return B->MorphTargetBuffer.Get(Entries.at(id).MorphTargets); }
 
 uint32_t MeshStore::GetVertexStateSlot() const { return B->VertexStateBuffer.Slot; }
+uint32_t MeshStore::GetVertexStateCount() const { return B->VertexStateBuffer.Count<uint8_t>(); }
 uint32_t MeshStore::GetCornerTangentSlot() const { return B->CornerTangentBuffer.Buffer.Slot; }
 uint32_t MeshStore::GetCornerColorSlot() const { return B->CornerColorBuffer.Buffer.Slot; }
 uint32_t MeshStore::GetCornerUvSlot() const { return B->CornerUvBuffer.Buffer.Slot; }
 uint32_t MeshStore::GetEdgeSharpnessSlot() const { return B->EdgeSharpnessBuffer.Buffer.Slot; }
+uint32_t MeshStore::GetEdgeSharpnessCount() const { return B->EdgeSharpnessBuffer.Buffer.Count<uint8_t>(); }
 uint32_t MeshStore::GetTetPositionSlot() const { return B->TetPositionBuffer.Buffer.Slot; }
 uint32_t MeshStore::GetTetEdgeIndexSlot() const { return B->TetEdgeIndexBuffer.Buffer.Slot; }
 
@@ -599,7 +601,7 @@ void MeshStore::EnsureSelectionBits(const Mesh &mesh) {
 }
 
 std::span<const uint32_t> MeshStore::GetSelectionBits(uint32_t id) const { return B->SelectionBitsBuffer.Get(Entries.at(id).SelectionBits); }
-std::span<uint32_t> MeshStore::GetSelectionBits(uint32_t id) { return B->SelectionBitsBuffer.GetMutable(Entries.at(id).SelectionBits); }
+std::span<uint32_t> MeshStore::GetMutableSelectionBits(uint32_t id) { return B->SelectionBitsBuffer.GetMutable(Entries.at(id).SelectionBits); }
 uint32_t MeshStore::GetSelectionBitsSlot() const { return B->SelectionBitsBuffer.Buffer.Slot; }
 uint32_t MeshStore::GetSelectionBitOffset(uint32_t id) const { return Entries.at(id).SelectionBits.Offset * 32; }
 
@@ -909,7 +911,7 @@ void MeshStore::UpdateMorphShadingAuthored(const Mesh &mesh, std::span<const Cor
 
 void MeshStore::SetEdgeSharpnessByAngle(const Mesh &mesh, float angle) {
     const auto id = mesh.GetStoreId();
-    auto sharp = GetEdgeSharpness(id);
+    auto sharp = GetMutableEdgeSharpness(id);
     if (sharp.empty()) return;
     const auto vertices = GetVertices(id);
     static thread_local std::vector<vec3> face_normals;
@@ -936,6 +938,34 @@ SharpnessSummary MeshStore::GetFaceSharpnessSummary(uint32_t id) const {
     const auto s = GetFaceSharpness(id);
     const auto sharp = [](uint8_t b) { return b != 0; };
     return {std::ranges::any_of(s, sharp), !s.empty() && std::ranges::all_of(s, sharp)};
+}
+
+SelectedSharpnessSummary MeshStore::GetSelectedSharpnessSummary(uint32_t id, Element element) const {
+    if (element == Element::None) return {};
+    const auto &entry = Entries.at(id);
+    const auto sharpness = element == Element::Face ? GetFaceSharpness(id) : GetEdgeSharpness(id);
+    const auto edge_states = B->EdgeStateBuffer.Get(entry.EdgeStates);
+    const auto face_states = B->FaceStateBuffer.GetSpan<uint8_t>(entry.FaceData);
+    bool any_sharp = false, any_smooth = false;
+    const auto classify = [&](uint32_t i) {
+        (sharpness[i] ? any_sharp : any_smooth) = true;
+        return any_sharp && any_smooth;
+    };
+    if (element == Element::Face) {
+        const uint32_t count = std::min(uint32_t(sharpness.size()), uint32_t(face_states.size()));
+        for (uint32_t i = 0; i < count; ++i) {
+            if ((face_states[i] & ElementStateSelected) != 0u && classify(i)) break;
+        }
+    } else {
+        const uint32_t count = std::min(uint32_t(sharpness.size()), uint32_t(edge_states.size() / 2));
+        for (uint32_t i = 0; i < count; ++i) {
+            const bool selected = element == Element::Edge ?
+                (edge_states[2 * i] & ElementStateSelected) != 0u :
+                ((edge_states[2 * i] | edge_states[2 * i + 1]) & ElementStateSelected) != 0u;
+            if (selected && classify(i)) break;
+        }
+    }
+    return {any_sharp, any_smooth};
 }
 
 namespace {
@@ -1422,7 +1452,7 @@ CreatedMesh MeshStore::CreateMesh(uint32_t id, MeshData &&data, MeshVertexAttrib
     entry.EdgeSharpness = B->EdgeSharpnessBuffer.Allocate(mesh.EdgeCount());
     ClearElementStates(vertices, entry.FaceData, entry.EdgeStates);
     if (entry.FaceData.Count > 0) {
-        auto sharpness = GetFaceSharpness(id);
+        auto sharpness = GetMutableFaceSharpness(id);
         std::ranges::fill(sharpness, uint8_t(flat_shaded ? 1 : 0));
         // Faces of primitives that ship no normals shade flat, like a fully normal-less mesh.
         if (!flat_shaded && !primitives.AttributeFlags.empty()) {
@@ -1432,12 +1462,12 @@ CreatedMesh MeshStore::CreateMesh(uint32_t id, MeshData &&data, MeshVertexAttrib
             }
         }
     }
-    if (entry.EdgeSharpness.Count > 0) std::ranges::fill(GetEdgeSharpness(id), uint8_t{0});
+    if (entry.EdgeSharpness.Count > 0) std::ranges::fill(GetMutableEdgeSharpness(id), uint8_t{0});
     BuildVertexAdjacency(mesh);
 
     // A face whose authored corner normals all match its geometric normal shades flat, recorded as face sharpness.
     if (!authored_corner_normals.empty() && entry.FaceData.Count > 0) {
-        auto sharp = GetFaceSharpness(id);
+        auto sharp = GetMutableFaceSharpness(id);
         // The weld rewrote the arena's positions and corners, so the face loops read them there.
         const auto source_vertices = GetVertices(id);
         const auto corners = GetFaceCorners(id);
@@ -1467,7 +1497,7 @@ CreatedMesh MeshStore::CreateMesh(uint32_t id, MeshData &&data, MeshVertexAttrib
     // The split records as edge sharpness so seam sectors derive.
     if (!authored_corner_normals.empty() && entry.FaceData.Count > 0 && entry.EdgeSharpness.Count > 0) {
         const auto first_triangles = GetFaceFirstTriangles(id);
-        auto sharp_edges = GetEdgeSharpness(id);
+        auto sharp_edges = GetMutableEdgeSharpness(id);
         const auto &c = mesh.GetConnectivity();
         // The authored normal at face loop position `k`, read from any of its fan-corner slots.
         const auto authored_at = [&](Mesh::FH fh, uint32_t k) {
@@ -1568,7 +1598,7 @@ CreatedMesh MeshStore::CloneMesh(const Mesh &mesh) {
     });
 
     ClearElementStates(vertices, faces, edge_states);
-    if (faces.Count > 0) std::ranges::copy(GetFaceSharpness(src_id), GetFaceSharpness(id).begin());
+    if (faces.Count > 0) std::ranges::copy(GetFaceSharpness(src_id), GetMutableFaceSharpness(id).begin());
     std::ranges::copy(GetBaseVertexNormals(src_id), GetBaseVertexNormals(id).begin());
     if (faces.Count > 0) std::ranges::copy(GetBaseFaceNormals(src_id), GetBaseFaceNormals(id).begin());
     return {id};
@@ -1647,9 +1677,9 @@ Range MeshStore::AllocateFaces(uint32_t count) {
 }
 
 std::span<const uint8_t> MeshStore::GetFaceSharpness(uint32_t id) const { return B->FaceSharpnessBuffer.GetSpan<uint8_t>(Entries.at(id).FaceData); }
-std::span<uint8_t> MeshStore::GetFaceSharpness(uint32_t id) { return B->FaceSharpnessBuffer.GetMutableSpan<uint8_t>(Entries.at(id).FaceData); }
+std::span<uint8_t> MeshStore::GetMutableFaceSharpness(uint32_t id) { return B->FaceSharpnessBuffer.GetMutableSpan<uint8_t>(Entries.at(id).FaceData); }
 std::span<const uint8_t> MeshStore::GetEdgeSharpness(uint32_t id) const { return B->EdgeSharpnessBuffer.Get(Entries.at(id).EdgeSharpness); }
-std::span<uint8_t> MeshStore::GetEdgeSharpness(uint32_t id) { return B->EdgeSharpnessBuffer.GetMutable(Entries.at(id).EdgeSharpness); }
+std::span<uint8_t> MeshStore::GetMutableEdgeSharpness(uint32_t id) { return B->EdgeSharpnessBuffer.GetMutable(Entries.at(id).EdgeSharpness); }
 
 VertexAdjacency MeshStore::GetVertexEdgeAdjacency(uint32_t id) const {
     const auto &e = Entries.at(id);

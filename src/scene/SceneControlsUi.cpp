@@ -1,6 +1,7 @@
 #include "scene/SceneControlsUi.h"
 #include "Camera.h"
 #include "Path.h"
+#include "Profile.h"
 #include "TransformMath.h"
 #include "action/Audio.h"
 #include "action/Bone.h"
@@ -54,7 +55,6 @@ static void RenderObjectTree(entt::registry &, entt::entity viewport);
 static void RenderEntityControls(entt::registry &, entt::entity viewport, entt::entity active_entity);
 
 namespace {
-
 constexpr std::string_view ObjectTypeName(ObjectType type) {
     switch (type) {
         case ObjectType::Empty: return "Empty";
@@ -815,6 +815,7 @@ static void RenderEntityControls(entt::registry &r, entt::entity viewport, entt:
 }
 
 void RenderControls(entt::registry &r, entt::entity viewport) {
+    const profile::CpuScope scope{"SceneControlsUi"};
     if (BeginTabBar("Scene controls")) {
         if (BeginTabItem("Object")) {
             {
@@ -853,40 +854,24 @@ void RenderControls(entt::registry &r, entt::entity viewport) {
                         SameLine();
                         if (RadioButton(name.c_str(), &type_interaction_mode, int(element))) action::Emit(action::view::SetEditMode{.Mode = element});
                     }
-                    const auto &mesh_store = r.ctx().get<const MeshStore>();
-                    if (const auto active_entity = FindActiveEntity(r); active_entity != entt::null) {
-                        if (const auto *instance = r.try_get<Instance>(active_entity); instance && HasMesh(r, instance->Entity)) {
-                            const auto mesh = GetMesh(r, instance->Entity);
-                            const uint32_t selected_count = r.all_of<MeshElementSelection>(instance->Entity) ?
-                                selection::CountSelected(mesh_store.GetSelectionBits(mesh.GetStoreId()), selection::GetElementCount(mesh, edit_mode)) :
-                                0;
-                            Text("Editing %s: %u selected", label(edit_mode).data(), selected_count);
-                        }
+                    const auto active_entity = FindActiveEntity(r);
+                    const auto *active_instance = active_entity != entt::null ? r.try_get<const Instance>(active_entity) : nullptr;
+                    const auto active_mesh = active_instance && HasMesh(r, active_instance->Entity) ? active_instance->Entity : entt::null;
+                    const auto *active_stats = active_mesh != entt::null ? r.try_get<const MeshElementSelectionStats>(active_mesh) : nullptr;
+                    const uint32_t selected_count = active_stats && active_stats->Mode == edit_mode ? active_stats->SelectedCount : 0u;
+                    bool any_sharp = false, any_smooth = false;
+                    for (const auto entity : r.view<const MeshElementSelectionStats>()) {
+                        const auto &stats = r.get<const MeshElementSelectionStats>(entity);
+                        if (stats.Mode != edit_mode) continue;
+                        any_sharp |= stats.AnySharp;
+                        any_smooth |= stats.AnySmooth;
+                        if (any_sharp && any_smooth) break;
                     }
+                    if (active_mesh != entt::null) Text("Editing %s: %u selected", label(edit_mode).data(), selected_count);
                     // Per-element shading over the current selection. Face mode shades selected faces,
                     // edge mode marks selected edges sharp, and vertex mode marks every edge touching
                     // a selected vertex (hidden when the selection touches no edges).
                     if (edit_mode != Element::None) {
-                        bool any_sharp = false, any_smooth = false;
-                        for (const auto me : r.view<const MeshElementSelection>()) {
-                            if (any_sharp && any_smooth) break;
-                            if (!HasMesh(r, me)) continue;
-                            const auto mesh = GetMesh(r, me);
-                            const auto id = mesh.GetStoreId();
-                            const auto bits = mesh_store.GetSelectionBits(id);
-                            const auto count = selection::GetElementCount(mesh, edit_mode);
-                            const auto classify = [&](std::span<const uint8_t> sharp) {
-                                return [&any_sharp, &any_smooth, sharp](uint32_t handle) {
-                                    if (handle < sharp.size()) (sharp[handle] ? any_sharp : any_smooth) = true;
-                                };
-                            };
-                            if (edit_mode == Element::Face || edit_mode == Element::Edge) {
-                                const auto sharp = edit_mode == Element::Face ? mesh_store.GetFaceSharpness(id) : mesh_store.GetEdgeSharpness(id);
-                                selection::ForEachSelected(bits, count, classify(sharp));
-                            } else {
-                                selection::ForEachVertexTouchedEdge(bits, count, mesh, classify(mesh_store.GetEdgeSharpness(id)));
-                            }
-                        }
                         if (any_sharp || any_smooth) {
                             const bool mixed = any_sharp && any_smooth;
                             if (mixed) PushItemFlag(ImGuiItemFlags_MixedValue, true);
@@ -989,14 +974,13 @@ void RenderControls(entt::registry &r, entt::entity viewport) {
                     if (!face_mesh_entities.empty()) {
                         // Fully smooth = no sharp face. Any sharp face (even partial) reads as not-smooth,
                         // and a partially sharp mesh renders the checkbox mixed.
-                        const auto &meshes = r.ctx().get<const MeshStore>();
                         bool any_smooth = false, any_sharp = false, any_partial = false;
                         for (const auto me : face_mesh_entities) {
+                            const auto &summary = r.get<const MeshShadingSummary>(me);
+                            any_smooth |= !summary.AnySharp;
+                            any_sharp |= summary.AnySharp;
+                            any_partial |= summary.AnySharp && !summary.AllSharp;
                             if ((any_smooth && any_sharp) || any_partial) break;
-                            const auto summary = meshes.GetFaceSharpnessSummary(r.get<const MeshHandle>(me).StoreId);
-                            any_smooth |= !summary.Any;
-                            any_sharp |= summary.Any;
-                            any_partial |= summary.Any && !summary.All;
                         }
                         const bool mixed_smooth = (any_smooth && any_sharp) || any_partial;
                         SameLine();

@@ -44,6 +44,10 @@ struct SharpnessSummary {
     bool Any, All;
 };
 
+struct SelectedSharpnessSummary {
+    bool AnySharp, AnySmooth;
+};
+
 // One pose's per-class corner-normal sources, each span entry-relative: the base stores for the rest pose, or the normals derived from a morph target's full-weight pose.
 struct CornerNormalSources {
     std::span<const vec3> VertexNormals;
@@ -140,7 +144,7 @@ struct MeshStore {
     uint32_t AllocateVertexBuffer(std::span<const vec3> positions, const MeshVertexAttributes &attrs);
 
     std::span<const Vertex> GetVertices(uint32_t id) const;
-    std::span<Vertex> GetVertices(uint32_t id);
+    std::span<Vertex> GetMutableVertices(uint32_t id);
     SlottedRange GetVerticesRange(uint32_t id) const;
     SlottedRange GetBoneDeformRange(uint32_t id) const;
     SlottedRange GetMorphTargetRange(uint32_t id) const;
@@ -155,10 +159,12 @@ struct MeshStore {
 
     // Base bindless slots of the per-mesh GPU buffers (for shader push constants).
     uint32_t GetVertexStateSlot() const;
+    uint32_t GetVertexStateCount() const;
     uint32_t GetCornerTangentSlot() const;
     uint32_t GetCornerColorSlot() const;
     uint32_t GetCornerUvSlot() const;
     uint32_t GetEdgeSharpnessSlot() const;
+    uint32_t GetEdgeSharpnessCount() const;
     uint32_t GetElementPrimitiveSlot() const;
     uint32_t GetPrimitiveMaterialSlot() const;
     uint32_t GetBoneDeformSlot() const;
@@ -185,11 +191,13 @@ struct MeshStore {
     // Canonical per-face and per-edge sharpness: 1 = shading discontinuity (flat face / sharp edge).
     // Callers writing these rederive corner normals afterward.
     std::span<const uint8_t> GetFaceSharpness(uint32_t id) const;
-    std::span<uint8_t> GetFaceSharpness(uint32_t id);
+    std::span<uint8_t> GetMutableFaceSharpness(uint32_t id);
     std::span<const uint8_t> GetEdgeSharpness(uint32_t id) const;
-    std::span<uint8_t> GetEdgeSharpness(uint32_t id);
+    std::span<uint8_t> GetMutableEdgeSharpness(uint32_t id);
     // Any/all summary of the face sharpness bytes.
     SharpnessSummary GetFaceSharpnessSummary(uint32_t id) const;
+    // Sharp and smooth elements touched by the current element-state selection.
+    SelectedSharpnessSummary GetSelectedSharpnessSummary(uint32_t id, Element element) const;
     // Compose per-corner shading normals from the classification and the base normal stores, in triangulated face-fan order, with authored corner offsets applied where non-identity.
     // Requires current base stores (the derive pass ran since the last position/sharpness write).
     // Returns scratch storage valid until the next call.
@@ -256,7 +264,7 @@ struct MeshStore {
     // so every edit mode indexes the same range. Keeps the bits a mesh already has.
     void EnsureSelectionBits(const Mesh &);
     std::span<const uint32_t> GetSelectionBits(uint32_t id) const;
-    std::span<uint32_t> GetSelectionBits(uint32_t id);
+    std::span<uint32_t> GetMutableSelectionBits(uint32_t id);
     // The selection bits' bindless slot, and a mesh's first bit within it, which the element rasters
     // and the state kernel index by.
     uint32_t GetSelectionBitsSlot() const;

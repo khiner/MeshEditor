@@ -32,5 +32,10 @@ struct MeshHandle {
     uint32_t StoreId{~0u};
 };
 
+// Derived from the canonical per-face sharpness store after construction or a shading edit.
+struct MeshShadingSummary {
+    bool AnySharp{}, AllSharp{};
+};
+
 // Cameras, lights, empties
 struct ObjectExtrasTag {};

@@ -1,7 +1,9 @@
 #pragma once
 
+#include "gpu/Element.h"
 #include "numeric/mat4.h"
 #include "numeric/vec2.h"
+#include "numeric/vec3.h"
 #include "selection/BoneSelection.h"
 
 #include <entt/entity/fwd.hpp>
@@ -14,6 +16,14 @@ constexpr uint32_t ElementStateSelected{1u << 0}, ElementStateActive{1u << 1};
 // Marks a mesh whose elements are individually selectable: the store holds its selection bits,
 // and it keeps them across edit-mode switches.
 struct MeshElementSelection {};
+
+// Derived alongside the element-state buffers whenever a mesh selection changes.
+struct MeshElementSelectionStats {
+    Element Mode{Element::None};
+    uint32_t SelectedCount{}, SelectedVertexCount{};
+    vec3 SelectedVertexPositionSum{};
+    bool AnySharp{}, AnySmooth{};
+};
 
 // A mesh's elements (vertices/edges/faces) in the store's selection bits: its first bit, and the
 // element count of the current edit mode.

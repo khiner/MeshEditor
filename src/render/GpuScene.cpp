@@ -5,7 +5,9 @@
 #include "Parallel.h"
 #include "gpu/CornerClassEncoding.h"
 #include "gpu/MeshPrimitiveTopology.h"
+#include "gpu/MeshletEditEdgeEncoding.h"
 #include "gpu/MeshletGeometryEncoding.h"
+#include "gpu/MeshletLimit.h"
 #include "mesh/Mesh.h"
 #include "mesh/MeshStore.h"
 
@@ -15,8 +17,8 @@
 #include <numeric>
 
 namespace {
-constexpr size_t MeshletMaxVertices{64};
-constexpr size_t MeshletMaxTriangles{48};
+constexpr size_t MeshletMaxVertices{size_t(MeshletLimit::MaxVertices)};
+constexpr size_t MeshletMaxTriangles{size_t(MeshletLimit::MaxTriangles)};
 // A primitive with more triangles than this is split into spatial chunks that clusterize on their
 // own. The split comes from the triangle count alone, so a mesh's meshlets never depend on how many
 // cores ran the build.
@@ -30,6 +32,34 @@ std::array<uint32_t, 3> CanonicalTriangle(std::array<uint32_t, 3> triangle) {
 uint32_t PackLocalTriangleOffset(uint32_t offset, MeshPrimitiveTopology topology) {
     assert((offset & ~uint32_t(MeshletGeometryEncoding::LocalTriangleOffsetMask)) == 0u);
     return offset | (uint32_t(topology) << uint32_t(MeshletGeometryEncoding::TopologyShift));
+}
+
+std::vector<uint32_t> BuildTriangleEditEdges(const Mesh &mesh, std::span<const uint32_t> face_first_triangles) {
+    std::vector<uint32_t> result(mesh.TriangleIndexCount(), InvalidOffset);
+    const auto write = [&](Mesh::HH halfedge, uint32_t slot) {
+        const uint32_t edge = *mesh.GetEdge(halfedge);
+        const auto canonical = mesh.GetHalfedge(Mesh::EH{edge}, 0u);
+        const bool reversed = mesh.GetFromVertex(canonical) != mesh.GetFromVertex(halfedge);
+        assert(mesh.GetFromVertex(canonical) == (reversed ? mesh.GetToVertex(halfedge) : mesh.GetFromVertex(halfedge)));
+        assert(mesh.GetToVertex(canonical) == (reversed ? mesh.GetFromVertex(halfedge) : mesh.GetToVertex(halfedge)));
+        assert(edge <= uint32_t(MeshletEditEdgeEncoding::EdgeMask));
+        result[slot] = edge | (reversed ? uint32_t(MeshletEditEdgeEncoding::ReversedBit) : 0u);
+    };
+    for (const auto face : mesh.faces()) {
+        const auto halfedges = mesh.fh_range(face);
+        auto it = halfedges.begin();
+        const auto end = halfedges.end();
+        const auto first_halfedge = *it++;
+        const auto second = *it++;
+        const uint32_t first_triangle = face_first_triangles[*face];
+        for (uint32_t triangle = 0u; it != end; ++it, ++triangle) {
+            const uint32_t base = (first_triangle + triangle) * 3u;
+            if (triangle == 0u) write(second, base);
+            write(*it, base + 1u);
+            if (auto next = it; ++next == end) write(first_halfedge, base + 2u);
+        }
+    }
+    return result;
 }
 
 // A mixed-normal meshlet stores the never-culls cutoff, so the cone test needs no separate flag.
@@ -94,6 +124,7 @@ DrawData PrimitiveDrawData(const GpuBuffers &buffers, const MeshBuffers &mb, con
         .VertexEdgeAdjacencyOffset = OffsetOrInvalid(meshes.GetVertexEdgeAdjacencyRange(store_id)),
         .VertexCountOrHeadImageSlot = mb.Vertices.Count,
         .ElementStateSlotOffset = meshes.GetFaceStateRange(store_id),
+        .EditEdgeOffset = 0u,
         .InstanceStateSlot = buffers.Instances.StateBuffer.Slot,
         .VertexOffset = mb.Vertices.Offset,
         .MorphShadingAuthored = meshes.GetMorphShadingAuthored(store_id) ? 1u : 0u,
@@ -129,6 +160,7 @@ MeshletBuildInputs CaptureMeshletInputs(const GpuBuffers &buffers, const MeshBuf
         .Indices = indices,
         .Vertices = mesh.GetVerticesSpan(),
         .ElementPrimitives = meshes.GetElementPrimitiveIndices(store_id),
+        .TriangleEditEdges = face_topology ? BuildTriangleEditEdges(mesh, meshes.GetFaceFirstTriangles(store_id)) : std::vector<uint32_t>{},
         .PrimitiveTriangleRanges = {primitive_ranges.begin(), primitive_ranges.end()},
         .Weld = {
             .CornerClassOffset = meshes.GetCornerClassOffset(store_id),
@@ -209,6 +241,7 @@ MeshletBuild BuildMeshlets(const MeshletBuildInputs &in) {
     MeshletBuild sink{
         .TriangleIds = std::vector<uint32_t>(face_topology ? in.TriangleCount : element_count),
         .LocalTriangles = std::vector<uint8_t>(face_topology ? size_t(in.TriangleCount) * 3 : 0),
+        .EditEdges = in.TriangleEditEdges,
     };
 
     std::vector<uint8_t> flat_face_triangles;
@@ -278,7 +311,7 @@ MeshletBuild BuildMeshlets(const MeshletBuildInputs &in) {
         for (uint32_t i = 0; i < chunk.TriangleCount; ++i) {
             const auto offset = size_t(i) * 3;
             const auto source_key = CanonicalTriangle({welded_indices[offset], welded_indices[offset + 1], welded_indices[offset + 2]});
-            source_triangles.Insert(source_key.data(), primitive.FirstTriangle + chunk_triangle_ids[i]);
+            source_triangles.Insert(source_key.data(), i);
         }
 
         const auto triangle_ids = std::span{sink.TriangleIds}.subspan(chunk.TriangleIdBase, chunk.TriangleCount);
@@ -302,12 +335,28 @@ MeshletBuild BuildMeshlets(const MeshletBuildInputs &in) {
                 const auto key = CanonicalTriangle(triangle);
                 auto *source = source_triangles.Find(key.data());
                 assert(source != nullptr);
-                const uint32_t source_index = *source;
-                const uint32_t source_triangle = source_index - primitive.FirstTriangle;
+                const uint32_t chunk_triangle = *source;
+                const uint32_t source_triangle = chunk_triangle_ids[chunk_triangle];
+                const uint32_t source_index = primitive.FirstTriangle + source_triangle;
                 *source = FlatKeyMap::Taken;
                 cone_cull_safe &= flat_face_triangles[source_triangle] != 0u;
+                uint32_t rotation = 0u;
+                for (; rotation < 3u; ++rotation) {
+                    bool matches = true;
+                    for (uint32_t c = 0u; c < 3u; ++c) {
+                        matches &= triangle[c] == welded_indices[chunk_triangle * 3u + (rotation + c) % 3u];
+                    }
+                    if (matches) break;
+                }
+                assert(rotation < 3u);
+                const std::array source_edit_edges{
+                    sink.EditEdges[source_index * 3u],
+                    sink.EditEdges[source_index * 3u + 1u],
+                    sink.EditEdges[source_index * 3u + 2u],
+                };
                 for (uint32_t c = 0; c < 3u; ++c) {
                     local_triangles[local_triangle_count++] = uint8_t(local_triangle[c] | (c == 0u && flat_face_triangles[source_triangle] ? uint8_t(MeshletGeometryEncoding::FlatTriangleBit) : 0u));
+                    sink.EditEdges[source_index * 3u + c] = source_edit_edges[(rotation + c) % 3u];
                 }
                 triangle_ids[triangle_id_count++] = source_index;
             }
@@ -453,6 +502,38 @@ MeshletBuild BuildMeshlets(const MeshletBuildInputs &in) {
         }
     }
 
+    if (face_topology) {
+        for (const auto &record : sink.Records) {
+            const auto &primitive = in.PrimitiveTriangleRanges[record.Primitive];
+            const uint32_t first_corner = primitive.FirstTriangle * 3u;
+            std::array<uint32_t, MeshletMaxVertices> vertices;
+            uint32_t vertex_count = 0u;
+            for (uint32_t v = 0u; v < record.VertexCount; ++v) {
+                auto &packed = sink.Vertices[record.VertexOffset + v];
+                const uint32_t corner = packed & uint32_t(MeshletGeometryEncoding::CornerMask);
+                const uint32_t vertex = in.Indices[first_corner + corner];
+                const auto seen = std::span{vertices}.first(vertex_count);
+                if (std::ranges::find(seen, vertex) == seen.end()) {
+                    vertices[vertex_count++] = vertex;
+                    packed |= uint32_t(MeshletGeometryEncoding::EditVertexOwnerBit);
+                }
+            }
+
+            std::array<uint32_t, MeshletMaxTriangles * 3u> edges;
+            uint32_t edge_count = 0u;
+            for (uint32_t t = 0u; t < record.TriangleCount; ++t) {
+                const uint32_t source_triangle = sink.TriangleIds[record.TriangleOffset + t];
+                for (uint32_t c = 0u; c < 3u; ++c) {
+                    auto &packed = sink.EditEdges[source_triangle * 3u + c];
+                    if (packed == InvalidOffset) continue;
+                    const uint32_t edge = packed & uint32_t(MeshletEditEdgeEncoding::EdgeMask);
+                    const auto seen = std::span{edges}.first(edge_count);
+                    if (std::ranges::find(seen, edge) != seen.end()) packed = InvalidOffset;
+                    else edges[edge_count++] = edge;
+                }
+            }
+        }
+    }
     return sink;
 }
 
@@ -508,6 +589,7 @@ void CommitMeshlets(GpuBuffers &buffers, MeshBuffers &mb, MeshletBuild &build) {
 
     mb.MeshletTriangles = buffers.MeshletTriangleIds.Allocate(std::span{build.TriangleIds}.first(build.TriangleIdCount));
     mb.MeshletLocalTriangles = buffers.MeshletLocalTriangles.Allocate(std::span{build.LocalTriangles}.first(build.LocalTriangleCount));
+    mb.MeshletEditEdges = buffers.MeshletEditEdgeIds.Allocate(build.EditEdges);
     mb.MeshletVertices = buffers.MeshletVertexCorners.Allocate(build.Vertices);
     for (auto &record : build.Records) {
         record.TriangleOffset += mb.MeshletTriangles.Offset;
@@ -516,7 +598,10 @@ void CommitMeshlets(GpuBuffers &buffers, MeshBuffers &mb, MeshletBuild &build) {
         record.VertexOffset += mb.MeshletVertices.Offset;
     }
     mb.Meshlets = buffers.Meshlets.Allocate(build.Records);
-    for (auto &record : build.Primitives) record.MeshletOffset += mb.Meshlets.Offset;
+    for (auto &record : build.Primitives) {
+        record.MeshletOffset += mb.Meshlets.Offset;
+        if (record.Draw.EditEdgeOffset != InvalidOffset) record.Draw.EditEdgeOffset += mb.MeshletEditEdges.Offset;
+    }
     mb.Primitives = buffers.Primitives.Allocate(build.Primitives);
     for (auto &record : buffers.Meshlets.GetMutable(mb.Meshlets)) record.Primitive += mb.Primitives.Offset;
     // Every primitive presents one never-pruned span node, which is the whole traversal a mesh

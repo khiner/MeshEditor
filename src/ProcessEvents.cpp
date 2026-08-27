@@ -250,7 +250,7 @@ void SetEditMode(entt::registry &r, entt::entity viewport, Element mode) {
         const auto mesh = GetMesh(r, mesh_entity);
         const auto id = mesh.GetStoreId();
         const uint32_t old_count = selection::GetElementCount(mesh, current_mode);
-        auto bits = meshes.GetSelectionBits(id);
+        auto bits = meshes.GetMutableSelectionBits(id);
         auto to_handles = selection::ConvertSelectionElement(bits, old_count, mesh, current_mode, mode);
         if (old_count > 0) old_ranges.emplace_back(mesh_entity, meshes.GetSelectionBitOffset(id), old_count);
         r.remove<MeshActiveElement>(mesh_entity);
@@ -269,7 +269,7 @@ void SetEditMode(entt::registry &r, entt::entity viewport, Element mode) {
 
     std::vector<ElementRange> new_ranges;
     for (const auto &p : pending) {
-        auto bits = meshes.GetSelectionBits(p.StoreId);
+        auto bits = meshes.GetMutableSelectionBits(p.StoreId);
         for (const uint32_t h : p.ToHandles) {
             if (h < p.NewCount) selection::Select(bits, h);
         }
@@ -278,7 +278,12 @@ void SetEditMode(entt::registry &r, entt::entity viewport, Element mode) {
 
     r.patch<EditMode>(viewport, [mode](auto &edit_mode) { edit_mode.Value = mode; });
     if (!new_ranges.empty()) ApplySelectionStateUpdate(r, viewport, new_ranges, mode);
-    else if (!old_ranges.empty()) r.emplace_or_replace<ElementStatesDirty>(viewport);
+    else {
+        for (const auto &p : pending) {
+            r.emplace_or_replace<MeshElementSelectionStats>(p.MeshEntity, MeshElementSelectionStats{.Mode = mode});
+        }
+        if (!old_ranges.empty()) r.emplace_or_replace<ElementStatesDirty>(viewport);
+    }
 }
 
 struct SyncResult {
@@ -758,14 +763,14 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
         const auto ranges = GetElementRangesForSelected(r, viewport);
         if (!toggle) {
             for (const auto &range : ranges) {
-                std::ranges::fill(meshes.GetSelectionBits(r.get<const MeshHandle>(range.MeshEntity).StoreId), 0u);
+                std::ranges::fill(meshes.GetMutableSelectionBits(r.get<const MeshHandle>(range.MeshEntity).StoreId), 0u);
                 r.remove<MeshActiveElement>(range.MeshEntity);
             }
         }
         const auto hit = RunElementPickFromRanges(r, viewport, ranges, edit_mode, mouse_px);
         if (hit) {
             const auto [mesh_entity, element_index] = *hit;
-            auto bits = meshes.GetSelectionBits(r.get<const MeshHandle>(mesh_entity).StoreId);
+            auto bits = meshes.GetMutableSelectionBits(r.get<const MeshHandle>(mesh_entity).StoreId);
             const auto *current_active = r.try_get<MeshActiveElement>(mesh_entity);
             const bool is_active = current_active && current_active->Handle == element_index;
             const bool was_selected = selection::IsSelected(bits, element_index);
@@ -1215,6 +1220,9 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
         std::vector<entt::entity> reclassified;
         for (auto mesh_entity : tracker) {
             if (const auto mesh = TryGetMesh(r, mesh_entity); mesh && r.all_of<MeshShadingDirty>(mesh_entity)) {
+                const auto [any, all] = meshes.GetFaceSharpnessSummary(mesh->GetStoreId());
+                r.emplace_or_replace<MeshShadingSummary>(mesh_entity, any, all);
+                RefreshElementSelectionSharpness(r, mesh_entity, r.get<const EditMode>(viewport).Value);
                 meshes.UpdateCornerClassification(*mesh);
                 reclassified.emplace_back(mesh_entity);
             }
@@ -1270,9 +1278,11 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
                 const auto mesh = GetMesh(r, mesh_entity);
                 meshes.EnsureSelectionBits(mesh);
                 const auto id = mesh.GetStoreId();
-                std::ranges::fill(meshes.GetSelectionBits(id), 0u);
+                std::ranges::fill(meshes.GetMutableSelectionBits(id), 0u);
                 if (const uint32_t count = selection::GetElementCount(mesh, edit_mode); count > 0) {
                     geometry_ranges.emplace_back(mesh_entity, meshes.GetSelectionBitOffset(id), count);
+                } else {
+                    r.emplace_or_replace<MeshElementSelectionStats>(mesh_entity, MeshElementSelectionStats{.Mode = edit_mode});
                 }
             }
         }

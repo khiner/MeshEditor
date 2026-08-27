@@ -48,6 +48,7 @@ CASES = [
     {"id": "draw-items", "scene": "DrawItems", "camera": "Default", "action": "steady"},
     {"id": "draw-items-visibility", "scene": "DrawItems", "camera": "Default", "action": "visibility", "actionCount": 64},
     {"id": "meshlets-close", "scene": "Meshlets", "camera": "Close", "action": "orbit"},
+    {"id": "meshlets-edit-vertices-selected", "scene": "Meshlets", "camera": "Close", "action": "orbit", "overlays": True, "edit": "vertex", "selectAll": True},
     {"id": "meshlets-overview", "scene": "Meshlets", "camera": "Overview", "action": "steady"},
     {"id": "large-meshes", "scene": "LargeMeshes", "camera": "Default", "action": "steady"},
     {"id": "occlusion-hidden", "scene": "Occlusion", "camera": "Occluded", "action": "steady"},
