@@ -172,9 +172,7 @@ struct GpuBuffers {
           ElementPickKey{Ctx, sizeof(uint32_t)},
           ElementPickId{Ctx, sizeof(uint32_t)},
           WireCoverageBuffer{Ctx, 0, SlotType::Buffer},
-          WireDrawRecords{Ctx, 0, SlotType::Buffer},
-          MeshletEditEdgeOwners{Ctx, 0, SlotType::Buffer},
-          MeshletEditVertexOwners{Ctx, 0, SlotType::Buffer} {
+          WireDrawRecords{Ctx, 0, SlotType::Buffer} {
     }
 
     void ReserveAdditionalIndices(uint32_t face, uint32_t edge, uint32_t vertex) {
@@ -494,5 +492,4 @@ struct GpuBuffers {
     TypedBuffer<uint32_t> ElementPickKey, ElementPickId;
     mtl::Buffer WireCoverageBuffer;
     TypedBuffer<WireDrawRecord> WireDrawRecords;
-    mtl::Buffer MeshletEditEdgeOwners, MeshletEditVertexOwners;
 };

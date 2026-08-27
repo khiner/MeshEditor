@@ -13,16 +13,36 @@
 #include <entt/entity/registry.hpp>
 
 namespace selection {
-
-std::unordered_map<entt::entity, entt::entity> ComputePrimaryEditInstances(const entt::registry &r, bool include_scale_locked) {
-    std::unordered_map<entt::entity, entt::entity> primaries;
+namespace {
+template<typename F>
+void ForEachEditInstance(const entt::registry &r, F &&f) {
     const auto active = FindActiveEntity(r);
     for (const auto [e, instance, ok, ri] : r.view<const Instance, const Selected, const ObjectKind, const RenderInstance>().each()) {
-        if (ok.Value == ObjectType::Mesh && (include_scale_locked || !r.all_of<ScaleLocked>(e))) {
-            if (auto &primary = primaries[instance.Entity]; primary == entt::entity{} || e == active) primary = e;
-        }
+        if (ok.Value == ObjectType::Mesh) f(instance.Entity, e, e == active, r.all_of<ScaleLocked>(e));
     }
+}
+
+void ChoosePrimary(PrimaryEditInstanceMap &primaries, entt::entity mesh, entt::entity instance, bool active) {
+    auto &primary = primaries[mesh];
+    if (primary == entt::entity{} || active) primary = instance;
+}
+} // namespace
+
+PrimaryEditInstanceMap ComputePrimaryEditInstances(const entt::registry &r, bool include_scale_locked) {
+    PrimaryEditInstanceMap primaries;
+    ForEachEditInstance(r, [&](entt::entity mesh, entt::entity instance, bool active, bool scale_locked) {
+        if (include_scale_locked || !scale_locked) ChoosePrimary(primaries, mesh, instance, active);
+    });
     return primaries;
+}
+
+PrimaryEditInstanceMaps ComputePrimaryEditInstanceMaps(const entt::registry &r) {
+    PrimaryEditInstanceMaps result;
+    ForEachEditInstance(r, [&](entt::entity mesh, entt::entity instance, bool active, bool scale_locked) {
+        ChoosePrimary(result.All, mesh, instance, active);
+        if (!scale_locked) ChoosePrimary(result.Transformable, mesh, instance, active);
+    });
+    return result;
 }
 
 bool HasScaleLockedInstance(const entt::registry &r, entt::entity e) {

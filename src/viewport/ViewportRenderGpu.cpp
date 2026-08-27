@@ -506,7 +506,8 @@ MeshletCullPushConstants MakeMeshletCullSlotsPc(const GpuBuffers &buffers) {
 MeshletDrawPushConstants MakeMeshletDrawPc(
     const GpuBuffers &buffers, const mtl::Buffer &visible, const mtl::Buffer &routes,
     uint32_t route, uint32_t required_instance_flags, uint32_t visibility_phase,
-    bool visibility_transmission, uint32_t vertex_state_slot, uint32_t edge_sharpness_slot
+    bool visibility_transmission, uint32_t vertex_state_slot, uint32_t edge_sharpness_slot,
+    uint32_t edit_edge_corner = 0u
 ) {
     return {
         .PrimitiveSlot = buffers.Primitives.Buffer.Slot,
@@ -521,12 +522,11 @@ MeshletDrawPushConstants MakeMeshletDrawPc(
         .RouteStateSlot = routes.Slot,
         .Route = route,
         .RequiredInstanceFlags = required_instance_flags,
+        .EditEdgeCorner = edit_edge_corner,
         .VisibilityPhase = visibility_phase,
         .VisibilityTransmission = visibility_transmission,
         .VertexStateSlot = vertex_state_slot,
         .EdgeSharpnessSlot = edge_sharpness_slot,
-        .EditEdgeOwnerSlot = buffers.MeshletEditEdgeOwners.Slot,
-        .EditVertexOwnerSlot = buffers.MeshletEditVertexOwners.Slot,
     };
 }
 
@@ -535,7 +535,7 @@ void DrawMeshletList(
     const mtl::Buffer &routes, const mtl::Buffer &dispatch_args, uint32_t route, uint32_t required_instance_flags,
     uint32_t visibility_phase = 0u, bool visibility_transmission = false, bool fragment_pc = false,
     uint32_t vertex_state_slot = InvalidSlot, uint32_t edge_sharpness_slot = InvalidSlot,
-    uint32_t mesh_threads = 160u
+    uint32_t mesh_threads = 160u, uint32_t edit_edge_corner = 0u
 ) {
     // Visibility ids reserve 25 bits for the visible-list index, and overflowing aliases the phase bit.
     if (fragment_pc) {
@@ -545,7 +545,7 @@ void DrawMeshletList(
     }
     auto pc = MakeMeshletDrawPc(
         buffers, visible, routes, route, required_instance_flags, visibility_phase,
-        visibility_transmission, vertex_state_slot, edge_sharpness_slot
+        visibility_transmission, vertex_state_slot, edge_sharpness_slot, edit_edge_corner
     );
     for (uint32_t chunk = 0; chunk < buffers.MeshletDispatchChunkCount; ++chunk) {
         pc.VisibleOffset = chunk * GpuBuffers::MeshletDispatchChunkSize;
@@ -556,21 +556,10 @@ void DrawMeshletList(
     }
 }
 
-void ClaimMeshletEditList(
-    MTL::ComputeCommandEncoder *encoder, const GpuBuffers &buffers, const mtl::Buffer &visible,
-    const mtl::Buffer &routes, const mtl::Buffer &dispatch_args, uint32_t vertex_state_slot,
-    uint32_t edge_sharpness_slot
-) {
-    auto pc = MakeMeshletDrawPc(
-        buffers, visible, routes, uint32_t(MeshletRoute::EditOverlay),
-        uint32_t(MeshletInstanceFlag::EditOverlay), 0u, false, vertex_state_slot, edge_sharpness_slot
-    );
-    for (uint32_t chunk = 0; chunk < buffers.MeshletDispatchChunkCount; ++chunk) {
-        pc.VisibleOffset = chunk * GpuBuffers::MeshletDispatchChunkSize;
-        encode::SetPushConstants(encoder, pc);
-        const auto args_offset = (uint32_t(MeshletRoute::EditOverlay) * buffers.MeshletDispatchChunkCount + chunk) * sizeof(MeshDispatchArgs);
-        encoder->dispatchThreadgroups(*dispatch_args, args_offset, MTL::Size(160, 1, 1));
-    }
+template<typename F>
+void ForEachMeshletVisibilityList(const GpuBuffers &buffers, bool two_phase, F &&f) {
+    f(buffers.VisibleMeshlets, buffers.MeshletRoutes, buffers.MeshletDispatchArgs);
+    if (two_phase) f(buffers.MeshletPhase2Visible, buffers.MeshletPhase2Routes, buffers.MeshletPhase2DispatchArgs);
 }
 
 void DrawPhase2Meshlets(
@@ -727,19 +716,17 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
         return mesh_buffers && mesh_buffers->FaceIndices.Count > 0;
     };
 
-    std::unordered_map<entt::entity, entt::entity> primary_edit_instances;
+    selection::PrimaryEditInstanceMap primary_edit_instances;
     EditTransformContext edit_transform_context;
     const bool has_pending_transform = is_edit_mode && r.all_of<PendingTransform>(viewport);
     record_inputs.Mix(has_pending_transform);
     if (is_edit_mode) {
-        const auto active = FindActiveEntity(r);
-        for (const auto [e, instance, ok, ri] : r.view<const Instance, const Selected, const ObjectKind, const RenderInstance>().each()) {
-            if (ok.Value != ObjectType::Mesh) continue;
-            if (auto &primary = primary_edit_instances[instance.Entity]; primary == entt::entity{} || e == active) primary = e;
-            if (has_pending_transform && !r.all_of<ScaleLocked>(e)) {
-                auto &primary_uf = edit_transform_context.TransformInstances[instance.Entity];
-                if (primary_uf == entt::entity{} || e == active) primary_uf = e;
-            }
+        if (has_pending_transform) {
+            auto primaries = selection::ComputePrimaryEditInstanceMaps(r);
+            primary_edit_instances = std::move(primaries.All);
+            edit_transform_context.TransformInstances = std::move(primaries.Transformable);
+        } else {
+            primary_edit_instances = selection::ComputePrimaryEditInstances(r);
         }
     }
     std::unordered_set<entt::entity> silhouette_instances;
@@ -1151,6 +1138,8 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
 
         draw.MeshletEditOverlayMeshes.clear();
         draw.MeshletEditHasSharpEdges = false;
+        // Filled triangle meshes reuse their visible finest meshlets. Wireframe and face-less
+        // topologies keep the classic batches because their cull and ownership contracts differ.
         const bool meshlet_edit_overlay = show_overlays && is_edit_mode && show_fill && draw_overlays;
         if (meshlet_edit_overlay) {
             for (const auto &e : mesh_entities) {
@@ -1655,27 +1644,6 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
     const bool wire_batches_drawn = draw.WireMeshlet.DrawCount > 0 || draw.WireLine.DrawCount > 0;
     const bool meshlet_edit_overlay_drawn =
         buffers.FlagWork(uint32_t(MeshletInstanceFlag::EditOverlay)).Meshlets > 0;
-    if (meshlet_edit_overlay_drawn) {
-        buffers.MeshletEditEdgeOwners.SetCount<uint32_t>(meshes.GetEdgeSharpnessCount());
-        buffers.MeshletEditVertexOwners.SetCount<uint32_t>(meshes.GetVertexStateCount());
-        {
-            auto *blit = chain.BeginBlit("MeshletEditClaimClear", MTL::StageMesh | MTL::StageFragment | MTL::StageDispatch);
-            blit->fillBuffer(*buffers.MeshletEditEdgeOwners, NS::Range::Make(0, buffers.MeshletEditEdgeOwners.UsedSize), 0xff);
-            blit->fillBuffer(*buffers.MeshletEditVertexOwners, NS::Range::Make(0, buffers.MeshletEditVertexOwners.UsedSize), 0xff);
-        }
-        auto *claim = chain.BeginCompute("MeshletEditClaim", MTL::StageBlit);
-        encode::BindCompute(claim, pipelines.MeshletEditClaim, slots, buffers, ubo_offset);
-        ClaimMeshletEditList(
-            claim, buffers, buffers.VisibleMeshlets, buffers.MeshletRoutes, buffers.MeshletDispatchArgs,
-            meshes.GetVertexStateSlot(), meshes.GetEdgeSharpnessSlot()
-        );
-        if (two_phase_meshlets) {
-            ClaimMeshletEditList(
-                claim, buffers, buffers.MeshletPhase2Visible, buffers.MeshletPhase2Routes,
-                buffers.MeshletPhase2DispatchArgs, meshes.GetVertexStateSlot(), meshes.GetEdgeSharpnessSlot()
-            );
-        }
-    }
     // One flattened edge list over both batches, so a scene of many small wire draws costs one dispatch.
     uint32_t wire_record_count = 0, wire_edge_total = 0;
     if (wire_batches_drawn) {
@@ -1762,25 +1730,23 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
         {
             if (meshlet_edit_overlay_drawn) {
                 overlay_layer_drawn = true;
-                const auto draw_meshlet_edits = [&](const mtl::MeshRenderPipeline &pipeline, uint32_t mesh_threads = 160u) {
+                const auto draw_meshlet_edits = [&](
+                    const mtl::MeshRenderPipeline &pipeline, uint32_t mesh_threads = 160u,
+                    uint32_t edit_edge_corner = 0u
+                ) {
                     pipeline.Bind(encoder);
-                    DrawMeshletList(
-                        encoder, buffers, buffers.VisibleMeshlets, buffers.MeshletRoutes,
-                        buffers.MeshletDispatchArgs, uint32_t(MeshletRoute::EditOverlay),
-                        uint32_t(MeshletInstanceFlag::EditOverlay), 0u, false, false,
-                        meshes.GetVertexStateSlot(), meshes.GetEdgeSharpnessSlot(), mesh_threads
-                    );
-                    if (two_phase_meshlets) {
+                    ForEachMeshletVisibilityList(buffers, two_phase_meshlets, [&](const auto &visible, const auto &routes, const auto &dispatch_args) {
                         DrawMeshletList(
-                            encoder, buffers, buffers.MeshletPhase2Visible, buffers.MeshletPhase2Routes,
-                            buffers.MeshletPhase2DispatchArgs, uint32_t(MeshletRoute::EditOverlay),
+                            encoder, buffers, visible, routes, dispatch_args, uint32_t(MeshletRoute::EditOverlay),
                             uint32_t(MeshletInstanceFlag::EditOverlay), 0u, false, false,
-                            meshes.GetVertexStateSlot(), meshes.GetEdgeSharpnessSlot(), mesh_threads
+                            meshes.GetVertexStateSlot(), meshes.GetEdgeSharpnessSlot(), mesh_threads,
+                            edit_edge_corner
                         );
-                    }
+                    });
                 };
+                // Preserve the sharp-free specialization; the all-smooth Meshlets scene is measurably faster with it.
                 const auto &edit_edges = draw.MeshletEditHasSharpEdges ? main.MeshletEditEdges : main.MeshletEditSmoothEdges;
-                for (const auto &edge : edit_edges) draw_meshlet_edits(edge);
+                for (uint32_t corner = 0u; corner < 3u; ++corner) draw_meshlet_edits(edit_edges, 160u, corner);
                 if (edit_mode == Element::Vertex) draw_meshlet_edits(main.MeshletEditPoint, 64u);
             }
             // Edit mode edges as triangle quads with self-AA, four corners to an edge

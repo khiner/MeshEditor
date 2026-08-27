@@ -2,8 +2,9 @@
 #define EDGEQUAD_MSL
 
 #include "Bindless.metal"
+#include "EditOverlayConstant.metal"
+#include "ElementOverlay.metal"
 #include "SceneUBO.metal"
-#include "LineQuad.metal"
 #include "TransformUtils.metal"
 #include "Varyings.metal"
 #include "OverlayDispatch.metal"
@@ -21,10 +22,8 @@ inline float EdgeQuadSmoothWeight(float distance) {
 }
 
 inline EdgeQuadVaryings EdgeQuadCorner(const thread Scene &scene, DrawData draw, uint edge_id, uint corner) {
-    constant ViewportThemeColors &colors = scene.Theme.Colors;
     const Transform world = scene.Models(draw.ModelSlot)[draw.FirstInstance];
     const uint endpoint = line_quad_endpoint(corner);
-    const float side = line_quad_side(corner);
 
     device const uint *indices = scene.Indices(draw.IndexSlotOffset.Slot);
     const uint base_index = draw.IndexSlotOffset.Offset + edge_id * 2u;
@@ -41,44 +40,13 @@ inline EdgeQuadVaryings EdgeQuadCorner(const thread Scene &scene, DrawData draw,
     clip0.z -= NdcOffsetFactor(scene);
     clip1.z -= NdcOffsetFactor(scene);
 
-    EdgeQuadVaryings out;
-    // Sharp edges draw a wider mark band around the wire core.
     const bool sharp = draw.EdgeSharpnessOffset != INVALID_OFFSET &&
         uint(scene.ElementStates(scene.View.EdgeSharpnessSlot)[draw.EdgeSharpnessOffset + edge_id]) != 0u;
-    out.OuterColor = sharp ? float4(float3(colors.EdgeSharp), 1.0f) : float4(0.0f);
-
-    // EdgeWidth is already the half-width, plus a 0.5px antialiased fringe.
-    // Marked edges enlarge by another edge width.
-    const float edge_width = scene.Theme.EdgeWidth;
-    const float half_width = edge_width + (out.OuterColor.a > 0.0f ? max(edge_width, 1.0f) : 0.0f) + 0.5f;
-
-    float4 pos = line_quad_position(scene, clip0, clip1, corner, half_width);
-    // Marked edges draw slightly in front.
-    if (out.OuterColor.a > 0.0f) pos.z -= 5e-7f * abs(pos.w);
-
-    out.Position = pos;
-    out.EdgeCoord = side * half_width;
-
     const uint element_state = draw.ElementStateSlotOffset.Slot != INVALID_SLOT ?
         uint(scene.ElementStates(draw.ElementStateSlotOffset.Slot)[draw.ElementStateSlotOffset.Offset + edge_id * 2u + endpoint]) :
         0u;
-
     const bool is_edit_edge = scene.View.InteractionMode == InteractionMode_Edit && scene.View.EditElement == Element_Edge;
-    const float4 edge_color = WireBaseColor(scene);
-    const bool is_selected = (element_state & STATE_SELECTED) != 0u;
-    const bool is_active = (element_state & STATE_ACTIVE) != 0u;
-
-    float4 selected_color = edge_color;
-    if (is_selected) {
-        selected_color = is_edit_edge ?
-            float4(float3(colors.EdgeSelected), 1.0f) :
-            float4(float3(colors.EdgeSelectedIncidental), 1.0f);
-    }
-
-    float4 final_color = is_selected ? selected_color : edge_color;
-    if (is_active) final_color = float4(float4(colors.ElementActive).rgb, 1.0f);
-    out.Color = final_color;
-    return out;
+    return EditEdgeQuadCorner(scene, clip0, clip1, EditEdgeColor(scene, element_state, is_edit_edge), sharp, corner);
 }
 
 [[mesh]] void EdgeQuadMesh(
@@ -134,18 +102,7 @@ fragment OverlayTargets EdgeQuadFragment(
     constant WorkspaceLights &workspace [[buffer(BufferIndex_WorkspaceLights)]]
 ) {
     const Scene scene{bindless, view, theme, workspace};
-    return ShadeEdgeQuad(in, scene, true);
-}
-
-fragment OverlayTargets EdgeQuadSmoothFragment(
-    EdgeQuadVaryings in [[stage_in]],
-    device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
-    constant SceneViewUBO &view [[buffer(BufferIndex_SceneView)]],
-    constant ViewportTheme &theme [[buffer(BufferIndex_ViewportTheme)]],
-    constant WorkspaceLights &workspace [[buffer(BufferIndex_WorkspaceLights)]]
-) {
-    const Scene scene{bindless, view, theme, workspace};
-    return ShadeEdgeQuad(in, scene, false);
+    return ShadeEdgeQuad(in, scene, IncludeOuter);
 }
 
 #endif

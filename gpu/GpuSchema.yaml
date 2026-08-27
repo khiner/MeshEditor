@@ -272,15 +272,14 @@ enums:
       - name: MaxTriangles
         value: 48u
   # Bit layout of the meshlet-local geometry streams.
-  # A meshlet vertex packs its flat-only bit and edit-local-owner bit over the representative corner index.
+  # A meshlet vertex packs its flat-only bit and canonical edit-owner bit over the representative corner index.
   # A local triangle byte packs its all-flat bit over the first local vertex index.
   - name: MeshletGeometryEncoding
     type: u32
     values:
       - name: FlatVertexBit
         value: 0x80000000u
-      # First occurrence of the canonical vertex within this meshlet. Visibility-aware ownership
-      # across meshlets is claimed each frame.
+      # First meshlet occurrence of the canonical vertex.
       - name: EditVertexOwnerBit
         value: 0x40000000u
       - name: CornerMask
@@ -297,7 +296,7 @@ enums:
         value: 30u
   # Canonical edit edge behind a source-triangle edge. The high bit records whether the triangle's
   # winding runs opposite the canonical edge endpoint order; all bits set means an internal diagonal.
-  # Repeated occurrences within one meshlet are removed by the build; visible meshlets claim one owner each frame.
+  # Only the first meshlet occurrence of each canonical edge remains after the build.
   - name: MeshletEditEdgeEncoding
     type: u32
     values:
@@ -339,6 +338,10 @@ function_constants:
   - name: NormalIndicatorConstant
     constants:
       - name: NormalIndicatorFaces
+        type: bool
+  - name: EditOverlayConstant
+    constants:
+      - name: IncludeOuter
         type: bool
   - name: BackgroundConstant
     constants:
@@ -1431,6 +1434,8 @@ structs:
         type: u32
       - name: RequiredInstanceFlags
         type: u32
+      - name: EditEdgeCorner
+        type: u32
       - name: VisibilityPhase
         type: u32
       - name: VisibilityTransmission
@@ -1439,12 +1444,6 @@ structs:
         type: u32
         default: InvalidSlot
       - name: EdgeSharpnessSlot
-        type: u32
-        default: InvalidSlot
-      - name: EditEdgeOwnerSlot
-        type: u32
-        default: InvalidSlot
-      - name: EditVertexOwnerSlot
         type: u32
         default: InvalidSlot
   - name: VisibilityShadingPushConstants

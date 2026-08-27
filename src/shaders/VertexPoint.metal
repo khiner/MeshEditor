@@ -2,6 +2,7 @@
 #define VERTEXPOINT_MSL
 
 #include "Bindless.metal"
+#include "ElementOverlay.metal"
 #include "SceneUBO.metal"
 #include "TransformUtils.metal"
 #include "Varyings.metal"
@@ -11,13 +12,11 @@
 
 // Object mode has no element selection, so points take their object's selection color.
 inline float4 point_color(const thread Scene &scene, DrawData draw, uint element_state) {
-    constant ViewportThemeColors &colors = scene.Theme.Colors;
     if (scene.View.InteractionMode == InteractionMode_Object && scene.View.ShowOverlays != 0u) {
+        constant ViewportThemeColors &colors = scene.Theme.Colors;
         return scene.ObjectSelectionColor(scene.InstanceState(draw), float4(float3(colors.Vertex), 1.0f));
     }
-    if ((element_state & STATE_ACTIVE) != 0u) return float4(float4(colors.ElementActive).rgb, 1.0f);
-    if ((element_state & STATE_SELECTED) != 0u) return float4(float3(colors.VertexSelected), 1.0f);
-    return float4(float3(colors.Vertex), 1.0f);
+    return EditVertexColor(scene, element_state);
 }
 
 // Element points for the overlay pass: edit-mode vertices, excitable sound vertices, and vertex meshes.
@@ -37,10 +36,9 @@ inline PointVaryings VertexPointSprite(const thread Scene &scene, DrawData draw,
     const bool is_selected = (element_state & STATE_SELECTED) != 0u;
     const bool is_active = (element_state & STATE_ACTIVE) != 0u;
 
-    PointVaryings out;
-    out.Color = point_color(scene, draw, element_state);
-    out.Position = MeshletPosition(scene, draw, world, idx);
-    out.Position.z -= NdcOffsetFactor(scene) * 1.5f; // Push points in front of lines and faces.
+    PointVaryings out = EditPointSprite(
+        scene, MeshletPosition(scene, draw, world, idx), point_color(scene, draw, element_state)
+    );
     // Excite mode shows selected and active vertices only.
     out.PointSize = scene.View.InteractionMode == InteractionMode_Excite && !is_selected && !is_active ? 0.0f : PointSize;
     return out;
@@ -71,13 +69,10 @@ inline float4 SoundPointClip(const thread Scene &scene, device const BindlessSet
     const uint sound_vertex = BindlessBuffer(uint, bindless.Buffer, pc.VertexSlot)[pc.VertexOffset + first_point + thread_index];
 
     constant ViewportThemeColors &colors = scene.Theme.Colors;
-    PointVaryings out;
-    out.Color = sound_vertex == pc.ExcitedVertex ? float4(colors.ElementExcited) :
+    const float4 color = sound_vertex == pc.ExcitedVertex ? float4(colors.ElementExcited) :
         sound_vertex == pc.ActiveVertex          ? float4(float4(colors.ElementActive).rgb, 1.0f) :
                                              float4(float3(colors.VertexSelected), 1.0f);
-    out.Position = SoundPointClip(scene, bindless, pc, sound_vertex);
-    out.Position.z -= NdcOffsetFactor(scene) * 1.5f; // Push points in front of lines and faces.
-    out.PointSize = PointSize;
+    const PointVaryings out = EditPointSprite(scene, SoundPointClip(scene, bindless, pc, sound_vertex), color);
 
     output.set_vertex(thread_index, out);
     output.set_index(thread_index, thread_index);

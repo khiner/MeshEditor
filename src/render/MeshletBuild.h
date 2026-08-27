@@ -29,6 +29,7 @@ struct MeshletBuildInputs {
     CornerWeldSource Weld;
     uint32_t TriangleCount{}; // Triangles across every primitive
     uint32_t ElementCount{}; // Edges of a line mesh, vertices of a point mesh, zero with faces
+    uint32_t EdgeCount{};
     uint32_t SourcePrimitiveCount{}; // Primitives a face-less mesh groups its elements into
     bool FaceTopology{}, LineTopology{};
     // Derived from the topology fields above.
@@ -51,8 +52,8 @@ struct MeshletBuild {
 
 // Read every input the build needs while the arenas hold still.
 MeshletBuildInputs CaptureMeshletInputs(const GpuBuffers &, const MeshBuffers &, const Mesh &, const MeshStore &);
-// Clusterize into plain vectors, touching no arena, so this runs on any thread.
-MeshletBuild BuildMeshlets(const MeshletBuildInputs &);
+// Clusterize into plain vectors, consuming TriangleEditEdges but touching no arena, so this runs on any thread.
+MeshletBuild BuildMeshlets(MeshletBuildInputs &);
 // Build the DAG over a finished level-0 build, on the same inputs and the same thread.
 // A face-less mesh, and one whose clusters fit a single partition, returns an empty build.
 ClusterLodBuild BuildMeshletClusterLod(const MeshletBuildInputs &, const MeshletBuild &);

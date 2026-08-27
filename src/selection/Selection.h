@@ -29,9 +29,15 @@ struct EditTransformContext {
 };
 
 namespace selection {
+using PrimaryEditInstanceMap = std::unordered_map<entt::entity, entt::entity>;
+struct PrimaryEditInstanceMaps {
+    PrimaryEditInstanceMap All, Transformable;
+};
+
 // Returns representative edit instance per selected mesh: active instance if selected, else first selected instance.
 // Only includes Mesh-type objects (excludes Cameras, etc.).
-std::unordered_map<entt::entity, entt::entity> ComputePrimaryEditInstances(const entt::registry &, bool include_scale_locked = true);
+PrimaryEditInstanceMap ComputePrimaryEditInstances(const entt::registry &, bool include_scale_locked = true);
+PrimaryEditInstanceMaps ComputePrimaryEditInstanceMaps(const entt::registry &);
 
 bool HasScaleLockedInstance(const entt::registry &, entt::entity);
 std::unordered_set<entt::entity> GetSelectedMeshEntities(const entt::registry &);
