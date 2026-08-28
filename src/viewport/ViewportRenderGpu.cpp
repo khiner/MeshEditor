@@ -8,6 +8,7 @@
 #include "gizmo/TransformGizmoTypes.h"
 #include "gpu/BoundsBoxPushConstants.h"
 #include "gpu/BoundsReducePushConstants.h"
+#include "gpu/CommitPosedGeometryPushConstants.h"
 #include "gpu/DepthPyramidReducePushConstants.h"
 #include "Variant.h"
 #include "physics/PhysicsTypes.h"
@@ -216,10 +217,11 @@ namespace {
 struct RecordInputs {
     uint64_t Value{0xcbf29ce484222325ull};
     void Mix(uint64_t v) { Value = (Value ^ v) * 0x100000001b3ull; }
-    void Mix(SlottedRange range) {
+    void Mix(SlotOffset range) {
         Mix(range.Slot);
         Mix(range.Offset);
     }
+    void Mix(EditSelectionStorage selection) { Mix(selection.VertexBits); Mix(selection.EdgeBits); Mix(selection.FaceBits); Mix(selection.Summary); }
 };
 
 struct DeformSlots {
@@ -395,11 +397,10 @@ std::optional<NormalDeriveEntry> MakeDeriveEntryInputs(const MeshStore &meshes, 
 
 namespace {
 // Materialize each posed entry's current-pose vertex positions.
-void RecordPosePrepass(MTL::ComputeCommandEncoder *encoder, const mtl::BindlessSet &slots, const Pipelines &pipelines, const GpuBuffers &buffers, uint32_t vertex_state_slot, uint32_t ubo_offset) {
+void RecordPosePrepass(MTL::ComputeCommandEncoder *encoder, const mtl::BindlessSet &slots, const Pipelines &pipelines, const GpuBuffers &buffers, uint32_t ubo_offset) {
     const auto &prepass = pipelines.PosePrepass;
     encode::BindCompute(encoder, prepass, slots, buffers, ubo_offset);
     const BoundsReducePushConstants pc{
-        .VertexStateSlot = vertex_state_slot,
         .DrawDataSlot = buffers.BoundsReduceEntries.Slot,
         .TileMapSlot = buffers.BoundsTiles.Slot,
     };
@@ -506,7 +507,7 @@ MeshletCullPushConstants MakeMeshletCullSlotsPc(const GpuBuffers &buffers) {
 MeshletDrawPushConstants MakeMeshletDrawPc(
     const GpuBuffers &buffers, const mtl::Buffer &visible, const mtl::Buffer &routes,
     uint32_t route, uint32_t required_instance_flags, uint32_t visibility_phase,
-    bool visibility_transmission, uint32_t vertex_state_slot, uint32_t edge_sharpness_slot,
+    bool visibility_transmission, uint32_t edge_sharpness_slot,
     uint32_t edit_edge_corner = 0u
 ) {
     return {
@@ -525,7 +526,6 @@ MeshletDrawPushConstants MakeMeshletDrawPc(
         .EditEdgeCorner = edit_edge_corner,
         .VisibilityPhase = visibility_phase,
         .VisibilityTransmission = visibility_transmission,
-        .VertexStateSlot = vertex_state_slot,
         .EdgeSharpnessSlot = edge_sharpness_slot,
     };
 }
@@ -534,7 +534,7 @@ void DrawMeshletList(
     MTL::RenderCommandEncoder *encoder, const GpuBuffers &buffers, const mtl::Buffer &visible,
     const mtl::Buffer &routes, const mtl::Buffer &dispatch_args, uint32_t route, uint32_t required_instance_flags,
     uint32_t visibility_phase = 0u, bool visibility_transmission = false, bool fragment_pc = false,
-    uint32_t vertex_state_slot = InvalidSlot, uint32_t edge_sharpness_slot = InvalidSlot,
+    uint32_t edge_sharpness_slot = InvalidSlot,
     uint32_t mesh_threads = 160u, uint32_t edit_edge_corner = 0u
 ) {
     // Visibility ids reserve 25 bits for the visible-list index, and overflowing aliases the phase bit.
@@ -545,7 +545,7 @@ void DrawMeshletList(
     }
     auto pc = MakeMeshletDrawPc(
         buffers, visible, routes, route, required_instance_flags, visibility_phase,
-        visibility_transmission, vertex_state_slot, edge_sharpness_slot, edit_edge_corner
+        visibility_transmission, edge_sharpness_slot, edit_edge_corner
     );
     for (uint32_t chunk = 0; chunk < buffers.MeshletDispatchChunkCount; ++chunk) {
         pc.VisibleOffset = chunk * GpuBuffers::MeshletDispatchChunkSize;
@@ -694,7 +694,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
     auto &draw_list = draw.List;
 
     RecordInputs record_inputs;
-    record_inputs.Mix(is_edit_mode);
+    record_inputs.Mix(uint32_t(is_edit_mode) | uint32_t(edit_mode) << 1u);
     record_inputs.Mix(buffers.Instances.RecordBuffer.Count<InstanceRecord>());
     // Edit mode uses the rest pose, and reused blur phases use slots built by the rebuild phase.
     const auto mesh_deform_slots = is_edit_mode || use == DrawListUse::Reuse ?
@@ -798,6 +798,19 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
             mesh_entities.emplace_back(entity, mesh_buffers, models, TryGetMesh(r, entity), get_deform_slots(entity), primary_bi, element_domain(mesh_buffers), sound_it != excitable_mesh_entities.end() ? &sound_it->second : nullptr, r.all_of<ArmatureObject>(entity) || is_bone_joint, is_bone_joint, r.all_of<ObjectExtrasTag>(entity));
         }
 
+        const auto attach_edit_selection = [&meshes](DrawData &draw_data, const MeshEntityData &e) {
+            if (!e.MeshComp) return;
+            const uint32_t id = e.MeshComp->GetStoreId();
+            draw_data.Selection = meshes.GetEditSelectionStorage(id);
+            draw_data.VertexEdgeAdjacencyOffset = OffsetOrInvalid(meshes.GetVertexEdgeAdjacencyRange(id));
+            draw_data.VertexFanAdjacencyOffset = OffsetOrInvalid(meshes.GetVertexFanAdjacencyRange(id));
+            draw_data.Connectivity = meshes.GetConnectivityRange(id);
+            draw_data.EdgeHalfedges = meshes.GetConnectivityEdgeRange(id);
+            draw_data.HalfedgeCount = meshes.GetFaceCornerRange(id).Count;
+            draw_data.FaceCount = e.MeshComp->FaceCount();
+            draw_data.ConnectivityFaceStarts = meshes.GetConnectivity(id).Faces.empty() ? 0u : 1u;
+        };
+
         // The mesh shades authored under morphing: rest normals plus weighted authored deltas.
         // Edit mode builds no deform slots, so edit-mode draws (including drags) derive.
         const auto morph_shading_authored = [&meshes](const MeshEntityData &e) {
@@ -810,7 +823,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
             return show_rendered && e.MeshComp && e.MeshComp->FaceCount() == 0 && meshes.GetPrimitiveMaterialRange(e.MeshComp->GetStoreId()).Count > 0;
         };
         // Shaded meshes take their selection feedback from the scene pass, which recolors selected line and point fills.
-        // Edit mode shows element state through its own overlays.
+        // Edit mode shows selection through its own overlays.
         // Draws a mesh's wire overlay for every instance, unless the scene pass shades it.
         const auto append_wire = [&](DrawBatchInfo &batch, const MeshEntityData &e, const SlottedRange &indices, const DrawData &dd) {
             if (shaded_in_scene_pass(e)) return;
@@ -862,7 +875,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
                 record_inputs.Mix(e.Deform.MorphDeformOffset);
                 record_inputs.Mix(e.Deform.MorphTargetCount);
                 record_inputs.Mix(e.PrimaryEditBufferIndex.value_or(InvalidOffset));
-                if (e.MeshComp) record_inputs.Mix(meshes.GetFaceStateRange(e.MeshComp->GetStoreId()));
+                if (e.MeshComp) record_inputs.Mix(meshes.GetEditSelectionStorage(e.MeshComp->GetStoreId()));
                 if (e.Buf.Meshlets.Count != 0u) {
                     record_inputs.Mix(buffers.Meshlets.Buffer.GetSpan<MeshletRecord>({e.Buf.Meshlets.Offset, 1}).front().LocalTriangleOffset);
                 }
@@ -946,6 +959,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
                     .FirstInstance = e.Mod.InstanceRange.Offset,
                     .VertexCountOrHeadImageSlot = e.Buf.Vertices.Count,
                     .ElementIdOffset = spec.PerInstanceDeform ? 1u : e.Mod.InstanceCount,
+                    .Selection = meshes.GetEditSelectionStorage(e.MeshComp->GetStoreId()),
                     .VertexOffset = e.Buf.Vertices.Offset,
                     .BoneDeformOffset = e.Deform.BoneDeformOffset,
                     .ArmatureDeformOffset = e.Deform.ArmatureDeformOffset,
@@ -1069,13 +1083,11 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
                     record.HasPendingVertexTransform = 1u;
                     record.PrimaryEditInstanceIndex = r.get<const RenderInstance>(primary->second).BufferIndex;
                 }
-                if (!is_edit_mode || (primary != primary_edit_instances.end() && primary->second == instance_entity)) {
-                    record.ElementStateSlotOffset = meshes.GetFaceStateRange(r.get<const MeshHandle>(instance.Entity).StoreId);
-                }
                 if (primary != primary_edit_instances.end() && primary->second == instance_entity) {
                     const uint32_t store_id = r.get<const MeshHandle>(instance.Entity).StoreId;
-                    record.EditEdgeStateSlotOffset = meshes.GetEdgeStateRange(store_id);
+                    record.Selection = meshes.GetEditSelectionStorage(store_id);
                     record.EditEdgeSharpnessOffset = meshes.GetEdgeSharpnessRange(store_id).Offset;
+                    record.ElementIdOffset = meshes.GetSelectionBitOffset(store_id, edit_mode);
                 }
                 buffers.Instances.RecordBuffer.GetMutableSpan<InstanceRecord>({ri.BufferIndex, 1}).front() = record;
             }
@@ -1139,7 +1151,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
         draw.MeshletEditOverlayMeshes.clear();
         draw.MeshletEditHasSharpEdges = false;
         // Filled triangle meshes reuse their visible finest meshlets. Wireframe and face-less
-        // topologies keep the classic batches because their cull and ownership contracts differ.
+        // topologies use their native line/point emissions because they have no triangle ownership.
         const bool meshlet_edit_overlay = show_overlays && is_edit_mode && show_fill && draw_overlays;
         if (meshlet_edit_overlay) {
             for (const auto &e : mesh_entities) {
@@ -1159,7 +1171,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
                 if (e.IsBone || e.IsExtras || !e.MeshComp || e.Buf.EdgeIndices.Count == 0 ||
                     draw.MeshletEditOverlayMeshes.contains(e.Entity)) continue;
                 auto dd = MakeDrawData(e.Buf.Vertices, e.Buf.EdgeIndices, buffers.Instances, e.Deform.BoneDeformOffset, e.Deform.ArmatureDeformOffset, e.Deform.MorphDeformOffset, e.Deform.MorphTargetCount);
-                dd.ElementStateSlotOffset = meshes.GetEdgeStateRange(e.MeshComp->GetStoreId());
+                attach_edit_selection(dd, e);
                 if (is_edit_mode) {
                     const auto sharpness = meshes.GetEdgeSharpnessRange(e.MeshComp->GetStoreId());
                     dd.EdgeSharpnessOffset = sharpness.Count > 0 ? sharpness.Offset : InvalidOffset;
@@ -1172,7 +1184,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
         }
         // Wire line batches (wireframe mode + line meshes, matches Blender's wireframe overlay).
         // Face meshes outside Edit mode carry only position and a per-instance color.
-        // Edit mode and line meshes use the element-state-colored emission.
+        // Edit mode and line meshes use the selection-colored emission.
         const auto wire_eligible = [&](const MeshEntityData &e) {
             return !e.IsBone && !e.IsExtras && e.MeshComp && e.Buf.EdgeIndices.Count > 0 &&
                 (e.Buf.FaceIndices.Count == 0 || is_wireframe_mode);
@@ -1180,7 +1192,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
         const auto meshlet_wire = [&](const MeshEntityData &e) { return e.Buf.FaceIndices.Count > 0 && !is_edit_mode; };
         const auto wire_draw_data = [&](const MeshEntityData &e) {
             auto dd = MakeDrawData(e.Buf.Vertices, e.Buf.EdgeIndices, buffers.Instances, e.Deform.BoneDeformOffset, e.Deform.ArmatureDeformOffset, e.Deform.MorphDeformOffset, e.Deform.MorphTargetCount);
-            dd.ElementStateSlotOffset = meshes.GetEdgeStateRange(e.MeshComp->GetStoreId());
+            attach_edit_selection(dd, e);
             return dd;
         };
         draw.WireMeshlet = draw_list.BeginBatch();
@@ -1204,7 +1216,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
             if ((!draw_elements && !draw_object) ||
                 (draw_elements && draw.MeshletEditOverlayMeshes.contains(e.Entity))) continue;
             auto dd = MakeDrawData(e.Buf.Vertices, e.Buf.VertexIndices, buffers.Instances, e.Deform.BoneDeformOffset, e.Deform.ArmatureDeformOffset, e.Deform.MorphDeformOffset, e.Deform.MorphTargetCount);
-            dd.ElementStateSlotOffset = {meshes.GetVertexStateSlot(), e.Buf.Vertices.Offset};
+            attach_edit_selection(dd, e);
             if (!draw_elements && shaded_in_scene_pass(e)) continue;
             const auto draws_before = draw_list.Draws.size();
             AppendDraw(draw_list, draw.Point, e.Buf.VertexIndices, e.Mod, dd, draw_elements ? e.PrimaryEditBufferIndex : std::optional<uint32_t>{});
@@ -1313,7 +1325,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
         const auto instance_records = buffers.Instances.RecordBuffer.GetMutableSpan<InstanceRecord>(
             {0, buffers.Instances.RecordBuffer.Count<InstanceRecord>()}
         );
-        GpuBuffers::MeshletFlagWork silhouette_work{}, edit_overlay_work{};
+        GpuBuffers::MeshletFlagWork silhouette_work{}, edit_overlay_work{}, element_selection_work{};
         for (const auto [instance_entity, ri] : r.view<const RenderInstance>().each()) {
             if (ri.BufferIndex == UINT32_MAX || ri.BufferIndex >= instance_records.size()) continue;
             auto &record = instance_records[ri.BufferIndex];
@@ -1327,6 +1339,15 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
                 record.Flags |= uint32_t(MeshletInstanceFlag::LodPinFinest);
             }
             const auto primary = instance ? primary_edit_instances.find(instance->Entity) : primary_edit_instances.end();
+            const auto *mesh_buffers = instance ? r.try_get<const MeshBuffers>(instance->Entity) : nullptr;
+            if (instance && mesh_buffers && mesh_buffers->FaceIndices.Count > 0u && mesh_buffers->Meshlets.Count > 0u &&
+                primary != primary_edit_instances.end() && primary->second == instance_entity) {
+                record.Flags |= uint32_t(MeshletInstanceFlag::ElementSelection);
+                if (ri.GpuId != InvalidOffset) {
+                    element_selection_work.Ranges += ri.MeshletRangeCount;
+                    element_selection_work.Meshlets += ri.MeshletCount;
+                }
+            }
             if (instance && draw.MeshletEditOverlayMeshes.contains(instance->Entity) &&
                 primary != primary_edit_instances.end() && primary->second == instance_entity) {
                 record.Flags |= uint32_t(MeshletInstanceFlag::EditOverlay);
@@ -1343,8 +1364,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
         }
         buffers.FlagWork(uint32_t(MeshletInstanceFlag::Silhouette)) = silhouette_work;
         buffers.FlagWork(uint32_t(MeshletInstanceFlag::EditOverlay)) = edit_overlay_work;
-        // The rewrite dropped every element-selection mark the selection passes left behind.
-        buffers.FlagWork(uint32_t(MeshletInstanceFlag::ElementSelection)) = {};
+        buffers.FlagWork(uint32_t(MeshletInstanceFlag::ElementSelection)) = element_selection_work;
         draw.InstanceFlagsStale = false;
     }
     const bool has_object_silhouette_selection =
@@ -1384,8 +1404,6 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
     const bool composite_transmission = transmission_active && phase == RenderPhase::Full && !is_edit_mode && settings.DebugChannel == DebugChannel::None;
     const bool meshlet_fill = buffers.MeshletInstanceCount > 0;
 
-    const uint32_t transform_vertex_state_slot = is_edit_mode ? meshes.GetVertexStateSlot() : InvalidSlot;
-
     // The posed passes run every phase, since blur steps read their step's captured pose through the phase's UBO instance.
     // Bounds and cull run once per command buffer, and later blur phases reuse the culled buffers.
     // Derived normals feed only the scene's face-fill draws, so only scene-drawing phases record the derive.
@@ -1403,7 +1421,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
         // posed bounds, the derives, and the bounds reduce, the face derive feeds the gather, and
         // the bounds reduce feeds the combine.
         if (prelude.PosePrepass > 0) {
-            RecordPosePrepass(compute, slots, pipelines, buffers, transform_vertex_state_slot, ubo_offset);
+            RecordPosePrepass(compute, slots, pipelines, buffers, ubo_offset);
             compute->memoryBarrier(MTL::BarrierScopeBuffers);
         }
         if (prelude.PosedMeshletBounds > 0) RecordPosedMeshletBounds(compute, slots, pipelines, buffers, ubo_offset);
@@ -1614,7 +1632,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
     }
 
     // Phase 2 needs the meshlet-only pyramid above. The persistent next-frame pyramid is rebuilt
-    // after the scene pass so classic opaque draw items contribute occlusion too.
+    // after the scene pass so indexed opaque draw items contribute occlusion too.
     if (show_fill && phase == RenderPhase::Full && cull_scene_meshlets) {
         auto *compute = chain.BeginCompute("DepthPyramidFinal", MTL::StageFragment);
         RecordDepthPyramid(compute, slots, buffers, pipelines, sel_slots, ubo_offset);
@@ -1649,7 +1667,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
     if (wire_batches_drawn) {
         buffers.WireDrawRecords.SetCount(draw.WireMeshlet.DrawCount + draw.WireLine.DrawCount);
         auto *records = buffers.WireDrawRecords.Data();
-        const auto flatten_batch = [&](const DrawBatchInfo &batch, bool element_state_color) {
+        const auto flatten_batch = [&](const DrawBatchInfo &batch, bool edit_selection_color) {
             for (uint32_t d = 0; d < batch.DrawCount; ++d) {
                 const auto &draw_record = draw.List.Records[batch.FirstRecord + d];
                 const auto edges = draw_record.IndexCount / 2u;
@@ -1658,7 +1676,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
                     .FirstEdge = wire_edge_total,
                     .EdgeCount = edges,
                     .DrawDataIndex = batch.DrawDataSlotOffset + draw_record.FirstDraw,
-                    .ElementStateColor = element_state_color ? 1u : 0u,
+                    .EditSelectionColor = edit_selection_color ? 1u : 0u,
                 };
                 wire_edge_total += edges * draw_record.InstanceCount;
             }
@@ -1739,7 +1757,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
                         DrawMeshletList(
                             encoder, buffers, visible, routes, dispatch_args, uint32_t(MeshletRoute::EditOverlay),
                             uint32_t(MeshletInstanceFlag::EditOverlay), 0u, false, false,
-                            meshes.GetVertexStateSlot(), meshes.GetEdgeSharpnessSlot(), mesh_threads,
+                            meshes.GetEdgeSharpnessSlot(), mesh_threads,
                             edit_edge_corner
                         );
                     });
@@ -2015,8 +2033,15 @@ void RecordSilhouetteDepthPass(
     encoder->drawPrimitives(MTL::PrimitiveTypeTriangleStrip, NS::UInteger(0), NS::UInteger(4));
 }
 
-void DrawMeshlets(MTL::RenderCommandEncoder *encoder, const GpuBuffers &buffers, uint32_t route, uint32_t required_instance_flags) {
-    DrawMeshletList(encoder, buffers, buffers.VisibleMeshlets, buffers.MeshletRoutes, buffers.MeshletDispatchArgs, route, required_instance_flags);
+void DrawMeshlets(
+    MTL::RenderCommandEncoder *encoder, const GpuBuffers &buffers, uint32_t route,
+    uint32_t required_instance_flags, uint32_t mesh_threads, uint32_t edit_edge_corner
+) {
+    DrawMeshletList(
+        encoder, buffers, buffers.VisibleMeshlets, buffers.MeshletRoutes, buffers.MeshletDispatchArgs,
+        route, required_instance_flags, 0u, false, false, InvalidSlot,
+        mesh_threads, edit_edge_corner
+    );
 }
 
 void RecordRenderCommandBuffer(entt::registry &r, entt::entity viewport, MTL::CommandBuffer *command_buffer, DrawListUse use, RenderPhase phase) {
@@ -2188,33 +2213,61 @@ void FinalizeNewMeshShadingNow(entt::registry &r, std::span<const entt::entity> 
     UpdateAuthoredMorphShadingNow(r, mesh_entities);
 }
 
-// Copy the mesh's posed positions and derived normals from the last submitted frame (fenced complete) into the canonical stores.
-// Returns true when any position changed.
-bool CommitPosedGeometry(entt::registry &r, entt::entity mesh_entity) {
+// Commit the last fenced poses into the canonical GPU stores with one submit, then read back one
+// changed flag per mesh for the CPU invalidation boundary.
+std::vector<entt::entity> CommitPosedGeometry(
+    entt::registry &r, std::span<const entt::entity> mesh_entities
+) {
     const auto &posed_by_entity = r.ctx().get<const DrawState>().PosedByEntity;
-    const auto it = posed_by_entity.find(mesh_entity);
-    if (it == posed_by_entity.end()) return false;
-    const auto &pr = it->second;
     auto &meshes = r.ctx().get<MeshStore>();
-    const auto &buffers = r.ctx().get<const GpuBuffers>();
-    const auto id = r.get<const MeshHandle>(mesh_entity).StoreId;
-    const auto posed_positions = buffers.PosedPositions.GetSpan<vec3>({pr.PositionOffset(0), pr.VertexCount});
-    auto vertices = meshes.GetMutableVertices(id);
-    bool any_moved = false;
-    for (uint32_t vi = 0; vi < pr.VertexCount; ++vi) {
-        if (vertices[vi].Position != posed_positions[vi]) {
-            vertices[vi].Position = posed_positions[vi];
-            any_moved = true;
-        }
-    }
-    if (any_moved) {
+    auto &buffers = r.ctx().get<GpuBuffers>();
+    std::vector<std::pair<entt::entity, CommitPosedGeometryPushConstants>> commits;
+    commits.reserve(mesh_entities.size());
+    for (const auto mesh_entity : mesh_entities) {
+        const auto it = posed_by_entity.find(mesh_entity);
+        if (it == posed_by_entity.end()) continue;
+        const auto &pr = it->second;
+        const auto id = r.get<const MeshHandle>(mesh_entity).StoreId;
+        CommitPosedGeometryPushConstants pc{
+            .Vertices = meshes.GetVerticesRange(id),
+            .PosedPositions = {buffers.PosedPositions.Slot, pr.PositionOffset(0)},
+            .Changed = {buffers.GeometryCommitChanged.Slot(), uint32_t(commits.size())},
+            .VertexCount = pr.VertexCount,
+        };
         if (const auto normals = pr.NormalsAt(0)) {
-            std::ranges::copy(buffers.PosedVertexNormals.GetSpan<vec3>({normals->VertexOffset, pr.VertexCount}), meshes.GetBaseVertexNormals(id).begin());
-            std::ranges::copy(buffers.PosedSeamNormals.GetSpan<vec3>({normals->SeamOffset, normals->SeamCount}), meshes.GetBaseSeamNormals(id).begin());
-            std::ranges::copy(buffers.PosedFaceNormals.GetSpan<vec3>({normals->FaceOffset, normals->FaceCount}), meshes.GetBaseFaceNormals(id).begin());
+            pc.BaseVertexNormals = meshes.GetBaseVertexNormalRange(id);
+            pc.PosedVertexNormals = SlottedRange{{normals->VertexOffset, pr.VertexCount}, buffers.PosedVertexNormals.Slot};
+            pc.BaseSeamNormals = meshes.GetBaseSeamNormalSlottedRange(id);
+            pc.PosedSeamNormals = SlottedRange{{normals->SeamOffset, normals->SeamCount}, buffers.PosedSeamNormals.Slot};
+            pc.BaseFaceNormals = meshes.GetBaseFaceNormalRange(id);
+            pc.PosedFaceNormals = SlottedRange{{normals->FaceOffset, normals->FaceCount}, buffers.PosedFaceNormals.Slot};
+            pc.SeamCount = normals->SeamCount;
+            pc.FaceCount = normals->FaceCount;
         }
+        commits.emplace_back(mesh_entity, pc);
     }
-    return any_moved;
+    if (commits.empty()) return {};
+    buffers.GeometryCommitChanged.SetCount(commits.size());
+    std::fill_n(buffers.GeometryCommitChanged.Data(), commits.size(), 0u);
+    const auto &ctx = r.ctx().get<const mtl::Context>();
+    ctx.CommitResidency();
+    auto *command_buffer = ctx.Queue->commandBuffer();
+    auto *encoder = command_buffer->computeCommandEncoder();
+    encode::BindCompute(encoder, r.ctx().get<const Pipelines>().CommitPosedGeometry, r.ctx().get<const mtl::BindlessSet>(), buffers);
+    for (const auto &commit : commits) {
+        const auto &pc = commit.second;
+        encode::SetPushConstants(encoder, pc);
+        const uint32_t count = std::max({pc.VertexCount, pc.SeamCount, pc.FaceCount});
+        encoder->dispatchThreadgroups(MTL::Size((count + 255u) / 256u, 1, 1), ThreadgroupSize::Linear256);
+    }
+    encoder->endEncoding();
+    command_buffer->commit();
+    command_buffer->waitUntilCompleted();
+    std::vector<entt::entity> changed;
+    for (uint32_t i = 0; i < commits.size(); ++i) {
+        if (buffers.GeometryCommitChanged.Data()[i] != 0u) changed.push_back(commits[i].first);
+    }
+    return changed;
 }
 
 void SyncPreludeDispatchArgs(GpuBuffers &buffers) {

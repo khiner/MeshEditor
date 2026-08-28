@@ -1430,11 +1430,10 @@ std::vector<uint32_t> GetSampleOpVertices(const entt::registry &r, entt::entity 
     }
     if (mode != InteractionMode::Edit || !r.all_of<MeshElementSelection>(mesh_entity)) return {};
 
-    const auto edit_elem = r.get<const EditMode>(viewport).Value;
-    const auto count = selection::GetElementCount(*mesh, edit_elem);
-    if (count == 0) return {};
-    const auto bits = r.ctx().get<const MeshStore>().GetSelectionBits(mesh->GetStoreId());
-    return selection::ConvertSelectionElement(bits, count, *mesh, edit_elem, Element::Vertex);
+    const auto bits = r.ctx().get<const MeshStore>().GetSelectionBits(mesh->GetStoreId(), Element::Vertex);
+    std::vector<uint32_t> vertices;
+    selection::ForEachSelected(bits, mesh->VertexCount(), [&](uint32_t vertex) { vertices.push_back(vertex); });
+    return vertices;
 }
 
 // Circular pad returning a position in the unit disk (center = zero). Drag to set, right-click recenters.

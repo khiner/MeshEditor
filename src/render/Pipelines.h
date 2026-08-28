@@ -1,5 +1,6 @@
 #pragma once
 
+#include "gpu/Element.h"
 #include "metal/Image.h"
 #include "metal/Shader.h"
 #include "render/IblPrefilterPipelines.h"
@@ -9,6 +10,7 @@
 #include "render/VertexAdjacencyPipelines.h"
 #include "render/VertexWeldPipelines.h"
 
+#include <array>
 #include <memory>
 #include <unordered_map>
 
@@ -181,14 +183,15 @@ struct SilhouetteEdgePipeline {
 
 struct SelectionFragmentPipeline {
     SelectionFragmentPipeline(mtl::LibraryCache &);
+    const mtl::MeshRenderPipeline &ElementRaster(Element, bool meshlet, bool bitset_box, bool xray) const;
 
-    mtl::RenderPipeline VisibilityObject, VisibilityFace, VisibilityFaceBitsetBox;
-    mtl::MeshRenderPipeline MeshletFaceXRay, MeshletFaceXRayBitsetBox, ExtrasLine, BoneSphere, Line, Point, SoundPoint;
-    // Element id rasters, one per element kind and depth mode, folding ids into the pick key or the box bitset.
-    mtl::MeshRenderPipeline ElementVertex, ElementVertexBitsetBox, ElementVertexXRay, ElementVertexXRayBitsetBox;
-    mtl::MeshRenderPipeline ElementEdge, ElementEdgeBitsetBox, ElementEdgeXRay, ElementEdgeXRayBitsetBox;
-    // Point fallbacks for X-Ray box select, catching elements whose projected primitive has no area.
-    mtl::MeshRenderPipeline ElementEdgeXRayPointsBitsetBox, ElementFaceXRayPointsBitsetBox;
+    mtl::RenderPipeline VisibilityObject;
+    using ElementVariants = std::array<mtl::MeshRenderPipeline, 4>;
+    ElementVariants MeshletFaces, MeshletVertices, MeshletEdges, Vertices, Edges;
+    mtl::MeshRenderPipeline MeshletFaceXRayPointsBitsetBox, MeshletEdgeXRayPointsBitsetBox;
+    mtl::MeshRenderPipeline ExtrasLine, BoneSphere, Line, Point, SoundPoint;
+    // Point coverage for X-Ray box select catches projected primitives with no raster area.
+    mtl::MeshRenderPipeline ElementEdgeXRayPointsBitsetBox;
 };
 
 namespace ThreadgroupSize {
@@ -219,7 +222,7 @@ struct Pipelines {
     SilhouettePipeline Silhouette;
     SilhouetteEdgePipeline SilhouetteEdge;
     SelectionFragmentPipeline SelectionFragment;
-    mtl::ComputePipeline UpdateSelectionState;
+    mtl::ComputePipeline PrepareEditSelection, FillEditSelectionList, ResetEditSelectionSummary, DeriveEditSelection, EditSharpness, CommitPosedGeometry;
     // Materializes current-pose positions before bounds and normal derivation.
     mtl::ComputePipeline PosePrepass;
     mtl::ComputePipeline PosedMeshletBounds;

@@ -9,6 +9,7 @@
 #include "selection/SelectionBitset.h"
 #include "selection/SelectionComponents.h"
 #include "selection/SelectionOps.h"
+#include "selection/SelectionQueries.h"
 #include "viewport/InteractionComponents.h"
 
 #include <entt/entity/registry.hpp>
@@ -58,13 +59,12 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
                 if (interaction_mode == InteractionMode::Pose || IsBoneEditMode(r, viewport)) {
                     r.clear<BoneSelection>();
                 } else if (interaction_mode == InteractionMode::Edit) {
-                    auto &meshes = r.ctx().get<MeshStore>();
+                    const auto element = r.get<const EditMode>(viewport).Value;
                     const auto ranges = GetElementRangesForSelected(r, viewport);
                     for (const auto &range : ranges) {
-                        std::ranges::fill(meshes.GetMutableSelectionBits(r.get<const MeshHandle>(range.MeshEntity).StoreId), 0u);
                         r.remove<MeshActiveElement>(range.MeshEntity);
                     }
-                    if (!ranges.empty()) r.emplace_or_replace<SelectionBitsDirty>(viewport);
+                    ApplyEditSelectionCommand(r, viewport, ranges, element, EditSelectionOperation::Clear);
                 } else {
                     r.clear<Selected>();
                 }
@@ -75,11 +75,7 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
                 const bool active_is_armature = FindArmatureObject(r, active_entity) != entt::null;
                 AdditiveBoxSelectBaseline baseline;
                 if (interaction_mode == InteractionMode::Edit && !active_is_armature) {
-                    const auto &meshes = r.ctx().get<const MeshStore>();
-                    for (const auto &range : GetElementRangesForSelected(r, viewport)) {
-                        const auto bits = meshes.GetSelectionBits(r.get<const MeshHandle>(range.MeshEntity).StoreId);
-                        baseline.ElementBits.emplace_back(range.MeshEntity, std::vector<uint32_t>{bits.begin(), bits.end()});
-                    }
+                    // The first GPU box transaction snapshots every current domain mask in-place.
                 } else if (interaction_mode == InteractionMode::Pose || (interaction_mode == InteractionMode::Edit && active_is_armature)) {
                     for (const auto e : r.view<BoneSelection>()) baseline.BoneSelections.emplace_back(e, r.get<BoneSelection>(e));
                 } else if (interaction_mode == InteractionMode::Object) {
@@ -87,7 +83,10 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
                 }
                 r.emplace_or_replace<AdditiveBoxSelectBaseline>(viewport, std::move(baseline));
             },
-            [&](ClearBoxSelectBaseline) { r.remove<AdditiveBoxSelectBaseline>(viewport); },
+            [&](ClearBoxSelectBaseline) {
+                r.remove<AdditiveBoxSelectBaseline>(viewport);
+                r.emplace_or_replace<PendingBoxSelectFinalize>(viewport);
+            },
             // Box-select stores only the rectangle, the GPU pick and hit resolution run later.
             [&](const ApplyBoxSelect &a) { r.emplace_or_replace<PendingBoxSelect>(viewport, a.BoxPx, a.Additive, *a.ViewProj); },
             // Click pick stores only the pixel, the GPU pick and selection resolution run later.
@@ -135,10 +134,9 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
                     for (const auto bone_entity : arm_obj.BoneEntities) r.emplace<BoneSelection>(bone_entity);
                     if (!arm_obj.BoneEntities.empty()) r.emplace<BoneActive>(arm_obj.BoneEntities.back());
                 } else if (interaction_mode == InteractionMode::Edit) {
-                    auto &meshes = r.ctx().get<MeshStore>();
+                    const auto element = r.get<const EditMode>(viewport).Value;
                     const auto ranges = GetElementRangesForSelected(r, viewport);
-                    for (const auto &range : ranges) ::selection::SelectAll(meshes.GetMutableSelectionBits(r.get<const MeshHandle>(range.MeshEntity).StoreId), range.Count);
-                    if (!ranges.empty()) r.emplace_or_replace<SelectionBitsDirty>(viewport);
+                    ApplyEditSelectionCommand(r, viewport, ranges, element, EditSelectionOperation::Fill);
                 } else if (interaction_mode == InteractionMode::Object) {
                     r.clear<Active, Selected>();
                     entt::entity last{entt::null};

@@ -394,34 +394,71 @@ void SilhouetteEdgePipeline::SetExtent(const mtl::Context &ctx, mtl::Extent2D ex
 // The element rasters share these formats: depth only, and no color, since ids reach the fragment stage as a varying.
 static PassFormats SelectionFormats() { return {{}, Format::Depth}; }
 
-static mtl::MeshRenderPipeline ElementRaster(mtl::LibraryCache &libraries, const char *mesh_name, bool bitset_box, DepthState depth) {
+static mtl::MeshRenderPipeline CreateElementRaster(mtl::LibraryCache &libraries, const char *mesh_name, bool bitset_box, DepthState depth) {
     const FunctionRef fragment = bitset_box ?
         FunctionRef{"SelectionElementBitsetBox.metal", "SelectionElementBitsetBoxFragment"} :
         FunctionRef{"SelectionElementPick.metal", "SelectionElementPickFragment"};
     return CreateMeshPipeline(libraries, fragment, SelectionFormats(), {}, depth, FunctionRef{"SelectionElement.metal", mesh_name});
 }
 
+static mtl::MeshRenderPipeline MeshletElementRaster(
+    mtl::LibraryCache &libraries, FunctionRef mesh, bool bitset_box, bool xray
+) {
+    const FunctionRef fragment = bitset_box ?
+        FunctionRef{"SelectionElementBitsetBox.metal", "SelectionElementBitsetBoxFragment"} :
+        FunctionRef{"SelectionElementPick.metal", "SelectionElementPickFragment"};
+    return CreateMeshPipeline(libraries, fragment, SelectionFormats(), {}, xray ? DepthOff : DepthTestNoWriteLessEqual, std::move(mesh));
+}
+
 SelectionFragmentPipeline::SelectionFragmentPipeline(mtl::LibraryCache &libraries)
     : VisibilityObject{libraries, {"TexQuad.metal", "TexQuadVertex"}, FunctionRef{"VisibilitySelection.metal", "VisibilityObjectSelectionFragment"}, SelectionFormats(), {}, DepthOff},
-      VisibilityFace{libraries, {"TexQuad.metal", "TexQuadVertex"}, FunctionRef{"VisibilitySelection.metal", "VisibilityFaceSelectionFragment"}, SelectionFormats(), {}, DepthOff},
-      VisibilityFaceBitsetBox{libraries, {"TexQuad.metal", "TexQuadVertex"}, FunctionRef{"VisibilitySelection.metal", "VisibilityFaceBitsetBoxFragment"}, SelectionFormats(), {}, DepthOff},
-      MeshletFaceXRay{CreateMeshPipeline(libraries, FunctionRef{"SelectionElementPick.metal", "SelectionElementPickFragment"}, SelectionFormats(), {}, DepthOff)},
-      MeshletFaceXRayBitsetBox{CreateMeshPipeline(libraries, FunctionRef{"SelectionElementBitsetBox.metal", "SelectionElementBitsetBoxFragment"}, SelectionFormats(), {}, DepthOff)},
+      MeshletFaces{
+          MeshletElementRaster(libraries, MeshletVertex(), false, false),
+          MeshletElementRaster(libraries, MeshletVertex(), true, false),
+          CreateMeshPipeline(libraries, FunctionRef{"SelectionElementPick.metal", "SelectionElementPickFragment"}, SelectionFormats(), {}, DepthOff),
+          CreateMeshPipeline(libraries, FunctionRef{"SelectionElementBitsetBox.metal", "SelectionElementBitsetBoxFragment"}, SelectionFormats(), {}, DepthOff),
+      },
+      MeshletVertices{
+          MeshletElementRaster(libraries, {"MeshletEditOverlay.metal", "MeshletSelectPointMesh"}, false, false),
+          MeshletElementRaster(libraries, {"MeshletEditOverlay.metal", "MeshletSelectPointMesh"}, true, false),
+          MeshletElementRaster(libraries, {"MeshletEditOverlay.metal", "MeshletSelectPointMesh"}, false, true),
+          MeshletElementRaster(libraries, {"MeshletEditOverlay.metal", "MeshletSelectPointMesh"}, true, true),
+      },
+      MeshletEdges{
+          MeshletElementRaster(libraries, {"MeshletEditOverlay.metal", "MeshletSelectEdgeMesh"}, false, false),
+          MeshletElementRaster(libraries, {"MeshletEditOverlay.metal", "MeshletSelectEdgeMesh"}, true, false),
+          MeshletElementRaster(libraries, {"MeshletEditOverlay.metal", "MeshletSelectEdgeMesh"}, false, true),
+          MeshletElementRaster(libraries, {"MeshletEditOverlay.metal", "MeshletSelectEdgeMesh"}, true, true),
+      },
+      Vertices{
+          CreateElementRaster(libraries, "SelectionElementVertexMesh", false, DepthTestNoWriteLessEqual),
+          CreateElementRaster(libraries, "SelectionElementVertexMesh", true, DepthTestNoWriteLessEqual),
+          CreateElementRaster(libraries, "SelectionElementVertexMesh", false, DepthOff),
+          CreateElementRaster(libraries, "SelectionElementVertexMesh", true, DepthOff),
+      },
+      Edges{
+          CreateElementRaster(libraries, "SelectionElementEdgeMesh", false, DepthTestNoWriteLessEqual),
+          CreateElementRaster(libraries, "SelectionElementEdgeMesh", true, DepthTestNoWriteLessEqual),
+          CreateElementRaster(libraries, "SelectionElementEdgeMesh", false, DepthOff),
+          CreateElementRaster(libraries, "SelectionElementEdgeMesh", true, DepthOff),
+      },
+      MeshletFaceXRayPointsBitsetBox{MeshletElementRaster(libraries, {"MeshletEditOverlay.metal", "MeshletSelectFacePointMesh"}, true, true)},
+      MeshletEdgeXRayPointsBitsetBox{MeshletElementRaster(libraries, {"MeshletEditOverlay.metal", "MeshletSelectEdgePointMesh"}, true, true)},
       ExtrasLine{CreateMeshPipeline(libraries, FunctionRef{"SelectionFragment.metal", "SelectionFragment"}, SelectionFormats(), {}, DepthOff, {"ExtrasLine.metal", "ExtrasLineIdMesh"})},
       BoneSphere{CreateMeshPipeline(libraries, FunctionRef{"SelectionFragment.metal", "SelectionFragment"}, SelectionFormats(), {}, DepthOff, {"BoneSphere.metal", "BoneSphereMesh"})},
       Line{CreateMeshPipeline(libraries, FunctionRef{"SelectionFragment.metal", "SelectionFragment"}, SelectionFormats(), {}, DepthOff, {"PositionTransform.metal", "SelectionLineIdMesh"})},
       Point{CreateMeshPipeline(libraries, FunctionRef{"SelectionFragment.metal", "SelectionFragment"}, SelectionFormats(), {}, DepthOff, {"PositionTransform.metal", "SelectionPointIdMesh"})},
       SoundPoint{CreateMeshPipeline(libraries, FunctionRef{"SelectionElementPick.metal", "SelectionElementPickFragment"}, SelectionFormats(), {}, DepthTestNoWriteLessEqual, {"VertexPoint.metal", "SoundPointIdMesh"})},
-      ElementVertex{ElementRaster(libraries, "SelectionElementVertexMesh", false, DepthTestNoWriteLessEqual)},
-      ElementVertexBitsetBox{ElementRaster(libraries, "SelectionElementVertexMesh", true, DepthTestNoWriteLessEqual)},
-      ElementVertexXRay{ElementRaster(libraries, "SelectionElementVertexMesh", false, DepthOff)},
-      ElementVertexXRayBitsetBox{ElementRaster(libraries, "SelectionElementVertexMesh", true, DepthOff)},
-      ElementEdge{ElementRaster(libraries, "SelectionElementEdgeMesh", false, DepthTestNoWriteLessEqual)},
-      ElementEdgeBitsetBox{ElementRaster(libraries, "SelectionElementEdgeMesh", true, DepthTestNoWriteLessEqual)},
-      ElementEdgeXRay{ElementRaster(libraries, "SelectionElementEdgeMesh", false, DepthOff)},
-      ElementEdgeXRayBitsetBox{ElementRaster(libraries, "SelectionElementEdgeMesh", true, DepthOff)},
-      ElementEdgeXRayPointsBitsetBox{ElementRaster(libraries, "SelectionElementEdgePointMesh", true, DepthOff)},
-      ElementFaceXRayPointsBitsetBox{ElementRaster(libraries, "SelectionElementFacePointMesh", true, DepthOff)} {}
+      ElementEdgeXRayPointsBitsetBox{CreateElementRaster(libraries, "SelectionElementEdgePointMesh", true, DepthOff)} {}
+
+const mtl::MeshRenderPipeline &SelectionFragmentPipeline::ElementRaster(
+    Element element, bool meshlet, bool bitset_box, bool xray
+) const {
+    const auto &variants = meshlet ?
+        (element == Element::Face ? MeshletFaces : element == Element::Vertex ? MeshletVertices : MeshletEdges) :
+        (element == Element::Vertex ? Vertices : Edges);
+    return variants[uint32_t(bitset_box) + 2u * uint32_t(xray)];
+}
 
 Pipelines::Pipelines(const mtl::Context &ctx, mtl::LibraryCache &libraries)
     : Ctx(ctx),
@@ -430,7 +467,12 @@ Pipelines::Pipelines(const mtl::Context &ctx, mtl::LibraryCache &libraries)
       Silhouette{libraries},
       SilhouetteEdge{libraries},
       SelectionFragment{libraries},
-      UpdateSelectionState{libraries, {"UpdateSelectionState.metal", "UpdateSelectionStateKernel"}},
+      PrepareEditSelection{libraries, {"EditSelectionTransaction.metal", "PrepareEditSelectionKernel"}},
+      FillEditSelectionList{libraries, {"EditSelectionTransaction.metal", "FillEditSelectionListKernel"}},
+      ResetEditSelectionSummary{libraries, {"EditSelectionTransaction.metal", "ResetEditSelectionSummaryKernel"}},
+      DeriveEditSelection{libraries, {"EditSelectionTransaction.metal", "DeriveEditSelectionKernel"}},
+      EditSharpness{libraries, {"EditSharpness.metal", "EditSharpnessKernel"}},
+      CommitPosedGeometry{libraries, {"CommitPosedGeometry.metal", "CommitPosedGeometryKernel"}},
       PosePrepass{libraries, {"PosePrepass.metal", "PosePrepassKernel"}},
       PosedMeshletBounds{libraries, {"PosedMeshletBounds.metal", "PosedMeshletBoundsKernel"}},
       VertexNormalDerive{libraries, {"VertexNormalDerive.metal", "VertexNormalDeriveKernel"}},
@@ -489,16 +531,21 @@ void Pipelines::CompileShaders() {
     Silhouette.Visibility.Compile(Libraries);
     SilhouetteEdge.Renderer.CompileShaders(Libraries);
     SelectionFragment.VisibilityObject.Compile(Libraries);
-    SelectionFragment.VisibilityFace.Compile(Libraries);
-    SelectionFragment.VisibilityFaceBitsetBox.Compile(Libraries);
     SelectionFragment.ExtrasLine.Compile(Libraries);
     for (auto *p : {&SelectionFragment.BoneSphere, &SelectionFragment.Line, &SelectionFragment.Point, &SelectionFragment.SoundPoint}) p->Compile(Libraries);
-    SelectionFragment.MeshletFaceXRay.Compile(Libraries);
-    SelectionFragment.MeshletFaceXRayBitsetBox.Compile(Libraries);
-    for (auto *p : {&SelectionFragment.ElementVertex, &SelectionFragment.ElementVertexBitsetBox, &SelectionFragment.ElementVertexXRay, &SelectionFragment.ElementVertexXRayBitsetBox, &SelectionFragment.ElementEdge, &SelectionFragment.ElementEdgeBitsetBox, &SelectionFragment.ElementEdgeXRay, &SelectionFragment.ElementEdgeXRayBitsetBox, &SelectionFragment.ElementEdgeXRayPointsBitsetBox, &SelectionFragment.ElementFaceXRayPointsBitsetBox}) {
-        p->Compile(Libraries);
+    for (auto *variants : {&SelectionFragment.MeshletFaces, &SelectionFragment.MeshletVertices,
+             &SelectionFragment.MeshletEdges, &SelectionFragment.Vertices, &SelectionFragment.Edges}) {
+        for (auto &pipeline : *variants) pipeline.Compile(Libraries);
     }
-    for (auto *compute : {&UpdateSelectionState, &PosePrepass, &PosedMeshletBounds, &VertexNormalDerive, &BoundsReduce, &BoundsCombine, &WireRaster, &LodFrontierCount, &LodFrontierPrefix, &LodFrontierEmit, &MeshletCullBlockCount, &MeshletCullPrefix, &MeshletCullEmit, &MeshletPhase2Cull, &MeshletPhase2RangeCull, &MeshletPhase2Prefix, &DepthPyramidReduce, &MotionBlurTilesFlatten, &MotionBlurTilesDilate, &IblPrefilter.EquirectToCubemap, &IblPrefilter.DiffuseIrradiance, &IblPrefilter.SpecularPrefilter, &VertexAdjacency.Zero, &VertexAdjacency.Count, &VertexAdjacency.BlockSum, &VertexAdjacency.BlockPrefix, &VertexAdjacency.Offsets, &VertexAdjacency.Scatter, &VertexAdjacency.Sort, &VertexWeld.TableInit, &VertexWeld.Insert, &VertexWeld.MarkReps, &VertexWeld.BlockSum, &VertexWeld.BlockPrefix, &VertexWeld.Scan, &VertexWeld.Emit, &VertexWeld.Compact, &VertexWeld.WriteBack, &VertexWeld.RemapCorners, &MeshConnectivity.Zero, &MeshConnectivity.Count, &MeshConnectivity.BlockSum, &MeshConnectivity.BlockPrefix, &MeshConnectivity.Offsets, &MeshConnectivity.Scatter, &MeshConnectivity.Pair, &MeshConnectivity.Bits, &MeshConnectivity.WordBlockSum, &MeshConnectivity.WordBlockPrefix, &MeshConnectivity.Ranks, &MeshConnectivity.Samples}) {
+    for (auto *pipeline : {&SelectionFragment.MeshletFaceXRayPointsBitsetBox,
+             &SelectionFragment.MeshletEdgeXRayPointsBitsetBox, &SelectionFragment.ElementEdgeXRayPointsBitsetBox}) {
+        pipeline->Compile(Libraries);
+    }
+    PrepareEditSelection.Compile(Libraries);
+    FillEditSelectionList.Compile(Libraries);
+    EditSharpness.Compile(Libraries);
+    CommitPosedGeometry.Compile(Libraries);
+    for (auto *compute : {&ResetEditSelectionSummary, &DeriveEditSelection, &PosePrepass, &PosedMeshletBounds, &VertexNormalDerive, &BoundsReduce, &BoundsCombine, &WireRaster, &LodFrontierCount, &LodFrontierPrefix, &LodFrontierEmit, &MeshletCullBlockCount, &MeshletCullPrefix, &MeshletCullEmit, &MeshletPhase2Cull, &MeshletPhase2RangeCull, &MeshletPhase2Prefix, &DepthPyramidReduce, &MotionBlurTilesFlatten, &MotionBlurTilesDilate, &IblPrefilter.EquirectToCubemap, &IblPrefilter.DiffuseIrradiance, &IblPrefilter.SpecularPrefilter, &VertexAdjacency.Zero, &VertexAdjacency.Count, &VertexAdjacency.BlockSum, &VertexAdjacency.BlockPrefix, &VertexAdjacency.Offsets, &VertexAdjacency.Scatter, &VertexAdjacency.Sort, &VertexWeld.TableInit, &VertexWeld.Insert, &VertexWeld.MarkReps, &VertexWeld.BlockSum, &VertexWeld.BlockPrefix, &VertexWeld.Scan, &VertexWeld.Emit, &VertexWeld.Compact, &VertexWeld.WriteBack, &VertexWeld.RemapCorners, &MeshConnectivity.Zero, &MeshConnectivity.Count, &MeshConnectivity.BlockSum, &MeshConnectivity.BlockPrefix, &MeshConnectivity.Offsets, &MeshConnectivity.Scatter, &MeshConnectivity.Pair, &MeshConnectivity.Bits, &MeshConnectivity.WordBlockSum, &MeshConnectivity.WordBlockPrefix, &MeshConnectivity.Ranks, &MeshConnectivity.Samples}) {
         compute->Compile(Libraries);
     }
 }

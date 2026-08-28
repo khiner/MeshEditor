@@ -7,11 +7,13 @@
 #include "gizmo/GizmoInteraction.h"
 #include "gpu/ViewportTheme.h"
 #include "mesh/Mesh.h"
+#include "mesh/MeshComponents.h"
 #include "mesh/MeshStore.h"
 #include "scene/Entity.h"
 #include "selection/Selection.h"
 #include "selection/SelectionBitset.h"
 #include "selection/SelectionComponents.h"
+#include "selection/SelectionQueries.h"
 #include "viewport/InteractionComponents.h"
 
 #include <entt/entity/registry.hpp>
@@ -21,7 +23,8 @@ bool IsUsing(const entt::registry &r, entt::entity viewport) { return r.get<cons
 } // namespace TransformGizmo
 
 bool SetInteractionMode(entt::registry &r, entt::entity viewport, InteractionMode mode) {
-    if (r.get<const Interaction>(viewport).Mode == mode) return false;
+    const auto current_mode = r.get<const Interaction>(viewport).Mode;
+    if (current_mode == mode) return false;
 
     const auto active_entity = FindActiveEntity(r);
     const auto active_arm = active_entity != entt::null ? FindArmatureObject(r, active_entity) : entt::null;
@@ -31,12 +34,35 @@ bool SetInteractionMode(entt::registry &r, entt::entity viewport, InteractionMod
 
     r.clear<VertexForce>();
     auto &meshes = r.ctx().get<MeshStore>();
-    if (r.get<const Interaction>(viewport).Mode == InteractionMode::Edit) {
-        // Element states are display-only. The selection bits keep the selection, and entering Edit mode rederives them.
-        for (const auto mesh_entity : r.view<const MeshElementSelection>()) {
-            if (HasMesh(r, mesh_entity)) meshes.ClearElementStates(GetMesh(r, mesh_entity));
+    std::vector<ElementRange> initialize_selection;
+    const auto edit_ranges = [&](Element element) {
+        std::vector<ElementRange> ranges;
+        if (element == Element::None) return ranges;
+        for (const auto mesh_entity : r.view<const MeshElementSelection, const MeshHandle>()) {
+            const auto mesh = GetMesh(r, mesh_entity);
+            meshes.EnsureSelectionBits(mesh);
+            const auto count = selection::GetElementCount(mesh, element);
+            if (count > 0) ranges.emplace_back(mesh_entity, meshes.GetSelectionBitOffset(mesh.GetStoreId(), element), count);
         }
-        r.emplace_or_replace<ElementStatesDirty>(viewport);
+        return ranges;
+    };
+
+    if (current_mode == InteractionMode::Excite) {
+        if (const auto *baseline = r.try_get<const ExciteSelectionBaseline>(viewport)) {
+            const auto ranges = edit_ranges(baseline->Mode);
+            ApplyEditSelectionCommand(r, viewport, ranges, baseline->Mode, EditSelectionOperation::RestoreBaseline);
+            for (const auto &range : ranges) {
+                const auto &summary = meshes.GetSelectionSummary(r.get<const MeshHandle>(range.MeshEntity).StoreId);
+                if (summary.ActiveHandle < range.Count) r.emplace_or_replace<MeshActiveElement>(range.MeshEntity, summary.ActiveHandle);
+                else r.remove<MeshActiveElement>(range.MeshEntity);
+            }
+        }
+        r.remove<ExciteSelectionBaseline>(viewport);
+    } else if (mode == InteractionMode::Excite) {
+        const auto edit_element = r.get<const EditMode>(viewport).Value;
+        const auto ranges = edit_ranges(edit_element);
+        ApplyEditSelectionCommand(r, viewport, ranges, edit_element, EditSelectionOperation::CaptureBaseline);
+        r.emplace_or_replace<ExciteSelectionBaseline>(viewport, edit_element);
     }
 
     if (mode == InteractionMode::Edit && !active_is_armature) {
@@ -50,12 +76,20 @@ bool SetInteractionMode(entt::registry &r, entt::entity viewport, InteractionMod
                 if (count == 0) continue;
 
                 meshes.EnsureSelectionBits(mesh);
-                selection::SelectAll(meshes.GetMutableSelectionBits(mesh.GetStoreId()), count);
                 r.emplace<MeshElementSelection>(mesh_entity);
+                initialize_selection.emplace_back(
+                    mesh_entity, meshes.GetSelectionBitOffset(mesh.GetStoreId(), edit_element), count
+                );
             }
         }
     }
     r.patch<Interaction>(viewport, [mode](auto &s) { s.Mode = mode; });
+    if (!initialize_selection.empty()) {
+        ApplyEditSelectionCommand(
+            r, viewport, initialize_selection, r.get<const EditMode>(viewport).Value,
+            EditSelectionOperation::Fill
+        );
+    }
     r.patch<ViewportTheme>(viewport, [](auto &) {});
     return true;
 }

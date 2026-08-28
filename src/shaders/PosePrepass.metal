@@ -9,6 +9,7 @@
 #include "ArmatureDeform.metal"
 #include "TransformUtils.metal"
 #include "BoundsReducePushConstants.metal"
+#include "EditSelection.metal"
 
 kernel void PosePrepassKernel(
     uint local_id [[thread_position_in_threadgroup]],
@@ -30,8 +31,8 @@ kernel void PosePrepassKernel(
     float3 morph_normal_delta = float3(0);
     ApplyMorphDeform(scene, draw, pos, morph_normal_delta, i);
     pos = ApplyArmatureDeform(scene, draw, pos, i, normal);
-    if (view.IsTransforming != 0u && draw.HasPendingVertexTransform != 0u && pc.VertexStateSlot != INVALID_SLOT &&
-        (uint(scene.ElementStates(pc.VertexStateSlot)[draw.VertexOffset + i]) & STATE_SELECTED) != 0u) {
+    if (view.IsTransforming != 0u && draw.HasPendingVertexTransform != 0u &&
+        EditSelectionBit(scene, draw.Selection.VertexBits, i)) {
         // The pending gesture moves selected vertices in world space through the primary edit instance.
         // Posed positions stay mesh-local, so those vertices round-trip through this transform.
         const Transform primary = scene.Models(draw.ModelSlot)[draw.PrimaryEditInstanceIndex];

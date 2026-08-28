@@ -9,6 +9,7 @@
 #include "Varyings.metal"
 #include "OverlayDispatch.metal"
 #include "OverlayMeshPushConstants.metal"
+#include "EditSelection.metal"
 
 // Edit/excite mode edges as screen-space quads with self-antialiasing.
 // Each threadgroup widens up to 40 edges into 4 corners and 2 triangles apiece, one thread per corner.
@@ -41,10 +42,8 @@ inline EdgeQuadVaryings EdgeQuadCorner(const thread Scene &scene, DrawData draw,
     clip1.z -= NdcOffsetFactor(scene);
 
     const bool sharp = draw.EdgeSharpnessOffset != INVALID_OFFSET &&
-        uint(scene.ElementStates(scene.View.EdgeSharpnessSlot)[draw.EdgeSharpnessOffset + edge_id]) != 0u;
-    const uint element_state = draw.ElementStateSlotOffset.Slot != INVALID_SLOT ?
-        uint(scene.ElementStates(draw.ElementStateSlotOffset.Slot)[draw.ElementStateSlotOffset.Offset + edge_id * 2u + endpoint]) :
-        0u;
+        uint(scene.Bytes(scene.View.EdgeSharpnessSlot)[draw.EdgeSharpnessOffset + edge_id]) != 0u;
+    const uint element_state = EditEdgeEndpointState(scene, draw, edge_id, endpoint == 0u ? idx0 : idx1);
     const bool is_edit_edge = scene.View.InteractionMode == InteractionMode_Edit && scene.View.EditElement == Element_Edge;
     return EditEdgeQuadCorner(scene, clip0, clip1, EditEdgeColor(scene, element_state, is_edit_edge), sharp, corner);
 }

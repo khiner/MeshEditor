@@ -9,6 +9,8 @@
 #include "SlottedRange.h"
 #include "gpu/BoneDeformVertex.h"
 #include "gpu/CornerClass.h"
+#include "gpu/EditSelectionStorage.h"
+#include "gpu/EditSelectionSummary.h"
 #include "gpu/MorphTargetVertex.h"
 #include "metal/Buffer.h"
 
@@ -42,10 +44,6 @@ struct ArmatureDeformData {
 
 struct SharpnessSummary {
     bool Any, All;
-};
-
-struct SelectedSharpnessSummary {
-    bool AnySharp, AnySmooth;
 };
 
 // One pose's per-class corner-normal sources, each span entry-relative: the base stores for the rest pose, or the normals derived from a morph target's full-weight pose.
@@ -130,6 +128,8 @@ struct MeshStore {
     ConnectivityStorage GetConnectivityStorage(uint32_t id);
     // The arena run holding the mesh's connectivity, which a GPU build fills in place.
     SlottedRange GetConnectivityRange(uint32_t id) const;
+    SlottedRange GetConnectivityHalfedgeToEdgeRange(uint32_t id) const;
+    SlottedRange GetConnectivityEdgeRange(uint32_t id) const;
     // Record the edge count a GPU build's ranks totalled.
     void SetConnectivityEdgeCount(uint32_t id, uint32_t edge_count);
     void PlaceConnectivity(uint32_t id, const BuiltConnectivity &);
@@ -158,8 +158,6 @@ struct MeshStore {
     std::span<const MorphTargetVertex> GetMorphTargets(uint32_t id) const;
 
     // Base bindless slots of the per-mesh GPU buffers (for shader push constants).
-    uint32_t GetVertexStateSlot() const;
-    uint32_t GetVertexStateCount() const;
     uint32_t GetCornerTangentSlot() const;
     uint32_t GetCornerColorSlot() const;
     uint32_t GetCornerUvSlot() const;
@@ -187,7 +185,6 @@ struct MeshStore {
     void ReleaseSoundVertices(Range);
     std::span<const uint32_t> GetSoundVertices(Range) const;
 
-    std::span<const uint8_t> GetVertexStates(uint32_t id) const;
     // Canonical per-face and per-edge sharpness: 1 = shading discontinuity (flat face / sharp edge).
     // Callers writing these rederive corner normals afterward.
     std::span<const uint8_t> GetFaceSharpness(uint32_t id) const;
@@ -196,8 +193,6 @@ struct MeshStore {
     std::span<uint8_t> GetMutableEdgeSharpness(uint32_t id);
     // Any/all summary of the face sharpness bytes.
     SharpnessSummary GetFaceSharpnessSummary(uint32_t id) const;
-    // Sharp and smooth elements touched by the current element-state selection.
-    SelectedSharpnessSummary GetSelectedSharpnessSummary(uint32_t id, Element element) const;
     // Compose per-corner shading normals from the classification and the base normal stores, in triangulated face-fan order, with authored corner offsets applied where non-identity.
     // Requires current base stores (the derive pass ran since the last position/sharpness write).
     // Returns scratch storage valid until the next call.
@@ -232,13 +227,16 @@ struct MeshStore {
     std::span<vec3> GetBaseVertexNormals(uint32_t id);
     std::span<const vec3> GetBaseFaceNormals(uint32_t id) const;
     std::span<vec3> GetBaseFaceNormals(uint32_t id);
+    SlottedRange GetBaseFaceNormalRange(uint32_t id) const;
+    SlottedRange GetBaseVertexNormalRange(uint32_t id) const;
+    SlottedRange GetBaseSeamNormalSlottedRange(uint32_t id) const;
     std::span<const vec3> GetBaseSeamNormals(uint32_t id) const;
     std::span<vec3> GetBaseSeamNormals(uint32_t id);
     // Authored normals of face-less meshes, in vertex order (empty when the mesh has none).
     std::span<const vec3> GetPointNormals(uint32_t id) const;
-    SlottedRange GetFaceStateRange(uint32_t id) const;
-    SlottedRange GetEdgeStateRange(uint32_t id) const;
     Range GetEdgeSharpnessRange(uint32_t id) const;
+    SlottedRange GetFaceSharpnessRange(uint32_t id) const;
+    SlottedRange GetEdgeSharpnessSlottedRange(uint32_t id) const;
     // Corner-domain attribute layers (one value per triangulated face corner, fan order).
     // Empty range/span when the mesh lacks the channel.
     static constexpr uint32_t MaxUvSets{4}; // Texture coordinate sets an entry stores, so a higher glTF TEXCOORD_n has nowhere to land.
@@ -258,19 +256,17 @@ struct MeshStore {
     // index buffer both read this, and a triangle mesh's draws index it directly.
     std::span<const uint32_t> GetFaceCorners(uint32_t id) const;
     SlottedRange GetFaceCornerRange(uint32_t id) const;
-    // Allocate and clear a mesh's edge selection states, which only the wireframe and edit overlays read.
-    void EnsureEdgeStates(const Mesh &);
-    // Take the mesh's element selection bits, one bit per element, sized to its largest element domain
-    // so every edit mode indexes the same range. Keeps the bits a mesh already has.
+    // Take compact selection masks for all three element domains. Exactly one
+    // selection domain is authoritative; the GPU derives the other two after every edit command.
     void EnsureSelectionBits(const Mesh &);
-    std::span<const uint32_t> GetSelectionBits(uint32_t id) const;
-    std::span<uint32_t> GetMutableSelectionBits(uint32_t id);
-    // The selection bits' bindless slot, and a mesh's first bit within it, which the element rasters
-    // and the state kernel index by.
+    std::span<const uint32_t> GetSelectionBits(uint32_t id, Element) const;
     uint32_t GetSelectionBitsSlot() const;
-    uint32_t GetSelectionBitOffset(uint32_t id) const;
-    // Zero a mesh's vertex, face, and edge states.
-    void ClearElementStates(const Mesh &);
+    uint32_t GetSelectionBitOffset(uint32_t id, Element) const;
+    SlottedRange GetSelectionBitsRange(uint32_t id, Element) const;
+    EditSelectionStorage GetEditSelectionStorage(uint32_t id) const;
+    SlottedRange GetSelectionBaselineRange(uint32_t id) const;
+    SlottedRange GetSelectionSummaryRange(uint32_t id) const;
+    const EditSelectionSummary &GetSelectionSummary(uint32_t id) const;
     std::span<const uint32_t> GetFaceFirstTriangles(uint32_t id) const;
     std::span<const uint32_t> GetElementPrimitiveIndices(uint32_t id) const;
     std::span<uint32_t> GetElementPrimitiveIndices(uint32_t id);
@@ -279,14 +275,6 @@ struct MeshStore {
 
     std::span<const PrimitiveTriangleRange> GetPrimitiveTriangleRanges(uint32_t id) const { return Entries.at(id).PrimitiveTriangleRanges; }
 
-    void UpdateEdgeStatesFromFaces(const Mesh &, std::optional<uint32_t> active_face);
-    // Mark `vertices` selected, clear every other element state, and derive the edge states from the selection.
-    void UpdateSoundVertexStates(const Mesh &, std::span<const uint32_t> vertices);
-    void UpdateEdgeStatesFromVertices(const Mesh &);
-    void UpdateFaceStatesFromVertices(const Mesh &);
-    void UpdateFaceStatesFromEdges(const Mesh &);
-    void UpdateVertexStatesFromFaces(const Mesh &, std::optional<uint32_t> active_face = {});
-    void UpdateVertexStatesFromEdges(const Mesh &, std::optional<uint32_t> active_edge = {});
     // Write edge sharpness from face dihedral angles: sharp where the angle exceeds `angle` (radians). Boundary edges stay smooth.
     void SetEdgeSharpnessByAngle(const Mesh &, float angle);
     // Classify each corner from the sharpness stores: vertex-normal, face-normal, or a seam sector of incident triangles.
@@ -322,8 +310,9 @@ private:
         Range CornerTangents{}, CornerColors{}; // Corner-domain attribute layers
         std::array<Range, MaxUvSets> CornerUvs{};
         Range EdgeSharpness{}; // One byte per edge, 1 = sharp
-        Range EdgeStates{}, TriangleFaceIds{}, ElementPrimitives{}, PrimitiveMaterials{}, FaceCorners{};
-        Range SelectionBits{}; // Element selection bits, one word per 32 elements of the largest element domain
+        Range TriangleFaceIds{}, ElementPrimitives{}, PrimitiveMaterials{}, FaceCorners{};
+        std::array<Range, 3> SelectionBits{}; // vertex, edge, face masks
+        Range SelectionBaseline{}, SelectionSummary{};
         // CSR vertex incidence, each range holding (vertex count + 1) offsets followed by the items
         Range VertexFanAdjacency{}, VertexEdgeAdjacency{};
         // The mesh's half-edge connectivity, laid out in the order SliceConnectivity reads it.
@@ -354,7 +343,7 @@ private:
     std::vector<uint32_t> FreeIds{};
 
     struct PendingReserves {
-        uint32_t Vertices{}, Faces{}, Triangles{}, Edges{}, EdgeStates{}, FaceCorners{};
+        uint32_t Vertices{}, Faces{}, Triangles{}, Edges{}, FaceCorners{};
         uint32_t Primitives{};
         uint32_t ElementPrimitiveIndices{}; // One per face, or per vertex for point and line meshes.
         uint32_t BoneDeformVertices{}, MorphTargetEntries{};
@@ -374,8 +363,4 @@ private:
     void BuildVertexAdjacency(const Mesh &);
     Range AllocateVertices(uint32_t count);
     Range AllocateFaces(uint32_t count);
-    std::span<uint8_t> GetFaceStates(Range);
-    std::span<uint8_t> GetVertexStates(Range);
-    std::span<const uint8_t> GetVertexStates(Range) const;
-    void ClearElementStates(Range vertices, Range faces, Range edges);
 };

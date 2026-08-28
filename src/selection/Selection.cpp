@@ -131,7 +131,7 @@ std::vector<ElementRange> GetElementRangesForSelected(const entt::registry &r, e
         if (!r.all_of<MeshElementSelection>(mesh_entity)) continue;
         const auto mesh = GetMesh(r, mesh_entity);
         if (const auto count = selection::GetElementCount(mesh, element); count > 0) {
-            ranges.emplace_back(mesh_entity, meshes.GetSelectionBitOffset(mesh.GetStoreId()), count);
+            ranges.emplace_back(mesh_entity, meshes.GetSelectionBitOffset(mesh.GetStoreId(), element), count);
         }
     }
     return ranges;

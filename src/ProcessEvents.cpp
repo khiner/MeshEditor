@@ -237,53 +237,19 @@ void SetEditMode(entt::registry &r, entt::entity viewport, Element mode) {
     if (current_mode == mode) return;
 
     auto &meshes = r.ctx().get<MeshStore>();
-
-    struct PendingConvert {
-        entt::entity MeshEntity;
-        uint32_t StoreId;
-        uint32_t NewCount;
-        std::vector<uint32_t> ToHandles; // Selection converted to the new mode, staged across the bit clear
-    };
-    std::vector<PendingConvert> pending;
-    std::vector<ElementRange> old_ranges;
+    std::vector<ElementRange> ranges;
     for (const auto mesh_entity : r.view<const MeshElementSelection, const MeshHandle>()) {
         const auto mesh = GetMesh(r, mesh_entity);
         const auto id = mesh.GetStoreId();
-        const uint32_t old_count = selection::GetElementCount(mesh, current_mode);
-        auto bits = meshes.GetMutableSelectionBits(id);
-        auto to_handles = selection::ConvertSelectionElement(bits, old_count, mesh, current_mode, mode);
-        if (old_count > 0) old_ranges.emplace_back(mesh_entity, meshes.GetSelectionBitOffset(id), old_count);
+        meshes.EnsureSelectionBits(mesh);
         r.remove<MeshActiveElement>(mesh_entity);
-        // Every mode indexes the same bits, so the old mode's bits clear before the converted ones land.
-        std::ranges::fill(bits, 0u);
-        pending.emplace_back(PendingConvert{mesh_entity, id, selection::GetElementCount(mesh, mode), std::move(to_handles)});
-    }
-
-    if (!old_ranges.empty()) {
-        DispatchUpdateSelectionStates(r, old_ranges, current_mode);
-        // Face mode also derives edge states on the CPU, so clear them when exiting face-select.
-        if (current_mode == Element::Face) {
-            for (const auto &p : pending) meshes.UpdateEdgeStatesFromFaces(GetMesh(r, p.MeshEntity), {});
-        }
-    }
-
-    std::vector<ElementRange> new_ranges;
-    for (const auto &p : pending) {
-        auto bits = meshes.GetMutableSelectionBits(p.StoreId);
-        for (const uint32_t h : p.ToHandles) {
-            if (h < p.NewCount) selection::Select(bits, h);
-        }
-        if (p.NewCount > 0) new_ranges.emplace_back(p.MeshEntity, meshes.GetSelectionBitOffset(p.StoreId), p.NewCount);
+        const auto count = selection::GetElementCount(mesh, mode);
+        if (count > 0) ranges.emplace_back(mesh_entity, meshes.GetSelectionBitOffset(id, mode), count);
+        else r.emplace_or_replace<MeshElementSelectionStats>(mesh_entity);
     }
 
     r.patch<EditMode>(viewport, [mode](auto &edit_mode) { edit_mode.Value = mode; });
-    if (!new_ranges.empty()) ApplySelectionStateUpdate(r, viewport, new_ranges, mode);
-    else {
-        for (const auto &p : pending) {
-            r.emplace_or_replace<MeshElementSelectionStats>(p.MeshEntity, MeshElementSelectionStats{.Mode = mode});
-        }
-        if (!old_ranges.empty()) r.emplace_or_replace<ElementStatesDirty>(viewport);
-    }
+    if (!ranges.empty()) ApplyEditSelectionCommand(r, viewport, ranges, mode, EditSelectionOperation::ClearActive);
 }
 
 struct SyncResult {
@@ -761,32 +727,16 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
 
         const auto edit_mode = r.get<const EditMode>(viewport).Value;
         const auto ranges = GetElementRangesForSelected(r, viewport);
+        const auto hit = RunEditElementClick(r, viewport, ranges, edit_mode, mouse_px, toggle);
         if (!toggle) {
-            for (const auto &range : ranges) {
-                std::ranges::fill(meshes.GetMutableSelectionBits(r.get<const MeshHandle>(range.MeshEntity).StoreId), 0u);
-                r.remove<MeshActiveElement>(range.MeshEntity);
-            }
-        }
-        const auto hit = RunElementPickFromRanges(r, viewport, ranges, edit_mode, mouse_px);
-        if (hit) {
-            const auto [mesh_entity, element_index] = *hit;
-            auto bits = meshes.GetMutableSelectionBits(r.get<const MeshHandle>(mesh_entity).StoreId);
-            const auto *current_active = r.try_get<MeshActiveElement>(mesh_entity);
-            const bool is_active = current_active && current_active->Handle == element_index;
-            const bool was_selected = selection::IsSelected(bits, element_index);
-            // Toggle-clicking the active element deselects and deactivates it. Any other click
-            // selects and activates, keeping the active element within the selection.
-            if (toggle && was_selected && is_active) {
-                selection::Deselect(bits, element_index);
-                r.remove<MeshActiveElement>(mesh_entity);
-            } else {
-                selection::Select(bits, element_index);
-                r.emplace_or_replace<MeshActiveElement>(mesh_entity, element_index);
-            }
-        } else if (!toggle) {
             for (const auto &range : ranges) r.remove<MeshActiveElement>(range.MeshEntity);
         }
-        if (!ranges.empty() && (!toggle || hit)) r.emplace_or_replace<SelectionBitsDirty>(viewport);
+        if (hit) {
+            const auto mesh_entity = hit->first;
+            const auto &summary = meshes.GetSelectionSummary(r.get<const MeshHandle>(mesh_entity).StoreId);
+            if (summary.ActiveHandle == InvalidOffset) r.remove<MeshActiveElement>(mesh_entity);
+            else r.emplace_or_replace<MeshActiveElement>(mesh_entity, summary.ActiveHandle);
+        }
     }
     if (const auto *pending = r.try_get<const PendingBoxSelect>(viewport)) {
         const auto box_px = pending->BoxPx;
@@ -826,6 +776,13 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
                 }
                 for (const auto &hit : hits) r.emplace_or_replace<Selected>(hit.Entity);
             }
+        }
+    }
+    if (r.all_of<PendingBoxSelectFinalize>(viewport)) {
+        r.remove<PendingBoxSelectFinalize>(viewport);
+        if (r.get<const Interaction>(viewport).Mode == InteractionMode::Edit &&
+            FindArmatureObject(r, FindActiveEntity(r)) == entt::null) {
+            FinalizeBoxSelectElements(r, viewport);
         }
     }
     if (const auto *pending = r.try_get<const PendingPick>(viewport)) {
@@ -951,7 +908,7 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
         }
     }
 
-    std::unordered_set<entt::entity> dirty_element_state_meshes;
+    std::unordered_set<entt::entity> dirty_sound_selection_meshes;
     if (const bool draws_element_indices = DrawsElementIndices(r, viewport); draws_element_indices != buffers.DrewElementIndices) {
         buffers.DrewElementIndices = draws_element_indices;
         if (draws_element_indices) {
@@ -967,12 +924,14 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
                 buffers.ReserveAdditionalIndices(0, total_edge, total_vertex);
                 for (const auto entity : r.view<const MeshBuffers, const MeshHandle>() | to<std::vector>()) {
                     const auto &mesh = GetMesh(r, entity);
-                    meshes.EnsureEdgeStates(mesh);
+                    meshes.EnsureSelectionBits(mesh);
                     r.patch<MeshBuffers>(entity, [&](auto &mb) { WriteElementIndices(buffers, mesh, mb); });
                 }
-                // The edge states start zeroed, so sound vertex states rederive into them this frame.
-                for (const auto [_, instance, __] : r.view<const Instance, const SoundVertices>().each()) {
-                    dirty_element_state_meshes.insert(instance.Entity);
+                if (r.get<const Interaction>(viewport).Mode == InteractionMode::Excite) {
+                    // Newly allocated masks must receive the current sparse Excite selection.
+                    for (const auto [_, instance, __] : r.view<const Instance, const SoundVertices>().each()) {
+                        dirty_sound_selection_meshes.insert(instance.Entity);
+                    }
                 }
                 request(RenderRequest::Rebuild);
             }
@@ -993,7 +952,7 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
         buffers.ReserveAdditionalIndices(total_face, total_edge, total_vertex);
         for (auto entity : sync.NewMeshEntities) {
             const auto &mesh = GetMesh(r, entity);
-            if (overlay_indices) meshes.EnsureEdgeStates(mesh);
+            if (overlay_indices) meshes.EnsureSelectionBits(mesh);
             r.patch<MeshBuffers>(entity, [&](auto &mb) {
                 if (DrawsStoredCorners(mesh)) {
                     mb.FaceIndices = meshes.GetFaceCornerRange(mesh.GetStoreId());
@@ -1176,10 +1135,6 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
         });
     };
 
-    if (r.all_of<SelectionBitsDirty>(viewport)) {
-        r.remove<SelectionBitsDirty>(viewport);
-        if (is_edit_mode) ApplySelectionStateUpdate(r, viewport, GetElementRangesForSelected(r, viewport), r.get<const EditMode>(viewport).Value);
-    }
     if (const auto &tracker = reactive<changes::MeshActiveElement>(r); !tracker.empty()) {
         const auto edit_mode = r.get<const EditMode>(viewport).Value;
         const auto active_entity = FindActiveEntity(r);
@@ -1189,15 +1144,19 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
                 active_element && edit_mode != Element::None && active_instance && active_instance->Entity == mesh_entity) {
                 orbit_to_active(active_entity, edit_mode, active_element->Handle);
             }
-            dirty_element_state_meshes.insert(mesh_entity); // for Excite mode
+            if (interaction_mode == InteractionMode::Excite) dirty_sound_selection_meshes.insert(mesh_entity);
         }
     }
     for (auto instance_entity : reactive<changes::VertexForce>(r)) {
-        if (const auto *inst = r.try_get<Instance>(instance_entity)) dirty_element_state_meshes.insert(inst->Entity);
+        if (interaction_mode == InteractionMode::Excite) {
+            if (const auto *inst = r.try_get<Instance>(instance_entity)) dirty_sound_selection_meshes.insert(inst->Entity);
+        }
         if (const auto *ev = r.try_get<VertexForce>(instance_entity)) orbit_to_active(instance_entity, Element::Vertex, ev->Vertex);
     }
     for (auto instance_entity : reactive<changes::SoundVerticesUpdated>(r)) {
-        if (const auto *inst = r.try_get<const Instance>(instance_entity)) dirty_element_state_meshes.insert(inst->Entity);
+        if (interaction_mode == InteractionMode::Excite) {
+            if (const auto *inst = r.try_get<const Instance>(instance_entity)) dirty_sound_selection_meshes.insert(inst->Entity);
+        }
     }
     for (auto camera_entity : reactive<changes::CameraLens>(r)) {
         // When looking through this camera, refresh the ViewCamera so the view picks up its FOV.
@@ -1222,7 +1181,7 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
             if (const auto mesh = TryGetMesh(r, mesh_entity); mesh && r.all_of<MeshShadingDirty>(mesh_entity)) {
                 const auto [any, all] = meshes.GetFaceSharpnessSummary(mesh->GetStoreId());
                 r.emplace_or_replace<MeshShadingSummary>(mesh_entity, any, all);
-                RefreshElementSelectionSharpness(r, mesh_entity, r.get<const EditMode>(viewport).Value);
+                RefreshElementSelectionSharpness(r, mesh_entity);
                 meshes.UpdateCornerClassification(*mesh);
                 reclassified.emplace_back(mesh_entity);
             }
@@ -1278,15 +1237,14 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
                 const auto mesh = GetMesh(r, mesh_entity);
                 meshes.EnsureSelectionBits(mesh);
                 const auto id = mesh.GetStoreId();
-                std::ranges::fill(meshes.GetMutableSelectionBits(id), 0u);
                 if (const uint32_t count = selection::GetElementCount(mesh, edit_mode); count > 0) {
-                    geometry_ranges.emplace_back(mesh_entity, meshes.GetSelectionBitOffset(id), count);
+                    geometry_ranges.emplace_back(mesh_entity, meshes.GetSelectionBitOffset(id, edit_mode), count);
                 } else {
-                    r.emplace_or_replace<MeshElementSelectionStats>(mesh_entity, MeshElementSelectionStats{.Mode = edit_mode});
+                    r.emplace_or_replace<MeshElementSelectionStats>(mesh_entity);
                 }
             }
         }
-        if (!geometry_ranges.empty()) ApplySelectionStateUpdate(r, viewport, geometry_ranges, edit_mode);
+        if (!geometry_ranges.empty()) ApplyEditSelectionCommand(r, viewport, geometry_ranges, edit_mode, EditSelectionOperation::Clear);
         request(RenderRequest::Reuse);
     }
     if (auto &tracker = reactive<changes::MeshMaterial>(r); !tracker.empty()) {
@@ -1342,12 +1300,11 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
     }
     if (!reactive<changes::InteractionMode>(r).empty()) {
         request(RenderRequest::Rebuild);
-        // Dispatch UpdateSelectionState for all meshes entering Edit mode (their bits are taken in SetInteractionMode).
-        if (r.get<const Interaction>(viewport).Mode == InteractionMode::Edit) {
-            if (const auto edit_mode = r.get<const EditMode>(viewport).Value; edit_mode != Element::None) ApplySelectionStateUpdate(r, viewport, GetElementRangesForSelected(r, viewport), edit_mode);
-        }
-        for (const auto [_, instance, __] : r.view<const Instance, const SoundVertices>().each()) {
-            dirty_element_state_meshes.insert(instance.Entity);
+        r.remove<BoxSelectStatsDirty>(viewport);
+        if (interaction_mode == InteractionMode::Excite) {
+            for (const auto [_, instance, __] : r.view<const Instance, const SoundVertices>().each()) {
+                dirty_sound_selection_meshes.insert(instance.Entity);
+            }
         }
         // Mark all armatures dirty for bone state + pose sync on mode change.
         for (const auto arm : r.view<ArmatureObject>()) r.emplace_or_replace<BoneInstanceStateDirty>(arm);
@@ -1360,12 +1317,13 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
                 // The pose pre-pass materialized base ∘ gesture per edited mesh with this final delta, fenced complete with the last frame.
                 // The derive pass materialized the matching normals.
                 // Commit copies those posed ranges into the canonical stores, once per mesh.
+                std::vector<entt::entity> commit_meshes;
                 for (const auto &[mesh_entity, instance_entity] : edit_transform_context.TransformInstances) {
-                    if (selection::HasScaleLockedInstance(r, mesh_entity)) continue;
-                    if (CommitPosedGeometry(r, mesh_entity)) {
-                        r.remove<PrimitiveShape>(mesh_entity);
-                        r.emplace_or_replace<MeshGeometryDirty>(mesh_entity);
-                    }
+                    if (!selection::HasScaleLockedInstance(r, mesh_entity)) commit_meshes.push_back(mesh_entity);
+                }
+                for (const auto mesh_entity : CommitPosedGeometry(r, commit_meshes)) {
+                    r.remove<PrimitiveShape>(mesh_entity);
+                    r.emplace_or_replace<MeshGeometryDirty>(mesh_entity);
                 }
             }
             r.remove<PendingTransform>(viewport);
@@ -1893,23 +1851,27 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
         request(transform_render_request);
     }
 
-    // Excite mode highlights every excitable vertex, so its edges pick up the same selected state.
-    for (const auto mesh_entity : dirty_element_state_meshes) {
-        if (interaction_mode != InteractionMode::Excite) continue;
-        std::span<const uint32_t> sound_vertices;
-        for (const auto [entity, instance, excitable] : r.view<const Instance, const SoundVertices>().each()) {
-            if (instance.Entity != mesh_entity) continue;
-            sound_vertices = meshes.GetSoundVertices(excitable.Vertices);
-            break;
+    // Excite mode publishes every dirty sparse vertex list through one GPU selection transaction.
+    if (interaction_mode == InteractionMode::Excite) {
+        std::vector<std::pair<entt::entity, SlottedRange>> sound_selections;
+        sound_selections.reserve(dirty_sound_selection_meshes.size());
+        for (const auto mesh_entity : dirty_sound_selection_meshes) {
+            SlottedRange sound_vertices{};
+            for (const auto [entity, instance, excitable] : r.view<const Instance, const SoundVertices>().each()) {
+                if (instance.Entity != mesh_entity) continue;
+                sound_vertices = {excitable.Vertices, meshes.GetSoundVertexSlot()};
+                break;
+            }
+            sound_selections.emplace_back(mesh_entity, sound_vertices);
         }
-        meshes.UpdateSoundVertexStates(GetMesh(r, mesh_entity), sound_vertices);
+        ApplyEditSelectionLists(r, viewport, sound_selections, Element::Vertex);
     }
-    if (!dirty_element_state_meshes.empty()) {
+    if (!dirty_sound_selection_meshes.empty()) {
         r.ctx().get<DrawState>().SelectionStale = true;
         request(RenderRequest::Reuse);
     }
-    if (r.all_of<ElementStatesDirty>(viewport)) {
-        r.remove<ElementStatesDirty>(viewport);
+    if (r.all_of<EditSelectionDirty>(viewport)) {
+        r.remove<EditSelectionDirty>(viewport);
         request(RenderRequest::Reuse);
     }
     for (auto &&[id, storage] : r.storage()) {

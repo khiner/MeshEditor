@@ -762,10 +762,9 @@ void InteractOverlay(entt::registry &r, entt::entity viewport, FrameState &frame
         if (bone_mode) return !bone_selected_view.empty();
         if (selected_view.empty()) return false;
         if (!mesh_edit_mode) return true;
-        const auto edit_element = r.get<const EditMode>(viewport).Value;
         for (const auto [e, instance] : r.view<const Instance, const Selected>(entt::exclude<ScaleLocked>).each()) {
             const auto *stats = r.try_get<const MeshElementSelectionStats>(instance.Entity);
-            if (stats && stats->Mode == edit_element && stats->SelectedCount > 0) return true;
+            if (stats && stats->SelectedCount > 0) return true;
         }
         return false;
     }();

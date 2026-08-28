@@ -11,6 +11,7 @@
 #include "TransformUtils.metal"
 // VelocityOutput writes the shutter-open and shutter-close motion the velocity pass reads.
 #include "MeshVertexConstant.metal"
+#include "EditSelection.metal"
 
 // World position of `vert` under one pose. The per-draw offsets are shared across poses,
 // so a pose is selected purely by its buffer slots.
@@ -123,11 +124,9 @@ inline MeshVaryings TransformVertex(
         // A coarse cluster's corners come from all over the primitive, so none of them names its face.
         if (!coarse) face_id = scene.ObjectIds(draw.ObjectIdSlot)[draw.FaceIdOffset + vertex_index / 3u];
         if (shading_normal) normal = CornerNormal(scene, draw, vertex_id, idx, face_id, coarse, coarse_normal);
-        if (face_attributes && draw.ElementStateSlotOffset.Slot != INVALID_SLOT && face_id != 0u) {
-            element_state = uint(scene.ElementStates(draw.ElementStateSlotOffset.Slot)[draw.ElementStateSlotOffset.Offset + face_id - 1u]);
-        }
-    } else if (draw.ElementStateSlotOffset.Slot != INVALID_SLOT) {
-        element_state = uint(scene.ElementStates(draw.ElementStateSlotOffset.Slot)[draw.ElementStateSlotOffset.Offset + vertex_index]);
+        if (face_attributes && face_id != 0u) element_state = EditFaceState(scene, draw, face_id - 1u);
+    } else if (draw.Selection.Summary.Slot != INVALID_SLOT) {
+        element_state = EditEdgeEndpointState(scene, draw, vertex_index / 2u, idx);
     }
     const float3 world_pos = apply_object_pending_transform(scene, draw, trs_transform_point(world, local_pos));
 
@@ -146,7 +145,7 @@ inline MeshVaryings TransformVertex(
     const float4 edge_color = is_edit_mode ? float4(float3(colors.WireEdit), 1.0f) : float4(float3(colors.Wire), 1.0f);
     const float4 object_base_color = float4(0.8f, 0.8f, 0.8f, 1.0f); // Blender's View3DShading.single_color default
     const float4 base_color = draw.ObjectIdSlot != INVALID_SLOT ? object_base_color : edge_color;
-    const bool is_edge_draw = !is_face_draw && draw.ElementStateSlotOffset.Slot != INVALID_SLOT;
+    const bool is_edge_draw = !is_face_draw && draw.Selection.Summary.Slot != INVALID_SLOT;
     const bool is_selected = (element_state & STATE_SELECTED) != 0u;
     const bool is_active = (element_state & STATE_ACTIVE) != 0u;
 

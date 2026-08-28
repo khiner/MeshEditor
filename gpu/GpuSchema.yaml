@@ -72,6 +72,27 @@ enums:
       - name: Excite
       - name: Pose
         value: 3
+  - name: EditSelectionOperation
+    type: u32
+    values:
+      - name: Derive
+      - name: Clear
+      - name: Fill
+      - name: FillList
+      - name: CaptureBaseline
+      - name: RestoreBaseline
+      - name: PickReplace
+      - name: PickToggle
+      - name: ClearActive
+  - name: EditSharpnessOperation
+    type: u32
+    values:
+      - name: SetAllFaces
+      - name: SmoothAll
+      - name: SmoothByAngle
+      - name: SetSelectedFaces
+      - name: SetSelectedEdges
+      - name: SetVertexEdges
   - name: ExtrasLineKind
     type: u32
     values:
@@ -356,6 +377,16 @@ structs:
         default: InvalidSlot
       - name: Offset
         type: u32
+  - name: EditSelectionStorage
+    fields:
+      - name: VertexBits
+        type: SlotOffset
+      - name: EdgeBits
+        type: SlotOffset
+      - name: FaceBits
+        type: SlotOffset
+      - name: Summary
+        type: SlotOffset
   - name: DrawData
     fields:
       - name: VertexSlot
@@ -411,12 +442,25 @@ structs:
       - name: VertexEdgeAdjacencyOffset
         type: u32
         default: InvalidOffset
+      - name: VertexFanAdjacencyOffset
+        type: u32
+        default: InvalidOffset
+      - name: Connectivity
+        type: SlotOffset
+      - name: EdgeHalfedges
+        type: SlotOffset
+      - name: HalfedgeCount
+        type: u32
+      - name: FaceCount
+        type: u32
+      - name: ConnectivityFaceStarts
+        type: u32
       - name: VertexCountOrHeadImageSlot
         type: u32
       - name: ElementIdOffset
         type: u32
-      - name: ElementStateSlotOffset
-        type: SlotOffset
+      - name: Selection
+        type: EditSelectionStorage
       - name: EdgeSharpnessOffset
         type: u32
         default: InvalidOffset
@@ -597,10 +641,8 @@ structs:
       - name: PosedMeshletBoundsOffset
         type: u32
         default: InvalidOffset
-      - name: ElementStateSlotOffset
-        type: SlotOffset
-      - name: EditEdgeStateSlotOffset
-        type: SlotOffset
+      - name: Selection
+        type: EditSelectionStorage
       - name: EditEdgeSharpnessOffset
         type: u32
         default: InvalidOffset
@@ -1440,9 +1482,6 @@ structs:
         type: u32
       - name: VisibilityTransmission
         type: u32
-      - name: VertexStateSlot
-        type: u32
-        default: InvalidSlot
       - name: EdgeSharpnessSlot
         type: u32
         default: InvalidSlot
@@ -1592,10 +1631,6 @@ structs:
   - name: BoundsReducePushConstants
     push_constant: true
     fields:
-      # Vertex-state slot for the pose pre-pass's selected-vertex pending-transform check.
-      - name: VertexStateSlot
-        type: u32
-        default: InvalidSlot
       - name: DrawDataSlot
         type: u32
       - name: BoundsSlot
@@ -1720,8 +1755,8 @@ structs:
         type: u32
       - name: DrawDataIndex
         type: u32
-      # Nonzero colors each halfedge from its own element state.
-      - name: ElementStateColor
+      # Nonzero colors each halfedge from its edit-selection mask.
+      - name: EditSelectionColor
         type: u32
   - name: WireRasterPushConstants
     push_constant: true
@@ -1863,23 +1898,139 @@ structs:
         type: float
       - name: NoiseOffset
         type: float
-  - name: UpdateSelectionStatePushConstants
+  - name: EditSelectionPushConstants
     push_constant: true
     fields:
-      - name: BitsetSlot
+      - name: Selection
+        type: EditSelectionStorage
+      - name: EdgeIndices
+        type: SlotOffset
+      - name: Corners
+        type: SlotOffset
+      - name: Connectivity
+        type: SlotOffset
+      - name: HalfedgeToEdge
+        type: SlotOffset
+      - name: EdgeHalfedges
+        type: SlotOffset
+      - name: Vertices
+        type: SlotOffset
+      - name: VertexFanAdjacencyOffset
         type: u32
-      - name: BitsetOffset
+        default: InvalidOffset
+      - name: VertexEdgeAdjacencyOffset
         type: u32
-      - name: StateSlot
+        default: InvalidOffset
+      - name: AdjacencySlot
         type: u32
-      - name: StateOffset
+        default: InvalidSlot
+      - name: FaceSharpness
+        type: SlotOffset
+      - name: EdgeSharpness
+        type: SlotOffset
+      - name: SelectionBaseline
+        type: SlotOffset
+      - name: VertexCount
         type: u32
-      - name: ElementCount
+      - name: EdgeCount
+        type: u32
+      - name: FaceCount
+        type: u32
+      - name: HalfedgeCount
+        type: u32
+      - name: Element
+        type: Element
+      - name: ConnectivityFaceStarts
+        type: u32
+      - name: Operation
+        type: EditSelectionOperation
+      - name: PickIdSlot
+        type: u32
+        default: InvalidSlot
+      - name: SelectionList
+        type: SlotOffset
+      - name: SelectionListCount
+        type: u32
+  - name: EditSelectionSummary
+    fields:
+      - name: PositionSum
+        type: vec3
+      - name: Mode
+        type: Element
+      - name: SelectedCount
+        type: u32
+      - name: SelectedVertexCount
+        type: u32
+      # Bit 0 means a selected sharp element exists; bit 1 means a selected smooth element exists.
+      - name: SharpnessFlags
         type: u32
       - name: ActiveHandle
         type: u32
-      - name: EdgeMode
+        default: InvalidOffset
+  - name: CommitPosedGeometryPushConstants
+    push_constant: true
+    fields:
+      - name: Vertices
+        type: SlotOffset
+      - name: PosedPositions
+        type: SlotOffset
+      - name: BaseVertexNormals
+        type: SlotOffset
+      - name: PosedVertexNormals
+        type: SlotOffset
+      - name: BaseSeamNormals
+        type: SlotOffset
+      - name: PosedSeamNormals
+        type: SlotOffset
+      - name: BaseFaceNormals
+        type: SlotOffset
+      - name: PosedFaceNormals
+        type: SlotOffset
+      - name: Changed
+        type: SlotOffset
+      - name: VertexCount
         type: u32
+      - name: SeamCount
+        type: u32
+      - name: FaceCount
+        type: u32
+  - name: EditSharpnessPushConstants
+    push_constant: true
+    fields:
+      - name: VertexSelectionBits
+        type: SlotOffset
+      - name: EdgeSelectionBits
+        type: SlotOffset
+      - name: FaceSelectionBits
+        type: SlotOffset
+      - name: FaceSharpness
+        type: SlotOffset
+      - name: EdgeSharpness
+        type: SlotOffset
+      - name: Connectivity
+        type: SlotOffset
+      - name: EdgeHalfedges
+        type: SlotOffset
+      - name: EdgeIndices
+        type: SlotOffset
+      - name: FaceNormals
+        type: SlotOffset
+      - name: VertexCount
+        type: u32
+      - name: EdgeCount
+        type: u32
+      - name: FaceCount
+        type: u32
+      - name: HalfedgeCount
+        type: u32
+      - name: ConnectivityFaceStarts
+        type: u32
+      - name: Operation
+        type: EditSharpnessOperation
+      - name: Value
+        type: u32
+      - name: CosAngle
+        type: float
   - name: SilhouetteEdgeColorPushConstants
     push_constant: true
     fields:

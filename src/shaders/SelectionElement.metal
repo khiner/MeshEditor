@@ -118,24 +118,4 @@ inline void EmitElementPoint(thread ElementIdPointOutput &output, uint thread_in
     EmitElementPoint(output, thread_index, draw.ElementIdOffset + index_position / 2u + 1u, ElementClip(scene, draw, index_position), 2.0f);
 }
 
-// Point topology catches edge-on faces, whose projected triangle has zero area.
-[[mesh]] void SelectionElementFacePointMesh(
-    ElementIdPointOutput output,
-    uint thread_index [[thread_index_in_threadgroup]],
-    uint3 threadgroup_position [[threadgroup_position_in_grid]],
-    device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
-    constant SceneViewUBO &view [[buffer(BufferIndex_SceneView)]],
-    constant ViewportTheme &theme [[buffer(BufferIndex_ViewportTheme)]],
-    constant WorkspaceLights &workspace [[buffer(BufferIndex_WorkspaceLights)]],
-    constant OverlayMeshPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
-) {
-    const Scene scene{bindless, view, theme, workspace};
-    const DrawData draw = GetDrawDataAt(scene, pc.DrawDataIndex + threadgroup_position.y);
-    uint index_position = 0u;
-    if (!ElementChunkThread(output, scene, draw, pc, ElementGroupPoints, 1u, threadgroup_position.x, thread_index, index_position)) return;
-
-    const uint face_id = scene.ObjectIds(draw.ObjectIdSlot)[draw.FaceIdOffset + index_position / 3u];
-    EmitElementPoint(output, thread_index, draw.ElementIdOffset + face_id, ElementClip(scene, draw, index_position), 1.0f);
-}
-
 #endif

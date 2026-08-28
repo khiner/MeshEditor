@@ -8,6 +8,7 @@
 #include "PrimitiveRecord.metal"
 #include "VisibleMeshlet.metal"
 #include "TransformUtils.metal"
+#include "EditSelection.metal"
 
 inline DrawData MeshletDraw(PrimitiveRecord primitive, InstanceRecord instance, uint instance_slot) {
     DrawData draw = primitive.Draw;
@@ -21,7 +22,7 @@ inline DrawData MeshletDraw(PrimitiveRecord primitive, InstanceRecord instance, 
     draw.PosedVertexNormalOffset = instance.PosedVertexNormalOffset;
     draw.PosedSeamNormalOffset = instance.PosedSeamNormalOffset;
     draw.PosedFaceNormalOffset = instance.PosedFaceNormalOffset;
-    draw.ElementStateSlotOffset = instance.ElementStateSlotOffset;
+    draw.Selection = instance.Selection;
     draw.HasPendingVertexTransform = instance.HasPendingVertexTransform;
     draw.PrimaryEditInstanceIndex = instance.PrimaryEditInstanceIndex;
     return draw;
@@ -129,7 +130,7 @@ inline MeshletTriangleCorners ResolveMeshletCorners(
     return result;
 }
 
-// A coarse cluster's face values: no source face, so no element state and no face normal, and the
+// A coarse cluster's face values: no source face, so no edit selection and no face normal, and the
 // material its primitive carries.
 inline MeshletFaceValues MeshletCoarseFace(
     const thread Scene &scene, PrimitiveRecord primitive, InstanceRecord instance, Transform world
@@ -158,8 +159,7 @@ inline MeshletFaceValues MeshletFace(
     Transform world, uint triangle, bool flat_face
 ) {
     const uint face_id = scene.ObjectIds(draw.ObjectIdSlot)[draw.FaceIdOffset + triangle - primitive.FirstTriangle];
-    const uint element_state = draw.ElementStateSlotOffset.Slot != INVALID_SLOT && face_id != 0u ?
-        uint(scene.ElementStates(draw.ElementStateSlotOffset.Slot)[draw.ElementStateSlotOffset.Offset + face_id - 1u]) : 0u;
+    const uint element_state = face_id != 0u ? EditFaceState(scene, draw, face_id - 1u) : 0u;
     const uint material_index = MeshletFaceMaterialIndex(scene, draw, face_id);
     float3 flat_world_normal = float3(0.0f);
     if (flat_face) flat_world_normal = trs_transform_normal(world, scene.GetFaceNormal(draw, face_id - 1u));

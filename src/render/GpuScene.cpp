@@ -122,8 +122,14 @@ DrawData PrimitiveDrawData(const GpuBuffers &buffers, const MeshBuffers &mb, con
         .BaseFaceNormalOffset = meshes.GetFaceDataRange(store_id).Offset,
         .FaceFirstTriangleOffset = meshes.GetFaceDataRange(store_id).Offset,
         .VertexEdgeAdjacencyOffset = OffsetOrInvalid(meshes.GetVertexEdgeAdjacencyRange(store_id)),
+        .VertexFanAdjacencyOffset = OffsetOrInvalid(meshes.GetVertexFanAdjacencyRange(store_id)),
+        .Connectivity = meshes.GetConnectivityRange(store_id),
+        .EdgeHalfedges = meshes.GetConnectivityEdgeRange(store_id),
+        .HalfedgeCount = meshes.GetFaceCornerRange(store_id).Count,
+        .FaceCount = meshes.GetFaceDataRange(store_id).Count,
+        .ConnectivityFaceStarts = meshes.GetConnectivity(store_id).Faces.empty() ? 0u : 1u,
         .VertexCountOrHeadImageSlot = mb.Vertices.Count,
-        .ElementStateSlotOffset = meshes.GetFaceStateRange(store_id),
+        .Selection = meshes.GetEditSelectionStorage(store_id),
         .EditEdgeOffset = 0u,
         .InstanceStateSlot = buffers.Instances.StateBuffer.Slot,
         .VertexOffset = mb.Vertices.Offset,
@@ -212,7 +218,6 @@ MeshletBuildInputs CaptureMeshletInputs(const GpuBuffers &buffers, const MeshBuf
 // Touches only its own captured inputs and its own vectors, so this runs on any thread.
 MeshletBuild BuildMeshlets(MeshletBuildInputs &in) {
     const auto vertices = in.Vertices;
-    const auto face_ids = in.Weld.TriangleFaceIds;
     const auto element_primitives = in.ElementPrimitives;
 
     const bool face_topology = in.FaceTopology;
@@ -259,10 +264,13 @@ MeshletBuild BuildMeshlets(MeshletBuildInputs &in) {
 
         // Meshlets are built inside one source-primitive range. Coverage classification therefore
         // remains uniform across every resulting meshlet and can be done once in the meshlet cull.
+#ifndef NDEBUG
+        const auto face_ids = in.Weld.TriangleFaceIds;
         for (const auto triangle : chunk_triangle_ids) {
             assert(face_ids[primitive.FirstTriangle + triangle] > 0u && face_ids[primitive.FirstTriangle + triangle] <= element_primitives.size());
             assert(element_primitives[face_ids[primitive.FirstTriangle + triangle] - 1u] == primitive.PrimitiveIndex);
         }
+#endif
         const CornerWeldKey key{in.Weld, first_index};
         for (const auto triangle : chunk_triangle_ids) flat_face_triangles[triangle] = key.FlatFaceTriangle(triangle);
 

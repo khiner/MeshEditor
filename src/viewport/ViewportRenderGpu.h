@@ -41,7 +41,10 @@ void FlushDrawList(entt::registry &, const DrawListBuilder &, mtl::Buffer &draw_
 std::vector<ExtrasLinePushConstants> CollectExtrasLines(const entt::registry &, const InstanceArena &);
 void RecordMeshletCull(mtl::PassChain &, const mtl::BindlessSet &, const Pipelines &, GpuBuffers &, MeshletCullConfig);
 void RecordSilhouetteDepthPass(mtl::PassChain &, const mtl::BindlessSet &, const Pipelines &, GpuBuffers &, bool draw_meshlets, uint32_t ubo_offset = 0);
-void DrawMeshlets(MTL::RenderCommandEncoder *, const GpuBuffers &, uint32_t route, uint32_t required_instance_flags = 0);
+void DrawMeshlets(
+    MTL::RenderCommandEncoder *, const GpuBuffers &, uint32_t route,
+    uint32_t required_instance_flags = 0, uint32_t mesh_threads = 160u, uint32_t edit_edge_corner = 0u
+);
 
 // Which parts of a frame one recording covers.
 enum class RenderPhase {
@@ -76,9 +79,8 @@ void DeriveBaseNormalsNow(entt::registry &, std::span<const entt::entity> mesh_e
 // Call after the meshes' index buffers are written, under DeriveBaseNormalsNow's between-frames constraints.
 void FinalizeNewMeshShadingNow(entt::registry &, std::span<const entt::entity> mesh_entities);
 
-// Copy the mesh's posed positions and derived normals from the last submitted frame (fenced complete) into the canonical stores.
-// Returns true when any position changed.
-bool CommitPosedGeometry(entt::registry &, entt::entity mesh_entity);
+// Commit posed positions and normals with one submit. Returns the meshes whose positions changed.
+std::vector<entt::entity> CommitPosedGeometry(entt::registry &, std::span<const entt::entity> mesh_entities);
 
 // Write the posed prelude's indirect dispatch group counts for the next submit.
 // Deform-input changes since the last submit select the recorded counts, and an unchanged pose selects zeros.

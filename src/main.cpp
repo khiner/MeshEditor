@@ -519,7 +519,7 @@ Capture:
 Benchmarking:
   --headless                  Run without a window
   --frames N                  Render N frames and exit
-  --bench-action ACTION       steady | orbit | transform | visibility
+  --bench-action ACTION       steady | orbit | transform | visibility | box-select
   --bench-action-count N      Actions per benchmark run
   --profile                   Print the profile report on exit
   --profile-json PATH         Write the profile report to PATH
@@ -531,7 +531,7 @@ Other:
 
 // Capture options from the CLI. `--render` is a preset for the full scene corpus; `--screenshot`/`--record` target one output.
 struct CaptureRequest {
-    enum class BenchmarkAction { Steady, Orbit, Transform, Visibility };
+    enum class BenchmarkAction { Steady, Orbit, Transform, Visibility, BoxSelect };
 
     bool Play{false};
     float PlayDuration{0}; // 0 = run until playback completes one loop.
@@ -571,7 +571,7 @@ struct BenchmarkDriver {
         for (const auto entity : entities) Transforms.emplace_back(entity, r.get<const Transform>(entity));
     }
 
-    void Apply(entt::registry &r) {
+    void Apply(entt::registry &r, entt::entity viewport, uvec2 extent) {
         switch (Action) {
             case CaptureRequest::BenchmarkAction::Steady: break;
             case CaptureRequest::BenchmarkAction::Orbit:
@@ -593,6 +593,18 @@ struct BenchmarkDriver {
                     else Show(r, entity);
                 }
                 break;
+            case CaptureRequest::BenchmarkAction::BoxSelect: {
+                if (extent == uvec2{}) break;
+                const auto &camera = r.get<const ViewCamera>(viewport);
+                const float aspect = float(extent.x) / float(extent.y);
+                const uint32_t inset = Frame % 2 == 0 ? 4u : 8u;
+                action::Emit(action::selection::ApplyBoxSelect{
+                    .BoxPx = {{inset, inset}, {extent.x - inset - 1, extent.y - inset - 1}},
+                    .Additive = false,
+                    .ViewProj = std::make_unique<mat4>(camera.Projection(aspect) * camera.View()),
+                });
+                break;
+            }
         }
         ++Frame;
     }
@@ -1251,7 +1263,7 @@ bool RunHeadlessScene(entt::registry &r, entt::entity viewport, const char *init
         }
         {
             const profile::CpuScope scope{"Frame"};
-            if (bench_frames > 0 && settled) benchmark.Apply(r);
+            if (bench_frames > 0 && settled) benchmark.Apply(r, viewport, extent);
             driver.EmitFrameActions(r, viewport, settled, extent);
             action::ApplyEmitted(r, viewport);
             ReportActionErrors(r);
@@ -1471,6 +1483,7 @@ int main(int argc, char **argv) {
             else if (action == "orbit") capture.BenchAction = CaptureRequest::BenchmarkAction::Orbit;
             else if (action == "transform") capture.BenchAction = CaptureRequest::BenchmarkAction::Transform;
             else if (action == "visibility") capture.BenchAction = CaptureRequest::BenchmarkAction::Visibility;
+            else if (action == "box-select") capture.BenchAction = CaptureRequest::BenchmarkAction::BoxSelect;
             else {
                 std::println(stderr, "Unknown benchmark action '{}'.", action);
                 return 1;

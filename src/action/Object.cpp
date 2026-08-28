@@ -16,7 +16,7 @@
 #include "scene/SceneGraphOps.h"
 #include "scene/WorldTransform.h"
 #include "selection/Selection.h"
-#include "selection/SelectionBitset.h"
+#include "selection/SelectionQueries.h"
 #include "viewport/InteractionComponents.h"
 #include "viewport/ViewportEvents.h"
 #include "viewport/ViewportInteractionState.h"
@@ -142,7 +142,7 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
     };
     // Rebuild a primitive mesh entity's geometry from its current PrimitiveShape.
     auto regen_primitive = [&](entt::entity e) {
-        const bool was_flat = meshes.GetFaceSharpnessSummary(r.get<const MeshHandle>(e).StoreId).All;
+        const bool was_flat = r.get<const MeshShadingSummary>(e).AllSharp;
         if (auto *mb = r.try_get<MeshBuffers>(e)) ReleaseMeshBuffers(r, *mb);
         // Erasing MeshHandle fires on_destroy, releasing the old store entry.
         r.erase<MeshBuffers, MeshHandle>(e);
@@ -163,17 +163,20 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
                 break;
         }
     };
-    // `fn(mesh_entity, mesh, bits, count)` for each edit-mode mesh with a non-empty element selection, when `element` is the current edit mode.
-    auto for_each_edit_selection = [&](Element element, auto &&fn) {
-        if (r.get<const EditMode>(viewport).Value != element) return;
+    const auto edit_selection_meshes = [&](Element element) {
+        std::vector<entt::entity> result;
+        if (r.get<const EditMode>(viewport).Value != element) return result;
         for (const auto me : r.view<const MeshElementSelection>()) {
             if (!HasMesh(r, me)) continue;
             const auto mesh = GetMesh(r, me);
-            const auto bits = meshes.GetSelectionBits(mesh.GetStoreId());
-            const auto count = ::selection::GetElementCount(mesh, element);
-            if (::selection::CountSelected(bits, count) == 0) continue;
-            fn(me, mesh, bits, count);
+            const auto &summary = meshes.GetSelectionSummary(mesh.GetStoreId());
+            if (summary.Mode == element && summary.SelectedCount > 0) result.push_back(me);
         }
+        return result;
+    };
+    const auto selected_meshes = [&] {
+        const auto selected = ::selection::GetSelectedMeshEntities(r);
+        return std::vector<entt::entity>{selected.begin(), selected.end()};
     };
     std::visit(
         overloaded{
@@ -219,50 +222,28 @@ void Apply(entt::registry &r, entt::entity viewport, const Action &action) {
                 }
             },
             [&](const SetSelectedSmoothShading &a) {
-                for (const auto me : ::selection::GetSelectedMeshEntities(r)) {
-                    const auto mesh = GetMesh(r, me);
-                    if (mesh.FaceCount() == 0) continue;
-                    std::ranges::fill(meshes.GetMutableFaceSharpness(mesh.GetStoreId()), uint8_t(a.Smooth ? 0 : 1));
-                    // Shade Smooth clears edge sharpness.
-                    if (a.Smooth) std::ranges::fill(meshes.GetMutableEdgeSharpness(mesh.GetStoreId()), uint8_t{0});
-                    r.emplace_or_replace<MeshShadingDirty>(me);
-                }
+                const auto targets = selected_meshes();
+                ApplyEditSharpness(
+                    r, viewport, targets,
+                    a.Smooth ? EditSharpnessOperation::SmoothAll : EditSharpnessOperation::SetAllFaces,
+                    !a.Smooth
+                );
             },
             [&](const ShadeSelectedSmoothByAngle &a) {
-                for (const auto me : ::selection::GetSelectedMeshEntities(r)) {
-                    const auto mesh = GetMesh(r, me);
-                    if (mesh.FaceCount() == 0) continue;
-                    std::ranges::fill(meshes.GetMutableFaceSharpness(mesh.GetStoreId()), uint8_t{0});
-                    meshes.SetEdgeSharpnessByAngle(mesh, a.Angle);
-                    r.emplace_or_replace<MeshShadingDirty>(me);
-                }
+                const auto targets = selected_meshes();
+                ApplyEditSharpness(r, viewport, targets, EditSharpnessOperation::SmoothByAngle, false, a.Angle);
             },
             [&](const SetSelectedFacesSmooth &a) {
-                for_each_edit_selection(Element::Face, [&](entt::entity me, const Mesh &mesh, std::span<const uint32_t> bits, uint32_t count) {
-                    auto sharp = meshes.GetMutableFaceSharpness(mesh.GetStoreId());
-                    ::selection::ForEachSelected(bits, count, [&](uint32_t f) {
-                        if (f < sharp.size()) sharp[f] = a.Smooth ? 0 : 1;
-                    });
-                    r.emplace_or_replace<MeshShadingDirty>(me);
-                });
+                const auto targets = edit_selection_meshes(Element::Face);
+                ApplyEditSharpness(r, viewport, targets, EditSharpnessOperation::SetSelectedFaces, !a.Smooth);
             },
             [&](const SetSelectedEdgesSharp &a) {
-                for_each_edit_selection(Element::Edge, [&](entt::entity me, const Mesh &mesh, std::span<const uint32_t> bits, uint32_t count) {
-                    auto sharp = meshes.GetMutableEdgeSharpness(mesh.GetStoreId());
-                    ::selection::ForEachSelected(bits, count, [&](uint32_t e) {
-                        if (e < sharp.size()) sharp[e] = a.Sharp ? 1 : 0;
-                    });
-                    r.emplace_or_replace<MeshShadingDirty>(me);
-                });
+                const auto targets = edit_selection_meshes(Element::Edge);
+                ApplyEditSharpness(r, viewport, targets, EditSharpnessOperation::SetSelectedEdges, a.Sharp);
             },
             [&](const SetSelectedVertexEdgesSharp &a) {
-                for_each_edit_selection(Element::Vertex, [&](entt::entity me, const Mesh &mesh, std::span<const uint32_t> bits, uint32_t count) {
-                    auto sharp = meshes.GetMutableEdgeSharpness(mesh.GetStoreId());
-                    ::selection::ForEachVertexTouchedEdge(bits, count, mesh, [&](uint32_t e) {
-                        if (e < sharp.size()) sharp[e] = a.Sharp ? 1 : 0;
-                    });
-                    r.emplace_or_replace<MeshShadingDirty>(me);
-                });
+                const auto targets = edit_selection_meshes(Element::Vertex);
+                ApplyEditSharpness(r, viewport, targets, EditSharpnessOperation::SetVertexEdges, a.Sharp);
             },
             [&](ParentToActive) {
                 const auto active = FindActiveEntity(r);

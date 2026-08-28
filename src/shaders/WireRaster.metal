@@ -13,6 +13,7 @@
 #include "WireCoverage.metal"
 #include "WireDrawRecord.metal"
 #include "WireRasterPushConstants.metal"
+#include "EditSelection.metal"
 
 // Fixed-point coverage per line, summed per class. A 32-bit counter holds any realistic line count.
 constant float WireCoverageScale = 255.0f;
@@ -20,15 +21,15 @@ constant float WireCoverageScale = 255.0f;
 constant float WireDiscRadius = 0.5641895835477563f * 1.05f;
 
 // The class a halfedge's color comes from. The resolve turns these back into theme colors.
-inline uint WireClassOf(const thread Scene &scene, DrawData draw, uint element_state_color, uint vertex_index) {
+inline uint WireClassOf(const thread Scene &scene, DrawData draw, uint edit_selection_color, uint edge, uint vertex_id) {
     if (scene.View.InteractionMode == InteractionMode_Object && scene.View.ShowOverlays != 0u) {
         const uint instance_state = scene.InstanceState(draw);
         if ((instance_state & STATE_SELECTED) == 0u) return WireCoverage_Base;
         return (instance_state & STATE_ACTIVE) != 0u ? WireCoverage_Active : WireCoverage_Selected;
     }
-    if (element_state_color == 0u || draw.ElementStateSlotOffset.Slot == INVALID_SLOT) return WireCoverage_Base;
+    if (edit_selection_color == 0u || draw.Selection.Summary.Slot == INVALID_SLOT) return WireCoverage_Base;
 
-    const uint element_state = uint(scene.ElementStates(draw.ElementStateSlotOffset.Slot)[draw.ElementStateSlotOffset.Offset + vertex_index]);
+    const uint element_state = EditEdgeEndpointState(scene, draw, edge, vertex_id);
     if ((element_state & STATE_ACTIVE) != 0u) return WireCoverage_Active;
     if ((element_state & STATE_SELECTED) == 0u) return WireCoverage_Base;
     return scene.View.InteractionMode == InteractionMode_Edit && scene.View.EditElement == Element_Edge ?
@@ -112,9 +113,9 @@ kernel void WireRasterKernel(
     const float2 p1 = ndc_to_uv(clip1.xy / clip1.w) * viewport;
     const float z0 = clip0.z / clip0.w, z1 = clip1.z / clip1.w;
 
-    // Each halfedge carries its own state, so the class comes from the endpoint the pixel is nearer.
-    const uint class0 = WireClassOf(scene, draw, record.ElementStateColor, index_position);
-    const uint class1 = WireClassOf(scene, draw, record.ElementStateColor, index_position + 1u);
+    // Each halfedge reads its own selection, so the class comes from the endpoint the pixel is nearer.
+    const uint class0 = WireClassOf(scene, draw, record.EditSelectionColor, edge, i0);
+    const uint class1 = WireClassOf(scene, draw, record.EditSelectionColor, edge, i1);
 
     const float half_width = max(theme.EdgeWidth, 1.0f) * 0.5f;
     const float reach = half_width + WireDiscRadius;

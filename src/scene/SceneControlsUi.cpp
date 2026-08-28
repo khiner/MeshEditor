@@ -858,11 +858,10 @@ void RenderControls(entt::registry &r, entt::entity viewport) {
                     const auto *active_instance = active_entity != entt::null ? r.try_get<const Instance>(active_entity) : nullptr;
                     const auto active_mesh = active_instance && HasMesh(r, active_instance->Entity) ? active_instance->Entity : entt::null;
                     const auto *active_stats = active_mesh != entt::null ? r.try_get<const MeshElementSelectionStats>(active_mesh) : nullptr;
-                    const uint32_t selected_count = active_stats && active_stats->Mode == edit_mode ? active_stats->SelectedCount : 0u;
+                    const uint32_t selected_count = active_stats ? active_stats->SelectedCount : 0u;
                     bool any_sharp = false, any_smooth = false;
                     for (const auto entity : r.view<const MeshElementSelectionStats>()) {
                         const auto &stats = r.get<const MeshElementSelectionStats>(entity);
-                        if (stats.Mode != edit_mode) continue;
                         any_sharp |= stats.AnySharp;
                         any_smooth |= stats.AnySmooth;
                         if (any_sharp && any_smooth) break;

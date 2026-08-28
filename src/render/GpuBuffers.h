@@ -171,6 +171,7 @@ struct GpuBuffers {
           MotionBlurTileIndirection{Ctx, 0},
           ElementPickKey{Ctx, sizeof(uint32_t)},
           ElementPickId{Ctx, sizeof(uint32_t)},
+          GeometryCommitChanged{Ctx, sizeof(uint32_t)},
           WireCoverageBuffer{Ctx, 0, SlotType::Buffer},
           WireDrawRecords{Ctx, 0, SlotType::Buffer} {
     }
@@ -490,6 +491,7 @@ struct GpuBuffers {
 
     TypedBuffer<uint32_t> ObjectPickKeys, ObjectPickSeenBitset, ObjectBoxBitset, MotionBlurTileIndirection;
     TypedBuffer<uint32_t> ElementPickKey, ElementPickId;
+    TypedBuffer<uint32_t> GeometryCommitChanged;
     mtl::Buffer WireCoverageBuffer;
     TypedBuffer<WireDrawRecord> WireDrawRecords;
 };

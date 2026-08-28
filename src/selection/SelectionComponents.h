@@ -10,16 +10,15 @@
 
 #include <vector>
 
-// Per-element state bits in the element state buffers.
+// Selection and activation bits shared by object, bone, and edit overlays.
 constexpr uint32_t ElementStateSelected{1u << 0}, ElementStateActive{1u << 1};
 
 // Marks a mesh whose elements are individually selectable: the store holds its selection bits,
 // and it keeps them across edit-mode switches.
 struct MeshElementSelection {};
 
-// Derived alongside the element-state buffers whenever a mesh selection changes.
+// Derived on the GPU whenever a mesh selection changes.
 struct MeshElementSelectionStats {
-    Element Mode{Element::None};
     uint32_t SelectedCount{}, SelectedVertexCount{};
     vec3 SelectedVertexPositionSum{};
     bool AnySharp{}, AnySmooth{};
@@ -37,11 +36,16 @@ struct ElementRange {
 struct AdditiveBoxSelectBaseline {
     std::vector<entt::entity> SelectedEntities;
     std::vector<std::pair<entt::entity, BoneSelection>> BoneSelections;
-    std::vector<std::pair<entt::entity, std::vector<uint32_t>>> ElementBits; // Each edit-selected mesh's selection bits
+    bool ElementSelectionCaptured{};
 };
 
-struct SelectionBitsDirty {}; // The selection bits changed, the compute update is pending.
-struct ElementStatesDirty {}; // The element state buffers changed, a submit is pending.
+// Excite temporarily publishes its sparse vertex mask through the edit-selection storage.
+// Preserve the authoritative edit domain so returning to Edit restores the remembered selection.
+struct ExciteSelectionBaseline {
+    Element Mode{Element::None};
+};
+
+struct EditSelectionDirty {}; // GPU selection changed; the viewport needs a reuse submit.
 
 // ViewProj is the record-time view-projection, stamped into SceneViewUBO so replay resolves pixels against it.
 struct PendingEditElementClick {
@@ -56,6 +60,8 @@ struct PendingBoxSelect {
     bool Additive;
     mat4 ViewProj;
 };
+struct PendingBoxSelectFinalize {};
+struct BoxSelectStatsDirty {};
 
 // Object/bone click pick awaiting GPU resolution. Cycle advances to the next overlapping hit.
 struct PendingPick {

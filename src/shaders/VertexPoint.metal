@@ -9,6 +9,7 @@
 #include "OverlayDispatch.metal"
 #include "OverlayMeshPushConstants.metal"
 #include "SoundPointPushConstants.metal"
+#include "EditSelection.metal"
 
 // Object mode has no element selection, so points take their object's selection color.
 inline float4 point_color(const thread Scene &scene, DrawData draw, uint element_state) {
@@ -29,9 +30,7 @@ inline PointVaryings VertexPointSprite(const thread Scene &scene, DrawData draw,
     const uint idx = min(element, vertex_count - 1u);
     const Transform world = scene.Models(draw.ModelSlot)[draw.FirstInstance];
 
-    const uint element_state = draw.ElementStateSlotOffset.Slot != INVALID_SLOT ?
-        uint(scene.ElementStates(draw.ElementStateSlotOffset.Slot)[draw.ElementStateSlotOffset.Offset + idx]) :
-        0u;
+    const uint element_state = EditVertexState(scene, draw, idx);
 
     const bool is_selected = (element_state & STATE_SELECTED) != 0u;
     const bool is_active = (element_state & STATE_ACTIVE) != 0u;

@@ -39,7 +39,7 @@ struct SceneT {
     device const Vertex *Vertices(uint slot) const { return BindlessBuffer(Vertex, B.VertexBuffer, slot); }
     device const Transform *Models(uint slot) const { return BindlessBuffer(Transform, B.ModelBuffer, slot); }
     device const uint *Indices(uint slot) const { return BindlessBuffer(uint, B.IndexBuffer, slot); }
-    device const uchar *ElementStates(uint slot) const { return BindlessBuffer(uchar, B.Buffer, slot); }
+    device const uchar *Bytes(uint slot) const { return BindlessBuffer(uchar, B.Buffer, slot); }
     device const uint *ObjectIds(uint slot) const { return BindlessBuffer(uint, B.ObjectIdBuffer, slot); }
     device const uint *FaceFirstTriangles(uint slot) const { return BindlessBuffer(uint, B.ObjectIdBuffer, slot); }
     device const uint *Adjacency(uint slot) const { return BindlessBuffer(uint, B.Buffer, slot); }
