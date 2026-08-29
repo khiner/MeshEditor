@@ -1,19 +1,23 @@
-#ifndef EXTRASLINE_MSL
-#define EXTRASLINE_MSL
+#ifndef OVERLAYJOBLINE_MSL
+#define OVERLAYJOBLINE_MSL
 
 #include "Bindless.metal"
 #include "SceneUBO.metal"
 #include "TransformUtils.metal"
 #include "ObjectExtrasTransform.metal"
 #include "Varyings.metal"
+#include "AABB.metal"
 #include "BoxWire.metal"
 #include "ExtrasLineKind.metal"
-#include "ExtrasLinePushConstants.metal"
+#include "InstanceRecord.metal"
 #include "OverlayDispatch.metal"
+#include "OverlayJob.metal"
+#include "OverlayJobDrawPushConstants.metal"
+#include "OverlayJobKind.metal"
 
-// Extras lines: camera, light, and empty gizmos plus collision shape wireframes, generated from the
-// object's own parameters. Each threadgroup emits a line group, two dedicated vertices apiece.
-constant uint ExtrasLineGroupLines = OverlayDispatch_LineGroupLines;
+// Each job emits a bounded line group, two dedicated vertices per line. Extras generate their
+// geometry procedurally; bounds and tetrahedral jobs read persistent scene buffers.
+constant uint OverlayJobGroupLines = OverlayDispatch_LineGroupLines;
 constant uint LightRangeSegments = OverlayDispatch_LightRangeSegments;
 constant uint SpotConeSegments = OverlayDispatch_SpotConeSegments;
 constant float SpotConeDepth = 2.0f;
@@ -21,8 +25,7 @@ constant uint ColliderCircleSegments = OverlayDispatch_ColliderCircleSegments;
 constant uint ColliderArcSegments = ColliderCircleSegments / 2u;
 // A hemisphere reads as its base circle plus four quarter arcs rising to the pole.
 constant uint ColliderCapLines = ColliderCircleSegments + 4u * ColliderArcSegments;
-using ExtrasLineOutput = metal::mesh<LineVaryings, void, ExtrasLineGroupLines * 2u, ExtrasLineGroupLines, metal::topology::line>;
-using ExtrasLineIdOutput = metal::mesh<ObjectIdFragmentVaryings, void, ExtrasLineGroupLines * 2u, ExtrasLineGroupLines, metal::topology::line>;
+using OverlayJobLineOutput = metal::mesh<ObjectLineVaryings, void, OverlayJobGroupLines * 2u, OverlayJobGroupLines, metal::topology::line>;
 
 inline bool IsColliderKind(uint kind) { return kind >= ExtrasLineKind_ColliderBox; }
 
@@ -74,14 +77,14 @@ inline float3 ColliderRingPoint(uint segment, uint end, float radius, float heig
 }
 
 // One endpoint of a collision shape's `line`, in the shape's own space.
-inline float3 ColliderWirePoint(constant ExtrasLinePushConstants &pc, uint line, uint end) {
-    const float4 params = pc.Params;
-    if (pc.Kind == ExtrasLineKind_ColliderBox) {
+inline float3 ColliderWirePoint(OverlayJob job, uint line, uint end) {
+    const float4 params = job.Params;
+    if (job.ExtrasKind == ExtrasLineKind_ColliderBox) {
         const uint corner = BoxEdgeCorners[line * 2u + end];
         const float3 half_size = params.xyz * 0.5f;
         return mix(-half_size, half_size, float3(float(corner & 1u), float((corner >> 1u) & 1u), float((corner >> 2u) & 1u)));
     }
-    if (pc.Kind == ExtrasLineKind_ColliderSphere) {
+    if (job.ExtrasKind == ExtrasLineKind_ColliderSphere) {
         // Three great circles, one per axis plane.
         const uint circle = line / ColliderCircleSegments;
         const float angle = 2.0f * Pi * float(line % ColliderCircleSegments + end) / float(ColliderCircleSegments);
@@ -91,7 +94,7 @@ inline float3 ColliderWirePoint(constant ExtrasLinePushConstants &pc, uint line,
 
     // Cylinders and capsules share a top and bottom profile joined by four side lines.
     const float radius_top = params.x, radius_bottom = params.y, half_height = params.z * 0.5f;
-    const uint profile_lines = pc.Kind == ExtrasLineKind_ColliderCapsule ? ColliderCapLines : ColliderCircleSegments;
+    const uint profile_lines = job.ExtrasKind == ExtrasLineKind_ColliderCapsule ? ColliderCapLines : ColliderCircleSegments;
     if (line >= profile_lines * 2u) {
         const uint side = line - profile_lines * 2u;
         const float angle = 0.5f * M_PI_F * float(side);
@@ -103,22 +106,22 @@ inline float3 ColliderWirePoint(constant ExtrasLinePushConstants &pc, uint line,
     const uint profile_line = top ? line : line - profile_lines;
     const float radius = top ? radius_top : radius_bottom;
     const float height = top ? half_height : -half_height;
-    if (pc.Kind == ExtrasLineKind_ColliderCylinder) return ColliderRingPoint(profile_line, end, radius, height);
+    if (job.ExtrasKind == ExtrasLineKind_ColliderCylinder) return ColliderRingPoint(profile_line, end, radius, height);
     // The bottom cap mirrors the top one through the XZ plane.
     const float3 point = ColliderCapPoint(profile_line, end) * radius;
     return float3(point.x, height + (top ? point.y : -point.y), point.z);
 }
 
 // One endpoint of the extras `line`, in the object's local space.
-inline ExtrasLineVertex ExtrasLineVertexAt(constant ExtrasLinePushConstants &pc, uint line, uint end) {
-    if (IsColliderKind(pc.Kind)) return {float3(pc.LocalOffset) + ColliderWirePoint(pc, line, end), VCLASS_NONE};
-    const float4 params = pc.Params;
-    if (pc.Kind == ExtrasLineKind_Empty) {
+inline ExtrasLineVertex ExtrasLineVertexAt(OverlayJob job, uint line, uint end) {
+    if (IsColliderKind(job.ExtrasKind)) return {float3(job.LocalOffset) + ColliderWirePoint(job, line, end), VCLASS_NONE};
+    const float4 params = job.Params;
+    if (job.ExtrasKind == ExtrasLineKind_Empty) {
         // Three axis line segments: +X, +Y, -Z from the origin.
         if (end == 0u) return {float3(0), VCLASS_NONE};
         return {line == 0u ? float3(1, 0, 0) : line == 1u ? float3(0, 1, 0) : float3(0, 0, -1), VCLASS_NONE};
     }
-    if (pc.Kind == ExtrasLineKind_Camera) {
+    if (job.ExtrasKind == ExtrasLineKind_Camera) {
         const float half_w = params.x, half_h = params.y, depth = params.z;
         const bool look_through = params.w != 0.0f;
         const float tria_size = 0.7f * 0.5f, tria_y = half_h + 0.1f * 0.5f;
@@ -143,12 +146,12 @@ inline ExtrasLineVertex ExtrasLineVertexAt(constant ExtrasLinePushConstants &pc,
     // Lights lay out their type-specific geometry first, then the shared halo.
     // A point or spot light rings its range; a directional light has no range to show.
     const float range = params.x, outer_radius = params.y, inner_radius = params.z;
-    const bool rings_range = pc.Kind != ExtrasLineKind_LightDirectional && range > 0.0f;
+    const bool rings_range = job.ExtrasKind != ExtrasLineKind_LightDirectional && range > 0.0f;
     const uint range_lines = rings_range ? LightRangeSegments : 0u;
     if (line < range_lines) return {CirclePoint(line, end, LightRangeSegments, range, 0.0f), VCLASS_BILLBOARD};
 
     uint local = line - range_lines;
-    if (pc.Kind == ExtrasLineKind_LightDirectional) {
+    if (job.ExtrasKind == ExtrasLineKind_LightDirectional) {
         // Eight rays, each a pair of dashes along its direction.
         const uint ray_count = 8u;
         if (local < ray_count * 2u) {
@@ -160,7 +163,7 @@ inline ExtrasLineVertex ExtrasLineVertexAt(constant ExtrasLinePushConstants &pc,
             return {float3(dir * distance, 0.0f), VCLASS_SCREENSPACE};
         }
         local -= ray_count * 2u;
-    } else if (pc.Kind == ExtrasLineKind_LightSpot) {
+    } else if (job.ExtrasKind == ExtrasLineKind_LightSpot) {
         if (local < SpotConeSegments) return {CirclePoint(local, end, SpotConeSegments, outer_radius, -SpotConeDepth), VCLASS_NONE};
         local -= SpotConeSegments;
         const uint inner_lines = inner_radius > 0.0f ? SpotConeSegments : 0u;
@@ -179,65 +182,91 @@ inline ExtrasLineVertex ExtrasLineVertexAt(constant ExtrasLinePushConstants &pc,
 
 // Clip position of one extras line endpoint, and the class that placed it.
 // Collision shapes hug their object's surface, so their lines push in front of faces.
-inline ExtrasLineVertex ExtrasLineClipVertex(const thread Scene &scene, constant ExtrasLinePushConstants &pc, uint line, uint end, thread float4 &clip) {
-    auto vertex_at = ExtrasLineVertexAt(pc, line, end);
-    const Transform world = scene.Models(pc.ModelSlot)[pc.InstanceIndex];
+inline ExtrasLineVertex ExtrasLineClipVertex(
+    const thread Scene &scene, constant OverlayJobDrawPushConstants &pc,
+    OverlayJob job, uint line, uint end, thread float4 &clip
+) {
+    auto vertex_at = ExtrasLineVertexAt(job, line, end);
+    const Transform world = scene.Models(pc.ModelSlot)[job.InstanceIndex];
     vertex_at.Position = ObjectExtrasWorldPos(scene, world, vertex_at.Position, vertex_at.Class);
     clip = scene.ViewProj() * float4(vertex_at.Position, 1.0f);
-    if (IsColliderKind(pc.Kind)) clip.z -= NdcOffsetFactor(scene);
+    if (IsColliderKind(job.ExtrasKind)) clip.z -= NdcOffsetFactor(scene);
     return vertex_at;
 }
 
-[[mesh]] void ExtrasLineMesh(
-    ExtrasLineOutput output,
-    uint thread_index [[thread_index_in_threadgroup]],
-    uint3 threadgroup_position [[threadgroup_position_in_grid]],
-    device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
-    constant SceneViewUBO &view [[buffer(BufferIndex_SceneView)]],
-    constant ViewportTheme &theme [[buffer(BufferIndex_ViewportTheme)]],
-    constant WorkspaceLights &workspace [[buffer(BufferIndex_WorkspaceLights)]],
-    constant ExtrasLinePushConstants &pc [[buffer(BufferIndex_PushConstants)]]
+inline OverlayJob ResolveOverlayJob(
+    device const BindlessSet &bindless, constant OverlayJobDrawPushConstants &pc, uint group
 ) {
-    const Scene scene{bindless, view, theme, workspace};
-    const uint first_line = threadgroup_position.x * ExtrasLineGroupLines;
-    const uint line_count = min(ExtrasLineGroupLines, pc.LineCount - first_line);
-    output.set_primitive_count(line_count);
-    if (thread_index >= line_count * 2u) return;
-
-    float4 clip;
-    const auto vertex_at = ExtrasLineClipVertex(scene, pc, first_line + thread_index / 2u, thread_index & 1u, clip);
-
-    const uint instance_state = uint(scene.InstanceStates(pc.StateSlot)[pc.InstanceIndex]);
-    float4 color = scene.ObjectSelectionColor(instance_state, WireBaseColor(scene));
-    // The ground line and diamond keep a fixed theme colour, unaffected by selection state.
-    if (vertex_at.Class == VCLASS_GROUNDPOINT) color = float4(scene.Theme.Colors.Light);
-
-    output.set_vertex(thread_index, MakeLineVertex(clip, color, float2(scene.View.ViewportSize)));
-    output.set_index(thread_index, thread_index);
+    const uint job = BindlessBuffer(uint, bindless.Buffer, pc.VisibleSlot)[group];
+    return BindlessBuffer(OverlayJob, bindless.Buffer, pc.JobsSlot)[job];
 }
 
-[[mesh]] void ExtrasLineIdMesh(
-    ExtrasLineIdOutput output,
+inline float4 OverlayJobClipVertex(
+    const thread Scene &scene, device const BindlessSet &bindless,
+    constant OverlayJobDrawPushConstants &pc, OverlayJob job,
+    uint element, uint end, thread uint &vertex_class
+) {
+    vertex_class = VCLASS_NONE;
+    if (job.Kind == OverlayJobKind_Extras) {
+        float4 clip;
+        vertex_class = ExtrasLineClipVertex(scene, pc, job, element, end, clip).Class;
+        return clip;
+    }
+    const Transform world = scene.Models(pc.ModelSlot)[job.InstanceIndex];
+    float3 local;
+    if (job.Kind == OverlayJobKind_Bounds) {
+        const AABB bounds = BindlessBuffer(AABB, bindless.Buffer, pc.BoundsSlot)[job.InstanceIndex];
+        if (any(float3(bounds.Min) > float3(bounds.Max))) return float4(2, 2, 2, 1);
+        const uint corner = BoxEdgeCorners[element * 2u + end];
+        local = mix(
+            float3(bounds.Min), float3(bounds.Max),
+            float3(float(corner & 1u), float((corner >> 1u) & 1u), float((corner >> 2u) & 1u))
+        );
+    } else {
+        const uint point = BindlessBuffer(uint, bindless.Buffer, pc.TetEdgeIndexSlot)[job.IndexOffset + element * 2u + end];
+        local = float3(BindlessBuffer(packed_float3, bindless.Buffer, pc.TetPositionSlot)[job.SourceOffset + point]);
+    }
+    float4 clip = scene.ViewProj() * float4(trs_transform_point(world, local), 1.0f);
+    if (job.Kind == OverlayJobKind_TetWire) clip.z -= NdcOffsetFactor(scene);
+    return clip;
+}
+
+[[mesh]] void OverlayJobLineMesh(
+    OverlayJobLineOutput output,
     uint thread_index [[thread_index_in_threadgroup]],
     uint3 threadgroup_position [[threadgroup_position_in_grid]],
     device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
     constant SceneViewUBO &view [[buffer(BufferIndex_SceneView)]],
     constant ViewportTheme &theme [[buffer(BufferIndex_ViewportTheme)]],
     constant WorkspaceLights &workspace [[buffer(BufferIndex_WorkspaceLights)]],
-    constant ExtrasLinePushConstants &pc [[buffer(BufferIndex_PushConstants)]]
+    constant OverlayJobDrawPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
 ) {
     const Scene scene{bindless, view, theme, workspace};
-    const uint first_line = threadgroup_position.x * ExtrasLineGroupLines;
-    const uint line_count = min(ExtrasLineGroupLines, pc.LineCount - first_line);
+    const OverlayJob job = ResolveOverlayJob(bindless, pc, threadgroup_position.x);
+    const uint line_count = job.ElementCount;
     output.set_primitive_count(line_count);
     if (thread_index >= line_count * 2u) return;
 
-    float4 clip;
-    ExtrasLineClipVertex(scene, pc, first_line + thread_index / 2u, thread_index & 1u, clip);
+    uint vertex_class;
+    const float4 clip = OverlayJobClipVertex(
+        scene, bindless, pc, job, job.FirstElement + thread_index / 2u, thread_index & 1u, vertex_class
+    );
 
-    ObjectIdFragmentVaryings out;
-    out.ObjectId = pc.ObjectIdSlot != INVALID_SLOT ? scene.ObjectIds(pc.ObjectIdSlot)[pc.InstanceIndex] : 0u;
-    out.Position = clip;
+    const uint instance_state = uint(scene.InstanceStates(pc.StateSlot)[job.InstanceIndex]);
+    float4 color = job.Kind == OverlayJobKind_TetWire ? WireBaseColor(scene) :
+        scene.ObjectSelectionColor(instance_state, WireBaseColor(scene));
+    if (job.Kind == OverlayJobKind_Bounds) {
+        color = float4(
+            (instance_state & STATE_ACTIVE) != 0u ? float3(scene.Theme.Colors.ObjectActive) :
+                                                   float3(scene.Theme.Colors.ObjectSelected),
+            1.0f
+        );
+    }
+    // The ground line and diamond keep a fixed theme colour, unaffected by selection state.
+    if (vertex_class == VCLASS_GROUNDPOINT) color = float4(scene.Theme.Colors.Light);
+
+    const LineVaryings line = MakeLineVertex(clip, color, float2(scene.View.ViewportSize));
+    ObjectLineVaryings out{line.Position, line.Color, line.EdgeStart, line.EdgePos, BindlessBuffer(InstanceRecord, bindless.Buffer, pc.InstanceSlot)[job.InstanceIndex].ObjectId};
     output.set_vertex(thread_index, out);
     output.set_index(thread_index, thread_index);
 }

@@ -189,6 +189,7 @@ MeshletBuildInputs CaptureMeshletInputs(const GpuBuffers &buffers, const MeshBuf
         .SourcePrimitiveCount = meshes.GetPrimitiveMaterialRange(store_id).Count,
         .FaceTopology = face_topology,
         .LineTopology = line_topology,
+        .AuxIndices = mb.EdgeIndices,
     };
     inputs.PrimitiveDraws.reserve(primitive_ranges.size());
     for (const auto &primitive : primitive_ranges) {
@@ -450,6 +451,7 @@ MeshletBuild BuildMeshlets(MeshletBuildInputs &in) {
 
         sink.Primitives.emplace_back(PrimitiveRecord{
             .Draw = in.PrimitiveDraws[primitive_record_index],
+            .AuxIndices = in.AuxIndices,
             .PrimitiveIndex = primitive.PrimitiveIndex,
             .FirstTriangle = primitive.FirstTriangle,
             .MeshletOffset = first_meshlet,
@@ -502,6 +504,7 @@ MeshletBuild BuildMeshlets(MeshletBuildInputs &in) {
 
             sink.Primitives.emplace_back(PrimitiveRecord{
                 .Draw = in.ElementDraw,
+                .AuxIndices = in.AuxIndices,
                 .PrimitiveIndex = primitive_index,
                 .FirstTriangle = 0u,
                 .MeshletOffset = first_meshlet,
@@ -511,24 +514,28 @@ MeshletBuild BuildMeshlets(MeshletBuildInputs &in) {
         }
     }
 
+    // Choose one meshlet per canonical vertex. Finest-LOD edit routing skips cone culling, and
+    // conservative bounds rejection means a culled owner cannot contain a visible element.
+    std::vector<uint8_t> vertex_owned(vertices.size());
+    for (const auto &record : sink.Records) {
+        const auto topology = MeshPrimitiveTopology(record.LocalTriangleOffset >> uint32_t(MeshletGeometryEncoding::TopologyShift));
+        const uint32_t first_corner = topology == MeshPrimitiveTopology::Triangle ?
+            in.PrimitiveTriangleRanges[record.Primitive].FirstTriangle * 3u : 0u;
+        for (uint32_t v = 0u; v < record.VertexCount; ++v) {
+            auto &packed = sink.Vertices[record.VertexOffset + v];
+            const uint32_t source = packed & uint32_t(MeshletGeometryEncoding::CornerMask);
+            const uint32_t vertex = topology == MeshPrimitiveTopology::Triangle ? in.Indices[first_corner + source] : source;
+            if (vertex_owned[vertex] == 0u) {
+                vertex_owned[vertex] = 1u;
+                packed |= uint32_t(MeshletGeometryEncoding::EditVertexOwnerBit);
+            }
+        }
+    }
+
     if (face_topology) {
-        // Choose one meshlet per topology element. Finest-LOD edit routing skips cone culling, and
-        // conservative bounds rejection means a culled owner cannot contain a visible element.
-        std::vector<uint8_t> vertex_owned(vertices.size());
+        // Choose one meshlet per canonical edge.
         std::vector<uint8_t> edge_owned(in.EdgeCount);
         for (const auto &record : sink.Records) {
-            const auto &primitive = in.PrimitiveTriangleRanges[record.Primitive];
-            const uint32_t first_corner = primitive.FirstTriangle * 3u;
-            for (uint32_t v = 0u; v < record.VertexCount; ++v) {
-                auto &packed = sink.Vertices[record.VertexOffset + v];
-                const uint32_t corner = packed & uint32_t(MeshletGeometryEncoding::CornerMask);
-                const uint32_t vertex = in.Indices[first_corner + corner];
-                if (vertex_owned[vertex] == 0u) {
-                    vertex_owned[vertex] = 1u;
-                    packed |= uint32_t(MeshletGeometryEncoding::EditVertexOwnerBit);
-                }
-            }
-
             for (uint32_t t = 0u; t < record.TriangleCount; ++t) {
                 const uint32_t source_triangle = sink.TriangleIds[record.TriangleOffset + t];
                 for (uint32_t c = 0u; c < 3u; ++c) {

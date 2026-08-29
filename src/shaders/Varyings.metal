@@ -106,6 +106,15 @@ struct LineVaryings {
     float2 EdgePos [[user(EdgePos)]];
 };
 
+// A line emission shared by the visible overlay and object-selection fragment pipelines.
+struct ObjectLineVaryings {
+    float4 Position [[position]];
+    float4 Color [[user(Color)]];
+    float2 EdgeStart [[user(EdgeStart)]] [[flat]];
+    float2 EdgePos [[user(EdgePos)]];
+    uint ObjectId [[user(ObjectId)]] [[flat]];
+};
+
 // Full-screen triangle strip with a [0,1] texture coordinate.
 struct QuadVaryings {
     float4 Position [[position]];

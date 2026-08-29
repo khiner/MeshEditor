@@ -32,6 +32,7 @@ struct MeshletBuildInputs {
     uint32_t EdgeCount{};
     uint32_t SourcePrimitiveCount{}; // Primitives a face-less mesh groups its elements into
     bool FaceTopology{}, LineTopology{};
+    SlotOffset AuxIndices{}; // Mesh-wide auxiliary topology, currently canonical edges.
     // Derived from the topology fields above.
     std::vector<DrawData> PrimitiveDraws{}; // One per entry of PrimitiveTriangleRanges
     DrawData ElementDraw{}; // Every line or point primitive of a face-less mesh draws through this

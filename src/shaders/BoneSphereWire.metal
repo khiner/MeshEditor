@@ -4,8 +4,8 @@
 // Billboard sphere outline for bone joints, drawn as a line list around the camera-facing disc.
 #include "Bindless.metal"
 #include "BoneUtils.metal"
+#include "MeshletResolve.metal"
 #include "Varyings.metal"
-#include "OverlayMeshPushConstants.metal"
 
 // One emitted vertex of a bone's BoneSphereWireMesh.
 inline LineVaryings BoneSphereWireMeshVertexAt(const thread Scene &scene, DrawData draw, uint vertex_id) {
@@ -44,13 +44,19 @@ using BoneSphereWireMeshOutput = metal::mesh<LineVaryings, void, 64u, 32u, metal
     constant SceneViewUBO &view [[buffer(BufferIndex_SceneView)]],
     constant ViewportTheme &theme [[buffer(BufferIndex_ViewportTheme)]],
     constant WorkspaceLights &workspace [[buffer(BufferIndex_WorkspaceLights)]],
-    constant OverlayMeshPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
+    constant MeshletDrawPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
 ) {
     const Scene scene{bindless, view, theme, workspace};
+    const MeshletWork work = ResolveMeshletWork(bindless, pc, threadgroup_position.x);
+    if (!work.Valid) {
+        if (thread_index == 0u) output.set_primitive_count(0u);
+        return;
+    }
     output.set_primitive_count(32u);
-    if (thread_index >= pc.ElementCount) return;
+    if (thread_index >= 64u) return;
 
-    const DrawData draw = GetDrawDataAt(scene, pc.DrawDataIndex + threadgroup_position.x);
+    DrawData draw = work.Draw;
+    draw.IndexSlotOffset = work.Primitive.AuxIndices;
     output.set_vertex(thread_index, BoneSphereWireMeshVertexAt(scene, draw, thread_index));
     output.set_index(thread_index, thread_index);
 }

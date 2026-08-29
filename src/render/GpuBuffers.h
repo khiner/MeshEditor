@@ -10,11 +10,13 @@
 #include "gpu/MeshDispatchArgs.h"
 #include "gpu/MeshletBlendBlockState.h"
 #include "gpu/MeshletCullBlockState.h"
+#include "gpu/MeshletInstanceFlag.h"
 #include "gpu/MeshletRecord.h"
 #include "gpu/MeshletRoute.h"
 #include "gpu/MeshletRouteState.h"
 #include "gpu/MeshletWorkRange.h"
 #include "gpu/MeshletWorkState.h"
+#include "gpu/OverlayJob.h"
 #include "gpu/PBRMaterial.h"
 #include "gpu/PrimitiveRecord.h"
 #include "gpu/PunctualLight.h"
@@ -24,7 +26,6 @@
 #include "gpu/ViewportTheme.h"
 #include "gpu/VisibleMeshlet.h"
 #include "gpu/WireCoverage.h"
-#include "gpu/WireDrawRecord.h"
 #include "gpu/WorkspaceLights.h"
 #include "metal/BufferArena.h"
 #include "metal/Image.h"
@@ -159,12 +160,15 @@ struct GpuBuffers {
           MeshletPhase2RangeCullArgs{Ctx, sizeof(MeshDispatchArgs), SlotType::Buffer},
           MeshletPhase2CullBlockCounts{Ctx, 0, SlotType::Buffer},
           MeshletCoarseCount{Ctx, sizeof(uint32_t), SlotType::Buffer},
+          OverlayJobs{Ctx, 0, SlotType::Buffer},
+          OverlayJobBlocks{Ctx, 0, SlotType::Buffer},
+          VisibleOverlayJobs{Ctx, 0, SlotType::Buffer},
+          OverlayJobDispatchArgs{Ctx, sizeof(MeshDispatchArgs), SlotType::Buffer},
           Lights{Ctx, sizeof(PunctualLight), SlotType::LightBuffer},
           Materials{Ctx, sizeof(PBRMaterial), SlotType::MaterialBuffer},
           SceneViewUBO{Ctx, ViewUboStride() * (MaxBlurSteps + 1)},
           ViewportThemeUBO{Ctx, sizeof(ViewportTheme)},
           WorkspaceLightsUBO{Ctx, sizeof(WorkspaceLights)},
-          RenderDraw{Ctx, 0, SlotType::DrawDataBuffer}, SelectionDraw{Ctx, 0, SlotType::DrawDataBuffer},
           ObjectPickKeys{Ctx, MaxSelectableObjects * sizeof(uint32_t)},
           ObjectPickSeenBitset{Ctx, ObjectPickBitsetWords * sizeof(uint32_t)},
           ObjectBoxBitset{Ctx, ObjectPickBitsetWords * sizeof(uint32_t)},
@@ -172,8 +176,7 @@ struct GpuBuffers {
           ElementPickKey{Ctx, sizeof(uint32_t)},
           ElementPickId{Ctx, sizeof(uint32_t)},
           GeometryCommitChanged{Ctx, sizeof(uint32_t)},
-          WireCoverageBuffer{Ctx, 0, SlotType::Buffer},
-          WireDrawRecords{Ctx, 0, SlotType::Buffer} {
+          WireCoverageBuffer{Ctx, 0, SlotType::Buffer} {
     }
 
     void ReserveAdditionalIndices(uint32_t face, uint32_t edge, uint32_t vertex) {
@@ -276,6 +279,9 @@ struct GpuBuffers {
         MeshletLodDepth = 0;
         MeshletFlagWorkByBit = {};
         MeshletTopologyMask = 0;
+        OverlayJobs.UsedSize = 0;
+        OverlayJobBlocks.UsedSize = 0;
+        VisibleOverlayJobs.UsedSize = 0;
         DrewElementIndices = false;
         // Occlusion feedback state, so the next scene's phase-1/phase-2 split replays identically
         // regardless of what rendered before the clear.
@@ -314,6 +320,8 @@ struct GpuBuffers {
     mtl::Buffer MeshletPhase2RangeCandidates, MeshletPhase2RangeCullArgs, MeshletPhase2CullBlockCounts;
     // Coarse clusters the last cull's cut selected, which the classification accumulates.
     mtl::Buffer MeshletCoarseCount;
+    // Persistent procedural line jobs, deterministically compacted into one indirect submission.
+    mtl::Buffer OverlayJobs, OverlayJobBlocks, VisibleOverlayJobs, OverlayJobDispatchArgs;
     uint64_t MeshletRangeCount{0};
     uint64_t MeshletInstanceCount{0};
     // The deepest span tree any resident mesh landed, which sets how many levels a traversal runs.
@@ -327,7 +335,8 @@ struct GpuBuffers {
         uint64_t Ranges{0}, Meshlets{0};
     };
     // One entry per MeshletInstanceFlag bit, indexed by that bit's position.
-    std::array<MeshletFlagWork, 4> MeshletFlagWorkByBit{};
+    static constexpr size_t MeshletInstanceFlagCount = std::bit_width(uint32_t(MeshletInstanceFlag::SoundPoint));
+    std::array<MeshletFlagWork, MeshletInstanceFlagCount> MeshletFlagWorkByBit{};
 
     MeshletFlagWork &FlagWork(uint32_t flag) { return MeshletFlagWorkByBit[std::countr_zero(flag)]; }
     const MeshletFlagWork &FlagWork(uint32_t flag) const { return MeshletFlagWorkByBit[std::countr_zero(flag)]; }
@@ -337,6 +346,17 @@ struct GpuBuffers {
     static constexpr uint32_t MeshletRouteCount{uint32_t(MeshletRoute::Count)};
     // One 32-lane simdgroup per phase-2 cull threadgroup, matching the shader's Phase2GroupSize.
     static constexpr uint32_t MeshletPhase2GroupSize{32};
+    static constexpr uint32_t OverlayJobBlockSize{256};
+
+    void SetOverlayJobs(std::span<const OverlayJob> jobs) {
+        OverlayJobs.SetCount<OverlayJob>(uint32_t(jobs.size()));
+        if (!jobs.empty()) OverlayJobs.Update(as_bytes(jobs));
+        OverlayJobBlocks.SetCount<uint32_t>(
+            uint32_t((jobs.size() + OverlayJobBlockSize - 1u) / OverlayJobBlockSize)
+        );
+        VisibleOverlayJobs.SetCount<uint32_t>(uint32_t(jobs.size()));
+        *OverlayJobDispatchArgs.GetMutableSpan<MeshDispatchArgs>({0, 1}).data() = {0u, 1u, 1u};
+    }
 
     void EnsureMeshletVisibilityCapacity(
         uint64_t visible_count, uint64_t work_range_count, uint64_t work_meshlet_count,
@@ -357,7 +377,7 @@ struct GpuBuffers {
         MeshletWorkBlocks.SetCount<uint32_t>(block_count);
         for (auto &frontier : LodFrontiers) frontier.SetCount<LodFrontierEntry>(frontier_count);
         LodFrontierBlockStates.SetCount<LodFrontierBlockState>(frontier_block_count);
-        MeshletClassifications.SetCount<uint16_t>(work_meshlet_count);
+        MeshletClassifications.SetCount<uint32_t>(work_meshlet_count);
         MeshletCullBlocks.SetCount<MeshletCullBlockState>(block_count);
         if (sort_blend) MeshletBlendBlocks.SetCount<MeshletBlendBlockState>(block_count);
         MeshletDispatchChunkCount = static_cast<uint32_t>((dispatch_meshlet_count + MeshletDispatchChunkSize - 1) / MeshletDispatchChunkSize);
@@ -397,10 +417,6 @@ struct GpuBuffers {
         while (BlurPoses.size() < count) BlurPoses.emplace_back(Ctx);
     }
 
-    void SetSceneViewDrawSlots(const mtl::Buffer &draw_data) {
-        SceneViewUBO.Update(as_bytes(draw_data.Slot), offsetof(::SceneViewUBO, DrawDataSlot));
-    }
-
     void SnapshotSceneViewUbo(uint32_t instance) {
         SceneViewUBO.Update(SceneViewUBO.Contents().subspan(0, sizeof(::SceneViewUBO)), ViewUboStride() * instance);
     }
@@ -430,9 +446,6 @@ struct GpuBuffers {
     // with the live state at instance 0.
     mtl::Buffer SceneViewUBO, ViewportThemeUBO, WorkspaceLightsUBO;
 
-    // One pass's draw data. Emissions read a draw at its own index.
-    mtl::Buffer RenderDraw, SelectionDraw;
-
     // One entry per run of mesh instance slots sharing a deform state.
     mtl::Buffer BoundsReduceEntries{Ctx, 0, SlotType::DrawDataBuffer};
     // (entry index, tile index) per bounds threadgroup, posed entries' tiles first.
@@ -458,11 +471,8 @@ struct GpuBuffers {
     mtl::Buffer PosedFaceNormals{Ctx, 0, SlotType::Buffer};
     // Weight-summed authored morph normal deltas, one vec3 per posed vertex slot, present for authored-morph entries.
     mtl::Buffer PosedMorphNormalDeltas{Ctx, 0, SlotType::Buffer};
-    // Instance-arena slots whose bounds draw as box wireframes, one box per listed slot.
-    mtl::Buffer BoundsBoxSlots{Ctx, 0, SlotType::Buffer};
-
     // Group counts of the posed prelude's passes, in recorded order (their arg slot order in PreludeDispatchArgs).
-    // Set on draw-list rebuild.
+    // Set when persistent scene descriptors refresh.
     struct PreludeGroups {
         static constexpr uint32_t PassCount{6};
         uint32_t PosePrepass{0}, PosedMeshletBounds{0}, DeriveFaces{0}, BoundsReduce{0}, DeriveGather{0}, BoundsCombine{0};
@@ -474,7 +484,7 @@ struct GpuBuffers {
     // Holds the recorded group counts, or zeros when deform inputs are unchanged since the last submit.
     mtl::Buffer PreludeDispatchArgs{Ctx, PreludeGroups::PassCount * sizeof(MTL::DispatchThreadgroupsIndirectArguments)};
     // A deform input was written since the last submit wrote live prelude counts.
-    // Deform inputs are morph weights, armature poses, transform gestures, geometry edits, and draw-list rebuilds.
+    // Deform inputs are morph weights, armature poses, transform gestures, geometry edits, and scene refreshes.
     bool PreludeStale{true};
     // Scene state changed since the previous submitted Full frame. This includes visibility and
     // material changes that do not need the posed prelude but can still reveal geometry.
@@ -487,11 +497,10 @@ struct GpuBuffers {
     // resolves correctly only against the list the raster that wrote it saw. Every cull bumps the
     // generation, the visibility raster stamps the ids it wrote with it, and decoding compares the two.
     uint32_t MeshletVisibleGeneration{0};
-    uint32_t VisibilityIdGeneration{0};
+    uint32_t VisibilityIdGeneration{InvalidOffset};
 
     TypedBuffer<uint32_t> ObjectPickKeys, ObjectPickSeenBitset, ObjectBoxBitset, MotionBlurTileIndirection;
     TypedBuffer<uint32_t> ElementPickKey, ElementPickId;
     TypedBuffer<uint32_t> GeometryCommitChanged;
     mtl::Buffer WireCoverageBuffer;
-    TypedBuffer<WireDrawRecord> WireDrawRecords;
 };

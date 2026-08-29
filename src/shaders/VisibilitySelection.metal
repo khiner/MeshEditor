@@ -1,6 +1,5 @@
 #include "MeshletInstanceFlag.metal"
 #include "SelectionObjectQuery.metal"
-#include "SelectionPickKey.metal"
 #include "VisibilityDecode.metal"
 #include "VisibilitySelectionPushConstants.metal"
 
@@ -27,8 +26,10 @@ fragment VisibilitySilhouetteTarget VisibilitySilhouetteFragment(
     return {{z, float(decoded.ObjectId)}, z};
 }
 
-fragment void VisibilityObjectSelectionFragment(
-    QuadVaryings quad [[stage_in]],
+// Selection consumes the same visibility ids as shading. The host limits this grid to the pick or
+// box rectangle, so a click decodes only the pixels that can contribute.
+kernel void VisibilityObjectSelectionKernel(
+    uint2 gid [[thread_position_in_grid]],
     texture2d<uint, access::read> visibility [[texture(0)]],
     texture2d<float, access::read> depth [[texture(1)]],
     device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
@@ -37,10 +38,10 @@ fragment void VisibilityObjectSelectionFragment(
     constant WorkspaceLights &workspace [[buffer(BufferIndex_WorkspaceLights)]],
     constant VisibilitySelectionPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
 ) {
+    if (any(gid >= pc.Extent)) return;
+    const uint2 pixel = pc.Origin + gid;
     const VisibilityMetadata decoded = DecodeVisibilityMetadata(
-        visibility.read(uint2(quad.Position.xy)).r, bindless, view, theme, workspace, pc.Visibility
+        visibility.read(pixel).r, bindless, view, theme, workspace, pc.Visibility
     );
-    if (!decoded.Valid || decoded.ObjectId == 0u) return;
-    const uint2 pixel = uint2(quad.Position.xy);
-    WriteObjectSelect(bindless, pc.Object, pixel, depth.read(pixel).r, decoded.ObjectId);
+    if (decoded.Valid) WriteObjectSelect(bindless, pc.Object, pixel, depth.read(pixel).r, decoded.ObjectId);
 }

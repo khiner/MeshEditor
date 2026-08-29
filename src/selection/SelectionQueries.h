@@ -30,7 +30,7 @@ struct SelectionHit {
 std::vector<SelectionHit> ResolveHits(entt::registry &, const std::vector<entt::entity> &raw, bool bone_mode, bool merge_parts = false);
 
 // Box selection: returns object-id-sorted entities hit by the box.
-std::vector<entt::entity> RunBoxSelect(entt::registry &, entt::entity viewport, std::pair<uvec2, uvec2> box_px);
+std::vector<entt::entity> RunBoxSelect(entt::registry &, std::pair<uvec2, uvec2> box_px);
 
 // Element-level box selection: renders IDs into the authoritative masks and derives the other domains on the GPU.
 void RunBoxSelectElements(entt::registry &, entt::entity viewport, std::span<const ElementRange> ranges, Element, std::pair<uvec2, uvec2> box_px, bool is_additive);
@@ -38,10 +38,10 @@ void PublishBoxSelectElementStats(entt::registry &, entt::entity viewport);
 void FinalizeBoxSelectElements(entt::registry &, entt::entity viewport);
 
 // Object click pick. Returns hit entities sorted by (distance, depth, object id). Advances `object_pick_epoch_tag` (8-bit, wraps with periodic key reset).
-std::vector<entt::entity> RunObjectPick(entt::registry &, entt::entity viewport, uint32_t &object_pick_epoch_tag, uvec2 mouse_px, uint32_t radius_px = 0);
+std::vector<entt::entity> RunObjectPick(entt::registry &, uint32_t &object_pick_epoch_tag, uvec2 mouse_px, uint32_t radius_px = 0);
 
 // Pick the nearest sound-vertex of an instance under the cursor.
-std::optional<uint32_t> RunSoundVerticesVertexPick(entt::registry &, entt::entity viewport, entt::entity instance_entity, uvec2 mouse_px);
+std::optional<uint32_t> RunSoundVerticesVertexPick(entt::registry &, entt::entity instance_entity, uvec2 mouse_px);
 
 // Element-level click transaction: pick, mutate, derive, and summarize on the GPU; returns the hit only for CPU editor mirrors.
 std::optional<std::pair<entt::entity, uint32_t>> RunEditElementClick(entt::registry &, entt::entity viewport, std::span<const ElementRange> ranges, Element, uvec2 mouse_px, bool toggle);

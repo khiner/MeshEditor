@@ -10,6 +10,7 @@ struct Context;
 
 #include <expected>
 #include <filesystem>
+#include <vector>
 
 // Build the process-lifetime engine and return the viewport entity.
 entt::entity InitEngine(entt::registry &);

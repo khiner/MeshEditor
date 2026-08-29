@@ -11,7 +11,7 @@
 #include "TransformUtils.metal"
 #include "ScreenSpace.metal"
 #include "WireCoverage.metal"
-#include "WireDrawRecord.metal"
+#include "MeshletEditGeometry.metal"
 #include "WireRasterPushConstants.metal"
 #include "EditSelection.metal"
 
@@ -62,45 +62,40 @@ inline bool WireClipNear(thread float4 &a, thread float4 &b) {
     return true;
 }
 
-// The record a global edge index falls in: the last one whose flattened range has begun.
-inline uint WireRecordAt(device const WireDrawRecord *records, uint count, uint global_edge) {
-    uint lo = 0u, hi = count - 1u;
-    while (lo < hi) {
-        const uint mid = (lo + hi + 1u) / 2u;
-        if (records[mid].FirstEdge <= global_edge) lo = mid;
-        else hi = mid - 1u;
-    }
-    return lo;
-}
-
 kernel void WireRasterKernel(
-    uint3 thread_position [[thread_position_in_grid]],
+    uint thread_index [[thread_index_in_threadgroup]],
+    uint3 threadgroup_position [[threadgroup_position_in_grid]],
     device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
     constant SceneViewUBO &view [[buffer(BufferIndex_SceneView)]],
     constant ViewportTheme &theme [[buffer(BufferIndex_ViewportTheme)]],
     constant WorkspaceLights &workspace [[buffer(BufferIndex_WorkspaceLights)]],
     constant WireRasterPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
 ) {
-    const uint global_edge = thread_position.x;
-    if (global_edge >= pc.EdgeTotal) return;
-
     const Scene scene{bindless, view, theme, workspace};
-    device const WireDrawRecord *records = BindlessBuffer(WireDrawRecord, bindless.Buffer, pc.RecordSlot);
-    const WireDrawRecord record = records[WireRecordAt(records, pc.RecordCount, global_edge)];
-    // Every instance of a draw repeats its edge list, so the remainder splits into instance and edge.
-    const uint local = global_edge - record.FirstEdge;
-    const uint instance = local / record.EdgeCount;
-    const uint edge = local - instance * record.EdgeCount;
+    const MeshletWork work = ResolveMeshletWork(bindless, pc.Meshlet, threadgroup_position.x);
+    if (!work.Valid) return;
+    const uint topology = MeshletPrimitiveTopology(work.Meshlet);
+    MeshletEditEdgeGeometry geometry;
+    if (topology == MeshPrimitiveTopology_Triangle) {
+        const uint local_triangle = thread_index / 3u;
+        const uint edge_corner = thread_index % 3u;
+        if (local_triangle >= work.Meshlet.TriangleCount) return;
+        const uint packed_edge = MeshletPackedEditEdge(
+            bindless, pc.Meshlet, work, local_triangle, edge_corner
+        );
+        if (packed_edge == INVALID_OFFSET) return;
+        geometry = ResolveMeshletEditEdge(
+            scene, work, bindless, pc.Meshlet, local_triangle, edge_corner, packed_edge
+        );
+    } else if (topology == MeshPrimitiveTopology_Line) {
+        if (thread_index >= work.Meshlet.TriangleCount) return;
+        geometry = ResolveMeshletLineEdge(scene, work, bindless, pc.Meshlet, thread_index);
+    } else {
+        return;
+    }
 
-    const DrawData draw = GetDrawDataAt(scene, record.DrawDataIndex + instance);
-    if (!InstanceInFrustum(scene, draw)) return;
-
-    const uint index_position = edge * 2u;
-    const Transform world = scene.Models(draw.ModelSlot)[draw.FirstInstance];
-    const uint i0 = scene.Indices(draw.IndexSlotOffset.Slot)[draw.IndexSlotOffset.Offset + index_position];
-    const uint i1 = scene.Indices(draw.IndexSlotOffset.Slot)[draw.IndexSlotOffset.Offset + index_position + 1u];
-    float4 clip0 = MeshletPosition(scene, draw, world, i0);
-    float4 clip1 = MeshletPosition(scene, draw, world, i1);
+    float4 clip0 = geometry.Clip0;
+    float4 clip1 = geometry.Clip1;
     // Push lines in front of faces, matching the hardware wire emission.
     clip0.z -= NdcOffsetFactor(scene);
     clip1.z -= NdcOffsetFactor(scene);
@@ -114,8 +109,14 @@ kernel void WireRasterKernel(
     const float z0 = clip0.z / clip0.w, z1 = clip1.z / clip1.w;
 
     // Each halfedge reads its own selection, so the class comes from the endpoint the pixel is nearer.
-    const uint class0 = WireClassOf(scene, draw, record.EditSelectionColor, edge, i0);
-    const uint class1 = WireClassOf(scene, draw, record.EditSelectionColor, edge, i1);
+    const uint edit_selection_color = topology == MeshPrimitiveTopology_Line ||
+        scene.View.InteractionMode == InteractionMode_Edit ? 1u : 0u;
+    const uint class0 = WireClassOf(
+        scene, work.Draw, edit_selection_color, geometry.Edge, geometry.Vertex0
+    );
+    const uint class1 = WireClassOf(
+        scene, work.Draw, edit_selection_color, geometry.Edge, geometry.Vertex1
+    );
 
     const float half_width = max(theme.EdgeWidth, 1.0f) * 0.5f;
     const float reach = half_width + WireDiscRadius;

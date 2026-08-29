@@ -386,9 +386,9 @@ void Interact(entt::registry &r, entt::entity viewport, FrameState &frame) {
 
     if (interaction_mode == InteractionMode::Excite) {
         if (IsMouseClicked(ImGuiMouseButton_Left)) {
-            if (const auto hit_entities = RunObjectPick(r, viewport, frame.ObjectPickEpochTag, mouse_px); !hit_entities.empty()) {
+            if (const auto hit_entities = RunObjectPick(r, frame.ObjectPickEpochTag, mouse_px); !hit_entities.empty()) {
                 if (const auto hit_entity = hit_entities.front(); r.all_of<SoundVertices>(hit_entity)) {
-                    if (const auto vertex = RunSoundVerticesVertexPick(r, viewport, hit_entity, mouse_px)) {
+                    if (const auto vertex = RunSoundVerticesVertexPick(r, hit_entity, mouse_px)) {
                         action::Emit(action::audio::ApplyExciteImpact{.InstanceEntity = hit_entity, .VertexIndex = *vertex});
                     }
                 }

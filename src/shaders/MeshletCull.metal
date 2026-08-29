@@ -59,7 +59,11 @@ inline bool InstanceDeformed(InstanceRecord instance) {
 // An edited or deformed instance draws original geometry, so its elements stay exact and its posed
 // bounds cover every cluster it draws.
 inline bool InstancePinsFinest(InstanceRecord instance) {
-    return (instance.Flags & MeshletInstanceFlag_LodPinFinest) != 0u || InstanceDeformed(instance);
+    return (instance.Flags & (MeshletInstanceFlag_LodPinFinest | MeshletInstanceFlag_Wire |
+        MeshletInstanceFlag_FaceNormal | MeshletInstanceFlag_VertexNormal |
+        MeshletInstanceFlag_EdgeOverlay | MeshletInstanceFlag_PointOverlay |
+        MeshletInstanceFlag_SoundPoint)) != 0u ||
+        InstanceDeformed(instance);
 }
 
 // The meshlets a primitive presents to the cull. Original geometry leads each primitive's run, so an
@@ -233,6 +237,7 @@ inline uint ClassifyInstanceRange(
     const OrientedBounds bounds = InstanceBounds(scene, pc, instance_slot);
     if (!bounds.Valid) return 1u;
     if (!in_frustum(scene.ViewProj(), bounds.Center, bounds.Ax, bounds.Ay, bounds.Az)) return 0u;
+    if ((instance.Flags & MeshletInstanceFlag_OverlayOnly) != 0u) return 1u;
     if (pc.PyramidSamplerSlot == INVALID_SLOT ||
         !MeshletOccluded(scene, pc.PyramidSamplerSlot, pc.OcclusionViewProj.Unpack(), bounds.Center, bounds.Ax, bounds.Ay, bounds.Az)) return 1u;
     // Blend routes are intentionally single-phase. Expand this instance so their meshlets can
@@ -256,19 +261,23 @@ inline RoutedMeshlet ClassifyMeshlet(
 
     const PrimitiveRecord primitive = BindlessBuffer(PrimitiveRecord, scene.B.Buffer, pc.PrimitiveSlot)[meshlet.Primitive];
     const bool triangle_topology = PrimitiveTopology(meshlet) == MeshPrimitiveTopology_Triangle;
-    if (pc.RouteMode == 3u && !triangle_topology) return result;
     // A one-meshlet instance already passed the conservative instance query. Repeating the
     // eight-corner pyramid query for its tighter sphere is optional extra rejection, not correctness.
     const bool can_occlude = bounds.Valid && !(instance.PrimitiveCount == 1u && primitive.MeshletCount == 1u);
     PBRMaterial material{};
     if (pc.RouteMode != 0u) material = scene.Materials(scene.View.MaterialSlot)[PrimitiveMaterialIndex(scene, primitive)];
     const bool edit_overlay = (instance.Flags & MeshletInstanceFlag_EditOverlay) != 0u;
+    const bool overlay_only = (instance.Flags & MeshletInstanceFlag_OverlayOnly) != 0u;
     const bool cone_visible = pc.RouteMode == 0u || material.DoubleSided != 0u ||
         MeshletConeVisible(scene, meshlet, world, InstanceDeformed(instance));
-    const bool occluded = can_occlude && pc.PyramidSamplerSlot != INVALID_SLOT &&
+    const bool occluded = !overlay_only && can_occlude && pc.PyramidSamplerSlot != INVALID_SLOT &&
         MeshletOccluded(scene, pc.PyramidSamplerSlot, pc.OcclusionViewProj.Unpack(), world_center, bounds.Ax, bounds.Ay, bounds.Az);
 
-    if (pc.RouteMode == 0u) {
+    if (overlay_only) {
+        result.Routes = 0u;
+    } else if (pc.RouteMode == 3u && !triangle_topology) {
+        result.Routes = 0u;
+    } else if (pc.RouteMode == 0u) {
         result.Routes = RouteBit(MeshletRoute_OpaqueCullBack);
     } else {
         const bool alpha_mask = material.AlphaMode == MaterialAlphaMode_Mask;
@@ -292,15 +301,25 @@ inline RoutedMeshlet ClassifyMeshlet(
         }
     }
     if (!cone_visible) result.Routes = 0u;
-    if (edit_overlay && triangle_topology) result.Routes |= RouteBit(MeshletRoute_EditOverlay);
+    if (edit_overlay) result.Routes |= RouteBit(MeshletRoute_EditOverlay);
+    if ((instance.Flags & MeshletInstanceFlag_Wire) != 0u) result.Routes |= RouteBit(MeshletRoute_Wire);
+    if ((instance.Flags & (MeshletInstanceFlag_Bone | MeshletInstanceFlag_BoneJoint |
+        MeshletInstanceFlag_FaceNormal | MeshletInstanceFlag_VertexNormal |
+        MeshletInstanceFlag_EdgeOverlay | MeshletInstanceFlag_PointOverlay |
+        MeshletInstanceFlag_SoundPoint)) != 0u) {
+        result.Routes |= RouteBit(MeshletRoute_Overlay);
+    }
+    result.Routes &= pc.RouteMask;
     if (result.Routes == 0u) return result;
     if (occluded) {
         if (pc.TwoPhase != 0u) {
             // Discard-free opaque routes move to the current-pyramid phase. Coverage and blend
             // remain in phase 1 and draw exactly once.
             const uint fast = RouteBit(MeshletRoute_OpaqueCullBack) | RouteBit(MeshletRoute_OpaqueCullFront) |
-                RouteBit(MeshletRoute_OpaqueDoubleSided) | RouteBit(MeshletRoute_EditOverlay);
-            const uint keep = RouteBit(MeshletRoute_Blend) | RouteBit(MeshletRoute_Coverage);
+                RouteBit(MeshletRoute_OpaqueDoubleSided) | RouteBit(MeshletRoute_EditOverlay) |
+                RouteBit(MeshletRoute_Overlay);
+            const uint keep = RouteBit(MeshletRoute_Blend) | RouteBit(MeshletRoute_Coverage) |
+                RouteBit(MeshletRoute_Wire);
             result.Routes = (result.Routes & keep) |
                 ((result.Routes & fast) != 0u ? RouteBit(MeshletRoute_Phase2Candidate) : 0u);
         } else {
@@ -628,7 +647,9 @@ kernel void MeshletCullBlockCount(
             blend_blocks[block_id].Buckets[bucket] = count;
         }
     }
-    if (work.Instance != INVALID_OFFSET) BindlessBufferMutable(ushort, bindless.Buffer, pc.ClassificationSlot)[i] = ushort(routes | (blend_bucket << 8u));
+    if (work.Instance != INVALID_OFFSET) {
+        BindlessBufferMutable(uint, bindless.Buffer, pc.ClassificationSlot)[i] = routes | (blend_bucket << CullRouteCount);
+    }
 }
 
 kernel void MeshletCullPrefix(
@@ -707,9 +728,9 @@ kernel void MeshletCullEmit(
     const VisibleMeshlet work = ResolveMeshlet(bindless, pc, block_id, i);
     const bool valid = work.Instance != INVALID_OFFSET;
     const bool sort_blend = pc.BlendBlockSlot != INVALID_SLOT;
-    const uint classification = valid ? BindlessBuffer(ushort, bindless.Buffer, pc.ClassificationSlot)[i] : 0u;
-    const uint routes = classification & 0xffu;
-    const uint blend_bucket = classification >> 8u;
+    const uint classification = valid ? BindlessBuffer(uint, bindless.Buffer, pc.ClassificationSlot)[i] : 0u;
+    const uint routes = classification & ((1u << CullRouteCount) - 1u);
+    const uint blend_bucket = classification >> CullRouteCount;
     threadgroup ushort *group_blend_counts = reinterpret_cast<threadgroup ushort *>(group_prefixes + CullRouteCount * PrefixStride);
     if (sort_blend) {
         for (uint j = lane; j < CullSimdGroups * 256u; j += CullBlockSize) group_blend_counts[j] = 0u;
@@ -909,11 +930,14 @@ kernel void MeshletPhase2Prefix(
     phase2->Offsets[MeshletRoute_OpaqueCullBack] = 0u;
     phase2->Counts[MeshletRoute_EditOverlay] = total;
     phase2->Offsets[MeshletRoute_EditOverlay] = 0u;
+    phase2->Counts[MeshletRoute_Overlay] = total;
+    phase2->Offsets[MeshletRoute_Overlay] = 0u;
     device MeshDispatchArgs *args = BindlessBufferMutable(MeshDispatchArgs, bindless.Buffer, pc.Phase2DispatchArgsSlot);
     for (uint chunk = 0u; chunk < pc.DispatchChunkCount; ++chunk) {
         const uint begin = chunk * pc.DispatchChunkSize;
         const MeshDispatchArgs dispatch = {total > begin ? min(total - begin, pc.DispatchChunkSize) : 0u, 1u, 1u};
         args[chunk] = dispatch;
         args[MeshletRoute_EditOverlay * pc.DispatchChunkCount + chunk] = dispatch;
+        args[MeshletRoute_Overlay * pc.DispatchChunkCount + chunk] = dispatch;
     }
 }

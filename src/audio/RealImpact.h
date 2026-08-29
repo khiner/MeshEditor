@@ -5,6 +5,7 @@
 
 #include <expected>
 #include <filesystem>
+#include <vector>
 
 /*
 Loads and provides access to a [RealImpact](https://github.com/samuel-clarke/RealImpact) dataset for a single object.

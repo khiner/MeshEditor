@@ -28,7 +28,7 @@
 #include "physics/PhysicsChanges.h"
 #include "physics/PhysicsSystem.h"
 #include "physics/PhysicsTypes.h"
-#include "render/DrawState.h"
+#include "render/GpuSceneState.h"
 #include "render/GpuBufferOps.h"
 #include "render/GpuBuffers.h"
 #include "render/Instance.h"
@@ -378,6 +378,46 @@ void BuildMeshletsNow(entt::registry &r, std::span<const entt::entity> mesh_enti
     }
 }
 
+// Procedural bone meshes share the persistent meshlet/instance work system too. Their custom
+// shaders use the primitive draw and auxiliary index stream; ordinary meshlet geometry remains
+// populated so the common bounds, frustum, routing, and indirect dispatch machinery applies.
+void BuildBoneMeshletsNow(entt::registry &r, std::span<const entt::entity> entities) {
+    auto &buffers = r.ctx().get<GpuBuffers>();
+    const auto &meshes = r.ctx().get<const MeshStore>();
+    for (const auto entity : entities) {
+        auto &mb = r.get<MeshBuffers>(entity);
+        if (mb.FaceIndices.Count == 0u) continue;
+        const auto indices = buffers.FaceIndexBuffer.Get(mb.FaceIndices);
+        const auto vertices = meshes.GetVertices(r.get<const VertexStoreId>(entity).StoreId);
+        const uint32_t triangle_count = uint32_t(indices.size() / 3u);
+        std::vector<uint32_t> face_ids(triangle_count), element_primitives(triangle_count, 0u);
+        std::iota(face_ids.begin(), face_ids.end(), 1u);
+        MeshletBuildInputs inputs;
+        inputs.Indices = indices;
+        inputs.Vertices = vertices;
+        inputs.ElementPrimitives = element_primitives;
+        inputs.TriangleEditEdges.assign(indices.size(), InvalidOffset);
+        inputs.PrimitiveTriangleRanges = {{0u, 0u, triangle_count}};
+        inputs.Weld.TriangleFaceIds = face_ids;
+        inputs.TriangleCount = triangle_count;
+        inputs.FaceTopology = true;
+        inputs.PrimitiveDraws.push_back({
+            .VertexSlot = mb.Vertices.Slot,
+            .IndexSlotOffset = mb.FaceIndices,
+            .ModelSlot = buffers.Instances.TransformBuffer.Slot,
+            .VertexCountOrHeadImageSlot = mb.Vertices.Count,
+            .InstanceStateSlot = buffers.Instances.StateBuffer.Slot,
+            .VertexOffset = mb.Vertices.Offset,
+        });
+        auto build = BuildMeshlets(inputs);
+        assert(build.Primitives.size() == 1u);
+        build.Primitives.front().AuxIndices = r.all_of<ArmatureObject>(entity) ?
+            r.get<const BoneAdjacencyIndices>(entity).Indices : mb.EdgeIndices;
+        CommitMeshlets(buffers, mb, build);
+    }
+    RepointMeshInstances(r, entities);
+}
+
 // Edge and vertex index buffers feed the wireframe, the edit and excite mode overlays, and line and
 // point meshes. A face mesh draws none of those in solid shading outside those modes, so it goes
 // without until something asks.
@@ -715,9 +755,8 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
     // so each pending selection carries the view-projection it was recorded with and stamps it for the resolve.
     // The UBO ends the frame live either way, since the rebuild below runs after selection and re-fills it on a view change.
     // Stamping a recorded view invalidates the selection buffer, so mark it stale to force a re-render against it.
-    const auto stamp_view_proj = [&r, &buffers](const mat4 &view_proj) {
+    const auto stamp_view_proj = [&buffers](const mat4 &view_proj) {
         buffers.SceneViewUBO.Update(as_bytes(view_proj), offsetof(SceneViewUBO, ViewProj));
-        r.ctx().get<DrawState>().SelectionStale = true;
     };
     if (const auto *pending = r.try_get<const PendingEditElementClick>(viewport)) {
         const auto mouse_px = pending->MousePx;
@@ -753,7 +792,7 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
             RunBoxSelectElements(r, viewport, ranges, r.get<const EditMode>(viewport).Value, box_px, additive);
         } else {
             const bool bone_mode = interaction.Mode == InteractionMode::Pose || IsBoneEditMode(r, viewport);
-            const auto hits = ResolveHits(r, RunBoxSelect(r, viewport, box_px), bone_mode, true);
+            const auto hits = ResolveHits(r, RunBoxSelect(r, box_px), bone_mode, true);
             const auto *baseline = additive ? r.try_get<const AdditiveBoxSelectBaseline>(viewport) : nullptr;
             if (bone_mode) {
                 r.clear<BoneSelection>();
@@ -801,7 +840,7 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
         );
         const auto radius = std::max(1u, uint32_t(std::lround(float(ObjectSelectRadiusPx) * render_scale)));
         auto &frame = r.ctx().get<FrameState>();
-        const auto hits = ResolveHits(r, RunObjectPick(r, viewport, frame.ObjectPickEpochTag, mouse_px, radius), bone_mode);
+        const auto hits = ResolveHits(r, RunObjectPick(r, frame.ObjectPickEpochTag, mouse_px, radius), bone_mode);
         const auto pick = hits.empty() ? std::optional<SelectionHit>{} : [&]() -> std::optional<SelectionHit> {
             if (!cycle) return hits.front();
             // Re-click at the same spot: advance from the currently-active hit to the next overlapping one.
@@ -821,14 +860,15 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
         }
     }
 
-    // A gizmo is generated from its object's parameters each frame, so a param change only needs a re-render.
-    if (!reactive<changes::CameraLens>(r).empty() || !r.view<LightWireframeDirty>().empty()) request(RenderRequest::Reuse);
+    // Camera and light parameters live in persistent overlay jobs; refresh those descriptors when
+    // their procedural geometry changes. Transforms remain separate incremental instance writes.
+    if (!reactive<changes::CameraLens>(r).empty() || !r.view<LightWireframeDirty>().empty()) request(RenderRequest::Rebuild);
 
     auto sync = SyncModelsBuffers(r); // Runs first so BufferIndex is valid for all downstream code.
     if (!sync.NewlyInserted.empty() || sync.Compacted) {
         request(RenderRequest::Reuse);
         // Insertion and compaction both reassign the record slots instances write into.
-        MarkInstanceRecordsStale(r.ctx().get<DrawState>());
+        MarkInstanceRecordsStale(r.ctx().get<GpuSceneState>());
     }
     const std::unordered_set<entt::entity> newly_inserted_set(sync.NewlyInserted.begin(), sync.NewlyInserted.end());
     const auto is_newly_inserted = [&](entt::entity e) { return newly_inserted_set.contains(e); };
@@ -984,6 +1024,7 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
         static const auto sphere_verts = iota(0u, uint32_t(sphere.Mesh.Positions.size())) | to<std::vector>();
 
         uint32_t total_face = 0, total_edge = 0, total_vertex = 0;
+        std::vector<entt::entity> bone_mesh_entities;
         for (auto entity : sync.NewExtrasEntities) {
             if (r.all_of<ArmatureObject>(entity)) {
                 total_face += bone_faces.size();
@@ -1004,14 +1045,17 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
                     mb.VertexIndices = buffers.CreateIndices(bone_verts, IndexKind::Vertex);
                 });
                 r.emplace_or_replace<BoneAdjacencyIndices>(entity, buffers.CreateIndices(bone.AdjacencyIndices, IndexKind::Edge));
+                bone_mesh_entities.push_back(entity);
             } else if (r.all_of<BoneJoint>(entity)) {
                 r.patch<MeshBuffers>(entity, [&](auto &mb) {
                     mb.FaceIndices = buffers.CreateIndices(sphere_faces, IndexKind::Face);
                     mb.EdgeIndices = buffers.CreateIndices(sphere.OutlineIndices, IndexKind::Edge);
                     mb.VertexIndices = buffers.CreateIndices(sphere_verts, IndexKind::Vertex);
                 });
+                bone_mesh_entities.push_back(entity);
             }
         }
+        BuildBoneMeshletsNow(r, bone_mesh_entities);
         request(RenderRequest::Rebuild);
     }
 
@@ -1082,7 +1126,7 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
             const auto mode = r.get<const Interaction>(viewport).Mode;
             request(mode == InteractionMode::Edit ? RenderRequest::Rebuild : RenderRequest::Silhouette);
             // Which instances carry a silhouette flag follows the selection.
-            r.ctx().get<DrawState>().InstanceFlagsStale = true;
+            r.ctx().get<GpuSceneState>().InstanceFlagsStale = true;
         }
 
         // SyncModelsBuffers writes the full initial state for newly inserted instances, so they are skipped here.
@@ -1118,7 +1162,7 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
         request(RenderRequest::Rebuild);
         // Instances appearing, going away, or changing slot move the records the meshlet passes read,
         // and the object ids they carry, neither of which a mesh-keyed signature sees.
-        MarkInstanceRecordsStale(r.ctx().get<DrawState>());
+        MarkInstanceRecordsStale(r.ctx().get<GpuSceneState>());
     }
 
     const auto interaction_mode = r.get<const Interaction>(viewport).Mode;
@@ -1188,19 +1232,19 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
         }
         if (!reclassified.empty()) {
             DeriveBaseNormalsNow(r, reclassified);
-            // Reclassification can reallocate the corner-class and seam arenas whose offsets the draw data carries, so the draw list rebuilds.
+            // Reclassification can reallocate arenas whose offsets persistent scene descriptors carry.
             request(RenderRequest::Rebuild);
         } else {
             request(RenderRequest::Reuse);
         }
     }
-    // Tet wireframes generate from the tet arenas at record time, so a tet mesh change re-renders.
-    if (!reactive<changes::TetMesh>(r).empty()) request(RenderRequest::Reuse);
+    // Tet arena ranges live in persistent overlay jobs.
+    if (!reactive<changes::TetMesh>(r).empty()) request(RenderRequest::Rebuild);
     // A body reports contacts anywhere on itself, so every mesh instanced under one answers closest-point queries.
     // A mesh no body reaches any more loses its hierarchy.
     if (!reactive<changes::PhysicsBodyMesh>(r).empty()) {
-        // Collision shape wireframes generate from ColliderShape at record time, so a shape change re-renders.
-        request(RenderRequest::Reuse);
+        // Collider parameters live in persistent overlay jobs.
+        request(RenderRequest::Rebuild);
 
         std::vector<entt::entity> demanded;
         const auto is_body = [&r](entt::entity a) { return r.all_of<PhysicsBodyHandle>(a); };
@@ -1837,9 +1881,11 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
             .MaterialSlot = buffers.Materials.Slot(),
             .PrimitiveMaterialSlot = meshes.GetPrimitiveMaterialSlot(),
             .ElementPrimitiveSlot = meshes.GetElementPrimitiveSlot(),
-            .DrawDataSlot = buffers.RenderDraw.Slot,
             .BoneXRay = settings.ViewportShading == ViewportShadingMode::Wireframe ? 1u : 0u,
             .ShowOverlays = settings.ShowOverlays ? 1u : 0u,
+            .ShowExtras = settings.ShowExtras ? 1u : 0u,
+            .ShowBoundingBoxes = settings.ShowBoundingBoxes ? 1u : 0u,
+            .ShowTetWireframe = settings.ShowTetWireframe ? 1u : 0u,
             // Polygon offset factor matching Blender's GPU_polygon_offset_calc (viewdist = max ortho extent)
             .NdcOffsetFactor = std::holds_alternative<Perspective>(camera.Data) ? proj[3][2] * -0.00125f : 0.000005f * std::max(std::abs(1.f / proj[0][0]), std::abs(1.f / proj[1][1])),
             .TransmissionFramebufferSamplerSlot = r.ctx().get<const SelectionSlots>().TransmissionSampler,
@@ -1847,7 +1893,6 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
             .UseRealTransmission = (is_pbr_mode && active_lighting.RealTransmission && pipelines.Main.Transmission) ? 1u : 0u,
             .DebugChannel = is_pbr_mode ? settings.DebugChannel : DebugChannel::None,
         }));
-        r.ctx().get<DrawState>().SelectionStale = true;
         request(transform_render_request);
     }
 
@@ -1865,9 +1910,23 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
             sound_selections.emplace_back(mesh_entity, sound_vertices);
         }
         ApplyEditSelectionLists(r, viewport, sound_selections, Element::Vertex);
+        if (!dirty_sound_selection_meshes.empty()) {
+            auto records = buffers.Instances.RecordBuffer.GetMutableSpan<InstanceRecord>(
+                {0u, buffers.Instances.RecordBuffer.Count<InstanceRecord>()}
+            );
+            for (const auto [instance_entity, instance, render_instance] :
+                 r.view<const Instance, const RenderInstance>().each()) {
+                if (!dirty_sound_selection_meshes.contains(instance.Entity) ||
+                    render_instance.BufferIndex >= records.size()) continue;
+                auto &record = records[render_instance.BufferIndex];
+                const auto *active = r.try_get<const MeshActiveElement>(instance.Entity);
+                const auto *force = r.try_get<const VertexForce>(instance_entity);
+                record.ActiveVertex = active ? active->Handle : InvalidOffset;
+                record.ExcitedVertex = force ? force->Vertex : InvalidOffset;
+            }
+        }
     }
     if (!dirty_sound_selection_meshes.empty()) {
-        r.ctx().get<DrawState>().SelectionStale = true;
         request(RenderRequest::Reuse);
     }
     if (r.all_of<EditSelectionDirty>(viewport)) {

@@ -5,18 +5,20 @@
 // fragment stage ray-traces the sphere it stands for.
 #include "Bindless.metal"
 #include "BoneUtils.metal"
+#include "MeshletResolve.metal"
 #include "Varyings.metal"
 #include "OverlayDispatch.metal"
-#include "OverlayMeshPushConstants.metal"
 
 // One emitted vertex of a bone's BoneSphereMesh.
-inline BoneSphereVaryings BoneSphereMeshVertexAt(const thread Scene &scene, DrawData draw, uint vertex_id) {
+inline BoneSphereVaryings BoneSphereMeshVertexAt(
+    const thread Scene &scene, DrawData draw, uint object_id, uint vertex_id
+) {
     const uint idx = scene.Indices(draw.IndexSlotOffset.Slot)[draw.IndexSlotOffset.Offset + vertex_id];
     const Vertex vert = scene.Vertices(draw.VertexSlot)[idx + draw.VertexOffset];
     const Transform world = scene.Models(draw.ModelSlot)[draw.FirstInstance];
 
     BoneSphereVaryings out;
-    out.ObjectId = draw.ObjectIdSlot != INVALID_SLOT ? scene.ObjectIds(draw.ObjectIdSlot)[draw.FirstInstance] : 0u;
+    out.ObjectId = object_id;
 
     // Object mode: neutral shadow, no selection tint.
     const bool is_object_mode = scene.View.InteractionMode == InteractionMode_Object;
@@ -40,7 +42,7 @@ inline BoneSphereVaryings BoneSphereMeshVertexAt(const thread Scene &scene, Draw
     return out;
 }
 
-// One threadgroup per bone, emitting that bone's BoneSphereMesh from the shared unit primitive.
+// One routed meshlet per joint, emitting that joint's shared unit primitive.
 // The color and selection-id pipelines both draw this emission, differing only in fragment.
 using BoneSphereMeshOutput = metal::mesh<BoneSphereVaryings, void, OverlayDispatch_BoneSphereVertices, 32u, metal::topology::triangle>;
 
@@ -52,14 +54,21 @@ using BoneSphereMeshOutput = metal::mesh<BoneSphereVaryings, void, OverlayDispat
     constant SceneViewUBO &view [[buffer(BufferIndex_SceneView)]],
     constant ViewportTheme &theme [[buffer(BufferIndex_ViewportTheme)]],
     constant WorkspaceLights &workspace [[buffer(BufferIndex_WorkspaceLights)]],
-    constant OverlayMeshPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
+    constant MeshletDrawPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
 ) {
     const Scene scene{bindless, view, theme, workspace};
+    const MeshletWork work = ResolveMeshletWork(bindless, pc, threadgroup_position.x);
+    if (!work.Valid) {
+        if (thread_index == 0u) output.set_primitive_count(0u);
+        return;
+    }
     output.set_primitive_count(32u);
-    if (thread_index >= pc.ElementCount) return;
+    if (thread_index >= OverlayDispatch_BoneSphereVertices) return;
 
-    const DrawData draw = GetDrawDataAt(scene, pc.DrawDataIndex + threadgroup_position.x);
-    output.set_vertex(thread_index, BoneSphereMeshVertexAt(scene, draw, thread_index));
+    output.set_vertex(
+        thread_index,
+        BoneSphereMeshVertexAt(scene, work.Draw, work.Instance.ObjectId, thread_index)
+    );
     output.set_index(thread_index, thread_index);
 }
 

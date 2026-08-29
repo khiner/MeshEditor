@@ -5,12 +5,6 @@
 #include <entt/entity/fwd.hpp>
 
 #include <array>
-#include <functional>
-
-struct DrawListBuilder;
-
-using SelectionBuildFn = std::function<void(DrawListBuilder &)>;
-
 // RAII for the bindless-slot leases used by the selection compute/render pipeline.
 struct SelectionSlots {
     uint32_t ObjectPickKey{}, ElementPickKey{}, ElementPickId{}, ObjectPickSeenBits{}, ObjectBoxBitset{};

@@ -56,6 +56,7 @@ private:
     NS::SharedPtr<MTL4::PipelineDataSetSerializer> Serializer;
     NS::SharedPtr<MTL4::Compiler> Compiler;
     NS::SharedPtr<MTL4::Archive> LoadedArchive;
+    std::optional<uint64_t> SourceFingerprint;
     bool PipelineCreated{false};
 };
 

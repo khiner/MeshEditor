@@ -105,16 +105,16 @@ enums:
       - name: ColliderSphere
       - name: ColliderCylinder
       - name: ColliderCapsule
+  - name: OverlayJobKind
+    type: u32
+    values:
+      - name: Extras
+      - name: Bounds
+      - name: TetWire
   - name: OverlayDispatch
     type: u32
     values:
       - name: LineGroupLines
-        value: 48
-      - name: EdgeQuadGroupEdges
-        value: 40
-      - name: PointGroupPoints
-        value: 160
-      - name: NormalIndicatorLines
         value: 48
       - name: ColliderCircleSegments
         value: 48
@@ -253,6 +253,31 @@ enums:
       # The primary edit instance emits its visible source edges and points from fine meshlets.
       - name: EditOverlay
         value: 8u
+      # Wire rasterization consumes canonical source edges from finest meshlets.
+      - name: Wire
+        value: 16u
+      # Procedural/editor-only geometry never enters the material visibility routes.
+      - name: OverlayOnly
+        value: 32u
+      - name: Bone
+        value: 64u
+      - name: BoneWire
+        value: 128u
+      - name: BoneJoint
+        value: 256u
+      - name: BoneJointWire
+        value: 512u
+      - name: FaceNormal
+        value: 1024u
+      - name: VertexNormal
+        value: 2048u
+      - name: EdgeOverlay
+        value: 4096u
+      - name: PointOverlay
+        value: 8192u
+      # Excite-mode points consume the mesh's persistent vertex-selection mask.
+      - name: SoundPoint
+        value: 16384u
   - name: MeshPrimitiveTopology
     type: u32
     values:
@@ -283,8 +308,12 @@ enums:
         value: 6
       - name: EditOverlay
         value: 7
-      - name: Count
+      - name: Wire
         value: 8
+      - name: Overlay
+        value: 9
+      - name: Count
+        value: 10
   - name: MeshletLimit
     type: u32
     values:
@@ -514,6 +543,28 @@ structs:
       - name: ElementPrimitiveOffset
         type: u32
         default: InvalidOffset
+  # One persistent, one-threadgroup chunk of procedural line geometry. All kinds share instance
+  # identity, visibility, selection state, deterministic compaction, and indirect submission.
+  - name: OverlayJob
+    fields:
+      - name: Kind
+        type: OverlayJobKind
+      - name: InstanceIndex
+        type: u32
+      - name: FirstElement
+        type: u32
+      - name: ElementCount
+        type: u32
+      - name: SourceOffset
+        type: u32
+      - name: IndexOffset
+        type: u32
+      - name: ExtrasKind
+        type: ExtrasLineKind
+      - name: LocalOffset
+        type: vec3
+      - name: Params
+        type: vec4
   # Immutable topology shared by every instance of a mesh. For non-triangle meshlets the triangle
   # offset/count fields identify logical line or point elements; local triangles remain triangle-only.
   - name: MeshletRecord
@@ -554,6 +605,9 @@ structs:
     fields:
       - name: Draw
         type: DrawData
+      # Optional kind-specific index stream; bone outlines use adjacency or ring indices here.
+      - name: AuxIndices
+        type: SlotOffset
       - name: PrimitiveIndex
         type: u32
       - name: FirstTriangle
@@ -657,6 +711,12 @@ structs:
         type: u32
       - name: ElementIdOffset
         type: u32
+      - name: ActiveVertex
+        type: u32
+        default: InvalidOffset
+      - name: ExcitedVertex
+        type: u32
+        default: InvalidOffset
   - name: VisibleMeshlet
     fields:
       - name: Instance
@@ -712,7 +772,7 @@ structs:
   - name: MeshletCullBlockState
     fields:
       - name: Routes
-        type: u32[8]
+        type: u32[10]
   - name: MeshletBlendBlockState
     fields:
       - name: Buckets
@@ -728,9 +788,9 @@ structs:
   - name: MeshletRouteState
     fields:
       - name: Counts
-        type: u32[8]
+        type: u32[10]
       - name: Offsets
-        type: u32[8]
+        type: u32[10]
       - name: BlendOffsets
         type: u32[256]
   # One CSR table a vertex-adjacency dispatch builds, over one mesh.
@@ -1035,12 +1095,16 @@ structs:
         type: u32
       - name: ElementPrimitiveSlot
         type: u32
-      - name: DrawDataSlot
-        type: u32
       - name: BoneXRay
         type: u32
       # Wires and points take selection colors only while overlays show.
       - name: ShowOverlays
+        type: u32
+      - name: ShowExtras
+        type: u32
+      - name: ShowBoundingBoxes
+        type: u32
+      - name: ShowTetWireframe
         type: u32
       - name: NdcOffsetFactor
         type: float
@@ -1405,7 +1469,7 @@ structs:
       - name: BoxResultSlot
         type: u32
         default: InvalidSlot
-  - name: SelectionDrawPushConstants
+  - name: ObjectSelectionPushConstants
     push_constant: true
     fields:
       - name: Query
@@ -1476,6 +1540,9 @@ structs:
         type: u32
       - name: RequiredInstanceFlags
         type: u32
+      - name: InstanceFilter
+        type: u32
+        default: InvalidOffset
       - name: EditEdgeCorner
         type: u32
       - name: VisibilityPhase
@@ -1513,8 +1580,10 @@ structs:
         type: VisibilityShadingPushConstants
       - name: Object
         type: ObjectSelectQuery
-      - name: Element
-        type: ElementSelectQuery
+      - name: Origin
+        type: uvec2
+      - name: Extent
+        type: uvec2
   - name: MeshletCullPushConstants
     push_constant: true
     fields:
@@ -1590,6 +1659,10 @@ structs:
         type: u32
       - name: RequiredInstanceFlags
         type: u32
+      # Routes this invocation may emit.
+      - name: RouteMask
+        type: u32
+        default: 0x3ffu
       - name: PyramidSamplerSlot
         type: u32
         default: InvalidSlot
@@ -1733,41 +1806,11 @@ structs:
         default: InvalidSlot
       - name: FirstTile
         type: u32
-  # One dispatch per overlay emission, over the draw's own element list.
-  - name: OverlayMeshPushConstants
-    push_constant: true
-    fields:
-      - name: DrawDataIndex
-        type: u32
-      - name: ElementCount
-        type: u32
-      # Where this dispatch's elements start, since a mesh grid caps at 65,535 threadgroups and a
-      # draw of more elements than that splits into chunks.
-      - name: FirstElement
-        type: u32
-  # One wire draw's place in the flattened edge list the raster dispatches over. A global edge index
-  # lands in the record whose FirstEdge it follows, and the remainder splits into instance and edge.
-  - name: WireDrawRecord
-    fields:
-      - name: FirstEdge
-        type: u32
-      - name: EdgeCount
-        type: u32
-      - name: DrawDataIndex
-        type: u32
-      # Nonzero colors each halfedge from its edit-selection mask.
-      - name: EditSelectionColor
-        type: u32
   - name: WireRasterPushConstants
     push_constant: true
     fields:
-      - name: RecordSlot
-        type: u32
-        default: InvalidSlot
-      - name: RecordCount
-        type: u32
-      - name: EdgeTotal
-        type: u32
+      - name: Meshlet
+        type: MeshletDrawPushConstants
       - name: CoverageSlot
         type: u32
         default: InvalidSlot
@@ -1777,65 +1820,32 @@ structs:
       - name: CoverageSlot
         type: u32
         default: InvalidSlot
-  # Bounding-box wireframes: one instanced line draw over the listed instance-arena slots.
-  - name: ExtrasLinePushConstants
+  # Deterministically compact the enabled persistent procedural line jobs.
+  - name: OverlayJobCullPushConstants
     push_constant: true
     fields:
-      - name: Kind
+      - name: JobsSlot
         type: u32
-      - name: LineCount
+      - name: JobCount
         type: u32
-      - name: ModelSlot
+      - name: InstanceStateSlot
         type: u32
-      - name: InstanceIndex
+      - name: BlockStateSlot
         type: u32
-      - name: StateSlot
+      - name: VisibleSlot
         type: u32
-      - name: ObjectIdSlot
+      - name: DispatchArgsSlot
         type: u32
-        default: InvalidSlot
-      - name: LocalOffset
-        type: vec3
-      - name: Params
-        type: vec4
-  - name: SoundPointPushConstants
+      - name: ExtrasOnly
+        type: u32
+  - name: OverlayJobDrawPushConstants
     push_constant: true
     fields:
-      - name: DrawDataIndex
+      - name: JobsSlot
         type: u32
-      - name: VertexSlot
+      - name: VisibleSlot
         type: u32
-      - name: VertexOffset
-        type: u32
-      - name: VertexCount
-        type: u32
-      - name: ActiveVertex
-        type: u32
-        default: InvalidOffset
-      - name: ExcitedVertex
-        type: u32
-        default: InvalidOffset
-  - name: TetWirePushConstants
-    push_constant: true
-    fields:
-      - name: PositionSlot
-        type: u32
-      - name: PositionOffset
-        type: u32
-      - name: EdgeIndexSlot
-        type: u32
-      - name: EdgeIndexOffset
-        type: u32
-      - name: ModelSlot
-        type: u32
-      - name: InstanceIndex
-        type: u32
-      - name: EdgeCount
-        type: u32
-  - name: BoundsBoxPushConstants
-    push_constant: true
-    fields:
-      - name: SlotsSlot
+      - name: InstanceSlot
         type: u32
       - name: BoundsSlot
         type: u32
@@ -1843,7 +1853,9 @@ structs:
         type: u32
       - name: StateSlot
         type: u32
-      - name: BoxCount
+      - name: TetPositionSlot
+        type: u32
+      - name: TetEdgeIndexSlot
         type: u32
   - name: SilhouetteEdgeDepthObjectPushConstants
     push_constant: true

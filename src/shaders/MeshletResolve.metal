@@ -48,6 +48,7 @@ inline MeshletWork ResolveMeshletWork(
     result.VisibleIndex = visible_index;
     result.MeshletIndex = work.Meshlet;
     result.Instance = BindlessBuffer(InstanceRecord, bindless.Buffer, pc.InstanceSlot)[instance_slot];
+    if (pc.InstanceFilter != INVALID_OFFSET && pc.InstanceFilter != instance_slot) return result;
     if ((result.Instance.Flags & pc.RequiredInstanceFlags) != pc.RequiredInstanceFlags) return result;
     result.Meshlet = BindlessBuffer(MeshletRecord, bindless.Buffer, pc.MeshletSlot)[work.Meshlet];
     result.Primitive = BindlessBuffer(PrimitiveRecord, bindless.Buffer, pc.PrimitiveSlot)[result.Meshlet.Primitive];
@@ -159,7 +160,8 @@ inline MeshletFaceValues MeshletFace(
     Transform world, uint triangle, bool flat_face
 ) {
     const uint face_id = scene.ObjectIds(draw.ObjectIdSlot)[draw.FaceIdOffset + triangle - primitive.FirstTriangle];
-    const uint element_state = face_id != 0u ? EditFaceState(scene, draw, face_id - 1u) : 0u;
+    const uint element_state = scene.View.InteractionMode == InteractionMode_Edit && face_id != 0u ?
+        EditFaceState(scene, draw, face_id - 1u) : 0u;
     const uint material_index = MeshletFaceMaterialIndex(scene, draw, face_id);
     float3 flat_world_normal = float3(0.0f);
     if (flat_face) flat_world_normal = trs_transform_normal(world, scene.GetFaceNormal(draw, face_id - 1u));

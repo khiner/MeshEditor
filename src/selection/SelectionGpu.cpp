@@ -1,37 +1,36 @@
 #include "selection/SelectionGpu.h"
 
-#include "gpu/SoundPointPushConstants.h"
-
 #include "Profile.h"
 #include "armature/ArmatureComponents.h"
 #include "audio/SoundVertices.h"
 #include "gpu/MeshletInstanceFlag.h"
-#include "gpu/SelectionDrawPushConstants.h"
+#include "gpu/OverlayDispatch.h"
+#include "gpu/ObjectSelectionPushConstants.h"
 #include "gpu/SelectionElementPushConstants.h"
 #include "gpu/EditSharpnessPushConstants.h"
 #include "gpu/EditSelectionPushConstants.h"
+#include "gpu/MeshletRoute.h"
 #include "gpu/VisibilitySelectionPushConstants.h"
 #include "mesh/MeshStore.h"
 #include "mesh/MeshComponents.h"
 #include "metal/PassChain.h"
 #include "metal/RenderTarget.h"
 #include "object/ObjectComponents.h"
-#include "render/Drawing.h"
 #include "render/Encoding.h"
 #include "render/Instance.h"
 #include "render/PickConstants.h"
 #include "render/Pipelines.h"
-#include "scene/Entity.h"
 #include "selection/Selection.h"
 #include "selection/SelectionBitset.h"
 #include "selection/SelectionComponents.h"
 #include "selection/SelectionQueries.h"
-#include "viewport/ViewportDisplay.h"
 #include "viewport/ViewportEvents.h"
 #include "viewport/ViewportRenderGpu.h"
 #include "viewport/InteractionComponents.h"
 
 #include <entt/entity/registry.hpp>
+
+#include <cmath>
 
 namespace {
 std::vector<EditSelectionPushConstants> BuildSelectionTransactions(
@@ -96,25 +95,17 @@ uint32_t MaxElementBound(auto &&ranges) {
     return std::ranges::fold_left(ranges, uint32_t{0}, [](uint32_t total, const auto &r) { return std::max(total, r.Offset + r.Count); });
 }
 
-void BindVisibilitySelectionTextures(MTL::RenderCommandEncoder *encoder, const Pipelines &pipelines) {
-    encoder->setFragmentTexture(*pipelines.Main.Resources->VisibilityImage, 0u);
-    encoder->setFragmentTexture(*pipelines.Main.Resources->DepthImage, 1u);
-}
-
 void RunSelectionPass(
-    entt::registry &r, mtl::PassChain &chain, const DrawListBuilder &draw_list,
-    bool render_depth, bool render_silhouette, bool draw_meshlets, uint32_t meshlet_flags, auto &&record_draws
+    entt::registry &r, mtl::PassChain &chain, bool render_depth, bool render_silhouette,
+    std::optional<MeshletCullConfig> meshlet_cull, auto &&record_draws
 ) {
     const auto &slots = r.ctx().get<const mtl::BindlessSet>();
     const auto &pipelines = r.ctx().get<const Pipelines>();
     auto &buffers = r.ctx().get<GpuBuffers>();
 
-    FlushDrawList(r, draw_list, buffers.SelectionDraw);
-    buffers.SetSceneViewDrawSlots(buffers.SelectionDraw);
-
     if (render_depth) RecordSilhouetteDepthPass(chain, slots, pipelines, buffers, render_silhouette);
-    if (draw_meshlets && buffers.MeshletInstanceCount > 0) {
-        RecordMeshletCull(chain, slots, pipelines, buffers, {.RequiredInstanceFlags = meshlet_flags});
+    if (meshlet_cull && buffers.MeshletInstanceCount > 0) {
+        RecordMeshletCull(chain, slots, pipelines, buffers, *meshlet_cull);
     }
 
     const auto extent = pipelines.Silhouette.Resources->DepthImage.Extent;
@@ -122,7 +113,7 @@ void RunSelectionPass(
     pass->setRenderTargetWidth(extent.Width);
     pass->setRenderTargetHeight(extent.Height);
     // The pick resolve reads the key an earlier raster wrote, and bindless buffers carry no tracked hazard.
-    auto *encoder = encode::BeginScenePass(chain, pass, "SelectionDraws", {{MTL::StageDispatch, MTL::StageVertex | MTL::StageMesh}, {MTL::StageBlit | MTL::StageFragment, MTL::StageFragment}}, extent, slots, buffers);
+    auto *encoder = encode::BeginScenePass(chain, pass, "SelectionPass", {{MTL::StageDispatch, MTL::StageVertex | MTL::StageMesh}, {MTL::StageBlit | MTL::StageFragment, MTL::StageFragment}}, extent, slots, buffers);
     record_draws(encoder, extent);
 }
 
@@ -137,43 +128,21 @@ void RenderElementSelectionPass(
     auto &meshes = r.ctx().get<MeshStore>();
     auto &buffers = r.ctx().get<GpuBuffers>();
 
-    const auto primary_edit_instances = selection::ComputePrimaryEditInstances(r);
     const bool xray_selection = r.get<const SelectionXRay>(viewport).Value;
     const auto &selection = pipelines.SelectionFragment;
-    // Face-less point/line meshes use their native topology; triangle meshes share the canonical
-    // meshlet ownership emission for vertices, edges, and faces.
-    const auto &element_raster = selection.ElementRaster(element, false, write_bitset, xray_selection);
-
-    DrawListBuilder draw_list;
     const bool render_depth = !xray_selection;
-    auto element_batch = draw_list.BeginBatch();
     const bool degenerate_point_pass = write_bitset && xray_selection && element != Element::Vertex;
-    bool has_meshlet_elements = false;
     for (const auto &range : ranges) {
-        const auto &mesh_buffers = r.get<MeshBuffers>(range.MeshEntity);
-        const auto &models = r.get<ModelsBuffer>(range.MeshEntity);
-        const bool meshlet_elements = mesh_buffers.FaceIndices.Count > 0 && mesh_buffers.Meshlets.Count > 0;
-        has_meshlet_elements |= meshlet_elements;
-        if (meshlet_elements) continue;
-
-        if (element == Element::Face) continue;
-        const auto &indices = element == Element::Vertex ? mesh_buffers.VertexIndices : mesh_buffers.EdgeIndices;
-        auto draw = MakeDrawData(mesh_buffers.Vertices, indices, buffers.Instances);
-        draw.ObjectIdSlot = InvalidSlot;
-        draw.FaceIdOffset = 0;
-        draw.VertexCountOrHeadImageSlot = 0;
-        draw.ElementIdOffset = range.Offset;
-        if (const auto primary = primary_edit_instances.find(range.MeshEntity);
-            primary != primary_edit_instances.end()) {
-            AppendDraw(draw_list, element_batch, indices, models, draw, r.get<RenderInstance>(primary->second).BufferIndex);
-        } else {
-            AppendDraw(draw_list, element_batch, indices, models, draw);
-        }
+        [[maybe_unused]] const auto &mesh_buffers = r.get<MeshBuffers>(range.MeshEntity);
+        assert(mesh_buffers.Meshlets.Count > 0u && "selectable mesh geometry must have persistent meshlets");
     }
 
     RunSelectionPass(
-        r, chain, draw_list, render_depth, true, has_meshlet_elements,
-        uint32_t(MeshletInstanceFlag::ElementSelection),
+        r, chain, render_depth, true,
+        MeshletCullConfig{
+            .RequiredInstanceFlags = uint32_t(MeshletInstanceFlag::ElementSelection),
+            .RouteMask = 1u << uint32_t(MeshletRoute::OpaqueCullBack),
+        },
         [&](auto *encoder, mtl::Extent2D) {
             const SelectionElementPushConstants element_pc{MakeElementQuery(sel_slots, {box_min.x, box_min.y, box_max.x, box_max.y}, meshes.GetSelectionBitsSlot(), pick)};
             if (write_bitset) {
@@ -185,55 +154,35 @@ void RenderElementSelectionPass(
                 if (max_x <= min_x || max_y <= min_y) return;
                 encoder->setScissorRect({min_x, min_y, max_x - min_x, max_y - min_y});
             }
-            const auto raster = [&](const mtl::MeshRenderPipeline &pipeline, uint32_t indices_per_element, uint32_t elements_per_group) {
-                pipeline.Bind(encoder);
+            const auto &pipeline = selection.ElementRaster(element, write_bitset, xray_selection);
+            pipeline.Bind(encoder);
+            encoder->setFragmentBytes(&element_pc, sizeof(element_pc), BufferIndex_PushConstants);
+            if (element == Element::Edge) {
+                for (uint32_t corner = 0u; corner < 3u; ++corner) {
+                    DrawMeshlets(encoder, buffers, 0u, uint32_t(MeshletInstanceFlag::ElementSelection), 160u, corner);
+                }
+            } else {
+                DrawMeshlets(
+                    encoder, buffers, 0u, uint32_t(MeshletInstanceFlag::ElementSelection),
+                    element == Element::Vertex ? 64u : 160u
+                );
+            }
+            if (degenerate_point_pass) {
+                const auto &point_pipeline = element == Element::Face ?
+                    selection.MeshletFaceXRayPointsBitsetBox : selection.MeshletEdgeXRayPointsBitsetBox;
+                point_pipeline.Bind(encoder);
                 encoder->setFragmentBytes(&element_pc, sizeof(element_pc), BufferIndex_PushConstants);
-                encode::DispatchMeshBatch(encoder, draw_list, element_batch, indices_per_element, elements_per_group, elements_per_group * indices_per_element);
-            };
-            const auto raster_lines = [&](const mtl::MeshRenderPipeline &pipeline) { raster(pipeline, 2, uint32_t(OverlayDispatch::LineGroupLines)); };
-            const auto raster_points = [&](const mtl::MeshRenderPipeline &pipeline) { raster(pipeline, 1, uint32_t(OverlayDispatch::PointGroupPoints)); };
-            if (has_meshlet_elements) {
-                const auto &pipeline = selection.ElementRaster(element, true, write_bitset, xray_selection);
-                pipeline.Bind(encoder);
-                encoder->setFragmentBytes(&element_pc, sizeof(element_pc), BufferIndex_PushConstants);
-                if (element == Element::Edge) {
+                if (element == Element::Face) {
+                    DrawMeshlets(encoder, buffers, 0u, uint32_t(MeshletInstanceFlag::ElementSelection), 64u);
+                } else {
                     for (uint32_t corner = 0u; corner < 3u; ++corner) {
                         DrawMeshlets(encoder, buffers, 0u, uint32_t(MeshletInstanceFlag::ElementSelection), 160u, corner);
                     }
-                } else {
-                    DrawMeshlets(
-                        encoder, buffers, 0u, uint32_t(MeshletInstanceFlag::ElementSelection),
-                        element == Element::Vertex ? 64u : 160u
-                    );
-                }
-            }
-            if (element_batch.DrawCount > 0) {
-                if (element == Element::Vertex) raster_points(element_raster);
-                else if (element == Element::Edge) raster_lines(element_raster);
-            }
-            if (write_bitset && xray_selection) {
-                if (has_meshlet_elements && degenerate_point_pass) {
-                    const auto &point_pipeline = element == Element::Face ?
-                        selection.MeshletFaceXRayPointsBitsetBox : selection.MeshletEdgeXRayPointsBitsetBox;
-                    point_pipeline.Bind(encoder);
-                    encoder->setFragmentBytes(&element_pc, sizeof(element_pc), BufferIndex_PushConstants);
-                    if (element == Element::Face) {
-                        DrawMeshlets(encoder, buffers, 0u, uint32_t(MeshletInstanceFlag::ElementSelection), 64u);
-                    } else {
-                        for (uint32_t corner = 0u; corner < 3u; ++corner) {
-                            DrawMeshlets(encoder, buffers, 0u, uint32_t(MeshletInstanceFlag::ElementSelection), 160u, corner);
-                        }
-                    }
-                }
-                if (element_batch.DrawCount > 0 && element == Element::Edge) {
-                    raster_points(selection.ElementEdgeXRayPointsBitsetBox);
                 }
             }
         }
     );
 
-    auto &draw = r.ctx().get<DrawState>();
-    draw.SelectionStale = true;
 }
 
 } // namespace
@@ -281,93 +230,107 @@ std::optional<std::pair<entt::entity, uint32_t>> RunEditElementClick(
     return {};
 }
 
-// The mesh-shader pick emissions one selection pass draws, mirroring the overlay draws.
-struct PickEmissions {
-    std::vector<ExtrasLinePushConstants> ExtrasLines{};
-    DrawBatchInfo BoneSpheres{};
-    DrawBatchInfo Lines{}, Points{};
-    std::optional<SoundPointPushConstants> SoundPoints{};
-    std::optional<ElementPickTarget> Pick{};
-    ObjectSelectQuery Object{};
+struct PixelRect {
+    uvec2 Origin{}, Extent{};
 };
 
-void RenderSelectionPassWith(
-    entt::registry &r, mtl::PassChain &chain, [[maybe_unused]] entt::entity viewport, bool render_depth,
-    const SelectionBuildFn &build_fn, bool render_silhouette = true, bool decode_visibility_objects = false,
-    const PickEmissions &picks = {}
+std::optional<PixelRect> ObjectQueryRect(const ObjectSelectQuery &query, mtl::Extent2D target) {
+    const uvec2 limit{target.Width, target.Height};
+    uvec2 lo{}, hi{}; // Exclusive high bound.
+    if (query.BoxResultSlot != InvalidSlot) {
+        lo = glm::min(uvec2{query.Box.x, query.Box.y}, limit);
+        hi = glm::min(uvec2{
+            uint32_t(std::min<uint64_t>(uint64_t{query.Box.z} + 1u, target.Width)),
+            uint32_t(std::min<uint64_t>(uint64_t{query.Box.w} + 1u, target.Height)),
+        }, limit);
+    } else if (query.BestKeySlot != InvalidSlot) {
+        const uint32_t radius = uint32_t(std::ceil(std::sqrt(float(query.RadiusSq))));
+        lo = glm::min(uvec2{
+            query.TargetPx.x > radius ? query.TargetPx.x - radius : 0u,
+            query.TargetPx.y > radius ? query.TargetPx.y - radius : 0u,
+        }, limit);
+        hi = glm::min(uvec2{
+            uint32_t(std::min<uint64_t>(uint64_t{query.TargetPx.x} + radius + 1u, target.Width)),
+            uint32_t(std::min<uint64_t>(uint64_t{query.TargetPx.y} + radius + 1u, target.Height)),
+        }, limit);
+    }
+    if (glm::any(glm::lessThanEqual(hi, lo))) return {};
+    return PixelRect{lo, hi - lo};
+}
+
+void RecordVisibilityObjectSelection(
+    entt::registry &r, mtl::PassChain &chain, const ObjectSelectQuery &query
 ) {
+    const auto &slots = r.ctx().get<const mtl::BindlessSet>();
+    const auto &pipelines = r.ctx().get<const Pipelines>();
+    auto &buffers = r.ctx().get<GpuBuffers>();
+
+    // A cull without a following visibility raster invalidates the id-to-visible-list mapping.
+    // Rebuild that same shared representation on demand instead of maintaining selection geometry.
+    if (buffers.VisibilityIdGeneration != buffers.MeshletVisibleGeneration) {
+        RecordMeshletCull(chain, slots, pipelines, buffers, {.Mode = MeshletRouteMode::Visibility});
+        RecordMeshletVisibilityPass(chain, slots, pipelines, buffers);
+    }
+    const auto rect = ObjectQueryRect(query, pipelines.Main.Resources->VisibilityImage.Extent);
+    if (!rect) return;
+
+    auto *encoder = chain.BeginCompute("VisibilityObjectSelection", MTL::StageFragment);
+    encode::BindCompute(encoder, pipelines.VisibilityObjectSelection, slots, buffers);
+    encoder->setTexture(*pipelines.Main.Resources->VisibilityImage, 0u);
+    encoder->setTexture(*pipelines.Main.Resources->DepthImage, 1u);
+    encode::SetPushConstants(encoder, VisibilitySelectionPushConstants{
+        encode::VisibilityDecodePc(buffers), query, rect->Origin, rect->Extent
+    });
+    encoder->dispatchThreadgroups(
+        MTL::Size((rect->Extent.x + 15u) / 16u, (rect->Extent.y + 15u) / 16u, 1u),
+        ThreadgroupSize::Tile16
+    );
+}
+
+void RenderSelectionPickPass(entt::registry &r, mtl::PassChain &chain, std::optional<ObjectSelectQuery> object, std::optional<uint32_t> sound_instance = {}, std::optional<ElementPickTarget> pick = {}) {
     const auto &sel_slots = r.ctx().get<const SelectionSlots>();
     auto &buffers = r.ctx().get<GpuBuffers>();
     const auto &pipelines = r.ctx().get<const Pipelines>();
-    DrawListBuilder draw_list;
-    build_fn(draw_list);
-
     const auto &selection = pipelines.SelectionFragment;
-    // Visibility ids index the visible-meshlet list the scene pass produced, so this pass reads that
-    // list and must not run a cull of its own over it.
-    RunSelectionPass(r, chain, draw_list, render_depth, render_silhouette, /*draw_meshlets=*/false, 0, [&](auto *encoder, mtl::Extent2D) {
-        const SelectionDrawPushConstants sel_pc{picks.Object};
-        // Excite mode picks over the excitable vertices themselves, so only those can be struck.
-        if (const auto &sound_points = picks.SoundPoints) {
-            // Sound points raster through the element pick fragment, which reads the cursor from its own constants.
-            const SelectionElementPushConstants point_pc{MakeElementQuery(sel_slots, {}, InvalidSlot, picks.Pick)};
-            selection.SoundPoint.Bind(encoder);
+    if (object) {
+        RecordVisibilityObjectSelection(r, chain, *object);
+        RecordOverlayJobCull(chain, r.ctx().get<const mtl::BindlessSet>(), pipelines, buffers, true);
+    }
+    if (sound_instance) {
+        RecordMeshletCull(
+            chain, r.ctx().get<const mtl::BindlessSet>(), pipelines, buffers,
+            {
+                .RequiredInstanceFlags = uint32_t(MeshletInstanceFlag::SoundPoint),
+                .RouteMask = 1u << uint32_t(MeshletRoute::OpaqueCullBack),
+            }
+        );
+    }
+    RunSelectionPass(r, chain, true, sound_instance.has_value(), std::nullopt, [&](auto *encoder, mtl::Extent2D) {
+        if (sound_instance) {
+            const SelectionElementPushConstants point_pc{MakeElementQuery(sel_slots, {}, InvalidSlot, pick)};
+            selection.ElementRaster(Element::Vertex, false, false).Bind(encoder);
             encoder->setFragmentBytes(&point_pc, sizeof(point_pc), BufferIndex_PushConstants);
-            encode::SetMeshPushConstants(encoder, *sound_points);
-            encoder->drawMeshThreadgroups(MTL::Size((sound_points->VertexCount + 159) / 160, 1, 1), MTL::Size(1, 1, 1), MTL::Size(160, 1, 1));
+            DrawMeshlets(
+                encoder, buffers, uint32_t(MeshletRoute::OpaqueCullBack),
+                uint32_t(MeshletInstanceFlag::SoundPoint), 64u, 0u, *sound_instance
+            );
         }
-        // Line and point meshes pick from the same emissions the overlay draws.
-        const auto pick_batch = [&](const mtl::MeshRenderPipeline &pipeline, const DrawBatchInfo &batch, uint32_t indices_per_element, uint32_t elements_per_group, uint32_t threads_per_group) {
-            if (batch.DrawCount == 0) return;
-            pipeline.Bind(encoder);
+        if (object) {
+            const ObjectSelectionPushConstants sel_pc{*object};
+            // Bone joints pick from the same persistent route and emission as the overlay.
+            if (buffers.FlagWork(uint32_t(MeshletInstanceFlag::BoneJoint)).Meshlets > 0u) {
+                selection.BoneSphere.Bind(encoder);
+                encoder->setFragmentBytes(&sel_pc, sizeof(sel_pc), BufferIndex_PushConstants);
+                DrawMeshlets(
+                    encoder, buffers, uint32_t(MeshletRoute::Overlay),
+                    uint32_t(MeshletInstanceFlag::BoneJoint), uint32_t(OverlayDispatch::BoneSphereVertices)
+                );
+            }
+            selection.OverlayJobLines.Bind(encoder);
             encoder->setFragmentBytes(&sel_pc, sizeof(sel_pc), BufferIndex_PushConstants);
-            encode::DispatchMeshBatch(encoder, draw_list, batch, indices_per_element, elements_per_group, threads_per_group);
-        };
-        constexpr auto group_lines = uint32_t(OverlayDispatch::LineGroupLines);
-        constexpr auto group_points = uint32_t(OverlayDispatch::PointGroupPoints);
-        pick_batch(selection.Line, picks.Lines, 2, group_lines, group_lines * 2);
-        pick_batch(selection.Point, picks.Points, 1, group_points, group_points);
-
-        // Bone joints pick from the same emission the overlay draws, one threadgroup per joint.
-        if (picks.BoneSpheres.DrawCount > 0) {
-            selection.BoneSphere.Bind(encoder);
-            encoder->setFragmentBytes(&sel_pc, sizeof(sel_pc), BufferIndex_PushConstants);
-            encode::DispatchInstancedMeshBatch(encoder, draw_list, picks.BoneSpheres, uint32_t(OverlayDispatch::BoneSphereVertices));
-        }
-        if (!picks.ExtrasLines.empty()) {
-            selection.ExtrasLine.Bind(encoder);
-            encoder->setFragmentBytes(&sel_pc, sizeof(sel_pc), BufferIndex_PushConstants);
-            encode::DispatchExtrasLines(encoder, picks.ExtrasLines);
-        }
-        if (decode_visibility_objects && buffers.MeshletInstanceCount > 0) {
-            selection.VisibilityObject.Bind(encoder);
-            BindVisibilitySelectionTextures(encoder, pipelines);
-            encode::SetPushConstants(encoder, VisibilitySelectionPushConstants{encode::VisibilityDecodePc(buffers), picks.Object, {}});
-            encoder->drawPrimitives(MTL::PrimitiveTypeTriangleStrip, NS::UInteger(0), NS::UInteger(4));
+            DrawOverlayJobs(encoder, buffers, r.ctx().get<const MeshStore>());
         }
     });
-}
-
-void RenderSelectionPass(entt::registry &r, mtl::PassChain &chain, entt::entity viewport, const ObjectSelectQuery &query) {
-    // Render depth so the selection-fragment pass has a valid depth attachment to load, even right after a resize recreated it.
-    // Object-pick ignores depth, so its contents and the silhouette draws don't matter.
-    const auto &draw = r.ctx().get<const DrawState>();
-    const auto &settings = r.get<const ViewportDisplay>(viewport);
-    RenderSelectionPassWith(
-        r, chain, viewport, /*render_depth=*/true,
-        [&draw](DrawListBuilder &draw_list) { draw_list = draw.SelectionList; },
-        /*render_silhouette=*/false,
-        /*decode_visibility_objects=*/true,
-        PickEmissions{
-            .ExtrasLines = settings.ShowOverlays && settings.ShowExtras ?
-                CollectExtrasLines(r, r.ctx().get<const GpuBuffers>().Instances) :
-                std::vector<ExtrasLinePushConstants>{},
-            .BoneSpheres = draw.SelectionBoneSpheres,
-            .Lines = draw.SelectionLines,
-            .Points = draw.SelectionPoints,
-            .Object = query,
-        }
-    );
 }
 
 void RunBoxSelectElements(entt::registry &r, entt::entity viewport, std::span<const ElementRange> ranges, Element element, std::pair<uvec2, uvec2> box_px, bool is_additive) {
@@ -398,13 +361,12 @@ void RunBoxSelectElements(entt::registry &r, entt::entity viewport, std::span<co
     r.emplace_or_replace<BoxSelectStatsDirty>(viewport);
 }
 
-std::optional<uint32_t> RunSoundVerticesVertexPick(entt::registry &r, entt::entity viewport, entt::entity instance_entity, uvec2 mouse_px) {
+std::optional<uint32_t> RunSoundVerticesVertexPick(entt::registry &r, entt::entity instance_entity, uvec2 mouse_px) {
     if (!r.all_of<SoundVertices>(instance_entity)) return {};
     const auto *instance = r.try_get<Instance>(instance_entity);
     if (!instance) return {};
     const auto &ctx = r.ctx().get<const mtl::Context>();
     auto &buffers = r.ctx().get<GpuBuffers>();
-    auto &meshes = r.ctx().get<MeshStore>();
 
     const profile::CpuScope scope{"RunSoundVerticesVertexPick"};
     const auto mesh_entity = instance->Entity;
@@ -412,42 +374,20 @@ std::optional<uint32_t> RunSoundVerticesVertexPick(entt::registry &r, entt::enti
     const uint32_t vertex_count = mesh.VertexCount();
     if (vertex_count == 0) return {};
 
-    const auto &mesh_buffers = r.get<MeshBuffers>(mesh_entity);
-    const auto &models = r.get<ModelsBuffer>(mesh_entity);
     const auto model_index = r.get<RenderInstance>(instance_entity).BufferIndex;
     ResetElementPick(buffers);
     auto *command_buffer = ctx.Queue->commandBuffer();
     {
         mtl::PassChain chain{command_buffer};
-        const auto sound_vertices = r.get<const SoundVertices>(instance_entity).Vertices;
         for (const bool resolve_id : {false, true}) {
-            RenderSelectionPassWith(
-                r, chain, viewport, true,
-                [&](DrawListBuilder &draw_list) {
-                    // The pick emission reads this one draw at index zero for the instance's transform and positions.
-                    auto batch = draw_list.BeginBatch();
-                    auto draw = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.VertexIndices, buffers.Instances);
-                    AppendDraw(draw_list, batch, mesh_buffers.VertexIndices, models, draw, model_index);
-                },
-                /*render_silhouette=*/true, /*decode_visibility_objects=*/false,
-                PickEmissions{
-                    .SoundPoints = SoundPointPushConstants{
-                        .DrawDataIndex = 0,
-                        .VertexSlot = meshes.GetSoundVertexSlot(),
-                        .VertexOffset = sound_vertices.Offset,
-                        .VertexCount = sound_vertices.Count,
-                    },
-                    .Pick = ElementPickTarget{mouse_px, ElementPickRadiusSq(Element::Vertex), resolve_id},
-                }
-            );
+            RenderSelectionPickPass(r, chain, std::nullopt, model_index, ElementPickTarget{mouse_px, ElementPickRadiusSq(Element::Vertex), resolve_id});
         }
     }
     SubmitAndWait(command_buffer);
-    r.ctx().get<DrawState>().SelectionStale = true;
     return ReadNearestPickedElement(buffers, vertex_count);
 }
 
-std::vector<entt::entity> RunObjectPick(entt::registry &r, entt::entity viewport, uint32_t &object_pick_epoch_tag, uvec2 mouse_px, uint32_t radius_px) {
+std::vector<entt::entity> RunObjectPick(entt::registry &r, uint32_t &object_pick_epoch_tag, uvec2 mouse_px, uint32_t radius_px) {
     const auto &ctx = r.ctx().get<const mtl::Context>();
     const auto &sel_slots = r.ctx().get<const SelectionSlots>();
     auto &buffers = r.ctx().get<GpuBuffers>();
@@ -469,8 +409,8 @@ std::vector<entt::entity> RunObjectPick(entt::registry &r, entt::entity viewport
     auto *command_buffer = ctx.Queue->commandBuffer();
     { // The chain closes its last pass as it goes out of scope, which the submit below needs.
         mtl::PassChain chain{command_buffer};
-        RenderSelectionPass(
-            r, chain, viewport,
+        RenderSelectionPickPass(
+            r, chain,
             ObjectSelectQuery{
                 .MaxId = max_object_id,
                 .TargetPx = mouse_px,
@@ -483,8 +423,6 @@ std::vector<entt::entity> RunObjectPick(entt::registry &r, entt::entity viewport
         );
     }
     SubmitAndWait(command_buffer);
-    r.ctx().get<DrawState>().SelectionStale = false;
-
     std::unordered_map<uint32_t, entt::entity> object_id_to_entity;
     for (const auto [e, ri] : r.view<RenderInstance>().each()) {
         if (ri.ObjectId > 0 && ri.ObjectId <= max_object_id) object_id_to_entity[ri.ObjectId] = e;
@@ -520,7 +458,7 @@ std::vector<entt::entity> RunObjectPick(entt::registry &r, entt::entity viewport
     return entities;
 }
 
-std::vector<entt::entity> RunBoxSelect(entt::registry &r, entt::entity viewport, std::pair<uvec2, uvec2> box_px) {
+std::vector<entt::entity> RunBoxSelect(entt::registry &r, std::pair<uvec2, uvec2> box_px) {
     const auto [box_min, box_max] = box_px;
     if (box_min.x > box_max.x || box_min.y > box_max.y) return {};
     auto &buffers = r.ctx().get<GpuBuffers>();
@@ -535,8 +473,8 @@ std::vector<entt::entity> RunBoxSelect(entt::registry &r, entt::entity viewport,
     auto *command_buffer = r.ctx().get<const mtl::Context>().Queue->commandBuffer();
     { // The chain closes its last pass as it goes out of scope, which the submit below needs.
         mtl::PassChain chain{command_buffer};
-        RenderSelectionPass(
-            r, chain, viewport,
+        RenderSelectionPickPass(
+            r, chain,
             ObjectSelectQuery{
                 .MaxId = max_object_id,
                 .BestKeySlot = InvalidSlot,
@@ -546,8 +484,6 @@ std::vector<entt::entity> RunBoxSelect(entt::registry &r, entt::entity viewport,
         );
     }
     SubmitAndWait(command_buffer);
-    r.ctx().get<DrawState>().SelectionStale = false;
-
     std::unordered_map<uint32_t, entt::entity> object_id_to_entity;
     for (const auto [e, ri] : r.view<RenderInstance>().each()) object_id_to_entity[ri.ObjectId] = e;
 

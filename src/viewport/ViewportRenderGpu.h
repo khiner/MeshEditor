@@ -1,6 +1,6 @@
 #pragma once
 
-#include "gpu/ExtrasLinePushConstants.h"
+#include "Range.h"
 #include "metal/MetalCpp.h"
 #include "metal/Slots.h"
 
@@ -14,9 +14,8 @@ struct Buffer;
 struct PassChain;
 } // namespace mtl
 
-struct DrawListBuilder;
 struct GpuBuffers;
-struct InstanceArena;
+struct MeshStore;
 struct Pipelines;
 
 enum class MeshletRouteMode : uint32_t { Single,
@@ -27,23 +26,29 @@ enum class MeshletRouteMode : uint32_t { Single,
 struct MeshletCullConfig {
     MeshletRouteMode Mode{MeshletRouteMode::Single};
     uint32_t RequiredInstanceFlags{0};
+    uint32_t RouteMask{0x3ffu};
     uint32_t UboOffset{0};
     uint32_t PyramidSamplerSlot{InvalidSlot};
     bool SortBlend{false};
     bool TwoPhase{false};
 };
 
-// Upload the draw list to the pass's draw-data buffer, flushing any deferred bindless updates
-// accumulated during buffer growth.
-void FlushDrawList(entt::registry &, const DrawListBuilder &, mtl::Buffer &draw_data);
-
-// Every extras line source this frame (gizmos and collision shape wireframes), with the dispatch each one needs.
-std::vector<ExtrasLinePushConstants> CollectExtrasLines(const entt::registry &, const InstanceArena &);
 void RecordMeshletCull(mtl::PassChain &, const mtl::BindlessSet &, const Pipelines &, GpuBuffers &, MeshletCullConfig);
+void RecordOverlayJobCull(
+    mtl::PassChain &, const mtl::BindlessSet &, const Pipelines &, GpuBuffers &,
+    bool extras_only = false, uint32_t ubo_offset = 0
+);
+void DrawOverlayJobs(MTL::RenderCommandEncoder *, const GpuBuffers &, const MeshStore &);
+// Rasterize the current meshlet routes into the visibility/depth pair shared by shading and selection.
+void RecordMeshletVisibilityPass(
+    mtl::PassChain &, const mtl::BindlessSet &, const Pipelines &, GpuBuffers &,
+    bool transmission = false, uint32_t ubo_offset = 0
+);
 void RecordSilhouetteDepthPass(mtl::PassChain &, const mtl::BindlessSet &, const Pipelines &, GpuBuffers &, bool draw_meshlets, uint32_t ubo_offset = 0);
 void DrawMeshlets(
     MTL::RenderCommandEncoder *, const GpuBuffers &, uint32_t route,
-    uint32_t required_instance_flags = 0, uint32_t mesh_threads = 160u, uint32_t edit_edge_corner = 0u
+    uint32_t required_instance_flags = 0, uint32_t mesh_threads = 160u,
+    uint32_t edit_edge_corner = 0u, uint32_t instance_filter = InvalidOffset
 );
 
 // Which parts of a frame one recording covers.
@@ -57,13 +62,13 @@ enum class RenderPhase {
 
 constexpr bool IsBlurAccumulate(RenderPhase p) { return p == RenderPhase::BlurAccumulateFirst || p == RenderPhase::BlurAccumulate; }
 
-// How a recording treats the DrawState draw list.
-enum class DrawListUse {
+// Whether this recording refreshes persistent GPU scene descriptors or reuses them unchanged.
+enum class SceneUpdate {
     Rebuild,
     Reuse,
 };
 
-void RecordRenderCommandBuffer(entt::registry &, entt::entity viewport, MTL::CommandBuffer *, DrawListUse = DrawListUse::Rebuild, RenderPhase = RenderPhase::Full);
+void RecordRenderCommandBuffer(entt::registry &, entt::entity viewport, MTL::CommandBuffer *, SceneUpdate = SceneUpdate::Rebuild, RenderPhase = RenderPhase::Full);
 
 // Record every motion blur step and the resolve into one command buffer, each step reading its own
 // view UBO instance (i + 1) by dynamic offset. `step_frames` holds each step's centre playback frame.

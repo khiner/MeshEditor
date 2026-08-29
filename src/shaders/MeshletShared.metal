@@ -1,6 +1,8 @@
 #ifndef MESHLET_SHARED_MSL
 #define MESHLET_SHARED_MSL
 
+#include "CompactPresent.metal"
+
 // Decode helpers for the meshlet-local geometry streams.
 #include "Bindless.metal"
 #include "MeshletGeometryEncoding.metal"
@@ -20,7 +22,7 @@ inline uint MeshletLocalTriangleOffset(MeshletRecord meshlet) {
 inline uint MeshletVertexId(
     const thread Scene &scene, DrawData draw, uint topology, uint packed_vertex
 ) {
-    if (topology != MeshPrimitiveTopology_Triangle) return packed_vertex;
+    if (topology != MeshPrimitiveTopology_Triangle) return packed_vertex & MeshletGeometryEncoding_CornerMask;
     return scene.Indices(draw.IndexSlotOffset.Slot)[
         draw.IndexSlotOffset.Offset + (packed_vertex & MeshletGeometryEncoding_CornerMask)
     ];

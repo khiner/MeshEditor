@@ -2,22 +2,23 @@
 #define NORMALINDICATOR_MSL
 
 #include "Bindless.metal"
+#include "MeshletLimit.metal"
+#include "MeshletResolve.metal"
 #include "SceneUBO.metal"
 #include "TransformUtils.metal"
 #include "Varyings.metal"
-#include "OverlayDispatch.metal"
-#include "OverlayMeshPushConstants.metal"
 #include "NormalIndicatorConstant.metal"
 
 // Normal indicators for the overlay pass, generated from the posed positions and normals of the frame.
 // Each threadgroup emits a line group of indicators, one thread and two dedicated vertices apiece.
 // An indicator's length follows local geometry size, so it stays readable at any mesh density.
-constant uint NormalIndicatorCount = OverlayDispatch_NormalIndicatorLines;
 constant float NormalIndicatorLengthScale = 0.25f;
 // Faces are fan-triangulated from their first corner, so a walk over a face's triangles visits
 // its distinct vertices as the first triangle's three, then the last vertex of each triangle after.
 constant uint NormalIndicatorMaxFaceCorners = 256u;
-using NormalIndicatorOutput = metal::mesh<LineVaryings, void, NormalIndicatorCount * 2u, NormalIndicatorCount, metal::topology::line>;
+constant uint NormalIndicatorThreads = MeshletLimit_MaxVertices;
+constant uint NormalIndicatorSimdGroups = NormalIndicatorThreads / 32u;
+using NormalIndicatorOutput = metal::mesh<LineVaryings, void, NormalIndicatorThreads * 2u, NormalIndicatorThreads, metal::topology::line>;
 
 inline float MeanIncidentEdgeLength(const thread Scene &scene, DrawData draw, uint vertex_id, float3 position) {
     if (draw.VertexEdgeAdjacencyOffset == INVALID_OFFSET) return 0.0f;
@@ -77,27 +78,60 @@ inline void NormalIndicatorSegment(const thread Scene &scene, DrawData draw, uin
 [[mesh]] void NormalIndicatorMesh(
     NormalIndicatorOutput output,
     uint thread_index [[thread_index_in_threadgroup]],
+    uint lane [[thread_index_in_simdgroup]],
     uint3 threadgroup_position [[threadgroup_position_in_grid]],
     device const BindlessSet &bindless [[buffer(BufferIndex_Bindless)]],
     constant SceneViewUBO &view [[buffer(BufferIndex_SceneView)]],
     constant ViewportTheme &theme [[buffer(BufferIndex_ViewportTheme)]],
     constant WorkspaceLights &workspace [[buffer(BufferIndex_WorkspaceLights)]],
-    constant OverlayMeshPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
+    constant MeshletDrawPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
 ) {
+    threadgroup uint simd_counts[NormalIndicatorSimdGroups];
     const Scene scene{bindless, view, theme, workspace};
-    const DrawData draw = GetDrawDataAt(scene, pc.DrawDataIndex + threadgroup_position.y);
-    if (!InstanceInFrustum(scene, draw)) {
+    const MeshletWork work = ResolveMeshletWork(bindless, pc, threadgroup_position.x);
+    if (!work.Valid) {
         output.set_primitive_count(0u);
         return;
     }
-    const uint first_element = pc.FirstElement + threadgroup_position.x * NormalIndicatorCount;
-    const uint element_count = min(NormalIndicatorCount, pc.ElementCount - first_element);
-    output.set_primitive_count(element_count);
-    if (thread_index >= element_count) return;
 
-    const Transform world = scene.Models(draw.ModelSlot)[draw.FirstInstance];
+    uint element = INVALID_OFFSET;
+    DrawData draw = work.Draw;
+    if (NormalIndicatorFaces) {
+        if (!MeshletCoarse(work.Meshlet) && thread_index < work.Meshlet.TriangleCount) {
+            const uint triangle = BindlessBuffer(uint, bindless.Buffer, pc.MeshletTriangleSlot)[
+                work.Meshlet.TriangleOffset + thread_index
+            ];
+            const uint encoded_face = scene.ObjectIds(draw.ObjectIdSlot)[
+                draw.FaceIdOffset + triangle - work.Primitive.FirstTriangle
+            ];
+            if (encoded_face != 0u) {
+                const uint face = encoded_face - 1u;
+                const uint first_triangle = scene.FaceFirstTriangles(scene.View.FaceFirstTriangleSlot)[
+                    draw.FaceFirstTriangleOffset + face
+                ];
+                if (triangle == first_triangle) element = face;
+            }
+        }
+        draw.IndexSlotOffset.Offset -= work.Primitive.FirstTriangle * 3u;
+        draw.FaceIdOffset -= work.Primitive.FirstTriangle;
+    } else if (thread_index < work.Meshlet.VertexCount) {
+        const uint packed = MeshletPackedVertex(bindless, pc.MeshletVertexSlot, work.Meshlet, thread_index);
+        if ((packed & MeshletGeometryEncoding_EditVertexOwnerBit) != 0u) {
+            element = MeshletVertexId(scene, draw, MeshletPrimitiveTopology(work.Meshlet), packed);
+        }
+        draw.IndexSlotOffset = work.Primitive.AuxIndices;
+    }
+
+    const uint present = element != INVALID_OFFSET ? 1u : 0u;
+    const uint2 compact = CompactPresent(
+        present, thread_index, lane, simd_counts, NormalIndicatorSimdGroups
+    );
+    if (thread_index == 0u) output.set_primitive_count(compact.y);
+    if (present == 0u) return;
+
+    const Transform world = MeshletWorld(scene, draw);
     float3 start, end;
-    NormalIndicatorSegment(scene, draw, first_element + thread_index, start, end);
+    NormalIndicatorSegment(scene, draw, element, start, end);
 
     constant ViewportThemeColors &colors = scene.Theme.Colors;
     const float4 color = float4(float3(NormalIndicatorFaces ? colors.FaceNormal : colors.VertexNormal), 1.0f);
@@ -105,7 +139,7 @@ inline void NormalIndicatorSegment(const thread Scene &scene, DrawData draw, uin
         const float3 world_pos = apply_object_pending_transform(scene, draw, trs_transform_point(world, endpoint == 0u ? start : end));
         float4 clip = scene.ViewProj() * float4(world_pos, 1.0f);
         clip.z -= NdcOffsetFactor(scene); // Push indicators in front of faces.
-        const uint slot = thread_index * 2u + endpoint;
+        const uint slot = compact.x * 2u + endpoint;
         output.set_vertex(slot, MakeLineVertex(clip, color, float2(scene.View.ViewportSize)));
         output.set_index(slot, slot);
     }

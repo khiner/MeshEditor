@@ -8,8 +8,8 @@
 // Each edge loads 4 adjacency indices: [adj_left, edge_v0, edge_v1, adj_right].
 #include "Bindless.metal"
 #include "BoneUtils.metal"
+#include "MeshletResolve.metal"
 #include "Varyings.metal"
-#include "OverlayMeshPushConstants.metal"
 
 // A degenerate position behind the near plane, for edges the silhouette test rejects.
 inline LineVaryings DiscardedEdge() {
@@ -98,7 +98,7 @@ inline LineVaryings BoneWireMeshVertexAt(const thread Scene &scene, DrawData dra
     return out;
 }
 
-// One threadgroup per bone, emitting that bone's BoneWireMesh from the shared unit primitive.
+// One routed meshlet per bone, emitting that bone's shared adjacency outline.
 using BoneWireMeshOutput = metal::mesh<LineVaryings, void, 24u, 12u, metal::topology::line>;
 
 [[mesh]] void BoneWireMesh(
@@ -109,13 +109,19 @@ using BoneWireMeshOutput = metal::mesh<LineVaryings, void, 24u, 12u, metal::topo
     constant SceneViewUBO &view [[buffer(BufferIndex_SceneView)]],
     constant ViewportTheme &theme [[buffer(BufferIndex_ViewportTheme)]],
     constant WorkspaceLights &workspace [[buffer(BufferIndex_WorkspaceLights)]],
-    constant OverlayMeshPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
+    constant MeshletDrawPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
 ) {
     const Scene scene{bindless, view, theme, workspace};
+    const MeshletWork work = ResolveMeshletWork(bindless, pc, threadgroup_position.x);
+    if (!work.Valid) {
+        if (thread_index == 0u) output.set_primitive_count(0u);
+        return;
+    }
     output.set_primitive_count(12u);
-    if (thread_index >= pc.ElementCount) return;
+    if (thread_index >= 24u) return;
 
-    const DrawData draw = GetDrawDataAt(scene, pc.DrawDataIndex + threadgroup_position.x);
+    DrawData draw = work.Draw;
+    draw.IndexSlotOffset = work.Primitive.AuxIndices;
     output.set_vertex(thread_index, BoneWireMeshVertexAt(scene, draw, thread_index));
     output.set_index(thread_index, thread_index);
 }

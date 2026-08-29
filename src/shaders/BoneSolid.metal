@@ -3,8 +3,8 @@
 
 #include "Bindless.metal"
 #include "BoneUtils.metal"
+#include "MeshletResolve.metal"
 #include "Varyings.metal"
-#include "OverlayMeshPushConstants.metal"
 
 // One emitted vertex of a bone's BoneSolidMesh.
 inline BoneSolidVaryings BoneSolidMeshVertexAt(const thread Scene &scene, DrawData draw, uint vertex_id) {
@@ -36,7 +36,7 @@ inline BoneSolidVaryings BoneSolidMeshVertexAt(const thread Scene &scene, DrawDa
     return out;
 }
 
-// One threadgroup per bone, emitting that bone's BoneSolidMesh from the shared unit primitive.
+// One routed meshlet per bone, emitting that bone's shared unit primitive.
 using BoneSolidMeshOutput = metal::mesh<BoneSolidVaryings, void, 24u, 8u, metal::topology::triangle>;
 
 [[mesh]] void BoneSolidMesh(
@@ -47,14 +47,18 @@ using BoneSolidMeshOutput = metal::mesh<BoneSolidVaryings, void, 24u, 8u, metal:
     constant SceneViewUBO &view [[buffer(BufferIndex_SceneView)]],
     constant ViewportTheme &theme [[buffer(BufferIndex_ViewportTheme)]],
     constant WorkspaceLights &workspace [[buffer(BufferIndex_WorkspaceLights)]],
-    constant OverlayMeshPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
+    constant MeshletDrawPushConstants &pc [[buffer(BufferIndex_PushConstants)]]
 ) {
     const Scene scene{bindless, view, theme, workspace};
+    const MeshletWork work = ResolveMeshletWork(bindless, pc, threadgroup_position.x);
+    if (!work.Valid) {
+        if (thread_index == 0u) output.set_primitive_count(0u);
+        return;
+    }
     output.set_primitive_count(8u);
-    if (thread_index >= pc.ElementCount) return;
+    if (thread_index >= 24u) return;
 
-    const DrawData draw = GetDrawDataAt(scene, pc.DrawDataIndex + threadgroup_position.x);
-    output.set_vertex(thread_index, BoneSolidMeshVertexAt(scene, draw, thread_index));
+    output.set_vertex(thread_index, BoneSolidMeshVertexAt(scene, work.Draw, thread_index));
     output.set_index(thread_index, thread_index);
 }
 

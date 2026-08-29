@@ -20,7 +20,8 @@ inline uint NonTriangleVertexId(
 ) {
     const uint endpoint = topology == MeshPrimitiveTopology_Line ? line_quad_endpoint(corner) : 0u;
     const uint stride = topology == MeshPrimitiveTopology_Line ? 2u : 1u;
-    return MeshletPackedVertex(bindless, meshlet_vertex_slot, meshlet, element * stride + endpoint);
+    return MeshletPackedVertex(bindless, meshlet_vertex_slot, meshlet, element * stride + endpoint) &
+        MeshletGeometryEncoding_CornerMask;
 }
 
 inline float4 NonTrianglePosition(

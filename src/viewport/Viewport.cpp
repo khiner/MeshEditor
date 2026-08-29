@@ -13,7 +13,7 @@
 #include "object/ObjectOps.h"
 #include "physics/PhysicsSystem.h"
 #include "physics/PhysicsTypes.h"
-#include "render/DrawState.h"
+#include "render/GpuSceneState.h"
 #include "render/MaterialImport.h"
 #include "render/MeshBatch.h"
 #include "render/Pipelines.h"
@@ -48,12 +48,10 @@ void ResetObjectPickKeys(GpuBuffers &buffers) {
     std::fill_n(buffers.ObjectPickKeys.Data(), GpuBuffers::MaxSelectableObjects, std::numeric_limits<uint32_t>::max());
 }
 
-// Dispatch sizes follow draw-list recording because the rebuild determines their counts.
+// Dispatch sizes follow scene recording because the rebuild determines their counts.
 void SubmitRecordedFrame(entt::registry &r, MTL::CommandBuffer *command_buffer) {
     const auto &ctx = r.ctx().get<const mtl::Context>();
     auto &buffers = r.ctx().get<GpuBuffers>();
-    // A selection pass may have swapped the draw slots, so point them back at the render draw data.
-    buffers.SetSceneViewDrawSlots(buffers.RenderDraw);
     SyncPreludeDispatchArgs(buffers);
     ctx.CommitResidency();
     {
@@ -64,11 +62,11 @@ void SubmitRecordedFrame(entt::registry &r, MTL::CommandBuffer *command_buffer) 
     r.ctx().get<FrameState>().RenderPending = true;
 }
 
-void RecordAndSubmitFrame(entt::registry &r, entt::entity viewport, DrawListUse use) {
+void RecordAndSubmitFrame(entt::registry &r, entt::entity viewport, SceneUpdate update) {
     const auto &ctx = r.ctx().get<const mtl::Context>();
     auto &resources = r.ctx().get<ViewportRenderResources>();
     auto *command_buffer = ctx.Queue->commandBuffer();
-    RecordRenderCommandBuffer(r, viewport, command_buffer, use);
+    RecordRenderCommandBuffer(r, viewport, command_buffer, update);
     resources.RecordedPhase = RenderPhase::Full;
     SubmitRecordedFrame(r, command_buffer);
 }
@@ -77,9 +75,9 @@ RenderRequest TakeRenderRequest(entt::registry &r) {
     return std::exchange(r.ctx().get<PendingRenderRequest>().Value, RenderRequest::None);
 }
 
-DrawListUse RequestedDrawListUse(RenderRequest request, bool force_rebuild = false) {
-    if (force_rebuild || request == RenderRequest::Rebuild) return DrawListUse::Rebuild;
-    return DrawListUse::Reuse;
+SceneUpdate RequestedSceneUpdate(RenderRequest request, bool force_rebuild = false) {
+    if (force_rebuild || request == RenderRequest::Rebuild) return SceneUpdate::Rebuild;
+    return SceneUpdate::Reuse;
 }
 
 // Drain changes and render. Returns false while the viewport has no non-zero extent.
@@ -87,7 +85,7 @@ bool AdvanceAndRecord(entt::registry &r, entt::entity viewport, bool force_full)
     ProcessComponentEvents(r, viewport);
     if (!ViewportImageReady(r)) return false;
     const auto render_request = TakeRenderRequest(r);
-    RecordAndSubmitFrame(r, viewport, RequestedDrawListUse(render_request, force_full));
+    RecordAndSubmitFrame(r, viewport, RequestedSceneUpdate(render_request, force_full));
     return true;
 }
 
@@ -140,9 +138,6 @@ void RenderMotionBlurredFrame(entt::registry &r, entt::entity viewport) {
     if (playback.Playing) physics::BakeThrough(r, viewport, int(std::ceil(hi)), range.Fps);
 
     auto &buffers = r.ctx().get<GpuBuffers>();
-    // Every blurred frame moves the scene under any selection data, recorded or not.
-    r.ctx().get<DrawState>().SelectionStale = true;
-
     // Allocate the blur targets on first use, replacing the bindless fallback slots.
     if (pipelines.Main.EnsureMotionBlurResources(ctx)) {
         auto &slots = r.ctx().get<mtl::BindlessSet>();
@@ -179,10 +174,10 @@ void RenderMotionBlurredFrame(entt::registry &r, entt::entity viewport) {
         // whole UBO, so these have to land after it and before recording.
         StampShutterPoses(buffers, 0, buffers.ShutterOpen, buffers.ShutterClose);
         // Poses and view state reach the GPU through buffers the recorded commands already read,
-        // so the recording goes stale only when the draw list or the phase changes.
+        // so the recording goes stale only when the persistent scene or the phase changes.
         std::ignore = TakeRenderRequest(r);
         auto *command_buffer = ctx.Queue->commandBuffer();
-        RecordRenderCommandBuffer(r, viewport, command_buffer, DrawListUse::Rebuild, phase);
+        RecordRenderCommandBuffer(r, viewport, command_buffer, SceneUpdate::Rebuild, phase);
         resources.RecordedPhase = phase;
         SubmitRecordedFrame(r, command_buffer);
         WaitForRender(r);
@@ -280,7 +275,7 @@ void SubmitViewport(entt::registry &r, entt::entity viewport, MTL::CommandBuffer
     const auto render_request = TakeRenderRequest(r);
     if (render_request == RenderRequest::None) return;
 
-    RecordAndSubmitFrame(r, viewport, RequestedDrawListUse(render_request));
+    RecordAndSubmitFrame(r, viewport, RequestedSceneUpdate(render_request));
 }
 
 void SetStudioEnvironment(entt::registry &r, uint32_t index) {
@@ -341,7 +336,7 @@ entt::entity InitEngine(entt::registry &r) {
     slots.SetBuffer({SlotType::Buffer, sel_slots.ElementPickId}, *buffers.ElementPickId);
     slots.SetBuffer({SlotType::Buffer, sel_slots.ObjectPickSeenBits}, *buffers.ObjectPickSeenBitset);
     slots.SetBuffer({SlotType::Buffer, sel_slots.ObjectBoxBitset}, *buffers.ObjectBoxBitset);
-    r.ctx().emplace<DrawState>();
+    r.ctx().emplace<GpuSceneState>();
     r.ctx().emplace<FrameState>();
     r.ctx().emplace<PendingRenderRequest>();
     r.ctx().emplace<ViewportRenderResources>();
@@ -472,7 +467,7 @@ void DeinitViewport(entt::registry &r, entt::entity viewport) {
     r.ctx().erase<SelectionSlots>();
     r.ctx().erase<FrameState>();
     r.ctx().erase<PendingRenderRequest>();
-    r.ctx().erase<DrawState>();
+    r.ctx().erase<GpuSceneState>();
     r.clear<Mesh>();
     r.ctx().erase<std::vector<ComponentEventHandler>>();
     r.ctx().erase<EntityDestroyTracker>();

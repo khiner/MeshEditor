@@ -127,12 +127,6 @@ using Scene = SceneT<BindlessSet>;
 using SceneImageWrite = SceneT<BindlessSetImageWrite>;
 using SceneImageUint = SceneT<BindlessSetImageUint>;
 
-// The draw an emission renders, at its own index in the pass's draw-data buffer.
-template<typename SetT>
-inline DrawData GetDrawDataAt(const thread SceneT<SetT> &scene, uint draw_data_index) {
-    return scene.Draws(scene.View.DrawDataSlot)[draw_data_index];
-}
-
 // Normalized direction of `n`, or zero when `n` has no length.
 inline float3 NormalizeOrZero(float3 n) {
     const float len = length(n);

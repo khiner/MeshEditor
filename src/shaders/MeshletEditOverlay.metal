@@ -3,8 +3,9 @@
 
 #include "ElementOverlay.metal"
 #include "EditSelection.metal"
-#include "MeshletEditEdgeEncoding.metal"
+#include "MeshletEditGeometry.metal"
 #include "MeshletLimit.metal"
+#include "MeshletInstanceFlag.metal"
 #include "MeshletResolve.metal"
 #include "SceneUBO.metal"
 #include "Varyings.metal"
@@ -18,59 +19,14 @@ using MeshletSelectEdgeOutput = metal::mesh<ElementIdFragmentVaryings, void, Mes
 using MeshletSelectEdgePointOutput = metal::mesh<ElementIdVaryings, void, MeshletLimit_MaxTriangles * 2u, MeshletLimit_MaxTriangles * 2u, metal::topology::point>;
 using MeshletSelectFacePointOutput = metal::mesh<ElementIdVaryings, void, MeshletLimit_MaxTriangles * 3u, MeshletLimit_MaxTriangles * 3u, metal::topology::point>;
 
-inline uint MeshletPackedEditEdge(
-    device const BindlessSet &bindless, constant MeshletDrawPushConstants &pc,
-    const thread MeshletWork &work, uint local_triangle, uint edge_corner
-) {
-    const uint source_triangle = BindlessBuffer(uint, bindless.Buffer, pc.MeshletTriangleSlot)[
-        work.Meshlet.TriangleOffset + local_triangle
-    ];
-    return BindlessBuffer(uint, bindless.Buffer, pc.MeshletEditEdgeSlot)[
-        work.Draw.EditEdgeOffset + source_triangle * 3u + edge_corner
-    ];
-}
-
-inline uint2 CompactPresent(
-    uint present, uint thread_index, uint lane, threadgroup uint *simd_counts, uint simd_group_count
-) {
-    const uint simd_rank = simd_prefix_exclusive_sum(present);
-    const uint simd_count = simd_sum(present);
-    const uint simdgroup = thread_index / 32u;
-    if (lane == 0u) simd_counts[simdgroup] = simd_count;
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-    uint rank = simd_rank;
-    for (uint i = 0u; i < simdgroup; ++i) rank += simd_counts[i];
-    uint count = 0u;
-    for (uint i = 0u; i < simd_group_count; ++i) count += simd_counts[i];
-    return uint2(rank, count);
-}
-
-struct MeshletEditEdgeGeometry {
-    float4 Clip0, Clip1;
-    uint Edge, Vertex0, Vertex1;
-};
-
-inline MeshletEditEdgeGeometry ResolveMeshletEditEdge(
+inline uint MeshletOwnedVertex(
     const thread Scene &scene, const thread MeshletWork &work,
-    device const BindlessSet &bindless, constant MeshletDrawPushConstants &pc,
-    uint local_triangle, uint edge_corner, uint packed_edge
+    device const BindlessSet &bindless, constant MeshletDrawPushConstants &pc, uint local_vertex
 ) {
-    device const uchar *triangles = BindlessBuffer(uchar, bindless.Buffer, pc.MeshletLocalTriangleSlot);
-    const uint triangle_base = MeshletLocalTriangleOffset(work.Meshlet) + local_triangle * 3u;
-    const uint local0 = uint(triangles[triangle_base + edge_corner] & MeshletGeometryEncoding_LocalIndexMask);
-    const uint local1 = uint(triangles[triangle_base + (edge_corner + 1u) % 3u] & MeshletGeometryEncoding_LocalIndexMask);
-    const uint packed0 = MeshletPackedVertex(bindless, pc.MeshletVertexSlot, work.Meshlet, local0);
-    const uint packed1 = MeshletPackedVertex(bindless, pc.MeshletVertexSlot, work.Meshlet, local1);
-    const uint vertex0 = MeshletVertexId(scene, work.Draw, MeshPrimitiveTopology_Triangle, packed0);
-    const uint vertex1 = MeshletVertexId(scene, work.Draw, MeshPrimitiveTopology_Triangle, packed1);
-    const Transform world = MeshletWorld(scene, work.Draw);
-    return {
-        MeshletPosition(scene, work.Draw, world, vertex0),
-        MeshletPosition(scene, work.Draw, world, vertex1),
-        packed_edge & MeshletEditEdgeEncoding_EdgeMask,
-        vertex0,
-        vertex1,
-    };
+    if (local_vertex >= work.Meshlet.VertexCount) return INVALID_OFFSET;
+    const uint packed = MeshletPackedVertex(bindless, pc.MeshletVertexSlot, work.Meshlet, local_vertex);
+    if ((packed & MeshletGeometryEncoding_EditVertexOwnerBit) == 0u) return INVALID_OFFSET;
+    return MeshletVertexId(scene, work.Draw, MeshletPrimitiveTopology(work.Meshlet), packed);
 }
 
 inline void EmitMeshletEditEdge(
@@ -86,19 +42,13 @@ inline void EmitMeshletEditEdge(
         output.set_primitive_count(0u);
         return;
     }
-    uint packed_edge = INVALID_OFFSET;
-    if (thread_index < work.Meshlet.TriangleCount) {
-        packed_edge = MeshletPackedEditEdge(bindless, pc, work, thread_index, edge_corner);
-    }
-    const uint present = packed_edge != INVALID_OFFSET ? 1u : 0u;
+    MeshletEditEdgeGeometry geometry;
+    const auto present = ResolveMeshletEditEdgeCandidate(scene, work, bindless, pc, thread_index, edge_corner, geometry);
     const uint2 compact = CompactPresent(present, thread_index, lane, simd_counts, MeshletEditSimdGroups);
     if (thread_index == 0u) output.set_primitive_count(compact.y * 2u);
-    if (present == 0u) return;
+    if (!present) return;
 
     const uint vertex_base = compact.x * 4u;
-    const MeshletEditEdgeGeometry geometry = ResolveMeshletEditEdge(
-        scene, work, bindless, pc, thread_index, edge_corner, packed_edge
-    );
     const bool edit_edge = scene.View.EditElement == Element_Edge;
     EditEdgeOverlay edge{
         geometry.Clip0, geometry.Clip1,
@@ -152,21 +102,24 @@ inline void EmitMeshletEditEdge(
         return;
     }
 
-    const uint packed = thread_index < work.Meshlet.VertexCount ?
-        MeshletPackedVertex(bindless, pc.MeshletVertexSlot, work.Meshlet, thread_index) : 0u;
-    const bool local_owner = thread_index < work.Meshlet.VertexCount &&
-        (packed & MeshletGeometryEncoding_EditVertexOwnerBit) != 0u;
-    const uint vertex_id = MeshletVertexId(scene, work.Draw, MeshPrimitiveTopology_Triangle, packed);
-    const uint present = local_owner ? 1u : 0u;
+    const uint vertex_id = MeshletOwnedVertex(scene, work, bindless, pc, thread_index);
+    const bool sound_point = (pc.RequiredInstanceFlags & MeshletInstanceFlag_SoundPoint) != 0u;
+    const uint vertex_state = vertex_id != INVALID_OFFSET ? EditVertexState(scene, work.Draw, vertex_id) : 0u;
+    const auto present = vertex_id != INVALID_OFFSET && (!sound_point || (vertex_state & STATE_SELECTED) != 0u);
     const uint2 compact = CompactPresent(present, thread_index, lane, simd_counts, MeshletEditPointSimdGroups);
     if (thread_index == 0u) output.set_primitive_count(compact.y);
-    if (present == 0u) return;
+    if (!present) return;
 
-    const uint state = EditVertexState(scene, work.Draw, vertex_id);
-    const PointVaryings out = EditPointSprite(
-        scene, MeshletPosition(scene, work.Draw, MeshletWorld(scene, work.Draw), vertex_id),
-        EditVertexColor(scene, state)
+    PointVaryings out = ElementPointSprite(
+        scene, work.Draw,
+        MeshletPosition(scene, work.Draw, MeshletWorld(scene, work.Draw), vertex_id), vertex_id
     );
+    if (sound_point) {
+        constant ViewportThemeColors &colors = scene.Theme.Colors;
+        out.Color = vertex_id == work.Instance.ExcitedVertex ? float4(colors.ElementExcited) :
+            vertex_id == work.Instance.ActiveVertex ? float4(float4(colors.ElementActive).rgb, 1.0f) :
+                                                     float4(float3(colors.VertexSelected), 1.0f);
+    }
     output.set_vertex(compact.x, out);
     output.set_index(compact.x, compact.x);
 }
@@ -187,17 +140,15 @@ inline void EmitMeshletEditEdge(
         output.set_primitive_count(0u);
         return;
     }
-    const uint packed = thread_index < work.Meshlet.VertexCount ?
-        MeshletPackedVertex(bindless, pc.MeshletVertexSlot, work.Meshlet, thread_index) : 0u;
-    const uint present = thread_index < work.Meshlet.VertexCount &&
-        (packed & MeshletGeometryEncoding_EditVertexOwnerBit) != 0u ? 1u : 0u;
+    const uint vertex_id = MeshletOwnedVertex(scene, work, bindless, pc, thread_index);
+    const bool sound_point = (pc.RequiredInstanceFlags & MeshletInstanceFlag_SoundPoint) != 0u;
+    const auto present = vertex_id != INVALID_OFFSET && (!sound_point || EditSelectionBit(scene, work.Draw.Selection.VertexBits, vertex_id));
     const uint2 compact = CompactPresent(present, thread_index, lane, simd_counts, MeshletEditPointSimdGroups);
     if (thread_index == 0u) output.set_primitive_count(compact.y);
-    if (present == 0u) return;
+    if (!present) return;
 
-    const uint vertex_id = MeshletVertexId(scene, work.Draw, MeshPrimitiveTopology_Triangle, packed);
     ElementIdVaryings out;
-    out.ElementId = work.Draw.ElementIdOffset + vertex_id + 1u;
+    out.ElementId = (sound_point ? 0u : work.Draw.ElementIdOffset) + vertex_id + 1u;
     out.Position = MeshletPosition(scene, work.Draw, MeshletWorld(scene, work.Draw), vertex_id);
     out.PointSize = PointSize;
     output.set_vertex(compact.x, out);
@@ -220,15 +171,11 @@ inline void EmitMeshletEditEdge(
         output.set_primitive_count(0u);
         return;
     }
-    const uint packed_edge = thread_index < work.Meshlet.TriangleCount ?
-        MeshletPackedEditEdge(bindless, pc, work, thread_index, pc.EditEdgeCorner) : INVALID_OFFSET;
-    const uint present = packed_edge != INVALID_OFFSET ? 1u : 0u;
+    MeshletEditEdgeGeometry edge;
+    const auto present = ResolveMeshletEditEdgeCandidate(scene, work, bindless, pc, thread_index, pc.EditEdgeCorner, edge);
     const uint2 compact = CompactPresent(present, thread_index, lane, simd_counts, MeshletEditSimdGroups);
     if (thread_index == 0u) output.set_primitive_count(compact.y);
-    if (present == 0u) return;
-    const MeshletEditEdgeGeometry edge = ResolveMeshletEditEdge(
-        scene, work, bindless, pc, thread_index, pc.EditEdgeCorner, packed_edge
-    );
+    if (!present) return;
     ElementIdFragmentVaryings out;
     out.ElementId = work.Draw.ElementIdOffset + edge.Edge + 1u;
     out.Position = edge.Clip0;
@@ -255,15 +202,11 @@ inline void EmitMeshletEditEdge(
         output.set_primitive_count(0u);
         return;
     }
-    const uint packed_edge = thread_index < work.Meshlet.TriangleCount ?
-        MeshletPackedEditEdge(bindless, pc, work, thread_index, pc.EditEdgeCorner) : INVALID_OFFSET;
-    const uint present = packed_edge != INVALID_OFFSET ? 1u : 0u;
+    MeshletEditEdgeGeometry edge;
+    const auto present = ResolveMeshletEditEdgeCandidate(scene, work, bindless, pc, thread_index, pc.EditEdgeCorner, edge);
     const uint2 compact = CompactPresent(present, thread_index, lane, simd_counts, MeshletEditSimdGroups);
     if (thread_index == 0u) output.set_primitive_count(compact.y * 2u);
-    if (present == 0u) return;
-    const MeshletEditEdgeGeometry edge = ResolveMeshletEditEdge(
-        scene, work, bindless, pc, thread_index, pc.EditEdgeCorner, packed_edge
-    );
+    if (!present) return;
     ElementIdVaryings out;
     out.ElementId = work.Draw.ElementIdOffset + edge.Edge + 1u;
     out.PointSize = 2.0f;
@@ -286,7 +229,7 @@ inline void EmitMeshletEditEdge(
 ) {
     const Scene scene{bindless, view, theme, workspace};
     const MeshletWork work = ResolveMeshletWork(bindless, pc, group.x);
-    if (!work.Valid || MeshletCoarse(work.Meshlet)) {
+    if (!work.Valid || MeshletPrimitiveTopology(work.Meshlet) != MeshPrimitiveTopology_Triangle || MeshletCoarse(work.Meshlet)) {
         output.set_primitive_count(0u);
         return;
     }

@@ -1,19 +1,14 @@
 #pragma once
 
-#include "gpu/ExtrasLinePushConstants.h"
-#include "gpu/OverlayDispatch.h"
-#include "gpu/OverlayMeshPushConstants.h"
 #include "gpu/VisibilityShadingPushConstants.h"
 #include "metal/Bindless.h"
 #include "metal/PassChain.h"
 #include "metal/Shader.h"
-#include "render/DrawState.h"
 #include "render/GpuBuffers.h"
 #include "render/Pipelines.h"
 
 #include <cassert>
 #include <print>
-#include <span>
 
 namespace encode {
 // Everything a pass needs to resolve a visibility id back to its meshlet, instance and primitive.
@@ -87,56 +82,6 @@ void SetMeshPushConstants(MTL::RenderCommandEncoder *encoder, const T &pc) {
 template<typename T>
 void SetPushConstants(MTL::ComputeCommandEncoder *encoder, const T &pc) {
     encoder->setBytes(&pc, sizeof(T), BufferIndex_PushConstants);
-}
-
-// A mesh grid dimension the hardware accepts, past which a draw renders nothing.
-constexpr uint32_t MaxMeshThreadgroups{65'535};
-
-// One dispatch per draw over a batch's element list, instances in the grid's second dimension.
-// A batch's draw holds `indices_per_element` indices for each element it emits.
-// A mesh with more elements than one grid holds goes out a chunk at a time.
-inline void DispatchMeshBatch(
-    MTL::RenderCommandEncoder *encoder, const DrawListBuilder &list, const DrawBatchInfo &batch,
-    uint32_t indices_per_element, uint32_t elements_per_group, uint32_t threads_per_group
-) {
-    const auto chunk_elements = MaxMeshThreadgroups * elements_per_group;
-    for (uint32_t d = 0; d < batch.DrawCount; ++d) {
-        const auto &record = list.Records[batch.FirstRecord + d];
-        const auto element_count = record.IndexCount / indices_per_element;
-        for (uint32_t first = 0; first < element_count; first += chunk_elements) {
-            const auto groups = (std::min(chunk_elements, element_count - first) + elements_per_group - 1) / elements_per_group;
-            SetMeshPushConstants(encoder, OverlayMeshPushConstants{
-                .DrawDataIndex = batch.DrawDataSlotOffset + record.FirstDraw,
-                .ElementCount = element_count,
-                .FirstElement = first,
-            });
-            encoder->drawMeshThreadgroups(MTL::Size(groups, record.InstanceCount, 1), MTL::Size(1, 1, 1), MTL::Size(threads_per_group, 1, 1));
-        }
-    }
-}
-
-// One threadgroup per instance, each emitting that instance's whole primitive.
-inline void DispatchInstancedMeshBatch(
-    MTL::RenderCommandEncoder *encoder, const DrawListBuilder &list, const DrawBatchInfo &batch,
-    uint32_t vertices_per_instance
-) {
-    for (uint32_t d = 0; d < batch.DrawCount; ++d) {
-        const auto &record = list.Records[batch.FirstRecord + d];
-        SetMeshPushConstants(encoder, OverlayMeshPushConstants{
-            .DrawDataIndex = batch.DrawDataSlotOffset + record.FirstDraw,
-            .ElementCount = vertices_per_instance,
-        });
-        encoder->drawMeshThreadgroups(MTL::Size(record.InstanceCount, 1, 1), MTL::Size(1, 1, 1), MTL::Size(vertices_per_instance, 1, 1));
-    }
-}
-
-// One dispatch per extras line source, chunked line groups.
-inline void DispatchExtrasLines(MTL::RenderCommandEncoder *encoder, std::span<const ExtrasLinePushConstants> extras_lines) {
-    constexpr auto lines = uint32_t(OverlayDispatch::LineGroupLines);
-    for (const auto &extras_line : extras_lines) {
-        SetMeshPushConstants(encoder, extras_line);
-        encoder->drawMeshThreadgroups(MTL::Size((extras_line.LineCount + lines - 1) / lines, 1, 1), MTL::Size(1, 1, 1), MTL::Size(lines * 2, 1, 1));
-    }
 }
 
 inline void SetFullViewport(MTL::RenderCommandEncoder *encoder, mtl::Extent2D extent) {

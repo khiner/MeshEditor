@@ -1,6 +1,9 @@
 #include "metal/Shader.h"
 #include "metal/MetalContext.h"
 
+#include <algorithm>
+#include <array>
+#include <fstream>
 #include <format>
 #include <stdexcept>
 
@@ -8,6 +11,47 @@
 
 namespace mtl {
 namespace {
+std::optional<uint64_t> ShaderTreeFingerprint(const std::filesystem::path &root) {
+    std::vector<std::filesystem::path> files;
+    try {
+        for (const auto &entry : std::filesystem::recursive_directory_iterator(root)) {
+            if (entry.is_regular_file()) files.emplace_back(entry.path());
+        }
+    } catch (const std::filesystem::filesystem_error &) {
+        return std::nullopt;
+    }
+    std::ranges::sort(files);
+
+    uint64_t hash = 14695981039346656037ull;
+    const auto mix = [&hash](const char *data, size_t size) {
+        for (size_t i = 0; i < size; ++i) {
+            hash ^= uint8_t(data[i]);
+            hash *= 1099511628211ull;
+        }
+    };
+    std::array<char, 64 * 1024> bytes;
+    for (const auto &file : files) {
+        const auto relative = std::filesystem::relative(file, root).generic_string();
+        mix(relative.data(), relative.size());
+        const char separator = '\0';
+        mix(&separator, 1);
+        std::ifstream input(file, std::ios::binary);
+        if (!input) return std::nullopt;
+        while (input) {
+            input.read(bytes.data(), std::streamsize(bytes.size()));
+            mix(bytes.data(), size_t(input.gcount()));
+        }
+        if (!input.eof()) return std::nullopt;
+    }
+    return hash;
+}
+
+std::filesystem::path FingerprintPath(const std::filesystem::path &archive) {
+    auto path = archive;
+    path += ".fingerprint";
+    return path;
+}
+
 bool DepsUnchanged(const std::vector<std::pair<std::filesystem::path, std::filesystem::file_time_type>> &deps, const std::filesystem::path &root) {
     std::error_code ec;
     for (const auto &[relative, mtime] : deps) {
@@ -129,7 +173,15 @@ LibraryCache::LibraryCache(const Context &ctx, std::filesystem::path shaders_dir
     }
 
     std::error_code ec;
-    if (ArchivePath.empty() || !std::filesystem::exists(ArchivePath, ec)) return;
+    if (ArchivePath.empty()) return;
+    const auto fingerprint = ShaderTreeFingerprint(ShadersDir);
+    if (!fingerprint) return;
+    SourceFingerprint = fingerprint;
+    if (!std::filesystem::exists(ArchivePath, ec)) return;
+    uint64_t archived_fingerprint{};
+    std::ifstream fingerprint_input(FingerprintPath(ArchivePath), std::ios::binary);
+    fingerprint_input.read(reinterpret_cast<char *>(&archived_fingerprint), sizeof(archived_fingerprint));
+    if (!fingerprint_input || archived_fingerprint != *SourceFingerprint) return;
     // A stale or corrupt archive only costs fresh compiles, so a failed load proceeds without one.
     if (auto archive = NS::TransferPtr(Ctx.Device->newArchive(NS::URL::fileURLWithPath(Str(ArchivePath.string())), &error))) {
         LoadedArchive = std::move(archive);
@@ -147,6 +199,17 @@ LibraryCache::~LibraryCache() {
     NS::Error *error = nullptr;
     if (Serializer->serializeAsArchiveAndFlushToURL(NS::URL::fileURLWithPath(Str(tmp.string())), &error)) {
         std::filesystem::rename(tmp, ArchivePath, ec);
+        if (!ec && SourceFingerprint) {
+            auto fingerprint = FingerprintPath(ArchivePath);
+            auto fingerprint_tmp = fingerprint;
+            fingerprint_tmp += std::format(".{}", getpid());
+            {
+                std::ofstream output(fingerprint_tmp, std::ios::binary | std::ios::trunc);
+                output.write(reinterpret_cast<const char *>(&*SourceFingerprint), sizeof(*SourceFingerprint));
+            }
+            std::filesystem::rename(fingerprint_tmp, fingerprint, ec);
+            std::filesystem::remove(fingerprint_tmp, ec);
+        }
     }
     std::filesystem::remove(tmp, ec);
 }

@@ -2,6 +2,7 @@
 #define ELEMENTOVERLAY_MSL
 
 #include "LineQuad.metal"
+#include "EditSelection.metal"
 #include "SceneUBO.metal"
 #include "Varyings.metal"
 
@@ -54,6 +55,22 @@ inline EdgeQuadVaryings EditEdgeQuadCorner(
 inline PointVaryings EditPointSprite(const thread Scene &scene, float4 position, float4 color) {
     position.z -= NdcOffsetFactor(scene) * 1.5f;
     return PointVaryings{position, PointSize, color};
+}
+
+inline PointVaryings ElementPointSprite(
+    const thread Scene &scene, DrawData draw, float4 position, uint vertex_id
+) {
+    const uint state = EditVertexState(scene, draw, vertex_id);
+    constant ViewportThemeColors &colors = scene.Theme.Colors;
+    const float4 color = scene.View.InteractionMode == InteractionMode_Object && scene.View.ShowOverlays != 0u ?
+        scene.ObjectSelectionColor(scene.InstanceState(draw), float4(float3(colors.Vertex), 1.0f)) :
+        EditVertexColor(scene, state);
+    PointVaryings out = EditPointSprite(scene, position, color);
+    if (scene.View.InteractionMode == InteractionMode_Excite &&
+        (state & (STATE_SELECTED | STATE_ACTIVE)) == 0u) {
+        out.PointSize = 0.0f;
+    }
+    return out;
 }
 
 #endif

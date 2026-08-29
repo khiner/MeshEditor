@@ -137,8 +137,8 @@ struct MainPipeline {
     mtl::RenderPipeline WorkspaceVisibility;
     mtl::MeshRenderPipeline MeshletVisibilityOpaque, MeshletVisibilityCoverage;
     mtl::MeshRenderPipeline MeshletEditEdges, MeshletEditSmoothEdges;
-    mtl::MeshRenderPipeline MeshletEditPoint, EdgeQuadMesh, PointMesh;
-    mtl::MeshRenderPipeline FaceNormalMesh, VertexNormalMesh, BoundsBoxMesh, TetWireMesh, SoundPointMesh, ExtrasLineMesh;
+    mtl::MeshRenderPipeline MeshletEditPoint;
+    mtl::MeshRenderPipeline FaceNormalMesh, VertexNormalMesh, OverlayJobLines;
     mtl::MeshRenderPipeline BoneFillMesh, BoneWireMesh, BoneSphereFillMesh, BoneSphereWireMesh;
     // Wireframe lines rasterize in compute, and this resolves their coverage into the overlay layer.
     mtl::RenderPipeline WireResolve;
@@ -183,15 +183,12 @@ struct SilhouetteEdgePipeline {
 
 struct SelectionFragmentPipeline {
     SelectionFragmentPipeline(mtl::LibraryCache &);
-    const mtl::MeshRenderPipeline &ElementRaster(Element, bool meshlet, bool bitset_box, bool xray) const;
+    const mtl::MeshRenderPipeline &ElementRaster(Element, bool bitset_box, bool xray) const;
 
-    mtl::RenderPipeline VisibilityObject;
     using ElementVariants = std::array<mtl::MeshRenderPipeline, 4>;
-    ElementVariants MeshletFaces, MeshletVertices, MeshletEdges, Vertices, Edges;
+    ElementVariants MeshletFaces, MeshletVertices, MeshletEdges;
     mtl::MeshRenderPipeline MeshletFaceXRayPointsBitsetBox, MeshletEdgeXRayPointsBitsetBox;
-    mtl::MeshRenderPipeline ExtrasLine, BoneSphere, Line, Point, SoundPoint;
-    // Point coverage for X-Ray box select catches projected primitives with no raster area.
-    mtl::MeshRenderPipeline ElementEdgeXRayPointsBitsetBox;
+    mtl::MeshRenderPipeline OverlayJobLines, BoneSphere;
 };
 
 namespace ThreadgroupSize {
@@ -222,7 +219,7 @@ struct Pipelines {
     SilhouettePipeline Silhouette;
     SilhouetteEdgePipeline SilhouetteEdge;
     SelectionFragmentPipeline SelectionFragment;
-    mtl::ComputePipeline PrepareEditSelection, FillEditSelectionList, ResetEditSelectionSummary, DeriveEditSelection, EditSharpness, CommitPosedGeometry;
+    mtl::ComputePipeline VisibilityObjectSelection, PrepareEditSelection, FillEditSelectionList, ResetEditSelectionSummary, DeriveEditSelection, EditSharpness, CommitPosedGeometry;
     // Materializes current-pose positions before bounds and normal derivation.
     mtl::ComputePipeline PosePrepass;
     mtl::ComputePipeline PosedMeshletBounds;
@@ -237,6 +234,7 @@ struct Pipelines {
     mtl::ComputePipeline LodFrontierCount, LodFrontierPrefix, LodFrontierEmit;
     mtl::ComputePipeline MeshletCullBlockCount, MeshletCullPrefix, MeshletCullEmit;
     mtl::ComputePipeline MeshletPhase2Cull, MeshletPhase2RangeCull, MeshletPhase2Prefix;
+    mtl::ComputePipeline OverlayJobBlockCount, OverlayJobPrefix, OverlayJobEmit;
     mtl::ComputePipeline DepthPyramidReduce;
     // Finds each tile's largest motion, then marks every tile its streak crosses.
     mtl::ComputePipeline MotionBlurTilesFlatten, MotionBlurTilesDilate;

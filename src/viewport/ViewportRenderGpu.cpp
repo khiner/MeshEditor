@@ -6,7 +6,6 @@
 #include "armature/ArmatureComponents.h"
 #include "audio/SoundVertices.h"
 #include "gizmo/TransformGizmoTypes.h"
-#include "gpu/BoundsBoxPushConstants.h"
 #include "gpu/BoundsReducePushConstants.h"
 #include "gpu/CommitPosedGeometryPushConstants.h"
 #include "gpu/DepthPyramidReducePushConstants.h"
@@ -14,10 +13,11 @@
 #include "physics/PhysicsTypes.h"
 #include "Camera.h"
 #include "gpu/ExtrasLineKind.h"
-#include "gpu/ExtrasLinePushConstants.h"
-#include "gpu/SoundPointPushConstants.h"
-#include "gpu/TetWirePushConstants.h"
-#include "gpu/WireDrawRecord.h"
+#include "gpu/OverlayJob.h"
+#include "gpu/OverlayJobCullPushConstants.h"
+#include "gpu/OverlayJobDrawPushConstants.h"
+#include "gpu/OverlayJobKind.h"
+#include "gpu/OverlayDispatch.h"
 #include "gpu/WireRasterPushConstants.h"
 #include "gpu/WireResolvePushConstants.h"
 #include "gpu/MeshletCullPushConstants.h"
@@ -34,14 +34,16 @@
 #include "gpu/SilhouetteEdgeDepthObjectPushConstants.h"
 #include "gpu/VisibilityId.h"
 #include "mesh/MeshStore.h"
+#include "mesh/MeshComponents.h"
 #include "metal/PassChain.h"
 #include "metal/RenderTarget.h"
-#include "render/Drawing.h"
 #include "render/Encoding.h"
 #include "render/Instance.h"
+#include "render/GpuSceneState.h"
 #include "render/Pipelines.h"
 #include "scene/Entity.h"
 #include "selection/Selection.h"
+#include "selection/SelectionBitset.h"
 #include "selection/SelectionGpu.h"
 #include "viewport/InteractionComponents.h"
 #include "viewport/ViewCamera.h"
@@ -125,93 +127,99 @@ ExtrasLine ExtrasGizmoParams(const entt::registry &r, entt::entity object, Objec
     };
 }
 
-} // namespace
-
-// Every extras line source this frame, with the dispatch each one needs: camera, light, and empty
-// gizmos plus collision shape wireframes. One collection serves draw and pick alike.
-std::vector<ExtrasLinePushConstants> CollectExtrasLines(const entt::registry &r, const InstanceArena &instances) {
-    std::vector<ExtrasLinePushConstants> lines;
-    const auto push = [&](const ExtrasLine &line, uint32_t instance_index, vec3 local_offset) {
-        lines.emplace_back(ExtrasLinePushConstants{
-            .Kind = uint32_t(line.Kind),
-            .LineCount = line.LineCount,
-            .ModelSlot = instances.TransformBuffer.Slot,
-            .InstanceIndex = instance_index,
-            .StateSlot = instances.StateBuffer.Slot,
-            .ObjectIdSlot = instances.ObjectIdBuffer.Slot,
-            .LocalOffset = local_offset,
-            .Params = line.Params,
-        });
+// Stable one-threadgroup chunks for every procedural line source. Settings and selection state stay
+// out of this table; the GPU filters them each use, so camera motion and selection never rebuild it.
+std::vector<OverlayJob> BuildOverlayJobs(const entt::registry &r) {
+    constexpr uint32_t LinesPerJob{uint32_t(OverlayDispatch::LineGroupLines)};
+    std::vector<OverlayJob> jobs;
+    const auto append = [&](OverlayJob job, uint32_t element_count) {
+        for (uint32_t first = 0u; first < element_count; first += LinesPerJob) {
+            job.FirstElement = first;
+            job.ElementCount = std::min(LinesPerJob, element_count - first);
+            jobs.emplace_back(job);
+        }
     };
     for (const auto [object, kind, instance, render_instance] : r.view<const ObjectKind, const Instance, const RenderInstance>().each()) {
         if (!r.all_of<ObjectExtrasTag>(instance.Entity) || r.all_of<Hidden>(object)) continue;
         const auto gizmo = ExtrasGizmoParams(r, object, kind.Value);
         if (gizmo.LineCount == 0) continue;
-        push(gizmo, render_instance.BufferIndex, vec3{0});
+        append(OverlayJob{
+            .Kind = OverlayJobKind::Extras,
+            .InstanceIndex = render_instance.BufferIndex,
+            .ExtrasKind = gizmo.Kind,
+            .LocalOffset = vec3{0},
+            .Params = gizmo.Params,
+        }, gizmo.LineCount);
     }
     for (const auto [entity, shape, render_instance] : r.view<const ColliderShape, const RenderInstance>().each()) {
         const auto wire = ColliderWireParams(shape.Shape);
         if (wire.LineCount == 0) continue;
-        push(wire, render_instance.BufferIndex, shape.LocalOffset);
+        append(OverlayJob{
+            .Kind = OverlayJobKind::Extras,
+            .InstanceIndex = render_instance.BufferIndex,
+            .ExtrasKind = wire.Kind,
+            .LocalOffset = shape.LocalOffset,
+            .Params = wire.Params,
+        }, wire.LineCount);
     }
-    return lines;
+    for (const auto [entity, instance, render_instance] : r.view<const Instance, const RenderInstance>().each()) {
+        if (!HasMesh(r, instance.Entity)) continue;
+        append(OverlayJob{
+            .Kind = OverlayJobKind::Bounds,
+            .InstanceIndex = render_instance.BufferIndex,
+        }, 12u);
+    }
+    for (const auto [entity, instance, render_instance] : r.view<const Instance, const RenderInstance>().each()) {
+        const auto *tets = r.try_get<const TetBuffers>(instance.Entity);
+        if (!tets || tets->EdgeIndices.Count == 0u) continue;
+        append(OverlayJob{
+            .Kind = OverlayJobKind::TetWire,
+            .InstanceIndex = render_instance.BufferIndex,
+            .SourceOffset = tets->Positions.Offset,
+            .IndexOffset = tets->EdgeIndices.Offset,
+        }, tets->EdgeIndices.Count / 2u);
+    }
+    return jobs;
 }
 
-namespace {
-
-// The element a mesh draws from: triangulated faces, or the edges or vertices of a face-less mesh.
-enum class ElementDomain {
-    Face,
-    Edge,
-    Vertex
-};
-void RecordDrawCounters(const GpuBuffers &buffers, const DrawListBuilder &draw_list, bool selection) {
-    const auto record = [&](const char *selection_name, const char *render_name, size_t value) { profile::RecordCounter(selection ? selection_name : render_name, value); };
-    record("Selection DrawData", "Render DrawData", draw_list.Draws.size());
-    record("Selection DrawRecords", "Render DrawRecords", draw_list.Records.size());
-    record("Selection DrawDataBytes", "Render DrawDataBytes", draw_list.Draws.size() * sizeof(DrawData));
-    record("Selection DrawRecordBytes", "Render DrawRecordBytes", draw_list.Records.size() * sizeof(DrawRecord));
-    if (!selection) {
-        profile::RecordCounter("InstanceSlots", buffers.Instances.TransformBuffer.UsedSize / sizeof(Transform));
-        profile::RecordCounter("MeshletRecords", buffers.Meshlets.Buffer.Count<MeshletRecord>());
-        profile::RecordCounter("MeshletInstances", buffers.MeshletInstanceCount);
-        profile::RecordCounter("MeshletRecordBytes", buffers.Meshlets.Buffer.UsedSize);
-        profile::RecordCounter("MeshletTriangleIdBytes", buffers.MeshletTriangleIds.Buffer.UsedSize);
-        profile::RecordCounter("PrimitiveRecordBytes", buffers.Primitives.Buffer.UsedSize);
-        profile::RecordCounter("InstanceRecordBytes", buffers.Instances.RecordBuffer.UsedSize);
-        if (buffers.MeshletRoutes.Contents().size() >= sizeof(MeshletRouteState)) {
-            const auto &routes = *reinterpret_cast<const MeshletRouteState *>(buffers.MeshletRoutes.Contents().data());
-            const auto count = [&](MeshletRoute route) { return routes.Counts[uint32_t(route)]; };
-            profile::RecordCounter("VisibleOpaqueMeshlets", count(MeshletRoute::OpaqueCullBack) + count(MeshletRoute::OpaqueCullFront) + count(MeshletRoute::OpaqueDoubleSided) + count(MeshletRoute::Coverage));
-            profile::RecordCounter("VisibleCoverageMeshlets", count(MeshletRoute::Coverage));
-            profile::RecordCounter("SelectedCoarseMeshlets", *reinterpret_cast<const uint32_t *>(buffers.MeshletCoarseCount.Contents().data()));
-            profile::RecordCounter("VisibleBlendMeshlets", count(MeshletRoute::Blend));
-            profile::RecordCounter("VisibleTransmissionMeshlets", count(MeshletRoute::Transmission));
-            static const bool record_routes = std::getenv("MESHEDITOR_MESHLET_ROUTE_COUNTERS") != nullptr;
-            if (record_routes) {
-                profile::RecordCounter("MeshletRoute OpaqueCullBack", count(MeshletRoute::OpaqueCullBack));
-                profile::RecordCounter("MeshletRoute Blend", count(MeshletRoute::Blend));
-                profile::RecordCounter("MeshletRoute Transmission", count(MeshletRoute::Transmission));
-                profile::RecordCounter("MeshletRoute Phase2Candidate", count(MeshletRoute::Phase2Candidate));
-                profile::RecordCounter("MeshletRoute OpaqueCullFront", count(MeshletRoute::OpaqueCullFront));
-                profile::RecordCounter("MeshletRoute OpaqueDoubleSided", count(MeshletRoute::OpaqueDoubleSided));
-                profile::RecordCounter("MeshletRoute Coverage", count(MeshletRoute::Coverage));
-            }
+void RecordSceneCounters(const GpuBuffers &buffers) {
+    profile::RecordCounter("InstanceSlots", buffers.Instances.TransformBuffer.UsedSize / sizeof(Transform));
+    profile::RecordCounter("MeshletRecords", buffers.Meshlets.Buffer.Count<MeshletRecord>());
+    profile::RecordCounter("MeshletInstances", buffers.MeshletInstanceCount);
+    profile::RecordCounter("MeshletRecordBytes", buffers.Meshlets.Buffer.UsedSize);
+    profile::RecordCounter("MeshletTriangleIdBytes", buffers.MeshletTriangleIds.Buffer.UsedSize);
+    profile::RecordCounter("PrimitiveRecordBytes", buffers.Primitives.Buffer.UsedSize);
+    profile::RecordCounter("InstanceRecordBytes", buffers.Instances.RecordBuffer.UsedSize);
+    profile::RecordCounter("OverlayJobs", buffers.OverlayJobs.Count<OverlayJob>());
+    if (buffers.OverlayJobDispatchArgs.Contents().size() >= sizeof(MeshDispatchArgs)) {
+        profile::RecordCounter(
+            "VisibleOverlayJobs",
+            reinterpret_cast<const MeshDispatchArgs *>(buffers.OverlayJobDispatchArgs.Contents().data())->ThreadgroupsX
+        );
+    }
+    if (buffers.MeshletRoutes.Contents().size() >= sizeof(MeshletRouteState)) {
+        const auto &routes = *reinterpret_cast<const MeshletRouteState *>(buffers.MeshletRoutes.Contents().data());
+        const auto count = [&](MeshletRoute route) { return routes.Counts[uint32_t(route)]; };
+        profile::RecordCounter("VisibleOpaqueMeshlets", count(MeshletRoute::OpaqueCullBack) + count(MeshletRoute::OpaqueCullFront) + count(MeshletRoute::OpaqueDoubleSided) + count(MeshletRoute::Coverage));
+        profile::RecordCounter("VisibleCoverageMeshlets", count(MeshletRoute::Coverage));
+        profile::RecordCounter("SelectedCoarseMeshlets", *reinterpret_cast<const uint32_t *>(buffers.MeshletCoarseCount.Contents().data()));
+        profile::RecordCounter("VisibleBlendMeshlets", count(MeshletRoute::Blend));
+        profile::RecordCounter("VisibleTransmissionMeshlets", count(MeshletRoute::Transmission));
+        static const bool record_routes = std::getenv("MESHEDITOR_MESHLET_ROUTE_COUNTERS") != nullptr;
+        if (record_routes) {
+            profile::RecordCounter("MeshletRoute OpaqueCullBack", count(MeshletRoute::OpaqueCullBack));
+            profile::RecordCounter("MeshletRoute Blend", count(MeshletRoute::Blend));
+            profile::RecordCounter("MeshletRoute Transmission", count(MeshletRoute::Transmission));
+            profile::RecordCounter("MeshletRoute Phase2Candidate", count(MeshletRoute::Phase2Candidate));
+            profile::RecordCounter("MeshletRoute OpaqueCullFront", count(MeshletRoute::OpaqueCullFront));
+            profile::RecordCounter("MeshletRoute OpaqueDoubleSided", count(MeshletRoute::OpaqueDoubleSided));
+            profile::RecordCounter("MeshletRoute Coverage", count(MeshletRoute::Coverage));
+            profile::RecordCounter("MeshletRoute Overlay", count(MeshletRoute::Overlay));
         }
-        profile::RecordCounter("DeviceAllocatedBytes", buffers.Ctx.Ctx.Device->currentAllocatedSize());
     }
-}
-} // namespace
-
-void FlushDrawList(entt::registry &r, const DrawListBuilder &draw_list, mtl::Buffer &draw_data) {
-    auto &buffers = r.ctx().get<GpuBuffers>();
-    if (&draw_data == &buffers.SelectionDraw) RecordDrawCounters(buffers, draw_list, true);
-    if (!draw_list.Draws.empty() || buffers.Prelude.HasWork()) {
-        draw_data.Update(as_bytes(draw_list.Draws));
-    }
+    profile::RecordCounter("DeviceAllocatedBytes", buffers.Ctx.Ctx.Device->currentAllocatedSize());
 }
 
-namespace {
 // Running signature of the values an instance record is built from. A frame whose signature matches
 // the last rebuild's reads records the arena already holds, so the per-instance rebuild is skipped.
 struct RecordInputs {
@@ -278,18 +286,6 @@ void PatchInstanceDeform(std::span<DrawData> draws, const DeformSlots &deform) {
         }
         if (auto it = deform.ArmatureDeformByBufferIndex.find(draw.FirstInstance); it != deform.ArmatureDeformByBufferIndex.end()) {
             draw.ArmatureDeformOffset = it->second;
-        }
-    }
-}
-// Set per-draw posed ranges (positions and derived normals), keyed by the draw's instance.
-void PatchPosedRanges(std::span<DrawData> draws, const PosedRanges &posed) {
-    for (auto &d : draws) {
-        const auto i = posed.PerInstance ? d.FirstInstance - posed.FirstInstance : 0u;
-        d.PosedPositionOffset = posed.PositionOffset(i);
-        if (const auto normals = posed.NormalsAt(i)) {
-            d.PosedVertexNormalOffset = normals->VertexOffset;
-            d.PosedSeamNormalOffset = normals->SeamOffset;
-            d.PosedFaceNormalOffset = normals->FaceOffset;
         }
     }
 }
@@ -508,7 +504,7 @@ MeshletDrawPushConstants MakeMeshletDrawPc(
     const GpuBuffers &buffers, const mtl::Buffer &visible, const mtl::Buffer &routes,
     uint32_t route, uint32_t required_instance_flags, uint32_t visibility_phase,
     bool visibility_transmission, uint32_t edge_sharpness_slot,
-    uint32_t edit_edge_corner = 0u
+    uint32_t edit_edge_corner = 0u, uint32_t instance_filter = InvalidOffset
 ) {
     return {
         .PrimitiveSlot = buffers.Primitives.Buffer.Slot,
@@ -523,6 +519,7 @@ MeshletDrawPushConstants MakeMeshletDrawPc(
         .RouteStateSlot = routes.Slot,
         .Route = route,
         .RequiredInstanceFlags = required_instance_flags,
+        .InstanceFilter = instance_filter,
         .EditEdgeCorner = edit_edge_corner,
         .VisibilityPhase = visibility_phase,
         .VisibilityTransmission = visibility_transmission,
@@ -535,7 +532,8 @@ void DrawMeshletList(
     const mtl::Buffer &routes, const mtl::Buffer &dispatch_args, uint32_t route, uint32_t required_instance_flags,
     uint32_t visibility_phase = 0u, bool visibility_transmission = false, bool fragment_pc = false,
     uint32_t edge_sharpness_slot = InvalidSlot,
-    uint32_t mesh_threads = 160u, uint32_t edit_edge_corner = 0u
+    uint32_t mesh_threads = 160u, uint32_t edit_edge_corner = 0u,
+    uint32_t instance_filter = InvalidOffset
 ) {
     // Visibility ids reserve 25 bits for the visible-list index, and overflowing aliases the phase bit.
     if (fragment_pc) {
@@ -545,7 +543,7 @@ void DrawMeshletList(
     }
     auto pc = MakeMeshletDrawPc(
         buffers, visible, routes, route, required_instance_flags, visibility_phase,
-        visibility_transmission, edge_sharpness_slot, edit_edge_corner
+        visibility_transmission, edge_sharpness_slot, edit_edge_corner, instance_filter
     );
     for (uint32_t chunk = 0; chunk < buffers.MeshletDispatchChunkCount; ++chunk) {
         pc.VisibleOffset = chunk * GpuBuffers::MeshletDispatchChunkSize;
@@ -663,9 +661,8 @@ void RecordDepthPyramid(
 
 // Record one phase's passes into `cb`, which is already begun with viewport and scissor set.
 // `ubo_offset` selects the view UBO instance every bind in the phase reads.
-void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain, DrawListUse use, RenderPhase phase, uint32_t ubo_offset, float playback_frame) {
+void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain, SceneUpdate update, RenderPhase phase, uint32_t ubo_offset, float playback_frame) {
     const profile::CpuScope scope{"RecordRenderCommandBuffer"};
-    if (use == DrawListUse::Rebuild) r.ctx().get<DrawState>().SelectionStale = true;
     // The multi-step blur splits the scene and its overlays across two phases so the overlays stay
     // sharp over the averaged steps. Full and BlurredFull draw both in one.
     const bool draw_scene = phase != RenderPhase::BlurResolve;
@@ -690,14 +687,13 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
         pipelines.Main.Compiler.HasFeature(PbrFeature::Transmission);
 
     const auto &sel_slots = r.ctx().get<const SelectionSlots>();
-    auto &draw = r.ctx().get<DrawState>();
-    auto &draw_list = draw.List;
+    auto &scene_state = r.ctx().get<GpuSceneState>();
 
     RecordInputs record_inputs;
-    record_inputs.Mix(uint32_t(is_edit_mode) | uint32_t(edit_mode) << 1u);
+    record_inputs.Mix(uint32_t(interaction_mode) | uint32_t(edit_mode) << 8u);
     record_inputs.Mix(buffers.Instances.RecordBuffer.Count<InstanceRecord>());
     // Edit mode uses the rest pose, and reused blur phases use slots built by the rebuild phase.
-    const auto mesh_deform_slots = is_edit_mode || use == DrawListUse::Reuse ?
+    const auto mesh_deform_slots = is_edit_mode || update == SceneUpdate::Reuse ?
         std::unordered_map<entt::entity, DeformSlots>{} :
         BuildDeformSlots(r, meshes, record_inputs);
     static const DeformSlots no_deform{};
@@ -715,6 +711,24 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
         const auto *mesh_buffers = r.try_get<const MeshBuffers>(buffer_entity);
         return mesh_buffers && mesh_buffers->FaceIndices.Count > 0;
     };
+    const auto should_draw_armature_bones = [&](entt::entity armature) {
+        if (is_wireframe_mode) return true;
+        if (is_edit_mode || interaction_mode == InteractionMode::Pose) return r.all_of<Active>(armature);
+        return r.all_of<Selected>(armature);
+    };
+    const bool show_normals = show_overlays && settings.NormalOverlays != 0u;
+    const auto normal_meshes = show_normals ?
+        selection::GetSelectedMeshEntities(r) : std::unordered_set<entt::entity>{};
+    const bool show_face_normals = show_normals &&
+        he::ElementMaskContains(settings.NormalOverlays, Element::Face);
+    const bool show_vertex_normals = show_normals &&
+        he::ElementMaskContains(settings.NormalOverlays, Element::Vertex);
+    std::unordered_set<entt::entity> sound_meshes;
+    if (is_excite_mode) {
+        for (const auto entity : r.view<const Instance, const SoundVertices>()) {
+            sound_meshes.insert(r.get<const Instance>(entity).Entity);
+        }
+    }
 
     selection::PrimaryEditInstanceMap primary_edit_instances;
     EditTransformContext edit_transform_context;
@@ -738,30 +752,9 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
             }
         }
     }
-    // Rewrite per-instance deform and posed-buffer fields on the draws appended since `draws_before`.
-    const auto patch_mesh_draws = [&](DrawListBuilder &list, size_t draws_before, entt::entity mesh_entity, const DeformSlots &deform) {
-        const auto draws = std::span{list.Draws}.subspan(draws_before);
-        PatchInstanceDeform(draws, deform);
-        if (const auto it = draw.PosedByEntity.find(mesh_entity); it != draw.PosedByEntity.end()) {
-            PatchPosedRanges(draws, it->second);
-        }
-    };
-
-    if (use == DrawListUse::Rebuild) {
-        const profile::CpuScope build_scope{"BuildDrawList"};
-        draw_list.Draws.clear();
-        draw_list.Records.clear();
-        draw.PosedByEntity.clear();
-
-        // The excitable handles and current strike of each sounding mesh, keyed by mesh entity.
-        struct SoundVertexState {
-            Range Vertices;
-            entt::entity InstanceEntity{entt::null};
-        };
-        std::unordered_map<entt::entity, SoundVertexState> excitable_mesh_entities;
-        for (const auto [e, instance, excitable] : r.view<const Instance, const SoundVertices>().each()) {
-            excitable_mesh_entities.emplace(instance.Entity, SoundVertexState{excitable.Vertices, e});
-        }
+    if (update == SceneUpdate::Rebuild) {
+        const profile::CpuScope build_scope{"UpdateGpuScene"};
+        scene_state.PosedByEntity.clear();
 
         struct MeshEntityData {
             entt::entity Entity;
@@ -770,13 +763,6 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
             std::optional<Mesh> MeshComp;
             const DeformSlots &Deform;
             std::optional<uint32_t> PrimaryEditBufferIndex;
-            ElementDomain Domain; // The element the mesh draws from.
-            const SoundVertexState *Sound; // Excitable vertex handles and their instance, absent when the mesh has none.
-            bool IsBone, IsBoneJoint, IsExtras;
-        };
-        const auto element_domain = [](const MeshBuffers &b) {
-            return b.FaceIndices.Count > 0 ? ElementDomain::Face : b.EdgeIndices.Count > 0 ? ElementDomain::Edge :
-                                                                                             ElementDomain::Vertex;
         };
 
         // Draw order resolves coincident surfaces, and pool iteration order varies with scene-load
@@ -793,43 +779,15 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
             if (auto it = primary_edit_instances.find(entity); it != primary_edit_instances.end()) {
                 primary_bi = r.get<RenderInstance>(it->second).BufferIndex;
             }
-            const bool is_bone_joint = r.all_of<BoneJoint>(entity);
-            const auto sound_it = excitable_mesh_entities.find(entity);
-            mesh_entities.emplace_back(entity, mesh_buffers, models, TryGetMesh(r, entity), get_deform_slots(entity), primary_bi, element_domain(mesh_buffers), sound_it != excitable_mesh_entities.end() ? &sound_it->second : nullptr, r.all_of<ArmatureObject>(entity) || is_bone_joint, is_bone_joint, r.all_of<ObjectExtrasTag>(entity));
+            mesh_entities.emplace_back(
+                entity, mesh_buffers, models, TryGetMesh(r, entity), get_deform_slots(entity), primary_bi
+            );
         }
-
-        const auto attach_edit_selection = [&meshes](DrawData &draw_data, const MeshEntityData &e) {
-            if (!e.MeshComp) return;
-            const uint32_t id = e.MeshComp->GetStoreId();
-            draw_data.Selection = meshes.GetEditSelectionStorage(id);
-            draw_data.VertexEdgeAdjacencyOffset = OffsetOrInvalid(meshes.GetVertexEdgeAdjacencyRange(id));
-            draw_data.VertexFanAdjacencyOffset = OffsetOrInvalid(meshes.GetVertexFanAdjacencyRange(id));
-            draw_data.Connectivity = meshes.GetConnectivityRange(id);
-            draw_data.EdgeHalfedges = meshes.GetConnectivityEdgeRange(id);
-            draw_data.HalfedgeCount = meshes.GetFaceCornerRange(id).Count;
-            draw_data.FaceCount = e.MeshComp->FaceCount();
-            draw_data.ConnectivityFaceStarts = meshes.GetConnectivity(id).Faces.empty() ? 0u : 1u;
-        };
 
         // The mesh shades authored under morphing: rest normals plus weighted authored deltas.
         // Edit mode builds no deform slots, so edit-mode draws (including drags) derive.
         const auto morph_shading_authored = [&meshes](const MeshEntityData &e) {
             return e.Deform.MorphDeformOffset != InvalidOffset && e.MeshComp && meshes.GetMorphShadingAuthored(e.MeshComp->GetStoreId());
-        };
-
-        // A face-less mesh with a material table is a point or line mesh, which material and rendered modes shade in the scene pass.
-        // Solid and wireframe draw it through the wire and point overlays, as do face-less overlays (bones, sound vertices), which carry no material table.
-        const auto shaded_in_scene_pass = [&meshes, show_rendered](const MeshEntityData &e) {
-            return show_rendered && e.MeshComp && e.MeshComp->FaceCount() == 0 && meshes.GetPrimitiveMaterialRange(e.MeshComp->GetStoreId()).Count > 0;
-        };
-        // Shaded meshes take their selection feedback from the scene pass, which recolors selected line and point fills.
-        // Edit mode shows selection through its own overlays.
-        // Draws a mesh's wire overlay for every instance, unless the scene pass shades it.
-        const auto append_wire = [&](DrawBatchInfo &batch, const MeshEntityData &e, const SlottedRange &indices, const DrawData &dd) {
-            if (shaded_in_scene_pass(e)) return;
-            const auto draws_before = draw_list.Draws.size();
-            AppendDraw(draw_list, batch, indices, e.Mod, dd);
-            patch_mesh_draws(draw_list, draws_before, e.Entity, e.Deform);
         };
 
         { // Bounds reduce entries.
@@ -876,6 +834,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
                 record_inputs.Mix(e.Deform.MorphTargetCount);
                 record_inputs.Mix(e.PrimaryEditBufferIndex.value_or(InvalidOffset));
                 if (e.MeshComp) record_inputs.Mix(meshes.GetEditSelectionStorage(e.MeshComp->GetStoreId()));
+                record_inputs.Mix(sound_meshes.contains(e.Entity));
                 if (e.Buf.Meshlets.Count != 0u) {
                     record_inputs.Mix(buffers.Meshlets.Buffer.GetSpan<MeshletRecord>({e.Buf.Meshlets.Offset, 1}).front().LocalTriangleOffset);
                 }
@@ -986,7 +945,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
                             std::optional{PosedRanges::NormalRanges{vertex_normal_offset, seam_normal_offset, face_normal_offset, spec.Entry.SeamCount, spec.Entry.FaceCount}} :
                             std::nullopt,
                     };
-                    draw.PosedByEntity.emplace(e.Entity, pr);
+                    scene_state.PosedByEntity.emplace(e.Entity, pr);
                     posed_offset += spec.Count * pr.VertexCount;
                     meshlet_bounds_offset += spec.Count * pr.Level0Count;
                 }
@@ -1033,11 +992,11 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
 
         // A frame that read the same inputs as the last rebuild leaves the records the arena holds,
         // topology mask included, so the per-instance rebuild costs nothing on a settled scene.
-        if (record_inputs.Value != draw.InstanceRecordInputs) {
-            draw.InstanceRecordInputs = record_inputs.Value;
-            MarkInstanceRecordsStale(draw);
+        if (record_inputs.Value != scene_state.InstanceRecordInputs) {
+            scene_state.InstanceRecordInputs = record_inputs.Value;
+            MarkInstanceRecordsStale(scene_state);
         }
-        if (draw.InstanceRecordsStale) {
+        if (scene_state.InstanceRecordsStale) {
             buffers.MeshletTopologyMask = 0u;
             for (const auto [instance_entity, instance, ri] : r.view<const Instance, const RenderInstance>().each()) {
                 if (ri.BufferIndex == UINT32_MAX) continue;
@@ -1067,7 +1026,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
                 if (const auto it = deform.MorphWeightsByBufferIndex.find(ri.BufferIndex); it != deform.MorphWeightsByBufferIndex.end()) {
                     record.MorphWeightsOffset = it->second;
                 }
-                if (const auto it = draw.PosedByEntity.find(instance.Entity); it != draw.PosedByEntity.end()) {
+                if (const auto it = scene_state.PosedByEntity.find(instance.Entity); it != scene_state.PosedByEntity.end()) {
                     const auto &posed = it->second;
                     const auto i = posed.PerInstance ? ri.BufferIndex - posed.FirstInstance : 0u;
                     record.PosedPositionOffset = posed.PositionOffset(i);
@@ -1088,244 +1047,53 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
                     record.Selection = meshes.GetEditSelectionStorage(store_id);
                     record.EditEdgeSharpnessOffset = meshes.GetEdgeSharpnessRange(store_id).Offset;
                     record.ElementIdOffset = meshes.GetSelectionBitOffset(store_id, edit_mode);
+                } else if (is_excite_mode && sound_meshes.contains(instance.Entity)) {
+                    const uint32_t store_id = r.get<const MeshHandle>(instance.Entity).StoreId;
+                    record.Selection = meshes.GetEditSelectionStorage(store_id);
+                    const auto *active = r.try_get<const MeshActiveElement>(instance.Entity);
+                    const auto *force = r.try_get<const VertexForce>(instance_entity);
+                    record.ActiveVertex = active ? active->Handle : InvalidOffset;
+                    record.ExcitedVertex = force ? force->Vertex : InvalidOffset;
                 }
                 buffers.Instances.RecordBuffer.GetMutableSpan<InstanceRecord>({ri.BufferIndex, 1}).front() = record;
             }
-            draw.InstanceRecordsStale = false;
+            scene_state.InstanceRecordsStale = false;
             // A fresh record carries no flags, so the object id and silhouette pass below must run.
-            draw.InstanceFlagsStale = true;
+            scene_state.InstanceFlagsStale = true;
         }
 
-        // Build bone batches for X-ray rendering (drawn after a mid-pass depth clear so bones are never occluded by scene meshes)
-        // Only draw bones for: active armature in Edit/Pose mode, selected armatures in Object mode.
-        const auto should_draw_armature_bones = [&](entt::entity arm_obj_entity) {
-            if (is_wireframe_mode) return true; // Wireframe mode: always show bone outlines
-            const bool is_bone_mode = is_edit_mode || interaction_mode == InteractionMode::Pose;
-            if (is_bone_mode) return r.all_of<Active>(arm_obj_entity);
-            return r.all_of<Selected>(arm_obj_entity);
-        };
-        // Map BoneJoint entities back to their owning armature object entities.
-        std::unordered_map<entt::entity, entt::entity> joint_to_owner;
-        for (const auto [e, arm_obj] : r.view<const ArmatureObject>().each()) {
-            if (arm_obj.JointEntity != entt::null) joint_to_owner[arm_obj.JointEntity] = e;
-        }
-        draw.BoneFill = {};
-        draw.BoneWire = {};
-        draw.BoneSphereFill = {};
-        draw.BoneSphereWire = {};
-        if (show_overlays && settings.ShowBones) {
-            draw.BoneFill = draw_list.BeginBatch();
-            for (const auto [entity, arm_obj, mesh_buffers, models] : r.view<const ArmatureObject, const MeshBuffers, const ModelsBuffer>().each()) {
-                if (mesh_buffers.FaceIndices.Count == 0) continue;
-                auto fill_draw = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.FaceIndices, buffers.Instances);
-                fill_draw.InstanceStateSlot = buffers.Instances.StateBuffer.Slot;
-                AppendDraw(draw_list, draw.BoneFill, mesh_buffers.FaceIndices, models, fill_draw);
-            }
-            draw.BoneWire = draw_list.BeginBatch();
-            for (const auto [entity, arm_obj, mesh_buffers, models] : r.view<const ArmatureObject, const MeshBuffers, const ModelsBuffer>().each()) {
-                if (!should_draw_armature_bones(entity)) continue;
-                if (const auto *adj = r.try_get<const BoneAdjacencyIndices>(entity)) {
-                    auto wire_draw = MakeDrawData(mesh_buffers.Vertices, adj->Indices, buffers.Instances);
-                    wire_draw.InstanceStateSlot = buffers.Instances.StateBuffer.Slot;
-                    AppendDraw(draw_list, draw.BoneWire, adj->Indices.Count / 2, models, wire_draw);
-                }
-            }
-
-            draw.BoneSphereFill = draw_list.BeginBatch();
-            for (const auto [entity, mesh_buffers, models] : r.view<const BoneJoint, const MeshBuffers, const ModelsBuffer>().each()) {
-                if (mesh_buffers.FaceIndices.Count == 0) continue;
-                auto fill_draw = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.FaceIndices, buffers.Instances);
-                fill_draw.InstanceStateSlot = buffers.Instances.StateBuffer.Slot;
-                AppendDraw(draw_list, draw.BoneSphereFill, mesh_buffers.FaceIndices, models, fill_draw);
-            }
-            draw.BoneSphereWire = draw_list.BeginBatch();
-            for (const auto [entity, mesh_buffers, models] : r.view<const BoneJoint, const MeshBuffers, const ModelsBuffer>().each()) {
-                if (mesh_buffers.EdgeIndices.Count == 0) continue;
-                if (const auto it = joint_to_owner.find(entity); it != joint_to_owner.end() && !should_draw_armature_bones(it->second)) continue;
-                auto wire_draw = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.EdgeIndices, buffers.Instances);
-                wire_draw.InstanceStateSlot = buffers.Instances.StateBuffer.Slot;
-                AppendDraw(draw_list, draw.BoneSphereWire, mesh_buffers.EdgeIndices, models, wire_draw);
-            }
-        }
-
-        draw.MeshletEditOverlayMeshes.clear();
-        draw.MeshletEditHasSharpEdges = false;
-        // Filled triangle meshes reuse their visible finest meshlets. Wireframe and face-less
-        // topologies use their native line/point emissions because they have no triangle ownership.
-        const bool meshlet_edit_overlay = show_overlays && is_edit_mode && show_fill && draw_overlays;
+        scene_state.MeshletEditOverlayMeshes.clear();
+        scene_state.MeshletEditHasSharpEdges = false;
+        const bool meshlet_edit_overlay = show_overlays && is_edit_mode && draw_overlays;
         if (meshlet_edit_overlay) {
             for (const auto &e : mesh_entities) {
-                if (!e.PrimaryEditBufferIndex || !e.MeshComp || e.MeshComp->FaceCount() == 0u ||
-                    e.Buf.Meshlets.Count == 0u) continue;
-                draw.MeshletEditOverlayMeshes.insert(e.Entity);
+                if (!e.PrimaryEditBufferIndex || !e.MeshComp || e.Buf.Meshlets.Count == 0u) continue;
+                scene_state.MeshletEditOverlayMeshes.insert(e.Entity);
                 const auto sharpness = meshes.GetEdgeSharpness(e.MeshComp->GetStoreId());
-                draw.MeshletEditHasSharpEdges |= std::memchr(sharpness.data(), 1, sharpness.size()) != nullptr;
+                scene_state.MeshletEditHasSharpEdges |= std::memchr(sharpness.data(), 1, sharpness.size()) != nullptr;
             }
         }
-        draw.InstanceFlagsStale = true;
+        scene_state.InstanceFlagsStale = true;
+        // Overlay jobs retain instance-arena indices, so publish them only after this rebuild has
+        // finalized every RenderInstance slot.
+        buffers.SetOverlayJobs(BuildOverlayJobs(r));
 
-        // Edge quad batch (edit/excite mode triangle quads with self-AA, matches Blender's overlay_edit_mesh_edge)
-        draw.EdgeQuad = draw_list.BeginBatch();
-        if (show_overlays && (is_edit_mode || is_excite_mode)) {
-            for (const auto &e : mesh_entities) {
-                if (e.IsBone || e.IsExtras || !e.MeshComp || e.Buf.EdgeIndices.Count == 0 ||
-                    draw.MeshletEditOverlayMeshes.contains(e.Entity)) continue;
-                auto dd = MakeDrawData(e.Buf.Vertices, e.Buf.EdgeIndices, buffers.Instances, e.Deform.BoneDeformOffset, e.Deform.ArmatureDeformOffset, e.Deform.MorphDeformOffset, e.Deform.MorphTargetCount);
-                attach_edit_selection(dd, e);
-                if (is_edit_mode) {
-                    const auto sharpness = meshes.GetEdgeSharpnessRange(e.MeshComp->GetStoreId());
-                    dd.EdgeSharpnessOffset = sharpness.Count > 0 ? sharpness.Offset : InvalidOffset;
-                }
-                const auto db = draw_list.Draws.size();
-                if (e.PrimaryEditBufferIndex) AppendDraw(draw_list, draw.EdgeQuad, e.Buf.EdgeIndices, e.Mod, dd, e.PrimaryEditBufferIndex);
-                else if (e.Sound) AppendDraw(draw_list, draw.EdgeQuad, e.Buf.EdgeIndices, e.Mod, dd);
-                patch_mesh_draws(draw_list, db, e.Entity, e.Deform);
-            }
-        }
-        // Wire line batches (wireframe mode + line meshes, matches Blender's wireframe overlay).
-        // Face meshes outside Edit mode carry only position and a per-instance color.
-        // Edit mode and line meshes use the selection-colored emission.
-        const auto wire_eligible = [&](const MeshEntityData &e) {
-            return !e.IsBone && !e.IsExtras && e.MeshComp && e.Buf.EdgeIndices.Count > 0 &&
-                (e.Buf.FaceIndices.Count == 0 || is_wireframe_mode);
-        };
-        const auto meshlet_wire = [&](const MeshEntityData &e) { return e.Buf.FaceIndices.Count > 0 && !is_edit_mode; };
-        const auto wire_draw_data = [&](const MeshEntityData &e) {
-            auto dd = MakeDrawData(e.Buf.Vertices, e.Buf.EdgeIndices, buffers.Instances, e.Deform.BoneDeformOffset, e.Deform.ArmatureDeformOffset, e.Deform.MorphDeformOffset, e.Deform.MorphTargetCount);
-            attach_edit_selection(dd, e);
-            return dd;
-        };
-        draw.WireMeshlet = draw_list.BeginBatch();
-        for (const auto &e : mesh_entities) {
-            if (wire_eligible(e) && meshlet_wire(e)) append_wire(draw.WireMeshlet, e, e.Buf.EdgeIndices, wire_draw_data(e));
-        }
-        draw.WireLine = draw_list.BeginBatch();
-        for (const auto &e : mesh_entities) {
-            if (wire_eligible(e) && !meshlet_wire(e)) append_wire(draw.WireLine, e, e.Buf.EdgeIndices, wire_draw_data(e));
-        }
-
-
-
-        draw.Point = draw_list.BeginBatch();
-        for (const auto &e : mesh_entities) {
-            if (e.IsBone) continue;
-            // Edit mode shows a mesh's vertices under vertex select, and excite mode its excitable ones.
-            const bool draw_elements = show_overlays && is_edit_mode && edit_mode == Element::Vertex && e.PrimaryEditBufferIndex;
-            // A vertex-only mesh otherwise draws its points as the object itself, until it is the one being edited.
-            const bool draw_object = e.Domain == ElementDomain::Vertex && !(is_edit_mode && e.PrimaryEditBufferIndex);
-            if ((!draw_elements && !draw_object) ||
-                (draw_elements && draw.MeshletEditOverlayMeshes.contains(e.Entity))) continue;
-            auto dd = MakeDrawData(e.Buf.Vertices, e.Buf.VertexIndices, buffers.Instances, e.Deform.BoneDeformOffset, e.Deform.ArmatureDeformOffset, e.Deform.MorphDeformOffset, e.Deform.MorphTargetCount);
-            attach_edit_selection(dd, e);
-            if (!draw_elements && shaded_in_scene_pass(e)) continue;
-            const auto draws_before = draw_list.Draws.size();
-            AppendDraw(draw_list, draw.Point, e.Buf.VertexIndices, e.Mod, dd, draw_elements ? e.PrimaryEditBufferIndex : std::optional<uint32_t>{});
-            patch_mesh_draws(draw_list, draws_before, e.Entity, e.Deform);
-        }
-
-        draw.SoundPoint = draw_list.BeginBatch();
-        draw.SoundPoints.clear();
-        if (show_overlays && is_excite_mode) {
-            for (const auto &e : mesh_entities) {
-                if (!e.Sound || e.Sound->Vertices.Count == 0) continue;
-                const auto *sound = &e.Sound->Vertices;
-                auto dd = MakeDrawData(e.Buf.Vertices, e.Buf.VertexIndices, buffers.Instances, e.Deform.BoneDeformOffset, e.Deform.ArmatureDeformOffset, e.Deform.MorphDeformOffset, e.Deform.MorphTargetCount);
-                const auto draws_before = draw_list.Draws.size();
-                AppendDraw(draw_list, draw.SoundPoint, sound->Count, e.Mod, dd);
-                patch_mesh_draws(draw_list, draws_before, e.Entity, e.Deform);
-                draw.SoundPoints.emplace_back(SoundPointInfo{
-                    .InstanceEntity = e.Sound->InstanceEntity,
-                    .VertexOffset = sound->Offset,
-                    .VertexCount = sound->Count,
-                });
-            }
-        }
-
-        { // Normal indicator batches, emitted per frame from the mesh's own positions and normals
-            const bool show_normals = show_overlays && settings.NormalOverlays != 0;
-            // Normal indicators are a selection overlay, so only selected meshes emit them.
-            const auto normal_meshes = show_normals ? selection::GetSelectedMeshEntities(r) : std::unordered_set<entt::entity>{};
-            const auto normal_overlay = [&](Element element) {
-                return show_normals && he::ElementMaskContains(settings.NormalOverlays, element);
-            };
-            draw.OverlayFaceNormals = draw_list.BeginBatch();
-            if (normal_overlay(Element::Face)) {
-                for (const auto &e : mesh_entities) {
-                    if (e.IsBone || e.IsExtras || !e.MeshComp || e.Buf.FaceIndices.Count == 0 || !normal_meshes.contains(e.Entity)) continue;
-                    const auto store_id = e.MeshComp->GetStoreId();
-                    const auto face_ids = meshes.GetFaceIdRange(store_id);
-                    auto dd = MakeDrawData(e.Buf.Vertices, e.Buf.FaceIndices, buffers.Instances, e.Deform.BoneDeformOffset, e.Deform.ArmatureDeformOffset, e.Deform.MorphDeformOffset, e.Deform.MorphTargetCount);
-                    dd.ObjectIdSlot = face_ids.Slot;
-                    dd.FaceIdOffset = face_ids.Offset;
-                    dd.FaceFirstTriangleOffset = meshes.GetFaceDataRange(store_id).Offset;
-                    dd.BaseFaceNormalOffset = meshes.GetFaceDataRange(store_id).Offset;
-                    const auto draws_before = draw_list.Draws.size();
-                    AppendDraw(draw_list, draw.OverlayFaceNormals, e.MeshComp->FaceCount(), e.Mod, dd);
-                    patch_mesh_draws(draw_list, draws_before, e.Entity, e.Deform);
-                }
-            }
-            draw.OverlayVertexNormals = draw_list.BeginBatch();
-            if (normal_overlay(Element::Vertex)) {
-                for (const auto &e : mesh_entities) {
-                    if (e.IsBone || e.IsExtras || !e.MeshComp || e.Buf.EdgeIndices.Count == 0 || !normal_meshes.contains(e.Entity)) continue;
-                    auto dd = MakeDrawData(e.Buf.Vertices, e.Buf.EdgeIndices, buffers.Instances, e.Deform.BoneDeformOffset, e.Deform.ArmatureDeformOffset, e.Deform.MorphDeformOffset, e.Deform.MorphTargetCount);
-                    dd.VertexEdgeAdjacencyOffset = OffsetOrInvalid(meshes.GetVertexEdgeAdjacencyRange(e.MeshComp->GetStoreId()));
-                    const auto draws_before = draw_list.Draws.size();
-                    AppendDraw(draw_list, draw.OverlayVertexNormals, e.Buf.Vertices.Count, e.Mod, dd);
-                    patch_mesh_draws(draw_list, draws_before, e.Entity, e.Deform);
-                }
-            }
-        }
-
-        { // Build selection draw list
-            auto &sel_list = draw.SelectionList;
-            sel_list = {};
-
-            const auto run_sel_pass = [&](auto &&indices_of, auto &&skip) {
-                auto batch = sel_list.BeginBatch();
-                for (const auto &e : mesh_entities) {
-                    if (e.IsExtras || e.IsBoneJoint || skip(e)) continue;
-                    const auto &indices = indices_of(e);
-                    auto dd = MakeDrawData(e.Buf.Vertices, indices, buffers.Instances, e.Deform.BoneDeformOffset, e.Deform.ArmatureDeformOffset, e.Deform.MorphDeformOffset, e.Deform.MorphTargetCount);
-                    dd.ObjectIdSlot = buffers.Instances.ObjectIdBuffer.Slot;
-                    const auto db = sel_list.Draws.size();
-                    if (e.PrimaryEditBufferIndex) AppendDraw(sel_list, batch, indices, e.Mod, dd, e.PrimaryEditBufferIndex);
-                    else AppendDraw(sel_list, batch, indices, e.Mod, dd);
-                    patch_mesh_draws(sel_list, db, e.Entity, e.Deform);
-                }
-                return batch;
-            };
-            const auto sel_line = run_sel_pass(
-                [](const auto &e) -> const auto & { return e.Buf.EdgeIndices; },
-                [&](const auto &e) { return e.Buf.FaceIndices.Count > 0 || e.Buf.EdgeIndices.Count == 0 || shaded_in_scene_pass(e); }
-            );
-            const auto sel_point = run_sel_pass(
-                [](const auto &e) -> const auto & { return e.Buf.VertexIndices; },
-                [&](const auto &e) { return e.Buf.FaceIndices.Count > 0 || e.Buf.EdgeIndices.Count > 0 || shaded_in_scene_pass(e); }
-            );
-
-            DrawBatchInfo sel_bone_sphere;
-            if (show_overlays && settings.ShowBones) {
-                sel_bone_sphere = sel_list.BeginBatch();
-                for (const auto [entity, mesh_buffers, models] : r.view<const BoneJoint, const MeshBuffers, const ModelsBuffer>().each()) {
-                    if (mesh_buffers.FaceIndices.Count == 0) continue;
-                    auto dd = MakeDrawData(mesh_buffers.Vertices, mesh_buffers.FaceIndices, buffers.Instances);
-                    dd.ObjectIdSlot = buffers.Instances.ObjectIdBuffer.Slot;
-                    AppendDraw(sel_list, sel_bone_sphere, mesh_buffers.FaceIndices, models, dd);
-                }
-            }
-
-            draw.SelectionBoneSpheres = sel_bone_sphere;
-            draw.SelectionLines = sel_line;
-            draw.SelectionPoints = sel_point;
-        }
     }
     // Object ids and silhouette flags, with the silhouette cull's work totalled as the flags land.
-    if (draw.InstanceFlagsStale) {
+    if (scene_state.InstanceFlagsStale) {
         const auto instance_records = buffers.Instances.RecordBuffer.GetMutableSpan<InstanceRecord>(
             {0, buffers.Instances.RecordBuffer.Count<InstanceRecord>()}
         );
-        GpuBuffers::MeshletFlagWork silhouette_work{}, edit_overlay_work{}, element_selection_work{};
+        GpuBuffers::MeshletFlagWork silhouette_work{}, edit_overlay_work{}, element_selection_work{}, wire_work{};
+        for (const auto flag : {
+                 MeshletInstanceFlag::Bone, MeshletInstanceFlag::BoneWire,
+                 MeshletInstanceFlag::BoneJoint, MeshletInstanceFlag::BoneJointWire,
+                 MeshletInstanceFlag::FaceNormal, MeshletInstanceFlag::VertexNormal,
+                 MeshletInstanceFlag::EdgeOverlay, MeshletInstanceFlag::PointOverlay,
+                 MeshletInstanceFlag::SoundPoint,
+             }) {
+            buffers.FlagWork(uint32_t(flag)) = {};
+        }
         for (const auto [instance_entity, ri] : r.view<const RenderInstance>().each()) {
             if (ri.BufferIndex == UINT32_MAX || ri.BufferIndex >= instance_records.size()) continue;
             auto &record = instance_records[ri.BufferIndex];
@@ -1340,15 +1108,16 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
             }
             const auto primary = instance ? primary_edit_instances.find(instance->Entity) : primary_edit_instances.end();
             const auto *mesh_buffers = instance ? r.try_get<const MeshBuffers>(instance->Entity) : nullptr;
-            if (instance && mesh_buffers && mesh_buffers->FaceIndices.Count > 0u && mesh_buffers->Meshlets.Count > 0u &&
-                primary != primary_edit_instances.end() && primary->second == instance_entity) {
+            if (instance && mesh_buffers && mesh_buffers->Meshlets.Count > 0u &&
+                primary != primary_edit_instances.end() && primary->second == instance_entity &&
+                selection::GetElementCount(GetMesh(r, instance->Entity), edit_mode) > 0u) {
                 record.Flags |= uint32_t(MeshletInstanceFlag::ElementSelection);
                 if (ri.GpuId != InvalidOffset) {
                     element_selection_work.Ranges += ri.MeshletRangeCount;
                     element_selection_work.Meshlets += ri.MeshletCount;
                 }
             }
-            if (instance && draw.MeshletEditOverlayMeshes.contains(instance->Entity) &&
+            if (instance && scene_state.MeshletEditOverlayMeshes.contains(instance->Entity) &&
                 primary != primary_edit_instances.end() && primary->second == instance_entity) {
                 record.Flags |= uint32_t(MeshletInstanceFlag::EditOverlay);
                 if (ri.GpuId != InvalidOffset) {
@@ -1356,6 +1125,62 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
                     edit_overlay_work.Meshlets += ri.MeshletCount;
                 }
             }
+            const auto mesh = instance ? TryGetMesh(r, instance->Entity) : std::nullopt;
+            const bool shaded_face_less = mesh && show_rendered && mesh->FaceCount() == 0u &&
+                meshes.GetPrimitiveMaterialRange(mesh->GetStoreId()).Count > 0u;
+            const bool wire = instance && mesh_buffers && mesh_buffers->Meshlets.Count > 0u &&
+                !r.all_of<ArmatureObject>(instance->Entity) && !r.all_of<BoneJoint>(instance->Entity) &&
+                !r.all_of<ObjectExtrasTag>(instance->Entity) && mesh_buffers->EdgeIndices.Count > 0u &&
+                (mesh_buffers->FaceIndices.Count == 0u || is_wireframe_mode) && !shaded_face_less;
+            if (wire) {
+                record.Flags |= uint32_t(MeshletInstanceFlag::Wire);
+                if (ri.GpuId != InvalidOffset) {
+                    wire_work.Ranges += ri.MeshletRangeCount;
+                    wire_work.Meshlets += ri.MeshletCount;
+                }
+            }
+            const bool bone = instance && r.all_of<ArmatureObject>(instance->Entity);
+            const bool joint = instance && r.all_of<BoneJoint>(instance->Entity);
+            if (bone || joint) record.Flags |= uint32_t(MeshletInstanceFlag::OverlayOnly);
+            const auto mark = [&](MeshletInstanceFlag flag) {
+                record.Flags |= uint32_t(flag);
+                if (ri.GpuId != InvalidOffset) {
+                    auto &work = buffers.FlagWork(uint32_t(flag));
+                    work.Ranges += ri.MeshletRangeCount;
+                    work.Meshlets += ri.MeshletCount;
+                }
+            };
+            if (show_overlays && settings.ShowBones) {
+                if (bone) {
+                    mark(MeshletInstanceFlag::Bone);
+                    if (should_draw_armature_bones(instance->Entity)) mark(MeshletInstanceFlag::BoneWire);
+                } else if (joint) {
+                    mark(MeshletInstanceFlag::BoneJoint);
+                    const auto *part = r.try_get<const BoneSubPartOf>(instance_entity);
+                    const auto *owner = part ? r.try_get<const SubElementOf>(part->BoneEntity) : nullptr;
+                    if (!owner || should_draw_armature_bones(owner->Parent)) mark(MeshletInstanceFlag::BoneJointWire);
+                }
+            }
+            if (instance && mesh_buffers && normal_meshes.contains(instance->Entity)) {
+                if (show_face_normals && mesh_buffers->FaceIndices.Count > 0u) {
+                    mark(MeshletInstanceFlag::FaceNormal);
+                }
+                if (show_vertex_normals && mesh_buffers->EdgeIndices.Count > 0u) {
+                    mark(MeshletInstanceFlag::VertexNormal);
+                }
+            }
+            if (instance && mesh_buffers && show_overlays && is_excite_mode &&
+                sound_meshes.contains(instance->Entity) && mesh_buffers->EdgeIndices.Count > 0u) {
+                mark(MeshletInstanceFlag::EdgeOverlay);
+            }
+            if (instance && mesh_buffers && show_overlays && is_excite_mode &&
+                sound_meshes.contains(instance->Entity) && mesh_buffers->Meshlets.Count > 0u) {
+                mark(MeshletInstanceFlag::SoundPoint);
+            }
+            const bool point_overlay = instance && mesh && mesh_buffers &&
+                mesh->FaceCount() == 0u && mesh->EdgeCount() == 0u &&
+                !primary_edit_instances.contains(instance->Entity) && !shaded_face_less;
+            if (point_overlay) mark(MeshletInstanceFlag::PointOverlay);
             // An instance reaches a cull only through its meshlet slot, which it holds when it has meshlets.
             if (silhouette && ri.GpuId != InvalidOffset) {
                 silhouette_work.Ranges += ri.MeshletRangeCount;
@@ -1365,37 +1190,22 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
         buffers.FlagWork(uint32_t(MeshletInstanceFlag::Silhouette)) = silhouette_work;
         buffers.FlagWork(uint32_t(MeshletInstanceFlag::EditOverlay)) = edit_overlay_work;
         buffers.FlagWork(uint32_t(MeshletInstanceFlag::ElementSelection)) = element_selection_work;
-        draw.InstanceFlagsStale = false;
+        buffers.FlagWork(uint32_t(MeshletInstanceFlag::Wire)) = wire_work;
+        scene_state.InstanceFlagsStale = false;
     }
     const bool has_object_silhouette_selection =
         any_of(r.view<const Selected, const Instance, const RenderInstance>().each(), [&](const auto &entry) { return is_silhouette_eligible(std::get<0>(entry)); });
     const bool render_silhouette = (show_overlays && settings.ShowOutlineSelected) && !is_excite_mode &&
         (is_edit_mode ? !silhouette_instances.empty() : has_object_silhouette_selection);
 
-    if (use != DrawListUse::Reuse) {
-        { // Bounding boxes draw straight from the instance arena: one box per selected mesh instance slot.
-            auto &slots_buffer = buffers.BoundsBoxSlots;
-            uint32_t box_count = 0;
-            if (show_overlays && settings.ShowExtras && settings.ShowBoundingBoxes) {
-                const auto boxes = r.view<const Selected, const Instance, const RenderInstance>();
-                const auto slots = slots_buffer.SetCount<uint32_t>(uint32_t(boxes.size_hint()));
-                for (const auto [e, instance, ri] : boxes.each()) {
-                    if (ri.BufferIndex != UINT32_MAX && HasMesh(r, instance.Entity)) slots[box_count++] = ri.BufferIndex;
-                }
-            }
-            slots_buffer.UsedSize = uint64_t(box_count) * sizeof(uint32_t);
-        }
-
-        FlushDrawList(r, draw_list, buffers.RenderDraw);
-    }
-    // A newly rebuilt draw list is the authoritative active-topology set. Specialize forward PBR
-    // here so scene loading needs no second registry scan and the first mixed-topology frame is correct.
-    if (show_rendered && use != DrawListUse::Reuse) {
+    // A rebuild is the authoritative active-topology scan. Specialize forward PBR here so scene
+    // loading needs no second registry scan and the first mixed-topology frame is correct.
+    if (show_rendered && update != SceneUpdate::Reuse) {
         pipelines.Main.Compiler.CompileTopologyPipelines(
             pipelines.Libraries, (buffers.MeshletTopologyMask & ~1u) != 0u
         );
     }
-    if (use != DrawListUse::Reuse || phase == RenderPhase::Full) RecordDrawCounters(buffers, draw_list, false);
+    if (update != SceneUpdate::Reuse || phase == RenderPhase::Full) RecordSceneCounters(buffers);
 
     const bool transmission_active = real_transmission && pipelines.Main.Transmission;
     // The transmission composite path lays the prepass down as the scene's background and
@@ -1409,7 +1219,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
     // Derived normals feed only the scene's face-fill draws, so only scene-drawing phases record the derive.
     // Every prelude pass dispatches indirectly.
     // A submit with unchanged deform inputs gets zero group counts, keeping the buffers' current results.
-    if (!draw_list.Draws.empty() || buffers.Prelude.HasWork()) {
+    if (buffers.Prelude.HasWork()) {
         const auto &prelude = buffers.Prelude;
         const bool record_bounds = phase != RenderPhase::BlurAccumulate && phase != RenderPhase::BlurResolve;
         // A derive entry always holds at least one face tile and one gather tile, so one count decides both phases.
@@ -1451,7 +1261,24 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
     // Wireframe can still show selection outlines. Populate visibility for silhouette decode even
     // when face fill is hidden, then leave its depth out of the wireframe scene pass below.
     const bool need_visibility = meshlet_fill && (show_fill || has_silhouette);
-    const bool cull_scene_meshlets = draw_scene && need_visibility;
+    const bool wire_meshlets = draw_overlays &&
+        buffers.FlagWork(uint32_t(MeshletInstanceFlag::Wire)).Meshlets > 0u;
+    const uint64_t bone_meshlets = draw_overlays ?
+        buffers.FlagWork(uint32_t(MeshletInstanceFlag::Bone)).Meshlets +
+            buffers.FlagWork(uint32_t(MeshletInstanceFlag::BoneJoint)).Meshlets :
+        0u;
+    const uint64_t normal_meshlets = draw_overlays ?
+        buffers.FlagWork(uint32_t(MeshletInstanceFlag::FaceNormal)).Meshlets +
+            buffers.FlagWork(uint32_t(MeshletInstanceFlag::VertexNormal)).Meshlets :
+        0u;
+    const uint64_t element_overlay_meshlets = draw_overlays ?
+        buffers.FlagWork(uint32_t(MeshletInstanceFlag::EdgeOverlay)).Meshlets +
+            buffers.FlagWork(uint32_t(MeshletInstanceFlag::PointOverlay)).Meshlets +
+            buffers.FlagWork(uint32_t(MeshletInstanceFlag::SoundPoint)).Meshlets :
+        0u;
+    const bool cull_scene_meshlets = draw_scene &&
+        (need_visibility || wire_meshlets || bone_meshlets > 0u || normal_meshlets > 0u ||
+         element_overlay_meshlets > 0u);
     bool sort_blend = false;
     if (cull_scene_meshlets && show_rendered) {
         for (uint32_t i = 0; i < buffers.Materials.Count() && !sort_blend; ++i) {
@@ -1460,7 +1287,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
     }
     const auto view_bytes = buffers.SceneViewUBO.Contents().subspan(ubo_offset, sizeof(SceneViewUBO));
     const auto &current_view_proj = reinterpret_cast<const SceneViewUBO *>(view_bytes.data())->ViewProj;
-    const bool disocclusion_possible = use != DrawListUse::Reuse || buffers.PreludeStale || buffers.MeshletOcclusionStale ||
+    const bool disocclusion_possible = update != SceneUpdate::Reuse || buffers.PreludeStale || buffers.MeshletOcclusionStale ||
         std::memcmp(&current_view_proj, &buffers.PreviousFullCullViewProj, sizeof(mat4)) != 0;
     // Real transmission stays single-phase because phase-2 visibility does not run its per-pixel
     // textured transmission-hole coverage test.
@@ -1475,7 +1302,9 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
             chain, slots, pipelines, buffers,
             {
                 .Mode = show_rendered ? (real_transmission ? MeshletRouteMode::Transmission : MeshletRouteMode::Material) : MeshletRouteMode::Visibility,
-                .RequiredInstanceFlags = show_fill ? 0u : uint32_t(MeshletInstanceFlag::Silhouette),
+                .RequiredInstanceFlags = show_fill || wire_meshlets || bone_meshlets > 0u ||
+                        normal_meshlets > 0u || element_overlay_meshlets > 0u ?
+                    0u : uint32_t(MeshletInstanceFlag::Silhouette),
                 .UboOffset = ubo_offset,
                 .PyramidSamplerSlot = pyramid,
                 .SortBlend = sort_blend,
@@ -1484,14 +1313,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
         );
     }
     if (need_visibility) {
-        const std::array colors{mtl::ClearColor(*main.Resources->VisibilityImage, MTL::ClearColor{double(UINT32_MAX), 0, 0, 0})};
-        const auto pass = mtl::MakePassDescriptor(colors, mtl::ClearDepth(*main.Resources->DepthImage));
-        encoder = encode::BeginScenePass(
-            chain, pass, "MeshletVisibility", {{MTL::StageDispatch, MTL::StageMesh}}, main_extent,
-            slots, buffers, ubo_offset
-        );
-        DrawVisibilityMeshlets(encoder, buffers, main, real_transmission);
-        buffers.VisibilityIdGeneration = buffers.MeshletVisibleGeneration;
+        RecordMeshletVisibilityPass(chain, slots, pipelines, buffers, real_transmission, ubo_offset);
     }
     if (show_fill && phase == RenderPhase::Full && cull_scene_meshlets) {
         if (two_phase_meshlets) {
@@ -1659,49 +1481,36 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
     }
 
     // Wireframe lines rasterize in compute before the overlay pass that resolves them.
-    const bool wire_batches_drawn = draw.WireMeshlet.DrawCount > 0 || draw.WireLine.DrawCount > 0;
+    const bool wire_raster_drawn = wire_meshlets;
     const bool meshlet_edit_overlay_drawn =
         buffers.FlagWork(uint32_t(MeshletInstanceFlag::EditOverlay)).Meshlets > 0;
-    // One flattened edge list over both batches, so a scene of many small wire draws costs one dispatch.
-    uint32_t wire_record_count = 0, wire_edge_total = 0;
-    if (wire_batches_drawn) {
-        buffers.WireDrawRecords.SetCount(draw.WireMeshlet.DrawCount + draw.WireLine.DrawCount);
-        auto *records = buffers.WireDrawRecords.Data();
-        const auto flatten_batch = [&](const DrawBatchInfo &batch, bool edit_selection_color) {
-            for (uint32_t d = 0; d < batch.DrawCount; ++d) {
-                const auto &draw_record = draw.List.Records[batch.FirstRecord + d];
-                const auto edges = draw_record.IndexCount / 2u;
-                if (edges == 0 || draw_record.InstanceCount == 0) continue;
-                records[wire_record_count++] = WireDrawRecord{
-                    .FirstEdge = wire_edge_total,
-                    .EdgeCount = edges,
-                    .DrawDataIndex = batch.DrawDataSlotOffset + draw_record.FirstDraw,
-                    .EditSelectionColor = edit_selection_color ? 1u : 0u,
-                };
-                wire_edge_total += edges * draw_record.InstanceCount;
-            }
-        };
-        flatten_batch(draw.WireMeshlet, false);
-        flatten_batch(draw.WireLine, true);
-    }
-    // The resolve reads what this dispatch writes, so it runs only when the dispatch does.
-    const bool wire_raster_drawn = wire_edge_total > 0;
+    const bool overlay_jobs = show_overlays && buffers.OverlayJobs.UsedSize > 0u &&
+        (settings.ShowExtras || settings.ShowBoundingBoxes || settings.ShowTetWireframe);
     if (wire_raster_drawn) {
         {   // Coverage sums and the complemented depth both start from zero.
             auto *blit = chain.BeginBlit("WireClear", MTL::StageDispatch);
             blit->fillBuffer(*buffers.WireCoverageBuffer, NS::Range::Make(0, buffers.WireCoverageBuffer.UsedSize), 0);
         }
-        // Every edge accumulates with atomics, so the dispatch needs no ordering within itself.
+        // Canonical meshlet edge owners accumulate with atomics, so threadgroups need no ordering.
         auto *wire = chain.BeginCompute("WireRaster", MTL::StageBlit | MTL::StageFragment, MTL::DispatchTypeConcurrent);
         encode::BindCompute(wire, pipelines.WireRaster, slots, buffers, ubo_offset);
-        encode::SetPushConstants(wire, WireRasterPushConstants{
-            .RecordSlot = buffers.WireDrawRecords.Slot(),
-            .RecordCount = wire_record_count,
-            .EdgeTotal = wire_edge_total,
+        WireRasterPushConstants wire_pc{
+            .Meshlet = MakeMeshletDrawPc(
+                buffers, buffers.VisibleMeshlets, buffers.MeshletRoutes,
+                uint32_t(MeshletRoute::Wire), uint32_t(MeshletInstanceFlag::Wire),
+                0u, false, InvalidSlot
+            ),
             .CoverageSlot = buffers.WireCoverageBuffer.Slot,
-        });
-        wire->dispatchThreadgroups(MTL::Size((wire_edge_total + 255) / 256, 1, 1), ThreadgroupSize::Linear256);
+        };
+        for (uint32_t chunk = 0; chunk < buffers.MeshletDispatchChunkCount; ++chunk) {
+            wire_pc.Meshlet.VisibleOffset = chunk * GpuBuffers::MeshletDispatchChunkSize;
+            encode::SetPushConstants(wire, wire_pc);
+            const auto args_offset = (uint32_t(MeshletRoute::Wire) * buffers.MeshletDispatchChunkCount + chunk) *
+                sizeof(MeshDispatchArgs);
+            wire->dispatchThreadgroups(*buffers.MeshletDispatchArgs, args_offset, MTL::Size(160, 1, 1));
+        }
     }
+    if (overlay_jobs) RecordOverlayJobCull(chain, slots, pipelines, buffers, false, ubo_offset);
 
     // The layer clears transparent, so an untouched one composites to nothing. Track whether anything
     // reaches it, and the composite skips reading it and its line data at all. Every draw in the pass
@@ -1710,11 +1519,9 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
     // Everything the pass could draw. With nothing to draw, the composite reads neither overlay layer.
     const bool overlay_pass_needed = has_silhouette ||
         (show_overlays && settings.ShowGrid) ||
-        meshlet_edit_overlay_drawn || draw.EdgeQuad.DrawCount > 0 || wire_batches_drawn ||
-        draw.Point.DrawCount > 0 || buffers.BoundsBoxSlots.UsedSize > 0 ||
-        (show_overlays && settings.ShowExtras) ||
-        draw.OverlayFaceNormals.DrawCount > 0 || draw.OverlayVertexNormals.DrawCount > 0 ||
-        draw.BoneFill.DrawCount > 0 || draw.BoneWire.DrawCount > 0 || draw.BoneSphereFill.DrawCount > 0 || draw.BoneSphereWire.DrawCount > 0;
+        meshlet_edit_overlay_drawn || element_overlay_meshlets > 0u || wire_raster_drawn ||
+        overlay_jobs ||
+        normal_meshlets > 0u || bone_meshlets > 0u;
     if (overlay_pass_needed) { // Overlay pass: display-referred overlays over transparent, depth-tested against the scene above.
         // Transparent overlay color is composited over scene color by alpha.
         const std::array overlay_colors{
@@ -1724,128 +1531,75 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
         const auto overlay_pass = mtl::MakePassDescriptor(overlay_colors, mtl::LoadDepth(*main.Resources->DepthImage));
         encoder = encode::BeginScenePass(chain, overlay_pass, "OverlayPass", {{MTL::StageDispatch, MTL::StageVertex | MTL::StageMesh | MTL::StageFragment}, {MTL::StageFragment, MTL::StageFragment}}, main_extent, slots, buffers, ubo_offset);
 
+        const auto draw_meshlet_overlay = [&](
+            const mtl::MeshRenderPipeline &pipeline, MeshletRoute route, MeshletInstanceFlag flag,
+            uint32_t threads, uint32_t corner = 0u, uint32_t sharpness_slot = InvalidSlot
+        ) {
+            pipeline.Bind(encoder);
+            ForEachMeshletVisibilityList(
+                buffers, two_phase_meshlets,
+                [&](const auto &visible, const auto &routes, const auto &dispatch_args) {
+                    DrawMeshletList(
+                        encoder, buffers, visible, routes, dispatch_args,
+                        uint32_t(route), uint32_t(flag), 0u, false, false,
+                        sharpness_slot, threads, corner
+                    );
+                }
+            );
+        };
 
-        // One threadgroup per instance, each emitting that instance's whole primitive.
-        const auto record_instanced_mesh_batch = [&](const mtl::MeshRenderPipeline &pipeline, const DrawBatchInfo &batch, OverlayDispatch vertices_per_instance, float depth_bias = 0.f) {
-            if (batch.DrawCount == 0) return;
-            overlay_layer_drawn = true;
-            pipeline.Bind(encoder);
-            // Mesh pipelines carry no bias of their own, so a biased emission sets and clears it around itself.
-            encoder->setDepthBias(depth_bias, 0.f, 0.f);
-            encode::DispatchInstancedMeshBatch(encoder, draw.List, batch, uint32_t(vertices_per_instance));
-            if (depth_bias != 0.f) encoder->setDepthBias(0.f, 0.f, 0.f);
-        };
-        // One dispatch per draw over a batch's element list, instances in the grid's second dimension.
-        const auto record_mesh_batch = [&](const mtl::MeshRenderPipeline &pipeline, const DrawBatchInfo &batch, uint32_t indices_per_element, uint32_t elements_per_group, uint32_t threads_per_group) {
-            if (batch.DrawCount == 0) return;
-            overlay_layer_drawn = true;
-            pipeline.Bind(encoder);
-            encode::DispatchMeshBatch(encoder, draw.List, batch, indices_per_element, elements_per_group, threads_per_group);
-        };
-        constexpr auto group_quad_edges = uint32_t(OverlayDispatch::EdgeQuadGroupEdges);
-        constexpr auto group_points = uint32_t(OverlayDispatch::PointGroupPoints);
-        constexpr auto group_indicators = uint32_t(OverlayDispatch::NormalIndicatorLines);
         {
             if (meshlet_edit_overlay_drawn) {
                 overlay_layer_drawn = true;
-                const auto draw_meshlet_edits = [&](
-                    const mtl::MeshRenderPipeline &pipeline, uint32_t mesh_threads = 160u,
-                    uint32_t edit_edge_corner = 0u
-                ) {
-                    pipeline.Bind(encoder);
-                    ForEachMeshletVisibilityList(buffers, two_phase_meshlets, [&](const auto &visible, const auto &routes, const auto &dispatch_args) {
-                        DrawMeshletList(
-                            encoder, buffers, visible, routes, dispatch_args, uint32_t(MeshletRoute::EditOverlay),
-                            uint32_t(MeshletInstanceFlag::EditOverlay), 0u, false, false,
-                            meshes.GetEdgeSharpnessSlot(), mesh_threads,
-                            edit_edge_corner
-                        );
-                    });
-                };
                 // Preserve the sharp-free specialization; the all-smooth Meshlets scene is measurably faster with it.
-                const auto &edit_edges = draw.MeshletEditHasSharpEdges ? main.MeshletEditEdges : main.MeshletEditSmoothEdges;
-                for (uint32_t corner = 0u; corner < 3u; ++corner) draw_meshlet_edits(edit_edges, 160u, corner);
-                if (edit_mode == Element::Vertex) draw_meshlet_edits(main.MeshletEditPoint, 64u);
+                const auto &edit_edges = scene_state.MeshletEditHasSharpEdges ? main.MeshletEditEdges : main.MeshletEditSmoothEdges;
+                for (uint32_t corner = 0u; corner < 3u; ++corner) {
+                    draw_meshlet_overlay(
+                        edit_edges, MeshletRoute::EditOverlay, MeshletInstanceFlag::EditOverlay,
+                        160u, corner, meshes.GetEdgeSharpnessSlot()
+                    );
+                }
             }
-            // Edit mode edges as triangle quads with self-AA, four corners to an edge
-            record_mesh_batch(main.EdgeQuadMesh, draw.EdgeQuad, 2, group_quad_edges, group_quad_edges * 4);
+            if (buffers.FlagWork(uint32_t(MeshletInstanceFlag::EdgeOverlay)).Meshlets > 0u) {
+                overlay_layer_drawn = true;
+                for (uint32_t corner = 0u; corner < 3u; ++corner) {
+                    draw_meshlet_overlay(
+                        main.MeshletEditSmoothEdges, MeshletRoute::Overlay,
+                        MeshletInstanceFlag::EdgeOverlay, 160u, corner
+                    );
+                }
+            }
             if (wire_raster_drawn) {
                 overlay_layer_drawn = true;
                 main.WireResolve.Bind(encoder);
                 encode::SetPushConstants(encoder, WireResolvePushConstants{buffers.WireCoverageBuffer.Slot});
                 encoder->drawPrimitives(MTL::PrimitiveTypeTriangleStrip, NS::UInteger(0), NS::UInteger(4));
             }
-            // Vertex points always record, and the batch is empty when nothing qualifies.
-            record_mesh_batch(main.PointMesh, draw.Point, 1, group_points, group_points);
-            // Excite mode points, one dispatch per sounding instance over its excitable handles
-            if (draw.SoundPoint.DrawCount > 0) {
-                overlay_layer_drawn = true;
-                main.SoundPointMesh.Bind(encoder);
-                for (uint32_t d = 0; d < draw.SoundPoint.DrawCount; ++d) {
-                    const auto &record = draw.List.Records[draw.SoundPoint.FirstRecord + d];
-                    const auto &info = draw.SoundPoints[d];
-                    // A strike lands between draw list rebuilds, so the handles come from the registry here.
-                    const auto *force = r.try_get<const VertexForce>(info.InstanceEntity);
-                    const auto *active_element = r.valid(info.InstanceEntity) && r.all_of<Instance>(info.InstanceEntity) ?
-                        r.try_get<const MeshActiveElement>(r.get<const Instance>(info.InstanceEntity).Entity) :
-                        nullptr;
-                    for (uint32_t i = 0; i < record.InstanceCount; ++i) {
-                        encode::SetMeshPushConstants(encoder, SoundPointPushConstants{
-                                                                  .DrawDataIndex = draw.SoundPoint.DrawDataSlotOffset + record.FirstDraw + i,
-                                                                  .VertexSlot = meshes.GetSoundVertexSlot(),
-                                                                  .VertexOffset = info.VertexOffset,
-                                                                  .VertexCount = info.VertexCount,
-                                                                  .ActiveVertex = active_element ? active_element->Handle : InvalidOffset,
-                                                                  .ExcitedVertex = force ? force->Vertex : InvalidOffset,
-                                                              });
-                        encoder->drawMeshThreadgroups(MTL::Size((info.VertexCount + 159) / 160, 1, 1), MTL::Size(1, 1, 1), MTL::Size(160, 1, 1));
-                    }
-                }
+            // Points follow the wire resolve so selected vertices stay on top in wireframe mode too.
+            if (meshlet_edit_overlay_drawn && edit_mode == Element::Vertex) {
+                draw_meshlet_overlay(
+                    main.MeshletEditPoint, MeshletRoute::EditOverlay,
+                    MeshletInstanceFlag::EditOverlay, 64u
+                );
             }
-            // Object extras (camera, light, and empty gizmos plus collision shape wireframes),
-            // generated from each object's parameters
-            if (show_overlays && settings.ShowExtras) {
-                if (const auto extras_lines = CollectExtrasLines(r, buffers.Instances); !extras_lines.empty()) {
-                    overlay_layer_drawn = true;
-                    main.ExtrasLineMesh.Bind(encoder);
-                    encode::DispatchExtrasLines(encoder, extras_lines);
-                }
-            }
-        }
-
-        // Bounding boxes, generated in the vertex shader from the instance arena's bounds and transforms.
-        if (const auto box_count = buffers.BoundsBoxSlots.Count<uint32_t>(); box_count > 0) {
-            overlay_layer_drawn = true;
-            main.BoundsBoxMesh.Bind(encoder);
-            encode::SetMeshPushConstants(encoder, BoundsBoxPushConstants{
-                                                     .SlotsSlot = buffers.BoundsBoxSlots.Slot,
-                                                     .BoundsSlot = buffers.Instances.BoundsBuffer.Slot,
-                                                     .ModelSlot = buffers.Instances.TransformBuffer.Slot,
-                                                     .StateSlot = buffers.Instances.StateBuffer.Slot,
-                                                     .BoxCount = box_count,
-                                                 });
-            encoder->drawMeshThreadgroups(MTL::Size((box_count + 5) / 6, 1, 1), MTL::Size(1, 1, 1), MTL::Size(144, 1, 1));
-        }
-
-        // Tet wireframes, read straight from the canonical tet arenas for each selected object that has one.
-        if (show_overlays && settings.ShowTetWireframe) {
-            bool bound = false;
-            for (const auto [entity, instance, render_instance] : r.view<const Instance, const RenderInstance, const Selected>().each()) {
-                const auto *tets = r.try_get<const TetBuffers>(instance.Entity);
-                if (!tets || tets->EdgeIndices.Count == 0) continue;
+            if (buffers.FlagWork(uint32_t(MeshletInstanceFlag::PointOverlay)).Meshlets > 0u) {
                 overlay_layer_drawn = true;
-                if (!std::exchange(bound, true)) main.TetWireMesh.Bind(encoder);
-                const auto edge_count = tets->EdgeIndices.Count / 2;
-                encode::SetMeshPushConstants(encoder, TetWirePushConstants{
-                                                         .PositionSlot = meshes.GetTetPositionSlot(),
-                                                         .PositionOffset = tets->Positions.Offset,
-                                                         .EdgeIndexSlot = meshes.GetTetEdgeIndexSlot(),
-                                                         .EdgeIndexOffset = tets->EdgeIndices.Offset,
-                                                         .ModelSlot = buffers.Instances.TransformBuffer.Slot,
-                                                         .InstanceIndex = render_instance.BufferIndex,
-                                                         .EdgeCount = edge_count,
-                                                     });
-                encoder->drawMeshThreadgroups(MTL::Size((edge_count + 47) / 48, 1, 1), MTL::Size(1, 1, 1), MTL::Size(96, 1, 1));
+                draw_meshlet_overlay(
+                    main.MeshletEditPoint, MeshletRoute::Overlay,
+                    MeshletInstanceFlag::PointOverlay, 64u
+                );
+            }
+            if (buffers.FlagWork(uint32_t(MeshletInstanceFlag::SoundPoint)).Meshlets > 0u) {
+                overlay_layer_drawn = true;
+                draw_meshlet_overlay(
+                    main.MeshletEditPoint, MeshletRoute::Overlay,
+                    MeshletInstanceFlag::SoundPoint, 64u
+                );
+            }
+            if (overlay_jobs) {
+                overlay_layer_drawn = true;
+                main.OverlayJobLines.Bind(encoder);
+                DrawOverlayJobs(encoder, buffers, meshes);
             }
         }
 
@@ -1862,18 +1616,21 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
                 if (r.all_of<RenderInstance>(active_bone)) {
                     active_object_id = r.get<RenderInstance>(active_bone).ObjectId;
                 }
-            } else if (!is_edit_mode) {
-                if (active_entity != entt::null && r.all_of<RenderInstance>(active_entity)) {
-                    active_object_id = r.get<RenderInstance>(active_entity).ObjectId;
-                }
+            } else if (!is_edit_mode && active_entity != entt::null && r.all_of<RenderInstance>(active_entity)) {
+                active_object_id = r.get<RenderInstance>(active_entity).ObjectId;
             }
             encode::SetPushConstants(encoder, SilhouetteEdgeColorPushConstants{TransformGizmo::IsUsing(r, viewport) && interaction_mode == InteractionMode::Object, sel_slots.ObjectIdSampler, active_object_id});
             draw_quad();
         }
 
-        { // Selection overlays
-            record_mesh_batch(main.FaceNormalMesh, draw.OverlayFaceNormals, 1, group_indicators, group_indicators);
-            record_mesh_batch(main.VertexNormalMesh, draw.OverlayVertexNormals, 1, group_indicators, group_indicators);
+        if (normal_meshlets > 0u) {
+            overlay_layer_drawn = true;
+            const auto draw_normals = [&](const mtl::MeshRenderPipeline &pipeline, MeshletInstanceFlag flag) {
+                if (buffers.FlagWork(uint32_t(flag)).Meshlets == 0u) return;
+                draw_meshlet_overlay(pipeline, MeshletRoute::Overlay, flag, 64u);
+            };
+            draw_normals(main.FaceNormalMesh, MeshletInstanceFlag::FaceNormal);
+            draw_normals(main.VertexNormalMesh, MeshletInstanceFlag::VertexNormal);
         }
 
         // Grid plane (drawn before bone depth clear so grid remains depth-tested against scene meshes)
@@ -1886,28 +1643,37 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
         { // Bone X-ray: depth clears so bones are never occluded by scene meshes, only by each other.
             // Metal clears an attachment at pass start alone, so the bones take a second pass that
             // loads the overlay colors and clears the depth.
-            if (draw.BoneFill.DrawCount > 0 || draw.BoneSphereFill.DrawCount > 0) {
+            if (bone_meshlets > 0u) {
                 const std::array bone_colors{
                     mtl::LoadColor(*main.Resources->OverlayColorImage),
                     mtl::LoadColor(*main.Resources->LineDataImage),
                 };
                 const auto bone_pass = mtl::MakePassDescriptor(bone_colors, mtl::ClearDepth(*main.Resources->DepthImage));
-                encoder = encode::BeginScenePass(chain, bone_pass, "BoneXRay", {{MTL::StageDispatch, MTL::StageVertex | MTL::StageFragment}, {MTL::StageFragment, MTL::StageFragment}}, main_extent, slots, buffers, ubo_offset);
+                encoder = encode::BeginScenePass(chain, bone_pass, "BoneXRay", {{MTL::StageDispatch, MTL::StageMesh | MTL::StageFragment}, {MTL::StageFragment, MTL::StageFragment}}, main_extent, slots, buffers, ubo_offset);
+
+                const auto draw_bones = [&](const mtl::MeshRenderPipeline &pipeline, MeshletInstanceFlag flag, uint32_t threads, float depth_bias = 0.f) {
+                    if (buffers.FlagWork(uint32_t(flag)).Meshlets == 0u) return;
+                    overlay_layer_drawn = true;
+                    pipeline.Bind(encoder);
+                    encoder->setDepthBias(depth_bias, 0.f, 0.f);
+                    DrawMeshlets(encoder, buffers, uint32_t(MeshletRoute::Overlay), uint32_t(flag), threads);
+                    if (depth_bias != 0.f) encoder->setDepthBias(0.f, 0.f, 0.f);
+                };
 
                 // In Object+wireframe mode, show only outlines (no fills).
                 // In Edit/Pose+wireframe, fills are semitransparent and write far-plane depth (via shader) so wires are never occluded.
                 const bool object_wireframe = is_wireframe_mode && interaction_mode == InteractionMode::Object;
                 if (!object_wireframe) {
-                    record_instanced_mesh_batch(main.BoneFillMesh, draw.BoneFill, OverlayDispatch::BoneSolidVertices, 2.f);
-                    record_instanced_mesh_batch(main.BoneSphereFillMesh, draw.BoneSphereFill, OverlayDispatch::BoneSphereVertices);
+                    draw_bones(main.BoneFillMesh, MeshletInstanceFlag::Bone, 24u, 2.f);
+                    draw_bones(main.BoneSphereFillMesh, MeshletInstanceFlag::BoneJoint, uint32_t(OverlayDispatch::BoneSphereVertices));
                 }
                 // In non-wireframe Object mode, "Outline selected" off suppresses bone wire outlines.
                 // In wireframe+Object mode, wires are the only bone visualization so always show them.
                 const bool hide_bone_outlines = !is_wireframe_mode && interaction_mode == InteractionMode::Object &&
                     (!show_overlays || !settings.ShowOutlineSelected);
                 if (!hide_bone_outlines) {
-                    record_instanced_mesh_batch(main.BoneWireMesh, draw.BoneWire, OverlayDispatch::BoneWireVertices);
-                    record_instanced_mesh_batch(main.BoneSphereWireMesh, draw.BoneSphereWire, OverlayDispatch::BoneSphereWireVertices);
+                    draw_bones(main.BoneWireMesh, MeshletInstanceFlag::BoneWire, 24u);
+                    draw_bones(main.BoneSphereWireMesh, MeshletInstanceFlag::BoneJointWire, 64u);
                 }
             }
         }
@@ -1934,6 +1700,73 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
 
 } // namespace
 
+void RecordOverlayJobCull(
+    mtl::PassChain &chain, const mtl::BindlessSet &slots, const Pipelines &pipelines,
+    GpuBuffers &buffers, bool extras_only, uint32_t ubo_offset
+) {
+    const uint32_t job_count = buffers.OverlayJobs.Count<OverlayJob>();
+    if (job_count == 0u) return;
+    const OverlayJobCullPushConstants pc{
+        .JobsSlot = buffers.OverlayJobs.Slot,
+        .JobCount = job_count,
+        .InstanceStateSlot = buffers.Instances.StateBuffer.Slot,
+        .BlockStateSlot = buffers.OverlayJobBlocks.Slot,
+        .VisibleSlot = buffers.VisibleOverlayJobs.Slot,
+        .DispatchArgsSlot = buffers.OverlayJobDispatchArgs.Slot,
+        .ExtrasOnly = extras_only,
+    };
+    auto *encoder = chain.BeginCompute("OverlayJobCull", MTL::StageDispatch | MTL::StageFragment);
+    encode::BindScene(encoder, slots, buffers, ubo_offset);
+    encode::SetPushConstants(encoder, pc);
+    const auto blocks = MTL::Size(
+        (job_count + GpuBuffers::OverlayJobBlockSize - 1u) / GpuBuffers::OverlayJobBlockSize, 1, 1
+    );
+    encoder->setComputePipelineState(pipelines.OverlayJobBlockCount.State());
+    encoder->dispatchThreadgroups(blocks, ThreadgroupSize::Linear256);
+    encoder->memoryBarrier(MTL::BarrierScopeBuffers);
+    encoder->setComputePipelineState(pipelines.OverlayJobPrefix.State());
+    encoder->dispatchThreadgroups(MTL::Size(1, 1, 1), ThreadgroupSize::Linear256);
+    encoder->memoryBarrier(MTL::BarrierScopeBuffers);
+    encoder->setComputePipelineState(pipelines.OverlayJobEmit.State());
+    encoder->dispatchThreadgroups(blocks, ThreadgroupSize::Linear256);
+}
+
+void DrawOverlayJobs(
+    MTL::RenderCommandEncoder *encoder, const GpuBuffers &buffers, const MeshStore &meshes
+) {
+    encode::SetMeshPushConstants(encoder, OverlayJobDrawPushConstants{
+        .JobsSlot = buffers.OverlayJobs.Slot,
+        .VisibleSlot = buffers.VisibleOverlayJobs.Slot,
+        .InstanceSlot = buffers.Instances.RecordBuffer.Slot,
+        .BoundsSlot = buffers.Instances.BoundsBuffer.Slot,
+        .ModelSlot = buffers.Instances.TransformBuffer.Slot,
+        .StateSlot = buffers.Instances.StateBuffer.Slot,
+        .TetPositionSlot = meshes.GetTetPositionSlot(),
+        .TetEdgeIndexSlot = meshes.GetTetEdgeIndexSlot(),
+    });
+    encoder->drawMeshThreadgroups(
+        *buffers.OverlayJobDispatchArgs, 0u, MTL::Size(1, 1, 1),
+        MTL::Size(uint32_t(OverlayDispatch::LineGroupLines) * 2u, 1, 1)
+    );
+}
+
+void RecordMeshletVisibilityPass(
+    mtl::PassChain &chain, const mtl::BindlessSet &slots, const Pipelines &pipelines,
+    GpuBuffers &buffers, bool transmission, uint32_t ubo_offset
+) {
+    const auto &main = pipelines.Main;
+    const std::array colors{
+        mtl::ClearColor(*main.Resources->VisibilityImage, MTL::ClearColor{double(UINT32_MAX), 0, 0, 0})
+    };
+    const auto pass = mtl::MakePassDescriptor(colors, mtl::ClearDepth(*main.Resources->DepthImage));
+    auto *encoder = encode::BeginScenePass(
+        chain, pass, "MeshletVisibility", {{MTL::StageDispatch, MTL::StageMesh}},
+        main.Resources->VisibilityImage.Extent, slots, buffers, ubo_offset
+    );
+    DrawVisibilityMeshlets(encoder, buffers, main, transmission);
+    buffers.VisibilityIdGeneration = buffers.MeshletVisibleGeneration;
+}
+
 void RecordMeshletCull(
     mtl::PassChain &chain, const mtl::BindlessSet &slots, const Pipelines &pipelines,
     GpuBuffers &buffers, MeshletCullConfig config
@@ -1958,6 +1791,7 @@ void RecordMeshletCull(
         pc.BlendBlockSlot = config.SortBlend ? buffers.MeshletBlendBlocks.Slot : InvalidSlot;
         pc.RouteMode = uint32_t(config.Mode);
         pc.RequiredInstanceFlags = config.RequiredInstanceFlags;
+        pc.RouteMask = config.RouteMask;
         pc.PyramidSamplerSlot = config.PyramidSamplerSlot;
         pc.TwoPhase = config.TwoPhase;
         return pc;
@@ -2009,7 +1843,8 @@ void RecordMeshletCull(
     encoder->setThreadgroupMemoryLength(AlignedThreadgroupBytes(GpuBuffers::MeshletRouteCount * sizeof(uint32_t)), 0);
     encoder->dispatchThreadgroups(MTL::Size(1, 1, 1), ThreadgroupSize::Linear256);
     encoder->memoryBarrier(MTL::BarrierScopeBuffers);
-    dispatch_meshlets(pipelines.MeshletCullEmit);}
+    dispatch_meshlets(pipelines.MeshletCullEmit);
+}
 
 void RecordSilhouetteDepthPass(
     mtl::PassChain &chain, const mtl::BindlessSet &slots, const Pipelines &pipelines,
@@ -2035,19 +1870,20 @@ void RecordSilhouetteDepthPass(
 
 void DrawMeshlets(
     MTL::RenderCommandEncoder *encoder, const GpuBuffers &buffers, uint32_t route,
-    uint32_t required_instance_flags, uint32_t mesh_threads, uint32_t edit_edge_corner
+    uint32_t required_instance_flags, uint32_t mesh_threads, uint32_t edit_edge_corner,
+    uint32_t instance_filter
 ) {
     DrawMeshletList(
         encoder, buffers, buffers.VisibleMeshlets, buffers.MeshletRoutes, buffers.MeshletDispatchArgs,
         route, required_instance_flags, 0u, false, false, InvalidSlot,
-        mesh_threads, edit_edge_corner
+        mesh_threads, edit_edge_corner, instance_filter
     );
 }
 
-void RecordRenderCommandBuffer(entt::registry &r, entt::entity viewport, MTL::CommandBuffer *command_buffer, DrawListUse use, RenderPhase phase) {
+void RecordRenderCommandBuffer(entt::registry &r, entt::entity viewport, MTL::CommandBuffer *command_buffer, SceneUpdate update, RenderPhase phase) {
     profile::BeginRecording();
     mtl::PassChain chain{command_buffer, profile::RecordingTimer()};
-    RecordPhase(r, viewport, chain, use, phase, 0, r.get<const PlaybackFrame>(viewport).Value);
+    RecordPhase(r, viewport, chain, update, phase, 0, r.get<const PlaybackFrame>(viewport).Value);
     profile::EndRecording();
 }
 
@@ -2056,9 +1892,9 @@ void RecordBlurStepsCommandBuffer(entt::registry &r, entt::entity viewport, MTL:
     profile::BeginRecording();
     mtl::PassChain chain{command_buffer, profile::RecordingTimer()};
     for (uint32_t i = 0; i < step_frames.size(); ++i) {
-        RecordPhase(r, viewport, chain, i == 0 ? DrawListUse::Rebuild : DrawListUse::Reuse, i == 0 ? RenderPhase::BlurAccumulateFirst : RenderPhase::BlurAccumulate, buffers.SceneViewUboOffset(i + 1), step_frames[i]);
+        RecordPhase(r, viewport, chain, i == 0 ? SceneUpdate::Rebuild : SceneUpdate::Reuse, i == 0 ? RenderPhase::BlurAccumulateFirst : RenderPhase::BlurAccumulate, buffers.SceneViewUboOffset(i + 1), step_frames[i]);
     }
-    RecordPhase(r, viewport, chain, DrawListUse::Reuse, RenderPhase::BlurResolve, 0, r.get<const PlaybackFrame>(viewport).Value);
+    RecordPhase(r, viewport, chain, SceneUpdate::Reuse, RenderPhase::BlurResolve, 0, r.get<const PlaybackFrame>(viewport).Value);
     profile::EndRecording();
 }
 
@@ -2097,7 +1933,7 @@ void SubmitNormalDeriveNow(entt::registry &r, std::span<const NormalDeriveEntry>
     encoder->endEncoding();
     command_buffer->commit();
     command_buffer->waitUntilCompleted();
-    // The one-shot rewrote the per-frame derive entry and tile buffers, so the next submit rebuilds the draw list.
+    // The one-shot rewrote per-frame derive inputs, so the next submit refreshes persistent scene descriptors.
     r.ctx().get<PendingRenderRequest>().Value = RenderRequest::Rebuild;
 }
 } // namespace
@@ -2218,7 +2054,7 @@ void FinalizeNewMeshShadingNow(entt::registry &r, std::span<const entt::entity> 
 std::vector<entt::entity> CommitPosedGeometry(
     entt::registry &r, std::span<const entt::entity> mesh_entities
 ) {
-    const auto &posed_by_entity = r.ctx().get<const DrawState>().PosedByEntity;
+    const auto &posed_by_entity = r.ctx().get<const GpuSceneState>().PosedByEntity;
     auto &meshes = r.ctx().get<MeshStore>();
     auto &buffers = r.ctx().get<GpuBuffers>();
     std::vector<std::pair<entt::entity, CommitPosedGeometryPushConstants>> commits;

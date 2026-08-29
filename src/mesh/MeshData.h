@@ -3,6 +3,7 @@
 #include "numeric/vec3.h"
 
 #include <span>
+#include <vector>
 
 struct MeshData {
     MeshData() = default;
