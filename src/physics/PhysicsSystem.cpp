@@ -38,6 +38,7 @@
 #include "Jolt/RegisterTypes.h"
 
 #include <algorithm>
+#include <bit>
 #include <iostream>
 #include <mutex>
 #include <ranges>
@@ -50,8 +51,8 @@ using namespace JPH::literals;
 namespace {
 inline Vec3 ToJolt(vec3 v) { return {v.x, v.y, v.z}; }
 inline vec3 FromJolt(RVec3 v) { return {v.GetX(), v.GetY(), v.GetZ()}; }
-inline Quat ToJolt(quat q) { return {q.x, q.y, q.z, q.w}; }
-inline quat FromJolt(Quat q) { return {q.GetW(), q.GetX(), q.GetY(), q.GetZ()}; }
+inline Quat ToJolt(quat q) { return std::bit_cast<Quat>(q); }
+inline quat FromJolt(Quat q) { return std::bit_cast<quat>(q); }
 
 inline bool HasNonUnitScale(const Transform &t) { return t.S.x != 1 || t.S.y != 1 || t.S.z != 1; }
 

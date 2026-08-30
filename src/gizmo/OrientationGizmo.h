@@ -5,6 +5,8 @@
 
 #include "ui/AxisColors.h"
 
+#include <bit>
+
 namespace OrientationGizmo {
 // Radii are relative to rect size.
 static constexpr float CircleRad = .095f, HoverCircleRad = .5f;
@@ -109,7 +111,7 @@ void Render(const colors::AxesArray &Axes) {
     const auto size = Ctx.Size;
 
     if (Ctx.Hovered || Ctx.DragEndPos) {
-        dl.AddCircleFilled({center.x, center.y}, size * HoverCircleRad, IM_COL32(120, 120, 120, 130));
+        dl.AddCircleFilled(std::bit_cast<ImVec2>(center), size * HoverCircleRad, IM_COL32(120, 120, 120, 130));
     }
 
     // Draw back to front

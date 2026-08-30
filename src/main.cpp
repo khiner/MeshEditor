@@ -58,6 +58,7 @@
 #include <entt/entity/registry.hpp>
 
 #include <array>
+#include <bit>
 #include <chrono>
 #include <csignal>
 #include <cstdlib>
@@ -885,7 +886,7 @@ void run(const char *initial_file, bool quiet, bool empty, const CaptureRequest 
     SetupScene(r, viewport); // Before the first frame reads viewport state.
     // Capture the DPI scale (only set during NewFrame) before priming DPI-scaled GPU state like edge-line width.
     window.NewImGuiFrame();
-    r.ctx().get<FrameState>().DisplayFramebufferScale = {io.DisplayFramebufferScale.x, io.DisplayFramebufferScale.y};
+    r.ctx().get<FrameState>().DisplayFramebufferScale = std::bit_cast<vec2>(io.DisplayFramebufferScale);
     ProcessComponentEvents(r, viewport); // Prime derived state before the first frame reads it.
 
     auto &audio_device = r.ctx().emplace<AudioDeviceResource>(r, viewport);

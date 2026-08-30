@@ -39,19 +39,14 @@ inline mat3 FromSimd(simd_float3x3 m) {
 }
 } // namespace numeric::detail
 
-inline mat3 operator*(mat3 a, mat3 b) {
-    vec3 c0 = a[0] * b[0].x;
-    c0 += a[1] * b[0].y;
-    c0 += a[2] * b[0].z;
-    vec3 c1 = a[0] * b[1].x;
-    c1 += a[1] * b[1].y;
-    c1 += a[2] * b[1].z;
-    vec3 c2 = a[0] * b[2].x;
-    c2 += a[1] * b[2].y;
-    c2 += a[2] * b[2].z;
-    return {c0, c1, c2};
+inline vec3 operator*(mat3 a, vec3 b) {
+    return {
+        std::fma(a[0].x, b.x, a[1].x * b.y) + a[2].x * b.z,
+        std::fma(a[0].y, b.x, a[1].y * b.y) + a[2].y * b.z,
+        std::fma(a[0].z, b.x, a[1].z * b.y) + a[2].z * b.z,
+    };
 }
-inline vec3 operator*(mat3 a, vec3 b) { return a[0] * b.x + a[1] * b.y + a[2] * b.z; }
+inline mat3 operator*(mat3 a, mat3 b) { return {a * b[0], a * b[1], a * b[2]}; }
 
 namespace numeric {
 using ::mat3;
@@ -60,20 +55,7 @@ inline mat3 Transpose(mat3 m) { return detail::FromSimd(simd_transpose(detail::T
 inline float Determinant(mat3 m) {
     return m[0][0] * (m[1][1] * m[2][2] - m[2][1] * m[1][2]) - m[1][0] * (m[0][1] * m[2][2] - m[2][1] * m[0][2]) + m[2][0] * (m[0][1] * m[1][2] - m[1][1] * m[0][2]);
 }
-inline mat3 Inverse(mat3 m) {
-    const float inverse_determinant = 1.f / Determinant(m);
-    mat3 inverse;
-    inverse[0][0] = m[1][1] * m[2][2] - m[2][1] * m[1][2];
-    inverse[1][0] = -(m[1][0] * m[2][2] - m[2][0] * m[1][2]);
-    inverse[2][0] = m[1][0] * m[2][1] - m[2][0] * m[1][1];
-    inverse[0][1] = -(m[0][1] * m[2][2] - m[2][1] * m[0][2]);
-    inverse[1][1] = m[0][0] * m[2][2] - m[2][0] * m[0][2];
-    inverse[2][1] = -(m[0][0] * m[2][1] - m[2][0] * m[0][1]);
-    inverse[0][2] = m[0][1] * m[1][2] - m[1][1] * m[0][2];
-    inverse[1][2] = -(m[0][0] * m[1][2] - m[1][0] * m[0][2]);
-    inverse[2][2] = m[0][0] * m[1][1] - m[1][0] * m[0][1];
-    return inverse * inverse_determinant;
-}
+inline mat3 Inverse(mat3 m) { return detail::FromSimd(simd_inverse(detail::ToSimd(m))); }
 inline mat3 ToMat3(quat q) {
     const float qxx = q.x * q.x, qyy = q.y * q.y, qzz = q.z * q.z;
     const float qxz = q.x * q.z, qxy = q.x * q.y, qyz = q.y * q.z;

@@ -35,29 +35,9 @@ inline simd_float4x4 ToSimd(mat4 m) { return std::bit_cast<simd_float4x4>(m); }
 inline mat4 FromSimd(simd_float4x4 m) { return std::bit_cast<mat4>(m); }
 } // namespace numeric::detail
 
-inline mat4 operator*(mat4 a, mat4 b) {
-    vec4 c0 = a[0] * b[0].x;
-    c0 += a[1] * b[0].y;
-    c0 += a[2] * b[0].z;
-    c0 += a[3] * b[0].w;
-    vec4 c1 = a[0] * b[1].x;
-    c1 += a[1] * b[1].y;
-    c1 += a[2] * b[1].z;
-    c1 += a[3] * b[1].w;
-    vec4 c2 = a[0] * b[2].x;
-    c2 += a[1] * b[2].y;
-    c2 += a[2] * b[2].z;
-    c2 += a[3] * b[2].w;
-    vec4 c3 = a[0] * b[3].x;
-    c3 += a[1] * b[3].y;
-    c3 += a[2] * b[3].z;
-    c3 += a[3] * b[3].w;
-    return {c0, c1, c2, c3};
-}
+inline mat4 operator*(mat4 a, mat4 b) { return numeric::detail::FromSimd(simd_mul(numeric::detail::ToSimd(a), numeric::detail::ToSimd(b))); }
 inline vec4 operator*(mat4 a, vec4 b) {
-    const vec4 p01 = a[0] * b.x + a[1] * b.y;
-    const vec4 p23 = a[2] * b.z + a[3] * b.w;
-    return p01 + p23;
+    return std::bit_cast<vec4>(simd_mul(numeric::detail::ToSimd(a), std::bit_cast<simd_float4>(b)));
 }
 
 namespace numeric {
@@ -153,10 +133,8 @@ inline mat4 PerspectiveRhZo(float fovy, float aspect, float near, float far) {
     return {vec4{1.f / (aspect * tangent), 0, 0, 0}, vec4{0, 1.f / tangent, 0, 0}, vec4{0, 0, far / (near - far), -1}, vec4{0, 0, -(far * near) / (far - near), 0}};
 }
 inline mat4 InfinitePerspectiveRhZo(float fovy, float aspect, float near) {
-    const float range = __builtin_tanf(fovy / 2.f) * near;
-    const float left = -range * aspect, right = range * aspect;
-    const float bottom = -range, top = range;
-    return {vec4{2.f * near / (right - left), 0, 0, 0}, vec4{0, 2.f * near / (top - bottom), 0, 0}, vec4{0, 0, -1, -1}, vec4{0, 0, -near, 0}};
+    const float tangent = 1.f / __builtin_tanf(fovy * .5f);
+    return {vec4{tangent / aspect, 0, 0, 0}, vec4{0, tangent, 0, 0}, vec4{0, 0, -1, -1}, vec4{0, 0, -near, 0}};
 }
 inline mat4 OrthoRhZo(float left, float right, float bottom, float top, float near, float far) {
     return {vec4{2.f / (right - left), 0, 0, 0}, vec4{0, 2.f / (top - bottom), 0, 0}, vec4{0, 0, -1.f / (far - near), 0}, vec4{-(right + left) / (right - left), -(top + bottom) / (top - bottom), -near / (far - near), 1}};

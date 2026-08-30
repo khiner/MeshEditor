@@ -13,6 +13,7 @@
 
 #include "meshoptimizer.h"
 
+#include <bit>
 #include <limits>
 #include <numeric>
 
@@ -284,7 +285,7 @@ MeshletBuild BuildMeshlets(MeshletBuildInputs &in) {
             welded_indices[chunk_corner] = render_vertex;
             representative_corners.push_back(corner | (flat_face_triangles[corner / 3u] ? uint32_t(MeshletGeometryEncoding::FlatVertexBit) : 0u));
             const vec3 position = vertices[primitive_indices[corner]].Position;
-            welded_positions.push_back({position.x, position.y, position.z});
+            welded_positions.push_back(std::bit_cast<std::array<float, 3>>(position));
             return render_vertex;
         };
         std::array<uint32_t, MaxWeldKeyWords> words{};
@@ -383,7 +384,7 @@ MeshletBuild BuildMeshlets(MeshletBuildInputs &in) {
                 .LocalTriangleOffset = PackLocalTriangleOffset(chunk.TriangleIdBase * 3u + first_local_triangle, MeshPrimitiveTopology::Triangle),
                 .Primitive = primitive_record,
                 .ConeAxisCutoff = PackCone(bounds, cone_cull_safe),
-                .Center = {bounds.center[0], bounds.center[1], bounds.center[2]},
+                .Center = std::bit_cast<vec3>(bounds.center),
                 .Radius = bounds.radius,
             });
         }
@@ -414,7 +415,7 @@ MeshletBuild BuildMeshlets(MeshletBuildInputs &in) {
                                            vec3{vertices[primitive_indices[triangle * 3u + 1u]].Position} +
                                            vec3{vertices[primitive_indices[triangle * 3u + 2u]].Position}) /
                         3.f;
-                    centroids[triangle] = {centroid.x, centroid.y, centroid.z};
+                    centroids[triangle] = std::bit_cast<std::array<float, 3>>(centroid);
                 }
             });
             SplitTriangleChunks(chunk_triangles, centroids, 0u, chunks);

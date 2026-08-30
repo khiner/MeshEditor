@@ -30,6 +30,7 @@
 
 #include <entt/entity/registry.hpp>
 
+#include <bit>
 #include <cmath>
 
 namespace {
@@ -235,7 +236,7 @@ struct PixelRect {
 };
 
 std::optional<PixelRect> ObjectQueryRect(const ObjectSelectQuery &query, mtl::Extent2D target) {
-    const uvec2 limit{target.Width, target.Height};
+    const auto limit = std::bit_cast<uvec2>(target);
     uvec2 lo{}, hi{}; // Exclusive high bound.
     if (query.BoxResultSlot != InvalidSlot) {
         lo = numeric::Min(uvec2{query.Box.x, query.Box.y}, limit);

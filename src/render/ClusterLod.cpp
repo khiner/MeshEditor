@@ -107,15 +107,16 @@ uint32_t PackCone(const meshopt_Bounds &bounds, bool cone_cull_safe) {
 // A sphere and its simplification error. Center leads and radius follows, which is the layout
 // meshopt's sphere merge reads.
 struct Bounds {
-    float Center[3]{};
+    vec3 Center{};
     float Radius{};
     float Error{};
 };
+static_assert(offsetof(Bounds, Radius) == sizeof(vec3));
 
 Bounds MergeBounds(std::span<const Bounds> bounds) {
-    const auto merged = meshopt_computeSphereBounds(bounds.front().Center, bounds.size(), sizeof(Bounds), &bounds.front().Radius, sizeof(Bounds));
+    const auto merged = meshopt_computeSphereBounds(&bounds.front().Center.x, bounds.size(), sizeof(Bounds), &bounds.front().Radius, sizeof(Bounds));
     Bounds result{
-        .Center = {merged.center[0], merged.center[1], merged.center[2]},
+        .Center = std::bit_cast<vec3>(merged.center),
         .Radius = merged.radius,
         .Error = 0.f,
     };
@@ -127,8 +128,8 @@ Bounds MergeBounds(std::span<const Bounds> bounds) {
 // A run's bounds, holding every member sphere and error. The radius grows to exact containment, so a
 // node the traversal prunes covers no record whose own test would still pass.
 Bounds MergeSpanBounds(std::span<const Bounds> members) {
-    const auto merged = meshopt_computeSphereBounds(members.front().Center, members.size(), sizeof(Bounds), &members.front().Radius, sizeof(Bounds));
-    Bounds result{.Center = {merged.center[0], merged.center[1], merged.center[2]}};
+    const auto merged = meshopt_computeSphereBounds(&members.front().Center.x, members.size(), sizeof(Bounds), &members.front().Radius, sizeof(Bounds));
+    Bounds result{.Center = std::bit_cast<vec3>(merged.center)};
     for (const auto &member : members) {
         const float dx = member.Center[0] - result.Center[0];
         const float dy = member.Center[1] - result.Center[1];
@@ -347,7 +348,7 @@ std::vector<std::vector<uint32_t>> PartitionClusters(const PrimitiveWeld &weld, 
 // The sloppy simplifier reaches targets regular simplification cannot, at a cost in appearance.
 // It reads neither sparsity nor absolute error, so the group's vertices deindex into a subset first.
 struct SloppyVertex {
-    float Position[3];
+    std::array<float, 3> Position;
     uint32_t Id;
 };
 
@@ -357,15 +358,15 @@ void SimplifySloppy(std::vector<uint32_t> &lod, const PrimitiveWeld &weld, const
     lod.resize(indices.size());
     for (size_t i = 0; i < indices.size(); ++i) {
         const auto &position = weld.Positions[indices[i]];
-        subset[i] = SloppyVertex{.Position = {position[0], position[1], position[2]}, .Id = indices[i]};
+        subset[i] = SloppyVertex{.Position = position, .Id = indices[i]};
         subset_locks[i] = weld.Locks[indices[i]];
         lod[i] = uint32_t(i);
     }
     lod.resize(meshopt_simplifySloppy(
-        lod.data(), lod.data(), lod.size(), subset.front().Position, subset.size(), sizeof(SloppyVertex),
+        lod.data(), lod.data(), lod.size(), subset.front().Position.data(), subset.size(), sizeof(SloppyVertex),
         subset_locks.data(), target_count, FLT_MAX, error
     ));
-    *error *= meshopt_simplifyScale(subset.front().Position, subset.size(), sizeof(SloppyVertex));
+    *error *= meshopt_simplifyScale(subset.front().Position.data(), subset.size(), sizeof(SloppyVertex));
     for (auto &index : lod) index = subset[index].Id;
 }
 
@@ -445,7 +446,7 @@ void EmitCluster(auto &&sink, const PrimitiveWeld &weld, const WorkCluster &clus
         .TriangleCount = triangle_count,
         .Primitive = primitive,
         .ConeAxisCutoff = PackCone(bounds, cluster.ConeSafe),
-        .Center = {bounds.center[0], bounds.center[1], bounds.center[2]},
+        .Center = std::bit_cast<vec3>(bounds.center),
         .Radius = bounds.radius,
         .GroupIndex = group,
         .RefinedGroup = cluster.Refined,
@@ -519,8 +520,8 @@ void CollectSpanRecords(
     const auto &source = mesh.Primitives[primitive];
     const auto &range = build.PrimitiveRanges[primitive];
     const auto push = [&](const vec3 &center, float radius, const ClusterLodGroup &group) {
-        records.push_back({.Center = {center.x, center.y, center.z}, .Radius = radius, .Error = group.Error});
-        records.push_back({.Center = {group.Center.x, group.Center.y, group.Center.z}, .Radius = group.Radius, .Error = group.Error});
+        records.push_back({.Center = center, .Radius = radius, .Error = group.Error});
+        records.push_back({.Center = group.Center, .Radius = group.Radius, .Error = group.Error});
     };
     for (uint32_t k = 0; k < source.ClusterCount; ++k) {
         const auto &cluster = mesh.Clusters[source.FirstCluster + k];
@@ -561,7 +562,7 @@ void BuildSpanTree(
         const auto bounds = MergeSpanBounds(std::span{records}.subspan(size_t{i} * 2u, size_t{span} * 2u));
         row.push_back(uint32_t(build.Nodes.size()));
         build.Nodes.push_back(LodNode{
-            .Center = {bounds.Center[0], bounds.Center[1], bounds.Center[2]},
+            .Center = bounds.Center,
             .Radius = bounds.Radius,
             .Error = bounds.Error,
             .FirstMeshlet = first_record + i,
@@ -578,14 +579,14 @@ void BuildSpanTree(
             children.clear();
             for (uint32_t c = 0; c < span; ++c) {
                 const auto &child = build.Nodes[row[i + c]];
-                children.push_back({.Center = {child.Center.x, child.Center.y, child.Center.z}, .Radius = child.Radius, .Error = child.Error});
+                children.push_back({.Center = child.Center, .Radius = child.Radius, .Error = child.Error});
             }
             const auto bounds = MergeSpanBounds(children);
             const auto &first = build.Nodes[row[i]];
             const auto &last = build.Nodes[row[i + span - 1]];
             next.push_back(uint32_t(build.Nodes.size()));
             build.Nodes.push_back(LodNode{
-                .Center = {bounds.Center[0], bounds.Center[1], bounds.Center[2]},
+                .Center = bounds.Center,
                 .Radius = bounds.Radius,
                 .Error = bounds.Error,
                 .FirstMeshlet = first.FirstMeshlet,
@@ -659,7 +660,7 @@ ClusterLodBuild BuildClusterLod(const ClusterLodMesh &mesh, bool serial) {
                 cluster.LocalTriangles[c] = local;
             }
             cluster.Sphere = Bounds{
-                .Center = {source.Center.x, source.Center.y, source.Center.z},
+                .Center = source.Center,
                 .Radius = source.Radius,
                 .Error = 0.f,
             };
@@ -704,7 +705,7 @@ ClusterLodBuild BuildClusterLod(const ClusterLodMesh &mesh, bool serial) {
                     cluster.LocalTriangleOffset += local_triangle_base;
                 }
                 build.Groups.push_back(ClusterLodGroup{
-                    .Center = {group_scratch.Sphere.Center[0], group_scratch.Sphere.Center[1], group_scratch.Sphere.Center[2]},
+                    .Center = group_scratch.Sphere.Center,
                     .Radius = group_scratch.Sphere.Radius,
                     .Error = group_scratch.Sphere.Error,
                     .FirstCluster = uint32_t(build.GroupClusters.size()),
@@ -754,7 +755,7 @@ ClusterLodBuild BuildClusterLod(const ClusterLodMesh &mesh, bool serial) {
             const auto &cluster = clusters[pending.front()];
             const uint32_t group = uint32_t(build.Groups.size());
             build.Groups.push_back(ClusterLodGroup{
-                .Center = {cluster.Sphere.Center[0], cluster.Sphere.Center[1], cluster.Sphere.Center[2]},
+                .Center = cluster.Sphere.Center,
                 .Radius = cluster.Sphere.Radius,
                 .Error = FLT_MAX,
                 .FirstCluster = uint32_t(build.GroupClusters.size()),

@@ -42,6 +42,7 @@
 #include <fastgltf/core.hpp>
 #include <simdjson.h>
 
+#include <bit>
 #include <map>
 #include <numbers>
 #include <numeric>
@@ -212,10 +213,10 @@ MimeType SniffMimeType(std::span<const std::byte> bytes) {
 
 MaterialAlphaMode ToAlphaMode(fastgltf::AlphaMode m) { return MapEnum(AlphaModeMap, m, MaterialAlphaMode::Opaque); }
 
-vec2 ToVec2(const fastgltf::math::nvec2 &v) { return {v.x(), v.y()}; }
-vec3 ToVec3(const fastgltf::math::nvec3 &v) { return {v.x(), v.y(), v.z()}; }
-vec4 ToVec4(const fastgltf::math::nvec4 &v) { return {v.x(), v.y(), v.z(), v.w()}; }
-quat ToQuat(const fastgltf::math::fquat &q) { return {q.w(), q.x(), q.y(), q.z()}; }
+vec2 ToVec2(const fastgltf::math::nvec2 &v) { return std::bit_cast<vec2>(v); }
+vec3 ToVec3(const fastgltf::math::nvec3 &v) { return std::bit_cast<vec3>(v); }
+vec4 ToVec4(const fastgltf::math::nvec4 &v) { return std::bit_cast<vec4>(v); }
+quat ToQuat(const fastgltf::math::fquat &q) { return std::bit_cast<quat>(q); }
 Transform TrsToTransform(const fastgltf::TRS &trs) { return {.P = ToVec3(trs.translation), .R = numeric::Normalize(ToQuat(trs.rotation)), .S = ToVec3(trs.scale)}; }
 
 // Slot = glTF texture index (resolved to a bindless slot later in Scene.cpp). Pass `meta` for
@@ -1123,7 +1124,7 @@ std::vector<Transform> ReadInstanceTransforms(const fastgltf::Asset &asset, cons
     if (r_attr != node.instancingAttributes.end()) {
         const auto &accessor = asset.accessors[r_attr->accessorIndex];
         fastgltf::iterateAccessorWithIndex<vec4>(asset, accessor, [&](const vec4 &v, auto i) {
-            transforms[i].R = numeric::Normalize(quat{v.w, v.x, v.y, v.z});
+            transforms[i].R = numeric::Normalize(std::bit_cast<quat>(v));
         });
     }
     if (s_attr != node.instancingAttributes.end()) {
@@ -1255,8 +1256,8 @@ std::unique_ptr<fastgltf::TextureTransform> MakeTextureTransform(const ::Texture
     if (!has_transform && !source_had_ext) return nullptr;
     auto t = std::make_unique<fastgltf::TextureTransform>();
     t->rotation = ti.UvRotation;
-    t->uvOffset = {ti.UvOffset.x, ti.UvOffset.y};
-    t->uvScale = {ti.UvScale.x, ti.UvScale.y};
+    t->uvOffset = std::bit_cast<fastgltf::math::nvec2>(ti.UvOffset);
+    t->uvScale = std::bit_cast<fastgltf::math::nvec2>(ti.UvScale);
     if (meta && meta->SourceTexCoordOverride) t->texCoordIndex = *meta->SourceTexCoordOverride;
     return t;
 }
@@ -1316,7 +1317,7 @@ std::optional<ImageBasedLight> ConvertIBL(const fastgltf::Asset &asset, size_t s
     if (!ibl_idx) return std::nullopt;
     const auto &src_ibl = asset.imageBasedLights[*ibl_idx];
     ImageBasedLight ibl{
-        .Rotation = numeric::Normalize(quat{src_ibl.rotation[3], src_ibl.rotation[0], src_ibl.rotation[1], src_ibl.rotation[2]}),
+        .Rotation = numeric::Normalize(std::bit_cast<quat>(src_ibl.rotation)),
         .SpecularImageSize = src_ibl.specularImageSize,
         .Intensity = std::max(0.f, src_ibl.intensity),
         .Name = src_ibl.name.empty() ? std::format("ImageBasedLight{}", *ibl_idx) : std::string{src_ibl.name},
@@ -1330,7 +1331,7 @@ std::optional<ImageBasedLight> ConvertIBL(const fastgltf::Asset &asset, size_t s
     if (src_ibl.irradianceCoefficients) {
         std::array<vec3, 9> coefficients{};
         for (size_t i = 0; i < 9; ++i) {
-            coefficients[i] = {(*src_ibl.irradianceCoefficients)[i][0], (*src_ibl.irradianceCoefficients)[i][1], (*src_ibl.irradianceCoefficients)[i][2]};
+            coefficients[i] = std::bit_cast<vec3>((*src_ibl.irradianceCoefficients)[i]);
         }
         ibl.IrradianceCoefficients = coefficients;
     }
@@ -1343,7 +1344,7 @@ fastgltf::Light ConvertLightToFg(const PunctualLight &pl, std::string_view name)
     const bool is_spot = type == fastgltf::LightType::Spot;
     return fastgltf::Light{
         .type = type,
-        .color = {pl.Color.x, pl.Color.y, pl.Color.z},
+        .color = std::bit_cast<fastgltf::math::nvec3>(pl.Color),
         .intensity = pl.Intensity,
         .range = (type != fastgltf::LightType::Directional && pl.Range > 0) ? fastgltf::Optional<fastgltf::num>{pl.Range} : fastgltf::Optional<fastgltf::num>{},
         .innerConeAngle = is_spot ? fastgltf::Optional<fastgltf::num>{std::acos(std::clamp(pl.InnerConeCos, -1.f, 1.f))} : fastgltf::Optional<fastgltf::num>{},
@@ -1606,10 +1607,7 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
             local_transforms[node_index] = TrsToTransform(std::get<fastgltf::TRS>(fg_transform));
         } else {
             const auto &fm = std::get<fastgltf::math::fmat4x4>(fg_transform);
-            mat4 m{};
-            for (size_t c = 0; c < 4; ++c) {
-                for (size_t r = 0; r < 4; ++r) m[c][r] = fm[c][r];
-            }
+            const mat4 m = std::bit_cast<mat4>(fm);
             source_matrices[node_index] = m;
 
             fastgltf::math::fvec3 scale, translation;
@@ -1780,8 +1778,7 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
             auto &node = source_node_physics[node_index];
             if (rb->motion) {
                 const auto com = ToVec3(rb->motion->centerOfMass);
-                // glTF quat: [x,y,z,w]
-                const auto inertia_orientation = rb->motion->inertialOrientation ? std::optional{[&] { const auto q = ToVec4(*rb->motion->inertialOrientation); return quat{q.w, q.x, q.y, q.z}; }()} : std::nullopt;
+                const auto inertia_orientation = rb->motion->inertialOrientation ? std::optional{std::bit_cast<quat>(*rb->motion->inertialOrientation)} : std::nullopt;
                 node.Motion = PhysicsMotion{
                     .IsKinematic = rb->motion->isKinematic,
                     .Mass = rb->motion->mass ? std::optional{float(*rb->motion->mass)} : std::nullopt,
@@ -2630,7 +2627,7 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
                         .Mass = mp->mass,
                         .CenterOfMass = ToVec3(mp->centerOfMass),
                         .InertiaDiagonal = ToVec3(mp->inertiaDiagonal),
-                        .InertiaOrientation = quat(q[3], q[0], q[1], q[2]),
+                        .InertiaOrientation = std::bit_cast<quat>(q),
                     }
                 );
                 // A dynamic rigid body is authoritative for contact dynamics (see UpdateContactDynamics), so its
@@ -2638,7 +2635,7 @@ std::expected<LoadResult, std::string> LoadGltf(const std::filesystem::path &sou
                 // The node's scale sizes the model, so the mass it implies at this size is the solved mass times scale cubed.
                 if (const auto *motion = r.try_get<const PhysicsMotion>(entity); motion && IsAuthoritativeDynamicBody(*motion)) {
                     const auto *trs = std::get_if<fastgltf::TRS>(&source_node.transform);
-                    const float node_scale = trs ? MeanScale({trs->scale[0], trs->scale[1], trs->scale[2]}) : 1.f;
+                    const float node_scale = trs ? MeanScale(std::bit_cast<vec3>(trs->scale)) : 1.f;
                     const float sized_mass = float(mp->mass) * node_scale * node_scale * node_scale;
                     const float body_mass = motion->Mass.value_or(DefaultMass);
                     if (std::abs(body_mass - sized_mass) > 1e-3f * std::max(body_mass, sized_mass)) {
@@ -3750,7 +3747,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
 
         fastgltf::Material out;
         out.name = ToFgStr(name);
-        out.pbrData.baseColorFactor = {pbr.BaseColorFactor.x, pbr.BaseColorFactor.y, pbr.BaseColorFactor.z, pbr.BaseColorFactor.w};
+        out.pbrData.baseColorFactor = std::bit_cast<fastgltf::math::nvec4>(pbr.BaseColorFactor);
         out.pbrData.metallicFactor = pbr.MetallicFactor;
         out.pbrData.roughnessFactor = pbr.RoughnessFactor;
         out.pbrData.baseColorTexture = ToFgTexInfo(pbr.BaseColorTexture, &meta.BaseSlotMeta[0]);
@@ -3758,7 +3755,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         out.normalTexture = ToFgNormalTexInfo(pbr.NormalTexture, pbr.NormalScale, &meta.BaseSlotMeta[2]);
         out.occlusionTexture = ToFgOcclusionTexInfo(pbr.OcclusionTexture, pbr.OcclusionStrength, &meta.BaseSlotMeta[3]);
         out.emissiveTexture = ToFgTexInfo(pbr.EmissiveTexture, &meta.BaseSlotMeta[4]);
-        out.emissiveFactor = {emissive_factor.x, emissive_factor.y, emissive_factor.z};
+        out.emissiveFactor = std::bit_cast<fastgltf::math::nvec3>(emissive_factor);
         if (bits & M::ExtEmissiveStrength) out.emissiveStrength = fastgltf::Optional<fastgltf::num>{meta.EmissiveStrength.value_or(1.f)};
         out.alphaMode = FromAlphaMode(pbr.AlphaMode);
         out.alphaCutoff = pbr.AlphaCutoff;
@@ -3769,7 +3766,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
 
         if (bits & M::ExtSheen) {
             out.sheen = std::make_unique<fastgltf::MaterialSheen>();
-            out.sheen->sheenColorFactor = {pbr.Sheen.ColorFactor.x, pbr.Sheen.ColorFactor.y, pbr.Sheen.ColorFactor.z};
+            out.sheen->sheenColorFactor = std::bit_cast<fastgltf::math::nvec3>(pbr.Sheen.ColorFactor);
             out.sheen->sheenRoughnessFactor = pbr.Sheen.RoughnessFactor;
             out.sheen->sheenColorTexture = ToFgTexInfo(pbr.Sheen.ColorTexture);
             out.sheen->sheenRoughnessTexture = ToFgTexInfo(pbr.Sheen.RoughnessTexture);
@@ -3777,7 +3774,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         if (bits & M::ExtSpecular) {
             out.specular = std::make_unique<fastgltf::MaterialSpecular>();
             out.specular->specularFactor = pbr.Specular.Factor;
-            out.specular->specularColorFactor = {pbr.Specular.ColorFactor.x, pbr.Specular.ColorFactor.y, pbr.Specular.ColorFactor.z};
+            out.specular->specularColorFactor = std::bit_cast<fastgltf::math::nvec3>(pbr.Specular.ColorFactor);
             out.specular->specularTexture = ToFgTexInfo(pbr.Specular.Texture);
             out.specular->specularColorTexture = ToFgTexInfo(pbr.Specular.ColorTexture);
         }
@@ -3789,14 +3786,14 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         if (bits & M::ExtDiffuseTransmission) {
             out.diffuseTransmission = std::make_unique<fastgltf::MaterialDiffuseTransmission>();
             out.diffuseTransmission->diffuseTransmissionFactor = pbr.DiffuseTransmission.Factor;
-            out.diffuseTransmission->diffuseTransmissionColorFactor = {pbr.DiffuseTransmission.ColorFactor.x, pbr.DiffuseTransmission.ColorFactor.y, pbr.DiffuseTransmission.ColorFactor.z};
+            out.diffuseTransmission->diffuseTransmissionColorFactor = std::bit_cast<fastgltf::math::nvec3>(pbr.DiffuseTransmission.ColorFactor);
             out.diffuseTransmission->diffuseTransmissionTexture = ToFgTexInfo(pbr.DiffuseTransmission.Texture);
             out.diffuseTransmission->diffuseTransmissionColorTexture = ToFgTexInfo(pbr.DiffuseTransmission.ColorTexture);
         }
         if (bits & M::ExtVolume) {
             out.volume = std::make_unique<fastgltf::MaterialVolume>();
             out.volume->thicknessFactor = pbr.Volume.ThicknessFactor;
-            out.volume->attenuationColor = {pbr.Volume.AttenuationColor.x, pbr.Volume.AttenuationColor.y, pbr.Volume.AttenuationColor.z};
+            out.volume->attenuationColor = std::bit_cast<fastgltf::math::nvec3>(pbr.Volume.AttenuationColor);
             out.volume->attenuationDistance = pbr.Volume.AttenuationDistance > 0.f ? pbr.Volume.AttenuationDistance : std::numeric_limits<float>::infinity();
             out.volume->thicknessTexture = ToFgTexInfo(pbr.Volume.ThicknessTexture);
         }
@@ -4194,7 +4191,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         return std::visit(
             overloaded{
                 [](const physics::Box &b) -> std::optional<fastgltf::Shape> {
-                    return fastgltf::BoxShape{.size = {b.Size.x, b.Size.y, b.Size.z}};
+                    return fastgltf::BoxShape{.size = std::bit_cast<fastgltf::math::fvec3>(b.Size)};
                 },
                 [](const physics::Sphere &s) -> std::optional<fastgltf::Shape> {
                     return fastgltf::SphereShape{.radius = s.Radius};
@@ -4336,7 +4333,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             uses_physics_rigid_bodies = true;
             fastgltf::Node node{};
             node.children = std::move(children);
-            node.transform = fastgltf::TRS{.translation = {cs.LocalOffset.x, cs.LocalOffset.y, cs.LocalOffset.z}};
+            node.transform = fastgltf::TRS{.translation = std::bit_cast<fastgltf::math::fvec3>(cs.LocalOffset)};
             node.physicsRigidBody = std::move(rb);
             asset.nodes.emplace_back(std::move(node));
             continue;
@@ -4404,7 +4401,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             for (uint32_t i = 0; i < count; ++i) {
                 const Transform local = ToTransform(node_world_inv * ToMatrix(instance_worlds[i]));
                 translations[i] = local.P;
-                rotations[i] = {local.R.x, local.R.y, local.R.z, local.R.w};
+                rotations[i] = std::bit_cast<vec4>(local.R);
                 scales[i] = local.S;
                 if (local.P != vec3{0.f}) any_t = true;
                 if (local.R != quat{1, 0, 0, 0}) any_r = true;
@@ -4446,17 +4443,17 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
                 fastgltf::Motion fg_motion{};
                 fg_motion.isKinematic = motion->IsKinematic;
                 if (motion->Mass) fg_motion.mass = fastgltf::Optional<fastgltf::num>{*motion->Mass};
-                if (motion->CenterOfMass) fg_motion.centerOfMass = {motion->CenterOfMass->x, motion->CenterOfMass->y, motion->CenterOfMass->z};
+                if (motion->CenterOfMass) fg_motion.centerOfMass = std::bit_cast<fastgltf::math::fvec3>(*motion->CenterOfMass);
                 if (motion->InertiaDiagonal) {
-                    fg_motion.inertialDiagonal = fastgltf::Optional<fastgltf::math::fvec3>{fastgltf::math::fvec3{motion->InertiaDiagonal->x, motion->InertiaDiagonal->y, motion->InertiaDiagonal->z}};
+                    fg_motion.inertialDiagonal = fastgltf::Optional<fastgltf::math::fvec3>{std::bit_cast<fastgltf::math::fvec3>(*motion->InertiaDiagonal)};
                 }
                 if (motion->InertiaOrientation) {
-                    fg_motion.inertialOrientation = fastgltf::Optional<fastgltf::math::fvec4>{fastgltf::math::fvec4{motion->InertiaOrientation->x, motion->InertiaOrientation->y, motion->InertiaOrientation->z, motion->InertiaOrientation->w}};
+                    fg_motion.inertialOrientation = fastgltf::Optional<fastgltf::math::fvec4>{std::bit_cast<fastgltf::math::fvec4>(*motion->InertiaOrientation)};
                 }
                 fg_motion.gravityFactor = motion->GravityFactor;
                 if (velocity) {
-                    fg_motion.linearVelocity = {velocity->Linear.x, velocity->Linear.y, velocity->Linear.z};
-                    fg_motion.angularVelocity = {velocity->Angular.x, velocity->Angular.y, velocity->Angular.z};
+                    fg_motion.linearVelocity = std::bit_cast<fastgltf::math::fvec3>(velocity->Linear);
+                    fg_motion.angularVelocity = std::bit_cast<fastgltf::math::fvec3>(velocity->Angular);
                 }
                 physics_rigid_body->motion = fastgltf::Optional<fastgltf::Motion>{std::move(fg_motion)};
             }
@@ -4485,16 +4482,12 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
         const auto *source_matrix = r.try_get<const SourceMatrixTransform>(entity);
         const auto fg_transform = [&]() -> std::variant<fastgltf::TRS, fastgltf::math::fmat4x4> {
             if (source_matrix) {
-                fastgltf::math::fmat4x4 out;
-                for (size_t c = 0; c < 4; ++c) {
-                    for (size_t r2 = 0; r2 < 4; ++r2) out[c][r2] = source_matrix->Value[c][r2];
-                }
-                return out;
+                return std::bit_cast<fastgltf::math::fmat4x4>(source_matrix->Value);
             }
             return fastgltf::TRS{
-                .translation = {local_transform.P.x, local_transform.P.y, local_transform.P.z},
-                .rotation = fastgltf::math::fquat(local_transform.R.x, local_transform.R.y, local_transform.R.z, local_transform.R.w),
-                .scale = {local_transform.S.x, local_transform.S.y, local_transform.S.z},
+                .translation = std::bit_cast<fastgltf::math::fvec3>(local_transform.P),
+                .rotation = std::bit_cast<fastgltf::math::fquat>(local_transform.R),
+                .scale = std::bit_cast<fastgltf::math::fvec3>(local_transform.S),
             };
         }();
 
@@ -4576,9 +4569,9 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
                 const vec3 inertia = mp->InertiaDiagonal * float(rho_ratio);
                 model.massProperties = fastgltf::ModalMassProperties{
                     .mass = fastgltf::num(mp->Mass * rho_ratio),
-                    .centerOfMass = {mp->CenterOfMass.x, mp->CenterOfMass.y, mp->CenterOfMass.z},
-                    .inertiaDiagonal = {inertia.x, inertia.y, inertia.z},
-                    .inertiaOrientation = {q.x, q.y, q.z, q.w},
+                    .centerOfMass = std::bit_cast<fastgltf::math::fvec3>(mp->CenterOfMass),
+                    .inertiaDiagonal = std::bit_cast<fastgltf::math::fvec3>(inertia),
+                    .inertiaOrientation = std::bit_cast<fastgltf::math::fvec4>(q),
                 };
             }
 
@@ -4640,7 +4633,7 @@ std::expected<void, std::string> SaveGltf(const std::filesystem::path &path, con
             std::array<fastgltf::math::fvec3, 9> coeffs{};
             for (size_t i = 0; i < 9; ++i) {
                 const auto &c = (*src_ibl.IrradianceCoefficients)[i];
-                coeffs[i] = {c.x, c.y, c.z};
+                coeffs[i] = std::bit_cast<fastgltf::math::fvec3>(c);
             }
             ibl.irradianceCoefficients = coeffs;
         }

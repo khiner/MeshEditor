@@ -61,6 +61,7 @@
 #include "viewport/ViewportOps.h"
 #include "viewport/ViewportRenderGpu.h"
 
+#include <bit>
 #include <iostream>
 #include <numeric>
 #include <print>
@@ -560,7 +561,7 @@ SyncResult SyncModelsBuffers(entt::registry &r) {
 bool SyncViewportRenderResources(entt::registry &r, entt::entity viewport) {
     auto &pipelines = r.ctx().get<Pipelines>();
     const auto render_extent_px = RenderExtentPx(r);
-    const mtl::Extent2D render_extent{render_extent_px.x, render_extent_px.y};
+    const auto render_extent = std::bit_cast<mtl::Extent2D>(render_extent_px);
     if (render_extent.Width == 0 || render_extent.Height == 0) return false;
     if (pipelines.BuiltColorExtent() == render_extent) return false;
 
@@ -1782,7 +1783,7 @@ void ProcessComponentEvents(entt::registry &r, entt::entity viewport) {
                     )) request(RenderRequest::Rebuild);
                 const bool want_transmission = active_lighting.RealTransmission && HasFeature(pbr_mask, PbrFeature::Transmission);
                 const auto te_px = RenderExtentPx(r);
-                if (pipelines.Main.EnsureTransmissionResources(ctx, {te_px.x, te_px.y}, want_transmission)) refresh_transmission_sampler();
+                if (pipelines.Main.EnsureTransmissionResources(ctx, std::bit_cast<mtl::Extent2D>(te_px), want_transmission)) refresh_transmission_sampler();
             } else if (pipelines.Main.EnsureTransmissionResources(ctx, {}, false)) {
                 refresh_transmission_sampler();
             }

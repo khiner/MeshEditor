@@ -102,19 +102,21 @@ template<typename T>
     requires std::is_arithmetic_v<T>
 constexpr T Max(T a, T b) { return a > b ? a : b; }
 template<detail::Vector V> constexpr typename V::value_type Dot(V a, V b) {
-    const V products = a * b;
-    if constexpr (V::ComponentCount == 4) return (products[0] + products[1]) + (products[2] + products[3]);
-    else {
-        typename V::value_type result{};
-        for (size_t i = 0; i < V::ComponentCount; ++i) result += products[i];
-        return result;
+    if constexpr (detail::FloatingVector<V>) {
+        if constexpr (V::ComponentCount == 2) return std::fma(a[0], b[0], a[1] * b[1]);
+        if constexpr (V::ComponentCount == 3) return std::fma(a[0], b[0], std::fma(a[1], b[1], a[2] * b[2]));
+        if constexpr (V::ComponentCount == 4) return std::fma(a[0], b[0], a[1] * b[1]) + std::fma(a[2], b[2], a[3] * b[3]);
     }
+    const V products = a * b;
+    typename V::value_type result{};
+    for (size_t i = 0; i < V::ComponentCount; ++i) result += products[i];
+    return result;
 }
 template<detail::FloatingVector V> inline typename V::value_type Length(V v) {
     if constexpr (std::same_as<typename V::value_type, float>) return __builtin_sqrtf(Dot(v, v));
     else return __builtin_sqrt(Dot(v, v));
 }
-template<detail::FloatingVector V> inline V Normalize(V v) { return v * (typename V::value_type{1} / Length(v)); }
+template<detail::FloatingVector V> inline V Normalize(V v) { return v / Length(v); }
 template<detail::Vector V> constexpr V Min(V a, V b) {
     for (size_t i = 0; i < V::ComponentCount; ++i) a[i] = Min(a[i], b[i]);
     return a;

@@ -2,6 +2,7 @@
 
 #include "numeric/vec4.h"
 
+#include <bit>
 #include <limits>
 #include <numbers>
 
@@ -11,10 +12,11 @@ struct quat {
     constexpr quat(float real, float imag_x, float imag_y, float imag_z) : x(imag_x), y(imag_y), z(imag_z), w(real) {}
     constexpr quat(float real, vec3 imaginary) : x(imaginary.x), y(imaginary.y), z(imaginary.z), w(real) {}
     explicit quat(vec3 euler_xyz);
-    explicit constexpr quat(vec4 xyzw) : x(xyzw.x), y(xyzw.y), z(xyzw.z), w(xyzw.w) {}
+    explicit constexpr quat(vec4 xyzw);
     constexpr float &operator[](size_t i) { return (&x)[i]; }
     constexpr const float &operator[](size_t i) const { return (&x)[i]; }
 };
+constexpr quat::quat(vec4 xyzw) { *this = std::bit_cast<quat>(xyzw); }
 constexpr quat operator-(quat q) { return {-q.w, -q.x, -q.y, -q.z}; }
 constexpr bool operator==(quat a, quat b) { return a.x == b.x && a.y == b.y && a.z == b.z && a.w == b.w; }
 constexpr quat operator+(quat a, quat b) { return {a.w + b.w, a.x + b.x, a.y + b.y, a.z + b.z}; }
@@ -28,13 +30,12 @@ constexpr quat &operator*=(quat &a, quat b) { return a = a * b; }
 namespace numeric {
 using ::quat;
 constexpr float Dot(quat a, quat b) {
-    const quat products{a.w * b.w, a.x * b.x, a.y * b.y, a.z * b.z};
-    return (products.w + products.x) + (products.y + products.z);
+    return std::fma(a.x, b.x, a.y * b.y) + std::fma(a.z, b.z, a.w * b.w);
 }
 inline quat Normalize(quat q) {
     const float length = __builtin_sqrtf(Dot(q, q));
     if (length <= 0.f) return {};
-    return q * (1.f / length);
+    return {q.w / length, q.x / length, q.y / length, q.z / length};
 }
 constexpr quat Conjugate(quat q) { return {q.w, -q.x, -q.y, -q.z}; }
 inline quat Inverse(quat q) {

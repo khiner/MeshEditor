@@ -3,6 +3,7 @@
 #include "metal/ImGuiTexture.h"
 #include "metal/Image.h"
 
+#include <bit>
 #include <cmath>
 
 #include "imgui.h"
@@ -43,7 +44,7 @@ SvgResource::SvgResource(const mtl::Context &ctx, const std::filesystem::path &p
 SvgResource::~SvgResource() = default;
 
 void SvgResource::DrawIcon(vec2 size) const {
-    if (Imp->Image) ImGui::Image(mtl::ImGuiTextureId(*Imp->Image), {size.x, size.y});
+    if (Imp->Image) ImGui::Image(mtl::ImGuiTextureId(*Imp->Image), std::bit_cast<ImVec2>(size));
 }
 
 std::unique_ptr<SvgResource> LoadSvg(const mtl::Context &ctx, const std::filesystem::path &path) {
