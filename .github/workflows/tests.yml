@@ -18,7 +18,7 @@ jobs:
           GIT_LFS_SKIP_SMUDGE: 1 # The RealImpact submodule's git-lfs meshes are only needed by the modal-corpus job
 
       - name: Install dependencies
-        run: brew install llvm fftw ninja
+        run: brew install llvm ninja
 
       - name: ccache
         uses: hendrikmuhs/ccache-action@v1.2
@@ -79,7 +79,7 @@ jobs:
         run: python3 script/SetupTetCorpus --thingi10k
 
       - name: Install dependencies
-        run: brew install llvm fftw ninja eigen
+        run: brew install llvm ninja eigen
 
       - name: ccache
         uses: hendrikmuhs/ccache-action@v1.2

@@ -93,10 +93,7 @@ PassFormats OverlayFormats() { return {{Format::Color, Format::LineData}, Format
 
 mtl::MeshRenderPipeline MeshletEditEdgePipeline(mtl::LibraryCache &libraries, bool include_outer) {
     return CreateMeshPipeline(
-        libraries, FunctionRef{
-            "EdgeQuad.metal", "EdgeQuadFragment",
-            {BoolConstant(EditOverlayConstant::IncludeOuter, include_outer)}
-        }, OverlayFormats(), {Blend, NoWrite}, DepthTestNoWriteLessEqual,
+        libraries, FunctionRef{"EdgeQuad.metal", "EdgeQuadFragment", {BoolConstant(EditOverlayConstant::IncludeOuter, include_outer)}}, OverlayFormats(), {Blend, NoWrite}, DepthTestNoWriteLessEqual,
         {"MeshletEditOverlay.metal", "MeshletEditEdgeMesh"}
     );
 }
@@ -421,7 +418,8 @@ SelectionFragmentPipeline::SelectionFragmentPipeline(mtl::LibraryCache &librarie
 const mtl::MeshRenderPipeline &SelectionFragmentPipeline::ElementRaster(
     Element element, bool bitset_box, bool xray
 ) const {
-    const auto &variants = element == Element::Face ? MeshletFaces : element == Element::Vertex ? MeshletVertices : MeshletEdges;
+    const auto &variants = element == Element::Face ? MeshletFaces : element == Element::Vertex ? MeshletVertices :
+                                                                                                  MeshletEdges;
     return variants[uint32_t(bitset_box) + 2u * uint32_t(xray)];
 }
 
@@ -496,12 +494,10 @@ void Pipelines::CompileShaders() {
     SilhouetteEdge.Renderer.CompileShaders(Libraries);
     SelectionFragment.OverlayJobLines.Compile(Libraries);
     SelectionFragment.BoneSphere.Compile(Libraries);
-    for (auto *variants : {&SelectionFragment.MeshletFaces, &SelectionFragment.MeshletVertices,
-             &SelectionFragment.MeshletEdges}) {
+    for (auto *variants : {&SelectionFragment.MeshletFaces, &SelectionFragment.MeshletVertices, &SelectionFragment.MeshletEdges}) {
         for (auto &pipeline : *variants) pipeline.Compile(Libraries);
     }
-    for (auto *pipeline : {&SelectionFragment.MeshletFaceXRayPointsBitsetBox,
-             &SelectionFragment.MeshletEdgeXRayPointsBitsetBox}) {
+    for (auto *pipeline : {&SelectionFragment.MeshletFaceXRayPointsBitsetBox, &SelectionFragment.MeshletEdgeXRayPointsBitsetBox}) {
         pipeline->Compile(Libraries);
     }
     PrepareEditSelection.Compile(Libraries);

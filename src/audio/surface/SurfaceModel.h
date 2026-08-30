@@ -29,10 +29,7 @@ constexpr uint32_t TrackSamples{131072};
 // Distance a contact travels before a synthesized field repeats, m.
 constexpr float SurfaceRepeatLength{0.1f};
 
-// The smallest size at or above `n` whose prime factors are 2, 3 and 5 alone.
-uint32_t SmoothSize(uint32_t n);
-
-// Thread count for transforms planned after this call.
+// Thread count a synthesis splits its columns over.
 // SURFACE_FFT_THREADS overrides it.
 void SetTransformThreads(uint32_t threads);
 

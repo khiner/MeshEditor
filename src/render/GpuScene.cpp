@@ -520,7 +520,8 @@ MeshletBuild BuildMeshlets(MeshletBuildInputs &in) {
     for (const auto &record : sink.Records) {
         const auto topology = MeshPrimitiveTopology(record.LocalTriangleOffset >> uint32_t(MeshletGeometryEncoding::TopologyShift));
         const uint32_t first_corner = topology == MeshPrimitiveTopology::Triangle ?
-            in.PrimitiveTriangleRanges[record.Primitive].FirstTriangle * 3u : 0u;
+            in.PrimitiveTriangleRanges[record.Primitive].FirstTriangle * 3u :
+            0u;
         for (uint32_t v = 0u; v < record.VertexCount; ++v) {
             auto &packed = sink.Vertices[record.VertexOffset + v];
             const uint32_t source = packed & uint32_t(MeshletGeometryEncoding::CornerMask);

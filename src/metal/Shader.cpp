@@ -3,8 +3,8 @@
 
 #include <algorithm>
 #include <array>
-#include <fstream>
 #include <format>
+#include <fstream>
 #include <stdexcept>
 
 #include <unistd.h>

@@ -1,6 +1,8 @@
 #include "viewport/ViewportRenderGpu.h"
+#include "Camera.h"
 #include "ProcessEvents.h"
 #include "Profile.h"
+#include "Variant.h"
 #include "animation/AnimationTimeline.h"
 #include "animation/MorphWeightState.h"
 #include "armature/ArmatureComponents.h"
@@ -9,17 +11,7 @@
 #include "gpu/BoundsReducePushConstants.h"
 #include "gpu/CommitPosedGeometryPushConstants.h"
 #include "gpu/DepthPyramidReducePushConstants.h"
-#include "Variant.h"
-#include "physics/PhysicsTypes.h"
-#include "Camera.h"
 #include "gpu/ExtrasLineKind.h"
-#include "gpu/OverlayJob.h"
-#include "gpu/OverlayJobCullPushConstants.h"
-#include "gpu/OverlayJobDrawPushConstants.h"
-#include "gpu/OverlayJobKind.h"
-#include "gpu/OverlayDispatch.h"
-#include "gpu/WireRasterPushConstants.h"
-#include "gpu/WireResolvePushConstants.h"
 #include "gpu/MeshletCullPushConstants.h"
 #include "gpu/MeshletDrawPushConstants.h"
 #include "gpu/MeshletGeometryEncoding.h"
@@ -29,17 +21,25 @@
 #include "gpu/MotionBlurTilesFlattenPushConstants.h"
 #include "gpu/NormalDeriveEntry.h"
 #include "gpu/NormalDerivePushConstants.h"
+#include "gpu/OverlayDispatch.h"
+#include "gpu/OverlayJob.h"
+#include "gpu/OverlayJobCullPushConstants.h"
+#include "gpu/OverlayJobDrawPushConstants.h"
+#include "gpu/OverlayJobKind.h"
 #include "gpu/PosedMeshletBoundsPushConstants.h"
 #include "gpu/SilhouetteEdgeColorPushConstants.h"
 #include "gpu/SilhouetteEdgeDepthObjectPushConstants.h"
 #include "gpu/VisibilityId.h"
-#include "mesh/MeshStore.h"
+#include "gpu/WireRasterPushConstants.h"
+#include "gpu/WireResolvePushConstants.h"
 #include "mesh/MeshComponents.h"
+#include "mesh/MeshStore.h"
 #include "metal/PassChain.h"
 #include "metal/RenderTarget.h"
+#include "physics/PhysicsTypes.h"
 #include "render/Encoding.h"
-#include "render/Instance.h"
 #include "render/GpuSceneState.h"
+#include "render/Instance.h"
 #include "render/Pipelines.h"
 #include "scene/Entity.h"
 #include "selection/Selection.h"
@@ -144,40 +144,44 @@ std::vector<OverlayJob> BuildOverlayJobs(const entt::registry &r) {
         const auto gizmo = ExtrasGizmoParams(r, object, kind.Value);
         if (gizmo.LineCount == 0) continue;
         append(OverlayJob{
-            .Kind = OverlayJobKind::Extras,
-            .InstanceIndex = render_instance.BufferIndex,
-            .ExtrasKind = gizmo.Kind,
-            .LocalOffset = vec3{0},
-            .Params = gizmo.Params,
-        }, gizmo.LineCount);
+                   .Kind = OverlayJobKind::Extras,
+                   .InstanceIndex = render_instance.BufferIndex,
+                   .ExtrasKind = gizmo.Kind,
+                   .LocalOffset = vec3{0},
+                   .Params = gizmo.Params,
+               },
+               gizmo.LineCount);
     }
     for (const auto [entity, shape, render_instance] : r.view<const ColliderShape, const RenderInstance>().each()) {
         const auto wire = ColliderWireParams(shape.Shape);
         if (wire.LineCount == 0) continue;
         append(OverlayJob{
-            .Kind = OverlayJobKind::Extras,
-            .InstanceIndex = render_instance.BufferIndex,
-            .ExtrasKind = wire.Kind,
-            .LocalOffset = shape.LocalOffset,
-            .Params = wire.Params,
-        }, wire.LineCount);
+                   .Kind = OverlayJobKind::Extras,
+                   .InstanceIndex = render_instance.BufferIndex,
+                   .ExtrasKind = wire.Kind,
+                   .LocalOffset = shape.LocalOffset,
+                   .Params = wire.Params,
+               },
+               wire.LineCount);
     }
     for (const auto [entity, instance, render_instance] : r.view<const Instance, const RenderInstance>().each()) {
         if (!HasMesh(r, instance.Entity)) continue;
         append(OverlayJob{
-            .Kind = OverlayJobKind::Bounds,
-            .InstanceIndex = render_instance.BufferIndex,
-        }, 12u);
+                   .Kind = OverlayJobKind::Bounds,
+                   .InstanceIndex = render_instance.BufferIndex,
+               },
+               12u);
     }
     for (const auto [entity, instance, render_instance] : r.view<const Instance, const RenderInstance>().each()) {
         const auto *tets = r.try_get<const TetBuffers>(instance.Entity);
         if (!tets || tets->EdgeIndices.Count == 0u) continue;
         append(OverlayJob{
-            .Kind = OverlayJobKind::TetWire,
-            .InstanceIndex = render_instance.BufferIndex,
-            .SourceOffset = tets->Positions.Offset,
-            .IndexOffset = tets->EdgeIndices.Offset,
-        }, tets->EdgeIndices.Count / 2u);
+                   .Kind = OverlayJobKind::TetWire,
+                   .InstanceIndex = render_instance.BufferIndex,
+                   .SourceOffset = tets->Positions.Offset,
+                   .IndexOffset = tets->EdgeIndices.Offset,
+               },
+               tets->EdgeIndices.Count / 2u);
     }
     return jobs;
 }
@@ -229,7 +233,12 @@ struct RecordInputs {
         Mix(range.Slot);
         Mix(range.Offset);
     }
-    void Mix(EditSelectionStorage selection) { Mix(selection.VertexBits); Mix(selection.EdgeBits); Mix(selection.FaceBits); Mix(selection.Summary); }
+    void Mix(EditSelectionStorage selection) {
+        Mix(selection.VertexBits);
+        Mix(selection.EdgeBits);
+        Mix(selection.FaceBits);
+        Mix(selection.Summary);
+    }
 };
 
 struct DeformSlots {
@@ -718,7 +727,8 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
     };
     const bool show_normals = show_overlays && settings.NormalOverlays != 0u;
     const auto normal_meshes = show_normals ?
-        selection::GetSelectedMeshEntities(r) : std::unordered_set<entt::entity>{};
+        selection::GetSelectedMeshEntities(r) :
+        std::unordered_set<entt::entity>{};
     const bool show_face_normals = show_normals &&
         he::ElementMaskContains(settings.NormalOverlays, Element::Face);
     const bool show_vertex_normals = show_normals &&
@@ -1077,7 +1087,6 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
         // Overlay jobs retain instance-arena indices, so publish them only after this rebuild has
         // finalized every RenderInstance slot.
         buffers.SetOverlayJobs(BuildOverlayJobs(r));
-
     }
     // Object ids and silhouette flags, with the silhouette cull's work totalled as the flags land.
     if (scene_state.InstanceFlagsStale) {
@@ -1086,10 +1095,14 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
         );
         GpuBuffers::MeshletFlagWork silhouette_work{}, edit_overlay_work{}, element_selection_work{}, wire_work{};
         for (const auto flag : {
-                 MeshletInstanceFlag::Bone, MeshletInstanceFlag::BoneWire,
-                 MeshletInstanceFlag::BoneJoint, MeshletInstanceFlag::BoneJointWire,
-                 MeshletInstanceFlag::FaceNormal, MeshletInstanceFlag::VertexNormal,
-                 MeshletInstanceFlag::EdgeOverlay, MeshletInstanceFlag::PointOverlay,
+                 MeshletInstanceFlag::Bone,
+                 MeshletInstanceFlag::BoneWire,
+                 MeshletInstanceFlag::BoneJoint,
+                 MeshletInstanceFlag::BoneJointWire,
+                 MeshletInstanceFlag::FaceNormal,
+                 MeshletInstanceFlag::VertexNormal,
+                 MeshletInstanceFlag::EdgeOverlay,
+                 MeshletInstanceFlag::PointOverlay,
                  MeshletInstanceFlag::SoundPoint,
              }) {
             buffers.FlagWork(uint32_t(flag)) = {};
@@ -1304,7 +1317,8 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
                 .Mode = show_rendered ? (real_transmission ? MeshletRouteMode::Transmission : MeshletRouteMode::Material) : MeshletRouteMode::Visibility,
                 .RequiredInstanceFlags = show_fill || wire_meshlets || bone_meshlets > 0u ||
                         normal_meshlets > 0u || element_overlay_meshlets > 0u ?
-                    0u : uint32_t(MeshletInstanceFlag::Silhouette),
+                    0u :
+                    uint32_t(MeshletInstanceFlag::Silhouette),
                 .UboOffset = ubo_offset,
                 .PyramidSamplerSlot = pyramid,
                 .SortBlend = sort_blend,
@@ -1487,7 +1501,7 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
     const bool overlay_jobs = show_overlays && buffers.OverlayJobs.UsedSize > 0u &&
         (settings.ShowExtras || settings.ShowBoundingBoxes || settings.ShowTetWireframe);
     if (wire_raster_drawn) {
-        {   // Coverage sums and the complemented depth both start from zero.
+        { // Coverage sums and the complemented depth both start from zero.
             auto *blit = chain.BeginBlit("WireClear", MTL::StageDispatch);
             blit->fillBuffer(*buffers.WireCoverageBuffer, NS::Range::Make(0, buffers.WireCoverageBuffer.UsedSize), 0);
         }
@@ -1532,9 +1546,9 @@ void RecordPhase(entt::registry &r, entt::entity viewport, mtl::PassChain &chain
         encoder = encode::BeginScenePass(chain, overlay_pass, "OverlayPass", {{MTL::StageDispatch, MTL::StageVertex | MTL::StageMesh | MTL::StageFragment}, {MTL::StageFragment, MTL::StageFragment}}, main_extent, slots, buffers, ubo_offset);
 
         const auto draw_meshlet_overlay = [&](
-            const mtl::MeshRenderPipeline &pipeline, MeshletRoute route, MeshletInstanceFlag flag,
-            uint32_t threads, uint32_t corner = 0u, uint32_t sharpness_slot = InvalidSlot
-        ) {
+                                              const mtl::MeshRenderPipeline &pipeline, MeshletRoute route, MeshletInstanceFlag flag,
+                                              uint32_t threads, uint32_t corner = 0u, uint32_t sharpness_slot = InvalidSlot
+                                          ) {
             pipeline.Bind(encoder);
             ForEachMeshletVisibilityList(
                 buffers, two_phase_meshlets,
@@ -1735,15 +1749,15 @@ void DrawOverlayJobs(
     MTL::RenderCommandEncoder *encoder, const GpuBuffers &buffers, const MeshStore &meshes
 ) {
     encode::SetMeshPushConstants(encoder, OverlayJobDrawPushConstants{
-        .JobsSlot = buffers.OverlayJobs.Slot,
-        .VisibleSlot = buffers.VisibleOverlayJobs.Slot,
-        .InstanceSlot = buffers.Instances.RecordBuffer.Slot,
-        .BoundsSlot = buffers.Instances.BoundsBuffer.Slot,
-        .ModelSlot = buffers.Instances.TransformBuffer.Slot,
-        .StateSlot = buffers.Instances.StateBuffer.Slot,
-        .TetPositionSlot = meshes.GetTetPositionSlot(),
-        .TetEdgeIndexSlot = meshes.GetTetEdgeIndexSlot(),
-    });
+                                              .JobsSlot = buffers.OverlayJobs.Slot,
+                                              .VisibleSlot = buffers.VisibleOverlayJobs.Slot,
+                                              .InstanceSlot = buffers.Instances.RecordBuffer.Slot,
+                                              .BoundsSlot = buffers.Instances.BoundsBuffer.Slot,
+                                              .ModelSlot = buffers.Instances.TransformBuffer.Slot,
+                                              .StateSlot = buffers.Instances.StateBuffer.Slot,
+                                              .TetPositionSlot = meshes.GetTetPositionSlot(),
+                                              .TetEdgeIndexSlot = meshes.GetTetEdgeIndexSlot(),
+                                          });
     encoder->drawMeshThreadgroups(
         *buffers.OverlayJobDispatchArgs, 0u, MTL::Size(1, 1, 1),
         MTL::Size(uint32_t(OverlayDispatch::LineGroupLines) * 2u, 1, 1)

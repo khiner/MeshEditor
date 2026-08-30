@@ -1,7 +1,7 @@
 #include "AudioSystem.h"
 #include "AudioDevice.h"
 #include "ContactScene.h"
-#include "FFTData.h"
+#include "Fft.h"
 #include "FileDialog.h"
 #include "Job.h"
 #include "ModalAudio.h"
@@ -491,6 +491,12 @@ struct AudioMix {};
 
 /***** Impact spectrum analysis *****/
 
+// The spectrum of one windowed segment, over the bins its sample count resolves.
+struct FFTData {
+    std::vector<std::complex<float>> Bins;
+    size_t NumReal;
+};
+
 constexpr void ApplyCosineWindow(float *w, uint32_t n, const float *coeff, uint32_t ncoeff) {
     if (n == 1) {
         w[0] = 1.0;
@@ -519,13 +525,11 @@ constexpr std::vector<float> ApplyWindow(const std::vector<float> &window, const
 }
 
 std::optional<float> EstimateFundamentalFrequency(const FFTData &fft, uint32_t sample_rate) {
-    const auto *data = fft.Complex;
-    const size_t n_bins = fft.NumReal / 2 + 1;
+    const size_t n_bins = fft.Bins.size();
 
     std::vector<float> mag_db(n_bins);
     for (size_t i = 0; i < n_bins; ++i) {
-        const auto mag_sq = data[i][0] * data[i][0] + data[i][1] * data[i][1];
-        mag_db[i] = 10.f * std::log10f(std::max(mag_sq, 1e-20f));
+        mag_db[i] = 10.f * std::log10f(std::max(std::norm(fft.Bins[i]), 1e-20f));
     }
 
     // Noise floor from upper half median
@@ -553,7 +557,8 @@ FFTData ComputeFft(const std::vector<float> &frames, uint32_t sample_rate) {
     constexpr uint32_t FftStartFrame = 30;
     const uint32_t FftEndFrame = sample_rate / 16;
     const auto window = CreateBlackmanHarris(FftEndFrame - FftStartFrame);
-    return {ApplyWindow(window, frames.data() + FftStartFrame)};
+    const auto windowed = ApplyWindow(window, frames.data() + FftStartFrame);
+    return {fft::RealToComplex(windowed), windowed.size()};
 }
 
 /***** Modal solve jobs *****/
@@ -1283,10 +1288,9 @@ void PlotMagnitudeSpectrum(const std::vector<float> &frames, uint32_t sample_rat
         frequency.resize(N2);
         magnitude.resize(N2);
 
-        const auto *data = fft.Complex;
         for (uint32_t i = 0; i < N2; i++) {
             frequency[i] = fs_n * float(i);
-            magnitude[i] = 20.0f * log10f(sqrtf(data[i][0] * data[i][0] + data[i][1] * data[i][1]) / float(N2));
+            magnitude[i] = 20.0f * log10f(std::abs(fft.Bins[i]) / float(N2));
         }
 
         ImPlot::SetupAxes("Frequency (Hz)", "Magnitude (dB)");

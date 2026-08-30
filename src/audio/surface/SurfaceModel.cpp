@@ -1,6 +1,6 @@
 #include "SurfaceModel.h"
 
-#include <fftw3.h>
+#include "audio/Fft.h"
 
 #include <glm/geometric.hpp>
 #include <glm/mat3x3.hpp>
@@ -22,16 +22,6 @@
 /***** Roughness tracks *****/
 
 namespace {
-// Guard the planner, the one part of the transform touching shared state.
-// Call before making any plan, and check whether the threaded planner initialized.
-bool ThreadedPlanner() {
-    static const bool ready = [] {
-        fftwf_make_planner_thread_safe();
-        return fftwf_init_threads() != 0;
-    }();
-    return ready;
-}
-
 uint64_t SplitMix64(uint64_t &state) {
     uint64_t z = (state += 0x9e3779b97f4a7c15ull);
     z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9ull;
@@ -110,22 +100,6 @@ float Finish(RoughnessTrack &t) {
         t.SlopeWindowRms[i] = widest;
     }
     return rms;
-}
-
-// The complex spectrum of a track's heights, one entry per wavenumber the transform resolves.
-std::vector<std::complex<float>> TraceSpectrum(std::span<const float> heights) {
-    const auto count = uint32_t(heights.size());
-    const uint32_t bins = count / 2 + 1;
-    std::vector<float> in(heights.begin(), heights.end());
-    auto *out = fftwf_alloc_complex(bins);
-    ThreadedPlanner();
-    auto *plan = fftwf_plan_dft_r2c_1d(int(count), in.data(), out, FFTW_ESTIMATE);
-    fftwf_execute(plan);
-    fftwf_destroy_plan(plan);
-    std::vector<std::complex<float>> spectrum(bins);
-    for (uint32_t i = 0; i < bins; ++i) spectrum[i] = {out[i][0], out[i][1]};
-    fftwf_free(out);
-    return spectrum;
 }
 
 // A spectrum averaged into cells holding a fixed share of an octave each, giving the bin each cell is centred on and the mean power over it.
@@ -301,17 +275,6 @@ void ParallelColumns(uint32_t columns, auto &&work) {
 
 void SetTransformThreads(uint32_t threads) {
     RequestedTransformThreads.store(std::max(threads, 1u), std::memory_order_relaxed);
-    if (ThreadedPlanner()) fftwf_plan_with_nthreads(int(TransformThreads()));
-}
-
-uint32_t SmoothSize(uint32_t n) {
-    for (uint32_t candidate = std::max(n, 2u);; ++candidate) {
-        uint32_t rest = candidate;
-        for (const uint32_t factor : {2u, 3u, 5u}) {
-            while (rest % factor == 0) rest /= factor;
-        }
-        if (rest == 1) return candidate;
-    }
 }
 
 RoughnessTrack SynthesizeRoughness(float correlation_length, float spectral_slope, float short_wavelength, float spacing, uint32_t count) {
@@ -324,7 +287,7 @@ RoughnessTrack SynthesizeRoughness(float correlation_length, float spectral_slop
     }
 
     const uint32_t bins = count / 2 + 1;
-    auto *spectrum = fftwf_alloc_complex(bins);
+    std::vector<std::complex<float>> spectrum(bins);
     const float q0 = 1.f / std::max(correlation_length, 1e-9f);
     // The surface's shortest stated wavelength, floored at the one this sampling can be measured over, so the track states the band its heights hold.
     // The floor is SurfaceSamplesPerCutoff rather than the two spacings representation ends at: a second difference reads about 40 percent of the true curvature at two spacings and converges by eight.
@@ -332,21 +295,15 @@ RoughnessTrack SynthesizeRoughness(float correlation_length, float spectral_slop
     const float qs = 1.f / track.Cutoff;
     const float dq = 1.f / (float(count) * spacing);
     uint64_t state = SurfaceDraw(0x517cc1b727220a95ull, correlation_length, spectral_slope, short_wavelength, spacing);
-    spectrum[0][0] = 0.f; // Zero mean.
-    spectrum[0][1] = 0.f;
+    spectrum[0] = {}; // Zero mean.
     for (uint32_t i = 1; i < bins; ++i) {
         const float q = float(i) * dq;
         // The phase is drawn whether or not the bin has amplitude, so a band the surface does not reach leaves the rest of the realization untouched.
         const float phase = NextPhase(state);
         const float amplitude = q > qs ? 0.f : (q > q0 ? std::pow(q / q0, spectral_slope * 0.5f) : 1.f);
-        spectrum[i][0] = amplitude * std::cos(phase);
-        spectrum[i][1] = amplitude * std::sin(phase);
+        spectrum[i] = {amplitude * std::cos(phase), amplitude * std::sin(phase)};
     }
-    ThreadedPlanner();
-    auto *plan = fftwf_plan_dft_c2r_1d(int(count), spectrum, track.Heights.data(), FFTW_ESTIMATE);
-    fftwf_execute(plan);
-    fftwf_destroy_plan(plan);
-    fftwf_free(spectrum);
+    fft::ComplexToReal(spectrum, track.Heights);
 
     Finish(track);
     return track;
@@ -361,7 +318,7 @@ RoughnessField SynthesizeRoughnessPatch(float correlation_length, float spectral
     const float radial_slope = spectral_slope - 1;
     // Real-to-complex leaves the last axis half-length plus one.
     const uint32_t bins = rows / 2 + 1;
-    auto *spectrum = fftwf_alloc_complex(size_t(columns) * bins);
+    std::vector<std::complex<float>> spectrum(size_t(columns) * bins);
     const float q0 = 1.f / std::max(correlation_length, 1e-9f);
     // The same cutoff a track takes, on the radial wavenumber.
     const float qs = 1.f / std::max(short_wavelength, 2 * spacing);
@@ -379,22 +336,16 @@ RoughnessField SynthesizeRoughnessPatch(float correlation_length, float spectral
                 const float q = std::sqrt(qx * qx + qy * qy);
                 const size_t at = size_t(i) * bins + j;
                 if (q <= 0) {
-                    spectrum[at][0] = 0.f; // Zero mean.
-                    spectrum[at][1] = 0.f;
+                    spectrum[at] = {}; // Zero mean.
                     continue;
                 }
                 const float phase = NextPhase(local);
                 const float amplitude = q > qs ? 0.f : (q > q0 ? std::pow(q / q0, radial_slope * 0.5f) : 1.f);
-                spectrum[at][0] = amplitude * std::cos(phase);
-                spectrum[at][1] = amplitude * std::sin(phase);
+                spectrum[at] = {amplitude * std::cos(phase), amplitude * std::sin(phase)};
             }
         }
     });
-    ThreadedPlanner();
-    auto *plan = fftwf_plan_dft_c2r_2d(int(columns), int(rows), spectrum, field.Heights.data(), FFTW_ESTIMATE);
-    fftwf_execute(plan);
-    fftwf_destroy_plan(plan);
-    fftwf_free(spectrum);
+    fft::ComplexToReal2d(spectrum, columns, rows, field.Heights);
 
     const auto n = field.Heights.size();
     const auto mean = float(std::accumulate(field.Heights.begin(), field.Heights.end(), 0.0) / double(n));
@@ -458,7 +409,7 @@ RoughnessTrack MakeProfileTrack(std::span<const float> heights, float spacing) {
     track.Heights.assign(heights.begin(), heights.end());
     track.Rms = Finish(track);
     if (heights.size() >= 8 && spacing > 0) {
-        const auto spectrum = TraceSpectrum(track.Heights);
+        const auto spectrum = fft::RealToComplex(track.Heights);
         std::vector<double> power(spectrum.size());
         for (size_t i = 0; i < power.size(); ++i) power[i] = std::norm(spectrum[i]);
         // The fit's corner is in bins, which the track length converts back into a wavelength.
@@ -477,7 +428,7 @@ RoughnessField SynthesizeProfileField(std::span<const float> heights, float spac
     const uint32_t bins_x = columns / 2 + 1, bins_y = rows / 2 + 1;
     // Wavenumbers are carried in bins of the sweep, which is the grid the radial spectrum is tabulated on, so the rows step by the ratio of the two axes' lengths.
     const double rho = double(columns) / rows;
-    const auto trace = TraceSpectrum(heights);
+    const auto trace = fft::RealToComplex(heights);
     // The transform's inverse includes the sample count, so the cut the field is conditioned on is the trace's spectrum over that count.
     std::vector<double> power(bins_x);
     for (uint32_t i = 0; i < bins_x; ++i) power[i] = std::norm(trace[i]) / (double(columns) * columns);
@@ -487,7 +438,7 @@ RoughnessField SynthesizeProfileField(std::span<const float> heights, float spac
         return std::sqrt(std::max(0.0, SpectrumAt(radial, std::sqrt(qx * qx + qy * qy))));
     };
 
-    auto *spectrum = fftwf_alloc_complex(size_t(columns) * bins_y);
+    std::vector<std::complex<float>> spectrum(size_t(columns) * bins_y);
     const auto at = [bins_y](uint32_t i, uint32_t j) { return size_t(i) * bins_y + j; };
     const uint64_t state = [&] {
         uint64_t s = HashParams(0x2545f4914f6cdd1dull, spacing, columns, rows, realization);
@@ -501,19 +452,15 @@ RoughnessField SynthesizeProfileField(std::span<const float> heights, float spac
             for (uint32_t j = 0; j < bins_y; ++j) {
                 const auto a = float(amplitude(i, j));
                 const float phase = NextPhase(local);
-                spectrum[at(i, j)][0] = a * std::cos(phase);
-                spectrum[at(i, j)][1] = a * std::sin(phase);
+                spectrum[at(i, j)] = {a * std::cos(phase), a * std::sin(phase)};
             }
         }
     });
     // The two rows across the sweep that mirror onto themselves carry conjugate symmetry along it, which leaves the field real and its row zero the plain sum of the stored bins.
     const auto symmetrize = [&](uint32_t j) {
-        spectrum[at(0, j)][1] = 0.f;
-        if (columns % 2 == 0) spectrum[at(columns / 2, j)][1] = 0.f;
-        for (uint32_t i = columns / 2 + 1; i < columns; ++i) {
-            spectrum[at(i, j)][0] = spectrum[at(columns - i, j)][0];
-            spectrum[at(i, j)][1] = -spectrum[at(columns - i, j)][1];
-        }
+        spectrum[at(0, j)].imag(0.f);
+        if (columns % 2 == 0) spectrum[at(columns / 2, j)].imag(0.f);
+        for (uint32_t i = columns / 2 + 1; i < columns; ++i) spectrum[at(i, j)] = std::conj(spectrum[at(columns - i, j)]);
     };
     symmetrize(0);
     if (rows % 2 == 0) symmetrize(rows / 2);
@@ -526,13 +473,13 @@ RoughnessField SynthesizeProfileField(std::span<const float> heights, float spac
     std::vector<double> held(columns);
     for (uint32_t i = 0; i < columns; ++i) {
         const uint32_t opposite = i == 0 ? 0 : columns - i;
-        std::complex<double> cut{spectrum[at(i, 0)][0], spectrum[at(i, 0)][1]};
+        std::complex<double> cut{spectrum[at(i, 0)]};
         for (uint32_t j = 0; j < bins_y; ++j) {
             const double a = amplitude(i, j);
             held[i] += a * a * (j > 0 && j <= mirrored ? 2 : 1);
             if (j == 0) continue;
-            cut += std::complex<double>{spectrum[at(i, j)][0], spectrum[at(i, j)][1]};
-            if (j <= mirrored) cut += std::conj(std::complex<double>{spectrum[at(opposite, j)][0], spectrum[at(opposite, j)][1]});
+            cut += std::complex<double>{spectrum[at(i, j)]};
+            if (j <= mirrored) cut += std::conj(std::complex<double>{spectrum[at(opposite, j)]});
         }
         const auto measured = i <= columns / 2 ? std::complex<double>(trace[i]) : std::conj(std::complex<double>(trace[columns - i]));
         miss[i] = measured / double(columns) - cut;
@@ -542,16 +489,11 @@ RoughnessField SynthesizeProfileField(std::span<const float> heights, float spac
         for (uint32_t j = 0; j < bins_y; ++j) {
             const double a = amplitude(i, j);
             const auto share = miss[i] * (a * a / held[i]);
-            spectrum[at(i, j)][0] += float(share.real());
-            spectrum[at(i, j)][1] += float(share.imag());
+            spectrum[at(i, j)] += std::complex<float>{float(share.real()), float(share.imag())};
         }
     }
 
-    ThreadedPlanner();
-    auto *plan = fftwf_plan_dft_c2r_2d(int(columns), int(rows), spectrum, field.Heights.data(), FFTW_ESTIMATE);
-    fftwf_execute(plan);
-    fftwf_destroy_plan(plan);
-    fftwf_free(spectrum);
+    fft::ComplexToReal2d(spectrum, columns, rows, field.Heights);
     return field;
 }
 

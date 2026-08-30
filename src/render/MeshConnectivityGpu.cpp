@@ -132,8 +132,12 @@ void SubmitChunk(entt::registry &r, std::span<const ConnectivityTarget> chunk, m
             std::vector<he::HH> outgoing(job.VertexCount), opposites(job.HalfedgeCount);
             std::vector<uint32_t> bits(words), ranks(words), samples(words);
             const ConnectivityStorage host{
-                .OutgoingHalfedges = outgoing, .Opposites = opposites,
-                .EdgeFirstBits = bits, .EdgeFirstRanks = ranks, .EdgeSamples = samples, .Faces = {},
+                .OutgoingHalfedges = outgoing,
+                .Opposites = opposites,
+                .EdgeFirstBits = bits,
+                .EdgeFirstRanks = ranks,
+                .EdgeSamples = samples,
+                .Faces = {},
             };
             const auto built = BuildConnectivity(chunk[i].Data->FaceOffsets, meshes.GetFaceCorners(chunk[i].StoreId), job.VertexCount, host);
             const auto gpu = meshes.GetConnectivity(chunk[i].StoreId);

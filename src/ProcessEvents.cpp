@@ -21,16 +21,16 @@
 #include "gltf/GltfScene.h"
 #include "mesh/MeshBvh.h"
 #include "mesh/MeshStore.h"
-#include "mesh/TetBuffers.h"
 #include "mesh/Primitives.h"
+#include "mesh/TetBuffers.h"
 #include "object/ObjectOps.h"
 #include "object/PendingSync.h"
 #include "physics/PhysicsChanges.h"
 #include "physics/PhysicsSystem.h"
 #include "physics/PhysicsTypes.h"
-#include "render/GpuSceneState.h"
 #include "render/GpuBufferOps.h"
 #include "render/GpuBuffers.h"
+#include "render/GpuSceneState.h"
 #include "render/Instance.h"
 #include "render/LightComponents.h"
 #include "render/MaterialComponents.h"
@@ -98,7 +98,6 @@ bool FlushIndexedWrites(auto &writes, auto &&span_getter) {
     for (const auto &[index, value] : writes) span[index] = value;
     return true;
 }
-
 
 uint8_t InstanceStateBits(const entt::registry &r, entt::entity e) {
     return (r.all_of<Selected>(e) ? ElementStateSelected : 0) | (r.all_of<Active>(e) ? ElementStateActive : 0);
@@ -412,7 +411,8 @@ void BuildBoneMeshletsNow(entt::registry &r, std::span<const entt::entity> entit
         auto build = BuildMeshlets(inputs);
         assert(build.Primitives.size() == 1u);
         build.Primitives.front().AuxIndices = r.all_of<ArmatureObject>(entity) ?
-            r.get<const BoneAdjacencyIndices>(entity).Indices : mb.EdgeIndices;
+            r.get<const BoneAdjacencyIndices>(entity).Indices :
+            mb.EdgeIndices;
         CommitMeshlets(buffers, mb, build);
     }
     RepointMeshInstances(r, entities);
@@ -555,7 +555,6 @@ SyncResult SyncModelsBuffers(entt::registry &r) {
     }
     return {std::move(newly_inserted), std::move(new_mesh_entities), std::move(new_extras_entities), compacted};
 }
-
 
 // Resize the viewport's GPU render resources to match RenderExtentPx(ViewportExtent), recreating images and
 // rewriting bindless selection slots. Returns true when a resize occurred.

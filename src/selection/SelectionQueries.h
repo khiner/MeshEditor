@@ -1,11 +1,11 @@
 #pragma once
 
-#include "gpu/Element.h"
+#include "SlottedRange.h"
 #include "gpu/EditSelectionOperation.h"
 #include "gpu/EditSharpnessOperation.h"
+#include "gpu/Element.h"
 #include "numeric/vec2.h"
 #include "selection/BoneSelection.h"
-#include "SlottedRange.h"
 
 #include <entt/entity/fwd.hpp>
 

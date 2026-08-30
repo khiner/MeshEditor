@@ -1,7 +1,7 @@
 #include "AudioDevice.h"
 
-#include "CoreAudioTypes.h"
 #include "AudioSystem.h"
+#include "CoreAudioTypes.h"
 #include "action/Audio.h" // Replace<AudioOutputConfig>
 #include "action/Emit.h"
 #include "ui/FieldEdit.h"

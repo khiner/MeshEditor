@@ -33,11 +33,6 @@ target_compile_options(basisu_transcoder PRIVATE -w -fno-strict-aliasing $<$<COM
 file(GLOB_RECURSE LIB_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/lib/*.c ${CMAKE_CURRENT_SOURCE_DIR}/lib/*.cpp)
 set_source_files_properties(${LIB_SOURCES} PROPERTIES COMPILE_FLAGS "-w")
 
-find_package(PkgConfig REQUIRED)
-pkg_search_module(FFTW3F REQUIRED fftw3f IMPORTED_TARGET)
-# The surface synthesis plans transforms from several threads at once, which the base library does
-# not guard, and runs one large transform across them.
-find_library(FFTW3F_THREADS fftw3f_threads REQUIRED)
 set(EIGEN3_INCLUDE_DIR /opt/homebrew/include/eigen3)
 
 set(ImguiDir lib/imgui)
@@ -126,7 +121,6 @@ include_directories(
     SYSTEM lib/basis_universal/zstd
     SYSTEM lib/metal-cpp
 
-    SYSTEM PkgConfig::FFTW3F
     src
 )
 
@@ -204,7 +198,7 @@ if(MESHEDITOR_APP)
     target_include_directories(${PROJECT_NAME} PRIVATE ${EIGEN3_INCLUDE_DIR})
     target_link_libraries(${PROJECT_NAME} PRIVATE "-framework Accelerate" "-framework AppKit" "-framework AudioToolbox" "-framework AudioUnit" "-framework CoreAudio" "-framework CoreFoundation" "-framework GameController" "-framework Metal" "-framework Foundation" "-framework QuartzCore" "-framework UniformTypeIdentifiers")
 
-    target_link_libraries(${PROJECT_NAME} PRIVATE meshoptimizer PkgConfig::FFTW3F ${FFTW3F_THREADS} lunasvg fastgltf::fastgltf simdjson::simdjson basisu_transcoder Jolt webp)
+    target_link_libraries(${PROJECT_NAME} PRIVATE meshoptimizer lunasvg fastgltf::fastgltf simdjson::simdjson basisu_transcoder Jolt webp)
 
     if(CMAKE_BUILD_TYPE MATCHES Debug)
         target_compile_definitions(${PROJECT_NAME} PRIVATE DEBUG_BUILD)

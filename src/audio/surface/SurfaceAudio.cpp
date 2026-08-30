@@ -3,6 +3,7 @@
 #include "Reactive.h"
 #include "TransformMath.h"
 #include "audio/ContactScene.h"
+#include "audio/Fft.h"
 #include "audio/ModalAudio.h"
 #include "gltf/SourceTexture.h"
 #include "numeric/vec2.h"
@@ -649,7 +650,7 @@ ResolvedContact ResolveContact(const entt::registry &r, ModalAudio &m, const Sus
                 const double bearing_width = footprint_length > 0 ? bound_area / footprint_length : 0.0;
                 const double strip_reach = strip_correlations * min_correlation;
                 const double strip_width = bearing_width > 0 ? std::min(bearing_width, strip_reach) : strip_reach;
-                const auto rows = SmoothSize(std::max(uint32_t(std::llround(strip_width / double(spacing))), 8u));
+                const auto rows = fft::DirectLength(std::max(uint32_t(std::llround(strip_width / double(spacing))), 8u));
                 // The load the datum seats at, quantized as the curvature and the footprint are.
                 // The height a population of crests bears a load at moves with that load, so a set built for one load does not serve another and the key says so.
                 // The elements tile one ribbon, so its load is the contact's divided by the ribbon count, which is the share the anchor solves at.
@@ -658,7 +659,7 @@ ResolvedContact ResolveContact(const entt::registry &r, ModalAudio &m, const Sus
                 const double load_bucket = c.NormalForce > 0 ? QuarterOctave(ribbon_load) : 0.0;
                 // The sweep axis spans the distance a slide covers before the surface repeats, which is a length rather than a sample count, so refining the band holds the ground the field covers.
                 // A measured finish spans its own trace, so its surface repeats over the length it was measured on.
-                const auto columns = sweep ? uint32_t(sweep->Heights.size()) : SmoothSize(std::max(uint32_t(std::llround(double(SurfaceRepeatLength) / double(spacing))), 4 * element_columns));
+                const auto columns = sweep ? uint32_t(sweep->Heights.size()) : fft::DirectLength(std::max(uint32_t(std::llround(double(SurfaceRepeatLength) / double(spacing))), 4 * element_columns));
                 constexpr uint32_t SpringKnots = 56;
                 const uint64_t surface_key = HashParams(
                     0x41c7e9b2d5a8f036ull, specs[0].Correlation, specs[0].Slope, specs[0].Sigma, specs[0].Cutoff,
@@ -731,7 +732,7 @@ ResolvedContact ResolveContact(const entt::registry &r, ModalAudio &m, const Sus
                         // A measured band is held at the sampling it was measured at, and spans the stretch of its own heights the elements stand over.
                         if (const auto &profile = drawn[i].Profile; profile && drawn[i].Spacing > 0) {
                             const auto span = uint32_t(std::min(double(profile->Heights.size()), std::ceil(band_length / drawn[i].Spacing)));
-                            const auto across = SmoothSize(uint32_t(std::llround(wide / double(drawn[i].Spacing))));
+                            const auto across = fft::DirectLength(uint32_t(std::llround(wide / double(drawn[i].Spacing))));
                             if (span < 8 || across < 2) continue;
                             to_draw.push_back({
                                 .Profile = profile,
@@ -758,8 +759,8 @@ ResolvedContact ResolveContact(const entt::registry &r, ModalAudio &m, const Sus
                                 .Sigma = drawn[i].Sigma,
                                 .Span = 0,
                                 .Across = 0,
-                                .Columns = SmoothSize(uint32_t(std::llround(band_length / coarse))),
-                                .Rows = SmoothSize(uint32_t(std::llround(wide / coarse))),
+                                .Columns = fft::DirectLength(uint32_t(std::llround(band_length / coarse))),
+                                .Rows = fft::DirectLength(uint32_t(std::llround(wide / coarse))),
                                 .Realization = realization,
                                 .Side = drawn[i].Side,
                             });

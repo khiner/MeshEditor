@@ -263,7 +263,6 @@ void VerifyCoverage(const entt::registry &r) {
     throw std::runtime_error(msg);
 }
 
-
 std::optional<bool> ComponentValuesEqual(entt::id_type type_hash, const void *a, const void *b) {
     using Comparator = bool (*)(const void *, const void *);
     static const auto comparators = [] {

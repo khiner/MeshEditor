@@ -278,15 +278,11 @@ std::vector<std::vector<uint32_t>> ProducedBy(const ClusterLodBuild &build) {
 }
 
 void ReportLevels(const ClusterLodBuild &build, std::string_view title) {
-    std::println("{}: {} levels, {} coarse clusters, {} groups, {} nodes, build {:.1f} ms (weld {:.1f}, level 0 {:.1f}, hierarchy {:.1f})",
-                 title, build.LevelCount, build.Clusters.size(), build.Groups.size(), build.Nodes.size(),
-                 build.Stats.TotalMs, build.Stats.WeldMs, build.Stats.Level0Ms, build.Stats.HierarchyMs);
+    std::println("{}: {} levels, {} coarse clusters, {} groups, {} nodes, build {:.1f} ms (weld {:.1f}, level 0 {:.1f}, hierarchy {:.1f})", title, build.LevelCount, build.Clusters.size(), build.Groups.size(), build.Nodes.size(), build.Stats.TotalMs, build.Stats.WeldMs, build.Stats.Level0Ms, build.Stats.HierarchyMs);
     for (uint32_t level = 0; level < build.Stats.Levels.size(); ++level) {
         const auto &stats = build.Stats.Levels[level];
-        std::println("  level {}: {} groups, {} clusters, {} triangles, {} stuck clusters ({} triangles), {} singletons, mean radius {:.4f}",
-                     level, stats.Groups, stats.Clusters, stats.Triangles, stats.StuckClusters, stats.StuckTriangles, stats.SingletonGroups, stats.MeanRadius);
-        std::println("           wall {:.1f} ms (partition {:.1f}, lock {:.1f}, merge {:.1f}), group cpu: simplify {:.1f}, clusterize {:.1f}, emit {:.1f}",
-                     stats.LevelMs, stats.PartitionMs, stats.LockMs, stats.MergeMs, stats.SimplifyMs, stats.ClusterizeMs, stats.EmitMs);
+        std::println("  level {}: {} groups, {} clusters, {} triangles, {} stuck clusters ({} triangles), {} singletons, mean radius {:.4f}", level, stats.Groups, stats.Clusters, stats.Triangles, stats.StuckClusters, stats.StuckTriangles, stats.SingletonGroups, stats.MeanRadius);
+        std::println("           wall {:.1f} ms (partition {:.1f}, lock {:.1f}, merge {:.1f}), group cpu: simplify {:.1f}, clusterize {:.1f}, emit {:.1f}", stats.LevelMs, stats.PartitionMs, stats.LockMs, stats.MergeMs, stats.SimplifyMs, stats.ClusterizeMs, stats.EmitMs);
     }
 }
 } // namespace
@@ -301,7 +297,9 @@ int main() {
     const auto grid_build = BuildClusterLod(MeshOf(seam_grid));
     const auto two_build = BuildClusterLod(MeshOf(two_primitives));
     const std::array<std::pair<const ClusterLodBuild *, const Fixture *>, 3> builds{{
-        {&small_build, &small_sphere}, {&grid_build, &seam_grid}, {&two_build, &two_primitives},
+        {&small_build, &small_sphere},
+        {&grid_build, &seam_grid},
+        {&two_build, &two_primitives},
     }};
 
     "a mesh with no clusters builds nothing"_test = [] {
@@ -542,9 +540,7 @@ int main() {
                 expect(group.Primitive == p);
                 for (uint32_t c = 0; c < group.ClusterCount; ++c) {
                     const uint32_t id = two_build.GroupClusters[group.FirstCluster + c];
-                    const uint32_t primitive = id < two_build.Level0Count()
-                        ? level0_primitive[id]
-                        : two_build.Clusters[id - two_build.Level0Count()].Primitive;
+                    const uint32_t primitive = id < two_build.Level0Count() ? level0_primitive[id] : two_build.Clusters[id - two_build.Level0Count()].Primitive;
                     expect(primitive == p);
                 }
             }

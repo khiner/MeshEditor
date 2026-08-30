@@ -3,16 +3,16 @@
 #include "Profile.h"
 #include "armature/ArmatureComponents.h"
 #include "audio/SoundVertices.h"
-#include "gpu/MeshletInstanceFlag.h"
-#include "gpu/OverlayDispatch.h"
-#include "gpu/ObjectSelectionPushConstants.h"
-#include "gpu/SelectionElementPushConstants.h"
-#include "gpu/EditSharpnessPushConstants.h"
 #include "gpu/EditSelectionPushConstants.h"
+#include "gpu/EditSharpnessPushConstants.h"
+#include "gpu/MeshletInstanceFlag.h"
 #include "gpu/MeshletRoute.h"
+#include "gpu/ObjectSelectionPushConstants.h"
+#include "gpu/OverlayDispatch.h"
+#include "gpu/SelectionElementPushConstants.h"
 #include "gpu/VisibilitySelectionPushConstants.h"
-#include "mesh/MeshStore.h"
 #include "mesh/MeshComponents.h"
+#include "mesh/MeshStore.h"
 #include "metal/PassChain.h"
 #include "metal/RenderTarget.h"
 #include "object/ObjectComponents.h"
@@ -24,9 +24,9 @@
 #include "selection/SelectionBitset.h"
 #include "selection/SelectionComponents.h"
 #include "selection/SelectionQueries.h"
+#include "viewport/InteractionComponents.h"
 #include "viewport/ViewportEvents.h"
 #include "viewport/ViewportRenderGpu.h"
-#include "viewport/InteractionComponents.h"
 
 #include <entt/entity/registry.hpp>
 
@@ -169,7 +169,8 @@ void RenderElementSelectionPass(
             }
             if (degenerate_point_pass) {
                 const auto &point_pipeline = element == Element::Face ?
-                    selection.MeshletFaceXRayPointsBitsetBox : selection.MeshletEdgeXRayPointsBitsetBox;
+                    selection.MeshletFaceXRayPointsBitsetBox :
+                    selection.MeshletEdgeXRayPointsBitsetBox;
                 point_pipeline.Bind(encoder);
                 encoder->setFragmentBytes(&element_pc, sizeof(element_pc), BufferIndex_PushConstants);
                 if (element == Element::Face) {
@@ -182,7 +183,6 @@ void RenderElementSelectionPass(
             }
         }
     );
-
 }
 
 } // namespace
@@ -240,19 +240,22 @@ std::optional<PixelRect> ObjectQueryRect(const ObjectSelectQuery &query, mtl::Ex
     if (query.BoxResultSlot != InvalidSlot) {
         lo = glm::min(uvec2{query.Box.x, query.Box.y}, limit);
         hi = glm::min(uvec2{
-            uint32_t(std::min<uint64_t>(uint64_t{query.Box.z} + 1u, target.Width)),
-            uint32_t(std::min<uint64_t>(uint64_t{query.Box.w} + 1u, target.Height)),
-        }, limit);
+                          uint32_t(std::min<uint64_t>(uint64_t{query.Box.z} + 1u, target.Width)),
+                          uint32_t(std::min<uint64_t>(uint64_t{query.Box.w} + 1u, target.Height)),
+                      },
+                      limit);
     } else if (query.BestKeySlot != InvalidSlot) {
         const uint32_t radius = uint32_t(std::ceil(std::sqrt(float(query.RadiusSq))));
         lo = glm::min(uvec2{
-            query.TargetPx.x > radius ? query.TargetPx.x - radius : 0u,
-            query.TargetPx.y > radius ? query.TargetPx.y - radius : 0u,
-        }, limit);
+                          query.TargetPx.x > radius ? query.TargetPx.x - radius : 0u,
+                          query.TargetPx.y > radius ? query.TargetPx.y - radius : 0u,
+                      },
+                      limit);
         hi = glm::min(uvec2{
-            uint32_t(std::min<uint64_t>(uint64_t{query.TargetPx.x} + radius + 1u, target.Width)),
-            uint32_t(std::min<uint64_t>(uint64_t{query.TargetPx.y} + radius + 1u, target.Height)),
-        }, limit);
+                          uint32_t(std::min<uint64_t>(uint64_t{query.TargetPx.x} + radius + 1u, target.Width)),
+                          uint32_t(std::min<uint64_t>(uint64_t{query.TargetPx.y} + radius + 1u, target.Height)),
+                      },
+                      limit);
     }
     if (glm::any(glm::lessThanEqual(hi, lo))) return {};
     return PixelRect{lo, hi - lo};
@@ -278,9 +281,7 @@ void RecordVisibilityObjectSelection(
     encode::BindCompute(encoder, pipelines.VisibilityObjectSelection, slots, buffers);
     encoder->setTexture(*pipelines.Main.Resources->VisibilityImage, 0u);
     encoder->setTexture(*pipelines.Main.Resources->DepthImage, 1u);
-    encode::SetPushConstants(encoder, VisibilitySelectionPushConstants{
-        encode::VisibilityDecodePc(buffers), query, rect->Origin, rect->Extent
-    });
+    encode::SetPushConstants(encoder, VisibilitySelectionPushConstants{encode::VisibilityDecodePc(buffers), query, rect->Origin, rect->Extent});
     encoder->dispatchThreadgroups(
         MTL::Size((rect->Extent.x + 15u) / 16u, (rect->Extent.y + 15u) / 16u, 1u),
         ThreadgroupSize::Tile16
@@ -342,9 +343,9 @@ void RunBoxSelectElements(entt::registry &r, entt::entity viewport, std::span<co
     const profile::CpuScope scope{"RunBoxSelectElements"};
 
     auto *baseline = is_additive ? r.try_get<AdditiveBoxSelectBaseline>(viewport) : nullptr;
-    const auto operation = !is_additive ? EditSelectionOperation::Clear :
+    const auto operation = !is_additive                 ? EditSelectionOperation::Clear :
         baseline && !baseline->ElementSelectionCaptured ? EditSelectionOperation::CaptureBaseline :
-                                                        EditSelectionOperation::RestoreBaseline;
+                                                          EditSelectionOperation::RestoreBaseline;
     const auto transactions = BuildSelectionTransactions(r, ranges, element, operation);
     const auto &ctx = r.ctx().get<const mtl::Context>();
     ctx.CommitResidency();
@@ -555,7 +556,8 @@ void RecordSelectionPrepare(
     auto *encoder = command_buffer->computeCommandEncoder();
     for (const auto &pc : transactions) {
         const uint32_t count = pc.Element == Element::Vertex ? pc.VertexCount :
-            pc.Element == Element::Edge ? pc.EdgeCount : pc.FaceCount;
+            pc.Element == Element::Edge                      ? pc.EdgeCount :
+                                                               pc.FaceCount;
         if (count == 0) continue;
         encode::BindCompute(encoder, pipelines.PrepareEditSelection, slots, buffers);
         encode::SetPushConstants(encoder, pc);

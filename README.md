@@ -126,7 +126,7 @@ Requires Apple Silicon and the Xcode command-line tools.
 
 ```shell
 $ git clone --recursive git@github.com:khiner/MeshEditor.git
-$ brew install cmake pkgconfig llvm fftw eigen
+$ brew install cmake llvm eigen
 $ brew link llvm --force
 ```
 
@@ -198,7 +198,7 @@ renders the whole corpus into `render_candidates/` with `FLAGS` handed to every 
 - [libwebp](https://github.com/webmproject/libwebp) WebP texture decoding and lossless snapshot/texture encoding (`EXT_texture_webp`)
 - [tinyobjloader](https://github.com/tinyobjloader/tinyobjloader) and [tinyply](https://github.com/ddiakopoulos/tinyply): `.obj` and `.ply` mesh loading
 - [lunasvg](https://github.com/sammycage/lunasvg): Render SVG icons to bitmaps
-- [fftw](https://www.fftw.org/) compute spectrograms (visualized with ImPlot)
+- [Accelerate](https://developer.apple.com/documentation/accelerate): vDSP Fourier transforms behind the spectrum plots, and BLAS/sparse Cholesky behind the modal solve
 - [ImPlot](https://github.com/epezent/implot): Plotting
 - [boost-ext/ut](https://github.com/boost-ext/ut): Testing
 

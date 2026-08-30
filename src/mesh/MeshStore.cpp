@@ -28,7 +28,8 @@ constexpr uint32_t FanLoopShift{uint32_t(FanItemEncoding::LoopShift)};
 
 constexpr uint32_t BitWords(uint32_t bits) { return (bits + 31u) / 32u; }
 constexpr uint32_t ElementIndex(Element element) {
-    return element == Element::Vertex ? 0u : element == Element::Edge ? 1u : 2u;
+    return element == Element::Vertex ? 0u : element == Element::Edge ? 1u :
+                                                                        2u;
 }
 
 std::optional<std::filesystem::path> ResolveTexturePath(const std::filesystem::path &base_dir, const std::string &texture_name) {
@@ -623,8 +624,7 @@ SlottedRange MeshStore::GetSelectionBitsRange(uint32_t id, Element element) cons
     return range.Count > 0 ? B->SelectionBitsBuffer.Slotted(range) : SlottedRange{};
 }
 EditSelectionStorage MeshStore::GetEditSelectionStorage(uint32_t id) const {
-    return {GetSelectionBitsRange(id, Element::Vertex), GetSelectionBitsRange(id, Element::Edge),
-        GetSelectionBitsRange(id, Element::Face), GetSelectionSummaryRange(id)};
+    return {GetSelectionBitsRange(id, Element::Vertex), GetSelectionBitsRange(id, Element::Edge), GetSelectionBitsRange(id, Element::Face), GetSelectionSummaryRange(id)};
 }
 SlottedRange MeshStore::GetSelectionBaselineRange(uint32_t id) const {
     const auto range = Entries.at(id).SelectionBaseline;

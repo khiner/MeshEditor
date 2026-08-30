@@ -531,7 +531,11 @@ Other:
 
 // Capture options from the CLI. `--render` is a preset for the full scene corpus; `--screenshot`/`--record` target one output.
 struct CaptureRequest {
-    enum class BenchmarkAction { Steady, Orbit, Transform, Visibility, BoxSelect };
+    enum class BenchmarkAction { Steady,
+                                 Orbit,
+                                 Transform,
+                                 Visibility,
+                                 BoxSelect };
 
     bool Play{false};
     float PlayDuration{0}; // 0 = run until playback completes one loop.
@@ -1472,8 +1476,7 @@ int main(int argc, char **argv) {
                     return 1;
                 }
             }
-        }
-        else if (a == "--fps" && std::next(it) != args.end()) capture.Fps = std::atoi(*++it);
+        } else if (a == "--fps" && std::next(it) != args.end()) capture.Fps = std::atoi(*++it);
         else if (a == "--timeline-end" && std::next(it) != args.end()) capture.TimelineEnd = std::atof(*++it);
         else if (a == "--motion-blur" && std::next(it) != args.end()) capture.MotionBlurSteps = uint8_t(std::max(1, std::atoi(*++it)));
         else if (a == "--frames" && std::next(it) != args.end()) capture.BenchFrames = std::atoi(*++it);

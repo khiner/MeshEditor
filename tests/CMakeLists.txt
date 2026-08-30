@@ -35,6 +35,7 @@ add_executable(MeshEditorTests
     ${CMAKE_SOURCE_DIR}/src/audio/ContactModel.cpp
     ${CMAKE_SOURCE_DIR}/src/audio/ContactDynamics.cpp
     ${CMAKE_SOURCE_DIR}/src/audio/ModalAudio.cpp
+    ${CMAKE_SOURCE_DIR}/src/audio/Fft.cpp
     ${SURFACE_SCENE_SOURCES}
     ${CMAKE_SOURCE_DIR}/src/audio/ModalModelFile.cpp
     ${CMAKE_SOURCE_DIR}/src/snapshot/SceneSnapshot.cpp
@@ -82,15 +83,13 @@ target_include_directories(MeshEditorTests PRIVATE
     SYSTEM ${CMAKE_SOURCE_DIR}/lib/metal-cpp
     SYSTEM ${CMAKE_SOURCE_DIR}/lib/basis_universal/transcoder
     SYSTEM ${CMAKE_SOURCE_DIR}/lib/JoltPhysics
-    SYSTEM PkgConfig::FFTW3F
 )
 
 target_link_libraries(MeshEditorTests PRIVATE
     fastgltf::fastgltf
-    PkgConfig::FFTW3F
-    ${FFTW3F_THREADS}
     simdjson::simdjson
     Boost::ut
+    "-framework Accelerate"
     "-framework Metal"
     "-framework Foundation"
     "-framework QuartzCore"
@@ -231,14 +230,14 @@ mesheditor_test_defaults(MeshEditorMeshBvhTest)
 
 # Everything pressing the audio render directly, off the registry, links the same three sources.
 function(mesheditor_render_target target source)
-    add_executable(${target} ${source} ${CMAKE_SOURCE_DIR}/src/audio/ModalAudio.cpp ${CMAKE_SOURCE_DIR}/src/audio/ContactModel.cpp ${SURFACE_MODEL_SOURCES})
+    add_executable(${target} ${source} ${CMAKE_SOURCE_DIR}/src/audio/ModalAudio.cpp ${CMAKE_SOURCE_DIR}/src/audio/ContactModel.cpp ${CMAKE_SOURCE_DIR}/src/audio/Fft.cpp ${SURFACE_MODEL_SOURCES})
     target_include_directories(${target} PRIVATE
         ${CMAKE_SOURCE_DIR}/src
         ${CMAKE_SOURCE_DIR}/tests
         SYSTEM ${CMAKE_SOURCE_DIR}/lib/glm
         SYSTEM ${CMAKE_SOURCE_DIR}/lib/entt/src
     )
-    target_link_libraries(${target} PRIVATE Boost::ut PkgConfig::FFTW3F ${FFTW3F_THREADS})
+    target_link_libraries(${target} PRIVATE Boost::ut "-framework Accelerate")
     mesheditor_test_defaults(${target})
 endfunction()
 

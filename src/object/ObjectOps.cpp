@@ -294,9 +294,7 @@ std::pair<entt::entity, entt::entity> ImportMesh(entt::registry &r, const std::f
     if (!result) throw std::runtime_error(result.error());
 
     // `deduplicate` merges vertices identical in every vertex-domain channel, keeping per-corner UVs and normals.
-    const auto created = CreateMesh(r, {
-        .Data = std::move(result->Mesh), .Attrs = std::move(result->Attrs), .Primitives = std::move(result->Primitives), .Weld = deduplicate
-    });
+    const auto created = CreateMesh(r, {.Data = std::move(result->Mesh), .Attrs = std::move(result->Attrs), .Primitives = std::move(result->Primitives), .Weld = deduplicate});
     if (!result->Materials.empty()) ImportObjPlyMaterials(r, result->Materials, path, created.StoreId);
 
     const auto entities = ::AddMesh(r, created.StoreId, std::move(info));
