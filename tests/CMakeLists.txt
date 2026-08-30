@@ -75,13 +75,15 @@ add_dependencies(MeshEditorTests generate_gpu_schema)
 target_include_directories(MeshEditorTests PRIVATE
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_BINARY_DIR}
+)
+target_include_directories(MeshEditorTests SYSTEM PRIVATE
     ${EIGEN3_INCLUDE_DIR}
-    SYSTEM ${CMAKE_SOURCE_DIR}/lib/entt/src
-    SYSTEM ${CMAKE_SOURCE_DIR}/lib/simdjson/include
-    SYSTEM ${CMAKE_SOURCE_DIR}/lib/libwebp/src
-    SYSTEM ${CMAKE_SOURCE_DIR}/lib/metal-cpp
-    SYSTEM ${CMAKE_SOURCE_DIR}/lib/basis_universal/transcoder
-    SYSTEM ${CMAKE_SOURCE_DIR}/lib/JoltPhysics
+    ${CMAKE_SOURCE_DIR}/lib/entt/src
+    ${CMAKE_SOURCE_DIR}/lib/simdjson/include
+    ${CMAKE_SOURCE_DIR}/lib/libwebp/src
+    ${CMAKE_SOURCE_DIR}/lib/metal-cpp
+    ${CMAKE_SOURCE_DIR}/lib/basis_universal/transcoder
+    ${CMAKE_SOURCE_DIR}/lib/JoltPhysics
 )
 
 target_link_libraries(MeshEditorTests PRIVATE
@@ -107,8 +109,8 @@ add_dependencies(MeshEditorActionSerializeTest generate_gpu_schema)
 target_include_directories(MeshEditorActionSerializeTest PRIVATE
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_BINARY_DIR}
-    SYSTEM ${CMAKE_SOURCE_DIR}/lib/entt/src
 )
+target_include_directories(MeshEditorActionSerializeTest SYSTEM PRIVATE ${CMAKE_SOURCE_DIR}/lib/entt/src)
 target_link_libraries(MeshEditorActionSerializeTest PRIVATE Boost::ut)
 mesheditor_test_defaults(MeshEditorActionSerializeTest)
 
@@ -127,9 +129,11 @@ function(mesheditor_solve_target target)
     )
     target_include_directories(${target} PRIVATE
         ${CMAKE_SOURCE_DIR}/src
+    )
+    target_include_directories(${target} SYSTEM PRIVATE
         ${EIGEN3_INCLUDE_DIR}
-        SYSTEM ${CMAKE_SOURCE_DIR}/lib/spectra/include
-        SYSTEM ${CMAKE_SOURCE_DIR}/lib/tinyobjloader
+        ${CMAKE_SOURCE_DIR}/lib/spectra/include
+        ${CMAKE_SOURCE_DIR}/lib/tinyobjloader
     )
     target_link_libraries(${target} PRIVATE Boost::ut meshoptimizer tinyobjloader "-framework Accelerate")
     mesheditor_test_defaults(${target})
@@ -147,8 +151,8 @@ target_compile_definitions(MeshEditorModalSolverBench PRIVATE TET_CORPUS_DIR="${
 add_executable(MeshEditorCompressTest CompressTest.cpp ${CMAKE_SOURCE_DIR}/src/Compress.cpp)
 target_include_directories(MeshEditorCompressTest PRIVATE
     ${CMAKE_SOURCE_DIR}/src
-    SYSTEM ${CMAKE_SOURCE_DIR}/lib/basis_universal/zstd
 )
+target_include_directories(MeshEditorCompressTest SYSTEM PRIVATE ${CMAKE_SOURCE_DIR}/lib/basis_universal/zstd)
 target_link_libraries(MeshEditorCompressTest PRIVATE Boost::ut basisu_transcoder)
 mesheditor_test_defaults(MeshEditorCompressTest)
 
@@ -156,13 +160,13 @@ add_executable(MeshEditorAudioFileTest AudioFileTest.cpp ${CMAKE_SOURCE_DIR}/src
 target_include_directories(MeshEditorAudioFileTest PRIVATE
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_SOURCE_DIR}/tests
-    SYSTEM ${CMAKE_SOURCE_DIR}/lib/entt/src
 )
+target_include_directories(MeshEditorAudioFileTest SYSTEM PRIVATE ${CMAKE_SOURCE_DIR}/lib/entt/src)
 target_link_libraries(MeshEditorAudioFileTest PRIVATE Boost::ut "-framework AudioToolbox" "-framework CoreFoundation")
 mesheditor_test_defaults(MeshEditorAudioFileTest)
 
 add_executable(MeshEditorContactCollectBench ContactCollectBench.cpp)
-target_include_directories(MeshEditorContactCollectBench PRIVATE SYSTEM ${CMAKE_SOURCE_DIR}/lib/JoltPhysics SYSTEM ${CMAKE_SOURCE_DIR}/lib/entt/src)
+target_include_directories(MeshEditorContactCollectBench SYSTEM PRIVATE ${CMAKE_SOURCE_DIR}/lib/JoltPhysics ${CMAKE_SOURCE_DIR}/lib/entt/src)
 target_link_libraries(MeshEditorContactCollectBench PRIVATE Jolt)
 mesheditor_test_defaults(MeshEditorContactCollectBench)
 
@@ -190,15 +194,13 @@ add_dependencies(MeshEditorContactCollectTest generate_gpu_schema)
 target_include_directories(MeshEditorContactCollectTest PRIVATE
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_BINARY_DIR}
-    SYSTEM ${CMAKE_SOURCE_DIR}/lib/entt/src
-    SYSTEM ${CMAKE_SOURCE_DIR}/lib/metal-cpp
-    SYSTEM ${CMAKE_SOURCE_DIR}/lib/JoltPhysics
 )
+target_include_directories(MeshEditorContactCollectTest SYSTEM PRIVATE ${CMAKE_SOURCE_DIR}/lib/entt/src ${CMAKE_SOURCE_DIR}/lib/metal-cpp ${CMAKE_SOURCE_DIR}/lib/JoltPhysics)
 target_link_libraries(MeshEditorContactCollectTest PRIVATE Boost::ut Jolt meshoptimizer "-framework Metal" "-framework Foundation" "-framework QuartzCore")
 mesheditor_test_defaults(MeshEditorContactCollectTest)
 
 add_executable(MeshEditorContactManifoldTest ContactManifoldTest.cpp)
-target_include_directories(MeshEditorContactManifoldTest PRIVATE SYSTEM ${CMAKE_SOURCE_DIR}/lib/JoltPhysics)
+target_include_directories(MeshEditorContactManifoldTest SYSTEM PRIVATE ${CMAKE_SOURCE_DIR}/lib/JoltPhysics)
 target_link_libraries(MeshEditorContactManifoldTest PRIVATE Boost::ut Jolt)
 mesheditor_test_defaults(MeshEditorContactManifoldTest)
 
@@ -228,8 +230,8 @@ function(mesheditor_render_target target source)
     target_include_directories(${target} PRIVATE
         ${CMAKE_SOURCE_DIR}/src
         ${CMAKE_SOURCE_DIR}/tests
-        SYSTEM ${CMAKE_SOURCE_DIR}/lib/entt/src
     )
+    target_include_directories(${target} SYSTEM PRIVATE ${CMAKE_SOURCE_DIR}/lib/entt/src)
     target_link_libraries(${target} PRIVATE Boost::ut "-framework Accelerate")
     mesheditor_test_defaults(${target})
 endfunction()
@@ -263,8 +265,8 @@ add_dependencies(MeshEditorMslCompileTest generate_gpu_schema)
 target_include_directories(MeshEditorMslCompileTest PRIVATE
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_BINARY_DIR}
-    SYSTEM ${CMAKE_SOURCE_DIR}/lib/metal-cpp
 )
+target_include_directories(MeshEditorMslCompileTest SYSTEM PRIVATE ${CMAKE_SOURCE_DIR}/lib/metal-cpp)
 target_link_libraries(MeshEditorMslCompileTest PRIVATE "-framework Metal" "-framework Foundation" "-framework QuartzCore")
 set_target_properties(MeshEditorMslCompileTest PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 mesheditor_test_defaults(MeshEditorMslCompileTest)

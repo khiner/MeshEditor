@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.20)
+cmake_minimum_required(VERSION 4.4)
 
 project(MeshEditor LANGUAGES C CXX OBJCXX)
 
@@ -8,6 +8,7 @@ endif()
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_EXTENSIONS OFF)
+set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON) # Emit build/compile_commands.json for clangd.
 set(CMAKE_CXX_FLAGS "-O2")
 set(CMAKE_C_FLAGS "-O2")
@@ -102,25 +103,26 @@ add_custom_command(
 add_custom_target(generate_gpu_schema DEPENDS ${GPU_SCHEMA_STAMP})
 
 include_directories(
+    ${CMAKE_BINARY_DIR}
+    src
+)
+include_directories(SYSTEM
     ${ImguiDir}
     ${ImguiDir}/backends
     ${ImplotDir}
-    ${CMAKE_BINARY_DIR}
-    SYSTEM lib/imspinner
-    SYSTEM lib/entt/src
-    SYSTEM lib/spectra/include
-    SYSTEM lib/tinyobjloader
-    SYSTEM lib/tinyply/source
-    SYSTEM lib/lunasvg/plutovg/source
-    SYSTEM lib/JoltPhysics
-    SYSTEM lib/zpp_bits
-    SYSTEM lib/readerwriterqueue
-    SYSTEM lib/simdjson/include
-    SYSTEM lib/libwebp/src
-    SYSTEM lib/basis_universal/zstd
-    SYSTEM lib/metal-cpp
-
-    src
+    lib/imspinner
+    lib/entt/src
+    lib/spectra/include
+    lib/tinyobjloader
+    lib/tinyply/source
+    lib/lunasvg/plutovg/source
+    lib/JoltPhysics
+    lib/zpp_bits
+    lib/readerwriterqueue
+    lib/simdjson/include
+    lib/libwebp/src
+    lib/basis_universal/zstd
+    lib/metal-cpp
 )
 
 # Symlink resources next to the executable.
@@ -194,7 +196,7 @@ if(MESHEDITOR_APP)
     set_source_files_properties(src/FileDialog.mm src/MacPlatform.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
     target_compile_definitions(${PROJECT_NAME} PRIVATE IMGUI_IMPL_METAL_CPP)
 
-    target_include_directories(${PROJECT_NAME} PRIVATE ${EIGEN3_INCLUDE_DIR})
+    target_include_directories(${PROJECT_NAME} SYSTEM PRIVATE ${EIGEN3_INCLUDE_DIR})
     target_link_libraries(${PROJECT_NAME} PRIVATE "-framework Accelerate" "-framework AppKit" "-framework AudioToolbox" "-framework AudioUnit" "-framework CoreAudio" "-framework CoreFoundation" "-framework GameController" "-framework Metal" "-framework Foundation" "-framework QuartzCore" "-framework UniformTypeIdentifiers")
 
     target_link_libraries(${PROJECT_NAME} PRIVATE meshoptimizer lunasvg fastgltf::fastgltf simdjson::simdjson basisu_transcoder Jolt webp)

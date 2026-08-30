@@ -113,8 +113,7 @@ enum class FontFamily {
 };
 
 constexpr float FontAtlasScale = 2; // Rasterize to a scaled-up texture and scale down the font size globally, for sharper text.
-ImFont *MainFont{nullptr}, *MonospaceFont{nullptr};
-ImFont *AddFont(FontFamily family, const std::string_view font_file) {
+void AddFont(FontFamily family, const std::string_view font_file) {
     static const auto FontsPath = Paths::Res() / "fonts";
     static constexpr auto PixelsForFamily = [] {
         // These are eyeballed.
@@ -123,11 +122,11 @@ ImFont *AddFont(FontFamily family, const std::string_view font_file) {
         v[size_t(FontFamily::Monospace)] = 17;
         return v;
     }();
-    return GetIO().Fonts->AddFontFromFileTTF((FontsPath / font_file).c_str(), PixelsForFamily[size_t(family)] * FontAtlasScale);
+    GetIO().Fonts->AddFontFromFileTTF((FontsPath / font_file).c_str(), PixelsForFamily[size_t(family)] * FontAtlasScale);
 }
 void InitFonts(float scale = 1.f) {
-    MainFont = AddFont(FontFamily::Main, "Inter-Regular.ttf");
-    MonospaceFont = AddFont(FontFamily::Monospace, "JetBrainsMono-Regular.ttf");
+    AddFont(FontFamily::Main, "Inter-Regular.ttf");
+    AddFont(FontFamily::Monospace, "JetBrainsMono-Regular.ttf");
     ImGui::GetIO().FontGlobalScale = scale / FontAtlasScale;
 }
 

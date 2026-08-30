@@ -1,3 +1,6 @@
+cmake_diagnostic(SET CMD_DEPRECATED IGNORE)
+set_property(DIRECTORY PROPERTY SYSTEM TRUE)
+
 add_subdirectory(ut)
 add_subdirectory(lunasvg)
 add_subdirectory(meshoptimizer)
@@ -31,4 +34,5 @@ set(JPH_USE_DX12 OFF CACHE BOOL "" FORCE)
 set(JPH_USE_VK OFF CACHE BOOL "" FORCE)
 set(JPH_USE_MTL OFF CACHE BOOL "" FORCE)
 set(JPH_USE_CPU_COMPUTE OFF CACHE BOOL "" FORCE)
+set(INTERPROCEDURAL_OPTIMIZATION OFF CACHE BOOL "" FORCE)
 add_subdirectory(JoltPhysics/Build)
